@@ -26,7 +26,7 @@
 
 ## 2. 디렉토리 구조
 
-이 `.temp/` 트리는 **새 프로젝트 루트에 그대로 복사**할 형태다.
+이 `project_manager/` 트리는 **새 프로젝트 루트에 그대로 복사**할 형태다.
 
 ```
 <프로젝트 루트>/
@@ -59,7 +59,7 @@
 
 ```bash
 # 1) 이 트리를 새 프로젝트 루트로 복사 (.claude 같은 dotfile 포함 주의)
-cp -r .temp/. /path/to/new-project/
+cp -r project_manager/. /path/to/new-project/
 
 cd /path/to/new-project/
 
