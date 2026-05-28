@@ -2,15 +2,15 @@
 """Ticket board CLI — multi-session development coordination.
 
 Atomic claim via POSIX rename(2). Tickets live as markdown files in
-`project_wiki/tickets/{open,claimed,blocked,done}/`. Each command updates
-`project_wiki/board.md` automatically.
+`.project_manager/wiki/tickets/{open,claimed,blocked,done}/`. Each command
+updates `.project_manager/wiki/board.md` automatically.
 
 `board.py idea …` manages pre-ADR ideas under
-`project_wiki/ideas/{open,promoted,killed}/` with the same atomic-rename +
-frontmatter-sync mechanics (see the `idea` subcommand group).
+`.project_manager/wiki/ideas/{open,promoted,killed}/` with the same
+atomic-rename + frontmatter-sync mechanics (see the `idea` subcommand group).
 
-See `project_wiki/tickets/README.md` and `project_wiki/ideas/README.md` for
-the workflows.
+See `.project_manager/wiki/tickets/README.md` and
+`.project_manager/wiki/ideas/README.md` for the workflows.
 """
 
 from __future__ import annotations
@@ -26,12 +26,12 @@ from typing import Any
 
 import yaml
 
-REPO = Path(__file__).resolve().parent.parent
-TICKETS_DIR = REPO / "project_wiki" / "tickets"
-IDEAS_DIR = REPO / "project_wiki" / "ideas"
-BOARD_FILE = REPO / "project_wiki" / "board.md"
-LOG_FILE = REPO / "project_wiki" / "log.md"
-STATUS_FILE = REPO / "project_wiki" / "status.md"
+REPO = Path(__file__).resolve().parents[2]
+TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"
+IDEAS_DIR = REPO / ".project_manager" / "wiki" / "ideas"
+BOARD_FILE = REPO / ".project_manager" / "wiki" / "board.md"
+LOG_FILE = REPO / ".project_manager" / "wiki" / "log.md"
+STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
 TEMPLATE_FILE = TICKETS_DIR / "_template.md"
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 # Ideas have a simpler lifecycle than tickets — no claim/complete middle
@@ -713,7 +713,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
 # ── board.md regeneration ──────────────────────────────────────────────
 
 def refresh_board() -> None:
-    """Regenerate project_wiki/board.md."""
+    """Regenerate .project_manager/wiki/board.md."""
     by_status: dict[str, list[dict]] = {s: [] for s in STATUS_DIRS}
     for status in STATUS_DIRS:
         for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
@@ -729,7 +729,7 @@ def refresh_board() -> None:
         "",
         "# Ticket Board",
         "",
-        "> 자동 생성 — `tools/board.py` 의 모든 변경 명령 끝에 갱신. 수동 편집 금지.",
+        "> 자동 생성 — `.project_manager/tools/board.py` 의 모든 변경 명령 끝에 갱신. 수동 편집 금지.",
         "> 작업 흐름: [`tickets/README.md`](tickets/README.md).",
         "",
     ]

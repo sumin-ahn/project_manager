@@ -23,6 +23,10 @@
       "Bash(python3 *)",
       "Bash(pip *)",
       "Bash(pip3 *)",
+      "Bash({{PY}} .project_manager/tools/board.py *)",
+      "Bash({{PY}} .project_manager/tools/pm_bootstrap.py *)",
+      "Bash({{PY}} .project_manager/tools/pm_handoff.py *)",
+      "Bash({{PY}} .project_manager/tools/ticket_finish.py *)",
       "Bash(git status)",
       "Bash(git status *)",
       "Bash(git log *)",
@@ -31,6 +35,7 @@
       "Bash(git commit *)",
       "Bash(git branch *)",
       "Bash(git checkout *)",
+      "Bash(git mv *)",
       "Bash({{PROJECT_ROOT}}/.claude/run_tests_hook.sh)",
       "Bash(gh auth *)",
       "Bash(git config *)",
@@ -39,7 +44,9 @@
       "Bash(ssh-keyscan -t ed25519 github.com)",
       "Bash(ssh-keygen -lf -)",
       "Bash(mkdir -p ~/.ssh)",
-      "Bash(git ls-remote *)"
+      "Bash(git ls-remote *)",
+      "Bash(git remote *)",
+      "Bash(git push *)"
     ],
     "deny": [
       "Bash(rm -rf *)",
@@ -64,5 +71,5 @@
       }
     ]
   },
-  "_comment": "Claude Code 프로젝트 설정 템플릿. {{PROJECT_ROOT}} 치환 필수. permissions.allow 는 보수적 기본값 — 프로젝트가 자주 쓰는 명령을 추가하라. PostToolUse hook 을 쓰지 않으려면 hooks 블록을 삭제."
+  "_comment": "Claude Code 프로젝트 설정 템플릿. {{PROJECT_ROOT}} / {{PY}} 치환 필수. permissions.allow 는 보수적 기본값 — 프로젝트가 자주 쓰는 명령을 추가하라. PostToolUse hook 을 쓰지 않으려면 hooks 블록을 삭제."
 }

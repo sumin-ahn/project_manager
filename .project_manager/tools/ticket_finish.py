@@ -2,23 +2,26 @@
 """PM 부기 자동화 헬퍼 — ticket 완료 시 기계적 부기를 한 명령으로 묶는다.
 
 사용:
-    venv/bin/python tools/ticket_finish.py T-NNNN [--section "<섹션명>"] [--dry-run]
+    venv/bin/python .project_manager/tools/ticket_finish.py T-NNNN [--section "<섹션명>"] [--dry-run]
 
 동작 순서 (하나라도 실패하면 이후 단계 중단):
   1. 회귀 실행 — pytest tests/ -q. red 면 즉시 중단.
-  2. status.md 스칼라 갱신 — 전체 테스트 수 / 합계 행 / 섹션 행(--section 시) / 회귀 실측 라인.
+  2. status.md 스칼라 갱신 — 전체 테스트 수 / 합계 행 / 섹션 행(--section 시) / 회귀 실측 라인
+       + (v2) 인라인 소계 행(--section 시, 행이 있는 섹션만).
   3. log.md 스켈레톤 append — 표준 형식 entry 골격.
   4. board.py complete 호출 — 회귀를 이미 통과했으므로 --tests-pass.
   5. git add -A — 스테이징. commit 은 PM 이 한다.
   6. 잔여 PM 수동 작업 출력.
 
-결정 (T-0064):
+결정 (T-0064 / T-0116):
   - subprocess DI: pytest/git/board.py subprocess 는 주입 가능한 함수로 감싼다.
   - red 면 중단: status.md / log.md / board / git 어떤 것도 건드리지 않는다.
   - 편집은 정규식 앵커 치환, 멱등. 앵커 불일치 시 명시적 에러 (추측 편집 금지).
   - 모듈 행·서술·commit 은 자동화하지 않는다 (v1 축소판 — §배경).
   - fail-soft 가 아니다 — 명시적 실패 (비-0 종료 + 명확한 메시지).
   - LLM 미호출 — stdlib + board.py import 만.
+  - (v2) 인라인 소계 부재 섹션은 warning log·skip·exit 0 (fail-soft).
+  - (v2) 인라인 소계 다중 매치 시 ValueError (앵커 방어).
 """
 
 from __future__ import annotations
@@ -28,13 +31,14 @@ import datetime
 import re
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Callable
 
-REPO = Path(__file__).resolve().parent.parent
-STATUS_FILE = REPO / "project_wiki" / "status.md"
-LOG_FILE = REPO / "project_wiki" / "log.md"
-BOARD_PY = REPO / "tools" / "board.py"
+REPO = Path(__file__).resolve().parents[2]
+STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
+LOG_FILE = REPO / ".project_manager" / "wiki" / "log.md"
+BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 VENV_PYTHON = REPO / "venv" / "bin" / "python"
 
 # ── 앵커 정규식 ────────────────────────────────────────────────────────
@@ -62,6 +66,120 @@ def _build_section_re(section: str) -> re.Pattern[str]:
     return re.compile(
         r"(\| " + escaped + r" \| )(\d+)( \|)"
     )
+
+
+# 인라인 소계 행: "| **소계** | | **N** | | |"
+_RE_INLINE_SUBTOTAL = re.compile(
+    r"^\| \*\*소계\*\* \| \| \*\*(\d+)\*\* \| \| \|$",
+    re.MULTILINE,
+)
+
+
+def _section_header_prefix(section: str) -> str:
+    """합계표 섹션명에서 ## 헤더 매칭용 prefix 를 추출한다 (방안 (a)).
+
+    괄호 전 부분을 trim 해서 반환한다.
+    예:
+      "개발 도구 (board.py + ...)" → "개발 도구"
+      "파이프라인 / 운영"          → "파이프라인 / 운영"
+      "Layer 2 — 결정론 코어"      → "Layer 2 — 결정론 코어"
+    """
+    paren_idx = section.find("(")
+    if paren_idx != -1:
+        return section[:paren_idx].rstrip()
+    return section
+
+
+def _extract_section_window(status_text: str, section: str) -> tuple[str, int] | None:
+    """status_text 에서 section 에 해당하는 ## 헤더 블록(다음 ## 전까지)을 반환한다.
+
+    헤더를 찾지 못하면 None 을 반환한다.
+    섹션 헤더 매핑 방안 (a): 합계표 섹션명의 괄호 전 prefix 로 `## ` 헤더를 찾는다.
+
+    Returns:
+        (window, start_offset) — window 는 섹션 헤더부터 다음 ## 까지 텍스트,
+        start_offset 은 window 의 status_text 내 시작 인덱스 (replace 시 사용).
+        헤더를 찾지 못하면 None.
+    """
+    prefix = _section_header_prefix(section)
+    # "## <prefix>" 로 시작하는 라인을 찾는다. 정확히 그 prefix 로 시작하거나 끝나는 헤더.
+    header_pattern = re.compile(
+        r"^## " + re.escape(prefix) + r"(?:\s.*)?$",
+        re.MULTILINE,
+    )
+    header_match = header_pattern.search(status_text)
+    if header_match is None:
+        return None
+
+    start = header_match.start()
+    # 다음 "## " 헤더까지가 이 섹션의 윈도우
+    next_header_match = re.search(r"^## ", status_text[header_match.end():], re.MULTILINE)
+    if next_header_match is None:
+        end = len(status_text)
+    else:
+        end = header_match.end() + next_header_match.start()
+
+    return status_text[start:end], start
+
+
+def _update_inline_subtotal_in_window(
+    status_text: str,
+    window: str,
+    offset: int,
+    delta: int,
+    section_label: str = "",
+) -> tuple[str, bool]:
+    """섹션 윈도우 안의 인라인 소계 행에 delta 를 적용한 새 텍스트를 반환한다.
+
+    offset 으로 정확한 위치 갱신 — status_text.find(window) 재탐색 제거.
+
+    Args:
+        status_text: 전체 status.md 텍스트.
+        window: 섹션 헤더부터 다음 ## 까지의 슬라이스 (_extract_section_window 반환값).
+        offset: window 가 status_text 에서 시작하는 인덱스 (_extract_section_window 반환값).
+        delta: 소계에 더할 값.
+        section_label: 경고·에러 메시지용 섹션명 (선택).
+
+    반환: (new_status_text, updated: bool)
+      - updated=True  — 인라인 소계 행이 존재해 갱신됨.
+      - updated=False — 인라인 소계 행 부재 (fail-soft·warning).
+    ValueError: 인라인 소계 행이 섹션 윈도우 안에서 2회 이상 매치됨 (앵커 방어).
+    """
+    matches = list(_RE_INLINE_SUBTOTAL.finditer(window))
+
+    if len(matches) == 0:
+        warnings.warn(
+            f"인라인 소계 skip: 섹션 '{section_label}' 의 인라인 소계 행 "
+            f"('| **소계** | | **N** | | |')이 없다. "
+            f"해당 섹션은 인라인 소계 없이 구성된 섹션이므로 갱신을 건너뛴다.",
+            stacklevel=3,
+        )
+        return status_text, False
+
+    if len(matches) > 1:
+        raise ValueError(
+            f"앵커 불일치: 섹션 '{section_label}' 안에서 인라인 소계 행이 "
+            f"{len(matches)}번 매치됐다 (정확히 1번이어야 한다). "
+            "status.md 형식을 확인하라."
+        )
+
+    # 매치 1개 — delta 적용
+    match = matches[0]
+    old_subtotal = int(match.group(1))
+    new_subtotal = old_subtotal + delta
+
+    # window 안에서 치환 후 status_text 에 offset 으로 정확히 교체한다 (재탐색 없음)
+    new_window = (
+        window[: match.start(1)]
+        + str(new_subtotal)
+        + window[match.end(1):]
+    )
+    new_status_text = (
+        status_text[:offset]
+        + new_window
+        + status_text[offset + len(window):]
+    )
+    return new_status_text, True
 
 
 # ── pytest 출력 파서 ────────────────────────────────────────────────────
@@ -149,13 +267,16 @@ def update_status(
 ) -> str:
     """status.md 텍스트에서 스칼라 값을 갱신한 새 텍스트를 반환한다.
 
-    갱신 대상:
-      - 헤더 라인 ("전체 테스트: N / N 통과" + 통합 NN개)
-      - 합계 행 ("| **합계** | **N** |")
-      - 회귀 실측 라인
-      - --section 이 지정된 경우 그 섹션 행 (델타 = new_total - old_total)
+    갱신 대상 (v1 + v2):
+      - (v1) 헤더 라인 ("전체 테스트: N / N 통과" + 통합 NN개)
+      - (v1) 합계 행 ("| **합계** | **N** |")
+      - (v1) 회귀 실측 라인
+      - (v1) --section 이 지정된 경우 그 섹션 행 (합계표)
+      - (v2 신규) --section 의 인라인 소계 행 — 동일 delta 적용
+              `| **소계** | | **N** | | |` (인라인 표 형식)
 
-    앵커 불일치 시 ValueError (추측 편집 금지).
+    인라인 소계 행이 부재한 섹션 (Layer 0 등) 은 skip — fail-soft.
+    앵커 불일치 시 ValueError (v1 정합 — 추측 편집 금지).
     """
     delta = new_total - old_total
 
@@ -214,6 +335,22 @@ def update_status(
             return m.group(1) + str(new_section_count) + m.group(3)
 
         status_text = section_re.sub(replace_section, status_text, count=1)
+
+        # 5. (v2) 인라인 소계 행 갱신 — fail-soft (부재 섹션은 skip)
+        # ValueError 는 다중 매치 시에만 raise (앵커 방어).
+        window_result = _extract_section_window(status_text, section)
+        if window_result is None:
+            # 헤더 자체가 없으면 fail-soft (합계표 섹션 행은 이미 갱신됐을 수 있음)
+            warnings.warn(
+                f"인라인 소계 skip: 섹션 헤더 '## {_section_header_prefix(section)}' "
+                f"를 status.md 에서 찾지 못했다. 인라인 소계 행을 갱신하지 않는다.",
+                stacklevel=3,
+            )
+        else:
+            window, window_offset = window_result
+            status_text, _updated = _update_inline_subtotal_in_window(
+                status_text, window, window_offset, delta, section_label=section
+            )
 
     return status_text
 
@@ -447,7 +584,7 @@ class TicketFinisher:
                 write_status(self._status_file, new_text)
                 print(f"  ✓ status.md 갱신: {old_total}→{new_total}")
                 if section:
-                    print(f"  ✓ 섹션 행 '{section}' 갱신.")
+                    print(f"  ✓ 섹션 행 '{section}' + 인라인 소계 갱신 (부재 시 skip).")
                 else:
                     print(
                         "  ⚠ --section 미지정 — 섹션 행은 PM 이 수동으로 갱신해야 한다 "
@@ -579,6 +716,31 @@ class TicketFinisher:
                 print(
                     f"  [dry-run] 섹션 행 '{section}': 패턴 불일치 — "
                     "실제 실행 시 에러가 발생한다."
+                )
+            # 인라인 소계 행 preview
+            window_result = _extract_section_window(status_text, section)
+            if window_result is not None:
+                window, _window_offset = window_result
+                subtotal_matches = list(_RE_INLINE_SUBTOTAL.finditer(window))
+                if len(subtotal_matches) == 1:
+                    old_sub = int(subtotal_matches[0].group(1))
+                    print(
+                        f"  [dry-run] 인라인 소계 행 ('{section}'): "
+                        f"{old_sub}→{old_sub + delta}"
+                    )
+                elif len(subtotal_matches) == 0:
+                    print(
+                        f"  [dry-run] 인라인 소계 행 없음 ('{section}') — skip (fail-soft)."
+                    )
+                else:
+                    print(
+                        f"  [dry-run] 인라인 소계 행 {len(subtotal_matches)}개 — "
+                        "실제 실행 시 ValueError 가 발생한다."
+                    )
+            else:
+                print(
+                    f"  [dry-run] 섹션 헤더를 찾지 못함 — "
+                    "인라인 소계 skip (fail-soft)."
                 )
         else:
             print("  [dry-run] --section 미지정 — 섹션 행은 건드리지 않는다.")

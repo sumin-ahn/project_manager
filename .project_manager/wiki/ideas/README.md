@@ -38,10 +38,10 @@ idea 의 상태 전이는 `board.py` 가 단독으로 관리한다 — **수동 
 (디렉토리 ↔ frontmatter `status` drift 방지).
 
 ```bash
-{{PY}} tools/board.py idea list [--status open|promoted|killed]
-{{PY}} tools/board.py idea new "<title>" [--tag a,b]
-{{PY}} tools/board.py idea promote NNNN   # open/ → promoted/
-{{PY}} tools/board.py idea kill NNNN      # open/ → killed/
+{{PY}} .project_manager/tools/board.py idea list [--status open|promoted|killed]
+{{PY}} .project_manager/tools/board.py idea new "<title>" [--tag a,b]
+{{PY}} .project_manager/tools/board.py idea promote NNNN   # open/ → promoted/
+{{PY}} .project_manager/tools/board.py idea kill NNNN      # open/ → killed/
 ```
 
 1. **새 idea** → `idea new "<title>"` 가 `open/NNNN-slug.md` 를 채번·생성한다.

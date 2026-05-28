@@ -28,8 +28,8 @@ tags: []                     # phase-1, infra 등 분류
 ## 완료 조건 (Definition of Done)
 - [ ] 핵심 산출물 (파일, 동작)
 - [ ] 단위 테스트 추가 (회귀 깨지지 않음)
-- [ ] `project_wiki/status.md` 갱신 (해당 모듈 행)
-- [ ] (해당 시) `project_wiki/log.md` append
+- [ ] `.project_manager/wiki/status.md` 갱신 (해당 모듈 행)
+- [ ] (해당 시) `.project_manager/wiki/log.md` append
 
 ## 참고
 - [[architecture]] 관련 절

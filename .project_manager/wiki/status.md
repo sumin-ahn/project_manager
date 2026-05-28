@@ -24,7 +24,7 @@ type: status
 ## 모듈 매트릭스
 
 <!-- TODO: 프로젝트의 Layer/그룹별로 섹션을 나눠 모듈 행을 채운다.
-     섹션 끝마다 소계 행을 두면 tools/ticket_finish.py 의 --section 으로
+     섹션 끝마다 소계 행을 두면 .project_manager/tools/ticket_finish.py 의 --section 으로
      자동 갱신할 수 있다. -->
 
 | 모듈 | 파일 | 테스트 | 상태 | 비고 |
@@ -35,7 +35,7 @@ type: status
 
 ## 테스트 합계표
 
-> `tools/ticket_finish.py` 가 ticket 완료 시 아래 스칼라를 자동 갱신한다 —
+> `.project_manager/tools/ticket_finish.py` 가 ticket 완료 시 아래 스칼라를 자동 갱신한다 —
 > 이 표의 라인 형식(`| 섹션명 | N |`, `| **합계** | **N** |`)을 바꾸면
 > `ticket_finish.py` 의 `_RE_*` 정규식도 같이 바꿔야 한다.
 

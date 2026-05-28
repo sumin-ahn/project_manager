@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/board.py *)",
+      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/pm_bootstrap.py *)",
+      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/pm_handoff.py *)",
+      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/ticket_finish.py *)"
+    ]
+  },
+  "_comment": "PM 세션 전용 권한 — board/bootstrap/handoff/ticket_finish 4 도구. CLAUDE_SESSION_NAME=pm prefix 는 board.py 가 --session 인자 없이도 'pm' 세션으로 식별하게 한다. {{PY}} 는 도입 시 venv/bin/python 또는 python3 로 치환."
+}

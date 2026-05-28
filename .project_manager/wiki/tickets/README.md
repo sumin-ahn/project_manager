@@ -5,7 +5,7 @@
 ## 핵심 약속
 
 - **디렉토리 = 상태.** 한 ticket 파일은 `open/`, `claimed/`, `blocked/`, `done/` 중 정확히 한 곳에 있다.
-- **`mv` 가 atomic 한 lock.** POSIX rename(2) 은 동일 파일시스템에서 atomic 이라, 두 세션이 동시에 claim 시도해도 한 쪽만 성공한다 (`tools/board.py claim` 이 wrapping).
+- **`mv` 가 atomic 한 lock.** POSIX rename(2) 은 동일 파일시스템에서 atomic 이라, 두 세션이 동시에 claim 시도해도 한 쪽만 성공한다 (`.project_manager/tools/board.py claim` 이 wrapping).
 - **`board.md` 가 항상 최신.** `board.py` 명령마다 자동 refresh — 다른 세션은 `board.md` 만 보면 현재 상태 안다.
 - **frontmatter 가 진실.** 본문 변경은 자유, 헤더는 `board.py` 가 관리.
 
@@ -14,7 +14,7 @@
 ### 새 세션 시작 시
 ```bash
 # 1) 현재 상황 확인
-cat project_wiki/board.md
+cat .project_manager/wiki/board.md
 
 # 2) 세션 이름 정하기 (claim 의 --session 인자로 전달 — 없으면 hostname-pid 자동)
 ```
@@ -22,26 +22,26 @@ cat project_wiki/board.md
 ### Ticket 잡고 작업
 ```bash
 # 3) open/ 에서 하나 골라 claim — atomic
-{{PY}} tools/board.py claim T-0003 --session session-A
+{{PY}} .project_manager/tools/board.py claim T-0003 --session session-A
 
 # 4) 코드 작업
 
 # 5) 다 끝나면 완료 처리 (회귀 통과 후 --tests-pass)
-{{PY}} tools/board.py complete T-0003 --tests-pass
+{{PY}} .project_manager/tools/board.py complete T-0003 --tests-pass
 
 # 또는 막혔으면
-{{PY}} tools/board.py block T-0003 --reason "외부 키 발급 대기"
+{{PY}} .project_manager/tools/board.py block T-0003 --reason "외부 키 발급 대기"
 
 # 막힘이 풀렸으면 다시 open 으로
-{{PY}} tools/board.py unblock T-0003
+{{PY}} .project_manager/tools/board.py unblock T-0003
 
 # 잘못 잡았으면 원위치
-{{PY}} tools/board.py unclaim T-0003
+{{PY}} .project_manager/tools/board.py unclaim T-0003
 ```
 
 ### 새 ticket 발행
 ```bash
-{{PY}} tools/board.py new "모듈 X 구현 + 통합" \
+{{PY}} .project_manager/tools/board.py new "모듈 X 구현 + 통합" \
     --touches src/x.py,tests/test_x.py \
     --depends T-0001 \
     --tag phase-1
@@ -49,11 +49,11 @@ cat project_wiki/board.md
 
 ### 조회
 ```bash
-{{PY}} tools/board.py list                    # 전체 상태
-{{PY}} tools/board.py list --status open      # open 만
-{{PY}} tools/board.py list --tag phase-1      # phase-1 태그
-{{PY}} tools/board.py show T-0003             # 한 ticket 상세
-{{PY}} tools/board.py refresh                 # board.md 강제 재생성
+{{PY}} .project_manager/tools/board.py list                    # 전체 상태
+{{PY}} .project_manager/tools/board.py list --status open      # open 만
+{{PY}} .project_manager/tools/board.py list --tag phase-1      # phase-1 태그
+{{PY}} .project_manager/tools/board.py show T-0003             # 한 ticket 상세
+{{PY}} .project_manager/tools/board.py refresh                 # board.md 강제 재생성
 ```
 
 ## 디렉토리

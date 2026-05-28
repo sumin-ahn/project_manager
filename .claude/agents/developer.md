@@ -17,8 +17,8 @@ tools: Read, Edit, Write, Bash, Glob, Grep
 ## 부트스트랩 (작업 시작 시)
 
 1. `CLAUDE.md` — 프로젝트 규칙·작업 원칙
-2. `project_wiki/status.md` — 모듈 진행 상태
-3. `{{PY}} tools/board.py show <T-NNNN>` — ticket 본문 (목표/인터페이스/결정/DoD/참고)
+2. `.project_manager/wiki/status.md` — 모듈 진행 상태
+3. `{{PY}} .project_manager/tools/board.py show <T-NNNN>` — ticket 본문 (목표/인터페이스/결정/DoD/참고)
 
 ticket 본문이 **단일 진실**이다. 본문의 목표/인터페이스/결정/완료 조건(DoD)대로만 수행한다. 본문이 부족해 작업이 불가능하면 추측하지 말고 그 사실을 보고에 명시한다.
 
@@ -84,9 +84,13 @@ orchestrator 가 code-reviewer 로 넘길 수 있게 변경 위치를 명확히 
 - `touches` 범위 밖 파일 수정
 - **프로덕션 진입점·파이프라인을 라이브로 실행** — 외부 비가역 부작용을 낸다. 검증은 mock 격리된 자동 테스트뿐 (위 §4 참조).
 - **보호 영역 수정** — {{PROTECTED_PATHS}} <!-- TODO: 코드 author + ADR 가 필요한 파일/디렉토리. 예: 운영 config, 한도 상수, immutable 스냅샷 디렉토리. 없으면 이 항목 삭제. -->
-- `tools/board.py` claim/complete 호출 — orchestrator 담당
-- `project_wiki/status.md` / `project_wiki/log.md` 갱신 — orchestrator 담당
+- `.project_manager/tools/board.py` claim/complete 호출 — orchestrator 담당
+- `.project_manager/wiki/status.md` / `.project_manager/wiki/log.md` 갱신 — orchestrator 담당
 - 기존 기능 파괴 / 과잉 엔지니어링 / 요청 안 한 기능 추가 / 테스트 skip
 - 코드를 동작 안 하는 상태로 남기기
+
+## 상속하는 경계
+
+서브에이전트도 프로젝트의 PM 사용자 게이트·금지 항목을 그대로 상속한다 (`.project_manager/wiki/pm_role.md` §"금지 (PM·사용자 단독 불가)"·§"사용자 게이트"). 외부 비가역 행위·미션 변경·{{PROTECTED_PATHS}} 수정 등은 이 에이전트의 권한 밖이다.
 
 당신은 구현자다(검토자가 아니다). 패턴을 모두 따르며 최선의 코드를 쓰고, 동작하는 소프트웨어를 인계한다. 검토는 code-reviewer 가, board/문서 동기화는 orchestrator 가 한다.
