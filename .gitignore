@@ -1,3 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
+
+# Claude Code 로컬 머신 override (harness 세션 중 자동 누적 권한 등).
+# 공통 settings 는 .claude/settings.json 에 (git tracked).
+.claude/settings.local.json

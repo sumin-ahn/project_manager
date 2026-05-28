@@ -1,11 +1,80 @@
 {
   "permissions": {
     "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)",
+      "Bash(echo *)",
+      "Bash(pwd)",
+      "Bash(diff *)",
+      "Bash(jq *)",
+      "Bash(mkdir *)",
+      "Bash(mv *)",
+      "Bash(cp *)",
+      "Bash(chmod *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip *)",
+      "Bash(pip3 *)",
+      "Bash({{PY}} .project_manager/tools/board.py *)",
+      "Bash({{PY}} .project_manager/tools/pm_bootstrap.py *)",
+      "Bash({{PY}} .project_manager/tools/pm_handoff.py *)",
+      "Bash({{PY}} .project_manager/tools/ticket_finish.py *)",
       "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/board.py *)",
       "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/pm_bootstrap.py *)",
       "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/pm_handoff.py *)",
-      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/ticket_finish.py *)"
+      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/ticket_finish.py *)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git branch *)",
+      "Bash(git checkout *)",
+      "Bash(git mv *)",
+      "Bash(git rm *)",
+      "Bash({{PROJECT_ROOT}}/.claude/run_tests_hook.sh)",
+      "Bash(gh auth *)",
+      "Bash(git config *)",
+      "Bash(ssh -T git@github.com)",
+      "Bash(git init *)",
+      "Bash(ssh-keyscan -t ed25519 github.com)",
+      "Bash(ssh-keygen -lf -)",
+      "Bash(mkdir -p ~/.ssh)",
+      "Bash(git ls-remote *)",
+      "Bash(git remote *)",
+      "Bash(git push *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean -f *)"
     ]
   },
-  "_comment": "PM 세션 전용 권한 — board/bootstrap/handoff/ticket_finish 4 도구. CLAUDE_SESSION_NAME=pm prefix 는 board.py 가 --session 인자 없이도 'pm' 세션으로 식별하게 한다. {{PY}} 는 도입 시 venv/bin/python 또는 python3 로 치환."
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{PROJECT_ROOT}}/.claude/run_tests_hook.sh",
+            "timeout": 60,
+            "statusMessage": "Running tests..."
+          }
+        ]
+      }
+    ]
+  },
+  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·다른 PC/프로젝트 import 용). {{PROJECT_ROOT}} / {{PY}} 치환 필수. permissions.allow 는 보수적 기본값 — 프로젝트가 자주 쓰는 명령을 추가하라. PostToolUse hook 을 쓰지 않으려면 hooks 블록을 삭제. 로컬 머신 전용 권한 (harness 세션 중 자동 누적분 포함) 은 별도 settings.local.json (gitignore) 으로 분리."
 }
