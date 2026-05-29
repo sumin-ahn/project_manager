@@ -49,7 +49,7 @@ PM 자율 영역 (pm_role.md §"자율 + 사후 로그"):
 - **본문 부족** → PM 직접 본문 보강 (cold dev 가 본문만 보고 시작 가능해야).
 - **depends_on 미충족** → 의존 ticket 진행 우선 또는 본 ticket blocked 처리.
 - **lint warning** → 의존성 모순 fix.
-- **wikilink dangling** → log.md 의 메타 entry 인용은 link 형태 또는 raw 단어로 재작성.
+- **wikilink dangling** → log/current.md 의 메타 entry 인용은 link 형태 또는 raw 단어로 재작성.
 
 ## 결정
 

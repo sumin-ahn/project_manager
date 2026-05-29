@@ -30,7 +30,7 @@ REPO = Path(__file__).resolve().parents[2]
 TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"
 IDEAS_DIR = REPO / ".project_manager" / "wiki" / "ideas"
 BOARD_FILE = REPO / ".project_manager" / "wiki" / "board.md"
-LOG_FILE = REPO / ".project_manager" / "wiki" / "log.md"
+LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
 TEMPLATE_FILE = TICKETS_DIR / "_template.md"
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
@@ -205,12 +205,12 @@ def _complete_gate(tid: str, args: argparse.Namespace) -> list[str]:
     problems: list[str] = []
     id_re = re.compile(rf"\b{re.escape(tid)}\b")
 
-    # 1. log.md must carry an entry for this ticket.
+    # 1. log/current.md must carry an entry for this ticket.
     if not args.allow_missing_log:
         log_text = LOG_FILE.read_text() if LOG_FILE.exists() else ""
         if not id_re.search(log_text):
             problems.append(
-                f"no log.md entry mentions {tid} — append one to "
+                f"no log/current.md entry mentions {tid} — append one to "
                 f"{_rel_to_repo(LOG_FILE)} (or pass --allow-missing-log)")
 
     # 2. regression must be confirmed by the implementing session.
@@ -816,7 +816,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="assert the regression suite passes "
                         "(required unless --allow-untested)")
     p.add_argument("--allow-missing-log", action="store_true",
-                   help="bypass the log.md entry check")
+                   help="bypass the log/current.md entry check")
     p.add_argument("--allow-untested", action="store_true",
                    help="bypass the regression check "
                         "(regression-irrelevant ticket)")

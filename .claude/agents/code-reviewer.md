@@ -18,7 +18,7 @@ tools: Read, Bash, Glob, Grep
 ### 1. DoD 충족
 ticket 의 완료 조건(DoD) 체크리스트 각 항목이 실제로 충족됐는가. 인터페이스 명세대로 구현됐는가.
 
-> ⚠️ `status.md`/`log.md` 갱신은 orchestrator 담당이다 — 그 누락을 developer must-fix 로 잡지 않는다.
+> ⚠️ `status.md`/`log/current.md` 갱신은 orchestrator 담당이다 — 그 누락을 developer must-fix 로 잡지 않는다.
 
 ### 2. ADR · spec 정합
 ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는가.
@@ -86,6 +86,6 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
 - **코드를 수정·완성하지 않는다** — 당신은 검토자다. must-fix 가 있으면 반려하고 developer 에게 돌려보낸다 (수정은 developer 가).
 - sensitivity 테스트의 임시 수정을 복원하지 않은 채 종료
 - `.project_manager/tools/board.py` claim/complete 호출 — orchestrator 담당
-- `.project_manager/wiki/status.md` / `.project_manager/wiki/log.md` 갱신 — orchestrator 담당
+- `.project_manager/wiki/status.md` / `.project_manager/wiki/log/current.md` 갱신 — orchestrator 담당
 
 당신은 품질 수호자다. 당신의 철저함이 결함이 프로덕션에 들어가는 것을 막는다.

@@ -22,7 +22,7 @@ type: index
 2. frontmatter — `title` / `created` / `updated` / `type: decision` / `status: proposed | accepted | deprecated | superseded` / `scope` / `tags`
 3. 본문: `## Context` / `## Decision` / `## Consequences` / `## References`
 4. 이 README 표에 한 줄 추가
-5. `log.md` 에 `## [YYYY-MM-DD] decide | ADR-NNNN <slug>` append
+5. `log/current.md` 에 `## [YYYY-MM-DD] decide | ADR-NNNN <slug>` append
 
 ## ADR 를 쓰는 시점
 

@@ -14,10 +14,12 @@ type: handoff
 
 ```
 1) CLAUDE.md
-2) .project_manager/wiki/pm_role.md  ← 이 파일
-3) .project_manager/wiki/status.md   ← 전체 상태
-4) .project_manager/wiki/board.md    ← 지금 누가 뭘 하고 있나
-5) .project_manager/wiki/log.md 마지막 ~150 라인 (직전 handoff entry 포함)
+2) .project_manager/wiki/pm_role.md   ← 정적 운영 매뉴얼 (이 파일)
+3) .project_manager/wiki/pm_state.md  ← 동적 상태 (세션 window / 진행 중 의사결정 / 남은 작업)
+4) .project_manager/wiki/status.md    ← 전체 상태
+5) .project_manager/wiki/board.md     ← 지금 누가 뭘 하고 있나
+6) .project_manager/wiki/log/current.md 의 마지막 handoff entry
+   (라인수가 아니라 의미 단위 — 직전 handoff entry 가 다음 세션 읽기 범위를 지정한다)
 ```
 
 기계 측정 dump 는 `/pm-bootstrap` skill (backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
@@ -47,7 +49,7 @@ PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm
 - **위임 프롬프트 작성**: 새 구현 세션이 self-contained 하게 받을 수 있는 부트스트랩 텍스트
 - **Spec 정비**: 설계 문서 / 코드 / ticket 본문에 흩어진 사양을 `specs/` 단일 진실 페이지로 추출
 - **ADR 발행**: 흩어진 결정을 `decisions/NNNN-*.md` 로 명시화
-- **상태 동기화**: `status.md` / `log.md` / `board.md` 갱신
+- **상태 동기화**: `status.md` / `log/current.md` / `board.md` 갱신
 - **다음 옵션 제안**: 사용자에게 진행 우선순위 + trade-off 제시. 결정은 사용자.
 
 ## 책임 — 하지 않는 것
@@ -66,13 +68,13 @@ PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm
 
 > PM 은 *어떻게* 를 자율 결정한다. 사용자는 *무엇을 · 얼마의 비용으로 · 밖으로 내보낼지* 를 결정한다.
 
-### 자율 + 사후 로그 (PM 단독 — `log.md` 기록)
+### 자율 + 사후 로그 (PM 단독 — `log/current.md` 기록)
 
 새 ticket 발행 / super-ticket 분할 / `depends_on`·`blocks` 변경 / `block`·
 `unblock` / spec 추출·갱신 / 일상 ADR (`scope: internal-process` — 프로세스·
 네이밍·내부 구조) / 위임·세션 spawn.
 
-→ 코드 동작·외부 세계를 건드리지 않고 가역적. `log.md` 가 사후 감사 경로.
+→ 코드 동작·외부 세계를 건드리지 않고 가역적. `log/current.md` 가 사후 감사 경로.
 
 ### 사용자 게이트 (사전 동의 필수)
 
@@ -111,27 +113,21 @@ PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm
 [`README.md`](README.md) "디렉토리 의미" 절이 단일 정의처 — 여기서 복제하지 않는다.
 
 ### Super-ticket 분할 절차
-1. 분할 결정 — **PM 자율**. `log.md` 에 분할 사유 기록 (과잉 분할 방지 규율).
+1. 분할 결정 — **PM 자율**. `log/current.md` 에 분할 사유 기록 (과잉 분할 방지 규율).
 2. 원본 ticket 을 `block --reason "Split into T-NNNN..T-MMMM"` 처리 (done 아님 — 작업 안 했으니).
 3. sub-ticket 발행, 각 본문 self-contained 작성.
 4. lint clean 확인 + 회귀 통과.
-5. log.md 에 split entry append.
+5. log/current.md 에 split entry append.
 
-### 세션 식별 (현재까지 사용된 이름)
-
-> ⚠️ `/pm-handoff` skill (backbone `pm_handoff.py`) 가 이 표를 sliding window 로
-> 자동 정리한다. 표 형식·앵커 (`### 세션 식별 (현재까지 사용된 이름)`) 를
-> 바꾸면 backbone CLI 의 정규식도 같이 바꿔야 한다.
+### 세션 식별 규칙
 
 - `pm`: PM 세션 (계속 사용 권장).
 - 구현 세션: 짧은 식별자 (알파벳·역할명 등). `board.py claim --session <name>` 으로 명시.
 - orchestrator 위임 시 PM 이 Agent 툴로 서브에이전트를 spawn — 세션명은
   `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류로 claim 시 명시 전달.
 
-최근 N 차 (sliding window, 기본 3 차):
-<!-- /pm-handoff 가 자동 갱신 — 형식: "  - **N차** (YYYY-MM-DD · <wave_summary>): ..." -->
-  - **1차** ({{DATE}} · 부트스트랩): 초기 PM 세션.
-  - 이전 차 (PM 1차~1차) = `log.md` handoff entry 단일 진실.
+> 실제 사용된 세션 목록 (sliding window) 은 동적 상태라 [`pm_state.md`](pm_state.md)
+> §"세션 식별 (현재까지 사용된 이름)" 으로 분리됐다 — `/pm-handoff` 가 자동 갱신.
 
 ## 위임 — 두 가지 방식
 
@@ -152,10 +148,10 @@ T-NNNN 을 구현하라. (developer)
 T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 ```
 
-이 방식에서 **board.py claim/complete 와 status.md/log.md 갱신은
+이 방식에서 **board.py claim/complete 와 status.md/log/current.md 갱신은
 orchestrator(PM)가 한다** — 서브에이전트는 구현/검토만.
 
-⚠️ code-reviewer 위임 프롬프트엔 "`status.md`/`log.md` 갱신은 orchestrator
+⚠️ code-reviewer 위임 프롬프트엔 "`status.md`/`log/current.md` 갱신은 orchestrator
 담당 — 그 누락은 developer must-fix 아님" 을 덧붙인다 (reviewer 가 ticket DoD
 의 status.md 항목을 developer 미이행으로 오판하는 것 방지).
 
@@ -175,7 +171,7 @@ git 도입 후 code-reviewer 는 `git diff` 로 변경 범위·내용을 직접 
 부트스트랩: 1) CLAUDE.md  2) .project_manager/wiki/status.md  3) {{PY}} .project_manager/tools/board.py show <T-NNNN>
 작업 시작: {{PY}} .project_manager/tools/board.py claim <T-NNNN> --session session-<X>
 ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
-완료 시: 전체 회귀 → board.py complete --tests-pass → status.md → log.md.
+완료 시: 전체 회귀 → board.py complete --tests-pass → status.md → log/current.md.
 막히면 block --reason 으로 PM 세션에.
 ```
 
@@ -203,7 +199,7 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
    정비 등. ⚠️ touches 겹치는 파일 편집 금지 (reviewer git diff 오염).
    ⚠️ 회귀 baseline 측정도 race 위험 — dev cycle 끝난 후 한 번에.
 5. **reviewer background 위임** — `/pm-dev-delegate T-NNNN --role
-   code-reviewer`. 위임 프롬프트에 *"status.md / log.md 갱신은 orchestrator
+   code-reviewer`. 위임 프롬프트에 *"status.md / log/current.md 갱신은 orchestrator
    담당 — 그 누락은 developer must-fix 아님"* 명시.
 6. **PM should-fix 처리 분기** — reviewer 보고 후:
    - **PM 직접 fix**: 1줄·1패턴 변경 + dev 가 안 도는 영역. cycle 시간 절약.
@@ -214,12 +210,12 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
      여부가 should-fix vs suggestion 의 기준.
 7. **ticket complete + 부기** — `/pm-wave-finish T-NNNN <섹션>`
    (`ticket_finish.py` wrapper). 회귀 → status.md 스칼라 (전체수·합계·회귀
-   라인·섹션 행·인라인 소계) → log.md 스켈레톤 append → board complete → git
+   라인·섹션 행·인라인 소계) → log/current.md 스켈레톤 append → board complete → git
    stage. **모듈 행 (테스트 수 + 비고)·git commit 은 PM 손**.
-8. **PM 손 잔여** — log.md 서술 채우기 (스켈레톤 `<!-- PM: 무엇을·왜 -->` 를
+8. **PM 손 잔여** — log/current.md 서술 채우기 (스켈레톤 `<!-- PM: 무엇을·왜 -->` 를
    실제 내용으로) + status.md 모듈 행 비고 (이번 ticket entry 추가) + git
    commit (Co-Authored-By: Claude 트레일러).
-9. **wave 종결 entry log.md append** — 패턴: `## [YYYY-MM-DD] complete | PM
+9. **wave 종결 entry log/current.md append** — 패턴: `## [YYYY-MM-DD] complete | PM
    N차 wave M 종결 — <ticket 목록>`. 본문 = (a) 누적 변경 / (b) 회귀 delta /
    (c) **wave 메타 학습** (다음 wave·다음 PM 세션이 학습으로 사용) / (d) 보드
    상태 / (e) 다음 wave·다음 PM 세션 우선순위. wave 종결 commit 메시지에도
@@ -227,7 +223,7 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 
 ### Wave 메타 학습 누적
 
-매 wave 의 *(c) 메타 학습* entry 가 다음 wave 의 의사결정에 영향. `log.md` 가
+매 wave 의 *(c) 메타 학습* entry 가 다음 wave 의 의사결정에 영향. `log/current.md` 가
 실측 학습 누적 매체 — `pm_role.md` 는 정착 패턴만 흡수 (이 절). 흔한 학습 카테고리:
 
 - **dev 병렬도 안전 조건** — touches disjoint 가 기본 원칙. *공통 통합 파일에
@@ -238,7 +234,7 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
   1줄·dev 안 도는 영역 기준.
 - **reviewer 분석의 cross-check** — reviewer 도 항상 옳지 않다. PM 이
   should-fix 처리 전 *코드 흐름 자체* 독립 점검·부정확이면 변경 불필요 +
-  log.md 영구 기록 (다음 PM 세션이 reviewer 평가 cross-check 신뢰도 활용).
+  log/current.md 영구 기록 (다음 PM 세션이 reviewer 평가 cross-check 신뢰도 활용).
 - **ticket 본문 가설의 검증 책임 = PM 영역** — ticket 이 "X 가 silently wrong
   위험" 가설을 담으면 dev 는 그대로 받아 구현한다. 가설 자체의 도달 가능성
   검증은 PM 이 본문 작성 시 미리 한다 — (a) 가설 / (b) 코드 흐름에서 도달
@@ -251,7 +247,7 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 PM 병목은 "PM 이 한 세션"이 아니라 한 PM 이 직렬로 떠안는 잡일이다. PM 을
 늘리지 않고(board·status·log·로드맵 단일 진실은 PM 1명) 잡일을 줄인다:
 
-- **부기 자동화** — ticket 완료 부기(회귀 → status.md 스칼라 → log.md 스켈레톤
+- **부기 자동화** — ticket 완료 부기(회귀 → status.md 스칼라 → log/current.md 스켈레톤
   → board complete → git stage)는 `.project_manager/tools/ticket_finish.py` /
   `/pm-wave-finish` skill 로 자동화. PM 은 서술(왜·무엇)만 채운다. ⚠️ 단일 진실
   파일을 편집하므로 status.md **모듈 행**·**git commit** 은 자동화하지 않는다 — PM 손.
@@ -290,8 +286,8 @@ PM 병목은 "PM 이 한 세션"이 아니라 한 PM 이 직렬로 떠안는 잡
 `/pm-bootstrap` 의 markdown dump 를 받은 직후 PM 이 사용자에게 줄 보고 형식:
 
 1. **board 요약 1줄** — `done N / open N / claimed N / blocked N` + 회귀·lint·git.
-2. **직전 세션 요약 3~5줄** — log.md handoff entry 본문에서 핵심 산출물·메타 학습 추출.
-3. **다음 옵션 N개** — 아래 "진행 중인 의사결정" 표 / "남은 작업 전체 그림" 절 + open ticket 목록 기반.
+2. **직전 세션 요약 3~5줄** — log/current.md handoff entry 본문에서 핵심 산출물·메타 학습 추출.
+3. **다음 옵션 N개** — `pm_state.md` 의 "진행 중인 의사결정" / "남은 작업 전체 그림" + open ticket 목록 기반.
 4. **결정 요청** — *무엇부터 갈까요?* + 권장 시퀀스 1줄.
 
 ## 핸드오프 절차 (7단계)
@@ -301,38 +297,26 @@ PM 병목은 "PM 이 한 세션"이 아니라 한 PM 이 직렬로 떠안는 잡
 
 자동 처리:
 1. **회귀 측정** — `{{TEST_CMD}}`. red 면 즉시 중단·핸드오프 불가.
-2. **log.md handoff entry skeleton append** — 표준 형식.
-3. **pm_role.md 세션 식별 sliding window 정리** — 신규 entry 추가 + 가장 오래된 entry 제거.
+2. **log/current.md handoff entry skeleton append** — 표준 형식.
+3. **pm_state.md 세션 식별 sliding window 정리** — 신규 entry 추가 + 가장 오래된 entry 제거.
 4. **pm_role.md 길이 검증** — 700 라인 초과 시 warning.
 5. **인계 프롬프트 stdout 출력** — 아래 "다음 PM 세션 부트스트랩 프롬프트 (템플릿)" 의 고정부 채움.
 6. **git status dump** — 변경 파일 카운트.
 7. **잔여 PM 수동 작업 checklist 출력**.
 
 PM 손:
-- log.md handoff entry 본문 채우기 (`<PM 손>` 자리를 실제 내용으로)
-- 아래 "진행 중인 의사결정" 표 갱신
-- "남은 작업 전체 그림" 갱신
+- log/current.md handoff entry 본문 채우기 (`<PM 손>` 자리를 실제 내용으로) + "다음 세션 읽기 범위" 줄 확정
+- `pm_state.md` "진행 중인 의사결정" 표 갱신
+- `pm_state.md` "남은 작업 전체 그림" 갱신
 - 인계 프롬프트의 `<핵심 인계 사항>` 채우기
 - git commit (Co-Authored-By: Claude 트레일러)
 - 마지막 응답에 인계 프롬프트 코드블록 출력 (사용자가 복사해 새 PM 세션에 붙여넣음)
 
-## 진행 중인 의사결정
+## 진행 중인 의사결정 · 남은 작업 전체 그림
 
-<!-- TODO: 현재 진행 중인 큰 결정·작업을 표로 추적. 핸드오프마다 갱신. -->
-
-| 항목 | 상태 |
-|---|---|
-| (예시) board | done 0 / open 0 / claimed 0 / blocked 0 |
-
-## 남은 작업 전체 그림
-
-<!-- TODO: 게이트별·phase별 우선순위와 외부 대기 항목을 정리. 핸드오프마다 갱신.
-예시 구조:
-### 🟢 board open N — 즉시 진행 가능
-### 🔵 외부 대기 (키 발급·배포 등)
-### 🟡 pre-ADR (ideas/)
-### 🔒 사용자 게이트 대기
--->
+동적 상태이므로 [`pm_state.md`](pm_state.md) 로 분리됐다 — "진행 중인 의사결정" 표와
+"남은 작업 전체 그림" 은 매 핸드오프마다 PM 이 거기서 갱신한다. (pm_role.md 는
+정적 운영 매뉴얼만 유지.)
 
 ## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)
 
@@ -345,10 +329,11 @@ PM 손:
 
 부트스트랩 (이 순서로):
 1) CLAUDE.md
-2) .project_manager/wiki/pm_role.md   ← PM 인계 문서 (가장 중요)
-3) .project_manager/wiki/status.md
-4) .project_manager/wiki/board.md
-5) .project_manager/wiki/log.md 마지막 ~150 라인 (직전 handoff entry 포함)
+2) .project_manager/wiki/pm_role.md   ← 정적 운영 매뉴얼 (가장 중요)
+3) .project_manager/wiki/pm_state.md  ← 동적 상태 (세션 window / 진행 중 의사결정 / 남은 작업)
+4) .project_manager/wiki/status.md
+5) .project_manager/wiki/board.md
+6) .project_manager/wiki/log/current.md 마지막 handoff entry (의미 단위 — 직전 PM 이 읽기 범위 지정)
 
 세션 식별: board.py 와 상호작용 시 (claim 등) --session pm 인자를 쓰세요.
 

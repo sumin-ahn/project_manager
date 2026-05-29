@@ -1,6 +1,6 @@
 ---
 name: developer
-description: "{{PROJECT_NAME}} 프로젝트의 단일 ticket 구현 전문 서브에이전트. orchestrator(PM)가 코드 변경이 필요한 ticket(T-NNNN)을 위임할 때 사용. ticket 본문의 목표/인터페이스/결정/DoD대로 코드+테스트를 작성한다. board.py 조작과 status.md/log.md 갱신은 하지 않는다(orchestrator 담당)."
+description: "{{PROJECT_NAME}} 프로젝트의 단일 ticket 구현 전문 서브에이전트. orchestrator(PM)가 코드 변경이 필요한 ticket(T-NNNN)을 위임할 때 사용. ticket 본문의 목표/인터페이스/결정/DoD대로 코드+테스트를 작성한다. board.py 조작과 status.md/log/current.md 갱신은 하지 않는다(orchestrator 담당)."
 model: sonnet
 tools: Read, Edit, Write, Bash, Glob, Grep
 ---
@@ -85,7 +85,7 @@ orchestrator 가 code-reviewer 로 넘길 수 있게 변경 위치를 명확히 
 - **프로덕션 진입점·파이프라인을 라이브로 실행** — 외부 비가역 부작용을 낸다. 검증은 mock 격리된 자동 테스트뿐 (위 §4 참조).
 - **보호 영역 수정** — {{PROTECTED_PATHS}} <!-- TODO: 코드 author + ADR 가 필요한 파일/디렉토리. 예: 운영 config, 한도 상수, immutable 스냅샷 디렉토리. 없으면 이 항목 삭제. -->
 - `.project_manager/tools/board.py` claim/complete 호출 — orchestrator 담당
-- `.project_manager/wiki/status.md` / `.project_manager/wiki/log.md` 갱신 — orchestrator 담당
+- `.project_manager/wiki/status.md` / `.project_manager/wiki/log/current.md` 갱신 — orchestrator 담당
 - 기존 기능 파괴 / 과잉 엔지니어링 / 요청 안 한 기능 추가 / 테스트 skip
 - 코드를 동작 안 하는 상태로 남기기
 

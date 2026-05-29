@@ -11,7 +11,7 @@
 
 | 알고 싶은 것 | 가야 할 곳 |
 |---|---|
-| **PM 세션이라면** (보드 운영 / 분할 / 위임) | [`pm_role.md`](pm_role.md) ← 인계 문서 |
+| **PM 세션이라면** (보드 운영 / 분할 / 위임) | [`pm_role.md`](pm_role.md) (정적 매뉴얼) + [`pm_state.md`](pm_state.md) (동적 상태) |
 | **지금 무슨 ticket 잡을까?** (구현 세션) | [`board.md`](board.md) (자동 갱신) + [`tickets/README.md`](tickets/README.md) (워크플로) |
 | 지금 어디까지 됐는가? (모듈 상태·테스트 수) | [`status.md`](status.md) |
 | 전체 아키텍처 + 모듈 의존성 | [`architecture.md`](architecture.md) |
@@ -19,7 +19,7 @@
 | 왜 이렇게 결정했는가? | [`decisions/`](decisions/) (ADR) |
 | 아직 결정 안 된 후보 아이디어 | [`ideas/`](ideas/) |
 | 시간 스냅샷 (plan_vN·벤치마크·외부 평가) | [`raw/`](raw/) (immutable) |
-| 작업 일지 | [`log.md`](log.md) |
+| 작업 일지 | [`log/current.md`](log/current.md) (활성) + [`log/archive/`](log/archive/) (봉인) |
 
 ## 디렉토리 의미
 
@@ -31,9 +31,10 @@
 ├── README.md         # ← 이 파일. 길찾기 + 디렉토리 의미 단일 정의처
 ├── status.md         # 현재 상태 단일 진실 — 모듈 매트릭스 + 테스트 수 + 외부 의존성
 ├── board.md          # ticket 현황 대시보드 (.project_manager/tools/board.py 자동 생성 — 수동 편집 금지)
-├── pm_role.md        # PM 세션 인계 문서 (책임·결정 권한·핸드오프 절차)
+├── pm_role.md        # PM 세션 인계 문서 — 정적 운영 매뉴얼 (책임·결정 권한·핸드오프 절차)
+├── pm_state.md       # PM 동적 상태 (세션 window / 진행 중 의사결정 / 남은 작업) — /pm-handoff 가 갱신
 ├── architecture.md   # 구조 + 모듈 간 의존성 (상태 정보는 status.md 위임)
-├── log.md            # 작업 일지 (append-only)
+├── log/              # 작업 일지. current.md(활성, append-only) + archive/(봉인, pm_log.py archive)
 │
 ├── tickets/          # 작업 단위. open/ claimed/ blocked/ done/ 하위 + _template.md
 ├── specs/            # current 사양 단일 진실 (포맷·한도·인터페이스·API)
@@ -46,6 +47,8 @@
 |---|---|
 | `status.md` | 모듈 진행 상태·테스트 수의 **단일 진실 소스**. 새 모듈/테스트 추가 시 먼저 갱신 |
 | `board.md` | ticket 발행 현황. `.project_manager/tools/board.py` 가 자동 생성 — 수동 편집 금지 |
+| `pm_role.md` / `pm_state.md` | PM 세션 인계 — **정적 매뉴얼**(role)과 **동적 상태**(state)를 분리. state 의 세션 window 는 `/pm-handoff` 가 자동 갱신 |
+| `log/` | 작업 일지. `current.md` = 활성(append-only), `archive/NNNN-*.md` = 봉인. `pm_log.py archive` 로 잘라 보관. 읽기는 의미 단위(마지막 handoff entry) |
 | `architecture.md` | 구조와 모듈 의존성(imports/imported-by). 변동 정보(테스트 수·구현 상태)는 두지 않는다 — `status.md` 에 위임 |
 | `tickets/` | 한 작업 = 한 ticket. `board.py` 가 `open/claimed/blocked/done/` 디렉토리로 관리 |
 | `specs/` | 자주 변하는 사양(포맷·한도·endpoint)의 단일 진실. 설계 문서 본문에 두지 않고 추출 |

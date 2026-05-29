@@ -1,6 +1,6 @@
 ---
 name: pm-dev-delegate
-description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check + background 옵션. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
+description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check + background 옵션. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
 ---
 
 # /pm-dev-delegate T-NNNN [--role developer|code-reviewer] [--background] — orchestrator 위임
@@ -52,7 +52,7 @@ Agent 툴 호출:
 
      변경 파일: <touches 인자 그대로 인용>.
 
-     ⚠️ status.md / log.md 갱신은 orchestrator(PM) 담당 — 그 누락은 developer
+     ⚠️ status.md / log/current.md 갱신은 orchestrator(PM) 담당 — 그 누락은 developer
      must-fix 아님.
 
      완료 시 보고:
@@ -82,7 +82,7 @@ reviewer 보고 후 PM 처리:
 ## reviewer 분석 cross-check
 
 reviewer 도 항상 옳지 않다. PM 가 should-fix 처리 전 *코드 흐름 자체* 독립
-점검·부정확이면 변경 불필요 + log.md 영구 기록. 특히 *reviewer 영역 attribute
+점검·부정확이면 변경 불필요 + log/current.md 영구 기록. 특히 *reviewer 영역 attribute
 부정확* — reviewer 가 *다른 ticket 영역의 결함을 현재 ticket 영역으로 잘못
 attribute* 가능. PM 이 진짜 영역 확인 후 fix 분기 결정.
 

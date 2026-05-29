@@ -9,9 +9,9 @@
 
 동작 순서 (하나라도 실패하면 이후 단계 중단):
   1. 회귀 측정 — pytest tests/ -q. red 면 즉시 중단·핸드오프 불가.
-  2. log.md handoff entry skeleton append — 표준 형식.
-  3. pm_role.md 세션 식별 표 sliding window 정리 — 신규 entry 추가 + 가장 오래된 entry 제거.
-  4. pm_role.md 길이 검증 — wc -l 기준 700 라인 초과 시 warning.
+  2. log/current.md handoff entry skeleton append — 표준 형식 (+ "다음 세션 읽기 범위" 줄).
+  3. pm_state.md 세션 식별 표 sliding window 정리 — 신규 entry 추가 + 가장 오래된 entry 제거.
+  4. pm_state.md 길이 검증 — wc -l 기준 700 라인 초과 시 warning.
   5. 인계 프롬프트 stdout 출력 — pm_role.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
      의 고정부 채워 stdout. <핵심 인계 사항> 절은 PM 손.
   6. git status dump — git status -s 출력 + 변경 파일 카운트.
@@ -23,7 +23,7 @@
   - 편집은 정규식 앵커 치환·멱등 — ticket_finish.py 와 동일.
   - LLM 미호출 — stdlib 만.
   - 인계 프롬프트는 stdout 만 — 파일 저장 안 함.
-  - pm_role.md 슬라이딩 윈도우 = 3 차 (프로젝트별 조정 — SLIDING_WINDOW_SIZE).
+  - pm_state.md 슬라이딩 윈도우 = 3 차 (프로젝트별 조정 — SLIDING_WINDOW_SIZE).
 """
 
 from __future__ import annotations
@@ -37,24 +37,26 @@ from pathlib import Path
 from typing import Callable
 
 REPO = Path(__file__).resolve().parents[2]
-LOG_FILE = REPO / ".project_manager" / "wiki" / "log.md"
-PM_ROLE_FILE = REPO / ".project_manager" / "wiki" / "pm_role.md"
+LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
+PM_ROLE_FILE = REPO / ".project_manager" / "wiki" / "pm_role.md"     # 정적 — 인계 프롬프트 템플릿 추출용
+PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"  # 동적 — 세션 식별 sliding window 편집 대상
 VENV_PYTHON = REPO / "venv" / "bin" / "python"
 
 # ── 상수 ─────────────────────────────────────────────────────────────────────
 
-# pm_role.md 길이 경고 임계값 (핸드오프 절차 7단계)
-PM_ROLE_LINE_WARNING_THRESHOLD = 700
+# pm_state.md 길이 경고 임계값 (핸드오프 절차 7단계 — 세션 정리 누락 신호)
+PM_STATE_LINE_WARNING_THRESHOLD = 700
 
 # 슬라이딩 윈도우 크기 — 최근 N 차 만 short inline 유지. 프로젝트별 조정 가능.
 SLIDING_WINDOW_SIZE = 3
 
-# ── log.md handoff entry skeleton ────────────────────────────────────────────
+# ── log/current.md handoff entry skeleton ────────────────────────────────────────────
 
 HANDOFF_LOG_SKELETON_TEMPLATE = """\
 ## [{date}] handoff | PM {session_num}차 → 다음 PM 세션
 
-<PM 손 — wave summary·다음 우선순위·주의 incident>
+- 다음 세션 읽기 범위: <PM 손 — 이 entry부터 / 또는 인용할 과거 entry·ADR 명시. 라인수 아님>
+- <PM 손 — wave summary·다음 우선순위·주의 incident>
 """
 
 
@@ -62,7 +64,7 @@ def build_handoff_log_skeleton(
     session_num: int | str,
     date: str | None = None,
 ) -> str:
-    """log.md 에 append 할 handoff entry skeleton 을 반환한다."""
+    """log/current.md 에 append 할 handoff entry skeleton 을 반환한다."""
     if date is None:
         date = datetime.date.today().isoformat()
     return HANDOFF_LOG_SKELETON_TEMPLATE.format(
@@ -73,8 +75,8 @@ def build_handoff_log_skeleton(
 
 # ── pm_role.md sliding window 편집 ───────────────────────────────────────────
 
-# 세션 식별 절 앵커: "### 세션 식별 (현재까지 사용된 이름)" 로 시작하는 섹션
-_SESSION_SECTION_ANCHOR = "### 세션 식별 (현재까지 사용된 이름)"
+# 세션 식별 절 앵커: pm_state.md 의 "## 세션 식별 (현재까지 사용된 이름)" 로 시작하는 섹션
+_SESSION_SECTION_ANCHOR = "## 세션 식별 (현재까지 사용된 이름)"
 
 # pm 세션 entry 줄: "  - **N차** (..." 형식
 # 각 줄은 반드시 두 칸 들여쓰기 + "- **N차**" 로 시작한다.
@@ -135,13 +137,15 @@ def _build_new_session_entry(
     )
 
 
-def update_pm_role_sliding_window(
+def update_session_window(
     pm_role_text: str,
     session_num: int | str,
     date_str: str,
     wave_summary: str,
 ) -> str:
-    """pm_role.md 텍스트의 세션 식별 절에 sliding window 를 적용한 새 텍스트를 반환한다.
+    """pm_state.md 의 세션 식별 절에 sliding window 를 적용한 새 텍스트를 반환한다.
+
+    (인자명 pm_role_text 는 역사적 — 이제 pm_state.md 텍스트를 받는다.)
 
     - 신규 세션 entry 추가
     - 가장 오래된 세션 entry 제거 (3 차 sliding window)
@@ -152,7 +156,7 @@ def update_pm_role_sliding_window(
     result = _extract_session_section(pm_role_text)
     if result is None:
         raise ValueError(
-            f"앵커 불일치: '{_SESSION_SECTION_ANCHOR}' 가 pm_role.md 에서 발견되지 않았다."
+            f"앵커 불일치: '{_SESSION_SECTION_ANCHOR}' 가 pm_state.md 에서 발견되지 않았다."
         )
     section_text, start_offset, end_offset = result
 
@@ -227,10 +231,10 @@ def update_pm_role_sliding_window(
             )
     else:
         # 포인터 줄이 없는 경우 — 제거된 entry 가 있는 자리에 포인터 추가
-        # "이전 차 (PM N차~N차) = log.md handoff entry 단일 진실." 형식으로 추가
+        # "이전 차 (PM N차~N차) = log/current.md handoff entry 단일 진실." 형식으로 추가
         pointer_line = (
             f"  - 이전 차 (PM {oldest_num}차~{oldest_num}차) = "
-            f"`log.md` handoff entry 단일 진실.\n"
+            f"`log/current.md` handoff entry 단일 진실.\n"
         )
         # 섹션의 기존 entry 목록 마지막 위치 뒤에 추가
         new_section += pointer_line
@@ -368,10 +372,12 @@ class PmHandoff:
         run_git_fn: Callable[[list[str]], tuple[int, str]] | None = None,
         log_file: Path = LOG_FILE,
         pm_role_file: Path = PM_ROLE_FILE,
+        pm_state_file: Path = PM_STATE_FILE,
         venv_python: Path = VENV_PYTHON,
     ) -> None:
         self._log_file = log_file
         self._pm_role_file = pm_role_file
+        self._pm_state_file = pm_state_file
         self._venv_python = venv_python
 
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
@@ -432,32 +438,32 @@ class PmHandoff:
             print(output.rstrip())
             if not is_pytest_green(output, returncode):
                 print(
-                    "\n[중단] 회귀 red — 핸드오프 불가. log.md·pm_role.md 어떤 것도 건드리지 않는다.",
+                    "\n[중단] 회귀 red — 핸드오프 불가. log/current.md·pm_role.md 어떤 것도 건드리지 않는다.",
                     file=sys.stderr,
                 )
                 return 1
             pytest_summary = parse_pytest_summary(output)
             print(f"  ✓ green: {pytest_summary}")
 
-        # ── 2. log.md handoff entry skeleton append ────────────────────────────
-        print("\n[2/7] log.md handoff entry skeleton append...")
+        # ── 2. log/current.md handoff entry skeleton append ────────────────────────────
+        print("\n[2/7] log/current.md handoff entry skeleton append...")
         skeleton = build_handoff_log_skeleton(session_num=session_num, date=date_str)
 
         if dry_run:
-            print("  [dry-run] log.md 에 append 할 skeleton:")
+            print("  [dry-run] log/current.md 에 append 할 skeleton:")
             print("  " + skeleton.replace("\n", "\n  "))
         else:
             log_text = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
             self._log_file.write_text(log_text + "\n" + skeleton, encoding="utf-8")
-            print(f"  ✓ log.md handoff entry skeleton append (PM {session_num}차)")
+            print(f"  ✓ log/current.md handoff entry skeleton append (PM {session_num}차)")
 
-        # ── 3. pm_role.md sliding window 정리 ─────────────────────────────────
-        print("\n[3/7] pm_role.md 세션 식별 sliding window 정리...")
-        pm_role_text = self._pm_role_file.read_text(encoding="utf-8")
+        # ── 3. pm_state.md sliding window 정리 ─────────────────────────────────
+        print("\n[3/7] pm_state.md 세션 식별 sliding window 정리...")
+        state_text = self._pm_state_file.read_text(encoding="utf-8")
 
         try:
-            new_pm_role_text = update_pm_role_sliding_window(
-                pm_role_text=pm_role_text,
+            new_state_text = update_session_window(
+                pm_role_text=state_text,
                 session_num=session_num,
                 date_str=date_str,
                 wave_summary=wave_summary,
@@ -468,26 +474,26 @@ class PmHandoff:
 
         if dry_run:
             # diff 미리보기: 변경된 줄 출력
-            old_lines = pm_role_text.splitlines()
-            new_lines = new_pm_role_text.splitlines()
+            old_lines = state_text.splitlines()
+            new_lines = new_state_text.splitlines()
             added = [l for l in new_lines if l not in set(old_lines)]
             removed = [l for l in old_lines if l not in set(new_lines)]
-            print("  [dry-run] pm_role.md 세션 식별 절 변경 예고:")
+            print("  [dry-run] pm_state.md 세션 식별 절 변경 예고:")
             for line in removed[:5]:
                 print(f"  - {line}")
             for line in added[:5]:
                 print(f"  + {line}")
         else:
-            self._pm_role_file.write_text(new_pm_role_text, encoding="utf-8")
-            print(f"  ✓ pm_role.md 세션 식별 sliding window 정리 완료 (PM {session_num}차 추가·최고령 entry 제거)")
+            self._pm_state_file.write_text(new_state_text, encoding="utf-8")
+            print(f"  ✓ pm_state.md 세션 식별 sliding window 정리 완료 (PM {session_num}차 추가·최고령 entry 제거)")
 
-        # ── 4. pm_role.md 길이 검증 ────────────────────────────────────────────
-        print("\n[4/7] pm_role.md 길이 검증...")
-        text_to_check = new_pm_role_text if not dry_run else pm_role_text
+        # ── 4. pm_state.md 길이 검증 ────────────────────────────────────────────
+        print("\n[4/7] pm_state.md 길이 검증...")
+        text_to_check = new_state_text if not dry_run else state_text
         line_count = len(text_to_check.splitlines())
-        if line_count > PM_ROLE_LINE_WARNING_THRESHOLD:
+        if line_count > PM_STATE_LINE_WARNING_THRESHOLD:
             print(
-                f"  ⚠ pm_role.md 길이 {line_count} 라인 > {PM_ROLE_LINE_WARNING_THRESHOLD} 라인 임계값.",
+                f"  ⚠ pm_state.md 길이 {line_count} 라인 > {PM_STATE_LINE_WARNING_THRESHOLD} 라인 임계값.",
                 file=sys.stdout,
             )
             print(
@@ -495,10 +501,12 @@ class PmHandoff:
                 file=sys.stdout,
             )
         else:
-            print(f"  ✓ pm_role.md {line_count} 라인 (임계값 {PM_ROLE_LINE_WARNING_THRESHOLD} 이하).")
+            print(f"  ✓ pm_state.md {line_count} 라인 (임계값 {PM_STATE_LINE_WARNING_THRESHOLD} 이하).")
 
         # ── 5. 인계 프롬프트 stdout 출력 ───────────────────────────────────────
+        # 템플릿(정적)은 pm_role.md 에서 추출한다 — sliding window 편집 대상(pm_state.md)과 분리.
         print("\n[5/7] 인계 프롬프트 출력...")
+        pm_role_text = self._pm_role_file.read_text(encoding="utf-8")
         prompt_output = build_handoff_prompt_output(
             pm_role_text=pm_role_text,
             session_num=session_num,
@@ -524,7 +532,7 @@ class PmHandoff:
 
         # ── 7. 잔여 PM 수동 작업 출력 ──────────────────────────────────────────
         print("\n[7/7] PM 이 손으로 할 잔여 작업:")
-        print("  [ ] log.md handoff entry 본문 채우기 (<PM 손> 자리를 실제 내용으로)")
+        print("  [ ] log/current.md handoff entry 본문 채우기 (<PM 손> 자리를 실제 내용으로)")
         print("  [ ] pm_role.md '진행 중인 의사결정' 표 갱신")
         print("  [ ] pm_role.md '남은 작업 전체 그림' / '권장 액션 template' 갱신")
         print("  [ ] 인계 프롬프트의 '<핵심 인계 사항>' 채우기 (위 [5/7] 출력 참조)")

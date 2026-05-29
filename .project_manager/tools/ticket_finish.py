@@ -8,14 +8,14 @@
   1. 회귀 실행 — pytest tests/ -q. red 면 즉시 중단.
   2. status.md 스칼라 갱신 — 전체 테스트 수 / 합계 행 / 섹션 행(--section 시) / 회귀 실측 라인
        + (v2) 인라인 소계 행(--section 시, 행이 있는 섹션만).
-  3. log.md 스켈레톤 append — 표준 형식 entry 골격.
+  3. log/current.md 스켈레톤 append — 표준 형식 entry 골격.
   4. board.py complete 호출 — 회귀를 이미 통과했으므로 --tests-pass.
   5. git add -A — 스테이징. commit 은 PM 이 한다.
   6. 잔여 PM 수동 작업 출력.
 
 결정 (T-0064 / T-0116):
   - subprocess DI: pytest/git/board.py subprocess 는 주입 가능한 함수로 감싼다.
-  - red 면 중단: status.md / log.md / board / git 어떤 것도 건드리지 않는다.
+  - red 면 중단: status.md / log/current.md / board / git 어떤 것도 건드리지 않는다.
   - 편집은 정규식 앵커 치환, 멱등. 앵커 불일치 시 명시적 에러 (추측 편집 금지).
   - 모듈 행·서술·commit 은 자동화하지 않는다 (v1 축소판 — §배경).
   - fail-soft 가 아니다 — 명시적 실패 (비-0 종료 + 명확한 메시지).
@@ -37,7 +37,7 @@ from typing import Callable
 
 REPO = Path(__file__).resolve().parents[2]
 STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
-LOG_FILE = REPO / ".project_manager" / "wiki" / "log.md"
+LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 VENV_PYTHON = REPO / "venv" / "bin" / "python"
 
@@ -542,7 +542,7 @@ class TicketFinisher:
 
         if not is_pytest_green(output, returncode):
             print(
-                "\n[중단] 회귀 red — status.md·log.md·board·git 어떤 것도 건드리지 않는다.",
+                "\n[중단] 회귀 red — status.md·log/current.md·board·git 어떤 것도 건드리지 않는다.",
                 file=sys.stderr,
             )
             print(
@@ -599,8 +599,8 @@ class TicketFinisher:
                     )
                 return 1
 
-        # ── 3. log.md 스켈레톤 append ────────────────────────────────
-        print("\n[3/6] log.md 스켈레톤 append...")
+        # ── 3. log/current.md 스켈레톤 append ────────────────────────────────
+        print("\n[3/6] log/current.md 스켈레톤 append...")
         board_before = self._board_count_fn()
         board_after = board_before + 1  # board complete 후 +1
 
@@ -618,12 +618,12 @@ class TicketFinisher:
         )
 
         if dry_run:
-            print("  [dry-run] log.md 에 append 할 스켈레톤:")
+            print("  [dry-run] log/current.md 에 append 할 스켈레톤:")
             print("  " + skeleton.replace("\n", "\n  "))
         else:
             log_text = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
             self._log_file.write_text(log_text + "\n" + skeleton, encoding="utf-8")
-            print(f"  ✓ log.md 스켈레톤 append ({ticket_id})")
+            print(f"  ✓ log/current.md 스켈레톤 append ({ticket_id})")
 
         # ── 4. board.py complete ──────────────────────────────────────
         print("\n[4/6] board.py complete...")
@@ -637,7 +637,7 @@ class TicketFinisher:
             if board_rc != 0:
                 print(
                     f"\n[중단] board.py complete 실패 (rc={board_rc}). "
-                    "status.md·log.md 는 이미 편집됐다.",
+                    "status.md·log/current.md 는 이미 편집됐다.",
                     file=sys.stderr,
                 )
                 return 1
@@ -659,7 +659,7 @@ class TicketFinisher:
 
         # ── 6. 잔여 PM 작업 출력 ─────────────────────────────────────
         print("\n[6/6] PM 이 손으로 할 잔여 작업:")
-        print("  ① log.md 서술 불릿 채우기 — <!-- PM: 무엇을·왜 서술 --> 를 실제 내용으로 교체")
+        print("  ① log/current.md 서술 불릿 채우기 — <!-- PM: 무엇을·왜 서술 --> 를 실제 내용으로 교체")
         print("  ② status.md 모듈 행(테스트 수 + 비고) — 해당 모듈 행을 PM 이 직접 갱신")
         print("  ③ git commit — 메시지는 PM 이 작성 (Co-Authored-By: Claude 트레일러 포함)")
         if not section:

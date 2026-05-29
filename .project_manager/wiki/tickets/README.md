@@ -96,5 +96,5 @@ tickets/
 - **분산 락 아님.** 같은 파일시스템 한 클론에서만 atomic. 두 머신이 동시에 쓰면 깨질 수 있음 — 운영상 1 머신 기준.
 - **자동 unclaim 없음.** TTL 기반 회수는 일부러 빼놨다. 사람이 결정.
 - **의존성 그래프 검증.** `depends_on` 은 claim 시점에 한 번 검사. 순환 의존은 `board.py lint` 가 검출.
-- **complete 동기화 게이트.** `board.py complete` 는 `done/` 으로 옮기기 전에 `log.md` entry · 회귀 통과 (`--tests-pass`) 를 확인하고 `status.md` 갱신 여부를 경고한다. 정당한 예외는 `--allow-missing-log` / `--allow-untested` 로 우회.
+- **complete 동기화 게이트.** `board.py complete` 는 `done/` 으로 옮기기 전에 `log/current.md` entry · 회귀 통과 (`--tests-pass`) 를 확인하고 `status.md` 갱신 여부를 경고한다. 정당한 예외는 `--allow-missing-log` / `--allow-untested` 로 우회.
 - **thin ticket 차단.** `board.py lint` 는 open/claimed 본문에 `_template.md` placeholder 가 남았거나 표준 섹션 (목표/완료 조건/참고) 이 없으면 실패한다.

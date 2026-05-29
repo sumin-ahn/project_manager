@@ -9,7 +9,7 @@
   board lint → clean | N warnings.
   pytest tests/ -q → 회귀 A / B 통과 (--with-pytest opt-in — default skip).
   git log / git status → 브랜치·최근 commit·working tree 상태.
-  log.md 마지막 entry → date / type / title.
+  log/current.md 마지막 entry → date / type / title.
 
 회귀 측정 default skip:
   직전 handoff entry 가 회귀 숫자를 기록한다면 부트스트랩 단계 pytest 재측정은
@@ -44,7 +44,7 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 REPO = Path(__file__).resolve().parents[2]
-LOG_FILE = REPO / ".project_manager" / "wiki" / "log.md"
+LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 VENV_PYTHON = REPO / "venv" / "bin" / "python"
 
@@ -161,12 +161,12 @@ def parse_git_status(status_output: str) -> str:
     return f"{len(lines)} files modified"
 
 
-# ── log.md 파서 ──────────────────────────────────────────────────────────
+# ── log/current.md 파서 ──────────────────────────────────────────────────────────
 
 def parse_log_last_entry(log_text: str) -> dict[str, str] | None:
-    """log.md 에서 마지막 ## 항목의 date/type/title 을 파싱한다.
+    """log/current.md 에서 마지막 ## 항목의 date/type/title 을 파싱한다.
 
-    log.md 포맷: `## [YYYY-MM-DD] type | title`
+    log/current.md 포맷: `## [YYYY-MM-DD] type | title`
 
     반환: {"date": "...", "type": "...", "title": "..."} 또는 None.
     """
@@ -309,7 +309,7 @@ class PmBootstrap:
         }
 
     def _collect_log_entry(self) -> dict | None:
-        """log.md 의 마지막 entry 를 파싱해 반환한다."""
+        """log/current.md 의 마지막 entry 를 파싱해 반환한다."""
         if not self._log_file.exists():
             return None
         log_text = self._log_file.read_text(encoding="utf-8")
@@ -364,14 +364,14 @@ class PmBootstrap:
         lines.append(f"- working tree: {git['working_tree']}")
         lines.append("")
 
-        # log.md 섹션
-        lines.append("### log.md 마지막 entry")
+        # log/current.md 섹션
+        lines.append("### log/current.md 마지막 entry")
         if log_entry:
             lines.append(f"- date: {log_entry['date']}")
             lines.append(f"- type: {log_entry['type']}")
             lines.append(f"- title: {log_entry['title']}")
         else:
-            lines.append("- (log.md 없음 또는 entry 파싱 실패)")
+            lines.append("- (log/current.md 없음 또는 entry 파싱 실패)")
         lines.append("")
 
         # 권장 첫 turn 섹션
@@ -389,10 +389,10 @@ class PmBootstrap:
             regression_summary = f" 회귀 (handoff entry 참조), lint {lint}."
         lines.append(f"- board: {board_summary}{regression_summary}")
         lines.append(
-            "- (직전 세션 요약은 PM 손 — pm_role.md \"세션 식별\" 절 참조)"
+            "- (직전 세션 요약은 PM 손 — pm_state.md \"세션 식별\" 절 + log/current.md 마지막 handoff entry 참조)"
         )
         lines.append(
-            "- 무엇부터 갈까요? (PM 손 — pm_role.md \"남은 작업 전체 그림\" 절 + open ticket"
+            "- 무엇부터 갈까요? (PM 손 — pm_state.md \"남은 작업 전체 그림\" 절 + open ticket"
         )
         lines.append("  목록 보고 옵션 제시)")
 

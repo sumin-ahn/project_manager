@@ -32,7 +32,7 @@
 
 추가로:
 - `.project_manager/wiki/status.md` 의 해당 모듈 행 갱신
-- `.project_manager/wiki/log.md` 에 한 entry append
+- `.project_manager/wiki/log/current.md` 에 한 entry append
 - 회귀 테스트 `{{TEST_CMD}}` 통과 확인
 - **git commit** — 논리적 체크포인트(ticket 완료 등)에서 커밋. 커밋 메시지 말미에 `Co-Authored-By: Claude` 트레일러. 시크릿은 `.gitignore` 로 영구 제외.
 
@@ -73,6 +73,11 @@
 {{PY}} .project_manager/tools/pm_bootstrap.py             # 세션 시작 부트스트랩 dump
 {{PY}} .project_manager/tools/pm_handoff.py --session-num N --wave-summary "..."   # 세션 종료 핸드오프
 {{PY}} .project_manager/tools/ticket_finish.py T-NNNN --section "<섹션>"           # ticket 완료 부기
+
+# log 관리 (활성 로그는 log/current.md, 오래된 entry 는 잘라서 보관)
+{{PY}} .project_manager/tools/pm_log.py tail                       # 마지막 entry 만 (의미단위 읽기)
+{{PY}} .project_manager/tools/pm_log.py archive --before YYYY-MM-DD  # 그 이전 entry 를 log/archive/ 봉인
+{{PY}} .project_manager/tools/pm_log.py migrate                    # 기존 log.md → archive/0000-legacy (도입 1회)
 ```
 
 PM workflow 는 `.claude/skills/pm-*` 슬래시 명령으로도 호출된다 (`/pm-bootstrap`, `/pm-handoff`, `/pm-wave-claim`, `/pm-wave-finish`, `/pm-dev-delegate`).
@@ -81,8 +86,8 @@ PM workflow 는 `.claude/skills/pm-*` 슬래시 명령으로도 호출된다 (`/
 
 | 경로 | 의미 |
 |---|---|
-| `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py (숨김 디렉토리 — `ls -a`) |
-| `.project_manager/wiki/` | 비-코드 산출물 (작업 / 결정 / 사양 / 상태 / 아키텍처 / raw 스냅샷) |
+| `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py · pm_log.py (숨김 디렉토리 — `ls -a`) |
+| `.project_manager/wiki/` | 비-코드 산출물 (작업 / 결정 / 사양 / 상태 / 아키텍처 / pm_role·pm_state / log/ / raw 스냅샷) |
 | `.claude/agents/` | developer · code-reviewer 서브에이전트 정의 |
 | `.claude/skills/` | PM workflow slash command skill (pm-bootstrap·pm-handoff·pm-wave-claim·pm-wave-finish·pm-dev-delegate) |
 <!-- TODO: 프로젝트의 실제 코드 디렉토리 행을 여기 추가한다. -->

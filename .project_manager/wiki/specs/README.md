@@ -32,7 +32,7 @@ ticket 본문 / 코드 docstring 에서 사양 디테일이 필요할 때:
 2. 사양 본문 작성. 설계 문서에서 가져온 경우 "출처" 명시
 3. 이 README 표에 행 추가
 4. 관련 ticket / 코드 docstring 의 설계 문서 직접 참조를 `specs/<slug>` 참조로 변경
-5. `log.md` 에 `## [YYYY-MM-DD] create | spec <slug>` append
+5. `log/current.md` 에 `## [YYYY-MM-DD] create | spec <slug>` append
 
 ## Spec 추출 트리거
 
