@@ -46,8 +46,9 @@
 │       ├── board.md              #   ticket 현황 (board.py 자동 생성)
 │       ├── log/                  #   작업 일지 — current.md(활성) + archive/(봉인)
 │       ├── architecture.md       #   Layer·모듈 의존성 구조
-│       ├── pm_role.md            #   PM 인계 — 정적 운영 매뉴얼 (결정 권한·skill 카탈로그)
+│       ├── pm_role.md            #   PM 인계 — 정적 핵심 (부트스트랩·결정 권한·안전 경계·skill 카탈로그)
 │       ├── pm_state.md           #   PM 인계 — 동적 상태 (세션 window·진행 중 의사결정·남은 작업)
+│       ├── pm_playbook.md        #   PM 활동별 레퍼런스 (위임·Wave·효율 규칙·메타 정책·인계 템플릿) — lazy
 │       ├── tickets/              #   open/ claimed/ blocked/ done/ + _template.md
 │       ├── decisions/            #   ADR — 결정과 근거 (NNNN-slug.md + README 색인)
 │       ├── specs/                #   사양 단일 진실 (포맷·한도·인터페이스)
@@ -152,7 +153,7 @@ PM 세션은 **wave** 단위로 ticket 을 처리한다. Wave = 사용자 명시
 *"최대한 많이 진행"* 신호에 PM 이 자율로 묶어 처리하는 작업 단위 (보통 1~여러
 ticket). 매 wave 사이 사용자 게이트 없이 다음 wave 로 이어지며, 사용자 게이트
 항목이 섞이면 wave 중단·사용자 결정 대기. 한 wave 의 5 단계는 각 slash
-command skill 하나가 trigger 한다 (자세한 wave 구성 9 단계는 `pm_role.md`
+command skill 하나가 trigger 한다 (자세한 wave 구성 9 단계는 `pm_playbook.md`
 §"Wave 패턴"):
 
 1. **`/pm-bootstrap`** — 세션 시작 시 board·git·log dump. PM 손은 *직전 세션
@@ -185,8 +186,9 @@ board.py claim/complete 와 status.md·log/current.md 갱신은 **PM(orchestrato
 | `.project_manager/wiki/` 골격 | ✅ 구조 재사용 | README·sub-README·`_template.md` 는 도메인 무관. status/architecture 내용만 새로 채움. |
 | `.claude/agents/` | ✅ 거의 그대로 | 역할·제약·부트스트랩 구조는 도메인 무관. `{{PROJECT_CONSTRAINTS}}`·`{{PROTECTED_PATHS}}` 만 채움. |
 | `.claude/skills/pm-*/` | ✅ 거의 그대로 | 5 skill thin wrapper. `{{PROJECT_NAME}}`·`{{PROJECT_CONSTRAINTS}}`·`{{PY}}` 치환만. |
-| `pm_role.md` | ✅ 도메인 무관 | PM 운영 모델·결정 권한·핸드오프 절차·skill 카탈로그 (정적 매뉴얼). `{{USER_GATE_ITEMS}}` 만 채움. |
+| `pm_role.md` | ✅ 도메인 무관 | PM 정적 핵심 — 부트스트랩·결정 권한·안전 경계·핸드오프 절차·skill 카탈로그 (매 세션 로드). `{{USER_GATE_ITEMS}}` 만 채움. |
 | `pm_state.md` | ✅ 구조 재사용 | PM 동적 상태 (세션 window·진행 중 의사결정·남은 작업). 세션 window 는 `/pm-handoff` 가 자동 갱신, 나머지는 PM 이 핸드오프마다 갱신. |
+| `pm_playbook.md` | ✅ 도메인 무관 | PM 활동별 레퍼런스 (위임·Wave 패턴·운영 효율 규칙·메타 정책·인계 프롬프트 템플릿). 부트스트랩에 통째 로드 X — 해당 활동 시 lazy Read. `pm_handoff.py` 가 인계 템플릿을 여기서 추출 (앵커 결합). |
 | `CLAUDE.md` | 🟡 템플릿 | 부트스트랩 패턴은 재사용, 프로젝트 한 줄·디렉토리 표는 placeholder. |
 | `.project_manager/tools/ticket_finish.py` | 🟡 **Python+pytest 결합** | status.md 의 **정확한 라인 형식**에 정규식 앵커가 묶여 있다 (`전체 테스트: N / N 통과`, `합계`, `pytest tests/ -q`, `인라인 소계`). 제공된 `status.md` 템플릿은 이 앵커와 일치하게 작성됨 — status.md 형식을 바꾸면 `ticket_finish.py` 의 `_RE_*` 정규식도 같이 바꿔야 한다. Python 외 언어면 pytest 파싱 로직 교체 필요. **선택 도구** — 없어도 board.py 만으로 완결적으로 동작한다. |
 | `run_tests_hook.sh` | 🟡 언어별 교체 | `pytest` 호출을 해당 언어 테스트 러너로. |

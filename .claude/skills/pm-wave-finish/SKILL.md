@@ -42,7 +42,7 @@ dev/reviewer cycle 통과 (must-fix 0) 또는 PM 직접 구현 ticket 완료 시
    - spec/ADR 정합 갱신 (있으면)
 3. **git commit** — 메시지: `T-NNNN — <title 요약>` (또는 wave 단위 단일 commit·복수 ticket 일 때).
 4. **wave 진행 중이면 다음 ticket** — `/pm-wave-claim` 으로 다음.
-5. **wave 종결이면 wave 메타 entry append** — pm_role.md §"Wave 메타 학습 누적" 표준.
+5. **wave 종결이면 wave 메타 entry append** — pm_playbook.md §"Wave 메타 학습 누적" 표준.
 
 ## 결정
 

@@ -34,8 +34,8 @@ description: "PM 세션 종료 핸드오프 7단계 자동화 — log entry skel
 1. **회귀 측정** — `pytest tests/ -q`. red 면 즉시 중단·핸드오프 불가 (baseline fix 후 재시도).
 2. **log/current.md handoff entry skeleton append** — `## [YYYY-MM-DD] handoff | PM N차 → 다음 PM 세션` 형식. 본문 = `<PM 손 채움>`.
 3. **pm_state.md sliding window 정리** — §세션 식별 표에 N차 entry 추가 + 가장 오래된 entry 제거. 자세히 → pm_role.md §핸드오프 절차 #4.
-4. **pm_state.md 길이 검증** — `wc -l` 700 라인 초과 시 warning (과거 누적 정리 누락 신호).
-5. **인계 프롬프트 stdout 출력** — pm_role.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)" 의 고정부 채움. `<핵심 인계 사항>` 절은 PM 손.
+4. **pm_state.md 길이 검증** — `wc -l` 700 라인 초과 시 warning (과거 누적 정리 누락 신호). + log/current.md entry 가 임계(40) 초과면 `pm_log.py archive` 권장 warning.
+5. **인계 프롬프트 stdout 출력** — pm_playbook.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)" 의 고정부 채움. `<핵심 인계 사항>` 절은 PM 손.
 6. **git status dump** — `git status -s` 출력 + 변경 파일 카운트.
 7. **잔여 PM 수동 작업 checklist 출력**.
 

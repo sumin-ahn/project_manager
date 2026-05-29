@@ -12,7 +12,7 @@
   2. log/current.md handoff entry skeleton append — 표준 형식 (+ "다음 세션 읽기 범위" 줄).
   3. pm_state.md 세션 식별 표 sliding window 정리 — 신규 entry 추가 + 가장 오래된 entry 제거.
   4. pm_state.md 길이 검증 — wc -l 기준 700 라인 초과 시 warning.
-  5. 인계 프롬프트 stdout 출력 — pm_role.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
+  5. 인계 프롬프트 stdout 출력 — pm_playbook.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
      의 고정부 채워 stdout. <핵심 인계 사항> 절은 PM 손.
   6. git status dump — git status -s 출력 + 변경 파일 카운트.
   7. 잔여 PM 수동 작업 출력 — checklist.
@@ -38,14 +38,20 @@ from typing import Callable
 
 REPO = Path(__file__).resolve().parents[2]
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
-PM_ROLE_FILE = REPO / ".project_manager" / "wiki" / "pm_role.md"     # 정적 — 인계 프롬프트 템플릿 추출용
-PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"  # 동적 — 세션 식별 sliding window 편집 대상
+PM_PLAYBOOK_FILE = REPO / ".project_manager" / "wiki" / "pm_playbook.md"  # 정적 — 인계 프롬프트 템플릿 추출용
+PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"       # 동적 — 세션 식별 sliding window 편집 대상
 VENV_PYTHON = REPO / "venv" / "bin" / "python"
 
 # ── 상수 ─────────────────────────────────────────────────────────────────────
 
 # pm_state.md 길이 경고 임계값 (핸드오프 절차 7단계 — 세션 정리 누락 신호)
 PM_STATE_LINE_WARNING_THRESHOLD = 700
+
+# log/current.md entry 누적 경고 임계값 — 초과 시 pm_log.py archive 권장 (차단 아님).
+LOG_ARCHIVE_SUGGEST_THRESHOLD = 40
+
+# log entry 시작 줄 ("## [YYYY-MM-DD] ...") — 누적 카운트용 (pm_log.split_entries 와 동일 형식).
+_LOG_ENTRY_RE = re.compile(r"^## \[\d{4}-\d{2}-\d{2}\]", re.MULTILINE)
 
 # 슬라이딩 윈도우 크기 — 최근 N 차 만 short inline 유지. 프로젝트별 조정 가능.
 SLIDING_WINDOW_SIZE = 3
@@ -313,14 +319,15 @@ def build_handoff_prompt_output(
 ) -> str:
     """인계 프롬프트 stdout 출력 문자열을 빌드한다.
 
-    pm_role.md 의 고정부를 그대로 포함하고 <핵심 인계 사항> 절은 PM 손임을 명시.
+    pm_playbook.md 의 고정부를 그대로 포함하고 <핵심 인계 사항> 절은 PM 손임을 명시.
+    (인자명 pm_role_text 는 역사적 — 이제 pm_playbook.md 텍스트를 받는다.)
     """
     template = extract_handoff_prompt_template(pm_role_text)
     if template is None:
         return (
-            "[경고] pm_role.md 에서 인계 프롬프트 템플릿을 찾지 못했다. "
+            "[경고] pm_playbook.md 에서 인계 프롬프트 템플릿을 찾지 못했다. "
             f"앵커: '{_HANDOFF_PROMPT_SECTION_ANCHOR}'\n"
-            "pm_role.md §'다음 PM 세션 부트스트랩 프롬프트 (템플릿)' 을 직접 복사하라."
+            "pm_playbook.md §'다음 PM 세션 부트스트랩 프롬프트 (템플릿)' 을 직접 복사하라."
         )
 
     header = (
@@ -371,12 +378,12 @@ class PmHandoff:
         run_pytest_fn: Callable[[], tuple[int, str]] | None = None,
         run_git_fn: Callable[[list[str]], tuple[int, str]] | None = None,
         log_file: Path = LOG_FILE,
-        pm_role_file: Path = PM_ROLE_FILE,
+        pm_playbook_file: Path = PM_PLAYBOOK_FILE,
         pm_state_file: Path = PM_STATE_FILE,
         venv_python: Path = VENV_PYTHON,
     ) -> None:
         self._log_file = log_file
-        self._pm_role_file = pm_role_file
+        self._pm_playbook_file = pm_playbook_file
         self._pm_state_file = pm_state_file
         self._venv_python = venv_python
 
@@ -457,6 +464,17 @@ class PmHandoff:
             self._log_file.write_text(log_text + "\n" + skeleton, encoding="utf-8")
             print(f"  ✓ log/current.md handoff entry skeleton append (PM {session_num}차)")
 
+        # log/current.md entry 누적 점검 — 임계 초과 시 archive 권장 (차단 아님).
+        cur_log_text = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
+        entry_count = len(_LOG_ENTRY_RE.findall(cur_log_text))
+        if entry_count > LOG_ARCHIVE_SUGGEST_THRESHOLD:
+            print(
+                f"  ⚠ log/current.md entry {entry_count}개 > {LOG_ARCHIVE_SUGGEST_THRESHOLD} — "
+                f"`pm_log.py archive --before <날짜>` 로 오래된 entry 봉인 권장 "
+                f"(부트스트랩 읽기 비용 ↓).",
+                file=sys.stdout,
+            )
+
         # ── 3. pm_state.md sliding window 정리 ─────────────────────────────────
         print("\n[3/7] pm_state.md 세션 식별 sliding window 정리...")
         state_text = self._pm_state_file.read_text(encoding="utf-8")
@@ -504,11 +522,11 @@ class PmHandoff:
             print(f"  ✓ pm_state.md {line_count} 라인 (임계값 {PM_STATE_LINE_WARNING_THRESHOLD} 이하).")
 
         # ── 5. 인계 프롬프트 stdout 출력 ───────────────────────────────────────
-        # 템플릿(정적)은 pm_role.md 에서 추출한다 — sliding window 편집 대상(pm_state.md)과 분리.
+        # 템플릿(정적)은 pm_playbook.md 에서 추출한다 — sliding window 편집 대상(pm_state.md)과 분리.
         print("\n[5/7] 인계 프롬프트 출력...")
-        pm_role_text = self._pm_role_file.read_text(encoding="utf-8")
+        playbook_text = self._pm_playbook_file.read_text(encoding="utf-8")
         prompt_output = build_handoff_prompt_output(
-            pm_role_text=pm_role_text,
+            pm_role_text=playbook_text,
             session_num=session_num,
             wave_summary=wave_summary,
             date_str=date_str,

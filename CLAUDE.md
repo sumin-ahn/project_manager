@@ -69,27 +69,22 @@
 {{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint     # 의존성·thin-ticket 일관성 검사
 
-# PM workflow 도구 (PM 세션에서만)
-{{PY}} .project_manager/tools/pm_bootstrap.py             # 세션 시작 부트스트랩 dump
-{{PY}} .project_manager/tools/pm_handoff.py --session-num N --wave-summary "..."   # 세션 종료 핸드오프
-{{PY}} .project_manager/tools/ticket_finish.py T-NNNN --section "<섹션>"           # ticket 완료 부기
-
-# log 관리 (활성 로그는 log/current.md, 오래된 entry 는 잘라서 보관)
+# PM workflow 도구(pm_bootstrap·pm_handoff·ticket_finish)는 PM 세션 전용 — 용법·플래그·호출(/pm-*)의
+# 단일 진실은 pm_role.md §"skill 카탈로그" + 각 .claude/skills/pm-*/SKILL.md. 여기에 재나열하지 않는다.
+# log 관리 도구만 여기 (전용 skill 없음):
 {{PY}} .project_manager/tools/pm_log.py tail                       # 마지막 entry 만 (의미단위 읽기)
 {{PY}} .project_manager/tools/pm_log.py archive --before YYYY-MM-DD  # 그 이전 entry 를 log/archive/ 봉인
 {{PY}} .project_manager/tools/pm_log.py migrate                    # 기존 log.md → archive/0000-legacy (도입 1회)
 ```
-
-PM workflow 는 `.claude/skills/pm-*` 슬래시 명령으로도 호출된다 (`/pm-bootstrap`, `/pm-handoff`, `/pm-wave-claim`, `/pm-wave-finish`, `/pm-dev-delegate`).
 
 ## 핵심 디렉토리
 
 | 경로 | 의미 |
 |---|---|
 | `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py · pm_log.py (숨김 디렉토리 — `ls -a`) |
-| `.project_manager/wiki/` | 비-코드 산출물 (작업 / 결정 / 사양 / 상태 / 아키텍처 / pm_role·pm_state / log/ / raw 스냅샷) |
+| `.project_manager/wiki/` | 비-코드 산출물 (작업 / 결정 / 사양 / 상태 / 아키텍처 / pm_role·pm_state·pm_playbook / log/ / raw 스냅샷) |
 | `.claude/agents/` | developer · code-reviewer 서브에이전트 정의 |
-| `.claude/skills/` | PM workflow slash command skill (pm-bootstrap·pm-handoff·pm-wave-claim·pm-wave-finish·pm-dev-delegate) |
+| `.claude/skills/` | PM workflow slash command skill (목록·역할·backbone → pm_role.md §"skill 카탈로그") |
 <!-- TODO: 프로젝트의 실제 코드 디렉토리 행을 여기 추가한다. -->
 
 ## 막혔을 때

@@ -18,7 +18,7 @@ skill 호출 *전* PM 세션은 이미 다음을 읽어야 한다 (pm_role.md §
 3. `.project_manager/wiki/pm_state.md` (동적 상태 — 세션 window / 진행 중 의사결정 / 남은 작업)
 4. `.project_manager/wiki/status.md`
 5. `.project_manager/wiki/board.md`
-6. `.project_manager/wiki/log/current.md` 마지막 handoff entry (의미 단위 — 직전 PM 이 읽기 범위 지정)
+6. log/current.md 마지막 handoff entry — `{{PY}} .project_manager/tools/pm_log.py tail` 로 읽기 (full Read 금지·의미 단위. 직전 PM 이 더 넓은 범위 지정 시 그 부분만 추가)
 
 skill 은 *기계 측정* 만 자동화한다. 컨텍스트 인지·결정은 PM 의 몫.
 

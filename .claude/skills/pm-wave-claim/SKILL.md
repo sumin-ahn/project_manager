@@ -26,7 +26,7 @@ description: "wave 안 ticket claim — board show + DoD self-containment PM 검
 ## PM 검증 체크리스트 (claim 전)
 
 다음 항목 *전부 충족* 시에만 claim. 하나라도 실패하면 ticket 본문 보강 우선
-(pm_role.md §"Ticket 본문 — self-contained 의무").
+(pm_playbook.md §메타 정책 "Ticket 본문" — self-contained 의무).
 
 - [ ] **표준 섹션 6개 존재** — 목표 / 인터페이스 / 결정 / 완료 조건 / 참고 / 메모. board.py lint 가 표준 섹션 누락 차단·`<...>` placeholder 0개.
 - [ ] **depends_on 모두 done** — 의존 ticket 이 아직 open/claimed 면 차단. blocked 의존은 reason 확인.
@@ -55,7 +55,7 @@ PM 자율 영역 (pm_role.md §"자율 + 사후 로그"):
 
 - **PM 검증은 손작업** — 자동화 부분은 board.py lint 가 placeholder·표준 섹션·순환 의존만. DoD verify-able·본문 self-containment·게이트 분류는 PM 인지.
 - **wave 안 1 ticket 1 claim** — 동시 다중 claim 회피 (touches conflict 위험·orchestrator 단순화).
-- **dev/reviewer 위임 ticket 도 PM claim** — board.py claim 은 orchestrator(PM) 영역 (pm_role.md §방식 A). 서브에이전트는 구현/검토만.
+- **dev/reviewer 위임 ticket 도 PM claim** — board.py claim 은 orchestrator(PM) 영역 (pm_playbook.md §"위임 — 두 가지 방식" 방식 A). 서브에이전트는 구현/검토만.
 
 ## 참고
 
