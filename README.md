@@ -42,7 +42,8 @@
 │   │   └── pm_log.py             # ④ log 의미단위 읽기 + 아카이브 (tail/archive/migrate)
 │   └── wiki/                     # ② 문서 그래프 위키
 │       ├── README.md             #   길찾기 + "디렉토리 의미" 단일 정의처
-│       ├── status.md             #   모듈 상태·테스트 수 단일 진실
+│       ├── status.md             #   활성 모듈 매트릭스 + 테스트 합계표 (헤더는 스칼라)
+│       ├── status_done.md        #   완성·안정 모듈 상세 아카이브 (status.md 에서 분리 — lazy)
 │       ├── board.md              #   ticket 현황 (board.py 자동 생성)
 │       ├── log/                  #   작업 일지 — current.md(활성) + archive/(봉인)
 │       ├── architecture.md       #   Layer·모듈 의존성 구조
@@ -182,7 +183,7 @@ board.py claim/complete 와 status.md·log/current.md 갱신은 **PM(orchestrato
 |---|---|---|
 | `.project_manager/tools/board.py` | ✅ 그대로 | 순수 ticket 도구. 하드코딩 경로 없음 (`REPO` 를 `__file__` 로 해소). Python 3 + `pyyaml` 만 필요. |
 | `.project_manager/tools/pm_bootstrap.py` | ✅ 그대로 | PM 세션 시작 dump. 도메인 무관. timezone (KST default) 만 프로젝트에 맞춰. |
-| `.project_manager/tools/pm_handoff.py` | 🟡 pm_state.md / pm_role.md 형식 결합 | 세션 식별 표 sliding window 는 `pm_state.md` 의 `## 세션 식별 (현재까지 사용된 이름)` 앵커에, 인계 프롬프트 추출은 `pm_role.md` 의 템플릿 코드블록에 정규식이 묶여 있다. 해당 절 형식을 바꾸면 정규식도 같이. |
+| `.project_manager/tools/pm_handoff.py` | 🟡 pm_state.md / pm_playbook.md 형식 결합 | 세션 식별 표 sliding window 는 `pm_state.md` 의 `## 세션 식별 (현재까지 사용된 이름)` 앵커에, 인계 프롬프트 추출은 `pm_playbook.md` 의 템플릿 코드블록에 정규식이 묶여 있다. 해당 절 형식을 바꾸면 정규식도 같이. |
 | `.project_manager/tools/pm_log.py` | ✅ 그대로 | log 의미단위 읽기 + 아카이브. `log/current.md` entry 경계(`## [YYYY-MM-DD]`)만 의존 — 도메인 무관. 도입 시 기존 `log.md` 가 있으면 `migrate` 한 번. |
 | `.project_manager/wiki/` 골격 | ✅ 구조 재사용 | README·sub-README·`_template.md` 는 도메인 무관. status/architecture 내용만 새로 채움. |
 | `.claude/agents/` | ✅ 거의 그대로 | architect(Opus)·developer·code-reviewer 3 정의. 역할·제약·부트스트랩 구조는 도메인 무관. `{{PROJECT_CONSTRAINTS}}`·`{{PROTECTED_PATHS}}` 만 채움. |

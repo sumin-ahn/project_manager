@@ -280,7 +280,7 @@ def update_session_window(
     return new_pm_role_text
 
 
-# ── pm_role.md 인계 프롬프트 추출 ────────────────────────────────────────────
+# ── pm_playbook.md 인계 프롬프트 추출 ────────────────────────────────────────
 
 _HANDOFF_PROMPT_SECTION_ANCHOR = "## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
 
@@ -289,7 +289,8 @@ _CODE_BLOCK_RE = re.compile(r"```\n(.+?)```", re.DOTALL)
 
 
 def extract_handoff_prompt_template(pm_role_text: str) -> str | None:
-    """pm_role.md 에서 인계 프롬프트 템플릿 코드블록을 추출한다.
+    """pm_playbook.md 에서 인계 프롬프트 템플릿 코드블록을 추출한다.
+    (인자명 pm_role_text 는 역사적 — 이제 pm_playbook.md 텍스트를 받는다.)
 
     반환: 코드블록 내용 문자열 또는 None (앵커 불일치).
     """
