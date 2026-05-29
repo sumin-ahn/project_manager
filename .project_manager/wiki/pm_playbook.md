@@ -29,6 +29,12 @@ type: reference
 ### 디렉토리 의미
 [`README.md`](README.md) "디렉토리 의미" 절이 단일 정의처 — 여기서 복제하지 않는다.
 
+### status.md 정비 (부트스트랩 컨텍스트 경계)
+- status.md 는 **활성**(🟡/⬜/🔒) 모듈 + 테스트 합계표 + 외부 의존성만. ✅ 완성·안정 모듈 행은
+  `status_done.md` 로 옮긴다 (합계표 소계·합계는 status.md 유지 — 카운트는 행 위치와 무관).
+- "전체 테스트" 헤더는 **스칼라 앵커**(ticket_finish 편집). incident/wave 서술을 붙이지 않는다 — log/current.md entry 로.
+- `board.py lint` 가 헤더 비대(>280자)·✅ 누적(>30행)을 warn 한다 (차단 아님 — 정리 신호).
+
 ### Super-ticket 분할 절차
 1. 분할 결정 — **PM 자율**. `log/current.md` 에 분할 사유 기록 (과잉 분할 방지 규율).
 2. 원본 ticket 을 `block --reason "Split into T-NNNN..T-MMMM"` 처리 (done 아님 — 작업 안 했으니).

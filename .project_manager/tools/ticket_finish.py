@@ -18,6 +18,8 @@
   - red 면 중단: status.md / log/current.md / board / git 어떤 것도 건드리지 않는다.
   - 편집은 정규식 앵커 치환, 멱등. 앵커 불일치 시 명시적 에러 (추측 편집 금지).
   - 모듈 행·서술·commit 은 자동화하지 않는다 (v1 축소판 — §배경).
+  - 편집 대상은 status.md 의 스칼라 앵커(헤더·합계표·소계·회귀)뿐 — 모듈 행은 PM 손이고,
+    ✅ 완성 모듈은 status_done.md 로 옮겨도 합계표 카운트는 status.md 에 남으므로 이 도구와 무관.
   - fail-soft 가 아니다 — 명시적 실패 (비-0 종료 + 명확한 메시지).
   - LLM 미호출 — stdlib + board.py import 만.
   - (v2) 인라인 소계 부재 섹션은 warning log·skip·exit 0 (fail-soft).

@@ -7,9 +7,13 @@ type: status
 
 # 현재 진행 상태
 
-> **단일 진실 소스** — 모듈 진행 상황은 여기를 본다. 새 모듈/테스트 추가 시 이 파일을 먼저 갱신.
+> **단일 진실 소스 (활성 작업)** — *진행 중* 모듈 상태는 여기를, 완성·안정 모듈 상세는 [`status_done.md`](status_done.md) 를 본다. 새 모듈/테스트 추가 시 이 파일을 먼저 갱신.
 
+<!-- ⚠️ 아래 "전체 테스트" 라인은 스칼라 앵커다 (ticket_finish.py 가 편집). incident/wave 서술을
+     이 라인에 붙이지 않는다 — narrative 는 log/current.md 의 entry 로. board.py lint 가 길이 초과 시 경고. -->
 **전체 테스트: 0 / 0 통과** (통합 0개는 외부 의존으로 기본 skip)
+
+**완성 모듈:** 0개 — 상세는 [`status_done.md`](status_done.md) (✅ 안정 모듈은 거기로 이동, 이 파일은 활성만 유지).
 
 **개발 작업 보드:** [`board.md`](board.md) — ticket 발행 현황의 단일 진실은 `board.md` (자동 생성). 멀티 세션 병렬 작업 가능. 워크플로는 [`tickets/README.md`](tickets/README.md).
 
@@ -21,11 +25,12 @@ type: status
 
 ---
 
-## 모듈 매트릭스
+## 활성 모듈 매트릭스 (🟡 부분 / ⬜ 미구현 / 🔒 외부 대기)
 
-<!-- TODO: 프로젝트의 Layer/그룹별로 섹션을 나눠 모듈 행을 채운다.
-     섹션 끝마다 소계 행을 두면 .project_manager/tools/ticket_finish.py 의 --section 으로
-     자동 갱신할 수 있다. -->
+<!-- 진행 중·미구현·외부 대기 모듈만 여기. ✅ 완성+안정 모듈은 status_done.md 로 옮긴다
+     (wave-finish/handoff 시점). Layer/그룹별로 섹션을 나누고 섹션 끝마다 소계 행을 두면
+     ticket_finish.py 의 --section 으로 자동 갱신된다. 비고는 1줄 — 전체 이력은 log + done ticket.
+     ⚠️ ✅ 행이 누적되면 board.py lint 가 status_done.md archive 를 권고한다. -->
 
 | 모듈 | 파일 | 테스트 | 상태 | 비고 |
 |---|---|---:|:-:|---|

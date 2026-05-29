@@ -704,10 +704,53 @@ def lint_ideas() -> list[tuple[str, str, str]]:
     return issues
 
 
+# status.md 부트스트랩 컨텍스트 드리프트 가드 임계값 (warn-only — 차단 아님).
+# 헤더 = 스칼라 앵커, 활성 매트릭스 = 진행 중만. 초과 시 정리 신호.
+STATUS_HEADER_MAX_CHARS = 280
+STATUS_DONE_ROW_WARN = 30
+
+# status.md 의 "전체 테스트:" 헤더 라인 (ticket_finish 가 편집하는 스칼라 앵커).
+_STATUS_HEADER_RE = re.compile(r"^\*\*전체 테스트:.*$", re.MULTILINE)
+# 모듈 매트릭스 행 중 상태 셀이 ✅ 인 행 (범례 "- ✅ ..." 는 `|` 시작 아니라 제외).
+_STATUS_DONE_ROW_RE = re.compile(r"^\|.*\| ✅ \|", re.MULTILINE)
+
+
+def lint_status() -> list[tuple[str, str, str]]:
+    """status.md 의 부트스트랩 컨텍스트 비대화를 경고한다 (warn-only).
+
+    Checks:
+      - status-header-bloat: '전체 테스트' 헤더 라인이 너무 김 — incident/wave narrative 가
+        스칼라 앵커 라인에 섞인 신호. 서술은 log/current.md entry 로.
+      - status-done-accum:   활성 매트릭스에 ✅ 완성 행이 누적 — status_done.md 로 archive 권고.
+
+    status.md 없으면 빈 리스트. (board.py refresh/lint 끝에서 호출.)
+    """
+    issues: list[tuple[str, str, str]] = []
+    if not STATUS_FILE.exists():
+        return issues
+    text = STATUS_FILE.read_text()
+
+    header = _STATUS_HEADER_RE.search(text)
+    if header and len(header.group(0)) > STATUS_HEADER_MAX_CHARS:
+        issues.append((
+            "status.md", "status-header-bloat",
+            f"'전체 테스트' 헤더 {len(header.group(0))}자 > {STATUS_HEADER_MAX_CHARS} — "
+            f"incident/wave narrative 는 log/current.md 로 (헤더는 스칼라 앵커)"))
+
+    done_rows = len(_STATUS_DONE_ROW_RE.findall(text))
+    if done_rows > STATUS_DONE_ROW_WARN:
+        issues.append((
+            "status.md", "status-done-accum",
+            f"활성 매트릭스 ✅ 완성 행 {done_rows}개 > {STATUS_DONE_ROW_WARN} — "
+            f"status_done.md 로 archive 권고"))
+
+    return issues
+
+
 def lint_tickets() -> list[tuple[str, str, str]]:
     """All lint issues — ticket dependency graph + body self-containment +
-    idea status/directory agreement."""
-    return lint_dependencies() + lint_bodies() + lint_ideas()
+    idea status/directory agreement + status.md context drift guard."""
+    return lint_dependencies() + lint_bodies() + lint_ideas() + lint_status()
 
 
 # ── board.md regeneration ──────────────────────────────────────────────

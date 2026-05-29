@@ -149,6 +149,7 @@ PM 손:
 - log/current.md handoff entry 본문 채우기 (`<PM 손>` 자리를 실제 내용으로) + "다음 세션 읽기 범위" 줄 확정
 - `pm_state.md` "진행 중인 의사결정" 표 갱신
 - `pm_state.md` "남은 작업 전체 그림" 갱신
+- status.md 정비 (lint 가 경고하면) — 안정화된 ✅ 모듈 행은 `status_done.md` 로 이동, "전체 테스트" 헤더는 스칼라 유지(서술은 log/current.md)
 - 인계 프롬프트의 `<핵심 인계 사항>` 채우기
 - git commit (Co-Authored-By: Claude 트레일러)
 - 마지막 응답에 인계 프롬프트 코드블록 출력 (사용자가 복사해 새 PM 세션에 붙여넣음)

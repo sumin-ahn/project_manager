@@ -13,7 +13,7 @@
 |---|---|
 | **PM 세션이라면** (보드 운영 / 분할 / 위임) | [`pm_role.md`](pm_role.md) (정적 매뉴얼) + [`pm_state.md`](pm_state.md) (동적 상태) |
 | **지금 무슨 ticket 잡을까?** (구현 세션) | [`board.md`](board.md) (자동 갱신) + [`tickets/README.md`](tickets/README.md) (워크플로) |
-| 지금 어디까지 됐는가? (모듈 상태·테스트 수) | [`status.md`](status.md) |
+| 지금 어디까지 됐는가? (활성 모듈·테스트 수) | [`status.md`](status.md) (활성) + [`status_done.md`](status_done.md) (완성 모듈) |
 | 전체 아키텍처 + 모듈 의존성 | [`architecture.md`](architecture.md) |
 | 사양 (포맷·한도·인터페이스) 단일 진실 | [`specs/`](specs/) |
 | 왜 이렇게 결정했는가? | [`decisions/`](decisions/) (ADR) |
@@ -29,7 +29,8 @@
 ```
 .project_manager/wiki/
 ├── README.md         # ← 이 파일. 길찾기 + 디렉토리 의미 단일 정의처
-├── status.md         # 현재 상태 단일 진실 — 모듈 매트릭스 + 테스트 수 + 외부 의존성
+├── status.md         # 현재 상태 — 활성 모듈 매트릭스 + 테스트 합계표 + 외부 의존성 (헤더는 스칼라)
+├── status_done.md    # 완성·안정 모듈 상세 아카이브 (status.md 에서 분리 — 부트스트랩 비로드)
 ├── board.md          # ticket 현황 대시보드 (.project_manager/tools/board.py 자동 생성 — 수동 편집 금지)
 ├── pm_role.md        # PM 세션 인계 문서 — 정적 운영 매뉴얼 (책임·결정 권한·핸드오프 절차)
 ├── pm_state.md       # PM 동적 상태 (세션 window / 진행 중 의사결정 / 남은 작업) — /pm-handoff 가 갱신
@@ -45,7 +46,8 @@
 
 | 디렉토리 / 파일 | 의미 |
 |---|---|
-| `status.md` | 모듈 진행 상태·테스트 수의 **단일 진실 소스**. 새 모듈/테스트 추가 시 먼저 갱신 |
+| `status.md` | **활성** 모듈 상태·테스트 합계의 단일 진실. 새 모듈/테스트 추가 시 먼저 갱신. 헤더 "전체 테스트" 라인은 **스칼라**(narrative 금지 — log 로). `board.py lint` 가 헤더 비대·✅ 누적을 경고 |
+| `status_done.md` | ✅ **완성·안정** 모듈 상세 아카이브. status.md 가 비대해지지 않게 분리 — 부트스트랩에 로드 안 됨. 모듈이 안정되면 PM 이 행을 여기로 이동 (합계표 카운트는 status.md 유지) |
 | `board.md` | ticket 발행 현황. `.project_manager/tools/board.py` 가 자동 생성 — 수동 편집 금지 |
 | `pm_role.md` / `pm_state.md` | PM 세션 인계 — **정적 매뉴얼**(role)과 **동적 상태**(state)를 분리. state 의 세션 window 는 `/pm-handoff` 가 자동 갱신 |
 | `log/` | 작업 일지. `current.md` = 활성(append-only), `archive/NNNN-*.md` = 봉인. `pm_log.py archive` 로 잘라 보관. 읽기는 의미 단위(마지막 handoff entry) |
