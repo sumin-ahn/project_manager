@@ -83,7 +83,7 @@
 |---|---|
 | `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py · pm_log.py (숨김 디렉토리 — `ls -a`) |
 | `.project_manager/wiki/` | 비-코드 산출물 (작업 / 결정 / 사양 / 상태 / 아키텍처 / pm_role·pm_state·pm_playbook / log/ / raw 스냅샷) |
-| `.claude/agents/` | developer · code-reviewer 서브에이전트 정의 |
+| `.claude/agents/` | architect(Opus) · developer · code-reviewer 서브에이전트 정의 |
 | `.claude/skills/` | PM workflow slash command skill (목록·역할·backbone → pm_role.md §"skill 카탈로그") |
 <!-- TODO: 프로젝트의 실제 코드 디렉토리 행을 여기 추가한다. -->
 

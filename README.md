@@ -17,7 +17,7 @@
 |---|---|---|
 | **① Ticket 보드 (JIRA)** | 여러 Claude 세션이 충돌 없이 병렬 작업하는 가벼운 작업 보드. 디렉토리 = 상태, `mv` = atomic lock. | `.project_manager/tools/board.py` |
 | **② 문서 그래프 위키** | 진행 중 프로젝트의 운영 계층 — 상태·결정·사양·아이디어·일지를 markdown 그래프로. `[[wikilink]]` 인터링크 + frontmatter (Karpathy LLM-Wiki 패턴 계승). | `.project_manager/wiki/` |
-| **③ PM·Dev·Reviewer 협업** | PM(orchestrator) 세션이 ticket 을 발행·분할하고, developer / code-reviewer 서브에이전트에 위임. **generate ≠ evaluate** — 구현자와 검토자를 분리. | `.claude/agents/`, `.project_manager/wiki/pm_role.md` |
+| **③ PM·Architect·Dev·Reviewer 협업** | PM(orchestrator) 세션이 ticket 을 발행·분할하고 architect / developer / code-reviewer 서브에이전트에 위임. **generate ≠ evaluate**, 그리고 **design labor ≠ decision** — 설계·구현·검토 주체를 분리하고 결정·비준은 PM. | `.claude/agents/`, `.project_manager/wiki/pm_role.md` |
 | **④ PM workflow skill** | PM 의 반복 workflow (부트스트랩 / wave claim / 위임 / wave finish / 핸드오프) 를 trigger 단위로 강제. backbone CLI 4 + slash command skill 5. | `.project_manager/tools/pm_*.py`, `.claude/skills/pm-*/` |
 
 설계 원칙 한 줄: **board.py 는 순수 ticket 도구, `.project_manager/wiki/` 는
@@ -56,6 +56,7 @@
 │       └── raw/                  #   IMMUTABLE 시간 스냅샷 (plans·evaluations·benchmarks)
 └── .claude/
     ├── agents/
+    │   ├── architect.md          # ③ 설계 서브에이전트 정의 (Opus — 설계 노동, PM 비준)
     │   ├── developer.md          # ③ 구현 서브에이전트 정의
     │   └── code-reviewer.md      # ③ 검토 서브에이전트 정의
     ├── skills/                   # ④ PM workflow slash command
@@ -184,7 +185,7 @@ board.py claim/complete 와 status.md·log/current.md 갱신은 **PM(orchestrato
 | `.project_manager/tools/pm_handoff.py` | 🟡 pm_state.md / pm_role.md 형식 결합 | 세션 식별 표 sliding window 는 `pm_state.md` 의 `## 세션 식별 (현재까지 사용된 이름)` 앵커에, 인계 프롬프트 추출은 `pm_role.md` 의 템플릿 코드블록에 정규식이 묶여 있다. 해당 절 형식을 바꾸면 정규식도 같이. |
 | `.project_manager/tools/pm_log.py` | ✅ 그대로 | log 의미단위 읽기 + 아카이브. `log/current.md` entry 경계(`## [YYYY-MM-DD]`)만 의존 — 도메인 무관. 도입 시 기존 `log.md` 가 있으면 `migrate` 한 번. |
 | `.project_manager/wiki/` 골격 | ✅ 구조 재사용 | README·sub-README·`_template.md` 는 도메인 무관. status/architecture 내용만 새로 채움. |
-| `.claude/agents/` | ✅ 거의 그대로 | 역할·제약·부트스트랩 구조는 도메인 무관. `{{PROJECT_CONSTRAINTS}}`·`{{PROTECTED_PATHS}}` 만 채움. |
+| `.claude/agents/` | ✅ 거의 그대로 | architect(Opus)·developer·code-reviewer 3 정의. 역할·제약·부트스트랩 구조는 도메인 무관. `{{PROJECT_CONSTRAINTS}}`·`{{PROTECTED_PATHS}}` 만 채움. |
 | `.claude/skills/pm-*/` | ✅ 거의 그대로 | 5 skill thin wrapper. `{{PROJECT_NAME}}`·`{{PROJECT_CONSTRAINTS}}`·`{{PY}}` 치환만. |
 | `pm_role.md` | ✅ 도메인 무관 | PM 정적 핵심 — 부트스트랩·결정 권한·안전 경계·핸드오프 절차·skill 카탈로그 (매 세션 로드). `{{USER_GATE_ITEMS}}` 만 채움. |
 | `pm_state.md` | ✅ 구조 재사용 | PM 동적 상태 (세션 window·진행 중 의사결정·남은 작업). 세션 window 는 `/pm-handoff` 가 자동 갱신, 나머지는 PM 이 핸드오프마다 갱신. |

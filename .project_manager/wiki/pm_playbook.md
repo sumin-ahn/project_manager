@@ -42,18 +42,24 @@ ticket 본문이 self-contained 의무를 지므로 위임 프롬프트는 bespo
 
 ### 방식 A — orchestrator 서브에이전트 (Agent 툴, 권장)
 
-PM 이 `Agent` 툴로 spawn 한다. `subagent_type` 으로 전용 정의를 쓴다:
+PM 이 `Agent` 툴로 spawn 한다. `subagent_type` 으로 전용 정의를 쓴다 (세 축: 설계/구현/검토):
 
+- **설계** — `subagent_type: architect` ([`.claude/agents/architect.md`](../../.claude/agents/architect.md), Opus). 설계 노동(idea 검토·ADR 초안·spec 추출·가설 검증·인터페이스). **산출은 PM 이 비준** — 발행·board·idea promote 는 PM.
 - **구현** — `subagent_type: developer` ([`.claude/agents/developer.md`](../../.claude/agents/developer.md))
 - **검토** — `subagent_type: code-reviewer` ([`.claude/agents/code-reviewer.md`](../../.claude/agents/code-reviewer.md))
 
-두 정의가 역할·제약·부트스트랩·프로젝트 제약을 이미 담고 있으므로 PM 의 Agent
-프롬프트는 한 줄이면 된다 (`/pm-dev-delegate` skill 이 표준 프롬프트를 dump):
+세 정의가 역할·제약·부트스트랩·프로젝트 제약을 이미 담고 있으므로 PM 의 Agent
+프롬프트는 한 줄이면 된다 (구현/검토는 `/pm-dev-delegate` skill 이 표준 프롬프트를 dump):
 
 ```
+Idea-00NN 을 promote/kill 분석하고 promote 면 ADR 초안을 내라. (architect)
 T-NNNN 을 구현하라. (developer)
 T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 ```
+
+설계 spike 는 **PM 이 비준**한다 — architect 가 ADR/spec/idea-promote *초안·권고*를 내면, PM 이
+검토 후 ADR 발행 / `board.py idea promote` / spec 승격 / log entry 를 한다 (generate≠evaluate 에 이은
+"design labor ≠ decision"). 구현이 필요하면 PM 이 ticket 으로 발행해 developer 에 위임한다.
 
 이 방식에서 **board.py claim/complete 와 status.md/log/current.md 갱신은
 orchestrator(PM)가 한다** — 서브에이전트는 구현/검토만.
