@@ -25,6 +25,11 @@ type: reference
 - **self-contained 의무.** 새 세션이 본문만 보고 작업 시작 가능해야. template 만 채워 두면 안 됨.
 - 본문 표준 섹션: 목표 / 인터페이스 / 결정 / 완료 조건 / 참고 / 메모.
 - 참고 섹션은 spec / ADR / 의존 모듈 / 패턴 reference (이미 done 된 비슷한 ticket) 포함.
+- **본문 = dev 컨텍스트 방화벽.** 정밀한 본문(정확한 함수/라인·인터페이스·패턴 reference)은 dev 의
+  *읽기 범위*를 좁혀 cold subagent 의 컨텍스트 truncation 을 막는다. 모호한 본문 → 광범위 grep → 폭증.
+- **ticket 크기는 두 축: 노력 + 컨텍스트.** `estimate` 는 노력 축이다. 노력이 small 이라도 touches 에
+  대형 파일이 있거나 이해에 광범위 읽기가 필요하면 *컨텍스트가 크다* — **분할하거나** 본문에 정확한
+  함수/라인·패턴 reference 를 박아 pre-digest 한다 (큰 ticket 의 pre-digest 는 architect 위임 후보).
 
 ### 디렉토리 의미
 [`README.md`](README.md) "디렉토리 의미" 절이 단일 정의처 — 여기서 복제하지 않는다.

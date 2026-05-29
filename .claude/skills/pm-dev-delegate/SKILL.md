@@ -15,6 +15,7 @@ description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touche
 - depends_on 모두 done.
 - touches 명시.
 - DoD verify-able.
+- **컨텍스트 예산 확인** — touches 대형 파일·광범위 읽기 필요 시 dev truncation 위험. 미리 분할했거나 본문이 정확한 함수/라인·패턴 reference 로 dev 읽기를 좁히는지 확인 (안 되면 위임 전 본문 보강·분할).
 
 ## 실행 패턴
 
