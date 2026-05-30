@@ -16,3 +16,6 @@ __pycache__/
 
 # local.conf = per-clone 설정 (prefix·session) — clone 마다 다르니 커밋 안 함. pm-init 이 생성.
 .project_manager/local.conf
+
+# .local/ = per-clone 스크래치 (회귀 게이트 플래그 등) — 커밋 안 함.
+.project_manager/.local/

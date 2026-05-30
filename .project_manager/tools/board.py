@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import re
 import socket
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -37,6 +39,8 @@ LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 AREAS_FILE = REPO / ".project_manager" / "areas.md"    # shared registry (committed, merge=union)
 PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"          # per-clone (git-ignored)
 PM_STATE_TEMPLATE = REPO / ".project_manager" / "wiki" / "pm_state.template.md"  # tracked skeleton
+LOCAL_DIR = REPO / ".project_manager" / ".local"            # per-clone scratch (git-ignored)
+REGRESSION_FLAG = LOCAL_DIR / "regression.json"             # last regression result, keyed by HEAD
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 # Ideas have a simpler lifecycle than tickets — no claim/complete middle
 # states, just `open → promoted|killed`.
@@ -122,6 +126,77 @@ def areas_append(prefix: str, area: str, owner: str) -> None:
             encoding="utf-8")
     with AREAS_FILE.open("a", encoding="utf-8") as f:
         f.write(f"| {prefix} | {area} | {owner} |\n")
+
+
+# ── 회귀 게이트 (R8) ──────────────────────────────────────────────────────
+# 회귀 단위 ≡ push 단위 · green 인 것만 push. `regression run` 이 측정·기록(per-clone
+# 로컬 플래그), pre-push 훅이 `regression check` 로 HEAD green 을 검증. 비차단 pre-warm 은
+# PM 이 `run_in_background` 로 `regression run` 을 돌리는 워크플로(하니스 background).
+
+def _git_head() -> str:
+    r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _hooks_dir() -> Path | None:
+    r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--git-path", "hooks"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    d = Path(r.stdout.strip())
+    return d if d.is_absolute() else REPO / d
+
+
+def install_pre_push_hook() -> bool:
+    """Install the R8 pre-push regression gate. Idempotent. False if not a git repo."""
+    hooks = _hooks_dir()
+    if hooks is None:
+        return False
+    hooks.mkdir(parents=True, exist_ok=True)
+    hook = hooks / "pre-push"
+    hook.write_text(
+        "#!/bin/sh\n"
+        "# pm pre-push gate (R8) — green 회귀만 push. board.py init 이 설치.\n"
+        "python3 .project_manager/tools/board.py regression check || \\\n"
+        "  python3 .project_manager/tools/board.py regression run\n")
+    hook.chmod(0o755)
+    return True
+
+
+def _test_cmd(override: str | None) -> str:
+    return override or local_config().get("test_cmd") or "pytest -q"
+
+
+def cmd_regression(args: argparse.Namespace) -> int:
+    """run = 측정+기록(HEAD 키), check = HEAD 가 green 인지 (pre-push 훅이 호출)."""
+    if args.action == "run":
+        cmd = _test_cmd(args.cmd)
+        print(f"regression: $ {cmd}")
+        rc = subprocess.run(cmd, shell=True, cwd=str(REPO)).returncode
+        status = "pass" if rc in (0, 5) else "fail"  # pytest rc5 = no tests collected
+        LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+        REGRESSION_FLAG.write_text(json.dumps(
+            {"head": _git_head(), "status": status, "rc": rc, "ts": now_utc()}),
+            encoding="utf-8")
+        print(f"regression: {status} (rc={rc}) @ {_git_head()[:8] or '?'}")
+        return 0 if status == "pass" else 1
+    # action == "check" — pre-push 게이트
+    if not REGRESSION_FLAG.exists():
+        print("regression: 기록 없음 — `board.py regression run` 필요 (push 차단).",
+              file=sys.stderr)
+        return 1
+    data = json.loads(REGRESSION_FLAG.read_text(encoding="utf-8"))
+    head = _git_head()
+    if data.get("head") != head:
+        print(f"regression: stale (기록 {str(data.get('head'))[:8]} ≠ HEAD {head[:8]}) "
+              "— 재실행 필요.", file=sys.stderr)
+        return 1
+    if data.get("status") != "pass":
+        print(f"regression: RED @ {head[:8]} — push 차단.", file=sys.stderr)
+        return 1
+    print(f"regression: green @ {head[:8]} ✓")
+    return 0
 
 
 def now_utc() -> str:
@@ -429,6 +504,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         PM_STATE_FILE.write_text(PM_STATE_TEMPLATE.read_text(encoding="utf-8"),
                                  encoding="utf-8")
         print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
+    if install_pre_push_hook():
+        print("✓ pre-push 회귀 게이트 훅 설치 (green 회귀만 push)")
     print(INIT_GUIDE.format(prefix=prefix))
     return 0
 
@@ -1022,6 +1099,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--owner", help="소유자 (기본: session 이름)")
     p.add_argument("--session", help="세션 이름 (기본: <prefix>-pm)")
     p.set_defaults(fn=cmd_init)
+
+    p = sub.add_parser("regression",
+                       help="회귀 게이트 (run=측정·기록 / check=HEAD green 검증·pre-push 훅용)")
+    p.add_argument("action", choices=["run", "check"])
+    p.add_argument("--cmd", help="테스트 명령 (기본: local.conf test_cmd / pytest -q)")
+    p.set_defaults(fn=cmd_regression)
 
     p = sub.add_parser("refresh", help="regenerate board.md")
     p.set_defaults(fn=cmd_refresh)
