@@ -82,8 +82,11 @@ cp -r project_manager/. /path/to/new-project/
 
 cd /path/to/new-project/
 
-# 2) placeholder 일괄 치환 (§4 표 참고). 예:
+# 2) placeholder 일괄 치환 (§4 표). pm_role.md·pm_playbook.md 는 제외 — 엔진(pm_update
+#    동기화 대상)이라 {{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}} 를 리터럴로 두고 local.conf 가
+#    해소한다. 치환하면 다음 pm_update 때 되돌아간다.
 grep -rl '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='*.py' | \
+  grep -vE 'wiki/pm_role\.md|wiki/pm_playbook\.md' | \
   xargs sed -i \
     -e 's|{{PROJECT_NAME}}|My Project|g' \
     -e 's|{{PROJECT_TAGLINE}}|한 줄 프로젝트 설명|g' \
@@ -92,20 +95,28 @@ grep -rl '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='
     -e 's|{{TEST_CMD}}|python3 -m pytest tests/ -q|g' \
     -e "s|{{DATE}}|$(date +%F)|g"
 
-# 3) board.py 동작 확인 — 첫 ticket 발행
+# 3) 이 clone 등록 (clone 당 1회) — 솔로 또는 팀
+python3 .project_manager/tools/board.py init                        # 솔로: legacy T-NNNN
+#   팀(여러 사람·영역 분할): board.py init --prefix PAY --area "결제"   # → T-PAY-NNN + areas.md
+#   공통: local.conf(py·test_cmd·session) + pm_state + pre-push 회귀 훅 생성.
+
+# 4) board.py 동작 확인 — 첫 ticket 발행
 python3 .project_manager/tools/board.py new "첫 ticket — 환경 셋업 검증" --tag infra
 python3 .project_manager/tools/board.py list
 
-# 4) .project_manager/wiki/ 의 {{PROJECT_CONSTRAINTS}} / {{PROTECTED_PATHS}} /
-#    {{USER_GATE_ITEMS}} 등 free-form placeholder 를 직접 채운다 (sed 로 안
-#    되는 서술 항목). → CLAUDE.md, .claude/agents/*.md, pm_role.md 안의
-#    <!-- TODO --> 주석 참고.
+# 5) free-form placeholder 직접 채우기 (sed 로 안 되는 서술 항목):
+#    - {{PROJECT_CONSTRAINTS}} → CLAUDE.md, .claude/agents/*.md, skills/pm-dev-delegate
+#    - 보호 영역 / 사용자 게이트 / 금지 → .project_manager/wiki/pm_role.local.md (overlay)
+#      ({{PROTECTED_PATHS}} 는 agents/*.md·skills 에도) — 파일 안 <!-- TODO --> 참고.
 
-# 5) (Python 외 언어면) .claude/run_tests_hook.sh 와 ticket_finish.py / pm_*.py
-#    의 pytest 가정을 해당 언어 테스트 러너로 교체 (§6).
+# 6) (Python 외 언어면) local.conf 의 test_cmd + ticket_finish.py / pm_*.py 의 pytest
+#    가정을 해당 언어 러너로 교체 (§6).
+
+# 이후 프레임워크 개선 받기: pm_update.py --from <upstream-checkout> [--dry-run]
+#    (engine.manifest 의 엔진 경로만 덮어씀 — 인스턴스 상태·커스터마이즈는 보존.)
 ```
 
-치환 후 남은 `{{...}}` 가 없는지 확인:
+치환 후 남은 `{{...}}` 확인 (단, `pm_role.md`·`pm_playbook.md` 의 `{{PY}}`·`{{TEST_CMD}}`·`{{PROJECT_NAME}}` 는 **의도적으로 남는다** — local.conf 가 해소):
 
 ```bash
 grep -rn '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='*.py'
@@ -126,13 +137,15 @@ grep -rn '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='
 | `{{TEST_CMD}}` | 전체 회귀 명령 | `venv/bin/python -m pytest tests/ -q` |
 | `{{DATE}}` | 초기화 날짜 (wiki frontmatter) | `2026-05-22` |
 
+> ⚠️ `{{PY}}`·`{{TEST_CMD}}`·`{{PROJECT_NAME}}` 은 **엔진 문서(`pm_role.md`·`pm_playbook.md`)에선 치환하지 않는다** — `local.conf` 가 해소(`board.py init` 기록)하고 pm_update 동기화 대상이라 치환하면 되돌아간다. 다른 파일(CLAUDE.md 등)에선 sed 로 채워도 됨.
+
 직접 서술해야 하는(자유 형식) placeholder — 파일 안 `<!-- TODO -->` 주석으로 표시:
 
 | 토큰 | 어디에 | 무엇을 채우나 |
 |---|---|---|
 | `{{PROJECT_CONSTRAINTS}}` | `CLAUDE.md`, `agents/developer.md`, `agents/code-reviewer.md`, `skills/pm-dev-delegate/SKILL.md` | 프로젝트의 **절대 위반 금지 제약**. 아키텍처 불변식·안전 경계 등. (예: "핵심 결정 로직 ↔ 비결정/LLM 계층 경계 분리", "외부 호출은 fail-soft") |
-| `{{PROTECTED_PATHS}}` | `agents/*.md`, `pm_role.md`, `skills/pm-wave-claim/SKILL.md` | 서브에이전트·PM 이 **건드리면 안 되는 파일/디렉토리**. (예: 운영 한도·안전 상수 config, immutable `raw/` 스냅샷) |
-| `{{USER_GATE_ITEMS}}` | `pm_role.md` | PM 자율 결정 밖 — **사용자 사전 동의가 필요한 행위**. (예: 외부 비가역 행위, 유료 API 대량 호출) |
+| `{{PROTECTED_PATHS}}` | `agents/*.md`, **`pm_role.local.md`**(overlay), `skills/pm-wave-claim/SKILL.md` | 서브에이전트·PM 이 **건드리면 안 되는 파일/디렉토리**. (예: 운영 한도·안전 상수 config, immutable `raw/` 스냅샷) |
+| `{{USER_GATE_ITEMS}}` | **`pm_role.local.md`**(overlay) | PM 자율 결정 밖 — **사용자 사전 동의가 필요한 행위**. (예: 외부 비가역 행위, 유료 API 대량 호출) |
 
 ---
 
