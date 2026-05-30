@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> Claude Code 세션이 시작될 때 자동 로드되는 진입점. **새 세션이라면 먼저 이걸 읽고 → `.project_manager/wiki/board.md` 를 확인하라.**
+> Claude Code 세션이 시작될 때 자동 로드되는 진입점. **새 세션이라면 먼저 이걸 읽고 → `board.py list` 로 보드를 확인하라.**
 
 ## 프로젝트 한 줄
 
@@ -9,8 +9,8 @@
 
 ## 새 세션 부트스트랩 (3 단계)
 
-1. **상황 파악** — 다음 3 파일을 순서대로 본다:
-   - [`.project_manager/wiki/board.md`](.project_manager/wiki/board.md) — 지금 무슨 ticket 잡을 수 있나?
+1. **상황 파악** — 다음을 순서대로 본다:
+   - 보드 — `{{PY}} .project_manager/tools/board.py list` (지금 무슨 ticket 잡을 수 있나). `board.md` 는 이걸 렌더한 파생 대시보드라 git 에 없을 수 있다 — 파일로 보려면 `board.py refresh`.
    - [`.project_manager/wiki/status.md`](.project_manager/wiki/status.md) — 어디까지 됐나? (모듈 매트릭스 + 외부 의존성)
    - [`.project_manager/wiki/architecture.md`](.project_manager/wiki/architecture.md) — Layer / 파일 / 의존성 / 계약
    결정 근거는 [`.project_manager/wiki/decisions/`](.project_manager/wiki/decisions/).

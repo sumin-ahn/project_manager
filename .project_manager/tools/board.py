@@ -772,7 +772,7 @@ def refresh_board() -> None:
         "",
         "# Ticket Board",
         "",
-        "> 자동 생성 — `.project_manager/tools/board.py` 의 모든 변경 명령 끝에 갱신. 수동 편집 금지.",
+        "> 자동 생성 파생물 (git-untracked) — `board.py` 변경 명령마다 로컬 갱신 · `board.py refresh` 로 재생성. 단일 진실은 `tickets/`, 라이브 상태는 `board.py list`. 수동 편집 금지.",
         "> 작업 흐름: [`tickets/README.md`](tickets/README.md).",
         "",
     ]

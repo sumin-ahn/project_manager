@@ -5,3 +5,7 @@ __pycache__/
 # Claude Code 로컬 머신 override (harness 세션 중 자동 누적 권한 등).
 # 공통 settings 는 .claude/settings.json 에 (git tracked).
 .claude/settings.local.json
+
+# board.md 는 tickets/ 에서 재생성되는 파생 대시보드 — 커밋하지 않는다 (세션·clone 간 충돌 방지).
+# 없으면 `.project_manager/tools/board.py refresh` 로 재생성. 라이브 상태는 `board.py list`.
+.project_manager/wiki/board.md

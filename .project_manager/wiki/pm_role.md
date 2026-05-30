@@ -17,7 +17,7 @@ type: handoff
 2) .project_manager/wiki/pm_role.md   ← 정적 운영 매뉴얼 (이 파일)
 3) .project_manager/wiki/pm_state.md  ← 동적 상태 (세션 window / 진행 중 의사결정 / 남은 작업)
 4) .project_manager/wiki/status.md    ← 전체 상태
-5) .project_manager/wiki/board.md     ← 지금 누가 뭘 하고 있나
+5) board 상태 — `{{PY}} .project_manager/tools/board.py list` (board.md 는 파생 대시보드 · git-untracked)
 6) log/current.md 마지막 handoff entry — `{{PY}} .project_manager/tools/pm_log.py tail` 로 읽는다
    (full Read 금지·라인수 아님. 직전 PM 이 더 넓은 읽기 범위를 지정했으면 그 부분만 추가로)
 ```

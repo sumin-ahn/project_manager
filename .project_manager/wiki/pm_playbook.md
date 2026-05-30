@@ -211,7 +211,7 @@ PM 병목은 "PM 이 한 세션"이 아니라 한 PM 이 직렬로 떠안는 잡
 2) .project_manager/wiki/pm_role.md   ← 정적 운영 매뉴얼 (가장 중요)
 3) .project_manager/wiki/pm_state.md  ← 동적 상태 (세션 window / 진행 중 의사결정 / 남은 작업)
 4) .project_manager/wiki/status.md
-5) .project_manager/wiki/board.md
+5) board 상태 — `board.py list` (board.md 는 파생 대시보드 · git-untracked)
 6) .project_manager/wiki/log/current.md 마지막 handoff entry — `pm_log.py tail` 로 읽기
    (full Read 금지. 직전 PM 이 더 넓은 읽기 범위를 지정했으면 그 부분만 추가로)
 

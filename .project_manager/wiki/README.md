@@ -12,7 +12,7 @@
 | 알고 싶은 것 | 가야 할 곳 |
 |---|---|
 | **PM 세션이라면** (보드 운영 / 분할 / 위임) | [`pm_role.md`](pm_role.md) (정적 매뉴얼) + [`pm_state.md`](pm_state.md) (동적 상태) |
-| **지금 무슨 ticket 잡을까?** (구현 세션) | [`board.md`](board.md) (자동 갱신) + [`tickets/README.md`](tickets/README.md) (워크플로) |
+| **지금 무슨 ticket 잡을까?** (구현 세션) | `board.py list` (라이브) · `board.md` 는 파생 대시보드(git-untracked) + [`tickets/README.md`](tickets/README.md) (워크플로) |
 | 지금 어디까지 됐는가? (활성 모듈·테스트 수) | [`status.md`](status.md) (활성) + [`status_done.md`](status_done.md) (완성 모듈) |
 | 전체 아키텍처 + 모듈 의존성 | [`architecture.md`](architecture.md) |
 | 사양 (포맷·한도·인터페이스) 단일 진실 | [`specs/`](specs/) |

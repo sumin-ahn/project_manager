@@ -6,15 +6,15 @@
 
 - **디렉토리 = 상태.** 한 ticket 파일은 `open/`, `claimed/`, `blocked/`, `done/` 중 정확히 한 곳에 있다.
 - **`mv` 가 atomic 한 lock.** POSIX rename(2) 은 동일 파일시스템에서 atomic 이라, 두 세션이 동시에 claim 시도해도 한 쪽만 성공한다 (`.project_manager/tools/board.py claim` 이 wrapping).
-- **`board.md` 가 항상 최신.** `board.py` 명령마다 자동 refresh — 다른 세션은 `board.md` 만 보면 현재 상태 안다.
+- **`board.py list` 가 라이브 상태.** tickets/ 디렉토리가 단일 진실이고 `board.py list` 는 항상 그걸 직접 읽는다. `board.md` 는 `board.py` 명령마다 갱신되는 로컬 파생 대시보드(git-untracked) — clone 간 공유 안 됨.
 - **frontmatter 가 진실.** 본문 변경은 자유, 헤더는 `board.py` 가 관리.
 
 ## 워크플로
 
 ### 새 세션 시작 시
 ```bash
-# 1) 현재 상황 확인
-cat .project_manager/wiki/board.md
+# 1) 현재 상황 확인 (라이브 — board.md 파일 없어도 동작)
+{{PY}} .project_manager/tools/board.py list
 
 # 2) 세션 이름 정하기 (claim 의 --session 인자로 전달 — 없으면 hostname-pid 자동)
 ```
@@ -70,7 +70,7 @@ tickets/
 
 ## 충돌 회피
 
-- **세션 시작 전 `board.md` 확인** — 같은 파일을 건드리는 ticket 이 다른 세션에 claim 되어 있으면 다른 걸 골라라.
+- **세션 시작 전 `board.py list` 확인** — 같은 파일을 건드리는 ticket 이 다른 세션에 claim 되어 있으면 다른 걸 골라라.
 - **`touches:` 정확히 적기** — `git status` 가 회피의 마지막 보루.
 - **claim 후 진행 없으면** — 다른 세션이 `unclaim` 후 새로 claim 가능 (운영 가이드, 자동화 X).
 
