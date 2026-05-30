@@ -7,6 +7,10 @@ type: handoff-state
 
 # PM State — 동적 핸드오프 상태
 
+> ⚠️ **이 파일은 per-clone 로컬 (git-ignored) — `pm_state.template.md` 에서 `pm-init` 이 생성.**
+> 담는 건 **이 clone/PM 의 연속성**(세션 window · 내 진행 · 다음 액션)뿐. **프로젝트-전역 진실
+> (board·status·ADR·log)은 공유 채널에** — 여기 두면 다중 PM 에서 갈라진다.
+>
 > [`pm_role.md`](pm_role.md)(정적 운영 매뉴얼)에서 분리한 **휘발성 상태**. 매 핸드오프마다 바뀐다.
 > PM 세션은 정적 매뉴얼(pm_role.md)을 매번 정독하지 않아도, 이 파일만 보면 "지금 어디까지 왔나"를 안다.
 > 일부 절은 `/pm-handoff` (backbone `pm_handoff.py`)가 자동 갱신한다 — 아래 앵커·표 형식을 바꾸면 정규식도 같이.

@@ -209,7 +209,7 @@ PM 병목은 "PM 이 한 세션"이 아니라 한 PM 이 직렬로 떠안는 잡
 부트스트랩 (이 순서로):
 1) CLAUDE.md
 2) .project_manager/wiki/pm_role.md   ← 정적 운영 매뉴얼 (가장 중요)
-3) .project_manager/wiki/pm_state.md  ← 동적 상태 (세션 window / 진행 중 의사결정 / 남은 작업)
+3) .project_manager/wiki/pm_state.md  ← 동적 상태 (세션 window / 남은 작업) · **per-clone 로컬**(pm-init 이 template 생성)
 4) .project_manager/wiki/status.md
 5) board 상태 — `board.py list` (board.md 는 파생 대시보드 · git-untracked)
 6) .project_manager/wiki/log/current.md 마지막 handoff entry — `pm_log.py tail` 로 읽기

@@ -15,7 +15,7 @@ skill 호출 *전* PM 세션은 이미 다음을 읽어야 한다 (pm_role.md §
 
 1. `CLAUDE.md`
 2. `.project_manager/wiki/pm_role.md` (정적 운영 매뉴얼)
-3. `.project_manager/wiki/pm_state.md` (동적 상태 — 세션 window / 진행 중 의사결정 / 남은 작업)
+3. `.project_manager/wiki/pm_state.md` (동적 상태 — 세션 window / 남은 작업 · **per-clone 로컬**, pm-init 이 template 생성)
 4. `.project_manager/wiki/status.md`
 5. board 상태 — `{{PY}} .project_manager/tools/board.py list` (board.md 는 파생 대시보드 · git-untracked — skill 이 자동 측정)
 6. log/current.md 마지막 handoff entry — `{{PY}} .project_manager/tools/pm_log.py tail` 로 읽기 (full Read 금지·의미 단위. 직전 PM 이 더 넓은 범위 지정 시 그 부분만 추가)
