@@ -15,7 +15,7 @@ type: status
 
 **완성 모듈:** 0개 — 상세는 [`status_done.md`](status_done.md) (✅ 안정 모듈은 거기로 이동, 이 파일은 활성만 유지).
 
-**개발 작업 보드:** [`board.md`](board.md) — ticket 발행 현황의 단일 진실은 `board.md` (자동 생성). 멀티 세션 병렬 작업 가능. 워크플로는 [`tickets/README.md`](tickets/README.md).
+**개발 작업 보드:** ticket 발행 현황의 단일 진실은 `board.py list` (tickets/ 직접 읽음). `board.md` 는 파생 대시보드(git-untracked). 멀티 세션 병렬 작업 가능. 워크플로는 [`tickets/README.md`](tickets/README.md).
 
 ## 범례
 - ✅ 완성 + 테스트 통과
@@ -27,14 +27,18 @@ type: status
 
 ## 활성 모듈 매트릭스 (🟡 부분 / ⬜ 미구현 / 🔒 외부 대기)
 
+> **멀티-PM:** `area` 열 = 그 모듈을 소유한 영역 prefix(예 `PAY`). 각 영역 PM 은 *자기 행만*
+> 편집 → 서로 다른 hunk 라 git 이 대개 auto-merge. status.md 가 **공유 프로젝트 브리프**다
+> (pm_state 가 비운 프로젝트-전역 상태는 여기·board·ADR 로). 단일 PM 이면 area 열은 비워도 됨.
+
 <!-- 진행 중·미구현·외부 대기 모듈만 여기. ✅ 완성+안정 모듈은 status_done.md 로 옮긴다
      (wave-finish/handoff 시점). Layer/그룹별로 섹션을 나누고 섹션 끝마다 소계 행을 두면
      ticket_finish.py 의 --section 으로 자동 갱신된다. 비고는 1줄 — 전체 이력은 log + done ticket.
      ⚠️ ✅ 행이 누적되면 board.py lint 가 status_done.md archive 를 권고한다. -->
 
-| 모듈 | 파일 | 테스트 | 상태 | 비고 |
-|---|---|---:|:-:|---|
-| (예시) 핵심 모듈 | `core.py` | 0 | ⬜ | 첫 ticket 으로 구현 예정 |
+| area | 모듈 | 파일 | 테스트 | 상태 | 비고 |
+|:-:|---|---|---:|:-:|---|
+| (예시) PAY | 핵심 모듈 | `core.py` | 0 | ⬜ | 첫 ticket 으로 구현 예정 |
 
 ---
 
