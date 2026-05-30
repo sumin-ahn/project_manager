@@ -1,0 +1,5 @@
+# Append-only 운영 로그 — 여러 세션/clone 의 동시 append 가 git merge 에서 충돌하지 않도록
+# git 내장 union merge 드라이버를 쓴다 (양쪽 entry 를 모두 보존). 실증: 두 분기의 EOF append 가
+# 충돌 없이 합쳐짐. merge seam 의 전역 시간순은 best-effort — 정확 정렬이 필요해지면 entry
+# 앵커를 ISO timestamp 로 바꿔 재정렬한다.
+.project_manager/wiki/log/current.md merge=union
