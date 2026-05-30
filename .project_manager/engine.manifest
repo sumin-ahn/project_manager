@@ -1,0 +1,27 @@
+# engine.manifest — upstream(프레임워크) 소유 경로. `pm_update.py` 가 이 경로만 덮어쓴다(merge 아님).
+# 여기 없는 건 인스턴스 소유(상태: tickets/·status·log·decisions/*.md·areas.md…) 또는 per-clone
+# 로컬(board.md·pm_state·local.conf·.local) — pm_update 가 절대 건드리지 않음.
+# 한 줄 = 한 경로(파일/디렉토리), repo 루트 기준. '#' 주석. 디렉토리는 재귀 동기화.
+#
+# ⚠️ 커스터마이즈 가능한 엔진 문서(CLAUDE.md·pm_role.md·pm_playbook.md·README 스캐폴드·.gitignore)는
+#    여기서 제외 — 덮어쓰면 채택자 커스터마이즈 손실. overlay 메커니즘은 후속(decisions-needed D10).
+
+# ── 도구 (순수 엔진) ─────────────────────────────────────────────
+.project_manager/tools/board.py
+.project_manager/tools/pm_bootstrap.py
+.project_manager/tools/pm_handoff.py
+.project_manager/tools/pm_log.py
+.project_manager/tools/ticket_finish.py
+.project_manager/tools/pm_update.py
+
+# ── 템플릿 (도구가 소비) ─────────────────────────────────────────
+.project_manager/wiki/pm_state.template.md
+.project_manager/wiki/tickets/_template.md
+
+# ── 서브에이전트 · skill (엔진) ──────────────────────────────────
+.claude/agents
+.claude/skills
+
+# ── 설정 (엔진) ──────────────────────────────────────────────────
+.gitattributes
+.github/workflows/regression.yml
