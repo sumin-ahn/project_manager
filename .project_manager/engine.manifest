@@ -14,6 +14,10 @@
 .project_manager/tools/ticket_finish.py
 .project_manager/tools/pm_update.py
 
+# ── 방법론 문서 (엔진 · 프로젝트별 칸은 *.local.md / local.conf, manifest 밖) ──
+.project_manager/wiki/pm_role.md
+.project_manager/wiki/pm_playbook.md
+
 # ── 템플릿 (도구가 소비) ─────────────────────────────────────────
 .project_manager/wiki/pm_state.template.md
 .project_manager/wiki/tickets/_template.md

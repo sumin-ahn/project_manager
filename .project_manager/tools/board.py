@@ -498,7 +498,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     sess = args.session or f"{prefix.lower()}-pm"
     LOCAL_CONF.write_text(
         "# per-clone 설정 (git-ignored). pm-init 생성. clone 마다 다름.\n"
-        f"prefix={prefix}\nsession={sess}\n", encoding="utf-8")
+        f"prefix={prefix}\nsession={sess}\n"
+        "# 엔진 문서의 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
+        "py=python3\ntest_cmd=pytest -q\nproject_name=\n", encoding="utf-8")
     print(f"✓ local.conf: prefix={prefix} · session={sess}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
         PM_STATE_FILE.write_text(PM_STATE_TEMPLATE.read_text(encoding="utf-8"),
