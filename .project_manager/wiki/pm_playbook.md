@@ -199,6 +199,20 @@ PM 병목은 "PM 이 한 세션"이 아니라 한 PM 이 직렬로 떠안는 잡
   근거: 부트스트랩·도구 결함 1 turn fix 의 ROI 가 wave 의 marginal dev 위임
   보다 크다 — 다음 세션도 같은 비용을 그대로 물려받기 때문.
 
+## 프레임워크 갱신 (pm_update)
+
+upstream(프레임워크 reference)의 엔진 개선을 이 인스턴스로 당겨오는 **저빈도 유지보수 액션**.
+**메인테이너가 업그레이드당 1회** 실행 → 커밋 → push. 나머지 팀원은 `git pull` (per-clone 아님 — 그건 `board.py init`).
+
+1. upstream 체크아웃 확보 (reference repo 를 어딘가 clone/pull · v1 은 로컬 경로만).
+2. `{{PY}} .project_manager/tools/pm_update.py --from <upstream> --dry-run` → 바뀔 엔진 파일 검토.
+3. `--dry-run` 빼고 적용 (`--version vX` 로 `engine.version` 기록 가능).
+4. 엔진이 바뀌었으니 회귀 검증 — `{{PY}} .project_manager/tools/board.py regression run`.
+5. 엔진 변경 커밋 + push (공유 — 팀원은 `git pull` 로 받음).
+
+- 인스턴스 상태(board·status·log·tickets)·per-clone 로컬·커스터마이즈(`*.local.md`·루트 `CLAUDE.md`/`.gitignore`)는 **안 건드림**.
+- 새 upstream 엔진 *파일* 을 받으려면 인스턴스 `engine.manifest` 에 그 경로를 추가한다 (manifest 는 인스턴스 소유).
+
 ## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)
 
 핸드오프 절차 #5 에서 `/pm-handoff` 가 자동 출력 — 고정부 그대로 두고 `<...>` 만 채운다.

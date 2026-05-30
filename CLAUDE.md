@@ -81,6 +81,9 @@
 {{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint     # 의존성·thin-ticket 일관성 검사
 
+# 프레임워크 갱신 (메인테이너·업그레이드당 1회 — 절차는 pm_playbook §"프레임워크 갱신"):
+{{PY}} .project_manager/tools/pm_update.py --from <upstream-checkout> --dry-run   # 엔진만 당겨옴 → --dry-run 빼고 적용 → 검증 → 커밋·push
+
 # PM workflow 도구(pm_bootstrap·pm_handoff·ticket_finish)는 PM 세션 전용 — 용법·플래그·호출(/pm-*)의
 # 단일 진실은 pm_role.md §"skill 카탈로그" + 각 .claude/skills/pm-*/SKILL.md. 여기에 재나열하지 않는다.
 # log 관리 도구만 여기 (전용 skill 없음):
