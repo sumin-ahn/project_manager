@@ -5,9 +5,9 @@
 > command 를 **도메인 무관 템플릿**으로 추출한 것. 새 프로젝트가 이 디렉토리를
 > 복제하고 placeholder 만 채우면 같은 운영 프로세스를 그대로 쓸 수 있다.
 
-이 프레임워크는 Finance Agent 프로젝트(한·미 주식 자동매매 멀티 에이전트
-시스템)에서 160+개 ticket·22개 ADR 을 거치며 검증된 운영 계층을 추출한 것이다.
-"구조"와 "도메인 내용"이 처음부터 분리돼 설계됐기 때문에 이식 장벽이 낮다.
+이 프레임워크는 실전 멀티-에이전트 프로젝트에서 100+개 ticket·20+개 ADR 을 거치며
+검증된 운영 계층을 추출한 것이다. "구조"와 "도메인 내용"이 처음부터 분리돼
+설계됐기 때문에 이식 장벽이 낮다.
 
 ---
 
@@ -119,8 +119,8 @@ grep -rn '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='
 
 | 토큰 | 의미 | 예시 |
 |---|---|---|
-| `{{PROJECT_NAME}}` | 프로젝트 표시 이름 | `Finance Agent` |
-| `{{PROJECT_TAGLINE}}` | 한 줄 프로젝트 설명 | `한·미 주식 자동매매 멀티 에이전트 시스템` |
+| `{{PROJECT_NAME}}` | 프로젝트 표시 이름 | `My Project` |
+| `{{PROJECT_TAGLINE}}` | 한 줄 프로젝트 설명 | `한 줄 프로젝트 설명` |
 | `{{PROJECT_ROOT}}` | 프로젝트 루트 절대경로 | `/home/user/workspace/myproject` |
 | `{{PY}}` | Python 실행 prefix | `venv/bin/python` 또는 `python3` |
 | `{{TEST_CMD}}` | 전체 회귀 명령 | `venv/bin/python -m pytest tests/ -q` |
@@ -130,9 +130,9 @@ grep -rn '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='
 
 | 토큰 | 어디에 | 무엇을 채우나 |
 |---|---|---|
-| `{{PROJECT_CONSTRAINTS}}` | `CLAUDE.md`, `agents/developer.md`, `agents/code-reviewer.md`, `skills/pm-dev-delegate/SKILL.md` | 프로젝트의 **절대 위반 금지 제약**. 아키텍처 불변식·안전 경계 등. (finance 예: "결정론 코어 vs LLM 분석층 분리", "LLM 호출은 fail-soft") |
-| `{{PROTECTED_PATHS}}` | `agents/*.md`, `pm_role.md`, `skills/pm-wave-claim/SKILL.md` | 서브에이전트·PM 이 **건드리면 안 되는 파일/디렉토리**. (finance 예: `risk/limits.py` 같은 Tier 4 운영 config, immutable `raw/`) |
-| `{{USER_GATE_ITEMS}}` | `pm_role.md` | PM 자율 결정 밖 — **사용자 사전 동의가 필요한 행위**. (finance 예: 외부 비가역 행위, 유료 API 대량 호출) |
+| `{{PROJECT_CONSTRAINTS}}` | `CLAUDE.md`, `agents/developer.md`, `agents/code-reviewer.md`, `skills/pm-dev-delegate/SKILL.md` | 프로젝트의 **절대 위반 금지 제약**. 아키텍처 불변식·안전 경계 등. (예: "핵심 결정 로직 ↔ 비결정/LLM 계층 경계 분리", "외부 호출은 fail-soft") |
+| `{{PROTECTED_PATHS}}` | `agents/*.md`, `pm_role.md`, `skills/pm-wave-claim/SKILL.md` | 서브에이전트·PM 이 **건드리면 안 되는 파일/디렉토리**. (예: 운영 한도·안전 상수 config, immutable `raw/` 스냅샷) |
+| `{{USER_GATE_ITEMS}}` | `pm_role.md` | PM 자율 결정 밖 — **사용자 사전 동의가 필요한 행위**. (예: 외부 비가역 행위, 유료 API 대량 호출) |
 
 ---
 
@@ -222,7 +222,7 @@ board.py claim/complete 와 status.md·log/current.md 갱신은 **PM(orchestrato
 
 단, **자동화 대상은 개발·관리 프로세스** (ticket 운영·코드 구현·검토·회귀·
 세션 협업·PM 의사결정 흐름) **에 한정**. 도메인의 비가역·미션 결정 (예:
-금융이면 매매·한도·자본) 은 자동화 비대상 — 영구 사용자 게이트. 도입 프로젝트
+자본·안전 한도·외부 송신 같은 되돌릴 수 없는 행위) 은 자동화 비대상 — 영구 사용자 게이트. 도입 프로젝트
 의 `pm_role.md` §"사용자 게이트" / §"금지 (PM·사용자 단독 불가)" 가 그 경계를
 명시한다.
 

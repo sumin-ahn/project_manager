@@ -84,7 +84,7 @@ def _section_header_prefix(section: str) -> str:
     예:
       "개발 도구 (board.py + ...)" → "개발 도구"
       "파이프라인 / 운영"          → "파이프라인 / 운영"
-      "Layer 2 — 결정론 코어"      → "Layer 2 — 결정론 코어"
+      "Layer 2 — 핵심 엔진"        → "Layer 2 — 핵심 엔진"
     """
     paren_idx = section.find("(")
     if paren_idx != -1:

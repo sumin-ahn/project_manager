@@ -26,8 +26,8 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
 ### 3. 프로젝트 고유 제약
 {{PROJECT_CONSTRAINTS}}
 <!-- TODO: developer.md 와 동일한 프로젝트 제약. 검토자는 이 제약 위반을
-     must-fix 로 잡는다. 예시 (finance): 결정론 코어에 LLM 호출이 새지
-     않았는가 / LLM 래퍼가 fail-soft 인가 / 외부 데이터가 sanitize 됐는가.
+     must-fix 로 잡는다. 예시 (도메인 무관): 핵심 결정 로직에 외부·LLM 호출이 새지
+     않았는가 / 외부 래퍼가 fail-soft 인가 / 외부 입력이 sanitize 됐는가.
      제약이 없으면 이 절을 삭제. -->
 
 ### 4. 회귀
