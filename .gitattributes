@@ -3,3 +3,6 @@
 # 충돌 없이 합쳐짐. merge seam 의 전역 시간순은 best-effort — 정확 정렬이 필요해지면 entry
 # 앵커를 ISO timestamp 로 바꿔 재정렬한다.
 .project_manager/wiki/log/current.md merge=union
+
+# areas.md = 멀티-PM prefix 레지스트리 (append-only 등록) — 동시 등록이 충돌하지 않게 union.
+.project_manager/areas.md merge=union

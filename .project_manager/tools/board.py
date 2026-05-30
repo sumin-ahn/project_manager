@@ -34,6 +34,9 @@ LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
 TEMPLATE_FILE = TICKETS_DIR / "_template.md"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored): prefix, session
+AREAS_FILE = REPO / ".project_manager" / "areas.md"    # shared registry (committed, merge=union)
+PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"          # per-clone (git-ignored)
+PM_STATE_TEMPLATE = REPO / ".project_manager" / "wiki" / "pm_state.template.md"  # tracked skeleton
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 # Ideas have a simpler lifecycle than tickets — no claim/complete middle
 # states, just `open → promoted|killed`.
@@ -82,6 +85,43 @@ def id_prefix(override: str | None = None) -> str | None:
     if override:
         return override
     return local_config().get("prefix") or None
+
+
+_AREAS_ROW_RE = re.compile(r"^\|\s*([A-Za-z][\w-]*)\s*\|")
+
+
+def registered_prefixes() -> set[str]:
+    """Prefixes registered in areas.md (shared registry). Empty set if no registry.
+
+    The registry's *existence* is the multi-PM mode signal — when present,
+    `board.py new` requires a registered prefix (see cmd_new guard).
+    """
+    if not AREAS_FILE.exists():
+        return set()
+    out: set[str] = set()
+    for line in AREAS_FILE.read_text(encoding="utf-8").splitlines():
+        m = _AREAS_ROW_RE.match(line.strip())
+        if m and m.group(1).lower() != "prefix":
+            out.add(m.group(1))
+    return out
+
+
+def areas_append(prefix: str, area: str, owner: str) -> None:
+    """Register a prefix in areas.md (append-only; create with header if missing).
+
+    Append-only + `merge=union` (.gitattributes) → concurrent registrations from
+    different clones never conflict.
+    """
+    if not AREAS_FILE.exists():
+        AREAS_FILE.write_text(
+            "# Area Registry\n\n"
+            "> prefix → area → owner. 멀티-PM ID 네임스페이스의 단일 진실. "
+            "append-only (`merge=union`).\n"
+            "> `board.py init` 이 등록. prefix 유일성 = race-free ID 의 전제.\n\n"
+            "| prefix | area | owner |\n|---|---|---|\n",
+            encoding="utf-8")
+    with AREAS_FILE.open("a", encoding="utf-8") as f:
+        f.write(f"| {prefix} | {area} | {owner} |\n")
 
 
 def now_utc() -> str:
@@ -360,8 +400,51 @@ def cmd_unblock(args: argparse.Namespace) -> int:
     return 0
 
 
+INIT_GUIDE = """\
+─ pm-init 완료 — 이 clone 의 멀티-PM 등록 끝 ─
+  3계층: 엔진(upstream) / 공유상태(main: board·status·log·ADR) / per-clone 로컬(pm_state·local.conf · git-ignored)
+  규칙: 내구 진실은 공유 채널에만 · pm_state 는 버려도 되는 로컬 · 공유 파일 직접 난편집 금지
+  ID:   네 ticket 은 `board.py new` 로 T-{prefix}-NNN 발행 (네임스페이스라 영역 간 ID 충돌 없음)
+"""
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """멀티-PM clone 등록 (clone 당 1회): prefix 레지스트리 + local.conf + pm_state."""
+    prefix = args.prefix
+    if prefix in registered_prefixes():
+        print(f"prefix {prefix!r} 이미 등록됨 (areas.md) — local.conf 만 갱신.")
+    else:
+        if not args.area:
+            print(f"새 prefix {prefix!r} 등록엔 --area <설명> 필요.", file=sys.stderr)
+            return 1
+        owner = args.owner or session_name()
+        areas_append(prefix, args.area, owner)
+        print(f"✓ areas.md 등록: {prefix} | {args.area} | {owner}")
+    sess = args.session or f"{prefix.lower()}-pm"
+    LOCAL_CONF.write_text(
+        "# per-clone 설정 (git-ignored). pm-init 생성. clone 마다 다름.\n"
+        f"prefix={prefix}\nsession={sess}\n", encoding="utf-8")
+    print(f"✓ local.conf: prefix={prefix} · session={sess}")
+    if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
+        PM_STATE_FILE.write_text(PM_STATE_TEMPLATE.read_text(encoding="utf-8"),
+                                 encoding="utf-8")
+        print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
+    print(INIT_GUIDE.format(prefix=prefix))
+    return 0
+
+
 def cmd_new(args: argparse.Namespace) -> int:
-    tid = _next_id(id_prefix(getattr(args, "prefix", None)))
+    prefix = id_prefix(getattr(args, "prefix", None))
+    if AREAS_FILE.exists():  # multi-PM mode (registry exists) → registered prefix 필수
+        if not prefix:
+            print("멀티-PM 모드(areas.md 존재) — prefix 필요. 먼저 "
+                  "`board.py init --prefix <PFX> --area <name>`.", file=sys.stderr)
+            return 1
+        if prefix not in registered_prefixes():
+            print(f"prefix {prefix!r} 미등록 (areas.md). `board.py init` 로 등록하거나 "
+                  "등록된 prefix 사용.", file=sys.stderr)
+            return 1
+    tid = _next_id(prefix)
     slug = _slugify(args.title)
     filename = f"{tid}-{slug}.md"
 
@@ -932,6 +1015,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prefix", help="ID namespace prefix (default: local.conf "
                    "prefix / none → legacy T-NNNN)")
     p.set_defaults(fn=cmd_new)
+
+    p = sub.add_parser("init", help="멀티-PM clone 등록 (prefix·local.conf·pm_state, clone 당 1회)")
+    p.add_argument("--prefix", required=True, help="이 clone 의 ID 네임스페이스 (예: PAY)")
+    p.add_argument("--area", help="영역 설명 (새 prefix 최초 등록 시 필요)")
+    p.add_argument("--owner", help="소유자 (기본: session 이름)")
+    p.add_argument("--session", help="세션 이름 (기본: <prefix>-pm)")
+    p.set_defaults(fn=cmd_init)
 
     p = sub.add_parser("refresh", help="regenerate board.md")
     p.set_defaults(fn=cmd_refresh)
