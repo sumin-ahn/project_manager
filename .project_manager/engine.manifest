@@ -23,5 +23,6 @@
 .claude/skills
 
 # ── 설정 (엔진) ──────────────────────────────────────────────────
+.project_manager/.gitignore
 .gitattributes
 .github/workflows/regression.yml
