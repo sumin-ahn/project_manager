@@ -33,6 +33,7 @@ BOARD_FILE = REPO / ".project_manager" / "wiki" / "board.md"
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
 TEMPLATE_FILE = TICKETS_DIR / "_template.md"
+LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored): prefix, session
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 # Ideas have a simpler lifecycle than tickets — no claim/complete middle
 # states, just `open → promoted|killed`.
@@ -41,13 +42,46 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 
 # ── utilities ──────────────────────────────────────────────────────────
 
+def local_config() -> dict[str, str]:
+    """Per-clone local config (`.project_manager/local.conf`, git-ignored).
+
+    Plain `KEY=value` lines; `#` comments and blank lines ignored. Missing → {}.
+    Holds per-clone settings that must NOT be shared via git (prefix, session) —
+    see the multi-PM model. Written by `pm-init`.
+    """
+    conf: dict[str, str] = {}
+    if not LOCAL_CONF.exists():
+        return conf
+    for line in LOCAL_CONF.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        conf[key.strip()] = val.strip()
+    return conf
+
+
 def session_name(override: str | None = None) -> str:
     if override:
         return override
     env = os.environ.get("CLAUDE_SESSION_NAME")
     if env:
         return env
+    sess = local_config().get("session")
+    if sess:
+        return sess
     return f"{socket.gethostname()}-{os.getpid()}"
+
+
+def id_prefix(override: str | None = None) -> str | None:
+    """Resolve ticket-ID namespace prefix (multi-PM areas).
+
+    Order: override > local.conf `prefix=` > None. None → legacy `T-NNNN`
+    (graceful / backward compatible). Non-None → `T-<PREFIX>-NNN` namespace.
+    """
+    if override:
+        return override
+    return local_config().get("prefix") or None
 
 
 def now_utc() -> str:
@@ -137,7 +171,17 @@ def next_numeric_id(base_dir: Path, statuses: tuple[str, ...],
     return max_id + 1
 
 
-def _next_id() -> str:
+def _next_id(prefix: str | None = None) -> str:
+    """Next ticket ID. Namespaced per prefix so concurrent areas never collide.
+
+    prefix=None → legacy `T-NNNN` (4-digit). prefix="PAY" → `T-PAY-NNN` (3-digit),
+    counted independently (scans only `T-PAY-*`). The legacy regex `T-(\\d+)-`
+    never matches a prefixed file, so the two namespaces stay disjoint.
+    """
+    if prefix:
+        n = next_numeric_id(TICKETS_DIR, STATUS_DIRS,
+                            f"T-{prefix}-*.md", rf"T-{re.escape(prefix)}-(\d+)-")
+        return f"T-{prefix}-{n:03d}"
     n = next_numeric_id(TICKETS_DIR, STATUS_DIRS, "T-*.md", r"T-(\d+)-")
     return f"T-{n:04d}"
 
@@ -317,7 +361,7 @@ def cmd_unblock(args: argparse.Namespace) -> int:
 
 
 def cmd_new(args: argparse.Namespace) -> int:
-    tid = _next_id()
+    tid = _next_id(id_prefix(getattr(args, "prefix", None)))
     slug = _slugify(args.title)
     filename = f"{tid}-{slug}.md"
 
@@ -885,6 +929,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tag", help="comma-separated tags")
     p.add_argument("--estimate", choices=["small", "medium", "large"],
                    default="small")
+    p.add_argument("--prefix", help="ID namespace prefix (default: local.conf "
+                   "prefix / none → legacy T-NNNN)")
     p.set_defaults(fn=cmd_new)
 
     p = sub.add_parser("refresh", help="regenerate board.md")

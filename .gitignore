@@ -13,3 +13,6 @@ __pycache__/
 # pm_state.md = per-clone 로컬 핸드오프 상태 — 커밋 안 함 (clone 마다 다르고 공유 불필요).
 # pm-init 이 pm_state.template.md 에서 생성. 내구적 진실은 공유 채널(board/status/ADR/log)에.
 .project_manager/wiki/pm_state.md
+
+# local.conf = per-clone 설정 (prefix·session) — clone 마다 다르니 커밋 안 함. pm-init 이 생성.
+.project_manager/local.conf
