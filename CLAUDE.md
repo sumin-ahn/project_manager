@@ -34,7 +34,7 @@
 - `areas.md`(공유 레지스트리) prefix 등록 + `local.conf`(per-clone·git-ignored) 생성 + `pm_state.md` 로컬 생성.
 - 이후 `board.py new` 는 `T-PAY-NNN` 으로 발행 (영역별 네임스페이스 → 동시 발행 ID 충돌 없음).
 - **3계층:** 엔진(upstream) / 공유상태(main: board·status·log·ADR) / per-clone 로컬(pm_state·local.conf).
-- 단일 PM(개인/toy)이면 init 불필요 — `board.py new` 가 legacy `T-NNNN` 발행 (graceful).
+- **솔로(개인/toy):** `board.py init` (prefix 없이) → 솔로 setup(pm_state·pre-push 회귀 훅·legacy `T-NNNN`, areas.md 안 만듦). 안 해도 `board.py new` 는 동작(graceful).
 
 ## 작업이 끝나면
 

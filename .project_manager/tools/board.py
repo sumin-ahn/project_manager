@@ -514,39 +514,50 @@ def cmd_unblock(args: argparse.Namespace) -> int:
 
 
 INIT_GUIDE = """\
-─ pm-init 완료 — 이 clone 의 멀티-PM 등록 끝 ─
+─ init 완료 — 이 clone setup 끝 ({mode}) ─
   3계층: 엔진(upstream) / 공유상태(main: board·status·log·ADR) / per-clone 로컬(pm_state·local.conf · git-ignored)
   규칙: 내구 진실은 공유 채널에만 · pm_state 는 버려도 되는 로컬 · 공유 파일 직접 난편집 금지
-  ID:   네 ticket 은 `board.py new` 로 T-{prefix}-NNN 발행 (네임스페이스라 영역 간 ID 충돌 없음)
+  ID:   `board.py new` 로 {idfmt} 발행
 """
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    """멀티-PM clone 등록 (clone 당 1회): prefix 레지스트리 + local.conf + pm_state."""
+    """clone 당 1회 setup. --prefix 있으면 팀(멀티-PM 등록), 없으면 솔로.
+
+    공통: local.conf + pm_state(template) + pre-push 회귀 훅.
+    팀만: areas.md 레지스트리 등록 + prefix(→ T-PREFIX-NNN·멀티-PM 가드 활성).
+    솔로: areas.md 안 만듦 → 가드 off → legacy T-NNNN.
+    """
     prefix = args.prefix
-    if prefix in registered_prefixes():
-        print(f"prefix {prefix!r} 이미 등록됨 (areas.md) — local.conf 만 갱신.")
-    else:
-        if not args.area:
-            print(f"새 prefix {prefix!r} 등록엔 --area <설명> 필요.", file=sys.stderr)
-            return 1
-        owner = args.owner or session_name()
-        areas_append(prefix, args.area, owner)
-        print(f"✓ areas.md 등록: {prefix} | {args.area} | {owner}")
-    sess = args.session or f"{prefix.lower()}-pm"
-    LOCAL_CONF.write_text(
-        "# per-clone 설정 (git-ignored). pm-init 생성. clone 마다 다름.\n"
-        f"prefix={prefix}\nsession={sess}\n"
-        "# 엔진 문서의 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
-        "py=python3\ntest_cmd=pytest -q\nproject_name=\n", encoding="utf-8")
-    print(f"✓ local.conf: prefix={prefix} · session={sess}")
+    team = bool(prefix)
+    if team:
+        if prefix in registered_prefixes():
+            print(f"prefix {prefix!r} 이미 등록됨 (areas.md) — local.conf 만 갱신.")
+        else:
+            if not args.area:
+                print(f"새 prefix {prefix!r} 등록엔 --area <설명> 필요.", file=sys.stderr)
+                return 1
+            owner = args.owner or session_name()
+            areas_append(prefix, args.area, owner)
+            print(f"✓ areas.md 등록: {prefix} | {args.area} | {owner}")
+    sess = args.session or (f"{prefix.lower()}-pm" if team else "pm")
+    conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
+    if team:
+        conf += f"prefix={prefix}\n"
+    conf += (f"session={sess}\n"
+             "# 엔진 문서 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
+             "py=python3\ntest_cmd=pytest -q\nproject_name=\n")
+    LOCAL_CONF.write_text(conf, encoding="utf-8")
+    print(f"✓ local.conf: {('prefix=' + prefix + ' · ') if team else ''}session={sess}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
         PM_STATE_FILE.write_text(PM_STATE_TEMPLATE.read_text(encoding="utf-8"),
                                  encoding="utf-8")
         print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
     if install_pre_push_hook():
         print("✓ pre-push 회귀 게이트 훅 설치 (green 회귀만 push)")
-    print(INIT_GUIDE.format(prefix=prefix))
+    mode = f"팀 · {prefix}" if team else "솔로"
+    idfmt = f"T-{prefix}-NNN" if team else "T-NNNN (legacy)"
+    print(INIT_GUIDE.format(mode=mode, idfmt=idfmt))
     return 0
 
 
@@ -1133,9 +1144,9 @@ def build_parser() -> argparse.ArgumentParser:
                    "prefix / none → legacy T-NNNN)")
     p.set_defaults(fn=cmd_new)
 
-    p = sub.add_parser("init", help="멀티-PM clone 등록 (prefix·local.conf·pm_state, clone 당 1회)")
-    p.add_argument("--prefix", required=True, help="이 clone 의 ID 네임스페이스 (예: PAY)")
-    p.add_argument("--area", help="영역 설명 (새 prefix 최초 등록 시 필요)")
+    p = sub.add_parser("init", help="clone 당 1회 setup (솔로/팀) — pm_state·local.conf·pre-push 훅")
+    p.add_argument("--prefix", help="팀(멀티-PM) ID 네임스페이스 (예: PAY). 생략 = 솔로(legacy T-NNNN)")
+    p.add_argument("--area", help="영역 설명 (팀: 새 prefix 최초 등록 시 필요)")
     p.add_argument("--owner", help="소유자 (기본: session 이름)")
     p.add_argument("--session", help="세션 이름 (기본: <prefix>-pm)")
     p.set_defaults(fn=cmd_init)
