@@ -1,0 +1,4 @@
+# flaky test quarantine — 여기 적힌 pytest node id 는 회귀에서 --deselect (push 게이트 보호).
+# 한 줄 = 한 id. '#' 주석. 인스턴스 소유(프로젝트별·manifest 밖). 예:
+#   tests/pay/test_charge.py::test_flaky_timeout   2026-05-30 간헐 timeout · 추적 T-PAY-099
+# 격리는 임시 — 근본 원인 ticket 을 같이 발행할 것.

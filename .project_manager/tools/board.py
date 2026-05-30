@@ -168,17 +168,55 @@ def _test_cmd(override: str | None) -> str:
     return override or local_config().get("test_cmd") or "pytest -q"
 
 
+def _ticket_touches(tid: str) -> list[str]:
+    try:
+        _status, path = find_ticket(tid)
+    except FileNotFoundError:
+        return []
+    fm, _ = load_ticket(path)
+    return list(fm.get("touches") or [])
+
+
+def _scope_args(touches: list[str]) -> str:
+    """touches → pytest -k 선택식 (파일 stem 기반). 비면 '' (스코프 없음 = full)."""
+    stems = sorted({Path(t).stem for t in touches
+                    if t.strip() and Path(t).stem not in ("", "__init__")})
+    return f'-k "{" or ".join(stems)}"' if stems else ""
+
+
+def _quarantine_args() -> str:
+    """quarantine.txt(있으면)의 test node id 를 --deselect 로. flaky 격리 (full 게이트 보호)."""
+    q = REPO / ".project_manager" / "quarantine.txt"
+    if not q.exists():
+        return ""
+    ids = [ln.strip() for ln in q.read_text(encoding="utf-8").splitlines()
+           if ln.strip() and not ln.startswith("#")]
+    return " ".join(f"--deselect {i}" for i in ids)
+
+
 def cmd_regression(args: argparse.Namespace) -> int:
     """run = 측정+기록(HEAD 키), check = HEAD 가 green 인지 (pre-push 훅이 호출)."""
     if args.action == "run":
-        cmd = _test_cmd(args.cmd)
+        touches = (_ticket_touches(args.ticket) if getattr(args, "ticket", None)
+                   else (args.touches.split(",") if getattr(args, "touches", None) else []))
+        scoped = bool(touches)
+        parts = [_test_cmd(args.cmd)]
+        if scoped:
+            parts.append(_scope_args(touches))
+        parts.append(_quarantine_args())
+        cmd = " ".join(p for p in parts if p)
         print(f"regression: $ {cmd}")
         rc = subprocess.run(cmd, shell=True, cwd=str(REPO)).returncode
         status = "pass" if rc in (0, 5) else "fail"  # pytest rc5 = no tests collected
+        if scoped:
+            # 스코프 실행 = dev 빠른 피드백 (advisory). full 만 push 게이트 → 게이트 플래그 안 씀.
+            print(f"regression(scoped, {len(touches)} touches): {status} (rc={rc}) "
+                  "— dev 피드백 · push 게이트 아님")
+            return 0 if status == "pass" else 1
         LOCAL_DIR.mkdir(parents=True, exist_ok=True)
         REGRESSION_FLAG.write_text(json.dumps(
-            {"head": _git_head(), "status": status, "rc": rc, "ts": now_utc()}),
-            encoding="utf-8")
+            {"head": _git_head(), "status": status, "rc": rc, "scope": "full",
+             "ts": now_utc()}), encoding="utf-8")
         print(f"regression: {status} (rc={rc}) @ {_git_head()[:8] or '?'}")
         return 0 if status == "pass" else 1
     # action == "check" — pre-push 게이트
@@ -1106,6 +1144,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="회귀 게이트 (run=측정·기록 / check=HEAD green 검증·pre-push 훅용)")
     p.add_argument("action", choices=["run", "check"])
     p.add_argument("--cmd", help="테스트 명령 (기본: local.conf test_cmd / pytest -q)")
+    p.add_argument("--ticket", help="이 ticket 의 touches 로 스코프 (dev 빠른 루프·advisory)")
+    p.add_argument("--touches", help="comma-separated 파일로 스코프 (advisory)")
     p.set_defaults(fn=cmd_regression)
 
     p = sub.add_parser("refresh", help="regenerate board.md")
