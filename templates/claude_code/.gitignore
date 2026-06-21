@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Claude Code 로컬 머신 override (harness 세션 중 자동 누적 권한 등).
+# 공통 settings 는 .claude/settings.json 에 (git tracked).
+.claude/settings.local.json
+
+# multi-PM 우산 풀 잔재 (ADR-0011 — repo add 의 bare .git 원·worktree add 의 슬롯은 per-clone·미추적).
+.repos/
+work/
+
+# 프레임워크 엔진 ignore 규칙(board.md·pm_state·local.conf·.local)은
+# .project_manager/.gitignore 에 (nested · engine.manifest 로 sync). 이 루트 파일은 인스턴스 소유.

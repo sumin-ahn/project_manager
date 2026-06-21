@@ -1,0 +1,3 @@
+# Dev/test dependencies. 런타임 의존을 포함한 뒤 테스트 러너만 추가한다.
+-r requirements.txt
+pytest

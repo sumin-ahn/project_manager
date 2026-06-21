@@ -1,0 +1,14 @@
+# 프레임워크 엔진 ignore 규칙 (nested · engine.manifest 로 sync).
+# 경로는 이 디렉토리(.project_manager/) 기준. 인스턴스 고유 ignore 는 루트 .gitignore 에.
+
+# board.md = tickets/ 에서 재생성되는 파생 대시보드 (board.py refresh). clone 간 공유 안 함.
+wiki/board.md
+
+# pm_state.md = per-clone 로컬 핸드오프 상태 (pm-init 이 pm_state.template.md 에서 생성).
+wiki/pm_state.md
+
+# local.conf = per-clone 설정 (prefix·session). pm-init 이 생성.
+local.conf
+
+# .local/ = per-clone 스크래치 (회귀 게이트 플래그 등).
+.local/

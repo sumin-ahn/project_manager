@@ -1,0 +1,250 @@
+"""board.py CP949/Windows 하드닝 단위 테스트 (T-0017).
+
+한국어 Windows(기본 로케일 cp949) + Python 3.12 에서 board.py 가 추가 환경변수 없이
+동작해야 한다. 이 테스트들은 *수정 전 코드에서 실패* 하도록 설계됐다 — ambient
+PYTHONUTF8 가 버그를 가리지 않게, 파일 I/O 단언은 (locale 에 의존하지 않고) write/read
+호출에 `encoding="utf-8"` 가 명시됐는지를 직접 검사한다.
+
+도구가 패키지가 아니므로 importlib 로 경로 로드한다(test_portability 와 동일).
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+TOOLS = REPO / ".project_manager" / "tools"
+
+# em-dash(U+2014) + 이모지 + 한글 — cp949 로는 인코딩 불가. 실 ticket 본문의 재현.
+HARD_CONTENT = "결정 — 외부 전송 발생 ✓ ✅ 🟡 🔴 — 끝"
+
+
+def _load(name: str):
+    spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def board():
+    return _load("board")
+
+
+# ── C1: load_ticket / dump_ticket round-trip (em-dash + 이모지) ──────────────
+
+def test_dump_load_round_trip_em_dash_and_emoji(board, tmp_path):
+    """`—`(U+2014)+이모지+한글 ticket 을 dump→load 했을 때 내용이 보존되고, 디스크에
+    실제 UTF-8 바이트로 기록되는지. (cp949 기본이면 dump 가 UnicodeEncodeError 로 죽는다.)
+    """
+    path = tmp_path / "T-9999-hard.md"
+    fm = {"id": "T-9999", "title": HARD_CONTENT, "status": "open"}
+    body = f"# 본문\n{HARD_CONTENT}\n"
+
+    board.dump_ticket(path, fm, body)
+
+    # 디스크 바이트가 UTF-8 인지 — cp949 로 적혔다면 utf-8 decode 가 깨진다.
+    raw = path.read_bytes()
+    assert HARD_CONTENT.encode("utf-8") in raw
+
+    fm2, body2 = board.load_ticket(path)
+    assert fm2["title"] == HARD_CONTENT
+    assert body2 == body
+
+
+def test_dump_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
+    """dump_ticket 이 write_text 에 encoding='utf-8' 를 명시하는지 직접 검증.
+
+    ambient PYTHONUTF8 가 cp949 버그를 가려도 이 단언은 통과하지 못한다 —
+    수정 전 코드(encoding 누락)에서 captured['encoding'] 은 None.
+    """
+    captured: dict = {}
+    orig = Path.write_text
+
+    def spy(self, data, *args, **kwargs):
+        if self.name.endswith(".md") and "T-9999" in self.name:
+            captured["encoding"] = kwargs.get("encoding")
+        return orig(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", spy)
+    board.dump_ticket(tmp_path / "T-9999-x.md", {"id": "T-9999"}, "body")
+    assert captured.get("encoding") == "utf-8"
+
+
+def test_load_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
+    """load_ticket 이 read_text 에 encoding='utf-8' 를 명시하는지 직접 검증."""
+    path = tmp_path / "T-9999-y.md"
+    path.write_text("---\nid: T-9999\n---\nbody\n", encoding="utf-8")
+
+    captured: dict = {}
+    orig = Path.read_text
+
+    def spy(self, *args, **kwargs):
+        if self.name == "T-9999-y.md":
+            captured["encoding"] = kwargs.get("encoding")
+        return orig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", spy)
+    board.load_ticket(path)
+    assert captured.get("encoding") == "utf-8"
+
+
+# ── C6: prompt_external_review_optin — 비대화/EOF stdin 에서 아무것도 안 씀 ──
+
+def _isolated_local_conf(board, monkeypatch, tmp_path) -> Path:
+    """LOCAL_CONF 를 tmp 로 격리하고 빈 상태(미결정)로 둔다."""
+    conf = tmp_path / "local.conf"
+    monkeypatch.setattr(board, "LOCAL_CONF", conf)
+    return conf
+
+
+def test_prompt_optin_writes_nothing_when_non_tty(board, monkeypatch, tmp_path):
+    """비대화형(isatty False) → 묻지 않고 반환, local.conf 에 아무것도 안 씀."""
+    conf = _isolated_local_conf(board, monkeypatch, tmp_path)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: False)
+
+    board.prompt_external_review_optin()
+
+    assert not conf.exists() or "external_review_enabled" not in conf.read_text(encoding="utf-8")
+
+
+def test_prompt_optin_writes_nothing_on_eof_under_tty(board, monkeypatch, tmp_path):
+    """isatty=True 인데 input() 이 EOFError (Windows-under-pytest 재현) → 아무것도 안 씀.
+
+    수정 전 코드는 answer='' 로 떨어져 external_review_enabled=false 를 기록했다 —
+    사용자의 기존 true 결정을 덮어 preservation 을 깨뜨림.
+    """
+    conf = _isolated_local_conf(board, monkeypatch, tmp_path)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+
+    def _raise_eof(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _raise_eof)
+
+    board.prompt_external_review_optin()
+
+    assert not conf.exists() or "external_review_enabled" not in conf.read_text(encoding="utf-8")
+
+
+def test_prompt_optin_does_not_clobber_existing_true(board, monkeypatch, tmp_path):
+    """이미 external_review_enabled 가 있으면(여기선 true) EOF 경로로도 건드리지 않음."""
+    conf = _isolated_local_conf(board, monkeypatch, tmp_path)
+    conf.write_text("external_review_enabled=true\n", encoding="utf-8")
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": (_ for _ in ()).throw(EOFError))
+
+    board.prompt_external_review_optin()
+
+    text = conf.read_text(encoding="utf-8")
+    assert "external_review_enabled=true" in text
+    assert "external_review_enabled=false" not in text
+
+
+# ── T-0071: PM_NONINTERACTIVE 명시 신호 우선 (isatty 신뢰불가 함정 회피) ──
+
+@pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on"])
+def test_prompt_optin_skips_when_pm_noninteractive_truthy(
+    board, monkeypatch, tmp_path, val
+):
+    """PM_NONINTERACTIVE truthy → isatty=True(신뢰불가 DEVNULL 흉내)여도 묻지 않고 skip.
+
+    Windows DEVNULL 의 isatty() 가 True 로 거짓-보고하는 함정을 흉내낸다 — env 신호가
+    그걸 이겨 input() 을 절대 안 부르고 local.conf 에 아무것도 안 쓴다.
+    """
+    conf = _isolated_local_conf(board, monkeypatch, tmp_path)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)  # 거짓 tty 보고
+    monkeypatch.setenv("PM_NONINTERACTIVE", val)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt="": pytest.fail("PM_NONINTERACTIVE 인데 input() 호출됨 — skip 위반."),
+    )
+
+    board.prompt_external_review_optin()
+
+    assert not conf.exists() or "external_review_enabled" not in conf.read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("val", ["", "0", "false", "no"])
+def test_prompt_optin_falsy_pm_noninteractive_preserves_isatty_path(
+    board, monkeypatch, tmp_path, val
+):
+    """PM_NONINTERACTIVE 빈/falsy → 기존 isatty 폴백 보존(설정 안 한 것과 동일).
+
+    여기선 isatty=True + input 이 정상 'y' → 기록까지 진행해 isatty 경로가 살아있음을 친다.
+    """
+    conf = _isolated_local_conf(board, monkeypatch, tmp_path)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setenv("PM_NONINTERACTIVE", val)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+
+    board.prompt_external_review_optin()
+
+    assert "external_review_enabled=true" in conf.read_text(encoding="utf-8")
+
+
+def test_prompt_optin_no_env_preserves_non_tty_skip(board, monkeypatch, tmp_path):
+    """PM_NONINTERACTIVE 미설정 + 비-tty → 기존 isatty 폴백대로 skip(무기록)."""
+    conf = _isolated_local_conf(board, monkeypatch, tmp_path)
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: False)
+
+    board.prompt_external_review_optin()
+
+    assert not conf.exists() or "external_review_enabled" not in conf.read_text(
+        encoding="utf-8"
+    )
+
+
+# ── C5: pre-push 훅 본문이 탐지 인터프리터를 쓰는지 (bare 'python3' 하드코딩 아님) ──
+
+def test_hook_body_uses_detected_interpreter(board, monkeypatch, tmp_path):
+    """훅 본문이 _detect_py() 결과를 주입하는지 — Windows 흔한 'python' 시나리오로 검증.
+
+    수정 전 코드는 'python3' 를 하드코딩해 Windows 에서 깨진다. python 만 PATH 에 있는
+    환경을 흉내내면, 고친 코드는 'python' 을 쓰고 bare 'python3' 토큰은 안 나온다.
+    """
+    import re
+
+    hooks = tmp_path / "hooks"
+    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
+    monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
+    # python3 부재·python 존재 → _detect_py() == 'python'.
+    monkeypatch.setattr(
+        board.shutil, "which",
+        lambda cmd: r"C:\Python\python.exe" if cmd == "python" else None,
+    )
+
+    assert board.install_pre_push_hook() is True
+
+    body = (hooks / "pre-push").read_text(encoding="utf-8")
+    assert "python .project_manager/tools/board.py regression" in body
+    # 명령 토큰으로서의 bare 'python3' 는 없어야 한다 (주석 문구의 .py 경로는 무관).
+    assert not re.search(r"(?<![\w.])python3\s+\.project_manager", body)
+
+
+def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
+    """hook.write_text 에 encoding='utf-8' 가 명시됐는지 직접 검증 (주석에 한글 포함)."""
+    hooks = tmp_path / "hooks"
+    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
+    monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
+    monkeypatch.setattr(board.shutil, "which", lambda cmd: "/usr/bin/python3" if cmd == "python3" else None)
+
+    captured: dict = {}
+    orig = Path.write_text
+
+    def spy(self, data, *args, **kwargs):
+        if self.name == "pre-push":
+            captured["encoding"] = kwargs.get("encoding")
+        return orig(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", spy)
+    board.install_pre_push_hook()
+    assert captured.get("encoding") == "utf-8"

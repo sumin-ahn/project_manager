@@ -1,0 +1,3 @@
+# Runtime dependencies — board.py / ticket_finish.py / pm_*.py 가 frontmatter 파싱에 사용.
+# 느슨한 핀: 프레임워크는 yaml 기본 API(safe_load/safe_dump)만 사용.
+PyYAML>=6

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // ctx 정지-핸드오프 (T-0014·설계 T-0012): lossy 자동 컴팩션 차단 — plugins/ctx-guard.js 의
+  // 임계 정지(잔여 ≤ stop_pct)가 컴팩션보다 먼저 오게 한다. 컴팩션 도달 시 컨텍스트가 손실되며
+  // 핸드오프 박제 없이 진행되므로, 자동 컴팩션을 끄고 우리 정지·핸드오프로 대체한다.
+  // (토큰추적·넛지·정지·pm_handoff 트리거는 .opencode/plugins/ctx-guard.js 가 autoload 로 담당.)
+  "compaction": {
+    "auto": false
+  },
+  // 위험 bash 명령 기본 가드 (claude 어댑터 .claude/settings.json deny 미러링 + opencode 추가).
+  // 단일 진실 = 이 project config. agents/*.md 도 같은 패턴맵을 명시(coarse "allow"
+  // override 차단 — opencode 는 permission 을 룰 리스트로 평탄화·누적하므로 agent 가
+  // bash: "allow" 만 주면 deny 룰 뒤에 allow * 가 append 돼 매칭 규칙에 따라 우회될 수
+  // 있다. agents 도 패턴맵으로 명시하면 어떤 매칭 규칙에서도 deny 가 마지막에 보존된다).
+  // 채택자는 프로젝트에서 이 가드를 완화할 수 있다 (deny → ask/allow).
+  "permission": {
+    "bash": {
+      "*": "allow",
+      "rm -rf *": "deny",
+      "git push --force*": "deny",
+      "git push -f*": "deny",
+      "git clean -f*": "deny",
+      "git reset --hard*": "ask"
+    }
+  }
+}

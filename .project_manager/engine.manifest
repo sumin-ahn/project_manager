@@ -1,0 +1,51 @@
+# engine.manifest — upstream(프레임워크) 소유 경로. `pm_update.py` 가 이 경로만 덮어쓴다(merge 아님).
+# 여기 없는 건 인스턴스 소유(상태: tickets/·status·log·decisions/*.md·areas.md…) 또는 per-clone
+# 로컬(board.md·pm_state·local.conf·.local) — pm_update 가 절대 건드리지 않음.
+# 한 줄 = 한 경로(파일/디렉토리), repo 루트 기준. '#' 주석. 디렉토리는 재귀 동기화.
+#
+# ⚠️ 커스터마이즈 가능한 엔진 문서 중 CLAUDE.md·README 스캐폴드·루트 .gitignore 는
+#    여기서 제외 — 덮어쓰면 채택자 커스터마이즈 손실. pm_role.md·pm_playbook.md 는
+#    포함(아래) — 프로젝트별 칸은 *.local.md / local.conf 오버레이로 분리(D10).
+#    D15 해소(ADR-0007): pm_playbook 누적 학습/도메인 사례는 pm_playbook.local.md 로 분리(manifest 밖·인스턴스 자산).
+# ⚠️ 어댑터 lite 진입(`*.lite.md` — 예 CLAUDE.lite.md·AGENTS.lite.md, T-0010)도 manifest 밖이다:
+#    어댑터-네이티브(엔진 아님)이고 채택자 커스터마이즈 대상이라 pm_update 동기화에서 제외한다
+#    (manifest 기반이라 .lite.md 는 이미 안 건드린다 — 명시화).
+
+# ── 도구 (순수 엔진) ─────────────────────────────────────────────
+.project_manager/tools/board.py
+# domain: v2 도메인 지식 레이어 엔진 (ADR-0018·covers 파서·touches∩covers·staleness·freshness lint·capture). domain/ 페이지는 인스턴스 소유(manifest 밖)
+.project_manager/tools/domain.py
+.project_manager/tools/pm_bootstrap.py
+.project_manager/tools/pm_handoff.py
+.project_manager/tools/pm_log.py
+.project_manager/tools/ticket_finish.py
+.project_manager/tools/pm_update.py
+# relay core: 하니스 무관 thin stateless supervisor (ADR-0009). 하니스 driver(pm_orch_*.py)는 어댑터층(manifest 밖)
+.project_manager/tools/pm_relay.py
+# external_review: 외부 리뷰어 어댑터 (ADR-0004·기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
+.project_manager/tools/external_review.py
+# worktree_pool: multi-PM worktree 풀/슬롯 리스 엔진 (ADR-0013). 리스 장부(.local/worktree-leases.json)는 per-clone(manifest 밖)
+.project_manager/tools/worktree_pool.py
+# pm_config: 우산 셋업/관리 파사드 디스패처 (ADR-0011·0014). 루트 forwarder pm-config.sh/.cmd 는
+#   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 동형·manifest 밖)
+.project_manager/tools/pm_config.py
+
+# ── 방법론 문서 (엔진 · 프로젝트별 칸은 *.local.md / local.conf, manifest 밖) ──
+.project_manager/wiki/pm_role.md
+.project_manager/wiki/pm_playbook.md
+
+# ── 템플릿 (도구·skill 이 소비) ──────────────────────────────────
+.project_manager/wiki/pm_state.template.md
+.project_manager/wiki/tickets/_template.md
+.project_manager/wiki/raw/spikes/_template.md
+# domain/ *페이지*는 인스턴스 소유(manifest 밖·domain.py 행 참조) — _template.md 만 엔진 소유 스캐폴드 (ADR-0018·T-0095)
+.project_manager/wiki/domain/_template.md
+
+# ── 서브에이전트 · skill (엔진) ──────────────────────────────────
+.claude/agents
+.claude/skills
+
+# ── 설정 (엔진) ──────────────────────────────────────────────────
+.project_manager/.gitignore
+.gitattributes
+.github/workflows/regression.yml

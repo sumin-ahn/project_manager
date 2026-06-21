@@ -1,0 +1,24 @@
+# 예시 trunk 회귀 CI (R8 · 멀티-PM 모델 §회귀) — full suite 권위 게이트.
+# pre-push 훅(로컬)이 1차 게이트, 이 CI 가 trunk 의 권위 backstop (cross-area 회귀까지).
+# ⚠️ 예시다 — 채택자가 자기 프로젝트에 맞게 수정(언어·의존 설치·테스트 명령·버전).
+name: regression
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: |
+          python -m pip install -U pip
+          [ -f requirements.txt ] && pip install -r requirements.txt || true
+          pip install pytest
+      - name: full regression
+        run: pytest -q

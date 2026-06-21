@@ -1,0 +1,14 @@
+# Append-only 운영 로그 — 여러 세션/clone 의 동시 append 가 git merge 에서 충돌하지 않도록
+# git 내장 union merge 드라이버를 쓴다 (양쪽 entry 를 모두 보존). 실증: 두 분기의 EOF append 가
+# 충돌 없이 합쳐짐. merge seam 의 전역 시간순은 best-effort — 정확 정렬이 필요해지면 entry
+# 앵커를 ISO timestamp 로 바꿔 재정렬한다.
+.project_manager/wiki/log/current.md merge=union
+
+# areas.md = 멀티-PM prefix 레지스트리 (append-only 등록) — 동시 등록이 충돌하지 않게 union.
+.project_manager/areas.md merge=union
+
+# Forwarder 줄바꿈 강제 (T-0068) — Windows 배치(.cmd/.bat)는 CRLF 여야 cp949 cmd.exe 가
+# 오파싱하지 않는다. POSIX shell(.sh)은 LF 유지. 체크아웃 시 강제해 LF 회귀를 차단한다.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.sh text eol=lf

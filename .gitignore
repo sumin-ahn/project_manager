@@ -1,0 +1,20 @@
+# 모노레포 루트 ignore (인스턴스 소유 · D10).
+# 템플릿(templates/<target>/.gitignore)·엔진(.project_manager/.gitignore) 규칙은 각자.
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+
+# Claude Code 서브에이전트 격리 worktree 잔재 (PM 10차 — 코드 ticket 병렬 격리용·repo 사본).
+.claude/worktrees/
+
+# throwaway PoC/실험 스크립트 (PM 12차·T-0044 — verdict 는 ticket 메모·log 에 박제·스크립트는 미커밋).
+scratch/
+
+# multi-PM 우산 풀 잔재 (ADR-0011 — repo add 의 bare .git 원·worktree add 의 슬롯은 per-clone·미추적).
+.repos/
+work/
+
+# 루트 도그푸딩 .project_manager 의 per-clone 파일은 .project_manager/.gitignore(엔진)가 처리.
