@@ -278,3 +278,119 @@ def test_session_window_entry_no_double_cha(hf, raw):
     entry = hf._build_new_session_entry(raw, "2026-06-19", "wave")
     assert entry.startswith("  - **20차** ")
     assert "차차" not in entry
+
+
+# ── _regression_cwd — 회귀 cwd worktree 자동해소 (T-0124) ─────────────────────
+# `_regression_cwd(worktree_slot=, areas_file=, leases_file=)` 는 파일 seam 을 인자로
+# 노출하므로 실 장부/areas 를 안 건드린다(hermetic·pm_bootstrap._auto_slot 재사용). REPO 는
+# 절대경로 비교 대신 반환 문자열의 suffix(슬롯 식별자)로 검증한다 — REPO monkeypatch 불요.
+
+import json as _rcwd_json  # noqa: E402 — T-0124 테스트 전용 로컬 import
+
+
+def _write_areas(path: Path, repos: list[str]) -> None:
+    """areas.md (신 스키마·파이프 테이블) — repo 행을 repos 개수만큼. 빈 리스트면 헤더만."""
+    lines = [
+        "| repo | prefix | git | test_cmd | owner | base | protected |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for r in repos:
+        lines.append(f"| {r} | {r} |  |  | alice |  |  |")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_leases(path: Path, entries: list[dict]) -> None:
+    """worktree-leases.json — {"leases": [...]} 스키마 (worktree_pool.Lease.to_dict 동형)."""
+    path.write_text(_rcwd_json.dumps({"leases": entries}), encoding="utf-8")
+
+
+def test_regression_cwd_single_self_host_resolves_slot(hf, tmp_path):
+    # 단일 self-host: areas 1 repo + 그 repo 슬롯 정확히 1개 → work/<repo>_<N> 로 끝남.
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+    ])
+    result = hf._regression_cwd(areas_file=areas, leases_file=leases)
+    assert result.endswith("work/project_manager_1")
+
+
+def test_regression_cwd_explicit_slot_overrides_auto(hf, tmp_path):
+    # 명시 worktree_slot 우선 — auto 판정을 무시하고 그 슬롯 경로 반환.
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+    ])
+    result = hf._regression_cwd("work/foo_2", areas_file=areas, leases_file=leases)
+    assert result.endswith("work/foo_2")
+
+
+def test_regression_cwd_zero_repos_falls_back_to_repo(hf, tmp_path):
+    # 등록 repo 0개 → str(REPO) 폴백 (work/ 슬롯 suffix 아님).
+    areas = tmp_path / "areas.md"   # 미생성 → 부재
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+    ])
+    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+
+
+def test_regression_cwd_two_repos_falls_back_to_repo(hf, tmp_path):
+    # 등록 repo 2개(진짜 multi-PM·모호) → str(REPO) 폴백.
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["A", "B"])
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
+    ])
+    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+
+
+def test_regression_cwd_two_slots_ambiguous_falls_back(hf, tmp_path):
+    # 등록 repo 1개지만 그 repo 슬롯 2개(모호) → str(REPO) 폴백.
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+        {"slot": "work/project_manager_2", "repo": "project_manager",
+         "session": "project_manager_2", "state": "leased"},
+    ])
+    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+
+
+def test_regression_cwd_missing_leases_falls_back(hf, tmp_path):
+    # lease 장부 부재 → str(REPO) 폴백 (fail-soft).
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"  # 미생성 → 부재
+    _write_areas(areas, ["project_manager"])
+    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+
+
+def test_regression_cwd_corrupt_leases_falls_back(hf, tmp_path):
+    # 깨진 JSON 장부 → str(REPO) 폴백 (fail-soft·크래시 안 함).
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    leases.write_text("{not valid json", encoding="utf-8")
+    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+
+
+def test_regression_cwd_bootstrap_absent_falls_back(hf, tmp_path, monkeypatch):
+    # pm_bootstrap 동적로드 실패(None) → str(REPO) 폴백 (자동해소 없이 안전).
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+    ])
+    monkeypatch.setattr(hf, "_load_pm_bootstrap", lambda: None)
+    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
