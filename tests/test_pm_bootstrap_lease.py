@@ -812,3 +812,177 @@ def test_sensitivity_trigger_must_not_release(handoff, tmp_path, capsys):
     inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
     inst.run_trigger(reason="ctx-stop", ctx_pct=8, worktree_slot="work/A_2", branch="a5")
     assert len(wp.release_calls) == 0
+
+
+# ── 11. _auto_slot — 단일 self-host 자동바인딩 판정 (Part B) ──────────────────
+# `_auto_slot(areas_file=, leases_file=)` 는 인자로 파일 seam 을 노출하므로 실 장부/areas
+# 를 안 건드린다(hermetic·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형 패턴).
+
+import json as _auto_json  # noqa: E402 — Part B 테스트 전용 로컬 import
+
+
+def _write_areas(path: Path, repos: list[str]) -> None:
+    """areas.md (신 스키마) — repo 행을 repos 개수만큼. 빈 리스트면 헤더만."""
+    lines = [
+        "| repo | prefix | git | test_cmd | owner | base | protected |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for r in repos:
+        lines.append(f"| {r} | {r} |  |  | alice |  |  |")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_leases(path: Path, entries: list[dict]) -> None:
+    """worktree-leases.json — {"leases": [...]} 스키마 (worktree_pool.Lease.to_dict 와 동형)."""
+    path.write_text(_auto_json.dumps({"leases": entries}), encoding="utf-8")
+
+
+def test_auto_slot_single_repo_single_slot_returns_pair(bootstrap, tmp_path):
+    """등록 repo 정확히 1개 + 그 repo 슬롯 정확히 1개 → (repo, N)."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+    ])
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) == ("project_manager", 1)
+
+
+def test_auto_slot_zero_repos_returns_none(bootstrap, tmp_path):
+    """등록 repo 0개(레지스트리 부재) → None (현행 솔로)."""
+    areas = tmp_path / "areas.md"   # 미생성 → 부재
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+    ])
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+
+
+def test_auto_slot_two_repos_returns_none(bootstrap, tmp_path):
+    """등록 repo 2개(모호·진짜 multi-PM) → None (사용자가 --repo --slot 명시)."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["A", "B"])
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
+    ])
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+
+
+def test_auto_slot_two_slots_returns_none(bootstrap, tmp_path):
+    """등록 repo 1개지만 그 repo 슬롯 2개(모호) → None."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+        {"slot": "work/project_manager_2", "repo": "project_manager",
+         "session": "project_manager_2", "state": "leased"},
+    ])
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+
+
+def test_auto_slot_missing_leases_returns_none(bootstrap, tmp_path):
+    """등록 repo 1개지만 lease 장부 부재 → None (슬롯 0개·fail-soft)."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"  # 미생성 → 부재
+    _write_areas(areas, ["project_manager"])
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+
+
+def test_auto_slot_corrupt_leases_returns_none(bootstrap, tmp_path):
+    """등록 repo 1개 + 깨진 JSON 장부 → None (fail-soft·크래시 안 함)."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    leases.write_text("{not valid json", encoding="utf-8")
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+
+
+def test_auto_slot_schema_mismatch_returns_none(bootstrap, tmp_path):
+    """유효 JSON 이지만 dict/leases 리스트 아님 → None (fail-soft)."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    leases.write_text(_auto_json.dumps(["not", "a", "dict"]), encoding="utf-8")
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+
+
+def test_auto_slot_slot_for_other_repo_returns_none(bootstrap, tmp_path):
+    """등록 repo 1개지만 장부 슬롯이 *다른* repo 것뿐 → None (그 repo 슬롯 0개)."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/other_1", "repo": "other", "session": "other_1", "state": "leased"},
+    ])
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+
+
+def test_auto_slot_parses_nonone_slot_number(bootstrap, tmp_path):
+    """슬롯 N 이 1이 아닌 값(예 3)도 정확히 파싱한다 → (repo, 3)."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/project_manager_3", "repo": "project_manager",
+         "session": "project_manager_3", "state": "leased"},
+    ])
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) == ("project_manager", 3)
+
+
+# ── 12. main() 자동 세팅 분기 — 둘 다 None 일 때만 _auto_slot 적용 ─────────────
+# PmBootstrap.run 을 stub 으로 갈아끼워 받은 repo/slot 인자만 캡처한다(실 worktree_pool
+# 동적로드·git/장부 미접촉). _auto_slot 자체는 monkeypatch 로 결정값 주입(분기만 검증).
+
+
+class _CaptureBootstrap:
+    """run() 이 받은 repo/slot 을 클래스 변수에 캡처하는 stub (실행 부작용 없음)."""
+    last: dict | None = None
+
+    def run(self, **kwargs):
+        type(self).last = kwargs
+        return 0
+
+
+def _patch_main_stub(bootstrap, monkeypatch, auto_result):
+    """main() 의 _auto_slot 을 결정값으로, PmBootstrap 을 캡처 stub 으로 교체."""
+    _CaptureBootstrap.last = None
+    monkeypatch.setattr(bootstrap, "_auto_slot", lambda: auto_result)
+    monkeypatch.setattr(bootstrap, "PmBootstrap", _CaptureBootstrap)
+
+
+def test_main_auto_binds_when_both_none(bootstrap, monkeypatch, capsys):
+    """무인자(repo/slot 둘 다 None) + _auto_slot 가 (repo,N) → run 에 그 값이 전달."""
+    _patch_main_stub(bootstrap, monkeypatch, ("project_manager", 2))
+    rc = bootstrap.main([])
+    assert rc == 0
+    assert _CaptureBootstrap.last["repo"] == "project_manager"
+    assert _CaptureBootstrap.last["slot"] == 2
+    assert "자동 바인딩(단일 슬롯)" in capsys.readouterr().err
+
+
+def test_main_no_auto_when_auto_slot_none(bootstrap, monkeypatch, capsys):
+    """무인자 + _auto_slot 가 None → 현행 솔로 (repo/slot 둘 다 None 유지·안내 없음)."""
+    _patch_main_stub(bootstrap, monkeypatch, None)
+    rc = bootstrap.main([])
+    assert rc == 0
+    assert _CaptureBootstrap.last["repo"] is None
+    assert _CaptureBootstrap.last["slot"] is None
+    assert "자동 바인딩" not in capsys.readouterr().err
+
+
+def test_main_explicit_slot_skips_auto(bootstrap, monkeypatch, capsys):
+    """명시 --repo --slot 경로는 _auto_slot 분기를 타지 않는다 (auto 가 (X,9)여도 무시)."""
+    # _auto_slot 이 호출되면 (다른값) 으로 오염시켜, 호출 안 됨을 확인.
+    monkeypatch.setattr(bootstrap, "_auto_slot",
+                        lambda: (_ for _ in ()).throw(AssertionError("auto 호출되면 안 됨")))
+    monkeypatch.setattr(bootstrap, "PmBootstrap", _CaptureBootstrap)
+    _CaptureBootstrap.last = None
+    rc = bootstrap.main(["--repo", "A", "--slot", "1"])
+    assert rc == 0
+    assert _CaptureBootstrap.last["repo"] == "A"
+    assert _CaptureBootstrap.last["slot"] == 1

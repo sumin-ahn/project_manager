@@ -1122,12 +1122,22 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_new(args: argparse.Namespace) -> int:
     prefix = id_prefix(getattr(args, "prefix", None))
-    if AREAS_FILE.exists():  # multi-repo 네임스페이스 모드 (registry 존재) → registered prefix 필수
+    # multi-repo 네임스페이스 가드는 **레지스트리 *존재*가 아니라 등록 repo *개수*** 기준이다.
+    # 등록 prefix 가 ≥2 면 진짜 ID 충돌 가능성이 있으니 prefix 필수(namespace 강제). 등록이
+    # ≤1(0=레지스트리 부재/빈·1=단일 self-host) 이면 충돌이 없으므로 solo legacy `T-NNNN` 을
+    # 허용한다(prefix optional) — 단일 self-host 가 areas.md 1행만으로 multi-PM 마찰을 떠안지
+    # 않게(ADR-0027 분리 후 단일 등록 repo 케이스). 명시 prefix 가 *주어지면* 그건 그대로
+    # 존중해(아래 등록 검증) prefixed ID 를 발행한다 — ≤1 라도 사용자가 골랐으면 따른다.
+    registered = registered_prefixes()
+    if len(registered) >= 2:
         if not prefix:
-            print("multi-repo 네임스페이스 모드(areas.md 존재) — prefix 필요. 먼저 "
+            print("multi-repo 네임스페이스 모드(등록 repo ≥2) — prefix 필요. 먼저 "
                   "`board.py init --prefix <PFX> --area <name>`.", file=sys.stderr)
             return 1
-        if prefix not in registered_prefixes():
+    if prefix and prefix not in registered:
+        # 명시 prefix(override 또는 local.conf)는 등록된 것이어야 한다 — registry 가 존재할 때만
+        # 의미 있는 검증(부재면 registered 가 빈 set → 솔로에서 prefix 를 명시한 비정상 케이스).
+        if AREAS_FILE.exists():
             print(f"prefix {prefix!r} 미등록 (areas.md). `board.py init` 로 등록하거나 "
                   "등록된 prefix 사용.", file=sys.stderr)
             return 1

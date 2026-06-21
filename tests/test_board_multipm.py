@@ -289,8 +289,13 @@ def test_cmd_new_guard_rejects_unregistered_prefix(board, capsys):
 
 
 def test_cmd_new_guard_rejects_missing_prefix_in_multi_mode(board, capsys):
-    """areas.md 존재(multi 모드)인데 prefix 미해소 → 거부."""
+    """등록 repo ≥2(진짜 multi 모드)인데 prefix 미해소 → 거부.
+
+    가드 기준이 areas.md *존재* → 등록 repo *개수* 로 바뀌었다(단일 self-host 마찰 해소).
+    repo 2개여야 진짜 ID 충돌 가능 → prefix 강제.
+    """
     board.areas_append("PAY", "결제", "alice")
+    board.areas_append("ACC", "정산", "bob")  # 등록 repo 2개 → multi 모드
     # override 없음·local.conf prefix 없음 → id_prefix None.
     rc = board.cmd_new(_new_args(prefix=None))
     assert rc != 0
@@ -314,6 +319,37 @@ def test_cmd_new_solo_no_registry_emits_legacy_id(board):
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
     assert len(created) == 1
+
+
+def test_cmd_new_single_registered_repo_emits_legacy_id(board):
+    """등록 repo 1개 + prefix 미명시 → 가드 off(충돌 없음), legacy T-NNNN 발행.
+
+    가드 기준이 areas.md *존재* → 등록 repo *개수* 로 바뀐 핵심(Part A): 단일 self-host
+    (등록 repo 1개)는 ID 충돌이 없으니 solo `T-NNNN` 을 그대로 쓴다 — areas.md 1행만으로
+    multi-PM prefix 마찰을 떠안지 않게.
+    """
+    board.areas_append("project_manager", "프레임워크", "alice")  # 등록 repo 1개
+    rc = board.cmd_new(_new_args(prefix=None))
+    assert rc == 0
+    created = list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
+    assert len(created) == 1
+    fm, _ = board.load_ticket(created[0])
+    assert fm["id"] == "T-0001"
+
+
+def test_cmd_new_single_registered_repo_honors_explicit_prefix(board):
+    """등록 repo 1개라도 명시 prefix(그 등록값)는 존중 → prefixed ID 발행.
+
+    가드가 ≤1 에서 off 여도, 사용자가 그 등록 prefix 를 *명시*하면 prefixed `T-PFX-NNN` 을
+    발행한다(prefix optional·명시 우선).
+    """
+    board.areas_append("PAY", "결제", "alice")  # 등록 repo 1개
+    rc = board.cmd_new(_new_args(prefix="PAY"))
+    assert rc == 0
+    created = list((board.TICKETS_DIR / "open").glob("T-PAY-001-*.md"))
+    assert len(created) == 1
+    fm, _ = board.load_ticket(created[0])
+    assert fm["id"] == "T-PAY-001"
 
 
 # ════════════════════════════════════════════════════════════════════════

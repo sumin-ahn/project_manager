@@ -48,6 +48,10 @@ LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 TOOLS_DIR = REPO / ".project_manager" / "tools"
 AREAS_FILE = REPO / ".project_manager" / "areas.md"   # per-repo 레지스트리 (등록영역 surface·ADR-0014)
+# worktree 리스 장부 (ADR-0013) — worktree_pool.LEASES_FILE 와 *같은 위치*. _auto_slot 이
+# 단일 슬롯 자동바인딩 판정에 stdlib json 으로 직접 read 한다(worktree_pool 미import·touches
+# 격리·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형·데이터 결합만).
+LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 
 
 # ── worktree_pool import seam (multi-PM 모드·ADR-0013) ───────────────────────────
@@ -122,6 +126,56 @@ def _registered_repos(areas_file: Path = AREAS_FILE) -> list[str]:
         if name:
             rows.append(name)
     return rows
+
+
+def _auto_slot(
+    areas_file: Path = AREAS_FILE,
+    leases_file: Path = LEASES_FILE,
+) -> tuple[str, int] | None:
+    """단일 self-host 자동바인딩 판정 — 정확히 1 repo + 그 repo 슬롯 정확히 1개면 `(repo, N)`.
+
+    솔로 무인자 bootstrap(`--repo`/`--slot` 둘 다 없음)에서, 등록 repo 가 정확히 1개이고
+    그 repo 의 worktree 슬롯(lease 장부 엔트리)이 정확히 1개면 모호함이 없으므로 그 슬롯에
+    자동으로 bind 한다(세션=`<repo>_<N>`·기존 `--slot` bind 경로 재사용). 그 외는 None
+    (현행 솔로 유지) — repo 0개/≥2개 또는 슬롯 0개/≥2개면 사용자가 `--repo --slot` 명시.
+
+    판정:
+      1. `_registered_repos` 재사용 — areas.md 등록 repo 가 정확히 1개인가(아니면 None).
+      2. lease 장부(`leases_file`)를 **stdlib json** 으로 read — 그 repo 슬롯이 정확히 1개인가.
+         slot 식별자 형식은 `work/<repo>_<N>` 이니 그 repo 의 leased 엔트리에서 N 을 파싱한다.
+
+    **worktree_pool 을 import 하지 않는다**(touches 격리·ADR-0013) — `_registered_repos` 가
+    areas.md 를 stdlib 로 읽는 것과 동형으로 장부 파일을 직접 read 한다(데이터 결합만).
+    파일 부재/스키마 불일치/JSON 깨짐 → None(fail-soft — 자동바인딩은 *추가 편의*이지
+    강제 아님·실패는 현행 솔로로 폴백).
+    """
+    repos = _registered_repos(areas_file)
+    if len(repos) != 1:
+        return None
+    repo = repos[0]
+    if not leases_file.exists():
+        return None
+    try:
+        data = json.loads(leases_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    leases = data.get("leases", [])
+    if not isinstance(leases, list):
+        return None
+    # 이 repo 의 슬롯 식별자(`work/<repo>_<N>`)에서 N 을 파싱 — 슬롯이 정확히 1개일 때만 자동.
+    slot_re = re.compile(rf"^work/{re.escape(repo)}_(\d+)$")
+    slot_nums: list[int] = []
+    for row in leases:
+        if not isinstance(row, dict) or row.get("repo") != repo:
+            continue
+        m = slot_re.match(str(row.get("slot") or ""))
+        if m:
+            slot_nums.append(int(m.group(1)))
+    if len(slot_nums) != 1:
+        return None
+    return repo, slot_nums[0]
 
 
 def _default_python() -> str:
@@ -917,6 +971,16 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
     args = build_parser().parse_args(argv)
+    # 단일 self-host 자동바인딩 (Part B) — `--repo`/`--slot` 둘 다 없는 솔로 무인자 호출에서,
+    # 등록 repo 정확히 1개 + 그 repo 슬롯 정확히 1개면 그 슬롯에 자동 bind 한다(기존 `--slot`
+    # bind 경로가 그대로 실행됨·세션=`<repo>_<N>`). 모호(repo/슬롯 ≥2)하거나 repo 0개면 None
+    # → 현행 솔로. 명시 `--repo`/`--slot` 경로는 이 분기를 타지 않아 무변경.
+    if args.repo is None and args.slot is None:
+        auto = _auto_slot()
+        if auto is not None:
+            args.repo, args.slot = auto
+            print(f"자동 바인딩(단일 슬롯): repo={args.repo} · slot={args.slot}",
+                  file=sys.stderr)
     # --branch/--resume/--slot 은 --repo multi-PM 모드 전용 — repo 없이 주면 오용 신호로 거부.
     if args.repo is None and (
         args.branch is not None or args.resume is not None or args.slot is not None
