@@ -246,6 +246,52 @@ def test_target_mode_no_upstream_errors(pm_update, tmp_path, monkeypatch, capsys
     assert "upstream 미등록" in capsys.readouterr().err
 
 
+# ── --target = copy2 (render_enabled=False) 가드 (T-0133·should-fix) ──────────
+# main() 의 `render_enabled = not args.target` 매핑을 회귀로 박는다. --target 동기는
+# 템플릿(local.conf 없는 토큰-form 소스)을 렌더하면 operational leak/_assert_no_leak crash
+# 나므로 copy2 여야 한다. plan-level 가드(plan(render_enabled=...))는 별 테스트가 박았으나,
+# main() 의 매핑 자체는 회귀 그물 밖이었다(reviewer should-fix). @render 활성화 후 load-bearing.
+
+def _spy_render_enabled(pm_update, monkeypatch, captured):
+    """pm_update.plan 을 감싸 main() 이 전달한 render_enabled 키워드를 포착한다(실 plan 위임)."""
+    real_plan = pm_update.plan
+
+    def spy(*args, **kwargs):
+        captured["render_enabled"] = kwargs.get("render_enabled")
+        return real_plan(*args, **kwargs)
+
+    monkeypatch.setattr(pm_update, "plan", spy)
+
+
+def test_main_target_passes_render_disabled(pm_update, tmp_path, monkeypatch):
+    """main() --target → plan(render_enabled=False) — 템플릿 동기는 copy2(토큰-form 보존)."""
+    fake_repo = tmp_path / "fake_repo"
+    (fake_repo / "templates" / "oc").mkdir(parents=True)
+    stored = tmp_path / "up_target"
+    _make_upstream(stored)
+    _write_local_conf(fake_repo / "templates" / "oc", f"upstream={stored}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    captured: dict = {}
+    _spy_render_enabled(pm_update, monkeypatch, captured)
+
+    assert pm_update.main(["--target", "oc", "--dry-run"]) == 0
+    assert captured["render_enabled"] is False, "--target 인데 render 가 켜졌다(템플릿 토큰 렌더 위험)."
+
+
+def test_main_self_location_passes_render_enabled(pm_update, tmp_path, monkeypatch):
+    """main() --target 없음(채택자 self-update) → plan(render_enabled=True) — render 유지·불변."""
+    fake_repo = tmp_path / "fake_repo"
+    stored = tmp_path / "up_self"
+    _make_upstream(stored)
+    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    captured: dict = {}
+    _spy_render_enabled(pm_update, monkeypatch, captured)
+
+    assert pm_update.main(["--dry-run"]) == 0
+    assert captured["render_enabled"] is True, "채택자 self-update 인데 render 가 꺼졌다(토큰 출하 위험)."
+
+
 # ── v2 엔진 manifest 정합 (T-0088 — 신규 엔진 등재/개명 누락 가드) ────────────────
 # domain.py 가 manifest 미등재라 templates 에 전파 안 되던 실 버그를 회귀로 박는다.
 # 3 manifest(root + claude_code + opencode)가 v2 엔진을 일관되게 담는지 검증.

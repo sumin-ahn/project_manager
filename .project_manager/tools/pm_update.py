@@ -245,6 +245,9 @@ _LOCAL_CONF_TO_OPERATIONAL = {
     "py": "PY",
     "test_cmd": "TEST_CMD",
     "date": "DATE",
+    # opencode 어댑터 전용 — pm_import 가 import 시 local.conf 에 기록(T-0033). opencode
+    # @render 활성화 시 `{{OPENCODE_PRO_MODEL}}` 을 local.conf 로 재유도(claude tree 엔 부재 → no-op).
+    "opencode_pro_model": "OPENCODE_PRO_MODEL",
 }
 
 
@@ -297,6 +300,8 @@ def plan(
     source_root: Path,
     manifest: list,
     dest_root: Path | None = None,
+    *,
+    render_enabled: bool = True,
 ) -> tuple[list[tuple], list[str]]:
     """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update).
 
@@ -306,13 +311,20 @@ def plan(
     여부를 dst(`_RenderDst` 래퍼)에 실어 apply 가 byte-copy vs render 를 분기하게 한다. 평문
     str 항목(레거시 호출)은 render=False(후방호환·순수 copy2). render path 의 변경검출은
     filecmp 대신 rendered-output 비교(`_render_eq_dst`) — 템플릿≠산출물 오보 회피(§3.3).
+
+    render_enabled=False 면 manifest @render 태그를 *무시*하고 전부 copy2(토큰-form 보존).
+    `--target`(루트→templates/<name> 동기) 경로 전용 — 템플릿은 토큰-form 소스라 절대 렌더
+    대상이 아니다(local.conf 부재 → operational 토큰 leak·_assert_no_leak crash). render 는
+    채택자 self-update(--target 없음·local.conf 보유)와 pm_import 경로에서만 일어난다.
     """
     effective_dest = dest_root if dest_root is not None else REPO
     changes: list[tuple] = []
     missing: list[str] = []
     for entry in manifest:
         rel = str(entry)
-        render = _entry_render_flag(entry)
+        # render_enabled=False(--target) 면 @render 태그를 강제로 끈다 — 템플릿은 토큰-form
+        # 소스라 copy2 로 토큰을 보존해야 한다(렌더 시 operational leak·crash 회피).
+        render = _entry_render_flag(entry) if render_enabled else False
         if not (source_root / rel).exists():
             missing.append(rel)
             continue
@@ -542,7 +554,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     manifest = read_manifest(manifest_path)
-    changes, missing = plan(source_root, manifest, dest_root=dest_root)
+    # --target(루트→templates/<name>) 은 render 를 끈다 — 템플릿은 토큰-form 소스라 copy2 로
+    # 토큰을 보존해야 한다(렌더 시 local.conf 부재 → operational leak·_assert_no_leak crash).
+    # render 는 채택자 self-update(--target 없음·local.conf 보유)와 pm_import 경로에서만.
+    render_enabled = not args.target
+    changes, missing = plan(
+        source_root, manifest, dest_root=dest_root, render_enabled=render_enabled)
 
     for r, _sp, _dst, kind in changes:
         # render path 는 byte-copy 가 아니라 재렌더 산출물 — PM 이 구분하게 [render] 로 표기

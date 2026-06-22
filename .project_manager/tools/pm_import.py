@@ -965,6 +965,30 @@ def record_upstream(dest_root: Path, source_root: Path) -> bool:
     return False
 
 
+def record_opencode_model(dest_root: Path, model: str) -> bool:
+    """해소된 opencode 모델을 dest local.conf 에 `opencode_pro_model=` 로 기록한다.
+
+    {{OPENCODE_PRO_MODEL}} 가 import 때 파일에 직접 치환되지만, local.conf 엔 안 들어가
+    pm_update 의 @render 가 그 토큰을 local.conf 에서 재유도할 때(`opencode_pro_model` →
+    OPENCODE_PRO_MODEL · pm_update._LOCAL_CONF_TO_OPERATIONAL) 키 부재로 leak assertion 에
+    걸려 채택자 렌더가 crash 한다. 따라서 *실제로 모델이 해소된* 경로(flag·interactive)에서만
+    그 값을 local.conf 에 박아 둔다 — todo(미해소)는 토큰이 YAML 주석으로 남아 렌더 leak 이
+    없으므로 기록하지 않는다(호출부 게이트). _set_conf_keys 키 단위 set-or-replace 라 다른
+    키·주석은 보존. local.conf 부재면 graceful skip. 변경 시 True.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        print(f"경고: local.conf 없음 ({local_conf}) — opencode 모델 기록 건너뜀.",
+              file=sys.stderr)
+        return False
+    text = local_conf.read_text(encoding="utf-8")
+    new_text = _set_conf_keys(text, {"opencode_pro_model": model})
+    if new_text != text:
+        local_conf.write_text(new_text, encoding="utf-8")
+        return True
+    return False
+
+
 # ── opencode 모델 결정적 해소 단계 (LLM 아님 · T-0033) ──────────────────────
 # board init·conf sync 직후·fill *이전* 의 결정적 단계(sync_local_conf 와 같은 결). opencode
 # 어댑터 token({{OPENCODE_PRO_MODEL}})이 이번 복사본에 잔존할 때만 동작한다.
@@ -2118,6 +2142,13 @@ def main(argv: list[str] | None = None) -> int:
                   f"'{model_result.model}', {model_result.changed} 파일)")
         elif model_result.path == "todo":
             print(f"  {OPENCODE_MODEL_TOKEN} TODO 표시 — {model_result.note}")
+        # 모델이 *실제로 해소된* 경로(flag·interactive)만 local.conf 에 기록 — 이후 pm_update
+        #   @render 가 {{OPENCODE_PRO_MODEL}} 을 local.conf 에서 재유도할 때 키 부재로 leak
+        #   assertion crash 하는 걸 막는다. todo(미해소)는 토큰이 YAML 주석으로 남아 leak 없음 →
+        #   기록 안 함. claude import 는 active=False 라 이 블록에 안 들어와 자연 skip.
+        if model_result.path in ("flag", "interactive") and model_result.model:
+            if record_opencode_model(dest_root, model_result.model):
+                print(f"✓ local.conf opencode_pro_model 기록 ({model_result.model})")
 
     # ── fill 단계 (T-0009): board init·conf sync 직후 hook. 자유서술 placeholder 처리.
     #    auto + opt-in 게이트 통과 → 하니스 구동 *제안*(파일 미변경, 사람 검토 전제).

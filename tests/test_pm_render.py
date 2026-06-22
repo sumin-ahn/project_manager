@@ -142,6 +142,20 @@ def test_operational_token_alone_not_dropped(pm_render):
     assert out == "/repo\n"
 
 
+def test_operational_missing_key_leaks_not_silently_emptied(pm_render):
+    """OPERATIONAL_KEYS 에 있으나 operational dict 에 부재인 키는 빈 문자열로 silently 치환하지
+    않고 토큰을 남겨 RenderLeakError 로 잡는다 (codex·침묵 비움 금지).
+
+    회귀: `_fill_operational` 가 `.get(key, "")` 였을 때, 기존 opencode 채택자의 local.conf 가
+    `opencode_pro_model` 미보유면 `model: {{OPENCODE_PRO_MODEL}}` 이 `model: ` 로 *조용히 비워져*
+    첫 @render pm_update 가 기존 모델 설정을 덮었다. 미보유 키는 잔존→leak 으로 표면화해야 한다.
+    """
+    tpl = "model: {{OPENCODE_PRO_MODEL}}\n"
+    with pytest.raises(pm_render.RenderLeakError):
+        # operational 에 다른 키만 보유·OPENCODE_PRO_MODEL 부재 → 빈 치환 아닌 leak.
+        pm_render.render_adapter(tpl, overlay={}, operational={"PROJECT_NAME": "acme"})
+
+
 def test_freeform_and_operational_one_pass(pm_render):
     """free-form(slot/omit) + operational(plain) 한 pass 공존."""
     tpl = (
@@ -187,6 +201,20 @@ def test_operational_in_kept_drop_section_resolved(pm_render):
         operational={"PROJECT_ROOT": "/repo"},
     )
     assert out == "root /repo guards core/**\n"
+    assert "{{" not in out
+
+
+def test_opencode_pro_model_in_operational_keys(pm_render):
+    """OPENCODE_PRO_MODEL ∈ OPERATIONAL_KEYS — opencode 어댑터 토큰이 operational 채널에 배선됨(T-0133)."""
+    assert "OPENCODE_PRO_MODEL" in pm_render.OPERATIONAL_KEYS
+
+
+def test_opencode_pro_model_operational_resolved(pm_render):
+    """operational 에 OPENCODE_PRO_MODEL 공급 → `{{OPENCODE_PRO_MODEL}}` plain replace 해소(leak 0)."""
+    tpl = "pro model: {{OPENCODE_PRO_MODEL}}\n"
+    out = pm_render.render_adapter(
+        tpl, overlay={}, operational={"OPENCODE_PRO_MODEL": "anthropic/claude-opus-4"})
+    assert out == "pro model: anthropic/claude-opus-4\n"
     assert "{{" not in out
 
 
@@ -529,3 +557,90 @@ def test_render_leak_clean_when_render_path_fully_rendered(board, monkeypatch, t
     adapter.write_text("- core/**\nbody\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", fake_repo)
     assert board.lint_render_leak() == []
+
+
+# ── 2. plan render_enabled=False (--target copy2·토큰-form 보존·T-0133) ───────
+# --target(루트→templates/<name>) 은 *템플릿* manifest 를 읽는데 거기에 @render 가 있으면
+# plan/apply 가 루트 어댑터를 렌더하려 든다 — 템플릿엔 local.conf 가 없어 operational 토큰이
+# 미해소 leak → _assert_no_leak crash. 템플릿은 토큰-form 소스라 절대 렌더 대상이 아니므로
+# --target 일 때 render_enabled=False 로 @render 를 무시하고 전부 copy2(토큰 보존)한다.
+
+def test_plan_render_disabled_forces_copy_for_render_manifest(pm_update, tmp_path):
+    """(a) --target(render_enabled=False) + @render manifest → copy2(render=False·예외 없음)."""
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    rel = ".claude/agents/developer.md"
+    (src / ".claude/agents").mkdir(parents=True)
+    # 토큰-form 소스 (templates/ 의 어댑터처럼 free-form+operational 토큰 보유).
+    src_text = "- {{PROTECTED_PATHS}}\n- {{PROJECT_NAME}}\nbody\n"
+    (src / rel).write_text(src_text, encoding="utf-8")
+    # dst(=템플릿 타깃)엔 local.conf/overlay 없음 — 렌더 시 leak 날 환경.
+    manifest = pm_update.read_manifest(
+        _write_manifest(src, [".claude/agents @render"]))
+
+    # render_enabled=False → @render 무시·copy2. leak/crash 없이 new 변경 1건.
+    changes, missing = pm_update.plan(
+        src, manifest, dest_root=dst, render_enabled=False)
+    assert missing == []
+    target = [c for c in changes if c[0] == rel]
+    assert len(target) == 1
+    assert target[0][3] == "new"
+    assert getattr(target[0][2], "render", False) is False
+    # apply 도 copy2 — 토큰-form 이 byte 그대로 보존(렌더 안 됨).
+    pm_update.apply(changes)
+    assert (dst / rel).read_text(encoding="utf-8") == src_text
+
+
+def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
+    """(b) 비-target(render_enabled=True 기본) + @render + local.conf → render(토큰 해소·회귀)."""
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    rel = ".claude/agents/developer.md"
+    (src / ".claude/agents").mkdir(parents=True)
+    (src / rel).write_text("- {{PROTECTED_PATHS}}\n- {{PROJECT_NAME}}\nbody\n",
+                           encoding="utf-8")
+    # 채택자 dest — overlay(free-form) + local.conf(operational) 보유.
+    _seed_render_dest(
+        dst, overlay_yaml="PROTECTED_PATHS: 'core/**'\n",
+        local_conf="project_name=acme\n")
+    manifest = pm_update.read_manifest(
+        _write_manifest(src, [".claude/agents @render"]))
+
+    # 기본 render_enabled=True → render path (dst 가 산출물과 다르므로 render 변경).
+    changes, missing = pm_update.plan(src, manifest, dest_root=dst)
+    assert missing == []
+    target = [c for c in changes if c[0] == rel]
+    assert len(target) == 1
+    assert getattr(target[0][2], "render", False) is True
+    pm_update.apply(changes)
+    written = (dst / rel).read_text(encoding="utf-8")
+    # PROTECTED_PATHS(overlay)·PROJECT_NAME(local.conf) 해소·잔여 토큰 0.
+    assert written == "- core/**\n- acme\nbody\n"
+    assert "{{" not in written
+
+
+def test_opencode_pro_model_local_conf_mapping(pm_update, tmp_path):
+    """local.conf `opencode_pro_model=...` → operational dict 의 OPENCODE_PRO_MODEL 매핑(T-0133)."""
+    assert pm_update._LOCAL_CONF_TO_OPERATIONAL["opencode_pro_model"] == "OPENCODE_PRO_MODEL"
+    dst = tmp_path / "dst"
+    _seed_render_dest(dst, local_conf="opencode_pro_model=anthropic/claude-opus-4\n")
+    operational = pm_update._operational_from_local_conf(dst)
+    assert operational["OPENCODE_PRO_MODEL"] == "anthropic/claude-opus-4"
+
+
+def test_opencode_pro_model_render_resolved_from_local_conf(pm_update, tmp_path):
+    """apply render 가 local.conf 의 opencode_pro_model 로 `{{OPENCODE_PRO_MODEL}}` 해소(end-to-end)."""
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    rel = ".opencode/agents/architect.md"
+    (src / ".opencode/agents").mkdir(parents=True)
+    (src / rel).write_text("model: {{OPENCODE_PRO_MODEL}}\nbody\n", encoding="utf-8")
+    _seed_render_dest(dst, local_conf="opencode_pro_model=anthropic/claude-opus-4\n")
+    manifest = pm_update.read_manifest(
+        _write_manifest(src, [".opencode/agents @render"]))
+    changes, missing = pm_update.plan(src, manifest, dest_root=dst)
+    assert missing == []
+    pm_update.apply(changes)
+    written = (dst / rel).read_text(encoding="utf-8")
+    assert written == "model: anthropic/claude-opus-4\nbody\n"
+    assert "{{" not in written

@@ -9,7 +9,7 @@ slot-fill + conditional-omit (Jinja/표현식/루프 없음·DSL 아님). 이게
 토큰 3종 (어댑터 .md 의 `{{KEY}}` placeholder):
   - **free-form 3종** (FREEFORM_KEYS) — 채택자 손편집 산문(보존 난제). overlay.local.yaml 공급.
     값 있으면 SLOT-FILL, 빈/부재면 CONDITIONAL-OMIT(host 행/구역 drop). 이 엔진이 처리.
-  - **operational 6종** (OPERATIONAL_TOKENS) — import 시 sed 치환된 리터럴(local.conf 재유도).
+  - **operational** (OPERATIONAL_KEYS) — import 시 sed 치환된 리터럴(local.conf 재유도).
     plain string replace(omit 없음). 출하 파일엔 이미 리터럴이라 렌더는 보통 no-op.
 
 자족 산출물 = 토큰 0 (ADR-0028): 렌더 결과에 잔여 `{{[A-Z_]+}}` 가 *하나라도* 있으면
@@ -34,10 +34,11 @@ FREEFORM_KEYS: tuple[str, ...] = (
     "USER_GATE_ITEMS",
 )
 
-# operational 6종 — import sed 치환된 리터럴 (local.conf 재유도). plain replace·omit 없음.
-# pm_import.OPERATIONAL_TOKENS(중괄호 포함)와 동일 집합을 bare key 로.
+# operational — import sed 치환된 리터럴 (local.conf 재유도). plain replace·omit 없음.
+# pm_import.OPERATIONAL_TOKENS(중괄호 포함)와 동일 집합을 bare key 로 + opencode 전용
+# OPENCODE_PRO_MODEL(opencode 채택자 local.conf 만 보유·claude tree 엔 토큰 부재 → no-op).
 #
-# ⚠️ D17-2 forward-flag (@render 활성화 시점): local.conf(board.py init 산출)는 이 6종 중
+# ⚠️ D17-2 forward-flag (@render 활성화 시점): local.conf(board.py init 산출)는 이 중
 #    일부만 보유한다 — DATE·PROJECT_ROOT·PROJECT_TAGLINE 는 init 이 채우지 않을 수 있어
 #    pm_update._operational_from_local_conf 가 그 token-key 를 dict 에 안 넣는다. 엄격 가드
 #    (_assert_no_leak·토큰 0) 하에선, @render 활성화된 어댑터 파일이 그런 미보유 operational
@@ -51,6 +52,10 @@ OPERATIONAL_KEYS: tuple[str, ...] = (
     "PY",
     "TEST_CMD",
     "DATE",
+    # opencode 어댑터 전용 — pm_import 가 local.conf 에 opencode_pro_model 을 기록(T-0033).
+    # opencode @render 활성화 시 `{{OPENCODE_PRO_MODEL}}` 토큰이 미배선이면 leak 하므로
+    # operational 채널에 포함한다(local.conf 재유도·plain replace).
+    "OPENCODE_PRO_MODEL",
 )
 
 # overlay 파일 위치 (instance-owned·manifest-제외·§3.1).
@@ -124,9 +129,14 @@ def _fill_operational(text: str, operational: dict) -> str:
     if not operational:
         return text
     for key in OPERATIONAL_KEYS:
+        if key not in operational:
+            # 미보유 key 는 치환하지 않는다 — 토큰을 그대로 남겨 _assert_no_leak 가 잡게 한다.
+            # `.get(key, "")` 로 빈 문자열 치환하면 미해소를 *침묵 비움*(예: 기존 채택자
+            # local.conf 미보유 opencode_pro_model → `model: ` 로 덮음)으로 출하한다(codex·docstring 의도).
+            continue
         token = "{{" + key + "}}"
         if token in text:
-            text = text.replace(token, str(operational.get(key, "")))
+            text = text.replace(token, str(operational[key]))
     return text
 
 

@@ -1404,13 +1404,34 @@ def test_unmigrated_absent_adapter_tree_is_clean(board, monkeypatch, tmp_path):
     assert board.lint_unmigrated_overlay() == []
 
 
-def test_unmigrated_root_doc_token_flagged(board, monkeypatch, tmp_path):
-    """root 어댑터 doc(CLAUDE.md/AGENTS.md)의 리터럴 free-form 토큰도 잡힌다."""
+def test_unmigrated_root_doc_token_not_flagged(board, monkeypatch, tmp_path):
+    """root 어댑터 doc(CLAUDE.md/AGENTS.md)의 리터럴 free-form 토큰은 *미-flag* (T-0133).
+
+    root 문서는 채택자가 통째로 손편집하는 instance-owned scaffold 라 render-overlay 관리
+    대상이 아니다(manifest 제외·omit-marker 0). 거기의 raw 토큰은 "미마이그레이션"이 아니라
+    "채택자가 아직 안 채움"이라 lint 가 오분류하면 안 된다 — root doc 만 두면 clean.
+    """
     monkeypatch.setattr(board, "REPO", tmp_path)
     _adapter_doc(tmp_path, "AGENTS.md", "## 사용자 게이트\n\n{{USER_GATE_ITEMS}}\n")
+    _adapter_doc(tmp_path, "CLAUDE.md", "## 보호 영역\n\n{{PROTECTED_PATHS}}\n")
+    assert board.lint_unmigrated_overlay() == []
+
+
+def test_unmigrated_adapter_dir_still_flagged_when_root_doc_present(
+        board, monkeypatch, tmp_path):
+    """root doc 은 미-flag 하되 어댑터 디렉토리 토큰은 여전히 flag (root-doc 제외가 디렉토리 스캔 무영향)."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _overlay_file(tmp_path)  # overlay 존재 → 부재 finding 제거(어댑터 토큰 finding 만 본다).
+    # root doc 토큰은 무시돼야 한다.
+    _adapter_doc(tmp_path, "CLAUDE.md", "## 보호\n\n{{PROTECTED_PATHS}}\n")
+    # 어댑터 디렉토리 토큰은 여전히 flag.
+    _adapter_doc(tmp_path, ".claude/agents/developer.md",
+                 "## 제약\n\n{{PROJECT_CONSTRAINTS}}\n")
     issues = board.lint_unmigrated_overlay()
-    assert any(name == "AGENTS.md" and "{{USER_GATE_ITEMS}}" in detail
-               for name, _k, detail in issues), issues
+    # 어댑터 finding 은 있다.
+    assert any(name == ".claude/agents/developer.md" for name, _k, _d in issues), issues
+    # root doc 은 어떤 finding 도 만들지 않는다(스캔 대상 아님).
+    assert not any(name in ("CLAUDE.md", "AGENTS.md") for name, _k, _d in issues), issues
 
 
 def test_unmigrated_skill_nested_scanned(board, monkeypatch, tmp_path):

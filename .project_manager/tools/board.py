@@ -2064,35 +2064,33 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
 # 별개. graceful: 어댑터 파일/디렉토리 부재 시 finding 0(솔로·non-adopter tree 무오염).
 
 # 어댑터 스캐폴드 .md 글롭 — 채택자 tree 에 출하되는 harness 어댑터 본문 (존재하는 것만).
-#   claude   : `.claude/agents/*.md`·`.claude/skills/**/SKILL.md`·root `CLAUDE.md`/`CLAUDE.lite.md`
-#   opencode : `.opencode/agents/*.md`·`.opencode/command/*.md`·root `AGENTS.md`/`AGENTS.lite.md`
+#   claude   : `.claude/agents/*.md`·`.claude/skills/**/SKILL.md`
+#   opencode : `.opencode/agents/*.md`·`.opencode/command/*.md`
 # 각 경로는 harness 별 존재 여부가 다르므로(claude 채택자엔 `.opencode` 부재·역도) 있을 때만 스캔.
+# root 문서(CLAUDE.md·AGENTS.md 등)는 *제외* (T-0133): 채택자가 통째로 손편집하는 instance-owned
+# scaffold 라 render-overlay 관리 대상이 아니다(omit-marker 0·manifest 제외). 거기의 raw free-form
+# 토큰은 "미마이그레이션"이 아니라 "채택자가 아직 안 채움"이라 이 lint 의 오분류 대상이 아니다.
 _OVERLAY_ADAPTER_GLOBS: tuple[tuple[str, str], ...] = (
     (".claude/agents", "*.md"),
     (".claude/skills", "SKILL.md"),
     (".opencode/agents", "*.md"),
     (".opencode/command", "*.md"),
 )
-_OVERLAY_ADAPTER_ROOT_DOCS: tuple[str, ...] = (
-    "CLAUDE.md", "CLAUDE.lite.md", "AGENTS.md", "AGENTS.lite.md")
 
 
 def _collect_overlay_adapter_files() -> list[Path]:
-    """un-migrated 검사 대상 어댑터 .md — harness 스캐폴드 디렉토리 + root 어댑터 doc (존재만).
+    """un-migrated 검사 대상 어댑터 .md — harness 스캐폴드 디렉토리만 (존재하는 것만).
 
-    `.claude/skills` 는 `**/SKILL.md`(rglob), 그 외 디렉토리는 직속 `*.md`(glob)·root doc 은
-    파일 정확 일치로 모은다. dedupe 는 호출부가 path 로 처리. `.is_dir()`/`.is_file()` 가드로
-    부재 harness/솔로 tree 는 조용히 건너뛴다(graceful·finding 0)."""
+    `.claude/skills` 는 `**/SKILL.md`(rglob), 그 외 디렉토리는 직속 `*.md`(glob)로 모은다.
+    root 문서(CLAUDE.md·AGENTS.md 등)는 제외 — instance-owned scaffold 라 render-overlay
+    관리 대상이 아니다(T-0133). dedupe 는 호출부가 path 로 처리. `.is_dir()` 가드로 부재
+    harness/솔로 tree 는 조용히 건너뛴다(graceful·finding 0)."""
     files: list[Path] = []
     for rel, pattern in _OVERLAY_ADAPTER_GLOBS:
         d = REPO / rel
         if not d.is_dir():
             continue
         files.extend(d.rglob(pattern) if pattern == "SKILL.md" else d.glob(pattern))
-    for name in _OVERLAY_ADAPTER_ROOT_DOCS:
-        p = REPO / name
-        if p.is_file():
-            files.append(p)
     return files
 
 

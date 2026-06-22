@@ -1489,6 +1489,88 @@ def test_resolve_inactive_when_token_absent(pm_import, tmp_path):
     assert result.changed == 0
 
 
+# ── change4 (codex): 해소된 모델을 local.conf opencode_pro_model 로 기록 ──────────
+#   pm_update @render 가 {{OPENCODE_PRO_MODEL}} 을 local.conf 에서 재유도(_LOCAL_CONF_TO_
+#   OPERATIONAL["opencode_pro_model"])할 때 키 부재면 leak assertion crash. flag/interactive
+#   해소 경로만 기록, todo(미해소·토큰이 YAML 주석)·claude(inactive)는 미기록.
+
+def test_import_flag_records_opencode_model_in_local_conf(pm_import, tmp_path):
+    """opencode import + --opencode-model(flag 해소) → local.conf 에 opencode_pro_model 기록."""
+    dest = tmp_path / "modelconf"
+    rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "ModelConf",
+                         "--opencode-model", "ollama/qwen3.6:27b"])
+    assert rc == 0
+    conf = _parse_conf(dest / ".project_manager" / "local.conf")
+    assert conf.get("opencode_pro_model") == "ollama/qwen3.6:27b", \
+        f"flag 해소인데 local.conf opencode_pro_model 부재/불일치: {conf.get('opencode_pro_model')!r}"
+
+
+def test_import_flag_model_preserves_other_local_conf_keys(pm_import, tmp_path):
+    """opencode_pro_model 기록이 board init·sync 가 쓴 다른 키(project_name·upstream)·주석을 보존."""
+    dest = tmp_path / "modelpreserve"
+    rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "Keep It",
+                         "--opencode-model", "ollama/qwen3.6:27b"])
+    assert rc == 0
+    local_conf = dest / ".project_manager" / "local.conf"
+    conf = _parse_conf(local_conf)
+    assert conf.get("opencode_pro_model") == "ollama/qwen3.6:27b"
+    assert conf.get("project_name") == "Keep It", "모델 기록이 project_name 을 덮음."
+    assert "upstream" in conf, "모델 기록이 upstream 키를 잃음."
+    assert local_conf.read_text(encoding="utf-8").lstrip().startswith("#"), \
+        "모델 기록이 local.conf 머리 주석을 지움."
+
+
+def test_import_todo_does_not_record_opencode_model(pm_import, tmp_path):
+    """opencode import + 플래그 없음(비-tty → todo 폴백·미해소) → opencode_pro_model 미기록.
+
+    토큰이 YAML 주석(`# model: …`)으로 남아 @render leak 이 없으므로 local.conf 기록도 안 한다.
+    (autouse _hermetic_opencode_models fixture 가 _real_models_runner 를 (False, []) 로 고정 →
+    todo 경로.)
+    """
+    dest = tmp_path / "modeltodo"
+    rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "ModelTodo"])
+    assert rc == 0
+    conf = _parse_conf(dest / ".project_manager" / "local.conf")
+    assert "opencode_pro_model" not in conf, \
+        f"todo(미해소)인데 opencode_pro_model 이 기록됨: {conf.get('opencode_pro_model')!r}"
+
+
+def test_import_claude_does_not_record_opencode_model(pm_import, tmp_path):
+    """claude-only import(모델 토큰 미잔존·inactive) → opencode_pro_model 미기록."""
+    dest = tmp_path / "modelclaude"
+    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "ModelClaude"])
+    assert rc == 0
+    conf = _parse_conf(dest / ".project_manager" / "local.conf")
+    assert "opencode_pro_model" not in conf, \
+        "claude import 인데 opencode_pro_model 이 기록됨."
+
+
+def test_record_opencode_model_set_or_replace_unit(pm_import, tmp_path):
+    """record_opencode_model: 기존 키 제자리 교체, 없으면 추가. 다른 키·주석 보존."""
+    local_conf = tmp_path / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True)
+    local_conf.write_text(
+        "# header\nproject_name=Keep\nsession=pm\n", encoding="utf-8")
+    # 신규 추가.
+    assert pm_import.record_opencode_model(tmp_path, "ollama/a") is True
+    conf = _parse_conf(local_conf)
+    assert conf["opencode_pro_model"] == "ollama/a"
+    assert conf["project_name"] == "Keep" and conf["session"] == "pm"
+    assert local_conf.read_text(encoding="utf-8").startswith("# header"), "머리 주석 손실."
+    # 제자리 교체(중복 줄 미생성).
+    assert pm_import.record_opencode_model(tmp_path, "ollama/b") is True
+    text = local_conf.read_text(encoding="utf-8")
+    assert text.count("opencode_pro_model=") == 1, "교체 대신 중복 줄 생성."
+    assert _parse_conf(local_conf)["opencode_pro_model"] == "ollama/b"
+    # 동일값 재기록 → 변경 없음(False).
+    assert pm_import.record_opencode_model(tmp_path, "ollama/b") is False
+
+
+def test_record_opencode_model_graceful_when_conf_absent(pm_import, tmp_path):
+    """record_opencode_model: local.conf 부재면 graceful skip(False·예외 없음)."""
+    assert pm_import.record_opencode_model(tmp_path, "ollama/x") is False
+
+
 # ── DoD ⑤: dry-run 계획 — 경로·플래그값·tty 여부만 출력, 파일변경·실호출 0 ───────
 
 def test_dry_run_opencode_model_plan_flag(pm_import, tmp_path, capsys):
