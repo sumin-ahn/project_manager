@@ -1284,3 +1284,160 @@ def test_lint_tickets_includes_architecture_freshness(board, monkeypatch):
     monkeypatch.setattr(board, "lint_adr_lifecycle", lambda: [])
     monkeypatch.setattr(board, "lint_architecture_freshness", lambda: sentinel)
     assert sentinel[0] in board.lint_tickets()
+
+
+# ── un-migrated overlay 검출 (advisory · T-0132·§3.6) ──────────────────────
+# 어댑터 .md 에 리터럴 free-form 토큰(FREEFORM_KEYS) 잔존 = render-overlay 마이그레이션
+# 미완 신호. advisory(`_ADVISORY_LINT_KINDS`·`--gate` 미차단). overlay 부재면 추가 finding.
+# operational 토큰·code-fence 예시는 검사 제외(오탐 0). 어댑터 부재 tree finding 0(graceful).
+
+def _adapter_doc(root: Path, relpath: str, text: str) -> Path:
+    """root 아래 어댑터 스캐폴드 .md 를 만든다 (예: .claude/agents/developer.md)."""
+    p = root / relpath
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def _overlay_file(root: Path) -> Path:
+    """root 에 overlay.local.yaml 채널 파일을 만든다 (pm_render.OVERLAY_RELPATH 위치)."""
+    p = root / ".project_manager" / "overlay.local.yaml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("PROTECTED_PATHS: |\n  config/limits.py\n", encoding="utf-8")
+    return p
+
+
+def test_unmigrated_literal_token_is_advisory_hit(board, monkeypatch, tmp_path):
+    """(a) 리터럴 free-form 토큰 잔존 어댑터 → `un-migrated-overlay` advisory finding."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _adapter_doc(tmp_path, ".claude/agents/developer.md",
+                 "## 프로젝트 제약\n\n{{PROJECT_CONSTRAINTS}}\n")
+    issues = board.lint_unmigrated_overlay()
+    assert any(name == ".claude/agents/developer.md"
+               and kind == "un-migrated-overlay"
+               and "{{PROJECT_CONSTRAINTS}}" in detail
+               for name, kind, detail in issues), issues
+
+
+def test_unmigrated_kind_is_advisory_gate_excluded(board, monkeypatch, tmp_path):
+    """(a) `un-migrated-overlay` 는 `_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 0(미차단)."""
+    assert "un-migrated-overlay" in board._ADVISORY_LINT_KINDS
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _adapter_doc(tmp_path, ".opencode/agents/architect.md",
+                 "## 보호 영역\n\n{{PROTECTED_PATHS}}\n")
+    # 다른 lint 표면은 비워 un-migrated finding 만 게이트에 반영.
+    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
+               "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
+               "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
+               "lint_render_leak", "_run_lint_hooks"):
+        monkeypatch.setattr(board, fn, lambda: [])
+    issues = board.lint_unmigrated_overlay()
+    assert issues, "un-migrated finding 이 있어야 한다."
+    assert all(kind == "un-migrated-overlay" for _n, kind, _d in issues), issues
+    # advisory 라 gate 는 통과(0), full 은 finding 있으면 1(현행 계약).
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
+
+
+def test_unmigrated_overlay_present_no_tokens_is_clean(board, monkeypatch, tmp_path):
+    """(b) overlay 존재 + 리터럴 토큰 0(렌더 산출물) → finding 0(clean)."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _overlay_file(tmp_path)
+    # 렌더 산출물 — free-form 토큰이 이미 값으로 채워져 토큰 0.
+    _adapter_doc(tmp_path, ".claude/agents/developer.md",
+                 "## 프로젝트 제약\n\n- 핵심 결정 로직 = 순수 코드.\n")
+    _adapter_doc(tmp_path, ".claude/skills/pm-wave-claim/SKILL.md",
+                 "## 보호 영역\n\nconfig/limits.py\n")
+    assert board.lint_unmigrated_overlay() == []
+
+
+def test_unmigrated_overlay_absent_adds_finding(board, monkeypatch, tmp_path):
+    """(c) overlay 부재 + 리터럴 토큰 잔존 → 토큰 finding + overlay 미생성 finding 추가."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _adapter_doc(tmp_path, ".claude/agents/developer.md",
+                 "## 제약\n\n{{PROJECT_CONSTRAINTS}}\n\n## 보호\n\n{{PROTECTED_PATHS}}\n")
+    issues = board.lint_unmigrated_overlay()
+    # 토큰 finding (파일별 1건·잔존 토큰 합산).
+    assert any(name == ".claude/agents/developer.md" for name, _k, _d in issues), issues
+    # overlay 부재 finding (OVERLAY_RELPATH 를 name 으로).
+    overlay_rel = board._load_pm_render_module().OVERLAY_RELPATH
+    assert any(name == overlay_rel and "overlay 채널 미생성" in detail
+               for name, _k, detail in issues), issues
+
+
+def test_unmigrated_overlay_present_absence_finding_suppressed(board, monkeypatch, tmp_path):
+    """(c 경계) overlay 존재면 — 토큰 잔존해도 overlay-부재 finding 은 안 난다(토큰 finding 만)."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _overlay_file(tmp_path)
+    _adapter_doc(tmp_path, ".claude/agents/developer.md", "{{PROTECTED_PATHS}}\n")
+    issues = board.lint_unmigrated_overlay()
+    overlay_rel = board._load_pm_render_module().OVERLAY_RELPATH
+    # 토큰 finding 은 있다.
+    assert any(name == ".claude/agents/developer.md" for name, _k, _d in issues), issues
+    # overlay 가 있으므로 미생성 finding 은 없다.
+    assert not any(name == overlay_rel for name, _k, _d in issues), issues
+
+
+def test_unmigrated_operational_token_not_flagged(board, monkeypatch, tmp_path):
+    """(d) operational 토큰(`{{PROJECT_NAME}}` 등)은 검사 대상 아님 — 오탐 0."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _overlay_file(tmp_path)  # overlay 존재 → 부재 finding 변수 제거.
+    _adapter_doc(tmp_path, ".claude/agents/developer.md",
+                 "너는 {{PROJECT_NAME}} 의 developer 다. {{PY}} {{TEST_CMD}} 로 검증.\n")
+    assert board.lint_unmigrated_overlay() == []
+
+
+def test_unmigrated_code_fence_example_not_flagged(board, monkeypatch, tmp_path):
+    """(d) code span/fence 안 *예시* free-form 토큰은 `_strip_code` 로 제거 → 오탐 0."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _overlay_file(tmp_path)
+    _adapter_doc(tmp_path, ".claude/agents/developer.md",
+                 "토큰 예시: `{{PROTECTED_PATHS}}` 는 overlay 가 채운다.\n\n"
+                 "```yaml\nPROTECTED_PATHS: |\n  {{PROJECT_CONSTRAINTS}}\n```\n")
+    assert board.lint_unmigrated_overlay() == []
+
+
+def test_unmigrated_absent_adapter_tree_is_clean(board, monkeypatch, tmp_path):
+    """graceful: 어댑터 파일/디렉토리 부재(솔로·non-adopter tree) → finding 0."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    # 어떤 어댑터 스캐폴드도 만들지 않는다 — 빈 tree.
+    assert board.lint_unmigrated_overlay() == []
+
+
+def test_unmigrated_root_doc_token_flagged(board, monkeypatch, tmp_path):
+    """root 어댑터 doc(CLAUDE.md/AGENTS.md)의 리터럴 free-form 토큰도 잡힌다."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _adapter_doc(tmp_path, "AGENTS.md", "## 사용자 게이트\n\n{{USER_GATE_ITEMS}}\n")
+    issues = board.lint_unmigrated_overlay()
+    assert any(name == "AGENTS.md" and "{{USER_GATE_ITEMS}}" in detail
+               for name, _k, detail in issues), issues
+
+
+def test_unmigrated_skill_nested_scanned(board, monkeypatch, tmp_path):
+    """`.claude/skills/**/SKILL.md` 는 중첩(rglob)으로 스캔된다(직속 *.md 아님)."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _adapter_doc(tmp_path, ".claude/skills/pm-dev-delegate/SKILL.md",
+                 "## 제약\n\n{{PROJECT_CONSTRAINTS}}\n")
+    issues = board.lint_unmigrated_overlay()
+    assert any(name == ".claude/skills/pm-dev-delegate/SKILL.md"
+               for name, _k, _d in issues), issues
+
+
+def test_unmigrated_pm_render_load_fail_is_graceful(board, monkeypatch, tmp_path):
+    """pm_render 로드 실패(단일 진실 부재) → [] (graceful·무발화)."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _adapter_doc(tmp_path, ".claude/agents/developer.md", "{{PROTECTED_PATHS}}\n")
+    monkeypatch.setattr(board, "_load_pm_render_module", lambda: None)
+    assert board.lint_unmigrated_overlay() == []
+
+
+def test_lint_tickets_includes_unmigrated_overlay(board, monkeypatch):
+    """lint_tickets 통합 — un-migrated finding 이 전체 보고에 포함된다."""
+    sentinel = [(".claude/agents/x.md", "un-migrated-overlay", "sentinel")]
+    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
+               "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
+               "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
+               "lint_render_leak"):
+        monkeypatch.setattr(board, fn, lambda: [])
+    monkeypatch.setattr(board, "lint_unmigrated_overlay", lambda: sentinel)
+    assert sentinel[0] in board.lint_tickets()
