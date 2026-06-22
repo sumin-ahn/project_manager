@@ -376,6 +376,40 @@ class PmBootstrap:
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
         self._run_git_fn = run_git_fn or self._default_run_git
 
+        # 바운드 슬롯 식별자(`work/<repo>_<N>`) — git/pytest 러너의 worktree cwd 해소용
+        # (T-0125·T-0124 동형). run() 진입부에서 명시 multi-PM 모드면 세팅, 솔로면 None
+        # 유지(→ `_worktree_cwd` 가 `_auto_slot` 으로 자동해소). board 러너는 무관(REPO 고정).
+        self._bound_slot: str | None = None
+
+    # ── git/pytest 러너 cwd 해소 (worktree·T-0125) ───────────────────────
+
+    def _worktree_cwd(self, slot: str | None = None) -> str:
+        """git/pytest 를 돌릴 작업 디렉토리를 해소한다 (T-0125·분리된 PM 홈+worktree 모델).
+
+        자기분리(ADR-0027) 토폴로지: 코드/tests=① worktree·board/wiki=② PM 홈. 분리된 PM
+        홈(②) 루트에서 bootstrap 을 돌리면 그 자리엔 코드/tests 가 없으므로, git dump·pytest
+        회귀는 활성 worktree 슬롯 cwd 에서 돌아야 한다. 이 함수가 그 경로를 해소한다.
+        (board 러너는 ② 홈 소유라 이 경로를 쓰지 않는다 — `_default_run_board` 는 REPO 고정.)
+
+        해소 순서 (pm_handoff `_regression_cwd`·T-0124 동형):
+          - `slot`(명시 multi-PM `--slot` → `work/<repo>_<N>`) 가 있으면 `REPO / slot`,
+          - 없으면 `_auto_slot()` 으로 단일 self-host 슬롯 자동해소(`work/<repo>_<N>`),
+          - 그것도 없으면(솔로/모호/부재) **현 `REPO` 폴백** (fail-soft·솔로 무변경).
+
+        `_auto_slot` 은 같은 모듈 함수라 직접 호출한다(동적로드 불요·DRY — 복붙 금지).
+        예외/None 은 흡수해 REPO 로 폴백한다(자동해소는 *추가 편의*·강제 아님).
+        """
+        if slot:
+            return str(REPO / slot)
+        try:
+            auto = _auto_slot()
+        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 REPO 폴백.
+            auto = None
+        if auto:
+            repo, n = auto
+            return str(REPO / f"work/{repo}_{n}")
+        return str(REPO)
+
     # ── 기본 subprocess 구현 ─────────────────────────────────────────────
 
     def _default_run_board(self, args: list[str]) -> tuple[int, str]:
@@ -394,26 +428,30 @@ class PmBootstrap:
     def _default_run_pytest(self) -> tuple[int, str]:
         # encoding 명시 — pytest 의 한글 테스트명 출력을 부모가 cp949 로 디코딩해
         # 크래시하지 않도록 utf-8 고정 (Windows CP949 회피).
+        # cwd 는 _worktree_cwd 가 해소한다(T-0125) — 분리된 PM 홈(②)엔 tests/ 가 없으므로
+        # 회귀는 활성 worktree 슬롯에서 돌아야 한다(솔로/미세팅이면 REPO 폴백).
         result = subprocess.run(
             [str(self._venv_python), "-m", "pytest", "tests/", "-q"],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            cwd=str(REPO),
+            cwd=self._worktree_cwd(self._bound_slot),
         )
         return result.returncode, result.stdout + result.stderr
 
     def _default_run_git(self, args: list[str]) -> tuple[int, str]:
         # encoding 명시 — git 의 한글 커밋 메시지/상태 출력을 부모가 cp949 로
         # 디코딩해 크래시하지 않도록 utf-8 고정 (Windows CP949 회피).
+        # cwd 는 _worktree_cwd 가 해소한다(T-0125) — 분리된 PM 홈(②)엔 코드 git 이 없으므로
+        # git dump 는 활성 worktree 슬롯에서 돌아야 한다(솔로/미세팅이면 REPO 폴백).
         result = subprocess.run(
             ["git"] + args,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            cwd=str(REPO),
+            cwd=self._worktree_cwd(self._bound_slot),
         )
         return result.returncode, result.stdout + result.stderr
 
@@ -669,6 +707,14 @@ class PmBootstrap:
         """
         now = datetime.datetime.now(tz=KST)
         timestamp = now.strftime("%Y-%m-%d %H:%M KST")
+
+        # 바운드 슬롯을 git/pytest 수집 *전*에 세팅한다 (T-0125·순서 함정) — _collect_git/
+        # _collect_pytest 가 슬롯 바인딩(_bind_and_identity)보다 먼저 호출되므로, 여기 진입부에서
+        # 명시 multi-PM 모드(repo+slot·slot=정수 N)면 슬롯 식별자 `work/<repo>_<N>` 를 세팅해
+        # git/pytest 러너가 worktree cwd 를 보게 한다(회사=multi-PM 주 케이스). 솔로(무인자)면
+        # None 유지 → `_worktree_cwd` 가 `_auto_slot()` 로 자동해소(순서 무관). board 러너는 무관.
+        if repo is not None and slot is not None:
+            self._bound_slot = f"work/{repo}_{slot}"
 
         board = self._collect_board()
         pytest_result = self._collect_pytest() if with_pytest else None

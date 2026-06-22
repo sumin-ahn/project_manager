@@ -986,3 +986,166 @@ def test_main_explicit_slot_skips_auto(bootstrap, monkeypatch, capsys):
     assert rc == 0
     assert _CaptureBootstrap.last["repo"] == "A"
     assert _CaptureBootstrap.last["slot"] == 1
+
+
+# ── 13. _worktree_cwd — git/pytest 러너 worktree cwd 자동해소 (T-0125·T-0124 동형) ─
+# `_worktree_cwd(slot=)` 는 명시 slot > `_auto_slot()` > REPO 순으로 해소한다. _auto_slot
+# 은 areas/leases 파일 seam 으로 hermetic(위 Part B 헬퍼 _write_areas/_write_leases 재사용).
+# 자동해소 경로는 _auto_slot 을 monkeypatch 로 결정값 주입(REPO 상수 의존 회피).
+
+
+def test_worktree_cwd_explicit_slot_wins(bootstrap):
+    """명시 slot(`work/<repo>_<N>`) 이 최우선 — REPO/slot 으로 끝난다 (_auto_slot 무시)."""
+    inst = bootstrap.PmBootstrap()
+    cwd = inst._worktree_cwd("work/foo_2")
+    assert cwd == str(bootstrap.REPO / "work/foo_2")
+    assert cwd.endswith("work/foo_2")
+
+
+def test_worktree_cwd_single_selfhost_resolves_slot(bootstrap, tmp_path, monkeypatch):
+    """단일 self-host (1 repo + 1 슬롯) → _auto_slot 해소 → REPO/work/<repo>_<N> 로 끝난다."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+    ])
+    # _auto_slot 을 이 hermetic 파일 seam 으로 해소하도록 고정 (실 장부 미접촉).
+    real_auto = bootstrap._auto_slot
+    monkeypatch.setattr(bootstrap, "_auto_slot",
+                        lambda: real_auto(areas_file=areas, leases_file=leases))
+    inst = bootstrap.PmBootstrap()
+    cwd = inst._worktree_cwd()
+    assert cwd == str(bootstrap.REPO / "work/project_manager_1")
+    assert cwd.endswith("work/project_manager_1")
+
+
+def test_worktree_cwd_no_slot_falls_back_to_repo(bootstrap, monkeypatch):
+    """_auto_slot 이 None(0/2 repo·2 슬롯·부재·모호)면 REPO 폴백 (솔로 무변경)."""
+    monkeypatch.setattr(bootstrap, "_auto_slot", lambda: None)
+    inst = bootstrap.PmBootstrap()
+    assert inst._worktree_cwd() == str(bootstrap.REPO)
+    assert inst._worktree_cwd(None) == str(bootstrap.REPO)
+
+
+def test_worktree_cwd_auto_slot_exception_falls_back_to_repo(bootstrap, monkeypatch):
+    """_auto_slot 이 예외를 던져도 흡수해 REPO 폴백 (fail-soft — 자동해소는 추가 편의)."""
+    monkeypatch.setattr(bootstrap, "_auto_slot",
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    inst = bootstrap.PmBootstrap()
+    assert inst._worktree_cwd() == str(bootstrap.REPO)
+
+
+def test_default_git_pytest_cwd_is_worktree_but_board_is_repo(bootstrap, monkeypatch):
+    """분리 회귀 가드 — git/pytest 기본 러너 cwd=worktree, board 기본 러너 cwd=REPO.
+
+    자기분리(ADR-0027): 코드/tests=① worktree·board/wiki=② 홈. 세 기본 러너의 subprocess
+    cwd 를 캡처해 git·pytest 는 worktree 슬롯, board 는 REPO 임을 단언한다(러너별 cwd 분리).
+    subprocess.run 을 fake 로 갈아 실 git/pytest/board 를 절대 부르지 않는다(hermetic).
+    """
+    captured: dict[str, list[str]] = {"git": [], "pytest": [], "board": []}
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        cwd = kwargs.get("cwd")
+        if argv[0] == "git":
+            captured["git"].append(cwd)
+        elif "pytest" in argv:
+            captured["pytest"].append(cwd)
+        else:
+            captured["board"].append(cwd)
+        return _FakeCompleted()
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+    # _auto_slot 을 단일 self-host 로 고정 → worktree cwd 가 결정된다.
+    monkeypatch.setattr(bootstrap, "_auto_slot", lambda: ("project_manager", 1))
+    inst = bootstrap.PmBootstrap()
+
+    inst._default_run_git(["status"])
+    inst._default_run_pytest()
+    inst._default_run_board(["list"])
+
+    worktree = str(bootstrap.REPO / "work/project_manager_1")
+    assert captured["git"] == [worktree], "git 러너 cwd 가 worktree 가 아님"
+    assert captured["pytest"] == [worktree], "pytest 러너 cwd 가 worktree 가 아님"
+    # board 는 ②(PM 홈) 소유라 REPO 고정 — worktree 가 아님(분리 가드).
+    assert captured["board"] == [str(bootstrap.REPO)], "board 러너 cwd 가 REPO 가 아님"
+    assert captured["board"][0] != worktree
+
+
+def test_default_git_uses_bound_slot_when_set(bootstrap, monkeypatch):
+    """명시 multi-PM 바인딩(self._bound_slot) → git 기본 러너가 그 슬롯 worktree cwd 를 쓴다."""
+    captured: list[str] = []
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        if argv[0] == "git":
+            captured.append(kwargs.get("cwd"))
+        return _FakeCompleted()
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+    # _auto_slot 이 호출되면 안 된다 — 명시 _bound_slot 이 우선.
+    monkeypatch.setattr(bootstrap, "_auto_slot",
+                        lambda: (_ for _ in ()).throw(AssertionError("명시 slot 인데 auto 호출됨")))
+    inst = bootstrap.PmBootstrap()
+    inst._bound_slot = "work/billing_3"
+    inst._default_run_git(["status"])
+    assert captured == [str(bootstrap.REPO / "work/billing_3")]
+
+
+# ── 14. run() 진입부 _bound_slot 스레딩 (순서 함정 — 수집 전 세팅) ─────────────
+# 명시 --repo --slot multi-PM 경로에서 run() 이 _collect_git/_collect_pytest *전*에
+# self._bound_slot 을 세팅하는지 검증한다. 주입 git_fn 으로 호출 시점의 _bound_slot 을
+# 캡처해, git 수집이 worktree cwd 를 쓸 수 있는 상태였는지 확인한다.
+
+
+def test_run_sets_bound_slot_before_git_collection(bootstrap, tmp_path, capsys):
+    """명시 --repo --slot 시 _collect_git 호출 시점에 _bound_slot 이 이미 세팅돼 있다(순서 함정 해소)."""
+    seen: dict[str, str | None] = {}
+
+    def capturing_git(args):
+        # git 수집 시점의 _bound_slot 을 캡처 — 바인딩이 수집보다 먼저면 값이 잡힌다.
+        seen["bound_slot"] = inst._bound_slot
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return 0, "main\n"
+        if args[:2] == ["log", "--oneline"]:
+            return 0, "abc123 commit subject\n"
+        return 0, ""
+
+    wp = FakeWorktreePool()
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    # 기본 git stub 대신 캡처 git_fn 으로 교체.
+    inst._run_git_fn = capturing_git
+    rc = inst.run(repo="X", slot=2)
+    assert rc == 0
+    # git 수집 시점에 _bound_slot = work/X_2 (명시 multi-PM 슬롯 식별자).
+    assert seen["bound_slot"] == "work/X_2"
+
+
+def test_run_solo_leaves_bound_slot_none(bootstrap, tmp_path, capsys):
+    """솔로(무인자) run 은 _bound_slot 을 None 으로 유지(→ _worktree_cwd 가 _auto_slot 해소)."""
+    seen: dict[str, str | None] = {}
+
+    def capturing_git(args):
+        seen["bound_slot"] = inst._bound_slot
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return 0, "main\n"
+        if args[:2] == ["log", "--oneline"]:
+            return 0, "abc123 commit subject\n"
+        return 0, ""
+
+    wp = FakeWorktreePool()
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst._run_git_fn = capturing_git
+    rc = inst.run()  # 솔로
+    assert rc == 0
+    assert seen["bound_slot"] is None
