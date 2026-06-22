@@ -248,3 +248,48 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "write_text", spy)
     board.install_pre_push_hook()
     assert captured.get("encoding") == "utf-8"
+
+
+# ── C8: cmd_init 가 local.conf 에 ctx_window_tokens 핸드오프 예산 surface (T-0128) ──
+
+def _init_isolated(board, monkeypatch, tmp_path):
+    """cmd_init 을 hermetic 으로: LOCAL_CONF 만 tmp, pm_state·훅·opt-in 부수효과 차단."""
+    conf_path = tmp_path / "local.conf"
+    monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
+    monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
+    monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
+    monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(board, "prompt_external_review_optin", lambda: None)
+    return conf_path
+
+
+def test_init_writes_ctx_window_tokens_budget(board, monkeypatch, tmp_path):
+    """init 이 local.conf 에 ctx_window_tokens=<기본> 라인을 nudge/stop pct 옆에 기록한다.
+
+    회사 실사용 계기(T-0128): 핸드오프 토큰 예산을 사용자가 발견·조정할 수 있게 surface.
+    기본은 어댑터 ctx_guard 와 동기된 200K (board 자체 상수 — touches 격리).
+    """
+    conf_path = _init_isolated(board, monkeypatch, tmp_path)
+    args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
+
+    assert board.cmd_init(args) == 0
+
+    conf_text = conf_path.read_text(encoding="utf-8")
+    assert f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
+    assert board.CTX_WINDOW_TOKENS_DEFAULT == 200000
+    # nudge/stop pct 옆에 배치됐는지 (기존 ctx 임계와 한 블록).
+    assert "ctx_nudge_pct=" in conf_text and "ctx_stop_pct=" in conf_text
+
+
+def test_init_ctx_window_tokens_has_cost_meaning_comment(board, monkeypatch, tmp_path):
+    """ctx_window_tokens 라인 위에 비용 의미 주석(이른 핸드오프=토큰 경제·물리 window 아님)이 박힌다."""
+    conf_path = _init_isolated(board, monkeypatch, tmp_path)
+    args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
+
+    assert board.cmd_init(args) == 0
+
+    conf_text = conf_path.read_text(encoding="utf-8")
+    assert "# ctx_window_tokens:" in conf_text
+    assert "핸드오프 토큰 예산" in conf_text
+    # 핵심 의미: 물리 window 가 아니라 사용자가 정하는 비용/맥락 선택.
+    assert "물리 window 아님" in conf_text

@@ -635,6 +635,11 @@ def _detect_py() -> str:
 # local.conf `ctx_nudge_pct`·`ctx_stop_pct` 로 per-clone 조정 가능 (board.py init 기록).
 CTX_NUDGE_PCT_DEFAULT = 20  # 잔여 ≤ 이 % → "곧 정지" nudge (아직 일은 계속).
 CTX_STOP_PCT_DEFAULT = 10   # 잔여 ≤ 이 % → 정지·핸드오프 트리거 임계.
+# 핸드오프 토큰 예산(위 nudge/stop %의 기준). 어댑터 ctx_guard.CTX_WINDOW_TOKENS_DEFAULT
+# 와 값을 동기 — board 는 ctx_guard 를 import 하지 않고(touches 격리) 리터럴을 보유한다
+# (nudge/stop pct 도 동형으로 board 자체 상수). 큰 물리 window(1M) 모델이라도 낮게 두면
+# 이른 핸드오프 = 토큰 경제이므로 기본은 200K 유지(auto-detect 안 함). init 이 local.conf surface.
+CTX_WINDOW_TOKENS_DEFAULT = 200000
 
 
 def _ctx_pct(key: str, default: int) -> int:
@@ -1104,7 +1109,11 @@ def cmd_init(args: argparse.Namespace) -> int:
              "# 엔진 문서 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
              f"py={_detect_py()}\ntest_cmd=pytest -q\nproject_name=\n"
              "# ctx 정지-핸드오프 임계 (어댑터 훅이 잔여 컨텍스트 %로 판정 — T-0013):\n"
-             f"ctx_nudge_pct={CTX_NUDGE_PCT_DEFAULT}\nctx_stop_pct={CTX_STOP_PCT_DEFAULT}\n")
+             f"ctx_nudge_pct={CTX_NUDGE_PCT_DEFAULT}\nctx_stop_pct={CTX_STOP_PCT_DEFAULT}\n"
+             "# ctx_window_tokens: 핸드오프 토큰 예산(위 nudge/stop %의 기준). 큰 window(1M)\n"
+             "# 모델이라도 낮게 두면 이른 핸드오프 = 토큰 경제(큰 컨텍스트가 매 턴 소모 가속).\n"
+             "# 올리면 세션당 더 길게. 물리 window 아님 — 사용자 비용/맥락 선택.\n"
+             f"ctx_window_tokens={CTX_WINDOW_TOKENS_DEFAULT}\n")
     LOCAL_CONF.write_text(conf, encoding="utf-8")
     print(f"✓ local.conf: {('prefix=' + prefix + ' · ') if namespaced else ''}session={sess}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
