@@ -338,12 +338,16 @@ def _scaffold_doc(root: Path, relpath: str, text: str) -> Path:
     ".opencode/command/pm-dev-delegate.md",
 ])
 def test_scaffold_dangling_wikilink_is_flagged(board, monkeypatch, tmp_path, relpath):
-    """출하 scaffold 의 dangling framework [[ADR-NNNN]] 이 lint 에 잡힌다 (scaffold 스캔)."""
+    """출하 scaffold 의 dangling framework [[ADR-NNNN]] 이 lint 에 잡힌다 (scaffold 스캔).
+
+    T-0129 이후 scaffold-only framework ADR/idea dangling 은 advisory kind
+    `dangling-wikilink-scaffold` 로 분류된다(여전 보고되되 `--gate` 미차단).
+    """
     _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음 → ADR-9999 는 부재.
     _scaffold_doc(tmp_path, relpath,
                   "이 에이전트는 [[ADR-9999]] 결정을 따른다.")
     issues = board.lint_wikilinks()
-    assert any(name == "ADR-9999" and kind == "dangling-wikilink"
+    assert any(name == "ADR-9999" and kind == "dangling-wikilink-scaffold"
                for name, kind, _d in issues), (
         f"scaffold {relpath} 의 dangling [[ADR-9999]] 가 안 잡힘 — "
         f"_collect_wikilink_files 가 scaffold 를 스캔하지 않음:\n{issues}")
@@ -370,10 +374,101 @@ def test_scaffold_absent_harness_dir_skipped(board, monkeypatch, tmp_path):
     issues = board.lint_wikilinks()
     assert issues == [], issues
     # 한쪽(.claude)만 두고 dangling → 잡히되 부재한 .opencode 는 무영향.
+    # scaffold-only framework ADR dangling → advisory kind (T-0129).
     _scaffold_doc(tmp_path, ".claude/agents/x.md", "참조 [[ADR-9999]].")
+    issues = board.lint_wikilinks()
+    assert any(name == "ADR-9999" and kind == "dangling-wikilink-scaffold"
+               for name, kind, _d in issues), issues
+
+
+# ── ③d scaffold framework ADR/idea dangling = advisory · push 미차단 (T-0129) ──
+# T-0118 이 scaffold dangling 을 blocking 으로 만들면서 framework ADR 부재 다운스트림
+# 채택자의 push 를 막는 부작용이 생겼다. T-0129 이 scaffold-only framework ADR/idea
+# dangling 을 `dangling-wikilink-scaffold`(advisory·`_ADVISORY_LINT_KINDS`) 로 강등한다 —
+# signal(visibility) 은 유지하되 false push-block 만 제거. wiki/·root-doc·ticket dangling 은
+# 여전히 `dangling-wikilink`(blocking).
+
+def test_scaffold_kind_is_advisory(board):
+    """`dangling-wikilink-scaffold` 는 `_ADVISORY_LINT_KINDS` 에 등재 (gate 가 안 막음)."""
+    assert "dangling-wikilink-scaffold" in board._ADVISORY_LINT_KINDS
+    # blocking kind 는 advisory 가 아니다 (대칭 회귀 — 본 dangling 은 여전 차단).
+    assert "dangling-wikilink" not in board._ADVISORY_LINT_KINDS
+
+
+def test_scaffold_dangling_gate_passes(board, monkeypatch, tmp_path):
+    """scaffold-only framework ADR dangling 만 있으면 `lint --gate` 종료코드 0 (미차단)."""
+    _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음 → ADR-9999 부재.
+    _scaffold_doc(tmp_path, ".opencode/agents/orchestrator.md",
+                  "이 에이전트는 [[ADR-9999]] 와 [[idea-9999]] 를 따른다.")
+    # 다른 lint 표면은 비워 scaffold dangling 만 게이트에 반영.
+    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
+    monkeypatch.setattr(board, "lint_bodies", lambda: [])
+    monkeypatch.setattr(board, "lint_ideas", lambda: [])
+    monkeypatch.setattr(board, "lint_status", lambda: [])
+    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
+    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    # 분류는 advisory.
+    issues = board.lint_wikilinks()
+    assert all(kind == "dangling-wikilink-scaffold"
+               for name, kind, _d in issues
+               if name in ("ADR-9999", "idea-9999")), issues
+    # gate 는 통과(0), full 은 advisory 라도 1 (현행 계약: full 은 모든 finding 에서 1).
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
+
+
+def test_wiki_dangling_still_blocks(board, monkeypatch, tmp_path):
+    """wiki/ 의 framework ADR dangling 은 여전히 `dangling-wikilink`·gate 차단."""
+    wiki = _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음.
+    _doc(wiki, "note.md", "본문 산문 참조 [[ADR-9999]] 는 실재해야 한다.")
+    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
+    monkeypatch.setattr(board, "lint_bodies", lambda: [])
+    monkeypatch.setattr(board, "lint_ideas", lambda: [])
+    monkeypatch.setattr(board, "lint_status", lambda: [])
+    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
+    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
     issues = board.lint_wikilinks()
     assert any(name == "ADR-9999" and kind == "dangling-wikilink"
                for name, kind, _d in issues), issues
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 1  # 차단 유지.
+
+
+def test_scaffold_resolving_wikilink_clean_no_advisory(board, monkeypatch, tmp_path):
+    """scaffold ref 가 실재 ADR 을 가리키면 clean — advisory 도 안 남는다 (오탐 0)."""
+    wiki = _wire_repo(board, monkeypatch, tmp_path)
+    _adr(wiki, "0018", "domain-pages")
+    _scaffold_doc(tmp_path, ".claude/agents/orchestrator.md",
+                  "domain 갱신은 [[ADR-0018]] 을 따른다.")
+    issues = board.lint_wikilinks()
+    assert not any(name == "ADR-0018" for name, _k, _d in issues), issues
+    assert not any(kind == "dangling-wikilink-scaffold"
+                   for _n, kind, _d in issues), issues
+
+
+def test_scaffold_ticket_dangling_still_blocks(board, monkeypatch, tmp_path):
+    """scaffold 안의 ticket(`[[T-...]]`) dangling 은 scaffold 여도 항상 blocking."""
+    _wire_repo(board, monkeypatch, tmp_path)  # ticket 트리 비어 있음 → T-9999 부재.
+    _scaffold_doc(tmp_path, ".claude/agents/orchestrator.md",
+                  "이전 결정 [[T-9999]] 참조.")
+    issues = board.lint_wikilinks()
+    assert any(name == "T-9999" and kind == "dangling-wikilink"
+               for name, kind, _d in issues), (
+        f"scaffold 의 ticket dangling 은 항상 blocking 이어야 함:\n{issues}")
+    assert not any(name == "T-9999" and kind == "dangling-wikilink-scaffold"
+                   for name, kind, _d in issues), issues
+
+
+def test_same_ref_in_scaffold_and_wiki_blocks(board, monkeypatch, tmp_path):
+    """같은 framework ADR 이 scaffold + wiki/ 양쪽에서 dangle 하면 blocking (자기문서 dangle 금지)."""
+    wiki = _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음.
+    _scaffold_doc(tmp_path, ".claude/agents/orchestrator.md", "scaffold 참조 [[ADR-9999]].")
+    _doc(wiki, "note.md", "wiki 산문 참조 [[ADR-9999]] 도 있다.")
+    issues = board.lint_wikilinks()
+    # 사용처 하나라도 wiki/root-doc 이면 advisory 강등 불가 → blocking.
+    assert any(name == "ADR-9999" and kind == "dangling-wikilink"
+               for name, kind, _d in issues), issues
+    assert not any(name == "ADR-9999" and kind == "dangling-wikilink-scaffold"
+                   for name, kind, _d in issues), issues
 
 
 # ── ④ 자유어휘 일반 무탐 (오탐 0 회귀) ────────────────────────────────────────

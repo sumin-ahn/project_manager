@@ -1777,6 +1777,20 @@ def cmd_promote_scope(args: argparse.Namespace) -> int:
 # [[name]] 또는 alias [[name|display]] — name 만 캡처. backtick 안도 포함.
 _WIKILINK_RE = re.compile(r"\[\[([A-Za-z0-9_\s.\-]+?)(?:\|[^\]]+)?\]\]")
 
+# 어댑터 scaffold 경로 — fresh adopter 에 출하되는 harness 어댑터(.claude/.opencode).
+# 채택자(특히 framework ADR 0001~ 이 없는 다운스트림 앱)는 자기 repo 의 scaffold 에서
+# framework ADR/idea 를 [[bracket]] 참조하면 *영구 dangling* 이 된다 — 이는 정상이며
+# push 를 막아선 안 된다(T-0129·ADR-0015 "차단은 최소·advisory 우선"). `_collect_wikilink_files`
+# 의 scaffold rel 목록과 동일 — POSIX 경계로 비교(_rel_to_repo 는 `/` 정규화).
+_SCAFFOLD_PATH_PREFIXES: tuple[str, ...] = (
+    ".claude/agents/", ".claude/skills/", ".opencode/agents/", ".opencode/command/")
+
+
+def _is_scaffold_src(src: str) -> bool:
+    """src(`_rel_to_repo` 결과)가 어댑터 scaffold 경로 하위인지 — `\\`→`/` 정규화 후 prefix 매칭."""
+    norm = src.replace("\\", "/")
+    return norm.startswith(_SCAFFOLD_PATH_PREFIXES)
+
 
 def _collect_wikilink_files() -> list[Path]:
     """wikilink 검사 대상 .md — wiki/ 전체 + 레포 루트 CLAUDE.md·README.md + 어댑터 scaffold.
@@ -1832,9 +1846,22 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
     코드 span/fence 안의 *예시* wikilink(규약 문서가 backtick 으로 보여주는
     `[[ADR-NNNN]]`)는 실 참조가 아니므로 `_strip_code` 로 제거 후 스캔한다 —
     `lint_unstable_refs` 와 동일한 처리(오탐 0·ADR-0003 철학).
+
+    kind 분류 (T-0129·T-0118 push-block 정정):
+      - `dangling-wikilink`          = wiki/·root-doc(CLAUDE.md·README) 의 framework ADR/idea
+        dangling, 그리고 **모든 ticket(`[[T-...]]`) dangling** — `lint --gate` 차단(blocking).
+      - `dangling-wikilink-scaffold` = framework ADR/idea dangling 이 *오직* 어댑터 scaffold
+        경로(`.claude/{agents,skills}`·`.opencode/{agents,command}`)에서만 등장 — advisory
+        (`_ADVISORY_LINT_KINDS` 등재·`--gate` 미차단). 채택자(framework ADR 부재 다운스트림)의
+        scaffold bracket-ref 는 영구 dangling 이 정상이라 push 를 막으면 안 된다.
+    같은 ref 가 scaffold + wiki/root-doc 양쪽에서 dangle 하면 blocking 유지(프레임워크 자기
+    문서는 dangle 하면 안 됨). per-occurrence source 경로를 추적해 분기한다(name 별로 ADR/idea
+    여부 + 사용처 전부가 scaffold 인지).
     """
     ticket_ids, adr_nums, idea_nums = _resolve_wikilink_targets()
-    dangling: dict[str, list[str]] = {}  # name → [source rel paths]
+    # name → (is_ticket, [source rel paths]). is_ticket=True 면 항상 blocking,
+    # False(ADR/idea)면 사용처가 전부 scaffold 일 때만 advisory 강등.
+    dangling: dict[str, tuple[bool, list[str]]] = {}
 
     for path in _collect_wikilink_files():
         try:
@@ -1847,23 +1874,36 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
             name = raw.strip()
             m_adr = re.fullmatch(r"ADR-(\d+)", name)
             m_idea = re.fullmatch(r"idea-(\d+)", name)
+            is_ticket = False
             if m_adr:
                 ok = (m_adr.group(1).lstrip("0") or "0") in adr_nums
             elif re.fullmatch(r"T-(?:[A-Za-z]+-)?\d+", name):
                 ok = name in ticket_ids
+                is_ticket = True
             elif m_idea:
                 ok = (m_idea.group(1).lstrip("0") or "0") in idea_nums
             else:
                 continue  # 자유어휘 — 엔진 판정 안 함 (R15 훅 영역)
-            if not ok and src not in dangling.setdefault(name, []):
-                dangling[name].append(src)
+            if ok:
+                continue
+            _t, srcs = dangling.setdefault(name, (is_ticket, []))
+            if src not in srcs:
+                srcs.append(src)
 
     issues: list[tuple[str, str, str]] = []
     for name in sorted(dangling):
-        srcs = dangling[name]
+        is_ticket, srcs = dangling[name]
         shown = ", ".join(srcs[:3]) + (f" (외 {len(srcs) - 3}개)" if len(srcs) > 3 else "")
-        issues.append((name, "dangling-wikilink",
-                       f"[[{name}]] 대상 파일 없음 · 사용처: {shown}"))
+        # ticket dangling 은 항상 blocking. ADR/idea 는 사용처가 *전부* scaffold 일 때만
+        # advisory 강등 — 하나라도 wiki/root-doc 이면 framework 자기 문서 dangle 이라 blocking.
+        scaffold_only = (not is_ticket) and all(_is_scaffold_src(s) for s in srcs)
+        if scaffold_only:
+            issues.append((name, "dangling-wikilink-scaffold",
+                           f"[[{name}]] 대상 파일 없음 (어댑터 scaffold 참조 · 채택자 "
+                           f"decisions/ 에 framework ADR 부재 = 정상) · 사용처: {shown}"))
+        else:
+            issues.append((name, "dangling-wikilink",
+                           f"[[{name}]] 대상 파일 없음 · 사용처: {shown}"))
     return issues
 
 
@@ -2066,9 +2106,14 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     "차단은 최소·advisory 우선").
 #   - stale·orphan·oversized : domain freshness finding (lint_domain·ADR-0018). domain lint 는
 #     enforcement 아닌 visibility — push 를 절대 막지 않는다(advisory only·`--gate` 제외).
+#   - dangling-wikilink-scaffold : 어댑터 scaffold(.claude/.opencode) 에서만 등장하는 framework
+#     ADR/idea dangling (T-0129). 채택자(framework ADR 부재 다운스트림)의 scaffold bracket-ref 는
+#     영구 dangling 이 정상 — visibility 만, push 미차단. ticket dangling·wiki/root-doc dangling 은
+#     여전히 `dangling-wikilink`(blocking).
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
-     "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale"})
+     "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
+     "dangling-wikilink-scaffold"})
 
 
 def _adr_id_from_path(p: Path) -> str:
