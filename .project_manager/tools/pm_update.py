@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import importlib.util
 import os
 import shutil
 import sys
@@ -41,6 +42,66 @@ REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / ".project_manager" / "engine.manifest"
 VERSION_FILE = REPO / ".project_manager" / "engine.version"
 DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
+
+# manifest 의 render 태그 (T-0131·§3.3) — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
+RENDER_TAG = "@render"
+
+
+class ManifestEntry(str):
+    """manifest 한 경로 — `str` 서브클래스라 기존 `in`/`.startswith`/`==` 가 그대로 동작한다.
+
+    추가 속성 `render`(bool): 그 path 행 끝에 `@render` 태그가 있으면 True(byte-copy 대신
+    render_adapter 로 채운다·§3.3). 미주석=False → 오늘과 정확히 동일(순수 copy2·후방호환).
+    str 을 상속함으로써 read_manifest 의 반환이 `list[(path, render_flag)]` 의미를 가지면서도
+    `entry in entries`·`e.startswith(...)` 같은 기존 호출부/테스트를 한 줄도 깨지 않는다.
+    """
+
+    render: bool
+
+    def __new__(cls, path: str, render: bool = False) -> "ManifestEntry":
+        obj = super().__new__(cls, path)
+        obj.render = render
+        return obj
+
+
+class _RenderDst:
+    """change tuple 의 dst — 내부 Path 에 위임하되 `.render` 플래그를 운반하는 thin 래퍼.
+
+    plan 이 dst 에 render 여부를 실어 apply 가 byte-copy vs render 를 분기하게 한다. change
+    tuple 을 4-요소로 유지(`(rel, src, dst, kind)`)해 기존 unpack 호출부/테스트를 깨지 않으면서
+    render 정보를 운반한다. Path 직접 서브클래싱(버전별 `_flavour` 함정·하위 호환 약화)을 피하고
+    `__fspath__`/`__eq__`/`__getattr__` 위임으로 테스트가 쓰는 표면(`dst.exists()`·`dst.parent`·
+    `dst == Path(...)`·`str(dst)`·`Path(dst)`)을 모두 지원한다. 평문 Path dst(레거시 apply
+    직접 호출)는 이 래퍼가 아니므로 `getattr(dst, "render", False)` 가 False → copy2(후방호환).
+    """
+
+    __slots__ = ("_path", "render")
+
+    def __init__(self, path: Path, render: bool = False) -> None:
+        self._path = Path(path)
+        self.render = render
+
+    def __fspath__(self) -> str:
+        return str(self._path)
+
+    def __getattr__(self, name):
+        # _path 의 메서드/속성(exists·parent·read_text 등)으로 위임. __slots__ 정의 속성은
+        # 이 메서드 진입 전 처리되므로 무한재귀 없음.
+        return getattr(self._path, name)
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, _RenderDst):
+            return self._path == other._path
+        return self._path == other
+
+    def __hash__(self) -> int:
+        return hash(self._path)
+
+    def __str__(self) -> str:
+        return str(self._path)
+
+    def __repr__(self) -> str:
+        return f"_RenderDst({self._path!r}, render={self.render})"
 
 
 def _templates_dir() -> Path:
@@ -95,14 +156,36 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
             print("  → 외부 리뷰 OFF (나중에 local.conf 로 켤 수 있음).")
 
 
-def read_manifest(path: Path) -> list[str]:
-    """manifest 파일 → 경로 리스트 ('#' 주석·빈 줄 제외)."""
-    out: list[str] = []
+def read_manifest(path: Path) -> list[ManifestEntry]:
+    """manifest 파일 → ManifestEntry 리스트 ('#' 주석·빈 줄 제외·T-0131 @render 파싱).
+
+    각 항목은 `str` 서브클래스 ManifestEntry — 값은 path 문자열이고 `.render` 속성이 그 path
+    의 render 여부를 운반한다. path 행 끝 `  @render` 태그가 있으면 render=True(byte-copy 대신
+    render_adapter), 없으면 False(오늘과 동일·순수 copy2·후방호환). `@render` 토큰은 path 에서
+    떼어내 순수 경로만 ManifestEntry 값으로 남긴다.
+    """
+    out: list[ManifestEntry] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if line and not line.startswith("#"):
-            out.append(line)
+        if not line or line.startswith("#"):
+            continue
+        render = False
+        # 행 끝 @render 태그 인식 — path 와 태그 사이는 공백. 태그를 떼고 순수 경로만 남긴다.
+        parts = line.split()
+        if parts and parts[-1] == RENDER_TAG:
+            render = True
+            line = " ".join(parts[:-1])
+        out.append(ManifestEntry(line, render))
     return out
+
+
+def _entry_render_flag(entry) -> bool:
+    """manifest 항목의 render 플래그 — ManifestEntry 면 `.render`, 평문 str(레거시 호출)면 False.
+
+    plan() 이 `list[str]`(기존 테스트·외부 호출)과 `list[ManifestEntry]`(read_manifest) 둘 다
+    받게 정규화한다 — 후방호환(평문 str 항목은 render 비대상).
+    """
+    return bool(getattr(entry, "render", False))
 
 
 def _read_local_conf(path: Path) -> dict[str, str]:
@@ -131,39 +214,160 @@ def _iter_files(root: Path, rel: str):
             if p.is_file():
                 yield str(p.relative_to(root)), p
     elif src.is_file():
-        yield rel, src
+        yield str(rel), src
     # missing → 아무것도 yield 안 함 (호출부가 missing 으로 보고)
+
+
+def _load_pm_render():
+    """pm_render 모듈을 같은 tools/ 디렉토리에서 직접 로드 (sys.path 오염 없이·stdlib seam).
+
+    pm_import._detected_py 가 board.py 를 로드하는 패턴과 동형 — pm_update 는 stdlib-only
+    철학이나 render 분기는 pm_render(같은 엔진 동기 대상)에 위임한다. import 실패는 호출부가
+    안전쪽으로 처리하게 예외를 전파(render path 인데 렌더러 없음 = 명확한 에러가 옳다).
+    """
+    render_py = Path(__file__).resolve().parent / "pm_render.py"
+    spec = importlib.util.spec_from_file_location("pm_render", render_py)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"pm_render 로드 불가: {render_py}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# local.conf key(lowercase) → operational token key(uppercase·pm_render). board.py init 은
+# py·test_cmd·project_name 만 기록 — 나머지(project_root·project_tagline·date)는 local.conf
+# 에 없으므로 매핑 부재 시 빈값(render 시 그 토큰이 남아있으면 leak assertion 이 잡는다·그러나
+# 출하 어댑터의 operational 토큰은 import sed 로 이미 리터럴이라 render 시점엔 보통 부재 → no-op).
+_LOCAL_CONF_TO_OPERATIONAL = {
+    "project_name": "PROJECT_NAME",
+    "project_tagline": "PROJECT_TAGLINE",
+    "project_root": "PROJECT_ROOT",
+    "py": "PY",
+    "test_cmd": "TEST_CMD",
+    "date": "DATE",
+}
+
+
+def _operational_from_local_conf(dest_root: Path) -> dict[str, str]:
+    """local.conf 의 operational 해소값을 pm_render 의 token-key dict 로 변환.
+
+    local.conf 키(lowercase) → operational token key(uppercase). board.py init 이 안 쓴 키는
+    포함하지 않는다(빈값 강제 안 함). 출하 어댑터의 operational 토큰은 import sed 로 이미
+    리터럴이라 render 시점엔 보통 부재 — 이 매핑은 재렌더가 그 토큰을 만났을 때 local.conf
+    단일 진실로 재유도하기 위한 것(§3.2).
+    """
+    conf = _read_local_conf(dest_root / ".project_manager" / "local.conf")
+    operational: dict[str, str] = {}
+    for conf_key, token_key in _LOCAL_CONF_TO_OPERATIONAL.items():
+        if conf_key in conf:
+            operational[token_key] = conf[conf_key]
+    return operational
+
+
+def _render_text(source_path: Path, dest_root: Path) -> str:
+    """source 템플릿을 채택자 overlay(free-form) + local.conf(operational)로 렌더한 텍스트.
+
+    pm_render.load_overlay 가 dest_root/.project_manager/overlay.local.yaml 을 읽고(부재면
+    free-form host omit), local.conf 의 operational 값을 plain replace 로 채운다. 결과는
+    자족(잔여 `{{...}}` 0·assertion). 호출부(apply/plan)가 dst 와 비교/기록한다.
+    """
+    render_mod = _load_pm_render()
+    overlay = render_mod.load_overlay(dest_root)
+    operational = _operational_from_local_conf(dest_root)
+    text = Path(source_path).read_text(encoding="utf-8")
+    return render_mod.render_adapter(text, overlay=overlay, operational=operational)
+
+
+def _render_eq_dst(sp: Path, dst: Path, dest_root: Path) -> bool:
+    """render path 의 '변경 없음' 정직 판정 — 렌더 산출물 == dst 현재 내용 (§3.3).
+
+    filecmp.cmp(템플릿, dst) 는 render path 에 *틀림*(템플릿은 렌더 산출물과 byte-equal 일 수
+    없어 항상 update 오보). 대신 source 를 dest 의 overlay/local.conf 로 렌더해 dst 와 비교한다.
+    렌더 실패(렌더러 부재·assertion)는 보수적으로 '다름'(False) 취급 — plan 이 그 path 를
+    change 로 띄워 apply 가 실제 렌더에서 명확히 실패하게 한다(침묵 폴백 금지).
+    """
+    try:
+        rendered = _render_text(sp, dest_root)
+        return rendered == dst.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001 — 렌더/IO 실패는 '다름'으로 보수 처리.
+        return False
 
 
 def plan(
     source_root: Path,
-    manifest: list[str],
+    manifest: list,
     dest_root: Path | None = None,
 ) -> tuple[list[tuple], list[str]]:
     """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update).
 
     dest_root: 동기화 대상 루트. None 이면 REPO(self-location) 사용.
+
+    manifest 항목이 `ManifestEntry`(render 플래그 운반·read_manifest 산출)면 그 path 의 render
+    여부를 dst(`_RenderDst` 래퍼)에 실어 apply 가 byte-copy vs render 를 분기하게 한다. 평문
+    str 항목(레거시 호출)은 render=False(후방호환·순수 copy2). render path 의 변경검출은
+    filecmp 대신 rendered-output 비교(`_render_eq_dst`) — 템플릿≠산출물 오보 회피(§3.3).
     """
     effective_dest = dest_root if dest_root is not None else REPO
     changes: list[tuple] = []
     missing: list[str] = []
-    for rel in manifest:
+    for entry in manifest:
+        rel = str(entry)
+        render = _entry_render_flag(entry)
         if not (source_root / rel).exists():
             missing.append(rel)
             continue
         for r, sp in _iter_files(source_root, rel):
-            dst = effective_dest / r
+            # render 는 `.md` 한정 — @render 디렉토리 하위의 비-.md(이미지·json 등)는 byte-copy
+            # (pm_import.render_managed_files 가 이미 `.md` 한정·정렬과 동형). 산출물은 자족 .md.
+            file_render = render and Path(r).suffix == ".md"
+            dst = _RenderDst(effective_dest / r, file_render)
             if not dst.exists():
                 changes.append((r, sp, dst, "new"))
+            elif file_render:
+                # render path: 템플릿이 산출물과 byte-equal 일 수 없으므로 filecmp 는 항상 오보.
+                # 렌더한 결과가 dst 와 다를 때만 update(정직 판정·§3.3).
+                if not _render_eq_dst(sp, dst, effective_dest):
+                    changes.append((r, sp, dst, "update"))
             elif not filecmp.cmp(sp, dst, shallow=False):
                 changes.append((r, sp, dst, "update"))
     return changes, missing
 
 
 def apply(changes: list[tuple]) -> None:
+    """change 적용 — render=False(기본)는 순수 copy2, render=True 는 render_adapter 후 기록.
+
+    dst 가 `_RenderDst`(render 플래그 운반·plan 산출)면 그 플래그로 분기한다. 평문 Path dst
+    (레거시 직접 호출)는 render 비대상 → copy2(후방호환·현 pm_update 동작 불변).
+    """
+    render_mod = None  # render path 가 있을 때만 lazy-load.
     for _r, sp, dst, _kind in changes:
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(sp, dst)
+        if getattr(dst, "render", False):
+            dest_root = _dest_root_for(dst, _r)
+            if render_mod is None:
+                render_mod = _load_pm_render()
+            overlay = render_mod.load_overlay(dest_root)
+            operational = _operational_from_local_conf(dest_root)
+            text = Path(sp).read_text(encoding="utf-8")
+            rendered = render_mod.render_adapter(
+                text, overlay=overlay, operational=operational)
+            Path(dst).write_text(rendered, encoding="utf-8")
+        else:
+            shutil.copy2(sp, dst)
+
+
+def _dest_root_for(dst: Path, rel: str) -> Path:
+    """change 의 dst 절대경로와 그 repo-기준 relpath 로 dest_root 를 역산한다.
+
+    dst = dest_root / rel 이므로 dst 에서 rel 컴포넌트 수만큼 거슬러 올라가면 dest_root.
+    plan 이 dst 를 effective_dest/r 로 만들었으므로 정확히 복원된다(render path 의 overlay/
+    local.conf 조회 기준).
+    """
+    parts = Path(rel).parts
+    root = Path(dst)
+    for _ in parts:
+        root = root.parent
+    return root
 
 
 def resolve_target_root(target_name: str) -> Path:
@@ -341,7 +545,10 @@ def main(argv: list[str] | None = None) -> int:
     changes, missing = plan(source_root, manifest, dest_root=dest_root)
 
     for r, _sp, _dst, kind in changes:
-        print(f"  [{kind}] {r}")
+        # render path 는 byte-copy 가 아니라 재렌더 산출물 — PM 이 구분하게 [render] 로 표기
+        # ([update] = byte-copy·§3.3 dry-run 표기). new 든 update 든 render 면 [render].
+        label = "render" if getattr(_dst, "render", False) else kind
+        print(f"  [{label}] {r}")
     for r in missing:
         print(f"  [source 에 없음] {r}", file=sys.stderr)
 

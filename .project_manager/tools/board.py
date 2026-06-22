@@ -1907,6 +1907,130 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
     return issues
 
 
+# ── render-leak (리터럴 `{{...}}` 누출 차단 · T-0131·§3.4) ──────────────────
+# 어댑터 파일 = render-overlay 산출물(ADR-0028). framework 본문 템플릿 + 채택자 overlay 가
+# pm_update 재렌더로 자족 .md 가 된다. half-rendered 토큰(`{{...}}` 잔존)이 *출하 산출물* 에
+# 새 나가면 harness-load 에이전트 지시가 무음 열화하므로 실결함 — blocking(경고 아님).
+#
+# ⚠️ 활성화 전 무발화 경계 (DoD): 스캔 대상을 **@render manifest path 의 산출물로 한정**한다.
+#    현재 트리는 *어떤* 실 manifest path 도 @render 가 아니므로(D17-2/T-0133 활성화 전) 검사
+#    대상이 0 → 이 lint 는 현 트리에서 무발화(기존 토큰을 가진 어댑터 .md 를 *검사하지 않음*).
+#    토큰은 @render 로 활성화돼 렌더 산출물이 된 path 에서만 leak 으로 간주된다 — 활성화는
+#    pm_render(post-render assertion) + 이 lint(상시 backstop)가 함께 자족성을 보증한다.
+
+# leak 스캔 토큰 — 대문자/언더스코어 placeholder (`{{PROJECT_NAME}}`·`{{PROTECTED_PATHS}}` 등).
+# pm_render._ANY_TOKEN_RE 와 동형(소문자/공백 토큰은 산문이라 제외·오탐 0).
+_RENDER_TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+
+
+def _render_managed_relpaths() -> set[str]:
+    """engine.manifest 에서 `@render` 태그가 붙은 path 들(repo 기준 relpath·POSIX) — 검사 대상.
+
+    pm_update.read_manifest 를 재사용해 `.render` 플래그가 True 인 항목만 모은다. manifest
+    부재·로드 실패는 빈 set(검사 대상 0·무발화). manifest 의 @render path 가 디렉토리면 그
+    하위 출하 어댑터가 전부 산출물이므로 prefix 매칭에 쓴다.
+    """
+    pm_update = _load_pm_update_module()
+    if pm_update is None:
+        return set()
+    managed: set[str] = set()
+    for manifest_path in _engine_manifest_paths():
+        try:
+            for entry in pm_update.read_manifest(manifest_path):
+                if getattr(entry, "render", False):
+                    managed.add(str(entry).replace("\\", "/"))
+        except Exception:  # noqa: BLE001 — 깨진/부재 manifest 는 검사 대상 0(무발화).
+            continue
+    return managed
+
+
+def _engine_manifest_paths() -> list[Path]:
+    """이 트리에서 검사할 engine.manifest 파일들 — 루트 + templates/<harness>/ (있을 때만).
+
+    채택자(단일 트리)는 루트 manifest 만, 도그푸딩 모노레포(이 repo)는 templates/* 도 본다.
+    `.is_file()` 가드로 존재하는 것만(harness 별 부재 무영향)."""
+    out: list[Path] = []
+    root_manifest = REPO / ".project_manager" / "engine.manifest"
+    if root_manifest.is_file():
+        out.append(root_manifest)
+    templates = REPO / "templates"
+    if templates.is_dir():
+        for child in sorted(templates.iterdir()):
+            m = child / ".project_manager" / "engine.manifest"
+            if m.is_file():
+                out.append(m)
+    return out
+
+
+def _load_pm_update_module():
+    """pm_update 모듈을 같은 tools/ 디렉토리에서 로드 (read_manifest @render 파싱 재사용).
+
+    board.py 가 _detected_py 류 seam 으로 형제 모듈을 로드하는 패턴과 동형. 실패 시 None →
+    호출부가 검사 대상 0(무발화)으로 흡수한다."""
+    pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("pm_update", pm_update_py)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — 로드 실패는 무발화(검사 대상 0).
+        return None
+
+
+def _is_render_managed(rel_posix: str, managed: set[str]) -> bool:
+    """rel_posix 가 @render manifest path(파일 정확일치 OR 디렉토리 prefix) 하위인지."""
+    for m in managed:
+        if rel_posix == m or rel_posix.startswith(m.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def lint_render_leak() -> list[tuple[str, str, str]]:
+    """render 산출물에 리터럴 `{{...}}` 누출 차단 (kind=`render-leak`·blocking·ADR-0028·§3.4).
+
+    `_ADVISORY_LINT_KINDS` 밖 → `lint --gate` 차단 → pre-push exit 1(dangling-wikilink 미러).
+    half-rendered 토큰은 harness-load 에이전트 지시의 무음 열화라 실결함(경고 아님).
+
+    **활성화 전 무발화 경계**: 검사 대상 = engine.manifest 에서 `@render` 태그가 붙은 path 의
+    산출물뿐(`_render_managed_relpaths`). 현 트리는 실 path @render 0(D17-2/T-0133 활성화 전)
+    → 검사 대상 0 → 무발화(기존 토큰을 가진 미활성 어댑터 .md 는 *검사하지 않음*). pm_render
+    의 post-render assertion 과 2중 backstop — pm_update 가 마지막 도구였는지 무관한 상시 가드.
+
+    fail-soft: manifest 부재·로드 실패·파일 read 오류 → 그 부분 skip(검사 대상 0·솔로/신규 무영향).
+    """
+    managed = _render_managed_relpaths()
+    if not managed:
+        return []  # @render path 0 → 검사 대상 0 (활성화 전 무발화).
+    issues: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for managed_rel in sorted(managed):
+        target = REPO / managed_rel
+        files: list[Path] = []
+        if target.is_dir():
+            files = sorted(p for p in target.rglob("*.md") if p.is_file())
+        elif target.is_file():
+            files = [target]
+        for p in files:
+            rel_posix = _rel_to_repo(p).replace("\\", "/")
+            if rel_posix in seen:
+                continue
+            seen.add(rel_posix)
+            try:
+                text = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            leaked = sorted(set(_RENDER_TOKEN_RE.findall(text)))
+            if leaked:
+                issues.append((
+                    rel_posix, "render-leak",
+                    f"render 산출물에 미해소 토큰 잔존: {', '.join(leaked)} "
+                    f"(@render 관리 path — overlay/local.conf 채널 누락 또는 미배선 토큰)"))
+    return issues
+
+
 # ── 파일명-무관 참조 강제 (unstable-ref · T-0036, ADR-0003 연장) ──────────
 # 엔진은 [[ADR-NNNN]] 를 *번호*로 resolve 하므로 슬러그는 무관하다(ADR-0003). 그러나 LLM 이
 # 구조화 디렉토리(decisions/·tickets/·ideas/)를 **생파일명·슬러그**로 가리키면 — markdown 경로
@@ -2312,12 +2436,14 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     dangling wikilink + unstable (slug/filename) refs (ADR-0003) +
     family wiki scope 인지(ADR-0015) +
     domain freshness advisory(stale/orphan/oversized·ADR-0018·never-block) +
-    architecture.md freshness advisory(architecture-stale·ADR-0022·never-block)."""
+    architecture.md freshness advisory(architecture-stale·ADR-0022·never-block) +
+    render-leak(리터럴 `{{...}}` 누출·ADR-0028·blocking·@render 산출물 한정·활성화 전 무발화)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
             + lint_domain() + lint_adr_lifecycle()
-            + lint_architecture_freshness())
+            + lint_architecture_freshness()
+            + lint_render_leak())
 
 
 # ── board.md regeneration ──────────────────────────────────────────────

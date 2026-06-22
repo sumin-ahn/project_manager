@@ -17,6 +17,8 @@
 .project_manager/tools/pm_log.py
 .project_manager/tools/ticket_finish.py
 .project_manager/tools/pm_update.py
+# pm_render: 어댑터 render 엔진 (ADR-0028·T-0131·slot-fill+conditional-omit). pm_update/pm_import 가 @render path 에 위임. 도구 전파 등록일 뿐 — @render *활성화*(어댑터 path 태그)는 별개(D17-2/D17-5)
+.project_manager/tools/pm_render.py
 # relay core: 하니스 무관 thin stateless supervisor (ADR-0009). 하니스 driver(pm_orch_*.py)는 어댑터층(manifest 밖)
 .project_manager/tools/pm_relay.py
 # external_review: 외부 리뷰어 어댑터 (ADR-0004·기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)

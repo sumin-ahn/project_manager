@@ -694,6 +694,104 @@ def substitute_placeholders(
     return changed
 
 
+# ── render 단계 (T-0131·ADR-0028) ──────────────────────────────────────────
+# 어댑터 파일 = render-overlay 산출물. import 도 pm_update 와 같은 render 경로를 탄다 —
+# manifest @render path 면 복사+operational sed 후 free-form 토큰을 overlay(부재면 host omit)로
+# render_adapter 처리한다(pm_render 공유). 현 트리는 실 path @render 0 → 이 단계는 무동작
+# (활성화 전·D17-2/T-0133). substitute(operational) *이후*·fill *이전* 에 둬 fill 이 @render
+# 파일의 free-form 토큰을 보지 않게 한다(render 가 이미 omit/fill 처리).
+
+def _load_pm_render_module():
+    """pm_render 모듈을 같은 tools/ 디렉토리에서 로드 (board.py 로더 패턴 동형·sys.path 무오염).
+
+    실패 시 None → 호출부가 render 단계 skip(검사 대상 0·무동작). render path 가 있는데
+    렌더러 부재면 토큰이 잔존하나, 그건 board.py render-leak lint 가 backstop 으로 잡는다."""
+    render_py = Path(__file__).resolve().parent / "pm_render.py"
+    try:
+        spec = importlib.util.spec_from_file_location("pm_render", render_py)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — 로드 실패는 render 단계 skip(무동작).
+        return None
+
+
+def _render_managed_relpaths(dest_root: Path) -> set[str]:
+    """복사된 트리의 engine.manifest 에서 `@render` path(repo 기준 relpath·POSIX) 집합.
+
+    pm_update.read_manifest 를 재사용해 `.render` True 항목만 모은다. manifest 부재·로드 실패
+    → 빈 set(render 대상 0·무동작). 디렉토리 path 는 하위 어댑터 산출물의 prefix 매칭에 쓴다."""
+    pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
+    manifest = dest_root / ".project_manager" / "engine.manifest"
+    if not manifest.is_file():
+        return set()
+    try:
+        spec = importlib.util.spec_from_file_location("pm_update", pm_update_py)
+        if spec is None or spec.loader is None:
+            return set()
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return {
+            str(e).replace("\\", "/")
+            for e in mod.read_manifest(manifest)
+            if getattr(e, "render", False)
+        }
+    except Exception:  # noqa: BLE001 — 로드/파싱 실패는 render 대상 0(무동작).
+        return set()
+
+
+def _is_render_managed(rel_posix: str, managed: set[str]) -> bool:
+    """rel_posix 가 @render manifest path(파일 정확일치 OR 디렉토리 prefix) 하위인지."""
+    for m in managed:
+        if rel_posix == m or rel_posix.startswith(m.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def render_managed_files(
+    dest_root: Path,
+    subs: dict[str, str],
+    copied_relpaths: set[Path],
+) -> int:
+    """이번 run 이 복사한 @render path 파일을 render_adapter 산출물로 다시 쓴다. 변경 수 반환.
+
+    범위 = copied_relpaths(비파괴·substitute_placeholders 와 동일 계약). @render manifest path
+    하위 .md 만 대상. operational 은 이번 import 의 subs(이미 substitute 가 리터럴로 박았으므로
+    보통 no-op), free-form 은 overlay(부재면 host omit). 현 트리는 @render 0 → 무동작.
+
+    subs(중괄호 포함 token→value)를 pm_render 의 bare-key operational dict 로 변환해 넘긴다."""
+    managed = _render_managed_relpaths(dest_root)
+    if not managed:
+        return 0
+    render_mod = _load_pm_render_module()
+    if render_mod is None:
+        return 0
+    overlay = render_mod.load_overlay(dest_root)
+    # subs 는 `{{KEY}}`→value — pm_render 는 bare KEY 를 기대하므로 변환.
+    operational = {
+        token.strip("{}"): value for token, value in subs.items()
+    }
+    changed = 0
+    for rel in sorted(copied_relpaths):
+        rel_posix = rel.as_posix()
+        if not rel_posix.endswith(".md") or not _is_render_managed(rel_posix, managed):
+            continue
+        path = dest_root / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        rendered = render_mod.render_adapter(text, overlay=overlay, operational=operational)
+        if rendered != text:
+            path.write_text(rendered, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 # ── board.py init 호출 ─────────────────────────────────────────────────────
 
 def run_board_init(dest_root: Path) -> int:
@@ -1965,6 +2063,14 @@ def main(argv: list[str] | None = None) -> int:
     subs = _substitution_map(project_name, dest_root, today)
     n_subst = substitute_placeholders(dest_root, subs, copied_relpaths)
     print(f"✓ {n_copy} 파일 복사 · {n_subst} 파일 placeholder 치환")
+
+    # render 단계 (T-0131·ADR-0028): @render manifest path 의 복사본을 render_adapter 산출물로
+    # 다시 쓴다 — operational(subs·이미 sed) + free-form overlay(부재면 host omit). substitute
+    # *직후*·fill *이전* 에 둬 fill 이 @render 파일의 free-form 토큰을 보지 않게 한다. 현 트리는
+    # 실 path @render 0 → 무동작(활성화 전·D17-2/T-0133). 범위 = copied_relpaths(비파괴).
+    n_render = render_managed_files(dest_root, subs, copied_relpaths)
+    if n_render:
+        print(f"✓ {n_render} 파일 render (어댑터=overlay 산출물·ADR-0028)")
 
     # MF1: board.py init 은 local.conf 를 무조건 덮으므로(local.conf 는 복사/백업 대상 트리
     #      밖), --into 재-import 면 기존 per-clone 설정(external_review·reviewer_cmd·prefix
