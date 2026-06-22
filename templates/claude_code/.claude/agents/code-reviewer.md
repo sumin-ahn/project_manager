@@ -43,7 +43,7 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
 - `touches` 범위만 변경됐는가 (`git diff --name-only` 로 확인). 보호 영역({{PROTECTED_PATHS}})이 건드려지지 않았는가. <!-- TODO: 없으면 괄호 부분 삭제 -->
 - 과잉 엔지니어링·요청 안 한 기능이 없는가.
 
-### 7. wiki DoD · domain freshness ([[ADR-0018]])
+### 7. wiki DoD · domain freshness (ADR-0018)
 - touch 한 코드를 담당하는 `domain/` 페이지(covers 매칭)가 있으면, 변경으로 상한 내용이 갱신됐는가 (touch∩covers·soft — *누락이 곧 must-fix 는 아니나* should-fix/상기로 띄운다).
 - `{{PY}} .project_manager/tools/domain.py lint` advisory finding(stale/orphan/oversized)이 이번 변경으로 새로 생겼는가 — 생겼으면 보고에 표면화 (작업 무차단·visibility).
 

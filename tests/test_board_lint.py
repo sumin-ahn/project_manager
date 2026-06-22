@@ -316,6 +316,66 @@ def test_real_dangling_wikilink_outside_code_still_flagged(board, monkeypatch, t
     assert not any(name == "ADR-0006" for name, _k, _d in issues), issues
 
 
+# ── ③c 어댑터 scaffold 스캔 (T-0118·fresh-adopter scaffold dangling 가드) ──────
+# `_collect_wikilink_files` 가 wiki/·루트 docs 뿐 아니라 출하 어댑터 scaffold
+# (`.claude/{agents,skills}`·`.opencode/{agents,command}`)도 봐야 한다 — fresh adopter 엔
+# framework ADR 이 없으니 scaffold 의 `[[ADR-NNNN]]` 가 새면 dangling. 가드가 wiki/ 만 보던
+# 동안 이 dangling 은 구조적으로 안 잡혔다(T-0116 이 scaffold ref 를 늘림). 이 테스트들이
+# scaffold 스캔의 sensitivity — 확장 전이면 모두 false-negative 로 fail 한다.
+
+def _scaffold_doc(root: Path, relpath: str, text: str) -> Path:
+    """root 아래 어댑터 scaffold .md 를 만든다 (예: .claude/agents/x.md)."""
+    p = root / relpath
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+@pytest.mark.parametrize("relpath", [
+    ".claude/agents/orchestrator.md",
+    ".claude/skills/spike-new.md",
+    ".opencode/agents/orchestrator.md",
+    ".opencode/command/pm-dev-delegate.md",
+])
+def test_scaffold_dangling_wikilink_is_flagged(board, monkeypatch, tmp_path, relpath):
+    """출하 scaffold 의 dangling framework [[ADR-NNNN]] 이 lint 에 잡힌다 (scaffold 스캔)."""
+    _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음 → ADR-9999 는 부재.
+    _scaffold_doc(tmp_path, relpath,
+                  "이 에이전트는 [[ADR-9999]] 결정을 따른다.")
+    issues = board.lint_wikilinks()
+    assert any(name == "ADR-9999" and kind == "dangling-wikilink"
+               for name, kind, _d in issues), (
+        f"scaffold {relpath} 의 dangling [[ADR-9999]] 가 안 잡힘 — "
+        f"_collect_wikilink_files 가 scaffold 를 스캔하지 않음:\n{issues}")
+
+
+def test_scaffold_resolving_wikilink_is_clean(board, monkeypatch, tmp_path):
+    """scaffold ref 가 실재 ADR 을 가리키면 clean (오탐 0 경계)."""
+    wiki = _wire_repo(board, monkeypatch, tmp_path)
+    _adr(wiki, "0018", "domain-pages")
+    _scaffold_doc(tmp_path, ".claude/agents/orchestrator.md",
+                  "domain 갱신은 [[ADR-0018]] 을 따른다.")
+    issues = board.lint_wikilinks()
+    assert not any(name == "ADR-0018" for name, _k, _d in issues), issues
+
+
+def test_scaffold_absent_harness_dir_skipped(board, monkeypatch, tmp_path):
+    """부재 harness scaffold dir 은 skip — 없는 디렉토리에서 터지지 않는다.
+
+    claude 채택자엔 `.opencode` 가, opencode 채택자엔 `.claude` 가 없다. `.is_dir()`
+    가드 덕에 부재 dir 은 조용히 건너뛰고 존재하는 scaffold 만 스캔한다.
+    """
+    _wire_repo(board, monkeypatch, tmp_path)  # 어떤 scaffold dir 도 안 만든다.
+    # scaffold 부재 + wiki/ 비어 있음 → dangling 없음, 예외 없이 clean.
+    issues = board.lint_wikilinks()
+    assert issues == [], issues
+    # 한쪽(.claude)만 두고 dangling → 잡히되 부재한 .opencode 는 무영향.
+    _scaffold_doc(tmp_path, ".claude/agents/x.md", "참조 [[ADR-9999]].")
+    issues = board.lint_wikilinks()
+    assert any(name == "ADR-9999" and kind == "dangling-wikilink"
+               for name, kind, _d in issues), issues
+
+
 # ── ④ 자유어휘 일반 무탐 (오탐 0 회귀) ────────────────────────────────────────
 
 def test_freeform_non_numeric_wikilink_untouched(board, monkeypatch, tmp_path):

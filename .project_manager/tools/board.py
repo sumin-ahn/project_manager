@@ -1770,13 +1770,25 @@ _WIKILINK_RE = re.compile(r"\[\[([A-Za-z0-9_\s.\-]+?)(?:\|[^\]]+)?\]\]")
 
 
 def _collect_wikilink_files() -> list[Path]:
-    """wikilink 검사 대상 .md — wiki/ 전체 + 레포 루트 CLAUDE.md·README.md."""
+    """wikilink 검사 대상 .md — wiki/ 전체 + 레포 루트 CLAUDE.md·README.md + 어댑터 scaffold.
+
+    어댑터 scaffold(`.claude/{agents,skills}`·`.opencode/{agents,command}`)도 스캔한다 —
+    fresh adopter 엔 framework ADR/ticket 이 없으므로, 출하 scaffold 의 `[[ADR-NNNN]]` 같은
+    구조참조 wikilink 가 그대로 새 나가면 fresh-clone 에서 dangling 이 된다. 가드가 wiki/ 만
+    보던 동안 이 scaffold dangling 은 *구조적으로* 안 잡혔다(T-0116 이 scaffold ref 를 늘림).
+    각 dir 은 harness 별로 존재 여부가 다르므로(claude 채택자엔 `.opencode` 부재·역도 마찬가지)
+    `.is_dir()` 가드로 있을 때만 추가한다.
+    """
     wiki = REPO / ".project_manager" / "wiki"
     files: list[Path] = list(wiki.rglob("*.md")) if wiki.is_dir() else []
     for name in ("CLAUDE.md", "README.md"):
         p = REPO / name
         if p.exists():
             files.append(p)
+    for rel in (".claude/agents", ".claude/skills", ".opencode/agents", ".opencode/command"):
+        d = REPO / rel
+        if d.is_dir():
+            files.extend(d.rglob("*.md"))
     return files
 
 

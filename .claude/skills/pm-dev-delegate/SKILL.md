@@ -19,7 +19,7 @@ description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touche
 
 ## domain 소환 (recall — dev 위임 *전*)
 
-위임 *전* ticket 의 covers 매칭 domain 페이지를 띄워 dev 에게 함께 넘긴다 (읽기 맥락 — dev 가 도메인 지식 없이 구현하는 걸 막음·[[ADR-0018]] §7b):
+위임 *전* ticket 의 covers 매칭 domain 페이지를 띄워 dev 에게 함께 넘긴다 (읽기 맥락 — dev 가 도메인 지식 없이 구현하는 걸 막음·ADR-0018 §7b):
 
 ```bash
 {{PY}} .project_manager/tools/domain.py affected --ticket T-NNNN
