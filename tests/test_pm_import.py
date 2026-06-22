@@ -68,7 +68,7 @@ def _hermetic_opencode_models(request, pm_import, monkeypatch):
     테스트는 `_real_models_runner` 를 안 타므로 영향 없다. `_real_models_runner` 자체의 fail-soft
     를 검증하는 테스트만 opt-out 한다.
     """
-    if request.function.__name__ == "test_real_models_runner_no_binary_fail_soft":
+    if request.function.__name__.startswith("test_real_models_runner"):
         return
     monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
 
@@ -1582,6 +1582,165 @@ def test_real_models_runner_no_binary_fail_soft(pm_import, monkeypatch):
     )
     ok, models = pm_import._real_models_runner()
     assert ok is False and models == []
+
+
+# ── T-0127: _real_models_runner 실패 사유 stderr surface (침묵 무력화 해소) ──────
+# fail-soft 는 유지(반환 계약 불변)하되 *왜* 실패했는지 stderr 로 1줄 surface. monkeypatch 로
+# subprocess.run 에 가짜 result/예외를 주입하고 capsys 로 stderr 를 캡처해 사유 출력을 단언한다.
+
+class _FakeResult:
+    """subprocess.run 반환 모사 — _real_models_runner 가 보는 필드만(returncode/stdout/stderr)."""
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_real_models_runner_no_binary_surfaces_reason(pm_import, monkeypatch, capsys):
+    """which None → (False, []) 유지 + stderr 에 PATH 부재 사유 surface."""
+    monkeypatch.setattr(pm_import.shutil, "which", lambda b: None)
+    ok, models = pm_import._real_models_runner()
+    assert ok is False and models == []
+    err = capsys.readouterr().err
+    assert "PATH 부재" in err
+
+
+def test_real_models_runner_nonzero_rc_surfaces_reason(pm_import, monkeypatch, capsys):
+    """rc≠0 → (False, []) 유지 + stderr 에 rc + stderr 앞부분 surface."""
+    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
+    monkeypatch.setattr(
+        pm_import.subprocess, "run",
+        lambda *a, **k: _FakeResult(returncode=2, stdout="", stderr="boom failure detail"),
+    )
+    ok, models = pm_import._real_models_runner()
+    assert ok is False and models == []
+    err = capsys.readouterr().err
+    assert "rc=2" in err
+    assert "boom failure detail" in err
+
+
+def test_real_models_runner_nonzero_rc_truncates_stderr(pm_import, monkeypatch, capsys):
+    """rc≠0 의 stderr 는 앞 200자까지만 surface(로그 폭증 방지)."""
+    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
+    long_detail = "x" * 500
+    monkeypatch.setattr(
+        pm_import.subprocess, "run",
+        lambda *a, **k: _FakeResult(returncode=1, stdout="", stderr=long_detail),
+    )
+    pm_import._real_models_runner()
+    err = capsys.readouterr().err
+    assert "x" * 200 in err
+    assert "x" * 201 not in err
+
+
+def test_real_models_runner_timeout_surfaces_reason(pm_import, monkeypatch, capsys):
+    """TimeoutExpired → (False, []) 유지 + stderr 에 timeout 값 + env override 안내 surface."""
+    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
+    monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
+
+    def _raise_timeout(*a, **k):
+        raise pm_import.subprocess.TimeoutExpired(cmd="opencode models", timeout=60)
+
+    monkeypatch.setattr(pm_import.subprocess, "run", _raise_timeout)
+    ok, models = pm_import._real_models_runner()
+    assert ok is False and models == []
+    err = capsys.readouterr().err
+    assert "60s timeout 초과" in err
+    assert "PM_OPENCODE_MODELS_TIMEOUT" in err
+
+
+def test_real_models_runner_exception_surfaces_reason(pm_import, monkeypatch, capsys):
+    """기타 예외 → (False, []) 유지 + stderr 에 예외 메시지 surface(import 안 깸)."""
+    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
+
+    def _raise(*a, **k):
+        raise RuntimeError("unexpected explosion")
+
+    monkeypatch.setattr(pm_import.subprocess, "run", _raise)
+    ok, models = pm_import._real_models_runner()
+    assert ok is False and models == []
+    err = capsys.readouterr().err
+    assert "예외" in err
+    assert "unexpected explosion" in err
+
+
+def test_real_models_runner_parse_zero_surfaces_reason(pm_import, monkeypatch, capsys):
+    """rc=0 이나 파싱 0개 → (True, []) 유지(호출부가 TODO 폴백) + stderr 에 형식 확인 안내 surface."""
+    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
+    # 슬래시 없는 배너만 → _parse_opencode_models 가 빈 리스트.
+    monkeypatch.setattr(
+        pm_import.subprocess, "run",
+        lambda *a, **k: _FakeResult(returncode=0, stdout="banner line\nno slash here\n"),
+    )
+    ok, models = pm_import._real_models_runner()
+    assert ok is True and models == []
+    err = capsys.readouterr().err
+    assert "모델 0개 파싱" in err
+
+
+def test_real_models_runner_success_no_reason(pm_import, monkeypatch, capsys):
+    """정상(rc=0·모델 N개) → (True, [모델]) + stderr 무음(반환 계약·무사유 확인)."""
+    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
+    monkeypatch.setattr(
+        pm_import.subprocess, "run",
+        lambda *a, **k: _FakeResult(
+            returncode=0, stdout="ollama/gemma4:26b\nopencode/big-pickle\n"
+        ),
+    )
+    ok, models = pm_import._real_models_runner()
+    assert ok is True
+    assert models == ["ollama/gemma4:26b", "opencode/big-pickle"]
+    assert capsys.readouterr().err == ""
+
+
+# ── T-0127: _opencode_models_timeout env override (T-0070 PM_SUBMODULE_TIMEOUT 동형) ──
+
+def test_opencode_models_timeout_default_when_unset(pm_import, monkeypatch):
+    """env 미설정 → 기본 60."""
+    monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
+    assert pm_import._opencode_models_timeout() == 60
+
+
+def test_opencode_models_timeout_env_override(pm_import, monkeypatch):
+    """PM_OPENCODE_MODELS_TIMEOUT=120 → 120(양의 정수 채택)."""
+    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "120")
+    assert pm_import._opencode_models_timeout() == 120
+
+
+def test_opencode_models_timeout_strips_whitespace(pm_import, monkeypatch):
+    """env 값 앞뒤 공백 strip 후 int 파싱."""
+    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "  90  ")
+    assert pm_import._opencode_models_timeout() == 90
+
+
+def test_opencode_models_timeout_non_numeric_falls_back(pm_import, monkeypatch):
+    """비숫자 env → 기본 60 폴백(무해)."""
+    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "soon")
+    assert pm_import._opencode_models_timeout() == 60
+
+
+def test_opencode_models_timeout_non_positive_falls_back(pm_import, monkeypatch):
+    """≤0 env(0·음수) → 기본 60 폴백(무제한 두지 않음 — 빠른 로컬 조회 가정)."""
+    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "0")
+    assert pm_import._opencode_models_timeout() == 60
+    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "-5")
+    assert pm_import._opencode_models_timeout() == 60
+
+
+def test_real_models_runner_uses_resolved_timeout(pm_import, monkeypatch):
+    """_real_models_runner 가 subprocess.run 의 timeout= 으로 _opencode_models_timeout() 값을 쓴다."""
+    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
+    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "200")
+    seen = {}
+
+    def _capture(*a, **k):
+        seen["timeout"] = k.get("timeout")
+        return _FakeResult(returncode=0, stdout="ollama/gemma4:26b\n")
+
+    monkeypatch.setattr(pm_import.subprocess, "run", _capture)
+    pm_import._real_models_runner()
+    assert seen["timeout"] == 200
 
 
 def test_main_opencode_flag_end_to_end(pm_import, tmp_path):

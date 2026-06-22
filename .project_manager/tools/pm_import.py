@@ -105,10 +105,26 @@ OPENCODE_FILL_CMD = ("opencode", "run")
 # 하니스 호출 타임아웃 (초) — repo 분석 1회.
 FILL_TIMEOUT_SECONDS = 300
 
-# `opencode models` 조회 타임아웃 (초) — 모델 목록 나열은 빠른 로컬 명령이라 짧게 둔다.
+# `opencode models` 조회 타임아웃 (초). 모델 목록 나열은 빠른 로컬 명령 가정이나, 회사 Pro/원격
+# 게이트웨이는 cold 콜 지연이 커 15s 로는 부족(T-0127 회사 실사용 — 자동해소 실패→수동 폴백).
+# 기본을 60 으로 올리고, env override 로 환경별 재조정(T-0070 의 PM_SUBMODULE_TIMEOUT 동형).
 # (FILL_TIMEOUT 300 은 LLM 헤드리스 구동용 — 모델 조회엔 과대. --opencode-model 명시 경로의
-# 대조-조회가 import UX 를 길게 막지 않도록 fail-soft + 짧은 상한. T-0033 codex suggestion.)
-OPENCODE_MODELS_TIMEOUT_SECONDS = 15
+# 대조-조회가 import UX 를 길게 막지 않도록 fail-soft + 적당한 상한. T-0033 codex suggestion.)
+OPENCODE_MODELS_TIMEOUT_SECONDS = 60
+
+
+# env override (T-0127·T-0070 PM_SUBMODULE_TIMEOUT 동형): 회사 Pro·느린 원격에서 60s 도 모자라면
+#   코드 수정 없이 `PM_OPENCODE_MODELS_TIMEOUT`(초)로 늘린다. 양의 정수만 채택 — 미설정/비숫자/≤0
+#   은 기본 OPENCODE_MODELS_TIMEOUT_SECONDS(60) 로 폴백(무해). 빠른 로컬 조회라 무제한은 두지 않는다.
+def _opencode_models_timeout() -> int:
+    raw = os.environ.get("PM_OPENCODE_MODELS_TIMEOUT")
+    if raw is None:
+        return OPENCODE_MODELS_TIMEOUT_SECONDS
+    try:
+        val = int(raw.strip())
+    except (ValueError, AttributeError):
+        return OPENCODE_MODELS_TIMEOUT_SECONDS
+    return val if val > 0 else OPENCODE_MODELS_TIMEOUT_SECONDS
 
 # --harness 값 → templates/ 하위 어댑터 트리 디렉토리명.
 HARNESS_TEMPLATE_DIRS = {
@@ -910,9 +926,16 @@ def _real_models_runner() -> tuple[bool, list[str]]:
     _real_harness_runner 선례 — 예외를 raise 하지 않고 (False, []) 로 감싼다. opencode 바이너리가
     PATH 에 없으면(shutil.which 부재) subprocess 도 안 띄우고 즉시 (False, []) — fail-soft.
     stdout 은 _parse_opencode_models 로 줄단위 provider/model 파싱한다.
+
+    T-0127: fail-soft 는 유지(import 안 깸)하되 *침묵*은 제거한다 — 각 실패 분기에서 stderr 로
+    사유 1줄을 surface 해 사용자가 다음 실행 때 왜 자동해소가 실패했는지(PATH/rc/timeout/parse)를
+    본다(T-0070 _real_git_runner stderr surface 선례 동형). 타임아웃은 _opencode_models_timeout()
+    (env PM_OPENCODE_MODELS_TIMEOUT > 기본 60)으로 해소한다.
     """
     if shutil.which("opencode") is None:
+        print("opencode 바이너리 PATH 부재 — 모델 자동해소 skip", file=sys.stderr)
         return False, []
+    timeout = _opencode_models_timeout()
     try:
         result = subprocess.run(
             list(OPENCODE_MODELS_CMD),
@@ -920,16 +943,31 @@ def _real_models_runner() -> tuple[bool, list[str]]:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=OPENCODE_MODELS_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
         if result.returncode != 0:
+            print(
+                f"opencode models 실패 rc={result.returncode}: "
+                f"{(result.stderr or '').strip()[:200]}",
+                file=sys.stderr,
+            )
             return False, []
-        return True, _parse_opencode_models(result.stdout or "")
+        models = _parse_opencode_models(result.stdout or "")
+        if not models:
+            print("opencode models 출력에서 모델 0개 파싱 — 형식 확인", file=sys.stderr)
+        return True, models
     except subprocess.TimeoutExpired:
+        print(
+            f"opencode models {timeout}s timeout 초과 — "
+            "PM_OPENCODE_MODELS_TIMEOUT 로 늘리세요",
+            file=sys.stderr,
+        )
         return False, []
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
+        print(f"opencode models 예외: {exc}", file=sys.stderr)
         return False, []
-    except Exception:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
+        print(f"opencode models 예외: {exc}", file=sys.stderr)
         return False, []
 
 
