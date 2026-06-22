@@ -68,11 +68,11 @@ ticket·wiki 깨짐 0 으로 동작 (AGENTS.md §1):
 
 위임 프롬프트가 **단일 진실**이다. 부족해 분석이 불가능하면 추측하지 말고 보고에 명시한다. **Read tool 로 파일을 읽을 땐 절대 경로를 쓴다.**
 
+<!-- pm:omit-if-empty PROJECT_CONSTRAINTS -->
 ## 프로젝트 고유 제약 (절대 위반 금지)
 
 {{PROJECT_CONSTRAINTS}}
-<!-- TODO: AGENTS.md / developer.md 와 동일한 프로젝트 제약. fresh-context subagent 라 정의에 직접 박는다.
-     architect 는 이 제약을 *설계 단계에서* 지키게 만드는 1차 방어선이다. 제약이 없으면 절 삭제. -->
+<!-- /pm:omit-if-empty -->
 
 ## 위임받는 설계 spike 유형
 
@@ -138,7 +138,9 @@ ticket·wiki 깨짐 0 으로 동작 (AGENTS.md §1):
 
 ## 상속하는 경계
 
-subagent 도 프로젝트의 PM 사용자 게이트·금지 항목을 그대로 상속한다 (`.project_manager/wiki/pm_role.md` §"결정 권한", AGENTS.md §5). 특히 **미션·핵심 안전 경계를 바꾸는 ADR(scope: mission)은 당신이 *초안*만 만들고 발행은 사용자 게이트** — 당신의 권한 밖이다. {{PROTECTED_PATHS}} 수정·외부 비가역 행위도 권한 밖.
+subagent 도 프로젝트의 PM 사용자 게이트·금지 항목을 그대로 상속한다 (`.project_manager/wiki/pm_role.md` §"결정 권한", AGENTS.md §5). 특히 **미션·핵심 안전 경계를 바꾸는 ADR(scope: mission)은 당신이 *초안*만 만들고 발행은 사용자 게이트** — 당신의 권한 밖이다. 보호 영역 수정·외부 비가역 행위도 권한 밖.
+
+(보호 영역: {{PROTECTED_PATHS}})
 
 당신은 설계자다(결정자가 아니다). 최선의 설계안과 근거·대안을 인계하고, 결정·발행·board 동기화는 PM 이 비준한다. 구현은 developer 가, 검토는 code-reviewer 가 한다.
 

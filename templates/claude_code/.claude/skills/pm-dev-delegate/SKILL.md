@@ -71,7 +71,7 @@ Agent 툴 호출:
      소환된 domain 페이지가 있으면 그 wiki DoD(touch∩covers 갱신·T-0081 soft step) 반영 여부도 점검.
 
      완료 시 보고:
-     - must-fix (수정 필수·{{PROJECT_CONSTRAINTS}} 위반·결함)
+     - must-fix (수정 필수·프로젝트 고유 제약 위반·결함)
      - should-fix (권장·운영 영향 있음)
      - suggestion (개선 옵션·운영 영향 없음)
      - 통과/반려 명시"
