@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pm_import — PM 프레임워크를 프로젝트에 import / 새 프로젝트로 시작하는 단일 진입 커맨드.
+"""pm_import — PM 프레임워크 import 단일 진입 커맨드 (--new = PM 홈 생성 / --into = 기존 프로젝트 임베드).
 
 현행 채택 플로우(루트 README §3.2 의 수동 longhand: `cp -r` + sed +
 `board.py init` + 손)의 **기계 단계**(결정적·무LLM)를 1 커맨드로 대체하고(T-0007), 그 위에
@@ -1755,8 +1755,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     mode = ap.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--into", metavar="PATH", help="기존 프로젝트 경로에 import(비파괴·백업)")
-    mode.add_argument("--new", metavar="PATH", help="새 프로젝트 경로 생성 + git init")
+    mode.add_argument("--into", metavar="PATH", help="기존 프로젝트에 임베드 import(비파괴·백업·특정 케이스)")
+    mode.add_argument("--new", metavar="PATH", help="PM 홈 생성 + git init (코드 없는 홈·표준 채택·ADR-0026)")
     ap.add_argument("--harness", choices=HARNESS_CHOICES, default="claude",
                     help="어댑터 선택 (default: claude)")
     ap.add_argument("--weight", choices=WEIGHT_CHOICES, default="full",
