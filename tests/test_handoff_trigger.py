@@ -142,6 +142,110 @@ def test_trigger_dry_run_no_file_edit(handoff, tmp_path):
     assert state_file.read_text(encoding="utf-8") == before_state
 
 
+# ── 1b. 인계 프롬프트 박제 (D16·T-0134) ───────────────────────────────────────
+
+# pm_playbook.md §부트스트랩 프롬프트 코드블록 최소 fixture (앵커·코드블록 형식 유지) ──
+_PM_PLAYBOOK_FIXTURE = """\
+# PM Playbook
+
+## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)
+
+```
+당신은 이 프로젝트의 PM 세션입니다.
+<핵심 인계 사항>
+- 읽기 범위: ...
+- 메타 학습: ...
+- 다음 intent: ...
+- 회귀/incident: ...
+```
+
+## 다음 절
+"""
+
+
+def _make_handoff_with_playbook(handoff, tmp_path: Path, state_text: str, playbook_text: str | None):
+    """log·pm_state 에 더해 pm_playbook 파일을 명시 주입한 PmHandoff 인스턴스.
+
+    playbook_text=None 이면 pm_playbook 파일을 *생성하지 않아* fail-soft 경로를 친다.
+    """
+    log_file = tmp_path / "current.md"
+    state_file = tmp_path / "pm_state.md"
+    playbook_file = tmp_path / "pm_playbook.md"
+    log_file.write_text("# log\n", encoding="utf-8")
+    state_file.write_text(state_text, encoding="utf-8")
+    if playbook_text is not None:
+        playbook_file.write_text(playbook_text, encoding="utf-8")
+    inst = handoff.PmHandoff(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("trigger 가 pytest 를 호출했다")),
+        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("trigger 가 git 을 호출했다")),
+        log_file=log_file,
+        pm_state_file=state_file,
+        pm_playbook_file=playbook_file,
+    )
+    return inst, log_file, state_file
+
+
+def test_trigger_embeds_handoff_prompt_in_log(handoff, tmp_path):
+    """run_trigger 가 log handoff entry 끝에 다음 세션용 인계 프롬프트를 박제한다 (D16)."""
+    inst, log_file, _ = _make_handoff_with_playbook(
+        handoff, tmp_path, _PM_STATE_FIXTURE, _PM_PLAYBOOK_FIXTURE,
+    )
+    rc = inst.run_trigger(reason="ctx-stop", ctx_pct=8)
+    assert rc == 0
+    log_text = log_file.read_text(encoding="utf-8")
+    # skeleton handoff entry 가 여전히 append 된다 (회귀).
+    assert "handoff (ctx-trigger)" in log_text
+    # 인계 프롬프트 헤더(자동 추론 5차)가 log 에 박제됐다 — stdout 휘발 아님.
+    assert "=== 인계 프롬프트 (PM 5차 → 다음 PM 세션) ===" in log_text
+    # pm_playbook 템플릿 코드블록 본문도 entry 안에 들어왔다.
+    assert "당신은 이 프로젝트의 PM 세션입니다." in log_text
+    # 박제 위치가 skeleton entry *뒤* 다 (인계 프롬프트가 handoff 헤더보다 나중).
+    assert log_text.index("handoff (ctx-trigger)") < log_text.index("=== 인계 프롬프트")
+
+
+def test_trigger_prompt_block_uses_shared_builder(handoff, tmp_path):
+    """박제된 블록이 build_handoff_prompt_output 산출과 동일하다 (run() 과 동일 seam 재사용)."""
+    inst, log_file, _ = _make_handoff_with_playbook(
+        handoff, tmp_path, _PM_STATE_FIXTURE, _PM_PLAYBOOK_FIXTURE,
+    )
+    inst.run_trigger(reason="ctx-stop", ctx_pct=8)
+    log_text = log_file.read_text(encoding="utf-8")
+    # run() 의 [5/7] 가 쓰는 동일 builder 로 기대 출력을 만든다.
+    expected = handoff.build_handoff_prompt_output(
+        pm_playbook_text=_PM_PLAYBOOK_FIXTURE,
+        session_num=5,
+        wave_summary=handoff.build_trigger_wave_summary(reason="ctx-stop", ctx_pct=8),
+        date_str=__import__("datetime").date.today().isoformat(),
+    )
+    assert expected in log_text
+
+
+def test_trigger_prompt_failsoft_when_no_playbook(handoff, tmp_path):
+    """pm_playbook.md 부재 시 fail-soft — 한 줄 안내만 남기고 trigger handoff 는 계속한다."""
+    inst, log_file, _ = _make_handoff_with_playbook(
+        handoff, tmp_path, _PM_STATE_FIXTURE, playbook_text=None,
+    )
+    rc = inst.run_trigger(reason="ctx-stop", ctx_pct=8)
+    assert rc == 0
+    log_text = log_file.read_text(encoding="utf-8")
+    # skeleton 은 여전히 박제된다 (인계 프롬프트만 graceful skip).
+    assert "handoff (ctx-trigger)" in log_text
+    # fail-soft 안내 문구가 entry 에 남는다.
+    assert "pm_playbook.md 없음" in log_text
+
+
+def test_trigger_prompt_dry_run_no_file_edit(handoff, tmp_path):
+    """dry-run 은 인계 프롬프트 박제 분기도 파일을 건드리지 않는다."""
+    inst, log_file, state_file = _make_handoff_with_playbook(
+        handoff, tmp_path, _PM_STATE_FIXTURE, _PM_PLAYBOOK_FIXTURE,
+    )
+    before_log = log_file.read_text(encoding="utf-8")
+    before_state = state_file.read_text(encoding="utf-8")
+    assert inst.run_trigger(reason="ctx-stop", ctx_pct=7, dry_run=True) == 0
+    assert log_file.read_text(encoding="utf-8") == before_log
+    assert state_file.read_text(encoding="utf-8") == before_state
+
+
 # ── 2. 자동 채움 헬퍼 단위 ────────────────────────────────────────────────────
 
 def test_infer_next_session_num(handoff):
@@ -375,6 +479,36 @@ def test_parser_trigger_flags_exist(handoff):
     # 대화형 플래그도 여전히 파싱된다 (회귀).
     ns2 = parser.parse_args(["--session-num", "5", "--wave-summary", "x", "--no-pytest"])
     assert ns2.session_num == "5" and ns2.wave_summary == "x" and ns2.no_pytest is True
+
+
+def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, tmp_path, capsys):
+    """대화형 run() 불변 — 인계 프롬프트는 [5/7] stdout 로만 나가고 log entry 에 박제하지 않는다.
+
+    trigger 경로는 log 에 *박제*(durable)하지만 run() 은 모델이 살아 있어 stdout 가
+    권위적이다. T-0134 의 trigger 박제가 run() 의 경로(stdout-only)를 오염시키지 않음을
+    잠근다 — log 파일은 인계 프롬프트 헤더를 포함하지 않아야 한다.
+    """
+    log_file = tmp_path / "current.md"
+    state_file = tmp_path / "pm_state.md"
+    playbook_file = tmp_path / "pm_playbook.md"
+    log_file.write_text("# log\n", encoding="utf-8")
+    state_file.write_text(_PM_STATE_FIXTURE, encoding="utf-8")
+    playbook_file.write_text(_PM_PLAYBOOK_FIXTURE, encoding="utf-8")
+    inst = handoff.PmHandoff(
+        # run() 은 git status dump 를 부른다 — 정상 stub (trigger 와 달리 폭발 아님).
+        run_pytest_fn=lambda: (0, "1 passed"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_state_file=state_file,
+        pm_playbook_file=playbook_file,
+    )
+    rc = inst.run(session_num=5, wave_summary="ws", dry_run=False, skip_pytest=True)
+    assert rc == 0
+    out = capsys.readouterr().out
+    # 인계 프롬프트는 stdout 으로 나간다 ([5/7]).
+    assert "=== 인계 프롬프트 (PM 5차 → 다음 PM 세션) ===" in out
+    # 그러나 run() 은 log 파일을 인계 프롬프트로 오염시키지 않는다 (경로 분리·불변).
+    assert "=== 인계 프롬프트" not in log_file.read_text(encoding="utf-8")
 
 
 def test_handoff_prompt_template_is_lean(handoff):

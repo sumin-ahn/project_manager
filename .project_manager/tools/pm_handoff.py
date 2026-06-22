@@ -962,6 +962,36 @@ class PmHandoff:
 
     # ── 비대화 트리거 빠른 경로 (ctx 정지-핸드오프 — T-0013) ──────────────────
 
+    def _build_trigger_handoff_prompt_block(
+        self,
+        session_num: int | str,
+        wave_summary: str,
+        date_str: str,
+    ) -> str:
+        """trigger handoff entry 끝에 박제할 인계 프롬프트 블록을 빌드한다 (T-0134·D16).
+
+        대화형 run() 의 [5/7] 와 동일 build_handoff_prompt_output 을 재사용한다 — 자동
+        경로는 모델이 정지되어 stdout(휘발)으로 프롬프트를 전달할 수 없으므로, 그 출력을
+        durable 채널(log entry)에 박제해 다음 세션이 부트스트랩 때 읽게 한다.
+
+        pm_playbook.md 부재(board.py init 미실행 clone)는 치명 아님 — fail-soft 로
+        한 줄 안내만 남기고 trigger handoff 는 계속한다(skeleton 자체는 이미 append).
+        반환 문자열은 skeleton 뒤에 이어 붙일 수 있게 선행 개행을 포함한다.
+        """
+        if not self._pm_playbook_file.exists():
+            return (
+                "\n[인계 프롬프트] ⚠ pm_playbook.md 없음 — 인계 프롬프트 템플릿 추출 skip. "
+                "새 세션에서 pm_playbook.md §부트스트랩 프롬프트를 직접 복사하라.\n"
+            )
+        playbook_text = self._pm_playbook_file.read_text(encoding="utf-8")
+        prompt_output = build_handoff_prompt_output(
+            pm_playbook_text=playbook_text,
+            session_num=_normalize_session_num(session_num),
+            wave_summary=wave_summary,
+            date_str=date_str,
+        )
+        return "\n" + prompt_output + "\n"
+
     def run_trigger(
         self,
         reason: str = TRIGGER_DEFAULT_REASON,
@@ -978,7 +1008,8 @@ class PmHandoff:
           2. wave-summary 자동 생성 (reason·ctx%·board 현황).
           3. 회귀/git status 측정 스킵 (--no-pytest 동등 — 훅 컨텍스트라 빠른 경로).
           4. log/current.md 에 trigger handoff entry skeleton append (reason·ctx% 기록·
-             thread_tail 주입 시 "다음 intent" 대화 thread-tail 슬롯 자동 채움).
+             thread_tail 주입 시 "다음 intent" 대화 thread-tail 슬롯 자동 채움) +
+             다음 세션용 인계 프롬프트를 같은 entry 끝에 박제 (D16·durable 채널).
           5. pm_state sliding window 정리.
           6. stdout 에 "정지·새 세션 부트스트랩" 안내 + rc 0.
 
@@ -1020,6 +1051,9 @@ class PmHandoff:
         print("  [trigger] 회귀 측정 skip (훅 컨텍스트 — --no-pytest 동등).")
 
         # ── 4. log/current.md trigger handoff entry skeleton append ────────────
+        # skeleton 뒤에 다음 세션용 인계 프롬프트를 *박제*한다 — 자동 경로는 모델이
+        # 정지되므로 stdout(휘발)이 아닌 durable 채널(log)이 권위적이다(decision D16).
+        # 대화형 run() 의 [5/7] stdout 와 동일 build_handoff_prompt_output 을 재사용한다.
         skeleton = build_trigger_handoff_log_skeleton(
             session_num=_normalize_session_num(session_num),
             reason=reason,
@@ -1029,13 +1063,20 @@ class PmHandoff:
             worktree_slot=worktree_slot,
             branch=branch,
         )
+        prompt_block = self._build_trigger_handoff_prompt_block(
+            session_num=session_num, wave_summary=wave_summary, date_str=date_str,
+        )
+        entry = skeleton + prompt_block
         if dry_run:
-            print("  [dry-run] log/current.md 에 append 할 trigger skeleton:")
-            print("  " + skeleton.replace("\n", "\n  "))
+            print("  [dry-run] log/current.md 에 append 할 trigger entry (skeleton + 인계 프롬프트):")
+            print("  " + entry.replace("\n", "\n  "))
         else:
             log_text = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
-            self._log_file.write_text(log_text + "\n" + skeleton, encoding="utf-8")
-            print(f"  ✓ log/current.md trigger handoff entry skeleton append (PM {session_num}차)")
+            self._log_file.write_text(log_text + "\n" + entry, encoding="utf-8")
+            print(
+                f"  ✓ log/current.md trigger handoff entry skeleton + 인계 프롬프트 박제 "
+                f"(PM {session_num}차)"
+            )
 
         # ── 5. pm_state sliding window 정리 ────────────────────────────────────
         # session_num 이 placeholder("?") 면 sliding window 편집은 스킵 (정수 차수만 안전 편집).
@@ -1063,12 +1104,16 @@ class PmHandoff:
             )
 
         # ── 6. 정지·부트스트랩 안내 stdout ─────────────────────────────────────
+        # 안내 stdout 은 휘발되므로 인계 프롬프트 본문을 *여기* 다시 찍지 않는다 —
+        # log handoff entry 에 박제된 위치를 가리킨다(durable 권위 채널·D16).
         print(
             "\n=== ctx 정지·핸드오프 박제 완료 ===\n"
             f"  reason={reason} · ctx={ctx_pct}% · PM {session_num}차 handoff entry 기록.\n"
+            "  → 다음 세션용 인계 프롬프트는 log/current.md 최신 handoff entry 끝에 박제됨.\n"
             "  → 이 세션을 정지하고 새 PM 세션을 부트스트랩하라:\n"
             "     1. log/current.md 최신 handoff entry 의 <PM 손> 절을 채운다.\n"
-            "     2. CLAUDE.md → pm_state.md → board.py list 순으로 새 세션 부트스트랩.\n"
+            "     2. 같은 entry 의 박제된 인계 프롬프트를 새 세션에 붙여넣는다.\n"
+            "     3. CLAUDE.md → pm_state.md → board.py list 순으로 새 세션 부트스트랩.\n"
             "  (실제 세션 종료는 어댑터 훅 책임 — 엔진은 권위 handoff 박제까지.)"
         )
         if dry_run:
