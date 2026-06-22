@@ -129,6 +129,23 @@ def test_load_pages_empty_dir_returns_empty(dm, tmp_path):
     assert dm.load_pages(domain_dir=tmp_path) == []
 
 
+def test_load_pages_recurses_subfolders(dm, tmp_path):
+    # T-0126: domain wikitree 를 하위 폴더로 조직해도 페이지가 잡혀야 한다(rglob).
+    _write_page(tmp_path, "top.md", frontmatter="title: 최상위\ntype: concept")
+    _write_page(tmp_path / "area", "nested.md", frontmatter="title: 하위\ntype: guide")
+    _write_page(tmp_path / "area" / "deep", "deeper.md", frontmatter="title: 더깊이\ntype: concept")
+    titles = sorted(p["title"] for p in dm.load_pages(domain_dir=tmp_path))
+    assert titles == ["더깊이", "최상위", "하위"]
+
+
+def test_load_pages_excludes_readme_template_in_subfolders(dm, tmp_path):
+    # README/_template 는 어느 깊이든 name 으로 제외(rglob 후에도).
+    _write_page(tmp_path / "area", "README.md", frontmatter="title: idx\ntype: index")
+    _write_page(tmp_path / "area", "_template.md", frontmatter="title: tpl\ntype: concept")
+    _write_page(tmp_path / "area", "real.md", frontmatter="title: 실하위\ntype: guide")
+    assert [p["title"] for p in dm.load_pages(domain_dir=tmp_path)] == ["실하위"]
+
+
 # ── pages_for_path (글롭 매칭) ───────────────────────────────────────────────
 
 
