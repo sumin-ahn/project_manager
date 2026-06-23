@@ -156,9 +156,10 @@ def test_fill_manual_is_default_and_marks_todo(pm_import, tmp_path):
     dest = tmp_path / "manualdefault"
     rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "Manual"])
     assert rc == 0
-    # 자유서술 placeholder 가 있던 파일에 TODO 마커가 표시됐다.
-    claude_dev = dest / ".claude" / "agents" / "developer.md"
-    text = claude_dev.read_text(encoding="utf-8")
+    # 자유서술 placeholder 가 있는 파일(root doc CLAUDE.md §프로젝트 고유 제약)에 TODO 마커가 표시됐다.
+    # (ADR-0030: 어댑터는 free-form-free → 마커는 root doc·pm_role.local.md 에 — developer.md 는 더 이상 토큰 없음.)
+    marked = dest / "CLAUDE.md"
+    text = marked.read_text(encoding="utf-8")
     # placeholder 는 보존되되, 그 줄(또는 인접)에 TODO 마커가 있어야 한다.
     assert "TODO" in text, "manual 모드인데 TODO 표시가 없음."
 
@@ -218,7 +219,7 @@ def test_main_auto_without_env_forces_manual(pm_import, tmp_path, monkeypatch, c
     out = capsys.readouterr().out
     # 게이트 미통과 안내 + manual 폴백(TODO 표시).
     assert "stub/미구동" in out or "게이트 미통과" in out
-    text = (dest / ".claude" / "agents" / "developer.md").read_text(encoding="utf-8")
+    text = (dest / "CLAUDE.md").read_text(encoding="utf-8")  # ADR-0030: free-form 은 root doc 에(어댑터 아님)
     assert "TODO" in text, "게이트 미통과 manual 폴백인데 TODO 표시가 없음."
 
 
@@ -366,8 +367,9 @@ def test_into_manual_fill_does_not_touch_user_file(pm_import, tmp_path):
         "manual fill 이 복사 안 한 사용자 파일을 수정함(비파괴 위반)."
     assert "TODO" not in user_file.read_text(encoding="utf-8")
     # 반면 이번 import 가 복사한 파일에는 TODO 표시가 됐다(범위 한정이 맞다는 양성 증거).
-    copied_dev = dest / ".claude" / "agents" / "developer.md"
-    assert "TODO" in copied_dev.read_text(encoding="utf-8")
+    # ADR-0030: 어댑터 free-form-free → 마커는 복사된 root doc CLAUDE.md(§프로젝트 고유 제약).
+    copied_marked = dest / "CLAUDE.md"
+    assert "TODO" in copied_marked.read_text(encoding="utf-8")
 
 
 def test_into_auto_stub_fill_does_not_touch_user_file(pm_import, tmp_path, monkeypatch):

@@ -59,13 +59,13 @@ tools: Read, Glob, Grep, Bash
 - **결정·설계·권고** — fact-gathering 까지. 설계는 architect, 결정은 PM.
 - **교차 통찰(synthesis) 대행** — 여러 출처를 통합한 결론은 PM 이 흡수한다. 재료만 모은다.
 - **프로덕션 진입점·파이프라인 라이브 실행** — 외부 비가역 부작용. 조사는 읽기뿐.
-- **보호 영역 읽기 외 행위** — {{PROTECTED_PATHS}} <!-- TODO: 없으면 이 항목 삭제 -->
+- **보호 영역 읽기 외 행위** — `.project_manager/wiki/pm_role.local.md` §보호 영역 의 경로
 
 ## 상속하는 경계
 
 서브에이전트도 프로젝트의 PM 사용자 게이트·금지 항목을 그대로 상속한다 (`.project_manager/wiki/pm_role.md`). 외부 비가역 행위·미션 변경·보호 영역 수정은 권한 밖 — 애초에 read-only 라 쓰기 자체가 없다.
 
-(보호 영역: {{PROTECTED_PATHS}})
+(보호 영역: `.project_manager/wiki/pm_role.local.md` §보호 영역)
 
 > **Explore 와의 구분**: Explore 는 *파일 위치*를 넓게 fan-out 검색해 "어디 있나"를 답한다. researcher 는 *bounded 조사 + 결론 추출* — 정해진 범위를 깊이 읽어 "무엇을 확인했나(사실·인용)"를 답한다.
 

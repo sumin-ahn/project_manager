@@ -28,6 +28,7 @@ IDENTICAL_RELPATHS = [
     "precompact_capture_hook.sh",
     "skills/pm-handoff/SKILL.md",
     "skills/pm-dev-delegate/SKILL.md",
+    "skills/pm-wave-claim/SKILL.md",
     "agents/architect.md",
     "agents/code-reviewer.md",
     "agents/developer.md",
