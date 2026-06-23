@@ -44,7 +44,7 @@ reconfigure)하므로 env prefix 불필요 — Windows/CP949·PowerShell 서도 
 - [ ] **DoD verify-able** — *충족 evidence 측정 방법* 이 ticket 본문에 명시 (테스트 + 단위 수·라이브 검증 절차·spec 정합 확인 등).
 - [ ] **컨텍스트 예산** — touches 에 대형 파일이 있거나 이해에 광범위 읽기가 필요하면 dev(cold subagent) 컨텍스트 truncation 위험. 분할하거나 본문에 정확한 함수/라인·패턴 reference 를 박아 dev 읽기 범위를 좁힌다 (본문 = dev 컨텍스트 방화벽). opencode 200K 압박 시 특히 주의.
 - [ ] **PM 자율 vs 사용자 게이트 분류** — 보호 영역 / mission scope / 외부 비가역 행위 영향 시 사용자 게이트 통과 확인 (pm_role.md §사용자 게이트).
-  - (보호 영역: {{PROTECTED_PATHS}})
+  - (보호 영역: `.project_manager/wiki/pm_role.local.md` §보호 영역)
 
 ## 자율 claim 가능 ticket 후보
 

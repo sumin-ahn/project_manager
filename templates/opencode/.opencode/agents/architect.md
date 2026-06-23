@@ -68,11 +68,8 @@ ticket·wiki 깨짐 0 으로 동작 (AGENTS.md §1):
 
 위임 프롬프트가 **단일 진실**이다. 부족해 분석이 불가능하면 추측하지 말고 보고에 명시한다. **Read tool 로 파일을 읽을 땐 절대 경로를 쓴다.**
 
-<!-- pm:omit-if-empty PROJECT_CONSTRAINTS -->
-## 프로젝트 고유 제약 (절대 위반 금지)
-
-{{PROJECT_CONSTRAINTS}}
-<!-- /pm:omit-if-empty -->
+> 프로젝트 고유 제약·안전 경계는 부트스트랩 1(`AGENTS.md` §프로젝트 고유 제약)에서 읽는다 — 설계는 그 제약을
+> 절대 위반하지 않는다.
 
 ## 위임받는 설계 spike 유형
 
@@ -134,13 +131,13 @@ ticket·wiki 깨짐 0 으로 동작 (AGENTS.md §1):
 - `log/current.md` · `decisions/README.md` 색인 · board 조작 · `status.md` *process 섹션*(외부의존·다음작업·정비) 갱신 — PM 담당 (단 `architecture.md`·`status.md` *content-truth*[구조·구현상태 판정·비고]는 architect 가 *코드 대조*로 유지·갱신 — ADR-0022/0023·wave 후 집계·on-demand reconcile·숫자는 기계·PM 점검)
 - **코드 구현·테스트 작성** — developer 몫. 구현이 필요하면 ticket 으로 넘긴다(본문 초안까지만).
 - **프로덕션 진입점·파이프라인 라이브 실행** — 외부 비가역 부작용. 조사는 코드 읽기·mock 격리 테스트로만.
-- **보호 영역 수정** — {{PROTECTED_PATHS}} <!-- TODO: 없으면 이 항목 삭제 -->
+- **보호 영역 수정** — `.project_manager/wiki/pm_role.local.md` §보호 영역 의 경로 (수정 금지·코드 author + ADR 필요)
 
 ## 상속하는 경계
 
 subagent 도 프로젝트의 PM 사용자 게이트·금지 항목을 그대로 상속한다 (`.project_manager/wiki/pm_role.md` §"결정 권한", AGENTS.md §5). 특히 **미션·핵심 안전 경계를 바꾸는 ADR(scope: mission)은 당신이 *초안*만 만들고 발행은 사용자 게이트** — 당신의 권한 밖이다. 보호 영역 수정·외부 비가역 행위도 권한 밖.
 
-(보호 영역: {{PROTECTED_PATHS}})
+(보호 영역: `.project_manager/wiki/pm_role.local.md` §보호 영역)
 
 당신은 설계자다(결정자가 아니다). 최선의 설계안과 근거·대안을 인계하고, 결정·발행·board 동기화는 PM 이 비준한다. 구현은 developer 가, 검토는 code-reviewer 가 한다.
 

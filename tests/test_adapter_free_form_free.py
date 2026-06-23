@@ -29,10 +29,11 @@ FREEFORM_TOKENS = (
 
 # @render 활성화 scope (ADR-0030 · T-0133): 어댑터 디렉토리만.
 # root doc(CLAUDE.md/AGENTS.md)·lite·pm_role.local.md 은 @render 밖 = free-form 의 canonical home → 제외.
-# T-0136 이 opencode 경로(.opencode/agents·.opencode/command)를 이 목록에 추가한다.
 RENDER_SCOPED_DIRS = (
-    "templates/claude_code/.claude/agents",
+    "templates/claude_code/.claude/agents",     # T-0135 (claude)
     "templates/claude_code/.claude/skills",
+    "templates/opencode/.opencode/agents",      # T-0136 (opencode)
+    "templates/opencode/.opencode/command",
 )
 
 
