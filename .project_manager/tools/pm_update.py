@@ -45,22 +45,38 @@ DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 
 # manifest 의 render 태그 (T-0131·§3.3) — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
 RENDER_TAG = "@render"
+# manifest 의 target-owned 태그 (T-0137) — path 행 끝 `  @target-owned` 면 그 경로는 타깃 자신만
+# 보유하는 어댑터다(엔진 upstream/루트에 source 부재가 정상). source-부재 skip 의 *명시* 판별자.
+# `@render` 와 독립 — `.claude/agents @render`(루트 upstream 에 존재해야 하는 엔진 리소스)는
+# render=True 이지만 target_owned=False 라, 잘못된 --from 에서 빠지면 skip 이 아니라 rc2 가 된다.
+TARGET_OWNED_TAG = "@target-owned"
+# read_manifest 가 path 행 끝에서 떼어낼 수 있는 마커들(복수·순서 무관).
+_MANIFEST_MARKERS = (RENDER_TAG, TARGET_OWNED_TAG)
 
 
 class ManifestEntry(str):
     """manifest 한 경로 — `str` 서브클래스라 기존 `in`/`.startswith`/`==` 가 그대로 동작한다.
 
-    추가 속성 `render`(bool): 그 path 행 끝에 `@render` 태그가 있으면 True(byte-copy 대신
-    render_adapter 로 채운다·§3.3). 미주석=False → 오늘과 정확히 동일(순수 copy2·후방호환).
-    str 을 상속함으로써 read_manifest 의 반환이 `list[(path, render_flag)]` 의미를 가지면서도
-    `entry in entries`·`e.startswith(...)` 같은 기존 호출부/테스트를 한 줄도 깨지 않는다.
+    추가 속성:
+    - `render`(bool): path 행 끝에 `@render` 태그가 있으면 True(byte-copy 대신 render_adapter
+      로 채운다·§3.3). 미주석=False → 오늘과 정확히 동일(순수 copy2·후방호환).
+    - `target_owned`(bool): path 행 끝에 `@target-owned` 태그가 있으면 True — 타깃 자신만 보유
+      하는 어댑터라 엔진 upstream 에 source-부재가 정상(전파 대상 아님). source-부재 skip 의
+      명시 판별자(T-0137). `@render` 와 독립이며, 두 마커는 한 행에 같이 올 수 있다(순서 무관).
+
+    str 을 상속함으로써 read_manifest 의 반환이 path+플래그 의미를 가지면서도 `entry in entries`·
+    `e.startswith(...)` 같은 기존 호출부/테스트를 한 줄도 깨지 않는다.
     """
 
     render: bool
+    target_owned: bool
 
-    def __new__(cls, path: str, render: bool = False) -> "ManifestEntry":
+    def __new__(
+        cls, path: str, render: bool = False, target_owned: bool = False
+    ) -> "ManifestEntry":
         obj = super().__new__(cls, path)
         obj.render = render
+        obj.target_owned = target_owned
         return obj
 
 
@@ -157,25 +173,33 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
 
 
 def read_manifest(path: Path) -> list[ManifestEntry]:
-    """manifest 파일 → ManifestEntry 리스트 ('#' 주석·빈 줄 제외·T-0131 @render 파싱).
+    """manifest 파일 → ManifestEntry 리스트 ('#' 주석·빈 줄 제외·마커 파싱).
 
-    각 항목은 `str` 서브클래스 ManifestEntry — 값은 path 문자열이고 `.render` 속성이 그 path
-    의 render 여부를 운반한다. path 행 끝 `  @render` 태그가 있으면 render=True(byte-copy 대신
-    render_adapter), 없으면 False(오늘과 동일·순수 copy2·후방호환). `@render` 토큰은 path 에서
-    떼어내 순수 경로만 ManifestEntry 값으로 남긴다.
+    각 항목은 `str` 서브클래스 ManifestEntry — 값은 path 문자열이고 `.render`·`.target_owned`
+    속성이 그 path 의 마커 여부를 운반한다. path 행 끝의 마커(`@render`·`@target-owned`)는
+    복수·순서 무관으로 인식해 전부 떼어내고 순수 경로만 ManifestEntry 값으로 남긴다.
+      - `@render`(T-0131)        → render=True (byte-copy 대신 render_adapter·§3.3)
+      - `@target-owned`(T-0137)  → target_owned=True (엔진 upstream source-부재가 정상·skip 판별)
+    예: `.opencode/agents  @render @target-owned` → path=`.opencode/agents`, 둘 다 True.
+    미주석=둘 다 False → 오늘과 동일(순수 copy2·전파 대상·후방호환).
     """
     out: list[ManifestEntry] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        render = False
-        # 행 끝 @render 태그 인식 — path 와 태그 사이는 공백. 태그를 떼고 순수 경로만 남긴다.
+        # 행 끝의 마커들(복수·순서 무관)을 떼어낸다 — path 와 마커, 마커끼리는 공백 구분.
         parts = line.split()
-        if parts and parts[-1] == RENDER_TAG:
-            render = True
-            line = " ".join(parts[:-1])
-        out.append(ManifestEntry(line, render))
+        render = False
+        target_owned = False
+        while parts and parts[-1] in _MANIFEST_MARKERS:
+            marker = parts.pop()
+            if marker == RENDER_TAG:
+                render = True
+            elif marker == TARGET_OWNED_TAG:
+                target_owned = True
+        line = " ".join(parts)
+        out.append(ManifestEntry(line, render, target_owned))
     return out
 
 
@@ -186,6 +210,15 @@ def _entry_render_flag(entry) -> bool:
     받게 정규화한다 — 후방호환(평문 str 항목은 render 비대상).
     """
     return bool(getattr(entry, "render", False))
+
+
+def _entry_target_owned_flag(entry) -> bool:
+    """manifest 항목의 target_owned 플래그 — ManifestEntry 면 `.target_owned`, 평문 str 면 False.
+
+    source-부재 skip 판별자(T-0137). 평문 str 항목(레거시 호출)은 target-owned 가 아니므로
+    source-부재 시 엔진 누락으로 보고 rc2(후방호환·is_owned skip 은 명시 마커 한정).
+    """
+    return bool(getattr(entry, "target_owned", False))
 
 
 def _read_local_conf(path: Path) -> dict[str, str]:
@@ -566,16 +599,47 @@ def main(argv: list[str] | None = None) -> int:
         # ([update] = byte-copy·§3.3 dry-run 표기). new 든 update 든 render 면 [render].
         label = "render" if getattr(_dst, "render", False) else kind
         print(f"  [{label}] {r}")
-    for r in missing:
-        print(f"  [source 에 없음] {r}", file=sys.stderr)
 
+    # ── source 부재 항목 처리 (T-0137·D17 · @target-owned skip · 양 모드 공통) ──
+    # manifest 의 일부는 *target-owned 어댑터* 일 수 있다 — 엔진 upstream(루트)엔 source 가
+    # 없고 타깃 자신만 보유하는 경로(예: opencode `.opencode/*`). 그런 항목은 upstream→dest
+    # 전파 대상이 *아니므로* rc2 로 전체를 막는 대신 graceful skip + 안내 로그로 surface 한다
+    # (침묵 skip 금지).
+    #
+    # skip 은 **`@target-owned` 항목 한정**이다(명시 마커·T-0137). 옛 구현은 `@render` 를
+    # 판별자로 썼으나 그건 틀렸다(codex 포착): `.claude/agents @render`·`.claude/skills @render`
+    # 처럼 *루트 upstream 에 존재해야 하는 엔진 리소스*도 @render 라, 잘못된 --from/upstream 에서
+    # 빠지면 rc2 대신 skip 으로 숨겨 엔진 누락을 은폐했다. `@target-owned` 는 @render 와 독립인
+    # 명시 마커로, "upstream 이 안 들고 있어도 정상" 을 정확히 표시한다. non-`@target-owned`
+    # 항목이 source-부재면 진짜 누락(오타·잘못된 --from·전파돼야 하는데 빠진 도구·@render 엔진
+    # 리소스 포함)이므로 rc2 + 에러를 유지한다(silent skip 금지). 혼합이면 non-@target-owned 가
+    # 전체를 막는다.
+    #
+    # 이 판별은 **양 모드(--target·self-update) 공통**이다. opencode 채택자의 self-update 는
+    # manifest 에 `.opencode/* @target-owned` 가 있으나 upstream=프레임워크 루트(.opencode/
+    # 부재·root=claude)라 source-부재 → 과거 rc2(전체 update 실패)였다. @target-owned 는 어느
+    # 모드든 판별자이므로 self-update 에서도 skip 한다.
     if missing:
-        print(
-            f"오류: manifest {len(missing)}개 항목이 source 에 없음 — "
-            "--from 경로가 올바른 엔진 upstream 인지 확인하라.",
-            file=sys.stderr,
-        )
-        return 2
+        # missing 은 path 문자열만 운반하므로 manifest 에서 각 path 의 @target-owned 플래그를
+        # 복원한다(plan 의 render_enabled=False 는 copy/render 동작만 끄고 entry 플래그는 보존).
+        target_owned_flag = {str(e): _entry_target_owned_flag(e) for e in manifest}
+        owned = [r for r in missing if target_owned_flag.get(r, False)]
+        engine_missing = [r for r in missing if not target_owned_flag.get(r, False)]
+        for r in owned:
+            print(
+                f"  [skip] {r} — target-owned: upstream source 부재 "
+                "(타깃 고유 @target-owned 어댑터·엔진 upstream 에 없음·전파 대상 아님)"
+            )
+        if engine_missing:
+            for r in engine_missing:
+                print(f"  [source 에 없음] {r}", file=sys.stderr)
+            print(
+                f"오류: 엔진 경로 {len(engine_missing)}개가 source 에 없음(non-@target-owned) — "
+                "--from 경로가 올바른 엔진 upstream 인지 확인하라 "
+                "(@target-owned 어댑터만 target-owned skip 대상).",
+                file=sys.stderr,
+            )
+            return 2
 
     if not changes:
         print("최신 — 변경 없음.")

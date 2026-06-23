@@ -246,6 +246,258 @@ def test_target_mode_no_upstream_errors(pm_update, tmp_path, monkeypatch, capsys
     assert "upstream 미등록" in capsys.readouterr().err
 
 
+# ── ⑥ --target 모드: source 부재 항목 graceful skip (T-0137·D17 · @target-owned) ──
+# target-owned 어댑터(루트 엔진 upstream 엔 없고 타깃 자신만 보유·예: opencode `.opencode/*`)
+# 가 manifest 에 있을 때, --target 동기가 rc2 로 전체를 막지 않고 skip + 안내 로그하는지.
+# 판별자는 명시 마커 `@target-owned` 한정 — non-@target-owned(엔진경로·@render-only 엔진
+# 리소스 포함) source-부재는 --target 모드여도 rc2 + 에러(silent skip 금지·엔진 누락 은폐 방지).
+
+def test_target_mode_skips_target_owned_source_absent_with_log(pm_update, tmp_path, monkeypatch, capsys):
+    """--target + manifest 의 @target-owned 항목이 root source 부재 → rc2 대신 skip + 안내 로그.
+
+    copy 가능 항목(sentinel)은 정상 plan 되고, target-owned 부재 항목은 [skip] 로그로 surface
+    된다(부분 skip 이 전체를 막지 않음). dry-run 레벨로 검증(실 복사 없음).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    target_dir = fake_repo / "templates" / "oc"
+    target_dir.mkdir(parents=True)
+    stored = tmp_path / "up_target"
+    # source(upstream)에는 sentinel 1개만 두되, manifest 엔 target-owned 부재 경로도 등재.
+    sentinel = stored / SENTINEL_REL
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("# upstream sentinel\n", encoding="utf-8")
+    absent_rel = ".opencode/command/pm-only.md"  # root upstream 엔 없는 target-owned 어댑터
+    manifest = stored / ".project_manager" / "engine.manifest"
+    # @target-owned 태그 = 타깃 고유 어댑터 신호 → source-부재 시 graceful skip 대상.
+    # 실 어댑터는 @render @target-owned 함께지만 skip 판별은 @target-owned 단독으로도 성립.
+    manifest.write_text(
+        SENTINEL_REL + "\n" + absent_rel + "  @render @target-owned\n", encoding="utf-8")
+    _write_local_conf(target_dir, f"upstream={stored}\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main(["--target", "oc", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, "target-owned source 부재가 rc2 로 전체를 막았다(graceful skip 실패)."
+    # 정상 항목은 plan 에 진행(부분 skip 이 전체를 막지 않음).
+    assert SENTINEL_REL in captured.out, "copy 가능 항목이 plan 되지 않음."
+    # 부재 항목은 침묵 skip 이 아니라 [skip] 안내 로그로 surface 되어야 한다.
+    assert "[skip]" in captured.out and absent_rel in captured.out, \
+        "target-owned 부재 경로가 안내 로그로 surface 되지 않음(침묵 skip 금지)."
+    assert "target-owned" in captured.out, "skip 사유(target-owned: root source 부재) 미표기."
+    # --target 모드의 부재 skip 은 에러가 아니므로 rc2 missing 에러 메시지가 없어야 한다.
+    assert "source 에 없음" not in captured.err
+
+
+def test_target_mode_non_target_owned_source_absent_errors(pm_update, tmp_path, monkeypatch, capsys):
+    """--target + manifest 의 **non-@target-owned** 항목이 root source 부재 → rc2 + 에러(skip 아님).
+
+    엔진경로(`.project_manager/tools/*` 등)는 @target-owned 가 아니므로, source 부재면 진짜 누락
+    (오타·잘못된 --from·전파돼야 하는데 빠진 도구)이다 — --target 모드여도 silent skip 금지·rc2.
+    이게 핵심 회귀(엔진 빠짐을 못 보는 클래스 방지).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    target_dir = fake_repo / "templates" / "oc"
+    target_dir.mkdir(parents=True)
+    stored = tmp_path / "up_target"
+    sentinel = stored / SENTINEL_REL
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("# upstream sentinel\n", encoding="utf-8")
+    # non-@target-owned 엔진경로가 source 에 부재 — 전파돼야 하는데 빠진 도구(진짜 누락).
+    engine_absent = ".project_manager/tools/foo.py"
+    manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.write_text(SENTINEL_REL + "\n" + engine_absent + "\n", encoding="utf-8")
+    _write_local_conf(target_dir, f"upstream={stored}\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main(["--target", "oc", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 2, "non-@target-owned 엔진경로 부재가 skip 됐다(silent skip — rc2 이어야 함)."
+    assert engine_absent in captured.err, "엔진경로 누락이 에러로 surface 되지 않음."
+    assert "[skip]" not in captured.out, "non-@target-owned 부재를 skip 으로 처리함(판별자 위반)."
+
+
+def test_target_mode_render_only_source_absent_errors(pm_update, tmp_path, monkeypatch, capsys):
+    """--target + **@render-only**(target_owned 아님) 항목이 root source 부재 → rc2 + 에러.
+
+    핵심 회귀(codex 발·over-broad-skip 가드): `.claude/agents @render` 처럼 루트 upstream 에
+    *존재해야 하는* 엔진 리소스도 @render 다. 옛 구현(@render 판별)은 잘못된 --from 에서 이게
+    빠져도 skip 으로 숨겼다. @target-owned 가 없으면 @render 라도 엔진 누락으로 보고 rc2 여야 한다.
+    """
+    fake_repo = tmp_path / "fake_repo"
+    target_dir = fake_repo / "templates" / "oc"
+    target_dir.mkdir(parents=True)
+    stored = tmp_path / "up_target"
+    sentinel = stored / SENTINEL_REL
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("# upstream sentinel\n", encoding="utf-8")
+    # @render 이지만 @target-owned 가 아닌 엔진 리소스 — source 부재면 진짜 누락(은폐 금지).
+    render_only_absent = ".claude/agents/some-engine-agent.md"
+    manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.write_text(
+        SENTINEL_REL + "\n" + render_only_absent + "  @render\n", encoding="utf-8")
+    _write_local_conf(target_dir, f"upstream={stored}\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main(["--target", "oc", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 2, "@render-only(target_owned 아님) 엔진 리소스 부재가 skip 됐다(은폐 — rc2 이어야 함)."
+    assert render_only_absent in captured.err, "@render-only 엔진 리소스 누락이 에러로 surface 되지 않음."
+    assert "[skip]" not in captured.out, "@render-only 부재를 skip 으로 처리함(over-broad-skip 회귀)."
+
+
+def test_target_mode_mixed_absent_engine_missing_wins(pm_update, tmp_path, monkeypatch, capsys):
+    """--target + @target-owned 부재 + non-@target-owned 부재 동시 → non-@target-owned 때문에 rc2.
+
+    부분 skip 이 엔진 누락을 가리면 안 된다 — @target-owned 어댑터는 skip 안내해도, non-
+    @target-owned 엔진경로 부재가 하나라도 있으면 전체가 rc2 로 멈춘다(엔진 누락이 전체를 막아야 함).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    target_dir = fake_repo / "templates" / "oc"
+    target_dir.mkdir(parents=True)
+    stored = tmp_path / "up_target"
+    (stored / ".project_manager").mkdir(parents=True)
+    owned_absent = ".opencode/command/pm-only.md"       # target-owned 어댑터(부재)
+    engine_absent = ".project_manager/tools/foo.py"     # 엔진경로 non-@target-owned(부재)
+    manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.write_text(
+        owned_absent + "  @target-owned\n" + engine_absent + "\n", encoding="utf-8")
+    _write_local_conf(target_dir, f"upstream={stored}\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main(["--target", "oc", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 2, "혼합 부재에서 non-@target-owned 엔진 누락이 rc2 로 막지 못함."
+    # @target-owned 어댑터는 여전히 skip 안내(surface), 엔진경로는 에러로 surface.
+    assert "[skip]" in captured.out and owned_absent in captured.out, \
+        "@target-owned 어댑터 부재가 skip 안내로 surface 되지 않음."
+    assert engine_absent in captured.err, "엔진경로 누락이 에러로 surface 되지 않음."
+
+
+def test_self_location_source_absent_still_errors(pm_update, tmp_path, monkeypatch, capsys):
+    """self-update 경로의 **non-@target-owned** source 부재는 rc2 에러 유지(양 모드 공통 안전판).
+
+    self-update 에서도 @target-owned 부재는 graceful skip 하나(양 모드 공통), non-@target-owned
+    엔진경로 부재는 진짜 잘못된 upstream 신호이므로 skip 대상이 아니다 — rc2 + 안내 에러 동작
+    불변을 회귀로 박는다(엔진 누락이 self-update 에서 침묵 skip 되는 클래스 방지).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    stored = tmp_path / "up_self"
+    # manifest 에 등재됐으나 source 에 없는 경로 1개 — self-loc 에선 진짜 에러.
+    absent_rel = ".project_manager/tools/__absent__.py"
+    (stored / ".project_manager").mkdir(parents=True)
+    (stored / ".project_manager" / "engine.manifest").write_text(
+        absent_rel + "\n", encoding="utf-8")
+    _write_local_conf(fake_repo, f"upstream={stored}\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main(["--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 2, "self-update 경로의 source 부재가 rc2 로 멈추지 않음(기존 동작 깨짐)."
+    assert "source 에 없음" in captured.err
+    assert "[skip]" not in captured.out, \
+        "self-update non-@target-owned 부재를 skip 으로 처리함(판별자 위반)."
+
+
+# ── ⑥b self-update 모드: @target-owned source 부재 graceful skip (T-0137·양 모드 공통) ──
+# opencode 채택자(`pm_import --harness opencode`)의 manifest 엔 `.opencode/* @target-owned` 가
+# 있으나 upstream=프레임워크 루트(.opencode/ 부재·root=claude)라 self-update 시 source-부재 →
+# 과거 rc2(전체 update 실패). @target-owned 는 어느 모드든 판별자이므로 self-update 에서도
+# skip(rc0)해야 한다(ship-blocker 수정). non-@target-owned 부재는 양 모드 공통 rc2 유지.
+
+def test_self_location_skips_target_owned_source_absent_with_log(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """self-update(--target 없음) + @target-owned 항목 source 부재 → rc2 대신 skip + 로그·rc0.
+
+    opencode 채택자 self-update 의 실측 시나리오: manifest 의 `.opencode/* @target-owned` 가
+    root upstream(claude)에 없어 과거 rc2 였던 것을 graceful skip 으로 surface 한다. 정상 항목
+    (sentinel)은 plan 에 진행(부분 skip 이 전체를 막지 않음).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    fake_repo.mkdir()
+    stored = tmp_path / "up_self"
+    # source(upstream)에는 sentinel 1개만 두되, manifest 엔 target-owned 부재 경로 등재.
+    _make_upstream(stored)
+    absent_rel = ".opencode/command/pm-only.md"  # 채택자 어댑터·root upstream(claude) 부재
+    manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.write_text(
+        SENTINEL_REL + "\n" + absent_rel + "  @render @target-owned\n", encoding="utf-8")
+    _write_local_conf(fake_repo, f"upstream={stored}\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main(["--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, \
+        "self-update 의 @target-owned source 부재가 rc2 로 전체를 막았다(graceful skip 실패)."
+    # 정상 항목은 plan 에 진행(부분 skip 이 전체를 막지 않음).
+    assert SENTINEL_REL in captured.out, "copy 가능 항목이 plan 되지 않음."
+    # 부재 항목은 침묵 skip 이 아니라 [skip] 안내 로그로 surface 되어야 한다.
+    assert "[skip]" in captured.out and absent_rel in captured.out, \
+        "self-update 의 @target-owned 부재 경로가 안내 로그로 surface 되지 않음(침묵 skip 금지)."
+    assert "target-owned" in captured.out, "skip 사유(target-owned: upstream source 부재) 미표기."
+    assert "source 에 없음" not in captured.err, "@target-owned skip 인데 missing 에러가 찍힘."
+
+
+def test_self_location_render_only_source_absent_errors(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """self-update + **@render-only**(target_owned 아님) source 부재 → rc2 + 에러.
+
+    양 모드 공통 회귀(codex 발): self-update 에서도 @render 만 붙은 엔진 리소스(`.claude/* @render`)
+    부재는 엔진 누락이지 target-owned skip 대상이 아니다 — rc2 로 멈춰 은폐를 막는다.
+    """
+    fake_repo = tmp_path / "fake_repo"
+    fake_repo.mkdir()
+    stored = tmp_path / "up_self"
+    _make_upstream(stored)
+    render_only_absent = ".claude/agents/some-engine-agent.md"  # @render 엔진 리소스(부재)
+    manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.write_text(
+        SENTINEL_REL + "\n" + render_only_absent + "  @render\n", encoding="utf-8")
+    _write_local_conf(fake_repo, f"upstream={stored}\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main(["--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 2, "self-update 의 @render-only 엔진 리소스 부재가 skip 됐다(은폐 — rc2 이어야 함)."
+    assert render_only_absent in captured.err, "@render-only 엔진 리소스 누락이 에러로 surface 되지 않음."
+    assert "[skip]" not in captured.out, "@render-only 부재를 skip 으로 처리함(over-broad-skip 회귀)."
+
+
+def test_self_location_mixed_absent_engine_missing_wins(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """self-update + @target-owned 부재 + non-@target-owned 부재 동시 → non-@target-owned 때문에 rc2.
+
+    self-update 에서도 @target-owned 어댑터는 skip 안내하되, non-@target-owned 엔진경로 부재가
+    하나라도 있으면 전체가 rc2 로 멈춘다(엔진 누락이 부분 skip 에 가려지면 안 됨·양 모드 공통).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    fake_repo.mkdir()
+    stored = tmp_path / "up_self"
+    (stored / ".project_manager").mkdir(parents=True)
+    owned_absent = ".opencode/command/pm-only.md"       # target-owned 어댑터(부재)
+    engine_absent = ".project_manager/tools/foo.py"     # 엔진경로 non-@target-owned(부재)
+    manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.write_text(
+        owned_absent + "  @target-owned\n" + engine_absent + "\n", encoding="utf-8")
+    _write_local_conf(fake_repo, f"upstream={stored}\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main(["--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 2, "self-update 혼합 부재에서 non-@target-owned 엔진 누락이 rc2 로 막지 못함."
+    # @target-owned 어댑터는 여전히 skip 안내(surface), 엔진경로는 에러로 surface.
+    assert "[skip]" in captured.out and owned_absent in captured.out, \
+        "@target-owned 어댑터 부재가 skip 안내로 surface 되지 않음."
+    assert engine_absent in captured.err, "엔진경로 누락이 에러로 surface 되지 않음."
+
+
 # ── --target = copy2 (render_enabled=False) 가드 (T-0133·should-fix) ──────────
 # main() 의 `render_enabled = not args.target` 매핑을 회귀로 박는다. --target 동기는
 # 템플릿(local.conf 없는 토큰-form 소스)을 렌더하면 operational leak/_assert_no_leak crash
@@ -357,3 +609,78 @@ def test_domain_template_planned_as_managed(pm_update, tmp_path):
     assert planned.get(DOMAIN_TEMPLATE_REL) == "update", (
         "domain/_template.md 가 plan 의 동기 대상(update)으로 안 잡힘 — manifest 동기 채널 누락"
     )
+
+
+# ── read_manifest 마커 파싱 (T-0137 — @render·@target-owned·복수·순서무관) ────────
+# path 행 끝의 마커들을 복수·순서 무관으로 인식·전부 떼어내고 render/target_owned 플래그로
+# 운반하는지 단위로 박는다. 미주석=둘 다 False(후방호환). board.py 의 @render 의존(render
+# 파싱 불변·render-leak lint) 회귀도 같이 가드한다.
+
+def _write_manifest(tmp_path: Path, lines: list[str]) -> Path:
+    manifest = tmp_path / "engine.manifest"
+    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return manifest
+
+
+def test_read_manifest_no_markers_both_false(pm_update, tmp_path):
+    """미주석 path → render=False, target_owned=False (후방호환·전파 대상)."""
+    manifest = _write_manifest(tmp_path, [".project_manager/tools/board.py"])
+    entries = pm_update.read_manifest(manifest)
+    assert len(entries) == 1
+    e = entries[0]
+    assert str(e) == ".project_manager/tools/board.py"
+    assert e.render is False
+    assert e.target_owned is False
+
+
+def test_read_manifest_render_only(pm_update, tmp_path):
+    """`path @render` → render=True, target_owned=False (엔진 리소스 렌더·skip 비대상)."""
+    manifest = _write_manifest(tmp_path, [".claude/agents  @render"])
+    e = pm_update.read_manifest(manifest)[0]
+    assert str(e) == ".claude/agents"
+    assert e.render is True
+    assert e.target_owned is False
+
+
+def test_read_manifest_target_owned_only(pm_update, tmp_path):
+    """`path @target-owned` → render=False, target_owned=True (source-부재 skip 판별)."""
+    manifest = _write_manifest(tmp_path, [".opencode/command/pm-only.md  @target-owned"])
+    e = pm_update.read_manifest(manifest)[0]
+    assert str(e) == ".opencode/command/pm-only.md"
+    assert e.render is False
+    assert e.target_owned is True
+
+
+def test_read_manifest_both_markers(pm_update, tmp_path):
+    """`path @render @target-owned` → 둘 다 True, 순수 경로만 값으로 남는다."""
+    manifest = _write_manifest(tmp_path, [".opencode/agents  @render @target-owned"])
+    e = pm_update.read_manifest(manifest)[0]
+    assert str(e) == ".opencode/agents"
+    assert e.render is True
+    assert e.target_owned is True
+
+
+def test_read_manifest_both_markers_order_independent(pm_update, tmp_path):
+    """마커 순서 무관 — `@target-owned @render` 도 둘 다 True 로 파싱."""
+    manifest = _write_manifest(tmp_path, [".opencode/agents  @target-owned @render"])
+    e = pm_update.read_manifest(manifest)[0]
+    assert str(e) == ".opencode/agents"
+    assert e.render is True
+    assert e.target_owned is True
+
+
+def test_read_manifest_render_preserved_with_target_owned(pm_update, tmp_path):
+    """board.py compat 회귀: @target-owned 가 붙은 행도 render 를 올바로 파싱(render-leak lint).
+
+    board.py 가 read_manifest 의 `.render` 로 render-leak 검사 대상을 모은다 — @target-owned
+    공존이 render 파싱을 깨면 안 된다(이름·의미 불변·target_owned 는 *추가* 속성).
+    """
+    manifest = _write_manifest(tmp_path, [
+        ".claude/agents  @render",                         # render-only 엔진 리소스
+        ".opencode/agents  @render @target-owned",         # 둘 다
+        ".project_manager/tools/board.py",                 # 무마커
+    ])
+    entries = pm_update.read_manifest(manifest)
+    render_paths = {str(e) for e in entries if e.render}
+    assert render_paths == {".claude/agents", ".opencode/agents"}, \
+        "@target-owned 공존이 render 파싱을 깼다(board.py render-leak lint 회귀)."

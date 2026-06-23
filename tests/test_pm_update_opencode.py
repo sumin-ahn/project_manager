@@ -531,17 +531,15 @@ def test_main_target_nested_returns_error(pm_update, tmp_path):
 # ── missing 처리: source 에 없는 manifest 항목 ───────────────────────────────
 
 def test_main_missing_manifest_entries_returns_rc2(pm_update, tmp_path, monkeypatch):
-    """manifest 항목이 source 에 없으면 rc=2 를 반환한다 (잘못된 --from 감지).
+    """self-update 경로(--target 없음)에서 manifest 항목이 source 에 없으면 rc=2 (잘못된 --from 감지).
 
     missing 이 있어도 changes=0 이면 '최신'으로 0 종료하던 기존 동작을 수정한다.
+    (T-0137: --target 모드의 source 부재는 target-owned graceful skip 로 분기되므로,
+    이 잘못된-upstream 감지 계약은 self-update/pm_import 경로에 한정된다.)
     """
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "upstream"
     source.mkdir()
-
-    # dest: fake_repo/templates/mytarget/
-    dest = fake_repo / "templates" / "mytarget"
-    dest.mkdir(parents=True)
 
     # source 에는 아무 파일도 없지만 manifest 엔 항목이 있다 → all missing
     manifest_in_source = source / ".project_manager" / "engine.manifest"
@@ -556,7 +554,6 @@ def test_main_missing_manifest_entries_returns_rc2(pm_update, tmp_path, monkeypa
 
     rc = pm_update.main([
         "--from", str(source),
-        "--target", "mytarget",
         "--dry-run",
     ])
 
