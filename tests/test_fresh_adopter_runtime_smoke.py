@@ -134,3 +134,89 @@ def test_live_claude_adopter_bootstraps_and_creates_ticket(tmp_path):
         f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
     )
     assert _board_list_recognizes_ticket(dest), "board.py list 가 실 claude 발행 ticket 미인식"
+
+
+# ── 채택자 *update* 경로 라이브 검증 (T-0133·activation 이 update 를 깨지 않는가) ──────────────
+# 위 두 테스트는 import+operate 만 친다. 아래 두 테스트는 그 사이 *채택자 self-update*(pm_update)를
+# 끼워, 활성화(@render·@target-owned·모델 폴백 중화)가 바꾼 *update 경로*를 라이브로 검증한다:
+# import → pm_update(self-update) → 실 LLM 이 *post-update* 진입문서로 ticket 발행. import smoke 가
+# 못 친 update 경로(opencode: .opencode/* @target-owned graceful skip / claude: .claude/* @render 재렌더)를
+# 커버한다(회귀·rc 실측·codex 의 *기계* 검증 위에 *런타임* 층 1개 더).
+
+
+def _self_update(dest: Path) -> subprocess.CompletedProcess:
+    """채택자 디렉토리에서 self-update(pm_update) 실행 — 진짜 채택자 update 흐름."""
+    return subprocess.run(
+        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py")],
+        cwd=str(dest), capture_output=True, text=True,
+        env={**os.environ, "PM_NONINTERACTIVE": "1"},
+    )
+
+
+@pytest.mark.skipif(
+    not PM_ORCH_LIVE or not shutil.which("opencode"),
+    reason="runtime smoke — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
+)
+def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
+    """opencode 채택자가 self-update 후에도 안 깨지고 board 운영 가능 (.opencode/* @target-owned skip 경로)."""
+    pm_import = _load_pm_import()
+    dest = _import_adopter(tmp_path, "opencode")
+    # 1) self-update: .opencode/* 는 @target-owned graceful skip(upstream=framework-root 가 안 들고 있음)·
+    #    엔진경로 동기·rc0(crash/clobber 0). 활성화 전엔 source-부재로 rc2 였던 경로(T-0137+self-update 확장).
+    upd = _self_update(dest)
+    assert upd.returncode == 0, (
+        f"opencode 채택자 pm_update 실패(rc={upd.returncode}) — activation 이 update 경로를 깸.\n"
+        f"--- stdout ---\n{upd.stdout[-1500:]}\n--- stderr ---\n{upd.stderr[-800:]}"
+    )
+    # .opencode/agents 는 skip(보존)돼야 — 리터럴 모델 토큰 0(neutralized 유지·@render leak 0).
+    dev_text = (dest / ".opencode" / "agents" / "developer.md").read_text(encoding="utf-8")
+    assert pm_import.OPENCODE_MODEL_TOKEN not in dev_text, \
+        "pm_update 후 .opencode/agents 에 리터럴 모델 토큰 잔존(@render leak·skip 안 됨)"
+    # 2) post-update 운영성: 실 opencode 가 update 후 AGENTS.md 로 ticket 발행.
+    open_dir = dest / ".project_manager" / "wiki" / "tickets" / "open"
+    before = {p.name for p in open_dir.glob("T-*.md")}
+    proc = subprocess.run(
+        ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
+         _make_prompt("AGENTS.md")],
+        cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+    )
+    created = {p.name for p in open_dir.glob("T-*.md")} - before
+    assert created, (
+        "pm_update 후 실 opencode 가 ticket 을 발행하지 못함 — update 후 운영성 실패.\n"
+        f"--- opencode stdout(tail) ---\n{proc.stdout[-2000:]}\n--- stderr(tail) ---\n{proc.stderr[-1000:]}"
+    )
+    assert _board_list_recognizes_ticket(dest), "pm_update 후 board.py list 가 실 opencode 발행 ticket 미인식"
+
+
+@pytest.mark.skipif(
+    not PM_ORCH_LIVE or not shutil.which("claude"),
+    reason="runtime smoke — PM_ORCH_LIVE=1 + claude CLI 필요(API 과금). 기본 skip·on-demand.",
+)
+def test_live_claude_adopter_survives_pm_update_then_operates(tmp_path):
+    """claude 채택자가 self-update(.claude/* @render 재렌더) 후에도 안 깨지고 board 운영 가능."""
+    dest = _import_adopter(tmp_path, "claude")
+    # 1) self-update: .claude/* 는 @render(framework-root=claude 가 source 보유) 재렌더·rc0.
+    upd = _self_update(dest)
+    assert upd.returncode == 0, (
+        f"claude 채택자 pm_update 실패(rc={upd.returncode}) — activation 이 update 경로를 깸.\n"
+        f"--- stdout ---\n{upd.stdout[-1500:]}\n--- stderr ---\n{upd.stderr[-800:]}"
+    )
+    # 재렌더 산출물에 리터럴 토큰 0(self-containment·operational 해소).
+    dev_text = (dest / ".claude" / "agents" / "developer.md").read_text(encoding="utf-8")
+    import re as _re
+    assert not _re.search(r"\{\{[A-Z_]+\}\}", dev_text), \
+        "pm_update 재렌더 후 .claude/agents 에 미해소 토큰 잔존(leak)"
+    # 2) post-update 운영성: 실 claude 가 update 후 CLAUDE.md 로 ticket 발행.
+    open_dir = dest / ".project_manager" / "wiki" / "tickets" / "open"
+    before = {p.name for p in open_dir.glob("T-*.md")}
+    proc = subprocess.run(
+        ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
+         "--dangerously-skip-permissions", _make_prompt("CLAUDE.md")],
+        cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+    )
+    created = {p.name for p in open_dir.glob("T-*.md")} - before
+    assert created, (
+        "pm_update 후 실 claude 가 ticket 을 발행하지 못함 — update 후 운영성 실패.\n"
+        f"--- claude stdout(tail) ---\n{proc.stdout[-2000:]}\n--- stderr(tail) ---\n{proc.stderr[-1000:]}"
+    )
+    assert _board_list_recognizes_ticket(dest), "pm_update 후 board.py list 가 실 claude 발행 ticket 미인식"

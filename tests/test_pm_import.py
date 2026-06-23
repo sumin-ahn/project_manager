@@ -82,8 +82,16 @@ def _grep_token_files(root: Path, token: str, *, exclude_engine_docs: bool = Fal
             continue
         if not path.is_file():
             continue
-        if exclude_engine_docs and rel.as_posix() in ENGINE_DOCS_KEEP_LITERAL:
-            continue
+        if exclude_engine_docs:
+            relp = rel.as_posix()
+            # 엔진 문서/소스/생성-config 는 placeholder 대상이 아니라 *토큰명을 문서화*한다 — verbatim.
+            #   - pm_role.md·pm_playbook.md (방법론 문서·기존)
+            #   - .project_manager/tools/* (엔진 소스 .py — 주석/docstring 이 토큰 메커니즘 설명·T-0133)
+            #   - local.conf (board init 헤더 주석이 해소 키를 `{{PY}}·{{PROJECT_NAME}}` 로 설명)
+            if (relp in ENGINE_DOCS_KEEP_LITERAL
+                    or relp.startswith(".project_manager/tools/")
+                    or relp == ".project_manager/local.conf"):
+                continue
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
@@ -1232,7 +1240,10 @@ def _opencode_dest_with_token(pm_import, tmp_path, name):
     rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", name])
     assert rc == 0
     # import 가 비-tty 경로로 주석화한 모델-토큰 `# model:` 줄을 fresh 활성 토큰 줄로 환원.
-    # (T-0077: 폴백이 `model:` 줄을 통째 주석화 — `# model: "..."  # TODO: ...` → `model: "..."`).
+    # (T-0077: 폴백이 `model:` 줄을 통째 주석화 — `# model: "..."  # TODO: ...` → `model: "..."`.
+    #  T-0133: @render leak-safety 로 폴백이 토큰을 중화 — `# model: "<provider/model>"  # TODO:`
+    #  → 활성 토큰 줄 `model: "{{OPENCODE_PRO_MODEL}}"` 로 환원: TODO 마커 제거·`# ` 주석 표식
+    #  제거·중화 placeholder(<provider/model>)를 원 토큰으로 복원.)
     for path in dest.rglob("*"):
         if not path.is_file():
             continue
@@ -1240,26 +1251,36 @@ def _opencode_dest_with_token(pm_import, tmp_path, name):
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        if OPENCODE_MODEL_TOKEN not in text:
-            continue
         new_lines = []
+        changed_any = False
         for line in text.splitlines(keepends=True):
-            if OPENCODE_MODEL_TOKEN in line and "# TODO" in line:
+            stripped = line.lstrip()
+            # 폴백이 주석화한 model: 줄 (토큰 잔존 또는 <provider/model> 중화·둘 다 대응).
+            is_commented_model = (
+                stripped.startswith("#") and "model:" in stripped and "# TODO" in line
+                and (OPENCODE_MODEL_TOKEN in line or "<provider/model>" in line)
+            )
+            if is_commented_model:
                 eol = "\n" if line.endswith("\n") else ""
                 body = line.rstrip("\n")
                 # 줄 끝의 `  # TODO ...` 마커를 잘라내고…
                 marker_idx = body.find("  # TODO")
                 if marker_idx != -1:
                     body = body[:marker_idx]
-                # …줄 머리의 `# ` 주석 표식을 벗겨 활성 `model:` 줄로 환원한다.
-                if body.lstrip().startswith("#"):
-                    stripped = body.lstrip()
-                    indent = body[: len(body) - len(stripped)]
-                    body = indent + stripped[1:].lstrip(" ")
+                # …줄 머리의 `# ` 주석 표식을 벗기고…
+                s = body.lstrip()
+                indent = body[: len(body) - len(s)]
+                if s.startswith("#"):
+                    s = s[1:].lstrip(" ")
+                body = indent + s
+                # …중화 placeholder 를 원 토큰으로 복원해 활성 `model:` 줄로 환원한다.
+                body = body.replace("<provider/model>", OPENCODE_MODEL_TOKEN)
                 new_lines.append(body + eol)
+                changed_any = True
             else:
                 new_lines.append(line)
-        path.write_text("".join(new_lines), encoding="utf-8")
+        if changed_any:
+            path.write_text("".join(new_lines), encoding="utf-8")
     return dest
 
 
@@ -1380,11 +1401,14 @@ def test_opencode_model_non_tty_todo_with_available_list(pm_import, tmp_path, ca
     assert result.model is None
     assert result.changed == 0
     assert OPENCODE_MODEL_TOKEN in result.todos
-    # 토큰은 보존(치환 안 함)되고 그 옆에 가용 목록이 인라인된 TODO 마커가 붙었다.
-    assert pm_import._token_present(dest, OPENCODE_MODEL_TOKEN, relpaths), \
-        "비-tty 폴백인데 토큰이 사라짐(치환됨)."
     dev = dest / ".opencode" / "agents" / "developer.md"
     dev_text = dev.read_text(encoding="utf-8")
+    # T-0133: TODO 폴백(모델 미해소)은 model: 줄을 주석화하며 토큰을 <provider/model> 로 *중화*한다
+    # (실제 모델로 치환=채움이 아님). model 파일엔 리터럴 토큰이 남지 않는다(@render leak 회피) — 발견
+    # 경로는 주석 model 줄 + 형식 힌트 + 가용목록 TODO 로 보존. (whole-tree 토큰 존재는 README 산문에서
+    # 별도 검증되므로 여기선 model 줄 동작만 본다.)
+    assert OPENCODE_MODEL_TOKEN not in dev_text, "TODO 폴백인데 model 파일에 리터럴 토큰 잔존(@render leak)."
+    assert "<provider/model>" in dev_text, "TODO 폴백 형식 힌트(<provider/model>) 소실."
     assert "TODO" in dev_text, "비-tty 폴백인데 TODO 마커가 없음."
     assert "ollama/gemma4:26b" in dev_text, "TODO 마커에 가용 모델 목록이 인라인되지 않음."
     err = capsys.readouterr().err
@@ -1406,10 +1430,11 @@ def test_opencode_model_binary_absent_todo_fallback(pm_import, tmp_path, capsys)
     assert result.path == "todo"
     assert result.changed == 0
     assert result.available == [], "조회 실패인데 가용 목록이 비어있지 않음."
-    assert pm_import._token_present(dest, OPENCODE_MODEL_TOKEN, relpaths)
     dev_text = (dest / ".opencode" / "agents" / "developer.md").read_text(encoding="utf-8")
+    # T-0133: TODO 폴백은 model: 줄 토큰을 <provider/model> 로 중화 — model 파일에 리터럴 토큰 0(@render leak 회피).
+    assert OPENCODE_MODEL_TOKEN not in dev_text, "TODO 폴백인데 model 파일에 리터럴 토큰 잔존(@render leak)."
     assert "TODO" in dev_text
-    # 목록 없으니 일반 TODO 안내(가용 목록 인라인 아님).
+    # 목록 없으니 일반 TODO 안내(가용 목록 인라인 아님)·형식 힌트 <provider/model> 보존.
     assert "provider/model" in dev_text and "가용:" not in dev_text
     # T-0077: model 줄은 통째 주석화돼야 한다(`# model:` — 값 비활성 → opencode 기본 모델).
     assert re.search(r"^#\s*model:", dev_text, re.MULTILINE), \
@@ -1443,12 +1468,16 @@ def test_opencode_agent_frontmatter_valid_after_default_import(pm_import, tmp_pa
     """기본(--opencode-model 없는·비-tty) opencode import 후 agent frontmatter 가 유효한 YAML.
 
     T-0077: 미해소 폴백은 `model:` 줄을 *통째 주석화*한다 — frontmatter 에 `model` 키가 *부재*해야
-    opencode 가 "configured model {{OPENCODE_PRO_MODEL}} is not valid" 로 agent 를 거부하지 않고
-    *기본 모델*로 띄운다(graceful·실 파일럿 블로커 fix). 주석은 반드시 YAML 주석(`#`)이어야 하며
-    (HTML 주석 `<!-- -->` 은 frontmatter 파싱을 깬다 — T-0033 codex must-fix), 토큰 자체는 줄 안에
-    주석으로 보존(채택자가 주석 해제 후 치환·`--opencode-model` 재import 안내). main 의 기본 경로
-    (autouse fixture 가 _real_models_runner 를 (False, []) 로 고정 → 폴백)로 import 한 3개 subagent
-    정의 frontmatter 를 실제 파싱해 가드.
+    opencode 가 "configured model … is not valid" 로 agent 를 거부하지 않고 *기본 모델*로 띄운다
+    (graceful·실 파일럿 블로커 fix). 주석은 반드시 YAML 주석(`#`)이어야 하며 (HTML 주석 `<!-- -->` 은
+    frontmatter 파싱을 깬다 — T-0033 codex must-fix).
+
+    T-0133(@render 활성화): `.opencode/agents` 가 render 대상이 되면서, 폴백 주석 줄에 리터럴
+    `{{OPENCODE_PRO_MODEL}}` 을 남기면 render `_assert_no_leak` 가 hard-fail 한다. 그래서 폴백은
+    토큰을 형식 힌트 `<provider/model>` 로 *중화* 하되 주석 `model:` 줄 + TODO 안내는 보존한다 —
+    채택자 발견경로(주석 해제 후 provider/model 로 치환·`--opencode-model` 재import)는 유지하고,
+    리터럴 토큰만 제거(이전 "토큰 보존" 계약을 활성화가 강제 변경). main 의 기본 경로(autouse fixture
+    가 _real_models_runner 를 (False, []) 로 고정 → 폴백)로 import 한 3개 subagent frontmatter 가드.
     """
     dest = tmp_path / "fmvalid"
     rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "FmValid"])
@@ -1464,8 +1493,11 @@ def test_opencode_agent_frontmatter_valid_after_default_import(pm_import, tmp_pa
         assert "model" not in fm, (
             f"{name}: 미해소 폴백인데 model 키가 활성(부재여야 opencode 기본 모델): {fm.get('model')!r}"
         )
-        # 그래도 토큰은 *주석으로* 보존(채택자 손작업 지점) — 단, YAML 키로는 활성 아님.
-        assert OPENCODE_MODEL_TOKEN in text, f"{name}: 폴백이 모델 토큰을 통째 삭제(보존돼야 함)"
+        # T-0133: @render leak-safety — 리터럴 토큰은 *없어야* 한다(render _assert_no_leak hard-fail 회피).
+        assert OPENCODE_MODEL_TOKEN not in text, \
+            f"{name}: @render 경로 agent 에 리터럴 모델 토큰 잔존 → render leak"
+        # 그래도 발견경로는 보존: 주석 model: 줄 + 형식 힌트(<provider/model>) + TODO 안내.
+        assert "<provider/model>" in text, f"{name}: 폴백 형식 힌트(<provider/model>) 소실"
         assert re.search(r"^#\s*model:", text[: end + 5], re.MULTILINE), \
             f"{name}: model 줄이 `# model:` 로 주석화되지 않음"
         # frontmatter 영역에 HTML 주석 잔류 0 (YAML 깨짐 방지 — T-0033 codex must-fix 회귀 가드).

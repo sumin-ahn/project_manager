@@ -648,11 +648,32 @@ def _substitution_map(project_name: str, project_root: Path, today: str) -> dict
     }
 
 
+def _is_engine_source(rel: Path) -> bool:
+    """엔진 소스 코드(`.project_manager/tools/`)인가 — placeholder 처리에서 전면 제외 대상.
+
+    엔진 도구(.py)는 verbatim canonical 사본이다: 코드는 런타임에 local.conf 에서 project_name·
+    py·test_cmd 를 읽지, baked placeholder 를 쓰지 않는다. 그런데 그 *주석·docstring·예시 문자열*
+    엔 `{{PROJECT_NAME}}`·`{{OPENCODE_PRO_MODEL}}`·`{{PROJECT_CONSTRAINTS}}` 같은 토큰이 문서로
+    등장한다(엔진이 placeholder 메커니즘을 설명하므로). 이 문자열들은 *placeholder 가 아니라
+    문서*다 — substitute/fill/token-scan 이 건드리면 (a) 주석이 concrete 값으로 변질 (b) free-form
+    토큰에 `<!-- TODO -->` 주입 (c) `{{OPENCODE_PRO_MODEL}}` 이 claude 트리의 모델-해소 게이트를
+    오발(_token_present True → resolve active). 따라서 엔진 소스는 placeholder 처리 전 범위에서
+    제외해 verbatim 으로 둔다 (D17 의 pm_render/pm_update 가 토큰을 문서화하며 표면화·T-0133).
+
+    rel 은 dest-rel(`​.project_manager/tools/board.py`) 또는 절대/소스 경로(dry-run plan 의
+    `action.dst`/`action.src`) 둘 다 올 수 있어 substring 매칭으로 통일한다(`tools/` 트레일링
+    슬래시로 `tools_backup` 등 오탐 방지)."""
+    p = rel.as_posix()
+    return p.startswith(".project_manager/tools/") or "/.project_manager/tools/" in p
+
+
 def _should_substitute(rel: Path) -> bool:
     """이 파일이 operational placeholder 치환 대상인가."""
     if rel.suffix not in SUBSTITUTE_SUFFIXES:
         return False
     if rel.as_posix() in SED_EXCLUDE_RELPATHS:
+        return False
+    if _is_engine_source(rel):  # 엔진 소스(.py)는 verbatim — 주석의 토큰-문서는 placeholder 아님
         return False
     return True
 
@@ -1175,17 +1196,22 @@ def _mark_model_todos(
     copied_relpaths: set[Path],
     available: list[str],
 ) -> list[str]:
-    """비-tty/opencode 부재 폴백: {{OPENCODE_PRO_MODEL}} 토큰이 있는 `model:` 줄을 통째로 주석화한다.
+    """비-tty/opencode 부재 폴백: `model:` 줄을 주석화하고 그 안의 모델 토큰을 중화한다.
 
     _mark_todos 폴백을 흡수(T-0033) — 모델 토큰만 대상. 조회 성공 시 가용 모델 목록을 마커에
     인라인해 사람이 바로 고를 수 있게 한다. _mark_todos 와 같은 비파괴 규칙(이미 TODO/주석인 줄은
-    건너뜀·copied_relpaths 범위 한정). 주석화한 토큰([OPENCODE_MODEL_TOKEN] 또는 [])을 반환.
+    건너뜀·copied_relpaths 범위 한정). 마크한 토큰([OPENCODE_MODEL_TOKEN] 또는 [])을 반환.
 
-    T-0077: 미해소 시 `model:` 값을 활성으로 남기면(`model: "{{OPENCODE_PRO_MODEL}}"  # TODO`)
-    opencode 가 "configured model … is not valid" 로 agent 자체를 거부한다(실 파일럿 블로커).
-    → 줄 *전체*를 주석화(`# model: "{{OPENCODE_PRO_MODEL}}"  # TODO: …`)해 YAML frontmatter 에서
-    `model` 키를 *부재*시킨다 → opencode 가 기본 모델로 agent 를 구동(graceful degradation).
-    채택자는 주석을 해제하고 provider/model 로 치환(또는 `--opencode-model` 재import)하면 된다.
+    T-0077: 미해소 시 `model:` 값을 활성으로 남기면(`model: "…"  # TODO`) opencode 가
+    "configured model … is not valid" 로 agent 자체를 거부한다(실 파일럿 블로커). → 줄 *전체*를
+    주석화해 YAML frontmatter 에서 `model` 키를 *부재*시킨다 → opencode 가 기본 모델로 agent 를
+    구동(graceful degradation).
+
+    T-0133(@render 활성화·동작 변경): 미해소 폴백이 주석 줄에 리터럴 `{{OPENCODE_PRO_MODEL}}` 을
+    남기면 render `_assert_no_leak` 가 hard-fail 한다(@render path 산출물에 토큰 0 이어야 함). 그래서
+    주석화하면서 토큰을 **형식 힌트 `<provider/model>` 로 중화**한다 → `# model: "<provider/model>"
+    # TODO: …`. (이전엔 리터럴 토큰을 그대로 보존했으나, 활성화가 그 동작과 양립 불가.) 채택자는
+    주석을 해제하고 `<provider/model>` 자리에 provider/model 을 채우거나 `--opencode-model` 재import.
     """
     # ⚠️ 토큰은 (T-0032 후) 전부 `.opencode/agents/*.md` 의 YAML frontmatter `model:` 줄에만
     # 있다 — 주석은 반드시 **YAML 주석(`#`)** 이어야 한다. HTML 주석(`<!-- -->`)을 붙이면
@@ -1213,7 +1239,13 @@ def _mark_model_todos(
             if OPENCODE_MODEL_TOKEN in line and "TODO" not in line \
                     and line.lstrip().startswith("model:"):
                 eol = "\n" if line.endswith("\n") else ""
-                body = line.rstrip("\n")
+                # 토큰 중화 (T-0133·@render leak-safety): 줄을 주석화하면서 {{OPENCODE_PRO_MODEL}}
+                # 을 <provider/model> 로 치환해 *토큰을 제거*한다. @render 활성화로 .opencode/agents
+                # 가 render 대상이 됐고 render 의 _assert_no_leak 는 주석 안의 토큰도 잡으므로, 미해소
+                # 폴백이 토큰을 남기면 RenderLeakError. 중화하면 토큰 0(자족) + 채택자 발견경로(주석
+                # +TODO·fill 형식 힌트) 유지. (resolve 가 render 이전으로 이동했어도 이 줄은 필요 —
+                # 주석화한 줄에 토큰을 남기면 뒤따르는 render 가 여전히 leak.)
+                body = line.rstrip("\n").replace(OPENCODE_MODEL_TOKEN, "<provider/model>")
                 replacement = "# " + body + tail + eol
                 new_text = new_text.replace(line, replacement, 1)
                 marked = True
@@ -1532,6 +1564,8 @@ def _plan_fill_targets(actions: list[CopyAction]) -> list[str]:
     present: list[str] = []
     for token in FREE_FORM_TOKENS:
         for action in actions:
+            if _is_engine_source(action.dst):  # 엔진 소스 주석의 토큰-문서는 placeholder 아님 (T-0133)
+                continue
             try:
                 if token in action.src.read_text(encoding="utf-8"):
                     present.append(token)
@@ -1548,6 +1582,8 @@ def _plan_opencode_model_targets(actions: list[CopyAction]) -> bool:
     dry-run 은 복사를 안 하므로 src 측에서 미리 본다(_plan_fill_targets 와 같은 결).
     """
     for action in actions:
+        if _is_engine_source(action.dst):  # 엔진 소스(.py) 주석의 모델-토큰 문서는 placeholder 아님 (T-0133)
+            continue
         try:
             if OPENCODE_MODEL_TOKEN in action.src.read_text(encoding="utf-8"):
                 return True
@@ -1567,6 +1603,8 @@ def _token_present(
     """
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
     for _rel, path in _iter_copied_files(dest_root, scan):
+        if _is_engine_source(_rel):  # 엔진 소스 주석의 토큰-문서는 placeholder 아님 (T-0133)
+            continue
         try:
             if token in path.read_text(encoding="utf-8"):
                 return True
@@ -1594,6 +1632,8 @@ def _mark_todos(
     marked: set[str] = set()
     marker = " <!-- TODO: 손으로 채우세요 -->"
     for _rel, path in _iter_copied_files(dest_root, scan):
+        if _is_engine_source(_rel):  # 엔진 소스(.py)에 TODO 마커 주입 금지 — verbatim (T-0133)
+            continue
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
@@ -2088,10 +2128,31 @@ def main(argv: list[str] | None = None) -> int:
     n_subst = substitute_placeholders(dest_root, subs, copied_relpaths)
     print(f"✓ {n_copy} 파일 복사 · {n_subst} 파일 placeholder 치환")
 
+    # ── opencode 모델 결정적 해소 (T-0033): substitute *직후*·render *이전*. @render 활성화(T-0133)
+    #    로 .opencode/agents 가 render 대상이 됐으므로, render_managed_files 가 model: 줄의
+    #    {{OPENCODE_PRO_MODEL}} 을 만나기 *전* 에 해소해야 한다 — flag/interactive=토큰 치환,
+    #    todo(미해소)=줄 주석화 + 토큰 중화(<provider/model>) → 어느 경로든 render 시점엔 토큰 0.
+    #    (이 단계 이전엔 render 가 0 path 였어서 resolve 가 render *뒤*에 있었다 — 활성화가 그 순서
+    #    가정을 깸·옛 "todo 토큰은 YAML 주석으로 남아 leak 없음" 전제 무효.) local.conf 기록
+    #    (record_opencode_model)은 board init 이 local.conf 를 만든 *뒤* 로 분리(아래).
+    #    LLM 추측(fill)이 아니라 `opencode models` 결정적 조회로 해소(환각·미가용 모델 제거).
+    #    범위 = substitute_placeholders 와 동일한 copied_relpaths(비파괴). claude-only=inactive.
+    model_result = resolve_opencode_model(
+        dest_root, copied_relpaths, model_arg=args.opencode_model)
+    if model_result.active:
+        if model_result.path == "flag":
+            print(f"✓ {OPENCODE_MODEL_TOKEN} 치환(--opencode-model "
+                  f"'{model_result.model}', {model_result.changed} 파일)")
+        elif model_result.path == "interactive":
+            print(f"✓ {OPENCODE_MODEL_TOKEN} 치환(대화형 선택 "
+                  f"'{model_result.model}', {model_result.changed} 파일)")
+        elif model_result.path == "todo":
+            print(f"  {OPENCODE_MODEL_TOKEN} TODO 표시 — {model_result.note}")
+
     # render 단계 (T-0131·ADR-0028): @render manifest path 의 복사본을 render_adapter 산출물로
-    # 다시 쓴다 — operational(subs·이미 sed) + free-form overlay(부재면 host omit). substitute
-    # *직후*·fill *이전* 에 둬 fill 이 @render 파일의 free-form 토큰을 보지 않게 한다. 현 트리는
-    # 실 path @render 0 → 무동작(활성화 전·D17-2/T-0133). 범위 = copied_relpaths(비파괴).
+    # 다시 쓴다 — operational(subs·이미 sed) + free-form overlay(부재면 host omit). substitute·
+    # 모델해소 *직후*·fill *이전* 에 둬 fill 이 @render 파일의 free-form 토큰을 보지 않게 한다.
+    # 범위 = copied_relpaths(비파괴).
     n_render = render_managed_files(dest_root, subs, copied_relpaths)
     if n_render:
         print(f"✓ {n_render} 파일 render (어댑터=overlay 산출물·ADR-0028)")
@@ -2127,28 +2188,16 @@ def main(argv: list[str] | None = None) -> int:
     if record_upstream(dest_root, source_root):
         print(f"✓ local.conf upstream 기록 (pm_update --from 기본값): {source_root}")
 
-    # ── opencode 모델 결정적 해소 (T-0033): conf sync 직후·fill *이전*. opencode 어댑터
-    #    token({{OPENCODE_PRO_MODEL}})이 이번 복사본에 잔존할 때만 동작(claude-only 면 inactive).
-    #    LLM 추측(fill)이 아니라 `opencode models` 결정적 조회로 해소한다(환각·미가용 모델 제거).
-    #    범위 = substitute_placeholders 와 동일한 copied_relpaths(비파괴).
-    model_result = resolve_opencode_model(
-        dest_root, copied_relpaths, model_arg=args.opencode_model)
-    if model_result.active:
-        if model_result.path == "flag":
-            print(f"✓ {OPENCODE_MODEL_TOKEN} 치환(--opencode-model "
-                  f"'{model_result.model}', {model_result.changed} 파일)")
-        elif model_result.path == "interactive":
-            print(f"✓ {OPENCODE_MODEL_TOKEN} 치환(대화형 선택 "
-                  f"'{model_result.model}', {model_result.changed} 파일)")
-        elif model_result.path == "todo":
-            print(f"  {OPENCODE_MODEL_TOKEN} TODO 표시 — {model_result.note}")
-        # 모델이 *실제로 해소된* 경로(flag·interactive)만 local.conf 에 기록 — 이후 pm_update
-        #   @render 가 {{OPENCODE_PRO_MODEL}} 을 local.conf 에서 재유도할 때 키 부재로 leak
-        #   assertion crash 하는 걸 막는다. todo(미해소)는 토큰이 YAML 주석으로 남아 leak 없음 →
-        #   기록 안 함. claude import 는 active=False 라 이 블록에 안 들어와 자연 skip.
-        if model_result.path in ("flag", "interactive") and model_result.model:
-            if record_opencode_model(dest_root, model_result.model):
-                print(f"✓ local.conf opencode_pro_model 기록 ({model_result.model})")
+    # ── opencode 모델 local.conf 기록 (T-0033): board init·conf sync 가 local.conf 를 만든 *뒤*.
+    #    실제 모델을 해소한 경로(flag·interactive)만 기록 — 이후 pm_update @render 가
+    #    {{OPENCODE_PRO_MODEL}} 을 local.conf 에서 재유도할 때 키 부재로 leak assertion crash 하는
+    #    걸 막는다. todo(미해소)는 위 resolve 가 토큰을 주석화+중화(<provider/model>)했으니 기록
+    #    안 함(키 없어도 어댑터에 토큰 0 → leak 없음). claude import 는 active=False 라 자연 skip.
+    #    (resolve_opencode_model 자체는 render 이전으로 이동·위 substitute 직후 블록 참조.)
+    if model_result.active and model_result.path in ("flag", "interactive") \
+            and model_result.model:
+        if record_opencode_model(dest_root, model_result.model):
+            print(f"✓ local.conf opencode_pro_model 기록 ({model_result.model})")
 
     # ── fill 단계 (T-0009): board init·conf sync 직후 hook. 자유서술 placeholder 처리.
     #    auto + opt-in 게이트 통과 → 하니스 구동 *제안*(파일 미변경, 사람 검토 전제).

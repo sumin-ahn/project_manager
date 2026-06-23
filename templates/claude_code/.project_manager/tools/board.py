@@ -505,6 +505,47 @@ def _active_slot_test_cmd() -> str | None:
     return None
 
 
+def _active_slot_path() -> str | None:
+    """활성 worktree 슬롯(lease)의 절대 경로 (T-0122·ADR-0026·없으면 None).
+
+    분리된 PM 홈(코드 없음)+worktree 모델([[ADR-0026]])에서 회귀는 활성 repo 의
+    worktree cwd 에서 돌아야 한다 — 이 함수가 그 경로를 lease 장부에서 해소한다.
+
+    `_active_slot_test_cmd` 와 *동형* 데이터-결합: **worktree_pool 을 import 하지 않고**
+    (ADR-0013 isolation) 리스 장부 파일(`LEASES_FILE`)을 stdlib json 으로 직접 read 한다.
+    slot 식별자는 `work/` 접두를 이미 포함(`work/<repo>_<N>`)하므로 worktree_pool 의
+    `slot_path()`(= `REPO / slot`)와 동일하게 board 가 import 없이 `REPO / lease["slot"]` 로 직접 구성한다.
+    리스는 worktree_pool 이 atomic-replace 로 쓰므로 락 없는 point-read 가 일관 스냅샷을 본다.
+
+    활성 슬롯 = `session_name()` == lease.session && state=="leased" 인 첫 행. 그 행의
+    `slot` 을 `REPO / slot` 절대경로로 반환. 장부 부재/파싱실패/매칭없음/빈 slot → None
+    (fail-soft — 호출부가 다음 레이어[REPO]로 폴백·솔로 무변경).
+    """
+    if not LEASES_FILE.exists():
+        return None
+    try:
+        data = json.loads(LEASES_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    # 장부 손상 = fail-soft (_active_slot_test_cmd 와 동일 가드): 유효 JSON 이라도
+    # dict/list 가 아니면 None 폴백(회귀해소를 깨지 않게).
+    if not isinstance(data, dict):
+        return None
+    leases = data.get("leases", [])
+    if not isinstance(leases, list):
+        return None
+    sess = session_name()
+    for row in leases:
+        if not isinstance(row, dict):
+            continue
+        if row.get("session") == sess and row.get("state") == "leased":
+            slot = row.get("slot")
+            if not slot:
+                return None  # 빈/None slot → None (다음 레이어[REPO]로)
+            return str(REPO / slot)
+    return None
+
+
 def _test_cmd(override: str | None) -> str:
     """회귀에 쓸 테스트 명령을 해소한다 (ADR-0014 per-repo + T-0066 per-slot).
 
@@ -536,15 +577,18 @@ def _regression_cwd(override: str | None = None) -> str:
     """회귀를 실행할 작업 디렉토리를 해소한다 (ADR-0014 cwd seam).
 
     multi-PM 모델에선 코드가 활성 repo 의 **worktree** 에 있고 multi-PM 루트(`REPO`)엔 코드/테스트가
-    없다 — 회귀는 worktree cwd 에서 돌아야 한다(spike §8-4 c). 이 함수는 그 cwd 를
-    주입 가능한 seam 으로 노출한다.
+    없다 — 회귀는 worktree cwd 에서 돌아야 한다(spike §8-4 c·[[ADR-0026]] 홈+worktree 표준).
+    이 함수는 그 cwd 를 주입 가능한 seam 으로 노출한다.
 
-    **이 ticket(T-0058)의 범위 = seam 까지.** 실제 worktree 경로 결정/주입은 T-0060
-    (bootstrap 리스)의 일이다. 따라서 지금은:
-      - `override`(미래 호출자가 worktree 경로를 넘김) 가 있으면 그것,
-      - 없으면 **현 `REPO` 기본** (솔로/multi-PM-미배선 — additive·솔로 무변경).
+    해소 순서 (T-0058 seam → T-0122 주입 완성):
+      - `override`(CLI `--cwd`·미래 호출자가 worktree 경로를 넘김) 가 있으면 그것,
+      - 없으면 **활성 슬롯 경로**(`_active_slot_path` — lease 장부에서 이 세션의 leased
+        슬롯 worktree 경로·worktree_pool 미import),
+      - 그것도 없으면 **현 `REPO` 기본** (솔로/multi-PM-미배선 — additive·솔로 무변경).
     """
-    return override if override else str(REPO)
+    if override:
+        return override
+    return _active_slot_path() or str(REPO)
 
 
 def _interp_runs(cmd: str) -> bool:
@@ -591,6 +635,11 @@ def _detect_py() -> str:
 # local.conf `ctx_nudge_pct`·`ctx_stop_pct` 로 per-clone 조정 가능 (board.py init 기록).
 CTX_NUDGE_PCT_DEFAULT = 20  # 잔여 ≤ 이 % → "곧 정지" nudge (아직 일은 계속).
 CTX_STOP_PCT_DEFAULT = 10   # 잔여 ≤ 이 % → 정지·핸드오프 트리거 임계.
+# 핸드오프 토큰 예산(위 nudge/stop %의 기준). 어댑터 ctx_guard.CTX_WINDOW_TOKENS_DEFAULT
+# 와 값을 동기 — board 는 ctx_guard 를 import 하지 않고(touches 격리) 리터럴을 보유한다
+# (nudge/stop pct 도 동형으로 board 자체 상수). 큰 물리 window(1M) 모델이라도 낮게 두면
+# 이른 핸드오프 = 토큰 경제이므로 기본은 200K 유지(auto-detect 안 함). init 이 local.conf surface.
+CTX_WINDOW_TOKENS_DEFAULT = 200000
 
 
 def _ctx_pct(key: str, default: int) -> int:
@@ -1060,7 +1109,11 @@ def cmd_init(args: argparse.Namespace) -> int:
              "# 엔진 문서 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
              f"py={_detect_py()}\ntest_cmd=pytest -q\nproject_name=\n"
              "# ctx 정지-핸드오프 임계 (어댑터 훅이 잔여 컨텍스트 %로 판정 — T-0013):\n"
-             f"ctx_nudge_pct={CTX_NUDGE_PCT_DEFAULT}\nctx_stop_pct={CTX_STOP_PCT_DEFAULT}\n")
+             f"ctx_nudge_pct={CTX_NUDGE_PCT_DEFAULT}\nctx_stop_pct={CTX_STOP_PCT_DEFAULT}\n"
+             "# ctx_window_tokens: 핸드오프 토큰 예산(위 nudge/stop %의 기준). 큰 window(1M)\n"
+             "# 모델이라도 낮게 두면 이른 핸드오프 = 토큰 경제(큰 컨텍스트가 매 턴 소모 가속).\n"
+             "# 올리면 세션당 더 길게. 물리 window 아님 — 사용자 비용/맥락 선택.\n"
+             f"ctx_window_tokens={CTX_WINDOW_TOKENS_DEFAULT}\n")
     LOCAL_CONF.write_text(conf, encoding="utf-8")
     print(f"✓ local.conf: {('prefix=' + prefix + ' · ') if namespaced else ''}session={sess}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
@@ -1078,12 +1131,22 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_new(args: argparse.Namespace) -> int:
     prefix = id_prefix(getattr(args, "prefix", None))
-    if AREAS_FILE.exists():  # multi-repo 네임스페이스 모드 (registry 존재) → registered prefix 필수
+    # multi-repo 네임스페이스 가드는 **레지스트리 *존재*가 아니라 등록 repo *개수*** 기준이다.
+    # 등록 prefix 가 ≥2 면 진짜 ID 충돌 가능성이 있으니 prefix 필수(namespace 강제). 등록이
+    # ≤1(0=레지스트리 부재/빈·1=단일 self-host) 이면 충돌이 없으므로 solo legacy `T-NNNN` 을
+    # 허용한다(prefix optional) — 단일 self-host 가 areas.md 1행만으로 multi-PM 마찰을 떠안지
+    # 않게(ADR-0027 분리 후 단일 등록 repo 케이스). 명시 prefix 가 *주어지면* 그건 그대로
+    # 존중해(아래 등록 검증) prefixed ID 를 발행한다 — ≤1 라도 사용자가 골랐으면 따른다.
+    registered = registered_prefixes()
+    if len(registered) >= 2:
         if not prefix:
-            print("multi-repo 네임스페이스 모드(areas.md 존재) — prefix 필요. 먼저 "
+            print("multi-repo 네임스페이스 모드(등록 repo ≥2) — prefix 필요. 먼저 "
                   "`board.py init --prefix <PFX> --area <name>`.", file=sys.stderr)
             return 1
-        if prefix not in registered_prefixes():
+    if prefix and prefix not in registered:
+        # 명시 prefix(override 또는 local.conf)는 등록된 것이어야 한다 — registry 가 존재할 때만
+        # 의미 있는 검증(부재면 registered 가 빈 set → 솔로에서 prefix 를 명시한 비정상 케이스).
+        if AREAS_FILE.exists():
             print(f"prefix {prefix!r} 미등록 (areas.md). `board.py init` 로 등록하거나 "
                   "등록된 prefix 사용.", file=sys.stderr)
             return 1
@@ -1714,15 +1777,41 @@ def cmd_promote_scope(args: argparse.Namespace) -> int:
 # [[name]] 또는 alias [[name|display]] — name 만 캡처. backtick 안도 포함.
 _WIKILINK_RE = re.compile(r"\[\[([A-Za-z0-9_\s.\-]+?)(?:\|[^\]]+)?\]\]")
 
+# 어댑터 scaffold 경로 — fresh adopter 에 출하되는 harness 어댑터(.claude/.opencode).
+# 채택자(특히 framework ADR 0001~ 이 없는 다운스트림 앱)는 자기 repo 의 scaffold 에서
+# framework ADR/idea 를 [[bracket]] 참조하면 *영구 dangling* 이 된다 — 이는 정상이며
+# push 를 막아선 안 된다(T-0129·ADR-0015 "차단은 최소·advisory 우선"). `_collect_wikilink_files`
+# 의 scaffold rel 목록과 동일 — POSIX 경계로 비교(_rel_to_repo 는 `/` 정규화).
+_SCAFFOLD_PATH_PREFIXES: tuple[str, ...] = (
+    ".claude/agents/", ".claude/skills/", ".opencode/agents/", ".opencode/command/")
+
+
+def _is_scaffold_src(src: str) -> bool:
+    """src(`_rel_to_repo` 결과)가 어댑터 scaffold 경로 하위인지 — `\\`→`/` 정규화 후 prefix 매칭."""
+    norm = src.replace("\\", "/")
+    return norm.startswith(_SCAFFOLD_PATH_PREFIXES)
+
 
 def _collect_wikilink_files() -> list[Path]:
-    """wikilink 검사 대상 .md — wiki/ 전체 + 레포 루트 CLAUDE.md·README.md."""
+    """wikilink 검사 대상 .md — wiki/ 전체 + 레포 루트 CLAUDE.md·README.md + 어댑터 scaffold.
+
+    어댑터 scaffold(`.claude/{agents,skills}`·`.opencode/{agents,command}`)도 스캔한다 —
+    fresh adopter 엔 framework ADR/ticket 이 없으므로, 출하 scaffold 의 `[[ADR-NNNN]]` 같은
+    구조참조 wikilink 가 그대로 새 나가면 fresh-clone 에서 dangling 이 된다. 가드가 wiki/ 만
+    보던 동안 이 scaffold dangling 은 *구조적으로* 안 잡혔다(T-0116 이 scaffold ref 를 늘림).
+    각 dir 은 harness 별로 존재 여부가 다르므로(claude 채택자엔 `.opencode` 부재·역도 마찬가지)
+    `.is_dir()` 가드로 있을 때만 추가한다.
+    """
     wiki = REPO / ".project_manager" / "wiki"
     files: list[Path] = list(wiki.rglob("*.md")) if wiki.is_dir() else []
     for name in ("CLAUDE.md", "README.md"):
         p = REPO / name
         if p.exists():
             files.append(p)
+    for rel in (".claude/agents", ".claude/skills", ".opencode/agents", ".opencode/command"):
+        d = REPO / rel
+        if d.is_dir():
+            files.extend(d.rglob("*.md"))
     return files
 
 
@@ -1757,9 +1846,22 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
     코드 span/fence 안의 *예시* wikilink(규약 문서가 backtick 으로 보여주는
     `[[ADR-NNNN]]`)는 실 참조가 아니므로 `_strip_code` 로 제거 후 스캔한다 —
     `lint_unstable_refs` 와 동일한 처리(오탐 0·ADR-0003 철학).
+
+    kind 분류 (T-0129·T-0118 push-block 정정):
+      - `dangling-wikilink`          = wiki/·root-doc(CLAUDE.md·README) 의 framework ADR/idea
+        dangling, 그리고 **모든 ticket(`[[T-...]]`) dangling** — `lint --gate` 차단(blocking).
+      - `dangling-wikilink-scaffold` = framework ADR/idea dangling 이 *오직* 어댑터 scaffold
+        경로(`.claude/{agents,skills}`·`.opencode/{agents,command}`)에서만 등장 — advisory
+        (`_ADVISORY_LINT_KINDS` 등재·`--gate` 미차단). 채택자(framework ADR 부재 다운스트림)의
+        scaffold bracket-ref 는 영구 dangling 이 정상이라 push 를 막으면 안 된다.
+    같은 ref 가 scaffold + wiki/root-doc 양쪽에서 dangle 하면 blocking 유지(프레임워크 자기
+    문서는 dangle 하면 안 됨). per-occurrence source 경로를 추적해 분기한다(name 별로 ADR/idea
+    여부 + 사용처 전부가 scaffold 인지).
     """
     ticket_ids, adr_nums, idea_nums = _resolve_wikilink_targets()
-    dangling: dict[str, list[str]] = {}  # name → [source rel paths]
+    # name → (is_ticket, [source rel paths]). is_ticket=True 면 항상 blocking,
+    # False(ADR/idea)면 사용처가 전부 scaffold 일 때만 advisory 강등.
+    dangling: dict[str, tuple[bool, list[str]]] = {}
 
     for path in _collect_wikilink_files():
         try:
@@ -1772,23 +1874,292 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
             name = raw.strip()
             m_adr = re.fullmatch(r"ADR-(\d+)", name)
             m_idea = re.fullmatch(r"idea-(\d+)", name)
+            is_ticket = False
             if m_adr:
                 ok = (m_adr.group(1).lstrip("0") or "0") in adr_nums
             elif re.fullmatch(r"T-(?:[A-Za-z]+-)?\d+", name):
                 ok = name in ticket_ids
+                is_ticket = True
             elif m_idea:
                 ok = (m_idea.group(1).lstrip("0") or "0") in idea_nums
             else:
                 continue  # 자유어휘 — 엔진 판정 안 함 (R15 훅 영역)
-            if not ok and src not in dangling.setdefault(name, []):
-                dangling[name].append(src)
+            if ok:
+                continue
+            _t, srcs = dangling.setdefault(name, (is_ticket, []))
+            if src not in srcs:
+                srcs.append(src)
 
     issues: list[tuple[str, str, str]] = []
     for name in sorted(dangling):
-        srcs = dangling[name]
+        is_ticket, srcs = dangling[name]
         shown = ", ".join(srcs[:3]) + (f" (외 {len(srcs) - 3}개)" if len(srcs) > 3 else "")
-        issues.append((name, "dangling-wikilink",
-                       f"[[{name}]] 대상 파일 없음 · 사용처: {shown}"))
+        # ticket dangling 은 항상 blocking. ADR/idea 는 사용처가 *전부* scaffold 일 때만
+        # advisory 강등 — 하나라도 wiki/root-doc 이면 framework 자기 문서 dangle 이라 blocking.
+        scaffold_only = (not is_ticket) and all(_is_scaffold_src(s) for s in srcs)
+        if scaffold_only:
+            issues.append((name, "dangling-wikilink-scaffold",
+                           f"[[{name}]] 대상 파일 없음 (어댑터 scaffold 참조 · 채택자 "
+                           f"decisions/ 에 framework ADR 부재 = 정상) · 사용처: {shown}"))
+        else:
+            issues.append((name, "dangling-wikilink",
+                           f"[[{name}]] 대상 파일 없음 · 사용처: {shown}"))
+    return issues
+
+
+# ── render-leak (리터럴 `{{...}}` 누출 차단 · T-0131·§3.4) ──────────────────
+# 어댑터 파일 = render-overlay 산출물(ADR-0028). framework 본문 템플릿 + 채택자 overlay 가
+# pm_update 재렌더로 자족 .md 가 된다. half-rendered 토큰(`{{...}}` 잔존)이 *출하 산출물* 에
+# 새 나가면 harness-load 에이전트 지시가 무음 열화하므로 실결함 — blocking(경고 아님).
+#
+# ⚠️ 활성화 전 무발화 경계 (DoD): 스캔 대상을 **@render manifest path 의 산출물로 한정**한다.
+#    현재 트리는 *어떤* 실 manifest path 도 @render 가 아니므로(D17-2/T-0133 활성화 전) 검사
+#    대상이 0 → 이 lint 는 현 트리에서 무발화(기존 토큰을 가진 어댑터 .md 를 *검사하지 않음*).
+#    토큰은 @render 로 활성화돼 렌더 산출물이 된 path 에서만 leak 으로 간주된다 — 활성화는
+#    pm_render(post-render assertion) + 이 lint(상시 backstop)가 함께 자족성을 보증한다.
+
+# leak 스캔 토큰 — 대문자/언더스코어 placeholder (`{{PROJECT_NAME}}`·`{{PROTECTED_PATHS}}` 등).
+# pm_render._ANY_TOKEN_RE 와 동형(소문자/공백 토큰은 산문이라 제외·오탐 0).
+_RENDER_TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+
+
+def _render_managed_relpaths() -> set[str]:
+    """engine.manifest 에서 `@render` 태그가 붙은 path 들(repo 기준 relpath·POSIX) — 검사 대상.
+
+    pm_update.read_manifest 를 재사용해 `.render` 플래그가 True 인 항목만 모은다. manifest
+    부재·로드 실패는 빈 set(검사 대상 0·무발화). manifest 의 @render path 가 디렉토리면 그
+    하위 출하 어댑터가 전부 산출물이므로 prefix 매칭에 쓴다.
+    """
+    pm_update = _load_pm_update_module()
+    if pm_update is None:
+        return set()
+    managed: set[str] = set()
+    for manifest_path in _engine_manifest_paths():
+        try:
+            for entry in pm_update.read_manifest(manifest_path):
+                if getattr(entry, "render", False):
+                    managed.add(str(entry).replace("\\", "/"))
+        except Exception:  # noqa: BLE001 — 깨진/부재 manifest 는 검사 대상 0(무발화).
+            continue
+    return managed
+
+
+def _engine_manifest_paths() -> list[Path]:
+    """render-leak 검사 대상 engine.manifest — **루트 manifest 만** (렌더 산출물 트리).
+
+    render-leak 은 *렌더 산출물*(operational 토큰이 concrete 로 치환된 어댑터 .md)에서 미해소
+    토큰을 잡는 가드다. 그 산출물 트리는 **루트 트리**다 — 채택자/②는 루트 manifest 가 @render 면
+    루트 `.claude/`·`.opencode/` 가 렌더된 산출물이고, 도그푸딩 모노레포(이 repo)는 루트 manifest 가
+    plain(token-form 유지)이라 @render path 0 → 무발화.
+
+    ⚠️ `templates/<harness>/` 는 **스캔하지 않는다**: 출하 템플릿은 *token-form 소스*다(`--target`
+    이 copy2 로 토큰을 보존). 그 manifest 가 `.claude/agents @render` 여도 그건 *채택자가 import/
+    update 할 때 렌더하라*는 표식이지 템플릿 자신이 렌더 산출물이란 뜻이 아니다 — 템플릿은 늘 토큰을
+    가지므로 스캔하면 영구 오탐(T-0133: 활성화가 이 오탐을 표면화). 옛 구현은 templates/* 도 봤으나
+    "활성화 시 템플릿이 렌더된다"는 오해에 기반했다(템플릿은 렌더되지 않음).
+
+    `.is_file()` 가드로 존재할 때만."""
+    out: list[Path] = []
+    root_manifest = REPO / ".project_manager" / "engine.manifest"
+    if root_manifest.is_file():
+        out.append(root_manifest)
+    return out
+
+
+def _load_pm_update_module():
+    """pm_update 모듈을 같은 tools/ 디렉토리에서 로드 (read_manifest @render 파싱 재사용).
+
+    board.py 가 _detected_py 류 seam 으로 형제 모듈을 로드하는 패턴과 동형. 실패 시 None →
+    호출부가 검사 대상 0(무발화)으로 흡수한다."""
+    pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("pm_update", pm_update_py)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — 로드 실패는 무발화(검사 대상 0).
+        return None
+
+
+def _load_pm_render_module():
+    """pm_render 모듈을 같은 tools/ 디렉토리에서 로드 (FREEFORM_KEYS·OVERLAY_RELPATH 재사용).
+
+    `_load_pm_update_module`·`_load_domain_module` 과 동형 deep-import seam (순환 회피·
+    형제 모듈 지연 로드). free-form 토큰 집합과 overlay 경로의 단일 진실 = pm_render —
+    board 가 중복 정의하지 않고 여기서 빌린다. 실패 시 None → 호출부가 무발화로 흡수한다."""
+    pm_render_py = Path(__file__).resolve().parent / "pm_render.py"
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("pm_render", pm_render_py)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — 로드 실패는 무발화(검사 대상 0).
+        return None
+
+
+def _is_render_managed(rel_posix: str, managed: set[str]) -> bool:
+    """rel_posix 가 @render manifest path(파일 정확일치 OR 디렉토리 prefix) 하위인지."""
+    for m in managed:
+        if rel_posix == m or rel_posix.startswith(m.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def lint_render_leak() -> list[tuple[str, str, str]]:
+    """render 산출물에 리터럴 `{{...}}` 누출 차단 (kind=`render-leak`·blocking·ADR-0028·§3.4).
+
+    `_ADVISORY_LINT_KINDS` 밖 → `lint --gate` 차단 → pre-push exit 1(dangling-wikilink 미러).
+    half-rendered 토큰은 harness-load 에이전트 지시의 무음 열화라 실결함(경고 아님).
+
+    **활성화 전 무발화 경계**: 검사 대상 = engine.manifest 에서 `@render` 태그가 붙은 path 의
+    산출물뿐(`_render_managed_relpaths`). 현 트리는 실 path @render 0(D17-2/T-0133 활성화 전)
+    → 검사 대상 0 → 무발화(기존 토큰을 가진 미활성 어댑터 .md 는 *검사하지 않음*). pm_render
+    의 post-render assertion 과 2중 backstop — pm_update 가 마지막 도구였는지 무관한 상시 가드.
+
+    fail-soft: manifest 부재·로드 실패·파일 read 오류 → 그 부분 skip(검사 대상 0·솔로/신규 무영향).
+    """
+    managed = _render_managed_relpaths()
+    if not managed:
+        return []  # @render path 0 → 검사 대상 0 (활성화 전 무발화).
+    issues: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for managed_rel in sorted(managed):
+        target = REPO / managed_rel
+        files: list[Path] = []
+        if target.is_dir():
+            files = sorted(p for p in target.rglob("*.md") if p.is_file())
+        elif target.is_file():
+            files = [target]
+        for p in files:
+            rel_posix = _rel_to_repo(p).replace("\\", "/")
+            if rel_posix in seen:
+                continue
+            seen.add(rel_posix)
+            try:
+                text = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            leaked = sorted(set(_RENDER_TOKEN_RE.findall(text)))
+            if leaked:
+                issues.append((
+                    rel_posix, "render-leak",
+                    f"render 산출물에 미해소 토큰 잔존: {', '.join(leaked)} "
+                    f"(@render 관리 path — overlay/local.conf 채널 누락 또는 미배선 토큰)"))
+    return issues
+
+
+# ── un-migrated overlay 검출 (advisory · T-0132·§3.6) ──────────────────────
+# 어댑터 파일 = render-overlay 산출물(ADR-0028): 마이그레이션 후 출하 .md = 렌더 산출물 =
+# 리터럴 free-form 토큰 0(overlay 채널이 값을 공급). 채택자가 *아직* 마이그레이션을 안 했으면
+# (overlay 미생성·baked 값 손편집 유지) 어댑터 .md 에 리터럴 `{{PROTECTED_PATHS}}` 류가 잔존한다
+# — 이 lint 가 그 신호를 표면화한다(§3.6 "un-migrated 검출"). render-leak(blocking·@render 산출물
+# 한정)과 별개·상보: render-leak 은 *활성화된* render path 의 미해소 토큰을, 이 lint 는 *활성화
+# 전* 어댑터 본문의 미마이그레이션 토큰 잔존을 본다.
+#
+# **advisory only** — 마이그레이션 누락은 push 결함이 아니라 채택자 운영 ritual 신호(§3.6
+# "push-block 아님·advisory")라 `_ADVISORY_LINT_KINDS` 에 등재(`--gate` 미차단). free-form 3종
+# (FREEFORM_KEYS)만 본다 — operational 토큰(`{{PROJECT_NAME}}` 등)은 import sed/local.conf 채널이라
+# 별개. graceful: 어댑터 파일/디렉토리 부재 시 finding 0(솔로·non-adopter tree 무오염).
+
+# 어댑터 스캐폴드 .md 글롭 — 채택자 tree 에 출하되는 harness 어댑터 본문 (존재하는 것만).
+#   claude   : `.claude/agents/*.md`·`.claude/skills/**/SKILL.md`
+#   opencode : `.opencode/agents/*.md`·`.opencode/command/*.md`
+# 각 경로는 harness 별 존재 여부가 다르므로(claude 채택자엔 `.opencode` 부재·역도) 있을 때만 스캔.
+# root 문서(CLAUDE.md·AGENTS.md 등)는 *제외* (T-0133): 채택자가 통째로 손편집하는 instance-owned
+# scaffold 라 render-overlay 관리 대상이 아니다(omit-marker 0·manifest 제외). 거기의 raw free-form
+# 토큰은 "미마이그레이션"이 아니라 "채택자가 아직 안 채움"이라 이 lint 의 오분류 대상이 아니다.
+_OVERLAY_ADAPTER_GLOBS: tuple[tuple[str, str], ...] = (
+    (".claude/agents", "*.md"),
+    (".claude/skills", "SKILL.md"),
+    (".opencode/agents", "*.md"),
+    (".opencode/command", "*.md"),
+)
+
+
+def _collect_overlay_adapter_files() -> list[Path]:
+    """un-migrated 검사 대상 어댑터 .md — harness 스캐폴드 디렉토리만 (존재하는 것만).
+
+    `.claude/skills` 는 `**/SKILL.md`(rglob), 그 외 디렉토리는 직속 `*.md`(glob)로 모은다.
+    root 문서(CLAUDE.md·AGENTS.md 등)는 제외 — instance-owned scaffold 라 render-overlay
+    관리 대상이 아니다(T-0133). dedupe 는 호출부가 path 로 처리. `.is_dir()` 가드로 부재
+    harness/솔로 tree 는 조용히 건너뛴다(graceful·finding 0)."""
+    files: list[Path] = []
+    for rel, pattern in _OVERLAY_ADAPTER_GLOBS:
+        d = REPO / rel
+        if not d.is_dir():
+            continue
+        files.extend(d.rglob(pattern) if pattern == "SKILL.md" else d.glob(pattern))
+    return files
+
+
+def lint_unmigrated_overlay() -> list[tuple[str, str, str]]:
+    """어댑터 .md 에 리터럴 free-form 토큰이 잔존하면 un-migrated 신호 (kind=`un-migrated-overlay`).
+
+    `_ADVISORY_LINT_KINDS` 등재 → `lint --gate` 미차단(advisory·§3.6 "push-block 아님"). 마이그레이션
+    누락은 채택자 운영 ritual 신호이지 출하 결함이 아니므로 visibility 만 제공한다.
+
+    검사 (정적·shipped tree 스캔):
+      - 어댑터 .md(`_collect_overlay_adapter_files`)에 리터럴 free-form 토큰(FREEFORM_KEYS —
+        `{{PROJECT_CONSTRAINTS}}`/`{{PROTECTED_PATHS}}`/`{{USER_GATE_ITEMS}}`)이 잔존 → 파일·토큰별
+        finding 1건. 마이그레이션 후엔 출하 .md = 렌더 산출물 = 토큰 0(overlay 가 값 공급).
+      - 위 토큰이 *하나라도* 발견됐는데 OVERLAY_RELPATH(`.project_manager/overlay.local.yaml`)가
+        부재 → "overlay 채널 미생성" finding 1건 추가(마이그레이션의 핵심 단계 누락).
+
+    오탐 0 경계:
+      - **FREEFORM_KEYS·OVERLAY_RELPATH 는 pm_render 에서 import**(중복 정의 0·단일 진실). pm_render
+        로드 실패 → 검사 불가 → [] (무발화·graceful).
+      - operational 토큰(`{{PROJECT_NAME}}` 등)은 *검사 대상 아님* — import sed/local.conf 채널이라
+        별개. free-form 3종만 매칭(render-overlay 가 관리하는 손편집 산문).
+      - 코드 span/fence 안의 *예시* 토큰은 `_strip_code` 로 제거 후 스캔(문서가 토큰을 예시로
+        보여줘도 오탐 안 됨).
+      - graceful: 어댑터 파일/디렉토리 부재(솔로·non-adopter) → finding 0. 파일 read 오류는 skip.
+
+    이 lint 는 "어느 overlay key 가 채워졌어야 하는지"는 추론하지 않는다 — baked 파일에 provenance
+    마커가 없어 기계 oracle 불가(§3.6). robust 한 정적 신호(리터럴 토큰 잔존 + overlay 파일 부재)만 본다.
+    """
+    pm_render = _load_pm_render_module()
+    if pm_render is None:
+        return []  # 단일 진실(FREEFORM_KEYS·OVERLAY_RELPATH) 로드 실패 → 무발화(graceful).
+    freeform_keys = tuple(getattr(pm_render, "FREEFORM_KEYS", ()))
+    overlay_relpath = getattr(pm_render, "OVERLAY_RELPATH", None)
+    if not freeform_keys or overlay_relpath is None:
+        return []  # 계약 상수 부재(구버전 pm_render) → 무발화.
+    token_re = re.compile(
+        r"\{\{(" + "|".join(re.escape(k) for k in freeform_keys) + r")\}\}")
+
+    issues: list[tuple[str, str, str]] = []
+    any_token = False
+    seen: set[str] = set()
+    for p in _collect_overlay_adapter_files():
+        rel_posix = _rel_to_repo(p).replace("\\", "/")
+        if rel_posix in seen:
+            continue
+        seen.add(rel_posix)
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        # 코드 span/fence 예시 토큰은 실 placeholder 가 아니므로 제거 후 스캔(오탐 0).
+        leaked = sorted(set(token_re.findall(_strip_code(text))))
+        if leaked:
+            any_token = True
+            toks = ", ".join("{{" + k + "}}" for k in leaked)
+            issues.append((
+                rel_posix, "un-migrated-overlay",
+                f"리터럴 free-form 토큰 잔존: {toks} — 어댑터가 아직 render-overlay 로 "
+                f"마이그레이션되지 않았다(§3.6·재렌더 후엔 토큰 0)."))
+    # 토큰이 하나라도 잔존했는데 overlay 채널 자체가 없으면 마이그레이션 핵심 단계 누락.
+    if any_token and not (REPO / overlay_relpath).is_file():
+        issues.append((
+            overlay_relpath, "un-migrated-overlay",
+            f"overlay 채널 미생성: {overlay_relpath} 부재 — free-form 토큰이 잔존하나 "
+            f"마이그레이션 overlay 가 없다(§3.6 CREATE overlay 단계 누락)."))
     return issues
 
 
@@ -1991,9 +2362,17 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     "차단은 최소·advisory 우선").
 #   - stale·orphan·oversized : domain freshness finding (lint_domain·ADR-0018). domain lint 는
 #     enforcement 아닌 visibility — push 를 절대 막지 않는다(advisory only·`--gate` 제외).
+#   - dangling-wikilink-scaffold : 어댑터 scaffold(.claude/.opencode) 에서만 등장하는 framework
+#     ADR/idea dangling (T-0129). 채택자(framework ADR 부재 다운스트림)의 scaffold bracket-ref 는
+#     영구 dangling 이 정상 — visibility 만, push 미차단. ticket dangling·wiki/root-doc dangling 은
+#     여전히 `dangling-wikilink`(blocking).
+#   - un-migrated-overlay : 어댑터 .md 에 리터럴 free-form 토큰 잔존 + overlay 부재 (T-0132·§3.6).
+#     render-overlay 마이그레이션 누락 신호 — 채택자 운영 ritual 이지 출하 결함 아니므로 visibility
+#     만, push 미차단. render-leak(@render 산출물 한정·blocking)과 별개·상보(활성화 전 본문 스캔).
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
-     "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale"})
+     "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
+     "dangling-wikilink-scaffold", "un-migrated-overlay"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -2192,12 +2571,15 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     dangling wikilink + unstable (slug/filename) refs (ADR-0003) +
     family wiki scope 인지(ADR-0015) +
     domain freshness advisory(stale/orphan/oversized·ADR-0018·never-block) +
-    architecture.md freshness advisory(architecture-stale·ADR-0022·never-block)."""
+    architecture.md freshness advisory(architecture-stale·ADR-0022·never-block) +
+    render-leak(리터럴 `{{...}}` 누출·ADR-0028·blocking·@render 산출물 한정·활성화 전 무발화) +
+    un-migrated-overlay(리터럴 free-form 토큰 잔존·overlay 부재·T-0132·§3.6·advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
             + lint_domain() + lint_adr_lifecycle()
-            + lint_architecture_freshness())
+            + lint_architecture_freshness()
+            + lint_render_leak() + lint_unmigrated_overlay())
 
 
 # ── board.md regeneration ──────────────────────────────────────────────

@@ -301,16 +301,18 @@ def parse_page(path: Path) -> dict:
 
 
 def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
-    """domain/*.md 를 스캔해 파싱된 페이지 리스트를 돌려준다.
+    """domain/ 의 `*.md` 를 **재귀**(rglob) 스캔해 파싱된 페이지 리스트를 돌려준다.
 
-    README.md·_template.md 는 제외. frontmatter 없는/깨진 파일은 graceful skip
-    (stderr 경고·crash 0). 디렉토리 부재 → [] (solo·신규 clone 무영향).
+    domain wikitree 를 하위 폴더로 조직해도 그 안의 페이지가 잡히도록 `rglob` 로 재귀
+    스캔한다(T-0126·회사 실사용). README.md·_template.md 는 (어느 깊이든) `name` 으로 제외.
+    frontmatter 없는/깨진 파일은 graceful skip(stderr 경고·crash 0). 디렉토리 부재 → []
+    (solo·신규 clone 무영향). 평면 domain/ 은 하위폴더가 없어 결과 불변(additive).
     """
     domain_dir = Path(domain_dir)
     if not domain_dir.is_dir():
         return []
     pages: list[dict] = []
-    for path in sorted(domain_dir.glob("*.md")):
+    for path in sorted(domain_dir.rglob("*.md")):
         if path.name in _NON_PAGE_FILES:
             continue
         try:

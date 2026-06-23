@@ -45,7 +45,12 @@
 .gitattributes
 # .github/workflows/regression.yml — 제외: opencode 채택자(Windows 등)는 GitHub Actions 없을 수 있음
 
-# ── opencode 어댑터 (T-0002~T-0004 에서 추가 예정) ─────────────
-# .opencode/agents/
-# .opencode/command/
-# AGENTS.md
+# ── opencode 어댑터 (@render — operational 토큰만·ADR-0030·D17·T-0133) ─────────────
+# free-form 0 (T-0136 제거) → pm_update/pm_import 가 채택자 트리에서 operational 토큰 재유도(copy2 면 leak).
+# --target(루트→템플릿)은 render 무시·copy2 로 토큰-form 보존. ⚠️ .opencode/ 는 target-owned —
+# 엔진 upstream(루트=claude)이 안 들고 있다(`.opencode/` 부재). `@target-owned` 마커로 명시: pm_update
+# (--target·채택자 self-update 공통)가 source-부재여도 rc2 대신 graceful skip(T-0137). `@render`-only 인
+# `.claude/*` 는 엔진-소스라 부재 시 rc2(엔진 누락 은폐 금지·codex). AGENTS.md/AGENTS.lite.md 는 제외 —
+# root doc(CLAUDE.md 대칭·instance-owned·PROJECT_TAGLINE 보유)·@render 경로 밖 (PM 26/27 rescope·ADR-0030).
+.opencode/agents    @render @target-owned
+.opencode/command   @render @target-owned

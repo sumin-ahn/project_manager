@@ -1945,20 +1945,24 @@ def _render_managed_relpaths() -> set[str]:
 
 
 def _engine_manifest_paths() -> list[Path]:
-    """이 트리에서 검사할 engine.manifest 파일들 — 루트 + templates/<harness>/ (있을 때만).
+    """render-leak 검사 대상 engine.manifest — **루트 manifest 만** (렌더 산출물 트리).
 
-    채택자(단일 트리)는 루트 manifest 만, 도그푸딩 모노레포(이 repo)는 templates/* 도 본다.
-    `.is_file()` 가드로 존재하는 것만(harness 별 부재 무영향)."""
+    render-leak 은 *렌더 산출물*(operational 토큰이 concrete 로 치환된 어댑터 .md)에서 미해소
+    토큰을 잡는 가드다. 그 산출물 트리는 **루트 트리**다 — 채택자/②는 루트 manifest 가 @render 면
+    루트 `.claude/`·`.opencode/` 가 렌더된 산출물이고, 도그푸딩 모노레포(이 repo)는 루트 manifest 가
+    plain(token-form 유지)이라 @render path 0 → 무발화.
+
+    ⚠️ `templates/<harness>/` 는 **스캔하지 않는다**: 출하 템플릿은 *token-form 소스*다(`--target`
+    이 copy2 로 토큰을 보존). 그 manifest 가 `.claude/agents @render` 여도 그건 *채택자가 import/
+    update 할 때 렌더하라*는 표식이지 템플릿 자신이 렌더 산출물이란 뜻이 아니다 — 템플릿은 늘 토큰을
+    가지므로 스캔하면 영구 오탐(T-0133: 활성화가 이 오탐을 표면화). 옛 구현은 templates/* 도 봤으나
+    "활성화 시 템플릿이 렌더된다"는 오해에 기반했다(템플릿은 렌더되지 않음).
+
+    `.is_file()` 가드로 존재할 때만."""
     out: list[Path] = []
     root_manifest = REPO / ".project_manager" / "engine.manifest"
     if root_manifest.is_file():
         out.append(root_manifest)
-    templates = REPO / "templates"
-    if templates.is_dir():
-        for child in sorted(templates.iterdir()):
-            m = child / ".project_manager" / "engine.manifest"
-            if m.is_file():
-                out.append(m)
     return out
 
 

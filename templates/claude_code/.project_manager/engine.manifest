@@ -40,9 +40,11 @@
 # domain/ *페이지*는 인스턴스 소유(manifest 밖·domain.py 행 참조) — _template.md 만 엔진 소유 스캐폴드 (ADR-0018·T-0095)
 .project_manager/wiki/domain/_template.md
 
-# ── 서브에이전트 · skill (엔진) ──────────────────────────────────
-.claude/agents
-.claude/skills
+# ── 서브에이전트 · skill (엔진·@render — operational 토큰만·ADR-0030·D17·T-0133) ──
+# free-form 0 (T-0135 제거) → pm_update/pm_import 가 채택자 트리에서 operational 토큰 재유도(copy2 면 leak).
+# --target(루트→템플릿)은 render 무시·copy2 로 토큰-form 보존.
+.claude/agents    @render
+.claude/skills    @render
 
 # ── 설정 (엔진) ──────────────────────────────────────────────────
 .project_manager/.gitignore
