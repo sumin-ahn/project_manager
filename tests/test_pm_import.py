@@ -245,12 +245,20 @@ def test_local_conf_sync_idempotent(pm_import, tmp_path):
 
 # ── T-0053: import 가 source(--from)를 local.conf 의 upstream= 으로 기록 ──────
 
-def test_new_records_upstream_in_local_conf(pm_import, tmp_path):
-    """--new import 후 local.conf 에 upstream=<resolved --from> 이 기록된다.
+# T-0145 디커플: --upstream 생략 시 --from 이 로컬 git clone 이면 origin URL 을 자동도출한다
+# (ADR-0032 D4 릴리스 추적 기본). 아래 *기존 동작 회귀 보존* 테스트들은 derive_origin_url 을
+# None(=origin 부재·non-git source)으로 monkeypatch 해 "--from 경로 그대로 기록" 의 기존 계약을
+# 결정적으로 검증한다(REPO 는 실 git checkout 이라 patch 없으면 origin URL 이 도출됨). origin
+# 도출·--upstream 명시 등 *신규* 디커플 경로는 별도 테스트(아래)가 검증한다.
 
-    --from 생략 시 default=REPO 이므로, upstream 은 이 repo 루트의 resolve() 절대경로여야 한다.
-    이후 pm_update 가 --from 없이 이 값을 기본 upstream 으로 쓴다(T-0053).
+def test_new_records_upstream_in_local_conf(pm_import, tmp_path, monkeypatch):
+    """--new import 후 local.conf 에 upstream=<resolved --from> 이 기록된다(origin 부재 시·기존 동작).
+
+    --from 생략 시 default=REPO 이고 origin 도출이 None(monkeypatch)이면, upstream 은 이 repo
+    루트의 resolve() 절대경로여야 한다(경로 fallback·회귀 보존). 이후 pm_update 가 --from 없이
+    이 값을 기본 upstream 으로 쓴다(T-0053).
     """
+    monkeypatch.setattr(pm_import, "derive_origin_url", lambda *a, **k: None)
     dest = tmp_path / "up_new"
     rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "U"])
     assert rc == 0
@@ -260,13 +268,14 @@ def test_new_records_upstream_in_local_conf(pm_import, tmp_path):
         f"upstream 이 default source(REPO)와 불일치: {conf.get('upstream')!r}"
 
 
-def test_new_records_upstream_explicit_from(pm_import, tmp_path):
+def test_new_records_upstream_explicit_from(pm_import, tmp_path, monkeypatch):
     """명시 `--from` 이 그 source 의 resolve() 절대경로로 upstream= 에 기록되는 *배선*을 검증한다.
 
     실 import 은 source 가 유효 프레임워크 checkout(`templates/<harness>/`)이어야 하므로 여기선
-    `--from REPO`(=기본값)로 배선만 확인한다. *주어진 source != 기본값* 일 때 그 값이 기록된다는
-    값-구분 계약은 `test_record_upstream_unit`(distinct `/new/checkout`)이 직접 강제한다.
+    `--from REPO`(=기본값)로 배선만 확인한다(origin 도출 None patch·경로 fallback). *주어진
+    source != 기본값* 일 때 그 값이 기록된다는 값-구분 계약은 `test_record_upstream_unit`이 강제한다.
     """
+    monkeypatch.setattr(pm_import, "derive_origin_url", lambda *a, **k: None)
     rc = pm_import.main(["--new", str(tmp_path / "up_expl"), "--harness", "claude",
                          "--from", str(REPO), "--name", "E"])
     assert rc == 0
@@ -275,8 +284,9 @@ def test_new_records_upstream_explicit_from(pm_import, tmp_path):
         f"명시 --from 이 upstream 으로 기록 안 됨: {conf.get('upstream')!r}"
 
 
-def test_into_records_upstream_in_local_conf(pm_import, tmp_path):
-    """--into 재-import 후에도 local.conf 에 upstream= 이 기록된다."""
+def test_into_records_upstream_in_local_conf(pm_import, tmp_path, monkeypatch):
+    """--into 재-import 후에도 local.conf 에 upstream= 이 기록된다(origin 부재 시·기존 동작)."""
+    monkeypatch.setattr(pm_import, "derive_origin_url", lambda *a, **k: None)
     dest = tmp_path / "up_into"
     rc1 = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "I"])
     assert rc1 == 0
@@ -288,12 +298,14 @@ def test_into_records_upstream_in_local_conf(pm_import, tmp_path):
         f"--into 후 upstream 불일치: {conf.get('upstream')!r}"
 
 
-def test_reimport_updates_stale_upstream(pm_import, tmp_path):
+def test_reimport_updates_stale_upstream(pm_import, tmp_path, monkeypatch):
     """재-import 는 upstream 을 *현재 source 로 갱신*한다 — preserve 가 stale 값을 붙들지 않는다.
 
     1차 import 후 local.conf 의 upstream 을 가짜 stale 경로로 손수 바꾼 뒤 재-import 하면,
-    upstream 이 현재 source(REPO)로 덮여야 한다(stale 보존 아님). upstream 키 한 줄만 등장.
+    upstream 이 현재 source(REPO)로 덮여야 한다(stale 보존 아님·origin 부재 시 경로 fallback).
+    upstream 키 한 줄만 등장.
     """
+    monkeypatch.setattr(pm_import, "derive_origin_url", lambda *a, **k: None)
     dest = tmp_path / "up_stale"
     rc1 = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "S"])
     assert rc1 == 0
@@ -333,8 +345,215 @@ def test_record_upstream_unit(pm_import, tmp_path):
     assert "upstream=/old/path" not in text
     assert "session=pm" in text  # 타 키 보존
     assert text.startswith("# header")  # 주석 보존
-    # 제자리 갱신이므로 upstream 한 줄만.
-    assert text.count("upstream=") == 1
+    # 제자리 갱신이므로 upstream 한 줄만 (upstream_rev 등 다른 키는 이 호출이 안 씀).
+    assert sum(
+        1 for line in text.splitlines()
+        if line.split("=", 1)[0].strip() == "upstream"
+    ) == 1
+
+
+# ── T-0145: --from↔--upstream 디커플 + origin 자동도출 + upstream_rev baseline ──
+
+def test_record_upstream_accepts_url_string(pm_import, tmp_path):
+    """record_upstream 은 URL 문자열도 받아 그대로 기록한다(디커플·URL 선호·T-0145)."""
+    local_conf = tmp_path / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True)
+    local_conf.write_text("session=pm\nupstream=/old\n", encoding="utf-8")
+
+    changed = pm_import.record_upstream(tmp_path, "https://github.com/foo/bar.git")
+    assert changed is True
+    conf = _parse_conf(local_conf)
+    assert conf["upstream"] == "https://github.com/foo/bar.git"
+    assert conf["session"] == "pm"  # 타 키 보존
+
+
+def test_explicit_upstream_recorded_distinct_from_source(pm_import, tmp_path):
+    """--upstream 명시값은 --from(파일 소스)과 *독립적으로* upstream= 에 기록된다(디커플·T-0145)."""
+    dest = tmp_path / "up_explicit"
+    url = "https://github.com/acme/proj.git"
+    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "X",
+                         "--from", str(REPO), "--upstream", url])
+    assert rc == 0
+    conf = _parse_conf(dest / ".project_manager" / "local.conf")
+    assert conf.get("upstream") == url, \
+        f"--upstream 명시값이 기록 안 됨(파일 소스 --from 과 디커플 실패): {conf.get('upstream')!r}"
+
+
+def test_bad_upstream_rejected_before_import(pm_import, tmp_path):
+    """나쁜 --upstream(leading-dash·비허용 scheme·credential)은 부작용 전 fail-closed 거부(T-0145)."""
+    dest = tmp_path / "bad_up"
+    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "B",
+                         "--upstream", "http://insecure/x"])
+    assert rc == 1, "비허용 scheme upstream 이 거부되지 않음"
+    # 부작용 전 거부 — dest 가 생성되지 않았어야(import 진행 안 함).
+    assert not dest.exists(), "거부됐는데도 import 부작용이 발생(dest 생성됨)"
+
+
+def test_origin_url_auto_derived_when_from_is_clone(pm_import, tmp_path, monkeypatch):
+    """--upstream 생략 + --from 이 로컬 clone 이면 origin URL 을 자동도출해 기록(릴리스 추적·T-0145)."""
+    derived_url = "git@github.com:owner/repo.git"
+    monkeypatch.setattr(pm_import, "derive_origin_url", lambda *a, **k: derived_url)
+    dest = tmp_path / "up_origin"
+    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "O",
+                         "--from", str(REPO)])
+    assert rc == 0
+    conf = _parse_conf(dest / ".project_manager" / "local.conf")
+    assert conf.get("upstream") == derived_url, \
+        f"origin URL 자동도출 실패 — upstream={conf.get('upstream')!r}"
+
+
+def test_upstream_rev_baseline_recorded_on_import(pm_import, tmp_path, monkeypatch):
+    """import 시 --from checkout 의 HEAD 가 upstream_rev= baseline 으로 기록된다(drift 입력·T-0145)."""
+    monkeypatch.setattr(pm_import, "derive_origin_url", lambda *a, **k: None)
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "deadbeefcafe")
+    dest = tmp_path / "up_rev"
+    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "R"])
+    assert rc == 0
+    conf = _parse_conf(dest / ".project_manager" / "local.conf")
+    assert conf.get("upstream_rev") == "deadbeefcafe", \
+        f"upstream_rev baseline 미기록: {conf.get('upstream_rev')!r}"
+
+
+def test_upstream_rev_skipped_when_source_not_git(pm_import, tmp_path, monkeypatch):
+    """--from 이 git checkout 이 아니면(read_upstream_rev=None) upstream_rev 를 graceful 생략(T-0145)."""
+    monkeypatch.setattr(pm_import, "derive_origin_url", lambda *a, **k: None)
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    dest = tmp_path / "up_norev"
+    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "N"])
+    assert rc == 0
+    conf = _parse_conf(dest / ".project_manager" / "local.conf")
+    assert "upstream_rev" not in conf, \
+        f"git repo 아닌데 upstream_rev 가 기록됨: {conf.get('upstream_rev')!r}"
+
+
+def test_record_upstream_rev_preserves_other_keys(pm_import, tmp_path):
+    """record_upstream_rev: upstream_rev 만 set-or-replace, 타 키·주석 보존(T-0145)."""
+    local_conf = tmp_path / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True)
+    local_conf.write_text(
+        "# h\nsession=pm\nupstream=/x\nupstream_rev=old\n", encoding="utf-8")
+
+    changed = pm_import.record_upstream_rev(tmp_path, "newrev123")
+    assert changed is True
+    conf = _parse_conf(local_conf)
+    assert conf["upstream_rev"] == "newrev123"
+    assert conf["upstream"] == "/x"   # 별개 키 보존(한 키 2역 금지)
+    assert conf["session"] == "pm"
+
+
+# ── T-0145: URL 안전 계약 (순수 검증·네트워크 0) ──────────────────────────────
+
+def test_classify_upstream_url_vs_path(pm_import):
+    """self-describing 분류 — scheme/scp→url · 경로/Windows 드라이브→path (분류 ≠ 허가)."""
+    assert pm_import.classify_upstream("https://github.com/x/y.git") == "url"
+    assert pm_import.classify_upstream("ssh://git@h/x") == "url"
+    assert pm_import.classify_upstream("file:///srv/r.git") == "url"
+    assert pm_import.classify_upstream("git@github.com:x/y.git") == "url"  # scp-style
+    assert pm_import.classify_upstream("/home/u/checkout") == "path"
+    assert pm_import.classify_upstream("../rel/path") == "path"
+    assert pm_import.classify_upstream("C:\\repo") == "path"   # Windows 드라이브
+    assert pm_import.classify_upstream("C:/repo") == "path"
+
+
+def test_validate_upstream_value_safety_contract(pm_import):
+    """URL 안전 계약 — allowlist(https/ssh/file)·credential·leading-dash·transport·ssh-주입 거부."""
+    # 허용 — allowlist scheme + scp + 경로 + **scp path edge**(path 의 `@`·`:` 는 자유·MF3
+    # round-2 회귀 박제: scp 는 첫 `:` 로 lhs↔path 분리·authority 는 lhs 안에서만 해석).
+    for ok_val in (
+        "https://github.com/x/y.git", "ssh://git@h/x", "ssh://git@h:22/x",
+        "file:///srv/r.git", "git@github.com:x/y.git", "/home/u/checkout", "../rel",
+        "host:path@v1.git",          # path 에 `@`(ref) — 정상 scp
+        "host:path@with:colon",      # path 에 `@`+`:` — 정상 scp(false-reject 금지)
+        "git@host:path",             # 기본 scp
+        "git@host:sub/dir@ref",      # path 에 `/`·`@` — 정상 scp
+    ):
+        assert pm_import.validate_upstream_value(ok_val)[0] is True, ok_val
+    # 거부.
+    for bad_val in (
+        "", "   ",                              # 빈/공백
+        "--upload-pack=evil",                   # leading-dash(옵션 오인)
+        "http://insecure/x",                    # 평문 http(SSRF/중간자)
+        "git://h/x.git",                        # MF2: git:// 비인증 평문(MITM)·allowlist 밖
+        "ftp://h/x",                            # 비허용 scheme
+        "ext::sh -c evil",                      # transport helper(임의명령)
+        "fd::17",                               # transport helper
+        "https://user:pass@github.com/x.git",   # credential-in-URL(scheme-form)
+        "ssh://-oProxyCommand=sh/repo",         # MF3: ssh 옵션 주입(host leading-dash)
+        "ssh://git@-oProxyCommand=sh/repo",     # MF3: ssh 옵션 주입(host leading-dash·userinfo 有)
+        "git@-evil:x.git",                      # MF3: scp host leading-dash
+    ):
+        assert pm_import.validate_upstream_value(bad_val)[0] is False, bad_val
+
+
+def test_derive_origin_url_unit(pm_import):
+    """derive_origin_url: origin URL 도출·origin 부재 None·도출 URL 검증 실패 None(T-0145)."""
+    assert pm_import.derive_origin_url(
+        Path("/x"), git_runner=lambda a: (0, "git@github.com:o/r.git\n")
+    ) == "git@github.com:o/r.git"
+    # origin 부재(rc!=0) → None.
+    assert pm_import.derive_origin_url(
+        Path("/x"), git_runner=lambda a: (1, "no remote")) is None
+    # 도출 URL 이 안전 검증 실패(비허용 scheme) → None(나쁜 값 자동기록 차단).
+    assert pm_import.derive_origin_url(
+        Path("/x"), git_runner=lambda a: (0, "http://insecure/x\n")) is None
+
+
+def test_read_upstream_rev_unit(pm_import):
+    """read_upstream_rev: HEAD commit 읽기·git repo 아님 None(T-0145)."""
+    assert pm_import.read_upstream_rev(
+        Path("/x"), git_runner=lambda a: (0, "abc123def\n")) == "abc123def"
+    assert pm_import.read_upstream_rev(
+        Path("/x"), git_runner=lambda a: (128, "not a git repo")) is None
+
+
+def test_upstream_git_runner_isolates_global_config(pm_import, monkeypatch):
+    """MF4: 네트워크-facing runner 가 global/system git config 를 격리한다(insteadOf·helper 차단).
+
+    실 git 을 부르지 않고 subprocess.run 을 가로채 *전달된 env* 를 검사한다 — GIT_CONFIG_GLOBAL/
+    SYSTEM=os.devnull 로 global·system config 무력화 + GIT_CONFIG_COUNT 패턴으로 credential.
+    helper=(빈값)·protocol allowlist(https/ssh/file always·기본 never) 강제 + GIT_TERMINAL_PROMPT=0.
+    """
+    import os as _os
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "ok\n"
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs.get("env", {})
+        return _Result()
+
+    # hardening: 상속된 protocol 우회 env 가 *있어도* runner 가 중화(pop)하는지 검증.
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "ext")
+    monkeypatch.setenv("GIT_PROTOCOL_FROM_USER", "1")
+    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/git")
+    monkeypatch.setattr(pm_import.subprocess, "run", fake_run)
+    runner = pm_import._real_upstream_git_runner()
+    rc, _out = runner(["ls-remote", "https://github.com/x/y.git"])
+    assert rc == 0
+    env = captured["env"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert env["GIT_CONFIG_GLOBAL"] == _os.devnull
+    assert env["GIT_CONFIG_SYSTEM"] == _os.devnull
+    # hardening 2: protocol 우회 env 가 중화(pop)됐는지 — 우리 allowlist 가 단일 권위.
+    assert "GIT_ALLOW_PROTOCOL" not in env, "GIT_ALLOW_PROTOCOL 미중화(allowlist 우회 가능)"
+    assert "GIT_PROTOCOL_FROM_USER" not in env, "GIT_PROTOCOL_FROM_USER 미중화"
+    # GIT_CONFIG_COUNT 패턴 — credential.helper=(빈값)·protocol allowlist·followRedirects.
+    count = int(env["GIT_CONFIG_COUNT"])
+    kvs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(count)}
+    assert kvs.get("credential.helper") == "", "credential.helper 빈값 강제 안 됨"
+    assert kvs.get("protocol.allow") == "never", "protocol 기본 거부 안 됨"
+    assert kvs.get("protocol.https.allow") == "always"
+    assert kvs.get("protocol.ssh.allow") == "always"
+    assert kvs.get("protocol.file.allow") == "always"
+    # hardening 1: redirect 추적 차단(D5 잔여 SSRF 표면).
+    assert kvs.get("http.followRedirects") == "false", "http.followRedirects 차단 안 됨"
+    # argv 에 shell 해석 없이 그대로 — no-shell(argv-list) 계약.
+    assert captured["argv"][0] == "/usr/bin/git"
+    assert "ls-remote" in captured["argv"]
 
 
 def test_set_conf_keys_replaces_in_place(pm_import):

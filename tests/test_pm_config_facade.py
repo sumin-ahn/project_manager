@@ -212,7 +212,7 @@ def test_help_surfaces_all_subcommands(pc, capsys):
     rc = pc.main([])
     assert rc == 1
     out = capsys.readouterr().out
-    for sub in ("init", "repo", "worktree", "status", "whoami", "release", "update"):
+    for sub in ("init", "repo", "worktree", "status", "whoami", "release", "update", "upstream"):
         assert sub in out, f"서브커맨드 {sub!r} 가 --help surface 에 없다"
 
 
@@ -310,6 +310,161 @@ def test_update_engine_missing_errors_isolated(pc, monkeypatch, capsys):
     rc = pc.cmd_update(["--dry-run"])
     assert rc == 1
     assert "pm_update.py 엔진을 찾을 수 없다" in capsys.readouterr().err
+
+
+# ── upstream show/set 배선 — 검증(도달성·fail-closed) + local.conf atomic·타 키 보존 (T-0145) ──
+
+
+def _load_pm_import():
+    """실 pm_import 모듈 로드 — cmd_upstream 이 재사용하는 URL 안전 검증·conf set-or-replace 제공."""
+    spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _good_upstream_runner(argv):
+    """ls-remote·rev-parse·--is-inside-work-tree 전부 OK(도달/유효 checkout) 가짜 git."""
+    if "ls-remote" in argv:
+        return 0, "abc123\trefs/heads/main\n"
+    return 0, "true\n"
+
+
+def _bad_upstream_runner(argv):
+    """git 호출 전부 실패(원격 부재·non-git) 가짜 git."""
+    return 128, "fatal: repository not found"
+
+
+def _setup_repo_conf(pc, tmp_path, text):
+    """pc.REPO 를 tmp 로 핀하고 local.conf 를 만든다 — 실 worktree 오염 0."""
+    pm = tmp_path / ".project_manager"
+    pm.mkdir(parents=True)
+    conf = pm / "local.conf"
+    conf.write_text(text, encoding="utf-8")
+    pc.REPO = pm.parent
+    return conf
+
+
+def test_upstream_show_surfaces_value(pc, tmp_path, monkeypatch, capsys):
+    """`upstream show` → 현재 upstream 값 + self-describing 분류 surface."""
+    conf = _setup_repo_conf(pc, tmp_path, "upstream=https://github.com/x/y.git\n")
+    args = argparse.Namespace(upstream_action="show")
+    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "https://github.com/x/y.git" in out
+    assert "(url)" in out
+
+
+def test_upstream_show_unregistered(pc, tmp_path, capsys):
+    """upstream 미등록이면 안내(미등록) surface · rc 0."""
+    _setup_repo_conf(pc, tmp_path, "session=pm\n")
+    args = argparse.Namespace(upstream_action="show")
+    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
+    assert rc == 0
+    assert "미등록" in capsys.readouterr().out
+
+
+def test_upstream_set_url_valid_records_and_preserves_keys(pc, tmp_path):
+    """`upstream set <url>` 도달성 통과 시 atomic 재기록 + 타 키·주석 보존(T-0145)."""
+    conf = _setup_repo_conf(
+        pc, tmp_path, "# header\nsession=pm\nupstream=/old\ntest_cmd=pytest\n")
+    args = argparse.Namespace(
+        upstream_action="set", value="https://github.com/foo/bar.git")
+    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
+    assert rc == 0
+    text = conf.read_text(encoding="utf-8")
+    assert "upstream=https://github.com/foo/bar.git" in text
+    assert "upstream=/old" not in text          # 제자리 갱신(중복 아님)
+    assert "session=pm" in text                 # 타 키 보존
+    assert "test_cmd=pytest" in text            # 타 키 보존
+    assert text.startswith("# header")          # 주석 보존
+
+
+def test_upstream_set_url_unreachable_rejected(pc, tmp_path, capsys):
+    """URL 도달 불가(ls-remote 실패)면 fail-closed 거부 — 기록 안 함(T-0145)."""
+    conf = _setup_repo_conf(pc, tmp_path, "upstream=/keep\n")
+    args = argparse.Namespace(
+        upstream_action="set", value="https://github.com/no/such.git")
+    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_bad_upstream_runner)
+    assert rc == 1
+    assert "도달 불가" in capsys.readouterr().err
+    assert conf.read_text(encoding="utf-8") == "upstream=/keep\n"  # 무변경
+
+
+def test_upstream_set_path_valid_records(pc, tmp_path):
+    """`upstream set <path>` 가 존재+git checkout 이면 기록(경로 upstream·공동개발 특수)."""
+    conf = _setup_repo_conf(pc, tmp_path, "upstream=/old\n")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    args = argparse.Namespace(upstream_action="set", value=str(checkout))
+    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
+    assert rc == 0
+    assert f"upstream={checkout}" in conf.read_text(encoding="utf-8")
+
+
+def test_upstream_set_path_nonexistent_rejected(pc, tmp_path, capsys):
+    """경로 upstream 이 존재하지 않으면 fail-closed 거부 — 기록 안 함(T-0145)."""
+    conf = _setup_repo_conf(pc, tmp_path, "upstream=/keep\n")
+    args = argparse.Namespace(
+        upstream_action="set", value=str(tmp_path / "does_not_exist"))
+    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
+    assert rc == 1
+    assert "디렉토리가 아니거나 존재하지 않음" in capsys.readouterr().err
+    assert conf.read_text(encoding="utf-8") == "upstream=/keep\n"
+
+
+def test_upstream_set_unsafe_value_rejected_before_network(pc, tmp_path, capsys):
+    """나쁜 값(credential·leading-dash·비허용 scheme)은 도달성 검사 *전* 순수 검증에서 거부.
+
+    git_runner 가 호출되지 않아야(네트워크 0) — 순수 검증이 1차 게이트(fail-closed·기록 안 함).
+    """
+    conf = _setup_repo_conf(pc, tmp_path, "upstream=/keep\n")
+    called = {"n": 0}
+
+    def runner(argv):
+        called["n"] += 1
+        return 0, "ok"
+
+    args = argparse.Namespace(
+        upstream_action="set", value="https://user:pass@github.com/x.git")
+    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=runner)
+    assert rc == 1
+    assert called["n"] == 0, "순수 검증 실패인데도 git(네트워크)이 호출됨"
+    assert conf.read_text(encoding="utf-8") == "upstream=/keep\n"
+
+
+def test_upstream_engine_missing_errors_isolated(pc, monkeypatch, capsys):
+    """pm_import 로드 실패면 명시 에러 rc 1(침묵 무력화 금지)."""
+    monkeypatch.setattr(pc, "_load_module", lambda name, filename: None)
+    args = argparse.Namespace(upstream_action="show")
+    rc = pc.cmd_upstream(args)
+    assert rc == 1
+    assert "pm_import.py 엔진을 찾을 수 없다" in capsys.readouterr().err
+
+
+def test_upstream_no_action_surfaces_help(pc, monkeypatch):
+    """`upstream` 만 주면 그룹 도움말 surface(SystemExit) — repo/worktree 동형."""
+    with pytest.raises(SystemExit):
+        pc.main(["upstream"])
+
+
+def test_upstream_set_missing_conf_skips_network(pc, tmp_path, monkeypatch, capsys):
+    """suggestion(codex): local.conf 부재면 reachability(네트워크) *전* 에 거부 — git 미호출."""
+    # local.conf 를 만들지 않는다 — pc.REPO 만 tmp 로 핀.
+    pc.REPO = tmp_path
+    called = {"n": 0}
+
+    def runner(argv):
+        called["n"] += 1
+        return 0, "ok"
+
+    args = argparse.Namespace(
+        upstream_action="set", value="https://github.com/x/y.git")
+    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=runner)
+    assert rc == 1
+    assert "local.conf 없음" in capsys.readouterr().err
+    assert called["n"] == 0, "conf 부재인데 git(네트워크)이 호출됨(네트워크 낭비)"
 
 
 # ── repo add 배선 — areas_append(per-repo) + git clone --bare ────────────────

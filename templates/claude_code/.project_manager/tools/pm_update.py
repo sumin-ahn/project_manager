@@ -267,6 +267,47 @@ def _load_pm_render():
     return mod
 
 
+def _load_pm_import():
+    """pm_import 모듈을 같은 tools/ 에서 직접 로드 (T-0145·_load_pm_render 패턴 동형).
+
+    upstream_rev baseline 기록(매 sync·ADR-0032 D2)에 pm_import 의 URL 안전 git 호출
+    (read_upstream_rev — argv-list·timeout·GIT_TERMINAL_PROMPT=0)과 local.conf set-or-replace
+    (record_upstream_rev)를 *재사용*한다 — pm_update 가 자체 git/conf-write 를 중복 구현하지
+    않게(엔진 stdlib-only 철학 안에서 검증된 안전 계약을 상속). 로드 실패는 호출부가 fail-soft
+    (baseline 기록은 best-effort·sync 자체를 깨지 않는다).
+    """
+    import_py = Path(__file__).resolve().parent / "pm_import.py"
+    spec = importlib.util.spec_from_file_location("pm_import", import_py)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"pm_import 로드 불가: {import_py}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
+    """매 sync 후 upstream baseline revision 을 dest local.conf 에 `upstream_rev=<commit>` 기록(T-0145).
+
+    drift-lint(T-0141)의 baseline 입력 — "마지막 동기 이후 upstream 변경분" 의 기준점이다
+    (ADR-0032 D2). pm_import(import 시)와 여기(pm_update 매 sync) 둘 다 갱신해야 "마지막 동기
+    이후" 가 성립한다. source_root(upstream)가 로컬 git checkout 이면 그 HEAD commit 을 읽어
+    기록한다. git repo 아님·HEAD 해소 실패·pm_import 로드 실패는 **graceful 생략**(기록 안 함·
+    best-effort·sync 자체는 안 깬다). URL upstream(로컬 checkout 없음)은 baseline 을 못 읽어
+    생략 — 스킬층이 fetch 후 `upstream_seen_rev`(별개 키)를 기록한다(한 키 2역 금지).
+
+    pm_import 의 read_upstream_rev(URL 안전 git 호출)·record_upstream_rev(local.conf set-or-
+    replace·타 키 보존)를 재사용한다. 변경 시 True·생략/무변경 False.
+    """
+    try:
+        pm_import = _load_pm_import()
+    except Exception:  # noqa: BLE001 — 로드 실패는 baseline best-effort: sync 를 안 깬다.
+        return False
+    rev = pm_import.read_upstream_rev(source_root)
+    if not rev:
+        return False  # git repo 아님·HEAD 해소 실패 — graceful 생략(URL upstream 포함).
+    return bool(pm_import.record_upstream_rev(dest_root, rev))
+
+
 # local.conf key(lowercase) → operational token key(uppercase·pm_render). board.py init 은
 # py·test_cmd·project_name 만 기록 — 나머지(project_root·project_tagline·date)는 local.conf
 # 에 없으므로 매핑 부재 시 빈값(render 시 그 토큰이 남아있으면 leak assertion 이 잡는다·그러나
@@ -514,7 +555,10 @@ def main(argv: list[str] | None = None) -> int:
         epilog=(
             "--from 생략 시 <dest>/.project_manager/local.conf 의 `upstream=` 값을 기본으로 쓴다 "
             "(pm_import 가 한 번 import 하면 자동 기록·--from 명시로 override 가능). "
-            "upstream 미등록이거나 그 경로가 부재/디렉토리 아님이면 명확한 에러로 멈춘다(침묵 폴백 없음)."
+            "단 upstream= 이 **URL**(릴리스 추적 기본)이면 엔진은 로컬 파일만 복사하므로 "
+            "(git clone/fetch 안 함·ADR-0032 D5) 자동 진행하지 않고 명확한 에러로 멈춘다 — "
+            "`pm-update` 스킬(URL→cache clone)을 쓰거나 `--from <로컬 checkout>` 을 명시하라. "
+            "upstream 미등록이거나 그 경로가 부재/디렉토리 아님이어도 명확한 에러로 멈춘다(침묵 폴백 없음)."
         ),
     )
     ap.add_argument("--from", dest="source", required=False, default=None,
@@ -559,6 +603,22 @@ def main(argv: list[str] | None = None) -> int:
                 "오류: upstream 미등록 — --from <checkout> 를 주거나 "
                 f"{local_conf} 에 `upstream=` 를 등록하라 "
                 "(이 프로젝트를 한 번 pm_import 하면 자동 기록된다).",
+                file=sys.stderr,
+            )
+            return 1
+        # MF1(codex·D5 경계): upstream= 이 URL(릴리스 추적 기본값·ADR-0032 D4)이면 엔진은
+        #   로컬 파일만 복사하므로 `Path(url).resolve()` 했다간 "디렉터리 없음" 류로 침묵 실패한다.
+        #   URL 은 디렉토리로 해소하지 말고 *명확·actionable* 에러로 멈춘다 — git freshness 는
+        #   스킬층(pm-update: URL→cache clone)이거나 `--from <로컬 checkout>` 명시가 답이다.
+        try:
+            kind = _load_pm_import().classify_upstream(stored)
+        except Exception:  # noqa: BLE001 — 분류 실패는 보수적으로 경로 취급(기존 동작·fail-soft).
+            kind = "path"
+        if kind == "url":
+            print(
+                f"오류: upstream 이 URL 이다 ({stored}) — 엔진(pm_update)은 로컬 파일만 복사한다 "
+                "(git clone/fetch 안 함·ADR-0032 D5). `pm-update` 스킬(URL→cache clone 후 sync)을 "
+                "쓰거나, `--from <로컬 checkout>` 으로 로컬 경로를 명시하라.",
                 file=sys.stderr,
             )
             return 1
@@ -652,6 +712,17 @@ def main(argv: list[str] | None = None) -> int:
         version_file.write_text(args.version + "\n", encoding="utf-8")
         msg += f" · engine.version={args.version}"
     print(msg)
+
+    # upstream_rev baseline 갱신(T-0145·ADR-0032 D2) — 매 sync 마다 source(upstream) HEAD 를
+    # local.conf 에 박아 drift-lint(T-0141)의 "마지막 동기 이후" 기준점을 최신화한다. source 가
+    # 로컬 git checkout 일 때만(URL upstream 은 로컬 checkout 없어 graceful 생략). best-effort —
+    # 기록 실패가 동기화 자체를 무효화하지 않는다(파일은 이미 적용됨). --target 모드는 effective_
+    # dest(templates/<name>)의 conf 에 기록(루트 오염 방지·maybe_prompt_external_review 와 동형).
+    if record_upstream_rev_baseline(effective_dest, source_root):
+        rev = _read_local_conf(
+            effective_dest / ".project_manager" / "local.conf").get("upstream_rev", "")
+        print(f"✓ local.conf upstream_rev baseline 갱신 (drift-lint 기준점): {rev}")
+
     maybe_prompt_external_review(effective_dest)
     return 0
 

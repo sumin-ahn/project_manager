@@ -207,6 +207,126 @@ def test_upstream_file_not_dir_errors(pm_update, tmp_path, monkeypatch, capsys):
     assert "디렉토리가 아니거나 존재하지 않음" in capsys.readouterr().err
 
 
+# ── T-0145: upstream_rev baseline 기록 (매 sync·drift-lint 입력·ADR-0032 D2) ──
+
+def test_record_upstream_rev_baseline_records_head(pm_update, tmp_path, monkeypatch):
+    """source 가 git checkout 이면 매 sync 후 upstream_rev=<HEAD> 를 dest local.conf 에 기록.
+
+    pm_update 는 git 을 직접 안 부르고 pm_import.read_upstream_rev(URL 안전 git 호출)를 재사용한다
+    — 그 read 를 monkeypatch 해 라이브 git 없이 baseline 기록 *배선* 을 검증한다(매 sync).
+    """
+    dest = tmp_path / "dest"
+    _write_local_conf(dest, "session=pm\nupstream=/some/checkout\n")
+    source = tmp_path / "src"
+    source.mkdir()
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "headcommit99")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    changed = pm_update.record_upstream_rev_baseline(dest, source)
+    assert changed is True
+    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    assert conf["upstream_rev"] == "headcommit99"
+    assert conf["upstream"] == "/some/checkout"  # 별개 키 보존(한 키 2역 금지)
+    assert conf["session"] == "pm"
+
+
+def test_record_upstream_rev_baseline_skips_when_source_not_git(pm_update, tmp_path, monkeypatch):
+    """source 가 git checkout 이 아니면(read_upstream_rev=None·URL upstream 포함) graceful 생략."""
+    dest = tmp_path / "dest"
+    _write_local_conf(dest, "upstream=https://h/x.git\n")
+    source = tmp_path / "src"
+    source.mkdir()
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    changed = pm_update.record_upstream_rev_baseline(dest, source)
+    assert changed is False
+    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    assert "upstream_rev" not in conf
+
+
+def test_main_records_upstream_rev_on_successful_sync(pm_update, tmp_path, monkeypatch, capsys):
+    """실 sync(apply) 후 upstream_rev baseline 이 기록된다(매 sync·dry-run 은 기록 안 함)."""
+    fake_repo = tmp_path / "fake_repo"
+    stored = tmp_path / "stored_upstream"
+    _make_upstream(stored)
+    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    # baseline rev 읽기를 결정적으로 stub(라이브 git 0).
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "syncedrev42")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main([])  # 실 sync(dry-run 아님) — sentinel 1개 복사.
+    assert rc == 0
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert conf.get("upstream_rev") == "syncedrev42", \
+        f"매 sync 후 upstream_rev baseline 미갱신: {conf.get('upstream_rev')!r}"
+
+
+def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypatch):
+    """--dry-run 은 실 sync 가 아니므로 upstream_rev baseline 을 기록하지 않는다(파일 미변경)."""
+    fake_repo = tmp_path / "fake_repo"
+    stored = tmp_path / "stored_upstream"
+    _make_upstream(stored)
+    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main(["--dry-run"])
+    assert rc == 0
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert "upstream_rev" not in conf, "dry-run 인데 upstream_rev 가 기록됨(부작용 누출)"
+
+
+# ── MF1(codex): URL upstream + --from 생략 → 명확·actionable 에러 (D5 경계·침묵 실패 금지) ──
+
+def test_url_upstream_omitted_from_errors_clearly(pm_update, tmp_path, monkeypatch, capsys):
+    """local.conf upstream= 이 URL 이고 --from 생략이면 디렉토리 resolve 안 하고 명확 에러로 멈춘다.
+
+    엔진(pm_update)은 로컬 파일만 복사한다(git clone/fetch 안 함·ADR-0032 D5). URL upstream 을
+    `Path(url).resolve()` 했다간 "디렉터리 없음" 류로 침묵 실패하므로, classify_upstream 으로
+    URL 을 판별해 actionable 에러(pm-update 스킬·--from 명시 안내)로 멈춘다(MF1).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    _write_local_conf(fake_repo, "upstream=https://github.com/acme/proj.git\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    rc = pm_update.main([])  # --from 생략 → local.conf URL upstream 해소 시도.
+    assert rc == 1, "URL upstream 인데 rc 0/2 — 명확 에러로 안 멈춤"
+    err = capsys.readouterr().err
+    assert "URL" in err and ("pm-update" in err or "--from" in err), \
+        f"actionable 에러 아님(스킬·--from 안내 없음): {err!r}"
+
+
+def test_url_upstream_explicit_from_local_still_works(pm_update, tmp_path, monkeypatch, capsys):
+    """local.conf 가 URL upstream 이어도 --from <로컬 checkout> 명시면 정상 sync(URL 게이트 우회).
+
+    MF1 게이트는 *--from 생략 + local.conf URL* 경로 한정 — 명시 --from(로컬)은 그대로 동작
+    (URL 게이트는 stored upstream 해소 분기에만 있고 명시 --from 은 그 분기를 안 탄다).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    _write_local_conf(fake_repo, "upstream=https://github.com/acme/proj.git\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    local_src = tmp_path / "local_checkout"
+    _make_upstream(local_src)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "localrev1")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main(["--from", str(local_src)])
+    assert rc == 0, f"명시 --from(로컬)인데 URL 게이트가 막음: {capsys.readouterr().err!r}"
+
+
 # ── ⑤ --target 모드: --from 생략 시 *타깃* local.conf 의 upstream 사용 (self-loc 과 일관) ──
 
 def test_target_mode_omitted_from_uses_target_local_conf(pm_update, tmp_path, monkeypatch, capsys):
@@ -562,6 +682,42 @@ def test_v2_engine_in_manifest(pm_update, manifest_path):
     assert ".project_manager/tools/domain.py" in entries, "domain.py manifest 미등재 (전파 누락)"
     assert ".project_manager/tools/pm_relay.py" in entries, "pm_relay.py manifest 미등재"
     assert ".project_manager/tools/pm_orchestrator.py" not in entries, "옛 pm_orchestrator.py 잔재 (relay 개명 누락)"
+
+
+# ── pm_import.py manifest 편입 (T-0140·ADR-0032 — PM 31 ⓒ stale 근본 해소) ──────────
+# pm_import.py 가 manifest 미등재(root-only)라 pm_update 가 채택자/템플릿으로 전파 못 해
+# 소리없이 stale 되던 것(PM 31 ⓒ)을 회귀로 박는다. 편입 후 pm_update(채택자 흡수)·
+# pm_update --target(템플릿 refresh)가 전파한다. manifest 진화(새 항목이 *기존* 채택자에
+# 도달)는 pm-update 스킬 reconcile(T-0142)·self-list 아님(codex round-2).
+
+_PM_IMPORT_REL = ".project_manager/tools/pm_import.py"
+
+
+@pytest.mark.parametrize("manifest_path", _MANIFESTS, ids=lambda p: p.parent.parent.name or "root")
+def test_pm_import_in_manifest(pm_update, manifest_path):
+    """pm_import.py 가 3 manifest(root + claude_code + opencode) 모두 등재 — 전파 채널 확보(de-list 가드)."""
+    entries = pm_update.read_manifest(manifest_path)
+    assert _PM_IMPORT_REL in entries, (
+        f"{_PM_IMPORT_REL} manifest 미등재 ({manifest_path}) — pm_update 전파 누락(PM 31 ⓒ stale 재발)"
+    )
+
+
+def test_pm_import_byte_identical_root_templates():
+    """pm_import.py 가 root↔양 템플릿 byte-identical (전파 무드리프트·`both` import 첫-트리 mismatch 회피).
+
+    pm_import 의 `--harness both` 는 공유 엔진파일을 양 템플릿 트리에서 가져오므로, 두 트리의
+    pm_import.py 가 다르면 import 가 mismatch 한다. root 단일 진실 → pm_update --target 전파로
+    byte-identical 유지([[verify-engine-template-propagation]]·test_agents_root_templates_byte_identical 동형).
+    """
+    root_bytes = (REPO / _PM_IMPORT_REL).read_bytes()
+    for harness in ("claude_code", "opencode"):
+        tmpl = REPO / "templates" / harness / _PM_IMPORT_REL
+        assert tmpl.exists(), (
+            f"{harness} 템플릿에 pm_import.py 부재 — pm_update --target 전파 필요(T-0140)"
+        )
+        assert tmpl.read_bytes() == root_bytes, (
+            f"{harness} pm_import.py root↔template 드리프트 — 엔진 변경 후 pm_update --target 전파 필요"
+        )
 
 
 # ── domain/_template.md 엔진 동기 채널 (T-0095 — 스캐폴드 파리티 가드) ──────────────

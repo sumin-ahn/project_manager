@@ -1262,6 +1262,7 @@ def test_architecture_freshness_is_advisory_never_blocks(board, monkeypatch, tmp
     monkeypatch.setattr(board, "lint_scopes", lambda: [])
     monkeypatch.setattr(board, "lint_domain", lambda: [])
     monkeypatch.setattr(board, "lint_adr_lifecycle", lambda: [])
+    monkeypatch.setattr(board, "lint_adapter_drift", lambda: [])
     monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
     monkeypatch.setattr(board, "lint_architecture_freshness", lambda: [
         ("architecture.md", "architecture-stale", "최신 ADR > architecture updated")])
@@ -1323,7 +1324,7 @@ def test_unmigrated_kind_is_advisory_gate_excluded(board, monkeypatch, tmp_path)
     for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
                "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
                "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_render_leak", "_run_lint_hooks"):
+               "lint_adapter_drift", "lint_render_leak", "_run_lint_hooks"):
         monkeypatch.setattr(board, fn, lambda: [])
     issues = board.lint_unmigrated_overlay()
     assert issues, "un-migrated finding 이 있어야 한다."
@@ -1429,7 +1430,133 @@ def test_lint_tickets_includes_unmigrated_overlay(board, monkeypatch):
     for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
                "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
                "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_render_leak"):
+               "lint_adapter_drift", "lint_render_leak"):
         monkeypatch.setattr(board, fn, lambda: [])
     monkeypatch.setattr(board, "lint_unmigrated_overlay", lambda: sentinel)
+    assert sentinel[0] in board.lint_tickets()
+
+
+# ── adapter-layer drift lint (T-0141·ADR-0032 Decision 2·advisory·baseline B) ─────
+# `lint_adapter_drift` 는 git network 0 — `local.conf` 의 2키
+# (`upstream_rev` baseline ↔ `upstream_seen_rev` 현재 관찰값)만 비교한다. 둘 다 존재하고
+# *다르면* drift 1 finding(baseline 이후 upstream 변경). 한쪽이라도 부재·upstream 미설정·
+# 같은 rev 면 graceful 0(fail-soft). 테스트는 `local_config` 를 stub 해 hermetic 하게 2키를
+# 주입한다(파일 IO·network 0). scope 제외(instance-state)는 lint 가 파일 diff 를 안 하므로
+# 자동 충족 — 여기선 rev 비교 sensitivity 와 advisory never-block 만 검증한다.
+
+def _wire_conf(board, monkeypatch, conf: dict) -> None:
+    """`local_config()` 를 고정 dict 로 stub — local.conf 파일/network 없이 2키 주입."""
+    monkeypatch.setattr(board, "local_config", lambda: dict(conf))
+
+
+def test_adapter_drift_flags_when_baseline_differs_from_seen(board, monkeypatch):
+    # 정상 baseline 이후 upstream 이 앞섬(seen≠baseline) → 인위 drift → finding 1.
+    _wire_conf(board, monkeypatch, {
+        "upstream": "https://github.com/example/project_manager",
+        "upstream_rev": "aaaaaaaaaaaa1111",
+        "upstream_seen_rev": "bbbbbbbbbbbb2222",
+    })
+    findings = board.lint_adapter_drift()
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "adapter-layer"
+    assert kind == "adapter-drift"
+    # baseline·seen 양쪽 rev 와 pm-update 안내가 메시지에 노출.
+    assert "aaaaaaaaaaaa" in detail and "bbbbbbbbbbbb" in detail
+    assert "pm-update" in detail
+
+
+def test_adapter_drift_clean_when_baseline_equals_seen(board, monkeypatch):
+    # baseline == seen → 마지막 동기 이후 upstream 변경 없음 → finding 0 (정상→0).
+    _wire_conf(board, monkeypatch, {
+        "upstream": "https://github.com/example/project_manager",
+        "upstream_rev": "cccccccccccc3333",
+        "upstream_seen_rev": "cccccccccccc3333",
+    })
+    assert board.lint_adapter_drift() == []
+
+
+def test_adapter_drift_graceful_when_upstream_absent(board, monkeypatch):
+    # 솔로·non-adopter — upstream 자체 부재 → graceful 0 (fail-soft).
+    _wire_conf(board, monkeypatch, {
+        "upstream_rev": "aaaaaaaaaaaa1111",
+        "upstream_seen_rev": "bbbbbbbbbbbb2222",
+    })
+    assert board.lint_adapter_drift() == []
+
+
+def test_adapter_drift_graceful_when_baseline_unrecorded(board, monkeypatch):
+    # baseline(`upstream_rev`) 미기록(구 import·revision 추적 전) → graceful 0.
+    _wire_conf(board, monkeypatch, {
+        "upstream": "/some/path/project_manager_1",
+        "upstream_seen_rev": "bbbbbbbbbbbb2222",
+    })
+    assert board.lint_adapter_drift() == []
+
+
+def test_adapter_drift_graceful_when_seen_unrecorded(board, monkeypatch):
+    # seen(`upstream_seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → graceful 0
+    # (관찰값 없으면 비교 불가 → flood 회피·flag 안 함).
+    _wire_conf(board, monkeypatch, {
+        "upstream": "https://github.com/example/project_manager",
+        "upstream_rev": "aaaaaaaaaaaa1111",
+    })
+    assert board.lint_adapter_drift() == []
+
+
+def test_adapter_drift_graceful_when_conf_empty(board, monkeypatch):
+    # local.conf 부재(빈 dict·솔로/신규 clone) → graceful 0.
+    _wire_conf(board, monkeypatch, {})
+    assert board.lint_adapter_drift() == []
+
+
+def test_adapter_drift_blank_values_treated_as_absent(board, monkeypatch):
+    # 키는 있으나 빈 값(`upstream_seen_rev=`) → 미기록과 동치 → graceful 0.
+    _wire_conf(board, monkeypatch, {
+        "upstream": "https://github.com/example/project_manager",
+        "upstream_rev": "aaaaaaaaaaaa1111",
+        "upstream_seen_rev": "   ",
+    })
+    assert board.lint_adapter_drift() == []
+
+
+def test_adapter_drift_uses_two_distinct_keys(board, monkeypatch):
+    # 한 키 2역 금지(race/자기비교 회피·codex round-3 NEW-2) — baseline 키와 seen 키가 분리돼야.
+    assert board._DRIFT_BASELINE_KEY == "upstream_rev"
+    assert board._DRIFT_SEEN_KEY == "upstream_seen_rev"
+    assert board._DRIFT_BASELINE_KEY != board._DRIFT_SEEN_KEY
+
+
+def test_adapter_drift_kind_is_advisory(board):
+    # adapter-drift 는 `_ADVISORY_LINT_KINDS` 등재 → --gate 종료코드 비기여(never-block).
+    assert "adapter-drift" in board._ADVISORY_LINT_KINDS
+
+
+def test_adapter_drift_is_advisory_never_blocks(board, monkeypatch):
+    # 인위 drift finding 만 있어도 --gate 는 0(미차단)·무인자는 표면화로 1 (sensitivity).
+    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
+               "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
+               "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
+               "lint_render_leak", "lint_unmigrated_overlay", "_run_lint_hooks"):
+        monkeypatch.setattr(board, fn, lambda: [])
+    _wire_conf(board, monkeypatch, {
+        "upstream": "https://github.com/example/project_manager",
+        "upstream_rev": "aaaaaaaaaaaa1111",
+        "upstream_seen_rev": "bbbbbbbbbbbb2222",
+    })
+    issues = board.lint_adapter_drift()
+    assert issues and all(k == "adapter-drift" for _n, k, _d in issues)
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
+
+
+def test_lint_tickets_includes_adapter_drift(board, monkeypatch):
+    # lint_tickets 통합 — adapter-drift finding 이 전체 보고에 포함된다.
+    sentinel = [("adapter-layer", "adapter-drift", "sentinel")]
+    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
+               "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
+               "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
+               "lint_render_leak", "lint_unmigrated_overlay"):
+        monkeypatch.setattr(board, fn, lambda: [])
+    monkeypatch.setattr(board, "lint_adapter_drift", lambda: sentinel)
     assert sentinel[0] in board.lint_tickets()

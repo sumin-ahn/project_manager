@@ -17,6 +17,8 @@
 .project_manager/tools/pm_log.py
 .project_manager/tools/ticket_finish.py
 .project_manager/tools/pm_update.py
+# pm_import: 채택자 홈 생성/임베드 import 엔진 (ADR-0027). manifest 편입(T-0140·ADR-0032) → pm_update 전파로 PM 31 ⓒ stale 해소. 비-@render·verbatim copy2(tools/* 토큰치환 제외). manifest 진화(새 항목이 기존 채택자에 도달)는 pm-update 스킬 reconcile(T-0142·self-list 아님·codex)
+.project_manager/tools/pm_import.py
 # pm_render: 어댑터 render 엔진 (ADR-0028·ADR-0031·operational 토큰 치환). pm_update/pm_import 가 @render path 에 위임. 도구 전파 등록일 뿐 — @render *활성화*는 T-0133(D17)
 .project_manager/tools/pm_render.py
 # relay core: 하니스 무관 thin stateless supervisor (ADR-0009). 하니스 driver(pm_orch_*.py)는 어댑터층(manifest 밖)

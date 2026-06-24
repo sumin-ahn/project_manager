@@ -2341,10 +2341,15 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #   - un-migrated-overlay : 어댑터 .md 에 리터럴 free-form 토큰 잔존 (T-0132·§3.6·ADR-0031 디커플).
 #     canonical home(root doc·pm_role.local.md) 마이그레이션 누락 신호 — 채택자 운영 ritual 이지
 #     출하 결함 아니므로 visibility 만, push 미차단. render-leak(@render 산출물 한정·blocking)과 별개.
+#   - adapter-drift : 채택자의 adapter-layer(facade·진입문서·settings) 가 baseline(마지막 동기) 이후
+#     upstream 에서 변경됨 (T-0141·ADR-0032 Decision 2). 전파 채널 없는 manifest-제외 잔여라 *전파 대신*
+#     PM 에게 경고만 — `pm-update` 안내(visibility>enforcement). B 전파는 채택자 customization clobber(비파괴
+#     위배)라 의도적 비-전파. instance-state(status·architecture·tickets·log·decisions·README·lite)는 채택자
+#     소유·diverge 정상이라 scope 제외. push 미차단(never-block).
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
      "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
-     "dangling-wikilink-scaffold", "un-migrated-overlay"})
+     "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -2483,6 +2488,74 @@ def lint_architecture_freshness() -> list[tuple[str, str, str]]:
     return findings
 
 
+# adapter-drift baseline 의 두 local.conf 키 (T-0141·ADR-0032 Decision 2·codex round-3 NEW-2).
+# 한 키가 baseline 과 현재-관찰을 겸하면 race/자기비교라 *분리*한다:
+#   - upstream_rev      : baseline — 마지막 성공 sync 의 upstream revision (pm_import·pm_update 가 기록·T-0145).
+#   - upstream_seen_rev : 현재 관찰값 — pm-update 스킬이 upstream fetch 후 기록 (T-0142)·경로 upstream 은
+#                         로컬 checkout rev 직접. cache 부재 URL 은 이 키 부재 → graceful skip.
+_DRIFT_BASELINE_KEY = "upstream_rev"
+_DRIFT_SEEN_KEY = "upstream_seen_rev"
+
+
+def lint_adapter_drift() -> list[tuple[str, str, str]]:
+    """adapter-layer drift advisory (T-0141·ADR-0032 Decision 2·never-block).
+
+    채택자의 **adapter-layer manifest-제외 파일**(facade·진입문서·settings)이 baseline(마지막 동기)
+    *이후* upstream 에서 변경됐는지 가시화한다. 이 잔여는 전파 채널이 없어(B 전파=채택자
+    customization clobber·비파괴 위배) 소리없이 stale 되므로, *전파 대신* PM 에게 경고만 낸다
+    (kind=`adapter-drift`·`_ADVISORY_LINT_KINDS` 등재로 `--gate` 종료코드 비기여·visibility>enforcement).
+
+    **drift 판정 = baseline B**(codex MUST-FIX 2): "공식판과 다름"(채택자 customization 오탐)이 아니라
+    "마지막 동기 이후 upstream 변경". **lint 는 git network 를 하지 않는다**(codex round-2·3): `local.conf`
+    의 **2개 키**만 비교한다 —
+
+      - `upstream_rev`      (baseline·마지막 성공 sync·pm_import/pm_update 가 기록)
+      - `upstream_seen_rev` (현재 관찰값·pm-update 스킬이 upstream fetch 후 기록·경로 upstream 은 로컬 rev)
+
+    둘 다 존재하고 **다르면** drift 1 finding(baseline 이후 upstream 이 앞섰다 = adapter-layer 가 낡았을 수
+    있음). 한 키 2역 금지(race/자기비교 회피·codex round-3 NEW-2).
+
+    scope(codex MUST-FIX 4): 대상 = adapter-layer(facade·진입문서·settings) / 제외 = instance-state
+    (status·architecture·tickets·log·decisions·README 스캐폴드·lite — 채택자 소유·diverge 정상) /
+    hooks·driver = open(Q3·대상 단정 안 함). lint 가 파일 단위 diff 를 하지 않으므로(rev 비교만) scope 는
+    advisory 메시지로 안내하고, 제외 집합은 애초 비교 대상이 아니라 자동 충족된다.
+
+    fail-soft (graceful 0-finding):
+      - `upstream` 미설정(솔로·non-adopter·templates/upstream 부재 환경) → [].
+      - baseline(`upstream_rev`) 미기록(아직 revision 추적 전·구 import) → [].
+      - seen(`upstream_seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → [] + 안내는 내지 않음
+        (false-positive flood 회피 — 관찰값 없으면 비교 불가). drift 는 *변경 확인*된 경우만 경고한다.
+    """
+    findings: list[tuple[str, str, str]] = []
+    conf = local_config()
+
+    # 솔로/non-adopter — upstream 자체가 없으면 비교할 대상이 없다 (graceful).
+    if not (conf.get("upstream") or "").strip():
+        return findings
+
+    baseline = (conf.get(_DRIFT_BASELINE_KEY) or "").strip()
+    seen = (conf.get(_DRIFT_SEEN_KEY) or "").strip()
+
+    # baseline 미기록(구 import·revision 추적 전) 또는 seen 미기록(cache 부재 URL·pm-update 미실행)
+    # → graceful skip. 한쪽이라도 없으면 "마지막 동기 이후 변경"을 단정할 수 없어 경고하지 않는다
+    # (false-positive flood 회피·baseline B 의 핵심).
+    if not baseline or not seen:
+        return findings
+
+    # 두 rev 가 같으면 baseline 이후 upstream 변경 없음 → clean.
+    if baseline == seen:
+        return findings
+
+    # 다름 = baseline(마지막 동기) 이후 upstream 이 앞섰다. adapter-layer(facade·진입문서·settings)가
+    # 낡았을 수 있으니 PM 에게 `pm-update` 안내 (전파 아님·never-block).
+    findings.append((
+        "adapter-layer", "adapter-drift",
+        f"upstream 이 baseline({baseline[:12]}) 이후 변경됨(현재 관찰 {seen[:12]}) — "
+        f"adapter-layer(facade·진입문서·settings) 가 낡았을 수 있음. "
+        f"`pm-update` 로 동기 (instance-state·README·lite 는 채택자 소유·제외)"))
+    return findings
+
+
 def _load_domain_module():
     """domain.py 를 경로 import 해 모듈로 반환한다 (부재/실패 시 None).
 
@@ -2544,13 +2617,14 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     family wiki scope 인지(ADR-0015) +
     domain freshness advisory(stale/orphan/oversized·ADR-0018·never-block) +
     architecture.md freshness advisory(architecture-stale·ADR-0022·never-block) +
+    adapter-layer drift advisory(adapter-drift·T-0141·ADR-0032·never-block·baseline rev 비교) +
     render-leak(리터럴 `{{...}}` 누출·ADR-0028·blocking·@render 산출물 한정·활성화 전 무발화) +
     un-migrated-overlay(어댑터 .md 리터럴 free-form 토큰 잔존·T-0132·§3.6·ADR-0031·advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
             + lint_domain() + lint_adr_lifecycle()
-            + lint_architecture_freshness()
+            + lint_architecture_freshness() + lint_adapter_drift()
             + lint_render_leak() + lint_unmigrated_overlay())
 
 
