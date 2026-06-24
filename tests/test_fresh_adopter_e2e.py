@@ -103,3 +103,94 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested"
     )
     assert done.returncode == 0, f"{harness} `board.py complete {tid}` 실패: {done.stderr}"
+
+
+# ── 출하 @render 스킬/command materialize 가드 (T-0142/T-0143 — 신규 스킬 회귀) ──────
+# `board.py lint` clean 은 파일 *부재* 를 못 잡는다(없어도 clean). 출하 스킬이 fresh import 에서
+# 조용히 누락/미렌더되는 회귀를 source 템플릿 트리 기준 전수 대조로 박는다. PM 33 에서 신규
+# pm-update/pm-env 스킬을 추가하며 ephemeral smoke 로만 확인했던 갭의 durable 화 ([[feature-ship-needs-fresh-adopter-gate]]).
+# operational 토큰(import 가 *항상* 해소)만 검사 — free-form·{{OPENCODE_PRO_MODEL}} 는 manual fill TODO 라 제외.
+
+_OPERATIONAL_TOKENS = re.compile(r"\{\{(?:PY|PROJECT_NAME|PROJECT_TAGLINE|TEST_CMD)\}\}")
+
+# harness → (source 출하 스킬 트리, adopter 상대경로, 디렉토리형 여부[claude=<name>/SKILL.md · opencode=<name>.md])
+_RENDER_SKILL_SRC = {
+    "claude": (REPO / "templates" / "claude_code" / ".claude" / "skills", ".claude/skills", True),
+    "opencode": (REPO / "templates" / "opencode" / ".opencode" / "command", ".opencode/command", False),
+}
+_NEW_SKILLS = {"claude": {"pm-update", "pm-env"}, "opencode": {"pm-update.md", "pm-env.md"}}
+
+
+def _skill_names(root: Path, is_dir: bool) -> set[str]:
+    if not root.is_dir():
+        return set()
+    if is_dir:
+        return {p.name for p in root.iterdir() if (p / "SKILL.md").is_file()}
+    return {p.name for p in root.glob("*.md")}
+
+
+@pytest.mark.parametrize("harness", ["claude", "opencode"])
+def test_fresh_adopter_render_skills_materialize(pm_import, tmp_path, harness):
+    """fresh import 가 출하 @render 스킬/command 전부를 materialize + operational 토큰 해소 (양 harness).
+
+    source 출하 트리의 모든 스킬이 adopter 에 도착하는지 전수 대조한다 — 어떤 출하 스킬이라도
+    누락/미렌더되면 여기서 터진다(신규 추가 자동 커버). 신규 pm-update/pm-env 는 명시 backstop.
+    """
+    src_dir, dest_rel, is_dir = _RENDER_SKILL_SRC[harness]
+    dest = tmp_path / f"adopter-{harness}"
+    rc = pm_import.main(
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    )
+    assert rc == 0, f"{harness} import 실패 (rc={rc})"
+
+    expected = _skill_names(src_dir, is_dir)
+    materialized = _skill_names(dest / dest_rel, is_dir)
+
+    # (a) 전수 materialize — source 출하 스킬 전부 adopter 도착.
+    missing = expected - materialized
+    assert not missing, f"{harness}: fresh import 에 출하 스킬/command 누락 {missing} (@render 전파 실패)"
+
+    # (b) 신규 스킬 명시 backstop (T-0142 pm-update · T-0143 pm-env).
+    new = _NEW_SKILLS[harness]
+    assert new <= materialized, f"{harness}: 신규 스킬 {new - materialized} fresh import 부재"
+
+    # (c) operational 토큰 해소 — {{PY}}·{{PROJECT_NAME}} 등이 import 후 남으면 깨진 스킬.
+    for name in expected:
+        f = (dest / dest_rel / name / "SKILL.md") if is_dir else (dest / dest_rel / name)
+        leaked = _OPERATIONAL_TOKENS.findall(f.read_text(encoding="utf-8"))
+        assert not leaked, f"{harness}: {name} 에 미해소 operational 토큰 {set(leaked)} (렌더 실패)"
+
+
+# ── adapter-drift lint real-file 발화 가드 (T-0141 — 실 local.conf 경로) ───────────
+# unit(test_board_lint)은 local_config() 를 stub 한다. 이 테스트는 *실제 import 된* local.conf 의
+# 2키(upstream_rev baseline=import 기록 · upstream_seen_rev 주입)로 drift-lint 가 발화하고
+# `--gate` 는 never-block(exit 0) 임을 real-file 경로로 박는다.
+
+@pytest.mark.parametrize("harness", ["claude", "opencode"])
+def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, harness):
+    """실 local.conf 2키로 adapter-drift advisory 발화 + never-block (양 harness·engine 중립)."""
+    dest = tmp_path / f"adopter-{harness}"
+    rc = pm_import.main(
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    )
+    assert rc == 0, f"{harness} import 실패 (rc={rc})"
+    conf = dest / ".project_manager" / "local.conf"
+    conf_txt = conf.read_text(encoding="utf-8")
+    # import 가 upstream_rev baseline 을 기록했어야 한다(origin 도출·drift 기준점).
+    assert any(l.startswith("upstream_rev=") for l in conf_txt.splitlines()), \
+        f"{harness}: import 가 upstream_rev baseline 미기록 (drift-lint 입력 부재)"
+
+    # seen 미기록 → graceful(발화 안 함).
+    clean = _board(dest, "lint")
+    assert "adapter-drift" not in clean.stdout, f"{harness}: seen 미기록인데 drift 발화(graceful 실패)"
+
+    # seen≠baseline 주입 → 발화.
+    conf.write_text(conf_txt + "upstream_seen_rev=ffff0000baselinedifferent\n", encoding="utf-8")
+    fired = _board(dest, "lint")
+    assert "adapter-drift" in fired.stdout, f"{harness}: 인위 drift 인데 adapter-drift 미발화\n{fired.stdout}"
+
+    # never-block — advisory 라 `--gate` 종료코드 0.
+    gated = _board(dest, "lint", "--gate")
+    assert gated.returncode == 0, (
+        f"{harness}: adapter-drift 가 `--gate` 를 차단(never-block 위배·exit {gated.returncode})\n{gated.stdout}"
+    )
