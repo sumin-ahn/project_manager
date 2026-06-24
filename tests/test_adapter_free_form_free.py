@@ -1,13 +1,15 @@
 """@render 활성 경로의 출하 어댑터는 free-form-free (ADR-0030 · T-0135/T-0136 가드).
 
-배경: @render 가 활성화되면(T-0133) `pm_render` 가 어댑터의 free-form `{{KEY}}` 토큰을
-overlay 로 채우거나 — overlay 미설정이면 **host 행을 통째 omit** 한다(pm_render `_sole_freeform_token`·
-CONDITIONAL-OMIT). 어댑터에 free-form 토큰이 남아 있으면 fresh adopter(overlay 미설정)에서 그 줄이
-조용히 사라져 채택자 customization·**안전 라인(보호 영역)**이 소실된다.
+배경: @render 가 활성화되면(T-0133) `pm_render` 가 어댑터를 자족 .md 로 렌더한다. free-form
+value-fill 기계(overlay·slot-fill·conditional-omit)는 ADR-0031 로 제거됐으므로 — 어댑터에 free-form
+`{{KEY}}` 토큰이 남아 있으면 그 토큰을 아무도 채우지 않아 `_assert_no_leak` 가 **RenderLeakError 로
+hard-fail**(자족 산출물 = 토큰 0). 즉 채택자 customization·**안전 라인(보호 영역)**이 조용히 소실되는
+대신 emission 순간 큰소리로 표면화된다.
 
-결정(ADR-0030·amends ADR-0028): @render 어댑터 파일은 **operational 토큰만** 보유한다(free-form 0).
-채택자 free-form 은 *기존 canonical home* 에 둔다 — 고유 제약 = root doc(CLAUDE.md/AGENTS.md §프로젝트
-고유 제약) · 보호 영역 = `pm_role.local.md §보호 영역`([[ADR-0025]]). 어댑터는 이를 포인터로 참조.
+결정(ADR-0030·amends ADR-0028, ADR-0031 cleanup): @render 어댑터 파일은 **operational 토큰만** 보유한다
+(free-form 0). 채택자 free-form 은 *기존 canonical home* 에 둔다 — 고유 제약 = root doc(CLAUDE.md/
+AGENTS.md §프로젝트 고유 제약) · 보호 영역 = `pm_role.local.md §보호 영역`([[ADR-0025]]). pm_import 의
+FILL 채널이 거기서 전담하며, 어댑터는 이를 포인터로 참조.
 
 이 가드는 그 불변식을 lock-in 한다 — @render 될 어댑터 경로의 출하 .md 에 free-form 토큰이
 하나라도 있으면 fail. 미래 어댑터가 free-form 을 재유입하면 여기서 잡힌다

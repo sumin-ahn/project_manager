@@ -1286,24 +1286,18 @@ def test_lint_tickets_includes_architecture_freshness(board, monkeypatch):
     assert sentinel[0] in board.lint_tickets()
 
 
-# ── un-migrated overlay 검출 (advisory · T-0132·§3.6) ──────────────────────
-# 어댑터 .md 에 리터럴 free-form 토큰(FREEFORM_KEYS) 잔존 = render-overlay 마이그레이션
-# 미완 신호. advisory(`_ADVISORY_LINT_KINDS`·`--gate` 미차단). overlay 부재면 추가 finding.
-# operational 토큰·code-fence 예시는 검사 제외(오탐 0). 어댑터 부재 tree finding 0(graceful).
+# ── un-migrated overlay 검출 (advisory · T-0132·§3.6·ADR-0031) ─────────────
+# 어댑터 .md 에 리터럴 free-form 토큰(`_UNMIGRATED_FREEFORM_KEYS` 로컬 튜플·ADR-0031 디커플)
+# 잔존 = canonical home(root doc·pm_role.local.md) 마이그레이션 미완 신호. advisory
+# (`_ADVISORY_LINT_KINDS`·`--gate` 미차단). operational 토큰·code-fence 예시는 검사 제외
+# (오탐 0). 어댑터 부재 tree finding 0(graceful). overlay 파일 부재 조건은 ADR-0031 로 제거됐다
+# — free-form value-fill 기계(overlay.local.yaml)가 없어졌으므로 리터럴 토큰 잔존만으로 advisory.
 
 def _adapter_doc(root: Path, relpath: str, text: str) -> Path:
     """root 아래 어댑터 스캐폴드 .md 를 만든다 (예: .claude/agents/developer.md)."""
     p = root / relpath
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
-    return p
-
-
-def _overlay_file(root: Path) -> Path:
-    """root 에 overlay.local.yaml 채널 파일을 만든다 (pm_render.OVERLAY_RELPATH 위치)."""
-    p = root / ".project_manager" / "overlay.local.yaml"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("PROTECTED_PATHS: |\n  config/limits.py\n", encoding="utf-8")
     return p
 
 
@@ -1339,11 +1333,10 @@ def test_unmigrated_kind_is_advisory_gate_excluded(board, monkeypatch, tmp_path)
     assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
 
 
-def test_unmigrated_overlay_present_no_tokens_is_clean(board, monkeypatch, tmp_path):
-    """(b) overlay 존재 + 리터럴 토큰 0(렌더 산출물) → finding 0(clean)."""
+def test_unmigrated_no_tokens_is_clean(board, monkeypatch, tmp_path):
+    """(b) 리터럴 free-form 토큰 0(마이그레이션 완료 = canonical home) → finding 0(clean)."""
     monkeypatch.setattr(board, "REPO", tmp_path)
-    _overlay_file(tmp_path)
-    # 렌더 산출물 — free-form 토큰이 이미 값으로 채워져 토큰 0.
+    # 마이그레이션 후 — free-form 토큰이 canonical home 으로 옮겨져 어댑터엔 토큰 0.
     _adapter_doc(tmp_path, ".claude/agents/developer.md",
                  "## 프로젝트 제약\n\n- 핵심 결정 로직 = 순수 코드.\n")
     _adapter_doc(tmp_path, ".claude/skills/pm-wave-claim/SKILL.md",
@@ -1351,37 +1344,25 @@ def test_unmigrated_overlay_present_no_tokens_is_clean(board, monkeypatch, tmp_p
     assert board.lint_unmigrated_overlay() == []
 
 
-def test_unmigrated_overlay_absent_adds_finding(board, monkeypatch, tmp_path):
-    """(c) overlay 부재 + 리터럴 토큰 잔존 → 토큰 finding + overlay 미생성 finding 추가."""
+def test_unmigrated_token_finding_per_file(board, monkeypatch, tmp_path):
+    """(c) 리터럴 토큰 잔존 → 파일별 finding 1건(잔존 토큰 합산·ADR-0031 디커플 후 토큰 finding 만)."""
     monkeypatch.setattr(board, "REPO", tmp_path)
     _adapter_doc(tmp_path, ".claude/agents/developer.md",
                  "## 제약\n\n{{PROJECT_CONSTRAINTS}}\n\n## 보호\n\n{{PROTECTED_PATHS}}\n")
     issues = board.lint_unmigrated_overlay()
     # 토큰 finding (파일별 1건·잔존 토큰 합산).
-    assert any(name == ".claude/agents/developer.md" for name, _k, _d in issues), issues
-    # overlay 부재 finding (OVERLAY_RELPATH 를 name 으로).
-    overlay_rel = board._load_pm_render_module().OVERLAY_RELPATH
-    assert any(name == overlay_rel and "overlay 채널 미생성" in detail
-               for name, _k, detail in issues), issues
-
-
-def test_unmigrated_overlay_present_absence_finding_suppressed(board, monkeypatch, tmp_path):
-    """(c 경계) overlay 존재면 — 토큰 잔존해도 overlay-부재 finding 은 안 난다(토큰 finding 만)."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _overlay_file(tmp_path)
-    _adapter_doc(tmp_path, ".claude/agents/developer.md", "{{PROTECTED_PATHS}}\n")
-    issues = board.lint_unmigrated_overlay()
-    overlay_rel = board._load_pm_render_module().OVERLAY_RELPATH
-    # 토큰 finding 은 있다.
-    assert any(name == ".claude/agents/developer.md" for name, _k, _d in issues), issues
-    # overlay 가 있으므로 미생성 finding 은 없다.
-    assert not any(name == overlay_rel for name, _k, _d in issues), issues
+    match = [i for i in issues if i[0] == ".claude/agents/developer.md"]
+    assert len(match) == 1, issues
+    _name, kind, detail = match[0]
+    assert kind == "un-migrated-overlay"
+    assert "{{PROJECT_CONSTRAINTS}}" in detail and "{{PROTECTED_PATHS}}" in detail
+    # overlay 파일 부재 조건은 ADR-0031 로 제거 — overlay-부재 finding 은 없다(토큰 finding 만).
+    assert len(issues) == 1, issues
 
 
 def test_unmigrated_operational_token_not_flagged(board, monkeypatch, tmp_path):
     """(d) operational 토큰(`{{PROJECT_NAME}}` 등)은 검사 대상 아님 — 오탐 0."""
     monkeypatch.setattr(board, "REPO", tmp_path)
-    _overlay_file(tmp_path)  # overlay 존재 → 부재 finding 변수 제거.
     _adapter_doc(tmp_path, ".claude/agents/developer.md",
                  "너는 {{PROJECT_NAME}} 의 developer 다. {{PY}} {{TEST_CMD}} 로 검증.\n")
     assert board.lint_unmigrated_overlay() == []
@@ -1390,9 +1371,8 @@ def test_unmigrated_operational_token_not_flagged(board, monkeypatch, tmp_path):
 def test_unmigrated_code_fence_example_not_flagged(board, monkeypatch, tmp_path):
     """(d) code span/fence 안 *예시* free-form 토큰은 `_strip_code` 로 제거 → 오탐 0."""
     monkeypatch.setattr(board, "REPO", tmp_path)
-    _overlay_file(tmp_path)
     _adapter_doc(tmp_path, ".claude/agents/developer.md",
-                 "토큰 예시: `{{PROTECTED_PATHS}}` 는 overlay 가 채운다.\n\n"
+                 "토큰 예시: `{{PROTECTED_PATHS}}` 는 canonical home 이 채운다.\n\n"
                  "```yaml\nPROTECTED_PATHS: |\n  {{PROJECT_CONSTRAINTS}}\n```\n")
     assert board.lint_unmigrated_overlay() == []
 
@@ -1421,7 +1401,6 @@ def test_unmigrated_adapter_dir_still_flagged_when_root_doc_present(
         board, monkeypatch, tmp_path):
     """root doc 은 미-flag 하되 어댑터 디렉토리 토큰은 여전히 flag (root-doc 제외가 디렉토리 스캔 무영향)."""
     monkeypatch.setattr(board, "REPO", tmp_path)
-    _overlay_file(tmp_path)  # overlay 존재 → 부재 finding 제거(어댑터 토큰 finding 만 본다).
     # root doc 토큰은 무시돼야 한다.
     _adapter_doc(tmp_path, "CLAUDE.md", "## 보호\n\n{{PROTECTED_PATHS}}\n")
     # 어댑터 디렉토리 토큰은 여전히 flag.
@@ -1442,14 +1421,6 @@ def test_unmigrated_skill_nested_scanned(board, monkeypatch, tmp_path):
     issues = board.lint_unmigrated_overlay()
     assert any(name == ".claude/skills/pm-dev-delegate/SKILL.md"
                for name, _k, _d in issues), issues
-
-
-def test_unmigrated_pm_render_load_fail_is_graceful(board, monkeypatch, tmp_path):
-    """pm_render 로드 실패(단일 진실 부재) → [] (graceful·무발화)."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".claude/agents/developer.md", "{{PROTECTED_PATHS}}\n")
-    monkeypatch.setattr(board, "_load_pm_render_module", lambda: None)
-    assert board.lint_unmigrated_overlay() == []
 
 
 def test_lint_tickets_includes_unmigrated_overlay(board, monkeypatch):

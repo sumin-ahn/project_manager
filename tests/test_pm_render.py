@@ -1,8 +1,9 @@
-"""render 엔진 단위 테스트 (T-0131·ADR-0028·§3.2~3.4).
+"""render 엔진 단위 테스트 (T-0131·ADR-0028·ADR-0031·§3.2~3.4).
 
 세 표면을 합성 입력(실 템플릿/manifest 무의존)으로 검증한다:
-  1. pm_render.render_adapter — slot-fill(단/멀티라인)·drop-line·drop-section·marker strip·
-     operational plain·leak raise·overlay 부재→전 omit.
+  1. pm_render.render_adapter — operational plain replace·leak raise·미해소 토큰 표면화.
+     (free-form value-fill 기계 = overlay/slot-fill/conditional-omit 은 ADR-0031 로 제거됨 —
+      free-form 은 pm_import FILL 채널이 canonical home 에서 전담.)
   2. pm_update.read_manifest(@render 파싱·후방호환) + plan/apply render 분기(합성 manifest).
   3. board.lint_render_leak — @render 산출물 한정·활성화 전 무발화·blocking(advisory 밖).
 
@@ -41,104 +42,20 @@ def board():
     return _load("board")
 
 
-# ── 1. render_adapter — slot-fill ──────────────────────────────────────────
-
-def test_slot_fill_single_line(pm_render):
-    """단일라인 free-form 값 → 토큰이 값으로 치환(host 행 유지)."""
-    tpl = "- **보호 영역 수정** — {{PROTECTED_PATHS}}\n"
-    out = pm_render.render_adapter(tpl, {"PROTECTED_PATHS": "src/core/**"})
-    assert out == "- **보호 영역 수정** — src/core/**\n"
-
-
-def test_slot_fill_multiline_indents_at_token_column(pm_render):
-    """멀티라인 값 → 2번째 줄 이후가 토큰 컬럼(들여쓰기)에 정렬된다."""
-    tpl = "    {{PROJECT_CONSTRAINTS}}\n"
-    val = "- 핵심 결정 = 순수 코드\n- 분석 계층 = 보조"
-    out = pm_render.render_adapter(tpl, {"PROJECT_CONSTRAINTS": val})
-    assert out == (
-        "    - 핵심 결정 = 순수 코드\n"
-        "    - 분석 계층 = 보조\n"
-    )
-
-
-# ── 1. render_adapter — conditional-omit (drop-line) ────────────────────────
-
-def test_drop_line_when_value_empty(pm_render):
-    """빈 값(overlay 에 빈 문자열) → host 행 drop."""
-    tpl = "keep above\n- {{PROTECTED_PATHS}}\nkeep below\n"
-    out = pm_render.render_adapter(tpl, {"PROTECTED_PATHS": ""})
-    assert out == "keep above\nkeep below\n"
-
-
-def test_drop_line_when_key_absent(pm_render):
-    """overlay 에 key 부재 → host 행 drop(빈 값과 동일)."""
-    tpl = "keep above\n- {{USER_GATE_ITEMS}}\nkeep below\n"
-    out = pm_render.render_adapter(tpl, {})
-    assert out == "keep above\nkeep below\n"
-
-
-def test_overlay_absent_omits_all_freeform_hosts(pm_render):
-    """overlay 부재(빈 dict) → 모든 free-form host 가 omit(깨끗한 출하-기본)."""
-    tpl = (
-        "intro\n"
-        "- {{PROJECT_CONSTRAINTS}}\n"
-        "- {{PROTECTED_PATHS}}\n"
-        "- {{USER_GATE_ITEMS}}\n"
-        "outro\n"
-    )
-    out = pm_render.render_adapter(tpl, {})
-    assert out == "intro\noutro\n"
-
-
-# ── 1. render_adapter — drop-section + marker strip ─────────────────────────
-
-def test_drop_section_when_empty(pm_render):
-    """짝 마커 span — 빈 key 면 span 통째 drop(마커 줄도 사라짐)."""
-    tpl = (
-        "before\n"
-        "<!-- pm:omit-if-empty PROTECTED_PATHS -->\n"
-        "### 보호 영역\n"
-        "{{PROTECTED_PATHS}}\n"
-        "<!-- /pm:omit-if-empty -->\n"
-        "after\n"
-    )
-    out = pm_render.render_adapter(tpl, {})
-    assert out == "before\nafter\n"
-
-
-def test_drop_section_keeps_inner_strips_markers_when_filled(pm_render):
-    """값 있으면 안쪽 유지 + 마커 줄만 strip(렌더-제어 전용은 출하물에서 항상 제거)."""
-    tpl = (
-        "before\n"
-        "<!-- pm:omit-if-empty PROTECTED_PATHS -->\n"
-        "### 보호 영역\n"
-        "{{PROTECTED_PATHS}}\n"
-        "<!-- /pm:omit-if-empty -->\n"
-        "after\n"
-    )
-    out = pm_render.render_adapter(tpl, {"PROTECTED_PATHS": "ops/limits.py"})
-    assert out == (
-        "before\n"
-        "### 보호 영역\n"
-        "ops/limits.py\n"
-        "after\n"
-    )
-
-
 # ── 1. render_adapter — operational plain replace ───────────────────────────
 
 def test_operational_plain_replace_no_omit(pm_render):
-    """operational 토큰은 plain replace(omit 없음·빈 값이어도 host 행 유지)."""
+    """operational 토큰은 plain replace(omit 없음·값으로 치환·host 행 유지)."""
     tpl = "session for {{PROJECT_NAME}} runs {{TEST_CMD}}\n"
     out = pm_render.render_adapter(
-        tpl, overlay={}, operational={"PROJECT_NAME": "acme", "TEST_CMD": "pytest -q"})
+        tpl, operational={"PROJECT_NAME": "acme", "TEST_CMD": "pytest -q"})
     assert out == "session for acme runs pytest -q\n"
 
 
 def test_operational_token_alone_not_dropped(pm_render):
-    """operational 토큰 단독 행은 free-form 이 아니므로 drop 대상 아님(plain replace)."""
+    """operational 토큰 단독 행은 drop 대상 아님(plain replace·host 행 유지)."""
     tpl = "{{PROJECT_ROOT}}\n"
-    out = pm_render.render_adapter(tpl, overlay={}, operational={"PROJECT_ROOT": "/repo"})
+    out = pm_render.render_adapter(tpl, operational={"PROJECT_ROOT": "/repo"})
     assert out == "/repo\n"
 
 
@@ -153,54 +70,15 @@ def test_operational_missing_key_leaks_not_silently_emptied(pm_render):
     tpl = "model: {{OPENCODE_PRO_MODEL}}\n"
     with pytest.raises(pm_render.RenderLeakError):
         # operational 에 다른 키만 보유·OPENCODE_PRO_MODEL 부재 → 빈 치환 아닌 leak.
-        pm_render.render_adapter(tpl, overlay={}, operational={"PROJECT_NAME": "acme"})
+        pm_render.render_adapter(tpl, operational={"PROJECT_NAME": "acme"})
 
 
-def test_freeform_and_operational_one_pass(pm_render):
-    """free-form(slot/omit) + operational(plain) 한 pass 공존."""
-    tpl = (
-        "root: {{PROJECT_ROOT}}\n"
-        "- {{PROTECTED_PATHS}}\n"
-        "- {{USER_GATE_ITEMS}}\n"
-    )
+def test_multiple_operational_tokens_one_line_both_resolved(pm_render):
+    """한 행의 operational 토큰 2개 모두 plain replace 로 해소(whole-text 패스·잔여 토큰 0)."""
+    tpl = "{{PROJECT_NAME}}: {{PROJECT_ROOT}}\n"
     out = pm_render.render_adapter(
-        tpl,
-        overlay={"PROTECTED_PATHS": "core/**"},
-        operational={"PROJECT_ROOT": "/r"},
-    )
-    assert out == "root: /r\n- core/**\n"
-
-
-def test_freeform_and_operational_same_line_both_resolved(pm_render):
-    """operational+free-form 이 *같은 행* 에 공존해도 둘 다 해소(whole-text 최종 패스·내부 should-fix).
-
-    이전엔 free-form slot 행에 operational plain-replace 가 안 닿아 operational 이 리터럴로
-    남았다(`{{PROJECT_NAME}}: core/**`). render_adapter 가 루프 후 결과 전체에 operational
-    최종 1회 패스를 적용하므로 이제 균일 해소된다(잔여 토큰 0).
-    """
-    tpl = "{{PROJECT_NAME}}: {{PROTECTED_PATHS}}\n"
-    out = pm_render.render_adapter(
-        tpl,
-        overlay={"PROTECTED_PATHS": "core/**"},
-        operational={"PROJECT_NAME": "acme"},
-    )
-    assert out == "acme: core/**\n"
-    assert "{{" not in out
-
-
-def test_operational_in_kept_drop_section_resolved(pm_render):
-    """drop-section 안쪽(값 있어 keep)의 operational 토큰도 whole-text 최종 패스로 해소된다."""
-    tpl = (
-        "<!-- pm:omit-if-empty PROTECTED_PATHS -->\n"
-        "root {{PROJECT_ROOT}} guards {{PROTECTED_PATHS}}\n"
-        "<!-- /pm:omit-if-empty -->\n"
-    )
-    out = pm_render.render_adapter(
-        tpl,
-        overlay={"PROTECTED_PATHS": "core/**"},
-        operational={"PROJECT_ROOT": "/repo"},
-    )
-    assert out == "root /repo guards core/**\n"
+        tpl, operational={"PROJECT_NAME": "acme", "PROJECT_ROOT": "/r"})
+    assert out == "acme: /r\n"
     assert "{{" not in out
 
 
@@ -213,7 +91,7 @@ def test_opencode_pro_model_operational_resolved(pm_render):
     """operational 에 OPENCODE_PRO_MODEL 공급 → `{{OPENCODE_PRO_MODEL}}` plain replace 해소(leak 0)."""
     tpl = "pro model: {{OPENCODE_PRO_MODEL}}\n"
     out = pm_render.render_adapter(
-        tpl, overlay={}, operational={"OPENCODE_PRO_MODEL": "anthropic/claude-opus-4"})
+        tpl, operational={"OPENCODE_PRO_MODEL": "anthropic/claude-opus-4"})
     assert out == "pro model: anthropic/claude-opus-4\n"
     assert "{{" not in out
 
@@ -224,7 +102,7 @@ def test_leak_raises_on_unknown_token(pm_render):
     """allow-list 밖 토큰(`{{FOO}}`)이 산출물에 잔존하면 RenderLeakError."""
     tpl = "value: {{FOO}}\n"
     with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, {})
+        pm_render.render_adapter(tpl)
     assert "{{FOO}}" in str(exc.value)
 
 
@@ -238,43 +116,16 @@ def test_render_file_leak_reports_source(pm_render, tmp_path):
     assert "{{UNKNOWN}}" in str(exc.value)
 
 
-def test_stray_close_marker_raises(pm_render):
-    """짝 없는 close 마커가 산출물에 잔존하면 RenderLeakError(중첩/미짝 무음 출하 방지)."""
+def test_stray_omit_marker_raises(pm_render):
+    """옛 free-form drop-section 마커(ADR-0031 제거)가 잔존하면 RenderLeakError(미마이그 표면화).
+
+    어댑터는 free-form-free(ADR-0030)라 `<!-- pm:omit-if-empty ... -->` 류 마커가 절대 없어야
+    한다 — 잔존하면 미마이그레이션 신호로 무음 출하를 막는다(_assert_no_leak·stray 검출).
+    """
     tpl = "body\n<!-- /pm:omit-if-empty -->\ntail\n"
     with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, {})
+        pm_render.render_adapter(tpl)
     assert "omit-marker" in str(exc.value)
-
-
-def test_nested_open_marker_leftover_raises(pm_render):
-    """중첩 미지원(§3.2): 안쪽 open 마커가 첫 close 로 닫혀 산출물에 잔존 → RenderLeakError.
-
-    바깥 open..안쪽 open..close..close 에서 엔진은 *첫* close 를 짝으로 본다(중첩 미인식).
-    값이 있어 span 을 keep 하면 안쪽 open 마커가 산출물에 남아 stray 로 잡힌다.
-    """
-    tpl = (
-        "<!-- pm:omit-if-empty PROTECTED_PATHS -->\n"
-        "keep {{PROTECTED_PATHS}}\n"
-        "<!-- pm:omit-if-empty USER_GATE_ITEMS -->\n"
-        "<!-- /pm:omit-if-empty -->\n"
-        "<!-- /pm:omit-if-empty -->\n"
-    )
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, {"PROTECTED_PATHS": "core/**"})
-    assert "omit-marker" in str(exc.value)
-
-
-def test_drop_section_inner_token_renders_via_recursion(pm_render):
-    """drop-section 안쪽의 free-form 토큰도 재귀 렌더(slot-fill/omit)된다."""
-    tpl = (
-        "<!-- pm:omit-if-empty PROTECTED_PATHS -->\n"
-        "head {{PROTECTED_PATHS}}\n"
-        "- {{USER_GATE_ITEMS}}\n"
-        "<!-- /pm:omit-if-empty -->\n"
-    )
-    # PROTECTED_PATHS 채워짐(span keep) · 안쪽 USER_GATE_ITEMS 부재 → 그 host 행 omit.
-    out = pm_render.render_adapter(tpl, {"PROTECTED_PATHS": "core/**"})
-    assert out == "head core/**\n"
 
 
 def test_unfilled_operational_token_is_leak_strict(pm_render):
@@ -285,58 +136,29 @@ def test_unfilled_operational_token_is_leak_strict(pm_render):
     """
     tpl = "host: {{PROJECT_NAME}}\n"
     with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, overlay={}, operational={})
+        pm_render.render_adapter(tpl, operational={})
     assert "{{PROJECT_NAME}}" in str(exc.value)
 
 
 def test_filled_operational_token_no_leak(pm_render):
     """operational 토큰을 값으로 채우면 잔여 0 → leak 아님(plain replace 정상 경로)."""
     tpl = "host: {{PROJECT_NAME}}\n"
-    out = pm_render.render_adapter(
-        tpl, overlay={}, operational={"PROJECT_NAME": "acme"})
+    out = pm_render.render_adapter(tpl, operational={"PROJECT_NAME": "acme"})
     assert out == "host: acme\n"
     assert "{{" not in out
 
 
-def test_multiple_freeform_tokens_one_line_left_literal_is_leak(pm_render):
-    """한 행에 free-form 토큰 2개면 host 모호 → slot/omit 안 함 → 리터럴 잔존 → RenderLeakError.
+def test_freeform_token_left_literal_is_leak(pm_render):
+    """free-form 토큰(`{{PROTECTED_PATHS}}` 등)은 이 엔진이 채우지 않으므로 잔존 → RenderLeakError.
 
-    재저작 규율(T-0130)상 정상 입력이 아니다 — 엔진이 추론하지 않고(§3.2), 잔존 토큰은 엄격
-    가드가 자족 위반으로 잡는다(allow-list 폐지 후 더는 무음 통과 안 됨).
+    ADR-0031 로 free-form value-fill 기계가 제거됐다 — free-form 은 pm_import FILL 채널이
+    canonical home 에서 전담하므로 어댑터엔 free-form 토큰이 없어야 한다(ADR-0030 free-form-free).
+    잔존하면 엄격 가드가 자족 위반(미마이그레이션)으로 표면화한다.
     """
-    tpl = "{{PROTECTED_PATHS}} and {{USER_GATE_ITEMS}}\n"
+    tpl = "보호: {{PROTECTED_PATHS}}\n"
     with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, {"PROTECTED_PATHS": "x", "USER_GATE_ITEMS": "y"})
-    # 단일 토큰이 아니므로 slot-fill 안 함 → 둘 다 리터럴로 남아 leak.
+        pm_render.render_adapter(tpl, operational={"PROJECT_NAME": "acme"})
     assert "{{PROTECTED_PATHS}}" in str(exc.value)
-    assert "{{USER_GATE_ITEMS}}" in str(exc.value)
-
-
-# ── 1. load_overlay ─────────────────────────────────────────────────────────
-
-def test_load_overlay_missing_returns_empty(pm_render, tmp_path):
-    assert pm_render.load_overlay(tmp_path) == {}
-
-
-def test_load_overlay_reads_yaml(pm_render, tmp_path):
-    overlay = tmp_path / ".project_manager" / "overlay.local.yaml"
-    overlay.parent.mkdir(parents=True)
-    overlay.write_text(
-        "PROTECTED_PATHS: 'core/**'\n"
-        "PROJECT_CONSTRAINTS: |\n  - a\n  - b\n",
-        encoding="utf-8",
-    )
-    data = pm_render.load_overlay(tmp_path)
-    assert data["PROTECTED_PATHS"] == "core/**"
-    assert data["PROJECT_CONSTRAINTS"].strip() == "- a\n- b"
-
-
-def test_load_overlay_non_dict_returns_empty(pm_render, tmp_path):
-    """yaml 이 list/scalar 면 {}(방어·free-form host omit)."""
-    overlay = tmp_path / ".project_manager" / "overlay.local.yaml"
-    overlay.parent.mkdir(parents=True)
-    overlay.write_text("- just\n- a\n- list\n", encoding="utf-8")
-    assert pm_render.load_overlay(tmp_path) == {}
 
 
 # ── 2. read_manifest @render 파싱 (후방호환) ────────────────────────────────
@@ -372,14 +194,11 @@ def test_read_manifest_backcompat_str_ops(pm_update, tmp_path):
     assert all(isinstance(e, str) for e in entries)
 
 
-# ── 2. plan/apply render 분기 (합성) ────────────────────────────────────────
+# ── 2. plan/apply render 분기 (합성·operational 채널) ───────────────────────
 
-def _seed_render_dest(dest_root: Path, overlay_yaml: str | None = None,
-                      local_conf: str | None = None) -> None:
+def _seed_render_dest(dest_root: Path, local_conf: str | None = None) -> None:
     pm = dest_root / ".project_manager"
     pm.mkdir(parents=True, exist_ok=True)
-    if overlay_yaml is not None:
-        (pm / "overlay.local.yaml").write_text(overlay_yaml, encoding="utf-8")
     if local_conf is not None:
         (pm / "local.conf").write_text(local_conf, encoding="utf-8")
 
@@ -406,17 +225,17 @@ def test_plan_render_path_compares_rendered_output(pm_update, tmp_path):
     dst = tmp_path / "dst"
     rel = ".claude/agents/developer.md"
     (src / ".claude/agents").mkdir(parents=True)
-    (src / rel).write_text("- {{PROTECTED_PATHS}}\nbody\n", encoding="utf-8")
-    _seed_render_dest(dst, overlay_yaml="PROTECTED_PATHS: 'core/**'\n")
+    (src / rel).write_text("- {{PROJECT_NAME}}\nbody\n", encoding="utf-8")
+    _seed_render_dest(dst, local_conf="project_name=acme\n")
     # dst 에 *렌더 산출물* 을 미리 둔다 — 같으면 change 없어야.
     (dst / ".claude/agents").mkdir(parents=True)
-    (dst / rel).write_text("- core/**\nbody\n", encoding="utf-8")
+    (dst / rel).write_text("- acme\nbody\n", encoding="utf-8")
 
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     assert missing == []
-    # 템플릿("- {{PROTECTED_PATHS}}\nbody\n") != dst, 그러나 *렌더 산출물* == dst → 변경 없음.
+    # 템플릿("- {{PROJECT_NAME}}\nbody\n") != dst, 그러나 *렌더 산출물* == dst → 변경 없음.
     rendered_paths = [c for c in changes if c[0] == rel]
     assert rendered_paths == [], f"render path 가 오보로 update 처리됨: {changes}"
 
@@ -427,8 +246,8 @@ def test_plan_render_path_update_when_output_differs(pm_update, tmp_path):
     dst = tmp_path / "dst"
     rel = ".claude/agents/developer.md"
     (src / ".claude/agents").mkdir(parents=True)
-    (src / rel).write_text("- {{PROTECTED_PATHS}}\nbody\n", encoding="utf-8")
-    _seed_render_dest(dst, overlay_yaml="PROTECTED_PATHS: 'core/**'\n")
+    (src / rel).write_text("- {{PROJECT_NAME}}\nbody\n", encoding="utf-8")
+    _seed_render_dest(dst, local_conf="project_name=acme\n")
     (dst / ".claude/agents").mkdir(parents=True)
     (dst / rel).write_text("- STALE\nbody\n", encoding="utf-8")
 
@@ -447,16 +266,16 @@ def test_apply_render_writes_rendered_output(pm_update, tmp_path):
     dst = tmp_path / "dst"
     rel = ".claude/agents/developer.md"
     (src / ".claude/agents").mkdir(parents=True)
-    (src / rel).write_text("- {{PROTECTED_PATHS}}\n- {{USER_GATE_ITEMS}}\nbody\n",
+    (src / rel).write_text("- {{PROJECT_NAME}}\n- {{PROJECT_ROOT}}\nbody\n",
                            encoding="utf-8")
-    _seed_render_dest(dst, overlay_yaml="PROTECTED_PATHS: 'core/**'\n")
+    _seed_render_dest(dst, local_conf="project_name=acme\nproject_root=/r\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     pm_update.apply(changes)
     written = (dst / rel).read_text(encoding="utf-8")
-    # PROTECTED_PATHS 채워짐, USER_GATE_ITEMS(overlay 부재) host omit, 잔여 토큰 0.
-    assert written == "- core/**\nbody\n"
+    # operational 토큰 둘 다 해소·잔여 토큰 0.
+    assert written == "- acme\n- /r\nbody\n"
     assert "{{" not in written
 
 
@@ -471,10 +290,10 @@ def test_render_dir_only_md_rendered_others_copied(pm_update, tmp_path):
     md_rel = ".claude/agents/developer.md"
     json_rel = ".claude/agents/config.json"
     (src / ".claude/agents").mkdir(parents=True)
-    (src / md_rel).write_text("- {{PROTECTED_PATHS}}\nbody\n", encoding="utf-8")
+    (src / md_rel).write_text("- {{PROJECT_NAME}}\nbody\n", encoding="utf-8")
     # 비-.md 파일은 토큰처럼 보이는 텍스트를 담아도 render 안 됨(byte-copy·자족 .md 아님).
-    (src / json_rel).write_text('{"k": "{{PROTECTED_PATHS}}"}\n', encoding="utf-8")
-    _seed_render_dest(dst, overlay_yaml="PROTECTED_PATHS: 'core/**'\n")
+    (src / json_rel).write_text('{"k": "{{PROJECT_NAME}}"}\n', encoding="utf-8")
+    _seed_render_dest(dst, local_conf="project_name=acme\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
@@ -485,8 +304,8 @@ def test_render_dir_only_md_rendered_others_copied(pm_update, tmp_path):
     assert getattr(by_rel[json_rel][2], "render", False) is False
     pm_update.apply(changes)
     # .md 는 렌더 산출물, .json 은 byte-copy(토큰 그대로·자족 변환 안 함).
-    assert (dst / md_rel).read_text(encoding="utf-8") == "- core/**\nbody\n"
-    assert (dst / json_rel).read_text(encoding="utf-8") == '{"k": "{{PROTECTED_PATHS}}"}\n'
+    assert (dst / md_rel).read_text(encoding="utf-8") == "- acme\nbody\n"
+    assert (dst / json_rel).read_text(encoding="utf-8") == '{"k": "{{PROJECT_NAME}}"}\n'
 
 
 def test_apply_non_render_byte_copies(pm_update, tmp_path):
@@ -571,10 +390,10 @@ def test_plan_render_disabled_forces_copy_for_render_manifest(pm_update, tmp_pat
     dst = tmp_path / "dst"
     rel = ".claude/agents/developer.md"
     (src / ".claude/agents").mkdir(parents=True)
-    # 토큰-form 소스 (templates/ 의 어댑터처럼 free-form+operational 토큰 보유).
-    src_text = "- {{PROTECTED_PATHS}}\n- {{PROJECT_NAME}}\nbody\n"
+    # 토큰-form 소스 (templates/ 의 어댑터처럼 operational 토큰 보유).
+    src_text = "- {{PROJECT_NAME}}\nbody\n"
     (src / rel).write_text(src_text, encoding="utf-8")
-    # dst(=템플릿 타깃)엔 local.conf/overlay 없음 — 렌더 시 leak 날 환경.
+    # dst(=템플릿 타깃)엔 local.conf 없음 — 렌더 시 leak 날 환경.
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
 
@@ -597,12 +416,9 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
     dst = tmp_path / "dst"
     rel = ".claude/agents/developer.md"
     (src / ".claude/agents").mkdir(parents=True)
-    (src / rel).write_text("- {{PROTECTED_PATHS}}\n- {{PROJECT_NAME}}\nbody\n",
-                           encoding="utf-8")
-    # 채택자 dest — overlay(free-form) + local.conf(operational) 보유.
-    _seed_render_dest(
-        dst, overlay_yaml="PROTECTED_PATHS: 'core/**'\n",
-        local_conf="project_name=acme\n")
+    (src / rel).write_text("- {{PROJECT_NAME}}\nbody\n", encoding="utf-8")
+    # 채택자 dest — local.conf(operational) 보유.
+    _seed_render_dest(dst, local_conf="project_name=acme\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
 
@@ -614,8 +430,8 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
     assert getattr(target[0][2], "render", False) is True
     pm_update.apply(changes)
     written = (dst / rel).read_text(encoding="utf-8")
-    # PROTECTED_PATHS(overlay)·PROJECT_NAME(local.conf) 해소·잔여 토큰 0.
-    assert written == "- core/**\n- acme\nbody\n"
+    # PROJECT_NAME(local.conf) 해소·잔여 토큰 0.
+    assert written == "- acme\nbody\n"
     assert "{{" not in written
 
 

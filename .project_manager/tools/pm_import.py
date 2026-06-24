@@ -715,12 +715,12 @@ def substitute_placeholders(
     return changed
 
 
-# ── render 단계 (T-0131·ADR-0028) ──────────────────────────────────────────
-# 어댑터 파일 = render-overlay 산출물. import 도 pm_update 와 같은 render 경로를 탄다 —
-# manifest @render path 면 복사+operational sed 후 free-form 토큰을 overlay(부재면 host omit)로
-# render_adapter 처리한다(pm_render 공유). 현 트리는 실 path @render 0 → 이 단계는 무동작
-# (활성화 전·D17-2/T-0133). substitute(operational) *이후*·fill *이전* 에 둬 fill 이 @render
-# 파일의 free-form 토큰을 보지 않게 한다(render 가 이미 omit/fill 처리).
+# ── render 단계 (T-0131·ADR-0028·ADR-0031) ─────────────────────────────────
+# @render manifest path 의 어댑터 파일은 import 도 pm_update 와 같은 render 경로를 탄다 —
+# 복사 후 operational 토큰(local.conf — PROJECT_NAME·TEST_CMD 등)을 render_adapter 로 치환한다
+# (pm_render 공유). @render 는 T-0133 으로 활성(.claude/agents·skills·.opencode/agents·command).
+# free-form value-fill 기계는 ADR-0031 로 제거됨 — free-form 은 canonical home(root doc·
+# pm_role.local.md)의 FILL 채널이 전담. substitute(operational) *이후* 에 둬 일관 처리.
 
 def _load_pm_render_module():
     """pm_render 모듈을 같은 tools/ 디렉토리에서 로드 (board.py 로더 패턴 동형·sys.path 무오염).
@@ -780,7 +780,8 @@ def render_managed_files(
 
     범위 = copied_relpaths(비파괴·substitute_placeholders 와 동일 계약). @render manifest path
     하위 .md 만 대상. operational 은 이번 import 의 subs(이미 substitute 가 리터럴로 박았으므로
-    보통 no-op), free-form 은 overlay(부재면 host omit). 현 트리는 @render 0 → 무동작.
+    보통 no-op). free-form 은 pm_import 의 FILL 채널이 canonical home 에서 전담하므로 render-overlay
+    가 관여하지 않는다(ADR-0030·ADR-0031). 현 트리는 @render 0 → 무동작.
 
     subs(중괄호 포함 token→value)를 pm_render 의 bare-key operational dict 로 변환해 넘긴다."""
     managed = _render_managed_relpaths(dest_root)
@@ -789,7 +790,6 @@ def render_managed_files(
     render_mod = _load_pm_render_module()
     if render_mod is None:
         return 0
-    overlay = render_mod.load_overlay(dest_root)
     # subs 는 `{{KEY}}`→value — pm_render 는 bare KEY 를 기대하므로 변환.
     operational = {
         token.strip("{}"): value for token, value in subs.items()
@@ -806,7 +806,7 @@ def render_managed_files(
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        rendered = render_mod.render_adapter(text, overlay=overlay, operational=operational)
+        rendered = render_mod.render_adapter(text, operational=operational)
         if rendered != text:
             path.write_text(rendered, encoding="utf-8")
             changed += 1
@@ -2149,13 +2149,12 @@ def main(argv: list[str] | None = None) -> int:
         elif model_result.path == "todo":
             print(f"  {OPENCODE_MODEL_TOKEN} TODO 표시 — {model_result.note}")
 
-    # render 단계 (T-0131·ADR-0028): @render manifest path 의 복사본을 render_adapter 산출물로
-    # 다시 쓴다 — operational(subs·이미 sed) + free-form overlay(부재면 host omit). substitute·
-    # 모델해소 *직후*·fill *이전* 에 둬 fill 이 @render 파일의 free-form 토큰을 보지 않게 한다.
-    # 범위 = copied_relpaths(비파괴).
+    # render 단계 (T-0131·ADR-0028·ADR-0031): @render manifest path 의 복사본을 render_adapter
+    # 산출물로 다시 쓴다 — operational 토큰(subs·이미 sed) 치환. free-form value-fill 은 ADR-0031
+    # 로 제거(FILL 채널이 canonical home 전담). substitute·모델해소 *직후*. 범위 = copied_relpaths(비파괴).
     n_render = render_managed_files(dest_root, subs, copied_relpaths)
     if n_render:
-        print(f"✓ {n_render} 파일 render (어댑터=overlay 산출물·ADR-0028)")
+        print(f"✓ {n_render} 파일 render (operational 토큰 치환·ADR-0028·ADR-0031)")
 
     # MF1: board.py init 은 local.conf 를 무조건 덮으므로(local.conf 는 복사/백업 대상 트리
     #      밖), --into 재-import 면 기존 per-clone 설정(external_review·reviewer_cmd·prefix

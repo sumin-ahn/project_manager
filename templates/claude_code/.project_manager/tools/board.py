@@ -1908,14 +1908,12 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
 
 
 # ── render-leak (리터럴 `{{...}}` 누출 차단 · T-0131·§3.4) ──────────────────
-# 어댑터 파일 = render-overlay 산출물(ADR-0028). framework 본문 템플릿 + 채택자 overlay 가
-# pm_update 재렌더로 자족 .md 가 된다. half-rendered 토큰(`{{...}}` 잔존)이 *출하 산출물* 에
-# 새 나가면 harness-load 에이전트 지시가 무음 열화하므로 실결함 — blocking(경고 아님).
+# @render 어댑터 파일 = render_adapter 산출물(operational 토큰 치환·ADR-0028·ADR-0031). half-rendered
+# 토큰(`{{...}}` 잔존)이 *출하 산출물* 에 새 나가면 harness-load 에이전트 지시가 무음 열화하므로
+# 실결함 — blocking(경고 아님).
 #
-# ⚠️ 활성화 전 무발화 경계 (DoD): 스캔 대상을 **@render manifest path 의 산출물로 한정**한다.
-#    현재 트리는 *어떤* 실 manifest path 도 @render 가 아니므로(D17-2/T-0133 활성화 전) 검사
-#    대상이 0 → 이 lint 는 현 트리에서 무발화(기존 토큰을 가진 어댑터 .md 를 *검사하지 않음*).
-#    토큰은 @render 로 활성화돼 렌더 산출물이 된 path 에서만 leak 으로 간주된다 — 활성화는
+# 스캔 대상 = **@render manifest path 의 산출물**(T-0133 으로 활성: .claude/agents·skills·
+#    .opencode/agents·command). 토큰은 @render 산출물 path 에서만 leak 으로 간주된다 —
 #    pm_render(post-render assertion) + 이 lint(상시 backstop)가 함께 자족성을 보증한다.
 
 # leak 스캔 토큰 — 대문자/언더스코어 placeholder (`{{PROJECT_NAME}}`·`{{PROTECTED_PATHS}}` 등).
@@ -1984,25 +1982,6 @@ def _load_pm_update_module():
         return None
 
 
-def _load_pm_render_module():
-    """pm_render 모듈을 같은 tools/ 디렉토리에서 로드 (FREEFORM_KEYS·OVERLAY_RELPATH 재사용).
-
-    `_load_pm_update_module`·`_load_domain_module` 과 동형 deep-import seam (순환 회피·
-    형제 모듈 지연 로드). free-form 토큰 집합과 overlay 경로의 단일 진실 = pm_render —
-    board 가 중복 정의하지 않고 여기서 빌린다. 실패 시 None → 호출부가 무발화로 흡수한다."""
-    pm_render_py = Path(__file__).resolve().parent / "pm_render.py"
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("pm_render", pm_render_py)
-        if spec is None or spec.loader is None:
-            return None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-    except Exception:  # noqa: BLE001 — 로드 실패는 무발화(검사 대상 0).
-        return None
-
-
 def _is_render_managed(rel_posix: str, managed: set[str]) -> bool:
     """rel_posix 가 @render manifest path(파일 정확일치 OR 디렉토리 prefix) 하위인지."""
     for m in managed:
@@ -2054,31 +2033,41 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
     return issues
 
 
-# ── un-migrated overlay 검출 (advisory · T-0132·§3.6) ──────────────────────
-# 어댑터 파일 = render-overlay 산출물(ADR-0028): 마이그레이션 후 출하 .md = 렌더 산출물 =
-# 리터럴 free-form 토큰 0(overlay 채널이 값을 공급). 채택자가 *아직* 마이그레이션을 안 했으면
-# (overlay 미생성·baked 값 손편집 유지) 어댑터 .md 에 리터럴 `{{PROTECTED_PATHS}}` 류가 잔존한다
-# — 이 lint 가 그 신호를 표면화한다(§3.6 "un-migrated 검출"). render-leak(blocking·@render 산출물
-# 한정)과 별개·상보: render-leak 은 *활성화된* render path 의 미해소 토큰을, 이 lint 는 *활성화
-# 전* 어댑터 본문의 미마이그레이션 토큰 잔존을 본다.
+# ── un-migrated overlay 검출 (advisory · T-0132·§3.6·ADR-0031) ─────────────
+# free-form(채택자 손편집 산문)의 canonical home 은 root doc(§프로젝트 고유 제약)·
+# `pm_role.local.md`(§보호 영역)이고, pm_import 의 FILL 채널이 거기서 전담한다(ADR-0030). 따라서
+# 어댑터 .md 는 free-form-free 여야 한다(토큰 0). 채택자가 *아직* 마이그레이션을 안 했으면 어댑터
+# .md 에 리터럴 `{{PROTECTED_PATHS}}` 류가 잔존한다 — 이 lint 가 그 신호를 표면화한다(§3.6
+# "un-migrated 검출"). render-leak(blocking·@render 산출물 한정)과 별개·상보: render-leak 은
+# *활성화된* render path 의 미해소 토큰을, 이 lint 는 어댑터 본문의 미마이그레이션 토큰 잔존을 본다.
 #
 # **advisory only** — 마이그레이션 누락은 push 결함이 아니라 채택자 운영 ritual 신호(§3.6
 # "push-block 아님·advisory")라 `_ADVISORY_LINT_KINDS` 에 등재(`--gate` 미차단). free-form 3종
-# (FREEFORM_KEYS)만 본다 — operational 토큰(`{{PROJECT_NAME}}` 등)은 import sed/local.conf 채널이라
-# 별개. graceful: 어댑터 파일/디렉토리 부재 시 finding 0(솔로·non-adopter tree 무오염).
+# (로컬 `_UNMIGRATED_FREEFORM_KEYS`·ADR-0031 디커플)만 본다 — operational 토큰(`{{PROJECT_NAME}}`
+# 등)은 import sed/local.conf 채널이라 별개. graceful: 어댑터 파일/디렉토리 부재 시 finding 0.
 
 # 어댑터 스캐폴드 .md 글롭 — 채택자 tree 에 출하되는 harness 어댑터 본문 (존재하는 것만).
 #   claude   : `.claude/agents/*.md`·`.claude/skills/**/SKILL.md`
 #   opencode : `.opencode/agents/*.md`·`.opencode/command/*.md`
 # 각 경로는 harness 별 존재 여부가 다르므로(claude 채택자엔 `.opencode` 부재·역도) 있을 때만 스캔.
 # root 문서(CLAUDE.md·AGENTS.md 등)는 *제외* (T-0133): 채택자가 통째로 손편집하는 instance-owned
-# scaffold 라 render-overlay 관리 대상이 아니다(omit-marker 0·manifest 제외). 거기의 raw free-form
-# 토큰은 "미마이그레이션"이 아니라 "채택자가 아직 안 채움"이라 이 lint 의 오분류 대상이 아니다.
+# scaffold 라 free-form 의 canonical home 이다(manifest 제외). 거기의 raw free-form 토큰은
+# "미마이그레이션"이 아니라 "채택자가 아직 안 채움"이라 이 lint 의 오분류 대상이 아니다.
 _OVERLAY_ADAPTER_GLOBS: tuple[tuple[str, str], ...] = (
     (".claude/agents", "*.md"),
     (".claude/skills", "SKILL.md"),
     (".opencode/agents", "*.md"),
     (".opencode/command", "*.md"),
+)
+
+# free-form 3종 토큰 — un-migrated-overlay lint 가 어댑터 .md 에서 스캔하는 리터럴 토큰 집합.
+# pm_render 의 free-form value-fill 기계(FREEFORM_KEYS·overlay)는 ADR-0031 로 제거됐으므로,
+# 이 lint 는 그 심볼에 의존하지 않고 자체 로컬 튜플로 검출 대상을 정의한다(디커플·단일 책임).
+# pm_import.FREE_FORM_TOKENS(FILL 채널·canonical home 전담)와 동일 집합을 bare key 로 본다.
+_UNMIGRATED_FREEFORM_KEYS: tuple[str, ...] = (
+    "PROJECT_CONSTRAINTS",
+    "PROTECTED_PATHS",
+    "USER_GATE_ITEMS",
 )
 
 
@@ -2105,36 +2094,26 @@ def lint_unmigrated_overlay() -> list[tuple[str, str, str]]:
     누락은 채택자 운영 ritual 신호이지 출하 결함이 아니므로 visibility 만 제공한다.
 
     검사 (정적·shipped tree 스캔):
-      - 어댑터 .md(`_collect_overlay_adapter_files`)에 리터럴 free-form 토큰(FREEFORM_KEYS —
-        `{{PROJECT_CONSTRAINTS}}`/`{{PROTECTED_PATHS}}`/`{{USER_GATE_ITEMS}}`)이 잔존 → 파일·토큰별
-        finding 1건. 마이그레이션 후엔 출하 .md = 렌더 산출물 = 토큰 0(overlay 가 값 공급).
-      - 위 토큰이 *하나라도* 발견됐는데 OVERLAY_RELPATH(`.project_manager/overlay.local.yaml`)가
-        부재 → "overlay 채널 미생성" finding 1건 추가(마이그레이션의 핵심 단계 누락).
+      - 어댑터 .md(`_collect_overlay_adapter_files`)에 리터럴 free-form 토큰
+        (`{{PROJECT_CONSTRAINTS}}`/`{{PROTECTED_PATHS}}`/`{{USER_GATE_ITEMS}}`)이 잔존 → 파일·토큰별
+        finding 1건. 마이그레이션 후엔 어댑터 .md 가 free-form-free(ADR-0030·토큰 0)다.
+
+    디커플 (ADR-0031): render-overlay free-form value-fill 기계(`FREEFORM_KEYS`·overlay.local.yaml)
+    는 제거됐으므로 이 lint 는 그 심볼에 의존하지 않고 자체 로컬 튜플(`_UNMIGRATED_FREEFORM_KEYS`)
+    로 검출 대상을 정의한다. free-form 은 pm_import FILL 채널이 canonical home 에서 전담하므로
+    overlay 파일 부재 조건은 더 이상 의미가 없다 — 리터럴 토큰 잔존만으로 advisory 를 낸다.
 
     오탐 0 경계:
-      - **FREEFORM_KEYS·OVERLAY_RELPATH 는 pm_render 에서 import**(중복 정의 0·단일 진실). pm_render
-        로드 실패 → 검사 불가 → [] (무발화·graceful).
       - operational 토큰(`{{PROJECT_NAME}}` 등)은 *검사 대상 아님* — import sed/local.conf 채널이라
-        별개. free-form 3종만 매칭(render-overlay 가 관리하는 손편집 산문).
+        별개. free-form 3종만 매칭(채택자 손편집 산문).
       - 코드 span/fence 안의 *예시* 토큰은 `_strip_code` 로 제거 후 스캔(문서가 토큰을 예시로
         보여줘도 오탐 안 됨).
       - graceful: 어댑터 파일/디렉토리 부재(솔로·non-adopter) → finding 0. 파일 read 오류는 skip.
-
-    이 lint 는 "어느 overlay key 가 채워졌어야 하는지"는 추론하지 않는다 — baked 파일에 provenance
-    마커가 없어 기계 oracle 불가(§3.6). robust 한 정적 신호(리터럴 토큰 잔존 + overlay 파일 부재)만 본다.
     """
-    pm_render = _load_pm_render_module()
-    if pm_render is None:
-        return []  # 단일 진실(FREEFORM_KEYS·OVERLAY_RELPATH) 로드 실패 → 무발화(graceful).
-    freeform_keys = tuple(getattr(pm_render, "FREEFORM_KEYS", ()))
-    overlay_relpath = getattr(pm_render, "OVERLAY_RELPATH", None)
-    if not freeform_keys or overlay_relpath is None:
-        return []  # 계약 상수 부재(구버전 pm_render) → 무발화.
     token_re = re.compile(
-        r"\{\{(" + "|".join(re.escape(k) for k in freeform_keys) + r")\}\}")
+        r"\{\{(" + "|".join(re.escape(k) for k in _UNMIGRATED_FREEFORM_KEYS) + r")\}\}")
 
     issues: list[tuple[str, str, str]] = []
-    any_token = False
     seen: set[str] = set()
     for p in _collect_overlay_adapter_files():
         rel_posix = _rel_to_repo(p).replace("\\", "/")
@@ -2148,18 +2127,11 @@ def lint_unmigrated_overlay() -> list[tuple[str, str, str]]:
         # 코드 span/fence 예시 토큰은 실 placeholder 가 아니므로 제거 후 스캔(오탐 0).
         leaked = sorted(set(token_re.findall(_strip_code(text))))
         if leaked:
-            any_token = True
             toks = ", ".join("{{" + k + "}}" for k in leaked)
             issues.append((
                 rel_posix, "un-migrated-overlay",
-                f"리터럴 free-form 토큰 잔존: {toks} — 어댑터가 아직 render-overlay 로 "
-                f"마이그레이션되지 않았다(§3.6·재렌더 후엔 토큰 0)."))
-    # 토큰이 하나라도 잔존했는데 overlay 채널 자체가 없으면 마이그레이션 핵심 단계 누락.
-    if any_token and not (REPO / overlay_relpath).is_file():
-        issues.append((
-            overlay_relpath, "un-migrated-overlay",
-            f"overlay 채널 미생성: {overlay_relpath} 부재 — free-form 토큰이 잔존하나 "
-            f"마이그레이션 overlay 가 없다(§3.6 CREATE overlay 단계 누락)."))
+                f"리터럴 free-form 토큰 잔존: {toks} — 어댑터가 아직 canonical home(root doc·"
+                f"pm_role.local.md)으로 마이그레이션되지 않았다(§3.6·ADR-0030·free-form-free)."))
     return issues
 
 
@@ -2366,9 +2338,9 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     ADR/idea dangling (T-0129). 채택자(framework ADR 부재 다운스트림)의 scaffold bracket-ref 는
 #     영구 dangling 이 정상 — visibility 만, push 미차단. ticket dangling·wiki/root-doc dangling 은
 #     여전히 `dangling-wikilink`(blocking).
-#   - un-migrated-overlay : 어댑터 .md 에 리터럴 free-form 토큰 잔존 + overlay 부재 (T-0132·§3.6).
-#     render-overlay 마이그레이션 누락 신호 — 채택자 운영 ritual 이지 출하 결함 아니므로 visibility
-#     만, push 미차단. render-leak(@render 산출물 한정·blocking)과 별개·상보(활성화 전 본문 스캔).
+#   - un-migrated-overlay : 어댑터 .md 에 리터럴 free-form 토큰 잔존 (T-0132·§3.6·ADR-0031 디커플).
+#     canonical home(root doc·pm_role.local.md) 마이그레이션 누락 신호 — 채택자 운영 ritual 이지
+#     출하 결함 아니므로 visibility 만, push 미차단. render-leak(@render 산출물 한정·blocking)과 별개.
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
      "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
@@ -2573,7 +2545,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     domain freshness advisory(stale/orphan/oversized·ADR-0018·never-block) +
     architecture.md freshness advisory(architecture-stale·ADR-0022·never-block) +
     render-leak(리터럴 `{{...}}` 누출·ADR-0028·blocking·@render 산출물 한정·활성화 전 무발화) +
-    un-migrated-overlay(리터럴 free-form 토큰 잔존·overlay 부재·T-0132·§3.6·advisory·never-block)."""
+    un-migrated-overlay(어댑터 .md 리터럴 free-form 토큰 잔존·T-0132·§3.6·ADR-0031·advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
