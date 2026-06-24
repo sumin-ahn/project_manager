@@ -48,6 +48,13 @@ PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm
 | `/pm-wave-finish T-NNNN` | ticket 완료 부기 — 회귀+log+board+stage (status 미접촉·ADR-0023) | `ticket_finish.py` |
 | `/pm-handoff` | 세션 종료 핸드오프 7단계 자동화 | `pm_handoff.py` |
 
+환경·갱신 라이프사이클(wave 흐름 밖·facade-기반·ADR-0032):
+
+| skill | 역할 | backbone CLI |
+|---|---|---|
+| `/pm-env` | 환경 관리 — repo/worktree 슬롯·upstream show/switch(path↔URL) | `pm-config.sh`→`pm_config.py` |
+| `/pm-update` | 엔진 갱신 — upstream freshness 자동분기·manifest reconcile·adapter-drift 표면화 | `pm-update.sh`→`pm_update.py` |
+
 각 skill 의 사용 시점·체크리스트는 `.claude/skills/pm-*/SKILL.md` 참조.
 
 리뷰는 skill 외에 **codex 외부 교차검증**을 표준으로 병행한다 — 내부

@@ -2223,6 +2223,9 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
+            "온보딩(fresh 채택자·T-0144): manager(project_manager) 경로/URL 만 있으면 자율 import — "
+            "harness=자기 세션(claude|opencode), --new(빈 PM 홈·ADR-0026)/--into(기존 프로젝트 임베드) "
+            "맥락 판단. 상세 가이드 = manager 루트 ADOPT.md. import 후 다음 단계: /pm-bootstrap → /pm-env.\n\n"
             "upstream 기록(T-0145): --from 은 *파일 소스*, --upstream 은 *future update 기록*으로 "
             "디커플된다. local.conf 에 `upstream=`(pm_update 가 --from 생략 시 사용) + "
             "`upstream_rev=<commit>`(drift baseline·--from 이 로컬 git checkout 일 때)이 기록된다. "
