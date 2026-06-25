@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fnmatch
 import os
 import re
 import subprocess
@@ -161,6 +162,34 @@ _LOG_ENTRY_RE = re.compile(r"^## \[\d{4}-\d{2}-\d{2}\]", re.MULTILINE)
 
 # 슬라이딩 윈도우 크기 — 최근 N 차 만 short inline 유지. 프로젝트별 조정 가능.
 SLIDING_WINDOW_SIZE = 3
+
+# ── 라이브-게이트 발동 출하 경로 (A tier·spike harness-test-two-level-gate §3.3) ─────
+# 미push diff 가 이 글롭 중 하나라도 건드리면 출하 변경 → 라이브 게이트 발동. 채택자
+# 산출물을 바꾸는 경로([[smoke-gate-by-output-change]])만 포함한다 — 엔진(.project_manager/
+# tools)·출하 템플릿·어댑터(.claude/.opencode)·진입문서·manifest·파사드·요구사항·방법론 wiki.
+# NON-SHIPPING(tests/·② wiki board/ADR/spike·status/pm_state/log)은 매칭 안 돼 자연 skip.
+# fnmatch 글롭 — `**` 는 임의 깊이, 정확 파일명은 그대로. baseline 기준 ref(@{upstream}/
+# origin/main) 해소불가나 비분류 경로는 호출부에서 has_unknown(ambiguous) 처리.
+SHIPPING_GLOBS = (
+    ".project_manager/tools/*",       # canonical 엔진 (한 단계)
+    ".project_manager/tools/**",      # canonical 엔진 (중첩)
+    "templates/**",                   # 출하 템플릿 (claude_code·opencode)
+    ".claude/**",                     # claude 어댑터 (agents·skills·commands)
+    ".opencode/**",                   # opencode 어댑터
+    "CLAUDE.md",                      # claude 진입문서
+    "AGENTS.md",                      # opencode 진입문서
+    "**/CLAUDE.md",                   # 중첩 진입문서 (templates 하위 등)
+    "**/AGENTS.md",
+    "engine.manifest",                # 엔진 동기 매니페스트
+    "**/engine.manifest",
+    "pm-*.sh",                        # 루트 파사드 (POSIX)
+    "pm-*.cmd",                       # 루트 파사드 (Windows)
+    "requirements*.txt",              # 런타임/개발 의존성
+    ".project_manager/wiki/pm_role.md",       # 방법론 — templates 로 출하
+    ".project_manager/wiki/pm_playbook.md",
+    ".project_manager/wiki/_template/**",
+    ".project_manager/wiki/domain/**",
+)
 
 # ── log/current.md handoff entry skeleton ────────────────────────────────────────────
 
@@ -657,6 +686,183 @@ def parse_pytest_summary(output: str) -> str:
     return output.strip()[-200:] if output.strip() else ""
 
 
+# ── 라이브-게이트 출하 변경 발동 (A tier·spike §3.3) ──────────────────────────────
+
+# baseline 기준 ref 후보 — push 대상 기준(미push diff). 첫 해소 가능한 것을 쓴다.
+#   @{upstream}: 현 브랜치의 추적 upstream (가장 정확한 "미push" 경계).
+#   origin/main: upstream 미설정 시 폴백 (공개 제품 ①의 push 대상).
+_PENDING_PUSH_BASELINE_REFS = ("@{upstream}", "origin/main")
+
+
+def _path_is_shipping(path: str) -> bool:
+    """경로가 SHIPPING_GLOBS 중 하나라도 매칭하면 True (fnmatch 글롭)."""
+    return any(fnmatch.fnmatch(path, glob) for glob in SHIPPING_GLOBS)
+
+
+def _resolve_pending_baseline(
+    worktree: str,
+    git_runner: Callable[[list[str]], tuple[int, str]],
+) -> str | None:
+    """미push diff 기준 baseline ref 를 해소한다. 해소 불가 시 None (ambiguous).
+
+    `git -C <worktree> rev-parse --verify <ref>` 로 후보 ref(@{upstream}·origin/main)를
+    순서대로 시도해 첫 성공 ref 문자열을 반환한다. detached/upstream 미설정/원격부재면
+    모두 비-0 → None → 호출부가 has_unknown(ambiguous→surface) 처리. fail-soft.
+    """
+    for ref in _PENDING_PUSH_BASELINE_REFS:
+        rc, _ = git_runner(["-C", worktree, "rev-parse", "--verify", "--quiet", ref])
+        if rc == 0:
+            return ref
+    return None
+
+
+def _uncommitted_and_untracked_paths(
+    worktree: str,
+    runner: Callable[[list[str]], tuple[int, str]],
+) -> list[str] | None:
+    """작업트리 미커밋(staged+unstaged tracked) + untracked 신규파일 경로를 union 반환.
+
+    push 시 확실히 올라갈 변경(커밋만 하면 됨). 두 git 호출을 합친다:
+      - `git -C <wt> diff --name-only HEAD`              → staged+unstaged tracked 변경
+      - `git -C <wt> ls-files --others --exclude-standard` → untracked 신규파일(.gitignore 제외)
+    둘 중 하나라도 비-0 종료면 작업트리 상태 불명 → None (호출부가 ambiguous 처리).
+    runner DI seam 경유(hermetic). 예외는 호출부에서 흡수.
+    """
+    rc_diff, out_diff = runner(["-C", worktree, "diff", "--name-only", "HEAD"])
+    if rc_diff != 0:
+        return None
+    rc_others, out_others = runner(
+        ["-C", worktree, "ls-files", "--others", "--exclude-standard"]
+    )
+    if rc_others != 0:
+        return None
+    paths: list[str] = []
+    for out in (out_diff, out_others):
+        paths.extend(line.strip() for line in out.splitlines() if line.strip())
+    return paths
+
+
+def _shipping_paths_in_pending_push(
+    worktree: str,
+    *,
+    git_runner: Callable[[list[str]], tuple[int, str]] | None = None,
+) -> tuple[list[str], bool]:
+    """"지금 push 하면 올라갈 변경" ∩ SHIPPING_GLOBS 를 해소한다 (라이브-게이트 발동·spike §3.3).
+
+    pm_handoff [7/7] 체크리스트는 핸드오프 *후* `git commit` 을 안내한다 — 정상 핸드오프
+    시점엔 출하 변경이 대개 **working tree(staged/unstaged·미커밋·untracked)** 에 있다.
+    따라서 커밋된-미push 만 보면(diff <baseline>..HEAD) 정상 핸드오프 시 게이트가 발동하지
+    않는다(must-fix·T-0151). "지금 push 하면 올라갈 변경 전체"를 union 한다:
+      - 커밋된 미push: `git -C <wt> diff --name-only <baseline>..HEAD` (baseline 해소된 경우만)
+      - 작업트리 vs HEAD(staged+unstaged tracked): `git -C <wt> diff --name-only HEAD`
+      - untracked 신규파일: `git -C <wt> ls-files --others --exclude-standard`
+    이 union ∩ SHIPPING_GLOBS 가 `shipping_hits`.
+
+    ambiguous 정련: uncommitted/untracked 출하 hit 이 있으면 **baseline 해소 여부와 무관하게
+    발동**(그 변경은 확실히 올라간다). baseline 해소불가(또는 커밋된-미push diff 실패)
+    **그리고** 출하 hit 이 전혀 없을 때만 has_unknown=True(커밋된-미push 출하분을 못 봐서
+    불명). diff/ls-files 명령 실패·예외는 fail-soft(has_unknown=True) — silent skip 금지
+    (false-skip = 미검증 출하 위험 > false-fire 낭비·spike §6).
+
+    반환: (shipping_hits, has_unknown).
+      - shipping_hits 비어있지 않음 → 발동.
+      - shipping_hits 비어있고 has_unknown False → 명확한 비-출하(또는 push 없음) → skip.
+      - shipping_hits 비어있고 has_unknown True → ambiguous (호출부 surface).
+
+    fail-soft: git 미설치·worktree 부재 등 예외는 has_unknown=True 로 흡수(크래시 금지).
+    git_runner DI seam — hermetic 테스트는 결정론 stub 주입. 모든 git 호출은 이 seam 경유.
+    """
+    runner = git_runner if git_runner is not None else _module_run_git
+
+    # 1. 확실히 올라갈 변경 — uncommitted(작업트리 vs HEAD)·untracked 신규파일.
+    #    baseline 해소 여부와 무관하게 진실(이 변경은 push 시 반드시 올라간다).
+    try:
+        uncommitted_paths = _uncommitted_and_untracked_paths(worktree, runner)
+    except Exception:  # noqa: BLE001 — fail-soft: git 예외는 ambiguous 로 흡수.
+        return [], True
+    if uncommitted_paths is None:
+        # diff HEAD/ls-files 명령 실패 — 작업트리 상태를 모른다 → ambiguous.
+        return [], True
+
+    # 2. 커밋된 미push 변경 — baseline 해소된 경우만(detached/upstream 미설정/원격부재면 못 봄).
+    committed_paths: list[str] = []
+    committed_unknown = False
+    try:
+        baseline = _resolve_pending_baseline(worktree, runner)
+        if baseline is None:
+            # 커밋된-미push 경계를 모른다 → 그 부분만 불명(uncommitted 는 이미 확보).
+            committed_unknown = True
+        else:
+            rc, out = runner(
+                ["-C", worktree, "diff", "--name-only", f"{baseline}..HEAD"]
+            )
+            if rc != 0:
+                # diff 자체 실패 — 커밋된-미push 가 무엇인지 모른다 → 그 부분만 불명.
+                committed_unknown = True
+            else:
+                committed_paths = [
+                    line.strip() for line in out.splitlines() if line.strip()
+                ]
+    except Exception:  # noqa: BLE001 — fail-soft: git 예외는 커밋된-미push 불명으로 흡수.
+        committed_unknown = True
+
+    all_paths = set(uncommitted_paths) | set(committed_paths)
+    shipping_hits = sorted(p for p in all_paths if _path_is_shipping(p))
+
+    if shipping_hits:
+        # uncommitted/untracked·또는 커밋된-미push 에서 확실한 출하 hit → 발동.
+        # 발동할 변경이 확정됐으므로 baseline 해소불가여도 ambiguous 아님.
+        return shipping_hits, False
+    # 출하 hit 이 전혀 없을 때만 — 커밋된-미push 출하분을 못 봤다면(committed_unknown)
+    # ambiguous(surface), 아니면 명확한 비-출하(skip).
+    return [], committed_unknown
+
+
+def _module_run_git(args: list[str]) -> tuple[int, str]:
+    """모듈-레벨 git 실행 (DI 미주입 시 기본). (returncode, stdout+stderr)."""
+    result = subprocess.run(
+        ["git"] + args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return result.returncode, result.stdout + result.stderr
+
+
+def _run_live_gate(
+    worktree: str,
+    *,
+    runner: Callable[[list[str], dict[str, str], str], tuple[int, str]] | None = None,
+) -> tuple[int, str]:
+    """`pytest -m live_gate -q` 를 worktree cwd·PM_ORCH_LIVE=1 로 돌린다 (A tier enforce).
+
+    라이브 게이트 subset(live_gate marker) 만 선택해 실행한다 — relay 과금 smoke 는 제외
+    (spike §3.1). PM_ORCH_LIVE=1 을 env 에 주입해 라이브 테스트의 skipif 를 깨운다. 단
+    라이브 바이너리(opencode/claude) 부재면 per-test skipif(shutil.which)가 여전히 skip
+    하므로 → 0개 selected/skip → green → fail-soft 통과(게이트 강제 안 함·CI green 불변·
+    spike §3.3·ticket 결정).
+
+    반환: (returncode, stdout+stderr). runner DI seam — hermetic 테스트는 결정론 stub.
+    """
+    if runner is not None:
+        env = dict(os.environ)
+        env["PM_ORCH_LIVE"] = "1"
+        return runner([sys.executable, "-m", "pytest", "-m", "live_gate", "-q"], env, worktree)
+    env = dict(os.environ)
+    env["PM_ORCH_LIVE"] = "1"
+    result = subprocess.run(
+        [_default_python(), "-m", "pytest", "-m", "live_gate", "-q"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=worktree,
+        env=env,
+    )
+    return result.returncode, result.stdout + result.stderr
+
+
 # ── PmHandoff 핵심 클래스 ─────────────────────────────────────────────────────
 
 class PmHandoff:
@@ -671,6 +877,7 @@ class PmHandoff:
         *,
         run_pytest_fn: Callable[[], tuple[int, str]] | None = None,
         run_git_fn: Callable[[list[str]], tuple[int, str]] | None = None,
+        run_live_gate_fn: Callable[[str], tuple[int, str]] | None = None,
         log_file: Path = LOG_FILE,
         pm_playbook_file: Path = PM_PLAYBOOK_FILE,
         pm_state_file: Path = PM_STATE_FILE,
@@ -690,6 +897,10 @@ class PmHandoff:
 
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
         self._run_git_fn = run_git_fn or self._default_run_git
+        # 라이브-게이트 seam (A tier·spike §3.3) — worktree cwd 를 받아 (rc, out) 반환.
+        # 테스트는 결정론 stub 주입(실 pytest/LLM 미실행·hermetic). None 이면 모듈
+        # _run_live_gate(실 subprocess `pytest -m live_gate -q`·PM_ORCH_LIVE=1).
+        self._run_live_gate_fn = run_live_gate_fn or _run_live_gate
 
     # ── multi-PM 모드: 작업완료 release (ADR-0013) ────────────────────────────────
 
@@ -766,6 +977,82 @@ class PmHandoff:
         output = result.stdout + result.stderr
         return result.returncode, output
 
+    # ── 라이브-게이트 step (A tier·출하-변경 발동·spike §3.3) ────────────────────
+
+    def _live_gate_step(self, worktree: str, live_gate_override: bool | None) -> int:
+        """[1/7] 기계회귀 green 직후 라이브-게이트 step (출하-변경 발동·3-way).
+
+        발동 판단 = 미push diff ∩ SHIPPING_GLOBS([[smoke-gate-by-output-change]]) —
+        세션 종류가 아니라 *올리려는 코드*. override 가 주어지면 분류를 건너뛴다
+        (--live-gate=강제발동·--no-live-gate=강제skip·사후 사유 log 는 PM 손).
+
+        3-way (override None 일 때):
+          - shipping_hits 비어있지 않음 → **발동**: `pytest -m live_gate` red → return 1.
+          - shipping/unknown 모두 없음(push 없음·명확한 비-출하) → **skip**(사유 출력).
+          - has_unknown(baseline 해소불가·분류불명) → **surface**(불명 신호 나열·기본
+            비실행·PM 이 --live-gate/--no-live-gate 로 결정).
+
+        반환: 0=통과/skip/surface(계속), 1=라이브 게이트 red(핸드오프 중단).
+        run_trigger(ctx-STOP)는 이 step 을 절대 호출하지 않는다(자동정지·LLM 못 띄움).
+        """
+        if live_gate_override is False:
+            print("  [--no-live-gate] 라이브 게이트 강제 skip (사유 log 는 PM 손).")
+            return 0
+        if live_gate_override is True:
+            print("  [--live-gate] 라이브 게이트 강제 발동...")
+            return self._fire_live_gate(worktree)
+
+        shipping_hits, has_unknown = _shipping_paths_in_pending_push(
+            worktree, git_runner=self._run_git_fn
+        )
+        if shipping_hits:
+            print(
+                f"  출하 변경 감지 ({len(shipping_hits)}개 경로) — 라이브 게이트 발동:"
+            )
+            for path in shipping_hits[:10]:
+                print(f"    · {path}")
+            return self._fire_live_gate(worktree)
+        if has_unknown:
+            # ambiguous → surface (silent skip/fire 금지·대화형 핸드오프라 가능).
+            print(
+                "  ⚠ 미push diff 분류 불명 (baseline ref 해소불가/분류 불가) — "
+                "출하 변경 여부를 자동 판단할 수 없다.",
+                file=sys.stdout,
+            )
+            print(
+                "    → 라이브 게이트를 기본 비실행한다. push 코드가 채택자 산출물을 "
+                "바꾸는지 PM 이 판단해 `--live-gate`(강제발동) 또는 `--no-live-gate`"
+                "(강제skip·사유 log)로 명시하라.",
+                file=sys.stdout,
+            )
+            return 0
+        print("  출하 변경 없음 (미push diff 가 비-출하·또는 push 없음) — 라이브 게이트 skip.")
+        return 0
+
+    def _fire_live_gate(self, worktree: str) -> int:
+        """라이브 게이트 실행 + red→중단 (기계회귀 red 동형). 반환 0=green/skip·1=red.
+
+        fail-soft 허용을 **명시적으로 좁힌다** — pytest 종료코드 `rc in (0, 5)` 만 통과:
+          - 0 = all passed(또는 skipped-only — skip 은 rc 0 이라 라이브 미가용 통과 보존).
+          - 5 = no tests collected = 라이브 미가용(바이너리 부재·PM_ORCH_LIVE 미주입) fail-soft.
+        그 외 모든 비-0(1=failed·2=interrupted·3=internal·4=usage·collection/import error 등)은
+        **red → 핸드오프 중단**(return 1). 이전 `re.search("N failed")` 판정은 "failed" 요약이
+        없는 collection/import/internal error(rc 2/3/4)를 silently green 처리했다(must-fix·T-0151).
+        """
+        rc, out = self._run_live_gate_fn(worktree)
+        print(out.rstrip())
+        if rc not in (0, 5):
+            print(
+                "\n[중단] 라이브 게이트 red — 핸드오프 불가. log/current.md·pm_state.md "
+                f"어떤 것도 건드리지 않는다. (pytest rc={rc} ≠ 0/5 — 라이브 테스트 실패·"
+                "collection/import/내부 에러 = 출하 변경이 실 LLM 운영성을 깨거나 게이트가 "
+                "정상 실행되지 못했다.)",
+                file=sys.stderr,
+            )
+            return 1
+        print("  ✓ 라이브 게이트 통과 (green·또는 라이브 미가용 fail-soft skip·rc∈{0,5}).")
+        return 0
+
     # ── 메인 흐름 ─────────────────────────────────────────────────────────────
 
     def run(
@@ -777,6 +1064,7 @@ class PmHandoff:
         worktree_slot: str | None = None,
         branch: str | None = None,
         done: bool = False,
+        live_gate_override: bool | None = None,
     ) -> int:
         """PM 핸드오프 7단계 자동화 전체 흐름을 실행한다.
 
@@ -784,6 +1072,9 @@ class PmHandoff:
             기록해 회전 재부착 연속성 단서를 남긴다. 미지정(솔로)이면 현행 lean 스키마 보존.
         done: 작업완료(--done) — worktree 슬롯을 release(idle 반납). worktree_slot
             필요. 미지정이면 release 안 함(세션종료/회전 ≠ release·ADR-0013).
+        live_gate_override: A tier 라이브-게이트 강제 override (--live-gate=True 강제발동·
+            --no-live-gate=False 강제skip). None 이면 미push diff ∩ 출하경로로 3-way 자동
+            판단(spike §3.3). 라이브 게이트 red → 핸드오프 중단(기계회귀 red 동형).
 
         반환: 0=성공, 1=실패 (중단).
         """
@@ -815,6 +1106,20 @@ class PmHandoff:
                 return 1
             pytest_summary = parse_pytest_summary(output)
             print(f"  ✓ green: {pytest_summary}")
+
+        # ── 1b. 라이브-게이트 step (A tier·출하-변경 발동·spike §3.3) ───────────
+        # 기계회귀 green 직후·push 직전 1회. 미push diff 가 출하경로를 건드릴 때만
+        # `pytest -m live_gate` 발동(3-way: 발동/skip/ambiguous→surface). red → 중단
+        # (기계회귀 red 동형·log/pm_state 미접촉). dry_run 은 라이브 LLM 비용/시간을
+        # 들이지 않도록 step 자체를 skip(미리보기 경로). worktree 는 회귀와 같은 cwd.
+        print("\n[1b/7] 라이브-게이트 (출하-변경 발동)...")
+        if dry_run:
+            print("  [dry-run] 라이브 게이트 발동 판단·실행 skip (미리보기).")
+        else:
+            worktree = _regression_cwd(self._worktree_slot)
+            gate_rc = self._live_gate_step(worktree, live_gate_override)
+            if gate_rc != 0:
+                return gate_rc
 
         # ── 2. log/current.md handoff entry skeleton append ────────────────────────────
         print("\n[2/7] log/current.md handoff entry skeleton append...")
@@ -1202,6 +1507,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="회귀 측정 skip (기본 측정·대화형 경로).",
     )
+    # ── 라이브-게이트 override (A tier·spike §3.3) — 상호배제. 미지정이면 출하-변경 자동 판단. ──
+    live_gate_group = parser.add_mutually_exclusive_group()
+    live_gate_group.add_argument(
+        "--live-gate",
+        dest="live_gate",
+        action="store_true",
+        default=None,
+        help="라이브 게이트 강제 발동 (출하-변경 자동 판단 무시·`pytest -m live_gate` 실행).",
+    )
+    live_gate_group.add_argument(
+        "--no-live-gate",
+        dest="live_gate",
+        action="store_false",
+        help="라이브 게이트 강제 skip (출하-변경 자동 판단 무시·사후 사유 log 는 PM 손).",
+    )
     return parser
 
 
@@ -1276,6 +1596,7 @@ def main(argv: list[str] | None = None) -> int:
         worktree_slot=args.worktree_slot,
         branch=args.branch,
         done=args.done,
+        live_gate_override=args.live_gate,
     )
 
 
