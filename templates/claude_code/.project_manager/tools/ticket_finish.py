@@ -38,6 +38,58 @@ LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 AREAS_FILE = REPO / ".project_manager" / "areas.md"  # shared per-repo registry (ADR-0014)
+TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵커 (회귀 cwd 해소·T-0149)
+
+
+# ── 회귀 cwd 자동해소 (self-host·T-0149 — pm_handoff `_regression_cwd` 재사용·DRY) ────
+# 분리된 PM 홈(②·ADR-0027)엔 `tests/` 가 없으므로, ② 홈 cwd 에서 ticket_finish 를 돌리면
+# 회귀가 활성 worktree 슬롯(①·tests/ 보유)에서 돌아야 한다. pm_handoff 가 이미 이 판정을
+# 모듈-레벨 `_regression_cwd(worktree_slot, areas_file, leases_file)` 로 해결했고(T-0124·
+# pm_bootstrap `_auto_slot` 동적로드 재사용·self-host 해소 검증됨), board.py·pm_bootstrap 과
+# *같은 위치*에 산다 — 복붙 대신 동적 로드해 그 함수를 그대로 위임한다(`_auto_slot` 복제 0).
+
+def _load_pm_handoff():
+    """pm_handoff 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
+
+    `_load_board_module`·`_load_domain_module` 과 동형 — `spec_from_file_location`
+    (스크립트-위치 앵커). 부재/실패는 None 이고 호출부가 `str(REPO)` 로 폴백하므로 무해.
+    """
+    import importlib.util
+
+    hp_path = TOOLS_DIR / "pm_handoff.py"
+    if not hp_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("pm_handoff", hp_path)
+    if spec is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+        return None
+    return mod
+
+
+def _regression_cwd(worktree_slot: str | None = None) -> str:
+    """회귀를 실행할 작업 디렉토리를 해소한다 (T-0149 — pm_handoff `_regression_cwd` 위임).
+
+    해소 순서(pm_handoff 와 동형):
+      - `worktree_slot`(multi-PM 명시) 가 있으면 `REPO / worktree_slot`,
+      - 없으면 pm_handoff `_regression_cwd` 가 bootstrap `_auto_slot` 으로 단일 self-host
+        슬롯을 자동해소(`work/<repo>_<N>`),
+      - 그것도 없으면(솔로/모호/부재) **현 `REPO` 기본** (fail-soft 폴백·솔로 무변경).
+
+    pm_handoff 를 동적 로드해 그 함수에 위임한다(DRY — `_auto_slot` 복제 0). pm_handoff
+    부재/로드 실패는 `str(REPO)` 폴백(현행 100% 보존·additive). pm_handoff.REPO 는 같은
+    `tools/` 위치 기준이라 ticket_finish.REPO 와 동일 경로다.
+    """
+    hp = _load_pm_handoff()
+    if hp is not None:
+        try:
+            return hp._regression_cwd(worktree_slot)
+        except Exception:  # noqa: BLE001 — fail-soft: 위임 실패는 REPO 폴백.
+            pass
+    return str(REPO)
 
 
 def _default_python() -> str:
@@ -355,10 +407,12 @@ class TicketFinisher:
         self._log_file = log_file
         self._board_py = board_py
         self._venv_python = venv_python
-        # 회귀 cwd seam (ADR-0014) — multi-PM 모델은 활성 repo 의 worktree 에서 회귀를 돌려야
-        # 한다(multi-PM 루트엔 코드/테스트 없음·spike §8-4 c). 주입 시 그 경로, 미주입(솔로/multi-PM-
-        # 미배선)은 REPO. 실제 worktree 경로 결정/주입은 T-0060(bootstrap 리스)의 일이다.
-        self._regression_cwd = str(regression_cwd) if regression_cwd else str(REPO)
+        # 회귀 cwd seam (ADR-0014·T-0149) — 분리된 PM 홈(②)엔 tests/ 가 없으므로 회귀는 활성
+        # worktree 슬롯(①·tests/)에서 돌아야 한다. **즉시 고정하지 않는다** — `regression_cwd`
+        # 명시 주입은 그대로 보존(테스트/명시 override)하되, 미지정이면 `__init__` 시점의 REPO
+        # 박제 대신 _default_run_pytest 가 런타임에 _regression_cwd() 로 self-host 슬롯을
+        # 자동해소한다(T-0149 — pm_handoff `_regression_cwd` 재사용·솔로는 REPO 폴백 무변경).
+        self._regression_cwd = str(regression_cwd) if regression_cwd else None
 
         # subprocess DI — 기본값은 실제 subprocess 호출
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
@@ -384,9 +438,11 @@ class TicketFinisher:
           - **솔로/프레임워크 자기 회귀** — per-repo cmd 가 없으면 현행 그대로
             `[venv_python, -m, pytest, tests/, -q]` venv argv(도그푸딩 불변·하위호환).
 
-        cwd 는 회귀 seam(`self._regression_cwd`·ADR-0014) — 솔로/multi-PM-미배선은 REPO,
-        주입(T-0060 bootstrap) 시 활성 repo 의 worktree. 명령·cwd 모두 활성 repo 정합.
+        cwd 는 런타임 해소(T-0149) — 명시 주입(`regression_cwd` 인자)이 있으면 그 경로,
+        없으면 `_regression_cwd()` 가 self-host 단일 슬롯을 자동해소(② 홈 cwd 에서도 활성
+        worktree 의 tests/ 에서 돌게). 솔로/모호/부재는 REPO 폴백(현행 보존·additive).
         """
+        cwd = self._regression_cwd if self._regression_cwd is not None else _regression_cwd()
         per_repo_cmd = _resolve_per_repo_test_cmd()
         if per_repo_cmd:
             # multi-PM — per-repo test_cmd 문자열을 shell 로(board.py regression run 과 동형).
@@ -397,7 +453,7 @@ class TicketFinisher:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                cwd=self._regression_cwd,
+                cwd=cwd,
             )
         else:
             # 솔로/프레임워크 자기 회귀 — 현행 venv pytest argv 보존(불변).
@@ -407,7 +463,7 @@ class TicketFinisher:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                cwd=self._regression_cwd,
+                cwd=cwd,
             )
         output = result.stdout + result.stderr
         return result.returncode, output
