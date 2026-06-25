@@ -129,7 +129,13 @@ def test_shipping_paths_fires_on_template_and_adapter(hf):
 
 
 def test_shipping_paths_skips_non_shipping(hf):
-    """비-출하(tests·② wiki board/ADR/spike·status/log) → 빈 hits·unknown False → skip."""
+    """비-출하(tests·② wiki board/ADR/spike·status/log) → 빈 hits·unknown False → skip.
+
+    T-0154 정확 경로 글롭 추가(`.project_manager/wiki/tickets/_template.md`·`.gitattributes`
+    등) 후에도 ② dev-state wiki(ADR·spike 본문·status·pm_state·log·board)·tests-only 가
+    걸리지 않는지 단언한다(과잉발동 회피). ADR-0099 같은 ② wiki 결정/spike 본문은
+    출하가 아니므로 게이트가 false-fire 하면 설계 세션이 무용한 라이브 게이트를 돈다.
+    """
     runner = _git_stub(diff_paths=[
         "tests/test_pm_handoff.py",
         ".project_manager/wiki/raw/spikes/some-spike.md",
@@ -137,10 +143,50 @@ def test_shipping_paths_skips_non_shipping(hf):
         ".project_manager/wiki/status.md",
         ".project_manager/wiki/pm_state.md",
         ".project_manager/wiki/log/current.md",
+        # T-0154 과잉발동 회피 — ② wiki board/roadmap·tests fixture 도 새 글롭에 안 걸려야.
+        ".project_manager/wiki/board.md",
+        ".project_manager/wiki/roadmap.md",
+        ".project_manager/wiki/tickets/open/T-9999-some.md",
+        "tests/fixtures/sample.template.example",
     ])
     hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == []
     assert unknown is False
+
+
+# 정확 경로 글롭으로 좁히지 않으면 포괄 글롭(`**/_template.md`·`**/*.template.md`·
+# `**/.gitignore`)이 매칭했을 *비-출하* 위험 경로 — manifest 갭이 *아닌* 동명 파일들.
+_NON_SHIPPING_TEMPLATE_LOOKALIKES = (
+    "tests/fixtures/_template.md",                       # tests fixture — 출하 아님.
+    "tests/fixtures/foo.template.md",                    # tests fixture — 출하 아님.
+    ".project_manager/wiki/decisions/foo.template.md",   # ② wiki ADR 디렉토리 — 출하 아님.
+    "some/nested/dir/.gitignore",                        # 비-manifest .gitignore — 출하 아님.
+)
+
+
+def test_shipping_paths_skips_template_lookalikes(hf):
+    """정확 경로 1:1 글롭이라 manifest 갭과 동명인 *비-출하* 파일은 발동 안 함 (must-fix 1).
+
+    포괄 글롭(`**/_template.md`·`**/*.template.md`·`**/.gitignore`)이었다면 tests fixture·②
+    wiki ADR 디렉토리의 동명 파일까지 false-fire 했을 것 — 정확 경로로 좁힌 뒤엔 skip.
+    """
+    runner = _git_stub(diff_paths=list(_NON_SHIPPING_TEMPLATE_LOOKALIKES))
+    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    assert hits == []  # 정확 경로 글롭이라 동명 비-출하는 미발동.
+    assert unknown is False
+
+
+def test_template_lookalikes_are_not_shipping(hf):
+    """must-fix 1 — manifest 갭과 동명인 비-출하 경로가 `_path_is_shipping` False (skip).
+
+    `tests/fixtures/_template.md`·`tests/fixtures/foo.template.md`·② wiki
+    `decisions/foo.template.md`·비-manifest `.gitignore` 가 새 정확 경로 글롭에 안 걸려야
+    한다. 포괄 글롭이면 True(false-fire)였을 것 — 정밀 스코프 회귀 가드.
+    """
+    for path in _NON_SHIPPING_TEMPLATE_LOOKALIKES:
+        assert not hf._path_is_shipping(path), (
+            f"비-출하 경로가 SHIPPING_GLOBS 에 false-match (포괄 글롭 회귀): {path}"
+        )
 
 
 def test_shipping_paths_empty_diff_skips(hf):
@@ -609,3 +655,93 @@ def test_sensitivity_rc_in_0_5_guard_is_load_bearing(hf, tmp_path):
     inst2._fire_live_gate = _old_fire  # type: ignore[method-assign]
     # 옛 판정은 "failed" 요약 없는 rc 2 collection error 를 green 처리 → abort 단언 무너짐.
     assert inst2.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False) == 0
+
+
+# ── T-0154: SHIPPING_GLOBS ↔ engine.manifest 정합 가드 ──────────────────────────
+#
+# 라이브-게이트 발동 판단(SHIPPING_GLOBS)이 출하 진실(engine.manifest)과 drift 하면
+# manifest 가 출하한다고 명시한 파일이 어떤 글롭에도 안 잡혀 게이트가 false-skip 한다
+# (미검증 출하). manifest 전개 경로 전부가 SHIPPING_GLOBS 로 커버됨을 단언해 다음
+# manifest 항목 추가 시 SHIPPING_GLOBS 갱신 누락을 push 전에 잡는다(손목록 drift→가드).
+
+ENGINE_MANIFEST = REPO / ".project_manager" / "engine.manifest"
+
+# PM 36 실측 미커버 6경로 — 글롭 추가 전엔 어떤 SHIPPING_GLOB 에도 안 잡혔다.
+_MANIFEST_GAP_PATHS = (
+    ".gitattributes",
+    ".github/workflows/regression.yml",
+    ".project_manager/.gitignore",
+    ".project_manager/wiki/pm_state.template.md",
+    ".project_manager/wiki/raw/spikes/_template.md",
+    ".project_manager/wiki/tickets/_template.md",
+)
+
+
+def _expand_manifest_shipping_paths():
+    """engine.manifest 의 출하 경로를 디스크로 전개한다 — 파일은 그대로, 디렉토리는 하위 파일.
+
+    한 줄 = 한 경로(repo 루트 기준·'#' 주석). 디렉토리 항목은 os.walk 로 실 파일 경로로
+    전개한다(gap_check.py·PM 36 실측과 동형). 반환: repo-rel 경로 set.
+    """
+    import os
+
+    paths: set[str] = set()
+    for line in ENGINE_MANIFEST.read_text(encoding="utf-8").splitlines():
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        abs_p = REPO / entry
+        if abs_p.is_dir():
+            for dirpath, _dirnames, filenames in os.walk(abs_p):
+                for fn in filenames:
+                    rel = os.path.relpath(os.path.join(dirpath, fn), REPO)
+                    paths.add(rel.replace(os.sep, "/"))
+        else:
+            paths.add(entry)
+    return paths
+
+
+def test_six_manifest_gap_paths_now_shipping(hf):
+    """PM 36 실측 미커버 6경로가 이제 `_path_is_shipping` True (갭 6개 닫힘·T-0154)."""
+    for path in _MANIFEST_GAP_PATHS:
+        assert hf._path_is_shipping(path), f"manifest 출하 경로가 SHIPPING_GLOBS 미커버: {path}"
+
+
+def test_engine_manifest_subset_of_shipping_globs(hf):
+    """engine.manifest 전개 경로 전부가 SHIPPING_GLOBS 로 커버됨 (정합 가드·manifest→globs 단방향).
+
+    출하 진실(engine.manifest) ⊆ SHIPPING_GLOBS 커버. 미커버 1개라도 있으면 fail —
+    다음 manifest 항목 추가 시 SHIPPING_GLOBS 동기화 누락을 push 전에 잡는다(drift 차단).
+    역방향(글롭이 manifest 밖 잡음)은 의도된 출하(`pm-*.sh` 파사드·진입문서)라 단언 안 함.
+    """
+    expanded = _expand_manifest_shipping_paths()
+    assert expanded, "engine.manifest 전개 경로가 비어있다 (manifest 위치·파싱 확인)."
+    uncovered = sorted(p for p in expanded if not hf._path_is_shipping(p))
+    assert uncovered == [], (
+        f"engine.manifest 출하 경로 {len(uncovered)}개가 SHIPPING_GLOBS 미커버 — "
+        f"SHIPPING_GLOBS 갱신 필요(manifest↔globs drift): {uncovered}"
+    )
+
+
+def test_sensitivity_manifest_conformance_guard_is_load_bearing(hf):
+    """정합 가드 sensitivity: 새 정확 경로 글롭 1개를 SHIPPING_GLOBS 에서 제거하면 가드가
+    fail 재현하는지(non-vacuous) 직접 확인한다.
+
+    정확 경로 글롭 `.project_manager/wiki/tickets/_template.md` 1개 제거 시 그 manifest 갭
+    경로가 다시 미커버가 돼야 한다 → 정합 가드의 단언(uncovered == [])이 무너짐. 모듈 전역 복구.
+    """
+    removed_glob = ".project_manager/wiki/tickets/_template.md"
+    orig = hf.SHIPPING_GLOBS
+    assert removed_glob in orig, "전제 위반 — 제거 대상 정확 경로 글롭이 SHIPPING_GLOBS 에 없다."
+    # 정확 경로 글롭 1개 제거 — 그 manifest 갭 경로(ticket 스캐폴드)가 다시 미커버.
+    hf.SHIPPING_GLOBS = tuple(g for g in orig if g != removed_glob)
+    try:
+        expanded = _expand_manifest_shipping_paths()
+        uncovered = [p for p in expanded if not hf._path_is_shipping(p)]
+    finally:
+        hf.SHIPPING_GLOBS = orig  # 모듈 전역 복구.
+    # 글롭 무력화하면 그 정확 경로가 미커버로 드러나야 정합 가드가 load-bearing.
+    assert removed_glob in uncovered, (
+        "글롭 제거 후에도 그 경로가 미커버로 안 드러나면 정합 가드가 vacuous — "
+        f"uncovered={sorted(uncovered)}"
+    )

@@ -189,6 +189,18 @@ SHIPPING_GLOBS = (
     ".project_manager/wiki/pm_playbook.md",
     ".project_manager/wiki/_template/**",
     ".project_manager/wiki/domain/**",
+    # ── engine.manifest 정합 갭 (T-0154·정확 경로 1:1·과잉발동 회피) ──────────
+    # manifest 출하 항목 중 위 글롭에 안 잡히던 6경로를 *정확 경로* 글롭으로 1:1 닫는다
+    # (PM 36 실측). 포괄 글롭(`**/_template.md`·`**/*.template.md`·`**/.gitignore` 등)은 repo
+    # 전체를 매칭해 비-출하(tests/fixtures/_template.md·② wiki decisions/foo.template.md 등)
+    # 까지 게이트를 false-fire 시킨다 — ticket 결정("정밀·과잉발동 회피")·tests/ non-shipping
+    # 계약과 모순. 1:1 정확 경로라도 미래 manifest 항목 추가는 정합 가드(test)가 잡아 동기화 강제.
+    ".project_manager/wiki/tickets/_template.md",     # ticket 스캐폴드 (manifest 갭)
+    ".project_manager/wiki/raw/spikes/_template.md",  # spike 스캐폴드 (manifest 갭)
+    ".project_manager/wiki/pm_state.template.md",     # pm_state 템플릿 (manifest 갭)
+    ".gitattributes",                                 # log union-merge·forwarder EOL (T-0068·루트만)
+    ".project_manager/.gitignore",                    # .project_manager .gitignore (manifest 갭)
+    ".github/workflows/regression.yml",               # 예시 CI 스캐폴드 (manifest 가 덮어쓰는 출하 파일)
 )
 
 # ── log/current.md handoff entry skeleton ────────────────────────────────────────────
