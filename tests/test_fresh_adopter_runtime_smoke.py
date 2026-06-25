@@ -48,6 +48,23 @@ def _make_prompt(entry_doc: str) -> str:
     )
 
 
+def _make_lifecycle_prompt(entry_doc: str) -> str:
+    """진입문서만 보고 ticket 의 **full 라이프사이클**(new→claim→complete)을 운영하라는 프롬프트.
+
+    board.py 경로를 *주지 않는다* — adopter 가 문서만으로 도구를 찾아 new·claim·complete 와
+    complete sync-gate(log entry·--tests-pass 류)까지 자력으로 운영해야 통과(= 진짜 문서 운영성).
+    side-effect(ticket 파일이 open→claimed→done 으로 이동)를 단언하므로 출력 phrasing 비결정에 강건.
+    """
+    return (
+        f"You are the PM for this project. Read {entry_doc} to learn how the project board "
+        "works. Then run a full ticket lifecycle using the project's board tool: (1) create "
+        "exactly one ticket titled 'lifecycle smoke' (touches README.md), (2) claim it, "
+        "(3) mark it complete/done. The complete step has a sync gate — satisfy it however the "
+        "docs say (e.g. a log entry and the tests-pass / untested flag). After the ticket is "
+        "marked done, reply with the ticket id."
+    )
+
+
 def _load_pm_import():
     spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
@@ -79,6 +96,13 @@ def _board_list_recognizes_ticket(dest: Path) -> bool:
     return "T-" in listing.stdout
 
 
+def _tickets_in(dest: Path, status: str) -> set[str]:
+    """`tickets/<status>/` 의 T-*.md 파일명 집합 (라이프사이클 side-effect 단언용)."""
+    status_dir = dest / ".project_manager" / "wiki" / "tickets" / status
+    return {p.name for p in status_dir.glob("T-*.md")} if status_dir.exists() else set()
+
+
+@pytest.mark.live_gate
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("opencode"),
     reason="runtime smoke — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
@@ -107,6 +131,7 @@ def test_live_opencode_adopter_bootstraps_and_creates_ticket(tmp_path):
     assert _board_list_recognizes_ticket(dest), "board.py list 가 실 opencode 발행 ticket 미인식"
 
 
+@pytest.mark.live_gate
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("claude"),
     reason="runtime smoke — PM_ORCH_LIVE=1 + claude CLI 필요(API 과금). 기본 skip·on-demand.",
@@ -153,6 +178,7 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
     )
 
 
+@pytest.mark.live_gate
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("opencode"),
     reason="runtime smoke — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
@@ -188,6 +214,7 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     assert _board_list_recognizes_ticket(dest), "pm_update 후 board.py list 가 실 opencode 발행 ticket 미인식"
 
 
+@pytest.mark.live_gate
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("claude"),
     reason="runtime smoke — PM_ORCH_LIVE=1 + claude CLI 필요(API 과금). 기본 skip·on-demand.",
@@ -220,3 +247,65 @@ def test_live_claude_adopter_survives_pm_update_then_operates(tmp_path):
         f"--- claude stdout(tail) ---\n{proc.stdout[-2000:]}\n--- stderr(tail) ---\n{proc.stderr[-1000:]}"
     )
     assert _board_list_recognizes_ticket(dest), "pm_update 후 board.py list 가 실 claude 발행 ticket 미인식"
+
+
+# ── A tier 라이브 커버 확장: full 티켓 라이프사이클 (new→claim→finish · T-0150) ──────────────
+# 위 테스트들은 *new*(발행)까지만 라이브로 친다. 아래 두 테스트는 실 LLM 이 진입문서만 보고
+# board.py 로 **new→claim→complete** 전 라이프사이클을 운영하는지 검증한다(spike §3.2). 단언은
+# side-effect(ticket 파일이 open→claimed→done 으로 이동)라 출력 phrasing 비결정에 강건하다 —
+# complete 의 sync-gate(log entry·--tests-pass 류)까지 문서만 보고 자력 운영해야 통과한다.
+
+
+def _assert_full_lifecycle(dest: Path, proc: subprocess.CompletedProcess, harness: str) -> None:
+    """라이프사이클 side-effect 단언 — ticket 1개가 done/ 에 도달(open·claimed 잔류 없음).
+
+    done/ 도달이 핵심 단언(open→claimed→done 전이 완주). complete sync-gate 까지 통과해야만
+    done/ 에 ticket 이 생기므로, 이 단언이 곧 full 라이프사이클 운영성을 증명한다.
+    """
+    done_tickets = _tickets_in(dest, "done")
+    tail = (
+        f"--- {harness} stdout(tail) ---\n{proc.stdout[-2000:]}\n"
+        f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
+    )
+    assert done_tickets, (
+        f"실 {harness} 가 ticket 을 done/ 까지 운영하지 못함 — full 라이프사이클(new→claim→"
+        f"complete) 실패.\nopen={_tickets_in(dest, 'open')} claimed={_tickets_in(dest, 'claimed')}\n"
+        + tail
+    )
+    assert _board_list_recognizes_ticket(dest), f"board.py list 가 실 {harness} 운영 ticket 미인식"
+
+
+@pytest.mark.live_gate
+@pytest.mark.skipif(
+    not PM_ORCH_LIVE or not shutil.which("opencode"),
+    reason="runtime smoke — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
+)
+def test_live_opencode_adopter_runs_full_ticket_lifecycle(tmp_path):
+    """실 opencode(agentic·ollama)가 `AGENTS.md` 만 보고 ticket new→claim→complete 를 운영한다."""
+    dest = _import_adopter(tmp_path, "opencode")
+    proc = subprocess.run(
+        ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
+         _make_lifecycle_prompt("AGENTS.md")],
+        cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+    )
+    _assert_full_lifecycle(dest, proc, "opencode")
+
+
+@pytest.mark.live_gate
+@pytest.mark.skipif(
+    not PM_ORCH_LIVE or not shutil.which("claude"),
+    reason="runtime smoke — PM_ORCH_LIVE=1 + claude CLI 필요(API 과금). 기본 skip·on-demand.",
+)
+def test_live_claude_adopter_runs_full_ticket_lifecycle(tmp_path):
+    """실 claude(`claude-sonnet-4-6`·agentic)가 `CLAUDE.md` 만 보고 ticket new→claim→complete 운영.
+
+    claude 는 subprocess cwd 를 존중한다(`--dir` 불요). `--dangerously-skip-permissions` =
+    throwaway tmp adopter 격리라 안전(실 repo 무영향). API 과금.
+    """
+    dest = _import_adopter(tmp_path, "claude")
+    proc = subprocess.run(
+        ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
+         "--dangerously-skip-permissions", _make_lifecycle_prompt("CLAUDE.md")],
+        cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+    )
+    _assert_full_lifecycle(dest, proc, "claude")
