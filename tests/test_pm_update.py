@@ -840,3 +840,526 @@ def test_read_manifest_render_preserved_with_target_owned(pm_update, tmp_path):
     render_paths = {str(e) for e in entries if e.render}
     assert render_paths == {".claude/agents", ".opencode/agents"}, \
         "@target-owned 공존이 render 파싱을 깼다(board.py render-leak lint 회귀)."
+
+
+# ── T-0146: pm_update --changes — baseline↔HEAD 변경점 요약 (read-only·D5) ────
+# 전부 git_runner 주입(DI seam)으로 hermetic — 라이브 git/네트워크 0. fake_git_runner 가
+# argv 패턴(rev-parse·cat-file·log·diff)별로 결정적 출력을 돌려준다.
+
+def _make_fake_git_runner(
+    *,
+    head: str = "headHHHHHHHH",
+    baseline_reachable: bool = True,
+    log_lines=None,
+    diff_lines=None,
+):
+    """argv 패턴별 결정적 (rc, out) — summarize_upstream_changes 의 4 호출을 커버한다.
+
+    - rev-parse HEAD            → (0, head)        / head="" → (1, "")
+    - cat-file -e <rev>^{commit} → (0, "") if reachable else (1, "missing")
+    - log --oneline base..HEAD  → (0, "\\n".join(log_lines))
+    - diff --name-status …      → (0, "\\n".join(diff_lines))
+    """
+    log_lines = log_lines or []
+    diff_lines = diff_lines or []
+
+    def runner(argv):
+        if "rev-parse" in argv:
+            return (0, head + "\n") if head else (1, "")
+        if "cat-file" in argv:
+            return (0, "") if baseline_reachable else (1, "fatal: bad object")
+        if "log" in argv:
+            return 0, "\n".join(log_lines) + ("\n" if log_lines else "")
+        if "diff" in argv:
+            return 0, "\n".join(diff_lines) + ("\n" if diff_lines else "")
+        return 1, f"unexpected argv: {argv!r}"
+
+    return runner
+
+
+def _make_source_with_manifest(root: Path, manifest_lines):
+    """source(upstream) checkout 디렉토리 + engine.manifest.
+
+    main e2e 에서 _run_changes 가 resolve_manifest_for_dest(dest 우선·없으면 source)로 manifest 를
+    해소하므로, source 트리에 engine.manifest 를 둬 그 경로가 권위가 되게 한다(dest manifest 부재 시).
+    """
+    (root / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (root / ".project_manager" / "engine.manifest").write_text(
+        "\n".join(manifest_lines) + "\n", encoding="utf-8")
+
+
+def _manifest_entries(pm_update, lines):
+    """manifest 줄 리스트 → ManifestEntry 리스트 (summarize_upstream_changes 에 직접 주입용).
+
+    헬퍼 단위테스트는 manifest 를 *인자로* 넘긴다(codex MF — 분류 manifest 는 호출부가 sync 와
+    동일 경로로 해소). read_manifest 의 파싱(마커·주석)을 거쳐 실제 ManifestEntry 를 만든다.
+    """
+    text = "\n".join(lines) + "\n"
+    import tempfile
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".manifest", delete=False, encoding="utf-8") as f:
+        f.write(text)
+        path = Path(f.name)
+    try:
+        return pm_update.read_manifest(path)
+    finally:
+        path.unlink()
+
+
+# ── 헬퍼 단위: summarize_upstream_changes (git_runner 주입·hermetic) ──────────
+
+def test_summarize_normal_splits_engine_and_other(pm_update, tmp_path):
+    """정상: N commits + manifest 항목(파일·디렉토리)에 따라 engine/other 분리."""
+    source = tmp_path / "src"
+    source.mkdir()
+    manifest = _manifest_entries(pm_update, [
+        ".project_manager/tools/board.py",   # 파일 항목
+        ".claude/agents",                    # 디렉토리 항목(prefix 매칭)
+    ])
+    runner = _make_fake_git_runner(
+        head="abcdef1234567890",
+        log_lines=["abc1234 fix board lint", "def5678 add agent"],
+        diff_lines=[
+            "M\t.project_manager/tools/board.py",   # engine(파일 동일)
+            "A\t.claude/agents/new-agent.md",       # engine(디렉토리 prefix)
+            "M\tREADME.md",                          # other(manifest 밖)
+            "D\t.project_manager/wiki/status.md",   # other
+        ],
+    )
+    s = pm_update.summarize_upstream_changes(source, "base000000", manifest, git_runner=runner)
+    assert s["status"] == "ok"
+    assert s["head"] == "abcdef1234567890"
+    assert s["count"] == 2
+    engine_paths = {p for _c, p in s["engine"]}
+    other_paths = {p for _c, p in s["other"]}
+    assert engine_paths == {
+        ".project_manager/tools/board.py", ".claude/agents/new-agent.md"}
+    assert other_paths == {"README.md", ".project_manager/wiki/status.md"}
+    # 코드(M/A/D) 보존.
+    assert ("M", ".project_manager/tools/board.py") in s["engine"]
+    assert ("A", ".claude/agents/new-agent.md") in s["engine"]
+    assert ("D", ".project_manager/wiki/status.md") in s["other"]
+
+
+def test_summarize_head_equals_baseline_empty_log(pm_update, tmp_path):
+    """HEAD==baseline(빈 log) → status='up_to_date'·count 0·변경 목록 빈."""
+    source = tmp_path / "src"
+    source.mkdir()
+    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"])
+    runner = _make_fake_git_runner(head="samehead0000", log_lines=[], diff_lines=[])
+    s = pm_update.summarize_upstream_changes(source, "samehead0000", manifest, git_runner=runner)
+    assert s["status"] == "up_to_date"
+    assert s["count"] == 0
+    assert s["engine"] == [] and s["other"] == []
+
+
+def test_summarize_baseline_unreachable(pm_update, tmp_path):
+    """baseline rev 도달불가(cat-file rc≠0·force-push/shallow) → status='baseline_unreachable'."""
+    source = tmp_path / "src"
+    source.mkdir()
+    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"])
+    runner = _make_fake_git_runner(baseline_reachable=False)
+    s = pm_update.summarize_upstream_changes(source, "gonerev00000", manifest, git_runner=runner)
+    assert s["status"] == "baseline_unreachable"
+    # 도달불가면 log/diff 집계는 하지 않는다(early-return).
+    assert s["count"] == 0
+    assert s["engine"] == [] and s["other"] == []
+
+
+def test_summarize_rename_code_first_letter_and_new_path(pm_update, tmp_path):
+    """R(rename) name-status 는 `R100\\told\\tnew` 3필드 — 코드 첫글자 R·경로는 새 경로."""
+    source = tmp_path / "src"
+    source.mkdir()
+    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"])
+    runner = _make_fake_git_runner(
+        head="h",
+        log_lines=["aaa renamed tool"],
+        diff_lines=["R100\t.project_manager/tools/old.py\t.project_manager/tools/board.py"],
+    )
+    s = pm_update.summarize_upstream_changes(source, "base", manifest, git_runner=runner)
+    assert ("R", ".project_manager/tools/board.py") in s["engine"]
+
+
+def test_summarize_empty_manifest_all_other(pm_update, tmp_path):
+    """빈 manifest(둘 다 부재·fresh-adopter) → 변경 전부 'other'(graceful·엔진 영향 0 보수 표시)."""
+    source = tmp_path / "src"
+    source.mkdir()
+    runner = _make_fake_git_runner(
+        head="h", log_lines=["x commit"],
+        diff_lines=["M\t.project_manager/tools/board.py"])
+    s = pm_update.summarize_upstream_changes(source, "base", [], git_runner=runner)
+    assert s["engine"] == []
+    assert ("M", ".project_manager/tools/board.py") in s["other"]
+
+
+def test_summarize_log_failure_surfaces(pm_update, tmp_path):
+    """git log rc≠0(도달가능한데 호출 실패) → status='summary_failed'(빈 결과 오판 금지·suggestion 1)."""
+    source = tmp_path / "src"
+    source.mkdir()
+    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"])
+
+    def runner(argv):
+        if "rev-parse" in argv:
+            return 0, "headXXXXXXXX\n"
+        if "cat-file" in argv:
+            return 0, ""  # baseline 도달 가능
+        if "log" in argv:
+            return 128, "fatal: bad revision"  # log 호출 실패
+        return 1, "unexpected"
+
+    s = pm_update.summarize_upstream_changes(source, "base", manifest, git_runner=runner)
+    assert s["status"] == "summary_failed"
+    # 빈 결과를 "변경 0"으로 오판하지 않게 — count 0 이어도 status 로 실패를 구분한다.
+    assert s["engine"] == [] and s["other"] == []
+
+
+def test_summarize_diff_failure_surfaces(pm_update, tmp_path):
+    """git log 는 성공했으나 diff --name-status rc≠0 → status='summary_failed'(엔진 영향 0 오판 금지)."""
+    source = tmp_path / "src"
+    source.mkdir()
+    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"])
+
+    def runner(argv):
+        if "rev-parse" in argv:
+            return 0, "headXXXXXXXX\n"
+        if "cat-file" in argv:
+            return 0, ""
+        if "log" in argv:
+            return 0, "abc1234 commit one\n"  # log 성공(commit 1)
+        if "diff" in argv:
+            return 128, "fatal: diff failed"  # diff 호출 실패
+        return 1, "unexpected"
+
+    s = pm_update.summarize_upstream_changes(source, "base", manifest, git_runner=runner)
+    assert s["status"] == "summary_failed"
+
+
+# ── main --changes end-to-end (fake _real_upstream_git_runner 주입·라이브 git 0) ──
+
+def _patch_upstream_runner(pm_update, monkeypatch, runner):
+    """_run_changes 가 git_runner 미주입으로 호출하므로 pm_import._real_upstream_git_runner 를 stub.
+
+    summarize_upstream_changes(source, baseline, manifest) (git_runner 없음) → _load_pm_import().
+    _real_upstream_git_runner() 를 부른다. 그 팩토리를 fake runner 반환으로 바꿔 라이브 git 0.
+    """
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "_real_upstream_git_runner", lambda: runner)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+
+def test_changes_main_normal_three_blocks(pm_update, tmp_path, monkeypatch, capsys):
+    """--changes: baseline..HEAD 3블록(헤더·엔진 영향·그 외) 출력·실 sync 안 함."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py", ".claude/agents"])
+    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base12345678\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    runner = _make_fake_git_runner(
+        head="head9876543210",
+        log_lines=["abc1234 fix", "def5678 feat"],
+        diff_lines=[
+            "M\t.project_manager/tools/board.py",
+            "A\t.claude/agents/x.md",
+            "M\tCHANGELOG.md",
+        ],
+    )
+    _patch_upstream_runner(pm_update, monkeypatch, runner)
+
+    rc = pm_update.main(["--changes"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "baseline base12345678" in out
+    assert "HEAD head98765432" in out  # 12자 절단
+    assert "2 commits" in out
+    # 엔진 영향 2 / 그 외 1 분리.
+    assert "엔진 영향" in out and "2 files" in out
+    assert "M .project_manager/tools/board.py" in out
+    assert "A .claude/agents/x.md" in out
+    assert "그 외 변경" in out and "1 files" in out
+    # 실 sync 안 함 — source 파일을 fake_repo 로 복사하지 않았다(엔진 영향 로그는 board.py 만 언급).
+    assert not (fake_repo / ".project_manager" / "tools" / "board.py").exists()
+
+
+def test_changes_main_count_only(pm_update, tmp_path, monkeypatch, capsys):
+    """--changes --count-only: commit 개수 1줄만."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    runner = _make_fake_git_runner(
+        head="h", log_lines=["a x", "b y", "c z"], diff_lines=["M\tREADME.md"])
+    _patch_upstream_runner(pm_update, monkeypatch, runner)
+
+    rc = pm_update.main(["--changes", "--count-only"])
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    assert out == "3", f"count-only 가 개수 1줄이 아님: {out!r}"
+
+
+def test_changes_main_log_tail(pm_update, tmp_path, monkeypatch, capsys):
+    """--changes --log: git log --oneline 커밋 목록을 꼬리에 출력."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    runner = _make_fake_git_runner(
+        head="h",
+        log_lines=["abc1234 first commit", "def5678 second commit"],
+        diff_lines=["M\t.project_manager/tools/board.py"],
+    )
+    _patch_upstream_runner(pm_update, monkeypatch, runner)
+
+    rc = pm_update.main(["--changes", "--log"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "abc1234 first commit" in out
+    assert "def5678 second commit" in out
+
+
+def test_changes_main_baseline_unrecorded_graceful(pm_update, tmp_path, monkeypatch, capsys):
+    """baseline(upstream_rev) 미기록 → graceful 안내·exit 0(요약 생략·다음 sync 후 추적)."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    # upstream 은 있으나 upstream_rev 없음.
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    rc = pm_update.main(["--changes"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "baseline 미기록" in out
+    assert "다음" in out and "sync" in out
+
+
+def test_changes_main_head_equals_baseline(pm_update, tmp_path, monkeypatch, capsys):
+    """HEAD==baseline(변경 0) → '변경 0·최신' 안내·exit 0."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=samerev00000\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    runner = _make_fake_git_runner(head="samerev00000", log_lines=[], diff_lines=[])
+    _patch_upstream_runner(pm_update, monkeypatch, runner)
+
+    rc = pm_update.main(["--changes"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "변경 0" in out and "최신" in out
+
+
+def test_changes_main_baseline_unreachable(pm_update, tmp_path, monkeypatch, capsys):
+    """baseline rev 도달불가(cat-file rc≠0) → 재clone 권고·exit 0."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=gonerev00000\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    runner = _make_fake_git_runner(baseline_reachable=False)
+    _patch_upstream_runner(pm_update, monkeypatch, runner)
+
+    rc = pm_update.main(["--changes"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "도달 불가" in out
+    assert "재clone" in out or "재 clone" in out
+
+
+def test_changes_main_url_upstream_early_error(pm_update, tmp_path, monkeypatch, capsys):
+    """--changes + URL upstream + --from 생략 → 명확 에러로 멈춤(rc≠0·D5: git clone/fetch 안 함).
+
+    엔진은 로컬 checkout 만 read 한다 — URL freshness 는 스킬층(T-0147) 소관. _run_changes 가
+    sync 와 같은 _resolve_dest_source 를 타므로 URL 게이트를 동일하게 거친다.
+    """
+    fake_repo = tmp_path / "fake_repo"
+    _write_local_conf(
+        fake_repo, "upstream=https://github.com/acme/proj.git\nupstream_rev=base\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    rc = pm_update.main(["--changes"])
+    assert rc == 1, "URL upstream 인데 명확 에러로 안 멈춤(D5 경계 위반)."
+    err = capsys.readouterr().err
+    assert "URL" in err and ("pm-update" in err or "--from" in err)
+
+
+def test_changes_main_url_upstream_explicit_local_from_works(pm_update, tmp_path, monkeypatch, capsys):
+    """local.conf 가 URL 이어도 --changes --from <로컬 checkout> 명시면 동작(URL 게이트 우회).
+
+    URL 게이트는 stored upstream 해소 분기 한정 — 명시 --from(로컬)은 그 분기를 안 탄다(sync 동형).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    _write_local_conf(
+        fake_repo, "upstream=https://github.com/acme/proj.git\nupstream_rev=base\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    runner = _make_fake_git_runner(
+        head="h", log_lines=["a x"], diff_lines=["M\t.project_manager/tools/board.py"])
+    _patch_upstream_runner(pm_update, monkeypatch, runner)
+
+    rc = pm_update.main(["--changes", "--from", str(source)])
+    captured = capsys.readouterr()
+    assert rc == 0, f"명시 --from(로컬)인데 URL 게이트가 막음: {captured.err!r}"
+    assert "엔진 영향" in captured.out
+
+
+def test_changes_does_not_sync(pm_update, tmp_path, monkeypatch, capsys):
+    """--changes 는 read-only — apply 를 절대 부르지 않는다(실 복사 0·부작용 0)."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    sentinel = source / ".project_manager" / "tools" / "board.py"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("# real engine file\n", encoding="utf-8")
+    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    called = {"apply": False}
+    monkeypatch.setattr(pm_update, "apply", lambda *a, **k: called.__setitem__("apply", True))
+
+    runner = _make_fake_git_runner(
+        head="h", log_lines=["a x"], diff_lines=["M\t.project_manager/tools/board.py"])
+    _patch_upstream_runner(pm_update, monkeypatch, runner)
+
+    rc = pm_update.main(["--changes"])
+    assert rc == 0
+    assert called["apply"] is False, "--changes 가 apply 를 불렀다(read-only 위반)."
+    # source 의 board.py 가 dest(fake_repo)로 복사되지 않았다.
+    assert not (fake_repo / ".project_manager" / "tools" / "board.py").exists()
+
+
+# ── codex MF: 엔진 영향 분류 manifest = sync 와 동일(dest 우선·없으면 source) ──
+
+def test_changes_uses_dest_manifest_when_present(pm_update, tmp_path, monkeypatch, capsys):
+    """dest manifest ≠ source manifest → **dest manifest 가 권위**(실 sync 와 일치·codex MF).
+
+    실 sync 는 resolve_manifest_for_dest(dest 우선)로 "무엇이 엔진인가"를 정한다. --changes 의
+    "엔진 영향(이번 동기가 받는 것)"도 같은 manifest 를 써야 어긋나지 않는다. source manifest 는
+    board.py 만 엔진이라 하고, dest manifest 는 .claude/agents 만 엔진이라 하는 상충 상황에서,
+    분류가 *dest* 를 따라야 함을 단언(source 로 분류하던 잘못을 잡는 sensitivity).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    # source manifest: board.py 만 엔진.
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    # dest(fake_repo) manifest: .claude/agents 만 엔진(source 와 상충).
+    (fake_repo / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (fake_repo / ".project_manager" / "engine.manifest").write_text(
+        ".claude/agents\n", encoding="utf-8")
+    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base12345678\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    runner = _make_fake_git_runner(
+        head="head0000",
+        log_lines=["abc1234 c1"],
+        diff_lines=[
+            "M\t.project_manager/tools/board.py",   # source 면 engine·dest 면 other
+            "A\t.claude/agents/x.md",               # dest 면 engine·source 면 other
+        ],
+    )
+    _patch_upstream_runner(pm_update, monkeypatch, runner)
+
+    rc = pm_update.main(["--changes"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # dest manifest 권위 → .claude/agents 가 엔진 영향, board.py 는 그 외.
+    assert "엔진 영향 (manifest 경로·이번 동기가 받는 것): 1 files" in out
+    assert "A .claude/agents/x.md" in out
+    assert "그 외 변경 (manifest 밖·동기 안 받음): 1 files" in out
+    # board.py 가 엔진 영향 목록에 떠선 안 된다(source manifest 로 분류했다는 증거).
+    engine_block = out.split("엔진 영향")[1].split("그 외 변경")[0]
+    assert ".project_manager/tools/board.py" not in engine_block, \
+        "source manifest 로 분류함(dest 권위 위반·codex MF 회귀)."
+
+
+def test_changes_falls_back_to_source_manifest_when_no_dest(pm_update, tmp_path, monkeypatch, capsys):
+    """dest manifest 부재(fresh-adopter 직전·dest 미생성) → source manifest 로 분류(graceful fallback).
+
+    resolve_manifest_for_dest 의 dest 우선·없으면 source 폴백을 --changes 도 그대로 상속한다.
+    """
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    # dest 에는 engine.manifest 없음(local.conf 만) → source manifest 가 폴백 권위.
+    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    runner = _make_fake_git_runner(
+        head="h", log_lines=["a x"],
+        diff_lines=["M\t.project_manager/tools/board.py", "M\tREADME.md"])
+    _patch_upstream_runner(pm_update, monkeypatch, runner)
+
+    rc = pm_update.main(["--changes"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "엔진 영향 (manifest 경로·이번 동기가 받는 것): 1 files" in out
+    assert "M .project_manager/tools/board.py" in out
+    assert "그 외 변경 (manifest 밖·동기 안 받음): 1 files" in out
+
+
+# ── codex suggestion 1: 집계 실패 surface (빈 결과 → "변경 0" 오판 금지) ──────
+
+def test_changes_main_summary_failed_surfaces(pm_update, tmp_path, monkeypatch, capsys):
+    """log/diff git 호출 rc≠0(요약 불가) → stderr 안내·exit 0(변경 0 오판 금지·suggestion 1)."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base12345678\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    def runner(argv):
+        if "rev-parse" in argv:
+            return 0, "head0000\n"
+        if "cat-file" in argv:
+            return 0, ""  # baseline 도달 가능(unreachable 과 구분)
+        if "log" in argv:
+            return 128, "fatal: bad revision"  # 집계 실패
+        return 1, "unexpected"
+
+    _patch_upstream_runner(pm_update, monkeypatch, runner)
+
+    rc = pm_update.main(["--changes"])
+    assert rc == 0  # read-only 안내 — 진행은 막지 않되 명확히 surface.
+    captured = capsys.readouterr()
+    assert "집계 실패" in captured.err or "요약 불가" in captured.err, \
+        "집계 실패가 surface 되지 않음(변경 0 오판 위험·suggestion 1)."
+    # "변경 0·최신" 같은 오판 메시지가 stdout 에 뜨면 안 된다.
+    assert "변경 0" not in captured.out
+
+
+# ── codex suggestion 2: --count-only/--log 는 --changes 전용 (CLI 오사용 차단) ──
+
+def test_count_only_without_changes_errors(pm_update, tmp_path, monkeypatch, capsys):
+    """--count-only 를 --changes 없이 주면 명확 에러(rc≠0) — 조용한 무시·일반 sync 진행 금지."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    rc = pm_update.main(["--count-only"])
+    assert rc == 1, "--count-only 가 --changes 없이도 통과(일반 sync 진행·조용한 무시)."
+    err = capsys.readouterr().err
+    assert "--count-only" in err and "--changes" in err
+
+
+def test_log_without_changes_errors(pm_update, tmp_path, monkeypatch, capsys):
+    """--log 를 --changes 없이 주면 명확 에러(rc≠0) — 조용한 무시 금지."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "checkout"
+    _make_source_with_manifest(source, [".project_manager/tools/board.py"])
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    rc = pm_update.main(["--log"])
+    assert rc == 1, "--log 가 --changes 없이도 통과(조용한 무시)."
+    err = capsys.readouterr().err
+    assert "--log" in err and "--changes" in err
