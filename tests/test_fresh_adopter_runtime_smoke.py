@@ -35,6 +35,26 @@ LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/gemma4:26b")
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 RUNTIME_TIMEOUT = int(os.environ.get("PM_ADOPTER_RUNTIME_TIMEOUT", "300"))
 
+# LLM subprocess env 화이트리스트 — 부모 셸의 모델 선택 변수(PM_ORCH_LIVE_MODEL·
+# PM_ORCH_LIVE_CLAUDE_MODEL·PM_ORCH_LIVE)가 하위 LLM 으로 누수하면 모델 선택이 부모 env
+# 의존(비-hermetic·재현성 저하)이 된다. 부모 환경을 통째 상속하지 않고 LLM 바이너리 동작에
+# 필수인 것만 통과시킨다. 모델 값은 _live_env(model=...) 가 테스트 의도값으로 명시 set.
+_LIVE_ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE")
+
+
+def _live_env(model: str) -> dict[str, str]:
+    """LLM subprocess 용 명시 env(화이트리스트) — 부모 env 통째 상속·모델 누수 차단.
+
+    필수 환경(PATH/HOME/로케일·LLM 바이너리 동작에 필요)만 부모에서 통과시키고, 테스트가
+    의도한 모델을 `PM_ORCH_LIVE_MODEL` 로 직접 박는다(부모 env 폴백에 의존하지 않음). 부모
+    셸에 set 된 PM_ORCH_LIVE_MODEL·PM_ORCH_LIVE_CLAUDE_MODEL·PM_ORCH_LIVE 는 화이트리스트
+    밖이라 안 흘러든다 — 누가/어디서 돌려도 같은 모델로 동작(hermetic).
+    """
+    env = {k: os.environ[k] for k in _LIVE_ENV_PASSTHROUGH if k in os.environ}
+    env["PM_NONINTERACTIVE"] = "1"
+    env["PM_ORCH_LIVE_MODEL"] = model
+    return env
+
 
 def _make_prompt(entry_doc: str) -> str:
     """adopter 의 진입문서(`entry_doc`)만 보고 board 도구로 ticket 을 발행하라는 프롬프트.
@@ -91,6 +111,8 @@ def _board_list_recognizes_ticket(dest: Path) -> bool:
         cwd=str(dest),
         capture_output=True,
         text=True,
+        # 엔진 도구(board.py)는 LLM 이 아니라 모델 선택 무관 — 부모 env 상속 OK.
+        # 모델 누수가 문제되는 LLM subprocess(opencode/claude)만 _live_env 로 격리한다.
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
     )
     return "T-" in listing.stdout
@@ -120,6 +142,7 @@ def test_live_opencode_adopter_bootstraps_and_creates_ticket(tmp_path):
         ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
          _make_prompt("AGENTS.md")],
         cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        env=_live_env(LIVE_MODEL),
     )
 
     created = {p.name for p in open_dir.glob("T-*.md")} - before
@@ -150,6 +173,7 @@ def test_live_claude_adopter_bootstraps_and_creates_ticket(tmp_path):
         ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
          "--dangerously-skip-permissions", _make_prompt("CLAUDE.md")],
         cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        env=_live_env(CLAUDE_MODEL),
     )
 
     created = {p.name for p in open_dir.glob("T-*.md")} - before
@@ -183,6 +207,8 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
         [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
          "--from", str(REPO)],
         cwd=str(dest), capture_output=True, text=True,
+        # 엔진 도구(pm_update.py)는 LLM 이 아니라 모델 선택 무관 — 부모 env 상속 OK.
+        # 모델 누수가 문제되는 LLM subprocess(opencode/claude)만 _live_env 로 격리한다.
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
     )
 
@@ -214,6 +240,7 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
         ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
          _make_prompt("AGENTS.md")],
         cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        env=_live_env(LIVE_MODEL),
     )
     created = {p.name for p in open_dir.glob("T-*.md")} - before
     assert created, (
@@ -249,6 +276,7 @@ def test_live_claude_adopter_survives_pm_update_then_operates(tmp_path):
         ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
          "--dangerously-skip-permissions", _make_prompt("CLAUDE.md")],
         cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        env=_live_env(CLAUDE_MODEL),
     )
     created = {p.name for p in open_dir.glob("T-*.md")} - before
     assert created, (
@@ -296,6 +324,7 @@ def test_live_opencode_adopter_runs_full_ticket_lifecycle(tmp_path):
         ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
          _make_lifecycle_prompt("AGENTS.md")],
         cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        env=_live_env(LIVE_MODEL),
     )
     _assert_full_lifecycle(dest, proc, "opencode")
 
@@ -316,5 +345,122 @@ def test_live_claude_adopter_runs_full_ticket_lifecycle(tmp_path):
         ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
          "--dangerously-skip-permissions", _make_lifecycle_prompt("CLAUDE.md")],
         cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        env=_live_env(CLAUDE_MODEL),
     )
     _assert_full_lifecycle(dest, proc, "claude")
+
+
+# ── env 격리 가드 (라이브 실행 없이·hermetic — T-0155) ──────────────────────────
+# 위 라이브 테스트들은 LLM subprocess 를 `env=_live_env(model)` 로 띄운다 — 부모 env 통째 상속
+# 대신 화이트리스트. 아래 가드는 부모 셸에 모델 선택 변수를 오염시킨 채로도 그 부모 값이 LLM env
+# 로 안 흘러듦을 단언한다(라이브 미호출·env 빌더/subprocess 인자 단위). 격리를 떼면 fail(sensitivity).
+
+# 부모 셸에서 새면 모델 선택을 비-hermetic 하게 만드는 누수 변수 — 단일 진실.
+# 가드들이 이 목록을 순회해 오염·누수0 을 단언하므로, 미래에 누수 변수가 늘면 여기 한 곳만
+# 갱신하면 가드가 자동 커버한다. 각 값에 "leaked" 토큰을 박아 누수 시 env 에서 검출.
+_LEAK_VARS = ("PM_ORCH_LIVE_MODEL", "PM_ORCH_LIVE_CLAUDE_MODEL", "PM_ORCH_LIVE")
+_LEAK_SENTINEL = "leaked-by-parent"
+
+
+def _pollute_parent_leak_vars(monkeypatch) -> None:
+    """부모 셸 오염 모사 — 모든 누수 변수에 sentinel 토큰을 박는다(_LEAK_VARS 단일 진실)."""
+    for var in _LEAK_VARS:
+        monkeypatch.setenv(var, _LEAK_SENTINEL)
+
+
+def test_live_env_does_not_leak_parent_model_vars(monkeypatch):
+    """부모 env 에 모델 선택 변수가 오염돼 있어도 _live_env 결과로 그 부모 값이 안 새어든다."""
+    _pollute_parent_leak_vars(monkeypatch)
+
+    env = _live_env("test/intended-model")
+
+    # 모델 값은 테스트가 의도한 것 — 부모의 sentinel 값이 아니다.
+    assert env["PM_ORCH_LIVE_MODEL"] == "test/intended-model"
+    # 어떤 누수 변수의 부모(sentinel) 값도 env 로 새지 않는다(_LEAK_VARS 순회).
+    for var in _LEAK_VARS:
+        assert env.get(var) != _LEAK_SENTINEL, f"부모 {var} 값이 _live_env 로 누수됨"
+    # 부모의 sentinel 토큰이 env 어느 값에도 없다.
+    assert _LEAK_SENTINEL not in repr(env)
+
+
+def test_live_env_includes_required_runtime_env(monkeypatch):
+    """화이트리스트가 LLM 바이너리 동작 필수 환경(PATH·HOME·PM_NONINTERACTIVE)을 포함한다.
+
+    PATH/HOME/로케일 누락 시 LLM 실행 자체가 깨지므로 격리가 동작을 망가뜨리지 않는지 가드.
+    """
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HOME", "/home/tester")
+
+    env = _live_env("test/model")
+
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["HOME"] == "/home/tester"
+    assert env["PM_NONINTERACTIVE"] == "1"
+
+
+def test_live_env_passthrough_is_explicit_whitelist(monkeypatch):
+    """부모의 임의 변수는 화이트리스트 밖이면 통과 안 함(부모 통째 상속 아님)."""
+    monkeypatch.setenv("SOME_UNRELATED_PARENT_VAR", "should-not-pass")
+
+    env = _live_env("test/model")
+
+    assert "SOME_UNRELATED_PARENT_VAR" not in env
+    # env 키는 화이트리스트 ∪ {PM_NONINTERACTIVE, PM_ORCH_LIVE_MODEL} 부분집합.
+    allowed = set(_LIVE_ENV_PASSTHROUGH) | {"PM_NONINTERACTIVE", "PM_ORCH_LIVE_MODEL"}
+    assert set(env).issubset(allowed)
+
+
+def test_live_calls_use_isolated_env(monkeypatch):
+    """라이브 호출 6개가 부모 env 통째 상속이 아니라 _live_env(화이트리스트)로 LLM 을 띄운다.
+
+    실 LLM 을 띄우지 않고(subprocess.run 을 가로채) 각 라이브 테스트가 LLM 호출에 넘기는 env 가
+    부모 누수 변수를 안 담음을 단언한다. 격리(env=_live_env)를 떼면 부모 통째 상속이 되어 fail
+    (sensitivity). adopter import·board list·pm_update 등 LLM 이 아닌 subprocess 는 통과시킨다.
+    """
+    # 부모 셸 오염 — 격리가 없으면 이 값들이 LLM env 로 샌다(_LEAK_VARS 단일 진실).
+    _pollute_parent_leak_vars(monkeypatch)
+
+    real_run = subprocess.run
+    llm_envs: list[dict | None] = []
+
+    def _spy_run(cmd, *args, **kwargs):
+        # LLM 바이너리 호출만 env 를 포착(import/board/pm_update 는 실행 그대로).
+        if cmd and cmd[0] in ("opencode", "claude"):
+            llm_envs.append(kwargs.get("env"))
+            # 라이브 LLM 은 실제로 띄우지 않는다 — 빈 성공 응답으로 대역.
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _spy_run)
+    # 게이트 우회 — 라이브 분기 진입(실 LLM 은 spy 가 막음). which 도 통과시킨다.
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/stub")
+
+    import importlib
+    mod = importlib.import_module(__name__)
+    monkeypatch.setattr(mod, "PM_ORCH_LIVE", True)
+
+    # tmp_path 대신 직접 만든 임시 디렉토리로 6개 라이브 테스트 함수를 spy 하에 구동.
+    import tempfile
+    live_tests = [
+        test_live_opencode_adopter_bootstraps_and_creates_ticket,
+        test_live_claude_adopter_bootstraps_and_creates_ticket,
+        test_live_opencode_adopter_survives_pm_update_then_operates,
+        test_live_claude_adopter_survives_pm_update_then_operates,
+        test_live_opencode_adopter_runs_full_ticket_lifecycle,
+        test_live_claude_adopter_runs_full_ticket_lifecycle,
+    ]
+    for fn in live_tests:
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                fn(Path(td))
+            except AssertionError:
+                # 라이브 LLM 을 stub 으로 막아 발행 단언은 실패할 수 있다 — 여기선 env 만 관심.
+                pass
+
+    assert llm_envs, "LLM subprocess 호출이 한 건도 포착되지 않음 — spy 배선 오류"
+    for env in llm_envs:
+        assert env is not None, "LLM 호출에 env 미전달(부모 통째 상속) — 격리 깨짐"
+        # 어떤 누수 변수의 부모(sentinel) 값도 LLM env 로 새지 않는다(_LEAK_VARS 순회).
+        for var in _LEAK_VARS:
+            assert env.get(var) != _LEAK_SENTINEL, \
+                f"부모의 {var} 이 LLM env 로 누수됨 — 격리 깨짐"
