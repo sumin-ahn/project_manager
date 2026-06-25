@@ -514,7 +514,7 @@ def test_repo_add_registers_areas_and_clones(pc, tmp_path):
 
 
 def test_repo_add_already_registered_bare_exists_is_noop(pc, tmp_path):
-    """이미 등록 + bare 존재 → 완전 no-op rc 0(append 0·clone 0·멱등 재실행)."""
+    """이미 등록 + bare 존재 → 등록 no-op rc 0(append 0·clone 0). refspec 보정만 돈다(T-0152)."""
     board = FakeBoard(registered=("svc",))
     gitr = FakeGitRecorder(rc=0)
     repos = tmp_path / ".repos"
@@ -525,7 +525,9 @@ def test_repo_add_already_registered_bare_exists_is_noop(pc, tmp_path):
     )
     assert rc == 0
     assert board.append_calls == []   # 중복 등록 안 함
-    assert gitr.calls == []           # 이미 완비 → clone 안 함(no-op)
+    assert _clone_argv(gitr) is None  # 이미 완비 → clone 안 함(no-op)
+    # 기존 bare 재사용 경로에서도 fetch refspec 보정은 멱등 수행한다(refspec-없는 과거 bare 복구·T-0152).
+    assert any("config" in c and "remote.origin.fetch" in c for c in gitr.calls)
 
 
 def test_repo_add_already_registered_bare_missing_retries_clone(pc, tmp_path):
@@ -543,11 +545,13 @@ def test_repo_add_already_registered_bare_missing_retries_clone(pc, tmp_path):
     )
     assert rc == 0
     assert board.append_calls == []           # 중복 등록 안 함(append-only 보호)
-    assert len(gitr.calls) == 1               # clone 재시도됨
-    argv = gitr.calls[0]
+    argv = _clone_argv(gitr)                   # clone 재시도됨
+    assert argv is not None
     assert argv[0] == "clone" and "--bare" in argv
     assert argv[-2] == "git@h:me/svc.git"
     assert argv[-1].endswith("svc.git")
+    # clone 성공 직후 fetch refspec 보정도 수행한다(T-0152·origin/* remote-tracking ref).
+    assert any("config" in c and "remote.origin.fetch" in c for c in gitr.calls)
 
 
 def test_repo_add_clone_failure_returns_error(pc, tmp_path, capsys):
