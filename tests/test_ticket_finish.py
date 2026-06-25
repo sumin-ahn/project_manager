@@ -496,3 +496,135 @@ def test_affected_domain_titles_shares_single_git_runner(tf, tmp_path, monkeypat
     assert result == [("A", None), ("B", None), ("C", None)]
     assert calls["runner_built"] == 1                       # 페이지 3개여도 runner 1회 생성
     assert calls["runners_seen"] == [sentinel, sentinel, sentinel]  # 같은 runner 공유
+
+
+# ── self-host 회귀 cwd 런타임 해소 (T-0149 — ② 홈서 worktree 회귀) ─────────────
+#
+# 분리된 PM 홈(②·ADR-0027)엔 tests/ 가 없으므로, ② 홈 cwd 에서 ticket_finish 를 돌리면
+# 회귀가 활성 worktree 슬롯(①·tests/)에서 돌아야 한다. `__init__` 즉시-REPO-고정 버그를
+# 제거하고 `_default_run_pytest` 가 런타임에 `_regression_cwd()` 로 해소한다. ticket_finish
+# `_regression_cwd` wrapper 는 pm_handoff `_regression_cwd`(T-0124·bootstrap `_auto_slot`
+# 동적로드 재사용)에 위임한다.
+#
+# seam 주입 주의: pm_handoff `_regression_cwd`·pm_bootstrap `_auto_slot` 의 `areas_file`/
+# `leases_file` 은 **def-time 바운드 기본 인자**(실 worktree 경로)다 — 모듈 전역(`AREAS_FILE`)을
+# setattr 로 rebind 해도 이미 캡처된 기본값을 못 바꾼다(가짜 seam). 그래서 `hp._regression_cwd`
+# 를 areas/leases 를 *명시 인자로* 넘기는 lambda 로 감싸 주입한다(전역 rebind 대신). 또 REPO
+# 자체가 `.../work/project_manager_1`(① worktree 에서 pytest 실행)이라 그 suffix 로 self-host
+# 를 단언하면 REPO 폴백과 우연 일치한다 — 슬롯명을 `work/myrepo_7` 로 둬 구조적으로 구별한다.
+
+import json as _selfhost_json  # noqa: E402 — T-0149 테스트 전용 로컬 import
+
+
+def _write_selfhost_areas(path: Path, repos: list[str]) -> None:
+    """areas.md (신 스키마·파이프 테이블) — repo 행을 repos 개수만큼. 빈 리스트면 헤더만."""
+    lines = [
+        "| repo | prefix | git | test_cmd | owner | base | protected |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for r in repos:
+        lines.append(f"| {r} | {r} |  |  | alice |  |  |")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_selfhost_leases(path: Path, entries: list[dict]) -> None:
+    """worktree-leases.json — {"leases": [...]} 스키마 (worktree_pool.Lease.to_dict 동형)."""
+    path.write_text(_selfhost_json.dumps({"leases": entries}), encoding="utf-8")
+
+
+def _bind_pm_handoff_seams(tf, monkeypatch, areas: Path, leases: Path):
+    """pm_handoff 를 로드하고 `_regression_cwd` 를 areas/leases 명시 인자 lambda 로 감싸 주입.
+
+    pm_handoff `_regression_cwd`(과 그 하부 `_auto_slot`)의 areas/leases 는 def-time 바운드
+    기본 인자라 모듈 전역 setattr rebind 가 무효다(가짜 seam). 그래서 원본 `_regression_cwd`
+    를 닫아 `worktree_slot` 만 받고 areas/leases 를 *명시 인자로* 넘기는 lambda 로 교체한다 —
+    이게 실 장부/areas 미접촉 hermetic 해소의 유효한 seam 이다. ticket_finish wrapper 는
+    `hp._regression_cwd(slot)` 로 호출하므로 이 교체가 그대로 위임 경로에 먹힌다.
+    """
+    hp = tf._load_pm_handoff()
+    assert hp is not None  # 동적 로드 성공 전제 (없으면 폴백 테스트로 분리)
+    real = hp._regression_cwd
+    monkeypatch.setattr(
+        hp, "_regression_cwd",
+        lambda worktree_slot=None: real(worktree_slot, areas, leases),
+    )
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: hp)
+    return hp
+
+
+def test_regression_cwd_self_host_resolves_worktree_slot(tf, tmp_path, monkeypatch):
+    """② 홈 cwd 모사 — 단일 self-host(areas 1 repo + 슬롯 1개) → work/<repo>_<N> 해소.
+
+    이게 깨지면 ② 홈서 ticket_finish 회귀가 tests/ 없는 ② cwd 에서 돌아 "no tests ran" red.
+    슬롯명을 `work/myrepo_7` 로 둬 REPO suffix(`work/project_manager_1`)와 구조적으로 구별한다 —
+    REPO 폴백과 우연 일치하지 않아야 self-host 해소를 실제로 단언하는 가드가 된다.
+    """
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_selfhost_areas(areas, ["myrepo"])
+    _write_selfhost_leases(leases, [
+        {"slot": "work/myrepo_7", "repo": "myrepo",
+         "session": "myrepo_7", "state": "leased"},
+    ])
+    _bind_pm_handoff_seams(tf, monkeypatch, areas, leases)
+    result = tf._regression_cwd()
+    # REPO 자체가 work/project_manager_1 이므로 myrepo_7 로 끝나면 self-host 해소 확정(폴백 아님).
+    assert result.endswith("work/myrepo_7")
+    assert not result.endswith(str(tf.REPO))  # REPO 폴백과 구별
+
+
+def test_regression_cwd_explicit_slot_overrides_auto(tf, tmp_path, monkeypatch):
+    """명시 worktree_slot 우선 — auto 판정을 무시하고 그 슬롯 경로 반환."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_selfhost_areas(areas, ["myrepo"])
+    _write_selfhost_leases(leases, [
+        {"slot": "work/myrepo_7", "repo": "myrepo",
+         "session": "myrepo_7", "state": "leased"},
+    ])
+    _bind_pm_handoff_seams(tf, monkeypatch, areas, leases)
+    result = tf._regression_cwd("work/foo_2")
+    assert result.endswith("work/foo_2")
+
+
+def test_regression_cwd_solo_falls_back_to_repo(tf, tmp_path, monkeypatch):
+    """솔로(areas 부재·모호) → str(REPO) 폴백 (현행 100% 보존·additive)."""
+    areas = tmp_path / "areas.md"           # 미생성 → 부재(솔로)
+    leases = tmp_path / "worktree-leases.json"
+    _write_selfhost_leases(leases, [
+        {"slot": "work/myrepo_7", "repo": "myrepo",
+         "session": "myrepo_7", "state": "leased"},
+    ])
+    _bind_pm_handoff_seams(tf, monkeypatch, areas, leases)
+    assert tf._regression_cwd() == str(tf.REPO)
+
+
+def test_regression_cwd_pm_handoff_absent_falls_back_to_repo(tf, monkeypatch):
+    """pm_handoff 동적로드 실패(None) → str(REPO) 폴백 (자동해소 없이 안전·fail-soft)."""
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: None)
+    assert tf._regression_cwd() == str(tf.REPO)
+
+
+def test_default_run_pytest_resolves_cwd_at_runtime_when_not_injected(tf, monkeypatch):
+    """regression_cwd 미주입 → _default_run_pytest 가 런타임 _regression_cwd() 로 해소.
+
+    __init__ 즉시-고정 버그(REPO 박제) 제거 회귀 가드 — 미주입 시 self-host 슬롯이
+    cwd 로 들어가야 한다(② 홈서 worktree 회귀). 명시 주입은 다음 두 테스트가 보존 검증.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured["cwd"] = kw.get("cwd")
+        class R:
+            returncode = 0
+            stdout = "1 passed in 0.1s"
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(tf, "_resolve_per_repo_test_cmd", lambda: None)
+    monkeypatch.setattr(tf, "_regression_cwd", lambda: "/wt/project_manager_1")
+    monkeypatch.setattr(tf.subprocess, "run", fake_run)
+    finisher = tf.TicketFinisher(venv_python="/venv/bin/python")  # regression_cwd 미주입
+    rc, _out = finisher._default_run_pytest()
+    assert rc == 0
+    assert captured["cwd"] == "/wt/project_manager_1"  # __init__ 박제 아니라 런타임 해소
