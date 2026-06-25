@@ -357,6 +357,54 @@ def _resolve_base(base_arg: str | None, bare_path: Path, *, runner: GitRunner):
     return base_arg
 
 
+# ── bare clone fetch refspec 보정 (T-0152) ───────────────────────────────────
+
+# `git clone --bare` 가 설정하지 않는 fetch refspec — 일반(non-bare) clone 은 이 줄을
+# remote.origin.fetch 에 박지만 `--bare` 는 생략한다. 그 결과 bare 에 origin/* remote-tracking
+# ref(origin/main 등)가 안 생겨, 그 bare 를 공유하는 worktree 슬롯이 핸드오프 라이브-게이트
+# (T-0151)의 baseline(@{upstream}/origin/main)을 해소 못 한다. multi-PM 패밀리 공통 결함(T-0152).
+_BARE_FETCH_REFSPEC = "+refs/heads/*:refs/remotes/origin/*"
+
+
+def _set_bare_fetch_refspec(bare_path: Path, *, runner: GitRunner) -> None:
+    """bare repo 에 fetch refspec 을 박고 origin/* remote-tracking ref 를 채운다 (T-0152·fail-soft).
+
+    `git clone --bare` 는 일반 clone 과 달리 `remote.origin.fetch` 를 설정하지 않아 bare 에
+    `refs/remotes/origin/*` 가 영영 안 생긴다 → 그 bare 를 공유하는 worktree 슬롯이 핸드오프
+    라이브-게이트(T-0151)의 baseline(origin/main)을 해소 못 한다(ambiguous→surface). 이를:
+      1. `git -C <bare> config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'`
+         (set=덮어쓰기·멱등 — 재실행/refspec-없는 과거 bare 보정 안전).
+      2. `git -C <bare> fetch origin` (origin/* remote-tracking ref 채움 → origin/main 생성).
+    로 근절한다(`--mirror` 가 아니라 명시 refspec — 국소·안전·push --mirror 부작용 없음·결정).
+
+    git 호출은 주입된 clone `runner` 를 `-C <bare>` 로 재사용한다(별도 DI seam 안 만듦·base
+    해소[T-0075]가 symbolic-ref/show-ref 를 `-C <bare>` 로 호출하는 패턴과 동일). **fail-soft**:
+    refspec set 실패·fetch 실패(네트워크)는 경고를 surface 하되 repo add 자체는 막지 않는다
+    (refspec 은 박혔으니 이후 fetch 로 복구 가능). bare 는 존재 전제(clone 성공/재사용 후 호출).
+    """
+    rc, out = runner(
+        ["-C", str(bare_path), "config", "remote.origin.fetch", _BARE_FETCH_REFSPEC]
+    )
+    if rc != 0:
+        print(
+            f"[경고] bare fetch refspec 설정 실패 (rc={rc}): {out.strip()[:200]}\n"
+            f"  수동으로 `git -C {bare_path} config remote.origin.fetch '{_BARE_FETCH_REFSPEC}'` "
+            "후 `git -C <bare> fetch origin` 하라 (origin/* remote-tracking ref·baseline 해소·T-0152).",
+            file=sys.stderr,
+        )
+        return  # refspec 미설정이면 fetch 해도 origin/* 안 채워짐 — skip.
+    rc, out = runner(["-C", str(bare_path), "fetch", "origin"])
+    if rc != 0:
+        print(
+            f"[경고] bare `git -C {bare_path} fetch origin` 실패 (rc={rc}): {out.strip()[:200]}\n"
+            "  refspec 은 설정됨 — 네트워크 복구 후 `git -C <bare> fetch origin` 으로 origin/* 채우면 "
+            "라이브-게이트 baseline(origin/main)이 해소된다 (T-0152).",
+            file=sys.stderr,
+        )
+        return
+    print("✓ bare fetch refspec 설정 + fetch origin — origin/* remote-tracking ref 채움 (T-0152).")
+
+
 # ── 서브커맨드 핸들러 ─────────────────────────────────────────────────────────
 
 
@@ -450,6 +498,12 @@ def cmd_repo_add(
             )
             return 1
         print(f"✓ .repos/{name}.git bare clone 완료.")
+
+    # 1b) bare fetch refspec 보정 (T-0152) — clone 성공/기존 bare 재사용 *둘 다* 에서 수행한다.
+    #     `git clone --bare` 가 remote.origin.fetch 를 설정하지 않아 origin/* remote-tracking
+    #     ref(origin/main)가 안 생기는 결함을 근절한다(멱등 — refspec-없는 과거 bare 도 보정).
+    #     clone 실패 시엔 위에서 이미 return 1 했으므로 여기 도달 = bare 존재 전제(fail-soft).
+    _set_bare_fetch_refspec(bare_path, runner=runner)
 
     # 2) 이미 등록돼 있으면 base 재해소/등록을 건너뛴다(append-only·중복 등록 금지). base 는
     #    첫 등록 때 박힌 값 그대로(clone 만 실패했던 재시도 경로는 위 clone 으로 복구됨).
