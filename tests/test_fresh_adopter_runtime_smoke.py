@@ -124,7 +124,7 @@ def _tickets_in(dest: Path, status: str) -> set[str]:
     return {p.name for p in status_dir.glob("T-*.md")} if status_dir.exists() else set()
 
 
-@pytest.mark.live_gate
+@pytest.mark.shipping
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("opencode"),
     reason="runtime smoke — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
@@ -154,7 +154,7 @@ def test_live_opencode_adopter_bootstraps_and_creates_ticket(tmp_path):
     assert _board_list_recognizes_ticket(dest), "board.py list 가 실 opencode 발행 ticket 미인식"
 
 
-@pytest.mark.live_gate
+@pytest.mark.shipping
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("claude"),
     reason="runtime smoke — PM_ORCH_LIVE=1 + claude CLI 필요(API 과금). 기본 skip·on-demand.",
@@ -201,7 +201,7 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
     하지 않는다(ADR-0032 D5 — URL→cache clone 은 `pm-update` 스킬 책임). 실 채택자는 그 스킬을
     쓰지만 테스트는 스킬(LLM/facade)을 못 돌리므로, 스킬이 cache clone 후 하는 "로컬 checkout
     에서 sync" 단계를 `--from <로컬 worktree>` 로 hermetic 근사한다. (이 명시가 없으면 URL
-    upstream 에서 엔진이 rc 1 로 거부 → 게이트 영구 red — 라이브 게이트 도그푸드가 포착.)
+    upstream 에서 엔진이 rc 1 로 거부 → 게이트 영구 red — 출하 테스트 도그푸드가 포착.)
     """
     return subprocess.run(
         [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
@@ -213,7 +213,7 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
     )
 
 
-@pytest.mark.live_gate
+@pytest.mark.shipping
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("opencode"),
     reason="runtime smoke — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
@@ -250,7 +250,7 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     assert _board_list_recognizes_ticket(dest), "pm_update 후 board.py list 가 실 opencode 발행 ticket 미인식"
 
 
-@pytest.mark.live_gate
+@pytest.mark.shipping
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("claude"),
     reason="runtime smoke — PM_ORCH_LIVE=1 + claude CLI 필요(API 과금). 기본 skip·on-demand.",
@@ -286,7 +286,7 @@ def test_live_claude_adopter_survives_pm_update_then_operates(tmp_path):
     assert _board_list_recognizes_ticket(dest), "pm_update 후 board.py list 가 실 claude 발행 ticket 미인식"
 
 
-# ── A tier 라이브 커버 확장: full 티켓 라이프사이클 (new→claim→finish · T-0150) ──────────────
+# ── 출하 테스트 라이브 커버 확장: full 티켓 라이프사이클 (new→claim→finish · T-0150) ──────────────
 # 위 테스트들은 *new*(발행)까지만 라이브로 친다. 아래 두 테스트는 실 LLM 이 진입문서만 보고
 # board.py 로 **new→claim→complete** 전 라이프사이클을 운영하는지 검증한다(spike §3.2). 단언은
 # side-effect(ticket 파일이 open→claimed→done 으로 이동)라 출력 phrasing 비결정에 강건하다 —
@@ -312,7 +312,7 @@ def _assert_full_lifecycle(dest: Path, proc: subprocess.CompletedProcess, harnes
     assert _board_list_recognizes_ticket(dest), f"board.py list 가 실 {harness} 운영 ticket 미인식"
 
 
-@pytest.mark.live_gate
+@pytest.mark.shipping
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("opencode"),
     reason="runtime smoke — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
@@ -329,7 +329,7 @@ def test_live_opencode_adopter_runs_full_ticket_lifecycle(tmp_path):
     _assert_full_lifecycle(dest, proc, "opencode")
 
 
-@pytest.mark.live_gate
+@pytest.mark.shipping
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("claude"),
     reason="runtime smoke — PM_ORCH_LIVE=1 + claude CLI 필요(API 과금). 기본 skip·on-demand.",

@@ -1,18 +1,18 @@
-"""pm_handoff 라이브-게이트 step 단위테스트 (T-0151·A tier·spike harness-test-two-level-gate §3.3).
+"""pm_handoff 출하 테스트 step 단위테스트 (T-0151·spike harness-test-two-level-gate §3.3).
 
-push 직전(핸드오프) 1회 라이브-게이트 step 을 검증한다 — **미push diff 가 출하경로를
-건드릴 때만** `pytest -m live_gate` 를 돌려 red 면 핸드오프·push 를 차단(자동·enforced).
+push 직전(핸드오프) 1회 출하 테스트 step 을 검증한다 — **미push diff 가 출하경로를
+건드릴 때만** `pytest -m shipping` 을 돌려 red 면 핸드오프·push 를 차단(자동·enforced).
 설계 세션(출하변경 0)은 자동 skip.
 
 모두 hermetic — 실 pytest/LLM 미실행. git diff 는 결정론 `git_runner` stub 으로,
-라이브 게이트 실행은 `run_live_gate_fn` DI seam 으로 갈아끼운다(실 subprocess 미진입).
+출하 테스트 실행은 `run_shipping_test_fn` DI seam 으로 갈아끼운다(실 subprocess 미진입).
 
 커버:
   - 분류 3-way (`_shipping_paths_in_pending_push`): 출하변경→발동 / 비출하→skip / baseline
     해소불가·diff실패·예외→ambiguous(has_unknown).
   - run() 통합: 발동(green→계속) / skip / ambiguous→surface(비실행) / abort-on-red(rc 1).
-  - escape: --live-gate 강제발동 · --no-live-gate 강제skip (분류 무시).
-  - run_trigger 제외 (라이브 게이트 절대 미호출).
+  - escape: --shipping-test 강제발동 · --no-shipping-test 강제skip (분류 무시).
+  - run_trigger 제외 (출하 테스트 절대 미호출).
   - sensitivity: 가드 무력화(red 를 무시) 시 테스트가 실패하는지(non-vacuous).
 
 도구는 패키지가 아니므로 importlib 동적 로드 (test_handoff_trigger 관용구).
@@ -134,7 +134,7 @@ def test_shipping_paths_skips_non_shipping(hf):
     T-0154 정확 경로 글롭 추가(`.project_manager/wiki/tickets/_template.md`·`.gitattributes`
     등) 후에도 ② dev-state wiki(ADR·spike 본문·status·pm_state·log·board)·tests-only 가
     걸리지 않는지 단언한다(과잉발동 회피). ADR-0099 같은 ② wiki 결정/spike 본문은
-    출하가 아니므로 게이트가 false-fire 하면 설계 세션이 무용한 라이브 게이트를 돈다.
+    출하가 아니므로 게이트가 false-fire 하면 설계 세션이 무용한 출하 테스트를 돈다.
     """
     runner = _git_stub(diff_paths=[
         "tests/test_pm_handoff.py",
@@ -304,11 +304,11 @@ def test_shipping_paths_unknown_when_ls_files_fails(hf):
 # ── run() 통합 fixture (hermetic·DI) ──────────────────────────────────────────
 
 
-def _make_handoff(hf, tmp_path: Path, *, git_runner, live_gate_fn):
-    """라이브-게이트 + git_runner 를 DI 한 PmHandoff 를 만든다 (실 파일/회귀 미접촉).
+def _make_handoff(hf, tmp_path: Path, *, git_runner, shipping_test_fn):
+    """출하 테스트 + git_runner 를 DI 한 PmHandoff 를 만든다 (실 파일/회귀 미접촉).
 
     회귀(step 1)는 green stub. log/playbook 은 tmp, pm_state 는 부재 경로(3·4 skip).
-    git_runner 는 출하-변경 분류용 diff 응답. live_gate_fn 은 라이브 게이트 실행 stub.
+    git_runner 는 출하-변경 분류용 diff 응답. shipping_test_fn 은 출하 테스트 실행 stub.
     """
     log_file = tmp_path / "current.md"
     playbook_file = tmp_path / "pm_playbook.md"
@@ -318,7 +318,7 @@ def _make_handoff(hf, tmp_path: Path, *, git_runner, live_gate_fn):
     inst = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "120 passed in 1.0s\n"),
         run_git_fn=git_runner,
-        run_live_gate_fn=live_gate_fn,
+        run_shipping_test_fn=shipping_test_fn,
         log_file=log_file,
         pm_playbook_file=playbook_file,
         pm_state_file=missing_state,
@@ -326,8 +326,8 @@ def _make_handoff(hf, tmp_path: Path, *, git_runner, live_gate_fn):
     return inst
 
 
-def _live_gate_recorder(rc: int, out: str):
-    """라이브 게이트 실행을 기록하는 stub. .calls 로 호출 여부·worktree 확인."""
+def _shipping_test_recorder(rc: int, out: str):
+    """출하 테스트 실행을 기록하는 stub. .calls 로 호출 여부·worktree 확인."""
     calls: list[str] = []
 
     def _fn(worktree: str) -> tuple[int, str]:
@@ -341,41 +341,41 @@ def _live_gate_recorder(rc: int, out: str):
 # ── run() 3-way + abort-on-red + escape ───────────────────────────────────────
 
 
-def test_run_fires_live_gate_on_shipping_change(hf, tmp_path):
-    """출하 변경(엔진) → 라이브 게이트 발동·green → rc 0 (계속)."""
-    gate = _live_gate_recorder(0, "3 passed in 4.0s\n")
+def test_run_fires_shipping_test_on_shipping_change(hf, tmp_path):
+    """출하 변경(엔진) → 출하 테스트 발동·green → rc 0 (계속)."""
+    gate = _shipping_test_recorder(0, "3 passed in 4.0s\n")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0
     assert len(gate.calls) == 1  # 발동됨.
 
 
-def test_run_aborts_on_live_gate_red(hf, tmp_path):
-    """출하 변경 + 라이브 게이트 red(failed) → 핸드오프 중단 rc 1."""
-    gate = _live_gate_recorder(1, "1 failed, 2 passed in 4.0s\n")
+def test_run_aborts_on_shipping_test_red(hf, tmp_path):
+    """출하 변경 + 출하 테스트 red(failed) → 핸드오프 중단 rc 1."""
+    gate = _shipping_test_recorder(1, "1 failed, 2 passed in 4.0s\n")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=["templates/opencode/AGENTS.md"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 1  # 차단.
     assert len(gate.calls) == 1
 
 
-def test_run_skips_live_gate_on_non_shipping(hf, tmp_path):
-    """비-출하 변경(spike/ADR/tests) → 라이브 게이트 미발동 (skip)·rc 0."""
-    gate = _live_gate_recorder(0, "")
+def test_run_skips_shipping_test_on_non_shipping(hf, tmp_path):
+    """비-출하 변경(spike/ADR/tests) → 출하 테스트 미발동 (skip)·rc 0."""
+    gate = _shipping_test_recorder(0, "")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[
             ".project_manager/wiki/raw/spikes/s.md", "tests/test_x.py",
         ]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0
@@ -383,41 +383,41 @@ def test_run_skips_live_gate_on_non_shipping(hf, tmp_path):
 
 
 def test_run_surfaces_ambiguous_without_firing(hf, tmp_path, capsys):
-    """baseline 해소불가(ambiguous) → 라이브 게이트 비실행 + PM surface 안내·rc 0."""
-    gate = _live_gate_recorder(0, "")
+    """baseline 해소불가(ambiguous) → 출하 테스트 비실행 + PM surface 안내·rc 0."""
+    gate = _shipping_test_recorder(0, "")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(baseline_ok=False),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0
     assert gate.calls == []  # ambiguous 는 기본 비실행.
     out = capsys.readouterr().out
     assert "분류 불명" in out
-    assert "--live-gate" in out and "--no-live-gate" in out  # PM 결정 유도.
+    assert "--shipping-test" in out and "--no-shipping-test" in out  # PM 결정 유도.
 
 
-def test_run_failsoft_skip_when_live_gate_no_tests(hf, tmp_path):
+def test_run_failsoft_skip_when_shipping_test_no_tests(hf, tmp_path):
     """라이브 미가용(0개 selected·rc 5·failed 없음) → green 처리 → fail-soft 통과 rc 0."""
-    gate = _live_gate_recorder(5, "no tests ran in 0.1s\n")
+    gate = _shipping_test_recorder(5, "no tests ran in 0.1s\n")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/board.py"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0  # rc 5(no tests) 통과 (CI green 불변·게이트 강제 안 함).
     assert len(gate.calls) == 1
 
 
-def test_run_passes_when_live_gate_all_passed_rc0(hf, tmp_path):
+def test_run_passes_when_shipping_test_all_passed_rc0(hf, tmp_path):
     """rc 0(all passed·또는 skipped-only) → 통과 rc 0 (fail-soft 통과 보존)."""
-    gate = _live_gate_recorder(0, "2 passed, 1 skipped in 4.0s\n")
+    gate = _shipping_test_recorder(0, "2 passed, 1 skipped in 4.0s\n")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/board.py"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0
@@ -432,11 +432,11 @@ def test_run_passes_when_live_gate_all_passed_rc0(hf, tmp_path):
 
 def test_run_aborts_on_collection_error_no_failed_summary(hf, tmp_path):
     """collection error("1 error"·rc 2·"failed" 요약 없음) → 핸드오프 중단 rc 1."""
-    gate = _live_gate_recorder(2, "ERROR collecting test_live.py\n1 error in 0.3s\n")
+    gate = _shipping_test_recorder(2, "ERROR collecting test_live.py\n1 error in 0.3s\n")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 1  # "failed" 없어도 비-0(≠5) → red 중단.
@@ -445,11 +445,11 @@ def test_run_aborts_on_collection_error_no_failed_summary(hf, tmp_path):
 
 def test_run_aborts_on_interrupted_rc2(hf, tmp_path):
     """rc 2(interrupted) → 핸드오프 중단 rc 1 (이전 판정은 green 처리했음)."""
-    gate = _live_gate_recorder(2, "!!! KeyboardInterrupt !!!\n")
+    gate = _shipping_test_recorder(2, "!!! KeyboardInterrupt !!!\n")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".claude/agents/developer.md"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 1
@@ -458,11 +458,11 @@ def test_run_aborts_on_interrupted_rc2(hf, tmp_path):
 
 def test_run_aborts_on_internal_error_rc3(hf, tmp_path):
     """rc 3(internal error·예: import error) → 핸드오프 중단 rc 1."""
-    gate = _live_gate_recorder(3, "INTERNALERROR> ImportError: no module\n")
+    gate = _shipping_test_recorder(3, "INTERNALERROR> ImportError: no module\n")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=["templates/claude_code/CLAUDE.md"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 1
@@ -471,11 +471,11 @@ def test_run_aborts_on_internal_error_rc3(hf, tmp_path):
 
 def test_run_aborts_on_usage_error_rc4(hf, tmp_path):
     """rc 4(usage error·예: pytest 미설치/잘못된 인자) → 핸드오프 중단 rc 1."""
-    gate = _live_gate_recorder(4, "ERROR: usage: pytest ...\n")
+    gate = _shipping_test_recorder(4, "ERROR: usage: pytest ...\n")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/board.py"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 1
@@ -483,57 +483,57 @@ def test_run_aborts_on_usage_error_rc4(hf, tmp_path):
 
 
 def test_run_escape_force_fire_ignores_classification(hf, tmp_path):
-    """--live-gate (override True) → 비-출하여도 강제 발동."""
-    gate = _live_gate_recorder(0, "3 passed in 4.0s\n")
+    """--shipping-test (override True) → 비-출하여도 강제 발동."""
+    gate = _shipping_test_recorder(0, "3 passed in 4.0s\n")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=["tests/test_x.py"]),  # 비-출하.
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(
         session_num=5, wave_summary="x", dry_run=False, skip_pytest=False,
-        live_gate_override=True,
+        shipping_test_override=True,
     )
     assert rc == 0
     assert len(gate.calls) == 1  # 분류 무시·강제 발동.
 
 
 def test_run_escape_force_skip_ignores_classification(hf, tmp_path):
-    """--no-live-gate (override False) → 출하 변경이어도 강제 skip (미실행)."""
-    gate = _live_gate_recorder(1, "1 failed in 4.0s\n")  # red 라도 안 돌려야.
+    """--no-shipping-test (override False) → 출하 변경이어도 강제 skip (미실행)."""
+    gate = _shipping_test_recorder(1, "1 failed in 4.0s\n")  # red 라도 안 돌려야.
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(
         session_num=5, wave_summary="x", dry_run=False, skip_pytest=False,
-        live_gate_override=False,
+        shipping_test_override=False,
     )
     assert rc == 0  # 강제 skip 이라 red gate 도 무시.
     assert gate.calls == []  # 미발동.
 
 
-def test_run_dry_run_skips_live_gate(hf, tmp_path):
-    """--dry-run → 라이브 게이트 발동 판단·실행 자체 skip (LLM 비용/시간 회피)."""
-    gate = _live_gate_recorder(0, "")
+def test_run_dry_run_skips_shipping_test(hf, tmp_path):
+    """--dry-run → 출하 테스트 발동 판단·실행 자체 skip (LLM 비용/시간 회피)."""
+    gate = _shipping_test_recorder(0, "")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=True, skip_pytest=False)
     assert rc == 0
     assert gate.calls == []  # dry-run 은 미실행.
 
 
-def test_run_skips_live_gate_when_machine_regression_red(hf, tmp_path):
-    """[1/7] 기계회귀 red → 그 자리에서 중단 → 라이브 게이트 도달 안 함."""
-    gate = _live_gate_recorder(0, "")
+def test_run_skips_shipping_test_when_machine_regression_red(hf, tmp_path):
+    """[1/7] 기계회귀 red → 그 자리에서 중단 → 출하 테스트 도달 안 함."""
+    gate = _shipping_test_recorder(0, "")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     inst._run_pytest_fn = lambda: (1, "1 failed in 1.0s\n")  # 기계회귀 red.
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
@@ -544,25 +544,25 @@ def test_run_skips_live_gate_when_machine_regression_red(hf, tmp_path):
 # ── run_trigger 제외 (ctx-STOP·자동정지·LLM 못 띄움) ──────────────────────────
 
 
-def test_run_trigger_never_fires_live_gate(hf, tmp_path):
-    """run_trigger(ctx-STOP) 는 라이브 게이트를 절대 호출하지 않는다."""
+def test_run_trigger_never_fires_shipping_test(hf, tmp_path):
+    """run_trigger(ctx-STOP) 는 출하 테스트를 절대 호출하지 않는다."""
     log_file = tmp_path / "current.md"
     playbook_file = tmp_path / "pm_playbook.md"
     missing_state = tmp_path / "nope" / "pm_state.md"
     log_file.write_text("# log\n", encoding="utf-8")
     playbook_file.write_text("# pm_playbook\n", encoding="utf-8")
-    gate = _live_gate_recorder(1, "1 failed\n")  # 호출되면 안 됨.
+    gate = _shipping_test_recorder(1, "1 failed\n")  # 호출되면 안 됨.
     inst = hf.PmHandoff(
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("trigger 가 pytest 호출")),
         run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("trigger 가 git 호출")),
-        run_live_gate_fn=gate,
+        run_shipping_test_fn=gate,
         log_file=log_file,
         pm_playbook_file=playbook_file,
         pm_state_file=missing_state,
     )
     rc = inst.run_trigger(reason="ctx-stop", ctx_pct=8)
     assert rc == 0
-    assert gate.calls == []  # 자동정지 경로는 라이브 게이트 제외.
+    assert gate.calls == []  # 자동정지 경로는 출하 테스트 제외.
 
 
 # ── sensitivity: 가드 무력화 시 테스트가 실패하는가 (non-vacuous) ──────────────
@@ -571,26 +571,26 @@ def test_run_trigger_never_fires_live_gate(hf, tmp_path):
 def test_sensitivity_abort_guard_is_load_bearing(hf, tmp_path):
     """abort-on-red 가드를 무력화(red 를 0 으로 흡수)하면 abort 테스트가 깨져야 한다.
 
-    `_fire_live_gate` 가 red 를 무시하고 0 을 돌려주도록 monkeypatch → run() 이 rc 0 을
-    돌려 `test_run_aborts_on_live_gate_red` 의 단언(rc==1)이 무너지는지 직접 확인한다.
+    `_fire_shipping_test` 가 red 를 무시하고 0 을 돌려주도록 monkeypatch → run() 이 rc 0 을
+    돌려 `test_run_aborts_on_shipping_test_red` 의 단언(rc==1)이 무너지는지 직접 확인한다.
     가드가 load-bearing(실제 차단 동작)임을 입증 — vacuous pass 방지.
     """
-    gate = _live_gate_recorder(1, "1 failed, 2 passed in 4.0s\n")
+    gate = _shipping_test_recorder(1, "1 failed, 2 passed in 4.0s\n")
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=["templates/opencode/AGENTS.md"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     # 정상: red → 중단 rc 1.
     assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False) == 1
 
-    # 가드 무력화: _fire_live_gate 가 red 를 무시하고 항상 0.
+    # 가드 무력화: _fire_shipping_test 가 red 를 무시하고 항상 0.
     inst2 = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=["templates/opencode/AGENTS.md"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
-    inst2._fire_live_gate = lambda worktree: 0  # type: ignore[method-assign]
+    inst2._fire_shipping_test = lambda worktree: 0  # type: ignore[method-assign]
     # 무력화하면 red 여도 통과(rc 0) → abort 단언이 의미 있으려면 여기서 0 이 나와야 함.
     assert inst2.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False) == 0
 
@@ -625,18 +625,18 @@ def test_sensitivity_rc_in_0_5_guard_is_load_bearing(hf, tmp_path):
     """must-fix 2 가드 무력화: 좁힌 rc∈{0,5} 판정을 옛 `"N failed"` 판정으로 되돌리면
     collection error(rc 2·"failed" 요약 없음) abort 테스트가 깨져야 한다(non-vacuous).
 
-    `_fire_live_gate` 를 옛 판정(`rc != 0 and re.search("N failed")`)으로 monkeypatch →
+    `_fire_shipping_test` 를 옛 판정(`rc != 0 and re.search("N failed")`)으로 monkeypatch →
     rc 2·"1 error"(failed 없음)가 silently green(rc 0) 처리되는지 직접 확인한다.
     정상(좁힌 가드)은 rc 1 로 중단.
     """
     import re
 
-    gate = _live_gate_recorder(2, "ERROR collecting test_live.py\n1 error in 0.3s\n")
+    gate = _shipping_test_recorder(2, "ERROR collecting test_live.py\n1 error in 0.3s\n")
     # 정상: rc 2(≠0/5) → red 중단 rc 1.
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
     assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False) == 1
 
@@ -650,16 +650,16 @@ def test_sensitivity_rc_in_0_5_guard_is_load_bearing(hf, tmp_path):
     inst2 = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        live_gate_fn=gate,
+        shipping_test_fn=gate,
     )
-    inst2._fire_live_gate = _old_fire  # type: ignore[method-assign]
+    inst2._fire_shipping_test = _old_fire  # type: ignore[method-assign]
     # 옛 판정은 "failed" 요약 없는 rc 2 collection error 를 green 처리 → abort 단언 무너짐.
     assert inst2.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False) == 0
 
 
 # ── T-0154: SHIPPING_GLOBS ↔ engine.manifest 정합 가드 ──────────────────────────
 #
-# 라이브-게이트 발동 판단(SHIPPING_GLOBS)이 출하 진실(engine.manifest)과 drift 하면
+# 출하 테스트 발동 판단(SHIPPING_GLOBS)이 출하 진실(engine.manifest)과 drift 하면
 # manifest 가 출하한다고 명시한 파일이 어떤 글롭에도 안 잡혀 게이트가 false-skip 한다
 # (미검증 출하). manifest 전개 경로 전부가 SHIPPING_GLOBS 로 커버됨을 단언해 다음
 # manifest 항목 추가 시 SHIPPING_GLOBS 갱신 누락을 push 전에 잡는다(손목록 drift→가드).
