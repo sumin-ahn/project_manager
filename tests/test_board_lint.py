@@ -458,6 +458,37 @@ def test_scaffold_ticket_dangling_still_blocks(board, monkeypatch, tmp_path):
                    for name, kind, _d in issues), issues
 
 
+def test_prefixed_ticket_wikilink_resolves(board, monkeypatch, tmp_path):
+    """prefixed ticket(`[[T-PAY-001]]`·`[[T-service-a-001]]`·`[[T-P0-001]]`) wikilink 가
+    실재 ticket 으로 resolve 돼 dangling 으로 오탐되지 않는다 (T-0164 감사·multi-repo).
+
+    구 정규식 `T-(?:[A-Za-z]+-)?\\d+` 는 `P0`(숫자)·`service-a`(하이픈 2개) prefix 를 ticket
+    으로 인식조차 못 해(`continue`·자유어휘 처리) lint 가 침묵했다. 같은 grammar(`_TICKET_ID_BODY`)
+    로 prefixed ID 도 ticket 으로 보고 `ticket_ids` 멤버십을 확인해야 valid resolve 가 된다."""
+    wiki = _wire_repo(board, monkeypatch, tmp_path)
+    for tid in ("T-PAY-001", "T-service-a-001", "T-P0-001"):
+        p = wiki / "tickets" / "open" / f"{tid}-x.md"
+        p.write_text(f"---\nid: {tid}\n---\n# {tid}\n", encoding="utf-8")
+    _doc(wiki, "note.md", "참조: [[T-PAY-001]] · [[T-service-a-001]] · [[T-P0-001]].")
+    issues = board.lint_wikilinks()
+    assert not any(name in ("T-PAY-001", "T-service-a-001", "T-P0-001")
+                   for name, _k, _d in issues), (
+        f"실재 prefixed ticket wikilink 는 dangling 아님:\n{issues}")
+
+
+def test_prefixed_ticket_wikilink_dangling_blocks(board, monkeypatch, tmp_path):
+    """부재 prefixed ticket(`[[T-PAY-999]]`) wikilink 는 dangling 으로 잡혀 차단된다.
+
+    grammar 가 prefixed ID 를 ticket 으로 인식해야 *부재* 시에도 dangling-wikilink(blocking)
+    로 surface 한다 — 인식 못 하면 자유어휘로 새 침묵(T-0164 감사 round-3 클래스 방지)."""
+    wiki = _wire_repo(board, monkeypatch, tmp_path)  # ticket 트리 비어 있음.
+    _doc(wiki, "note.md", "없는 ticket 참조 [[T-PAY-999]].")
+    issues = board.lint_wikilinks()
+    assert any(name == "T-PAY-999" and kind == "dangling-wikilink"
+               for name, kind, _d in issues), (
+        f"부재 prefixed ticket wikilink 는 blocking dangling 이어야 함:\n{issues}")
+
+
 def test_same_ref_in_scaffold_and_wiki_blocks(board, monkeypatch, tmp_path):
     """같은 framework ADR 이 scaffold + wiki/ 양쪽에서 dangle 하면 blocking (자기문서 dangle 금지)."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음.

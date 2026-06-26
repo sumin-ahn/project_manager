@@ -15,11 +15,20 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOOTSTRAP_PY = TOOLS / "pm_bootstrap.py"
+BOARD_PY = TOOLS / "board.py"
 
 
 def _load_module(name: str = "pm_bootstrap"):
     """pm_bootstrap 를 경로 로드한다 (도구는 패키지가 아니므로 importlib)."""
     spec = importlib.util.spec_from_file_location(name, BOOTSTRAP_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_board(name: str = "board"):
+    """board 를 경로 로드한다 — grammar 정합 가드용 (`_ticket_prefix` 비교)."""
+    spec = importlib.util.spec_from_file_location(name, BOARD_PY)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -72,6 +81,52 @@ def test_parse_open_tickets_none_open():
     mod = _load_module()
     out = "  [done   ] T-0001  x  pm  t\n  [claimed] T-0002  y  pm  t\n"
     assert mod.parse_open_tickets(out) == []
+
+
+def test_parse_open_tickets_prefixed_ids():
+    """prefixed multi-repo ID(`T-PAY-001`·`T-service-a-001`·`T-P0-001`)도 잡는다 (T-0164).
+
+    board list --mine 가 multi-repo 보드를 surface 하면 정상 open 티켓은 prefixed ID 다.
+    `T-\\d+` 만 매칭하면 prefixed 가 전부 누락된다 — board.py `_TICKET_PREFIX_RE` 와 같은
+    grammar(`[A-Za-z0-9_-]+`)로 prefixed(숫자/하이픈/언더스코어 포함) + legacy 를 다 파싱.
+    """
+    mod = _load_module()
+    out = (
+        "  [open   ] T-PAY-001       결제 모듈      -  pay\n"
+        "  [open   ] T-service-a-001 서비스 A       -  svc\n"
+        "  [open   ] T-P0-001        숫자포함 prefix -  p0\n"
+        "  [open   ] T-123-001       순수숫자 prefix -  num\n"
+        "  [open   ] T-0164          legacy 4자리   -  legacy\n"
+        "  [claimed] T-PAY-002       진행 중        pm  pay\n"
+    )
+    assert mod.parse_open_tickets(out) == [
+        "T-PAY-001",
+        "T-service-a-001",
+        "T-P0-001",
+        "T-123-001",
+        "T-0164",
+    ]
+
+
+def test_parse_open_tickets_grammar_matches_board():
+    """parse_open_tickets grammar 가 board.py `_TICKET_PREFIX_RE` 와 정합인지 (drift 가드).
+
+    board.py 가 발행/검증하는 ID grammar 와 부트스트랩 소비측이 어긋나면 한쪽이 잡는 ID 를
+    다른 쪽이 놓친다(T-0164 round-3 클래스). 같은 prefix 집합에서 대칭임을 못박는다.
+    """
+    board = _load_board()
+    mod = _load_module()
+    # board 가 prefixed 로 인정하는 ID 면 부트스트랩도 open 목록으로 잡아야 한다.
+    # `123` = 순수 숫자 prefix(등록 grammar `[A-Za-z0-9][A-Za-z0-9_-]*` 가 허용·round-3 must-fix).
+    for prefix in ("PAY", "service-a", "P0", "x_y", "123"):
+        tid = f"T-{prefix}-001"
+        assert board._ticket_prefix(tid) == prefix  # board grammar 가 prefix 로 인정
+        out = f"  [open   ] {tid}  t  -  tag\n"
+        assert mod.parse_open_tickets(out) == [tid]
+    # legacy(prefix 없음)도 양쪽에서 일관 — board 는 None, 부트스트랩은 open 으로 잡음.
+    # legacy 4자리(`T-0164`·하이픈 1개) vs 숫자 prefix(`T-123-001`·하이픈 2개) 구조적 비충돌.
+    assert board._ticket_prefix("T-0164") is None
+    assert mod.parse_open_tickets("  [open   ] T-0164  t  -  tag\n") == ["T-0164"]
 
 
 # ── parse_lint_result ───────────────────────────────────────────────────────

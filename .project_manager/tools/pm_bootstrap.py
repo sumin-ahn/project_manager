@@ -221,13 +221,31 @@ def parse_board_counts(board_output: str) -> dict[str, int]:
     return counts
 
 
+# 티켓 ID grammar — board.py `_TICKET_PREFIX_RE`(`_TICKET_PREFIX_BODY`·발행측 `_next_id` 의 역,
+# 등록측 `pm_config._REPO_NAME_RE` 와 정합)와 *같은 문법*이어야 한다. board list --mine(T-0164·
+# 기본 입력)이 multi-repo 보드를 surface 하면 정상 open 티켓은 prefixed ID(`T-PAY-001`·
+# `T-service-a-001`·`T-P0-001`·`T-123-001`)다. 옛 `T-\d+` 만 잡으면 prefixed 가 전부 누락된다.
+# 두 형태를 다 잡는다:
+#   prefixed = `T-<PREFIX>-NNN`  — PREFIX 는 `[A-Za-z0-9][A-Za-z0-9_-]*`(등록 grammar 와 정합·
+#                                  순수 숫자 `123` 포함), 끝 `-NNN` 은 숫자.
+#   legacy   = `T-NNNN`          — `T-` 다음이 순수 숫자(하이픈 1개·prefix 마디 없음).
+# legacy 와 순수-숫자 prefix 의 구분은 **구조적**이다(board.py 와 동일): prefixed 분기는 *내부
+# 하이픈*(`PREFIX-NNN`)을 요구해 `T-123-001`(하이픈 2개)을 잡고, `T-0164`(하이픈 1개)는 legacy
+# 분기(`\d+`)로 떨어진다 — 둘이 충돌하지 않는다.
+# board.py 를 직접 import 하지 않는 이유(touches 격리·deep-import seam·순환 회피)는 parse_board_
+# counts 등 다른 파서가 board 미import 인 것과 동형 — grammar 만 board.py 와 정합시킨다(가드
+# 테스트 `test_parse_open_tickets_grammar_matches_board` 가 board `_ticket_prefix` 와 대칭 확인).
+_TICKET_ID = r"T-(?:[A-Za-z0-9][A-Za-z0-9_-]*-\d+|\d+)"
+
+
 def parse_open_tickets(board_output: str) -> list[str]:
     """board list 출력에서 open status 의 ticket ID 목록을 반환한다.
 
-    claim 가능한 open ticket 만 추출한다 (claimed/blocked/done 제외).
+    claim 가능한 open ticket 만 추출한다 (claimed/blocked/done 제외). prefixed(multi-repo
+    `T-PAY-001`)·legacy(`T-0164`) ID 를 둘 다 파싱한다 (board.py grammar 정합·T-0164).
     """
     tickets: list[str] = []
-    line_pattern = re.compile(r"^\s+\[open\s*\]\s+(T-\d+)")
+    line_pattern = re.compile(rf"^\s+\[open\s*\]\s+({_TICKET_ID})\b")
     for line in board_output.splitlines():
         match = line_pattern.match(line)
         if match:
@@ -458,8 +476,15 @@ class PmBootstrap:
     # ── 데이터 수집 ──────────────────────────────────────────────────────
 
     def _collect_board(self) -> dict:
-        """board list + lint 결과를 수집한다. 실패 시 sys.exit(1)."""
-        rc, output = self._run_board_fn(["list"])
+        """board list --mine + lint 결과를 수집한다. 실패 시 sys.exit(1).
+
+        기본 보드 뷰 = `--mine`(T-0164·ADR-0033 ④) — 부트스트랩이 전체 contention 을
+        떠안지 않고 *내 것*(내 area open + 내 claim)만 surface 한다. 솔로(user 미상)는
+        board 가 전체 open + 내 슬롯 claim 으로 graceful 폴백하므로 현행과 사실상 동등
+        (`board list --mine` 의 솔로 폴백·spike §2.D). 전체 보드(contention 가시)는
+        무플래그 `board list` 로 PM 이 명시 조회한다.
+        """
+        rc, output = self._run_board_fn(["list", "--mine"])
         if rc != 0:
             print(f"[중단] board.py list 실패 (rc={rc}):\n{output}", file=sys.stderr)
             sys.exit(1)

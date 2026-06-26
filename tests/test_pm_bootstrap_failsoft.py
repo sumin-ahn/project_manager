@@ -113,6 +113,30 @@ def test_collect_board_clean_passes():
     assert board["lint"] == "clean"
 
 
+# ── 기본 보드 뷰 = --mine (T-0164·ADR-0033 ④) ────────────────────────────────
+
+def test_collect_board_default_view_is_mine():
+    """_collect_board 가 list 를 `--mine` 렌즈로 부른다 (부트스트랩 기본뷰·T-0164).
+
+    부트스트랩이 전체 contention 을 떠안지 않고 *내 것*만 surface 한다 — 솔로(user 미상)는
+    board 의 graceful 폴백으로 현행과 사실상 동등(`--mine` 솔로 폴백·spike §2.D).
+    """
+    mod = _load_module()
+    captured: list[list[str]] = []
+
+    def _fn(args: list[str]) -> tuple[int, str]:
+        captured.append(args)
+        if args[0] == "list":
+            return (0, _BOARD_LIST_OUTPUT)
+        return (0, "✓ no lint issues\n")
+
+    bootstrap = mod.PmBootstrap(run_board_fn=_fn)
+    bootstrap._collect_board()
+
+    list_calls = [a for a in captured if a[0] == "list"]
+    assert list_calls == [["list", "--mine"]]
+
+
 # ── 빈 repo: rev-parse rc≠0 + symbolic-ref OK + log rc≠0 → fail-soft ──────────
 
 def test_empty_repo_degrades_without_exit():
