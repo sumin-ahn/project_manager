@@ -414,15 +414,27 @@ def _ticket_area_owner(tid: str) -> str | None:
 
     매핑 경로: ID prefix(`_ticket_prefix`) → areas.md 의 그 prefix 행(`_areas_row_for_prefix`)에서
     `area_owner` 를 *직접* 읽는다(`_active_test_cmd`/line 737 의 prefix-행 직접-읽기와 동형).
-    legacy(prefix 없음)·미등록 prefix·area_owner 빈값은 모두 None(area 비소유 처리).
+    미등록 prefix·area_owner 빈값은 None(area 비소유 처리).
 
     prefix 행에서 직접 읽는 이유(repo 칼럼 경유 재스캔 금지): areas registry 는 prefix-unique 만
     보장하고 repo-unique 는 아니다 — 두 prefix 가 같은 `repo` 칼럼값을 공유하면 `repo` 로 재스캔할
     경우 *그 repo 의 첫 행* area_owner 를 돌려줘 잘못된 소유자가 나온다. prefix 로 이미 정확한 행을
     잡았으니 그 행에서 바로 읽는다(이중 스캔도 제거).
+
+    **no-prefix(솔로 self-host) 폴백 (T-0164 실버그·sole-area)**: 솔로 self-host(T-0123·
+    prefix-불요)는 티켓이 `T-NNNN`(prefix 없음)이라 `_ticket_prefix` None 이다. no-prefix 티켓 ⟹
+    솔로 단일-repo(id_prefix None) ⟹ areas registry 의 *단일 area* 가 그 티켓의 area 다 — prefix
+    매핑은 multi-repo 메커니즘이므로 솔로엔 sole-area 폴백이 맞다. areas 에 area 가 **정확히 1개**면
+    그 단일 area 의 area_owner 를 돌려준다(migration 이 area_owner 를 채운 솔로 보드에서 `--mine`
+    (a) 가 no-prefix open 티켓을 잡게). area 가 여러 개면(multi-repo 인데 no-prefix 티켓 = 모순적/
+    희귀) 모호하므로 None 유지(기존 동작). prefix 가 *있는* 티켓은 이 폴백을 안 타고 기존 prefix
+    경로 그대로(multi-repo 정합·무회귀).
     """
     prefix = _ticket_prefix(tid)
     if not prefix:
+        _header, rows = _parse_areas()
+        if len(rows) == 1:
+            return rows[0].get("area_owner") or None
         return None
     row = _areas_row_for_prefix(prefix)
     if not row:

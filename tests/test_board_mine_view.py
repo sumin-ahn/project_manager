@@ -194,10 +194,47 @@ def test_ticket_area_owner_unregistered_prefix_is_none(board):
     assert board._ticket_area_owner("T-XYZ-001") is None
 
 
-def test_ticket_area_owner_legacy_id_is_none(board):
-    """legacy ID(prefix 없음)는 area_owner 미해소 → None (현행 동작)."""
-    _write_areas(board)
+def test_ticket_area_owner_legacy_id_multi_area_is_none(board):
+    """no-prefix ID + area 여러 개(multi-repo)는 area_owner 미해소 → None.
+
+    no-prefix 티켓이 multi-repo 레지스트리(area 2개)에 떨어지면 어느 area 인지 모호 →
+    None 유지(sole-area 폴백은 area 가 정확히 1개일 때만·기존 동작 보존)."""
+    _write_areas(board)  # PAY·ACC 두 area
     assert board._ticket_area_owner("T-0164") is None
+
+
+# 솔로 self-host(T-0123·prefix-불요)의 단일 area 레지스트리 — migration 이 area_owner 를 채운 상태.
+# 솔로 보드의 티켓은 no-prefix(`T-NNNN`)다. area 가 정확히 1개이므로 그 area = 그 티켓의 area.
+_SOLO_AREAS = (
+    "# Area Registry\n\n"
+    "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+    "|---|---|---|---|---|---|---|---|\n"
+    "| project_manager | project_manager | g:pm | pytest -q | reg | main | main | sumin |\n"
+)
+
+
+def test_ticket_area_owner_solo_no_prefix_resolves_sole_area(board):
+    """**T-0164 실버그**: no-prefix 티켓(`T-0162`)이 단일 area 레지스트리에서 그 area 의
+    area_owner 로 해소된다(솔로 self-host·prefix-불요).
+
+    수정 전엔 `_ticket_prefix` None → 즉시 None 반환 → migration 으로 area_owner 가 채워진
+    솔로 보드의 모든 open 티켓이 `--mine` (a)에서 사라졌다(이 단언이 수정 전 fail).
+    """
+    board.AREAS_FILE.write_text(_SOLO_AREAS, encoding="utf-8")
+    assert board._ticket_area_owner("T-0162") == "sumin"
+
+
+def test_ticket_area_owner_prefix_ticket_not_intercepted_by_sole_area(board):
+    """단일 area 레지스트리라도 *prefix 가 있는* 티켓은 prefix→area 매핑 경로 그대로 —
+    sole-area 폴백이 prefix 티켓을 가로채지 않는다(multi-repo 정합·무회귀).
+
+    단일 area(prefix=project_manager·area_owner=sumin)에서 *다른* prefix 티켓(`T-PAY-001`)은
+    미등록 prefix → None(sole-area 의 sumin 으로 잘못 매핑되지 않음)."""
+    board.AREAS_FILE.write_text(_SOLO_AREAS, encoding="utf-8")
+    # 등록된 prefix 티켓은 prefix 행에서 직접 읽는다(sole-area 폴백 미경유):
+    assert board._ticket_area_owner("T-project_manager-001") == "sumin"
+    # 미등록 prefix 는 sole-area 로 흘러내리지 않고 None(prefix 경로 유지):
+    assert board._ticket_area_owner("T-PAY-001") is None
 
 
 # 두 prefix(PAY·ACC)가 *같은 `repo` 칼럼값*(monorepo)을 공유하고 각자 다른 area_owner.
@@ -304,7 +341,12 @@ def test_mine_includes_numeric_only_prefix_area_open(board, capsys):
 
     `_ticket_prefix("T-123-001")` 이 '123' 으로 풀려야 area_owner==alice 가 해소돼 (a) 에 든다.
     소비 grammar 가 등록 grammar 보다 좁으면(비-숫자 강제) `T-123-001` 이 legacy(None)로 빠져
-    area_owner None → alice --mine 에서 누락(이 단언이 수정 전 fail)."""
+    area_owner None → alice --mine 에서 누락(이 단언이 수정 전 fail).
+
+    (T-0164 sole-area 폴백 후 정정): 이 레지스트리는 *단일 area* 라 no-prefix 티켓 seed 는
+    sole-area 폴백으로 그 area 에 흡수된다 — no-prefix 제외 검증은 multi-area 레지스트리에서만
+    유효하므로 `test_ticket_area_owner_legacy_id_multi_area_is_none` 으로 분리했다. 여기선 순수
+    숫자 *prefix* 해소만 단언한다(prefix 티켓이 sole-area 폴백 미경유로 정확히 잡힘)."""
     areas = (
         "# Area Registry\n\n"
         "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
@@ -315,7 +357,6 @@ def test_mine_includes_numeric_only_prefix_area_open(board, capsys):
     _write_conf(board, user="alice", session="pm-1")
     assert board._ticket_area_owner("T-123-001") == "alice"  # prefix→area_owner 해소
     _seed(board, "T-123-001", "open")    # 순수 숫자 prefix → alice area
-    _seed(board, "T-0164", "open")       # legacy(prefix 없음)·alice area 아님 → 제외
     ids = _list_ids(board, capsys, mine=True)
     assert ids == ["T-123-001"]
 
@@ -538,6 +579,25 @@ def test_mine_user_with_owned_area_still_filters(board, capsys):
     _seed(board, "T-ACC-001", "open")  # bob area → alice --mine 제외
     ids = _list_ids(board, capsys, mine=True)
     assert ids == ["T-PAY-001"]
+
+
+def test_mine_solo_no_prefix_open_included_when_migrated(board, capsys):
+    """**T-0164 실버그 e2e**: 솔로 self-host(단일 area·area_owner=me) + migration 으로
+    area_owner 채워짐 + no-prefix open 티켓 → `--mine` (a)에 잡힌다.
+
+    PM 이 실 데이터로 잡은 버그: migration 이 area_owner 를 채워 _area_owner_in_use True 가
+    되면 (a) 가 area_owner==me 로 좁혀지는데, no-prefix 티켓은 _ticket_area_owner None 이라
+    제외됐고 전체-open 폴백도 안 타 솔로 보드의 모든 open 티켓이 --mine 에서 사라졌다(claim 만
+    보임). sole-area 폴백으로 no-prefix 티켓이 단일 area_owner==me 로 해소돼 (a)에 든다.
+    이 단언이 수정 전 fail(=빈 (a))."""
+    board._git_config_email = lambda: "sumin"  # type: ignore[assignment]
+    _write_conf(board, session="project_manager_1")
+    board.AREAS_FILE.write_text(_SOLO_AREAS, encoding="utf-8")  # 단일 area·area_owner=sumin
+    _seed(board, "T-0162", "open")  # no-prefix open
+    _seed(board, "T-0163", "open")  # no-prefix open
+    ids = _list_ids(board, capsys, mine=True)
+    # area_owner_in_use True(migrated) 인데도 sole-area 폴백으로 no-prefix open 이 (a)에 든다.
+    assert set(ids) == {"T-0162", "T-0163"}
 
 
 def test_mine_all_area_owner_empty_degrades_to_all_open(board, capsys):
