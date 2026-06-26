@@ -47,11 +47,33 @@ REPO = Path(__file__).resolve().parents[2]
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 TOOLS_DIR = REPO / ".project_manager" / "tools"
-AREAS_FILE = REPO / ".project_manager" / "areas.md"   # per-repo 레지스트리 (등록영역 surface·ADR-0014)
+AREAS_FILE = REPO / ".project_manager" / "areas.md"   # legacy 별칭 (아래 _areas_file 가 board_root 추종)
 # worktree 리스 장부 (ADR-0013) — worktree_pool.LEASES_FILE 와 *같은 위치*. _auto_slot 이
 # 단일 슬롯 자동바인딩 판정에 stdlib json 으로 직접 read 한다(worktree_pool 미import·touches
 # 격리·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형·데이터 결합만).
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+
+
+# ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────
+# board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다(ADR-0033 ①).
+# 그러면 등록영역 surface(`_registered_repos`)·단일 self-host 자동바인딩(`_auto_slot`)이
+# areas.md 의 wiki-밖 legacy 위치를 보면 *stale*(등록 repo 0개·자동바인딩 미해소)이다.
+# pm_bootstrap 은 board.py 를 직접 import 하지 않으므로(touches 격리·areas 를 stdlib read),
+# board.py 의 graceful 탐지를 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면 areas 가
+# board/ 안(board/areas.md), 아니면 legacy `.project_manager/areas.md`. 솔로/미분리면 현 위치
+# 100% 폴백(회귀 0). 상수 AREAS_FILE 는 hermetic 테스트 seam·legacy 기본값으로 유지.
+
+def _areas_file() -> Path:
+    """areas 레지스트리 경로 (board.py `areas_file` 동형·board_root 추종·T-0162 A6).
+
+    `.project_manager/board/tickets` 가 실 디렉토리면 board 가 submodule 로 분리된 형상
+    (ADR-0033 ①) → areas 도 board/ 안(`board/areas.md`). 아니면 legacy wiki-밖 위치
+    (`.project_manager/areas.md`·현 위치·무변경).
+    """
+    base = REPO / ".project_manager"
+    if (base / "board" / "tickets").is_dir():
+        return base / "board" / "areas.md"
+    return base / "areas.md"
 
 
 # ── worktree_pool import seam (multi-PM 모드·ADR-0013) ───────────────────────────
@@ -100,12 +122,15 @@ def _load_board():
         return None
 
 
-def _registered_repos(areas_file: Path = AREAS_FILE) -> list[str]:
+def _registered_repos(areas_file: Path | None = None) -> list[str]:
     """areas.md 레지스트리에서 등록된 repo 이름 목록 (identity surface '등록영역' 표면용).
 
     board.py 를 import 하지 않는다(touches 격리·병렬충돌 회피) — areas.md 의 `repo`/`prefix`
     칼럼을 stdlib 로 가볍게 읽는다. 파일 부재/스키마 불일치 → 빈 목록(fail-soft·솔로 무해).
+    `areas_file` 미지정이면 `_areas_file()`(board_root 추종·T-0162 A6)로 *호출 시점* 해소.
     """
+    if areas_file is None:
+        areas_file = _areas_file()
     if not areas_file.exists():
         return []
     rows: list[str] = []
@@ -129,7 +154,7 @@ def _registered_repos(areas_file: Path = AREAS_FILE) -> list[str]:
 
 
 def _auto_slot(
-    areas_file: Path = AREAS_FILE,
+    areas_file: Path | None = None,
     leases_file: Path = LEASES_FILE,
 ) -> tuple[str, int] | None:
     """단일 self-host 자동바인딩 판정 — 정확히 1 repo + 그 repo 슬롯 정확히 1개면 `(repo, N)`.
@@ -147,7 +172,8 @@ def _auto_slot(
     **worktree_pool 을 import 하지 않는다**(touches 격리·ADR-0013) — `_registered_repos` 가
     areas.md 를 stdlib 로 읽는 것과 동형으로 장부 파일을 직접 read 한다(데이터 결합만).
     파일 부재/스키마 불일치/JSON 깨짐 → None(fail-soft — 자동바인딩은 *추가 편의*이지
-    강제 아님·실패는 현행 솔로로 폴백).
+    강제 아님·실패는 현행 솔로로 폴백). `areas_file` 미지정(None)이면 `_registered_repos` 가
+    `_areas_file()`(board_root 추종·T-0162 A6)로 해소한다.
     """
     repos = _registered_repos(areas_file)
     if len(repos) != 1:
@@ -373,14 +399,17 @@ class PmBootstrap:
         run_git_fn: Callable[[list[str]], tuple[int, str]] | None = None,
         log_file: Path = LOG_FILE,
         board_py: Path = BOARD_PY,
-        areas_file: Path = AREAS_FILE,
+        areas_file: Path | None = None,
         venv_python: str | Path = _default_python(),
         worktree_pool=None,
         board=None,
     ) -> None:
         self._log_file = log_file
         self._board_py = board_py
-        self._areas_file = areas_file
+        # areas_file 미지정이면 `_areas_file()`(board_root 추종·T-0162 A6)로 해소 — board/
+        # 분리(ADR-0033 ①) 후 등록영역 surface(_registered_repos)가 stale 안 보게. 명시
+        # 인자(hermetic 테스트)는 그대로 존중.
+        self._areas_file = areas_file if areas_file is not None else _areas_file()
         self._venv_python = venv_python
         # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 --repo
         # 경로 진입 시에만 동적 로드(multi-PM 모드)·솔로 무인자 경로는 안 건드린다.

@@ -82,11 +82,19 @@ def test_is_pytest_green_no_passed_is_false(tf):
 
 
 class _FakeBoard:
-    """board.py 대역 — id_prefix / _areas_row_for_prefix 만 흉내(areas 해소 가로채기)."""
+    """board.py 대역 — areas_file / id_prefix / _areas_row_for_prefix 만 흉내(areas 해소 가로채기).
 
-    def __init__(self, prefix, row):
+    `areas_file()` = board_root 추종 결과(T-0162 A6) — `_resolve_per_repo_test_cmd` 의 존재
+    가드가 board 모듈 함수로 위임되므로 대역도 그 함수를 제공한다(실재 areas.md 경로 주입).
+    """
+
+    def __init__(self, prefix, row, areas_path=None):
         self._prefix = prefix
         self._row = row
+        self._areas_path = areas_path or Path("/__nonexistent_areas__.md")
+
+    def areas_file(self):
+        return self._areas_path
 
     def id_prefix(self):
         return self._prefix
@@ -97,7 +105,10 @@ class _FakeBoard:
 
 def test_resolve_per_repo_cmd_solo_no_areas_returns_none(tf, tmp_path, monkeypatch):
     """솔로 폴백 — areas.md 부재면 None(호출부가 현행 pytest argv 보존)."""
-    monkeypatch.setattr(tf, "AREAS_FILE", tmp_path / "no-areas.md")
+    monkeypatch.setattr(
+        tf, "_load_board_module",
+        lambda: _FakeBoard(None, None, areas_path=tmp_path / "no-areas.md"),
+    )
     assert tf._resolve_per_repo_test_cmd() is None
 
 
@@ -105,10 +116,9 @@ def test_resolve_per_repo_cmd_umbrella_returns_row_cmd(tf, tmp_path, monkeypatch
     """multi-PM — areas.md 있고 활성 prefix 행에 test_cmd 있으면 그 문자열(예: go test)."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-    monkeypatch.setattr(tf, "AREAS_FILE", areas)
     monkeypatch.setattr(
         tf, "_load_board_module",
-        lambda: _FakeBoard("A1", {"test_cmd": "go test ./..."}),
+        lambda: _FakeBoard("A1", {"test_cmd": "go test ./..."}, areas_path=areas),
     )
     assert tf._resolve_per_repo_test_cmd() == "go test ./..."
 
@@ -117,8 +127,8 @@ def test_resolve_per_repo_cmd_umbrella_no_prefix_returns_none(tf, tmp_path, monk
     """multi-PM이라도 활성 prefix 없으면 None(솔로 폴백 — 현행 보존)."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-    monkeypatch.setattr(tf, "AREAS_FILE", areas)
-    monkeypatch.setattr(tf, "_load_board_module", lambda: _FakeBoard(None, None))
+    monkeypatch.setattr(
+        tf, "_load_board_module", lambda: _FakeBoard(None, None, areas_path=areas))
     assert tf._resolve_per_repo_test_cmd() is None
 
 
@@ -126,19 +136,15 @@ def test_resolve_per_repo_cmd_umbrella_empty_test_cmd_returns_none(tf, tmp_path,
     """multi-PM이라도 행의 test_cmd 빈 값이면 None(부분 등록 — 현행 보존)."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-    monkeypatch.setattr(tf, "AREAS_FILE", areas)
     monkeypatch.setattr(
         tf, "_load_board_module",
-        lambda: _FakeBoard("A1", {"test_cmd": ""}),
+        lambda: _FakeBoard("A1", {"test_cmd": ""}, areas_path=areas),
     )
     assert tf._resolve_per_repo_test_cmd() is None
 
 
 def test_resolve_per_repo_cmd_board_load_failure_returns_none(tf, tmp_path, monkeypatch):
     """board import 실패(None)면 None — fail-soft 로 솔로 폴백(현행 보존)."""
-    areas = tmp_path / "areas.md"
-    areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-    monkeypatch.setattr(tf, "AREAS_FILE", areas)
     monkeypatch.setattr(tf, "_load_board_module", lambda: None)
     assert tf._resolve_per_repo_test_cmd() is None
 

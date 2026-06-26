@@ -42,13 +42,47 @@ REPO = Path(__file__).resolve().parents[2]
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 PM_PLAYBOOK_FILE = REPO / ".project_manager" / "wiki" / "pm_playbook.md"  # 정적 — 인계 프롬프트 템플릿 추출용
 PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"       # 동적 — 세션 식별 sliding window 편집 대상
-TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"             # board 현황 카운트용 (trigger wave-summary)
+TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"             # board 현황 카운트 legacy 별칭 (아래 _tickets_dir 가 추종)
 TOOLS_DIR = REPO / ".project_manager" / "tools"                          # worktree_pool 동적 로드 앵커 (multi-PM 모드)
 # 회귀 cwd 자동해소(T-0124) — board.py·pm_bootstrap.py 와 *같은 위치*. _regression_cwd 가
 # pm_bootstrap._auto_slot 에 명시 인자로 넘겨 단일 self-host 슬롯을 해소한다. worktree_pool 은
 # import 하지 않는다(touches 격리·데이터 결합만) — pm_bootstrap 을 동적로드해 그 판정을 재사용.
-AREAS_FILE = REPO / ".project_manager" / "areas.md"
+AREAS_FILE = REPO / ".project_manager" / "areas.md"                       # legacy 별칭 (아래 _areas_file 가 추종)
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+
+
+# ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────
+# board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다(ADR-0033 ①).
+# 그러면 board 현황 카운트(trigger wave-summary)·회귀 cwd 자동해소(_auto_slot 의 areas 입력)가
+# wiki/ legacy 위치를 보면 *stale*(count 0·미해소)이다. pm_handoff 는 board.py 를 import 하지
+# 않으므로(touches 격리·`board_status_counts` 가 stdlib glob), board.py 의 graceful 탐지 로직을
+# *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면 board/ 루트, 아니면 wiki/(legacy).
+# 솔로/미분리/미마이그 adopter 에선 board/tickets 부재 → 현 위치 100% 폴백(회귀 0).
+# 상수 TICKETS_DIR·AREAS_FILE 는 hermetic 테스트의 monkeypatch seam·legacy 기본값으로 유지.
+
+def _board_root() -> Path:
+    """board(tickets+areas) 루트 — board/ 분리 시 `<REPO>/.project_manager/board`, 아니면
+    legacy `<REPO>/.project_manager/wiki` (board.py `board_root` 동형·import 없이 복제)."""
+    base = REPO / ".project_manager"
+    if (base / "board" / "tickets").is_dir():
+        return base / "board"
+    return base / "wiki"
+
+
+def _tickets_dir() -> Path:
+    """ticket 디렉토리 — _board_root()/tickets (board/ 분리 추종·legacy=wiki/tickets)."""
+    return _board_root() / "tickets"
+
+
+def _areas_file() -> Path:
+    """areas 레지스트리 경로 (board.py `areas_file` 동형·조건분기).
+
+    areas.md 는 legacy 에서 `.project_manager/areas.md`(wiki *밖*)에 산다. board/ 분리 시엔
+    board submodule *안*(board/areas.md)으로 옮겨진다 → board/tickets 존재로 가른다.
+    """
+    if (REPO / ".project_manager" / "board" / "tickets").is_dir():
+        return _board_root() / "areas.md"
+    return REPO / ".project_manager" / "areas.md"
 
 
 # ── worktree_pool import seam (multi-PM 모드·ADR-0013) ───────────────────────────
@@ -102,7 +136,7 @@ def _load_pm_bootstrap():
 
 def _regression_cwd(
     worktree_slot: str | None = None,
-    areas_file: Path = AREAS_FILE,
+    areas_file: Path | None = None,
     leases_file: Path = LEASES_FILE,
 ) -> str:
     """회귀를 실행할 작업 디렉토리를 해소한다 (T-0124·분리된 PM 홈+worktree 모델).
@@ -117,7 +151,12 @@ def _regression_cwd(
 
     판정 로직은 pm_bootstrap `_auto_slot` 재사용(count-based 단일 self-host·T-0123 동형) —
     복붙하지 않고 동적 로드한다(DRY). areas/leases 는 명시 인자로 노출해 hermetic 테스트 가능.
+    `areas_file` 미지정이면 `_areas_file()`(board_root 추종·T-0162 A6)로 해소한다 — board/
+    분리(ADR-0033 ①) 후 areas 가 board/ 안으로 옮겨가므로 legacy 위치를 보면 _auto_slot 이
+    등록 repo 를 0개로 세 self-host 슬롯을 미해소한다.
     """
+    if areas_file is None:
+        areas_file = _areas_file()
     if worktree_slot:
         return str(REPO / worktree_slot)
     bp = _load_pm_bootstrap()
@@ -582,11 +621,17 @@ def infer_next_session_num(pm_state_text: str) -> int | str:
     return highest + 1
 
 
-def board_status_counts(tickets_dir: Path = TICKETS_DIR) -> dict[str, int]:
+def board_status_counts(tickets_dir: Path | None = None) -> dict[str, int]:
     """board 의 status 디렉토리별 ticket 수를 센다 (stdlib glob — board.py 미import).
 
     반환: {"open": N, "claimed": N, "blocked": N, "done": N}.
+
+    `tickets_dir` 미지정(None)이면 `_tickets_dir()`(board_root 추종·T-0162 A6)로 *호출 시점*
+    해소한다 — board/ 분리(ADR-0033 ①) 후 wiki/ legacy 위치(stale·count 0)를 안 보게. 명시
+    인자는 그대로 존중(hermetic 테스트 seam).
     """
+    if tickets_dir is None:
+        tickets_dir = _tickets_dir()
     counts: dict[str, int] = {}
     for status in _BOARD_STATUS_DIRS:
         status_dir = tickets_dir / status
@@ -600,12 +645,13 @@ def board_status_counts(tickets_dir: Path = TICKETS_DIR) -> dict[str, int]:
 def build_trigger_wave_summary(
     reason: str,
     ctx_pct: int | str | None,
-    tickets_dir: Path = TICKETS_DIR,
+    tickets_dir: Path | None = None,
 ) -> str:
     """비대화 트리거용 wave-summary 를 자동 생성한다 (사람 작성 대체).
 
     형식: "ctx 임계 자동 핸드오프 (reason=<reason>·ctx=<N>%) — board <현황 1줄>"
-    ctx_pct 가 None 이면 ctx 표기를 생략.
+    ctx_pct 가 None 이면 ctx 표기를 생략. tickets_dir 미지정이면 board_status_counts 가
+    `_tickets_dir()`(board_root 추종)로 해소한다(T-0162 A6).
     """
     ctx_part = f"·ctx={ctx_pct}%" if ctx_pct is not None else ""
     counts = board_status_counts(tickets_dir)

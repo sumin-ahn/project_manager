@@ -33,7 +33,6 @@ from typing import Any
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"
 IDEAS_DIR = REPO / ".project_manager" / "wiki" / "ideas"
 DECISIONS_DIR = REPO / ".project_manager" / "wiki" / "decisions"
 SPECS_DIR = REPO / ".project_manager" / "wiki" / "specs"
@@ -42,8 +41,71 @@ HOOKS_DIR = REPO / ".project_manager" / "hooks"  # instance-owned lint hooks (AD
 BOARD_FILE = REPO / ".project_manager" / "wiki" / "board.md"
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
-TEMPLATE_FILE = TICKETS_DIR / "_template.md"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored): prefix, session
+
+
+# ── board root (graceful 탐지·ADR-0033 ① 분리) ───────────────────────────────
+# board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다 — 그러면
+# git 형상이 design(superproject)/board(submodule) 둘로 갈려 PM 운영 commit 이 코드 git 을
+# 오염하지 않는다(ADR-0033 ①). 분리되지 않은 legacy(솔로·미마이그 adopter)에선 board 가
+# wiki/ 안에 그대로 산다. 아래 board_root() 가 *실측*으로 둘을 가른다 — board/tickets 가
+# 실제 dir 이면 board/ 루트, 아니면 wiki/ 루트(legacy). install_pre_push_hook 의 git-path
+# 탐지 패턴 동형(존재할 때만 새 경로·없으면 현 위치).
+#
+# board-관련 경로(tickets·_template·areas)는 *상수가 아니라 함수*로 lazy 해소한다 — board/
+# 존재 여부가 런타임(설치/마이그레이션)에 바뀔 수 있고, hermetic 테스트가 REPO 를 monkeypatch
+# 한 뒤 board_root 가 그 tmp REPO 를 따라야 하기 때문(import-time 상수면 실 REPO 에 굳음).
+# 나머지 wiki 잔류 경로(ideas/board.md/decisions/specs/architecture/log/status)는 board 가
+# 아니라 설계축/파생물이므로 상수 그대로 둔다.
+
+def board_root() -> Path:
+    """board(tickets+areas) 루트 — board/ 분리 시 `<REPO>/.project_manager/board`, 아니면
+    legacy `<REPO>/.project_manager/wiki`.
+
+    `.project_manager/board/tickets` 가 실 디렉토리면 board 가 submodule 로 분리된
+    형상(ADR-0033 ①) → board/ 루트. 아니면 board 가 아직 wiki/ 안에 있는 legacy 형상 →
+    wiki/ 루트(현 위치·무변경). install_pre_push_hook 의 디렉토리-탐지와 동형 — *존재할
+    때만* 새 경로로 갈리고, 없으면 현재 위치로 100% 폴백한다(솔로·미마이그 무영향).
+    """
+    base = REPO / ".project_manager"
+    if (base / "board" / "tickets").is_dir():
+        return base / "board"
+    return base / "wiki"
+
+
+def tickets_dir() -> Path:
+    """ticket 디렉토리 — board_root()/tickets (board/ 분리 추종·legacy=wiki/tickets)."""
+    return board_root() / "tickets"
+
+
+def template_file() -> Path:
+    """ticket 본문 템플릿 — tickets_dir()/_template.md (board_root 추종)."""
+    return tickets_dir() / "_template.md"
+
+
+def areas_file() -> Path:
+    """areas 레지스트리 경로 (board_root 추종·*조건분기*).
+
+    areas.md 는 legacy 에서 `.project_manager/areas.md`(wiki *밖*·committed shared registry)에
+    산다 — tickets 처럼 wiki/ 안이 아니다. board/ 분리 시엔 board submodule *안*으로 옮겨야
+    PM 운영(repo add 가 append)이 코드 git 을 오염하지 않는다(ADR-0033 ①). 그래서:
+      - board/ 존재 → `board_root()/areas.md` (= board/areas.md·submodule 안)
+      - legacy     → `<REPO>/.project_manager/areas.md` (현 위치·wiki 밖·무변경)
+    """
+    if (REPO / ".project_manager" / "board" / "tickets").is_dir():
+        return board_root() / "areas.md"
+    return REPO / ".project_manager" / "areas.md"
+
+
+# board-관련 경로의 module-level 별칭 — 위 함수가 *실제* 해소 경로다(board_root 추종). 이
+# 상수들은 (1) hermetic 테스트의 monkeypatch seam(`setattr(board, "TICKETS_DIR", …)` 가
+# AttributeError 없이 동작)과 (2) 외부 import 안전(import-time 평가)을 위해 legacy 기본값으로
+# 유지한다. 내부 코드는 *함수*를 부르므로(board_root 추종·아래), 이 상수가 가리키는 legacy
+# 경로는 board/ 미분리 시점에 함수 결과와 동일하다 — board/ 분리 후에도 함수가 우선이라
+# 회귀 없음. (테스트가 이들을 patch 할 땐 REPO 도 함께 patch 하고 그 값이 legacy 와 일치 →
+# 함수가 같은 경로를 낸다.)
+TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"
+TEMPLATE_FILE = TICKETS_DIR / "_template.md"
 AREAS_FILE = REPO / ".project_manager" / "areas.md"    # shared registry (committed, merge=union)
 PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"          # per-clone (git-ignored)
 PM_STATE_TEMPLATE = REPO / ".project_manager" / "wiki" / "pm_state.template.md"  # tracked skeleton
@@ -256,11 +318,12 @@ def _parse_areas() -> tuple[list[str], list[dict[str, str]]]:
     헤더 매핑으로 떨어져 `base` 유실(codex T-0076) → `> len(header)` 가 6칸·7칸 신 row 둘 다 보존.
     셀 수가 헤더 이하인 행(구 6/5/3칸 데이터 row)은 자기 헤더로 매핑(현행). areas.md 부재 → ([], []).
     """
-    if not AREAS_FILE.exists():
+    af = areas_file()
+    if not af.exists():
         return [], []
     header: list[str] = []
     rows: list[dict[str, str]] = []
-    for line in AREAS_FILE.read_text(encoding="utf-8").splitlines():
+    for line in af.read_text(encoding="utf-8").splitlines():
         cells = _split_areas_row(line)
         if cells is None:
             continue
@@ -562,9 +625,10 @@ def areas_append(prefix: str, area: str, owner: str,
     _base = base or ""
     _protected = protected or ""
     _area_owner = area_owner or ""
+    af = areas_file()
     with board_lock():
-        if not AREAS_FILE.exists():
-            AREAS_FILE.write_text(
+        if not af.exists():
+            af.write_text(
                 "# Area Registry\n\n"
                 "> per-repo 레지스트리 (ADR-0014·T-0075·T-0076·T-0161): repo → prefix → git → "
                 "test_cmd → owner → base → protected → area_owner. 멀티-PM ID 네임스페이스 + "
@@ -578,7 +642,7 @@ def areas_append(prefix: str, area: str, owner: str,
         # O_APPEND atomic append (ADR-0012) — areas 는 append-only 레지스트리이므로
         # read-modify-write 가 아니라 OS 가 보장하는 원자 추가로 동시 등록 충돌을 없앤다.
         _append_atomic(
-            AREAS_FILE,
+            af,
             f"| {_repo} | {prefix} | {_git} | {_test} | {owner} | {_base} "
             f"| {_protected} | {_area_owner} |\n")
 
@@ -719,6 +783,63 @@ def install_pre_push_hook() -> bool:
         encoding="utf-8")
     hook.chmod(0o755)
     return True
+
+
+def _configure_board_submodule() -> bool:
+    """board submodule 의 `ignore = all` 을 자동 설정 (ADR-0033 ①·누출 0). 멱등·fail-soft.
+
+    board 가 submodule 로 분리(`.project_manager/board/.git` 존재)된 형상에서만 동작한다 —
+    superproject(design·코드 git)에서 `submodule.<path>.ignore all` 을 켜면, board(submodule)가
+    PM 운영 commit 으로 전진해도 design 의 `git status`/`git diff` 가 그 gitlink drift 를 숨겨
+    routine `git add -A` 가 board 포인터 bump 를 *우발 stage* 하지 않는다(board↔design 누출 0).
+
+    fail-soft: git 바이너리 부재·git repo 아님·submodule 미분리(`.../board/.git` 없음·솔로/
+    legacy)면 아무 것도 하지 않고 False 반환(솔로·미마이그 adopter 100% 무영향). 멱등:
+    `git config` 는 같은 키를 덮어쓰므로 재실행 안전. 반환 True = 설정 적용.
+
+    config 키 = `submodule.<.gitmodules-path>.ignore`(실측·hermetic git fixture로 확정·A5). board
+    의 `.gitmodules` 서브섹션 *이름*을 권위로 읽어(표준 `git submodule add` 는 name==path) 키를
+    구성한다 — 이름이 path 와 달라도 정확한 키로 set.
+    """
+    board_git = REPO / ".project_manager" / "board" / ".git"
+    if not board_git.exists():
+        return False  # submodule 미분리(솔로/legacy) — no-op
+    # `.gitmodules` 에서 이 board path 에 대응하는 submodule 서브섹션 *이름*을 찾는다.
+    # 출력 예: `submodule.<name>.path .project_manager/board` — 표준은 name == path.
+    name = _board_submodule_name()
+    if name is None:
+        return False  # .gitmodules 부재/미등록·git 부재 — fail-soft
+    r = subprocess.run(
+        ["git", "-C", str(REPO), "config", f"submodule.{name}.ignore", "all"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return r.returncode == 0
+
+
+def _board_submodule_name() -> str | None:
+    """`.gitmodules` 에서 `.project_manager/board` path 의 submodule 서브섹션 이름 (없으면 None).
+
+    `git config -f .gitmodules --get-regexp '^submodule\\..*\\.path$'` 행을 파싱해 값이
+    `.project_manager/board` 인 항목의 키 `submodule.<name>.path` 에서 `<name>` 을 추출한다.
+    git 부재·.gitmodules 부재·매칭 없음 → None (fail-soft·_configure_board_submodule 가 no-op).
+    """
+    gitmodules = REPO / ".gitmodules"
+    if not gitmodules.exists():
+        return None
+    r = subprocess.run(
+        ["git", "-C", str(REPO), "config", "-f", str(gitmodules),
+         "--get-regexp", r"^submodule\..*\.path$"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        return None
+    want = ".project_manager/board"
+    for line in r.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if value.strip() != want:
+            continue
+        # key = `submodule.<name>.path` → 가운데 <name>(점 포함 가능) 추출.
+        if key.startswith("submodule.") and key.endswith(".path"):
+            return key[len("submodule."):-len(".path")]
+    return None
 
 
 def _active_slot_test_cmd() -> str | None:
@@ -1015,7 +1136,7 @@ def find_item(base_dir: Path, statuses: tuple[str, ...], item_id: str,
 
 def find_ticket(tid: str) -> tuple[str, Path]:
     """Return (status_dir, path). Raises FileNotFoundError if missing."""
-    return find_item(TICKETS_DIR, STATUS_DIRS, tid, "ticket")
+    return find_item(tickets_dir(), STATUS_DIRS, tid, "ticket")
 
 
 def find_idea(iid: str) -> tuple[str, Path]:
@@ -1070,7 +1191,7 @@ def move_item(base_dir: Path, src: Path, dst_status: str) -> Path:
 
 def move_ticket(src: Path, dst_status: str) -> Path:
     """Atomic mv into a ticket status directory."""
-    return move_item(TICKETS_DIR, src, dst_status)
+    return move_item(tickets_dir(), src, dst_status)
 
 
 def move_idea(src: Path, dst_status: str) -> Path:
@@ -1104,10 +1225,10 @@ def _next_id(prefix: str | None = None) -> str:
     never matches a prefixed file, so the two namespaces stay disjoint.
     """
     if prefix:
-        n = next_numeric_id(TICKETS_DIR, STATUS_DIRS,
+        n = next_numeric_id(tickets_dir(), STATUS_DIRS,
                             f"T-{prefix}-*.md", rf"T-{re.escape(prefix)}-(\d+)-")
         return f"T-{prefix}-{n:03d}"
-    n = next_numeric_id(TICKETS_DIR, STATUS_DIRS, "T-*.md", r"T-(\d+)-")
+    n = next_numeric_id(tickets_dir(), STATUS_DIRS, "T-*.md", r"T-(\d+)-")
     return f"T-{n:04d}"
 
 
@@ -1401,6 +1522,10 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
     if install_pre_push_hook():
         print("✓ pre-push 회귀 게이트 훅 설치 (green 회귀만 push)")
+    # board submodule 이 분리된 형상(ADR-0033 ①)이면 ignore=all 자동 설정 — design(코드) git 이
+    # board PM-commit 으로 오염되지 않게(누출 0). 솔로/미분리/git 부재면 no-op(fail-soft·무영향).
+    if _configure_board_submodule():
+        print("✓ board submodule ignore=all 설정 (코드 git 누출 0·ADR-0033 ①)")
     prompt_external_review_optin()
     mode = f"multi-repo · {prefix}" if namespaced else "solo (N=1·M=1)"
     idfmt = f"T-{prefix}-NNN" if namespaced else "T-NNNN (legacy)"
@@ -1545,15 +1670,16 @@ def _migrate_identity_preview(
     """
     total = 0
     # areas.md 미리보기(읽기 전용).
-    if AREAS_FILE.exists():
-        text = AREAS_FILE.read_text(encoding="utf-8")
+    af = areas_file()
+    if af.exists():
+        text = af.read_text(encoding="utf-8")
         _, area_changes = _migrate_areas_text(text, user)
         for c in area_changes:
             print(f"  areas.md: {c}")
         total += len(area_changes)
     # 티켓 미리보기 — glob 스캔 후 변경 산출만(쓰기 없음).
     for status in statuses:
-        for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, _body = load_ticket(p)
             changes = _migrate_ticket_fm(fm, user, slot)
             if not changes:
@@ -1576,19 +1702,20 @@ def _migrate_areas_apply(user: str) -> tuple[int, bool]:
     **재진입 금지**: board_lock 은 OS flock(non-reentrant). 락 안에서 부르는 IO
     (`_migrate_areas_text`·AREAS_FILE read/write)는 락을 다시 잡지 않는다. 반환 `(total, wrote)`.
     """
-    if not AREAS_FILE.exists():
+    af = areas_file()
+    if not af.exists():
         return 0, False
     total = 0
     wrote = False
     with board_lock():
-        text = AREAS_FILE.read_text(encoding="utf-8")
+        text = af.read_text(encoding="utf-8")
         new_text, area_changes = _migrate_areas_text(text, user)
         for c in area_changes:
             print(f"  areas.md: {c}")
         if area_changes:
             total += len(area_changes)
             if new_text != text:
-                AREAS_FILE.write_text(new_text, encoding="utf-8")
+                af.write_text(new_text, encoding="utf-8")
                 wrote = True
     return total, wrote
 
@@ -1617,7 +1744,7 @@ def _migrate_tickets_apply(
     total = 0
     wrote = False
     for status in statuses:
-        for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
             # 스캔 시점 frontmatter 로 변경 산출(읽기). ID 는 frontmatter 에서 얻는다.
             try:
                 fm, body = load_ticket(p)
@@ -1745,12 +1872,12 @@ def cmd_new(args: argparse.Namespace) -> int:
     if prefix and prefix not in registered:
         # 명시 prefix(override 또는 local.conf)는 등록된 것이어야 한다 — registry 가 존재할 때만
         # 의미 있는 검증(부재면 registered 가 빈 set → 솔로에서 prefix 를 명시한 비정상 케이스).
-        if AREAS_FILE.exists():
+        if areas_file().exists():
             print(f"prefix {prefix!r} 미등록 (areas.md). `board.py init` 로 등록하거나 "
                   "등록된 prefix 사용.", file=sys.stderr)
             return 1
 
-    tmpl_fm, tmpl_body = load_ticket(TEMPLATE_FILE)
+    tmpl_fm, tmpl_body = load_ticket(template_file())
 
     # ID 발행(`_next_id` = max+1·동시 발행 race)과 파일 생성을 단일 락으로 직렬화한다
     # (ADR-0012). 락 안에서 ID 를 *읽고* 곧바로 파일을 만들어, 다른 세션이 같은 ID 를
@@ -1782,7 +1909,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         fm["tags"] = (args.tag.split(",") if args.tag else [])
         fm["estimate"] = args.estimate
 
-        path = TICKETS_DIR / "open" / filename
+        path = tickets_dir() / "open" / filename
         dump_ticket(path, fm, body)
 
     print(f"created {tid} ({_rel_to_repo(path)})")
@@ -1808,7 +1935,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     for status in STATUS_DIRS:
         if args.status and args.status != status:
             continue
-        for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, _ = load_ticket(p)
             if args.tag and args.tag not in (fm.get("tags") or []):
                 continue
@@ -2047,7 +2174,7 @@ def _all_tickets() -> list[tuple[str, dict]]:
     """[(status, frontmatter), ...] for every ticket regardless of dir."""
     out: list[tuple[str, dict]] = []
     for status in STATUS_DIRS:
-        for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, _ = load_ticket(p)
             out.append((status, fm))
     return out
@@ -2167,7 +2294,7 @@ def lint_bodies() -> list[tuple[str, str, str]]:
     """
     issues: list[tuple[str, str, str]] = []
     for status in ("open", "claimed"):
-        for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, body = load_ticket(p)
             tid = fm.get("id") or p.name
             prose = _strip_code(body)
@@ -2422,6 +2549,14 @@ def _collect_wikilink_files() -> list[Path]:
     """
     wiki = REPO / ".project_manager" / "wiki"
     files: list[Path] = list(wiki.rglob("*.md")) if wiki.is_dir() else []
+    # board/ 분리(ADR-0033 ①) 시 ticket 본문이 wiki/ 밖(board/tickets)으로 빠진다 — 그러면
+    # ticket 의 `[[ADR-NNNN]]` 구조참조가 wiki-only 스캔에선 안 보여 dangling 이 *미검출*된다.
+    # tickets_dir() 를 union 해 두 루트를 모두 본다. legacy(board_root==wiki)면 이 경로는 이미
+    # wiki.rglob 에 포함되므로 set dedup 으로 no-op(중복 0). board/areas.md 등 비-md 는 제외.
+    tk = tickets_dir()
+    if tk.is_dir():
+        files.extend(tk.rglob("*.md"))
+    files = list(dict.fromkeys(files))  # 순서보존 dedup (legacy 중복 제거 + board union 합집합)
     for name in ("CLAUDE.md", "README.md"):
         p = REPO / name
         if p.exists():
@@ -2923,7 +3058,7 @@ def lint_unstable_refs() -> list[tuple[str, str, str]]:
 def _find_ticket_file(filename: str) -> Path | None:
     """tickets/<state>/<filename> 중 실재하는 첫 경로 (상태 무관 — mv 로 이동했을 수 있음)."""
     for status in STATUS_DIRS:
-        p = TICKETS_DIR / status / filename
+        p = tickets_dir() / status / filename
         if p.exists():
             return p
     return None
@@ -3276,7 +3411,7 @@ def _refresh_board_locked() -> None:
     """board.md 재생성의 scan+render+write 본체. **board_lock 보유 전제**."""
     by_status: dict[str, list[dict]] = {s: [] for s in STATUS_DIRS}
     for status in STATUS_DIRS:
-        for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, _ = load_ticket(p)
             by_status[status].append(fm)
 
