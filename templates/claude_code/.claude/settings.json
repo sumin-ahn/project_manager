@@ -54,7 +54,7 @@
       "Bash(git push *)"
     ],
     "deny": [
-      "Bash(rm -rf *)",
+      "Bash(rm *)",
       "Bash(git push --force *)",
       "Bash(git push -f *)",
       "Bash(git reset --hard *)",

@@ -18,7 +18,7 @@ permission:
   # (researcher 는 read-only — bash 는 읽기/조사용이지만 가드는 동일하게 박는다.)
   bash:
     "*": allow
-    "rm -rf *": deny
+    "rm *": deny
     "git push --force*": deny
     "git push -f*": deny
     "git clean -f*": deny

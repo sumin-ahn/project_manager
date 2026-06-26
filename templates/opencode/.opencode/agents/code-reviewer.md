@@ -17,7 +17,7 @@ permission:
   # 위험 패턴 deny 를 동일하게 박아 어떤 매칭 규칙에서도 우회되지 않게 한다.
   bash:
     "*": allow
-    "rm -rf *": deny
+    "rm *": deny
     "git push --force*": deny
     "git push -f*": deny
     "git clean -f*": deny

@@ -17,7 +17,7 @@ permission:
   # 있으므로 agent 레벨에도 패턴맵을 박아 어떤 매칭에서도 deny 가 보존되게 한다.
   bash:
     "*": allow
-    "rm -rf *": deny
+    "rm *": deny
     "git push --force*": deny
     "git push -f*": deny
     "git clean -f*": deny

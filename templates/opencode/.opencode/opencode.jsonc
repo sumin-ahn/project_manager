@@ -16,7 +16,7 @@
   "permission": {
     "bash": {
       "*": "allow",
-      "rm -rf *": "deny",
+      "rm *": "deny",
       "git push --force*": "deny",
       "git push -f*": "deny",
       "git clean -f*": "deny",

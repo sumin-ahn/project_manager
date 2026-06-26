@@ -38,11 +38,12 @@ AGENT_FILES = [
     OPENCODE / "agents" / "researcher.md",
 ]
 
-# claude deny 와 정합해야 할 위험 패턴 (rm -rf · force push · clean -f) — deny 강제.
+# claude deny 와 정합해야 할 위험 패턴 (rm 일반 · force push · clean -f) — deny 강제.
+# `rm *` = 일반 파일 삭제 deny (T-0160 — "파일 삭제는 사용자가 직접"·`rm -rf *` 를 subsume).
 # git push --force* / -f* 는 claude 의 `git push --force *` / `git push -f *` 와
 # 의미 동등 (opencode 는 후행 인자 매칭 위해 `*` 를 공백 없이 붙인다).
 REQUIRED_DENY_PATTERNS = [
-    "rm -rf *",
+    "rm *",
     "git push --force*",
     "git push -f*",
     "git clean -f*",
@@ -205,8 +206,8 @@ def test_mirrors_claude_settings_deny():
     claude_heads = {head(p) for p in claude_deny}
     opencode_heads = {head(p) for p in opencode_deny}
 
-    # rm -rf · git push --force · git push -f · git clean -f 는 opencode 가 deny 로 미러.
-    for risky in ["rm -rf", "git push --force", "git push -f", "git clean -f"]:
+    # rm · git push --force · git push -f · git clean -f 는 opencode 가 deny 로 미러.
+    for risky in ["rm", "git push --force", "git push -f", "git clean -f"]:
         assert risky in claude_heads, f"claude deny 에 {risky!r} 가 없음 (테스트 전제 깨짐)"
         assert risky in opencode_heads, (
             f"opencode 가 claude deny {risky!r} 를 미러하지 않음. opencode deny: {opencode_deny}"

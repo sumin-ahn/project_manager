@@ -78,7 +78,7 @@ def test_config_keeps_existing_permission_guard():
     data = _load_config()
     bash = data.get("permission", {}).get("bash")
     assert isinstance(bash, dict), "permission.bash 패턴맵이 사라짐 (T-0011 회귀)"
-    assert bash.get("rm -rf *") == "deny", "기존 deny 가드 손실 (T-0011 회귀)"
+    assert bash.get("rm *") == "deny", "기존 deny 가드 손실 (T-0011·T-0160 회귀)"
 
 
 # ── 2. plugin 정합: 파일 존재 + 필수 호출/구조 ──────────────────────────────
