@@ -63,7 +63,7 @@ tickets/
 ├── README.md               ← 이 파일
 ├── _template.md            ← 새 ticket 만들 때 board.py 가 복사
 ├── open/                   누구든 claim 가능 (depends_on 모두 done 일 때)
-├── claimed/                작업 중 (frontmatter.claimed_by 가 세션 식별)
+├── claimed/                작업 중 (frontmatter.claimed_by 가 작업자 식별 — 슬롯 `<pm>` 또는 multi-user 시 `<user>/<pm-slot>`)
 ├── blocked/                의존성/외부 대기 — claim 불가
 └── done/                   완료
 ```

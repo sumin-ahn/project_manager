@@ -95,6 +95,15 @@ _OLD_SCHEMA = (
     "| ACC | 정산 | bob |\n"
 )
 
+# 신 스키마 (T-0161·ADR-0033 ③): | … | protected | area_owner |
+_AREA_OWNER_SCHEMA = (
+    "# Area Registry\n\n"
+    "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+    "|---|---|---|---|---|---|---|---|\n"
+    "| service-a | PAY | git@github.com:me/a.git | pytest -q | alice | develop | main | alice |\n"
+    "| service-b | ACC | git@github.com:me/b.git | go test ./... | bob |  |  |  |\n"
+)
+
 
 # ════════════════════════════════════════════════════════════════════════
 # areas.md 신 스키마 파싱 (헤더-인식)
@@ -404,6 +413,114 @@ def test_areas_append_protected_to_base_header_preserves_protected(board):
     assert board._repo_protected("service-c") == ["main"]
     # 기존 구 base row(protected 셀 없음)는 여전히 DEFAULT 폴백(회귀 0).
     assert board._repo_protected("service-a") == ["main", "master", "develop"]
+
+
+# ════════════════════════════════════════════════════════════════════════
+# areas.md area_owner 칼럼 (T-0161·ADR-0033 ③) — 파싱·하위호환·areas_append·_repo_area_owner
+# ════════════════════════════════════════════════════════════════════════
+
+def test_parse_areas_area_owner_schema_maps_column(board):
+    """신 8칸 스키마 파싱 — area_owner 칼럼을 헤더로 매핑한다 (T-0161)."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    header, rows = board._parse_areas()
+    assert header == ["repo", "prefix", "git", "test_cmd", "owner", "base",
+                      "protected", "area_owner"]
+    assert rows[0]["area_owner"] == "alice"   # 명시 area_owner(단일 user 토큰)
+    assert rows[1]["area_owner"] == ""        # 빈 area_owner → _repo_area_owner None 폴백
+
+
+def test_areas_columns_canonical_includes_area_owner(board):
+    """canonical 칼럼 순서 끝에 area_owner 가 추가됐다 (스키마 진화·T-0161)."""
+    assert board._AREAS_COLUMNS == (
+        "repo", "prefix", "git", "test_cmd", "owner", "base", "protected",
+        "area_owner")
+
+
+def test_repo_area_owner_resolves_from_areas(board):
+    """_repo_area_owner(repo) → areas.md 그 repo 의 area_owner (T-0161)."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    assert board._repo_area_owner("service-a") == "alice"
+
+
+def test_repo_area_owner_empty_column_is_none(board):
+    """빈 area_owner 칼럼(부분 등록) → None (`--mine` 풀이 비소유 처리·T-0161)."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    assert board._repo_area_owner("service-b") is None
+
+
+def test_repo_area_owner_old_schema_is_none(board):
+    """area_owner 칼럼 없는 구 레지스트리(protected/base/per-repo) → None (하위호환·T-0161).
+
+    ADR-0014 의 기존 owner 칼럼은 그대로 두고(overload 금지), area_owner 칼럼만 없으므로
+    구 areas.md(7칸 protected·6칸 base·5칸 per-repo)는 무변경 동작 — area_owner None 폴백.
+    """
+    board.AREAS_FILE.write_text(_PROTECTED_SCHEMA, encoding="utf-8")  # 7칸·area_owner 없음
+    assert board._repo_area_owner("service-a") is None
+    board.AREAS_FILE.write_text(_BASE_SCHEMA, encoding="utf-8")       # 6칸·area_owner 없음
+    assert board._repo_area_owner("service-a") is None
+    board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")        # 5칸·area_owner 없음
+    assert board._repo_area_owner("service-a") is None
+
+
+def test_repo_area_owner_does_not_overload_owner(board):
+    """area_owner 는 ADR-0014 owner 와 별개 — owner(registrant)≠area_owner(user) (T-0161)."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    row = board._areas_row_for_prefix("PAY")
+    assert row["owner"] == "alice"        # registrant(ADR-0014)
+    assert row["area_owner"] == "alice"   # user 소유(별도 칼럼) — 값은 같아도 *다른 칼럼*
+    # service-b: owner=bob 인데 area_owner 는 빈 값(두 칼럼이 독립임을 확증).
+    row_b = board._areas_row_for_prefix("ACC")
+    assert row_b["owner"] == "bob"
+    assert row_b["area_owner"] == ""
+
+
+def test_repo_area_owner_absent_repo_is_none(board):
+    """미등록 repo → None (T-0161)."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    assert board._repo_area_owner("nope") is None
+
+
+def test_repo_area_owner_no_registry_is_none(board):
+    """areas.md 부재(솔로) → None (T-0161)."""
+    assert board._repo_area_owner("service-a") is None
+
+
+def test_areas_append_writes_area_owner_column(board):
+    """areas_append(area_owner=) → area_owner 칼럼 기록 + 신 8칸 스키마 헤더 생성 (T-0161)."""
+    board.areas_append("PAY", "", "alice",
+                       repo="service-a", git="git@x:a.git", test_cmd="pytest -q",
+                       base="develop", protected="main", area_owner="alice")
+    text = board.AREAS_FILE.read_text(encoding="utf-8")
+    assert ("| repo | prefix | git | test_cmd | owner | base | protected "
+            "| area_owner |") in text
+    assert ("| service-a | PAY | git@x:a.git | pytest -q | alice | develop "
+            "| main | alice |") in text
+    assert board._repo_area_owner("service-a") == "alice"
+
+
+def test_areas_append_area_owner_default_empty(board):
+    """areas_append(area_owner 미지정) → 빈 칼럼 + _repo_area_owner None 폴백 (T-0161)."""
+    board.areas_append("PAY", "", "alice", repo="service-a", test_cmd="pytest -q")
+    row = board._areas_row_for_prefix("PAY")
+    assert row["area_owner"] == ""                       # 미지정 → 빈 칼럼
+    assert board._repo_area_owner("service-a") is None    # 빈 값 → None 폴백
+
+
+def test_areas_append_area_owner_to_protected_header_preserves(board):
+    """업그레이드(구 7칸 protected 헤더) + areas_append(area_owner=) → area_owner 보존 (canonical 8칸 가드·T-0161).
+
+    T-0076 protected 헤더(7칸·area_owner 없음)에 8칸 row 가 append 되면, 헤더 길이만큼만 매핑 시
+    8번째(area_owner) 셀이 유실된다 → `_parse_areas` 가 셀 수 > 헤더(7칸 → 8칸 신 row)이면 헤더
+    무관 canonical 매핑(codex T-0075 게이트의 8칸 확장).
+    """
+    board.AREAS_FILE.write_text(_PROTECTED_SCHEMA, encoding="utf-8")  # 구 7칸 protected 헤더(area_owner 없음)
+    board.areas_append("ORD", "", "carol",
+                       repo="service-c", git="git@x:c.git", test_cmd="pytest -q",
+                       base="develop", protected="main", area_owner="carol")
+    # 헤더는 7칸 그대로지만 append 된 8칸 row 의 area_owner 가 canonical 매핑으로 보존된다.
+    assert board._repo_area_owner("service-c") == "carol"
+    # 기존 구 protected row(area_owner 셀 없음)는 여전히 None 폴백(회귀 0).
+    assert board._repo_area_owner("service-a") is None
 
 
 # ════════════════════════════════════════════════════════════════════════

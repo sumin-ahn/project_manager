@@ -150,6 +150,65 @@ def _default_session() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
 
 
+def _local_conf_user() -> str | None:
+    """`.project_manager/local.conf` 의 `user=` (없거나 OSError → None) (T-0161·ADR-0033 ③).
+
+    `_local_conf_session` 과 동형 — board.py 를 import 하지 않으므로(ADR-0013 isolation·
+    touches 격리) `board.local_config().get("user")` 와 *동일 의미*를 stdlib 로 자체 구현한다.
+    plain `KEY=value`·`#` 주석/빈 줄 무시. 부재/읽기실패는 None(폴백).
+    """
+    conf_file = REPO / ".project_manager" / "local.conf"
+    try:
+        text = conf_file.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        if key.strip() == "user":
+            return val.strip() or None
+    return None
+
+
+def _git_config_email() -> str | None:
+    """`git config user.email` (미설정/git 부재/실패 → None·fail-soft) (T-0161·ADR-0033 ③).
+
+    board.py `_git_config_email` 와 *동형* — board 직접 import 금지(ADR-0013 isolation)라
+    `_default_user` 의 폴백 레이어를 stdlib subprocess 로 자체 구현한다. UTF-8 고정(한글
+    이름·메시지 안전)·짧은 timeout. git 바이너리 부재·rc≠0·예외는 None 으로 강등(크래시 0).
+    """
+    git_binary = shutil.which("git")
+    if git_binary is None:
+        return None
+    try:
+        r = subprocess.run(
+            [git_binary, "-C", str(REPO), "config", "user.email"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5,
+        )
+    except Exception:  # noqa: BLE001 — fail-soft: git 호출 실패는 None(미상)으로 강등.
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def _default_user() -> str | None:
+    """user 식별자 — board.py `user_name()` 과 *동형* 우선순위 (T-0161·ADR-0033 ③):
+    `local.conf user=` > `git config user.email` > None (graceful·user 미상 허용).
+
+    `pm`(슬롯·`_default_session`)과 직교하는 **누가**(사람) 차원이다. `repo add` 의 areas.md
+    `area_owner` 칼럼(그 area 의 user 소유·`--mine` 풀 입력) 기본값으로 쓴다. solo 는 보통
+    `local.conf user=` 미설정 → `git config user.email` 폴백·그마저 없으면 None(빈 area_owner).
+    """
+    conf_user = _local_conf_user()
+    if conf_user:
+        return conf_user
+    return _git_config_email()
+
+
 def _local_conf_test_cmd() -> str | None:
     """`.project_manager/local.conf` 의 `test_cmd=` (없거나 OSError → None).
 
@@ -473,6 +532,10 @@ def cmd_repo_add(
         return 1
 
     owner = args.owner or _default_session()
+    # area_owner = 그 area 의 *user* 소유(`--mine` 풀 입력·ADR-0033 ③·T-0161) — registrant
+    # `owner`(슬롯/세션)와 별개 칼럼(overload 금지·codex sug). `--user` 명시 > local.conf user=
+    # > git config user.email > None(빈 칼럼·_repo_area_owner None 폴백·현행 동작).
+    area_owner = getattr(args, "user", None) or _default_user()
     base_arg = getattr(args, "base", None)
     bare_path = repos_dir / f"{name}.git"
     already_registered = name in board_mod.registered_prefixes()
@@ -532,15 +595,16 @@ def cmd_repo_add(
     #    폴백한다(per-repo override 는 areas.md 를 직접 편집·후속 `--protected` 플래그 여지).
     board_mod.areas_append(
         name, "", owner, repo=name, git=args.git, test_cmd=args.test, base=base,
-        protected="",
+        protected="", area_owner=area_owner,
     )
     # --test 미지정(None) 이면 areas test_cmd 빈 값 — 해소 체인이 슬롯/local.conf 로
     # 폴백한다(T-0066). 빌드명령은 worktree add 프롬프트·콘솔 [b] 에서 채울 수 있다.
     test_surface = args.test if args.test else "(미지정 — worktree add/콘솔 [b] 에서 설정)"
     base_surface = base if base else "(미해소 — worktree add 가 bare HEAD 사용)"
+    area_owner_surface = area_owner if area_owner else "(미상 — local.conf user= / git user.email 미설정)"
     print(
         f"✓ areas.md 등록: {name} | git={args.git} | test_cmd={test_surface} | "
-        f"owner={owner} | base={base_surface}"
+        f"owner={owner} | base={base_surface} | area_owner={area_owner_surface}"
     )
     # 5) 보호 브랜치 pre-push 훅 설치 (T-0076·멱등 자가치유) — 보호목록(areas protected→
     #    default) sidecar + bare core.hooksPath wiring. 회사 repo 무영향(.project_manager/.local).
@@ -1086,7 +1150,8 @@ def _console_repo_add(input_fn, board_mod):
     # 그 브랜치명을 cmd_repo_add 로 — 형식/존재 검증은 콘솔이 따로 안 하고 `_resolve_base`
     # 의 `show-ref --verify`(T-0078) 단일 sink 가 거른다(중복 검사 0).
     args = argparse.Namespace(
-        name=name, git=git, test=(test or None), owner=None, base=(base or None)
+        name=name, git=git, test=(test or None), owner=None, base=(base or None),
+        user=None,  # area_owner 는 cmd_repo_add 가 local.conf user= / git email 로 해소(T-0161).
     )
     cmd_repo_add(args, board=board_mod)
     return None
@@ -1243,7 +1308,10 @@ def build_parser() -> argparse.ArgumentParser:
                                  "미지정 시 areas test_cmd 빈 값 — 해소 체인이 슬롯/local.conf 로 폴백(T-0066). "
                                  "빌드명령은 worktree add 프롬프트·콘솔 [b] 에서도 설정 가능.")
     p_repo_add.add_argument("--owner", metavar="이름", default=None,
-                            help="등록 owner (기본: 현 세션)")
+                            help="등록 owner = registrant (기본: 현 세션·ADR-0014)")
+    p_repo_add.add_argument("--user", metavar="이름", default=None,
+                            help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력·ADR-0033 ③·T-0161). "
+                                 "미지정 시 local.conf user= / git config user.email 로 해소(없으면 빈 값).")
     p_repo_add.add_argument("--base", metavar="BRANCH", default=None,
                             help="worktree 슬롯 브랜치가 파생될 base 브랜치 (T-0075·develop 등). "
                                  "미지정 시 clone 된 bare 의 기본 브랜치(원격 default)로 해소·기록. "

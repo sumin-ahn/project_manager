@@ -110,6 +110,68 @@ def session_name(override: str | None = None) -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
 
 
+# user identity 해소 git 폴백 timeout — `git config user.email` 은 로컬 config 읽기라
+# 즉답이지만(네트워크 0) 환경 이상에 대비해 짧은 상한을 둔다(엔진 subprocess 규약·_interp_runs 동류).
+_GIT_USER_TIMEOUT_SECONDS = 5
+
+
+def _git_config_email() -> str | None:
+    """`git config user.email` 을 읽어 반환 — 미설정/git 부재/실패 → None (fail-soft).
+
+    user identity 해소(`user_name`)의 폴백 레이어다 — `local.conf user=` 가 없을 때
+    git 의 commit author email 을 user 식별자로 쓴다(spike §3.5·§6.3). subprocess 는
+    엔진 규약대로 UTF-8 고정(한글 이름·메시지 안전)·짧은 timeout. git 바이너리 부재
+    (`shutil.which` None)·rc≠0(미설정)·예외는 모두 None 으로 강등한다(크래시 0).
+    """
+    git_binary = shutil.which("git")
+    if git_binary is None:
+        return None
+    try:
+        r = subprocess.run(
+            [git_binary, "-C", str(REPO), "config", "user.email"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_GIT_USER_TIMEOUT_SECONDS,
+        )
+    except Exception:  # noqa: BLE001 — fail-soft: git 호출 실패는 None(미상)으로 강등.
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def user_name(override: str | None = None) -> str | None:
+    """user 식별자 해소 — `session_name()` 과 *동형* 우선순위 (T-0073 패턴·spike §3.5):
+
+        override > local.conf `user=` > `git config user.email` > None
+
+    `pm`(슬롯)이 *어느 PM 컨텍스트*인지(=`session_name()`)와 직교하는 **누가**(사람) 차원이다
+    (ADR-0033 ③). multi-user 보드 공유에서 `created_by`(provenance)·`claimed_by`(assignee)·
+    areas `area_owner` 의 user 토큰을 푼다. solo(N=1·M=1)는 보통 `local.conf user=` 미설정 →
+    `git config user.email` 로 폴백(commit author 와 동일 식별자)·그마저 없으면 None(graceful —
+    user 미상 허용·fail-soft·기존 슬롯-only 동작 무변경).
+    """
+    if override:
+        return override
+    conf_user = local_config().get("user")
+    if conf_user:
+        return conf_user
+    return _git_config_email()
+
+
+def identity_tag(session_override: str | None = None,
+                 user_override: str | None = None) -> str:
+    """현재 identity 를 `<user>/<pm-slot>` 토큰으로 합성한다 (spike §3.2·ADR-0033 ③).
+
+    `created_by`(provenance)·`claimed_by`(assignee) frontmatter 에 박는 값이다. user 가
+    해소되면 `<user>/<pm>`, 미상(None)이면 슬롯만(`<pm>`) — **기존 슬롯-only 값과 형태가
+    같다**(graceful·하위호환). 읽기측은 `/` 로 split 해 user/slot 을 분리하되, `/` 없는 값
+    (구 ticket·user 미상)은 slot-only 로 읽어야 한다(fail-soft).
+    """
+    pm = session_name(session_override)
+    user = user_name(user_override)
+    return f"{user}/{pm}" if user else pm
+
+
 def id_prefix(override: str | None = None) -> str | None:
     """Resolve ticket-ID namespace prefix (multi-repo areas·N×M·ADR-0016).
 
@@ -122,11 +184,14 @@ def id_prefix(override: str | None = None) -> str | None:
     return local_config().get("prefix") or None
 
 
-# areas.md 신/구 스키마 (ADR-0014 · T-0075 · T-0076).
+# areas.md 신/구 스키마 (ADR-0014 · T-0075 · T-0076 · T-0161).
 #   - 구 스키마: `| prefix | area | owner |`                      (멀티-CLONE·ADR-0005)
 #   - per-repo: `| repo | prefix | git | test_cmd | owner |`      (per-repo 레지스트리·ADR-0014)
 #   - base 스키마: `| repo | prefix | git | test_cmd | owner | base |`  (base 브랜치·T-0075)
-#   - 신 스키마: `| repo | prefix | git | test_cmd | owner | base | protected |`  (보호브랜치·T-0076)
+#   - protected 스키마: `| repo | prefix | git | test_cmd | owner | base | protected |`  (보호브랜치·T-0076)
+#   - 신 스키마: `| … | protected | area_owner |`                 (user 소유·T-0161·ADR-0033 ③·refines ADR-0014)
+#     area_owner = `--mine` 기본 풀 입력의 *user* 소유(spike §3.3·§6.4). ADR-0014 의 기존 `owner`
+#     (per-repo registry registrant)를 overload 하지 않는 *별도* 칼럼이다(codex sug — 의미 충돌 회피).
 # 파싱은 **헤더 행을 읽어 칼럼명→인덱스**로 매핑한다(위치-비의존) — 모든 스키마를 같은
 # 코드로 읽고, 누락 칼럼은 빈 값으로 떨어뜨려 하위호환을 보장한다(`base`/`protected` 칼럼
 # 없는 구 레지스트리 → 행 dict 에 그 키 없음 → `_repo_base`/`_repo_protected` 가 폴백).
@@ -151,12 +216,14 @@ def _split_areas_row(line: str) -> list[str] | None:
     return [c.strip() for c in inner.split("|")]
 
 
-# areas.md canonical 칼럼 순서 (신 스키마·ADR-0014·T-0075·T-0076). 구 헤더(`base`/`protected`
-# 없음)는 이 순서의 *prefix* 다(`repo|prefix|git|test_cmd|owner` 또는 …`|base`). 그래서 헤더보다
-# 셀이 많은 행(구 헤더에 신 칼럼 row 가 append 된 *업그레이드* 프로젝트 — `repo add` 가 완전
-# canonical row 를 더 짧은 헤더에 붙인 경우)을 이 canonical 순서로 이어 매핑해 `base`/`protected`
-# 유실을 막는다(codex T-0075 게이트가 base 에 대해 건 가드를 protected 추가로 7칸까지 확장).
-_AREAS_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base", "protected")
+# areas.md canonical 칼럼 순서 (신 스키마·ADR-0014·T-0075·T-0076·T-0161). 구 헤더(`base`/
+# `protected`/`area_owner` 없음)는 이 순서의 *prefix* 다(`repo|prefix|git|test_cmd|owner` 또는
+# …`|base`/…`|protected`). 그래서 헤더보다 셀이 많은 행(구 헤더에 신 칼럼 row 가 append 된
+# *업그레이드* 프로젝트 — `repo add` 가 완전 canonical row 를 더 짧은 헤더에 붙인 경우)을 이
+# canonical 순서로 이어 매핑해 `base`/`protected`/`area_owner` 유실을 막는다(codex T-0075 게이트가
+# base 에 대해 건 가드를 protected[7칸]→area_owner[8칸]까지 확장).
+_AREAS_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base", "protected",
+                  "area_owner")
 
 
 def _parse_areas() -> tuple[list[str], list[dict[str, str]]]:
@@ -255,6 +322,27 @@ def _repo_protected(repo: str) -> list[str]:
     return list(DEFAULT_PROTECTED)
 
 
+def _repo_area_owner(repo: str) -> str | None:
+    """그 repo 의 areas.md `area_owner`(user 소유) — 미지정/미등록/구 스키마 → None (T-0161·ADR-0033 ③).
+
+    `--mine` 기본 풀(내 area 의 open 티켓) 판정의 입력이다(spike §3.3·후속 T-0164). ADR-0014 의
+    기존 `owner`(per-repo registry registrant)와 의미가 다른 *별도* 칼럼 — overload 금지(codex sug).
+    단일 user 토큰이다(목록/구분자 아님·spike §6.4). repo 명은 areas.md `repo` 칼럼과 매칭한다
+    (repo add 가 `repo=name` 으로 등록).
+
+    None 폴백(현행 동작·회귀 0 — `--mine` 풀 판정이 그 area 를 비소유로 처리):
+      - areas.md 부재(솔로) — `_parse_areas()` 가 ([],[]).
+      - 그 repo 행이 없음(미등록).
+      - `area_owner` 칼럼 자체가 없는 구 레지스트리(헤더에 area_owner 없음 → 행 dict 에 키 없음).
+      - `area_owner` 칼럼이 빈 값(부분 등록).
+    """
+    _header, rows = _parse_areas()
+    for row in rows:
+        if row.get("repo") == repo:
+            return row.get("area_owner") or None
+    return None
+
+
 def registered_prefixes() -> set[str]:
     """Prefixes registered in areas.md (shared registry). Empty set if no registry.
 
@@ -273,7 +361,7 @@ def registered_prefixes() -> set[str]:
 def areas_append(prefix: str, area: str, owner: str,
                  *, repo: str | None = None, git: str | None = None,
                  test_cmd: str | None = None, base: str | None = None,
-                 protected: str | None = None) -> None:
+                 protected: str | None = None, area_owner: str | None = None) -> None:
     """Register a prefix in areas.md (append-only; create with header if missing).
 
     Append-only + `merge=union` (.gitattributes) → concurrent registrations from
@@ -285,16 +373,18 @@ def areas_append(prefix: str, area: str, owner: str,
     O_APPEND 라도 헤더 race 가 남음). 락으로 감싸면 동시 최초 등록에도 헤더 1회·모든
     row 보존.
 
-    스키마(ADR-0014·T-0075·T-0076): per-repo 레지스트리
-    `| repo | prefix | git | test_cmd | owner | base | protected |`.
+    스키마(ADR-0014·T-0075·T-0076·T-0161): per-repo 레지스트리
+    `| repo | prefix | git | test_cmd | owner | base | protected | area_owner |`.
     `owner` = **등록 식별자(registrant)** — 협업 소유자(다중-사람)가 아니라 single user
     의 등록 출처 표식이다(ADR-0016·ADR-0002 amend). 기본 = 현 세션. 컬럼/형식은 보존
     (test_path 바인딩·regression 게이트가 의존) — 의미만 재정의.
-    `repo`/`git`/`test_cmd`/`base`/`protected` 미지정 시 빈 칼럼으로 채운다(부분 등록
-    허용·하위호환). `base`(T-0075)는 worktree 슬롯 브랜치가 파생될 base 브랜치 — 빈 값/
-    누락이면 `_repo_base` 가 None 폴백(worktree add 가 현행 bare HEAD 동작). `protected`
-    (T-0076)는 PM 이 자율 commit/push 못 하는 보호 브랜치(쉼표분리) — 빈 값/누락이면
-    `_repo_protected` 가 `DEFAULT_PROTECTED`(main/master/develop) 폴백.
+    `repo`/`git`/`test_cmd`/`base`/`protected`/`area_owner` 미지정 시 빈 칼럼으로 채운다
+    (부분 등록 허용·하위호환). `base`(T-0075)는 worktree 슬롯 브랜치가 파생될 base 브랜치
+    — 빈 값/누락이면 `_repo_base` 가 None 폴백(worktree add 가 현행 bare HEAD 동작).
+    `protected`(T-0076)는 PM 이 자율 commit/push 못 하는 보호 브랜치(쉼표분리) — 빈 값/
+    누락이면 `_repo_protected` 가 `DEFAULT_PROTECTED`(main/master/develop) 폴백.
+    `area_owner`(T-0161·ADR-0033 ③)는 그 area 의 *user* 소유(`--mine` 풀 입력) — `owner`
+    (registrant)와 별개 칼럼(overload 금지). 빈 값/누락이면 `_repo_area_owner` None 폴백.
     `area`(구 스키마 칼럼)는 신 스키마에 칼럼이 없어 무시한다 — 호출 시그니처는
     하위호환을 위해 유지(기존 `cmd_init`·테스트가 positional 로 area 를 넘김).
 
@@ -306,25 +396,26 @@ def areas_append(prefix: str, area: str, owner: str,
     _test = test_cmd or ""
     _base = base or ""
     _protected = protected or ""
+    _area_owner = area_owner or ""
     with board_lock():
         if not AREAS_FILE.exists():
             AREAS_FILE.write_text(
                 "# Area Registry\n\n"
-                "> per-repo 레지스트리 (ADR-0014·T-0075·T-0076): repo → prefix → git → "
-                "test_cmd → owner → base → protected. 멀티-PM ID 네임스페이스 + per-repo "
-                "테스트 경로 + worktree base 브랜치 + 보호 브랜치의 단일 진실. "
+                "> per-repo 레지스트리 (ADR-0014·T-0075·T-0076·T-0161): repo → prefix → git → "
+                "test_cmd → owner → base → protected → area_owner. 멀티-PM ID 네임스페이스 + "
+                "per-repo 테스트 경로 + worktree base 브랜치 + 보호 브랜치 + user 소유의 단일 진실. "
                 "append-only (`merge=union`).\n"
                 "> `board.py init` / `pm-config repo add` 가 등록. "
                 "prefix 유일성 = race-free ID 의 전제.\n\n"
-                "| repo | prefix | git | test_cmd | owner | base | protected |\n"
-                "|---|---|---|---|---|---|---|\n",
+                "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+                "|---|---|---|---|---|---|---|---|\n",
                 encoding="utf-8")
         # O_APPEND atomic append (ADR-0012) — areas 는 append-only 레지스트리이므로
         # read-modify-write 가 아니라 OS 가 보장하는 원자 추가로 동시 등록 충돌을 없앤다.
         _append_atomic(
             AREAS_FILE,
             f"| {_repo} | {prefix} | {_git} | {_test} | {owner} | {_base} "
-            f"| {_protected} |\n")
+            f"| {_protected} | {_area_owner} |\n")
 
 
 # ── 보드 동시성 (ADR-0012) ────────────────────────────────────────────────
@@ -856,6 +947,10 @@ def _slugify(text: str, max_len: int = 40) -> str:
 
 def cmd_claim(args: argparse.Namespace) -> int:
     sess = session_name(args.session)
+    # claimed_by 는 `<user>/<slot>` (assignee·ADR-0033 ③·T-0161) — user 미상이면 슬롯만
+    # (graceful·기존 슬롯-only 값과 형태 동일). 진행메시지/board surface 는 슬롯(sess)을 쓴다.
+    assignee = identity_tag(session_override=args.session,
+                            user_override=getattr(args, "user", None))
     try:
         status, path = find_ticket(args.id)
     except FileNotFoundError as e:
@@ -895,10 +990,10 @@ def cmd_claim(args: argparse.Namespace) -> int:
         return 1
 
     fm["status"] = "claimed"
-    fm["claimed_by"] = sess
+    fm["claimed_by"] = assignee
     fm["claimed_at"] = now_utc()
     dump_ticket(new_path, fm, body)
-    print(f"claimed {args.id} as {sess}")
+    print(f"claimed {args.id} as {assignee}")
     refresh_board()
     return 0
 
@@ -1099,8 +1194,14 @@ def cmd_init(args: argparse.Namespace) -> int:
             # owner = areas.md 등록 식별자(registrant) — 협업 소유자(다중-사람)가 아니라
             # single user 의 등록 출처 표식이다(ADR-0016·ADR-0002 amend). 기본 = 현 세션.
             owner = args.owner or session_name()
-            areas_append(prefix, args.area, owner)
-            print(f"✓ areas.md 등록: {prefix} | {args.area} | {owner}")
+            # area_owner = 그 area 의 *user* 소유(`--mine` 풀 입력·ADR-0033 ③·T-0161) —
+            # registrant `owner`(슬롯/세션)와 별개 칼럼(overload 금지·ADR-0014 refine).
+            # cmd_repo_add 와 동형 해소: `--user` 명시 > local.conf user= > git config
+            # user.email > None(빈 칼럼·_repo_area_owner None 폴백·현행 `--mine` 미포함).
+            area_owner = user_name(getattr(args, "user", None))
+            areas_append(prefix, args.area, owner, area_owner=area_owner)
+            ao_surface = area_owner if area_owner else "(미상 — local.conf user= / git user.email 미설정)"
+            print(f"✓ areas.md 등록: {prefix} | {args.area} | owner={owner} | area_owner={ao_surface}")
     sess = args.session or (f"{prefix.lower()}-pm" if namespaced else "pm")
     conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
     if namespaced:
@@ -1169,6 +1270,11 @@ def cmd_new(args: argparse.Namespace) -> int:
         fm["title"] = args.title
         fm["status"] = "open"
         fm["created"] = datetime.date.today().isoformat()
+        # created_by = `<user>/<pm-slot>` (provenance·불변·생성 시 set·ADR-0033 ③·T-0161).
+        # "누가 추가했나" = 중복-작업 방지의 출처 표식. user 미상이면 슬롯만(graceful).
+        fm["created_by"] = identity_tag(
+            session_override=getattr(args, "session", None),
+            user_override=getattr(args, "user", None))
         fm["claimed_by"] = None
         fm["claimed_at"] = None
         fm["completed_at"] = None
@@ -2745,7 +2851,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("claim", help="atomic claim — mv open → claimed")
     p.add_argument("id")
-    p.add_argument("--session", help="session name (default $PM_SESSION_NAME or hostname-pid)")
+    p.add_argument("--session", help="session name = pm slot (default $PM_SESSION_NAME or hostname-pid)")
+    p.add_argument("--user", help="user 식별자 — claimed_by 의 user 차원 (default: local.conf user= / "
+                   "git config user.email · ADR-0033 ③)")
     p.set_defaults(fn=cmd_claim)
 
     p = sub.add_parser("complete", help="mv claimed → done (sync gate enforced)")
@@ -2782,12 +2890,16 @@ def build_parser() -> argparse.ArgumentParser:
                    default="small")
     p.add_argument("--prefix", help="ID namespace prefix (default: local.conf "
                    "prefix / none → legacy T-NNNN)")
+    p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf user= / "
+                   "git config user.email · ADR-0033 ③)")
     p.set_defaults(fn=cmd_new)
 
     p = sub.add_parser("init", help="clone 당 1회 setup (solo · multi-repo N×M) — pm_state·local.conf·pre-push 훅")
     p.add_argument("--prefix", help="multi-repo (N×M) ID 네임스페이스 (예: PAY). 생략 = solo(legacy T-NNNN)")
     p.add_argument("--area", help="영역 설명 (namespaced: 새 prefix 최초 등록 시 필요)")
     p.add_argument("--owner", help="등록 식별자(registrant·기본: session 이름)")
+    p.add_argument("--user", help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력·ADR-0033 ③·T-0161). "
+                                  "미지정 시 local.conf user= / git config user.email 로 해소(없으면 빈 값).")
     p.add_argument("--session", help="세션 이름 (기본: <prefix>-pm)")
     p.set_defaults(fn=cmd_init)
 

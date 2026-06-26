@@ -56,8 +56,9 @@ class FakeBoard:
         return set(self._registered)
 
     def areas_append(self, prefix, area, owner, *, repo=None, git=None,
-                     test_cmd=None, base=None, protected=None):
-        self.append_calls.append({"repo": repo, "git": git, "base": base})
+                     test_cmd=None, base=None, protected=None, area_owner=None):
+        self.append_calls.append({"repo": repo, "git": git, "base": base,
+                                  "area_owner": area_owner})
 
     def _repo_protected(self, repo):
         return ["main", "master", "develop"]

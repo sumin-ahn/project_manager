@@ -158,11 +158,11 @@ class FakeBoard:
         return set(self._registered)
 
     def areas_append(self, prefix, area, owner, *, repo=None, git=None,
-                     test_cmd=None, base=None, protected=None):
+                     test_cmd=None, base=None, protected=None, area_owner=None):
         self.append_calls.append(
             {"prefix": prefix, "area": area, "owner": owner,
              "repo": repo, "git": git, "test_cmd": test_cmd, "base": base,
-             "protected": protected}
+             "protected": protected, "area_owner": area_owner}
         )
 
     def _repo_base(self, repo):
@@ -511,6 +511,71 @@ def test_repo_add_registers_areas_and_clones(pc, tmp_path):
     assert argv[-2] == "git@h:me/svc.git"
     assert argv[-1].endswith("svc.git")
     assert str(repos) in argv[-1]
+
+
+def test_repo_add_passes_explicit_user_as_area_owner(pc, tmp_path):
+    """repo add --user → areas_append(area_owner=) 로 전달 (ADR-0033 ③·T-0161).
+
+    area_owner 는 그 area 의 *user* 소유(`--mine` 풀 입력)다 — registrant `owner`(별개 칼럼·
+    overload 금지)와 독립. 명시 `--user` 가 _default_user 폴백보다 우선임을 확증한다.
+    """
+    board = FakeBoard(registered=())
+    gitr = FakeGitRecorder(rc=0)
+    repos = tmp_path / ".repos"
+    args = argparse.Namespace(name="svc", git="git@h:me/svc.git", test="pytest -q",
+                              owner="me", base=None, user="alice")
+    rc = pc.cmd_repo_add(args, board=board, clone_runner=gitr, repos_dir=repos)
+    assert rc == 0
+    call = board.append_calls[0]
+    assert call["owner"] == "me"          # registrant(ADR-0014) — 별개
+    assert call["area_owner"] == "alice"  # user 소유(T-0161·명시 --user 우선)
+
+
+def test_repo_add_area_owner_falls_back_to_default_user(pc, tmp_path, monkeypatch):
+    """repo add (--user 미지정) → _default_user 로 area_owner 해소 (T-0161·local.conf user=/git email).
+
+    `_default_user` 를 hermetic stub 으로 고정해 local.conf user=/git email 폴백 경로가
+    area_owner 로 흐르는 배선을 결정적으로 친다(실 git config 누출 0).
+    """
+    monkeypatch.setattr(pc, "_default_user", lambda: "resolved-user")
+    board = FakeBoard(registered=())
+    gitr = FakeGitRecorder(rc=0)
+    repos = tmp_path / ".repos"
+    args = argparse.Namespace(name="svc", git="git@h:me/svc.git", test="pytest -q",
+                              owner=None, base=None)  # user 속성 부재 → getattr None → _default_user
+    rc = pc.cmd_repo_add(args, board=board, clone_runner=gitr, repos_dir=repos)
+    assert rc == 0
+    assert board.append_calls[0]["area_owner"] == "resolved-user"
+
+
+def test_default_user_local_conf_wins_over_git(pc, tmp_path, monkeypatch):
+    """_default_user — local.conf user= 가 git email 폴백보다 우선 (T-0161·board.user_name 동형)."""
+    pm = tmp_path / ".project_manager"
+    pm.mkdir(parents=True)
+    (pm / "local.conf").write_text("user=alice\nsession=slot\n", encoding="utf-8")
+    monkeypatch.setattr(pc, "REPO", tmp_path)
+    monkeypatch.setattr(pc, "_git_config_email", lambda: "git@x.com")
+    assert pc._default_user() == "alice"
+
+
+def test_default_user_falls_back_to_git_email(pc, tmp_path, monkeypatch):
+    """_default_user — local.conf user= 부재 → git config user.email 폴백 (T-0161)."""
+    monkeypatch.setattr(pc, "REPO", tmp_path)   # local.conf 없음
+    monkeypatch.setattr(pc, "_git_config_email", lambda: "dev@example.com")
+    assert pc._default_user() == "dev@example.com"
+
+
+def test_default_user_none_when_neither(pc, tmp_path, monkeypatch):
+    """_default_user — local.conf user= 도 git email 도 없으면 None (graceful·T-0161)."""
+    monkeypatch.setattr(pc, "REPO", tmp_path)
+    monkeypatch.setattr(pc, "_git_config_email", lambda: None)
+    assert pc._default_user() is None
+
+
+def test_git_config_email_fail_soft_when_git_absent(pc, monkeypatch):
+    """_git_config_email — git 바이너리 부재 → None (fail-soft·크래시 0·T-0161)."""
+    monkeypatch.setattr(pc.shutil, "which", lambda _name: None)
+    assert pc._git_config_email() is None
 
 
 def test_repo_add_already_registered_bare_exists_is_noop(pc, tmp_path):

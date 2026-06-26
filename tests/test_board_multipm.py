@@ -356,8 +356,9 @@ def test_cmd_new_single_registered_repo_honors_explicit_prefix(board):
 # cmd_init team 경로
 # ════════════════════════════════════════════════════════════════════════
 
-def _init_args(prefix=None, area=None, owner=None, session=None):
-    return argparse.Namespace(prefix=prefix, area=area, owner=owner, session=session)
+def _init_args(prefix=None, area=None, owner=None, session=None, user=None):
+    return argparse.Namespace(prefix=prefix, area=area, owner=owner,
+                              session=session, user=user)
 
 
 @pytest.fixture
@@ -419,6 +420,57 @@ def test_cmd_init_owner_defaults_to_session_name(init_board, monkeypatch):
     areas = init_board.AREAS_FILE.read_text(encoding="utf-8")
     # 신 스키마(ADR-0014): repo=prefix·git/test_cmd 빈 값·owner=session_name() 해소값.
     assert "| ACC | ACC |  |  | ambient-sess |" in areas
+
+
+# ── cmd_init area_owner 해소 (T-0161 델타·ADR-0033 ③·codex must-fix) ──────────
+# `init --prefix` 등록행이 area_owner 칼럼을 항상 빈 값으로 남기던 갭의 durable 가드.
+# 해소 우선순위는 cmd_repo_add 와 동형: `--user` > local.conf user= > git email > None.
+
+def test_cmd_init_area_owner_from_explicit_user(init_board, monkeypatch):
+    """--user 명시가 area_owner 칼럼에 박힌다 (local.conf user=·git 폴백보다 우선)."""
+    # local.conf user= 와 git 폴백이 다른 값을 줘도 --user 가 이긴다.
+    init_board.LOCAL_CONF.write_text("user=conf-user\n", encoding="utf-8")
+    monkeypatch.setattr(init_board, "_git_config_email", lambda: "git@x.com")
+    rc = init_board.cmd_init(_init_args(prefix="PAY", area="결제", owner="alice", user="carol"))
+    assert rc == 0
+    # 신 8칸 스키마 끝 칼럼 area_owner=carol → _repo_area_owner 로 확증(`--mine` 풀 입력).
+    assert init_board._repo_area_owner("PAY") == "carol"
+
+
+def test_cmd_init_area_owner_falls_back_to_local_conf(init_board, monkeypatch):
+    """--user 미지정 → local.conf user= 로 area_owner 해소 (git 폴백보다 우선)."""
+    init_board.LOCAL_CONF.write_text("user=conf-user\n", encoding="utf-8")
+    monkeypatch.setattr(init_board, "_git_config_email", lambda: "git@x.com")
+    rc = init_board.cmd_init(_init_args(prefix="ACC", area="정산", owner="bob"))
+    assert rc == 0
+    assert init_board._repo_area_owner("ACC") == "conf-user"
+
+
+def test_cmd_init_area_owner_falls_back_to_git_email(init_board, monkeypatch):
+    """--user·local.conf user= 둘 다 미설정 → git config user.email 로 area_owner 해소."""
+    # cmd_init 이 local.conf 를 write 하기 전에 user_name() 을 부르므로, user 키 없는
+    # local.conf 를 미리 둬 그 경로(부재→git 폴백)를 결정적으로 탄다.
+    init_board.LOCAL_CONF.write_text("session=acc-pm\n", encoding="utf-8")
+    monkeypatch.setattr(init_board, "_git_config_email", lambda: "dev@example.com")
+    rc = init_board.cmd_init(_init_args(prefix="ORD", area="주문", owner="carol"))
+    assert rc == 0
+    assert init_board._repo_area_owner("ORD") == "dev@example.com"
+
+
+def test_cmd_init_area_owner_graceful_when_user_unknown(init_board, monkeypatch):
+    """user 미상(--user·local.conf·git 전부 없음) → area_owner 빈 칼럼·_repo_area_owner None.
+
+    `--mine` 풀에 안 잡히지만 등록 자체는 graceful 진행(기존 슬롯-only 동작 보존).
+    """
+    init_board.LOCAL_CONF.write_text("session=s\n", encoding="utf-8")
+    monkeypatch.setattr(init_board, "_git_config_email", lambda: None)
+    rc = init_board.cmd_init(_init_args(prefix="INV", area="재고", owner="dave"))
+    assert rc == 0
+    assert init_board._repo_area_owner("INV") is None
+    # owner(registrant)는 정상 기록 — area_owner 만 빈 값(두 칼럼 독립·overload 금지).
+    row = init_board._areas_row_for_prefix("INV")
+    assert row["owner"] == "dave"
+    assert row["area_owner"] == ""
 
 
 # ════════════════════════════════════════════════════════════════════════
