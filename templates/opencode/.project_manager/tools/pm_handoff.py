@@ -202,17 +202,25 @@ def _resolve_state_slot(
     areas_file: Path | None = None,
     leases_file: Path | None = None,
 ) -> str | None:
-    """pm_state slot 키(`<repo>_<N>`)를 해소한다 — 명시 슬롯 우선·없으면 단일 self-host 자동.
+    """pm_state slot 키(`<repo>_<N>`)를 해소한다 — 명시 슬롯 우선·없으면 guarded default-1 자동.
 
-    해소 순서 (`_regression_cwd`·T-0124 동형):
+    해소 순서:
       - `worktree_slot`(multi-PM `--worktree-slot` 명시·`work/<repo>_<N>` 또는 `<repo>_<N>`)
         가 있으면 leading `work/` 를 벗긴 `<repo>_<N>` 을 슬롯 키로.
-      - 없으면 bootstrap `_auto_slot` 으로 단일 self-host 슬롯 자동해소 → `<repo>_<N>`.
-      - 그것도 없으면(솔로/모호/부재) **None** — 호출부가 legacy `wiki/pm_state.md` 로 폴백.
+      - 없으면 bootstrap `_resolve_session_slot`(guarded default-1·T-0178) 으로 자동해소 →
+        `<repo>_<N>`. `{1,2}`→slot 1·`{3}`-sole→slot 3·단일 self-host→그것.
+      - 그것도 없으면(solo/부재) **None** — 호출부가 legacy `wiki/pm_state.md` 로 폴백.
 
-    `_auto_slot` 판정은 동적 로드해 재사용(DRY·복붙 금지). `areas_file`/`leases_file` 미지정이면
-    *호출 시점* `_areas_file()`(board_root 추종)·`LEASES_FILE`(REPO 기준)로 해소한다 — 모듈
-    default 상수가 import 시점에 굳지 않게 None 으로 받아 monkeypatch 된 REPO 를 추종(hermetic).
+    **continuity(세션-window read/write) 정합** (T-0178 should-fix·spike §1·§3): `_auto_slot`
+    (exactly-1)은 `{1,2}` 를 None 으로 떨궈 *없는 legacy* 로 새서 slot 1 연속성을 끊었다 —
+    run() 가드는 `_resolve_session_slot`(default-1)로 "slot 1" 통과시키는데 write 는 legacy 로
+    가는 split. continuity 해소도 같은 `_resolve_session_slot`(default-1)을 경유해 정합시킨다.
+    `SlotResolutionError`(진짜 모호·`{2,3}`·repo≥2)는 **catch → None**(display/preview fail-soft
+    보존) — write 경로는 run()/run_trigger() 가드가 이미 fail-loud 로 막아 도달 안 한다(방어적).
+
+    `_resolve_session_slot` 은 동적 로드해 재사용(DRY·복붙 금지). `areas_file`/`leases_file`
+    미지정이면 *호출 시점* `_areas_file()`(board_root 추종)·REPO 기준으로 해소한다 — 모듈 default
+    상수가 import 시점에 굳지 않게 None 으로 받아 monkeypatch 된 REPO 를 추종(hermetic).
     """
     if worktree_slot:
         # `work/<repo>_<N>` 또는 `<repo>_<N>` 둘 다 받아 슬롯 키(`<repo>_<N>`)로 정규화.
@@ -227,13 +235,70 @@ def _resolve_state_slot(
     if bp is None:
         return None
     try:
-        auto = bp._auto_slot(areas_file, leases_file)
+        auto = bp._resolve_session_slot(areas_file, leases_file)
+    except bp.SlotResolutionError:
+        # 진짜 모호(`{2,3}`·repo≥2) — display/preview 는 fail-soft(None→legacy 표기). 실제
+        # write 경로는 run()/run_trigger() 가드가 이미 fail-loud 로 막았다(여기 도달=방어적).
+        return None
     except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 None(legacy 폴백).
         return None
     if not auto:
         return None
     repo, n = auto
     return f"{repo}_{n}"
+
+
+# ── session-entry guarded 슬롯해소 (멀티-PM 모호 → fail-loud + 실행 슬롯 threading·T-0178·ADR-0035) ──
+# bare handoff(`--worktree-slot` 미지정)는 *어느 슬롯의* 연속성을 이어야 하는지 명확해야 한다.
+# 멀티-PM 셋업이 모호(등록 repo ≥2·한 repo 슬롯 ≥2 중 slot1 부재)하면, 없는 legacy `wiki/pm_state.md`
+# 로 조용히 폴백해 *빈 legacy fork·연속성 단절*(spike §1·§2 D2)을 내는 대신 명시 에러로 중단한다.
+#
+# **단일 해소로 통일(codex round2 must-fix)**: 이 함수가 가드 단계서 슬롯을 *한 번* 해소해 실행
+# 슬롯(`worktree_slot`)으로 thread 한다 — run()/run_trigger() 가 결과를 `self._worktree_slot` 에 박으면
+# downstream 전부(pm_state `_pm_state_path`·회귀/출하 cwd `_regression_cwd`·handoff entry `worktree_slot`
+# 필드)가 *명시 슬롯 우선* 경로로 **같은** 슬롯을 일관되게 쓴다(이미 다들 explicit slot 우선). 이전의
+# "continuity=default-1 / 회귀cwd=REPO 폴백" 비대칭은 self-split(② 홈엔 tests/ 없음)에서 회귀를 엉뚱한
+# REPO 에서 돌려 깨졌다 — T-0124/0125 가 회귀를 *활성 worktree* 서 돌리려던 목적과 정합시킨다.
+# 판정은 bootstrap `_resolve_session_slot`(T-0178·idle 필터·default-1) 재사용(DRY·동적 로드).
+def _resolve_session_worktree_slot(
+    worktree_slot: str | None = None,
+    areas_file: Path | None = None,
+    leases_file: Path | None = None,
+) -> tuple[str | None, str | None]:
+    """bare handoff 의 실행 슬롯을 해소한다 — `(resolved_slot, error_msg)`.
+
+    반환:
+      - `(worktree_slot, None)` — 명시 `--worktree-slot` 이면 그대로(downstream explicit 우선).
+      - `(None, None)` — solo/미해소(멀티-PM 미셋업·bootstrap 부재·판정 실패). 현행 legacy/REPO
+        폴백 유지(자기-호스트 solo 무변경).
+      - `(f"work/<repo>_<N>", None)` — default-1/단독/idle-필터 후 활성 슬롯으로 해소. run() 이
+        이걸 `self._worktree_slot` 에 박아 pm_state·회귀cwd·entry 가 같은 슬롯을 쓴다.
+      - `(None, error_msg)` — 진짜 모호(`{2,3}`·repo≥2). run() 이 surface 하고 중단(fail-loud).
+
+    `_resolve_state_slot`(incidental·display/preview 에서도 쓰임)은 계약 유지(None·fail-soft)하고,
+    *오직 session-entry* 인 이 함수만 모호를 loud 로 만들고 실행 슬롯을 thread 한다 — bootstrap 을
+    모호함으로 crash 시키지 않는다. `areas_file`/`leases_file` 미지정이면 *호출 시점* REPO 기준
+    해소(monkeypatch 추종·hermetic).
+    """
+    if worktree_slot:
+        return worktree_slot, None
+    if areas_file is None:
+        areas_file = _areas_file()
+    if leases_file is None:
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    bp = _load_pm_bootstrap()
+    if bp is None:
+        return None, None  # bootstrap 부재 → 판정 불가·현행 폴백(fail-soft).
+    try:
+        auto = bp._resolve_session_slot(areas_file, leases_file)
+    except bp.SlotResolutionError as exc:
+        return None, str(exc)  # 진짜 모호 → fail-loud.
+    except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 현행 폴백(모호 아님).
+        return None, None
+    if not auto:
+        return None, None  # solo/미해소 → 현행 폴백.
+    repo, n = auto
+    return f"work/{repo}_{n}", None
 
 
 def _pm_state_path(
@@ -1264,8 +1329,30 @@ class PmHandoff:
         반환: 0=성공, 1=실패 (중단).
         """
         date_str = datetime.date.today().isoformat()
+        # release(--done)는 *명시* 슬롯만 반납한다(비가역) — 자동해소 슬롯을 release 하지 않게
+        # 원래 명시 인자를 별도 보존. 슬롯 자동해소(아래)는 read/write 연속성 경로에만 적용.
+        explicit_worktree_slot = worktree_slot
+        # session-entry 슬롯 해소 + 실행 슬롯 threading (T-0178·codex round2 must-fix) — bare
+        # handoff(`--worktree-slot` 미지정)에서 default-1/단독/idle-필터 슬롯을 *한 번* 해소해
+        # 실행 슬롯에 박는다. 그러면 downstream 전부(pm_state·회귀cwd·handoff entry)가 *명시
+        # 슬롯 우선* 경로로 같은 슬롯을 일관되게 쓴다(self-split 에서 회귀를 활성 worktree 서
+        # 돌림·continuity/회귀cwd 비대칭 제거). 멀티-PM 모호면 fail-loud(slot 안 박고 중단).
+        # 명시 주입(테스트·_pm_state_file_explicit)은 슬롯 해소를 건너뛴다(hermetic 경로 보존).
+        if not self._pm_state_file_explicit:
+            resolved_slot, ambiguity = _resolve_session_worktree_slot(worktree_slot)
+            if ambiguity is not None:
+                print(
+                    f"\n[중단] 슬롯 해소 모호 — {ambiguity} "
+                    "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다.)",
+                    file=sys.stderr,
+                )
+                return 1
+            # 해소된 슬롯을 실행 슬롯으로 thread — handoff entry skeleton·_pm_state_path·migrate 가
+            # 같은 슬롯을 본다. solo/미해소(None)는 현행 폴백 유지(worktree_slot 그대로 None).
+            if resolved_slot is not None:
+                worktree_slot = resolved_slot
         # 회귀 cwd 해소(T-0124)용 — _default_run_pytest 가 _regression_cwd 에 넘긴다.
-        # 명시 슬롯이 있으면 그 worktree, 없으면 _regression_cwd 가 단일 self-host 자동해소.
+        # 명시/해소 슬롯이 있으면 그 worktree, 없으면 _regression_cwd 가 단일 self-host 자동해소.
         self._worktree_slot = worktree_slot
         # per-slot pm_state 경로 해소(T-0166) — 명시 주입(테스트)이 없을 때만. 진입부에선
         # **읽기 위치(target 경로)만 정하고 파일은 옮기지 않는다**(migrate=False) — 회귀/출하
@@ -1441,9 +1528,11 @@ class PmHandoff:
         print("  [ ] git commit (Co-Authored-By: Claude 트레일러 포함)")
 
         # ── multi-PM 모드: --done 작업완료 슬롯 release (ADR-0013) ─────────────────
-        # 세션종료/회전 ≠ release — --done 명시 시에만 슬롯을 idle 반납한다.
+        # 세션종료/회전 ≠ release — --done 명시 시에만 슬롯을 idle 반납한다. release 는 비가역
+        # 이라 *명시* `--worktree-slot`(explicit_worktree_slot)만 반납한다 — 자동해소(default-1)
+        # 슬롯은 read/write 연속성에만 쓰고 release 하지 않는다(의도치 않은 반납 차단·T-0178).
         if done:
-            if not worktree_slot:
+            if not explicit_worktree_slot:
                 print(
                     "\n[중단] --done 은 --worktree-slot 이 필요하다 (어느 슬롯을 반납할지).",
                     file=sys.stderr,
@@ -1451,9 +1540,9 @@ class PmHandoff:
                 return 1
             print("\n[multi-PM] --done 작업완료 — worktree 슬롯 release...")
             if dry_run:
-                print(f"  [dry-run] worktree 슬롯 release 예고: {worktree_slot} (실행 생략).")
+                print(f"  [dry-run] worktree 슬롯 release 예고: {explicit_worktree_slot} (실행 생략).")
             else:
-                rc = self._release_slot(worktree_slot)
+                rc = self._release_slot(explicit_worktree_slot)
                 if rc != 0:
                     return rc
 
@@ -1534,11 +1623,27 @@ class PmHandoff:
         # 접촉(아래 session-num 추론 read) 직전에 1회 — dry_run 은 이동 안 함(미리보기).
         # 명시 주입(테스트)은 재해소 안 함(hermetic 경로 보존).
         if not self._pm_state_file_explicit:
+            # session-entry 슬롯 해소 + threading (T-0178·codex round2·run() 동형) — bare trigger
+            # 에서 default-1/단독/idle-필터 슬롯을 한 번 해소해 실행 슬롯에 박는다. 멀티-PM 모호면
+            # fail-loud(slot 안 박고 중단). solo·미해소는 현행 폴백 유지(worktree_slot None).
+            resolved_slot, ambiguity = _resolve_session_worktree_slot(worktree_slot)
+            if ambiguity is not None:
+                print(
+                    f"\n[중단] 슬롯 해소 모호 — {ambiguity} "
+                    "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다.)",
+                    file=sys.stderr,
+                )
+                return 1
+            if resolved_slot is not None:
+                worktree_slot = resolved_slot  # entry skeleton·pm_state·migrate 가 같은 슬롯.
             self._pm_state_file = _pm_state_path(worktree_slot, migrate=False)
             # 트리거는 빠른 경로(중단 게이트 없음)지만 run() 과 동형으로 — pm_state 첫 접촉
             # 직전에 이동을 명시 단계로 둔다. dry_run 미리보기는 이동 안 함(부작용 0).
             if not dry_run:
                 self._pm_state_file = _migrate_legacy_pm_state(worktree_slot)
+        # 회귀 cwd 해소(T-0124)·release 경로용 실행 슬롯 thread (run() 동형). trigger 는 회귀를
+        # skip 하지만 일관성 위해 해소 슬롯을 박는다(downstream 슬롯-인지 경로 정합).
+        self._worktree_slot = worktree_slot
 
         # ── 1. session-num 자동 추론 ───────────────────────────────────────────
         # pm_state.md 부재(board.py init 미실행 clone)는 치명 아님 — fail-soft.

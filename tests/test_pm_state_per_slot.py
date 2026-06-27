@@ -100,7 +100,8 @@ def test_resolve_state_slot_solo_returns_none(hf):
 
 
 def test_resolve_state_slot_ambiguous_multi_returns_none(hf):
-    """등록 repo ≥2 (모호) → None — 사용자가 명시해야(자동바인딩 미해소)."""
+    """등록 repo ≥2 (진짜 모호) → None — `_resolve_session_slot` 의 SlotResolutionError 를
+    display/preview fail-soft 로 catch (T-0178). 실제 write 는 run() 가드가 fail-loud 로 막음."""
     areas = hf._tmp / ".project_manager" / "areas.md"
     areas.parent.mkdir(parents=True, exist_ok=True)
     areas.write_text(
@@ -110,6 +111,73 @@ def test_resolve_state_slot_ambiguous_multi_returns_none(hf):
         "| repo_b | B | g | pytest | me |\n",
         encoding="utf-8")
     assert hf._resolve_state_slot() is None
+
+
+def _write_leases_multi(path, repo: str, ns: list[int]) -> None:
+    """worktree-leases.json — 한 repo 의 여러 슬롯(`work/<repo>_<N>`)."""
+    import json
+    path.parent.mkdir(parents=True, exist_ok=True)
+    leases = [{"repo": repo, "slot": f"work/{repo}_{n}"} for n in ns]
+    path.write_text(json.dumps({"leases": leases}), encoding="utf-8")
+
+
+def test_resolve_state_slot_default_1_when_slot1_present(hf):
+    """repo 1개 + 슬롯 `{1,2}` → `<repo>_1`(default-1·T-0178 should-fix).
+
+    이 갭의 핵심: 이전 `_auto_slot`(exactly-1)은 `{1,2}`→None→없는 legacy 로 새서 slot1
+    continuity 를 끊었다. `_resolve_session_slot`(default-1) 경유로 slot1 로 라우팅된다."""
+    _write_areas(hf._tmp / ".project_manager" / "areas.md")
+    _write_leases_multi(
+        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
+        "project_manager", [1, 2])
+    assert hf._resolve_state_slot() == "project_manager_1"
+
+
+def test_resolve_state_slot_sole_non1_slot(hf):
+    """repo 1개 + 슬롯 `{3}`(단독·1 아님) → `<repo>_3` (단독 규칙·현행 `_3`-only 보존)."""
+    _write_areas(hf._tmp / ".project_manager" / "areas.md")
+    _write_leases_multi(
+        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
+        "project_manager", [3])
+    assert hf._resolve_state_slot() == "project_manager_3"
+
+
+def test_resolve_state_slot_truly_ambiguous_slot1_absent_returns_none(hf):
+    """repo 1개 + 슬롯 `{2,3}`(1 부재·비단독·진짜 모호) → None (SlotResolutionError catch·
+    display fail-soft). 실제 write 는 run() 가드가 fail-loud 로 막음."""
+    _write_areas(hf._tmp / ".project_manager" / "areas.md")
+    _write_leases_multi(
+        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
+        "project_manager", [2, 3])
+    assert hf._resolve_state_slot() is None
+
+
+def _write_leases_states(path, repo: str, slots: list[tuple[int, str]]) -> None:
+    """worktree-leases.json — 한 repo 의 (슬롯N, state) 목록 (idle 회귀용)."""
+    import json
+    path.parent.mkdir(parents=True, exist_ok=True)
+    leases = [{"repo": repo, "slot": f"work/{repo}_{n}", "state": st} for n, st in slots]
+    path.write_text(json.dumps({"leases": leases}), encoding="utf-8")
+
+
+def test_resolve_state_slot_idle_slot1_routes_continuity_to_leased_slot2(hf):
+    """`{1:idle, 2:leased}` continuity → `project_manager_2` (idle 슬롯1 아님·codex must-fix).
+
+    continuity 도 idle 필터된 활성 슬롯으로 라우팅 — 죽은 슬롯1 의 per-slot 으로 새지 않는다."""
+    _write_areas(hf._tmp / ".project_manager" / "areas.md")
+    _write_leases_states(
+        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
+        "project_manager", [(1, "idle"), (2, "leased")])
+    assert hf._resolve_state_slot() == "project_manager_2"
+
+
+def test_pm_state_path_idle_slot1_routes_to_slot2_per_slot(hf):
+    """`{1:idle, 2:leased}` pm_state → `slots/project_manager_2/pm_state.md` (활성 슬롯2 per-slot)."""
+    _write_areas(hf._tmp / ".project_manager" / "areas.md")
+    _write_leases_states(
+        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
+        "project_manager", [(1, "idle"), (2, "leased")])
+    assert hf._pm_state_path() == _slot_path(hf, "project_manager_2")
 
 
 # ── _pm_state_path: per-slot / 솔로 폴백 / graceful 마이그레이션 ──────────────
@@ -163,6 +231,30 @@ def test_pm_state_path_slot_resolved_but_both_absent_returns_slot_path(hf):
     assert not sp.exists(), "반환만 — 파일을 새로 만들지 않는다(fail-soft)."
 
 
+def test_pm_state_path_default_1_routes_to_slot1_not_legacy(hf):
+    """`{1,2}` continuity → `slots/<repo>_1/pm_state.md` (legacy 아님·T-0178 should-fix 핵심).
+
+    이 갭의 단언: default-1 셋업(`{1,2}`)에서 pm_state 가 *없는* legacy `wiki/pm_state.md`
+    로 새지 않고 slot1 per-slot 경로로 해소됨을 박제 — run() 가드의 "slot 1" 판정과 정합."""
+    _write_areas(hf._tmp / ".project_manager" / "areas.md")
+    _write_leases_multi(
+        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
+        "project_manager", [1, 2])
+    resolved = hf._pm_state_path()
+    assert resolved == _slot_path(hf, "project_manager_1")
+    assert resolved != _legacy(hf), "continuity 가 없는 legacy 로 새면 안 됨(이 갭의 회귀)."
+
+
+def test_pm_state_path_truly_ambiguous_falls_back_to_legacy_display(hf):
+    """`{2,3}`(진짜 모호) → display/preview fail-soft 로 legacy 표기 (write 는 run() 가드가 막음)."""
+    _write_areas(hf._tmp / ".project_manager" / "areas.md")
+    _write_leases_multi(
+        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
+        "project_manager", [2, 3])
+    # SlotResolutionError catch → None → legacy(display fail-soft·크래시 안 함).
+    assert hf._pm_state_path() == _legacy(hf)
+
+
 def test_pm_state_path_solo_does_not_touch_legacy(hf):
     """솔로(슬롯 미해소) + legacy 존재 → legacy 그대로(마이그레이션 안 함·무변경)."""
     legacy = _legacy(hf)
@@ -170,6 +262,27 @@ def test_pm_state_path_solo_does_not_touch_legacy(hf):
     legacy.write_text("솔로 상태", encoding="utf-8")
     assert hf._pm_state_path() == legacy
     assert legacy.exists() and legacy.read_text(encoding="utf-8") == "솔로 상태"
+
+
+# ── incidental(회귀 cwd) fail-soft 무변경 재확인 (T-0178 should-fix·continuity 와 비대칭) ──
+# continuity(`_resolve_state_slot`)는 default-1(`{1,2}`→slot1)로 라우팅하지만, incidental
+# `_regression_cwd` 는 여전히 `_auto_slot`(exactly-1)을 쓴다 — `{1,2}`→None→REPO 폴백 유지.
+# 회귀 cwd 는 *슬롯 무관*(어느 슬롯이든 같은 worktree 트리)이라 REPO 폴백으로 충분하므로,
+# 모호함으로 깨뜨리지 않는다(solo 도그푸딩 보존·최우선). 이 비대칭이 의도적임을 박제한다.
+
+def test_regression_cwd_default_1_setup_falls_back_to_repo(hf):
+    """`{1,2}` 셋업에서도 `_regression_cwd` 는 REPO 폴백(incidental fail-soft 불변).
+
+    continuity 는 slot1 로 라우팅되지만 회귀 cwd 는 `_auto_slot`(exactly-1·미변경)→None→
+    REPO — 모호함으로 회귀 러너를 깨지 않는다(should-fix 가 건드린 건 continuity 한정)."""
+    _write_areas(hf._tmp / ".project_manager" / "areas.md")
+    _write_leases_multi(
+        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
+        "project_manager", [1, 2])
+    # _regression_cwd 는 areas/leases 인자를 노출하므로 hermetic 호출.
+    areas = hf._tmp / ".project_manager" / "areas.md"
+    leases = hf._tmp / ".project_manager" / ".local" / "worktree-leases.json"
+    assert hf._regression_cwd(None, areas, leases) == str(hf._tmp)
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -153,32 +153,22 @@ def _registered_repos(areas_file: Path | None = None) -> list[str]:
     return rows
 
 
-def _auto_slot(
-    areas_file: Path | None = None,
-    leases_file: Path = LEASES_FILE,
-) -> tuple[str, int] | None:
-    """단일 self-host 자동바인딩 판정 — 정확히 1 repo + 그 repo 슬롯 정확히 1개면 `(repo, N)`.
+def _repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
+    """`leases_file` 장부에서 `repo` 의 **활성(leased)** worktree 슬롯 번호(`work/<repo>_<N>`→N)를 반환한다.
 
-    솔로 무인자 bootstrap(`--repo`/`--slot` 둘 다 없음)에서, 등록 repo 가 정확히 1개이고
-    그 repo 의 worktree 슬롯(lease 장부 엔트리)이 정확히 1개면 모호함이 없으므로 그 슬롯에
-    자동으로 bind 한다(세션=`<repo>_<N>`·기존 `--slot` bind 경로 재사용). 그 외는 None
-    (현행 솔로 유지) — repo 0개/≥2개 또는 슬롯 0개/≥2개면 사용자가 `--repo --slot` 명시.
+    slot 식별자 형식은 `work/<repo>_<N>` 이니 그 repo 의 엔트리에서 N 을 파싱한다. **`state` 가
+    `leased` 인 엔트리만 센다**(`state` 키 부재→`leased` 로 back-compat·worktree_pool `from_dict`
+    default 동형) — idle(반납) 슬롯은 *죽은 세션*이라 자동바인딩/연속성 라우팅 대상이 아니다(codex
+    must-fix·ADR-0035 "활성 세션 연속성"). 같은 슬롯 N 의 중복 장부 엔트리는 **dedup** 해 "슬롯
+    개수" 오진을 막는다(정렬된 unique 목록 반환).
 
-    판정:
-      1. `_registered_repos` 재사용 — areas.md 등록 repo 가 정확히 1개인가(아니면 None).
-      2. lease 장부(`leases_file`)를 **stdlib json** 으로 read — 그 repo 슬롯이 정확히 1개인가.
-         slot 식별자 형식은 `work/<repo>_<N>` 이니 그 repo 의 leased 엔트리에서 N 을 파싱한다.
+    파일 부재/JSON 깨짐/스키마 불일치 → **None**(fail-soft·"읽을 수 없음" 신호); 정상 read 인데
+    그 repo 의 leased 슬롯이 0개면 빈 리스트 `[]`("읽었으나 활성 슬롯 없음"). 호출부는 두 경우를
+    구분할 수 있다(`_auto_slot`·`_resolve_session_slot` 가 같은 stdlib json 파싱을 공유·DRY).
 
     **worktree_pool 을 import 하지 않는다**(touches 격리·ADR-0013) — `_registered_repos` 가
     areas.md 를 stdlib 로 읽는 것과 동형으로 장부 파일을 직접 read 한다(데이터 결합만).
-    파일 부재/스키마 불일치/JSON 깨짐 → None(fail-soft — 자동바인딩은 *추가 편의*이지
-    강제 아님·실패는 현행 솔로로 폴백). `areas_file` 미지정(None)이면 `_registered_repos` 가
-    `_areas_file()`(board_root 추종·T-0162 A6)로 해소한다.
     """
-    repos = _registered_repos(areas_file)
-    if len(repos) != 1:
-        return None
-    repo = repos[0]
     if not leases_file.exists():
         return None
     try:
@@ -190,18 +180,123 @@ def _auto_slot(
     leases = data.get("leases", [])
     if not isinstance(leases, list):
         return None
-    # 이 repo 의 슬롯 식별자(`work/<repo>_<N>`)에서 N 을 파싱 — 슬롯이 정확히 1개일 때만 자동.
     slot_re = re.compile(rf"^work/{re.escape(repo)}_(\d+)$")
-    slot_nums: list[int] = []
+    slot_nums: set[int] = set()
     for row in leases:
         if not isinstance(row, dict) or row.get("repo") != repo:
             continue
+        # 활성(leased) 슬롯만 — idle(반납) 은 죽은 세션이라 라우팅 대상 아님(codex must-fix).
+        # state 키 부재는 leased 로 본다(worktree_pool from_dict default·back-compat).
+        if row.get("state", "leased") != "leased":
+            continue
         m = slot_re.match(str(row.get("slot") or ""))
         if m:
-            slot_nums.append(int(m.group(1)))
-    if len(slot_nums) != 1:
+            slot_nums.add(int(m.group(1)))
+    return sorted(slot_nums)
+
+
+def _auto_slot(
+    areas_file: Path | None = None,
+    leases_file: Path = LEASES_FILE,
+) -> tuple[str, int] | None:
+    """단일 self-host 자동바인딩 판정 — 정확히 1 repo + 그 repo **활성(leased)** 슬롯 정확히 1개면 `(repo, N)`.
+
+    솔로 무인자 bootstrap(`--repo`/`--slot` 둘 다 없음)에서, 등록 repo 가 정확히 1개이고
+    그 repo 의 활성 worktree 슬롯(leased lease 엔트리)이 정확히 1개면 모호함이 없으므로 그 슬롯에
+    자동으로 bind 한다(세션=`<repo>_<N>`·기존 `--slot` bind 경로 재사용). 그 외는 None
+    (현행 솔로 유지) — repo 0개/≥2개 또는 활성 슬롯 0개/≥2개면 사용자가 `--repo --slot` 명시.
+
+    판정:
+      1. `_registered_repos` 재사용 — areas.md 등록 repo 가 정확히 1개인가(아니면 None).
+      2. `_repo_slot_numbers` 로 그 repo 의 **leased** 슬롯 번호(dedup)를 read — 정확히 1개인가.
+
+    **idle 필터 영향(codex must-fix)**: `_repo_slot_numbers` 가 leased 만 세므로, `{1:idle, 2:leased}`
+    는 이전 None(2개→폴백) 대신 leased={2}→exactly-1→슬롯2 로 해소된다 — incidental(`_regression_cwd`·
+    display)이 *활성* 슬롯을 찾는 것이라 오히려 정합·개선(의도된 변화). solo `{1:leased}`→1 은 불변.
+
+    파일 부재/스키마 불일치/JSON 깨짐 → None(fail-soft — 자동바인딩은 *추가 편의*이지 강제
+    아님·실패는 현행 솔로로 폴백). `areas_file` 미지정(None)이면 `_registered_repos` 가
+    `_areas_file()`(board_root 추종·T-0162 A6)로 해소한다.
+
+    **순수 resolver·반환 계약 불변(`(repo,N)` | None)** — 모든 incidental 호출부(`_worktree_cwd`·
+    `_pm_state_display_path`·handoff `_regression_cwd`)가 이 fail-soft None 폴백에 기댄다.
+    session-entry 의 guarded default-1 + fail-loud 규칙은 별도 `_resolve_session_slot` 가 처리한다.
+    """
+    repos = _registered_repos(areas_file)
+    if len(repos) != 1:
+        return None
+    repo = repos[0]
+    slot_nums = _repo_slot_numbers(repo, leases_file)
+    if not slot_nums or len(slot_nums) != 1:
         return None
     return repo, slot_nums[0]
+
+
+# ── guarded session-entry 슬롯해소 (default-1 + fail-loud·T-0178·ADR-0035) ─────
+# session-entry 경로(bare `/pm-bootstrap` 무인자·bare handoff)는 *어느 슬롯의* 연속성을
+# 이어야 하는지 명확해야 한다. `_auto_slot`(순수 resolver·"정확히 1 슬롯") 의 None 은
+# **두 경우**를 합친다 — (1) solo(멀티-PM 미셋업·등록 repo 0개) = 정상 솔로 도그푸딩,
+# (2) ambiguous(멀티-PM 셋업 존재하나 under-specified). (1)은 fail-soft 유지(bare bootstrap
+# 무변경), (2)만 fail-loud 여야 1→2 슬롯 경계의 *침묵 동작변경*(없는 legacy 폴백·조용한
+# 연속성 단절)을 명시 에러로 대체한다(spike §2 D2(b)·§3). 이 함수가 그 둘을 가른다.
+class SlotResolutionError(Exception):
+    """멀티-PM 셋업이 모호(under-specified)해 슬롯을 자동해소할 수 없을 때 — session-entry fail-loud.
+
+    solo(멀티-PM 미셋업)와 구분된다 — 등록 repo 0개/슬롯 0개는 이 에러가 아니라 None(fail-soft·
+    현행 솔로 유지). 메시지는 repo/slot 개수 + `--repo`/`--slot` 안내를 담는다(호출부가 그대로
+    사용자에게 surface).
+    """
+
+
+def _resolve_session_slot(
+    areas_file: Path | None = None,
+    leases_file: Path = LEASES_FILE,
+) -> tuple[str, int] | None:
+    """session-entry 용 guarded 슬롯해소 — repo-안 default-1 + `slot1>단독>fail-loud`.
+
+    해소 규칙(spike §3·repo 해소 후 repo 안에서):
+      ```
+      repo:  등록 repo 정확히 1개 > (≥2) → FAIL-LOUD
+      slot:  slot 1 존재하면 1 > 슬롯 정확히 1개면 그것 > (모호/부재) → FAIL-LOUD
+      ```
+    `slot 1 존재 > 단독 슬롯` 순서 = 현행 단일슬롯 보존(회귀 0): `_1`-only→1, `_3`-only(단일·1
+    아님)→그것(단독 규칙), `{1,2}`→1(slot1 default), `{2,3}`(1 부재·비단독)→FAIL-LOUD.
+
+    반환:
+      - `(repo, N)` — 해소됨(default-1·단독·단일 self-host).
+      - **None** — solo(멀티-PM 미셋업): 등록 repo 0개, 또는 등록 repo 1개인데 장부를 읽을 수
+        없거나(부재/깨짐) 그 repo 슬롯이 0개. 현행 솔로 fail-soft(bare bootstrap 무변경).
+      - **raise `SlotResolutionError`** — ambiguous(멀티-PM 셋업 존재하나 under-specified):
+        등록 repo ≥2(no `--repo`), 또는 repo 1개인데 슬롯 ≥2 이고 slot 1 부재한 비단독.
+
+    `_auto_slot`(순수 resolver) 와 같은 stdlib json 파싱(`_repo_slot_numbers`)을 공유하되,
+    "정확히 1개"가 아니라 슬롯 *집합*을 보고 default-1/단독/fail-loud 를 가른다. worktree_pool
+    미import(touches 격리·ADR-0013) 유지. `areas_file` 미지정이면 `_registered_repos` 가
+    `_areas_file()`(board_root 추종)로 해소.
+    """
+    repos = _registered_repos(areas_file)
+    if len(repos) == 0:
+        return None  # solo — 멀티-PM 미셋업(등록 repo 없음). 현행 솔로 fail-soft.
+    if len(repos) > 1:
+        raise SlotResolutionError(
+            f"등록 repo {len(repos)}개({', '.join(repos)}) — 어느 repo 인지 모호하다. "
+            f"`--repo <name> --slot <N>` 으로 명시하라."
+        )
+    repo = repos[0]
+    slot_nums = _repo_slot_numbers(repo, leases_file)
+    if not slot_nums:
+        # 장부 부재/깨짐(None) 또는 그 repo 슬롯 0개([]) — 멀티-PM 셋업 미완(슬롯 미생성).
+        # 현행 솔로 fail-soft(bare bootstrap 무변경·`_auto_slot` None 과 동형).
+        return None
+    if 1 in slot_nums:
+        return repo, 1  # slot 1 존재 → default-1(`{1}`·`{1,2}` 등).
+    if len(slot_nums) == 1:
+        return repo, slot_nums[0]  # 단독 슬롯(`_3`-only) → 그것(현행 단일슬롯 보존).
+    raise SlotResolutionError(
+        f"repo '{repo}' 슬롯 {len(slot_nums)}개"
+        f"({', '.join(f'work/{repo}_{n}' for n in sorted(slot_nums))}) 중 slot 1 부재 — "
+        f"어느 슬롯인지 모호하다. `--slot <N>` 으로 명시하라."
+    )
 
 
 # ── per-slot pm_state 경로 안내 (multi-PM 연속성·ADR-0033 §3.1·T-0166) ─────────
@@ -1123,15 +1218,21 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
     args = build_parser().parse_args(argv)
-    # 단일 self-host 자동바인딩 (Part B) — `--repo`/`--slot` 둘 다 없는 솔로 무인자 호출에서,
-    # 등록 repo 정확히 1개 + 그 repo 슬롯 정확히 1개면 그 슬롯에 자동 bind 한다(기존 `--slot`
-    # bind 경로가 그대로 실행됨·세션=`<repo>_<N>`). 모호(repo/슬롯 ≥2)하거나 repo 0개면 None
-    # → 현행 솔로. 명시 `--repo`/`--slot` 경로는 이 분기를 타지 않아 무변경.
+    # guarded 자동바인딩 (T-0178·ADR-0035) — `--repo`/`--slot` 둘 다 없는 bare 무인자 호출에서,
+    # `_resolve_session_slot` 으로 repo-안 default-1 규칙(slot1>단독>fail-loud)으로 해소한다.
+    #   - 해소(`(repo,N)`) → 그 슬롯에 자동 bind(기존 `--slot` bind 경로 재사용·세션=`<repo>_<N>`).
+    #   - None(solo·멀티-PM 미셋업) → 현행 솔로(무변경·자동바인딩 없음).
+    #   - SlotResolutionError(멀티-PM 셋업 모호) → 침묵 폴백 대신 명시 에러(`--repo`/`--slot` 안내).
+    # 명시 `--repo`/`--slot` 경로는 이 분기를 타지 않아 무변경.
     if args.repo is None and args.slot is None:
-        auto = _auto_slot()
+        try:
+            auto = _resolve_session_slot()
+        except SlotResolutionError as exc:
+            build_parser().error(str(exc))
         if auto is not None:
             args.repo, args.slot = auto
-            print(f"자동 바인딩(단일 슬롯): repo={args.repo} · slot={args.slot}",
+            # default-1(`{1,2}`→1)·단독·idle-필터 해소도 포함하므로 "단일 슬롯" 한정 문구 제거.
+            print(f"슬롯 자동 해소: repo={args.repo} · slot={args.slot}",
                   file=sys.stderr)
     # --branch/--resume/--slot 은 --repo multi-PM 모드 전용 — repo 없이 주면 오용 신호로 거부.
     if args.repo is None and (

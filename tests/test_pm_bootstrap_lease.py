@@ -934,9 +934,208 @@ def test_auto_slot_parses_nonone_slot_number(bootstrap, tmp_path):
     assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) == ("project_manager", 3)
 
 
-# ── 12. main() 자동 세팅 분기 — 둘 다 None 일 때만 _auto_slot 적용 ─────────────
+# ── 11b. _resolve_session_slot — guarded 슬롯해소 (default-1 + fail-loud·T-0178) ──
+# `_auto_slot`(순수 resolver·"정확히 1 슬롯") 과 달리 session-entry 용 — repo-안 default-1
+# (slot1>단독>fail-loud). solo(멀티-PM 미셋업)는 None(fail-soft), ambiguous(under-specified)
+# 는 SlotResolutionError 로 fail-loud. _write_areas/_write_leases hermetic seam 재사용.
+
+
+def _lease(repo: str, n: int, state: str = "leased") -> dict:
+    """worktree-leases.json 엔트리 1개 (`work/<repo>_<N>`·기본 leased·idle 회귀용 state 인자)."""
+    return {"slot": f"work/{repo}_{n}", "repo": repo, "session": f"{repo}_{n}", "state": state}
+
+
+def _resolve(bootstrap, tmp_path, repos: list[str], lease_entries: list[dict] | None):
+    """areas/leases 파일 seam 을 깔고 _resolve_session_slot 을 hermetic 하게 호출한다.
+
+    `lease_entries=None` 이면 장부 파일을 *만들지 않는다*(부재). 빈 리스트면 빈 장부.
+    """
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, repos)
+    if lease_entries is not None:
+        _write_leases(leases, lease_entries)
+    return bootstrap._resolve_session_slot(areas_file=areas, leases_file=leases)
+
+
+def test_resolve_session_slot_single_self_host(bootstrap, tmp_path):
+    """repo 1개 + 슬롯 `{1}` → (repo, 1) (현행 단일 self-host 보존)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"],
+                   [_lease("project_manager", 1)])
+    assert got == ("project_manager", 1)
+
+
+def test_resolve_session_slot_default_1_when_slot1_present(bootstrap, tmp_path):
+    """repo 1개 + 슬롯 `{1,2}` → (repo, 1) (slot1 존재 → default-1·모호 아님)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"],
+                   [_lease("project_manager", 1), _lease("project_manager", 2)])
+    assert got == ("project_manager", 1)
+
+
+def test_resolve_session_slot_sole_non1_slot(bootstrap, tmp_path):
+    """repo 1개 + 슬롯 `{3}`(단독·1 아님) → (repo, 3) (단독 규칙·현행 `_3`-only 보존)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"],
+                   [_lease("project_manager", 3)])
+    assert got == ("project_manager", 3)
+
+
+def test_resolve_session_slot_zero_repos_returns_none(bootstrap, tmp_path):
+    """등록 repo 0개(멀티-PM 미셋업) → None (solo·fail-soft·bare bootstrap 무변경)."""
+    got = _resolve(bootstrap, tmp_path, [], [_lease("project_manager", 1)])
+    assert got is None
+
+
+def test_resolve_session_slot_repo1_no_slots_returns_none(bootstrap, tmp_path):
+    """repo 1개지만 그 repo 슬롯 0개(셋업 미완) → None (solo·fail-soft)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"], [])
+    assert got is None
+
+
+def test_resolve_session_slot_missing_leases_returns_none(bootstrap, tmp_path):
+    """repo 1개 + 장부 부재 → None (solo·fail-soft·_auto_slot None 동형)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"], None)
+    assert got is None
+
+
+def test_resolve_session_slot_corrupt_leases_returns_none(bootstrap, tmp_path):
+    """repo 1개 + 깨진 JSON 장부 → None (fail-soft·크래시 안 함)."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    leases.write_text("{not valid json", encoding="utf-8")
+    assert bootstrap._resolve_session_slot(areas_file=areas, leases_file=leases) is None
+
+
+def test_resolve_session_slot_two_repos_fails_loud(bootstrap, tmp_path):
+    """등록 repo ≥2 (no --repo) → SlotResolutionError (fail-loud·--repo 안내)."""
+    with pytest.raises(bootstrap.SlotResolutionError) as exc:
+        _resolve(bootstrap, tmp_path, ["A", "B"], [_lease("A", 1)])
+    msg = str(exc.value)
+    assert "repo 2개" in msg
+    assert "--repo" in msg
+
+
+def test_resolve_session_slot_slot1_absent_nonsole_fails_loud(bootstrap, tmp_path):
+    """repo 1개 + 슬롯 `{2,3}`(1 부재·비단독) → SlotResolutionError (fail-loud·--slot 안내)."""
+    with pytest.raises(bootstrap.SlotResolutionError) as exc:
+        _resolve(bootstrap, tmp_path, ["project_manager"],
+                 [_lease("project_manager", 2), _lease("project_manager", 3)])
+    msg = str(exc.value)
+    assert "슬롯 2개" in msg
+    assert "--slot" in msg
+
+
+def test_resolve_session_slot_no_silent_fallback_sensitivity(bootstrap, tmp_path):
+    """sensitivity — 모호 케이스가 *조용히* (repo,N)/None 으로 폴백하면 fail.
+
+    `{2,3}`(1 부재·비단독)은 명시 에러여야 한다. 침묵 폴백(returns 대신)이면 이 테스트가
+    잡는다 — fail-loud 가 실제로 발화함을 입증(에러 안 나면 실패)."""
+    raised = False
+    try:
+        _resolve(bootstrap, tmp_path, ["project_manager"],
+                 [_lease("project_manager", 2), _lease("project_manager", 3)])
+    except bootstrap.SlotResolutionError:
+        raised = True
+    assert raised, "모호 케이스가 명시 에러 없이 조용히 폴백했다 (침묵 무력화 회귀)"
+
+
+# ── 11c. idle(반납) 슬롯 필터 — leased 만 라우팅 (codex must-fix·ADR-0035 활성 연속성) ──
+# default-1 이 permissive 해지며 idle 슬롯으로 라우팅하던 결함을 닫는다 — `_repo_slot_numbers`
+# 가 state=="leased" 만 센다. idle 은 죽은 세션이라 자동바인딩/연속성 대상이 아니다.
+
+
+def test_resolve_session_slot_idle_slot1_routes_to_leased_slot2(bootstrap, tmp_path):
+    """`{1:idle, 2:leased}` → (repo, 2) — idle 슬롯1 아니라 *활성* 슬롯2 (핵심 must-fix)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"],
+                   [_lease("project_manager", 1, "idle"),
+                    _lease("project_manager", 2, "leased")])
+    assert got == ("project_manager", 2)
+
+
+def test_resolve_session_slot_idle_slot2_keeps_leased_slot1(bootstrap, tmp_path):
+    """`{1:leased, 2:idle}` → (repo, 1) — 활성 슬롯1 (idle 2 제외·default-1)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"],
+                   [_lease("project_manager", 1, "leased"),
+                    _lease("project_manager", 2, "idle")])
+    assert got == ("project_manager", 1)
+
+
+def test_resolve_session_slot_both_leased_default_1(bootstrap, tmp_path):
+    """`{1:leased, 2:leased}`(둘 다 활성) → (repo, 1) — default-1 의도 유지."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"],
+                   [_lease("project_manager", 1, "leased"),
+                    _lease("project_manager", 2, "leased")])
+    assert got == ("project_manager", 1)
+
+
+def test_resolve_session_slot_all_idle_returns_none(bootstrap, tmp_path):
+    """`{1:idle, 2:idle}`(활성 없음) → None (fail-soft·활성 세션 부재·솔로 폴백)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"],
+                   [_lease("project_manager", 1, "idle"),
+                    _lease("project_manager", 2, "idle")])
+    assert got is None
+
+
+def test_resolve_session_slot_solo_single_leased_unchanged(bootstrap, tmp_path):
+    """solo `{1:leased}` → (repo, 1) — 단일 활성 슬롯 불변(idle 필터가 solo 안 깸·재확인)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"],
+                   [_lease("project_manager", 1, "leased")])
+    assert got == ("project_manager", 1)
+
+
+def test_resolve_session_slot_duplicate_entries_dedup(bootstrap, tmp_path):
+    """같은 슬롯 N 중복 장부 엔트리(2행) → "1 슬롯" 으로 정상 (dedup·codex suggestion)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"],
+                   [_lease("project_manager", 3, "leased"),
+                    _lease("project_manager", 3, "leased")])
+    assert got == ("project_manager", 3)  # dedup 없으면 "슬롯 2개"→fail-loud 오진.
+
+
+def test_resolve_session_slot_state_absent_treated_leased(bootstrap, tmp_path):
+    """state 키 부재 엔트리 → leased 로 취급 (back-compat·worktree_pool from_dict default)."""
+    got = _resolve(bootstrap, tmp_path, ["project_manager"],
+                   [{"slot": "work/project_manager_1", "repo": "project_manager",
+                     "session": "project_manager_1"}])  # state 키 없음.
+    assert got == ("project_manager", 1)
+
+
+# ── _auto_slot idle 필터 영향 (공유 헬퍼·의도된 변화·codex 영향 분석) ──────────
+
+def test_auto_slot_idle_slot1_resolves_leased_slot2(bootstrap, tmp_path):
+    """`{1:idle, 2:leased}` → _auto_slot 도 leased={2}→exactly-1→(repo, 2) (의도된 변화).
+
+    이전엔 2개 엔트리→None→폴백이었으나, idle 필터로 *활성* 슬롯만 세 exactly-1 해소된다 —
+    incidental(`_regression_cwd`·display)이 활성 슬롯을 찾는 것이라 정합·개선."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [_lease("project_manager", 1, "idle"),
+                           _lease("project_manager", 2, "leased")])
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) == ("project_manager", 2)
+
+
+def test_auto_slot_solo_single_leased_unchanged(bootstrap, tmp_path):
+    """solo `{1:leased}` → (repo, 1) — idle 필터가 solo 핵심 케이스 안 깸(재확인)."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [_lease("project_manager", 1, "leased")])
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) == ("project_manager", 1)
+
+
+def test_auto_slot_all_idle_returns_none(bootstrap, tmp_path):
+    """`{1:idle}`(활성 0개) → None — _auto_slot 도 활성만 센다(fail-soft·솔로 폴백)."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [_lease("project_manager", 1, "idle")])
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+
+
+# ── 12. main() 자동 세팅 분기 — 둘 다 None 일 때만 guarded 해소 적용 (T-0178) ──
 # PmBootstrap.run 을 stub 으로 갈아끼워 받은 repo/slot 인자만 캡처한다(실 worktree_pool
-# 동적로드·git/장부 미접촉). _auto_slot 자체는 monkeypatch 로 결정값 주입(분기만 검증).
+# 동적로드·git/장부 미접촉). main() 은 `_resolve_session_slot`(guarded·default-1+fail-loud)
+# 을 부르므로 그걸 monkeypatch 로 결정값/예외 주입한다(분기만 검증).
 
 
 class _CaptureBootstrap:
@@ -949,37 +1148,53 @@ class _CaptureBootstrap:
 
 
 def _patch_main_stub(bootstrap, monkeypatch, auto_result):
-    """main() 의 _auto_slot 을 결정값으로, PmBootstrap 을 캡처 stub 으로 교체."""
+    """main() 의 _resolve_session_slot 을 결정값으로, PmBootstrap 을 캡처 stub 으로 교체."""
     _CaptureBootstrap.last = None
-    monkeypatch.setattr(bootstrap, "_auto_slot", lambda: auto_result)
+    monkeypatch.setattr(bootstrap, "_resolve_session_slot", lambda: auto_result)
     monkeypatch.setattr(bootstrap, "PmBootstrap", _CaptureBootstrap)
 
 
 def test_main_auto_binds_when_both_none(bootstrap, monkeypatch, capsys):
-    """무인자(repo/slot 둘 다 None) + _auto_slot 가 (repo,N) → run 에 그 값이 전달."""
+    """무인자(repo/slot 둘 다 None) + 해소가 (repo,N) → run 에 그 값이 전달."""
     _patch_main_stub(bootstrap, monkeypatch, ("project_manager", 2))
     rc = bootstrap.main([])
     assert rc == 0
     assert _CaptureBootstrap.last["repo"] == "project_manager"
     assert _CaptureBootstrap.last["slot"] == 2
-    assert "자동 바인딩(단일 슬롯)" in capsys.readouterr().err
+    assert "슬롯 자동 해소" in capsys.readouterr().err
 
 
-def test_main_no_auto_when_auto_slot_none(bootstrap, monkeypatch, capsys):
-    """무인자 + _auto_slot 가 None → 현행 솔로 (repo/slot 둘 다 None 유지·안내 없음)."""
+def test_main_no_auto_when_resolve_none(bootstrap, monkeypatch, capsys):
+    """무인자 + 해소가 None(solo) → 현행 솔로 (repo/slot 둘 다 None 유지·안내 없음)."""
     _patch_main_stub(bootstrap, monkeypatch, None)
     rc = bootstrap.main([])
     assert rc == 0
     assert _CaptureBootstrap.last["repo"] is None
     assert _CaptureBootstrap.last["slot"] is None
-    assert "자동 바인딩" not in capsys.readouterr().err
+    assert "슬롯 자동 해소" not in capsys.readouterr().err
+
+
+def test_main_ambiguous_fails_loud(bootstrap, monkeypatch, capsys):
+    """무인자 + 해소가 SlotResolutionError(멀티-PM 모호) → 명시 에러로 exit (침묵 폴백 부재)."""
+    _CaptureBootstrap.last = None
+    monkeypatch.setattr(bootstrap, "PmBootstrap", _CaptureBootstrap)
+
+    def _raise():
+        raise bootstrap.SlotResolutionError("등록 repo 2개(A, B) — --repo <name> --slot <N> 으로 명시하라.")
+
+    monkeypatch.setattr(bootstrap, "_resolve_session_slot", _raise)
+    with pytest.raises(SystemExit):
+        bootstrap.main([])
+    # argparse error 는 SystemExit(2)·stderr 로 안내. run() 은 호출되지 않는다(침묵 폴백 부재).
+    assert _CaptureBootstrap.last is None
+    assert "등록 repo 2개" in capsys.readouterr().err
 
 
 def test_main_explicit_slot_skips_auto(bootstrap, monkeypatch, capsys):
-    """명시 --repo --slot 경로는 _auto_slot 분기를 타지 않는다 (auto 가 (X,9)여도 무시)."""
-    # _auto_slot 이 호출되면 (다른값) 으로 오염시켜, 호출 안 됨을 확인.
-    monkeypatch.setattr(bootstrap, "_auto_slot",
-                        lambda: (_ for _ in ()).throw(AssertionError("auto 호출되면 안 됨")))
+    """명시 --repo --slot 경로는 해소 분기를 타지 않는다 (해소가 던져도 무시)."""
+    # _resolve_session_slot 이 호출되면 예외로 오염시켜, 호출 안 됨을 확인.
+    monkeypatch.setattr(bootstrap, "_resolve_session_slot",
+                        lambda: (_ for _ in ()).throw(AssertionError("해소 호출되면 안 됨")))
     monkeypatch.setattr(bootstrap, "PmBootstrap", _CaptureBootstrap)
     _CaptureBootstrap.last = None
     rc = bootstrap.main(["--repo", "A", "--slot", "1"])
