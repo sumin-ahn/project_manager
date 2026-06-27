@@ -33,7 +33,6 @@ from typing import Any
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"
 IDEAS_DIR = REPO / ".project_manager" / "wiki" / "ideas"
 DECISIONS_DIR = REPO / ".project_manager" / "wiki" / "decisions"
 SPECS_DIR = REPO / ".project_manager" / "wiki" / "specs"
@@ -42,8 +41,71 @@ HOOKS_DIR = REPO / ".project_manager" / "hooks"  # instance-owned lint hooks (AD
 BOARD_FILE = REPO / ".project_manager" / "wiki" / "board.md"
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
-TEMPLATE_FILE = TICKETS_DIR / "_template.md"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored): prefix, session
+
+
+# ── board root (graceful 탐지·ADR-0033 ① 분리) ───────────────────────────────
+# board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다 — 그러면
+# git 형상이 design(superproject)/board(submodule) 둘로 갈려 PM 운영 commit 이 코드 git 을
+# 오염하지 않는다(ADR-0033 ①). 분리되지 않은 legacy(솔로·미마이그 adopter)에선 board 가
+# wiki/ 안에 그대로 산다. 아래 board_root() 가 *실측*으로 둘을 가른다 — board/tickets 가
+# 실제 dir 이면 board/ 루트, 아니면 wiki/ 루트(legacy). install_pre_push_hook 의 git-path
+# 탐지 패턴 동형(존재할 때만 새 경로·없으면 현 위치).
+#
+# board-관련 경로(tickets·_template·areas)는 *상수가 아니라 함수*로 lazy 해소한다 — board/
+# 존재 여부가 런타임(설치/마이그레이션)에 바뀔 수 있고, hermetic 테스트가 REPO 를 monkeypatch
+# 한 뒤 board_root 가 그 tmp REPO 를 따라야 하기 때문(import-time 상수면 실 REPO 에 굳음).
+# 나머지 wiki 잔류 경로(ideas/board.md/decisions/specs/architecture/log/status)는 board 가
+# 아니라 설계축/파생물이므로 상수 그대로 둔다.
+
+def board_root() -> Path:
+    """board(tickets+areas) 루트 — board/ 분리 시 `<REPO>/.project_manager/board`, 아니면
+    legacy `<REPO>/.project_manager/wiki`.
+
+    `.project_manager/board/tickets` 가 실 디렉토리면 board 가 submodule 로 분리된
+    형상(ADR-0033 ①) → board/ 루트. 아니면 board 가 아직 wiki/ 안에 있는 legacy 형상 →
+    wiki/ 루트(현 위치·무변경). install_pre_push_hook 의 디렉토리-탐지와 동형 — *존재할
+    때만* 새 경로로 갈리고, 없으면 현재 위치로 100% 폴백한다(솔로·미마이그 무영향).
+    """
+    base = REPO / ".project_manager"
+    if (base / "board" / "tickets").is_dir():
+        return base / "board"
+    return base / "wiki"
+
+
+def tickets_dir() -> Path:
+    """ticket 디렉토리 — board_root()/tickets (board/ 분리 추종·legacy=wiki/tickets)."""
+    return board_root() / "tickets"
+
+
+def template_file() -> Path:
+    """ticket 본문 템플릿 — tickets_dir()/_template.md (board_root 추종)."""
+    return tickets_dir() / "_template.md"
+
+
+def areas_file() -> Path:
+    """areas 레지스트리 경로 (board_root 추종·*조건분기*).
+
+    areas.md 는 legacy 에서 `.project_manager/areas.md`(wiki *밖*·committed shared registry)에
+    산다 — tickets 처럼 wiki/ 안이 아니다. board/ 분리 시엔 board submodule *안*으로 옮겨야
+    PM 운영(repo add 가 append)이 코드 git 을 오염하지 않는다(ADR-0033 ①). 그래서:
+      - board/ 존재 → `board_root()/areas.md` (= board/areas.md·submodule 안)
+      - legacy     → `<REPO>/.project_manager/areas.md` (현 위치·wiki 밖·무변경)
+    """
+    if (REPO / ".project_manager" / "board" / "tickets").is_dir():
+        return board_root() / "areas.md"
+    return REPO / ".project_manager" / "areas.md"
+
+
+# board-관련 경로의 module-level 별칭 — 위 함수가 *실제* 해소 경로다(board_root 추종). 이
+# 상수들은 (1) hermetic 테스트의 monkeypatch seam(`setattr(board, "TICKETS_DIR", …)` 가
+# AttributeError 없이 동작)과 (2) 외부 import 안전(import-time 평가)을 위해 legacy 기본값으로
+# 유지한다. 내부 코드는 *함수*를 부르므로(board_root 추종·아래), 이 상수가 가리키는 legacy
+# 경로는 board/ 미분리 시점에 함수 결과와 동일하다 — board/ 분리 후에도 함수가 우선이라
+# 회귀 없음. (테스트가 이들을 patch 할 땐 REPO 도 함께 patch 하고 그 값이 legacy 와 일치 →
+# 함수가 같은 경로를 낸다.)
+TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"
+TEMPLATE_FILE = TICKETS_DIR / "_template.md"
 AREAS_FILE = REPO / ".project_manager" / "areas.md"    # shared registry (committed, merge=union)
 PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"          # per-clone (git-ignored)
 PM_STATE_TEMPLATE = REPO / ".project_manager" / "wiki" / "pm_state.template.md"  # tracked skeleton
@@ -110,6 +172,68 @@ def session_name(override: str | None = None) -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
 
 
+# user identity 해소 git 폴백 timeout — `git config user.email` 은 로컬 config 읽기라
+# 즉답이지만(네트워크 0) 환경 이상에 대비해 짧은 상한을 둔다(엔진 subprocess 규약·_interp_runs 동류).
+_GIT_USER_TIMEOUT_SECONDS = 5
+
+
+def _git_config_email() -> str | None:
+    """`git config user.email` 을 읽어 반환 — 미설정/git 부재/실패 → None (fail-soft).
+
+    user identity 해소(`user_name`)의 폴백 레이어다 — `local.conf user=` 가 없을 때
+    git 의 commit author email 을 user 식별자로 쓴다(spike §3.5·§6.3). subprocess 는
+    엔진 규약대로 UTF-8 고정(한글 이름·메시지 안전)·짧은 timeout. git 바이너리 부재
+    (`shutil.which` None)·rc≠0(미설정)·예외는 모두 None 으로 강등한다(크래시 0).
+    """
+    git_binary = shutil.which("git")
+    if git_binary is None:
+        return None
+    try:
+        r = subprocess.run(
+            [git_binary, "-C", str(REPO), "config", "user.email"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_GIT_USER_TIMEOUT_SECONDS,
+        )
+    except Exception:  # noqa: BLE001 — fail-soft: git 호출 실패는 None(미상)으로 강등.
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def user_name(override: str | None = None) -> str | None:
+    """user 식별자 해소 — `session_name()` 과 *동형* 우선순위 (T-0073 패턴·spike §3.5):
+
+        override > local.conf `user=` > `git config user.email` > None
+
+    `pm`(슬롯)이 *어느 PM 컨텍스트*인지(=`session_name()`)와 직교하는 **누가**(사람) 차원이다
+    (ADR-0033 ③). multi-user 보드 공유에서 `created_by`(provenance)·`claimed_by`(assignee)·
+    areas `area_owner` 의 user 토큰을 푼다. solo(N=1·M=1)는 보통 `local.conf user=` 미설정 →
+    `git config user.email` 로 폴백(commit author 와 동일 식별자)·그마저 없으면 None(graceful —
+    user 미상 허용·fail-soft·기존 슬롯-only 동작 무변경).
+    """
+    if override:
+        return override
+    conf_user = local_config().get("user")
+    if conf_user:
+        return conf_user
+    return _git_config_email()
+
+
+def identity_tag(session_override: str | None = None,
+                 user_override: str | None = None) -> str:
+    """현재 identity 를 `<user>/<pm-slot>` 토큰으로 합성한다 (spike §3.2·ADR-0033 ③).
+
+    `created_by`(provenance)·`claimed_by`(assignee) frontmatter 에 박는 값이다. user 가
+    해소되면 `<user>/<pm>`, 미상(None)이면 슬롯만(`<pm>`) — **기존 슬롯-only 값과 형태가
+    같다**(graceful·하위호환). 읽기측은 `/` 로 split 해 user/slot 을 분리하되, `/` 없는 값
+    (구 ticket·user 미상)은 slot-only 로 읽어야 한다(fail-soft).
+    """
+    pm = session_name(session_override)
+    user = user_name(user_override)
+    return f"{user}/{pm}" if user else pm
+
+
 def id_prefix(override: str | None = None) -> str | None:
     """Resolve ticket-ID namespace prefix (multi-repo areas·N×M·ADR-0016).
 
@@ -122,11 +246,14 @@ def id_prefix(override: str | None = None) -> str | None:
     return local_config().get("prefix") or None
 
 
-# areas.md 신/구 스키마 (ADR-0014 · T-0075 · T-0076).
+# areas.md 신/구 스키마 (ADR-0014 · T-0075 · T-0076 · T-0161).
 #   - 구 스키마: `| prefix | area | owner |`                      (멀티-CLONE·ADR-0005)
 #   - per-repo: `| repo | prefix | git | test_cmd | owner |`      (per-repo 레지스트리·ADR-0014)
 #   - base 스키마: `| repo | prefix | git | test_cmd | owner | base |`  (base 브랜치·T-0075)
-#   - 신 스키마: `| repo | prefix | git | test_cmd | owner | base | protected |`  (보호브랜치·T-0076)
+#   - protected 스키마: `| repo | prefix | git | test_cmd | owner | base | protected |`  (보호브랜치·T-0076)
+#   - 신 스키마: `| … | protected | area_owner |`                 (user 소유·T-0161·ADR-0033 ③·refines ADR-0014)
+#     area_owner = `--mine` 기본 풀 입력의 *user* 소유(spike §3.3·§6.4). ADR-0014 의 기존 `owner`
+#     (per-repo registry registrant)를 overload 하지 않는 *별도* 칼럼이다(codex sug — 의미 충돌 회피).
 # 파싱은 **헤더 행을 읽어 칼럼명→인덱스**로 매핑한다(위치-비의존) — 모든 스키마를 같은
 # 코드로 읽고, 누락 칼럼은 빈 값으로 떨어뜨려 하위호환을 보장한다(`base`/`protected` 칼럼
 # 없는 구 레지스트리 → 행 dict 에 그 키 없음 → `_repo_base`/`_repo_protected` 가 폴백).
@@ -151,12 +278,28 @@ def _split_areas_row(line: str) -> list[str] | None:
     return [c.strip() for c in inner.split("|")]
 
 
-# areas.md canonical 칼럼 순서 (신 스키마·ADR-0014·T-0075·T-0076). 구 헤더(`base`/`protected`
-# 없음)는 이 순서의 *prefix* 다(`repo|prefix|git|test_cmd|owner` 또는 …`|base`). 그래서 헤더보다
-# 셀이 많은 행(구 헤더에 신 칼럼 row 가 append 된 *업그레이드* 프로젝트 — `repo add` 가 완전
-# canonical row 를 더 짧은 헤더에 붙인 경우)을 이 canonical 순서로 이어 매핑해 `base`/`protected`
-# 유실을 막는다(codex T-0075 게이트가 base 에 대해 건 가드를 protected 추가로 7칸까지 확장).
-_AREAS_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base", "protected")
+# areas.md canonical 칼럼 순서 (신 스키마·ADR-0014·T-0075·T-0076·T-0161). 구 헤더(`base`/
+# `protected`/`area_owner` 없음)는 이 순서의 *prefix* 다(`repo|prefix|git|test_cmd|owner` 또는
+# …`|base`/…`|protected`). 그래서 헤더보다 셀이 많은 행(구 헤더에 신 칼럼 row 가 append 된
+# *업그레이드* 프로젝트 — `repo add` 가 완전 canonical row 를 더 짧은 헤더에 붙인 경우)을 이
+# canonical 순서로 이어 매핑해 `base`/`protected`/`area_owner` 유실을 막는다(codex T-0075 게이트가
+# base 에 대해 건 가드를 protected[7칸]→area_owner[8칸]까지 확장).
+_AREAS_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base", "protected",
+                  "area_owner")
+
+
+def _areas_header_line() -> str:
+    """canonical areas.md 헤더 행 (`| repo | prefix | … | area_owner |`·줄바꿈 없음).
+
+    `_AREAS_COLUMNS`(단일 진실)에서 파생한다 — `areas_append` 의 신규 파일 헤더와
+    `_migrate_areas_text` 의 구-헤더 업그레이드가 같은 8칼럼 헤더를 쓰도록 한 곳에서 만든다.
+    """
+    return "| " + " | ".join(_AREAS_COLUMNS) + " |"
+
+
+def _areas_separator_line() -> str:
+    """canonical areas.md 구분선 (`|---|---|…|`·칼럼 수만큼 `---`·줄바꿈 없음)."""
+    return "|" + "|".join("---" for _ in _AREAS_COLUMNS) + "|"
 
 
 def _parse_areas() -> tuple[list[str], list[dict[str, str]]]:
@@ -175,11 +318,12 @@ def _parse_areas() -> tuple[list[str], list[dict[str, str]]]:
     헤더 매핑으로 떨어져 `base` 유실(codex T-0076) → `> len(header)` 가 6칸·7칸 신 row 둘 다 보존.
     셀 수가 헤더 이하인 행(구 6/5/3칸 데이터 row)은 자기 헤더로 매핑(현행). areas.md 부재 → ([], []).
     """
-    if not AREAS_FILE.exists():
+    af = areas_file()
+    if not af.exists():
         return [], []
     header: list[str] = []
     rows: list[dict[str, str]] = []
-    for line in AREAS_FILE.read_text(encoding="utf-8").splitlines():
+    for line in af.read_text(encoding="utf-8").splitlines():
         cells = _split_areas_row(line)
         if cells is None:
             continue
@@ -255,6 +399,178 @@ def _repo_protected(repo: str) -> list[str]:
     return list(DEFAULT_PROTECTED)
 
 
+def _repo_area_owner(repo: str) -> str | None:
+    """그 repo 의 areas.md `area_owner`(user 소유) — 미지정/미등록/구 스키마 → None (T-0161·ADR-0033 ③).
+
+    `--mine` 기본 풀(내 area 의 open 티켓) 판정의 입력이다(spike §3.3·후속 T-0164). ADR-0014 의
+    기존 `owner`(per-repo registry registrant)와 의미가 다른 *별도* 칼럼 — overload 금지(codex sug).
+    단일 user 토큰이다(목록/구분자 아님·spike §6.4). repo 명은 areas.md `repo` 칼럼과 매칭한다
+    (repo add 가 `repo=name` 으로 등록).
+
+    None 폴백(현행 동작·회귀 0 — `--mine` 풀 판정이 그 area 를 비소유로 처리):
+      - areas.md 부재(솔로) — `_parse_areas()` 가 ([],[]).
+      - 그 repo 행이 없음(미등록).
+      - `area_owner` 칼럼 자체가 없는 구 레지스트리(헤더에 area_owner 없음 → 행 dict 에 키 없음).
+      - `area_owner` 칼럼이 빈 값(부분 등록).
+    """
+    _header, rows = _parse_areas()
+    for row in rows:
+        if row.get("repo") == repo:
+            return row.get("area_owner") or None
+    return None
+
+
+# ── `--mine` 뷰 필터 (T-0164·ADR-0033 ④·spike §2.D · T-0168 단순화) ─────────
+# 단일 공유 보드 위의 *렌즈*(별도 저장 아님). `board list --mine` 은 두 풀의 합집합:
+#   (a) 내 area 의 open — status=open ∧ 그 티켓 area 의 `area_owner` == 내 user.
+#   (b) 내 claim — `claimed_by` 의 *user* == 내 user (새 형태) ∨ `claimed_by` == 내 슬롯
+#       (legacy 슬롯-only·user 차원 없는 claim). 상태 무관(연속성).
+# graceful degrade(핵심·spike §2.D): user 미해소(None)이거나 보드에 area_owner 가 운영 중이지
+# 않으면(미마이그레이션 채택자·솔로) (a)=전체 open 으로 떨어진다(빈 보드 금지·plain list 처럼).
+# `cmd_list` 가 `_area_owner_in_use()`(areas.md 전역 1회 스캔)로 (a) 범위를 정한다 — per-user
+# 2축 분기(`_owns_any_area`+`area_filter`)를 전역 플래그 1개로 단순화(T-0168 동반·사용자 결정
+# 2026-06-26: 데이터 정합은 `board migrate-identity` 가 책임·런타임 폴백은 최소).
+
+# 티켓 ID prefix 추출 — `_next_id` ID 발행 규약의 *정확한 역*:
+#   prefixed = `T-{prefix}-{NNN}` (`_next_id` line 1011·prefix 는 리터럴 삽입·끝 -NNN 은 숫자),
+#   legacy   = `T-{NNNN}`        (`_next_id` line 1013·하이픈 1개·prefix 없음).
+# prefix 문법은 **등록/검증측(`pm_config._REPO_NAME_RE`·`^[A-Za-z0-9][A-Za-z0-9_-]*$`)과 정합**한다
+# — repo add·init `--prefix` 가 그 패턴으로 prefix 를 검증·등록하므로 소비측도 같은 grammar 여야
+# 한다(T-0164 round-3 must-fix: 소비 grammar 가 등록 grammar 보다 좁으면 `123` 같은 순수-숫자
+# prefix 가 등록은 되는데 소비측에서 legacy 로 오인돼 `_ticket_prefix`/wikilink/bootstrap 이 prefix
+# 로 인식 못 함). 영숫자로 시작(leading `-` 배제)·이후 영숫자/`_`/`-` — 그래서 `P0`(숫자 포함)·
+# `service-a`(family-scope·하이픈)·`123`(순수 숫자) prefix 모두 발행·해소된다(`T-P0-001`·
+# `T-service-a-001`·`T-123-001`). 역파서는 끝의 `-NNN`(숫자) 한 마디만 떼고 나머지를 prefix 로 잡는다.
+# legacy 와의 구분은 **구조적**으로 유지된다(prefix grammar 가 순수 숫자를 포함해도): full-ID
+# regex `^T-(prefix)-\d+$` 가 *내부 하이픈*(prefix-NNN 2세그먼트)을 요구하므로 `T-0164`(하이픈
+# 1개)는 매칭 안 됨 → None(legacy), `T-123-001`(하이픈 2개)는 prefix `123` 으로 갈린다. 발행측이
+# legacy 를 prefix 없는 `T-NNNN` 단일 하이픈으로만 내므로 이 하이픈-수 경계가 둘을 정확히 가른다.
+# ID grammar 의 단일 진실 — prefix 마디 본체. `_TICKET_PREFIX_RE` + prefixed-ID 를 매칭하는 다른
+# 파서(`_ticket_id_from_filename`·wikilink lint·bootstrap `_TICKET_ID`)가 *전부* 이 한 조각(또는
+# 동형 grammar)을 쓴다 — grammar drift 방지(T-0164 round-3 클래스: 한 곳 고치면 같은 가정의 다른
+# 파서가 어긋남). `P0`(숫자)·`service-a`(하이픈)·`x_y`(언더스코어)·`123`(순수 숫자) prefix 포섭.
+_TICKET_PREFIX_BODY = r"[A-Za-z0-9][A-Za-z0-9_-]*"
+_TICKET_PREFIX_RE = re.compile(
+    rf"^T-(?P<prefix>{_TICKET_PREFIX_BODY})-\d+$")
+# prefixed | legacy 둘 다 매칭하는 ID 본체 (anchor 없음 — 호출측이 ^…$·\b 등으로 감싼다).
+# 파일명/wikilink 파서가 공유한다(자체 `[A-Za-z]+` regex 두지 말 것 — `P0`/`service-a` 누락).
+_TICKET_ID_BODY = rf"T-(?:{_TICKET_PREFIX_BODY}-\d+|\d+)"
+
+
+def _ticket_prefix(tid: str) -> str | None:
+    """티켓 ID 에서 네임스페이스 prefix 추출. legacy `T-NNNN`(prefix 없음) → None.
+
+    `_next_id` 의 ID 발행 규약의 역이다: prefixed = `T-<PREFIX>-NNN`, legacy = `T-NNNN`.
+    PREFIX 문법은 등록/검증측(`pm_config._REPO_NAME_RE`·`[A-Za-z0-9][A-Za-z0-9_-]*`)과 정합이라
+    숫자(`P0`)·하이픈(`service-a`)·순수 숫자(`123`)를 포함할 수 있고 그런 ID(`T-P0-001`·
+    `T-service-a-001`·`T-123-001`)도 해소된다. legacy 4자리 숫자 ID(`T-0164`)는 full-ID regex
+    가 *내부 하이픈*(prefix-NNN)을 요구하는데 하이픈이 1개뿐이라 매칭 안 됨 → None(구조적 구분).
+    """
+    if not tid:
+        return None
+    m = _TICKET_PREFIX_RE.match(tid)
+    return m.group("prefix") if m else None
+
+
+def _ticket_area_owner(tid: str) -> str | None:
+    """티켓의 area `area_owner`(user 소유) 해소 — 미상이면 None (T-0164·`--mine` (a) 입력).
+
+    매핑 경로: ID prefix(`_ticket_prefix`) → areas.md 의 그 prefix 행(`_areas_row_for_prefix`)에서
+    `area_owner` 를 *직접* 읽는다(`_active_test_cmd`/line 737 의 prefix-행 직접-읽기와 동형).
+    미등록 prefix·area_owner 빈값은 None(area 비소유 처리).
+
+    prefix 행에서 직접 읽는 이유(repo 칼럼 경유 재스캔 금지): areas registry 는 prefix-unique 만
+    보장하고 repo-unique 는 아니다 — 두 prefix 가 같은 `repo` 칼럼값을 공유하면 `repo` 로 재스캔할
+    경우 *그 repo 의 첫 행* area_owner 를 돌려줘 잘못된 소유자가 나온다. prefix 로 이미 정확한 행을
+    잡았으니 그 행에서 바로 읽는다(이중 스캔도 제거).
+
+    **no-prefix(솔로 self-host) 폴백 (T-0164 실버그·sole-area)**: 솔로 self-host(T-0123·
+    prefix-불요)는 티켓이 `T-NNNN`(prefix 없음)이라 `_ticket_prefix` None 이다. no-prefix 티켓 ⟹
+    솔로 단일-repo(id_prefix None) ⟹ areas registry 의 *단일 area* 가 그 티켓의 area 다 — prefix
+    매핑은 multi-repo 메커니즘이므로 솔로엔 sole-area 폴백이 맞다. areas 에 area 가 **정확히 1개**면
+    그 단일 area 의 area_owner 를 돌려준다(migration 이 area_owner 를 채운 솔로 보드에서 `--mine`
+    (a) 가 no-prefix open 티켓을 잡게). area 가 여러 개면(multi-repo 인데 no-prefix 티켓 = 모순적/
+    희귀) 모호하므로 None 유지(기존 동작). prefix 가 *있는* 티켓은 이 폴백을 안 타고 기존 prefix
+    경로 그대로(multi-repo 정합·무회귀).
+    """
+    prefix = _ticket_prefix(tid)
+    if not prefix:
+        _header, rows = _parse_areas()
+        if len(rows) == 1:
+            return rows[0].get("area_owner") or None
+        return None
+    row = _areas_row_for_prefix(prefix)
+    if not row:
+        return None
+    return row.get("area_owner") or None
+
+
+def _area_owner_in_use() -> bool:
+    """areas.md 에 non-empty `area_owner` 행이 **하나라도** 있는가 (T-0168 동반 단순화).
+
+    `--mine` (a) 풀(내 area 의 open)을 area_owner 로 좁히는 건 *소유권 데이터가 보드에 실제로
+    구성돼 있을 때만* 의미가 있다. 이건 **전역**(per-user 아님) 1회 판정이다 — areas.md 전체를
+    한 번 스캔해 `area_owner` 칼럼이 어디든 채워져 있으면 True. 채워져 있으면 area_owner 파티션이
+    운영 중(마이그레이션됨·multi-user)이라 (a) 를 area_owner==me 로 좁히고, 비어 있으면(미마이그레이션
+    채택자·솔로) (a) 를 전체 open 으로 degrade 한다(빈 보드 금지·plain list 처럼).
+
+    이전 per-user `_owns_any_area(my_user)`(내 소유 area ≥1 인가)를 대체한다 — 데이터 정합은
+    마이그레이션 도구(`board migrate-identity`·T-0168)가 책임지고, 런타임 폴백은 **전역 플래그
+    하나**로 최소화한다(사용자 결정 2026-06-26). area_owner 가 운영 중인데 *내* area 가 0개면
+    (a) 는 자연히 빈다 — 그건 회귀가 아니라 '내 area 의 open 이 없음'이라는 올바른 결과다.
+
+    areas.md 부재(솔로)·모든 area_owner 빈 값이면 False. ≥1 채워짐이면 True.
+    """
+    _header, rows = _parse_areas()
+    return any((row.get("area_owner") or "").strip() for row in rows)
+
+
+def _claimed_by_user(claimed_by: str | None) -> str | None:
+    """`claimed_by`(`<user>/<pm-slot>`)에서 *user* 토큰 추출 — 슬롯-only/빈값은 None (T-0164·codex sug).
+
+    `claimed_by` 는 이제 `<user>/<slot>`(ADR-0033 ③·T-0161) 또는 구 슬롯-only(`<slot>`)다.
+    user 추출은 **마지막 `/` 분리** 규약(`rsplit('/', 1)[0]`) — slot 이 마지막 토큰이므로 user 에
+    `/` 가 들어가도(이메일은 보통 없지만 안전) 정확히 분리한다. `/` 가 없으면(구 슬롯-only·user
+    미상) None 을 반환해 (b) 매칭에서 graceful 제외한다.
+    """
+    if not claimed_by or "/" not in claimed_by:
+        return None
+    return claimed_by.rsplit("/", 1)[0] or None
+
+
+def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
+                    my_slot: str, area_owner_in_use: bool) -> bool:
+    """이 티켓이 `--mine` 뷰에 들어가는지 — (a) 내 area open ∨ (b) 내 claim.
+
+    단일 전역 플래그 `area_owner_in_use`(보드에 area_owner 가 운영 중인가·`cmd_list` 가 1회 계산)로
+    (a) 의 범위를 정한다 — per-user 2축 분기를 폐기했다(T-0168 동반 단순화·사용자 결정 2026-06-26).
+    데이터 정합은 `board migrate-identity` 가 책임지고 런타임 폴백은 전역 1개로 최소화한다.
+
+    (b) 내 claim — 상태 무관 연속성. 두 갈래를 OR 한다:
+      - user 일치: `claimed_by` 의 user(`_claimed_by_user`) == my_user (새 `<user>/<slot>` 형태).
+      - slot 일치: `claimed_by` == my_slot (legacy 슬롯-only·user 차원 없는 claim·round-4 must-fix).
+        `my_user is not None and` 가드로 user-일치는 식별자가 있을 때만 — 무-identity 시 남의
+        슬롯-only claim 을 내 것으로 오인하지 않는다(slot 일치는 항상 내 슬롯만 잡으므로 안전).
+    (a) 내 area open — status==open 한정:
+      - my_user 미상(None) 또는 area_owner 미운영(¬area_owner_in_use): 전체 open(빈 보드 금지·
+        미마이그레이션/솔로 안전 degrade — plain list 처럼).
+      - 그 외(user 해소 ∧ area_owner 운영): 그 티켓 area 의 area_owner == my_user 만.
+    """
+    tid = fm.get("id") or ""
+    cb = fm.get("claimed_by") or ""
+    # (b) 내 claim — user 일치(새 형태) OR slot 일치(legacy 슬롯-only·무-identity).
+    if cb:
+        cb_user = _claimed_by_user(cb)
+        if (my_user is not None and cb_user == my_user) or cb == my_slot:
+            return True
+    # (a) 내 area 의 open.
+    if status == "open":
+        if my_user is None or not area_owner_in_use:
+            return True
+        return _ticket_area_owner(tid) == my_user
+    return False
+
+
 def registered_prefixes() -> set[str]:
     """Prefixes registered in areas.md (shared registry). Empty set if no registry.
 
@@ -273,7 +589,7 @@ def registered_prefixes() -> set[str]:
 def areas_append(prefix: str, area: str, owner: str,
                  *, repo: str | None = None, git: str | None = None,
                  test_cmd: str | None = None, base: str | None = None,
-                 protected: str | None = None) -> None:
+                 protected: str | None = None, area_owner: str | None = None) -> None:
     """Register a prefix in areas.md (append-only; create with header if missing).
 
     Append-only + `merge=union` (.gitattributes) → concurrent registrations from
@@ -285,16 +601,18 @@ def areas_append(prefix: str, area: str, owner: str,
     O_APPEND 라도 헤더 race 가 남음). 락으로 감싸면 동시 최초 등록에도 헤더 1회·모든
     row 보존.
 
-    스키마(ADR-0014·T-0075·T-0076): per-repo 레지스트리
-    `| repo | prefix | git | test_cmd | owner | base | protected |`.
+    스키마(ADR-0014·T-0075·T-0076·T-0161): per-repo 레지스트리
+    `| repo | prefix | git | test_cmd | owner | base | protected | area_owner |`.
     `owner` = **등록 식별자(registrant)** — 협업 소유자(다중-사람)가 아니라 single user
     의 등록 출처 표식이다(ADR-0016·ADR-0002 amend). 기본 = 현 세션. 컬럼/형식은 보존
     (test_path 바인딩·regression 게이트가 의존) — 의미만 재정의.
-    `repo`/`git`/`test_cmd`/`base`/`protected` 미지정 시 빈 칼럼으로 채운다(부분 등록
-    허용·하위호환). `base`(T-0075)는 worktree 슬롯 브랜치가 파생될 base 브랜치 — 빈 값/
-    누락이면 `_repo_base` 가 None 폴백(worktree add 가 현행 bare HEAD 동작). `protected`
-    (T-0076)는 PM 이 자율 commit/push 못 하는 보호 브랜치(쉼표분리) — 빈 값/누락이면
-    `_repo_protected` 가 `DEFAULT_PROTECTED`(main/master/develop) 폴백.
+    `repo`/`git`/`test_cmd`/`base`/`protected`/`area_owner` 미지정 시 빈 칼럼으로 채운다
+    (부분 등록 허용·하위호환). `base`(T-0075)는 worktree 슬롯 브랜치가 파생될 base 브랜치
+    — 빈 값/누락이면 `_repo_base` 가 None 폴백(worktree add 가 현행 bare HEAD 동작).
+    `protected`(T-0076)는 PM 이 자율 commit/push 못 하는 보호 브랜치(쉼표분리) — 빈 값/
+    누락이면 `_repo_protected` 가 `DEFAULT_PROTECTED`(main/master/develop) 폴백.
+    `area_owner`(T-0161·ADR-0033 ③)는 그 area 의 *user* 소유(`--mine` 풀 입력) — `owner`
+    (registrant)와 별개 칼럼(overload 금지). 빈 값/누락이면 `_repo_area_owner` None 폴백.
     `area`(구 스키마 칼럼)는 신 스키마에 칼럼이 없어 무시한다 — 호출 시그니처는
     하위호환을 위해 유지(기존 `cmd_init`·테스트가 positional 로 area 를 넘김).
 
@@ -306,25 +624,27 @@ def areas_append(prefix: str, area: str, owner: str,
     _test = test_cmd or ""
     _base = base or ""
     _protected = protected or ""
+    _area_owner = area_owner or ""
+    af = areas_file()
     with board_lock():
-        if not AREAS_FILE.exists():
-            AREAS_FILE.write_text(
+        if not af.exists():
+            af.write_text(
                 "# Area Registry\n\n"
-                "> per-repo 레지스트리 (ADR-0014·T-0075·T-0076): repo → prefix → git → "
-                "test_cmd → owner → base → protected. 멀티-PM ID 네임스페이스 + per-repo "
-                "테스트 경로 + worktree base 브랜치 + 보호 브랜치의 단일 진실. "
+                "> per-repo 레지스트리 (ADR-0014·T-0075·T-0076·T-0161): repo → prefix → git → "
+                "test_cmd → owner → base → protected → area_owner. 멀티-PM ID 네임스페이스 + "
+                "per-repo 테스트 경로 + worktree base 브랜치 + 보호 브랜치 + user 소유의 단일 진실. "
                 "append-only (`merge=union`).\n"
                 "> `board.py init` / `pm-config repo add` 가 등록. "
                 "prefix 유일성 = race-free ID 의 전제.\n\n"
-                "| repo | prefix | git | test_cmd | owner | base | protected |\n"
-                "|---|---|---|---|---|---|---|\n",
+                + _areas_header_line() + "\n"
+                + _areas_separator_line() + "\n",
                 encoding="utf-8")
         # O_APPEND atomic append (ADR-0012) — areas 는 append-only 레지스트리이므로
         # read-modify-write 가 아니라 OS 가 보장하는 원자 추가로 동시 등록 충돌을 없앤다.
         _append_atomic(
-            AREAS_FILE,
+            af,
             f"| {_repo} | {prefix} | {_git} | {_test} | {owner} | {_base} "
-            f"| {_protected} |\n")
+            f"| {_protected} | {_area_owner} |\n")
 
 
 # ── 보드 동시성 (ADR-0012) ────────────────────────────────────────────────
@@ -463,6 +783,256 @@ def install_pre_push_hook() -> bool:
         encoding="utf-8")
     hook.chmod(0o755)
     return True
+
+
+def _configure_board_submodule() -> bool:
+    """board submodule 의 `ignore = all` 을 자동 설정 (ADR-0033 ①·누출 0). 멱등·fail-soft.
+
+    board 가 submodule 로 분리(`.project_manager/board/.git` 존재)된 형상에서만 동작한다 —
+    superproject(design·코드 git)에서 `submodule.<path>.ignore all` 을 켜면, board(submodule)가
+    PM 운영 commit 으로 전진해도 design 의 `git status`/`git diff` 가 그 gitlink drift 를 숨겨
+    routine `git add -A` 가 board 포인터 bump 를 *우발 stage* 하지 않는다(board↔design 누출 0).
+
+    fail-soft: git 바이너리 부재·git repo 아님·submodule 미분리(`.../board/.git` 없음·솔로/
+    legacy)면 아무 것도 하지 않고 False 반환(솔로·미마이그 adopter 100% 무영향). 멱등:
+    `git config` 는 같은 키를 덮어쓰므로 재실행 안전. 반환 True = 설정 적용.
+
+    config 키 = `submodule.<.gitmodules-path>.ignore`(실측·hermetic git fixture로 확정·A5). board
+    의 `.gitmodules` 서브섹션 *이름*을 권위로 읽어(표준 `git submodule add` 는 name==path) 키를
+    구성한다 — 이름이 path 와 달라도 정확한 키로 set.
+    """
+    board_git = REPO / ".project_manager" / "board" / ".git"
+    if not board_git.exists():
+        return False  # submodule 미분리(솔로/legacy) — no-op
+    # `.gitmodules` 에서 이 board path 에 대응하는 submodule 서브섹션 *이름*을 찾는다.
+    # 출력 예: `submodule.<name>.path .project_manager/board` — 표준은 name == path.
+    name = _board_submodule_name()
+    if name is None:
+        return False  # .gitmodules 부재/미등록·git 부재 — fail-soft
+    r = subprocess.run(
+        ["git", "-C", str(REPO), "config", f"submodule.{name}.ignore", "all"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return r.returncode == 0
+
+
+def _board_submodule_name() -> str | None:
+    """`.gitmodules` 에서 `.project_manager/board` path 의 submodule 서브섹션 이름 (없으면 None).
+
+    `git config -f .gitmodules --get-regexp '^submodule\\..*\\.path$'` 행을 파싱해 값이
+    `.project_manager/board` 인 항목의 키 `submodule.<name>.path` 에서 `<name>` 을 추출한다.
+    git 부재·.gitmodules 부재·매칭 없음 → None (fail-soft·_configure_board_submodule 가 no-op).
+    """
+    gitmodules = REPO / ".gitmodules"
+    if not gitmodules.exists():
+        return None
+    r = subprocess.run(
+        ["git", "-C", str(REPO), "config", "-f", str(gitmodules),
+         "--get-regexp", r"^submodule\..*\.path$"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        return None
+    want = ".project_manager/board"
+    for line in r.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if value.strip() != want:
+            continue
+        # key = `submodule.<name>.path` → 가운데 <name>(점 포함 가능) 추출.
+        if key.startswith("submodule.") and key.endswith(".path"):
+            return key[len("submodule."):-len(".path")]
+    return None
+
+
+# ── board git 즉시 sync (ADR-0033 ②·T-0163) ──────────────────────────────────
+# board(tickets+areas)가 별도 git(submodule·standalone)으로 분리된 형상에서, ticket
+# mutation 마다 board git 에 자동 commit + pull --rebase + push 한다. mutation 별 sync
+# 강도가 다르다(spike §3.6·ADR-0033 ②):
+#
+#   - **claim = STRICT(원자·조율 primitive)**: pull 로 remote 선점을 먼저 반영 → 이미
+#     남이 claim 했으면 작업 시작을 차단(race-lost·로컬 변경 0) → 로컬 claim commit →
+#     push 가 성공해야 *비로소* 소유 확정. non-FF/conflict/offline 면 로컬 claim 을
+#     rollback(티켓 open 복귀) + 명시 실패. best-effort 로 "내가 claim" 을 남기면 둘이
+#     같은 일 = 중복작업 방지가 깨지므로 claim 만 strict 다.
+#   - **new/complete/block/unclaim/unblock = best-effort local-first**: 로컬 commit 은
+#     항상 성공(로컬) → pull --rebase ; push 는 best-effort → 실패 시 stale 경고 + 무차단
+#     계속. active retry 루프는 두지 않는다 — 다음 mutation 의 pull-rebase+push 가 밀린
+#     commit 을 자연 catch-up 한다(spike §3.6 "retry" 의 해석).
+#
+# **활성 게이트 = board 가 별도 git 일 때만**(`board_root()/.git` 존재). legacy(board 가
+# wiki/ 안·별도 git 아님)면 sync 는 전부 no-op(git 호출 0·현 동작 byte-identical) —
+# board_root() graceful 탐지와 동형이고, 기존 회귀가 green 으로 남는 핵심이다. 모든 git
+# 호출은 fail-soft subprocess(엔진 규약·UTF-8 고정·짧은 timeout) — 거짓 원자성/락 보장을
+# 만들지 않는다(best-effort 는 정직하게 경고, claim 만 명시 실패).
+
+# board git 호출 timeout — pull/push 는 네트워크 왕복이라 user-email 폴백(5s)보다 길게
+# 둔다. 환경 이상(hang·offline DNS)에서 무한 대기를 막는 상한(엔진 subprocess 규약).
+_BOARD_GIT_TIMEOUT_SECONDS = 30
+
+
+def _board_git_enabled() -> bool:
+    """board 가 별도 git 으로 분리됐고 sync 가능한가 — `board_root()/.git` 존재 + git 바이너리.
+
+    True 면 ticket mutation 이 board git 에 commit/pull/push 한다. False 면 sync 전부
+    no-op(legacy·솔로·git 부재) — `board_root()` 가 wiki/ 를 가리키는 legacy 에선
+    `wiki/.git` 가 없어 자동으로 False(superproject git 은 REPO 루트에 산다). board/ 분리
+    형상에서만 `board/.git`(submodule git 파일/디렉토리)이 존재한다. git 바이너리 부재면
+    분리 형상이라도 no-op(fail-soft·sync 불능).
+    """
+    if shutil.which("git") is None:
+        return False
+    return (board_root() / ".git").exists()
+
+
+def _board_git(args: list[str], *, check: bool = False) -> subprocess.CompletedProcess:
+    """board git working dir(`board_root()`)에서 git 명령을 실행한다 (UTF-8·timeout 고정).
+
+    엔진 subprocess 규약: UTF-8 디코딩(한글 ticket/경로 안전)·짧은 timeout·`errors=replace`.
+    `-C board_root()` 로 작업 디렉토리를 board git 으로 고정한다(cwd 의존 0). `check=False`
+    가 기본 — 호출부가 returncode 로 분기하며, 예외(timeout·바이너리 이상)는 호출부가
+    fail-soft 로 처리한다.
+    """
+    return subprocess.run(
+        ["git", "-C", str(board_root()), *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=_BOARD_GIT_TIMEOUT_SECONDS, check=check)
+
+
+def _board_git_head() -> str | None:
+    """board git 의 현재 HEAD SHA (없으면 None) — claim rollback 의 복귀 지점 기록용."""
+    r = _board_git(["rev-parse", "HEAD"])
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _board_git_stage_and_commit(message: str) -> bool:
+    """board git 에 tickets/ + areas.md 변경을 stage 하고 commit 한다 (로컬·항상 시도).
+
+    누출 0: board git 엔 board 파일밖에 없으므로 `add -A` 가 설계(superproject)를 끌고
+    가지 않는다(ADR-0033 ①). nothing-to-commit(변경 없음)이면 commit 은 rc≠0 이지만 그건
+    정상(이미 동기)이라 호출부가 무시한다. 반환 True = 새 commit 생성, False = 변경 없음/
+    실패(둘 다 호출부에서 best-effort 로는 무차단).
+    """
+    _board_git(["add", "-A"])
+    r = _board_git(["commit", "-m", message])
+    return r.returncode == 0
+
+
+def _board_git_pull_rebase() -> subprocess.CompletedProcess:
+    """board git 을 remote 최신화 (`pull --rebase`) — 선점/원격 변경을 로컬에 반영."""
+    return _board_git(["pull", "--rebase"])
+
+
+def _board_git_push() -> subprocess.CompletedProcess:
+    """board git 을 remote 로 push — claim 소유 확정(strict)·best-effort 동기(나머지)."""
+    return _board_git(["push"])
+
+
+def _board_git_sync_best_effort(message: str) -> None:
+    """best-effort local-first sync (new/complete/block/unclaim/unblock·spike §3.6).
+
+    board 가 별도 git 이 아니면 no-op(legacy·솔로). 별도 git 이면: 로컬 commit(항상
+    시도·로컬은 성공) → pull --rebase ; push 를 best-effort 로. offline/auth/conflict 등
+    어떤 실패도 **작업을 차단하지 않는다** — stale 경고만 stderr 로 내고 계속한다. active
+    retry 루프는 없다 — 밀린 commit 은 다음 mutation 의 pull-rebase+push 가 catch-up 한다.
+    """
+    if not _board_git_enabled():
+        return
+    try:
+        _board_git_stage_and_commit(message)
+        pull = _board_git_pull_rebase()
+        push = _board_git_push() if pull.returncode == 0 else None
+    except Exception as exc:  # noqa: BLE001 — fail-soft: best-effort sync 는 절대 작업을 막지 않는다.
+        print(f"  ⚠ board sync 보류(다음 mutation 이 catch-up): {exc}", file=sys.stderr)
+        return
+    if pull.returncode != 0:
+        print("  ⚠ board sync 보류 — pull --rebase 실패(offline/conflict). 로컬 commit 은 "
+              "보존되며 다음 mutation 이 catch-up 한다.", file=sys.stderr)
+    elif push is not None and push.returncode != 0:
+        print("  ⚠ board sync 보류 — push 실패(offline/auth/non-FF). 로컬 commit 은 보존되며 "
+              "다음 mutation 이 catch-up 한다.", file=sys.stderr)
+
+
+def _board_git_claim_prefetch() -> str | None:
+    """claim STRICT 1단계: `pull --rebase` 로 remote 선점을 로컬에 먼저 반영한다.
+
+    board 가 별도 git 이 아니면 no-op·`""`(sentinel: sync 비활성·검증 진행). 별도 git
+    이면 pull --rebase 를 시도한다:
+      - 성공 → board git HEAD SHA 반환(claim commit 의 rollback 복귀 지점·truthy anchor).
+      - 실패(offline·DNS·auth·rebase conflict) → None 반환. 호출부가 이를 **offline/도달
+        불가**로 보고 claim 을 명시 실패시킨다(best-effort 로 "내가 claim" 을 남기면 중복작업
+        — claim 은 조율 primitive 라 remote 도달 없이는 claim 불가).
+      - pull 은 성공했으나 HEAD SHA 를 못 구함(빈 board git·detached 이상) → **None**.
+        enabled 인데 rollback anchor 가 없으면 push 실패 시 거짓 소유를 되돌릴 수 없으므로,
+        strict-claim 은 안전하게 *실패*해야 한다(로컬 변경 0·anchor 없는 진행 금지).
+    반환 의미 3분: `""` = sync 비활성(legacy·confirm early-return True) · `None` = enabled-
+    but-unreachable/no-anchor(claim 명시 실패) · `<sha>` = 유효 anchor(정상 진행).
+    pull 이 winner 의 claim 을 끌어오면 working tree 에서 ticket 이 claimed/ 로 이동돼,
+    뒤따르는 `find_ticket`/status 검사가 자연히 race-lost 를 표면화한다(로컬 변경 0).
+    """
+    if not _board_git_enabled():
+        return ""  # sync 비활성 — pull 없이 검증만 진행(legacy·솔로).
+    try:
+        pull = _board_git_pull_rebase()
+    except Exception:  # noqa: BLE001 — fail-soft: pull 예외(timeout 등)는 offline 취급.
+        return None
+    if pull.returncode != 0:
+        return None
+    # enabled 인데 HEAD 를 못 구하면 rollback anchor 부재 → None(거짓 소유 위험·안전 실패).
+    return _board_git_head() or None
+
+
+def _board_git_claim_rollback(orig_head: str) -> None:
+    """로컬 claim 을 통째로 되돌린다 — `reset --hard <orig_head>` + winner 상태 반영 (절대 throw 금지).
+
+    `orig_head`(prefetch 가 기록한 pull 직후 SHA)로 hard-reset 해 claim commit 을 되돌리고
+    working tree 의 ticket 을 open/ 으로 복원한다(거짓 소유 0). 이어 `pull --rebase` 로 winner
+    의 claimed 상태를 로컬에 best-effort 반영한다. **어떤 git 호출이 throw(timeout·git 소실
+    등)해도 예외를 삼킨다** — confirm 이 ADR-0012 "loser 는 깨끗한 race-lost rc=1·never
+    traceback" 을 어기지 않도록(rollback 이 cmd_claim 까지 예외를 새지 않게). reset/pull 자체가
+    실패하면 복원이 불완전할 수 있으나, 그건 claim 을 *확정하지 않는다*(False 경로)는 사실과
+    독립이다 — confirm 은 여전히 False 를 내고, 다음 mutation/claim 의 prefetch pull-rebase 가
+    상태를 catch-up 한다.
+    """
+    with contextlib.suppress(Exception):
+        _board_git(["reset", "--hard", orig_head])
+    with contextlib.suppress(Exception):
+        _board_git_pull_rebase()  # winner 의 claimed 상태를 로컬에 반영(best-effort).
+
+
+def _board_git_claim_confirm(orig_head: str | None) -> bool:
+    """claim STRICT 3·4단계: 로컬 claim 을 commit 하고 push 가 성공해야 소유 확정.
+
+    board 가 별도 git 이 아니거나 prefetch 가 sync 를 비활성(`""`)으로 판단했으면 True
+    (sync 무관 — 로컬 atomic-rename 만으로 claim 확정·legacy 동작 무변경). 별도 git 이고
+    유효 anchor(`orig_head` = truthy SHA)면:
+      1. commit(tickets/ + areas.md) — 로컬 claim 박제. **commit 이 새 commit 을 못 내면
+         (identity 부재·hook·nothing-to-commit) push 가 "up-to-date" rc=0 을 내 remote 미전파
+         인데 확정될 수 있다(거짓 소유) → commit 실패는 즉시 rollback + False.** claim 경로는
+         항상 rename 변경이 있으므로 commit 은 반드시 새 commit 을 내야 정상이다.
+      2. push — 성공(rc=0)해야 *비로소* 소유 확정(True).
+      3. (commit 실패 ∨ push 실패 ∨ 예외) → `_board_git_claim_rollback` 후 False (거짓 소유 0).
+    **어떤 경로에서도 bool 만 반환**한다(rollback 은 절대 throw 안 함) — cmd_claim(try 없음)이
+    깨끗한 race-lost rc=1 을 내도록(ADR-0012·never traceback). False = 호출부가 race-lost /
+    offline 으로 명시 실패시킨다.
+
+    `orig_head` 가 빈 문자열(`""`)이면 = sync 비활성(legacy)이라 early-return True. None 은
+    prefetch 가 이미 cmd_claim 에서 명시 실패로 걸러내므로(enabled-but-no-anchor·offline) 여기
+    도달하지 않지만, 방어적으로 함께 True 가 아닌 *비활성* 으로만 취급한다(아래 not orig_head).
+    """
+    if not _board_git_enabled() or not orig_head:
+        return True  # sync 비활성(legacy·anchor 없음) — 로컬 rename 만으로 확정(무변경).
+    try:
+        committed = _board_git_stage_and_commit("claim")
+        if not committed:
+            # commit 이 새 commit 을 못 냄 → push rc=0(up-to-date)이 거짓 확정을 낼 수 있다.
+            _board_git_claim_rollback(orig_head)
+            return False
+        push = _board_git_push()
+        if push.returncode == 0:
+            return True
+        _board_git_claim_rollback(orig_head)
+        return False
+    except Exception:  # noqa: BLE001 — fail-soft: 어떤 sync 예외도 claim 을 거짓 확정시키지 않는다.
+        _board_git_claim_rollback(orig_head)
+        return False
 
 
 def _active_slot_test_cmd() -> str | None:
@@ -759,7 +1329,7 @@ def find_item(base_dir: Path, statuses: tuple[str, ...], item_id: str,
 
 def find_ticket(tid: str) -> tuple[str, Path]:
     """Return (status_dir, path). Raises FileNotFoundError if missing."""
-    return find_item(TICKETS_DIR, STATUS_DIRS, tid, "ticket")
+    return find_item(tickets_dir(), STATUS_DIRS, tid, "ticket")
 
 
 def find_idea(iid: str) -> tuple[str, Path]:
@@ -788,6 +1358,19 @@ def dump_ticket(path: Path, fm: dict[str, Any], body: str) -> None:
     path.write_text(f"---\n{fm_text}\n---\n{body}", encoding="utf-8")
 
 
+def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
+    """`dump_ticket` 과 같은 바이트를 쓰되 temp 파일 + `os.replace` 로 원자 교체한다.
+
+    부분쓰기로 티켓 frontmatter 가 깨지는 것을 막는다(worktree_pool `_write_ledger`
+    동형 — tmp 에 전체를 쓰고 같은 디렉토리 안에서 atomic rename). backfill 처럼
+    *기존* 티켓을 제자리 갱신할 때 쓴다 — 같은 status 디렉토리 안 rename 이라 원자적이다.
+    """
+    fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(f"---\n{fm_text}\n---\n{body}", encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
 def move_item(base_dir: Path, src: Path, dst_status: str) -> Path:
     """Atomic mv of an item file into a sibling status directory.
 
@@ -801,7 +1384,7 @@ def move_item(base_dir: Path, src: Path, dst_status: str) -> Path:
 
 def move_ticket(src: Path, dst_status: str) -> Path:
     """Atomic mv into a ticket status directory."""
-    return move_item(TICKETS_DIR, src, dst_status)
+    return move_item(tickets_dir(), src, dst_status)
 
 
 def move_idea(src: Path, dst_status: str) -> Path:
@@ -835,10 +1418,10 @@ def _next_id(prefix: str | None = None) -> str:
     never matches a prefixed file, so the two namespaces stay disjoint.
     """
     if prefix:
-        n = next_numeric_id(TICKETS_DIR, STATUS_DIRS,
+        n = next_numeric_id(tickets_dir(), STATUS_DIRS,
                             f"T-{prefix}-*.md", rf"T-{re.escape(prefix)}-(\d+)-")
         return f"T-{prefix}-{n:03d}"
-    n = next_numeric_id(TICKETS_DIR, STATUS_DIRS, "T-*.md", r"T-(\d+)-")
+    n = next_numeric_id(tickets_dir(), STATUS_DIRS, "T-*.md", r"T-(\d+)-")
     return f"T-{n:04d}"
 
 
@@ -856,6 +1439,22 @@ def _slugify(text: str, max_len: int = 40) -> str:
 
 def cmd_claim(args: argparse.Namespace) -> int:
     sess = session_name(args.session)
+    # claimed_by 는 `<user>/<slot>` (assignee·ADR-0033 ③·T-0161) — user 미상이면 슬롯만
+    # (graceful·기존 슬롯-only 값과 형태 동일). 진행메시지/board surface 는 슬롯(sess)을 쓴다.
+    assignee = identity_tag(session_override=args.session,
+                            user_override=getattr(args, "user", None))
+
+    # claim STRICT 1단계 (ADR-0033 ②·spike §3.6): board 가 별도 git 이면 먼저 pull --rebase
+    # 로 remote 선점을 로컬에 반영한다. pull 이 winner 의 claim 을 끌어오면 ticket 이
+    # claimed/ 로 이동돼 아래 status 검사가 race-lost 를 표면화한다(로컬 변경 0). pull 자체가
+    # 실패(offline/도달 불가)하면 claim 불가 — best-effort 로 claim 을 남기면 중복작업이라
+    # claim 만 strict offline-fail 한다. orig_head = pull 직후 SHA(claim commit rollback 지점·
+    # legacy/sync 비활성이면 ""). None = offline.
+    orig_head = _board_git_claim_prefetch()
+    if orig_head is None:
+        print(f"offline — board 도달 불가, {args.id} claim 불가", file=sys.stderr)
+        return 1
+
     try:
         status, path = find_ticket(args.id)
     except FileNotFoundError as e:
@@ -895,10 +1494,21 @@ def cmd_claim(args: argparse.Namespace) -> int:
         return 1
 
     fm["status"] = "claimed"
-    fm["claimed_by"] = sess
+    fm["claimed_by"] = assignee
     fm["claimed_at"] = now_utc()
     dump_ticket(new_path, fm, body)
-    print(f"claimed {args.id} as {sess}")
+
+    # claim STRICT 3·4단계 (spike §3.6): 로컬 claim 을 commit 하고 push 가 성공해야 *비로소*
+    # 소유 확정. push 실패(non-FF/conflict/offline)면 로컬 claim 을 rollback(reset --hard
+    # orig_head → ticket open/ 복원·commit 되돌림)하고 race-lost 로 명시 실패한다 — 거짓
+    # 소유를 남기지 않는다. board 가 별도 git 이 아니면 confirm 은 True(로컬 rename 만으로
+    # 확정·legacy 무변경).
+    if not _board_git_claim_confirm(orig_head):
+        print(f"claim race lost on {args.id} (board push 충돌·소유 미확정·롤백됨)",
+              file=sys.stderr)
+        refresh_board()
+        return 1
+    print(f"claimed {args.id} as {assignee}")
     refresh_board()
     return 0
 
@@ -959,6 +1569,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body)
     print(f"completed {args.id}")
     refresh_board()
+    _board_git_sync_best_effort(f"complete {args.id}")
     return 0
 
 
@@ -978,6 +1589,7 @@ def cmd_block(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body + note)
     print(f"blocked {args.id}: {args.reason}")
     refresh_board()
+    _board_git_sync_best_effort(f"block {args.id}")
     return 0
 
 
@@ -998,6 +1610,7 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body)
     print(f"unclaimed {args.id}")
     refresh_board()
+    _board_git_sync_best_effort(f"unclaim {args.id}")
     return 0
 
 
@@ -1017,6 +1630,7 @@ def cmd_unblock(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body)
     print(f"unblocked {args.id}")
     refresh_board()
+    _board_git_sync_best_effort(f"unblock {args.id}")
     return 0
 
 
@@ -1099,8 +1713,14 @@ def cmd_init(args: argparse.Namespace) -> int:
             # owner = areas.md 등록 식별자(registrant) — 협업 소유자(다중-사람)가 아니라
             # single user 의 등록 출처 표식이다(ADR-0016·ADR-0002 amend). 기본 = 현 세션.
             owner = args.owner or session_name()
-            areas_append(prefix, args.area, owner)
-            print(f"✓ areas.md 등록: {prefix} | {args.area} | {owner}")
+            # area_owner = 그 area 의 *user* 소유(`--mine` 풀 입력·ADR-0033 ③·T-0161) —
+            # registrant `owner`(슬롯/세션)와 별개 칼럼(overload 금지·ADR-0014 refine).
+            # cmd_repo_add 와 동형 해소: `--user` 명시 > local.conf user= > git config
+            # user.email > None(빈 칼럼·_repo_area_owner None 폴백·현행 `--mine` 미포함).
+            area_owner = user_name(getattr(args, "user", None))
+            areas_append(prefix, args.area, owner, area_owner=area_owner)
+            ao_surface = area_owner if area_owner else "(미상 — local.conf user= / git user.email 미설정)"
+            print(f"✓ areas.md 등록: {prefix} | {args.area} | owner={owner} | area_owner={ao_surface}")
     sess = args.session or (f"{prefix.lower()}-pm" if namespaced else "pm")
     conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
     if namespaced:
@@ -1122,10 +1742,336 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
     if install_pre_push_hook():
         print("✓ pre-push 회귀 게이트 훅 설치 (green 회귀만 push)")
+    # board submodule 이 분리된 형상(ADR-0033 ①)이면 ignore=all 자동 설정 — design(코드) git 이
+    # board PM-commit 으로 오염되지 않게(누출 0). 솔로/미분리/git 부재면 no-op(fail-soft·무영향).
+    if _configure_board_submodule():
+        print("✓ board submodule ignore=all 설정 (코드 git 누출 0·ADR-0033 ①)")
     prompt_external_review_optin()
     mode = f"multi-repo · {prefix}" if namespaced else "solo (N=1·M=1)"
     idfmt = f"T-{prefix}-NNN" if namespaced else "T-NNNN (legacy)"
     print(INIT_GUIDE.format(mode=mode, idfmt=idfmt))
+    return 0
+
+
+# ── identity backfill 마이그레이션 (T-0168·ADR-0033 업그레이드 경로) ────────
+# ADR-0033 이전 데이터(areas `area_owner` 부재·ticket `created_by` 부재·`claimed_by` 슬롯-only)를
+# *일회성* backfill 해 `--mine`·provenance 가 기존 보드에서 동작하게 한다. graceful-null 우회를
+# 정합 데이터로 대체하는 정식 업그레이드 경로.
+#   - 멱등: 빈/부재 필드만 채운다. 기존 non-empty 값은 절대 덮어쓰지 않는다(재실행 no-op).
+#   - 비파괴: frontmatter 키 순서·body 보존(dump_ticket 가 sort_keys=False)·areas.md 표/주석 보존.
+#   - 대상: areas 빈 area_owner → user · 티켓 부재 created_by → user · 슬롯-only claimed_by
+#     (`/` 없음·non-empty) → `<user>/<slot>`(기존 슬롯값을 slot 으로 보존·user 차원만 prepend).
+
+
+def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
+    """areas.md 텍스트에서 빈 `area_owner` 셀을 user 로 채운 (새 텍스트, per-row 요약) 반환.
+
+    표/주석/빈 줄은 verbatim 보존하고 *데이터 행의 area_owner 셀만* 채운다(비파괴·멱등).
+    헤더(첫 table row)에서 `area_owner` 칼럼 인덱스를 찾는다 — 이미 채워진 행은 건드리지 않는다.
+
+    **구-헤더 업그레이드(T-0168 must-fix)**: ADR-0033 *이전* areas.md 는 `area_owner` 칼럼
+    자체가 없는 구 스키마다(`repo|prefix|git|test_cmd|owner`[5]·`…|base`[6]·`…|protected`[7] 또는
+    멀티-clone `prefix|area|owner`[3] variant). 헤더에 area_owner 칼럼이 없으면 단순히 채울 자리가
+    없어 no-op 이 되어버리면 migrate 의 본래 목적(구 데이터를 `--mine` 가능하게)이 가장 구형
+    스키마에서 작동하지 않는다. 그래서 area_owner 칼럼이 없는 구 헤더를 만나면 **canonical 8칼럼
+    헤더(`_areas_header_line`·`_AREAS_COLUMNS` 단일 진실)로 업그레이드**한다 — 헤더 행 교체 +
+    바로 뒤 구분선(`|---|`) 행을 canonical 폭으로 교체 + 각 데이터 행에 area_owner 칼럼(빈값 →
+    user) 추가. 기존 칼럼·값·정렬·표 밖 텍스트(주석)는 보존하고 area_owner 만 *append* 한다
+    (비파괴). 멱등: 이미 area_owner 칼럼이 있으면 헤더 업그레이드 없이 빈 셀만 채운다.
+
+    셀 수가 헤더보다 많은 wider row(비-canonical 구 헤더 아래에 canonical 8칼럼 row 가 append 된
+    경우 포함)는 `upgrade` 여부와 무관하게 `_AREAS_COLUMNS` 의 area_owner 인덱스(7)로 area_owner
+    셀을 찾는다 — `_parse_areas` 가 wider row 를 헤더 무시하고 canonical 순서로 매핑하는 것과
+    정확히 동형(must-fix). 그렇지 않으면 헤더 폭으로 읽다 index 3(`test_cmd`)을 area_owner 로
+    오인해 backfill 을 놓친다.
+    """
+    lines = text.splitlines(keepends=True)
+    header_cells: list[str] | None = None
+    ao_idx: int | None = None
+    # 구-헤더 업그레이드 모드: 헤더에 area_owner 칼럼이 없을 때 켜진다. 켜지면 헤더 행을
+    # 갈아끼우고, 바로 뒤 구분선 1개를 같은 폭으로 교체하고, 데이터 행마다 area_owner 칼럼을
+    # append 한다. ao_idx 는 새 area_owner 칼럼 위치로 고정된다.
+    upgrade = False
+    sep_cols = 0     # 업그레이드 후 구분선이 가질 칼럼 수(canonical 8 또는 구 헤더+1).
+    sep_replaced = False  # 헤더 직후 구분선 1회만 교체(이후 구분선은 verbatim).
+    canonical_ao = _AREAS_COLUMNS.index("area_owner")
+    changes: list[str] = []
+    out: list[str] = []
+    for line in lines:
+        # 줄바꿈을 떼어 셀을 검사하고, 재조립 시 원래 종결자를 복원한다(비파괴).
+        nl = ""
+        body = line
+        if line.endswith("\r\n"):
+            nl, body = "\r\n", line[:-2]
+        elif line.endswith("\n"):
+            nl, body = "\n", line[:-1]
+        cells = _split_areas_row(body)
+        if cells is None:
+            # 비-table 줄(주석·빈 줄·구분선)은 기본 verbatim. 단 업그레이드 모드에서 헤더
+            # 직후 첫 구분선(`|---|`)은 새 칼럼 수에 맞춰 교체한다(헤더 폭과 정합).
+            if upgrade and not sep_replaced and _AREAS_SEP_RE.match(body.strip()):
+                out.append("|" + "|".join("---" for _ in range(sep_cols)) + "|" + nl)
+                sep_replaced = True
+            else:
+                out.append(line)
+            continue
+        if header_cells is None:
+            header_cells = [c.lower() for c in cells]
+            if "area_owner" in header_cells:
+                ao_idx = header_cells.index("area_owner")
+                out.append(line)  # 이미 신 스키마 헤더 — verbatim.
+            else:
+                # 구 헤더(area_owner 칼럼 부재) → 업그레이드. canonical prefix(per-repo
+                # 레지스트리 계열·5/6/7칼럼이 `_AREAS_COLUMNS` 앞 N개와 일치)면 **canonical
+                # 8칼럼 헤더로 교체**(본문 요구·base/protected 미지정분도 표면화). 그 외
+                # 비호환 구 헤더(멀티-clone `prefix|area|owner`[3] 등 — 칼럼 의미가 canonical
+                # 과 어긋남)는 정렬을 깨지 않게 **기존 헤더 끝에 area_owner 칼럼만 append**한다.
+                upgrade = True
+                if tuple(header_cells) == _AREAS_COLUMNS[:len(header_cells)]:
+                    ao_idx = canonical_ao
+                    out.append(_areas_header_line() + nl)
+                    sep_cols = len(_AREAS_COLUMNS)
+                else:
+                    ao_idx = len(header_cells)  # 기존 칼럼 뒤에 append.
+                    out.append("| " + " | ".join(header_cells + ["area_owner"])
+                               + " |" + nl)
+                    sep_cols = len(header_cells) + 1
+            continue
+        # 헤더보다 넓은 row 는 `upgrade` 여부와 무관하게 canonical area_owner 인덱스(7)로
+        # 매핑한다 — `_parse_areas` 가 wider row(`len(cells) > len(header)`)를 헤더 무시하고
+        # `_AREAS_COLUMNS` 순서로 매핑하는 것과 정확히 동형이다(area_owner=index 7). 비-canonical
+        # 구 헤더(예 멀티-clone `prefix|area|owner`[3]) 아래에 canonical 8칼럼 row 가 append 된
+        # 케이스에서 `ao_idx`(=헤더 폭) 로 읽으면 index 3(`test_cmd`)을 area_owner 로 오인해
+        # backfill 못 한다 → wider row 면 무조건 canonical_ao 로 보정(must-fix·_parse_areas 정합).
+        idx = ao_idx if ao_idx is not None else canonical_ao
+        if len(cells) > len(header_cells):
+            idx = canonical_ao
+        prefix = cells[1] if len(cells) > 1 else "?"
+        cur = cells[idx] if idx < len(cells) else ""
+        if cur.strip():
+            out.append(line)  # 이미 채워짐 — 멱등(보존).
+            continue
+        # 빈 셀 채움. 셀이 모자라면 빈 칸으로 패딩해 인덱스를 확보(비파괴 append).
+        while len(cells) <= idx:
+            cells.append("")
+        cells[idx] = user
+        out.append("| " + " | ".join(cells) + " |" + nl)
+        changes.append(f"area {prefix}: area_owner → {user}")
+    return "".join(out), changes
+
+
+def _migrate_ticket_fm(fm: dict, user: str, slot: str) -> list[str]:
+    """티켓 frontmatter 를 *제자리* backfill 하고 per-field 변경 요약을 반환(빈 = no-op).
+
+    멱등·비파괴: 부재/빈 `created_by` 만 user 로, 슬롯-only(`/` 없음·non-empty) `claimed_by`
+    만 `<user>/<slot>` 로 채운다. 기존 non-empty 값(이미 `<user>/<slot>` 형태 포함)은 불변.
+    키 순서는 dict 제자리 수정이라 보존(없던 created_by 추가는 끝에 붙음 → dump 순서 유지).
+    """
+    changes: list[str] = []
+    created_by = fm.get("created_by")
+    # 부재(키 없음·None)거나 빈/공백 문자열이면 backfill. 기존 non-empty 값은 불변(멱등).
+    if not (str(created_by).strip() if created_by is not None else ""):
+        fm["created_by"] = user
+        changes.append(f"created_by → {user}")
+    cb = fm.get("claimed_by")
+    if isinstance(cb, str) and cb.strip() and "/" not in cb:
+        # 슬롯-only(구 형태·user 차원 없음) → user 차원 prepend(슬롯값 보존).
+        fm["claimed_by"] = f"{user}/{cb}"
+        changes.append(f"claimed_by {cb} → {user}/{cb}")
+    return changes
+
+
+def _migrate_identity_preview(
+        user: str, slot: str, statuses: tuple[str, ...]) -> tuple[int, bool]:
+    """--dry-run 경로: read-only 스캔 + per-file 미리보기. 락·쓰기 0.
+
+    어떤 파일도 옮기거나 쓰지 않으므로 board_lock 을 *전혀* 잡지 않는다(read-only 보장).
+    반환 `(total, wrote)` 에서 wrote 는 항상 False(쓰기 없음 → refresh_board 미호출).
+    """
+    total = 0
+    # areas.md 미리보기(읽기 전용).
+    af = areas_file()
+    if af.exists():
+        text = af.read_text(encoding="utf-8")
+        _, area_changes = _migrate_areas_text(text, user)
+        for c in area_changes:
+            print(f"  areas.md: {c}")
+        total += len(area_changes)
+    # 티켓 미리보기 — glob 스캔 후 변경 산출만(쓰기 없음).
+    for status in statuses:
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
+            fm, _body = load_ticket(p)
+            changes = _migrate_ticket_fm(fm, user, slot)
+            if not changes:
+                continue
+            tid = fm.get("id") or p.stem
+            total += len(changes)
+            for c in changes:
+                print(f"  {tid} ({status}/): {c}")
+    return total, False
+
+
+def _migrate_areas_apply(user: str) -> tuple[int, bool]:
+    """areas.md 의 빈 area_owner backfill (read→transform→write)을 board_lock 으로 보호.
+
+    areas.md 는 `areas_append`(repo 등록·ADR-0012/0014)가 *진짜* 공유 mutation 으로
+    board_lock 을 잡고 쓰는 단일 파일이라, 본 RMW 의 write 도 같은 락으로 직렬화해야
+    동시 repo-add 의 lost-update(전체 write_text 가 append 된 row 를 클로버)를 막는다.
+    이 락은 areas 구간 *한정* — 티켓 backfill 은 별개(아래 best-effort).
+
+    **재진입 금지**: board_lock 은 OS flock(non-reentrant). 락 안에서 부르는 IO
+    (`_migrate_areas_text`·AREAS_FILE read/write)는 락을 다시 잡지 않는다. 반환 `(total, wrote)`.
+    """
+    af = areas_file()
+    if not af.exists():
+        return 0, False
+    total = 0
+    wrote = False
+    with board_lock():
+        text = af.read_text(encoding="utf-8")
+        new_text, area_changes = _migrate_areas_text(text, user)
+        for c in area_changes:
+            print(f"  areas.md: {c}")
+        if area_changes:
+            total += len(area_changes)
+            if new_text != text:
+                af.write_text(new_text, encoding="utf-8")
+                wrote = True
+    return total, wrote
+
+
+def _migrate_tickets_apply(
+        user: str, slot: str, statuses: tuple[str, ...]) -> tuple[int, bool]:
+    """티켓 backfill — **best-effort**(하드 보장 아님). 글로벌 board_lock 을 잡지 않는다.
+
+    티켓 이동(`cmd_claim`·`cmd_complete`·`cmd_block`·`cmd_unclaim`)은 *설계상* board_lock
+    을 안 타고 lock-free atomic-rename(`move_ticket`)만 쓴다(ADR-0012). 따라서 migration 이
+    board_lock 을 쥐어도 티켓 이동을 막지 못한다 — 락은 거짓 안전(차단만 유발)이라 안 잡는다.
+    일회성 backfill 도구를 위해 claim/complete 같은 코어 hot-path 를 락-직렬화로 재설계하는
+    것은 과설계다(PM 결정·T-0168). 대신 정직한 best-effort 로 착지한다:
+
+      1. glob 으로 후보 ID 를 스캔한다(스냅샷·경로는 stale 될 수 있다).
+      2. 각 티켓을 *쓰기 직전* ID 로 현재 경로를 **재조회**(`find_ticket`)한다. 사라졌거나
+         스캔 경로와 다르면(다른 세션이 claim/complete 로 이동) **skip + stderr 경고** —
+         이동/완료된 티켓에 stale 쓰기를 하지 않는다.
+      3. 살아 있으면 현재 경로에 **atomic write**(temp + `os.replace`)로 backfill 한다
+         (부분쓰기 0).
+
+    재조회↔replace 사이의 미세 TOCTOU 는 *하드 보장하지 않는다* — migrate-identity 는
+    단일-세션 업그레이드 op(조용한 창에서 1회 실행) 전제로 이 잔여 창을 수용한다. 원자성·
+    이동-차단을 *주장하지 않는다*. 반환 `(total, wrote)`.
+    """
+    total = 0
+    wrote = False
+    for status in statuses:
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
+            # 스캔 시점 frontmatter 로 변경 산출(읽기). ID 는 frontmatter 에서 얻는다.
+            try:
+                fm, body = load_ticket(p)
+            except FileNotFoundError:
+                # 스캔↔load 사이에 이동/완료됨 — best-effort skip.
+                print(f"  skip {p.name}: 스캔 후 사라짐(다른 세션이 이동) — backfill 안 함",
+                      file=sys.stderr)
+                continue
+            changes = _migrate_ticket_fm(fm, user, slot)
+            if not changes:
+                continue
+            tid = fm.get("id") or p.stem
+            # 쓰기 *직전* ID 로 현재 경로 재조회 — 스캔 경로와 다르거나 사라졌으면 stale
+            # 쓰기를 막는다(이동/완료된 티켓에 안 씀). 살아 있으면 현재 경로에 atomic write.
+            try:
+                cur_status, cur_path = find_ticket(tid)
+            except FileNotFoundError:
+                print(f"  skip {tid}: 재조회 시 없음(다른 세션이 완료/삭제) — backfill 안 함",
+                      file=sys.stderr)
+                continue
+            if cur_path != p:
+                print(f"  skip {tid}: {status}/ → {cur_status}/ 이동됨(쓰기 직전) — "
+                      f"stale 쓰기 안 함", file=sys.stderr)
+                continue
+            total += len(changes)
+            for c in changes:
+                print(f"  {tid} ({status}/): {c}")
+            dump_ticket_atomic(cur_path, fm, body)
+            wrote = True
+    return total, wrote
+
+
+def _migrate_identity_apply(
+        user: str, slot: str, statuses: tuple[str, ...]) -> tuple[int, bool]:
+    """비-dry-run 경로: areas(락 보호) + 티켓(best-effort) backfill 을 차례로 수행.
+
+    - **areas.md**: `_migrate_areas_apply` 가 board_lock 으로 RMW 를 보호한다(`areas_append`
+      와의 lost-update 방지·진짜 공유 mutation·ADR-0012/0014).
+    - **티켓**: `_migrate_tickets_apply` 가 **best-effort** 로 backfill 한다(글로벌락 없음 —
+      티켓 이동이 락-free atomic-rename 이라 락이 이동을 못 막으므로 거짓 안전을 두지 않는다).
+      각 티켓은 쓰기 직전 재조회로 이동/완료 시 skip 한다.
+
+    **재진입 금지**: areas 락 안에서 board_lock 을 다시 잡는 헬퍼는 부르지 않는다.
+    board.md 재생성(`refresh_board` — 자체 board_lock)은 **호출자(`cmd_migrate_identity`)가
+    락 밖에서 1회** 한다(데드락 방지). 반환 `(total, wrote)`.
+    """
+    area_total, area_wrote = _migrate_areas_apply(user)
+    ticket_total, ticket_wrote = _migrate_tickets_apply(user, slot, statuses)
+    return area_total + ticket_total, area_wrote or ticket_wrote
+
+
+def cmd_migrate_identity(args: argparse.Namespace) -> int:
+    """ADR-0033 이전 데이터 일회성 backfill — areas area_owner·ticket created_by/claimed_by.
+
+    `--user` override > `user_name()`(local.conf user= / git config user.email). 미해소(None)면
+    abort(식별자 없이는 backfill 불가). `--dry-run` 은 쓰기 0·per-file 미리보기. `--scope`
+    active(open+claimed) | all(기본·done 포함). 멱등(빈 필드만)·비파괴(순서/body/표 보존).
+
+    `--session`/slot 은 출력·기본 identity 표시용이며 **backfill 대상 슬롯을 바꾸지 않는다**.
+    슬롯-only `claimed_by`(`pm-1` 같은 `/` 없는 값)는 user 차원만 prepend 하고 *기존 슬롯
+    토큰을 보존*한다(`pm-1` → `<user>/pm-1`). `--session` 은 부재 created_by 의 표시값과
+    로그 표기에만 쓰이고, 이미 기록된 슬롯 토큰을 자신의 값으로 덮어쓰지 않는다(비파괴).
+
+    **단일-세션 업그레이드 op (동시성 모델·T-0168)**: migrate-identity 는 *단일-세션* 업그레이드
+    op 다. 다른 세션이 claim/complete 로 보드를 변경하는 중엔 실행하지 말 것 — 조용한 창에서
+    1회 돌린다. 보드의 티켓 이동(claim/complete/block/unclaim)은 *설계상* board_lock 을 안
+    타고 lock-free atomic-rename 만 쓰므로(ADR-0012), migration 이 락을 쥐어도 티켓 이동을
+    막지 못한다. 따라서:
+      - **areas write** 는 board_lock 으로 보호한다(`areas_append` 와의 lost-update 방지 —
+        areas 는 진짜 락-보호 공유 mutation).
+      - **티켓 backfill** 은 best-effort 다 — 각 티켓을 쓰기 직전 재조회해, 동시에 이동/완료
+        됐으면 해당 티켓을 skip(경고)하고 살아 있으면 atomic write 한다. 재조회↔쓰기 사이의
+        미세 TOCTOU 는 *하드 보장하지 않는다*(단일-세션 전제로 수용). 원자성·이동-차단을
+        주장하지 않는다.
+    board.md 재생성은 데드락 방지를 위해 (areas) 락 밖에서 1회 한다.
+    """
+    user = user_name(getattr(args, "user", None))
+    if not user:
+        print("[중단] user 식별자 미해소 — `--user <id>` 를 주거나 local.conf user= / "
+              "git config user.email 를 설정하라(식별자 없이는 backfill 불가).",
+              file=sys.stderr)
+        return 1
+    slot = session_name(getattr(args, "session", None))
+    dry_run = bool(getattr(args, "dry_run", False))
+    scope = getattr(args, "scope", "all") or "all"
+    statuses = ("open", "claimed") if scope == "active" else STATUS_DIRS
+
+    tag = "[dry-run] " if dry_run else ""
+    print(f"{tag}migrate-identity — user={user} · slot={slot} · scope={scope}")
+
+    if dry_run:
+        total, wrote = _migrate_identity_preview(user, slot, statuses)
+    else:
+        total, wrote = _migrate_identity_apply(user, slot, statuses)
+
+    if total == 0:
+        print("  (변경 없음 — 이미 마이그레이션됨이거나 backfill 대상 없음)")
+    else:
+        verb = "변경 예정" if dry_run else "변경 완료"
+        print(f"{tag}{total}건 {verb}.")
+    if dry_run:
+        print("[dry-run] 쓰기 0 — 적용하려면 --dry-run 없이 재실행.")
+    # 파생 board.md 갱신("board.py 변경 명령마다 파생 보드 갱신" 계약·codex sug). migrate 가
+    # claimed_by 를 바꾸면 board.md claimed 표시도 달라진다 — 실제 쓰기가 있었고 dry-run 이
+    # 아닐 때만 1회 재생성한다(dry-run 은 파생물도 안 건드림·읽기-only 미리보기 보장).
+    if wrote:
+        refresh_board()
     return 0
 
 
@@ -1146,12 +2092,12 @@ def cmd_new(args: argparse.Namespace) -> int:
     if prefix and prefix not in registered:
         # 명시 prefix(override 또는 local.conf)는 등록된 것이어야 한다 — registry 가 존재할 때만
         # 의미 있는 검증(부재면 registered 가 빈 set → 솔로에서 prefix 를 명시한 비정상 케이스).
-        if AREAS_FILE.exists():
+        if areas_file().exists():
             print(f"prefix {prefix!r} 미등록 (areas.md). `board.py init` 로 등록하거나 "
                   "등록된 prefix 사용.", file=sys.stderr)
             return 1
 
-    tmpl_fm, tmpl_body = load_ticket(TEMPLATE_FILE)
+    tmpl_fm, tmpl_body = load_ticket(template_file())
 
     # ID 발행(`_next_id` = max+1·동시 발행 race)과 파일 생성을 단일 락으로 직렬화한다
     # (ADR-0012). 락 안에서 ID 를 *읽고* 곧바로 파일을 만들어, 다른 세션이 같은 ID 를
@@ -1169,6 +2115,11 @@ def cmd_new(args: argparse.Namespace) -> int:
         fm["title"] = args.title
         fm["status"] = "open"
         fm["created"] = datetime.date.today().isoformat()
+        # created_by = `<user>/<pm-slot>` (provenance·불변·생성 시 set·ADR-0033 ③·T-0161).
+        # "누가 추가했나" = 중복-작업 방지의 출처 표식. user 미상이면 슬롯만(graceful).
+        fm["created_by"] = identity_tag(
+            session_override=getattr(args, "session", None),
+            user_override=getattr(args, "user", None))
         fm["claimed_by"] = None
         fm["claimed_at"] = None
         fm["completed_at"] = None
@@ -1178,24 +2129,39 @@ def cmd_new(args: argparse.Namespace) -> int:
         fm["tags"] = (args.tag.split(",") if args.tag else [])
         fm["estimate"] = args.estimate
 
-        path = TICKETS_DIR / "open" / filename
+        path = tickets_dir() / "open" / filename
         dump_ticket(path, fm, body)
 
     print(f"created {tid} ({_rel_to_repo(path)})")
     print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint` "
           "(placeholders left in the body fail lint)")
     refresh_board()
+    _board_git_sync_best_effort(f"new {tid}")
     return 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:
+    # `--mine` 뷰(T-0164·ADR-0033 ④): 단일 공유 보드의 렌즈 — 내 area open + 내 claim.
+    # identity 입력(T-0161)을 한 번 해소해 행마다 재계산 안 함. 무플래그 list 는 무변경.
+    mine = getattr(args, "mine", False)
+    my_user = user_name() if mine else None
+    my_slot = session_name() if mine else ""
+    # graceful degrade(T-0168 단순화): (a) 풀(내 area open) 필터는 보드에 area_owner 가 *운영
+    # 중일 때만* 적용한다. areas.md 에 area_owner 가 하나도 안 채워졌으면(미마이그레이션 채택자·
+    # 솔로) area_owner_in_use=False → (a) 가 전체 open 으로 degrade(빈 보드 금지·plain list 처럼).
+    # per-user `_owns_any_area`+`area_filter` 2축 분기를 전역 1회 스캔 1개로 단순화(사용자 결정
+    # 2026-06-26: 데이터 정합은 migrate-identity 가 책임·런타임 폴백은 최소).
+    area_owner_in_use = mine and _area_owner_in_use()
     rows: list[tuple[str, dict]] = []
     for status in STATUS_DIRS:
         if args.status and args.status != status:
             continue
-        for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, _ = load_ticket(p)
             if args.tag and args.tag not in (fm.get("tags") or []):
+                continue
+            if mine and not _ticket_is_mine(status, fm, my_user, my_slot,
+                                            area_owner_in_use):
                 continue
             rows.append((status, fm))
     if not rows:
@@ -1429,7 +2395,7 @@ def _all_tickets() -> list[tuple[str, dict]]:
     """[(status, frontmatter), ...] for every ticket regardless of dir."""
     out: list[tuple[str, dict]] = []
     for status in STATUS_DIRS:
-        for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, _ = load_ticket(p)
             out.append((status, fm))
     return out
@@ -1549,7 +2515,7 @@ def lint_bodies() -> list[tuple[str, str, str]]:
     """
     issues: list[tuple[str, str, str]] = []
     for status in ("open", "claimed"):
-        for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, body = load_ticket(p)
             tid = fm.get("id") or p.name
             prose = _strip_code(body)
@@ -1804,6 +2770,14 @@ def _collect_wikilink_files() -> list[Path]:
     """
     wiki = REPO / ".project_manager" / "wiki"
     files: list[Path] = list(wiki.rglob("*.md")) if wiki.is_dir() else []
+    # board/ 분리(ADR-0033 ①) 시 ticket 본문이 wiki/ 밖(board/tickets)으로 빠진다 — 그러면
+    # ticket 의 `[[ADR-NNNN]]` 구조참조가 wiki-only 스캔에선 안 보여 dangling 이 *미검출*된다.
+    # tickets_dir() 를 union 해 두 루트를 모두 본다. legacy(board_root==wiki)면 이 경로는 이미
+    # wiki.rglob 에 포함되므로 set dedup 으로 no-op(중복 0). board/areas.md 등 비-md 는 제외.
+    tk = tickets_dir()
+    if tk.is_dir():
+        files.extend(tk.rglob("*.md"))
+    files = list(dict.fromkeys(files))  # 순서보존 dedup (legacy 중복 제거 + board union 합집합)
     for name in ("CLAUDE.md", "README.md"):
         p = REPO / name
         if p.exists():
@@ -1877,7 +2851,9 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
             is_ticket = False
             if m_adr:
                 ok = (m_adr.group(1).lstrip("0") or "0") in adr_nums
-            elif re.fullmatch(r"T-(?:[A-Za-z]+-)?\d+", name):
+            elif re.fullmatch(_TICKET_ID_BODY, name):
+                # prefixed(`T-PAY-001`)·legacy(`T-0164`) wikilink 둘 다 ticket 참조로 본다
+                # (multi-repo 보드·T-0164). grammar 는 `_TICKET_ID_BODY` 공유(자체 regex 금지).
                 ok = name in ticket_ids
                 is_ticket = True
             elif m_idea:
@@ -2303,7 +3279,7 @@ def lint_unstable_refs() -> list[tuple[str, str, str]]:
 def _find_ticket_file(filename: str) -> Path | None:
     """tickets/<state>/<filename> 중 실재하는 첫 경로 (상태 무관 — mv 로 이동했을 수 있음)."""
     for status in STATUS_DIRS:
-        p = TICKETS_DIR / status / filename
+        p = tickets_dir() / status / filename
         if p.exists():
             return p
     return None
@@ -2319,8 +3295,12 @@ def _find_idea_file(filename: str) -> Path | None:
 
 
 def _ticket_id_from_filename(filename: str) -> str | None:
-    """ticket 파일명에서 canonical ID 추출 ('T-0036-foo.md' → 'T-0036'). 없으면 None."""
-    m = re.match(r"(T-(?:[A-Za-z]+-)?\d+)", filename)
+    """ticket 파일명에서 canonical ID 추출 ('T-0036-foo.md' → 'T-0036'). 없으면 None.
+
+    prefixed(`T-PAY-001-foo.md` → `T-PAY-001`·`T-service-a-001-…`)도 추출 — 발행측
+    `_next_id` 가 prefixed 파일을 만드므로(T-0164). grammar 는 `_TICKET_ID_BODY` 공유.
+    """
+    m = re.match(rf"({_TICKET_ID_BODY})", filename)
     return m.group(1) if m else None
 
 
@@ -2346,10 +3326,14 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     PM 에게 경고만 — `pm-update` 안내(visibility>enforcement). B 전파는 채택자 customization clobber(비파괴
 #     위배)라 의도적 비-전파. instance-state(status·architecture·tickets·log·decisions·README·lite)는 채택자
 #     소유·diverge 정상이라 scope 제외. push 미차단(never-block).
+#   - adr-author : ADR frontmatter `author: <user>/<pm-slot>` provenance 권고 (T-0165·ADR-0033 ③).
+#     "누가 결정했나"(provenance·연속성 아님)를 박는 발행측 규약 — board.py 는 ADR 을 발행하지 않으므로
+#     부재/형식어긋남을 권고만 한다. solo·구 ADR(author 부재)은 정상이라 push 미차단(never-block).
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
      "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
-     "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift"})
+     "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
+     "adr-author"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -2416,6 +3400,52 @@ def lint_adr_lifecycle() -> list[tuple[str, str, str]]:
             findings.append((adr_id, "adr-lifecycle", "status: amended 인데 amended_by 없음"))
         if status == "superseded" and not _as_id_list(fm.get("superseded_by")):
             findings.append((adr_id, "adr-lifecycle", "status: superseded 인데 superseded_by 없음"))
+    return findings
+
+
+def _parse_adr_author(val) -> tuple[str, str] | None:
+    """ADR frontmatter `author` 를 `(user, slot)` 으로 파싱한다 (ADR-0033 ③·spike §3.4).
+
+    규약 = `<user>/<pm-slot>` — `created_by`/`claimed_by` identity 토큰과 동일 형태(`identity_tag`).
+    *마지막* `/` 로 분리(`rsplit('/', 1)`)해 slot 을 마지막 토큰으로 잡는다 — user 에 `/` 가
+    있어도(이메일 등엔 없지만 방어) slot 이 흔들리지 않는다. 두 토큰이 모두 non-empty 여야
+    유효(`<user>/<pm-slot>`); `/` 없음·한쪽 빈값(`/slot`·`user/`)은 None(형식 어긋남).
+    빈값/None 은 None(부재) — 호출측이 부재와 형식 어긋남을 구분한다.
+    """
+    s = str(val or "").strip()
+    if "/" not in s:
+        return None
+    user, slot = s.rsplit("/", 1)
+    user, slot = user.strip(), slot.strip()
+    return (user, slot) if user and slot else None
+
+
+def lint_adr_author() -> list[tuple[str, str, str]]:
+    """ADR `author` provenance 권고 advisory (T-0165·ADR-0033 ③·never-block).
+
+    각 ADR frontmatter 에 `author: <user>/<pm-slot>`(누가 결정했나·provenance·연속성 아님)가
+    박혀 있는지 권고한다 — board.py 가 ADR 을 *발행*하지 않으므로 발행측 규약을 강제하는 대신
+    부재/형식어긋남을 visibility 로만 표면화한다. `author` 부재 → "author 권고"; 있으나
+    `<user>/<pm-slot>` 형식이 아니면 → 형식 권고. kind=`adr-author`(`_ADVISORY_LINT_KINDS`
+    등재로 `--gate` 종료코드 비기여). decisions/ 부재·깨진 frontmatter → graceful skip
+    (솔로/신규 clone·구 ADR author 부재 정상 무영향)."""
+    findings: list[tuple[str, str, str]] = []
+    if not DECISIONS_DIR.is_dir():
+        return findings
+    for p in sorted(DECISIONS_DIR.glob("[0-9]*.md")):
+        try:
+            fm, _ = load_ticket(p)
+        except Exception:  # noqa: BLE001 — 깨진/frontmatter 없는 파일은 skip(비차단).
+            continue
+        fm = fm or {}
+        adr_id = _adr_id_from_path(p)
+        raw = fm.get("author")
+        if not str(raw or "").strip():
+            findings.append((adr_id, "adr-author",
+                             "author 권고 — `author: <user>/<pm-slot>` (누가 결정했나·provenance)"))
+        elif _parse_adr_author(raw) is None:
+            findings.append((adr_id, "adr-author",
+                             f"author 형식 권고 — `{raw}` 이 `<user>/<pm-slot>` 아님"))
     return findings
 
 
@@ -2619,11 +3649,12 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     architecture.md freshness advisory(architecture-stale·ADR-0022·never-block) +
     adapter-layer drift advisory(adapter-drift·T-0141·ADR-0032·never-block·baseline rev 비교) +
     render-leak(리터럴 `{{...}}` 누출·ADR-0028·blocking·@render 산출물 한정·활성화 전 무발화) +
-    un-migrated-overlay(어댑터 .md 리터럴 free-form 토큰 잔존·T-0132·§3.6·ADR-0031·advisory·never-block)."""
+    un-migrated-overlay(어댑터 .md 리터럴 free-form 토큰 잔존·T-0132·§3.6·ADR-0031·advisory·never-block) +
+    adr-author(ADR `author: <user>/<pm-slot>` provenance 권고·T-0165·ADR-0033 ③·advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
-            + lint_domain() + lint_adr_lifecycle()
+            + lint_domain() + lint_adr_lifecycle() + lint_adr_author()
             + lint_architecture_freshness() + lint_adapter_drift()
             + lint_render_leak() + lint_unmigrated_overlay())
 
@@ -2652,7 +3683,7 @@ def _refresh_board_locked() -> None:
     """board.md 재생성의 scan+render+write 본체. **board_lock 보유 전제**."""
     by_status: dict[str, list[dict]] = {s: [] for s in STATUS_DIRS}
     for status in STATUS_DIRS:
-        for p in sorted((TICKETS_DIR / status).glob("T-*.md")):
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, _ = load_ticket(p)
             by_status[status].append(fm)
 
@@ -2737,6 +3768,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("list", help="list tickets")
     p.add_argument("--status", choices=STATUS_DIRS)
     p.add_argument("--tag")
+    p.add_argument("--mine", action="store_true",
+                   help="내 것만 (렌즈·단일 보드 위 필터·ADR-0033 ④): 내 area 의 open"
+                        "(area_owner==나) + 내 in-progress(claimed_by.user==나). "
+                        "솔로(user 미상)는 전체 open + 내 슬롯 claim 으로 graceful 폴백.")
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("show", help="show one ticket")
@@ -2745,7 +3780,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("claim", help="atomic claim — mv open → claimed")
     p.add_argument("id")
-    p.add_argument("--session", help="session name (default $PM_SESSION_NAME or hostname-pid)")
+    p.add_argument("--session", help="session name = pm slot (default $PM_SESSION_NAME or hostname-pid)")
+    p.add_argument("--user", help="user 식별자 — claimed_by 의 user 차원 (default: local.conf user= / "
+                   "git config user.email · ADR-0033 ③)")
     p.set_defaults(fn=cmd_claim)
 
     p = sub.add_parser("complete", help="mv claimed → done (sync gate enforced)")
@@ -2782,14 +3819,35 @@ def build_parser() -> argparse.ArgumentParser:
                    default="small")
     p.add_argument("--prefix", help="ID namespace prefix (default: local.conf "
                    "prefix / none → legacy T-NNNN)")
+    p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf user= / "
+                   "git config user.email · ADR-0033 ③)")
     p.set_defaults(fn=cmd_new)
 
     p = sub.add_parser("init", help="clone 당 1회 setup (solo · multi-repo N×M) — pm_state·local.conf·pre-push 훅")
     p.add_argument("--prefix", help="multi-repo (N×M) ID 네임스페이스 (예: PAY). 생략 = solo(legacy T-NNNN)")
     p.add_argument("--area", help="영역 설명 (namespaced: 새 prefix 최초 등록 시 필요)")
     p.add_argument("--owner", help="등록 식별자(registrant·기본: session 이름)")
+    p.add_argument("--user", help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력·ADR-0033 ③·T-0161). "
+                                  "미지정 시 local.conf user= / git config user.email 로 해소(없으면 빈 값).")
     p.add_argument("--session", help="세션 이름 (기본: <prefix>-pm)")
     p.set_defaults(fn=cmd_init)
+
+    p = sub.add_parser("migrate-identity",
+                       help="ADR-0033 이전 데이터 일회성 backfill — areas area_owner·ticket "
+                            "created_by·슬롯-only claimed_by (멱등·비파괴·dry-run 선검토). "
+                            "단일-세션 op: 다른 세션이 claim/complete 중일 땐 실행 말 것"
+                            "(조용한 창에서 1회). areas write 는 락 보호·티켓 backfill 은 "
+                            "best-effort(동시 이동 시 해당 티켓 skip).")
+    p.add_argument("--dry-run", action="store_true",
+                   help="변경 미리보기(쓰기 0·per-file 요약). 먼저 실행 권장.")
+    p.add_argument("--user", help="identity override (기본: local.conf user= / git config "
+                   "user.email · 미해소 시 abort)")
+    p.add_argument("--session", help="slot 표시값 (기본: $PM_SESSION_NAME / local.conf "
+                   "session= / hostname-pid) — backfill 대상 슬롯을 *바꾸지 않음*. 슬롯-only "
+                   "claimed_by 는 기존 슬롯 토큰을 보존하고 user 차원만 prepend(비파괴)")
+    p.add_argument("--scope", choices=["active", "all"], default="all",
+                   help="active=open+claimed 만 · all=done 포함(기본)")
+    p.set_defaults(fn=cmd_migrate_identity)
 
     p = sub.add_parser("regression",
                        help="회귀 게이트 (run=측정·기록 / check=HEAD green 검증·pre-push 훅용)")

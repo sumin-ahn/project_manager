@@ -47,11 +47,33 @@ REPO = Path(__file__).resolve().parents[2]
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 TOOLS_DIR = REPO / ".project_manager" / "tools"
-AREAS_FILE = REPO / ".project_manager" / "areas.md"   # per-repo 레지스트리 (등록영역 surface·ADR-0014)
+AREAS_FILE = REPO / ".project_manager" / "areas.md"   # legacy 별칭 (아래 _areas_file 가 board_root 추종)
 # worktree 리스 장부 (ADR-0013) — worktree_pool.LEASES_FILE 와 *같은 위치*. _auto_slot 이
 # 단일 슬롯 자동바인딩 판정에 stdlib json 으로 직접 read 한다(worktree_pool 미import·touches
 # 격리·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형·데이터 결합만).
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+
+
+# ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────
+# board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다(ADR-0033 ①).
+# 그러면 등록영역 surface(`_registered_repos`)·단일 self-host 자동바인딩(`_auto_slot`)이
+# areas.md 의 wiki-밖 legacy 위치를 보면 *stale*(등록 repo 0개·자동바인딩 미해소)이다.
+# pm_bootstrap 은 board.py 를 직접 import 하지 않으므로(touches 격리·areas 를 stdlib read),
+# board.py 의 graceful 탐지를 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면 areas 가
+# board/ 안(board/areas.md), 아니면 legacy `.project_manager/areas.md`. 솔로/미분리면 현 위치
+# 100% 폴백(회귀 0). 상수 AREAS_FILE 는 hermetic 테스트 seam·legacy 기본값으로 유지.
+
+def _areas_file() -> Path:
+    """areas 레지스트리 경로 (board.py `areas_file` 동형·board_root 추종·T-0162 A6).
+
+    `.project_manager/board/tickets` 가 실 디렉토리면 board 가 submodule 로 분리된 형상
+    (ADR-0033 ①) → areas 도 board/ 안(`board/areas.md`). 아니면 legacy wiki-밖 위치
+    (`.project_manager/areas.md`·현 위치·무변경).
+    """
+    base = REPO / ".project_manager"
+    if (base / "board" / "tickets").is_dir():
+        return base / "board" / "areas.md"
+    return base / "areas.md"
 
 
 # ── worktree_pool import seam (multi-PM 모드·ADR-0013) ───────────────────────────
@@ -100,12 +122,15 @@ def _load_board():
         return None
 
 
-def _registered_repos(areas_file: Path = AREAS_FILE) -> list[str]:
+def _registered_repos(areas_file: Path | None = None) -> list[str]:
     """areas.md 레지스트리에서 등록된 repo 이름 목록 (identity surface '등록영역' 표면용).
 
     board.py 를 import 하지 않는다(touches 격리·병렬충돌 회피) — areas.md 의 `repo`/`prefix`
     칼럼을 stdlib 로 가볍게 읽는다. 파일 부재/스키마 불일치 → 빈 목록(fail-soft·솔로 무해).
+    `areas_file` 미지정이면 `_areas_file()`(board_root 추종·T-0162 A6)로 *호출 시점* 해소.
     """
+    if areas_file is None:
+        areas_file = _areas_file()
     if not areas_file.exists():
         return []
     rows: list[str] = []
@@ -129,7 +154,7 @@ def _registered_repos(areas_file: Path = AREAS_FILE) -> list[str]:
 
 
 def _auto_slot(
-    areas_file: Path = AREAS_FILE,
+    areas_file: Path | None = None,
     leases_file: Path = LEASES_FILE,
 ) -> tuple[str, int] | None:
     """단일 self-host 자동바인딩 판정 — 정확히 1 repo + 그 repo 슬롯 정확히 1개면 `(repo, N)`.
@@ -147,7 +172,8 @@ def _auto_slot(
     **worktree_pool 을 import 하지 않는다**(touches 격리·ADR-0013) — `_registered_repos` 가
     areas.md 를 stdlib 로 읽는 것과 동형으로 장부 파일을 직접 read 한다(데이터 결합만).
     파일 부재/스키마 불일치/JSON 깨짐 → None(fail-soft — 자동바인딩은 *추가 편의*이지
-    강제 아님·실패는 현행 솔로로 폴백).
+    강제 아님·실패는 현행 솔로로 폴백). `areas_file` 미지정(None)이면 `_registered_repos` 가
+    `_areas_file()`(board_root 추종·T-0162 A6)로 해소한다.
     """
     repos = _registered_repos(areas_file)
     if len(repos) != 1:
@@ -176,6 +202,39 @@ def _auto_slot(
     if len(slot_nums) != 1:
         return None
     return repo, slot_nums[0]
+
+
+# ── per-slot pm_state 경로 안내 (multi-PM 연속성·ADR-0033 §3.1·T-0166) ─────────
+# pm_state 는 *슬롯별*이다(spike §1.3·§3.1) — pm_handoff 가 활성 슬롯의 pm_state 를
+# read/write 하므로(`.local/slots/<slot>/pm_state.md`·솔로 legacy 폴백), 부트스트랩의
+# "첫 turn" 안내도 PM 이 *어느* pm_state 를 읽어야 하는지 같은 경로로 가리켜야 한다.
+# 부트스트랩은 pm_state 를 편집하지 않으므로(read/write 주체는 pm_handoff) 경로 *문자열*만
+# 해소한다 — slot 키는 `_auto_slot`(단일 self-host 자동바인딩·T-0123) 동형으로 재사용한다.
+def _pm_state_display_path(
+    slot: tuple[str, int] | None = None,
+    areas_file: Path | None = None,
+    leases_file: Path | None = None,
+) -> str:
+    """첫-turn 안내에 쓸 pm_state 경로 문자열 (per-slot·솔로 legacy 폴백·T-0166).
+
+    슬롯이 해소되면(`(repo, N)`·명시 또는 `_auto_slot` 단일 self-host) per-slot 경로
+    `.project_manager/.local/slots/<repo>_<N>/pm_state.md`, 미해소(솔로/모호)면 legacy
+    `pm_state.md`(현행 안내 무변경·짧은 표기). `_auto_slot` 은 같은 모듈 함수라 직접
+    호출(동적로드 불요·`_worktree_cwd` 동형). 예외/None 은 흡수해 legacy 표기로 폴백.
+    `leases_file` 미지정이면 *호출 시점* REPO 기준 재구성(monkeypatch 추종·hermetic).
+    """
+    if leases_file is None:
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    resolved = slot
+    if resolved is None:
+        try:
+            resolved = _auto_slot(areas_file, leases_file)
+        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 legacy 표기 폴백.
+            resolved = None
+    if resolved is None:
+        return "pm_state.md"
+    repo, n = resolved
+    return f".project_manager/.local/slots/{repo}_{n}/pm_state.md"
 
 
 def _default_python() -> str:
@@ -221,13 +280,31 @@ def parse_board_counts(board_output: str) -> dict[str, int]:
     return counts
 
 
+# 티켓 ID grammar — board.py `_TICKET_PREFIX_RE`(`_TICKET_PREFIX_BODY`·발행측 `_next_id` 의 역,
+# 등록측 `pm_config._REPO_NAME_RE` 와 정합)와 *같은 문법*이어야 한다. board list --mine(T-0164·
+# 기본 입력)이 multi-repo 보드를 surface 하면 정상 open 티켓은 prefixed ID(`T-PAY-001`·
+# `T-service-a-001`·`T-P0-001`·`T-123-001`)다. 옛 `T-\d+` 만 잡으면 prefixed 가 전부 누락된다.
+# 두 형태를 다 잡는다:
+#   prefixed = `T-<PREFIX>-NNN`  — PREFIX 는 `[A-Za-z0-9][A-Za-z0-9_-]*`(등록 grammar 와 정합·
+#                                  순수 숫자 `123` 포함), 끝 `-NNN` 은 숫자.
+#   legacy   = `T-NNNN`          — `T-` 다음이 순수 숫자(하이픈 1개·prefix 마디 없음).
+# legacy 와 순수-숫자 prefix 의 구분은 **구조적**이다(board.py 와 동일): prefixed 분기는 *내부
+# 하이픈*(`PREFIX-NNN`)을 요구해 `T-123-001`(하이픈 2개)을 잡고, `T-0164`(하이픈 1개)는 legacy
+# 분기(`\d+`)로 떨어진다 — 둘이 충돌하지 않는다.
+# board.py 를 직접 import 하지 않는 이유(touches 격리·deep-import seam·순환 회피)는 parse_board_
+# counts 등 다른 파서가 board 미import 인 것과 동형 — grammar 만 board.py 와 정합시킨다(가드
+# 테스트 `test_parse_open_tickets_grammar_matches_board` 가 board `_ticket_prefix` 와 대칭 확인).
+_TICKET_ID = r"T-(?:[A-Za-z0-9][A-Za-z0-9_-]*-\d+|\d+)"
+
+
 def parse_open_tickets(board_output: str) -> list[str]:
     """board list 출력에서 open status 의 ticket ID 목록을 반환한다.
 
-    claim 가능한 open ticket 만 추출한다 (claimed/blocked/done 제외).
+    claim 가능한 open ticket 만 추출한다 (claimed/blocked/done 제외). prefixed(multi-repo
+    `T-PAY-001`)·legacy(`T-0164`) ID 를 둘 다 파싱한다 (board.py grammar 정합·T-0164).
     """
     tickets: list[str] = []
-    line_pattern = re.compile(r"^\s+\[open\s*\]\s+(T-\d+)")
+    line_pattern = re.compile(rf"^\s+\[open\s*\]\s+({_TICKET_ID})\b")
     for line in board_output.splitlines():
         match = line_pattern.match(line)
         if match:
@@ -355,14 +432,17 @@ class PmBootstrap:
         run_git_fn: Callable[[list[str]], tuple[int, str]] | None = None,
         log_file: Path = LOG_FILE,
         board_py: Path = BOARD_PY,
-        areas_file: Path = AREAS_FILE,
+        areas_file: Path | None = None,
         venv_python: str | Path = _default_python(),
         worktree_pool=None,
         board=None,
     ) -> None:
         self._log_file = log_file
         self._board_py = board_py
-        self._areas_file = areas_file
+        # areas_file 미지정이면 `_areas_file()`(board_root 추종·T-0162 A6)로 해소 — board/
+        # 분리(ADR-0033 ①) 후 등록영역 surface(_registered_repos)가 stale 안 보게. 명시
+        # 인자(hermetic 테스트)는 그대로 존중.
+        self._areas_file = areas_file if areas_file is not None else _areas_file()
         self._venv_python = venv_python
         # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 --repo
         # 경로 진입 시에만 동적 로드(multi-PM 모드)·솔로 무인자 경로는 안 건드린다.
@@ -409,6 +489,22 @@ class PmBootstrap:
             repo, n = auto
             return str(REPO / f"work/{repo}_{n}")
         return str(REPO)
+
+    def _pm_state_display_path(self) -> str:
+        """첫-turn 안내에 쓸 pm_state 경로 (per-slot·솔로 legacy 폴백·T-0166).
+
+        명시 multi-PM 모드(`_bound_slot` = `work/<repo>_<N>`)면 그 슬롯의 per-slot 경로,
+        솔로 무인자면 `_auto_slot()` 단일 self-host 자동해소(인스턴스 `_areas_file` 추종),
+        둘 다 미해소면 legacy `pm_state.md` 표기(현행 무변경). 모듈 `_pm_state_display_path`
+        에 위임한다 — slot 키는 pm_handoff 의 read/write 경로와 동형(`<repo>_<N>`).
+        """
+        bound = None
+        if self._bound_slot and self._bound_slot.startswith("work/"):
+            rest = self._bound_slot[len("work/"):]
+            m = re.match(r"^(.+)_(\d+)$", rest)
+            if m:
+                bound = (m.group(1), int(m.group(2)))
+        return _pm_state_display_path(bound, self._areas_file)
 
     # ── 기본 subprocess 구현 ─────────────────────────────────────────────
 
@@ -458,8 +554,15 @@ class PmBootstrap:
     # ── 데이터 수집 ──────────────────────────────────────────────────────
 
     def _collect_board(self) -> dict:
-        """board list + lint 결과를 수집한다. 실패 시 sys.exit(1)."""
-        rc, output = self._run_board_fn(["list"])
+        """board list --mine + lint 결과를 수집한다. 실패 시 sys.exit(1).
+
+        기본 보드 뷰 = `--mine`(T-0164·ADR-0033 ④) — 부트스트랩이 전체 contention 을
+        떠안지 않고 *내 것*(내 area open + 내 claim)만 surface 한다. 솔로(user 미상)는
+        board 가 전체 open + 내 슬롯 claim 으로 graceful 폴백하므로 현행과 사실상 동등
+        (`board list --mine` 의 솔로 폴백·spike §2.D). 전체 보드(contention 가시)는
+        무플래그 `board list` 로 PM 이 명시 조회한다.
+        """
+        rc, output = self._run_board_fn(["list", "--mine"])
         if rc != 0:
             print(f"[중단] board.py list 실패 (rc={rc}):\n{output}", file=sys.stderr)
             sys.exit(1)
@@ -630,11 +733,14 @@ class PmBootstrap:
         else:
             regression_summary = f" 회귀 (handoff entry 참조), lint {lint}."
         lines.append(f"- board: {board_summary}{regression_summary}")
+        # pm_state 는 슬롯별(T-0166) — PM 이 *자기 슬롯* pm_state 를 읽도록 per-slot 경로를
+        # 안내한다(pm_handoff 의 read/write 경로와 동형). 솔로/모호면 legacy `pm_state.md` 표기.
+        state_path = self._pm_state_display_path()
         lines.append(
-            "- (직전 세션 요약은 PM 손 — pm_state.md \"세션 식별\" 절 + log/current.md 마지막 handoff entry 참조)"
+            f"- (직전 세션 요약은 PM 손 — {state_path} \"세션 식별\" 절 + log/current.md 마지막 handoff entry 참조)"
         )
         lines.append(
-            "- 무엇부터 갈까요? (PM 손 — pm_state.md \"남은 작업 전체 그림\" 절 + open ticket"
+            f"- 무엇부터 갈까요? (PM 손 — {state_path} \"남은 작업 전체 그림\" 절 + open ticket"
         )
         lines.append("  목록 보고 옵션 제시)")
 

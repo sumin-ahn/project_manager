@@ -4,11 +4,13 @@
 # board.md = tickets/ 에서 재생성되는 파생 대시보드 (board.py refresh). clone 간 공유 안 함.
 wiki/board.md
 
-# pm_state.md = per-clone 로컬 핸드오프 상태 (pm-init 이 pm_state.template.md 에서 생성).
+# pm_state.md = 로컬 핸드오프 상태 (pm-init 이 pm_state.template.md 에서 생성).
+#   solo = clone당 1개(wiki/pm_state.md). multi-PM = 슬롯별(.local/slots/<slot>/pm_state.md·
+#   pm_handoff 가 첫 핸드오프 시 graceful 이동·T-0166·ADR-0033 §3.1). 둘 다 gitignored.
 wiki/pm_state.md
 
 # local.conf = per-clone 설정 (prefix·session). pm-init 이 생성.
 local.conf
 
-# .local/ = per-clone 스크래치 (회귀 게이트 플래그 등).
+# .local/ = per-clone·per-slot 스크래치 (회귀 게이트 플래그·worktree-leases·slots/<slot>/pm_state.md).
 .local/

@@ -3,7 +3,8 @@ id: T-NNNN
 title: <한 줄 제목>
 status: open                 # open | claimed | blocked | done — 디렉토리와 일치해야 함
 created: YYYY-MM-DD
-claimed_by:                  # 세션 식별자 (board.py claim 시 자동 채워짐)
+created_by:                  # 생성 식별자 (board.py new 시 자동 — 슬롯 `<pm>` 또는 multi-user 시 `<user>/<pm-slot>`)
+claimed_by:                  # 작업자 식별자 (board.py claim 시 자동 — 슬롯 `<pm>` 또는 multi-user 시 `<user>/<pm-slot>`)
 claimed_at:
 completed_at:
 depends_on: []               # 선행 티켓 ID 들. 모두 done 되어야 claim 가능

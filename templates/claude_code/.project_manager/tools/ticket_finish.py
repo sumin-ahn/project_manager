@@ -37,8 +37,9 @@ REPO = Path(__file__).resolve().parents[2]
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
-AREAS_FILE = REPO / ".project_manager" / "areas.md"  # shared per-repo registry (ADR-0014)
 TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵커 (회귀 cwd 해소·T-0149)
+# areas.md 경로는 상수로 굳히지 않는다(T-0162 A6) — board/ 분리(ADR-0033 ①) 시 board/ 안으로
+# 옮겨가므로, `_resolve_per_repo_test_cmd` 가 board 모듈의 `areas_file()`(board_root 추종)에 위임.
 
 
 # ── 회귀 cwd 자동해소 (self-host·T-0149 — pm_handoff `_regression_cwd` 재사용·DRY) ────
@@ -153,11 +154,16 @@ def _resolve_per_repo_test_cmd() -> str | None:
     board.py 를 import 해 areas.md 레지스트리 해소(`id_prefix`·`_areas_row_for_prefix`)를
     재사용한다 — areas.md 가 있고 활성 prefix 의 행에 비어 있지 않은 `test_cmd` 가 있을
     때만 그 문자열을 반환한다. 그 외(솔로·미등록·빈 값·import 실패)는 None(현행 보존).
+
+    areas.md 존재 가드는 board 의 `areas_file()`(board_root 추종)로 위임한다 — board/ 분리
+    (ADR-0033 ①) 시 areas.md 가 board/ 안(submodule)으로 옮겨가므로 legacy 위치(wiki 밖
+    `.project_manager/areas.md`)를 보면 stale 이다. board 로드 후 그 함수를 부른다(`id_prefix`
+    해소와 동일 루트).
     """
-    if not AREAS_FILE.exists():
-        return None
     mod = _load_board_module()
     if mod is None:
+        return None
+    if not mod.areas_file().exists():
         return None
     try:
         prefix = mod.id_prefix()
@@ -227,7 +233,9 @@ def count_board_done(board_py: Path) -> int:
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-        done_dir = mod.TICKETS_DIR / "done"
+        # board_root() 추종 — board/ 분리(ADR-0033 ①) 시 ticket 이 board/tickets 로 빠지므로
+        # legacy 별칭 상수(mod.TICKETS_DIR)가 아니라 함수를 부른다(분리 후 stale wiki/ 안 봄).
+        done_dir = mod.tickets_dir() / "done"
         return len(list(done_dir.glob("T-*.md")))
     except Exception:
         return -1

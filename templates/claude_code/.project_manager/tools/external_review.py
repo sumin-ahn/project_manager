@@ -48,10 +48,28 @@ from pathlib import Path
 from typing import Callable
 
 REPO = Path(__file__).resolve().parents[2]
-TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"
+TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"  # legacy 별칭 (아래 _tickets_dir 가 board_root 추종)
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 REVIEW_CONTEXT_FILE = REPO / ".project_manager" / "review_context.local.md"  # 인스턴스 소유 overlay
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
+
+
+# ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────
+# board(tickets)는 `.project_manager/board/`(submodule)로 분리될 수 있다(ADR-0033 ①). 그러면
+# ticket touches 해소(`parse_ticket_touches`)가 wiki/ legacy 위치를 보면 *stale*(ticket 미발견
+# → 빈 touches)이다. external_review 는 board.py 를 import 하지 않으므로(YAML frontmatter 직접
+# 파싱), board.py 의 graceful 탐지를 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면
+# board/ 루트, 아니면 wiki/(legacy). 솔로/미분리면 현 위치 100% 폴백(회귀 0). 상수 TICKETS_DIR
+# 는 hermetic 테스트 seam·legacy 기본값으로 유지.
+
+def _tickets_dir() -> Path:
+    """ticket 디렉토리 — board/ 분리 시 `<REPO>/.project_manager/board/tickets`, 아니면
+    legacy `<REPO>/.project_manager/wiki/tickets` (board.py `tickets_dir` 동형·import 없이 복제)."""
+    base = REPO / ".project_manager"
+    if (base / "board" / "tickets").is_dir():
+        return base / "board" / "tickets"
+    return base / "wiki" / "tickets"
+
 
 # 기본 검토 경로 (--paths·local.conf review_paths 미지정 시)
 DEFAULT_PATHS: list[str] = ["src/", "tests/", "scripts/", ".project_manager/tools/"]
@@ -254,9 +272,13 @@ def parse_ticket_touches(ticket_id: str) -> list[str]:
     """board ticket frontmatter 의 touches 필드를 파싱해 경로 목록을 반환한다.
 
     YAML frontmatter 직접 파싱 (board.py 를 import 하지 않음). 못 찾으면 빈 목록.
+
+    ticket 디렉토리는 `_tickets_dir()`(board_root 추종·T-0162 A6)로 *호출 시점* 해소한다 —
+    board/ 분리(ADR-0033 ①) 후 wiki/ legacy 위치(stale·ticket 미발견)를 안 보게.
     """
+    tickets_dir = _tickets_dir()
     for status_dir in STATUS_DIRS:
-        dir_path = TICKETS_DIR / status_dir
+        dir_path = tickets_dir / status_dir
         if not dir_path.exists():
             continue
         for ticket_file in dir_path.glob(f"{ticket_id}-*.md"):

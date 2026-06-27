@@ -254,6 +254,48 @@ def _iter_files(root: Path, rel: str):
     # missing → 아무것도 yield 안 함 (호출부가 missing 으로 보고)
 
 
+# ── board-분리 인지 dest 리매핑 (T-0169·ADR-0033 ①) ───────────────────────────
+# manifest 는 ticket 본문 템플릿을 `wiki/tickets/_template.md` 로 들고 있다(① canonical·
+# legacy adopter 의 실 위치). 그러나 board(tickets+areas)가 `.project_manager/board/`
+# (submodule)로 분리된 adopter(ADR-0033 ①·board.py board_root)에선 `_template.md` 가
+# `board/tickets/_template.md` 에 산다(board_root() 추종·B 마이그레이션이 거기로 옮김).
+# manifest 항목은 ①↔② 동일·legacy-correct 로 두고(자체 drift 회피), *동기 시 dest 경로만*
+# board_root 로 해소한다 — board-분리 dest 면 board/tickets/_template.md 로, legacy dest 면
+# 종전 wiki/tickets/_template.md 로(무변경). 이로써 board-분리 adopter 의 매 sync 가
+# wiki/tickets/_template.md 를 부활시키지 않는다(drift-0·실 발생 버그 reconcile).
+#
+# board.py board_root() 의 *실측* 판별(`<dest>/.project_manager/board/tickets` 가 dir 인가)을
+# 동형 복제한다 — pm_update 는 stdlib-only(board 미import 결합 회피·_resolve_dest_source 와
+# 동형)이고, 판별은 단일 is_dir() probe 라 board.py line 71/95 와 정확히 같다. 어떤 manifest
+# 항목이 board-분리 시 board/ 로 옮겨가는지는 아래 `_TEMPLATE_REL`→`_BOARD_TEMPLATE_REL`
+# 매핑(`_dest_relpath_for`)이 단일 진실.
+_TEMPLATE_REL = ".project_manager/wiki/tickets/_template.md"
+_BOARD_TEMPLATE_REL = ".project_manager/board/tickets/_template.md"
+
+
+def _is_board_separated(dest_root: Path) -> bool:
+    """dest 가 board-분리 형상인가 — `<dest>/.project_manager/board/tickets` 가 실 dir.
+
+    board.py board_root() 의 판별과 동형(line 71/95) — pm_update 가 board 를 import 하지 않고
+    같은 *실측* probe 로 dest 레이아웃을 가른다. board/tickets 가 없으면 legacy(False·무변경).
+    """
+    return (Path(dest_root) / ".project_manager" / "board" / "tickets").is_dir()
+
+
+def _dest_relpath_for(rel: str, dest_root: Path) -> str:
+    """manifest source relpath → dest 기록 relpath (board-분리 인지 리매핑·T-0169).
+
+    `wiki/tickets/_template.md` 항목은 board-분리 dest 에서 `board/tickets/_template.md` 로
+    리매핑한다(board_root() 추종) — source 는 upstream 의 wiki/ 에서 그대로 읽되 dest 만 옮긴다.
+    legacy dest(board/ 미분리)거나 다른 모든 항목은 입력 그대로(무변경·후방호환). 경로 비교는
+    OS-무관하게 posix-normalize 한다(_iter_files 가 str(Path) 로 yield 해 Windows 에선 `\\` 가
+    섞일 수 있다)."""
+    rel_norm = rel.replace("\\", "/")
+    if rel_norm == _TEMPLATE_REL and _is_board_separated(dest_root):
+        return _BOARD_TEMPLATE_REL
+    return rel
+
+
 def _load_pm_render():
     """pm_render 모듈을 같은 tools/ 디렉토리에서 직접 로드 (sys.path 오염 없이·stdlib seam).
 
@@ -686,6 +728,12 @@ def plan(
             missing.append(rel)
             continue
         for r, sp in _iter_files(source_root, rel):
+            # board-분리 dest 면 `wiki/tickets/_template.md` 를 `board/tickets/_template.md` 로
+            # 리매핑한다(T-0169·board_root() 추종) — source 는 upstream wiki/ 에서 그대로 읽되
+            # dest 경로만 옮긴다. legacy dest·그 외 항목은 입력 그대로(무변경). 표시 relpath(r)도
+            # 리매핑 후 경로로 둬 dry-run 출력이 실제 기록 위치를 정직히 보인다(_dest_root_for
+            # 역산도 part 수 동일이라 정합).
+            r = _dest_relpath_for(r, effective_dest)
             # render 는 `.md` 한정 — @render 디렉토리 하위의 비-.md(이미지·json 등)는 byte-copy
             # (pm_import.render_managed_files 가 이미 `.md` 한정·정렬과 동형). 산출물은 자족 .md.
             file_render = render and Path(r).suffix == ".md"
