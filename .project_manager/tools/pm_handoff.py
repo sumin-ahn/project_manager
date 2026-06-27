@@ -13,7 +13,8 @@
   3. pm_state.md 세션 식별 표 sliding window 정리 — 신규 entry 추가 + 가장 오래된 entry 제거.
   4. pm_state.md 길이 검증 — wc -l 기준 700 라인 초과 시 warning.
   5. 인계 프롬프트 stdout 출력 — pm_playbook.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
-     의 고정부 채워 stdout. <핵심 인계 사항> 절은 PM 손.
+     의 트리거(역할 framing + /pm-bootstrap)를 채워 stdout. 인계 본문은 log entry 가 carry —
+     부트스트랩이 자동 dump 하므로 프롬프트에 손-채움 안 함(T-0180·T-0179 짝).
   6. git status dump — git status -s 출력 + 변경 파일 카운트.
   7. 잔여 PM 수동 작업 출력 — checklist.
 
@@ -886,9 +887,12 @@ def build_handoff_prompt_output(
     wave_summary: str,
     date_str: str,
 ) -> str:
-    """인계 프롬프트 stdout 출력 문자열을 빌드한다.
+    """인계 프롬프트 stdout 출력 문자열을 빌드한다 (T-0180 — 트리거로 축소).
 
-    pm_playbook.md 의 고정부를 그대로 포함하고 <핵심 인계 사항> 절은 PM 손임을 명시.
+    pm_playbook.md §부트스트랩 프롬프트 템플릿(역할 framing + `/pm-bootstrap` 트리거)을 그대로
+    포함한다. T-0179 로 부트스트랩이 인계 본문(읽기 범위·메타 학습·다음 intent·회귀/incident)을
+    log handoff entry 에서 자동 dump 하므로, 프롬프트는 더 이상 `<핵심 인계 사항>` 손-채움을
+    싣지 않는다 — 같은 인계를 두 곳에 적던 중복 제거(spike §3 옵션 C·ADR-0035).
     """
     template = extract_handoff_prompt_template(pm_playbook_text)
     if template is None:
@@ -901,7 +905,7 @@ def build_handoff_prompt_output(
     header = (
         f"=== 인계 프롬프트 (PM {session_num}차 → 다음 PM 세션) ===\n"
         f"--- 아래를 복사해 다음 PM 세션에 붙여넣기 ---\n"
-        f"(⚠️  '<핵심 인계 사항>' 절은 PM 손 — 직접 채워 넣을 것)\n\n"
+        f"(인계 본문은 /pm-bootstrap 이 log entry 에서 자동 dump — 프롬프트는 트리거만)\n\n"
     )
     footer = (
         f"\n--- 복사 끝 ---\n"
@@ -1524,7 +1528,6 @@ class PmHandoff:
         print("  [ ] domain capture 검토 — `domain.py capture --tickets <이 세션 done>` 출력 보고 ⚠/gap 페이지 갱신/신설(채록·ADR-0018 §7b·surface-only).")
         print("  [ ] pm_state.md '진행 중인 의사결정' 표 갱신")
         print("  [ ] pm_state.md '남은 작업 전체 그림' 갱신")
-        print("  [ ] 인계 프롬프트의 '<핵심 인계 사항>' 채우기 (위 [5/7] 출력 참조)")
         print("  [ ] git commit (Co-Authored-By: Claude 트레일러 포함)")
 
         # ── multi-PM 모드: --done 작업완료 슬롯 release (ADR-0013) ─────────────────

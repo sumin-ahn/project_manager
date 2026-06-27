@@ -209,7 +209,7 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
 2. **log/current.md handoff entry skeleton append** — 표준 형식.
 3. **pm_state.md 세션 식별 sliding window 정리** — 신규 entry 추가 + 가장 오래된 entry 제거.
 4. **pm_state.md 길이 검증** — 700 라인 초과 시 warning. (+ log/current.md entry 누적 시 archive 권장)
-5. **인계 프롬프트 stdout 출력** — `pm_playbook.md` §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)" 의 고정부 채움.
+5. **인계 프롬프트(트리거) stdout 출력** — `pm_playbook.md` §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)" 의 트리거(역할 framing + `/pm-bootstrap`). **인계 본문은 채우지 않는다** — log handoff entry 가 단일 진실이고 다음 세션 부트스트랩이 자동 dump(차수·인계 본문·남은작업·T-0179·ADR-0035).
 6. **git status dump** — 변경 파일 카운트.
 7. **잔여 PM 수동 작업 checklist 출력**.
 
@@ -219,9 +219,8 @@ PM 손:
 - `pm_state.md` "진행 중인 의사결정" 표 갱신
 - `pm_state.md` "남은 작업 전체 그림" 갱신
 - status.md 정비 (lint 가 경고하면) — 안정화된 ✅ 모듈 행은 `status_done.md` 로 이동. status.md = judgment-only(ADR-0023): 테스트 *수*는 안 적음(pytest 실측·log history)·상태/비고는 architect 유지·PM 점검
-- 인계 프롬프트의 `<핵심 인계 사항>` 채우기
 - git commit (Co-Authored-By: Claude 트레일러)
-- 마지막 응답에 인계 프롬프트 코드블록 출력 (사용자가 복사해 새 PM 세션에 붙여넣음)
+- 마지막 응답에 인계 프롬프트(트리거) 코드블록 출력 — 다음 세션은 `/pm-bootstrap` 실행(트리거 붙여넣기 or 직접). 인계 본문은 부트스트랩이 log entry 에서 dump 하므로 손-채움 불요(ADR-0035)
 
 ## 진행 중인 의사결정 · 남은 작업 전체 그림
 

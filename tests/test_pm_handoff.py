@@ -205,6 +205,104 @@ def test_extract_handoff_prompt_template_no_code_block_returns_none(hf):
     assert hf.extract_handoff_prompt_template(playbook) is None
 
 
+# ── build_handoff_prompt_output: 트리거로 축소 (T-0180) ────────────────────────
+# 프롬프트는 역할 framing + /pm-bootstrap 트리거만 — 인계 본문(읽기 범위·메타 학습·다음
+# intent·회귀/incident) 손-채움은 폐기(부트스트랩이 log entry 에서 dump·T-0179 짝).
+
+# 트리거 형태 fixture — 실 pm_playbook §부트스트랩 프롬프트의 축소 형태와 동형.
+_TRIGGER_PLAYBOOK = (
+    "# pm_playbook\n\n"
+    f"{_PROMPT_ANCHOR}\n\n"
+    "설명 문단.\n\n"
+    "```\n"
+    "당신은 이 프로젝트의 PM 세션입니다.\n"
+    "지금 /pm-bootstrap 을 실행하세요.\n"
+    "```\n\n"
+    "## 다른 절\n"
+)
+
+
+def test_build_handoff_prompt_output_emits_trigger(hf):
+    """추출한 트리거 코드블록을 헤더/푸터로 감싸 emit 한다 (PM 차수·날짜·wave 표기)."""
+    out = hf.build_handoff_prompt_output(
+        pm_playbook_text=_TRIGGER_PLAYBOOK,
+        session_num=42,
+        wave_summary="요약",
+        date_str="2026-06-28",
+    )
+    assert "=== 인계 프롬프트 (PM 42차 → 다음 PM 세션) ===" in out
+    assert "/pm-bootstrap" in out
+    assert "당신은 이 프로젝트의 PM 세션입니다." in out
+    assert "2026-06-28" in out and "요약" in out
+
+
+def test_build_handoff_prompt_output_no_handfill_block(hf):
+    """트리거 emit 에는 폐기된 `<핵심 인계 사항>` 손-채움 블록이 없다 (T-0180·중복 제거)."""
+    out = hf.build_handoff_prompt_output(
+        pm_playbook_text=_TRIGGER_PLAYBOOK,
+        session_num=42,
+        wave_summary="요약",
+        date_str="2026-06-28",
+    )
+    # 손-채움 인계 블록과 그 안내 헤더 둘 다 사라졌다 (본문은 log entry/부트스트랩이 carry).
+    assert "<핵심 인계 사항>" not in out
+    assert "채워 넣을 것" not in out
+
+
+def test_build_handoff_prompt_output_template_absent_warns(hf):
+    """앵커/코드블록 부재 시 fail-soft 경고 문자열 (추측 emit 금지)."""
+    out = hf.build_handoff_prompt_output(
+        pm_playbook_text="# no anchor here\n",
+        session_num=42,
+        wave_summary="요약",
+        date_str="2026-06-28",
+    )
+    assert "[경고]" in out and "직접 복사하라" in out
+
+
+# ── 출하 pm_playbook 정합: 프롬프트가 트리거로 축소됐다 (T-0180·feature-ship 가드) ──
+
+def test_shipped_pm_playbook_prompt_is_trigger_only():
+    """실 출하 pm_playbook.md §부트스트랩 프롬프트가 트리거(역할 framing + /pm-bootstrap)다.
+
+    손-채움 `<핵심 인계 사항>` 블록이 폐기됐는지 출하 파일 자체로 가드한다 — 프롬프트·log
+    entry 양쪽에 같은 인계를 적던 중복이 재발하지 않게(부트스트랩이 dump·T-0179).
+    """
+    hf = _load_module()
+    playbook_text = (
+        REPO / ".project_manager" / "wiki" / "pm_playbook.md"
+    ).read_text(encoding="utf-8")
+    template = hf.extract_handoff_prompt_template(playbook_text)
+    assert template is not None, "출하 pm_playbook 에서 프롬프트 템플릿 추출 실패"
+    # 트리거 유지: 역할 framing + /pm-bootstrap.
+    assert "PM" in template and "/pm-bootstrap" in template
+    # 폐기: 손-채움 인계 블록(읽기 범위 손-기입 슬롯).
+    assert "<핵심 인계 사항>" not in template
+    assert "<- 읽기 범위" not in template
+
+
+def test_shipped_handoff_procedure_docs_have_no_handfill_instruction():
+    """핸드오프 절차 문서(pm_role·claude SKILL·opencode command)가 폐기된 `<핵심 인계 사항>`
+    손-채움을 *살아있는 단계*로 지시하지 않는다.
+
+    프롬프트 emit(`build_handoff_prompt_output`)은 트리거화됐는데(T-0180) 절차 미러 문서가
+    "그 절을 채우라"고 stale 로 남으면 다음 PM 이 *없는 슬롯*을 찾는다 — code-mirror 갱신 ↔
+    doc-mirror stale 비대칭은 반복 클래스라([[feature-ship-needs-fresh-adopter-gate]]) 기계로 박는다.
+    출하 파일 자체를 가드(canonical = 사본 byte-identical 은 parity 가드가 별도 강제).
+    """
+    procedure_docs = [
+        REPO / ".project_manager" / "wiki" / "pm_role.md",
+        REPO / ".claude" / "skills" / "pm-handoff" / "SKILL.md",
+        REPO / "templates" / "opencode" / ".opencode" / "command" / "pm-handoff.md",
+    ]
+    for doc in procedure_docs:
+        text = doc.read_text(encoding="utf-8")
+        # 폐기된 인계-블록 절 이름이 절차 지시에 잔존하면 안 된다 (트리거화 후 손-채움 슬롯 부재).
+        assert "핵심 인계 사항" not in text, (
+            f"{doc} 에 폐기된 `<핵심 인계 사항>` 손-채움 지시 잔존 — 트리거(T-0180)와 모순"
+        )
+
+
 # ── run() 잔여 PM 손작업 checklist — domain capture 리마인더 (T-0084) ─────────
 
 

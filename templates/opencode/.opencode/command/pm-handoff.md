@@ -45,16 +45,15 @@ env prefix 불필요 — Windows/CP949·PowerShell 서도 env 없이 동작. 드
 2. **log/current.md handoff entry skeleton append** — `## [YYYY-MM-DD] handoff | PM N차 → 다음 PM 세션` 형식. 본문 = `<PM 손 채움>`.
 3. **pm_state.md sliding window 정리** — §세션 식별 표에 N차 entry 추가 + 가장 오래된 entry 제거.
 4. **pm_state.md 길이 검증** — `wc -l` 700 라인 초과 시 warning. + log/current.md entry 가 임계(40) 초과면 `pm_log.py archive` 권장 warning.
-5. **인계 프롬프트 stdout 출력** — 고정부 채움. `<핵심 인계 사항>` 절은 PM 손.
+5. **인계 프롬프트(트리거) stdout 출력** — 트리거(역할 framing + `/pm-bootstrap`). **인계 본문은 채우지 않는다** — log entry 가 carry·다음 세션 부트스트랩이 자동 dump(차수·인계 본문·남은작업·T-0179·ADR-0035).
 6. **git status dump** — `git status -s` 출력 + 변경 파일 카운트.
 7. **잔여 PM 수동 작업 checklist 출력**.
 
 ## 잔여 PM 손작업 (CLI 후)
 
 1. **log/current.md handoff entry 본문 서술 (lean 스키마 — ADR-0008)** — skeleton 의 `<...>` placeholder 를 채움. 파생 가능 상태는 source 에 미룬다(point, don't copy). 비파생 salient 레이어만: **읽기 범위**(이 entry + 인용할 과거 entry/ADR 포인터) · **메타 학습**(ticket 상태에서 도출 불가한 교훈만·없으면 "없음") · **다음 intent**(두 줄 세분 — ADR-0008·T-0047: *대화 thread-tail* = 정지 직전 사용자 발화 + *pending user intent* = 다음 우선순위·사용자 결정 대기. 단 opencode 어댑터는 thread-tail 자동 추출 미구현=2차 — 현재 PM 손) · **회귀/incident**(회귀 "N passed / 상태" 1줄 baseline·green 도 + 비-자명 incident). **FORBIDDEN (대량 재열거 금지):** board 카운트·open ticket 목록·commit 해시·push 상태·직전 complete 산출물 재요약 (→ board·git·/pm-bootstrap·인접 entry 가 답함).
-2. **인계 프롬프트 §핵심 인계 사항 절 채움** — 위 lean 스키마와 동일 (읽기범위·메타학습·다음intent + 회귀/incident 1줄). board 상태·open 목록·commit 해시 대량 재열거 금지.
-3. **git commit** — 핸드오프 commit message 형식: `PM 세션(N차) 핸드오프 — pm_state.md sliding window + log/current.md handoff entry + PM (N+1)차 인계`.
-4. **마지막 응답에 인계 프롬프트 코드블록 출력** — 사용자가 복사해 새 PM 세션에 붙여넣음.
+2. **git commit** — 핸드오프 commit message 형식: `PM 세션(N차) 핸드오프 — pm_state.md sliding window + log/current.md handoff entry + PM (N+1)차 인계`.
+3. **마지막 응답에 인계 프롬프트(트리거) 코드블록 출력** — 다음 세션은 `/pm-bootstrap` 실행(트리거 붙여넣기 or 직접). 인계 본문은 부트스트랩이 log entry 에서 자동 dump 하므로 손-채움 불요(ADR-0035).
 
 ## 결정
 

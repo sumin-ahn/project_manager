@@ -145,6 +145,8 @@ def test_trigger_dry_run_no_file_edit(handoff, tmp_path):
 # ── 1b. 인계 프롬프트 박제 (D16·T-0134) ───────────────────────────────────────
 
 # pm_playbook.md §부트스트랩 프롬프트 코드블록 최소 fixture (앵커·코드블록 형식 유지) ──
+# T-0180 — 프롬프트는 트리거로 축소(역할 framing + /pm-bootstrap). 인계 본문(읽기 범위·
+# 메타 학습·다음 intent·회귀/incident) 손-채움 블록은 폐기 — 부트스트랩이 log entry 에서 dump.
 _PM_PLAYBOOK_FIXTURE = """\
 # PM Playbook
 
@@ -152,11 +154,7 @@ _PM_PLAYBOOK_FIXTURE = """\
 
 ```
 당신은 이 프로젝트의 PM 세션입니다.
-<핵심 인계 사항>
-- 읽기 범위: ...
-- 메타 학습: ...
-- 다음 intent: ...
-- 회귀/incident: ...
+지금 /pm-bootstrap 을 실행하세요.
 ```
 
 ## 다음 절
