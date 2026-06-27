@@ -36,8 +36,11 @@ from test_fresh_adopter_runtime_smoke import (
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 # claude: sonnet-4-6(API 과금·env override). probe 가 이 모델로 PASS.
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
-# opencode: 로컬 ollama(과금 0·느림·변동 큼). runtime_smoke 와 동일 default.
-LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/gemma4:26b")
+# opencode: full wave(claim→위임→complete sync-gate)는 *강한* 모델이 필요하다 — gemma4:26b 는
+# complete 의 sync-gate 를 못 넘어 flaky(위임=probe.txt 는 쓰나 ticket 이 claimed 에 머묾·PM 39 실측).
+# qwen3.5:397b-cloud(ollama cloud)로 full wave PASS 검증(69s·PM 39). 그래서 release default 는 이 모델
+# 이다(runtime_smoke[lite·sync-gate 없음]는 gemma 로 충분 — 거긴 별도 default). env override 로 교체 가능.
+LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/qwen3.5:397b-cloud")
 
 # full wave probe 가 작성하도록 지시하는 산출 파일·내용 — side-effect 단언의 기준(단일 진실).
 PROBE_FILE = "probe.txt"
