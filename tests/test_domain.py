@@ -1197,3 +1197,232 @@ def test_capture_requires_tickets_or_touches(dm):
     # 둘 다 없으면 argparse SystemExit (mutually exclusive·required).
     with pytest.raises(SystemExit):
         dm.main(["capture"])
+
+
+# ── capture-draft (researcher 조사 prose → domain 초안 scaffold·git 무조작·T-0167) ──
+# researcher 의 조사 prose 를 domain draft 페이지(status:draft)로 scaffold. no-auto-commit
+# 3중: (1) frontmatter status:draft 가 index 제외 진실 (2) git add/commit 절대 호출 안 함
+# (3) promote 명령 부재 = draft→정식이 사람 손. prose 는 verbatim 배치(요약/구조화 금지).
+
+
+def _read_draft(domain_dir: Path, slug: str) -> str:
+    """tmp domain dir 의 <slug>.draft.md 본문 전체를 읽는다(frontmatter+body)."""
+    return (domain_dir / f"{slug}.draft.md").read_text(encoding="utf-8")
+
+
+def test_capture_draft_writes_scaffold_with_draft_status(dm, tmp_path):
+    # capture-draft 가 <slug>.draft.md 를 status:draft frontmatter + title + source 로 생성.
+    path = dm.write_draft_page(
+        "Factor Beta Pipeline",
+        covers=["src/analysis/**"],
+        source=None,
+        domain_dir=tmp_path,
+        today="2026-06-27",
+    )
+    assert path == tmp_path / "factor-beta-pipeline.draft.md"
+    text = path.read_text(encoding="utf-8")
+    assert 'title: "Factor Beta Pipeline"' in text
+    assert "status: draft" in text          # index 제외 진실
+    assert "derived: false" in text         # 사람 author
+    assert "updated: 2026-06-27" in text
+    assert "covers: [src/analysis/**]" in text
+    assert 'source: "(none)"' in text       # provenance (미지정)
+    # _template.md 골격 절.
+    assert "# Factor Beta Pipeline" in text
+    assert "## 조사 결과" in text
+
+
+def test_capture_draft_source_file_prose_verbatim(dm, tmp_path):
+    # --source <file>: 파일 prose 가 ## 조사 결과 아래 *그대로*(verbatim) 배치된다.
+    src = tmp_path / "research.txt"
+    prose = "factor beta 는 X 로 추정.\n  - 근거 1\n  - 근거 2 (미해결: Y)\n"
+    src.write_text(prose, encoding="utf-8")
+    path = dm.write_draft_page(
+        "베타", slug="beta", source=str(src), domain_dir=tmp_path,
+    )
+    text = path.read_text(encoding="utf-8")
+    # prose 가 verbatim(요약/구조화 없이) 본문에 들어간다.
+    assert prose.strip() in text
+    assert "근거 1" in text and "근거 2 (미해결: Y)" in text
+    assert 'source: "' in text and "research.txt" in text  # provenance 파일경로
+
+
+def test_capture_draft_source_stdin(dm, tmp_path, monkeypatch):
+    # --source -: stdin prose 를 읽어 verbatim 배치(CLI main 경로).
+    import io
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO("stdin 으로 들어온 조사 결과 prose.\n"))
+    rc = dm.main(["capture-draft", "--title", "Stdin Page", "--slug", "stdin-page", "--source", "-"])
+    assert rc == 0
+    text = _read_draft(tmp_path, "stdin-page")
+    assert "stdin 으로 들어온 조사 결과 prose." in text
+    assert "status: draft" in text
+
+
+def test_capture_draft_no_covers_todo_placeholder(dm, tmp_path):
+    # --covers 미지정 → 빈 covers + 본문 TODO placeholder.
+    path = dm.write_draft_page("미정", slug="undef", source=None, domain_dir=tmp_path)
+    text = path.read_text(encoding="utf-8")
+    assert "covers: []" in text
+    assert "TODO PM: covers 글롭" in text
+
+
+def test_capture_draft_no_source_todo_placeholder(dm, tmp_path):
+    # --source 미지정 → 빈 본문 TODO placeholder(조사 prose 자리).
+    path = dm.write_draft_page("빈본문", slug="empty-body", source=None, domain_dir=tmp_path)
+    text = path.read_text(encoding="utf-8")
+    assert "TODO PM: 조사 prose" in text
+
+
+def test_capture_draft_default_type_research(dm, tmp_path):
+    # --type 미지정 → research 기본.
+    path = dm.write_draft_page("기본타입", slug="t", source=None, domain_dir=tmp_path)
+    assert "type: research" in path.read_text(encoding="utf-8")
+    # 명시 type 은 그대로.
+    path2 = dm.write_draft_page("개념", slug="c", ptype="concept", source=None, domain_dir=tmp_path)
+    assert "type: concept" in path2.read_text(encoding="utf-8")
+
+
+def test_capture_draft_slug_from_title_when_unspecified(dm, tmp_path):
+    # --slug 미지정 → title 에서 kebab 도출.
+    path = dm.write_draft_page("Hello World v2", source=None, domain_dir=tmp_path)
+    assert path.name == "hello-world-v2.draft.md"
+
+
+def test_capture_draft_non_ascii_title_falls_back_to_draft_slug(dm, tmp_path):
+    # 순한글 title(영숫자 0) → 빈 슬러그 → 기본 'draft' 슬러그 대체(crash 0).
+    path = dm.write_draft_page("순한글제목", source=None, domain_dir=tmp_path)
+    assert path.name == "draft.draft.md"
+
+
+def test_capture_draft_no_auto_commit_git_status_unchanged(dm, tmp_path):
+    # **no-auto-commit (검토 게이트)**: 임시 git repo 에서 capture-draft 후 staging 변화 0.
+    # capture-draft 는 파일을 *쓰되* git add/commit 을 절대 호출하지 않는다 — untracked 로만
+    # 남아 사람이 검토(promote)할 때까지 staged 변화가 없다.
+    import subprocess
+    repo = tmp_path / "repo"
+    domain_dir = repo / "domain"
+    domain_dir.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+
+    dm.write_draft_page("드래프트", slug="d", source=None, domain_dir=domain_dir)
+
+    # staged(인덱스) 변화 0 — git add 가 호출되지 않았다.
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert staged == ""
+    # 파일은 untracked 로 존재(쓰이긴 했다·git 은 add 안 한 디렉토리를 `-u` 로 펼친다).
+    untracked = subprocess.run(
+        ["git", "status", "--porcelain", "-uall"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "?? domain/d.draft.md" in untracked
+    # 커밋도 0(HEAD 부재).
+    rc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True).returncode
+    assert rc != 0  # 커밋이 없다.
+
+
+def test_capture_draft_excluded_from_load_pages_index(dm, tmp_path):
+    # **draft index 제외**: status:draft scaffold 는 load_pages 가 빼고 정식만 반환.
+    dm.write_draft_page("드래프트", slug="drafted", source=None, domain_dir=tmp_path)
+    _write_page(
+        tmp_path, "official.md",
+        frontmatter="title: 정식\ntype: concept\ncovers:\n  - src/x/**",
+    )
+    pages = dm.load_pages(domain_dir=tmp_path)
+    titles = [p["title"] for p in pages]
+    assert titles == ["정식"]  # draft 제외·정식만.
+
+
+def test_load_pages_excludes_draft_status_marker_not_suffix(dm, tmp_path):
+    # 필터 기준 = frontmatter status:draft 이지 .draft.md 파일명이 아니다.
+    # (a) status:draft 인데 평범한 .md 이름 → 제외.
+    _write_page(
+        tmp_path, "plain-named.md",
+        frontmatter="title: 초안A\ntype: research\nstatus: draft",
+    )
+    # (b) .draft.md suffix 인데 status 부재(정식) → 포함(suffix 는 필터 아님).
+    _write_page(
+        tmp_path, "suffixed.draft.md",
+        frontmatter="title: 정식B\ntype: concept",
+    )
+    titles = [p["title"] for p in dm.load_pages(domain_dir=tmp_path)]
+    assert titles == ["정식B"]  # status 기준 — A(draft) 제외·B(suffix지만 정식) 포함.
+
+
+def test_parse_page_status_field(dm, tmp_path):
+    # parse_page 가 status frontmatter 를 읽는다(부재 → None = 정식).
+    drafted = _write_page(
+        tmp_path, "d.md", frontmatter="title: D\ntype: research\nstatus: draft",
+    )
+    official = _write_page(
+        tmp_path, "o.md", frontmatter="title: O\ntype: concept",
+    )
+    assert dm.parse_page(drafted)["status"] == "draft"
+    assert dm.parse_page(official)["status"] is None
+
+
+def test_promote_simulation_status_removal_includes_page(dm, tmp_path):
+    # **promote 시뮬**: status:draft 제거 → load_pages 가 비로소 포함 = draft→정식이 마커 1개.
+    path = dm.write_draft_page(
+        "승격대상", slug="promote-me", covers=["src/y/**"], source=None, domain_dir=tmp_path,
+    )
+    # 전: draft → index 제외.
+    assert dm.load_pages(domain_dir=tmp_path) == []
+    # promote 시뮬 = frontmatter status:draft 줄 제거(파일명 rename 은 필터 무관·생략).
+    text = path.read_text(encoding="utf-8")
+    promoted = text.replace("status: draft\n", "")
+    path.write_text(promoted, encoding="utf-8")
+    # 후: 비로소 포함(마커 1개 제거가 draft→정식).
+    titles = [p["title"] for p in dm.load_pages(domain_dir=tmp_path)]
+    assert titles == ["승격대상"]
+
+
+def test_capture_draft_cli_exit_code_success(dm, tmp_path, monkeypatch, capsys):
+    # CLI 성공 → exit 0 + 생성 경로/promote 안내 출력.
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    rc = dm.main(["capture-draft", "--title", "조사X", "--slug", "research-x"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "draft 생성" in out
+    assert "research-x.draft.md" in out
+    assert "promote" in out
+    assert (tmp_path / "research-x.draft.md").exists()
+
+
+def test_capture_draft_requires_title(dm):
+    # --title 부재 → argparse SystemExit(required).
+    with pytest.raises(SystemExit):
+        dm.main(["capture-draft"])
+
+
+def test_capture_draft_missing_source_file_errors(dm, tmp_path, monkeypatch, capsys):
+    # --source 파일 부재 → 명시 에러(rc 1·stderr)·잘못된 빈 페이지 생성 안 함.
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    rc = dm.main(["capture-draft", "--title", "X", "--slug", "x",
+                  "--source", str(tmp_path / "does-not-exist.txt")])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "capture-draft 실패" in err
+    assert not (tmp_path / "x.draft.md").exists()  # 페이지 생성 안 됨.
+
+
+def test_capture_draft_invalid_type_rejected(dm):
+    # --type 은 concept|guide|research 만(choices) — 그 외 SystemExit.
+    with pytest.raises(SystemExit):
+        dm.main(["capture-draft", "--title", "X", "--type", "bogus"])
+
+
+def test_capture_draft_covers_csv_parsed(dm, tmp_path, monkeypatch):
+    # --covers CSV → 콤마분리·공백 trim·빈 토큰 제거된 covers 리스트.
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    rc = dm.main(["capture-draft", "--title", "C", "--slug", "c",
+                  "--covers", "src/a/** , src/b/** ,"])
+    assert rc == 0
+    text = _read_draft(tmp_path, "c")
+    assert "covers: [src/a/**, src/b/**]" in text
+    assert "TODO PM: covers" not in text  # covers 있으므로 placeholder 없음.
