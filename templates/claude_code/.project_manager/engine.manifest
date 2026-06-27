@@ -25,9 +25,9 @@
 .project_manager/tools/pm_relay.py
 # external_review: 외부 리뷰어 어댑터 (ADR-0004·기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
 .project_manager/tools/external_review.py
-# worktree_pool: repo별 worktree 풀 리스 엔진 (ADR-0013·우산 모델). 순수 엔진(git DI seam)
+# worktree_pool: repo별 worktree 풀 리스 엔진 (ADR-0013·multi-PM 모델). 순수 엔진(git DI seam)
 .project_manager/tools/worktree_pool.py
-# pm_config: 우산 셋업/관리 파사드 디스패처 (ADR-0011·0014). 루트 forwarder pm-config.sh/.cmd 는
+# pm_config: multi-PM 셋업/관리 파사드 디스패처 (ADR-0011·0014). 루트 forwarder pm-config.sh/.cmd 는
 #   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 동형·manifest 밖)
 .project_manager/tools/pm_config.py
 

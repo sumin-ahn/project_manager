@@ -45,6 +45,17 @@ def _live_files() -> list[Path]:
         REPO / "templates/opencode/.opencode/command/pm-bootstrap.md",
         REPO / "templates/claude_code/pm-config.sh",
         REPO / "templates/opencode/pm-config.sh",
+        # engine.manifest 3곳 + 루트 pm-config 파사드 (T-0171 범위 확장): 폐기 용어 '우산'이
+        #   여기 잔존해도 위 glob/list 가 안 봐서 살아남았다. README.md 는 의도적으로 제외 —
+        #   "옛 '우산'=…재정의·ADR-0016" 은 용어 *재정의 설명*이라 historical-context 정당.
+        REPO / ".project_manager/engine.manifest",
+        REPO / "templates/claude_code/.project_manager/engine.manifest",
+        REPO / "templates/opencode/.project_manager/engine.manifest",
+        # ① worktree 루트 파사드 — 위 list 는 templates/*/pm-config.sh 만 있고 루트 누락이었다.
+        #   존재하는 파사드만 검사(미존재는 f.exists() 필터로 자동 제외).
+        REPO / "pm-config.sh",
+        REPO / "pm-import.sh",
+        REPO / "pm-update.sh",
     ]
     return [f for f in files if f.exists() and f.name != _SELF]
 
