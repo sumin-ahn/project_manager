@@ -10,8 +10,14 @@ T-0170 이 manifest/facade 전파 채널 갭을 노출했다. 실측 결론:
 실 파일 존재/내용만 본다(LLM·subprocess 미진입). manifest 파싱은 pm_update.read_manifest
 재사용(주석·`@마커` 제거를 한 곳에서 — 자체 파서 drift 회피).
 
-historical 주의: manifest *경로* 만 비교한다(주석 drift 는 무시 — 갭2 실체가 주석뿐).
-폐기 용어 잔존은 별개 가드(test_terminology·T-0171 범위 확장)가 본다.
+historical 주의: 경로-집합 가드(가드 2)는 manifest *경로* 만 비교한다(주석 drift 는 무시 — 갭2
+실체가 주석뿐). 폐기 용어 잔존은 별개 가드(test_terminology·T-0171 범위 확장)가 본다.
+
+T-0176 보강(가드 2b·content 정합): 경로-집합·facade 가드는 공유 엔진 파일의 *내용* drift 를 못
+잡는다(전파 누락·구버전 잔존이 회귀를 통과). 공유 엔진(manifest non-render·양 트리 실재)을
+canonical ↔ 각 템플릿 byte-identical 로 강제해 그 갭을 메운다. 어댑터-비대칭(.claude/* vs
+.opencode/*·@render 렌더 항목)은 스코프 밖 — render/target_owned 마커 + 경로 비대칭으로 자동 제외
+(별도 content 화이트리스트 불요·path-set 화이트리스트와 동거).
 """
 from __future__ import annotations
 
@@ -90,6 +96,107 @@ def test_opencode_manifest_diff_is_whitelisted_only():
         f"opencode manifest 제외 경로가 화이트리스트와 불일치 — "
         f"예상 {sorted(CLAUDE_ONLY_PATHS)}, 실제 {sorted(dropped)}"
     )
+
+
+# ── 가드 2b: content 정합 (공유 엔진 byte-identical) ─────────────────────────
+
+
+def _expand_manifest_files(base: Path, relpath: str) -> dict[str, Path]:
+    """manifest 경로 1개를 `{rel파일경로: 절대경로}` 로 전개 (파일=자기 자신·디렉토리=재귀 파일).
+
+    base 아래 해당 경로가 없으면 빈 dict (경로 비대칭 — path-set 가드 소관, content 가드 밖)."""
+    p = base / relpath
+    if p.is_file():
+        return {relpath: p}
+    if p.is_dir():
+        return {
+            str(f.relative_to(base)): f
+            for f in sorted(p.rglob("*"))
+            if f.is_file()
+        }
+    return {}
+
+
+def _engine_content_diffs(template_root: Path, manifest_entries=None) -> list[str]:
+    """canonical(REPO 루트) ↔ template_root 의 *공유 엔진* 파일 byte 차이 리스트 (정합용 helper).
+
+    스코프 = manifest 항목 중 ``@render``/``@target-owned`` 가 아니고(=byte-copy 계약·렌더/타깃소유는
+    내용이 갈릴 수 있어 제외) **양 트리에 실재**하는(경로 비대칭은 path-set 가드 소관) 파일. 디렉토리
+    항목은 재귀 파일 단위로 본다. read_manifest(pm_update) 재사용 — 자체 파서 금지(주석·`@마커` 제거 동형).
+
+    sensitivity 용으로 ``manifest_entries`` 를 주입할 수 있다(미지정 시 ROOT_MANIFEST 파싱). 반환은
+    drift 파일의 rel 경로 + 비대칭은 ``MISSING:`` 접두(양 트리 모두 present 인 디렉토리 내부 누락)."""
+    pm_update = _load_pm_update()
+    if manifest_entries is None:
+        manifest_entries = pm_update.read_manifest(ROOT_MANIFEST)
+    diffs: list[str] = []
+    for entry in manifest_entries:
+        if getattr(entry, "render", False) or getattr(entry, "target_owned", False):
+            continue  # 렌더/타깃소유 = byte-copy 계약 밖
+        rel = str(entry)
+        canon_files = _expand_manifest_files(REPO, rel)
+        if not canon_files:
+            continue  # canonical 부재 — 별개 사안(여기선 비교 불가)
+        tmpl_files = _expand_manifest_files(template_root, rel)
+        if not tmpl_files:
+            continue  # 경로 비대칭(어댑터-고유) — path-set 화이트리스트 가드 소관
+        for rel_file in sorted(canon_files):
+            tmpl_path = tmpl_files.get(rel_file)
+            if tmpl_path is None:
+                diffs.append(f"MISSING:{rel_file}")  # 디렉토리 내부 파일 누락
+            elif canon_files[rel_file].read_bytes() != tmpl_path.read_bytes():
+                diffs.append(rel_file)
+    return diffs
+
+
+def test_shared_engine_files_are_byte_identical_across_templates():
+    """공유 엔진 파일(manifest non-render·양 트리 실재)이 canonical ↔ 각 템플릿 byte-identical.
+
+    pm_update overwrite 계약 — `.project_manager/tools/**`·`wiki/_template`·`.gitignore`·`.gitattributes`
+    등 공유 엔진은 양 템플릿 트리에 canonical 과 1바이트도 다르지 않아야 한다. content drift(전파
+    누락·구버전 잔존)를 즉시 fail 시킨다 — path-set 가드(경로만)·facade 가드(존재만)가 못 보던 갭.
+    어댑터-비대칭(.claude/* vs .opencode/*·@render 렌더 항목)은 스코프 밖(helper 가 제외)."""
+    for name, root in TEMPLATE_ROOTS.items():
+        diffs = _engine_content_diffs(root)
+        assert not diffs, (
+            f"'{name}' 템플릿의 공유 엔진 파일이 canonical 과 content drift — {sorted(diffs)}. "
+            "pm_update 전파 누락/구버전 잔존 — 엔진을 다시 전파(pm_update --target)해야 한다."
+        )
+
+
+def test_content_guard_is_sensitive_to_drift():
+    """sensitivity — 고의로 1바이트 다른 가상 template 트리에 helper 가 drift 를 검출함을 입증(non-vacuous).
+
+    실 트리는 안 건드린다 — canonical(REPO) board.py 내용에 1바이트를 더한 사본을 임시 디렉토리
+    (가상 template_root)에 만들어 helper 에 주입한다. canonical 은 실 파일이라 불변. helper 가 그 1바이트
+    차이를 잡아내면(diff == [board.py]) 가드가 vacuous 하지 않음이 입증된다. 끝에 동일-트리 음성 통제로
+    false-positive 가 아님도 확인한다."""
+    import tempfile
+
+    pm_update = _load_pm_update()
+    # board.py 엔트리 하나만 골라 격리 (단일 파일·non-render).
+    entry = next(
+        e for e in pm_update.read_manifest(ROOT_MANIFEST)
+        if str(e) == ".project_manager/tools/board.py"
+    )
+    rel = str(entry)
+    canon_file = REPO / rel
+
+    with tempfile.TemporaryDirectory() as td:
+        fake_root = Path(td)
+        target = fake_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # canonical 내용 + 1바이트 → 고의 drift (실 파일 미변경).
+        target.write_bytes(canon_file.read_bytes() + b"\n# sensitivity drift\n")
+
+        diffs = _engine_content_diffs(fake_root, manifest_entries=[entry])
+        assert diffs == [rel], (
+            f"content 가드가 1바이트 drift 를 못 잡음(vacuous 위험) — 검출 {diffs}, 예상 [{rel!r}]"
+        )
+
+    # 음성 통제: 동일 입력(canonical=REPO 자신)엔 0 diff (false-positive 아님 확인).
+    no_diff = _engine_content_diffs(REPO, manifest_entries=[entry])
+    assert no_diff == [], f"동일 트리에 false-positive drift 검출 — {no_diff}"
 
 
 # ── 가드 3: facade 정합 (갭3 재발 차단) ──────────────────────────────────────
