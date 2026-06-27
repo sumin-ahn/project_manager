@@ -1363,3 +1363,211 @@ def test_log_without_changes_errors(pm_update, tmp_path, monkeypatch, capsys):
     assert rc == 1, "--log 가 --changes 없이도 통과(조용한 무시)."
     err = capsys.readouterr().err
     assert "--log" in err and "--changes" in err
+
+
+# ════════════════════════════════════════════════════════════════════════
+# T-0169 — board-분리 인지 template dest 리매핑 (ADR-0033 ① · 실 발생 버그 reconcile)
+# ════════════════════════════════════════════════════════════════════════
+# manifest 는 `wiki/tickets/_template.md`(① canonical·legacy 실 위치)를 들고 있다. board 가
+# `.project_manager/board/`(submodule)로 분리된 adopter 에선 _template.md 가
+# `board/tickets/_template.md` 에 산다(board_root() 추종). pm_update 가 dest 를 board_root 로
+# 리매핑하지 않으면 매 sync 가 `wiki/tickets/_template.md` 를 부활시킨다(dead cruft·drift).
+# 아래는 양 형상 hermetic 검증 — board-분리 시 board/, legacy 시 wiki/ (회귀 무영향).
+
+_TEMPLATE_REL = ".project_manager/wiki/tickets/_template.md"
+_BOARD_TEMPLATE_REL = ".project_manager/board/tickets/_template.md"
+
+
+def _make_board_separated(dest_root: Path) -> None:
+    """dest 를 board-분리 형상으로 — `.project_manager/board/tickets/{open,...}` 생성.
+
+    board_root()/`_is_board_separated` 가 *실측*(board/tickets 가 dir 인가)으로 가르므로,
+    그 디렉토리를 만들어 분리 adopter 를 모사한다(test_board_root._make_board_dir 동형)."""
+    board_dir = dest_root / ".project_manager" / "board"
+    for status in ("open", "claimed", "blocked", "done"):
+        (board_dir / "tickets" / status).mkdir(parents=True, exist_ok=True)
+
+
+def _make_template_upstream(root: Path) -> None:
+    """upstream(source) — manifest 에 wiki/tickets/_template.md 를 엔진으로 등재 + 실 파일.
+
+    ① canonical 형상: upstream 은 항상 `wiki/tickets/_template.md` 에 템플릿을 들고 있다
+    (board-분리는 *dest* 형상이지 upstream 형상이 아니다). source 는 wiki/ 에서 그대로 읽힌다."""
+    tmpl = root / _TEMPLATE_REL
+    tmpl.parent.mkdir(parents=True, exist_ok=True)
+    tmpl.write_text("# ticket 본문 템플릿 (upstream)\n", encoding="utf-8")
+    (root / ".project_manager" / "engine.manifest").write_text(
+        _TEMPLATE_REL + "\n", encoding="utf-8")
+
+
+# ── 단위: _is_board_separated 실측 판별 (board.py board_root 동형) ────────────
+
+def test_is_board_separated_false_when_no_board_dir(pm_update, tmp_path):
+    """board/tickets 부재(legacy·솔로) → _is_board_separated == False."""
+    assert pm_update._is_board_separated(tmp_path) is False
+
+
+def test_is_board_separated_true_when_board_tickets_dir(pm_update, tmp_path):
+    """`.project_manager/board/tickets` 가 dir → _is_board_separated == True (분리 형상)."""
+    _make_board_separated(tmp_path)
+    assert pm_update._is_board_separated(tmp_path) is True
+
+
+def test_is_board_separated_ignores_bare_board_without_tickets(pm_update, tmp_path):
+    """board/ 만 있고 tickets/ 가 없으면 legacy 로 본다 (board_root 의 graceful 실측 동형)."""
+    (tmp_path / ".project_manager" / "board").mkdir(parents=True)
+    assert pm_update._is_board_separated(tmp_path) is False
+
+
+# ── 단위: _dest_relpath_for 리매핑 (template 한정·분리 시만) ──────────────────
+
+def test_dest_relpath_remaps_template_when_separated(pm_update, tmp_path):
+    """board-분리 dest → wiki/tickets/_template.md 가 board/tickets/_template.md 로 리매핑."""
+    _make_board_separated(tmp_path)
+    assert pm_update._dest_relpath_for(_TEMPLATE_REL, tmp_path) == _BOARD_TEMPLATE_REL
+
+
+def test_dest_relpath_keeps_template_in_wiki_when_legacy(pm_update, tmp_path):
+    """legacy dest(board/ 미분리) → 종전 wiki/tickets/_template.md 유지(무변경·회귀)."""
+    assert pm_update._dest_relpath_for(_TEMPLATE_REL, tmp_path) == _TEMPLATE_REL
+
+
+def test_dest_relpath_passthrough_other_paths_even_when_separated(pm_update, tmp_path):
+    """리매핑은 _template.md 한정 — 다른 엔진 경로는 board-분리 dest 여도 입력 그대로(무변경)."""
+    _make_board_separated(tmp_path)
+    other = ".project_manager/tools/board.py"
+    assert pm_update._dest_relpath_for(other, tmp_path) == other
+
+
+def test_dest_relpath_normalizes_windows_separators(pm_update, tmp_path):
+    """relpath 에 `\\`(Windows _iter_files str(Path))가 섞여도 posix-normalize 후 리매핑한다."""
+    _make_board_separated(tmp_path)
+    win_rel = _TEMPLATE_REL.replace("/", "\\")
+    assert pm_update._dest_relpath_for(win_rel, tmp_path) == _BOARD_TEMPLATE_REL
+
+
+# ── plan 레벨: 양 형상 dst 목적지 (실 복사 없이) ──────────────────────────────
+
+def test_plan_writes_template_to_board_when_separated(pm_update, tmp_path):
+    """board-분리 dest → plan 의 template change dst 가 board/tickets/_template.md (wiki/ 부활 0)."""
+    source = tmp_path / "upstream"
+    dest = tmp_path / "dest"
+    _make_template_upstream(source)
+    _make_board_separated(dest)
+
+    manifest = pm_update.read_manifest(source / ".project_manager" / "engine.manifest")
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+
+    assert missing == []
+    rels = [c[0] for c in changes]
+    assert _BOARD_TEMPLATE_REL in rels, f"board-분리 dest 인데 board 경로로 plan 안 됨: {rels}"
+    assert _TEMPLATE_REL not in rels, f"board-분리 dest 인데 wiki/ 경로를 부활(drift): {rels}"
+    # dst 절대경로도 board/ 안을 가리킨다(source 는 upstream wiki/ 에서 그대로 읽힘).
+    tmpl_change = next(c for c in changes if c[0] == _BOARD_TEMPLATE_REL)
+    _r, sp, dst, _kind = tmpl_change
+    assert Path(dst) == dest / _BOARD_TEMPLATE_REL
+    assert Path(sp) == source / _TEMPLATE_REL, "source 는 upstream wiki/ 에서 읽어야 한다(dest 만 옮김)."
+
+
+def test_plan_writes_template_to_wiki_when_legacy(pm_update, tmp_path):
+    """legacy dest(board/ 미분리) → plan 의 template change dst 가 wiki/tickets/_template.md (종전)."""
+    source = tmp_path / "upstream"
+    dest = tmp_path / "dest"
+    _make_template_upstream(source)
+    (dest / ".project_manager").mkdir(parents=True)  # board/ 없음 = legacy
+
+    manifest = pm_update.read_manifest(source / ".project_manager" / "engine.manifest")
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+
+    assert missing == []
+    rels = [c[0] for c in changes]
+    assert _TEMPLATE_REL in rels, f"legacy dest 인데 종전 wiki/ 경로로 plan 안 됨(회귀): {rels}"
+    assert _BOARD_TEMPLATE_REL not in rels, f"legacy dest 인데 board/ 로 옮김(오리매핑): {rels}"
+    tmpl_change = next(c for c in changes if c[0] == _TEMPLATE_REL)
+    assert Path(tmpl_change[2]) == dest / _TEMPLATE_REL
+
+
+def test_plan_template_already_at_board_no_change(pm_update, tmp_path):
+    """board-분리 dest 에 board/tickets/_template.md 가 이미 동일 내용이면 update 없음(no-op).
+
+    리매핑된 dst 와 비교하므로 board 위치의 동일 파일은 변경 0 — 매 sync 가 무변경(idempotent)."""
+    source = tmp_path / "upstream"
+    dest = tmp_path / "dest"
+    _make_template_upstream(source)
+    _make_board_separated(dest)
+    # board 위치에 upstream 과 동일 내용 선배치.
+    board_tmpl = dest / _BOARD_TEMPLATE_REL
+    board_tmpl.write_text((source / _TEMPLATE_REL).read_text(encoding="utf-8"), encoding="utf-8")
+
+    manifest = pm_update.read_manifest(source / ".project_manager" / "engine.manifest")
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+
+    assert missing == []
+    assert changes == [], f"board 위치에 동일 템플릿이 있는데 변경이 떴다(idempotent 깨짐): {changes}"
+
+
+# ── e2e main --dry-run: 실 발생 버그 (board-분리 adopter 가 wiki/ 부활) ────────
+
+def test_dry_run_board_separated_does_not_revive_wiki_template(pm_update, tmp_path, monkeypatch, capsys):
+    """board-분리 adopter 의 `pm_update --dry-run` 이 [new] wiki/tickets/_template.md 를 안 올린다.
+
+    이게 실 발생 버그(drift-0 DoD): board-분리 인스턴스에서 매 sync 가 wiki/tickets/_template.md
+    를 부활(`[new]`)시키던 것을 reconcile — 표기는 board/tickets/_template.md 로 정직히 나온다."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "upstream"
+    _make_template_upstream(source)
+    _make_board_separated(fake_repo)
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    rc = pm_update.main(["--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert _TEMPLATE_REL not in out, \
+        f"board-분리 adopter 가 wiki/tickets/_template.md 를 부활시킴(drift·실 버그 재발): {out!r}"
+    assert _BOARD_TEMPLATE_REL in out, \
+        f"board-분리 dest 의 template 이 board/ 경로로 표기되지 않음: {out!r}"
+
+
+def test_dry_run_legacy_ships_wiki_template(pm_update, tmp_path, monkeypatch, capsys):
+    """legacy adopter 의 `pm_update --dry-run` 은 종전대로 wiki/tickets/_template.md 를 ship(회귀)."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "upstream"
+    _make_template_upstream(source)
+    (fake_repo / ".project_manager").mkdir(parents=True)  # board/ 없음 = legacy
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    rc = pm_update.main(["--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert _TEMPLATE_REL in out, \
+        f"legacy adopter 가 종전 wiki/tickets/_template.md 를 ship 안 함(회귀): {out!r}"
+    assert _BOARD_TEMPLATE_REL not in out, \
+        f"legacy adopter 인데 board/ 경로로 표기(오리매핑): {out!r}"
+
+
+def test_apply_board_separated_writes_template_into_board(pm_update, tmp_path, monkeypatch, capsys):
+    """실 sync(apply) — board-분리 dest 에 board/tickets/_template.md 가 쓰이고 wiki/ 는 안 만들어진다.
+
+    dry-run 표기뿐 아니라 실제 파일 IO 도 board/ 안으로 가는지(그리고 wiki/ 부활 0) 검증."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "upstream"
+    _make_template_upstream(source)
+    _make_board_separated(fake_repo)
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    # baseline rev 기록은 본 테스트 무관 — 라이브 git 없이 graceful 생략되게 stub None.
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main([])  # 실 sync.
+    assert rc == 0
+    board_tmpl = fake_repo / _BOARD_TEMPLATE_REL
+    wiki_tmpl = fake_repo / _TEMPLATE_REL
+    assert board_tmpl.exists(), "board-분리 sync 후 board/tickets/_template.md 가 안 쓰임."
+    assert board_tmpl.read_text(encoding="utf-8") == \
+        (source / _TEMPLATE_REL).read_text(encoding="utf-8")
+    assert not wiki_tmpl.exists(), "board-분리 sync 가 wiki/tickets/_template.md 를 부활(drift)."

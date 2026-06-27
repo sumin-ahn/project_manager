@@ -40,6 +40,9 @@
 
 # ── 템플릿 (도구·skill 이 소비) ──────────────────────────────────
 .project_manager/wiki/pm_state.template.md
+# ticket 본문 템플릿 — entry 는 wiki/tickets/_template.md(① canonical·legacy 실 위치)로 두되,
+#   board 분리 adopter(ADR-0033 ①·board_root)에선 pm_update 가 dest 를 board/tickets/_template.md
+#   로 *리매핑*해 동기한다(T-0169·_dest_relpath_for). manifest 자체는 ①↔② 동일·자체 drift 0.
 .project_manager/wiki/tickets/_template.md
 .project_manager/wiki/raw/spikes/_template.md
 # domain/ *페이지*는 인스턴스 소유(manifest 밖·domain.py 행 참조) — _template.md 만 엔진 소유 스캐폴드 (ADR-0018·T-0095)
