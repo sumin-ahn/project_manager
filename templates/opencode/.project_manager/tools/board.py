@@ -2903,7 +2903,17 @@ def _render_managed_relpaths() -> set[str]:
     pm_update.read_manifest 를 재사용해 `.render` 플래그가 True 인 항목만 모은다. manifest
     부재·로드 실패는 빈 set(검사 대상 0·무발화). manifest 의 @render path 가 디렉토리면 그
     하위 출하 어댑터가 전부 산출물이므로 prefix 매칭에 쓴다.
+
+    **트리 성격 게이트 (local.conf·ADR-0028 render-overlay 의미론)**: render-leak 은 *렌더
+    산출물*(operational 토큰이 concrete 로 치환된 어댑터)의 미해소 토큰을 잡는 가드다. 그런데
+    토큰-form *소스 트리*(① canonical worktree)는 산출물이 아니라 출하 전 원본이라 토큰이 정상
+    이다. local.conf 부재 ⟺ 소스 트리(채택/init 전), 존재 ⟺ 채택 인스턴스(render 산출물 보유)
+    이므로, local.conf 가 파일로 없으면 검사 대상 0(무발화)으로 잘라낸다 — `.opencode`(templates
+    =소스)가 스캔에서 빠지는 것의 *트리-단위 일반화*. 이로써 루트 manifest 가 `.claude/* @render`
+    여도 ① worktree(local.conf 부재)에선 토큰-form 어댑터를 산출물로 오인하지 않는다.
     """
+    if not (REPO / ".project_manager" / "local.conf").is_file():
+        return set()  # 토큰-form 소스 트리(local.conf 부재·① canonical) — render 산출물 아님.
     pm_update = _load_pm_update_module()
     if pm_update is None:
         return set()
@@ -2923,8 +2933,11 @@ def _engine_manifest_paths() -> list[Path]:
 
     render-leak 은 *렌더 산출물*(operational 토큰이 concrete 로 치환된 어댑터 .md)에서 미해소
     토큰을 잡는 가드다. 그 산출물 트리는 **루트 트리**다 — 채택자/②는 루트 manifest 가 @render 면
-    루트 `.claude/`·`.opencode/` 가 렌더된 산출물이고, 도그푸딩 모노레포(이 repo)는 루트 manifest 가
-    plain(token-form 유지)이라 @render path 0 → 무발화.
+    루트 `.claude/`·`.opencode/` 가 렌더된 산출물이다. 도그푸딩 모노레포(이 repo·① canonical)는
+    루트 manifest 가 `.claude/* @render` 여도 토큰-form 소스라 산출물이 아니다 — 그 트리-성격
+    판별은 `_render_managed_relpaths` 의 local.conf 게이트가 한다(부재=소스 트리→검사 0·ADR-0028
+    render-overlay 의미론). 따라서 이 함수는 manifest *위치*만 정하고, 토큰-form 소스의 무발화는
+    local.conf 게이트가 보장한다.
 
     ⚠️ `templates/<harness>/` 는 **스캔하지 않는다**: 출하 템플릿은 *token-form 소스*다(`--target`
     이 copy2 로 토큰을 보존). 그 manifest 가 `.claude/agents @render` 여도 그건 *채택자가 import/
@@ -2972,10 +2985,12 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
     `_ADVISORY_LINT_KINDS` 밖 → `lint --gate` 차단 → pre-push exit 1(dangling-wikilink 미러).
     half-rendered 토큰은 harness-load 에이전트 지시의 무음 열화라 실결함(경고 아님).
 
-    **활성화 전 무발화 경계**: 검사 대상 = engine.manifest 에서 `@render` 태그가 붙은 path 의
-    산출물뿐(`_render_managed_relpaths`). 현 트리는 실 path @render 0(D17-2/T-0133 활성화 전)
-    → 검사 대상 0 → 무발화(기존 토큰을 가진 미활성 어댑터 .md 는 *검사하지 않음*). pm_render
-    의 post-render assertion 과 2중 backstop — pm_update 가 마지막 도구였는지 무관한 상시 가드.
+    **트리 성격 무발화 경계**: 검사 대상 = engine.manifest 에서 `@render` 태그가 붙은 path 의
+    산출물뿐(`_render_managed_relpaths`). 그 헬퍼는 local.conf 부재 트리(토큰-form 소스·①
+    canonical)를 검사 0 으로 잘라낸다(local.conf=트리 성격 판별·ADR-0028 render-overlay 의미론)
+    — 루트 manifest 가 `.claude/* @render` 여도 소스 트리에선 무발화, 채택 인스턴스(local.conf
+    보유·render 산출물)에선 미해소 토큰을 잡는다. pm_render 의 post-render assertion 과 2중
+    backstop — pm_update 가 마지막 도구였는지 무관한 상시 가드.
 
     fail-soft: manifest 부재·로드 실패·파일 read 오류 → 그 부분 skip(검사 대상 0·솔로/신규 무영향).
     """

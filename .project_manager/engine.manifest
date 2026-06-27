@@ -49,8 +49,15 @@
 .project_manager/wiki/domain/_template.md
 
 # ── 서브에이전트 · skill (엔진) ──────────────────────────────────
-.claude/agents
-.claude/skills
+# @render: byte-copy 대신 render → 토큰-form(`{{PROJECT_NAME}}`·`{{PY}}`·`{{TEST_CMD}}`)을 채택자
+#   local.conf 값으로 치환한다. 빠지면(bare 행) 채택 인스턴스(②) self-update 가 토큰-form 루트 어댑터를
+#   *치환된* 라이브 어댑터 위에 byte-copy 해 de-substitute 한다(T-0170 버그·ADR-0028/0032 의도 전파 유지).
+#   토큰-form 소스 트리(① canonical·local.conf 부재)는 render-leak 검사 밖이다(board _render_managed_relpaths).
+# ⚠️ non-@target-owned (의도적): `.claude/*` 는 루트 upstream 에 실재하는 엔진 리소스(4 md)라 source
+#   부재 시 rc2(잘못된 --from·불완전 source 탐지)가 옳다 — @target-owned 를 달면 그 안전판이 꺼져 엔진
+#   누락을 은폐한다(pm_update.py:985). `.opencode/*` 와 비대칭: opencode 는 루트 부재=진짜 target-owned.
+.claude/agents    @render
+.claude/skills    @render
 
 # ── 설정 (엔진) ──────────────────────────────────────────────────
 .project_manager/.gitignore

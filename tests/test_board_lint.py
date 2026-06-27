@@ -1383,6 +1383,9 @@ def test_architecture_freshness_is_advisory_never_blocks(board, monkeypatch, tmp
     monkeypatch.setattr(board, "lint_domain", lambda: [])
     monkeypatch.setattr(board, "lint_adr_lifecycle", lambda: [])
     monkeypatch.setattr(board, "lint_adapter_drift", lambda: [])
+    # 이 테스트 의도 = architecture-stale advisory 격리지 render-leak 실-트리 의존 아님 — 실
+    # 어댑터 스캔 결합을 끊어 테스트 위생 유지(T-0170·A 적용 후 자연 green 이나 명시적 격리).
+    monkeypatch.setattr(board, "lint_render_leak", lambda: [])
     monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
     monkeypatch.setattr(board, "lint_architecture_freshness", lambda: [
         ("architecture.md", "architecture-stale", "최신 ADR > architecture updated")])
@@ -1405,6 +1408,101 @@ def test_lint_tickets_includes_architecture_freshness(board, monkeypatch):
     monkeypatch.setattr(board, "lint_adr_lifecycle", lambda: [])
     monkeypatch.setattr(board, "lint_architecture_freshness", lambda: sentinel)
     assert sentinel[0] in board.lint_tickets()
+
+
+# ── render-leak 트리 성격 게이트 (local.conf 부재=소스 트리 무발화 · T-0170·ADR-0028) ──
+# render-leak 은 *렌더 산출물*(operational 토큰 치환 어댑터)의 미해소 토큰을 잡는다. 토큰-form
+# 소스 트리(① canonical worktree·local.conf 부재)는 산출물이 아니라 토큰이 정상이므로 검사 밖이다
+# (`_render_managed_relpaths` 의 local.conf 게이트). 루트 manifest 가 `.claude/* @render` 여도 소스
+# 트리에선 무발화·채택 인스턴스(local.conf 보유)에선 실 leak 을 잡는다 — 양방향 박제.
+
+def _write_root_manifest(root: Path, body: str) -> None:
+    """tmp REPO 에 .project_manager/engine.manifest 를 쓴다."""
+    mf = root / ".project_manager" / "engine.manifest"
+    mf.parent.mkdir(parents=True, exist_ok=True)
+    mf.write_text(body, encoding="utf-8")
+
+
+def _write_claude_adapter(root: Path, text: str) -> Path:
+    """tmp REPO 에 .claude/agents/architect.md 어댑터를 쓴다(토큰-form 산출물 시뮬)."""
+    p = root / ".claude" / "agents" / "architect.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_render_leak_skips_source_tree_no_localconf(board, monkeypatch, tmp_path):
+    """① canonical 소스 트리(local.conf 부재) → 루트 manifest @render 여도 render-leak 무발화.
+
+    sensitivity: 루트 manifest 가 `.claude/agents @render` 이고 어댑터에 미해소 토큰이 잔존해도,
+    local.conf 가 없으면 토큰-form 소스 트리이므로 검사 대상 0(빈 결과). 이게 ① worktree 에서
+    `lint --gate` 가 rc=0 으로 통과하는 근거(T-0170 A·이전엔 rc=1 로 깨졌던 지점).
+    """
+    fake_repo = tmp_path / "source_tree"
+    _write_root_manifest(fake_repo, ".claude/agents    @render\n")
+    _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect · {{PY}} · {{TEST_CMD}}\n")
+    # local.conf 미생성 → 소스 트리.
+    assert not (fake_repo / ".project_manager" / "local.conf").exists()
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert board.lint_render_leak() == [], (
+        "토큰-form 소스 트리(local.conf 부재)인데 render-leak 이 발화 — 트리 게이트 미작동."
+    )
+    assert board._render_managed_relpaths() == set(), (
+        "소스 트리는 검사 대상 0 이어야 한다(local.conf 게이트)."
+    )
+
+
+def test_render_leak_fires_on_rendered_tree_with_localconf(board, monkeypatch, tmp_path):
+    """채택 인스턴스(local.conf 존재·render 산출물) → 미해소 토큰 잔존 시 render-leak 발화(blocking).
+
+    specificity: 같은 manifest·같은 토큰-form 어댑터라도 local.conf 가 있으면 렌더 산출물 트리이므로
+    실 leak 을 잡는다. 트리 게이트가 *소스 트리만* 면제하고 산출물 트리의 보안 의미론은 보존함을 박제.
+    """
+    fake_repo = tmp_path / "rendered_tree"
+    _write_root_manifest(fake_repo, ".claude/agents    @render\n")
+    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n본문\n")
+    # local.conf 존재 → 채택 인스턴스(render 산출물 트리).
+    local_conf = fake_repo / ".project_manager" / "local.conf"
+    local_conf.write_text("project_name=acme\npy=python3\n", encoding="utf-8")
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    issues = board.lint_render_leak()
+    rel = str(adapter.relative_to(fake_repo)).replace("\\", "/")
+    assert any(
+        name == rel and kind == "render-leak" and "{{PROJECT_NAME}}" in detail
+        for name, kind, detail in issues
+    ), f"산출물 트리(local.conf 존재)에서 미해소 토큰 leak 을 잡지 못함: {issues}"
+
+
+def test_claude_adapter_manifest_is_render_not_target_owned(board):
+    """루트 canonical manifest `.claude/agents`·`.claude/skills` 가 @render·**non**-@target-owned (T-0170 B).
+
+    `@render`: bare 행이면 채택 인스턴스 self-update 가 토큰-form 어댑터를 *치환된* 라이브 위에
+    byte-copy 해 de-substitute 한다 — render 로 치환 경로를 탄다(de-substitution 근절).
+    **non-@target-owned (의도적·안전판)**: `.claude/*` 는 루트 upstream 에 실재하는 엔진 리소스(4 md)
+    라 source 부재 시 rc2(잘못된 --from·불완전 source 탐지)가 *옳다*. `@target-owned` 를 달면 그
+    안전판이 꺼져 엔진 누락을 은폐한다(pm_update.py:985). `.opencode/*`(루트 부재=진짜 target-owned)
+    와 비대칭. 선례 [[T-0154]]·hermetic·git-network 0.
+    """
+    pm_update = board._load_pm_update_module()
+    assert pm_update is not None, "pm_update 모듈 로드 실패"
+    root_manifest = board.REPO / ".project_manager" / "engine.manifest"
+    assert root_manifest.is_file(), "루트 .project_manager/engine.manifest 없음"
+
+    by_path = {str(e): e for e in pm_update.read_manifest(root_manifest)}
+    for adapter in (".claude/agents", ".claude/skills"):
+        assert adapter in by_path, f"루트 manifest 에 {adapter} 항목 없음"
+        entry = by_path[adapter]
+        assert entry.render is True, (
+            f"{adapter} 가 @render 아님 — bare 행이면 self-update 가 de-substitute 한다(T-0170)."
+        )
+        assert entry.target_owned is False, (
+            f"{adapter} 가 @target-owned 임 — 루트 실재 엔진 리소스라 source 부재 시 rc2 가 옳다 "
+            "(@target-owned 는 엔진 누락 은폐·pm_update.py:985)."
+        )
 
 
 # ── un-migrated overlay 검출 (advisory · T-0132·§3.6·ADR-0031) ─────────────

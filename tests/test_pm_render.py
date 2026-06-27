@@ -333,12 +333,19 @@ def test_render_leak_not_advisory_is_blocking(board):
 
 
 def test_render_leak_silent_when_no_render_path(board, monkeypatch, tmp_path):
-    """현 트리 동형: @render manifest path 0 → 검사 대상 0 → 무발화."""
+    """@render manifest path 0 → 검사 대상 0 → 무발화 (트리 게이트가 아닌 *본 로직* 검증).
+
+    렌더 산출물 트리(local.conf 존재)로 두어 트리 게이트(T-0170)를 통과시킨 뒤, manifest 에
+    @render 항목이 없음 자체로 무발화함을 본다 — local.conf 부재 면제와 *별개*인 경로.
+    """
     # manifest 에 @render 항목이 없는 합성 repo 로 REPO 를 가리킨다.
     fake_repo = tmp_path / "repo"
     m = fake_repo / ".project_manager" / "engine.manifest"
     m.parent.mkdir(parents=True)
     m.write_text(".project_manager/tools/board.py\n.claude/agents\n", encoding="utf-8")
+    # local.conf 존재 → 트리 게이트 통과(이 무발화는 @render 부재 때문이지 트리 면제가 아님).
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
     # 토큰을 가진 어댑터가 있어도 @render 가 아니므로 검사 안 함.
     adapter = fake_repo / ".claude/agents/developer.md"
     adapter.parent.mkdir(parents=True)
@@ -348,11 +355,18 @@ def test_render_leak_silent_when_no_render_path(board, monkeypatch, tmp_path):
 
 
 def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_path):
-    """@render 활성화된 path 산출물에 리터럴 `{{...}}` 잔존 → render-leak finding(blocking)."""
+    """@render 활성화된 path 산출물에 리터럴 `{{...}}` 잔존 → render-leak finding(blocking).
+
+    렌더 산출물 트리(채택 인스턴스)임을 local.conf 존재로 표시한다 — 트리 게이트(T-0170)는
+    local.conf 부재 트리(토큰-form 소스·① canonical)만 면제하고, 산출물 트리의 leak 발화는 보존.
+    """
     fake_repo = tmp_path / "repo"
     m = fake_repo / ".project_manager" / "engine.manifest"
     m.parent.mkdir(parents=True)
     m.write_text(".claude/agents @render\n", encoding="utf-8")
+    # local.conf 존재 → 채택 인스턴스(render 산출물 트리·트리 게이트 통과해 실 leak 검사).
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
     adapter = fake_repo / ".claude/agents/developer.md"
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- {{PROTECTED_PATHS}}\nbody\n", encoding="utf-8")
@@ -366,11 +380,18 @@ def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_
 
 
 def test_render_leak_clean_when_render_path_fully_rendered(board, monkeypatch, tmp_path):
-    """@render path 라도 잔여 토큰이 없으면(완전 렌더) finding 0."""
+    """@render path 라도 잔여 토큰이 없으면(완전 렌더) finding 0 (산출물 트리에서 검증).
+
+    렌더 산출물 트리(local.conf 존재)로 트리 게이트(T-0170)를 통과시킨 뒤, 완전 렌더된 어댑터엔
+    토큰이 없어 무발화함을 본다 — 트리 면제가 아닌 본 leak-스캔 경로.
+    """
     fake_repo = tmp_path / "repo"
     m = fake_repo / ".project_manager" / "engine.manifest"
     m.parent.mkdir(parents=True)
     m.write_text(".claude/agents @render\n", encoding="utf-8")
+    # local.conf 존재 → 산출물 트리(트리 게이트 통과·실 스캔이 토큰 0 으로 무발화).
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
     adapter = fake_repo / ".claude/agents/developer.md"
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- core/**\nbody\n", encoding="utf-8")
