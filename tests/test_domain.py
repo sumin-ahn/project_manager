@@ -1226,7 +1226,8 @@ def test_capture_draft_writes_scaffold_with_draft_status(dm, tmp_path):
     assert "derived: false" in text         # 사람 author
     assert "updated: 2026-06-27" in text
     assert "covers: [src/analysis/**]" in text
-    assert 'source: "(none)"' in text       # provenance (미지정)
+    # source 미지정 → 자유서술 placeholder(절대경로 박제 금지·T-0174).
+    assert f'source: "{dm.SOURCE_TODO_PLACEHOLDER}"' in text
     # _template.md 골격 절.
     assert "# Factor Beta Pipeline" in text
     assert "## 조사 결과" in text
@@ -1244,7 +1245,9 @@ def test_capture_draft_source_file_prose_verbatim(dm, tmp_path):
     # prose 가 verbatim(요약/구조화 없이) 본문에 들어간다.
     assert prose.strip() in text
     assert "근거 1" in text and "근거 2 (미해결: Y)" in text
-    assert 'source: "' in text and "research.txt" in text  # provenance 파일경로
+    # tmp_path 는 repo 밖 → source 는 절대경로 대신 placeholder(T-0174·dangling 방지).
+    assert str(src) not in text
+    assert f'source: "{dm.SOURCE_TODO_PLACEHOLDER}"' in text
 
 
 def test_capture_draft_source_stdin(dm, tmp_path, monkeypatch):
@@ -1426,3 +1429,158 @@ def test_capture_draft_covers_csv_parsed(dm, tmp_path, monkeypatch):
     text = _read_draft(tmp_path, "c")
     assert "covers: [src/a/**, src/b/**]" in text
     assert "TODO PM: covers" not in text  # covers 있으므로 placeholder 없음.
+
+
+# ── T-0174: prose `##` 강등 + source 경로 정규화 ──────────────────────────────
+# prose 의 `## ` 헤딩을 `### ` 로 강등해 scaffold 절(`## 조사 결과`)과 미충돌. source: 는
+# repo 내 → 상대경로·stdin/미지정/repo밖(tmp) → placeholder(절대경로 박제·dangling 방지).
+
+
+def test_capture_draft_demotes_prose_h2_to_h3(dm, tmp_path):
+    # prose 의 라인-시작 `## ` 가 `### ` 로 강등 → scaffold 절과 같은 레벨 형제로 안 뜬다.
+    prose = "서론.\n\n## tier 정의\ntier1 = ...\n\n## tier 판정\ntier2 = ...\n"
+    path = dm.write_draft_page("강등", slug="demote", source=None, domain_dir=tmp_path)
+    # 직접 _draft_body 로 prose 강등을 검증(source 정규화와 분리).
+    body = dm._draft_body("강등", [], prose)
+    assert "### tier 정의" in body
+    assert "### tier 판정" in body
+    # 강등 후 본문에 라인-시작 `## tier` 는 없다(scaffold 절과 충돌 안 함).
+    assert "\n## tier" not in body
+    # scaffold 절 자체(`## 조사 결과` 등)는 보존.
+    assert "## 조사 결과" in body
+    assert "## 한 줄" in body and "## gotcha" in body
+
+
+def test_capture_draft_demote_preserves_h3_and_deeper(dm, tmp_path):
+    # `###`+ 는 이미 scaffold 절보다 깊어 충돌 안 함 → 손대지 않는다(`##` 만 한 단계 강등).
+    prose = "## H2\n### H3 그대로\n#### H4 그대로\n"
+    body = dm._draft_body("깊이", [], prose)
+    assert "### H2" in body          # H2 → H3
+    assert "### H3 그대로" in body    # H3 불변
+    assert "#### H4 그대로" in body   # H4 불변
+    # H3 가 H4 로 시프트되지 않았다(전체 깊이 시프트 아님·`##` 만).
+    assert "#### H3 그대로" not in body
+
+
+def test_capture_draft_demote_skips_h2_inside_code_fence(dm, tmp_path):
+    # 코드펜스(```) 안의 `## ` 는 코드/주석이라 강등 제외 — 펜스 토글 추적.
+    prose = (
+        "## 실제 헤딩\n\n"
+        "```sh\n"
+        "## 이건 shell 주석 (강등 금지)\n"
+        "echo hi\n"
+        "```\n\n"
+        "## 펜스 뒤 헤딩\n"
+    )
+    body = dm._draft_body("펜스", [], prose)
+    # 펜스 밖 헤딩은 강등.
+    assert "### 실제 헤딩" in body
+    assert "### 펜스 뒤 헤딩" in body
+    # 펜스 안 `## ` 는 원형 보존(강등 안 함).
+    assert "## 이건 shell 주석 (강등 금지)" in body
+    assert "### 이건 shell 주석" not in body
+
+
+def test_capture_draft_demote_skips_h2_inside_tilde_fence(dm, tmp_path):
+    # 틸드 펜스(~~~) 안의 `## ` 도 강등 제외(CommonMark 는 ~~~ 도 코드펜스·백틱과 동형).
+    prose = (
+        "## 실제 헤딩\n\n"
+        "~~~sh\n"
+        "## 이건 펜스 안 주석 (강등 금지)\n"
+        "echo hi\n"
+        "~~~\n\n"
+        "## 펜스 뒤 헤딩\n"
+    )
+    body = dm._draft_body("틸드", [], prose)
+    # 펜스 밖 헤딩은 강등.
+    assert "### 실제 헤딩" in body
+    assert "### 펜스 뒤 헤딩" in body
+    # 틸드 펜스 안 `## ` 는 원형 보존(강등 안 함).
+    assert "## 이건 펜스 안 주석 (강등 금지)" in body
+    assert "### 이건 펜스 안 주석" not in body
+
+
+def test_capture_draft_demote_mixed_fence_no_mistoggle(dm, tmp_path):
+    # mixed 펜스 오토글 없음 — ~~~ 로 연 펜스 안의 ``` 는 펜스를 닫지 않는다(CommonMark:
+    # 닫는 펜스는 여는 펜스와 같은 문자여야). 그래서 ``` 사이 `## ` 도 (틸드 펜스 안이라) 보호.
+    prose = (
+        "~~~\n"
+        "## 틸드 펜스 안 (강등 금지)\n"
+        "```\n"
+        "## 안쪽 백틱 라인 사이 (여전히 틸드 펜스 안·강등 금지)\n"
+        "```\n"
+        "## 아직 틸드 펜스 안 (강등 금지)\n"
+        "~~~\n\n"
+        "## 펜스 완전히 닫힌 뒤 (강등)\n"
+    )
+    body = dm._draft_body("믹스", [], prose)
+    # 틸드 펜스 안의 모든 `## ` 는 (중간 ``` 가 닫지 못하므로) 보호된다.
+    assert "## 틸드 펜스 안 (강등 금지)" in body
+    assert "## 안쪽 백틱 라인 사이 (여전히 틸드 펜스 안·강등 금지)" in body
+    assert "## 아직 틸드 펜스 안 (강등 금지)" in body
+    assert "### 틸드 펜스 안" not in body
+    assert "### 안쪽 백틱 라인" not in body
+    # 틸드 펜스가 완전히 닫힌 뒤의 헤딩만 강등.
+    assert "### 펜스 완전히 닫힌 뒤 (강등)" in body
+
+
+def test_capture_draft_source_stdin_is_placeholder(dm, tmp_path, monkeypatch):
+    # --source - (stdin) → source: 는 자유서술 placeholder(stdin 은 경로 박제 불가).
+    import io
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO("stdin prose.\n"))
+    rc = dm.main(["capture-draft", "--title", "S", "--slug", "s-stdin", "--source", "-"])
+    assert rc == 0
+    text = _read_draft(tmp_path, "s-stdin")
+    assert f'source: "{dm.SOURCE_TODO_PLACEHOLDER}"' in text
+    assert "stdin prose." in text  # prose 본문은 여전히 배치.
+
+
+def test_capture_draft_source_outside_repo_is_placeholder(dm, tmp_path):
+    # repo 밖(tmp_path 등 일시 경로) source → placeholder(절대경로 박제 금지·dangling 방지).
+    src = tmp_path / "scratch.md"
+    src.write_text("repo 밖 prose.\n", encoding="utf-8")
+    path = dm.write_draft_page("밖", slug="outside", source=str(src), domain_dir=tmp_path)
+    text = path.read_text(encoding="utf-8")
+    assert f'source: "{dm.SOURCE_TODO_PLACEHOLDER}"' in text
+    assert str(src) not in text          # 절대경로 박제 안 됨.
+    assert str(tmp_path) not in text     # 일시 디렉토리 경로도 안 박힘.
+
+
+def test_capture_draft_source_inside_repo_is_relative(dm, tmp_path):
+    # repo 내 경로 source → repo 상대경로로 기록(절대경로 아님).
+    rel = "scratchpad/research-note.md"
+    src = dm.REPO / rel
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("repo 내 prose.\n", encoding="utf-8")
+    try:
+        path = dm.write_draft_page("안", slug="inside", source=str(src), domain_dir=tmp_path)
+        text = path.read_text(encoding="utf-8")
+        assert f'source: "{rel}"' in text         # 상대경로.
+        assert str(dm.REPO) not in text           # 절대경로 prefix 박제 안 됨.
+    finally:
+        src.unlink()
+        # 빈 scratchpad 디렉토리 정리(테스트 hermetic — repo 상태 무변화).
+        try:
+            src.parent.rmdir()
+        except OSError:
+            pass
+
+
+def test_capture_draft_source_unspecified_is_placeholder(dm, tmp_path):
+    # --source 미지정(None) → source: 는 placeholder(절대경로/`(none)` 박제 안 함).
+    path = dm.write_draft_page("미지정", slug="unspec", source=None, domain_dir=tmp_path)
+    text = path.read_text(encoding="utf-8")
+    assert f'source: "{dm.SOURCE_TODO_PLACEHOLDER}"' in text
+    assert '"(none)"' not in text  # 옛 `(none)` 라벨 박제 안 함.
+
+
+def test_normalize_source_label_unit(dm):
+    # _normalize_source_label 단위: stdin/미지정/repo밖 → placeholder·repo내 → 상대경로.
+    assert dm._normalize_source_label(None) == dm.SOURCE_TODO_PLACEHOLDER
+    assert dm._normalize_source_label("(none)") == dm.SOURCE_TODO_PLACEHOLDER
+    assert dm._normalize_source_label("-") == dm.SOURCE_TODO_PLACEHOLDER
+    assert dm._normalize_source_label("/tmp/foo/bar.md") == dm.SOURCE_TODO_PLACEHOLDER
+    # repo 내 경로 → 상대경로(존재하지 않아도 resolve+relative_to 로 판정).
+    inside = str(dm.REPO / "a" / "b.md")
+    assert dm._normalize_source_label(inside) == "a/b.md"
