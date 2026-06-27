@@ -21,14 +21,17 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 # 런타임 smoke 와 헬퍼 공유(같은 tests/ 디렉토리·import) — adopter import·LLM env 격리·ticket 조회.
+# `_load_pm_import`(pm_import 모듈 로드)·`_real_models_runner` 스텁은 multi-repo 셋업 헬퍼에서도 재사용.
 from test_fresh_adopter_runtime_smoke import (
     _import_adopter,
     _live_env,
+    _load_pm_import,
     _tickets_in,
 )
 
@@ -212,6 +215,183 @@ def test_release_wave_opencode_full_wave(tmp_path):
         assert _DEV_SUBAGENT in proc.stdout and _REVIEWER_SUBAGENT in proc.stdout
 
 
+# ── multi-repo 경로 (multi-PM 셋업 full wave · T-0158) ───────────────────────────────────
+# 위 단일-adopter 테스트는 *한* repo 위 full wave 다. 아래는 그 multi-repo 확장 — multi-PM 셋업
+# (`pm_config repo add` 2 repo + worktree slot)에서 한 LLM 세션이 공유 보드 위 *여러 repo* 의
+# wave 를 운영하는지 검증한다. PM 라이브 probe(opencode/qwen3.5:397b-cloud·실측 PASS)로 viable 확인
+# 후 그 mechanics 를 옮긴 것이다.
+
+# multi-repo 셋업의 repo 이름 = prefix = worktree 슬롯 네임스페이스(단일 진실). 2 repo 로 충분 —
+# 새 위험축(per-repo prefix·per-slot 식별)은 1→2 에서 이미 드러난다(대N 은 spike §6 후속).
+_MULTIREPO_REPOS = ("repoA", "repoB")
+# multi-repo wave 가 각 repo 슬롯에 쓰도록 지시하는 산출 파일·내용 — side-effect 단언의 기준.
+# (단일 wave 의 PROBE_FILE='probe.txt' 와 별개 — 슬롯별 파일이라 슬롯 격리도 함께 단언한다.)
+_WAVE_FILE = "wave-done.txt"
+
+
+def _seed_git_repo(path: Path) -> None:
+    """seed git repo(main·1 commit) 생성 — repo add 의 bare-clone 원(ADR-0011)."""
+    path.mkdir(parents=True, exist_ok=True)
+    _git = lambda *a: subprocess.run(["git", "-C", str(path), *a], check=True,
+                                     capture_output=True, text=True)
+    _git("init", "-q")
+    _git("config", "user.email", "probe@local")
+    _git("config", "user.name", "probe")
+    (path / "README.md").write_text(f"# {path.name}\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "init")
+    _git("branch", "-M", "main")
+
+
+def _pm_config(home: Path, *args: str) -> subprocess.CompletedProcess:
+    """home 의 pm_config.py 호출(엔진 도구·LLM 아님 → 부모 env 상속 OK·모델 무관)."""
+    return subprocess.run(
+        [sys.executable, str(home / ".project_manager" / "tools" / "pm_config.py"), *args],
+        cwd=str(home), capture_output=True, text=True,
+        env={**os.environ, "PM_NONINTERACTIVE": "1"},
+    )
+
+
+def _import_multipm_home(tmp_path: Path, harness: str,
+                         repos: tuple[str, ...] = _MULTIREPO_REPOS) -> Path:
+    """multi-PM 홈 import (hermetic) — fresh adopter 위에 `repo add`·`worktree add` 로 multi-repo 셋업.
+
+    단일 `_import_adopter`(test_fresh_adopter_runtime_smoke) 와 *다른* 셋업이다 — 그건 import 만,
+    이건 그 위에 repo 마다 [seed git repo → `pm_config repo add` → `pm_config worktree add`] 를
+    얹어 공유 보드 + 슬롯(`work/<repo>_1`)을 만든다. `_load_pm_import`·`_real_models_runner` 스텁을
+    재사용해 라이브 models 조회를 차단(hermetic). home 디렉토리를 반환한다.
+    """
+    pm_import = _load_pm_import()
+    pm_import._real_models_runner = lambda: (False, [])
+    home = tmp_path / f"mpm-home-{harness}"
+    origins = tmp_path / f"origins-{harness}"
+    rc = pm_import.main(
+        ["--new", str(home), "--harness", harness, "--name", "MPM", "--fill", "manual"]
+    )
+    assert rc == 0, f"{harness} multi-PM home import 실패 (rc={rc})"
+
+    for repo in repos:
+        _seed_git_repo(origins / repo)
+        added = _pm_config(home, "repo", "add", repo, "--git", str(origins / repo))
+        assert added.returncode == 0, (
+            f"repo add {repo} 실패 (rc={added.returncode})\n"
+            f"stdout={added.stdout[-600:]}\nstderr={added.stderr[-600:]}"
+        )
+        slotted = _pm_config(home, "worktree", "add", repo)
+        assert slotted.returncode == 0, (
+            f"worktree add {repo} 실패 (rc={slotted.returncode})\n"
+            f"stdout={slotted.stdout[-600:]}\nstderr={slotted.stderr[-600:]}"
+        )
+    return home
+
+
+def _multirepo_wave_prompt(repos: tuple[str, ...] = _MULTIREPO_REPOS) -> str:
+    """한 세션이 공유 보드 위 *각 repo* 의 미니 wave 를 운영하라는 프롬프트(PM probe 본보기).
+
+    범위 축소(scoping) — multi-repo wave 는 dev→reviewer *위임*까지 가지 않고 미니 wave
+    (new→claim→슬롯 파일→complete)다. 위임은 단일 full wave(`test_release_wave_*_full_wave`)에서
+    이미 검증됐고, multi-repo 의 *새* 위험축은 한 세션이 공유 보드/슬롯/identity 를 repo별로 바르게
+    핸들링하는가 — per-repo prefix(`--prefix <repo>` → `T-<repo>-NNN` ID 네임스페이스)·per-slot 식별
+    (`--session <repo>_1`·`work/<repo>_1` 슬롯 파일)이다. 그래서 prompt 는 그 축만 친다(ticket 본문
+    "viable 불확실/과복잡 시 형태 재검토" 허용). board.py 경로는 *준다* — 단일 wave 가 문서 운영성
+    (경로 미제공)을 이미 검증하므로 여기선 multi-repo 핸들링에 집중한다.
+    """
+    repo_list = " and ".join(repos)
+    steps = "\n".join(
+        f"  Wave {i + 1} (repo = {repo}): create a ticket, claim it, write a slot file, complete it."
+        for i, repo in enumerate(repos)
+    )
+    return (
+        "You operate a multi-PM project-manager home that shares ONE board across "
+        f"{len(repos)} code repos: {repo_list}. Each repo has its own worktree slot directory: "
+        + ", ".join(f"work/{r}_1" for r in repos) + ". The board engine is "
+        ".project_manager/tools/board.py.\n\n"
+        "Do a minimal wave for EACH repo, one repo fully before the next:\n"
+        f"{steps}\n\n"
+        "For a repo named REPO, the 4 steps are exactly:\n"
+        '  1. Create a ticket:   python3 .project_manager/tools/board.py new "wave probe REPO" '
+        "--prefix REPO\n"
+        "     (this prints the new ticket id, e.g. T-REPO-001 — note it)\n"
+        "  2. Claim it:          python3 .project_manager/tools/board.py claim <TICKET_ID> "
+        "--session REPO_1\n"
+        f"  3. Write a file named {_WAVE_FILE} containing the text \"done by REPO\" INSIDE that "
+        f"repo slot: work/REPO_1/{_WAVE_FILE}\n"
+        "  4. Complete it:       python3 .project_manager/tools/board.py complete <TICKET_ID> "
+        "--tests-pass --allow-missing-log\n\n"
+        "Replace REPO with the actual repo name for each wave. Use the EXACT ticket id from "
+        "step 1 output in steps 2 and 4."
+    )
+
+
+def _assert_multirepo_wave_side_effects(home: Path, proc: subprocess.CompletedProcess,
+                                        harness: str,
+                                        repos: tuple[str, ...] = _MULTIREPO_REPOS) -> None:
+    """per-repo side-effect 단언 — 각 repo 가 done ticket(`T-<repo>-*`) + 슬롯 파일을 남겼는가.
+
+    repo별로 (1) `tickets/done/T-<repo>-*.md` 존재 = per-repo prefix 로 발행·claim·complete 완주
+    (per-repo ID 네임스페이스·sync-gate 통과) (2) `work/<repo>_1/wave-done.txt` 존재+내용 = 그 repo
+    슬롯에 정확히 썼음(슬롯 격리). 둘 다 출력 phrasing 비결정에 강건한 side-effect 다(T-0157 동형).
+    """
+    done_root = home / ".project_manager" / "wiki" / "tickets" / "done"
+    tail = (
+        f"--- {harness} stdout(tail) ---\n{proc.stdout[-2500:]}\n"
+        f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
+    )
+    for repo in repos:
+        # (1) per-repo done ticket — prefix 가 ID 네임스페이스(T-<repo>-NNN)를 가른다.
+        done = sorted(done_root.glob(f"T-{repo}-*.md"))
+        assert done, (
+            f"실 {harness} multi-repo wave: repo '{repo}' 의 done ticket(T-{repo}-*) 부재 — "
+            f"per-repo wave 미완주.\nall done={_tickets_in(home, 'done')}\n"
+            f"open={_tickets_in(home, 'open')} claimed={_tickets_in(home, 'claimed')}\n" + tail
+        )
+        # (2) per-slot 파일 — 그 repo 슬롯(work/<repo>_1)에 정확히 썼는가(슬롯 격리).
+        wave_file = home / "work" / f"{repo}_1" / _WAVE_FILE
+        assert wave_file.exists(), (
+            f"실 {harness} multi-repo wave: repo '{repo}' 슬롯 파일 work/{repo}_1/{_WAVE_FILE} "
+            f"부재 — 슬롯에 안 썼거나 다른 슬롯에 씀.\n" + tail
+        )
+        assert wave_file.read_text(encoding="utf-8").strip(), (
+            f"repo '{repo}' 슬롯 파일 {_WAVE_FILE} 가 비어 있음.\n" + tail
+        )
+
+
+@pytest.mark.release
+@pytest.mark.skipif(
+    not _RELEASE_LIVE or not shutil.which("opencode"),
+    reason="release wave multi-repo — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. "
+           "기본 skip·사용자 트리거.",
+)
+def test_release_wave_multirepo_opencode_full_wave(tmp_path):
+    """실 opencode(agentic·ollama)가 multi-PM 셋업(2 repo·공유 보드)에서 repo별 wave 를 운영한다.
+
+    PM 라이브 probe(`scratchpad/mpm_live_probe.sh`·opencode/qwen3.5:397b-cloud·실측 PASS —
+    T-repoA-001·T-repoB-001 둘 다 done·각 슬롯 wave-done.txt 존재)의 mechanics 를 옮긴 것이다.
+    단일 full wave 와 *다른* 검증축 — 한 세션이 공유 보드 위 여러 repo 의 보드/슬롯/identity 를
+    per-repo prefix·per-slot 식별로 바르게 핸들링하는가(범위 축소 근거는 `_multirepo_wave_prompt`
+    docstring). side-effect(repo별 done ticket·슬롯 파일)만 hard 단언 → 출력 phrasing 비결정에
+    강건(T-0157 동형). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama).
+
+    TODO(T-0158 후속): claude 경로(stream-json subagent 관측)는 multi-repo 미probe 라 미추가 —
+    opencode 가 probe-검증된 기본이다. claude multi-repo 가 필요해지면 단일 claude mechanics
+    (`--allowedTools Bash`·stream-json)를 이 multi-repo 셋업 위에 미러한다.
+    """
+    home = _import_multipm_home(tmp_path, "opencode")
+
+    proc = subprocess.run(
+        # `--dangerously-skip-permissions`: 비대화 헤드리스 격리(throwaway tmp home)라 안전 —
+        # 단일 wave 테스트와 동일 근거(opencode 가 --dir 디렉토리를 external 로 보고 auto-reject).
+        ["opencode", "run", "--agent", "build", "--dir", str(home),
+         "--dangerously-skip-permissions", "-m", LIVE_MODEL,
+         _multirepo_wave_prompt()],
+        cwd=str(home), capture_output=True, text=True,
+        env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
+    )
+
+    # side-effect(hard) — repo별 done ticket(per-repo prefix) + 슬롯 파일(슬롯 격리).
+    _assert_multirepo_wave_side_effects(home, proc, "opencode")
+
+
 # ── hermetic 단위 가드 (라이브 실행 없이·@release/skipif 무관 — 매 회귀 통과) ──────────────
 # 위 라이브 테스트는 PM_ORCH_LIVE_RELEASE 미설정 시 skip 이라 CI 에선 안 돈다. 아래 단위는 라이브
 # 없이도 돌아 (1) full wave 프롬프트가 5단계 키워드를 담는지 (2) subagent_type walk 가 stream-json
@@ -276,3 +456,56 @@ def test_collect_subagent_types_handles_no_delegation():
         json.dumps({"type": "result", "subtype": "success"}),
     ])
     assert _collect_subagent_types(stdout) == []
+
+
+# ── multi-repo hermetic 가드 (라이브 실행 없이·@release/skipif 무관 — 매 회귀 통과 · T-0158) ──────
+# multi-repo 라이브 테스트는 PM_ORCH_LIVE_RELEASE 미설정 시 skip 이라 CI 에선 안 돈다. 아래 단위는
+# 라이브 없이도 돌아 (1) 셋업 헬퍼(`_import_multipm_home`)가 LLM 없이 home + 2 repo areas + 2 슬롯을
+# 만드는지 (= 셋업 자체 검증·라이브 테스트의 전제) (2) multi-repo wave 프롬프트가 repo별 mechanics
+# (prefix·session·슬롯 파일·new/claim/complete)를 담는지 — 라이브 미실행 시에도 구조를 가드한다.
+
+
+def test_import_multipm_home_sets_up_two_repos_and_slots(tmp_path):
+    """`_import_multipm_home` 가 LLM 없이 multi-PM 홈 + 2 repo areas 등록 + 2 worktree 슬롯을 만든다.
+
+    라이브 테스트의 전제(셋업)를 hermetic 하게 검증 — 셋업이 깨지면 라이브가 가짜 PASS/skip 으로
+    숨지 않고 여기서 잡힌다(단일 hermetic 가드 패턴 동형). models 조회는 `_real_models_runner`
+    스텁으로 차단되므로 LLM·네트워크 없이 돈다.
+    """
+    home = _import_multipm_home(tmp_path, "opencode")
+
+    # (1) home 이 fresh adopter 로 import 됐다(공유 보드 + 엔진).
+    assert (home / ".project_manager" / "tools" / "board.py").exists()
+    assert (home / ".project_manager" / "wiki" / "tickets" / "open").is_dir()
+
+    # (2) 2 repo 가 areas.md(per-repo 레지스트리·ADR-0014)에 prefix 로 등록됐다 — per-repo ID
+    #     네임스페이스의 단일 진실(legacy 셋업에선 .project_manager/areas.md·wiki 밖·committed).
+    areas_path = home / ".project_manager" / "areas.md"
+    assert areas_path.exists(), "repo add 후 areas.md 부재"
+    areas_text = areas_path.read_text(encoding="utf-8")
+    for repo in _MULTIREPO_REPOS:
+        assert f"| {repo} |" in areas_text, f"areas.md 에 repo '{repo}' 등록 행 부재"
+
+    # (3) repo 마다 worktree 슬롯(work/<repo>_1)이 생성됐다 — per-slot 식별의 물리 자원.
+    for repo in _MULTIREPO_REPOS:
+        slot = home / "work" / f"{repo}_1"
+        assert slot.is_dir(), f"worktree 슬롯 work/{repo}_1 미생성"
+
+
+def test_multirepo_wave_prompt_has_per_repo_mechanics():
+    """multi-repo wave 프롬프트가 각 repo 의 wave mechanics(prefix·session·슬롯 파일·4단계)를 담는다.
+
+    라이브 미실행 시에도 프롬프트 구조를 가드 — repo별 prefix(`--prefix REPO`)·per-slot session
+    (`--session REPO_1`)·슬롯 파일(`work/REPO_1/<file>`)·new/claim/complete 4단계가 빠지면 잡힌다.
+    """
+    prompt = _multirepo_wave_prompt()
+
+    # 두 repo 가 모두 prompt 에 등장(공유 보드 위 각 repo wave).
+    for repo in _MULTIREPO_REPOS:
+        assert repo in prompt, f"프롬프트에 repo '{repo}' 미언급"
+    # 4단계 mechanics — new(+prefix)·claim(+session)·슬롯 파일·complete(sync-gate flag).
+    assert "board.py new" in prompt and "--prefix REPO" in prompt
+    assert "board.py claim" in prompt and "--session REPO_1" in prompt
+    assert f"work/REPO_1/{_WAVE_FILE}" in prompt
+    assert "board.py complete" in prompt
+    assert "--tests-pass" in prompt and "--allow-missing-log" in prompt
