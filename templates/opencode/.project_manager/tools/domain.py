@@ -6,10 +6,12 @@
 
 범위: 파서(`parse_page`)·스캔(`load_pages`)·매칭(`pages_for_path`)·touches∩covers
 (`pages_for_touches`·#2)·staleness(`page_stale`·#3)·freshness lint(`lint_pages`)·
-CLI(`list`/`affected`/`capture`/`lint`). capture(채록·`uncovered_paths` gap·Phase 3)는
-surface-only — 담당 페이지·coverage gap 을 *띄울* 뿐 본문 자동 생성/스탬프는 안 한다(자동
-`updated:` 는 stale 탐지를 거짓으로 만듦·ADR-0018 결정). 범위 밖(후속): derive(코드서 자동
-채록·`derived:true`·Phase 5)·contradiction(LLM).
+CLI(`list`/`affected`/`capture`/`capture-draft`/`lint`). capture(채록·`uncovered_paths`
+gap·Phase 3)는 surface-only — 담당 페이지·coverage gap 을 *띄울* 뿐 본문 자동 생성/스탬프는
+안 한다(자동 `updated:` 는 stale 탐지를 거짓으로 만듦·ADR-0018 결정). capture-draft(T-0167·
+Phase 2)는 researcher 조사 prose 를 domain 초안(`status: draft`)으로 *scaffold* 한다 —
+prose 는 verbatim 배치(요약/구조화 금지)·**git 무조작**(add/commit 0)·promote(draft→정식)는
+사람 손. 범위 밖(후속): derive(코드서 자동 채록·`derived:true`·Phase 5)·contradiction(LLM).
 
 설계 (ADR-0018):
   - **frontmatter 파싱은 board.load_ticket 재사용** — 이름은 ticket 이나 임의 frontmatter md
@@ -49,6 +51,13 @@ _NON_PAGE_FILES = frozenset({"README.md", "_template.md"})
 
 # domain lint oversized 임계 — 본문 라인수가 이 값을 넘으면 advisory finding(상수·비차단).
 OVERSIZED_LINES = 200
+
+# capture-draft scaffold 기본값 — frontmatter status 진실(draft 제외 기준)·type 기본.
+DRAFT_STATUS = "draft"
+DEFAULT_DRAFT_TYPE = "research"
+# capture-draft 출력 파일 suffix(`.draft.md`) — 사람 가독 보조. **필터 기준 아님**
+# (index 제외는 frontmatter `status: draft`). suffix 는 PM 가 promote 시 `.md` 로 rename.
+DRAFT_SUFFIX = ".draft.md"
 
 # git CLI argv → (returncode, stdout). DI seam 타입(worktree_pool.GitRunner 선례).
 GitRunner = Callable[[list], "tuple[int, str]"]
@@ -271,10 +280,12 @@ def page_stale(page: dict, *, git_runner: GitRunner | None = None) -> bool | Non
 def parse_page(path: Path) -> dict:
     """한 domain 페이지를 파싱한다.
 
-    Returns: {path, title, type, covers: list[str], derived: bool, updated}.
+    Returns: {path, title, type, covers: list[str], derived: bool, updated, status}.
     frontmatter 파싱은 board.load_ticket 재사용(임의 frontmatter md 파서·DRY).
-    covers 부재 → []·derived 부재 → False. board 미로드/frontmatter 깨짐은 호출부가
-    처리하도록 예외를 그대로 전파한다(load_pages 가 graceful skip).
+    covers 부재 → []·derived 부재 → False·status 부재 → None(정식 취급·draft 아님).
+    board 미로드/frontmatter 깨짐은 호출부가 처리하도록 예외를 그대로 전파한다(load_pages
+    가 graceful skip). `status` 는 capture-draft 가 쓴 `draft` 진실 — load_pages 가 이로
+    미승인 초안을 index 에서 제외한다(suffix 가 아닌 frontmatter status 가 필터 기준).
     """
     board = _load_board()
     if board is None:
@@ -290,6 +301,9 @@ def parse_page(path: Path) -> dict:
         covers = [c for c in covers if isinstance(c, str)]
     else:
         covers = []
+    # status — 문자열만 취한다(부재·비-문자열 → None = 정식 페이지·draft 제외 대상 아님).
+    status = fm.get("status")
+    status = status if isinstance(status, str) else None
     return {
         "path": path,
         "title": fm.get("title") or "",
@@ -297,6 +311,7 @@ def parse_page(path: Path) -> dict:
         "covers": covers,
         "derived": bool(fm.get("derived")),
         "updated": fm.get("updated"),
+        "status": status,
     }
 
 
@@ -307,6 +322,11 @@ def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
     스캔한다(T-0126·회사 실사용). README.md·_template.md 는 (어느 깊이든) `name` 으로 제외.
     frontmatter 없는/깨진 파일은 graceful skip(stderr 경고·crash 0). 디렉토리 부재 → []
     (solo·신규 clone 무영향). 평면 domain/ 은 하위폴더가 없어 결과 불변(additive).
+
+    **draft 제외(T-0167)**: frontmatter `status == "draft"` 페이지는 미승인 초안
+    (capture-draft scaffold)이라 index 에서 뺀다 — affected/lint/recall/capture 가
+    승인 안 된 지식을 보지 않게. 필터 기준은 frontmatter status 이지 `.draft.md` 파일명이
+    아니다(promote = status:draft 제거 1개로 비로소 정식 = 포함). status 부재/기타 → 포함.
     """
     domain_dir = Path(domain_dir)
     if not domain_dir.is_dir():
@@ -316,9 +336,13 @@ def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
         if path.name in _NON_PAGE_FILES:
             continue
         try:
-            pages.append(parse_page(path))
+            page = parse_page(path)
         except Exception as exc:  # noqa: BLE001 — 깨진 페이지는 skip(경고만·crash 금지).
             print(f"domain: {path.name} 파싱 skip — {exc}", file=sys.stderr)
+            continue
+        if page["status"] == DRAFT_STATUS:
+            continue  # 미승인 초안 — index 제외(promote 전까지 안 보임).
+        pages.append(page)
     return pages
 
 
@@ -636,6 +660,148 @@ def cmd_capture(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── capture-draft (researcher 조사 prose → domain 초안 scaffold·git 무조작·T-0167) ──
+# researcher 의 *조사 prose*(read-only gather 산출)를 domain draft 페이지로 scaffold 한다.
+# **기계는 scaffold + verbatim prose 배치까지만** — type/covers 정련·의미 판단은 PM/LLM·
+# promote(draft→정식)는 사람 손. no-auto-commit 3중: (1) frontmatter `status: draft` 가
+# index 제외 진실 (2) git add/commit 절대 호출 안 함(파일만 쓰고 staging 무변화) (3) promote
+# 명령 부재 = draft→정식 전환이 사람 손(status 제거 + .draft.md→.md rename + git add).
+
+# kebab 슬러그 변환 — 영숫자만 남기고 그 외(공백·기호·한글)는 하이픈, 중복/양끝 하이픈 정리.
+_SLUG_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(title: str) -> str:
+    """title 을 kebab-case 슬러그로 변환한다 (--slug 미지정 시 파일명 도출).
+
+    소문자화 후 영숫자(ascii) 외 문자열을 단일 하이픈으로 접고 양끝 하이픈을 제거한다.
+    한글 등 비-ascii 는 영숫자가 아니라 하이픈으로 접히므로, 영숫자가 전혀 없는 title
+    (순한글 등)은 빈 슬러그가 된다 → 호출부(cmd)가 `draft` 기본 슬러그로 대체한다.
+    """
+    slug = _SLUG_NON_ALNUM_RE.sub("-", title.lower()).strip("-")
+    return slug
+
+
+def _read_source(source: str | None) -> str:
+    """`--source` 입력(조사 prose)을 읽는다 — `-`=stdin·파일경로=파일·None/(none)=빈 문자열.
+
+    프로비넌스 표기 `(none)`(미지정)도 빈 본문으로 흡수한다. 파일 부재/읽기 실패는 호출부가
+    명시 에러로 보고하도록 예외를 전파한다(scaffold 전에 잡혀 잘못된 빈 페이지 생성 방지).
+    """
+    if source is None or source == "(none)":
+        return ""
+    if source == "-":
+        return sys.stdin.read()
+    return Path(source).read_text(encoding="utf-8")
+
+
+def _draft_frontmatter(title: str, ptype: str, covers: list[str],
+                       source: str, today: str) -> str:
+    """draft 페이지 frontmatter(scaffold) 문자열을 만든다.
+
+    `status: draft`(index 제외 진실)·`derived: false`(사람 author)·`source`(provenance).
+    covers 가 비면 빈 리스트(`covers: []`)로 두고 body 에 TODO placeholder 를 띄운다(아래
+    _draft_body). yaml 안전을 위해 title/source 는 따옴표로 감싼다(콜론·특수문자 방어).
+    """
+    covers_yaml = "[" + ", ".join(covers) + "]" if covers else "[]"
+    return (
+        f"title: {_yaml_quote(title)}\n"
+        f"type: {ptype}\n"
+        f"covers: {covers_yaml}\n"
+        f"derived: false\n"
+        f"status: {DRAFT_STATUS}\n"
+        f"updated: {today}\n"
+        f"source: {_yaml_quote(source)}\n"
+    )
+
+
+def _yaml_quote(value: str) -> str:
+    """frontmatter 스칼라를 큰따옴표로 감싼다(콜론·`#` 등 yaml 메타 방어·내부 `"`·`\\` escape)."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _draft_body(title: str, covers: list[str], prose: str) -> str:
+    """draft 페이지 body(scaffold) — `_template.md` 골격 + prose **verbatim 배치**.
+
+    조사 prose 를 요약/구조화하지 않고 `## 조사 결과` 아래 *그대로* 배치한다(기계는 배치만·
+    의미 판단은 PM/LLM). covers 미지정 시 `## 조사 결과` 앞에 `TODO PM: covers 글롭` 을
+    띄운다. 한 줄 요약·gotcha·관련 절은 TODO placeholder 로 PM 손을 기다린다.
+    """
+    covers_todo = "" if covers else "<!-- TODO PM: covers 글롭 (담당 코드) -->\n\n"
+    prose_block = prose if prose.strip() else "<!-- TODO PM: 조사 prose (--source) -->"
+    return (
+        f"# {title}\n\n"
+        f"## 한 줄\n"
+        f"<!-- TODO PM: 한 줄 요약 -->\n\n"
+        f"{covers_todo}"
+        f"## 조사 결과\n"
+        f"{prose_block}\n\n"
+        f"## gotcha · 디버깅\n\n"
+        f"## 관련\n"
+    )
+
+
+def write_draft_page(title: str, *, ptype: str = DEFAULT_DRAFT_TYPE,
+                     covers: list[str] | None = None, slug: str | None = None,
+                     source: str | None = None, domain_dir: Path = DOMAIN_DIR,
+                     today: str | None = None) -> Path:
+    """researcher 조사 prose 를 domain draft 페이지로 scaffold 해 *쓴다*. 경로를 돌려준다.
+
+    파일은 `<domain_dir>/<slug>.draft.md` 에 쓴다(`.draft.md` suffix=가독 보조). frontmatter
+    `status: draft` 가 index 제외 진실. **git 은 절대 건드리지 않는다**(add/commit 호출 0 —
+    파일만 쓴다). prose 는 `--source` 입력을 그대로 body 에 배치(요약/구조화 금지·기계는 배치만).
+
+    slug 미지정 시 title 에서 도출(slugify)·영숫자 없으면 `draft` 로 대체. covers 미지정 시
+    빈 covers + body TODO placeholder. today 미지정 시 오늘 ISO date(`updated`·provenance).
+    domain_dir 은 부재 시 생성(scaffold 가 첫 페이지일 수 있음·테스트가 tmp dir 주입).
+    """
+    covers = covers or []
+    slug = slug or slugify(title) or "draft"
+    today = today or datetime.date.today().isoformat()
+    prose = _read_source(source)
+    source_label = source if source else "(none)"
+
+    domain_dir = Path(domain_dir)
+    domain_dir.mkdir(parents=True, exist_ok=True)
+    path = domain_dir / f"{slug}{DRAFT_SUFFIX}"
+    frontmatter = _draft_frontmatter(title, ptype, covers, source_label, today)
+    body = _draft_body(title, covers, prose)
+    path.write_text(f"---\n{frontmatter}---\n{body}", encoding="utf-8")
+    return path
+
+
+def cmd_capture_draft(args: argparse.Namespace) -> int:
+    """researcher 조사 prose → domain draft 페이지 scaffold (git 무조작·사람 검토 게이트).
+
+    `cmd_capture`(코드→domain·read-only surface)와 **별개** — 이건 조사결과를 draft 페이지로
+    *쓴다*(scaffold). 단 frontmatter `status: draft` 라 load_pages 가 index 에서 제외하고,
+    git 은 절대 건드리지 않는다(staging 무변화). promote(draft→정식)는 PM 손(status 제거 +
+    `.draft.md`→`.md` rename + git add) — 엔진에 promote 명령 부재가 게이트.
+
+    --source 읽기 실패(파일 부재 등)는 명시 에러(stderr·rc 1)로 보고한다 — 잘못된 빈 페이지
+    생성을 막는다. 성공 시 생성 경로와 promote 안내를 출력하고 rc 0.
+    """
+    covers = [c.strip() for c in args.covers.split(",") if c.strip()] if args.covers else []
+    try:
+        path = write_draft_page(
+            args.title,
+            ptype=args.type,
+            covers=covers,
+            slug=args.slug,
+            source=args.source,
+            domain_dir=DOMAIN_DIR,
+        )
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError 는 OSError 하위 아님 — 비-UTF8 source 파일을 명시 에러로(traceback 방지).
+        print(f"domain: capture-draft 실패 — source 읽기/쓰기 오류: {exc}", file=sys.stderr)
+        return 1
+    print(f"draft 생성: {path}")
+    print("  status: draft (index 제외 — affected/lint/recall 안 보임).")
+    print("  promote(정식화·사람 손): frontmatter status:draft 제거 + 파일명 .draft.md→.md rename + git add.")
+    return 0
+
+
 def cmd_lint(args: argparse.Namespace) -> int:
     """domain freshness lint — stale/orphan/oversized finding 출력 (advisory·항상 exit 0).
 
@@ -694,6 +860,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="콤마분리 경로 목록으로 채록 대상을 띄운다 (--tickets 대안).",
     )
     p_capture.set_defaults(fn=cmd_capture)
+
+    p_draft = sub.add_parser(
+        "capture-draft",
+        help="researcher 조사 prose → domain 초안 scaffold (status:draft·git 무조작·사람 검토)",
+    )
+    p_draft.add_argument(
+        "--title", required=True, metavar="제목",
+        help="draft 페이지 제목 (필수·슬러그 미지정 시 여기서 도출).",
+    )
+    p_draft.add_argument(
+        "--type", default=DEFAULT_DRAFT_TYPE, choices=["concept", "guide", "research"],
+        help=f"페이지 type (기본 {DEFAULT_DRAFT_TYPE}).",
+    )
+    p_draft.add_argument(
+        "--covers", metavar="a/**,b/**",
+        help="담당 코드 글롭(콤마분리). 미지정 시 빈 covers + 본문 TODO placeholder.",
+    )
+    p_draft.add_argument(
+        "--slug", metavar="kebab",
+        help="파일 슬러그(미지정 시 --title 에서 kebab 도출).",
+    )
+    p_draft.add_argument(
+        "--source", metavar="file|-",
+        help="조사 prose 입력 — 파일 경로·`-`=stdin·미지정 시 빈 본문(TODO placeholder).",
+    )
+    p_draft.set_defaults(fn=cmd_capture_draft)
 
     p_lint = sub.add_parser(
         "lint",
