@@ -842,6 +842,199 @@ def _board_submodule_name() -> str | None:
     return None
 
 
+# ── board git 즉시 sync (ADR-0033 ②·T-0163) ──────────────────────────────────
+# board(tickets+areas)가 별도 git(submodule·standalone)으로 분리된 형상에서, ticket
+# mutation 마다 board git 에 자동 commit + pull --rebase + push 한다. mutation 별 sync
+# 강도가 다르다(spike §3.6·ADR-0033 ②):
+#
+#   - **claim = STRICT(원자·조율 primitive)**: pull 로 remote 선점을 먼저 반영 → 이미
+#     남이 claim 했으면 작업 시작을 차단(race-lost·로컬 변경 0) → 로컬 claim commit →
+#     push 가 성공해야 *비로소* 소유 확정. non-FF/conflict/offline 면 로컬 claim 을
+#     rollback(티켓 open 복귀) + 명시 실패. best-effort 로 "내가 claim" 을 남기면 둘이
+#     같은 일 = 중복작업 방지가 깨지므로 claim 만 strict 다.
+#   - **new/complete/block/unclaim/unblock = best-effort local-first**: 로컬 commit 은
+#     항상 성공(로컬) → pull --rebase ; push 는 best-effort → 실패 시 stale 경고 + 무차단
+#     계속. active retry 루프는 두지 않는다 — 다음 mutation 의 pull-rebase+push 가 밀린
+#     commit 을 자연 catch-up 한다(spike §3.6 "retry" 의 해석).
+#
+# **활성 게이트 = board 가 별도 git 일 때만**(`board_root()/.git` 존재). legacy(board 가
+# wiki/ 안·별도 git 아님)면 sync 는 전부 no-op(git 호출 0·현 동작 byte-identical) —
+# board_root() graceful 탐지와 동형이고, 기존 회귀가 green 으로 남는 핵심이다. 모든 git
+# 호출은 fail-soft subprocess(엔진 규약·UTF-8 고정·짧은 timeout) — 거짓 원자성/락 보장을
+# 만들지 않는다(best-effort 는 정직하게 경고, claim 만 명시 실패).
+
+# board git 호출 timeout — pull/push 는 네트워크 왕복이라 user-email 폴백(5s)보다 길게
+# 둔다. 환경 이상(hang·offline DNS)에서 무한 대기를 막는 상한(엔진 subprocess 규약).
+_BOARD_GIT_TIMEOUT_SECONDS = 30
+
+
+def _board_git_enabled() -> bool:
+    """board 가 별도 git 으로 분리됐고 sync 가능한가 — `board_root()/.git` 존재 + git 바이너리.
+
+    True 면 ticket mutation 이 board git 에 commit/pull/push 한다. False 면 sync 전부
+    no-op(legacy·솔로·git 부재) — `board_root()` 가 wiki/ 를 가리키는 legacy 에선
+    `wiki/.git` 가 없어 자동으로 False(superproject git 은 REPO 루트에 산다). board/ 분리
+    형상에서만 `board/.git`(submodule git 파일/디렉토리)이 존재한다. git 바이너리 부재면
+    분리 형상이라도 no-op(fail-soft·sync 불능).
+    """
+    if shutil.which("git") is None:
+        return False
+    return (board_root() / ".git").exists()
+
+
+def _board_git(args: list[str], *, check: bool = False) -> subprocess.CompletedProcess:
+    """board git working dir(`board_root()`)에서 git 명령을 실행한다 (UTF-8·timeout 고정).
+
+    엔진 subprocess 규약: UTF-8 디코딩(한글 ticket/경로 안전)·짧은 timeout·`errors=replace`.
+    `-C board_root()` 로 작업 디렉토리를 board git 으로 고정한다(cwd 의존 0). `check=False`
+    가 기본 — 호출부가 returncode 로 분기하며, 예외(timeout·바이너리 이상)는 호출부가
+    fail-soft 로 처리한다.
+    """
+    return subprocess.run(
+        ["git", "-C", str(board_root()), *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=_BOARD_GIT_TIMEOUT_SECONDS, check=check)
+
+
+def _board_git_head() -> str | None:
+    """board git 의 현재 HEAD SHA (없으면 None) — claim rollback 의 복귀 지점 기록용."""
+    r = _board_git(["rev-parse", "HEAD"])
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _board_git_stage_and_commit(message: str) -> bool:
+    """board git 에 tickets/ + areas.md 변경을 stage 하고 commit 한다 (로컬·항상 시도).
+
+    누출 0: board git 엔 board 파일밖에 없으므로 `add -A` 가 설계(superproject)를 끌고
+    가지 않는다(ADR-0033 ①). nothing-to-commit(변경 없음)이면 commit 은 rc≠0 이지만 그건
+    정상(이미 동기)이라 호출부가 무시한다. 반환 True = 새 commit 생성, False = 변경 없음/
+    실패(둘 다 호출부에서 best-effort 로는 무차단).
+    """
+    _board_git(["add", "-A"])
+    r = _board_git(["commit", "-m", message])
+    return r.returncode == 0
+
+
+def _board_git_pull_rebase() -> subprocess.CompletedProcess:
+    """board git 을 remote 최신화 (`pull --rebase`) — 선점/원격 변경을 로컬에 반영."""
+    return _board_git(["pull", "--rebase"])
+
+
+def _board_git_push() -> subprocess.CompletedProcess:
+    """board git 을 remote 로 push — claim 소유 확정(strict)·best-effort 동기(나머지)."""
+    return _board_git(["push"])
+
+
+def _board_git_sync_best_effort(message: str) -> None:
+    """best-effort local-first sync (new/complete/block/unclaim/unblock·spike §3.6).
+
+    board 가 별도 git 이 아니면 no-op(legacy·솔로). 별도 git 이면: 로컬 commit(항상
+    시도·로컬은 성공) → pull --rebase ; push 를 best-effort 로. offline/auth/conflict 등
+    어떤 실패도 **작업을 차단하지 않는다** — stale 경고만 stderr 로 내고 계속한다. active
+    retry 루프는 없다 — 밀린 commit 은 다음 mutation 의 pull-rebase+push 가 catch-up 한다.
+    """
+    if not _board_git_enabled():
+        return
+    try:
+        _board_git_stage_and_commit(message)
+        pull = _board_git_pull_rebase()
+        push = _board_git_push() if pull.returncode == 0 else None
+    except Exception as exc:  # noqa: BLE001 — fail-soft: best-effort sync 는 절대 작업을 막지 않는다.
+        print(f"  ⚠ board sync 보류(다음 mutation 이 catch-up): {exc}", file=sys.stderr)
+        return
+    if pull.returncode != 0:
+        print("  ⚠ board sync 보류 — pull --rebase 실패(offline/conflict). 로컬 commit 은 "
+              "보존되며 다음 mutation 이 catch-up 한다.", file=sys.stderr)
+    elif push is not None and push.returncode != 0:
+        print("  ⚠ board sync 보류 — push 실패(offline/auth/non-FF). 로컬 commit 은 보존되며 "
+              "다음 mutation 이 catch-up 한다.", file=sys.stderr)
+
+
+def _board_git_claim_prefetch() -> str | None:
+    """claim STRICT 1단계: `pull --rebase` 로 remote 선점을 로컬에 먼저 반영한다.
+
+    board 가 별도 git 이 아니면 no-op·`""`(sentinel: sync 비활성·검증 진행). 별도 git
+    이면 pull --rebase 를 시도한다:
+      - 성공 → board git HEAD SHA 반환(claim commit 의 rollback 복귀 지점·truthy anchor).
+      - 실패(offline·DNS·auth·rebase conflict) → None 반환. 호출부가 이를 **offline/도달
+        불가**로 보고 claim 을 명시 실패시킨다(best-effort 로 "내가 claim" 을 남기면 중복작업
+        — claim 은 조율 primitive 라 remote 도달 없이는 claim 불가).
+      - pull 은 성공했으나 HEAD SHA 를 못 구함(빈 board git·detached 이상) → **None**.
+        enabled 인데 rollback anchor 가 없으면 push 실패 시 거짓 소유를 되돌릴 수 없으므로,
+        strict-claim 은 안전하게 *실패*해야 한다(로컬 변경 0·anchor 없는 진행 금지).
+    반환 의미 3분: `""` = sync 비활성(legacy·confirm early-return True) · `None` = enabled-
+    but-unreachable/no-anchor(claim 명시 실패) · `<sha>` = 유효 anchor(정상 진행).
+    pull 이 winner 의 claim 을 끌어오면 working tree 에서 ticket 이 claimed/ 로 이동돼,
+    뒤따르는 `find_ticket`/status 검사가 자연히 race-lost 를 표면화한다(로컬 변경 0).
+    """
+    if not _board_git_enabled():
+        return ""  # sync 비활성 — pull 없이 검증만 진행(legacy·솔로).
+    try:
+        pull = _board_git_pull_rebase()
+    except Exception:  # noqa: BLE001 — fail-soft: pull 예외(timeout 등)는 offline 취급.
+        return None
+    if pull.returncode != 0:
+        return None
+    # enabled 인데 HEAD 를 못 구하면 rollback anchor 부재 → None(거짓 소유 위험·안전 실패).
+    return _board_git_head() or None
+
+
+def _board_git_claim_rollback(orig_head: str) -> None:
+    """로컬 claim 을 통째로 되돌린다 — `reset --hard <orig_head>` + winner 상태 반영 (절대 throw 금지).
+
+    `orig_head`(prefetch 가 기록한 pull 직후 SHA)로 hard-reset 해 claim commit 을 되돌리고
+    working tree 의 ticket 을 open/ 으로 복원한다(거짓 소유 0). 이어 `pull --rebase` 로 winner
+    의 claimed 상태를 로컬에 best-effort 반영한다. **어떤 git 호출이 throw(timeout·git 소실
+    등)해도 예외를 삼킨다** — confirm 이 ADR-0012 "loser 는 깨끗한 race-lost rc=1·never
+    traceback" 을 어기지 않도록(rollback 이 cmd_claim 까지 예외를 새지 않게). reset/pull 자체가
+    실패하면 복원이 불완전할 수 있으나, 그건 claim 을 *확정하지 않는다*(False 경로)는 사실과
+    독립이다 — confirm 은 여전히 False 를 내고, 다음 mutation/claim 의 prefetch pull-rebase 가
+    상태를 catch-up 한다.
+    """
+    with contextlib.suppress(Exception):
+        _board_git(["reset", "--hard", orig_head])
+    with contextlib.suppress(Exception):
+        _board_git_pull_rebase()  # winner 의 claimed 상태를 로컬에 반영(best-effort).
+
+
+def _board_git_claim_confirm(orig_head: str | None) -> bool:
+    """claim STRICT 3·4단계: 로컬 claim 을 commit 하고 push 가 성공해야 소유 확정.
+
+    board 가 별도 git 이 아니거나 prefetch 가 sync 를 비활성(`""`)으로 판단했으면 True
+    (sync 무관 — 로컬 atomic-rename 만으로 claim 확정·legacy 동작 무변경). 별도 git 이고
+    유효 anchor(`orig_head` = truthy SHA)면:
+      1. commit(tickets/ + areas.md) — 로컬 claim 박제. **commit 이 새 commit 을 못 내면
+         (identity 부재·hook·nothing-to-commit) push 가 "up-to-date" rc=0 을 내 remote 미전파
+         인데 확정될 수 있다(거짓 소유) → commit 실패는 즉시 rollback + False.** claim 경로는
+         항상 rename 변경이 있으므로 commit 은 반드시 새 commit 을 내야 정상이다.
+      2. push — 성공(rc=0)해야 *비로소* 소유 확정(True).
+      3. (commit 실패 ∨ push 실패 ∨ 예외) → `_board_git_claim_rollback` 후 False (거짓 소유 0).
+    **어떤 경로에서도 bool 만 반환**한다(rollback 은 절대 throw 안 함) — cmd_claim(try 없음)이
+    깨끗한 race-lost rc=1 을 내도록(ADR-0012·never traceback). False = 호출부가 race-lost /
+    offline 으로 명시 실패시킨다.
+
+    `orig_head` 가 빈 문자열(`""`)이면 = sync 비활성(legacy)이라 early-return True. None 은
+    prefetch 가 이미 cmd_claim 에서 명시 실패로 걸러내므로(enabled-but-no-anchor·offline) 여기
+    도달하지 않지만, 방어적으로 함께 True 가 아닌 *비활성* 으로만 취급한다(아래 not orig_head).
+    """
+    if not _board_git_enabled() or not orig_head:
+        return True  # sync 비활성(legacy·anchor 없음) — 로컬 rename 만으로 확정(무변경).
+    try:
+        committed = _board_git_stage_and_commit("claim")
+        if not committed:
+            # commit 이 새 commit 을 못 냄 → push rc=0(up-to-date)이 거짓 확정을 낼 수 있다.
+            _board_git_claim_rollback(orig_head)
+            return False
+        push = _board_git_push()
+        if push.returncode == 0:
+            return True
+        _board_git_claim_rollback(orig_head)
+        return False
+    except Exception:  # noqa: BLE001 — fail-soft: 어떤 sync 예외도 claim 을 거짓 확정시키지 않는다.
+        _board_git_claim_rollback(orig_head)
+        return False
+
+
 def _active_slot_test_cmd() -> str | None:
     """활성 worktree 슬롯(lease)에 바인딩된 test_cmd (T-0066·ADR-0014 amend·없으면 None).
 
@@ -1250,6 +1443,18 @@ def cmd_claim(args: argparse.Namespace) -> int:
     # (graceful·기존 슬롯-only 값과 형태 동일). 진행메시지/board surface 는 슬롯(sess)을 쓴다.
     assignee = identity_tag(session_override=args.session,
                             user_override=getattr(args, "user", None))
+
+    # claim STRICT 1단계 (ADR-0033 ②·spike §3.6): board 가 별도 git 이면 먼저 pull --rebase
+    # 로 remote 선점을 로컬에 반영한다. pull 이 winner 의 claim 을 끌어오면 ticket 이
+    # claimed/ 로 이동돼 아래 status 검사가 race-lost 를 표면화한다(로컬 변경 0). pull 자체가
+    # 실패(offline/도달 불가)하면 claim 불가 — best-effort 로 claim 을 남기면 중복작업이라
+    # claim 만 strict offline-fail 한다. orig_head = pull 직후 SHA(claim commit rollback 지점·
+    # legacy/sync 비활성이면 ""). None = offline.
+    orig_head = _board_git_claim_prefetch()
+    if orig_head is None:
+        print(f"offline — board 도달 불가, {args.id} claim 불가", file=sys.stderr)
+        return 1
+
     try:
         status, path = find_ticket(args.id)
     except FileNotFoundError as e:
@@ -1292,6 +1497,17 @@ def cmd_claim(args: argparse.Namespace) -> int:
     fm["claimed_by"] = assignee
     fm["claimed_at"] = now_utc()
     dump_ticket(new_path, fm, body)
+
+    # claim STRICT 3·4단계 (spike §3.6): 로컬 claim 을 commit 하고 push 가 성공해야 *비로소*
+    # 소유 확정. push 실패(non-FF/conflict/offline)면 로컬 claim 을 rollback(reset --hard
+    # orig_head → ticket open/ 복원·commit 되돌림)하고 race-lost 로 명시 실패한다 — 거짓
+    # 소유를 남기지 않는다. board 가 별도 git 이 아니면 confirm 은 True(로컬 rename 만으로
+    # 확정·legacy 무변경).
+    if not _board_git_claim_confirm(orig_head):
+        print(f"claim race lost on {args.id} (board push 충돌·소유 미확정·롤백됨)",
+              file=sys.stderr)
+        refresh_board()
+        return 1
     print(f"claimed {args.id} as {assignee}")
     refresh_board()
     return 0
@@ -1353,6 +1569,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body)
     print(f"completed {args.id}")
     refresh_board()
+    _board_git_sync_best_effort(f"complete {args.id}")
     return 0
 
 
@@ -1372,6 +1589,7 @@ def cmd_block(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body + note)
     print(f"blocked {args.id}: {args.reason}")
     refresh_board()
+    _board_git_sync_best_effort(f"block {args.id}")
     return 0
 
 
@@ -1392,6 +1610,7 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body)
     print(f"unclaimed {args.id}")
     refresh_board()
+    _board_git_sync_best_effort(f"unclaim {args.id}")
     return 0
 
 
@@ -1411,6 +1630,7 @@ def cmd_unblock(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body)
     print(f"unblocked {args.id}")
     refresh_board()
+    _board_git_sync_best_effort(f"unblock {args.id}")
     return 0
 
 
@@ -1916,6 +2136,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint` "
           "(placeholders left in the body fail lint)")
     refresh_board()
+    _board_git_sync_best_effort(f"new {tid}")
     return 0
 
 
