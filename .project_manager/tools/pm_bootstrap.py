@@ -204,6 +204,39 @@ def _auto_slot(
     return repo, slot_nums[0]
 
 
+# ── per-slot pm_state 경로 안내 (multi-PM 연속성·ADR-0033 §3.1·T-0166) ─────────
+# pm_state 는 *슬롯별*이다(spike §1.3·§3.1) — pm_handoff 가 활성 슬롯의 pm_state 를
+# read/write 하므로(`.local/slots/<slot>/pm_state.md`·솔로 legacy 폴백), 부트스트랩의
+# "첫 turn" 안내도 PM 이 *어느* pm_state 를 읽어야 하는지 같은 경로로 가리켜야 한다.
+# 부트스트랩은 pm_state 를 편집하지 않으므로(read/write 주체는 pm_handoff) 경로 *문자열*만
+# 해소한다 — slot 키는 `_auto_slot`(단일 self-host 자동바인딩·T-0123) 동형으로 재사용한다.
+def _pm_state_display_path(
+    slot: tuple[str, int] | None = None,
+    areas_file: Path | None = None,
+    leases_file: Path | None = None,
+) -> str:
+    """첫-turn 안내에 쓸 pm_state 경로 문자열 (per-slot·솔로 legacy 폴백·T-0166).
+
+    슬롯이 해소되면(`(repo, N)`·명시 또는 `_auto_slot` 단일 self-host) per-slot 경로
+    `.project_manager/.local/slots/<repo>_<N>/pm_state.md`, 미해소(솔로/모호)면 legacy
+    `pm_state.md`(현행 안내 무변경·짧은 표기). `_auto_slot` 은 같은 모듈 함수라 직접
+    호출(동적로드 불요·`_worktree_cwd` 동형). 예외/None 은 흡수해 legacy 표기로 폴백.
+    `leases_file` 미지정이면 *호출 시점* REPO 기준 재구성(monkeypatch 추종·hermetic).
+    """
+    if leases_file is None:
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    resolved = slot
+    if resolved is None:
+        try:
+            resolved = _auto_slot(areas_file, leases_file)
+        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 legacy 표기 폴백.
+            resolved = None
+    if resolved is None:
+        return "pm_state.md"
+    repo, n = resolved
+    return f".project_manager/.local/slots/{repo}_{n}/pm_state.md"
+
+
 def _default_python() -> str:
     """플랫폼-인지 venv 인터프리터 경로 (없으면 sys.executable 폴백).
 
@@ -457,6 +490,22 @@ class PmBootstrap:
             return str(REPO / f"work/{repo}_{n}")
         return str(REPO)
 
+    def _pm_state_display_path(self) -> str:
+        """첫-turn 안내에 쓸 pm_state 경로 (per-slot·솔로 legacy 폴백·T-0166).
+
+        명시 multi-PM 모드(`_bound_slot` = `work/<repo>_<N>`)면 그 슬롯의 per-slot 경로,
+        솔로 무인자면 `_auto_slot()` 단일 self-host 자동해소(인스턴스 `_areas_file` 추종),
+        둘 다 미해소면 legacy `pm_state.md` 표기(현행 무변경). 모듈 `_pm_state_display_path`
+        에 위임한다 — slot 키는 pm_handoff 의 read/write 경로와 동형(`<repo>_<N>`).
+        """
+        bound = None
+        if self._bound_slot and self._bound_slot.startswith("work/"):
+            rest = self._bound_slot[len("work/"):]
+            m = re.match(r"^(.+)_(\d+)$", rest)
+            if m:
+                bound = (m.group(1), int(m.group(2)))
+        return _pm_state_display_path(bound, self._areas_file)
+
     # ── 기본 subprocess 구현 ─────────────────────────────────────────────
 
     def _default_run_board(self, args: list[str]) -> tuple[int, str]:
@@ -684,11 +733,14 @@ class PmBootstrap:
         else:
             regression_summary = f" 회귀 (handoff entry 참조), lint {lint}."
         lines.append(f"- board: {board_summary}{regression_summary}")
+        # pm_state 는 슬롯별(T-0166) — PM 이 *자기 슬롯* pm_state 를 읽도록 per-slot 경로를
+        # 안내한다(pm_handoff 의 read/write 경로와 동형). 솔로/모호면 legacy `pm_state.md` 표기.
+        state_path = self._pm_state_display_path()
         lines.append(
-            "- (직전 세션 요약은 PM 손 — pm_state.md \"세션 식별\" 절 + log/current.md 마지막 handoff entry 참조)"
+            f"- (직전 세션 요약은 PM 손 — {state_path} \"세션 식별\" 절 + log/current.md 마지막 handoff entry 참조)"
         )
         lines.append(
-            "- 무엇부터 갈까요? (PM 손 — pm_state.md \"남은 작업 전체 그림\" 절 + open ticket"
+            f"- 무엇부터 갈까요? (PM 손 — {state_path} \"남은 작업 전체 그림\" 절 + open ticket"
         )
         lines.append("  목록 보고 옵션 제시)")
 

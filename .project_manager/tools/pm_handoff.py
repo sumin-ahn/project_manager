@@ -41,7 +41,7 @@ from typing import Callable
 REPO = Path(__file__).resolve().parents[2]
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 PM_PLAYBOOK_FILE = REPO / ".project_manager" / "wiki" / "pm_playbook.md"  # 정적 — 인계 프롬프트 템플릿 추출용
-PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"       # 동적 — 세션 식별 sliding window 편집 대상
+PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"       # legacy 솔로 단일 경로 (별칭·아래 _legacy_pm_state_file 가 호출시점 REPO 추종·T-0166 per-slot 화 후 폴백 원천)
 TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"             # board 현황 카운트 legacy 별칭 (아래 _tickets_dir 가 추종)
 TOOLS_DIR = REPO / ".project_manager" / "tools"                          # worktree_pool 동적 로드 앵커 (multi-PM 모드)
 # 회귀 cwd 자동해소(T-0124) — board.py·pm_bootstrap.py 와 *같은 위치*. _regression_cwd 가
@@ -169,6 +169,128 @@ def _regression_cwd(
             repo, n = auto
             return str(REPO / f"work/{repo}_{n}")
     return str(REPO)
+
+
+# ── per-slot pm_state 경로 해소 (multi-PM 연속성·ADR-0033 §3.1·T-0166) ─────────
+# pm_state 는 *슬롯별*이다 — 여러 PM 슬롯이 한 clone 의 공유 보드 위에서 각자 핸드오프
+# 연속성(세션 식별 sliding window·진행 중 결정)을 유지해야 하므로, 슬롯마다 별도
+# pm_state 를 둔다(spike §1.3·§3.1). 경로 = `.project_manager/.local/slots/<slot>/pm_state.md`
+# (gitignored·per-slot). slot 키 = lease 장부 슬롯과 동형(`<repo>_<N>`) — `_regression_cwd`·
+# `_auto_slot`(T-0123) 의 단일 self-host 바인딩과 같은 식별자를 재사용한다.
+#
+# graceful 마이그레이션 / 솔로 하위호환:
+#   - 슬롯이 해소되고(`<repo>_<N>`) slot 경로가 아직 없는데 legacy `wiki/pm_state.md` 가
+#     있으면, 첫 접근 시 slot 경로로 **이동**(per-slot 화 일회성 마이그레이션·spike §6.7).
+#   - 슬롯 미해소(솔로 단일 host·모호·미분리·`_auto_slot` None) → legacy `wiki/pm_state.md`
+#     를 그대로 read/write(현행 100% 보존·솔로 무변경).
+#   - 슬롯 해소돼도 slot 경로 부재 + legacy 부재면(드문 엣지) legacy 경로로 fail-soft 폴백.
+
+# 동적 별칭(_legacy_pm_state_file)으로 PM_STATE_FILE 을 추종 — 테스트가 monkeypatch 로
+# REPO 를 바꿔도 import 시점에 굳은 PM_STATE_FILE 대신 *호출 시점* legacy 경로를 본다.
+def _legacy_pm_state_file() -> Path:
+    """legacy 단일 pm_state 경로 (`wiki/pm_state.md`·clone당 1개·솔로 폴백·마이그레이션 원천)."""
+    return REPO / ".project_manager" / "wiki" / "pm_state.md"
+
+
+def _slots_root() -> Path:
+    """per-slot 상태 디렉토리 루트 (`.project_manager/.local/slots/`·gitignored·spike §3.1)."""
+    return REPO / ".project_manager" / ".local" / "slots"
+
+
+def _resolve_state_slot(
+    worktree_slot: str | None = None,
+    areas_file: Path | None = None,
+    leases_file: Path | None = None,
+) -> str | None:
+    """pm_state slot 키(`<repo>_<N>`)를 해소한다 — 명시 슬롯 우선·없으면 단일 self-host 자동.
+
+    해소 순서 (`_regression_cwd`·T-0124 동형):
+      - `worktree_slot`(multi-PM `--worktree-slot` 명시·`work/<repo>_<N>` 또는 `<repo>_<N>`)
+        가 있으면 leading `work/` 를 벗긴 `<repo>_<N>` 을 슬롯 키로.
+      - 없으면 bootstrap `_auto_slot` 으로 단일 self-host 슬롯 자동해소 → `<repo>_<N>`.
+      - 그것도 없으면(솔로/모호/부재) **None** — 호출부가 legacy `wiki/pm_state.md` 로 폴백.
+
+    `_auto_slot` 판정은 동적 로드해 재사용(DRY·복붙 금지). `areas_file`/`leases_file` 미지정이면
+    *호출 시점* `_areas_file()`(board_root 추종)·`LEASES_FILE`(REPO 기준)로 해소한다 — 모듈
+    default 상수가 import 시점에 굳지 않게 None 으로 받아 monkeypatch 된 REPO 를 추종(hermetic).
+    """
+    if worktree_slot:
+        # `work/<repo>_<N>` 또는 `<repo>_<N>` 둘 다 받아 슬롯 키(`<repo>_<N>`)로 정규화.
+        return worktree_slot[len("work/"):] if worktree_slot.startswith("work/") else worktree_slot
+    if areas_file is None:
+        areas_file = _areas_file()
+    if leases_file is None:
+        # *호출 시점* REPO 기준 — 모듈 상수 LEASES_FILE 은 import 시점에 굳어 monkeypatch
+        # 된 REPO 를 안 추종(hermetic 테스트 갭). REPO 에서 재구성해 추종한다(_areas_file 동형).
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    bp = _load_pm_bootstrap()
+    if bp is None:
+        return None
+    try:
+        auto = bp._auto_slot(areas_file, leases_file)
+    except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 None(legacy 폴백).
+        return None
+    if not auto:
+        return None
+    repo, n = auto
+    return f"{repo}_{n}"
+
+
+def _pm_state_path(
+    worktree_slot: str | None = None,
+    areas_file: Path | None = None,
+    leases_file: Path | None = None,
+    *,
+    migrate: bool = True,
+) -> Path:
+    """활성 슬롯의 pm_state 경로를 해소한다 (+graceful 마이그레이션·솔로 폴백·T-0166).
+
+    경로 우선순위:
+      - 슬롯 미해소(솔로/모호) → legacy `wiki/pm_state.md` (현행·무변경).
+      - slot 경로(`.local/slots/<slot>/pm_state.md`) 이미 존재 → 그대로(이미 per-slot).
+      - slot 부재 + legacy 존재 → `migrate=True` 면 legacy → slot 으로 *이동* 후 slot 반환,
+        `migrate=False` 면 이동 없이 **legacy** 반환(현 읽기 위치·미리보기·부작용 0).
+      - slot·legacy 둘 다 부재(드문 엣지·fresh) → **slot 경로** 반환(정식 위치·쓰기 시 생성).
+
+    `migrate` 는 *파일 이동* 만 가른다(경로 우선순위는 동일). run()/run_trigger() 는 진입부에서
+    `migrate=False`(읽기 위치만)로 호출하고, 모든 중단 게이트 통과 후 pm_state 첫 접촉 직전에만
+    `_migrate_legacy_pm_state` 로 실제 이동을 수행한다 — "중단 시 pm_state 무접촉" 계약 보존
+    (codex 교차검증 must-fix). dry-run 은 이동을 절대 하지 않는다(미리보기).
+    """
+    slot = _resolve_state_slot(worktree_slot, areas_file, leases_file)
+    legacy = _legacy_pm_state_file()
+    if slot is None:
+        # 솔로/모호 — 현행 단일 pm_state(무변경).
+        return legacy
+    slot_path = _slots_root() / slot / "pm_state.md"
+    if slot_path.exists():
+        return slot_path
+    if legacy.exists():
+        if not migrate:
+            # 이동 없이 현 읽기 위치(legacy)를 반환(진입부 target·미리보기·부작용 0).
+            return legacy
+        # graceful 마이그레이션 — legacy → slot 경로 이동(일회성·per-slot 화·atomic·동일 FS).
+        slot_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy.replace(slot_path)
+        return slot_path
+    # slot 경로·legacy 둘 다 부재 — slot 경로를 정식 위치로 반환(쓰기 시 생성).
+    return slot_path
+
+
+def _migrate_legacy_pm_state(
+    worktree_slot: str | None = None,
+    areas_file: Path | None = None,
+    leases_file: Path | None = None,
+) -> Path:
+    """legacy `wiki/pm_state.md` 를 활성 슬롯 경로로 이동하고 최종 pm_state 경로를 반환한다.
+
+    `_pm_state_path(..., migrate=True)` 의 명시 별칭 — run()/run_trigger() 가 **모든 중단
+    게이트(회귀·출하) 통과 후·pm_state 첫 접촉 직전**에 단 한 번 호출한다(트랜잭션 계약:
+    중단 시 pm_state 무접촉·codex must-fix). 멱등·비파괴(slot 이미 존재면 이동 안 함)·
+    legacy 부재면 이동 없이 slot 경로 반환(쓰기 시 생성). dry-run 경로는 이 함수를 호출하지
+    않는다(진입부 migrate=False target 을 그대로 읽음·미리보기·부작용 0).
+    """
+    return _pm_state_path(worktree_slot, areas_file, leases_file, migrate=True)
 
 
 def _default_python() -> str:
@@ -938,13 +1060,18 @@ class PmHandoff:
         run_shipping_test_fn: Callable[[str], tuple[int, str]] | None = None,
         log_file: Path = LOG_FILE,
         pm_playbook_file: Path = PM_PLAYBOOK_FILE,
-        pm_state_file: Path = PM_STATE_FILE,
+        pm_state_file: Path | None = None,
         venv_python: str | Path = _default_python(),
         worktree_pool=None,
     ) -> None:
         self._log_file = log_file
         self._pm_playbook_file = pm_playbook_file
-        self._pm_state_file = pm_state_file
+        # pm_state 는 *슬롯별*(T-0166·ADR-0033 §3.1) — 명시 주입(테스트/override)이 있으면
+        # 그 경로 고정, 미지정(None·프로덕션)이면 run()/run_trigger() 진입부에서 활성 슬롯을
+        # 해소해 `_pm_state_path` 로 per-slot 경로(또는 솔로 legacy 폴백)를 세팅한다. 명시 주입
+        # 여부를 기억해 per-slot 재해소가 hermetic 테스트의 명시 경로를 덮지 않게 한다.
+        self._pm_state_file_explicit = pm_state_file is not None
+        self._pm_state_file = pm_state_file if pm_state_file is not None else _legacy_pm_state_file()
         self._venv_python = venv_python
         # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 --done
         # --slot 경로 진입 시에만 동적 로드(multi-PM 모드)·솔로 무인자 경로는 안 건드린다.
@@ -1140,6 +1267,12 @@ class PmHandoff:
         # 회귀 cwd 해소(T-0124)용 — _default_run_pytest 가 _regression_cwd 에 넘긴다.
         # 명시 슬롯이 있으면 그 worktree, 없으면 _regression_cwd 가 단일 self-host 자동해소.
         self._worktree_slot = worktree_slot
+        # per-slot pm_state 경로 해소(T-0166) — 명시 주입(테스트)이 없을 때만. 진입부에선
+        # **읽기 위치(target 경로)만 정하고 파일은 옮기지 않는다**(migrate=False) — 회귀/출하
+        # 게이트(아래)가 red 면 "중단 시 pm_state 무접촉" 계약을 지켜야 하므로, legacy→slot
+        # 이동은 *모든 중단 게이트 통과 후·pm_state 첫 접촉 직전*([3/7] 앞)에 1회 수행한다.
+        if not self._pm_state_file_explicit:
+            self._pm_state_file = _pm_state_path(worktree_slot, migrate=False)
         print(
             f"[pm_handoff] PM {session_num}차 핸드오프 시작 "
             f"(dry_run={dry_run}, skip_pytest={skip_pytest}, "
@@ -1206,6 +1339,14 @@ class PmHandoff:
                 f"(부트스트랩 읽기 비용 ↓).",
                 file=sys.stdout,
             )
+
+        # ── per-slot 마이그레이션 (T-0166·트랜잭션 계약) ─────────────────────────
+        # 모든 중단 게이트(회귀 [1/7]·출하 [1b/7])를 통과한 *뒤*·pm_state 첫 접촉([3/7])
+        # 직전에 legacy → slot 이동을 1회 수행한다. 게이트 red 면 여기 못 와 legacy 무접촉
+        # (codex must-fix — "중단 시 pm_state 무접촉" 보존). dry_run 은 이동 안 함(미리보기 —
+        # 진입부 migrate=False target 을 그대로 읽음). 명시 주입(테스트)은 재해소 안 함.
+        if not dry_run and not self._pm_state_file_explicit:
+            self._pm_state_file = _migrate_legacy_pm_state(worktree_slot)
 
         # ── 3·4. pm_state.md sliding window 정리 + 길이 검증 ───────────────────
         # pm_state.md 부재(board.py init 미실행 clone)는 치명 아님 — fail-soft.
@@ -1388,6 +1529,16 @@ class PmHandoff:
         반환: 0=성공, 1=실패 (앵커 불일치 등).
         """
         date_str = datetime.date.today().isoformat()
+        # per-slot pm_state 경로 해소(T-0166) — run() 동형. 진입부엔 읽기 위치(target)만
+        # 정하고 파일 이동은 안 한다(migrate=False). 실제 legacy→slot 이동은 pm_state 첫
+        # 접촉(아래 session-num 추론 read) 직전에 1회 — dry_run 은 이동 안 함(미리보기).
+        # 명시 주입(테스트)은 재해소 안 함(hermetic 경로 보존).
+        if not self._pm_state_file_explicit:
+            self._pm_state_file = _pm_state_path(worktree_slot, migrate=False)
+            # 트리거는 빠른 경로(중단 게이트 없음)지만 run() 과 동형으로 — pm_state 첫 접촉
+            # 직전에 이동을 명시 단계로 둔다. dry_run 미리보기는 이동 안 함(부작용 0).
+            if not dry_run:
+                self._pm_state_file = _migrate_legacy_pm_state(worktree_slot)
 
         # ── 1. session-num 자동 추론 ───────────────────────────────────────────
         # pm_state.md 부재(board.py init 미실행 clone)는 치명 아님 — fail-soft.
