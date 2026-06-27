@@ -122,6 +122,30 @@ def _load_board():
         return None
 
 
+def _load_tool(name: str):
+    """이름의 엔진 도구 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
+
+    `_load_worktree_pool`/`_load_board` 와 동형 — `spec_from_file_location`(스크립트-위치
+    앵커). 부트스트랩이 차수 추론(`pm_handoff.infer_next_session_num`)·log 마지막 entry 본문
+    파싱(`pm_log.split_entries`)을 **DRY** 로 재사용하기 위한 역방향 동적 로드(T-0124 의
+    `pm_handoff._load_pm_bootstrap` 동형·복붙 금지). 직접 import 하지 않는 이유(touches 격리·
+    순환 회피)는 동적 로드로 보존된다. 차수/인계 dump 는 *소프트*(부재/실패 시 placeholder)라
+    None 이어도 부트스트랩 본체는 깨지지 않는다.
+    """
+    import importlib.util
+
+    tool_path = TOOLS_DIR / f"{name}.py"
+    if not tool_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location(name, tool_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — fail-soft: 차수/dump 는 소프트(로드 실패=placeholder).
+        return None
+
+
 def _registered_repos(areas_file: Path | None = None) -> list[str]:
     """areas.md 레지스트리에서 등록된 repo 이름 목록 (identity surface '등록영역' 표면용).
 
@@ -510,6 +534,94 @@ def parse_log_last_entry(log_text: str) -> dict[str, str] | None:
     }
 
 
+def extract_last_log_entry_body(log_text: str) -> str | None:
+    """log/current.md 의 마지막 `## [..]` entry **본문 전체**를 반환한다 (T-0179·인계 dump).
+
+    부트스트랩은 그간 마지막 entry 의 제목(date·type·title)만 표시하고 본문은 PM 이
+    `pm_log.py tail` 로 따로 읽었다 — self-sufficient 부트스트랩(인계 컨텍스트 자동 dump)을
+    위해 본문 전체를 surface 한다. **단일 진실 = `pm_log.split_entries`**(tail 추출 로직)를
+    동적 로드해 재사용한다(중복 파서 금지·DRY) — `cmd_tail` 의 `entries[-1][1]` 과 동형.
+
+    pm_log 부재/로드 실패(fail-soft) 또는 entry 0개면 None — 호출부가 제목만 표시하던
+    현행으로 폴백한다(소프트·본체는 안 깨짐).
+    """
+    pm_log = _load_tool("pm_log")
+    if pm_log is None:
+        return None
+    try:
+        _preamble, entries = pm_log.split_entries(log_text)
+    except Exception:  # noqa: BLE001 — fail-soft: 파싱 실패는 None(제목만 표시 폴백).
+        return None
+    if not entries:
+        return None
+    return entries[-1][1].rstrip()
+
+
+def infer_session_num(pm_state_text: str) -> int | str | None:
+    """per-slot pm_state 텍스트에서 다음 PM 세션 차수를 추론한다 (T-0179·차수 announce).
+
+    **단일 진실 = `pm_handoff.infer_next_session_num`**(세션 식별 절 최고차+1)을 동적 로드해
+    재사용한다(복붙 금지·DRY·T-0124 역방향). pm_handoff 부재/로드 실패면 None(소프트
+    placeholder) — handoff 의 `infer_next_session_num` 은 entry 부재 시 `"?"`(placeholder)를
+    돌려주므로 이 함수도 그 계약을 그대로 전달한다(정수 N / `"?"` / None).
+    """
+    pm_handoff = _load_tool("pm_handoff")
+    if pm_handoff is None:
+        return None
+    try:
+        return pm_handoff.infer_next_session_num(pm_state_text)
+    except Exception:  # noqa: BLE001 — fail-soft: 추론 실패는 None(placeholder).
+        return None
+
+
+# pm_state "남은 작업 전체 그림" 절 앵커 — 부트스트랩 인계 surface 의 단일 진실(`## ` 헤더).
+# pm_handoff 의 세션-window 앵커(`## 세션 식별 …`)와 같은 `## ` 레벨이라, 다음 `## ` 헤더
+# 직전(또는 파일 끝)까지가 절 범위다. 형식이 바뀌면 이 상수만 교체.
+_REMAINING_WORK_ANCHOR = "## 남은 작업 전체 그림"
+
+
+def extract_remaining_work_section(pm_state_text: str) -> str | None:
+    """pm_state 의 "남은 작업 전체 그림" 절(`### 🔴 다음 세션 — 사용자 발의` 포함) 텍스트를 반환한다.
+
+    T-0179 — 인계 컨텍스트 dump 의 일부. 앵커(`## 남은 작업 전체 그림`)부터 다음 `## ` 헤더
+    직전(또는 파일 끝)까지를 한 절로 surface 한다 — 그 안의 `### 🔴 다음 세션 — 사용자 발의`·
+    `### 🟡 DEFER`·`### 🔵 장기 carry` 하위 절을 통째로 담는다(다음 세션이 "무엇부터" 를
+    바로 보게). pm_handoff `_extract_session_section` 과 동형(앵커 → 다음 동급 헤더)이되
+    *읽기 전용 surface* 라 위치 offset 은 불필요해 텍스트만 반환한다.
+
+    앵커 불일치(형식 변경·절 부재) → None — 호출부가 명시 포인터로 graceful 폴백한다.
+    """
+    anchor_idx = pm_state_text.find(_REMAINING_WORK_ANCHOR)
+    if anchor_idx == -1:
+        return None
+    after_anchor = pm_state_text[anchor_idx + len(_REMAINING_WORK_ANCHOR):]
+    next_header = re.search(r"^## ", after_anchor, re.MULTILINE)
+    if next_header is None:
+        end_offset = len(pm_state_text)
+    else:
+        end_offset = anchor_idx + len(_REMAINING_WORK_ANCHOR) + next_header.start()
+    return pm_state_text[anchor_idx:end_offset].rstrip()
+
+
+# 차수 announce 머리표 placeholder — pm_state 미해소/추론불가 시 `PM <?>차` (crash 금지).
+_SESSION_LABEL_PLACEHOLDER = "PM <?>차"
+
+
+def _format_session_label(handoff_ctx: dict | None) -> str:
+    """차수 announce 머리표를 만든다 — `PM <N>차` / placeholder (T-0179·crash 금지).
+
+    `handoff_ctx["session_num"]` 가 정수면 `PM <N>차`, `"?"`(entry 부재 placeholder)·None·
+    handoff_ctx 부재(pm_state 미해소)면 `PM <?>차` placeholder. self-surface 헤더라 미해소도
+    graceful — 부트스트랩 본체를 깨지 않는다(spike §3·T-0178 fail-soft 정합).
+    """
+    if handoff_ctx is None:
+        return _SESSION_LABEL_PLACEHOLDER
+    num = handoff_ctx.get("session_num")
+    if isinstance(num, int):
+        return f"PM {num}차"
+    return _SESSION_LABEL_PLACEHOLDER
+
+
 # ── 핵심 흐름 ──────────────────────────────────────────────────────────────
 
 class PmBootstrap:
@@ -531,9 +643,15 @@ class PmBootstrap:
         venv_python: str | Path = _default_python(),
         worktree_pool=None,
         board=None,
+        pm_state_file: Path | None = None,
     ) -> None:
         self._log_file = log_file
         self._board_py = board_py
+        # pm_state seam (T-0179·차수 announce + 인계 dump) — bound slot 의 per-slot pm_state.
+        # 명시(hermetic 테스트)면 그 경로를 read. None 이면 run() 진입부에서 bound slot 으로
+        # 해소(`pm_handoff._pm_state_path` 동적로드·migrate=False·read-only·DRY). 부트스트랩은
+        # pm_state 를 *편집하지 않으므로*(read/write 주체는 pm_handoff) 경로만 잡고 텍스트만 읽는다.
+        self._pm_state_file = pm_state_file
         # areas_file 미지정이면 `_areas_file()`(board_root 추종·T-0162 A6)로 해소 — board/
         # 분리(ADR-0033 ①) 후 등록영역 surface(_registered_repos)가 stale 안 보게. 명시
         # 인자(hermetic 테스트)는 그대로 존중.
@@ -747,11 +865,65 @@ class PmBootstrap:
         }
 
     def _collect_log_entry(self) -> dict | None:
-        """log/current.md 의 마지막 entry 를 파싱해 반환한다."""
+        """log/current.md 의 마지막 entry 제목(date·type·title) + **본문 전체**를 수집한다.
+
+        T-0179 — 인계 컨텍스트 dump. 제목은 `parse_log_last_entry`, 본문은
+        `extract_last_log_entry_body`(`pm_log.split_entries` 재사용·DRY)로 같은 텍스트에서
+        뽑는다. 본문 추출 실패(pm_log 부재 등)면 `body=None` — 호출부가 제목만 표시하던
+        현행으로 graceful 폴백한다.
+        """
         if not self._log_file.exists():
             return None
         log_text = self._log_file.read_text(encoding="utf-8")
-        return parse_log_last_entry(log_text)
+        entry = parse_log_last_entry(log_text)
+        if entry is None:
+            return None
+        entry = dict(entry)
+        entry["body"] = extract_last_log_entry_body(log_text)
+        return entry
+
+    def _resolve_pm_state_file(self) -> Path | None:
+        """bound slot 의 per-slot pm_state 경로를 해소한다 (read-only·T-0179).
+
+        명시 주입(`self._pm_state_file`·hermetic 테스트)이 있으면 그대로. 없으면
+        `pm_handoff._pm_state_path`(per-slot·솔로 legacy 폴백·T-0166)를 **동적 로드**해
+        해소한다(복붙 금지·DRY). `migrate=False` — 부트스트랩은 pm_state 를 *읽기만* 하므로
+        legacy → slot 이동(부작용)을 절대 하지 않는다(읽기 위치만). 명시 multi-PM 모드면
+        `self._bound_slot`(`work/<repo>_<N>`)을 슬롯 인자로 넘겨 그 슬롯 pm_state 를 본다.
+        pm_handoff 부재/해소 실패 → None(소프트 — 차수/남은작업 surface 생략).
+        """
+        if self._pm_state_file is not None:
+            return self._pm_state_file
+        pm_handoff = _load_tool("pm_handoff")
+        if pm_handoff is None:
+            return None
+        try:
+            return pm_handoff._pm_state_path(self._bound_slot, migrate=False)
+        except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 None(surface 생략).
+            return None
+
+    def _collect_handoff_context(self) -> dict | None:
+        """bound slot pm_state 에서 차수 + "남은 작업/사용자발의" 절을 수집한다 (T-0179).
+
+        반환: {"session_num": int|str|None, "remaining_work": str|None,
+               "state_path": str} 또는 None(pm_state 미해소/부재 — surface 생략·graceful).
+        - `session_num`: `infer_session_num`(pm_handoff `infer_next_session_num` 재사용) — 정수
+          N / `"?"`(entry 부재 placeholder) / None(추론 불가). 출력 머리에 `PM <N>차`.
+        - `remaining_work`: `extract_remaining_work_section`(절 통째) 또는 None(명시 포인터 폴백).
+        pm_state 경로 미해소/파일 부재면 None — 호출부가 현행(placeholder/명시 포인터)로 폴백한다.
+        """
+        state_path = self._resolve_pm_state_file()
+        if state_path is None or not state_path.exists():
+            return None
+        try:
+            state_text = state_path.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001 — fail-soft: read 실패는 surface 생략.
+            return None
+        return {
+            "session_num": infer_session_num(state_text),
+            "remaining_work": extract_remaining_work_section(state_text),
+            "state_path": str(state_path),
+        }
 
     # ── 출력 빌드 ────────────────────────────────────────────────────────
 
@@ -762,13 +934,18 @@ class PmBootstrap:
         git: dict,
         log_entry: dict | None,
         timestamp: str,
+        handoff_ctx: dict | None = None,
     ) -> str:
         counts = board["counts"]
         open_tickets = board["open_tickets"]
         lint = board["lint"]
 
+        # 차수 announce (T-0179) — bound slot pm_state 에서 추론한 `PM <N>차`. 미해소/추론불가는
+        # placeholder(`?`) — self-surface 헤더이지 강제 아님(crash 금지).
+        session_label = _format_session_label(handoff_ctx)
+
         lines: list[str] = []
-        lines.append(f"## PM 세션 부트스트랩 ({timestamp})")
+        lines.append(f"## {session_label} 부트스트랩 ({timestamp})")
         lines.append("")
 
         # Board 섹션
@@ -804,14 +981,40 @@ class PmBootstrap:
         lines.append(f"- working tree: {git['working_tree']}")
         lines.append("")
 
-        # log/current.md 섹션
+        # log/current.md 섹션 — 제목 + **본문 전체** dump (T-0179·인계 컨텍스트 self-surface).
+        # 그간 제목(date·type·title)만 표시하고 PM 이 `pm_log.py tail` 로 따로 읽던 것을,
+        # 부트스트랩만으로 인계 컨텍스트를 알도록 마지막 handoff entry 본문을 통째로 surface 한다.
         lines.append("### log/current.md 마지막 entry")
         if log_entry:
             lines.append(f"- date: {log_entry['date']}")
             lines.append(f"- type: {log_entry['type']}")
             lines.append(f"- title: {log_entry['title']}")
+            body = log_entry.get("body")
+            if body:
+                lines.append("")
+                lines.append("<details><summary>본문 (인계 컨텍스트)</summary>")
+                lines.append("")
+                lines.append(body)
+                lines.append("")
+                lines.append("</details>")
+            else:
+                lines.append("- (본문 파싱 실패 — `pm_log.py tail` 로 직접 확인)")
         else:
             lines.append("- (log/current.md 없음 또는 entry 파싱 실패)")
+        lines.append("")
+
+        # pm_state 인계 surface (T-0179) — bound slot 의 "남은 작업/사용자발의" 절. 부트스트랩만으로
+        # 다음 세션이 "무엇부터" 를 바로 보도록 절을 통째로 dump. 미해소/절 부재면 명시 포인터 폴백.
+        lines.append("### pm_state — 남은 작업 / 사용자 발의")
+        remaining_work = handoff_ctx.get("remaining_work") if handoff_ctx else None
+        if remaining_work:
+            lines.append("")
+            lines.append(remaining_work)
+        else:
+            ptr_path = handoff_ctx.get("state_path") if handoff_ctx else self._pm_state_display_path()
+            lines.append(
+                f"- (pm_state \"남은 작업 전체 그림\" 절 미해소 — {ptr_path} 직접 확인)"
+            )
         lines.append("")
 
         # 권장 첫 turn 섹션
@@ -848,10 +1051,15 @@ class PmBootstrap:
         git: dict,
         log_entry: dict | None,
         timestamp: str,
+        handoff_ctx: dict | None = None,
     ) -> dict:
         counts = board["counts"]
         return {
             "timestamp": timestamp,
+            # 차수 + 인계 컨텍스트 (T-0179) — session_num(정수/`?`/None)·remaining_work(절 텍스트/
+            # None)·state_path. log_last_entry 는 body(본문 전체) 포함. 미해소면 None.
+            "session_num": handoff_ctx.get("session_num") if handoff_ctx else None,
+            "handoff_context": handoff_ctx,
             "board": {
                 "done": counts["done"],
                 "open": counts["open"],
@@ -921,20 +1129,24 @@ class PmBootstrap:
         pytest_result = self._collect_pytest() if with_pytest else None
         git = self._collect_git()
         log_entry = self._collect_log_entry()
+        # 차수 + 인계 컨텍스트 (T-0179) — bound slot pm_state 에서 차수·"남은 작업/사용자발의" 절.
+        # _bound_slot 세팅 후라 명시 multi-PM 모드면 그 슬롯 pm_state 를, 솔로면 자동해소(legacy 폴백).
+        # 미해소/부재면 None → 빌더가 placeholder/명시 포인터로 graceful.
+        handoff_ctx = self._collect_handoff_context()
 
         # multi-PM 모드 분기: --slot(lean·직접 bind·T-0074) vs 기존 --repo alloc.
         multipm_lean = repo is not None and slot is not None
         multipm_alloc = repo is not None and slot is None
 
         if output_json:
-            data = self._build_json(board, pytest_result, git, log_entry, timestamp)
+            data = self._build_json(board, pytest_result, git, log_entry, timestamp, handoff_ctx)
             if multipm_lean:
                 data["worktree"] = self._bind_and_identity(repo, slot)
             elif multipm_alloc:
                 data["worktree"] = self._alloc_and_identity(repo, branch, resume)
             print(json.dumps(data, ensure_ascii=False, indent=2))
         else:
-            markdown = self._build_markdown(board, pytest_result, git, log_entry, timestamp)
+            markdown = self._build_markdown(board, pytest_result, git, log_entry, timestamp, handoff_ctx)
             print(markdown)
             if multipm_lean:
                 # lean 정체성 선언(T-0074) — bind + identity surface + 다른 활성 PM 상태점검.

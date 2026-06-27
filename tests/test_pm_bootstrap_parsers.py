@@ -271,3 +271,215 @@ def test_parse_log_last_entry_requires_pipe_separator():
     mod = _load_module()
     text = "## [2026-06-14] handoff PM 인계 (pipe 없음)\n본문\n"
     assert mod.parse_log_last_entry(text) is None
+
+
+# ── extract_last_log_entry_body (T-0179·인계 dump·pm_log.split_entries 재사용) ──
+
+_LOG_TEXT = (
+    "# Project Log\n\n"
+    "## [2026-06-13] ticket | T-0010 lite 어댑터\n"
+    "- 첫 entry 본문\n\n"
+    "## [2026-06-14] handoff | PM 7차 인계 — 다음 우선순위\n"
+    "- 인계 사항 A\n"
+    "- 인계 사항 B\n"
+)
+
+
+def test_extract_last_log_entry_body_returns_full_body():
+    """마지막 entry 의 본문 전체(`## [..]` 줄 + 하위 라인)를 반환한다 (제목만 아님)."""
+    mod = _load_module()
+    body = mod.extract_last_log_entry_body(_LOG_TEXT)
+    assert body is not None
+    # 마지막 entry 의 헤더 줄과 본문 라인이 전부 들어간다.
+    assert "## [2026-06-14] handoff | PM 7차 인계 — 다음 우선순위" in body
+    assert "- 인계 사항 A" in body
+    assert "- 인계 사항 B" in body
+    # 이전 entry 본문은 섞이지 않는다.
+    assert "첫 entry 본문" not in body
+
+
+def test_extract_last_log_entry_body_matches_pm_log_tail():
+    """단일 진실 = `pm_log.split_entries` — tail 의 `entries[-1][1]` 과 동일 결과 (DRY 가드)."""
+    mod = _load_module()
+    # pm_log 를 직접 로드해 split_entries 의 마지막 entry 와 동형인지 대조한다(tail 재사용 핀).
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("pm_log", TOOLS / "pm_log.py")
+    real_pm_log = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real_pm_log)
+    _pre, entries = real_pm_log.split_entries(_LOG_TEXT)
+    assert mod.extract_last_log_entry_body(_LOG_TEXT) == entries[-1][1].rstrip()
+
+
+def test_extract_last_log_entry_body_no_entries_is_none():
+    """entry 가 없으면 None (제목만 표시하던 현행으로 폴백 신호)."""
+    mod = _load_module()
+    assert mod.extract_last_log_entry_body("# Project Log\n\n> 설명만\n") is None
+    assert mod.extract_last_log_entry_body("") is None
+
+
+# ── infer_session_num (T-0179·차수 추론·pm_handoff.infer_next_session_num 재사용) ──
+
+_PM_STATE_TEXT = (
+    "---\ntitle: PM State\n---\n\n"
+    "## 세션 식별 (현재까지 사용된 이름)\n\n"
+    "최근 N 차 (sliding window, 기본 3 차):\n"
+    "  - **40차** (2026-06-27 · 요약): 요약.\n"
+    "  - **41차** (2026-06-27 · 요약): 요약.\n"
+    "  - 이전 차 (PM 1차~39차) = log.\n\n"
+    "## 진행 중인 의사결정\n\n"
+    "| 항목 | 상태 |\n|---|---|\n| x | y |\n\n"
+    "## 남은 작업 전체 그림\n\n"
+    "> PM 41 종결 — actionable = 0.\n\n"
+    "### 🔴 다음 세션 — 사용자 발의\n"
+    "- sikdan pm 업데이트.\n\n"
+    "### 🟡 DEFER (명시 트리거 전엔 안 함)\n"
+    "- log archive.\n\n"
+    "## 다른 절\n"
+    "- 이건 안 들어가야 한다.\n"
+)
+
+
+def test_infer_session_num_returns_next_number():
+    """세션 식별 절 최고차(41) + 1 = 42 를 반환한다 (pm_handoff.infer_next_session_num 재사용)."""
+    mod = _load_module()
+    assert mod.infer_session_num(_PM_STATE_TEXT) == 42
+
+
+def test_infer_session_num_no_section_returns_placeholder():
+    """세션 식별 절/entry 가 없으면 `?` placeholder (pm_handoff 계약 전달)."""
+    mod = _load_module()
+    assert mod.infer_session_num("## 다른 절\n- 내용\n") == "?"
+
+
+# ── extract_remaining_work_section (T-0179·남은 작업/사용자발의 절 surface) ────
+
+def test_extract_remaining_work_section_includes_subsections():
+    """`## 남은 작업 전체 그림` 절을 다음 `## ` 직전까지 통째로(🔴/🟡 하위절 포함) 반환한다."""
+    mod = _load_module()
+    section = mod.extract_remaining_work_section(_PM_STATE_TEXT)
+    assert section is not None
+    assert section.startswith("## 남은 작업 전체 그림")
+    assert "🔴 다음 세션 — 사용자 발의" in section
+    assert "sikdan pm 업데이트" in section
+    assert "🟡 DEFER" in section
+    # 다음 `## ` 절은 범위 밖.
+    assert "이건 안 들어가야 한다" not in section
+
+
+def test_extract_remaining_work_section_to_eof():
+    """다음 `## ` 헤더가 없으면 파일 끝까지가 절 범위다."""
+    mod = _load_module()
+    text = "## 남은 작업 전체 그림\n\n### 🔴 다음 세션 — 사용자 발의\n- 끝까지\n"
+    section = mod.extract_remaining_work_section(text)
+    assert section is not None
+    assert "끝까지" in section
+
+
+def test_extract_remaining_work_section_anchor_absent_is_none():
+    """앵커(`## 남은 작업 전체 그림`)가 없으면 None (명시 포인터 폴백 신호)."""
+    mod = _load_module()
+    assert mod.extract_remaining_work_section("## 다른 절\n- 내용\n") is None
+
+
+# ── _format_session_label (T-0179·차수 announce 머리표·crash 금지) ─────────────
+
+def test_format_session_label_with_int():
+    """session_num 이 정수면 `PM <N>차`."""
+    mod = _load_module()
+    assert mod._format_session_label({"session_num": 42}) == "PM 42차"
+
+
+def test_format_session_label_placeholder_cases():
+    """`?`(entry 부재)·None·handoff_ctx 부재는 전부 placeholder (graceful·crash 금지)."""
+    mod = _load_module()
+    assert mod._format_session_label({"session_num": "?"}) == mod._SESSION_LABEL_PLACEHOLDER
+    assert mod._format_session_label({"session_num": None}) == mod._SESSION_LABEL_PLACEHOLDER
+    assert mod._format_session_label(None) == mod._SESSION_LABEL_PLACEHOLDER
+
+
+# ── run() 통합: 차수 announce + log 본문 dump + 남은작업 surface + 미해소 graceful ──
+
+def _make_hermetic_bootstrap(mod, tmp_path, *, log_text: str, pm_state_text: str | None):
+    """board/git/pytest 는 stub, log/pm_state 는 tmp 파일로 격리한 PmBootstrap (실 fs 미접촉).
+
+    pm_state_text=None → pm_state 파일을 두지 않아 *미해소*(graceful placeholder) 경로를 탄다.
+    """
+    log_file = tmp_path / "current.md"
+    log_file.write_text(log_text, encoding="utf-8")
+    areas_file = tmp_path / "areas.md"  # 빈(미생성) → 솔로
+
+    kwargs = dict(
+        run_board_fn=lambda args: (0, "✓ no lint issues\n") if args[:1] == ["lint"]
+        else (0, "  [open   ] T-0001  x  pm  tag\n"),
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 미호출")),
+        run_git_fn=lambda args: (0, "main\n") if args[:2] == ["rev-parse", "--abbrev-ref"]
+        else ((0, "abc123 subj\n") if args[:2] == ["log", "--oneline"] else (0, "")),
+        log_file=log_file,
+        areas_file=areas_file,
+    )
+    if pm_state_text is not None:
+        pm_state_file = tmp_path / "pm_state.md"
+        pm_state_file.write_text(pm_state_text, encoding="utf-8")
+        kwargs["pm_state_file"] = pm_state_file
+    else:
+        # 미해소 graceful — 존재하지 않는 경로를 주입해 _collect_handoff_context 가 None 으로 폴백.
+        kwargs["pm_state_file"] = tmp_path / "absent_pm_state.md"
+    return mod.PmBootstrap(**kwargs)
+
+
+def test_run_announces_session_num_in_header(tmp_path, capsys):
+    """bound slot pm_state 차수로 헤더에 `PM <N>차` announce."""
+    mod = _load_module()
+    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
+    assert inst.run() == 0
+    out = capsys.readouterr().out
+    assert "## PM 42차 부트스트랩" in out
+
+
+def test_run_dumps_log_entry_body(tmp_path, capsys):
+    """log 마지막 entry 의 제목 + **본문 전체**를 dump (제목만 아님·인계 컨텍스트)."""
+    mod = _load_module()
+    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
+    assert inst.run() == 0
+    out = capsys.readouterr().out
+    assert "title: PM 7차 인계 — 다음 우선순위" in out
+    # 본문 라인이 표면화된다(그간 제목만 표시).
+    assert "- 인계 사항 A" in out
+    assert "- 인계 사항 B" in out
+
+
+def test_run_surfaces_remaining_work_section(tmp_path, capsys):
+    """pm_state '남은 작업/사용자발의' 절을 surface."""
+    mod = _load_module()
+    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
+    assert inst.run() == 0
+    out = capsys.readouterr().out
+    assert "### pm_state — 남은 작업 / 사용자 발의" in out
+    assert "🔴 다음 세션 — 사용자 발의" in out
+    assert "sikdan pm 업데이트" in out
+
+
+def test_run_graceful_when_pm_state_unresolved(tmp_path, capsys):
+    """pm_state 미해소(부재)면 차수 placeholder + 명시 포인터 — crash 없이 진행."""
+    mod = _load_module()
+    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=None)
+    assert inst.run() == 0
+    out = capsys.readouterr().out
+    # 차수 placeholder(crash 금지) + 남은작업 명시 포인터 폴백.
+    assert "## PM <?>차 부트스트랩" in out
+    assert "남은 작업 전체 그림" in out  # 포인터 안내 문구.
+    # 본문 dump 는 log 가 있으니 여전히 나온다(차수 미해소와 독립).
+    assert "- 인계 사항 A" in out
+
+
+def test_run_json_includes_session_num_and_handoff_context(tmp_path, capsys):
+    """--json 출력에 session_num + handoff_context(remaining_work·log body) 포함."""
+    import json as _json
+    mod = _load_module()
+    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
+    assert inst.run(output_json=True) == 0
+    data = _json.loads(capsys.readouterr().out)
+    assert data["session_num"] == 42
+    assert data["handoff_context"]["session_num"] == 42
+    assert "sikdan pm 업데이트" in data["handoff_context"]["remaining_work"]
+    assert "- 인계 사항 A" in data["log_last_entry"]["body"]

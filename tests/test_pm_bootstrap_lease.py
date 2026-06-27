@@ -162,13 +162,20 @@ class _FakeBoard:
 
 
 def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str | None = None,
-                    board=None):
-    """격리된 PmBootstrap — board/git/log 는 stub, worktree_pool/board 는 mock 주입."""
+                    board=None, pm_state_text: str | None = None):
+    """격리된 PmBootstrap — board/git/log 는 stub, worktree_pool/board 는 mock 주입.
+
+    pm_state 도 hermetic seam 으로 주입한다(T-0179·차수/인계 dump) — 미지정이면 빈 pm_state
+    파일을 둬 실 worktree pm_state 누수를 막는다(차수 placeholder·남은작업 미해소로 폴백).
+    """
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
     areas_file = tmp_path / "areas.md"
     if areas_text is not None:
         areas_file.write_text(areas_text, encoding="utf-8")
+    # pm_state hermetic seam — 명시 텍스트면 그걸, 아니면 빈 파일(handoff_ctx 는 placeholder).
+    pm_state_file = tmp_path / "pm_state.md"
+    pm_state_file.write_text(pm_state_text if pm_state_text is not None else "", encoding="utf-8")
 
     board_output = (
         "  [open   ] T-0001  something  pm  tag\n"
@@ -197,6 +204,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
         areas_file=areas_file,
         worktree_pool=worktree_pool,
         board=board,
+        pm_state_file=pm_state_file,
     )
     return inst
 
@@ -299,8 +307,8 @@ def test_bootstrap_solo_does_not_touch_worktree_pool(bootstrap, tmp_path, capsys
     assert rc == 0
     assert wp.alloc_calls == []  # alloc 경로 미진입.
     out = capsys.readouterr().out
-    # 현행 부트스트랩 출력은 유지되고, identity surface 는 없다.
-    assert "PM 세션 부트스트랩" in out
+    # 현행 부트스트랩 출력은 유지되고, identity surface 는 없다 (헤더=차수 announce·T-0179).
+    assert "부트스트랩" in out
     assert "당신은" not in out
 
 
