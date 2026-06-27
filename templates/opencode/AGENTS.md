@@ -289,8 +289,10 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"
 ## 10. domain 지식 레이어 (살아있는 프로젝트 지식)
 
 `.project_manager/wiki/domain/` = 이 프로젝트가 **무엇이고 어떻게 다루나**의 *살아있는* 지식 그래프.
-`decisions/`(왜·동결)와 대비해 *현재 무엇·어떻게*를 계속 갱신한다(ADR-0018). 옛 `architecture.md`
-(빈 TODO 로 죽기 쉬웠음)를 대체한다.
+`decisions/`(왜·동결)와 대비해 *현재 무엇·어떻게*를 계속 갱신한다(ADR-0018). **`architecture.md`
+(현재-아키텍처 단일 진실·부트스트랩 1순위·ADR-0022)와 공존하는 그 *세부* 지식층**이다 — architecture.md
+가 구조·모듈·구현상태를 한 장으로 잡고, domain 페이지가 `covers:` 코드 글롭 단위로 세부(개념·절차·조사)를
+깊게 편다 (refines ADR-0018). architecture↔domain 충돌 = 의도↔현실 드리프트 표면화 기능.
 
 **페이지 작성** — `domain/_template.md` 를 복사해 `domain/<주제>.md`. frontmatter:
 - `type:` concept(무엇·왜) | guide(어떻게·절차) | research(조사·누적)

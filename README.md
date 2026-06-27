@@ -20,7 +20,7 @@
 | 기둥 | 무엇 | 핵심 파일 |
 |---|---|---|
 | **① Ticket 보드 (JIRA)** | 여러 LLM 세션이 충돌 없이 병렬 작업하는 가벼운 작업 보드. 디렉토리 = 상태, `mv` = atomic lock. | `.project_manager/tools/board.py` |
-| **② 문서 그래프 위키 (3축)** | 진행 중 프로젝트의 운영 계층 — **domain 지식 레이어**(살아있는 concept 그래프·`covers:` 코드 링크·작업 시 소환/채록·freshness lint·ADR-0018) + decisions+spikes + process(상태·사양·일지). `[[wikilink]]` 인터링크 + frontmatter (Karpathy LLM-Wiki 패턴 계승). | `.project_manager/wiki/` (`domain/`·`decisions/`·…) |
+| **② 문서 그래프 위키 (3축)** | 진행 중 프로젝트의 운영 계층 — **architecture.md**(현재-아키텍처 단일 진실·부트스트랩 #1·ADR-0022) + **domain 지식 레이어**(그 *세부* — 살아있는 concept 그래프·`covers:` 코드 링크·소환/채록·freshness lint·ADR-0018) + decisions+spikes + process(상태·사양·일지). `[[wikilink]]` 인터링크 + frontmatter (Karpathy LLM-Wiki 패턴 계승). | `.project_manager/wiki/` (`architecture.md`·`domain/`·`decisions/`·…) |
 | **③ PM·Researcher·Architect·Dev·Reviewer 협업** | PM 세션이 ticket 을 발행·분할하고 4축(gather=researcher / design=architect / build=developer / evaluate=code-reviewer)에 위임 (ADR-0019). **generate ≠ evaluate**, **design labor ≠ decision** — 주체를 분리하고 결정·비준·synthesis 는 PM. | 어댑터층(`.claude/agents/`·`.opencode/agents/`), `.project_manager/wiki/pm_role.md` |
 | **④ PM workflow skill** | PM 의 반복 workflow (부트스트랩 / wave claim / 위임 / wave finish / 핸드오프) 를 trigger 단위로 강제. backbone CLI 4 + slash command 5. | `.project_manager/tools/pm_*.py`, 어댑터층(`.claude/skills/`·`.opencode/command/`) |
 
@@ -46,7 +46,8 @@ PM·orchestrator 는 협업 모델, PM skill 은 trigger 단위 명시성 강제
 │   │   └── pm_log.py             # ④ log 의미단위 읽기 + 아카이브
 │   └── wiki/                     # ② 문서 그래프 위키
 │       ├── README.md             #   길찾기 + "디렉토리 의미" 단일 정의처
-│       ├── status.md             #   활성 모듈 매트릭스 + 테스트 합계표
+│       ├── architecture.md       #   현재-아키텍처 단일 진실 (① live / ② target · 부트스트랩 #1 · ADR-0022)
+│       ├── status.md             #   활성 모듈 매트릭스 (모듈 진행상태·비고 — judgment-only·ADR-0023)
 │       ├── board.md              #   ticket 현황 (board.py 자동 생성)
 │       ├── log/                  #   작업 일지 — current.md(활성) + archive/(봉인)
 │       ├── domain/               #   살아있는 지식 레이어 — concept/guide 페이지 (covers 로 코드 추적)
@@ -197,7 +198,7 @@ grep -rn '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='
 {{PY}} .project_manager/tools/board.py idea new "후보 아이디어"   # pre-ADR 아이디어
 ```
 
-### PM·Dev·Reviewer 루프 + PM skill
+### PM·Researcher·Architect·Dev·Reviewer 루프 + PM skill
 
 PM 세션은 **wave** 단위로 ticket 을 처리한다. Wave = 사용자 명시 *"wave 진행"* / *"최대한 많이 진행"*
 신호에 PM 이 자율로 묶어 처리하는 작업 단위 (보통 1~여러 ticket). 매 wave 사이 사용자 게이트 없이
@@ -210,15 +211,25 @@ slash command 하나가 trigger 한다 (자세한 wave 구성은 `pm_playbook.md
 4. **`/pm-dev-delegate T-NNNN --role code-reviewer`** — 독립 검토 (generate ≠ evaluate). must-fix 있으면 재작업.
 5. **`/pm-wave-finish T-NNNN <섹션>`** — 회귀+status+log+board+stage. git commit 은 PM 손.
 
+PM 은 build/evaluate 외에 **gather·design** 도 서브에이전트에 위임한다 (4축 = ADR-0019 · 위 개요표 ③):
+
+- **researcher (gather)** — bounded 사실 수집 (여러 파일·로그·레퍼런스를 훑어 사실·인용·목록 추출). ticket
+  분할 전 사실 정찰이나 *왜 이런가* 조사에. 읽기 전용 (조사≠결정).
+- **architect (design · Opus)** — 설계 노동 (idea triage / ADR 초안 / spec 추출 / 인터페이스 설계 / 가설
+  검증 / architecture.md·domain content-truth 유지). **design labor ≠ decision** — architect 는 권고+초안까지,
+  채택·발행·비준은 PM (ADR-0022 · ADR-0024 외부 설계 교차검토 게이트).
+
 세션 종료 시 **`/pm-handoff`**. board.py claim/complete 와 status.md·log/current.md 갱신은
-**PM(orchestrator) 담당** — 서브에이전트는 구현·검토만 한다. (위임 *기제*는 하니스마다 다르다 —
-claude_code 는 `Agent` 툴 `subagent_type`, opencode 는 네이티브 `task` tool. 각 타깃 README 참조.)
+**PM(orchestrator) 담당** — 서브에이전트는 gather/design/build/evaluate 만 한다. (위임 *기제*는 하니스마다
+다르다 — claude_code 는 `Agent` 툴 `subagent_type`, opencode 는 네이티브 `task` tool. 각 타깃 README 참조.)
 
 ### domain 지식 레이어 (살아있는 프로젝트 지식)
 
 `.project_manager/wiki/domain/` = 이 프로젝트가 **무엇이고 어떻게 다루나**의 *살아있는* 지식 그래프.
-`decisions/`(왜·동결)와 대비해 *현재 무엇·어떻게*를 계속 갱신한다. 옛 `architecture.md`(빈 TODO 로
-죽기 쉬웠음)를 대체한다.
+`decisions/`(왜·동결)와 대비해 *현재 무엇·어떻게*를 계속 갱신한다. **`architecture.md`(현재-아키텍처
+단일 진실·부트스트랩 #1·ADR-0022)와 공존하는 그 *세부* 지식층**이다 — architecture.md 가 구조·모듈·
+구현상태를 한 장으로 잡고, domain 페이지가 `covers:` 코드 글롭 단위로 그 세부(개념·절차·조사)를 깊게
+편다 (refines ADR-0018). architecture↔domain 충돌은 *의도↔현실 드리프트*를 표면화하는 기능이다.
 
 **페이지 작성:**
 ```bash
