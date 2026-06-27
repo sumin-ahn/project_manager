@@ -112,7 +112,7 @@ def test_resolve_per_repo_cmd_solo_no_areas_returns_none(tf, tmp_path, monkeypat
     assert tf._resolve_per_repo_test_cmd() is None
 
 
-def test_resolve_per_repo_cmd_umbrella_returns_row_cmd(tf, tmp_path, monkeypatch):
+def test_resolve_per_repo_cmd_multipm_returns_row_cmd(tf, tmp_path, monkeypatch):
     """multi-PM — areas.md 있고 활성 prefix 행에 test_cmd 있으면 그 문자열(예: go test)."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
@@ -123,7 +123,7 @@ def test_resolve_per_repo_cmd_umbrella_returns_row_cmd(tf, tmp_path, monkeypatch
     assert tf._resolve_per_repo_test_cmd() == "go test ./..."
 
 
-def test_resolve_per_repo_cmd_umbrella_no_prefix_returns_none(tf, tmp_path, monkeypatch):
+def test_resolve_per_repo_cmd_multipm_no_prefix_returns_none(tf, tmp_path, monkeypatch):
     """multi-PM이라도 활성 prefix 없으면 None(솔로 폴백 — 현행 보존)."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
@@ -132,7 +132,7 @@ def test_resolve_per_repo_cmd_umbrella_no_prefix_returns_none(tf, tmp_path, monk
     assert tf._resolve_per_repo_test_cmd() is None
 
 
-def test_resolve_per_repo_cmd_umbrella_empty_test_cmd_returns_none(tf, tmp_path, monkeypatch):
+def test_resolve_per_repo_cmd_multipm_empty_test_cmd_returns_none(tf, tmp_path, monkeypatch):
     """multi-PM이라도 행의 test_cmd 빈 값이면 None(부분 등록 — 현행 보존)."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
@@ -175,7 +175,7 @@ def test_default_run_pytest_solo_uses_venv_pytest_argv(tf, tmp_path, monkeypatch
     assert captured["shell"] is False
 
 
-def test_default_run_pytest_umbrella_uses_per_repo_shell_cmd(tf, tmp_path, monkeypatch):
+def test_default_run_pytest_multipm_uses_per_repo_shell_cmd(tf, tmp_path, monkeypatch):
     """multi-PM 회귀 — per-repo cmd(예: go test)면 그 문자열을 shell 로 실행(활성 repo cwd).
 
     sensitivity: per-repo 해소를 무력화(None)하면 위 솔로 argv 로 떨어진다 → 해소가 살아있어야

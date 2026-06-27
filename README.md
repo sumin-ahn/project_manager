@@ -256,7 +256,7 @@ cd <project> && ./pm-update.sh          # facade — manifest 경로만 byte-ove
   ```
   채택자 `local.conf` 의 `upstream_rev`(마지막 동기 baseline)부터 upstream HEAD 까지 — "내가 받은 버전 이후 무엇이 얼마나 바뀌었나". 변경 0이면 받을 게 없다(최신).
 - **drift 경고** — `board.py lint` 의 `adapter-drift`(advisory·never-block)가 "upstream 이 baseline 이후 앞섰다"를 표면화. 보이면 위 절차로 동기.
-- **multi-repo(N×M)** = `<umbrella>/pm-config.sh update`([§8](#8-multi-repo-nm-운용--pm-config-파사드-adr-01100140016)).
+- **multi-repo(N×M)** = `<manager>/pm-config.sh update`([§8](#8-multi-repo-nm-운용--pm-config-파사드-adr-01100140016)).
 - **재import** — opencode `.opencode/*` 같은 `@target-owned` 어댑터는 update 채널 밖이라 **재import 로 받는다**(§3 의 `--into`). claude 스킬은 pm-update 가 전파.
 
 > PM 세션은 `/pm-update`(갱신·freshness 자동분기·drift 표면화를 묶음)·`/pm-env`(upstream 값 전환·repo/worktree 관리)를 쓴다.
@@ -328,11 +328,11 @@ cd <project> && ./pm-update.sh          # facade — manifest 경로만 byte-ove
 가 ADR-0011 amend), 셋업·조회·진단은 루트의 `pm-config.sh`(`/.cmd`) 한 파사드로 한다:
 
 ```bash
-<umbrella>/pm-config.sh repo add <name> --git <url> --test "<cmd>"  # 패밀리에 repo 등록 + .repos clone
-<umbrella>/pm-config.sh worktree add <repo>                         # 새 worktree 슬롯 + submodule init
-<umbrella>/pm-config.sh status | whoami                             # 풀/리스 + 이 세션 repo/슬롯/branch
-<umbrella>/pm-config.sh release <slot> [--force]                    # 작업완료 반납 / 수동 강제(백스톱)
-<umbrella>/pm-config.sh update [--from <upstream>]                  # 엔진 갱신 (pm-update 흡수)
+<manager>/pm-config.sh repo add <name> --git <url> --test "<cmd>"  # 패밀리에 repo 등록 + .repos clone
+<manager>/pm-config.sh worktree add <repo>                         # 새 worktree 슬롯 + submodule init
+<manager>/pm-config.sh status | whoami                             # 풀/리스 + 이 세션 repo/슬롯/branch
+<manager>/pm-config.sh release <slot> [--force]                    # 작업완료 반납 / 수동 강제(백스톱)
+<manager>/pm-config.sh update [--from <upstream>]                  # 엔진 갱신 (pm-update 흡수)
 ```
 
 셋업·조회·진단 전용이다 — 런타임 worktree alloc/release 자동화는 `pm-bootstrap`/handoff 가 하고,

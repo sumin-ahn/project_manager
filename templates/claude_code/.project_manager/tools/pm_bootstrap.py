@@ -828,25 +828,25 @@ class PmBootstrap:
         log_entry = self._collect_log_entry()
 
         # multi-PM 모드 분기: --slot(lean·직접 bind·T-0074) vs 기존 --repo alloc.
-        umbrella_lean = repo is not None and slot is not None
-        umbrella_alloc = repo is not None and slot is None
+        multipm_lean = repo is not None and slot is not None
+        multipm_alloc = repo is not None and slot is None
 
         if output_json:
             data = self._build_json(board, pytest_result, git, log_entry, timestamp)
-            if umbrella_lean:
+            if multipm_lean:
                 data["worktree"] = self._bind_and_identity(repo, slot)
-            elif umbrella_alloc:
+            elif multipm_alloc:
                 data["worktree"] = self._alloc_and_identity(repo, branch, resume)
             print(json.dumps(data, ensure_ascii=False, indent=2))
         else:
             markdown = self._build_markdown(board, pytest_result, git, log_entry, timestamp)
             print(markdown)
-            if umbrella_lean:
+            if multipm_lean:
                 # lean 정체성 선언(T-0074) — bind + identity surface + 다른 활성 PM 상태점검.
                 identity = self._bind_and_identity(repo, slot)
                 print()
                 print(self._build_slot_identity_markdown(identity))
-            elif umbrella_alloc:
+            elif multipm_alloc:
                 # 기존 --repo alloc + identity surface 를 markdown 뒤에 추가 출력.
                 identity = self._alloc_and_identity(repo, branch, resume)
                 print()

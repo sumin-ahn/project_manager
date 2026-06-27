@@ -6,11 +6,11 @@ rem forwards all arguments verbatim. No own arg parsing/validation -
 rem pm_config is the single source of truth for the CLI contract.
 rem (Callable as .\pm-config.cmd from both cmd and PowerShell.)
 rem
-rem Usage:  <umbrella>\pm-config.cmd repo add <name> --git <url> --test "<cmd>"
-rem         <umbrella>\pm-config.cmd worktree add <repo>
-rem         <umbrella>\pm-config.cmd status ^| whoami
-rem         <umbrella>\pm-config.cmd release <slot> [--force]
-rem         <umbrella>\pm-config.cmd update [--from <upstream>]
+rem Usage:  <manager>\pm-config.cmd repo add <name> --git <url> --test "<cmd>"
+rem         <manager>\pm-config.cmd worktree add <repo>
+rem         <manager>\pm-config.cmd status ^| whoami
+rem         <manager>\pm-config.cmd release <slot> [--force]
+rem         <manager>\pm-config.cmd update [--from <upstream>]
 setlocal
 
 rem Interpreter preference python -> py -> python3 (matches _detect_py Windows order).

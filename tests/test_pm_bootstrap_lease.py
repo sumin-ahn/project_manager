@@ -135,7 +135,7 @@ class FakeWorktreePool:
         return self._live_branch.get(slot)
 
     def slot_path(self, slot):
-        return Path("/tmp/umbrella") / slot
+        return Path("/tmp/multipm") / slot
 
     def release(self, slot, *, require_clean=True, **_kw):
         self.release_calls.append({"slot": slot, "require_clean": require_clean})
@@ -258,7 +258,7 @@ def test_bootstrap_repo_reports_slot_cwd(bootstrap, tmp_path, capsys):
     inst.run(repo="A", branch="a5")
     out = capsys.readouterr().out
     # cwd(작업 슬롯) 경로가 보고된다 (slot_path 산출).
-    assert "/tmp/umbrella/work/A_2" in out
+    assert "/tmp/multipm/work/A_2" in out
 
 
 def test_bootstrap_repo_identity_lists_registered_areas(bootstrap, tmp_path, capsys):

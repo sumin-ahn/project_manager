@@ -6,11 +6,11 @@
 # 호출하고 모든 인자를 그대로 forward 한다. 자체 인자 파싱/검증은 0 — pm_config 이 CLI
 # 계약의 단일 진실이다(서브커맨드가 추가돼도 이 파사드는 변경 불필요).
 #
-# 사용:  <umbrella>/pm-config.sh repo add <name> --git <url> --test "<cmd>"
-#        <umbrella>/pm-config.sh worktree add <repo>
-#        <umbrella>/pm-config.sh status | whoami
-#        <umbrella>/pm-config.sh release <slot> [--force]
-#        <umbrella>/pm-config.sh update [--from <upstream>]
+# 사용:  <manager>/pm-config.sh repo add <name> --git <url> --test "<cmd>"
+#        <manager>/pm-config.sh worktree add <repo>
+#        <manager>/pm-config.sh status | whoami
+#        <manager>/pm-config.sh release <slot> [--force]
+#        <manager>/pm-config.sh update [--from <upstream>]
 set -eu
 
 # 자기 디렉토리 해석 (호출 cwd 무관).
