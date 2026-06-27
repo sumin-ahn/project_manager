@@ -373,6 +373,110 @@ def test_claim_preserves_best_effort_backlog(board, tmp_path):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# claim prefetch — board dirty(uncommitted) ↔ offline 구분 (T-0175)
+# ════════════════════════════════════════════════════════════════════════
+
+@requires_git
+def test_claim_prefetch_dirty_board_branches_not_offline(board, tmp_path):
+    """board submodule 에 uncommitted 변경 → prefetch 가 dirty sentinel(≠offline·≠anchor) 반환 (T-0175).
+
+    발행 직후 ticket 본문 Edit 처럼 board 트리에 unstaged 변경이 있으면 `pull --rebase` 가
+    "스테이징하지 않은 변경" 으로 거부된다. 이를 offline(None) 으로 오판하지 않고 dirty sentinel
+    로 가른다 — 네트워크는 정상이다(실 board git fixture·remote 살아있음)."""
+    bare = tmp_path / "bare-dirty"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    # board 트리에 unstaged 변경 1건(ticket 본문 Edit 모사) — remote 는 그대로 살아있다.
+    tk = board_dir / "tickets" / "open" / "T-0001-t.md"
+    tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
+
+    result = board._board_git_claim_prefetch()
+    assert result == board._CLAIM_PREFETCH_DIRTY, \
+        "dirty board 인데 prefetch 가 dirty sentinel 을 안 냄(offline/anchor 오판)."
+    assert result is not None, "dirty 가 offline(None) 으로 오판됨 — T-0175 회귀."
+
+
+@requires_git
+def test_claim_dirty_board_prints_commit_guidance_not_offline(board, tmp_path, capsys):
+    """dirty board claim → 'offline 아님'·commit 안내 메시지·claim 차단(rc=1)·로컬 변경 0 (T-0175 통합).
+
+    cmd_claim 이 dirty sentinel 을 offline 과 별도 분기해, 사용자가 'offline' 이 아니라 'commit 후
+    재시도' 안내를 본다(이중 출력·오판 0). ticket 은 open/ 그대로(prefetch 가 로컬 미변경)."""
+    bare = tmp_path / "bare-dirty2"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    tk = board_dir / "tickets" / "open" / "T-0001-t.md"
+    tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
+
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="me", user="me"))
+    assert rc == 1, "dirty board claim 이 차단 안 됨(prefetch 못 하는데 진행)."
+    err = capsys.readouterr().err
+    assert "uncommitted" in err and "offline 아님" in err, \
+        f"dirty 안내 메시지가 commit 안내·'offline 아님'을 안 담음: {err!r}"
+    assert "offline — board 도달 불가" not in err, \
+        f"dirty 케이스에 offline 메시지가 나옴(오판·이중출력): {err!r}"
+    # 로컬 변경 0: ticket 은 open/ 그대로, claimed/ 엔 없어야 한다(prefetch 가 안 건드림).
+    assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
+        "dirty claim 실패인데 ticket 이 open/ 에 없음 — prefetch 가 로컬을 변경함."
+    assert not list((board_dir / "tickets" / "claimed").glob("T-0001-*.md")), \
+        "dirty claim 실패인데 ticket 이 claimed/ 에 남음."
+
+
+@requires_git
+def test_claim_prefetch_clean_pull_failure_is_offline(board, tmp_path, monkeypatch):
+    """clean tree + pull --rebase 실패(monkeypatch) → offline(None) (dirty 와 구분·T-0175 보존).
+
+    dirty 선체크가 *clean* board 의 pull 실패(offline·conflict)를 dirty 로 오판하지 않는지 —
+    tree 는 clean 인데 pull 만 실패시켜 현행 offline 판정(None)이 유지됨을 단언한다."""
+    bare = tmp_path / "bare-clean-off"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    _make_board_git(tmp_path, remote=bare)
+    # tree 는 clean(_make_board_git 가 commit 했으므로) — pull 만 실패시킨다.
+    monkeypatch.setattr(
+        board, "_board_git_pull_rebase",
+        lambda: subprocess.CompletedProcess([], 1, "", "could not resolve host (offline)"))
+
+    result = board._board_git_claim_prefetch()
+    assert result is None, "clean tree + pull 실패인데 offline(None) 이 아님 — dirty 선체크 오발."
+
+
+@requires_git
+def test_claim_prefetch_clean_success_returns_anchor(board, tmp_path):
+    """clean tree + pull 성공 → board HEAD SHA anchor 반환(dirty/offline sentinel 아님·T-0175 보존)."""
+    bare = tmp_path / "bare-clean-ok"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+
+    result = board._board_git_claim_prefetch()
+    expected = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    assert result == expected, "clean+성공인데 board HEAD anchor 가 아님."
+    assert result not in (None, "", board._CLAIM_PREFETCH_DIRTY), \
+        "정상 anchor 가 sentinel(비활성/dirty/offline) 로 오염됨."
+
+
+@requires_git
+def test_dirty_precheck_removal_misclassifies_as_offline(board, tmp_path, monkeypatch):
+    """sensitivity: dirty 선체크를 무력화하면 dirty board 가 offline(None) 으로 오판됨(가드 실증·T-0175).
+
+    `_board_git_status_porcelain` 을 항상-clean 으로 stub(=dirty 선체크 제거 효과)하면, dirty
+    board 의 pull --rebase 가 '스테이징하지 않은 변경' 으로 rc≠0 → 현행 offline 판정(None) 으로
+    떨어진다. 이 테스트가 통과한다 = 선체크가 *실제로* dirty↔offline 을 가르는 load-bearing 가드."""
+    bare = tmp_path / "bare-sens"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    tk = board_dir / "tickets" / "open" / "T-0001-t.md"
+    tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
+
+    # 선체크 제거 모사: porcelain 이 빈 문자열(=clean) 을 내게 한다.
+    monkeypatch.setattr(board, "_board_git_status_porcelain", lambda: "")
+    result = board._board_git_claim_prefetch()
+    assert result is None, (
+        "선체크 무력화 시 dirty board 가 offline(None) 으로 오판돼야 한다 "
+        "(pull --rebase 가 unstaged 로 rc≠0). 오판이 안 나면 dirty 가 다른 경로로 새는 것."
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════
 # best-effort — push 실패해도 무차단(경고만)
 # ════════════════════════════════════════════════════════════════════════
 

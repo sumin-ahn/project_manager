@@ -867,6 +867,12 @@ def _board_submodule_name() -> str | None:
 # 둔다. 환경 이상(hang·offline DNS)에서 무한 대기를 막는 상한(엔진 subprocess 규약).
 _BOARD_GIT_TIMEOUT_SECONDS = 30
 
+# claim prefetch 반환 sentinel — board submodule 에 uncommitted 변경이 있어 pull --rebase
+# 가 "스테이징하지 않은 변경" 으로 거부되는 상태(offline 아님·네트워크 정상·T-0175). prefetch
+# 반환 4분(`""`=비활성 / 이 sentinel=dirty / None=offline·no-anchor / sha=anchor)에서 dirty 를
+# offline 과 *메시지로* 가르기 위한 고유 토큰 — 어떤 git SHA(40-hex)와도 충돌하지 않는다.
+_CLAIM_PREFETCH_DIRTY = "\0dirty"
+
 
 def _board_git_enabled() -> bool:
     """board 가 별도 git 으로 분리됐고 sync 가능한가 — `board_root()/.git` 존재 + git 바이너리.
@@ -900,6 +906,21 @@ def _board_git_head() -> str | None:
     """board git 의 현재 HEAD SHA (없으면 None) — claim rollback 의 복귀 지점 기록용."""
     r = _board_git(["rev-parse", "HEAD"])
     return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _board_git_status_porcelain() -> str:
+    """board git working tree 의 uncommitted 변경 요약 (`status --porcelain`·locale 무관).
+
+    `--porcelain` 은 번역되지 않는 안정 포맷이라(cp949·한글 git 메시지 무관) dirty 판정에
+    robust 하다 — non-empty 면 staged/unstaged/untracked 변경이 있다는 뜻. rc≠0(이상)이나
+    예외는 빈 문자열로 fail-soft 처리해 호출부가 dirty 아님(=clean·pull 진행)으로 보게 한다
+    (dirty 선체크가 정상 claim 경로를 막지 않도록 보수적으로).
+    """
+    try:
+        r = _board_git(["status", "--porcelain"])
+    except Exception:  # noqa: BLE001 — fail-soft: status 예외(timeout 등)는 clean 취급(보수적).
+        return ""
+    return r.stdout if r.returncode == 0 else ""
 
 
 def _board_git_stage_and_commit(message: str) -> bool:
@@ -954,7 +975,13 @@ def _board_git_claim_prefetch() -> str | None:
     """claim STRICT 1단계: `pull --rebase` 로 remote 선점을 로컬에 먼저 반영한다.
 
     board 가 별도 git 이 아니면 no-op·`""`(sentinel: sync 비활성·검증 진행). 별도 git
-    이면 pull --rebase 를 시도한다:
+    이면 pull --rebase *전* board submodule 의 uncommitted 변경을 먼저 점검하고
+    (`status --porcelain`·T-0175), 그 다음 pull --rebase 를 시도한다:
+      - dirty(staged/unstaged/untracked 변경 있음) → `_CLAIM_PREFETCH_DIRTY` sentinel 반환.
+        `pull --rebase` 는 dirty tree 에서 "스테이징하지 않은 변경" 으로 거부되는데, 이를
+        offline 으로 오판하지 않도록 *먼저* 가른다(네트워크는 정상). 발행 직후 ticket 본문을
+        Edit 하면 흔히 발생한다 — 자동 commit/stash 는 PM 의 편집 의도를 임의 처리해 위험하므로
+        하지 않고, 호출부가 "commit 후 재시도" 를 안내하고 claim 을 차단한다.
       - 성공 → board git HEAD SHA 반환(claim commit 의 rollback 복귀 지점·truthy anchor).
       - 실패(offline·DNS·auth·rebase conflict) → None 반환. 호출부가 이를 **offline/도달
         불가**로 보고 claim 을 명시 실패시킨다(best-effort 로 "내가 claim" 을 남기면 중복작업
@@ -962,13 +989,20 @@ def _board_git_claim_prefetch() -> str | None:
       - pull 은 성공했으나 HEAD SHA 를 못 구함(빈 board git·detached 이상) → **None**.
         enabled 인데 rollback anchor 가 없으면 push 실패 시 거짓 소유를 되돌릴 수 없으므로,
         strict-claim 은 안전하게 *실패*해야 한다(로컬 변경 0·anchor 없는 진행 금지).
-    반환 의미 3분: `""` = sync 비활성(legacy·confirm early-return True) · `None` = enabled-
-    but-unreachable/no-anchor(claim 명시 실패) · `<sha>` = 유효 anchor(정상 진행).
+    반환 의미 4분: `""` = sync 비활성(legacy·confirm early-return True) ·
+    `_CLAIM_PREFETCH_DIRTY` = board dirty(commit 안내·offline 아님·claim 차단) ·
+    `None` = enabled-but-unreachable/no-anchor(offline·claim 명시 실패) · `<sha>` = 유효
+    anchor(정상 진행). dirty 와 offline 을 *메시지로* 가르는 게 핵심 — dirty 케이스에 offline
+    메시지가 안 나와야 한다(오판·이중출력 0).
     pull 이 winner 의 claim 을 끌어오면 working tree 에서 ticket 이 claimed/ 로 이동돼,
     뒤따르는 `find_ticket`/status 검사가 자연히 race-lost 를 표면화한다(로컬 변경 0).
     """
     if not _board_git_enabled():
         return ""  # sync 비활성 — pull 없이 검증만 진행(legacy·솔로).
+    # pull --rebase *전* dirty 선체크 — dirty 면 pull 이 "스테이징하지 않은 변경" 으로 rc≠0 인데
+    # 이를 offline 으로 오판하지 않도록 먼저 가른다(네트워크 정상·commit 후 재시도가 정답).
+    if _board_git_status_porcelain().strip():
+        return _CLAIM_PREFETCH_DIRTY
     try:
         pull = _board_git_pull_rebase()
     except Exception:  # noqa: BLE001 — fail-soft: pull 예외(timeout 등)는 offline 취급.
@@ -1449,8 +1483,19 @@ def cmd_claim(args: argparse.Namespace) -> int:
     # claimed/ 로 이동돼 아래 status 검사가 race-lost 를 표면화한다(로컬 변경 0). pull 자체가
     # 실패(offline/도달 불가)하면 claim 불가 — best-effort 로 claim 을 남기면 중복작업이라
     # claim 만 strict offline-fail 한다. orig_head = pull 직후 SHA(claim commit rollback 지점·
-    # legacy/sync 비활성이면 ""). None = offline.
+    # legacy/sync 비활성이면 ""). dirty sentinel = board uncommitted(commit 안내·offline 아님·
+    # T-0175). None = offline.
     orig_head = _board_git_claim_prefetch()
+    if orig_head == _CLAIM_PREFETCH_DIRTY:
+        # board submodule 에 uncommitted 변경(흔히 발행 직후 ticket 본문 Edit) — pull --rebase
+        # 가 거부되지만 *네트워크는 정상*이다. offline 으로 오판하지 않고 commit 후 재시도를
+        # 안내한다(자동 commit/stash 는 PM 편집 의도를 임의 처리해 위험·안내만·ADR-0033 ②).
+        print(
+            f"board submodule 에 uncommitted 변경 — "
+            f"`git -C .project_manager/board add -A && git -C .project_manager/board commit` "
+            f"후 {args.id} claim 재시도 (offline 아님·네트워크 정상)",
+            file=sys.stderr)
+        return 1
     if orig_head is None:
         print(f"offline — board 도달 불가, {args.id} claim 불가", file=sys.stderr)
         return 1
