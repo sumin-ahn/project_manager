@@ -1165,6 +1165,95 @@ def test_adr_lifecycle_graceful_no_decisions(board, monkeypatch, tmp_path):
     assert board.lint_adr_lifecycle() == []
 
 
+# ── ADR author provenance lint (T-0165·ADR-0033 ③·advisory) ──────────────────
+
+def _write_adr_author(decisions_dir, num, *, author=None, title="제목"):
+    """hermetic ADR md fixture — author frontmatter 만 의미 있음.
+
+    author=None → author 키 자체 부재(구 ADR), author="" → 빈값(부재로 취급),
+    그 외 → `author: <값>` 박힘.
+    """
+    fm = ["title: " + title, "type: decision", "status: accepted"]
+    if author is not None:
+        fm.append("author: " + author)
+    (decisions_dir / f"{num}-slug.md").write_text(
+        "---\n" + "\n".join(fm) + "\n---\n\n# ADR-" + num + " — " + title + "\n\nbody\n",
+        encoding="utf-8",
+    )
+
+
+def test_parse_adr_author_valid(board):
+    # `<user>/<pm-slot>` → (user, slot) · 마지막 `/` 분리(slot=마지막 토큰).
+    assert board._parse_adr_author("alice/pm-1") == ("alice", "pm-1")
+    assert board._parse_adr_author("  alice/pm-1  ") == ("alice", "pm-1")
+
+
+def test_parse_adr_author_invalid_or_absent(board):
+    # `/` 없음·한쪽 빈값·None/빈값 → None (형식 어긋남 또는 부재).
+    assert board._parse_adr_author("alice") is None          # `/` 없음 (slot-only)
+    assert board._parse_adr_author("/pm-1") is None           # user 빈값
+    assert board._parse_adr_author("alice/") is None          # slot 빈값
+    assert board._parse_adr_author(None) is None
+    assert board._parse_adr_author("") is None
+    assert board._parse_adr_author("   ") is None
+
+
+def test_adr_author_present_valid_no_findings(board, decisions_dir):
+    # author 가 `<user>/<pm-slot>` 형식이면 finding 0.
+    _write_adr_author(decisions_dir, "0001", author="alice/pm-1")
+    assert board.lint_adr_author() == []
+
+
+def test_adr_author_absent_is_advised(board, decisions_dir):
+    # author 부재 → adr-author 권고 finding.
+    _write_adr_author(decisions_dir, "0001", author=None)
+    findings = board.lint_adr_author()
+    assert len(findings) == 1
+    name, kind, detail = findings[0]
+    assert name == "ADR-0001"
+    assert kind == "adr-author"
+    assert "author 권고" in detail
+
+
+def test_adr_author_empty_is_advised(board, decisions_dir):
+    # author 빈값도 부재로 취급 → 권고.
+    _write_adr_author(decisions_dir, "0001", author='""')
+    findings = board.lint_adr_author()
+    assert any(k == "adr-author" and "author 권고" in d for _l, k, d in findings)
+
+
+def test_adr_author_malformed_is_advised(board, decisions_dir):
+    # author 있으나 `<user>/<pm-slot>` 아님 → 형식 권고 finding.
+    _write_adr_author(decisions_dir, "0001", author="alice")  # `/` 없음 (slot-only)
+    findings = board.lint_adr_author()
+    assert len(findings) == 1
+    name, kind, detail = findings[0]
+    assert kind == "adr-author"
+    assert "형식 권고" in detail and "alice" in detail
+
+
+def test_adr_author_is_advisory_never_blocks(board):
+    # adr-author 은 advisory — --gate 종료코드 비기여(_ADVISORY_LINT_KINDS 등재).
+    assert "adr-author" in board._ADVISORY_LINT_KINDS
+
+
+def test_adr_author_gate_does_not_block(board, monkeypatch, tmp_path):
+    # author 부재 ADR 만 있어도 `lint --gate` 종료코드 0 (never-block 보증·end-to-end).
+    wiki = _wire_repo(board, monkeypatch, tmp_path)
+    _write_adr_author(wiki / "decisions", "0001", author=None)
+    # adr-author finding 이 실제로 발생함을 먼저 확인.
+    assert any(k == "adr-author" for _l, k, _d in board.lint_adr_author())
+    # 그럼에도 gate 는 0 (차단 카테고리 0), full 보고는 1 (issue 존재).
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
+
+
+def test_adr_author_graceful_no_decisions(board, monkeypatch, tmp_path):
+    # decisions/ 부재 → [] (솔로/신규 clone·구 ADR author 부재 무영향).
+    monkeypatch.setattr(board, "DECISIONS_DIR", tmp_path / "nope")
+    assert board.lint_adr_author() == []
+
+
 # ── architecture.md freshness lint (T-0101·ADR-0022·advisory) ─────────────────
 
 def _write_adr_dated(decisions_dir, num, *, created, updated=None):

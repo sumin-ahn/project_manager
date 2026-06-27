@@ -3326,10 +3326,14 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     PM 에게 경고만 — `pm-update` 안내(visibility>enforcement). B 전파는 채택자 customization clobber(비파괴
 #     위배)라 의도적 비-전파. instance-state(status·architecture·tickets·log·decisions·README·lite)는 채택자
 #     소유·diverge 정상이라 scope 제외. push 미차단(never-block).
+#   - adr-author : ADR frontmatter `author: <user>/<pm-slot>` provenance 권고 (T-0165·ADR-0033 ③).
+#     "누가 결정했나"(provenance·연속성 아님)를 박는 발행측 규약 — board.py 는 ADR 을 발행하지 않으므로
+#     부재/형식어긋남을 권고만 한다. solo·구 ADR(author 부재)은 정상이라 push 미차단(never-block).
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
      "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
-     "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift"})
+     "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
+     "adr-author"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -3396,6 +3400,52 @@ def lint_adr_lifecycle() -> list[tuple[str, str, str]]:
             findings.append((adr_id, "adr-lifecycle", "status: amended 인데 amended_by 없음"))
         if status == "superseded" and not _as_id_list(fm.get("superseded_by")):
             findings.append((adr_id, "adr-lifecycle", "status: superseded 인데 superseded_by 없음"))
+    return findings
+
+
+def _parse_adr_author(val) -> tuple[str, str] | None:
+    """ADR frontmatter `author` 를 `(user, slot)` 으로 파싱한다 (ADR-0033 ③·spike §3.4).
+
+    규약 = `<user>/<pm-slot>` — `created_by`/`claimed_by` identity 토큰과 동일 형태(`identity_tag`).
+    *마지막* `/` 로 분리(`rsplit('/', 1)`)해 slot 을 마지막 토큰으로 잡는다 — user 에 `/` 가
+    있어도(이메일 등엔 없지만 방어) slot 이 흔들리지 않는다. 두 토큰이 모두 non-empty 여야
+    유효(`<user>/<pm-slot>`); `/` 없음·한쪽 빈값(`/slot`·`user/`)은 None(형식 어긋남).
+    빈값/None 은 None(부재) — 호출측이 부재와 형식 어긋남을 구분한다.
+    """
+    s = str(val or "").strip()
+    if "/" not in s:
+        return None
+    user, slot = s.rsplit("/", 1)
+    user, slot = user.strip(), slot.strip()
+    return (user, slot) if user and slot else None
+
+
+def lint_adr_author() -> list[tuple[str, str, str]]:
+    """ADR `author` provenance 권고 advisory (T-0165·ADR-0033 ③·never-block).
+
+    각 ADR frontmatter 에 `author: <user>/<pm-slot>`(누가 결정했나·provenance·연속성 아님)가
+    박혀 있는지 권고한다 — board.py 가 ADR 을 *발행*하지 않으므로 발행측 규약을 강제하는 대신
+    부재/형식어긋남을 visibility 로만 표면화한다. `author` 부재 → "author 권고"; 있으나
+    `<user>/<pm-slot>` 형식이 아니면 → 형식 권고. kind=`adr-author`(`_ADVISORY_LINT_KINDS`
+    등재로 `--gate` 종료코드 비기여). decisions/ 부재·깨진 frontmatter → graceful skip
+    (솔로/신규 clone·구 ADR author 부재 정상 무영향)."""
+    findings: list[tuple[str, str, str]] = []
+    if not DECISIONS_DIR.is_dir():
+        return findings
+    for p in sorted(DECISIONS_DIR.glob("[0-9]*.md")):
+        try:
+            fm, _ = load_ticket(p)
+        except Exception:  # noqa: BLE001 — 깨진/frontmatter 없는 파일은 skip(비차단).
+            continue
+        fm = fm or {}
+        adr_id = _adr_id_from_path(p)
+        raw = fm.get("author")
+        if not str(raw or "").strip():
+            findings.append((adr_id, "adr-author",
+                             "author 권고 — `author: <user>/<pm-slot>` (누가 결정했나·provenance)"))
+        elif _parse_adr_author(raw) is None:
+            findings.append((adr_id, "adr-author",
+                             f"author 형식 권고 — `{raw}` 이 `<user>/<pm-slot>` 아님"))
     return findings
 
 
@@ -3599,11 +3649,12 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     architecture.md freshness advisory(architecture-stale·ADR-0022·never-block) +
     adapter-layer drift advisory(adapter-drift·T-0141·ADR-0032·never-block·baseline rev 비교) +
     render-leak(리터럴 `{{...}}` 누출·ADR-0028·blocking·@render 산출물 한정·활성화 전 무발화) +
-    un-migrated-overlay(어댑터 .md 리터럴 free-form 토큰 잔존·T-0132·§3.6·ADR-0031·advisory·never-block)."""
+    un-migrated-overlay(어댑터 .md 리터럴 free-form 토큰 잔존·T-0132·§3.6·ADR-0031·advisory·never-block) +
+    adr-author(ADR `author: <user>/<pm-slot>` provenance 권고·T-0165·ADR-0033 ③·advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
-            + lint_domain() + lint_adr_lifecycle()
+            + lint_domain() + lint_adr_lifecycle() + lint_adr_author()
             + lint_architecture_freshness() + lint_adapter_drift()
             + lint_render_leak() + lint_unmigrated_overlay())
 
