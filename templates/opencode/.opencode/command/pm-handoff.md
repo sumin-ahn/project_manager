@@ -8,9 +8,9 @@ argument-hint: "--session-num <N> --wave-summary \"<요약>\""
 # /pm-handoff — PM 세션 종료 핸드오프 자동화
 
 > {{PROJECT_NAME}} PM 세션의 핸드오프 7단계 (pm_role.md §"핸드오프 절차") 를
-> 한 trigger 로 처리한다. PM 손은 *log/current.md 본문 서술 + 인계 프롬프트 §핵심
-> 인계 사항 채움 + git commit* 만 남는다. backbone =
-> `.project_manager/tools/pm_handoff.py`. 비즈니스 로직 0 — 엔진 CLI 호출 thin wrapper.
+> 한 trigger 로 처리한다. PM 손은 *log/current.md handoff entry 본문 서술 + git commit* 만 남는다
+> (인계 프롬프트는 트리거 축소 — 인계 본문은 다음 세션 부트스트랩이 log entry 에서 dump·ADR-0035).
+> backbone = `.project_manager/tools/pm_handoff.py`. 비즈니스 로직 0 — 엔진 CLI 호출 thin wrapper.
 
 ## 사용 시점
 

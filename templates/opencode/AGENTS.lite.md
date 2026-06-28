@@ -27,7 +27,7 @@
 
 1. **이 파일** — 이미 로드됨. 2. **보드**(위) · **아키텍처** [`architecture.md`](.project_manager/wiki/architecture.md)(현재-아키텍처 단일 진실 · ① live / ② target · ADR-0022 · 부트스트랩 1순위·충돌 시 이게 기준) ·
 **상태** [`status.md`](.project_manager/wiki/status.md)(모듈 진행상태·비고 · judgment-only) +
-[`pm_state.md`](.project_manager/wiki/pm_state.md)(per-clone·없으면 `board.py init` 이 생성) · 3. **직전 핸드오프**(위 `pm_log.py tail`).
+[`pm_state.md`](.project_manager/wiki/pm_state.md)(per-slot `.local/slots/<slot>/`·솔로는 wiki 폴백·T-0166) · 3. **직전 핸드오프**(부트스트랩이 본문 dump·ADR-0035).
 
 > 세션명 **`pm`** 고정 — `board.py ... --session pm`. 위임(task subagent·폴백 프로세스) 식별 라벨 `orch-dev-TNNNN`/`orch-review-TNNNN`.
 > 첫 turn 보고: board 1줄 + 직전 요약 3~5줄 + 다음 옵션 + 결정 요청(*무엇부터?*). 기계 dump = `pm_bootstrap.py`.

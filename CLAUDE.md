@@ -18,7 +18,7 @@
 3. **dev-state(architecture·ADR·roadmap·board·spike)는 ② PM 홈 `project_manager_dev` 가 소유** — 이
    worktree 의 `.project_manager/wiki/` 에는 없다. 현재-진실 아키텍처/결정이 필요하면 ② repo
    `.project_manager/wiki/` 의 `architecture.md`(현재-아키텍처 단일 진실·ADR 은 *왜*의 히스토리·충돌 시
-   architecture 기준)·`decisions/`(ADR 0001~0030)·`roadmap.md` 를 본다. 이 worktree 단독 작업은 엔진
+   architecture 기준)·`decisions/`(ADR — 상한·목록은 색인 `decisions/README.md`)·`roadmap.md` 를 본다. 이 worktree 단독 작업은 엔진
    구조·`tests/`·`templates/` 로 한정한다.
 
 ## 구조 (ADR-0027 · ADR-0005 amended)

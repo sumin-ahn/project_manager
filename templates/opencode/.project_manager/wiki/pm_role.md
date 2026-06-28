@@ -19,12 +19,11 @@ type: handoff
 ```
 1) CLAUDE.md
 2) .project_manager/wiki/pm_role.md   ← 정적 운영 매뉴얼 (이 파일)
-3) .project_manager/wiki/pm_state.md  ← 동적 상태 (세션 window / 남은 작업) · **per-clone 로컬**(pm-init 이 template 생성)
+3) per-slot pm_state — `.project_manager/.local/slots/<slot>/pm_state.md` ← 동적 상태 (세션 window / 남은 작업) · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033
 4) .project_manager/wiki/architecture.md ← **현재-아키텍처 단일 진실**(① live / ② target · ADR-0022). 충돌 시 이게 기준.
 5) .project_manager/wiki/status.md    ← 진행 상태 (judgment — 모듈 상태·비고)
 6) board 상태 — `{{PY}} .project_manager/tools/board.py list` (board.md 는 파생 대시보드 · git-untracked)
-7) log/current.md 마지막 handoff entry — `{{PY}} .project_manager/tools/pm_log.py tail` 로 읽는다
-   (full Read 금지·라인수 아님. 직전 PM 이 더 넓은 읽기 범위를 지정했으면 그 부분만 추가로)
+7) log/current.md 마지막 handoff entry — **부트스트랩 CLI 가 본문 전체를 자동 dump** 한다(차수·남은작업과 함께·self-sufficient·ADR-0035). 직접 `{{PY}} .project_manager/tools/pm_log.py tail` 은 baseline 재확인·더 넓은 범위 인용 시에만.
 ```
 
 기계 측정 dump 는 `/pm-bootstrap` skill (backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
@@ -42,9 +41,11 @@ PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm
 
 | skill | 역할 | backbone CLI |
 |---|---|---|
-| `/pm-bootstrap` | 세션 시작 — board·git·log 마지막 entry dump | `pm_bootstrap.py` |
+| `/pm-bootstrap` | 세션 시작 — board·git + **차수·log 본문·남은작업 자동 surface**(self-sufficient·ADR-0035) | `pm_bootstrap.py` |
 | `/pm-wave-claim T-NNNN` | ticket claim — DoD self-containment 검증 + claim | `board.py show/lint/claim` |
 | `/pm-dev-delegate T-NNNN --role developer\|code-reviewer` | orchestrator 위임 표준 프롬프트 | `Agent` 툴 |
+| `/pm-regression` | 비차단 백그라운드 회귀 pre-warm + 완료 알림 | `board.py regression` |
+| `/pm-qa` | 통합 검증 게이트 — 회귀+lint+git 단일 report (wave 종료/baseline) | `board.py regression/lint` |
 | `/pm-wave-finish T-NNNN` | ticket 완료 부기 — 회귀+log+board+stage (status 미접촉·ADR-0023) | `ticket_finish.py` |
 | `/pm-handoff` | 세션 종료 핸드오프 7단계 자동화 | `pm_handoff.py` |
 
@@ -192,11 +193,12 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
 
 ## 인계 후 PM 세션 첫 turn 의 권장 액션
 
-`/pm-bootstrap` 의 markdown dump 를 받은 직후 PM 이 사용자에게 줄 보고 형식:
+`/pm-bootstrap` 의 markdown dump 를 받은 직후 PM 이 사용자에게 줄 보고 형식 (차수·인계 본문·남은작업은
+CLI 가 *이미 dump* 했으니 PM 은 **요약·판단**만 — 손-추출 아님):
 
-1. **board 요약 1줄** — `done N / open N / claimed N / blocked N` + 회귀·lint·git.
-2. **직전 세션 요약 3~5줄** — log/current.md handoff entry 본문에서 핵심 산출물·메타 학습 추출.
-3. **다음 옵션 N개** — `pm_state.md` 의 "진행 중인 의사결정" / "남은 작업 전체 그림" + open ticket 목록 기반.
+1. **board 요약 1줄** — `done N / open N / claimed N / blocked N` + 회귀·lint·git. (차수 `PM N차` 는 CLI 머리에 이미 announce.)
+2. **직전 세션 요약 3~5줄** — CLI 가 dump 한 handoff entry 본문에서 핵심 산출물·메타 학습 *요약*.
+3. **다음 옵션 N개** — CLI 가 surface 한 `pm_state` "남은 작업 전체 그림" + open ticket 목록 기반.
 4. **결정 요청** — *무엇부터 갈까요?* + 권장 시퀀스 1줄.
 
 ## 핸드오프 절차 (7단계)

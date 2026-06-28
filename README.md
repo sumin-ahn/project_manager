@@ -22,7 +22,7 @@
 | **① Ticket 보드 (JIRA)** | 여러 LLM 세션이 충돌 없이 병렬 작업하는 가벼운 작업 보드. 디렉토리 = 상태, `mv` = atomic lock. | `.project_manager/tools/board.py` |
 | **② 문서 그래프 위키 (3축)** | 진행 중 프로젝트의 운영 계층 — **architecture.md**(현재-아키텍처 단일 진실·부트스트랩 #1·ADR-0022) + **domain 지식 레이어**(그 *세부* — 살아있는 concept 그래프·`covers:` 코드 링크·소환/채록·freshness lint·ADR-0018) + decisions+spikes + process(상태·사양·일지). `[[wikilink]]` 인터링크 + frontmatter (Karpathy LLM-Wiki 패턴 계승). | `.project_manager/wiki/` (`architecture.md`·`domain/`·`decisions/`·…) |
 | **③ PM·Researcher·Architect·Dev·Reviewer 협업** | PM 세션이 ticket 을 발행·분할하고 4축(gather=researcher / design=architect / build=developer / evaluate=code-reviewer)에 위임 (ADR-0019). **generate ≠ evaluate**, **design labor ≠ decision** — 주체를 분리하고 결정·비준·synthesis 는 PM. | 어댑터층(`.claude/agents/`·`.opencode/agents/`), `.project_manager/wiki/pm_role.md` |
-| **④ PM workflow skill** | PM 의 반복 workflow (부트스트랩 / wave claim / 위임 / wave finish / 핸드오프) 를 trigger 단위로 강제. backbone CLI 4 + slash command 5. | `.project_manager/tools/pm_*.py`, 어댑터층(`.claude/skills/`·`.opencode/command/`) |
+| **④ PM workflow skill** | PM 의 반복 workflow (부트스트랩 / wave claim / 위임 / wave finish / 핸드오프) 를 trigger 단위로 강제. backbone CLI(`pm_*.py`) + 어댑터 slash command. | `.project_manager/tools/pm_*.py`, 어댑터층(`.claude/skills/`·`.opencode/command/`) |
 
 설계 원칙 한 줄: **board.py 는 순수 ticket 도구, `.project_manager/wiki/` 는 문서 그래프 패턴,
 PM·orchestrator 는 협업 모델, PM skill 은 trigger 단위 명시성 강제 — 넷 다 도메인을 모른다.**

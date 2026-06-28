@@ -295,10 +295,15 @@ def test_shipped_handoff_procedure_docs_have_no_handfill_instruction():
         REPO / ".claude" / "skills" / "pm-handoff" / "SKILL.md",
         REPO / "templates" / "opencode" / ".opencode" / "command" / "pm-handoff.md",
     ]
+    import re
+    # 줄바꿈/blockquote `>`/공백으로 쪼개져도 잡는 bounded loose match — 헤더 blockquote 가
+    # "§핵심\n> 인계 사항" 으로 분할돼 단순 substring(`"핵심 인계 사항" in text`)을 빠져나갔던
+    # 구멍을 막는다(1.0 문서 감사 P2). `.{0,6}`(DOTALL)로 인접만 매칭해 far-apart 오탐 방지.
+    _handfill = re.compile(r"핵심.{0,6}인계.{0,6}사항", re.DOTALL)
     for doc in procedure_docs:
         text = doc.read_text(encoding="utf-8")
         # 폐기된 인계-블록 절 이름이 절차 지시에 잔존하면 안 된다 (트리거화 후 손-채움 슬롯 부재).
-        assert "핵심 인계 사항" not in text, (
+        assert not _handfill.search(text), (
             f"{doc} 에 폐기된 `<핵심 인계 사항>` 손-채움 지시 잔존 — 트리거(T-0180)와 모순"
         )
 
