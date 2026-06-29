@@ -635,3 +635,48 @@ def test_js_extract_thread_tail_equiv_claude():
         assert js_result == claude_result, (
             f"[{label}] JS/claude thread-tail 불일치 — JS={js_result!r} claude={claude_result!r}"
         )
+
+
+# ── graceful nudge 모델-주입 (ADR-0037) — 정적 + node 순수 검증 ────────────────
+
+
+def test_plugin_injects_nudge_to_model():
+    """nudge 안내를 모델 컨텍스트에 비차단 주입한다 (toast=사람 / system.transform=모델).
+
+    chat.message 의 full Part 구성(id/sessionID/messageID 필수)보다 system[] string push 가
+    안전 — experimental.chat.system.transform 채택. event(nudge)서 pendingNudgeText 세팅 →
+    다음 모델 호출에 1회 소비.
+    """
+    src = _plugin_src()
+    assert "experimental.chat.system.transform" in src, "모델 주입 훅(system.transform) 없음"
+    assert "buildNudgeGuidance" in src, "nudge 안내 빌더 없음"
+    assert "pendingNudgeText" in src, "nudge 주입 대기 플래그 없음"
+    assert "output.system.push" in src, "system[] 에 push 하는 주입 경로 없음"
+    # nudge 분기가 pendingNudgeText 를 세팅한다(toast 와 함께).
+    assert "pendingNudgeText = buildNudgeGuidance" in src, "nudge 감지 시 주입 대기 세팅 누락"
+
+
+def test_js_build_nudge_guidance():
+    """node 로 buildNudgeGuidance 가 조건부 안내문(/pm-handoff·ADR-0037)을 만드는지 검증.
+
+    claude build_nudge_guidance 와 동형 문구. node 부재 시 skip(정적 검증으로 게이트).
+    """
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — JS buildNudgeGuidance 순수 단위 skip (정적 검증만 적용)")
+
+    script = r"""
+const m = require("./ctx-guard.js");
+const assert = require("node:assert");
+assert.strictEqual(typeof m.buildNudgeGuidance, "function", "missing export: buildNudgeGuidance");
+const g = m.buildNudgeGuidance({ remainingPct: 18, usedPct: 82 }, { nudge_pct: 20, stop_pct: 10 });
+assert.ok(g.includes("ctx-nudge"), "ctx-nudge 누락");
+assert.ok(g.includes("잔여 18%"), "잔여% 누락: " + g);
+assert.ok(g.includes("/pm-handoff"), "/pm-handoff 누락");
+assert.ok(g.includes("10%"), "stop_pct 안내 누락");
+assert.ok(g.includes("ADR-0037"), "ADR-0037 누락");
+console.log("JS_NUDGE_GUIDANCE_OK");
+"""
+    out = _run_node_check(script)
+    assert "JS_NUDGE_GUIDANCE_OK" in out, f"JS buildNudgeGuidance 검증 실패. out={out!r}"

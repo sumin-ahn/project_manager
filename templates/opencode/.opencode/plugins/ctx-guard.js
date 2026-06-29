@@ -126,6 +126,22 @@ function computeCtxState(used, limit, thresholds) {
   return { remainingPct, usedPct, level };
 }
 
+// ── 순수 함수: nudge 안내문 (모델-facing 비차단 주입용·ADR-0037) ──────────────
+// claude ctx_guard.build_nudge_guidance 미러. 조건부 권고(지시 아님) — 현 단계 마무리 후 핸드오프
+// 유도로 wave 중간 끊김(premature interrupt) 회피. experimental.chat.system.transform 이 이 문자열을
+// system[] 에 push 한다(모델 컨텍스트·비차단). hard-stop 과 달리 모델이 살아있어 스스로 /pm-handoff.
+function buildNudgeGuidance(state, thresholds) {
+  const remaining = Math.round((state && state.remainingPct) || 0);
+  const used = Math.round((state && state.usedPct) || 0);
+  const stopPct =
+    thresholds && thresholds.stop_pct != null ? thresholds.stop_pct : STOP_PCT_DEFAULT;
+  return (
+    `[ctx-nudge] 컨텍스트 사용 ${used}% (잔여 ${remaining}%) — 핸드오프 준비 구간. ` +
+    `지금 진행 중인 단계(ticket/wave)를 마무리한 뒤, 새 큰 작업을 시작하지 말고 ` +
+    `/pm-handoff 로 핸드오프하라. 잔여 ${stopPct}% 도달 시 자동 정지된다 (ADR-0037).`
+  );
+}
+
 // ── thread-tail 추출 (handoff "다음 intent" 자동 채움 — T-0050·claude ctx_guard 미러) ──
 //
 // claude `ctx_guard.extract_thread_tail`(python)의 JS 재현. claude 는 transcript JSONL 을
@@ -237,6 +253,9 @@ function findEngineRoot(startDir) {
 const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   // 세션당 1회 가드 (멱등성).
   const fired = { nudge: false, stop: false };
+  // graceful nudge 모델-주입 대기 텍스트 (ADR-0037). event(message.updated)서 nudge 감지 시
+  // 세팅 → 다음 모델 호출의 experimental.chat.system.transform 이 1회 소비(push 후 null).
+  let pendingNudgeText = null;
   let cachedThresholds = null;
   let cachedLimit = null;
   // 현재 세션 id — event hook 의 info.sessionID 로 캡처(PluginInput 엔 sid 없음·실측). STOP
@@ -402,7 +421,24 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         triggerHandoff(state); // 핸드오프 박제 (1회).
       } else if (state.level === "nudge" && !fired.nudge) {
         fired.nudge = true;
-        await notifyNudge(state, t); // 넛지 (1회).
+        await notifyNudge(state, t); // 넛지 toast (사람 UI·1회).
+        // 모델-주입 안내 대기 (ADR-0037) — 다음 모델 호출의 system.transform 이 소비. toast(사람)
+        // 와 별개로 모델이 실제로 받아 스스로 /pm-handoff 하게 한다(claude UserPromptSubmit 등가).
+        pendingNudgeText = buildNudgeGuidance(state, t);
+      }
+    },
+
+    // ── graceful nudge 모델-주입 (ADR-0037): nudge 안내를 system 에 비차단 1회 주입 ────
+    // experimental.chat.system.transform 은 모델 호출 전 system[] 을 비차단 수정한다(@opencode-ai
+    // /plugin Hooks·opencode 1.17.11 타입 확인). chat.message 의 full Part 구성(id/sessionID/
+    // messageID 필수)보다 string push 가 안전·정확. ⚠️ experimental namespace — opencode 가 이 surface
+    // 를 바꾸면 *조용히* 주입이 멈출 수 있다(hard-stop 은 무관·안전). 호환성 게이트 = T-0183 Tier2
+    // 라이브 smoke(버전 회귀 포착)·codex 권고 반영. 변동 시 안정 chat.message 전환 검토.
+    // 멱등: pendingNudgeText 를 1회 소비(push 후 null). hard-stop·deny 와 무관(안내만).
+    "experimental.chat.system.transform": async (_input, output) => {
+      if (pendingNudgeText && output && Array.isArray(output.system)) {
+        output.system.push(pendingNudgeText);
+        pendingNudgeText = null;
       }
     },
 
@@ -433,6 +469,7 @@ module.exports = {
   resolveThresholds,
   accumulateTokens,
   computeCtxState,
+  buildNudgeGuidance,
   findEngineRoot,
   sanitizeSessionId,
   // thread-tail 추출 (T-0050 — claude extract_thread_tail 미러·테스트용 export).

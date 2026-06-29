@@ -561,3 +561,90 @@ def test_settings_preserves_posttooluse(name):
     post = data["hooks"]["PostToolUse"]
     cmds = [h.get("command", "") for m in post for h in m.get("hooks", [])]
     assert any("run_tests_hook.sh" in c for c in cmds)
+
+
+# ── graceful nudge (ADR-0037) — nudge 임계서 모델-facing 비차단 안내 주입 ──────────
+# 1단(nudge)이 비어있던 자리를 채운다: UserPromptSubmit additionalContext 로 모델이 스스로
+# /pm-handoff 하게 유도. hard-stop(2단)은 독립 fail-safe 로 무변경.
+
+
+def test_build_nudge_guidance(guard):
+    # 안내문 = 조건부 권고(현 단계 마무리 후·/pm-handoff·자동정지 임계). 정지/지시 아님.
+    g = guard.build_nudge_guidance(82, {"nudge_pct": 20, "stop_pct": 10})
+    assert "ctx-nudge" in g
+    assert "잔여 18%" in g          # remaining_pct(82) = 18.
+    assert "/pm-handoff" in g
+    assert "10%" in g               # stop_pct 안내.
+    assert "ADR-0037" in g
+
+
+def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
+    # nudge 레벨(used 85·잔여 15) + UserPromptSubmit → additionalContext 비차단 주입.
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 170_000})])
+    stdin = {
+        "transcript_path": str(path),
+        "session_id": "sess-nudge",
+        "hook_event_name": "UserPromptSubmit",
+    }
+    calls = []
+    rc, output = stop_hook.evaluate(
+        stdin, tmp_path, {}, handoff_fn=lambda root, pct: calls.append(pct) or 0
+    )
+    assert rc == 0
+    hso = output["hookSpecificOutput"]
+    assert hso["hookEventName"] == "UserPromptSubmit"
+    assert "additionalContext" in hso
+    assert "/pm-handoff" in hso["additionalContext"]
+    assert "ctx-nudge" in hso["additionalContext"]
+    # 비차단: deny/block 아님 (정지 스키마 부재).
+    assert "permissionDecision" not in hso
+    assert output.get("decision") != "block"
+    # nudge 는 엔진 박제 안 함 (handoff 미호출).
+    assert calls == []
+    # nudge marker(.nudge) 생성·stop marker(.done) 미생성.
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge.nudge").exists()
+    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge.done").exists()
+
+
+def test_hook_nudge_pretooluse_passes_no_injection(stop_hook, tmp_path):
+    # nudge 레벨 + PreToolUse(주입 채널 없음) → 통과(도구 진행)·주입/marker 없음.
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 170_000})])
+    stdin = {"transcript_path": str(path), "session_id": "sess-nudge-ptu"}  # event 없음=PreToolUse 기본.
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {}, handoff_fn=lambda r, p: 0)
+    assert rc == 0 and output is None
+    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge-ptu.nudge").exists()
+
+
+def test_hook_nudge_idempotent_single_injection(stop_hook, tmp_path):
+    # 같은 세션 두 번 nudge(UserPromptSubmit)여도 주입은 1회 (.nudge marker 가드).
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 170_000})])
+    stdin = {
+        "transcript_path": str(path),
+        "session_id": "sess-nudge-idem",
+        "hook_event_name": "UserPromptSubmit",
+    }
+    rc1, out1 = stop_hook.evaluate(stdin, tmp_path, {}, handoff_fn=lambda r, p: 0)
+    rc2, out2 = stop_hook.evaluate(stdin, tmp_path, {}, handoff_fn=lambda r, p: 0)
+    assert "additionalContext" in out1["hookSpecificOutput"]   # 1회차 주입.
+    assert out2 is None                                        # 2회차 통과(이미 주입).
+
+
+def test_hook_nudge_independent_from_stop(stop_hook, tmp_path):
+    # 2단 fail-safe 독립: nudge(.nudge) 발동해도 stop 은 별개로 deny+trigger (서로 marker 분리).
+    sid = "sess-2tier"
+    nudge_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 170_000})])
+    nudge_stdin = {"transcript_path": str(nudge_tx), "session_id": sid,
+                   "hook_event_name": "UserPromptSubmit"}
+    stop_hook.evaluate(nudge_stdin, tmp_path, {}, handoff_fn=lambda r, p: 0)  # nudge 주입.
+    # 같은 세션이 stop 레벨 transcript 로 진입(transcript.jsonl 은 같은 경로라 덮어씀) → nudge
+    # marker(.nudge)는 stop marker(.done)와 *별개 파일*이라 stop 을 막지 않는다(2단 fail-safe 독립).
+    stop_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
+    calls = []
+    rc, output = stop_hook.evaluate(
+        {"transcript_path": str(stop_tx), "session_id": sid}, tmp_path, {},
+        handoff_fn=lambda r, p: calls.append(p) or 0,
+    )
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"  # stop 정상 작동.
+    assert calls == [5]  # handoff 1회(잔여 5).
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / f"{sid}.nudge").exists()
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / f"{sid}.done").exists()

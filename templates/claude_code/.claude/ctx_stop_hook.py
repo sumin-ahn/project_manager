@@ -64,6 +64,26 @@ def _mark_triggered(root: Path, session_id: str) -> None:
         pass
 
 
+# ── nudge 멱등 marker (ADR-0037 graceful nudge) — stop 의 `.done` 과 분리(`.nudge`) ──
+# 독립 marker 라 2단 fail-safe 가 서로 간섭하지 않는다(nudge 안내 ⊥ stop 박제).
+def _nudge_marker_path(root: Path, session_id: str) -> Path:
+    return root / _MARKER_DIR / f"{session_id}.nudge"
+
+
+def _already_nudged(root: Path, session_id: str) -> bool:
+    return _nudge_marker_path(root, session_id).exists()
+
+
+def _mark_nudged(root: Path, session_id: str) -> None:
+    path = _nudge_marker_path(root, session_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ctx-nudge injected\n", encoding="utf-8")
+    except OSError:
+        # marker 를 못 써도 안내 자체는 유효 — best-effort.
+        pass
+
+
 def run_handoff(root: Path, ctx_pct: int, runner=subprocess.run, thread_tail: str = "") -> int:
     """pm_handoff --trigger shell-out. rc 반환 (0=박제 성공). 실패해도 정지는 유효.
 
@@ -115,6 +135,24 @@ def _stop_output(stdin: dict, reason: str) -> dict:
     return deny_output(reason)  # 기본 = PreToolUse
 
 
+def nudge_output(stdin: dict, guidance: str) -> dict | None:
+    """graceful nudge — 모델-facing 비차단 안내 주입 (ADR-0037). 정지(deny/block) 아님.
+
+    UserPromptSubmit 의 ``additionalContext`` 만 모델 컨텍스트에 비차단 주입한다(claude-code-guide
+    실측 확인). PreToolUse 는 모델-컨텍스트 주입 채널이 없고(permissionDecision 만) 도구 중간
+    끊김을 피하려 None → 호출부가 통과(도구 정상 진행·statusline 이 사람용 표시 담당).
+    """
+    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
+    if event == "UserPromptSubmit":
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": guidance,
+            }
+        }
+    return None
+
+
 def build_stop_reason(used_pct: int, remaining: int, handoff_rc: int) -> str:
     handoff_note = (
         "권위 handoff 가 박제됐다 (pm_handoff --trigger)."
@@ -142,10 +180,24 @@ def evaluate(stdin: dict, root: Path, conf: dict, handoff_fn=None) -> tuple[int,
         else 0
     )
     state = ctx_guard.classify(used, thresholds)
-    if state != "stop":
-        # ok/nudge → 도구 정상 진행 (넛지는 statusline 이 담당).
+    if state == "ok":
         return 0, None
 
+    if state == "nudge":
+        # graceful nudge (ADR-0037) — 모델-facing 비차단 안내 주입(엔진 박제 X·흐름 안 끊음).
+        # 멱등(세션 1회·.nudge marker). UserPromptSubmit 만 주입 채널(nudge_output) — PreToolUse
+        # 면 None → 통과(도구 정상 진행·statusline 이 사람용 표시). marker 는 *실제 주입* 시에만
+        # 남겨, PreToolUse 선행으로 marker 만 박혀 UserPromptSubmit 주입이 누락되는 일을 막는다.
+        session_id = _session_id(stdin)
+        if _already_nudged(root, session_id):
+            return 0, None
+        output = nudge_output(stdin, ctx_guard.build_nudge_guidance(used, thresholds))
+        if output is None:
+            return 0, None
+        _mark_nudged(root, session_id)
+        return 0, output
+
+    # state == "stop" — hard-stop(fail-safe·기계 박제·deny). nudge 와 독립(별개 marker).
     remaining = ctx_guard.remaining_pct(used)
     session_id = _session_id(stdin)
 

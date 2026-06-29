@@ -360,3 +360,18 @@ def classify(used_pct: int, thresholds: dict[str, int]) -> str:
     if remaining <= thresholds["nudge_pct"]:
         return "nudge"
     return "ok"
+
+
+def build_nudge_guidance(used_pct: int, thresholds: dict[str, int]) -> str:
+    """nudge 안내문 — 모델-facing 비차단 주입용 (ADR-0037 graceful handoff nudge).
+
+    조건부 권고(지시 아님): *현 단계 마무리 후* 핸드오프를 유도해 wave 중간 끊김(premature
+    interrupt)을 피한다. hard-stop(잔여 stop_pct)과 달리 모델이 살아있는 채로 받아 스스로
+    `/pm-handoff`(rich·모델-주도) 하게 한다. 멈추지 않는다(안내만·엔진 박제 X).
+    """
+    remaining = remaining_pct(used_pct)
+    return (
+        f"[ctx-nudge] 컨텍스트 사용 {used_pct}% (잔여 {remaining}%) — 핸드오프 준비 구간. "
+        f"지금 진행 중인 단계(ticket/wave)를 마무리한 뒤, 새 큰 작업을 시작하지 말고 "
+        f"`/pm-handoff` 로 핸드오프하라. 잔여 {thresholds['stop_pct']}% 도달 시 자동 정지된다 (ADR-0037)."
+    )
