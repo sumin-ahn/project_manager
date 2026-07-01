@@ -41,7 +41,7 @@
       "Bash(git checkout *)",
       "Bash(git mv *)",
       "Bash(git rm *)",
-      "Bash({{PROJECT_ROOT}}/.claude/run_tests_hook.sh)",
+      "Bash(./.claude/run_tests_hook.sh)",
       "Bash(gh auth *)",
       "Bash(git config *)",
       "Bash(ssh -T git@github.com)",
@@ -68,7 +68,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{PROJECT_ROOT}}/.claude/run_tests_hook.sh",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/run_tests_hook.sh",
             "timeout": 60,
             "statusMessage": "Running tests..."
           }
@@ -80,12 +80,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{PROJECT_ROOT}}/.claude/precompact_capture_hook.sh",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/precompact_capture_hook.sh",
             "timeout": 30
           }
         ]
       }
     ]
   },
-  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·다른 PC/프로젝트 import 용). {{PROJECT_ROOT}} / {{PY}} 치환 필수. permissions.allow 는 보수적 기본값 — 프로젝트가 자주 쓰는 명령을 추가하라. PostToolUse hook 을 쓰지 않으려면 hooks 블록을 삭제. 로컬 머신 전용 권한 (harness 세션 중 자동 누적분 포함) 은 별도 settings.local.json (gitignore) 으로 분리."
+  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·멀티-유저 공유 안전). 훅/PreCompact 경로는 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} 를 쓴다(절대경로 박제 금지 — clone-and-go·다른 PC 에서 재-import 불필요). {{PY}} 는 인터프리터명(python3/python)·import 치환. permissions.allow 는 보수적 기본값. 머신-특정 권한/오버라이드는 settings.local.json (gitignore) 으로 분리."
 }

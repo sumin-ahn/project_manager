@@ -2,8 +2,9 @@
 //
 // 무엇:
 //   opencode 세션의 컨텍스트 토큰 사용을 추적해, 임계 도달 시
-//     1) 넛지(이른 경고·1회 toast) → "티켓 마무리·큰 거 새로 시작 마라"
-//     2) 하드 정지(필수) → permission.ask deny + pm_handoff --trigger 1회(엔진 박제) + 새 세션 안내
+//     1) 넛지(이른 경고·1회 toast + 모델-주입 안내·ADR-0037) → "티켓 마무리·큰 거 새로 시작 마라"
+//     2) 하드 정지(ADR-0038 D2) → 새 작업 도구만 차단(tool.execute.before)·진행 중 핸드오프 도구는
+//        예외 통과·STOP marker 직접 박제(relay 회전 신호·no pm_handoff --trigger).
 //   하고, lossy 컴팩션은 opencode.jsonc `compaction.auto:false` 로 차단(우리 정지가 먼저 오게).
 //
 // 모델 (T-0012, 2D): 넛지(이른) → 하드 정지(필수) → 새 세션. compaction 회피.
@@ -22,7 +23,6 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
 
 // ── 엔진 기본값 (board.py CTX_*_PCT_DEFAULT 미러 — 폴백 전용) ──────────────────
 const NUDGE_PCT_DEFAULT = 20; // 잔여 ≤ 이 % → 넛지 (일은 계속).
@@ -142,97 +142,67 @@ function buildNudgeGuidance(state, thresholds) {
   );
 }
 
-// ── thread-tail 추출 (handoff "다음 intent" 자동 채움 — T-0050·claude ctx_guard 미러) ──
-//
-// claude `ctx_guard.extract_thread_tail`(python)의 JS 재현. claude 는 transcript JSONL 을
-// 읽지만 opencode plugin 은 transcript_path 미제공 → `opencode export <sid>` 의 messages
-// 배열을 입력으로 받는다(같은 규칙·다른 소스). 엔진은 string 수용·삽입만(harness-agnostic seam).
+// ── 순수 함수: 핸드오프 도구 allow-list (ADR-0038 D2 — claude ctx_stop_hook._is_handoff_* 미러) ──
+// hard-stop 중 진행 중인 rich /pm-handoff 가 완주하도록 핸드오프 도구를 통과시키고 그 외 새 작업은
+// 정지한다. tool.execute.before(clean schema: input.tool + output.args)가 authoritative gate,
+// permission.ask(Permission best-effort)는 fail-open 보조(핸드오프 절대 오차단 안 함).
+const _SHELL_OPS = ["&&", "||", ";", "|", "`", "$(", "\n", ">", "<", "&"];
+const _ENV_PREFIX_RE = /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/;
+const _HANDOFF_BASH_PATTERNS = [
+  /^(?:python3?\s+)?\S*pm_handoff\.py(?:\s|$)/,
+  /^(?:python3?\s+)?\S*domain\.py(?:\s|$)/,
+  /^git\s+add(?:\s|$)/,
+  /^git\s+commit(?:\s|$)/,
+  /^(?:python3?\s+-m\s+)?pytest(?:\s|$)/,
+];
+const _HANDOFF_TARGET_SUBSTR = ["log/current.md", "pm_state", "status.md"];
+const _HANDOFF_TARGET_DIR = "/domain/";
 
-// 추출 기본값 — lean(ADR-0008·ticket §결정). "방금 뭘" 미끼지 로그 복제 아님 (claude 미러).
-const THREAD_TAIL_MAX_TURNS = 3; // 최근 user 발화 N턴까지만.
-const THREAD_TAIL_MAX_CHARS = 600; // 결합 결과 총 길이 캡 (민감발화 노출·로그 비대 최소화).
-
-// ── 순수 함수: 한 message 의 text part 결합 → 개행 ` / ` 평탄화 (claude _message_text 미러) ──
-// opencode message = { info:{ role }, parts:[{ type, text }] }. `type === "text"` part 의
-// `.text` 만 모아 `\n` 결합 후 개행을 ` / ` 로 1줄 평탄화한다. tool/step-start 등 비-text
-// part 는 제외. text part 0개(tool_result·synthetic-only turn 동치)면 "".
-function messageText(message) {
-  if (!message || typeof message !== "object") return "";
-  const parts = message.parts;
-  if (!Array.isArray(parts)) return "";
-  const texts = [];
-  for (const part of parts) {
-    if (!part || typeof part !== "object") continue;
-    if (part.type === "text" && typeof part.text === "string") {
-      texts.push(part.text);
-    }
-  }
-  const text = texts.join("\n");
-  // 개행을 1줄로 평탄화 (handoff entry 는 줄 단위 슬롯).
-  const flat = text
-    .split("\n")
-    .map((seg) => seg.trim())
-    .filter((seg) => seg)
-    .join(" / ");
-  return flat.trim();
+// Bash command 가 핸드오프-allow 호출로 *시작*하는가 (연쇄 연산자 없이·anchored·claude _is_handoff_bash 미러).
+function isHandoffBash(command) {
+  if (typeof command !== "string" || !command.trim()) return false;
+  if (_SHELL_OPS.some((op) => command.includes(op))) return false; // 복합 명령 → deny(fail-closed).
+  const core = command.replace(_ENV_PREFIX_RE, "").trim();
+  return _HANDOFF_BASH_PATTERNS.some((re) => re.test(core));
 }
 
-// ── 순수 함수: 정지 직전 user 발화 N턴 추출 → 1줄 (claude extract_thread_tail 미러) ──
-// 규칙(claude 동치):
-//   - info.role === "user" message 만 (assistant 제외).
-//   - turn 텍스트 = messageText(message). text part 0개면 skip (tool_result·synthetic 제외 동치).
-//   - 배열 끝(최신)에서 역순 max_turns 개 수집 → 시간순(오래된→최신) 복원.
-//   - turn 당 텍스트는 max_chars 로 truncate, 결합 결과도 총 max_chars 캡, 개행 ` / ` 평탄화.
-//   - 빈/비배열/max_turns<=0/max_chars<=0 → "" (fail-soft — 엔진이 placeholder 유지).
-function extractThreadTail(messages, max_turns = THREAD_TAIL_MAX_TURNS, max_chars = THREAD_TAIL_MAX_CHARS) {
-  if (max_turns <= 0 || max_chars <= 0) return "";
-  if (!Array.isArray(messages)) return "";
-
-  const collected = []; // 역순(최신→오래) — 나중에 reverse.
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (collected.length >= max_turns) break;
-    const message = messages[i];
-    if (!message || typeof message !== "object") continue;
-    const info = message.info;
-    if (!info || typeof info !== "object" || info.role !== "user") continue;
-    const text = messageText(message);
-    if (!text) continue;
-    collected.push(text.slice(0, max_chars));
-  }
-
-  if (collected.length === 0) return "";
-  collected.reverse(); // 시간순(오래된→최신) 복원.
-  return collected.join(" / ").slice(0, max_chars).trim();
+// Edit/Write/Read 대상이 핸드오프 산출물(log/pm_state/status/domain)인가 (claude _is_handoff_target 미러).
+function isHandoffTarget(filePath) {
+  if (typeof filePath !== "string" || !filePath) return false;
+  const p = filePath.replace(/\\/g, "/");
+  if (_HANDOFF_TARGET_SUBSTR.some((s) => p.includes(s))) return true;
+  return p.includes(_HANDOFF_TARGET_DIR);
 }
 
-// ── wiring: opencode export <sid> → messages 배열 (fail-soft) ─────────────────
-// claude 는 transcript_path 를 hook 이 받지만 opencode plugin 은 미제공(T-0048 §결정) → 정지
-// 시점에 `opencode export <sid> --pure` 로 세션 transcript 를 추출한다. `--pure` 는 export
-// subprocess 가 plugin 을 재load 하지 않게 해 ctx-guard 재진입/부수효과를 막는다. `--sanitize`
-// 미사용(claude 와 동일 — truncate+N턴 캡으로 노출 최소화·과도 redaction 회피). 실패/비-JSON/
-// sid 미상/!root → [] (fail-soft — 정지·handoff 박제는 유지, thread-tail 만 빈 슬롯).
-//
-// maxBuffer 명시(64 MiB) — ctx-STOP 은 *정의상 컨텍스트가 가득 찬* 시점에 발화하므로 export JSON 이
-// spawnSync 기본 maxBuffer(~1 MiB)를 쉽게 초과한다. 초과 시 stdout 이 잘려 JSON.parse 가 실패하고
-// thread-tail 이 *항상 빈 값*으로 빠져 기능이 가장 필요한 긴 세션에서 조용히 무력화된다(codex T-0050
-// must-fix). 버퍼는 STOP 1회·필요분만 할당이라 비용은 transient.
-function exportSessionMessages(sid, root, runner = spawnSync) {
-  if (!root || typeof sid !== "string" || !sid.trim()) return [];
-  try {
-    const res = runner("opencode", ["export", sid, "--pure"], {
-      cwd: root,
-      encoding: "utf-8",
-      timeout: 30000,
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    if (!res || typeof res.stdout !== "string") return [];
-    const data = JSON.parse(res.stdout);
-    const messages = data && data.messages;
-    return Array.isArray(messages) ? messages : [];
-  } catch {
-    /* spawn 실패·타임아웃·비-JSON 모두 [] — 정지 경로는 깨지 않는다(fail-soft). */
-    return [];
+// tool.execute.before 용 — input.tool(이름)+output.args 로 판정 (authoritative·clean schema).
+// bash → args.command, edit/write/read/patch → args.filePath(방어적: file_path/path 도). 그 외 → false(deny).
+function isHandoffTool(input, output) {
+  const tool = String((input && input.tool) || "").toLowerCase();
+  const args = (output && output.args) || {};
+  if (tool === "bash") return isHandoffBash(args.command);
+  if (tool === "edit" || tool === "write" || tool === "read" || tool === "patch") {
+    return isHandoffTarget(args.filePath || args.file_path || args.path || "");
   }
+  return false;
+}
+
+// permission.ask 용 — Permission{type,pattern,title,metadata} best-effort. tool.execute.before 가
+// authoritative 라 여기선 *확실한 새 작업만* deny(prompt 회피)하고 핸드오프/불명은 통과(fail-open →
+// tool.execute.before 위임·핸드오프 false-block 방지). 반환 true = 새 작업(deny), false = 통과.
+function isNewWorkPermission(permission) {
+  if (!permission || typeof permission !== "object") return false;
+  const cand = [];
+  if (typeof permission.pattern === "string") cand.push(permission.pattern);
+  else if (Array.isArray(permission.pattern))
+    cand.push(...permission.pattern.filter((x) => typeof x === "string"));
+  if (typeof permission.title === "string") cand.push(permission.title);
+  const meta = permission.metadata;
+  if (meta && typeof meta === "object") {
+    for (const v of Object.values(meta)) if (typeof v === "string") cand.push(v);
+  }
+  if (cand.length === 0) return false; // 추출 불가 → 통과(fail-open).
+  // 후보 중 하나라도 핸드오프 신호면 통과(false). 전부 비-핸드오프면 새 작업(true·deny).
+  return !cand.some((c) => isHandoffBash(c) || isHandoffTarget(c));
 }
 
 // ── 엔진 루트 탐색: directory 에서 위로 .project_manager 를 찾는다 ───────────
@@ -346,58 +316,6 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     }
   }
 
-  // 정지: pm_handoff --trigger 1회 박제 (엔진 T-0013) + STOP marker(ADR-0009). 세션 종료/툴
-  // 차단은 permission.ask 가 담당.
-  function triggerHandoff(state) {
-    if (!root) return;
-    // 정지 직전 user 발화 추출 → handoff "다음 intent" thread-tail 슬롯 자동 채움(T-0050).
-    // opencode export 로 세션 transcript 를 끌어와 claude 동치 규칙으로 N턴 추출한다. sid 미상·
-    // 추출 빈이면 빈 문자열 → 인자 미추가(엔진 placeholder 유지·하위호환). export 실패해도
-    // fail-soft(exportSessionMessages 가 [] 반환) — 정지·handoff 박제는 영향 없다.
-    const threadTail = currentSessionID
-      ? extractThreadTail(
-          exportSessionMessages(currentSessionID, root),
-          THREAD_TAIL_MAX_TURNS,
-          THREAD_TAIL_MAX_CHARS,
-        )
-      : "";
-    let handoffRc = null; // null = spawn 실패/타임아웃/킬 (rc 미상).
-    try {
-      const handoffArgs = [
-        path.join(root, ENGINE_REL, "pm_handoff.py"),
-        "--trigger",
-        "--reason",
-        "ctx-stop",
-        "--ctx-pct",
-        String(Math.max(0, Math.round(state.remainingPct))),
-      ];
-      // thread-tail 은 raw 전달 — 엔진 _flatten_thread_tail 이 단일 계약지점에서 sanitize
-      // (claude run_handoff 동치·어댑터 재방어 안 함). 비어있으면 미추가(하위호환).
-      if (threadTail) {
-        handoffArgs.push("--thread-tail", threadTail);
-      }
-      const res = spawnSync("python3", handoffArgs, {
-        cwd: root,
-        stdio: "ignore",
-        timeout: 30000,
-      });
-      handoffRc = res.status; // 0=박제 성공.
-    } catch {
-      /* handoff 박제 실패해도 정지(deny)는 유지 — 안전측. */
-    }
-    // STOP marker 는 handoff *성공*(rc 0) 시에만 — 실패면 새 PM 이 *권위 handoff 없이* stale
-    // context 로 부트스트랩하므로 회전을 트리거하지 않는다(claude ctx_stop_hook 가 handoff_rc==0
-    // 시에만 marker 남기는 선례·codex T-0048 must-fix). 정지(deny)는 rc 무관 유지.
-    if (handoffRc === 0) {
-      writeStopMarker(); // claude ctx_stop_hook 가 _mark_triggered 하는 자리.
-    } else {
-      process.stderr.write(
-        `[ctx-guard] pm_handoff --trigger 실패(rc=${handoffRc}) — STOP marker 보류 ` +
-          "(권위 handoff 없는 회전 방지). 정지(deny)는 유지.\n",
-      );
-    }
-  }
-
   return {
     // ── 토큰 추적: 어시스턴트 메시지 갱신마다 ctx% 재평가 ──────────────────
     event: async ({ event }) => {
@@ -418,7 +336,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
 
       if (state.level === "stop" && !fired.stop) {
         fired.stop = true;
-        triggerHandoff(state); // 핸드오프 박제 (1회).
+        writeStopMarker(); // STOP marker 직접 박제 (ADR-0038 D2·무조건·relay 회전 신호·no --trigger).
       } else if (state.level === "nudge" && !fired.nudge) {
         fired.nudge = true;
         await notifyNudge(state, t); // 넛지 toast (사람 UI·1회).
@@ -442,19 +360,22 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       }
     },
 
-    // ── 하드 정지 레버: 정지 트리거 후 모든 툴 권한 deny ───────────────────
-    "permission.ask": async (_input, output) => {
-      if (fired.stop) {
+    // ── 하드 정지 (ADR-0038 D2): 새 작업만 deny·진행 중 핸드오프 도구는 예외 통과 ────
+    // permission.ask 는 Permission best-effort 라 *확실한 새 작업만* 미리 deny(prompt 회피)하고
+    // 핸드오프/불명은 통과시킨다(fail-open — 핸드오프를 절대 오차단하지 않는다). 실제 authoritative
+    // gate 는 아래 tool.execute.before(clean schema).
+    "permission.ask": async (input, output) => {
+      if (fired.stop && isNewWorkPermission(input)) {
         output.status = "deny";
       }
     },
 
-    // ── 보조 하드 정지: 정지 후 툴 실행 차단 (permission deny 우회 대비) ────
-    "tool.execute.before": async () => {
-      if (fired.stop) {
+    // ── authoritative 하드 정지 gate: 정지 후 새 작업 도구 실행만 차단 (핸드오프 도구는 통과) ────
+    "tool.execute.before": async (input, output) => {
+      if (fired.stop && !isHandoffTool(input, output)) {
         throw new Error(
-          "[ctx-guard] 컨텍스트 정지 임계 도달 — 작업 중단. pm_handoff 핸드오프가 " +
-            "박제되었다. 이 세션을 종료하고 새 세션에서 핸드오프를 이어받아라.",
+          "[ctx-guard] 컨텍스트 정지 임계 도달 — 새 작업 중단. 진행 중인 rich /pm-handoff " +
+            "(핸드오프 도구)는 통과한다 — 핸드오프를 완료하고 이 세션을 종료한 뒤 새 세션에서 이어받아라.",
         );
       }
     },
@@ -472,12 +393,11 @@ module.exports = {
   buildNudgeGuidance,
   findEngineRoot,
   sanitizeSessionId,
-  // thread-tail 추출 (T-0050 — claude extract_thread_tail 미러·테스트용 export).
-  messageText,
-  extractThreadTail,
-  exportSessionMessages,
+  // 핸드오프 도구 allow-list (ADR-0038 D2 — claude _is_handoff_* 미러·테스트용 export).
+  isHandoffBash,
+  isHandoffTarget,
+  isHandoffTool,
+  isNewWorkPermission,
   NUDGE_PCT_DEFAULT,
   STOP_PCT_DEFAULT,
-  THREAD_TAIL_MAX_TURNS,
-  THREAD_TAIL_MAX_CHARS,
 };

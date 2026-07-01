@@ -1669,24 +1669,27 @@ def test_opencode_model_binary_absent_todo_fallback(pm_import, tmp_path, capsys)
 
 
 def test_opencode_model_fallback_only_comments_model_field_not_prose(pm_import, tmp_path):
-    """폴백 주석화는 agent 의 `model:` 필드 줄만 — README 산문/헤더의 토큰은 안 건드린다(T-0077 PM 게이트).
+    """폴백 주석화는 agent 의 `model:` 필드 줄만 — 엔진 사본 docstring 산문의 토큰은 안 건드린다(T-0077 PM 게이트).
 
-    README 는 placeholder 를 *문서화* 하는 산문(`…placeholder {{OPENCODE_PRO_MODEL}} 로 출하된다`)·
-    헤더(`### 모델 선택 (\`{{OPENCODE_PRO_MODEL}}\` …)`)에 토큰을 담는다. 마커가 `토큰 in line` 만 보고
-    `# ` prepend 하면 그 산문이 markdown H1 로 깨진다 → 마커는 `model:` 필드 줄로 한정해야 한다.
+    opencode 트리에도 그대로 복사되는 `.project_manager/tools/pm_import.py` 자신의 docstring 은
+    placeholder 를 *문서화* 하는 산문(`{{OPENCODE_PRO_MODEL}} 가 import 때 파일에 직접 치환되지만…`)에
+    토큰을 담는다(T-0192 #6 전 README 예시를 실 출하 파일로 repoint). 마커가 `토큰 in line` 만 보고
+    `# ` prepend 하면 그 산문 줄이 깨진다 → 마커는 `model:` 필드 줄로 한정해야 한다.
     """
     dest = tmp_path / "readmesafe"
     rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "ReadmeSafe"])
     assert rc == 0
-    readme = (dest / "README.md").read_text(encoding="utf-8")
-    # README 는 폴백 후에도 placeholder 토큰을 *문서화* 형태로 보존(치환/주석화 안 됨).
-    assert OPENCODE_MODEL_TOKEN in readme
-    # 폴백 TODO 마커는 `model:` 필드 줄에만 — README 엔 그 필드가 없으니 마커 0(산문 무손상).
-    assert "# TODO: opencode 모델 ID" not in readme, "README 산문/헤더 토큰에 폴백 마커가 붙어 깨짐"
-    # 토큰 든 산문 줄이 `# ` prepend 로 H1 화되지 않았다(원 산문/헤더 그대로).
-    for line in readme.splitlines():
-        if OPENCODE_MODEL_TOKEN in line and not line.lstrip().startswith("###"):
-            assert not line.lstrip().startswith("# "), f"README 산문 줄이 # prepend 로 깨짐: {line!r}"
+    engine_copy = (dest / ".project_manager" / "tools" / "pm_import.py").read_text(encoding="utf-8")
+    # 엔진 사본은 폴백 후에도 placeholder 토큰을 *문서화* 형태로 보존(치환/주석화 안 됨).
+    assert OPENCODE_MODEL_TOKEN in engine_copy
+    # 폴백 TODO 마커는 `model:` 필드 줄에만 — docstring 산문 줄은 그 필드가 아니므로 마커 0(산문 무손상).
+    prose_line = "{{OPENCODE_PRO_MODEL}} 가 import 때 파일에 직접 치환되지만"
+    assert any(prose_line in line for line in engine_copy.splitlines()), \
+        "docstring 산문 줄 전제가 깨짐 — pm_import.py record_opencode_model 문구 확인 필요."
+    for line in engine_copy.splitlines():
+        if OPENCODE_MODEL_TOKEN in line and not line.lstrip().startswith("model:"):
+            assert "# TODO: opencode 모델 ID" not in line, f"docstring 산문 줄에 폴백 마커가 붙어 깨짐: {line!r}"
+            assert not line.lstrip().startswith("# TODO"), f"docstring 산문 줄이 마커로 오염됨: {line!r}"
 
 
 def test_opencode_agent_frontmatter_valid_after_default_import(pm_import, tmp_path):
@@ -2192,14 +2195,14 @@ def test_non_git_target_all_central_backup_no_siblings(pm_import, tmp_path):
     dest = tmp_path / "nongit"
     dest.mkdir()
     (dest / "CLAUDE.md").write_text("user content\n", encoding="utf-8")
-    (dest / "README.md").write_text("user readme\n", encoding="utf-8")
+    (dest / "pm-config.sh").write_text("#!/bin/sh\necho user script\n", encoding="utf-8")
     today = datetime.date.today().isoformat()
     # 실 import — tmp 디렉토리는 git repo 가 아니므로 git_safe_relpaths → None → 전부 백업.
     rc = pm_import.main(["--into", str(dest), "--harness", "claude", "--name", "NonGit"])
     assert rc == 0
     backup_root = dest / pm_import.BACKUP_DIR_NAME / today
     assert (backup_root / "CLAUDE.md").is_file(), "비-git 충돌 CLAUDE.md 가 중앙 백업되지 않음."
-    assert (backup_root / "README.md").is_file(), "비-git 충돌 README.md 가 중앙 백업되지 않음."
+    assert (backup_root / "pm-config.sh").is_file(), "비-git 충돌 pm-config.sh 가 중앙 백업되지 않음."
     # 형제 백업(트리 전역 분산)은 0 — 중앙화 계약.
     siblings = list(dest.rglob("*.backup.*"))
     assert siblings == [], f"형제 *.backup.<DATE> 잔존 — 중앙화 위반: {siblings}"

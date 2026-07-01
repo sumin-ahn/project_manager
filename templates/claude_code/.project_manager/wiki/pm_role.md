@@ -49,6 +49,12 @@ PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm
 | `/pm-wave-finish T-NNNN` | ticket 완료 부기 — 회귀+log+board+stage (status 미접촉·ADR-0023) | `ticket_finish.py` |
 | `/pm-handoff` | 세션 종료 핸드오프 7단계 자동화 | `pm_handoff.py` |
 
+> **무코드/개념(ADR·doc·decision) 티켓 test-less done(T-0198):** 회귀와 무관한 티켓은
+> `board.py complete --allow-untested`(+본문에 log entry 를 안 남겼다면 `--allow-missing-log`)
+> 로 회귀 게이트 없이 done 처리한다 — 기능은 이미 있고, 개념 티켓 complete 시 에러로
+> 막히는 건 이 옵션을 몰라서다. `/pm-wave-finish`(`ticket_finish.py`)도 코드 변경이 없는
+> ticket 엔 같은 플래그를 넘긴다.
+
 환경·갱신 라이프사이클(wave 흐름 밖·facade-기반·ADR-0032):
 
 | skill | 역할 | backbone CLI |
@@ -155,6 +161,12 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
 > 실제 사용된 세션 목록 (sliding window) 은 동적 상태라 [`pm_state.md`](pm_state.md)
 > §"세션 식별 (현재까지 사용된 이름)" 으로 분리됐다 — `/pm-handoff` 가 자동 갱신.
 
+**`list` 스코핑(조회) vs `claim`/`complete` 의 `--session`(행위자) — 구분(T-0197):** `board.py list`
+의 `--session`/`--slot`/`--mine` 은 **조회 전용 뷰 필터**(그 식별자의 open+claim 렌즈)다.
+`claim`/`complete`/`migrate-identity` 의 `--session` 은 **행위자 지정**(누구 이름으로 claim 하는지)
+— 의미가 다르다. `list --session X` 는 이제 에러 없이 동작(과거 argparse 가 거부해 opencode PM 이
+계속 에러났었다) — 두 용법을 혼동해도 최소한 크래시는 안 난다.
+
 ## 운영 레퍼런스 (필요 시에만 Read — 부트스트랩 통째 로드 X)
 
 아래 상세는 활동을 실제로 할 때만 [`pm_playbook.md`](pm_playbook.md) 에서 읽는다:
@@ -167,6 +179,10 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
 
 ## 라이브 외부 행위 안전 가드
 
+- **무티켓 작업 착수 전 사용자 확인.** ticket 없이(board.py new 를 거치지 않고) 코드/문서를
+  바로 고치는 건 금지가 아니라 — **착수 전에 사용자에게 확인**한다(무티켓 자체를 금지하는 게
+  아니라 확인이 규율·T-0196). raw-file 을 `open/` 에 직접 앉히거나 미충전 stub 을 만들어 두는
+  건 공유 board 오염(다른 slot 의 bootstrap 을 lint fail-hard 로 막을 수 있음)이므로 하지 않는다.
 - **파일 삭제는 사용자가 직접 한다.** PM·에이전트(dev·reviewer 등)는 파일 삭제(`rm`)를 **직접
   실행하지 않는다** — *무엇을 왜 지우는지* 사유 + 복붙용 커맨드를 적어 **사용자에게 위임**하고,
   사용자가 자기 쉘에서 직접 실행한다. (읽기/빌드/테스트성 명령은 직접 OK·*삭제*만 위임.) 권한 가드가

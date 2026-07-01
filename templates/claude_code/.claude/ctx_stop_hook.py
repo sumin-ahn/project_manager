@@ -1,31 +1,33 @@
 #!/usr/bin/env python3
-"""claude ctx 임계 하드 정지 훅 (PreToolUse + UserPromptSubmit) + 자동 handoff (T-0015 · stdlib only).
+"""claude ctx 임계 hard-stop 훅 (PreToolUse + UserPromptSubmit · ADR-0038 · stdlib only).
 
 claude Code 가 호출: UserPromptSubmit(prompt 처리 전 — 새 작업 진입 차단) + PreToolUse(도구 호출 전).
-한 스크립트가 stdin 의 `hook_event_name` 으로 분기 — UserPromptSubmit→prompt block, PreToolUse→tool deny.
-훅 입력엔 ``context_window`` 가 **없을 수 있어**(statusline 전용) — 그래서 훅은
-``transcript_path`` JSONL 을 읽어 컨텍스트 점유를 자체 산출한다.
+한 스크립트가 stdin 의 ``hook_event_name`` 으로 분기. 훅 입력엔 ``context_window`` 가 **없을 수 있어**
+(statusline 전용) — 그래서 훅은 ``transcript_path`` JSONL 을 읽어 컨텍스트 점유를 자체 산출한다.
 
-잔여 컨텍스트가 stop 임계 이하면:
-  1. 도구 호출을 **deny** (PreToolUse permissionDecision:"deny" — 유일한 차단 수단).
-  2. ``pm_handoff.py --trigger --reason ctx-stop --ctx-pct <N>`` shell-out
-     (권위 handoff 박제). 멱등 — 세션당 **1회**만 트리거(중복 deny 로 handoff
-     여러 번 안 나게 marker 파일로 가드).
-  3. "새 세션 시작" 안내를 deny reason 으로 돌려준다.
+잔여 컨텍스트가 stop 임계 이하면(ADR-0038 D2 — "새 작업만 정지·핸드오프 도구 예외"):
+  1. **STOP marker `.done` 직접 박제** (relay 회전 신호·존재만 stat·본문 없음). 무조건 — 이전의
+     ``handoff_rc==0`` 게이트(T-0048)는 run_trigger 폐기로 소멸(ADR-0038 D4). 멱등 = **파일 존재**
+     (write 실패 시 다음 호출 재시도 self-heal — in-memory 플래그 안 씀).
+  2. **PreToolUse**: 진행 중 rich ``/pm-handoff`` 의 **핸드오프 도구는 통과**(hook 결정 없이 None →
+     normal permission eval·settings.json standing deny 유지). 그 외 새 작업 도구는 **deny**.
+  3. **UserPromptSubmit**: 새 작업 진입 자체를 **전면 block**(핸드오프 예외 없음·도구 개념 없음).
 
-claude native auto-compact 보다 우리 stop 이 먼저 오게 — stop_pct 잔여(기본 10%)에서
-선점한다 (명시 disable config 없으면 임계 선점).
+nudge(ADR-0037) 는 그대로 — 모델-facing 비차단 안내를 UserPromptSubmit ``additionalContext`` 로 주입.
+
+claude 네이티브 auto-compact 는 어댑터 settings.json ``autoCompactEnabled:false`` 로 비활성(ADR-0038 D3·
+opencode ``compaction.auto:false`` 파리티) — hard-stop 이 단일 게이트.
 
 출력 스키마 (claude hooks):
-  {"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                          "permissionDecision": "deny"|"allow",
-                          "permissionDecisionReason": "..."}}
-ok/nudge 면 출력 없이 rc0 (도구 정상 진행 — 훅은 정상 작업을 막지 않는다).
+  PreToolUse deny: {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                    "permissionDecision": "deny", "permissionDecisionReason": "..."}}
+  UserPromptSubmit block: {"decision": "block", "reason": "..."}
+ok / 핸드오프 도구 통과 면 출력 없이 rc0 (정상 진행 — 훅은 핸드오프를 막지 않는다).
 """
 from __future__ import annotations
 
 import json
-import subprocess
+import re
 import sys
 from pathlib import Path
 
@@ -60,7 +62,8 @@ def _mark_triggered(root: Path, session_id: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("ctx-stop handoff triggered\n", encoding="utf-8")
     except OSError:
-        # marker 를 못 써도 정지 자체는 유효 — best-effort.
+        # marker 를 못 써도 정지 자체는 유효 — best-effort. 파일이 안 생기면 _already_triggered 가
+        # 계속 False → 다음 stop-도구 호출이 재시도(self-heal). in-memory 플래그를 두지 않는 이유.
         pass
 
 
@@ -84,31 +87,66 @@ def _mark_nudged(root: Path, session_id: str) -> None:
         pass
 
 
-def run_handoff(root: Path, ctx_pct: int, runner=subprocess.run, thread_tail: str = "") -> int:
-    """pm_handoff --trigger shell-out. rc 반환 (0=박제 성공). 실패해도 정지는 유효.
+# ── 핸드오프 도구 allow-list (ADR-0038 D2) ────────────────────────────────────
+# hard-stop 중 진행 중인 rich `/pm-handoff` 가 완주하도록 핸드오프 도구를 통과시킨다. 매칭은
+# **hook allow 를 반환하지 않고** None(통과) 으로 두어 settings.json standing deny(force-push·rm)를
+# 무력화하지 않는다 — 통과 = "normal permission eval 로 넘김"(ADR-0038 설계검증 allow-list 렌즈).
+#
+# Bash 매칭 규율: (1) 셸 연쇄/치환 연산자 포함 시 거부(허용 head 로 denied tail 밀반입 차단·fail-closed),
+# (2) 선행 env 대입(VAR=val)을 정규화한 뒤 (3) 허용 호출로 *시작*(anchored prefix·substring 금지).
+_SHELL_OPS = ("&&", "||", ";", "|", "`", "$(", "\n", ">", "<", "&")
+_ENV_PREFIX_RE = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*")
+_HANDOFF_BASH_PATTERNS = (
+    re.compile(r"^(?:python3?\s+)?\S*pm_handoff\.py(?:\s|$)"),
+    re.compile(r"^(?:python3?\s+)?\S*domain\.py(?:\s|$)"),
+    re.compile(r"^git\s+add(?:\s|$)"),
+    re.compile(r"^git\s+commit(?:\s|$)"),
+    re.compile(r"^(?:python3?\s+-m\s+)?pytest(?:\s|$)"),
+)
 
-    thread_tail(정지 직전 사용자 발화)이 비어있지 않으면 ``--thread-tail`` 로 배선해
-    handoff entry "다음 intent" 의 대화 thread-tail 슬롯을 자동 채운다(T-0047).
-    빈 문자열이면 인자를 붙이지 않아 엔진이 placeholder 를 유지한다(하위호환).
-    """
-    cmd = [
-        sys.executable,
-        str(root / ".project_manager" / "tools" / "pm_handoff.py"),
-        "--trigger",
-        "--reason", "ctx-stop",
-        "--ctx-pct", str(ctx_pct),
-    ]
-    if thread_tail:
-        cmd += ["--thread-tail", thread_tail]
-    try:
-        completed = runner(cmd, cwd=str(root), capture_output=True, text=True)
-        return completed.returncode
-    except (OSError, ValueError):
-        return 1
+# Edit/Write/Read 대상 파일 — 핸드오프가 채우는 산출물 + 그 Edit 전제 Read(claude Edit 은
+# 사전 in-session Read 요구). 광역 Read/Grep/Glob·source 편집은 매칭 안 돼 deny(새 작업 방어).
+_HANDOFF_TARGET_SUBSTR = ("log/current.md", "pm_state", "status.md")
+_HANDOFF_TARGET_DIR = "/domain/"  # .project_manager/wiki/domain/*.md (domain capture 채록)
+_HANDOFF_EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "Read")
+
+
+def _is_handoff_bash(command: str) -> bool:
+    """Bash command 가 핸드오프-allow 호출로 시작하는가 (연쇄 연산자 없이·anchored)."""
+    if not isinstance(command, str) or not command.strip():
+        return False
+    if any(op in command for op in _SHELL_OPS):
+        return False  # 복합 명령 — tail 검증 불가 → deny(fail-closed).
+    core = _ENV_PREFIX_RE.sub("", command).strip()
+    return any(pat.match(core) for pat in _HANDOFF_BASH_PATTERNS)
+
+
+def _is_handoff_target(path: str) -> bool:
+    """Edit/Write/Read 대상이 핸드오프 산출물(log/pm_state/status/domain)인가."""
+    if not isinstance(path, str) or not path:
+        return False
+    p = path.replace("\\", "/")
+    if any(sub in p for sub in _HANDOFF_TARGET_SUBSTR):
+        return True
+    return _HANDOFF_TARGET_DIR in p
+
+
+def _is_handoff_tool(stdin: dict) -> bool:
+    """PreToolUse 도구 호출이 진행 중 핸드오프의 일부인가 (통과 대상)."""
+    tool = stdin.get("tool_name") or stdin.get("toolName")
+    tool_input = stdin.get("tool_input") or stdin.get("toolInput") or {}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if tool == "Bash":
+        return _is_handoff_bash(tool_input.get("command", ""))
+    if tool in _HANDOFF_EDIT_TOOLS:
+        path = tool_input.get("file_path") or tool_input.get("filePath") or ""
+        return _is_handoff_target(path)
+    return False
 
 
 def deny_output(reason: str) -> dict:
-    """PreToolUse 차단 — 도구 호출 직전 deny."""
+    """PreToolUse 차단 — 새 작업 도구 호출 직전 deny."""
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -121,18 +159,6 @@ def deny_output(reason: str) -> dict:
 def block_output(reason: str) -> dict:
     """UserPromptSubmit 차단 — prompt 가 모델에 들어가기 *전* 에 block (새 작업 진입 차단)."""
     return {"decision": "block", "reason": reason}
-
-
-def _stop_output(stdin: dict, reason: str) -> dict:
-    """훅 이벤트별 정지 출력 — UserPromptSubmit=prompt block / PreToolUse=tool deny.
-
-    UserPromptSubmit 은 prompt 처리 *전* 실행돼 새 작업 진입 자체를 막고(T-0012 정지 경계),
-    PreToolUse 는 이미 진행 중인 턴의 도구 호출을 막는다. 둘 다 배선해 빈틈을 없앤다.
-    """
-    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
-    if event == "UserPromptSubmit":
-        return block_output(reason)
-    return deny_output(reason)  # 기본 = PreToolUse
 
 
 def nudge_output(stdin: dict, guidance: str) -> dict | None:
@@ -153,22 +179,29 @@ def nudge_output(stdin: dict, guidance: str) -> dict | None:
     return None
 
 
-def build_stop_reason(used_pct: int, remaining: int, handoff_rc: int) -> str:
-    handoff_note = (
-        "권위 handoff 가 박제됐다 (pm_handoff --trigger)."
-        if handoff_rc == 0
-        else "handoff 박제 실패 — 수동으로 `pm_handoff --trigger` 실행 권장."
-    )
+def build_stop_deny_reason(used_pct: int, remaining: int) -> str:
+    """PreToolUse 새 작업 deny 사유 — 핸드오프 도구는 통과함을 안내."""
     return (
         f"[ctx-stop] 컨텍스트 사용 {used_pct}% (잔여 {remaining}%) — 정지 임계 도달. "
-        f"이 세션에서 더 진행하지 말고 핸드오프 후 **새 세션을 시작**하라. {handoff_note}"
+        "새 작업 도구는 정지됐다. 진행 중인 `/pm-handoff`(핸드오프 도구: pm_handoff.py·git add/commit·"
+        "domain.py·log/current.md·pm_state·status.md·domain 편집)는 통과한다 — rich 핸드오프를 완료하고 "
+        "이 세션을 종료한 뒤 **새 세션을 시작**하라."
     )
 
 
-def evaluate(stdin: dict, root: Path, conf: dict, handoff_fn=None) -> tuple[int, dict | None]:
-    """훅 핵심 — (rc, output|None). output None = 통과(도구 진행).
+def build_stop_block_reason(used_pct: int, remaining: int) -> str:
+    """UserPromptSubmit 새 작업 진입 block 사유."""
+    return (
+        f"[ctx-stop] 컨텍스트 사용 {used_pct}% (잔여 {remaining}%) — 정지 임계 도달. "
+        "이 세션에서 새 작업을 시작하지 말고 `/pm-handoff` 로 rich 핸드오프 후 **새 세션을 시작**하라."
+    )
 
-    handoff_fn(root, ctx_pct) -> rc 를 주입하면 shell-out 을 대체 (테스트용).
+
+def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
+    """훅 핵심 — (rc, output|None). output None = 통과(도구/prompt 진행).
+
+    stop 시: STOP marker 무조건 박제(relay 신호·ADR-0038 D4) + PreToolUse 핸드오프 도구 통과·
+    새 작업 deny / UserPromptSubmit 전면 block.
     """
     transcript = stdin.get("transcript_path")
     window = ctx_guard.ctx_window_tokens(conf)
@@ -186,8 +219,8 @@ def evaluate(stdin: dict, root: Path, conf: dict, handoff_fn=None) -> tuple[int,
     if state == "nudge":
         # graceful nudge (ADR-0037) — 모델-facing 비차단 안내 주입(엔진 박제 X·흐름 안 끊음).
         # 멱등(세션 1회·.nudge marker). UserPromptSubmit 만 주입 채널(nudge_output) — PreToolUse
-        # 면 None → 통과(도구 정상 진행·statusline 이 사람용 표시). marker 는 *실제 주입* 시에만
-        # 남겨, PreToolUse 선행으로 marker 만 박혀 UserPromptSubmit 주입이 누락되는 일을 막는다.
+        # 면 None → 통과. marker 는 *실제 주입* 시에만 남겨, PreToolUse 선행으로 marker 만 박혀
+        # UserPromptSubmit 주입이 누락되는 일을 막는다.
         session_id = _session_id(stdin)
         if _already_nudged(root, session_id):
             return 0, None
@@ -197,36 +230,27 @@ def evaluate(stdin: dict, root: Path, conf: dict, handoff_fn=None) -> tuple[int,
         _mark_nudged(root, session_id)
         return 0, output
 
-    # state == "stop" — hard-stop(fail-safe·기계 박제·deny). nudge 와 독립(별개 marker).
+    # state == "stop" — hard-stop(ADR-0038 D2: 새 작업만 정지·핸드오프 도구 예외).
     remaining = ctx_guard.remaining_pct(used)
     session_id = _session_id(stdin)
 
-    # 멱등: 이미 트리거된 세션이면 handoff 재실행 없이 차단만 (반복·중복 박제 방지).
-    if _already_triggered(root, session_id):
-        reason = (
-            f"[ctx-stop] 컨텍스트 사용 {used}% (잔여 {remaining}%) — 정지 임계 (이미 핸드오프 박제됨). "
-            "새 세션을 시작하라."
-        )
-        return 0, _stop_output(stdin, reason)
-
-    # 정지 직전 사용자 발화를 transcript 에서 추출해 handoff "다음 intent" thread-tail
-    # 슬롯에 자동 채운다(T-0047). 추출은 fail-soft("" 폴백) — 못 뽑아도 정지는 유효.
-    thread_tail = (
-        ctx_guard.extract_thread_tail(transcript)
-        if isinstance(transcript, str) and transcript
-        else ""
-    )
-    if handoff_fn is not None:
-        # 테스트 DI seam — 주입 runner 는 (root, pct) 2인자 계약 유지(하위호환).
-        handoff_rc = handoff_fn(root, remaining)
-    else:
-        handoff_rc = run_handoff(root, remaining, thread_tail=thread_tail)
-    # 멱등 marker 는 handoff *성공*(rc0=박제 계약) 시에만 남긴다. 실패면 marker 없이 차단만 →
-    # 다음 훅 호출이 handoff 를 재시도(미박제 상태로 "이미 박제됨" 처리되는 버그 방지).
-    if handoff_rc == 0:
+    # STOP marker 직접 박제 — relay 회전 신호. **무조건**(handoff_rc 게이트 없음·T-0048 반전·
+    # ADR-0038 D4). 멱등은 파일 존재 기반: 이미 있으면 재작성 안 함, write 실패면 파일 부재로
+    # 남아 다음 stop-도구 호출이 재시도(self-heal). marker 는 event 종류(PreToolUse/UserPromptSubmit)
+    # 무관하게 stop 도달 즉시 박제 — stop 후 도구를 안 써도 회전 신호 누락 방지.
+    if not _already_triggered(root, session_id):
         _mark_triggered(root, session_id)
-    reason = build_stop_reason(used, remaining, handoff_rc)
-    return 0, _stop_output(stdin, reason)
+
+    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
+    if event == "UserPromptSubmit":
+        # 새 작업 진입 전면 차단(핸드오프 예외 없음·도구 개념 없음).
+        return 0, block_output(build_stop_block_reason(used, remaining))
+
+    # PreToolUse — 진행 중 핸드오프 도구는 통과(None → normal permission eval·settings deny 유지).
+    if _is_handoff_tool(stdin):
+        return 0, None
+    # 그 외 새 작업 도구는 deny.
+    return 0, deny_output(build_stop_deny_reason(used, remaining))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -510,6 +510,25 @@ def parse_git_status(status_output: str) -> str:
     return f"{len(lines)} files modified"
 
 
+def parse_git_ahead_behind(rev_list_output: str) -> tuple[int, int] | None:
+    """`git rev-list --left-right --count HEAD...@{u}` 출력에서 (ahead, behind) 를 파싱한다.
+
+    출력 형식: `"<ahead>\\t<behind>"` (좌=로컬만·ahead, 우=upstream만·behind). 형식
+    불일치(빈 문자열·탭 없음 등) → None(파싱 실패 — 호출부가 upstream 미설정과 동일하게
+    graceful 취급).
+    """
+    stripped = rev_list_output.strip()
+    if not stripped:
+        return None
+    parts = stripped.split()
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+
+
 # ── log/current.md 파서 ──────────────────────────────────────────────────────────
 
 def parse_log_last_entry(log_text: str) -> dict[str, str] | None:
@@ -607,6 +626,35 @@ def extract_remaining_work_section(pm_state_text: str) -> str | None:
 _SESSION_LABEL_PLACEHOLDER = "PM <?>차"
 
 
+def _format_board_counts_line(counts: dict[str, int]) -> str:
+    """board 카운트 한 줄을 만든다 — `--mine`(scoped) 라벨 명확화 (T-0194).
+
+    `counts` 는 항상 `board list --mine` 스코프(T-0164) — status 별로 "내 area open"
+    또는 "내 claim" 만 센 값이라 실측(예 done 25)이 전체 done(184) 과 크게 다를 수 있다
+    (done/claimed/blocked 는 --mine 이 곧 "내 claim" 이라 전체보다 훨씬 작을 소지가 큼).
+    라벨에 `(mine)` 을 명시해 "전체 done" 처럼 오독하지 않게 한다. total 병기(옵션 b)는
+    `_collect_board` 의 회귀 가드 충돌로 이번 범위에서 보류(docstring 참조).
+    """
+    parts = [f"{label}: {counts[key]} (mine)" for key, label in (
+        ("done", "done"), ("open", "open"), ("claimed", "claimed"), ("blocked", "blocked")
+    )]
+    return "- " + " / ".join(parts)
+
+
+def _format_board_git_freshness(board_git: dict) -> str:
+    """board submodule freshness 한 줄을 만든다 — HEAD·dirty·ahead/behind (T-0195).
+
+    `board_git` = `_collect_board_git()` 반환(`head`·`dirty`·`ahead`·`behind`). ahead/behind
+    가 둘 다 None(upstream 미설정/조회불가)이면 그 구간을 생략 — dirty·head 만 있어도
+    유의미(부분 degrade). dirty=False 면 "clean", True 면 "dirty".
+    """
+    parts = [f"HEAD {board_git['head']}", "dirty" if board_git["dirty"] else "clean"]
+    ahead, behind = board_git.get("ahead"), board_git.get("behind")
+    if ahead is not None and behind is not None:
+        parts.append(f"{ahead} ahead / {behind} behind")
+    return " · ".join(parts)
+
+
 def _format_session_label(handoff_ctx: dict | None) -> str:
     """차수 announce 머리표를 만든다 — `PM <N>차` / placeholder (T-0179·crash 금지).
 
@@ -644,9 +692,15 @@ class PmBootstrap:
         worktree_pool=None,
         board=None,
         pm_state_file: Path | None = None,
+        board_dir: Path | None = None,
     ) -> None:
         self._log_file = log_file
         self._board_py = board_py
+        # board submodule 디렉토리(T-0195) — 명시(hermetic 테스트) 없으면 *호출 시점*
+        # `REPO / ".project_manager" / "board"` 로 해소한다(board 감지와 동일 앵커·
+        # `_areas_file()` 의 `board/tickets` 판정과 동형). freshness 수집이 이 경로가
+        # 실 디렉토리(`.git` 존재)인지로 분리(submodule) 여부를 판정한다.
+        self._board_dir = board_dir if board_dir is not None else REPO / ".project_manager" / "board"
         # pm_state seam (T-0179·차수 announce + 인계 dump) — bound slot 의 per-slot pm_state.
         # 명시(hermetic 테스트)면 그 경로를 read. None 이면 run() 진입부에서 bound slot 으로
         # 해소(`pm_handoff._pm_state_path` 동적로드·migrate=False·read-only·DRY). 부트스트랩은
@@ -767,13 +821,26 @@ class PmBootstrap:
     # ── 데이터 수집 ──────────────────────────────────────────────────────
 
     def _collect_board(self) -> dict:
-        """board list --mine + lint 결과를 수집한다. 실패 시 sys.exit(1).
+        """board list --mine(+ done 별도 조회) + lint 결과를 수집한다. `list` 실패만 여전히 sys.exit(1).
 
         기본 보드 뷰 = `--mine`(T-0164·ADR-0033 ④) — 부트스트랩이 전체 contention 을
         떠안지 않고 *내 것*(내 area open + 내 claim)만 surface 한다. 솔로(user 미상)는
         board 가 전체 open + 내 슬롯 claim 으로 graceful 폴백하므로 현행과 사실상 동등
         (`board list --mine` 의 솔로 폴백·spike §2.D). 전체 보드(contention 가시)는
         무플래그 `board list` 로 PM 이 명시 조회한다.
+
+        반환 `counts` 는 항상 이 `--mine` 스코프 값이다(T-0194 — 실측 done 25(mine) vs
+        전체 184 오해). 라벨 명확화는 빌더(`_format_board_counts_line`)가 담당한다.
+
+        **done 카운트는 default 뷰(무-`--status`) 비의존**(T-0198 — done-count 0 회귀 fix):
+        `board.py list`(무-status)가 done 을 접어(T-0197) 활성 상태(open/claimed/blocked)만
+        보여주므로, 위 `["list", "--mine"]` 호출 출력엔 done 행이 아예 없어 `counts["done"]`
+        이 항상 0 이었다(T-0194 가 예고한 done(mine) surface 를 T-0197 이 무력화). 그래서
+        done 전용으로 `["list", "--status", "done", "--mine"]` 을 **별도 호출**해 그 출력만
+        파싱한 done 카운트로 덮어쓴다 — open/claimed/blocked 는 첫 호출(default 뷰) 그대로
+        (그 상태들은 default 뷰에 이미 있으므로 재조회 불요). `list` 호출이 2회로 늘어
+        (구 가드가 정확히 1회만 허용했다) `test_collect_board_default_view_is_mine` 가 이
+        신규 배선(list 2회: default·done)에 맞게 함께 갱신됐다.
         """
         rc, output = self._run_board_fn(["list", "--mine"])
         if rc != 0:
@@ -783,20 +850,25 @@ class PmBootstrap:
         counts = parse_board_counts(output)
         open_tickets = parse_open_tickets(output)
 
+        # done 전용 재조회 — default 뷰가 done 을 접어(T-0197) 위 counts["done"] 이 항상 0
+        # 이 되는 회귀를 막는다. 이 호출이 실패해도(구버전 board.py 등) done=0 으로 fail-soft
+        # 하고 abort 하지 않는다(핵심 list 는 이미 성공했으므로 done 카운트만 저하 없는 선에서).
+        done_rc, done_output = self._run_board_fn(["list", "--status", "done", "--mine"])
+        if done_rc == 0:
+            counts["done"] = parse_board_counts(done_output)["done"]
+
         # `--gate` 로 호출 — 차단 카테고리에만 rc=1, advisory(status drift·
-        # unstable-ref-advice)는 rc=0 (board.cmd_lint). advisory-only lint 는
-        # 부트스트랩을 막지 않고, 진짜 차단(dangling-wikilink·dep 오류·placeholder
-        # /thin)만 abort 한다 — push 게이트와 동일한 차단 기준 재사용(T-0038).
+        # unstable-ref-advice)는 rc=0 (board.cmd_lint). dump-then-warn(T-0195) —
+        # blocking 이어도 여기서 abort 하지 않고 플래그만 실어 반환한다.
         lint_rc, lint_output = self._run_board_fn(["lint", "--gate"])
-        if lint_rc != 0:
-            print(f"[중단] board.py lint 실패 (rc={lint_rc}):\n{lint_output}", file=sys.stderr)
-            sys.exit(1)
         lint_result = parse_lint_result(lint_output)
 
         return {
             "counts": counts,
             "open_tickets": open_tickets,
             "lint": lint_result,
+            "lint_blocking": lint_rc != 0,
+            "lint_gate_output": lint_output,
         }
 
     def _collect_pytest(self) -> dict | None:
@@ -863,6 +935,49 @@ class PmBootstrap:
             "no_commits": no_commits,
             "working_tree": working_tree,
         }
+
+    def _collect_board_git(self) -> dict | None:
+        """board submodule(`.project_manager/board`) 의 HEAD·dirty·ahead/behind 를 수집한다 (T-0195).
+
+        board 는 `ignore=all` git submodule(ADR-0033 ①) 이라 부모 repo `git status` 가
+        board 의 git 상태를 통째로 숨긴다 — multi-PM 에서 board = claim 즉시-sync 공유채널
+        (T-0163) 이라 board 가 stale 하면 남의 claim 을 놓칠 수 있다(freshness load-bearing).
+
+        `self._board_dir`(`.project_manager/board`) 가 **실 디렉토리가 아니면**(솔로/board
+        미분리) None 을 반환해 graceful skip 한다(빌더가 Git 섹션에 이 줄을 생략). 실
+        디렉토리여도 `-C <board_dir>` git 호출이 전부 실패하면(예: `.git` 없음·손상) 마찬가지로
+        None(fail-soft — board freshness 는 *추가 인지*이지 부트스트랩 본체를 막지 않는다).
+
+        반환: {"head": "<sha7>", "dirty": bool, "ahead": int|None, "behind": int|None} 또는 None.
+        ahead/behind 는 upstream 미설정/조회불가 시 둘 다 None(dirty·head 는 여전히 유효할 수
+        있음 — 부분 degrade).
+        """
+        if not self._board_dir.is_dir():
+            return None
+
+        head_rc, head_out = self._run_git_fn(
+            ["-C", str(self._board_dir), "rev-parse", "--short", "HEAD"]
+        )
+        if head_rc != 0:
+            return None
+        head = head_out.strip()
+
+        status_rc, status_out = self._run_git_fn(
+            ["-C", str(self._board_dir), "status", "-s"]
+        )
+        dirty = status_rc == 0 and bool(status_out.strip())
+
+        ahead: int | None = None
+        behind: int | None = None
+        ab_rc, ab_out = self._run_git_fn(
+            ["-C", str(self._board_dir), "rev-list", "--left-right", "--count", "HEAD...@{u}"]
+        )
+        if ab_rc == 0:
+            parsed = parse_git_ahead_behind(ab_out)
+            if parsed is not None:
+                ahead, behind = parsed
+
+        return {"head": head, "dirty": dirty, "ahead": ahead, "behind": behind}
 
     def _collect_log_entry(self) -> dict | None:
         """log/current.md 의 마지막 entry 제목(date·type·title) + **본문 전체**를 수집한다.
@@ -948,12 +1063,9 @@ class PmBootstrap:
         lines.append(f"## {session_label} 부트스트랩 ({timestamp})")
         lines.append("")
 
-        # Board 섹션
+        # Board 섹션 — 카운트는 `--mine`(scoped) 라벨 명확화(T-0194).
         lines.append("### Board")
-        lines.append(
-            f"- done: {counts['done']} / open: {counts['open']} / "
-            f"claimed: {counts['claimed']} / blocked: {counts['blocked']}"
-        )
+        lines.append(_format_board_counts_line(counts))
         if pytest_result is not None:
             lines.append(
                 f"- 회귀: {pytest_result['passed']} / {pytest_result['total']} 통과"
@@ -979,6 +1091,11 @@ class PmBootstrap:
             for sha, subject in git["commits"][:3]:
                 lines.append(f"  - {sha} {subject}")
         lines.append(f"- working tree: {git['working_tree']}")
+        # board submodule freshness (T-0195) — `ignore=all` 이 부모 `git status` 에서 board
+        # git 상태를 숨기므로 별도 1줄로 surface. board 미분리(솔로)면 생략(graceful skip).
+        board_git = git.get("board_git")
+        if board_git is not None:
+            lines.append(f"- board: {_format_board_git_freshness(board_git)}")
         lines.append("")
 
         # log/current.md 섹션 — 제목 + **본문 전체** dump (T-0179·인계 컨텍스트 self-surface).
@@ -1020,9 +1137,11 @@ class PmBootstrap:
         # 권장 첫 turn 섹션
         lines.append("### 권장 첫 turn")
         lines.append("PM 세션 시작합니다.")
+        # 카운트는 `--mine`(scoped) — 라벨 명확화(T-0194). 위 `_format_board_counts_line` 과
+        # 동일 데이터를 요약 문장체로 표기(선두 "- " 없이·마침표로 마감).
         board_summary = (
-            f"done {counts['done']} / open {counts['open']} / "
-            f"claimed {counts['claimed']} / blocked {counts['blocked']}."
+            f"done {counts['done']} (mine) / open {counts['open']} (mine) / "
+            f"claimed {counts['claimed']} (mine) / blocked {counts['blocked']} (mine)."
         )
         if pytest_result is not None:
             regression_summary = (
@@ -1061,10 +1180,14 @@ class PmBootstrap:
             "session_num": handoff_ctx.get("session_num") if handoff_ctx else None,
             "handoff_context": handoff_ctx,
             "board": {
+                # 하위호환(top-level) — 값은 여전히 `--mine` 스코프(변경 없음). T-0194: 컨슈머가
+                # 이 카운트를 "전체" 로 오독하지 않도록 `counts_mine`(동일 값의 명시 별칭)을
+                # 병기한다 — 스키마 상에서도 mine-scoped 임이 드러나게(라벨 명확화·옵션 a).
                 "done": counts["done"],
                 "open": counts["open"],
                 "claimed": counts["claimed"],
                 "blocked": counts["blocked"],
+                "counts_mine": dict(counts),
                 "open_tickets": board["open_tickets"],
                 "lint": board["lint"],
             },
@@ -1084,6 +1207,9 @@ class PmBootstrap:
                 ],
                 "no_commits": git.get("no_commits", False),
                 "working_tree": git["working_tree"],
+                # board submodule freshness(T-0195) — None(솔로/board 미분리)이면 생략된 것과
+                # 동일 정보량(graceful skip). 있으면 head/dirty/ahead/behind.
+                "board_git": git.get("board_git"),
             },
             "log_last_entry": log_entry,
         }
@@ -1128,6 +1254,9 @@ class PmBootstrap:
         board = self._collect_board()
         pytest_result = self._collect_pytest() if with_pytest else None
         git = self._collect_git()
+        # board submodule freshness(T-0195) — HEAD·dirty·ahead/behind. board 미분리(솔로)면
+        # None(graceful skip) — `git` dict 에 실어 빌더로 전달(시그니처 변경 최소화).
+        git["board_git"] = self._collect_board_git()
         log_entry = self._collect_log_entry()
         # 차수 + 인계 컨텍스트 (T-0179) — bound slot pm_state 에서 차수·"남은 작업/사용자발의" 절.
         # _bound_slot 세팅 후라 명시 multi-PM 모드면 그 슬롯 pm_state 를, 솔로면 자동해소(legacy 폴백).
@@ -1158,6 +1287,17 @@ class PmBootstrap:
                 identity = self._alloc_and_identity(repo, branch, resume)
                 print()
                 print(self._build_identity_markdown(identity))
+
+        # blocking lint — dump-then-warn(T-0195·abort-before-dump 제거). 위에서 이미
+        # markdown/JSON 전체(board/git/log/pm_state)를 dump 했으니, 여기서 마지막으로
+        # 경고 + 비-0 종료한다 — mid-wave 세션 진입이 dump 0 으로 손 재구성하던 것을 막는다.
+        if board.get("lint_blocking"):
+            print(
+                f"[경고] board lint 차단(blocking) 이슈 — 위 dump 는 정상 출력됨:\n"
+                f"{board['lint_gate_output']}",
+                file=sys.stderr,
+            )
+            return 1
 
         return 0
 

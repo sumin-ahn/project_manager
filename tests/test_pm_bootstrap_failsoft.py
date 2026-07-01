@@ -47,12 +47,18 @@ _BOARD_LIST_OUTPUT = (
 )
 
 
-def _make_board_fn(list_resp: tuple[int, str], lint_resp: tuple[int, str]):
+def _make_board_fn(list_resp: tuple[int, str], lint_resp: tuple[int, str],
+                    done_resp: tuple[int, str] | None = None):
     """board argv 의 첫 토큰(list/lint)으로 (rc, out) 을 반환하는 fake run_board_fn.
 
     `_collect_board` 가 lint 를 게이트(`["lint", "--gate"]`)로 부르는지도 함께 검증한다.
+    `done_resp`(T-0198) 로 done 전용 재조회(`["list", "--status", "done", "--mine"]`)에
+    별도 응답을 줄 수 있다 — 생략하면 `list_resp` 를 재사용(기존 테스트 호환·done count
+    무관 케이스).
     """
     def _fn(args: list[str]) -> tuple[int, str]:
+        if args == ["list", "--status", "done", "--mine"]:
+            return done_resp if done_resp is not None else list_resp
         if args[0] == "list":
             return list_resp
         if args[0] == "lint":
@@ -86,8 +92,11 @@ def test_collect_board_advisory_only_does_not_abort():
     assert board["open_tickets"] == ["T-0010"]
 
 
-def test_collect_board_blocking_lint_aborts(capsys):
-    """차단 카테고리 게이트 출력(rc=1) → 기존대로 sys.exit(1) (회귀 보존)."""
+def test_collect_board_blocking_lint_carries_flag_not_abort():
+    """차단 카테고리 게이트 출력(rc=1) → _collect_board 는 **abort 하지 않고** `lint_blocking`
+    플래그를 실어 반환한다 (dump-then-warn·T-0195·ADR-0038 wave). abort-before-dump 폐기 —
+    run() 이 board/git/log 전체 dump 를 출력한 *뒤* 경고 + 비-0 종료(그 계약은
+    test_pm_bootstrap_parsers 가 별도 가드). 여기선 _collect_board 가 SystemExit 안 냄을 고정."""
     mod = _load_module()
     gate_out = (
         "⚠️  1 lint issue(s) (1 blocking 차단):\n"
@@ -96,11 +105,11 @@ def test_collect_board_blocking_lint_aborts(capsys):
     board_fn = _make_board_fn((0, _BOARD_LIST_OUTPUT), (1, gate_out))
     bootstrap = mod.PmBootstrap(run_board_fn=board_fn)
 
-    with pytest.raises(SystemExit) as exc:
-        bootstrap._collect_board()
-    assert exc.value.code == 1
-    err = capsys.readouterr().err
-    assert "board.py lint 실패" in err
+    # sys.exit 가 나면 SystemExit 으로 실패 — dump-then-warn 이라 여기서 abort 하지 않는다.
+    board = bootstrap._collect_board()
+    assert board["lint_blocking"] is True
+    assert board["lint_gate_output"] == gate_out
+    assert board["open_tickets"] == ["T-0010"]
 
 
 def test_collect_board_clean_passes():
@@ -113,14 +122,66 @@ def test_collect_board_clean_passes():
     assert board["lint"] == "clean"
 
 
+# ── done(mine) 카운트 — default 뷰 비의존 (T-0198 회귀 fix) ──────────────────
+
+_BOARD_DONE_OUTPUT = (
+    "보드 목록 (T-NNNN)\n\n"
+    "  [done   ] T-0001  완료된 티켓 1  -  -\n"
+    "  [done   ] T-0002  완료된 티켓 2  -  -\n"
+)
+
+
+def test_collect_board_done_count_positive_via_separate_query():
+    """done(mine) > 0 인 실제 케이스 — default 뷰(무-status)가 done 을 접어도(T-0197)
+    별도 done 전용 재조회(T-0198)가 정확한 카운트를 채운다(0 으로 고착되는 회귀 방지).
+
+    default 뷰 응답(`_BOARD_LIST_OUTPUT`)엔 done 행이 없다(T-0197 이 접음) — 이것만
+    파싱하면 done=0 이 되는 게 바로 T-0197→T-0194 무력화 회귀였다. done 전용 응답
+    (`_BOARD_DONE_OUTPUT`)엔 done 2건이 있다 — `_collect_board` 가 이를 반영해야 한다.
+    """
+    mod = _load_module()
+    board_fn = _make_board_fn(
+        (0, _BOARD_LIST_OUTPUT), (0, "✓ no lint issues\n"),
+        done_resp=(0, _BOARD_DONE_OUTPUT))
+    bootstrap = mod.PmBootstrap(run_board_fn=board_fn)
+
+    board = bootstrap._collect_board()
+    assert board["counts"]["done"] == 2, (
+        f"done(mine) 이 별도 재조회를 반영 안 함 — counts: {board['counts']!r}")
+    # open/claimed/blocked 는 default 뷰(첫 호출) 값 그대로 보존돼야 한다(재조회 불필요).
+    assert board["counts"]["open"] == 1
+
+
+def test_collect_board_done_query_failure_degrades_to_zero():
+    """done 전용 재조회가 실패(rc≠0·구버전 board.py 등)해도 `_collect_board` 는 abort 안 하고
+    done=0 으로 fail-soft — 핵심 list(default 뷰)가 이미 성공했으므로 전체를 막지 않는다."""
+    mod = _load_module()
+
+    def _fn(args: list[str]) -> tuple[int, str]:
+        if args == ["list", "--status", "done", "--mine"]:
+            return (1, "unknown flag")
+        if args[0] == "list":
+            return (0, _BOARD_LIST_OUTPUT)
+        return (0, "✓ no lint issues\n")
+
+    bootstrap = mod.PmBootstrap(run_board_fn=_fn)
+    board = bootstrap._collect_board()  # sys.exit 가 나면 여기서 실패.
+    assert board["counts"]["done"] == 0
+    assert board["counts"]["open"] == 1
+
+
 # ── 기본 보드 뷰 = --mine (T-0164·ADR-0033 ④) ────────────────────────────────
 
 def test_collect_board_default_view_is_mine():
-    """_collect_board 가 list 를 `--mine` 렌즈로 부른다 (부트스트랩 기본뷰·T-0164).
+    """_collect_board 가 list 를 `--mine` 렌즈(default 뷰 + done 전용)로 부른다 (T-0164·T-0198).
 
     부트스트랩이 전체 contention 을 떠안지 않고 *내 것*만 surface 한다 — 솔로(user 미상)는
     board 의 graceful 폴백으로 현행과 사실상 동등(`--mine` 솔로 폴백·spike §2.D).
-    """
+
+    `list` 호출은 **2 회**다(T-0198 — done-count 0 회귀 fix): 첫 호출은 default 뷰
+    (`["list", "--mine"]` — open/claimed/blocked, T-0197 이 done 을 접음), 두 번째는 done
+    전용(`["list", "--status", "done", "--mine"]`) — default 뷰가 done 을 안 보여줘서 생긴
+    회귀(done(mine) 이 항상 0)를 이 재조회가 메꾼다. 둘 다 `--mine` 렌즈를 유지한다."""
     mod = _load_module()
     captured: list[list[str]] = []
 
@@ -134,7 +195,10 @@ def test_collect_board_default_view_is_mine():
     bootstrap._collect_board()
 
     list_calls = [a for a in captured if a[0] == "list"]
-    assert list_calls == [["list", "--mine"]]
+    assert list_calls == [
+        ["list", "--mine"],
+        ["list", "--status", "done", "--mine"],
+    ]
 
 
 # ── 빈 repo: rev-parse rc≠0 + symbolic-ref OK + log rc≠0 → fail-soft ──────────

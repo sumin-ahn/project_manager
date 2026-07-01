@@ -8,7 +8,7 @@ work/ 풀을 절대 건드리지 않는다(test_handoff_trigger.py 의 DI 패턴
   - bootstrap --repo --branch → alloc 호출·identity surface 출력·cwd 슬롯 보고.
   - 무인자(솔로) → 현행 동작 (alloc 경로 미진입·worktree_pool 안 건드림).
   - NeedsCreate (풀 소진) → 사용자 게이트 안내·자동 git worktree add 안 함.
-  - handoff payload 에 slot/branch 기록 · --done → release · --trigger → 리스 유지(release X).
+  - handoff payload 에 slot/branch 기록 · --done → release · --done 없으면 리스 유지(release X).
   - 회전 재부착(resume) 연속성 · worktree_pool 부재 시 명시 에러(침묵 무력화 금지).
   - sensitivity: 배선 무력화 시 fail.
 """
@@ -552,22 +552,6 @@ def test_handoff_skeleton_solo_omits_slot_line(handoff):
     assert "- 회귀/incident:" in sk
 
 
-def test_trigger_skeleton_records_slot_branch(handoff):
-    """트리거 skeleton 도 multi-PM 모드 slot/branch 기록 (회전 재부착 단서)."""
-    sk = handoff.build_trigger_handoff_log_skeleton(
-        session_num=7, reason="ctx-stop", ctx_pct=6, date="2026-06-16",
-        worktree_slot="work/B_1", branch="b2",
-    )
-    assert "- worktree: slot=`work/B_1`" in sk and "branch=`b2`" in sk
-
-
-def test_trigger_skeleton_solo_omits_slot_line(handoff):
-    sk = handoff.build_trigger_handoff_log_skeleton(
-        session_num=7, reason="ctx-stop", ctx_pct=6, date="2026-06-16",
-    )
-    assert "worktree: slot" not in sk
-
-
 # ── handoff fixture (DI — pytest/git stub·worktree_pool mock) ─────────────────
 
 
@@ -672,23 +656,6 @@ def test_handoff_done_release_keyerror_soft(handoff, tmp_path, capsys):
     assert rc == 0
 
 
-# ── 7. trigger → 리스 유지 (release 절대 호출 안 함) ───────────────────────────
-
-
-def test_trigger_records_slot_but_never_releases(handoff, tmp_path, capsys):
-    """ctx-STOP --trigger 는 slot/branch 기록만 — release 절대 호출 안 함(리스 유지)."""
-    wp = FakeWorktreePool()
-    inst, log_file, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
-    rc = inst.run_trigger(
-        reason="ctx-stop", ctx_pct=8, worktree_slot="work/A_2", branch="a5",
-    )
-    assert rc == 0
-    # 리스 유지 — release 0회 (다음 bootstrap 이 같은 슬롯 resume).
-    assert wp.release_calls == []
-    log_text = log_file.read_text(encoding="utf-8")
-    assert "- worktree: slot=`work/A_2`" in log_text
-
-
 # ── 8. 회전 재부착(resume) 연속성 ─────────────────────────────────────────────
 
 
@@ -765,13 +732,7 @@ def test_handoff_parser_worktree_flags(handoff):
     assert ns.worktree_slot == "work/A_2" and ns.branch == "a5" and ns.done is True
 
 
-def test_handoff_done_with_trigger_rejected(handoff):
-    """--done + --trigger 동시 사용은 거부 (ctx-STOP 회전은 release 아님·ADR-0013)."""
-    with pytest.raises(SystemExit):
-        handoff.main(["--trigger", "--done", "--worktree-slot", "work/A_2"])
-
-
-def test_handoff_branch_without_slot_rejected_interactive(handoff):
+def test_handoff_branch_without_slot_rejected(handoff):
     """--branch 만(--worktree-slot 없이) → parser.error 거부 (조용히 무시 X·오용 축소).
 
     슬롯 없는 브랜치는 회전 재부착 단서로 불완전 — 어느 슬롯에 재부착할지 모른다.
@@ -781,12 +742,6 @@ def test_handoff_branch_without_slot_rejected_interactive(handoff):
     with pytest.raises(SystemExit):
         handoff.main(["--session-num", "5", "--wave-summary", "x",
                       "--branch", "a5", "--no-pytest", "--dry-run"])
-
-
-def test_handoff_branch_without_slot_rejected_trigger(handoff):
-    """트리거 경로에서도 --branch 만(슬롯 없이) → 거부 (양 경로 공통 가드)."""
-    with pytest.raises(SystemExit):
-        handoff.main(["--trigger", "--branch", "a5", "--dry-run"])
 
 
 def test_handoff_branch_with_slot_accepted_by_parser(handoff):
@@ -814,11 +769,14 @@ def test_sensitivity_done_must_release(handoff, tmp_path, capsys):
     assert len(wp.release_calls) == 1
 
 
-def test_sensitivity_trigger_must_not_release(handoff, tmp_path, capsys):
-    """sensitivity: 트리거가 실수로 release 를 호출하면(리스 파괴) 이 단언이 깨진다."""
+def test_sensitivity_no_done_must_not_release(handoff, tmp_path, capsys):
+    """sensitivity: --done 없는 handoff 가 실수로 release 를 호출하면(리스 파괴) 이 단언이 깨진다."""
     wp = FakeWorktreePool()
     inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
-    inst.run_trigger(reason="ctx-stop", ctx_pct=8, worktree_slot="work/A_2", branch="a5")
+    inst.run(
+        session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+        worktree_slot="work/A_2", branch="a5", done=False,
+    )
     assert len(wp.release_calls) == 0
 
 

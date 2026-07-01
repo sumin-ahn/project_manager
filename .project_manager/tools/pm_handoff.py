@@ -54,10 +54,9 @@ LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 
 # ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────
 # board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다(ADR-0033 ①).
-# 그러면 board 현황 카운트(trigger wave-summary)·회귀 cwd 자동해소(_auto_slot 의 areas 입력)가
-# wiki/ legacy 위치를 보면 *stale*(count 0·미해소)이다. pm_handoff 는 board.py 를 import 하지
-# 않으므로(touches 격리·`board_status_counts` 가 stdlib glob), board.py 의 graceful 탐지 로직을
-# *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면 board/ 루트, 아니면 wiki/(legacy).
+# 그러면 회귀 cwd 자동해소(_auto_slot 의 areas 입력)가 wiki/ legacy 위치를 보면 *stale*(미해소)
+# 이다. pm_handoff 는 board.py 를 import 하지 않으므로(touches 격리), board.py 의 graceful 탐지
+# 로직을 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면 board/ 루트, 아니면 wiki/(legacy).
 # 솔로/미분리/미마이그 adopter 에선 board/tickets 부재 → 현 위치 100% 폴백(회귀 0).
 # 상수 TICKETS_DIR·AREAS_FILE 는 hermetic 테스트의 monkeypatch seam·legacy 기본값으로 유지.
 
@@ -217,7 +216,7 @@ def _resolve_state_slot(
     run() 가드는 `_resolve_session_slot`(default-1)로 "slot 1" 통과시키는데 write 는 legacy 로
     가는 split. continuity 해소도 같은 `_resolve_session_slot`(default-1)을 경유해 정합시킨다.
     `SlotResolutionError`(진짜 모호·`{2,3}`·repo≥2)는 **catch → None**(display/preview fail-soft
-    보존) — write 경로는 run()/run_trigger() 가드가 이미 fail-loud 로 막아 도달 안 한다(방어적).
+    보존) — write 경로는 run() 가드가 이미 fail-loud 로 막아 도달 안 한다(방어적).
 
     `_resolve_session_slot` 은 동적 로드해 재사용(DRY·복붙 금지). `areas_file`/`leases_file`
     미지정이면 *호출 시점* `_areas_file()`(board_root 추종)·REPO 기준으로 해소한다 — 모듈 default
@@ -239,7 +238,7 @@ def _resolve_state_slot(
         auto = bp._resolve_session_slot(areas_file, leases_file)
     except bp.SlotResolutionError:
         # 진짜 모호(`{2,3}`·repo≥2) — display/preview 는 fail-soft(None→legacy 표기). 실제
-        # write 경로는 run()/run_trigger() 가드가 이미 fail-loud 로 막았다(여기 도달=방어적).
+        # write 경로는 run() 가드가 이미 fail-loud 로 막았다(여기 도달=방어적).
         return None
     except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 None(legacy 폴백).
         return None
@@ -255,7 +254,7 @@ def _resolve_state_slot(
 # 로 조용히 폴백해 *빈 legacy fork·연속성 단절*(spike §1·§2 D2)을 내는 대신 명시 에러로 중단한다.
 #
 # **단일 해소로 통일(codex round2 must-fix)**: 이 함수가 가드 단계서 슬롯을 *한 번* 해소해 실행
-# 슬롯(`worktree_slot`)으로 thread 한다 — run()/run_trigger() 가 결과를 `self._worktree_slot` 에 박으면
+# 슬롯(`worktree_slot`)으로 thread 한다 — run() 이 결과를 `self._worktree_slot` 에 박으면
 # downstream 전부(pm_state `_pm_state_path`·회귀/출하 cwd `_regression_cwd`·handoff entry `worktree_slot`
 # 필드)가 *명시 슬롯 우선* 경로로 **같은** 슬롯을 일관되게 쓴다(이미 다들 explicit slot 우선). 이전의
 # "continuity=default-1 / 회귀cwd=REPO 폴백" 비대칭은 self-split(② 홈엔 tests/ 없음)에서 회귀를 엉뚱한
@@ -318,7 +317,7 @@ def _pm_state_path(
         `migrate=False` 면 이동 없이 **legacy** 반환(현 읽기 위치·미리보기·부작용 0).
       - slot·legacy 둘 다 부재(드문 엣지·fresh) → **slot 경로** 반환(정식 위치·쓰기 시 생성).
 
-    `migrate` 는 *파일 이동* 만 가른다(경로 우선순위는 동일). run()/run_trigger() 는 진입부에서
+    `migrate` 는 *파일 이동* 만 가른다(경로 우선순위는 동일). run() 은 진입부에서
     `migrate=False`(읽기 위치만)로 호출하고, 모든 중단 게이트 통과 후 pm_state 첫 접촉 직전에만
     `_migrate_legacy_pm_state` 로 실제 이동을 수행한다 — "중단 시 pm_state 무접촉" 계약 보존
     (codex 교차검증 must-fix). dry-run 은 이동을 절대 하지 않는다(미리보기).
@@ -350,7 +349,7 @@ def _migrate_legacy_pm_state(
 ) -> Path:
     """legacy `wiki/pm_state.md` 를 활성 슬롯 경로로 이동하고 최종 pm_state 경로를 반환한다.
 
-    `_pm_state_path(..., migrate=True)` 의 명시 별칭 — run()/run_trigger() 가 **모든 중단
+    `_pm_state_path(..., migrate=True)` 의 명시 별칭 — run() 이 **모든 중단
     게이트(회귀·출하) 통과 후·pm_state 첫 접촉 직전**에 단 한 번 호출한다(트랜잭션 계약:
     중단 시 pm_state 무접촉·codex must-fix). 멱등·비파괴(slot 이미 존재면 이동 안 함)·
     legacy 부재면 이동 없이 slot 경로 반환(쓰기 시 생성). dry-run 경로는 이 함수를 호출하지
@@ -370,11 +369,8 @@ def _default_python() -> str:
     cand = REPO / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     return str(cand) if cand.exists() else sys.executable
 
-# ── ctx 정지-핸드오프 비대화 트리거 (T-0013) ─────────────────────────────────
-# 어댑터 훅(opencode·claude)이 ctx 임계 도달 시 호출하는 빠른 경로의 기본값.
-TRIGGER_DEFAULT_REASON = "ctx-stop"          # --reason 미지정 시 기본 사유.
+# ── 세션 차수 추론 placeholder (infer_next_session_num 사용) ──────────────────
 TRIGGER_SESSION_PLACEHOLDER = "?"            # 세션 차수 추론 불가 시 안전한 placeholder.
-_BOARD_STATUS_DIRS = ("open", "claimed", "blocked", "done")  # board.py STATUS_DIRS 동기.
 
 # ── 상수 ─────────────────────────────────────────────────────────────────────
 
@@ -450,9 +446,10 @@ THREAD_TAIL_MAX_CHARS = 600  # 엔진 레벨 방어 cap (어댑터 추출 캡과
 def _flatten_thread_tail(thread_tail: str) -> str:
     """thread_tail 을 한 줄 슬롯에 안전하게 — 개행 평탄화·trim·cap.
 
-    `--thread-tail` 은 공개 CLI 라 다중행 입력이 후속 섹션(`- 회귀/incident:` 등)을 위조하거나
-    lean 줄단위 handoff 스키마를 깰 수 있다. 엔진이 *자기* 계약(줄단위 슬롯)을 직접 방어한다 —
-    어댑터(ctx_guard)가 이미 평탄화해도 defense-in-depth (엔진 인터페이스는 공개라 신뢰 안 함).
+    `build_handoff_log_skeleton(thread_tail=...)` 은 공개 API 라 다중행 입력이 후속 섹션
+    (`- 회귀/incident:` 등)을 위조하거나 lean 줄단위 handoff 스키마를 깰 수 있다. 엔진이 *자기*
+    계약(줄단위 슬롯)을 직접 방어한다 — 어댑터(ctx_guard)가 이미 평탄화해도 defense-in-depth
+    (엔진 인터페이스는 공개라 신뢰 안 함).
     """
     flat = " / ".join(part.strip() for part in thread_tail.splitlines() if part.strip())
     flat = flat.strip()
@@ -528,64 +525,6 @@ def build_handoff_log_skeleton(
     return HANDOFF_LOG_SKELETON_TEMPLATE.format(
         date=date,
         session_num=_normalize_session_num(session_num),
-        next_intent=_next_intent_lines(thread_tail),
-        worktree_line=_worktree_line(worktree_slot, branch),
-    )
-
-
-# ── 비대화 트리거 handoff entry skeleton (reason·ctx% 기록) ────────────────────
-
-TRIGGER_HANDOFF_LOG_SKELETON_TEMPLATE = """\
-## [{date}] handoff ({trigger_label}) | PM {session_num}차 → 다음 PM 세션
-
-- 트리거: {trigger_desc} (reason={reason}{ctx_part}) — 어댑터 훅이 정지 직전 박제.
-- 읽기 범위: <PM 손 — 이 entry + 인용할 과거 entry/ADR. 라인수·전체Read 아님. board/git/log 는 /pm-bootstrap 라이브 — 적지 마라.>
-- 메타 학습: <PM 손 — ticket 상태에서 도출 불가한 교훈만. 없으면 "없음".>
-{next_intent}
-{worktree_line}- 회귀/incident: <PM 손 — 회귀 "N passed / 상태" 1줄(green 도 — baseline) + 비-자명 incident. (회귀는 1줄 load-bearing 이라 항상 적음 — board/git/log 대량 재열거만 금지.)>
-"""
-
-
-# 트리거 reason 별 marker (헤더 라벨·트리거 서술). 기본 = ctx-STOP 회전.
-# precompact(네이티브 압축이 수동 handoff 보다 먼저 터질 때의 방어 폴백·ADR-0020)은
-# ctx-임계 회전과 *시각적으로 구별*돼야 한다 — 다음 세션이 "수동 handoff 미완 가능"을
-# 즉시 알도록 별도 라벨·⚠ 문구. reason 미등록 시 default(ctx-trigger).
-_TRIGGER_MARKERS = {
-    "precompact": ("precompact-flush", "⚠ 네이티브 압축 직전 durable flush — 수동 handoff 미완 가능"),
-}
-_TRIGGER_MARKER_DEFAULT = ("ctx-trigger", "ctx 임계 자동 핸드오프")
-
-
-def build_trigger_handoff_log_skeleton(
-    session_num: int | str,
-    reason: str,
-    ctx_pct: int | str | None,
-    date: str | None = None,
-    thread_tail: str | None = None,
-    worktree_slot: str | None = None,
-    branch: str | None = None,
-) -> str:
-    """비대화 트리거가 log/current.md 에 append 할 handoff entry skeleton.
-
-    대화형 skeleton 과 달리 reason·ctx% 를 권위 최종 상태로 기록한다. **reason 별 marker**
-    (헤더 라벨·트리거 서술)로 ctx-STOP 회전과 precompact 폴백을 구별한다(ADR-0020) —
-    reason=precompact 면 "precompact-flush"·⚠ 문구, 그 외엔 default(ctx-trigger).
-    thread_tail 주입 시 "다음 intent" 의 대화 thread-tail 슬롯을 자동 채운다
-    (어댑터 훅이 정지 직전 사용자 발화를 transcript 에서 추출해 전달).
-    worktree_slot 주입 시(multi-PM 모드) slot/branch 기록 줄을 추가한다 — ctx-STOP
-    회전은 release 아님(리스 유지)이므로 다음 bootstrap 의 같은 슬롯 resume 단서.
-    """
-    if date is None:
-        date = datetime.date.today().isoformat()
-    ctx_part = f"·ctx={ctx_pct}%" if ctx_pct is not None else ""
-    trigger_label, trigger_desc = _TRIGGER_MARKERS.get(reason, _TRIGGER_MARKER_DEFAULT)
-    return TRIGGER_HANDOFF_LOG_SKELETON_TEMPLATE.format(
-        date=date,
-        session_num=_normalize_session_num(session_num),
-        reason=reason,
-        ctx_part=ctx_part,
-        trigger_label=trigger_label,
-        trigger_desc=trigger_desc,
         next_intent=_next_intent_lines(thread_tail),
         worktree_line=_worktree_line(worktree_slot, branch),
     )
@@ -807,47 +746,6 @@ def infer_next_session_num(pm_state_text: str) -> int | str:
         return TRIGGER_SESSION_PLACEHOLDER
     highest = max(int(m.group(1).replace("차", "")) for m in entries)
     return highest + 1
-
-
-def board_status_counts(tickets_dir: Path | None = None) -> dict[str, int]:
-    """board 의 status 디렉토리별 ticket 수를 센다 (stdlib glob — board.py 미import).
-
-    반환: {"open": N, "claimed": N, "blocked": N, "done": N}.
-
-    `tickets_dir` 미지정(None)이면 `_tickets_dir()`(board_root 추종·T-0162 A6)로 *호출 시점*
-    해소한다 — board/ 분리(ADR-0033 ①) 후 wiki/ legacy 위치(stale·count 0)를 안 보게. 명시
-    인자는 그대로 존중(hermetic 테스트 seam).
-    """
-    if tickets_dir is None:
-        tickets_dir = _tickets_dir()
-    counts: dict[str, int] = {}
-    for status in _BOARD_STATUS_DIRS:
-        status_dir = tickets_dir / status
-        if status_dir.is_dir():
-            counts[status] = len(list(status_dir.glob("*.md")))
-        else:
-            counts[status] = 0
-    return counts
-
-
-def build_trigger_wave_summary(
-    reason: str,
-    ctx_pct: int | str | None,
-    tickets_dir: Path | None = None,
-) -> str:
-    """비대화 트리거용 wave-summary 를 자동 생성한다 (사람 작성 대체).
-
-    형식: "ctx 임계 자동 핸드오프 (reason=<reason>·ctx=<N>%) — board <현황 1줄>"
-    ctx_pct 가 None 이면 ctx 표기를 생략. tickets_dir 미지정이면 board_status_counts 가
-    `_tickets_dir()`(board_root 추종)로 해소한다(T-0162 A6).
-    """
-    ctx_part = f"·ctx={ctx_pct}%" if ctx_pct is not None else ""
-    counts = board_status_counts(tickets_dir)
-    board_line = (
-        f"board done {counts['done']} / open {counts['open']} / "
-        f"claimed {counts['claimed']} / blocked {counts['blocked']}"
-    )
-    return f"ctx 임계 자동 핸드오프 (reason={reason}{ctx_part}) — {board_line}"
 
 
 # ── pm_playbook.md 인계 프롬프트 추출 ────────────────────────────────────────
@@ -1181,7 +1079,7 @@ class PmHandoff:
         self._log_file = log_file
         self._pm_playbook_file = pm_playbook_file
         # pm_state 는 *슬롯별*(T-0166·ADR-0033 §3.1) — 명시 주입(테스트/override)이 있으면
-        # 그 경로 고정, 미지정(None·프로덕션)이면 run()/run_trigger() 진입부에서 활성 슬롯을
+        # 그 경로 고정, 미지정(None·프로덕션)이면 run() 진입부에서 활성 슬롯을
         # 해소해 `_pm_state_path` 로 per-slot 경로(또는 솔로 legacy 폴백)를 세팅한다. 명시 주입
         # 여부를 기억해 per-slot 재해소가 hermetic 테스트의 명시 경로를 덮지 않게 한다.
         self._pm_state_file_explicit = pm_state_file is not None
@@ -1292,7 +1190,6 @@ class PmHandoff:
             비실행·PM 이 --shipping-test/--no-shipping-test 로 결정).
 
         반환: 0=통과/skip/surface(계속), 1=출하 테스트 red(핸드오프 중단).
-        run_trigger(ctx-STOP)는 이 step 을 절대 호출하지 않는다(자동정지·LLM 못 띄움).
         """
         if shipping_test_override is False:
             print("  [--no-shipping-test] 출하 테스트 강제 skip (사유 log 는 PM 손).")
@@ -1602,240 +1499,24 @@ class PmHandoff:
 
         return 0
 
-    # ── 비대화 트리거 빠른 경로 (ctx 정지-핸드오프 — T-0013) ──────────────────
-
-    def _build_trigger_handoff_prompt_block(
-        self,
-        session_num: int | str,
-        wave_summary: str,
-        date_str: str,
-    ) -> str:
-        """trigger handoff entry 끝에 박제할 인계 프롬프트 블록을 빌드한다 (T-0134·D16).
-
-        대화형 run() 의 [5/7] 와 동일 build_handoff_prompt_output 을 재사용한다 — 자동
-        경로는 모델이 정지되어 stdout(휘발)으로 프롬프트를 전달할 수 없으므로, 그 출력을
-        durable 채널(log entry)에 박제해 다음 세션이 부트스트랩 때 읽게 한다.
-
-        pm_playbook.md 부재(board.py init 미실행 clone)는 치명 아님 — fail-soft 로
-        한 줄 안내만 남기고 trigger handoff 는 계속한다(skeleton 자체는 이미 append).
-        반환 문자열은 skeleton 뒤에 이어 붙일 수 있게 선행 개행을 포함한다.
-        """
-        if not self._pm_playbook_file.exists():
-            return (
-                "\n[인계 프롬프트] ⚠ pm_playbook.md 없음 — 인계 프롬프트 템플릿 추출 skip. "
-                "새 세션에서 pm_playbook.md §부트스트랩 프롬프트를 직접 복사하라.\n"
-            )
-        playbook_text = self._pm_playbook_file.read_text(encoding="utf-8")
-        prompt_output = build_handoff_prompt_output(
-            pm_playbook_text=playbook_text,
-            session_num=_normalize_session_num(session_num),
-            wave_summary=wave_summary,
-            date_str=date_str,
-            worktree_slot=self._worktree_slot,
-        )
-        return "\n" + prompt_output + "\n"
-
-    def run_trigger(
-        self,
-        reason: str = TRIGGER_DEFAULT_REASON,
-        ctx_pct: int | str | None = None,
-        dry_run: bool = False,
-        thread_tail: str | None = None,
-        worktree_slot: str | None = None,
-        branch: str | None = None,
-    ) -> int:
-        """ctx 임계 도달 시 어댑터 훅이 호출하는 비대화 트리거 경로.
-
-        사람 입력(session-num·wave-summary) 없이 자동 채워 권위 handoff 를 박제한다:
-          1. session-num 추론 (pm_state 세션 window 다음 차수).
-          2. wave-summary 자동 생성 (reason·ctx%·board 현황).
-          3. 회귀/git status 측정 스킵 (--no-pytest 동등 — 훅 컨텍스트라 빠른 경로).
-          4. log/current.md 에 trigger handoff entry skeleton append (reason·ctx% 기록·
-             thread_tail 주입 시 "다음 intent" 대화 thread-tail 슬롯 자동 채움) +
-             다음 세션용 인계 프롬프트를 같은 entry 끝에 박제 (D16·durable 채널).
-          5. pm_state sliding window 정리.
-          6. stdout 에 "정지·새 세션 부트스트랩" 안내 + rc 0.
-
-        thread_tail 은 어댑터(훅)가 transcript 에서 추출한 정지 직전 사용자 발화다 —
-        엔진은 transcript 포맷을 보지 않고 받은 string 을 슬롯에 넣기만 한다. None 이면
-        placeholder 유지(하위호환).
-
-        worktree_slot/branch (multi-PM 모드·ADR-0013): handoff entry 에 slot/branch 를 기록해
-        회전 재부착 단서를 남긴다. **ctx-STOP 회전은 release 가 아니다** — 리스는 유지하고
-        다음 bootstrap 이 같은 슬롯을 resume 한다(트리거 경로는 release 를 절대 호출 안 함).
-
-        실제 작업 정지·세션 종료는 어댑터(훅) 책임 — 엔진은 박제+안내까지.
-        반환: 0=성공, 1=실패 (앵커 불일치 등).
-        """
-        date_str = datetime.date.today().isoformat()
-        # per-slot pm_state 경로 해소(T-0166) — run() 동형. 진입부엔 읽기 위치(target)만
-        # 정하고 파일 이동은 안 한다(migrate=False). 실제 legacy→slot 이동은 pm_state 첫
-        # 접촉(아래 session-num 추론 read) 직전에 1회 — dry_run 은 이동 안 함(미리보기).
-        # 명시 주입(테스트)은 재해소 안 함(hermetic 경로 보존).
-        if not self._pm_state_file_explicit:
-            # session-entry 슬롯 해소 + threading (T-0178·codex round2·run() 동형) — bare trigger
-            # 에서 default-1/단독/idle-필터 슬롯을 한 번 해소해 실행 슬롯에 박는다. 멀티-PM 모호면
-            # fail-loud(slot 안 박고 중단). solo·미해소는 현행 폴백 유지(worktree_slot None).
-            resolved_slot, ambiguity = _resolve_session_worktree_slot(worktree_slot)
-            if ambiguity is not None:
-                print(
-                    f"\n[중단] 슬롯 해소 모호 — {ambiguity} "
-                    "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다.)",
-                    file=sys.stderr,
-                )
-                return 1
-            if resolved_slot is not None:
-                worktree_slot = resolved_slot  # entry skeleton·pm_state·migrate 가 같은 슬롯.
-            self._pm_state_file = _pm_state_path(worktree_slot, migrate=False)
-            # 트리거는 빠른 경로(중단 게이트 없음)지만 run() 과 동형으로 — pm_state 첫 접촉
-            # 직전에 이동을 명시 단계로 둔다. dry_run 미리보기는 이동 안 함(부작용 0).
-            if not dry_run:
-                self._pm_state_file = _migrate_legacy_pm_state(worktree_slot)
-        # 회귀 cwd 해소(T-0124)·release 경로용 실행 슬롯 thread (run() 동형). trigger 는 회귀를
-        # skip 하지만 일관성 위해 해소 슬롯을 박는다(downstream 슬롯-인지 경로 정합).
-        self._worktree_slot = worktree_slot
-
-        # ── 1. session-num 자동 추론 ───────────────────────────────────────────
-        # pm_state.md 부재(board.py init 미실행 clone)는 치명 아님 — fail-soft.
-        # 빈 문자열 폴백 → infer_next_session_num("")="?" placeholder → 5단계
-        # isinstance(int) else 분기가 sliding window 자동 skip. log skeleton append 는 진행.
-        if not self._pm_state_file.exists():
-            print(
-                "  ⚠ pm_state.md 없음 — session-num 추론·sliding window skip. "
-                "trigger handoff 계속.",
-                file=sys.stderr,
-            )
-        state_text = self._pm_state_file.read_text(encoding="utf-8") if self._pm_state_file.exists() else ""
-        session_num = infer_next_session_num(state_text)
-
-        # ── 2. wave-summary 자동 생성 ──────────────────────────────────────────
-        wave_summary = build_trigger_wave_summary(reason=reason, ctx_pct=ctx_pct)
-
-        print(
-            f"[pm_handoff --trigger] ctx 임계 자동 핸드오프 "
-            f"(reason={reason}, ctx_pct={ctx_pct}, session→{session_num}차, dry_run={dry_run})"
-        )
-
-        # ── 3. 회귀 측정 스킵 (빠른 경로) ──────────────────────────────────────
-        print("  [trigger] 회귀 측정 skip (훅 컨텍스트 — --no-pytest 동등).")
-
-        # ── 4. log/current.md trigger handoff entry skeleton append ────────────
-        # skeleton 뒤에 다음 세션용 인계 프롬프트를 *박제*한다 — 자동 경로는 모델이
-        # 정지되므로 stdout(휘발)이 아닌 durable 채널(log)이 권위적이다(decision D16).
-        # 대화형 run() 의 [5/7] stdout 와 동일 build_handoff_prompt_output 을 재사용한다.
-        skeleton = build_trigger_handoff_log_skeleton(
-            session_num=_normalize_session_num(session_num),
-            reason=reason,
-            ctx_pct=ctx_pct,
-            date=date_str,
-            thread_tail=thread_tail,
-            worktree_slot=worktree_slot,
-            branch=branch,
-        )
-        prompt_block = self._build_trigger_handoff_prompt_block(
-            session_num=session_num, wave_summary=wave_summary, date_str=date_str,
-        )
-        entry = skeleton + prompt_block
-        if dry_run:
-            print("  [dry-run] log/current.md 에 append 할 trigger entry (skeleton + 인계 프롬프트):")
-            print("  " + entry.replace("\n", "\n  "))
-        else:
-            log_text = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
-            self._log_file.write_text(log_text + "\n" + entry, encoding="utf-8")
-            print(
-                f"  ✓ log/current.md trigger handoff entry skeleton + 인계 프롬프트 박제 "
-                f"(PM {session_num}차)"
-            )
-
-        # ── 5. pm_state sliding window 정리 ────────────────────────────────────
-        # session_num 이 placeholder("?") 면 sliding window 편집은 스킵 (정수 차수만 안전 편집).
-        if isinstance(session_num, int):
-            try:
-                new_state_text = update_session_window(
-                    pm_state_text=state_text,
-                    session_num=_normalize_session_num(session_num),
-                    date_str=date_str,
-                    wave_summary=wave_summary,
-                )
-            except ValueError as exc:
-                print(f"\n[중단] pm_state sliding window: {exc}", file=sys.stderr)
-                return 1
-            if dry_run:
-                print("  [dry-run] pm_state.md 세션 식별 절 갱신 예고 (생략).")
-            else:
-                self._pm_state_file.write_text(new_state_text, encoding="utf-8")
-                print(f"  ✓ pm_state.md 세션 식별 sliding window 정리 완료 (PM {session_num}차 추가)")
-        else:
-            print(
-                f"  ⚠ session-num 추론 불가 (placeholder {session_num!r}) — "
-                f"pm_state sliding window 정리 스킵. PM 이 새 세션에서 직접 채울 것.",
-                file=sys.stdout,
-            )
-
-        # ── 6. 정지·부트스트랩 안내 stdout ─────────────────────────────────────
-        # 안내 stdout 은 휘발되므로 인계 프롬프트 본문을 *여기* 다시 찍지 않는다 —
-        # log handoff entry 에 박제된 위치를 가리킨다(durable 권위 채널·D16).
-        print(
-            "\n=== ctx 정지·핸드오프 박제 완료 ===\n"
-            f"  reason={reason} · ctx={ctx_pct}% · PM {session_num}차 handoff entry 기록.\n"
-            "  → 다음 세션용 인계 프롬프트는 log/current.md 최신 handoff entry 끝에 박제됨.\n"
-            "  → 이 세션을 정지하고 새 PM 세션을 부트스트랩하라:\n"
-            "     1. log/current.md 최신 handoff entry 의 <PM 손> 절을 채운다.\n"
-            "     2. 같은 entry 의 박제된 인계 프롬프트를 새 세션에 붙여넣는다.\n"
-            "     3. CLAUDE.md → pm_state.md → board.py list 순으로 새 세션 부트스트랩.\n"
-            "  (실제 세션 종료는 어댑터 훅 책임 — 엔진은 권위 handoff 박제까지.)"
-        )
-        if dry_run:
-            print("\n[dry-run] 완료 — 실제 파일 편집은 실행하지 않았다.")
-        return 0
-
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pm_handoff.py",
-        description="PM 핸드오프 7단계 자동화 헬퍼 (+ ctx 정지 비대화 트리거).",
+        description="PM 핸드오프 7단계 자동화 헬퍼.",
     )
-    # 대화형 경로 — --trigger 없을 때 필수 (검증은 main 에서, 트리거와 상호배제 위해
-    # argparse required 대신 수동 검증).
+    # 대화형 경로 — session-num·wave-summary 는 필수 (검증은 main 에서 수동).
     parser.add_argument(
         "--session-num",
         metavar="N",
-        help="떠나는 PM 세션 차수 (예: 28). 대화형 경로 필수 (--trigger 면 자동 추론).",
+        help="떠나는 PM 세션 차수 (예: 28). 필수.",
     )
     parser.add_argument(
         "--wave-summary",
         metavar="요약",
-        help="떠나는 PM 세션의 wave 종합 1~2 줄 요약 (사람 작성). 대화형 필수 (--trigger 면 자동 생성).",
-    )
-    parser.add_argument(
-        "--trigger",
-        action="store_true",
-        help="비대화 트리거 모드 — 사람 입력 없이 ctx 임계 자동 핸드오프 박제 (어댑터 훅용).",
-    )
-    parser.add_argument(
-        "--reason",
-        metavar="사유",
-        default=TRIGGER_DEFAULT_REASON,
-        help=f"트리거 사유 (--trigger 전용·기본 {TRIGGER_DEFAULT_REASON!r}).",
-    )
-    parser.add_argument(
-        "--ctx-pct",
-        metavar="N",
-        type=int,
-        default=None,
-        help="잔여 컨텍스트 %% (--trigger 전용·handoff entry 에 기록).",
-    )
-    parser.add_argument(
-        "--thread-tail",
-        metavar="텍스트",
-        default=None,
-        help=(
-            "정지 직전 사용자 발화 (--trigger 전용·옵션). 어댑터 훅이 transcript 에서 "
-            "추출해 전달하면 handoff entry '다음 intent' 의 대화 thread-tail 슬롯에 "
-            "삽입한다. 미전달 시 placeholder 유지(하위호환)."
-        ),
+        help="떠나는 PM 세션의 wave 종합 1~2 줄 요약 (사람 작성). 필수.",
     )
     # ── multi-PM 모드 (ADR-0013) — 솔로 미지정이면 미사용·현행 보존 ──
     parser.add_argument(
@@ -1927,22 +1608,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.branch and not args.worktree_slot:
         parser.error("--branch 는 --worktree-slot 과 함께 써야 한다 (multi-PM 모드 회전 재부착 단서·ADR-0013).")
 
-    # --done 은 대화형(--trigger 아님) 경로 전용 — ctx-STOP 회전은 release 아님(ADR-0013).
-    if args.done and args.trigger:
-        parser.error("--done 은 --trigger 와 함께 쓸 수 없다 (ctx-STOP 회전은 release 아님·ADR-0013).")
-
-    if args.trigger:
-        # 비대화 트리거 — session-num·wave-summary 무시(자동 채움). 슬롯/브랜치는
-        # handoff entry 기록만 (release 안 함·리스 유지·다음 bootstrap 이 resume).
-        return handoff.run_trigger(
-            reason=args.reason,
-            ctx_pct=args.ctx_pct,
-            dry_run=args.dry_run,
-            thread_tail=args.thread_tail,
-            worktree_slot=args.worktree_slot,
-            branch=args.branch,
-        )
-
     # 대화형 경로 — session-num·wave-summary 수동 필수.
     missing = [
         flag
@@ -1950,7 +1615,7 @@ def main(argv: list[str] | None = None) -> int:
         if not val
     ]
     if missing:
-        parser.error(f"대화형 경로엔 {', '.join(missing)} 가 필수다 (또는 --trigger 비대화 모드 사용).")
+        parser.error(f"{', '.join(missing)} 가 필수다.")
 
     return handoff.run(
         session_num=args.session_num,

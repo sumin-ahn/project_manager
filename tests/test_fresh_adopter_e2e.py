@@ -16,6 +16,7 @@ push(pre-push 훅)에 자동 포함된다.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -103,6 +104,78 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested"
     )
     assert done.returncode == 0, f"{harness} `board.py complete {tid}` 실패: {done.stderr}"
+
+
+# ── 멀티-유저 훅 경로 portability 가드 (T-0191 · v1.0.x 운영버그 #5) ──────────────
+# import 가 {{PROJECT_ROOT}} 를 절대경로로 박으면 git-공유 시 다른 머신에서 훅이 깨진다
+# (alice 절대경로 커밋 → bob pull → 그 경로 없음 → 훅 무음 실패·ctx-stop 안전게이트 死).
+# settings.json 훅/PreCompact 은 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR}, run_tests_hook.sh 는
+# self-resolve 라 *렌더된* 결과에 절대경로/{{PROJECT_ROOT}} 가 남으면 안 된다(fresh-adopter 게이트).
+
+def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
+    """claude import 후 settings.json/run_tests_hook.sh 에 절대경로·{{PROJECT_ROOT}} 잔존 0."""
+    dest = tmp_path / "adopter-portable"
+    rc = pm_import.main(
+        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
+    )
+    assert rc == 0, f"import 실패 (rc={rc})"
+    dest_abs = str(dest.resolve())
+
+    settings_text = (dest / ".claude" / "settings.json").read_text(encoding="utf-8")
+    run_tests_text = (dest / ".claude" / "run_tests_hook.sh").read_text(encoding="utf-8")
+
+    for fname, text in (("settings.json", settings_text), ("run_tests_hook.sh", run_tests_text)):
+        assert "{{PROJECT_ROOT}}" not in text, (
+            f"{fname} 에 미치환 {{{{PROJECT_ROOT}}}} 잔존 — portable 형이 아님")
+        assert dest_abs not in text, (
+            f"{fname} 에 import 절대경로({dest_abs}) 박제 — git 공유 시 다른 머신서 훅 깨짐. "
+            "settings.json=$CLAUDE_PROJECT_DIR / run_tests=self-resolve 를 써라.")
+
+    # settings.json 훅 명령(hooks.*)은 런타임 머신별 해소를 쓴다 (절대경로 미박제).
+    data = json.loads(settings_text)
+    hook_cmds = [
+        h.get("command", "")
+        for event_hooks in data.get("hooks", {}).values()
+        for block in event_hooks
+        for h in block.get("hooks", [])
+    ]
+    assert hook_cmds, "settings.json 에 훅 명령 없음"
+    for cmd in hook_cmds:
+        assert "CLAUDE_PROJECT_DIR" in cmd or cmd.startswith("./"), (
+            f"훅 명령이 머신별 해소(${{CLAUDE_PROJECT_DIR}})·상대경로 미사용: {cmd!r}")
+
+    # run_tests_hook.sh 는 치환 토큰 0 (완전 self-contained·모든 머신 byte-identical).
+    assert "{{" not in run_tests_text, "run_tests_hook.sh 에 치환 토큰 잔존 (self-resolve 아님)"
+
+
+# ── adopter 출하 위생: 프레임워크-내부 최상위 README 미출하 (T-0192 · v1.0.x 운영버그 #6) ──
+# 템플릿 트리 최상위 README.md 는 "어댑터 타깃" 프레임워크-내부 문서(`../../README.md`·
+# `../opencode/README.md` 상대링크)라 adopter 트리에선 dangling. adopter 로 복사되면 안 된다.
+# 하위 `.project_manager/wiki/*/README.md`(wiki 구조 안내)는 adopter-facing 이라 유지.
+
+@pytest.mark.parametrize("harness", ["claude", "opencode", "both"])
+def test_fresh_adopter_excludes_framework_internal_readme(pm_import, tmp_path, harness):
+    """import 후 최상위 README.md 미출하 · 하위 wiki README 유지 · dangling 프레임워크 링크 0."""
+    dest = tmp_path / f"adopter-readme-{harness}"
+    rc = pm_import.main(
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    )
+    assert rc == 0, f"{harness} import 실패 (rc={rc})"
+
+    # 최상위 README.md 는 출하 안 됨 (프레임워크-내부 어댑터-타깃 doc·dangling 링크 포함).
+    assert not (dest / "README.md").exists(), (
+        f"{harness}: 프레임워크-내부 최상위 README.md 가 adopter 로 출하됨 "
+        "(COPY_EXCLUDE_RELPATHS 로 제외해야 함)")
+
+    # 하위 wiki 구조 안내 README 는 유지 (adopter-facing·정확 relpath 만 제외).
+    assert (dest / ".project_manager" / "wiki" / "tickets" / "README.md").exists(), (
+        f"{harness}: wiki/tickets/README.md 가 실수로 제외됨 (최상위만 제외해야 함)")
+
+    # adopter 트리 어디에도 프레임워크-상대(sibling 트리) dangling 링크가 남지 않는다.
+    for md in dest.rglob("*.md"):
+        text = md.read_text(encoding="utf-8")
+        assert "../opencode/README.md" not in text and "../claude_code/README.md" not in text, (
+            f"{harness}: {md.relative_to(dest)} 에 프레임워크-상대 dangling 링크 잔존")
 
 
 # ── 출하 @render 스킬/command materialize 가드 (T-0142/T-0143 — 신규 스킬 회귀) ──────

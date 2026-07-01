@@ -4,8 +4,8 @@ PM 세션 라이프사이클 자동화의 다른 한 축 — pm_state.md 세션 
 편집(`update_session_window`)과 그 하부 절 추출(`_extract_session_section`)·인계 프롬프트
 템플릿 추출(`extract_handoff_prompt_template`)을 직접 검증한다.
 
-기존 `test_handoff_trigger.py` 는 run_trigger 경로에서 이들을 *간접* 호출하고
-`infer_next_session_num`·실 pm_playbook lean 검증을 덮는다 — 여기선 함수를 직접 호출하는
+`test_handoff_trigger.py` 는 `infer_next_session_num`·대화형 skeleton·실 pm_playbook lean
+검증을 덮는다 — 여기선 함수를 직접 호출하는
 *절 경계·윈도 경계·앵커 불일치 ValueError·멱등·프롬프트 부재→None* edge 에 집중한다
 ([[T-0026]] 규율 — non-vacuous·실제 동작 단언). 모두 텍스트 인자라 실 wiki 미접촉.
 
@@ -314,7 +314,7 @@ def test_run_passes_worktree_slot_to_prompt(hf, tmp_path, capsys):
     """run() 이 self._worktree_slot 을 build_handoff_prompt_output 에 전달한다 (T-0185·호출부).
 
     명시 --worktree-slot=work/repoA_2 를 run 에 주면 [5/7] 복사 블록에 slot-qualified 트리거가
-    나온다 — 두 호출부(run·run_trigger 중 run) 배선을 통합으로 가드.
+    나온다 — run() 호출부 배선을 가드.
     """
     pm_state = tmp_path / "pm_state.md"
     pm_state.write_text(
@@ -343,29 +343,6 @@ def test_run_passes_worktree_slot_to_prompt(hf, tmp_path, capsys):
     assert "/pm-bootstrap repoA --slot 2" in out
 
 
-def test_run_trigger_passes_worktree_slot_to_prompt(hf, tmp_path):
-    """_build_trigger_handoff_prompt_block(run_trigger 경로)이 self._worktree_slot 을 전달한다 (T-0185).
-
-    trigger 는 정지되어 stdout 이 휘발하므로 프롬프트를 log entry 에 박제한다 — 그 박제 블록
-    빌더가 slot 을 프롬프트에 넘기는지 단위로 가드.
-    """
-    playbook = tmp_path / "pm_playbook.md"
-    playbook.write_text(_TRIGGER_PLAYBOOK, encoding="utf-8")
-
-    handoff = hf.PmHandoff(
-        run_pytest_fn=lambda: (0, "1 passed\n"),
-        run_git_fn=lambda args: (0, ""),
-        log_file=tmp_path / "current.md",
-        pm_playbook_file=playbook,
-        pm_state_file=tmp_path / "pm_state.md",
-    )
-    handoff._worktree_slot = "work/repoA_2"
-    block = handoff._build_trigger_handoff_prompt_block(
-        session_num=7, wave_summary="요약", date_str="2026-06-28"
-    )
-    assert "/pm-bootstrap repoA --slot 2" in block
-
-
 # ── 출하 pm_playbook 정합: 프롬프트가 트리거로 축소됐다 (T-0180·feature-ship 가드) ──
 
 def test_shipped_pm_playbook_prompt_is_trigger_only():
@@ -380,11 +357,21 @@ def test_shipped_pm_playbook_prompt_is_trigger_only():
     ).read_text(encoding="utf-8")
     template = hf.extract_handoff_prompt_template(playbook_text)
     assert template is not None, "출하 pm_playbook 에서 프롬프트 템플릿 추출 실패"
-    # 트리거 유지: 역할 framing + /pm-bootstrap.
-    assert "PM" in template and "/pm-bootstrap" in template
+    # bare(T-0193): /pm-bootstrap 커맨드만. 역할문구(2인칭 "당신은")·위임 framing 은 폐기 —
+    # pm_role.md(bootstrap 필독)·CLAUDE.md 가 auto-load 로 담당. who-pastes 혼동의 근원 제거.
+    assert "/pm-bootstrap" in template
+    assert "당신은" not in template, "2인칭 역할문구 잔존 — bare(T-0193)와 모순"
+    assert "위임" not in template, "역할 framing 잔존 — pm_role/CLAUDE.md 로 이관됐어야 함"
     # 폐기: 손-채움 인계 블록(읽기 범위 손-기입 슬롯).
     assert "<핵심 인계 사항>" not in template
     assert "<- 읽기 범위" not in template
+    # 폐기: 부트스트랩이 이미 하는 일(차수 announce·dump·인계 surface)과 4단계 보고 지침의
+    # *재기술 사족*. 이건 /pm-bootstrap CLI(T-0179 dump)·pm-bootstrap skill·pm_role §첫-turn
+    # 권장 액션이 단일 진실로 담당한다 — 프롬프트에 중복 기술하면 다음 PM 이 부트스트랩 실패
+    # (예: board lint abort)에도 그 서술대로 수동 재구성·과잉 보고하게 유도한다(트리거만·T-0180).
+    assert "차수 announce" not in template
+    assert "자동 surface" not in template
+    assert "단계로 보고" not in template
 
 
 def test_shipped_handoff_procedure_docs_have_no_handfill_instruction():
@@ -472,13 +459,6 @@ def test_handoff_skeleton_no_double_cha(hf, raw):
     head = hf.build_handoff_log_skeleton(raw, date="2026-06-19").splitlines()[0]
     assert head == "## [2026-06-19] handoff | PM 19차 → 다음 PM 세션"
     assert "차차" not in head
-
-
-@pytest.mark.parametrize("raw", ["19", "19차", "19차차"])
-def test_trigger_skeleton_no_double_cha(hf, raw):
-    head = hf.build_trigger_handoff_log_skeleton(
-        raw, reason="ctx", ctx_pct=8, date="2026-06-19").splitlines()[0]
-    assert "PM 19차 →" in head and "차차" not in head
 
 
 @pytest.mark.parametrize("raw", ["20", "20차", "20차차"])

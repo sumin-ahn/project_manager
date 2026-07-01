@@ -160,6 +160,13 @@ SED_EXCLUDE_RELPATHS = frozenset({
 #          .git 을 텍스트 read 하지 않도록 명시 제외 — 낭비 방지·결정론).
 COPY_EXCLUDE_DIR_NAMES = frozenset({"node_modules", "__pycache__", ".git"})
 
+# 복사 제외 파일 (정확 dst relpath) — adopter 에게 출하하지 않을 프레임워크-repo 내부 문서.
+#   README.md(최상위) — 템플릿 트리의 "어댑터 타깃" 설명서다(프레임워크 상대링크 `../../README.md`·
+#   `../opencode/README.md` 를 담아 adopter 트리에선 dangling·오해 소지). 채택자는 자기 프로젝트
+#   README 를 쓴다 → 프레임워크-내부 doc 를 adopter README 로 박제하지 않는다(both 도 이 충돌 소거).
+#   하위 `.project_manager/wiki/*/README.md`(wiki 구조 안내)는 유지 — 정확 relpath `README.md` 만 제외.
+COPY_EXCLUDE_RELPATHS = frozenset({"README.md"})
+
 # --into 백업 중앙화 디렉토리 (T-0034). 충돌 파일별 형제 `*.backup.<DATE>` 를 트리 전역에
 # 흩뿌리는 대신, 무백업 덮기 불가(미추적·dirty·비-git)인 파일만 단일 디렉토리
 # `<dest>/.pm_import_backups/<DATE>/` 에 relpath 미러링으로 모은다. git 이 추적 중이고
@@ -730,6 +737,8 @@ def _iter_source_files(template_root: Path, weight: str = "full"):
             part in COPY_EXCLUDE_DIR_NAMES
             for part in path.relative_to(template_root).parts
         )
+        # 프레임워크-내부 doc(최상위 README.md 등)은 adopter 로 출하하지 않는다.
+        and path.relative_to(template_root).as_posix() not in COPY_EXCLUDE_RELPATHS
     ]
     # lite 모드: 이 트리에서 lite 가 대체할 full 진입 relpath 집합을 먼저 모은다.
     lite_overridden: set[Path] = set()

@@ -12,7 +12,6 @@ push 직전(핸드오프) 1회 출하 테스트 step 을 검증한다 — **미p
     해소불가·diff실패·예외→ambiguous(has_unknown).
   - run() 통합: 발동(green→계속) / skip / ambiguous→surface(비실행) / abort-on-red(rc 1).
   - escape: --shipping-test 강제발동 · --no-shipping-test 강제skip (분류 무시).
-  - run_trigger 제외 (출하 테스트 절대 미호출).
   - sensitivity: 가드 무력화(red 를 무시) 시 테스트가 실패하는지(non-vacuous).
 
 도구는 패키지가 아니므로 importlib 동적 로드 (test_handoff_trigger 관용구).
@@ -539,30 +538,6 @@ def test_run_skips_shipping_test_when_machine_regression_red(hf, tmp_path):
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 1
     assert gate.calls == []  # 기계회귀에서 먼저 중단.
-
-
-# ── run_trigger 제외 (ctx-STOP·자동정지·LLM 못 띄움) ──────────────────────────
-
-
-def test_run_trigger_never_fires_shipping_test(hf, tmp_path):
-    """run_trigger(ctx-STOP) 는 출하 테스트를 절대 호출하지 않는다."""
-    log_file = tmp_path / "current.md"
-    playbook_file = tmp_path / "pm_playbook.md"
-    missing_state = tmp_path / "nope" / "pm_state.md"
-    log_file.write_text("# log\n", encoding="utf-8")
-    playbook_file.write_text("# pm_playbook\n", encoding="utf-8")
-    gate = _shipping_test_recorder(1, "1 failed\n")  # 호출되면 안 됨.
-    inst = hf.PmHandoff(
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("trigger 가 pytest 호출")),
-        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("trigger 가 git 호출")),
-        run_shipping_test_fn=gate,
-        log_file=log_file,
-        pm_playbook_file=playbook_file,
-        pm_state_file=missing_state,
-    )
-    rc = inst.run_trigger(reason="ctx-stop", ctx_pct=8)
-    assert rc == 0
-    assert gate.calls == []  # 자동정지 경로는 출하 테스트 제외.
 
 
 # ── sensitivity: 가드 무력화 시 테스트가 실패하는가 (non-vacuous) ──────────────

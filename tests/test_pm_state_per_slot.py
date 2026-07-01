@@ -528,37 +528,6 @@ def test_run_dry_run_does_not_migrate_legacy(hf):
     assert not _slot_path(hf).exists()
 
 
-def test_run_trigger_writes_to_per_slot_path(hf):
-    """run_trigger() 프로덕션 경로 — 단일 self-host → per-slot pm_state read(session 추론)+write."""
-    inst = _make_handoff_production(hf, slot_seeded=True)
-    rc = inst.run_trigger(reason="ctx-stop", ctx_pct=90, dry_run=False)
-    assert rc == 0
-    sp = _slot_path(hf)
-    # 추론 차수(기존 최고 3차 + 1 = 4차)가 per-slot pm_state 에 sliding window 로 써짐.
-    assert "**4차**" in sp.read_text(encoding="utf-8")
-    assert not _legacy(hf).exists()
-
-
-def test_run_trigger_solo_writes_legacy(hf):
-    """run_trigger() 솔로(슬롯 미해소) → legacy `wiki/pm_state.md`(현행 무변경)."""
-    tmp = hf._tmp
-    log_file = tmp / "log.md"; log_file.write_text("# log\n", encoding="utf-8")
-    playbook_file = tmp / "pb.md"; playbook_file.write_text("# pb\n", encoding="utf-8")
-    legacy = _legacy(hf)
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text(_SESSION_SECTION, encoding="utf-8")
-
-    inst = hf.PmHandoff(
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip")),
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file, pm_playbook_file=playbook_file,
-    )
-    rc = inst.run_trigger(reason="ctx-stop", ctx_pct=90, dry_run=False)
-    assert rc == 0
-    assert "**4차**" in legacy.read_text(encoding="utf-8")
-    assert not _slot_path(hf).exists()
-
-
 # ══════════════════════════════════════════════════════════════════════════
 # 트랜잭션 계약 — 중단 게이트(회귀·출하) red → legacy 미이동 (codex must-fix)
 # ══════════════════════════════════════════════════════════════════════════
@@ -634,18 +603,3 @@ def test_run_gates_green_migrates_then_writes_per_slot(hf):
     assert not legacy.exists(), "게이트 green → legacy 는 slot 으로 이동(제거)."
 
 
-def test_run_trigger_gates_absent_migrates(hf):
-    """run_trigger() — 빠른 경로(게이트 없음)도 pm_state 첫 접촉 직전 이동(run 동형 가드).
-
-    트리거는 중단 게이트가 없지만 진입부 migrate=False → read 직전 _migrate_legacy_pm_state
-    1회로 run() 과 동형. legacy → slot 이동 후 slot 에 sliding window 기록되는지 단언.
-    """
-    inst = _make_handoff_production(hf, with_legacy=True)
-    legacy = _legacy(hf)
-    assert legacy.exists()
-
-    rc = inst.run_trigger(reason="ctx-stop", ctx_pct=90, dry_run=False)
-    assert rc == 0
-    sp = _slot_path(hf)
-    assert sp.exists() and "**4차**" in sp.read_text(encoding="utf-8")
-    assert not legacy.exists(), "트리거도 legacy→slot 이동 후 원본 제거."

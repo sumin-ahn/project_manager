@@ -53,7 +53,7 @@ def _make_wiki_tickets(root: Path) -> Path:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# pm_handoff — board_status_counts(_tickets_dir 추종) · _regression_cwd(_areas_file 추종)
+# pm_handoff — _tickets_dir(board_root 추종) · _areas_file / _regression_cwd(_areas_file 추종)
 # ════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture
@@ -86,42 +86,6 @@ def test_handoff_areas_file_present_moves_inside_board(handoff):
     """board/ 존재 → _areas_file() == board/areas.md (submodule 안·조건분기·legacy 와 다름)."""
     _make_board_dir(handoff._tmp)
     assert handoff._areas_file() == handoff._tmp / ".project_manager" / "board" / "areas.md"
-
-
-def test_handoff_board_status_counts_reads_board_not_stale_wiki(handoff):
-    """board_status_counts() 가 board/tickets 의 done 을 센다 — stale wiki/tickets 를 안 봄.
-
-    *수정 전*: 기본 인자가 TICKETS_DIR(wiki) 라 board done 을 0 으로 셌다(stale→fail).
-    board/done 에 1 ticket, wiki/done(stale)에 99 ticket → board 를 봐야 done==1."""
-    board_dir = _make_board_dir(handoff._tmp)
-    wiki_tk = _make_wiki_tickets(handoff._tmp)
-    # board/ 가 진실 — done 1개. wiki/(stale)엔 99개 둬서 잘못 읽으면 99 로 드러나게.
-    (board_dir / "tickets" / "done" / "T-0001-real.md").write_text("# real\n", encoding="utf-8")
-    for i in range(99):
-        (wiki_tk / "done" / f"T-9{i:03d}-stale.md").write_text("# stale\n", encoding="utf-8")
-    counts = handoff.board_status_counts()
-    assert counts["done"] == 1, \
-        f"board done 을 board/tickets(진실)에서 안 셈 — stale wiki/tickets 봄: {counts}"
-
-
-def test_handoff_board_status_counts_legacy_reads_wiki(handoff):
-    """legacy(board/ 부재) → board_status_counts() 가 wiki/tickets 를 센다(현행 보존)."""
-    wiki_tk = _make_wiki_tickets(handoff._tmp)
-    (wiki_tk / "done" / "T-0001-x.md").write_text("# x\n", encoding="utf-8")
-    (wiki_tk / "open" / "T-0002-y.md").write_text("# y\n", encoding="utf-8")
-    counts = handoff.board_status_counts()
-    assert counts["done"] == 1 and counts["open"] == 1, \
-        f"legacy 에서 wiki/tickets 카운트 회귀: {counts}"
-
-
-def test_handoff_board_status_counts_explicit_dir_honored(handoff, tmp_path):
-    """명시 tickets_dir 인자는 그대로 존중(hermetic 테스트 seam — 자동해소 우회)."""
-    explicit = tmp_path / "explicit"
-    for status in ("open", "claimed", "blocked", "done"):
-        (explicit / status).mkdir(parents=True, exist_ok=True)
-    (explicit / "done" / "T-0001-e.md").write_text("# e\n", encoding="utf-8")
-    counts = handoff.board_status_counts(explicit)
-    assert counts["done"] == 1
 
 
 # ════════════════════════════════════════════════════════════════════════

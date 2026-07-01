@@ -4,8 +4,9 @@
 동기화된다(pm_update 전파). 드리프트 시 채택 프로젝트가 옛/다른 동작을 받는다
 ([[verify-engine-template-propagation]]). v2 머지 전 codex 제안 — 핵심 어댑터 산출물의
 양 트리 parity 를 자동 검증한다:
-  - `settings.json`: 양쪽에 PreCompact 키 존재 + 동일 훅 명령(루트에 ctx 훅 없는 차이는 허용).
-  - `precompact_capture_hook.sh`: byte-identical.
+  - `settings.json`(ADR-0038 D3 비대칭): root=PreCompact breadcrumb(auto-compact ON) /
+    template=PreCompact 없음 + autoCompactEnabled:false(auto-compact OFF·hard-stop 단일 게이트).
+  - `precompact_capture_hook.sh`: root 전용(template 엔 없음) — byte-identical 대상 아님.
   - `skills/pm-handoff/SKILL.md`·`skills/pm-dev-delegate/SKILL.md`: byte-identical.
   - `agents/*.md`: byte-identical(4파일).
 
@@ -25,7 +26,6 @@ TEMPLATE_CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 
 # 양 트리에서 byte-identical 이어야 하는 어댑터 산출물 (의도된 차이 없음).
 IDENTICAL_RELPATHS = [
-    "precompact_capture_hook.sh",
     "skills/pm-handoff/SKILL.md",
     "skills/pm-dev-delegate/SKILL.md",
     "skills/pm-wave-claim/SKILL.md",
@@ -51,33 +51,32 @@ def test_settings_present_both_trees():
         json.loads(path.read_text(encoding="utf-8"))  # 파싱 실패 시 raise
 
 
-def test_settings_precompact_propagated_both_trees():
-    """PreCompact 훅이 양 트리 settings 에 존재(채택 프로젝트 폴백 보장·codex must-fix).
+def test_precompact_asymmetric_root_breadcrumb_template_autocompact_off():
+    """ADR-0038 D3 — precompact 는 이제 **원리적 비대칭**(압축 가능한 곳에만 breadcrumb).
 
-    루트에 ctx 훅이 없는 차이는 허용하되 PreCompact 전파는 강제 — precompact 훅이
-    템플릿에만 있고 루트엔 없으면(또는 반대) 전파 드리프트.
+    - root(도그푸딩·ctx hard-stop 훅 부재·auto-compact **ON**): PreCompact breadcrumb 존재
+      → `precompact_capture_hook.sh` 를 가리킴 (압축이 수동 핸드오프를 선점할 수 있는 유일한
+      net-less tree 라 1줄 신호 보존).
+    - template(auto-compact **OFF**·hard-stop 단일 게이트): PreCompact **없음** +
+      `autoCompactEnabled:false` + env `DISABLE_AUTO_COMPACT` (압축이 hard-stop 을 선점 못 하니
+      백스톱 불요). ctx-훅-템플릿-전용의 거울상 = precompact-root-전용.
     """
-    root_block = _precompact_block(ROOT_CLAUDE / "settings.json")
-    tmpl_block = _precompact_block(TEMPLATE_CLAUDE / "settings.json")
-    assert root_block, "root settings.json 에 PreCompact 훅 누락 (전파 드리프트)"
-    assert tmpl_block, "templates settings.json 에 PreCompact 훅 누락 (전파 드리프트)"
-
-
-def test_settings_precompact_hook_command_identical():
-    """양 트리 PreCompact 블록이 동일한 precompact 훅을 같은 명령으로 가리킨다.
-
-    의도된 settings 차이(ctx 훅)는 허용하지만 PreCompact 블록 자체는 동일해야 한다 —
-    같은 훅·타임아웃을 채택 프로젝트가 받게.
-    """
-    root_block = _precompact_block(ROOT_CLAUDE / "settings.json")
-    tmpl_block = _precompact_block(TEMPLATE_CLAUDE / "settings.json")
-    assert root_block == tmpl_block, (
-        f"PreCompact 블록이 root↔templates 불일치:\nroot={root_block}\ntmpl={tmpl_block}"
+    root = json.loads((ROOT_CLAUDE / "settings.json").read_text(encoding="utf-8"))
+    tmpl = json.loads((TEMPLATE_CLAUDE / "settings.json").read_text(encoding="utf-8"))
+    # root: PreCompact breadcrumb 존재 + auto-compact 유지(비활성 아님).
+    root_block = root.get("hooks", {}).get("PreCompact")
+    assert root_block, "root settings.json 에 PreCompact breadcrumb 누락 (auto-compact ON tree)"
+    assert "precompact_capture_hook.sh" in json.dumps(root_block), (
+        f"root PreCompact 가 precompact 훅을 안 가리킴: {root_block}"
     )
-    # 블록이 실제로 precompact 훅을 가리키는지(빈 가드 무력화 방지).
-    flat = json.dumps(root_block)
-    assert "precompact_capture_hook.sh" in flat, (
-        f"PreCompact 블록이 precompact 훅을 안 가리킴: {root_block}"
+    assert root.get("autoCompactEnabled") is not False, "root 는 auto-compact 유지여야 함"
+    # template: PreCompact 제거 + auto-compact 이중 비활성.
+    assert tmpl.get("hooks", {}).get("PreCompact") is None, (
+        "template settings.json 에 PreCompact 잔존 — auto-compact off 라 제거됐어야 함 (ADR-0038 D3)"
+    )
+    assert tmpl.get("autoCompactEnabled") is False, "template autoCompactEnabled:false 누락"
+    assert tmpl.get("env", {}).get("DISABLE_AUTO_COMPACT") == "1", (
+        "template env DISABLE_AUTO_COMPACT 누락 (이중 kill-switch)"
     )
 
 

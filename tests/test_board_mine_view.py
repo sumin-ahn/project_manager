@@ -99,7 +99,8 @@ def _seed(board, tid, status, *, claimed_by=None, title="t"):
 def _list_ids(board, capsys, **flags) -> list[str]:
     """cmd_list 를 돌려 출력에서 ticket ID 목록을 추출한다."""
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
-                              mine=flags.get("mine", False))
+                              mine=flags.get("mine", False),
+                              session=flags.get("session"), slot=flags.get("slot"))
     rc = board.cmd_list(args)
     assert rc == 0
     out = capsys.readouterr().out
@@ -386,12 +387,16 @@ def test_mine_area_open_only_for_open_status(board, capsys):
 # ════════════════════════════════════════════════════════════════════════
 
 def test_mine_includes_my_claim_any_status(board, capsys):
-    """(b) claimed_by.user==나 면 상태 무관(claimed/done)으로 포함 — 연속성."""
+    """(b) claimed_by.user==나 면 상태 무관(claimed/done)으로 포함 — 연속성.
+
+    기본 status 뷰(T-0197)는 활성만(done 접기) — done 클레임까지 보려면
+    `--status all` 을 명시한다(status 셀렉터는 `--mine` 과 직교하는 별도 축).
+    """
     _write_conf(board, user="alice", session="pm-1")
     _write_areas(board)
     _seed(board, "T-ACC-005", "claimed", claimed_by="alice/pm-1")  # 남의 area·내 claim
     _seed(board, "T-ACC-006", "done", claimed_by="alice/pm-1")
-    ids = _list_ids(board, capsys, mine=True)
+    ids = _list_ids(board, capsys, mine=True, status="all")
     assert set(ids) == {"T-ACC-005", "T-ACC-006"}
 
 
@@ -627,7 +632,7 @@ def test_mine_all_area_owner_empty_degrades_to_all_open(board, capsys):
 # ════════════════════════════════════════════════════════════════════════
 
 def test_list_without_mine_unchanged(board, capsys):
-    """무플래그 list 는 전체(모든 status·area)를 그대로 — 필터 미적용."""
+    """무플래그 list 는 area 필터 미적용 — status 는 기본뷰(활성만·done 접기·T-0197)."""
     _write_conf(board, user="alice", session="pm-1")
     _write_areas(board)
     _seed(board, "T-PAY-001", "open")
@@ -635,7 +640,17 @@ def test_list_without_mine_unchanged(board, capsys):
     _seed(board, "T-ACC-005", "claimed", claimed_by="bob/pm-2")
     _seed(board, "T-ACC-006", "done", claimed_by="bob/pm-2")
     ids = _list_ids(board, capsys, mine=False)
-    assert set(ids) == {"T-PAY-001", "T-ACC-001", "T-ACC-005", "T-ACC-006"}
+    assert set(ids) == {"T-PAY-001", "T-ACC-001", "T-ACC-005"}
+
+
+def test_list_without_mine_status_all_includes_done(board, capsys):
+    """무플래그 list `--status all` 은 done 포함 전체(T-0197 — 기존 무변경 동작은 all 로 이관)."""
+    _write_conf(board, user="alice", session="pm-1")
+    _write_areas(board)
+    _seed(board, "T-PAY-001", "open")
+    _seed(board, "T-ACC-006", "done", claimed_by="bob/pm-2")
+    ids = _list_ids(board, capsys, mine=False, status="all")
+    assert set(ids) == {"T-PAY-001", "T-ACC-006"}
 
 
 def test_list_without_mine_does_not_resolve_identity(board, capsys, monkeypatch):

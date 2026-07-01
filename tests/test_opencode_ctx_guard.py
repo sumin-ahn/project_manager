@@ -1,15 +1,16 @@
-"""opencode 어댑터 ctx 정지-핸드오프 plugin 정합 테스트 (T-0014).
+"""opencode 어댑터 ctx 정지-핸드오프 plugin 정합 테스트 (T-0014·ADR-0038 D2).
 
 opencode plugin(`.opencode/plugins/ctx-guard.js`)이 컨텍스트 토큰을 추적해 임계 도달 시
-정지(permission deny)·자동 handoff(엔진 T-0013 트리거)하고, lossy 자동 컴팩션을
-차단(`compaction.auto:false`)하는 것을 두 층위에서 단언한다:
+하드 정지(새 작업 도구만 차단·진행 중 핸드오프 도구는 예외 통과)하고 STOP marker 를 직접
+박제(relay 회전 신호·no pm_handoff --trigger·ADR-0038 D2/D4)하며, lossy 자동 컴팩션을
+차단(`compaction.auto:false`)하는 것을 여러 층위에서 단언한다:
 
   1. config 정합  — opencode.jsonc 에 `compaction.auto:false` (T-0012 L1).
   2. plugin 정합  — plugin 파일 존재 + 필수 호출/구조 정적 검증:
-       event 토큰추적 · permission.ask deny · tool.execute.before throw ·
-       pm_handoff --trigger shell-out · 임계값(ctx_*_pct / local.conf) 참조 · 멱등 가드.
-  3. 순수 로직   — node 가 있으면 plugin 의 결정 로직(임계 분기·sanity 폴백·토큰누적)을
-       이벤트/opencode 런타임 없이 자가검증. node 부재 시 skip (정적 검증만으로도 게이트).
+       event 토큰추적 · permission.ask deny(새 작업만) · tool.execute.before throw(allow-list) ·
+       임계값(ctx_*_pct / local.conf) 참조 · 멱등 가드 · STOP marker 직접 박제.
+  3. 순수 로직   — node 가 있으면 plugin 의 결정 로직(임계 분기·sanity 폴백·토큰누적·핸드오프
+       allow-list)을 이벤트/opencode 런타임 없이 자가검증. node 부재 시 skip (정적 검증만으로도 게이트).
 
 JS 로직 실동작(실제 deny 강제·세션 정지)은 비결정적(T-0011 메모) → opencode Pro 환경
 수동 검증. 여기선 결정적 정적/순수 검증만. stdlib(+ 선택적 node)만 사용 — opencode CLI 미실행.
@@ -112,15 +113,6 @@ def test_plugin_has_tool_execute_guard():
     assert "tool.execute.before" in src, "보조 정지(tool.execute.before) 없음"
 
 
-def test_plugin_triggers_pm_handoff():
-    """정지 시 엔진 T-0013 핸드오프를 shell-out 트리거한다 (pm_handoff --trigger)."""
-    src = _plugin_src()
-    assert "pm_handoff.py" in src, "pm_handoff.py shell-out 없음"
-    assert "--trigger" in src, "pm_handoff --trigger 플래그 없음"
-    assert "--reason" in src and "ctx-stop" in src, "trigger reason(ctx-stop) 없음"
-    assert "--ctx-pct" in src, "--ctx-pct 전달 없음 (handoff entry 기록)"
-
-
 def test_plugin_reads_thresholds_from_local_conf():
     """임계값을 엔진 local.conf 의 ctx_*_pct 에서 읽는다 (T-0013 계약)."""
     src = _plugin_src()
@@ -183,23 +175,32 @@ def test_plugin_marker_fail_soft_and_sid_guard():
     src = _plugin_src()
     # sid 미상 경고 (stderr) — silent-fail 방어.
     assert "stderr" in src, "sid 미상 경고(stderr) 없음 — 침묵 금지 위반"
-    # writeStopMarker 가 triggerHandoff 에서 호출됨 (handoff 직후 marker).
+    # STOP marker write 함수 존재 (event 정지 경로에서 직접 호출·ADR-0038 D2).
     assert "writeStopMarker" in src, "STOP marker write 함수 없음"
 
 
-def test_plugin_marker_gated_on_handoff_success():
-    """STOP marker 는 pm_handoff --trigger 성공(rc 0) 시에만 — 실패면 새 PM 이 권위 handoff
-    없이 stale context 로 부트스트랩하므로 회전 금지(claude ctx_stop_hook handoff_rc==0 선례·
-    codex T-0048 must-fix). 정지(deny)는 rc 무관 유지."""
+def test_plugin_marker_written_unconditionally_on_stop():
+    """STOP marker 는 정지 감지 시 무조건 박제된다 — pm_handoff --trigger·handoffRc 게이트 없음
+    (ADR-0038 D2/D4: relay 회전은 marker 로만 신호·엔진 --trigger spawn 폐기).
+
+    writeStopMarker() 호출이 event(message.updated) 정지 분기의 `fired.stop = true` 와 나란히
+    (co-located·무조건) 온다. 어떤 handoffRc/--trigger 게이트도 재도입되지 않았음을 함께 단언한다.
+    """
     src = _plugin_src()
-    # handoff 종료코드(status)를 포착해 rc 0 게이트.
-    assert ".status" in src, "pm_handoff --trigger 종료코드(res.status) 미포착"
-    assert "handoffRc === 0" in src, "marker 가 handoff rc 0 게이트 안 됨 (실패 시 stale 회전 위험)"
-    # writeStopMarker 호출이 rc 0 게이트 *뒤* 에 온다 (무조건 호출 아님).
-    idx_rc = src.find("handoffRc === 0")
-    idx_call = src.find("writeStopMarker()", idx_rc)
-    assert idx_rc != -1 and idx_call != -1 and idx_call > idx_rc, (
-        "writeStopMarker 가 handoff rc 0 게이트 밖에서 호출됨 (codex T-0048)"
+    # --trigger spawn·handoffRc 게이트가 완전히 사라졌다 (ADR-0038 회귀 방지).
+    # (설명 주석에 "no --trigger"·findEngineRoot 의 pm_handoff.py *경로 probe* 는 남으므로
+    #  substring 이 아니라 실 배선 토큰[spawn 함수·rc 게이트]으로 부재를 단언한다.)
+    assert "triggerHandoff" not in src, "triggerHandoff spawn 함수 재도입 (ADR-0038 D4 위반)"
+    assert "handoffRc" not in src, "handoffRc 게이트 재도입 (ADR-0038 D2 위반·marker 무조건이어야)"
+    assert not re.search(r"spawnSync\s*\(", src), (
+        "pm_handoff --trigger spawnSync() 호출 재도입 (ADR-0038 D4 위반·marker 로만 신호)"
+    )
+    # fired.stop = true 세팅 직후 writeStopMarker() 무조건 호출 (co-located).
+    idx_fired = src.find("fired.stop = true")
+    idx_call = src.find("writeStopMarker()", idx_fired)
+    assert idx_fired != -1, "정지 분기(fired.stop = true) 없음"
+    assert idx_call != -1 and idx_call > idx_fired, (
+        "writeStopMarker() 가 정지 분기(fired.stop = true) 직후에 무조건 호출되지 않음"
     )
 
 
@@ -364,277 +365,107 @@ def test_plugin_requires_cleanly_in_node():
     assert "REQUIRE_OK" in out, f"plugin require 실패: {out!r}"
 
 
-# ── 4. thread-tail 추출 (T-0050 — claude extract_thread_tail 미러) ───────────
+# ── 4. 핸드오프 도구 allow-list (ADR-0038 D2 — claude _is_handoff_* 미러) ─────
+# hard-stop 중 진행 중인 rich /pm-handoff 도구는 통과·그 외 새 작업은 정지. tool.execute.before
+# (input.tool + output.args)가 authoritative gate·permission.ask(Permission best-effort)는 fail-open 보조.
 
-def test_plugin_wires_thread_tail_into_handoff():
-    """triggerHandoff 가 정지 시 opencode export → extractThreadTail → --thread-tail 배선한다.
 
-    claude `ctx_stop_hook.run_handoff` 가 `--thread-tail` 을 배선하는 패턴의 opencode 동치.
-    정적검증: 추출/배선 토큰이 plugin 소스에 존재 (실 opencode 무호출). 빈/미상이면 미추가
-    (하위호환)는 node 단위 테스트(아래 runner DI)에서 검증.
-    """
+def test_plugin_has_handoff_allowlist_hooks():
+    """정지 후 hard-stop 이 새 작업만 deny 하고 핸드오프 도구는 통과시키는 allow-list 배선 (정적)."""
     src = _plugin_src()
-    # 추출·배선 토큰 — pm_handoff 에 thread-tail 전달.
-    assert "--thread-tail" in src, "pm_handoff --thread-tail 플래그 배선 없음"
-    assert "extractThreadTail" in src, "thread-tail 추출 함수(extractThreadTail) 없음"
-    assert "exportSessionMessages" in src, "세션 transcript 추출(exportSessionMessages) 없음"
-    # opencode export shell-out (--pure 로 plugin 재진입 방지).
-    assert "opencode" in src, "opencode export shell-out 없음"
-    assert '"export"' in src or "'export'" in src, "export 서브커맨드 없음"
-    assert "--pure" in src, "--pure 플래그 없음 (plugin 재진입 방지)"
-    # 상수 (claude 미러).
-    assert "THREAD_TAIL_MAX_TURNS" in src, "THREAD_TAIL_MAX_TURNS 상수 없음"
-    assert "THREAD_TAIL_MAX_CHARS" in src, "THREAD_TAIL_MAX_CHARS 상수 없음"
-
-
-def test_plugin_thread_tail_backward_compat_omits_flag():
-    """threadTail 이 비어있으면 cmd 에 --thread-tail 미추가 (claude run_handoff 동치·하위호환).
-
-    정적검증: --thread-tail push 가 `if (threadTail)` 게이트 안에 있다 (무조건 추가 아님).
-    """
-    src = _plugin_src()
-    # threadTail 진릿값 게이트가 --thread-tail push 앞에 온다.
-    idx_gate = src.find("if (threadTail)")
-    idx_push = src.find('"--thread-tail"', idx_gate)
-    assert idx_gate != -1, "threadTail 진릿값 게이트(if (threadTail)) 없음 — 하위호환 깨짐"
-    assert idx_push != -1 and idx_push > idx_gate, (
-        "--thread-tail push 가 threadTail 게이트 밖 (빈/미상에도 추가됨 — 엔진 placeholder 파손)"
+    # permission.ask 는 확실한 새 작업만 deny (isNewWorkPermission 게이트).
+    assert "isNewWorkPermission" in src, "permission.ask 의 새 작업 판정(isNewWorkPermission) 없음"
+    # tool.execute.before 는 핸드오프 도구가 아니면 throw (authoritative allow-list gate).
+    assert "isHandoffTool" in src, "tool.execute.before 의 allow-list 판정(isHandoffTool) 없음"
+    assert re.search(r"fired\.stop\s*&&\s*!isHandoffTool", src), (
+        "tool.execute.before 가 (fired.stop && !isHandoffTool) throw 형태가 아님"
+    )
+    assert re.search(r"fired\.stop\s*&&\s*isNewWorkPermission", src), (
+        "permission.ask 가 (fired.stop && isNewWorkPermission) deny 형태가 아님"
     )
 
 
-def test_plugin_thread_tail_marker_gate_unchanged():
-    """thread-tail 배선이 marker 게이트(handoffRc === 0)·멱등 로직을 깨지 않는다 (회귀 방지)."""
-    src = _plugin_src()
-    # handoff rc 0 게이트 뒤에 writeStopMarker (T-0048 불변식 — thread-tail 배선이 손대면 안 됨).
-    idx_rc = src.find("handoffRc === 0")
-    idx_call = src.find("writeStopMarker()", idx_rc)
-    assert idx_rc != -1 and idx_call != -1 and idx_call > idx_rc, (
-        "thread-tail 배선이 marker rc 0 게이트를 깼다 (T-0048 회귀)"
-    )
-    # 멱등 가드 보존.
-    assert "fired.stop" in src, "정지 멱등 가드(fired.stop) 손실 (회귀)"
+def test_js_handoff_allowlist_pure_unit():
+    """node 로 핸드오프 allow-list 순수 함수(isHandoffBash/Target/Tool/isNewWorkPermission) 검증.
 
-
-def test_js_extract_thread_tail_pure_unit():
-    """node 로 JS extractThreadTail 순수 동작 검증 — user-only·N턴 캡·text-part 0 turn 제외·
-    개행 평탄화·max_chars 캡·빈 입력 fail-soft. node 부재 시 skip (정적 검증으로 게이트)."""
+    claude ctx_stop_hook._is_handoff_* 미러 — 핸드오프 도구는 통과(true/allow)·새 작업은 정지
+    (false/deny)·셸 연쇄 밀반입은 fail-closed·Permission 추출불가는 fail-open. node 부재 시 skip.
+    """
     if _NODE is None:
         import pytest
 
-        pytest.skip("node 없음 — JS extractThreadTail 순수 단위 skip (정적 검증만)")
+        pytest.skip("node 없음 — 핸드오프 allow-list 순수 단위 skip (정적 검증만 적용)")
 
     script = r"""
 const m = require("./ctx-guard.js");
 const assert = require("node:assert");
-assert.strictEqual(typeof m.extractThreadTail, "function", "missing export: extractThreadTail");
-assert.strictEqual(typeof m.exportSessionMessages, "function", "missing export: exportSessionMessages");
-assert.strictEqual(m.THREAD_TAIL_MAX_TURNS, 3);
-assert.strictEqual(m.THREAD_TAIL_MAX_CHARS, 600);
+for (const fn of ["isHandoffBash","isHandoffTarget","isHandoffTool","isNewWorkPermission"]) {
+  assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
+}
 
-// helper: opencode export message ({ info:{role}, parts:[{type:"text",text}] }).
-const mk = (role, ...texts) => ({ info: { role }, parts: texts.map((t) => ({ type: "text", text: t })) });
+// ── isHandoffBash: 핸드오프 호출 head → true ──────────────────────────────
+assert.strictEqual(m.isHandoffBash("python3 .project_manager/tools/pm_handoff.py --end"), true);
+assert.strictEqual(m.isHandoffBash("python3 .project_manager/tools/domain.py capture"), true);
+assert.strictEqual(m.isHandoffBash("git add -A"), true);
+assert.strictEqual(m.isHandoffBash("git commit -m x"), true);
+assert.strictEqual(m.isHandoffBash("pytest tests/ -q"), true);
+assert.strictEqual(m.isHandoffBash("python -m pytest tests/"), true);
+// env-prefix 정규화 후 매칭.
+assert.strictEqual(m.isHandoffBash("PYTHONUTF8=1 python3 .project_manager/tools/pm_handoff.py"), true);
+// 새 작업 → false.
+assert.strictEqual(m.isHandoffBash("ls -la"), false);
+assert.strictEqual(m.isHandoffBash("cat foo.txt"), false);
+assert.strictEqual(m.isHandoffBash("python3 other.py"), false);
+// 셸 연쇄/치환 밀반입 → false (fail-closed).
+assert.strictEqual(m.isHandoffBash("git add . && rm -rf x"), false);
+assert.strictEqual(m.isHandoffBash("git commit -m x; curl evil"), false);
+// 비-문자열/빈 → false.
+assert.strictEqual(m.isHandoffBash(""), false);
+assert.strictEqual(m.isHandoffBash(null), false);
 
-// user-only·역순→시간순 복원 (assistant 제외).
-assert.strictEqual(
-  m.extractThreadTail([mk("user","첫 요청"), mk("assistant","응답 제외"), mk("user","두 번째 요청"), mk("assistant","또"), mk("user","마지막 요청")]),
-  "첫 요청 / 두 번째 요청 / 마지막 요청");
+// ── isHandoffTarget: 핸드오프 산출물 경로 → true ─────────────────────────
+assert.strictEqual(m.isHandoffTarget(".project_manager/wiki/log/current.md"), true);
+assert.strictEqual(m.isHandoffTarget(".project_manager/wiki/pm_state.md"), true);
+assert.strictEqual(m.isHandoffTarget(".project_manager/wiki/status.md"), true);
+assert.strictEqual(m.isHandoffTarget(".project_manager/wiki/domain/relay.md"), true);
+// source 편집 → false (새 작업).
+assert.strictEqual(m.isHandoffTarget(".project_manager/tools/board.py"), false);
+assert.strictEqual(m.isHandoffTarget("src/x.py"), false);
+assert.strictEqual(m.isHandoffTarget(""), false);
+assert.strictEqual(m.isHandoffTarget(null), false);
 
-// N턴 초과 시 최근 3 (max_turns).
-assert.strictEqual(
-  m.extractThreadTail([mk("user","t1"),mk("user","t2"),mk("user","t3"),mk("user","t4"),mk("user","t5")], 3),
-  "t3 / t4 / t5");
+// ── isHandoffTool: input.tool + output.args 판정 ────────────────────────
+assert.strictEqual(m.isHandoffTool({tool:"bash"}, {args:{command:"git commit -m x"}}), true);
+assert.strictEqual(m.isHandoffTool({tool:"bash"}, {args:{command:"cat x"}}), false);
+assert.strictEqual(m.isHandoffTool({tool:"edit"}, {args:{filePath:".project_manager/wiki/log/current.md"}}), true);
+assert.strictEqual(m.isHandoffTool({tool:"edit"}, {args:{filePath:"src/x.py"}}), false);
+// write/read/patch 도 같은 target 규칙.
+assert.strictEqual(m.isHandoffTool({tool:"write"}, {args:{filePath:".project_manager/wiki/status.md"}}), true);
+assert.strictEqual(m.isHandoffTool({tool:"read"}, {args:{filePath:".project_manager/wiki/domain/x.md"}}), true);
+// 방어적 file_path/path 별칭.
+assert.strictEqual(m.isHandoffTool({tool:"edit"}, {args:{file_path:".project_manager/wiki/pm_state.md"}}), true);
+// unknown 도구 → false (deny).
+assert.strictEqual(m.isHandoffTool({tool:"grep"}, {args:{pattern:"x"}}), false);
+assert.strictEqual(m.isHandoffTool({}, {}), false);
 
-// text part 0개 turn 제외 (tool_result·synthetic-only 동치).
-assert.strictEqual(
-  m.extractThreadTail([mk("user","진짜 발화"), { info:{role:"user"}, parts:[{ type:"tool", text:"무시" }] }]),
-  "진짜 발화");
+// ── isNewWorkPermission: 새 작업만 deny(true)·핸드오프/불명은 통과(false) ──
+assert.strictEqual(m.isNewWorkPermission({pattern:"ls *"}), true);        // 새 작업 → deny
+assert.strictEqual(m.isNewWorkPermission({pattern:"git commit *"}), false); // 핸드오프 → allow
+assert.strictEqual(m.isNewWorkPermission({}), false);                     // 추출불가 → fail-open
+assert.strictEqual(m.isNewWorkPermission({pattern:undefined}), false);    // 추출불가 → fail-open
+assert.strictEqual(m.isNewWorkPermission(null), false);                   // 비객체 → fail-open
+// 후보 하나라도 핸드오프면 통과(false). title 은 anchored 매칭 — 핸드오프 head 로 *시작*해야.
+assert.strictEqual(m.isNewWorkPermission({title:"git add -A"}), false);
+// title 이 핸드오프 head 로 시작 안 하면(단순 포함) 매칭 안 됨 → 새 작업(true·deny).
+assert.strictEqual(m.isNewWorkPermission({title:"Run git add -A"}), true);
+// pattern 배열·metadata 값도 후보.
+assert.strictEqual(m.isNewWorkPermission({pattern:["rm *","ls *"]}), true);
+assert.strictEqual(m.isNewWorkPermission({metadata:{cmd:"pytest tests/"}}), false);
 
-// 비-text part 섞여도 text part 만 수집.
-assert.strictEqual(
-  m.extractThreadTail([{ info:{role:"user"}, parts:[{ type:"step-start" }, { type:"text", text:"블록 텍스트" }] }]),
-  "블록 텍스트");
-
-// 개행 ` / ` 평탄화.
-assert.strictEqual(m.extractThreadTail([mk("user","첫 줄\n둘째 줄\n셋째 줄")]), "첫 줄 / 둘째 줄 / 셋째 줄");
-
-// 총 max_chars 캡.
-assert.ok(m.extractThreadTail([mk("user","가".repeat(50)), mk("user","나".repeat(50))], 3, 30).length <= 30);
-
-// fail-soft: 빈/비배열/assistant-only/max<=0 → "".
-assert.strictEqual(m.extractThreadTail([]), "");
-assert.strictEqual(m.extractThreadTail(null), "");
-assert.strictEqual(m.extractThreadTail([mk("assistant","응답만")]), "");
-assert.strictEqual(m.extractThreadTail([mk("user","x")], 0), "");
-assert.strictEqual(m.extractThreadTail([mk("user","x")], 3, 0), "");
-
-console.log("JS_THREAD_TAIL_OK");
+console.log("JS_HANDOFF_ALLOWLIST_OK");
 """
     out = _run_node_check(script)
-    assert "JS_THREAD_TAIL_OK" in out, f"JS extractThreadTail 순수 단위 실패. out={out!r}"
-
-
-def test_js_export_session_messages_fail_soft_unit():
-    """node 로 exportSessionMessages fail-soft 검증 (runner DI — 실 opencode 무호출).
-
-    spawn throw·비-JSON·messages 비배열·!root·sid 미상 → [] (fail-soft). 정상 JSON →
-    .messages 배열. node 부재 시 skip.
-    """
-    if _NODE is None:
-        import pytest
-
-        pytest.skip("node 없음 — exportSessionMessages fail-soft 단위 skip")
-
-    script = r"""
-const m = require("./ctx-guard.js");
-const assert = require("node:assert");
-
-// spawn throw → [] (try/catch fail-soft).
-assert.deepStrictEqual(m.exportSessionMessages("ses_x", "/root", () => { throw new Error("boom"); }), []);
-// 비-JSON stdout → [].
-assert.deepStrictEqual(m.exportSessionMessages("ses_x", "/root", () => ({ stdout: "not json" })), []);
-// stdout 미상(undefined) → [].
-assert.deepStrictEqual(m.exportSessionMessages("ses_x", "/root", () => ({})), []);
-// messages 비배열 → [].
-assert.deepStrictEqual(m.exportSessionMessages("ses_x", "/root", () => ({ stdout: JSON.stringify({ messages: "x" }) })), []);
-// sid 미상 → [] (runner 미호출).
-let called = false;
-assert.deepStrictEqual(m.exportSessionMessages("", "/root", () => { called = true; return { stdout: "{}" }; }), []);
-assert.strictEqual(called, false, "sid 미상인데 runner 호출됨 (불필요 shell-out)");
-// !root → [].
-assert.deepStrictEqual(m.exportSessionMessages("ses_x", null, () => ({ stdout: "{}" })), []);
-// 정상 → .messages 배열 반환.
-const ok = m.exportSessionMessages("ses_x", "/root", () => ({ stdout: JSON.stringify({ messages: [{ info: { role: "user" }, parts: [] }] }) }));
-assert.strictEqual(Array.isArray(ok), true);
-assert.strictEqual(ok.length, 1);
-assert.strictEqual(ok[0].info.role, "user");
-// runner 가 opencode export <sid> --pure 로 호출되는지.
-let capturedCmd = null, capturedArgs = null, capturedOpts = null;
-m.exportSessionMessages("ses_abc", "/root", (cmd, args, opts) => {
-  capturedCmd = cmd; capturedArgs = args; capturedOpts = opts;
-  return { stdout: JSON.stringify({ messages: [] }) };
-});
-assert.strictEqual(capturedCmd, "opencode");
-assert.deepStrictEqual(capturedArgs, ["export", "ses_abc", "--pure"]);
-assert.strictEqual(capturedOpts.cwd, "/root");
-assert.strictEqual(capturedOpts.encoding, "utf-8");
-// maxBuffer 명시 — ctx-STOP 시점 export JSON 은 기본 1 MiB 를 넘기 쉬워 잘리면 thread-tail 이
-// 조용히 무력화된다(codex T-0050 must-fix). 기본(~1 MiB)보다 충분히 커야 한다.
-assert.ok(capturedOpts.maxBuffer >= 16 * 1024 * 1024,
-  "exportSessionMessages must set explicit maxBuffer >= 16 MiB (default ~1 MiB truncates near-full export)");
-
-console.log("JS_EXPORT_FAILSOFT_OK");
-"""
-    out = _run_node_check(script)
-    assert "JS_EXPORT_FAILSOFT_OK" in out, f"exportSessionMessages fail-soft 단위 실패. out={out!r}"
-
-
-def _claude_extract_thread_tail(transcript_messages, max_turns=3, max_chars=600) -> str:
-    """claude `extract_thread_tail` 을 importlib 로 로드해 transcript fixture 로 실행.
-
-    transcript_messages = [(role, content), ...] (content 는 str 또는 block list).
-    동치 검증의 reference 측 — JS 와 같은 논리 시나리오를 claude transcript 포맷으로 돌린다.
-    """
-    import importlib.util
-    import tempfile
-
-    spec = importlib.util.spec_from_file_location(
-        "claude_ctx_guard_equiv",
-        REPO / "templates" / "claude_code" / ".claude" / "ctx_guard.py",
-    )
-    guard = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(guard)
-    lines = []
-    for role, content in transcript_messages:
-        lines.append(json.dumps({"type": role, "message": {"role": role, "content": content}}))
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".jsonl", encoding="utf-8", delete=False
-    ) as fh:
-        fh.write("\n".join(lines) + "\n")
-        path = fh.name
-    try:
-        return guard.extract_thread_tail(path, max_turns=max_turns, max_chars=max_chars)
-    finally:
-        Path(path).unlink(missing_ok=True)
-
-
-def test_js_extract_thread_tail_equiv_claude():
-    """JS extractThreadTail 가 claude extract_thread_tail 규칙과 동치 (공통 시나리오).
-
-    같은 논리 대화를 양 포맷으로 구성 — claude transcript(content str/block) vs opencode
-    export(parts text) — 그 결과 문자열이 일치해야 한다. user-only·N턴 초과 최근 3·turn
-    truncate·text-part 0 turn 제외·개행 평탄화·빈 입력. node 부재 시 skip(정적 게이트).
-    """
-    if _NODE is None:
-        import pytest
-
-        pytest.skip("node 없음 — JS/claude 동치 검증 skip (정적 검증으로 게이트)")
-
-    # 공통 논리 시나리오: [(role, [발화 텍스트 part 들], claude_content)].
-    # JS 입력은 parts(text) 로, claude 입력은 content(str|block) 로 같은 의미를 표현.
-    # 각 케이스: (label, claude_transcript, js_messages, max_turns, max_chars).
-    cases = [
-        (
-            "user-only-chronological",
-            [("user", "첫 요청"), ("assistant", "응답"), ("user", "두 번째"), ("user", "마지막")],
-            [
-                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "첫 요청"}]},
-                {"info": {"role": "assistant"}, "parts": [{"type": "text", "text": "응답"}]},
-                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "두 번째"}]},
-                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "마지막"}]},
-            ],
-            3,
-            600,
-        ),
-        (
-            "max-turns-recent-3",
-            [("user", "t1"), ("user", "t2"), ("user", "t3"), ("user", "t4"), ("user", "t5")],
-            [
-                {"info": {"role": "user"}, "parts": [{"type": "text", "text": f"t{i}"}]}
-                for i in range(1, 6)
-            ],
-            3,
-            600,
-        ),
-        (
-            "exclude-text-0-turn",
-            [
-                ("user", "진짜 발화"),
-                ("user", [{"type": "tool_result", "tool_use_id": "x", "content": "도구 결과"}]),
-            ],
-            [
-                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "진짜 발화"}]},
-                {"info": {"role": "user"}, "parts": [{"type": "tool", "text": "도구 결과"}]},
-            ],
-            3,
-            600,
-        ),
-        (
-            "newline-flatten",
-            [("user", "첫 줄\n둘째 줄\n셋째 줄")],
-            [{"info": {"role": "user"}, "parts": [{"type": "text", "text": "첫 줄\n둘째 줄\n셋째 줄"}]}],
-            3,
-            600,
-        ),
-        (
-            "empty-no-user",
-            [("assistant", "응답만")],
-            [{"info": {"role": "assistant"}, "parts": [{"type": "text", "text": "응답만"}]}],
-            3,
-            600,
-        ),
-    ]
-
-    for label, claude_tx, js_messages, mt, mc in cases:
-        claude_result = _claude_extract_thread_tail(claude_tx, max_turns=mt, max_chars=mc)
-        js_script = (
-            'const m=require("./ctx-guard.js");'
-            "const msgs=" + json.dumps(js_messages) + ";"
-            f"console.log(JSON.stringify(m.extractThreadTail(msgs, {mt}, {mc})));"
-        )
-        js_result = json.loads(_run_node_check(js_script).strip())
-        assert js_result == claude_result, (
-            f"[{label}] JS/claude thread-tail 불일치 — JS={js_result!r} claude={claude_result!r}"
-        )
+    assert "JS_HANDOFF_ALLOWLIST_OK" in out, f"핸드오프 allow-list 순수 단위 실패. out={out!r}"
 
 
 # ── graceful nudge 모델-주입 (ADR-0037) — 정적 + node 순수 검증 ────────────────

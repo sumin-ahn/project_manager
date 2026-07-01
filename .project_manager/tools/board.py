@@ -83,6 +83,21 @@ def template_file() -> Path:
     return tickets_dir() / "_template.md"
 
 
+def drafts_dir() -> Path:
+    """미충전 draft 격리 디렉토리 — tickets_dir()/.drafts (board_root 추종·T-0198).
+
+    `board.py new` 가 board-git 활성(공유) 상태에서 placeholder/thin 본문을 감지하면
+    티켓을 `tickets/open/` 이 아니라 이 디렉토리에 둔다 — STATUS_DIRS(`open/claimed/
+    blocked/done`) *밖*이라 STATUS_DIRS 를 순회하는 어떤 mutation(`_board_git_stage_and_commit`
+    의 `git add -A`·`_board_git_status_porcelain` 의 `git status --porcelain`·list·lint 등)도
+    draft 를 보지 못한다 — 다음 mutation 이 무관 draft 를 실수로 board-git 에 커밋하는 leak
+    을 원천 차단한다(T-0196 이 생성 시점만 막고 후속 mutation 은 못 막던 결함의 재발 방지).
+    `_BOARD_GIT_DRAFT_PATHSPEC` 로 board-git 호출에서도 이중으로 명시 제외한다(방어적 이중화).
+    본문을 채운 뒤 `board.py promote <id>` 가 `open/` 으로 이동 + board-git 커밋한다.
+    """
+    return tickets_dir() / ".drafts"
+
+
 def areas_file() -> Path:
     """areas 레지스트리 경로 (board_root 추종·*조건분기*).
 
@@ -567,9 +582,27 @@ def _claimed_by_user(claimed_by: str | None) -> str | None:
     return claimed_by.rsplit("/", 1)[0] or None
 
 
+def _slot_matches(claimed_by: str, my_slot: str, *, suffix: bool = False) -> bool:
+    """`claimed_by`(`<user>/<pm-slot>` 또는 legacy 슬롯-only)의 slot 토큰이 `my_slot` 인가.
+
+    `suffix=False`(기본·`--mine`/`--session`): 완전 일치 — slot 식별자 전체를 안다.
+    `suffix=True`(`--slot <N>`): slot 규약(`work/<repo>_<N>` → 세션 이름 `<repo>_<N>`·
+    T-0074/pm_bootstrap `_repo_slot_numbers`)상 숫자 N 만으론 repo 접두를 모르므로,
+    slot 토큰이 `_<N>` 로 끝나거나(=`<repo>_<N>`) 토큰 자체가 `<N>`(레거시 순수 슬롯번호)인
+    경우 모두 매칭한다.
+    """
+    if not claimed_by:
+        return False
+    slot_token = claimed_by.rsplit("/", 1)[-1]
+    if not suffix:
+        return slot_token == my_slot
+    return slot_token == my_slot or slot_token.endswith(f"_{my_slot}")
+
+
 def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
-                    my_slot: str, area_owner_in_use: bool) -> bool:
-    """이 티켓이 `--mine` 뷰에 들어가는지 — (a) 내 area open ∨ (b) 내 claim.
+                    my_slot: str, area_owner_in_use: bool,
+                    *, slot_suffix: bool = False) -> bool:
+    """이 티켓이 `--mine`/`--session`/`--slot` 뷰에 들어가는지 — (a) 내 area open ∨ (b) 내 claim.
 
     단일 전역 플래그 `area_owner_in_use`(보드에 area_owner 가 운영 중인가·`cmd_list` 가 1회 계산)로
     (a) 의 범위를 정한다 — per-user 2축 분기를 폐기했다(T-0168 동반 단순화·사용자 결정 2026-06-26).
@@ -577,7 +610,8 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
 
     (b) 내 claim — 상태 무관 연속성. 두 갈래를 OR 한다:
       - user 일치: `claimed_by` 의 user(`_claimed_by_user`) == my_user (새 `<user>/<slot>` 형태).
-      - slot 일치: `claimed_by` == my_slot (legacy 슬롯-only·user 차원 없는 claim·round-4 must-fix).
+      - slot 일치: `_slot_matches`(legacy 슬롯-only·user 차원 없는 claim·round-4 must-fix·
+        `--slot <N>` 은 suffix 매칭·T-0197).
         `my_user is not None and` 가드로 user-일치는 식별자가 있을 때만 — 무-identity 시 남의
         슬롯-only claim 을 내 것으로 오인하지 않는다(slot 일치는 항상 내 슬롯만 잡으므로 안전).
     (a) 내 area open — status==open 한정:
@@ -590,7 +624,8 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
     # (b) 내 claim — user 일치(새 형태) OR slot 일치(legacy 슬롯-only·무-identity).
     if cb:
         cb_user = _claimed_by_user(cb)
-        if (my_user is not None and cb_user == my_user) or cb == my_slot:
+        if (my_user is not None and cb_user == my_user) or \
+                _slot_matches(cb, my_slot, suffix=slot_suffix):
             return True
     # (a) 내 area 의 open.
     if status == "open":
@@ -902,6 +937,13 @@ _BOARD_GIT_TIMEOUT_SECONDS = 30
 # offline 과 *메시지로* 가르기 위한 고유 토큰 — 어떤 git SHA(40-hex)와도 충돌하지 않는다.
 _CLAIM_PREFETCH_DIRTY = "\0dirty"
 
+# board-git pathspec — `tickets/.drafts/`(drafts_dir()) 를 `git add`/`git status` 에서 명시
+# 제외한다(T-0198). draft 는 STATUS_DIRS 순회 밖이라 이미 안 보이지만, 이 pathspec 은 방어적
+# 이중화다 — draft 경로가 board_root 바로 아래(add -A 의 스캔 범위)에 있는 한, 어떤 향후
+# 변경으로 draft 가 STATUS_DIRS 스캔 함수에 실수로 노출되더라도 git 수준에서 한 번 더 막는다.
+# pathspec 은 board_root() 기준 상대경로 리터럴이라 위치 이동(legacy↔board 분리) 무관 동작한다.
+_BOARD_GIT_DRAFT_PATHSPEC: tuple[str, ...] = (".", ":!tickets/.drafts")
+
 
 def _board_git_enabled() -> bool:
     """board 가 별도 git 으로 분리됐고 sync 가능한가 — `board_root()/.git` 존재 + git 바이너리.
@@ -944,9 +986,13 @@ def _board_git_status_porcelain() -> str:
     robust 하다 — non-empty 면 staged/unstaged/untracked 변경이 있다는 뜻. rc≠0(이상)이나
     예외는 빈 문자열로 fail-soft 처리해 호출부가 dirty 아님(=clean·pull 진행)으로 보게 한다
     (dirty 선체크가 정상 claim 경로를 막지 않도록 보수적으로).
+
+    `_BOARD_GIT_DRAFT_PATHSPEC` 으로 `tickets/.drafts/`(미충전 draft·T-0198)를 제외한다 —
+    아니면 draft 가 untracked 로 남아 있는 동안 무관 claim 이 "board dirty" 로 오판돼 차단된다
+    (draft 는 board-git 관점에서 아예 존재하지 않는 것처럼 보여야 한다).
     """
     try:
-        r = _board_git(["status", "--porcelain"])
+        r = _board_git(["status", "--porcelain", "--", *_BOARD_GIT_DRAFT_PATHSPEC])
     except Exception:  # noqa: BLE001 — fail-soft: status 예외(timeout 등)는 clean 취급(보수적).
         return ""
     return r.stdout if r.returncode == 0 else ""
@@ -959,8 +1005,15 @@ def _board_git_stage_and_commit(message: str) -> bool:
     가지 않는다(ADR-0033 ①). nothing-to-commit(변경 없음)이면 commit 은 rc≠0 이지만 그건
     정상(이미 동기)이라 호출부가 무시한다. 반환 True = 새 commit 생성, False = 변경 없음/
     실패(둘 다 호출부에서 best-effort 로는 무차단).
+
+    `_BOARD_GIT_DRAFT_PATHSPEC` 으로 `tickets/.drafts/`(미충전 draft·T-0198)를 stage 에서
+    제외한다 — draft 는 STATUS_DIRS 순회 밖이라 이미 이 mutation 이 만든 변경 목록엔 안 잡히지만,
+    `add -A` 자체가 board_root 전체를 스캔하므로 무관한 draft 를 *이* mutation 의 commit 에
+    쓸어담을 수 있었다(T-0196 게이트가 생성 시점만 막고 후속 mutation 은 못 막던 leak). 이
+    pathspec 이 그 leak 을 원천 차단한다 — 어떤 mutation(자기·무관 무엇이든)도 draft 를
+    커밋하지 않는다. promote 는 draft 를 `open/` 으로 옮긴 *뒤* 이 함수를 부르므로 무영향.
     """
-    _board_git(["add", "-A"])
+    _board_git(["add", "-A", "--", *_BOARD_GIT_DRAFT_PATHSPEC])
     r = _board_git(["commit", "-m", message])
     return r.returncode == 0
 
@@ -1391,8 +1444,20 @@ def find_item(base_dir: Path, statuses: tuple[str, ...], item_id: str,
 
 
 def find_ticket(tid: str) -> tuple[str, Path]:
-    """Return (status_dir, path). Raises FileNotFoundError if missing."""
-    return find_item(tickets_dir(), STATUS_DIRS, tid, "ticket")
+    """Return (status_dir, path). Raises FileNotFoundError if missing.
+
+    STATUS_DIRS(open/claimed/blocked/done)에서 못 찾으면 draft 격리 디렉토리
+    (`drafts_dir()`·T-0198)를 폴백으로 스캔해 pseudo-status `"draft"` 로 반환한다 — `show`/
+    `promote`가 draft 를 조회할 수 있게 한다. 다른 mutation(claim/block/complete 등)이 이
+    경로로 draft 를 찾아도 각자의 status 검사(`!= "open"` 등)가 즉시 거부하므로 안전하다
+    (예: "cannot claim T-x: currently in draft/" — 오히려 명확한 신호).
+    """
+    try:
+        return find_item(tickets_dir(), STATUS_DIRS, tid, "ticket")
+    except FileNotFoundError:
+        for p in drafts_dir().glob(f"{tid}-*.md"):
+            return "draft", p
+        raise
 
 
 def find_idea(iid: str) -> tuple[str, Path]:
@@ -1473,6 +1538,12 @@ def next_numeric_id(base_dir: Path, statuses: tuple[str, ...],
     return max_id + 1
 
 
+# ID 스캔용 status 튜플 — STATUS_DIRS + draft 격리 디렉토리(`.drafts`·T-0198). draft 도 이미
+# 발행된 ID(파일명에 박제)이므로 스캔에서 빠지면 promote 전 다음 `new` 가 같은 번호를 재사용해
+# 충돌한다. `next_numeric_id` 는 `base_dir / d` 로 순회하므로 디렉토리명 그대로 넣으면 된다.
+_ID_SCAN_STATUSES: tuple[str, ...] = (*STATUS_DIRS, ".drafts")
+
+
 def _next_id(prefix: str | None = None) -> str:
     """Next ticket ID. Namespaced per prefix so concurrent areas never collide.
 
@@ -1481,10 +1552,10 @@ def _next_id(prefix: str | None = None) -> str:
     never matches a prefixed file, so the two namespaces stay disjoint.
     """
     if prefix:
-        n = next_numeric_id(tickets_dir(), STATUS_DIRS,
+        n = next_numeric_id(tickets_dir(), _ID_SCAN_STATUSES,
                             f"T-{prefix}-*.md", rf"T-{re.escape(prefix)}-(\d+)-")
         return f"T-{prefix}-{n:03d}"
-    n = next_numeric_id(tickets_dir(), STATUS_DIRS, "T-*.md", r"T-(\d+)-")
+    n = next_numeric_id(tickets_dir(), _ID_SCAN_STATUSES, "T-*.md", r"T-(\d+)-")
     return f"T-{n:04d}"
 
 
@@ -2211,6 +2282,18 @@ def cmd_new(args: argparse.Namespace) -> int:
 
     tmpl_fm, tmpl_body = load_ticket(template_file())
 
+    # 발행 규율 게이트(T-0196·T-0198): board-git 이 공유(별도 git·submodule) 상태일 때만
+    # 의미가 있다 — 미충전 stub 이 board-git 에 커밋돼 다른 slot 의 handoff/bootstrap 을
+    # 오염시키는 게 문제(T-0191/T-0192 실패)이므로, board 가 별도 git 이 아니면(legacy·솔로)
+    # 게이트 없이 기존처럼 즉시 open/ 에 발행한다. 별도 git 이면 본문을 *쓰기 전에* 미리
+    # 검사(`_body_lint_issues` — `lint_bodies` 와 동일 로직)해 placeholder/thin 이 남아있으면
+    # `open/` 이 아니라 `drafts_dir()`(STATUS_DIRS 밖·T-0198)에 쓴다 — draft 가 STATUS_DIRS
+    # 순회 대상이 되는 창(open/ 에 잠깐이라도 존재)이 아예 없어야, 이후의 **어떤** mutation
+    # (자기 자신의 board-git sync 뿐 아니라 무관한 claim/complete/promote 등)도 draft 를
+    # board-git 에 잘못 쓸어담을 수 없다(T-0196 이 자기 sync 만 skip 하고 후속 mutation 의
+    # `git add -A` 가 leak 시키던 결함의 재발 방지 — board-git 에 아예 안 보이는 게 핵심).
+    # `list`/`show`/`promote` 는 `find_ticket`/`drafts_dir()` 로 draft 를 계속 인지한다.
+    #
     # ID 발행(`_next_id` = max+1·동시 발행 race)과 파일 생성을 단일 락으로 직렬화한다
     # (ADR-0012). 락 안에서 ID 를 *읽고* 곧바로 파일을 만들어, 다른 세션이 같은 ID 를
     # 발행할 틈을 없앤다. board.md 재생성은 락 밖(별도 트랜잭션 — 파생물).
@@ -2221,11 +2304,14 @@ def cmd_new(args: argparse.Namespace) -> int:
 
         # Replace placeholder tokens in body
         body = tmpl_body.replace("T-NNNN", tid).replace("<제목>", args.title)
+        # lint 판정은 `tid` 치환과 무관(placeholder/section 검사가 `T-NNNN` 자체를 안 봄) —
+        # 발행 전에 판정해 쓰기 경로(open/ vs drafts_dir())를 정한다(open/ 창 노출 0).
+        is_draft = _board_git_enabled() and bool(_body_lint_issues(tid, body))
 
         fm: dict[str, Any] = dict(tmpl_fm)
         fm["id"] = tid
         fm["title"] = args.title
-        fm["status"] = "open"
+        fm["status"] = "draft" if is_draft else "open"
         fm["created"] = datetime.date.today().isoformat()
         # created_by = `<user>/<pm-slot>` (provenance·불변·생성 시 set·ADR-0033 ③·T-0161).
         # "누가 추가했나" = 중복-작업 방지의 출처 표식. user 미상이면 슬롯만(graceful).
@@ -2241,39 +2327,134 @@ def cmd_new(args: argparse.Namespace) -> int:
         fm["tags"] = (args.tag.split(",") if args.tag else [])
         fm["estimate"] = args.estimate
 
-        path = tickets_dir() / "open" / filename
+        if is_draft:
+            drafts_dir().mkdir(parents=True, exist_ok=True)
+            path = drafts_dir() / filename
+        else:
+            path = tickets_dir() / "open" / filename
         dump_ticket(path, fm, body)
 
     print(f"created {tid} ({_rel_to_repo(path)})")
     print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint` "
           "(placeholders left in the body fail lint)")
+
+    if is_draft:
+        # draft 는 STATUS_DIRS 밖(drafts_dir())에 있어 board.md(STATUS_DIRS 스캔)에도, 다른
+        # slot 의 board-git pull/handoff 에도 나타나지 않는다 — 로컬 `board.py show <id>` 로만
+        # 조회 가능(`find_ticket` 이 drafts_dir() 폴백으로 찾는다). board-git sync 자체를
+        # 부르지 않는다(draft 는 STATUS_DIRS 밖이라 다른 mutation 의 `git add -A` pathspec
+        # exclude 와 별개로 이미 board_root 스캔에 걸리지 않지만, 명시적으로 skip).
+        print(f"  ⚠ draft — board-git 미커밋(공유 board 오염 방지·T-0196/T-0198): "
+              f"미충전(placeholder/thin) 본문. 본문을 채운 뒤 "
+              f"`board.py promote {tid}` 로 승격(open/ 이동 + board-git 커밋)하라.",
+              file=sys.stderr)
+        return 0
     refresh_board()
     _board_git_sync_best_effort(f"new {tid}")
     return 0
 
 
+def cmd_promote(args: argparse.Namespace) -> int:
+    """draft(drafts_dir() 격리·board-git 미커밋) 티켓을 승격 — 재검사 후 open/ 이동 + board-git sync.
+
+    `board.py new` 가 생성 시점 게이트(T-0196·T-0198)로 `drafts_dir()`(STATUS_DIRS 밖)에 남긴
+    draft 를, 본문을 채운 뒤 이 명령으로 승격한다. 여전히 placeholder/thin 이 남아있으면
+    거부(rc=1)하고 남은 이슈를 안내한다(파일은 drafts_dir() 에 그대로 — 재수정 후 재시도).
+    통과해야 `open/` 으로 옮겨져 STATUS_DIRS 스캔 대상이 되고 board-git 에 커밋돼 공유 board
+    에 존재하게 된다(생성~claim 사이 handoff 창에 미충전 stub 이 인계되는 실패를 원천 차단).
+    board 가 별도 git 이 아니면(legacy·솔로) 게이트 자체가 무의미하므로 항상 통과(sync 는
+    기존처럼 no-op) — 이 경로에선 draft 개념 자체가 없으므로(`cmd_new` 가 legacy 에선 항상
+    `open/` 에 발행) status 는 정상적으로 "open" 이다.
+    """
+    try:
+        status, path = find_ticket(args.id)
+    except FileNotFoundError as e:
+        print(e, file=sys.stderr)
+        return 2
+    if status not in ("open", "draft"):
+        print(f"cannot promote {args.id}: currently in {status}/ (promote 는 open/draft 만)",
+              file=sys.stderr)
+        return 1
+    fm, body = load_ticket(path)
+    if _board_git_enabled():
+        remaining = _body_lint_issues(args.id, body)
+        if remaining:
+            print(f"promote 거부 — {args.id} 에 아직 미충전 {len(remaining)}건:",
+                  file=sys.stderr)
+            for tid, kind, detail in remaining:
+                print(f"  ✗ [{kind}] {detail}", file=sys.stderr)
+            return 1
+    if status == "draft":
+        # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.
+        fm["status"] = "open"
+        new_path = tickets_dir() / "open" / path.name
+        dump_ticket(path, fm, body)  # status 갱신을 먼저 디스크에 반영한 뒤 이동.
+        os.rename(path, new_path)
+        refresh_board()
+    _board_git_sync_best_effort(f"promote {args.id}")
+    print(f"promoted {args.id} (board-git 승격 완료)")
+    return 0
+
+
+# `list` 기본뷰(무-status)의 활성 상태 — done 을 접어 범람을 해소한다(T-0197). `--status all`
+# 이 STATUS_DIRS 전체(done 포함)를 연다.
+_LIST_ACTIVE_STATUSES: tuple[str, ...] = ("open", "claimed", "blocked")
+
+
 def cmd_list(args: argparse.Namespace) -> int:
-    # `--mine` 뷰(T-0164·ADR-0033 ④): 단일 공유 보드의 렌즈 — 내 area open + 내 claim.
-    # identity 입력(T-0161)을 한 번 해소해 행마다 재계산 안 함. 무플래그 list 는 무변경.
-    mine = getattr(args, "mine", False)
-    my_user = user_name() if mine else None
-    my_slot = session_name() if mine else ""
+    # `--mine`(T-0164·ADR-0033 ④) / `--session`·`--slot`(T-0197) 뷰: 단일 공유 보드의 렌즈 —
+    # 내(또는 지목한 세션의) area open + claim. identity 입력(T-0161)을 한 번 해소해 행마다
+    # 재계산 안 함. 무플래그 list 는 필터 없이 전체(status 셀렉터만 적용).
+    #
+    # `--session NAME`/`--slot N` 은 `--mine` 의 *명시-인자* 버전이다 — 내 identity 대신 지목한
+    # slot 으로 `_ticket_is_mine` 을 돌린다(같은 (a) area open ∨ (b) claim 렌즈). `--session` 은
+    # 세션 이름 전체를 아니 완전 일치, `--slot N` 은 숫자만 아니 slot 규약(`<repo>_<N>`) suffix
+    # 매칭(`_slot_matches` suffix=True). 서로 배타적(argparse mutually exclusive) — 동시 지정 방지.
+    #
+    # 비대칭(T-0198 DOC): `--session`/`--slot` 은 my_user 를 해소하지 않고 항상 None 으로 둔다
+    # (아래) — `_ticket_is_mine` 의 (a) area-open 분기(`my_user is None → 전체 open`)가 그래서
+    # *세션별로 못 좁히고* 항상 전체 open 을 반환한다. `--mine` 은 `user_name()` 을 해소해 내
+    # area 로 좁힐 수 있는 것과 다르다 — `--session`/`--slot` 조회는 "그 세션 claim + 전체
+    # open" 을 보여준다(잘못된 동작 아님·의도된 조회-전용 뷰 스코프의 한계일 뿐).
+    explicit_session = getattr(args, "session", None)
+    explicit_slot = getattr(args, "slot", None)
+    mine = getattr(args, "mine", False) or bool(explicit_session) or explicit_slot is not None
+    slot_suffix = explicit_slot is not None
+    if explicit_session:
+        my_user = None
+        my_slot = explicit_session
+    elif explicit_slot is not None:
+        my_user = None
+        my_slot = str(explicit_slot)
+    else:
+        my_user = user_name() if mine else None
+        my_slot = session_name() if mine else ""
     # graceful degrade(T-0168 단순화): (a) 풀(내 area open) 필터는 보드에 area_owner 가 *운영
     # 중일 때만* 적용한다. areas.md 에 area_owner 가 하나도 안 채워졌으면(미마이그레이션 채택자·
     # 솔로) area_owner_in_use=False → (a) 가 전체 open 으로 degrade(빈 보드 금지·plain list 처럼).
     # per-user `_owns_any_area`+`area_filter` 2축 분기를 전역 1회 스캔 1개로 단순화(사용자 결정
     # 2026-06-26: 데이터 정합은 migrate-identity 가 책임·런타임 폴백은 최소).
     area_owner_in_use = mine and _area_owner_in_use()
+    # status 뷰 셀렉터(T-0197): 기본(무-status)=활성만(done 접기) · `--status all`=전체(done 포함)
+    # · `--status <특정>`=그 status 만(기존 동작 무변경).
+    status_arg = getattr(args, "status", None)
+    if status_arg == "all":
+        allowed_statuses = STATUS_DIRS
+    elif status_arg:
+        allowed_statuses = (status_arg,)
+    else:
+        allowed_statuses = _LIST_ACTIVE_STATUSES
     rows: list[tuple[str, dict]] = []
     for status in STATUS_DIRS:
-        if args.status and args.status != status:
+        if status not in allowed_statuses:
             continue
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, _ = load_ticket(p)
             if args.tag and args.tag not in (fm.get("tags") or []):
                 continue
             if mine and not _ticket_is_mine(status, fm, my_user, my_slot,
-                                            area_owner_in_use):
+                                            area_owner_in_use,
+                                            slot_suffix=slot_suffix):
                 continue
             rows.append((status, fm))
     if not rows:
@@ -2616,6 +2797,25 @@ _PLACEHOLDERS: tuple[str, ...] = (
 _REQUIRED_SECTIONS: tuple[str, ...] = ("## 목표", "## 완료 조건", "## 참고")
 
 
+def _body_lint_issues(tid: str, body: str) -> list[tuple[str, str, str]]:
+    """단일 티켓 본문의 self-containment issue — `lint_bodies` 와 `cmd_new` 발행-게이트가 공유(T-0196).
+
+    `lint_bodies` 의 검사 로직(placeholder·thin)을 단일-티켓 단위로 추출한 것 — `board.py new`
+    가 방금 만든 티켓 하나만 즉석 검사해 board-git 승격(sync) 여부를 정할 때도 재사용한다.
+    """
+    issues: list[tuple[str, str, str]] = []
+    prose = _strip_code(body)
+    for placeholder in _PLACEHOLDERS:
+        if placeholder in prose:
+            issues.append((tid, "placeholder",
+                           f"unfilled template text: {placeholder!r}"))
+    for section in _REQUIRED_SECTIONS:
+        if section not in body:
+            issues.append((tid, "thin",
+                           f"missing standard section: {section}"))
+    return issues
+
+
 def lint_bodies() -> list[tuple[str, str, str]]:
     """Lint open/claimed ticket bodies for self-containment.
 
@@ -2630,15 +2830,7 @@ def lint_bodies() -> list[tuple[str, str, str]]:
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, body = load_ticket(p)
             tid = fm.get("id") or p.name
-            prose = _strip_code(body)
-            for placeholder in _PLACEHOLDERS:
-                if placeholder in prose:
-                    issues.append((tid, "placeholder",
-                                   f"unfilled template text: {placeholder!r}"))
-            for section in _REQUIRED_SECTIONS:
-                if section not in body:
-                    issues.append((tid, "thin",
-                                   f"missing standard section: {section}"))
+            issues.extend(_body_lint_issues(tid, body))
     return issues
 
 
@@ -3893,12 +4085,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("list", help="list tickets")
-    p.add_argument("--status", choices=STATUS_DIRS)
+    p.add_argument("--status", choices=(*STATUS_DIRS, "all"),
+                   help="status 뷰 셀렉터(T-0197): 생략 시 활성만(open/claimed/blocked·done 접기)· "
+                        "특정 status 하나만 보려면 그 값(예: done)· 전체(done 포함)는 `all`.")
     p.add_argument("--tag")
-    p.add_argument("--mine", action="store_true",
+    scope = p.add_mutually_exclusive_group()
+    scope.add_argument("--mine", action="store_true",
                    help="내 것만 (렌즈·단일 보드 위 필터·ADR-0033 ④): 내 area 의 open"
                         "(area_owner==나) + 내 in-progress(claimed_by.user==나). "
                         "솔로(user 미상)는 전체 open + 내 슬롯 claim 으로 graceful 폴백.")
+    scope.add_argument("--session", help="`--mine` 의 명시-인자 버전(T-0197·조회 전용 뷰 스코프 — "
+                        "claim/mutation 행위자 `--session` 과는 별개): 그 세션 이름의 open+claim 만. "
+                        "list 스코핑은 `--mine`/`--session`/`--slot` 을 쓴다(claim/complete 의 "
+                        "행위자 `--session` 을 list 에 일반화하면 argparse 에러). "
+                        "주의(T-0198): area_owner 미운영 시 open 은 세션-스코프로 못 좁혀 전체 "
+                        "open + 해당 세션 claim 을 보인다(`--mine` 은 내 area 로 좁힘 — 비대칭).")
+    scope.add_argument("--slot", type=int,
+                        help="`--session` 의 슬롯-번호 버전(T-0197): slot 식별자가 `<repo>_<N>` "
+                             "규약이라 N 만으로 suffix 매칭한다(repo 접두 불문). 주의(T-0198): "
+                             "area_owner 미운영 시 open 은 세션-스코프로 못 좁혀 전체 open + "
+                             "해당 세션 claim 을 보인다(`--mine` 은 내 area 로 좁힘 — 비대칭).")
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("show", help="show one ticket")
@@ -3949,6 +4155,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf user= / "
                    "git config user.email · ADR-0033 ③)")
     p.set_defaults(fn=cmd_new)
+
+    p = sub.add_parser("promote", help="draft(board-git 미커밋) 티켓을 승격 — 본문 채운 뒤 board-git sync "
+                        "(T-0196 발행 규율 게이트: board-git 공유 시 `new` 가 미충전 티켓을 draft 로 남긴다)")
+    p.add_argument("id")
+    p.set_defaults(fn=cmd_promote)
 
     p = sub.add_parser("init", help="clone 당 1회 setup (solo · multi-repo N×M) — pm_state·local.conf·pre-push 훅")
     p.add_argument("--prefix", help="multi-repo (N×M) ID 네임스페이스 (예: PAY). 생략 = solo(legacy T-NNNN)")

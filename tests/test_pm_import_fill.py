@@ -114,12 +114,29 @@ def test_fill_auto_stub_resolves_free_form(pm_import, tmp_path):
     assert len(stub.calls) == 1
 
 
-def test_fill_auto_stub_opencode_excludes_model_token(pm_import, tmp_path):
+def test_fill_auto_stub_opencode_excludes_model_token(pm_import, tmp_path, monkeypatch):
     """opencode 트리: {{OPENCODE_PRO_MODEL}} 은 LLM fill 후보가 *아니다*(T-0033 결정적 분리).
 
     모델 토큰은 resolve_opencode_model(결정적 `opencode models` 조회)이 전담하므로 fill 의
     제안 값에 들어가면 안 된다(중복·환각 제거). 자유서술 3종만 fill 대상이다.
+
+    main 의 정상 파이프라인은 substitute_placeholders 직후 resolve_opencode_model 이 돌아
+    토큰을 항상 해소/중화한다(치환 또는 `<provider/model>` 폴백) — 그래서 실 import 완료 트리엔
+    리터럴 토큰이 남지 않는다. 이 테스트가 검증하려는 "fill 은 model 토큰을 안 건드린다" 계약은
+    **model 해소 전** 시점(substitute 직후)의 실 어댑터 파일(`.opencode/agents/*.md` 의
+    `model:` 필드)을 대상으로 해야 하므로, resolve_opencode_model 을 no-op stub 으로 바꿔
+    그 시점을 재현한다(T-0192 #6 전 README 문서화 산문 예시를 실 출하 파일로 repoint).
     """
+    monkeypatch.setattr(
+        pm_import, "resolve_opencode_model",
+        lambda dest_root, copied_relpaths, **kwargs: pm_import.ModelResolveResult(
+            active=False, path="inactive", note="테스트 stub — 모델 해소 단계 건너뜀.",
+        ),
+    )
+    # render_managed_files(@render)가 미해소 리터럴 토큰을 leak 로 hard-fail 하므로(T-0133
+    # RenderLeakError) 함께 no-op — 이 테스트는 fill 스캔(run_fill)만 격리 검증한다(render 계약은
+    # test_pm_render.py 소관).
+    monkeypatch.setattr(pm_import, "render_managed_files", lambda dest_root, subs, copied: 0)
     dest = _make_imported_tree(pm_import, tmp_path, harness="opencode", name="OpenFill")
     # 어댑터 트리이므로 모델 토큰은 잔존하나(전제 확인) — 그건 resolve_opencode_model 소관.
     assert pm_import._token_present(dest, OPENCODE_MODEL_TOKEN), \
