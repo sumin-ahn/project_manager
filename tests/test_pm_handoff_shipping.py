@@ -19,6 +19,7 @@ push 직전(핸드오프) 1회 출하 테스트 step 을 검증한다 — **미p
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -479,6 +480,48 @@ def test_run_aborts_on_usage_error_rc4(hf, tmp_path):
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 1
     assert len(gate.calls) == 1
+
+
+# ── T-0200: 라이브 출하 smoke wall-clock 상한 (인터랙티브 hang 방지) ────────────
+#
+# outer subprocess timeout 초과 → rc 124 반환 → `rc not in (0,5)` 계약으로 핸드오프 중단
+# (silent pass 아님). unbounded hang 을 bounded abort 로. env `PM_SHIPPING_TEST_TIMEOUT`.
+
+
+def test_run_aborts_on_shipping_test_timeout_rc124(hf, tmp_path):
+    """출하 smoke wall-clock 초과(rc 124) → 핸드오프 중단 rc 1 (hang 대신 bounded abort)."""
+    gate = _shipping_test_recorder(124, "[timeout] 출하 테스트가 1200s 를 초과해 중단됨\n")
+    inst = _make_handoff(
+        hf, tmp_path,
+        git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
+        shipping_test_fn=gate,
+    )
+    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    assert rc == 1  # rc 124 ∉ {0,5} → red 중단.
+    assert len(gate.calls) == 1
+
+
+def test_run_shipping_test_returns_124_note_on_timeout(hf):
+    """`_run_shipping_test` 의 runner 가 TimeoutExpired → (124, PM 안내) 반환 (실 subprocess 미실행)."""
+    def _raises(cmd, env, worktree):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=1200, output="partial-out\n", stderr="")
+
+    rc, out = hf._run_shipping_test("/wt", runner=_raises, timeout=1200)
+    assert rc == 124
+    assert "partial-out" in out          # 부분 출력 보존.
+    assert "[timeout]" in out
+    assert "--no-shipping-test" in out    # PM 에스케이프 안내.
+    assert "PM_SHIPPING_TEST_TIMEOUT" in out
+
+
+def test_shipping_test_timeout_env_override(hf, monkeypatch):
+    """env `PM_SHIPPING_TEST_TIMEOUT` 로 상한 override · 미설정/불량 → default 1200."""
+    monkeypatch.delenv("PM_SHIPPING_TEST_TIMEOUT", raising=False)
+    assert hf._shipping_test_timeout() == 1200
+    monkeypatch.setenv("PM_SHIPPING_TEST_TIMEOUT", "300")
+    assert hf._shipping_test_timeout() == 300
+    monkeypatch.setenv("PM_SHIPPING_TEST_TIMEOUT", "not-an-int")
+    assert hf._shipping_test_timeout() == 1200  # 불량 값 → default 폴백.
 
 
 def test_run_escape_force_fire_ignores_classification(hf, tmp_path):

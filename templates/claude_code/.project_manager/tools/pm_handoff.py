@@ -1022,10 +1022,29 @@ def _module_run_git(args: list[str]) -> tuple[int, str]:
     return result.returncode, result.stdout + result.stderr
 
 
+# 인터랙티브 handoff 의 라이브 출하 smoke wall-clock 상한 (초·T-0200). 라이브 바이너리
+# (opencode/claude/ollama) 있는 머신에선 shipping smoke(각 inner 300s cap)가 순차 실행돼
+# 최악 수십 분 block → 인터랙티브 hang. outer subprocess 에 이 상한을 걸어 bound 한다.
+# 정상 full smoke(~수백 s)엔 여유, 병리적 hang 은 상한. env 로 하향(빠른 피드백) 가능.
+_SHIPPING_TEST_TIMEOUT_DEFAULT = 1200
+
+
+def _shipping_test_timeout() -> int:
+    """출하 smoke outer wall-clock 상한 (env `PM_SHIPPING_TEST_TIMEOUT` · default 1200s)."""
+    raw = os.environ.get("PM_SHIPPING_TEST_TIMEOUT")
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return _SHIPPING_TEST_TIMEOUT_DEFAULT
+
+
 def _run_shipping_test(
     worktree: str,
     *,
     runner: Callable[[list[str], dict[str, str], str], tuple[int, str]] | None = None,
+    timeout: int | None = None,
 ) -> tuple[int, str]:
     """`pytest -m shipping -q` 를 worktree cwd·PM_ORCH_LIVE=1 로 돌린다 (출하 테스트 enforce).
 
@@ -1035,24 +1054,42 @@ def _run_shipping_test(
     하므로 → 0개 selected/skip → green → fail-soft 통과(게이트 강제 안 함·CI green 불변·
     spike §3.3·ticket 결정).
 
-    반환: (returncode, stdout+stderr). runner DI seam — hermetic 테스트는 결정론 stub.
+    wall-clock 상한(T-0200): 라이브 바이너리가 *있는* 머신에선 smoke 가 실제로 돌아 수십 분
+    block → 인터랙티브 hang. outer `subprocess.run` 에 `timeout` 을 걸고, 초과 시
+    `subprocess.TimeoutExpired` 를 잡아 rc 124(=`_fire_shipping_test` 의 `rc not in (0,5)` →
+    핸드오프 중단·silent pass 아님) + PM 안내(`--no-shipping-test`·수동 실행)를 반환한다.
+
+    반환: (returncode, stdout+stderr). runner DI seam — hermetic 테스트는 결정론 stub
+    (timeout 경로도 runner 가 `TimeoutExpired` raise 로 검증 가능·실 subprocess 미실행).
     """
-    if runner is not None:
-        env = dict(os.environ)
-        env["PM_ORCH_LIVE"] = "1"
-        return runner([sys.executable, "-m", "pytest", "-m", "shipping", "-q"], env, worktree)
+    if timeout is None:
+        timeout = _shipping_test_timeout()
     env = dict(os.environ)
     env["PM_ORCH_LIVE"] = "1"
-    result = subprocess.run(
-        [_default_python(), "-m", "pytest", "-m", "shipping", "-q"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        cwd=worktree,
-        env=env,
-    )
-    return result.returncode, result.stdout + result.stderr
+    cmd = ["-m", "pytest", "-m", "shipping", "-q"]
+    try:
+        if runner is not None:
+            return runner([sys.executable, *cmd], env, worktree)
+        result = subprocess.run(
+            [_default_python(), *cmd],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=worktree,
+            env=env,
+            timeout=timeout,
+        )
+        return result.returncode, result.stdout + result.stderr
+    except subprocess.TimeoutExpired as exc:
+        partial = (exc.stdout or "") + (exc.stderr or "")
+        note = (
+            f"\n[timeout] 출하 테스트가 {timeout}s 를 초과해 중단됨 — 라이브 smoke 미완주.\n"
+            "  이미 별도로 출하 라이브를 검증했다면 `/pm-handoff … --no-shipping-test` 로 재실행,\n"
+            "  아니면 worktree 에서 `PM_ORCH_LIVE=1 pytest -m shipping` 을 수동으로 완주시켜라.\n"
+            "  (상한 조정: env `PM_SHIPPING_TEST_TIMEOUT=<초>`)"
+        )
+        return 124, partial + note
 
 
 # ── PmHandoff 핵심 클래스 ─────────────────────────────────────────────────────
