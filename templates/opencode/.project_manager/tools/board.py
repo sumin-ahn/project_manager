@@ -144,6 +144,35 @@ def local_config() -> dict[str, str]:
     return conf
 
 
+def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
+    """local.conf 텍스트에서 지정 키만 set-or-replace. 나머지 줄·주석은 보존.
+
+    있으면 그 자리에서 `key=value` 로 교체(첫 등장만), 없으면 끝에 추가. stdlib only.
+    pm_import._set_conf_keys 와 동형 — board 는 pm_import 를 import 하지 않으므로
+    (의존 방향: pm_import 가 board init 을 subprocess 로 부르는 상위) board-local 사본을
+    둔다(중복 최소·순수 프리미티브). cmd_init 의 비파괴 병합에 쓴다(T-0184).
+    """
+    remaining = dict(updates)
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in remaining:
+                newline = "\n" if line.endswith("\n") else ""
+                out.append(f"{key}={remaining.pop(key)}{newline}")
+                continue
+        out.append(line)
+    if remaining:
+        if out and not out[-1].endswith("\n"):
+            out[-1] = out[-1] + "\n"
+        for key, value in updates.items():
+            if key in remaining:
+                out.append(f"{key}={value}\n")
+    return "".join(out)
+
+
 def session_name(override: str | None = None) -> str:
     """세션 식별자 해소 — 4단 우선순위 (T-0073·worktree_pool/pm_config 와 *동형*):
 
@@ -1767,20 +1796,58 @@ def cmd_init(args: argparse.Namespace) -> int:
             ao_surface = area_owner if area_owner else "(미상 — local.conf user= / git user.email 미설정)"
             print(f"✓ areas.md 등록: {prefix} | {args.area} | owner={owner} | area_owner={ao_surface}")
     sess = args.session or (f"{prefix.lower()}-pm" if namespaced else "pm")
-    conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
-    if namespaced:
-        conf += f"prefix={prefix}\n"
-    conf += (f"session={sess}\n"
-             "# 엔진 문서 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
-             f"py={_detect_py()}\ntest_cmd=pytest -q\nproject_name=\n"
-             "# ctx 정지-핸드오프 임계 (어댑터 훅이 잔여 컨텍스트 %로 판정 — T-0013):\n"
-             f"ctx_nudge_pct={CTX_NUDGE_PCT_DEFAULT}\nctx_stop_pct={CTX_STOP_PCT_DEFAULT}\n"
-             "# ctx_window_tokens: 핸드오프 토큰 예산(위 nudge/stop %의 기준). 큰 window(1M)\n"
-             "# 모델이라도 낮게 두면 이른 핸드오프 = 토큰 경제(큰 컨텍스트가 매 턴 소모 가속).\n"
-             "# 올리면 세션당 더 길게. 물리 window 아님 — 사용자 비용/맥락 선택.\n"
-             f"ctx_window_tokens={CTX_WINDOW_TOKENS_DEFAULT}\n")
-    LOCAL_CONF.write_text(conf, encoding="utf-8")
-    print(f"✓ local.conf: {('prefix=' + prefix + ' · ') if namespaced else ''}session={sess}")
+    if not LOCAL_CONF.exists():
+        # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
+        conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
+        if namespaced:
+            conf += f"prefix={prefix}\n"
+        conf += (f"session={sess}\n"
+                 "# 엔진 문서 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
+                 f"py={_detect_py()}\ntest_cmd=pytest -q\nproject_name=\n"
+                 "# ctx 정지-핸드오프 임계 (어댑터 훅이 잔여 컨텍스트 %로 판정 — T-0013):\n"
+                 f"ctx_nudge_pct={CTX_NUDGE_PCT_DEFAULT}\nctx_stop_pct={CTX_STOP_PCT_DEFAULT}\n"
+                 "# ctx_window_tokens: 핸드오프 토큰 예산(위 nudge/stop %의 기준). 큰 window(1M)\n"
+                 "# 모델이라도 낮게 두면 이른 핸드오프 = 토큰 경제(큰 컨텍스트가 매 턴 소모 가속).\n"
+                 "# 올리면 세션당 더 길게. 물리 window 아님 — 사용자 비용/맥락 선택.\n"
+                 f"ctx_window_tokens={CTX_WINDOW_TOKENS_DEFAULT}\n")
+        LOCAL_CONF.write_text(conf, encoding="utf-8")
+        surface_sess = sess
+    else:
+        # 존재 시 — 비파괴 병합(T-0184). init 이 안 쓰는 사용자/operational 키
+        # (external_review_enabled·reviewer_cmd·upstream·upstream_rev·opencode_pro_model·
+        # status_total_style·user 등)를 절대 삭제/변경하지 않는다. 통째 write 금지.
+        text = LOCAL_CONF.read_text(encoding="utf-8")
+        existing = local_config()
+        updates: dict[str, str] = {}
+        # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 ctx_window_tokens 등)은 보존.
+        defaults = {
+            "py": _detect_py(),
+            "test_cmd": "pytest -q",
+            "project_name": "",
+            "ctx_nudge_pct": str(CTX_NUDGE_PCT_DEFAULT),
+            "ctx_stop_pct": str(CTX_STOP_PCT_DEFAULT),
+            "ctx_window_tokens": str(CTX_WINDOW_TOKENS_DEFAULT),
+        }
+        for key, value in defaults.items():
+            if key not in existing:
+                updates[key] = value
+        # session·prefix 는 명시 인자일 때만 set-or-replace(재등록 UX 보존). 인자 없으면
+        # 기존 session 보존 — 없으면 default(`pm`/`<prefix>-pm`)로 표면화만.
+        if args.session:
+            updates["session"] = args.session
+        if namespaced:
+            updates["prefix"] = prefix
+        merged = _set_conf_keys(text, updates)
+        # trailing newline 보장 — updates 가 비어(default 키 전부 존재) `_set_conf_keys` 가
+        # 원문을 그대로 반환하고 그 원문이 개행 없이 끝나면, 뒤이은 prompt_external_review_optin()
+        # 의 append 가 마지막 키에 그대로 붙어 기존 키를 변질시킨다(codex must-fix·병합 경로 회귀).
+        if merged and not merged.endswith("\n"):
+            merged += "\n"
+        LOCAL_CONF.write_text(merged, encoding="utf-8")
+        surface_sess = existing.get("session") or sess
+        if args.session:
+            surface_sess = args.session
+    print(f"✓ local.conf: {('prefix=' + prefix + ' · ') if namespaced else ''}session={surface_sess}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
         PM_STATE_FILE.write_text(PM_STATE_TEMPLATE.read_text(encoding="utf-8"),
                                  encoding="utf-8")

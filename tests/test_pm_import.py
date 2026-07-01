@@ -1077,8 +1077,14 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
 
 
 def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
-    """재병합은 board init 이 *쓴* 키를 덮지 않는다 — session 은 board init 솔로 기본('pm')을
-    따르고, 기존 local.conf 의 session('mine')은 백업에만 남는다(init 값 우선)."""
+    """재-import 는 기존 사용자 설정을 보존한다 — session 은 명시 인자가 없으므로 기존값
+    ('mine')을 유지하고(T-0184 비파괴 병합·cmd_init 이 통째 덮지 않음), init 이 안 쓰는
+    사용자 키(external_review_enabled)도 보존된다.
+
+    T-0184 이전엔 board init 이 local.conf 를 통째 덮어 session 이 init 솔로 기본('pm')으로
+    리셋됐고 기존 'mine' 은 백업에만 남았다(데이터 손실 버그). 이제 cmd_init 은 local.conf
+    존재 시 병합하며 session·prefix 는 *명시 인자일 때만* 교체한다 — pm_import 의
+    run_board_init 은 --session 을 넘기지 않으므로 기존 session 이 보존된다."""
     dest = tmp_path / "precedence"
     dest.mkdir()
     pm_dir = dest / ".project_manager"
@@ -1091,9 +1097,9 @@ def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
     assert rc == 0
 
     conf = _parse_conf(pm_dir / "local.conf")
-    # board init 이 쓴 session 키는 init 기본(솔로='pm')이 우선 — 기존 'mine' 으로 덮지 않음.
-    assert conf.get("session") == "pm", \
-        f"재병합이 board init 의 session 을 기존값으로 덮음 — init 값 우선이어야 함: {conf.get('session')!r}"
+    # 명시 --session 이 없으므로 기존 session 이 보존된다(T-0184 비파괴 병합).
+    assert conf.get("session") == "mine", \
+        f"재-import 가 기존 session 을 보존하지 않음(T-0184 비파괴 병합 기대): {conf.get('session')!r}"
     # board init 이 안 쓰는 사용자 키는 보존.
     assert conf.get("external_review_enabled") == "false"
 

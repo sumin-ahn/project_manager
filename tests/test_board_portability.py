@@ -293,3 +293,139 @@ def test_init_ctx_window_tokens_has_cost_meaning_comment(board, monkeypatch, tmp
     assert "핸드오프 토큰 예산" in conf_text
     # 핵심 의미: 물리 window 가 아니라 사용자가 정하는 비용/맥락 선택.
     assert "물리 window 아님" in conf_text
+
+
+# ── C9: cmd_init 재실행 비파괴 병합 — 사용자/operational 키 보존 (T-0184) ──────
+# 🔴 데이터 손실 버그: cmd_init 이 local.conf 를 가드 없이 통째 덮어써 재실행 시 init 이
+# 안 쓰는 사용자 키(external_review_enabled·upstream·upstream_rev·opencode_pro_model 등)가
+# 소멸하고 커스텀 ctx_window_tokens 가 default 로 리셋됐다. 존재 시 병합으로 수정.
+
+# init 이 안 쓰는 사용자/operational 키 + 커스텀 init 기본키를 담은 기존 local.conf.
+_CUSTOM_CONF = (
+    "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
+    "session=my-pm\n"
+    "py=python3\ntest_cmd=pytest -q\nproject_name=myproj\n"
+    "ctx_nudge_pct=20\nctx_stop_pct=10\n"
+    "ctx_window_tokens=5000\n"
+    "# 외부 코드리뷰 (ADR-0004)\n"
+    "external_review_enabled=false\n"
+    "reviewer_cmd=codex exec\n"
+    "upstream=/x\nupstream_rev=abc\n"
+    "opencode_pro_model=m\n"
+    "status_total_style=fraction\n"
+    "user=me@example.com\n"
+)
+
+
+def test_init_rerun_preserves_custom_operational_keys(board, monkeypatch, tmp_path):
+    """(a) 커스텀 키(external_review_enabled·upstream·upstream_rev·opencode_pro_model 등)를
+    담은 local.conf 에 cmd_init 재실행 → 모든 커스텀 키/값이 생존한다(통째 덮어쓰기 금지)."""
+    conf_path = _init_isolated(board, monkeypatch, tmp_path)
+    conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
+    args = argparse.Namespace(prefix=None, area=None, owner=None, session=None)
+
+    assert board.cmd_init(args) == 0
+
+    conf_text = conf_path.read_text(encoding="utf-8")
+    # init 이 안 쓰는 사용자/operational 키가 전부 원값 그대로 생존.
+    assert "external_review_enabled=false" in conf_text
+    assert "reviewer_cmd=codex exec" in conf_text
+    assert "upstream=/x" in conf_text
+    assert "upstream_rev=abc" in conf_text
+    assert "opencode_pro_model=m" in conf_text
+    assert "status_total_style=fraction" in conf_text
+    assert "user=me@example.com" in conf_text
+
+
+def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_path):
+    """(b) 커스텀 ctx_window_tokens=5000 이 default(200000)로 리셋되지 않는다(없을 때만 추가)."""
+    conf_path = _init_isolated(board, monkeypatch, tmp_path)
+    conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
+    args = argparse.Namespace(prefix=None, area=None, owner=None, session=None)
+
+    assert board.cmd_init(args) == 0
+
+    conf_text = conf_path.read_text(encoding="utf-8")
+    assert "ctx_window_tokens=5000" in conf_text
+    assert f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" not in conf_text
+    # 인자 없는 재실행이므로 기존 session 도 보존.
+    assert "session=my-pm" in conf_text
+
+
+def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
+    """(c) local.conf 부재 시 전체 default 생성(현행 회귀·기본키 존재)."""
+    conf_path = _init_isolated(board, monkeypatch, tmp_path)
+    assert not conf_path.exists()
+    args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
+
+    assert board.cmd_init(args) == 0
+
+    conf_text = conf_path.read_text(encoding="utf-8")
+    assert "session=pm" in conf_text
+    assert "py=" in conf_text and "test_cmd=pytest -q" in conf_text
+    assert f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
+    assert "ctx_nudge_pct=" in conf_text and "ctx_stop_pct=" in conf_text
+
+
+def test_init_rerun_explicit_session_updates_and_preserves(board, monkeypatch, tmp_path):
+    """(d) --session 명시 시 session 만 갱신, 나머지 커스텀 키는 보존(set-or-replace)."""
+    conf_path = _init_isolated(board, monkeypatch, tmp_path)
+    conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
+    args = argparse.Namespace(prefix=None, area=None, owner=None, session="newsess")
+
+    assert board.cmd_init(args) == 0
+
+    conf_text = conf_path.read_text(encoding="utf-8")
+    assert "session=newsess" in conf_text
+    assert "session=my-pm" not in conf_text
+    # session 갱신은 나머지 커스텀 키를 건드리지 않는다.
+    assert "external_review_enabled=false" in conf_text
+    assert "upstream=/x" in conf_text
+    assert "ctx_window_tokens=5000" in conf_text
+
+
+# default 키 전부 존재 + external_review_enabled *부재* + 마지막 줄 개행 없음.
+# (updates 가 비어 `_set_conf_keys` 가 원문 verbatim 반환 → trailing newline 회귀 재현 조건.)
+_NO_TRAILING_NL_CONF = (
+    "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
+    "session=my-pm\n"
+    "py=python3\ntest_cmd=pytest -q\nproject_name=myproj\n"
+    "ctx_nudge_pct=20\nctx_stop_pct=10\n"
+    "ctx_window_tokens=5000"  # ← 마지막 줄·개행 없음(intentional)
+)
+
+
+def test_init_rerun_no_trailing_newline_optin_append_preserves_last_key(
+    board, monkeypatch, tmp_path
+):
+    """codex must-fix: 병합 경로가 개행 없는 local.conf 를 남기면 뒤이은 external_review
+    opt-in append 가 마지막 키에 그대로 붙어 기존 키를 변질시킨다. cmd_init 이 write 전
+    trailing newline 을 보장해 (a) 마지막 키(ctx_window_tokens=5000)가 온전하고 뒤에 `#` 이
+    붙지 않으며 (b) opt-in 블록이 *새 줄*에서 시작함을 검증한다.
+
+    `_init_isolated`(opt-in stub)를 안 쓰고 *실제* prompt_external_review_optin append 를
+    태운다 — 대화형 'n' 경로(external_review_enabled=false 를 append)를 결정적으로 재현."""
+    conf_path = tmp_path / "local.conf"
+    monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
+    monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
+    monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
+    monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
+    # 실 opt-in append 를 태운다 — 대화형 'n'(OFF) 경로를 결정적으로:
+    monkeypatch.setattr(board, "_is_noninteractive", lambda: False)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+
+    conf_path.write_text(_NO_TRAILING_NL_CONF, encoding="utf-8")
+    args = argparse.Namespace(prefix=None, area=None, owner=None, session=None)
+
+    assert board.cmd_init(args) == 0
+
+    conf_text = conf_path.read_text(encoding="utf-8")
+    # (a) 마지막 키가 변질 안 됨 — 값 온전·뒤에 `#`(주석) 안 붙음.
+    assert "ctx_window_tokens=5000\n" in conf_text
+    assert "ctx_window_tokens=5000#" not in conf_text
+    # (b) opt-in 블록이 새 줄에서 시작(external_review_enabled 라인이 온전).
+    assert "external_review_enabled=false" in conf_text
+    # 파싱 무결성: 값 파트에 `#` 이 섞여 들어가지 않았다.
+    assert board.local_config().get("ctx_window_tokens") == "5000"
+    assert board.local_config().get("external_review_enabled") == "false"
