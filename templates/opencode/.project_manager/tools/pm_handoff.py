@@ -881,11 +881,50 @@ def extract_handoff_prompt_template(pm_playbook_text: str) -> str | None:
     return match.group(1)
 
 
+# bare `/pm-bootstrap` 트리거 — 멀티-PM 슬롯 주입 대상(T-0185).
+_BARE_BOOTSTRAP_TRIGGER = "/pm-bootstrap"
+
+
+def _parse_worktree_slot(worktree_slot: str | None) -> tuple[str, int] | None:
+    """`work/<repo>_<N>` 슬롯을 `(repo, N)` 로 파싱한다 — 비정형이면 None (T-0185).
+
+    파싱: leading `work/` 제거 후 `<repo>_<N>` 을 rsplit("_", 1) → repo·N. N 은 정수여야
+    하고 repo 는 비어 있지 않아야 한다. None·prefix 불일치·underscore 부재·N 비정수는 모두
+    None 반환(호출부가 bare 폴백·fail-soft·현행 유지).
+    """
+    if not worktree_slot or not worktree_slot.startswith("work/"):
+        return None
+    rest = worktree_slot[len("work/"):]
+    if "_" not in rest:
+        return None
+    repo, n_str = rest.rsplit("_", 1)
+    if not repo or not n_str.isdigit():
+        return None
+    return repo, int(n_str)
+
+
+def _inject_slot_into_template(template: str, worktree_slot: str | None) -> str:
+    """복사 블록 템플릿의 bare `/pm-bootstrap` 을 slot-qualified 로 치환한다 (T-0185).
+
+    `worktree_slot` 이 `work/<repo>_<N>` 형식이면 템플릿 내 모든 `/pm-bootstrap` 을
+    `/pm-bootstrap <repo> --slot <N>` 로 치환한다 — 멀티-PM 다음 세션이 슬롯 disambiguator
+    없이 fail-loud 하는 갭 보완(ADR-0035). 여러 등장 전부 같은 커맨드라 모두 치환 OK.
+    None·비정형(파싱 실패)이면 bare 유지(fail-soft·현행).
+    """
+    parsed = _parse_worktree_slot(worktree_slot)
+    if parsed is None:
+        return template
+    repo, n = parsed
+    qualified = f"{_BARE_BOOTSTRAP_TRIGGER} {repo} --slot {n}"
+    return template.replace(_BARE_BOOTSTRAP_TRIGGER, qualified)
+
+
 def build_handoff_prompt_output(
     pm_playbook_text: str,
     session_num: int | str,
     wave_summary: str,
     date_str: str,
+    worktree_slot: str | None = None,
 ) -> str:
     """인계 프롬프트 stdout 출력 문자열을 빌드한다 (T-0180 — 트리거로 축소).
 
@@ -893,6 +932,11 @@ def build_handoff_prompt_output(
     포함한다. T-0179 로 부트스트랩이 인계 본문(읽기 범위·메타 학습·다음 intent·회귀/incident)을
     log handoff entry 에서 자동 dump 하므로, 프롬프트는 더 이상 `<핵심 인계 사항>` 손-채움을
     싣지 않는다 — 같은 인계를 두 곳에 적던 중복 제거(spike §3 옵션 C·ADR-0035).
+
+    `worktree_slot`(`work/<repo>_<N>`·기본 None)이 set 이면 복사 블록의 bare `/pm-bootstrap` 을
+    `/pm-bootstrap <repo> --slot <N>` 로 주입해, 멀티-PM 다음 세션이 슬롯을 정확히 바인딩하게
+    한다(T-0185). None·비정형이면 bare 유지(하위호환·fail-soft). pm_playbook.md 템플릿 파일은
+    건드리지 않는다 — 치환은 추출된 텍스트 안에서만 contained.
     """
     template = extract_handoff_prompt_template(pm_playbook_text)
     if template is None:
@@ -901,6 +945,7 @@ def build_handoff_prompt_output(
             f"앵커: '{_HANDOFF_PROMPT_SECTION_ANCHOR}'\n"
             "pm_playbook.md §'다음 PM 세션 부트스트랩 프롬프트 (템플릿)' 을 직접 복사하라."
         )
+    template = _inject_slot_into_template(template, worktree_slot)
 
     header = (
         f"=== 인계 프롬프트 (PM {session_num}차 → 다음 PM 세션) ===\n"
@@ -1504,6 +1549,7 @@ class PmHandoff:
             session_num=_normalize_session_num(session_num),
             wave_summary=wave_summary,
             date_str=date_str,
+            worktree_slot=self._worktree_slot,
         )
         print(prompt_output)
 
@@ -1585,6 +1631,7 @@ class PmHandoff:
             session_num=_normalize_session_num(session_num),
             wave_summary=wave_summary,
             date_str=date_str,
+            worktree_slot=self._worktree_slot,
         )
         return "\n" + prompt_output + "\n"
 

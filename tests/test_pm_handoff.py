@@ -260,6 +260,112 @@ def test_build_handoff_prompt_output_template_absent_warns(hf):
     assert "[경고]" in out and "직접 복사하라" in out
 
 
+# ── 멀티-PM 슬롯 주입 (T-0185) — 복사 블록의 bare /pm-bootstrap 에 slot 주입 ─────
+
+def test_build_handoff_prompt_output_injects_worktree_slot(hf):
+    """worktree_slot=work/<repo>_<N> 이면 복사 블록에 slot-qualified 트리거 주입 (T-0185).
+
+    멀티-PM 다음 세션이 슬롯을 몰라 fail-loud 하던 갭 보완 — bare `/pm-bootstrap` 부재·
+    `/pm-bootstrap <repo> --slot <N>` 존재를 단언한다.
+    """
+    out = hf.build_handoff_prompt_output(
+        pm_playbook_text=_TRIGGER_PLAYBOOK,
+        session_num=42,
+        wave_summary="요약",
+        date_str="2026-06-28",
+        worktree_slot="work/repoA_2",
+    )
+    assert "/pm-bootstrap repoA --slot 2" in out
+    # 복사 블록(템플릿) 내 bare 트리거는 남지 않는다 (뒤 공백/줄바꿈으로 slot-qualified 와 구별).
+    template = hf.extract_handoff_prompt_template(_TRIGGER_PLAYBOOK)
+    injected = hf._inject_slot_into_template(template, "work/repoA_2")
+    assert "/pm-bootstrap " not in injected.replace("/pm-bootstrap repoA", "")
+    assert "/pm-bootstrap\n" not in injected
+
+
+def test_build_handoff_prompt_output_none_slot_keeps_bare(hf):
+    """worktree_slot=None(solo) 이면 bare `/pm-bootstrap` 유지 (현행·회귀·T-0185)."""
+    out = hf.build_handoff_prompt_output(
+        pm_playbook_text=_TRIGGER_PLAYBOOK,
+        session_num=42,
+        wave_summary="요약",
+        date_str="2026-06-28",
+        worktree_slot=None,
+    )
+    assert "/pm-bootstrap" in out
+    assert "--slot" not in out
+
+
+@pytest.mark.parametrize("bad_slot", ["weird", "work/nounderscoreslot", "work/repo_x", ""])
+def test_build_handoff_prompt_output_malformed_slot_falls_back_bare(hf, bad_slot):
+    """비정형 slot(prefix 없음·underscore 없음·N 비정수·빈문자)이면 bare 폴백·크래시 없음 (T-0185)."""
+    out = hf.build_handoff_prompt_output(
+        pm_playbook_text=_TRIGGER_PLAYBOOK,
+        session_num=42,
+        wave_summary="요약",
+        date_str="2026-06-28",
+        worktree_slot=bad_slot,
+    )
+    assert "/pm-bootstrap" in out
+    assert "--slot" not in out
+
+
+def test_run_passes_worktree_slot_to_prompt(hf, tmp_path, capsys):
+    """run() 이 self._worktree_slot 을 build_handoff_prompt_output 에 전달한다 (T-0185·호출부).
+
+    명시 --worktree-slot=work/repoA_2 를 run 에 주면 [5/7] 복사 블록에 slot-qualified 트리거가
+    나온다 — 두 호출부(run·run_trigger 중 run) 배선을 통합으로 가드.
+    """
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_TRIGGER_PLAYBOOK, encoding="utf-8")
+    log_file = tmp_path / "current.md"
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+    )
+    rc = handoff.run(
+        session_num=7,
+        wave_summary="요약",
+        dry_run=True,
+        skip_pytest=False,
+        worktree_slot="work/repoA_2",
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "/pm-bootstrap repoA --slot 2" in out
+
+
+def test_run_trigger_passes_worktree_slot_to_prompt(hf, tmp_path):
+    """_build_trigger_handoff_prompt_block(run_trigger 경로)이 self._worktree_slot 을 전달한다 (T-0185).
+
+    trigger 는 정지되어 stdout 이 휘발하므로 프롬프트를 log entry 에 박제한다 — 그 박제 블록
+    빌더가 slot 을 프롬프트에 넘기는지 단위로 가드.
+    """
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_TRIGGER_PLAYBOOK, encoding="utf-8")
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=tmp_path / "current.md",
+        pm_playbook_file=playbook,
+        pm_state_file=tmp_path / "pm_state.md",
+    )
+    handoff._worktree_slot = "work/repoA_2"
+    block = handoff._build_trigger_handoff_prompt_block(
+        session_num=7, wave_summary="요약", date_str="2026-06-28"
+    )
+    assert "/pm-bootstrap repoA --slot 2" in block
+
+
 # ── 출하 pm_playbook 정합: 프롬프트가 트리거로 축소됐다 (T-0180·feature-ship 가드) ──
 
 def test_shipped_pm_playbook_prompt_is_trigger_only():
