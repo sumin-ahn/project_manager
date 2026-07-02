@@ -162,7 +162,7 @@ def test_release_wave_claude_full_wave(tmp_path):
          "--output-format", "stream-json", "--verbose",
          "--dangerously-skip-permissions",
          _full_wave_prompt("CLAUDE.md")],
-        cwd=str(dest), capture_output=True, text=True,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
     )
 
@@ -205,7 +205,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
         ["opencode", "run", "--agent", "build", "--dir", str(dest),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
          _full_wave_prompt("AGENTS.md")],
-        cwd=str(dest), capture_output=True, text=True,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
@@ -237,7 +237,7 @@ def _seed_git_repo(path: Path) -> None:
     """seed git repo(main·1 commit) 생성 — repo add 의 bare-clone 원(ADR-0011)."""
     path.mkdir(parents=True, exist_ok=True)
     _git = lambda *a: subprocess.run(["git", "-C", str(path), *a], check=True,
-                                     capture_output=True, text=True)
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace")
     _git("init", "-q")
     _git("config", "user.email", "probe@local")
     _git("config", "user.name", "probe")
@@ -251,7 +251,7 @@ def _pm_config(home: Path, *args: str) -> subprocess.CompletedProcess:
     """home 의 pm_config.py 호출(엔진 도구·LLM 아님 → 부모 env 상속 OK·모델 무관)."""
     return subprocess.run(
         [sys.executable, str(home / ".project_manager" / "tools" / "pm_config.py"), *args],
-        cwd=str(home), capture_output=True, text=True,
+        cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
     )
 
@@ -388,7 +388,7 @@ def test_release_wave_multirepo_opencode_full_wave(tmp_path):
         ["opencode", "run", "--agent", "build", "--dir", str(home),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
          _multirepo_wave_prompt()],
-        cwd=str(home), capture_output=True, text=True,
+        cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
@@ -427,7 +427,7 @@ def test_release_wave_multirepo_claude_full_wave(tmp_path):
          "--allowedTools", "Bash",
          "--dangerously-skip-permissions",
          _multirepo_wave_prompt()],
-        cwd=str(home), capture_output=True, text=True,
+        cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
     )
 
@@ -511,11 +511,14 @@ def _fire_stop_hook(dest: Path, stdin_payload: dict) -> subprocess.CompletedProc
 
     claude Code 가 훅을 부르는 방식(래퍼 exec·stdin 에 hook JSON)을 그대로 재현한다 — 래퍼가
     인터프리터 self-resolve 후 ctx_stop_hook.py 를 exec. 엔진-측 스크립트라 LLM 아님·부모 env OK.
+    bash 절대경로 경유 스폰 — Windows CreateProcess 는 shebang 스크립트를 직접 실행 못 한다
+    (WinError 193·PM 48차 tier3 실측). POSIX 는 shebang 이 bash 라 동치 (test_run_tests_hook 패턴).
     """
+    bash = shutil.which("bash") or "bash"
     return subprocess.run(
-        [str(dest / ".claude" / "ctx_stop_hook.sh")],
+        [bash, str(dest / ".claude" / "ctx_stop_hook.sh")],
         input=json.dumps(stdin_payload),
-        cwd=str(dest), capture_output=True, text=True,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
     )
 
@@ -562,7 +565,7 @@ def test_release_wave_claude_hard_stop_lockout_exception(tmp_path):
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--allowedTools", "Bash", "Read",
          "--dangerously-skip-permissions", turn1_prompt],
-        cwd=str(dest), capture_output=True, text=True,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
     )
 
