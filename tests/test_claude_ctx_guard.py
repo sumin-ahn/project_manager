@@ -594,3 +594,144 @@ def test_hook_nudge_independent_from_stop(stop_hook, tmp_path):
     assert output["hookSpecificOutput"]["permissionDecision"] == "deny"  # stop 정상 작동.
     assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / f"{sid}.nudge").exists()
     assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / f"{sid}.done").exists()
+
+
+# ── 6. hard-stop 핸드오프-intent 예외 (T-0205·ADR-0038 D2 amend) ────────────────
+# 락아웃 해소: stop 밴드 UserPromptSubmit 에서 `/pm-handoff` 로 *시작*하는 prompt 는 통과(None),
+# 그 외 prompt 는 block 유지(좁은 매칭·과통과=hard-stop 무력화 방지). 통과 케이스도 STOP marker 는
+# 이벤트 무관하게 박힌다. 회귀: nudge/ok/PreToolUse 경로는 이 예외에 무영향.
+
+_OMIT = object()  # "prompt 키 자체 부재" 를 명시(None 값과 구분).
+
+
+def _ups_stop_stdin(tmp_path: Path, session_id: str, prompt=_OMIT) -> dict:
+    """stop 밴드 UserPromptSubmit stdin (prompt=_OMIT → 키 생략·그 외는 그대로 세팅)."""
+    stdin = {
+        "transcript_path": str(_stop_transcript(tmp_path)),
+        "session_id": session_id,
+        "hook_event_name": "UserPromptSubmit",
+    }
+    if prompt is not _OMIT:
+        stdin["prompt"] = prompt
+    return stdin
+
+
+def test_hook_ups_handoff_prompt_passes(stop_hook, tmp_path):
+    # stop 밴드 + `/pm-handoff` prompt → 통과(None·block JSON 없음)로 핸드오프 진입 허용.
+    stdin = _ups_stop_stdin(tmp_path, "sess-hp", prompt="/pm-handoff")
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert rc == 0 and output is None
+    # 통과해도 STOP marker(.done)는 stop 도달 즉시 박힌다 (이벤트 무관·회전 신호 누락 방지).
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-hp.done").exists()
+
+
+@pytest.mark.parametrize("prompt", [
+    "/pm-handoff --dry-run",       # 인자 허용.
+    "/pm-handoff --reason ctx-stop",
+    "  /pm-handoff  ",             # 선행/후행 공백.
+    "\t/pm-handoff\n",             # 탭·개행도 strip.
+])
+def test_hook_ups_handoff_prompt_variants_pass(stop_hook, tmp_path, prompt):
+    # 인자/공백 변형도 통과 — strip 후 정확 커맨드(+공백 인자). 변형 통과에도 STOP marker
+    # 계약(이벤트 무관 박제)은 유지된다(codex suggestion — 대표 케이스 아닌 전 변형 단언).
+    stdin = _ups_stop_stdin(tmp_path, "sess-hpv", prompt=prompt)
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert rc == 0 and output is None, f"핸드오프 트리거 변형은 통과해야 함: {prompt!r}"
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-hpv.done").exists(), \
+        f"통과 변형에서 STOP marker 누락: {prompt!r} (relay 회전 신호 계약)"
+
+
+@pytest.mark.parametrize("prompt", [
+    "/pm-handofffoo",              # 접미 변형 — 비정확 커맨드 (토큰 경계·codex must-fix).
+    "/pm-handoffs",
+    "/pm-handoff;echo x",          # 공백 없는 접미(세미콜론) — 커맨드 토큰이 아님.
+])
+def test_hook_ups_inexact_command_suffix_blocks(stop_hook, tmp_path, prompt):
+    # 토큰 경계: 정확 커맨드 단독 또는 공백 뒤 인자만 통과 — bare prefix 매칭이 허용하던
+    # `/pm-handoffX` 류 비정확 커맨드는 block 유지 (codex·내부 reviewer 수렴 지점).
+    stdin = _ups_stop_stdin(tmp_path, "sess-hpx", prompt=prompt)
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert rc == 0 and output is not None and output.get("decision") == "block", \
+        f"비정확 커맨드 접미 변형이 통과됨(토큰 경계 붕괴): {prompt!r}"
+
+
+@pytest.mark.parametrize("prompt", [
+    "핸드오프 해줘",              # 자연어(키워드) — 오인식 위험이라 계속 block.
+    "인계 부탁해",                # 자연어 키워드.
+    "pm-handoff",                 # 슬래시 없음.
+    "버그 고치고 /pm-handoff",    # `/pm-handoff` 가 시작 아님(중간).
+    "please run /pm-handoff",     # 영문 산문 — 시작 아님.
+])
+def test_hook_ups_non_handoff_prompt_still_blocks(stop_hook, tmp_path, prompt):
+    # 좁은 매칭 경계(핵심): `/pm-handoff` 로 *시작*하지 않으면 새 작업 진입 block 유지.
+    stdin = _ups_stop_stdin(tmp_path, "sess-nblk", prompt=prompt)
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert output["decision"] == "block", f"비-핸드오프 prompt 는 block 유지: {prompt!r}"
+    # block 이어도 STOP marker 는 박힌다 (이벤트 무관).
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nblk.done").exists()
+
+
+def test_hook_ups_block_reason_guides_handoff_command(stop_hook, tmp_path):
+    # block reason 이 통과 가능한 정확 커맨드(`/pm-handoff`)를 안내 → 락아웃 없음.
+    stdin = _ups_stop_stdin(tmp_path, "sess-guide", prompt="다른 일 해줘")
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert output["decision"] == "block"
+    assert "/pm-handoff" in output["reason"], "락아웃 해소 안내(정확 커맨드) 누락"
+
+
+@pytest.mark.parametrize("prompt", [_OMIT, None, 123, {"cmd": "/pm-handoff"}, ["/pm-handoff"]])
+def test_hook_ups_missing_or_nonstr_prompt_blocks(stop_hook, tmp_path, prompt):
+    # prompt 필드 부재/비-str → fail-closed block (기존 동작 보존·과통과 방지).
+    stdin = _ups_stop_stdin(tmp_path, "sess-badp", prompt=prompt)
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert output["decision"] == "block", f"prompt 부재/비-str 은 fail-closed block: {prompt!r}"
+
+
+def test_hook_ups_handoff_exception_scoped_to_stop_band(stop_hook, tmp_path):
+    # 회귀: 핸드오프-intent 예외는 stop 밴드 한정 — nudge 밴드 UserPromptSubmit 은 prompt 내용과
+    # 무관하게 여전히 비차단 nudge 주입(예외가 nudge 경로를 오염시키지 않음).
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])  # 잔여 25 = nudge.
+    stdin = {
+        "transcript_path": str(path),
+        "session_id": "sess-nudge-hp",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "/pm-handoff",
+    }
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert rc == 0
+    hso = output["hookSpecificOutput"]
+    assert "additionalContext" in hso              # nudge 주입 — 통과(None)도 block 도 아님.
+    assert output.get("decision") != "block"
+
+
+def test_hook_ups_ok_band_passes_regardless_of_prompt(stop_hook, tmp_path):
+    # 회귀: ok 밴드면 prompt 내용 무관 통과·marker 미박제 (stop 예외 로직 미진입).
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 100_000})])  # used 50 = ok.
+    stdin = {
+        "transcript_path": str(path),
+        "session_id": "sess-ok-ups",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "아무 일이나 해줘",
+    }
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert rc == 0 and output is None
+    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-ok-ups.done").exists()
+
+
+@pytest.mark.parametrize("stdin,expected", [
+    ({"prompt": "/pm-handoff"}, True),
+    ({"prompt": "/pm-handoff --dry-run"}, True),
+    ({"prompt": "  /pm-handoff  "}, True),
+    ({"prompt": "핸드오프 해줘"}, False),
+    ({"prompt": "pm-handoff"}, False),
+    ({"prompt": "버그 고치고 /pm-handoff"}, False),
+    # 토큰 경계 (codex·reviewer 수렴) — 정확 커맨드 단독/공백+인자만·접미 변형은 비정확 커맨드.
+    ({"prompt": "/pm-handofffoo"}, False),
+    ({"prompt": "/pm-handoffs"}, False),
+    ({"prompt": "/pm-handoff;echo x"}, False),
+    ({"prompt": 123}, False),
+    ({}, False),
+])
+def test_is_handoff_prompt_unit(stop_hook, stdin, expected):
+    # 좁은 매칭 계약 단위 검증 — 정확 커맨드 `/pm-handoff` 단독 또는 공백 뒤 인자만 True.
+    assert stop_hook._is_handoff_prompt(stdin) is expected

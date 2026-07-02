@@ -11,7 +11,8 @@ claude Code 가 호출: UserPromptSubmit(prompt 처리 전 — 새 작업 진입
      (write 실패 시 다음 호출 재시도 self-heal — in-memory 플래그 안 씀).
   2. **PreToolUse**: 진행 중 rich ``/pm-handoff`` 의 **핸드오프 도구는 통과**(hook 결정 없이 None →
      normal permission eval·settings.json standing deny 유지). 그 외 새 작업 도구는 **deny**.
-  3. **UserPromptSubmit**: 새 작업 진입 자체를 **전면 block**(핸드오프 예외 없음·도구 개념 없음).
+  3. **UserPromptSubmit**: 새 작업 진입 block — 단 **핸드오프 트리거(`/pm-handoff` 로 시작하는
+     prompt)는 통과**(T-0205·ADR-0038 D2 amend — 좁은 매칭·자연어는 계속 block+커맨드 안내).
 
 nudge(ADR-0037) 는 그대로 — 모델-facing 비차단 안내를 UserPromptSubmit ``additionalContext`` 로 주입.
 
@@ -145,6 +146,24 @@ def _is_handoff_tool(stdin: dict) -> bool:
     return False
 
 
+def _is_handoff_prompt(stdin: dict) -> bool:
+    """UserPromptSubmit prompt 가 핸드오프 트리거인가 (stop 중 통과 대상·T-0205).
+
+    **좁은 매칭**(사용자 결정 2026-07-02·ADR-0038 D2 amend): 정확 트리거 `/pm-handoff` 로
+    *시작*하는 prompt 만(인자 허용 — `/pm-handoff --dry-run` 등). 자연어("핸드오프 해줘")는
+    계속 block — 키워드 매칭은 오인식("핸드오프 전에 이 버그 고쳐줘")이 새 작업을 통과시켜
+    hard-stop 을 무력화한다. 넓은 문의 실패(안전장치 무력화)가 좁은 문의 실패(안내 보고
+    커맨드 재입력·몇 초)보다 비싸다 — block reason 이 정확 커맨드를 안내해 락아웃은 없다.
+    """
+    prompt = stdin.get("prompt")
+    if not isinstance(prompt, str):
+        return False
+    stripped = prompt.strip()
+    # 토큰 경계 필수(codex·reviewer 수렴): bare `startswith` 는 `/pm-handoffX` 같은 비정확
+    # 커맨드도 통과시킨다 — 정확 커맨드 단독 또는 공백 뒤 인자만 허용(^/pm-handoff(\s|$)).
+    return stripped == "/pm-handoff" or stripped.startswith("/pm-handoff ")
+
+
 def deny_output(reason: str) -> dict:
     """PreToolUse 차단 — 새 작업 도구 호출 직전 deny."""
     return {
@@ -190,10 +209,11 @@ def build_stop_deny_reason(used_pct: int, remaining: int) -> str:
 
 
 def build_stop_block_reason(used_pct: int, remaining: int) -> str:
-    """UserPromptSubmit 새 작업 진입 block 사유."""
+    """UserPromptSubmit 새 작업 진입 block 사유 (+통과 가능한 정확 커맨드 안내·T-0205)."""
     return (
         f"[ctx-stop] 컨텍스트 사용 {used_pct}% (잔여 {remaining}%) — 정지 임계 도달. "
-        "이 세션에서 새 작업을 시작하지 말고 `/pm-handoff` 로 rich 핸드오프 후 **새 세션을 시작**하라."
+        "새 작업 진입은 차단된다. **지금 입력 가능한 것은 `/pm-handoff` 뿐** — 그대로 입력하면 "
+        "rich 핸드오프가 통과·진행되고, 완료 후 **새 세션을 시작**하라."
     )
 
 
@@ -201,7 +221,7 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
     """훅 핵심 — (rc, output|None). output None = 통과(도구/prompt 진행).
 
     stop 시: STOP marker 무조건 박제(relay 신호·ADR-0038 D4) + PreToolUse 핸드오프 도구 통과·
-    새 작업 deny / UserPromptSubmit 전면 block.
+    새 작업 deny / UserPromptSubmit block(핸드오프 트리거 prompt 예외·T-0205).
     """
     transcript = stdin.get("transcript_path")
     window = ctx_guard.ctx_window_tokens(conf)
@@ -243,7 +263,12 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
 
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
     if event == "UserPromptSubmit":
-        # 새 작업 진입 전면 차단(핸드오프 예외 없음·도구 개념 없음).
+        # 핸드오프-intent 예외(T-0205·ADR-0038 D2 amend): 정확 트리거 `/pm-handoff` prompt 는
+        # 통과 — 턴이 끝난 뒤 stop 되면 사용자 prompt 가 유일한 핸드오프 진입 수단인데 전면
+        # block 이 그것까지 막아 락아웃(사용자 실측)이었다. 그 외 prompt 는 새 작업 진입
+        # 차단 유지(block reason 이 정확 커맨드 안내).
+        if _is_handoff_prompt(stdin):
+            return 0, None
         return 0, block_output(build_stop_block_reason(used, remaining))
 
     # PreToolUse — 진행 중 핸드오프 도구는 통과(None → normal permission eval·settings deny 유지).
