@@ -21,16 +21,9 @@
       "Bash(chmod *)",
       "Bash(python *)",
       "Bash(python3 *)",
+      "Bash(py *)",
       "Bash(pip *)",
       "Bash(pip3 *)",
-      "Bash({{PY}} .project_manager/tools/board.py *)",
-      "Bash({{PY}} .project_manager/tools/pm_bootstrap.py *)",
-      "Bash({{PY}} .project_manager/tools/pm_handoff.py *)",
-      "Bash({{PY}} .project_manager/tools/ticket_finish.py *)",
-      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/board.py *)",
-      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/pm_bootstrap.py *)",
-      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/pm_handoff.py *)",
-      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/ticket_finish.py *)",
       "Bash(git status)",
       "Bash(git status *)",
       "Bash(git log *)",
@@ -85,7 +78,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{PY}} ${CLAUDE_PROJECT_DIR}/.claude/ctx_stop_hook.py",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/ctx_stop_hook.sh",
             "timeout": 15
           }
         ]
@@ -96,17 +89,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{PY}} ${CLAUDE_PROJECT_DIR}/.claude/ctx_stop_hook.py",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/ctx_stop_hook.sh",
             "timeout": 15
           }
         ]
       }
     ]
   },
-  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·멀티-유저 공유 안전). 네이티브 auto-compact 는 autoCompactEnabled:false + env DISABLE_AUTO_COMPACT 로 이중 비활성(hard-stop 단일 게이트·ADR-0038 D3 — 압축이 hard-stop 을 선점 못 하니 PreCompact 백스톱 불요·제거). 훅 경로는 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} 를 쓴다(절대경로 박제 금지 — clone-and-go·다른 PC 에서 재-import 불필요). statusLine 은 ${CLAUDE_PROJECT_DIR} 미지원이라 상대경로(cwd=프로젝트루트면 동작·아니면 무표시 graceful·필요시 settings.local.json 절대경로 override). {{PY}} 는 인터프리터명(python3/python)·import 치환. permissions.allow 는 보수적 기본값. 머신-특정 권한/오버라이드는 settings.local.json (gitignore) 으로 분리.",
+  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·멀티-유저 공유 안전·T-0202 portable-by-construction). 이 파일은 치환 토큰·절대경로 0 — 모든 머신/프로젝트에서 byte-identical 하게 동작하므로 import/update 가 경로를 재작성할 필요가 없다(pm_update 는 이 파일을 덮지 않음·인스턴스 소유). 네이티브 auto-compact 는 autoCompactEnabled:false + env DISABLE_AUTO_COMPACT 로 이중 비활성(hard-stop 단일 게이트·ADR-0038 D3). 훅 경로는 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} + 인터프리터는 래퍼(.sh)가 self-resolve(python3→python — PY 치환토큰 폐기·T-0202). statusLine 은 ${CLAUDE_PROJECT_DIR} 미지원이라 상대경로 래퍼(cwd=프로젝트루트면 동작·아니면 무표시 graceful·필요시 settings.local.json 절대경로 override). permissions.allow 는 보수적 기본값(python/python3/py 와일드카드가 PM 도구 호출 커버). 머신-특정 권한/오버라이드는 settings.local.json (gitignore) 으로 분리.",
   "statusLine": {
     "type": "command",
-    "command": "{{PY}} .claude/ctx_statusline.py",
+    "command": ".claude/ctx_statusline.sh",
     "padding": 0
   }
 }

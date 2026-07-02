@@ -7,6 +7,11 @@
 #    여기서 제외 — 덮어쓰면 채택자 커스터마이즈 손실. pm_role.md·pm_playbook.md 는
 #    포함(아래) — 프로젝트별 칸은 *.local.md / local.conf 오버레이로 분리(D10).
 #    D15 해소(ADR-0007): pm_playbook 누적 학습/도메인 사례는 pm_playbook.local.md 로 분리(manifest 밖·인스턴스 자산).
+# ⚠️ `.claude/settings.json`(+ 훅 스크립트 `.claude/*.sh`·`.claude/ctx_*.py`)도 **의도적 manifest 밖**
+#    (T-0202): 사용자가 손대는 인스턴스 소유 파일이라 pm_update 가 덮으면 커스터마이즈 손실.
+#    대신 파일 자체가 portable-by-construction — 치환 토큰·절대경로 0(${CLAUDE_PROJECT_DIR} +
+#    래퍼 self-resolve)이라 import 복사만으로 어느 머신/프로젝트에서든 정확 동작(재작성 채널 불요).
+#    머신-특정 오버라이드는 settings.local.json(gitignore).
 
 # ── 도구 (순수 엔진) ─────────────────────────────────────────────
 .project_manager/tools/board.py

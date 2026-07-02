@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from _settings_portability import portability_failures, referenced_hook_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -267,3 +268,41 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
     assert gated.returncode == 0, (
         f"{harness}: adapter-drift 가 `--gate` 를 차단(never-block 위배·exit {gated.returncode})\n{gated.stdout}"
     )
+
+
+# ── import 된 adopter settings.json portable + 훅 배선 실재 (T-0202 · claude harness) ──
+# settings.json + 훅 래퍼(.sh)·스크립트(.py)는 engine.manifest **밖**(인스턴스 소유)이라 pm_import 가
+# 토큰 치환 없이 *verbatim 복사* 한다(render 채널 부재·A안 portable-by-construction). 이 층은 그 복사본이
+# (a) 유효 JSON·치환 토큰 0·머신-특정 절대경로 0 + (b) settings.json 이 가리키는 훅 파일이 adopter 트리에
+# 실재 + `.sh` 실행비트(copy2 mode 보존) 임을 실증한다 — parity 가드(source 트리)를 넘어 import 파이프라인이
+# 이 성질을 verbatim 으로 전달함을 못박는 층(clone-and-go·다른 머신 재-import 불요). portable 판정 로직은
+# _settings_portability 헬퍼로 parity 가드와 공유(구조적 JSON 순회·POSIX/드라이브 절대경로).
+
+
+def test_fresh_adopter_settings_portable_and_hooks_wired(pm_import, tmp_path):
+    """claude import 후 settings.json 이 portable(유효 JSON·토큰 0·절대경로 0) + 훅 파일 실재·실행비트."""
+    dest = tmp_path / "adopter-settings"
+    rc = pm_import.main(
+        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
+    )
+    assert rc == 0, f"import 실패 (rc={rc})"
+
+    text = (dest / ".claude" / "settings.json").read_text(encoding="utf-8")
+
+    # (a) portable-by-construction — 유효 JSON·치환 토큰 0·머신-특정 절대경로(POSIX/드라이브) 0.
+    json.loads(text)  # invalid escape(Windows 절대경로) 시 raise
+    failures = portability_failures(text)
+    assert not failures, f"import 된 settings.json portable-by-construction 위반: {failures}"
+    # import 절대경로 박제 없음 — dest 경로가 새면 git 공유 시 다른 머신서 훅 깨짐(명시 belt-and-suspenders).
+    assert str(dest.resolve()) not in text, (
+        "import 된 settings.json 에 import 절대경로 박제 — git 공유 시 다른 머신서 훅 깨짐")
+
+    # (b) 훅/statusLine 참조 파일이 adopter 트리에 실재 + `.sh` 실행비트 (${CLAUDE_PROJECT_DIR}/ 제거).
+    refs = referenced_hook_paths(text)
+    assert refs, "import 된 settings.json 에서 훅/statusLine 참조 경로 0"
+    for rel in refs:
+        target = dest / rel
+        assert target.is_file(), f"settings.json 이 가리키는 훅 파일이 adopter 에 부재: {rel}"
+        if rel.endswith(".sh"):
+            assert os.access(target, os.X_OK), (
+                f"import 된 {rel} 실행비트 소실 (copy2 mode 보존 실패?) — 훅 실행 불가")

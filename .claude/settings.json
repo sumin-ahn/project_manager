@@ -21,16 +21,9 @@
       "Bash(chmod *)",
       "Bash(python *)",
       "Bash(python3 *)",
+      "Bash(py *)",
       "Bash(pip *)",
       "Bash(pip3 *)",
-      "Bash({{PY}} .project_manager/tools/board.py *)",
-      "Bash({{PY}} .project_manager/tools/pm_bootstrap.py *)",
-      "Bash({{PY}} .project_manager/tools/pm_handoff.py *)",
-      "Bash({{PY}} .project_manager/tools/ticket_finish.py *)",
-      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/board.py *)",
-      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/pm_bootstrap.py *)",
-      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/pm_handoff.py *)",
-      "Bash(CLAUDE_SESSION_NAME=pm {{PY}} .project_manager/tools/ticket_finish.py *)",
       "Bash(git status)",
       "Bash(git status *)",
       "Bash(git log *)",
@@ -87,5 +80,5 @@
       }
     ]
   },
-  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·멀티-유저 공유 안전). 훅/PreCompact 경로는 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} 를 쓴다(절대경로 박제 금지 — clone-and-go·다른 PC 에서 재-import 불필요). {{PY}} 는 인터프리터명(python3/python)·import 치환. permissions.allow 는 보수적 기본값. 머신-특정 권한/오버라이드는 settings.local.json (gitignore) 으로 분리."
+  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·멀티-유저 공유 안전·T-0202 portable-by-construction). 치환 토큰·절대경로 0 — 모든 머신에서 byte-identical. 훅/PreCompact 경로는 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} 를 쓴다(절대경로 박제 금지 — clone-and-go·다른 PC 에서 재-import 불필요). permissions.allow 는 보수적 기본값(python/python3/py 와일드카드가 PM 도구 호출 커버 — PY 치환토큰 항목 폐기·T-0202). 머신-특정 권한/오버라이드는 settings.local.json (gitignore) 으로 분리."
 }

@@ -440,11 +440,13 @@ def test_hook_pretooluse_handoff_tool_marks_stop_unconditionally(stop_hook, tmp_
 
 def test_settings_wires_user_prompt_submit():
     # settings.json 에 UserPromptSubmit 훅(ctx_stop_hook) 배선 — 새 작업 진입 차단.
+    # T-0202: 이제 래퍼(ctx_stop_hook.sh) 경유 — 래퍼가 인터프리터 self-resolve 후 ctx_stop_hook.py 를
+    #   exec(stdin/args/rc 투명 전달). 래퍼→.py 링크는 test_new_wrappers_self_contained 가 커버.
     data = json.loads((CLAUDE / "settings.json").read_text(encoding="utf-8"))
     ups = data["hooks"]["UserPromptSubmit"]
     assert isinstance(ups, list) and ups
     cmds = [h.get("command", "") for m in ups for h in m.get("hooks", [])]
-    assert any("ctx_stop_hook.py" in c for c in cmds), "UserPromptSubmit 에 ctx_stop_hook 누락"
+    assert any("ctx_stop_hook.sh" in c for c in cmds), "UserPromptSubmit 에 ctx_stop_hook 래퍼 누락"
 
 
 def test_hook_session_id_sanitized(stop_hook):
@@ -474,12 +476,17 @@ def test_statusline_main_empty_stdin(statusline, monkeypatch, capsys):
 
 # ── 5. settings 배선 (statusLine·PreToolUse 훅) ────────────────────────────
 
+# T-0202: statusLine·PreToolUse 배선은 이제 래퍼(.sh) 경유 — 래퍼가 인터프리터를 self-resolve
+#   (python3→python) 후 대응 .py 를 exec(stdin/args/rc 투명). settings.json 이 .py 를 직접 부르지
+#   않아 {{PY}} 치환토큰·절대경로가 사라진다(portable-by-construction). 래퍼→.py 링크는
+#   test_claude_adapter_parity.test_new_wrappers_self_contained 가 커버.
+
 @pytest.mark.parametrize("name", ["settings.json"])
 def test_settings_wires_statusline(name):
     data = json.loads((CLAUDE / name).read_text(encoding="utf-8"))
     sl = data.get("statusLine")
     assert isinstance(sl, dict), f"{name} 에 statusLine 누락"
-    assert "ctx_statusline.py" in sl["command"]
+    assert "ctx_statusline.sh" in sl["command"]
 
 
 @pytest.mark.parametrize("name", ["settings.json"])
@@ -492,7 +499,7 @@ def test_settings_wires_pretooluse_hook(name):
         for matcher in pre
         for h in matcher.get("hooks", [])
     ]
-    assert any("ctx_stop_hook.py" in c for c in cmds), f"{name} PreToolUse 에 ctx_stop_hook 누락"
+    assert any("ctx_stop_hook.sh" in c for c in cmds), f"{name} PreToolUse 에 ctx_stop_hook 래퍼 누락"
 
 
 @pytest.mark.parametrize("name", ["settings.json"])
