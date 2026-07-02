@@ -651,3 +651,30 @@ def test_render_managed_files_normal_sub_renders(pm_import, tmp_path):
     written = (dest / rel).read_text(encoding="utf-8")
     assert written == "description: acme 프로젝트\n"
     assert "{{" not in written
+
+
+# ── T-0219 (c): 렌더/sed-fed 어댑터 표면의 머신-가변 토큰 재도입 방지 ─────────
+# {{PY}}/{{TEST_CMD}} 는 폐기(문서=python3 관례+래퍼 self-resolve·test 명령=local.conf 노브 지칭).
+# 이 토큰이 어댑터 소스에 다시 들어오면 per-clone 렌더 왕복(ping-pong)이 재발한다.
+
+_ADAPTER_SURFACES = [
+    REPO / ".claude" / "agents",
+    REPO / ".claude" / "skills",
+    REPO / "templates" / "claude_code" / ".claude" / "agents",
+    REPO / "templates" / "claude_code" / ".claude" / "skills",
+    REPO / "templates" / "opencode" / ".opencode" / "agents",
+    REPO / "templates" / "opencode" / ".opencode" / "command",
+]
+
+
+def test_adapter_surfaces_no_machine_variant_tokens():
+    """어댑터 소스(렌더/sed 대상 6표면)에 {{PY}}·{{TEST_CMD}} 재도입 금지 (T-0219 (c) 불변식)."""
+    offenders = []
+    for surface in _ADAPTER_SURFACES:
+        assert surface.is_dir(), f"어댑터 표면 부재: {surface}"
+        for md in surface.rglob("*.md"):
+            text = md.read_text(encoding="utf-8")
+            for token in ("{{PY}}", "{{TEST_CMD}}"):
+                if token in text:
+                    offenders.append(f"{md.relative_to(REPO)}: {token}")
+    assert not offenders, "머신-가변 토큰 재도입 (T-0219 ping-pong 재발 위험):\n" + "\n".join(offenders)

@@ -25,7 +25,7 @@ reconfigure)하므로 env prefix 불필요 — Windows/CP949·PowerShell 서도 
 셸별 문법(PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`).
 
 ```bash
-{{PY}} .project_manager/tools/ticket_finish.py T-NNNN
+python3 .project_manager/tools/ticket_finish.py T-NNNN
 ```
 
 ## CLI 자동 처리

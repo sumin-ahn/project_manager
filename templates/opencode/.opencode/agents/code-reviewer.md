@@ -38,15 +38,15 @@ permission:
 
 ## 엔진 호출 규약 (인코딩)
 
-엔진 python CLI(board.py)·`{{TEST_CMD}}` 는 env prefix 없이 그대로 호출한다 — 엔진이 인코딩을
+엔진 python CLI(board.py)·프로젝트 test 명령(local.conf `test_cmd=` — 이하 test_cmd)은 env prefix 없이 그대로 호출한다 — 엔진이 인코딩을
 코드로 처리(PM 7차·C1 파일·C2 콘솔 reconfigure)하므로 Windows/CP949·PowerShell 서도 env 없이
 한글 ticket·출력 깨짐 0 으로 동작 (AGENTS.md §1):
 
 ```bash
-{{PY}} .project_manager/tools/board.py show T-NNNN
+python3 .project_manager/tools/board.py show T-NNNN
 ```
 
-`{{PY}}` 는 채택 환경의 인터프리터로 치환된다 (venv 면 `venv/bin/python`). 구버전 Windows·
+`python3` 는 채택 환경의 인터프리터로 치환된다 (venv 면 `venv/bin/python`). 구버전 Windows·
 서드파티 파이프서 드물게 필요하면 각 셸 문법으로(PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`).
 
 ## 부트스트랩 (검토 시작 시)
@@ -54,7 +54,7 @@ permission:
 1. `AGENTS.md` — opencode 실행 모델·엔진 호출(인코딩)·위임 규약
 2. ticket 본문:
    ```bash
-   {{PY}} .project_manager/tools/board.py show T-NNNN
+   python3 .project_manager/tools/board.py show T-NNNN
    ```
 3. 변경된 파일 — `git status` / `git diff` 로 직접 확인 (PM 이 알려준 경로·developer 보고와 대조). `git diff` 가 `touches` 범위 준수와 실제 변경 내용의 1차 근거다.
 
@@ -74,7 +74,7 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
 프로젝트 고유 제약(`AGENTS.md` §프로젝트 고유 제약·있으면)을 위반하지 않았는가 — 검토자는 위반을 must-fix 로 잡는다.
 
 ### 4. 회귀
-`{{TEST_CMD}}` 를 직접 실행해 전체 통과를 확인한다 (env prefix 없이 그대로 — 엔진이 인코딩을 코드로 처리). 테스트 수가 ticket 기대치와 맞는가.
+test_cmd 를 직접 실행해 전체 통과를 확인한다 (env prefix 없이 그대로 — 엔진이 인코딩을 코드로 처리). 테스트 수가 ticket 기대치와 맞는가.
 
 ### 5. 테스트 품질
 - 새 코드의 핵심 경로·에러 경로가 커버되는가.
@@ -93,7 +93,7 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
 
 - 당신은 읽기 전용(`edit: deny`)이다. 임시 수정은 **Bash 로만** 한다 (`cp <f> <f>.bak` → 수정 → 테스트 → `mv <f>.bak <f>` 복원).
 - **복원 의무** — 검토 종료 시 모든 파일은 반드시 원상태(intact)여야 한다.
-- **검증 의무** — 복원 후 `{{TEST_CMD}}` 로 회귀가 검토 전과 동일함을 확인하고, 그 사실을 보고에 명시한다.
+- **검증 의무** — 복원 후 test_cmd 로 회귀가 검토 전과 동일함을 확인하고, 그 사실을 보고에 명시한다.
 - 임시 수정-복원을 했으면 보고에 "sensitivity 테스트: X 를 임시 제거 → 회귀 N→M 실패 재현 → 복원 → 회귀 N 복귀 확인" 형태로 남긴다.
 
 ## 산출 — 검토 보고
@@ -105,7 +105,7 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
 [변경에 대한 한 단락 + 통과/반려 판정]
 
 ## 회귀
-- `{{TEST_CMD}}`: NNN passed / [실패 출력]
+- test_cmd 회귀: NNN passed / [실패 출력]
 
 ## Must-Fix (반려 — 차단)
 - [ ] [이슈] (`file:line`) — [근거] — [제안 수정]

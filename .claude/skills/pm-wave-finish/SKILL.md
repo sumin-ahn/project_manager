@@ -16,7 +16,7 @@ dev/reviewer cycle 통과 (must-fix 0) 또는 PM 직접 구현 ticket 완료 시
 ## 실행
 
 ```bash
-{{PY}} .project_manager/tools/ticket_finish.py T-NNNN
+python3 .project_manager/tools/ticket_finish.py T-NNNN
 ```
 
 > `--section` 인자는 **deprecated no-op**(ADR-0023 — status.md 합계표 제거로 더 이상 쓰지 않음·후방호환 수용만).

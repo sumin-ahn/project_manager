@@ -49,10 +49,10 @@ permission:
 ticket·wiki 깨짐 0 으로 동작 (AGENTS.md §1):
 
 ```bash
-{{PY}} .project_manager/tools/board.py show T-NNNN
+python3 .project_manager/tools/board.py show T-NNNN
 ```
 
-`{{PY}}` 는 채택 환경의 인터프리터로 치환된다 (venv 면 `venv/bin/python`). 구버전 Windows·
+`python3` 는 채택 환경의 인터프리터로 치환된다 (venv 면 `venv/bin/python`). 구버전 Windows·
 서드파티 파이프서 드물게 필요하면 각 셸 문법으로(PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`).
 
 ## 부트스트랩 (작업 시작 시)
@@ -61,7 +61,7 @@ ticket·wiki 깨짐 0 으로 동작 (AGENTS.md §1):
 2. `.project_manager/wiki/status.md` — 모듈 진행 상태
 3. ticket 본문:
    ```bash
-   {{PY}} .project_manager/tools/board.py show T-NNNN
+   python3 .project_manager/tools/board.py show T-NNNN
    ```
 
 ticket 본문이 **단일 진실**이다. 본문의 목표/인터페이스/결정/완료 조건(DoD)대로만 수행한다. 본문이 부족해 작업이 불가능하면 추측하지 말고 그 사실을 보고에 명시한다. **Read tool 로 파일을 읽을 땐 절대 경로를 쓴다.**
@@ -89,7 +89,7 @@ ticket 의 목표·DoD 를 정확히 파싱. `touches` 에 명시된 파일이 �
 ### 4. 테스트
 - 새 코드에는 단위 테스트. 기존 테스트 패턴·헬퍼를 따른다.
 - **단위 테스트는 모두 mock.** 라이브 외부 API 호출 금지 — 그런 검증은 통합 테스트 마커로만.
-- 검증은 **오직 `{{TEST_CMD}}`** — 전체 회귀가 통과해야 한다. 실패는 완료 전에 고친다.
+- 검증은 **오직 프로젝트 test 명령**(local.conf `test_cmd=` — 이하 test_cmd) — 전체 회귀가 통과해야 한다. 실패는 완료 전에 고친다.
 - **프로덕션 진입점·파이프라인을 라이브로 실행하지 않는다.** 실제 외부 부작용(네트워크 송신·실 DB 쓰기·메시지 발신 등)을 내는 진입점을 직접 돌리거나 "스모크 테스트" 명목으로 호출하지 않는다 — 되돌릴 수 없다. 동작 검증은 mock 으로 격리된 자동 테스트가 전부다. 라이브 통합 검증이 꼭 필요하다고 판단되면, 직접 하지 말고 그 필요성을 보고에 적어 PM 에 맡긴다.
 
 ### 5. 보고
@@ -104,7 +104,7 @@ PM 이 code-reviewer 로 넘길 수 있게 변경 위치를 명확히 보고한�
 - `경로`: [무엇을 / 왜]
 
 ## 테스트
-- `{{TEST_CMD}}`: NNN passed / 실패 시 출력 첨부
+- test_cmd 회귀: NNN passed / 실패 시 출력 첨부
 - 추가한 테스트: [파일 — 케이스 N개]
 
 ## 메모

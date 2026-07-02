@@ -27,7 +27,7 @@ env prefix 불필요 — Windows/CP949·PowerShell 서도 env 없이 동작. 드
 (PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`).
 
 ```bash
-{{PY}} .project_manager/tools/pm_handoff.py \
+python3 .project_manager/tools/pm_handoff.py \
   --session-num <N> \
   --wave-summary "<wave 1~3 한 줄 요약>"
 ```

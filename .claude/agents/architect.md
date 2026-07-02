@@ -21,7 +21,7 @@ tools: Read, Edit, Write, Bash, Glob, Grep
 2. `.project_manager/wiki/architecture.md` — 구조·모듈 의존성·계약
 3. `.project_manager/wiki/status.md` — 모듈 진행 상태
 4. 관련 `decisions/`(ADR) · `specs/` — 위임받은 주제에 닿는 기존 결정·사양 (grep 로 탐색)
-5. 분석 대상 — 위임받은 idea(`{{PY}} .project_manager/tools/board.py idea show`는 없으니 파일 직접 Read) / ticket(`board.py show <T-NNNN>`) / 설계 질문
+5. 분석 대상 — 위임받은 idea(`python3 .project_manager/tools/board.py idea show`는 없으니 파일 직접 Read) / ticket(`board.py show <T-NNNN>`) / 설계 질문
 
 위임 프롬프트가 **단일 진실**이다. 부족해 분석이 불가능하면 추측하지 말고 보고에 명시한다.
 

@@ -10,7 +10,7 @@ tools: Read, Bash, Glob, Grep
 ## 부트스트랩 (검토 시작 시)
 
 1. `CLAUDE.md` — 프로젝트 규칙·작업 원칙
-2. `{{PY}} .project_manager/tools/board.py show <T-NNNN>` — 검토 대상 ticket 의 목표/인터페이스/결정/DoD
+2. `python3 .project_manager/tools/board.py show <T-NNNN>` — 검토 대상 ticket 의 목표/인터페이스/결정/DoD
 3. 변경된 파일 — `git status` / `git diff` 로 직접 확인 (orchestrator 가 알려준 경로·developer 보고와 대조). `git diff` 가 `touches` 범위 준수와 실제 변경 내용의 1차 근거다.
 
 ## 검토 항목
@@ -27,7 +27,7 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
 프로젝트 고유 제약(`CLAUDE.md` §프로젝트 고유 제약·있으면)을 위반하지 않았는가 — 검토자는 위반을 must-fix 로 잡는다.
 
 ### 4. 회귀
-`{{TEST_CMD}}` 를 직접 실행해 전체 통과를 확인한다. 테스트 수가 ticket 기대치와 맞는가.
+프로젝트 test 명령(local.conf `test_cmd=` — 이하 test_cmd)을 직접 실행해 전체 통과를 확인한다. 테스트 수가 ticket 기대치와 맞는가.
 
 ### 5. 테스트 품질
 - 새 코드의 핵심 경로·에러 경로가 커버되는가.
@@ -42,7 +42,7 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
 
 ### 7. wiki DoD · domain freshness (ADR-0018)
 - touch 한 코드를 담당하는 `domain/` 페이지(covers 매칭)가 있으면, 변경으로 상한 내용이 갱신됐는가 (touch∩covers·soft — *누락이 곧 must-fix 는 아니나* should-fix/상기로 띄운다).
-- `{{PY}} .project_manager/tools/domain.py lint` advisory finding(stale/orphan/oversized)이 이번 변경으로 새로 생겼는가 — 생겼으면 보고에 표면화 (작업 무차단·visibility).
+- `python3 .project_manager/tools/domain.py lint` advisory finding(stale/orphan/oversized)이 이번 변경으로 새로 생겼는가 — 생겼으면 보고에 표면화 (작업 무차단·visibility).
 
 ## sensitivity 테스트 규칙
 
@@ -50,7 +50,7 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
 
 - 당신에게는 Edit/Write 도구가 없다. 임시 수정은 **Bash 로만** 한다 (`cp <f> <f>.bak` → 수정 → 테스트 → `mv <f>.bak <f>` 복원).
 - **복원 의무** — 검토 종료 시 모든 파일은 반드시 원상태(intact)여야 한다.
-- **검증 의무** — 복원 후 `{{TEST_CMD}}` 로 회귀가 검토 전과 동일함을 확인하고, 그 사실을 보고에 명시한다.
+- **검증 의무** — 복원 후 test_cmd 로 회귀가 검토 전과 동일함을 확인하고, 그 사실을 보고에 명시한다.
 - 임시 수정-복원을 했으면 보고에 "sensitivity 테스트: X 를 임시 제거 → 회귀 N→M 실패 재현 → 복원 → 회귀 N 복귀 확인" 형태로 남긴다.
 
 ## 산출 — 검토 보고
@@ -60,7 +60,7 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
 [변경에 대한 한 단락 + 통과/반려 판정]
 
 ## 회귀
-- `{{TEST_CMD}}`: ✅ NNN passed / ❌ [실패 출력]
+- test_cmd 회귀: ✅ NNN passed / ❌ [실패 출력]
 
 ## Must-Fix (반려 — 차단)
 - [ ] [이슈] (`file:line`) — [근거] — [제안 수정]

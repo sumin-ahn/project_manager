@@ -21,15 +21,15 @@ reconfigure)하므로 env prefix 불필요 — Windows/CP949·PowerShell 서도 
 
 ```bash
 # 1. ticket 본문 dump
-{{PY}} .project_manager/tools/board.py show T-NNNN
+python3 .project_manager/tools/board.py show T-NNNN
 
 # 2. lint (의존성 일관성)
-{{PY}} .project_manager/tools/board.py lint
+python3 .project_manager/tools/board.py lint
 
 # 3. PM 검증 (아래 체크리스트)
 
 # 4. 통과 시 claim
-{{PY}} .project_manager/tools/board.py claim T-NNNN --session pm
+python3 .project_manager/tools/board.py claim T-NNNN --session pm
 ```
 
 ## PM 검증 체크리스트 (claim 전)

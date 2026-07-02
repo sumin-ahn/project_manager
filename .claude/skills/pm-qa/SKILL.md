@@ -23,13 +23,14 @@ description: "통합 검증 게이트 — 회귀(pytest) + board.py lint + git s
 
 ### 1. 회귀 측정 (foreground)
 ```bash
-{{TEST_CMD}} 2>&1 | tail -5
+# 프로젝트 test 명령은 board regression 이 해소·기록한다 (local.conf test_cmd= · rc0 만 pass·T-0220)
+python3 .project_manager/tools/board.py regression run
 ```
 성공 = `N passed in T.Ts`. red → 즉시 PM 에게 보고 + **후속 단계 중단 검토**(red 위에 wave 종료/시작 진행 차단).
 
 ### 2. board.py lint (foreground)
 ```bash
-{{PY}} .project_manager/tools/board.py lint
+python3 .project_manager/tools/board.py lint
 ```
 성공 = clean(또는 advisory만). 차단성 warning(의존성 모순·placeholder 잔존·dangling wikilink) 있으면 PM 보고.
 
@@ -67,4 +68,4 @@ working tree clean 여부·변경 파일 수·최근 commit 정합(핸드오프 
 
 ## 참고
 - [[pm-regression]] · [[pm-wave-finish]] · [[pm-bootstrap]] — 인접 스킬(위 구분)
-- backbone CLI: `{{PY}} .project_manager/tools/board.py {lint,regression}`
+- backbone CLI: `python3 .project_manager/tools/board.py {lint,regression}`

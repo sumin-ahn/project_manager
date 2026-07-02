@@ -69,7 +69,7 @@ manifest 경로만 byte-overwrite(@render path 는 operational 토큰 재치환)
 
 ### 5. drift 표면화
 ```bash
-{{PY}} .project_manager/tools/board.py lint
+python3 .project_manager/tools/board.py lint
 ```
 `adapter-drift` advisory 가 남아 있으면(facade·진입문서 등 manifest-제외 잔여가 upstream 이후 변경) PM 에게 보고 — 자동전파 대상 아님(B 전파=채택자 customization clobber·비파괴), 수기 검토 안내(never-block).
 

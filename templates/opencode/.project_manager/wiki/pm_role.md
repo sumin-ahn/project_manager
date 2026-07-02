@@ -11,7 +11,8 @@ type: handoff
 > 개별 ticket 구현 세션과 다른 역할 — 보드 운영 / 분할 / 위임 / spec·ADR 정비.
 >
 > ⚙️ **이 파일은 엔진** (`pm_update` 가 upstream 에서 자동 갱신). 그래서 프로젝트별 값은 여기 안 박는다:
-> `{{PY}}`·`{{TEST_CMD}}`·`{{PROJECT_NAME}}` = `local.conf` 에서 해소(리터럴로 두되 '이 프로젝트 값'으로 이해) ·
+> `{{PROJECT_NAME}}` = `local.conf` 에서 해소(리터럴로 두되 '이 프로젝트 값'으로 이해) · 문서의 `python3` 표기는
+> 관례(Windows 는 `py` 런처·래퍼 self-resolve·T-0219) · test 명령 = local.conf `test_cmd=`(board regression 이 해소) ·
 > 보호 영역·게이트 등 프로젝트 내용 = [[pm_role.local.md]] (인스턴스 소유 — 갱신이 안 건드림).
 
 ## 부트스트랩 (PM 세션 시작 시 순서)
@@ -22,8 +23,8 @@ type: handoff
 3) per-slot pm_state — `.project_manager/.local/slots/<slot>/pm_state.md` ← 동적 상태 (세션 window / 남은 작업) · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033
 4) .project_manager/wiki/architecture.md ← **현재-아키텍처 단일 진실**(① live / ② target · ADR-0022). 충돌 시 이게 기준.
 5) .project_manager/wiki/status.md    ← 진행 상태 (judgment — 모듈 상태·비고)
-6) board 상태 — `{{PY}} .project_manager/tools/board.py list` (board.md 는 파생 대시보드 · git-untracked)
-7) log/current.md 마지막 handoff entry — **부트스트랩 CLI 가 본문 전체를 자동 dump** 한다(차수·남은작업과 함께·self-sufficient·ADR-0035). 직접 `{{PY}} .project_manager/tools/pm_log.py tail` 은 baseline 재확인·더 넓은 범위 인용 시에만.
+6) board 상태 — `python3 .project_manager/tools/board.py list` (board.md 는 파생 대시보드 · git-untracked)
+7) log/current.md 마지막 handoff entry — **부트스트랩 CLI 가 본문 전체를 자동 dump** 한다(차수·남은작업과 함께·self-sufficient·ADR-0035). 직접 `python3 .project_manager/tools/pm_log.py tail` 은 baseline 재확인·더 넓은 범위 인용 시에만.
 ```
 
 기계 측정 dump 는 `/pm-bootstrap` skill (backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
@@ -66,7 +67,7 @@ PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm
 
 리뷰는 skill 외에 **codex 외부 교차검증**을 표준으로 병행한다 — 내부
 code-reviewer(generate≠evaluate) + codex external_review(외부 모델 다양성). 코드 =
-`{{PY}} .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`,
+`python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`,
 설계(ADR/spike) = `--base <ref> --paths .project_manager/wiki/decisions/ ...`.
 전제 `external_review_enabled=true` (ADR-0004 opt-in). 상세·diff-only 한계는
 [`pm_playbook.md`](pm_playbook.md) §"검토 루프" 참조.
@@ -223,7 +224,7 @@ CLI 가 *이미 dump* 했으니 PM 은 **요약·판단**만 — 손-추출 아�
 명시. dry-run 권장 (`--dry-run`).
 
 자동 처리:
-1. **회귀 측정** — `{{TEST_CMD}}`. red 면 즉시 중단·핸드오프 불가.
+1. **회귀 측정** — 프로젝트 test_cmd(local.conf·board regression 해소). red 면 즉시 중단·핸드오프 불가.
 2. **log/current.md handoff entry skeleton append** — 표준 형식.
 3. **pm_state.md 세션 식별 sliding window 정리** — 신규 entry 추가 + 가장 오래된 entry 제거.
 4. **pm_state.md 길이 검증** — 700 라인 초과 시 warning. (+ log/current.md entry 누적 시 archive 권장)

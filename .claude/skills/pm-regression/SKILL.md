@@ -18,7 +18,7 @@ description: "비차단 백그라운드 회귀 — full 테스트를 run_in_back
 
 ```bash
 # Bash run_in_background: true 로 호출. 완료되면 하니스가 세션을 재호출(알림).
-{{PY}} .project_manager/tools/board.py regression run
+python3 .project_manager/tools/board.py regression run
 ```
 - green → 다음 push 즉시 통과. red → `regression check` 가 push 차단 → 원인 fix.
 - 결과는 per-clone `.project_manager/.local/regression.json` (HEAD 키)에 기록.
@@ -28,7 +28,7 @@ description: "비차단 백그라운드 회귀 — full 테스트를 run_in_back
 구현 중 자기 ticket 관련 테스트만 — 빠른 피드백 (push 게이트 아님):
 
 ```bash
-{{PY}} .project_manager/tools/board.py regression run --ticket T-PAY-001   # touches → pytest -k
+python3 .project_manager/tools/board.py regression run --ticket T-PAY-001   # touches → pytest -k
 ```
 
 ## red 처리

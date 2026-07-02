@@ -110,8 +110,9 @@ cd /path/to/new-project/
 python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest(테스트)
 
 # 2) placeholder 일괄 치환 (§4 표). pm_role.md·pm_playbook.md 는 제외 — 엔진(pm_update
-#    동기화 대상)이라 {{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}} 를 리터럴로 두고 local.conf 가
-#    해소한다. 치환하면 다음 pm_update 때 되돌아간다.
+#    동기화 대상)이라 {{PROJECT_NAME}} 를 리터럴로 두고 local.conf 가 해소한다(치환하면
+#    다음 pm_update 때 되돌아간다). {{PY}}/{{TEST_CMD}} 는 엔진 문서·어댑터에서 폐기(T-0219 —
+#    문서 표기는 python3 관례·test 명령은 local.conf test_cmd= 노브)·진입 문서 등엔 잔존.
 grep -rl '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='*.py' | \
   grep -vE 'wiki/pm_role\.md|wiki/pm_playbook\.md' | \
   xargs sed -i \
@@ -140,7 +141,7 @@ python3 .project_manager/tools/board.py list
 # 이후 프레임워크 개선 받기: pm_update.py --from <upstream-checkout> [--dry-run]   (상세 = §5 엔진 갱신 받기)
 ```
 
-치환 후 남은 `{{...}}` 확인 (단, `pm_role.md`·`pm_playbook.md` 의 `{{PY}}`·`{{TEST_CMD}}`·`{{PROJECT_NAME}}` 는 **의도적으로 남는다** — local.conf 가 해소):
+치환 후 남은 `{{...}}` 확인 (단, `pm_role.md` 의 `{{PROJECT_NAME}}` 는 **의도적으로 남는다** — local.conf 가 해소):
 
 ```bash
 grep -rn '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='*.py'
@@ -161,7 +162,7 @@ grep -rn '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='
 | `{{TEST_CMD}}` | 전체 회귀 명령 | `venv/bin/python -m pytest tests/ -q` |
 | `{{DATE}}` | 초기화 날짜 (wiki frontmatter) | `2026-05-22` |
 
-> ⚠️ `{{PY}}`·`{{TEST_CMD}}`·`{{PROJECT_NAME}}` 은 **엔진 문서(`pm_role.md`·`pm_playbook.md`)에선 치환하지 않는다** — `local.conf` 가 해소(`board.py init` 기록)하고 pm_update 동기화 대상이라 치환하면 되돌아간다. 다른 파일(진입 문서 등)에선 sed 로 채워도 됨.
+> ⚠️ `{{PROJECT_NAME}}` 은 **엔진 문서(`pm_role.md`)에선 치환하지 않는다** — `local.conf` 가 해소(`board.py init` 기록)하고 pm_update 동기화 대상이라 치환하면 되돌아간다. `{{PY}}`·`{{TEST_CMD}}` 는 엔진 문서·어댑터에서 폐기(T-0219) — 진입 문서 등 다른 파일에선 sed 로 채워도 됨.
 > opencode 타깃은 추가로 `{{OPENCODE_PRO_MODEL}}`(subagent 모델 ID)을 가지며 — sed 가 아니라 pm_import 의 결정적 `opencode models` 조회로 해소된다 ([`templates/opencode/README.md`](templates/opencode/README.md) §모델 선택).
 
 직접 서술해야 하는(자유 형식) placeholder — 파일 안 `<!-- TODO -->` 주석으로 표시:

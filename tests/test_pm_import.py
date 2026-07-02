@@ -162,16 +162,21 @@ def test_new_name_defaults_to_dirname(pm_import, tmp_path):
     assert "auto-named-proj" in claude_md
 
 
-# ── 엔진 문서는 리터럴 보존 (local.conf 가 런타임 해소) ──────────────────────
+# ── 엔진 문서 토큰 계약 (T-0219: PY/TEST_CMD 폐기·PROJECT_NAME 리터럴 유지) ──
 
 def test_engine_docs_keep_literal_placeholders(pm_import, tmp_path):
-    """pm_role.md·pm_playbook.md 는 {{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}} 리터럴을 유지한다."""
+    """엔진 문서의 머신-가변 토큰은 폐기됐고({{PY}}·{{TEST_CMD}} 부재·T-0219 (c) 중립화 —
+    문서 표기는 `python3` 관례 + 래퍼 self-resolve·test 명령은 local.conf 노브 지칭),
+    project-truth 토큰({{PROJECT_NAME}})은 리터럴 유지된다(local.conf 런타임 해소 관례)."""
     dest = tmp_path / "p"
     rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "P"])
     assert rc == 0
     for rel in ENGINE_DOCS_KEEP_LITERAL:
         text = (dest / rel).read_text(encoding="utf-8")
-        assert "{{PY}}" in text, f"{rel} 에서 {{PY}} 가 치환됨 — 리터럴 유지여야 한다."
+        assert "{{PY}}" not in text, f"{rel} 에 {{{{PY}}}} 잔존 — T-0219 로 폐기된 토큰."
+        assert "{{TEST_CMD}}" not in text, f"{rel} 에 {{{{TEST_CMD}}}} 잔존 — T-0219 로 폐기된 토큰."
+        if rel.endswith("pm_role.md"):  # PROJECT_NAME 리터럴은 pm_role 만 보유 (playbook 은 원래 없음)
+            assert "{{PROJECT_NAME}}" in text, f"{rel} 에서 {{{{PROJECT_NAME}}}} 가 치환/유실 — 리터럴 유지여야 한다."
 
 
 # ── D11 seam: local.conf operational 값이 sed 치환값과 일치 ─────────────────

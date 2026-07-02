@@ -17,7 +17,7 @@ argument-hint: "<주제>"
 ## 언제 쓰나
 
 - 한 설계 주제를 **옵션 비교 + ADR/ticket 초안** 수준까지 사용자와 같이 익힐 때.
-- 구분: 빠른 한 줄 후보·backlog 는 `ideas/` (`{{PY}} .project_manager/tools/board.py idea`). 한 주제의 설계 산출 박제는 여기 `raw/spikes/`.
+- 구분: 빠른 한 줄 후보·backlog 는 `ideas/` (`python3 .project_manager/tools/board.py idea`). 한 주제의 설계 산출 박제는 여기 `raw/spikes/`.
 - 주제가 명확하면 ideas 를 건너뛰고 여기서 바로 시작해도 된다.
 
 ## 흐름 — 대화형 (이 command 의 핵심)

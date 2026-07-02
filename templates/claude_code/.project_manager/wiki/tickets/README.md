@@ -14,7 +14,7 @@
 ### 새 세션 시작 시
 ```bash
 # 1) 현재 상황 확인 (라이브 — board.md 파일 없어도 동작)
-{{PY}} .project_manager/tools/board.py list
+python3 .project_manager/tools/board.py list
 
 # 2) 세션 이름 정하기 (claim 의 --session 인자로 전달 — 없으면 hostname-pid 자동)
 ```
@@ -22,26 +22,26 @@
 ### Ticket 잡고 작업
 ```bash
 # 3) open/ 에서 하나 골라 claim — atomic
-{{PY}} .project_manager/tools/board.py claim T-0003 --session session-A
+python3 .project_manager/tools/board.py claim T-0003 --session session-A
 
 # 4) 코드 작업
 
 # 5) 다 끝나면 완료 처리 (회귀 통과 후 --tests-pass)
-{{PY}} .project_manager/tools/board.py complete T-0003 --tests-pass
+python3 .project_manager/tools/board.py complete T-0003 --tests-pass
 
 # 또는 막혔으면
-{{PY}} .project_manager/tools/board.py block T-0003 --reason "외부 키 발급 대기"
+python3 .project_manager/tools/board.py block T-0003 --reason "외부 키 발급 대기"
 
 # 막힘이 풀렸으면 다시 open 으로
-{{PY}} .project_manager/tools/board.py unblock T-0003
+python3 .project_manager/tools/board.py unblock T-0003
 
 # 잘못 잡았으면 원위치
-{{PY}} .project_manager/tools/board.py unclaim T-0003
+python3 .project_manager/tools/board.py unclaim T-0003
 ```
 
 ### 새 ticket 발행
 ```bash
-{{PY}} .project_manager/tools/board.py new "모듈 X 구현 + 통합" \
+python3 .project_manager/tools/board.py new "모듈 X 구현 + 통합" \
     --touches src/x.py,tests/test_x.py \
     --depends T-0001 \
     --tag phase-1
@@ -49,11 +49,11 @@
 
 ### 조회
 ```bash
-{{PY}} .project_manager/tools/board.py list                    # 전체 상태
-{{PY}} .project_manager/tools/board.py list --status open      # open 만
-{{PY}} .project_manager/tools/board.py list --tag phase-1      # phase-1 태그
-{{PY}} .project_manager/tools/board.py show T-0003             # 한 ticket 상세
-{{PY}} .project_manager/tools/board.py refresh                 # board.md 강제 재생성
+python3 .project_manager/tools/board.py list                    # 전체 상태
+python3 .project_manager/tools/board.py list --status open      # open 만
+python3 .project_manager/tools/board.py list --tag phase-1      # phase-1 태그
+python3 .project_manager/tools/board.py show T-0003             # 한 ticket 상세
+python3 .project_manager/tools/board.py refresh                 # board.md 강제 재생성
 ```
 
 ## 디렉토리

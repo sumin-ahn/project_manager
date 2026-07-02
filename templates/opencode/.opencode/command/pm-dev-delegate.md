@@ -31,7 +31,7 @@ ticket 번호는 `$ARGUMENTS` 에서 받는다 (예: `T-0007`). 역할(developer
 도메인 지식 없이 구현하는 걸 막음 · ADR-0018):
 
 ```bash
-{{PY}} .project_manager/tools/domain.py affected --ticket T-NNNN
+python3 .project_manager/tools/domain.py affected --ticket T-NNNN
 ```
 
 - 출력 = ticket touches ∩ 페이지 `covers` 매칭 페이지. 줄 앞 `⚠ ` = **stale**(담당 코드가 페이지
@@ -66,7 +66,7 @@ PM 이 내장 `task` tool 을 호출한다 (`subagent_type` · `description` · 
 세션을 관리한다 (AGENTS.md §3.3). 별도 background 표현은 필요 없다.
 
 > reviewer 위임과 **병행해 codex 외부 교차검증**을 돌릴 수 있다 (표준 리뷰 게이트):
-> `{{PY}} .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
+> `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
 > (전제 `external_review_enabled=true`). 상세는 `pm_playbook.md` §"검토 루프".
 
 ## reviewer 후 PM 처리 (AGENTS.md §3.6)

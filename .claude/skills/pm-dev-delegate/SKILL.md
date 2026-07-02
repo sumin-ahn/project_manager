@@ -22,7 +22,7 @@ description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touche
 위임 *전* ticket 의 covers 매칭 domain 페이지를 띄워 dev 에게 함께 넘긴다 (읽기 맥락 — dev 가 도메인 지식 없이 구현하는 걸 막음·ADR-0018 §7b):
 
 ```bash
-{{PY}} .project_manager/tools/domain.py affected --ticket T-NNNN
+python3 .project_manager/tools/domain.py affected --ticket T-NNNN
 ```
 
 - 출력 = ticket touches ∩ 페이지 `covers` 매칭 페이지. 줄 앞 `⚠ ` = **stale**(담당 코드가 페이지 갱신 후 커밋됨).
@@ -43,7 +43,7 @@ Agent 툴 호출:
 
      세션명: orch-dev-TNNNN (board.py 조작은 orchestrator(PM) 담당·dev 는 코드+테스트만).
 
-     ticket 본문은 {{PY}} .project_manager/tools/board.py show T-NNNN 로 확인.
+     ticket 본문은 python3 .project_manager/tools/board.py show T-NNNN 로 확인.
      본문이 self-contained — 목표/인터페이스/결정/DoD/참고 절 대로 구현.
      (PM 첨부 — 소환된 domain 페이지: <domain affected 출력 경로·있으면>. ⚠ 표시분은 stale 이니 맹신 말 것.)
 
@@ -78,7 +78,7 @@ Agent 툴 호출:
 ```
 
 > ⚙️ reviewer 위임과 **병행해 codex 외부 교차검증**을 돌린다 (표준 리뷰 게이트):
-> `{{PY}} .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
+> `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
 > (ADR 본문 정합 필요 시 `--paths` 에 **코드 경로+ADR 함께 나열** — `--paths` 는
 > `--ticket` touches 를 *대체*함). 전제
 > `external_review_enabled=true`. 상세는 `pm_playbook.md` §"검토 루프".

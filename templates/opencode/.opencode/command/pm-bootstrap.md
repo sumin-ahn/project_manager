@@ -30,14 +30,14 @@ Windows·서드파티 파이프서 드물게 필요하면 각 셸 문법으로(P
 bash `PYTHONUTF8=1`).
 
 ```bash
-{{PY}} .project_manager/tools/pm_bootstrap.py
+python3 .project_manager/tools/pm_bootstrap.py
 ```
 
 **multi-PM 모드 (멀티-PM·lean·T-0074)** — 사용자가 `/pm-bootstrap <repo> --slot <N>` 처럼 repo·슬롯을
 주면, 그 인자를 그대로 엔진에 forward 한다:
 
 ```bash
-{{PY}} .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
+python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
 ```
 
 이건 "나는 `<repo>_<N>` PM" *정체성 선언 + 상태점검* 이다 — 출력의 identity surface(세션=`<repo>_<N>`·

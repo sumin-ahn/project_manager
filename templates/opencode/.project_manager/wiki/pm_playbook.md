@@ -11,7 +11,7 @@ type: reference
 > **활동별 상세 레퍼런스**. 부트스트랩 시 통째로 읽지 않는다 — 해당 활동(위임 / wave 운영 /
 > ticket 발행·분할 / 핸드오프)을 실제로 할 때 그 절만 Read 한다.
 >
-> ⚙️ **엔진** (`pm_update` 자동 갱신). `{{PY}}`(·`{{DATE}}`)는 `local.conf`/런타임 값으로 이해(리터럴 유지).
+> ⚙️ **엔진** (`pm_update` 자동 갱신). `python3` 표기는 관례(Windows 는 `py` 런처·T-0219) · `{{DATE}}` 는 런타임 값으로 이해(리터럴 유지).
 
 ## 메타 정책 (코드/spec/ADR 어디에도 안 적힌 운영 약속)
 
@@ -117,13 +117,13 @@ git 도입 후 code-reviewer 는 `git diff` 로 변경 범위·내용을 직접 
 
 - **코드 리뷰** = 내부 code-reviewer + codex 외부 교차.
   ```
-  {{PY}} .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN
+  python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN
   ```
   `--ticket` 이 touches 를 diff 경로로 잡고, `--adr` 이 관련 ADR 을 프롬프트에
   참조로 넣는다.
 - **설계 리뷰** (ADR/spike) = codex 교차. ADR/spike 문서 자체를 diff 로 보낸다.
   ```
-  {{PY}} .project_manager/tools/external_review.py --base <ref> --paths .project_manager/wiki/decisions/ ...
+  python3 .project_manager/tools/external_review.py --base <ref> --paths .project_manager/wiki/decisions/ ...
   ```
 - **diff-only 한계 노트**: codex 는 **diff 만** 본다 (`--adr` 은 ID 참조일 뿐
   본문 미포함). ADR 본문을 봐야 정합을 판단할 수 있으면 — 특히 코드 ticket 이
@@ -141,8 +141,8 @@ git 도입 후 code-reviewer 는 `git diff` 로 변경 범위·내용을 직접 
 
 ```
 당신은 이 프로젝트의 구현 세션 <X> 입니다. 역할: <T-NNNN> 단일 ticket 구현.
-부트스트랩: 1) CLAUDE.md  2) .project_manager/wiki/status.md  3) {{PY}} .project_manager/tools/board.py show <T-NNNN>
-작업 시작: {{PY}} .project_manager/tools/board.py claim <T-NNNN> --session session-<X>
+부트스트랩: 1) CLAUDE.md  2) .project_manager/wiki/status.md  3) python3 .project_manager/tools/board.py show <T-NNNN>
+작업 시작: python3 .project_manager/tools/board.py claim <T-NNNN> --session session-<X>
 ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 완료 시: 전체 회귀 → board.py complete --tests-pass → status.md → log/current.md.
 막히면 block --reason 으로 PM 세션에.
@@ -305,9 +305,9 @@ upstream(프레임워크 reference)의 엔진 개선을 이 인스턴스로 당�
 **메인테이너가 업그레이드당 1회** 실행 → 커밋 → push. 나머지 팀원은 `git pull` (per-clone 아님 — 그건 `board.py init`).
 
 1. upstream 체크아웃 확보 (reference repo 를 어딘가 clone/pull · v1 은 로컬 경로만).
-2. `{{PY}} .project_manager/tools/pm_update.py --from <upstream> --dry-run` → 바뀔 엔진 파일 검토.
+2. `python3 .project_manager/tools/pm_update.py --from <upstream> --dry-run` → 바뀔 엔진 파일 검토.
 3. `--dry-run` 빼고 적용. 엔진 freshness 는 `local.conf` 의 `upstream_rev`↔`upstream_seen_rev`(git rev-baseline)로 추적된다(ADR-0036).
-4. 엔진이 바뀌었으니 회귀 검증 — `{{PY}} .project_manager/tools/board.py regression run`.
+4. 엔진이 바뀌었으니 회귀 검증 — `python3 .project_manager/tools/board.py regression run`.
 5. 엔진 변경 커밋 + push (공유 — 팀원은 `git pull` 로 받음).
 
 - 인스턴스 상태(board·status·log·tickets)·per-clone 로컬·커스터마이즈(`*.local.md`·루트 `CLAUDE.md`/`.gitignore`)는 **안 건드림**.

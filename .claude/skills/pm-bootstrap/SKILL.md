@@ -18,22 +18,22 @@ skill 호출 *전* PM 세션은 이미 다음을 읽어야 한다 (pm_role.md §
 2. `.project_manager/wiki/pm_role.md` (정적 운영 매뉴얼)
 3. per-slot pm_state — `.project_manager/.local/slots/<slot>/pm_state.md` (동적 상태 · 세션 window / 남은 작업 · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033). **부트스트랩이 bound slot 의 이 파일에서 차수·남은작업을 자동 surface** 하니 손-read 는 보충일 뿐.
 4. `.project_manager/wiki/status.md`
-5. board 상태 — `{{PY}} .project_manager/tools/board.py list` (board.md 는 파생 대시보드 · git-untracked — skill 이 자동 측정)
-6. log/current.md 마지막 handoff entry — **부트스트랩이 본문 전체를 자동 dump** 한다(self-sufficient·ADR-0035). 직접 `{{PY}} .project_manager/tools/pm_log.py tail` 은 baseline 재확인·더 넓은 범위 인용 시에만.
+5. board 상태 — `python3 .project_manager/tools/board.py list` (board.md 는 파생 대시보드 · git-untracked — skill 이 자동 측정)
+6. log/current.md 마지막 handoff entry — **부트스트랩이 본문 전체를 자동 dump** 한다(self-sufficient·ADR-0035). 직접 `python3 .project_manager/tools/pm_log.py tail` 은 baseline 재확인·더 넓은 범위 인용 시에만.
 
 skill 은 *기계 측정* 만 자동화한다. 컨텍스트 인지·결정은 PM 의 몫.
 
 ## 실행
 
 ```bash
-{{PY}} .project_manager/tools/pm_bootstrap.py
+python3 .project_manager/tools/pm_bootstrap.py
 ```
 
 **multi-PM 모드 (멀티-PM·lean·T-0074)** — 사용자가 `/pm-bootstrap <repo> --slot <N>` 처럼 repo·슬롯을
 주면, 그 인자를 그대로 엔진에 forward 한다:
 
 ```bash
-{{PY}} .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
+python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
 ```
 
 이건 "나는 `<repo>_<N>` PM" *정체성 선언 + 상태점검* 이다 — 출력의 identity surface(세션=`<repo>_<N>`·

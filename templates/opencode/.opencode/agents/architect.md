@@ -52,10 +52,10 @@ permission:
 ticket·wiki 깨짐 0 으로 동작 (AGENTS.md §1):
 
 ```bash
-{{PY}} .project_manager/tools/board.py show T-NNNN
+python3 .project_manager/tools/board.py show T-NNNN
 ```
 
-`{{PY}}` 는 채택 환경의 인터프리터로 치환된다 (venv 면 `venv/bin/python`). 구버전 Windows·
+`python3` 는 채택 환경의 인터프리터로 치환된다 (venv 면 `venv/bin/python`). 구버전 Windows·
 서드파티 파이프서 드물게 필요하면 각 셸 문법으로(PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`).
 
 ## 부트스트랩 (작업 시작 시)
