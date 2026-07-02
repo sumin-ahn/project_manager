@@ -723,6 +723,80 @@ def infer_session_num(pm_state_text: str) -> int | str | None:
         return None
 
 
+# ── 차수 log-폴백 + stale 교차검증 (T-0208·ADR-0035) ──────────────────────────
+# per-slot pm_state 는 git-ignored 라 머신 간 미동기 — fresh clone(머신 이동)에서 차수가
+# per-slot 리셋으로 오표기된다(라이브 실증). log/current.md 는 git 추적(freshness=[[T-0217]] 가
+# 최신 담보)이라 handoff entry 제목 `PM N차` 가 차수의 상보 진실이다. handoff entry 로 한정
+# 한다 — complete/fix/note 제목은 `PM N차` 부재/불규칙이라 오파싱을 막는다.
+# 형식: `## [YYYY-MM-DD] handoff | PM N차 → 다음 PM 세션`(또는 `… PM N차 인계 — …`).
+_LOG_HANDOFF_HEADER_RE = re.compile(
+    r"^(?P<line>## \[\d{4}-\d{2}-\d{2}\]\s+handoff\s*\|\s*PM\s+(?P<num>\d+)차.*)$",
+    re.MULTILINE,
+)
+
+
+def parse_last_handoff_session_num(log_text: str | None) -> int | None:
+    """log/current.md 마지막 handoff entry 제목의 `PM N차` 에서 N 을 반환한다 (T-0208).
+
+    handoff type entry 로 한정(complete/fix/note 는 제목 `PM N차` 부재/불규칙 — 오파싱 차단).
+    여러 handoff 가 있으면 *마지막*(chronological 최신·append-only 로그라 최고차)을 취한다.
+    handoff entry 부재·log 부재/파싱 실패 → None(폴백 층 없음·현행 유지·fail-soft).
+    """
+    if not log_text:
+        return None
+    last: re.Match | None = None
+    for m in _LOG_HANDOFF_HEADER_RE.finditer(log_text):
+        last = m
+    if last is None:
+        return None
+    return int(last.group("num"))
+
+
+def last_handoff_header_line(log_text: str | None) -> str | None:
+    """마지막 handoff entry 의 헤더 줄 전체를 반환한다 (T-0208·user 연속성 pickaxe needle).
+
+    `parse_last_handoff_session_num` 과 같은 grammar 로 헤더 줄을 잡는다 — 그 줄을 담은 commit
+    을 `git log -S<line>`(pickaxe)로 찾아 author email 을 얻기 위함. 부재/파싱 실패 → None.
+    """
+    if not log_text:
+        return None
+    last: re.Match | None = None
+    for m in _LOG_HANDOFF_HEADER_RE.finditer(log_text):
+        last = m
+    if last is None:
+        return None
+    return last.group("line")
+
+
+def reconcile_session_num(
+    state_num: int | str | None, log_next: int | None
+) -> tuple[int | str | None, bool]:
+    """pm_state-derived 차수와 log-derived *다음* 차수(N+1)를 교차검증한다 (T-0208).
+
+    반환 `(final, stale)` — final 은 int / `"?"` / None(현행 계약 보존), stale 은 pm_state 가
+    log 보다 뒤처졌을 때만 True(머신 간 미동기 경고 신호).
+
+    규칙(spike·티켓 인터페이스):
+      - state int · log_next int:
+          `log_next > state` → `(log_next, True)`   # pm_state stale — log 우선(max) + 경고
+          그 외              → `(state, False)`      # 현행(state 우선·회귀 0)
+      - state int · log_next None → `(state, False)`      # 현행(log 폴백 없음)
+      - state 미해소(`"?"`/None) · log_next int → `(log_next, False)`  # 차수 log-폴백
+      - 둘 다 미해소 → `(state, False)`  # `"?"`/None 그대로(placeholder·crash 금지)
+
+    순수 함수 — stale 교차검증(1축)과 폴백(1축)을 한 곳에 모아 단위테스트로 못박는다.
+    """
+    if isinstance(state_num, int) and isinstance(log_next, int):
+        if log_next > state_num:
+            return log_next, True
+        return state_num, False
+    if isinstance(state_num, int):
+        return state_num, False
+    if isinstance(log_next, int):
+        return log_next, False
+    return state_num, False
+
+
 # pm_state "남은 작업 전체 그림" 절 앵커 — 부트스트랩 인계 surface 의 단일 진실(`## ` 헤더).
 # pm_handoff 의 세션-window 앵커(`## 세션 식별 …`)와 같은 `## ` 레벨이라, 다음 `## ` 헤더
 # 직전(또는 파일 끝)까지가 절 범위다. 형식이 바뀌면 이 상수만 교체.
@@ -798,6 +872,23 @@ def _format_session_label(handoff_ctx: dict | None) -> str:
     if isinstance(num, int):
         return f"PM {num}차"
     return _SESSION_LABEL_PLACEHOLDER
+
+
+def _format_stale_warning(handoff_ctx: dict | None) -> str | None:
+    """pm_state stale 교차검증 경고 1줄 — log-derived 차수가 pm_state 보다 앞설 때 (T-0208).
+
+    `handoff_ctx["session_stale"]` 가 True(=`reconcile_session_num` 이 log 우선 max 를 택함)면
+    경고 문자열, 아니면 None(줄 생략). per-slot pm_state 가 git-ignored 라 머신 간 미동기임을
+    표면화한다 — final(log 우선) vs state(뒤처진 pm_state 값) 둘 다 담아 진단 가능하게.
+    """
+    if not handoff_ctx or not handoff_ctx.get("session_stale"):
+        return None
+    final = handoff_ctx.get("session_num")
+    state = handoff_ctx.get("state_session_num")
+    return (
+        f"⚠ pm_state stale (머신 간 미동기) — log 기준 PM {final}차 우선 "
+        f"(pm_state 는 PM {state}차)"
+    )
 
 
 # ── 핵심 흐름 ──────────────────────────────────────────────────────────────
@@ -1283,28 +1374,118 @@ class PmBootstrap:
         except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 None(surface 생략).
             return None
 
-    def _collect_handoff_context(self) -> dict | None:
-        """bound slot pm_state 에서 차수 + "남은 작업/사용자발의" 절을 수집한다 (T-0179).
+    def _collect_handoff_context(self, log_text: str | None = None) -> dict | None:
+        """bound slot pm_state 차수(+ log 교차검증) + "남은 작업/사용자발의" 절을 수집한다 (T-0179·T-0208).
 
-        반환: {"session_num": int|str|None, "remaining_work": str|None,
-               "state_path": str} 또는 None(pm_state 미해소/부재 — surface 생략·graceful).
-        - `session_num`: `infer_session_num`(pm_handoff `infer_next_session_num` 재사용) — 정수
-          N / `"?"`(entry 부재 placeholder) / None(추론 불가). 출력 머리에 `PM <N>차`.
+        반환: {"session_num": int|str|None, "session_stale": bool,
+               "state_session_num": int|str|None, "remaining_work": str|None,
+               "state_path": str} 또는 None(pm_state·log 둘 다 미해소 — surface 생략·graceful).
+        - `session_num`: pm_state(`infer_session_num`) 와 log(`parse_last_handoff_session_num`+1)
+          을 `reconcile_session_num` 으로 교차검증한 *최종* 차수. pm_state 해소 경로가 우선이되
+          (현행 무변경), pm_state 미해소(template/부재)면 log-derived N+1 로 **폴백**하고, pm_state
+          가 해소돼도 log-derived 가 더 크면 **log 우선(max)** + stale 표시(T-0208·머신 간 미동기).
+        - `session_stale`: pm_state 가 log 보다 뒤처져 log 를 택했으면 True(경고 1줄).
+        - `state_session_num`: pm_state-derived 원값(stale 경고 메시지의 진단용).
         - `remaining_work`: `extract_remaining_work_section`(절 통째) 또는 None(명시 포인터 폴백).
-        pm_state 경로 미해소/파일 부재면 None — 호출부가 현행(placeholder/명시 포인터)로 폴백한다.
+        pm_state·log 둘 다 미해소면 None — 호출부가 현행(placeholder/명시 포인터)로 폴백한다.
         """
         state_path = self._resolve_pm_state_file()
-        if state_path is None or not state_path.exists():
-            return None
-        try:
-            state_text = state_path.read_text(encoding="utf-8")
-        except Exception:  # noqa: BLE001 — fail-soft: read 실패는 surface 생략.
+        state_text: str | None = None
+        if state_path is not None and state_path.exists():
+            try:
+                state_text = state_path.read_text(encoding="utf-8")
+            except Exception:  # noqa: BLE001 — fail-soft: read 실패는 pm_state 미해소로 취급.
+                state_text = None
+
+        # log-derived 차수 폴백/교차검증 (T-0208) — handoff entry `PM N차` → 다음 차수 N+1.
+        state_num = infer_session_num(state_text) if state_text is not None else None
+        log_num = parse_last_handoff_session_num(log_text)
+        log_next = log_num + 1 if log_num is not None else None
+        session_num, session_stale = reconcile_session_num(state_num, log_next)
+
+        remaining_work = (
+            extract_remaining_work_section(state_text) if state_text is not None else None
+        )
+
+        # pm_state·log 둘 다 아무 신호도 없으면(차수 미해소 + 남은작업 부재 + pm_state 부재) None
+        # — 현행 graceful(surface 생략)과 동형. log-derived 만 있어도 dict 를 내 폴백을 살린다.
+        if session_num is None and remaining_work is None and state_text is None:
             return None
         return {
-            "session_num": infer_session_num(state_text),
-            "remaining_work": extract_remaining_work_section(state_text),
-            "state_path": str(state_path),
+            "session_num": session_num,
+            "session_stale": session_stale,
+            "state_session_num": state_num,
+            "remaining_work": remaining_work,
+            "state_path": str(state_path) if state_path is not None else "pm_state.md",
         }
+
+    # ── user 연속성 surface (T-0208·ADR-0033 ③) ──────────────────────────
+
+    def _read_log_text(self) -> str | None:
+        """log/current.md 원문을 읽는다 (T-0208·차수 log-폴백/user 연속성 공용·fail-soft None)."""
+        if not self._log_file.exists():
+            return None
+        try:
+            return self._log_file.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001 — fail-soft: read 실패는 None(surface 생략).
+            return None
+
+    def _current_user(self) -> str | None:
+        """현재 user 식별자 — `board.user_name()`(local.conf user > git config email) (T-0208).
+
+        board 모듈(주입/동적로드)의 `user_name` 을 getattr 로 쓴다(직접 import 금지·touches 격리·
+        `_protected_warning` 동형·DI 보존). board 부재/헬퍼 부재/예외 → None(fail-soft·줄 생략).
+        """
+        board_mod = self._board or _load_board()
+        user_name = getattr(board_mod, "user_name", None) if board_mod else None
+        if user_name is None:
+            return None
+        try:
+            return user_name()
+        except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 None(줄 생략).
+            return None
+
+    def _handoff_commit_author(self, handoff_header: str) -> str | None:
+        """직전 handoff entry 헤더 줄을 담은 commit 의 author email (T-0208·pickaxe).
+
+        `git log -1 --format=%ae -S<header> -- <log_file>` — 그 헤더 줄을 추가한 commit 을
+        pickaxe(-S)로 찾아 author email 을 얻는다. log/current.md 는 REPO(② PM 홈)가 소유하므로
+        `-C <REPO>` 로 명시(러너 cwd=worktree 무관·`_collect_board_git` 동형). rc≠0·빈 출력·git
+        실패 → None(fail-soft·줄 생략). DI 러너(`_run_git_fn`) 경유 — 테스트는 mock.
+        """
+        rc, out = self._run_git_fn([
+            "-C", str(REPO), "log", "-1", "--format=%ae",
+            f"-S{handoff_header}", "--", str(self._log_file),
+        ])
+        if rc != 0:
+            return None
+        stripped = out.strip()
+        if not stripped:
+            return None
+        return stripped.splitlines()[0].strip() or None
+
+    def _collect_user_continuity(self, log_text: str | None) -> str | None:
+        """직전 handoff 작성자(commit author) vs 현재 user 비교 → 연속성 1줄 (T-0208·ADR-0033 ③).
+
+        일치 → `사용자: <email> (직전 handoff 작성자와 동일 — 연속)`.
+        불일치 → `⚠ 직전 handoff 는 다른 사용자(<email>) — pending intent 는 프로젝트 상태로 취급`.
+        어느 쪽이든 미해소(handoff 부재·author 조회불가·user 미상) → None(줄 생략·fail-soft).
+        """
+        header = last_handoff_header_line(log_text)
+        if header is None:
+            return None
+        author = self._handoff_commit_author(header)
+        if not author:
+            return None
+        current = self._current_user()
+        if not current:
+            return None
+        if current == author:
+            return f"사용자: {current} (직전 handoff 작성자와 동일 — 연속)"
+        return (
+            f"⚠ 직전 handoff 는 다른 사용자({author}) — "
+            "pending intent 는 프로젝트 상태로 취급"
+        )
 
     # ── 출력 빌드 ────────────────────────────────────────────────────────
 
@@ -1327,6 +1508,14 @@ class PmBootstrap:
 
         lines: list[str] = []
         lines.append(f"## {session_label} 부트스트랩 ({timestamp})")
+        # 차수 stale 교차검증 (T-0208) — pm_state 가 log 보다 뒤처졌으면(머신 간 미동기) 경고 1줄.
+        stale_warning = _format_stale_warning(handoff_ctx)
+        if stale_warning:
+            lines.append(stale_warning)
+        # user 연속성 (T-0208) — 직전 handoff 작성자와 현재 사용자 동일성 1줄(미해소면 생략).
+        user_continuity = git.get("user_continuity")
+        if user_continuity:
+            lines.append(user_continuity)
         lines.append("")
 
         # Board 섹션 — 카운트는 `--mine`(scoped) 라벨 명확화(T-0194).
@@ -1492,6 +1681,8 @@ class PmBootstrap:
                 "freshness": git.get("freshness"),
                 # 재부착 단서(T-0217·ADR-0013) — 브랜치 불일치 경고 문자열 또는 None.
                 "reattach": git.get("reattach"),
+                # user 연속성(T-0208·ADR-0033 ③) — 직전 handoff 작성자 vs 현재 user 1줄 또는 None.
+                "user_continuity": git.get("user_continuity"),
             },
             "log_last_entry": log_entry,
         }
@@ -1547,6 +1738,7 @@ class PmBootstrap:
         # None(graceful skip) — `git` dict 에 실어 빌더로 전달(시그니처 변경 최소화).
         git["board_git"] = self._collect_board_git()
         git["freshness"] = freshness
+        log_text = self._read_log_text()
         log_entry = self._collect_log_entry()
         # 재부착 단서 (T-0217·ADR-0013) — 현 worktree 브랜치가 직전 handoff 의 worktree
         # 브랜치와 다르면 경고(자동 checkout 안 함·재부착은 PM 판단). log 마지막 entry 본문의
@@ -1554,10 +1746,14 @@ class PmBootstrap:
         git["reattach"] = reattach_warning(
             git.get("branch"), log_entry.get("body") if log_entry else None
         )
-        # 차수 + 인계 컨텍스트 (T-0179) — bound slot pm_state 에서 차수·"남은 작업/사용자발의" 절.
-        # _bound_slot 세팅 후라 명시 multi-PM 모드면 그 슬롯 pm_state 를, 솔로면 자동해소(legacy 폴백).
+        # user 연속성 (T-0208·ADR-0033 ③) — 직전 handoff 작성자(commit author) vs 현재 user.
+        # 일치=연속·불일치=다른 사용자 경고·미해소=줄 생략(fail-soft). git dict 에 실어 빌더 전달.
+        git["user_continuity"] = self._collect_user_continuity(log_text)
+        # 차수 + 인계 컨텍스트 (T-0179·T-0208) — bound slot pm_state 에서 차수·"남은 작업/사용자발의"
+        # 절. _bound_slot 세팅 후라 명시 multi-PM 모드면 그 슬롯 pm_state 를, 솔로면 자동해소(legacy
+        # 폴백). log_text 를 넘겨 차수 log-폴백 + stale 교차검증(T-0208)을 함께 해소한다.
         # 미해소/부재면 None → 빌더가 placeholder/명시 포인터로 graceful.
-        handoff_ctx = self._collect_handoff_context()
+        handoff_ctx = self._collect_handoff_context(log_text)
 
         # multi-PM 모드 분기: --slot(lean·직접 bind·T-0074) vs 기존 --repo alloc.
         multipm_lean = repo is not None and slot is not None

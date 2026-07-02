@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -306,6 +307,15 @@ _LOG_TEXT = (
 )
 
 
+# handoff entry 가 없는 log — 차수 log-폴백 대상 부재(placeholder 유지·T-0208 회귀 가드).
+_LOG_TEXT_NO_HANDOFF = (
+    "# Project Log\n\n"
+    "## [2026-06-14] note | 진행 메모\n"
+    "- 인계 사항 A\n"
+    "- 인계 사항 B\n"
+)
+
+
 def test_extract_last_log_entry_body_returns_full_body():
     """마지막 entry 의 본문 전체(`## [..]` 줄 + 하위 라인)를 반환한다 (제목만 아님)."""
     mod = _load_module()
@@ -416,6 +426,117 @@ def test_format_session_label_placeholder_cases():
     assert mod._format_session_label({"session_num": "?"}) == mod._SESSION_LABEL_PLACEHOLDER
     assert mod._format_session_label({"session_num": None}) == mod._SESSION_LABEL_PLACEHOLDER
     assert mod._format_session_label(None) == mod._SESSION_LABEL_PLACEHOLDER
+
+
+# ── 차수 log-폴백 + stale 교차검증 (T-0208·ADR-0035) ──────────────────────────
+
+_LOG_HANDOFF_TEXT = (
+    "# Project Log\n\n"
+    "## [2026-07-01] complete | T-0100 뭔가 완료\n"
+    "- 본문.\n\n"
+    "## [2026-07-02] handoff | PM 47차 → 다음 PM 세션\n"
+    "- 인계.\n"
+)
+
+# handoff 뒤에 note entry 가 붙어도(chronological 최신이 handoff 아님) handoff 를 잡아야 한다.
+_LOG_HANDOFF_THEN_NOTE = (
+    "# Project Log\n\n"
+    "## [2026-07-02] handoff | PM 48차 → 다음 PM 세션\n"
+    "- 인계.\n\n"
+    "## [2026-07-03] note | 사용자 액션 메모\n"
+    "- 메모.\n"
+)
+
+
+def test_parse_last_handoff_session_num_returns_num():
+    """handoff entry 제목 `PM 47차` → 47 (다음 차수 유도 전의 raw N)."""
+    mod = _load_module()
+    assert mod.parse_last_handoff_session_num(_LOG_HANDOFF_TEXT) == 47
+
+
+def test_parse_last_handoff_session_num_ignores_trailing_note():
+    """handoff 뒤 note entry 가 있어도 마지막 *handoff* 의 N(48)을 잡는다 (note 오파싱 방지)."""
+    mod = _load_module()
+    assert mod.parse_last_handoff_session_num(_LOG_HANDOFF_THEN_NOTE) == 48
+
+
+def test_parse_last_handoff_session_num_takes_latest_handoff():
+    """여러 handoff 면 마지막(최신·최고차)을 취한다."""
+    mod = _load_module()
+    text = (
+        "## [2026-06-14] handoff | PM 7차 인계 — 다음 우선순위\n- a.\n\n"
+        "## [2026-07-02] handoff | PM 47차 → 다음 PM 세션\n- b.\n"
+    )
+    assert mod.parse_last_handoff_session_num(text) == 47
+
+
+def test_parse_last_handoff_session_num_none_when_no_handoff():
+    """handoff type entry 가 없으면(complete/note 만) None (폴백 없음·현행 유지)."""
+    mod = _load_module()
+    assert mod.parse_last_handoff_session_num(_LOG_TEXT_NO_HANDOFF) is None
+    assert mod.parse_last_handoff_session_num("") is None
+    assert mod.parse_last_handoff_session_num(None) is None
+
+
+def test_last_handoff_header_line_returns_full_line():
+    """pickaxe needle — 마지막 handoff entry 헤더 줄 전체(날짜·type·제목)를 반환한다."""
+    mod = _load_module()
+    line = mod.last_handoff_header_line(_LOG_HANDOFF_TEXT)
+    assert line == "## [2026-07-02] handoff | PM 47차 → 다음 PM 세션"
+
+
+def test_last_handoff_header_line_none_when_absent():
+    mod = _load_module()
+    assert mod.last_handoff_header_line(_LOG_TEXT_NO_HANDOFF) is None
+    assert mod.last_handoff_header_line(None) is None
+
+
+def test_reconcile_session_num_state_wins_when_ahead():
+    """pm_state 해소값이 log-derived 보다 크면 pm_state 우선·stale 아님 (현행 무변경·회귀 0)."""
+    mod = _load_module()
+    assert mod.reconcile_session_num(42, 8) == (42, False)
+    # 동률(log_next == state)도 pm_state 유지·stale 아님(엄격 `>` 비교).
+    assert mod.reconcile_session_num(48, 48) == (48, False)
+
+
+def test_reconcile_session_num_log_wins_when_stale():
+    """pm_state 가 해소돼도 log-derived 가 더 크면 log 우선(max) + stale True (머신 간 미동기)."""
+    mod = _load_module()
+    assert mod.reconcile_session_num(48, 49) == (49, True)
+
+
+def test_reconcile_session_num_falls_back_to_log():
+    """pm_state 미해소(`?`/None)면 log-derived 로 폴백(stale 아님·폴백 층)."""
+    mod = _load_module()
+    assert mod.reconcile_session_num("?", 48) == (48, False)
+    assert mod.reconcile_session_num(None, 48) == (48, False)
+
+
+def test_reconcile_session_num_state_only_and_both_unresolved():
+    """log 폴백 없음(None)이면 pm_state 그대로; 둘 다 미해소면 placeholder 그대로."""
+    mod = _load_module()
+    assert mod.reconcile_session_num(42, None) == (42, False)
+    assert mod.reconcile_session_num("?", None) == ("?", False)
+    assert mod.reconcile_session_num(None, None) == (None, False)
+
+
+def test_format_stale_warning_shows_both_numbers():
+    """stale=True 면 log 우선 차수 + 뒤처진 pm_state 차수를 함께 담은 경고 1줄."""
+    mod = _load_module()
+    line = mod._format_stale_warning(
+        {"session_num": 49, "session_stale": True, "state_session_num": 48}
+    )
+    assert line is not None
+    assert "pm_state stale" in line
+    assert "PM 49차" in line
+    assert "PM 48차" in line
+
+
+def test_format_stale_warning_none_when_not_stale():
+    """stale 아님·handoff_ctx 부재면 None(줄 생략)."""
+    mod = _load_module()
+    assert mod._format_stale_warning({"session_num": 42, "session_stale": False}) is None
+    assert mod._format_stale_warning(None) is None
 
 
 # ── _format_board_counts_line (T-0194·`--mine`(scoped) 라벨 명확화) ────────────
@@ -624,9 +745,13 @@ def test_run_surfaces_remaining_work_section(tmp_path, capsys):
 
 
 def test_run_graceful_when_pm_state_unresolved(tmp_path, capsys):
-    """pm_state 미해소(부재)면 차수 placeholder + 명시 포인터 — crash 없이 진행."""
+    """pm_state 미해소 + log handoff 부재면 차수 placeholder + 명시 포인터 — crash 없이 진행.
+
+    (log 에 handoff entry 가 있으면 차수 log-폴백[T-0208]이 placeholder 를 대체하므로, 진짜
+    placeholder 경로를 고정하려면 log 도 handoff-없음이어야 한다 — 별 fixture `_LOG_TEXT_NO_HANDOFF`.)
+    """
     mod = _load_module()
-    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=None)
+    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT_NO_HANDOFF, pm_state_text=None)
     assert inst.run() == 0
     out = capsys.readouterr().out
     # 차수 placeholder(crash 금지) + 남은작업 명시 포인터 폴백.
@@ -647,6 +772,149 @@ def test_run_json_includes_session_num_and_handoff_context(tmp_path, capsys):
     assert data["handoff_context"]["session_num"] == 42
     assert "sikdan pm 업데이트" in data["handoff_context"]["remaining_work"]
     assert "- 인계 사항 A" in data["log_last_entry"]["body"]
+
+
+# ── 차수 log-폴백 + stale 교차검증 run() 통합 (T-0208) ─────────────────────────
+
+# pm_state 세션 식별 절은 있으나 entry 가 없는 template → infer_session_num == "?"(미해소).
+_PM_STATE_TEMPLATE = (
+    "---\ntitle: PM State\n---\n\n"
+    "## 세션 식별 (현재까지 사용된 이름)\n\n"
+    "최근 N 차 (sliding window, 기본 3 차):\n"
+    "  - (아직 없음)\n\n"
+    "## 남은 작업 전체 그림\n\n"
+    "> 초기.\n"
+)
+
+# pm_state 가 48차를 해소하나 log 가 PM 48차 handoff(→ 다음 49) 라 log 가 앞선다(stale).
+_PM_STATE_48 = (
+    "---\ntitle: PM State\n---\n\n"
+    "## 세션 식별 (현재까지 사용된 이름)\n\n"
+    "최근 N 차 (sliding window, 기본 3 차):\n"
+    "  - **47차** (2026-07-01 · 요약): 요약.\n\n"
+)
+_LOG_TEXT_47_HANDOFF = (
+    "# Project Log\n\n"
+    "## [2026-07-02] handoff | PM 47차 → 다음 PM 세션\n"
+    "- 인계.\n"
+)
+_LOG_TEXT_48_HANDOFF = (
+    "# Project Log\n\n"
+    "## [2026-07-02] handoff | PM 48차 → 다음 PM 세션\n"
+    "- 인계.\n"
+)
+
+
+def test_run_falls_back_to_log_session_num_when_pm_state_template(tmp_path, capsys):
+    """DoD ①: fresh pm_state(template·`?`) + log handoff(`PM 47차`) → 헤더 `PM 48차`(N+1 폴백)."""
+    mod = _load_module()
+    inst = _make_hermetic_bootstrap(
+        mod, tmp_path, log_text=_LOG_TEXT_47_HANDOFF, pm_state_text=_PM_STATE_TEMPLATE,
+    )
+    assert inst.run() == 0
+    out = capsys.readouterr().out
+    assert "## PM 48차 부트스트랩" in out
+    # 폴백(미해소→log)은 stale 경고 아님(pm_state 가 뒤처진 게 아니라 아예 미해소).
+    assert "pm_state stale" not in out
+
+
+def test_run_session_num_stale_cross_check_prefers_log(tmp_path, capsys):
+    """DoD 인터페이스: pm_state 해소(48) < log-derived(49) → log 우선(max) + stale 경고 1줄."""
+    mod = _load_module()
+    inst = _make_hermetic_bootstrap(
+        mod, tmp_path, log_text=_LOG_TEXT_48_HANDOFF, pm_state_text=_PM_STATE_48,
+    )
+    assert inst.run() == 0
+    out = capsys.readouterr().out
+    assert "## PM 49차 부트스트랩" in out
+    assert "⚠ pm_state stale (머신 간 미동기)" in out
+    assert "PM 48차" in out  # 뒤처진 pm_state 값 진단.
+
+
+def test_run_session_num_state_wins_no_stale_warning(tmp_path, capsys):
+    """DoD ③: pm_state 해소(42) > log-derived(8) → pm_state 우선·stale 경고 없음(회귀 무변경)."""
+    mod = _load_module()
+    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
+    assert inst.run() == 0
+    out = capsys.readouterr().out
+    assert "## PM 42차 부트스트랩" in out
+    assert "pm_state stale" not in out
+
+
+# ── user 연속성 1줄 (T-0208·ADR-0033 ③·author 일치/불일치/미해소 3분기) ─────────
+
+def _user_continuity_bootstrap(mod, *, author_email, user, log_file=None):
+    """`_collect_user_continuity` 직접 검증용 PmBootstrap — pickaxe git·board.user_name 을 mock.
+
+    author_email=None → pickaxe 가 빈 출력(author 미해소). user=None → board.user_name 미해소.
+    """
+    def _git_fn(args: list[str]) -> tuple[int, str]:
+        # pickaxe 호출: ["-C", <REPO>, "log", "-1", "--format=%ae", "-S<header>", "--", <log>]
+        if args[2:5] == ["log", "-1", "--format=%ae"]:
+            return (0, f"{author_email}\n") if author_email else (0, "")
+        raise AssertionError(f"예상치 못한 git 호출: {args}")
+
+    kwargs = dict(
+        run_git_fn=_git_fn,
+        board=SimpleNamespace(user_name=lambda: user),
+    )
+    if log_file is not None:
+        kwargs["log_file"] = log_file
+    return mod.PmBootstrap(**kwargs)
+
+
+def test_collect_user_continuity_match():
+    """직전 handoff author == 현재 user → `사용자: … (동일 — 연속)`."""
+    mod = _load_module()
+    inst = _user_continuity_bootstrap(mod, author_email="alice@x.com", user="alice@x.com")
+    line = inst._collect_user_continuity(_LOG_TEXT_47_HANDOFF)
+    assert line == "사용자: alice@x.com (직전 handoff 작성자와 동일 — 연속)"
+
+
+def test_collect_user_continuity_mismatch():
+    """직전 handoff author != 현재 user → ⚠ 다른 사용자(author) 경고."""
+    mod = _load_module()
+    inst = _user_continuity_bootstrap(mod, author_email="bob@x.com", user="alice@x.com")
+    line = inst._collect_user_continuity(_LOG_TEXT_47_HANDOFF)
+    assert line == (
+        "⚠ 직전 handoff 는 다른 사용자(bob@x.com) — pending intent 는 프로젝트 상태로 취급"
+    )
+
+
+def test_collect_user_continuity_unresolved_is_none():
+    """author 조회불가·user 미상·handoff 부재 → None(줄 생략·fail-soft)."""
+    mod = _load_module()
+    # author 미해소(pickaxe 빈 출력).
+    inst_no_author = _user_continuity_bootstrap(mod, author_email=None, user="alice@x.com")
+    assert inst_no_author._collect_user_continuity(_LOG_TEXT_47_HANDOFF) is None
+    # user 미상(board.user_name None).
+    inst_no_user = _user_continuity_bootstrap(mod, author_email="alice@x.com", user=None)
+    assert inst_no_user._collect_user_continuity(_LOG_TEXT_47_HANDOFF) is None
+    # handoff entry 부재 → git 호출 자체를 안 함(needle 없음)·None.
+    inst_ok = _user_continuity_bootstrap(mod, author_email="alice@x.com", user="alice@x.com")
+    assert inst_ok._collect_user_continuity(_LOG_TEXT_NO_HANDOFF) is None
+
+
+def test_run_surfaces_user_continuity_line(tmp_path, capsys):
+    """run() markdown 헤더 직후 user 연속성 1줄이 표면화된다(일치 케이스)."""
+    mod = _load_module()
+    inst = _make_hermetic_bootstrap(
+        mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT,
+    )
+    # 기본 fixture 는 pickaxe 를 (0,"") 로 흘려 author 미해소 → 줄 생략. author/user 를 주입해
+    # 일치 케이스를 만든다(board mock + pickaxe author 반환).
+    inst._board = SimpleNamespace(user_name=lambda: "alice@x.com")
+    _orig_git = inst._run_git_fn
+
+    def _git_fn(args):
+        if args[2:5] == ["log", "-1", "--format=%ae"]:
+            return (0, "alice@x.com\n")
+        return _orig_git(args)
+
+    inst._run_git_fn = _git_fn
+    assert inst.run() == 0
+    out = capsys.readouterr().out
+    assert "사용자: alice@x.com (직전 handoff 작성자와 동일 — 연속)" in out
 
 
 # ── run() 통합: board 카운트 `--mine` 라벨 명확화 (T-0194) ─────────────────────
