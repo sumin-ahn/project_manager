@@ -1399,7 +1399,12 @@ def test_into_symlink_conflict_does_not_follow_link(pm_import, tmp_path):
     #    원래 대상을 가리킨다(T-0034: symlink 충돌은 git_safe 무관하게 항상 백업).
     backup = dest / pm_import.BACKUP_DIR_NAME / today / "CLAUDE.md"
     assert backup.is_symlink(), "백업이 링크 자체가 아님 — 링크를 따라가 대상을 복제함."
-    assert os.readlink(backup) == str(link_target), "백업 링크가 원래 대상을 가리키지 않음."
+    # os.readlink 는 Windows 에서 링크 대상을 확장길이 접두형(\\?\C:\...)으로 반환할 수 있어
+    #   평문 str 비교가 형식 차이로 깨진다(POSIX 는 평문·`\\?\` 는 resolve()도 보존해 무의미).
+    #   계약은 "백업 링크가 원래 외부 대상 파일을 가리킨다"이지 링크 문자열의 정확한 형식이
+    #   아니므로 same-file 동일성으로 형식-무관 비교한다(T-0211 (a) os-agnostic 패턴).
+    assert Path(os.readlink(backup)).samefile(link_target), \
+        "백업 링크가 원래 대상을 가리키지 않음."
 
     # ③ 새 dst 는 일반 파일(symlink 아님)이고 템플릿 내용(외부 대상 내용 아님).
     new_claude = dest / "CLAUDE.md"
