@@ -52,6 +52,10 @@ def _board(dest: Path, *args: str) -> subprocess.CompletedProcess:
         cwd=str(dest),
         capture_output=True,
         text=True,
+        # 엔진 출력은 UTF-8(한글 포함) — 부모 콘솔 로케일(Windows cp949)로 디코드하면
+        # reader-thread 가 UnicodeDecodeError 로 죽어 stdout=None → 명시 utf-8 로 캡처.
+        encoding="utf-8",
+        errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
     )
 

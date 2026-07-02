@@ -503,7 +503,9 @@ class _FakeBoard:
         return ("open", Path(f"/fake/{ticket_id}.md"))
 
     def load_ticket(self, path):
-        if str(path).startswith("/fake/"):
+        # fake 대역 경로 판별은 os-agnostic — Windows 에선 str(Path("/fake/…")) 가
+        # 역슬래시라 startswith("/fake/") 가 빗나가 실 board 로 새어 크래시한다.
+        if Path(path).as_posix().startswith("/fake/"):
             return ({"touches": self._touches}, "body")
         return self._real.load_ticket(path)
 

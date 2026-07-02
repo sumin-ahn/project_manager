@@ -17,6 +17,7 @@ T-0041 rename 반영 — `_extract_session_section(pm_state_text)` ·
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -503,7 +504,7 @@ def test_regression_cwd_single_self_host_resolves_slot(hf, tmp_path):
          "session": "project_manager_1", "state": "leased"},
     ])
     result = hf._regression_cwd(areas_file=areas, leases_file=leases)
-    assert result.endswith("work/project_manager_1")
+    assert result.replace(os.sep, "/").endswith("work/project_manager_1")
 
 
 def test_regression_cwd_explicit_slot_overrides_auto(hf, tmp_path):
@@ -516,7 +517,7 @@ def test_regression_cwd_explicit_slot_overrides_auto(hf, tmp_path):
          "session": "project_manager_1", "state": "leased"},
     ])
     result = hf._regression_cwd("work/foo_2", areas_file=areas, leases_file=leases)
-    assert result.endswith("work/foo_2")
+    assert result.replace(os.sep, "/").endswith("work/foo_2")
 
 
 def test_regression_cwd_zero_repos_falls_back_to_repo(hf, tmp_path):

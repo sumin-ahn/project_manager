@@ -15,6 +15,7 @@ work/ 풀을 절대 건드리지 않는다(test_handoff_trigger.py 의 DI 패턴
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -265,8 +266,9 @@ def test_bootstrap_repo_reports_slot_cwd(bootstrap, tmp_path, capsys):
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
     inst.run(repo="A", branch="a5")
     out = capsys.readouterr().out
-    # cwd(작업 슬롯) 경로가 보고된다 (slot_path 산출).
-    assert "/tmp/multipm/work/A_2" in out
+    # cwd(작업 슬롯) 경로가 보고된다 (slot_path 산출). 엔진 표시는 OS-네이티브라
+    # Windows 에선 역슬래시 — 경로 구분자만 정규화해 비교(POSIX 무변경·os.sep="/").
+    assert "/tmp/multipm/work/A_2" in out.replace(os.sep, "/")
 
 
 def test_bootstrap_repo_identity_lists_registered_areas(bootstrap, tmp_path, capsys):
@@ -1180,7 +1182,7 @@ def test_worktree_cwd_explicit_slot_wins(bootstrap):
     inst = bootstrap.PmBootstrap()
     cwd = inst._worktree_cwd("work/foo_2")
     assert cwd == str(bootstrap.REPO / "work/foo_2")
-    assert cwd.endswith("work/foo_2")
+    assert cwd.replace(os.sep, "/").endswith("work/foo_2")
 
 
 def test_worktree_cwd_single_selfhost_resolves_slot(bootstrap, tmp_path, monkeypatch):
@@ -1199,7 +1201,7 @@ def test_worktree_cwd_single_selfhost_resolves_slot(bootstrap, tmp_path, monkeyp
     inst = bootstrap.PmBootstrap()
     cwd = inst._worktree_cwd()
     assert cwd == str(bootstrap.REPO / "work/project_manager_1")
-    assert cwd.endswith("work/project_manager_1")
+    assert cwd.replace(os.sep, "/").endswith("work/project_manager_1")
 
 
 def test_worktree_cwd_no_slot_falls_back_to_repo(bootstrap, monkeypatch):

@@ -341,7 +341,9 @@ def test_record_upstream_unit(pm_import, tmp_path):
     changed = pm_import.record_upstream(tmp_path, Path("/new/checkout"))
     assert changed is True
     text = local_conf.read_text(encoding="utf-8")
-    assert "upstream=/new/checkout" in text
+    # record_upstream 은 str(Path) 를 OS-네이티브로 기록(엔진 결정) — Windows 역슬래시를
+    # 경로 구분자만 정규화해 비교(POSIX 무변경·os.sep="/").
+    assert "upstream=/new/checkout" in text.replace(os.sep, "/")
     assert "upstream=/old/path" not in text
     assert "session=pm" in text  # 타 키 보존
     assert text.startswith("# header")  # 주석 보존

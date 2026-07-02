@@ -11,6 +11,7 @@ per-repo 회귀 명령 해소(ADR-0014)·domain soft 알림(ADR-0018 #2)·전체
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -575,7 +576,7 @@ def test_regression_cwd_self_host_resolves_worktree_slot(tf, tmp_path, monkeypat
     _bind_pm_handoff_seams(tf, monkeypatch, areas, leases)
     result = tf._regression_cwd()
     # REPO 자체가 work/project_manager_1 이므로 myrepo_7 로 끝나면 self-host 해소 확정(폴백 아님).
-    assert result.endswith("work/myrepo_7")
+    assert result.replace(os.sep, "/").endswith("work/myrepo_7")
     assert not result.endswith(str(tf.REPO))  # REPO 폴백과 구별
 
 
@@ -590,7 +591,7 @@ def test_regression_cwd_explicit_slot_overrides_auto(tf, tmp_path, monkeypatch):
     ])
     _bind_pm_handoff_seams(tf, monkeypatch, areas, leases)
     result = tf._regression_cwd("work/foo_2")
-    assert result.endswith("work/foo_2")
+    assert result.replace(os.sep, "/").endswith("work/foo_2")
 
 
 def test_regression_cwd_solo_falls_back_to_repo(tf, tmp_path, monkeypatch):
