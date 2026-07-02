@@ -14,7 +14,6 @@
       "Bash(echo *)",
       "Bash(pwd)",
       "Bash(diff *)",
-      "Bash(jq *)",
       "Bash(mkdir *)",
       "Bash(mv *)",
       "Bash(cp *)",

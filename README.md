@@ -359,7 +359,7 @@ cd <project> && ./pm-update.sh          # facade — manifest 경로만 byte-ove
   (파일 IO `encoding="utf-8"`·콘솔 reconfigure)하므로 env 없이 동작 — cp949·PowerShell 서도 한글 깨짐 0.
 - 의존성 선언: `requirements.txt`(런타임=`PyYAML>=6`) + `requirements-dev.txt`(`-r requirements.txt` + `pytest`).
   설치: `python3 -m pip install -r requirements-dev.txt` (Windows: `py -3.12 -m pip install ...`).
-- `pyyaml` — `board.py` 의 frontmatter 파싱. `jq` — `run_tests_hook.sh` (선택 hook). `codex`(또는
+- `pyyaml` — `board.py` 의 frontmatter 파싱. `codex`(또는
   `reviewer_cmd`) — `external_review.py` 사용 시에만 (선택·기본 OFF).
 - LLM 코딩 에이전트 (Claude Code·opencode 등) — 어댑터층 에이전트·skill, 위임 툴.
 
