@@ -203,6 +203,23 @@ def _seed_render_dest(dest_root: Path, local_conf: str | None = None) -> None:
         (pm / "local.conf").write_text(local_conf, encoding="utf-8")
 
 
+def test_iter_files_yields_posix_rel_keys(pm_update, tmp_path):
+    """_iter_files 디렉토리 재귀 relpath 는 posix(슬래시) key — Windows 역슬래시 금지(T-0212).
+
+    plan change 튜플 key 가 소비자/테스트(슬래시 규약)와 일치하려면 디렉토리 하위 파일 relpath
+    가 OS-네이티브 `str(Path)`(Windows `\\`)가 아니라 `as_posix()` 여야 한다. 이 직접 단언이
+    `.claude/agents` 같은 디렉토리 manifest 항목의 역슬래시 회귀를 못박는다(POSIX 는 항상 슬래시).
+    """
+    root = tmp_path / "root"
+    nested = root / ".claude" / "agents"
+    nested.mkdir(parents=True)
+    (nested / "developer.md").write_text("x\n", encoding="utf-8")
+    (nested / "reviewer.md").write_text("y\n", encoding="utf-8")
+    rels = [r for r, _sp in pm_update._iter_files(root, ".claude/agents")]
+    assert rels == [".claude/agents/developer.md", ".claude/agents/reviewer.md"]
+    assert all("\\" not in r for r in rels)
+
+
 def test_plan_non_render_uses_copy_semantics(pm_update, tmp_path):
     """@render 없는 항목(평문 str manifest)은 filecmp 기반 — 후방호환(byte-copy)."""
     src = tmp_path / "src"
