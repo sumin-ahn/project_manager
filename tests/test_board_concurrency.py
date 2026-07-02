@@ -495,6 +495,51 @@ def test_claim_normal_rejections_unaffected(board, capsys):
     assert list((board.TICKETS_DIR / "claimed").glob("T-0013-*.md"))
 
 
+def test_claim_critical_section_holds_board_lock(board):
+    """sensitivity(결정적·cross-platform) — claim 의 load→rename 임계구역이 board_lock 을 보유한다.
+
+    Windows `os.rename` 비배타(ADR-0012 Amendment·T-0213)를 락으로 대체한 것을 결정적으로
+    박제한다: claim 이 `load_ticket` 을 부르는 순간(=임계구역 *안*) 다른 fd 로 board_lock 을
+    *비차단* 획득하려 하면 실패해야 한다(락 잡힘). `cmd_claim` 에서 `with board_lock()` 을
+    걷어내면 프로브가 free 를 봐 이 단언이 FAIL 을 재현한다 = 락이 load-bearing(확률적 spawn
+    타이밍 비의존·`test_refresh_board_scan_and_write_are_mutually_exclusive` 동류). flock/msvcrt
+    미지원 폴백 환경은 배타성이 없어 skip.
+    """
+    if not _has_flock_primitive():
+        pytest.skip("락 프리미티브 없음(폴백 무락) — 임계구역 락 보유 단언 비적용")
+
+    tid = "T-0001"
+    path = board.TICKETS_DIR / "open" / f"{tid}-seed.md"
+    board.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
+                             "depends_on": []}, "# seed\n")
+
+    observed: dict[str, bool] = {}
+    orig_load = board.load_ticket
+
+    def probing_load(p):
+        # claim 이 이 load 를 호출하는 시점 = board_lock 임계구역 *안*이어야 한다. 별도 fd 로
+        # 비차단 프로브를 걸어 락이 실제로 잡혀있는지 관찰한다(flock/msvcrt 는 같은 프로세스의
+        # 다른 fd 도 상호배제 — `_probe_lock_free` 가 False 를 봐야 정상).
+        # setdefault: 첫 load(=claim 임계구역)만 기록 — claim 완료 후 refresh_board 가 자기
+        # board_lock 을 쥔 채 load_ticket 을 또 부르므로, 덮어쓰면 그쪽 False 가 임계구역
+        # 관측을 가려 락을 걷어내도 통과하는 false-green 이 된다(T-0213 reviewer must-fix).
+        observed.setdefault("lock_free_during_load", _probe_lock_free(board.BOARD_LOCK))
+        return orig_load(p)
+
+    board.load_ticket = probing_load
+    try:
+        rc = board.cmd_claim(_Args(id=tid, session="s"))
+    finally:
+        board.load_ticket = orig_load
+
+    assert rc == 0, f"비경합 claim 이 성공해야 함: rc={rc}"
+    assert observed.get("lock_free_during_load") is False, (
+        "claim 임계구역이 board_lock 을 보유하지 않음 — Windows 비배타 rename 을 직렬화로 "
+        "대체하지 못함(with board_lock 제거 시 재현)")
+    # claim 성공 — ticket 은 claimed/ 로 이동(임계구역 정상 완주).
+    assert list((board.TICKETS_DIR / "claimed").glob(f"{tid}-*.md"))
+
+
 # ════════════════════════════════════════════════════════════════════════
 # 3. 크래시 시 락 자동해제 (OS flock — stale-lock 없음)
 # ════════════════════════════════════════════════════════════════════════

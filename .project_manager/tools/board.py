@@ -716,7 +716,10 @@ def areas_append(prefix: str, area: str, owner: str,
 #   - board_lock: OS 파일락 — ID 발행(new)·공유 단일파일 write(board.md) 직렬화.
 #     프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock 없음).
 #   - _append_atomic: O_APPEND — log/areas 같은 append-only 파일의 원자 추가.
-#   - claim(`move_ticket` atomic rename)은 이미 원자적이라 신규 락을 안 씌운다.
+#   - claim(`cmd_claim` 의 load→rename 임계구역)도 board_lock 으로 직렬화한다 — POSIX rename 은
+#     원자적이나 Windows os.rename 은 동시 프로세스에 배타적이지 않아(ADR-0012 Amendment·T-0213)
+#     락으로 배타성을 복원한다(패배자는 깨끗한 `claim race lost`). complete/block 같은 비경합
+#     전이(단일 소유 ticket)는 race 가 없어 락 없이 rename 만 쓴다.
 #
 # 크로스플랫폼(stdlib-only — 런타임 의존은 PyYAML 뿐): POSIX=fcntl.flock,
 # Windows=msvcrt.locking. 둘 다 없으면 단일-머신 전제의 무락 폴백(락 파일만 생성).
@@ -1570,8 +1573,14 @@ def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
 def move_item(base_dir: Path, src: Path, dst_status: str) -> Path:
     """Atomic mv of an item file into a sibling status directory.
 
-    The POSIX rename(2) is the lock — a lost race surfaces as FileNotFoundError.
-    Generic over tickets and ideas.
+    On POSIX rename(2) is atomic and a lost race surfaces as FileNotFoundError
+    (the source is already gone). On Windows os.rename is NOT exclusive across
+    concurrent processes (ADR-0012 Amendment · T-0213), so a caller that needs
+    mutual exclusion for a *contended* transition must serialize it itself —
+    `cmd_claim` wraps its load→rename in `board_lock` for exactly this reason.
+    Uncontended transitions (complete/block on a ticket a single session already
+    owns) never race, so this primitive stays lock-free. Generic over tickets
+    and ideas.
     """
     dst = base_dir / dst_status / src.name
     os.rename(src, dst)
@@ -1690,31 +1699,39 @@ def cmd_claim(args: argparse.Namespace) -> int:
         print(f"cannot claim {args.id}: currently in {status}/", file=sys.stderr)
         return 1
 
-    # find→load→rename has two race windows where a concurrent winner may move
-    # the ticket out of open/ between our `find_ticket` and our own rename: the
-    # loser's `load_ticket(path)` read or its `move_ticket(path)` rename then
-    # raises FileNotFoundError. Both mean the same thing — we lost the claim
+    # The claim critical section (load → dependency check → open→claimed rename)
+    # runs under board_lock so the transition is *serialized* across sessions.
+    # On POSIX the atomic rename(2) alone was exclusive; on Windows os.rename is
+    # NOT exclusive across concurrent processes, so without serialization every
+    # concurrent claimer could "win" and duplicate the claim (ADR-0012
+    # Amendment · T-0213 — the "rename is the lock" premise is Windows-invalid).
+    # Holding board_lock makes the rename effectively exclusive everywhere: once
+    # the winner moves the ticket out of open/, every serialized loser's
+    # load_ticket/move_ticket hits the now-missing path → FileNotFoundError. The
+    # two race windows (the loser's `load_ticket(path)` read or its
+    # `move_ticket(path)` rename) both mean the same thing — we lost the claim
     # race — so both surface as one clean "claim race lost" (rc=1), never an
-    # unhandled traceback (ADR-0012 contract). The atomic rename remains the
-    # lock; this only unifies the loser's *reporting* across the two windows.
-    # Note: a dependency's own FileNotFoundError is caught below and is a
+    # unhandled traceback (ADR-0012 contract · T-0057). board_lock is OS-flock
+    # based, so a crash mid critical-section auto-releases the lock (no stale
+    # lock). Note: a dependency's own FileNotFoundError is caught below and is a
     # *normal* rejection ("dependency not found"), distinct from a claim race.
     try:
-        fm, body = load_ticket(path)
-        # Check dependencies
-        for dep in fm.get("depends_on") or []:
-            try:
-                dep_status, _ = find_ticket(dep)
-            except FileNotFoundError:
-                print(f"dependency {dep} not found", file=sys.stderr)
-                return 1
-            if dep_status != "done":
-                print(f"dependency {dep} is {dep_status}/, not done",
-                      file=sys.stderr)
-                return 1
+        with board_lock():
+            fm, body = load_ticket(path)
+            # Check dependencies
+            for dep in fm.get("depends_on") or []:
+                try:
+                    dep_status, _ = find_ticket(dep)
+                except FileNotFoundError:
+                    print(f"dependency {dep} not found", file=sys.stderr)
+                    return 1
+                if dep_status != "done":
+                    print(f"dependency {dep} is {dep_status}/, not done",
+                          file=sys.stderr)
+                    return 1
 
-        # Atomic rename is the lock
-        new_path = move_ticket(path, "claimed")
+            # board_lock (not the bare os.rename) is now the exclusive gate.
+            new_path = move_ticket(path, "claimed")
     except FileNotFoundError:
         print(f"claim race lost on {args.id}", file=sys.stderr)
         return 1
