@@ -29,7 +29,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
-# opencode: 로컬 ollama 모델(과금 0) — 기존 opencode live smoke 와 동일 default.
+# opencode: ollama cloud 모델(qwen3.5:397b-cloud) — 이 박스 로컬 모델 불가(PM 48차)·env override 가능.
 LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/qwen3.5:397b-cloud")
 # claude: sonnet-4-6(사용자 지정·API 과금) — env override.
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
@@ -125,7 +125,7 @@ def _board_list_recognizes_ticket(dest: Path) -> bool:
          "list", "--status", "all"],
         cwd=str(dest),
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         # 엔진 도구(board.py)는 LLM 이 아니라 모델 선택 무관 — 부모 env 상속 OK.
         # 모델 누수가 문제되는 LLM subprocess(opencode/claude)만 _live_env 로 격리한다.
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
@@ -156,7 +156,7 @@ def test_live_opencode_adopter_bootstraps_and_creates_ticket(tmp_path):
     proc = subprocess.run(
         ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
          _make_prompt("AGENTS.md")],
-        cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
         env=_live_env(LIVE_MODEL),
     )
 
@@ -187,7 +187,7 @@ def test_live_claude_adopter_bootstraps_and_creates_ticket(tmp_path):
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
          "--dangerously-skip-permissions", _make_prompt("CLAUDE.md")],
-        cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
         env=_live_env(CLAUDE_MODEL),
     )
 
@@ -221,7 +221,7 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
          "--from", str(REPO)],
-        cwd=str(dest), capture_output=True, text=True,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         # 엔진 도구(pm_update.py)는 LLM 이 아니라 모델 선택 무관 — 부모 env 상속 OK.
         # 모델 누수가 문제되는 LLM subprocess(opencode/claude)만 _live_env 로 격리한다.
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
@@ -254,7 +254,7 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     proc = subprocess.run(
         ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
          _make_prompt("AGENTS.md")],
-        cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
         env=_live_env(LIVE_MODEL),
     )
     created = {p.name for p in open_dir.glob("T-*.md")} - before
@@ -290,7 +290,7 @@ def test_live_claude_adopter_survives_pm_update_then_operates(tmp_path):
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
          "--dangerously-skip-permissions", _make_prompt("CLAUDE.md")],
-        cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
         env=_live_env(CLAUDE_MODEL),
     )
     created = {p.name for p in open_dir.glob("T-*.md")} - before
@@ -338,7 +338,7 @@ def test_live_opencode_adopter_runs_full_ticket_lifecycle(tmp_path):
     proc = subprocess.run(
         ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
          _make_lifecycle_prompt("AGENTS.md")],
-        cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
         env=_live_env(LIVE_MODEL),
     )
     _assert_full_lifecycle(dest, proc, "opencode")
@@ -359,7 +359,7 @@ def test_live_claude_adopter_runs_full_ticket_lifecycle(tmp_path):
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
          "--dangerously-skip-permissions", _make_lifecycle_prompt("CLAUDE.md")],
-        cwd=str(dest), capture_output=True, text=True, timeout=RUNTIME_TIMEOUT,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
         env=_live_env(CLAUDE_MODEL),
     )
     _assert_full_lifecycle(dest, proc, "claude")
