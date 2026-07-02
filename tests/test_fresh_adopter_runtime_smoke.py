@@ -39,7 +39,15 @@ RUNTIME_TIMEOUT = int(os.environ.get("PM_ADOPTER_RUNTIME_TIMEOUT", "300"))
 # PM_ORCH_LIVE_CLAUDE_MODEL·PM_ORCH_LIVE)가 하위 LLM 으로 누수하면 모델 선택이 부모 env
 # 의존(비-hermetic·재현성 저하)이 된다. 부모 환경을 통째 상속하지 않고 LLM 바이너리 동작에
 # 필수인 것만 통과시킨다. 모델 값은 _live_env(model=...) 가 테스트 의도값으로 명시 set.
-_LIVE_ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE")
+# Windows 시스템 env(SystemRoot·ComSpec·PATHEXT·APPDATA 등)는 프로세스 기동 필수 —
+# 빠지면 node 기반 CLI(claude 등)가 rc 0xC0000409 무출력 즉사한다(PM 48차 tier2 6/6 실측·
+# probe 재현). POSIX 엔 이 키들이 없어 `if k in os.environ` 가드로 자연 무시(항등).
+_LIVE_ENV_PASSTHROUGH = (
+    "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE",
+    # Windows 프로세스 기동 필수 + CLI 자격증명/설정 위치(USERPROFILE/.claude·APPDATA 등):
+    "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "WINDIR", "PROGRAMDATA",
+    "TEMP", "TMP", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+)
 
 
 def _live_env(model: str) -> dict[str, str]:
