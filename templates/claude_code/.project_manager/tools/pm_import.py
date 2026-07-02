@@ -948,6 +948,13 @@ def substitute_placeholders(
     무백업 치환되어 --into 비파괴 계약을 위반한다. 따라서 범위를 copied_relpaths(plan_copy
     가 만든 actions 의 dst relpath)로 엄격히 한정한다. 복사된 파일은 충돌 시 이미 백업됐으므로
     치환해도 안전하고, 복사 안 한 사용자 파일은 절대 건드리지 않는다.
+
+    T-0218: 값이 빈 문자열(`""`/`None`)인 subs 는 치환하지 않는다 — `replace(token, "")` 로 토큰을
+    silent 로 비우면(예: 빈 project_name → " 프로젝트") 미해소 탐지 신호가 사라진다(잔여 토큰보다
+    나쁨). 토큰을 남기면 @render path 는 이후 render_managed_files 의 _assert_no_leak 가 leak 으로
+    잡고(같은 subs 를 render 채널에도 넘겨 빈값 힌트까지 표면화), 비-@render path 는 리터럴 토큰이
+    가시적으로 남아(침묵 비움 아님) 사람이 즉시 알아챈다. 이 함수는 render *이전* 단계라, 이전엔
+    빈값이 render 가드 도달 전에 이미 지워졌다(codex must-fix — 최초 import 경로 사각).
     """
     changed = 0
     for rel in sorted(copied_relpaths):
@@ -964,6 +971,14 @@ def substitute_placeholders(
             continue
         new_text = text
         for token, value in subs.items():
+            if value is None or value == "":
+                # 빈값 subs 는 치환하지 않는다 — 토큰을 그대로 남겨 이후 render 단계
+                # (render_managed_files)의 _assert_no_leak 가 leak 으로 잡게 한다(silent-empty =
+                # leak 클래스·T-0218). `replace(token, "")` 는 미해소를 *침묵 비움*(예:
+                # `{{PROJECT_NAME}}`→"" → description 이 " 프로젝트")으로 박제해 탐지 신호 자체를
+                # 없앤다 — 잔여 토큰보다 더 나쁘다(ADR-0028 자족 산출물 취지). subs 는 이후
+                # render_managed_files 에도 그대로 전달돼 render 채널이 같은 빈값을 힌트로 표면화한다.
+                continue
             if token in new_text:
                 new_text = new_text.replace(token, value)
         if new_text != text:

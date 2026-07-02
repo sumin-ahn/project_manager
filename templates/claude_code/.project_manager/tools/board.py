@@ -1447,6 +1447,26 @@ def _quarantine_args() -> str:
     return " ".join(f"--deselect {i}" for i in ids)
 
 
+def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
+    """rc5(pytest 수집 0 · "no tests ran") 진단 힌트를 만든다 (rc≠5 면 '').
+
+    "no tests ran"(exit 5)은 pass 로 기록하지 않는다(T-0220) — 수집 0 은 테스트 루트/cwd 가
+    어긋났다는 신호지 green 이 아니다(T-0190 pin 가드의 "수집 N 확인" 원칙을 board 회귀
+    채널로 확장). 나아가 lease/세션 미매칭으로 cwd 가 REPO 로 폴백했고 그 REPO 에 `tests/` 가
+    없으면(② PM 홈이 worktree cwd 를 못 가리키는 형상·T-0124) 세션 해소 경로를 시끄럽게
+    표면화한다 — 훅 env 에 세션 정체성이 없어 상시 vacuous green 을 만들던 침묵 폴백
+    (PM 49차 실증)을 근절한다. `override`(명시 `--cwd`)면 폴백이 아니므로 힌트를 붙이지 않는다.
+    """
+    if rc != 5:
+        return ""
+    note = " · 수집 0 — 테스트 루트/cwd 확인"
+    fell_back_to_repo = not override and cwd == str(REPO)
+    if fell_back_to_repo and not (Path(cwd) / "tests").is_dir():
+        note += (f" · 활성 slot lease 미매칭(session=`{session_name()}`) — "
+                 "`PM_SESSION_NAME` 또는 local.conf `session=` 확인")
+    return note
+
+
 def cmd_regression(args: argparse.Namespace) -> int:
     """run = 측정+기록(HEAD 키), check = HEAD 가 green 인지 (pre-push 훅이 호출)."""
     if args.action == "run":
@@ -1467,17 +1487,21 @@ def cmd_regression(args: argparse.Namespace) -> int:
         # `--cwd` 주입(미래·T-0060 bootstrap) 시 그 경로, 미주입(솔로/multi-PM-미배선)은 REPO.
         cwd = _regression_cwd(getattr(args, "cwd", None))
         rc = subprocess.run(cmd, shell=True, cwd=cwd, env=env).returncode
-        status = "pass" if rc in (0, 5) else "fail"  # pytest rc5 = no tests collected
+        # pass = rc0 한정. pytest rc5(수집 0·"no tests ran")는 fail — 수집 0 은 green 이
+        # 아니라 테스트 루트/cwd 결함이다(T-0220). 이전엔 rc5 를 pass 로 삼켜 훅 세션
+        # 미해소 시 상시 vacuous green 이었다(PM 49차).
+        status = "pass" if rc == 0 else "fail"
+        detail = f"{status} (rc={rc}{_regression_rc5_note(rc, cwd, getattr(args, 'cwd', None))})"
         if scoped:
             # 스코프 실행 = dev 빠른 피드백 (advisory). full 만 push 게이트 → 게이트 플래그 안 씀.
-            print(f"regression(scoped, {len(touches)} touches): {status} (rc={rc}) "
+            print(f"regression(scoped, {len(touches)} touches): {detail} "
                   "— dev 피드백 · push 게이트 아님")
             return 0 if status == "pass" else 1
         LOCAL_DIR.mkdir(parents=True, exist_ok=True)
         REGRESSION_FLAG.write_text(json.dumps(
             {"head": _git_head(), "status": status, "rc": rc, "scope": "full",
              "ts": now_utc()}), encoding="utf-8")
-        print(f"regression: {status} (rc={rc}) @ {_git_head()[:8] or '?'}")
+        print(f"regression: {detail} @ {_git_head()[:8] or '?'}")
         return 0 if status == "pass" else 1
     # action == "check" — pre-push 게이트
     if not REGRESSION_FLAG.exists():
@@ -1491,7 +1515,12 @@ def cmd_regression(args: argparse.Namespace) -> int:
               "— 재실행 필요.", file=sys.stderr)
         return 1
     if data.get("status") != "pass":
-        print(f"regression: RED @ {head[:8]} — push 차단.", file=sys.stderr)
+        rc = data.get("rc")
+        # rc5(수집 0)는 fail 로 기록된다(T-0220) — RED 사유를 push 게이트에서 드러내
+        # "테스트가 안 돌았는데 green" 이던 침묵 폴백을 진단 가능하게 한다(run/check 일관).
+        extra = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
+        print(f"regression: RED @ {head[:8]} (rc={rc}){extra} — push 차단.",
+              file=sys.stderr)
         return 1
     print(f"regression: green @ {head[:8]} ✓")
     return 0

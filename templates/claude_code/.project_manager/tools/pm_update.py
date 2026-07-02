@@ -657,20 +657,33 @@ _LOCAL_CONF_TO_OPERATIONAL = {
 }
 
 
-def _operational_from_local_conf(dest_root: Path) -> dict[str, str]:
+def _operational_from_local_conf(dest_root: Path) -> tuple[dict[str, str], list[str]]:
     """local.conf 의 operational 해소값을 pm_render 의 token-key dict 로 변환.
 
     local.conf 키(lowercase) → operational token key(uppercase). board.py init 이 안 쓴 키는
     포함하지 않는다(빈값 강제 안 함). 출하 어댑터의 operational 토큰은 import sed 로 이미
     리터럴이라 render 시점엔 보통 부재 — 이 매핑은 재렌더가 그 토큰을 만났을 때 local.conf
     단일 진실로 재유도하기 위한 것(§3.2).
+
+    **값이 빈 문자열인 키도 dict 에서 제외**한다(부재와 동일 취급·T-0218) — 빈값을 그대로
+    넘기면 렌더가 토큰을 빈 문자열로 silent 치환해(예: `project_name=` 빈값 → description 이
+    " 프로젝트"·PM 49차 Windows ② clone 실오염) 탐지 신호가 사라진다. 제외하면 토큰이 잔존해
+    render 의 _assert_no_leak 가 leak 으로 잡는다(silent-empty = leak 클래스). 제외된 빈값
+    token-key 목록을 함께 반환해 render_adapter 가 leak 힌트("값을 채우라")에 싣게 한다.
+
+    반환: (operational dict, 빈값이라 제외된 token-key 목록).
     """
     conf = _read_local_conf(dest_root / ".project_manager" / "local.conf")
     operational: dict[str, str] = {}
+    empty_keys: list[str] = []
     for conf_key, token_key in _LOCAL_CONF_TO_OPERATIONAL.items():
-        if conf_key in conf:
-            operational[token_key] = conf[conf_key]
-    return operational
+        if conf_key not in conf:
+            continue
+        if conf[conf_key] == "":
+            empty_keys.append(token_key)
+            continue
+        operational[token_key] = conf[conf_key]
+    return operational, empty_keys
 
 
 def _render_text(source_path: Path, dest_root: Path) -> str:
@@ -681,9 +694,9 @@ def _render_text(source_path: Path, dest_root: Path) -> str:
     호출부(apply/plan)가 dst 와 비교/기록한다.
     """
     render_mod = _load_pm_render()
-    operational = _operational_from_local_conf(dest_root)
+    operational, empty_keys = _operational_from_local_conf(dest_root)
     text = Path(source_path).read_text(encoding="utf-8")
-    return render_mod.render_adapter(text, operational=operational)
+    return render_mod.render_adapter(text, operational=operational, empty_keys=empty_keys)
 
 
 def _render_eq_dst(sp: Path, dst: Path, dest_root: Path) -> bool:
@@ -769,9 +782,10 @@ def apply(changes: list[tuple]) -> None:
             dest_root = _dest_root_for(dst, _r)
             if render_mod is None:
                 render_mod = _load_pm_render()
-            operational = _operational_from_local_conf(dest_root)
+            operational, empty_keys = _operational_from_local_conf(dest_root)
             text = Path(sp).read_text(encoding="utf-8")
-            rendered = render_mod.render_adapter(text, operational=operational)
+            rendered = render_mod.render_adapter(
+                text, operational=operational, empty_keys=empty_keys)
             Path(dst).write_text(rendered, encoding="utf-8")
         else:
             shutil.copy2(sp, dst)

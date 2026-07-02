@@ -69,26 +69,39 @@ class RenderLeakError(RuntimeError):
     """렌더 산출물에 리터럴 `{{...}}` 또는 stray omit-marker 가 잔존 — 미해소 leak(자족 산출물 위반)."""
 
 
-def _fill_operational(text: str, operational: dict) -> str:
+def _fill_operational(text: str, operational: dict) -> tuple[str, list[str]]:
     """operational 토큰(`{{PROJECT_NAME}}` 등)을 plain string replace — omit 없음·행-문맥 불요.
 
     text 는 단일 행이든 산출물 전체든 무관(plain replace 라 멱등). 출하/채움 파일엔 이미
     리터럴(import sed)이라 보통 no-op. operational 값이 주어지면 재렌더가 그 토큰을 리터럴로
     채운다(local.conf 재유도). operational 가 안 채운 토큰은 그대로 남고, 그러면 _assert_no_leak
     가 leak 으로 잡는다(자족 산출물 = 토큰 0·미해소 침묵 출하 금지).
+
+    미보유 key(dict 부재)는 물론, **값이 빈 문자열인 key 도 치환하지 않는다**(T-0218·호출자 무관
+    이중화·pm_import 경로 포함) — 토큰을 그대로 남겨 _assert_no_leak 가 leak 으로 잡게 한다.
+    `.get(key, "")` 나 빈값 치환은 미해소를 *침묵 비움*(예: `project_name=` 빈값 → description 이
+    " 프로젝트"·PM 49차 라이브 오염)으로 출하해 탐지 신호 자체를 없앤다 — 잔여 토큰보다 더 나쁘다.
+
+    반환: (치환된 text, 빈값이라 건너뛴 token-key 목록). 후자는 render_adapter 가 _assert_no_leak
+    힌트("local.conf `<key>=` 가 빈값 — 값을 채우라")에 싣는다.
     """
     if not operational:
-        return text
+        return text, []
+    empty_keys: list[str] = []
     for key in OPERATIONAL_KEYS:
         if key not in operational:
             # 미보유 key 는 치환하지 않는다 — 토큰을 그대로 남겨 _assert_no_leak 가 잡게 한다.
-            # `.get(key, "")` 로 빈 문자열 치환하면 미해소를 *침묵 비움*(예: 기존 채택자
-            # local.conf 미보유 opencode_pro_model → `model: ` 로 덮음)으로 출하한다(codex·docstring 의도).
+            continue
+        value = operational[key]
+        if value is None or str(value) == "":
+            # 빈값 key 도 치환하지 않는다 — silent-empty = leak 클래스(T-0218). 토큰을 남겨
+            # _assert_no_leak 가 잡되, 빈값 원인임을 힌트로 표면화한다(값을 채우라).
+            empty_keys.append(key)
             continue
         token = "{{" + key + "}}"
         if token in text:
-            text = text.replace(token, str(operational[key]))
-    return text
+            text = text.replace(token, str(value))
+    return text, empty_keys
 
 
 def render_adapter(
@@ -96,10 +109,13 @@ def render_adapter(
     operational: dict | None = None,
     *,
     source: str | None = None,
+    empty_keys: list[str] | None = None,
 ) -> str:
     """어댑터 템플릿 → 자족 .md (operational plain replace·§3.2·ADR-0031).
 
     source: leak 에러에 실을 파일 경로(선택·render_file 이 전달). 진단용일 뿐 렌더엔 무영향.
+    empty_keys: 호출자(pm_update)가 local.conf 빈값이라 dict 에서 제외한 token-key 목록(선택).
+    렌더러가 직접 감지한 빈값 key 와 합쳐 leak 힌트("값을 채우라")에 싣는다(T-0218).
 
     operational 은 행-문맥 무관 plain string replace(omit 없음) → 템플릿 전체에 whole-text
     패스로 적용한다(멱등). 결과는 자족(잔여 `{{...}}`·stray 마커 0) — post-render assertion 이
@@ -107,12 +123,20 @@ def render_adapter(
     (ADR-0030 free-form-free), 잔존하면 leak 으로 표면화된다(미마이그레이션 신호).
     """
     operational = operational or {}
-    result = _fill_operational(template_text, operational)
-    _assert_no_leak(result, source=source)
+    result, detected_empty = _fill_operational(template_text, operational)
+    # pm_update 가 excluded 한 빈값 key(empty_keys) + 렌더러가 직접 감지한 빈값 key 를 합쳐
+    # leak 힌트에 싣는다(중복 제거·순서 보존).
+    all_empty = list(dict.fromkeys([*(empty_keys or []), *detected_empty]))
+    _assert_no_leak(result, source=source, empty_keys=all_empty)
     return result
 
 
-def _assert_no_leak(text: str, *, source: str | None = None) -> None:
+def _assert_no_leak(
+    text: str,
+    *,
+    source: str | None = None,
+    empty_keys: list[str] | None = None,
+) -> None:
     """렌더 산출물에 잔여 `{{[A-Z_]+}}` 토큰 또는 stray omit-marker 가 있으면 RenderLeakError.
 
     자족 산출물 = 토큰 0 (ADR-0028·allow-list 없음): 잔여 토큰이 *하나라도* 있으면 emission
@@ -135,6 +159,13 @@ def _assert_no_leak(text: str, *, source: str | None = None) -> None:
         parts.append(
             f"미해소 토큰 잔존: {toks} — 자족 산출물(ADR-0028)은 토큰 0 이어야 한다. "
             f"템플릿 저자가 새 토큰을 넣었거나 local.conf 채널 배선이 누락됐다.")
+        # 빈값(local.conf `<key>=`)이 원인인 leak 은 값을 채우라는 실행가능 힌트를 더한다(T-0218).
+        # empty_keys·leaked 는 둘 다 uppercase token-key → `.lower()` 로 local.conf key 를 제시.
+        empty_leaked = [k for k in (empty_keys or []) if k in leaked]
+        if empty_leaked:
+            conf_keys = ", ".join("`" + k.lower() + "=`" for k in empty_leaked)
+            parts.append(
+                f"위 토큰은 local.conf {conf_keys} 가 빈값이라 미해소 — 값을 채우라.")
     if stray:
         parts.append(
             f"stray omit-marker 잔존: {', '.join(dict.fromkeys(stray))} — 옛 free-form "
