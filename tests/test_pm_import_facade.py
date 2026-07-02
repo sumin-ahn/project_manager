@@ -33,10 +33,27 @@ HARNESSES = ("claude_code", "opencode")
 UPDATE_SH = {h: REPO / "templates" / h / "pm-update.sh" for h in HARNESSES}
 UPDATE_CMD = {h: REPO / "templates" / h / "pm-update.cmd" for h in HARNESSES}
 
+# subprocess 는 CreateProcess 검색 순서상 System32\bash.exe(WSL 런처)를 PATH 의 Git Bash 보다
+# 먼저 집는다 — WSL bash 는 `/mnt/c/…` 마운트라 Windows-form 경로(`C:/…`·`/c/…`)를 못 연다(rc127).
+# `shutil.which` 는 PATH 순서(=Git Bash)를 반환하므로 그 절대경로로 실행해 일관된 POSIX 셸을 쓴다
+# (Linux 는 `/bin/bash`·무영향). requires_bash 와 동일 소스라 skip 조건과 정합.
+BASH = shutil.which("bash")
+
 requires_bash = pytest.mark.skipif(
-    shutil.which("bash") is None,
+    BASH is None,
     reason="bash 부재(POSIX e2e 불가) — .sh 실행 환경 아님",
 )
+
+
+def _bash_arg(path) -> str:
+    """bash 에 넘길 경로 인자를 forward-slash(as_posix) 로 변환.
+
+    Windows Git Bash 는 argv 의 `\\` 를 escape 로 처리해 소실한다(`C:\\Users` → `C:Users`) —
+    Windows-form 절대경로를 그대로 넘기면 스크립트를 못 찾거나(rc127) 포워딩 인자가 깨진다.
+    forward-slash 형은 bash 가 그대로 해소하고, native python 호출 시 MSYS 가 Windows 경로로
+    되돌린다. POSIX 는 `as_posix` 가 무변경이라 동작 불변(교차플랫폼 안전).
+    """
+    return Path(path).as_posix()
 
 
 def _load_pm_import():
@@ -58,11 +75,13 @@ def test_sh_facade_reaches_pm_import_dry_run(tmp_path: Path) -> None:
     dest = tmp_path / "facade_dest"
 
     proc = subprocess.run(
-        ["bash", str(SH), "--dry-run", "--new", str(dest),
+        [BASH, _bash_arg(SH), "--dry-run", "--new", _bash_arg(dest),
          "--harness", "opencode"],
         cwd=str(cwd),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     combined = proc.stdout + proc.stderr
@@ -79,17 +98,21 @@ def test_sh_facade_forwards_from_default_to_manager_root(tmp_path: Path) -> None
     """--from 미지정 시 pm_import 이 manager 루트로 auto-default — opencode 소스 트리 도달."""
     dest = tmp_path / "facade_dest2"
     proc = subprocess.run(
-        ["bash", str(SH), "--dry-run", "--new", str(dest),
+        [BASH, _bash_arg(SH), "--dry-run", "--new", _bash_arg(dest),
          "--harness", "opencode"],
         cwd=str(tmp_path),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, combined
     # source 가 이 manager 루트의 templates/opencode 로 해소돼야 한다.
+    # Windows 는 소스 출력이 mixed-separator(`…project_manager_1/templates/opencode` — pm_import
+    # f-string 이 `/templates/` 를 하드코딩)라 separator 정규화 후 비교. POSIX 는 무변경.
     expected_src = str(REPO / "templates" / "opencode")
-    assert expected_src in combined, combined
+    assert expected_src.replace("\\", "/") in combined.replace("\\", "/"), combined
 
 
 # --- .sh 정적 단언 ---
@@ -134,9 +157,11 @@ def test_cmd_exists_and_has_forward_tokens() -> None:
 def test_import_sh_help_surfaces_upstream_record_note() -> None:
     """pm-import.sh --help 가 pm_import epilog 의 upstream 기록 안내를 surface."""
     proc = subprocess.run(
-        ["bash", str(SH), "--help"],
+        [BASH, _bash_arg(SH), "--help"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, f"rc={proc.returncode}\n{combined}"
@@ -159,10 +184,12 @@ def test_update_sh_help_surfaces_upstream_note(harness: str, tmp_path: Path) -> 
     cwd = tmp_path / "elsewhere"
     cwd.mkdir()
     proc = subprocess.run(
-        ["bash", str(UPDATE_SH[harness]), "--help"],
+        [BASH, _bash_arg(UPDATE_SH[harness]), "--help"],
         cwd=str(cwd),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, f"rc={proc.returncode}\n{combined}"

@@ -13,9 +13,16 @@ set -u
 
 hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
 
-if command -v python3 >/dev/null 2>&1; then py=python3
-elif command -v python >/dev/null 2>&1; then py=python
-else exit 0
-fi
+# 인터프리터 선택 — 후보를 순회하며 *실행검증*(--version rc)으로 채택(엔진 _detect_py·T-0022 시맨틱과
+# 동형·python3 → python). 존재검증(command -v)만으론 Windows WindowsApps 가짜 shim(command -v 통과·
+# 실행 시 Permission denied rc126)을 못 거른다. 전부 실패 시 rc0 조용 통과(훅은 정상 작업을 막지 않음).
+py=""
+for _cand in python3 python; do
+    if command -v "$_cand" >/dev/null 2>&1 && "$_cand" --version >/dev/null 2>&1; then
+        py="$_cand"
+        break
+    fi
+done
+[ -n "$py" ] || exit 0
 
 exec "$py" "$hook_dir/ctx_stop_hook.py" "$@"

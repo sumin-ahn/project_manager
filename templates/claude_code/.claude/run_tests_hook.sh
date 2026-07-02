@@ -23,11 +23,17 @@ esac
 
 cd "$repo_root" || exit 0
 
-# 인터프리터 런타임 선택 (python3 → python 폴백). 없으면 조용히 통과 — hook 은 정상 작업을 막지 않는다.
-if command -v python3 >/dev/null 2>&1; then py=python3
-elif command -v python >/dev/null 2>&1; then py=python
-else exit 0
-fi
+# 인터프리터 선택 — 후보를 순회하며 *실행검증*(--version rc)으로 채택(엔진 _detect_py·T-0022 시맨틱과
+# 동형·python3 → python). 존재검증(command -v)만으론 Windows WindowsApps 가짜 shim(command -v 통과·
+# 실행 시 Permission denied rc126)을 못 거른다. 전부 실패 시 rc0 조용 통과(훅은 정상 작업을 막지 않음).
+py=""
+for _cand in python3 python; do
+    if command -v "$_cand" >/dev/null 2>&1 && "$_cand" --version >/dev/null 2>&1; then
+        py="$_cand"
+        break
+    fi
+done
+[ -n "$py" ] || exit 0
 
 result=$("$py" -m pytest tests/ -q --no-header 2>&1 | tail -1)
 jq -n --arg msg "tests: $result" '{systemMessage: $msg}'
