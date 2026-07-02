@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
+import types
 from pathlib import Path
 
 import pytest
@@ -672,3 +674,151 @@ def test_session_name_override_beats_everything(board, monkeypatch):
     monkeypatch.setenv("PM_SESSION_NAME", "from-pm-env")
     _write_conf(board, "session=from-conf\n")
     assert board.session_name("explicit") == "explicit"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# regression run: vacuous-pass 근절 (T-0220) — rc5(수집 0·"no tests ran")는
+# pass 로 기록하지 않는다. pass = rc0 한정. 미매칭 REPO 폴백 + tests/ 부재 시
+# 세션 해소 힌트를 시끄럽게 표면화(침묵 폴백이 상시 vacuous green 이던 것 근절·PM 49차).
+# ════════════════════════════════════════════════════════════════════════
+
+class _FakeRun:
+    """board.subprocess.run 대역 — 고정 returncode 를 돌려주고 호출을 기록한다.
+
+    pytest 자식을 실기동하지 않고 rc 만 주입한다. `_git_head` 은 별도 mock 하므로 이
+    대역은 회귀 pytest 호출만 받는다.
+    """
+
+    def __init__(self, rc: int):
+        self.rc = rc
+        self.calls: list[dict] = []
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return types.SimpleNamespace(returncode=self.rc)
+
+
+@pytest.fixture
+def reg_board(board, monkeypatch):
+    """회귀 run 을 hermetic 하게 만든 board — 플래그/장부/HEAD 를 tmp·fake 로 격리.
+
+    board 픽스처는 REGRESSION_FLAG·LOCAL_DIR·LEASES_FILE 을 monkeypatch 하지 않아 실 repo 를
+    가리킨다 — 여기서 tmp 로 재지정한다. LEASES_FILE 은 부재(→`_active_slot_path` None →
+    cwd=REPO 폴백)·REPO(=tmp proj)엔 `tests/` 없음 → rc5 폴백 힌트 조건이 성립한다.
+    """
+    local = board._proj / ".project_manager" / ".local"
+    monkeypatch.setattr(board, "LOCAL_DIR", local)
+    monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
+    monkeypatch.setattr(board, "LEASES_FILE", local / "worktree-leases.json")  # 부재
+    monkeypatch.setattr(board, "_git_head", lambda: "deadbeef01234567")
+    return board
+
+
+def _run_args(**over):
+    base = dict(action="run", cmd=None, ticket=None, touches=None)
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_regression_run_rc5_records_fail(reg_board, monkeypatch, capsys):
+    """rc5(수집 0) full run → status='fail' 기록 + rc≠0 반환 (vacuous pass 근절·T-0220).
+
+    이전엔 `rc in (0, 5)` 로 rc5 를 pass 로 삼켰다 — 그 회귀를 복원하면 이 단언이 깨진다.
+    """
+    monkeypatch.setattr(reg_board.subprocess, "run", _FakeRun(5))
+    rc = reg_board.cmd_regression(_run_args())
+    assert rc == 1, "rc5 는 fail — cmd_regression 이 0(pass)을 반환하면 안 된다"
+    data = json.loads(reg_board.REGRESSION_FLAG.read_text(encoding="utf-8"))
+    assert data["status"] == "fail", f"rc5 가 pass 로 기록됨: {data!r}"
+    assert data["rc"] == 5
+    out = capsys.readouterr().out
+    assert "fail (rc=5" in out
+    assert "수집 0" in out
+
+
+def test_regression_run_rc0_records_pass_unchanged(reg_board, monkeypatch, capsys):
+    """rc0 full run → status='pass' 기록 + 0 반환 (회귀 무변경·T-0220).
+
+    pass = rc0 한정으로 좁혔어도 정상 green 경로는 그대로여야 한다.
+    """
+    monkeypatch.setattr(reg_board.subprocess, "run", _FakeRun(0))
+    rc = reg_board.cmd_regression(_run_args())
+    assert rc == 0
+    data = json.loads(reg_board.REGRESSION_FLAG.read_text(encoding="utf-8"))
+    assert data["status"] == "pass"
+    assert data["rc"] == 0
+    out = capsys.readouterr().out
+    assert "pass (rc=0)" in out
+    assert "수집 0" not in out  # rc0 엔 rc5 진단 노트가 붙지 않는다.
+
+
+def test_regression_run_rc1_records_fail(reg_board, monkeypatch):
+    """rc1(실 실패) full run → status='fail' (일반 실패는 회귀 무변경)."""
+    monkeypatch.setattr(reg_board.subprocess, "run", _FakeRun(1))
+    rc = reg_board.cmd_regression(_run_args())
+    assert rc == 1
+    data = json.loads(reg_board.REGRESSION_FLAG.read_text(encoding="utf-8"))
+    assert data["status"] == "fail"
+    assert data["rc"] == 1
+
+
+def test_regression_run_rc5_repo_fallback_surfaces_session_hint(
+        reg_board, monkeypatch, capsys):
+    """rc5 + REPO 폴백(lease 미매칭) + tests/ 부재 → 세션 해소 힌트 표면화 (T-0220).
+
+    훅 env 에 세션 정체성이 없어 침묵 폴백 → 상시 vacuous green 이던 것을 시끄럽게 만든다.
+    힌트에 해소된 session 값과 PM_SESSION_NAME/local.conf 안내가 들어간다.
+    """
+    monkeypatch.setenv("PM_SESSION_NAME", "orch-dev-T0220")
+    monkeypatch.setattr(reg_board.subprocess, "run", _FakeRun(5))
+    reg_board.cmd_regression(_run_args())
+    out = capsys.readouterr().out
+    assert "활성 slot lease 미매칭" in out
+    assert "session=`orch-dev-T0220`" in out
+    assert "PM_SESSION_NAME" in out
+    assert "local.conf" in out
+
+
+def test_regression_run_rc5_explicit_cwd_no_fallback_hint(
+        reg_board, monkeypatch, capsys):
+    """rc5 지만 명시 `--cwd`(override)면 폴백이 아니므로 세션 힌트를 붙이지 않는다.
+
+    수집 0 노트는 그대로(rc5=fail) 나오되, '미매칭 폴백' 힌트는 override 경로에선 무의미하다.
+    """
+    monkeypatch.setenv("PM_SESSION_NAME", "orch-dev-T0220")
+    monkeypatch.setattr(reg_board.subprocess, "run", _FakeRun(5))
+    reg_board.cmd_regression(_run_args(cwd=str(reg_board._proj / "elsewhere")))
+    out = capsys.readouterr().out
+    assert "수집 0" in out               # rc5=fail 노트는 유지.
+    assert "활성 slot lease 미매칭" not in out  # override 는 폴백 아님 → 힌트 없음.
+
+
+def test_regression_run_rc5_scoped_returns_fail(reg_board, monkeypatch, capsys):
+    """scoped(touches) rc5 도 fail 반환 (advisory 경로도 rc0 만 pass·T-0220).
+
+    scoped 는 플래그를 안 쓰지만 반환값/메시지는 full 과 같은 판정을 따른다.
+    """
+    monkeypatch.setattr(reg_board.subprocess, "run", _FakeRun(5))
+    rc = reg_board.cmd_regression(_run_args(touches="tests/test_board_multipm.py"))
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "fail (rc=5" in out
+    assert "수집 0" in out
+
+
+def test_regression_check_rc5_recorded_blocks_push(reg_board, monkeypatch, capsys):
+    """rc5 로 기록된 fail 플래그를 `check` 가 HEAD-매칭 RED 로 차단 + rc 표면화 (run/check 일관).
+
+    check 는 플래그의 status 만 신뢰한다 — rc5 가 fail 로 기록되므로 push 가 막히고,
+    RED 메시지가 rc=5·수집 0 사유를 드러낸다.
+    """
+    reg_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    reg_board.REGRESSION_FLAG.write_text(json.dumps(
+        {"head": "deadbeef01234567", "status": "fail", "rc": 5,
+         "scope": "full", "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
+    rc = reg_board.cmd_regression(argparse.Namespace(action="check"))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "RED" in err
+    assert "rc=5" in err
+    assert "수집 0" in err
