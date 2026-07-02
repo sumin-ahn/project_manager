@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -479,12 +480,20 @@ def _make_hermetic_bootstrap(
     def _git_fn(args: list[str]) -> tuple[int, str]:
         if args[:2] == ["-C", str(board_dir)]:
             sub = args[2:]
+            # T-0217 board 서브모듈 rider(fetch + branch 유지 pull). rev-list 가 behind 0 을
+            # 주므로 이 fixture 에선 checkout/pull 은 안 불리지만 안전하게 handler 를 둔다.
+            if sub == ["fetch", "origin"]:
+                return (0, "")
+            if sub == ["symbolic-ref", "--short", "HEAD"]:
+                return (0, "main\n")
             if sub == ["rev-parse", "--short", "HEAD"]:
                 return (0, "abc1234\n")
             if sub == ["status", "-s"]:
                 return (0, " M areas.md\n")
             if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:
                 return (0, "1\t0\n")
+            if sub[:1] == ["checkout"] or sub[:1] == ["pull"]:
+                return (0, "")
             raise AssertionError(f"예상치 못한 board git 호출: {args}")
         if args[:2] == ["rev-parse", "--abbrev-ref"]:
             return (0, "main\n")
@@ -801,3 +810,522 @@ def test_run_dump_then_warn_prints_dump_before_warning_and_exits_nonzero(tmp_pat
     assert "- 인계 사항 A" in out.out
     # 경고는 stderr 로.
     assert "차단(blocking)" in out.err
+
+
+# ── T-0217: git freshness (fetch + behind 표면화 + clean·ff 자동 pull) ─────────
+
+# ── freshness_decision (순수 판정 함수) ──────────────────────────────────────
+
+def test_freshness_decision_latest_no_pull():
+    """behind 0 · ahead 0 → '최신' · pull 안 함."""
+    mod = _load_module()
+    assert mod.freshness_decision(
+        fetched=True, detached=False, dirty=False, ahead=0, behind=0) == ("최신", False)
+
+
+def test_freshness_decision_behind_clean_ff_pulls():
+    """behind>0 · ahead 0 · clean · fetch 성공 → '동기' · pull True (안전조건 전부 충족)."""
+    mod = _load_module()
+    assert mod.freshness_decision(
+        fetched=True, detached=False, dirty=False, ahead=0, behind=3) == ("동기", True)
+
+
+def test_freshness_decision_fetch_failed_no_pull():
+    """behind>0 · clean · ff 여도 **fetch 실패면 자동 pull 금지** (codex must-fix ① — stale 원격)."""
+    mod = _load_module()
+    assert mod.freshness_decision(
+        fetched=False, detached=False, dirty=False, ahead=0, behind=3) == (
+        "수동 동기 필요", False,
+    )
+
+
+def test_freshness_decision_status_unknown_no_pull():
+    """behind>0 · ff 여도 **status 미확인(dirty=None)이면 자동 pull 금지** (codex must-fix ② — clean 미증명)."""
+    mod = _load_module()
+    assert mod.freshness_decision(
+        fetched=True, detached=False, dirty=None, ahead=0, behind=3) == (
+        "수동 동기 필요", False,
+    )
+
+
+def test_freshness_decision_ahead_unknown_no_pull():
+    """behind>0 · fetch 성공 · clean 이어도 **ahead=None(미확인)이면 자동 pull 금지**
+    (codex round-2 must-fix — `ahead or 0` 폴백이 미확인을 ff-확정으로 위장하던 구멍)."""
+    mod = _load_module()
+    assert mod.freshness_decision(
+        fetched=True, detached=False, dirty=False, ahead=None, behind=2) == (
+        "수동 동기 필요", False,
+    )
+
+
+def test_behind_warning_ahead_unknown_reason():
+    """_behind_warning 이 ahead=None 을 'ahead 미확인' 사유로 표면화한다."""
+    mod = _load_module()
+    warning = mod._behind_warning(
+        {"behind": 2, "fetched": True, "dirty": False, "ahead": None})
+    assert "ahead 미확인" in warning
+
+
+def test_freshness_decision_behind_dirty_no_pull():
+    """behind>0 인데 dirty → '수동 동기 필요' · pull False (표면화만)."""
+    mod = _load_module()
+    assert mod.freshness_decision(
+        fetched=True, detached=False, dirty=True, ahead=0, behind=2) == (
+        "수동 동기 필요", False,
+    )
+
+
+def test_freshness_decision_diverged_no_pull():
+    """behind>0 · ahead>0 (diverged) → '수동 동기 필요' · pull False."""
+    mod = _load_module()
+    assert mod.freshness_decision(
+        fetched=True, detached=False, dirty=False, ahead=1, behind=2) == (
+        "수동 동기 필요", False,
+    )
+
+
+def test_freshness_decision_detached_no_pull():
+    """detached HEAD → 'detached' · pull False (재부착은 PM 판단)."""
+    mod = _load_module()
+    assert mod.freshness_decision(
+        fetched=True, detached=True, dirty=False, ahead=0, behind=5) == (
+        "detached", False,
+    )
+
+
+def test_freshness_decision_no_upstream_no_pull():
+    """behind None (upstream 미설정/조회불가) → 'upstream 없음' · pull False."""
+    mod = _load_module()
+    assert mod.freshness_decision(
+        fetched=True, detached=False, dirty=False, ahead=None, behind=None) == (
+        "upstream 없음", False,
+    )
+
+
+def test_freshness_decision_ahead_only_no_pull():
+    """behind 0 · ahead>0 → 'ahead-only' · pull False (로컬만 앞섬·push 대기)."""
+    mod = _load_module()
+    assert mod.freshness_decision(
+        fetched=True, detached=False, dirty=False, ahead=2, behind=0) == (
+        "ahead-only", False,
+    )
+
+
+# ── _format_freshness (표면화 문자열) ────────────────────────────────────────
+
+def test_format_freshness_behind_ahead():
+    mod = _load_module()
+    scope = {"fetched": True, "detached": False, "behind": 3, "ahead": 0, "note": None}
+    assert mod._format_freshness(scope) == "behind 3 / ahead 0"
+
+
+def test_format_freshness_latest_with_note():
+    mod = _load_module()
+    scope = {"fetched": True, "detached": False, "behind": 0, "ahead": 0,
+             "note": "ff-pull 동기 완료 (behind 3→0)"}
+    assert mod._format_freshness(scope) == "최신 · ff-pull 동기 완료 (behind 3→0)"
+
+
+def test_format_freshness_fetch_failure_prefixed():
+    """fetch 실패면 '⚠ fetch 실패' 접두 + stale local 측정 병기(fail-soft 표면화)."""
+    mod = _load_module()
+    scope = {"fetched": False, "detached": False, "behind": 2, "ahead": 0, "note": None}
+    line = mod._format_freshness(scope)
+    assert line.startswith("⚠ fetch 실패")
+    assert "behind 2 / ahead 0" in line
+
+
+def test_format_freshness_detached():
+    mod = _load_module()
+    scope = {"fetched": True, "detached": True, "behind": None, "ahead": None, "note": None}
+    assert mod._format_freshness(scope) == "detached HEAD"
+
+
+# ── parse_handoff_worktree_branch / reattach_warning ─────────────────────────
+
+def test_parse_handoff_worktree_branch_happy():
+    """handoff entry 본문의 worktree 줄에서 branch 추출 (부가 주석이 붙어도)."""
+    mod = _load_module()
+    body = (
+        "## [2026-07-02] handoff | PM 48차 인계\n"
+        "- worktree: slot=`work/project_manager_1` · branch=`main` "
+        "(릴리즈 ff 후 상태 · 회전 재부착 단서·ADR-0013)\n"
+    )
+    assert mod.parse_handoff_worktree_branch(body) == "main"
+
+
+def test_parse_handoff_worktree_branch_unset_is_none():
+    """`(미지정)` placeholder 또는 줄 부재 → None (비교 생략)."""
+    mod = _load_module()
+    body = "- worktree: slot=`work/A_1` · branch=`(미지정)` (회전 재부착 단서·ADR-0013)\n"
+    assert mod.parse_handoff_worktree_branch(body) is None
+    assert mod.parse_handoff_worktree_branch("본문에 worktree 줄 없음\n") is None
+    assert mod.parse_handoff_worktree_branch(None) is None
+
+
+def test_reattach_warning_mismatch_warns():
+    """현 브랜치 ≠ 직전 handoff worktree 브랜치 → 경고 문자열 (자동 checkout 안 함)."""
+    mod = _load_module()
+    body = "- worktree: slot=`work/pm_1` · branch=`release/v1.0.2` (회전 재부착 단서·ADR-0013)\n"
+    warn = mod.reattach_warning("main", body)
+    assert warn is not None
+    assert "release/v1.0.2" in warn and "main" in warn
+    # 자동 checkout 은 하지 않는다는 안내를 담는다(재부착은 PM 판단).
+    assert "자동 checkout" in warn
+
+
+def test_reattach_warning_match_or_missing_is_none():
+    """브랜치 일치·직전 브랜치 미상·현 브랜치 미상 → None (경고 생략)."""
+    mod = _load_module()
+    body = "- worktree: slot=`work/pm_1` · branch=`main` (회전 재부착 단서·ADR-0013)\n"
+    assert mod.reattach_warning("main", body) is None            # 일치
+    assert mod.reattach_warning("main", "worktree 줄 없음") is None  # 직전 미상
+    assert mod.reattach_warning(None, body) is None              # 현 미상
+
+
+# ── _sync_scope (fetch + 판정 + clean·ff pull) ───────────────────────────────
+
+def _scope_git_fn(dir_str, *, fetch_rc=0, branch="main", detached=False, dirty=False,
+                  status_rc=0, ahead=0, behind=0, pull_rc=0, calls=None):
+    """단일 scope_dir 를 대상으로 fetch/symbolic-ref/status/rev-list/pull/checkout 를
+    canned 응답하는 fake run_git_fn (모든 호출은 `-C <dir_str>` 명시·실 git 미접촉).
+
+    `status_rc != 0` 로 `git status -s` 실패(clean 미확인)를 흉내낼 수 있다(codex must-fix ②).
+    """
+    def _fn(args: list[str]) -> tuple[int, str]:
+        if calls is not None:
+            calls.append(args)
+        assert args[:2] == ["-C", dir_str], f"예상치 못한 git 호출: {args}"
+        sub = args[2:]
+        if sub == ["fetch", "origin"]:
+            return (fetch_rc, "" if fetch_rc == 0 else "fatal: could not read from remote\n")
+        if sub == ["symbolic-ref", "--short", "HEAD"]:
+            return (1, "") if detached else (0, f"{branch}\n")
+        if sub == ["status", "-s"]:
+            if status_rc != 0:
+                return (status_rc, "fatal: not a git repository\n")
+            return (0, " M x\n" if dirty else "")
+        if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:
+            return (0, f"{ahead}\t{behind}\n")
+        if sub[:1] == ["pull"]:
+            return (pull_rc, "")
+        if sub[:1] == ["checkout"]:
+            return (0, "")
+        raise AssertionError(f"예상치 못한 git 호출: {args}")
+    return _fn
+
+
+def test_sync_scope_fetch_failure_behind_no_pull(tmp_path):
+    """codex must-fix ①: fetch 실패 + behind>0(clean·ff) → **pull 미실행** · 경고 표면화.
+
+    fetch 실패면 behind/ahead 는 stale 원격 데이터라 그 위에서 자동 pull 하면 안 된다.
+    """
+    mod = _load_module()
+    d = tmp_path / "repo"
+    calls: list[list[str]] = []
+    inst = mod.PmBootstrap(
+        run_git_fn=_scope_git_fn(str(d), fetch_rc=1, behind=3, ahead=0, dirty=False, calls=calls))
+    scope = inst._sync_scope("② PM 홈", d)
+    assert scope["fetched"] is False
+    assert scope["state"] == "수동 동기 필요"
+    assert scope["pulled"] is False
+    # pull 은 절대 호출되지 않는다(stale 원격 위 자동 동기 금지).
+    assert not any(a[2:3] == ["pull"] for a in calls)
+    # 경고 표면화 — behind 유지 + 차단 사유(fetch 실패).
+    assert scope["behind"] == 3
+    assert scope["note"] and "fetch 실패" in scope["note"]
+
+
+def test_sync_scope_status_failure_behind_no_pull(tmp_path):
+    """codex must-fix ②: `git status` 실패 + behind>0(ff) → **pull 미실행** · 경고 표면화.
+
+    status 조회 실패면 clean 을 증명 못 하므로 자동 pull 불가(fail-soft — abort 아님·pull 만 차단).
+    """
+    mod = _load_module()
+    d = tmp_path / "repo"
+    calls: list[list[str]] = []
+    inst = mod.PmBootstrap(
+        run_git_fn=_scope_git_fn(str(d), status_rc=128, behind=2, ahead=0, calls=calls))
+    scope = inst._sync_scope("① worktree", d)
+    assert scope["dirty"] is None  # clean 미확인(tri-state).
+    assert scope["state"] == "수동 동기 필요"
+    assert scope["pulled"] is False
+    # pull 은 절대 호출되지 않는다(clean 미증명).
+    assert not any(a[2:3] == ["pull"] for a in calls)
+    # 경고 표면화 — behind 유지 + 차단 사유(status 미확인).
+    assert scope["behind"] == 2
+    assert scope["note"] and "status 미확인" in scope["note"]
+
+
+# ── _default_run_git 네트워크 timeout → fail-soft (reviewer must-fix ③) ────────
+
+def test_default_run_git_fetch_timeout_is_failsoft(tmp_path, monkeypatch):
+    """reviewer must-fix ③: fetch 가 timeout(원격 무응답)이면 rc≠0 로 흡수 — hang·abort 없음.
+
+    present-but-unresponsive 원격(VPN 미접속·captive portal)이 OS TCP 타임아웃(수 분)까지
+    세션 시작을 막던 hang 을 GIT_NETWORK_TIMEOUT 로 끊고 fail-soft(`fetched=False`) 경로로 흡수.
+    """
+    mod = _load_module()
+    inst = mod.PmBootstrap()  # 기본 러너(_default_run_git) 사용.
+
+    captured: dict = {}
+
+    def _raise_timeout(*a, **k):
+        captured["timeout"] = k.get("timeout")
+        raise subprocess.TimeoutExpired(cmd=a[0] if a else k.get("args"), timeout=k.get("timeout"))
+
+    monkeypatch.setattr(mod.subprocess, "run", _raise_timeout)
+    rc, out = inst._default_run_git(["-C", str(tmp_path), "fetch", "origin"])
+    # 네트워크 계열엔 timeout 이 실제로 전달된다(무-timeout hang 재발 방지).
+    assert captured["timeout"] == mod.GIT_NETWORK_TIMEOUT
+    # fail-soft — SystemExit/TimeoutExpired 전파 아님·rc≠0 로 흡수.
+    assert rc != 0
+    assert "timeout" in out.lower()
+
+
+def test_default_run_git_local_command_no_timeout(monkeypatch):
+    """로컬 git(status·log 등)엔 timeout 을 걸지 않는다(=None·현행 무변경·정상 완주 보존)."""
+    mod = _load_module()
+    inst = mod.PmBootstrap()
+
+    captured: dict = {}
+
+    class _R:
+        returncode = 0
+        stdout = "main\n"
+        stderr = ""
+
+    def _fake_run(*a, **k):
+        captured["timeout"] = k.get("timeout")
+        return _R()
+
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+    rc, _out = inst._default_run_git(["status", "--short"])
+    assert rc == 0
+    assert captured["timeout"] is None  # 로컬 git 은 timeout 미부여.
+
+
+def test_sync_scope_behind_clean_ff_performs_pull(tmp_path):
+    """② clean+ff → `git pull --ff-only` 수행 · behind→0 · pulled=True (DoD ②)."""
+    mod = _load_module()
+    d = tmp_path / "repo"
+    calls: list[list[str]] = []
+    inst = mod.PmBootstrap(
+        run_git_fn=_scope_git_fn(str(d), behind=3, ahead=0, dirty=False, calls=calls))
+    scope = inst._sync_scope("① worktree", d)
+    assert scope["state"] == "동기"
+    assert scope["pulled"] is True
+    assert scope["behind"] == 0
+    assert scope["note"] and "ff-pull 동기 완료" in scope["note"]
+    # pull --ff-only 이 실제 호출됨.
+    assert ["-C", str(d), "pull", "--ff-only"] in calls
+
+
+def test_sync_scope_behind_dirty_surfaces_no_pull(tmp_path):
+    """① behind 표면화 + dirty → 경고만 · pull 없음 (DoD ①·③)."""
+    mod = _load_module()
+    d = tmp_path / "repo"
+    calls: list[list[str]] = []
+    inst = mod.PmBootstrap(
+        run_git_fn=_scope_git_fn(str(d), behind=2, ahead=0, dirty=True, calls=calls))
+    scope = inst._sync_scope("① worktree", d)
+    assert scope["state"] == "수동 동기 필요"
+    assert scope["pulled"] is False
+    assert scope["behind"] == 2  # behind 표면화 유지(0 으로 덮이지 않음).
+    assert scope["note"] and "수동 동기 필요" in scope["note"]
+    # pull 은 호출되지 않는다.
+    assert not any(a[2:3] == ["pull"] for a in calls)
+
+
+def test_sync_scope_diverged_surfaces_no_pull(tmp_path):
+    """diverged(ahead>0 & behind>0) → 경고만 · pull 없음 (DoD ③)."""
+    mod = _load_module()
+    d = tmp_path / "repo"
+    calls: list[list[str]] = []
+    inst = mod.PmBootstrap(
+        run_git_fn=_scope_git_fn(str(d), behind=2, ahead=1, dirty=False, calls=calls))
+    scope = inst._sync_scope("① worktree", d)
+    assert scope["state"] == "수동 동기 필요"
+    assert scope["pulled"] is False
+    assert "diverged" in scope["note"]
+    assert not any(a[2:3] == ["pull"] for a in calls)
+
+
+def test_sync_scope_fetch_failure_is_failsoft(tmp_path):
+    """④ fetch 실패 → fetched=False · abort 없이 scope dict 반환(현행 측정 계속)."""
+    mod = _load_module()
+    d = tmp_path / "repo"
+    inst = mod.PmBootstrap(
+        run_git_fn=_scope_git_fn(str(d), fetch_rc=1, behind=0, ahead=0, dirty=False))
+    scope = inst._sync_scope("② PM 홈", d)  # SystemExit/예외 던지면 실패.
+    assert scope["fetched"] is False
+    assert scope["pulled"] is False
+    # 로컬 측정은 계속돼 상태가 채워진다(behind 0 → 최신).
+    assert scope["state"] == "최신"
+
+
+# ── _sync_board_submodule (branch 유지 pull·detached 회피) ────────────────────
+
+def test_sync_board_submodule_absent_is_none(tmp_path):
+    """board 미분리(디렉토리 부재) → None (skip·git 미호출)."""
+    mod = _load_module()
+    inst = mod.PmBootstrap(
+        run_git_fn=lambda a: (_ for _ in ()).throw(AssertionError("board git 미호출 기대")),
+        board_dir=tmp_path / "board")
+    assert inst._sync_board_submodule() is None
+
+
+def test_sync_board_submodule_branch_preserving_pull(tmp_path):
+    """clean+ff → `checkout <branch> && pull --ff-only` (branch 유지·`submodule update` 아님)."""
+    mod = _load_module()
+    board_dir = tmp_path / "board"
+    board_dir.mkdir()
+    calls: list[list[str]] = []
+
+    def _fn(args: list[str]) -> tuple[int, str]:
+        calls.append(args)
+        assert args[:2] == ["-C", str(board_dir)]
+        sub = args[2:]
+        if sub == ["fetch", "origin"]:
+            return (0, "")
+        if sub == ["symbolic-ref", "--short", "HEAD"]:
+            return (0, "main\n")
+        if sub == ["status", "-s"]:
+            return (0, "")  # clean
+        if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:
+            return (0, "0\t2\n")  # behind 2 · ahead 0 → clean+ff
+        if sub == ["checkout", "main"]:
+            return (0, "")
+        if sub == ["pull", "--ff-only"]:
+            return (0, "")
+        raise AssertionError(f"예상치 못한 board git 호출: {args}")
+
+    inst = mod.PmBootstrap(run_git_fn=_fn, board_dir=board_dir)
+    scope = inst._sync_board_submodule()
+    assert scope["pulled"] is True
+    assert scope["behind"] == 0
+    # branch 유지 동기 — checkout main + pull --ff-only.
+    assert ["-C", str(board_dir), "checkout", "main"] in calls
+    assert ["-C", str(board_dir), "pull", "--ff-only"] in calls
+    # `git submodule update` 는 절대 호출하지 않는다(detached HEAD → T-0203 sentinel 회피).
+    # 서브커맨드 토큰(`-C <dir>` 뒤)만 검사한다 — tmp_path 경로에 'submodule' 이 섞여도 오탐 0.
+    subcommands = [a[2] for a in calls if len(a) >= 3]
+    assert "submodule" not in subcommands
+
+
+# ── run() 통합: freshness surface + ff-pull + json 필드 + 재부착 경고 ──────────
+
+def _make_freshness_bootstrap(mod, tmp_path, *, git_fn, log_text=_LOG_TEXT):
+    """REPO scope freshness 를 git_fn 으로 제어하는 run() 통합 픽스처 (board 미분리·솔로)."""
+    log_file = tmp_path / "current.md"
+    log_file.write_text(log_text, encoding="utf-8")
+    pm_state_file = tmp_path / "pm_state.md"
+    pm_state_file.write_text(_PM_STATE_TEXT, encoding="utf-8")
+    areas_file = tmp_path / "areas.md"
+    board_dir = tmp_path / "board"  # 미생성 → board rider None(솔로)
+    return mod.PmBootstrap(
+        run_board_fn=lambda a: (0, "✓ no lint issues\n") if a[:1] == ["lint"]
+        else (0, "  [open   ] T-0001  x  pm  tag\n"),
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 미호출")),
+        run_git_fn=git_fn,
+        log_file=log_file, areas_file=areas_file, board_dir=board_dir,
+        pm_state_file=pm_state_file,
+    )
+
+
+def _repo_scope_git_fn(repo_dir, *, behind, ahead=0, dirty=False, pull_rc=0):
+    """②(REPO) scope freshness + `_collect_git` 응답을 함께 dispatch 하는 run() 용 git_fn."""
+    def _fn(args: list[str]) -> tuple[int, str]:
+        if args[:2] == ["-C", repo_dir]:
+            sub = args[2:]
+            if sub == ["fetch", "origin"]:
+                return (0, "")
+            if sub == ["symbolic-ref", "--short", "HEAD"]:
+                return (0, "main\n")
+            if sub == ["status", "-s"]:
+                return (0, " M x\n" if dirty else "")
+            if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:
+                return (0, f"{ahead}\t{behind}\n")
+            if sub == ["pull", "--ff-only"]:
+                return (pull_rc, "")
+            return (0, "")
+        # _collect_git (worktree cwd=REPO in solo) — branch/commits/status.
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return (0, "main\n")
+        if args[:2] == ["log", "--oneline"]:
+            return (0, "abc123 subj\n")
+        return (0, "")
+    return _fn
+
+
+def test_run_surfaces_freshness_and_ff_pull(tmp_path, capsys):
+    """run() Git 절에 freshness 줄 + clean·ff 자동 ff-pull 결과가 표면화된다 (DoD ①·②)."""
+    mod = _load_module()
+    git_fn = _repo_scope_git_fn(str(mod.REPO), behind=3, ahead=0, dirty=False)
+    inst = _make_freshness_bootstrap(mod, tmp_path, git_fn=git_fn)
+    assert inst.run() == 0
+    out = capsys.readouterr().out
+    assert "freshness (② PM 홈)" in out
+    assert "ff-pull 동기 완료" in out
+
+
+def test_run_freshness_json_field(tmp_path, capsys):
+    """--json 출력의 git.freshness 에 scope 목록(pulled·label)이 실린다 (DoD --json 필드)."""
+    import json as _json
+    mod = _load_module()
+    git_fn = _repo_scope_git_fn(str(mod.REPO), behind=2, ahead=0, dirty=False)
+    inst = _make_freshness_bootstrap(mod, tmp_path, git_fn=git_fn)
+    assert inst.run(output_json=True) == 0
+    data = _json.loads(capsys.readouterr().out)
+    freshness = data["git"]["freshness"]
+    assert isinstance(freshness, list) and len(freshness) == 1  # 솔로(②=①) → 1 scope
+    assert freshness[0]["label"] == "② PM 홈"
+    assert freshness[0]["pulled"] is True
+    assert freshness[0]["behind"] == 0
+
+
+def test_run_freshness_fetch_failure_failsoft_continues(tmp_path, capsys):
+    """④ fetch 실패여도 부트스트랩은 현행 dump 를 정상 출력하고 rc 0 (fail-soft)."""
+    mod = _load_module()
+    repo_dir = str(mod.REPO)
+
+    def _fn(args: list[str]) -> tuple[int, str]:
+        if args[:2] == ["-C", repo_dir]:
+            sub = args[2:]
+            if sub == ["fetch", "origin"]:
+                return (1, "fatal: could not read from remote repository\n")
+            if sub == ["symbolic-ref", "--short", "HEAD"]:
+                return (0, "main\n")
+            if sub == ["status", "-s"]:
+                return (0, "")
+            if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:
+                return (0, "0\t0\n")
+            return (0, "")
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return (0, "main\n")
+        if args[:2] == ["log", "--oneline"]:
+            return (0, "abc123 subj\n")
+        return (0, "")
+
+    inst = _make_freshness_bootstrap(mod, tmp_path, git_fn=_fn)
+    assert inst.run() == 0  # abort 안 함.
+    out = capsys.readouterr().out
+    assert "### Git" in out
+    assert "⚠ fetch 실패" in out  # 경고 줄은 표면화되되 현행 출력 계속.
+
+
+def test_run_reattach_warning_on_branch_mismatch(tmp_path, capsys):
+    """현 브랜치(main) ≠ 직전 handoff worktree 브랜치(feature-x) → 재부착 경고 줄 (DoD 재부착)."""
+    mod = _load_module()
+    log_text = (
+        "# Project Log\n\n"
+        "## [2026-07-02] handoff | PM 48차 인계\n"
+        "- worktree: slot=`work/project_manager_1` · branch=`feature-x` "
+        "(회전 재부착 단서·ADR-0013)\n"
+    )
+    git_fn = _repo_scope_git_fn(str(mod.REPO), behind=0, ahead=0, dirty=False)
+    inst = _make_freshness_bootstrap(mod, tmp_path, git_fn=git_fn, log_text=log_text)
+    assert inst.run() == 0
+    out = capsys.readouterr().out
+    assert "worktree 브랜치 불일치" in out
+    assert "feature-x" in out

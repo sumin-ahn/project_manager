@@ -377,6 +377,15 @@ except Exception:  # ImportError(zoneinfo 부재) + ZoneInfoNotFoundError(tzdata
     KST = datetime.timezone(datetime.timedelta(hours=9))
 
 
+# 네트워크 git(fetch/pull) 1회당 timeout 상한 (초) — T-0217 freshness.
+# 부트스트랩은 네트워크 I/O 를 처음 도입했다(fetch·pull·최대 ②+①+board). 원격이
+# present-but-unresponsive(VPN 미접속·captive portal)면 각 호출이 OS TCP 타임아웃(수 분)까지
+# 세션 시작을 막아 ticket 의 fail-soft 결정("offline/원격 불가에서도 부트스트랩 동작")을 위반한다.
+# 이 값이 곧 네트워크 git 1회당 세션 시작 지연 상한이다(worst-case = 활성 스코프 수 × 이 값).
+# 초과 시 `subprocess.TimeoutExpired` 를 fail-soft rc≠0 로 흡수 → `fetched=False` 경로 합류.
+GIT_NETWORK_TIMEOUT = 20
+
+
 # ── board 카운트 파서 ────────────────────────────────────────────────────
 
 def parse_board_counts(board_output: str) -> dict[str, int]:
@@ -527,6 +536,127 @@ def parse_git_ahead_behind(rev_list_output: str) -> tuple[int, int] | None:
         return int(parts[0]), int(parts[1])
     except ValueError:
         return None
+
+
+# ── git freshness 판정 + 재부착 단서 (T-0217·ADR-0035·ADR-0013) ────────────────
+# 머신 이동 부트스트랩이 stale 로컬(origin 보다 behind)을 그대로 dump 하던 연속성 사고를
+# 막는다 — fetch 로 freshness 를 실측하고, clean·ff 가능한 안전 형상만 자동 동기(ff-pull)
+# 한다. dirty·diverged·detached 는 표면화만(자동 pull 안 함). 아래는 그 판정의 순수 함수.
+
+def freshness_decision(
+    *, fetched: bool, detached: bool, dirty: bool | None, ahead: int | None, behind: int | None
+) -> tuple[str, bool]:
+    """fetch 후 scope 상태 문자열 + ff-pull 수행 여부를 판정한다 (T-0217·순수 함수·자동 pull 안전 게이트).
+
+    - detached HEAD → ("detached", False) — 재부착은 PM 판단(ADR-0013)·자동 pull 안 함.
+    - behind None (upstream 미설정/조회불가) → ("upstream 없음", False).
+    - behind 0 · ahead 0 → ("최신", False).
+    - behind 0 · ahead>0 → ("ahead-only", False) — 로컬만 앞섬(push 대기·pull 불요).
+    - behind>0 · **안전조건 전부 충족** → ("동기", True) — 자동 ff-pull.
+    - behind>0 · 안전조건 위반 → ("수동 동기 필요", False) — 표면화만.
+
+    **자동 ff-pull 안전조건**(codex must-fix — 하나라도 어기면 자동 pull 금지):
+      ① `fetched is True` — freshness 를 *실측*(fetch 성공)한 상태여야 한다. fetch 실패면
+         behind/ahead 는 stale 원격 데이터라 그 위에서 pull 하면 "실측 후 clean·ff" 전제가 거짓.
+      ② `dirty is False` — working tree 가 *확정 clean*. `git status` 조회 실패(dirty=None·
+         미확인)는 clean 을 증명 못 하므로 자동 pull 불가(경고만).
+      ③ `ahead == 0` — 로컬 커밋 없음 *확정*(ff 가능·diverged 아님). `ahead=None`(미확인)은
+         0 취급하지 않는다 — 증명 없는 pull 금지(codex round-2 must-fix).
+    """
+    if detached:
+        return "detached", False
+    if behind is None:
+        return "upstream 없음", False
+    ahead_n = ahead or 0
+    if behind == 0:
+        return ("ahead-only", False) if ahead_n > 0 else ("최신", False)
+    # behind > 0 — 안전조건 전부 충족(fetch 성공·확정 clean·ff 확정)일 때만 자동 동기.
+    # `ahead == 0` 엄격 비교: None(미확인)은 False — ahead_n 폴백을 여기 쓰면 미확인이 0 으로 위장.
+    if fetched and dirty is False and ahead == 0:
+        return "동기", True
+    return "수동 동기 필요", False
+
+
+def _behind_warning(scope: dict) -> str:
+    """behind>0 인데 자동 pull 불가한 scope 의 경고 문자열 + 차단 사유 (T-0217).
+
+    사유: fetch 실패(stale) · status 미확인(clean 미증명) · dirty · diverged(ahead>0).
+    """
+    behind = scope.get("behind")
+    reasons: list[str] = []
+    if not scope.get("fetched"):
+        reasons.append("fetch 실패")
+    if scope.get("dirty") is None:
+        reasons.append("status 미확인")
+    elif scope.get("dirty"):
+        reasons.append("dirty")
+    if scope.get("ahead") is None:
+        reasons.append("ahead 미확인")
+    elif scope["ahead"] > 0:
+        reasons.append(f"ahead {scope['ahead']} diverged")
+    reason = f" ({', '.join(reasons)})" if reasons else ""
+    return f"⚠ behind {behind} — 수동 동기 필요{reason}"
+
+
+def _format_freshness(scope: dict) -> str:
+    """freshness scope 한 줄 표기 — fetch/behind/ahead/상태 + 동기·경고 노트 (T-0217)."""
+    parts: list[str] = []
+    if not scope.get("fetched"):
+        parts.append("⚠ fetch 실패 (offline·현행 유지)")
+    if scope.get("detached"):
+        parts.append("detached HEAD")
+    else:
+        behind = scope.get("behind")
+        ahead = scope.get("ahead") or 0
+        if behind is None:
+            parts.append("upstream 없음")
+        elif behind == 0 and ahead == 0:
+            parts.append("최신")
+        else:
+            parts.append(f"behind {behind} / ahead {ahead}")
+    if scope.get("note"):
+        parts.append(scope["note"])
+    return " · ".join(parts)
+
+
+# 직전 handoff entry 의 worktree 줄 grammar — pm_handoff `_worktree_line` 과 정합
+# (`- worktree: slot=`...` · branch=`<branch>` (…)`). 재부착 단서(ADR-0013) 비교의 단일 소스.
+_HANDOFF_WORKTREE_RE = re.compile(r"- worktree: slot=`[^`]*` · branch=`([^`]*)`")
+
+
+def parse_handoff_worktree_branch(log_body: str | None) -> str | None:
+    r"""직전 handoff entry 본문에서 worktree branch 를 추출한다 (재부착 단서·T-0217·ADR-0013).
+
+    pm_handoff `_worktree_line` 형식(`- worktree: slot=... · branch=`<branch>` (…)`)을
+    파싱한다. body 부재·줄 부재·`(미지정)` placeholder 는 None(비교 생략). 줄 뒤에
+    부가 주석(예: `(릴리즈 ff 후 상태 · …)`)이 붙어도 branch 백틱 구간만 잡는다.
+    """
+    if not log_body:
+        return None
+    m = _HANDOFF_WORKTREE_RE.search(log_body)
+    if m is None:
+        return None
+    branch = m.group(1).strip()
+    if not branch or branch == "(미지정)":
+        return None
+    return branch
+
+
+def reattach_warning(current_branch: str | None, log_body: str | None) -> str | None:
+    """현 worktree 브랜치가 직전 handoff 의 worktree 브랜치와 다르면 경고 문자열 (T-0217·ADR-0013).
+
+    같거나·둘 중 하나라도 미상이면 None(경고 생략). 자동 checkout 은 하지 않는다 —
+    회전 재부착은 PM 판단(ADR-0013).
+    """
+    expected = parse_handoff_worktree_branch(log_body)
+    if not expected or not current_branch:
+        return None
+    if current_branch == expected:
+        return None
+    return (
+        f"⚠ worktree 브랜치 불일치 — 현재 `{current_branch}` · "
+        f"직전 handoff `{expected}` (재부착은 PM 판단·자동 checkout 안 함·ADR-0013)"
+    )
 
 
 # ── log/current.md 파서 ──────────────────────────────────────────────────────────
@@ -808,14 +938,25 @@ class PmBootstrap:
         # 디코딩해 크래시하지 않도록 utf-8 고정 (Windows CP949 회피).
         # cwd 는 _worktree_cwd 가 해소한다(T-0125) — 분리된 PM 홈(②)엔 코드 git 이 없으므로
         # git dump 는 활성 worktree 슬롯에서 돌아야 한다(솔로/미세팅이면 REPO 폴백).
-        result = subprocess.run(
-            ["git"] + args,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=self._worktree_cwd(self._bound_slot),
-        )
+        # 네트워크 계열(fetch/pull)만 timeout(T-0217) — present-but-unresponsive 원격이 세션
+        # 시작을 수 분 막는 hang 방지. 초과 시 TimeoutExpired 를 fail-soft rc≠0 로 흡수(abort
+        # 아님) → freshness 의 `fetched=False`/pull 실패 경고 경로 합류. 로컬 git(rev-parse·
+        # log·status·rev-list)은 즉시 끝나므로 timeout 미부여(=None·현행 무변경).
+        is_network = bool({"fetch", "pull"} & set(args))
+        timeout = GIT_NETWORK_TIMEOUT if is_network else None
+        try:
+            result = subprocess.run(
+                ["git"] + args,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=self._worktree_cwd(self._bound_slot),
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # fail-soft — 원격 무응답을 rc≠0 로 흡수해 부트스트랩이 계속 진행하게 한다.
+            return 1, f"[timeout] git {' '.join(args)} 가 {timeout}s 초과 — 원격 무응답(offline?)"
         return result.returncode, result.stdout + result.stderr
 
     # ── 데이터 수집 ──────────────────────────────────────────────────────
@@ -979,6 +1120,131 @@ class PmBootstrap:
 
         return {"head": head, "dirty": dirty, "ahead": ahead, "behind": behind}
 
+    # ── git freshness: fetch + behind/ahead + clean·ff 자동 ff-pull (T-0217) ────
+
+    def _freshness_scopes(self) -> list[tuple[str, Path, bool]]:
+        """freshness 대상 git 컨텍스트 목록 — (label, dir, is_home) (T-0217).
+
+        ②(PM 홈·REPO)·①(worktree·`_worktree_cwd`)를 각각 fetch/pull 대상으로 한다.
+        자기분리(ADR-0027)가 아닌 솔로(둘이 같은 디렉토리)면 하나로 접는다 — 같은 repo 를
+        두 번 fetch/pull 하지 않게. ②(is_home)만 board 서브모듈 rider 를 붙인다.
+        """
+        repo_dir = REPO
+        wt_dir = Path(self._worktree_cwd(self._bound_slot))
+        scopes: list[tuple[str, Path, bool]] = [("② PM 홈", repo_dir, True)]
+        if wt_dir.resolve() != repo_dir.resolve():
+            scopes.append(("① worktree", wt_dir, False))
+        return scopes
+
+    def _probe_git_freshness(self, label: str, scope_dir: Path) -> dict:
+        """한 git 컨텍스트를 fetch origin 후 branch/dirty/ahead·behind 로 측정한다 (T-0217·pull 없음).
+
+        모든 호출은 `-C <dir>` 로 명시(러너 cwd 무관·`_collect_board_git` 동형·DI 보존).
+        fetch 실패는 fail-soft(fetched=False·이후 측정은 stale local 기준). `state` 는
+        `freshness_decision` — 호출부가 `state == "동기"` 로 clean·ff 인지 판정해 pull 한다.
+        """
+        scope: dict = {
+            "label": label, "dir": str(scope_dir), "fetched": None,
+            "branch": None, "detached": False, "dirty": None,
+            "ahead": None, "behind": None, "pulled": False,
+            "note": None, "state": None,
+        }
+        d = str(scope_dir)
+        f_rc, _f_out = self._run_git_fn(["-C", d, "fetch", "origin"])
+        scope["fetched"] = f_rc == 0
+        b_rc, b_out = self._run_git_fn(["-C", d, "symbolic-ref", "--short", "HEAD"])
+        if b_rc == 0 and b_out.strip():
+            scope["branch"] = b_out.strip()
+        else:
+            # symbolic-ref 실패(rc≠0·빈 출력) = detached HEAD — 자동 pull 대상 아님.
+            scope["detached"] = True
+        # dirty 는 tri-state (codex must-fix): True(변경 있음)·False(확정 clean)·None(status
+        # 조회 실패=clean 미확인). None 은 자동 pull 을 막는다(freshness_decision `dirty is False`).
+        s_rc, s_out = self._run_git_fn(["-C", d, "status", "-s"])
+        scope["dirty"] = bool(s_out.strip()) if s_rc == 0 else None
+        ab_rc, ab_out = self._run_git_fn(
+            ["-C", d, "rev-list", "--left-right", "--count", "HEAD...@{u}"]
+        )
+        if ab_rc == 0:
+            parsed = parse_git_ahead_behind(ab_out)
+            if parsed is not None:
+                scope["ahead"], scope["behind"] = parsed
+        scope["state"], _do_pull = freshness_decision(
+            fetched=scope["fetched"], detached=scope["detached"], dirty=scope["dirty"],
+            ahead=scope["ahead"], behind=scope["behind"],
+        )
+        return scope
+
+    def _sync_scope(self, label: str, scope_dir: Path, *, is_home: bool = False) -> dict:
+        """한 git 컨텍스트를 측정하고 clean·ff 면 `git pull --ff-only` 로 자동 동기한다 (T-0217).
+
+        pull 실패는 fail-soft(경고 노트 실어 계속·abort 안 함). dirty·diverged·detached 는
+        pull 하지 않고 `⚠ behind N — 수동 동기 필요` 경고만. ②(is_home)는 board 서브모듈
+        rider(fetch + branch 유지 pull)를 함께 돌려 `scope["board_sync"]` 로 반환한다.
+        """
+        scope = self._probe_git_freshness(label, scope_dir)
+        d = str(scope_dir)
+        # state=="동기" 는 안전조건(fetch 성공·확정 clean·로컬 ahead 0)을 전부 통과했다는
+        # 뜻이다(freshness_decision — 단일 안전 게이트). 그 밖은 pull 하지 않고 경고만.
+        if scope["state"] == "동기":
+            was_behind = scope["behind"]
+            p_rc, _p_out = self._run_git_fn(["-C", d, "pull", "--ff-only"])
+            if p_rc == 0:
+                scope["pulled"] = True
+                scope["behind"] = 0
+                scope["note"] = f"ff-pull 동기 완료 (behind {was_behind}→0)"
+            else:
+                scope["note"] = f"⚠ pull --ff-only 실패 (rc={p_rc}) — 수동 확인"
+        elif scope["behind"] and scope["behind"] > 0:
+            scope["note"] = _behind_warning(scope)
+        if is_home:
+            scope["board_sync"] = self._sync_board_submodule()
+        return scope
+
+    def _sync_board_submodule(self) -> dict | None:
+        """board 서브모듈 fetch + branch 유지 ff-pull (T-0217·② rider).
+
+        board 미분리(솔로·`_board_dir` 비-디렉토리)면 None(skip). fetch 상시(fail-soft),
+        clean·ff 면 `checkout <branch> && pull --ff-only` 로 branch 를 유지한 채 동기한다 —
+        `git submodule update` 의 detached HEAD 를 피한다(그러면 이후 board mutation 부기가
+        [[T-0203]] sentinel 로 스킵된다). dirty·diverged·detached 는 표면화만(pull 안 함).
+        """
+        board_dir = self._board_dir
+        if not board_dir.is_dir():
+            return None
+        scope = self._probe_git_freshness("② board 서브모듈", board_dir)
+        d = str(board_dir)
+        # state=="동기" = 안전조건(fetch 성공·확정 clean·ff) 통과(freshness_decision 단일 게이트).
+        if scope["state"] == "동기" and scope["branch"]:
+            was_behind = scope["behind"]
+            # branch 유지 동기 — detached HEAD 회피(T-0203 sentinel·ticket memo). submodule
+            # update 대신 그 branch 를 checkout 하고 ff-pull 한다.
+            co_rc, _co = self._run_git_fn(["-C", d, "checkout", scope["branch"]])
+            p_rc, _p = self._run_git_fn(["-C", d, "pull", "--ff-only"])
+            if co_rc == 0 and p_rc == 0:
+                scope["pulled"] = True
+                scope["behind"] = 0
+                scope["note"] = f"board ff-pull 동기 완료 (branch 유지·behind {was_behind}→0)"
+            else:
+                scope["note"] = (
+                    f"⚠ board 동기 실패 (checkout rc={co_rc}·pull rc={p_rc}) — 수동 확인"
+                )
+        elif scope["behind"] and scope["behind"] > 0:
+            scope["note"] = _behind_warning(scope)
+        return scope
+
+    def _collect_freshness(self) -> list[dict]:
+        """②·① 각 scope 를 fetch → behind/ahead → clean·ff 면 ff-pull 한다 (T-0217).
+
+        솔로(②=①)면 한 scope 로 접힌다. 반환 목록을 Git 절 freshness surface 에 쓴다.
+        부트스트랩 *첫 단계*로 돌려(run() 순서) 이후 git/board 수집이 pull 반영 상태를
+        dump 하게 한다. 실 fetch/pull 은 DI 러너(`_run_git_fn`) 경유 — 테스트는 mock.
+        """
+        return [
+            self._sync_scope(label, scope_dir, is_home=is_home)
+            for label, scope_dir, is_home in self._freshness_scopes()
+        ]
+
     def _collect_log_entry(self) -> dict | None:
         """log/current.md 의 마지막 entry 제목(date·type·title) + **본문 전체**를 수집한다.
 
@@ -1091,6 +1357,17 @@ class PmBootstrap:
             for sha, subject in git["commits"][:3]:
                 lines.append(f"  - {sha} {subject}")
         lines.append(f"- working tree: {git['working_tree']}")
+        # git freshness (T-0217) — ②·① 각 scope fetch 후 behind/ahead + clean·ff 자동
+        # ff-pull 결과. ②(is_home)엔 board 서브모듈 rider 를 하위 줄로 붙인다.
+        for scope in git.get("freshness", []):
+            lines.append(f"- freshness ({scope['label']}): {_format_freshness(scope)}")
+            board_sync = scope.get("board_sync")
+            if board_sync is not None:
+                lines.append(f"  - {board_sync['label']}: {_format_freshness(board_sync)}")
+        # 재부착 단서 (T-0217·ADR-0013) — 현 브랜치가 직전 handoff worktree 브랜치와 다르면.
+        reattach = git.get("reattach")
+        if reattach:
+            lines.append(f"- {reattach}")
         # board submodule freshness (T-0195) — `ignore=all` 이 부모 `git status` 에서 board
         # git 상태를 숨기므로 별도 1줄로 surface. board 미분리(솔로)면 생략(graceful skip).
         board_git = git.get("board_git")
@@ -1210,6 +1487,11 @@ class PmBootstrap:
                 # board submodule freshness(T-0195) — None(솔로/board 미분리)이면 생략된 것과
                 # 동일 정보량(graceful skip). 있으면 head/dirty/ahead/behind.
                 "board_git": git.get("board_git"),
+                # git freshness(T-0217) — ②·① 각 scope 의 fetch/behind·ahead/pull 결과 목록
+                # (`board_sync` 하위 포함). None/[] 면 freshness 미수집(빌더 직접 호출 등).
+                "freshness": git.get("freshness"),
+                # 재부착 단서(T-0217·ADR-0013) — 브랜치 불일치 경고 문자열 또는 None.
+                "reattach": git.get("reattach"),
             },
             "log_last_entry": log_entry,
         }
@@ -1251,13 +1533,27 @@ class PmBootstrap:
         if repo is not None and slot is not None:
             self._bound_slot = f"work/{repo}_{slot}"
 
+        # git freshness (T-0217) — 부트스트랩 *첫 단계*로 ②·① fetch + clean·ff 자동 ff-pull
+        # (+ ② board 서브모듈). stale 로컬로 세션을 시작하는 연속성 사고(차수 오표기·완료된
+        # 릴리즈 재추진)를 막는다. fetch/pull 실패는 fail-soft(경고 노트 실어 계속·abort 안
+        # 함) — offline 환경도 부트스트랩은 동작한다. git/board 수집보다 *먼저* 돌려 이후
+        # dump 가 pull 반영 상태를 보게 한다.
+        freshness = self._collect_freshness()
+
         board = self._collect_board()
         pytest_result = self._collect_pytest() if with_pytest else None
         git = self._collect_git()
         # board submodule freshness(T-0195) — HEAD·dirty·ahead/behind. board 미분리(솔로)면
         # None(graceful skip) — `git` dict 에 실어 빌더로 전달(시그니처 변경 최소화).
         git["board_git"] = self._collect_board_git()
+        git["freshness"] = freshness
         log_entry = self._collect_log_entry()
+        # 재부착 단서 (T-0217·ADR-0013) — 현 worktree 브랜치가 직전 handoff 의 worktree
+        # 브랜치와 다르면 경고(자동 checkout 안 함·재부착은 PM 판단). log 마지막 entry 본문의
+        # worktree 줄(`- worktree: slot=… · branch=…`)에서 직전 브랜치를 읽는다.
+        git["reattach"] = reattach_warning(
+            git.get("branch"), log_entry.get("body") if log_entry else None
+        )
         # 차수 + 인계 컨텍스트 (T-0179) — bound slot pm_state 에서 차수·"남은 작업/사용자발의" 절.
         # _bound_slot 세팅 후라 명시 multi-PM 모드면 그 슬롯 pm_state 를, 솔로면 자동해소(legacy 폴백).
         # 미해소/부재면 None → 빌더가 placeholder/명시 포인터로 graceful.
