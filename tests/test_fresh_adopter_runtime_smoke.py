@@ -30,7 +30,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
 # opencode: 로컬 ollama 모델(과금 0) — 기존 opencode live smoke 와 동일 default.
-LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/gemma4:26b")
+LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/qwen3.5:397b-cloud")
 # claude: sonnet-4-6(사용자 지정·API 과금) — env override.
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 RUNTIME_TIMEOUT = int(os.environ.get("PM_ADOPTER_RUNTIME_TIMEOUT", "300"))
