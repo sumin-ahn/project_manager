@@ -42,6 +42,11 @@ def board():
     return _load("board")
 
 
+@pytest.fixture(scope="module")
+def pm_import():
+    return _load("pm_import")
+
+
 # ── 1. render_adapter — operational plain replace ───────────────────────────
 
 def test_operational_plain_replace_no_omit(pm_render):
@@ -71,6 +76,41 @@ def test_operational_missing_key_leaks_not_silently_emptied(pm_render):
     with pytest.raises(pm_render.RenderLeakError):
         # operational 에 다른 키만 보유·OPENCODE_PRO_MODEL 부재 → 빈 치환 아닌 leak.
         pm_render.render_adapter(tpl, operational={"PROJECT_NAME": "acme"})
+
+
+def test_operational_empty_value_leaks_not_silently_emptied(pm_render):
+    """operational dict 에 *있되 빈 문자열* 인 키는 빈 치환하지 않고 토큰을 남겨 RenderLeakError.
+
+    T-0218 발단(PM 49차 라이브): local.conf `project_name=` 빈값 → 렌더가 `{{PROJECT_NAME}}` 를
+    `` 로 silent 치환 → description 이 " 프로젝트"(이름 빈칸)로 커밋·전파. `_assert_no_leak` 는
+    *잔여 토큰* 만 보므로 통과했다. 빈값 항목은 치환하지 않아 토큰이 잔존→leak 으로 표면화해야
+    한다(silent-empty = leak 클래스·렌더러 이중화·호출자 무관). 에러엔 빈값 힌트가 실린다.
+    """
+    tpl = "{{PROJECT_NAME}} 프로젝트\n"
+    with pytest.raises(pm_render.RenderLeakError) as exc:
+        pm_render.render_adapter(tpl, operational={"PROJECT_NAME": ""})
+    msg = str(exc.value)
+    assert "{{PROJECT_NAME}}" in msg
+    # 빈값 원인 힌트: local.conf `<key>=` 가 빈값 — 값을 채우라.
+    assert "`project_name=`" in msg
+    assert "빈값" in msg
+
+
+def test_operational_empty_value_hint_only_for_leaked_token(pm_render):
+    """빈값 키라도 그 토큰이 텍스트에 없으면 힌트에 등장하지 않는다(스퓨리어스 힌트 0).
+
+    PROJECT_ROOT 가 빈값이지만 템플릿엔 `{{PROJECT_ROOT}}` 가 없다 → leak 아님. 반면 UNKNOWN 은
+    다른 원인의 leak. 힌트는 *빈값이라 leak 된* 토큰에만 붙어야 한다(_assert_no_leak 정밀도).
+    """
+    tpl = "value: {{UNKNOWN}}\n"
+    with pytest.raises(pm_render.RenderLeakError) as exc:
+        pm_render.render_adapter(
+            tpl, operational={"PROJECT_NAME": "acme", "PROJECT_ROOT": ""})
+    msg = str(exc.value)
+    assert "{{UNKNOWN}}" in msg
+    # PROJECT_ROOT 는 빈값이나 텍스트에 없어 leak 아님 → 빈값 힌트 부재.
+    assert "project_root" not in msg
+    assert "빈값" not in msg
 
 
 def test_multiple_operational_tokens_one_line_both_resolved(pm_render):
@@ -478,8 +518,9 @@ def test_opencode_pro_model_local_conf_mapping(pm_update, tmp_path):
     assert pm_update._LOCAL_CONF_TO_OPERATIONAL["opencode_pro_model"] == "OPENCODE_PRO_MODEL"
     dst = tmp_path / "dst"
     _seed_render_dest(dst, local_conf="opencode_pro_model=anthropic/claude-opus-4\n")
-    operational = pm_update._operational_from_local_conf(dst)
+    operational, empty_keys = pm_update._operational_from_local_conf(dst)
     assert operational["OPENCODE_PRO_MODEL"] == "anthropic/claude-opus-4"
+    assert empty_keys == []
 
 
 def test_opencode_pro_model_render_resolved_from_local_conf(pm_update, tmp_path):
@@ -497,4 +538,116 @@ def test_opencode_pro_model_render_resolved_from_local_conf(pm_update, tmp_path)
     pm_update.apply(changes)
     written = (dst / rel).read_text(encoding="utf-8")
     assert written == "model: anthropic/claude-opus-4\nbody\n"
+    assert "{{" not in written
+
+
+# ── 4. 빈값 operational silent-empty 가드 (T-0218·pm_update·pm_import 경로) ────
+
+def test_operational_from_local_conf_excludes_empty_value(pm_update, tmp_path):
+    """local.conf `project_name=`(빈값) → operational dict 에서 제외·empty_keys 로 표면화(T-0218).
+
+    빈값을 그대로 넘기면 렌더가 토큰을 빈 문자열로 silent 치환한다(PM 49차 " 프로젝트" 오염).
+    부재와 동일 취급으로 제외 → 토큰 잔존 → render 가 leak 으로 잡는다. 정상값은 무영향(회귀).
+    """
+    dst = tmp_path / "dst"
+    # project_name 은 빈값, py 는 정상값 — 빈값만 제외되고 정상값은 보존돼야 한다.
+    _seed_render_dest(dst, local_conf="project_name=\npy=python3\n")
+    operational, empty_keys = pm_update._operational_from_local_conf(dst)
+    assert "PROJECT_NAME" not in operational  # 빈값 → dict 에서 제외(부재 동일 취급)
+    assert empty_keys == ["PROJECT_NAME"]  # 빈값 token-key 표면화
+    assert operational["PY"] == "python3"  # 정상값은 보존(회귀 무변경)
+
+
+def test_operational_from_local_conf_all_normal_no_empty_keys(pm_update, tmp_path):
+    """정상값만 있으면 empty_keys 는 빈 리스트(빈값 가드가 정상 경로를 오탐 안 함·회귀)."""
+    dst = tmp_path / "dst"
+    _seed_render_dest(dst, local_conf="project_name=acme\ntest_cmd=pytest -q\n")
+    operational, empty_keys = pm_update._operational_from_local_conf(dst)
+    assert operational["PROJECT_NAME"] == "acme"
+    assert operational["TEST_CMD"] == "pytest -q"
+    assert empty_keys == []
+
+
+def test_render_text_empty_local_conf_raises_with_hint(pm_update, tmp_path):
+    """빈값 local.conf 로 재렌더하면 RenderLeakError + 빈값 힌트(pm_update end-to-end·T-0218).
+
+    발단 재현: 채택자 local.conf `project_name=` 빈값·어댑터에 `{{PROJECT_NAME}}` → 재렌더가
+    silent 로 " 프로젝트" 를 쓰던 것을 이제 큰소리로 실패시킨다(값을 채우라 힌트).
+    """
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src_f = src / ".claude/agents/developer.md"
+    src_f.parent.mkdir(parents=True)
+    src_f.write_text("description: {{PROJECT_NAME}} 프로젝트\n", encoding="utf-8")
+    _seed_render_dest(dst, local_conf="project_name=\n")
+    # RenderLeakError 는 RuntimeError 서브클래스 — pm_update 가 pm_render 를 격리 로드하므로
+    # 클래스 동일성 대신 base + 이름으로 잡는다(모듈 인스턴스 간 클래스 객체 상이).
+    with pytest.raises(RuntimeError) as exc:
+        pm_update._render_text(src_f, dst)
+    assert type(exc.value).__name__ == "RenderLeakError"
+    msg = str(exc.value)
+    assert "{{PROJECT_NAME}}" in msg
+    assert "`project_name=`" in msg
+    assert "빈값" in msg
+
+
+def test_apply_render_empty_local_conf_raises(pm_update, tmp_path):
+    """apply(render) 도 빈값 local.conf 면 hard-fail — silent 로 빈 이름을 기록하지 않는다(T-0218)."""
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    rel = ".claude/agents/developer.md"
+    (src / ".claude/agents").mkdir(parents=True)
+    (src / rel).write_text("description: {{PROJECT_NAME}} 프로젝트\n", encoding="utf-8")
+    _seed_render_dest(dst, local_conf="project_name=\n")
+    manifest = pm_update.read_manifest(
+        _write_manifest(src, [".claude/agents @render"]))
+    changes, missing = pm_update.plan(src, manifest, dest_root=dst)
+    assert missing == []
+    with pytest.raises(RuntimeError) as exc:  # RenderLeakError (격리 로드·base 로 잡음)
+        pm_update.apply(changes)
+    assert type(exc.value).__name__ == "RenderLeakError"
+    # silent 로 빈 이름(" 프로젝트")이 기록되지 않았음을 확인(파일 미생성 or 토큰 보존).
+    assert not (dst / rel).exists()
+
+
+def _seed_render_managed_tree(dest_root: Path, rel: str, body: str) -> None:
+    """@render manifest(.claude/agents) + 해당 산출물 파일 — render_managed_files 대상 트리."""
+    pm = dest_root / ".project_manager"
+    pm.mkdir(parents=True, exist_ok=True)
+    (pm / "engine.manifest").write_text(".claude/agents @render\n", encoding="utf-8")
+    f = dest_root / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(body, encoding="utf-8")
+
+
+def test_render_managed_files_empty_sub_leaks(pm_import, tmp_path):
+    """pm_import 경로(render_managed_files)도 빈값 sub → RenderLeakError(동일 가드·T-0218 DoD ③).
+
+    subs 의 값이 빈 문자열이면 렌더가 토큰을 silent 로 비우지 않고 leak 으로 표면화해야 한다
+    (호출자 무관 이중화·_fill_operational 방어). render_managed_files 는 leak 을 삼키지 않고
+    전파 → 빈 이름이 파일에 기록되지 않는다.
+    """
+    dest = tmp_path / "adopter"
+    rel = ".claude/agents/developer.md"
+    _seed_render_managed_tree(dest, rel, "description: {{PROJECT_NAME}} 프로젝트\n")
+    # RenderLeakError 는 RuntimeError 서브클래스 — pm_import 가 pm_render 를 격리 로드하므로
+    # base + 이름으로 잡는다(모듈 인스턴스 간 클래스 객체 상이).
+    with pytest.raises(RuntimeError) as exc:
+        pm_import.render_managed_files(
+            dest, subs={"{{PROJECT_NAME}}": ""}, copied_relpaths={Path(rel)})
+    assert type(exc.value).__name__ == "RenderLeakError"
+    # silent 로 빈 이름이 기록되지 않고 원본(토큰) 보존 — 파일이 " 프로젝트" 로 안 덮임.
+    assert (dest / rel).read_text(encoding="utf-8") == "description: {{PROJECT_NAME}} 프로젝트\n"
+
+
+def test_render_managed_files_normal_sub_renders(pm_import, tmp_path):
+    """정상값 sub 는 render_managed_files 가 정상 치환·기록(회귀 무변경·T-0218 DoD ②)."""
+    dest = tmp_path / "adopter"
+    rel = ".claude/agents/developer.md"
+    _seed_render_managed_tree(dest, rel, "description: {{PROJECT_NAME}} 프로젝트\n")
+    changed = pm_import.render_managed_files(
+        dest, subs={"{{PROJECT_NAME}}": "acme"}, copied_relpaths={Path(rel)})
+    assert changed == 1
+    written = (dest / rel).read_text(encoding="utf-8")
+    assert written == "description: acme 프로젝트\n"
     assert "{{" not in written

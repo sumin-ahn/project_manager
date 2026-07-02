@@ -879,6 +879,84 @@ def test_into_does_not_substitute_untouched_user_files(pm_import, tmp_path):
         "안 복사한 사용자 파일이 백업됨 — 건드리면 안 됨."
 
 
+# ── T-0218: 빈값 subs silent-empty 가드 (substitute → render 관통·codex must-fix) ──
+
+def _seed_render_managed(dest_root: Path, rel_str: str, body: str) -> None:
+    """@render manifest(.claude/agents) + 복사된 산출물 파일 — substitute→render 관통 대상 트리."""
+    pm = dest_root / ".project_manager"
+    pm.mkdir(parents=True, exist_ok=True)
+    (pm / "engine.manifest").write_text(".claude/agents @render\n", encoding="utf-8")
+    f = dest_root / rel_str
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(body, encoding="utf-8")
+
+
+def test_substitute_skips_empty_value_keeps_token(pm_import, tmp_path):
+    """빈값 subs 는 치환하지 않고 토큰을 남긴다(silent 비움 금지)·정상값은 치환(T-0218 unit).
+
+    `replace(token, "")` 로 토큰을 조용히 비우면 미해소 탐지 신호가 사라진다 — 빈값은 skip 해
+    토큰을 남기고(이후 render 가 leak 으로 잡음), 정상값만 치환한다.
+    """
+    dest = tmp_path / "empty"
+    rel = Path("CLAUDE.md")
+    f = dest / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("name={{PROJECT_NAME}} py={{PY}}\n", encoding="utf-8")
+    subs = {"{{PROJECT_NAME}}": "", "{{PY}}": "python3"}  # PROJECT_NAME 빈값·PY 정상값
+    pm_import.substitute_placeholders(dest, subs, {rel})
+    out = f.read_text(encoding="utf-8")
+    assert out == "name={{PROJECT_NAME}} py=python3\n"  # 빈값 토큰 잔존·정상값만 치환
+
+
+def test_import_order_empty_name_leaks_at_render_not_silently_emptied(pm_import, tmp_path):
+    """최초 import 관통(substitute→render_managed_files)에서 빈 project_name → RenderLeakError+힌트.
+
+    codex must-fix(T-0218): substitute_placeholders 가 render *이전* 에 돌아 빈값 subs 를
+    `replace(token, "")` 로 지우면 `{{PROJECT_NAME}}` 이 render 가드 도달 전에 사라진다(최초 import
+    사각). 이제 빈값은 substitute 에서 skip → 토큰 잔존 → render_managed_files 의 _assert_no_leak
+    가 leak + 빈값 힌트로 표면화한다. 실제 import 호출 순서를 그대로 거쳐 회귀를 못박는다.
+    """
+    dest = tmp_path / "adopter"
+    rel_str = ".claude/agents/developer.md"
+    _seed_render_managed(dest, rel_str, "description: {{PROJECT_NAME}} 프로젝트\n")
+    copied = {Path(rel_str)}
+    # 실제 import 순서의 subs: PROJECT_NAME 빈값 (다른 operational 토큰은 정상값).
+    subs = {"{{PROJECT_NAME}}": "", "{{PY}}": "python3", "{{DATE}}": "2026-07-03"}
+    # 1) substitute_placeholders — 빈값 skip → 토큰 잔존(파일 미오염·silent 비움 없음).
+    pm_import.substitute_placeholders(dest, subs, copied)
+    assert (dest / rel_str).read_text(encoding="utf-8") == \
+        "description: {{PROJECT_NAME}} 프로젝트\n"
+    # 2) render_managed_files — 잔존 토큰 → RenderLeakError + 빈값 힌트. RenderLeakError 는
+    #    RuntimeError 서브클래스 — pm_import 가 pm_render 를 격리 로드하므로 base+이름으로 잡는다.
+    with pytest.raises(RuntimeError) as exc:
+        pm_import.render_managed_files(dest, subs, copied)
+    assert type(exc.value).__name__ == "RenderLeakError"
+    msg = str(exc.value)
+    assert "{{PROJECT_NAME}}" in msg
+    assert "`project_name=`" in msg
+    assert "빈값" in msg
+    # render 실패 전이라 파일은 여전히 토큰 보존(silent 로 " 프로젝트" 안 기록됨).
+    assert (dest / rel_str).read_text(encoding="utf-8") == \
+        "description: {{PROJECT_NAME}} 프로젝트\n"
+
+
+def test_import_order_normal_name_renders_clean(pm_import, tmp_path):
+    """정상 project_name → substitute 가 치환·render 는 leak 0(정상 import 회귀 무변경·T-0218)."""
+    dest = tmp_path / "adopter_ok"
+    rel_str = ".claude/agents/developer.md"
+    _seed_render_managed(dest, rel_str, "description: {{PROJECT_NAME}} 프로젝트\n")
+    copied = {Path(rel_str)}
+    subs = {"{{PROJECT_NAME}}": "Acme", "{{PY}}": "python3", "{{DATE}}": "2026-07-03"}
+    # substitute 가 토큰을 리터럴로 치환(정상값).
+    n = pm_import.substitute_placeholders(dest, subs, copied)
+    assert n == 1
+    assert (dest / rel_str).read_text(encoding="utf-8") == "description: Acme 프로젝트\n"
+    # render_managed_files — 잔존 토큰 0 → 변경 0(leak 없음·idempotent).
+    n_render = pm_import.render_managed_files(dest, subs, copied)
+    assert n_render == 0
+    assert "{{" not in (dest / rel_str).read_text(encoding="utf-8")
+
+
 # ── MF2: --new 비어있지 않은 디렉토리 거부 (데이터 손실 가드) ──────────────────
 
 def test_new_rejects_non_empty_dir(pm_import, tmp_path):
