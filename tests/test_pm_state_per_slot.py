@@ -223,6 +223,76 @@ def test_pm_state_path_graceful_migration_moves_legacy(hf):
     assert not legacy.exists(), "graceful 마이그레이션은 legacy 를 *이동*(복사 아님) — 원본 제거."
 
 
+# ── divergent bare 슬롯 dir backfill 마이그레이션 (T-0201) ────────────────────
+
+def _bare_slot_dir(hf, n: int = 1) -> Path:
+    return hf._tmp / ".project_manager" / ".local" / "slots" / str(n)
+
+
+def test_pm_state_path_backfills_divergent_bare_slot_dir(hf):
+    """`slots/<N>`(divergent bare dir) 존재 + canonical 부재 → canonical 로 이동(backfill)."""
+    _make_single_self_host(hf._tmp)  # _auto_slot → ("project_manager", 1).
+    bare_dir = _bare_slot_dir(hf, 1)
+    bare_dir.mkdir(parents=True)
+    (bare_dir / "pm_state.md").write_text("divergent bare 슬롯 내용", encoding="utf-8")
+
+    resolved = hf._pm_state_path()
+
+    sp = _slot_path(hf, "project_manager_1")
+    assert resolved == sp
+    assert sp.exists() and sp.read_text(encoding="utf-8") == "divergent bare 슬롯 내용"
+    assert not bare_dir.exists(), "backfill 은 bare dir 을 이동(정리) — 원본 잔재 없어야 함."
+
+
+def test_pm_state_path_backfill_skips_when_canonical_already_exists(hf):
+    """canonical dir 이 이미 있으면 bare dir 은 건드리지 않는다(안전 — 유실 방지)."""
+    _make_single_self_host(hf._tmp)
+    sp = _slot_path(hf, "project_manager_1")
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text("canonical 기존 내용", encoding="utf-8")
+
+    bare_dir = _bare_slot_dir(hf, 1)
+    bare_dir.mkdir(parents=True)
+    (bare_dir / "pm_state.md").write_text("bare 잔재 내용", encoding="utf-8")
+
+    resolved = hf._pm_state_path()
+
+    assert resolved == sp
+    assert sp.read_text(encoding="utf-8") == "canonical 기존 내용", "canonical 을 덮어쓰지 않는다."
+    assert bare_dir.exists(), "canonical 이 이미 있으면 bare dir 은 그대로 둔다(유실 방지)."
+
+
+def test_pm_state_path_backfill_noop_when_no_divergent_dir(hf):
+    """divergent bare dir 이 없으면 backfill 은 no-op(정상 케이스·회귀 없음)."""
+    _make_single_self_host(hf._tmp)
+    resolved = hf._pm_state_path()
+    sp = _slot_path(hf, "project_manager_1")
+    assert resolved == sp
+    assert not sp.exists()
+
+
+def test_pm_state_path_dry_run_does_not_backfill(hf):
+    """migrate=False(dry-run/진입부 읽기) → backfill 안 함(부작용 0 계약 보존)."""
+    _make_single_self_host(hf._tmp)
+    bare_dir = _bare_slot_dir(hf, 1)
+    bare_dir.mkdir(parents=True)
+    (bare_dir / "pm_state.md").write_text("divergent bare 슬롯 내용", encoding="utf-8")
+
+    resolved = hf._pm_state_path(migrate=False)
+
+    sp = _slot_path(hf, "project_manager_1")
+    assert not sp.exists(), "dry-run 은 backfill 이동을 하지 않는다."
+    assert bare_dir.exists() and (bare_dir / "pm_state.md").exists(), "bare dir 그대로 보존."
+    # legacy·slot 둘 다 부재인 상태의 migrate=False 반환값은 slot_path(정식 위치) — 이동 안 함.
+    assert resolved == sp
+
+
+def test_backfill_divergent_slot_dir_noop_for_bare_slot_key(hf):
+    """slot 키 자체가 bare 숫자(트레일링 `_N` 없음)면 대상 아님 — no-op(방어적)."""
+    hf._backfill_divergent_slot_dir("4")  # 예외 없이 조용히 통과.
+    assert not (hf._tmp / ".project_manager" / ".local" / "slots").exists()
+
+
 def test_pm_state_path_slot_resolved_but_both_absent_returns_slot_path(hf):
     """슬롯 해소 + slot 경로·legacy 둘 다 부재 → slot 경로 반환(쓰기 시 생성·생성 안 함)."""
     _make_single_self_host(hf._tmp)
@@ -601,5 +671,134 @@ def test_run_gates_green_migrates_then_writes_per_slot(hf):
     assert sp.exists() and "**4차**" in sp.read_text(encoding="utf-8"), \
         "게이트 통과 후 legacy→slot 이동 + slot 에 기록."
     assert not legacy.exists(), "게이트 green → legacy 는 slot 으로 이동(제거)."
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# CLI ingress — bare `--worktree-slot` 거부 + canonical 정규화 (T-0201 결정 = B·codex round-3)
+# 슬롯 번호는 repo 별 독립이라 repo 미명시 bare 숫자는 등록 repo ≥2 면 본질적으로 모호 → 입구에서
+# 명확한 에러로 거부. repo-qualified 는 canonical `work/<repo>_<N>` 로 결정적 접두 부착 후 thread —
+# downstream(`_regression_cwd`·`--done` release·`_parse_worktree_slot`)이 전부 `work/` 접두 전제.
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── bare 판정 단위 ──────────────────────────────────────────────────────────
+
+def test_is_bare_worktree_slot_detects_pure_number(hf):
+    """`_is_bare_worktree_slot` — 순수 숫자(`"4"`)·`work/` 접두 숫자(`"work/4"`·`"Work/4"`) bare 판정."""
+    assert hf._is_bare_worktree_slot("4") is True
+    assert hf._is_bare_worktree_slot("work/4") is True
+    assert hf._is_bare_worktree_slot("Work/4") is True  # case-insensitive 하드닝.
+
+
+def test_is_bare_worktree_slot_accepts_repo_qualified(hf):
+    """repo-qualified(`<repo>_<N>`·`work/<repo>_<N>`) 는 bare 아님 — 정상 통과 대상."""
+    assert hf._is_bare_worktree_slot("project_manager_4") is False
+    assert hf._is_bare_worktree_slot("work/project_manager_4") is False
+
+
+# ── canonical 정규화 단위 ────────────────────────────────────────────────────
+
+def test_canonicalize_worktree_slot_adds_prefix_when_absent(hf):
+    """무접두 `<repo>_<N>` → `work/<repo>_<N>`(결정적 접두 부착·repo 추론 없음)."""
+    assert hf._canonicalize_worktree_slot("project_manager_4") == "work/project_manager_4"
+
+
+def test_canonicalize_worktree_slot_idempotent_when_prefixed(hf):
+    """이미 `work/<repo>_<N>` → 그대로(double-prefix 없음)."""
+    assert hf._canonicalize_worktree_slot("work/project_manager_4") == "work/project_manager_4"
+
+
+def test_canonicalize_worktree_slot_lowercases_prefix(hf):
+    """대문자 접두(`Work/`)는 소문자 `work/` 로 통일(downstream exact-match 정합)."""
+    assert hf._canonicalize_worktree_slot("Work/project_manager_4") == "work/project_manager_4"
+
+
+# ── main() ingress 거부 (bare) ──────────────────────────────────────────────
+
+def test_main_rejects_bare_worktree_slot(hf, capsys):
+    """`--worktree-slot 4`(bare) → main() 이 parser.error 로 명확히 거부(SystemExit·비-0)."""
+    with pytest.raises(SystemExit) as exc_info:
+        hf.main([
+            "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
+            "--worktree-slot", "4",
+        ])
+    assert exc_info.value.code != 0
+    err = capsys.readouterr().err
+    assert "--worktree-slot" in err
+    assert "repo-qualified" in err or "bare" in err
+
+
+def test_main_rejects_bare_work_prefixed_worktree_slot(hf, capsys):
+    """`--worktree-slot work/4`(work/ 접두 + bare 숫자) 도 동일하게 거부된다(대칭 메시지 assert)."""
+    with pytest.raises(SystemExit) as exc_info:
+        hf.main([
+            "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
+            "--worktree-slot", "work/4",
+        ])
+    assert exc_info.value.code != 0
+    err = capsys.readouterr().err
+    assert "--worktree-slot" in err
+    assert "repo-qualified" in err or "bare" in err
+
+
+def test_main_rejects_whitespace_padded_bare_slot(hf, capsys):
+    """`--worktree-slot " 4 "`(공백 패딩 bare) → strip 후 bare 로 판정돼 거부(하드닝)."""
+    with pytest.raises(SystemExit) as exc_info:
+        hf.main([
+            "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
+            "--worktree-slot", " 4 ",
+        ])
+    assert exc_info.value.code != 0
+
+
+# ── main() ingress 정규화 → run() 전달 슬롯 캡처 (hermetic·DI stub) ──────────
+# run() 을 실제로 실행하면 프로덕션 `PmHandoff()`(주입 없음)가 실 canonical LOG_FILE/
+# PM_PLAYBOOK_FILE 에 handoff entry 를 append 하는 라이브 부작용을 낸다(hermetic 위반·비가역).
+# 그래서 `PmHandoff.run` 을 인자 캡처 stub 으로 monkeypatch 해 run() 을 끝까지 돌리지 않고
+# *main() 이 run() 에 넘기는 worktree_slot 값* 만 검증한다.
+
+def _capture_run_slot(hf, monkeypatch) -> dict:
+    """`PmHandoff.run` 을 인자 캡처 stub 으로 대체한다 — run() 미실행·부작용 0."""
+    captured: dict = {}
+
+    def _stub(self, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(hf.PmHandoff, "run", _stub)
+    return captured
+
+
+def test_main_canonicalizes_unprefixed_repo_qualified_slot(hf, monkeypatch):
+    """`--worktree-slot project_manager_4`(무접두 repo-qualified) → run() 에 `work/project_manager_4`
+    전달(codex round-3: 무접두는 downstream 3곳서 부분 고장 → ingress 서 canonical 화)."""
+    captured = _capture_run_slot(hf, monkeypatch)
+    rc = hf.main([
+        "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
+        "--worktree-slot", "project_manager_4",
+    ])
+    assert rc == 0
+    assert captured["worktree_slot"] == "work/project_manager_4"
+
+
+def test_main_passes_prefixed_slot_unchanged(hf, monkeypatch):
+    """이미 `work/<repo>_<N>` → run() 에 그대로 전달(double-prefix 없음)."""
+    captured = _capture_run_slot(hf, monkeypatch)
+    rc = hf.main([
+        "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
+        "--worktree-slot", "work/project_manager_4",
+    ])
+    assert rc == 0
+    assert captured["worktree_slot"] == "work/project_manager_4"
+
+
+def test_main_canonicalizes_case_and_whitespace_variants(hf, monkeypatch):
+    """`--worktree-slot " Work/project_manager_4 "`(대문자 접두 + 공백) → `work/project_manager_4`."""
+    captured = _capture_run_slot(hf, monkeypatch)
+    rc = hf.main([
+        "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
+        "--worktree-slot", " Work/project_manager_4 ",
+    ])
+    assert rc == 0
+    assert captured["worktree_slot"] == "work/project_manager_4"
 
 

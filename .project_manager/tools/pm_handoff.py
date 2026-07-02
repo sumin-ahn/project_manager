@@ -197,6 +197,52 @@ def _slots_root() -> Path:
     return REPO / ".project_manager" / ".local" / "slots"
 
 
+# canonical 슬롯 키(`<repo>_<N>`)에서 trailing 숫자(`<N>`)를 뽑는다 — divergent bare dir
+# (`slots/<N>`) 존재 여부를 판단하는 backfill 마이그레이션(T-0201)에서 재사용.
+_SLOT_TRAILING_NUM_RE = re.compile(r"^.+_(\d+)$")
+
+
+def _backfill_divergent_slot_dir(slot: str) -> None:
+    """divergent bare 슬롯 dir(`slots/<N>`)을 canonical `slots/<repo>_<N>` 로 1회 이동한다 (T-0201).
+
+    write-side 가 과거 bare 토큰(`--slot 4`)을 verbatim 슬롯 키로 써 `slots/<N>` 을 만든
+    잔재가 있으면, 이번 진입에서 canonical `slots/<repo>_<N>`(`slot`)으로 **backfill**
+    한다(prefer-data-migration-over-fallback — 런타임 폴백 누적 대신 원천 정합). guarded:
+
+      - `slot` 이 `<repo>_<N>` 형식이 아니면(trailing 숫자 없음) no-op.
+      - bare dir(`slots/<N>`)이 없으면 no-op(정상 케이스·이미 정합).
+      - canonical dir(`slots/<repo>_<N>`)이 **이미 있으면** 안전하게 스킵(덮어쓰지 않음 — 두
+        dir 이 동시에 있는 드문 엣지는 canonical 이 우선·bare 는 그대로 둬 데이터 유실 방지).
+      - bare dir 안에 `pm_state.md` 가 있으면 canonical dir 로 이동(부모 생성)하고, bare dir 이
+        비면 정리한다(빈 dir 이 아니면 남겨둔다 — 예상 밖 파일 보존).
+
+    예외/실패는 전부 fail-soft(무해) — 마이그레이션은 편의 backfill 이지 강제 아니다.
+    """
+    m = _SLOT_TRAILING_NUM_RE.match(slot)
+    if not m:
+        return
+    bare = m.group(1)
+    if bare == slot:
+        return  # slot 이 그 자체로 bare 숫자(레포 접두어 없음) — 대상 아님.
+    slots_root = _slots_root()
+    bare_dir = slots_root / bare
+    canonical_dir = slots_root / slot
+    try:
+        if not bare_dir.is_dir() or canonical_dir.exists():
+            return
+        bare_state = bare_dir / "pm_state.md"
+        if not bare_state.exists():
+            return
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        bare_state.replace(canonical_dir / "pm_state.md")
+        try:
+            next(bare_dir.iterdir())
+        except StopIteration:
+            bare_dir.rmdir()  # 비었으면 정리(예상 밖 잔여 파일이 있으면 남겨둠).
+    except OSError:  # noqa: BLE001 — fail-soft: 마이그레이션 실패는 무해(다음 접근 시 재시도).
+        return
+
+
 def _resolve_state_slot(
     worktree_slot: str | None = None,
     areas_file: Path | None = None,
@@ -210,6 +256,13 @@ def _resolve_state_slot(
       - 없으면 bootstrap `_resolve_session_slot`(guarded default-1·T-0178) 으로 자동해소 →
         `<repo>_<N>`. `{1,2}`→slot 1·`{3}`-sole→slot 3·단일 self-host→그것.
       - 그것도 없으면(solo/부재) **None** — 호출부가 legacy `wiki/pm_state.md` 로 폴백.
+
+    **T-0201 결정 = B(입구 거부)**: bare 슬롯 번호(`<N>`)는 repo 별 독립(worktree_pool
+    `_existing_slot_numbers(repo, …)`·`prefix=f"work/{repo}_"`)이라 repo ≥2 면 본질적으로
+    모호하다 — `project_manager_1`·`finance_1` 공존 가능. 그래서 이 함수는 bare 토큰을
+    *정규화하지 않는다* — CLI argparse ingress(`main()`)가 bare `--worktree-slot` 을 명확한
+    에러로 **거부**해 이 함수엔 이미 repo-qualified(`work/<repo>_<N>`·`<repo>_<N>`) 슬롯만
+    들어온다는 전제다(입구 거부가 근본·정규화는 소비자마다 재발하는 두더지잡기).
 
     **continuity(세션-window read/write) 정합** (T-0178 should-fix·spike §1·§3): `_auto_slot`
     (exactly-1)은 `{1,2}` 를 None 으로 떨궈 *없는 legacy* 로 새서 slot 1 연속성을 끊었다 —
@@ -269,6 +322,10 @@ def _resolve_session_worktree_slot(
 
     반환:
       - `(worktree_slot, None)` — 명시 `--worktree-slot` 이면 그대로(downstream explicit 우선).
+        **T-0201 결정 = B(입구 거부)**: bare `<N>` 은 CLI argparse ingress(`main()`)가 이미
+        명확한 에러로 거부하므로, 이 함수엔 repo-qualified(`work/<repo>_<N>`·`<repo>_<N>`) 슬롯만
+        도달한다는 전제 — 여기서 재정규화하지 않는다(정규화를 소비자마다 스레딩하면 새 소비자가
+        생길 때마다 재발하는 두더지잡기 — 입구 거부가 근본).
       - `(None, None)` — solo/미해소(멀티-PM 미셋업·bootstrap 부재·판정 실패). 현행 legacy/REPO
         폴백 유지(자기-호스트 solo 무변경).
       - `(f"work/<repo>_<N>", None)` — default-1/단독/idle-필터 후 활성 슬롯으로 해소. run() 이
@@ -321,12 +378,18 @@ def _pm_state_path(
     `migrate=False`(읽기 위치만)로 호출하고, 모든 중단 게이트 통과 후 pm_state 첫 접촉 직전에만
     `_migrate_legacy_pm_state` 로 실제 이동을 수행한다 — "중단 시 pm_state 무접촉" 계약 보존
     (codex 교차검증 must-fix). dry-run 은 이동을 절대 하지 않는다(미리보기).
+
+    `migrate=True` 일 때만 divergent bare 슬롯 dir(`slots/<N>`) 도 canonical
+    `slots/<repo>_<N>` 로 backfill 한다(T-0201) — legacy 마이그레이션과 같은 타이밍(게이트
+    통과 후·첫 접촉 직전)이라 "중단 시 pm_state 무접촉" 계약을 그대로 지킨다.
     """
     slot = _resolve_state_slot(worktree_slot, areas_file, leases_file)
     legacy = _legacy_pm_state_file()
     if slot is None:
         # 솔로/모호 — 현행 단일 pm_state(무변경).
         return legacy
+    if migrate:
+        _backfill_divergent_slot_dir(slot)
     slot_path = _slots_root() / slot / "pm_state.md"
     if slot_path.exists():
         return slot_path
@@ -1561,7 +1624,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="슬롯",
         default=None,
         help=(
-            "multi-PM 모드 — 이 세션의 worktree 슬롯 (`work/<repo>_<N>`). handoff entry 에 "
+            "multi-PM 모드 — 이 세션의 worktree 슬롯 (`work/<repo>_<N>` 1순위·`<repo>_<N>` 도 "
+            "수용·자동 canonical 화). bare 슬롯 번호(`4`)는 repo 별 모호라 거부. handoff entry 에 "
             "slot/branch 를 기록(회전 재부착 단서). --done 과 함께면 작업완료 release."
         ),
     )
@@ -1624,6 +1688,48 @@ def _set_console_codepage_utf8() -> None:
         pass
 
 
+# CLI ingress 검증·정규화(T-0201 결정 = B) — bare 슬롯 번호(순수 숫자 `<N>`)는 repo 별 독립
+# (worktree_pool `_existing_slot_numbers(repo, …)`·`prefix=f"work/{repo}_"`)이라 등록 repo
+# ≥2 면 본질적으로 모호하다(`project_manager_1`·`finance_1` 공존 가능). 정규화(A안)로 소비자마다
+# 폴백을 스레딩하면 새 소비자가 생길 때마다 재발하는 두더지잡기(codex round-1/round-2 실증) —
+# 입구에서 명확한 에러로 거부하는 게 근본이다.
+#
+# **canonical 형식 = `work/<repo>_<N>`** — downstream 소비자(`_regression_cwd`→`REPO/<slot>`·
+# `--done` release→lease 키 exact-match·`_parse_worktree_slot`→`work/` 접두 필수)가 전부 `work/`
+# 접두 형식을 전제한다(codex round-3). 그래서 repo-qualified 지만 `work/` 무접두인 `<repo>_<N>` 은
+# 정상 수용하되, ingress 에서 **결정적 문자열 접두 부착**으로 `work/<repo>_<N>` 로 만들어 thread
+# 한다(모호성 0·단일 지점·A안의 repo-추론 정규화와 다름). 이후 run() 내부는 전부 `work/<repo>_<N>`
+# 만 받는다. `work/` 접두 판정은 case-insensitive(`Work/4` 변형이 verbatim 으로 안 새게).
+_WORK_PREFIX = "work/"
+_BARE_WORKTREE_SLOT_RE = re.compile(r"^(?:work/)?\d+$", re.IGNORECASE)
+
+
+def _strip_work_prefix_ci(worktree_slot: str) -> str:
+    """leading `work/`(대소문자 무관)를 벗긴 나머지를 반환한다 (`Work/4`→`4`·T-0201 하드닝)."""
+    if worktree_slot[: len(_WORK_PREFIX)].lower() == _WORK_PREFIX:
+        return worktree_slot[len(_WORK_PREFIX):]
+    return worktree_slot
+
+
+def _is_bare_worktree_slot(worktree_slot: str) -> bool:
+    """`--worktree-slot` 값이 repo 미지정 bare 숫자(`"4"`·`"work/4"`·`"Work/4"`)인지 판정한다 (T-0201).
+
+    호출부(`main()`)가 `strip()` 후 넘긴다는 전제 — 정규식은 `(?:work/)?\\d+` case-insensitive.
+    """
+    return bool(_BARE_WORKTREE_SLOT_RE.match(worktree_slot))
+
+
+def _canonicalize_worktree_slot(worktree_slot: str) -> str:
+    """repo-qualified `--worktree-slot` 을 canonical `work/<repo>_<N>` 로 정규화한다 (T-0201).
+
+    이미 `work/`(대소문자 무관) 접두면 접두를 소문자 `work/` 로 통일해 재부착, 무접두
+    `<repo>_<N>` 이면 `work/` 를 붙인다 — **결정적 문자열 접두 부착**(repo 추론 없음·모호성 0).
+    bare 숫자는 `main()` 게이트가 이미 거부했으므로 여기 도달하지 않는다(repo-qualified 전제).
+    """
+    rest = _strip_work_prefix_ci(worktree_slot)
+    return f"{_WORK_PREFIX}{rest}"
+
+
 def main(argv: list[str] | None = None) -> int:
     # 콘솔/파이프 출력을 UTF-8 로 재설정 — cp949 콘솔이나 리다이렉트된 stdout 에서
     # 이모지·em-dash(—) print 가 UnicodeEncodeError 로 죽는 것을 막는다 (T-0017).
@@ -1640,10 +1746,33 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     handoff = PmHandoff()
 
+    # --worktree-slot 정제(T-0201 하드닝) — 주변 공백을 벗겨 `" 4 "`·`" work/x_1 "` 변형이
+    # verbatim 으로 새지 않게 한다. 빈 문자열은 미지정(None)과 동형으로 취급.
+    if args.worktree_slot is not None:
+        args.worktree_slot = args.worktree_slot.strip() or None
+
     # --branch 는 --worktree-slot 동반 필요 — 슬롯 없는 브랜치는 회전 재부착 단서로
     # 불완전(어느 슬롯에 재부착할지 모름)하므로 조용히 무시하지 않고 거부한다(오용 축소·ADR-0013).
     if args.branch and not args.worktree_slot:
         parser.error("--branch 는 --worktree-slot 과 함께 써야 한다 (multi-PM 모드 회전 재부착 단서·ADR-0013).")
+
+    # bare 슬롯 번호 거부(T-0201 결정 = B) — 슬롯 번호는 repo 별 독립이라 repo 미명시 bare
+    # 숫자(`"4"`·`"work/4"`·`"Work/4"`)는 등록 repo ≥2 면 본질적으로 모호하다. 정규화 대신
+    # 입구에서 명확한 에러로 거부한다(두더지잡기 방지).
+    if args.worktree_slot and _is_bare_worktree_slot(args.worktree_slot):
+        parser.error(
+            f"--worktree-slot '{args.worktree_slot}' 은 bare 슬롯 번호다 — repo-qualified 형식"
+            "(`work/<repo>_<N>` 1순위·`<repo>_<N>` 도 수용)으로 지정하라. 슬롯 번호는 repo 별 "
+            "독립이라 bare 숫자만으로는 어느 repo 인지 모호하다(ADR-0013)."
+        )
+
+    # canonical 정규화(T-0201·codex round-3) — repo-qualified 지만 `work/` 무접두(`<repo>_<N>`)
+    # 이거나 대문자 접두(`Work/`)면 결정적으로 소문자 `work/` 접두로 통일한다. downstream 소비자
+    # (`_regression_cwd`·`--done` lease release·`_parse_worktree_slot` slot-injection)가 전부
+    # `work/<repo>_<N>` 형식을 전제하므로, 여기서 한 번 canonical 화해 thread 하면 run() 내부는
+    # 무변경으로 정합한다(무접두 형식이 downstream 3곳서 부분 고장나던 갭 해소).
+    if args.worktree_slot:
+        args.worktree_slot = _canonicalize_worktree_slot(args.worktree_slot)
 
     # 대화형 경로 — session-num·wave-summary 수동 필수.
     missing = [
