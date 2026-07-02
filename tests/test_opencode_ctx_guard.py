@@ -327,17 +327,17 @@ for (const fn of ["parseLocalConf","resolveThresholds","accumulateTokens","compu
   assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
 }
 
-// 임계 해석 + sanity 폴백 (엔진 기본 20/10).
-assert.deepStrictEqual(m.resolveThresholds({}), {nudge_pct:20, stop_pct:10});                       // 미설정→기본
+// 임계 해석 + sanity 폴백 (엔진 기본 30/20 · T-0207).
+assert.deepStrictEqual(m.resolveThresholds({}), {nudge_pct:30, stop_pct:20});                       // 미설정→기본
 assert.deepStrictEqual(m.resolveThresholds({ctx_nudge_pct:"25",ctx_stop_pct:"12"}), {nudge_pct:25, stop_pct:12});
-assert.deepStrictEqual(m.resolveThresholds({ctx_nudge_pct:"5",ctx_stop_pct:"30"}), {nudge_pct:20, stop_pct:10}); // stop>nudge→폴백
-assert.deepStrictEqual(m.resolveThresholds({ctx_nudge_pct:"-5",ctx_stop_pct:"3"}), {nudge_pct:20, stop_pct:10}); // 음수→폴백
+assert.deepStrictEqual(m.resolveThresholds({ctx_nudge_pct:"5",ctx_stop_pct:"30"}), {nudge_pct:30, stop_pct:20}); // stop>nudge→폴백
+assert.deepStrictEqual(m.resolveThresholds({ctx_nudge_pct:"-5",ctx_stop_pct:"3"}), {nudge_pct:30, stop_pct:20}); // 음수→폴백
 
 // 토큰 누적.
 assert.strictEqual(m.accumulateTokens({input:100,output:20,reasoning:5,cache:{read:10,write:3}}), 138);
 assert.strictEqual(m.accumulateTokens(null), 0);
 
-// ctx 상태 판정 (limit 1000, 기본 20/10 = 잔여% 임계).
+// ctx 상태 판정 (limit 1000, 20/10 명시 임계 = 잔여% 판정·경계 검증용).
 const t = {nudge_pct:20, stop_pct:10};
 assert.strictEqual(m.computeCtxState(500, 1000, t).level, "ok");    // 잔여 50%
 assert.strictEqual(m.computeCtxState(800, 1000, t).level, "nudge"); // 잔여 20% (경계·<=)

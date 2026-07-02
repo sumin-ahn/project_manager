@@ -9,12 +9,12 @@
 //
 // 모델 (T-0012, 2D): 넛지(이른) → 하드 정지(필수) → 새 세션. compaction 회피.
 //
-// 임계값(엔진 T-0013): local.conf `ctx_nudge_pct`/`ctx_stop_pct`(기본 20/10) = "잔여 컨텍스트 %".
+// 임계값(엔진 T-0013·T-0207 상향): local.conf `ctx_nudge_pct`/`ctx_stop_pct`(기본 30/20) = "잔여 컨텍스트 %".
 //   잔여% = (1 - used/limit) * 100.  잔여 ≤ nudge_pct → 넛지,  잔여 ≤ stop_pct → 정지.
 //   plugin 은 local.conf 를 직접 파싱(의존 적음·board.py shell-out 회피).
 //
 // 멱등성(codex T-0013 인계): 넛지·정지·handoff 트리거는 세션당 각 1회만 (중복 호출 가드).
-// sanity(codex 인계): 읽은 nudge/stop 이 비정상(음수·stop>nudge)이면 엔진 기본(20/10) 폴백.
+// sanity(codex 인계): 읽은 nudge/stop 이 비정상(음수·stop>nudge)이면 엔진 기본(30/20) 폴백.
 //
 // 엔진(pm_handoff/board) 미수정 — shell-out 호출만. 어댑터층(templates/opencode/.opencode/)만.
 //
@@ -25,8 +25,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 // ── 엔진 기본값 (board.py CTX_*_PCT_DEFAULT 미러 — 폴백 전용) ──────────────────
-const NUDGE_PCT_DEFAULT = 20; // 잔여 ≤ 이 % → 넛지 (일은 계속).
-const STOP_PCT_DEFAULT = 10; // 잔여 ≤ 이 % → 정지·핸드오프.
+// T-0207 상향(20/10→30/20): 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬(PM 47 실측).
+const NUDGE_PCT_DEFAULT = 30; // 잔여 ≤ 이 % → 넛지 (일은 계속).
+const STOP_PCT_DEFAULT = 20; // 잔여 ≤ 이 % → 정지·핸드오프.
 
 // 엔진 경로 (plugin 의 directory 기준 .project_manager 까지 거슬러 올라가 해석).
 const ENGINE_REL = path.join(".project_manager", "tools");

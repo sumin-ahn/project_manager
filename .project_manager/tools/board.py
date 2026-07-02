@@ -1319,8 +1319,10 @@ def _detect_py() -> str:
 # ── ctx 임계 (context 정지-핸드오프 — T-0013) ──────────────────────────────
 # 어댑터 훅(opencode·claude)이 컨텍스트 잔여 비율로 nudge/stop 을 판정할 기본값.
 # local.conf `ctx_nudge_pct`·`ctx_stop_pct` 로 per-clone 조정 가능 (board.py init 기록).
-CTX_NUDGE_PCT_DEFAULT = 20  # 잔여 ≤ 이 % → "곧 정지" nudge (아직 일은 계속).
-CTX_STOP_PCT_DEFAULT = 10   # 잔여 ≤ 이 % → 정지·핸드오프 트리거 임계.
+# T-0207 상향(20/10→30/20): 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬(PM 47 실측).
+# 어댑터 사본(claude ctx_guard.py·opencode ctx-guard.js)과 미러(test_ctx_default_mirror 가드).
+CTX_NUDGE_PCT_DEFAULT = 30  # 잔여 ≤ 이 % → "곧 정지" nudge (아직 일은 계속).
+CTX_STOP_PCT_DEFAULT = 20   # 잔여 ≤ 이 % → 정지·핸드오프 트리거 임계.
 # 핸드오프 토큰 예산(위 nudge/stop %의 기준). 어댑터 ctx_guard.CTX_WINDOW_TOKENS_DEFAULT
 # 와 값을 동기 — board 는 ctx_guard 를 import 하지 않고(touches 격리) 리터럴을 보유한다
 # (nudge/stop pct 도 동형으로 board 자체 상수). 큰 물리 window(1M) 모델이라도 낮게 두면
@@ -1342,7 +1344,7 @@ def _ctx_pct(key: str, default: int) -> int:
 def ctx_thresholds() -> dict[str, int]:
     """ctx 정지-핸드오프 임계값을 dict 로 반환 (어댑터 훅이 읽어 판정).
 
-    반환: {"nudge_pct": N, "stop_pct": M}. local.conf 우선·없으면 엔진 기본(20/10).
+    반환: {"nudge_pct": N, "stop_pct": M}. local.conf 우선·없으면 엔진 기본(30/20).
     """
     return {
         "nudge_pct": _ctx_pct("ctx_nudge_pct", CTX_NUDGE_PCT_DEFAULT),

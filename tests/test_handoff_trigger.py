@@ -8,7 +8,7 @@ nudge tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 박제 경로가 
 파일은 그 폐기 후 살아남는 축만 검증한다:
   - session-num 추론 (pm_state 세션 window 다음 차수·infer_next_session_num).
   - 대화형 handoff skeleton (thread_tail 주입·평탄화·cap·lean 스키마).
-  - ctx 임계 config 기본값(20/10) + reader + board.py init 기록.
+  - ctx 임계 config 기본값(30/20·T-0207 상향) + reader + board.py init 기록.
   - 대화형 run() 경로 회귀 불변 (인계 프롬프트 stdout·log 미오염·프롬프트 템플릿 lean).
 """
 from __future__ import annotations
@@ -143,12 +143,12 @@ def test_thread_tail_capped_at_engine_limit(handoff):
 # ── 3. ctx 임계 config (board.py reader + init 기본값) ─────────────────────────
 
 def test_ctx_threshold_defaults(board, monkeypatch):
-    """local.conf 에 ctx 키가 없으면 엔진 기본(20/10)."""
+    """local.conf 에 ctx 키가 없으면 엔진 기본(30/20 — T-0207 상향)."""
     monkeypatch.setattr(board, "local_config", lambda: {})
     th = board.ctx_thresholds()
-    assert th == {"nudge_pct": 20, "stop_pct": 10}
-    assert board.CTX_NUDGE_PCT_DEFAULT == 20
-    assert board.CTX_STOP_PCT_DEFAULT == 10
+    assert th == {"nudge_pct": 30, "stop_pct": 20}
+    assert board.CTX_NUDGE_PCT_DEFAULT == 30
+    assert board.CTX_STOP_PCT_DEFAULT == 20
 
 
 def test_ctx_threshold_reads_local_conf(board, monkeypatch):
@@ -160,11 +160,11 @@ def test_ctx_threshold_invalid_falls_back(board, monkeypatch):
     """비정수 값은 무시하고 기본으로 fallback (config 오타에 robust)."""
     monkeypatch.setattr(board, "local_config", lambda: {"ctx_nudge_pct": "abc"})
     th = board.ctx_thresholds()
-    assert th["nudge_pct"] == 20 and th["stop_pct"] == 10
+    assert th["nudge_pct"] == 30 and th["stop_pct"] == 20
 
 
 def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
-    """board.py init 가 local.conf 에 ctx_nudge_pct=20·ctx_stop_pct=10 을 기록한다."""
+    """board.py init 가 local.conf 에 ctx_nudge_pct=30·ctx_stop_pct=20 을 기록한다 (T-0207)."""
     conf_path = tmp_path / "local.conf"
     state_path = tmp_path / "pm_state.md"
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
@@ -180,8 +180,8 @@ def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
 
     assert rc == 0
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert "ctx_nudge_pct=20" in conf_text
-    assert "ctx_stop_pct=10" in conf_text
+    assert "ctx_nudge_pct=30" in conf_text
+    assert "ctx_stop_pct=20" in conf_text
 
 
 # ── 4. 대화형 경로 회귀 불변 (기존 동작 보존) ──────────────────────────────────

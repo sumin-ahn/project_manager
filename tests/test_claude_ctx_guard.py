@@ -66,9 +66,9 @@ def _write_transcript(tmp_path: Path, messages) -> Path:
 # ── 1. 임계 config (local.conf 읽기 + sanity 폴백) ──────────────────────────
 
 def test_thresholds_defaults(guard):
-    assert guard.ctx_thresholds({}) == {"nudge_pct": 20, "stop_pct": 10}
-    assert guard.CTX_NUDGE_PCT_DEFAULT == 20
-    assert guard.CTX_STOP_PCT_DEFAULT == 10
+    assert guard.ctx_thresholds({}) == {"nudge_pct": 30, "stop_pct": 20}
+    assert guard.CTX_NUDGE_PCT_DEFAULT == 30
+    assert guard.CTX_STOP_PCT_DEFAULT == 20
 
 
 def test_thresholds_reads_conf(guard):
@@ -79,14 +79,14 @@ def test_thresholds_reads_conf(guard):
 def test_thresholds_sanity_fallback(guard):
     # stop > nudge (역전) → 기본 폴백.
     assert guard.ctx_thresholds({"ctx_nudge_pct": "5", "ctx_stop_pct": "30"}) == {
-        "nudge_pct": 20, "stop_pct": 10
+        "nudge_pct": 30, "stop_pct": 20
     }
     # 음수 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx_stop_pct": "-3"}) == {"nudge_pct": 20, "stop_pct": 10}
+    assert guard.ctx_thresholds({"ctx_stop_pct": "-3"}) == {"nudge_pct": 30, "stop_pct": 20}
     # 비정수 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx_nudge_pct": "abc"}) == {"nudge_pct": 20, "stop_pct": 10}
+    assert guard.ctx_thresholds({"ctx_nudge_pct": "abc"}) == {"nudge_pct": 30, "stop_pct": 20}
     # 100 이상 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx_nudge_pct": "100"}) == {"nudge_pct": 20, "stop_pct": 10}
+    assert guard.ctx_thresholds({"ctx_nudge_pct": "100"}) == {"nudge_pct": 30, "stop_pct": 20}
 
 
 def test_load_local_config_parses(guard, tmp_path):
@@ -147,14 +147,15 @@ def test_statusline_no_signal_zero(guard):
 
 
 def test_statusline_render_colors(guard, statusline):
-    th = {"nudge_pct": 20, "stop_pct": 10}
-    # ok (used 50, 잔여 50): 회색·정지문구 없음.
+    # conf={} → 엔진 기본 임계(30/20 · T-0207) 로 밴드 판정.
+    th = {"nudge_pct": 30, "stop_pct": 20}
+    # ok (used 50, 잔여 50 > 30): 회색·정지문구 없음.
     ok = statusline.build_statusline({"context_window": {"used_percentage": 50}}, {})
     assert "\033[90m" in ok and "ctx 50%" in ok and "정지" not in ok
-    # nudge (used 85, 잔여 15 <= 20): 노랑·"곧 정지".
-    nudge = statusline.build_statusline({"context_window": {"used_percentage": 85}}, {})
+    # nudge (used 75, 잔여 25 <= 30·> 20): 노랑·"곧 정지".
+    nudge = statusline.build_statusline({"context_window": {"used_percentage": 75}}, {})
     assert "\033[33m" in nudge and "곧 정지" in nudge
-    # stop (used 92, 잔여 8 <= 10): 빨강·"정지 임계".
+    # stop (used 92, 잔여 8 <= 20): 빨강·"정지 임계".
     stop = statusline.build_statusline({"context_window": {"used_percentage": 92}}, {})
     assert "\033[31m" in stop and "정지 임계" in stop
 
@@ -216,7 +217,7 @@ def test_hook_evaluate_ok_passes(guard, stop_hook, tmp_path):
 
 
 def test_hook_evaluate_stop_denies_and_triggers(guard, stop_hook, tmp_path):
-    # used 92% (잔여 8 <= 10) + 새 작업 도구 → deny + STOP marker 무조건 박제 (ADR-0038 D4).
+    # used 92% (잔여 8 <= 20) + 새 작업 도구 → deny + STOP marker 무조건 박제 (ADR-0038 D4).
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 184_000})])
     stdin = {
         "transcript_path": str(path),
@@ -317,10 +318,10 @@ def test_hook_pretooluse_default_when_no_event(guard, stop_hook, tmp_path):
 
 # ── 3c. 핸드오프 도구 allow-list (ADR-0038 D2 — 진행 중 /pm-handoff 통과) ─────
 # stop 밴드에서 PreToolUse 도구를 통과(None)/deny 로 가르는 안전-핵심 로직.
-# transcript 는 used 95%(잔여 5 <= stop 10)로 stop 밴드에 넣는다.
+# transcript 는 used 95%(잔여 5 <= stop 20·기본 T-0207)로 stop 밴드에 넣는다.
 
 def _stop_transcript(tmp_path: Path) -> Path:
-    # input_tokens 190_000 / window 200_000 = 95% used → 잔여 5 <= stop_pct 10 → stop.
+    # input_tokens 190_000 / window 200_000 = 95% used → 잔여 5 <= stop_pct 20 → stop.
     return _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
 
 
@@ -527,8 +528,8 @@ def test_build_nudge_guidance(guard):
 
 
 def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
-    # nudge 레벨(used 85·잔여 15) + UserPromptSubmit → additionalContext 비차단 주입.
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 170_000})])
+    # nudge 레벨(used 75·잔여 25 — stop 20 < 25 <= nudge 30) + UserPromptSubmit → additionalContext 비차단 주입.
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     stdin = {
         "transcript_path": str(path),
         "session_id": "sess-nudge",
@@ -550,8 +551,8 @@ def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
 
 
 def test_hook_nudge_pretooluse_passes_no_injection(stop_hook, tmp_path):
-    # nudge 레벨 + PreToolUse(주입 채널 없음) → 통과(도구 진행)·주입/marker 없음.
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 170_000})])
+    # nudge 레벨(잔여 25) + PreToolUse(주입 채널 없음) → 통과(도구 진행)·주입/marker 없음.
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     stdin = {"transcript_path": str(path), "session_id": "sess-nudge-ptu"}  # event 없음=PreToolUse 기본.
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
     assert rc == 0 and output is None
@@ -560,7 +561,7 @@ def test_hook_nudge_pretooluse_passes_no_injection(stop_hook, tmp_path):
 
 def test_hook_nudge_idempotent_single_injection(stop_hook, tmp_path):
     # 같은 세션 두 번 nudge(UserPromptSubmit)여도 주입은 1회 (.nudge marker 가드).
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 170_000})])
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     stdin = {
         "transcript_path": str(path),
         "session_id": "sess-nudge-idem",
@@ -575,7 +576,7 @@ def test_hook_nudge_idempotent_single_injection(stop_hook, tmp_path):
 def test_hook_nudge_independent_from_stop(stop_hook, tmp_path):
     # 2단 fail-safe 독립: nudge(.nudge) 발동해도 stop 은 별개로 deny+박제 (서로 marker 분리).
     sid = "sess-2tier"
-    nudge_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 170_000})])
+    nudge_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     nudge_stdin = {"transcript_path": str(nudge_tx), "session_id": sid,
                    "hook_event_name": "UserPromptSubmit"}
     stop_hook.evaluate(nudge_stdin, tmp_path, {})  # nudge 주입.

@@ -4,8 +4,8 @@
 statusLine 넛지와 PreToolUse 하드 정지가 **같은 임계 로직**을 공유하게 한 모듈.
 두 진입점(``ctx_statusline.py`` · ``ctx_stop_hook.py``)이 여기 함수를 호출한다.
 
-엔진 계약 (T-0013):
-  - 임계값 = local.conf ``ctx_nudge_pct`` / ``ctx_stop_pct`` (없으면 엔진 기본 20/10).
+엔진 계약 (T-0013·T-0207 임계 상향):
+  - 임계값 = local.conf ``ctx_nudge_pct`` / ``ctx_stop_pct`` (없으면 엔진 기본 30/20).
     훅/statusline 은 board.py 를 import 하지 않고 **local.conf 를 직접 파싱**한다
     (어댑터는 엔진 사본 경로에 묶이지 않게 — ticket §인터페이스 "local.conf 직접 파싱 권장").
   - 정지 시 handoff = ``python3 .project_manager/tools/pm_handoff.py --trigger
@@ -29,8 +29,9 @@ import json
 from pathlib import Path
 
 # ── 엔진 기본 임계 (board.py CTX_*_PCT_DEFAULT 와 동일 — 어댑터는 import 안 하고 미러) ──
-CTX_NUDGE_PCT_DEFAULT = 20  # 잔여 <= 이 % → "곧 정지" 넛지 (아직 일은 계속).
-CTX_STOP_PCT_DEFAULT = 10   # 잔여 <= 이 % → 정지·핸드오프 트리거.
+# T-0207 상향(20/10→30/20): 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬(PM 47 실측).
+CTX_NUDGE_PCT_DEFAULT = 30  # 잔여 <= 이 % → "곧 정지" 넛지 (아직 일은 계속).
+CTX_STOP_PCT_DEFAULT = 20   # 잔여 <= 이 % → 정지·핸드오프 트리거.
 
 # 기본 컨텍스트 윈도 크기 (statusLine 이 size 를 안 주거나 훅 transcript 경로일 때).
 # claude 기본 200k. local.conf ``ctx_window_tokens`` 로 조정 가능.

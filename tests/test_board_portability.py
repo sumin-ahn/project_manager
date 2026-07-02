@@ -335,6 +335,10 @@ def test_init_rerun_preserves_custom_operational_keys(board, monkeypatch, tmp_pa
     assert "opencode_pro_model=m" in conf_text
     assert "status_total_style=fraction" in conf_text
     assert "user=me@example.com" in conf_text
+    # T-0207: 기존 클론의 ctx 임계(20/10)는 디폴트 상향(30/20)이 있어도 불변 —
+    # init 은 '없을 때만 추가'라 이미 기록된 값을 덮지 않는다(마이그레이션 영향 0).
+    assert "ctx_nudge_pct=20" in conf_text and "ctx_stop_pct=10" in conf_text
+    assert "ctx_nudge_pct=30" not in conf_text and "ctx_stop_pct=20" not in conf_text
 
 
 def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_path):
