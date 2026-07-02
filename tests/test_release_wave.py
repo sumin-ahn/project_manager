@@ -17,11 +17,15 @@ probe.txt(=developer 서브에이전트가 작성)·ticket done 전이가 핵심
 """
 from __future__ import annotations
 
+import ast
+import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -431,6 +435,199 @@ def test_release_wave_multirepo_claude_full_wave(tmp_path):
     _assert_multirepo_wave_side_effects(home, proc, "claude")
 
 
+# ── hard-stop 락아웃/실발화 라이브 단언 (ADR-0038 D4/T-D · T-0190) ─────────────────────────
+# 위 wave 테스트는 정상 컨텍스트에서 도는 full wave 다. 아래는 그 *경계* — hard-stop machinery
+# (ADR-0038)가 실 claude transcript 위에서 실제로 발화하고, 락아웃 예외(T-0205)가 성립하는지를
+# 라이브로 못박는다. 기계 단위 테스트(test_claude_ctx_guard)가 로직을 결정적으로 커버하지만,
+# transcript-slug 탐색·실 transcript 의 100% 판정·래퍼(.sh) exec 발화는 실 하니스 형상에서만
+# 드러나는 갭이다([[verify-real-output-not-just-review]]·설계검증 allow-list 렌즈).
+
+# ctx 예산 극소 설정 — 실 transcript 의 첫 턴이 곧장 stop 밴드(잔여 0)에 들도록. local.conf
+# 에 이 값을 *append* 해 마지막-줄이 이긴다(last-wins·load_local_config 규칙·PM 47 실측).
+_TINY_CTX_WINDOW = 2000
+# hard-stop 훅 stdin 세션 id — marker 파일명(`<sid>.done`)의 단일 진실.
+_HARD_STOP_SID = "release-hard-stop-probe"
+# stop 밴드에서 통과하는 유일한 UserPromptSubmit prompt(T-0205 핸드오프 예외) vs 계속 block 되는 것.
+_HANDOFF_PROMPT = "/pm-handoff"
+_NON_HANDOFF_PROMPT = "다른 일 해줘"
+
+
+def _append_tiny_ctx_window(dest: Path) -> None:
+    """adopter local.conf 에 극소 ctx_window_tokens 를 append(last-wins) — 즉발 hard-stop.
+
+    import 기본 local.conf 는 이미 ctx_window_tokens=200000 을 담는다 — append 한 극소값이
+    *마지막 줄* 로 이겨(load_local_config 는 KEY 마지막 값 채택) 첫 실 턴이 잔여 0 = stop 밴드.
+    """
+    conf_path = dest / ".project_manager" / "local.conf"
+    conf_path.write_text(
+        conf_path.read_text(encoding="utf-8") + f"\nctx_window_tokens={_TINY_CTX_WINDOW}\n",
+        encoding="utf-8",
+    )
+
+
+def _claude_project_slug(cwd: Path) -> str:
+    """claude Code transcript 디렉토리 slug — cwd 절대경로의 비영숫자를 '-' 로 치환.
+
+    실측: `/home/u/.../project_manager` → `-home-u-...-project-manager`(`/`·`_`·`.` 모두 `-`).
+    """
+    return re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+
+
+def _find_claude_transcript(dest: Path, *, not_before: float = 0.0) -> Path | None:
+    """turn1 이 남긴 실 transcript(`~/.claude/projects/<cwd-slug>/*.jsonl`) 최신본을 찾는다.
+
+    1차: cwd(=dest) slug 디렉토리 직접 glob. 2차 폴백(resolve/치환 엣지 대비): dest.name slug 로
+    끝나는 프로젝트 디렉토리 안을 훑는다. 못 찾으면 None(호출부가 명확 assert).
+
+    `not_before`(test 시작 시각): 폴백이 dest.name('adopter-claude')만으로 매칭하면 **과거 run 의
+    잔재 transcript** 를 집어 primary-miss 를 가릴 수 있다(reviewer should-fix) — 이번 run 생성분
+    (mtime >= not_before)만 후보로 스코프해 stale false-green 을 차단한다.
+
+    참고(비정리·누적): turn1 transcript 는 사용자 홈(`~/.claude/projects/<tmp-slug>/`)에 남고 이
+    테스트는 정리하지 않는다 — tmp-unique slug 라 세션 간 간섭 없음·순수 축적만(release-only 수용).
+    """
+    projects = Path.home() / ".claude" / "projects"
+    candidates = list((projects / _claude_project_slug(dest)).glob("*.jsonl"))
+    if not candidates and projects.is_dir():
+        tail = _claude_project_slug(Path(dest.name))  # 예: 'adopter-claude'
+        for pdir in projects.iterdir():
+            if pdir.is_dir() and pdir.name.endswith(tail):
+                candidates.extend(pdir.glob("*.jsonl"))
+    candidates = [p for p in candidates if p.stat().st_mtime >= not_before]
+    return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
+
+
+def _load_adopter_ctx_guard(dest: Path):
+    """adopter 가 실제로 쓰는 `.claude/ctx_guard.py` 를 로드 — 같은 machinery 로 % 판정 재현."""
+    path = dest / ".claude" / "ctx_guard.py"
+    spec = importlib.util.spec_from_file_location("adopter_ctx_guard", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _fire_stop_hook(dest: Path, stdin_payload: dict) -> subprocess.CompletedProcess:
+    """adopter 의 `.claude/ctx_stop_hook.sh` 래퍼를 하니스처럼 발화(stdin JSON·rc/stdout 그대로).
+
+    claude Code 가 훅을 부르는 방식(래퍼 exec·stdin 에 hook JSON)을 그대로 재현한다 — 래퍼가
+    인터프리터 self-resolve 후 ctx_stop_hook.py 를 exec. 엔진-측 스크립트라 LLM 아님·부모 env OK.
+    """
+    return subprocess.run(
+        [str(dest / ".claude" / "ctx_stop_hook.sh")],
+        input=json.dumps(stdin_payload),
+        cwd=str(dest), capture_output=True, text=True,
+        env={**os.environ, "PM_NONINTERACTIVE": "1"},
+    )
+
+
+@pytest.mark.release
+@pytest.mark.skipif(
+    not _RELEASE_LIVE or not shutil.which("claude"),
+    reason="release wave hard-stop — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
+           "기본 skip·사용자 트리거.",
+)
+def test_release_wave_claude_hard_stop_lockout_exception(tmp_path):
+    """실 claude transcript 로 hard-stop 이 발화하고 락아웃 예외(T-0205)가 성립하는지 라이브 단언.
+
+    레시피(PM 47 라이브 probe 실증·2026-07-02): fresh claude adopter import → local.conf 에
+    ctx_window_tokens=2000 append(극소 예산·last-wins) → **turn1: 실 claude 1콜**(비용 절제 —
+    단 1회)로 CLAUDE.md 를 읽고 요약시켜 transcript 를 인플레이션 → 실 transcript(`~/.claude/
+    projects/<cwd-slug>/*.jsonl`)가 극소 window 대비 used=100%/stop 으로 판정되는지
+    (`ctx_guard.context_used_pct_from_transcript` 로 실증) → adopter 래퍼(`.claude/
+    ctx_stop_hook.sh`)를 하니스 형상 stdin JSON + 실 transcript_path 로 발화해 단언:
+      1. PreToolUse + 새 작업(Bash `ls`) → deny JSON(`permissionDecision == "deny"`).
+      2. UserPromptSubmit + 비-핸드오프 prompt → block JSON + reason 에 `/pm-handoff` 안내 포함
+         (락아웃 계약 — 새 작업 진입 차단하되 탈출 커맨드 안내).
+      3. UserPromptSubmit + `"/pm-handoff"` → **무출력 rc0 통과**(T-0205 fix — 이 예외가 없으면
+         stop 후 전면 block 으로 핸드오프 진입 자체가 봉쇄되는 락아웃이었다·사용자 실측).
+      4. STOP marker `.done` 실박제(`.project_manager/.local/ctx-stop/<sid>.done`) — hard-stop 이
+         *실제로* 발화했다는 증거(mis-wire=가짜 게이트 방어·[[verify-real-output-not-just-review]]).
+
+    **왜 래퍼-발화 방식인가(설계 결정)**: `claude -p --continue` full-e2e 로 실제 block/통과까지
+    PM probe 로 확증됐으나 테스트엔 넣지 않는다 — turn2 LLM 콜은 추가 과금·비결정을 낳고, 래퍼-발화가
+    실 transcript 위에서 계약(deny/block/pass/marker)을 결정적으로 전부 커버한다(turn1 1콜만 라이브).
+
+    claude 는 subprocess cwd 를 존중한다(`--dir` 불요). API 과금(turn1 1콜).
+    """
+    dest = _import_adopter(tmp_path, "claude")
+    _append_tiny_ctx_window(dest)
+    test_start = time.time()  # transcript 탐색 스코프(과거 run 잔재 배제·reviewer should-fix).
+
+    # turn1 — 실 claude 1콜로 transcript 인플레이션(요약 지시). Read 도구로 진입문서를 읽게 허용.
+    turn1_prompt = (
+        "Read CLAUDE.md and the key docs it references, then write a detailed multi-paragraph "
+        "summary of how this project's board tool and PM workflow operate."
+    )
+    turn1 = subprocess.run(
+        ["claude", "-p", "--model", CLAUDE_MODEL,
+         "--allowedTools", "Bash", "Read",
+         "--dangerously-skip-permissions", turn1_prompt],
+        cwd=str(dest), capture_output=True, text=True,
+        env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
+    )
+
+    transcript = _find_claude_transcript(dest, not_before=test_start)
+    assert transcript is not None, (
+        "turn1 후 실 claude transcript 를 못 찾음 — hard-stop 판정 근거 부재.\n"
+        f"찾은 slug={_claude_project_slug(dest)}  projects={Path.home() / '.claude' / 'projects'}\n"
+        f"--- claude stdout(tail) ---\n{turn1.stdout[-1500:]}\n"
+        f"--- stderr(tail) ---\n{turn1.stderr[-800:]}"
+    )
+
+    # 실 transcript 가 극소 window 대비 used=100%/stop 으로 판정되는지(같은 machinery 로 실증).
+    ctx_guard = _load_adopter_ctx_guard(dest)
+    used = ctx_guard.context_used_pct_from_transcript(str(transcript), _TINY_CTX_WINDOW)
+    assert used == 100, (
+        f"실 transcript 가 used=100% 로 판정되지 않음(used={used}·window={_TINY_CTX_WINDOW}) — "
+        f"stop 밴드 진입 실패.\ntranscript={transcript}"
+    )
+
+    base_stdin = {"transcript_path": str(transcript), "session_id": _HARD_STOP_SID}
+
+    # (1) PreToolUse + 새 작업(Bash ls) → deny.
+    deny = _fire_stop_hook(dest, {
+        **base_stdin, "hook_event_name": "PreToolUse",
+        "tool_name": "Bash", "tool_input": {"command": "ls -la"},
+    })
+    assert deny.returncode == 0 and deny.stdout.strip(), (
+        f"PreToolUse 새 작업에 훅이 출력 없음 — deny 미발화.\nstdout={deny.stdout!r} stderr={deny.stderr!r}"
+    )
+    deny_out = json.loads(deny.stdout)
+    assert deny_out["hookSpecificOutput"]["permissionDecision"] == "deny", (
+        f"새 작업 도구가 deny 되지 않음: {deny_out}"
+    )
+
+    # (2) UserPromptSubmit + 비-핸드오프 prompt → block + reason 에 `/pm-handoff` 안내(락아웃 계약).
+    block = _fire_stop_hook(dest, {
+        **base_stdin, "hook_event_name": "UserPromptSubmit", "prompt": _NON_HANDOFF_PROMPT,
+    })
+    assert block.returncode == 0 and block.stdout.strip(), (
+        f"UserPromptSubmit 비-핸드오프에 훅이 출력 없음 — block 미발화.\n"
+        f"stdout={block.stdout!r} stderr={block.stderr!r}"
+    )
+    block_out = json.loads(block.stdout)
+    assert block_out["decision"] == "block", f"비-핸드오프 prompt 가 block 되지 않음: {block_out}"
+    assert _HANDOFF_PROMPT in block_out["reason"], (
+        f"block reason 에 탈출 커맨드({_HANDOFF_PROMPT}) 안내 누락 — 락아웃(계약 위반): {block_out['reason']!r}"
+    )
+
+    # (3) UserPromptSubmit + `/pm-handoff` → 무출력 rc0 통과(T-0205 락아웃 예외).
+    handoff = _fire_stop_hook(dest, {
+        **base_stdin, "hook_event_name": "UserPromptSubmit", "prompt": _HANDOFF_PROMPT,
+    })
+    assert handoff.returncode == 0 and handoff.stdout.strip() == "", (
+        f"stop 밴드 `/pm-handoff` prompt 가 통과(무출력)하지 않음 — 락아웃 재현(T-0205 회귀).\n"
+        f"rc={handoff.returncode} stdout={handoff.stdout!r} stderr={handoff.stderr!r}"
+    )
+
+    # (4) STOP marker `.done` 실박제 — hard-stop 이 실제로 발화했다는 증거(mis-wire 방어).
+    marker = dest / ".project_manager" / ".local" / "ctx-stop" / f"{_HARD_STOP_SID}.done"
+    assert marker.exists(), (
+        f"STOP marker {marker} 부재 — hard-stop 미발화(가짜 게이트).\n"
+        f"ctx-stop 디렉토리: {list((dest / '.project_manager' / '.local' / 'ctx-stop').glob('*')) if (dest / '.project_manager' / '.local' / 'ctx-stop').exists() else '(없음)'}"
+    )
+
+
 # ── hermetic 단위 가드 (라이브 실행 없이·@release/skipif 무관 — 매 회귀 통과) ──────────────
 # 위 라이브 테스트는 PM_ORCH_LIVE_RELEASE 미설정 시 skip 이라 CI 에선 안 돈다. 아래 단위는 라이브
 # 없이도 돌아 (1) full wave 프롬프트가 5단계 키워드를 담는지 (2) subagent_type walk 가 stream-json
@@ -575,3 +772,74 @@ def test_multirepo_wave_prompt_has_per_repo_mechanics():
     assert f"work/REPO_1/{_WAVE_FILE}" in prompt
     assert "board.py complete" in prompt
     assert "--tests-pass" in prompt and "--allow-missing-log" in prompt
+
+
+# ── marker-수집 가드 (기계·항상 실행·@release/skipif 무관 — 매 회귀 통과 · T-0190) ────────────
+# 릴리즈/출하 게이트는 `pytest -m release`·`-m shipping` 으로 라이브 서브셋을 선택한다. 마커가
+# 소실(데코레이터 삭제)·개명(다른 이름)되면 그 테스트는 selection 에서 조용히 빠지고, 게이트는
+# "0개 수집·exit5" 를 false-green 으로 삼킨다 — pytest.ini strict-marker 는 *오타* 만 잡지 *소실*
+# 은 못 잡는다. 그래서 마커 달린 테스트 함수 수를 pin 해, 마커가 사라지거나 이름이 바뀌면 이
+# 기계 가드가 즉시 red 로 잡는다(T-0159 보완). 기대값은 테스트가 늘 때 의도적으로 함께 갱신한다.
+
+_RELEASE_TEST_FILE = Path(__file__)
+_SHIPPING_TEST_FILE = Path(__file__).parent / "test_fresh_adopter_runtime_smoke.py"
+# 이 두 값은 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
+_EXPECTED_RELEASE_TESTS = 5   # 기존 4(full/multirepo × claude/opencode) + 신규 1(hard-stop).
+_EXPECTED_SHIPPING_TESTS = 6  # test_fresh_adopter_runtime_smoke 의 라이브 shipping 테스트.
+
+
+def _pytest_marker_name(decorator) -> str | None:
+    """데코레이터 AST 노드 → `pytest.mark.<name>` 의 <name> (그 형태가 아니면 None).
+
+    `@pytest.mark.release`(bare Attribute)·`@pytest.mark.skipif(...)`(Call)·
+    `@pytest.mark.parametrize(...)` 모두 처리 — Call 이면 `.func` 를 본다.
+    """
+    node = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "mark"
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "pytest"
+    ):
+        return node.attr
+    return None
+
+
+def _count_marked_tests(path: Path, marker: str) -> int:
+    """`path` 의 모듈-레벨 테스트 함수 중 `@pytest.mark.<marker>` 가 달린 개수 (AST 파싱)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return sum(
+        1
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(_pytest_marker_name(d) == marker for d in node.decorator_list)
+    )
+
+
+def test_release_marker_count_is_pinned():
+    """`release` 마커 테스트 수가 고정값과 일치 — 마커 소실/개명 시 게이트 false-green 방어.
+
+    근거(2026-07-02 실측): 릴리즈 게이트가 wrong-cwd + 잔재 tests/ 로 0개 수집·exit5 를 조용히
+    내는 false-green 이 실제 발생. `-m release` selection 에서 마커가 빠진 테스트는 조용히 안 돌고,
+    그 부재를 게이트가 못 본다. 이 수집-수 pin 이 마커 소실/개명 클래스를 red 로 세운다(T-0159 보완).
+    """
+    actual = _count_marked_tests(_RELEASE_TEST_FILE, "release")
+    assert actual == _EXPECTED_RELEASE_TESTS, (
+        f"`release` 마커 테스트 수 {actual} != 기대 {_EXPECTED_RELEASE_TESTS} — 마커 소실/개명 "
+        f"의심(게이트 selection 에서 조용히 누락될 위험). 라이브 테스트를 의도적으로 늘렸다면 "
+        f"_EXPECTED_RELEASE_TESTS 를 함께 갱신하라."
+    )
+
+
+def test_shipping_marker_count_is_pinned():
+    """`shipping` 마커 테스트 수가 고정값과 일치 — 출하 게이트의 마커 소실/개명 false-green 방어.
+
+    release 짝(`test_release_marker_count_is_pinned`)과 동형 — 근거는 그 docstring 참조. 대상은
+    출하 라이브 테스트가 사는 test_fresh_adopter_runtime_smoke.py 다(shipping 마커 단일 소재).
+    """
+    actual = _count_marked_tests(_SHIPPING_TEST_FILE, "shipping")
+    assert actual == _EXPECTED_SHIPPING_TESTS, (
+        f"`shipping` 마커 테스트 수 {actual} != 기대 {_EXPECTED_SHIPPING_TESTS} — 마커 소실/개명 "
+        f"의심. 출하 라이브 테스트를 의도적으로 늘렸다면 _EXPECTED_SHIPPING_TESTS 를 함께 갱신하라."
+    )
