@@ -937,6 +937,14 @@ _BOARD_GIT_TIMEOUT_SECONDS = 30
 # offline 과 *메시지로* 가르기 위한 고유 토큰 — 어떤 git SHA(40-hex)와도 충돌하지 않는다.
 _CLAIM_PREFETCH_DIRTY = "\0dirty"
 
+# claim prefetch 반환 sentinel — board submodule 이 detached HEAD 인 상태(네트워크 정상·dirty
+# 도 offline 도 아닌 제3의 상태·T-0203). detached 에선 `pull --rebase` 가 rc≠0 로 거부되는데,
+# 이를 offline(None) 으로 오판하지 않도록 dirty sentinel 선례대로 별도 토큰으로 가른다. dirty
+# 패턴 동형(`\0` 접두)이라 어떤 git SHA(40-hex)와도 충돌하지 않는다. best-effort sync 가
+# detached 에서 commit 을 skip 해(T-0204) board 가 dirty 로 남을 수 있으므로, prefetch 는 이
+# sentinel 을 dirty 보다 *먼저* 판정한다(detached 안내가 dirty 안내보다 우선·원인 정확).
+_CLAIM_PREFETCH_DETACHED = "\0detached"
+
 # board-git pathspec — `tickets/.drafts/`(drafts_dir()) 를 `git add`/`git status` 에서 명시
 # 제외한다(T-0198). draft 는 STATUS_DIRS 순회 밖이라 이미 안 보이지만, 이 pathspec 은 방어적
 # 이중화다 — draft 경로가 board_root 바로 아래(add -A 의 스캔 범위)에 있는 한, 어떤 향후
@@ -977,6 +985,31 @@ def _board_git_head() -> str | None:
     """board git 의 현재 HEAD SHA (없으면 None) — claim rollback 의 복귀 지점 기록용."""
     r = _board_git(["rev-parse", "HEAD"])
     return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _board_git_head_detached() -> bool:
+    """board git 의 HEAD 가 detached 인가 (T-0203·T-0204 공유 primitive).
+
+    `git symbolic-ref -q HEAD` 는 HEAD 가 브랜치를 가리키면(attached) 그 ref 를 출력하며
+    rc=0, HEAD 가 커밋을 직접 가리키면(detached) **rc=1** 이다(`-q` 로 에러 메시지 억제·locale
+    무관). detached HEAD 는 dirty 도 offline 도 아닌 제3의 상태로, prefetch 오진(T-0203)과
+    best-effort orphan 누적(T-0204)의 공통 근원이라 두 경로가 이 판정을 공유한다.
+
+    **rc=1 만 detached** (codex must-fix): gitdir 손상/조회 불능 같은 fatal 오류는 rc=128 로
+    떨어지는데 이를 detached 로 취급하면 "offline 아님·detached" 오진으로 claim 을 잘못
+    차단하고 best-effort commit 도 잘못 skip 한다 — fatal 은 False 로 흘려 기존 실패
+    경로(dirty/offline/정상 분기)가 처리하게 한다.
+
+    **fail-soft**: 예외(timeout·git 소실)·rc==0(attached)·rc==128(fatal) 모두 False — 판정
+    실패는 현행 경로(detached 가드 미발동)로 흘려보낸다. 거짓 detached 판정이 정상
+    sync/claim 을 막는 것보다, 판정 불능 시 현행 동작 유지가 보수적이다(dirty 선체크의
+    fail-soft clean 취급과 동형).
+    """
+    try:
+        r = _board_git(["symbolic-ref", "-q", "HEAD"])
+    except Exception:  # noqa: BLE001 — fail-soft: 판정 예외(timeout 등)는 현행 경로(False).
+        return False
+    return r.returncode == 1
 
 
 def _board_git_status_porcelain() -> str:
@@ -1035,8 +1068,26 @@ def _board_git_sync_best_effort(message: str) -> None:
     시도·로컬은 성공) → pull --rebase ; push 를 best-effort 로. offline/auth/conflict 등
     어떤 실패도 **작업을 차단하지 않는다** — stale 경고만 stderr 로 내고 계속한다. active
     retry 루프는 없다 — 밀린 commit 은 다음 mutation 의 pull-rebase+push 가 catch-up 한다.
+
+    **단 detached HEAD 는 예외(T-0204)**: commit *전* HEAD 상태를 점검해 detached 면
+    commit/pull/push 를 전부 skip 하고 loud 경고만 낸다. detached 위의 commit 은 orphan 으로
+    쌓이고 catch-up 이 구조적으로 불가하므로(pull --rebase 계속 실패), 침묵 누적 대신 부기를
+    보류하고 복귀를 안내한다(파일 mutation 은 이미 완료라 작업 무차단은 유지).
     """
     if not _board_git_enabled():
+        return
+    # detached HEAD 가드 (T-0204): detached 에선 commit 이 orphan 으로 쌓이고 `pull --rebase`
+    # 가 계속 실패해 "다음 mutation 이 catch-up" 약속이 *구조적으로* 성립하지 않는다(attached
+    # 브랜치의 일시 offline/conflict 만 상정한 계약). commit/pull/push 를 모두 skip 하고 loud
+    # 경고만 내 orphan 무한 누적을 원천 차단한다. 파일 mutation(rename·frontmatter)은 이미
+    # 끝난 뒤라 작업은 무차단 — git 부기만 보류한다(best-effort=작업 무차단 원칙 유지). 자동
+    # 복구(checkout/cherry-pick)는 PM 편집/브랜치 의도 침해라 하지 않고 안내만 한다(T-0203 동형).
+    if _board_git_head_detached():
+        print("  ⚠ board sync 보류 — detached HEAD. board git 부기를 건너뛴다(orphan commit "
+              "누적 방지). `git -C .project_manager/board checkout <branch>`(예: main) 로 브랜치에 "
+              "복귀하면 다음 mutation 이 일괄 commit·catch-up 한다. detached 에서 이미 쌓인 로컬 "
+              "commit 이 있으면 복귀 후 `git -C .project_manager/board cherry-pick <sha>` 로 이식.",
+              file=sys.stderr)
         return
     try:
         _board_git_stage_and_commit(message)
@@ -1057,8 +1108,14 @@ def _board_git_claim_prefetch() -> str | None:
     """claim STRICT 1단계: `pull --rebase` 로 remote 선점을 로컬에 먼저 반영한다.
 
     board 가 별도 git 이 아니면 no-op·`""`(sentinel: sync 비활성·검증 진행). 별도 git
-    이면 pull --rebase *전* board submodule 의 uncommitted 변경을 먼저 점검하고
-    (`status --porcelain`·T-0175), 그 다음 pull --rebase 를 시도한다:
+    이면 pull --rebase *전* board submodule 의 상태를 순서대로 선점검하고
+    (detached → dirty → pull), 그 다음 pull --rebase 를 시도한다:
+      - detached HEAD → `_CLAIM_PREFETCH_DETACHED` sentinel 반환 (T-0203). detached 에선
+        `pull --rebase` 가 rc≠0 로 거부되는데 이를 offline(None) 으로 오판하지 않도록 가른다
+        (네트워크는 정상). **dirty 보다 먼저** 판정한다 — best-effort sync 가 detached 에서
+        commit 을 skip 해(T-0204) board 가 dirty 로 남을 수 있는데, 그때 dirty 안내
+        ("commit 후 재시도") 는 오도이기 때문이다(detached 라 단순 commit 으론 복구 안 됨).
+        호출부가 브랜치 복귀(checkout)/cherry-pick 을 안내하고 claim 을 차단한다(anchor 없음).
       - dirty(staged/unstaged/untracked 변경 있음) → `_CLAIM_PREFETCH_DIRTY` sentinel 반환.
         `pull --rebase` 는 dirty tree 에서 "스테이징하지 않은 변경" 으로 거부되는데, 이를
         offline 으로 오판하지 않도록 *먼저* 가른다(네트워크는 정상). 발행 직후 ticket 본문을
@@ -1068,19 +1125,28 @@ def _board_git_claim_prefetch() -> str | None:
       - 실패(offline·DNS·auth·rebase conflict) → None 반환. 호출부가 이를 **offline/도달
         불가**로 보고 claim 을 명시 실패시킨다(best-effort 로 "내가 claim" 을 남기면 중복작업
         — claim 은 조율 primitive 라 remote 도달 없이는 claim 불가).
-      - pull 은 성공했으나 HEAD SHA 를 못 구함(빈 board git·detached 이상) → **None**.
+      - pull 은 성공했으나 HEAD SHA 를 못 구함(빈 board git — detached 는 위 선체크가 이미
+        걸러 정상적으론 여기 도달 안 함·fail-soft 판정실패 엣지만) → **None**.
         enabled 인데 rollback anchor 가 없으면 push 실패 시 거짓 소유를 되돌릴 수 없으므로,
         strict-claim 은 안전하게 *실패*해야 한다(로컬 변경 0·anchor 없는 진행 금지).
-    반환 의미 4분: `""` = sync 비활성(legacy·confirm early-return True) ·
+    반환 의미 5분: `""` = sync 비활성(legacy·confirm early-return True) ·
+    `_CLAIM_PREFETCH_DETACHED` = board detached HEAD(checkout 안내·offline 아님·claim 차단) ·
     `_CLAIM_PREFETCH_DIRTY` = board dirty(commit 안내·offline 아님·claim 차단) ·
     `None` = enabled-but-unreachable/no-anchor(offline·claim 명시 실패) · `<sha>` = 유효
-    anchor(정상 진행). dirty 와 offline 을 *메시지로* 가르는 게 핵심 — dirty 케이스에 offline
-    메시지가 안 나와야 한다(오판·이중출력 0).
+    anchor(정상 진행). detached·dirty·offline 을 *메시지로* 가르는 게 핵심 — 각 케이스에 다른
+    원인의 메시지가 섞여 나오면 안 된다(오판·이중출력 0).
     pull 이 winner 의 claim 을 끌어오면 working tree 에서 ticket 이 claimed/ 로 이동돼,
     뒤따르는 `find_ticket`/status 검사가 자연히 race-lost 를 표면화한다(로컬 변경 0).
     """
     if not _board_git_enabled():
         return ""  # sync 비활성 — pull 없이 검증만 진행(legacy·솔로).
+    # pull --rebase *전* detached HEAD 선체크 — detached 면 pull 이 rc≠0 로 거부되는데 이를
+    # offline 으로 오판하지 않도록 가른다(네트워크 정상·브랜치 복귀가 정답). **dirty 보다 먼저**
+    # 둔다: best-effort 가 detached 에서 commit 을 skip 해(T-0204) board 가 dirty 로 남을 수
+    # 있는데, 그때 dirty 안내("commit 후 재시도")는 오도라(detached 라 단순 commit 불가) detached
+    # 안내가 우선해야 원인 정확(순서: detached → dirty → pull·T-0204 상호작용).
+    if _board_git_head_detached():
+        return _CLAIM_PREFETCH_DETACHED
     # pull --rebase *전* dirty 선체크 — dirty 면 pull 이 "스테이징하지 않은 변경" 으로 rc≠0 인데
     # 이를 offline 으로 오판하지 않도록 먼저 가른다(네트워크 정상·commit 후 재시도가 정답).
     if _board_git_status_porcelain().strip():
@@ -1585,9 +1651,22 @@ def cmd_claim(args: argparse.Namespace) -> int:
     # claimed/ 로 이동돼 아래 status 검사가 race-lost 를 표면화한다(로컬 변경 0). pull 자체가
     # 실패(offline/도달 불가)하면 claim 불가 — best-effort 로 claim 을 남기면 중복작업이라
     # claim 만 strict offline-fail 한다. orig_head = pull 직후 SHA(claim commit rollback 지점·
-    # legacy/sync 비활성이면 ""). dirty sentinel = board uncommitted(commit 안내·offline 아님·
-    # T-0175). None = offline.
+    # legacy/sync 비활성이면 ""). detached sentinel = board detached HEAD(checkout 안내·offline
+    # 아님·T-0203). dirty sentinel = board uncommitted(commit 안내·offline 아님·T-0175). None =
+    # offline. detached 를 dirty 보다 먼저 분기한다(원인 우선순위·prefetch 순서와 일치).
     orig_head = _board_git_claim_prefetch()
+    if orig_head == _CLAIM_PREFETCH_DETACHED:
+        # board submodule 이 detached HEAD — pull --rebase 가 거부되지만 *네트워크는 정상*이다
+        # (offline 아님). detached 에선 claim 의 rollback anchor 를 확정할 수 없고 best-effort
+        # sync 가 orphan 을 쌓으므로(T-0204), offline 으로 오판하지 않고 브랜치 복귀를 안내하며
+        # claim 을 차단한다. 자동 checkout 은 PM 의 브랜치 의도를 침해해 위험하므로 안내만 한다.
+        print(
+            f"board submodule 이 detached HEAD 상태 — {args.id} claim 불가(rollback anchor 없음). "
+            f"`git -C .project_manager/board checkout <branch>`(예: main) 로 브랜치에 복귀 후 "
+            f"claim 재시도 (offline 아님·네트워크 정상). detached 에서 이미 쌓인 로컬 commit 이 "
+            f"있으면 복귀 후 `git -C .project_manager/board cherry-pick <sha>` 로 이식.",
+            file=sys.stderr)
+        return 1
     if orig_head == _CLAIM_PREFETCH_DIRTY:
         # board submodule 에 uncommitted 변경(흔히 발행 직후 ticket 본문 Edit) — pull --rebase
         # 가 거부되지만 *네트워크는 정상*이다. offline 으로 오판하지 않고 commit 후 재시도를

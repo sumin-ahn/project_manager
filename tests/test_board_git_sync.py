@@ -74,6 +74,16 @@ _TICKET_TEXT = (
 )
 
 
+def _detach_head(board_dir: Path) -> str:
+    """board git 을 detached HEAD 로 만든다 (현재 SHA 로 checkout) — 반환 = detached SHA.
+
+    `git checkout <sha>` 는 HEAD 를 브랜치가 아닌 커밋에 직접 붙인다(working tree 는 그대로·
+    clean 유지). detached HEAD 재현의 표준 수단."""
+    head = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    _git(["checkout", "-q", head], board_dir)
+    return head
+
+
 def _make_board_git(root: Path, *, remote: Path, tid: str = "T-0001") -> Path:
     """`<root>/.project_manager/board/` 에 실 board git 을 만든다 (tickets/ + open ticket + remote).
 
@@ -522,3 +532,178 @@ def test_complete_best_effort_offline_still_completes(board, tmp_path, capsys):
         "complete 가 로컬에서 done/ 으로 안 옮겨짐."
     err = capsys.readouterr().err
     assert "보류" in err or "sync" in err, f"offline complete 인데 stale 경고가 안 나옴: {err!r}"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# detached HEAD — 공유 primitive + prefetch 오진 수정(T-0203) + best-effort orphan 방지(T-0204)
+# ════════════════════════════════════════════════════════════════════════
+
+@requires_git
+def test_head_detached_false_when_on_branch(board, tmp_path):
+    """`_board_git_head_detached` — 브랜치 위(attached)면 False (공유 primitive·T-0203/0204)."""
+    bare = tmp_path / "bare-att"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    _make_board_git(tmp_path, remote=bare)  # HEAD → refs/heads/main (attached).
+    assert board._board_git_head_detached() is False, \
+        "브랜치 위인데 detached 로 오판 — attached 판정 오발."
+
+
+@requires_git
+def test_head_detached_true_when_detached(board, tmp_path):
+    """`_board_git_head_detached` — detached HEAD 면 True (symbolic-ref rc≠0)."""
+    bare = tmp_path / "bare-det"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    _detach_head(board_dir)
+    assert board._board_git_head_detached() is True, \
+        "detached HEAD 인데 감지 못 함 — symbolic-ref rc 판정 실패."
+
+
+def test_head_detached_fail_soft_on_exception(board, monkeypatch):
+    """`_board_git_head_detached` — 판정 예외(git 소실·timeout)는 fail-soft False(현행 경로)."""
+    def _boom(*a, **k):
+        raise RuntimeError("simulated git failure (timeout/소실)")
+
+    monkeypatch.setattr(board, "_board_git", _boom)
+    assert board._board_git_head_detached() is False, \
+        "판정 예외인데 True(detached) 로 떨어짐 — fail-soft 위반(정상 경로를 막을 위험)."
+
+
+def test_head_detached_rc1_only_fatal_rc128_is_false(board, monkeypatch):
+    """rc=1 만 detached — fatal(rc=128·gitdir 손상/조회 불능)은 False (codex must-fix).
+
+    rc≠0 전부를 detached 로 취급하면 fatal 오류가 "offline 아님·detached" 오진으로 claim 을
+    잘못 차단하고 best-effort commit 도 잘못 skip 한다 — fatal 은 기존 실패 경로로 흘린다.
+    """
+    import subprocess as _sp
+
+    def _fake(rc):
+        def _run(args, **k):
+            return _sp.CompletedProcess(args, rc, stdout="", stderr="")
+        return _run
+
+    monkeypatch.setattr(board, "_board_git", _fake(1))
+    assert board._board_git_head_detached() is True, "rc=1(detached)인데 False."
+    monkeypatch.setattr(board, "_board_git", _fake(128))
+    assert board._board_git_head_detached() is False, \
+        "rc=128(fatal)인데 True(detached) — fatal 을 detached 로 오진(claim 오차단·sync 오skip)."
+
+
+@requires_git
+def test_claim_prefetch_detached_branches_not_offline(board, tmp_path):
+    """detached HEAD → prefetch 가 detached sentinel 반환(≠offline None·≠dirty·≠anchor·T-0203).
+
+    detached 에선 `pull --rebase` 가 rc≠0 로 거부되는데, 이를 offline(None) 으로 오판하지 않고
+    별도 sentinel 로 가른다 — 네트워크는 정상(실 board git·remote 살아있음)."""
+    bare = tmp_path / "bare-pd"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    _detach_head(board_dir)
+
+    result = board._board_git_claim_prefetch()
+    assert result == board._CLAIM_PREFETCH_DETACHED, \
+        "detached board 인데 prefetch 가 detached sentinel 을 안 냄(offline/dirty/anchor 오판)."
+    assert result is not None, "detached 가 offline(None) 으로 오판됨 — T-0203 회귀."
+    assert result != board._CLAIM_PREFETCH_DIRTY, "detached 가 dirty sentinel 로 오판됨."
+
+
+@requires_git
+def test_claim_prefetch_detached_precedes_dirty(board, tmp_path):
+    """dirty + detached 동시 → detached sentinel 우선(순서 detached→dirty→pull·T-0204 상호작용).
+
+    best-effort 가 detached 에서 commit 을 skip 하면 board 가 dirty 로 남는다 — 그때 dirty
+    안내("commit 후 재시도")는 오도(detached 라 단순 commit 불가)이므로 detached 를 먼저 갈라야
+    원인 정확. dirty·detached 를 동시에 만들고 prefetch 가 detached 를 우선하는지 단언한다."""
+    bare = tmp_path / "bare-pdd"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    _detach_head(board_dir)
+    # detached 상태 위에 unstaged 변경 1건(best-effort commit skip 으로 dirty 잔존 모사).
+    tk = board_dir / "tickets" / "open" / "T-0001-t.md"
+    tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
+    assert board._board_git_status_porcelain().strip(), "fixture 전제: board 가 dirty 여야 함."
+
+    result = board._board_git_claim_prefetch()
+    assert result == board._CLAIM_PREFETCH_DETACHED, \
+        "dirty+detached 동시인데 detached 가 우선 안 됨 — 순서(detached→dirty) 위반·오도 안내 위험."
+
+
+@requires_git
+def test_claim_detached_prints_checkout_guidance_not_offline(board, tmp_path, capsys):
+    """detached board claim → detached 원인-정확 안내(checkout)·offline 문구 미출력·차단(rc=1)·로컬 변경 0 (T-0203 통합).
+
+    cmd_claim 이 detached sentinel 을 offline/dirty 와 별도 분기해, 사용자가 'offline' 이나
+    'commit 후 재시도' 가 아니라 '브랜치 복귀(checkout)' 안내를 본다(오판·이중출력 0). ticket 은
+    open/ 그대로(prefetch 가 로컬 미변경)."""
+    bare = tmp_path / "bare-cd"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    _detach_head(board_dir)
+
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="me", user="me"))
+    assert rc == 1, "detached board claim 이 차단 안 됨(anchor 없는데 진행)."
+    err = capsys.readouterr().err
+    assert "detached HEAD" in err and "checkout" in err, \
+        f"detached 안내 메시지가 detached/checkout 을 안 담음: {err!r}"
+    assert "offline — board 도달 불가" not in err, \
+        f"detached 케이스에 offline 메시지가 나옴(오판·이중출력): {err!r}"
+    assert "uncommitted" not in err, \
+        f"detached 케이스에 dirty(uncommitted) 메시지가 나옴(오판·이중출력): {err!r}"
+    # 로컬 변경 0: ticket 은 open/ 그대로, claimed/ 엔 없어야 한다(prefetch 가 안 건드림).
+    assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
+        "detached claim 실패인데 ticket 이 open/ 에 없음 — prefetch 가 로컬을 변경함."
+    assert not list((board_dir / "tickets" / "claimed").glob("T-0001-*.md")), \
+        "detached claim 실패인데 ticket 이 claimed/ 에 남음."
+
+
+@requires_git
+def test_best_effort_detached_skips_commit_no_orphan(board, tmp_path, capsys):
+    """detached HEAD → best-effort sync 가 commit 을 skip(orphan 0)하고 loud 경고만 낸다 (T-0204).
+
+    detached 위의 commit 은 orphan 으로 쌓이고 catch-up 이 구조적으로 불가하므로, best-effort 는
+    commit/pull/push 를 전부 skip 하고 부기를 보류한다 — HEAD 불변(새 orphan commit 0)·경고 출력.
+    파일 mutation 은 이미 끝난 뒤라 작업은 무차단(파일은 남는다)."""
+    bare = tmp_path / "bare-bed"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    _detach_head(board_dir)
+    # mutation 모사: 새 ticket 파일(정상이면 best-effort 가 commit 할 대상).
+    (board_dir / "tickets" / "open" / "T-0002-t.md").write_text(
+        _TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")
+
+    head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    count_before = _git(["rev-list", "--count", "HEAD"], board_dir).stdout.strip()
+    board._board_git_sync_best_effort("new T-0002")  # 예외 없이 리턴(무차단).
+    head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    count_after = _git(["rev-list", "--count", "HEAD"], board_dir).stdout.strip()
+
+    assert head_after == head_before, \
+        "detached 에서 best-effort 가 commit 을 냄 — orphan 누적(HEAD 전진)·T-0204 위반."
+    assert count_after == count_before, "detached 에서 commit 개수가 늘어남 — orphan 누적."
+    assert board._board_git_head_detached() is True, \
+        "best-effort 가 detached 를 자동 checkout 함 — PM 브랜치 의도 침해(안내만 해야)."
+    err = capsys.readouterr().err
+    assert "detached HEAD" in err and "보류" in err, \
+        f"detached best-effort 인데 detached 보류 경고가 안 나옴: {err!r}"
+    # 작업 무차단: mutation 파일 자체는 남아야 한다(git 부기만 보류·working tree 미접촉).
+    assert (board_dir / "tickets" / "open" / "T-0002-t.md").exists(), \
+        "detached best-effort 가 mutation 파일을 되돌림 — 작업 무차단 원칙 위반."
+
+
+@requires_git
+def test_best_effort_attached_still_commits(board, tmp_path):
+    """회귀: attached 브랜치에선 best-effort 가 종전대로 로컬 commit 을 낸다(detached 가드가 정상 경로 미차단).
+
+    T-0204 detached 가드가 attached 정상 경로를 실수로 막지 않는지 — detached 감지가 False 인
+    브랜치 상태에서 새 mutation 이 로컬 commit 으로 박제되는지 단언한다(HEAD 전진)."""
+    bare = tmp_path / "bare-att-c"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)  # attached.
+    (board_dir / "tickets" / "open" / "T-0002-t.md").write_text(
+        _TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")
+
+    head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    board._board_git_sync_best_effort("new T-0002")
+    head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    assert head_after != head_before, \
+        "attached 인데 best-effort 가 commit 을 안 함 — detached 가드가 정상 경로를 오차단."
