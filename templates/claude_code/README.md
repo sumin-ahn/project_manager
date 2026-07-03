@@ -22,7 +22,7 @@ claude_code LLM 세션이 `CLAUDE.md` 를 진입으로 PM 을 구동한다 — o
 
 PM(메인 세션)이 `Agent` 툴을 `subagent_type=developer|code-reviewer|architect|researcher` 로
 호출하면 `.claude/agents/*.md` 정의가 별도 자식 세션에서 구동된다. 표준 위임 프롬프트는
-`/pm-dev-delegate` skill. (위임 *개념*·generate≠evaluate 는 루트 README §2·§3.)
+`/pm-dev-delegate` skill. (위임 *개념*·generate≠evaluate 는 루트 README 사용법·특징 절.)
 
 ## 채택 (pm_import — 정규 경로)
 
