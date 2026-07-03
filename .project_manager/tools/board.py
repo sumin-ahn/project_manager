@@ -1286,7 +1286,7 @@ def _board_git_claim_confirm(orig_head: str | None) -> bool:
         return False
 
 
-def _active_slot_test_cmd() -> str | None:
+def _active_slot_test_cmd(session: str | None = None) -> str | None:
     """활성 worktree 슬롯(lease)에 바인딩된 test_cmd (T-0066·ADR-0014 amend·없으면 None).
 
     같은 repo 의 슬롯들이 서로 다른 빌드 타깃(HIL config 1/2/3·full vs a-only 등)을
@@ -1298,8 +1298,10 @@ def _active_slot_test_cmd() -> str | None:
     아님). 리스는 worktree_pool 이 atomic-replace(`os.replace`)로 쓰므로 **락 없는
     point-read 가 일관 스냅샷**을 본다(쓰기 경합과 분리 — 부분쓰기 장부를 못 본다).
 
-    활성 슬롯 = `session_name()` == lease.session && state=="leased" 인 첫 행. 그 행의
-    test_cmd 가 비어 있지 않으면 반환. 장부 부재/파싱실패/매칭없음/빈 test_cmd → None
+    활성 슬롯 = (`session` 인자 또는 `session_name()`) == lease.session && state=="leased" 인
+    첫 행 — `session` 명시는 M>1 슬롯 순회(ADR-0040 D2·`_regression_multi_*`)가 슬롯별 test_cmd
+    를 뽑을 때 쓴다(무명시는 현행대로 `session_name()` 해소). 그 행의 test_cmd 가 비어 있지 않으면
+    반환. 장부 부재/파싱실패/매칭없음/빈 test_cmd → None
     (침묵 폴백 — 슬롯 레이어는 *추가 우선*이지 강제 아님·호출부가 다음 레이어로 폴백).
     파싱 실패를 에러로 죽이지 않는다(fail-soft — 장부 손상이 회귀해소를 깨면 안 된다).
     """
@@ -1316,17 +1318,19 @@ def _active_slot_test_cmd() -> str | None:
     leases = data.get("leases", [])
     if not isinstance(leases, list):
         return None
-    sess = session_name()
+    sess = session if session is not None else session_name()
     for row in leases:
         if not isinstance(row, dict):
             continue
-        if row.get("session") == sess and row.get("state") == "leased":
+        # `and sess` 방어가드: sess 가 None(모호 M>1·미바인딩)일 때 손상 행(`session: null`·
+        # `state: "leased"`)에 None==None 으로 false-match 하지 않게 한다(ADR-0040 reviewer).
+        if sess and row.get("session") == sess and row.get("state") == "leased":
             cmd = row.get("test_cmd")
             return cmd or None   # 빈/None → None (이 활성 슬롯엔 바인딩 없음·다음 레이어로)
     return None
 
 
-def _active_slot_path() -> str | None:
+def _active_slot_path(session: str | None = None) -> str | None:
     """활성 worktree 슬롯(lease)의 절대 경로 (T-0122·ADR-0026·없으면 None).
 
     분리된 PM 홈(코드 없음)+worktree 모델([[ADR-0026]])에서 회귀는 활성 repo 의
@@ -1338,7 +1342,8 @@ def _active_slot_path() -> str | None:
     `slot_path()`(= `REPO / slot`)와 동일하게 board 가 import 없이 `REPO / lease["slot"]` 로 직접 구성한다.
     리스는 worktree_pool 이 atomic-replace 로 쓰므로 락 없는 point-read 가 일관 스냅샷을 본다.
 
-    활성 슬롯 = `session_name()` == lease.session && state=="leased" 인 첫 행. 그 행의
+    활성 슬롯 = (`session` 인자 또는 `session_name()`) == lease.session && state=="leased" 인
+    첫 행 — `session` 명시는 M>1 슬롯 순회(ADR-0040 D2)가 슬롯별 cwd 를 뽑을 때 쓴다. 그 행의
     `slot` 을 `REPO / slot` 절대경로로 반환. 장부 부재/파싱실패/매칭없음/빈 slot → None
     (fail-soft — 호출부가 다음 레이어[REPO]로 폴백·솔로 무변경).
     """
@@ -1355,11 +1360,12 @@ def _active_slot_path() -> str | None:
     leases = data.get("leases", [])
     if not isinstance(leases, list):
         return None
-    sess = session_name()
+    sess = session if session is not None else session_name()
     for row in leases:
         if not isinstance(row, dict):
             continue
-        if row.get("session") == sess and row.get("state") == "leased":
+        # `and sess` 방어가드 (ADR-0040 reviewer) — sess None 시 손상 행 false-match 방지.
+        if sess and row.get("session") == sess and row.get("state") == "leased":
             slot = row.get("slot")
             if not slot:
                 return None  # 빈/None slot → None (다음 레이어[REPO]로)
@@ -1367,14 +1373,16 @@ def _active_slot_path() -> str | None:
     return None
 
 
-def _test_cmd(override: str | None) -> str:
+def _test_cmd(override: str | None, session: str | None = None) -> str:
     """회귀에 쓸 테스트 명령을 해소한다 (ADR-0014 per-repo + T-0066 per-slot).
 
     우선순위:
       1. `override` (CLI `--cmd`).
       2. **활성 슬롯(lease)의 test_cmd** — worktree 리스 장부에서 이 세션의 leased 슬롯에
-         바인딩된 명령(`_active_slot_test_cmd`). 같은 repo 슬롯별 빌드변형을 수용한다
-         (T-0066·ADR-0014 amend). 장부 부재/매칭없음/빈 값이면 다음 레이어로 폴백.
+         바인딩된 명령(`_active_slot_test_cmd(session)`). 같은 repo 슬롯별 빌드변형을 수용한다
+         (T-0066·ADR-0014 amend). `session` 명시는 M>1 슬롯 순회(ADR-0040 D2)가 슬롯별로
+         호출할 때 쓴다(무명시는 `session_name()` 해소). 장부 부재/매칭없음/빈 값이면 다음
+         레이어로 폴백.
       3. **활성 repo 의 areas.md test_cmd** — 멀티-PM 모드(areas.md 존재)에서
          활성 prefix(`id_prefix()`)의 레지스트리 행에 비어 있지 않은 `test_cmd` 가
          있으면 그것. per-repo 스택(pytest/go test…)을 수용한다.
@@ -1383,7 +1391,7 @@ def _test_cmd(override: str | None) -> str:
     """
     if override:
         return override
-    slot_cmd = _active_slot_test_cmd()
+    slot_cmd = _active_slot_test_cmd(session)
     if slot_cmd:
         return slot_cmd
     prefix = id_prefix()
@@ -1394,7 +1402,7 @@ def _test_cmd(override: str | None) -> str:
     return local_config().get("test_cmd") or "pytest -q"
 
 
-def _regression_cwd(override: str | None = None) -> str:
+def _regression_cwd(override: str | None = None, session: str | None = None) -> str:
     """회귀를 실행할 작업 디렉토리를 해소한다 (ADR-0014 cwd seam).
 
     multi-PM 모델에선 코드가 활성 repo 의 **worktree** 에 있고 multi-PM 루트(`REPO`)엔 코드/테스트가
@@ -1403,13 +1411,13 @@ def _regression_cwd(override: str | None = None) -> str:
 
     해소 순서 (T-0058 seam → T-0122 주입 완성):
       - `override`(CLI `--cwd`·미래 호출자가 worktree 경로를 넘김) 가 있으면 그것,
-      - 없으면 **활성 슬롯 경로**(`_active_slot_path` — lease 장부에서 이 세션의 leased
-        슬롯 worktree 경로·worktree_pool 미import),
+      - 없으면 **활성 슬롯 경로**(`_active_slot_path(session)` — lease 장부에서 이 세션의 leased
+        슬롯 worktree 경로·worktree_pool 미import·`session` 명시는 M>1 슬롯 순회용·ADR-0040 D2),
       - 그것도 없으면 **현 `REPO` 기본** (솔로/multi-PM-미배선 — additive·솔로 무변경).
     """
     if override:
         return override
-    return _active_slot_path() or str(REPO)
+    return _active_slot_path(session) or str(REPO)
 
 
 def _interp_runs(cmd: str) -> bool:
@@ -1533,13 +1541,165 @@ def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
     return note
 
 
+# ── M>1 회귀 슬롯 해소 (ADR-0040 D2·b-1) ────────────────────────────────────
+# 훅은 `--session` 을 못 넘긴다(pre-push 훅 스크립트 무변경·check||run 체인). 명시/env/단일-lease
+# 는 그 슬롯(현행 결과 동일)이지만, 활성 슬롯이 여럿(leased ≥2·무명시)이면 **어느 세션이 push 하든**
+# 전 leased 슬롯이 green 이어야 한다 — check-first(저비용·기록 baseline)로 이미 green 인 슬롯의
+# pytest 재실행을 억제하고 stale/red 만 run, 하나라도 red 면 push 차단(ADR-0039 보호훅 all-or-
+# nothing 철학과 동형). 슬롯별 회귀 플래그를 분리해(같은 `.local/` 공유) 결과가 서로 덮이지 않게 한다.
+
+def _regression_flag_for(session: str | None) -> Path:
+    """세션(슬롯)별 회귀 플래그 경로 — M>1 all-or-nothing 순회용 (ADR-0040 D2·b-1).
+
+    `session` None(솔로·단일-lease·현행 단일-슬롯) → 공유 `REGRESSION_FLAG`(무변경·후방호환).
+    지정(M>1 슬롯 순회) → `regression-<slug>.json` 로 슬롯별 분리 — 여러 slot 이 같은 `.local/`
+    을 공유하므로 세션명 슬러그를 파일명에 담아 슬롯 결과가 서로 덮이지 않게 한다.
+    """
+    if not session:
+        return REGRESSION_FLAG
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", session)
+    return LOCAL_DIR / f"regression-{slug}.json"
+
+
+def _regression_slot_state(session: str, cwd: str) -> tuple[str, int | None]:
+    """슬롯별 회귀 플래그를 읽어 상태를 판정 — (`'green'|'stale'|'red'|'missing'`, rc).
+
+    all-or-nothing check-first 의 저비용 판정 (pytest 미실행): per-slot 플래그
+    (`_regression_flag_for(session)`)를 읽고 그 슬롯 worktree HEAD(`_git_head_at(cwd)`·각 슬롯은
+    독립 worktree·독립 commit)와 대조한다. green(HEAD 일치·pass)이면 재실행 skip, 그 외
+    (stale=HEAD 불일치·red=fail·missing=기록없음/손상)는 run 대상. 손상 플래그는 missing 강등
+    (fail-soft — 장부 손상이 회귀해소를 깨면 안 된다·`_regression_slot_state` 는 재실행을 유도).
+    """
+    flag = _regression_flag_for(session)
+    if not flag.exists():
+        return ("missing", None)
+    try:
+        data = json.loads(flag.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ("missing", None)
+    if not isinstance(data, dict):
+        return ("missing", None)
+    if data.get("head") != _git_head_at(cwd):
+        return ("stale", data.get("rc"))
+    if data.get("status") != "pass":
+        return ("red", data.get("rc"))
+    return ("green", data.get("rc"))
+
+
+def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> int:
+    """한 슬롯의 회귀를 pytest 로 측정·기록(슬롯별 플래그) — rc 반환 (ADR-0040 D2).
+
+    단일-슬롯 run 본체와 동형(같은 env·shell·인코딩·rc0 만 pass·rc5 vacuous 근절)이되,
+    cwd/test_cmd/플래그/HEAD 를 슬롯별로 해소한다. 스코프(touches)는 훅 M>1 경로엔 없으므로
+    full 만(플래그는 push 게이트 대상). 플래그 키는 그 슬롯 worktree HEAD 다(`_git_head_at`).
+    """
+    cmd = " ".join(p for p in (_test_cmd(args.cmd, session=session),
+                               _quarantine_args()) if p)
+    print(f"regression[{session}]: $ {cmd}  (cwd={cwd})")
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    rc = subprocess.run(cmd, shell=True, cwd=cwd, env=env).returncode
+    status = "pass" if rc == 0 else "fail"
+    head = _git_head_at(cwd)
+    note = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
+    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(_regression_flag_for(session),
+                       {"head": head, "status": status, "rc": rc, "scope": "full",
+                        "session": session, "ts": now_utc()})
+    print(f"regression[{session}]: {status} (rc={rc}{note}) @ {head[:8] or '?'}")
+    return rc
+
+
+def _slot_state_label(session: str, state: str, rc: int | None) -> str:
+    """미검증 슬롯 라벨 — `<session>=<state>(rc=N·수집0)` (rc None 이면 상태만·codex sug).
+
+    check 실패 메시지에 슬롯별 rc 를 실어 단일-슬롯 진단과 균질화한다 — 특히 rc5(수집 0)는
+    테스트 루트/cwd 결함 신호이므로 힌트를 붙인다(`_regression_slot_state` 가 이미 rc 반환·저비용).
+    """
+    if rc is None:
+        return f"{session}={state}"
+    hint = "·수집0" if rc == 5 else ""
+    return f"{session}={state}(rc={rc}{hint})"
+
+
+def _regression_multi_check(sessions: list[str]) -> int:
+    """M>1 check — 전 leased 슬롯이 green(HEAD 일치·pass)이어야 rc0 (all-or-nothing).
+
+    미검증(stale/red/missing) 슬롯이 하나라도 있으면 rc1 로 push 를 차단하고 *어느 슬롯이
+    어떤 상태(+rc)*인지 명시한다(디버깅 동선). pytest 는 안 돌린다(check = 저비용 baseline 검증).
+    """
+    not_green: list[str] = []
+    for session in sessions:
+        cwd = _active_slot_path(session) or str(REPO)
+        state, rc = _regression_slot_state(session, cwd)
+        if state != "green":
+            not_green.append(_slot_state_label(session, state, rc))
+    if not_green:
+        print(f"regression(M={len(sessions)}): 미검증 슬롯 [{', '.join(not_green)}] "
+              "— `regression run` 필요 (push 차단).", file=sys.stderr)
+        return 1
+    print(f"regression(M={len(sessions)}): 전 슬롯 green ✓ [{', '.join(sessions)}]")
+    return 0
+
+
+def _regression_multi_run(args: argparse.Namespace, sessions: list[str]) -> int:
+    """M>1 run — 슬롯별 check-first(green skip)·stale/red 만 pytest·하나라도 red 면 rc1.
+
+    all-or-nothing (ADR-0040 D2·b-1·ADR-0039 보호훅 철학과 동형): 어느 세션이 push 하든 전
+    leased 슬롯이 green 이어야 통과. check-first 로 이미 green(기록 baseline·HEAD 일치)인 슬롯의
+    pytest 재실행을 억제(비용 억제)하고, 실패 슬롯(red)을 종합 메시지에 명시한다(디버깅 동선).
+    """
+    skipped: list[str] = []
+    ran: list[str] = []
+    red: list[str] = []
+    for session in sessions:
+        cwd = _active_slot_path(session) or str(REPO)
+        state, _rc = _regression_slot_state(session, cwd)
+        if state == "green":
+            skipped.append(session)
+            continue
+        # stale/red/missing → 이 슬롯 pytest 실행·슬롯별 플래그 갱신.
+        ran.append(session)
+        if _regression_run_slot(args, session, cwd) != 0:
+            red.append(session)
+    summary = (f"regression(M={len(sessions)}): "
+               f"skip(green) {len(skipped)} · run {len(ran)}")
+    if red:
+        print(f"{summary} · RED [{', '.join(red)}] — push 차단.", file=sys.stderr)
+        return 1
+    print(f"{summary} · 전 슬롯 green ✓")
+    return 0
+
+
 def cmd_regression(args: argparse.Namespace) -> int:
-    """run = 측정+기록(HEAD 키), check = HEAD 가 green 인지 (pre-push 훅이 호출)."""
+    """run = 측정+기록(HEAD 키), check = HEAD 가 green 인지 (pre-push 훅이 호출).
+
+    M>1(leased ≥2) 홈은 전 leased 슬롯 all-or-nothing 으로 해소한다 (ADR-0040 D2·b-1): 훅은
+    --session 을 못 넘기므로 활성 슬롯이 여럿이면 슬롯별 check-first(저비용) 후 stale/red 만
+    run 하며 하나라도 red 면 push 를 차단한다 (ADR-0039 보호훅 all-or-nothing 철학과 동형).
+
+    **보호 게이트는 ambient env(PM_SESSION_NAME/CLAUDE_SESSION_NAME)로 좁혀지면 안 된다**
+    (codex): 훅 프로세스가 env 세션을 상속하면 "어느 세션이 push 하든 전 leased 슬롯 green"이
+    조용히 자기 슬롯 단일 경로로 우회된다. 그래서 M>1 디스패치 판정은 **CLI `--session` 명시**
+    (문서화된 의도적 조작)만 단일-슬롯으로 좁히고 env 는 이 판정에서 제외한다 — 단일-lease/솔로/
+    명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로 유효.)
+    """
+    # 디스패치 판정은 CLI --session(명시) 만 본다 — env 세션은 M>1 게이트를 조용히 좁히므로
+    # 여기선 제외(위 docstring·codex). explicit 없고 leased ≥2 면 env 유무 무관 전-슬롯 순회.
+    explicit_session = getattr(args, "session", None)
+    if explicit_session is None:
+        leased = _leased_sessions()
+        if len(leased) >= 2:
+            slots = sorted(set(leased))
+            return (_regression_multi_run(args, slots) if args.action == "run"
+                    else _regression_multi_check(slots))
+    # 단일-슬롯 (명시 --session·단일-lease·솔로·env<M2) — 현행 경로. sess 는 슬롯 test_cmd/cwd
+    # threading 용(env 유효·위에서 M>1 만 걸러냄).
+    sess = session_name(explicit_session)
     if args.action == "run":
         touches = (_ticket_touches(args.ticket) if getattr(args, "ticket", None)
                    else (args.touches.split(",") if getattr(args, "touches", None) else []))
         scoped = bool(touches)
-        parts = [_test_cmd(args.cmd)]
+        parts = [_test_cmd(args.cmd, session=sess)]
         if scoped:
             parts.append(_scope_args(touches))
         parts.append(_quarantine_args())
@@ -1551,7 +1711,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
         env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
         # cwd seam (ADR-0014) — multi-PM 모델은 활성 repo 의 worktree 에서 돌아야 한다.
         # `--cwd` 주입(미래·T-0060 bootstrap) 시 그 경로, 미주입(솔로/multi-PM-미배선)은 REPO.
-        cwd = _regression_cwd(getattr(args, "cwd", None))
+        cwd = _regression_cwd(getattr(args, "cwd", None), session=sess)
         rc = subprocess.run(cmd, shell=True, cwd=cwd, env=env).returncode
         # pass = rc0 한정. pytest rc5(수집 0·"no tests ran")는 fail — 수집 0 은 green 이
         # 아니라 테스트 루트/cwd 결함이다(T-0220). 이전엔 rc5 를 pass 로 삼켜 훅 세션
@@ -4507,6 +4667,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=["run", "check"])
     p.add_argument("--cmd", help="테스트 명령 (기본: 활성 repo areas.md test_cmd → local.conf test_cmd → pytest -q)")
     p.add_argument("--cwd", help="회귀 실행 cwd (ADR-0014 seam·기본 REPO; multi-PM은 활성 repo worktree·T-0060 배선)")
+    p.add_argument("--session", help="명시 슬롯 세션 (이 슬롯만 회귀·M>1 홈에서 무명시면 전 leased 슬롯 all-or-nothing·ADR-0040 D2)")
     p.add_argument("--ticket", help="이 ticket 의 touches 로 스코프 (dev 빠른 루프·advisory)")
     p.add_argument("--touches", help="comma-separated 파일로 스코프 (advisory)")
     p.set_defaults(fn=cmd_regression)

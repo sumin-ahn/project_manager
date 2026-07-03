@@ -171,7 +171,8 @@ def test_record_rc_nonzero_records_fail(live_board, monkeypatch, capsys):
 def test_record_uses_regression_cwd_seam(live_board, monkeypatch):
     """record 의 pytest 는 `_regression_cwd`(활성 slot worktree)에서 돈다 — 회귀와 동일 seam."""
     worktree = str(live_board._proj / "work" / "slot1")
-    monkeypatch.setattr(live_board, "_active_slot_path", lambda: worktree)
+    # `_active_slot_path(session=None)` 시그니처(ADR-0040 D2) — 선택 인자 수용.
+    monkeypatch.setattr(live_board, "_active_slot_path", lambda session=None: worktree)
     fake = _FakeRun(0, "7 passed, 812 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     live_board.cmd_livegate(_rec_args())
