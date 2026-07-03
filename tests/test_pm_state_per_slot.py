@@ -463,14 +463,14 @@ _SESSION_SECTION = (
 
 def _make_handoff_production(
     hf, *, with_legacy: bool = False, slot_seeded: bool = False,
-    run_pytest_fn=None, run_shipping_test_fn=None,
+    run_pytest_fn=None,
 ):
     """명시 pm_state_file 주입 *없는*(프로덕션) PmHandoff — run() 이 per-slot 해소.
 
     단일 self-host 형상(areas+leases)을 monkeypatch 된 tmp REPO 에 깐다. log/playbook 은
     tmp(REPO 추종). subprocess 는 결정론 DI. with_legacy=True 면 legacy pm_state 를 미리
     seed(마이그레이션 케이스), slot_seeded=True 면 slot 경로를 미리 seed(이미 per-slot).
-    run_pytest_fn/run_shipping_test_fn 주입 시 게이트 red 케이스(중단 시 무접촉 가드)에 쓴다.
+    run_pytest_fn 주입 시 기계회귀 red 케이스(중단 시 무접촉 가드)에 쓴다.
     """
     tmp = hf._tmp
     _make_single_self_host(tmp)
@@ -494,7 +494,6 @@ def _make_handoff_production(
         run_pytest_fn=run_pytest_fn or
             (lambda: (_ for _ in ()).throw(AssertionError("skip_pytest 인데 호출"))),
         run_git_fn=lambda args: (0, ""),
-        run_shipping_test_fn=run_shipping_test_fn,
         log_file=log_file,
         pm_playbook_file=playbook_file,
         # pm_state_file 미주입 → per-slot 해소(프로덕션 경로).
@@ -599,11 +598,12 @@ def test_run_dry_run_does_not_migrate_legacy(hf):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 트랜잭션 계약 — 중단 게이트(회귀·출하) red → legacy 미이동 (codex must-fix)
+# 트랜잭션 계약 — 중단 게이트(기계회귀) red → legacy 미이동 (codex must-fix)
 # ══════════════════════════════════════════════════════════════════════════
 #
-# 마이그레이션(legacy→slot replace())이 *모든 중단 게이트 통과 후*·pm_state 첫 접촉 직전에만
-# 일어나야 한다 — 회귀 red·shipping red 로 중단되면 pm_state 무접촉(legacy 그대로·slot 미생성).
+# 마이그레이션(legacy→slot replace())이 *중단 게이트 통과 후*·pm_state 첫 접촉 직전에만
+# 일어나야 한다 — 기계회귀 red 로 중단되면 pm_state 무접촉(legacy 그대로·slot 미생성).
+# (출하 step 은 ADR-0039 D4 로 비차단 surface 화 — 더는 중단 게이트가 아니다.)
 
 _PYTEST_RED = "1 passed, 1 failed in 0.1s"  # is_pytest_green → False(중단).
 _PYTEST_GREEN = "2 passed in 0.1s"          # is_pytest_green → True(통과).
@@ -626,41 +626,16 @@ def test_run_pytest_red_does_not_migrate_legacy(hf):
     assert not _slot_path(hf).exists(), "회귀 red 중단인데 slot 경로가 생성됐다."
 
 
-def test_run_shipping_red_does_not_migrate_legacy(hf):
-    """출하 게이트 red 로 run() 중단 → legacy 미이동·slot 경로 미생성(무접촉 계약).
-
-    회귀는 green(통과) 후 출하 step 에서 red(rc∉{0,5}) → 중단. shipping_test_override=True 로
-    강제 발동시키고 run_shipping_test_fn red stub 으로 출하 게이트만 red 를 만든다.
-    """
-    inst = _make_handoff_production(
-        hf, with_legacy=True,
-        run_pytest_fn=lambda: (0, _PYTEST_GREEN),       # 회귀 green(통과).
-        run_shipping_test_fn=lambda worktree: (1, "shipping red"),  # 출하 red(rc=1).
-    )
-    legacy = _legacy(hf)
-    assert legacy.exists()
-
-    rc = inst.run(
-        session_num=4, wave_summary="신규", dry_run=False, skip_pytest=False,
-        shipping_test_override=True,  # 출하 테스트 강제 발동.
-    )
-    assert rc == 1, "출하 게이트 red → 핸드오프 중단."
-    # 회귀는 green 이지만 출하 red 로 중단 — pm_state 첫 접촉 전이라 legacy 무접촉.
-    assert legacy.exists(), "출하 red 중단인데 legacy 가 이동됐다(트랜잭션 계약 위반)."
-    assert legacy.read_text(encoding="utf-8") == _SESSION_SECTION, "legacy 내용 불변."
-    assert not _slot_path(hf).exists(), "출하 red 중단인데 slot 경로가 생성됐다."
-
-
 def test_run_gates_green_migrates_then_writes_per_slot(hf):
-    """게이트(회귀·출하) green → 통과 후 legacy→slot 이동 + slot 에 sliding window 기록.
+    """기계회귀 green + 출하 surface 무변경 → 통과 후 legacy→slot 이동 + slot 에 기록.
 
-    test_run_migrates_legacy_then_writes_per_slot 의 *게이트 실행* 변형 — skip_pytest=False·
-    회귀 green·출하 skip(override False·미push diff 없음 stub)로 게이트를 실제 통과시킨다.
+    test_run_migrates_legacy_then_writes_per_slot 의 *회귀 실행* 변형 — skip_pytest=False·
+    회귀 green·출하 surface 무변경(git stub (0,"") → 출하 변경 없음·비차단)로 통과시킨다.
     """
     inst = _make_handoff_production(
         hf, with_legacy=True,
         run_pytest_fn=lambda: (0, _PYTEST_GREEN),  # 회귀 green.
-        # run_shipping_test_fn 미주입 — git stub 이 (0,"") 라 출하 변경 없음 → skip(발동 안 함).
+        # git stub 이 (0,"") 라 미push diff 출하 변경 없음 → surface "출하 변경 없음"(비차단).
     )
     legacy = _legacy(hf)
     assert legacy.exists()

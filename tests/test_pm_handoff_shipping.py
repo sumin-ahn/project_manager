@@ -1,25 +1,29 @@
-"""pm_handoff 출하 테스트 step 단위테스트 (T-0151·spike harness-test-two-level-gate §3.3).
+"""pm_handoff 출하 변경 surface 단위테스트 (ADR-0039 D4·spike live-gate-redesign-2026-07-03).
 
-push 직전(핸드오프) 1회 출하 테스트 step 을 검증한다 — **미push diff 가 출하경로를
-건드릴 때만** `pytest -m shipping` 을 돌려 red 면 핸드오프·push 를 차단(자동·enforced).
-설계 세션(출하변경 0)은 자동 skip.
+핸드오프 [1b/7] step 은 **비차단 surface** 다 — 라이브 테스트를 돌리지 않고 미push diff ∩
+SHIPPING_GLOBS 를 분류해 미검증 출하 변경이 있으면 "릴리즈 전 라이브(release wave) 필요"
+1줄을 출력하고 핸드오프를 계속한다(rc 무영향). 라이브 LLM 검증(실 하네스 smoke)은
+릴리즈(① main 머지) 단일 지점(release wave)으로 모았다(ADR-0039). 구 차단 게이트
+(`_fire_shipping_test`·`_run_shipping_test`·`--shipping-test`/`--no-shipping-test`·outer
+timeout)는 폐지됐다 — 분류기(`_shipping_paths_in_pending_push`·`SHIPPING_GLOBS`)만 존치
+(surface 의 기반·향후 게이트 복원 가능성의 가역 지점).
 
-모두 hermetic — 실 pytest/LLM 미실행. git diff 는 결정론 `git_runner` stub 으로,
-출하 테스트 실행은 `run_shipping_test_fn` DI seam 으로 갈아끼운다(실 subprocess 미진입).
+모두 hermetic — 실 pytest/LLM 미실행. git diff 는 결정론 `git_runner` stub 으로 갈아끼운다.
 
 커버:
-  - 분류 3-way (`_shipping_paths_in_pending_push`): 출하변경→발동 / 비출하→skip / baseline
-    해소불가·diff실패·예외→ambiguous(has_unknown).
-  - run() 통합: 발동(green→계속) / skip / ambiguous→surface(비실행) / abort-on-red(rc 1).
-  - escape: --shipping-test 강제발동 · --no-shipping-test 강제skip (분류 무시).
-  - sensitivity: 가드 무력화(red 를 무시) 시 테스트가 실패하는지(non-vacuous).
+  - 분류 3-way (`_shipping_paths_in_pending_push`): 출하변경→hits / 비출하→skip / baseline
+    해소불가·diff실패·예외→ambiguous(has_unknown). (존치 분류기·불변)
+  - run() surface 3-way: hits→경고 1줄·비차단 / unknown→가능성 경고 / 무변경→"출하 변경 없음".
+  - 비차단: 출하 변경이 있어도 rc 0 + log skeleton append(중단 안 함). dry-run/회귀-red 경로.
+  - 폐지: `--shipping-test`/`--no-shipping-test` 인자 에러 · 차단 심볼 부재.
+  - 정합 가드: SHIPPING_GLOBS ↔ engine.manifest (존치 분류기·drift 차단).
+  - sensitivity: 분류기 가드 무력화 시 테스트가 실패하는지(non-vacuous).
 
 도구는 패키지가 아니므로 importlib 동적 로드 (test_handoff_trigger 관용구).
 """
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -93,7 +97,7 @@ def _git_stub(*, baseline_ok: bool = True, diff_paths: list[str] | None = None,
     return _runner
 
 
-# ── _shipping_paths_in_pending_push: 분류 3-way ───────────────────────────────
+# ── _shipping_paths_in_pending_push: 분류 3-way (존치 분류기·불변) ─────────────
 
 
 def test_shipping_paths_fires_on_engine_change(hf):
@@ -165,14 +169,14 @@ _NON_SHIPPING_TEMPLATE_LOOKALIKES = (
 
 
 def test_shipping_paths_skips_template_lookalikes(hf):
-    """정확 경로 1:1 글롭이라 manifest 갭과 동명인 *비-출하* 파일은 발동 안 함 (must-fix 1).
+    """정확 경로 1:1 글롭이라 manifest 갭과 동명인 *비-출하* 파일은 hits 안 잡힘 (must-fix 1).
 
     포괄 글롭(`**/_template.md`·`**/*.template.md`·`**/.gitignore`)이었다면 tests fixture·②
     wiki ADR 디렉토리의 동명 파일까지 false-fire 했을 것 — 정확 경로로 좁힌 뒤엔 skip.
     """
     runner = _git_stub(diff_paths=list(_NON_SHIPPING_TEMPLATE_LOOKALIKES))
     hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
-    assert hits == []  # 정확 경로 글롭이라 동명 비-출하는 미발동.
+    assert hits == []  # 정확 경로 글롭이라 동명 비-출하는 미매칭.
     assert unknown is False
 
 
@@ -224,11 +228,11 @@ def test_shipping_paths_failsoft_on_exception(hf):
 # ── must-fix 1: 미커밋(working tree·untracked) 출하 변경 감지 (T-0151) ───────────
 #
 # 핸드오프 [7/7] 은 핸드오프 *후* git commit 을 안내하므로 정상 시점엔 출하 변경이
-# 커밋되지 않은 working tree·untracked 에 있다. 커밋된-미push 만 보면 게이트 미발동.
+# 커밋되지 않은 working tree·untracked 에 있다. 커밋된-미push 만 보면 분류 미탐지.
 
 
 def test_shipping_paths_fires_on_uncommitted_tracked(hf):
-    """staged/unstaged tracked 출하파일(diff HEAD) → 발동·unknown False (커밋 안 됐어도)."""
+    """staged/unstaged tracked 출하파일(diff HEAD) → hits·unknown False (커밋 안 됐어도)."""
     runner = _git_stub(uncommitted_paths=[".project_manager/tools/pm_handoff.py", "tests/x.py"])
     hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == [".project_manager/tools/pm_handoff.py"]  # tests/ 는 비-출하 제외.
@@ -236,7 +240,7 @@ def test_shipping_paths_fires_on_uncommitted_tracked(hf):
 
 
 def test_shipping_paths_fires_on_untracked_new_file(hf):
-    """untracked 신규 출하파일(ls-files --others) → 발동·unknown False."""
+    """untracked 신규 출하파일(ls-files --others) → hits·unknown False."""
     runner = _git_stub(untracked_paths=[".claude/agents/new_agent.md", "scratch.txt"])
     hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == [".claude/agents/new_agent.md"]  # scratch.txt 는 비-출하.
@@ -244,10 +248,10 @@ def test_shipping_paths_fires_on_untracked_new_file(hf):
 
 
 def test_shipping_paths_fires_on_uncommitted_even_when_baseline_unresolved(hf):
-    """baseline 해소불가여도 미커밋 출하 hit 이 있으면 **발동**(그 변경은 확실히 올라감).
+    """baseline 해소불가여도 미커밋 출하 hit 이 있으면 **hits 확정**(그 변경은 확실히 올라감).
 
     must-fix 1 의 ambiguous 정련 — uncommitted/untracked 출하 hit 이 있으면 커밋된-미push
-    경계 불명(baseline_ok=False)과 무관하게 발동·unknown False.
+    경계 불명(baseline_ok=False)과 무관하게 hits·unknown False.
     """
     runner = _git_stub(
         baseline_ok=False,
@@ -255,7 +259,7 @@ def test_shipping_paths_fires_on_uncommitted_even_when_baseline_unresolved(hf):
     )
     hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == ["templates/opencode/AGENTS.md"]
-    assert unknown is False  # 발동 확정 → ambiguous 아님.
+    assert unknown is False  # hit 확정 → ambiguous 아님.
 
 
 def test_shipping_paths_unions_committed_uncommitted_untracked(hf):
@@ -304,11 +308,12 @@ def test_shipping_paths_unknown_when_ls_files_fails(hf):
 # ── run() 통합 fixture (hermetic·DI) ──────────────────────────────────────────
 
 
-def _make_handoff(hf, tmp_path: Path, *, git_runner, shipping_test_fn):
-    """출하 테스트 + git_runner 를 DI 한 PmHandoff 를 만든다 (실 파일/회귀 미접촉).
+def _make_handoff(hf, tmp_path: Path, *, git_runner):
+    """git_runner 를 DI 한 PmHandoff 를 만든다 (실 파일/회귀 미접촉).
 
     회귀(step 1)는 green stub. log/playbook 은 tmp, pm_state 는 부재 경로(3·4 skip).
-    git_runner 는 출하-변경 분류용 diff 응답. shipping_test_fn 은 출하 테스트 실행 stub.
+    git_runner 는 출하-변경 분류용 diff 응답. ADR-0039 D4 이후 [1b/7] 은 비차단 surface 라
+    출하 테스트 실행 seam(구 run_shipping_test_fn)은 없다.
     """
     log_file = tmp_path / "current.md"
     playbook_file = tmp_path / "pm_playbook.md"
@@ -318,7 +323,6 @@ def _make_handoff(hf, tmp_path: Path, *, git_runner, shipping_test_fn):
     inst = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "120 passed in 1.0s\n"),
         run_git_fn=git_runner,
-        run_shipping_test_fn=shipping_test_fn,
         log_file=log_file,
         pm_playbook_file=playbook_file,
         pm_state_file=missing_state,
@@ -326,291 +330,125 @@ def _make_handoff(hf, tmp_path: Path, *, git_runner, shipping_test_fn):
     return inst
 
 
-def _shipping_test_recorder(rc: int, out: str):
-    """출하 테스트 실행을 기록하는 stub. .calls 로 호출 여부·worktree 확인."""
-    calls: list[str] = []
-
-    def _fn(worktree: str) -> tuple[int, str]:
-        calls.append(worktree)
-        return rc, out
-
-    _fn.calls = calls  # type: ignore[attr-defined]
-    return _fn
+# ── run() 출하 surface 3-way (비차단·ADR-0039 D4) ──────────────────────────────
+#
+# [1b/7] 은 라이브 테스트를 돌리지 않고 미push diff ∩ SHIPPING_GLOBS 를 분류해 미검증 출하
+# 변경을 1줄 surface 한다 — 핸드오프를 차단하지 않는다(rc 무영향). 라이브 LLM 검증은
+# 릴리즈(① main 머지) 단일 지점(release wave)으로 모았다(ADR-0039).
 
 
-# ── run() 3-way + abort-on-red + escape ───────────────────────────────────────
-
-
-def test_run_fires_shipping_test_on_shipping_change(hf, tmp_path):
-    """출하 변경(엔진) → 출하 테스트 발동·green → rc 0 (계속)."""
-    gate = _shipping_test_recorder(0, "3 passed in 4.0s\n")
+def test_run_surfaces_shipping_change_nonblocking(hf, tmp_path, capsys):
+    """출하 변경(엔진) → "미검증 출하 변경 N파일 … release wave" 1줄 surface·rc 0(비차단)."""
     inst = _make_handoff(
         hf, tmp_path,
-        git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        shipping_test_fn=gate,
+        git_runner=_git_stub(diff_paths=[
+            ".project_manager/tools/pm_handoff.py", "tests/test_x.py",
+        ]),
     )
+    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    assert rc == 0  # 비차단 — 출하 변경이 있어도 핸드오프 진행.
+    out = capsys.readouterr().out
+    assert "미검증 출하 변경" in out
+    assert "1파일" in out            # tests/ 는 비-출하 제외 → 1파일.
+    assert "release wave" in out
+    assert "ADR-0039" in out
+
+
+def test_run_surfaces_ambiguous_nonblocking(hf, tmp_path, capsys):
+    """baseline 해소불가(분류불명) → "가능성 … 분류 불명 … release wave" surface·rc 0."""
+    inst = _make_handoff(hf, tmp_path, git_runner=_git_stub(baseline_ok=False))
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0
-    assert len(gate.calls) == 1  # 발동됨.
+    out = capsys.readouterr().out
+    assert "분류 불명" in out
+    assert "release wave" in out
+    assert "ADR-0039" in out
 
 
-def test_run_aborts_on_shipping_test_red(hf, tmp_path):
-    """출하 변경 + 출하 테스트 red(failed) → 핸드오프 중단 rc 1."""
-    gate = _shipping_test_recorder(1, "1 failed, 2 passed in 4.0s\n")
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=["templates/opencode/AGENTS.md"]),
-        shipping_test_fn=gate,
-    )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
-    assert rc == 1  # 차단.
-    assert len(gate.calls) == 1
-
-
-def test_run_skips_shipping_test_on_non_shipping(hf, tmp_path):
-    """비-출하 변경(spike/ADR/tests) → 출하 테스트 미발동 (skip)·rc 0."""
-    gate = _shipping_test_recorder(0, "")
+def test_run_reports_no_shipping_change(hf, tmp_path, capsys):
+    """비-출하 변경(spike/ADR/tests) → "출하 변경 없음" skip 사유·rc 0·경고 미출력."""
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[
             ".project_manager/wiki/raw/spikes/s.md", "tests/test_x.py",
         ]),
-        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0
-    assert gate.calls == []  # 미발동.
-
-
-def test_run_surfaces_ambiguous_without_firing(hf, tmp_path, capsys):
-    """baseline 해소불가(ambiguous) → 출하 테스트 비실행 + PM surface 안내·rc 0."""
-    gate = _shipping_test_recorder(0, "")
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(baseline_ok=False),
-        shipping_test_fn=gate,
-    )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
-    assert rc == 0
-    assert gate.calls == []  # ambiguous 는 기본 비실행.
     out = capsys.readouterr().out
-    assert "분류 불명" in out
-    assert "--shipping-test" in out and "--no-shipping-test" in out  # PM 결정 유도.
+    assert "출하 변경 없음" in out
+    assert "미검증 출하 변경" not in out  # 경고 미출력.
 
 
-def test_run_failsoft_skip_when_shipping_test_no_tests(hf, tmp_path):
-    """라이브 미가용(0개 selected·rc 5·failed 없음) → green 처리 → fail-soft 통과 rc 0."""
-    gate = _shipping_test_recorder(5, "no tests ran in 0.1s\n")
+def test_run_shipping_surface_never_blocks_handoff(hf, tmp_path):
+    """출하 변경이 있어도 [2/7] log skeleton 이 append 된다 — surface 는 절대 중단 안 함(비차단).
+
+    구 차단 게이트라면 여기서 return 1 로 log 미접촉이었다. 비차단 확증: 출하 변경 hit 이
+    있는데도 핸드오프가 진행돼 log skeleton 이 실제로 써진다.
+    """
     inst = _make_handoff(
         hf, tmp_path,
-        git_runner=_git_stub(diff_paths=[".project_manager/tools/board.py"]),
-        shipping_test_fn=gate,
+        git_runner=_git_stub(diff_paths=["templates/opencode/AGENTS.md"]),
     )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
-    assert rc == 0  # rc 5(no tests) 통과 (CI green 불변·게이트 강제 안 함).
-    assert len(gate.calls) == 1
-
-
-def test_run_passes_when_shipping_test_all_passed_rc0(hf, tmp_path):
-    """rc 0(all passed·또는 skipped-only) → 통과 rc 0 (fail-soft 통과 보존)."""
-    gate = _shipping_test_recorder(0, "2 passed, 1 skipped in 4.0s\n")
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=[".project_manager/tools/board.py"]),
-        shipping_test_fn=gate,
-    )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = inst.run(session_num=7, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0
-    assert len(gate.calls) == 1
+    assert "PM 7차" in (tmp_path / "current.md").read_text(encoding="utf-8")
 
 
-# ── must-fix 2: collection/import/internal error 등 비-0(≠5)도 red 중단 (T-0151) ──
-#
-# 이전 `re.search("N failed")` 판정은 "failed" 요약이 없는 rc 2/3/4·collection error 를
-# silently green 처리했다. rc∈{0,5} 만 통과로 좁혀 그 외 비-0 은 모두 red 중단.
-
-
-def test_run_aborts_on_collection_error_no_failed_summary(hf, tmp_path):
-    """collection error("1 error"·rc 2·"failed" 요약 없음) → 핸드오프 중단 rc 1."""
-    gate = _shipping_test_recorder(2, "ERROR collecting test_live.py\n1 error in 0.3s\n")
+def test_run_dry_run_skips_shipping_surface(hf, tmp_path, capsys):
+    """--dry-run → 출하 surface 분류·출력 자체 skip (미리보기·git 비호출)."""
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        shipping_test_fn=gate,
-    )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
-    assert rc == 1  # "failed" 없어도 비-0(≠5) → red 중단.
-    assert len(gate.calls) == 1
-
-
-def test_run_aborts_on_interrupted_rc2(hf, tmp_path):
-    """rc 2(interrupted) → 핸드오프 중단 rc 1 (이전 판정은 green 처리했음)."""
-    gate = _shipping_test_recorder(2, "!!! KeyboardInterrupt !!!\n")
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=[".claude/agents/developer.md"]),
-        shipping_test_fn=gate,
-    )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
-    assert rc == 1
-    assert len(gate.calls) == 1
-
-
-def test_run_aborts_on_internal_error_rc3(hf, tmp_path):
-    """rc 3(internal error·예: import error) → 핸드오프 중단 rc 1."""
-    gate = _shipping_test_recorder(3, "INTERNALERROR> ImportError: no module\n")
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=["templates/claude_code/CLAUDE.md"]),
-        shipping_test_fn=gate,
-    )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
-    assert rc == 1
-    assert len(gate.calls) == 1
-
-
-def test_run_aborts_on_usage_error_rc4(hf, tmp_path):
-    """rc 4(usage error·예: pytest 미설치/잘못된 인자) → 핸드오프 중단 rc 1."""
-    gate = _shipping_test_recorder(4, "ERROR: usage: pytest ...\n")
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=[".project_manager/tools/board.py"]),
-        shipping_test_fn=gate,
-    )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
-    assert rc == 1
-    assert len(gate.calls) == 1
-
-
-# ── T-0200: 라이브 출하 smoke wall-clock 상한 (인터랙티브 hang 방지) ────────────
-#
-# outer subprocess timeout 초과 → rc 124 반환 → `rc not in (0,5)` 계약으로 핸드오프 중단
-# (silent pass 아님). unbounded hang 을 bounded abort 로. env `PM_SHIPPING_TEST_TIMEOUT`.
-
-
-def test_run_aborts_on_shipping_test_timeout_rc124(hf, tmp_path):
-    """출하 smoke wall-clock 초과(rc 124) → 핸드오프 중단 rc 1 (hang 대신 bounded abort)."""
-    gate = _shipping_test_recorder(124, "[timeout] 출하 테스트가 1200s 를 초과해 중단됨\n")
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        shipping_test_fn=gate,
-    )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
-    assert rc == 1  # rc 124 ∉ {0,5} → red 중단.
-    assert len(gate.calls) == 1
-
-
-def test_run_shipping_test_returns_124_note_on_timeout(hf):
-    """`_run_shipping_test` 의 runner 가 TimeoutExpired → (124, PM 안내) 반환 (실 subprocess 미실행)."""
-    def _raises(cmd, env, worktree):
-        raise subprocess.TimeoutExpired(cmd=cmd, timeout=1200, output="partial-out\n", stderr="")
-
-    rc, out = hf._run_shipping_test("/wt", runner=_raises, timeout=1200)
-    assert rc == 124
-    assert "partial-out" in out          # 부분 출력 보존.
-    assert "[timeout]" in out
-    assert "--no-shipping-test" in out    # PM 에스케이프 안내.
-    assert "PM_SHIPPING_TEST_TIMEOUT" in out
-
-
-def test_shipping_test_timeout_env_override(hf, monkeypatch):
-    """env `PM_SHIPPING_TEST_TIMEOUT` 로 상한 override · 미설정/불량 → default 1200."""
-    monkeypatch.delenv("PM_SHIPPING_TEST_TIMEOUT", raising=False)
-    assert hf._shipping_test_timeout() == 1200
-    monkeypatch.setenv("PM_SHIPPING_TEST_TIMEOUT", "300")
-    assert hf._shipping_test_timeout() == 300
-    monkeypatch.setenv("PM_SHIPPING_TEST_TIMEOUT", "not-an-int")
-    assert hf._shipping_test_timeout() == 1200  # 불량 값 → default 폴백.
-
-
-def test_run_escape_force_fire_ignores_classification(hf, tmp_path):
-    """--shipping-test (override True) → 비-출하여도 강제 발동."""
-    gate = _shipping_test_recorder(0, "3 passed in 4.0s\n")
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=["tests/test_x.py"]),  # 비-출하.
-        shipping_test_fn=gate,
-    )
-    rc = inst.run(
-        session_num=5, wave_summary="x", dry_run=False, skip_pytest=False,
-        shipping_test_override=True,
-    )
-    assert rc == 0
-    assert len(gate.calls) == 1  # 분류 무시·강제 발동.
-
-
-def test_run_escape_force_skip_ignores_classification(hf, tmp_path):
-    """--no-shipping-test (override False) → 출하 변경이어도 강제 skip (미실행)."""
-    gate = _shipping_test_recorder(1, "1 failed in 4.0s\n")  # red 라도 안 돌려야.
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        shipping_test_fn=gate,
-    )
-    rc = inst.run(
-        session_num=5, wave_summary="x", dry_run=False, skip_pytest=False,
-        shipping_test_override=False,
-    )
-    assert rc == 0  # 강제 skip 이라 red gate 도 무시.
-    assert gate.calls == []  # 미발동.
-
-
-def test_run_dry_run_skips_shipping_test(hf, tmp_path):
-    """--dry-run → 출하 테스트 발동 판단·실행 자체 skip (LLM 비용/시간 회피)."""
-    gate = _shipping_test_recorder(0, "")
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        shipping_test_fn=gate,
     )
     rc = inst.run(session_num=5, wave_summary="x", dry_run=True, skip_pytest=False)
     assert rc == 0
-    assert gate.calls == []  # dry-run 은 미실행.
+    out = capsys.readouterr().out
+    assert "[dry-run] 출하 변경 surface skip" in out
+    assert "미검증 출하 변경" not in out  # 분류 자체 안 함.
 
 
-def test_run_skips_shipping_test_when_machine_regression_red(hf, tmp_path):
-    """[1/7] 기계회귀 red → 그 자리에서 중단 → 출하 테스트 도달 안 함."""
-    gate = _shipping_test_recorder(0, "")
+def test_run_skips_shipping_surface_when_machine_regression_red(hf, tmp_path, capsys):
+    """[1/7] 기계회귀 red → 그 자리에서 중단(rc 1) → 출하 surface 도달 안 함."""
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        shipping_test_fn=gate,
     )
     inst._run_pytest_fn = lambda: (1, "1 failed in 1.0s\n")  # 기계회귀 red.
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 1
-    assert gate.calls == []  # 기계회귀에서 먼저 중단.
+    out = capsys.readouterr().out
+    assert "미검증 출하 변경" not in out  # 회귀에서 먼저 중단 → surface 미도달.
 
 
-# ── sensitivity: 가드 무력화 시 테스트가 실패하는가 (non-vacuous) ──────────────
+# ── 폐지: 차단 게이트 CLI 인자·심볼 제거 (ADR-0039 D4·하위호환 없이 즉시) ─────────
+#
+# 결정 = 하위호환 없이 즉시 에러(내부 도구·채택자 스크립트 의존 없음 확인·ticket 결정).
 
 
-def test_sensitivity_abort_guard_is_load_bearing(hf, tmp_path):
-    """abort-on-red 가드를 무력화(red 를 0 으로 흡수)하면 abort 테스트가 깨져야 한다.
+@pytest.mark.parametrize("flag", ["--shipping-test", "--no-shipping-test"])
+def test_removed_shipping_test_flags_error(hf, flag):
+    """폐지된 `--shipping-test`/`--no-shipping-test` 는 argparse 가 즉시 거부한다(SystemExit)."""
+    parser = hf.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--session-num", "5", "--wave-summary", "x", flag])
 
-    `_fire_shipping_test` 가 red 를 무시하고 0 을 돌려주도록 monkeypatch → run() 이 rc 0 을
-    돌려 `test_run_aborts_on_shipping_test_red` 의 단언(rc==1)이 무너지는지 직접 확인한다.
-    가드가 load-bearing(실제 차단 동작)임을 입증 — vacuous pass 방지.
-    """
-    gate = _shipping_test_recorder(1, "1 failed, 2 passed in 4.0s\n")
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=["templates/opencode/AGENTS.md"]),
-        shipping_test_fn=gate,
-    )
-    # 정상: red → 중단 rc 1.
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False) == 1
 
-    # 가드 무력화: _fire_shipping_test 가 red 를 무시하고 항상 0.
-    inst2 = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=["templates/opencode/AGENTS.md"]),
-        shipping_test_fn=gate,
-    )
-    inst2._fire_shipping_test = lambda worktree: 0  # type: ignore[method-assign]
-    # 무력화하면 red 여도 통과(rc 0) → abort 단언이 의미 있으려면 여기서 0 이 나와야 함.
-    assert inst2.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False) == 0
+def test_removed_shipping_symbols_absent(hf):
+    """폐지 심볼(차단 실행·타임아웃)이 모듈/클래스에서 제거·분류기와 surface step 은 존치."""
+    # 폐지 — 차단 실행·outer timeout·escape.
+    assert not hasattr(hf, "_run_shipping_test")
+    assert not hasattr(hf, "_shipping_test_timeout")
+    assert not hasattr(hf, "_SHIPPING_TEST_TIMEOUT_DEFAULT")
+    assert not hasattr(hf.PmHandoff, "_fire_shipping_test")
+    assert not hasattr(hf.PmHandoff, "_shipping_test_step")
+    # 존치 — 분류기(가역 기반)·비차단 surface step.
+    assert hasattr(hf, "_shipping_paths_in_pending_push")
+    assert hasattr(hf, "SHIPPING_GLOBS")
+    assert hasattr(hf.PmHandoff, "_shipping_surface_step")
+
+
+# ── sensitivity: 분류기 가드 무력화 시 테스트가 실패하는가 (non-vacuous) ────────
 
 
 def test_sensitivity_uncommitted_detection_is_load_bearing(hf):
@@ -618,11 +456,11 @@ def test_sensitivity_uncommitted_detection_is_load_bearing(hf):
     감지 테스트가 깨져야 한다(non-vacuous).
 
     `_uncommitted_and_untracked_paths` 가 항상 빈 목록(=커밋된-미push 만 보던 옛 동작)을
-    돌려주도록 monkeypatch → baseline 해소만 가능한 미커밋 출하 변경은 hits 가 비어 발동
-    안 함을 직접 확인한다. 정상(패치 전)은 발동(hits 비어있지 않음).
+    돌려주도록 monkeypatch → baseline 해소만 가능한 미커밋 출하 변경은 hits 가 비어
+    미탐지임을 직접 확인한다. 정상(패치 전)은 hits 비어있지 않음.
     """
     runner = _git_stub(uncommitted_paths=[".project_manager/tools/pm_handoff.py"])
-    # 정상: 미커밋 출하 hit → 발동.
+    # 정상: 미커밋 출하 hit → 탐지.
     hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == [".project_manager/tools/pm_handoff.py"]
     assert unknown is False
@@ -634,53 +472,17 @@ def test_sensitivity_uncommitted_detection_is_load_bearing(hf):
         hits2, unknown2 = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
     finally:
         hf._uncommitted_and_untracked_paths = orig  # 모듈 전역 복구.
-    # 무력화하면 커밋된-미push 만 보므로(여긴 비어있음) 발동 안 함 → 감지 테스트가 깨질 것.
+    # 무력화하면 커밋된-미push 만 보므로(여긴 비어있음) 미탐지 → 감지 테스트가 깨질 것.
     assert hits2 == []
     assert unknown2 is False
 
 
-def test_sensitivity_rc_in_0_5_guard_is_load_bearing(hf, tmp_path):
-    """must-fix 2 가드 무력화: 좁힌 rc∈{0,5} 판정을 옛 `"N failed"` 판정으로 되돌리면
-    collection error(rc 2·"failed" 요약 없음) abort 테스트가 깨져야 한다(non-vacuous).
-
-    `_fire_shipping_test` 를 옛 판정(`rc != 0 and re.search("N failed")`)으로 monkeypatch →
-    rc 2·"1 error"(failed 없음)가 silently green(rc 0) 처리되는지 직접 확인한다.
-    정상(좁힌 가드)은 rc 1 로 중단.
-    """
-    import re
-
-    gate = _shipping_test_recorder(2, "ERROR collecting test_live.py\n1 error in 0.3s\n")
-    # 정상: rc 2(≠0/5) → red 중단 rc 1.
-    inst = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        shipping_test_fn=gate,
-    )
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False) == 1
-
-    # 가드 무력화: 옛 판정("N failed" 요약이 있을 때만 red).
-    def _old_fire(worktree):
-        rc, out = gate(worktree)
-        if rc != 0 and re.search(r"\d+ failed", out):
-            return 1
-        return 0
-
-    inst2 = _make_handoff(
-        hf, tmp_path,
-        git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-        shipping_test_fn=gate,
-    )
-    inst2._fire_shipping_test = _old_fire  # type: ignore[method-assign]
-    # 옛 판정은 "failed" 요약 없는 rc 2 collection error 를 green 처리 → abort 단언 무너짐.
-    assert inst2.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False) == 0
-
-
-# ── T-0154: SHIPPING_GLOBS ↔ engine.manifest 정합 가드 ──────────────────────────
+# ── T-0154: SHIPPING_GLOBS ↔ engine.manifest 정합 가드 (존치 분류기) ────────────
 #
-# 출하 테스트 발동 판단(SHIPPING_GLOBS)이 출하 진실(engine.manifest)과 drift 하면
-# manifest 가 출하한다고 명시한 파일이 어떤 글롭에도 안 잡혀 게이트가 false-skip 한다
-# (미검증 출하). manifest 전개 경로 전부가 SHIPPING_GLOBS 로 커버됨을 단언해 다음
-# manifest 항목 추가 시 SHIPPING_GLOBS 갱신 누락을 push 전에 잡는다(손목록 drift→가드).
+# 출하 변경 분류(SHIPPING_GLOBS)가 출하 진실(engine.manifest)과 drift 하면 manifest 가
+# 출하한다고 명시한 파일이 어떤 글롭에도 안 잡혀 surface 가 false-skip 한다(미검증 출하
+# 가시성 상실). manifest 전개 경로 전부가 SHIPPING_GLOBS 로 커버됨을 단언해 다음 manifest
+# 항목 추가 시 SHIPPING_GLOBS 갱신 누락을 push 전에 잡는다(손목록 drift→가드).
 
 ENGINE_MANIFEST = REPO / ".project_manager" / "engine.manifest"
 

@@ -276,7 +276,6 @@ def _bare_handoff_capturing_cwd(handoff, tmp_path: Path):
     inst = handoff.PmHandoff(
         run_pytest_fn=_capture_pytest,
         run_git_fn=lambda args: (0, ""),
-        run_shipping_test_fn=lambda wt: (0, "(no shipping)"),
         log_file=log_file,
         pm_playbook_file=playbook,
     )
