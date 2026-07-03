@@ -334,16 +334,97 @@ def identity_tag(session_override: str | None = None,
     return f"{user}/{pm}" if user else pm
 
 
-def id_prefix(override: str | None = None) -> str | None:
-    """Resolve ticket-ID namespace prefix (multi-repo areas·N×M·ADR-0016).
+def _repo_from_session(session: str) -> str | None:
+    """세션명 `<repo>_<N>` 에서 repo 를 추출한다 (ADR-0040 D3·id_prefix 세션 유도).
 
-    prefix 는 M>1 repo 의 ID 네임스페이스(협업용 아님) — solo(N=1·M=1)는 부재.
-    Order: override > local.conf `prefix=` > None. None → legacy `T-NNNN`
-    (graceful / backward compatible). Non-None → `T-<PREFIX>-NNN` namespace.
+    슬롯 세션명은 `{repo}_{N}`(N=숫자 슬롯·worktree_pool `_slot_for`·pm_bootstrap lean
+    T-0074)의 전단사 파생이다. 끝의 `_<숫자>` 마디를 슬롯 번호로 떼고 나머지를 repo 로
+    잡는다(`rpartition('_')` — 마지막 `_` 만 분리) — repo 명이 `_` 를 포함해도(예
+    `project_manager_1` → repo `project_manager`·`a_2_3` → `a_2`) 정확히 갈린다. 끝
+    마디가 숫자가 아니거나(솔로 커스텀 세션명 `pm`·`my-session`·`foo_bar`) repo 부분이
+    비면(`_1`) `<repo>_<N>` 형태가 아니므로 None (유도 skip → id_prefix 가 다음 층으로).
+    """
+    head, sep, tail = session.rpartition("_")
+    if not sep or not head or not tail.isdigit():
+        return None
+    return head
+
+
+def _prefix_from_session(session: str | None = None) -> str | None:
+    """바인딩된 세션의 repo → areas.md 그 repo 행의 prefix (ADR-0040 D3·id_prefix 세션 유도층).
+
+    `session_name(session)`(count-based·surface·required=False)이 세션을 해소하면 세션명을
+    `<repo>_<N>` 로 파싱해(`_repo_from_session`) repo 를 얻고, areas.md 에서 그 repo 행의
+    prefix 를 돌려준다 — per-repo prefix 의 단일 진실은 areas.md 칼럼이다(ADR-0040). 다음은
+    모두 None → id_prefix 가 다음 층(count-based)으로 폴백:
+      - 세션 미해소(None·모호 M>1·비바인딩) — `session_name()` 이 None(required=False라 fail-loud 아님).
+      - 세션명이 `<repo>_<N>` 형태 아님(솔로 커스텀 세션명) — `_repo_from_session` None.
+      - 그 repo 가 areas.md 에 미등록(또는 prefix 칼럼 빈 값·areas.md 부재).
+
+    `session` 명시는 M>1 슬롯 순회(ADR-0040 D2·`_regression_run_slot`→`_test_cmd`)가 슬롯별로
+    prefix 를 뽑을 때 쓴다 — `session_name(session)` 이 그 override 를 즉시 반환하므로 슬롯 lease
+    test_cmd 가 빈 areas 폴백이 *그 슬롯의* repo prefix 로 정확 해소된다. session 을 안 넘기면
+    (`None`) 전역 `session_name()` 재해소로 떨어져, M>1 순회에서 전 슬롯이 None(모호)·env 오귀속
+    prefix 로 같은 areas test_cmd 를 돌리는 false-green 이 생긴다(push 게이트·codex must-fix).
+    """
+    resolved = session_name(session)   # override(session) 우선·미지정 시 전역 해소(required=False → None 가능)
+    if not resolved:
+        return None
+    repo = _repo_from_session(resolved)
+    if not repo:
+        return None
+    _header, rows = _parse_areas()
+    for row in rows:
+        if row.get("repo") == repo:
+            return row.get("prefix") or None
+    return None
+
+
+def id_prefix(override: str | None = None, *, session: str | None = None) -> str | None:
+    """Resolve ticket-ID namespace prefix (multi-repo areas·N×M·ADR-0016·ADR-0040 D3).
+
+    prefix 는 M>1 repo 의 ID 네임스페이스(협업용 아님)다. 해소 체인(ADR-0040 D3·count-based
+    유도·spike §3 D3):
+
+        override(--prefix)
+          > 세션 유도: session_name(session) → 세션명 `<repo>_<N>` → repo → areas.md 행 prefix
+          > 등록 repo(prefix) 가 정확히 1개면 그 prefix               (count-based)
+          > (solo·areas 부재 = 등록 0) local.conf `prefix=`           (legacy 폴백)
+          > None
+
+    None → legacy `T-NNNN`(graceful·후방호환). Non-None → `T-<PREFIX>-NNN` 네임스페이스.
+
+    `session`(키워드 전용) 은 세션 유도층에만 쓰이는 override 다 — M>1 슬롯 순회(`_test_cmd`)가
+    슬롯별 prefix 해소를 위해 그 슬롯 세션명을 넘긴다. 미지정(`None`)이면 세션 유도가 전역
+    `session_name()` 을 해소한다(현행·cmd_new/status/init 무변경). count-based·local.conf 층은
+    session 과 무관하다(전역 registry/conf).
+
+    **solo(areas.md·lease 장부 부재) 경로는 무변경** — 세션 유도(장부 부재 → session_name 이
+    local.conf session 폴백이나 그 세션명이 areas 미등록이라 None)·count-based(등록 0 → skip)를
+    거쳐 legacy local.conf `prefix=` 폴백에 그대로 도달한다. **local.conf `prefix=` 는 solo
+    전용으로 강등**(ADR-0040) — 등록 repo 가 있으면(≥1) per-repo prefix 는 areas.md(세션/
+    count 유도)가 단일 진실이고 clone 전역 키는 무시한다(남의 prefix 로 silent 오네임스페이스
+    하던 클래스 차단). multi-repo(등록 repo ≥2) 홈에서 세션 유도·count-based 가 둘 다 실패
+    (None)하면 `cmd_new` 가 fail-loud(오네임스페이스 방지).
     """
     if override:
         return override
-    return local_config().get("prefix") or None
+    # 2. 세션 유도 — 바인딩된 세션명 `<repo>_<N>` → repo → areas.md prefix (단일 진실).
+    #    session override 를 thread — M>1 슬롯 순회가 슬롯별 정확 해소(전역 재해소 false-green 차단).
+    derived = _prefix_from_session(session)
+    if derived:
+        return derived
+    # 3. count-based — 등록 repo(prefix) 가 정확히 1개면 그것(단일 self-host·모호성 0).
+    #    cmd_new 의 ≥2 fail-loud 가드와 같은 `registered_prefixes()` 를 세어 lockstep 유지.
+    registered = registered_prefixes()
+    if len(registered) == 1:
+        return next(iter(registered))
+    # 4. (solo·areas 부재 = 등록 0) local.conf `prefix=` legacy 폴백. 등록 repo 가 있으면
+    #    (≥2·모호) 여기서 local.conf 를 쓰지 않는다 → None(cmd_new fail-loud·오귀속 차단).
+    if not registered:
+        return local_config().get("prefix") or None
+    # 5. 등록 repo ≥2 인데 세션 유도 실패 → None (cmd_new fail-loud).
+    return None
 
 
 # areas.md 신/구 스키마 (ADR-0014 · T-0075 · T-0076 · T-0161).
@@ -1384,8 +1465,11 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
          호출할 때 쓴다(무명시는 `session_name()` 해소). 장부 부재/매칭없음/빈 값이면 다음
          레이어로 폴백.
       3. **활성 repo 의 areas.md test_cmd** — 멀티-PM 모드(areas.md 존재)에서
-         활성 prefix(`id_prefix()`)의 레지스트리 행에 비어 있지 않은 `test_cmd` 가
-         있으면 그것. per-repo 스택(pytest/go test…)을 수용한다.
+         활성 prefix(`id_prefix(None, session=session)`)의 레지스트리 행에 비어 있지 않은
+         `test_cmd` 가 있으면 그것. per-repo 스택(pytest/go test…)을 수용한다. **`session` 을
+         id_prefix 에도 thread** — M>1 슬롯 순회에서 슬롯 lease test_cmd 가 비면 prefix 유도가
+         *그 슬롯의* repo 로 해소돼야 한다(전역 재해소 시 모호 None·env 오귀속으로 전 슬롯이
+         같은 test_cmd 를 돌리는 false-green·codex must-fix).
       4. **솔로 폴백** — 위 전부 미스면 현 단일 `local.conf test_cmd`
          (없으면 `pytest -q`). 100% 하위호환(장부 없는 솔로/multi-PM-미배선 무영향).
     """
@@ -1394,7 +1478,7 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
     slot_cmd = _active_slot_test_cmd(session)
     if slot_cmd:
         return slot_cmd
-    prefix = id_prefix()
+    prefix = id_prefix(None, session=session)
     if prefix:
         row = _areas_row_for_prefix(prefix)
         if row and row.get("test_cmd"):
@@ -2739,8 +2823,11 @@ def cmd_new(args: argparse.Namespace) -> int:
     registered = registered_prefixes()
     if len(registered) >= 2:
         if not prefix:
-            print("multi-repo 네임스페이스 모드(등록 repo ≥2) — prefix 필요. 먼저 "
-                  "`board.py init --prefix <PFX> --area <name>`.", file=sys.stderr)
+            print("multi-repo 네임스페이스 모드(등록 repo ≥2) — prefix 필요(미해소·ADR-0040 D3). "
+                  "`--prefix <PFX>` 로 명시하거나 세션을 바인딩하라"
+                  "(`PM_SESSION_NAME=<repo>_<N>` env 또는 단일 활성 슬롯 lease → areas.md "
+                  "repo→prefix 유도). 미등록이면 먼저 `board.py init --prefix <PFX> --area <name>`.",
+                  file=sys.stderr)
             return 1
     if prefix and prefix not in registered:
         # 명시 prefix(override 또는 local.conf)는 등록된 것이어야 한다 — registry 가 존재할 때만

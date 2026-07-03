@@ -95,8 +95,30 @@ def board(tmp_path, monkeypatch):
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
+    # ADR-0040: id_prefix 세션 유도가 session_name() 을 부르고 그게 env $PM_SESSION_NAME 을
+    # 읽는다 — 실 PM 세션 env 가 hermetic 테스트로 새지 않게 제거(장부/local.conf 만이 세션 소스).
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     mod._proj = proj  # 테스트 편의 핸들 (tmp 프로젝트 루트)
     return mod
+
+
+def _seed_lease(board, session: str, repo: str, *,
+                slot: str | None = None, state: str = "leased") -> None:
+    """리스 장부에 한 행을 심는다 (session_name count-based 유도·ADR-0040 D1·D3).
+
+    board 는 worktree_pool 을 import 하지 않으므로 테스트도 파일 스키마로만 친다
+    (`{"leases": [...]}`·worktree_pool.Lease.to_dict() 동형). 여러 번 부르면 append.
+    """
+    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    data = {"leases": []}
+    if board.LEASES_FILE.exists():
+        data = json.loads(board.LEASES_FILE.read_text(encoding="utf-8"))
+    data["leases"].append({
+        "slot": slot or f"work/{session}", "repo": repo,
+        "session": session, "state": state,
+    })
+    board.LEASES_FILE.write_text(json.dumps(data), encoding="utf-8")
 
 
 # ── 헬퍼: 보드에 ticket 파일을 직접 심는다 (네임스페이싱 단위용) ──────────────
@@ -180,28 +202,123 @@ def test_next_id_distinct_prefixes_disjoint(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 단위: id_prefix 3분기 (override > local.conf prefix= > None)
+# 단위: id_prefix 유도 체인 (ADR-0040 D3):
+#   override > 세션 유도(areas) > count-based(단일 repo) > (solo) local.conf > None
 # ════════════════════════════════════════════════════════════════════════
 
+# ── layer 1: override (명시) ──────────────────────────────────────────────
+
 def test_id_prefix_override_wins(board):
-    """override 인자가 최우선 — local.conf prefix 가 있어도 무시한다."""
+    """override 인자가 최우선 — local.conf prefix·areas 유도가 있어도 무시한다."""
     board.LOCAL_CONF.write_text("prefix=ACC\n", encoding="utf-8")
     assert board.id_prefix("PAY") == "PAY"
 
 
+# ── layer 4: (solo·areas 부재) local.conf prefix= legacy 폴백 ───────────────
+
 def test_id_prefix_from_local_conf(board):
-    """override 없으면 local.conf 의 prefix= 를 쓴다."""
+    """solo(areas·lease 부재) → override 없으면 local.conf 의 prefix= 를 쓴다(layer 4)."""
     board.LOCAL_CONF.write_text("session=x\nprefix=ACC\n", encoding="utf-8")
     assert board.id_prefix(None) == "ACC"
 
 
+# ── layer 5: None (legacy T-NNNN) ─────────────────────────────────────────
+
 def test_id_prefix_none_when_unset(board):
-    """override 도 local.conf prefix 도 없으면 None (legacy solo)."""
+    """override 도 local.conf prefix 도 없고 areas·lease 부재 → None (legacy solo)."""
     # local.conf 부재.
     assert board.id_prefix(None) is None
     # local.conf 는 있지만 prefix 키 없음 → 여전히 None.
     board.LOCAL_CONF.write_text("session=x\n", encoding="utf-8")
     assert board.id_prefix(None) is None
+
+
+# ── layer 3: count-based (등록 repo 정확히 1개 → 그 prefix) ─────────────────
+
+def test_id_prefix_single_registered_repo_count_based(board):
+    """등록 repo 정확히 1개 + 세션 무바인딩 → 그 repo 의 prefix (count-based·ADR-0040 D3).
+
+    local.conf prefix 도 없이 areas.md 단일 등록만으로 prefix 를 유도한다 — areas 가 단일
+    진실이므로 등록 prefix 가 무시되던 갭을 닫는다(T-0123 Part A 의 '단일 self-host=legacy
+    T-NNNN' 를 supersede). areas.md 자체가 없는 진짜 solo 는 layer 5(None)로 무변경.
+    """
+    board.areas_append("PAY", "결제", "alice", repo="pay")  # 등록 repo 1개(repo=pay·prefix=PAY)
+    assert board.id_prefix(None) == "PAY"
+
+
+def test_id_prefix_multi_repo_ambiguous_returns_none(board):
+    """등록 repo ≥2 + 세션 무바인딩 → None(모호) — cmd_new fail-loud 을 유발(ADR-0040 D3)."""
+    board.areas_append("PAY", "결제", "alice", repo="pay")
+    board.areas_append("SHIP", "배송", "bob", repo="ship")
+    # count-based 는 정확히 1개일 때만 유도. ≥2 는 세션 유도 없으면 모호 → None.
+    assert board.id_prefix(None) is None
+
+
+def test_id_prefix_multi_repo_ignores_local_conf_prefix(board):
+    """등록 repo ≥2 면 local.conf prefix= 를 무시한다 → None (silent 오네임스페이스 차단).
+
+    ADR-0040 핵심: per-clone `prefix=` 가 multi-repo 에서 남의 prefix 로 오귀속하던 클래스.
+    등록이 있으면 areas(세션/count)가 단일 진실이고 local.conf 전역 키는 layer 4 에서
+    (`not registered` 게이트) 건너뛴다.
+    """
+    board.areas_append("PAY", "결제", "alice", repo="pay")
+    board.areas_append("SHIP", "배송", "bob", repo="ship")
+    board.LOCAL_CONF.write_text("prefix=PAY\n", encoding="utf-8")
+    assert board.id_prefix(None) is None
+
+
+# ── layer 2: 세션 유도 (`<repo>_<N>` → repo → areas.md 행 prefix) ───────────
+
+def test_id_prefix_session_derives_prefix_from_areas(board):
+    """세션 유도(layer 2): 바인딩 세션 `<repo>_<N>` → repo → areas.md 행 prefix.
+
+    등록 repo 2개(count-based 는 모호)여도 세션이 `ship_1` 이면 repo `ship` → prefix SHIP.
+    세션 유도가 count-based(모호 None)보다 우선함을 격리 검증한다.
+    """
+    board.areas_append("PAY", "결제", "alice", repo="pay")
+    board.areas_append("SHIP", "배송", "bob", repo="ship")
+    _seed_lease(board, "ship_1", repo="ship")   # 단일 lease → session_name = ship_1
+    assert board.id_prefix(None) == "SHIP"
+
+
+def test_id_prefix_session_derivation_non_slot_form_skips(board):
+    """세션명이 `<repo>_<N>` 형태 아님(솔로 커스텀 `pm`) → 세션 유도 skip → 다음 층(count-based).
+
+    끝 마디가 숫자가 아닌 커스텀 세션명은 repo 를 못 파싱하므로 layer 2 를 건너뛴다.
+    등록 repo 1개이므로 count-based 로 그 prefix 를 유도한다.
+    """
+    board.areas_append("PAY", "결제", "alice", repo="pay")  # 등록 repo 1개
+    _seed_lease(board, "pm", repo="pay")   # 커스텀 세션명(끝 마디 숫자 아님) → 파싱 skip
+    assert board.id_prefix(None) == "PAY"
+
+
+def test_id_prefix_session_repo_unregistered_falls_through(board):
+    """세션 repo 가 areas.md 에 미등록 → 세션 유도 None → 다음 층으로 폴백.
+
+    세션 `other_1` → repo `other` 인데 areas 엔 pay 만 등록 → layer 2 None →
+    count-based(등록 1개) → PAY.
+    """
+    board.areas_append("PAY", "결제", "alice", repo="pay")
+    _seed_lease(board, "other_1", repo="other")
+    assert board.id_prefix(None) == "PAY"
+
+
+# ── 단위: _repo_from_session (세션명 `<repo>_<N>` 역파싱) ───────────────────
+
+@pytest.mark.parametrize("session,expected", [
+    ("project_manager_1", "project_manager"),  # repo 명에 `_` 포함 — 마지막 `_숫자` 만 슬롯
+    ("pay_1", "pay"),
+    ("ship_12", "ship"),                        # 다자리 슬롯 번호
+    ("a_2_3", "a_2"),                           # 마지막 `_숫자` 마디만 분리
+    ("pm", None),                               # 커스텀 솔로 세션명(무 `_`)
+    ("my-session", None),                       # 하이픈·무 `_숫자`
+    ("foo_bar", None),                          # 끝 마디 비숫자
+    ("_1", None),                               # repo 부분 빈
+    ("", None),                                 # 빈 문자열
+])
+def test_repo_from_session_parses_slot_form(board, session, expected):
+    """`<repo>_<N>` 만 repo 로 역파싱하고, 형태 밖은 None(세션 유도 skip)."""
+    assert board._repo_from_session(session) == expected
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -328,20 +445,38 @@ def test_cmd_new_solo_no_registry_emits_legacy_id(board):
     assert len(created) == 1
 
 
-def test_cmd_new_single_registered_repo_emits_legacy_id(board):
-    """등록 repo 1개 + prefix 미명시 → 가드 off(충돌 없음), legacy T-NNNN 발행.
+def test_cmd_new_single_registered_repo_derives_prefix(board):
+    """등록 repo 1개 + prefix 미명시 → count-based 로 그 repo 의 prefix 유도(ADR-0040 D3).
 
-    가드 기준이 areas.md *존재* → 등록 repo *개수* 로 바뀐 핵심(Part A): 단일 self-host
-    (등록 repo 1개)는 ID 충돌이 없으니 solo `T-NNNN` 을 그대로 쓴다 — areas.md 1행만으로
-    multi-PM prefix 마찰을 떠안지 않게.
+    **ADR-0040 D3 가 T-0123 Part A('단일 self-host = legacy T-NNNN')를 supersede** —
+    areas.md 에 등록 repo 가 정확히 1개면 그 prefix 가 단일 진실이므로 `--prefix` 없이도
+    자동 유도돼 `T-<prefix>-NNN` 을 발행한다(등록 prefix 가 무시되던 갭을 닫는다). 진짜
+    solo(areas.md 자체가 없음)는 여전히 legacy T-NNNN — `test_cmd_new_solo_no_registry_emits_legacy_id`.
     """
-    board.areas_append("project_manager", "프레임워크", "alice")  # 등록 repo 1개
+    board.areas_append("PAY", "결제", "alice")  # 등록 repo 1개(repo=prefix=PAY)
     rc = board.cmd_new(_new_args(prefix=None))
     assert rc == 0
-    created = list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
+    created = list((board.TICKETS_DIR / "open").glob("T-PAY-001-*.md"))
     assert len(created) == 1
     fm, _ = board.load_ticket(created[0])
-    assert fm["id"] == "T-0001"
+    assert fm["id"] == "T-PAY-001"
+
+
+def test_cmd_new_multi_repo_session_bound_derives_prefix(board):
+    """등록 repo ≥2 이어도 세션 바인딩(단일 lease)이면 repo→prefix 유도로 발행 성공(ADR-0040 D3).
+
+    모호(≥2)여도 세션이 `service-b_1` 이면 repo `service-b`(prefix ACC)로 좁혀져 fail-loud 을
+    피하고 T-ACC-001 을 발행한다 — silent 오귀속 없이 정확한 네임스페이스.
+    """
+    board.areas_append("PAY", "결제", "alice", repo="service-a")
+    board.areas_append("ACC", "정산", "bob", repo="service-b")
+    _seed_lease(board, "service-b_1", repo="service-b")
+    rc = board.cmd_new(_new_args(prefix=None))
+    assert rc == 0
+    created = list((board.TICKETS_DIR / "open").glob("T-ACC-001-*.md"))
+    assert len(created) == 1
+    fm, _ = board.load_ticket(created[0])
+    assert fm["id"] == "T-ACC-001"
 
 
 def test_cmd_new_single_registered_repo_honors_explicit_prefix(board):

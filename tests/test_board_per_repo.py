@@ -55,6 +55,10 @@ def board(tmp_path, monkeypatch):
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
+    # ADR-0040: id_prefix 세션 유도(→ session_name → env $PM_SESSION_NAME)가 _test_cmd 해소에
+    # 끼므로, 실 PM 세션 env 가 hermetic 테스트로 새지 않게 제거(장부/local.conf 만이 세션 소스).
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     mod._tmp = tmp_path
     return mod
 
@@ -535,21 +539,26 @@ def test_test_cmd_override_wins(board):
 
 
 def test_test_cmd_resolves_per_repo_from_active_prefix(board):
-    """활성 prefix(local.conf)의 areas.md 행 test_cmd 를 해소한다 (per-repo).
+    """활성 prefix(세션 유도)의 areas.md 행 test_cmd 를 해소한다 (per-repo).
 
-    ACC 활성 → 그 repo 의 `go test ./...` 이 나와야 한다 (PAY 의 pytest 아님).
-    이것이 ADR-0014 의 핵심 — 무력화(항상 local.conf 폴백) 시 이 단언이 FAIL.
+    세션 `service-b_1` → repo service-b(prefix ACC) → 그 repo 의 `go test ./...` 이 나와야
+    한다 (service-a/PAY 의 pytest 아님). ADR-0040 이후 활성 repo 는 local.conf prefix 가
+    아니라 바인딩 세션(단일 lease)으로 좁혀진다 — 무력화(항상 local.conf 폴백) 시 FAIL.
     """
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
-    board.LOCAL_CONF.write_text("prefix=ACC\ntest_cmd=pytest -q\n", encoding="utf-8")
-    # local.conf test_cmd 가 pytest -q 라도, 활성 repo(ACC)의 areas test_cmd 가 우선.
+    _write_ledger(board, _lease_row(slot="work/service-b_1", repo="service-b",
+                                    session="service-b_1"))
+    board.LOCAL_CONF.write_text("test_cmd=pytest -q\n", encoding="utf-8")
+    # local.conf test_cmd 가 pytest -q 라도, 활성 repo(service-b/ACC)의 areas test_cmd 가 우선.
     assert board._test_cmd(None) == "go test ./..."
 
 
 def test_test_cmd_per_repo_distinct_prefixes(board):
-    """prefix 가 다르면 다른 repo 의 test_cmd 가 나온다 (PAY→pytest, ACC→go)."""
+    """세션이 다르면 다른 repo 의 test_cmd 가 나온다 (service-a→pytest, service-b→go)."""
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
-    board.LOCAL_CONF.write_text("prefix=PAY\n", encoding="utf-8")
+    _write_ledger(board, _lease_row(slot="work/service-a_1", repo="service-a",
+                                    session="service-a_1"))
+    # service-a(PAY) 로 좁혀짐 → pytest -q. service-b 로 오해소하면 `go test ./...` → FAIL.
     assert board._test_cmd(None) == "pytest -q"
 
 
@@ -639,43 +648,41 @@ def test_test_cmd_slot_layer_wins_over_areas(board, monkeypatch):
 
 
 def test_test_cmd_slot_layer_session_mismatch_ignored(board, monkeypatch):
-    """다른 session 의 슬롯은 무시 — areas 로 폴백 (session 매칭 정확성).
+    """다른 session 의 슬롯은 무시 — areas per-repo(세션 유도) 로 폴백 (session 매칭 정확성).
 
     장부에 leased 슬롯이 있어도 그게 *다른* 세션이면 이 세션의 회귀명령이 아니다.
+    현 세션 `service-a_1`(→ PAY areas → pytest -q)로 좁혀지고 슬롯의 make hil2 는 무시된다.
     """
-    monkeypatch.setattr(board, "session_name", lambda override=None: "me")
+    monkeypatch.setattr(board, "session_name", lambda override=None: "service-a_1")
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
-    board.LOCAL_CONF.write_text("prefix=PAY\n", encoding="utf-8")
     _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="other",
                                     test_cmd="make hil2"))  # 다른 세션
     assert board._test_cmd(None) == "pytest -q"  # areas 폴백(슬롯 무시)
 
 
 def test_test_cmd_slot_layer_non_leased_ignored(board, monkeypatch):
-    """idle 슬롯(state!=leased)은 무시 — areas 로 폴백."""
-    monkeypatch.setattr(board, "session_name", lambda override=None: "me")
+    """idle 슬롯(state!=leased)은 무시 — areas per-repo(세션 유도) 로 폴백."""
+    monkeypatch.setattr(board, "session_name", lambda override=None: "service-a_1")
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
-    board.LOCAL_CONF.write_text("prefix=PAY\n", encoding="utf-8")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me",
-                                    state="idle", test_cmd="make hil2"))
-    assert board._test_cmd(None) == "pytest -q"  # idle 슬롯 무시 → areas
+    _write_ledger(board, _lease_row(slot="work/service-a_1", repo="service-a",
+                                    session="service-a_1", state="idle",
+                                    test_cmd="make hil2"))
+    assert board._test_cmd(None) == "pytest -q"  # idle 슬롯 무시 → areas(service-a/PAY)
 
 
 def test_test_cmd_slot_layer_empty_test_cmd_falls_back_to_areas(board, monkeypatch):
-    """활성 슬롯은 매칭되나 test_cmd 가 빈/None → areas 폴백 (바인딩 없는 슬롯)."""
-    monkeypatch.setattr(board, "session_name", lambda override=None: "me")
+    """활성 슬롯은 매칭되나 test_cmd 가 빈/None → areas per-repo(세션 유도) 폴백 (바인딩 없는 슬롯)."""
+    monkeypatch.setattr(board, "session_name", lambda override=None: "service-a_1")
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
-    board.LOCAL_CONF.write_text("prefix=PAY\n", encoding="utf-8")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me",
-                                    test_cmd=None))  # 바인딩 없음
-    assert board._test_cmd(None) == "pytest -q"  # areas 폴백
+    _write_ledger(board, _lease_row(slot="work/service-a_1", repo="service-a",
+                                    session="service-a_1", test_cmd=None))  # 바인딩 없음
+    assert board._test_cmd(None) == "pytest -q"  # areas 폴백(service-a/PAY)
 
 
 def test_test_cmd_slot_layer_absent_ledger_falls_back_to_areas(board, monkeypatch):
-    """장부 부재 → areas 폴백 (슬롯 레이어 skip·per-repo 정상 동작)."""
-    monkeypatch.setattr(board, "session_name", lambda override=None: "me")
-    board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
-    board.LOCAL_CONF.write_text("prefix=ACC\n", encoding="utf-8")  # areas → go test ./...
+    """장부 부재 → 슬롯 레이어 skip, 세션 유도로 areas per-repo 폴백 (per-repo 정상 동작)."""
+    monkeypatch.setattr(board, "session_name", lambda override=None: "service-b_1")
+    board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")  # service-b/ACC → go test ./...
     assert not board.LEASES_FILE.exists()
     assert board._test_cmd(None) == "go test ./..."
 
@@ -708,6 +715,29 @@ def test_test_cmd_slot_layer_distinct_slots_same_repo(board, monkeypatch):
         _lease_row(slot="work/A_2", repo="A", session="me", test_cmd="make hil2"),
     )
     assert board._test_cmd(None) == "make hil2"
+
+
+def test_test_cmd_per_slot_areas_resolves_by_session_not_global(board):
+    """M>1 슬롯 순회: 슬롯 lease test_cmd 가 비면 areas 폴백이 *그 슬롯 세션의* repo 로 해소.
+
+    codex must-fix 핀 — 등록 repo 2 + leased 슬롯 2(서로 다른 repo) + 슬롯 lease test_cmd 없음
+    + areas per-repo test_cmd. `_test_cmd(None, session=…)` 는 그 세션의 repo(service-b→ACC/
+    service-a→PAY) areas test_cmd 로 정확 해소해야 한다. session 을 id_prefix 에 thread 하지
+    않으면 전역 session_name() 이 leased 2개(모호)라 None → prefix None → 기본 `pytest -q` 로
+    떨어지는 false-green(push 게이트가 슬롯별로 틀린 명령). session 미thread 회귀 시 이 단언 FAIL.
+    session_name 을 monkeypatch 하지 않아(전역 해소 모호) 이 sensitivity 를 실제로 태운다.
+    """
+    board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")  # service-a/PAY(pytest)·service-b/ACC(go)
+    _write_ledger(
+        board,
+        _lease_row(slot="work/service-a_1", repo="service-a",
+                   session="service-a_1", test_cmd=None),  # 슬롯 바인딩 없음
+        _lease_row(slot="work/service-b_1", repo="service-b",
+                   session="service-b_1", test_cmd=None),  # 슬롯 바인딩 없음
+    )
+    # 슬롯 lease test_cmd 가 둘 다 None → areas 폴백. session 별로 정확 해소(전역 모호 아님):
+    assert board._test_cmd(None, session="service-b_1") == "go test ./..."
+    assert board._test_cmd(None, session="service-a_1") == "pytest -q"
 
 
 # ════════════════════════════════════════════════════════════════════════
