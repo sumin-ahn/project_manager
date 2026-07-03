@@ -139,6 +139,13 @@ M repo 구성이고, 혼자 한 repo 만 쓰면 오버헤드 없이 solo 로 동
 `pm-config.sh` 하나로 하고, 각 프로젝트는 worktree 슬롯으로 붙인다. 상세는
 [`docs/multi-repo.md`](docs/multi-repo.md).
 
+멀티-PM 에서는 세션이 부트스트랩할 때 repo 와 슬롯을 지정해 "나는 이 repo 의 N 번 PM" 이라고
+선언한다. 이후 그 세션의 작업 위치와 보드 조작 귀속이 그 슬롯으로 잡힌다:
+
+```text
+/pm-bootstrap repo-a --slot 2
+```
+
 ```mermaid
 flowchart TB
     subgraph Home["PM 홈 (공유 board + wiki)"]
