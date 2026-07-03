@@ -76,6 +76,7 @@ def board(tmp_path, monkeypatch):
     mod = _load_board()
     pm = proj / ".project_manager"
     wiki = pm / "wiki"
+    local = pm / ".local"
     overrides = {
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
@@ -85,6 +86,10 @@ def board(tmp_path, monkeypatch):
         "STATUS_FILE": wiki / "status.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
+        # 리스 장부(session_name count-based 유도·ADR-0040 D1) — tmp 로 재지정해 hermetic
+        # (부재 = leased 0 = solo·기본). 단일-lease 유도 테스트는 여기에 장부를 직접 쓴다.
+        "LOCAL_DIR": local,
+        "LEASES_FILE": local / "worktree-leases.json",
         "PM_STATE_FILE": wiki / "pm_state.md",
         "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
     }
@@ -614,29 +619,51 @@ def test_real_root_areas_md_untouched(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# session_name 4단 우선순위 (T-0073) — 매칭측(board) ↔ 저장측(worktree_pool)·
-# pm_config 와 동형. PM_SESSION_NAME(정식) > CLAUDE_SESSION_NAME(deprecated alias·
-# silent) > local.conf session= > <host>-<pid>. 세 모듈이 어긋나면 per-slot
-# test_cmd·claim 소유권이 미스된다(T-0066 함정).
+# session_name count-based 유도 (ADR-0040 D1·T-0073 층위 amend) — 매칭측(board) ↔
+# 저장측(worktree_pool)·pm_config 와 동형. 명시 > $PM_SESSION_NAME(정식) >
+# $CLAUDE_SESSION_NAME(deprecated alias·silent) > lease 장부 leased 1개면 그 session
+# (단일-lease 유도) > (장부 부재·leased 0 = solo) local.conf session= > None.
+# leased ≥2 면 local.conf 층 건너뜀(silent 오귀속 차단). 미해소 시 귀속 쓰기(required=True)는
+# fail-loud, surface(required=False)는 None(호출부 "(비바인딩)"). 세 모듈이 어긋나면
+# per-slot test_cmd·claim 소유권이 미스된다(T-0066 함정).
 # ════════════════════════════════════════════════════════════════════════
 
 def _write_conf(board, text):
     board.LOCAL_CONF.write_text(text, encoding="utf-8")
 
 
+def _write_ledger(board, *rows):
+    """리스 장부 파일(`LEASES_FILE`)에 leased/idle 행을 직접 쓴다 (count-based 유도 전제).
+
+    worktree_pool 을 import 하지 않고(board 격리 동형) 최소 스키마(session/state/slot/repo)만
+    담는다 — session_name 은 state=="leased" 행의 session 만 센다.
+    """
+    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    leases = [{"slot": f"work/{r['session']}", "repo": "r",
+               "session": r["session"], "state": r.get("state", "leased")}
+              for r in rows]
+    board.LEASES_FILE.write_text(json.dumps({"leases": leases}), encoding="utf-8")
+
+
+def _clear_env(monkeypatch):
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+
+
 def test_session_name_prefers_pm_env(board, monkeypatch):
-    """`$PM_SESSION_NAME` 최우선 — alias·local.conf session= 무시 (T-0073)."""
+    """`$PM_SESSION_NAME` 최우선 — alias·lease·local.conf session= 무시 (ADR-0040)."""
     monkeypatch.setenv("PM_SESSION_NAME", "from-pm-env")
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
     _write_conf(board, "session=from-conf\n")
+    _write_ledger(board, {"session": "leased-sess"})
     assert board.session_name() == "from-pm-env"
 
 
 def test_session_name_claude_env_is_alias(board, monkeypatch):
-    """`$CLAUDE_SESSION_NAME` 단독 → deprecated alias 로 조용히 동작 (T-0073 back-compat).
+    """`$CLAUDE_SESSION_NAME` 단독 → deprecated alias 로 조용히 동작 (back-compat).
 
     `PM_SESSION_NAME` 미설정·구 변수만 설정된 기존 dogfooding/채택 환경이 깨지지 않아야
-    한다 — alias 우선순위 2번, local.conf 보다 우선.
+    한다 — alias 우선순위 2번, lease·local.conf 보다 우선.
     """
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
@@ -645,35 +672,133 @@ def test_session_name_claude_env_is_alias(board, monkeypatch):
 
 
 def test_session_name_pm_wins_over_claude(board, monkeypatch):
-    """둘 다 설정 시 `PM_SESSION_NAME` 승 (T-0073 마이그레이션 중 명시 우선)."""
+    """둘 다 설정 시 `PM_SESSION_NAME` 승 (마이그레이션 중 명시 우선)."""
     monkeypatch.setenv("PM_SESSION_NAME", "new")
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "old")
     assert board.session_name() == "new"
 
 
+def test_session_name_single_lease_derives_session(board, monkeypatch):
+    """env 없음·leased 슬롯 정확히 1개 → 그 session 유도 (ADR-0040 count-based)."""
+    _clear_env(monkeypatch)
+    _write_ledger(board, {"session": "project_manager_1"})
+    assert board.session_name() == "project_manager_1"
+
+
+def test_session_name_single_lease_wins_over_local_conf(board, monkeypatch):
+    """단일-lease 값과 local.conf 값이 다르면 유도값(lease) 승 (저장 쪽지보다 파생 진실)."""
+    _clear_env(monkeypatch)
+    _write_conf(board, "session=stale-conf\n")
+    _write_ledger(board, {"session": "derived-1"})
+    assert board.session_name() == "derived-1"
+
+
+def test_session_name_two_leases_skips_local_conf_returns_none(board, monkeypatch):
+    """leased ≥2 (모호) → local.conf 층 건너뜀 → None (silent 오귀속 차단·ADR-0040)."""
+    _clear_env(monkeypatch)
+    _write_conf(board, "session=some-conf\n")   # 있어도 무시돼야 한다(건너뜀)
+    _write_ledger(board, {"session": "a_1"}, {"session": "b_1"})
+    assert board.session_name() is None
+
+
+def test_session_name_idle_leases_not_counted(board, monkeypatch):
+    """idle 행은 count 대상 아님 — leased 1개(+idle 다수)면 그 leased session 유도."""
+    _clear_env(monkeypatch)
+    _write_ledger(board, {"session": "live_1"},
+                  {"session": "old_2", "state": "idle"},
+                  {"session": "old_3", "state": "idle"})
+    assert board.session_name() == "live_1"
+
+
 def test_session_name_reads_local_conf_session(board, monkeypatch):
-    """env(둘 다) 없음 → local.conf `session=` (저장측 worktree_pool 3층과 동형)."""
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
-    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    """env·lease 없음(장부 부재 = solo) → local.conf `session=` (legacy 폴백·후방호환)."""
+    _clear_env(monkeypatch)
     _write_conf(board, "session=foo\n")
+    # 장부 미작성 → leased 0 = solo → local.conf.
     assert board.session_name() == "foo"
 
 
-def test_session_name_falls_back_to_host_pid(board, monkeypatch):
-    """env(둘 다)·local.conf session= 모두 없음 → `<host>-<pid>` (4층 폴백)."""
-    import os
-    import socket
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
-    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    # local.conf 없음(_make_project 는 local.conf 안 만듦).
-    assert board.session_name() == f"{socket.gethostname()}-{os.getpid()}"
+def test_session_name_solo_unbound_returns_none(board, monkeypatch):
+    """env·lease·local.conf session= 모두 없음 → None (구 host-pid 폴백 제거·ADR-0040).
+
+    `<host>-<pid>` 최종 폴백은 세션-귀속 아닌 국소 용처(worktree_pool lease 취득)에만 잔존 —
+    board 의 귀속 해소에선 미해소=None(surface required=False)이다.
+    """
+    _clear_env(monkeypatch)
+    # local.conf 없음·장부 없음.
+    assert board.session_name() is None
 
 
 def test_session_name_override_beats_everything(board, monkeypatch):
-    """override 인자가 env·local.conf 보다 우선 (해소 0층)."""
+    """override 인자가 env·lease·local.conf 보다 우선 (해소 0층)."""
     monkeypatch.setenv("PM_SESSION_NAME", "from-pm-env")
     _write_conf(board, "session=from-conf\n")
+    _write_ledger(board, {"session": "leased-1"})
     assert board.session_name("explicit") == "explicit"
+
+
+def test_session_name_required_fail_loud_when_unresolved(board, monkeypatch):
+    """required=True + 미해소(solo 무바인딩) → fail-loud(SystemExit·`--session` 안내)."""
+    _clear_env(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        board.session_name(required=True)
+    # 안내 문구에 `--session <repo>_<N>` 형식이 들어간다.
+    assert "--session" in str(exc.value)
+
+
+def test_session_name_required_fail_loud_when_ambiguous(board, monkeypatch):
+    """required=True + leased ≥2 (모호) → fail-loud (local.conf 있어도 오귀속 안 함)."""
+    _clear_env(monkeypatch)
+    _write_conf(board, "session=some-conf\n")
+    _write_ledger(board, {"session": "a_1"}, {"session": "b_1"})
+    with pytest.raises(SystemExit):
+        board.session_name(required=True)
+
+
+def test_session_name_required_resolves_does_not_exit(board, monkeypatch):
+    """required=True 라도 해소되면(단일-lease) fail-loud 없이 그 값 반환."""
+    _clear_env(monkeypatch)
+    _write_ledger(board, {"session": "only_1"})
+    assert board.session_name(required=True) == "only_1"
+
+
+# ── 귀속 쓰기(claim) fail-loud 배선 + surface(list --mine) 비바인딩 (ADR-0040 D1) ──
+
+def test_cmd_claim_fail_loud_when_session_ambiguous(board, monkeypatch):
+    """cmd_claim(귀속 쓰기·required=True) — leased ≥2 모호 + --session 없음 → fail-loud.
+
+    세션 해소가 cmd_claim 최상단이라 find_ticket/board-git 이전에 SystemExit — silent
+    오귀속(남의 세션으로 claim) 대신 즉시 `--session` 명시를 요구한다.
+    """
+    _clear_env(monkeypatch)
+    _write_conf(board, "session=some-conf\n")   # 있어도 무시(모호 → 건너뜀)
+    _write_ledger(board, {"session": "a_1"}, {"session": "b_1"})
+    with pytest.raises(SystemExit):
+        board.cmd_claim(argparse.Namespace(id="T-0001", session=None, user=None))
+
+
+def test_cmd_claim_explicit_session_bypasses_fail_loud(board, monkeypatch):
+    """명시 --session 이면 모호해도 fail-loud 하지 않는다(세션 해소 override 0층)."""
+    _clear_env(monkeypatch)
+    _write_ledger(board, {"session": "a_1"}, {"session": "b_1"})
+    _seed_ticket(board, "T-0001", status="open")
+    # 명시 session → session_name 이 즉시 반환(SystemExit 없음). claim 이 정상 진행돼 rc=0.
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="a_1", user="me"))
+    assert rc == 0
+
+
+def test_cmd_list_mine_unbound_surfaces_unbind_note(board, monkeypatch, capsys):
+    """list --mine + 세션 미바인딩(surface·required=False) → stderr "(비바인딩)"·크래시 없음.
+
+    stdout 티켓 목록은 area-open 으로 graceful degrade(빈 보드 금지)하고, 안내는 stderr 로
+    분리해 목록 포맷을 오염시키지 않는다(ADR-0040).
+    """
+    _clear_env(monkeypatch)   # 장부·local.conf 없음 → session_name None
+    _seed_ticket(board, "T-0001", status="open")
+    rc = board.cmd_list(argparse.Namespace(mine=True, session=None, slot=None,
+                                           tag=None, status=None))
+    assert rc == 0
+    assert "비바인딩" in capsys.readouterr().err
 
 
 # ════════════════════════════════════════════════════════════════════════

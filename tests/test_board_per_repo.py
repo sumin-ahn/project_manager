@@ -778,22 +778,24 @@ def test_default_session_e2e_local_conf_match(board, monkeypatch):
     assert board._test_cmd(None) == "make hil2"
 
 
-def test_default_session_e2e_mismatch_without_local_conf_layer(board, monkeypatch):
-    """대조군 — 저장측이 host-pid(예: env 미설정·local.conf 없음)인데 매칭측이 foo 면 미스.
+def test_default_session_e2e_single_lease_derives_over_stale_conf(board, monkeypatch):
+    """ADR-0040 D1 — 단일-lease 유도가 stale local.conf 와 어긋나도 매칭측/저장측이 일치.
 
-    local.conf 레이어가 두 측에 *일관* 적용돼야 함을 보인다: 장부엔 host-pid 세션 슬롯만
-    있고 board 는 local.conf session=foo 로 매칭 → 매칭 실패 → None(폴백). 이는 비대칭
-    버그의 *증상* 을 재현해, 통일 수정이 왜 필요한지 박는다.
+    장부에 leased 슬롯이 정확히 1개(session=host_pid)면 board.session_name 은 그 lease 에서
+    유도하므로(stale local.conf session=foo 는 건너뜀·유도값 승), `_active_slot_test_cmd` 의
+    session 매칭이 성립해 슬롯 test_cmd 를 돌려준다. T-0066 이 local.conf 레이어 통일로
+    패치하던 비대칭이 count-based 유도로 원천 해소된다(저장 쪽지보다 슬롯 파생 진실).
     """
     import os
     import socket
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     host_pid = f"{socket.gethostname()}-{os.getpid()}"
     _write_ledger(board, _lease_row(slot="work/A_1", repo="A",
                                     session=host_pid, test_cmd="make hil2"))
-    board.LOCAL_CONF.write_text("session=foo\n", encoding="utf-8")  # board → foo
-    assert board.session_name() == "foo"
-    assert board._active_slot_test_cmd() is None  # host-pid 슬롯과 foo 매칭 안 됨
+    board.LOCAL_CONF.write_text("session=foo\n", encoding="utf-8")  # stale — 유도값이 이김
+    assert board.session_name() == host_pid              # 단일-lease 유도(local.conf foo 아님)
+    assert board._active_slot_test_cmd() == "make hil2"  # 매칭 성립 → 슬롯 test_cmd
 
 
 # ════════════════════════════════════════════════════════════════════════

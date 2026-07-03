@@ -23,7 +23,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -189,32 +188,82 @@ def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
     return "".join(out)
 
 
-def session_name(override: str | None = None) -> str:
-    """세션 식별자 해소 — 4단 우선순위 (T-0073·worktree_pool/pm_config 와 *동형*):
+def _leased_sessions() -> list[str]:
+    """lease 장부에서 state=="leased" 행들의 session 목록 (count-based 유도용·ADR-0040 D1).
 
-        override
+    board 는 worktree_pool 을 import 하지 않는다(ADR-0013 isolation) — `_active_slot_test_cmd`
+    와 *동형*의 stdlib json point-read 로 리스 장부 파일(`LEASES_FILE`)을 직접 읽는다
+    (모듈 결합 아님·areas.md 를 읽듯 데이터 결합만). 리스는 worktree_pool 이 atomic-replace
+    (`os.replace`)로 쓰므로 락 없는 point-read 도 일관 스냅샷을 본다. 장부 부재/파싱실패/손상은
+    빈 리스트(fail-soft — 세션 해소가 장부 손상으로 죽지 않게). session 이 빈/None 인 행은 제외.
+    """
+    if not LEASES_FILE.exists():
+        return []
+    try:
+        data = json.loads(LEASES_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    leases = data.get("leases", [])
+    if not isinstance(leases, list):
+        return []
+    sessions: list[str] = []
+    for row in leases:
+        if isinstance(row, dict) and row.get("state") == "leased":
+            sess = row.get("session")
+            if sess:
+                sessions.append(sess)
+    return sessions
+
+
+def session_name(override: str | None = None, *, required: bool = False) -> str | None:
+    """세션 식별자 해소 — count-based 유도 (ADR-0040 D1·T-0073 층위 amend·3모듈 *동형*):
+
+        override(--session)
           > $PM_SESSION_NAME (env·harness 무관 엔진 식별자)
           > $CLAUDE_SESSION_NAME (env·deprecated alias·silent back-compat)
-          > local.conf `session=`
-          > `<host>-<pid>`
+          > lease 장부 state=="leased" 행이 정확히 1개면 그 session   (단일-lease 유도)
+          > (장부 부재·leased 0 = solo 홈) local.conf `session=`        (legacy 폴백)
+          > None
 
-    `PM_SESSION_NAME` 이 정식 이름(엔진 변수·하니스 무관). `CLAUDE_SESSION_NAME` 은
-    구 이름으로 alias 만 — 둘 다 설정 시 `PM_SESSION_NAME` 승(마이그레이션 중 명시 우선).
-    deprecation 경고는 print 하지 않는다(`--json`/machine-parse 출력 오염 방지) — alias 는
-    조용히 동작하고 안내는 문서에만 둔다.
+    `PM_SESSION_NAME` 이 정식 이름(엔진 변수·하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
+    (둘 다면 PM 승·조용히 동작·안내는 문서만·`--json` 출력 오염 방지).
 
-    저장측(worktree_pool._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·
-    claim 소유권이 미스되므로([[T-0066]] must-fix) 세 모듈을 같은 우선순위로 통일한다.
+    **leased ≥2 (모호)면 local.conf 층을 건너뛴다** — per-clone 저장값(`session=`)으로 남의
+    세션을 silent 오귀속하던 클래스를 원천 차단한다(ADR-0040·Windows 4슬롯 홈 리포트). 단일-lease
+    값과 local.conf 값이 다르면 유도값(lease) 승 — 저장 쪽지보다 슬롯 파생 진실.
+
+    `required=True`(귀속 쓰기: claim·migrate·init owner 기본값)에서 미해소(None)면 fail-loud —
+    `--session <repo>_<N>` 명시를 안내하고 `sys.exit` 한다(silent 오귀속 금지). `required=False`
+    (surface: whoami/status/list --mine)면 None 을 반환한다(호출부가 "(비바인딩)" 표시). 구
+    `<host>-<pid>` 최종 폴백은 세션-귀속 아닌 국소 용처(worktree_pool `_default_session` 의
+    lease 취득 임시 명명)에만 잔존한다 — 여기(귀속 해소)선 제거.
+
+    저장측(worktree_pool._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
+    소유권이 미스되므로([[T-0066]] must-fix) 세 모듈(board.session_name·worktree_pool._default_
+    session·pm_config._default_session)을 같은 우선순위로 통일한다(tail 만 용처별 상이).
     """
     if override:
         return override
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
         return env
-    sess = local_config().get("session")
-    if sess:
-        return sess
-    return f"{socket.gethostname()}-{os.getpid()}"
+    leased = _leased_sessions()
+    if len(leased) == 1:
+        return leased[0]
+    if not leased:
+        # 장부 부재·leased 0 = solo 홈 → legacy local.conf 폴백 (후방호환).
+        sess = local_config().get("session")
+        if sess:
+            return sess
+    # leased ≥2 (모호) 또는 solo 무바인딩 → 미해소.
+    if required:
+        sys.exit(
+            "[중단] 세션 미해소 — 활성 슬롯이 여럿이거나 바인딩이 없다. 귀속 조작은 "
+            "`--session <repo>_<N>` 로 세션을 명시하라 (예: `--session project_manager_1`)."
+        )
+    return None
 
 
 # user identity 해소 git 폴백 timeout — `git config user.email` 은 로컬 config 읽기라
@@ -266,16 +315,22 @@ def user_name(override: str | None = None) -> str | None:
 
 
 def identity_tag(session_override: str | None = None,
-                 user_override: str | None = None) -> str:
+                 user_override: str | None = None) -> str | None:
     """현재 identity 를 `<user>/<pm-slot>` 토큰으로 합성한다 (spike §3.2·ADR-0033 ③).
 
     `created_by`(provenance)·`claimed_by`(assignee) frontmatter 에 박는 값이다. user 가
     해소되면 `<user>/<pm>`, 미상(None)이면 슬롯만(`<pm>`) — **기존 슬롯-only 값과 형태가
     같다**(graceful·하위호환). 읽기측은 `/` 로 split 해 user/slot 을 분리하되, `/` 없는 값
     (구 ticket·user 미상)은 slot-only 로 읽어야 한다(fail-soft).
+
+    세션 미바인딩(`session_name` None·surface·required=False)이면 슬롯 토큰이 없으므로 user
+    만(있으면) 반환하고 둘 다 없으면 None 이다(ADR-0040·graceful). 귀속 쓰기 호출부(claim)는
+    이 함수 전에 `session_name(required=True)` 로 세션을 확정하므로 pm 이 None 으로 새지 않는다.
     """
     pm = session_name(session_override)
     user = user_name(user_override)
+    if pm is None:
+        return user
     return f"{user}/{pm}" if user else pm
 
 
@@ -1473,7 +1528,7 @@ def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
     note = " · 수집 0 — 테스트 루트/cwd 확인"
     fell_back_to_repo = not override and cwd == str(REPO)
     if fell_back_to_repo and not (Path(cwd) / "tests").is_dir():
-        note += (f" · 활성 slot lease 미매칭(session=`{session_name()}`) — "
+        note += (f" · 활성 slot lease 미매칭(session=`{session_name() or '(비바인딩)'}`) — "
                  "`PM_SESSION_NAME` 또는 local.conf `session=` 확인")
     return note
 
@@ -1800,7 +1855,9 @@ def _slugify(text: str, max_len: int = 40) -> str:
 # ── commands ───────────────────────────────────────────────────────────
 
 def cmd_claim(args: argparse.Namespace) -> int:
-    sess = session_name(args.session)
+    # claim = 귀속 쓰기(spike §1 row a·최악 클래스 silent 오귀속) — 세션 미해소면 fail-loud
+    # (ADR-0040 D1·required=True). 명시 --session > env > 단일-lease 유도 > (solo) local.conf.
+    sess = session_name(args.session, required=True)
     # claimed_by 는 `<user>/<slot>` (assignee·ADR-0033 ③·T-0161) — user 미상이면 슬롯만
     # (graceful·기존 슬롯-only 값과 형태 동일). 진행메시지/board surface 는 슬롯(sess)을 쓴다.
     assignee = identity_tag(session_override=args.session,
@@ -2106,7 +2163,9 @@ def cmd_init(args: argparse.Namespace) -> int:
                 return 1
             # owner = areas.md 등록 식별자(registrant) — 협업 소유자(다중-사람)가 아니라
             # single user 의 등록 출처 표식이다(ADR-0016·ADR-0002 amend). 기본 = 현 세션.
-            owner = args.owner or session_name()
+            # 등록 owner 기본값 = 귀속 쓰기(ADR-0040 D1·required=True) — 세션 미해소면 fail-loud
+            # (`--owner`/`--session` 명시 유도). --owner 명시면 session_name 미호출(short-circuit).
+            owner = args.owner or session_name(required=True)
             # area_owner = 그 area 의 *user* 소유(`--mine` 풀 입력·ADR-0033 ③·T-0161) —
             # registrant `owner`(슬롯/세션)와 별개 칼럼(overload 금지·ADR-0014 refine).
             # cmd_repo_add 와 동형 해소: `--user` 명시 > local.conf user= > git config
@@ -2479,7 +2538,9 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
               "git config user.email 를 설정하라(식별자 없이는 backfill 불가).",
               file=sys.stderr)
         return 1
-    slot = session_name(getattr(args, "session", None))
+    # backfill slot = 귀속 쓰기(claimed_by 에 박음·ADR-0040 D1·required=True) — 세션 미해소면
+    # fail-loud(None 슬롯으로 backfill 하면 오귀속). 명시 --session > env > 단일-lease 유도.
+    slot = session_name(getattr(args, "session", None), required=True)
     dry_run = bool(getattr(args, "dry_run", False))
     scope = getattr(args, "scope", "all") or "all"
     statuses = ("open", "claimed") if scope == "active" else STATUS_DIRS
@@ -2678,6 +2739,11 @@ def cmd_list(args: argparse.Namespace) -> int:
     else:
         my_user = user_name() if mine else None
         my_slot = session_name() if mine else ""
+        if mine and my_slot is None:
+            # 세션 미바인딩(surface·required=False·ADR-0040) — slot-claim 필터를 못 좁힌다.
+            # 안내는 stderr 로 내 stdout 티켓 목록 포맷을 오염시키지 않는다(area-open 은 계속 표시).
+            print("(비바인딩 — 세션 미해소·claim 필터 비활성; `--session <repo>_<N>` 로 지정)",
+                  file=sys.stderr)
     # graceful degrade(T-0168 단순화): (a) 풀(내 area open) 필터는 보드에 area_owner 가 *운영
     # 중일 때만* 적용한다. areas.md 에 area_owner 가 하나도 안 채워졌으면(미마이그레이션 채택자·
     # 솔로) area_owner_in_use=False → (a) 가 전체 open 으로 degrade(빈 보드 금지·plain list 처럼).

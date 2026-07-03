@@ -470,7 +470,10 @@ def test_upstream_set_missing_conf_skips_network(pc, tmp_path, monkeypatch, caps
 # ── repo add 배선 — areas_append(per-repo) + git clone --bare ────────────────
 
 
-def _repo_add_args(pc, name="svc", git="git@h:me/svc.git", test="pytest -q", owner=None,
+# owner 기본값 "me" — 이 헬퍼를 쓰는 테스트는 owner *해소* 를 검증하지 않는다(base/clone/hook/
+# name/routing 대상). owner 미해소 fail-loud(ADR-0040 D1)는 owner=None 을 *명시* 하는 전용
+# 테스트(test_repo_add_unbound_session_owner_fail_loud_no_side_effects)가 친다.
+def _repo_add_args(pc, name="svc", git="git@h:me/svc.git", test="pytest -q", owner="me",
                    base=None):
     return argparse.Namespace(name=name, git=git, test=test, owner=owner, base=base)
 
@@ -541,8 +544,9 @@ def test_repo_add_area_owner_falls_back_to_default_user(pc, tmp_path, monkeypatc
     board = FakeBoard(registered=())
     gitr = FakeGitRecorder(rc=0)
     repos = tmp_path / ".repos"
+    # owner="me"(registrant) — 이 테스트는 area_owner 폴백만 검증(owner 해소는 별개·overload 금지).
     args = argparse.Namespace(name="svc", git="git@h:me/svc.git", test="pytest -q",
-                              owner=None, base=None)  # user 속성 부재 → getattr None → _default_user
+                              owner="me", base=None)  # user 속성 부재 → getattr None → _default_user
     rc = pc.cmd_repo_add(args, board=board, clone_runner=gitr, repos_dir=repos)
     assert rc == 0
     assert board.append_calls[0]["area_owner"] == "resolved-user"
@@ -856,6 +860,45 @@ def test_repo_add_invalid_name_rejected_no_side_effects(pc, tmp_path, capsys, ba
     assert "형식 위반" in capsys.readouterr().err
 
 
+def test_repo_add_unbound_session_owner_fail_loud_no_side_effects(
+        pc, tmp_path, monkeypatch, capsys):
+    """미바인딩 세션 + --owner 미지정 → owner 미해소 fail-loud(rc 1)·부작용 0 (ADR-0040 D1).
+
+    _default_session None(leased ≥2·무바인딩)을 그대로 areas_append 에 넘기면 board 가 owner 를
+    문자열 "None" 으로 areas.md 에 기록(귀속 쓰기 누출) — 그 전에 clone/등록/훅 없이 차단한다
+    (board.cmd_init owner required=True 와 동형). status/whoami surface 테스트가 못 잡던 *쓰기*
+    경로 회귀 핀(codex must-fix).
+    """
+    _bind_tmp_repo(pc, monkeypatch, tmp_path)   # local.conf·장부 없음 → _default_session None
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    board = FakeBoard(registered=())
+    gitr = FakeGitRecorder(rc=0)
+    rc = pc.cmd_repo_add(
+        _repo_add_args(pc, name="svc", owner=None),
+        board=board, clone_runner=gitr, repos_dir=tmp_path / ".repos",
+    )
+    assert rc == 1
+    assert board.append_calls == []    # areas 등록 안 함(owner "None" 누출 0)
+    assert gitr.calls == []             # clone/base 해소 git 호출 안 함(부작용 0)
+    assert "owner 미해소" in capsys.readouterr().err
+
+
+def test_repo_add_unbound_session_explicit_owner_passes(pc, tmp_path, monkeypatch):
+    """미바인딩이라도 --owner 명시면 통과(short-circuit) — 정상 등록 (fail-loud 우회)."""
+    _bind_tmp_repo(pc, monkeypatch, tmp_path)
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    board = FakeBoard(registered=())
+    gitr = FakeGitRecorder(rc=0)
+    rc = pc.cmd_repo_add(
+        _repo_add_args(pc, name="svc", owner="alice"),
+        board=board, clone_runner=gitr, repos_dir=tmp_path / ".repos",
+    )
+    assert rc == 0
+    assert board.append_calls[0]["owner"] == "alice"
+
+
 @pytest.mark.parametrize("good_name", ["billing", "web_api", "svc-1"])
 def test_repo_add_valid_name_passes_guard(pc, tmp_path, good_name):
     """정상 name → 가드 통과·등록 진행 (T-0078 — 기존 동작 보존)."""
@@ -1135,6 +1178,25 @@ def test_status_empty_pool(pc, capsys):
     assert "리스 없음" in capsys.readouterr().out
 
 
+def test_status_unbound_session_surfaces_placeholder(pc, monkeypatch, tmp_path, capsys):
+    """_default_session None(미바인딩) → cmd_status 헤더 "(비바인딩)"·남의 리스로 self-identify 안 함.
+
+    Windows 4슬롯 홈에서 비바인딩(pm-env) 세션이 남의 세션으로 self-identify 하던 직접 증상의
+    수정(ADR-0040 surface) — 세션 None 이면 헤더가 "(비바인딩)"·"이 세션의 리스: (없음)".
+    """
+    _bind_tmp_repo(pc, monkeypatch, tmp_path)   # local.conf·장부 없음 → _default_session None
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    wp = FakeWorktreePool(leases=[
+        FakeLease(slot="work/svc_1", repo="svc", session="other", state="leased"),
+    ])
+    rc = pc.cmd_status(argparse.Namespace(command="whoami"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "(비바인딩)" in out
+    assert "이 세션의 리스: (없음)" in out   # 남의 세션(other)을 내 것으로 오식별하지 않음
+
+
 def test_status_shows_live_branch_from_current_branch(pc, monkeypatch, capsys):
     """status 가 branch 를 `current_branch(slot)` live 조회로 표시한다(ADR-0013 amend T-0072).
 
@@ -1278,7 +1340,10 @@ def test_main_routes_repo_add_to_engine(pc, monkeypatch, tmp_path):
     monkeypatch.setattr(pc, "_load_module", fake_load)
     monkeypatch.setattr(pc, "_real_clone_runner", lambda: gitr)
     monkeypatch.setattr(pc, "REPOS_DIR", tmp_path / ".repos")
-    rc = pc.main(["repo", "add", "svc", "--git", "git@h:me/svc.git", "--test", "pytest -q"])
+    # --owner me — 라우팅 검증 테스트(owner 해소 대상 아님)라 미바인딩 fail-loud(ADR-0040)를
+    # 피하려 명시한다. argparse 경로엔 _repo_add_args 헬퍼 기본값이 안 걸린다.
+    rc = pc.main(["repo", "add", "svc", "--git", "git@h:me/svc.git", "--test", "pytest -q",
+                  "--owner", "me"])
     assert rc == 0
     assert len(board.append_calls) == 1
     assert board.append_calls[0]["repo"] == "svc"
@@ -1321,15 +1386,17 @@ def test_main_worktree_without_add_shows_group_help(pc):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# _default_session — board.session_name 과 동형 우선순위 (T-0066 must-fix)
-# env > local.conf session= > <host>-<pid>. cmd_status/whoami 의 "이 세션의 리스"
-# surface 가 이걸 쓰므로, local.conf-session 운영에서 board 매칭과 정합해야 한다.
+# _default_session — board.session_name 과 동형 count-based 유도 (ADR-0040 D1·T-0073)
+# env > lease 장부 leased 1개면 그 session(단일-lease 유도) > (장부 부재·leased 0 = solo)
+# local.conf session= > None. leased ≥2 면 local.conf 건너뜀. cmd_status/whoami 의
+# "이 세션의 리스" surface 가 이걸 쓰므로 board 매칭과 정합해야 한다(T-0066 must-fix).
+# board 와 tail 만 다르다(host-pid 폴백 없음 — surface 는 미해소=None → "(비바인딩)").
 # ════════════════════════════════════════════════════════════════════════
 
 def _bind_tmp_repo(pc, monkeypatch, tmp_path):
-    """pc 의 REPO 를 tmp 로 재지정 — 실 루트 local.conf 무오염(hermetic).
+    """pc 의 REPO 를 tmp 로 재지정 — 실 루트 local.conf/리스장부 무오염(hermetic).
 
-    _local_conf_session 이 `REPO / .project_manager / local.conf` 를 읽으므로 REPO 를
+    _local_conf_session·_leased_sessions 가 `REPO / .project_manager / …` 를 읽으므로 REPO 를
     tmp 로 묶어야 실 루트를 안 건드린다. module-scope pc 라도 monkeypatch 가 테스트 후 복원.
     """
     pm = tmp_path / ".project_manager"
@@ -1338,17 +1405,30 @@ def _bind_tmp_repo(pc, monkeypatch, tmp_path):
     return pm / "local.conf"
 
 
+def _write_ledger_pc(tmp_path, *rows):
+    """`REPO/.project_manager/.local/worktree-leases.json` 에 리스 행을 쓴다 (유도 전제)."""
+    import json
+    local = tmp_path / ".project_manager" / ".local"
+    local.mkdir(parents=True, exist_ok=True)
+    leases = [{"slot": f"work/{r['session']}", "repo": "r",
+               "session": r["session"], "state": r.get("state", "leased")}
+              for r in rows]
+    (local / "worktree-leases.json").write_text(json.dumps({"leases": leases}),
+                                                encoding="utf-8")
+
+
 def test_default_session_prefers_pm_env(pc, monkeypatch, tmp_path):
-    """`$PM_SESSION_NAME` 최우선 — alias·local.conf session= 무시 (T-0073)."""
+    """`$PM_SESSION_NAME` 최우선 — alias·lease·local.conf session= 무시 (ADR-0040)."""
     conf = _bind_tmp_repo(pc, monkeypatch, tmp_path)
     monkeypatch.setenv("PM_SESSION_NAME", "from-pm-env")
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
     conf.write_text("session=from-conf\n", encoding="utf-8")
+    _write_ledger_pc(tmp_path, {"session": "leased-sess"})
     assert pc._default_session() == "from-pm-env"
 
 
 def test_default_session_claude_env_is_alias(pc, monkeypatch, tmp_path):
-    """`$CLAUDE_SESSION_NAME` 단독 → deprecated alias 로 조용히 동작 (T-0073 back-compat)."""
+    """`$CLAUDE_SESSION_NAME` 단독 → deprecated alias 로 조용히 동작 (back-compat)."""
     conf = _bind_tmp_repo(pc, monkeypatch, tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
@@ -1357,15 +1437,44 @@ def test_default_session_claude_env_is_alias(pc, monkeypatch, tmp_path):
 
 
 def test_default_session_pm_wins_over_claude(pc, monkeypatch, tmp_path):
-    """둘 다 설정 시 `PM_SESSION_NAME` 승 (T-0073 마이그레이션 중 명시 우선)."""
+    """둘 다 설정 시 `PM_SESSION_NAME` 승 (마이그레이션 중 명시 우선)."""
     _bind_tmp_repo(pc, monkeypatch, tmp_path)
     monkeypatch.setenv("PM_SESSION_NAME", "new")
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "old")
     assert pc._default_session() == "new"
 
 
+def test_default_session_single_lease_derives_session(pc, monkeypatch, tmp_path):
+    """env 없음·leased 슬롯 1개 → 그 session 유도 (ADR-0040 count-based·board 동형)."""
+    _bind_tmp_repo(pc, monkeypatch, tmp_path)
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    _write_ledger_pc(tmp_path, {"session": "project_manager_1"})
+    assert pc._default_session() == "project_manager_1"
+
+
+def test_default_session_single_lease_wins_over_local_conf(pc, monkeypatch, tmp_path):
+    """단일-lease 값과 local.conf 값이 다르면 유도값(lease) 승."""
+    conf = _bind_tmp_repo(pc, monkeypatch, tmp_path)
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    conf.write_text("session=stale-conf\n", encoding="utf-8")
+    _write_ledger_pc(tmp_path, {"session": "derived-1"})
+    assert pc._default_session() == "derived-1"
+
+
+def test_default_session_two_leases_skips_local_conf_returns_none(pc, monkeypatch, tmp_path):
+    """leased ≥2 (모호) → local.conf 건너뜀 → None (silent 오귀속 차단·ADR-0040)."""
+    conf = _bind_tmp_repo(pc, monkeypatch, tmp_path)
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    conf.write_text("session=some-conf\n", encoding="utf-8")
+    _write_ledger_pc(tmp_path, {"session": "a_1"}, {"session": "b_1"})
+    assert pc._default_session() is None
+
+
 def test_default_session_reads_local_conf_session(pc, monkeypatch, tmp_path):
-    """env 없음 → local.conf `session=` (board.session_name 3층과 동형·must-fix)."""
+    """env·lease 없음(장부 부재 = solo) → local.conf `session=` (legacy 폴백·must-fix)."""
     conf = _bind_tmp_repo(pc, monkeypatch, tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -1373,14 +1482,16 @@ def test_default_session_reads_local_conf_session(pc, monkeypatch, tmp_path):
     assert pc._default_session() == "foo"
 
 
-def test_default_session_falls_back_to_host_pid(pc, monkeypatch, tmp_path):
-    """env(둘 다)·local.conf session= 모두 없음 → `<host>-<pid>` (4층 폴백)."""
-    import os
-    import socket
-    _bind_tmp_repo(pc, monkeypatch, tmp_path)  # local.conf 없음
+def test_default_session_solo_unbound_returns_none(pc, monkeypatch, tmp_path):
+    """env·lease·local.conf session= 모두 없음 → None (구 host-pid 폴백 제거·ADR-0040).
+
+    surface(cmd_status/whoami·required=False)가 이 None 을 "(비바인딩)" 으로 표시한다 —
+    `<host>-<pid>` 는 세션-귀속 아닌 국소 용처(worktree_pool lease 취득)에만 잔존.
+    """
+    _bind_tmp_repo(pc, monkeypatch, tmp_path)  # local.conf 없음·장부 없음
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    assert pc._default_session() == f"{socket.gethostname()}-{os.getpid()}"
+    assert pc._default_session() is None
 
 
 def test_local_conf_session_ignores_comments_and_blanks(pc, monkeypatch, tmp_path):
@@ -1443,7 +1554,8 @@ def test_main_repo_add_without_test_routes_and_registers(pc, monkeypatch, tmp_pa
                         lambda name, filename: board if name == "board" else None)
     monkeypatch.setattr(pc, "_real_clone_runner", lambda: gitr)
     monkeypatch.setattr(pc, "REPOS_DIR", tmp_path / ".repos")
-    rc = pc.main(["repo", "add", "svc", "--git", "git@h:me/svc.git"])
+    # --owner me — 라우팅 검증(owner 해소 대상 아님)·미바인딩 fail-loud(ADR-0040) 회피.
+    rc = pc.main(["repo", "add", "svc", "--git", "git@h:me/svc.git", "--owner", "me"])
     assert rc == 0
     assert board.append_calls[0]["test_cmd"] is None
 

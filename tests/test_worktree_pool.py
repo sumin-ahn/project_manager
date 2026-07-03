@@ -949,9 +949,12 @@ def test_bind_slot_leaves_other_slots_untouched(wp):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# _default_session — board.session_name 과 동형 우선순위 (T-0066 must-fix)
-# env > local.conf session= > <host>-<pid>. local.conf 레이어가 빠지면 저장측
-# (이 모듈)과 매칭측(board.session_name)이 어긋나 per-slot test_cmd 가 미스된다.
+# _default_session — board.session_name 과 동형 count-based 유도 (ADR-0040 D1·T-0073)
+# env > lease 장부 leased 1개면 그 session(단일-lease 유도) > (장부 부재·leased 0 = solo)
+# local.conf session= > <host>-<pid>. leased ≥2 면 local.conf 건너뜀. board 와 tail 만
+# 다르다 — 여기는 lease *취득*의 국소 임시 명명이라 미해소를 <host>-<pid> 로 폴백한다
+# (host-pid 는 세션-귀속 아닌 국소 용처에만 잔존·ADR-0040). 저장측(이 모듈)과 매칭측
+# (board.session_name)이 어긋나면 per-slot test_cmd 가 미스된다(T-0066 must-fix).
 # ════════════════════════════════════════════════════════════════════════
 
 def _write_local_conf(proj, text):
@@ -997,12 +1000,54 @@ def test_default_session_reads_local_conf_session(wp, proj, monkeypatch):
     assert wp._default_session() == "foo"
 
 
-def test_default_session_falls_back_to_host_pid(wp, proj, monkeypatch):
-    """env(둘 다)·local.conf session= 모두 없음 → `<host>-<pid>` (4층 폴백)."""
+def test_default_session_single_lease_derives_session(wp, proj, monkeypatch):
+    """env·conf 없음·leased 슬롯 1개 → 그 session 유도 (ADR-0040 count-based·board 동형)."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    _seed(wp, _lease(wp, slot="work/project_manager_1", repo="project_manager",
+                     session="project_manager_1", state="leased"))
+    assert wp._default_session() == "project_manager_1"
+
+
+def test_default_session_single_lease_wins_over_local_conf(wp, proj, monkeypatch):
+    """단일-lease 값과 local.conf 값이 다르면 유도값(lease) 승 (저장 쪽지보다 파생 진실)."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    _write_local_conf(proj, "session=stale-conf\n")
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="derived-1", state="leased"))
+    assert wp._default_session() == "derived-1"
+
+
+def test_default_session_idle_leases_not_counted(wp, proj, monkeypatch):
+    """idle 행은 count 대상 아님 — leased 1개(+idle)면 그 leased session 유도."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="live_1", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", session="", pid=0, state="idle"))
+    assert wp._default_session() == "live_1"
+
+
+def test_default_session_two_leases_skips_conf_falls_back_host_pid(wp, proj, monkeypatch):
+    """leased ≥2 (모호) → local.conf 건너뜀 → `<host>-<pid>` (board 는 None·여긴 국소 폴백).
+
+    host-pid 최종 폴백은 세션-귀속 아닌 국소 용처(lease 취득 임시 명명)에만 잔존한다(ADR-0040)
+    — board.session_name 은 같은 조건에서 None(surface)/fail-loud(required)로 간다(tail 상이).
+    """
     import socket
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    # local.conf 없음(또는 session= 없음).
+    _write_local_conf(proj, "session=some-conf\n")   # 있어도 무시(모호 → 건너뜀)
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="a_1", state="leased"),
+          _lease(wp, slot="work/B_1", repo="B", session="b_1", state="leased"))
+    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
+
+
+def test_default_session_falls_back_to_host_pid(wp, proj, monkeypatch):
+    """env(둘 다)·lease·local.conf session= 모두 없음 → `<host>-<pid>` (국소 폴백 잔존)."""
+    import socket
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    # 장부 없음(leased 0)·local.conf 없음.
     assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
 
 
