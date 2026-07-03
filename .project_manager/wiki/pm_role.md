@@ -211,6 +211,21 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
 - **회사 repo 무영향**: 훅은 우리 multi-PM의 bare 미러(`.repos/<repo>.git`) `core.hooksPath`
   client-side 가드일 뿐 — 회사 서버 ref·사용자 클론은 무변경.
 
+### 릴리즈 절차 (순서 · ADR-0039)
+
+보호 브랜치(`main`)로 릴리즈를 낼 때 다음 순서를 지킨다:
+
+1. **`board.py livegate record`** — 릴리즈 라이브 wave 를 실측해 green(수집 pin 충족)을 push
+   대상 rev 에 기록한다 (손기록 없음·보호훅이 소비).
+2. **CHANGELOG 절 확정** — 루트 `CHANGELOG.md` 의 `[Unreleased]` 를 `## [X.Y.Z] - YYYY-MM-DD`
+   로 확정한다. 채택자-관점 Added/Changed/Fixed 요약(3~8줄·티켓 번호/내부 세션 용어 유입 금지)
+   + 새 `[Unreleased]` 빈 절을 위에 추가.
+3. **main push** — 사용자 승인 게이트 + `PM_ALLOW_PROTECTED_PUSH=1` (보호훅이 `livegate check`
+   green 을 추가 요구·위 §보호 브랜치 가드).
+4. **annotated tag `vX.Y.Z`** push.
+5. **(gh 인증 시)** `gh release create vX.Y.Z --notes-file <CHANGELOG 해당 절 추출>` — GitHub
+   Release 생성. gh 미인증이면 생략(사용자 별도 처리).
+
 ## 인계 후 PM 세션 첫 turn 의 권장 액션
 
 `/pm-bootstrap` 의 markdown dump 를 받은 직후 PM 이 사용자에게 줄 보고 형식 (차수·인계 본문·남은작업은
