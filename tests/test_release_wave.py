@@ -778,17 +778,22 @@ def test_multirepo_wave_prompt_has_per_repo_mechanics():
 
 
 # ── marker-수집 가드 (기계·항상 실행·@release/skipif 무관 — 매 회귀 통과 · T-0190) ────────────
-# 릴리즈/출하 게이트는 `pytest -m release`·`-m shipping` 으로 라이브 서브셋을 선택한다. 마커가
-# 소실(데코레이터 삭제)·개명(다른 이름)되면 그 테스트는 selection 에서 조용히 빠지고, 게이트는
-# "0개 수집·exit5" 를 false-green 으로 삼킨다 — pytest.ini strict-marker 는 *오타* 만 잡지 *소실*
-# 은 못 잡는다. 그래서 마커 달린 테스트 함수 수를 pin 해, 마커가 사라지거나 이름이 바뀌면 이
-# 기계 가드가 즉시 red 로 잡는다(T-0159 보완). 기대값은 테스트가 늘 때 의도적으로 함께 갱신한다.
+# 릴리즈 게이트는 `pytest -m release` 로 라이브 서브셋을 선택한다. 마커가 소실(데코레이터 삭제)·
+# 개명(다른 이름)되면 그 테스트는 selection 에서 조용히 빠지고, 게이트는 "0개 수집·exit5" 를
+# false-green 으로 삼킨다 — pytest.ini strict-marker 는 *오타* 만 잡지 *소실* 은 못 잡는다. 그래서
+# 마커 달린 테스트 함수 수를 pin 해, 마커가 사라지거나 이름이 바뀌면 이 기계 가드가 즉시 red 로
+# 잡는다(T-0159 보완). 기대값은 테스트가 늘 때 의도적으로 함께 갱신한다.
+# release tier 는 ADR-0039 D1 로 라이브 tier 를 하나로 통합한 것이라, 마커가 이 파일(full/multirepo/
+# hard-stop)과 test_fresh_adopter_runtime_smoke.py(pm_update self-update 경로 2케이스) 두 파일에
+# 걸쳐 있다 — AST 수집은 두 파일을 모두 스캔한다.
 
-_RELEASE_TEST_FILE = Path(__file__)
-_SHIPPING_TEST_FILE = Path(__file__).parent / "test_fresh_adopter_runtime_smoke.py"
-# 이 두 값은 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
-_EXPECTED_RELEASE_TESTS = 5   # 기존 4(full/multirepo × claude/opencode) + 신규 1(hard-stop).
-_EXPECTED_SHIPPING_TESTS = 6  # test_fresh_adopter_runtime_smoke 의 라이브 shipping 테스트.
+_RELEASE_TEST_FILES = (
+    Path(__file__),
+    Path(__file__).parent / "test_fresh_adopter_runtime_smoke.py",
+)
+# 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
+# 5(이 파일: full/multirepo × claude/opencode + hard-stop) + 2(runtime_smoke: pm_update opencode/claude).
+_EXPECTED_RELEASE_TESTS = 7
 
 
 def _pytest_marker_name(decorator) -> str | None:
@@ -821,28 +826,16 @@ def _count_marked_tests(path: Path, marker: str) -> int:
 
 
 def test_release_marker_count_is_pinned():
-    """`release` 마커 테스트 수가 고정값과 일치 — 마커 소실/개명 시 게이트 false-green 방어.
+    """`release` 마커 테스트 수(두 파일 합)가 고정값과 일치 — 마커 소실/개명 시 게이트 false-green 방어.
 
     근거(2026-07-02 실측): 릴리즈 게이트가 wrong-cwd + 잔재 tests/ 로 0개 수집·exit5 를 조용히
     내는 false-green 이 실제 발생. `-m release` selection 에서 마커가 빠진 테스트는 조용히 안 돌고,
     그 부재를 게이트가 못 본다. 이 수집-수 pin 이 마커 소실/개명 클래스를 red 로 세운다(T-0159 보완).
+    ADR-0039 로 라이브 tier 가 하나(release)라, 두 파일(_RELEASE_TEST_FILES)의 마커를 합산해 pin 한다.
     """
-    actual = _count_marked_tests(_RELEASE_TEST_FILE, "release")
+    actual = sum(_count_marked_tests(f, "release") for f in _RELEASE_TEST_FILES)
     assert actual == _EXPECTED_RELEASE_TESTS, (
         f"`release` 마커 테스트 수 {actual} != 기대 {_EXPECTED_RELEASE_TESTS} — 마커 소실/개명 "
         f"의심(게이트 selection 에서 조용히 누락될 위험). 라이브 테스트를 의도적으로 늘렸다면 "
         f"_EXPECTED_RELEASE_TESTS 를 함께 갱신하라."
-    )
-
-
-def test_shipping_marker_count_is_pinned():
-    """`shipping` 마커 테스트 수가 고정값과 일치 — 출하 게이트의 마커 소실/개명 false-green 방어.
-
-    release 짝(`test_release_marker_count_is_pinned`)과 동형 — 근거는 그 docstring 참조. 대상은
-    출하 라이브 테스트가 사는 test_fresh_adopter_runtime_smoke.py 다(shipping 마커 단일 소재).
-    """
-    actual = _count_marked_tests(_SHIPPING_TEST_FILE, "shipping")
-    assert actual == _EXPECTED_SHIPPING_TESTS, (
-        f"`shipping` 마커 테스트 수 {actual} != 기대 {_EXPECTED_SHIPPING_TESTS} — 마커 소실/개명 "
-        f"의심. 출하 라이브 테스트를 의도적으로 늘렸다면 _EXPECTED_SHIPPING_TESTS 를 함께 갱신하라."
     )

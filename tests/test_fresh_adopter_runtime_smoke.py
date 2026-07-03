@@ -1,18 +1,23 @@
-"""Fresh-adopter RUNTIME smoke — 실 opencode 가 출하 문서로 PM 을 운영하나 (기본 skip · on-demand).
+"""Fresh-adopter *update-path* 라이브 검증 — self-update 후에도 실 LLM 이 출하 문서로 PM 을 운영하나
+(release tier · 기본 skip · 사용자 릴리즈 트리거).
 
-테스트 3-tier 의 Tier 2(런타임). 기계층 e2e(`test_fresh_adopter_e2e`)는 harness-중립 engine 만
-구동한다. 이 테스트는 그 위 *런타임* 층 — **실 opencode(agentic·로컬 ollama)가 import 된 adopter 의
-`AGENTS.md` 를 읽고 `board.py` 로 ticket 을 실제 발행** 하는지(= LLM 이 출하 문서로 PM 을 운영) 검증한다.
+ADR-0039 D1 이전엔 이 파일이 구 shipping tier(bootstrap·lifecycle·update 6케이스·pm_handoff 자동
+차단)였다. 라이브 tier 를 release 하나로 통합하며 bootstrap/lifecycle 4케이스는
+release full wave(`test_release_wave`·new→claim→위임→complete)가 시나리오 superset 이라 폐기하고,
+shipping 고유분인 **pm_update self-update 경로 2케이스**(opencode/claude)만 `release` tier 로 승격했다
+— 이 파일에 남은 라이브 테스트다.
 
-비결정·느림·라이브 → relay smoke 와 같은 `PM_ORCH_LIVE` 게이트(기본 skip·`PM_ORCH_LIVE=1` 일 때만).
-로컬 ollama 라 API 과금 0. 프롬프트에 board.py 경로를 *주지 않는다* — adopter 가 문서만으로 board
-도구를 찾아 운영해야 통과(= 진짜 문서 운영성). side-effect(ticket 파일 생성)를 단언하므로 LLM 출력
-phrasing 비결정에 강건하고, 모델이 운영 못하면 정직하게 fail 한다(기존 live smoke 철학).
+두 테스트는 import → pm_update(self-update) → 실 LLM 이 *post-update* 진입문서로 ticket 발행을 친다.
+import smoke·full wave 가 못 친 update 경로(opencode: .opencode/* @target-owned graceful skip /
+claude: .claude/* @render 재렌더·leak 0)를 커버한다. 비결정·느림·라이브 → release wave 와 같은
+`PM_ORCH_LIVE_RELEASE` 게이트(기본 skip·`PM_ORCH_LIVE_RELEASE=1` 일 때만). 프롬프트에 board.py 경로를
+*주지 않는다* — adopter 가 문서만으로 board 도구를 찾아 운영해야 통과(= 문서 운영성). side-effect
+(ticket 파일 생성)를 단언하므로 LLM 출력 phrasing 비결정에 강건하다.
 
-이 테스트의 존재 자체가 "런타임 검증은 자동화 불가·사용자 직접" 이 틀렸음을 박제한다 — Linux headless
-로 가능(2026-06-20 실증). **양 harness** 커버: opencode(로컬 ollama=과금 0·`--dir` 핀)·claude
-(`claude-sonnet-4-6`·API 과금·cwd 존중). 남는 사용자 게이트는 Windows 플랫폼 특이점(CP949·py 런처·
-회사 Pro 모델)뿐.
+이 파일은 그 외 hermetic env 격리 가드(라이브 미실행·매 회귀 통과)도 보유한다 — 라이브 LLM
+subprocess 가 부모 env 통째 상속이 아니라 화이트리스트(`_live_env`)로 뜨는지 단언한다. **양 harness**
+커버: opencode(로컬/cloud ollama=과금 0·`--dir` 핀)·claude(`claude-sonnet-4-6`·API 과금·cwd 존중).
+남는 사용자 게이트는 Windows 플랫폼 특이점(CP949·py 런처·회사 Pro 모델)뿐.
 """
 from __future__ import annotations
 
@@ -28,7 +33,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
+PM_ORCH_LIVE_RELEASE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 # opencode: ollama cloud 모델(qwen3.5:397b-cloud) — 이 박스 로컬 모델 불가(PM 48차)·env override 가능.
 LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/qwen3.5:397b-cloud")
 # claude: sonnet-4-6(사용자 지정·API 과금) — env override.
@@ -36,7 +41,7 @@ CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 RUNTIME_TIMEOUT = int(os.environ.get("PM_ADOPTER_RUNTIME_TIMEOUT", "300"))
 
 # LLM subprocess env 화이트리스트 — 부모 셸의 모델 선택 변수(PM_ORCH_LIVE_MODEL·
-# PM_ORCH_LIVE_CLAUDE_MODEL·PM_ORCH_LIVE)가 하위 LLM 으로 누수하면 모델 선택이 부모 env
+# PM_ORCH_LIVE_CLAUDE_MODEL·PM_ORCH_LIVE_RELEASE)가 하위 LLM 으로 누수하면 모델 선택이 부모 env
 # 의존(비-hermetic·재현성 저하)이 된다. 부모 환경을 통째 상속하지 않고 LLM 바이너리 동작에
 # 필수인 것만 통과시킨다. 모델 값은 _live_env(model=...) 가 테스트 의도값으로 명시 set.
 # Windows 시스템 env(SystemRoot·ComSpec·PATHEXT·APPDATA 등)는 프로세스 기동 필수 —
@@ -55,7 +60,7 @@ def _live_env(model: str) -> dict[str, str]:
 
     필수 환경(PATH/HOME/로케일·LLM 바이너리 동작에 필요)만 부모에서 통과시키고, 테스트가
     의도한 모델을 `PM_ORCH_LIVE_MODEL` 로 직접 박는다(부모 env 폴백에 의존하지 않음). 부모
-    셸에 set 된 PM_ORCH_LIVE_MODEL·PM_ORCH_LIVE_CLAUDE_MODEL·PM_ORCH_LIVE 는 화이트리스트
+    셸에 set 된 PM_ORCH_LIVE_MODEL·PM_ORCH_LIVE_CLAUDE_MODEL·PM_ORCH_LIVE_RELEASE 는 화이트리스트
     밖이라 안 흘러든다 — 누가/어디서 돌려도 같은 모델로 동작(hermetic).
     """
     env = {k: os.environ[k] for k in _LIVE_ENV_PASSTHROUGH if k in os.environ}
@@ -73,23 +78,6 @@ def _make_prompt(entry_doc: str) -> str:
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
         "works. Then create exactly one ticket titled 'runtime smoke' using the project's board "
         "tool (touches README.md). After it is created, reply with the new ticket id."
-    )
-
-
-def _make_lifecycle_prompt(entry_doc: str) -> str:
-    """진입문서만 보고 ticket 의 **full 라이프사이클**(new→claim→complete)을 운영하라는 프롬프트.
-
-    board.py 경로를 *주지 않는다* — adopter 가 문서만으로 도구를 찾아 new·claim·complete 와
-    complete sync-gate(log entry·--tests-pass 류)까지 자력으로 운영해야 통과(= 진짜 문서 운영성).
-    side-effect(ticket 파일이 open→claimed→done 으로 이동)를 단언하므로 출력 phrasing 비결정에 강건.
-    """
-    return (
-        f"You are the PM for this project. Read {entry_doc} to learn how the project board "
-        "works. Then run a full ticket lifecycle using the project's board tool: (1) create "
-        "exactly one ticket titled 'lifecycle smoke' (touches README.md), (2) claim it, "
-        "(3) mark it complete/done. The complete step has a sync gate — satisfy it however the "
-        "docs say (e.g. a log entry and the tests-pass / untested flag). After the ticket is "
-        "marked done, reply with the ticket id."
     )
 
 
@@ -139,70 +127,9 @@ def _tickets_in(dest: Path, status: str) -> set[str]:
     return {p.name for p in status_dir.glob("T-*.md")} if status_dir.exists() else set()
 
 
-@pytest.mark.shipping
-@pytest.mark.skipif(
-    not PM_ORCH_LIVE or not shutil.which("opencode"),
-    reason="runtime smoke — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
-)
-def test_live_opencode_adopter_bootstraps_and_creates_ticket(tmp_path):
-    """실 opencode(agentic·ollama)가 adopter `AGENTS.md` 만 보고 `board.py` 로 ticket 을 발행한다."""
-    dest = _import_adopter(tmp_path, "opencode")
-    open_dir = dest / ".project_manager" / "wiki" / "tickets" / "open"
-    before = {p.name for p in open_dir.glob("T-*.md")}
-
-    # 실 opencode agentic 구동 — board.py 경로 미제공(docs 서 찾게). 로컬 ollama·과금 0.
-    # **`--dir` 로 프로젝트 루트를 adopter 에 명시 핀** — subprocess cwd 만으론 opencode 가
-    # PWD(부모=repo)로 루트를 오판해 *엉뚱한 트리*(상위 repo)에서 작동한다(relay driver 도 --dir 격리).
-    proc = subprocess.run(
-        ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
-         _make_prompt("AGENTS.md")],
-        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
-        env=_live_env(LIVE_MODEL),
-    )
-
-    created = {p.name for p in open_dir.glob("T-*.md")} - before
-    assert created, (
-        "실 opencode 가 adopter 문서로 ticket 을 발행하지 못함 — 런타임 운영 실패.\n"
-        f"--- opencode stdout(tail) ---\n{proc.stdout[-2000:]}\n"
-        f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
-    )
-    assert _board_list_recognizes_ticket(dest), "board.py list 가 실 opencode 발행 ticket 미인식"
-
-
-@pytest.mark.shipping
-@pytest.mark.skipif(
-    not PM_ORCH_LIVE or not shutil.which("claude"),
-    reason="runtime smoke — PM_ORCH_LIVE=1 + claude CLI 필요(API 과금). 기본 skip·on-demand.",
-)
-def test_live_claude_adopter_bootstraps_and_creates_ticket(tmp_path):
-    """실 claude(`claude-sonnet-4-6`·agentic)가 adopter `CLAUDE.md` 만 보고 `board.py` 로 ticket 발행.
-
-    claude 는 opencode 와 달리 subprocess cwd 를 존중한다(`--dir` 불요·프로브 실증·repo 오염 0).
-    `--dangerously-skip-permissions` = throwaway tmp adopter 격리라 안전(실 repo 무영향). API 과금.
-    """
-    dest = _import_adopter(tmp_path, "claude")
-    open_dir = dest / ".project_manager" / "wiki" / "tickets" / "open"
-    before = {p.name for p in open_dir.glob("T-*.md")}
-
-    proc = subprocess.run(
-        ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
-         "--dangerously-skip-permissions", _make_prompt("CLAUDE.md")],
-        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
-        env=_live_env(CLAUDE_MODEL),
-    )
-
-    created = {p.name for p in open_dir.glob("T-*.md")} - before
-    assert created, (
-        "실 claude 가 adopter 문서로 ticket 을 발행하지 못함 — 런타임 운영 실패.\n"
-        f"--- claude stdout(tail) ---\n{proc.stdout[-2000:]}\n"
-        f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
-    )
-    assert _board_list_recognizes_ticket(dest), "board.py list 가 실 claude 발행 ticket 미인식"
-
-
 # ── 채택자 *update* 경로 라이브 검증 (T-0133·activation 이 update 를 깨지 않는가) ──────────────
-# 위 두 테스트는 import+operate 만 친다. 아래 두 테스트는 그 사이 *채택자 self-update*(pm_update)를
-# 끼워, 활성화(@render·@target-owned·모델 폴백 중화)가 바꾼 *update 경로*를 라이브로 검증한다:
+# 아래 두 테스트는 import 와 operate 사이에 *채택자 self-update*(pm_update)를 끼워, 활성화
+# (@render·@target-owned·모델 폴백 중화)가 바꾼 *update 경로*를 라이브로 검증한다:
 # import → pm_update(self-update) → 실 LLM 이 *post-update* 진입문서로 ticket 발행. import smoke 가
 # 못 친 update 경로(opencode: .opencode/* @target-owned graceful skip / claude: .claude/* @render 재렌더)를
 # 커버한다(회귀·rc 실측·codex 의 *기계* 검증 위에 *런타임* 층 1개 더).
@@ -228,10 +155,10 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
     )
 
 
-@pytest.mark.shipping
+@pytest.mark.release
 @pytest.mark.skipif(
-    not PM_ORCH_LIVE or not shutil.which("opencode"),
-    reason="runtime smoke — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
+    not PM_ORCH_LIVE_RELEASE or not shutil.which("opencode"),
+    reason="release wave — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·사용자 트리거.",
 )
 def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     """opencode 채택자가 self-update 후에도 안 깨지고 board 운영 가능 (.opencode/* @target-owned skip 경로)."""
@@ -265,10 +192,10 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     assert _board_list_recognizes_ticket(dest), "pm_update 후 board.py list 가 실 opencode 발행 ticket 미인식"
 
 
-@pytest.mark.shipping
+@pytest.mark.release
 @pytest.mark.skipif(
-    not PM_ORCH_LIVE or not shutil.which("claude"),
-    reason="runtime smoke — PM_ORCH_LIVE=1 + claude CLI 필요(API 과금). 기본 skip·on-demand.",
+    not PM_ORCH_LIVE_RELEASE or not shutil.which("claude"),
+    reason="release wave — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
 )
 def test_live_claude_adopter_survives_pm_update_then_operates(tmp_path):
     """claude 채택자가 self-update(.claude/* @render 재렌더) 후에도 안 깨지고 board 운영 가능."""
@@ -301,70 +228,6 @@ def test_live_claude_adopter_survives_pm_update_then_operates(tmp_path):
     assert _board_list_recognizes_ticket(dest), "pm_update 후 board.py list 가 실 claude 발행 ticket 미인식"
 
 
-# ── 출하 테스트 라이브 커버 확장: full 티켓 라이프사이클 (new→claim→finish · T-0150) ──────────────
-# 위 테스트들은 *new*(발행)까지만 라이브로 친다. 아래 두 테스트는 실 LLM 이 진입문서만 보고
-# board.py 로 **new→claim→complete** 전 라이프사이클을 운영하는지 검증한다(spike §3.2). 단언은
-# side-effect(ticket 파일이 open→claimed→done 으로 이동)라 출력 phrasing 비결정에 강건하다 —
-# complete 의 sync-gate(log entry·--tests-pass 류)까지 문서만 보고 자력 운영해야 통과한다.
-
-
-def _assert_full_lifecycle(dest: Path, proc: subprocess.CompletedProcess, harness: str) -> None:
-    """라이프사이클 side-effect 단언 — ticket 1개가 done/ 에 도달(open·claimed 잔류 없음).
-
-    done/ 도달이 핵심 단언(open→claimed→done 전이 완주). complete sync-gate 까지 통과해야만
-    done/ 에 ticket 이 생기므로, 이 단언이 곧 full 라이프사이클 운영성을 증명한다.
-    """
-    done_tickets = _tickets_in(dest, "done")
-    tail = (
-        f"--- {harness} stdout(tail) ---\n{proc.stdout[-2000:]}\n"
-        f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
-    )
-    assert done_tickets, (
-        f"실 {harness} 가 ticket 을 done/ 까지 운영하지 못함 — full 라이프사이클(new→claim→"
-        f"complete) 실패.\nopen={_tickets_in(dest, 'open')} claimed={_tickets_in(dest, 'claimed')}\n"
-        + tail
-    )
-    assert _board_list_recognizes_ticket(dest), f"board.py list 가 실 {harness} 운영 ticket 미인식"
-
-
-@pytest.mark.shipping
-@pytest.mark.skipif(
-    not PM_ORCH_LIVE or not shutil.which("opencode"),
-    reason="runtime smoke — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
-)
-def test_live_opencode_adopter_runs_full_ticket_lifecycle(tmp_path):
-    """실 opencode(agentic·ollama)가 `AGENTS.md` 만 보고 ticket new→claim→complete 를 운영한다."""
-    dest = _import_adopter(tmp_path, "opencode")
-    proc = subprocess.run(
-        ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
-         _make_lifecycle_prompt("AGENTS.md")],
-        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
-        env=_live_env(LIVE_MODEL),
-    )
-    _assert_full_lifecycle(dest, proc, "opencode")
-
-
-@pytest.mark.shipping
-@pytest.mark.skipif(
-    not PM_ORCH_LIVE or not shutil.which("claude"),
-    reason="runtime smoke — PM_ORCH_LIVE=1 + claude CLI 필요(API 과금). 기본 skip·on-demand.",
-)
-def test_live_claude_adopter_runs_full_ticket_lifecycle(tmp_path):
-    """실 claude(`claude-sonnet-4-6`·agentic)가 `CLAUDE.md` 만 보고 ticket new→claim→complete 운영.
-
-    claude 는 subprocess cwd 를 존중한다(`--dir` 불요). `--dangerously-skip-permissions` =
-    throwaway tmp adopter 격리라 안전(실 repo 무영향). API 과금.
-    """
-    dest = _import_adopter(tmp_path, "claude")
-    proc = subprocess.run(
-        ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
-         "--dangerously-skip-permissions", _make_lifecycle_prompt("CLAUDE.md")],
-        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
-        env=_live_env(CLAUDE_MODEL),
-    )
-    _assert_full_lifecycle(dest, proc, "claude")
-
-
 # ── env 격리 가드 (라이브 실행 없이·hermetic — T-0155) ──────────────────────────
 # 위 라이브 테스트들은 LLM subprocess 를 `env=_live_env(model)` 로 띄운다 — 부모 env 통째 상속
 # 대신 화이트리스트. 아래 가드는 부모 셸에 모델 선택 변수를 오염시킨 채로도 그 부모 값이 LLM env
@@ -373,7 +236,7 @@ def test_live_claude_adopter_runs_full_ticket_lifecycle(tmp_path):
 # 부모 셸에서 새면 모델 선택을 비-hermetic 하게 만드는 누수 변수 — 단일 진실.
 # 가드들이 이 목록을 순회해 오염·누수0 을 단언하므로, 미래에 누수 변수가 늘면 여기 한 곳만
 # 갱신하면 가드가 자동 커버한다. 각 값에 "leaked" 토큰을 박아 누수 시 env 에서 검출.
-_LEAK_VARS = ("PM_ORCH_LIVE_MODEL", "PM_ORCH_LIVE_CLAUDE_MODEL", "PM_ORCH_LIVE")
+_LEAK_VARS = ("PM_ORCH_LIVE_MODEL", "PM_ORCH_LIVE_CLAUDE_MODEL", "PM_ORCH_LIVE_RELEASE")
 _LEAK_SENTINEL = "leaked-by-parent"
 
 
@@ -426,7 +289,7 @@ def test_live_env_passthrough_is_explicit_whitelist(monkeypatch):
 
 
 def test_live_calls_use_isolated_env(monkeypatch):
-    """라이브 호출 6개가 부모 env 통째 상속이 아니라 _live_env(화이트리스트)로 LLM 을 띄운다.
+    """라이브 호출 2개가 부모 env 통째 상속이 아니라 _live_env(화이트리스트)로 LLM 을 띄운다.
 
     실 LLM 을 띄우지 않고(subprocess.run 을 가로채) 각 라이브 테스트가 LLM 호출에 넘기는 env 가
     부모 누수 변수를 안 담음을 단언한다. 격리(env=_live_env)를 떼면 부모 통째 상속이 되어 fail
@@ -452,17 +315,13 @@ def test_live_calls_use_isolated_env(monkeypatch):
 
     import importlib
     mod = importlib.import_module(__name__)
-    monkeypatch.setattr(mod, "PM_ORCH_LIVE", True)
+    monkeypatch.setattr(mod, "PM_ORCH_LIVE_RELEASE", True)
 
-    # tmp_path 대신 직접 만든 임시 디렉토리로 6개 라이브 테스트 함수를 spy 하에 구동.
+    # tmp_path 대신 직접 만든 임시 디렉토리로 2개 라이브 테스트 함수를 spy 하에 구동.
     import tempfile
     live_tests = [
-        test_live_opencode_adopter_bootstraps_and_creates_ticket,
-        test_live_claude_adopter_bootstraps_and_creates_ticket,
         test_live_opencode_adopter_survives_pm_update_then_operates,
         test_live_claude_adopter_survives_pm_update_then_operates,
-        test_live_opencode_adopter_runs_full_ticket_lifecycle,
-        test_live_claude_adopter_runs_full_ticket_lifecycle,
     ]
     for fn in live_tests:
         with tempfile.TemporaryDirectory() as td:
