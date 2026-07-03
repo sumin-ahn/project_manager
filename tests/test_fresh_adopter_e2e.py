@@ -9,7 +9,7 @@ push(pre-push 훅)에 자동 포함된다.
 
 **기계층 게이트다.** harness-중립 engine(board·pm_import)만 구동 — 라이브 LLM·네트워크 0(토큰 0·
 결정적). claude/opencode *LLM 이 문서를 읽고 실제 PM 을 운영* 하는 **런타임** 검증은 라이브 harness 가
-필요해 여기서 하지 않는다 (사용자 환경 파일럿 후속 — relay live smoke[`PM_ORCH_LIVE`·skip]와 같은
+필요해 여기서 하지 않는다 (사용자 환경 파일럿 후속 — relay live smoke[`PM_RELAY_LIVE`·skip]와 같은
 클래스). `--fill manual` 이라 `{{OPENCODE_PRO_MODEL}}`·자유서술 placeholder 는 TODO 로 남는 게
 정상(LLM-fill 경로는 라이브라 별개)이며 lint/workflow 에 무영향.
 """

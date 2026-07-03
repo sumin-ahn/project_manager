@@ -391,14 +391,14 @@ def test_supervisor_with_opencode_driver_rotation(orch, driver_mod, tmp_path):
 
 # ── live smoke (실 opencode · 기본 skip · 로컬 ollama) ────────────────────────
 
-PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
+PM_RELAY_LIVE = os.environ.get("PM_RELAY_LIVE") == "1"
 # 로컬 ollama 모델 — 가벼운 것. 환경변수로 override 가능.
 LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/gemma4:26b")
 
 
 @pytest.mark.skipif(
-    not PM_ORCH_LIVE or not shutil.which("opencode"),
-    reason="live smoke — PM_ORCH_LIVE=1 + opencode CLI 필요(기본 skip·CI green 불변).",
+    not PM_RELAY_LIVE or not shutil.which("opencode"),
+    reason="live smoke — PM_RELAY_LIVE=1 + opencode CLI 필요(기본 skip·CI green 불변).",
 )
 def test_live_opencode_sid_marker_identity_smoke(orch, driver_mod, tmp_path):
     """실 opencode 1회 e2e: spawn → relay(≥2턴) → marker(driver-파싱 sid 로) → swap → relay.

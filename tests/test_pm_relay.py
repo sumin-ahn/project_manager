@@ -548,12 +548,12 @@ def test_claude_driver_parser_flags(driver_mod):
 
 # ── 통합 스모크 (실 claude · 기본 skip · frugal haiku) ────────────────────────
 
-PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
+PM_RELAY_LIVE = os.environ.get("PM_RELAY_LIVE") == "1"
 
 
 @pytest.mark.skipif(
-    not PM_ORCH_LIVE or not shutil.which("claude"),
-    reason="통합 스모크 — PM_ORCH_LIVE=1 + claude CLI 필요(기본 skip·CI green 불변).",
+    not PM_RELAY_LIVE or not shutil.which("claude"),
+    reason="통합 스모크 — PM_RELAY_LIVE=1 + claude CLI 필요(기본 skip·CI green 불변).",
 )
 def test_live_spawn_relay_swap_smoke(orch, driver_mod, tmp_path):
     """실 claude 1회 e2e: spawn(`--session-id <uuid>`) → relay(≥2턴 resume·turn2 가 turn1
