@@ -64,6 +64,8 @@ python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest(�
 > `python3` 그대로. 인코딩은 **엔진이 코드로 처리**(파일 IO `encoding="utf-8"`·콘솔 stdout
 > reconfigure)하므로 env prefix 없이 동작한다. cp949 콘솔·외부 파이프에서 드물게 깨지면 **각 셸
 > 문법으로** 붙인다 — PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`. (bash 전용 아님.)
+> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
+> 파라미터나 명령 분리로 실행한다.
 
 ```bash
 python3 -m pytest tests/ -q                               # 엔진 테스트 (Windows: py -3.12 -m pytest ...)

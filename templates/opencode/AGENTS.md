@@ -45,6 +45,8 @@
   env prefix 불필요. Windows/CP949·PowerShell 환경서도 env 없이 한글 ticket·wiki 깨짐 0 으로 동작(실측).
 - 구버전 Windows·서드파티 파이프서 드물게 필요하면 **각 셸 문법으로** 붙인다 —
   PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`. (bash 문법을 규약으로 강제하지 않는다.)
+- **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 금지, 도구의 workdir
+  파라미터나 명령 분리로 실행한다. 루트 facade 는 Windows 에선 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요).
 
 > 인터프리터: `{{PY}}` 는 setup 시 채택 환경의 인터프리터로 치환된다
 > (`.project_manager/local.conf` 의 `py=` 가 단일 진실 — `board.py init` 이 설정 ·

@@ -88,6 +88,7 @@ PM workflow skill 카탈로그(`/pm-bootstrap`·`/pm-handoff`·`/pm-wave-claim`�
 
 > **Windows/인코딩**: 엔진이 인코딩을 코드로 처리(PM 7차)하므로 env 없이 동작 — Windows/CP949·PowerShell 서도 한글 깨짐 0.
 > 드물게 필요하면 셸별 문법(PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`). `{{PY}}` 는 `board.py init` 이 PATH 탐지(Windows=`python`)로 채운다.
+> **PowerShell 5.x `&&` 미지원**(ParseError) — `cd X && cmd` 대신 도구 workdir 파라미터/명령 분리. Windows 진입은 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요).
 
 ## 7. 핵심 디렉토리
 

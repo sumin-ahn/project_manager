@@ -10,6 +10,10 @@ description: "PM 환경 관리 단일 command — pm-config.sh facade wrap. repo
 > repo/worktree/slot/upstream 분기. multi-PM 토폴로지(여러 repo·worktree 슬롯)와 upstream 값 전환의 단일
 > 진입. thin — `pm-config` 가 CLI 계약 단일 진실(서브커맨드 추가돼도 이 command 변경 불필요).
 
+> **Windows 진입**: `./pm-config.sh` 는 bash 용 — PowerShell/cmd 에선 **`.\pm-config.cmd`**(동일 인자·
+> pm_import 가 루트로 복사). PowerShell 5.x 는 `&&` 체이닝 미지원(ParseError) — `cd X && …` 대신
+> **도구의 workdir 파라미터**나 명령 분리로 실행한다.
+
 ## 인접 command 와 구분
 - **pm-env (이 command)** = 환경 *셋업/조회*(repo·worktree·slot·upstream 값).
 - `/pm-update` = 환경이 가리키는 upstream 으로 엔진 *갱신*. upstream 값을 여기서 전환 → pm-update 가 적용.

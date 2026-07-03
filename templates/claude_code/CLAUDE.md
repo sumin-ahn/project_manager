@@ -78,6 +78,9 @@
   외부 파이프·서드파티 도구·구버전 콘솔에서 드물게 필요하면 **각 셸 문법으로** 붙인다 —
   PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`. (bash 전용 규약이 아니다 — opencode 어댑터도
   prefix 강제를 폐기하고 엔진 코드-레벨 인코딩에 맡긴다. T-0031·ADR-0006 D4 supersede.)
+- **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 금지, 도구의 workdir
+  파라미터나 명령 분리로 실행한다. 루트 facade 는 Windows 에선 `.\pm-config.cmd`·`.\pm-update.cmd`
+  (bash 불요) — `./pm-*.sh` 는 bash 용.
 - 인터프리터: `{{PY}}` 는 `board.py init` 이 PATH 탐지로 채운다(Windows=`python`·POSIX=`python3`). venv 면
   PM workflow 도구가 `venv/Scripts/python.exe`(Windows)·`venv/bin/python`(POSIX)을 자동 선택, 없으면 현재 인터프리터로 폴백.
 

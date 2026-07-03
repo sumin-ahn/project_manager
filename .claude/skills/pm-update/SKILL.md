@@ -9,6 +9,10 @@ description: "엔진 갱신 PM front door — pm-update.sh facade wrap + upstrea
 > facade(`./pm-update.sh`) backbone 위에 **upstream freshness 자동분기 · manifest reconcile · drift 표면화**를
 > 얹는다. 엔진(`pm_update`)은 파일-복사만(git 무지·ADR-0032 D5) — git freshness 는 이 스킬층이 담당.
 
+> **Windows 진입**: `./pm-update.sh` 는 bash 용 — PowerShell/cmd 에선 **`.\pm-update.cmd`**(동일 인자).
+> PowerShell 5.x 는 `&&` 체이닝 미지원(ParseError) — `cd X && …` 대신 **도구의 workdir 파라미터**나
+> 명령 분리로 실행한다.
+
 ## 인접 스킬과 구분
 - **pm-update (이 스킬)** = 엔진 *갱신*(upstream→채택자).
 - [[pm-env]] = 환경 관리(repo/worktree/slot · upstream show/switch). upstream *값* 전환은 거기서.

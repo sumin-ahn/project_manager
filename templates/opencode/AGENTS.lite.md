@@ -17,6 +17,7 @@
 - **위임 = 네이티브 `task` tool** — opencode 가 `.opencode/agents/*.md` subagent 를 별도 자식 세션(fresh ctx = 200K 격리·자식 model/권한이 subagent 정의대로)에서 구동(PM 9차 실증). 폴백 = `opencode run` 외부 프로세스. §3.
 - **엔진 = 공유 python**(`.project_manager/tools/*.py`). PM 은 bash 로 호출·해석. **엔진 0 수정** — 어댑터만 타깃별.
 - **인코딩**: 엔진이 코드로 처리(PM 7차·C1 파일·C2 콘솔 reconfigure) — env prefix 불필요. PowerShell/CP949 서도 env 없이 한글 깨짐 0. 드물게 필요하면 셸별 문법(PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`).
+- **PowerShell 5.x `&&` 미지원**(ParseError) — `cd X && cmd` 대신 도구 workdir 파라미터/명령 분리. Windows 진입은 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요).
 
 ## 1. 부트스트랩 (세션 시작)
 
