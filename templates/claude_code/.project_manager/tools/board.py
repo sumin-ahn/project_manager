@@ -126,6 +126,7 @@ PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"          # pe
 PM_STATE_TEMPLATE = REPO / ".project_manager" / "wiki" / "pm_state.template.md"  # tracked skeleton
 LOCAL_DIR = REPO / ".project_manager" / ".local"            # per-clone scratch (git-ignored)
 REGRESSION_FLAG = LOCAL_DIR / "regression.json"             # last regression result, keyed by HEAD
+LIVEGATE_FLAG = LOCAL_DIR / "livegate.json"                 # last release live-gate result, keyed by ① worktree HEAD (ADR-0039·per-clone)
 BOARD_LOCK = LOCAL_DIR / "board.lock"                       # OS file lock — board write serialization (ADR-0012)
 # worktree_pool 의 LEASES_FILE 와 *같은 위치*(그 규약 — `.local/worktree-leases.json`). board 는
 # worktree_pool 을 import 하지 않으므로(ADR-0013 isolation·touches 격리) 경로를 자체 해소해 파일을
@@ -808,11 +809,21 @@ def _append_atomic(path: Path, text: str) -> None:
 # 로컬 플래그), pre-push 훅이 `regression check` 로 HEAD green 을 검증. 비차단 pre-warm 은
 # PM 이 `run_in_background` 로 `regression run` 을 돌리는 워크플로(하니스 background).
 
-def _git_head() -> str:
-    r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"],
+def _git_head_at(cwd: str) -> str:
+    """주어진 작업 디렉토리의 git HEAD sha 를 반환한다 (실패/비-repo 면 '').
+
+    `_git_head` 는 board 프로세스의 `REPO` 기준이지만, livegate 기록은 테스트가 실제로
+    돈 **활성 slot worktree**(=`_regression_cwd`)의 HEAD 를 키로 삼아야 한다 — 보호훅이
+    push 하는 sha(=① worktree HEAD)와 대조되기 때문. 이 함수가 그 cwd-매개 HEAD 를 낸다.
+    """
+    r = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"],
                        capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _git_head() -> str:
+    return _git_head_at(str(REPO))
 
 
 def _hooks_dir() -> Path | None:
@@ -1524,6 +1535,117 @@ def cmd_regression(args: argparse.Namespace) -> int:
         return 1
     print(f"regression: green @ {head[:8]} ✓")
     return 0
+
+
+# ── 릴리즈 라이브 게이트 (ADR-0039) ────────────────────────────────────────
+# 라이브 LLM 검증(실 하네스 smoke)을 릴리즈(① main 머지) 단일 지점으로 모은 게이트.
+# `livegate record` 가 `pytest -m release` 를 회귀와 동일한 cwd 해소로 실행·측정하고
+# (실행=기록·손기록 없음), 보호훅이 `livegate check --rev <sha>` 로 push HEAD 가 green 인지
+# 소비한다. false-green 방어를 위해 rc0 만으로는 부족하고 수집 N==pin 을 함께 요구한다
+# (T-0190 수집 pin·T-0220 rc5 vacuous-pass 근절의 원칙을 라이브 채널로 확장).
+LIVEGATE_RELEASE_PIN = 7   # `pytest -m release` 로 돌아야 하는 라이브 케이스 수 (단일 진실).
+                           # tests/test_release_wave.py `_EXPECTED_RELEASE_TESTS` 와 값 공유.
+LIVEGATE_TEST_CMD = "pytest -m release -q"   # 라이브 릴리즈 wave selection.
+
+
+def _livegate_ran_count(output: str) -> int:
+    """`pytest -m release -q` 요약행에서 *실제 실행된* release 테스트 수(수집 N)를 센다.
+
+    N = passed + failed + error(s). deselected 는 release 마커 밖이라 세지 않는다. "no tests
+    ran"(exit5)처럼 요약에 카운트가 없으면 0. 이 수집 N 을 pin 과 대조해 마커 소실·wrong-cwd
+    로 인한 false-green(수집 위장)을 차단한다 — rc0 만으로는 "0개 수집됐지만 red 아님"을
+    green 으로 삼킬 수 있다(T-0190 수집 pin·T-0220 vacuous-pass 근절의 라이브 확장).
+    """
+    total = 0
+    for kind in ("passed", "failed", "errors?"):
+        m = re.search(rf"(\d+) {kind}\b", output)
+        if m:
+            total += int(m.group(1))
+    return total
+
+
+def _write_json_atomic(path: Path, data: dict) -> None:
+    """dict → JSON 을 temp + `os.replace` 로 원자 교체한다 (crash 시 잔재/부분기록 방지).
+
+    `dump_ticket_atomic` 과 동형 — 같은 디렉토리 안 tmp 에 전체를 쓰고 atomic rename.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
+def _livegate_record(args: argparse.Namespace) -> int:
+    """`pytest -m release` 를 실행·측정하고 결과를 livegate.json 에 기록한다 (실행=기록).
+
+    회귀와 동일한 cwd 해소(`_regression_cwd` — 활성 slot worktree)로 subprocess 실행 →
+    **rc0 그리고 수집 N==pin** 일 때만 `pass @ <worktree HEAD>` 기록. rc!=0 또는 N!=pin 이면
+    `fail` 기록 + rc1(사유 표면화). 손기록 경로는 없다(위조/착오 차단·ADR-0039 D2).
+    """
+    cwd = _regression_cwd(getattr(args, "cwd", None))
+    print(f"livegate: $ {LIVEGATE_TEST_CMD}  (cwd={cwd})")
+    # 자식 pytest 인코딩을 코드로 명시(env 워크어라운드 아님) — cp949 콘솔에서도 UTF-8.
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    result = subprocess.run(LIVEGATE_TEST_CMD, shell=True, cwd=cwd, env=env,
+                            capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+    rc = result.returncode
+    output = (result.stdout or "") + (result.stderr or "")
+    if output.strip():
+        print(output if output.endswith("\n") else output + "\n", end="")
+    n = _livegate_ran_count(output)
+    head = _git_head_at(cwd)
+    passed = rc == 0 and n == LIVEGATE_RELEASE_PIN
+    status = "pass" if passed else "fail"
+    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(LIVEGATE_FLAG,
+                       {"head": head, "status": status, "n": n, "rc": rc, "ts": now_utc()})
+    if passed:
+        print(f"livegate: pass @ {head[:8] or '?'} "
+              f"(release {n}/{LIVEGATE_RELEASE_PIN} green) ✓")
+        return 0
+    if rc != 0:
+        reason = f"release red (rc={rc})"
+    else:
+        reason = (f"수집 {n} ≠ pin {LIVEGATE_RELEASE_PIN} — 마커 소실/wrong-cwd 의심"
+                  " (수집 위장 차단)")
+    print(f"livegate: fail @ {head[:8] or '?'} — {reason}. 릴리즈 차단.", file=sys.stderr)
+    return 1
+
+
+def _livegate_check(args: argparse.Namespace) -> int:
+    """기록된 라이브 게이트가 `--rev <sha>` 에 대해 green 인지 검증한다 (보호훅 소비 채널).
+
+    기록 존재 ∧ status==pass ∧ head==rev → rc0. 아니면 rc1 + 사유 3분화(기록 부재 / red /
+    rev 불일치 — 각각 다른 메시지로 훅이 그대로 surface). fail-soft 아님(명확 rc).
+    """
+    rev = getattr(args, "rev", None)
+    if not rev:
+        print("livegate check: --rev <sha> 필요 (push 대상 커밋).", file=sys.stderr)
+        return 1
+    if not LIVEGATE_FLAG.exists():
+        print("livegate: 기록 없음 — `board.py livegate record` 필요 (릴리즈 차단).",
+              file=sys.stderr)
+        return 1
+    data = json.loads(LIVEGATE_FLAG.read_text(encoding="utf-8"))
+    if data.get("status") != "pass":
+        n, rc = data.get("n"), data.get("rc")
+        print(f"livegate: RED (status={data.get('status')}, 수집 {n}, rc={rc}) "
+              "— 릴리즈 차단.", file=sys.stderr)
+        return 1
+    head = data.get("head")
+    if head != rev:
+        print(f"livegate: rev 불일치 (기록 {str(head)[:8]} ≠ push {str(rev)[:8]}) "
+              "— `livegate record` 재실행 필요 (릴리즈 차단).", file=sys.stderr)
+        return 1
+    print(f"livegate: green @ {str(rev)[:8]} ✓")
+    return 0
+
+
+def cmd_livegate(args: argparse.Namespace) -> int:
+    """record = `pytest -m release` 실행+기록 / check = push HEAD green 검증 (보호훅용)."""
+    if args.action == "record":
+        return _livegate_record(args)
+    return _livegate_check(args)
 
 
 def now_utc() -> str:
@@ -4322,6 +4444,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ticket", help="이 ticket 의 touches 로 스코프 (dev 빠른 루프·advisory)")
     p.add_argument("--touches", help="comma-separated 파일로 스코프 (advisory)")
     p.set_defaults(fn=cmd_regression)
+
+    p = sub.add_parser("livegate",
+                       help="릴리즈 라이브 게이트 (ADR-0039) — record=`pytest -m release` "
+                            "실행·수집 pin 강제·기록 / check=보호훅이 HEAD-매칭 green 검증")
+    p.add_argument("action", choices=["record", "check"])
+    p.add_argument("--rev", help="check 대상 sha (보호훅이 push HEAD 를 넘김·record 는 무시)")
+    p.add_argument("--cwd", help="record 의 pytest 실행 cwd (ADR-0014 seam·기본=활성 slot worktree)")
+    p.set_defaults(fn=cmd_livegate)
 
     p = sub.add_parser("refresh", help="regenerate board.md")
     p.set_defaults(fn=cmd_refresh)

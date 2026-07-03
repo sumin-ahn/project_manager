@@ -449,8 +449,8 @@ _LOG_ENTRY_RE = re.compile(r"^## \[\d{4}-\d{2}-\d{2}\]", re.MULTILINE)
 # 슬라이딩 윈도우 크기 — 최근 N 차 만 short inline 유지. 프로젝트별 조정 가능.
 SLIDING_WINDOW_SIZE = 3
 
-# ── 출하 테스트 발동 출하 경로 (spike harness-test-two-level-gate §3.3) ─────
-# 미push diff 가 이 글롭 중 하나라도 건드리면 출하 변경 → 출하 테스트 발동. 채택자
+# ── 출하 변경 분류 글롭 (surface·ADR-0039 D4 · spike harness-test-two-level-gate §3.3) ─────
+# 미push diff 가 이 글롭 중 하나라도 건드리면 출하 변경 → 비차단 surface([1b/7]). 채택자
 # 산출물을 바꾸는 경로([[smoke-gate-by-output-change]])만 포함한다 — 엔진(.project_manager/
 # tools)·출하 템플릿·어댑터(.claude/.opencode)·진입문서·manifest·파사드·요구사항·방법론 wiki.
 # NON-SHIPPING(tests/·② wiki board/ADR/spike·status/pm_state/log)은 매칭 안 돼 자연 skip.
@@ -1002,7 +1002,7 @@ def _shipping_paths_in_pending_push(
     *,
     git_runner: Callable[[list[str]], tuple[int, str]] | None = None,
 ) -> tuple[list[str], bool]:
-    """"지금 push 하면 올라갈 변경" ∩ SHIPPING_GLOBS 를 해소한다 (출하 테스트 발동·spike §3.3).
+    """"지금 push 하면 올라갈 변경" ∩ SHIPPING_GLOBS 를 해소한다 (비차단 surface·ADR-0039 D4).
 
     pm_handoff [7/7] 체크리스트는 핸드오프 *후* `git commit` 을 안내한다 — 정상 핸드오프
     시점엔 출하 변경이 대개 **working tree(staged/unstaged·미커밋·untracked)** 에 있다.
@@ -1085,76 +1085,6 @@ def _module_run_git(args: list[str]) -> tuple[int, str]:
     return result.returncode, result.stdout + result.stderr
 
 
-# 인터랙티브 handoff 의 라이브 출하 smoke wall-clock 상한 (초·T-0200). 라이브 바이너리
-# (opencode/claude/ollama) 있는 머신에선 shipping smoke(각 inner 300s cap)가 순차 실행돼
-# 최악 수십 분 block → 인터랙티브 hang. outer subprocess 에 이 상한을 걸어 bound 한다.
-# 정상 full smoke(~수백 s)엔 여유, 병리적 hang 은 상한. env 로 하향(빠른 피드백) 가능.
-_SHIPPING_TEST_TIMEOUT_DEFAULT = 1200
-
-
-def _shipping_test_timeout() -> int:
-    """출하 smoke outer wall-clock 상한 (env `PM_SHIPPING_TEST_TIMEOUT` · default 1200s)."""
-    raw = os.environ.get("PM_SHIPPING_TEST_TIMEOUT")
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            pass
-    return _SHIPPING_TEST_TIMEOUT_DEFAULT
-
-
-def _run_shipping_test(
-    worktree: str,
-    *,
-    runner: Callable[[list[str], dict[str, str], str], tuple[int, str]] | None = None,
-    timeout: int | None = None,
-) -> tuple[int, str]:
-    """`pytest -m shipping -q` 를 worktree cwd·PM_ORCH_LIVE=1 로 돌린다 (출하 테스트 enforce).
-
-    출하 테스트 subset(shipping marker) 만 선택해 실행한다 — relay 과금 smoke 는 제외
-    (spike §3.1). PM_ORCH_LIVE=1 을 env 에 주입해 라이브 테스트의 skipif 를 깨운다. 단
-    라이브 바이너리(opencode/claude) 부재면 per-test skipif(shutil.which)가 여전히 skip
-    하므로 → 0개 selected/skip → green → fail-soft 통과(게이트 강제 안 함·CI green 불변·
-    spike §3.3·ticket 결정).
-
-    wall-clock 상한(T-0200): 라이브 바이너리가 *있는* 머신에선 smoke 가 실제로 돌아 수십 분
-    block → 인터랙티브 hang. outer `subprocess.run` 에 `timeout` 을 걸고, 초과 시
-    `subprocess.TimeoutExpired` 를 잡아 rc 124(=`_fire_shipping_test` 의 `rc not in (0,5)` →
-    핸드오프 중단·silent pass 아님) + PM 안내(`--no-shipping-test`·수동 실행)를 반환한다.
-
-    반환: (returncode, stdout+stderr). runner DI seam — hermetic 테스트는 결정론 stub
-    (timeout 경로도 runner 가 `TimeoutExpired` raise 로 검증 가능·실 subprocess 미실행).
-    """
-    if timeout is None:
-        timeout = _shipping_test_timeout()
-    env = dict(os.environ)
-    env["PM_ORCH_LIVE"] = "1"
-    cmd = ["-m", "pytest", "-m", "shipping", "-q"]
-    try:
-        if runner is not None:
-            return runner([sys.executable, *cmd], env, worktree)
-        result = subprocess.run(
-            [_default_python(), *cmd],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=worktree,
-            env=env,
-            timeout=timeout,
-        )
-        return result.returncode, result.stdout + result.stderr
-    except subprocess.TimeoutExpired as exc:
-        partial = (exc.stdout or "") + (exc.stderr or "")
-        note = (
-            f"\n[timeout] 출하 테스트가 {timeout}s 를 초과해 중단됨 — 라이브 smoke 미완주.\n"
-            "  이미 별도로 출하 라이브를 검증했다면 `/pm-handoff … --no-shipping-test` 로 재실행,\n"
-            "  아니면 worktree 에서 `PM_ORCH_LIVE=1 pytest -m shipping` 을 수동으로 완주시켜라.\n"
-            "  (상한 조정: env `PM_SHIPPING_TEST_TIMEOUT=<초>`)"
-        )
-        return 124, partial + note
-
-
 # ── PmHandoff 핵심 클래스 ─────────────────────────────────────────────────────
 
 class PmHandoff:
@@ -1169,7 +1099,6 @@ class PmHandoff:
         *,
         run_pytest_fn: Callable[[], tuple[int, str]] | None = None,
         run_git_fn: Callable[[list[str]], tuple[int, str]] | None = None,
-        run_shipping_test_fn: Callable[[str], tuple[int, str]] | None = None,
         log_file: Path = LOG_FILE,
         pm_playbook_file: Path = PM_PLAYBOOK_FILE,
         pm_state_file: Path | None = None,
@@ -1194,10 +1123,6 @@ class PmHandoff:
 
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
         self._run_git_fn = run_git_fn or self._default_run_git
-        # 출하 테스트 seam (spike §3.3) — worktree cwd 를 받아 (rc, out) 반환.
-        # 테스트는 결정론 stub 주입(실 pytest/LLM 미실행·hermetic). None 이면 모듈
-        # _run_shipping_test(실 subprocess `pytest -m shipping -q`·PM_ORCH_LIVE=1).
-        self._run_shipping_test_fn = run_shipping_test_fn or _run_shipping_test
 
     # ── multi-PM 모드: 작업완료 release (ADR-0013) ────────────────────────────────
 
@@ -1274,80 +1199,37 @@ class PmHandoff:
         output = result.stdout + result.stderr
         return result.returncode, output
 
-    # ── 출하 테스트 step (출하-변경 발동·spike §3.3) ────────────────────
+    # ── 출하 변경 surface step (비차단·ADR-0039 D4) ────────────────────
 
-    def _shipping_test_step(self, worktree: str, shipping_test_override: bool | None) -> int:
-        """[1/7] 기계회귀 green 직후 출하 테스트 step (출하-변경 발동·3-way).
+    def _shipping_surface_step(self, worktree: str) -> None:
+        """[1b/7] 미검증 출하 변경을 **비차단 1줄로 surface** 한다 (ADR-0039 D4).
 
-        발동 판단 = 미push diff ∩ SHIPPING_GLOBS([[smoke-gate-by-output-change]]) —
-        세션 종류가 아니라 *올리려는 코드*. override 가 주어지면 분류를 건너뛴다
-        (--shipping-test=강제발동·--no-shipping-test=강제skip·사후 사유 log 는 PM 손).
+        미push diff ∩ SHIPPING_GLOBS([[smoke-gate-by-output-change]])를 분류해 출하 변경
+        (hits)·분류불명(unknown)이 있으면 "릴리즈 전 라이브 필요" 경고 1줄을 출력한다 —
+        **핸드오프를 지연·차단하지 않는다**(rc 무영향). 라이브 LLM 검증(실 하네스 smoke)은
+        릴리즈(① main 머지) 단일 지점(release wave)으로 모았으므로(ADR-0039), 고빈도 지점인
+        핸드오프에서는 가시성만 보존한다. hits·unknown 모두 없으면(push 없음·명확한 비-출하)
+        skip 사유만 출력.
 
-        3-way (override None 일 때):
-          - shipping_hits 비어있지 않음 → **발동**: `pytest -m shipping` red → return 1.
-          - shipping/unknown 모두 없음(push 없음·명확한 비-출하) → **skip**(사유 출력).
-          - has_unknown(baseline 해소불가·분류불명) → **surface**(불명 신호 나열·기본
-            비실행·PM 이 --shipping-test/--no-shipping-test 로 결정).
-
-        반환: 0=통과/skip/surface(계속), 1=출하 테스트 red(핸드오프 중단).
+        분류기(`_shipping_paths_in_pending_push`·`SHIPPING_GLOBS`)는 존치 — surface 의 기반이자
+        향후 게이트 복원 가능성의 가역 지점(ADR-0039·spike §2 갈림길3).
         """
-        if shipping_test_override is False:
-            print("  [--no-shipping-test] 출하 테스트 강제 skip (사유 log 는 PM 손).")
-            return 0
-        if shipping_test_override is True:
-            print("  [--shipping-test] 출하 테스트 강제 발동...")
-            return self._fire_shipping_test(worktree)
-
         shipping_hits, has_unknown = _shipping_paths_in_pending_push(
             worktree, git_runner=self._run_git_fn
         )
         if shipping_hits:
             print(
-                f"  출하 변경 감지 ({len(shipping_hits)}개 경로) — 출하 테스트 발동:"
+                f"  ⚠ 미검증 출하 변경 {len(shipping_hits)}파일 — 릴리즈 전 "
+                "라이브(release wave) 필요: `board.py livegate record` (ADR-0039)."
             )
-            for path in shipping_hits[:10]:
-                print(f"    · {path}")
-            return self._fire_shipping_test(worktree)
+            return
         if has_unknown:
-            # ambiguous → surface (silent skip/fire 금지·대화형 핸드오프라 가능).
             print(
-                "  ⚠ 미push diff 분류 불명 (baseline ref 해소불가/분류 불가) — "
-                "출하 변경 여부를 자동 판단할 수 없다.",
-                file=sys.stdout,
+                "  ⚠ 미검증 출하 변경 가능성 (미push diff 분류 불명·baseline 해소불가) — "
+                "릴리즈 전 라이브(release wave) 확인 필요 (ADR-0039)."
             )
-            print(
-                "    → 출하 테스트를 기본 비실행한다. push 코드가 채택자 산출물을 "
-                "바꾸는지 PM 이 판단해 `--shipping-test`(강제발동) 또는 `--no-shipping-test`"
-                "(강제skip·사유 log)로 명시하라.",
-                file=sys.stdout,
-            )
-            return 0
-        print("  출하 변경 없음 (미push diff 가 비-출하·또는 push 없음) — 출하 테스트 skip.")
-        return 0
-
-    def _fire_shipping_test(self, worktree: str) -> int:
-        """출하 테스트 실행 + red→중단 (기계회귀 red 동형). 반환 0=green/skip·1=red.
-
-        fail-soft 허용을 **명시적으로 좁힌다** — pytest 종료코드 `rc in (0, 5)` 만 통과:
-          - 0 = all passed(또는 skipped-only — skip 은 rc 0 이라 라이브 미가용 통과 보존).
-          - 5 = no tests collected = 라이브 미가용(바이너리 부재·PM_ORCH_LIVE 미주입) fail-soft.
-        그 외 모든 비-0(1=failed·2=interrupted·3=internal·4=usage·collection/import error 등)은
-        **red → 핸드오프 중단**(return 1). 이전 `re.search("N failed")` 판정은 "failed" 요약이
-        없는 collection/import/internal error(rc 2/3/4)를 silently green 처리했다(must-fix·T-0151).
-        """
-        rc, out = self._run_shipping_test_fn(worktree)
-        print(out.rstrip())
-        if rc not in (0, 5):
-            print(
-                "\n[중단] 출하 테스트 red — 핸드오프 불가. log/current.md·pm_state.md "
-                f"어떤 것도 건드리지 않는다. (pytest rc={rc} ≠ 0/5 — 라이브 테스트 실패·"
-                "collection/import/내부 에러 = 출하 변경이 실 LLM 운영성을 깨거나 게이트가 "
-                "정상 실행되지 못했다.)",
-                file=sys.stderr,
-            )
-            return 1
-        print("  ✓ 출하 테스트 통과 (green·또는 라이브 미가용 fail-soft skip·rc∈{0,5}).")
-        return 0
+            return
+        print("  출하 변경 없음 (미push diff 가 비-출하·또는 push 없음) — release 라이브 불요.")
 
     # ── 메인 흐름 ─────────────────────────────────────────────────────────────
 
@@ -1360,7 +1242,6 @@ class PmHandoff:
         worktree_slot: str | None = None,
         branch: str | None = None,
         done: bool = False,
-        shipping_test_override: bool | None = None,
     ) -> int:
         """PM 핸드오프 7단계 자동화 전체 흐름을 실행한다.
 
@@ -1368,9 +1249,6 @@ class PmHandoff:
             기록해 회전 재부착 연속성 단서를 남긴다. 미지정(솔로)이면 현행 lean 스키마 보존.
         done: 작업완료(--done) — worktree 슬롯을 release(idle 반납). worktree_slot
             필요. 미지정이면 release 안 함(세션종료/회전 ≠ release·ADR-0013).
-        shipping_test_override: 출하 테스트 강제 override (--shipping-test=True 강제발동·
-            --no-shipping-test=False 강제skip). None 이면 미push diff ∩ 출하경로로 3-way 자동
-            판단(spike §3.3). 출하 테스트 red → 핸드오프 중단(기계회귀 red 동형).
 
         반환: 0=성공, 1=실패 (중단).
         """
@@ -1431,19 +1309,17 @@ class PmHandoff:
             pytest_summary = parse_pytest_summary(output)
             print(f"  ✓ green: {pytest_summary}")
 
-        # ── 1b. 출하 테스트 step (출하-변경 발동·spike §3.3) ───────────
-        # 기계회귀 green 직후·push 직전 1회. 미push diff 가 출하경로를 건드릴 때만
-        # `pytest -m shipping` 발동(3-way: 발동/skip/ambiguous→surface). red → 중단
-        # (기계회귀 red 동형·log/pm_state 미접촉). dry_run 은 라이브 LLM 비용/시간을
-        # 들이지 않도록 step 자체를 skip(미리보기 경로). worktree 는 회귀와 같은 cwd.
-        print("\n[1b/7] 출하 테스트 (출하-변경 발동)...")
+        # ── 1b. 출하 변경 surface (비차단·ADR-0039 D4) ───────────────
+        # 기계회귀 green 직후 미push diff ∩ SHIPPING_GLOBS 를 분류해 미검증 출하 변경이
+        # 있으면 "릴리즈 전 라이브 필요" 1줄을 surface 한다 — **비차단**(rc 무영향·핸드오프
+        # 지연 0). 라이브 LLM 검증은 릴리즈(① main 머지) 단일 지점(release wave)으로 모았다
+        # (ADR-0039 D4). dry_run 은 git 분류도 건너뛴다(미리보기). worktree 는 회귀와 같은 cwd.
+        print("\n[1b/7] 출하 변경 surface (비차단·릴리즈 라이브는 release wave)...")
         if dry_run:
-            print("  [dry-run] 출하 테스트 발동 판단·실행 skip (미리보기).")
+            print("  [dry-run] 출하 변경 surface skip (미리보기).")
         else:
             worktree = _regression_cwd(self._worktree_slot)
-            gate_rc = self._shipping_test_step(worktree, shipping_test_override)
-            if gate_rc != 0:
-                return gate_rc
+            self._shipping_surface_step(worktree)
 
         # ── 2. log/current.md handoff entry skeleton append ────────────────────────────
         print("\n[2/7] log/current.md handoff entry skeleton append...")
@@ -1653,21 +1529,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="회귀 측정 skip (기본 측정·대화형 경로).",
     )
-    # ── 출하 테스트 override (spike §3.3) — 상호배제. 미지정이면 출하-변경 자동 판단. ──
-    shipping_test_group = parser.add_mutually_exclusive_group()
-    shipping_test_group.add_argument(
-        "--shipping-test",
-        dest="shipping_test",
-        action="store_true",
-        default=None,
-        help="출하 테스트 강제 발동 (출하-변경 자동 판단 무시·`pytest -m shipping` 실행).",
-    )
-    shipping_test_group.add_argument(
-        "--no-shipping-test",
-        dest="shipping_test",
-        action="store_false",
-        help="출하 테스트 강제 skip (출하-변경 자동 판단 무시·사후 사유 log 는 PM 손).",
-    )
     return parser
 
 
@@ -1791,7 +1652,6 @@ def main(argv: list[str] | None = None) -> int:
         worktree_slot=args.worktree_slot,
         branch=args.branch,
         done=args.done,
-        shipping_test_override=args.shipping_test,
     )
 
 

@@ -435,7 +435,7 @@ def bare_repo_path(repo: str) -> Path:
     return REPOS_DIR / f"{repo}.git"
 
 
-# ── 보호 브랜치 pre-push 훅 (T-0076·하드·회사 repo 무영향) ────────────────────
+# ── 보호 브랜치 pre-push 훅 (T-0076·하드·회사 repo 무영향 / T-0223·라이브 게이트 승격) ────
 # 훅 = `.project_manager/.local/repo-hooks/<repo>/pre-push`(프레임워크 소유·gitignore).
 # bare(`.repos/<repo>.git`)의 `core.hooksPath` 를 그 디렉토리로 set → 슬롯 push 가 이 훅에
 # 게이트된다. **회사 repo 서버/사용자 클론 무변경** — client-side·우리 bare 미러 config 1줄만.
@@ -444,35 +444,118 @@ def bare_repo_path(repo: str) -> Path:
 # 에서 읽는다. 설치(install_protected_hook)가 그 sidecar 를 채우므로(목록 변경 = 재설치로
 # 갱신), 훅 본문 자체는 repo 무관하게 동일하다. POSIX sh — Windows git 번들 sh 로도 동작.
 #
-# 로직: stdin 의 `<localref> <localsha> <remoteref> <remotesha>` 줄들에서 remote ref
-# (`refs/heads/<b>`)의 `<b>` 가 sidecar 보호목록에 있으면 거부(echo 안내·exit 1).
-# `PM_ALLOW_PROTECTED_PUSH=1` 이면 통과(사용자 명시 OK). feature 브랜치 push 는 통과(exit 0).
+# 로직: stdin 의 `<localref> <localsha> <remoteref> <remotesha>` 줄들(=이 push 의 모든 ref)을 순회한다.
+# pre-push 는 push 전체에 한 번 발화하는 all-or-nothing 게이트라 **보호 ref 를 전부 검증**하고 하나라도
+# 실패하면 push 전체를 거부한다(예: `git push main release` 서 main 만 green 이어도 release 가 미검증이면
+# 편승 차단). remote ref (`refs/heads/<b>`)의 `<b>` 가 sidecar 보호목록에 있으면 (그 ref 의 localsha 로) —
+#   - `PM_ALLOW_PROTECTED_PUSH=1` 아니면 하드 차단(T-0076·echo 안내·exit 1).
+#   - `PM_ALLOW_PROTECTED_PUSH=1` 이면 **라이브 게이트 승격**(T-0223·ADR-0039 D2/D3): push 되는
+#     sha 로 `board.py livegate check --rev <sha>` rc0 을 추가 요구한다(릴리즈 라이브 wave 가
+#     그 커밋에서 green 이어야 함). rc≠0 → 거부(2분기 안내). `PM_SKIP_LIVE_GATE=1` 이면 check
+#     만 생략(라이브-무관·긴급 변경 한정·승인/protected 시맨틱 불변). python/board.py 를 못
+#     돌리면 fail-closed 거부(게이트 무력화 방지). board.py 는 **PM 홈 엔진**을 쓴다 — 슬롯
+#     worktree 는 회사/family repo checkout 이라 PM 엔진 파일이 없으므로(T-0076 회사 repo 무영향),
+#     설치자가 훅 옆에 쓴 sidecar `engine-root`(PM 홈 REPO 절대경로 1줄)에서 board.py 를 해소한다
+#     (livegate.json 도 그 PM 홈 .local 소유라 기록 위치와 정합)·인터프리터는 T-0209 실행검증 폴백.
+# feature(비보호) 브랜치·tag push 는 통과(exit 0·PM_ALLOW/라이브 게이트 무관).
+#
+# **멱등 자가치유 배포**: install_protected_hook 이 매 호출 이 본문을 덮어쓰므로(repo add·
+# worktree add), 엔진 update 후 다음 재설치가 이 신 버전을 자동 배포한다.
 _PROTECTED_PRE_PUSH_HOOK = """\
 #!/bin/sh
-# pm 보호 브랜치 pre-push 가드 (T-0076) — PM 이 보호 브랜치(main 등)에 자율 push 못 하게.
+# pm 보호 브랜치 pre-push 가드 (T-0076·T-0223) — PM 이 보호 브랜치(main 등)에 자율 push 못 하게 +
+# 승인(PM_ALLOW_PROTECTED_PUSH=1)된 protected push 도 릴리즈 라이브 게이트 green 을 추가 요구.
 # install_protected_hook() 가 설치. 보호목록 = 같은 디렉토리의 sidecar `protected`(줄당 1브랜치).
-if [ "$PM_ALLOW_PROTECTED_PUSH" = "1" ]; then
-    exit 0
-fi
 hook_dir=$(dirname "$0")
 protected_file="$hook_dir/protected"
+engine_root_file="$hook_dir/engine-root"
 [ -f "$protected_file" ] || exit 0
-while read -r _local_ref _local_sha remote_ref _remote_sha; do
+
+# stdin(<localref> <localsha> <remoteref> <remotesha> 줄들)의 각 push ref 를 순회한다. pre-push 는
+# push 전체에 한 번 발화(all-or-nothing) — 보호 ref 를 *전부* 검증하고, 하나라도 실패하면(하드 차단
+# or 라이브 게이트 미green) exit 1 로 push 전체를 거부한다(한 push 에 보호 ref 여러 개면 각 ref 의
+# localsha 로 각각 게이트·미검증 ref 가 green ref 에 편승해 올라가는 것 차단). board.py/인터프리터는
+# 첫 게이트 검증 때 1회 지연 해소한다. stdin 은 파이프 아닌 fd0 직독이라 루프가 현재 셸에서 돌아
+# exit·변수 누적이 훅 전체에 반영된다(서브셸 아님).
+board=""
+py=""
+resolved=0
+while read -r _local_ref local_sha remote_ref _remote_sha; do
     case "$remote_ref" in
         refs/heads/*) branch=${remote_ref#refs/heads/} ;;
         *) continue ;;
     esac
+
+    # 이 ref 가 sidecar 보호목록에 있나?
+    is_protected=0
     while IFS= read -r protected_branch; do
         [ -n "$protected_branch" ] || continue
         if [ "$branch" = "$protected_branch" ]; then
-            echo "[pm 보호 가드] 보호 브랜치 '$branch' 로의 push 거부 (T-0076)." >&2
-            echo "  PM 은 보호 브랜치에 자율 commit/push 하지 않는다 — feature 브랜치로 작업하고" >&2
-            echo "  main 갱신은 사용자에게 맡긴다(PR/머지). 사용자 명시 OK 면:" >&2
-            echo "    PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
-            exit 1
+            is_protected=1
+            break
         fi
     done < "$protected_file"
+    [ "$is_protected" = "1" ] || continue   # 비보호 ref(feature)·tag → 이 ref 통과·다음 ref.
+
+    # 보호 ref — 승인(PM_ALLOW_PROTECTED_PUSH=1) 없으면 하드 차단 (T-0076·즉시 push 전체 거부).
+    if [ "$PM_ALLOW_PROTECTED_PUSH" != "1" ]; then
+        echo "[pm 보호 가드] 보호 브랜치 '$branch' 로의 push 거부 (T-0076)." >&2
+        echo "  PM 은 보호 브랜치에 자율 commit/push 하지 않는다 — feature 브랜치로 작업하고" >&2
+        echo "  main 갱신은 사용자에게 맡긴다(PR/머지). 사용자 명시 OK 면:" >&2
+        echo "    PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
+        exit 1
+    fi
+
+    # 승인됨(PM_ALLOW=1) — 라이브 게이트 승격 (T-0223·ADR-0039 D2/D3). 승인과 검증 스킵은 별개
+    # 스위치(감사 가능). PM_SKIP_LIVE_GATE=1 이면 이 ref 의 라이브 check 만 생략(승인·protected 불변).
+    [ "$PM_SKIP_LIVE_GATE" = "1" ] && continue
+
+    # 라이브 게이트 검증 자원 1회 지연 해소. board.py 는 **PM 홈 엔진**에 있다 — 슬롯 worktree(회사/
+    # family checkout)엔 PM 엔진 파일이 없으므로(T-0076 회사 repo 무영향), 설치자가 훅 옆에 쓴 sidecar
+    # `engine-root`(PM 홈 REPO 절대경로 1줄)에서 board.py 를 해소한다. livegate.json 도 그 PM 홈 .local
+    # 소유라 기록 위치와 정합. 인터프리터는 실행검증 폴백(python3->python->py·T-0209·WindowsApps 가짜
+    # shim 회피). sidecar 부재/경로 무효/인터프리터 부재 = fail-closed 거부(무력화 방지·ADR-0039 D3).
+    if [ "$resolved" != "1" ]; then
+        engine_root=""
+        [ -f "$engine_root_file" ] && IFS= read -r engine_root < "$engine_root_file"
+        if [ -n "$engine_root" ] && [ -f "$engine_root/.project_manager/tools/board.py" ]; then
+            board="$engine_root/.project_manager/tools/board.py"
+        fi
+        for _cand in python3 python py; do
+            if command -v "$_cand" >/dev/null 2>&1 && "$_cand" --version >/dev/null 2>&1; then
+                py="$_cand"
+                break
+            fi
+        done
+        if [ -z "$board" ] || [ -z "$py" ]; then
+            echo "[pm 라이브 게이트] 게이트 검증 실행 불가 — fail-closed 거부 (T-0223)." >&2
+            echo "  보호 브랜치 push 는 라이브 게이트 green 을 요구하는데 PM 엔진 board.py 를 못 찾았다" >&2
+            echo "  (engine-root sidecar='${engine_root}', py='${py}'). 게이트를 못 돌리면 무력화 방지로 거부한다." >&2
+            echo "  라이브-무관 변경(docs 등)·긴급 hotfix 면 우회:" >&2
+            echo "    PM_SKIP_LIVE_GATE=1 PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
+            exit 1
+        fi
+        resolved=1
+    fi
+
+    # 이 보호 ref 의 push sha 로 라이브 게이트 green 검증 (기록 존재·pass·HEAD 일치=rc0·board.py 사유 surface).
+    # </dev/null — 다중 ref 루프가 stdin(fd0) 직독이라 board.py 가 stdin 을 소비하면
+    # all-or-nothing 순회가 깨진다(현재 안 읽지만 향후 변경 방어).
+    "$py" "$board" livegate check --rev "$local_sha" </dev/null
+    gate_rc=$?
+    if [ "$gate_rc" -ne 0 ]; then
+        # rc!=0 — 이 보호 ref 가 미green → push 전체 거부 + 2분기 안내 (환경 복구 vs 우회·ADR-0039 D3).
+        echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — 라이브 게이트 미green (T-0223·ADR-0039)." >&2
+        echo "  릴리즈(main 머지)는 릴리즈 라이브 wave 가 이 커밋에서 green 이어야 한다(위 사유 참조)." >&2
+        echo "  - 환경 문제(오프라인·LLM 서비스 장애/한도·게이트 오작동)면 — 우회 아님·환경 복구 후 재실행:" >&2
+        echo "      board.py livegate record" >&2
+        echo "  - 라이브-무관 변경(docs 등)·긴급 hotfix 면 — 우회:" >&2
+        echo "      PM_SKIP_LIVE_GATE=1 PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
+        exit 1
+    fi
 done
+
+# 모든 보호 ref 가 게이트 통과(또는 skip)·또는 보호 ref 없음(비보호/tag) → push 통과.
 exit 0
 """
 
@@ -488,8 +571,9 @@ def install_protected_hook(
     **멱등·자가치유** — `pm-config repo add`·`worktree add` 가 매번 호출(이미 있으면 갱신).
     세 가지를 한다:
       1. 훅 디렉토리 `.project_manager/.local/repo-hooks/<repo>/` 생성(프레임워크 소유·gitignore).
-      2. `pre-push` 훅(generic·POSIX sh·LF)과 `protected` sidecar(보호목록·줄당 1브랜치) write.
-         목록이 바뀌면 재설치가 sidecar 를 덮어 갱신한다(훅 본문은 불변).
+      2. `pre-push` 훅(generic·POSIX sh·LF) + sidecar 2종: `protected`(보호목록·줄당 1브랜치)와
+         `engine-root`(PM 홈 REPO 절대경로 1줄·T-0223 라이브 게이트 board.py 해소용). 목록/루트가
+         바뀌면 재설치가 sidecar 를 덮어 갱신한다(훅 본문은 불변).
       3. bare(`.repos/<repo>.git`)의 `core.hooksPath` 를 그 디렉토리(절대경로)로 set
          → 슬롯 push 가 이 훅에 게이트된다.
 
@@ -518,6 +602,13 @@ def install_protected_hook(
     sidecar = hook_dir / "protected"
     sidecar.write_text(
         "".join(f"{b}\n" for b in protected), encoding="utf-8", newline="\n")
+
+    # 2.5) sidecar `engine-root` — PM 홈 REPO 절대경로 1줄 (T-0223 라이브 게이트 board.py 해소용).
+    # 설치자는 PM 홈 컨텍스트에서 도므로 REPO(=engine root)를 안다. 훅은 슬롯 worktree(회사/family
+    # checkout·PM 엔진 파일 없음)에서 발화하므로 self-locate 불가 — 이 sidecar 로 PM 홈 board.py 를
+    # 해소한다(livegate.json 도 PM 홈 .local 소유·기록 위치 정합). protected sidecar 와 동형·멱등.
+    (hook_dir / "engine-root").write_text(
+        f"{REPO.resolve()}\n", encoding="utf-8", newline="\n")
 
     # 3) bare core.hooksPath wiring (절대경로) — client-side·우리 미러 config 1줄.
     # **rc 검사(codex T-0076)**: config 실패면 훅이 실제로 wiring 안 됐는데 성공 보고하면 보호
