@@ -15,8 +15,9 @@
 
 ## 자율 판단 3가지
 
-1. **harness = 자기 세션** — 당신이 Claude Code 세션이면 `--harness claude`, opencode 세션이면
-   `--harness opencode`. (자명하므로 사용자에게 묻지 않는다.)
+1. **harness — 기본 `both`** (README 권장 정합) — 어댑터 둘 다 설치·엔진은 공유라 비용 미미.
+   사용자가 단일 하니스를 명시했거나 대상 환경에 한쪽만 쓰는 게 확실하면 그것만
+   (`--harness claude` | `opencode`). (자명하므로 사용자에게 묻지 않는다.)
 2. **`--new` vs `--into`** — 맥락으로 고른다:
    - **`--new <dest>`** : 코드 없는 **PM 홈**을 새로 만든다(빈 디렉토리 + `git init`). 표준 채택(ADR-0026).
      "프로젝트 PM 을 새로 시작" / "PM 홈 만들어" 류.
