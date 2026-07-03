@@ -21,6 +21,7 @@ board.py 는 import 하지 않는다(touches 격리·병렬충돌 회피·자체
 from __future__ import annotations
 
 import importlib.util
+import json
 import multiprocessing as mp
 import os
 import shutil
@@ -32,6 +33,11 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 SYNC_TIMEOUT = 60
+
+# livegate fixture 의 `n` — board.LIVEGATE_RELEASE_PIN(릴리즈 wave 케이스 수)의 미러. 이 파일은
+# 격리 원칙상 board.py 를 import 하지 않으므로(모듈 docstring) 값을 여기 둔다. 드리프트는 무해하다 —
+# `_livegate_check` 는 status==pass ∧ head==rev 만 보고 n 은 안 보기 때문(check 채널·green 판정 무관).
+_LIVEGATE_RELEASE_PIN = 7
 
 
 # ── 모듈 로드 + tmp 재배선 (부모·자식 공용) ─────────────────────────────────
@@ -1864,18 +1870,24 @@ def test_read_ledger_legacy_file_with_branch_key_loads_clean(wp):
 # ════════════════════════════════════════════════════════════════════════
 
 
-def _run_hook(hook_path: Path, stdin: str, *, env_override: bool = False) -> int:
-    """생성된 pre-push 훅을 `sh` 로 직접 실행하고 종료코드를 반환한다 (T-0076).
+def _run_hook(hook_path: Path, stdin: str, *, env_override: bool = False,
+              skip_live_gate: bool = False) -> int:
+    """생성된 pre-push 훅을 `sh` 로 직접 실행하고 종료코드를 반환한다 (T-0076·T-0223).
 
     훅은 stdin 으로 `<localref> <localsha> <remoteref> <remotesha>` 줄들을 받는다(실 git
-    pre-push 계약). `env_override` 면 `PM_ALLOW_PROTECTED_PUSH=1` 을 환경에 둔다(사용자 명시
-    OK 경로). 보호 ref 면 rc≠0(거부), feature/override 면 rc 0(통과).
+    pre-push 계약). `env_override` 면 `PM_ALLOW_PROTECTED_PUSH=1`, `skip_live_gate` 면
+    `PM_SKIP_LIVE_GATE=1` 을 환경에 둔다. 라이브 게이트 board.py 는 훅 옆 sidecar `engine-root`
+    로 해소되므로(cwd 무관·codex r2) 게이트 분기는 sidecar 유무/내용으로 제어한다.
     """
     env = dict(os.environ)
     if env_override:
         env["PM_ALLOW_PROTECTED_PUSH"] = "1"
     else:
         env.pop("PM_ALLOW_PROTECTED_PUSH", None)
+    if skip_live_gate:
+        env["PM_SKIP_LIVE_GATE"] = "1"
+    else:
+        env.pop("PM_SKIP_LIVE_GATE", None)
     result = subprocess.run(
         ["sh", str(hook_path)],
         input=stdin, capture_output=True, text=True, env=env,
@@ -1900,6 +1912,9 @@ def test_install_protected_hook_writes_hook_sidecar_and_sets_hookspath(wp):
     assert hook.exists() and hook.read_text(encoding="utf-8").startswith("#!/bin/sh")
     # sidecar = 보호목록(줄당 1브랜치).
     assert sidecar.read_text(encoding="utf-8").splitlines() == ["main", "develop"]
+    # engine-root sidecar = PM 홈 절대경로 1줄 (T-0223 — 훅의 board.py 해소 단일 진실).
+    engine_root = hook_dir / "engine-root"
+    assert engine_root.read_text(encoding="utf-8").strip() == str(wp.REPO.resolve())
     # core.hooksPath 를 bare 에 set — 절대경로(슬롯 push 게이트 wiring).
     config_calls = [c for c in git.calls if c[:2] == ["config", "core.hooksPath"]]
     assert len(config_calls) == 1
@@ -1914,6 +1929,9 @@ def test_install_protected_hook_idempotent_updates_sidecar(wp):
     wp.install_protected_hook("A", ["main", "release"], git_runner=git)  # 목록 변경 재설치
     sidecar = wp.REPO_HOOKS_DIR / "A" / "protected"
     assert sidecar.read_text(encoding="utf-8").splitlines() == ["main", "release"]
+    # engine-root 도 재설치마다 갱신(멱등 — stale PM 홈 경로 잔존 방지·T-0223).
+    engine_root = wp.REPO_HOOKS_DIR / "A" / "engine-root"
+    assert engine_root.read_text(encoding="utf-8").strip() == str(wp.REPO.resolve())
     # 훅은 단일(중복 파일 0)·core.hooksPath 매 호출 set(멱등).
     assert (wp.REPO_HOOKS_DIR / "A" / "pre-push").exists()
     assert sum(1 for c in git.calls if c[:2] == ["config", "core.hooksPath"]) == 2
@@ -1983,12 +2001,77 @@ def test_generated_hook_allows_feature_push(wp):
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
-def test_generated_hook_override_env_passes_protected(wp):
-    """생성 훅 직접 실행 — PM_ALLOW_PROTECTED_PUSH=1 이면 보호목록(main)도 통과(사용자 명시 OK·T-0076)."""
+def test_generated_hook_pm_allow_with_skip_passes_protected(wp):
+    """생성 훅 직접 실행 — PM_ALLOW_PROTECTED_PUSH=1 + PM_SKIP_LIVE_GATE=1 이면 보호목록(main)도
+    통과 (T-0223 — 라이브 게이트 승격 후 우회 경로·라이브-무관·긴급 변경 한정).
+
+    skip 은 라이브 check 만 생략 → 훅이 board.py 를 아예 호출하지 않아 hermetic(cwd 무관).
+    """
     _mk_bare_placeholder(wp, "A")
     wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
-    assert _run_hook(hook, _push_line("refs/heads/main"), env_override=True) == 0
+    assert _run_hook(hook, _push_line("refs/heads/main"),
+                     env_override=True, skip_live_gate=True) == 0
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_hook_pm_allow_engine_absent_fail_closed(wp):
+    """생성 훅 직접 실행 — PM_ALLOW=1·PM_SKIP 없음인데 engine-root 가 가리키는 PM 홈에 board.py 가
+    없으면 fail-closed 거부 (T-0223·codex r2).
+
+    라이브 게이트 승격: PM_ALLOW 만으론 더는 보호 push 를 통과시키지 않는다. engine-root sidecar 는
+    PM 홈(=proj)을 가리키는데 이 fixture proj 엔 `.project_manager/tools/board.py` 가 없으므로 게이트를
+    못 돌려 fail-closed(rc≠0)한다 — 무력화 방지. (board.py 는 슬롯 아닌 PM 홈 소유임을 반영·codex r2.)
+    """
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
+    # engine-root sidecar 는 PM 홈(proj)을 가리키지만 proj 엔 board.py 없음.
+    assert (wp.REPO_HOOKS_DIR / "A" / "engine-root").exists()
+    assert not (wp.REPO / ".project_manager" / "tools" / "board.py").exists()
+    assert _run_hook(hook, _push_line("refs/heads/main"), env_override=True) != 0
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_hook_engine_root_sidecar_absent_fail_closed(wp):
+    """생성 훅 직접 실행 — engine-root sidecar 자체가 없으면 PM_ALLOW=1 이어도 fail-closed 거부 (T-0223 DoD ③).
+
+    sidecar 부재/경로 무효 = board.py 미해소 → 기존 fail-closed 2분기 메시지 유지. 설치 후 sidecar 를
+    지워 재현(설치자가 안 썼거나 유실된 경우) — 게이트를 못 돌리면 무력화 방지로 거부한다.
+    """
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    (wp.REPO_HOOKS_DIR / "A" / "engine-root").unlink()   # sidecar 제거.
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
+    assert _run_hook(hook, _push_line("refs/heads/main"), env_override=True) != 0
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_hook_skip_alone_without_pm_allow_hard_blocks(wp):
+    """생성 훅 직접 실행 — PM_SKIP_LIVE_GATE=1 단독(PM_ALLOW 없음)은 여전히 T-0076 하드 차단 (reviewer 권고 가드).
+
+    승인(PM_ALLOW)과 검증 스킵(PM_SKIP)은 별개 스위치 — skip 만으론 보호 push 를 열지 못한다. 이 가드가
+    없으면 향후 PM_SKIP 체크가 하드차단보다 앞으로 이동해도(게이트 조용히 무력화) 안 잡힌다. skip 만 켜고
+    PM_ALLOW 를 안 주면 하드 차단(rc≠0)을 직접 단언한다.
+    """
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
+    assert _run_hook(hook, _push_line("refs/heads/main"),
+                     env_override=False, skip_live_gate=True) != 0
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_hook_tag_push_unaffected(wp):
+    """생성 훅 직접 실행 — tag push 는 보호 브랜치가 아니라 통과(rc 0)·PM_ALLOW/라이브 게이트 무관 (T-0076·T-0223).
+
+    remote ref 가 `refs/tags/*` 면 보호 판정 대상이 아니다 → PM_ALLOW=1 이어도 라이브 게이트를
+    타지 않고 통과(board.py 미호출·hermetic). tag 시맨틱 회귀 무변경 단언.
+    """
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
+    assert _run_hook(hook, _push_line("refs/tags/v1.0"), env_override=True) == 0
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
@@ -2109,10 +2192,13 @@ def test_real_git_feature_push_allowed_via_hookspath(proj, tmp_path):
 
 
 @_git_required
-def test_real_git_protected_push_override_env_allowed(proj, tmp_path):
-    """실 git e2e — PM_ALLOW_PROTECTED_PUSH=1 이면 hooksPath 훅을 거쳐도 보호 main push 허용·전진 (T-0096).
+def test_real_git_protected_push_pm_allow_with_skip_allowed(proj, tmp_path):
+    """실 git e2e — PM_ALLOW_PROTECTED_PUSH=1 + PM_SKIP_LIVE_GATE=1 이면 hooksPath 훅을 거쳐도
+    보호 main push 허용·전진 (T-0096·T-0223 DoD ③).
 
-    사용자 명시 OK override 가 wiring 경유 발화 경로에서도 작동함을 실 push 로 단언한다.
+    T-0223 승격 후 PM_ALLOW 만으론 보호 push 가 라이브 게이트에 막힌다 — PM_SKIP_LIVE_GATE=1
+    (라이브-무관·긴급 변경 우회)이 붙어야 통과한다. skip 은 board.py 호출 자체를 생략하므로
+    라이브 게이트 기록이 없어도 전진함을 실 push 로 단언한다.
     """
     _init_repo(proj)
     wp = _load_wp_bound(proj)
@@ -2125,13 +2211,252 @@ def test_real_git_protected_push_override_env_allowed(proj, tmp_path):
     assert wp.install_protected_hook("A", ["main"]) is True
 
     _git(slot_dir, "remote", "add", "server", str(server))
-    (slot_dir / "change.txt").write_text("override work on main\n", encoding="utf-8")
+    (slot_dir / "change.txt").write_text("skip work on main\n", encoding="utf-8")
     _git(slot_dir, "add", "change.txt")
-    _git(slot_dir, "commit", "-q", "-m", "override change on main")
+    _git(slot_dir, "commit", "-q", "-m", "skip change on main")
     slot_main = _git(slot_dir, "rev-parse", "main").stdout.strip()
 
-    # override env — _git 헬퍼가 env 를 merge 한다(check=True·통과 기대).
-    _git(slot_dir, "push", "server", "main", env={"PM_ALLOW_PROTECTED_PUSH": "1"})
-    # server bare 의 main 이 슬롯 main 으로 전진(override 가 차단을 풀었다).
+    # PM_ALLOW + PM_SKIP — _git 헬퍼가 env 를 merge 한다(check=True·통과 기대).
+    _git(slot_dir, "push", "server", "main",
+         env={"PM_ALLOW_PROTECTED_PUSH": "1", "PM_SKIP_LIVE_GATE": "1"})
+    # server bare 의 main 이 슬롯 main 으로 전진(승인+skip 이 차단을 풀었다).
     server_main = _git(server, "rev-parse", "main").stdout.strip()
-    assert server_main == slot_main, "override push 후 server main 이 전진 안 됨"
+    assert server_main == slot_main, "PM_ALLOW+PM_SKIP push 후 server main 이 전진 안 됨"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 라이브 게이트 승격 — protected push 에 livegate check green 요구 (T-0223·ADR-0039 D2/D3)
+# ════════════════════════════════════════════════════════════════════════
+# 위 e2e 는 board.py 를 안 태우는 경로(차단·override+skip)만 본다. 여기선 승격 경로를 실 발화시킨다:
+# 훅이 sidecar `engine-root`(설치자가 쓴 PM 홈 REPO 절대경로)에서 board.py 를 해소 → `livegate check
+# --rev <push sha>`. **슬롯 worktree(family/회사 checkout)엔 PM 엔진 파일이 없다**(T-0076 무영향) —
+# board.py·livegate.json 은 **PM 홈(proj)** 소유다. 그래서 표준 family bare(`_mk_real_bare`·엔진 없음)를
+# 쓰고, PM 홈에 board.py 를 심고(_install_engine), livegate.json 은 PM 홈 .local(_write_livegate)에 쓴다.
+#   ① 라이브 게이트 pass 기록 + PM_ALLOW → 통과(전진)   ② 기록 부재 / rev 불일치 → 거부(server 무변경)
+#   ④ 비보호 브랜치 → 라이브 게이트 무관(기록 없어도 통과)   codex r2: 슬롯엔 엔진 없음(회사 repo 무영향)
+# ⚠️ livegate record 자체는 실 LLM 릴리즈 wave(pytest -m release)라 여기서 안 돌린다 — board 테스트가
+#    mock 으로 record 를 검증한다. 여기선 결과 JSON(livegate.json)을 직접 심어 훅↔check 통합만 태운다
+#    (check 채널=T-0221·[[dcf3abf]]).
+
+
+def _install_engine(engine_root: Path) -> None:
+    """PM 홈(engine_root=wp.REPO)에 실 board.py 를 심는다 — 훅이 sidecar 로 해소하는 엔진 (T-0223 codex r2).
+
+    슬롯 worktree(family/회사 checkout)엔 엔진 파일이 없다(회사 repo 무영향) — board.py 는 PM 홈에만
+    존재하고 훅은 sidecar `engine-root`(=이 engine_root)로 그걸 찾는다. board.py 는 단일 파일이라
+    그것만 복사하면 `livegate check` 가 standalone 동작(yaml=런타임 의존·테스트 env 보유). board.py
+    REPO=Path(__file__).parents[2]=engine_root → livegate.json 을 engine_root/.project_manager/.local 에서 읽는다.
+    """
+    tools = engine_root / ".project_manager" / "tools"
+    tools.mkdir(parents=True, exist_ok=True)
+    shutil.copy(str(TOOLS / "board.py"), str(tools / "board.py"))
+
+
+def _write_livegate(engine_root: Path, *, head: str, status: str = "pass",
+                    rc: int = 0) -> None:
+    """PM 홈(engine_root)의 `.project_manager/.local/livegate.json` 에 게이트 결과를 심는다 (T-0223 e2e).
+
+    `board.py livegate record` 가 쓰는 것과 같은 스키마·같은 위치(board.py REPO=engine_root →
+    LOCAL_DIR=engine_root/.project_manager/.local). record 는 실 LLM 이라 안 돌리고 JSON 만 직접 심어
+    훅↔check 통합을 hermetic 히 태운다(head 가 push sha 와 일치하면 green). `n` = board.LIVEGATE_RELEASE_PIN
+    (릴리즈 wave 케이스 수)로 스키마 충실 — 단 `_livegate_check` 는 status==pass ∧ head==rev 만 보고 n 은
+    안 보므로(check 채널) green 판정엔 무관하다.
+    """
+    local_dir = engine_root / ".project_manager" / ".local"
+    local_dir.mkdir(parents=True, exist_ok=True)
+    (local_dir / "livegate.json").write_text(
+        json.dumps({"head": head, "status": status, "n": _LIVEGATE_RELEASE_PIN,
+                    "rc": rc, "ts": "t"}),
+        encoding="utf-8")
+
+
+def _slot_commit_on(slot_dir: Path, branch: str, marker: str) -> str:
+    """슬롯에서 새 커밋을 만들어 ref 를 전진시키고 그 sha 를 돌려준다 (pre-push 발화 전제).
+
+    pre-push 훅은 *실제 ref 갱신* push 에만 발화한다 — 각 push 전 새 커밋으로 ref 를 전진시킨다.
+    """
+    (slot_dir / "change.txt").write_text(marker, encoding="utf-8")
+    _git(slot_dir, "add", "change.txt")
+    _git(slot_dir, "commit", "-q", "-m", marker.strip() or "change")
+    return _git(slot_dir, "rev-parse", branch).stdout.strip()
+
+
+@_git_required
+def test_real_git_livegate_green_allows_protected_push(proj, tmp_path):
+    """실 git e2e — 라이브 게이트 pass 기록(head=push sha) + PM_ALLOW → 보호 main push 통과·전진 (T-0223 DoD ①).
+
+    훅이 engine-root sidecar 로 PM 홈 board.py 를 해소 → `livegate check --rev <push sha>` rc0 → 통과.
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _install_engine(proj)             # PM 홈 엔진 board.py (슬롯엔 없음·codex r2)
+    _mk_real_bare(wp, "A", tmp_path)   # 표준 family bare — 엔진 파일 없음(회사 repo 무영향)
+    server = tmp_path / "A-server.git"
+    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main"]) is True
+    _git(slot_dir, "remote", "add", "server", str(server))
+
+    slot_main = _slot_commit_on(slot_dir, "main", "release change\n")
+    _write_livegate(proj, head=slot_main)   # PM 홈 .local 에 라이브 게이트 pass @ push sha.
+
+    # PM_ALLOW + 라이브 게이트 green — check=True(통과 기대).
+    _git(slot_dir, "push", "server", "main", env={"PM_ALLOW_PROTECTED_PUSH": "1"})
+    assert _git(server, "rev-parse", "main").stdout.strip() == slot_main, \
+        "라이브 게이트 green 인데 보호 push 가 전진 안 됨"
+
+
+@_git_required
+def test_real_git_livegate_record_absent_blocks_protected_push(proj, tmp_path):
+    """실 git e2e — 라이브 게이트 기록 부재면 PM_ALLOW 여도 보호 main push 거부·server 무변경 (T-0223 DoD ②).
+
+    board.py livegate check 가 "기록 없음"(rc1) → 훅 fail·거부. record 없이 릴리즈 못 나감을 못박는다.
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _install_engine(proj)             # PM 홈 엔진 board.py (슬롯엔 없음·codex r2)
+    _mk_real_bare(wp, "A", tmp_path)   # 표준 family bare — 엔진 파일 없음(회사 repo 무영향)
+    server = tmp_path / "A-server.git"
+    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main"]) is True
+    _git(slot_dir, "remote", "add", "server", str(server))
+
+    slot_main = _slot_commit_on(slot_dir, "main", "unrecorded change\n")
+    server_before = _git(server, "rev-parse", "main").stdout.strip()
+    # 라이브 게이트 기록을 심지 않음 → check "기록 없음" rc1.
+
+    rc = subprocess.run(
+        [_GIT, "-C", str(slot_dir), "push", "server", "main"],
+        env={**os.environ, "PM_ALLOW_PROTECTED_PUSH": "1",
+             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    ).returncode
+    assert rc != 0, "라이브 게이트 기록 부재인데 보호 push 가 차단 안 됨(rc=0)"
+    server_after = _git(server, "rev-parse", "main").stdout.strip()
+    assert server_after == server_before, "차단됐는데 server main 이 갱신됨"
+    assert server_after != slot_main, "server main 이 슬롯 main 으로 전진함(차단 실패)"
+
+
+@_git_required
+def test_real_git_livegate_rev_mismatch_blocks_protected_push(proj, tmp_path):
+    """실 git e2e — 라이브 게이트 기록 head ≠ push sha 면 PM_ALLOW 여도 거부·server 무변경 (T-0223 DoD ②).
+
+    check 가 "rev 불일치"(rc1) → 훅 fail. 다른(stale) 커밋에서 돈 게이트로 새 커밋을 밀 수 없음.
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _install_engine(proj)             # PM 홈 엔진 board.py (슬롯엔 없음·codex r2)
+    _mk_real_bare(wp, "A", tmp_path)   # 표준 family bare — 엔진 파일 없음(회사 repo 무영향)
+    server = tmp_path / "A-server.git"
+    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main"]) is True
+    _git(slot_dir, "remote", "add", "server", str(server))
+
+    slot_main = _slot_commit_on(slot_dir, "main", "new change\n")
+    server_before = _git(server, "rev-parse", "main").stdout.strip()
+    # 게이트 기록은 pass 지만 head 가 엉뚱한 sha(=push sha 아님) → rev 불일치.
+    _write_livegate(proj, head="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+
+    rc = subprocess.run(
+        [_GIT, "-C", str(slot_dir), "push", "server", "main"],
+        env={**os.environ, "PM_ALLOW_PROTECTED_PUSH": "1",
+             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    ).returncode
+    assert rc != 0, "라이브 게이트 rev 불일치인데 보호 push 가 차단 안 됨(rc=0)"
+    server_after = _git(server, "rev-parse", "main").stdout.strip()
+    assert server_after == server_before, "차단됐는데 server main 이 갱신됨"
+    assert server_after != slot_main, "server main 이 슬롯 main 으로 전진함(차단 실패)"
+
+
+@_git_required
+def test_real_git_livegate_non_protected_push_unaffected(proj, tmp_path):
+    """실 git e2e — 비보호 브랜치 push 는 라이브 게이트 기록이 없어도 통과·전진 (T-0223 DoD ④).
+
+    PM 홈 엔진+engine-root sidecar 로 승격 경로가 배선돼 있어도 비보호 브랜치 push 는 게이트를 타지
+    않는다 — 라이브 게이트 무관을 실 push 로 단언(비보호 시맨틱 회귀 무변경).
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _install_engine(proj)             # PM 홈 엔진 board.py (슬롯엔 없음·codex r2)
+    _mk_real_bare(wp, "A", tmp_path)   # 표준 family bare — 엔진 파일 없음(회사 repo 무영향)
+    server = tmp_path / "A-server.git"
+    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main"]) is True   # main 만 보호
+    _git(slot_dir, "remote", "add", "server", str(server))
+
+    # 비보호 브랜치 work/x — 라이브 게이트 기록 없음.
+    _git(slot_dir, "checkout", "-q", "-b", "work/x")
+    slot_feat = _slot_commit_on(slot_dir, "work/x", "feature change\n")
+
+    _git(slot_dir, "push", "server", "work/x")   # check=True·통과 기대(게이트 무관).
+    assert _git(server, "rev-parse", "work/x").stdout.strip() == slot_feat, \
+        "비보호 브랜치 push 가 server 에 반영 안 됨(라이브 게이트가 비보호를 막음)"
+
+
+@_git_required
+def test_real_git_livegate_multi_protected_ref_all_or_nothing(proj, tmp_path):
+    """실 git e2e — 한 push 에 보호 ref 여러 개(main green·release 기록 불일치)면 push 전체가 거부되고
+    server 가 **둘 다** 미갱신 (T-0223 codex must-fix — all-or-nothing·미검증 ref 편승 차단).
+
+    pre-push 는 push 전체에 한 번 발화한다 → 훅이 보호 ref 를 *전부* 검증한다. livegate.json 은
+    main 커밋에서만 green(head=main sha)이라 main check 는 통과하지만 release check 는 rev 불일치로
+    fail → `git push server main release` 한 번이 통째로 거부되고 server main 도 release 도 안 올라간다.
+    (첫 ref 만 보고 break 하는 옛 구현이면 main green 이 release 를 편승시켜 이 단언이 깨진다.)
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _install_engine(proj)             # PM 홈 엔진 board.py (슬롯엔 없음·codex r2)
+    _mk_real_bare(wp, "A", tmp_path)   # 표준 family bare — 엔진 파일 없음(회사 repo 무영향)
+    server = tmp_path / "A-server.git"
+    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main", "release"]) is True   # main·release 둘 다 보호
+    _git(slot_dir, "remote", "add", "server", str(server))
+
+    # main 전진(새 커밋) + release 브랜치(main 에서 갈라 별도 커밋 — main sha 와 다른 tip).
+    main_new = _slot_commit_on(slot_dir, "main", "main release change\n")
+    _git(slot_dir, "checkout", "-q", "-b", "release")
+    release_tip = _slot_commit_on(slot_dir, "release", "release-only change\n")
+    _git(slot_dir, "checkout", "-q", "main")
+    assert release_tip != main_new
+
+    server_main_before = _git(server, "rev-parse", "main").stdout.strip()
+    # 라이브 게이트 pass @ main sha 만 → main check green·release check 는 rev 불일치.
+    _write_livegate(proj, head=main_new)
+
+    # 한 push 로 두 보호 ref — release 가 미green 이라 push 전체 거부(rc≠0).
+    rc = subprocess.run(
+        [_GIT, "-C", str(slot_dir), "push", "server", "main", "release"],
+        env={**os.environ, "PM_ALLOW_PROTECTED_PUSH": "1",
+             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    ).returncode
+    assert rc != 0, "release 미green 인데 다중 보호 ref push 가 차단 안 됨(rc=0)"
+
+    # server main 무갱신(green 이던 main 도 release 실패에 all-or-nothing 으로 함께 거부).
+    server_main_after = _git(server, "rev-parse", "main").stdout.strip()
+    assert server_main_after == server_main_before, "차단됐는데 server main 이 갱신됨(편승)"
+    assert server_main_after != main_new, "server main 이 슬롯 main 으로 전진함(all-or-nothing 실패)"
+    # server 에 release ref 미생성(미검증 ref 가 안 올라감).
+    release_on_server = subprocess.run(
+        [_GIT, "-C", str(server), "rev-parse", "--verify", "--quiet", "refs/heads/release"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    ).returncode
+    assert release_on_server != 0, "미검증 release ref 가 server 에 올라감(편승 차단 실패)"
