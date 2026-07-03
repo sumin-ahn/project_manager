@@ -825,6 +825,18 @@ def _count_marked_tests(path: Path, marker: str) -> int:
     )
 
 
+def test_release_pin_matches_board_livegate_pin():
+    """pin 단일진실 교차 단언 (T-0221/T-0222 접점·PM 배선) — release 케이스 수가 바뀌면
+    board.LIVEGATE_RELEASE_PIN(livegate record 의 수집 게이트)도 함께 바뀌어야 한다.
+    한쪽만 갱신하면 여기서 red — livegate 가 구 pin 으로 신규/삭제 케이스를 위장 통과시키는
+    드리프트를 차단한다."""
+    board_py = Path(__file__).resolve().parents[1] / ".project_manager" / "tools" / "board.py"
+    spec = importlib.util.spec_from_file_location("_board_pin_check", board_py)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.LIVEGATE_RELEASE_PIN == _EXPECTED_RELEASE_TESTS
+
+
 def test_release_marker_count_is_pinned():
     """`release` 마커 테스트 수(두 파일 합)가 고정값과 일치 — 마커 소실/개명 시 게이트 false-green 방어.
 
