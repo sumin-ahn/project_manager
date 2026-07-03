@@ -31,19 +31,20 @@ flowchart LR
 
 ## 2. 5분 여정 (quickstart)
 
-1. **import (설치 1줄)** — 프레임워크 checkout 루트(`<manager>`)에서 새 프로젝트를 찍어낸다:
+1. **Import (설치 1줄)**: 프레임워크 checkout 루트(`<manager>`)에서 새 프로젝트 생성 —
+   **`--harness both` 권장** (Claude Code + opencode 어댑터 모두·엔진은 공유):
    ```bash
-   <manager>/pm-import.sh --new <my-project>                    # claude_code (기본)
-   <manager>/pm-import.sh --new <my-project> --harness opencode # opencode
+   <manager>/pm-import.sh --new <my-project> --harness both      # 권장 — 두 하니스 모두
+   <manager>/pm-import.sh --new <my-project> --harness claude    # 하나만: claude | opencode
    ```
-   (LLM 에이전트가 *자율로* 채택하게 하려면 → [`ADOPT.md`](ADOPT.md). 손으로 각 단계를 밟으려면 →
-   [`docs/manual-import.md`](docs/manual-import.md). 기존 프로젝트에 얹으려면 `--into`.)
-2. **하니스 세션을 연다** — 새 프로젝트 폴더에서 `claude` 또는 `opencode` 를 띄운다.
-3. **부트스트랩** — 세션에 `/pm-bootstrap` 이라고 친다. board·git·log 상태를 PM 이 dump 하고 다음 수를 제안한다.
-4. **일을 맡긴다** — 이제부터 **사람은 자연어로 지시**하고, PM 세션이 ticket 발행·위임·완료를 운전한다.
-   (`board.py` 같은 CLI 는 *에이전트*가 친다 — 사람이 외울 필요 없다.)
+   (LLM 에이전트의 자율 채택 → [`ADOPT.md`](ADOPT.md) · 수동 절차 →
+   [`docs/manual-import.md`](docs/manual-import.md) · 기존 프로젝트에 얹기 → `--into`)
+2. **하니스 세션 Open**: 새 프로젝트 폴더에서 `claude` 또는 `opencode` 실행.
+3. **부트스트랩**: 세션에 `/pm-bootstrap` 입력 — board·git·log 상태 dump + 다음 수 제안.
+4. **위임 시작**: 이후는 **자연어 지시** — ticket 발행·위임·완료는 PM 세션이 운전.
+   (`board.py` 같은 CLI 는 *에이전트* 몫 — 사람이 외울 필요 없음.)
 
-사람이 실제로 하니스에 치는 말은 이런 식이다:
+사람이 하니스에 입력하는 예:
 
 ```text
 /pm-bootstrap
