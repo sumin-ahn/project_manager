@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -129,25 +130,64 @@ def _local_conf_session() -> str | None:
     return None
 
 
-def _default_session() -> str:
-    """세션 식별자 — board.py `session_name()` 과 *동형* 우선순위 (T-0073):
-    `$PM_SESSION_NAME` > `$CLAUDE_SESSION_NAME`(deprecated alias·silent) >
-    `local.conf session=` > `<host>-<pid>` (board/worktree_pool 동형).
+def _leased_sessions() -> list[str]:
+    """lease 장부 state=="leased" 행들의 session 목록 (count-based 유도·ADR-0040 D1).
 
-    `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관). `CLAUDE_SESSION_NAME` 은 구 이름
-    alias 만 — 둘 다 설정 시 `PM_SESSION_NAME` 승. alias 는 경고 없이 조용히 동작.
+    board.py·worktree_pool 을 import 하지 않으므로([[ADR-0013]] isolation·touches 격리) 리스
+    장부 파일을 stdlib json 으로 직접 point-read 한다(`board._leased_sessions`·worktree_pool
+    `_leased_sessions` 와 *동형*). 경로는 호출 시점 `REPO` 에서 구성한다(monkeypatch 존중·
+    `_local_conf_session` 과 동형). 장부 부재/파싱실패/손상은 빈 리스트(fail-soft). session 이
+    빈/None 인 행은 제외.
+    """
+    ledger = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    try:
+        data = json.loads(ledger.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("leases", [])
+    if not isinstance(rows, list):
+        return []
+    sessions: list[str] = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("state") == "leased":
+            sess = row.get("session")
+            if sess:
+                sessions.append(sess)
+    return sessions
 
-    local.conf `session=` 레이어가 빠지면 `cmd_status`/`whoami` 의 "이 세션의 리스" surface 와
-    worktree add 의 lease.session 저장이 board 매칭측과 어긋난다(T-0066 must-fix) — 통일한다.
+
+def _default_session() -> str | None:
+    """세션 식별자 — board.py `session_name()` 과 *동형* 우선순위 (ADR-0040 D1·T-0073):
+    `$PM_SESSION_NAME` > `$CLAUDE_SESSION_NAME`(deprecated alias·silent) > lease 장부
+    state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) > (장부 부재·leased 0 =
+    solo) `local.conf session=` > None.
+
+    `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias(둘 다면
+    PM 승·조용히 동작). **leased ≥2 (모호)면 local.conf 층을 건너뛴다**(board 와 동형 — silent
+    오귀속 차단). 미해소면 None — `cmd_status`/`whoami` surface(required=False)가 "(비바인딩)"
+    으로 표시한다(Windows 4슬롯 홈에서 비바인딩 세션이 남의 리스로 self-identify 하던 직접 증상
+    수정·ADR-0040). `<host>-<pid>` 최종 폴백은 세션-귀속 아닌 국소 용처(worktree_pool lease
+    취득)에만 잔존 — 여기(surface 해소)선 제거.
+
+    board.py 를 import 하지 않으므로([[ADR-0013]] isolation·touches 격리) 같은 해소를 자체
+    구현한다. 저장측(worktree_pool)과 매칭측(여기)이 어긋나면 "이 세션의 리스" surface 가
+    board 매칭과 어긋난다(T-0066 must-fix) — 세 모듈을 같은 우선순위로 통일한다.
     """
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
         return env
-    conf_sess = _local_conf_session()
-    if conf_sess:
-        return conf_sess
-    import socket
-    return f"{socket.gethostname()}-{os.getpid()}"
+    leased = _leased_sessions()
+    if len(leased) == 1:
+        return leased[0]
+    if not leased:
+        # 장부 부재·leased 0 = solo → legacy local.conf 폴백 (후방호환).
+        conf_sess = _local_conf_session()
+        if conf_sess:
+            return conf_sess
+    # leased ≥2 (모호) 또는 solo 무바인딩 → 미해소(surface 는 "(비바인딩)").
+    return None
 
 
 def _local_conf_user() -> str | None:
@@ -531,7 +571,20 @@ def cmd_repo_add(
         )
         return 1
 
+    # owner = areas.md 등록 식별자(registrant·**귀속 쓰기**) — 미해소면 fail-loud
+    # (**어떤 부작용(bare clone·areas_append·훅 설치)보다 앞에서**·board.cmd_init owner 와 동형·
+    # ADR-0040 D1). _default_session 이 미바인딩(leased ≥2·무바인딩)에서 None 을 돌려주므로,
+    # 그대로 areas_append 에 넘기면 board 가 owner 를 문자열 "None" 으로 areas.md 에 누출한다 —
+    # 그 전에 차단한다. `--owner <id>` 명시 또는 `--session <repo>_<N>` 로 세션 명시.
     owner = args.owner or _default_session()
+    if not owner:
+        print(
+            "[중단] 등록 owner 미해소 — 활성 슬롯이 여럿이거나 세션 바인딩이 없다. "
+            "`--owner <id>` 를 주거나 `--session <repo>_<N>` 로 세션을 명시하라 "
+            "(clone/등록/훅 전혀 하지 않았다).",
+            file=sys.stderr,
+        )
+        return 1
     # area_owner = 그 area 의 *user* 소유(`--mine` 풀 입력·ADR-0033 ③·T-0161) — registrant
     # `owner`(슬롯/세션)와 별개 칼럼(overload 금지·codex sug). `--user` 명시 > local.conf user=
     # > git config user.email > None(빈 칼럼·_repo_area_owner None 폴백·현행 동작).
@@ -743,7 +796,7 @@ def cmd_status(
     def _live_branch(slot: str) -> str:
         return wp.current_branch(slot) or "(detached/조회불가)"
 
-    print(f"# pm-config {args.command} — 세션: {sess}")
+    print(f"# pm-config {args.command} — 세션: {sess or '(비바인딩)'}")
     if mine:
         print("## 이 세션의 리스:")
         for l in mine:
@@ -1083,7 +1136,7 @@ def _render_slots(wp) -> None:
 def _render_state(board_mod, wp) -> None:
     """콘솔 상태 1회 렌더 — repos(areas) + slots(리스). 액션마다 재호출(재렌더)."""
     print()
-    print(f"# pm-config 콘솔 — 세션: {_default_session()}")
+    print(f"# pm-config 콘솔 — 세션: {_default_session() or '(비바인딩)'}")
     _render_repos(board_mod)
     _render_slots(wp)
 

@@ -159,6 +159,17 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
 - orchestrator 위임 시 PM 이 Agent 툴로 서브에이전트를 spawn — 세션명은
   `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류로 claim 시 명시 전달.
 
+**세션 정체성은 저장하지 않고 유도한다 (ADR-0040):** 세션명·티켓 prefix 는 per-clone
+`local.conf` 에 박아두는 상태가 아니라 **유도되는 값**이다. 해소 순서 =
+`명시(--session/--prefix) > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에
+leased 슬롯이 정확히 1개면 그 세션(count-based 유도) > (solo 홈·lease 부재) local.conf
+session=/prefix= legacy 폴백`. **leased ≥2 인 multi 홈은 local.conf 층을 건너뛴다** — per-clone
+저장값으로 남의 슬롯을 self-identify 하던 클래스(silent 오귀속)를 원천 차단. 모호(leased ≥2·
+무명시)한데 귀속 조작(claim/complete/unclaim/release/new owner)을 시도하면 **fail-loud**
+(`--session <repo>_<N>` 명시 유도), 조회 surface(whoami/status)는 `(비바인딩)` 표시. solo
+채택자는 lease 장부가 없어 legacy 폴백 = 현행 무변경 — `local.conf session=`/`prefix=` 는
+**solo 형상 전용 legacy** 라 multi 홈은 흡수 후 제거해도(남아도 무시) 동작 동일.
+
 > 실제 사용된 세션 목록 (sliding window) 은 동적 상태라 [`pm_state.md`](pm_state.md)
 > §"세션 식별 (현재까지 사용된 이름)" 으로 분리됐다 — `/pm-handoff` 가 자동 갱신.
 
@@ -167,6 +178,12 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
 `claim`/`complete`/`migrate-identity` 의 `--session` 은 **행위자 지정**(누구 이름으로 claim 하는지)
 — 의미가 다르다. `list --session X` 는 이제 에러 없이 동작(과거 argparse 가 거부해 opencode PM 이
 계속 에러났었다) — 두 용법을 혼동해도 최소한 크래시는 안 난다.
+
+**채택자 파급 — 단일 등록 홈의 ID 네임스페이스 (ADR-0040):** areas.md 에 repo 를 **정확히
+1개** 등록한 홈은 이제 `--prefix` 없이도 새 티켓이 그 repo 의 `T-<prefix>-NNN` 로 발행된다
+(count-based 유도). 과거 `T-NNNN`(legacy) 로 발행된 티켓과 **혼합**되지만 두 네임스페이스는
+disjoint 라 ID 충돌이 아니다 — 기존 보드는 그대로 열린다. (등록 repo ≥2 인 multi 홈은 세션
+유도로 슬롯별 prefix 해소, 모호하면 `new` 가 fail-loud.)
 
 ## 운영 레퍼런스 (필요 시에만 Read — 부트스트랩 통째 로드 X)
 
@@ -210,6 +227,21 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
   라이브 브랜치가 보호목록이면 🚫 경고로 소프트 인지시킨다.
 - **회사 repo 무영향**: 훅은 우리 multi-PM의 bare 미러(`.repos/<repo>.git`) `core.hooksPath`
   client-side 가드일 뿐 — 회사 서버 ref·사용자 클론은 무변경.
+
+### 릴리즈 절차 (순서 · ADR-0039)
+
+보호 브랜치(`main`)로 릴리즈를 낼 때 다음 순서를 지킨다:
+
+1. **`board.py livegate record`** — 릴리즈 라이브 wave 를 실측해 green(수집 pin 충족)을 push
+   대상 rev 에 기록한다 (손기록 없음·보호훅이 소비).
+2. **CHANGELOG 절 확정** — 루트 `CHANGELOG.md` 의 `[Unreleased]` 를 `## [X.Y.Z] - YYYY-MM-DD`
+   로 확정한다. 채택자-관점 Added/Changed/Fixed 요약(3~8줄·티켓 번호/내부 세션 용어 유입 금지)
+   + 새 `[Unreleased]` 빈 절을 위에 추가.
+3. **main push** — 사용자 승인 게이트 + `PM_ALLOW_PROTECTED_PUSH=1` (보호훅이 `livegate check`
+   green 을 추가 요구·위 §보호 브랜치 가드).
+4. **annotated tag `vX.Y.Z`** push.
+5. **(gh 인증 시)** `gh release create vX.Y.Z --notes-file <CHANGELOG 해당 절 추출>` — GitHub
+   Release 생성. gh 미인증이면 생략(사용자 별도 처리).
 
 ## 인계 후 PM 세션 첫 turn 의 권장 액션
 

@@ -1150,24 +1150,62 @@ def _local_conf_session() -> str | None:
     return None
 
 
+def _leased_sessions() -> list[str]:
+    """lease 장부 state=="leased" 행들의 session 목록 (count-based 유도·ADR-0040 D1).
+
+    `_default_session` 이 lease 취득 *전*(lock 밖)에 호출하므로 lock 없는 point-read 로 장부
+    파일(`LEASES_FILE`)을 직접 읽는다 — `_read_ledger`(lock 보유 전제)와 별도. 리스는
+    atomic-replace(`os.replace`)로 쓰므로 lock 없는 read 도 일관 스냅샷을 본다(board.py
+    `_leased_sessions` 와 *동형*). 장부 부재/파싱실패/손상은 빈 리스트(fail-soft). session 이
+    빈/None 인 행은 제외.
+    """
+    if not LEASES_FILE.exists():
+        return []
+    try:
+        data = json.loads(LEASES_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("leases", [])
+    if not isinstance(rows, list):
+        return []
+    sessions: list[str] = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("state") == "leased":
+            sess = row.get("session")
+            if sess:
+                sessions.append(sess)
+    return sessions
+
+
 def _default_session() -> str:
-    """세션 식별자 기본값 — board.py `session_name()` 과 *동형* 우선순위 (T-0073):
+    """세션 식별자 기본값 — board.py `session_name()` 과 *동형* 우선순위 (ADR-0040 D1·T-0073):
     `$PM_SESSION_NAME` env > `$CLAUDE_SESSION_NAME` env(deprecated alias·silent) >
-    `local.conf session=` > `<host>-<pid>`.
+    lease 장부 state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) >
+    (장부 부재·leased 0 = solo) `local.conf session=` > `<host>-<pid>`.
 
-    `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관). `CLAUDE_SESSION_NAME` 은 구 이름
-    alias 만 — 둘 다 설정 시 `PM_SESSION_NAME` 승. alias 는 경고 없이 조용히 동작.
+    `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
+    (둘 다면 PM 승·조용히 동작). **leased ≥2 (모호)면 local.conf 층을 건너뛰고 `<host>-<pid>` 로
+    간다**(board.session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단·ADR-0040).
 
-    board.py 를 import 하지 않으므로([[ADR-0013]] isolation·touches 격리·병렬충돌 회피)
-    같은 해소를 자체 구현한다. local.conf `session=` 레이어가 빠지면 저장측(여기)과
-    매칭측(board.session_name)이 어긋나 per-slot test_cmd 가 미스된다(T-0066 must-fix) —
-    그래서 세 모듈을 같은 우선순위로 통일한다.
+    board.session_name 과 **tail 만 다르다**: 여기는 lease *취득*의 국소 임시 명명이라 미해소를
+    None/fail 로 두지 않고 `<host>-<pid>` 로 폴백한다(ADR-0040 — host-pid 최종 폴백은 세션-귀속
+    아닌 국소 용처에만 잔존). board.py 를 import 하지 않으므로([[ADR-0013]] isolation·touches
+    격리·병렬충돌 회피) 같은 해소를 자체 구현한다. 저장측(여기)과 매칭측(board.session_name)이
+    어긋나면 per-slot test_cmd 가 미스되므로(T-0066 must-fix) 세 모듈을 같은 우선순위로 통일한다.
     """
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
         return env
-    conf_sess = _local_conf_session()
-    if conf_sess:
-        return conf_sess
+    leased = _leased_sessions()
+    if len(leased) == 1:
+        return leased[0]
+    if not leased:
+        # 장부 부재·leased 0 = solo → legacy local.conf 폴백 (후방호환).
+        conf_sess = _local_conf_session()
+        if conf_sess:
+            return conf_sess
+    # leased ≥2 (모호) 또는 solo 무바인딩 → 국소 임시 명명 host-pid (lease 취득 전용 잔존).
     import socket
     return f"{socket.gethostname()}-{os.getpid()}"
