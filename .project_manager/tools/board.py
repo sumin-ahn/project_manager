@@ -40,7 +40,7 @@ HOOKS_DIR = REPO / ".project_manager" / "hooks"  # instance-owned lint hooks (AD
 BOARD_FILE = REPO / ".project_manager" / "wiki" / "board.md"
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
-LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored): prefix, session
+LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored): py·test_cmd·ctx_* + solo-legacy prefix/session (multi 홈은 유도·ADR-0040)
 
 
 # ── board root (graceful 탐지·ADR-0033 ① 분리) ───────────────────────────────
@@ -144,8 +144,10 @@ def local_config() -> dict[str, str]:
     """Per-clone local config (`.project_manager/local.conf`, git-ignored).
 
     Plain `KEY=value` lines; `#` comments and blank lines ignored. Missing → {}.
-    Holds per-clone settings that must NOT be shared via git (prefix, session) —
-    multi-repo (N×M·prefix 네임스페이스) 셋업의 per-clone 로컬 상태. Written by `pm-init`.
+    Holds per-clone settings that must NOT be shared via git (py·test_cmd·ctx_*·
+    upstream 등). Written by `pm-init`. `session=`/`prefix=` 는 **solo 형상 전용 legacy**
+    (ADR-0040) — leased ≥2 인 multi 홈에서는 이 키가 있어도 무시되고 세션/prefix 는
+    lease 장부에서 유도된다(session_name·id_prefix). solo 홈만 이 키로 폴백.
     """
     conf: dict[str, str] = {}
     if not LOCAL_CONF.exists():
@@ -2418,13 +2420,17 @@ def cmd_init(args: argparse.Namespace) -> int:
             areas_append(prefix, args.area, owner, area_owner=area_owner)
             ao_surface = area_owner if area_owner else "(미상 — local.conf user= / git user.email 미설정)"
             print(f"✓ areas.md 등록: {prefix} | {args.area} | owner={owner} | area_owner={ao_surface}")
+    # session=/prefix= write 는 **solo 형상 전용 legacy** (ADR-0040 D4) — leased ≥2 인
+    # multi 홈은 이 키를 무시하고 세션/prefix 를 lease 장부에서 유도한다(session_name·
+    # id_prefix). solo 채택자 폴백(후방호환)을 위해 write 는 유지하되, multi 홈은 흡수 후
+    # 이 키를 제거해도 동작 동일(위생).
     sess = args.session or (f"{prefix.lower()}-pm" if namespaced else "pm")
     if not LOCAL_CONF.exists():
         # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
         conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
         if namespaced:
-            conf += f"prefix={prefix}\n"
-        conf += (f"session={sess}\n"
+            conf += f"prefix={prefix}\n"  # solo-legacy — multi 홈은 areas.md 유도(ADR-0040)
+        conf += (f"session={sess}\n"  # solo-legacy — multi 홈은 lease 유도(ADR-0040)
                  "# 엔진 문서 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
                  f"py={_detect_py()}\ntest_cmd=pytest -q\nproject_name=\n"
                  "# ctx 정지-핸드오프 임계 (어댑터 훅이 잔여 컨텍스트 %로 판정 — T-0013):\n"
@@ -2455,7 +2461,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             if key not in existing:
                 updates[key] = value
         # session·prefix 는 명시 인자일 때만 set-or-replace(재등록 UX 보존). 인자 없으면
-        # 기존 session 보존 — 없으면 default(`pm`/`<prefix>-pm`)로 표면화만.
+        # 기존 session 보존 — 없으면 default(`pm`/`<prefix>-pm`)로 표면화만. (둘 다 solo-legacy·
+        # multi 홈은 유도로 무시 — ADR-0040 D4.)
         if args.session:
             updates["session"] = args.session
         if namespaced:
