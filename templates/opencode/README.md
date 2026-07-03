@@ -35,7 +35,7 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
 채택은 **manager 루트의 `pm-import.sh`(`/.cmd`) 파사드**(= `pm_import.py` 호출)로 한다 — 어댑터
 복사·placeholder 치환·board init·git init(`--new`)·**모델 결정적 해소**까지 한 번에 처리한다.
 opencode 는 모델 placeholder 해소가 필수라 **수동 `cp -r` 은 불완전 — 쓰지 않는다**
-(claude_code 에 있는 수동 longhand(루트 [`README.md`](../../README.md) §3.2)에 해당하는 것이 opencode 엔 없다).
+(claude_code 에 있는 수동 longhand(루트 [`docs/manual-import.md`](../../docs/manual-import.md))에 해당하는 것이 opencode 엔 없다).
 
 ```bash
 # 신규 프로젝트 (디렉토리 생성 + git init)

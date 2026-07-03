@@ -22,7 +22,7 @@ claude_code LLM 세션이 `CLAUDE.md` 를 진입으로 PM 을 구동한다 — o
 
 PM(메인 세션)이 `Agent` 툴을 `subagent_type=developer|code-reviewer|architect|researcher` 로
 호출하면 `.claude/agents/*.md` 정의가 별도 자식 세션에서 구동된다. 표준 위임 프롬프트는
-`/pm-dev-delegate` skill. (위임 *개념*·generate≠evaluate 는 루트 README §5.)
+`/pm-dev-delegate` skill. (위임 *개념*·generate≠evaluate 는 루트 README §2·§3.)
 
 ## 채택 (pm_import — 정규 경로)
 
@@ -35,7 +35,7 @@ manager 루트의 `pm-import.sh`(`/.cmd`) 파사드로 한다 (default harness =
 ```
 
 (Windows 는 `pm-import.cmd`. `--from` 은 manager 루트 auto-default.) 파사드 없이 푸는 수동
-longhand·placeholder 표·도입 절차는 루트 [`README.md`](../../README.md) §3·§4.
+longhand·placeholder 표는 루트 [`docs/manual-import.md`](../../docs/manual-import.md)·[`docs/placeholders.md`](../../docs/placeholders.md).
 
 ## 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 
