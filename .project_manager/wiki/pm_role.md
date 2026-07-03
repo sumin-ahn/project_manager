@@ -203,8 +203,11 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
 - **main 갱신 = 사용자에게 묻고 사용자가 처리** (PR/머지 권장). PM 이 발의하지 않는다.
 - pre-push 훅(`.project_manager/.local/repo-hooks/<repo>/pre-push`)이 보호 브랜치 push 를
   하드 차단한다 — **`PM_ALLOW_PROTECTED_PUSH=1` override 를 PM 이 스스로 쓰지 않는다**
-  (사용자 명시 OK 의 escape hatch 일 뿐). bootstrap identity surface 가 라이브 브랜치가
-  보호목록이면 🚫 경고로 소프트 인지시킨다.
+  (사용자 명시 OK 의 escape hatch 일 뿐). override 로 열어도 훅은 **릴리즈 라이브 green
+  기록**(`board.py livegate check` — record 는 `livegate record`·ADR-0039)을 추가 요구한다.
+  `PM_SKIP_LIVE_GATE=1` 우회는 변경 성질 2사유(라이브-무관 변경·긴급 hotfix) 한정 —
+  환경 문제(오프라인·API 장애)는 우회 사유가 아니다(복구 우선). bootstrap identity surface 가
+  라이브 브랜치가 보호목록이면 🚫 경고로 소프트 인지시킨다.
 - **회사 repo 무영향**: 훅은 우리 multi-PM의 bare 미러(`.repos/<repo>.git`) `core.hooksPath`
   client-side 가드일 뿐 — 회사 서버 ref·사용자 클론은 무변경.
 
