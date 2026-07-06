@@ -295,6 +295,169 @@ def test_cmd_archive_index_increments_with_existing(tmp_path, monkeypatch):
     assert (archive_dir / "0002-2026-06-10_to_2026-06-10.md").exists()
 
 
+# ── cmd_archive --keep-last (개수 기반 슬라이스·T-0244) ───────────────────────
+
+def test_cmd_archive_keep_last_seals_old_keeps_recent(tmp_path, monkeypatch, capsys):
+    """--keep-last N: 최근 N entry(tail)만 유지, 나머지 오래된 쪽을 연번 봉인."""
+    mod = _load_module()
+    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    current.write_text(_HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C, encoding="utf-8")
+
+    # 최근 1개(ENTRY_C)만 유지 → ENTRY_A·ENTRY_B 봉인.
+    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=1, dry_run=False))
+    assert rc == 0
+
+    # 슬라이스: idx 1(빈 dir·legacy 예약) + 봉인 첫/마지막 날짜 범위명.
+    slice_path = archive_dir / "0001-2026-06-10_to_2026-06-12.md"
+    assert slice_path.exists()
+    sealed = slice_path.read_text(encoding="utf-8")
+    assert "본문 A" in sealed and "본문 B" in sealed
+    assert "본문 C" not in sealed
+    # 봉인 헤더 유래 줄이 --keep-last 모드를 반영.
+    assert "--keep-last 1" in sealed
+    assert "--before" not in sealed
+    assert "수정 금지" in sealed
+
+    # current.md: preamble 보존 + 최근 N(ENTRY_C)만 잔여.
+    remaining = current.read_text(encoding="utf-8")
+    assert remaining == _HEADER + _ENTRY_C
+    assert "본문 A" not in remaining and "본문 B" not in remaining
+
+
+def test_cmd_archive_keep_last_noop_when_n_ge_len(tmp_path, monkeypatch, capsys):
+    """N ≥ entry 수면 봉인할 게 없다 — no-op (archive 파일 미생성·current.md 무변)."""
+    mod = _load_module()
+    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    original = _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C  # entry 3개.
+    current.write_text(original, encoding="utf-8")
+
+    # N == len(entries): no-op.
+    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=3, dry_run=False))
+    assert rc == 0
+    assert "옮길 entry 없음" in capsys.readouterr().out
+    assert not archive_dir.exists() or not list(archive_dir.glob("*.md"))
+    assert current.read_text(encoding="utf-8") == original
+
+    # N > len(entries): 역시 no-op.
+    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=99, dry_run=False))
+    assert rc == 0
+    assert "옮길 entry 없음" in capsys.readouterr().out
+    assert not archive_dir.exists() or not list(archive_dir.glob("*.md"))
+    assert current.read_text(encoding="utf-8") == original
+
+
+def test_cmd_archive_requires_exactly_one_mode(tmp_path, monkeypatch, capsys):
+    """--before/--keep-last 둘 다 또는 둘 다 없음 → rc 1 (정확히 하나 필수)."""
+    mod = _load_module()
+    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    (log_dir / "current.md").write_text(_HEADER + _ENTRY_A + _ENTRY_C, encoding="utf-8")
+
+    # 둘 다 지정 → rc 1.
+    rc = mod.cmd_archive(
+        SimpleNamespace(before="2026-06-13", keep_last=2, dry_run=False))
+    assert rc == 1
+    assert "정확히 하나" in capsys.readouterr().err
+
+    # 둘 다 없음 → rc 1.
+    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=None, dry_run=False))
+    assert rc == 1
+    assert "정확히 하나" in capsys.readouterr().err
+
+
+def test_cmd_archive_keep_last_lossless_preserves_all_entries(tmp_path, monkeypatch):
+    """무손실 불변식: 봉인 entry + 잔여 entry = 원본 entry (순서·본문 보존)."""
+    mod = _load_module()
+    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    current.write_text(_HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C, encoding="utf-8")
+
+    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=2, dry_run=False))
+    assert rc == 0
+
+    slice_path = archive_dir / "0001-2026-06-10_to_2026-06-10.md"
+    sealed = slice_path.read_text(encoding="utf-8")
+    remaining = current.read_text(encoding="utf-8")
+
+    # 봉인본에서 entry 만 추출 + 잔여 current 의 entry = 원본 entry (순서 보존).
+    _pre_sealed, sealed_entries = mod.split_entries(sealed)
+    remaining_preamble, remaining_entries = mod.split_entries(remaining)
+    recombined = [e for _d, e in sealed_entries] + [e for _d, e in remaining_entries]
+    assert recombined == [_ENTRY_A, _ENTRY_B, _ENTRY_C]
+    # preamble 은 current 에만 남는다 (봉인본엔 봉인 헤더만).
+    assert remaining_preamble == _HEADER
+
+
+def test_cmd_archive_keep_last_index_continues_after_existing(tmp_path, monkeypatch):
+    """슬라이스 연번은 기존 archive 뒤로 이어진다 (모드 무관·max+1 동일 채널)."""
+    mod = _load_module()
+    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    archive_dir.mkdir(parents=True)
+    (archive_dir / "0000-legacy.md").touch()
+    (archive_dir / "0001-old.md").touch()
+    (log_dir / "current.md").write_text(_HEADER + _ENTRY_A + _ENTRY_C, encoding="utf-8")
+
+    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=1, dry_run=False))
+    assert rc == 0
+    # 기존 max(0001) 뒤 → 0002.
+    assert (archive_dir / "0002-2026-06-10_to_2026-06-10.md").exists()
+
+
+def test_cmd_archive_keep_last_dry_run_no_write(tmp_path, monkeypatch, capsys):
+    """--keep-last --dry-run: 봉인 계획만 출력, 파일 무변 (멱등·비편집)."""
+    mod = _load_module()
+    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    original = _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C
+    current.write_text(original, encoding="utf-8")
+
+    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=1, dry_run=True))
+    assert rc == 0
+    assert "[dry-run]" in capsys.readouterr().out
+    assert not archive_dir.exists()
+    assert current.read_text(encoding="utf-8") == original
+
+
+# ── build_parser: archive 모드 상호배타·양의 int (T-0244) ─────────────────────
+
+def test_parser_archive_keep_last_and_before_mutually_exclusive():
+    """argparse mutex 그룹: --before 와 --keep-last 동시 지정은 CLI 에서 거부(SystemExit)."""
+    mod = _load_module()
+    parser = mod.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["archive", "--before", "2026-06-13", "--keep-last", "2"])
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "abc", "1.5"])
+def test_parser_archive_keep_last_rejects_non_positive_int(bad):
+    """--keep-last 는 양의 정수만 — 0·음수·비정수는 argparse 거부."""
+    mod = _load_module()
+    parser = mod.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["archive", "--keep-last", bad])
+
+
+def test_parser_archive_each_mode_parses_alone():
+    """각 모드 단독은 정상 파싱 — 반대 모드는 None (기본)."""
+    mod = _load_module()
+    parser = mod.build_parser()
+
+    args = parser.parse_args(["archive", "--keep-last", "3"])
+    assert args.keep_last == 3
+    assert args.before is None
+
+    args = parser.parse_args(["archive", "--before", "2026-06-13"])
+    assert args.before == "2026-06-13"
+    assert args.keep_last is None
+
+
 # ── cmd_migrate (파괴적 — tmp_path 에서만) ────────────────────────────────────
 
 def test_cmd_migrate_seals_legacy_and_creates_current(tmp_path, monkeypatch, capsys):

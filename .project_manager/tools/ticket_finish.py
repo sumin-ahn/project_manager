@@ -33,7 +33,27 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-REPO = Path(__file__).resolve().parents[2]
+# ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형·ADR-0033 ①) ──────────
+# 하드코딩 `parents[2]` 는 tools 가 `<root>/.project_manager/tools/` 정확히 2단 깊이에 있다고
+# 가정한다 — 채택자 형상(PM 홈/worktree 구조 상이·다른 깊이)에선 어긋난다(finance_dev 제보 D2).
+# external_review 와 *동형*(각 파일 self-contained·공유 import 미도입)으로 상향 탐색해 견고화한다:
+# `.project_manager` 마커를 품은 첫(최근접) 조상을 REPO 로, 못 찾으면 현행 `parents[2]` 폴백(회귀 0).
+
+def _find_repo_root() -> Path:
+    """스크립트 위치에서 부모 체인을 상향 탐색해 `.project_manager` 를 품은 첫 조상을 반환한다.
+
+    `Path(__file__).resolve()` 부모 체인을 최근접부터 훑어 `.project_manager` 디렉토리를 자식으로
+    가진 첫 조상을 REPO 로 반환한다(worktree/PM 홈 등 다른 깊이여도 마커로 견고 해소). 마커를
+    못 찾으면 현행 `parents[2]` 로 폴백한다 — board_root() 동형의 graceful 폴백(회귀 0·additive).
+    """
+    here = Path(__file__).resolve()
+    for ancestor in here.parents:
+        if (ancestor / ".project_manager").is_dir():
+            return ancestor
+    return here.parents[2]
+
+
+REPO = _find_repo_root()
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
@@ -96,9 +116,13 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
 def _default_python() -> str:
     """플랫폼-인지 venv 인터프리터 경로 (없으면 sys.executable 폴백).
 
-    Windows 는 venv/Scripts/python.exe, POSIX 는 venv/bin/python. venv 가 없으면
-    현재 인터프리터로 폴백한다. 이 머신은 시스템 python3 에 pytest 가 없고 venv 에만
-    있으므로, venv 가 있으면 무조건 venv 를 우선해 회귀 측정 인터프리터를 보존한다.
+    Windows 는 venv/Scripts/python.exe, POSIX 는 venv/bin/python. **venv 후보가 존재하면 그대로
+    우선**한다 — 이 도그푸딩 머신은 시스템 python3 에 pytest 가 없고 venv 에만 있어, 회귀 측정
+    인터프리터를 보존하려면 venv-first 가 불변이어야 한다(솔로/프레임워크 경로 회귀 0·우선순위 불변).
+
+    venv 가 **없는** 건 에러가 아니라 정상 채택자 경로다 — 시스템 인터프리터에 pytest 가 깔린
+    형상에선 venv/ 를 안 만든다. 그때는 `sys.executable`(현재 인터프리터)로 폴백해 그 환경의
+    pytest 를 쓴다(폴백 분기·additive). 즉 존재 시 venv 우선, 부재 시 sys.executable 두 갈래다.
     """
     cand = REPO / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     return str(cand) if cand.exists() else sys.executable

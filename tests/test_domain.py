@@ -109,7 +109,8 @@ def test_load_pages_excludes_readme_and_template(dm, tmp_path):
 
 
 def test_load_pages_graceful_skip_broken(dm, tmp_path, capsys):
-    # frontmatter 없는 파일 + 안 닫힌 frontmatter — 둘 다 skip, crash 0.
+    # frontmatter 없는 파일 + 안 닫힌 frontmatter — 둘 다 skip, crash 0. (T-0245)
+    # nofm(구분자 없음)은 조용히 skip(요약에만 집계)·malformed(`---` 시작·깨짐)은 개별 경고 유지.
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "nofm.md").write_text("그냥 본문\n", encoding="utf-8")
     (tmp_path / "broken.md").write_text("---\ntitle: x\n본문(닫힘 없음)\n", encoding="utf-8")
@@ -117,7 +118,75 @@ def test_load_pages_graceful_skip_broken(dm, tmp_path, capsys):
     pages = dm.load_pages(domain_dir=tmp_path)
     assert [p["title"] for p in pages] == ["정상"]
     err = capsys.readouterr().err
-    assert "nofm.md" in err and "broken.md" in err
+    assert "broken.md" in err          # malformed = 개별 경고 유지.
+    assert "nofm.md" not in err        # frontmatter-less = 파일명 개별 경고 없음.
+    assert "frontmatter 없는 파일 1개 skip" in err  # 요약 1줄에만 집계.
+
+
+def test_load_pages_frontmatterless_silent_with_summary_line(dm, tmp_path, capsys):
+    # 무-frontmatter 다수 파일: 개별 경고 stderr 0줄 · 요약 정확히 1줄 · N·디렉토리별 개수 일치.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "note1.md").write_text("그냥 메모\n", encoding="utf-8")
+    (tmp_path / "note2.md").write_text("\n\n앞 공백 후 본문\n", encoding="utf-8")  # lstrip 후 판정.
+    (tmp_path / "empty.md").write_text("", encoding="utf-8")                      # 빈 파일.
+    (tmp_path / "area").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "area" / "sub.md").write_text("하위 메모\n", encoding="utf-8")
+    _write_page(tmp_path, "ok.md", frontmatter="title: 정상\ntype: concept")
+    pages = dm.load_pages(domain_dir=tmp_path)
+    assert [p["title"] for p in pages] == ["정상"]      # 정상만 index 포함.
+    err = capsys.readouterr().err
+    # 파일 전체 목록 출력 금지 — 어떤 skip 파일명도 stderr 에 없다.
+    for fname in ("note1.md", "note2.md", "empty.md", "sub.md"):
+        assert fname not in err
+    lines = [ln for ln in err.splitlines() if ln.strip()]
+    assert len(lines) == 1                              # 요약 정확히 1줄.
+    assert "frontmatter 없는 파일 4개 skip" in lines[0]  # N = 4 총계.
+    assert ".: 3" in lines[0] and "area: 1" in lines[0]  # 디렉토리별 개수 일치.
+
+
+def test_load_pages_frontmatterless_excluded_from_returned_list(dm, tmp_path):
+    # frontmatter-less 파일은 반환 리스트에서 제외·정상 페이지는 그대로 포함.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "junk.md").write_text("페이지 아님\n", encoding="utf-8")
+    _write_page(tmp_path, "real.md", frontmatter="title: 실페이지\ntype: guide")
+    pages = dm.load_pages(domain_dir=tmp_path)
+    assert [p["title"] for p in pages] == ["실페이지"]
+    assert all(p["path"].name != "junk.md" for p in pages)
+
+
+def test_load_pages_no_frontmatterless_prints_no_summary(dm, tmp_path, capsys):
+    # frontmatter-less 0개면 요약 줄을 아예 안 찍는다.
+    _write_page(tmp_path, "ok.md", frontmatter="title: 정상\ntype: concept")
+    dm.load_pages(domain_dir=tmp_path)
+    err = capsys.readouterr().err
+    assert "frontmatter 없는 파일" not in err
+    assert err.strip() == ""
+
+
+def test_load_pages_malformed_warns_individually_no_summary(dm, tmp_path, capsys):
+    # malformed(`---` 시작·본문 깨짐)만 있으면 개별 경고 유지·frontmatter-less 요약은 없다.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "broken.md").write_text("---\ntitle: x\n닫힘 없음\n", encoding="utf-8")
+    _write_page(tmp_path, "ok.md", frontmatter="title: 정상\ntype: concept")
+    pages = dm.load_pages(domain_dir=tmp_path)
+    assert [p["title"] for p in pages] == ["정상"]
+    err = capsys.readouterr().err
+    assert "broken.md 파싱 skip" in err            # 개별 경고.
+    assert "frontmatter 없는 파일" not in err        # frontmatter-less 요약 아님.
+
+
+def test_load_pages_non_utf8_file_no_crash_warns_individually(dm, tmp_path, capsys):
+    # T-0245 reviewer must-fix: non-UTF-8 .md(cp949 tmp 등)는 pre-read 에서 UnicodeDecodeError
+    # — OSError 가 아니라서 안 잡으면 load_pages 전체 크래시(crash-0 회귀). parse_page 로
+    # fall-through 해 개별 경고로 처리되고 정상 페이지는 계속 로드돼야 한다.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cp949.md").write_bytes("한글 메모, frontmatter 없음".encode("cp949"))
+    _write_page(tmp_path, "ok.md", frontmatter="title: 정상\ntype: concept")
+    pages = dm.load_pages(domain_dir=tmp_path)  # 크래시 없어야 함.
+    assert [p["title"] for p in pages] == ["정상"]
+    err = capsys.readouterr().err
+    assert "cp949.md 파싱 skip" in err             # 개별 경고(판정 불가 → malformed 채널).
+    assert "frontmatter 없는 파일" not in err        # 조용-skip 요약으로 오분류 금지.
 
 
 def test_load_pages_missing_dir_returns_empty(dm, tmp_path):

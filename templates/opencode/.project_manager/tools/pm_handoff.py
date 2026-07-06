@@ -595,8 +595,20 @@ def build_handoff_log_skeleton(
 
 # ── pm_state.md sliding window 편집 ──────────────────────────────────────────
 
-# 세션 식별 절 앵커: pm_state.md 의 "## 세션 식별 (현재까지 사용된 이름)" 로 시작하는 섹션
+# 세션 식별 절 앵커: pm_state.md 의 "## 세션 식별 (현재까지 사용된 이름)" 로 시작하는 h2 절.
+# 매칭은 정확 str.find 이 아니라 정규화 부분일치로 관대화한다 — 채택자 pm_state 의 h2 헤더가
+# 공백/괄호/여백 변형(괄호 내용 다름·2칸 공백·trailing space 등)이어도 매치한다(T-0243·
+# finance_dev D3: 미세 변형에 ValueError→핸드오프가 9세션 연속 죽던 회귀). 이 상수 문자열
+# 자체는 ValueError 메시지의 canonical 앵커 표기로만 남는다.
 _SESSION_SECTION_ANCHOR = "## 세션 식별 (현재까지 사용된 이름)"
+
+# 앵커 정규화 부분일치 대상: h2 헤더에서 '#'·공백(전각/반각)·괄호(전각/반각)를 제거한
+# 정규화 문자열이 이 값을 포함하면 세션 식별 절로 본다.
+_SESSION_ANCHOR_NORMALIZED = "세션식별"
+
+# 정규화에서 제거하는 비-공백 문자(괄호 전각/반각 + 헤더 마커). 공백류(반각/전각/탭/CR)는
+# str.isspace() 로 함께 제거한다.
+_ANCHOR_STRIP_CHARS = frozenset("#()（）")
 
 # pm 세션 entry 줄: "  - **N차** (..." 형식
 # 각 줄은 반드시 두 칸 들여쓰기 + "- **N차**" 로 시작한다.
@@ -609,26 +621,47 @@ _PM_SESSION_ANCHOR_RE = re.compile(
 _PREV_SESSIONS_POINTER = "  - 이전 차"
 
 
+def _normalize_h2_header(line: str) -> str:
+    """h2 헤더 줄에서 '#'·공백(전각/반각/탭/CR)·괄호(전각/반각)를 제거한 정규화 문자열."""
+    return "".join(
+        ch for ch in line
+        if not ch.isspace() and ch not in _ANCHOR_STRIP_CHARS
+    )
+
+
 def _extract_session_section(pm_state_text: str) -> tuple[str, int, int] | None:
     """pm_state.md 에서 세션 식별 절 텍스트와 그 시작·끝 위치를 반환한다.
+
+    앵커 탐색은 정확 str.find 이 아니라 정규화 부분일치다 — '##' 로 시작하는 h2 헤더 줄
+    (### 이상 제외)을 라인 스캔해, '#'·공백·괄호를 제거한 정규화 문자열이 '세션식별' 을
+    포함하는 줄을 절 시작 후보로 본다(공백/괄호/여백 변형 흡수·T-0243). 매치 실패 시 None.
+
+    후보가 여럿이면 **pm 세션 entry(`- **N차**`)를 가진 첫 절을 우선**하고, 전부 없으면
+    첫 후보로 폴백한다 — '## 세션 식별 규칙' 같은 설명-절이 실제 window 절보다 앞에 있을
+    때 빈 절을 오선택해 window 미갱신(fail-soft 스킵)·오염되는 것을 막는다(T-0243
+    reviewer should-fix).
 
     반환: (section_text, start_offset, end_offset) 또는 None (앵커 불일치).
     end_offset 는 다음 ## 또는 ### 헤더 직전 위치 (혹은 파일 끝).
     """
-    anchor_idx = pm_state_text.find(_SESSION_SECTION_ANCHOR)
-    if anchor_idx == -1:
+    def _section_bounds(m: re.Match) -> tuple[str, int, int]:
+        # 앵커 줄 이후에서 다음 헤더(## 또는 ###)를 찾아 절 경계를 계산한다.
+        after_anchor = pm_state_text[m.end():]
+        next_header = re.search(r"^###? ", after_anchor, re.MULTILINE)
+        end_offset = len(pm_state_text) if next_header is None else m.end() + next_header.start()
+        return pm_state_text[m.start():end_offset], m.start(), end_offset
+
+    candidates = [
+        m for m in re.finditer(r"^##(?!#).*$", pm_state_text, re.MULTILINE)
+        if _SESSION_ANCHOR_NORMALIZED in _normalize_h2_header(m.group(0))
+    ]
+    if not candidates:
         return None
-
-    # 앵커 이후에서 다음 헤더(## 또는 ###)를 찾는다
-    after_anchor = pm_state_text[anchor_idx + len(_SESSION_SECTION_ANCHOR):]
-    next_header = re.search(r"^###? ", after_anchor, re.MULTILINE)
-    if next_header is None:
-        end_offset = len(pm_state_text)
-    else:
-        end_offset = anchor_idx + len(_SESSION_SECTION_ANCHOR) + next_header.start()
-
-    section_text = pm_state_text[anchor_idx:end_offset]
-    return section_text, anchor_idx, end_offset
+    for m in candidates:  # entry 보유 절 우선 — 빈 설명-절 오선택 방지.
+        section = _section_bounds(m)
+        if _PM_SESSION_ANCHOR_RE.search(section[0]):
+            return section
+    return _section_bounds(candidates[0])  # 전부 entry 없음 → 첫 후보(종전 동작 보존).
 
 
 def _find_pm_session_entries(section_text: str) -> list[re.Match]:
@@ -1379,23 +1412,31 @@ class PmHandoff:
                     wave_summary=wave_summary,
                 )
             except ValueError as exc:
-                print(f"\n[중단] {exc}", file=sys.stderr)
-                return 1
-
-            if dry_run:
-                # diff 미리보기: 변경된 줄 출력
-                old_lines = state_text.splitlines()
-                new_lines = new_state_text.splitlines()
-                added = [l for l in new_lines if l not in set(old_lines)]
-                removed = [l for l in old_lines if l not in set(new_lines)]
-                print("  [dry-run] pm_state.md 세션 식별 절 변경 예고:")
-                for line in removed[:5]:
-                    print(f"  - {line}")
-                for line in added[:5]:
-                    print(f"  + {line}")
+                # fail-soft (T-0243·finance_dev D3): 앵커/entry 불일치는 step3(sliding
+                # window) *한정* 스킵하고 핸드오프는 완주한다. `return 1` 로 전체를 죽이면
+                # 채택자 pm_state 의 미세 변형에 매 핸드오프가 무너진다(9세션 연속 수동 우회).
+                # 추측 편집 금지 원칙은 유지 — window 를 지어내지 않되(원본 보존) 죽지도 않는다.
+                print(
+                    f"\n[3/7] ⚠ 세션 식별 sliding window 스킵 — {exc} "
+                    "나머지 단계(4~7) 계속 진행.",
+                    file=sys.stderr,
+                )
+                new_state_text = state_text  # window 미편집 — 원본 유지(step4 길이검증은 원본으로).
             else:
-                self._pm_state_file.write_text(new_state_text, encoding="utf-8")
-                print(f"  ✓ pm_state.md 세션 식별 sliding window 정리 완료 (PM {session_num}차 추가·최고령 entry 제거)")
+                if dry_run:
+                    # diff 미리보기: 변경된 줄 출력
+                    old_lines = state_text.splitlines()
+                    new_lines = new_state_text.splitlines()
+                    added = [l for l in new_lines if l not in set(old_lines)]
+                    removed = [l for l in old_lines if l not in set(new_lines)]
+                    print("  [dry-run] pm_state.md 세션 식별 절 변경 예고:")
+                    for line in removed[:5]:
+                        print(f"  - {line}")
+                    for line in added[:5]:
+                        print(f"  + {line}")
+                else:
+                    self._pm_state_file.write_text(new_state_text, encoding="utf-8")
+                    print(f"  ✓ pm_state.md 세션 식별 sliding window 정리 완료 (PM {session_num}차 추가·최고령 entry 제거)")
 
             # ── 4. pm_state.md 길이 검증 ────────────────────────────────────────
             print("\n[4/7] pm_state.md 길이 검증...")

@@ -8,12 +8,16 @@
 사용:
     python3 .project_manager/tools/pm_log.py tail
     python3 .project_manager/tools/pm_log.py archive --before YYYY-MM-DD [--dry-run]
+    python3 .project_manager/tools/pm_log.py archive --keep-last N [--dry-run]
     python3 .project_manager/tools/pm_log.py migrate [--dry-run]
 
 명령:
   tail                  — current.md 의 마지막 `## [..]` entry 만 출력 (의미단위 읽기 헬퍼).
   archive --before DATE — current.md 에서 DATE *미만* 날짜의 entry 들을 archive/ 새 슬라이스로
                           이동하고 current.md 는 최근만 남긴다. 멱등 (옮길 게 없으면 no-op).
+  archive --keep-last N — current.md 에서 최근 N entry 만 남기고 나머지(오래된 쪽)를 archive/
+                          새 슬라이스로 봉인한다. 날짜 계산 없이 개수로 자른다. N ≥ entry 수면 no-op.
+                          `--before` 와 상호배타 — 정확히 하나만 지정한다.
   migrate               — 기존 단일 `log.md` → `log/archive/0000-legacy.md` 로 봉인 +
                           `log/current.md` 생성. 일회성·멱등 (current.md 가 이미 있으면 no-op).
 
@@ -100,11 +104,25 @@ def cmd_tail(args: argparse.Namespace) -> int:
 
 
 def cmd_archive(args: argparse.Namespace) -> int:
-    try:
-        cutoff = datetime.date.fromisoformat(args.before)
-    except ValueError:
-        print(f"--before 날짜 형식 오류: {args.before!r} (YYYY-MM-DD)", file=sys.stderr)
+    before = getattr(args, "before", None)
+    keep_last = getattr(args, "keep_last", None)
+
+    # --before 와 --keep-last 는 상호배타 — 정확히 하나만 지정한다 (둘 다/둘 다 없음 거부).
+    # argparse mutex 그룹이 CLI 에서 "둘 다"를 먼저 걸러내지만, 함수 직접 호출(테스트) 경로에서도
+    # "정확히 하나" 를 못박는다.
+    if (before is None) == (keep_last is None):
+        print("archive: --before DATE 와 --keep-last N 중 정확히 하나를 지정하세요 "
+              "(둘 다/둘 다 없음 불가).", file=sys.stderr)
         return 1
+
+    cutoff = None
+    if before is not None:
+        try:
+            cutoff = datetime.date.fromisoformat(before)
+        except ValueError:
+            print(f"--before 날짜 형식 오류: {before!r} (YYYY-MM-DD)", file=sys.stderr)
+            return 1
+
     if not CURRENT_FILE.exists():
         print(f"(current.md 없음: {_rel(CURRENT_FILE)} — migrate 먼저)", file=sys.stderr)
         return 2
@@ -112,11 +130,23 @@ def cmd_archive(args: argparse.Namespace) -> int:
     text = CURRENT_FILE.read_text(encoding="utf-8")
     preamble, entries = split_entries(text)
 
-    old = [(d, e) for d, e in entries if datetime.date.fromisoformat(d) < cutoff]
-    keep = [(d, e) for d, e in entries if datetime.date.fromisoformat(d) >= cutoff]
+    if cutoff is not None:
+        # 날짜 기반: DATE 미만(strict <)만 봉인, DATE 이상은 유지.
+        old = [(d, e) for d, e in entries if datetime.date.fromisoformat(d) < cutoff]
+        keep = [(d, e) for d, e in entries if datetime.date.fromisoformat(d) >= cutoff]
+        mode_line = f"--before {before}"
+        noop_msg = f"옮길 entry 없음 (--before {before} 미만 entry 0개) — no-op."
+    else:
+        # 개수 기반: 최근 N entry(tail)만 유지, 나머지 오래된 쪽을 봉인. entry 단위(줄/바이트 아님).
+        # N ≥ entry 수면 old 0개 → no-op (기존 no-op 경로 재사용).
+        n = keep_last
+        old = entries[:-n] if n < len(entries) else []
+        keep = entries[-n:] if n < len(entries) else entries
+        mode_line = f"--keep-last {n}"
+        noop_msg = f"옮길 entry 없음 (entry {len(entries)}개 ≤ --keep-last {n}) — no-op."
 
     if not old:
-        print(f"옮길 entry 없음 (--before {args.before} 미만 entry 0개) — no-op.")
+        print(noop_msg)
         return 0
 
     idx = next_archive_index(ARCHIVE_DIR)
@@ -125,7 +155,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
     slice_path = ARCHIVE_DIR / slice_name
     slice_body = (
         f"# Log archive {idx:04d} ({first} ~ {last})\n\n"
-        f"> `pm_log.py archive --before {args.before}` 로 current.md 에서 봉인. 수정 금지.\n\n"
+        f"> `pm_log.py archive {mode_line}` 로 current.md 에서 봉인. 수정 금지.\n\n"
         + "".join(e for _d, e in old)
     )
     new_current = preamble + "".join(e for _d, e in keep)
@@ -187,6 +217,17 @@ def _rel(path: Path) -> str:
         return str(path)
 
 
+def _positive_int(value: str) -> int:
+    """argparse type — 양의 정수(≥1)만 허용. 0·음수·비정수는 거부."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"정수가 아님: {value!r}")
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"양의 정수여야 함 (≥1): {n}")
+    return n
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pm_log.py",
@@ -197,9 +238,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("tail", help="current.md 의 마지막 entry 만 출력")
     p.set_defaults(fn=cmd_tail)
 
-    p = sub.add_parser("archive", help="DATE 미만 entry 를 archive/ 로 봉인")
-    p.add_argument("--before", required=True, metavar="YYYY-MM-DD",
-                   help="이 날짜 미만의 entry 를 아카이브")
+    p = sub.add_parser("archive",
+                       help="entry 를 archive/ 로 봉인 (--before DATE | --keep-last N)")
+    # 상호배타 — 정확히 하나. "둘 다"는 여기서(CLI) 걸리고, "둘 다 없음"은 cmd_archive 가 rc 1.
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--before", metavar="YYYY-MM-DD",
+                      help="이 날짜 미만의 entry 를 아카이브")
+    mode.add_argument("--keep-last", type=_positive_int, metavar="N",
+                      help="최근 N entry 만 남기고 나머지(오래된 쪽)를 아카이브")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_archive)
 

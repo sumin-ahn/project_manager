@@ -173,6 +173,134 @@ def test_update_session_window_preserves_outside_section(hf):
     assert "진행 중인 의사결정" in out
 
 
+# ── T-0243: 앵커 fuzzy 매칭 — 공백/괄호/여백 변형 흡수 (finance_dev D3) ─────────
+#
+# 채택자 pm_state 의 세션 식별 h2 헤더가 canonical 앵커와 미세하게 다르면(괄호 내용·2칸 공백·
+# h2 뒤 trailing space) 정확 str.find 이 실패해 ValueError→핸드오프가 9세션 연속 죽었다.
+# h2 헤더 정규화 부분일치('#'·공백·괄호 제거 후 '세션식별' 포함)로 이 변형들을 흡수한다.
+
+# 변형 앵커 3종 — 정규화하면 모두 '세션식별…' 로 시작해 부분일치한다. canonical 문자열과
+# byte-불일치라 str.find 은 실패하는 형상.
+_ANCHOR_VARIANTS = [
+    "## 세션 식별 (이번 세션까지 쓴 이름)",    # ① 뒤 괄호절 내용 다름
+    "##  세션  식별  (현재까지 사용된 이름)",  # ② 공백 2칸
+    "## 세션 식별 (현재까지 사용된 이름)   ",  # ③ h2 뒤 trailing space
+]
+
+
+def _state_with_anchor(anchor_line: str, *entries: str, pointer: str = "") -> str:
+    """임의의 세션 식별 h2 헤더 줄로 pm_state 텍스트를 빌드한다 (변형 앵커 테스트용)."""
+    section = anchor_line + "\n\n최근 N 차 (sliding window, 기본 3 차):\n"
+    for e in entries:
+        section += e
+    if pointer:
+        section += pointer
+    return _PREAMBLE + section + "\n" + _NEXT_HEADER
+
+
+@pytest.mark.parametrize("anchor_line", _ANCHOR_VARIANTS)
+def test_extract_session_section_matches_anchor_variants(hf, anchor_line):
+    """공백/괄호/여백 변형 앵커도 정규화 부분일치로 절을 추출한다."""
+    doc = _state_with_anchor(anchor_line, _entry(4), pointer=_POINTER_1_3)
+    result = hf._extract_session_section(doc)
+    assert result is not None
+    section_text, start, end = result
+    # 절은 변형 헤더 줄로 시작하고(offset 정합), 다음 헤더는 포함하지 않는다.
+    assert section_text.startswith(anchor_line)
+    assert doc[start:end] == section_text
+    assert "진행 중인 의사결정" not in section_text
+    assert "**4차**" in section_text
+
+
+@pytest.mark.parametrize("anchor_line", _ANCHOR_VARIANTS)
+def test_update_session_window_applies_on_anchor_variants(hf, anchor_line):
+    """변형 앵커에서도 sliding window 가 정상 적용된다 (신규 추가·최고령 제거·포인터 전진)."""
+    doc = _state_with_anchor(
+        anchor_line, _entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3
+    )
+    out = hf.update_session_window(
+        doc, session_num=7, date_str="2026-06-15", wave_summary="새 wave"
+    )
+    assert "**7차**" in out                 # 신규 추가
+    assert "**4차**" not in out              # 최고령 제거
+    assert "**5차**" in out and "**6차**" in out
+    assert "이전 차 (PM 1차~4차)" in out      # 포인터 전진
+    # 변형 앵커 헤더 줄 자체는 편집 대상 아님 — 그대로 보존.
+    assert anchor_line in out
+    # 절 밖(preamble·다음 헤더)은 무영향.
+    assert out.startswith(_PREAMBLE)
+    assert "진행 중인 의사결정" in out
+
+
+# finance_dev 실 pm_state 형상 재현 — 세션 식별 h2 가 canonical 앵커와 미세 변형(2칸 공백 +
+# 괄호절 다름)이고 앞뒤로 다른 절들이 있는 실제 채택자 문서 모양. 정확 str.find 은 여기서
+# 실패해 9세션 연속 ValueError→핸드오프 사망이었다.
+_FINANCE_DEV_PM_STATE = (
+    "---\n"
+    "title: PM State\n"
+    "---\n\n"
+    "# PM State — finance_dev\n\n"
+    "## 현재 세션 요약\n\n"
+    "이번 세션 작업 내용.\n\n"
+    "##  세션 식별  (지금까지 쓴 PM 이름)\n\n"
+    "최근 N 차 (sliding window, 기본 3 차):\n"
+    "  - **7차** (2026-07-01 · 결제 파이프라인): 결제 파이프라인 정리.\n"
+    "  - **8차** (2026-07-03 · 리팩터): 리팩터 wave.\n"
+    "  - **9차** (2026-07-05 · 버그픽스): 버그픽스 wave.\n"
+    "  - 이전 차 (PM 4차~6차) = `log/current.md` handoff entry 단일 진실.\n\n"
+    "## 진행 중인 의사결정\n\n"
+    "표 내용.\n"
+)
+
+
+def test_extract_session_section_finance_dev_shape(hf):
+    """finance_dev 실 형상(2칸 공백 + 괄호절 다름 h2)에서도 절을 추출한다 (str.find 실패 형상)."""
+    assert hf._SESSION_SECTION_ANCHOR not in _FINANCE_DEV_PM_STATE  # 정확 매칭이면 실패했을 형상.
+    result = hf._extract_session_section(_FINANCE_DEV_PM_STATE)
+    assert result is not None
+    section_text, _, _ = result
+    assert "**9차**" in section_text
+    # 앞 절(현재 세션 요약)·다음 절(진행 중인 의사결정)은 세션 식별 절에 포함되지 않는다.
+    assert "현재 세션 요약" not in section_text
+    assert "진행 중인 의사결정" not in section_text
+
+
+def test_update_session_window_finance_dev_shape(hf):
+    """finance_dev 실 형상에서 window 정상 적용 — 9세션 연속 수동 우회 회귀를 재현·해소."""
+    out = hf.update_session_window(
+        _FINANCE_DEV_PM_STATE, session_num=10, date_str="2026-07-06", wave_summary="핸드오프 복구"
+    )
+    assert "**10차**" in out                  # 신규
+    assert "**7차**" not in out                # 최고령 제거
+    assert "**8차**" in out and "**9차**" in out
+    assert "이전 차 (PM 4차~7차)" in out        # 포인터 전진(6차→7차 흡수)
+
+
+def test_extract_session_section_prefers_entry_bearing_among_multiple_matches(hf):
+    """fuzzy 후보 h2 가 여럿이면 entry(`- **N차**`) 가진 절을 우선한다 (T-0243 reviewer should-fix).
+
+    '## 세션 식별 규칙'(설명-절·entry 없음)이 실제 window 절보다 앞에 있어도 빈 절을
+    오선택하지 않는다 — 오선택 시 window 미갱신(fail-soft 스킵)/오염 재발.
+    """
+    text = (
+        "# PM State\n\n"
+        "## 세션 식별 규칙\n\n"
+        "이름은 <repo>_<N> 로 짓는다 — 설명만 있는 절.\n\n"
+        "## 세션 식별 (현재까지 사용된 이름)\n\n"
+        "  - **3차** (2026-07-01 · wave): wave.\n\n"
+        "## 다음 절\n\n내용.\n"
+    )
+    result = hf._extract_session_section(text)
+    assert result is not None
+    section_text, _, _ = result
+    assert "**3차**" in section_text            # entry 보유 절을 선택.
+    assert "설명만 있는 절" not in section_text   # 앞의 빈 설명-절이 아님.
+    # 폴백: 전부 entry 없으면 첫 후보(종전 동작) — None 이 아니어야 함.
+    text_no_entry = "## 세션 식별 규칙\n\n설명.\n\n## 딴 절\n\n내용.\n"
+    fallback = hf._extract_session_section(text_no_entry)
+    assert fallback is not None and "설명." in fallback[0]
+
+
 # ── extract_handoff_prompt_template: 앵커 추출·부재→None ─────────────────────
 
 _PROMPT_ANCHOR = "## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)"

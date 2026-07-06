@@ -342,3 +342,79 @@ def test_run_solo_no_slot_threaded_repo_cwd_unchanged(handoff, tmp_path, monkeyp
     assert inst._worktree_slot is None  # 미세팅(현행 유지).
     assert captured["cwd"] == str(tmp_path)  # REPO 폴백(슬롯 미해소).
     assert "slot=`" not in log_file.read_text(encoding="utf-8")  # worktree 줄 생략(lean).
+
+
+# ── 앵커 부재 fail-soft — step3 만 스킵, 핸드오프 완주 (T-0243·finance_dev D3) ──────
+# pm_state.md 는 *존재*하나 세션 식별 절 앵커가 없으면 update_session_window→ValueError.
+# 종전엔 `return 1` 로 핸드오프 전체가 죽어 채택자가 9세션 연속 수동 우회했다. fail-soft 로
+# step3(sliding window)만 스킵하고 나머지(4~7)는 계속 진행한다. 추측 편집 금지 유지 —
+# window 를 지어내지 않되(pm_state 무변경) 죽지도 않는다.
+
+_PM_STATE_NO_ANCHOR = (
+    "# PM State\n\n"
+    "## 현재 세션 요약\n\n"
+    "세션 식별 절이 없는 채택자 pm_state.\n\n"
+    "## 진행 중인 의사결정\n\n"
+    "표 내용.\n"
+)
+
+
+def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str):
+    """세션 식별 앵커가 없는 pm_state.md 를 *실재*하게 주입한 PmHandoff 인스턴스."""
+    log_file = tmp_path / "current.md"
+    playbook_file = tmp_path / "pm_playbook.md"
+    pm_state = tmp_path / "pm_state.md"
+    log_file.write_text("# log\n", encoding="utf-8")
+    playbook_file.write_text("# pm_playbook (no anchor)\n", encoding="utf-8")
+    pm_state.write_text(state_text, encoding="utf-8")
+    inst = handoff.PmHandoff(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip_pytest 인데 pytest 호출")),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook_file,
+        pm_state_file=pm_state,
+    )
+    return inst, log_file, pm_state
+
+
+def test_extract_session_section_none_when_anchor_absent(handoff):
+    """세션 식별 절이 완전 부재하면 _extract_session_section 은 None (추측 편집 금지)."""
+    assert handoff._extract_session_section(_PM_STATE_NO_ANCHOR) is None
+
+
+def test_update_session_window_raises_when_anchor_absent(handoff):
+    """부재 시 update_session_window 는 종전대로 ValueError (앵커 못 찾으면 지어내지 않음)."""
+    with pytest.raises(ValueError):
+        handoff.update_session_window(
+            _PM_STATE_NO_ANCHOR, session_num=5, date_str="2026-07-06", wave_summary="x"
+        )
+
+
+def test_run_failsoft_skips_step3_when_anchor_absent(handoff, tmp_path, capsys):
+    """앵커 부재 pm_state → step3 스킵 경고 + rc 0(완주)·pm_state 무변경 (return 1 아님)."""
+    inst, _, pm_state = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR)
+    before = pm_state.read_text(encoding="utf-8")
+
+    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+
+    assert rc == 0  # fail-soft — 전체 핸드오프가 죽지 않는다.
+    err = capsys.readouterr().err
+    assert "세션 식별 sliding window 스킵" in err
+    assert "계속" in err
+    # step3 스킵 — window 를 지어내지 않으므로 pm_state 는 편집되지 않는다.
+    assert pm_state.read_text(encoding="utf-8") == before
+
+
+def test_run_failsoft_continues_remaining_steps_when_anchor_absent(handoff, tmp_path, capsys):
+    """step3 스킵 이후에도 나머지 단계(log entry append·완료 메시지)는 진행한다."""
+    inst, log_file, _ = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR)
+
+    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+
+    assert rc == 0
+    # step 2: log/current.md handoff entry skeleton 이 실제 append 됐다.
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "handoff" in log_text and "PM 5차" in log_text
+    # step 7 이후: 완료 메시지까지 도달(step3 fail-soft 가 흐름을 끊지 않음).
+    out = capsys.readouterr().out
+    assert "PM 5차 핸드오프 자동화 완료" in out

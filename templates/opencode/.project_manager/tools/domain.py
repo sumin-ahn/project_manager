@@ -324,8 +324,13 @@ def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
 
     domain wikitree 를 하위 폴더로 조직해도 그 안의 페이지가 잡히도록 `rglob` 로 재귀
     스캔한다(T-0126·회사 실사용). README.md·_template.md 는 (어느 깊이든) `name` 으로 제외.
-    frontmatter 없는/깨진 파일은 graceful skip(stderr 경고·crash 0). 디렉토리 부재 → []
-    (solo·신규 clone 무영향). 평면 domain/ 은 하위폴더가 없어 결과 불변(additive).
+    디렉토리 부재 → [](solo·신규 clone 무영향). 평면 domain/ 은 하위폴더가 없어 결과 불변(additive).
+
+    **frontmatter-less 조용한 skip(T-0245)**: `---` 구분자로 시작하지 않는 `.md`(tmp·메모 등
+    다수)는 "페이지 아님" — 개별 경고 없이 조용히 skip 하고 디렉토리별 카운터에만 누적한다.
+    스캔 종료 시 skip 이 1개 이상이면 stderr 에 디렉토리별 개수 요약 딱 1줄만 남긴다(파일
+    전체 목록 X — LLM 컨텍스트 낭비 원인). 반면 `---` 로 시작하는데 parse 가 깨지는(malformed)
+    파일은 진짜 페이지 오류 신호라 기존 개별 경고를 유지한다(crash 0).
 
     **draft 제외(T-0167)**: frontmatter `status == "draft"` 페이지는 미승인 초안
     (capture-draft scaffold)이라 index 에서 뺀다 — affected/lint/recall/capture 가
@@ -336,8 +341,22 @@ def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
     if not domain_dir.is_dir():
         return []
     pages: list[dict] = []
+    non_page_counts: dict[str, int] = {}  # frontmatter-less skip 카운트(디렉토리별·T-0245).
     for path in sorted(domain_dir.rglob("*.md")):
         if path.name in _NON_PAGE_FILES:
+            continue
+        # frontmatter 구분자(`---` 시작)가 아예 없는 파일 = 페이지 아님(tmp·메모 등). 개별
+        # 경고 없이 조용히 skip 하고 디렉토리별 카운터에만 누적(스캔 종료 시 요약 1줄·T-0245).
+        # 읽기 실패는 판정 불가 → parse_page 로 넘겨 malformed 경고에 맡긴다. UnicodeDecodeError
+        # (non-UTF-8 tmp — cp949·바이너리)는 OSError 가 아니라 별도 포획 — 안 잡으면 load_pages
+        # 전체가 크래시해 crash-0 계약이 깨진다(T-0245 reviewer must-fix 실측).
+        try:
+            has_delimiter = path.read_text(encoding="utf-8").lstrip().startswith("---")
+        except (OSError, UnicodeDecodeError):
+            has_delimiter = True
+        if not has_delimiter:
+            key = path.parent.relative_to(domain_dir).as_posix()  # flat → "."
+            non_page_counts[key] = non_page_counts.get(key, 0) + 1
             continue
         try:
             page = parse_page(path)
@@ -347,6 +366,10 @@ def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
         if page["status"] == DRAFT_STATUS:
             continue  # 미승인 초안 — index 제외(promote 전까지 안 보임).
         pages.append(page)
+    if non_page_counts:
+        total = sum(non_page_counts.values())
+        breakdown = ", ".join(f"{d}: {n}" for d, n in sorted(non_page_counts.items()))
+        print(f"domain: frontmatter 없는 파일 {total}개 skip ({breakdown})", file=sys.stderr)
     return pages
 
 
