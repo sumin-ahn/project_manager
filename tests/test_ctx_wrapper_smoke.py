@@ -52,8 +52,9 @@ IS_WINDOWS = os.name == "nt"
 
 # transcript 점유 토큰 — 190_000 / 기본 윈도 200_000 = 95% used → 잔여 5 <= stop 20(기본·T-0207) → stop.
 _STOP_INPUT_TOKENS = 190_000
-# statusline ok 밴드 — used 50 → 잔여 50 > nudge 30 → ok(회색 `ctx 50%`·정지문구 없음).
-_OK_USED_PCT = 50
+# statusline ok 밴드 — current_usage 100_000 / 기본 예산 200_000 = 50% used → 잔여 50 > nudge 30 →
+# ok(회색 `ctx 50%`·정지문구 없음). ADR-0041: 분모=예산·used_tokens=current_usage(물리 window% 폐기).
+_OK_USED_TOKENS = 100_000
 
 
 # ── hermetic repo + 인터프리터 env (test_run_tests_hook 미러) ──────────────────
@@ -166,11 +167,12 @@ def test_wrappers_present():
 
 @requires_bash
 def test_statusline_wrapper_emits_ctx_pct(tmp_path):
-    """stdin used_percentage 50 → stdout `ctx 50%`(회색·ok 밴드)·rc0 — 래퍼 경유 발화."""
+    """stdin current_usage 100K(=50% of 200K 예산) → stdout `ctx 50%`(회색·ok 밴드)·rc0 — 래퍼 경유 발화."""
     root, claude = _make_ctx_repo(tmp_path)
     env = _hook_env(tmp_path)
 
-    proc = _run(claude / _STATUSLINE_WRAPPER, {"context_window": {"used_percentage": _OK_USED_PCT}}, env)
+    proc = _run(claude / _STATUSLINE_WRAPPER,
+                {"context_window": {"current_usage": {"input_tokens": _OK_USED_TOKENS}}}, env)
     assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
     assert "ctx 50%" in proc.stdout, (
         f"statusline 미발화(`ctx 50%` 없음): {proc.stdout!r}\nstderr={proc.stderr!r}"

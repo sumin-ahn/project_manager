@@ -121,6 +121,32 @@ def test_plugin_reads_thresholds_from_local_conf():
     assert "local.conf" in src, "local.conf 직접 파싱 경로 참조 없음"
 
 
+# ── 2c. ctx 예산 전환 (ADR-0041 · T-0235): resolveBudget · modelLimit 폐기 ─────
+
+def test_plugin_uses_resolve_budget_not_model_limit():
+    """정지/넛지 분모가 모델 물리한도가 아니라 해소된 예산이다 (ADR-0041).
+
+    resolveBudget(conf,"opencode") 신설·event limit 주입원 교체 + modelLimit()/cachedLimit/
+    providers 조회가 완전히 사라졌음(물리한도 개념 폐기)을 정적으로 단언한다.
+    """
+    src = _plugin_src()
+    # 예산 해소 순수함수 + 200K 기본 상수 신설.
+    assert "function resolveBudget" in src, "resolveBudget 순수함수 신설 없음"
+    assert re.search(r"CTX_WINDOW_TOKENS_DEFAULT\s*=\s*200000", src), (
+        "CTX_WINDOW_TOKENS_DEFAULT=200000 상수 없음 (board.py 미러)"
+    )
+    # 하네스별 오버라이드 키 참조 (precedence 상위층).
+    assert "ctx_window_tokens_" in src, "하네스별 오버라이드 키(ctx_window_tokens_<harness>) 참조 없음"
+    # event 핸들러가 resolveBudget 로 limit 을 주입한다("opencode" 고정·conf 캐시 재사용).
+    assert re.search(r'const limit = resolveBudget\([^;]*["\']opencode["\']\)', src), (
+        "event limit 주입원이 resolveBudget(...,\"opencode\") 형태가 아님"
+    )
+    # 물리한도 조회(modelLimit·cachedLimit·config.providers)가 완전히 폐기됐다.
+    assert "modelLimit" not in src, "modelLimit() 폐기 안 됨 (ADR-0041 물리한도 개념 제거 위반)"
+    assert "cachedLimit" not in src, "cachedLimit 캐시 폐기 안 됨 (ADR-0041 위반)"
+    assert "config.providers" not in src, "client.config.providers() 조회 폐기 안 됨 (ADR-0041 위반)"
+
+
 def test_plugin_has_idempotency_guard():
     """넛지·정지·트리거는 세션당 1회만 — 멱등 가드(중복 handoff 방지·codex 인계)."""
     src = _plugin_src()
@@ -350,6 +376,59 @@ console.log("NODE_SELFCHECK_OK");
 """
     out = _run_node_check(script)
     assert "NODE_SELFCHECK_OK" in out, f"node 순수 로직 자가검증 실패. out={out!r}"
+
+
+def test_js_resolve_budget_pure_unit():
+    """node 로 resolveBudget 순수 함수(ADR-0041 예산 precedence)를 자가검증.
+
+    precedence: ctx_window_tokens_<harness> > generic ctx_window_tokens >
+    CTX_WINDOW_TOKENS_DEFAULT(200000). 각 층 >0 정수 sanity(≤0·비정수·미설정 → 다음 층).
+    분모 통일 확인: resolveBudget 결과를 computeCtxState 가 stop/nudge/ok 로 판정한다.
+    node 부재 시 skip (정적 검증 test_plugin_uses_resolve_budget_not_model_limit 로 게이트).
+    """
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — resolveBudget 순수 단위 skip (정적 검증만 적용)")
+
+    script = r"""
+const m = require("./ctx-guard.js");
+const assert = require("node:assert");
+assert.strictEqual(typeof m.resolveBudget, "function", "missing export: resolveBudget");
+assert.strictEqual(m.CTX_WINDOW_TOKENS_DEFAULT, 200000, "CTX_WINDOW_TOKENS_DEFAULT 미러(200000) 아님");
+
+// (a) 하네스별 오버라이드 키가 generic 보다 우선.
+assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"500000", ctx_window_tokens:"1000000"}, "opencode"), 500000);
+// (b) 오버라이드 없으면 generic ctx_window_tokens (back-compat·② 1M 무변경).
+assert.strictEqual(m.resolveBudget({ctx_window_tokens:"1000000"}, "opencode"), 1000000);
+// (c) 둘 다 없으면 200000 기본.
+assert.strictEqual(m.resolveBudget({}, "opencode"), 200000);
+assert.strictEqual(m.resolveBudget(null, "opencode"), 200000);
+// (d) ≤0·비정수·공백은 그 층을 건너뛰고 다음 층으로 폴백 (0/음수 특수의미 없음).
+assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"0",   ctx_window_tokens:"300000"}, "opencode"), 300000);
+assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"-5",  ctx_window_tokens:"300000"}, "opencode"), 300000);
+assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"abc", ctx_window_tokens:"300000"}, "opencode"), 300000);
+assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"1.5", ctx_window_tokens:"300000"}, "opencode"), 300000);
+assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"  ",  ctx_window_tokens:"300000"}, "opencode"), 300000);
+// 모든 층 비정상 → 200000 기본.
+assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"x", ctx_window_tokens:"y"}, "opencode"), 200000);
+// 하네스 독립: opencode 키는 claude 예산에 새지 않는다 (per-harness precedence).
+assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"500000"}, "claude"), 200000);
+
+// (e) 분모 통일: resolveBudget 예산으로 computeCtxState 가 stop/nudge/ok 판정.
+const t = {nudge_pct:30, stop_pct:20};
+const lim = m.resolveBudget({ctx_window_tokens_opencode:"1000"}, "opencode");
+assert.strictEqual(lim, 1000);
+assert.strictEqual(m.computeCtxState(500, lim, t).level, "ok");    // 잔여 50%
+assert.strictEqual(m.computeCtxState(700, lim, t).level, "nudge"); // 잔여 30% (넛지 경계·<=)
+assert.strictEqual(m.computeCtxState(750, lim, t).level, "nudge"); // 잔여 25%
+assert.strictEqual(m.computeCtxState(800, lim, t).level, "stop");  // 잔여 20% (정지 경계·<=)
+assert.strictEqual(m.computeCtxState(850, lim, t).level, "stop");  // 잔여 15%
+
+console.log("JS_RESOLVE_BUDGET_OK");
+"""
+    out = _run_node_check(script)
+    assert "JS_RESOLVE_BUDGET_OK" in out, f"resolveBudget 순수 단위 실패. out={out!r}"
 
 
 def test_plugin_requires_cleanly_in_node():

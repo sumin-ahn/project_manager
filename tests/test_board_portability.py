@@ -295,6 +295,34 @@ def test_init_ctx_window_tokens_has_cost_meaning_comment(board, monkeypatch, tmp
     assert "물리 window 아님" in conf_text
 
 
+def test_init_scaffold_has_harness_override_comment(board, monkeypatch, tmp_path):
+    """init 스캐폴드에 하네스별 오버라이드 키 주석 예시가 박힌다 (ADR-0041 Decision 4).
+
+    generic ctx_window_tokens=200000 은 활성 유지 + ctx_window_tokens_claude/_opencode 예시는
+    **주석(#)** 으로만 — 기본 불변(물리한도 폐기·동시 운용 시 사용자가 주석 해제로 활성화).
+    """
+    conf_path = _init_isolated(board, monkeypatch, tmp_path)
+    args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
+
+    assert board.cmd_init(args) == 0
+
+    conf_text = conf_path.read_text(encoding="utf-8")
+    # 두 하네스 오버라이드 키 예시가 스캐폴드에 존재.
+    assert "ctx_window_tokens_claude" in conf_text
+    assert "ctx_window_tokens_opencode" in conf_text
+    # 예시는 반드시 주석(#) — 활성 키로 새어 generic 200K 를 덮으면 안 된다.
+    for line in conf_text.splitlines():
+        if "ctx_window_tokens_claude" in line or "ctx_window_tokens_opencode" in line:
+            assert line.lstrip().startswith("#"), f"오버라이드 예시는 주석이어야 함(활성 키 X): {line!r}"
+    # generic ctx_window_tokens=200000 활성 라인은 그대로 (기본 불변).
+    assert f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
+    # 파싱 시 주석 오버라이드는 활성 키로 잡히지 않는다 (local_config 는 # 라인 skip).
+    parsed = board.local_config()  # _init_isolated 가 LOCAL_CONF 를 conf_path 로 patch.
+    assert "ctx_window_tokens_claude" not in parsed
+    assert "ctx_window_tokens_opencode" not in parsed
+    assert parsed.get("ctx_window_tokens") == str(board.CTX_WINDOW_TOKENS_DEFAULT)
+
+
 # ── C9: cmd_init 재실행 비파괴 병합 — 사용자/operational 키 보존 (T-0184) ──────
 # 🔴 데이터 손실 버그: cmd_init 이 local.conf 를 가드 없이 통째 덮어써 재실행 시 init 이
 # 안 쓰는 사용자 키(external_review_enabled·upstream·upstream_rev·opencode_pro_model 등)가

@@ -39,7 +39,7 @@
 
 ```bash
 {{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --depends T-0001 --tag phase-1
-# → open/ 에 T-NNNN(또는 영역 prefix 시 T-PAY-NNN) 스켈레톤 생성. 본문을 아래 형식으로 채운다.
+# → open/ 에 T-NNNN(또는 영역 prefix 시 T-pay-NNN) 스켈레톤 생성. 본문을 아래 형식으로 채운다.
 ```
 
 본문 필수 절 (self-containment — `board.py lint` 가 thin·dangling 검사):

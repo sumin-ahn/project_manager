@@ -224,7 +224,8 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
     새 작업 deny / UserPromptSubmit block(핸드오프 트리거 prompt 예외·T-0205).
     """
     transcript = stdin.get("transcript_path")
-    window = ctx_guard.ctx_window_tokens(conf)
+    # 분모 = 해소된 claude 예산(ADR-0041·per-harness) — statusLine 과 같은 예산.
+    window = ctx_guard.resolve_budget(conf, "claude")
     thresholds = ctx_guard.ctx_thresholds(conf)
 
     used = (

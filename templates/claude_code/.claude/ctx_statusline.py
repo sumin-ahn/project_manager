@@ -43,7 +43,9 @@ def render_line(used_pct: int, state: str) -> str:
 
 
 def build_statusline(stdin: dict, conf: dict) -> str:
-    used = ctx_guard.context_used_pct_from_statusline(stdin)
+    # 분모 = 해소된 claude 예산(ADR-0041) — hook 과 같은 예산으로 표시=정지 일관.
+    budget = ctx_guard.resolve_budget(conf, "claude")
+    used = ctx_guard.context_used_pct_from_statusline(stdin, budget)
     thresholds = ctx_guard.ctx_thresholds(conf)
     state = ctx_guard.classify(used, thresholds)
     return render_line(used, state)

@@ -24,7 +24,7 @@ OPENCODE_GUARD = REPO / "templates" / "opencode" / ".opencode" / "plugins" / "ct
 def _grab(path: Path, pattern: str) -> int:
     match = re.search(pattern, path.read_text(encoding="utf-8"))
     assert match, f"{path.name}: 디폴트 상수 못 찾음 (패턴 {pattern!r})"
-    return int(match.group(1))
+    return int(match.group(1).replace("_", ""))  # 파이썬 숫자 리터럴 언더스코어(200_000) 허용.
 
 
 def test_ctx_nudge_default_mirrors_across_three_sites():
@@ -42,6 +42,20 @@ def test_ctx_stop_default_mirrors_across_three_sites():
     opencode = _grab(OPENCODE_GUARD, r"const\s+STOP_PCT_DEFAULT\s*=\s*(\d+)")
     assert board == claude == opencode, (
         f"stop 디폴트 미러 불일치: board={board} claude={claude} opencode={opencode}"
+    )
+
+
+def test_ctx_window_tokens_default_mirrors_across_three_sites():
+    """ctx 예산 디폴트(200000)도 3-사이트 미러 (T-0236·ADR-0041).
+
+    ADR-0041 이 분모=예산 통일을 확정하며 opencode(ctx-guard.js)에도
+    CTX_WINDOW_TOKENS_DEFAULT 미러가 생겼다(T-0235) — nudge/stop 과 동형으로 셋의
+    합의를 강제한다(한 곳만 바꾸면 하네스별 기본 예산이 어긋남)."""
+    board = _grab(BOARD, r"CTX_WINDOW_TOKENS_DEFAULT\s*=\s*(\d+)")
+    claude = _grab(CLAUDE_GUARD, r"CTX_WINDOW_TOKENS_DEFAULT\s*=\s*([\d_]+)")
+    opencode = _grab(OPENCODE_GUARD, r"const\s+CTX_WINDOW_TOKENS_DEFAULT\s*=\s*(\d+)")
+    assert board == claude == opencode, (
+        f"window tokens 디폴트 미러 불일치: board={board} claude={claude} opencode={opencode}"
     )
 
 

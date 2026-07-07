@@ -227,7 +227,10 @@ def test_release_wave_opencode_full_wave(tmp_path):
 
 # multi-repo 셋업의 repo 이름 = prefix = worktree 슬롯 네임스페이스(단일 진실). 2 repo 로 충분 —
 # 새 위험축(per-repo prefix·per-slot 식별)은 1→2 에서 이미 드러난다(대N 은 spike §6 후속).
-_MULTIREPO_REPOS = ("repoA", "repoB")
+# 이름은 **소문자**여야 한다 — prefix sanity(`_validate_prefix`·[a-z0-9_]+·ADR-0042/T-0237)가
+# `--prefix <repo>` 를 검증하므로(대문자면 rc1). 라이브 LLM 은 아래 프롬프트의 "REPO" 를 실 repo
+# 이름(소문자)으로 치환해 `--prefix repoa` 를 발행한다 → sanity 통과.
+_MULTIREPO_REPOS = ("repoa", "repob")
 # multi-repo wave 가 각 repo 슬롯에 쓰도록 지시하는 산출 파일·내용 — side-effect 단언의 기준.
 # (단일 wave 의 PROBE_FILE='probe.txt' 와 별개 — 슬롯별 파일이라 슬롯 격리도 함께 단언한다.)
 _WAVE_FILE = "wave-done.txt"

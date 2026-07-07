@@ -46,19 +46,25 @@ def pc():
 
 
 class FakeBoard:
-    """board 대역 — areas_append 기록·registered_prefixes 제어 (refspec 테스트에 필요한 면만)."""
+    """board 대역 — areas_append 기록·registered_repos 제어 (refspec 테스트에 필요한 면만).
+
+    `registered` = 이미 등록된 **repo명** 집합(멱등 재등록 판별 축·ADR-0042 후 repo 칼럼 기준).
+    """
 
     def __init__(self, *, registered=()):
         self._registered = set(registered)
         self.append_calls: list = []
 
-    def registered_prefixes(self):
+    def registered_repos(self):
+        return set(self._registered)
+
+    def registered_prefixes(self):     # 자동시드 폐지 후 cmd_repo_add 는 미사용 — 하위 배선용 유지.
         return set(self._registered)
 
     def areas_append(self, prefix, area, owner, *, repo=None, git=None,
                      test_cmd=None, base=None, protected=None, area_owner=None):
-        self.append_calls.append({"repo": repo, "git": git, "base": base,
-                                  "area_owner": area_owner})
+        self.append_calls.append({"prefix": prefix, "repo": repo, "git": git,
+                                  "base": base, "area_owner": area_owner})
 
     def _repo_protected(self, repo):
         return ["main", "master", "develop"]
@@ -256,6 +262,40 @@ def test_fetch_failure_warns_but_repo_add_succeeds(pc, tmp_path, capsys):
     assert _fetch_call(gitr) is not None         # fetch 는 시도됨(실패)
     assert len(board.append_calls) == 1         # 등록은 진행됨
     assert "fetch origin" in capsys.readouterr().err
+
+
+# ── repo명 자동시드 폐지 (ADR-0042·T-0237) ───────────────────────────────────
+
+
+def test_repo_add_seeds_empty_prefix_not_repo_name(pc, tmp_path):
+    """repo add 는 prefix 를 **빈 값**으로 등록한다 — repo명 자동시드 폐지 (ADR-0042·DoD 1).
+
+    이전엔 `areas_append(name, …)` 로 repo명이 prefix 칼럼에 박혀 다음 티켓이 `T-<repo>-NNN`
+    으로 튀었다. 이제 positional prefix 는 `""` — repo명은 작업 카테고리가 아니다.
+    """
+    board = FakeBoard(registered=())
+    rc = pc.cmd_repo_add(_args(name="svc"), board=board, clone_runner=GitFake(),
+                         repos_dir=tmp_path / ".repos")
+    assert rc == 0
+    assert len(board.append_calls) == 1
+    call = board.append_calls[0]
+    assert call["prefix"] == ""          # 자동시드 폐지 — repo명 아님
+    assert call["repo"] == "svc"          # repo 칼럼엔 repo명 유지(등록 식별)
+
+
+def test_repo_add_idempotent_by_repo_name_not_prefix(pc, tmp_path):
+    """이미 등록된 repo(빈 prefix) 재실행 → 중복 append 0 — 멱등 판별이 repo명 기준 (ADR-0042·DoD 1).
+
+    자동시드 폐지로 prefix 칼럼이 비어 `registered_prefixes()` 로는 이 repo 를 못 세므로,
+    멱등 판별을 `registered_repos()`(repo 칼럼)로 옮겼다 — 재실행이 같은 repo 를 두 줄로
+    append 하지 않는다(append-only 레지스트리 오염 방지).
+    """
+    board = FakeBoard(registered=("svc",))    # repo명으로 이미 등록됨
+    (tmp_path / ".repos" / "svc.git").mkdir(parents=True)
+    rc = pc.cmd_repo_add(_args(name="svc"), board=board, clone_runner=GitFake(),
+                         repos_dir=tmp_path / ".repos")
+    assert rc == 0
+    assert board.append_calls == []           # 중복 등록 안 됨(멱등)
 
 
 # ── 헬퍼 직접 단위 (배선 격리) ───────────────────────────────────────────────

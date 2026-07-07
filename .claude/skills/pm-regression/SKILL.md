@@ -28,7 +28,7 @@ python3 .project_manager/tools/board.py regression run
 구현 중 자기 ticket 관련 테스트만 — 빠른 피드백 (push 게이트 아님):
 
 ```bash
-python3 .project_manager/tools/board.py regression run --ticket T-PAY-001   # touches → pytest -k
+python3 .project_manager/tools/board.py regression run --ticket T-pay-001   # touches → pytest -k
 ```
 
 ## red 처리

@@ -18,8 +18,8 @@
 //
 // 엔진(pm_handoff/board) 미수정 — shell-out 호출만. 어댑터층(templates/opencode/.opencode/)만.
 //
-// 결정 로직(computeCtxState·resolveThresholds·parseLocalConf·accumulateTokens)은 순수 함수로
-// 떼어 export — node 로 자가검증(이벤트/opencode 런타임 없이). plugin 함수는 그 wiring.
+// 결정 로직(computeCtxState·resolveThresholds·resolveBudget·parseLocalConf·accumulateTokens)은
+// 순수 함수로 떼어 export — node 로 자가검증(이벤트/opencode 런타임 없이). plugin 함수는 그 wiring.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -28,6 +28,11 @@ const path = require("node:path");
 // T-0207 상향(20/10→30/20): 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬(PM 47 실측).
 const NUDGE_PCT_DEFAULT = 30; // 잔여 ≤ 이 % → 넛지 (일은 계속).
 const STOP_PCT_DEFAULT = 20; // 잔여 ≤ 이 % → 정지·핸드오프.
+
+// ── ctx 예산 기본 (board.py CTX_WINDOW_TOKENS_DEFAULT 미러 · ADR-0041) ──────────
+// 정지/넛지 분모(100% 기준)의 최종 폴백. 물리 window auto-detect 개념 폐기 —
+// resolveBudget 이 하네스별 오버라이드 > generic > 이 기본 순으로 예산 하나를 해소한다.
+const CTX_WINDOW_TOKENS_DEFAULT = 200000;
 
 // 엔진 경로 (plugin 의 directory 기준 .project_manager 까지 거슬러 올라가 해석).
 const ENGINE_REL = path.join(".project_manager", "tools");
@@ -95,6 +100,27 @@ function resolveThresholds(conf) {
   return { nudge_pct: nudge, stop_pct: stop };
 }
 
+// ── 순수 함수: ctx 예산 해소 (하네스별 · ADR-0041) ────────────────────────────
+// 정지/넛지 분모(100% 기준) = 해소된 예산 하나 (물리한도 개념 폐기). precedence:
+//   ctx_window_tokens_<harness>  (하네스별 오버라이드)
+//   > ctx_window_tokens          (generic·back-compat)
+//   > CTX_WINDOW_TOKENS_DEFAULT  (200000)
+// 각 층 >0 정수 sanity — ≤0·비정수·미설정이면 다음 층으로(0/음수 특수의미 없음).
+// claude ctx_guard.resolve_budget(conf,"opencode") 동형. conf = parseLocalConf 결과.
+function resolveBudget(conf, harness) {
+  const readBudget = (key) => {
+    const raw = conf ? conf[key] : undefined;
+    if (raw === undefined || raw === null) return null;
+    const n = Number(String(raw).trim());
+    return Number.isInteger(n) && n > 0 ? n : null;
+  };
+  return (
+    readBudget(`ctx_window_tokens_${harness}`) ||
+    readBudget("ctx_window_tokens") ||
+    CTX_WINDOW_TOKENS_DEFAULT
+  );
+}
+
 // ── 순수 함수: AssistantMessage.tokens 누적 = 현재 컨텍스트 점유 토큰 ──────────
 // opencode 의 컨텍스트 점유 = 직전 어시스턴트 턴의 input + cache(read+write) + output + reasoning.
 // (input/cache 가 누적 컨텍스트를 반영 — 매 턴의 최신값을 쓰고, 합산이 아니라 최신 메시지 기준.)
@@ -109,8 +135,8 @@ function accumulateTokens(tokens) {
 }
 
 // ── 순수 함수: ctx 상태 판정 (테스트 핵심) ──────────────────────────────────
-// used: accumulateTokens 결과, limit: 모델 context window, thresholds: resolveThresholds 결과.
-// 반환: { remainingPct, usedPct, level: "ok"|"nudge"|"stop" }.
+// used: accumulateTokens 결과, limit: 해소된 ctx 예산(resolveBudget·ADR-0041·구 물리한도 폐기),
+// thresholds: resolveThresholds 결과. 반환: { remainingPct, usedPct, level: "ok"|"nudge"|"stop" }.
 //   limit 미상(0/음수/NaN)이면 판정 불가 → level "ok"(과도 정지 방지·안전).
 function computeCtxState(used, limit, thresholds) {
   const u = Number(used) || 0;
@@ -228,16 +254,16 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   // 세팅 → 다음 모델 호출의 experimental.chat.system.transform 이 1회 소비(push 후 null).
   let pendingNudgeText = null;
   let cachedThresholds = null;
-  let cachedLimit = null;
+  let cachedConf = null;
   // 현재 세션 id — event hook 의 info.sessionID 로 캡처(PluginInput 엔 sid 없음·실측). STOP
   // marker 파일명을 짓는 데 쓴다(relay 가 그 marker 를 stat 해 회전 트리거).
   let currentSessionID = null;
 
   const root = findEngineRoot(directory || worktree || process.cwd());
 
-  // local.conf 직접 파싱 → 임계값 (1회 캐시).
-  function thresholds() {
-    if (cachedThresholds) return cachedThresholds;
+  // local.conf 직접 파싱 (thresholds·budget 공용·1회 캐시). root 없거나 실패 시 {}.
+  function loadConf() {
+    if (cachedConf) return cachedConf;
     let conf = {};
     if (root) {
       try {
@@ -247,29 +273,15 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         conf = {};
       }
     }
-    cachedThresholds = resolveThresholds(conf);
-    return cachedThresholds;
+    cachedConf = conf;
+    return cachedConf;
   }
 
-  // 모델 context window 한도 조회 (providers → models[id].limit.context). 실패 시 null.
-  async function modelLimit(providerID, modelID) {
-    if (cachedLimit !== null) return cachedLimit;
-    if (!client || !providerID || !modelID) return null;
-    try {
-      const res = await client.config.providers();
-      const providers = (res && res.data && res.data.providers) || res.providers || [];
-      for (const prov of providers) {
-        if (prov.id !== providerID) continue;
-        const m = prov.models && prov.models[modelID];
-        if (m && m.limit && m.limit.context) {
-          cachedLimit = m.limit.context;
-          return cachedLimit;
-        }
-      }
-    } catch {
-      /* fail-soft: 한도 미상이면 정지 판정 보류 (computeCtxState 가 ok 반환). */
-    }
-    return cachedLimit;
+  // local.conf → 임계값 (1회 캐시).
+  function thresholds() {
+    if (cachedThresholds) return cachedThresholds;
+    cachedThresholds = resolveThresholds(loadConf());
+    return cachedThresholds;
   }
 
   // 넛지: 1회 toast(없으면 무음 — fail-soft).
@@ -331,7 +343,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       if (info.role !== "assistant" || !info.tokens) return;
 
       const used = accumulateTokens(info.tokens);
-      const limit = await modelLimit(info.providerID, info.modelID);
+      const limit = resolveBudget(loadConf(), "opencode"); // ctx 예산 (물리한도 폐기·ADR-0041).
       const t = thresholds();
       const state = computeCtxState(used, limit, t);
 
@@ -389,6 +401,7 @@ module.exports = {
   // 순수 결정 로직 (테스트·자가검증용 export).
   parseLocalConf,
   resolveThresholds,
+  resolveBudget,
   accumulateTokens,
   computeCtxState,
   buildNudgeGuidance,
@@ -401,4 +414,5 @@ module.exports = {
   isNewWorkPermission,
   NUDGE_PCT_DEFAULT,
   STOP_PCT_DEFAULT,
+  CTX_WINDOW_TOKENS_DEFAULT,
 };

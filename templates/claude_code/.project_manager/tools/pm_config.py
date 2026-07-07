@@ -518,8 +518,10 @@ def cmd_repo_add(
     """`repo add <name> --git <url> [--test "<cmd>"] [--base <branch>]` — 패밀리에 repo 등록 (ADR-0014·T-0075).
 
     1. areas.md 레지스트리에 per-repo 줄을 기록한다(board.areas_append — repo/prefix/
-       git/test_cmd/owner/base 칼럼·ADR-0014·T-0075). prefix 는 repo 이름과 동일(per-repo ID
-       네임스페이스·ADR-0011). owner = 등록 식별자(registrant·협업 소유자 아님·ADR-0016) —
+       git/test_cmd/owner/base 칼럼·ADR-0014·T-0075). **prefix 는 빈 값으로 등록**한다 —
+       repo명 자동시드 폐지(ADR-0042 §Decision 2·prefix=작업 카테고리이지 repo명이 아님).
+       카테고리가 필요하면 `board.py new --prefix <cat>` 로 티켓별 명시하거나 `board.py
+       prefix` 로 사후 관리한다. owner = 등록 식별자(registrant·협업 소유자 아님·ADR-0016) —
        기본 현 세션.
     2. `.repos/<name>.git` 로 bare clone 한다 — worktree 풀이 공유하는 .git 원(ADR-0011·
        worktree add 가 이 bare 를 base 로 슬롯을 만든다).
@@ -591,7 +593,10 @@ def cmd_repo_add(
     area_owner = getattr(args, "user", None) or _default_user()
     base_arg = getattr(args, "base", None)
     bare_path = repos_dir / f"{name}.git"
-    already_registered = name in board_mod.registered_prefixes()
+    # 멱등 재등록 판별은 **repo명**으로 한다(prefix 로 세지 않는다) — 자동시드 폐지(ADR-0042)
+    # 후 prefix 칼럼이 비므로 `registered_prefixes()` 는 이 repo 를 못 센다. `registered_repos()`
+    # 는 repo 칼럼을 직접 세어 중복 append(같은 repo 두 줄)를 막는다.
+    already_registered = name in board_mod.registered_repos()
     bare_exists = bare_path.exists()
     runner = clone_runner or _real_clone_runner()
 
@@ -644,10 +649,12 @@ def cmd_repo_add(
         return 1
 
     # 4) areas.md 등록 — repo/prefix/git/test_cmd/owner/base/protected 칼럼(ADR-0014·T-0075·T-0076).
-    #    protected 는 빈 값으로 등록 — `_repo_protected` 가 DEFAULT_PROTECTED(main/master/develop)
-    #    폴백한다(per-repo override 는 areas.md 를 직접 편집·후속 `--protected` 플래그 여지).
+    #    prefix(2번째 positional)는 **빈 값**으로 등록 — repo명 자동시드 폐지(ADR-0042): repo명은
+    #    작업 카테고리가 아니다. 이전엔 `name`(repo명)을 prefix 로 박아 다음 티켓이 `T-<repo>-NNN`
+    #    으로 튀게 했다. protected 도 빈 값 — `_repo_protected` 가 DEFAULT_PROTECTED(main/master/
+    #    develop) 폴백한다(per-repo override 는 areas.md 를 직접 편집·후속 `--protected` 플래그 여지).
     board_mod.areas_append(
-        name, "", owner, repo=name, git=args.git, test_cmd=args.test, base=base,
+        "", "", owner, repo=name, git=args.git, test_cmd=args.test, base=base,
         protected="", area_owner=area_owner,
     )
     # --test 미지정(None) 이면 areas test_cmd 빈 값 — 해소 체인이 슬롯/local.conf 로

@@ -185,6 +185,43 @@ session=/prefix= legacy 폴백`. **leased ≥2 인 multi 홈은 local.conf 층�
 disjoint 라 ID 충돌이 아니다 — 기존 보드는 그대로 열린다. (등록 repo ≥2 인 multi 홈은 세션
 유도로 슬롯별 prefix 해소, 모호하면 `new` 가 fail-loud.)
 
+## 티켓 prefix 사용 가이드 (ADR-0042 · prefix = 작업 카테고리)
+
+티켓 ID prefix 는 **작업 카테고리**다(repo 네임스페이스 전용 아님·M 무관 1급·자유 입력). tag·none
+과 역할이 다르다 — 아래 표로 고른다. 기본은 **none**(`T-NNNN`) — 단일 흐름이면 prefix 안 만든다.
+
+| | **prefix** (`T-<p>-NNN`) | **tag** (`tags:` frontmatter) | **none** (`T-NNNN`) |
+|---|---|---|---|
+| 위치 | ID 자체 — **항상 보임** | 메타데이터(안 보임·잊힘) | ID(prefix 없음) |
+| 개수 | 티켓당 1개(배타 구획) | 여러 개(교차 속성) | — |
+| 번호 | **prefix별 독립 일련** | 전체 일련 공유 | 전체 일련 |
+| 변경 | ID 변경 = 참조 rewrite(관리도구) | 자유(참조 안 깨짐) | — |
+| 언제 | **배타적 작업 스트림/카테고리**(auth·billing·layer)·prefix별 독립 번호 원할 때 | **겹치는 속성**(engine·adapter·harness)·`list --tag` 필터 | **단일 흐름 보드·카테고리 불요(기본)** |
+
+- 한 티켓 = 한 카테고리로 배타적으로 갈리면 → **prefix**(짧은 소문자).
+- 한 티켓이 여러 축에 걸치거나 교차 필터가 필요하면 → **tag**.
+
+**운영 수칙 (LLM PM 규율 — prefix 남발 방지):**
+- **새 카테고리 만들기 전** `board.py prefix list` 로 현황 확인(카테고리별 개수·번호범위) → 유사
+  카테고리 있으면 **재사용**(신설 남발 금지). prefix 는 짧은 소문자(`[a-z0-9_]`·첫 글자 영숫자)·
+  예약어 `none` 금지.
+- **mess(카테고리 난립·번호 재시작) 발견 시** `board.py prefix rename/strip/merge/delete` 로 정리
+  — **반드시 `--dry-run` 먼저**(규모 preview: N ID·M refs·K 파일). 홈 git clean 상태에서 실행
+  (board-git 이 백업 rev 자동 기록). 티켓 물리삭제 없음(무손실 relabel):
+  - `rename <A|none> <B|none>` — 개명 / 씌우기(`none`→A) / 지우기(A→`none`). 무충돌이면 번호 유지.
+  - `strip <A>` — `rename A none` 별칭(이름만 지움).
+  - `merge <A> [B...] --into <T|none>` — created 순 통합. 기본 append(대상 max 뒤·기존 번호 무변경·
+    저위험) / `--reorder-chronological` = 전체 재번호(opt-in·고위험).
+  - `delete <A>` — 빈(0티켓) 카테고리 등록만 제거(티켓 있으면 fail-loud → rename/merge 안내).
+
+**어댑터 마이그 절차 (재정의 흡수 — 각 어댑터 사용자 주도):** 기존 혼재(repo명 자동시드 잔재·
+prefix 남발)를 정리할 때 —
+1. `pm-update` 로 엔진 흡수(prefix 도구 반영).
+2. `board.py prefix list` 로 현황 파악.
+3. `board.py prefix merge/rename ... --dry-run` 으로 규모 preview.
+4. 홈 git clean 확인 후 실행(board-git 자동 백업). 예: finance_dev
+   `board.py prefix merge finance --into none` → `T-finance-*` 가 created 순 무prefix 로 흡수.
+
 ## 운영 레퍼런스 (필요 시에만 Read — 부트스트랩 통째 로드 X)
 
 아래 상세는 활동을 실제로 할 때만 [`pm_playbook.md`](pm_playbook.md) 에서 읽는다:

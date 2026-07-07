@@ -154,6 +154,11 @@ class FakeBoard:
         # board._repo_protected 를 부른다. 미지정 매핑은 default(main/master/develop).
         self._repo_protecteds = repo_protecteds or {}
 
+    def registered_repos(self):
+        # 멱등 재등록 판별 축(ADR-0042 후 repo 칼럼 기준·cmd_repo_add 가 이걸 부른다).
+        # `registered` 는 이미 등록된 repo명 집합으로 해석한다.
+        return set(self._registered)
+
     def registered_prefixes(self):
         return set(self._registered)
 
@@ -501,7 +506,7 @@ def test_repo_add_registers_areas_and_clones(pc, tmp_path):
     # areas_append — per-repo 스키마(repo/git/test_cmd/base) 로 호출.
     assert len(board.append_calls) == 1
     call = board.append_calls[0]
-    assert call["prefix"] == "svc"
+    assert call["prefix"] == ""     # repo명 자동시드 폐지 — prefix 는 빈 값(ADR-0042·T-0237)
     assert call["repo"] == "svc"
     assert call["git"] == "git@h:me/svc.git"
     assert call["test_cmd"] == "pytest -q"

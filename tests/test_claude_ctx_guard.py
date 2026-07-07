@@ -6,7 +6,7 @@ importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·�
 
 검증 축:
   1. 임계 config — local.conf nudge/stop 읽기 + sanity 폴백 (codex 인계).
-  2. statusLine — context_window → used % (native/manual/total_input 폴백) + 색/문구 넛지.
+  2. statusLine — context_window → used % (current_usage 단일 소스·ADR-0041) + 색/문구 넛지.
   3. 훅 — transcript JSONL 토큰합 → used %, 임계 분기(ok/nudge/stop), deny/block 출력 스키마.
   3c. 핸드오프 도구 allow-list (ADR-0038 D2) — stop 밴드에서 진행 중 /pm-handoff 도구는
       통과(None)·새 작업 도구는 deny. Bash 셸-연산자 밀반입 fail-closed·env-prefix 정규화.
@@ -106,6 +106,7 @@ def test_load_local_config_missing(guard, tmp_path):
 
 
 def test_window_tokens_default_and_override(guard):
+    # generic-only 헬퍼(back-compat) — 유지(하네스 오버라이드는 무시·resolve_budget 이 담당).
     assert guard.ctx_window_tokens({}) == 200_000
     assert guard.ctx_window_tokens({"ctx_window_tokens": "100000"}) == 100_000
     # 비정상(0·음수·비정수) → 기본.
@@ -113,51 +114,131 @@ def test_window_tokens_default_and_override(guard):
     assert guard.ctx_window_tokens({"ctx_window_tokens": "-5"}) == 200_000
 
 
-# ── 2. statusLine: context_window → used % + 넛지 ──────────────────────────
+# ── 1b. resolve_budget: per-harness precedence (ADR-0041 Decision 1) ────────
+# 분모 = ctx_window_tokens_<harness> > generic ctx_window_tokens > 200000 (각 층 >0 sanity).
 
-def test_statusline_used_pct_native(guard):
-    assert guard.context_used_pct_from_statusline({"context_window": {"used_percentage": 73}}) == 73
+def test_resolve_budget_defaults_to_200k(guard):
+    assert guard.resolve_budget({}, "claude") == 200_000
+    assert guard.resolve_budget({}, "opencode") == 200_000
+    assert guard.resolve_budget({}) == 200_000  # harness 기본값 = claude.
 
 
-def test_statusline_used_pct_manual_fallback(guard):
-    # native 없음 → current_usage 토큰합 / size.
-    sl = {
-        "context_window": {
-            "context_window_size": 200_000,
-            "current_usage": {
-                "input_tokens": 100_000,
-                "cache_creation_input_tokens": 40_000,
-                "cache_read_input_tokens": 40_000,
-            },
-        }
+def test_resolve_budget_generic_fallback(guard):
+    # 하네스 오버라이드 없음 → generic ctx_window_tokens (back-compat·② 1M 무변경).
+    assert guard.resolve_budget({"ctx_window_tokens": "1000000"}, "claude") == 1_000_000
+    assert guard.resolve_budget({"ctx_window_tokens": "1000000"}, "opencode") == 1_000_000
+
+
+def test_resolve_budget_harness_override_wins(guard):
+    # 하네스 키가 generic 을 이긴다 (precedence 최상층).
+    conf = {
+        "ctx_window_tokens": "300000",
+        "ctx_window_tokens_claude": "1000000",
+        "ctx_window_tokens_opencode": "200000",
     }
-    assert guard.context_used_pct_from_statusline(sl) == 90
+    assert guard.resolve_budget(conf, "claude") == 1_000_000
+    assert guard.resolve_budget(conf, "opencode") == 200_000
 
 
-def test_statusline_used_pct_total_input_fallback(guard):
-    # native·manual 없음 → total_input_tokens / size.
-    sl = {"context_window": {"context_window_size": 200_000, "total_input_tokens": 50_000}}
-    assert guard.context_used_pct_from_statusline(sl) == 25
+def test_resolve_budget_independent_harnesses(guard):
+    # claude·opencode 오버라이드 키 완전 독립 (동시 운용·generic 없이도 각자 해소).
+    conf = {"ctx_window_tokens_claude": "500000", "ctx_window_tokens_opencode": "200000"}
+    assert guard.resolve_budget(conf, "claude") == 500_000
+    assert guard.resolve_budget(conf, "opencode") == 200_000
+    # 다른 하네스 키만 있고 대상 하네스 키 없으면 → generic(없으면 200K).
+    assert guard.resolve_budget({"ctx_window_tokens_opencode": "999"}, "claude") == 200_000
+
+
+@pytest.mark.parametrize("bad", ["0", "-5", "abc", "", "  "])
+def test_resolve_budget_sanity_falls_through(guard, bad):
+    # 오버라이드가 ≤0/비정수 → generic 으로, generic 도 비정상이면 200K (각 층 >0 sanity).
+    assert guard.resolve_budget(
+        {"ctx_window_tokens_claude": bad, "ctx_window_tokens": "300000"}, "claude") == 300_000
+    assert guard.resolve_budget(
+        {"ctx_window_tokens_claude": bad, "ctx_window_tokens": bad}, "claude") == 200_000
+
+
+# ── 2. statusLine: context_window → used % (분모=예산·ADR-0041) + 넛지 ────────
+
+def test_statusline_used_pct_current_usage(guard):
+    # used_tokens = current_usage(input+cache 합) / 예산.
+    sl = {"context_window": {"current_usage": {
+        "input_tokens": 100_000,
+        "cache_creation_input_tokens": 40_000,
+        "cache_read_input_tokens": 40_000,
+    }}}
+    assert guard.context_used_pct_from_statusline(sl, 200_000) == 90
+
+
+def test_statusline_current_usage_null_with_stale_total_input_is_zero(guard):
+    # codex T-0234 must-fix: current_usage null(post-/compact) + 누적성 total_input 잔존 →
+    # 폴백하면 과대 표시→넛지 오판정. 반드시 0% graceful.
+    sl = {"context_window": {"current_usage": None, "total_input_tokens": 150_000}}
+    assert guard.context_used_pct_from_statusline(sl, 200_000) == 0
+
+
+def test_statusline_current_usage_empty_dict_is_zero(guard):
+    # current_usage 가 빈 dict 여도 0% (토큰 신호 없음 = graceful).
+    sl = {"context_window": {"current_usage": {}, "total_input_tokens": 99_000}}
+    assert guard.context_used_pct_from_statusline(sl, 200_000) == 0
+
+def test_statusline_budget_is_denominator(guard):
+    # 물리 window% 폐기 — 같은 토큰이라도 예산 분모가 다르면 다른 % (표시=정지 일관 근거).
+    sl = {"context_window": {"current_usage": {"input_tokens": 100_000}}}
+    assert guard.context_used_pct_from_statusline(sl, 200_000) == 50
+    assert guard.context_used_pct_from_statusline(sl, 500_000) == 20
+    assert guard.context_used_pct_from_statusline(sl, 1_000_000) == 10
+
+
+def test_statusline_ignores_native_physical_pct(guard):
+    # ADR-0041: native used_percentage(물리%)는 안 읽는다 — current_usage 예산 분모만.
+    sl = {"context_window": {"used_percentage": 73,
+                             "current_usage": {"input_tokens": 100_000}}}
+    assert guard.context_used_pct_from_statusline(sl, 200_000) == 50  # native 73 무시.
+    # current_usage/total_input 없이 native 만 → 0 (native 안 읽음).
+    assert guard.context_used_pct_from_statusline(
+        {"context_window": {"used_percentage": 73}}, 200_000) == 0
+
+
+def test_statusline_current_usage_null_zero(guard):
+    # current_usage null/부재(세션초·/compact 직후) + total_input 없음 → 0% graceful.
+    assert guard.context_used_pct_from_statusline(
+        {"context_window": {"current_usage": None}}, 200_000) == 0
+    assert guard.context_used_pct_from_statusline({"context_window": {}}, 200_000) == 0
 
 
 def test_statusline_no_signal_zero(guard):
-    assert guard.context_used_pct_from_statusline({}) == 0
-    assert guard.context_used_pct_from_statusline({"context_window": {}}) == 0
-    assert guard.context_used_pct_from_statusline({"context_window": "bad"}) == 0
+    assert guard.context_used_pct_from_statusline({}, 200_000) == 0
+    assert guard.context_used_pct_from_statusline({"context_window": "bad"}, 200_000) == 0
+    # budget<=0(비정상)도 0.
+    assert guard.context_used_pct_from_statusline(
+        {"context_window": {"current_usage": {"input_tokens": 100_000}}}, 0) == 0
 
 
 def test_statusline_render_colors(guard, statusline):
-    # conf={} → 엔진 기본 임계(30/20 · T-0207) 로 밴드 판정.
-    th = {"nudge_pct": 30, "stop_pct": 20}
+    # conf={} → 예산 200K 기본·기본 임계(30/20·T-0207). current_usage 토큰으로 밴드 구성.
+    def _sl(tokens):
+        return {"context_window": {"current_usage": {"input_tokens": tokens}}}
     # ok (used 50, 잔여 50 > 30): 회색·정지문구 없음.
-    ok = statusline.build_statusline({"context_window": {"used_percentage": 50}}, {})
+    ok = statusline.build_statusline(_sl(100_000), {})
     assert "\033[90m" in ok and "ctx 50%" in ok and "정지" not in ok
     # nudge (used 75, 잔여 25 <= 30·> 20): 노랑·"곧 정지".
-    nudge = statusline.build_statusline({"context_window": {"used_percentage": 75}}, {})
+    nudge = statusline.build_statusline(_sl(150_000), {})
     assert "\033[33m" in nudge and "곧 정지" in nudge
     # stop (used 92, 잔여 8 <= 20): 빨강·"정지 임계".
-    stop = statusline.build_statusline({"context_window": {"used_percentage": 92}}, {})
+    stop = statusline.build_statusline(_sl(184_000), {})
     assert "\033[31m" in stop and "정지 임계" in stop
+
+
+def test_statusline_render_colors_respects_budget_override(guard, statusline):
+    # 하네스 오버라이드로 예산이 커지면 같은 토큰이 낮은 %로 표시(표시=정지 일관·per-harness).
+    sl = {"context_window": {"current_usage": {"input_tokens": 184_000}}}
+    # 기본 200K: 92% used → stop(빨강).
+    stop = statusline.build_statusline(sl, {})
+    assert "\033[31m" in stop and "정지 임계" in stop
+    # claude 오버라이드 1M: 18% used → ok(회색).
+    ok = statusline.build_statusline(sl, {"ctx_window_tokens_claude": "1000000"})
+    assert "\033[90m" in ok and "ctx 18%" in ok and "정지" not in ok
 
 
 def test_classify_boundaries(guard):
@@ -460,7 +541,10 @@ def test_hook_session_id_sanitized(stop_hook):
 
 def test_statusline_main_emits_line(statusline, monkeypatch, capsys):
     import io
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"context_window": {"used_percentage": 95}})))
+    # load_local_config 를 빈 conf 로 고정 → resolve_budget 200K 결정론(실 repo local.conf 무관).
+    monkeypatch.setattr(statusline.ctx_guard, "load_local_config", lambda root: {})
+    stdin = {"context_window": {"current_usage": {"input_tokens": 190_000}}}  # 95% of 200K.
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(stdin)))
     rc = statusline.main()
     out = capsys.readouterr().out
     assert rc == 0

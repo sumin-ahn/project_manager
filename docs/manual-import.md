@@ -28,7 +28,7 @@ grep -rl '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='
 
 # 3) 이 clone 등록 (clone 당 1회) — solo(N=1·M=1) 또는 multi-repo(N×M·ADR-0016·multi-repo.md)
 python3 .project_manager/tools/board.py init                        # solo: legacy T-NNNN
-#   multi-repo(M>1·prefix 네임스페이스): board.py init --prefix PAY --area "결제"   # → T-PAY-NNN
+#   multi-repo(M>1·prefix 네임스페이스): board.py init --prefix pay --area "결제"   # → T-pay-NNN
 
 # 4) board.py 동작 확인 — 첫 ticket 발행
 python3 .project_manager/tools/board.py new "첫 ticket — 환경 셋업 검증" --tag infra

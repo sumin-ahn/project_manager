@@ -489,6 +489,33 @@ def test_prefixed_ticket_wikilink_dangling_blocks(board, monkeypatch, tmp_path):
         f"부재 prefixed ticket wikilink 는 blocking dangling 이어야 함:\n{issues}")
 
 
+def test_finance_dev_d4_prefixed_ticket_resolves_and_dangling(board, monkeypatch, tmp_path):
+    """finance_dev 제보 D4 회귀-lock: `[[T-finance-011]]`(실존) clean · `[[T-nope-999]]`(부재)
+    는 blocking dangling (T-0240·[[ADR-0042]]).
+
+    제보 D4 는 구버전 fork 관찰 — `[[T-<prefix>-NNN]]` 을 실존인데도 dangling 으로 오탐. 현 엔진은
+    `_TICKET_ID_BODY` 공유 grammar(board.py:640) + `ticket_ids` 멤버십 단일 경로(board.py:3926~3929)
+    로 이미 정합해소한다. 이 테스트가 finance_dev 가 보고한 정확한 케이스로 그 정합을 못박아
+    grammar/해소 drift(T-0164 클래스) 재발 시 빨간불이 되게 한다."""
+    wiki = _wire_repo(board, monkeypatch, tmp_path)
+    # (a) 실존 prefixed ticket — dangling 으로 오탐되면 안 된다 (오탐 제거).
+    p = wiki / "tickets" / "open" / "T-finance-011-x.md"
+    p.write_text("---\nid: T-finance-011\n---\n# T-finance-011\n", encoding="utf-8")
+    # 실존 링크와 부재 링크를 같은 산문에 둬 정합·검출력을 함께 검증.
+    _doc(wiki, "note.md",
+         "실존 [[T-finance-011]] · 부재 [[T-nope-999]] 참조.")
+    issues = board.lint_wikilinks()
+    # (a) 실존 prefixed → clean (결과에 그 name 이 없음).
+    assert not any(name == "T-finance-011" for name, _k, _d in issues), (
+        f"실존 prefixed ticket wikilink 는 dangling 아님(오탐):\n{issues}")
+    # (b) 부재 prefixed → is_ticket blocking(`dangling-wikilink`·advisory 강등 아님)·검출력 유지.
+    assert any(name == "T-nope-999" and kind == "dangling-wikilink"
+               for name, kind, _d in issues), (
+        f"부재 prefixed ticket wikilink 는 blocking dangling 이어야 함:\n{issues}")
+    assert not any(name == "T-nope-999" and kind == "dangling-wikilink-scaffold"
+                   for name, kind, _d in issues), issues
+
+
 def test_same_ref_in_scaffold_and_wiki_blocks(board, monkeypatch, tmp_path):
     """같은 framework ADR 이 scaffold + wiki/ 양쪽에서 dangle 하면 blocking (자기문서 dangle 금지)."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음.

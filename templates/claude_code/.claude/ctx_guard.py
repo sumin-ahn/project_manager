@@ -11,11 +11,13 @@ statusLine 넛지와 PreToolUse 하드 정지가 **같은 임계 로직**을 공
   - 정지 시 handoff = ``python3 .project_manager/tools/pm_handoff.py --trigger
     --reason ctx-stop --ctx-pct <N>`` shell-out (rc0=박제). 실제 정지는 훅이 deny 로.
 
-컨텍스트 % 모델 (omc HUD getContextPercent 선례 — 복제 아닌 자체 구현):
-  - statusLine stdin 은 ``context_window`` 필드를 준다. 우선순위:
-      1) native ``used_percentage`` (양수면 그대로)
-      2) manual: current_usage 토큰합 / context_window_size
-      3) total_input: total_input_tokens / context_window_size
+컨텍스트 % 모델 (ADR-0041 — 분모 = 해소된 예산 하나·물리 window% 폐기):
+  - 분모 예산 = ``resolve_budget(conf, harness)`` = ``ctx_window_tokens_<harness>`` >
+    generic ``ctx_window_tokens`` > 200000 (각 층 >0 sanity). statusLine·hook 이 **같은 예산**
+    을 분모로 써 표시=정지 일관(claude·opencode 오버라이드 키는 독립).
+  - statusLine stdin 의 ``context_window`` 에서 used_tokens = current_usage(input+cache 합) >
+    total_input_tokens. current_usage null/부재(세션초·/compact 직후)면 0% graceful. native
+    ``used_percentage``(물리%)는 ADR-0041 로 **안 읽는다**.
   - 훅 stdin 엔 ``context_window`` 가 **없을 수 있다**(statusline 전용) → 훅은
     ``transcript_path`` JSONL 을 읽어 자체 산출 (마지막 assistant usage 의 입력+캐시
     토큰 = 현재 컨텍스트 점유; omc sessionTotalTokens 선례).
@@ -33,8 +35,8 @@ from pathlib import Path
 CTX_NUDGE_PCT_DEFAULT = 30  # 잔여 <= 이 % → "곧 정지" 넛지 (아직 일은 계속).
 CTX_STOP_PCT_DEFAULT = 20   # 잔여 <= 이 % → 정지·핸드오프 트리거.
 
-# 기본 컨텍스트 윈도 크기 (statusLine 이 size 를 안 주거나 훅 transcript 경로일 때).
-# claude 기본 200k. local.conf ``ctx_window_tokens`` 로 조정 가능.
+# 기본 ctx 예산(분모) — resolve_budget 의 최종 폴백(오버라이드·generic 미설정 시).
+# claude 기본 200k. local.conf ``ctx_window_tokens_<harness>``/``ctx_window_tokens`` 로 조정(ADR-0041).
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
@@ -101,23 +103,35 @@ def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
 
 
 def ctx_window_tokens(conf: dict[str, str]) -> int:
+    """generic-only 예산 헬퍼(back-compat) — per-harness 해소는 ``resolve_budget``.
+
+    generic ``ctx_window_tokens`` 만 읽는다(하네스 오버라이드 무시). 유지하되 statusLine/hook
+    호출부는 ``resolve_budget`` 를 쓴다(ADR-0041). 비정상(≤0·비정수) → 기본.
+    """
     size = _int_conf(conf, "ctx_window_tokens", CTX_WINDOW_TOKENS_DEFAULT)
     return size if size > 0 else CTX_WINDOW_TOKENS_DEFAULT
 
 
-# ── statusLine: context_window → used % (omc getContextPercent 자체 구현) ─────
+def resolve_budget(conf: dict[str, str], harness: str = "claude") -> int:
+    """ctx 예산(분모)을 per-harness precedence 로 해소 (ADR-0041 Decision 1).
+
+    ``ctx_window_tokens_{harness}`` > generic ``ctx_window_tokens`` > ``CTX_WINDOW_TOKENS_DEFAULT``.
+    각 층 >0 sanity — ≤0·비정수면 다음 층 폴백(물리한도/0-특수의미 없음). claude·opencode
+    오버라이드 키는 완전 독립(동시 운용 시 하네스별 예산). statusLine·hook 이 이 값을 공유 분모로.
+    """
+    for key in (f"ctx_window_tokens_{harness}", "ctx_window_tokens"):
+        size = _int_conf(conf, key, 0)
+        if size > 0:
+            return size
+    return CTX_WINDOW_TOKENS_DEFAULT
+
+
+# ── statusLine: context_window → used % (분모 = 해소된 예산·ADR-0041) ──────────
 
 def _clamp_pct(value: float) -> int:
     if value != value or value in (float("inf"), float("-inf")):  # NaN/inf 가드
         return 0
     return max(0, min(100, round(value)))
-
-
-def _native_used_pct(cw: dict) -> int | None:
-    native = cw.get("used_percentage")
-    if not isinstance(native, (int, float)) or native != native or native <= 0:
-        return None
-    return _clamp_pct(float(native))
 
 
 def _current_usage_tokens(cw: dict) -> int:
@@ -132,40 +146,34 @@ def _current_usage_tokens(cw: dict) -> int:
     return total
 
 
-def _manual_used_pct(cw: dict) -> int | None:
-    size = cw.get("context_window_size")
-    if not isinstance(size, (int, float)) or size <= 0:
-        return None
-    tokens = _current_usage_tokens(cw)
-    if tokens <= 0:
-        return None
-    return _clamp_pct(tokens / float(size) * 100)
+def _statusline_used_tokens(cw: dict) -> int:
+    """statusLine 의 현재 컨텍스트 점유 토큰 — current_usage(input+cache) 단일 소스.
 
-
-def _total_input_used_pct(cw: dict) -> int | None:
-    size = cw.get("context_window_size")
-    if not isinstance(size, (int, float)) or size <= 0:
-        return None
-    total_input = cw.get("total_input_tokens")
-    if not isinstance(total_input, (int, float)) or total_input <= 0:
-        return None
-    return _clamp_pct(total_input / float(size) * 100)
-
-
-def context_used_pct_from_statusline(stdin: dict) -> int:
-    """statusLine stdin JSON → 컨텍스트 **사용** %.
-
-    omc getContextPercent 선례의 native → manual → total_input 폴백을 자체 구현.
-    아무 신호도 없으면 0 (정보 없음 = 넛지/정지 안 함).
+    current_usage null/부재/빈 dict(세션초·/compact 직후)면 0 (0% graceful — 정보 없음 =
+    넛지/정지 안 함). total_input_tokens 폴백은 채택 안 함(codex T-0234 must-fix) —
+    current_usage 가 null 인 바로 그 순간(post-compact) total_input 은 누적성/버전 의존이라
+    과대 표시→넛지 오판정 위험. current_usage 있으면 total_input 은 중복이라 불필요.
+    native 물리%(used_percentage)는 ADR-0041 로 폐기(안 읽음).
     """
+    return max(0, _current_usage_tokens(cw))
+
+
+def context_used_pct_from_statusline(stdin: dict, budget: int) -> int:
+    """statusLine stdin JSON → 컨텍스트 **사용** % (분모 = 해소된 예산·ADR-0041).
+
+    used_tokens(current_usage input+cache 단일 소스) / budget. 물리 window%(native
+    used_percentage)는 폐기 — hook 과 같은 예산 분모로 표시=정지 일관. 신호 없으면 0
+    (세션초·/compact 직후 graceful). budget<=0(비정상)도 0.
+    """
+    if budget <= 0:
+        return 0
     cw = stdin.get("context_window")
     if not isinstance(cw, dict):
         return 0
-    for fn in (_native_used_pct, _manual_used_pct, _total_input_used_pct):
-        pct = fn(cw)
-        if pct is not None:
-            return pct
-    return 0
+    tokens = _statusline_used_tokens(cw)
+    if tokens <= 0:
+        return 0
+    return _clamp_pct(tokens / float(budget) * 100)
 
 
 # ── 훅: transcript JSONL → used % (omc sessionTotalTokens 선례 자체 구현) ──────
