@@ -7,6 +7,45 @@
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-07-07
+
+하네스별 ctx 예산 분리, 티켓 prefix 의 작업-카테고리 재정의와 관리 도구, 채택자 제보 결함 수정.
+
+### Added
+- **`board.py prefix` 관리 도구** — `list`(현황: prefix 별 개수·번호 범위) ·
+  `rename <A|none> <B|none>`(카테고리 개명·이름 씌우기/지우기) · `strip <A>`(=rename A none) ·
+  `merge <A> [B...] --into <T|none> [--reorder-chronological]`(created 순 통합·기본 append) ·
+  `delete <A>`(빈 prefix 등록 제거). 전 동사 `--dry-run` 규모 미리보기, 참조 rewrite 는
+  전 표기형(frontmatter·wikilink·본문·파일명) 토큰 단위 정확 치환, collision 시 중단,
+  board-git 백업 커밋, 티켓 물리 삭제 없음(무손실 relabel). 혼재 보드(legacy `T-NNNN` +
+  prefixed)를 시간순으로 합칠 수 있다.
+- ctx 예산 **하네스별 오버라이드 키** — `ctx_window_tokens_claude` / `ctx_window_tokens_opencode`.
+  한 repo 를 claude·opencode 로 동시 운용할 때 하네스별로 다른 예산을 준다. 미설정 시
+  generic `ctx_window_tokens` → 200000 순으로 해소된다.
+- `pm_log.py archive --keep-last N` — 날짜 대신 개수 기준으로 최근 N entry 만 남기고 봉인.
+- prefix 사용 가이드(`pm_role.md`) — 언제 prefix(배타 카테고리)/tag(겹침 속성)/none(기본)을
+  쓰는지, 남발 방지 수칙, 어댑터 마이그레이션 절차.
+
+### Changed
+- **티켓 prefix 의 의미를 재정의** — repo 네임스페이스 전용에서 **작업 카테고리**(M 무관·
+  자유 입력·티켓당 1개)로. `repo add` 의 repo 명 prefix 자동 시드를 폐지하고, 명시
+  `--prefix` 의 "등록값 강제"를 제거했다(형식 sanity `^[a-z0-9][a-z0-9_]*$` 와 예약어
+  `none` 거부만 유지).
+- **ctx 정지/넛지의 분모를 해소된 예산 하나로 통일** — claude statusLine(물리 window %
+  표시 폐기)·claude hook·opencode plugin(`modelLimit()` 물리한도 조회 폐기)이 전부 같은
+  예산을 쓴다. 표시와 정지가 같은 숫자로 움직인다. 큰 window 는 예산 키를 명시한다.
+- domain 스캔이 frontmatter 없는 `.md`(tmp·메모)를 개별 경고 없이 조용히 건너뛰고
+  디렉토리별 개수 요약 1줄만 남긴다(malformed 는 개별 경고 유지).
+
+### Fixed
+- 채택자 제보 결함 — `external_review.py`/`ticket_finish.py` 의 repo 루트 하드코딩
+  (`.project_manager` 마커 상향 탐색으로 교체·venv 부재 폴백 명문화) · `pm_handoff` step3
+  앵커 정확-일치 실패 시 핸드오프 전체가 죽던 것(정규화 부분일치 + fail-soft 로 완주) ·
+  prefixed 티켓 ID lint 정합(회귀-lock).
+- non-UTF-8 파일이 domain 스캔·참조 rewrite 를 크래시시키던 경로(graceful skip + 경고).
+- relabel(대량 ID 변경)의 동시성 — 스캔·충돌 검사·적용 전체를 board 락 안 fresh snapshot
+  으로 직렬화하고, 적용 직전 대상 경로 점유를 재검증해 덮어쓰기를 원천 차단.
+
 ## [1.0.4] - 2026-07-03
 
 세션 정체성 유도 전환과 사람-친화 문서 개편.
