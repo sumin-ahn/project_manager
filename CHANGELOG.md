@@ -7,6 +7,72 @@
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-07-10
+
+세션 정체성 인자의 canonical 통일, 멀티-PM 차수·워크스페이스의 슬롯별 격리,
+부트스트랩 커맨드 카드, 채택자 진입문서·어댑터 정합 수정.
+
+### Added
+- **`board.py reid <OLD-ID> <NEW-ID>`** — 오발행 티켓의 ID(번호·prefix 부여/변경/제거)를 무손실
+  재부여한다. 파일명·frontmatter 는 물론 전 참조(`depends_on`/`blocks`·본문 wikilink·slug
+  파일명·`wiki`/`log`)를 토큰 단위로 정확히 rewrite 한다. collision 시 중단, `--dry-run` 미리보기,
+  board-git 백업, 홈 git clean 요구, 다른 세션이 claim 중이면 중단, 멱등.
+- **부트스트랩 커맨드 카드** — 부트스트랩이 이 세션이 쓸 커맨드를 정체성 실값으로 채운 완성형
+  카드로 dump 한다(남는 자리는 사용자가 넣을 `T-NNNN`·`<PFX>` 같은 값뿐). 숨은 전제(claim 은
+  promote 선행 · prefix 조작은 홈 git clean · livegate record 는 케이스 수 pin · migrate-identity 는
+  단일 세션) 경고와 '정체성이 필요 없는 커맨드' 목록, '상황→소스' 포인터를 담아 `--help` 없이
+  바로 칠 수 있다.
+- **`pm_handoff --normalize-session-anchors [--dry-run]`** — `pm_state` 의 차수 앵커 오형식(`N차차`)을
+  `N차` 로 정규화하는 멱등·비파괴 유지보수 도구. 파서를 관대하게 만드는 대신 데이터를 원천에서
+  정규화한다.
+- **멀티-PM slot 대시보드** `wiki/log/dashboard.md` — 핸드오프가 자기 섹션(키=세션 정체성)만
+  overwrite 하고(3~5줄 상한·다른 섹션은 byte 불변·append 아님), 부트스트랩이 '다른 활성 PM' 섹션을
+  가볍게 dump 한다. 런타임 파생물이라 gitignore 되고 출하물에 포함되지 않는다. 솔로면 건너뛴다.
+- 릴리즈 라이브 게이트(`PM_ORCH_LIVE_RELEASE=1`)에 **커맨드 카드 기반 사용성 시나리오** 2건 추가 —
+  실 LLM 이 카드만 보고 첫 시도에 커맨드를 성공시키는지 두 하네스에서 확인한다(라이브 케이스 7→9).
+
+### Changed
+- **세션 정체성 인자를 canonical 하나로 통일** — 정체성을 받는 커맨드가 `--session <repo>_<N>`
+  (정체성) · `--session-seq N`(차수) 표기로 일원화됐다. `pm_handoff` 에 `--session`·`--session-seq` 를
+  신설했고, 솔로(미지정) 경로는 동작이 바뀌지 않는다. canonical 과 구형 alias 를 함께 주고 값이
+  다르면 명확히 실패한다.
+- **차수(PM N차)를 전역 카운터에서 슬롯별 시퀀스로 격리** — 핸드오프 로그 헤더에 정체성 태그
+  `PM N차 (<repo>_<N>)` 가 붙고(솔로는 태그 생략 = 기존 헤더와 byte 호환), 부트스트랩이 자기 슬롯
+  태그 entry 만 필터해 차수·인계 본문·`pm_state`·reattach 를 복원한다. 멀티-PM 두 슬롯이 같은
+  N차 를 주장하던 문제가 사라진다. 식별 불가 시 기존 전역 동작을 보존한다.
+- **멀티-PM 기본 규율을 '자기 공간 우선' 으로 확정** — 자기 티켓은 `board list --mine`, 상태는
+  per-slot `pm_state`, 인계는 자기 슬롯 태그 handoff entry 로 운영하고, 다른 PM 과는 대시보드로만
+  공유한다.
+- **`pm_role.md` 축약** — 커맨드 표기를 부트스트랩 카드에 위임하고, 필독 문서를 `CLAUDE.md` +
+  per-slot `pm_state` + `/pm-bootstrap` dump 셋으로 줄였다(`status`·`architecture` 는 '필요시 조회').
+  '찾아가는 법' 절을 신설했다.
+- opencode 라이브 모델 예시를 `ollama/glm-5.2:cloud` 로 교체 — `pm_import` 의 seed 주석과
+  `--opencode-model` 도움말 예시 문자열.
+
+### Deprecated
+- `pm_handoff --worktree-slot` → **`--session`**. 구형 플래그는 무기한 alias 로 계속 수용된다(기존
+  스크립트 무파손). canonical 과 값이 다르면 명확히 실패한다.
+- `pm_handoff --session-num` → **`--session-seq`**. 무기한 alias 로 수용, 불일치 시 실패. 차수 인자를
+  rename 한 것은 정체성 `--session` 과의 명명 충돌을 피하기 위함이다.
+
+### Fixed
+- `pm_bootstrap` 이 `/pm-bootstrap <repo> --slot N` 의 positional `<repo>` 를 수용한다 — 핸드오프가
+  찍어주던 커맨드와 raw CLI 의 불일치를 수리했다(`--repo` 와 alias·둘 다 주면 값 일치 필수·
+  무인자 자동바인딩은 그대로).
+- 진입문서와 어댑터 카드의 세션명 지시를 canonical `<repo>_<N>`(솔로는 `--session` 생략)로 정합 —
+  opencode 의 하드코딩 `--session pm` 과 claude 진입문서의 자유형 `--session session-B` 를 제거했다.
+  하드코딩 세션명은 repo 유도를 조용히 건너뛰게 만든다. 재유입은 테스트로 막는다.
+- board CLI `--help` 위생 — ticket 인자 metavar 를 `T-NNNN` 으로 표기하고, `new --prefix` 도움말을
+  작업 카테고리 재정의에 맞게 갱신했다. `list --session`(뷰 렌즈)이 쓰기 주체 `--session` 과 별개라는
+  주의문도 다시 썼다. 핸들러 동작은 바뀌지 않았다.
+- `pm-config init`/`update` 의 usage 줄이 내부 파일명(`board.py`·`pm_update.py`) 대신 실제 커맨드명
+  (`pm-config`)으로 표기된다 — 에이전트가 칠 커맨드를 오인하지 않게.
+- 채택자 진입문서·스킬 정합 — pm-regression 스킬이 존재하지 않는 커맨드(done→open 복구)를 안내하던
+  것을 정직하게 표기하고, pm-wave-claim 의 필수 섹션을 6→3(목표·완료 조건·참고)으로 정정했다.
+  ADOPT 하네스 기본값을 `claude` 로 명시하고, 하네스별 ctx 예산 키를 진입문서에 반영했다.
+- opencode 어댑터 정합 — researcher 출하 파일 말미의 스트레이 태그 2줄 제거, README 의 서브에이전트
+  개수 undercount 정정, 인스턴스 소유 루트 `.gitignore` 신설(claude 파리티).
+
 ## [1.0.5] - 2026-07-07
 
 하네스별 ctx 예산 분리, 티켓 prefix 의 작업-카테고리 재정의와 관리 도구, 채택자 제보 결함 수정.
