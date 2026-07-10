@@ -15,12 +15,12 @@
    - [`.project_manager/wiki/status.md`](.project_manager/wiki/status.md) — 어디까지 됐나? (모듈 진행상태·비고)
    - [`.project_manager/wiki/domain/`](.project_manager/wiki/domain/) — architecture 의 *세부* 지식 (concept · `covers:` 코드 링크 · freshness · ADR-0018)
    결정 *근거(왜·히스토리)*는 [`.project_manager/wiki/decisions/`](.project_manager/wiki/decisions/) — ADR 은 현재 구속력 없음(현재-기준 = architecture.md · ADR-0022).
-2. **세션 이름 정하기 (옵션, 권장)** — 사용자가 식별할 수 있게 본인 이름을 정한다. 전달은 아래 3단계 `claim` 의 `--session` 인자로 한다 — 환경 무관하게 동작하며 VSCode extension 등 `export` 가 불가능한 환경에서도 OK. (CLI 환경이면 `export PM_SESSION_NAME=session-B` 도 가능. 둘 다 없으면 `<hostname>-<pid>` 자동 할당.) board.py 세션 식별 우선순위: `--session` 인자 > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` = deprecated alias·여전히 인식) > `local.conf session=` > `hostname-pid`.
+2. **세션 이름 정하기** — **PM 세션명 canonical = `<repo>_<N>`** (multi-PM 정체성 — `<repo>`=프로젝트 repo·`<N>`=PM 슬롯 번호·ADR-0043). 전달은 아래 3단계 `claim` 의 `--session` 인자로 이 표기로 한다 — 환경 무관하게 동작하며 VSCode extension 등 `export` 가 불가능한 환경에서도 OK. canonical 표기라야 board 가 repo prefix 를 유도한다 (`session-B` 같은 자유형은 M>1 에서 prefix 유도가 조용히 죽음). **솔로(M=1)** 는 `--session` 을 생략해도 된다 — 아래 식별 우선순위 체인이 해소한다. (CLI 환경이면 `export PM_SESSION_NAME=<repo>_<N>` 도 가능.) board.py 세션 식별 우선순위: `--session` 인자 > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` = deprecated alias·여전히 인식) > `local.conf session=` > `hostname-pid`.
 3. **Ticket 잡기** — 외부 의존이 없고, 다른 세션이 이미 claim 하지 않은 것을 고른다:
    ```bash
    {{PY}} .project_manager/tools/board.py list --status open
    {{PY}} .project_manager/tools/board.py show T-NNNN
-   {{PY}} .project_manager/tools/board.py claim T-NNNN --session session-B
+   {{PY}} .project_manager/tools/board.py claim T-NNNN --session <repo>_<N>   # 예: --session myproj_1 · 솔로(M=1)면 생략 가능
    ```
    ticket 본문에 **목표 / 인터페이스 / 완료 조건 / 참고 링크** 가 들어 있다. 그것만 보고 작업이 가능해야 한다 — 부족하면 본문 자체를 보강하라.
 
@@ -93,7 +93,7 @@
 # 보드 조작
 {{PY}} .project_manager/tools/board.py list
 {{PY}} .project_manager/tools/board.py show T-NNNN
-{{PY}} .project_manager/tools/board.py claim T-NNNN --session <name>
+{{PY}} .project_manager/tools/board.py claim T-NNNN --session <repo>_<N>   # 솔로(M=1)면 생략 가능 (§세션 이름)
 {{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass
 {{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint     # 의존성·thin-ticket 일관성 검사

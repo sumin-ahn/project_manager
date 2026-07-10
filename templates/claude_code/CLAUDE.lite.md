@@ -18,7 +18,7 @@
 4. **상태** — [`.project_manager/wiki/status.md`](.project_manager/wiki/status.md) (모듈 진행상태·비고 · judgment-only) + pm_state (세션 window·남은 작업 · 솔로는 `wiki/pm_state.md` · 멀티-PM 은 per-slot `.local/slots/<slot>/` · T-0166).
 5. **직전 핸드오프** — `{{PY}} .project_manager/tools/pm_log.py tail` (마지막 entry 만).
 
-> 세션명: `claim` 의 `--session <name>` 인자로 전달(우선순위 `--session` > `$PM_SESSION_NAME`[구 `$CLAUDE_SESSION_NAME` alias] > `local.conf session=` > `hostname-pid`).
+> 세션명 canonical = `<repo>_<N>`(multi-PM 정체성·ADR-0043) — `claim` 의 `--session <repo>_<N>` 인자로 전달(솔로 M=1 은 생략 가능·우선순위 `--session` > `$PM_SESSION_NAME`[구 `$CLAUDE_SESSION_NAME` alias] > `local.conf session=` > `hostname-pid`). 자유형은 M>1 에서 prefix 유도가 죽는다.
 > 첫 turn 권장 보고: board 1줄 + 직전 세션 요약 3~5줄 + 다음 옵션 + 결정 요청(*무엇부터?*).
 
 ## 2. 작업 원칙 (반드시)
