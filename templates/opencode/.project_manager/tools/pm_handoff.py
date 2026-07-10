@@ -551,6 +551,20 @@ def _worktree_line(worktree_slot: str | None, branch: str | None) -> str:
     return f"- worktree: slot=`{worktree_slot}` · branch=`{branch_part}` (회전 재부착 단서·ADR-0013)\n"
 
 
+def _session_tag(session: str | None) -> str:
+    """handoff 헤더의 세션 정체성 태그 조각을 빌드한다 — ` ({session})` (ADR-0044).
+
+    멀티-PM 모드에서 세션 정체성(canonical `<repo>_<N>`)이 해소되면 헤더 차수 뒤에 `({session})`
+    태그를 붙인다 — per-slot 시퀀스의 감사 단서다(이벤트 메타데이터·상태 저장 아님·ADR-0040
+    무충돌). 솔로(미해소·None/빈문자)면 빈 문자열을 반환해 태그를 생략한다 — 현행 헤더와
+    byte-호환·하위호환. 선행 공백까지 포함해 반환하므로 템플릿은 `PM {session_num}차{session_tag}`
+    로 이어 붙인다(태그 없을 땐 `PM {N}차 →` 로 정확히 현행 스키마 보존).
+    """
+    if not session:
+        return ""
+    return f" ({session})"
+
+
 def _normalize_session_num(session_num: int | str) -> str:
     """세션 차수를 bare 숫자 문자열로 정규화한다 — `19`·`'19'`·`'19차'`·`'19차차'` 모두 `'19'`.
 
@@ -562,7 +576,7 @@ def _normalize_session_num(session_num: int | str) -> str:
 
 
 HANDOFF_LOG_SKELETON_TEMPLATE = """\
-## [{date}] handoff | PM {session_num}차 → 다음 PM 세션
+## [{date}] handoff | PM {session_num}차{session_tag} → 다음 PM 세션
 
 - 읽기 범위: <PM 손 — 이 entry + 인용할 과거 entry/ADR. 라인수·전체Read 아님. board/git/log 는 /pm-bootstrap 라이브 — 적지 마라.>
 - 메타 학습: <PM 손 — ticket 상태에서 도출 불가한 교훈만. 없으면 "없음".>
@@ -577,18 +591,23 @@ def build_handoff_log_skeleton(
     thread_tail: str | None = None,
     worktree_slot: str | None = None,
     branch: str | None = None,
+    session: str | None = None,
 ) -> str:
     """log/current.md 에 append 할 handoff entry skeleton 을 반환한다.
 
     thread_tail 주입 시 "다음 intent" 의 대화 thread-tail 슬롯을 자동 채운다.
     worktree_slot 주입 시(multi-PM 모드) slot/branch 기록 줄을 추가한다 — 회전 재부착
     연속성 단서(ADR-0013). 미지정(솔로)이면 줄 생략(현행 스키마 보존).
+    session 주입 시(multi-PM 정체성 해소·canonical `<repo>_<N>`) 헤더 차수 뒤에 `({session})`
+    정체성 태그를 박는다 — per-slot 시퀀스의 감사 단서(ADR-0044·이벤트 메타·상태 저장 아님).
+    미지정(솔로)이면 태그를 생략해 현행 헤더와 byte-호환이다.
     """
     if date is None:
         date = datetime.date.today().isoformat()
     return HANDOFF_LOG_SKELETON_TEMPLATE.format(
         date=date,
         session_num=_normalize_session_num(session_num),
+        session_tag=_session_tag(session),
         next_intent=_next_intent_lines(thread_tail),
         worktree_line=_worktree_line(worktree_slot, branch),
     )
@@ -1357,11 +1376,17 @@ class PmHandoff:
 
         # ── 2. log/current.md handoff entry skeleton append ────────────────────────────
         print("\n[2/7] log/current.md handoff entry skeleton append...")
+        # 세션 정체성 태그(ADR-0044) — 해소된 슬롯(`work/<repo>_<N>`)에서 canonical `<repo>_<N>`
+        # 를 유도해 헤더에 박는다(감사 메타·상태 저장 아님·ADR-0040 무충돌·태그 값에 `work/`
+        # 프리픽스 없음). 솔로(미해소)면 None → 태그 생략·현행 헤더 byte-호환.
+        _parsed_slot = _parse_worktree_slot(worktree_slot)
+        session_identity = f"{_parsed_slot[0]}_{_parsed_slot[1]}" if _parsed_slot else None
         skeleton = build_handoff_log_skeleton(
             session_num=_normalize_session_num(session_num),
             date=date_str,
             worktree_slot=worktree_slot,
             branch=branch,
+            session=session_identity,
         )
 
         if dry_run:

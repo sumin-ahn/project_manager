@@ -853,3 +853,105 @@ def test_reconcile_helpers_mismatch_raise(hf):
         hf._reconcile_session_seq("42", "43", parser)
     with pytest.raises(SystemExit):
         hf._reconcile_session_slot("project_manager_1", "work/finance_2", parser)
+
+
+# ── ADR-0044 handoff 헤더 세션 정체성 태그 (T-0252) ──────────────────────────────
+#
+# 멀티(정체성 해소) 헤더에 `PM {N}차 ({session}) →` 태그를 박고, 솔로(미해소)는 태그를 생략해
+# 현행 헤더와 byte-호환을 유지한다. 태그 값은 canonical `<repo>_<N>`(`work/` 프리픽스 아님).
+# 태그는 이벤트 감사 메타데이터일 뿐 상태 저장이 아니다(ADR-0040 무충돌).
+
+
+def test_session_tag_helper_present_and_absent(hf):
+    # 정체성 있으면 선행 공백 포함 ` ({session})`·없으면(None/빈문자/공백) 빈 문자열.
+    assert hf._session_tag("project_manager_1") == " (project_manager_1)"
+    assert hf._session_tag(None) == ""
+    assert hf._session_tag("") == ""
+
+
+def test_handoff_skeleton_solo_omits_session_tag_byte_compat(hf):
+    # 솔로(session 미지정) — 헤더는 현행 스키마와 정확히 byte-호환(태그·괄호 없음).
+    head = hf.build_handoff_log_skeleton(7, date="2026-07-10").splitlines()[0]
+    assert head == "## [2026-07-10] handoff | PM 7차 → 다음 PM 세션"
+    assert "(" not in head
+
+
+def test_handoff_skeleton_multi_inserts_session_tag(hf):
+    # 멀티(session 해소) — 차수 뒤에 정체성 태그 삽입, canonical `<repo>_<N>`(work/ 프리픽스 없음).
+    head = hf.build_handoff_log_skeleton(
+        7, date="2026-07-10", session="project_manager_1"
+    ).splitlines()[0]
+    assert head == "## [2026-07-10] handoff | PM 7차 (project_manager_1) → 다음 PM 세션"
+    assert "work/" not in head
+
+
+def test_run_writes_session_tag_from_worktree_slot(hf, tmp_path, capsys):
+    """run() 이 해소된 슬롯(`work/<repo>_<N>`)에서 canonical `<repo>_<N>` 를 유도해 헤더 태그에
+    박는다 (write 경로 배선·ADR-0044). 태그 값엔 `work/` 프리픽스가 없다.
+    """
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    log_file = tmp_path / "current.md"
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+    )
+    rc = handoff.run(
+        session_num=7,
+        wave_summary="요약",
+        dry_run=True,
+        skip_pytest=False,
+        worktree_slot="work/repoA_2",
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # 헤더 skeleton 에 canonical 정체성 태그(work/ 프리픽스 제거)가 박혔다.
+    assert "PM 7차 (repoA_2) → 다음 PM 세션" in out
+    # 태그 자리엔 슬롯 원형(`work/repoA_2`)이 아니라 canonical `<repo>_<N>` 만.
+    assert "(work/repoA_2)" not in out
+
+
+def test_run_solo_omits_session_tag_byte_compat(hf, tmp_path, capsys):
+    """솔로(worktree_slot 미지정·명시 pm_state 로 자동해소 skip) — 헤더 태그 생략·byte-호환."""
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    log_file = tmp_path / "current.md"
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+    )
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=True, skip_pytest=False
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "PM 7차 → 다음 PM 세션" in out  # 태그·괄호 없는 현행 헤더.
+
+
+def test_session_done_canonical_reaches_release(hf, captured_run):
+    """codex 게이트(2026-07-10 wave A) — canonical `--session <repo>_<N> --done` 이 release 대상
+    (worktree_slot=`work/<repo>_<N>`·done=True)으로 run 에 도달한다. alias(`--worktree-slot`)로만
+    release 되던 경로가 canonical `--session` 으로도 확실히 이어지는지 직접 못박아 전환 회귀 차단.
+    """
+    assert hf.main(
+        ["--session", "project_manager_1", "--done", "--session-seq", "7",
+         "--wave-summary", "x", "--no-pytest"]
+    ) == 0
+    assert captured_run["worktree_slot"] == "work/project_manager_1"
+    assert captured_run["done"] is True

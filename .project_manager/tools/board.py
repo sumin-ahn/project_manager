@@ -638,6 +638,18 @@ _TICKET_PREFIX_RE = re.compile(
 # prefixed | legacy 둘 다 매칭하는 ID 본체 (anchor 없음 — 호출측이 ^…$·\b 등으로 감싼다).
 # 파일명/wikilink 파서가 공유한다(자체 `[A-Za-z]+` regex 두지 말 것 — `P0`/`service-a` 누락).
 _TICKET_ID_BODY = rf"T-(?:{_TICKET_PREFIX_BODY}-\d+|\d+)"
+# 명시 NEW-ID(`reid`·T-0259) 형식 sanity 용 full-match 앵커 — 발행 문법(`_TICKET_ID_BODY`)을 그대로
+# 감싸 `T-NNNN`·`T-<pfx>-NNN` 둘 다 받고 그 외(빈 문자열·`foo`·`T-`·`X-1`)는 거른다. prefix 마디는
+# 소비측 grammar(`_TICKET_PREFIX_BODY`·대문자/하이픈 legacy 포함)라 **자유 입력**이다 — 기존
+# 네임스페이스로의 relabel 을 위해 좁은 `_validate_prefix`(소문자 카테고리)를 적용하지 않는다(ADR-0042).
+# 앵커는 `\A…\Z`(codex T-0259 R3) — `$` 는 Python 에서 trailing newline 앞에서도 매치해 `T-0250\n`
+# 같은 개행-포함 ID 를 통과시킨다(파일명/frontmatter/참조에 깨진 ID 기록 위험). `\Z` 는 문자열 끝에서만.
+_FULL_TICKET_ID_RE = re.compile(rf"\A{_TICKET_ID_BODY}\Z")
+
+
+def _is_valid_ticket_id(tid: str) -> bool:
+    """`tid` 가 발행 규약 ID 문법(`T-NNNN`·`T-<pfx>-NNN`)에 완전 일치하는지 (reid NEW-ID sanity)."""
+    return bool(_FULL_TICKET_ID_RE.match(tid))
 
 
 def _ticket_prefix(tid: str) -> str | None:
@@ -3409,11 +3421,38 @@ def _is_rewritable(path: Path) -> bool:
     return True
 
 
+def _canonical_ticket_id(path: Path, fm: dict[str, Any] | None = None) -> str | None:
+    """티켓의 canonical ID — frontmatter `id:` 1차 진실·파일명 파싱은 폴백 (숫자-slug 모호성 해소).
+
+    파일명 파서(`_ticket_id_from_filename`)는 legacy `T-NNNN` + **숫자로 끝나는 slug**
+    (`T-0036-fix-123.md`)를 prefixed ID `T-0036-fix-123` 으로 오인한다(하이픈-마디 grammar 모호성·
+    codex T-0259 R2 MF-2). `dump_ticket`/`_next_id` 이 발행 시 확정해 쓰는 frontmatter `id:` 가
+    권위 진실이므로 이를 우선하고, 부재/읽기 실패(비-UTF-8·frontmatter 깨짐) 시에만 파일명 파싱으로
+    폴백한다(fail-soft). `_scan_prefix_tickets` 의 `fm.get("id") or …` 와 동형 semantics — 스캔측과
+    rename-planning 측이 같은 canonical 해소를 쓰게 해 파일명↔content 불일치를 원천 차단한다.
+
+    `fm` 이 주어지면(호출부가 이미 로드) 재-read 를 피한다. 미지정이면 여기서 fail-soft 로 로드한다.
+    """
+    if fm is None:
+        try:
+            fm, _ = load_ticket(path)
+        except Exception:  # noqa: BLE001 — 읽기/파싱 실패는 파일명 폴백(fail-soft·비-UTF-8 등).
+            fm = {}
+    fid = fm.get("id")
+    if isinstance(fid, str) and fid:
+        return fid
+    return _ticket_id_from_filename(path.name)
+
+
 def _plan_file_renames(id_map: dict[str, str]) -> list[tuple[Path, Path]]:
     """slug 파일명 rename 계획 — `T-old-slug.md` → `T-new-slug.md` (상태 디렉토리 보존).
 
-    파일명은 canonical ID(`_ticket_id_from_filename`)로 시작하므로 그 prefix 구간만 new ID 로
-    바꾸고 나머지(`-slug.md`)는 보존한다(slug 안에 old ID 가 또 있어도 오치환 없음).
+    canonical ID 는 **frontmatter `id:` 1차 진실**(`_canonical_ticket_id`)로 잡고, 파일명은 그 ID 로
+    시작하므로 prefix 구간만 new ID 로 바꾸고 나머지(`-slug.md`)는 보존한다(slug 안에 old ID 가 또
+    있어도 오치환 없음). 파일명-only 파싱은 숫자로 끝나는 legacy slug(`T-0036-fix-123.md`)를
+    prefixed ID 로 오인해 rename 을 누락시키므로(codex R2 MF-2), 스캔측(`_scan_prefix_tickets`)과
+    같은 fm-우선 해소로 통일한다. canonical 이 파일명 접두가 아니면(코너/corrupt) slug 슬라이스가
+    어긋나므로 파일명 파싱값으로 폴백해 접두 일치를 보장한다(비손실·기존 동작 보존).
 
     **본문 rewrite 가 스킵될 티켓 파일(비-UTF-8·읽기 실패)은 rename 도 제외**한다(suggestion 채택·
     T-0239 rework): `rewrite_refs` 가 그 파일의 content id 를 못 바꿔 남겨두는데 파일명만 new ID
@@ -3423,7 +3462,9 @@ def _plan_file_renames(id_map: dict[str, str]) -> list[tuple[Path, Path]]:
     renames: list[tuple[Path, Path]] = []
     for status in (*STATUS_DIRS, ".drafts"):   # .drafts 포함 — _scan_prefix_tickets 와 lockstep(codex R2).
         for p in (tickets_dir() / status).glob("T-*.md"):
-            tid = _ticket_id_from_filename(p.name)
+            tid = _canonical_ticket_id(p)       # frontmatter id 1차 진실 (숫자-slug 모호성 해소·MF-2).
+            if not (tid and p.name.startswith(tid)):
+                tid = _ticket_id_from_filename(p.name)   # 접두 불일치(corrupt) → 파일명 폴백.
             if not (tid and tid in id_map):
                 continue
             if not _is_rewritable(p):
@@ -3473,8 +3514,11 @@ def _home_git_status_porcelain() -> str | None:
 
 
 def _prefix_relabel(build_map, *, verb: str, label: str,
-                    dry_run: bool) -> int:
-    """검증된 old→new 맵을 적용하는 공통 파이프라인 (rename/merge 공용·ADR-0042 §3.3).
+                    dry_run: bool, noun: str = "prefix") -> int:
+    """검증된 old→new 맵을 적용하는 공통 파이프라인 (rename/merge/reid 공용·ADR-0042 §3.3).
+
+    `noun` = 출력·commit 메시지의 op 접두어(카테고리 동사는 "prefix", 단건 재부여는 "reid" —
+    `op = f"{noun} {verb}".strip()`·verb 빈 문자열이면 noun 만). 기본값은 prefix 동사 하위호환.
 
     dry-run: 규모 preview("N ID·M refs·K 파일")만·쓰기 0(read-only 라 락 불요). 적용: 홈 git
     clean 가드 → **단일 `board_lock()` 구간에서** 본문 토큰 rewrite(`rewrite_refs`) + slug 파일명
@@ -3497,6 +3541,7 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
     dry-run 은 read-only preview 라 락 없이 빌드한다(정확성보다 규모 감이 목적).
     """
     root = REPO / ".project_manager"
+    op = f"{noun} {verb}".strip()   # "prefix rename" / "prefix merge" / "reid" (verb 빈 문자열이면 noun만)
 
     def _scale_line(n_ids: int, scale: dict[str, int], n_renames: int) -> str:
         return (f"{n_ids} ID 변경 · {scale['refs']} refs · "
@@ -3508,7 +3553,7 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
         if not id_map:
             return rc
         scale = rewrite_refs(root, id_map, dry_run=True)
-        print(f"[dry-run] prefix {verb} {label} — "
+        print(f"[dry-run] {op} {label} — "
               f"{_scale_line(len(id_map), scale, len(_plan_file_renames(id_map)))}")
         print("[dry-run] 쓰기 0 — 적용하려면 --dry-run 없이 재실행.")
         return 0
@@ -3547,7 +3592,7 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
         _apply_file_renames(renames)
         _refresh_board_locked()
         if _board_git_enabled():
-            _board_git_stage_and_commit(f"prefix {verb} {label}")
+            _board_git_stage_and_commit(f"{op} {label}")
 
     if _board_git_enabled():
         if backup_rev:
@@ -3556,7 +3601,7 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
     else:
         print("  legacy(board-git 미분리) — board 변경은 홈 git 에 함께 있다. "
               "되돌리려면 홈 git 으로 revert.")
-    print(f"prefix {verb} {label} — {_scale_line(len(id_map), scale, len(renames))} 적용 완료.")
+    print(f"{op} {label} — {_scale_line(len(id_map), scale, len(renames))} 적용 완료.")
     return 0
 
 
@@ -3723,6 +3768,92 @@ def cmd_prefix_delete(args: argparse.Namespace) -> int:
     cleared = _areas_clear_prefix_cell(target)
     print(f"prefix {args.prefix} — 0 티켓·areas 등록 셀 {cleared}행 비움(행·repo 등록 보존·무손실).")
     return 0
+
+
+# ── reid — 단일 티켓 ID 재부여 (ADR-0042 관리도구 per-ticket 확장·T-0259) ──────────
+# 카테고리 일괄(`prefix` 네임스페이스)과 달리 **티켓 1장**의 오발행 ID(번호·prefix)를 고친다.
+# T-0239 prefix rename/merge 와 *같은 파이프라인*(`_prefix_relabel`)을 재사용한다 — old→new 맵을
+# `{OLD: NEW}` 단일 항으로 세워 T-0238 토큰단위 rewriter·slug 파일명 rename·홈 git clean 가드·단일
+# board_lock·board-git 백업·dry-run 규모 preview 를 그대로 상속한다(새 rewrite 엔진 없음).
+
+def cmd_reid(args: argparse.Namespace) -> int:
+    """`reid <OLD-ID> <NEW-ID> [--dry-run]` — 단일 티켓 ID 를 무손실 재부여한다 (ADR-0042·T-0259).
+
+    잘못 발행된 티켓 1장의 ID(`T-0036`→`T-0250`·`T-0036`→`T-finance-036`·역방향)를 파일명·
+    frontmatter·**전 참조**(board 내 depends_on/blocks·타 티켓 본문·wiki/log wikilink)까지 한 번에
+    고친다. 카테고리 일괄이 아니라 단건이므로 top-level 서브커맨드다(`prefix` 네임스페이스는 카테고리
+    전용 유지).
+
+    가드(값싼 정적 → 상태 의존 순): NEW-ID 형식 sanity(발행 문법·prefix 자유 입력) → src≠dst → (락
+    안 fresh snapshot) OLD 실재 → 타 세션 claim abort(단일세션 op) → NEW collision(전 상태
+    디렉토리+.drafts 에 이미 존재하면 abort). 번호 자동발급 카운터는 `_next_id` 가 max 기반이라 어느
+    번호로 옮겨도 무충돌이다 — 다음 발급이 최대치를 자연히 이으므로 별도 조정 없이 확인만 한다(결정).
+    """
+    old_id, new_id = args.old_id, args.new_id
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    # 정적 sanity(락·재조회 불요) — 값싼 거부 먼저. OLD/NEW 형식·자기 자신.
+    # OLD-ID 도 형식 선검증(codex T-0259 must-fix): find_ticket 은 glob 기반이라 메타문자(`*`·`?`·`[]`)
+    # 든 OLD 가 임의 티켓에 매치된 뒤 rewrite 는 리터럴 키라 no-op 인데 성공처럼 끝날 수 있다.
+    if not _is_valid_ticket_id(old_id):
+        print(f"[중단] OLD-ID {old_id!r} 형식 위반 — `T-NNNN`(무prefix) 또는 `T-<prefix>-NNN`"
+              "(발행 문법) 이어야 한다.", file=sys.stderr)
+        return 1
+    if not _is_valid_ticket_id(new_id):
+        print(f"[중단] NEW-ID {new_id!r} 형식 위반 — `T-NNNN`(무prefix) 또는 `T-<prefix>-NNN`"
+              "(발행 문법·prefix 자유 입력) 이어야 한다.", file=sys.stderr)
+        return 1
+    if old_id == new_id:
+        print(f"[중단] OLD 와 NEW 가 같다({old_id}) — 변경 없음.", file=sys.stderr)
+        return 1
+
+    def build_map() -> "tuple[dict[str, str] | None, int]":
+        # 상태 의존 검사는 (적용 경로에선) `_prefix_relabel` 이 잡은 board_lock 안 fresh snapshot 에서
+        # 수행한다 — 검사↔적용 사이 cmd_new/claim 창을 봉합한다(prefix rename build_map 동형·codex R3).
+        # OLD 티켓을 canonical ID 로 정확 선택한다. `find_ticket` 은 `{old_id}-*.md` glob 의 *첫*
+        # 매치만 반환해 두 결함이 있었다: (R2 MF-1) legacy `T-0036` 부재 시 숫자-prefix `T-0036-001-*.md`
+        # 가 glob 에 걸려 silent-noop / (R4) `T-0036-slug.md` 와 `T-0036-001-slug.md` 공존 시 디렉토리
+        # 순서에 따라 후자가 먼저 잡혀 canonical mismatch 로 실재하는 OLD 를 놓침(false-negative).
+        # `_scan_prefix_tickets`(fm.get("id") or 파일명 폴백·전 상태 디렉토리+.drafts)로 전수 스캔해
+        # canonical ID 가 정확히 old_id 인 레코드만 고른다.
+        matches = [t for t in _scan_prefix_tickets() if t["id"] == old_id]
+        if not matches:
+            print(f"[중단] OLD 티켓 {old_id} 을 찾을 수 없다 — 재부여할 대상이 없다.",
+                  file=sys.stderr)
+            return None, 2
+        if len(matches) > 1:
+            # 같은 canonical ID 가 둘 이상 = 이미 오염된 보드 — 임의 선택은 그 자체로 silent-wrong-target.
+            dup = ", ".join(t["path"].name for t in matches[:5])
+            print(f"[중단] OLD 티켓 {old_id} 가 여러 파일에 존재한다({dup}) — 먼저 중복을 해소하라.",
+                  file=sys.stderr)
+            return None, 1
+        path = matches[0]["path"]
+        fm, _ = load_ticket(path)
+        # 타 세션 claim 가드 — 단일세션 op(migrate-identity·prefix rename 동류·spike §6). claim 중인
+        # 티켓은 그 소유 세션만 reid 할 수 있다(다른 세션이 작업 중인 ID 를 바꿔 참조를 흔들지 않게).
+        # claim/complete/block 이 board_lock-free 라 미세 TOCTOU 는 하드 보장하지 않는다(정직한 한계).
+        claimed_by = fm.get("claimed_by")
+        if claimed_by:
+            claimed_slot = str(claimed_by).rsplit("/", 1)[-1]   # `<user>/<slot>` → slot (또는 slot-only)
+            current = session_name(getattr(args, "session", None))
+            if current is None or claimed_slot != current:
+                print(f"[중단] {old_id} 은 `{claimed_by}` 가 claim 중 — reid 는 단일세션 op 다. 소유 "
+                      f"세션에서 `--session {claimed_slot}` 로 재실행하거나 먼저 unclaim 하라.",
+                      file=sys.stderr)
+                return None, 1
+        # NEW collision — `_detect_collisions` 재사용(zero-pad 폭 정규화 포함). {OLD:NEW} 를 전 티켓
+        # ID 집합에 적용해 두 티켓이 같은 논리 ID(전 상태 디렉토리+.drafts)로 떨어지면 잡는다.
+        id_map = {old_id: new_id}
+        collisions = _detect_collisions(id_map, {t["id"] for t in _scan_prefix_tickets()})
+        if collisions:
+            sample = ", ".join(collisions[:5])
+            print(f"[중단] NEW-ID {new_id} collision — 이미 존재하는 티켓과 번호가 겹친다({sample}). "
+                  "미사용 ID 로 재부여하라(`board.py prefix list` 로 현황 확인).", file=sys.stderr)
+            return None, 1
+        return id_map, 0
+
+    return _prefix_relabel(build_map, verb="", label=f"{old_id} → {new_id}",
+                           dry_run=dry_run, noun="reid")
 
 
 def cmd_show(args: argparse.Namespace) -> int:
@@ -5500,6 +5631,18 @@ def build_parser() -> argparse.ArgumentParser:
     ip = idea_sub.add_parser("kill", help="mv idea open → killed")
     ip.add_argument("id")
     ip.set_defaults(fn=cmd_idea_kill)
+
+    # reid — 단일 티켓 ID 재부여 (ADR-0042 관리도구 per-ticket 확장·T-0259). 번호·prefix 변경 무손실
+    # relabel + 전 참조 rewrite. prefix rename/merge 와 같은 파이프라인(`_prefix_relabel`) 재사용.
+    p = sub.add_parser(
+        "reid",
+        help="단일 티켓 ID 재부여 <OLD-ID> <NEW-ID> — 번호·prefix 변경 무손실 relabel + 전 참조 rewrite")
+    p.add_argument("old_id", metavar="OLD-ID", help="재부여할 기존 티켓 ID (예: T-0036)")
+    p.add_argument("new_id", metavar="NEW-ID",
+                   help="새 티켓 ID — T-NNNN 또는 T-<prefix>-NNN (발행 문법·prefix 자유 입력)")
+    p.add_argument("--session", help="세션명 <repo>_<N> (claim 중 티켓의 소유 세션 확인용)")
+    p.add_argument("--dry-run", action="store_true", help="규모 preview(N ID·M refs·K 파일)·쓰기 0")
+    p.set_defaults(fn=cmd_reid)
 
     # prefix subcommand group — 작업 카테고리 prefix 관리 (ADR-0042). list=현황(read-only) +
     # rename/strip/merge/delete=개명·통합 (T-0239·`none`=무prefix 1급·collision abort·board-git 백업).

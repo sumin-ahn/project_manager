@@ -728,40 +728,133 @@ def infer_session_num(pm_state_text: str) -> int | str | None:
 # per-slot 리셋으로 오표기된다(라이브 실증). log/current.md 는 git 추적(freshness=[[T-0217]] 가
 # 최신 담보)이라 handoff entry 제목 `PM N차` 가 차수의 상보 진실이다. handoff entry 로 한정
 # 한다 — complete/fix/note 제목은 `PM N차` 부재/불규칙이라 오파싱을 막는다.
-# 형식: `## [YYYY-MM-DD] handoff | PM N차 → 다음 PM 세션`(또는 `… PM N차 인계 — …`).
+# 형식: `## [YYYY-MM-DD] handoff | PM N차 (<repo>_<M>) → 다음 PM 세션`(솔로는 태그 생략 —
+# `… PM N차 → …`·`… PM N차 인계 — …`). optional `(?P<session>...)` = 세션 정체성 태그
+# (ADR-0044·pm_handoff `_session_tag`) — 슬롯 필터(자기 슬롯 태그 entry 만)의 캡처 그룹.
+# 캡처는 **canonical `<repo>_<N>` 만**(`[A-Za-z0-9][A-Za-z0-9_-]*_\d+`·pm_config `_REPO_NAME_RE`+`_N`)
+# 으로 제약한다(should-fix) — 서술형 괄호(`PM 4차 (아침 대화)`)를 세션 태그로 오인해 솔로에서
+# entry 를 drop 하지 않게. 비-canonical 괄호는 `.*` 로 흡수돼 session=None(무태그 폴백).
 _LOG_HANDOFF_HEADER_RE = re.compile(
-    r"^(?P<line>## \[\d{4}-\d{2}-\d{2}\]\s+handoff\s*\|\s*PM\s+(?P<num>\d+)차.*)$",
+    r"^(?P<line>## \[\d{4}-\d{2}-\d{2}\]\s+handoff\s*\|\s*PM\s+(?P<num>\d+)차"
+    r"(?:\s*\((?P<session>[A-Za-z0-9][A-Za-z0-9_-]*_\d+)\))?.*)$",
     re.MULTILINE,
 )
 
 
-def parse_last_handoff_session_num(log_text: str | None) -> int | None:
-    """log/current.md 마지막 handoff entry 제목의 `PM N차` 에서 N 을 반환한다 (T-0208).
+def _session_owns_untagged(bound_session: str | None) -> bool:
+    """무태그 handoff entry 가 이 세션 소유인지 판정한다 — 솔로(None)/slot-1 만 True (ADR-0044).
+
+    무태그 entry = 태그 도입(ADR-0044) 이전 로그 또는 솔로 핸드오프 → 솔로/slot-1 귀속
+    (연속성 보존·제로 마이그레이션). **slot-2+ 는 무태그를 무시**하고 자기 태그 entry 만 센다
+    (핵심 회귀 가드·codex 제언). bound_session 이 None(솔로)이거나 canonical `<repo>_1`(slot-1)이면
+    True, 그 외(slot-2+·비정형 non-None)면 False.
+    """
+    if bound_session is None:
+        return True
+    m = re.search(r"_(\d+)$", bound_session)
+    return m is not None and int(m.group(1)) == 1
+
+
+def _handoff_entry_owned(match: re.Match, bound_session: str | None,
+                         owns_untagged: bool) -> bool:
+    """handoff 헤더 match 가 bound_session 슬롯 소유인지 판정한다 (ADR-0044·슬롯 필터 공용).
+
+    태그 있는 entry → 태그 == bound_session 일 때만 소유(타 슬롯 entry 유입 차단). 태그 없는
+    entry → 솔로/slot-1(`owns_untagged`)만 소유. 차수 유도(`parse_last_handoff_session_num`)와
+    본문 dump(`extract_slot_handoff_entry`)가 같은 규칙을 공유하게 한 단일 sink.
+    """
+    tag = match.group("session")
+    tag = tag.strip() if tag else None
+    if tag:
+        return bound_session is not None and tag == bound_session
+    return owns_untagged
+
+
+def parse_last_handoff_session_num(
+    log_text: str | None, *, bound_session: str | None = None
+) -> int | None:
+    """log/current.md 에서 **자기 슬롯** handoff entry 제목의 최고 `PM N차` N 을 반환한다 (T-0253·ADR-0044).
 
     handoff type entry 로 한정(complete/fix/note 는 제목 `PM N차` 부재/불규칙 — 오파싱 차단).
-    여러 handoff 가 있으면 *마지막*(chronological 최신·append-only 로그라 최고차)을 취한다.
-    handoff entry 부재·log 부재/파싱 실패 → None(폴백 층 없음·현행 유지·fail-soft).
+    `bound_session`(`<repo>_<N>`)이 **양성 해소**되면 자기 슬롯 태그 entry 만 필터해 그 중 최고차
+    (append-only 로그라 max=최신)를 취한다 — 전역 max 가 아니다("두 슬롯 같은 N차" 해소·slot-2+ 는
+    무태그/타 슬롯 무시). **bound 가 None(사유 무관 — genuine solo 든 미해소든)이면 전역 tag-agnostic
+    파싱**(원 T-0208 동작 보존)으로 폴백한다: fresh clone(lease 부재)에 tracked 로그가 태그를 가져도
+    log-derived 차수를 잃지 않게(codex R4·본문 dump·user 연속성 surface 와 동일 원리 — 양성 슬롯일 때만
+    필터). handoff entry 부재·log 부재/파싱 실패 → None(fail-soft).
     """
     if not log_text:
         return None
-    last: re.Match | None = None
+    owns_untagged = _session_owns_untagged(bound_session)
+    nums: list[int] = []
     for m in _LOG_HANDOFF_HEADER_RE.finditer(log_text):
-        last = m
-    if last is None:
+        # 양성 슬롯 해소 시에만 소유 필터 — bound None 은 전역(태그 무관·차수 유실 방지).
+        if bound_session is None or _handoff_entry_owned(m, bound_session, owns_untagged):
+            nums.append(int(m.group("num")))
+    if not nums:
         return None
-    return int(last.group("num"))
+    return max(nums)
 
 
-def last_handoff_header_line(log_text: str | None) -> str | None:
-    """마지막 handoff entry 의 헤더 줄 전체를 반환한다 (T-0208·user 연속성 pickaxe needle).
+def extract_slot_handoff_entry(
+    log_text: str | None, *, bound_session: str | None = None
+) -> dict[str, str] | None:
+    """**자기 슬롯**의 마지막 handoff entry(date/type/title + 본문 전체)를 반환한다 (T-0253·ADR-0047 ③).
 
-    `parse_last_handoff_session_num` 과 같은 grammar 로 헤더 줄을 잡는다 — 그 줄을 담은 commit
-    을 `git log -S<line>`(pickaxe)로 찾아 author email 을 얻기 위함. 부재/파싱 실패 → None.
+    부트스트랩 인계 dump 를 전역 마지막 entry 가 아니라 *자기 슬롯의 마지막 handoff* 로 좁힌다
+    — 타 슬롯 entry 본문이 컨텍스트에 유입되면 자기 복원이 흐려진다(ADR-0047). 슬롯 필터는
+    `parse_last_handoff_session_num` 과 같은 규칙(`_handoff_entry_owned`·무태그=솔로/slot-1).
+    단일 진실 = `pm_log.split_entries`(entry 분할)를 동적 로드 재사용(DRY). 자기 슬롯 handoff
+    entry 부재·pm_log 부재/파싱 실패 → None(호출부가 전역 마지막으로 graceful 폴백).
     """
     if not log_text:
         return None
+    pm_log = _load_tool("pm_log")
+    if pm_log is None:
+        return None
+    try:
+        _preamble, entries = pm_log.split_entries(log_text)
+    except Exception:  # noqa: BLE001 — fail-soft: 파싱 실패는 None(전역 마지막 폴백).
+        return None
+    owns_untagged = _session_owns_untagged(bound_session)
+    selected: str | None = None
+    for _date, entry_text in entries:
+        # 각 entry_text 는 `## [..]` 헤더 줄로 시작(split_entries) — 첫 줄만 handoff 헤더다.
+        m = _LOG_HANDOFF_HEADER_RE.search(entry_text)
+        if m is None:
+            continue  # handoff type 아님(complete/note 등) — skip.
+        if _handoff_entry_owned(m, bound_session, owns_untagged):
+            selected = entry_text  # append-only 라 마지막 매치가 자기 슬롯 최신 handoff.
+    if selected is None:
+        return None
+    entry = parse_log_last_entry(selected)  # 단일 헤더 → 그 entry 의 date/type/title.
+    if entry is None:
+        return None
+    entry = dict(entry)
+    entry["body"] = selected.rstrip()
+    return entry
+
+
+def last_handoff_header_line(
+    log_text: str | None, *, bound_session: str | None = None
+) -> str | None:
+    """**자기 슬롯** 마지막 handoff entry 의 헤더 줄 전체를 반환한다 (T-0208·user 연속성 pickaxe needle).
+
+    `parse_last_handoff_session_num` 과 같은 grammar·같은 소유 sink(`_handoff_entry_owned`)로
+    헤더 줄을 잡는다 — 그 줄을 담은 commit 을 `git log -S<line>`(pickaxe)로 찾아 author email 을
+    얻기 위함. `bound_session`(`<repo>_<N>`·솔로면 None)으로 **자기 슬롯 태그 entry 만 필터**한다
+    (T-0253·ADR-0047 "타 슬롯 최소 유입") — slot-2 부트스트랩이 전역 마지막(=slot-1) handoff 로
+    "직전 작성자" 를 오판정하지 않게. 무태그=솔로/slot-1 귀속. 부재/파싱 실패 → None.
+    """
+    if not log_text:
+        return None
+    owns_untagged = _session_owns_untagged(bound_session)
     last: re.Match | None = None
     for m in _LOG_HANDOFF_HEADER_RE.finditer(log_text):
+        # 솔로(bound 진짜 미해소)는 슬롯 개념이 없다 — 전역 마지막 handoff(원 동작 보존·타입/태그 무관).
+        # bound 해소 시에만 자기 슬롯 소유 entry 로 필터(slot-2 가 전역 slot-1 작성자를 오판정 안 하게).
+        if bound_session is not None and not _handoff_entry_owned(m, bound_session, owns_untagged):
+            continue
         last = m
     if last is None:
         return None
@@ -1336,23 +1429,79 @@ class PmBootstrap:
             for label, scope_dir, is_home in self._freshness_scopes()
         ]
 
-    def _collect_log_entry(self) -> dict | None:
-        """log/current.md 의 마지막 entry 제목(date·type·title) + **본문 전체**를 수집한다.
+    def _bound_session_name(self) -> str | None:
+        """차수 유도/본문 dump 슬롯 필터용 bound 세션 키(`<repo>_<N>`) (ADR-0044·MF-1 write↔read 대칭).
 
-        T-0179 — 인계 컨텍스트 dump. 제목은 `parse_log_last_entry`, 본문은
-        `extract_last_log_entry_body`(`pm_log.split_entries` 재사용·DRY)로 같은 텍스트에서
-        뽑는다. 본문 추출 실패(pm_log 부재 등)면 `body=None` — 호출부가 제목만 표시하던
-        현행으로 graceful 폴백한다.
+        명시 multi-PM 모드(`_bound_slot`=`work/<repo>_<N>`)면 `work/` 접두를 벗긴 `<repo>_<N>`.
+        무인자(솔로)면 handoff **write 측**(`_resolve_session_worktree_slot`)과 **같은 경로로**
+        자동해소한다 — 단일 self-host 무인자 부트스트랩이 그 슬롯(`<repo>_<N>`)으로 바인딩되어,
+        handoff 가 무인자로 write 한 자기 태그 entry(+무태그 히스토리)를 **둘 다** 자기 것으로
+        되읽는다. 이 write↔read 대칭이 없으면(구: 무인자→None→솔로 read) 단일 self-host 에서
+        handoff 가 쓴 `(<repo>_1)` 태그 entry 를 부트스트랩이 버려 차수 유실·T-0208 stale 침묵
+        무력화가 났다(adopter#0 실증 버그). 등록 repo 0개(진짜 솔로)·모호·판정불가 → None.
+        """
+        if self._bound_slot:
+            if self._bound_slot.startswith("work/"):
+                return self._bound_slot[len("work/"):]
+            return self._bound_slot
+        return self._auto_bound_session()
+
+    def _auto_bound_session(self) -> str | None:
+        """무인자 단일 self-host 자동바인딩 세션 키 — handoff `_resolve_session_slot` 재사용 (MF-1·DRY).
+
+        handoff write 측이 태그를 만들 때 쓰는 바로 그 resolver(`_resolve_session_slot`·guarded
+        default-1·T-0178)를 재사용해 **write↔read 대칭**을 보장한다(`{1,2}`→slot-1 등 default-1
+        규칙까지 동일). leases 는 *호출 시점* REPO 기준 재구성(monkeypatch 추종·hermetic·
+        `_pm_state_display_path` 동형). 부트스트랩 READ 는 모호(`SlotResolutionError`)·판정불가를
+        **crash 없이** 솔로(None)로 폴백한다 — 모호를 fail-loud 로 막는 건 handoff WRITE 만
+        (bootstrap 은 read-only surface·`_resolve_pm_state_file` 폴백 동형).
+        """
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+        try:
+            auto = _resolve_session_slot(self._areas_file, leases_file)
+        except SlotResolutionError:
+            return None  # 진짜 모호(멀티-PM under-specified) → 솔로 폴백(read crash 금지).
+        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 솔로 폴백(현행 무변경).
+            return None
+        if not auto:
+            return None
+        repo, n = auto
+        return f"{repo}_{n}"
+
+    def _collect_log_entry(self) -> dict | None:
+        """**자기 슬롯**의 마지막 handoff entry 제목(date·type·title) + **본문 전체**를 수집한다.
+
+        T-0179·T-0253(ADR-0047 ③) — 인계 컨텍스트 dump 를 전역 마지막 entry 가 아니라 *자기
+        슬롯의 마지막 handoff*(태그 필터·무태그 폴백=솔로/slot-1)로 좁혀 자기 컨텍스트를 복원한다
+        (타 슬롯 entry 본문 유입 차단). **MF-2**: bound 세션이 해소됐는데 자기 handoff 가 0개
+        (fresh 슬롯)면 **전역 마지막으로 폴백하지 않는다** — 그러면 타 슬롯 handoff 본문·branch 가
+        유입되고 `reattach_warning` 이 타 슬롯로 오경고한다("타 슬롯 최소 유입" 정면 위반). fresh
+        슬롯은 이 슬롯의 첫 세션이라 인계 dump 없음(None). 전역 폴백은 bound 가 **진짜 미해소**
+        (솔로·식별 자체 없음)일 때만 — 그땐 현행 표시(전역 마지막 제목+본문)를 잃지 않는다.
         """
         if not self._log_file.exists():
             return None
         log_text = self._log_file.read_text(encoding="utf-8")
-        entry = parse_log_last_entry(log_text)
-        if entry is None:
-            return None
-        entry = dict(entry)
-        entry["body"] = extract_last_log_entry_body(log_text)
-        return entry
+        bound_session = self._bound_session_name()
+        # 솔로(bound 진짜 미해소)는 슬롯 개념이 없다 — T-0179 계약대로 **마지막 entry(모든 타입)**를
+        # 그대로 dump 한다(handoff·complete·decide 무관). handoff-우선 필터를 태우면 최신 complete
+        # ("wave 진행 중" 신호)를 과거 handoff 로 가려 현행 표시가 깨진다(codex R2·타입 무관 계약 보존).
+        if bound_session is None:
+            entry = parse_log_last_entry(log_text)
+            if entry is None:
+                return None
+            entry = dict(entry)
+            entry["body"] = extract_last_log_entry_body(log_text)
+            return entry
+        # bound 해소됨(단일 self-host·명시 multi-PM) — 자기 슬롯 handoff entry 우선(ADR-0047 ③).
+        # complete/decide 는 슬롯 태그가 없어 슬롯 귀속 불가라, 슬롯 인계 연속성은 마지막 자기-슬롯
+        # handoff 가 최선이다(전역 complete 를 dump 하면 타 슬롯 산출이 유입).
+        slot_entry = extract_slot_handoff_entry(log_text, bound_session=bound_session)
+        if slot_entry is not None:
+            return slot_entry
+        # 자기 handoff 0개(fresh 슬롯) → 전역 폴백 금지(MF-2·타 슬롯 유입 차단). 이 슬롯 첫 세션이라
+        # 인계 dump 없음 — reattach 도 None(타 슬롯 branch 오경고 차단).
+        return None
 
     def _resolve_pm_state_file(self) -> Path | None:
         """bound slot 의 per-slot pm_state 경로를 해소한다 (read-only·T-0179).
@@ -1362,6 +1511,14 @@ class PmBootstrap:
         해소한다(복붙 금지·DRY). `migrate=False` — 부트스트랩은 pm_state 를 *읽기만* 하므로
         legacy → slot 이동(부작용)을 절대 하지 않는다(읽기 위치만). 명시 multi-PM 모드면
         `self._bound_slot`(`work/<repo>_<N>`)을 슬롯 인자로 넘겨 그 슬롯 pm_state 를 본다.
+
+        **양성 슬롯 바인딩(`self._bound_slot`)이면 legacy 폴백을 금지**한다 (T-0253·codex R5·
+        ADR-0047 "타 슬롯 최소 유입"): 자기 슬롯 pm_state 가 없을 때 `_pm_state_path` 는
+        legacy `wiki/pm_state.md`(솔로/slot-1 상태)로 폴백하는데, 그러면 fresh slot-2 가 타 슬롯
+        차수·남은작업을 가져와 "fresh=1차" 를 깬다. 해소 경로가 자기 슬롯 디렉토리
+        (`.local/slots/<slot>/`) 밖(=legacy 폴백)이면 자기 pm_state 부재로 보고 None 을 반환한다
+        (fresh 슬롯·surface 생략·1차 규칙은 `_collect_handoff_context` 층). 솔로(bound None)는
+        legacy 가 자기 것(slot-1 계보)이라 현행 폴백을 유지한다(로그 surface 와 동일 원리).
         pm_handoff 부재/해소 실패 → None(소프트 — 차수/남은작업 surface 생략).
         """
         if self._pm_state_file is not None:
@@ -1370,9 +1527,14 @@ class PmBootstrap:
         if pm_handoff is None:
             return None
         try:
-            return pm_handoff._pm_state_path(self._bound_slot, migrate=False)
+            path = pm_handoff._pm_state_path(self._bound_slot, migrate=False)
         except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 None(surface 생략).
             return None
+        # 양성 슬롯인데 해소가 per-slot 디렉토리(`.local/slots/<slot>/pm_state.md`)가 아니면 =
+        # 자기 pm_state 부재로 legacy 폴백된 것 → 타 슬롯/솔로 상태 유입 금지·None(fresh).
+        if self._bound_slot is not None and path.parent.parent.name != "slots":
+            return None
+        return path
 
     def _collect_handoff_context(self, log_text: str | None = None) -> dict | None:
         """bound slot pm_state 차수(+ log 교차검증) + "남은 작업/사용자발의" 절을 수집한다 (T-0179·T-0208).
@@ -1397,11 +1559,20 @@ class PmBootstrap:
             except Exception:  # noqa: BLE001 — fail-soft: read 실패는 pm_state 미해소로 취급.
                 state_text = None
 
-        # log-derived 차수 폴백/교차검증 (T-0208) — handoff entry `PM N차` → 다음 차수 N+1.
+        # log-derived 차수 폴백/교차검증 (T-0208·T-0253) — 자기 슬롯 handoff `PM N차` → N+1.
+        # bound 세션 태그 필터로 전역 max 가 아니라 슬롯 max 를 쓴다(ADR-0044·"두 슬롯 같은 N차").
+        bound_session = self._bound_session_name()
         state_num = infer_session_num(state_text) if state_text is not None else None
-        log_num = parse_last_handoff_session_num(log_text)
+        log_num = parse_last_handoff_session_num(log_text, bound_session=bound_session)
         log_next = log_num + 1 if log_num is not None else None
         session_num, session_stale = reconcile_session_num(state_num, log_next)
+
+        # fresh 슬롯 규칙 (ADR-0044): 명시 슬롯 바인딩인데 자기 슬롯 차수가 전혀 안 잡히면
+        # (pm_state·log 둘 다 미해소) 1차부터 — slot-2+ 는 무태그 기존 로그를 무시하므로 fresh
+        # 슬롯이 placeholder(`?`) 대신 슬롯-first(1차)로 announce 된다. 솔로(bound None)는 현행
+        # placeholder 보존(회귀 0) — 이 규칙은 명시 슬롯(bound_session 해소)에서만 발동한다.
+        if bound_session is not None and not isinstance(session_num, int):
+            session_num = 1
 
         remaining_work = (
             extract_remaining_work_section(state_text) if state_text is not None else None
@@ -1471,7 +1642,9 @@ class PmBootstrap:
         불일치 → `⚠ 직전 handoff 는 다른 사용자(<email>) — pending intent 는 프로젝트 상태로 취급`.
         어느 쪽이든 미해소(handoff 부재·author 조회불가·user 미상) → None(줄 생략·fail-soft).
         """
-        header = last_handoff_header_line(log_text)
+        # 자기 슬롯 마지막 handoff 헤더로 좁힌다 (T-0253·codex R3) — slot-2 부트스트랩이 전역
+        # 마지막(=slot-1) handoff 작성자로 "직전 handoff 는 다른 사용자" 오경고를 내지 않게.
+        header = last_handoff_header_line(log_text, bound_session=self._bound_session_name())
         if header is None:
             return None
         author = self._handoff_commit_author(header)
