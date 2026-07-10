@@ -53,6 +53,12 @@ AREAS_FILE = REPO / ".project_manager" / "areas.md"   # legacy 별칭 (아래 _a
 # 격리·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형·데이터 결합만).
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 
+# 커맨드 카드 (ADR-0045) — 도구 호출 접두. 카드는 이 세션이 쓸 전 커맨드를 정체성 채운
+# 완성형으로 dump 한다("--help 자체를 안 가게"·사용자 지시). `python3` 은 머신-불변 doc 표면
+# 관례(T-0219·Windows 는 `py`·CLAUDE.md 노트). 경로는 multi-PM 공유 루트 기준 상대(도그푸딩
+# 관례와 정합·PM 이 공유 루트에서 board/wiki 조작).
+_CARD_TOOL_INVOKE = "python3 .project_manager/tools"
+
 
 # ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────
 # board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다(ADR-0033 ①).
@@ -1942,6 +1948,7 @@ class PmBootstrap:
         else:
             markdown = self._build_markdown(board, pytest_result, git, log_entry, timestamp, handoff_ctx)
             print(markdown)
+            identity: dict | None = None
             if multipm_lean:
                 # lean 정체성 선언(T-0074) — bind + identity surface + 다른 활성 PM 상태점검.
                 identity = self._bind_and_identity(repo, slot)
@@ -1952,6 +1959,14 @@ class PmBootstrap:
                 identity = self._alloc_and_identity(repo, branch, resume)
                 print()
                 print(self._build_identity_markdown(identity))
+            # 커맨드 카드 (ADR-0045) — identity surface 뒤. 이 세션이 쓸 전 커맨드를 정체성
+            # (`--session <repo>_<N>`) 채운 완성형으로 dump("--help 자체를 안 가게"). lean 은
+            # session 채운 형태·솔로(identity None/session 부재)는 --session 없는 형태로 분기.
+            # 렌더 실패는 fail-soft(카드 절 생략·위 dump 는 유지).
+            card = self._safe_command_card(identity)
+            if card:
+                print()
+                print(card)
 
         # blocking lint — dump-then-warn(T-0195·abort-before-dump 제거). 위에서 이미
         # markdown/JSON 전체(board/git/log/pm_state)를 dump 했으니, 여기서 마지막으로
@@ -2014,11 +2029,16 @@ class PmBootstrap:
             sys.exit(1)
 
         slot_path = wp.slot_path(lease.slot)
+        # 세션 정체성 = 슬롯키(`work/<repo>_<N>` → `<repo>_<N>`) — alloc 도 명시 multi-PM 이므로
+        # identity 에 `session` 을 채운다(T-0250 codex·ADR-0043/0045). 이게 없으면 커맨드 카드가
+        # `session` 키 부재를 솔로로 오판해 `--session` 빠진 카드를 dump → claim(required) fail-loud.
+        session = lease.slot[len("work/"):] if lease.slot.startswith("work/") else lease.slot
         # 브랜치는 슬롯 worktree 의 git HEAD 에서 live 조회(ADR-0013 amend T-0072 —
         # git=진실·장부 저장 폐지). detached/조회불가는 None → identity surface 가 "(미지정)".
         return {
             "repo": repo,
             "slot": lease.slot,
+            "session": session,
             "slot_path": str(slot_path),
             "branch": wp.current_branch(lease.slot),
             "registered_repos": _registered_repos(self._areas_file),
@@ -2127,6 +2147,159 @@ class PmBootstrap:
                 )
         else:
             lines.append("- (다른 활성 PM 없음)")
+        return "\n".join(lines)
+
+    def _safe_command_card(self, identity: dict | None) -> str | None:
+        """커맨드 카드를 fail-soft 로 렌더한다 — 실패하면 None(카드 절 생략·부트스트랩 유지).
+
+        카드 렌더 실패(정체성 dict 결손·예기치 못한 예외)는 부트스트랩 자체를 깨뜨리면 안
+        된다(ADR-0045 Consequences) — identity surface·board/git dump 는 이미 나갔으므로
+        카드만 조용히 생략한다.
+        """
+        try:
+            return self._build_command_card_markdown(identity)
+        except Exception:  # noqa: BLE001 — fail-soft: 카드 렌더 실패는 절 생략(부트스트랩 유지·ADR-0045).
+            return None
+
+    def _build_command_card_markdown(self, identity: dict | None) -> str:
+        """이 세션이 쓸 전 커맨드를 정체성 채운 완성형으로 dump 하는 커맨드 카드 (ADR-0045).
+
+        identity surface 뒤에 코드 생성해, PM 이 --help 왕복 없이 세션 전체를 운영하게 한다
+        ("--help 자체를 안 가게"·사용자 지시). 정체성(`--session <repo>_<N>`·ADR-0043 canonical)은
+        **실값으로 보간**하고, 사용자 입력(`T-NNNN`·`<PFX>`·`<요약>` 등)만 placeholder 로 남긴다.
+
+        identity: lean(멀티-PM) 모드면 `session` 키를 담은 dict → `--session <session>` 을 채운다.
+                  None 또는 `session` 부재(솔로/legacy alloc)면 `--session` 없는 현행 형태로 분기.
+
+        숨은 전제 4대장(claim=promote 선행·prefix rename/merge=홈 git clean·livegate record=
+        release-marked pin·migrate-identity=단일세션) + reid=홈 git clean 을 해당 커맨드 줄 바로
+        아래 1줄 ⚠ 경고로 인접 배치한다(ADR-0045 Decision 2 — 별도 절 금지·인접성이 학습 보장).
+        """
+        session = identity.get("session") if identity else None
+        # 정체성 인자 — lean 이면 ` --session <session>`, 솔로면 빈 문자열(현행 형태·ADR-0045).
+        sess = f" --session {session}" if session else ""
+
+        def cmd(name: str, args: str, comment: str = "") -> str:
+            """`python3 .project_manager/tools/<name> <args>` (+ ` # 주석`) 한 줄 렌더."""
+            line = f"{_CARD_TOOL_INVOKE}/{name} {args}".rstrip()
+            return f"{line}  # {comment}" if comment else line
+
+        lines: list[str] = []
+        lines.append("### 이 세션 커맨드 카드 (정체성 채움·--help 불요·단일 진실·ADR-0045)")
+        # 정체성 헤더 — 실값 보간(placeholder 0). 솔로는 --session 불요 명시.
+        if session:
+            branch = (identity.get("branch") if identity else None) or "(미지정)"
+            lines.append(
+                f"정체성: 세션=`{session}` · 브랜치=`{branch}` — 보드/리스 조작은 "
+                f"`--session {session}` 명시(정체성=에이전트 맥락·도구엔 명시 전달)."
+            )
+            slot_path = identity.get("slot_path") if identity else None
+            if slot_path:
+                lines.append(
+                    "실행 위치: 아래 커맨드는 multi-PM 공유 루트(`.project_manager` 있는 곳)에서 "
+                    f"실행 — 코드 작업만 슬롯 cwd(`{slot_path}`)."
+                )
+        else:
+            lines.append(
+                "정체성: 솔로(단일 세션) — `--session` 명시 불요(env `PM_SESSION_NAME` / "
+                "local.conf `session=` 로 자동 해소)."
+            )
+        lines.append("")
+
+        # 내 작업 보기 (ADR-0047 — 자기 공간 우선·기본 조회면·전체 보드는 열람용으로 강등).
+        lines.append("# 내 작업 보기 (ADR-0047 — 자기 공간 우선·기본 조회)")
+        lines.append(cmd("board.py", "list --mine", "내 티켓(open+claim)·기본 조회면"))
+        if session:
+            lines.append(cmd(
+                "board.py", f"list --session {session}",
+                "내 세션 뷰 렌즈(=--mine 명시형·조회 전용·아무것도 안 바꿈)",
+            ))
+        lines.append(cmd(
+            "board.py", "list", "전체 보드(모든 세션) — 타 PM 열람용·평시 불요",
+        ))
+        lines.append("")
+
+        # 티켓 조작 (정체성 명시·actor) — claim 은 promote 선행(4대장 ①·인접 ⚠).
+        lines.append("# 티켓 조작 (정체성 명시 — actor)")
+        lines.append(cmd(
+            "board.py", 'new "<제목>" --prefix <PFX>', "draft 발행(본문은 board 밖에서 채움)",
+        ))
+        lines.append(cmd(
+            "board.py", "promote T-NNNN", "draft → open(본문 채운 뒤·claim 선행조건)",
+        ))
+        lines.append(cmd("board.py", f"claim T-NNNN{sess}"))
+        lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
+        lines.append(cmd(
+            "board.py", "complete T-NNNN --tests-pass",
+            "행위자=env 자동 해소(complete 는 --session 없음)",
+        ))
+        lines.append("")
+
+        # 릴리즈·회귀 — livegate record 는 release-marked pin(4대장 ③·인접 ⚠).
+        lines.append("# 릴리즈·회귀 (정체성/슬롯)")
+        lines.append(cmd("board.py", f"regression run{sess}", "회귀 측정·기록"))
+        lines.append(cmd("board.py", "livegate record"))
+        lines.append(
+            "  ⚠ record 는 `pytest -m release` 수집 pin 강제 — "
+            "release-marked 0 수집이면 fail(릴리즈 차단)."
+        )
+        lines.append("")
+
+        # 핸드오프 (세션 종료·정체성) — session 이 있으면 맨 앞에 --session 채움.
+        lines.append("# 핸드오프 (세션 종료·정체성)")
+        handoff_args = '--session-seq <N> --wave-summary "<요약>"'
+        if session:
+            handoff_args = f"--session {session} {handoff_args}"
+        lines.append(cmd("pm_handoff.py", handoff_args))
+        lines.append("")
+
+        # ID·카테고리 유지보수 (드묾·전제 주의) — prefix rename/merge·reid=홈 git clean(4대장 ②·
+        # reid 추가)·migrate-identity=단일세션(4대장 ④). 각 커맨드 줄 바로 아래 1줄 ⚠.
+        lines.append("# ID·카테고리 유지보수 (드묾·전제 주의)")
+        lines.append(cmd("board.py", "prefix list", "카테고리 현황(read-only)"))
+        lines.append(cmd("board.py", "prefix rename <OLD> <NEW>"))
+        lines.append(
+            "  ⚠ rename 은 홈 git working tree clean 필수 — "
+            "wiki/log 참조 rewrite 라 미커밋 있으면 거부."
+        )
+        lines.append(cmd("board.py", "prefix merge <SRC> --into <DST>"))
+        lines.append("  ⚠ merge 도 홈 git clean 전제(참조 rewrite·미커밋 있으면 거부).")
+        lines.append(cmd(
+            "board.py", "reid <OLD-ID> <NEW-ID>", "오발행 ID 교정(번호·prefix 무손실)",
+        ))
+        lines.append("  ⚠ reid 도 홈 git clean 전제(참조 rewrite 원자성·미커밋 있으면 거부).")
+        lines.append(cmd(
+            "board.py", "migrate-identity --dry-run", "ADR-0033 이전 데이터 일회성 backfill",
+        ))
+        lines.append(
+            "  ⚠ migrate-identity 는 단일-세션 op — "
+            "다른 세션이 claim/complete 중이면 실행 말 것(조용한 창에서 1회)."
+        )
+        lines.append("")
+
+        # 정체성 불요 (cwd/conf/env 로 자동 해소·명시 인자 없음·ADR-0045 Decision 3) — 예시형.
+        lines.append("# 정체성 불요 (cwd/conf/env 자동 해소 — 명시 인자 없음)")
+        lines.append(cmd("ticket_finish.py", "<T-NNNN>"))
+        lines.append(cmd("external_review.py", "..."))
+        lines.append(cmd("pm_log.py", "tail"))
+        lines.append(cmd("pm_update.py", "--dry-run"))
+        lines.append(cmd("domain.py", "affected --ticket <T-NNNN>"))
+        lines.append("")
+
+        # 찾아가기 (부트스트랩 dump 에 없는 것 — 포인터만·정식 서술은 pm_role·T-0251).
+        # 각 항목 "평시 안 읽음·필요할 때만"(ADR-0047 자기 공간 우선).
+        self_tag = f"`({session})`" if session else "`(솔로/slot-1=무태그)`"
+        lines.append("# 찾아가기 (부트스트랩에 없는 것 — 평시 안 읽음·필요할 때만)")
+        lines.append(
+            f"- 내 티켓 상세: `{_CARD_TOOL_INVOKE}/board.py show T-NNNN`"
+        )
+        lines.append(
+            f"- 내 과거 세션: `wiki/log/current.md` 에서 자기 슬롯 태그 {self_tag} 검색(핸드오프 entry)"
+        )
+        lines.append("- 타 PM 현황: 부트스트랩 대시보드(상세는 그 슬롯 태그 log entry)")
+        lines.append("- 현재-아키텍처: `wiki/architecture.md`(충돌 시 단일 진실)")
+        lines.append("- 결정 히스토리: `wiki/decisions/README.md` 색인(ADR 상한)")
+        lines.append("- 방법론·규율: `wiki/pm_role.md`")
         return "\n".join(lines)
 
     def _build_identity_markdown(self, identity: dict) -> str:

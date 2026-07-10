@@ -1363,3 +1363,218 @@ def test_single_self_host_roundtrip_handoff_write_bootstrap_read(hf, bs, tmp_pat
     assert "무태그 히스토리" not in entry["body"], "본문은 최신 자기 handoff(52차)만."
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# pm_handoff — 오형식 차수 정규화 (`**N차차+**` → `**N차**`·T-0254·ADR-0044·§1.6)
+# T-0100 이중-차 잔재(finance 솔로 실측)가 앵커 정규식(`\d+차` 1회) 미매치 → pm_state
+# derive 실패 → log 폴백 은닉 의존. 파서 관대화(fallback)가 아니라 멱등·비파괴 데이터
+# 정규화 도구로 원천 해소(prefer-data-migration-over-fallback).
+# ══════════════════════════════════════════════════════════════════════════
+
+# 오형식 `**N차차**`(이중-차) 를 담은 세션 식별 절 — 정상 형식(_SESSION_SECTION)의 오염판.
+# 포인터 줄의 `PM 1차~1차` 는 정상 단일 '차'(정규화 대상 아님·비파괴 대조).
+_MALFORMED_SESSION_SECTION = (
+    "# PM State\n\n"
+    "## 세션 식별 (현재까지 사용된 이름)\n\n"
+    "최근 N 차 (sliding window, 기본 3 차):\n"
+    "  - **50차차** (2026-06-11 · w): w.\n"
+    "  - **51차차** (2026-06-12 · w): w.\n"
+    "  - **52차차** (2026-06-13 · w): w.\n"
+    "  - 이전 차 (PM 1차~1차) = `log/current.md` handoff entry 단일 진실.\n"
+    "\n## 진행 중인 의사결정\n\n표.\n"
+)
+
+
+def _write_legacy_state(hf, text: str) -> Path:
+    """솔로 legacy pm_state(`wiki/pm_state.md`)에 텍스트를 쓴다 (normalize CLI 대상)."""
+    p = _legacy(hf)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+# ── 순수 함수 normalize_session_anchors ──────────────────────────────────────
+
+def test_normalize_fixes_double_cha_tokens(hf):
+    """오형식 `**N차차**` 셋을 전부 `**N차**` 로 정규화·이중-차 잔존 0."""
+    fixed = hf.normalize_session_anchors(_MALFORMED_SESSION_SECTION)
+    assert "**50차**" in fixed and "**51차**" in fixed and "**52차**" in fixed
+    assert "차차" not in fixed
+
+
+def test_normalize_derive_succeeds_after_fix(hf):
+    """DoD: 오형식은 앵커 미매치라 유도 실패(placeholder)·정규화 후 infer 성공(max+1)."""
+    # 오형식 상태 — `_PM_SESSION_ANCHOR_RE`(`\d+차` 1회) 미매치 → placeholder.
+    assert hf.infer_next_session_num(_MALFORMED_SESSION_SECTION) == hf.TRIGGER_SESSION_PLACEHOLDER
+    fixed = hf.normalize_session_anchors(_MALFORMED_SESSION_SECTION)
+    # 정규화 후 max(50,51,52)+1 = 53 유도 성공(log 폴백 은닉 의존 해소).
+    assert hf.infer_next_session_num(fixed) == 53
+
+
+def test_normalize_idempotent(hf):
+    """멱등: 한 번 정규화한 텍스트를 다시 정규화해도 결과가 동일하다."""
+    once = hf.normalize_session_anchors(_MALFORMED_SESSION_SECTION)
+    twice = hf.normalize_session_anchors(once)
+    assert twice == once
+
+
+def test_normalize_noop_on_clean_returns_same_object(hf):
+    """오형식 없는 정상 절 — 무변경 시 입력을 그대로(동일 객체) 반환(값 비교 no-op 감지)."""
+    out = hf.normalize_session_anchors(_SESSION_SECTION)
+    assert out == _SESSION_SECTION
+    assert out is _SESSION_SECTION
+
+
+def test_normalize_handles_triple_or_more_cha(hf):
+    """`차차차`(3회 이상)도 단일 `차` 로 접는다(2회+ 반복 전부 대상)."""
+    text = _MALFORMED_SESSION_SECTION.replace("**50차차**", "**50차차차**")
+    fixed = hf.normalize_session_anchors(text)
+    assert "**50차**" in fixed and "차차" not in fixed
+
+
+def test_normalize_non_destructive_preserves_dates_and_pointer(hf):
+    """비파괴: 오형식 잉여 '차' 만 제거·날짜/요약/포인터 줄은 한 글자도 안 바뀐다."""
+    fixed = hf.normalize_session_anchors(_MALFORMED_SESSION_SECTION)
+    assert "(2026-06-11 · w): w." in fixed
+    assert "이전 차 (PM 1차~1차) = `log/current.md` handoff entry 단일 진실." in fixed
+    assert "## 진행 중인 의사결정" in fixed
+
+
+def test_normalize_no_session_section_unchanged(hf):
+    """세션 식별 절이 없으면 원문을 그대로(동일 객체) 반환 — 절 밖은 손대지 않는다."""
+    text = "# PM State\n\n## 딴 절\n\n**50차차** 본문.\n"
+    out = hf.normalize_session_anchors(text)
+    assert out == text
+    assert out is text
+
+
+def test_normalize_scoped_to_session_section_only(hf):
+    """비파괴 스코프: 세션 식별 절 *밖*의 `**N차차**` 는 정규화 대상이 아니다(절 경계 존중)."""
+    text = (
+        "# PM State\n\n"
+        "## 세션 식별 (현재까지 사용된 이름)\n\n"
+        "  - **50차차** (2026-06-11 · w): w.\n"
+        "\n## 다른 절\n\n"
+        "여기 **99차차** 는 세션 식별 절 밖이라 정규화 대상 아님.\n"
+    )
+    fixed = hf.normalize_session_anchors(text)
+    assert "**50차**" in fixed, "절 안 오형식은 정규화."
+    assert "**99차차**" in fixed, "절 밖 오형식은 보존(비파괴 스코프)."
+
+
+# finance 실 타깃 형상 — 설명 절(`## 세션 식별 규칙`·anchor 매치하나 entry 0)이 **먼저** 오고,
+# 그 뒤 실제 window 절의 entry 가 **전부 오형식**(`**N차차**`·well-formed 0). 절 선택을 정상
+# anchor 만으로 하면 window 가 "entry 없음"→설명 절로 폴백→silent no-op(codex must-fix 재현).
+_FINANCE_MALFORMED_ONLY_STATE = (
+    "# PM State\n\n"
+    "## 세션 식별 규칙\n\n"
+    "이름은 <repo>_<N> 로 짓는다 — 설명만 있는 절(entry 없음).\n\n"
+    "## 세션 식별 (현재까지 사용된 이름)\n\n"
+    "최근 N 차 (sliding window, 기본 3 차):\n"
+    "  - **87차차** (2026-07-08 · w): w.\n"
+    "  - **88차차** (2026-07-09 · w): w.\n"
+    "  - **89차차** (2026-07-10 · w): w.\n"
+    "  - 이전 차 (PM 1차~1차) = `log/current.md` handoff entry 단일 진실.\n"
+    "\n## 진행 중인 의사결정\n\n표.\n"
+)
+
+
+def test_normalize_all_malformed_window_after_rules_section(hf):
+    """codex must-fix 재현 — 설명 절이 먼저 오고 window entry 가 전부 오형식이어도 window 절을
+    정확히 골라 정규화한다(silent no-op 아님·수정 전엔 이 assert 가 no-op 로 실패).
+    """
+    fixed = hf.normalize_session_anchors(_FINANCE_MALFORMED_ONLY_STATE)
+    assert fixed != _FINANCE_MALFORMED_ONLY_STATE, "window 절을 골라 실제로 정규화(no-op 아님)."
+    assert "**87차**" in fixed and "**88차**" in fixed and "**89차**" in fixed
+    assert "차차" not in fixed, "이중-차 잔존 0."
+    assert "이름은 <repo>_<N> 로 짓는다" in fixed, "설명 절은 무접촉(비파괴)."
+
+
+def test_normalize_all_malformed_window_enables_derive(hf):
+    """DoD — 전부 오형식 window 도 정규화 후 infer 성공(max(87,88,89)+1=90)."""
+    assert hf.infer_next_session_num(_FINANCE_MALFORMED_ONLY_STATE) == hf.TRIGGER_SESSION_PLACEHOLDER
+    fixed = hf.normalize_session_anchors(_FINANCE_MALFORMED_ONLY_STATE)
+    assert hf.infer_next_session_num(fixed) == 90
+
+
+# ── CLI main(--normalize-session-anchors) ────────────────────────────────────
+
+def test_main_normalize_apply_fixes_legacy(hf, capsys):
+    """솔로 apply — legacy pm_state 오형식 교체·rc0·diff 출력·이중-차 잔존 0."""
+    p = _write_legacy_state(hf, _MALFORMED_SESSION_SECTION)
+    rc = hf.main(["--normalize-session-anchors"])
+    assert rc == 0
+    content = p.read_text(encoding="utf-8")
+    assert "**52차**" in content and "차차" not in content
+    out = capsys.readouterr().out
+    assert "정규화 적용 완료" in out
+    assert "차차" in out, "diff preview 에 제거되는 오형식 토큰 노출."
+
+
+def test_main_normalize_needs_no_session_seq_or_wave(hf):
+    """유지보수 모드는 session-seq/wave-summary 없이 동작(required 체크 우회·SystemExit 0)."""
+    _write_legacy_state(hf, _MALFORMED_SESSION_SECTION)
+    assert hf.main(["--normalize-session-anchors"]) == 0
+
+
+def test_main_normalize_dry_run_leaves_file_unchanged(hf, capsys):
+    """비파괴 dry-run — 원문 보존(파일 미변경)·diff preview·미적용 안내."""
+    p = _write_legacy_state(hf, _MALFORMED_SESSION_SECTION)
+    rc = hf.main(["--normalize-session-anchors", "--dry-run"])
+    assert rc == 0
+    assert p.read_text(encoding="utf-8") == _MALFORMED_SESSION_SECTION
+    out = capsys.readouterr().out
+    assert "[dry-run]" in out
+    assert "차차" in out, "dry-run diff 에 오형식 노출."
+
+
+def test_main_normalize_idempotent_second_run_noop(hf, capsys):
+    """멱등 재현 — apply 후 재실행이 파일을 다시 안 바꾸고 no-op 안내(rc0)."""
+    p = _write_legacy_state(hf, _MALFORMED_SESSION_SECTION)
+    assert hf.main(["--normalize-session-anchors"]) == 0
+    after_first = p.read_text(encoding="utf-8")
+    capsys.readouterr()  # 첫 실행 출력 소거.
+    assert hf.main(["--normalize-session-anchors"]) == 0
+    assert p.read_text(encoding="utf-8") == after_first, "재실행 무변화(멱등)."
+    assert "이미 정합" in capsys.readouterr().out
+
+
+def test_main_normalize_noop_on_clean_file(hf, capsys):
+    """이미 정합한 파일 — 변경 없음 no-op(rc0)."""
+    _write_legacy_state(hf, _SESSION_SECTION)
+    assert hf.main(["--normalize-session-anchors"]) == 0
+    assert "변경 없음" in capsys.readouterr().out
+
+
+def test_main_normalize_missing_file_is_noop(hf, capsys):
+    """대상 pm_state 부재(솔로·미생성) — 명시 안내 후 no-op(rc0·크래시 0)."""
+    assert hf.main(["--normalize-session-anchors"]) == 0
+    assert "대상 파일이 없다" in capsys.readouterr().out
+
+
+def test_main_normalize_targets_per_slot_pm_state(hf):
+    """--session <repo>_<N> → 해당 슬롯 pm_state 를 정규화(솔로 legacy 아님·per-slot 대상)."""
+    _make_single_self_host(hf._tmp)
+    sp = _slot_path(hf, "project_manager_1")
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(_MALFORMED_SESSION_SECTION, encoding="utf-8")
+    # legacy 는 손대면 안 됨(슬롯 대상 격리 대조).
+    legacy = _write_legacy_state(hf, _MALFORMED_SESSION_SECTION)
+
+    rc = hf.main(["--normalize-session-anchors", "--session", "project_manager_1"])
+    assert rc == 0
+    slot_content = sp.read_text(encoding="utf-8")
+    assert "**52차**" in slot_content and "차차" not in slot_content, "슬롯 pm_state 정규화."
+    assert legacy.read_text(encoding="utf-8") == _MALFORMED_SESSION_SECTION, "legacy 는 무접촉."
+
+
+def test_main_normalize_finance_all_malformed_not_silent_noop(hf, capsys):
+    """CLI end-to-end — finance 실 형상(설명 절 먼저·window 전부 오형식)에서 apply 가 window
+    를 정규화하고 파일을 교체한다(silent no-op 아님·codex must-fix 회귀 가드)."""
+    p = _write_legacy_state(hf, _FINANCE_MALFORMED_ONLY_STATE)
+    rc = hf.main(["--normalize-session-anchors"])
+    assert rc == 0
+    content = p.read_text(encoding="utf-8")
+    assert "**89차**" in content and "차차" not in content, "window 절 실제 교체."
+    assert "정규화 적용 완료" in capsys.readouterr().out
+
+

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import difflib
 import fnmatch
 import os
 import re
@@ -640,6 +641,24 @@ _PM_SESSION_ANCHOR_RE = re.compile(
 # "이전 차" 포인터 줄
 _PREV_SESSIONS_POINTER = "  - 이전 차"
 
+# 오형식 `**N차차+**`(T-0100 이중-차 잔재·finance 솔로 실측) → `**N차**` 정규화 대상.
+# 세션 entry bold 토큰에서 '차' 가 2회 이상 연속 반복된 것만 잡는다 — 단일 '차'=정상이라
+# 미매치(멱등: 재실행 무변화). skill 문서가 `--session-num <N차>` 로 안내한 탓에 '차' 가 이미
+# 붙은 입력에 handoff 가 다시 '차' 를 부착해 `**N차차**` 가 만들어졌고(T-0100), 그러면
+# `_PM_SESSION_ANCHOR_RE`(`\d+차` 1회)가 미매치해 pm_state derive 실패→log 폴백 은닉 의존.
+# 파서 관대화(fallback 누적)가 아니라 원천 데이터 정규화로 해소한다(ADR-0044·§1.6·
+# prefer-data-migration-over-fallback).
+_MALFORMED_SESSION_ANCHOR_RE = re.compile(r"\*\*(\d+)차{2,}\*\*")
+
+# 정상(`**N차**`) + 오형식(`**N차차+**`) anchor 를 모두 매치하는 entry 판정 정규식 — 세션 식별
+# *절 선택* 전용(normalize_session_anchors). 절 선택에 `_PM_SESSION_ANCHOR_RE`(정상만)를 쓰면
+# entry 가 전부 오형식인 실 타깃(finance: `88차차/87차차/89차차`·well-formed 0)에서 window 절이
+# "entry 없음"으로 판정→앞선 설명 절(`## 세션 식별 규칙`)로 폴백→**silent no-op**(마이그레이션
+# 도구가 정작 필요한 상황에서 조용히 실패·최악)이 된다. `차+`(1회 이상)로 오형식 절도
+# entry-bearing 으로 인정해 그 함정을 막는다(codex must-fix). handoff write 경로는 이 정규식을
+# 쓰지 않으므로(default=_PM_SESSION_ANCHOR_RE) 무영향.
+_ANY_SESSION_ANCHOR_RE = re.compile(r"^  - \*\*\d+차+\*\*[^\n]*$", re.MULTILINE)
+
 
 def _normalize_h2_header(line: str) -> str:
     """h2 헤더 줄에서 '#'·공백(전각/반각/탭/CR)·괄호(전각/반각)를 제거한 정규화 문자열."""
@@ -649,7 +668,10 @@ def _normalize_h2_header(line: str) -> str:
     )
 
 
-def _extract_session_section(pm_state_text: str) -> tuple[str, int, int] | None:
+def _extract_session_section(
+    pm_state_text: str,
+    entry_re: re.Pattern[str] = _PM_SESSION_ANCHOR_RE,
+) -> tuple[str, int, int] | None:
     """pm_state.md 에서 세션 식별 절 텍스트와 그 시작·끝 위치를 반환한다.
 
     앵커 탐색은 정확 str.find 이 아니라 정규화 부분일치다 — '##' 로 시작하는 h2 헤더 줄
@@ -660,6 +682,12 @@ def _extract_session_section(pm_state_text: str) -> tuple[str, int, int] | None:
     첫 후보로 폴백한다 — '## 세션 식별 규칙' 같은 설명-절이 실제 window 절보다 앞에 있을
     때 빈 절을 오선택해 window 미갱신(fail-soft 스킵)·오염되는 것을 막는다(T-0243
     reviewer should-fix).
+
+    `entry_re` = "entry 보유 절" 판정에 쓰는 정규식(기본 `_PM_SESSION_ANCHOR_RE`·정상 anchor
+    만). handoff write 경로는 기본값을 그대로 써 무변경이다. **정규화 도구**(normalize_session_
+    anchors)만 `_ANY_SESSION_ANCHOR_RE`(정상+오형식)를 넘겨, entry 가 전부 오형식(`**N차차**`)인
+    실 타깃 window 절도 entry-bearing 으로 인식하게 한다 — 그러지 않으면 설명-절로 폴백해
+    정규화가 silent no-op 이 된다(codex must-fix).
 
     반환: (section_text, start_offset, end_offset) 또는 None (앵커 불일치).
     end_offset 는 다음 ## 또는 ### 헤더 직전 위치 (혹은 파일 끝).
@@ -679,7 +707,7 @@ def _extract_session_section(pm_state_text: str) -> tuple[str, int, int] | None:
         return None
     for m in candidates:  # entry 보유 절 우선 — 빈 설명-절 오선택 방지.
         section = _section_bounds(m)
-        if _PM_SESSION_ANCHOR_RE.search(section[0]):
+        if entry_re.search(section[0]):
             return section
     return _section_bounds(candidates[0])  # 전부 entry 없음 → 첫 후보(종전 동작 보존).
 
@@ -862,6 +890,34 @@ def infer_next_session_num(pm_state_text: str) -> int | str:
         return TRIGGER_SESSION_PLACEHOLDER
     highest = max(int(m.group(1).replace("차", "")) for m in entries)
     return highest + 1
+
+
+# ── 오형식 차수 정규화 (`**N차차+**` → `**N차**`·멱등·비파괴·ADR-0044·§1.6) ─────────
+
+def normalize_session_anchors(pm_state_text: str) -> str:
+    """세션 식별 절의 오형식 `**N차차+**`(2회 이상 반복 차·T-0100 잔재) 를 `**N차**` 로
+    멱등·비파괴 정규화한 새 텍스트를 반환한다 (ADR-0044·§1.6).
+
+    - 세션 식별 절만 손댄다 — 절 밖·정상 단일 '차' 토큰은 무변경. 절 부재면 원문 그대로.
+    - 멱등: 정규화 후 토큰은 `**N차**` 라 재실행해도 `차{2,}` 미매치 → 결과 동일.
+    - 비파괴: 오형식 bold 토큰의 잉여 '차' 만 제거하고 그 밖의 문자(날짜·요약·포인터 줄)는
+      한 글자도 건드리지 않는다.
+
+    절 선택은 `_ANY_SESSION_ANCHOR_RE`(정상+오형식)로 한다 — window 절의 entry 가 전부
+    오형식(`**N차차**`·well-formed 0)인 실 타깃(finance)에서도 그 절을 entry-bearing 으로
+    인식하게 해, 앞선 설명 절(`## 세션 식별 규칙`)로 폴백해 조용히 no-op 되는 함정을 막는다
+    (codex must-fix). 정상 anchor 만 보는 handoff write 경로는 무영향.
+
+    변경이 없으면 입력 텍스트를 그대로(동일 객체) 반환한다 — 호출부가 no-op 을 값 비교로 감지.
+    """
+    result = _extract_session_section(pm_state_text, entry_re=_ANY_SESSION_ANCHOR_RE)
+    if result is None:
+        return pm_state_text
+    section_text, start_offset, end_offset = result
+    fixed_section = _MALFORMED_SESSION_ANCHOR_RE.sub(r"**\1차**", section_text)
+    if fixed_section == section_text:
+        return pm_state_text
+    return pm_state_text[:start_offset] + fixed_section + pm_state_text[end_offset:]
 
 
 # ── pm_playbook.md 인계 프롬프트 추출 ────────────────────────────────────────
@@ -1543,6 +1599,56 @@ class PmHandoff:
         return 0
 
 
+# ── 오형식 차수 정규화 CLI 진입 (--normalize-session-anchors·ADR-0044) ────────────
+
+def _run_normalize_session_anchors(worktree_slot: str | None, dry_run: bool) -> int:
+    """`--normalize-session-anchors` 진입 — 활성 슬롯 pm_state.md 의 오형식 `**N차차+**` 를
+    `**N차**` 로 멱등·비파괴 정규화한다 (ADR-0044·§1.6·prefer-data-migration-over-fallback).
+
+    - 대상 = `_pm_state_path(..., migrate=False)` (읽기 위치·마이그레이션 안 함·부작용 0).
+      슬롯 미해소(솔로)면 legacy `wiki/pm_state.md`, 슬롯 해소면 per-slot 경로.
+    - 변경 preview(unified diff)를 항상 출력한다(비파괴 선검토).
+    - `--dry-run` 이면 파일을 교체하지 않는다(선검토). 없으면 diff 출력 후 교체 write.
+    - 파일 부재·변경 없음(이미 정합·멱등)은 rc0 no-op.
+
+    반환: 0 (정규화 적용/미리보기/no-op 전부 성공).
+    """
+    target = _pm_state_path(worktree_slot, migrate=False)
+    print(f"[normalize-session-anchors] 대상 pm_state: {target}")
+    if not target.exists():
+        print("  대상 파일이 없다 — 정규화할 것이 없다(no-op).")
+        return 0
+
+    original = target.read_text(encoding="utf-8")
+    normalized = normalize_session_anchors(original)
+    if normalized == original:
+        print("  오형식 `**N차차+**` 없음 — 이미 정합(변경 없음·멱등 no-op).")
+        return 0
+
+    print("  변경 preview (오형식 `**N차차+**` → `**N차**`·세션 식별 절만):")
+    diff = difflib.unified_diff(
+        original.splitlines(keepends=True),
+        normalized.splitlines(keepends=True),
+        fromfile="pm_state.md (before)",
+        tofile="pm_state.md (after)",
+    )
+    for line in diff:
+        # unified_diff 는 컨텍스트 줄에 keepends 로 개행을 보존하지만 헤더/eof-no-newline
+        # 줄엔 개행이 없을 수 있어 end 를 조건부로 붙인다.
+        print(line, end="" if line.endswith("\n") else "\n")
+
+    if dry_run:
+        print(
+            "  [dry-run] 파일 미변경 — 위 diff 를 검토한 뒤 --dry-run 없이 재실행해 적용하라 "
+            "(비파괴·멱등)."
+        )
+        return 0
+
+    target.write_text(normalized, encoding="utf-8")
+    print(f"  ✓ 정규화 적용 완료 — {target} 교체 (멱등: 재실행 시 무변화).")
+    return 0
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1617,6 +1723,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-pytest",
         action="store_true",
         help="회귀 측정 skip (기본 측정·대화형 경로).",
+    )
+    # ── 유지보수 모드 (핸드오프 7단계와 독립·ADR-0044) ──────────────────────────
+    parser.add_argument(
+        "--normalize-session-anchors",
+        action="store_true",
+        help=(
+            "유지보수 모드 — pm_state.md 세션 식별 절의 오형식 `**N차차+**`(T-0100 잔재) 를 "
+            "`**N차**` 로 멱등·비파괴 정규화한다 (ADR-0044). session-seq/wave-summary 불요. "
+            "먼저 `--dry-run` 으로 diff 를 선검토한 뒤 재실행해 적용하길 권장. --session <repo>_<N> "
+            "로 슬롯별 pm_state 지정 가능(솔로는 미지정→legacy)."
+        ),
     )
     return parser
 
@@ -1773,6 +1890,13 @@ def main(argv: list[str] | None = None) -> int:
     # 무변경으로 정합한다(무접두 형식이 downstream 3곳서 부분 고장나던 갭 해소).
     if args.worktree_slot:
         args.worktree_slot = _canonicalize_worktree_slot(args.worktree_slot)
+
+    # ── 오형식 차수 정규화 모드 (--normalize-session-anchors·ADR-0044·§1.6) ──────
+    # 세션 식별 절의 `**N차차+**`(T-0100 잔재) → `**N차**` 멱등·비파괴 정규화. 핸드오프
+    # 7단계와 독립된 유지보수 모드라 session-seq/wave-summary required 체크 *앞에서* 분기해
+    # 조기 반환한다(위 ingress 파이프라인으로 canonical 화된 슬롯을 per-slot 대상 해소에 재사용).
+    if args.normalize_session_anchors:
+        return _run_normalize_session_anchors(args.worktree_slot, args.dry_run)
 
     # 대화형 경로 — session-seq(또는 deprecated --session-num)·wave-summary 수동 필수.
     missing = [
