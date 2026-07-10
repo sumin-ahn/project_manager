@@ -17,7 +17,8 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
 - **`AGENTS.lite.md`** (경량 진입) — 한 파일 + 공유 엔진 + `.opencode/command/` 만으로 PM
   happy-path(부트스트랩 → 발행 → 위임 → finish)를 자족 운영하도록 압축한 판. 회사 200K 배포 1급.
   도입 시 `--weight lite` 로 선택 (아래 §채택).
-- **`.opencode/agents/`** — developer · code-reviewer · architect subagent 정의(`mode: subagent`).
+- **`.opencode/agents/`** — pm primary 정의(`mode: primary` — orchestrator relay spawn 타깃) +
+  researcher · developer · code-reviewer · architect subagent 정의(`mode: subagent`).
   위임 1차 = 네이티브 `task` tool 이 이 정의를 별도 자식 세션에서 구동한다.
 - **`.opencode/command/`** — PM workflow slash command (pm-bootstrap·pm-wave-claim·pm-dev-delegate·
   pm-qa·pm-wave-finish·pm-handoff·pm-env·pm-update·spike-new · 전체는 `.opencode/command/` 디렉토리 · claude `.claude/skills/` 등가).
@@ -25,7 +26,7 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
 ### 위임 규약 단일 진실 = `AGENTS.md §3`
 
 위임 1차는 **opencode 네이티브 `task` tool** 이다 — PM(build primary)이 `task` tool 을
-`subagent_type=developer|code-reviewer|architect` 로 호출하면 opencode 가 `.opencode/agents/*.md`
+`subagent_type=developer|code-reviewer|architect|researcher` 로 호출하면 opencode 가 `.opencode/agents/*.md`
 를 별도 자식 세션(fresh 200K 격리·subagent `model:` 대로)에서 구동한다. `opencode run` 외부
 프로세스는 headless·CI·task tool 미노출 빌드용 **폴백**으로 강등됐다(§3.7). 자세한 규약·프롬프트는
 `AGENTS.md §3` 가 단일 진실. 결정 근거는 ADR-0006(§3·D2·D3·D5).

@@ -48,5 +48,6 @@ permission:
 
 ## 세션 식별
 
-- 이 PM 세션명은 **`pm`** 고정. board.py 조작 시 `--session pm` 으로 전달한다
-  (AGENTS.md §"세션 식별" 단일 진실 — 식별 우선순위·위임 라벨 포함).
+- 이 PM 세션명 canonical = **`<repo>_<N>`** (multi-PM 정체성 · ADR-0043). board.py 조작 시
+  `--session <repo>_<N>` 으로 전달한다 — 솔로(M=1)면 생략 가능
+  (AGENTS.md §"세션 식별" 단일 진실 — canonical 표기·식별 우선순위·위임 라벨 포함).

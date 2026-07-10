@@ -82,6 +82,16 @@ def _areas_file() -> Path:
     return base / "areas.md"
 
 
+def _dashboard_file() -> Path:
+    """slot 대시보드 경로 (`wiki/log/dashboard.md`·*호출 시점* REPO 추종·hermetic·ADR-0047·T-0260).
+
+    pm_handoff `_dashboard_file()` 과 *같은 위치* — 핸드오프 write / 부트스트랩 read 의 공유
+    채널(log/current.md 와 동형·새 git 기계 0). 섹션 grammar 는 pm_handoff `parse_dashboard_
+    sections` 를 동적로드 재사용(DRY) — 경로만 여기서 REPO 기준 해소한다(`_areas_file` 동형).
+    """
+    return REPO / ".project_manager" / "wiki" / "log" / "dashboard.md"
+
+
 # ── worktree_pool import seam (multi-PM 모드·ADR-0013) ───────────────────────────
 # multi-PM 인자(--repo)를 받았을 때만 alloc 경로에 진입한다. 솔로 무인자 경로는 이
 # 모듈을 전혀 쓰지 않으므로 import 실패가 무해(fail-soft) — 단 --repo 를 줬는데
@@ -1666,6 +1676,102 @@ class PmBootstrap:
             "pending intent 는 프로젝트 상태로 취급"
         )
 
+    # ── 다른 활성 PM 대시보드 light dump (수정형·ADR-0047 ③·T-0260) ──────────
+
+    def _read_leased_sessions_slots(self) -> list[tuple[str, str]] | None:
+        """lease 장부에서 leased 엔트리의 `(session, slot)` 목록을 직접 read 한다 (touches 격리).
+
+        session 은 엔트리 `session` 또는 슬롯(`work/<repo>_<N>`→`<repo>_<N>`)에서 유도(대시보드
+        키와 동형). worktree_pool 미import(`_repo_slot_numbers` 동형·stdlib json). **장부 부재/
+        깨짐/스키마 불일치 → None**("활성 슬롯을 알 수 없음"·MF-1 필터가 no-op 폴백에 씀); 정상
+        read 인데 leased 0개면 `[]`. `_lease_others`(폴백 dump)·`_active_leased_sessions`(교집합
+        필터) 가 공유한다.
+        """
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+        if not leases_file.exists():
+            return None
+        try:
+            data = json.loads(leases_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("leases"), list):
+            return None
+        pairs: list[tuple[str, str]] = []
+        for row in data["leases"]:
+            if not isinstance(row, dict) or row.get("state", "leased") != "leased":
+                continue
+            slot = str(row.get("slot") or "")
+            session = row.get("session") or (
+                slot[len("work/"):] if slot.startswith("work/") else slot
+            )
+            if session:
+                pairs.append((session, slot or "(미상)"))
+        return pairs
+
+    def _active_leased_sessions(self) -> set[str] | None:
+        """활성(leased) 슬롯 세션 키 집합 (MF-1 대시보드 교집합 필터·codex).
+
+        장부 read 성공 → leased 세션 집합. 장부 부재/불가(None) → **None**(활성 여부 판정
+        불가 → 필터 no-op·현행 표시 보존). `--done` release 로 idle 된 슬롯을 이 집합이 배제하므로
+        대시보드에 stale 섹션이 남아도 부트스트랩 dump 에서 사라진다 — release 누락/크래시에도
+        idle 노출 0(옵션 b·display-robust).
+        """
+        pairs = self._read_leased_sessions_slots()
+        return {s for s, _ in pairs} if pairs is not None else None
+
+    def _lease_others(self) -> list[dict]:
+        """자기 제외 leased 슬롯 목록을 lease 장부에서 직접 read 한다 (대시보드 부재 폴백).
+
+        `wiki/log/dashboard.md` 부재 시 폴백 — leased 엔트리에서 자기 세션(`_bound_session_name`)
+        제외분을 `[{"session","slot"}]` 로 반환한다. 장부 부재/깨짐/leased 0개는 빈 목록.
+        """
+        pairs = self._read_leased_sessions_slots()
+        if not pairs:
+            return []
+        bound = self._bound_session_name()
+        return [{"session": s, "slot": slot} for s, slot in pairs if s != bound]
+
+    def _collect_dashboard_others(self) -> dict | None:
+        """타 슬롯 대시보드 섹션(자기 제외) light dump 데이터를 수집한다 (ADR-0047 ③·T-0260).
+
+        - `wiki/log/dashboard.md` 존재 → `pm_handoff.parse_dashboard_sections`(동적로드·DRY)로
+          파싱해 자기 세션(`_bound_session_name`) 제외 + **활성(leased) 슬롯과 교집합** 섹션들을
+          `{"mode":"dashboard","others":[{"session","body"}]}` 로 반환. 자기 섹션은 표시 안 함
+          (자기 컨텍스트는 pm_state/log 몫·ADR-0047). `--done` 으로 release 된 idle 슬롯 섹션은
+          활성 집합에 없어 배제된다(MF-1·codex·stale idle 노출 0). 활성 집합 판정불가(장부 부재)면
+          필터 no-op(현행 표시 보존). 남는 타 슬롯 0개면 None(절 생략).
+        - 대시보드 부재/파싱 실패 → `_lease_others` 폴백(`{"mode":"lease","others":[…]}`).
+        - 어느 쪽도 타 PM 0개(솔로) → None(절 생략·graceful).
+        """
+        dash_file = _dashboard_file()
+        if dash_file.exists():
+            try:
+                text = dash_file.read_text(encoding="utf-8")
+            except OSError:
+                text = None
+            pm_handoff = _load_tool("pm_handoff") if text is not None else None
+            parser = getattr(pm_handoff, "parse_dashboard_sections", None)
+            if parser is not None:
+                try:
+                    sections = parser(text)
+                except Exception:  # noqa: BLE001 — fail-soft: 파싱 실패는 lease 폴백.
+                    sections = None
+                if sections is not None:
+                    bound = self._bound_session_name()
+                    # MF-1: 활성(leased) 슬롯과 교집합 — release/idle 슬롯의 stale 섹션 배제.
+                    # 활성 집합 None(장부 판정불가)이면 필터 no-op(현행 표시 보존).
+                    active = self._active_leased_sessions()
+                    others = [
+                        {"session": key, "body": body}
+                        for key, body in sections
+                        if key != bound and (active is None or key in active)
+                    ]
+                    # 대시보드가 진실원 — 타 슬롯 없으면 절 생략(lease 폴백 안 함·현재-상태 우선).
+                    return {"mode": "dashboard", "others": others} if others else None
+        # 대시보드 부재/파싱 불가 → 현행 lease 목록 폴백.
+        lease_others = self._lease_others()
+        return {"mode": "lease", "others": lease_others} if lease_others else None
+
     # ── 출력 빌드 ────────────────────────────────────────────────────────
 
     def _build_markdown(
@@ -1676,6 +1782,7 @@ class PmBootstrap:
         log_entry: dict | None,
         timestamp: str,
         handoff_ctx: dict | None = None,
+        dashboard_others: dict | None = None,
     ) -> str:
         counts = board["counts"]
         open_tickets = board["open_tickets"]
@@ -1779,6 +1886,27 @@ class PmBootstrap:
             )
         lines.append("")
 
+        # 다른 활성 PM (수정형 대시보드 light dump·ADR-0047 ③·T-0260) — 자기 컨텍스트 복원 뒤
+        # 타 슬롯 현재-상태(3~5줄)만 가볍게 dump(자기 섹션 제외·상세는 log/current.md 몫). 대시보드
+        # 부재면 현행 lease 목록 폴백. 솔로·타 PM 0개면 절 자체 생략(graceful·솔로 무노이즈).
+        if dashboard_others and dashboard_others.get("others"):
+            lines.append("### 다른 활성 PM")
+            if dashboard_others.get("mode") == "dashboard":
+                lines.append(
+                    "(수정형 대시보드 — 각 슬롯 자기 기록·상세는 log/current.md·ADR-0047)"
+                )
+                for other in dashboard_others["others"]:
+                    lines.append("")
+                    lines.append(f"**{other['session']}**")
+                    body = other.get("body")
+                    if body:
+                        lines.append(body)
+            else:
+                lines.append("(대시보드 부재 — 현행 lease 목록 폴백)")
+                for other in dashboard_others["others"]:
+                    lines.append(f"- `{other['session']}` · `{other['slot']}`")
+            lines.append("")
+
         # 권장 첫 turn 섹션
         lines.append("### 권장 첫 turn")
         lines.append("PM 세션 시작합니다.")
@@ -1816,6 +1944,7 @@ class PmBootstrap:
         log_entry: dict | None,
         timestamp: str,
         handoff_ctx: dict | None = None,
+        dashboard_others: dict | None = None,
     ) -> dict:
         counts = board["counts"]
         return {
@@ -1864,6 +1993,9 @@ class PmBootstrap:
                 "user_continuity": git.get("user_continuity"),
             },
             "log_last_entry": log_entry,
+            # 다른 활성 PM (수정형 대시보드·ADR-0047 ③·T-0260) — 자기 제외 타 슬롯 섹션 light
+            # dump({"mode":"dashboard"|"lease","others":[…]}) 또는 None(솔로·타 PM 0개).
+            "dashboard_others": dashboard_others,
         }
 
     # ── 메인 흐름 ────────────────────────────────────────────────────────
@@ -1895,91 +2027,121 @@ class PmBootstrap:
         now = datetime.datetime.now(tz=KST)
         timestamp = now.strftime("%Y-%m-%d %H:%M KST")
 
-        # 바운드 슬롯을 git/pytest 수집 *전*에 세팅한다 (T-0125·순서 함정) — _collect_git/
-        # _collect_pytest 가 슬롯 바인딩(_bind_and_identity)보다 먼저 호출되므로, 여기 진입부에서
-        # 명시 multi-PM 모드(repo+slot·slot=정수 N)면 슬롯 식별자 `work/<repo>_<N>` 를 세팅해
-        # git/pytest 러너가 worktree cwd 를 보게 한다(회사=multi-PM 주 케이스). 솔로(무인자)면
-        # None 유지 → `_worktree_cwd` 가 `_auto_slot()` 로 자동해소(순서 무관). board 러너는 무관.
-        if repo is not None and slot is not None:
-            self._bound_slot = f"work/{repo}_{slot}"
-
-        # git freshness (T-0217) — 부트스트랩 *첫 단계*로 ②·① fetch + clean·ff 자동 ff-pull
-        # (+ ② board 서브모듈). stale 로컬로 세션을 시작하는 연속성 사고(차수 오표기·완료된
-        # 릴리즈 재추진)를 막는다. fetch/pull 실패는 fail-soft(경고 노트 실어 계속·abort 안
-        # 함) — offline 환경도 부트스트랩은 동작한다. git/board 수집보다 *먼저* 돌려 이후
-        # dump 가 pull 반영 상태를 보게 한다.
-        freshness = self._collect_freshness()
-
-        board = self._collect_board()
-        pytest_result = self._collect_pytest() if with_pytest else None
-        git = self._collect_git()
-        # board submodule freshness(T-0195) — HEAD·dirty·ahead/behind. board 미분리(솔로)면
-        # None(graceful skip) — `git` dict 에 실어 빌더로 전달(시그니처 변경 최소화).
-        git["board_git"] = self._collect_board_git()
-        git["freshness"] = freshness
-        log_text = self._read_log_text()
-        log_entry = self._collect_log_entry()
-        # 재부착 단서 (T-0217·ADR-0013) — 현 worktree 브랜치가 직전 handoff 의 worktree
-        # 브랜치와 다르면 경고(자동 checkout 안 함·재부착은 PM 판단). log 마지막 entry 본문의
-        # worktree 줄(`- worktree: slot=… · branch=…`)에서 직전 브랜치를 읽는다.
-        git["reattach"] = reattach_warning(
-            git.get("branch"), log_entry.get("body") if log_entry else None
-        )
-        # user 연속성 (T-0208·ADR-0033 ③) — 직전 handoff 작성자(commit author) vs 현재 user.
-        # 일치=연속·불일치=다른 사용자 경고·미해소=줄 생략(fail-soft). git dict 에 실어 빌더 전달.
-        git["user_continuity"] = self._collect_user_continuity(log_text)
-        # 차수 + 인계 컨텍스트 (T-0179·T-0208) — bound slot pm_state 에서 차수·"남은 작업/사용자발의"
-        # 절. _bound_slot 세팅 후라 명시 multi-PM 모드면 그 슬롯 pm_state 를, 솔로면 자동해소(legacy
-        # 폴백). log_text 를 넘겨 차수 log-폴백 + stale 교차검증(T-0208)을 함께 해소한다.
-        # 미해소/부재면 None → 빌더가 placeholder/명시 포인터로 graceful.
-        handoff_ctx = self._collect_handoff_context(log_text)
-
-        # multi-PM 모드 분기: --slot(lean·직접 bind·T-0074) vs 기존 --repo alloc.
+        # 세션 정체성(`_bound_slot`)을 **모든 수집보다 먼저** 확정한다 (T-0125·codex R4). 이후 모든
+        # cwd-의존(freshness/pytest/git — `_worktree_cwd`)·slot-의존(log_entry/handoff_ctx/dashboard —
+        # `_bound_session_name`) 수집이 확정된 정체성을 본다. 확정 안 하면 alloc 모드 새 세션이
+        # `_worktree_cwd(None)` 자동해소로 **기존 단일 leased 슬롯 cwd** 에서 fetch/pull·pytest·
+        # branch/status 를 보고하고(cwd 유입), 기존 슬롯 log/pm_state/차수를 자기로 표시한다(slot
+        # 유입·T-0253 가 없앤 cross-slot 유입의 alloc-경로 재현). 새 슬롯은 fresh 라 자기 슬롯 cwd·
+        # "없음/1차"가 정답.
+        #   - lean(`--slot`): 슬롯 식별자(`work/<repo>_<N>`)를 직접 세팅.
+        #   - alloc(`--repo` without `--slot`): 새 슬롯을 alloc 해 정체성(`lease.slot`)을 확정하고 아래
+        #     출력에서 재사용한다(재-alloc 금지·`alloc_calls==1`). NeedsCreate(풀 소진)면 맨 앞에서
+        #     조기중단 — 슬롯 없어 세션 시작 불가(정당).
+        #   - 솔로/무인자: alloc 미진입 → `_bound_slot` None → `_worktree_cwd` 가 `_auto_slot()` 로
+        #     자동해소(현행 보존·순서 무관). board 러너는 슬롯 무관(REPO 고정).
         multipm_lean = repo is not None and slot is not None
         multipm_alloc = repo is not None and slot is None
+        alloc_identity: dict | None = None
+        if multipm_lean:
+            self._bound_slot = f"work/{repo}_{slot}"
+        elif multipm_alloc:
+            alloc_identity = self._alloc_and_identity(repo, branch, resume)
+            self._bound_slot = alloc_identity["slot"]  # 새 슬롯 정체성 → 모든 수집 기준.
 
-        if output_json:
-            data = self._build_json(board, pytest_result, git, log_entry, timestamp, handoff_ctx)
-            if multipm_lean:
-                data["worktree"] = self._bind_and_identity(repo, slot)
-            elif multipm_alloc:
-                data["worktree"] = self._alloc_and_identity(repo, branch, resume)
-            print(json.dumps(data, ensure_ascii=False, indent=2))
-        else:
-            markdown = self._build_markdown(board, pytest_result, git, log_entry, timestamp, handoff_ctx)
-            print(markdown)
-            identity: dict | None = None
-            if multipm_lean:
-                # lean 정체성 선언(T-0074) — bind + identity surface + 다른 활성 PM 상태점검.
-                identity = self._bind_and_identity(repo, slot)
-                print()
-                print(self._build_slot_identity_markdown(identity))
-            elif multipm_alloc:
-                # 기존 --repo alloc + identity surface 를 markdown 뒤에 추가 출력.
-                identity = self._alloc_and_identity(repo, branch, resume)
-                print()
-                print(self._build_identity_markdown(identity))
-            # 커맨드 카드 (ADR-0045) — identity surface 뒤. 이 세션이 쓸 전 커맨드를 정체성
-            # (`--session <repo>_<N>`) 채운 완성형으로 dump("--help 자체를 안 가게"). lean 은
-            # session 채운 형태·솔로(identity None/session 부재)는 --session 없는 형태로 분기.
-            # 렌더 실패는 fail-soft(카드 절 생략·위 dump 는 유지).
-            card = self._safe_command_card(identity)
-            if card:
-                print()
-                print(card)
+        # alloc 로 갓 잡은 **신규 lease 를 실패에 안전하게** 만든다 (R5·codex). alloc 을 앞단에 둔
+        # 건 cwd/정체성 정확성(R4) 때문이라 유지하되, 이후 fail-fast 수집(board/pytest/git — parse
+        # 실패 시 `sys.exit(1)`)이 abort 하면 방금 잡은 lease 가 stale leased 로 남아 풀 고갈·"다른
+        # 활성 PM" 오표시를 낳는다. 예외/SystemExit 시 그 신규 lease 를 release 후 re-raise 한다.
+        # 정상 완료(return 0·lint-blocking return 1 = dump 완료)면 lease 유지(세션이 그 슬롯을 쓴다) —
+        # except 는 예외/SystemExit 에만 발동한다. lean/솔로는 이 경로로 신규 lease 를 안 잡으므로
+        # cleanup 대상 아님(`alloc_identity is not None` 가드).
+        try:
+            # git freshness (T-0217) — 부트스트랩 *첫 단계*로 ②·① fetch + clean·ff 자동 ff-pull
+            # (+ ② board 서브모듈). stale 로컬로 세션을 시작하는 연속성 사고(차수 오표기·완료된
+            # 릴리즈 재추진)를 막는다. fetch/pull 실패는 fail-soft(경고 노트 실어 계속·abort 안
+            # 함) — offline 환경도 부트스트랩은 동작한다. git/board 수집보다 *먼저* 돌려 이후
+            # dump 가 pull 반영 상태를 보게 한다.
+            freshness = self._collect_freshness()
 
-        # blocking lint — dump-then-warn(T-0195·abort-before-dump 제거). 위에서 이미
-        # markdown/JSON 전체(board/git/log/pm_state)를 dump 했으니, 여기서 마지막으로
-        # 경고 + 비-0 종료한다 — mid-wave 세션 진입이 dump 0 으로 손 재구성하던 것을 막는다.
-        if board.get("lint_blocking"):
-            print(
-                f"[경고] board lint 차단(blocking) 이슈 — 위 dump 는 정상 출력됨:\n"
-                f"{board['lint_gate_output']}",
-                file=sys.stderr,
+            board = self._collect_board()
+            pytest_result = self._collect_pytest() if with_pytest else None
+            git = self._collect_git()
+            # board submodule freshness(T-0195) — HEAD·dirty·ahead/behind. board 미분리(솔로)면
+            # None(graceful skip) — `git` dict 에 실어 빌더로 전달(시그니처 변경 최소화).
+            git["board_git"] = self._collect_board_git()
+            git["freshness"] = freshness
+            log_text = self._read_log_text()
+            log_entry = self._collect_log_entry()
+            # 재부착 단서 (T-0217·ADR-0013) — 현 worktree 브랜치가 직전 handoff 의 worktree
+            # 브랜치와 다르면 경고(자동 checkout 안 함·재부착은 PM 판단). log 마지막 entry 본문의
+            # worktree 줄(`- worktree: slot=… · branch=…`)에서 직전 브랜치를 읽는다.
+            git["reattach"] = reattach_warning(
+                git.get("branch"), log_entry.get("body") if log_entry else None
             )
-            return 1
+            # user 연속성 (T-0208·ADR-0033 ③) — 직전 handoff 작성자(commit author) vs 현재 user.
+            # 일치=연속·불일치=다른 사용자 경고·미해소=줄 생략(fail-soft). git dict 에 실어 빌더 전달.
+            git["user_continuity"] = self._collect_user_continuity(log_text)
+            # 차수 + 인계 컨텍스트 (T-0179·T-0208) — bound slot pm_state 에서 차수·"남은 작업/사용자발의"
+            # 절. _bound_slot 세팅 후(lean 진입부·alloc 앞단)라 명시 multi-PM 모드면 그 슬롯 pm_state 를,
+            # 솔로면 자동해소(legacy 폴백). log_text 를 넘겨 차수 log-폴백 + stale 교차검증(T-0208)을 함께
+            # 해소한다. 미해소/부재면 None → 빌더가 placeholder/명시 포인터로 graceful.
+            handoff_ctx = self._collect_handoff_context(log_text)
+            # 다른 활성 PM (수정형 대시보드 light dump·ADR-0047 ③·T-0260) — 자기 섹션 제외 타 슬롯
+            # 현재-상태(3~5줄). 대시보드 부재면 lease 목록 폴백·솔로/타 PM 0개면 None(절 생략).
+            # lean 진입부·alloc 앞단으로 `_bound_slot` 이 확정된 뒤라 자기 세션 제외가 정확하다.
+            dashboard_others = self._collect_dashboard_others()
 
-        return 0
+            if output_json:
+                data = self._build_json(
+                    board, pytest_result, git, log_entry, timestamp, handoff_ctx, dashboard_others
+                )
+                if multipm_lean:
+                    data["worktree"] = self._bind_and_identity(repo, slot)
+                elif multipm_alloc:
+                    data["worktree"] = alloc_identity  # 위 앞단 alloc 결과 재사용(재-alloc 금지).
+                print(json.dumps(data, ensure_ascii=False, indent=2))
+            else:
+                markdown = self._build_markdown(
+                    board, pytest_result, git, log_entry, timestamp, handoff_ctx, dashboard_others
+                )
+                print(markdown)
+                identity: dict | None = None
+                if multipm_lean:
+                    # lean 정체성 선언(T-0074) — bind + identity surface + 다른 활성 PM 상태점검.
+                    identity = self._bind_and_identity(repo, slot)
+                    print()
+                    print(self._build_slot_identity_markdown(identity))
+                elif multipm_alloc:
+                    # 기존 --repo alloc + identity surface (위 앞단 alloc 결과 재사용).
+                    identity = alloc_identity
+                    print()
+                    print(self._build_identity_markdown(identity))
+                # 커맨드 카드 (ADR-0045) — identity surface 뒤. 이 세션이 쓸 전 커맨드를 정체성
+                # (`--session <repo>_<N>`) 채운 완성형으로 dump("--help 자체를 안 가게"). lean 은
+                # session 채운 형태·솔로(identity None/session 부재)는 --session 없는 형태로 분기.
+                # 렌더 실패는 fail-soft(카드 절 생략·위 dump 는 유지).
+                card = self._safe_command_card(identity)
+                if card:
+                    print()
+                    print(card)
+
+            # blocking lint — dump-then-warn(T-0195·abort-before-dump 제거). 위에서 이미
+            # markdown/JSON 전체(board/git/log/pm_state)를 dump 했으니, 여기서 마지막으로
+            # 경고 + 비-0 종료한다 — mid-wave 세션 진입이 dump 0 으로 손 재구성하던 것을 막는다.
+            if board.get("lint_blocking"):
+                print(
+                    f"[경고] board lint 차단(blocking) 이슈 — 위 dump 는 정상 출력됨:\n"
+                    f"{board['lint_gate_output']}",
+                    file=sys.stderr,
+                )
+                return 1
+
+            return 0
+        except BaseException:  # noqa: BLE001 — SystemExit 포함: abort 시 신규 lease 반납 후 re-raise.
+            if alloc_identity is not None:
+                self._release_alloc_lease_failsoft(alloc_identity["slot"])
+            raise
 
     # ── multi-PM 모드: worktree 슬롯 alloc + identity surface (ADR-0013·0011) ────
 
@@ -2000,6 +2162,22 @@ class PmBootstrap:
             )
             sys.exit(1)
         return wp
+
+    def _release_alloc_lease_failsoft(self, slot: str) -> None:
+        """alloc 로 갓 잡은 신규 lease 를 best-effort release 한다 (R5·실패 cleanup·원 예외 안 가림).
+
+        부트스트랩이 alloc(앞단·R4) 후 fail-fast 수집(board/pytest/git)에서 abort 하면 이 신규
+        lease 가 stale leased 로 남아 풀 고갈·"다른 활성 PM" 오표시를 낳는다. `worktree_pool.release`
+        로 반납한다 — `require_clean=False`(갓 alloc 한 슬롯은 clean 이나 방어적). 여기서는
+        `_resolve_worktree_pool`(부재 시 SystemExit) 대신 fail-soft 로드(부재→skip)를 쓰고, release
+        자체 실패도 삼킨다 — cleanup 이 원 abort 예외를 **가리지 않게**(re-raise 는 호출부 몫).
+        """
+        try:
+            wp = self._worktree_pool or _load_worktree_pool()
+            if wp is not None:
+                wp.release(slot, require_clean=False)
+        except Exception:  # noqa: BLE001 — best-effort: cleanup 실패가 원 abort 를 가리지 않는다.
+            pass
 
     def _alloc_and_identity(
         self, repo: str, branch: str | None, resume: str | None

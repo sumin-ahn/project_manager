@@ -15,30 +15,80 @@ type: handoff
 > 관례(Windows 는 `py` 런처·래퍼 self-resolve·T-0219) · test 명령 = local.conf `test_cmd=`(board regression 이 해소) ·
 > 보호 영역·게이트 등 프로젝트 내용 = [[pm_role.local.md]] (인스턴스 소유 — 갱신이 안 건드림).
 
-## 부트스트랩 (PM 세션 시작 시 순서)
+## 부트스트랩 (PM 세션 시작 시 — 필독 셋 최소·ADR-0045 D3)
 
+**꼭 읽는 것 (이 3 으로 세션이 선다):**
 ```
-1) CLAUDE.md
-2) .project_manager/wiki/pm_role.md   ← 정적 운영 매뉴얼 (이 파일)
-3) per-slot pm_state — `.project_manager/.local/slots/<slot>/pm_state.md` ← 동적 상태 (세션 window / 남은 작업) · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033
-4) .project_manager/wiki/architecture.md ← **현재-아키텍처 단일 진실**(① live / ② target · ADR-0022). 충돌 시 이게 기준.
-5) .project_manager/wiki/status.md    ← 진행 상태 (judgment — 모듈 상태·비고)
-6) board 상태 — `python3 .project_manager/tools/board.py list` (board.md 는 파생 대시보드 · git-untracked)
-7) log/current.md 마지막 handoff entry — **부트스트랩 CLI 가 본문 전체를 자동 dump** 한다(차수·남은작업과 함께·self-sufficient·ADR-0035). 직접 `python3 .project_manager/tools/pm_log.py tail` 은 baseline 재확인·더 넓은 범위 인용 시에만.
+1) CLAUDE.md                          ← 프로젝트 규칙·형상
+2) per-slot pm_state                  ← 내 동적 상태(세션 window·남은작업)
+   `.project_manager/.local/slots/<slot>/pm_state.md` · git-ignored · 솔로는
+   `wiki/pm_state.md` legacy 폴백(T-0166·ADR-0033)
+3) /pm-bootstrap dump (CLI 한 번) — 아래를 한꺼번에 surface:
+   · 커맨드 카드 — 이 세션이 쓸 전 커맨드를 정체성 채워 dump(커맨드 표기 단일 진실·ADR-0045)
+   · 차수 · 직전 handoff entry 본문 · 남은작업(self-sufficient·ADR-0035)
+   · `--mine` 보드 카운트 + 타 PM 대시보드 slot 1줄(ADR-0047)
 ```
-
 기계 측정 dump 는 `/pm-bootstrap` skill (backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
 
-> **현재-진실 vs 히스토리 (ADR-0022·ADR-0023):** `architecture.md` = 현재-아키텍처 단일 진실(위 4). `decisions/` ADR 은 *왜*의 히스토리(근거·**현재 구속력 없음**) — 현재-기준 아님. 옛 ADR 과 현재 의도/실측이 충돌하면 **architecture.md 가 기준**(요구를 옛 ADR 에 맞춰 재해석 ✗ · architect 가 architecture 갱신 + ADR amend/supersede). `architecture.md`·`status.md` content-truth(구조·구현상태 판정·비고)는 **architect 가 유지·PM 은 점검**(저자 아님).
+**필요할 때만 참조 (필독 아님·평시 미유입):** architecture · status · decisions · roadmap · 전체
+보드 · 타 슬롯 log 는 부트스트랩에 통째 로드하지 않는다 — 그 지식이 *실제로 필요할 때만* 아래
+§"찾아가는 법" 표대로 연다.
 
-세션 명 약속: `pm`. board.py 와 상호작용 시 (`claim` 등) `--session pm` 인자로
-전달한다 — `export` 는 불필요·불가 (VSCode extension / Bash 툴 환경변수 미보존).
+**공유 vs 슬롯 소유 (multi-PM 관리 규칙·ADR-0047):**
+- **슬롯 소유 = 자기 공간(1차 운영면):** 내 티켓 = `board.py list --mine` · 진행/남은작업 =
+  per-slot `pm_state.md` · 연속성 = 자기 슬롯 태그 handoff entry(ADR-0044). **자기 공간만 잘 관리**한다.
+- **공유 = 가볍게:** 타 PM 작업은 부트스트랩 **대시보드 slot 1줄**로만 받는다(상세 열람 X) ·
+  `log/current.md` 는 프로젝트 히스토리라 평시 통독하지 않고 *필요한 슬롯 태그 entry 만* 검색 ·
+  전체 보드(`board.py list`)는 열람용. 솔로(M=1)는 대시보드·슬롯 태그 무의미(현행 무변경).
+
+> **현재-진실 vs 히스토리 (ADR-0022·ADR-0023):** `architecture.md` = 현재-아키텍처 단일 진실.
+> `decisions/` ADR 은 *왜*의 히스토리(근거·**현재 구속력 없음**) — 현재-기준 아님. 옛 ADR 과 현재
+> 의도/실측이 충돌하면 **architecture.md 가 기준**(요구를 옛 ADR 에 맞춰 재해석 ✗ · architect 가
+> architecture 갱신 + ADR amend/supersede). `architecture.md`·`status.md` content-truth(구조·구현상태
+> 판정·비고)는 **architect 가 유지·PM 은 점검**(저자 아님).
+
+**세션 정체성(ADR-0043·ADR-0040):** 정체성 = `<repo>_<N>`(canonical 단일 문자열)이고 board/리스
+조작은 `--session <repo>_<N>` 로 명시 전달한다(env 미보존이라 `export` 불가·불필요). **실값은
+부트스트랩 카드가 정체성 채워 dump** 하므로 손으로 외우지 않는다. 솔로(단일 세션)는 `--session`
+불요 — env `PM_SESSION_NAME`/local.conf `session=` 자동 해소(현행 무변경·상세 순서는 §세션 식별 규칙).
+
+## 찾아가는 법 (상황 → 소스)
+
+부트스트랩 셋 밖의 것은 **필요할 때만** 연다 — 자기 공간(`--mine`·per-slot·자기 태그)이 1차,
+공유 자산은 그 지식이 실제로 필요할 때만. (부트스트랩 커맨드 카드의 "찾아가기" 1줄 포인터들이
+이 표를 가리킨다 — 카드=포인터·pm_role=정식 서술·단일 진실 분담·ADR-0047.)
+
+**자기 공간 (1차·평상 운영면):**
+
+| 궁금한 것 | 소스 |
+|---|---|
+| 내 티켓 목록 (지금 뭐 하지) | `board.py list --mine` (기본 조회면·open+claim) |
+| 내 티켓 상세 (DoD·인터페이스) | `board.py show T-NNNN` |
+| 내 진행·남은작업 (세션 window) | per-slot `pm_state.md` |
+| 내 직전 세션 (연속성) | `wiki/log/current.md` 에서 **자기 슬롯 태그** 검색(handoff entry·ADR-0044) |
+
+**공유 자산 (필요할 때만·평시 미유입):**
+
+| 궁금한 것 | 소스 |
+|---|---|
+| 타 PM 현황 (누가 뭐 하나) | 부트스트랩 **대시보드** slot 1줄 — 상세는 그 슬롯 태그 log entry(평시 통독 X·ADR-0047) |
+| 현재-아키텍처 (구조·구현상태) | `wiki/architecture.md` — 충돌 시 단일 진실(ADR-0022) |
+| 결정 히스토리 (왜 이렇게) | `wiki/decisions/README.md` 색인 — ADR 상한(*왜*의 히스토리·현재 구속력 없음) |
+| 무엇을·왜 (우선순위·방향) | `wiki/roadmap.md` |
+| 모듈 진행 상태 (judgment) | `wiki/status.md` |
+| 전체 보드 (모든 세션) | `board.py list` — 타 PM 열람용·평시 불요 |
+| 방법론·규율·커맨드 표기 | 이 문서(pm_role) + 부트스트랩 커맨드 카드(커맨드 표기 단일 진실·ADR-0045) |
 
 ## skill 카탈로그 (PM workflow slash command)
 
 PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm-wave-claim`
 → `/pm-dev-delegate` (dev / reviewer) → `/pm-wave-finish` } → `/pm-handoff`
 (세션 종료). 자세한 wave 정의·구성 단계는 [`pm_playbook.md`](pm_playbook.md) §"Wave 패턴" 참조.
+
+> **커맨드 *표기*(실 인자·정체성)의 단일 진실 = 부트스트랩 커맨드 카드(코드 생성·ADR-0045).**
+> 아래 표는 *방법론*(어떤 wave 에 어떤 skill·왜)만 담는다 — 실제 호출줄(정체성 `--session <repo>_<N>`
+> 채움·숨은 전제 경고 인접)은 `/pm-bootstrap` 이 dump 하는 카드가 항상-정합 단일 진실이라 여기 표기를
+> 중복하지 않는다(정적 표는 정체성 placeholder·drift 원천이었음·ADR-0045 Context).
 
 | skill | 역할 | backbone CLI |
 |---|---|---|
@@ -154,7 +204,9 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
 
 ## 세션 식별 규칙
 
-- `pm`: PM 세션 (계속 사용 권장).
+- **PM 세션 정체성 = `<repo>_<N>`** (canonical 단일 문자열·ADR-0043) — board/리스 조작은
+  `--session <repo>_<N>` 명시(부트스트랩 카드가 실값 채워 dump·손 암기 불요). 솔로(단일 세션)는
+  `--session` 불요 — env `PM_SESSION_NAME`/local.conf `session=` 자동 해소(아래 해소 순서).
 - 구현 세션: 짧은 식별자 (알파벳·역할명 등). `board.py claim --session <name>` 으로 명시.
 - orchestrator 위임 시 PM 이 Agent 툴로 서브에이전트를 spawn — 세션명은
   `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류로 claim 시 명시 전달.

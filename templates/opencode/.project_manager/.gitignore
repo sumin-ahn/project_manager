@@ -4,6 +4,10 @@
 # board.md = tickets/ 에서 재생성되는 파생 대시보드 (board.py refresh). clone 간 공유 안 함.
 wiki/board.md
 
+# dashboard.md = 핸드오프가 런타임 lazy 생성하는 slot 대시보드 파생물 (수정형·ADR-0047·T-0260).
+#   board.md 와 같은 사유 — 파생·현재-상태 스냅샷이라 git-untracked(공개 제품에 이물질 미출하).
+wiki/log/dashboard.md
+
 # pm_state.md = 로컬 핸드오프 상태 (pm-init 이 pm_state.template.md 에서 생성).
 #   solo = clone당 1개(wiki/pm_state.md). multi-PM = 슬롯별(.local/slots/<slot>/pm_state.md·
 #   pm_handoff 가 첫 핸드오프 시 graceful 이동·T-0166·ADR-0033 §3.1). 둘 다 gitignored.

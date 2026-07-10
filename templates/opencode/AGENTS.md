@@ -76,10 +76,13 @@ build 세션이 시작되면 다음을 순서대로 수행한다. **Read tool �
 
 ### 세션 식별
 
-- PM 세션명은 **`pm`** 고정. board.py 조작 시 `--session` 인자로 전달한다:
+- **PM 세션명 canonical = `<repo>_<N>`** (multi-PM 정체성 — `<repo>`=프로젝트 repo·`<N>`=PM 슬롯
+  번호 · ADR-0043). board.py 조작 시 `--session` 인자로 이 표기로 전달한다:
   ```bash
-  {{PY}} .project_manager/tools/board.py claim T-NNNN --session pm
+  {{PY}} .project_manager/tools/board.py claim T-NNNN --session <repo>_<N>   # 예: --session myproj_1
   ```
+  canonical 표기라야 board 가 repo prefix 를 유도한다 (`pm` 같은 자유형은 M>1 에서 prefix 유도가 조용히 죽음).
+  **솔로(M=1)** 는 `--session` 을 생략해도 된다 — 아래 식별 우선순위 체인이 해소한다.
   (board.py 식별 우선순위: `--session` 인자 > `$PM_SESSION_NAME`[구 `$CLAUDE_SESSION_NAME` = deprecated alias] > local.conf `session=` > `hostname-pid`.)
 - 위임(task subagent · 폴백 프로세스)의 식별 라벨 — `orch-dev-TNNNN` / `orch-review-TNNNN` (§3).
 
@@ -247,7 +250,7 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"        # 읽�
 # 보드
 {{PY}} .project_manager/tools/board.py list
 {{PY}} .project_manager/tools/board.py show T-NNNN
-{{PY}} .project_manager/tools/board.py claim T-NNNN --session pm
+{{PY}} .project_manager/tools/board.py claim T-NNNN --session <repo>_<N>   # 솔로(M=1)면 생략 가능 (§세션 식별)
 {{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass
 {{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint           # depends_on·thin-ticket 검사
@@ -257,7 +260,7 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"        # 읽�
 {{PY}} .project_manager/tools/pm_log.py archive --before YYYY-MM-DD
 
 # 위임 (1차 = 네이티브 task tool · 모델은 subagent 정의가 정함)
-#   PM 이 task tool 호출: subagent_type=developer|code-reviewer|architect, description, prompt (§3.1)
+#   PM 이 task tool 호출: subagent_type=developer|code-reviewer|architect|researcher, description, prompt (§3.1)
 # 위임 폴백 (headless·CI·task tool 미노출 — 내장 build/plan primary 라 subagent model: 안 읽음;
 #   모델은 opencode 기본, Pro/특정 모델 강제 시 -m <model>)
 opencode run --agent build --format json "<dev/architect 프롬프트>"

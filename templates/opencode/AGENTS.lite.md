@@ -30,7 +30,7 @@
 **상태** [`status.md`](.project_manager/wiki/status.md)(모듈 진행상태·비고 · judgment-only) +
 [`pm_state.md`](.project_manager/wiki/pm_state.md)(per-slot `.local/slots/<slot>/`·솔로는 wiki 폴백·T-0166) · 3. **직전 핸드오프**(부트스트랩이 본문 dump·ADR-0035).
 
-> 세션명 **`pm`** 고정 — `board.py ... --session pm`. 위임(task subagent·폴백 프로세스) 식별 라벨 `orch-dev-TNNNN`/`orch-review-TNNNN`.
+> 세션명 canonical **`<repo>_<N>`** (multi-PM 정체성 · ADR-0043) — `board.py ... --session <repo>_<N>` (솔로는 생략 가능). 위임(task subagent·폴백 프로세스) 식별 라벨 `orch-dev-TNNNN`/`orch-review-TNNNN`.
 > 첫 turn 보고: board 1줄 + 직전 요약 3~5줄 + 다음 옵션 + 결정 요청(*무엇부터?*). 기계 dump = `pm_bootstrap.py`.
 
 ## 2. 작업 원칙 (반드시)
