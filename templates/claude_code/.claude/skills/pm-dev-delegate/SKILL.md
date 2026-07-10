@@ -11,7 +11,7 @@ description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touche
 
 ## 사전 조건
 
-- ticket 이미 claim (`pm-wave-claim` 통과·`pm` 세션명).
+- ticket 이미 claim (`pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>` · 솔로(M=1)는 생략).
 - depends_on 모두 done.
 - touches 명시.
 - DoD verify-able.

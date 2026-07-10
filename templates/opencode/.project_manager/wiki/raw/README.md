@@ -24,6 +24,26 @@
 - **수정하면 인용이 깨진다** — ADR·log entry·ticket 본문이 raw 의 특정 절을
   인용한다. 후속 사실은 *새 파일* 에 적어 인용 사슬을 보존한다.
 
+## 예외 — spike 는 *seal* 시점에 immutable 이 바인딩된다 (ADR-0010)
+
+위 근거는 **태어날 때 봉인된**(born-sealed) 산출 — `plans/`·`evaluations/`·
+`benchmarks/` — 에 정확히 들어맞는다. 이들은 *측정·작성이 끝난 한 시점*의 스냅샷이다.
+**그러나 `spikes/` 는 여러 턴에 걸쳐 저작되는 live 과정**(born-draft)이라, immutability
+가 *생성* 시점이 아니라 ***seal* 시점**에 바인딩된다:
+
+- `status: draft` — 편집 가능·**세션 경계 무관**. 핸드오프해도 다음 세션이 *같은 파일*을
+  이어 쓴다 (새 날짜 파일이 아니다). 설계가 여러 턴에 걸쳐 누적되는 동안의 정상 상태.
+- `status: sealed (<date>)` — immutable·인용 가능. 설계 절 전부 합의 + §4·§5 완비 +
+  **사용자 사인오프** 시에만 봉인한다(혼자 봉인 금지). 봉인된 순간부터 위의 두 근거(시간
+  스냅샷·인용 사슬)가 그대로 적용된다.
+- **안전 기본값**: frontmatter `status:` 가 `draft` 로 시작하지 *않으면*(또는 없으면)
+  **immutable.** 기본이 immutable 이라 누락/오타가 데이터를 안 깨뜨리고, 기존 sealed
+  spike 마이그레이션은 0이다. 기존 `accepted (<date>)` 는 sealed 별칭(후방호환·=immutable).
+- **발행 입력은 sealed spike 만** — ADR/ticket 은 sealed 된 spike 에서만 발행한다. draft 는
+  권위 인용 대상이 아니므로(PM 수렴 입력이 아니므로) draft 편집이 인용 사슬을 안 깨뜨린다.
+- **sealed 후 vN 개정·born-sealed(plan/eval/bench) 는 현행 그대로** — 이 예외는 *spike 에만*
+  적용된다. sealed spike 의 개정은 여전히 새 날짜 파일(vN), born-sealed 는 태어날 때부터 immutable.
+
 ## 그럼 갱신은 어떻게
 
 - 같은 plan 의 새 버전이면: `plan_v2.md`. v1 은 그대로 둔다.
@@ -40,7 +60,8 @@
 
 - ✅ 새 파일 추가
 - ✅ 다른 문서에서 link 인용
-- ❌ 기존 파일 수정 (오타 수정도 — 사람 손이 닿으면 같은 시간 스냅샷이 아니게 된다)
+- ✅ **`spikes/` 예외**: `status: draft` 동안은 *같은 파일* 편집·세션무관 resume 가능 — `sealed (<date>)` 부터 immutable (ADR-0010)
+- ❌ 기존 파일 수정 (오타 수정도 — 사람 손이 닿으면 같은 시간 스냅샷이 아니게 된다). *non-draft 는 일체 immutable — 안전 기본값.*
 - ❌ 기존 파일 삭제
 
 심각한 잘못 (오해 소지·민감 정보 누출 등) 이 있으면 별도 ADR 로 처리하고 *왜

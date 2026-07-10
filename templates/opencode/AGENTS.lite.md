@@ -49,7 +49,7 @@
 
 - **1차 = `task` tool 호출** — 인자 `subagent_type`(=`developer`|`code-reviewer`|`architect`)·`description`(한 줄)·`prompt`(role 프롬프트). opencode 가 subagent(`.opencode/agents/*.md`)를 별도 자식 세션(fresh ctx·200K 격리)에서 구동·결과 반환(PM 9차 실증). subagent `tools:`/`permission:`/`model:` 이 권한·모델을 정함 — `--agent`/`-m` 분기 불필요.
 - **role → subagent_type**: developer=쓰기(코드+테스트) · code-reviewer=읽기(generate≠evaluate) · architect=설계(읽기+문서 쓰기).
-- **사전조건**: ticket claim(`pm`)·depends_on done·touches 명시·DoD verify-able. **병렬은 touches disjoint 일 때만**(task 병렬은 opencode 가 자식 세션 관리).
+- **사전조건**: ticket claim(세션 정체성 canonical `<repo>_<N>`·솔로 M=1 은 생략)·depends_on done·touches 명시·DoD verify-able. **병렬은 touches disjoint 일 때만**(task 병렬은 opencode 가 자식 세션 관리).
 - dev 프롬프트 골자: "T-NNNN 구현. 본문 단일진실(`board.py show T-NNNN`). board/status/log 는 PM — 너는 코드+테스트. 보고: 변경파일·테스트수·회귀결과·DoD evidence."
 - reviewer 후: **PM 직접 fix**(1줄·1패턴) / dev 재작업(여러 줄) / 별도 ticket(범위 외). reviewer 도 틀릴 수 있다 — should-fix 는 흐름 cross-check 후.
 - **폴백** (headless·CI·task tool 미노출): `opencode run --agent build|plan --format json "<프롬프트>"` (dev·architect=build 쓰기, reviewer=plan 읽기). `--agent build/plan` 은 내장 primary 라 subagent `model:` 을 안 읽음 → 모델은 opencode 기본(Pro 강제는 `-m`). 병렬 폴백은 세션 DB 락 가능성·순차 안전.

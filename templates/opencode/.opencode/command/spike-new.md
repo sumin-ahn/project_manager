@@ -1,5 +1,5 @@
 ---
-description: "사용자와 대화형으로 한 설계 주제를 진행하고 그 산출을 raw/spikes/ 에 박제하는 설계 command. 혼자 다 쓰지 않는다 — 실측 현황은 먼저 파악해 보고하고, 옵션·결정은 사용자와 한 절씩 합의하며 채운다. ADR/ticket 은 spike 파일 안 DRAFT 초안으로만, 발행은 PM. raw/ IMMUTABLE. Triggers: '설계 spike', 'spike 만들어', 'raw 설계안', 'design spike', 'spike-new'."
+description: "사용자와 대화형으로 한 설계 주제를 진행하고 그 산출을 raw/spikes/ 에 박제하는 설계 command. 혼자 다 쓰지 않는다 — 실측 현황은 먼저 파악해 보고하고, 옵션·결정은 사용자와 한 절씩 합의하며 채운다. ADR/ticket 은 spike 파일 안 DRAFT 초안으로만, 발행은 PM. spike 는 status: draft 동안 편집·세션무관 resume, 합의+사인오프 시 sealed 후 IMMUTABLE (ADR-0010). Triggers: '설계 spike', 'spike 만들어', 'raw 설계안', 'design spike', 'spike-new'."
 argument-hint: "<주제>"
 ---
 
@@ -9,7 +9,7 @@ argument-hint: "<주제>"
 
 > 사용자와 너(opencode LLM)가 한 주제를 **대화형으로** 설계하고, 그 산출을 `raw/spikes/` 에 박제한다.
 > ⚠️ **혼자 §0~§6 을 다 쓰고 끝내지 않는다.** 실측은 먼저 파악해 보고하고, 옵션·결정은 사용자와 한 절씩 합의하며 채운다.
-> `raw/` 는 IMMUTABLE — 개정은 새 날짜 파일. (컨벤션 단일 진실: `raw/README.md`.)
+> spike 는 **sealed 후 IMMUTABLE** — 생성 시 `status: draft`(편집·세션무관 resume), 합의+사용자 사인오프 시 `sealed (<date>)`. sealed 후 개정은 새 날짜 파일. (컨벤션 단일 진실: `raw/README.md` · ADR-0010.)
 > 이 command 는 backbone CLI 가 없다 — `cp` + 손 frontmatter 로 충분하다.
 
 주제는 `$ARGUMENTS` 에서 받는다.
@@ -34,7 +34,9 @@ argument-hint: "<주제>"
    - 옵션을 제시 → 사용자 의견 → **합의된 방향만** 파일에 기록.
    - 설계 의도가 걸리는 갈림길은 **추정으로 채우지 말고 사용자에게 묻는다.**
    - 사용자가 다음으로 넘어가자 하기 전엔 다음 절을 쓰지 않는다.
-4. **마무리** — 모든 절이 합의되면 파일 저장 + 이번 spike 산출만 git add. 끝낼 때 **PM 수렴 권장안 블록**을 출력한다(아래).
+4. **마무리 + seal** — 모든 절이 합의되면 파일 저장 + 이번 spike 산출만 git add. 끝낼 때 **PM 수렴 권장안 블록**을 출력한다(아래).
+   - **seal 단계 (ADR-0010):** 설계 절 전부 합의 + §4·§5 DRAFT 완비 + **사용자 사인오프** 확인 시에만 frontmatter `status:` 를 `draft → sealed (<date>)` 로 전환한다. **그 전엔 draft 로 둔다 — 혼자 봉인 금지(사인오프가 seal 트리거).** sealed 부터 immutable·인용 가능 / draft 는 편집 가능. ADR/ticket 발행 입력은 **sealed spike 만**(draft 는 PM 수렴 입력이 아님).
+   - **핸드오프-중-spike:** 설계가 한 세션에 안 끝나면 `status: draft` 로 두고 핸드오프한다. 다음 세션은 *새 날짜 파일이 아니라 같은 파일*을 이어 쓴다.
 
 ## 파일 만들기
 
@@ -53,6 +55,7 @@ cp .project_manager/wiki/raw/spikes/_template.md "$F" && echo "생성: $F"
 ```
 
 생성 후: 파일 Read → frontmatter(`title`·`created`·`session`·`related`) 채우고 상단 사용법 주석 블록 삭제.
+**`status:` 는 `draft` 로 생성한다**(편집 가능·세션무관) — 합의+사용자 사인오프 시 §4 마무리에서 `sealed (<date>)` 로 전환(ADR-0010).
 
 ## 섹션 작성 가이드
 
@@ -72,7 +75,7 @@ cp .project_manager/wiki/raw/spikes/_template.md "$F" && echo "생성: $F"
 설계가 끝나도 이 command 는 **raw/spikes 파일 박제까지만**. ADR/ticket 의 실제 발행(번호 부여, `decisions/`·`tickets/` 파일 생성, `board.py`)은 **PM(orchestrator)이 raw 초안을 참고해 진행**한다. 사용자 게이트가 걸리는 결정(비가역·비용·외부송신·안전)은 PM 이 사용자 비준을 거쳐 발행.
 
 마무리 시 사이드이펙트 격리:
-- 파일 저장만. **status/log/board 는 건드리지 않는다.**
+- 파일 저장 + (사용자 사인오프 시) 이 spike *자신의* frontmatter `status:` 를 `sealed (<date>)` 로 전환만. **status/log/board 는 건드리지 않는다** (PM 담당 — spike 자체 frontmatter `status:` 는 별개).
 - git: 이번 spike 의 `raw/spikes/` 하위 산출만 `add` (다른 변경과 섞지 말 것).
 
 **PM 수렴 권장안 블록** — 마지막 응답에 출력 (PM 이 §0·§4·§5·§6 받아 수렴·발행):
@@ -94,14 +97,14 @@ PM 은 이 블록 + spike 본문(§0·§4·§5·§6)만으로 수렴을 시작�
 
 - **주제 먼저 고정** — scope(범위 안/밖)를 사용자와 합의한 뒤에야 파일·실측 시작. 실측 중 곁가지(증상)로 주제를 바꾸지 않는다.
 - **대화형** — 이 command 는 혼자 결정·완성하지 않는다. 실측 보고 후 옵션·결정은 사용자와 한 절씩.
-- **raw/spikes = board 밖** — 자유 파일명. `raw/` IMMUTABLE — 개정은 새 날짜 파일(vN 누적).
+- **raw/spikes = board 밖** — 자유 파일명. spike 는 `status: draft` 동안 편집 가능·세션무관 resume, **sealed (<date>) 부터 IMMUTABLE** — sealed 후 개정은 새 날짜 파일(vN 누적). immutability 는 생성이 아니라 seal 시점 바인딩(ADR-0010).
 - **ADR/ticket 은 raw 안 DRAFT** — spike 파일 안에 초안으로. 실제 발행은 **PM** 이 raw 초안 참고해 진행.
 - **backbone 없음** — `cp` + 손 frontmatter 로 충분.
 
 ## 참고
 
 - `.project_manager/wiki/raw/spikes/_template.md` — 복제 원본(섹션 골격)
-- `.project_manager/wiki/raw/README.md` — `raw/` IMMUTABLE 컨벤션(새 사실 = 새 파일)
+- `.project_manager/wiki/raw/README.md` — `raw/` immutable 컨벤션 + spike draft→sealed 예외(ADR-0010)
 - `.opencode/agents/architect.md` — 무거운 설계 노동을 서브에이전트에 위임할 때(설계 노동 ≠ 결정·T-0004 에서 추가)
 
 </command-instruction>

@@ -60,7 +60,7 @@ pm_import 가 이를 **추측 없이 `opencode models` 결정적 조회**로 해
 1. **`--opencode-model PROVIDER/MODEL`** (비대화/CI) — 먼저 치환, 가용목록 대조는 best-effort 경고.
    ```bash
    python3 .project_manager/tools/pm_import.py --new <PATH> --harness opencode \
-     --opencode-model ollama/qwen3.6:27b
+     --opencode-model ollama/glm-5.2:cloud
    ```
 2. **tty 대화형** — `--opencode-model` 미지정·터미널이면 `opencode models` 목록에서 번호 선택.
 3. **비-tty·조회 실패·미선택 등**(비-tty/CI·opencode 바이너리 부재·`opencode models` 조회 실패·

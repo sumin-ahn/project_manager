@@ -20,7 +20,7 @@
     모델(Pro)·풀권한·안전 가드가 박힌 PM 세션이 뜬다. pm.md 본문은 thin — 이 문서로 부트스트랩하라고
     가리킨다.
   - **폴백 = build primary.** 회사판 opencode 가 custom primary(`mode: primary`)를 노출/허용하는지
-    **미검증**(opencode-pm-adapter spike §6)이므로, `pm` 이 안 떠도 PM 부트스트랩이 안 깨지게 한다 —
+    **미검증**(opencode-pm-adapter spike §6)이므로, `pm` primary agent 가 안 떠도 PM 부트스트랩이 안 깨지게 한다 —
     이 문서를 읽은 build 세션도 곧 PM 이다(plan/build 두 타입만 노출해도 무관). **PM 동작의 단일 진실은
     이 문서**이므로 어느 진입점이든 동일하게 PM 으로 구동된다. (additive — ADR-0006 amendment, 비준은 PM)
 - **위임 = 네이티브 `task` tool.** PM 은 dev/reviewer/architect 역할을 내장 `task` tool 로
@@ -81,9 +81,9 @@ build 세션이 시작되면 다음을 순서대로 수행한다. **Read tool �
   ```bash
   {{PY}} .project_manager/tools/board.py claim T-NNNN --session <repo>_<N>   # 예: --session myproj_1
   ```
-  canonical 표기라야 board 가 repo prefix 를 유도한다 (`pm` 같은 자유형은 M>1 에서 prefix 유도가 조용히 죽음).
+  canonical 표기라야 board 가 repo prefix 를 유도한다 (canonical 이 아닌 자유형 세션명은 M>1 에서 prefix 유도가 조용히 죽음).
   **솔로(M=1)** 는 `--session` 을 생략해도 된다 — 아래 식별 우선순위 체인이 해소한다.
-  (board.py 식별 우선순위: `--session` 인자 > `$PM_SESSION_NAME`[구 `$CLAUDE_SESSION_NAME` = deprecated alias] > local.conf `session=` > `hostname-pid`.)
+  (board.py 식별 우선순위·ADR-0040: `--session` 인자 > `$PM_SESSION_NAME`[구 `$CLAUDE_SESSION_NAME` = deprecated alias] > **활성 슬롯 lease 가 정확히 1개면 그 세션**[단일-lease 유도] > [lease 장부 부재·leased 0 = 솔로] local.conf `session=` > 미해소[귀속 쓰기는 fail-loud·`--session <repo>_<N>` 명시 요구]. leased ≥2[모호]면 local.conf 층을 건너뛴다 — 남의 세션 silent 오귀속 차단.)
 - 위임(task subagent · 폴백 프로세스)의 식별 라벨 — `orch-dev-TNNNN` / `orch-review-TNNNN` (§3).
 
 ### 첫 turn 권장 보고 (부트스트랩 직후)
@@ -134,7 +134,7 @@ task tool 인자:
 
 ### 3.3 위임 전 사전 조건
 
-- ticket 이미 claim (`pm` 세션) · depends_on 모두 done · touches 명시 · DoD verify-able.
+- ticket 이미 claim (세션 정체성 canonical `<repo>_<N>` · 솔로 M=1 은 생략) · depends_on 모두 done · touches 명시 · DoD verify-able.
 - **컨텍스트 예산** — touches 가 대형 파일·광범위 읽기를 요구하면 dev 가 truncation 위험.
   본문이 정확한 함수/라인·패턴 reference 로 읽기를 좁히는지 확인 (안 되면 위임 전 본문 보강·분할).
 - **병렬 위임 시 touches disjoint** — 동시 위임할 ticket 들의 touches 가 완전히 겹치지

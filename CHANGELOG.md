@@ -59,9 +59,15 @@
 - `pm_bootstrap` 이 `/pm-bootstrap <repo> --slot N` 의 positional `<repo>` 를 수용한다 — 핸드오프가
   찍어주던 커맨드와 raw CLI 의 불일치를 수리했다(`--repo` 와 alias·둘 다 주면 값 일치 필수·
   무인자 자동바인딩은 그대로).
-- 진입문서와 어댑터 카드의 세션명 지시를 canonical `<repo>_<N>`(솔로는 `--session` 생략)로 정합 —
-  opencode 의 하드코딩 `--session pm` 과 claude 진입문서의 자유형 `--session session-B` 를 제거했다.
-  하드코딩 세션명은 repo 유도를 조용히 건너뛰게 만든다. 재유입은 테스트로 막는다.
+- 진입문서와 어댑터 카드·위임 스킬의 세션명 지시를 canonical `<repo>_<N>`(솔로는 `--session` 생략)로
+  정합 — opencode 의 하드코딩 `--session pm`·산문형 `` `pm` 세션 `` 과 claude 진입문서의 자유형
+  `--session session-B` 를 제거했다. 하드코딩 세션명은 repo 유도를 조용히 건너뛰게 만든다. 재유입은
+  표기 형태(인자형·산문형·괄호형)에 무관하게 한 규칙으로 막는 테스트로 봉인했다.
+- 진입문서와 티켓 안내의 세션 식별 우선순위 서술을 실제 코드 동작에 맞췄다 — 없어진 `<hostname>-<pid>`
+  정체성 폴백을 빼고, 활성 슬롯이 하나면 그 세션으로 해소하는 단계와 슬롯이 여럿이면 저장값을 건너뛰어
+  오귀속을 막는 규칙을 반영했다.
+- `board.py list` 와 보드 렌더가 숫자 태그(`tags: [2026, cleanup]`)에 크래시하던 것을 고쳤다 — 태그를
+  문자열로 안전하게 처리한다. `--tag` 필터도 숫자 태그를 매치한다.
 - board CLI `--help` 위생 — ticket 인자 metavar 를 `T-NNNN` 으로 표기하고, `new --prefix` 도움말을
   작업 카테고리 재정의에 맞게 갱신했다. `list --session`(뷰 렌즈)이 쓰기 주체 `--session` 과 별개라는
   주의문도 다시 썼다. 핸들러 동작은 바뀌지 않았다.
@@ -71,7 +77,9 @@
   것을 정직하게 표기하고, pm-wave-claim 의 필수 섹션을 6→3(목표·완료 조건·참고)으로 정정했다.
   ADOPT 하네스 기본값을 `claude` 로 명시하고, 하네스별 ctx 예산 키를 진입문서에 반영했다.
 - opencode 어댑터 정합 — researcher 출하 파일 말미의 스트레이 태그 2줄 제거, README 의 서브에이전트
-  개수 undercount 정정, 인스턴스 소유 루트 `.gitignore` 신설(claude 파리티).
+  개수 undercount 정정, 인스턴스 소유 루트 `.gitignore` 신설(claude 파리티). opencode 의 `--opencode-model`
+  예시와 `spike-new` 커맨드의 설계 스파이크 생애주기(초안 편집 → 봉인 → 이후 불변) 서술을 claude 쪽과
+  맞췄다 — opencode 채택자가 옛 모델 예시·옛 봉인 모델을 받던 것을 정정했다.
 
 ## [1.0.5] - 2026-07-07
 

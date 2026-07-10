@@ -95,3 +95,43 @@ def test_ctx_budget_keys_documented_in_full_entry_docs():
         assert "ctx_window_tokens_" in text, (
             f"{rel}: 하네스별 ctx 예산 키(ADR-0041) 문서화 절 누락"
         )
+
+
+# ── ⑤ opencode README --opencode-model 예시 = pm_import canonical(옛 예시 잔존 금지) ──
+# T-0265: 같은 플래그를 설명하는 두 표면(pm_import.py `--opencode-model` argparse help /
+# opencode README §모델 선택 예시)이 서로 다른 모델을 들면 채택자가 폐기된 모델을 복붙한다.
+# canonical = pm_import.py help 의 예시(단일 진실 — 별도 상수 없음). 가드는 "canonical 이
+# 등장한다" 가 아니라 **README 의 --opencode-model 구체 예시가 전부 canonical 과 일치한다**
+# (옛 예시 잔존 0)를 단언해야 실효가 있다.
+
+OPENCODE_README = "templates/opencode/README.md"
+
+# 구체 model 인자만 캡처(placeholder metavar 'PROVIDER/MODEL'·prose 배제):
+# `--opencode-model` 바로 뒤에 공백 후 오는 provider/model — 소문자 시작(대문자 metavar 배제)·
+# 슬래시 포함. → 코드 예시의 실제 모델 문자열만 걸린다.
+_README_MODEL_EXAMPLE = re.compile(r"--opencode-model\s+([a-z][\w./:+-]+)")
+
+
+def _pm_import_opencode_model_example() -> str:
+    src = _read(".project_manager/tools/pm_import.py")
+    m = re.search(
+        r"""add_argument\(["']--opencode-model["'].*?예 ['"]([^'"]+)['"]""",
+        src,
+        flags=re.S,
+    )
+    assert m, "pm_import.py --opencode-model help 에서 예시 모델 추출 실패 — 가드 갱신 필요"
+    return m.group(1)
+
+
+def test_opencode_readme_model_example_matches_pm_import():
+    canonical = _pm_import_opencode_model_example()
+    readme = _read(OPENCODE_README)
+    examples = _README_MODEL_EXAMPLE.findall(readme)
+    assert examples, (
+        f"{OPENCODE_README}: --opencode-model 구체 예시가 없다 — 가드가 무력해짐"
+    )
+    stale = sorted({e for e in examples if e != canonical})
+    assert not stale, (
+        f"{OPENCODE_README}: --opencode-model 예시가 canonical '{canonical}' 와 어긋남 "
+        f"(옛 예시 잔존: {stale}). pm_import.py help 와 동기화하라."
+    )

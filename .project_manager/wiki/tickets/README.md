@@ -16,7 +16,8 @@
 # 1) 현재 상황 확인 (라이브 — board.md 파일 없어도 동작)
 python3 .project_manager/tools/board.py list
 
-# 2) 세션 이름 정하기 (claim 의 --session 인자로 전달 — 없으면 hostname-pid 자동)
+# 2) 세션 이름 정하기 (claim 의 --session 에 canonical <repo>_<N> 전달 · 솔로 M=1 은 생략 가능
+#    — 생략 시 $PM_SESSION_NAME > 활성 슬롯 lease 1개면 그 세션 > local.conf session= 순 해소·미해소면 claim 이 --session 요구)
 ```
 
 ### Ticket 잡고 작업
@@ -82,10 +83,14 @@ tickets/
 
 ## 세션 식별
 
-`claim` 시 `--session <name>` 으로 명시. 없으면 board.py 식별 우선순위:
-1. `$PM_SESSION_NAME` 환경변수 (구 `$CLAUDE_SESSION_NAME` = deprecated alias·여전히 인식)
-2. `local.conf` 의 `session=`
-3. 자동 생성 `<hostname>-<pid>`
+`claim` 시 `--session <repo>_<N>` 로 명시 (harness-무관·1순위 권장). 없으면 board.py 식별 우선순위(ADR-0040):
+1. `--session` 인자
+2. `$PM_SESSION_NAME` 환경변수 (구 `$CLAUDE_SESSION_NAME` = deprecated alias·여전히 인식)
+3. 활성 슬롯 lease 가 정확히 1개면 그 세션 (단일-lease 유도)
+4. (lease 부재·솔로) `local.conf` 의 `session=` (legacy 폴백)
+5. 미해소 — 귀속 쓰기(claim 등)는 `--session <repo>_<N>` 명시 요구 (fail-loud)
+
+`leased ≥2`(모호)면 `local.conf` 층을 건너뛴다 — per-clone 저장값으로 남의 세션에 silent 오귀속하던 것을 차단한다.
 
 ## 보드 새로고침
 

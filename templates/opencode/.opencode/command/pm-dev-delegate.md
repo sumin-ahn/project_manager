@@ -17,7 +17,7 @@ ticket 번호는 `$ARGUMENTS` 에서 받는다 (예: `T-0007`). 역할(developer
 
 ## 사전 조건 (위임 전 확인 · AGENTS.md §3.3)
 
-- ticket 이미 claim (`pm-wave-claim` 통과 · `pm` 세션).
+- ticket 이미 claim (`pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>` · 솔로(M=1)는 생략).
 - depends_on 모두 done.
 - touches 명시.
 - DoD verify-able.

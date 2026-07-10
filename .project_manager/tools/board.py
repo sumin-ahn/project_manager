@@ -3153,6 +3153,18 @@ def cmd_promote(args: argparse.Namespace) -> int:
 _LIST_ACTIVE_STATUSES: tuple[str, ...] = ("open", "claimed", "blocked")
 
 
+def _tag_values(fm: dict[str, Any]) -> list[str]:
+    """frontmatter 의 tags 를 전부 str 로 캐스팅한 리스트 (T-0264).
+
+    YAML 은 `tags: [2026, cleanup]` 의 `2026` 을 int 로 로드한다 — 이를 그대로
+    `str.join` 하면 TypeError 로 크래시하고(cmd_list·마크다운 렌더), 문자열 `--tag`
+    와 `in` 비교하면 조용히 매치 실패한다(필터). tags 를 표시·필터하는 전 호출부가
+    이 str 캐스팅을 단일 지점에서 거치게 해 두 결함을 함께 없앤다. 문자열 태그는
+    str→str 로 무변경(형식·매치 회귀 없음).
+    """
+    return [str(t) for t in (fm.get("tags") or [])]
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     # `--mine`(T-0164·ADR-0033 ④) / `--session`·`--slot`(T-0197) 뷰: 단일 공유 보드의 렌즈 —
     # 내(또는 지목한 세션의) area open + claim. identity 입력(T-0161)을 한 번 해소해 행마다
@@ -3207,7 +3219,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             continue
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, _ = load_ticket(p)
-            if args.tag and args.tag not in (fm.get("tags") or []):
+            if args.tag and args.tag not in _tag_values(fm):
                 continue
             if mine and not _ticket_is_mine(status, fm, my_user, my_slot,
                                             area_owner_in_use,
@@ -3218,7 +3230,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         print("(no tickets)")
         return 0
     for status, fm in rows:
-        tags = ",".join(fm.get("tags") or [])
+        tags = ",".join(_tag_values(fm))
         claimed = fm.get("claimed_by") or ""
         title = (fm.get("title") or "")[:60]
         print(f"  [{status:7s}] {fm['id']}  {title:60s}  {claimed:18s}  {tags}")
@@ -3914,14 +3926,14 @@ def cmd_idea_list(args: argparse.Namespace) -> int:
             continue
         for p in sorted((IDEAS_DIR / status).glob("[0-9]*.md")):
             fm, _ = load_ticket(p)
-            if args.tag and args.tag not in (fm.get("tags") or []):
+            if args.tag and args.tag not in _tag_values(fm):
                 continue
             rows.append((status, fm))
     if not rows:
         print("(no ideas)")
         return 0
     for status, fm in rows:
-        tags = ",".join(str(t) for t in (fm.get("tags") or []))
+        tags = ",".join(_tag_values(fm))
         iid = str(fm.get("id") or "")
         title = (fm.get("title") or "")[:60]
         print(f"  [{status:8s}] {iid:6s} {title:60s}  {tags}")
@@ -5430,7 +5442,7 @@ def _refresh_board_locked() -> None:
             for fm in items:
                 dep = ", ".join(fm.get("depends_on") or []) or "—"
                 tch = ", ".join((fm.get("touches") or [])[:3]) or "—"
-                tag = ", ".join(fm.get("tags") or [])
+                tag = ", ".join(_tag_values(fm))
                 lines.append(
                     f"| {fm['id']} | {fm.get('title','')} | {dep} | {tch} | {tag} |"
                 )
