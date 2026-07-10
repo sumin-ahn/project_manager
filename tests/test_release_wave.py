@@ -794,10 +794,12 @@ def test_multirepo_wave_prompt_has_per_repo_mechanics():
 _RELEASE_TEST_FILES = (
     Path(__file__),
     Path(__file__).parent / "test_fresh_adopter_runtime_smoke.py",
+    Path(__file__).parent / "test_command_card_usability.py",
 )
 # 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
-# 5(이 파일: full/multirepo × claude/opencode + hard-stop) + 2(runtime_smoke: pm_update opencode/claude).
-_EXPECTED_RELEASE_TESTS = 7
+# 5(이 파일: full/multirepo × claude/opencode + hard-stop) + 2(runtime_smoke: pm_update opencode/claude)
+# + 2(command_card_usability: claude/opencode 카드 사용성·ADR-0046·T-0255).
+_EXPECTED_RELEASE_TESTS = 9
 
 
 def _pytest_marker_name(decorator) -> str | None:
