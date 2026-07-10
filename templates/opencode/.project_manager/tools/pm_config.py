@@ -38,6 +38,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -504,6 +505,49 @@ def _set_bare_fetch_refspec(bare_path: Path, *, runner: GitRunner) -> None:
     print("✓ bare fetch refspec 설정 + fetch origin — origin/* remote-tracking ref 채움 (T-0152).")
 
 
+# ── 위임 forward 시 usage prog 정합 (T-0249·ADR-0043) ────────────────────────
+
+# `pm-config init`/`update` 는 board.py / pm_update.py 의 main() 으로 verbatim forward
+# 한다(cmd_init·cmd_update). 그 두 main 은 argparse prog 를 파일명으로 하드코딩하고
+# (prog="board.py"/"pm_update.py") main(argv) 에 prog 파라미터가 없어, `--help`·인자 에러
+# 시 usage 줄에 그 파일명이 새어 나온다 — 에이전트가 칠 실제 커맨드(pm-config init/update)와
+# 불일치해 오인을 부른다(ADR-0043 부수 CLI 위생·facade[pm-config.sh/.cmd]가 진입점이므로
+# usage 도 facade 이름이어야 카드[ADR-0045]↔실행 표기가 일치). 두 main 을 수정하지 않고
+# (touches 격리·CLI 계약 단일 진실 = board/pm_update 보존) 이 파사드에서 위임 동안만 파서
+# 생성 시점의 top-level prog 를 치환한다.
+_FACADE_PROG = "pm-config"   # facade 이름 — build_parser 의 prog 와 동일.
+
+
+@contextlib.contextmanager
+def _forwarded_prog(prog_map: "dict[str, str]"):
+    """위임 동안 argparse ArgumentParser 의 지정된 top-level prog 만 치환한다 (T-0249).
+
+    board.py·pm_update.py 는 prog 를 파일명으로 하드코딩하고 main() 에 prog 인자가 없어,
+    pm-config 가 위임할 때 usage 줄에 파일명이 새어 나온다. 두 엔진을 수정하지 않고(touches
+    격리·CLI 계약 단일 진실 보존) 파서 *생성 시점*에 명시 `prog=` kwarg 가 매핑 키와 정확히
+    일치할 때만 값을 갈아끼운다:
+      - board: "board.py"→"pm-config" — init 서브파서 usage 는 부모 prog 에서 "pm-config init"
+        로 **자동 파생**(argparse add_parser 규약)되므로 이 top-level 치환 하나로 forward 된
+        전 usage 줄이 정합한다.
+      - pm_update: "pm_update.py"→"pm-config update"(플랫 파서·서브커맨드 없음).
+    파생된 subparser prog(예: "pm-config init")·매핑 밖 prog 는 그대로 통과한다. 위임 종료
+    후 `__init__` 를 원복한다 — `--help`/인자 에러의 SystemExit·기타 예외에도 finally 로 복구.
+    """
+    original_init = argparse.ArgumentParser.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        prog = kwargs.get("prog")
+        if prog in prog_map:
+            kwargs["prog"] = prog_map[prog]
+        original_init(self, *args, **kwargs)
+
+    argparse.ArgumentParser.__init__ = _patched_init
+    try:
+        yield
+    finally:
+        argparse.ArgumentParser.__init__ = original_init
+
+
 # ── 서브커맨드 핸들러 ─────────────────────────────────────────────────────────
 
 
@@ -933,7 +977,12 @@ def cmd_update(
             file=sys.stderr,
         )
         return 1
-    return pm_update_mod.main(forward_args)
+    # usage prog 정합 (T-0249·ADR-0043) — pm_update.main 은 prog="pm_update.py" 하드코딩·prog
+    # 인자 없음 → 위임 동안만 "pm_update.py"→"pm-config update" 로 치환한다(에이전트가 칠 실
+    # 커맨드와 정합·파일명 leak 0). 실 배선 검증 테스트가 mock 을 주입하면 fake.main 은 argparse
+    # 를 만들지 않으므로 이 래핑은 무해(패치 후 즉시 원복).
+    with _forwarded_prog({"pm_update.py": f"{_FACADE_PROG} update"}):
+        return pm_update_mod.main(forward_args)
 
 
 # ── upstream show/set (T-0145·ADR-0032 D4) ───────────────────────────────────
@@ -1085,7 +1134,11 @@ def cmd_init(
             file=sys.stderr,
         )
         return 1
-    return board_mod.main(["init", *forward_args])
+    # usage prog 정합 (T-0249·ADR-0043) — board.main 은 prog="board.py" 하드코딩·prog 인자
+    # 없음 → 위임 동안만 "board.py"→"pm-config" 로 치환한다. init 서브파서 usage 는 부모 prog
+    # 에서 "pm-config init" 로 자동 파생돼 에이전트가 칠 실 커맨드와 정합(파일명 leak 0).
+    with _forwarded_prog({"board.py": _FACADE_PROG}):
+        return board_mod.main(["init", *forward_args])
 
 
 # ── 대화형 콘솔 (T-0069) ──────────────────────────────────────────────────────

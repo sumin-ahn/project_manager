@@ -3,7 +3,8 @@
 
 사용:
     venv/bin/python .project_manager/tools/pm_handoff.py \\
-      --session-num <N차> \\
+      --session-seq <N차> \\
+      [--session <repo>_<N>] \\
       --wave-summary "<wave 1~3 한 줄 요약>" \\
       [--dry-run] [--no-pytest]
 
@@ -1497,7 +1498,7 @@ class PmHandoff:
         if done:
             if not explicit_worktree_slot:
                 print(
-                    "\n[중단] --done 은 --worktree-slot 이 필요하다 (어느 슬롯을 반납할지).",
+                    "\n[중단] --done 은 --session <repo>_<N>(또는 legacy alias --worktree-slot) 이 필요하다 (어느 슬롯을 반납할지).",
                     file=sys.stderr,
                 )
                 return 1
@@ -1524,40 +1525,62 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pm_handoff.py",
         description="PM 핸드오프 7단계 자동화 헬퍼.",
     )
-    # 대화형 경로 — session-num·wave-summary 는 필수 (검증은 main 에서 수동).
+    # 대화형 경로 — session-seq(차수)·wave-summary 는 필수 (검증은 main 에서 수동).
+    # canonical = --session-seq (ADR-0043) · --session-num 은 deprecated alias 무기한 수용.
+    # 차수는 "세션 정체성"이 아니라 "슬롯 시퀀스" — --session(정체성) 과 명명 충돌 회피 rename.
+    parser.add_argument(
+        "--session-seq",
+        metavar="N",
+        default=None,
+        help="떠나는 PM 세션 차수 (예: 28·canonical·ADR-0043). 필수 (또는 deprecated --session-num).",
+    )
     parser.add_argument(
         "--session-num",
         metavar="N",
-        help="떠나는 PM 세션 차수 (예: 28). 필수.",
+        default=None,
+        help="[deprecated·--session-seq 로 대체] 세션 차수 alias — 값 동일. 구형 호출 무기한 수용(ADR-0043).",
     )
     parser.add_argument(
         "--wave-summary",
         metavar="요약",
         help="떠나는 PM 세션의 wave 종합 1~2 줄 요약 (사람 작성). 필수.",
     )
-    # ── multi-PM 모드 (ADR-0013) — 솔로 미지정이면 미사용·현행 보존 ──
+    # ── multi-PM 모드 (ADR-0013·ADR-0043) — 솔로 미지정이면 미사용·현행 보존 ──
+    # canonical = --session <repo>_<N>(정체성 단일 문자열) · --worktree-slot 은 deprecated alias.
+    parser.add_argument(
+        "--session",
+        metavar="<repo>_<N>",
+        default=None,
+        help=(
+            "세션 정체성 (canonical·ADR-0043) — `<repo>_<N>`(예: project_manager_1). 내부에서 "
+            "`work/` 프리픽스를 유도해 worktree 슬롯으로 쓴다. multi-PM 모드 전용(솔로는 미지정). "
+            "구형 --worktree-slot 은 alias(값 불일치 시 fail-loud)."
+        ),
+    )
     parser.add_argument(
         "--worktree-slot",
         metavar="슬롯",
         default=None,
         help=(
-            "multi-PM 모드 — 이 세션의 worktree 슬롯 (`work/<repo>_<N>` 1순위·`<repo>_<N>` 도 "
-            "수용·자동 canonical 화). bare 슬롯 번호(`4`)는 repo 별 모호라 거부. handoff entry 에 "
-            "slot/branch 를 기록(회전 재부착 단서). --done 과 함께면 작업완료 release."
+            "[deprecated·--session 으로 대체] multi-PM 슬롯 alias (`work/<repo>_<N>` 1순위·"
+            "`<repo>_<N>` 도 수용·자동 canonical 화). bare 슬롯 번호(`4`)는 repo 별 모호라 거부. "
+            "handoff entry 에 slot/branch 를 기록(회전 재부착 단서). --done 과 함께면 작업완료 "
+            "release. --session 과 값 불일치 시 fail-loud(ADR-0043)."
         ),
     )
     parser.add_argument(
         "--branch",
         metavar="브랜치",
         default=None,
-        help="multi-PM 모드 — 이 세션의 작업스트림 브랜치 (--worktree-slot 과 함께·handoff entry 기록).",
+        help="multi-PM 모드 — 이 세션의 작업스트림 브랜치 (--session <repo>_<N> 과 함께·handoff entry 기록).",
     )
     parser.add_argument(
         "--done",
         action="store_true",
         help=(
             "multi-PM 모드 — 작업완료 시 worktree 슬롯을 release(idle 반납·ADR-0013). "
-            "--worktree-slot 필요. 미지정이면 세션종료/회전 ≠ release(리스 유지)."
+            "--session <repo>_<N>(또는 legacy alias --worktree-slot) 필요. "
+            "미지정이면 세션종료/회전 ≠ release(리스 유지)."
         ),
     )
     parser.add_argument(
@@ -1632,6 +1655,54 @@ def _canonicalize_worktree_slot(worktree_slot: str) -> str:
     return f"{_WORK_PREFIX}{rest}"
 
 
+# ── 세션 정체성/차수 alias 병합 (ADR-0043) ──────────────────────────────────────
+# canonical(--session/--session-seq)·구형 alias(--worktree-slot/--session-num) 를 각각 병합한다.
+# 둘 다 주면 값이 일치해야 한다 — 불일치는 추측 없이 fail-loud(어느 걸 채택할지 임의 결정 금지).
+# canonical 우선(둘 다 있으면 canonical 값 채택). alias 무기한 수용(기존 채택자 무파손).
+def _reconcile_session_seq(
+    session_seq: str | None,
+    session_num: str | None,
+    parser: argparse.ArgumentParser,
+) -> str | None:
+    """`--session-seq`(canonical)·`--session-num`(deprecated alias) 병합 (ADR-0043).
+
+    둘 다 주면 strip 후 값이 같아야 한다 — 불일치는 fail-loud(`parser.error`·SystemExit).
+    canonical(`--session-seq`) 우선. 미지정이면 None 반환.
+    """
+    if session_seq is not None and session_num is not None:
+        if str(session_seq).strip() != str(session_num).strip():
+            parser.error(
+                f"--session-seq({session_seq!r}) 와 --session-num({session_num!r}) 값이 불일치한다 — "
+                "하나만 주거나 값을 맞춰라 (--session-num 은 deprecated alias·ADR-0043)."
+            )
+    return session_seq if session_seq is not None else session_num
+
+
+def _reconcile_session_slot(
+    session: str | None,
+    worktree_slot: str | None,
+    parser: argparse.ArgumentParser,
+) -> str | None:
+    """`--session`(canonical 정체성 `<repo>_<N>`)·`--worktree-slot`(deprecated alias) 병합 (ADR-0043).
+
+    각 값을 canonical `work/<repo>_<N>` 형태로 비교 — 둘 다 주고 다른 슬롯을 가리키면 fail-loud.
+    canonical(`--session`) 우선. 반환은 병합된 원시 슬롯 문자열(이후 `main()` 의 기존 ingress
+    파이프라인이 bare 거부→`work/` canonical 화 처리)·미지정이면 None. 주변 공백은 벗겨 빈 문자열은
+    미지정(None)과 동형 취급(T-0201 하드닝 정합).
+    """
+    sess = session.strip() if session is not None else None
+    sess = sess or None
+    slot = worktree_slot.strip() if worktree_slot is not None else None
+    slot = slot or None
+    if sess is not None and slot is not None:
+        if _canonicalize_worktree_slot(sess) != _canonicalize_worktree_slot(slot):
+            parser.error(
+                f"--session({sess!r}) 과 --worktree-slot({slot!r}) 이 다른 슬롯을 가리킨다 — "
+                "하나만 주거나 값을 맞춰라 (--worktree-slot 은 deprecated alias·ADR-0043)."
+            )
+    return sess if sess is not None else slot
+
+
 def main(argv: list[str] | None = None) -> int:
     # 콘솔/파이프 출력을 UTF-8 로 재설정 — cp949 콘솔이나 리다이렉트된 stdout 에서
     # 이모지·em-dash(—) print 가 UnicodeEncodeError 로 죽는 것을 막는다 (T-0017).
@@ -1648,24 +1719,26 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     handoff = PmHandoff()
 
-    # --worktree-slot 정제(T-0201 하드닝) — 주변 공백을 벗겨 `" 4 "`·`" work/x_1 "` 변형이
-    # verbatim 으로 새지 않게 한다. 빈 문자열은 미지정(None)과 동형으로 취급.
-    if args.worktree_slot is not None:
-        args.worktree_slot = args.worktree_slot.strip() or None
+    # 세션 정체성/차수 alias 병합 (ADR-0043) — canonical(--session/--session-seq) 우선·구형
+    # (--worktree-slot/--session-num)은 무기한 수용·둘 다 주고 값 불일치면 추측 없이 fail-loud.
+    # _reconcile_session_slot 이 주변 공백을 벗기고 빈 문자열→None(T-0201 하드닝 정합)까지 처리하므로
+    # 아래 기존 ingress 파이프라인(--branch 가드·bare 거부·canonical 화)은 무변경으로 이어진다.
+    session_seq = _reconcile_session_seq(args.session_seq, args.session_num, parser)
+    args.worktree_slot = _reconcile_session_slot(args.session, args.worktree_slot, parser)
 
     # --branch 는 --worktree-slot 동반 필요 — 슬롯 없는 브랜치는 회전 재부착 단서로
     # 불완전(어느 슬롯에 재부착할지 모름)하므로 조용히 무시하지 않고 거부한다(오용 축소·ADR-0013).
     if args.branch and not args.worktree_slot:
-        parser.error("--branch 는 --worktree-slot 과 함께 써야 한다 (multi-PM 모드 회전 재부착 단서·ADR-0013).")
+        parser.error("--branch 는 --session <repo>_<N>(또는 legacy alias --worktree-slot) 과 함께 써야 한다 (multi-PM 모드 회전 재부착 단서·ADR-0013).")
 
     # bare 슬롯 번호 거부(T-0201 결정 = B) — 슬롯 번호는 repo 별 독립이라 repo 미명시 bare
     # 숫자(`"4"`·`"work/4"`·`"Work/4"`)는 등록 repo ≥2 면 본질적으로 모호하다. 정규화 대신
     # 입구에서 명확한 에러로 거부한다(두더지잡기 방지).
     if args.worktree_slot and _is_bare_worktree_slot(args.worktree_slot):
         parser.error(
-            f"--worktree-slot '{args.worktree_slot}' 은 bare 슬롯 번호다 — repo-qualified 형식"
-            "(`work/<repo>_<N>` 1순위·`<repo>_<N>` 도 수용)으로 지정하라. 슬롯 번호는 repo 별 "
-            "독립이라 bare 숫자만으로는 어느 repo 인지 모호하다(ADR-0013)."
+            f"세션 슬롯 '{args.worktree_slot}' 은 bare 슬롯 번호다 — repo-qualified 형식으로 지정하라 "
+            "(--session `<repo>_<N>` 1순위·구형 --worktree-slot `work/<repo>_<N>` 도 수용). 슬롯 번호는 "
+            "repo 별 독립이라 bare 숫자만으로는 어느 repo 인지 모호하다(ADR-0013)."
         )
 
     # canonical 정규화(T-0201·codex round-3) — repo-qualified 지만 `work/` 무접두(`<repo>_<N>`)
@@ -1676,17 +1749,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.worktree_slot:
         args.worktree_slot = _canonicalize_worktree_slot(args.worktree_slot)
 
-    # 대화형 경로 — session-num·wave-summary 수동 필수.
+    # 대화형 경로 — session-seq(또는 deprecated --session-num)·wave-summary 수동 필수.
     missing = [
         flag
-        for flag, val in (("--session-num", args.session_num), ("--wave-summary", args.wave_summary))
+        for flag, val in (("--session-seq", session_seq), ("--wave-summary", args.wave_summary))
         if not val
     ]
     if missing:
         parser.error(f"{', '.join(missing)} 가 필수다.")
 
     return handoff.run(
-        session_num=args.session_num,
+        session_num=session_seq,
         wave_summary=args.wave_summary,
         dry_run=args.dry_run,
         skip_pytest=args.no_pytest,

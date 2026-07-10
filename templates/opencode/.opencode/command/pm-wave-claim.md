@@ -37,7 +37,7 @@ python3 .project_manager/tools/board.py claim T-NNNN --session pm
 다음 항목 *전부 충족* 시에만 claim. 하나라도 실패하면 ticket 본문 보강 우선
 (self-contained 의무).
 
-- [ ] **표준 섹션 6개 존재** — 목표 / 인터페이스 / 결정 / 완료 조건 / 참고 / 메모. board.py lint 가 표준 섹션 누락 차단·`<...>` placeholder 0개.
+- [ ] **표준 섹션 존재** — 목표 / 인터페이스 / 결정 / 완료 조건 / 참고 / 메모(템플릿 6절). board.py lint 는 이 중 **목표·완료 조건·참고 3개만** 누락 차단(`_REQUIRED_SECTIONS`) — 나머지(인터페이스·결정·메모)는 PM 판단으로 채운다. `<...>` placeholder 0개도 lint 차단.
 - [ ] **depends_on 모두 done** — 의존 ticket 이 아직 open/claimed 면 차단. blocked 의존은 reason 확인.
 - [ ] **touches 명시** — wave 병렬 시 touches disjoint 안전성 검증 substrate. 누락 시 보강.
 - [ ] **wikilink dangling 0개** — `[[name]]` 참조가 실제 존재하는 페이지·메모리·ADR·ticket 인가.
@@ -64,7 +64,7 @@ PM 자율 영역 (pm_role.md §"자율 + 사후 로그"):
 
 ## 결정
 
-- **thin wrapper** — 자동화 부분은 board.py lint 가 placeholder·표준 섹션·순환 의존만. DoD verify-able·본문 self-containment·게이트 분류는 PM 인지.
+- **thin wrapper** — 자동화 부분은 board.py lint 가 placeholder·표준 섹션(목표·완료 조건·참고 3개)·순환 의존만. DoD verify-able·본문 self-containment·게이트 분류는 PM 인지.
 - **wave 안 1 ticket 1 claim** — 동시 다중 claim 회피 (touches conflict 위험·orchestrator 단순화).
 - **dev/reviewer 위임 ticket 도 PM claim** — board.py claim 은 orchestrator(PM) 영역. 서브에이전트는 구현/검토만.
 

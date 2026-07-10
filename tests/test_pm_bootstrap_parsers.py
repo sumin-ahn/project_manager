@@ -14,10 +14,13 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOOTSTRAP_PY = TOOLS / "pm_bootstrap.py"
 BOARD_PY = TOOLS / "board.py"
+HANDOFF_PY = TOOLS / "pm_handoff.py"
 
 
 def _load_module(name: str = "pm_bootstrap"):
@@ -31,6 +34,14 @@ def _load_module(name: str = "pm_bootstrap"):
 def _load_board(name: str = "board"):
     """board 를 경로 로드한다 — grammar 정합 가드용 (`_ticket_prefix` 비교)."""
     spec = importlib.util.spec_from_file_location(name, BOARD_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_pm_handoff(name: str = "pm_handoff"):
+    """pm_handoff 를 경로 로드한다 — rewriter↔CLI 정합 가드용(rewriter 산출 재사용)."""
+    spec = importlib.util.spec_from_file_location(name, HANDOFF_PY)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -1597,3 +1608,118 @@ def test_run_reattach_warning_on_branch_mismatch(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "worktree 브랜치 불일치" in out
     assert "feature-x" in out
+
+
+# ── positional repo 흡수 — rewriter↔CLI 정합 (T-0247·ADR-0043) ────────────────
+
+# ── resolve_repo_arg (순수 정합 함수) ────────────────────────────────────────
+
+def test_resolve_repo_arg_both_none_is_none():
+    """positional·--repo 둘 다 미지정 → None (무인자 자동바인딩 경로 보존·회귀 0)."""
+    mod = _load_module()
+    assert mod.resolve_repo_arg(None, None) is None
+
+
+def test_resolve_repo_arg_positional_only():
+    """positional 만 주면 그 값 (rewriter 산출 `/pm-bootstrap <repo> --slot N` 경로)."""
+    mod = _load_module()
+    assert mod.resolve_repo_arg("myrepo", None) == "myrepo"
+
+
+def test_resolve_repo_arg_flag_only():
+    """`--repo` 만 주면 그 값 (기존 옵션 경로 무변경)."""
+    mod = _load_module()
+    assert mod.resolve_repo_arg(None, "myrepo") == "myrepo"
+
+
+def test_resolve_repo_arg_both_equal():
+    """positional == --repo → 그 값 (일치는 허용·alias 관계)."""
+    mod = _load_module()
+    assert mod.resolve_repo_arg("myrepo", "myrepo") == "myrepo"
+
+
+def test_resolve_repo_arg_mismatch_raises():
+    """positional != --repo → ValueError(fail-loud·추측 금지). 두 값이 메시지에 드러난다."""
+    mod = _load_module()
+    with pytest.raises(ValueError) as excinfo:
+        mod.resolve_repo_arg("alpha", "beta")
+    msg = str(excinfo.value)
+    assert "alpha" in msg and "beta" in msg
+
+
+# ── build_parser positional 흡수 (rewriter 산출 parse_args 수용) ──────────────
+
+def test_parse_args_accepts_positional_repo_with_slot():
+    """DoD ①: rewriter 형태 `<repo> --slot N` 이 raw CLI parse_args 를 통과한다."""
+    mod = _load_module()
+    args = mod.build_parser().parse_args(["myrepo", "--slot", "2"])
+    assert args.repo_positional == "myrepo"
+    assert args.repo is None  # --repo 미지정 — 정합은 resolve_repo_arg 가 접는다.
+    assert args.slot == 2
+    # main() 이 부르는 정합 헬퍼로 접으면 단일 repo 값이 된다.
+    assert mod.resolve_repo_arg(args.repo_positional, args.repo) == "myrepo"
+
+
+def test_parse_args_rewriter_output_roundtrips():
+    """DoD ①(정합 단언): handoff rewriter 실산출을 그대로 raw CLI 가 파싱한다.
+
+    pm_handoff `_inject_slot_into_template` 가 bare `/pm-bootstrap` 을
+    `/pm-bootstrap <repo> --slot N` 로 치환한 산출(pm_handoff.py:912 경로)을 재사용해,
+    트리거 토큰을 벗긴 나머지를 pm_bootstrap `build_parser` 가 수용하는지 못박는다
+    (rewriter↔CLI drift 가드).
+    """
+    mod = _load_module()
+    handoff = _load_pm_handoff()
+    injected = handoff._inject_slot_into_template(
+        handoff._BARE_BOOTSTRAP_TRIGGER, "work/myrepo_3"
+    )
+    # 산출: `/pm-bootstrap myrepo --slot 3` — 트리거 토큰(첫 토큰)을 벗긴 나머지가 raw CLI argv.
+    tokens = injected.split()
+    assert tokens[0] == handoff._BARE_BOOTSTRAP_TRIGGER
+    cli_args = tokens[1:]
+    args = mod.build_parser().parse_args(cli_args)
+    assert mod.resolve_repo_arg(args.repo_positional, args.repo) == "myrepo"
+    assert args.slot == 3
+
+
+def test_parse_args_flag_repo_path_unchanged():
+    """무회귀: 기존 `--repo <repo> --slot N` 경로는 그대로 동작(positional 미지정)."""
+    mod = _load_module()
+    args = mod.build_parser().parse_args(["--repo", "myrepo", "--slot", "2"])
+    assert args.repo_positional is None
+    assert args.repo == "myrepo"
+    assert args.slot == 2
+    assert mod.resolve_repo_arg(args.repo_positional, args.repo) == "myrepo"
+
+
+def test_parse_args_bare_no_arg_path_unchanged():
+    """무회귀: 무인자(솔로) 호출은 positional·--repo·--slot 전부 None."""
+    mod = _load_module()
+    args = mod.build_parser().parse_args([])
+    assert args.repo_positional is None
+    assert args.repo is None
+    assert args.slot is None
+    assert mod.resolve_repo_arg(args.repo_positional, args.repo) is None
+
+
+def test_parse_args_positional_matches_flag_ok():
+    """positional == --repo(같은 값)면 parse 통과·정합도 그 값 (alias 일치 허용)."""
+    mod = _load_module()
+    args = mod.build_parser().parse_args(["myrepo", "--repo", "myrepo"])
+    assert mod.resolve_repo_arg(args.repo_positional, args.repo) == "myrepo"
+
+
+# ── main() CLI 레벨 fail-loud (positional↔--repo 불일치) ──────────────────────
+
+def test_main_positional_repo_flag_mismatch_fails_loud(capsys):
+    """DoD: positional 과 --repo 를 다른 값으로 주면 main() 이 fail-loud(SystemExit·비-0).
+
+    argparse `error()` 는 SystemExit(2) 를 던지고 usage/메시지를 stderr 로 낸다. 정합 실패가
+    자동바인딩 fs 접근(_resolve_session_slot) 전에 걸리므로 hermetic 하다(실 fs 미접촉).
+    """
+    mod = _load_module()
+    with pytest.raises(SystemExit) as excinfo:
+        mod.main(["alpha", "--repo", "beta"])
+    assert excinfo.value.code != 0
+    err = capsys.readouterr().err
+    assert "alpha" in err and "beta" in err

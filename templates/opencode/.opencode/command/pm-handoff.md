@@ -1,6 +1,6 @@
 ---
 description: "PM 세션 종료 핸드오프 7단계 자동화 — log entry skeleton append + pm_state.md sliding window 정리 + 인계 프롬프트 stdout + 회귀 측정 + git status. backbone CLI .project_manager/tools/pm_handoff.py thin wrapper. Triggers: '핸드오프', '인계', 'PM 세션 종료', 'pm-handoff'."
-argument-hint: "--session-num <N> --wave-summary \"<요약>\""
+argument-hint: "--session-seq <N> --wave-summary \"<요약>\""
 ---
 
 <command-instruction>
@@ -28,12 +28,14 @@ env prefix 불필요 — Windows/CP949·PowerShell 서도 env 없이 동작. 드
 
 ```bash
 python3 .project_manager/tools/pm_handoff.py \
-  --session-num <N> \
+  --session-seq <N> \
   --wave-summary "<wave 1~3 한 줄 요약>"
 ```
 
-> `--session-num` 은 **숫자만**(`19`) — CLI 가 "차" 를 붙여 `PM 19차` 로 포맷한다(`19차` 줘도
-> 후행 "차" 정규화로 이중부착 방지·T-0100).
+> `--session-seq` 은 **숫자만**(`19`) — CLI 가 "차" 를 붙여 `PM 19차` 로 포맷한다(`19차` 줘도
+> 후행 "차" 정규화로 이중부착 방지·T-0100). 구형 `--session-num` 은 deprecated alias 로 계속
+> 동작(ADR-0043). multi-PM 이면 세션 정체성은 canonical `--session <repo>_<N>` 으로 준다
+> (구형 `--worktree-slot work/<repo>_<N>` 도 alias 수용).
 
 옵션:
 - `--dry-run` — log/current.md / pm_state.md 변경 미적용·stdout 미리보기만.

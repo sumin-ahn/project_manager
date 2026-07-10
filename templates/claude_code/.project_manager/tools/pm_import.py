@@ -1518,7 +1518,7 @@ def _mark_model_todos(
     if available:
         tail = f"  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 provider/model 로 치환 (가용: {', '.join(available)})"
     else:
-        tail = "  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 provider/model(예: ollama/qwen3:8b) 로 치환"
+        tail = "  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 provider/model(예: ollama/glm-5.2:cloud) 로 치환"
     marked = False
     for _rel, path in _iter_copied_files(dest_root, copied_relpaths):
         try:
@@ -2280,7 +2280,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="fill 구동 하니스 (default: --harness; both→claude, claude 부재 시 opencode 폴백)")
     ap.add_argument("--opencode-model", dest="opencode_model", metavar="PROVIDER/MODEL",
                     default=None,
-                    help="{{OPENCODE_PRO_MODEL}} 결정적 치환값 (비대화/CI). 예 'ollama/qwen3.6:27b'. "
+                    help="{{OPENCODE_PRO_MODEL}} 결정적 치환값 (비대화/CI). 예 'ollama/glm-5.2:cloud'. "
                          "opencode 어댑터 미포함이면 무시(claude-only)")
     ap.add_argument("--dry-run", action="store_true",
                     help="적용 없이 fill 계획만 출력 (실 하니스 미호출·파일시스템 미변경)")

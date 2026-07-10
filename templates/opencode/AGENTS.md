@@ -270,6 +270,11 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"
 {{PY}} .project_manager/tools/pm_update.py --from <upstream> --dry-run
 ```
 
+> **ctx 예산 (핸드오프 임계 분모 · ADR-0041):** ctx 정지/넛지 %의 100% 기준은 `.project_manager/local.conf`
+> 의 `ctx_window_tokens_<harness>`(예 `ctx_window_tokens_opencode=200000`) > generic `ctx_window_tokens` >
+> 200000 순으로 해소된다. 하네스별 키가 우선 — 한 repo 를 claude·opencode 로 동시 운용하면 각자 예산을
+> 독립 설정한다 (미설정 시 기본 200000).
+
 ## 8. 핵심 디렉토리
 
 | 경로 | 의미 |

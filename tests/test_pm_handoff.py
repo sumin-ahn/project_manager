@@ -712,3 +712,144 @@ def test_regression_cwd_bootstrap_absent_falls_back(hf, tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(hf, "_load_pm_bootstrap", lambda: None)
     assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+
+
+# ── ADR-0043 세션 정체성 canonical: --session/--session-seq + 구형 alias 무기한 ──────
+#
+# canonical(--session `<repo>_<N>` · --session-seq N)을 신설하고 구형(--worktree-slot·
+# --session-num)을 deprecated alias 로 무기한 수용한다. 둘 다 주고 값 불일치 → fail-loud
+# (추측 금지). 솔로(미지정) 현행 경로 무변경. main() ingress→run() 전달 kwargs 를 캡처해
+# 병합·work/ 프리픽스 유도·bare 거부·fail-loud 를 durable 하게 못박는다(T-0246·비-vacuous).
+
+
+@pytest.fixture
+def captured_run(hf, monkeypatch):
+    """PmHandoff.run 을 가로채 kwargs 를 캡처(실 회귀/파일편집 없이 ingress 만 검증).
+
+    main() 이 alias 병합·canonical 화·필수 검증을 마치고 run() 에 넘기는 kwargs 를 그대로
+    포착한다 — fail-loud(parser.error·SystemExit) 케이스에선 run 미도달이라 dict 가 빈 채 남는다.
+    """
+    calls: dict = {}
+
+    def _fake_run(self, **kwargs):
+        calls.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(hf.PmHandoff, "run", _fake_run)
+    return calls
+
+
+# --- 차수 인자: --session-seq(canonical) / --session-num(deprecated alias) ---
+
+def test_session_seq_canonical_accepted(hf, captured_run):
+    assert hf.main(["--session-seq", "42", "--wave-summary", "x", "--no-pytest"]) == 0
+    assert captured_run["session_num"] == "42"
+
+
+def test_session_num_deprecated_alias_accepted(hf, captured_run):
+    # 구형 --session-num 무기한 수용 — 값 동일하게 run(session_num=) 으로 전달.
+    assert hf.main(["--session-num", "42", "--wave-summary", "x", "--no-pytest"]) == 0
+    assert captured_run["session_num"] == "42"
+
+
+def test_session_seq_and_num_agree_accepted(hf, captured_run):
+    assert hf.main(
+        ["--session-seq", "42", "--session-num", "42", "--wave-summary", "x", "--no-pytest"]
+    ) == 0
+    assert captured_run["session_num"] == "42"
+
+
+def test_session_seq_and_num_mismatch_fails_loud(hf, captured_run):
+    with pytest.raises(SystemExit):
+        hf.main(
+            ["--session-seq", "42", "--session-num", "43", "--wave-summary", "x", "--no-pytest"]
+        )
+    assert captured_run == {}  # run 미도달 — 추측 없이 거부.
+
+
+def test_session_seq_missing_rejected(hf, captured_run):
+    # canonical/alias 둘 다 미지정 → 필수 누락 거부(대화형 경로).
+    with pytest.raises(SystemExit):
+        hf.main(["--wave-summary", "x", "--no-pytest"])
+    assert captured_run == {}
+
+
+# --- 정체성 인자: --session(canonical) / --worktree-slot(deprecated alias) ---
+
+def test_session_canonical_derives_work_prefix(hf, captured_run):
+    # --session <repo>_<N> → 내부에서 work/ 프리픽스 유도 → worktree_slot=work/<repo>_<N>.
+    assert hf.main(
+        ["--session", "project_manager_1", "--session-seq", "7", "--wave-summary", "x", "--no-pytest"]
+    ) == 0
+    assert captured_run["worktree_slot"] == "work/project_manager_1"
+
+
+def test_worktree_slot_deprecated_alias_accepted(hf, captured_run):
+    # 구형 --worktree-slot(qualified) 무기한 수용 — canonical 그대로 유지.
+    assert hf.main(
+        ["--worktree-slot", "work/project_manager_1", "--session-seq", "7",
+         "--wave-summary", "x", "--no-pytest"]
+    ) == 0
+    assert captured_run["worktree_slot"] == "work/project_manager_1"
+
+
+def test_session_and_worktree_slot_agree_accepted(hf, captured_run):
+    # --session <repo>_<N> 과 --worktree-slot work/<repo>_<N> 은 같은 슬롯 → 일치·canonical 채택.
+    assert hf.main(
+        ["--session", "project_manager_1", "--worktree-slot", "work/project_manager_1",
+         "--session-seq", "7", "--wave-summary", "x", "--no-pytest"]
+    ) == 0
+    assert captured_run["worktree_slot"] == "work/project_manager_1"
+
+
+def test_session_and_worktree_slot_mismatch_fails_loud(hf, captured_run):
+    with pytest.raises(SystemExit):
+        hf.main(
+            ["--session", "project_manager_1", "--worktree-slot", "work/finance_2",
+             "--session-seq", "7", "--wave-summary", "x", "--no-pytest"]
+        )
+    assert captured_run == {}  # run 미도달 — 서로 다른 슬롯이면 추측 없이 거부.
+
+
+def test_session_bare_number_rejected(hf, captured_run):
+    # --session 4 는 bare 슬롯 번호 — repo 별 모호라 ingress 가 거부(ADR-0013·아래로 안 샘).
+    with pytest.raises(SystemExit):
+        hf.main(["--session", "4", "--session-seq", "7", "--wave-summary", "x", "--no-pytest"])
+    assert captured_run == {}
+
+
+def test_solo_unspecified_worktree_slot_none(hf, captured_run):
+    # 솔로(정체성 미지정) 현행 경로 무변경 — worktree_slot None 로 run 진입.
+    assert hf.main(["--session-seq", "7", "--wave-summary", "x", "--no-pytest"]) == 0
+    assert captured_run["worktree_slot"] is None
+
+
+# --- 병합 헬퍼 직접 단위 (parser.error seam 포함) ---
+
+def test_reconcile_session_seq_prefers_canonical(hf):
+    parser = hf.build_parser()
+    assert hf._reconcile_session_seq("42", "42", parser) == "42"
+    assert hf._reconcile_session_seq("42", None, parser) == "42"
+    assert hf._reconcile_session_seq(None, "42", parser) == "42"
+    assert hf._reconcile_session_seq(None, None, parser) is None
+
+
+def test_reconcile_session_slot_canonical_equivalence(hf):
+    parser = hf.build_parser()
+    # 무접두 <repo>_<N> 과 work/ 접두는 같은 슬롯 → 일치(fail 안 함)·canonical(--session) 채택.
+    assert hf._reconcile_session_slot(
+        "project_manager_1", "work/project_manager_1", parser
+    ) == "project_manager_1"
+    # alias 만 → alias 값(이후 main 파이프라인이 canonical 화).
+    assert hf._reconcile_session_slot(None, "work/project_manager_1", parser) == "work/project_manager_1"
+    # 빈/공백 → None (미지정 동형·T-0201 하드닝 정합).
+    assert hf._reconcile_session_slot("  ", None, parser) is None
+    assert hf._reconcile_session_slot(None, None, parser) is None
+
+
+def test_reconcile_helpers_mismatch_raise(hf):
+    parser = hf.build_parser()
+    with pytest.raises(SystemExit):
+        hf._reconcile_session_seq("42", "43", parser)
+    with pytest.raises(SystemExit):
+        hf._reconcile_session_slot("project_manager_1", "work/finance_2", parser)

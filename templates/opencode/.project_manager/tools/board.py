@@ -5351,8 +5351,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="내 것만 (렌즈·단일 보드 위 필터·ADR-0033 ④): 내 area 의 open"
                         "(area_owner==나) + 내 in-progress(claimed_by.user==나). "
                         "솔로(user 미상)는 전체 open + 내 슬롯 claim 으로 graceful 폴백.")
-    scope.add_argument("--session", help="`--mine` 의 명시-인자 버전(T-0197·조회 전용 뷰 스코프 — "
-                        "claim/mutation 행위자 `--session` 과는 별개): 그 세션 이름의 open+claim 만. "
+    scope.add_argument("--session", help="뷰 렌즈 — `--mine` 의 명시-인자 버전(T-0197·조회 전용 뷰 스코프): "
+                        "그 세션 이름의 open+claim 만 비춘다. **actor `--session`(claim 등 귀속 쓰기)과는 "
+                        "같은 플래그명이지만 별개 의미**(ADR-0043) — 여기선 아무것도 안 바꾸는 뷰 렌즈일 뿐이다. "
                         "list 스코핑은 `--mine`/`--session`/`--slot` 을 쓴다(claim/complete 의 "
                         "행위자 `--session` 을 list 에 일반화하면 argparse 에러). "
                         "주의(T-0198): area_owner 미운영 시 open 은 세션-스코프로 못 좁혀 전체 "
@@ -5365,18 +5366,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("show", help="show one ticket")
-    p.add_argument("id")
+    p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_show)
 
     p = sub.add_parser("claim", help="atomic claim — mv open → claimed")
-    p.add_argument("id")
+    p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--session", help="session name = pm slot (default $PM_SESSION_NAME or hostname-pid)")
     p.add_argument("--user", help="user 식별자 — claimed_by 의 user 차원 (default: local.conf user= / "
                    "git config user.email · ADR-0033 ③)")
     p.set_defaults(fn=cmd_claim)
 
     p = sub.add_parser("complete", help="mv claimed → done (sync gate enforced)")
-    p.add_argument("id")
+    p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--tests-pass", action="store_true",
                    help="assert the regression suite passes "
                         "(required unless --allow-untested)")
@@ -5388,16 +5389,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_complete)
 
     p = sub.add_parser("block", help="mv open|claimed → blocked")
-    p.add_argument("id")
+    p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--reason", required=True)
     p.set_defaults(fn=cmd_block)
 
     p = sub.add_parser("unclaim", help="mv claimed → open")
-    p.add_argument("id")
+    p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_unclaim)
 
     p = sub.add_parser("unblock", help="mv blocked → open")
-    p.add_argument("id")
+    p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_unblock)
 
     p = sub.add_parser("new", help="create a new ticket")
@@ -5407,15 +5408,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tag", help="comma-separated tags")
     p.add_argument("--estimate", choices=["small", "medium", "large"],
                    default="small")
-    p.add_argument("--prefix", help="ID namespace prefix (default: local.conf "
-                   "prefix / none → legacy T-NNNN)")
+    p.add_argument("--prefix", help="작업 카테고리 (ADR-0042·자유 입력·배타 구획). "
+                   "default: local.conf prefix / 없으면 none(무prefix 1급 → legacy T-NNNN)")
     p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf user= / "
                    "git config user.email · ADR-0033 ③)")
     p.set_defaults(fn=cmd_new)
 
     p = sub.add_parser("promote", help="draft(board-git 미커밋) 티켓을 승격 — 본문 채운 뒤 board-git sync "
                         "(T-0196 발행 규율 게이트: board-git 공유 시 `new` 가 미충전 티켓을 draft 로 남긴다)")
-    p.add_argument("id")
+    p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_promote)
 
     p = sub.add_parser("init", help="clone 당 1회 setup (solo · multi-repo N×M) — pm_state·local.conf·pre-push 훅")

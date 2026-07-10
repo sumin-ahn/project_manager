@@ -42,7 +42,7 @@
 # → open/ 에 T-NNNN(또는 영역 prefix 시 T-pay-NNN) 스켈레톤 생성. 본문을 아래 형식으로 채운다.
 ```
 
-본문 필수 절 (self-containment — `board.py lint` 가 thin·dangling 검사):
+본문 표준 절 (self-containment) — `board.py lint` 는 이 중 **목표·완료 조건·참고** 3개만 thin 차단(`_REQUIRED_SECTIONS`)·dangling 검사, 나머지는 권장:
 
 - **목표** — 무엇을·왜 (1~3줄).
 - **인터페이스** — 함수/CLI 시그니처·입출력·파일 경로.

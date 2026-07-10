@@ -60,7 +60,7 @@
 {{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --depends T-0001 --tag phase-1
 ```
 
-본문 필수 절(self-containment — `board.py lint` 가 thin·dangling 검사): **목표**(무엇·왜) · **인터페이스**(시그니처·경로) ·
+본문 표준 절(self-containment) — `board.py lint` 는 이 중 **목표·완료 조건·참고** 3개만 thin 차단(`_REQUIRED_SECTIONS`)·dangling 검사, 나머지는 권장: **목표**(무엇·왜) · **인터페이스**(시그니처·경로) ·
 **결정**(분기 근거) · **완료 조건(DoD)**(체크 가능: 테스트 green·산출·판정/비고) · **참고**(`[[wikilink]]` 실재 · `depends_on`/`blocks` frontmatter).
 **본문이 단일 진실 — 그것만으로 구현 가능해야.** 채번·area prefix·thin 세부는 필요 시 `pm_playbook.md` Read.
 

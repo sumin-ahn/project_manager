@@ -226,3 +226,79 @@ def test_default_view_empty_when_only_done(board, capsys):
     _seed(board, "T-0018", "done", claimed_by="a/b")
     ids = _list_ids(board, capsys)
     assert ids == []
+
+
+# ════════════════════════════════════════════════════════════════════════
+# CLI --help 위생 (T-0248·ADR-0043/ADR-0042) — ticket 인자 metavar `T-NNNN`,
+# `list --session` 뷰/actor 구분 문구, `new --prefix` 카테고리 help.
+# ════════════════════════════════════════════════════════════════════════
+
+# ticket id 를 받는 서브커맨드 전건 (idea promote/kill 은 idea-ID 라 제외).
+_TICKET_ID_SUBCOMMANDS = (
+    "show", "claim", "complete", "block", "unclaim", "unblock", "promote",
+)
+
+
+def _fresh_parser():
+    import importlib.util as _il
+    spec = _il.spec_from_file_location("board_help_cli", TOOLS / "board.py")
+    mod = _il.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.build_parser()
+
+
+def _subparsers_action(parser):
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action
+    raise AssertionError("no subparsers action on parser")
+
+
+def _subparser(parser, name):
+    return _subparsers_action(parser).choices[name]
+
+
+@pytest.mark.parametrize("sub", _TICKET_ID_SUBCOMMANDS)
+def test_ticket_id_arg_uses_t_nnnn_metavar(sub):
+    """claim/complete/show/… 의 ticket 인자 usage 는 bare `id` 아닌 `T-NNNN` metavar."""
+    usage = _subparser(_fresh_parser(), sub).format_usage()
+    assert "T-NNNN" in usage, f"{sub} usage 에 T-NNNN metavar 없음: {usage!r}"
+    # bare positional `id` 토큰이 metavar 로 남아있지 않다 (공백 경계 매칭).
+    assert " id" not in usage.rsplit("[-h]", 1)[-1], (
+        f"{sub} usage 에 bare `id` metavar 잔존: {usage!r}")
+
+
+def test_idea_id_arg_keeps_plain_metavar():
+    """idea promote/kill 은 ticket 이 아니라 idea-ID — T-NNNN metavar 를 붙이지 않는다."""
+    idea = _subparser(_fresh_parser(), "idea")
+    for verb in ("promote", "kill"):
+        usage = _subparser(idea, verb).format_usage()
+        assert "T-NNNN" not in usage, f"idea {verb} 에 ticket metavar 오적용: {usage!r}"
+
+
+def test_list_session_help_distinguishes_view_from_actor():
+    """`list --session` help 는 뷰 렌즈 ↔ actor `--session` 이 별개임을 명시한다 (ADR-0043)."""
+    list_parser = _subparser(_fresh_parser(), "list")
+    session_help = None
+    for action in list_parser._actions:
+        if action.dest == "session":
+            session_help = action.help
+            break
+    assert session_help is not None, "list --session action 이 없다"
+    assert "뷰 렌즈" in session_help
+    assert "actor" in session_help
+    assert "별개" in session_help
+
+
+def test_new_prefix_help_frames_as_category_not_namespace():
+    """`new --prefix` help 는 ADR-0042 작업 카테고리로 재framing — 'namespace' 잔재 없음."""
+    new_parser = _subparser(_fresh_parser(), "new")
+    prefix_help = None
+    for action in new_parser._actions:
+        if action.dest == "prefix":
+            prefix_help = action.help
+            break
+    assert prefix_help is not None, "new --prefix action 이 없다"
+    assert "작업 카테고리" in prefix_help
+    assert "namespace" not in prefix_help.lower(), (
+        f"ADR-0042 재정의 후에도 namespace 잔재: {prefix_help!r}")

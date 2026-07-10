@@ -33,6 +33,6 @@ python3 .project_manager/tools/board.py regression run --ticket T-pay-001   # to
 
 ## red 처리
 
-- 백그라운드 red 알림 → 해당 ticket 인지 + 고치거나 `board.py reopen` / follow-up ticket.
+- 백그라운드 red 알림 → 해당 ticket 인지 + 고친다. 이미 done 이면 done→open 복구 CLI 가 아직 없으므로 follow-up ticket 으로 처리한다.
 - **flaky** 면 `.project_manager/quarantine.txt` 에 test node id 추가 (회귀가 `--deselect`).
   격리는 임시 — 근본 원인 ticket 을 같이 발행할 것.

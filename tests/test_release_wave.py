@@ -45,9 +45,10 @@ _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 # opencode: full wave(claim→위임→complete sync-gate)는 *강한* 모델이 필요하다 — gemma4:26b 는
 # complete 의 sync-gate 를 못 넘어 flaky(위임=probe.txt 는 쓰나 ticket 이 claimed 에 머묾·PM 39 실측).
-# qwen3.5:397b-cloud(ollama cloud)로 full wave PASS 검증(69s·PM 39). 그래서 release default 는 이 모델
-# 이다(runtime_smoke[lite·sync-gate 없음]는 gemma 로 충분 — 거긴 별도 default). env override 로 교체 가능.
-LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/qwen3.5:397b-cloud")
+# glm-5.2:cloud(ollama cloud) 강한 모델을 release default 로 쓴다(2026-07-07 채택·라이브 실측은
+# 릴리즈 wave). runtime_smoke[lite·sync-gate 없음]는 gemma 로 충분 — 거긴 별도 default.
+# env override 로 교체 가능.
+LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
 
 # full wave probe 가 작성하도록 지시하는 산출 파일·내용 — side-effect 단언의 기준(단일 진실).
 PROBE_FILE = "probe.txt"
@@ -222,7 +223,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
 # ── multi-repo 경로 (multi-PM 셋업 full wave · T-0158) ───────────────────────────────────
 # 위 단일-adopter 테스트는 *한* repo 위 full wave 다. 아래는 그 multi-repo 확장 — multi-PM 셋업
 # (`pm_config repo add` 2 repo + worktree slot)에서 한 LLM 세션이 공유 보드 위 *여러 repo* 의
-# wave 를 운영하는지 검증한다. PM 라이브 probe(opencode/qwen3.5:397b-cloud·실측 PASS)로 viable 확인
+# wave 를 운영하는지 검증한다. PM 라이브 probe(opencode·ollama cloud 모델·실측 PASS)로 viable 확인
 # 후 그 mechanics 를 옮긴 것이다.
 
 # multi-repo 셋업의 repo 이름 = prefix = worktree 슬롯 네임스페이스(단일 진실). 2 repo 로 충분 —
@@ -372,7 +373,7 @@ def _assert_multirepo_wave_side_effects(home: Path, proc: subprocess.CompletedPr
 def test_release_wave_multirepo_opencode_full_wave(tmp_path):
     """실 opencode(agentic·ollama)가 multi-PM 셋업(2 repo·공유 보드)에서 repo별 wave 를 운영한다.
 
-    PM 라이브 probe(`scratchpad/mpm_live_probe.sh`·opencode/qwen3.5:397b-cloud·실측 PASS —
+    PM 라이브 probe(`scratchpad/mpm_live_probe.sh`·opencode·ollama cloud 모델·실측 PASS —
     T-repoA-001·T-repoB-001 둘 다 done·각 슬롯 wave-done.txt 존재)의 mechanics 를 옮긴 것이다.
     단일 full wave 와 *다른* 검증축 — 한 세션이 공유 보드 위 여러 repo 의 보드/슬롯/identity 를
     per-repo prefix·per-slot 식별로 바르게 핸들링하는가(범위 축소 근거는 `_multirepo_wave_prompt`

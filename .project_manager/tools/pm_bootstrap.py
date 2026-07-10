@@ -1980,6 +1980,22 @@ class PmBootstrap:
 
 # ── CLI ────────────────────────────────────────────────────────────────────
 
+def resolve_repo_arg(positional: str | None, flag: str | None) -> str | None:
+    """positional `repo` 와 `--repo` alias 를 단일 repo 값으로 정합한다 (ADR-0043).
+
+    handoff rewriter 산출(`/pm-bootstrap <repo> --slot N`·positional)과 기존 `--repo` 를 둘 다
+    수용하되, 둘 다 주고 값이 다르면 추측하지 않고 fail-loud(`ValueError`) 한다. 한쪽만 주면 그
+    값을, 둘 다 None(미지정)이면 None 을 흘려 무인자 자동바인딩(T-0178) 경로를 보존한다.
+    """
+    if positional is not None and flag is not None and positional != flag:
+        raise ValueError(
+            f"positional repo({positional}) 와 --repo({flag}) 값이 다르다 — "
+            "하나만 주거나 같은 값으로 맞춰라 (추측 금지)."
+        )
+    # positional 우선(일치 시 동일값·한쪽만이면 준 쪽) — 둘 다 None 이면 None(자동바인딩 보존).
+    return positional if positional is not None else flag
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pm_bootstrap.py",
@@ -1997,13 +2013,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="pytest 회귀 측정 opt-in (default skip — handoff entry 가 숫자를 기록한다고 가정).",
     )
     # ── multi-PM 모드 (ADR-0013·0011) — 무인자(솔로)면 미사용·현행 보존 ──
+    # positional `repo`(nargs="?") — handoff rewriter 산출 `/pm-bootstrap <repo> --slot N`
+    # (pm_handoff.py `_inject_slot_into_template`)을 raw CLI 가 그대로 수용하기 위한 흡수구
+    # (ADR-0043·rewriter↔CLI 정합). `--repo` 와 alias 관계(dest 는 분리해 불일치 감지) — 정합은
+    # parse 후 `resolve_repo_arg` 가 한다(둘 다 주고 값 다르면 fail-loud). 미지정이면 None →
+    # 무인자 자동바인딩(T-0178) 경로 보존.
+    parser.add_argument(
+        "repo_positional",
+        nargs="?",
+        metavar="repo",
+        default=None,
+        help=(
+            "multi-PM 모드 — repo 이름(positional). `--repo` 의 alias — handoff rewriter 산출 "
+            "`/pm-bootstrap <repo> --slot N` 정합용 (ADR-0043). `--repo` 와 둘 다 주면 값 일치 필수."
+        ),
+    )
     parser.add_argument(
         "--repo",
         metavar="이름",
         default=None,
         help=(
             "multi-PM 모드 — repo 워크트리 슬롯을 alloc 하고 identity surface 를 출력한다 "
-            "(ADR-0013). 무인자(솔로)면 현행 부트스트랩만 (alloc 경로 미진입)."
+            "(ADR-0013). 무인자(솔로)면 현행 부트스트랩만 (alloc 경로 미진입). positional `repo` "
+            "와 alias — 둘 다 주면 값이 일치해야 한다."
         ),
     )
     parser.add_argument(
@@ -2062,6 +2094,13 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
     args = build_parser().parse_args(argv)
+    # positional `repo` 를 `--repo` alias 로 정합한다 (ADR-0043·rewriter↔CLI). 둘 다 주고 값이
+    # 다르면 fail-loud, 한쪽만/일치면 그 값을 `args.repo` 로 접어 downstream(자동바인딩·alloc)이
+    # 단일 필드만 보게 한다. 이후 로직은 positional 존재를 몰라도 된다.
+    try:
+        args.repo = resolve_repo_arg(args.repo_positional, args.repo)
+    except ValueError as exc:
+        build_parser().error(str(exc))
     # guarded 자동바인딩 (T-0178·ADR-0035) — `--repo`/`--slot` 둘 다 없는 bare 무인자 호출에서,
     # `_resolve_session_slot` 으로 repo-안 default-1 규칙(slot1>단독>fail-loud)으로 해소한다.
     #   - 해소(`(repo,N)`) → 그 슬롯에 자동 bind(기존 `--slot` bind 경로 재사용·세션=`<repo>_<N>`).

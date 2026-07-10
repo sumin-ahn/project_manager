@@ -21,12 +21,14 @@ description: "PM 세션 종료 핸드오프 7단계 자동화 — log entry skel
 
 ```bash
 python3 .project_manager/tools/pm_handoff.py \
-  --session-num <N> \
+  --session-seq <N> \
   --wave-summary "<wave 1~3 한 줄 요약>"
 ```
 
-> `--session-num` 은 **숫자만**(`19`) 준다 — CLI 가 "차" 를 붙여 `PM 19차` 로 포맷한다.
+> `--session-seq` 은 **숫자만**(`19`) 준다 — CLI 가 "차" 를 붙여 `PM 19차` 로 포맷한다.
 > `19차` 를 줘도 CLI 가 후행 "차" 를 정규화(idempotent·T-0100)해 이중부착(`19차차`)을 막는다.
+> 구형 `--session-num` 은 deprecated alias 로 계속 동작(ADR-0043). multi-PM 이면 세션 정체성은
+> canonical `--session <repo>_<N>` 으로 준다(구형 `--worktree-slot work/<repo>_<N>` 도 alias 수용).
 
 옵션:
 - `--dry-run` — log/current.md / pm_state.md 변경 미적용·stdout 미리보기만.

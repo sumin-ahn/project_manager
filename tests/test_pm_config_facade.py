@@ -317,6 +317,93 @@ def test_update_engine_missing_errors_isolated(pc, monkeypatch, capsys):
     assert "pm_update.py 엔진을 찾을 수 없다" in capsys.readouterr().err
 
 
+# ── init/update forward usage prog 정합 (T-0249·ADR-0043) ────────────────────
+# board.py / pm_update.py 의 main() 은 argparse prog 를 파일명으로 하드코딩(prog="board.py"/
+# "pm_update.py")하고 main(argv) 에 prog 인자가 없어, pm-config 가 위임하면 usage 줄에 그
+# 파일명이 새어 나온다(에이전트가 칠 실 커맨드 pm-config init/update 와 불일치·ADR-0043 부수
+# CLI 위생). `_forwarded_prog` 가 위임 동안만 top-level prog 를 facade 이름으로 치환함을 검증한다.
+# 아래 소수 테스트는 mock 을 주입하지 않고 **실 board/pm_update forward 를 관통**해 *실제 usage
+# 출력*을 관찰한다(DoD 증거) — `--help`/인자 에러는 argparse 가 핸들러 dispatch *전*에 usage 만
+# 찍고 SystemExit 하므로 board init·엔진 sync 부작용 0(안전).
+
+
+def _usage_line(text: str) -> str:
+    """`--help`/에러 출력에서 argparse usage 줄(prog 표기 줄)을 뽑는다.
+
+    DoD 계약은 *usage 줄*의 prog 표기(pm-config <sub>)다 — forward 된 도구의 docstring/epilog
+    본문이 자기 파일 경로를 예시로 참조하는 건(pm_update.py 직접 호출 문서) 별개 관심사(touches
+    밖·argparse 가 생성하는 usage 아님). prog 는 usage 블록 첫 줄에만 나오므로 그 줄만 검사한다.
+    """
+    return next(l for l in text.splitlines() if l.startswith("usage:"))
+
+
+def test_init_help_usage_shows_facade_prog_not_board_py(pc, capsys):
+    """`init --help` usage 줄은 `pm-config init` — `board.py` leak 0 (T-0249·ADR-0043)."""
+    with pytest.raises(SystemExit) as exc:
+        pc.main(["init", "--help"])
+    assert exc.value.code == 0
+    usage = _usage_line(capsys.readouterr().out)
+    assert usage.startswith("usage: pm-config init")   # facade 서브커맨드 표기(카드↔실행 정합)
+    assert "board.py" not in usage                     # usage 줄 파일명 leak 0
+
+
+def test_init_error_usage_no_board_py_leak(pc, capsys):
+    """`init <bad flag>` 인자 에러 usage/에러 줄에 `board.py` leak 0·prog=pm-config (T-0249)."""
+    with pytest.raises(SystemExit) as exc:
+        pc.main(["init", "--no-such-flag"])
+    assert exc.value.code == 2   # argparse 인자 에러
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "board.py" not in combined   # 파일명 leak 0(에러 경로도)
+    assert "pm-config" in combined      # facade prog 로 표기
+
+
+def test_update_help_usage_shows_facade_prog_not_pm_update_py(pc, capsys):
+    """`update --help` usage 줄은 `pm-config update` — `pm_update.py` leak 0 (T-0249·ADR-0043).
+
+    (usage 줄만 검사 — pm_update 의 docstring/epilog 본문은 자기 파일 경로를 직접-호출 예시로
+    참조하지만 그건 argparse 가 만든 usage 가 아니라 forward 대상 도구의 문서다·touches 밖.)
+    """
+    with pytest.raises(SystemExit) as exc:
+        pc.main(["update", "--help"])
+    assert exc.value.code == 0
+    usage = _usage_line(capsys.readouterr().out)
+    assert usage.startswith("usage: pm-config update")   # 플랫 파서 → facade+서브 표기
+    assert "pm_update.py" not in usage                   # usage 줄 파일명 leak 0
+
+
+def test_update_error_usage_shows_facade_prog_not_pm_update_py(pc, capsys):
+    """`update <bad flag>` 인자 에러 usage/에러 줄은 `pm-config update` — `pm_update.py` leak 0 (T-0249)."""
+    with pytest.raises(SystemExit) as exc:
+        pc.main(["update", "--no-such-flag"])
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "pm_update.py" not in combined     # 파일명 leak 0(에러 경로도)
+    assert "pm-config update" in combined     # facade prog(+서브)로 표기
+
+
+def test_forwarded_prog_remaps_only_mapped_and_restores(pc):
+    """`_forwarded_prog` — 매핑 prog 만 치환·매핑 밖은 통과·블록 종료 후 __init__ 원복 (T-0249)."""
+    original_init = argparse.ArgumentParser.__init__
+    with pc._forwarded_prog({"board.py": "pm-config"}):
+        # 매핑된 top-level prog → 치환.
+        assert argparse.ArgumentParser(prog="board.py").prog == "pm-config"
+        # 매핑 밖 prog(파생 subparser·타 도구)는 그대로 통과 — 오염 0.
+        assert argparse.ArgumentParser(prog="pm-config init").prog == "pm-config init"
+    # 블록 종료 후 전역 argparse 원복(누수 0).
+    assert argparse.ArgumentParser.__init__ is original_init
+
+
+def test_forwarded_prog_restores_on_exception(pc):
+    """`_forwarded_prog` — 블록 안 예외(SystemExit 포함)에도 finally 로 __init__ 원복 (T-0249)."""
+    original_init = argparse.ArgumentParser.__init__
+    with pytest.raises(SystemExit):
+        with pc._forwarded_prog({"board.py": "pm-config"}):
+            raise SystemExit(2)
+    assert argparse.ArgumentParser.__init__ is original_init
+
+
 # ── upstream show/set 배선 — 검증(도달성·fail-closed) + local.conf atomic·타 키 보존 (T-0145) ──
 
 

@@ -34,8 +34,9 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 PM_ORCH_LIVE_RELEASE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
-# opencode: ollama cloud 모델(qwen3.5:397b-cloud) — 이 박스 로컬 모델 불가(PM 48차)·env override 가능.
-LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/qwen3.5:397b-cloud")
+# opencode: ollama cloud 모델(glm-5.2:cloud·2026-07-07 채택) — 이 박스 로컬 모델 불가(PM 48차)·
+# env override 가능.
+LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
 # claude: sonnet-4-6(사용자 지정·API 과금) — env override.
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 RUNTIME_TIMEOUT = int(os.environ.get("PM_ADOPTER_RUNTIME_TIMEOUT", "300"))
