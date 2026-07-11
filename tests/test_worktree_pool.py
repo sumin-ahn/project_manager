@@ -112,9 +112,15 @@ class FakeGit:
     `head=None` 이면 detached(실 git 처럼 `symbolic-ref` 가 rc≠0 → current_branch None).
     """
 
-    def __init__(self, *, dirty: bool = False, head: "str | None" = None):
+    def __init__(self, *, dirty: bool = False, head: "str | None" = None,
+                 fetch_rc: int = 0, origin_has_base: bool = True):
         self.dirty = dirty
         self.head = head        # 슬롯 worktree 의 현재 브랜치(=HEAD)·checkout 으로 갱신.
+        # base 파생 origin-freshness 모델(T-0274): `fetch origin` rc + `refs/remotes/origin/<base>`
+        # 해소 여부(show-ref rc). origin_has_base=True = fetch 로 갱신된 최신 remote-tracking ref
+        # 존재(→ origin/<base> 파생), False = 미해소(→ 로컬 <base> 폴백).
+        self.fetch_rc = fetch_rc
+        self.origin_has_base = origin_has_base
         self.calls: list[list] = []
 
     def __call__(self, argv: list) -> tuple[int, str]:
@@ -129,6 +135,11 @@ class FakeGit:
             # `checkout <b>` 또는 `checkout -B <b>` — 실 git 처럼 head 를 갱신(브랜치 전환).
             self.head = argv[-1]
             return (0, "")
+        if argv[:2] == ["fetch", "origin"]:
+            return (self.fetch_rc, "" if self.fetch_rc == 0 else "fatal: could not fetch\n")
+        if argv[:3] == ["show-ref", "--verify", "--quiet"]:
+            # refs/remotes/origin/<base> 해소 판정 — resolvable=rc0, 미해소=rc1(→ 로컬 폴백).
+            return (0, "") if self.origin_has_base else (1, "")
         return (0, "")
 
     def did(self, *prefix) -> bool:
@@ -585,20 +596,83 @@ def test_create_slot_submodule_init_failure_message_surfaces_rc(wp):
 
 
 def test_create_slot_base_derives_slot_branch(wp):
-    """create_slot(base=) → `git worktree add -b <repo>_<N> <path> <base>` (T-0075).
+    """create_slot(base=) → fetch origin 후 `worktree add -b <repo>_<N> <path> origin/<base>` (T-0075·T-0274).
 
-    base 가 주어지면 슬롯 브랜치 `<repo>_<N>`(슬롯 식별자·T-0072 정합)를 *그 base 에서
-    파생*한다 — bare HEAD 가 아닌 의도한 base(develop 등)에서 슬롯 작업 브랜치를 판다.
-    주입 git_runner 로 정확한 argv 를 검증한다.
+    base 가 주어지면 먼저 `fetch origin`(T-0274) 후 슬롯 브랜치 `<repo>_<N>`(슬롯 식별자·
+    T-0072 정합)를 *`origin/<base>` 최신에서 파생*한다 — bare HEAD 도 로컬 동결 head 도 아닌
+    origin 최신에서 슬롯 작업 브랜치를 판다. 주입 git_runner 로 정확한 argv 를 검증한다.
+    """
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit()   # fetch_rc=0·origin_has_base=True → origin/develop 해소
+    lease = wp.create_slot("A", base="develop", session="me", git_runner=git)
+    assert lease.slot == "work/A_1"
+    # fetch 가 worktree add 전에 불렸다(origin 최신 갱신).
+    assert git.did("fetch", "origin")
+    # 정확한 argv — 슬롯 브랜치 이름은 `A_1`(work/ 접두 없음·슬롯 식별자), 파생 기준=origin/develop.
+    # `--no-track` = remote-tracking ref 파생 시 git autoSetupMerge 자동 upstream 설정 억제(슬롯=작업스트림).
+    add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
+    assert add_calls == [["worktree", "add", "--no-track", "-b", "A_1",
+                          str(wp.slot_path("work/A_1")), "origin/develop"]]
+
+
+def test_create_slot_base_fetches_before_worktree_add(wp):
+    """base 파생 — `fetch origin` 이 worktree add *보다 먼저* 불린다 (T-0274·origin 최신 선반영)."""
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit()
+    wp.create_slot("A", base="develop", session="me", git_runner=git)
+    fetch_idx = next(i for i, c in enumerate(git.calls) if c[:2] == ["fetch", "origin"])
+    add_idx = next(i for i, c in enumerate(git.calls) if c[:2] == ["worktree", "add"])
+    assert fetch_idx < add_idx
+
+
+def test_create_slot_base_fetch_failure_falls_back_to_local(wp, capsys):
+    """base 파생 — fetch 실패(오프라인)면 경고 + 로컬 `<base>` 폴백·슬롯 생성 성공 (T-0274·fail-soft).
+
+    fetch rc≠0 이면 origin/<base> 를 신뢰하지 않고(stale/부재 가능) 로컬 `<base>`(동결 head)에서
+    슬롯을 판다 — worktree add 핵심 부작용은 보존한다(슬롯 생성 계속).
+    """
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit(fetch_rc=1)   # fetch 실패
+    lease = wp.create_slot("A", base="develop", session="me", git_runner=git)
+    assert lease.slot == "work/A_1"          # 슬롯 생성은 계속(fail-soft)
+    add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
+    assert add_calls == [["worktree", "add", "--no-track", "-b", "A_1",
+                          str(wp.slot_path("work/A_1")), "develop"]]   # 로컬 <base> 폴백(origin/develop 아님)
+    assert not git.did("show-ref")            # fetch 실패면 origin ref 판정 건너뜀
+    assert "fetch origin" in capsys.readouterr().err
+
+
+def test_create_slot_base_origin_ref_unresolvable_falls_back_to_local(wp):
+    """base 파생 — fetch 성공해도 origin/<base> 미해소면 로컬 `<base>` 폴백 (T-0274).
+
+    refs/remotes/origin/<base> 가 없으면(구 bare·refspec 미보정 등) origin/<base> 파생이
+    불가하므로 로컬 `<base>` 에서 판다 — 슬롯 생성은 계속(회귀 0).
+    """
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit(fetch_rc=0, origin_has_base=False)   # fetch ok·origin ref 미해소
+    wp.create_slot("A", base="develop", session="me", git_runner=git)
+    assert git.did("fetch", "origin")
+    assert git.did("show-ref", "--verify", "--quiet", "refs/remotes/origin/develop")
+    add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
+    assert add_calls == [["worktree", "add", "--no-track", "-b", "A_1",
+                          str(wp.slot_path("work/A_1")), "develop"]]   # 로컬 폴백
+
+
+def test_create_slot_base_uses_no_track(wp):
+    """base 파생 — worktree add 에 `--no-track` 을 넣어 슬롯 브랜치 upstream 자동설정을 억제한다 (T-0274 결정·codex).
+
+    슬롯 브랜치 `<repo>_<N>` 는 작업스트림 컨테이너 — origin/<base>(remote-tracking ref)에서 `-b`
+    로 파면 git 기본 `branch.autoSetupMerge=true` 가 upstream 을 *자동* 설정한다. 엔진은 명시
+    `config` 를 안 하지만 그것만으론 자동설정을 못 막는다(mock argv 맹점·false green) → `--no-track`
+    이 유일한 방어선이다. 여기선 argv 에 `--no-track` 존재 + 명시 config 부재만 본다(git 의 실제
+    자동설정 억제는 실 git 백스톱 `test_real_git_create_slot_base_no_upstream_on_slot_branch` 가 검증).
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="develop", session="me", git_runner=git)
-    assert lease.slot == "work/A_1"
-    # 정확한 argv — 슬롯 브랜치 이름은 `A_1`(work/ 접두 없음·슬롯 식별자), base=develop.
+    wp.create_slot("A", base="develop", session="me", git_runner=git)
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
-    assert add_calls == [["worktree", "add", "-b", "A_1", str(wp.slot_path("work/A_1")),
-                          "develop"]]
+    assert add_calls and "--no-track" in add_calls[0]      # 자동 upstream 억제(유일 방어선)
+    assert not any(c[:1] == ["config"] for c in git.calls)  # 명시 tracking config 도 없음
 
 
 def test_create_slot_base_none_is_current_behavior(wp):
@@ -612,6 +686,9 @@ def test_create_slot_base_none_is_current_behavior(wp):
     wp.create_slot("A", session="me", git_runner=git)
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
     assert add_calls == [["worktree", "add", str(wp.slot_path("work/A_1"))]]
+    # bare-HEAD 경로는 fetch/show-ref 무관 — origin 파생(T-0274)은 base 경로 전용(회귀 0).
+    assert not git.did("fetch")
+    assert not git.did("show-ref")
 
 
 def test_create_slot_branch_takes_precedence_over_base(wp):
@@ -626,19 +703,22 @@ def test_create_slot_branch_takes_precedence_over_base(wp):
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
     assert add_calls == [["worktree", "add", "-B", "feat-x",
                           str(wp.slot_path("work/A_1"))]]
+    # branch 경로는 fetch/origin 파생을 안 탄다 — origin 파생(T-0274)은 base 전용 경로(회귀 0).
+    assert not git.did("fetch")
+    assert not git.did("show-ref")
 
 
 def test_create_slot_base_picks_next_free_number_in_branch_name(wp):
-    """base 파생 슬롯 브랜치 이름이 다음 빈 슬롯 번호를 따른다(`<repo>_<N>`·T-0075)."""
+    """base 파생 슬롯 브랜치 이름이 다음 빈 슬롯 번호를 따른다(`<repo>_<N>`·T-0075·T-0274)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="x", state="leased"))
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
     lease = wp.create_slot("A", base="develop", session="me", git_runner=git)
     assert lease.slot == "work/A_2"
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
-    # 슬롯 번호 2 → 브랜치 이름 `A_2`.
-    assert add_calls == [["worktree", "add", "-b", "A_2", str(wp.slot_path("work/A_2")),
-                          "develop"]]
+    # 슬롯 번호 2 → 브랜치 이름 `A_2`, 파생 기준=origin/develop(T-0274), `--no-track` 명시.
+    assert add_calls == [["worktree", "add", "--no-track", "-b", "A_2",
+                          str(wp.slot_path("work/A_2")), "origin/develop"]]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1270,6 +1350,143 @@ def test_real_git_create_slot_base_derives_slot_branch_from_base(proj, tmp_path)
     # develop-only 파일이 슬롯에 보인다(bare HEAD=main 이면 안 보임 → base 무시 회귀 포착).
     assert (slot_dir / "DEV_ONLY.txt").exists(), \
         "develop-only 파일이 슬롯에 없음 — base=develop 이 무시되고 main(bare HEAD)에서 땄다"
+
+
+@_git_required
+def test_real_git_create_slot_base_derives_from_origin_when_advanced(proj, tmp_path):
+    """실 git — origin 이 clone 이후 앞서면 create_slot(base=) 이 *origin 최신*에서 슬롯을 판다 (T-0274).
+
+    T-0152 refspec 은 origin/* 만 갱신하고 로컬 `refs/heads/<base>` 는 clone 시점 동결이라,
+    로컬 base 에서 파면 슬롯이 stale 하게 시작한다. 이 테스트는 clone 후 origin develop 을
+    앞서게(origin-only 커밋 D2) 만들고, create_slot 이 fetch 로 origin/develop 을 D2 로 갱신한 뒤
+    거기서 슬롯을 파 — 슬롯 HEAD == origin develop tip 이고 origin-only 파일이 보이는지 고정한다
+    (동결 로컬 develop=D1 에서 팠다면 D2 커밋/파일이 안 보임 → 회귀 포착).
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+
+    # family origin: main + develop(초기 커밋 D1).
+    origin = _init_repo(tmp_path / "A-origin")
+    _git(origin, "checkout", "-q", "-b", "develop")
+    (origin / "DEV1.txt").write_text("d1\n", encoding="utf-8")
+    _git(origin, "add", "DEV1.txt")
+    _git(origin, "commit", "-q", "-m", "develop D1")
+    _git(origin, "checkout", "-q", "main")   # origin HEAD = main
+
+    # bare = clone --bare + refspec 보정(T-0152 동형) + fetch → origin/develop = D1(로컬도 D1 동결).
+    bare = wp.bare_repo_path("A")
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
+    _git(bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    _git(bare, "fetch", "-q", "origin")
+
+    # origin develop 앞서기 — D2(origin-only 커밋). bare 로컬 refs/heads/develop 는 D1 동결 유지.
+    _git(origin, "checkout", "-q", "develop")
+    (origin / "DEV2.txt").write_text("d2\n", encoding="utf-8")
+    _git(origin, "add", "DEV2.txt")
+    _git(origin, "commit", "-q", "-m", "develop D2 (origin-only)")
+    develop_tip = _git(origin, "rev-parse", "develop").stdout.strip()
+    # 전제 확인 — 갱신 전 bare 로컬 refs/heads/develop 는 아직 D2 가 아니다(동결).
+    local_frozen = _git(bare, "rev-parse", "refs/heads/develop").stdout.strip()
+    assert local_frozen != develop_tip, "전제 위반 — 로컬 develop 이 이미 origin tip"
+
+    # create_slot(base=develop) — fetch 로 origin/develop→D2 갱신 후 거기서 슬롯 파생.
+    lease = wp.create_slot("A", base="develop", session="me", init_submodules=False)
+    assert lease.slot == "work/A_1"
+    slot_dir = wp.slot_path("work/A_1")
+
+    # 슬롯 HEAD == origin develop tip(D2) — 동결 로컬(D1) 이 아니다.
+    slot_head = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
+    assert slot_head == develop_tip, \
+        f"슬롯이 origin 최신(D2)에서 안 시작: HEAD={slot_head!r} origin_tip={develop_tip!r} frozen={local_frozen!r}"
+    # origin-only 커밋의 파일이 슬롯에 보인다(동결 로컬 D1엔 없음).
+    assert (slot_dir / "DEV2.txt").exists(), \
+        "origin-only 파일 DEV2 가 슬롯에 없음 — 동결 로컬 develop(D1)에서 팠다(T-0274 회귀)"
+
+
+@_git_required
+def test_real_git_create_slot_base_no_upstream_on_slot_branch(proj, tmp_path):
+    """실 git — origin/<base> 파생 슬롯 브랜치에 upstream 이 자동 설정되지 않는다 (T-0274 결정·codex 백스톱).
+
+    `worktree add -b <slot> <path> origin/<base>` 는 remote-tracking ref 에서 브랜치를 파므로
+    git 기본 `branch.autoSetupMerge=true` 가 슬롯 브랜치에 upstream 을 *자동* 설정한다(슬롯=작업
+    스트림 결정 위반). 엔진의 `--no-track` 이 그걸 억제하는지 — mock argv 단언(명시 config 부재)이
+    못 잡는 git 의 자동설정을 실 git 로 백스톱한다: 슬롯 브랜치 `<slot>@{upstream}` 미해소(rc≠0) +
+    `branch.<slot>.remote` config 미설정.
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+
+    # family origin: main + develop, bare = clone --bare + refspec 보정 + fetch(→ origin/develop 존재).
+    origin = _init_repo(tmp_path / "A-origin")
+    _git(origin, "checkout", "-q", "-b", "develop")
+    (origin / "DEV.txt").write_text("d\n", encoding="utf-8")
+    _git(origin, "add", "DEV.txt")
+    _git(origin, "commit", "-q", "-m", "develop")
+    _git(origin, "checkout", "-q", "main")
+    bare = wp.bare_repo_path("A")
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
+    _git(bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    _git(bare, "fetch", "-q", "origin")
+    # autoSetupMerge 기본 활성(git 기본값)임을 명시 — --no-track 이 없으면 upstream 이 걸릴 조건.
+    _git(bare, "config", "branch.autoSetupMerge", "true")
+
+    lease = wp.create_slot("A", base="develop", session="me", init_submodules=False)
+    slot_dir = wp.slot_path("work/A_1")
+    assert lease.slot == "work/A_1"
+    # 파생은 origin/develop 에서 됐다(파일 존재).
+    assert (slot_dir / "DEV.txt").exists()
+
+    # 슬롯 브랜치 `A_1@{upstream}` 이 미해소 — upstream 자동설정 안 됨(--no-track 효과).
+    up = subprocess.run(
+        [_GIT, "-C", str(slot_dir), "rev-parse", "--abbrev-ref", "A_1@{upstream}"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert up.returncode != 0, \
+        f"슬롯 브랜치 A_1 에 upstream 이 자동 설정됨(슬롯=작업스트림 위반): {up.stdout.strip()!r}"
+    # branch.A_1.remote config 도 미설정(자동 tracking 없음).
+    remote = subprocess.run(
+        [_GIT, "-C", str(bare), "config", "--get", "branch.A_1.remote"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert remote.returncode != 0, \
+        f"branch.A_1.remote 가 설정됨(슬롯 tracking 위반): {remote.stdout.strip()!r}"
+
+
+@_git_required
+def test_real_git_create_slot_base_fetch_offline_falls_back_to_local(proj, tmp_path):
+    """실 git — origin remote 소실(오프라인 시뮬)이면 fetch 실패 후 로컬 `<base>` 폴백·슬롯 생성 성공 (T-0274·fail-soft).
+
+    origin repo 를 삭제해 `git fetch origin` 이 실패하게 만들고, create_slot 이 경고 후
+    로컬 develop(동결 head)에서 슬롯을 파 — 슬롯이 실제로 생성되고 로컬 develop 내용을 갖는지
+    고정한다(네트워크 실패가 슬롯 생성을 막지 않는다).
+    """
+    import shutil as _sh
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+
+    origin = _init_repo(tmp_path / "A-origin")
+    _git(origin, "checkout", "-q", "-b", "develop")
+    (origin / "DEV_LOCAL.txt").write_text("local\n", encoding="utf-8")
+    _git(origin, "add", "DEV_LOCAL.txt")
+    _git(origin, "commit", "-q", "-m", "develop local")
+    _git(origin, "checkout", "-q", "main")
+    bare = wp.bare_repo_path("A")
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
+
+    # origin 삭제 → `git fetch origin` 이 실패한다(오프라인/소실 시뮬).
+    _sh.rmtree(origin)
+
+    lease = wp.create_slot("A", base="develop", session="me", init_submodules=False)
+    assert lease.slot == "work/A_1"           # fetch 실패해도 슬롯 생성 계속(fail-soft)
+    slot_dir = wp.slot_path("work/A_1")
+    assert slot_dir.is_dir()
+    # 로컬 develop(동결 head)에서 팜 — develop 내용이 보인다.
+    assert (slot_dir / "DEV_LOCAL.txt").exists()
+    head = _git(slot_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    assert head == "A_1"                       # 슬롯 브랜치 식별자 유지
 
 
 @_git_required

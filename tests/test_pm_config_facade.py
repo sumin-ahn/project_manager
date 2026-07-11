@@ -893,7 +893,13 @@ def test_repo_add_base_head_resolution_failure_falls_back_empty(pc, tmp_path):
 
 
 def test_repo_add_already_registered_skips_base_resolution(pc, tmp_path):
-    """이미 등록 + bare 존재 → base 재해소 안 함(append-only·중복 등록 금지·T-0075)."""
+    """이미 등록 + bare 존재 → base 재해소/재등록 안 함(append-only·중복 등록 금지·T-0075).
+
+    관측 신호 = 재등록 없음(`append_calls == []`) — base 재해소(`_resolve_base`→areas 재등록)는
+    already_registered early-return 이전에 short-circuit 된다. (T-0273 이후 그 early-return
+    *이전*에 `_ensure_bare_branch_tracking` 이 symbolic-ref 로 HEAD 를 읽어 tracking 을 자가치유
+    하지만, 그건 base 재해소가 아니라 tracking 보정이다 — 재등록으로 이어지지 않는다.)
+    """
     board = FakeBoard(registered=("svc",))
     gitr = _BaseAwareGit(head="main")
     repos = tmp_path / ".repos"
@@ -903,8 +909,7 @@ def test_repo_add_already_registered_skips_base_resolution(pc, tmp_path):
         board=board, clone_runner=gitr, repos_dir=repos,
     )
     assert rc == 0
-    assert board.append_calls == []                       # 중복 등록 안 함
-    assert not any("symbolic-ref" in c for c in gitr.calls)  # base 재해소 안 함(이미 박힘)
+    assert board.append_calls == []   # 중복 등록 안 함(base 재해소→재등록 경로 미도달)
 
 
 def test_repo_add_parser_base_optional(pc):

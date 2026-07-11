@@ -505,6 +505,74 @@ def _set_bare_fetch_refspec(bare_path: Path, *, runner: GitRunner) -> None:
     print("✓ bare fetch refspec 설정 + fetch origin — origin/* remote-tracking ref 채움 (T-0152).")
 
 
+def _ensure_bare_branch_tracking(bare_path: Path, *, runner: GitRunner) -> None:
+    """bare repo 의 기본 브랜치에 origin tracking(branch.<d>.remote/merge)을 박는다 (T-0273·fail-soft).
+
+    `git clone --bare` 는 일반(non-bare) clone 과 달리 로컬 브랜치 tracking config
+    (`branch.<n>.remote`/`branch.<n>.merge`)를 설정하지 않는다 → 그 bare 를 공유하는 worktree
+    슬롯의 **기본 브랜치가 `@{upstream}`(origin/<default>)을 해소 못 한다**(livegate baseline·
+    handoff freshness·`git status` ahead/behind·`git pull` 무인자 영향). T-0152
+    (`_set_bare_fetch_refspec`)가 tracking 의 한 절반(origin/* remote-tracking ref)을 채웠고,
+    이 함수가 나머지 절반(로컬 `branch.<d>.*` tracking config)을 채운다. bare 에 설정하면
+    worktree 가 공유 common config(`branch.*`)로 **상속**한다(worktree-local config.worktree 아님).
+
+    동작:
+      1. 기본 브랜치 = bare HEAD 해소(`git -C <bare> symbolic-ref --short HEAD`, 실패 시
+         `git -C <bare> rev-parse --abbrev-ref HEAD` 폴백).
+      2. `git -C <bare> config branch.<d>.remote origin` (set=덮어쓰기·멱등).
+      3. `git -C <bare> config branch.<d>.merge refs/heads/<d>`.
+    비-bare `git clone` 이 checked-out 기본 브랜치만 tracking 거는 동작을 미러 — **기본 브랜치만**
+    설정한다(전 브랜치 일괄 tracking 아님·로컬-전용 의도 브랜치를 잘못 tracking 걸지 않기 위해).
+
+    git 호출은 주입된 clone `runner` 를 `-C <bare>` 로 재사용한다(별도 DI seam 안 만듦·
+    `_set_bare_fetch_refspec`·base 해소[T-0075] 동형). **fail-soft**: bare HEAD 미해소·config
+    실패는 경고를 surface 하되 repo add 자체는 막지 않는다(tracking 은 *추가 가드*이지 repo add
+    핵심 부작용 아님). bare 는 존재 전제(clone 성공/재사용 후 호출).
+    """
+    rc, out = runner(["-C", str(bare_path), "symbolic-ref", "--short", "HEAD"])
+    if rc != 0:
+        # detached·비-symbolic HEAD 폴백 — 현재 브랜치명을 rev-parse 로 시도.
+        rc, out = runner(["-C", str(bare_path), "rev-parse", "--abbrev-ref", "HEAD"])
+    default_branch = out.strip()
+    if rc != 0 or not default_branch or default_branch == "HEAD":
+        print(
+            f"[경고] bare 기본 브랜치 해소 실패 (rc={rc}): {out.strip()[:200]}\n"
+            f"  수동으로 `git -C {bare_path} config branch.<d>.remote origin` + "
+            f"`git -C {bare_path} config branch.<d>.merge refs/heads/<d>` 하라 "
+            "(기본 브랜치 @{upstream} 해소·T-0273).",
+            file=sys.stderr,
+        )
+        return  # 기본 브랜치 미해소면 tracking 을 걸 대상이 없음 — skip(fail-soft).
+    rc, out = runner(
+        ["-C", str(bare_path), "config", f"branch.{default_branch}.remote", "origin"]
+    )
+    if rc != 0:
+        print(
+            f"[경고] bare `branch.{default_branch}.remote` 설정 실패 (rc={rc}): {out.strip()[:200]}\n"
+            f"  수동으로 `git -C {bare_path} config branch.{default_branch}.remote origin` + "
+            f"`git -C {bare_path} config branch.{default_branch}.merge refs/heads/{default_branch}` "
+            "하라 (기본 브랜치 @{upstream} 해소·T-0273).",
+            file=sys.stderr,
+        )
+        return
+    rc, out = runner(
+        ["-C", str(bare_path), "config",
+         f"branch.{default_branch}.merge", f"refs/heads/{default_branch}"]
+    )
+    if rc != 0:
+        print(
+            f"[경고] bare `branch.{default_branch}.merge` 설정 실패 (rc={rc}): {out.strip()[:200]}\n"
+            f"  remote 는 설정됨 — 수동으로 `git -C {bare_path} config "
+            f"branch.{default_branch}.merge refs/heads/{default_branch}` 로 보완하라 (T-0273).",
+            file=sys.stderr,
+        )
+        return
+    print(
+        f"✓ bare 기본 브랜치 origin tracking 설정: branch.{default_branch}.remote=origin + "
+        f"merge=refs/heads/{default_branch} (T-0273·슬롯 @{{upstream}} 해소)."
+    )
+
+
 # ── 위임 forward 시 usage prog 정합 (T-0249·ADR-0043) ────────────────────────
 
 # `pm-config init`/`update` 는 board.py / pm_update.py 의 main() 으로 verbatim forward
@@ -669,6 +737,13 @@ def cmd_repo_add(
     #     ref(origin/main)가 안 생기는 결함을 근절한다(멱등 — refspec-없는 과거 bare 도 보정).
     #     clone 실패 시엔 위에서 이미 return 1 했으므로 여기 도달 = bare 존재 전제(fail-soft).
     _set_bare_fetch_refspec(bare_path, runner=runner)
+
+    # 1c) bare 기본 브랜치 origin tracking 보정 (T-0273 — T-0152 나머지 절반). refspec 이 origin/*
+    #     remote-tracking ref 를 채웠고, 이 헬퍼가 로컬 branch.<d>.remote/merge tracking config 를
+    #     박아 그 bare 슬롯 기본 브랜치의 @{upstream}(origin/<default>) 해소를 닫는다. refspec 보정과
+    #     같은 위치(clone 성공/기존 bare 재사용 둘 다·already_registered early-return 이전)라 과거
+    #     tracking-없는 bare 도 다음 repo add 에 자가치유된다(멱등·fail-soft).
+    _ensure_bare_branch_tracking(bare_path, runner=runner)
 
     # 2) 이미 등록돼 있으면 base 재해소/등록을 건너뛴다(append-only·중복 등록 금지). base 는
     #    첫 등록 때 박힌 값 그대로(clone 만 실패했던 재시도 경로는 위 clone 으로 복구됨).

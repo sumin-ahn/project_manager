@@ -31,6 +31,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Callable
@@ -850,9 +851,12 @@ def create_slot(
            - `branch` 면 그 브랜치를 create-or-reset 으로 체크아웃(`-B <branch> <path>`).
              branch 가 신규든 기존이든 한 호출로 처리(`add <path> <ref>` 는 ref 가 *기존*이어야
              해 신규 작업스트림 브랜치엔 못 씀 → `-B` 로 통일).
-           - `base` 면(branch 미지정) 슬롯 브랜치 `<repo>_<N>` 를 *그 base 에서 파생*
-             (`-b <repo>_<N> <path> <base>`·T-0075). repo 등록 base(areas.md·`pm-config worktree
-             add` 가 전달)에서 일관되게 따게 한다 — bare HEAD 가 아닌 의도한 base(develop 등).
+           - `base` 면(branch 미지정) 먼저 `git fetch origin`(best-effort·T-0274) 후 슬롯 브랜치
+             `<repo>_<N>` 를 *`origin/<base>` 최신에서 파생*(`--no-track -b <repo>_<N> <path>
+             origin/<base>`). repo 등록 base(areas.md·`pm-config worktree add` 가 전달)에서 일관되게
+             따게 한다 — bare HEAD 가 아닌 의도한 base(develop 등). fetch 실패/origin ref 미해소면
+             로컬 `<base>`(동결 head) 폴백(T-0152 refspec 은 origin/* 만 갱신·로컬 heads 는 동결·
+             fail-soft). `--no-track` = 슬롯 브랜치에 origin/<base> upstream 자동설정 억제(슬롯=작업스트림).
            - 둘 다 미지정이면 **현행 보존**(`add <path>` = bare HEAD·회귀 0).
       4. submodule init — `git worktree add` 는 submodule 자동 init 안 함(ADR-0013·spike
          §8-4(d)) → `git submodule update --init --recursive --force`(슬롯 worktree cwd).
@@ -890,17 +894,50 @@ def create_slot(
         #   - branch 면 `-B`(create-or-reset)로 체크아웃 — `add <path> <ref>` 는 ref 가
         #     기존이어야 하므로 신규 작업스트림 브랜치엔 못 쓴다. `-B` 가 신규/기존 모두
         #     안전(슬롯=브랜치-무관 컨테이너·ADR-0013).
-        #   - base 면(branch 미지정·T-0075) 슬롯 브랜치 `<repo>_<N>` 를 *그 base 에서 파생*
-        #     (`-b <slot> <path> <base>`). 슬롯 브랜치 이름은 슬롯 식별자(`<repo>_<N>`·T-0072
-        #     live-branch 정합)이고 base 만 의도한 분기점(develop 등). `add <path> <base>` 가
-        #     아니라 `-b`(브랜치 생성)인 이유: ref 만 주면 detached 거나 base 브랜치 자체에
-        #     붙어 슬롯 작업이 base 를 오염한다 → 슬롯 전용 브랜치를 base 에서 새로 판다.
+        #   - base 면(branch 미지정·T-0075) 먼저 `fetch origin`(T-0274) 후 슬롯 브랜치
+        #     `<repo>_<N>` 를 *`origin/<base>` 최신에서 파생*(`--no-track -b <slot> <path>
+        #     origin/<base>`). 슬롯 브랜치 이름은 슬롯 식별자(`<repo>_<N>`·T-0072 live-branch 정합)
+        #     이고 base 만 의도한 분기점(develop 등). `add <path> <ref>` 가 아니라 `-b`(브랜치 생성)인
+        #     이유: ref 만 주면 detached 거나 base 브랜치 자체에 붙어 슬롯 작업이 base 를 오염한다 →
+        #     슬롯 전용 브랜치를 base 에서 새로 판다. `--no-track` = origin/<base> upstream 자동설정
+        #     억제(슬롯=작업스트림). (파생 기준·fetch·--no-track 상세는 아래 base 분기 주석.)
         #   - 둘 다 미지정이면 **현행 보존**(`add <path>` = bare HEAD·회귀 0).
         add_runner = git_runner or _real_git_runner(bare)
         if branch is not None:
             add_argv = ["worktree", "add", "-B", branch, str(path)]
         elif base is not None:
-            add_argv = ["worktree", "add", "-b", f"{repo}_{n}", str(path), base]
+            # base 파생 — 슬롯을 *origin 최신*에서 시작한다 (T-0274). T-0152 refspec
+            # (`+refs/heads/*:refs/remotes/origin/*`)은 origin/* 만 갱신하고 로컬 `refs/heads/<base>`
+            # 는 clone 시점 동결이라, 로컬 base 에서 파면 슬롯이 origin 보다 stale 하게 시작한다.
+            # worktree add 전에 origin 을 fetch 하고(best-effort) `origin/<base>`(존재 시)에서 판다.
+            #   - fetch 실패(오프라인)면 경고 후 로컬 `<base>` 폴백 — 슬롯 생성은 막지 않는다
+            #     (worktree add 핵심 부작용 보존·`_set_bare_fetch_refspec` fail-soft 규율 정합).
+            #   - 파생 기준 ref = fetch 성공 + `refs/remotes/origin/<base>` resolvable → `origin/<base>`
+            #     (fetch 로 갱신된 최신), 아니면 로컬 `<base>`(폴백). 로컬 `refs/heads/<base>` 동결은
+            #     손대지 않는다(pool 슬롯은 자기 슬롯 브랜치를 파므로 로컬 base 직접 체크아웃 안 함·
+            #     fast-forward 는 범위 밖·리스크 회피).
+            #   - **`--no-track` 필수**: 슬롯 브랜치 `<repo>_<N>` 는 새 작업 브랜치(슬롯=작업스트림)라
+            #     origin/<base> tracking 을 걸지 않는다. 그런데 remote-tracking ref(origin/<base>)에서
+            #     `-b` 로 브랜치를 파면 git 기본 `branch.autoSetupMerge=true` 가 그 슬롯 브랜치에
+            #     upstream 을 *자동* 설정한다(A_1@{upstream}=origin/<base>·`git status`/무인자 `git pull`
+            #     이 슬롯 작업을 base 에 묶음). `--no-track` 으로 그 자동설정을 억제한다(로컬 <base>
+            #     폴백 경로에서도 안전 — no-op·codex 게이트 포착 결함).
+            ref = base
+            rc, out = add_runner(["fetch", "origin"])
+            if rc != 0:
+                print(
+                    f"[경고] `git -C {bare} fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
+                    f"  로컬 `{base}`(동결 head)에서 슬롯을 판다 — 네트워크 복구 후 새 슬롯은 "
+                    "origin 최신에서 시작한다 (T-0274·fail-soft).",
+                    file=sys.stderr,
+                )
+            else:
+                rc, _ = add_runner(
+                    ["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base}"]
+                )
+                if rc == 0:
+                    ref = f"origin/{base}"
+            add_argv = ["worktree", "add", "--no-track", "-b", f"{repo}_{n}", str(path), ref]
         else:
             add_argv = ["worktree", "add", str(path)]
         rc, out = add_runner(add_argv)
