@@ -1144,14 +1144,104 @@ def _rollback_worktree(repo: str, slot_path_: Path, *, git_runner: GitRunner | N
 def _checkout(slot_path_: Path, branch: str, *, git_runner: GitRunner | None = None) -> tuple[int, str]:
     """슬롯 worktree 에서 브랜치 체크아웃 (브랜치 변경 = 같은 슬롯 재체크아웃·ADR-0013).
 
-    `git checkout <branch>`. 브랜치가 없으면 새로 만든다(`-B`) — 풀 슬롯에 새 작업스트림을
-    붙이는 정상 경로. (같은 브랜치 동시 2-worktree checkout 은 git 이 거부 — ADR-0013 §8-6.)
+    `git checkout --no-recurse-submodules <branch>`. 브랜치가 없으면 새로 만든다(`-B`) — 풀
+    슬롯에 새 작업스트림을 붙이는 정상 경로. (같은 브랜치 동시 2-worktree checkout 은 git 이
+    거부 — ADR-0013 §8-6.)
+
+    **`--no-recurse-submodules` (ADR-0051 크럭스 A·codex 게이트)**: 사용자 환경(전역
+    `~/.gitconfig` 또는 repo config)에 `submodule.recurse=true` 가 설정돼 있으면 plain
+    `git checkout` 이 *selective resync 전에* submodule 을 재귀 갱신해 on-branch(dev) submodule
+    을 detached pin 으로 낚아챈다 — ADR-0051 이 selective resync 로 막으려던 바로 그 dev 파괴.
+    양 checkout 호출에 `--no-recurse-submodules`(git 2.13+·2.43 확인)를 박아 ambient config 를
+    override → checkout 은 submodule 을 절대 안 건드리고 `_resync_submodules_selective` 가
+    submodule 상태의 **유일 권위**가 된다(ADR-0051 "전역 recurse 대신 selective" 정신 정합).
     """
     runner = git_runner or _real_git_runner(slot_path_)
-    rc, out = runner(["checkout", branch])
+    rc, out = runner(["checkout", "--no-recurse-submodules", branch])
     if rc != 0:
-        rc, out = runner(["checkout", "-B", branch])
+        rc, out = runner(["checkout", "--no-recurse-submodules", "-B", branch])
     return rc, out
+
+
+def _parse_submodule_paths(status_out: str) -> list[str]:
+    """`git submodule status` 출력에서 submodule 경로(superproject-상대)만 뽑는다 (git 2.43).
+
+    각 라인 형식 = `<flag><40-hex-sha> <path>[ (<describe>)]` — 선두 1글자 status 플래그
+    (space/`+`/`-`/`U`)가 sha 에 붙고, **두 번째 whitespace 토큰이 경로**다. `line.split()[1]`
+    로 플래그 유무와 무관하게 경로를 얻는다(선두 space 는 split 이 무시·플래그 문자는 sha 에
+    붙어 토큰이 안 쪼개짐). 빈 출력(submodule 없음)·토큰 2개 미만 라인은 건너뛴다.
+    """
+    paths: list[str] = []
+    for line in status_out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            paths.append(parts[1])
+    return paths
+
+
+def _submodule_dirty(sub: str, runner: GitRunner) -> bool:
+    """submodule 워킹트리에 미커밋 변경(untracked 포함)이 있는지 — `_is_dirty` 동형(sub 컨텍스트).
+
+    superproject-바인딩 runner 로 `git -C <sub> status --porcelain` 을 돌려 그 submodule
+    워킹트리를 본다(다중 `-C` = superproject cwd 기준 sub 로 재진입). porcelain 엔트리 라인이
+    하나라도 있으면 dirty. rc≠0(상태 조회 실패)은 **보수적으로 dirty** 로 본다 — `_is_dirty`
+    와 같은 규율(모르면 안 날린다·미커밋 작업 유실 방지). stderr 경고 오탐은
+    `_porcelain_status_lines` 로 걸러진다(`_is_dirty` 와 동일 가드).
+    """
+    rc, out = runner(["-C", sub, "status", "--porcelain"])
+    if rc != 0:
+        return True
+    return len(_porcelain_status_lines(out)) > 0
+
+
+def _resync_submodules_selective(slot_path_: Path, *, git_runner: GitRunner | None = None) -> None:
+    """브랜치 전환(`_checkout`) 성공 후 submodule 을 **선택적으로** superproject pin 에 재동기 (ADR-0051).
+
+    worktree 풀 슬롯의 브랜치를 바꾸면 superproject 는 새 브랜치의 submodule pin 을 가리키지만
+    submodule 워킹트리는 이전 pin 그대로라 drift 가 생긴다(ADR-0051 §Context). 브랜치 전환
+    직후 각 submodule 을 **역할별로** 재동기한다 — 역할은 별도 장부 없이 submodule 의 live git
+    HEAD 로 판별한다(ADR-0051 §Decision 1·무스키마·기본 A):
+
+      - **on-branch submodule (= dev 역할·`symbolic-ref -q HEAD` rc0)**: **skip**. 사용자가 그
+        submodule 에서 브랜치를 파 작업 중이므로 detached pin 으로 낚아채지 않는다(전역
+        `submodule.recurse=true` 가 dev 브랜치를 파괴하던 크럭스 A → *selective* 인 이유).
+      - **detached submodule (= consume 역할·`symbolic-ref -q HEAD` rc≠0)**: superproject pin
+        으로 `git submodule update --init --recursive --force -- <sub>` 재동기. 단 워킹트리가
+        **dirty(미커밋 변경)면 skip + 경고** — 재동기가 미커밋 작업을 날리지 않게 보호.
+      - **submodule 없는 repo**: `git submodule status` 가 rc0·빈 출력 → no-op.
+
+    fail-soft(브랜치 전환은 이미 성공했고 submodule 재동기 실패가 checkout 을 되돌리지 않는다·
+    raise 금지): `submodule status` rc≠0(조회 불가)면 no-op 반환. update 실패는 경고만 하고
+    drift 잔존을 surface 한다(침묵 무력화 금지). `git_runner` 미주입 시 슬롯 worktree 바인딩
+    `_real_git_runner(slot_path_)` 로 해소(기존 DI seam 패턴·`_is_dirty` 동형) — 모든 submodule
+    git 호출을 이 superproject-바인딩 runner + `-C <sub>` 로 돌려 테스트 mock 가능(hermetic).
+    """
+    runner = git_runner or _real_git_runner(slot_path_)
+    rc, out = runner(["submodule", "status"])
+    if rc != 0:
+        return  # 조회 불가(대개 submodule 없음/손상) → no-op fail-soft(checkout 은 이미 성공).
+    for sub in _parse_submodule_paths(out):
+        # 역할 = live git HEAD(ADR-0051 §Decision 1·장부 없음). on-branch(dev) → 보호(skip).
+        rc_head, _out = runner(["-C", sub, "symbolic-ref", "-q", "HEAD"])
+        if rc_head == 0:
+            continue
+        # detached(consume) → pin 재동기. 단 dirty(미커밋)면 작업 유실 방지 위해 skip + 경고.
+        if _submodule_dirty(sub, runner):
+            print(
+                f"[경고] submodule {sub!r} 이 detached 이나 미커밋 변경으로 dirty — pin "
+                f"재동기 skip (작업 보호·ADR-0051). 정리 후 재-alloc 하면 재동기된다.",
+                file=sys.stderr,
+            )
+            continue
+        rc_up, out_up = runner(
+            ["submodule", "update", "--init", "--recursive", "--force", "--", sub]
+        )
+        if rc_up != 0:
+            print(
+                f"[경고] submodule {sub!r} pin 재동기 실패 (rc={rc_up}): "
+                f"{str(out_up).strip()[:200]} — drift 잔존 가능(ADR-0051·fail-soft·checkout 은 성공).",
+                file=sys.stderr,
+            )
 
 
 def _checkout_required(slot: str, branch: str, *, git_runner: GitRunner | None = None) -> None:
@@ -1159,10 +1249,17 @@ def _checkout_required(slot: str, branch: str, *, git_runner: GitRunner | None =
 
     fail-soft 로 무시하면 호출부가 장부 branch/state 를 성공처럼 갱신해 장부↔실제 worktree
     branch 가 어긋난다. 성공해야만 호출부가 장부를 갱신하도록 강제하는 가드.
+
+    체크아웃 성공 직후 `_resync_submodules_selective` 로 submodule 을 새 브랜치 pin 에 selective
+    재동기한다(ADR-0051 파일럿 T-α — detached=consume 만 재동기·on-branch=dev skip·dirty
+    skip+경고). *브랜치 전환* 경로(alloc 세 checkout 분기)에만 붙는다 — `create_slot` 최초 init
+    은 이 함수를 안 타고 자체 `submodule update --init --recursive --force`(fresh=전부 detached)를
+    유지한다. 재동기는 fail-soft(raise 안 함)라 checkout 성공을 되돌리지 않는다.
     """
     rc, out = _checkout(slot_path(slot), branch, git_runner=git_runner)
     if rc != 0:
         raise CheckoutFailed(slot, branch, out)
+    _resync_submodules_selective(slot_path(slot), git_runner=git_runner)
 
 
 def _local_conf_session() -> str | None:

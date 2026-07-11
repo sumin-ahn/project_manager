@@ -202,8 +202,8 @@ def test_alloc_resume_reattaches_same_branch_slot(wp):
     assert lease.slot == "work/A_2"
     assert wp.current_branch("work/A_2", git_runner=git) == "a5-pay"  # live HEAD 유지
     assert lease.session == "new"
-    # 같은 슬롯 재체크아웃 발생.
-    assert git.did("checkout", "a5-pay")
+    # 같은 슬롯 재체크아웃 발생 (--no-recurse-submodules — ambient recurse override·ADR-0051).
+    assert git.did("checkout", "--no-recurse-submodules", "a5-pay")
 
 
 def test_alloc_branch_reassign_same_slot_different_branch(wp):
@@ -217,7 +217,7 @@ def test_alloc_branch_reassign_same_slot_different_branch(wp):
     git = FakeGit(head="a1-old")  # 슬롯 live HEAD = a1-old
     lease = wp.alloc("A", branch="a2-new", session="me", git_runner=git)
     assert lease.slot == "work/A_1"          # 같은 슬롯
-    assert git.did("checkout", "a2-new")     # 재체크아웃(live HEAD 와 다르므로)
+    assert git.did("checkout", "--no-recurse-submodules", "a2-new")  # 재체크아웃(live HEAD 와 다르므로)
     # checkout 이 슬롯 live HEAD 를 a2-new 로 전환(git=진실).
     assert wp.current_branch("work/A_1", git_runner=git) == "a2-new"
 
@@ -344,6 +344,141 @@ def test_alloc_checkout_success_updates_ledger_sensitivity(wp):
     assert lease.session == "me"
     # checkout 이 슬롯 live HEAD 를 a2-new 로 전환(장부 저장 아님·ADR-0013 amend T-0072).
     assert wp.current_branch("work/A_1", git_runner=git) == "a2-new"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# selective submodule 재동기 (ADR-0051 파일럿 T-α · T-0275)
+# 브랜치 전환(_checkout) 성공 후 detached(consume) submodule 만 superproject pin 으로
+# 재동기 · on-branch(dev) 는 skip(작업 보호·크럭스 A) · dirty 는 skip+경고 · submodule
+# 없는 repo 는 no-op. 역할은 submodule 의 live git HEAD 로 판별한다(무장부·ADR-0051 §Decision 1).
+# ════════════════════════════════════════════════════════════════════════
+
+
+class _SubmoduleGit:
+    """submodule 시나리오 주입 runner — superproject(슬롯) 바인딩 `git -C <slot>` 모델.
+
+    `subs` = {path: (role, dirty)} — role="branch"(on-branch=dev·`symbolic-ref -q HEAD` rc0)
+    또는 "detached"(consume·rc≠0), dirty=bool(sub 의 `status --porcelain` 변경 유무). `submodule
+    status` 는 각 sub 를 ` <sha> <path>` 로 나열한다(플래그 무관·경로만 파싱). submodule
+    컨텍스트 명령은 엔진의 다중 `-C` 배선대로 `["-C", <sub>, ...]` 로 온다(superproject cwd 기준
+    sub 재진입). `status_rc≠0` 이면 `submodule status` 조회 실패(fail-soft no-op 검증용).
+    """
+
+    def __init__(self, subs=None, *, head="feat", status_rc=0):
+        self.subs = dict(subs or {})
+        self.head = head
+        self.status_rc = status_rc
+        self.calls: list[list] = []
+
+    def __call__(self, argv: list) -> tuple[int, str]:
+        self.calls.append(list(argv))
+        if argv == ["submodule", "status"]:
+            if self.status_rc != 0:
+                return (self.status_rc, "fatal: not a git repository\n")
+            lines = "".join(
+                f" 1111111111111111111111111111111111111111 {p}\n" for p in self.subs
+            )
+            return (0, lines)
+        if argv[:2] == ["submodule", "update"]:
+            return (0, "")
+        if argv[:1] == ["checkout"]:
+            self.head = argv[-1]          # 실 git 처럼 head 갱신(브랜치 전환).
+            return (0, "")
+        if argv == ["symbolic-ref", "--short", "HEAD"]:
+            return (0, self.head + "\n") if self.head else (1, "")
+        if argv[:1] == ["-C"] and len(argv) >= 3:
+            sub, rest = argv[1], argv[2:]
+            role, dirty = self.subs.get(sub, ("detached", False))
+            if rest[:3] == ["symbolic-ref", "-q", "HEAD"]:
+                # on-branch(dev) → rc0 · detached(consume) → rc≠0 (실 `symbolic-ref -q` 동형).
+                return (0, "refs/heads/x\n") if role == "branch" else (1, "")
+            if rest[:2] == ["status", "--porcelain"]:
+                return (0, " M f\n") if dirty else (0, "")
+        return (0, "")
+
+    def did(self, *prefix) -> bool:
+        return any(c[: len(prefix)] == list(prefix) for c in self.calls)
+
+    def resynced(self) -> list:
+        """selective 재동기(`submodule update ... -- <sub>`) 된 sub 경로 목록."""
+        return [c[-1] for c in self.calls
+                if c[:2] == ["submodule", "update"] and "--" in c]
+
+
+def test_resync_detached_submodule_resyncs_to_pin(wp):
+    """detached(consume) + clean submodule → superproject pin 으로 재동기(update 호출)."""
+    git = _SubmoduleGit({"vendor/sub": ("detached", False)})
+    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    assert git.resynced() == ["vendor/sub"]
+    assert git.did("submodule", "update", "--init", "--recursive", "--force", "--", "vendor/sub")
+
+
+def test_resync_on_branch_submodule_skipped(wp):
+    """on-branch(dev) submodule → skip(재동기 안 함) — dev 작업 보호(크럭스 A).
+
+    비공허: skip 로직을 없애면 dev submodule 이 detached pin 으로 낚아채여 이 단언이 red.
+    """
+    git = _SubmoduleGit({"vendor/sub": ("branch", False)})
+    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    assert git.resynced() == [], "on-branch(dev) submodule 은 재동기하면 안 됨(작업 파괴)"
+
+
+def test_resync_dirty_detached_submodule_skipped_with_warning(wp, capsys):
+    """detached 이나 dirty(미커밋) submodule → skip + 경고(작업 유실 방지)."""
+    git = _SubmoduleGit({"vendor/sub": ("detached", True)})
+    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    assert git.resynced() == [], "dirty submodule 재동기는 미커밋 작업을 날린다"
+    err = capsys.readouterr().err
+    assert "vendor/sub" in err and "dirty" in err
+
+
+def test_resync_no_submodules_is_noop(wp):
+    """submodule 없는 repo(status rc0·빈 출력) → no-op(update 0회·per-sub 조회 0회·예외 0)."""
+    git = _SubmoduleGit({})
+    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    assert git.resynced() == []
+    assert not any(c[:1] == ["-C"] for c in git.calls), "submodule 없는데 per-sub 조회 발생"
+
+
+def test_resync_status_query_failure_is_noop(wp):
+    """`submodule status` rc≠0(조회 불가) → no-op fail-soft(checkout 은 이미 성공·raise 금지)."""
+    git = _SubmoduleGit({"vendor/sub": ("detached", False)}, status_rc=1)
+    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    assert git.resynced() == []
+    assert not any(c[:1] == ["-C"] for c in git.calls)
+
+
+def test_resync_mixed_selective_only_clean_detached(wp, capsys):
+    """혼합 — detached-clean=재동기 · on-branch=skip · detached-dirty=skip+경고 (selective 비공허).
+
+    셋 중 detached-clean 하나만 재동기돼야 한다. skip/dirty 가드 중 어느 하나라도 없으면
+    다른 sub 가 재동기 목록에 섞여 이 단언이 red(가드 비공허 실증).
+    """
+    git = _SubmoduleGit({
+        "vendor/consume": ("detached", False),   # 재동기 대상
+        "libs/dev":       ("branch", False),     # dev → skip
+        "vendor/wip":     ("detached", True),    # dirty → skip + 경고
+    })
+    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    assert git.resynced() == ["vendor/consume"]
+    assert "vendor/wip" in capsys.readouterr().err
+
+
+def test_checkout_required_success_triggers_resync(wp):
+    """배선 — `_checkout_required` 성공(브랜치 전환) 직후 slot 에 selective 재동기가 실행된다."""
+    git = _SubmoduleGit({"vendor/sub": ("detached", False)}, head="old")
+    wp._checkout_required("work/A_1", "feat", git_runner=git)
+    assert git.did("checkout", "--no-recurse-submodules", "feat")
+    assert git.resynced() == ["vendor/sub"], "checkout 성공 후 재동기 배선 안 됨"
+
+
+def test_checkout_required_failure_skips_resync(wp):
+    """배선 negative — checkout 실패면 CheckoutFailed raise·재동기 미실행(성공 후에만·비공허)."""
+    git = _CheckoutFailGit(head="old")
+    with pytest.raises(wp.CheckoutFailed):
+        wp._checkout_required("work/A_1", "feat", git_runner=git)
+    assert not any(c[:1] == ["submodule"] for c in git.calls), \
+        "checkout 실패인데 재동기(submodule status/update)를 시도함"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1574,6 +1709,148 @@ def test_real_git_submodule_init_in_new_slot(proj, tmp_path, monkeypatch):
     assert sub_file.read_text(encoding="utf-8") == "shared lib\n"
 
 
+def _allow_file_submodules(monkeypatch):
+    """모든 git 호출에 `protocol.file.allow=always` 주입 — file:// submodule clone 차단 해제.
+
+    git 은 보안상(CVE-2022-39253) file 프로토콜 submodule clone 을 기본 차단한다. 실 git
+    submodule 테스트 픽스처는 로컬 file:// 경로를 쓰므로 GIT_CONFIG_* 환경으로 그 차단을
+    푼다(테스트-전용·엔진 코드는 `-c` 를 안 박아 실전 동작에 영향 0·기존 submodule 테스트 정합).
+    """
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "always")
+
+
+def _mk_family_versioned_submodule(wp, tmp_path):
+    """family repo(main→sub v1 pin·feature→sub v2 pin) + bare `.repos/A.git` 를 만든다.
+
+    ADR-0051 selective 재동기 실 git 테스트 공용 픽스처 — submodule origin 에 v1→v2 두 커밋을
+    두고 superproject `main` 은 v1, `feature` 는 v2 를 pin 한다. 호출부가 슬롯을 main 에서
+    만들고 feature 로 전환하면 detached submodule 은 v2 로 재동기(consume)·on-branch 는
+    skip(dev)이어야 한다. 반환: sub_origin 경로(submodule URL — 테스트 존속 필요).
+    호출 전제: 이미 `_init_repo(proj)` + `wp = _load_wp_bound(proj)` 수행됨.
+    """
+    # submodule origin: v1(→ main pin), 이후 v2(→ feature pin).
+    sub_origin = _init_repo(tmp_path / "sub-origin")
+    (sub_origin / "lib.txt").write_text("v1\n", encoding="utf-8")
+    _git(sub_origin, "add", "lib.txt")
+    _git(sub_origin, "commit", "-q", "-m", "lib v1")
+
+    # family main: submodule add(현재 sub HEAD=v1 pin) + 커밋.
+    family = _init_repo(tmp_path / "A-origin")
+    _git(family, "submodule", "add", str(sub_origin), "vendor/sub")
+    _git(family, "commit", "-q", "-m", "main pins sub v1")
+
+    # sub-origin 에 v2 추가 → family feature 가 v2 를 pin.
+    (sub_origin / "lib.txt").write_text("v2\n", encoding="utf-8")
+    _git(sub_origin, "add", "lib.txt")
+    _git(sub_origin, "commit", "-q", "-m", "lib v2")
+    _git(family, "checkout", "-q", "-b", "feature")
+    _git(family / "vendor" / "sub", "fetch", "-q", "origin")
+    _git(family / "vendor" / "sub", "checkout", "-q", "origin/main")  # sub 최신(v2)
+    _git(family, "add", "vendor/sub")
+    _git(family, "commit", "-q", "-m", "feature pins sub v2")
+    _git(family, "checkout", "-q", "main")
+
+    bare = wp.bare_repo_path("A")
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    _git(tmp_path, "clone", "--bare", "-q", str(family), str(bare))
+    return sub_origin
+
+
+@_git_required
+def test_real_git_resync_detached_submodule_follows_new_branch_pin(proj, tmp_path, monkeypatch):
+    """실 git — 브랜치 전환 시 detached(consume) submodule 이 새 브랜치 pin 으로 재동기된다 (ADR-0051).
+
+    슬롯을 main(sub v1 pin)에서 만들면 submodule 은 v1·detached 다. feature(sub v2 pin)로
+    `_checkout_required` 전환하면 detached=consume 이라 selective 재동기가 submodule 을 v2 로
+    올린다. 재동기 없이 plain checkout 만이면 submodule 워킹트리는 v1 그대로(drift)라 red.
+    """
+    _allow_file_submodules(monkeypatch)
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_family_versioned_submodule(wp, tmp_path)
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=True)
+    slot_dir = wp.slot_path(lease.slot)
+    sub_lib = slot_dir / "vendor" / "sub" / "lib.txt"
+    assert sub_lib.read_text(encoding="utf-8") == "v1\n", "슬롯 초기 submodule 이 main pin(v1) 아님"
+
+    # feature 로 전환(브랜치 전환 경로) → detached submodule 이 feature pin(v2)로 재동기.
+    wp._checkout_required("work/A_1", "feature")
+    assert sub_lib.read_text(encoding="utf-8") == "v2\n", \
+        "detached submodule 이 새 브랜치 pin(v2)로 재동기 안 됨(drift·ADR-0051)"
+
+
+@_git_required
+def test_real_git_resync_on_branch_submodule_preserved(proj, tmp_path, monkeypatch):
+    """실 git — 브랜치 전환 시 on-branch(dev) submodule 은 skip·작업이 보존된다 (ADR-0051·크럭스 A).
+
+    슬롯 submodule 을 브랜치(devwork)로 전환해 dev 역할로 만든 뒤 superproject 를 feature(sub
+    v2 pin)로 바꾼다. on-branch=dev 라 selective 재동기가 skip 하므로 submodule 은 v1·devwork
+    그대로 보존된다(전역 submodule.recurse 였다면 detached pin 으로 낚아채 파괴됐을 것).
+    """
+    _allow_file_submodules(monkeypatch)
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_family_versioned_submodule(wp, tmp_path)
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=True)
+    slot_dir = wp.slot_path(lease.slot)
+    sub_dir = slot_dir / "vendor" / "sub"
+    sub_lib = sub_dir / "lib.txt"
+    assert sub_lib.read_text(encoding="utf-8") == "v1\n"
+
+    # submodule 을 브랜치로 전환(dev 역할·on-branch) — 여전히 v1.
+    _git(sub_dir, "checkout", "-q", "-b", "devwork")
+
+    # feature 로 전환 → on-branch(dev) submodule 은 skip → v1·devwork 유지.
+    wp._checkout_required("work/A_1", "feature")
+    assert sub_lib.read_text(encoding="utf-8") == "v1\n", \
+        "on-branch(dev) submodule 이 재동기돼 작업이 파괴됨(크럭스 A·ADR-0051 위반)"
+    head = _git(sub_dir, "symbolic-ref", "--short", "HEAD").stdout.strip()
+    assert head == "devwork", "dev 브랜치가 detached 로 낚아채짐(재동기 skip 안 됨)"
+
+
+@_git_required
+def test_real_git_resync_on_branch_submodule_preserved_under_recurse_true(proj, tmp_path, monkeypatch):
+    """실 git — `submodule.recurse=true` ambient config 여도 on-branch(dev) submodule 보존 (ADR-0051 크럭스 A·codex 게이트).
+
+    사용자 전역 `~/.gitconfig`(또는 repo config)에 `submodule.recurse=true` 가 있으면 plain
+    `git checkout` 이 selective resync *전에* submodule 을 재귀 갱신해 dev 브랜치를 detached pin
+    으로 낚아챈다. `_checkout` 이 양 checkout 에 `--no-recurse-submodules` 를 박아 이 ambient
+    recurse 를 override → selective resync 가 submodule 상태의 유일 권위가 된다. dev submodule 의
+    devwork 브랜치·v1 작업이 보존돼야 한다.
+
+    비공허: `--no-recurse-submodules` 를 빼면 recurse=true 가 dev submodule 을 detached(v2)로
+    낚아채 이 단언이 red(크럭스 A 회귀 재현) — mutation 으로 확인.
+    """
+    _allow_file_submodules(monkeypatch)
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_family_versioned_submodule(wp, tmp_path)
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=True)
+    slot_dir = wp.slot_path(lease.slot)
+    sub_dir = slot_dir / "vendor" / "sub"
+    sub_lib = sub_dir / "lib.txt"
+    assert sub_lib.read_text(encoding="utf-8") == "v1\n"
+
+    # ambient `submodule.recurse=true` — 사용자 전역/repo config 재현(슬롯 worktree config 에 설정).
+    _git(slot_dir, "config", "submodule.recurse", "true")
+
+    # submodule 을 브랜치로 전환(dev 역할·on-branch) — 여전히 v1.
+    _git(sub_dir, "checkout", "-q", "-b", "devwork")
+
+    # feature 로 전환 → recurse=true 여도 `--no-recurse-submodules` 로 checkout 이 submodule 무건드림,
+    # selective resync 는 on-branch=dev 를 skip → v1·devwork 보존(recurse=true 낚아챔 차단).
+    wp._checkout_required("work/A_1", "feature")
+    assert sub_lib.read_text(encoding="utf-8") == "v1\n", \
+        "recurse=true 가 dev submodule 을 detached pin 으로 낚아챔(--no-recurse-submodules 누락·크럭스 A 회귀)"
+    head = _git(sub_dir, "symbolic-ref", "--short", "HEAD").stdout.strip()
+    assert head == "devwork", "dev 브랜치가 detached 로 낚아채짐(ambient recurse override 실패)"
+
+
 # ════════════════════════════════════════════════════════════════════════
 # T-0070 — submodule 인터랙티브 러너 + 원자적 롤백 + 런너 stderr surface
 # 실 Windows multi-PM 파일럿 블로커 3종(submodule clone 600s 타임아웃·댕글링 worktree·
@@ -2089,7 +2366,7 @@ def test_alloc_resume_no_live_match_falls_through_to_idle_or_needscreate(wp):
     # 분기3(idle 리스) 경로 — 슬롯을 leased 로 잡고 a5-pay 로 재체크아웃(live HEAD 전환).
     assert lease.slot == "work/A_2"
     assert lease.state == "leased"
-    assert git.did("checkout", "a5-pay")
+    assert git.did("checkout", "--no-recurse-submodules", "a5-pay")
     assert wp.current_branch("work/A_2", git_runner=git) == "a5-pay"
 
 
