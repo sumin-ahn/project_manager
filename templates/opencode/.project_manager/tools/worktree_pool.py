@@ -201,6 +201,67 @@ class Lease:
         )
 
 
+class SubmoduleStatus:
+    """슬롯 worktree 한 submodule 의 상태 — 역할(live HEAD) + pin 비교 판정 (ADR-0051 §Decision 4·T-0276).
+
+    T-0275(`_resync_submodules_selective`)의 *역할 판별*을 표시층으로 재사용한다 — 역할은
+    별도 장부 없이 submodule 의 live git HEAD 로 정한다(ADR-0051 §Decision 1·무스키마):
+
+      - `kind="dev-ahead"` — **on-branch**(=dev 역할·`symbolic-ref -q HEAD` rc0). 사용자가 그
+        submodule 에서 브랜치를 파 작업 중 → **정보**(경고 아님). detached pin 으로 낚아채지
+        않는 selective resync 의 보호 대상(전역 recurse 가 파괴하던 크럭스 A).
+      - `kind="drift"` — **detached & pin ≠ working**(`git submodule status` flag `+`/`U`) →
+        **경고**. superproject pin 과 어긋난 detached. 재-alloc 시 T-0275 가 재동기하나 dirty 면
+        잔존한다(그래서 dirty 도 실어 *왜* 안 풀렸는지 surface).
+      - `kind="pinned"` — **detached & pin == working**(flag 공백) → 정상(pinned).
+      - `kind="uninitialized"` — submodule 미초기화(flag `-`) → 경고(슬롯 init 비정상).
+
+    `warning` = kind in {"drift", "uninitialized"}(dev-ahead/pinned 은 경고 아님 — 이 구별이
+    ADR-0051 §Decision 4 의 핵심). `dirty` = 워킹트리 미커밋 변경(`_submodule_dirty` 재사용).
+    (dataclass 미사용 — Lease 와 같은 이유: `spec_from_file_location` 로드 시 dataclass
+    forward-ref 해소가 깨진다. 평범한 클래스로 그 결합을 피한다.)
+    """
+
+    def __init__(self, path: str, kind: str, *, warning: bool, dirty: bool):
+        self.path = path
+        self.kind = kind
+        self.warning = warning
+        self.dirty = dirty
+
+    def __repr__(self) -> str:
+        return (f"SubmoduleStatus(path={self.path!r}, kind={self.kind!r}, "
+                f"warning={self.warning!r}, dirty={self.dirty!r})")
+
+
+class SlotStatus:
+    """슬롯 worktree 한 줄 상태 — branch + upstream + submodule 역할 (ADR-0051 파일럿 T-β·T-0276).
+
+    부트스트랩이 현재 슬롯의 상태를 1회 surface 하는 데 쓰는 구조(표시는 pm_bootstrap 이 담당).
+
+      - `branch` — `current_branch(slot)` live(None=detached/조회불가).
+      - `upstream` — `@{upstream}` 해소명(예 `origin/a5`·None=미해소).
+      - `upstream_ok` — `@{upstream}` 해소 여부. 미해소=경고(T-0273/0274 로 슬롯 tracking 이
+        설정돼야 정상 — 미해소면 origin-freshness 판정 불가).
+      - `submodules` — 각 submodule `SubmoduleStatus` 리스트. **빈 리스트 = submodule 없는
+        슬롯**(부트스트랩이 submodule 줄을 생략).
+
+    (dataclass 미사용 — Lease/SubmoduleStatus 와 동일 이유.)
+    """
+
+    def __init__(self, slot: str, *, branch: str | None, upstream: str | None,
+                 upstream_ok: bool, submodules: "list[SubmoduleStatus]"):
+        self.slot = slot
+        self.branch = branch
+        self.upstream = upstream
+        self.upstream_ok = upstream_ok
+        self.submodules = submodules
+
+    def __repr__(self) -> str:
+        return (f"SlotStatus(slot={self.slot!r}, branch={self.branch!r}, "
+                f"upstream={self.upstream!r}, upstream_ok={self.upstream_ok!r}, "
+                f"submodules={self.submodules!r})")
+
+
 def _now_utc() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
@@ -1094,6 +1155,51 @@ def current_branch(slot: str, *, git_runner: GitRunner | None = None) -> str | N
     return out.strip() or None
 
 
+def slot_status(slot: str, *, git_runner: GitRunner | None = None) -> SlotStatus:
+    """슬롯 worktree 의 상태(branch + upstream + submodule 역할)를 live 로 읽는다 (ADR-0051 파일럿 T-β·T-0276).
+
+    부트스트랩이 현재 슬롯 상태를 1회 surface 하는 backbone. **T-0275 의 submodule 역할
+    판별을 재사용**한다(중복 구현 금지):
+      - `current_branch(slot)` — 브랜치(live·`symbolic-ref --short HEAD`·ADR-0013 amend T-0072).
+      - `_upstream_status` — `@{upstream}` 해소 여부(T-0273/0274 로 슬롯 tracking 설정 → 해소).
+      - `_submodule_statuses` — `git submodule status`(`_parse_submodule_entries`) + submodule 당
+        `git -C <sub> symbolic-ref -q HEAD`(on-branch/detached) + `_submodule_dirty` 로 역할 판정
+        (`_resync_submodules_selective` 와 *같은* primitive). detached & pin≠working=drift(경고)·
+        on-branch=dev-ahead(정보)·detached & pin==working=pinned.
+
+    **전부 fail-soft — 예외 raise 안 함**(형제 backbone `current_branch`·`_resync_submodules_
+    selective`·`_rollback_worktree` 와 같은 규율·미래 호출부[on-demand 전체-풀 status·sync]가
+    이 계약에 기댄다): `current_branch` 는 자체 흡수. upstream/submodule 은 rc≠0 이면 미해소/
+    빈목록이고, `git_runner` 자체가 **예외를 던져도** 본문 try/except 로 흡수한다(upstream 미해소·
+    submodule 빈목록으로 보수적 degrade — 각각 독립 흡수라 한쪽 실패가 다른쪽을 안 가린다).
+    실 `_real_git_runner` 는 이미 예외를 (1, str) 로 감싸 rc≠0 경로로 오지만, 주입 runner
+    (DI seam·테스트/미래 호출부)가 raise 해도 이 계약이 지켜진다. `git_runner` 미주입 시 슬롯
+    worktree 바인딩 `_real_git_runner(slot_path(slot))` 로 해소(hermetic 테스트는 mock 주입).
+    슬롯 경로 부재 가드는 **실경로(미주입)에서만** 본다 — 주입 runner 는 존재/rc/HEAD 를
+    전부 모델링하는 권위이므로 fs 가드를 건너뛴다(`current_branch` 동형).
+    """
+    runner = git_runner
+    if runner is None:
+        path = slot_path(slot)
+        if not path.exists():
+            return SlotStatus(slot, branch=None, upstream=None, upstream_ok=False, submodules=[])
+        runner = _real_git_runner(path)
+    branch = current_branch(slot, git_runner=runner)
+    # upstream/submodule 조회는 runner 예외까지 흡수한다(docstring "예외 raise 안 함" 계약).
+    # 각각 독립 try/except — 한쪽 raise 가 다른쪽 정보를 가리지 않게(부분 degrade).
+    try:
+        upstream, upstream_ok = _upstream_status(runner)
+    except Exception:  # noqa: BLE001 — fail-soft: runner raise → 미해소로 흡수(경고 surface).
+        upstream, upstream_ok = None, False
+    try:
+        submodules = _submodule_statuses(runner)
+    except Exception:  # noqa: BLE001 — fail-soft: runner raise → 빈목록(부트스트랩 줄 생략).
+        submodules = []
+    return SlotStatus(
+        slot, branch=branch, upstream=upstream, upstream_ok=upstream_ok, submodules=submodules
+    )
+
+
 def set_test_cmd(slot: str, cmd: str | None) -> Lease:
     """기존 슬롯 리스의 test_cmd 를 갱신한다 (T-0069·ADR-0014 amend·idle/leased 무관).
 
@@ -1163,20 +1269,34 @@ def _checkout(slot_path_: Path, branch: str, *, git_runner: GitRunner | None = N
     return rc, out
 
 
-def _parse_submodule_paths(status_out: str) -> list[str]:
-    """`git submodule status` 출력에서 submodule 경로(superproject-상대)만 뽑는다 (git 2.43).
+def _parse_submodule_entries(status_out: str) -> list[tuple[str, str]]:
+    """`git submodule status` 출력에서 `(flag, path)` 를 뽑는다 (git 2.43).
 
-    각 라인 형식 = `<flag><40-hex-sha> <path>[ (<describe>)]` — 선두 1글자 status 플래그
-    (space/`+`/`-`/`U`)가 sha 에 붙고, **두 번째 whitespace 토큰이 경로**다. `line.split()[1]`
-    로 플래그 유무와 무관하게 경로를 얻는다(선두 space 는 split 이 무시·플래그 문자는 sha 에
-    붙어 토큰이 안 쪼개짐). 빈 출력(submodule 없음)·토큰 2개 미만 라인은 건너뛴다.
+    각 라인 형식 = `<flag><40-hex-sha> <path>[ (<describe>)]` — **선두 1글자가 status 플래그**
+    (`' '`=index pin 과 일치·`'+'`=working≠pin·`'-'`=미초기화·`'U'`=충돌)다. 플래그는 항상
+    라인 첫 글자(`line[0]`)이고(공백 플래그도 포함), **두 번째 whitespace 토큰이 경로**다
+    (`line.split()[1]` — 선두 공백은 split 이 무시·플래그 문자는 sha 에 붙어 토큰이 안 쪼개짐).
+    `len(parts) >= 2` 를 만족하면 라인은 비어있지 않으므로 `line[0]` 접근이 안전하다. 빈 출력
+    (submodule 없음)·토큰 2개 미만 라인은 건너뛴다.
+
+    `flag` 는 pin↔working 판정에 필요하다(T-0276 slot_status — `+`=drift·`' '`=pinned). 경로만
+    필요한 호출부(`_resync_submodules_selective`)는 `_parse_submodule_paths` 를 쓴다(경로만 뽑음).
     """
-    paths: list[str] = []
+    entries: list[tuple[str, str]] = []
     for line in status_out.splitlines():
         parts = line.split()
         if len(parts) >= 2:
-            paths.append(parts[1])
-    return paths
+            entries.append((line[0], parts[1]))
+    return entries
+
+
+def _parse_submodule_paths(status_out: str) -> list[str]:
+    """`git submodule status` 출력에서 submodule 경로(superproject-상대)만 뽑는다 (git 2.43).
+
+    `_parse_submodule_entries` 의 경로만 반환하는 얇은 래퍼 — 플래그가 불필요한 호출부
+    (`_resync_submodules_selective`)의 기존 인터페이스를 그대로 보존한다(행동 불변).
+    """
+    return [path for _flag, path in _parse_submodule_entries(status_out)]
 
 
 def _submodule_dirty(sub: str, runner: GitRunner) -> bool:
@@ -1192,6 +1312,61 @@ def _submodule_dirty(sub: str, runner: GitRunner) -> bool:
     if rc != 0:
         return True
     return len(_porcelain_status_lines(out)) > 0
+
+
+def _upstream_status(runner: GitRunner) -> tuple[str | None, bool]:
+    """슬롯 브랜치의 `@{upstream}` 추적 브랜치명 + 해소 여부 (T-0276·T-0273/0274 로 설정돼야 정상).
+
+    `git rev-parse --abbrev-ref @{upstream}` — 해소되면 rc0 + 추적 브랜치명(예 `origin/a5`),
+    미설정이면 rc≠0(`fatal: no upstream configured …`)이다. **rc 를 먼저 본다** — `_real_git_runner`
+    가 stdout+stderr 를 합쳐 돌려주므로(T-0070) 미해소 시 out 이 fatal 메시지로 *비어있지 않다*.
+    rc≠0 또는 빈 이름이면 `(None, False)`(미해소·부트스트랩이 경고), 해소면 `(name, True)`.
+    """
+    rc, out = runner(["rev-parse", "--abbrev-ref", "@{upstream}"])
+    name = out.strip()
+    if rc != 0 or not name:
+        return None, False
+    return name, True
+
+
+def _submodule_statuses(runner: GitRunner) -> list[SubmoduleStatus]:
+    """각 submodule 을 역할별로 판정한 `SubmoduleStatus` 리스트 (T-0276·T-0275 판별 재사용).
+
+    `_resync_submodules_selective` 와 *같은* primitive 로 역할을 정한다(중복 판별 구현 금지):
+    `git submodule status`(`_parse_submodule_entries` — flag+path) + submodule 당
+    `git -C <sub> symbolic-ref -q HEAD`(rc0=on-branch/dev·rc≠0=detached) + `_submodule_dirty`.
+
+      - on-branch(dev) → `"dev-ahead"`(정보). 사용자가 그 submodule 에서 브랜치를 파 작업 중.
+      - detached & flag `-`(미초기화) → `"uninitialized"`(경고·슬롯 init 비정상).
+      - detached & flag 공백(pin==working) → `"pinned"`(정상).
+      - detached & 그 외 flag(`+`/`U`·pin≠working) → `"drift"`(경고).
+
+    fail-soft: `git submodule status` rc≠0(조회 불가/submodule 없음)이면 **빈 리스트**
+    (부트스트랩이 submodule 줄 생략). dirty 는 *왜* drift 가 안 풀렸는지 surface 용(T-0275 는
+    dirty detached 를 재동기 skip → drift 잔존).
+    """
+    rc, out = runner(["submodule", "status"])
+    if rc != 0:
+        return []  # 조회 불가(대개 submodule 없음/손상) → 빈 목록(부트스트랩 줄 생략).
+    statuses: list[SubmoduleStatus] = []
+    for flag, sub in _parse_submodule_entries(out):
+        rc_head, _out = runner(["-C", sub, "symbolic-ref", "-q", "HEAD"])
+        if rc_head == 0:
+            kind = "dev-ahead"       # on-branch = dev 역할(정보·경고 아님).
+        elif flag == "-":
+            kind = "uninitialized"   # 미초기화(경고).
+        elif flag == " ":
+            kind = "pinned"          # detached & pin == working(정상).
+        else:
+            kind = "drift"           # detached & pin ≠ working('+'/'U' → 경고).
+        # dirty 는 미초기화 submodule 엔 무의미하다(워킹트리 부재 → `status --porcelain` rc≠0 을
+        # `_submodule_dirty` 가 보수적 True 로 → `⚠ uninitialized ·dirty` 잉여 렌더). uninitialized
+        # 는 skip(False)·나머지만 `_submodule_dirty` 재사용(불필요한 `-C status` 호출도 절약·reviewer).
+        dirty = False if kind == "uninitialized" else _submodule_dirty(sub, runner)
+        statuses.append(
+            SubmoduleStatus(sub, kind, warning=kind in ("drift", "uninitialized"), dirty=dirty)
+        )
+    return statuses
 
 
 def _resync_submodules_selective(slot_path_: Path, *, git_runner: GitRunner | None = None) -> None:

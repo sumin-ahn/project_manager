@@ -1000,6 +1000,81 @@ def _format_stale_warning(handoff_ctx: dict | None) -> str | None:
     )
 
 
+# ── 슬롯 상태 surface (upstream·submodule 역할·ADR-0051 파일럿 T-β·T-0276) ─────
+# 부트스트랩이 현재 슬롯의 상태(branch·upstream·submodule pin/dev-ahead/drift)를 1회
+# surface 한다(self-sufficient dump·ADR-0035). 판정은 worktree_pool.slot_status(백본·T-0275
+# 역할 판별 재사용)가 하고, 여기선 그 결과(JSON-safe dict)를 markdown 줄로 렌더한다.
+# **drift(경고) vs dev-ahead(정보) 구별**(ADR-0051 §Decision 4)이 핵심 — dev 작업 중인
+# submodule 을 "문제"로 오표시하면 안 된다.
+
+# submodule kind → 표시 라벨. dev-ahead/pinned = 정보(경고 아님)·drift/uninitialized = 경고(⚠).
+_SUBMODULE_KIND_LABEL = {
+    "dev-ahead": "dev-ahead(정보)",
+    "drift": "drift(pin≠working)",
+    "pinned": "pinned",
+    "uninitialized": "uninitialized",
+}
+
+
+def slot_status_to_dict(status: object | None) -> dict | None:
+    """worktree_pool.SlotStatus(백본 반환)를 JSON-safe dict 로 변환한다 (T-0276·markdown/JSON 공용).
+
+    부트스트랩은 worktree_pool 을 직접 import 하지 않으므로(touches 격리·주입/동적로드된
+    풀의 반환을 duck-typing 으로 소비) `getattr` 로 필드를 읽는다 — Lease 를 `.slot`/`.state`
+    로 소비하는 것과 동형. None(백본 미제공/실패)은 None 그대로(호출부가 절 생략). identity
+    dict 에 이 dict 를 실어 markdown 빌더(`_format_slot_status_lines`)와 JSON 이 함께 쓴다.
+    """
+    if status is None:
+        return None
+    return {
+        "slot": getattr(status, "slot", None),
+        "branch": getattr(status, "branch", None),
+        "upstream": getattr(status, "upstream", None),
+        "upstream_ok": bool(getattr(status, "upstream_ok", False)),
+        "submodules": [
+            {
+                "path": getattr(sub, "path", None),
+                "kind": getattr(sub, "kind", None),
+                "warning": bool(getattr(sub, "warning", False)),
+                "dirty": bool(getattr(sub, "dirty", False)),
+            }
+            for sub in (getattr(status, "submodules", None) or [])
+        ],
+    }
+
+
+def _format_submodule_token(sub: dict) -> str:
+    """submodule 하나를 `` `path` <라벨> `` 토큰으로 렌더한다 (T-0276·경고면 ⚠·dirty 면 ·dirty)."""
+    kind = sub.get("kind") or "?"
+    label = _SUBMODULE_KIND_LABEL.get(kind, kind)
+    mark = "⚠ " if sub.get("warning") else ""
+    dirty = " ·dirty" if sub.get("dirty") else ""
+    return f"`{sub.get('path')}` {mark}{label}{dirty}"
+
+
+def _format_slot_status_lines(status: dict | None) -> list[str]:
+    """슬롯 상태 dict → markdown 줄 (T-0276·branch·upstream + submodule 역할·submodule 없으면 줄 생략).
+
+    `status` = `slot_status_to_dict` 반환(또는 None). None 이면 빈 리스트(절 생략·백본 미제공).
+    - branch·upstream 한 줄 — upstream 미해소면 ⚠ 경고(T-0273/0274 로 슬롯 tracking 설정돼야 정상).
+    - submodule 이 있으면 역할 요약 한 줄(dev-ahead=정보·drift=⚠ 경고 구별) — **없으면 줄 생략**.
+    """
+    if status is None:
+        return []
+    lines: list[str] = []
+    branch = status.get("branch") or "(미지정)"
+    if status.get("upstream_ok"):
+        upstream = f"`{status.get('upstream')}`"
+    else:
+        upstream = "⚠ 미해소 (`@{upstream}` 없음 — 슬롯 tracking 미설정·T-0273/0274 확인)"
+    lines.append(f"- branch: `{branch}` · upstream: {upstream}")
+    submodules = status.get("submodules") or []
+    if submodules:
+        tokens = " · ".join(_format_submodule_token(sub) for sub in submodules)
+        lines.append(f"- submodule: {tokens}")
+    return lines
+
+
 # ── 핵심 흐름 ──────────────────────────────────────────────────────────────
 
 class PmBootstrap:
@@ -2220,6 +2295,9 @@ class PmBootstrap:
             "slot_path": str(slot_path),
             "branch": wp.current_branch(lease.slot),
             "registered_repos": _registered_repos(self._areas_file),
+            # 슬롯 상태 surface (T-0276·ADR-0051 T-β) — upstream + submodule 역할(pin/dev-ahead/
+            # drift). 백본 미제공/실패는 None(절 생략·fail-soft). JSON-safe dict 로 실어 빌더/JSON 공용.
+            "slot_status": self._safe_slot_status(wp, lease.slot),
         }
 
     def _bind_and_identity(self, repo: str, slot: int) -> dict:
@@ -2261,7 +2339,38 @@ class PmBootstrap:
             # 보호 브랜치 경고 (T-0076·소프트) — 라이브 브랜치가 그 repo 보호목록에 있으면
             # 🚫 경고를 surface 한다. 미보호/조회불가/board 부재면 None(경고 생략).
             "protected_branch": self._protected_warning(repo, live_branch),
+            # 슬롯 상태 surface (T-0276·ADR-0051 T-β) — upstream + submodule 역할(pin/dev-ahead/
+            # drift). 백본 미제공/실패는 None(절 생략·fail-soft). JSON-safe dict 로 실어 빌더/JSON 공용.
+            "slot_status": self._safe_slot_status(wp, lease.slot),
         }
+
+    def _safe_slot_status(self, wp, slot: str) -> dict | None:
+        """worktree_pool.slot_status(slot) 를 fail-soft 로 JSON-safe dict 화한다 (T-0276).
+
+        슬롯 상태 surface 는 *소프트*(추가 인지)라 백본 부재(구버전 풀·mock 미구현)·조회 실패는
+        None(절 생략·부트스트랩/identity 자체는 안 깨짐). `slot_status` 미구현 풀은 `getattr`
+        None 으로 걸러 AttributeError 없이 graceful — 기존 mock 풀(slot_status 없음)도 통과.
+        """
+        fn = getattr(wp, "slot_status", None)
+        if fn is None:
+            return None
+        try:
+            return slot_status_to_dict(fn(slot))
+        except Exception:  # noqa: BLE001 — fail-soft: 슬롯 상태는 소프트(실패=절 생략).
+            return None
+
+    def _slot_status_block(self, identity: dict | None) -> list[str]:
+        """identity 의 슬롯 상태를 `### 슬롯 상태` 서브섹션 줄로 렌더한다 (T-0276·없으면 빈 리스트).
+
+        `identity["slot_status"]`(`_safe_slot_status` dict·또는 None)이 있으면 upstream +
+        submodule 역할(drift 경고 vs dev-ahead 정보 구별)을 dump 한다. 백본 미제공(None)이면
+        빈 리스트(절 생략) — 기존 identity dump 무변경(fail-soft).
+        """
+        status = identity.get("slot_status") if identity else None
+        lines = _format_slot_status_lines(status)
+        if not lines:
+            return []
+        return ["", "### 슬롯 상태 (upstream·submodule·ADR-0051 T-β·T-0276)"] + lines
 
     def _protected_warning(self, repo: str, branch: str | None) -> str | None:
         """라이브 브랜치가 그 repo 보호목록(`board._repo_protected`)이면 그 브랜치명 (T-0076·소프트).
@@ -2314,6 +2423,9 @@ class PmBootstrap:
                 "feature 브랜치를 checkout 후 작업하고, main 갱신이 필요하면 사용자에게 맡긴다 "
                 "(pre-push 훅이 하드 차단·T-0076)."
             )
+        # 슬롯 상태 (T-0276) — upstream + submodule 역할(drift 경고 vs dev-ahead 정보). 백본
+        # 미제공/submodule 없으면 해당 줄 생략(fail-soft·submodule 줄 조건부).
+        lines.extend(self._slot_status_block(identity))
         lines.append("")
         # 상태점검 — 다른 활성 PM 현황.
         lines.append("### 다른 활성 PM (상태점검)")
@@ -2499,6 +2611,9 @@ class PmBootstrap:
         lines.append(
             "- 코드 작업은 이 슬롯 cwd 에서 — 보드/wiki 는 multi-PM 공유 `.project_manager`."
         )
+        # 슬롯 상태 (T-0276) — upstream + submodule 역할(drift 경고 vs dev-ahead 정보). 백본
+        # 미제공/submodule 없으면 해당 줄 생략(fail-soft·submodule 줄 조건부).
+        lines.extend(self._slot_status_block(identity))
         return "\n".join(lines)
 
 
