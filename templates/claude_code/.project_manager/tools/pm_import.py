@@ -134,6 +134,17 @@ HARNESS_TEMPLATE_DIRS = {
     "both": ("claude_code", "opencode"),
 }
 
+# add_harness(ADR-0048) 어댑터 네임스페이스 = {adapter dir, root doc}. 라이브 인스턴스에 두 번째
+# harness 를 *비파괴로 추가*할 때 복사 스코프를 이 네임스페이스로 구조적으로 제한한다 — 그 밖
+# (엔진·wiki dev-state·타 harness·설정·파사드)은 plan 에 애초에 안 들어와 clobber 가 불가능
+# (Decision 2·5). @render 엔진 리소스(`.claude/agents`·`.claude/skills`)는 네임스페이스 안이라도
+# 제외한다(engine.manifest 가 @render 표시 — _render_managed_relpaths 로 결정적 파생·generic).
+# 단일 harness(claude|opencode)만 추가한다('both' 는 최초 import 소관).
+ADD_HARNESS_ADAPTER = {
+    "claude": (".claude", "CLAUDE.md"),
+    "opencode": (".opencode", "AGENTS.md"),
+}
+
 # sed 치환 대상 operational placeholder (루트 README §4 표). 자유서술 3종은 여기 없음(보존).
 OPERATIONAL_TOKENS = (
     "{{PROJECT_NAME}}",
@@ -649,7 +660,7 @@ class CopyAction:
 
     def run(self) -> None:
         # MF1: 기존 dst 가 symlink 이면 shutil.copy2 가 링크를 *따라가* 링크 대상(프로젝트
-        #      밖일 수 있음) 파일을 백업/덮어쓴다 — 비파괴 계약 위반 + 외부 파일 변조 위험.
+        #      밖일 수 있음) 파일을 백업/덮어쓴다 — 비파괴 보장 위반 + 외부 파일 변조 위험.
         #      따라서 symlink 는 *링크 자체*를 처리한다: 링크를 그대로 백업(follow 안 함) →
         #      링크 unlink → 일반 파일로 src 복사. 링크 대상 파일은 절대 건드리지 않는다.
         dst_is_symlink = self.dst.is_symlink()
@@ -671,7 +682,7 @@ class FileVsDirConflict(Exception):
     """SF(codex 4차 suggestion): dst 위치에 기존 *디렉토리* 가 있어 파일 복사가 불가능.
 
     src 는 파일인데 dst 가 디렉토리면 shutil.copy2 가 IsADirectoryError 로 터지고, 백업도
-    안 된다(디렉토리는 copy2 대상 아님). 비파괴 계약상 사용자 디렉토리를 자동 삭제할 수 없으니
+    안 된다(디렉토리는 copy2 대상 아님). 비파괴 보장상 사용자 디렉토리를 자동 삭제할 수 없으니
     plan 단계에서 명시적으로 거부한다(apply 부분 복사 전 차단).
     """
 
@@ -702,7 +713,7 @@ def _free_backup_path(backup: Path) -> Path:
         n += 1
 
 
-# lite 진입 파일 규약 (T-0010): `X.lite.md` 는 진입 `X.md` 의 lite 변종이다.
+# lite 진입 파일 관례 (T-0010): `X.lite.md` 는 진입 `X.md` 의 lite 변종이다.
 # (예: CLAUDE.lite.md → CLAUDE.md, AGENTS.lite.md → AGENTS.md.) 임의의 `*.lite.md` 에 일반화.
 LITE_SUFFIX = ".lite.md"
 
@@ -720,7 +731,7 @@ def _full_relpath_for_lite(rel: Path) -> Path:
 def _iter_source_files(template_root: Path, weight: str = "full"):
     """template_root 하위 파일을 (dst relpath, 절대경로)로. node_modules 등 제외.
 
-    weight 규약 (T-0010 — `*.lite.md` = `*.md` 의 lite 변종):
+    weight 관례 (T-0010 — `*.lite.md` = `*.md` 의 lite 변종):
       - full(기본): 모든 `*.lite.md` 를 복사 대상에서 *제외*한다(lite 변종이 full 배포에
         끼면 안 됨). full `X.md` 는 그대로 복사.
       - lite: 각 `X.lite.md` 를 dst relpath `X.md` 로 복사(이름 치환). 동시에 (a) 같은
@@ -815,7 +826,7 @@ def plan_copy(
     relpath 는 git 이 복원 가능하므로 백업 없이 덮는다(git-safe skip — 액션 _git_safe_skip 표시).
 
     weight (T-0010): 'full'(기본) 이면 `*.lite.md` 를 제외, 'lite' 면 `X.lite.md` 를
-    dst `X.md` 로 rename 복사(같은 트리 full `X.md` 제외). _iter_source_files 가 이 규약을
+    dst `X.md` 로 rename 복사(같은 트리 full `X.md` 제외). _iter_source_files 가 이 관례를
     적용해 dst relpath 를 산출하므로, 아래 both 중복 판정·치환 범위는 모두 *dst relpath*
     위에서 일관되게 돈다(lite 모드에선 `X.md` 가 dst — both 양 트리가 각자 lite 변종을 깐다).
 
@@ -945,7 +956,7 @@ def substitute_placeholders(
     apply 단계 전용 — 복사가 끝난 dest 트리를 in-place 수정한다.
 
     MF1: dest 트리 전체를 rglob 하면 이번 import 가 복사하지 *않은* 기존 사용자 파일까지
-    무백업 치환되어 --into 비파괴 계약을 위반한다. 따라서 범위를 copied_relpaths(plan_copy
+    무백업 치환되어 --into 비파괴 보장을 위반한다. 따라서 범위를 copied_relpaths(plan_copy
     가 만든 actions 의 dst relpath)로 엄격히 한정한다. 복사된 파일은 충돌 시 이미 백업됐으므로
     치환해도 안전하고, 복사 안 한 사용자 파일은 절대 건드리지 않는다.
 
@@ -1043,6 +1054,34 @@ def _is_render_managed(rel_posix: str, managed: set[str]) -> bool:
     return False
 
 
+def _engine_render_relpaths(root: Path) -> set[str]:
+    """트리의 engine.manifest 에서 `@render` *엔진* 리소스(target-owned 아님) relpath 집합.
+
+    add_harness 스코프 제외용(ADR-0048 "@render 엔진 리소스"). `@render` 만 있고 `@target-owned`
+    가 *없는* path = 루트 upstream 에 실재하는 엔진 리소스(예 `.claude/agents`·`.claude/skills`) —
+    pm_update 소관이라 어댑터 추가 시 오적재하면 안 된다. 반대로 `@render @target-owned`
+    (예 `.opencode/agents`·`.opencode/command`)는 어댑터-소유라 *복사 대상*이므로 이 집합에서 뺀다
+    (pm_update ManifestEntry.target_owned 판별자·T-0137). manifest 부재·로드 실패 → 빈 set(무동작).
+    """
+    pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
+    manifest = root / ".project_manager" / "engine.manifest"
+    if not manifest.is_file():
+        return set()
+    try:
+        spec = importlib.util.spec_from_file_location("pm_update", pm_update_py)
+        if spec is None or spec.loader is None:
+            return set()
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return {
+            str(e).replace("\\", "/")
+            for e in mod.read_manifest(manifest)
+            if getattr(e, "render", False) and not getattr(e, "target_owned", False)
+        }
+    except Exception:  # noqa: BLE001 — 로드/파싱 실패는 제외집합 0(무동작·전부 복사 대상).
+        return set()
+
+
 def render_managed_files(
     dest_root: Path,
     subs: dict[str, str],
@@ -1050,7 +1089,7 @@ def render_managed_files(
 ) -> int:
     """이번 run 이 복사한 @render path 파일을 render_adapter 산출물로 다시 쓴다. 변경 수 반환.
 
-    범위 = copied_relpaths(비파괴·substitute_placeholders 와 동일 계약). @render manifest path
+    범위 = copied_relpaths(비파괴·substitute_placeholders 와 동일 보장). @render manifest path
     하위 .md 만 대상. operational 은 이번 import 의 subs(이미 substitute 가 리터럴로 박았으므로
     보통 no-op). free-form 은 pm_import 의 FILL 채널이 canonical home 에서 전담하므로 render-overlay
     가 관여하지 않는다(ADR-0030·ADR-0031). 현 트리는 @render 0 → 무동작.
@@ -1816,7 +1855,7 @@ def _iter_copied_files(dest_root: Path, copied_relpaths: set[Path]):
 
     MF(비파괴): fill 단계가 dest_root.rglob 로 *대상 프로젝트 전체* 를 훑으면, --into 에서
     이번 import 가 복사하지 *않은* 기존 사용자 파일(우연히 sentinel 포함)에도 TODO 마커가
-    주입되어 T-0007 비파괴 계약(substitute_placeholders 가 copied_relpaths 로 한정)과
+    주입되어 T-0007 비파괴 보장(substitute_placeholders 가 copied_relpaths 로 한정)과
     충돌한다. 따라서 fill 도 substitute_placeholders 와 *동일한* copied_relpaths set 만
     대상으로 한다 — 복사 안 한 사용자 파일은 절대 스캔/수정하지 않는다. node_modules·
     __pycache__·.git 등은 애초에 복사 목록에 없어 자연히 제외된다.
@@ -1924,7 +1963,7 @@ def _mark_todos(
     실제로 마커를 추가한 토큰 목록을 반환한다.
 
     스캔 범위는 copied_relpaths(이번 run 복사 파일)로 한정 — 복사하지 않은 사용자 파일에는
-    절대 마커를 주입하지 않는다(비파괴·T-0007 계약). None 이면 dest 트리 전체 폴백(직접 호출용).
+    절대 마커를 주입하지 않는다(비파괴·T-0007 보장). None 이면 dest 트리 전체 폴백(직접 호출용).
     """
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
     marked: set[str] = set()
@@ -1965,10 +2004,10 @@ def run_fill(
     live=False → runner 미호출(stub 경로). runner 가 주입되면(테스트 stub) live=True 와 무관하게
                  그 runner 로 명령을 조립·호출해 *명령 조립* 만 검증한다(토큰 0).
     copied_relpaths: 이번 import 가 복사한 파일 relpath set — fill 스캔 범위를 이 파일들로
-                 한정한다(비파괴·T-0007 계약). None 이면 dest 트리 전체를 스캔(직접 호출용
+                 한정한다(비파괴·T-0007 보장). None 이면 dest 트리 전체를 스캔(직접 호출용
                  폴백) — main 은 항상 substitute_placeholders 와 동일 set 을 전달한다.
 
-    계약(ticket §인터페이스): live=False 면 runner 를 호출하지 않고 stub/manual 경로로 간다.
+    규격(ticket §인터페이스): live=False 면 runner 를 호출하지 않고 stub/manual 경로로 간다.
     여기서 '하니스 미구동'은 *실 바이너리* 미구동을 뜻한다 — 주입 runner(stub)는 항상 안전.
     """
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
@@ -2142,6 +2181,176 @@ def resolve_template_roots(source_root: Path, harness: str) -> list[Path]:
             )
         roots.append(root)
     return roots
+
+
+# ── add_harness (라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가 · ADR-0048) ──────
+# raw `--into --harness both` 재-import 는 91파일 full 재-laydown 으로 라이브 wiki dev-state/엔진을
+# 템플릿 starter 로 덮는다(ADR-0048 Context). add_harness 는 복사 스코프를 *추가되는 harness 의
+# 어댑터 네임스페이스*(ADD_HARNESS_ADAPTER)로 제한해 그 파괴를 구조적으로 차단한다 — 기존 copy/
+# render/backup 머신(plan_copy·substitute·resolve_opencode_model·_run_manual_fill)만 재사용한다(신규
+# 복사 머신 0). 운영 진입(pm_config add-harness)이 이 core 로 verbatim 위임한다(Decision 3).
+
+
+def _in_adapter_namespace(
+    rel: Path, adapter_dir: str, root_doc: str, render_managed: set[str],
+) -> bool:
+    """rel(dst relpath)이 추가 harness 의 어댑터 네임스페이스 안인가 (ADR-0048 Decision 2).
+
+    네임스페이스 = {adapter dir 하위, root doc} − @render 엔진 리소스. adapter dir 하위이거나
+    root doc 정확일치여야 하고, 그 중 @render manifest path(`​.claude/agents`·`.claude/skills`)
+    하위는 엔진 소유라 제외한다(opencode 는 @render 없어 `.opencode/**` 단순). 이 밖은 전부
+    False → 엔진·wiki·타 harness·설정·파사드가 plan 에 애초에 안 들어온다(구조적 안전).
+    """
+    rel_posix = rel.as_posix()
+    if rel_posix != root_doc and not rel_posix.startswith(adapter_dir + "/"):
+        return False
+    # @render 엔진 리소스(engine.manifest 표시)는 어댑터 네임스페이스 안이라도 엔진 소유 — 제외.
+    if _is_render_managed(rel_posix, render_managed):
+        return False
+    return True
+
+
+def add_harness(
+    dest_root: Path,
+    harness: str,
+    *,
+    dry_run: bool,
+    source_root: Path | None = None,
+) -> list[CopyAction]:
+    """라이브 인스턴스에 두 번째 harness 어댑터를 비파괴로 추가한다 (ADR-0048 Decision 1·2).
+
+    스코프 = *추가되는 harness 의 어댑터 네임스페이스만*(ADD_HARNESS_ADAPTER·§인터페이스):
+    opencode=`.opencode/**`+`AGENTS.md`, claude=`.claude/**`(@render `.claude/agents`·`.claude/skills`
+    제외)+`CLAUDE.md`. **제외**(plan 에 애초에 없음→clobber 불가): `.project_manager/**`(엔진+wiki
+    dev-state)·`engine.manifest`·`.gitignore`·`.gitattributes`·`.github/**`·루트 파사드·다른 harness.
+
+    구현: `plan_copy` 로 전체 어댑터 트리 plan 을 만든 뒤 어댑터 네임스페이스 predicate 로
+    **구조적으로 좁힌다** — 반환·적용 plan 에는 네임스페이스 밖 relpath 가 0개다(Decision 5 불변식).
+    첫 add=신규 복사(무손실)·재실행=refresh(네임스페이스 안 로컬 커스터마이즈를 중앙 백업 후 덮음·
+    `--into` 백업 철학). fill(LLM) 불요 — operational 토큰 치환(substitute_placeholders)·opencode
+    모델 결정적 해소(resolve_opencode_model)·자유서술 TODO 표시(_run_manual_fill·비-LLM)만.
+
+    dry_run=True 면 plan 만 산출·출력(파일시스템 미변경). 반환값 = 스코프 제한된 CopyAction plan.
+    source_root 생략 시 이 repo 루트(REPO)를 파일 소스로 쓴다(main `--from` 기본값과 동일).
+    harness 는 단일('claude'|'opencode') — 'both'/미지원은 ValueError. dest 미존재는 FileNotFoundError.
+    """
+    if harness not in ADD_HARNESS_ADAPTER:
+        raise ValueError(
+            f"add_harness: harness 는 {tuple(ADD_HARNESS_ADAPTER)} 중 하나여야 한다 "
+            f"(단일 harness 추가·'both' 는 최초 import 소관): {harness!r}"
+        )
+    dest_root = Path(dest_root).resolve()
+    if not dest_root.is_dir():
+        raise FileNotFoundError(
+            f"add_harness: dest 가 존재하는 라이브 인스턴스 디렉토리가 아니다: {dest_root}"
+        )
+    src_root = Path(source_root).resolve() if source_root is not None else REPO
+    template_root = resolve_template_roots(src_root, harness)[0]
+
+    adapter_dir, root_doc = ADD_HARNESS_ADAPTER[harness]
+    # @render *엔진* 리소스(target-owned 아님) relpath 를 소스 어댑터 트리의 engine.manifest 에서
+    # 결정적 파생(generic). `.claude/agents`·`.claude/skills`(엔진)는 제외되나 `.opencode/agents`·
+    # `.opencode/command`(@render @target-owned·어댑터 소유)는 이 집합에 없어 복사 대상으로 남는다.
+    render_managed = _engine_render_relpaths(template_root)
+
+    today = datetime.date.today().isoformat()
+    # refresh(재실행)는 네임스페이스 안 기존 어댑터를 중앙 디렉토리에 백업 후 덮는다(--into 동형).
+    # 첫 add 는 신규라 백업 없음. git 추적&미변경은 백업 생략(git 복원 가능).
+    backup_root = dest_root / BACKUP_DIR_NAME / today
+    git_safe = git_safe_relpaths(dest_root)
+
+    # 전체 어댑터 트리 plan → 어댑터 네임스페이스로 구조적 제한(Decision 2·5). 네임스페이스 밖
+    # (엔진·wiki·타 harness·설정·파사드)은 필터로 제거돼 반환·적용 plan 에 0개다(불변식).
+    full_actions = plan_copy(
+        [template_root], dest_root, backup_root, "full", git_safe=git_safe)
+    plan = [
+        a for a in full_actions
+        if _in_adapter_namespace(
+            a.dst.relative_to(dest_root), adapter_dir, root_doc, render_managed)
+    ]
+
+    n_new = sum(1 for a in plan if a.backup is None and not a._git_safe_skip)
+    n_refresh = len(plan) - n_new
+    print(f"[pm_import add-harness] {harness} → {dest_root}")
+    print(f"  소스: {src_root}/templates/{HARNESS_TEMPLATE_DIRS[harness][0]}")
+    print(f"  스코프: 어댑터 네임스페이스만 ({adapter_dir}/** + {root_doc} · "
+          f"@render 엔진 리소스 제외)")
+    for a in plan:
+        print(a.describe())
+    print(f"  → {len(plan)} 파일 ({n_new} 신규 · {n_refresh} refresh)")
+
+    if dry_run:
+        print("[dry-run] 적용 안 함 (파일시스템 미변경).")
+        return plan
+
+    # ── 적용 ── 네임스페이스 안 파일만 복사·토큰 처리(스코프 밖은 plan 에 없어 불가침).
+    for a in plan:
+        a.run()
+    copied_relpaths = {a.dst.relative_to(dest_root) for a in plan}
+    # 라이브 인스턴스의 project_name 은 기존 local.conf 를 존중(없으면 디렉토리명 폴백).
+    project_name = _instance_project_name(dest_root)
+    subs = _substitution_map(project_name, dest_root, today)
+    n_subst = substitute_placeholders(dest_root, subs, copied_relpaths)
+    # opencode 모델 토큰 결정적 해소(claude-only 는 inactive) — main 흐름과 동일.
+    resolve_opencode_model(dest_root, copied_relpaths, model_arg=None)
+    # render_managed_files 는 dest 인스턴스 engine.manifest 의 @render path 만 렌더한다 —
+    # 추가되는 어댑터(예 .opencode/**)는 dest(기존 harness) manifest 에 @render 항목이 없어
+    # 현재 no-op (일관성·미래 대비 위해 호출).
+    render_managed_files(dest_root, subs, copied_relpaths)
+    # 자유서술 placeholder 는 TODO 표시(비-LLM·main manual 흐름과 동일·ADR-0048 fill 불요).
+    _run_manual_fill(dest_root, copied_relpaths)
+    print(f"✓ add-harness 완료: {harness} 어댑터 {len(plan)} 파일 복사 · "
+          f"{n_subst} 파일 토큰 치환 (스코프: {adapter_dir}/** + {root_doc})")
+    return plan
+
+
+def add_harness_cli(
+    dest_root: Path,
+    harness: str,
+    *,
+    dry_run: bool,
+    source_root: Path | None = None,
+) -> int:
+    """add_harness 의 main-style CLI 진입 — 인터페이스 예외를 친화 메시지 + rc 로 번역한다 (ADR-0048·T-0270).
+
+    운영 진입(`pm_config add-harness`·Decision 3)이 verbatim 위임하는 얇은 래퍼다. add_harness
+    자체(T-0269 확정 시그니처/로직)는 건드리지 않고, 그것이 던지는 인터페이스 예외만 CLI 경계에서
+    잡아 `main()` 과 *동일하게* 처리한다(에러 처리의 단일 진실 = CLI contract owner = pm_import):
+      - ValueError            : 미지원 harness('both'/오타·add_harness 입구 검증).
+      - FileNotFoundError     : dest 부재/비-디렉토리·소스 템플릿 부재(resolve_template_roots).
+      - FileVsDirConflict     : 어댑터 dst 위치에 기존 디렉토리(plan_copy·비파괴 거부).
+      - AncestorConflict      : dst 조상에 symlink/비-디렉토리 파일(plan_copy·비파괴 거부).
+    이 네 예외는 add_harness 가 *출력 전*(plan_copy·resolve_template_roots·입구 검증)에 던지므로
+    부분 출력/부작용 없이 깨끗한 `오류: …`(stderr) + rc 1 로 끝난다(traceback 0·main 동형). 성공은
+    add_harness 가 자체 plan/summary 를 출력하고 여기선 rc 0 만 돌려준다(위임 verbatim·중복 출력 0).
+
+    dry_run/source_root 는 add_harness 로 그대로 전달한다(투명 위임). 반환: 0(성공)·1(인터페이스 예외).
+    """
+    try:
+        add_harness(dest_root, harness, dry_run=dry_run, source_root=source_root)
+    except (ValueError, FileNotFoundError, FileVsDirConflict, AncestorConflict) as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _instance_project_name(dest_root: Path) -> str:
+    """라이브 인스턴스의 project_name 을 local.conf 에서 읽는다(없으면 디렉토리명 폴백).
+
+    add_harness 의 operational 토큰 치환이 인스턴스의 실제 project_name 을 존중하도록 —
+    최초 import 가 local.conf 에 박아 둔 값을 재사용한다(_parse_conf_keys). local.conf 부재·
+    project_name 미설정이면 dest 디렉토리명(main 의 --name 기본값과 동형).
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if local_conf.is_file():
+        try:
+            conf = _parse_conf_keys(local_conf.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, OSError):
+            conf = {}
+        name = conf.get("project_name", "").strip()
+        if name:
+            return name
+    return dest_root.name
 
 
 def git_init(dest_root: Path) -> int:

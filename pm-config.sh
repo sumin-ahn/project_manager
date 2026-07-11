@@ -11,6 +11,7 @@
 #        <manager>/pm-config.sh status | whoami
 #        <manager>/pm-config.sh release <slot> [--force]
 #        <manager>/pm-config.sh update [--from <upstream>]
+#        <manager>/pm-config.sh add-harness <harness> [--dry-run]
 set -eu
 
 # 자기 디렉토리 해석 (호출 cwd 무관).

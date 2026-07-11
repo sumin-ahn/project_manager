@@ -17,7 +17,7 @@ prose 는 verbatim 배치(요약/구조화 금지)·**git 무조작**(add/commit
   - **frontmatter 파싱은 board.load_ticket 재사용** — 이름은 ticket 이나 임의 frontmatter md
     파서다(board.py:714). 중복 파서 정의 금지(DRY·codex reuse 강조). board 는 같은 tools/
     에서 `_load_module`(spec_from_file_location) 로 로드한다 — 패키지 설치 없이 동작하는
-    board.py·pm_*.py 와 같은 로드 규약.
+    board.py·pm_*.py 와 같은 로드 관례.
   - **covers 글롭 시맨틱**: anchored full-match(경로 전체) · `**`=0+ 세그먼트 재귀 ·
     `*`=한 세그먼트 내. 빈 covers=코드-무관 개념(매칭 0). `fnmatch` 단독은 `**` 가
     부정확하므로 작은 glob→regex 변환(stdlib re)으로 `**`→세그먼트 횡단·`*`→세그먼트 내.
@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Callable
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
-# 앵커 규약(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
+# 앵커 관례(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
 REPO = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO / ".project_manager" / "tools"
 DOMAIN_DIR = REPO / ".project_manager" / "wiki" / "domain"
@@ -74,7 +74,7 @@ GIT_TIMEOUT_SECONDS = 120
 
 # ── 엔진 모듈 동적 로드 (스크립트-위치 앵커·board.py·pm_config.py 선례) ──────────
 # board.py 는 같은 tools/ 에 있다. spec_from_file_location 으로 로드한다 — 패키지 설치
-# 없이 동작(board.py·pm_*.py 와 같은 로드 규약). 부재/실패는 명시 에러로 보고한다.
+# 없이 동작(board.py·pm_*.py 와 같은 로드 관례). 부재/실패는 명시 에러로 보고한다.
 
 
 def _load_module(name: str, filename: str):
@@ -158,7 +158,7 @@ def _real_git_runner(cwd: Path) -> GitRunner:
 
     반환 callable: argv(list) → (returncode, stdout). git 바이너리 부재(shutil.which)면
     (1, msg)·예외(타임아웃 등)는 (1, str(exc)) 로 감싼다(fail-soft·rc!=0 로 호출부 위임·
-    raise 안 함). `git -C <cwd> <argv...>` 로 항상 그 repo 에 묶는다. 엔진 규약대로
+    raise 안 함). `git -C <cwd> <argv...>` 로 항상 그 repo 에 묶는다. 엔진 관례대로
     encoding="utf-8"(한글 경로/메시지 안전). page_stale 은 stdout(커밋 날짜)만 보므로
     stderr 는 합치지 않는다(worktree_pool 의 dirty 진단 결합과 달리 여기선 깔끔한 날짜만).
     """
@@ -349,7 +349,7 @@ def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
         # 경고 없이 조용히 skip 하고 디렉토리별 카운터에만 누적(스캔 종료 시 요약 1줄·T-0245).
         # 읽기 실패는 판정 불가 → parse_page 로 넘겨 malformed 경고에 맡긴다. UnicodeDecodeError
         # (non-UTF-8 tmp — cp949·바이너리)는 OSError 가 아니라 별도 포획 — 안 잡으면 load_pages
-        # 전체가 크래시해 crash-0 계약이 깨진다(T-0245 reviewer must-fix 실측).
+        # 전체가 크래시해 crash-0 보장이 깨진다(T-0245 reviewer must-fix 실측).
         try:
             has_delimiter = path.read_text(encoding="utf-8").lstrip().startswith("---")
         except (OSError, UnicodeDecodeError):

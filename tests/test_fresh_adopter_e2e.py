@@ -310,3 +310,92 @@ def test_fresh_adopter_settings_portable_and_hooks_wired(pm_import, tmp_path):
         if rel.endswith(".sh"):
             assert os.access(target, os.X_OK), (
                 f"import 된 {rel} 실행비트 소실 (copy2 mode 보존 실패?) — 훅 실행 불가")
+
+
+# ── add-harness 라이브-안전 e2e: 어댑터 네임스페이스만 추가·기존 트리 바이트 불변 (T-0271 · ADR-0048) ──
+# raw 재-import 의 파괴성(실측 5-file clobber: wiki/engine/claude/CLAUDE.md 를 덮음)이 재발하지 않음을
+# *전체 트리 diff* 로 못박는다. 단위 테스트(test_pm_import·T-0269)는 대표 파일 3~4개를 spot-check 하지만,
+# 이 e2e 는 fresh import 된 실 인스턴스의 전 트리를 스냅샷 → add-harness → 재스냅샷 해 (a) 추가된 relpath
+# 가 추가 harness 어댑터 네임스페이스(.opencode/** ∪ AGENTS.md) 밖으로 한 개도 안 새고 · (b) 기존 relpath
+# (wiki `.project_manager/**`·엔진·타 harness `.claude/**`·root doc)가 바이트 단위 불변·0 삭제임을 전수
+# 대조한다. add-harness 는 render-only(라이브 LLM 0·`opencode models` seam 은 pm_import fixture 가 stub)라
+# 결정적 — 최초 import 와 동일 in-process 경로로 구동한다(운영 진입 `pm_config add-harness` 는 별 subprocess
+# 라 stub 미상속·live 조회 위험 → 이 게이트의 hermetic 계약과 맞지 않는다).
+
+# 어댑터 네임스페이스 상한(추가 relpath ⊆ 이 집합). claude add 의 @render 제외(.claude/agents·skills)는
+# 추가 파일을 *줄일* 뿐이라 subset 단언엔 무영향 — 상한 predicate 로 충분하다.
+_ADD_HARNESS_NS_BOUND = {
+    "opencode": (".opencode", "AGENTS.md"),
+    "claude": (".claude", "CLAUDE.md"),
+}
+
+
+def _snapshot_tree(root: Path) -> dict[str, bytes]:
+    """트리의 모든 파일 relpath(posix) → 바이트 스냅샷 (__pycache__·.git 등 stale/VCS 산출물 제외)."""
+    snap: dict[str, bytes] = {}
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        if any(part in ("__pycache__", ".git") for part in rel.parts):
+            continue
+        snap[rel.as_posix()] = p.read_bytes()
+    return snap
+
+
+def _in_adapter_ns_bound(rel: str, added_harness: str) -> bool:
+    """rel(dst relpath)이 *추가되는 harness* 어댑터 네임스페이스 상한 안인가 (독립 참조 규칙)."""
+    adapter_dir, root_doc = _ADD_HARNESS_NS_BOUND[added_harness]
+    return rel == root_doc or rel.startswith(adapter_dir + "/")
+
+
+@pytest.mark.parametrize("base,added", [("claude", "opencode"), ("opencode", "claude")])
+def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_path, base, added):
+    """fresh import(base) → add-harness(added): 추가는 어댑터 네임스페이스뿐·기존 트리 바이트 불변.
+
+    ADR-0048 라이브-안전 불변식의 e2e 층 — raw 재-import 5-file clobber 재발을 실 인스턴스 전체 트리
+    diff 로 못박는다(단위 spot-check 보완). 1차 param(claude→opencode)이 실측 clobber 시나리오,
+    2차(opencode→claude)는 대칭 검증.
+    """
+    dest = tmp_path / f"adopter-{base}-add-{added}"
+    rc = pm_import.main(
+        ["--new", str(dest), "--harness", base, "--name", "Adopter", "--fill", "manual"]
+    )
+    assert rc == 0, f"{base} import 실패 (rc={rc})"
+
+    # add-harness 직전 전체 트리 바이트 스냅샷.
+    before = _snapshot_tree(dest)
+    # 공허참 방지 — 스냅샷이 실제로 라이브-파괴 원천(wiki dev-state·엔진·base 어댑터)을 담았다.
+    assert any(r.startswith(".project_manager/wiki/") for r in before), \
+        f"{base}: 스냅샷에 wiki dev-state 부재 (공허 테스트?)"
+    assert ".project_manager/tools/board.py" in before, f"{base}: 스냅샷에 엔진 board.py 부재"
+    base_dir, base_doc = _ADD_HARNESS_NS_BOUND[base]
+    assert base_doc in before and any(r.startswith(base_dir + "/") for r in before), \
+        f"{base}: 스냅샷에 base 어댑터({base_dir}/**·{base_doc}) 부재"
+
+    # 라이브-안전 add-harness — render-only·hermetic(models seam = pm_import fixture stub). 최초 import 와
+    # 동일 in-process 경로(source_root 생략 → 기본 REPO·main `--from` 기본값과 동형).
+    plan = pm_import.add_harness(dest, added, dry_run=False)
+    assert plan, f"{base}→{added}: add-harness plan 이 비어 있다."
+
+    after = _snapshot_tree(dest)
+    before_rels, after_rels = set(before), set(after)
+    added_rels = after_rels - before_rels
+    removed_rels = before_rels - after_rels
+
+    # (1) 삭제 0 — 기존 파일이 사라지면 안 된다.
+    assert not removed_rels, f"{base}→{added}: add-harness 가 기존 파일 삭제: {sorted(removed_rels)}"
+
+    # (2) 추가된 relpath ⊆ 추가 harness 어댑터 네임스페이스뿐 (그 밖은 한 개도 안 샌다).
+    outside = sorted(r for r in added_rels if not _in_adapter_ns_bound(r, added))
+    assert outside == [], (
+        f"{base}→{added}: add-harness 가 어댑터 네임스페이스 밖 파일 추가(라이브-안전 위반): {outside}")
+    # sanity — 어댑터가 실제로 추가됐다(스코프가 맞는 트리를 잡았다는 방증).
+    add_dir, add_doc = _ADD_HARNESS_NS_BOUND[added]
+    assert add_doc in added_rels, f"{base}→{added}: root doc {add_doc} 미추가"
+    assert any(r.startswith(add_dir + "/") for r in added_rels), f"{base}→{added}: {add_dir}/** 미추가"
+
+    # (3) 기존 relpath 전부 바이트 불변 (wiki `.project_manager/**`·엔진·타 harness·root doc 0 변경).
+    changed = sorted(r for r in before_rels & after_rels if before[r] != after[r])
+    assert changed == [], (
+        f"{base}→{added}: add-harness 가 기존 파일을 변경(byte diff≠0·5-file clobber 재발): {changed}")

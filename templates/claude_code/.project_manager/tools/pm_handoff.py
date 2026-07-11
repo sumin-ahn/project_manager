@@ -14,7 +14,7 @@
   3. pm_state.md 세션 식별 표 sliding window 정리 — 신규 entry 추가 + 가장 오래된 entry 제거.
   4. pm_state.md 길이 검증 — wc -l 기준 700 라인 초과 시 warning.
   5. 인계 프롬프트 stdout 출력 — pm_playbook.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
-     의 트리거(역할 framing + /pm-bootstrap)를 채워 stdout. 인계 본문은 log entry 가 carry —
+     의 트리거(역할 framing + /pm-bootstrap)를 채워 stdout. 인계 본문은 log entry 가 이월 —
      부트스트랩이 자동 dump 하므로 프롬프트에 손-채움 안 함(T-0180·T-0179 짝).
   6. git status dump — git status -s 출력 + 변경 파일 카운트.
   7. 잔여 PM 수동 작업 출력 — checklist.
@@ -335,7 +335,7 @@ def _resolve_session_worktree_slot(
         이걸 `self._worktree_slot` 에 박아 pm_state·회귀cwd·entry 가 같은 슬롯을 쓴다.
       - `(None, error_msg)` — 진짜 모호(`{2,3}`·repo≥2). run() 이 surface 하고 중단(fail-loud).
 
-    `_resolve_state_slot`(incidental·display/preview 에서도 쓰임)은 계약 유지(None·fail-soft)하고,
+    `_resolve_state_slot`(incidental·display/preview 에서도 쓰임)은 동작 유지(None·fail-soft)하고,
     *오직 session-entry* 인 이 함수만 모호를 loud 로 만들고 실행 슬롯을 thread 한다 — bootstrap 을
     모호함으로 crash 시키지 않는다. `areas_file`/`leases_file` 미지정이면 *호출 시점* REPO 기준
     해소(monkeypatch 추종·hermetic).
@@ -379,12 +379,12 @@ def _pm_state_path(
 
     `migrate` 는 *파일 이동* 만 가른다(경로 우선순위는 동일). run() 은 진입부에서
     `migrate=False`(읽기 위치만)로 호출하고, 모든 중단 게이트 통과 후 pm_state 첫 접촉 직전에만
-    `_migrate_legacy_pm_state` 로 실제 이동을 수행한다 — "중단 시 pm_state 무접촉" 계약 보존
+    `_migrate_legacy_pm_state` 로 실제 이동을 수행한다 — "중단 시 pm_state 무접촉" 보장 보존
     (codex 교차검증 must-fix). dry-run 은 이동을 절대 하지 않는다(미리보기).
 
     `migrate=True` 일 때만 divergent bare 슬롯 dir(`slots/<N>`) 도 canonical
     `slots/<repo>_<N>` 로 backfill 한다(T-0201) — legacy 마이그레이션과 같은 타이밍(게이트
-    통과 후·첫 접촉 직전)이라 "중단 시 pm_state 무접촉" 계약을 그대로 지킨다.
+    통과 후·첫 접촉 직전)이라 "중단 시 pm_state 무접촉" 보장을 그대로 지킨다.
     """
     slot = _resolve_state_slot(worktree_slot, areas_file, leases_file)
     legacy = _legacy_pm_state_file()
@@ -416,7 +416,7 @@ def _migrate_legacy_pm_state(
     """legacy `wiki/pm_state.md` 를 활성 슬롯 경로로 이동하고 최종 pm_state 경로를 반환한다.
 
     `_pm_state_path(..., migrate=True)` 의 명시 별칭 — run() 이 **모든 중단
-    게이트(회귀·출하) 통과 후·pm_state 첫 접촉 직전**에 단 한 번 호출한다(트랜잭션 계약:
+    게이트(회귀·출하) 통과 후·pm_state 첫 접촉 직전**에 단 한 번 호출한다(트랜잭션 보장:
     중단 시 pm_state 무접촉·codex must-fix). 멱등·비파괴(slot 이미 존재면 이동 안 함)·
     legacy 부재면 이동 없이 slot 경로 반환(쓰기 시 생성). dry-run 경로는 이 함수를 호출하지
     않는다(진입부 migrate=False target 을 그대로 읽음·미리보기·부작용 0).
@@ -483,7 +483,7 @@ SHIPPING_GLOBS = (
     # (PM 36 실측). 포괄 글롭(`**/_template.md`·`**/*.template.md`·`**/.gitignore` 등)은 repo
     # 전체를 매칭해 비-출하(tests/fixtures/_template.md·② wiki decisions/foo.template.md 등)
     # 까지 게이트를 false-fire 시킨다 — ticket 결정("정밀·과잉발동 회피")·tests/ non-shipping
-    # 계약과 모순. 1:1 정확 경로라도 미래 manifest 항목 추가는 정합 가드(test)가 잡아 동기화 강제.
+    # 원칙과 모순. 1:1 정확 경로라도 미래 manifest 항목 추가는 정합 가드(test)가 잡아 동기화 강제.
     ".project_manager/wiki/tickets/_template.md",     # ticket 스캐폴드 (manifest 갭)
     ".project_manager/wiki/raw/spikes/_template.md",  # spike 스캐폴드 (manifest 갭)
     ".project_manager/wiki/pm_state.template.md",     # pm_state 템플릿 (manifest 갭)
@@ -514,7 +514,7 @@ def _flatten_thread_tail(thread_tail: str) -> str:
 
     `build_handoff_log_skeleton(thread_tail=...)` 은 공개 API 라 다중행 입력이 후속 섹션
     (`- 회귀/incident:` 등)을 위조하거나 lean 줄단위 handoff 스키마를 깰 수 있다. 엔진이 *자기*
-    계약(줄단위 슬롯)을 직접 방어한다 — 어댑터(ctx_guard)가 이미 평탄화해도 defense-in-depth
+    규격(줄단위 슬롯)을 직접 방어한다 — 어댑터(ctx_guard)가 이미 평탄화해도 defense-in-depth
     (엔진 인터페이스는 공개라 신뢰 안 함).
     """
     flat = " / ".join(part.strip() for part in thread_tail.splitlines() if part.strip())
@@ -529,7 +529,7 @@ def _next_intent_lines(thread_tail: str | None) -> str:
 
     thread_tail 이 주어지면(어댑터 자동 주입) 첫 줄 슬롯에 *평탄화·trim·cap 한* 텍스트를 넣고,
     None/빈/공백뿐이면 placeholder 를 유지한다(하위호환). 엔진은 transcript 를 보지 않고 받은
-    string 을 *자기 줄단위 계약에 맞게 sanitize 해* 슬롯에 넣는다(harness-agnostic seam·CLI 방어).
+    string 을 *자기 줄단위 규격에 맞게 sanitize 해* 슬롯에 넣는다(harness-agnostic seam·CLI 방어).
     """
     tail = _flatten_thread_tail(thread_tail) if thread_tail else ""
     if not tail:
@@ -1314,7 +1314,7 @@ def _flatten_dashboard_value(value: object) -> str:
 
     render_dashboard_section 인자는 공개라 다중행 입력(wave_summary·next_plan)이 `## ` 헤딩을
     위조하거나 상한 줄수를 우회할 수 있다 — 개행을 공백으로 접고(single line) char cap 을 씌워
-    자기 계약(줄단위·경량)을 엔진이 직접 방어한다(_flatten_thread_tail 동형).
+    자기 규격(줄단위·경량)을 엔진이 직접 방어한다(_flatten_thread_tail 동형).
     """
     flat = " ".join(part.strip() for part in str(value).splitlines() if part.strip())
     flat = flat.strip()
@@ -1717,7 +1717,7 @@ class PmHandoff:
         self._worktree_slot = worktree_slot
         # per-slot pm_state 경로 해소(T-0166) — 명시 주입(테스트)이 없을 때만. 진입부에선
         # **읽기 위치(target 경로)만 정하고 파일은 옮기지 않는다**(migrate=False) — 회귀/출하
-        # 게이트(아래)가 red 면 "중단 시 pm_state 무접촉" 계약을 지켜야 하므로, legacy→slot
+        # 게이트(아래)가 red 면 "중단 시 pm_state 무접촉" 보장을 지켜야 하므로, legacy→slot
         # 이동은 *모든 중단 게이트 통과 후·pm_state 첫 접촉 직전*([3/7] 앞)에 1회 수행한다.
         if not self._pm_state_file_explicit:
             self._pm_state_file = _pm_state_path(worktree_slot, migrate=False)
@@ -1812,7 +1812,7 @@ class PmHandoff:
             )
             print(f"  ✓ 대시보드 자기 섹션 overwrite: {dash_file} (## {session_identity})")
 
-        # ── per-slot 마이그레이션 (T-0166·트랜잭션 계약) ─────────────────────────
+        # ── per-slot 마이그레이션 (T-0166·트랜잭션 보장) ─────────────────────────
         # 모든 중단 게이트(회귀 [1/7]·출하 [1b/7])를 통과한 *뒤*·pm_state 첫 접촉([3/7])
         # 직전에 legacy → slot 이동을 1회 수행한다. 게이트 red 면 여기 못 와 legacy 무접촉
         # (codex must-fix — "중단 시 pm_state 무접촉" 보존). dry_run 은 이동 안 함(미리보기 —

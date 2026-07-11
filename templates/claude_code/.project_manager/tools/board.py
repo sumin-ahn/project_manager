@@ -127,7 +127,7 @@ LOCAL_DIR = REPO / ".project_manager" / ".local"            # per-clone scratch 
 REGRESSION_FLAG = LOCAL_DIR / "regression.json"             # last regression result, keyed by HEAD
 LIVEGATE_FLAG = LOCAL_DIR / "livegate.json"                 # last release live-gate result, keyed by ① worktree HEAD (ADR-0039·per-clone)
 BOARD_LOCK = LOCAL_DIR / "board.lock"                       # OS file lock — board write serialization (ADR-0012)
-# worktree_pool 의 LEASES_FILE 와 *같은 위치*(그 규약 — `.local/worktree-leases.json`). board 는
+# worktree_pool 의 LEASES_FILE 와 *같은 위치*(그 관례 — `.local/worktree-leases.json`). board 는
 # worktree_pool 을 import 하지 않으므로(ADR-0013 isolation·touches 격리) 경로를 자체 해소해 파일을
 # 직접 read 한다(T-0066 슬롯 test_cmd 레이어·아래 _active_slot_test_cmd). areas.md 읽듯 데이터-결합만.
 LEASES_FILE = LOCAL_DIR / "worktree-leases.json"            # worktree 리스 장부 (ADR-0013·read-only here)
@@ -269,7 +269,7 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
 
 
 # user identity 해소 git 폴백 timeout — `git config user.email` 은 로컬 config 읽기라
-# 즉답이지만(네트워크 0) 환경 이상에 대비해 짧은 상한을 둔다(엔진 subprocess 규약·_interp_runs 동류).
+# 즉답이지만(네트워크 0) 환경 이상에 대비해 짧은 상한을 둔다(엔진 subprocess 관례·_interp_runs 동류).
 _GIT_USER_TIMEOUT_SECONDS = 5
 
 
@@ -278,7 +278,7 @@ def _git_config_email() -> str | None:
 
     user identity 해소(`user_name`)의 폴백 레이어다 — `local.conf user=` 가 없을 때
     git 의 commit author email 을 user 식별자로 쓴다(spike §3.5·§6.3). subprocess 는
-    엔진 규약대로 UTF-8 고정(한글 이름·메시지 안전)·짧은 timeout. git 바이너리 부재
+    엔진 관례대로 UTF-8 고정(한글 이름·메시지 안전)·짧은 timeout. git 바이너리 부재
     (`shutil.which` None)·rc≠0(미설정)·예외는 모두 None 으로 강등한다(크래시 0).
     """
     git_binary = shutil.which("git")
@@ -614,7 +614,7 @@ def _repo_area_owner(repo: str) -> str | None:
 # 2축 분기(`_owns_any_area`+`area_filter`)를 전역 플래그 1개로 단순화(T-0168 동반·사용자 결정
 # 2026-06-26: 데이터 정합은 `board migrate-identity` 가 책임·런타임 폴백은 최소).
 
-# 티켓 ID prefix 추출 — `_next_id` ID 발행 규약의 *정확한 역*:
+# 티켓 ID prefix 추출 — `_next_id` ID 발행 규칙의 *정확한 역*:
 #   prefixed = `T-{prefix}-{NNN}` (`_next_id` line 1011·prefix 는 리터럴 삽입·끝 -NNN 은 숫자),
 #   legacy   = `T-{NNNN}`        (`_next_id` line 1013·하이픈 1개·prefix 없음).
 # prefix 문법은 **등록/검증측(`pm_config._REPO_NAME_RE`·`^[A-Za-z0-9][A-Za-z0-9_-]*$`)과 정합**한다
@@ -648,14 +648,14 @@ _FULL_TICKET_ID_RE = re.compile(rf"\A{_TICKET_ID_BODY}\Z")
 
 
 def _is_valid_ticket_id(tid: str) -> bool:
-    """`tid` 가 발행 규약 ID 문법(`T-NNNN`·`T-<pfx>-NNN`)에 완전 일치하는지 (reid NEW-ID sanity)."""
+    """`tid` 가 발행 규칙 ID 문법(`T-NNNN`·`T-<pfx>-NNN`)에 완전 일치하는지 (reid NEW-ID sanity)."""
     return bool(_FULL_TICKET_ID_RE.match(tid))
 
 
 def _ticket_prefix(tid: str) -> str | None:
     """티켓 ID 에서 네임스페이스 prefix 추출. legacy `T-NNNN`(prefix 없음) → None.
 
-    `_next_id` 의 ID 발행 규약의 역이다: prefixed = `T-<PREFIX>-NNN`, legacy = `T-NNNN`.
+    `_next_id` 의 ID 발행 규칙의 역이다: prefixed = `T-<PREFIX>-NNN`, legacy = `T-NNNN`.
     PREFIX 문법은 등록/검증측(`pm_config._REPO_NAME_RE`·`[A-Za-z0-9][A-Za-z0-9_-]*`)과 정합이라
     숫자(`P0`)·하이픈(`service-a`)·순수 숫자(`123`)를 포함할 수 있고 그런 ID(`T-P0-001`·
     `T-service-a-001`·`T-123-001`)도 해소된다. legacy 4자리 숫자 ID(`T-0164`)는 full-ID regex
@@ -868,7 +868,7 @@ def _claimed_by_user(claimed_by: str | None) -> str | None:
     """`claimed_by`(`<user>/<pm-slot>`)에서 *user* 토큰 추출 — 슬롯-only/빈값은 None (T-0164·codex sug).
 
     `claimed_by` 는 이제 `<user>/<slot>`(ADR-0033 ③·T-0161) 또는 구 슬롯-only(`<slot>`)다.
-    user 추출은 **마지막 `/` 분리** 규약(`rsplit('/', 1)[0]`) — slot 이 마지막 토큰이므로 user 에
+    user 추출은 **마지막 `/` 분리** 규칙(`rsplit('/', 1)[0]`) — slot 이 마지막 토큰이므로 user 에
     `/` 가 들어가도(이메일은 보통 없지만 안전) 정확히 분리한다. `/` 가 없으면(구 슬롯-only·user
     미상) None 을 반환해 (b) 매칭에서 graceful 제외한다.
     """
@@ -881,7 +881,7 @@ def _slot_matches(claimed_by: str, my_slot: str, *, suffix: bool = False) -> boo
     """`claimed_by`(`<user>/<pm-slot>` 또는 legacy 슬롯-only)의 slot 토큰이 `my_slot` 인가.
 
     `suffix=False`(기본·`--mine`/`--session`): 완전 일치 — slot 식별자 전체를 안다.
-    `suffix=True`(`--slot <N>`): slot 규약(`work/<repo>_<N>` → 세션 이름 `<repo>_<N>`·
+    `suffix=True`(`--slot <N>`): slot 규칙(`work/<repo>_<N>` → 세션 이름 `<repo>_<N>`·
     T-0074/pm_bootstrap `_repo_slot_numbers`)상 숫자 N 만으론 repo 접두를 모르므로,
     slot 토큰이 `_<N>` 로 끝나거나(=`<repo>_<N>`) 토큰 자체가 `<N>`(레거시 순수 슬롯번호)인
     경우 모두 매칭한다.
@@ -1101,7 +1101,7 @@ def _append_atomic(path: Path, text: str) -> None:
 
     `O_APPEND` 는 각 write 의 offset 이동+기록을 OS 가 원자로 처리해, 동시 writer 가
     서로의 추가를 덮어쓰지 않는다(read-modify-write 의 lost update 회피). 파일이 없으면
-    생성한다. 인코딩은 엔진 규약대로 UTF-8.
+    생성한다. 인코딩은 엔진 관례대로 UTF-8.
     """
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
@@ -1244,11 +1244,11 @@ def _board_submodule_name() -> str | None:
 # **활성 게이트 = board 가 별도 git 일 때만**(`board_root()/.git` 존재). legacy(board 가
 # wiki/ 안·별도 git 아님)면 sync 는 전부 no-op(git 호출 0·현 동작 byte-identical) —
 # board_root() graceful 탐지와 동형이고, 기존 회귀가 green 으로 남는 핵심이다. 모든 git
-# 호출은 fail-soft subprocess(엔진 규약·UTF-8 고정·짧은 timeout) — 거짓 원자성/락 보장을
+# 호출은 fail-soft subprocess(엔진 관례·UTF-8 고정·짧은 timeout) — 거짓 원자성/락 보장을
 # 만들지 않는다(best-effort 는 정직하게 경고, claim 만 명시 실패).
 
 # board git 호출 timeout — pull/push 는 네트워크 왕복이라 user-email 폴백(5s)보다 길게
-# 둔다. 환경 이상(hang·offline DNS)에서 무한 대기를 막는 상한(엔진 subprocess 규약).
+# 둔다. 환경 이상(hang·offline DNS)에서 무한 대기를 막는 상한(엔진 subprocess 관례).
 _BOARD_GIT_TIMEOUT_SECONDS = 30
 
 # claim prefetch 반환 sentinel — board submodule 에 uncommitted 변경이 있어 pull --rebase
@@ -1290,7 +1290,7 @@ def _board_git_enabled() -> bool:
 def _board_git(args: list[str], *, check: bool = False) -> subprocess.CompletedProcess:
     """board git working dir(`board_root()`)에서 git 명령을 실행한다 (UTF-8·timeout 고정).
 
-    엔진 subprocess 규약: UTF-8 디코딩(한글 ticket/경로 안전)·짧은 timeout·`errors=replace`.
+    엔진 subprocess 관례: UTF-8 디코딩(한글 ticket/경로 안전)·짧은 timeout·`errors=replace`.
     `-C board_root()` 로 작업 디렉토리를 board git 으로 고정한다(cwd 의존 0). `check=False`
     가 기본 — 호출부가 returncode 로 분기하며, 예외(timeout·바이너리 이상)는 호출부가
     fail-soft 로 처리한다.
@@ -1398,7 +1398,7 @@ def _board_git_sync_best_effort(message: str) -> None:
         return
     # detached HEAD 가드 (T-0204): detached 에선 commit 이 orphan 으로 쌓이고 `pull --rebase`
     # 가 계속 실패해 "다음 mutation 이 catch-up" 약속이 *구조적으로* 성립하지 않는다(attached
-    # 브랜치의 일시 offline/conflict 만 상정한 계약). commit/pull/push 를 모두 skip 하고 loud
+    # 브랜치의 일시 offline/conflict 만 상정한 동작). commit/pull/push 를 모두 skip 하고 loud
     # 경고만 내 orphan 무한 누적을 원천 차단한다. 파일 mutation(rename·frontmatter)은 이미
     # 끝난 뒤라 작업은 무차단 — git 부기만 보류한다(best-effort=작업 무차단 원칙 유지). 자동
     # 복구(checkout/cherry-pick)는 PM 편집/브랜치 의도 침해라 하지 않고 안내만 한다(T-0203 동형).
@@ -2390,7 +2390,7 @@ def _complete_gate(tid: str, args: argparse.Namespace) -> list[str]:
     problems: list[str] = []
     id_re = re.compile(rf"\b{re.escape(tid)}\b")
 
-    # 1. log/current.md must carry an entry for this ticket.
+    # 1. log/current.md must contain an entry for this ticket.
     if not args.allow_missing_log:
         log_text = LOG_FILE.read_text(encoding="utf-8") if LOG_FILE.exists() else ""
         if not id_re.search(log_text):
@@ -2540,7 +2540,7 @@ def prompt_external_review_optin() -> None:
     try:
         answer = input("  켜기 [y/N]: ").strip().lower()
     except EOFError:
-        # stdin 이 EOF (비대화·파이프 종료) — 비대화 가드와 동일 계약: 결정 미기록,
+        # stdin 이 EOF (비대화·파이프 종료) — 비대화 가드와 동일 동작: 결정 미기록,
         # 아무것도 쓰지 않고 반환. 기존 local.conf 의 결정을 덮어쓰지 않는다(preservation).
         return
     with LOCAL_CONF.open("a", encoding="utf-8") as f:
@@ -2991,7 +2991,7 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
         print(f"{tag}{total}건 {verb}.")
     if dry_run:
         print("[dry-run] 쓰기 0 — 적용하려면 --dry-run 없이 재실행.")
-    # 파생 board.md 갱신("board.py 변경 명령마다 파생 보드 갱신" 계약·codex sug). migrate 가
+    # 파생 board.md 갱신("board.py 변경 명령마다 파생 보드 갱신" 보장·codex sug). migrate 가
     # claimed_by 를 바꾸면 board.md claimed 표시도 달라진다 — 실제 쓰기가 있었고 dry-run 이
     # 아닐 때만 1회 재생성한다(dry-run 은 파생물도 안 건드림·읽기-only 미리보기 보장).
     if wrote:
@@ -3172,7 +3172,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     #
     # `--session NAME`/`--slot N` 은 `--mine` 의 *명시-인자* 버전이다 — 내 identity 대신 지목한
     # slot 으로 `_ticket_is_mine` 을 돌린다(같은 (a) area open ∨ (b) claim 렌즈). `--session` 은
-    # 세션 이름 전체를 아니 완전 일치, `--slot N` 은 숫자만 아니 slot 규약(`<repo>_<N>`) suffix
+    # 세션 이름 전체를 아니 완전 일치, `--slot N` 은 숫자만 아니 slot 규칙(`<repo>_<N>`) suffix
     # 매칭(`_slot_matches` suffix=True). 서로 배타적(argparse mutually exclusive) — 동시 지정 방지.
     #
     # 비대칭(T-0198 DOC): `--session`/`--slot` 은 my_user 를 해소하지 않고 항상 None 으로 둔다
@@ -3292,7 +3292,7 @@ def _parse_prefix_arg(raw: str) -> str | None:
 
 
 def _format_ticket_id(prefix: str | None, num: int) -> str:
-    """prefix(또는 None=무prefix)와 순번으로 canonical ID 생성 (`_next_id` 발행 규약과 정합).
+    """prefix(또는 None=무prefix)와 순번으로 canonical ID 생성 (`_next_id` 발행 규칙과 정합).
 
     None → `T-NNNN`(최소 4자리) · prefix → `T-<p>-NNN`(최소 3자리). zero-pad 는 *최소* 폭이라
     번호가 커지면 자연 확장된다(`_next_id` 와 동형).
@@ -4015,7 +4015,7 @@ def _run_lint_hooks() -> list[tuple[str, str]]:
     """Discover & run instance lint hooks — .project_manager/hooks/lint_*.py (ADR-0003).
 
     각 훅 모듈은 `check() -> list[str]`(이슈 detail 문자열)을 노출한다. fail-soft:
-    로드/실행 실패·계약 불충족은 stderr 경고로 보고하고 계속한다(부분 실패가 lint 전체를
+    로드/실행 실패·규격 불충족은 stderr 경고로 보고하고 계속한다(부분 실패가 lint 전체를
     막지 않음). 인스턴스가 엔진 board.py 를 안 건드리고 자기 검사를 더하는 seam — 프레임워크
     공통 검사(wikilink 등)는 엔진 내장(lint_wikilinks), 프로젝트 고유 검사는 여기로.
     """
@@ -4043,9 +4043,9 @@ def _run_lint_hooks() -> list[tuple[str, str]]:
 def cmd_lint(args: argparse.Namespace) -> int:
     """전체 lint 보고 (무인자) 또는 push 게이트 (`--gate`).
 
-    무인자: 모든 issue 를 보고하고 issue 가 하나라도 있으면 종료코드 1 (현행 계약).
+    무인자: 모든 issue 를 보고하고 issue 가 하나라도 있으면 종료코드 1 (현행 동작).
     `--gate`: 종료코드를 *차단 카테고리*에만 1 로 둔다 — status drift 같은 자문성
-    (lint_status 의 "never blocks" 계약) 은 보고는 하되 종료코드에 반영하지 않는다.
+    (lint_status 의 "never blocks" 보장) 은 보고는 하되 종료코드에 반영하지 않는다.
     즉 `--gate` 는 pre-push 게이트용 엄격 부분집합이다.
     """
     gate = getattr(args, "gate", False)
@@ -4521,7 +4521,7 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
     """Return dangling [[name]] for *structural* refs (ADR/ticket/idea) only.
 
     name 으로 dedupe 하고 사용처를 detail 에 모은다. 자유어휘는 검사하지 않는다.
-    코드 span/fence 안의 *예시* wikilink(규약 문서가 backtick 으로 보여주는
+    코드 span/fence 안의 *예시* wikilink(관례 문서가 backtick 으로 보여주는
     `[[ADR-NNNN]]`)는 실 참조가 아니므로 `_strip_code` 로 제거 후 스캔한다 —
     `lint_unstable_refs` 와 동일한 처리(오탐 0·ADR-0003 철학).
 
@@ -4858,7 +4858,7 @@ _STRUCT_PATH_RE = re.compile(
 # 숫자선두 자유어휘 wikilink — `[[NNNN-slug]]`·`[[NNNN]]`·alias `[[NNNN-slug|표시명]]`
 # (ADR/idea 를 ID 아닌 형으로 적은 것). slug 부는 `[^\]|]+`(비-ASCII 포함) — `_slugify` 가 한글
 # slug 를 허용하므로 `[[0001-한글아이디어]]` 도 포착(codex T-0036 must-fix·false-negative 방지).
-# alias `|표시명` 은 `_WIKILINK_RE` 계약과 동일하게 흡수(codex suggestion).
+# alias `|표시명` 은 `_WIKILINK_RE` 동작과 동일하게 흡수(codex suggestion).
 _NUM_LEAD_WIKILINK_RE = re.compile(r"\[\[(\d+)(?:-[^\]|]+)?(?:\|[^\]]+)?\]\]")
 
 # 코드 span/fence 안의 *예시* 링크·wikilink 는 실제 참조가 아니므로 스캔 전 제거(codex T-0036·오탐 0).
@@ -5025,7 +5025,7 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 
 # 차단되지 않는 자문성 lint kind — push 를 막지 않는 권고/드리프트 카테고리.
 # `lint --gate` 는 이 카테고리를 종료코드에서 제외한다 (push 게이트용 엄격 부분집합):
-#   - status-done-accum : status.md ✅ 완성 행 누적 archive 권고 (lint_status "never blocks" 계약).
+#   - status-done-accum : status.md ✅ 완성 행 누적 archive 권고 (lint_status "never blocks" 보장).
 #     (ADR-0023: status-header-bloat·scalar-anchor-broken 은 status judgment-only 화로 제거.)
 #   - unstable-ref-advice : 실재 파일을 슬러그로 가리키는 링크 — 작동은 함, ID-wikilink 권고만
 #     (T-0036 결정 "차단은 dangling 만"). resolve 실패는 kind=`unstable-ref` 로 차단됨.
@@ -5046,7 +5046,7 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     위배)라 의도적 비-전파. instance-state(status·architecture·tickets·log·decisions·README·lite)는 채택자
 #     소유·diverge 정상이라 scope 제외. push 미차단(never-block).
 #   - adr-author : ADR frontmatter `author: <user>/<pm-slot>` provenance 권고 (T-0165·ADR-0033 ③).
-#     "누가 결정했나"(provenance·연속성 아님)를 박는 발행측 규약 — board.py 는 ADR 을 발행하지 않으므로
+#     "누가 결정했나"(provenance·연속성 아님)를 박는 발행측 규칙 — board.py 는 ADR 을 발행하지 않으므로
 #     부재/형식어긋남을 권고만 한다. solo·구 ADR(author 부재)은 정상이라 push 미차단(never-block).
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
@@ -5125,7 +5125,7 @@ def lint_adr_lifecycle() -> list[tuple[str, str, str]]:
 def _parse_adr_author(val) -> tuple[str, str] | None:
     """ADR frontmatter `author` 를 `(user, slot)` 으로 파싱한다 (ADR-0033 ③·spike §3.4).
 
-    규약 = `<user>/<pm-slot>` — `created_by`/`claimed_by` identity 토큰과 동일 형태(`identity_tag`).
+    형식 = `<user>/<pm-slot>` — `created_by`/`claimed_by` identity 토큰과 동일 형태(`identity_tag`).
     *마지막* `/` 로 분리(`rsplit('/', 1)`)해 slot 을 마지막 토큰으로 잡는다 — user 에 `/` 가
     있어도(이메일 등엔 없지만 방어) slot 이 흔들리지 않는다. 두 토큰이 모두 non-empty 여야
     유효(`<user>/<pm-slot>`); `/` 없음·한쪽 빈값(`/slot`·`user/`)은 None(형식 어긋남).
@@ -5143,7 +5143,7 @@ def lint_adr_author() -> list[tuple[str, str, str]]:
     """ADR `author` provenance 권고 advisory (T-0165·ADR-0033 ③·never-block).
 
     각 ADR frontmatter 에 `author: <user>/<pm-slot>`(누가 결정했나·provenance·연속성 아님)가
-    박혀 있는지 권고한다 — board.py 가 ADR 을 *발행*하지 않으므로 발행측 규약을 강제하는 대신
+    박혀 있는지 권고한다 — board.py 가 ADR 을 *발행*하지 않으므로 발행측 규칙을 강제하는 대신
     부재/형식어긋남을 visibility 로만 표면화한다. `author` 부재 → "author 권고"; 있으나
     `<user>/<pm-slot>` 형식이 아니면 → 형식 권고. kind=`adr-author`(`_ADVISORY_LINT_KINDS`
     등재로 `--gate` 종료코드 비기여). decisions/ 부재·깨진 frontmatter → graceful skip
@@ -5503,7 +5503,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "open + 해당 세션 claim 을 보인다(`--mine` 은 내 area 로 좁힘 — 비대칭).")
     scope.add_argument("--slot", type=int,
                         help="`--session` 의 슬롯-번호 버전(T-0197): slot 식별자가 `<repo>_<N>` "
-                             "규약이라 N 만으로 suffix 매칭한다(repo 접두 불문). 주의(T-0198): "
+                             "규칙이라 N 만으로 suffix 매칭한다(repo 접두 불문). 주의(T-0198): "
                              "area_owner 미운영 시 open 은 세션-스코프로 못 좁혀 전체 open + "
                              "해당 세션 claim 을 보인다(`--mine` 은 내 area 로 좁힘 — 비대칭).")
     p.set_defaults(fn=cmd_list)

@@ -36,7 +36,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Callable
 
-# REPO = 스크립트 위치 기반(cwd 무관) — board.py·pm_*.py 와 동일 앵커 규약(sealed spike §8-4).
+# REPO = 스크립트 위치 기반(cwd 무관) — board.py·pm_*.py 와 동일 앵커 관례(sealed spike §8-4).
 # multi-PM 모델에서 이 도구가 어느 worktree cwd 에서 호출돼도 자기 위치(multi-PM 루트 .project_manager)를
 # 자동 타깃한다.
 REPO = Path(__file__).resolve().parents[2]
@@ -132,7 +132,7 @@ class BareRepoMissing(RuntimeError):
     **`RuntimeError` 서브클래스**인 이유: 파사드 `pm_config.cmd_worktree_add` 가
     `create_slot` 의 실패를 `except RuntimeError` 로 잡아 사용자 안내 rc 1 로 surface 한다
     ([[T-0061]]). 베이스를 `Exception` 으로 두면 그 가드를 빠져나가 traceback 이 노출된다
-    (cross-module 계약 — codex T-0063 게이트 포착).
+    (cross-module 규격 — codex T-0063 게이트 포착).
     """
 
     def __init__(self, repo: str, bare_path: "Path"):
@@ -302,7 +302,7 @@ def _real_git_runner(cwd: Path) -> GitRunner:
 
     반환 callable: argv(list) → (returncode, stdout+stderr). git 바이너리 부재(shutil.which)
     면 (1, msg)·예외는 (1, str(exc)) 로 감싼다(fail-soft·rc!=0 로 호출부에 위임). `git -C
-    <cwd> <argv...>` 형태로 항상 그 work tree/repo 에 묶는다. 인코딩은 엔진 규약대로 UTF-8
+    <cwd> <argv...>` 형태로 항상 그 work tree/repo 에 묶는다. 인코딩은 엔진 관례대로 UTF-8
     (한글 경로·메시지 안전).
 
     **stdout+stderr 결합 반환 (T-0070·pm_config._real_clone_runner 정합)**: 옛 코드는
@@ -431,7 +431,7 @@ def bare_repo_path(repo: str) -> Path:
     """repo 이름 → 그 repo 의 공유 .git 원 경로 `.repos/<repo>.git` (bare·ADR-0011 §31).
 
     worktree 슬롯이 add/remove 되는 git 컨텍스트. `pm_config.REPOS_DIR / f"{repo}.git"` 와
-    같은 규약([[T-0061]]) — worktree 풀이 import 격리(board·pm_config 미import)라 자체 해소한다.
+    같은 관례([[T-0061]]) — worktree 풀이 import 격리(board·pm_config 미import)라 자체 해소한다.
     """
     return REPOS_DIR / f"{repo}.git"
 
@@ -613,7 +613,7 @@ def install_protected_hook(
 
     # 3) bare core.hooksPath wiring (절대경로) — client-side·우리 미러 config 1줄.
     # **rc 검사(codex T-0076)**: config 실패면 훅이 실제로 wiring 안 됐는데 성공 보고하면 보호
-    # 가드가 *침묵 무력화* 된다(하드 차단 계약 위반). rc≠0 → False 반환(호출부가 경고 surface).
+    # 가드가 *침묵 무력화* 된다(하드 차단 보장 위반). rc≠0 → False 반환(호출부가 경고 surface).
     runner = git_runner or _real_git_runner(bare)
     rc, _out = runner(["config", "core.hooksPath", str(hook_dir.resolve())])
     return rc == 0
@@ -874,7 +874,7 @@ def create_slot(
     # 폴백(multi-PM 루트 worktree)으로 가면 슬롯이 family repo 가 아닌 multi-PM 루트를 체크아웃해 토폴로지가
     # 깨진다 → 명시 raise 로 `pm-config repo add` 선행 안내(ADR-0013 fail-soft 규율). 주입된
     # git_runner(테스트 mock·bare base 도 그 runner 가 모킹)도 같은 가드를 거친다 — bare
-    # 부재 가드는 *경로 존재*에 대한 계약이지 실 git 호출이 아니므로 mock 모드에서도 유효.
+    # 부재 가드는 *경로 존재*에 대한 확인이지 실 git 호출이 아니므로 mock 모드에서도 유효.
     bare = bare_repo_path(repo)
     if not bare.exists():
         raise BareRepoMissing(repo, bare)
@@ -959,7 +959,7 @@ def create_slot(
         # 쓴다(현행 테스트 무영향) — 인터랙티브는 `git_runner is None` 실경로만.
         #
         # **원자적 롤백 (T-0070)**: 실패(rc≠0)면 leased 장부 등록 *전에* raise — 불완전 슬롯
-        # 차단(기존 계약). 단 worktree add 는 *이미 성공*했으므로 raise 전에 그 worktree 를
+        # 차단(기존 동작). 단 worktree add 는 *이미 성공*했으므로 raise 전에 그 worktree 를
         # 롤백한다(`_rollback_worktree`) — 안 지우면 댕글링 worktree("슬롯 없음"+재시도 "이미
         # 존재")가 남는다. 롤백은 best-effort(2차 예외 삼킴 금지·원래 에러로 raise). 빈 out
         # (Windows 인코딩 캡처 유실·인터랙티브는 항상 빈 out)에도 막히지 않게 rc + argv surface.
@@ -1076,7 +1076,7 @@ def current_branch(slot: str, *, git_runner: GitRunner | None = None) -> str | N
     (기존 DI seam 패턴 — 테스트는 mock runner 주입으로 hermetic·실 git 불요). **슬롯 경로
     부재 가드는 실경로(미주입)에서만 본다** — git_runner 주입 시엔 그 runner 가 존재/rc/HEAD
     를 전부 모델링하는 권위이므로 fs 가드를 건너뛴다(hermetic 테스트가 슬롯 폴더 없이 동작).
-    주입 runner 가 예외를 던져도 None 으로 흡수한다(docstring 의 "raise 금지" 계약을 DI seam
+    주입 runner 가 예외를 던져도 None 으로 흡수한다(docstring 의 "raise 금지" 규칙을 DI seam
     까지 보장 — 실 `_real_git_runner` 는 이미 예외를 (1, str) 로 감싸므로 실경로는 영향 없음).
     """
     runner = git_runner
@@ -1087,7 +1087,7 @@ def current_branch(slot: str, *, git_runner: GitRunner | None = None) -> str | N
         runner = _real_git_runner(path)
     try:
         rc, out = runner(["symbolic-ref", "--short", "HEAD"])
-    except Exception:  # noqa: BLE001 — fail-soft: 주입 runner raise 도 None(계약: raise 금지).
+    except Exception:  # noqa: BLE001 — fail-soft: 주입 runner raise 도 None(규칙: raise 금지).
         return None
     if rc != 0:  # detached(symbolic ref 아님)·git 부재/실패 → 브랜치 없음.
         return None

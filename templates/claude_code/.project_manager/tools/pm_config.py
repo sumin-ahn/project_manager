@@ -17,6 +17,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config release <slot> [--force]                     # 작업완료 반납 / 수동 강제(백스톱)
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수·T-0054)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (T-0145·검증·fail-closed)
+    pm-config add-harness <harness> [--dry-run]            # 라이브 인스턴스에 두 번째 harness 어댑터 추가 (ADR-0048·T-0270)
 
 서브커맨드별 엔진 배선:
   - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1[solo] ~ N×M 공용).
@@ -26,6 +27,8 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - status|whoami → worktree_pool.list_leases() + 이 세션 식별(repo/슬롯/branch surface).
   - release → worktree_pool.release(--force 면 force_release) — 수동 반납/강제만.
   - update → pm_update.main(argv) verbatim forward (rename 비용 0·중복 구현 금지).
+  - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=) verbatim forward (ADR-0048
+                  Decision 3·복사 스코프+인터페이스 예외 번역은 pm_import 단일 진실·중복 0·T-0270).
 
 결정 (ADR-0011·ADR-0014·spike §8-5):
   - thin forwarder(`pm-config.sh/.cmd`)는 로직 0 — 이 디스패처가 엔진 배선의 단일 지점.
@@ -49,7 +52,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-# REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py 와 동일 앵커 규약
+# REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py 와 동일 앵커 관례
 # (ADR-0011 — 어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
 REPO = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO / ".project_manager" / "tools"
@@ -63,7 +66,7 @@ GitRunner = Callable[[list], "tuple[int, str]"]
 
 # ── 엔진 모듈 동적 로드 (스크립트-위치 앵커·pm_bootstrap 선례) ──────────────────
 # board.py·worktree_pool.py 는 같은 tools/ 에 있다. spec_from_file_location 으로
-# 로드한다 — 패키지 설치 없이 동작(board.py·pm_*.py 와 같은 로드 규약). 부재/로드
+# 로드한다 — 패키지 설치 없이 동작(board.py·pm_*.py 와 같은 로드 관례). 부재/로드
 # 실패는 해당 서브커맨드 경로에서만 명시 에러(침묵 무력화 금지·ADR-0013).
 
 
@@ -86,7 +89,7 @@ def _real_clone_runner() -> GitRunner:
 
     clone 은 `-C <dir>` 가 아니라 `git clone <url> <dest>` 형태라 별도 runner 로 둔다.
     git 바이너리 부재(shutil.which)·예외는 (1, stderr-or-"") 로 감싼다 — 호출부가 rc 로
-    판정. 인코딩은 엔진 규약대로 UTF-8(한글 경로·메시지 안전).
+    판정. 인코딩은 엔진 관례대로 UTF-8(한글 경로·메시지 안전).
     """
     git_binary = shutil.which("git")
 
@@ -437,7 +440,7 @@ def _resolve_base(base_arg: str | None, bare_path: Path, *, runner: GitRunner):
         refs/heads/<b>` rc==0). `show-ref --verify` 는 exact-ref primitive(revision 문법
         미적용)라 태그·SHA·`HEAD`·원격 ref 는 물론 `main~0`·`main^{}` 같은 revision 표현도
         통과하지 못한다(T-0078 — worktree 슬롯 파생[T-0075]은 로컬 브랜치 base 가 전제). 통과면
-        반환값은 **기존대로 bare 브랜치명(`base_arg`)**(areas.md base 칼럼 계약 불변), 실패면
+        반환값은 **기존대로 bare 브랜치명(`base_arg`)**(areas.md base 칼럼 규격 불변), 실패면
         `_BASE_INVALID`(호출부가 명확한 에러 rc 1 로 surface·등록 차단).
 
     반환: 해소된 base 문자열(빈 문자열 = 미해소·None 동등) 또는 `_BASE_INVALID`(검증 실패).
@@ -581,7 +584,7 @@ def _ensure_bare_branch_tracking(bare_path: Path, *, runner: GitRunner) -> None:
 # 시 usage 줄에 그 파일명이 새어 나온다 — 에이전트가 칠 실제 커맨드(pm-config init/update)와
 # 불일치해 오인을 부른다(ADR-0043 부수 CLI 위생·facade[pm-config.sh/.cmd]가 진입점이므로
 # usage 도 facade 이름이어야 카드[ADR-0045]↔실행 표기가 일치). 두 main 을 수정하지 않고
-# (touches 격리·CLI 계약 단일 진실 = board/pm_update 보존) 이 파사드에서 위임 동안만 파서
+# (touches 격리·CLI 규격 단일 진실 = board/pm_update 보존) 이 파사드에서 위임 동안만 파서
 # 생성 시점의 top-level prog 를 치환한다.
 _FACADE_PROG = "pm-config"   # facade 이름 — build_parser 의 prog 와 동일.
 
@@ -592,10 +595,10 @@ def _forwarded_prog(prog_map: "dict[str, str]"):
 
     board.py·pm_update.py 는 prog 를 파일명으로 하드코딩하고 main() 에 prog 인자가 없어,
     pm-config 가 위임할 때 usage 줄에 파일명이 새어 나온다. 두 엔진을 수정하지 않고(touches
-    격리·CLI 계약 단일 진실 보존) 파서 *생성 시점*에 명시 `prog=` kwarg 가 매핑 키와 정확히
+    격리·CLI 규격 단일 진실 보존) 파서 *생성 시점*에 명시 `prog=` kwarg 가 매핑 키와 정확히
     일치할 때만 값을 갈아끼운다:
       - board: "board.py"→"pm-config" — init 서브파서 usage 는 부모 prog 에서 "pm-config init"
-        로 **자동 파생**(argparse add_parser 규약)되므로 이 top-level 치환 하나로 forward 된
+        로 **자동 파생**(argparse add_parser 관례)되므로 이 top-level 치환 하나로 forward 된
         전 usage 줄이 정합한다.
       - pm_update: "pm_update.py"→"pm-config update"(플랫 파서·서브커맨드 없음).
     파생된 subparser prog(예: "pm-config init")·매핑 밖 prog 는 그대로 통과한다. 위임 종료
@@ -1034,7 +1037,7 @@ def cmd_update(
 ) -> int:
     """`update [--from ...]` — 엔진 갱신 (pm-update 흡수·T-0054).
 
-    pm_update.main(forward_args) 로 verbatim forward 한다 — pm_update 가 CLI 계약의
+    pm_update.main(forward_args) 로 verbatim forward 한다 — pm_update 가 CLI 규격의
     단일 진실이고, 이 서브커맨드는 그 main 으로 위임만 한다(중복 구현 0·rename 비용 0).
     forward_args 는 `update` 뒤의 raw 토큰을 *그대로*(argparse 미가공) 넘긴다 —
     `--from`·`--dry-run` 등 option-like 플래그를 디스패처가 가로채지 않게 `pm_config.main`
@@ -1189,7 +1192,7 @@ def cmd_init(
     """`init [<board init 인자>]` — clone 당 1회 셋업 (board.py init 흡수·T-0065).
 
     board.main(["init", *forward_args]) 로 verbatim forward 한다 — board.py init 이
-    CLI 계약의 단일 진실이고, 이 서브커맨드는 그 main 으로 위임만 한다(중복 구현 0).
+    CLI 규격의 단일 진실이고, 이 서브커맨드는 그 main 으로 위임만 한다(중복 구현 0).
     forward_args 는 `init` 뒤의 raw 토큰을 *그대로*(argparse 미가공) 넘긴다 —
     `--prefix`·`--area`·`--owner`·`--session` 등 option-like 플래그를 디스패처가
     가로채지 않게 `pm_config.main` 이 (raw[0]=="init" special-case 로) argparse 를
@@ -1214,6 +1217,44 @@ def cmd_init(
     # 에서 "pm-config init" 로 자동 파생돼 에이전트가 칠 실 커맨드와 정합(파일명 leak 0).
     with _forwarded_prog({"board.py": _FACADE_PROG}):
         return board_mod.main(["init", *forward_args])
+
+
+def cmd_add_harness(
+    args: argparse.Namespace,
+    *,
+    pm_import=None,
+    dest_root: Path | None = None,
+) -> int:
+    """`add-harness <harness> [--dry-run]` — 라이브 인스턴스에 두 번째 harness 어댑터 추가 (ADR-0048·T-0270).
+
+    pm_import.add_harness_cli(dest, harness, dry_run=) 로 verbatim 위임한다 — 복사 스코프(어댑터
+    네임스페이스만)·비파괴 백업·토큰 치환은 pm_import 의 add_harness 가(T-0269), 인터페이스 예외의 친화
+    번역(rc 1)은 그 main-style 래퍼 add_harness_cli 가 단일 진실로 소유한다(pm_import 가 CLI 규격·
+    로직/에러경계 중복 0). harness 는 choices 로 재검증하지 않고 verbatim 으로 넘긴다 — 미지원
+    harness('both'/오타)는 add_harness_cli 가 ValueError→rc 1 로 거른다(pm_config 자체 검증 0).
+
+    dest 해소는 기존 pm_config 관례(REPO=스크립트-위치 앵커·cwd 무관·cmd_upstream 과 동형) —
+    pm_config.py 가 사는 이 인스턴스 루트가 곧 harness 를 추가할 라이브 인스턴스다. dest_root
+    미주입 시 *호출 시점*에 REPO 로 해소한다(테스트 monkeypatch/주입 존중·cmd_repo_add repos_dir
+    동형 — 함수 default 로 굳히면 주입이 안 먹는다).
+
+    pm_import/dest_root 주입으로 hermetic 테스트(실 복사 부작용 없이 위임 배선 검증).
+    """
+    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
+    if pm_import_mod is None:
+        print(
+            "[중단] pm_import.py 엔진을 찾을 수 없다 — harness 추가 불가 "
+            f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+    dest = dest_root if dest_root is not None else REPO
+    # usage prog 정합 (T-0249·ADR-0043) — init/update forward 와 동형 위임-경계 가드. add_harness_cli
+    # 는 자체 argparse 를 만들지 않고 main-style 로 출력·rc 반환하지만, 위임 경계를 init/update 와
+    # 균일하게 감싸 pm_import 가 어떤 argparse usage 를 surface 하더라도 파일명("pm_import.py")이 새지
+    # 않게 한다(에이전트가 칠 실 커맨드 pm-config add-harness 와 정합·경계 leak 0). rc 는 그대로 전파.
+    with _forwarded_prog({"pm_import.py": f"{_FACADE_PROG} add-harness"}):
+        return pm_import_mod.add_harness_cli(dest, args.harness, dry_run=args.dry_run)
 
 
 # ── 대화형 콘솔 (T-0069) ──────────────────────────────────────────────────────
@@ -1292,7 +1333,7 @@ def _console_input(input_fn: Callable[[str], str], prompt: str):
 
     **메뉴 입력뿐 아니라 모든 액션 내부 프롬프트**(`[r]` 이름/git/test·`[w]` repo·`[b]` slot/
     빌드명령)가 이 헬퍼를 거친다 — 어느 프롬프트서 Ctrl-C/EOF 가 나도 예외가 전파돼 크래시
-    하는 것을 막는다(must-fix 2·codex — "우아 종료/크래시 0" 계약). 반환:
+    하는 것을 막는다(must-fix 2·codex — "우아 종료/크래시 0" 보장). 반환:
       - 정상 입력 → `str`(strip 안 함 — 호출부가 의미에 맞게 strip; 빈입력 보존).
       - EOF/Ctrl-C → `_CONSOLE_ABORT`(호출부가 액션 취소/메뉴 복귀 또는 루프 종료).
     input_fn 주입으로 hermetic(라이브 input 블록 0).
@@ -1419,7 +1460,7 @@ def run_console(
     → 우아 종료(메시지 + rc 0). **메뉴 입력뿐 아니라 모든 액션 내부 프롬프트**(`[r]`·`[w]`·
     `[b]` 의 이름/git/repo/slot 입력)가 공유 `_console_input` 헬퍼를 거친다 — 어느 프롬프트서
     중단해도 액션이 `_CONSOLE_ABORT` 를 반환하고 루프가 우아 종료한다(must-fix 2·codex —
-    "우아 종료/크래시 0" 계약·traceback 0·rc 0). 엔진(board·worktree_pool)/입력(input_fn)
+    "우아 종료/크래시 0" 보장·traceback 0·rc 0). 엔진(board·worktree_pool)/입력(input_fn)
     주입으로 hermetic 테스트(실 clone/worktree·라이브 input 블록 0 — 입력 시퀀스 주입 + 핸들러 mock).
     """
     board_mod = board or _load_module("board", "board.py")
@@ -1543,6 +1584,24 @@ def build_parser() -> argparse.ArgumentParser:
                            help="dirty/leased 무시 강제 idle 화 (dirty 는 stash 보존 시도)")
     p_release.set_defaults(func=cmd_release)
 
+    # add-harness <harness> [--dry-run] — 라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가
+    # (ADR-0048·T-0270). pm_import.add_harness_cli 로 verbatim 위임(cmd_add_harness) — harness 는
+    # choices 로 재검증하지 않고(pm_import 가 CLI 규격 단일 진실·미지원은 add_harness_cli 가
+    # ValueError→rc 1) 그대로 넘긴다. repo/worktree/release 와 동형의 func-dispatch 서브커맨드다.
+    p_add_harness = sub.add_parser(
+        "add-harness",
+        help="라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가 (pm_import.add_harness 위임·ADR-0048)",
+    )
+    p_add_harness.add_argument(
+        "harness",
+        help="추가할 harness 어댑터 (claude|opencode·pm_import 가 검증). 어댑터 네임스페이스만 복사(비파괴).",
+    )
+    p_add_harness.add_argument(
+        "--dry-run", action="store_true",
+        help="적용 없이 복사 plan 만 출력 (파일시스템 미변경).",
+    )
+    p_add_harness.set_defaults(func=cmd_add_harness)
+
     # update [--from ...] — pm-update 흡수. 실제 forward 는 main 이 argparse 우회로
     # 처리한다(아래 special-case) — 여기 등록은 `--help` 목록 surface(발견성)용이다.
     # option-like 플래그(--from·--dry-run)를 이 디스패처가 가로채면 안 되므로 forward
@@ -1609,13 +1668,13 @@ def main(argv: list[str] | None = None) -> int:
 
     # `update` 는 argparse 를 우회해 뒤 인자를 pm_update 로 *verbatim* forward 한다 —
     # `--from`·`--dry-run` 같은 option-like 플래그를 디스패처가 가로채지 않게 한다
-    # (pm_update 가 CLI 계약의 단일 진실·중복 파싱 0). `update` 가 첫 토큰일 때만.
+    # (pm_update 가 CLI 규격의 단일 진실·중복 파싱 0). `update` 가 첫 토큰일 때만.
     if raw and raw[0] == "update":
         return cmd_update(raw[1:])
 
     # `init` 도 동형 — 뒤 인자를 board.py init 으로 *verbatim* forward 한다.
     # `--prefix`·`--area`·`--owner`·`--session` 같은 option-like 플래그를 디스패처가
-    # 가로채지 않게 한다(board.py init 이 CLI 계약의 단일 진실·중복 파싱 0). `init` 이
+    # 가로채지 않게 한다(board.py init 이 CLI 규격의 단일 진실·중복 파싱 0). `init` 이
     # 첫 토큰일 때만.
     if raw and raw[0] == "init":
         return cmd_init(raw[1:])

@@ -349,7 +349,7 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
     **git_runner 1회 생성해 공유** — 영향 페이지마다 새로 만들지 않고 한 runner 를
     page_stale 에 넘긴다(reviewer suggestion·subprocess 셋업 중복 회피). page_stale 은
     그 자체로 fail-soft(예외/git 부재→None)지만, stale 산출 단계 전체를 한 번 더 try 로
-    감싸 어떤 예외도 무표시(None)로 흡수한다 — 비차단·graceful 계약 불변.
+    감싸 어떤 예외도 무표시(None)로 흡수한다 — 비차단·graceful 동작 불변.
     """
     domain = _load_domain_module()
     if domain is None:

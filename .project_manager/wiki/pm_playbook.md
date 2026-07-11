@@ -7,7 +7,7 @@ type: reference
 
 # PM Playbook — 활동별 레퍼런스
 
-> [`pm_role.md`](pm_role.md)(매 부트스트랩에 항상 로드하는 운영 계약·안전 경계)에서 분리한
+> [`pm_role.md`](pm_role.md)(매 부트스트랩에 항상 로드하는 운영 규칙·안전 경계)에서 분리한
 > **활동별 상세 레퍼런스**. 부트스트랩 시 통째로 읽지 않는다 — 해당 활동(위임 / wave 운영 /
 > ticket 발행·분할 / 핸드오프)을 실제로 할 때 그 절만 Read 한다.
 >
@@ -36,7 +36,7 @@ type: reference
 ### 디렉토리 의미
 [`README.md`](README.md) "디렉토리 의미" 절이 단일 정의처 — 여기서 복제하지 않는다.
 
-### 참조 규약 (파일명-무관 — 모든 LLM PM)
+### 참조 규칙 (파일명-무관 — 모든 LLM PM)
 - ADR·ticket·idea 참조는 **항상 ID-wikilink**: `[[ADR-NNNN]]` · `[[T-NNNN]]`(`[[T-PFX-NNN]]`) · `[[idea-NNNN]]`.
 - **생파일명·슬러그·markdown 경로 링크 금지** — ✅ `[[ADR-0006]]` / ❌ `[adr](decisions/0006-opencode-adapter.md)` ·
   ❌ `[[0006-opencode-adapter]]`. 엔진이 **번호로 resolve**(슬러그 무관)하므로 슬러그 정확성은
@@ -327,7 +327,7 @@ upstream(프레임워크 reference)의 엔진 개선을 이 인스턴스로 당�
 /pm-bootstrap
 ```
 
-> **인계 본문은 log entry 가 carry:** 직전 PM 이 채운 lean handoff entry(읽기 범위·메타 학습·다음
+> **인계 본문은 log entry 가 이월:** 직전 PM 이 채운 lean handoff entry(읽기 범위·메타 학습·다음
 > intent·회귀/incident)를 `/pm-bootstrap` 이 dump 한다 — 이 프롬프트에 손으로 옮겨 적지 않는다.
 > *대화 thread-tail*(ctx-trigger 경로 어댑터 자동 초안)은 새 세션이 그 entry 슬롯에서 검토·편집한다.
 

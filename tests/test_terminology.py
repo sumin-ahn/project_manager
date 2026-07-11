@@ -101,3 +101,60 @@ def test_no_retired_umbrella_term_english_in_live_surface():
     assert not offenders, (
         f"폐기 용어 '{_RETIRED_TERM_EN}' 잔존 — ADR-0016 후 multi-PM 으로 (historical 제외): {offenders}"
     )
+
+
+# ── T-0268: 'carry' 폐기 용어 가드 (deferred/전달 → 후속·이월) ────────────────
+# 규율(메모리 [[avoid-carry-term]]): 'carry'(영어 동사 "log entry 가 …"·절 명칭 "장기 …")를
+# 쓰지 않고 '후속/이월' 로 쓴다. '우산'(위)과 달리 gray-zone 이 없다(safety-guarantee 아님) —
+# canonical live source 에 무조건 0. 검색 리터럴은 분할("car"+"ry") — 위 `"우"+"산"` 동류(_SELF
+# 제외와 이중 방어).
+_CARRY_TERM = "car" + "ry"
+
+# 스코프 = canonical **live** 엔진/방법론 source 만.
+#  · templates/**(tools·wiki 사본): pm_update 가 canonical 에서 byte-동기(canonical-clean ⟹
+#    templates-clean·pm_update --dry-run drift-0 게이트가 전파 강제)라 제외 — 안 그러면 canonical
+#    편집과 전파 사이에 false-red. 어댑터 카드(.claude/.opencode)도 별도 편집 표면이라 그쪽
+#    정리+전파 후 PM 이 편입(T-0268 follow-up).
+#  · wiki 는 **live methodology 파일만** 본다. log/·tickets/(done·claimed·open·blocked)·
+#    raw/spikes/(sealed)·ideas/·specs/·decisions/ 는 ADR-0010 immutable 기록/작업항목이라 흔한
+#    영어 동사가 자연히 등장해도 고칠 수 없다 → 형제 _live_files 가 historical 을 안 보는 정신과
+#    동일하게 제외한다. board.md 는 파생 대시보드(git-untracked·ticket 제목 유입)라 제외. 스캐폴드
+#    (_template.md)·domain 지식 페이지는 live methodology 라 포함.
+_CARRY_WIKI_FILES = (
+    ".project_manager/wiki/pm_role.md",
+    ".project_manager/wiki/pm_playbook.md",
+    ".project_manager/wiki/pm_state.template.md",
+    ".project_manager/wiki/README.md",
+    ".project_manager/wiki/tickets/_template.md",     # ticket 스캐폴드(빈 틀·done 본문 아님)
+    ".project_manager/wiki/raw/spikes/_template.md",  # spike 스캐폴드(sealed spike 아님)
+)
+_CARRY_WIKI_GLOBS = (
+    ".project_manager/wiki/domain/*.md",       # domain 지식 페이지 + _template
+    ".project_manager/wiki/_template/**/*.md",  # 방법론 템플릿 트리 (있으면)
+)
+
+
+def _canonical_source_files() -> list[Path]:
+    files: list[Path] = []
+    for g in (".project_manager/tools/*.py", "tests/*.py"):
+        files += [Path(p) for p in glob.glob(str(REPO / g))]
+    for g in _CARRY_WIKI_GLOBS:
+        files += [Path(p) for p in glob.glob(str(REPO / g), recursive=True)]
+    files += [REPO / rel for rel in _CARRY_WIKI_FILES]
+    return [f for f in files if f.is_file() and f.name != _SELF]
+
+
+def test_no_carry_term_in_canonical_source():
+    """canonical 엔진/방법론 source 에 폐기 용어 'carry' 0 (후속·이월로 통일·T-0268).
+
+    영어 동사 'carry'(예 'log entry 가 carry')·절 명칭('장기 carry') 모두 후속/이월 로 바꾼다.
+    '우산'과 달리 gray-zone 이 없다(safety-guarantee 아님). 대소문자 무관.
+    """
+    offenders = []
+    for f in _canonical_source_files():
+        for lineno, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if _CARRY_TERM in line.lower():
+                offenders.append(f"{f.relative_to(REPO).as_posix()}:{lineno}")
+    assert not offenders, (
+        f"폐기 용어 '{_CARRY_TERM}' 잔존 — '후속/이월' 로 정정하라 (T-0268): {offenders}"
+    )

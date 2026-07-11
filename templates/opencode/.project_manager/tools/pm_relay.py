@@ -130,7 +130,7 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None]:
     """`opencode run --format json` 출력에서 (session_id, reply) 추출.
 
     claude `parse_stream_json` 과 **대칭** 위치의 opencode 어댑터용 순수 헬퍼 —
-    하니스가 다른 한 줄=한 이벤트 JSON 스트림을 같은 (sid, reply) 계약으로 흡수한다.
+    하니스가 다른 한 줄=한 이벤트 JSON 스트림을 같은 (sid, reply) 규격으로 흡수한다.
     opencode driver(`pm_orch_opencode.py`)가 DI 로 주입받아 쓴다(엔진은 파싱만 보유).
 
     - session_id: 모든 이벤트 top-level `sessionID`(실측 — 매 이벤트에 실린다). 첫 등장값

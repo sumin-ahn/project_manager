@@ -11,6 +11,7 @@ rem         <manager>\pm-config.cmd worktree add <repo>
 rem         <manager>\pm-config.cmd status ^| whoami
 rem         <manager>\pm-config.cmd release <slot> [--force]
 rem         <manager>\pm-config.cmd update [--from <upstream>]
+rem         <manager>\pm-config.cmd add-harness <harness> [--dry-run]
 setlocal
 
 rem Interpreter preference python -> py -> python3 (matches _detect_py Windows order).

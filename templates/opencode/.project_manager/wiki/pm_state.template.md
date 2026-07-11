@@ -20,7 +20,7 @@ type: handoff-state
 > ⚠️ `/pm-handoff` skill (backbone `pm_handoff.py`) 가 이 표를 sliding window 로
 > 자동 정리한다. 표 형식·앵커 (`## 세션 식별 (현재까지 사용된 이름)`) 를
 > 바꾸면 backbone CLI 의 정규식도 같이 바꿔야 한다.
-> 역할 네이밍 규칙(`pm` / 구현 세션 / orchestrator)은 [`pm_role.md`](pm_role.md) §"세션 식별 규칙" 참조.
+> 역할 네이밍 규칙(PM 세션 / 구현 세션 / orchestrator)은 [`pm_role.md`](pm_role.md) §"세션 식별 규칙" 참조.
 
 최근 N 차 (sliding window, 기본 3 차):
 <!-- /pm-handoff 가 자동 갱신 — 형식: "  - **N차** (YYYY-MM-DD · <wave_summary>): ..." -->

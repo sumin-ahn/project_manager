@@ -2662,3 +2662,227 @@ def test_opencode_tickets_readme_no_claude_specific_session_env(pm_import):
     # claude 원본의 'CLAUDE_SESSION_NAME 환경변수\n1.' 단독 우선 형태가 그대로 남아있지 않아야 한다.
     assert "1. `CLAUDE_SESSION_NAME` 환경변수" not in oc_readme, \
         "claude-특화 세션 env 안내가 그대로 잔존 — opencode 적응 누락."
+
+
+# ── add_harness — 라이브 인스턴스 harness 추가(어댑터 네임스페이스 스코프) · ADR-0048 (T-0269) ──
+# scoped add-harness core: 라이브 인스턴스에 두 번째 harness 어댑터를 비파괴로 추가. 복사 스코프를
+# *추가 harness 의 어댑터 네임스페이스*로 제한해 raw 재-import 의 wiki/엔진 clobber 를 구조적으로 차단.
+
+# 어댑터 네임스페이스 판정(구현 predicate 와 독립·불변식을 진짜로 재는 참조 규칙).
+#   opencode = `.opencode/**` + `AGENTS.md`  ·  claude = `.claude/**`(@render agents·skills 제외) + `CLAUDE.md`.
+_ADD_HARNESS_NS = {
+    "opencode": (".opencode", "AGENTS.md", ()),
+    "claude": (".claude", "CLAUDE.md", (".claude/agents/", ".claude/skills/")),
+}
+
+
+def _build_live_instance(pm_import, dest: Path, harness: str) -> Path:
+    """`--new` 로 라이브 인스턴스 트리를 만든다(board init 포함). add_harness 대상."""
+    rc = pm_import.main(["--new", str(dest), "--harness", harness, "--name", "Live Inst"])
+    assert rc == 0, f"라이브 인스턴스 셋업 실패(rc={rc}·harness={harness})."
+    return dest
+
+
+def _plan_relpaths(plan, dest: Path) -> list[str]:
+    return sorted(a.dst.resolve().relative_to(dest.resolve()).as_posix() for a in plan)
+
+
+def _rel_in_namespace(rel: str, added_harness: str) -> bool:
+    """rel 이 *추가되는 harness* 의 어댑터 네임스페이스 안인가(참조 규칙·구현과 독립)."""
+    adapter_dir, root_doc, render_excl = _ADD_HARNESS_NS[added_harness]
+    in_ns = rel == root_doc or rel.startswith(adapter_dir + "/")
+    if not in_ns:
+        return False
+    return not any(rel.startswith(x) for x in render_excl)
+
+
+def test_add_harness_exposed(pm_import):
+    assert callable(pm_import.add_harness)
+    assert pm_import.ADD_HARNESS_ADAPTER["opencode"] == (".opencode", "AGENTS.md")
+    assert pm_import.ADD_HARNESS_ADAPTER["claude"] == (".claude", "CLAUDE.md")
+
+
+def test_add_harness_dry_run_opencode_scope(pm_import, tmp_path):
+    """claude 인스턴스에 opencode add(dry-run): plan 은 `.opencode/**`+`AGENTS.md` 만·파일 미변경."""
+    dest = _build_live_instance(pm_import, tmp_path / "claude_inst", "claude")
+    plan = pm_import.add_harness(dest, "opencode", dry_run=True, source_root=REPO)
+    rels = _plan_relpaths(plan, dest)
+    assert rels, "plan 이 비어 있다 — opencode 어댑터 신규 집합이 잡혀야 한다."
+    # 어댑터 신규 산출물이 실제로 포함(스코프가 맞는 트리를 잡았다는 sanity).
+    assert "AGENTS.md" in rels
+    assert ".opencode/agents/pm.md" in rels
+    # 전부 opencode 네임스페이스 안.
+    assert all(_rel_in_namespace(r, "opencode") for r in rels), rels
+    # dry-run = 파일시스템 미변경(.opencode 미생성).
+    assert not (dest / ".opencode").exists(), "dry-run 이 .opencode 를 생성했다(파일 변경)."
+    assert not (dest / "AGENTS.md").exists(), "dry-run 이 AGENTS.md 를 생성했다(파일 변경)."
+
+
+@pytest.mark.parametrize("base,added", [("claude", "opencode"), ("opencode", "claude")])
+def test_add_harness_invariant_zero_outside_namespace(pm_import, tmp_path, base, added):
+    """불변식 가드(ADR-0048 Decision 5): plan 이 어댑터 네임스페이스 밖 relpath 를 0개 포함.
+
+    양 harness — claude 인스턴스에 opencode 추가 / opencode 인스턴스에 claude 추가 모두 검증한다.
+    """
+    dest = _build_live_instance(pm_import, tmp_path / f"{base}_inst", base)
+    plan = pm_import.add_harness(dest, added, dry_run=True, source_root=REPO)
+    rels = _plan_relpaths(plan, dest)
+    assert rels, f"plan 이 비어 있다(base={base}·added={added})."
+    outside = [r for r in rels if not _rel_in_namespace(r, added)]
+    assert outside == [], (
+        f"add_harness({added}) plan 에 어댑터 네임스페이스 밖 relpath 포함(불변식 위반): {outside}"
+    )
+
+
+@pytest.mark.parametrize("base,added,other_dir,other_doc", [
+    ("claude", "opencode", ".claude/", "CLAUDE.md"),
+    ("opencode", "claude", ".opencode/", "AGENTS.md"),
+])
+def test_add_harness_live_safe_excludes_wiki_engine_facades(
+    pm_import, tmp_path, base, added, other_dir, other_doc,
+):
+    """라이브-안전 회귀: 기존 wiki/엔진/타 harness/설정/파사드 경로가 plan 에 절대 없다.
+
+    raw 재-import 가 덮던 것들(`.project_manager/**` wiki dev-state·엔진·engine.manifest·
+    .gitignore·.github·루트 파사드·다른 harness 어댑터)이 plan 에서 구조적으로 배제됨을 단언한다.
+    """
+    dest = _build_live_instance(pm_import, tmp_path / f"{base}_ls", base)
+    plan = pm_import.add_harness(dest, added, dry_run=True, source_root=REPO)
+    rels = _plan_relpaths(plan, dest)
+
+    # 엔진 + wiki dev-state (라이브 파괴 원천) — 0개.
+    assert not [r for r in rels if r.startswith(".project_manager/")], \
+        f"plan 에 .project_manager/** (엔진+wiki) 포함: {[r for r in rels if r.startswith('.project_manager/')]}"
+    # 공유 설정 / CI / 파사드 — 0개.
+    forbidden_exact = {".gitignore", ".gitattributes", ".project_manager/engine.manifest",
+                       "pm-config.sh", "pm-config.cmd", "pm-update.sh", "pm-update.cmd", "README.md"}
+    assert not (set(rels) & forbidden_exact), f"plan 에 공유 설정/파사드 포함: {set(rels) & forbidden_exact}"
+    assert not [r for r in rels if r.startswith(".github/")], "plan 에 .github/** 포함(공유 CI)."
+    # 다른(기존) harness 어댑터 — 0개.
+    assert not [r for r in rels if r.startswith(other_dir)], \
+        f"plan 에 타 harness 어댑터({other_dir}) 포함: {[r for r in rels if r.startswith(other_dir)]}"
+    assert other_doc not in rels, f"plan 에 타 harness root doc({other_doc}) 포함."
+
+
+def test_add_harness_claude_excludes_render_engine_resources(pm_import, tmp_path):
+    """claude add 는 @render 엔진 리소스(`.claude/agents`·`.claude/skills`)를 제외한다(대칭 정확성).
+
+    ADR-0048 Decision 2·§6 Q3: opencode 는 @render 없어 `.opencode/**` 단순이나, claude add 는
+    `.claude/agents`·`.claude/skills`(엔진 소유·pm_update 소관)를 오적재하면 안 된다. 반면 target-owned
+    어댑터 파일(`.claude/settings.json` 등)과 `CLAUDE.md` 는 포함해야 한다.
+    """
+    dest = _build_live_instance(pm_import, tmp_path / "oc_inst", "opencode")
+    plan = pm_import.add_harness(dest, "claude", dry_run=True, source_root=REPO)
+    rels = _plan_relpaths(plan, dest)
+    # @render 엔진 리소스는 제외.
+    assert not [r for r in rels if r.startswith(".claude/agents/")], \
+        f"claude add plan 에 @render `.claude/agents/**` 오적재: {[r for r in rels if r.startswith('.claude/agents/')]}"
+    assert not [r for r in rels if r.startswith(".claude/skills/")], \
+        f"claude add plan 에 @render `.claude/skills/**` 오적재: {[r for r in rels if r.startswith('.claude/skills/')]}"
+    # target-owned 어댑터 파일 + root doc 은 포함(스코프가 claude 어댑터를 실제로 잡았다는 sanity).
+    assert "CLAUDE.md" in rels
+    assert ".claude/settings.json" in rels
+    # 전부 claude 네임스페이스 안(불변식 재확인).
+    assert all(_rel_in_namespace(r, "claude") for r in rels), rels
+
+
+def test_add_harness_apply_opencode_creates_adapter_and_preserves_devstate(pm_import, tmp_path):
+    """apply(opencode→claude 인스턴스): `.opencode/**`+`AGENTS.md` 신규·wiki/엔진/타 harness 불변."""
+    dest = _build_live_instance(pm_import, tmp_path / "claude_apply", "claude")
+    # 라이브 dev-state·타 harness 파일의 apply 전 바이트 스냅샷.
+    wiki_role = dest / ".project_manager" / "wiki" / "pm_role.md"
+    engine_board = dest / ".project_manager" / "tools" / "board.py"
+    claude_doc = dest / "CLAUDE.md"
+    before = {p: p.read_bytes() for p in (wiki_role, engine_board, claude_doc)}
+
+    plan = pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    assert plan, "apply plan 이 비어 있다."
+
+    # 어댑터 파일이 실제로 생성됐다.
+    assert (dest / "AGENTS.md").is_file()
+    assert (dest / ".opencode" / "agents" / "pm.md").is_file()
+    # operational 토큰이 치환됐다(어댑터 산출물에 raw 토큰 잔존 0).
+    assert _grep_token_files(dest / ".opencode", "{{PROJECT_NAME}}") == [], \
+        "apply 후 .opencode 에 {{PROJECT_NAME}} 미치환 잔존."
+    assert _grep_token_files(dest / ".opencode", "{{OPENCODE_PRO_MODEL}}") == [], \
+        "apply 후 .opencode 에 {{OPENCODE_PRO_MODEL}} 미해소 잔존(TODO 중화 실패)."
+    # 인스턴스 project_name(Live Inst)이 어댑터에 반영됐다.
+    assert "Live Inst" in (dest / "AGENTS.md").read_text(encoding="utf-8")
+
+    # 라이브 dev-state·엔진·타 harness root doc 은 바이트 단위 불변(라이브-안전).
+    for p, raw in before.items():
+        assert p.read_bytes() == raw, f"add-harness 가 스코프 밖 파일을 변경했다: {p}"
+
+
+def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_import, tmp_path):
+    """apply(claude→opencode 인스턴스·반대 방향): `.claude/**`(agents·skills 제외)+`CLAUDE.md`
+    신규·기존 opencode 어댑터/wiki/엔진 불변. (DoD "양 harness apply" 문자 충족.)
+    """
+    dest = _build_live_instance(pm_import, tmp_path / "opencode_apply", "opencode")
+    # 라이브 dev-state·엔진·타(기존) harness 파일의 apply 전 바이트 스냅샷.
+    wiki_role = dest / ".project_manager" / "wiki" / "pm_role.md"
+    engine_board = dest / ".project_manager" / "tools" / "board.py"
+    opencode_doc = dest / "AGENTS.md"
+    opencode_agent = dest / ".opencode" / "agents" / "pm.md"
+    before = {p: p.read_bytes() for p in (wiki_role, engine_board, opencode_doc, opencode_agent)}
+
+    plan = pm_import.add_harness(dest, "claude", dry_run=False, source_root=REPO)
+    assert plan, "apply plan 이 비어 있다."
+
+    # claude 어댑터 파일이 실제로 생성됐다(root doc + target-owned 어댑터 파일).
+    assert (dest / "CLAUDE.md").is_file()
+    assert (dest / ".claude" / "settings.json").is_file()
+    # @render 엔진 리소스(agents·skills)는 add-harness 가 깔지 않는다(pm_update 소관).
+    assert not (dest / ".claude" / "agents").exists(), \
+        "claude add-harness 가 @render 엔진 리소스 .claude/agents 를 오적재."
+    assert not (dest / ".claude" / "skills").exists(), \
+        "claude add-harness 가 @render 엔진 리소스 .claude/skills 를 오적재."
+    # operational 토큰이 치환됐다(claude 어댑터 산출물에 raw 토큰 잔존 0).
+    assert _grep_token_files(dest / ".claude", "{{PROJECT_NAME}}", exclude_engine_docs=True) == [], \
+        "apply 후 .claude 에 {{PROJECT_NAME}} 미치환 잔존."
+    assert "{{PROJECT_NAME}}" not in (dest / "CLAUDE.md").read_text(encoding="utf-8"), \
+        "apply 후 CLAUDE.md 에 {{PROJECT_NAME}} 미치환 잔존."
+    # 인스턴스 project_name(Live Inst)이 어댑터에 반영됐다.
+    assert "Live Inst" in (dest / "CLAUDE.md").read_text(encoding="utf-8")
+
+    # 라이브 dev-state·엔진·기존 opencode 어댑터(root doc+agent)는 바이트 단위 불변(라이브-안전).
+    for p, raw in before.items():
+        assert p.read_bytes() == raw, f"add-harness 가 스코프 밖 파일을 변경했다: {p}"
+
+
+def test_add_harness_apply_refresh_backs_up_and_stays_scoped(pm_import, tmp_path):
+    """재실행(refresh): 네임스페이스 안 기존 어댑터는 백업 후 덮되, 스코프 밖은 여전히 불변."""
+    dest = _build_live_instance(pm_import, tmp_path / "refresh_inst", "claude")
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    wiki_role = dest / ".project_manager" / "wiki" / "pm_role.md"
+    role_before = wiki_role.read_bytes()
+
+    # 로컬 어댑터 커스터마이즈 후 refresh — 백업 경로로 보존돼야 한다.
+    agents_pm = dest / ".opencode" / "agents" / "pm.md"
+    agents_pm.write_text("LOCAL CUSTOMIZE\n", encoding="utf-8")
+
+    plan2 = pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    rels2 = _plan_relpaths(plan2, dest)
+    # refresh 도 스코프 불변(네임스페이스 밖 0).
+    assert all(_rel_in_namespace(r, "opencode") for r in rels2), rels2
+    # 중앙 백업 디렉토리가 생기고 커스터마이즈가 그 안에 보존됐다.
+    backups = list((dest / ".pm_import_backups").rglob("agents/pm.md"))
+    assert backups, "refresh 가 기존 어댑터를 백업하지 않았다(.pm_import_backups)."
+    assert any("LOCAL CUSTOMIZE" in b.read_text(encoding="utf-8") for b in backups), \
+        "refresh 백업에 로컬 커스터마이즈 내용이 보존되지 않았다."
+    # 스코프 밖 wiki 는 여전히 불변.
+    assert wiki_role.read_bytes() == role_before, "refresh 가 wiki dev-state 를 건드렸다."
+
+
+def test_add_harness_rejects_both_and_unknown(pm_import, tmp_path):
+    dest = _build_live_instance(pm_import, tmp_path / "reject_inst", "claude")
+    with pytest.raises(ValueError):
+        pm_import.add_harness(dest, "both", dry_run=True, source_root=REPO)
+    with pytest.raises(ValueError):
+        pm_import.add_harness(dest, "bogus", dry_run=True, source_root=REPO)
+
+
+def test_add_harness_rejects_missing_dest(pm_import, tmp_path):
+    with pytest.raises(FileNotFoundError):
+        pm_import.add_harness(tmp_path / "does_not_exist", "opencode",
+                              dry_run=True, source_root=REPO)

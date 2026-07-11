@@ -373,7 +373,7 @@ def test_build_handoff_prompt_output_no_handfill_block(hf):
         wave_summary="요약",
         date_str="2026-06-28",
     )
-    # 손-채움 인계 블록과 그 안내 헤더 둘 다 사라졌다 (본문은 log entry/부트스트랩이 carry).
+    # 손-채움 인계 블록과 그 안내 헤더 둘 다 사라졌다 (본문은 log entry/부트스트랩이 이월).
     assert "<핵심 인계 사항>" not in out
     assert "채워 넣을 것" not in out
 

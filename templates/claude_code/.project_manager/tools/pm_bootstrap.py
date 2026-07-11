@@ -100,7 +100,7 @@ def _load_worktree_pool():
     """worktree_pool 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
 
     REPO/tools 경로 기준 `spec_from_file_location` — board.py·pm_*.py 와 같은
-    스크립트-위치 앵커 규약. 솔로(multi-PM 미사용)에선 호출 안 되거나 None 이어도
+    스크립트-위치 앵커 관례. 솔로(multi-PM 미사용)에선 호출 안 되거나 None 이어도
     무인자 경로가 이 모듈을 안 쓰므로 무해. --repo 경로만 None 을 명시 에러로 처리.
     """
     import importlib.util
@@ -258,7 +258,7 @@ def _auto_slot(
     아님·실패는 현행 솔로로 폴백). `areas_file` 미지정(None)이면 `_registered_repos` 가
     `_areas_file()`(board_root 추종·T-0162 A6)로 해소한다.
 
-    **순수 resolver·반환 계약 불변(`(repo,N)` | None)** — 모든 incidental 호출부(`_worktree_cwd`·
+    **순수 resolver·반환 규격 불변(`(repo,N)` | None)** — 모든 incidental 호출부(`_worktree_cwd`·
     `_pm_state_display_path`·handoff `_regression_cwd`)가 이 fail-soft None 폴백에 기댄다.
     session-entry 의 guarded default-1 + fail-loud 규칙은 별도 `_resolve_session_slot` 가 처리한다.
     """
@@ -728,7 +728,7 @@ def infer_session_num(pm_state_text: str) -> int | str | None:
     **단일 진실 = `pm_handoff.infer_next_session_num`**(세션 식별 절 최고차+1)을 동적 로드해
     재사용한다(복붙 금지·DRY·T-0124 역방향). pm_handoff 부재/로드 실패면 None(소프트
     placeholder) — handoff 의 `infer_next_session_num` 은 entry 부재 시 `"?"`(placeholder)를
-    돌려주므로 이 함수도 그 계약을 그대로 전달한다(정수 N / `"?"` / None).
+    돌려주므로 이 함수도 그 규격을 그대로 전달한다(정수 N / `"?"` / None).
     """
     pm_handoff = _load_tool("pm_handoff")
     if pm_handoff is None:
@@ -882,7 +882,7 @@ def reconcile_session_num(
 ) -> tuple[int | str | None, bool]:
     """pm_state-derived 차수와 log-derived *다음* 차수(N+1)를 교차검증한다 (T-0208).
 
-    반환 `(final, stale)` — final 은 int / `"?"` / None(현행 계약 보존), stale 은 pm_state 가
+    반환 `(final, stale)` — final 은 int / `"?"` / None(현행 동작 보존), stale 은 pm_state 가
     log 보다 뒤처졌을 때만 True(머신 간 미동기 경고 신호).
 
     규칙(spike·티켓 인터페이스):
@@ -917,7 +917,7 @@ def extract_remaining_work_section(pm_state_text: str) -> str | None:
 
     T-0179 — 인계 컨텍스트 dump 의 일부. 앵커(`## 남은 작업 전체 그림`)부터 다음 `## ` 헤더
     직전(또는 파일 끝)까지를 한 절로 surface 한다 — 그 안의 `### 🔴 다음 세션 — 사용자 발의`·
-    `### 🟡 DEFER`·`### 🔵 장기 carry` 하위 절을 통째로 담는다(다음 세션이 "무엇부터" 를
+    `### 🟡 DEFER`·`### 🔵 장기 이월` 하위 절을 통째로 담는다(다음 세션이 "무엇부터" 를
     바로 보게). pm_handoff `_extract_session_section` 과 동형(앵커 → 다음 동급 헤더)이되
     *읽기 전용 surface* 라 위치 offset 은 불필요해 텍스트만 반환한다.
 
@@ -1499,9 +1499,9 @@ class PmBootstrap:
             return None
         log_text = self._log_file.read_text(encoding="utf-8")
         bound_session = self._bound_session_name()
-        # 솔로(bound 진짜 미해소)는 슬롯 개념이 없다 — T-0179 계약대로 **마지막 entry(모든 타입)**를
+        # 솔로(bound 진짜 미해소)는 슬롯 개념이 없다 — T-0179 규칙대로 **마지막 entry(모든 타입)**를
         # 그대로 dump 한다(handoff·complete·decide 무관). handoff-우선 필터를 태우면 최신 complete
-        # ("wave 진행 중" 신호)를 과거 handoff 로 가려 현행 표시가 깨진다(codex R2·타입 무관 계약 보존).
+        # ("wave 진행 중" 신호)를 과거 handoff 로 가려 현행 표시가 깨진다(codex R2·타입 무관 동작 보존).
         if bound_session is None:
             entry = parse_log_last_entry(log_text)
             if entry is None:
