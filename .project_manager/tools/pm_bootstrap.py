@@ -2464,6 +2464,17 @@ class PmBootstrap:
         숨은 전제 4대장(claim=promote 선행·prefix rename/merge=홈 git clean·livegate record=
         release-marked pin·migrate-identity=단일세션) + reid=홈 git clean 을 해당 커맨드 줄 바로
         아래 1줄 ⚠ 경고로 인접 배치한다(ADR-0045 Decision 2 — 별도 절 금지·인접성이 학습 보장).
+
+        wave 운영(claim·regression·finish·qa·dev 위임·handoff·엔진 갱신)은 **스킬(`/pm-…`) 진입을
+        primary** 로 올리고 감싸는 backbone 은 강등한다(ADR-0052 Decision 2 — boundary=래핑 스킬
+        유무). 강등 줄은 pm_role skill 카탈로그의 "감싸는 내부 엔진" 열과 정확히 일치시킨다(카드=
+        pm_role 표기·ADR-0045). **엔진이 CLI(`python3 tools/*.py` — board.py/ticket_finish.py/
+        pm_handoff.py)일 때만** "직접 금지" 강등 줄로 그리고, 엔진이 Agent 툴(`/pm-dev-delegate`)·
+        facade 셸(`/pm-update`=pm-update.sh)이면 python3 줄을 지어내지 않고 skill-only + 평문 note
+        로 둔다. external_review 는 래핑 스킬 없는 별도 codex 게이트라 강등이 아니라 직접-CLI 예외
+        (`board.py complete` 직접완료 경로·new/promote 도 동일). 강등 = 제거 아님: CLI backbone
+        줄은 정체성 보간·⚠ 인접·argparse 정합 가드를 위해 남긴다. 규칙·why 는 재설명하지 않고
+        (ADR-0045 비중복) 카드 상단 1줄 pointer 로 pm_role 규율 절을 가리킨다.
         """
         session = identity.get("session") if identity else None
         # 정체성 인자 — lean 이면 ` --session <session>`, 솔로면 빈 문자열(현행 형태·ADR-0045).
@@ -2473,6 +2484,24 @@ class PmBootstrap:
             """`python3 .project_manager/tools/<name> <args>` (+ ` # 주석`) 한 줄 렌더."""
             line = f"{_CARD_TOOL_INVOKE}/{name} {args}".rstrip()
             return f"{line}  # {comment}" if comment else line
+
+        def skill(invocation: str, comment: str = "") -> str:
+            """`/pm-…` 스킬 진입 줄(wave 운영 primary·ADR-0052).
+
+            `python3` 로 시작하지 않으므로 카드↔CLI argparse 정합 가드·정체성 `--session`
+            검사(불변식 3)의 대상이 아니다 — backbone 은 아래 `engine()` 줄로 종속화한다.
+            """
+            return f"{invocation}  # {comment}" if comment else invocation
+
+        def engine(name: str, args: str,
+                   note: str = "스킬이 부르는 내부 엔진·직접 금지") -> str:
+            """스킬에 종속된 backbone 줄 — 2-스페이스 들여쓰기 + '직접 금지' 주석(강등 표기).
+
+            `python3 …` 로 시작해(들여쓰기는 strip 됨) 정체성 `--session` 보간·카드↔CLI
+            argparse 정합 가드의 대상으로 남는다(불변식 1·3 무손상). 스킬 줄(`/pm-…`)만 그
+            가드 밖이다.
+            """
+            return "  " + cmd(name, args, f"↳ {note}")
 
         lines: list[str] = []
         lines.append("### 이 세션 커맨드 카드 (정체성 채움·--help 불요·단일 진실·ADR-0045)")
@@ -2494,10 +2523,14 @@ class PmBootstrap:
                 "정체성: 솔로(단일 세션) — `--session` 명시 불요(env `PM_SESSION_NAME` / "
                 "local.conf `session=` 로 자동 해소)."
             )
+        # 스킬-우선 운영 pointer — 규칙/why 는 pm_role 이 단일 진실(재설명 금지·ADR-0045 비중복·ADR-0052).
+        lines.append(
+            "> wave 운영은 스킬로 invoke·backbone 직접호출 금지 → pm_role §스킬 우선 운영 규율"
+        )
         lines.append("")
 
-        # 내 작업 보기 (ADR-0047 — 자기 공간 우선·기본 조회면·전체 보드는 열람용으로 강등).
-        lines.append("# 내 작업 보기 (ADR-0047 — 자기 공간 우선·기본 조회)")
+        # 내 작업 보기 (read-only 조회·직접 — 래핑 스킬 없음·ADR-0047 자기 공간 우선).
+        lines.append("# 내 작업 보기 (read-only 조회·직접 — ADR-0047 자기 공간 우선)")
         lines.append(cmd("board.py", "list --mine", "내 티켓(open+claim)·기본 조회면"))
         if session:
             lines.append(cmd(
@@ -2509,38 +2542,72 @@ class PmBootstrap:
         ))
         lines.append("")
 
-        # 티켓 조작 (정체성 명시·actor) — claim 은 promote 선행(4대장 ①·인접 ⚠).
-        lines.append("# 티켓 조작 (정체성 명시 — actor)")
+        # 티켓 lifecycle 직접 (직접 — 래핑 스킬 없음·ADR-0052 예외). new/promote authoring +
+        # complete 는 스킬 없는 fresh-adopter/concept(--allow-untested) 직접완료 경로(정상 wave
+        # 종료=/pm-wave-finish→ticket_finish 가 complete 를 내부 수행·중복 실행 말 것).
+        lines.append("# 티켓 lifecycle 직접 (래핑 스킬 없음·ADR-0052 예외)")
         lines.append(cmd(
             "board.py", 'new "<제목>" --prefix <PFX>', "draft 발행(본문은 board 밖에서 채움)",
         ))
         lines.append(cmd(
             "board.py", "promote T-NNNN", "draft → open(본문 채운 뒤·claim 선행조건)",
         ))
-        lines.append(cmd("board.py", f"claim T-NNNN{sess}"))
-        lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
         lines.append(cmd(
             "board.py", "complete T-NNNN --tests-pass",
-            "행위자=env 자동 해소(complete 는 --session 없음)",
+            "직접 완료 — fresh-adopter/concept(--allow-untested)·정상 wave 는 /pm-wave-finish",
         ))
         lines.append("")
 
-        # 릴리즈·회귀 — livegate record 는 release-marked pin(4대장 ③·인접 ⚠).
-        lines.append("# 릴리즈·회귀 (정체성/슬롯)")
-        lines.append(cmd("board.py", f"regression run{sess}", "회귀 측정·기록"))
+        # wave 운영 (스킬 primary — CLI 엔진(board.py/ticket_finish.py/pm_handoff.py)만 backbone
+        # 강등 줄·직접 금지). Agent 툴·facade 셸 엔진은 python3 줄을 지어내지 않고 skill-only +
+        # 평문 note. 강등 줄은 pm_role skill 카탈로그의 "감싸는 내부 엔진" 열과 정확히 일치한다
+        # (카드=pm_role 표기·ADR-0045). 숨은전제 ⚠ 는 강등 backbone claim 줄 바로 아래 인접(불변식 2).
+        lines.append(
+            "# wave 운영 (스킬로 invoke — backbone CLI 엔진은 직접 금지·ADR-0052)"
+        )
+        # /pm-wave-claim 엔진 = board.py show/lint/claim (pm_role 카탈로그 순서 — show/lint 는
+        # DoD self-containment 검증 단계·read-only·⚠ 없음, claim 이 mutating·전제 ⚠ 인접).
+        lines.append(skill("/pm-wave-claim T-NNNN", "ticket claim — DoD 자족 검증 + claim"))
+        lines.append(engine("board.py", "show T-NNNN"))
+        lines.append(engine("board.py", "lint"))
+        lines.append(engine("board.py", f"claim T-NNNN{sess}"))
+        lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
+        lines.append(skill("/pm-regression", "비차단 백그라운드 회귀 pre-warm + 완료 알림"))
+        lines.append(engine("board.py", f"regression run{sess}"))
+        lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 부기 — 회귀+log+board+stage"))
+        lines.append(engine(
+            "ticket_finish.py", "<T-NNNN>",
+            "스킬이 부르는 내부 엔진·직접 금지 — 내부서 board.py complete 수행",
+        ))
+        lines.append(skill("/pm-qa", "통합 검증 게이트 — 회귀+lint+git 단일 report"))
+        lines.append(engine("board.py", f"regression run{sess}"))
+        lines.append(engine("board.py", "lint"))
+        lines.append(skill(
+            "/pm-dev-delegate T-NNNN --role developer|code-reviewer",
+            "orchestrator 위임 표준 프롬프트(dev / reviewer)",
+        ))
+        lines.append("  ↳ 엔진=Agent 툴(위임)·직접 CLI 아님 — skill-only.")
+        # external_review = 래핑 스킬 없는 별도 codex 게이트(직접 OK 예외·reviewer 병행). 위임 직후 sibling.
+        lines.append(cmd(
+            "external_review.py", "--ticket T-NNNN --adr ADR-NNNN",
+            "codex 외부 교차검증 게이트 — 직접(래핑 스킬 없음)·reviewer 병행",
+        ))
+        lines.append(skill("/pm-handoff", "세션 종료 7단계 자동화"))
+        handoff_args = '--session-seq <N> --wave-summary "<요약>"'
+        if session:
+            handoff_args = f"--session {session} {handoff_args}"
+        lines.append(engine("pm_handoff.py", handoff_args))
+        lines.append(skill("/pm-update", "엔진 갱신 — upstream freshness·manifest reconcile"))
+        lines.append("  ↳ 엔진=pm-update.sh 파사드(freshness+reconcile)·직접 CLI 아님 — skill-only.")
+        lines.append("")
+
+        # 릴리즈 (직접 — 래핑 스킬 없음) — livegate record 는 release-marked pin(4대장 ③·인접 ⚠).
+        lines.append("# 릴리즈 (직접 — 래핑 스킬 없음)")
         lines.append(cmd("board.py", "livegate record"))
         lines.append(
             "  ⚠ record 는 `pytest -m release` 수집 pin 강제 — "
             "release-marked 0 수집이면 fail(릴리즈 차단)."
         )
-        lines.append("")
-
-        # 핸드오프 (세션 종료·정체성) — session 이 있으면 맨 앞에 --session 채움.
-        lines.append("# 핸드오프 (세션 종료·정체성)")
-        handoff_args = '--session-seq <N> --wave-summary "<요약>"'
-        if session:
-            handoff_args = f"--session {session} {handoff_args}"
-        lines.append(cmd("pm_handoff.py", handoff_args))
         lines.append("")
 
         # ID·카테고리 유지보수 (드묾·전제 주의) — prefix rename/merge·reid=홈 git clean(4대장 ②·
@@ -2567,12 +2634,11 @@ class PmBootstrap:
         )
         lines.append("")
 
-        # 정체성 불요 (cwd/conf/env 로 자동 해소·명시 인자 없음·ADR-0045 Decision 3) — 예시형.
-        lines.append("# 정체성 불요 (cwd/conf/env 자동 해소 — 명시 인자 없음)")
-        lines.append(cmd("ticket_finish.py", "<T-NNNN>"))
-        lines.append(cmd("external_review.py", "..."))
+        # 정체성 불요 조회 (read-only·직접·cwd/conf/env 자동 해소·ADR-0045 Decision 3) — 래핑
+        # 스킬 없는 read-only op 만. ticket_finish/external_review/pm_update 는 위 wave 운영서
+        # 각 스킬의 강등 backbone 으로 이미 표기(ADR-0052).
+        lines.append("# 정체성 불요 (read-only 조회·직접 — cwd/conf/env 자동 해소)")
         lines.append(cmd("pm_log.py", "tail"))
-        lines.append(cmd("pm_update.py", "--dry-run"))
         lines.append(cmd("domain.py", "affected --ticket <T-NNNN>"))
         lines.append("")
 

@@ -153,12 +153,16 @@ def test_card_reid_precondition_adjacent(bootstrap):
 
 
 def test_card_identity_free_section(bootstrap):
-    """"정체성 불요" 절에 cwd/conf/env 자동해소 커맨드 5종이 명시된다."""
+    """정체성-free CLI 도구가 카드에 명시된다(--session 불요·ADR-0045 §Decision 3).
+
+    "정체성 불요" 절(pm_log·domain 조회) + wave 절의 정체성-free CLI 엔진(ticket_finish·
+    external_review)이 노출된다. pm_update.py 는 facade(/pm-update) 뒤로 감춰져 raw CLI 로
+    노출하지 않는다(ADR-0052·must-fix #4 — facade 우회 금지)."""
     card = _card(bootstrap, LEAN_IDENTITY)
     assert "정체성 불요" in card
-    for tool in ("ticket_finish.py", "external_review.py", "pm_log.py",
-                 "pm_update.py", "domain.py"):
-        assert tool in card, f"정체성 불요 절에 {tool} 누락"
+    for tool in ("ticket_finish.py", "external_review.py", "pm_log.py", "domain.py"):
+        assert tool in card, f"정체성-free 도구 {tool} 누락"
+    assert "pm_update.py" not in card, "facade 우회 raw pm_update.py 가 카드에 렌더됨"
 
 
 # ── 4. 자기 것 보기 가이드 — --mine 우선·전체 보드 강등 (ADR-0047·메모) ────────
@@ -449,3 +453,196 @@ def test_run_json_mode_omits_card(bootstrap, tmp_path, capsys):
     inst.run(repo="X", slot=2, output_json=True)
     out = capsys.readouterr().out
     assert "이 세션 커맨드 카드" not in out
+
+
+# ── 10. 스킬-우선 재구성 — wave op 스킬 primary·backbone 강등 (T-0280 · ADR-0052) ──
+
+# 정체성 헤더 직후에 오는 스킬-우선 운영 pointer(규칙/why 는 pm_role — 이유 재설명 없음).
+_SKILL_POINTER = "> wave 운영은 스킬로 invoke·backbone 직접호출 금지 → pm_role §스킬 우선 운영 규율"
+
+# wave op → (스킬 진입 needle, 스킬-고유 강등 CLI 엔진 needle) — 스킬이 강등 엔진 줄보다 먼저/primary.
+# needle 은 해당 스킬 아래에서 *처음* 등장하는 CLI 엔진(카탈로그 sub-op 중복 없는 것)이어야 한다.
+# /pm-qa(엔진 regression/lint 가 /pm-wave-claim·/pm-regression 과 중복)는 전용 block-scope 테스트로
+# 검증(아래 test_card_qa_demotes_regression_and_lint). /pm-dev-delegate(Agent 툴)·/pm-update(facade
+# 셸)는 CLI 강등 줄이 없어 여기서 제외.
+_SKILL_FIRST_OPS = [
+    ("/pm-wave-claim T-NNNN", "board.py claim T-NNNN"),
+    ("/pm-regression", "board.py regression run"),
+    ("/pm-wave-finish T-NNNN", "ticket_finish.py <T-NNNN>"),
+    ("/pm-handoff", "pm_handoff.py"),
+]
+
+
+@pytest.mark.parametrize("identity", [LEAN_IDENTITY, None])
+def test_card_skill_first_pointer_after_identity_header(bootstrap, identity):
+    """카드 상단(정체성 헤더 직후·첫 섹션 앞)에 pm_role 스킬 우선 규율 pointer 1줄 — lean/솔로 양분기.
+
+    규칙·why 는 재설명하지 않고(ADR-0045 비중복) pm_role 규율 절을 가리키는 1줄 pointer 만 둔다.
+    """
+    card = _card(bootstrap, identity)
+    assert _SKILL_POINTER in card
+    pointer_i = _line_index(card, "pm_role §스킬 우선 운영 규율")
+    first_section_i = _line_index(card, "# 내 작업 보기")
+    assert pointer_i < first_section_i, "pointer 가 첫 섹션보다 뒤에 옴(정체성 헤더 직후 아님)"
+    # pointer 는 정확히 1줄(이유 산문 미포함·ADR-0045 비중복).
+    assert card.count(_SKILL_POINTER) == 1
+
+
+@pytest.mark.parametrize("identity", [LEAN_IDENTITY, None])
+def test_card_wave_op_skill_precedes_backbone(bootstrap, identity):
+    """스킬 있는 wave op(claim·regression·finish·위임·handoff·update)은 `/pm-…` 진입이 강등된
+    backbone 줄보다 먼저/primary(lean·솔로 양분기·ADR-0052 Decision 2)."""
+    card = _card(bootstrap, identity)
+    for skill_needle, backbone_needle in _SKILL_FIRST_OPS:
+        skill_i = _line_index(card, skill_needle)
+        backbone_i = _line_index(card, backbone_needle)
+        assert skill_i < backbone_i, (
+            f"{skill_needle!r} 스킬 줄이 backbone {backbone_needle!r} 뒤에 옴(강등 실패)"
+        )
+
+
+def test_card_skilled_ops_render_all_seven_skill_entries(bootstrap):
+    """매핑 표의 스킬 진입 7종(qa 포함)이 모두 카드에 렌더된다(스킬 누락 0)."""
+    card = _card(bootstrap, LEAN_IDENTITY)
+    for skill_entry in ("/pm-wave-claim", "/pm-regression", "/pm-wave-finish",
+                        "/pm-qa", "/pm-dev-delegate", "/pm-handoff", "/pm-update"):
+        assert skill_entry in card, f"스킬 진입 {skill_entry!r} 누락"
+
+
+def test_card_skill_lines_excluded_from_argparse_guard(bootstrap, board_mod, handoff_mod):
+    """불변식 3: `/pm-…` 스킬 줄은 카드↔CLI argparse 정합 가드의 파싱 대상이 아니다.
+
+    가드(`_iter_card_cli_commands`)는 backbone `python3 …/board.py|pm_handoff.py` 줄만 추출한다 —
+    스킬 줄이 그 가드에 파싱돼 SystemExit 로 깨지지 않는다. 강등 backbone 줄은 여전히 추출·parse
+    대상으로 남아(불변식 3·가드 non-vacuous) 카드↔CLI 정합을 계속 못박는다.
+    """
+    card = _card(bootstrap, LEAN_IDENTITY)
+    # 카드에 스킬 진입 줄이 실제로 있다(비공허 — 가드 우회가 아니라 실제 배치).
+    skill_lines = [ln for ln in card.splitlines() if ln.strip().startswith("/pm-")]
+    assert len(skill_lines) >= 7, f"스킬 진입 줄이 너무 적음({len(skill_lines)})"
+    # 가드 추출물은 board.py/pm_handoff.py 뿐이고 어떤 스킬 토큰(`pm-…`)도 섞이지 않는다.
+    commands = list(_iter_card_cli_commands(card))
+    for tool, tokens in commands:
+        assert tool in ("board.py", "pm_handoff.py")
+        assert not any("pm-" in tok for tok in tokens), f"스킬 줄이 가드에 유입: {tool} {tokens}"
+    # 강등 backbone 은 여전히 전건 parse (스킬 줄 제외해도 가드 공허 아님).
+    assert len(commands) >= 12, f"강등 후 backbone 추출이 너무 적음({len(commands)})"
+    parsers = {"board.py": board_mod.build_parser(), "pm_handoff.py": handoff_mod.build_parser()}
+    for tool, tokens in commands:
+        try:
+            parsers[tool].parse_args(tokens)
+        except SystemExit as exc:
+            pytest.fail(f"강등 backbone 이 {tool} CLI parse 실패: {tokens} (exit={exc.code})")
+
+
+def test_card_demoted_backbone_keeps_identity_interpolation(bootstrap):
+    """불변식 1: 강등된 backbone 줄도 정체성 `--session <session>` 실값 보간 유지(lean),
+    솔로는 `--session` 없는 분기 유지(강등이 정체성 보간을 깨지 않음)."""
+    lean = _card(bootstrap, LEAN_IDENTITY)
+    assert "board.py claim T-NNNN --session project_manager_1" in lean
+    assert "board.py regression run --session project_manager_1" in lean
+    assert "pm_handoff.py --session project_manager_1 --session-seq <N>" in lean
+    assert "--session <" not in lean, "강등 backbone 에 정체성 placeholder 잔존"
+    solo = _card(bootstrap, None)
+    # 솔로 실행 줄(강등 backbone 포함)엔 정체성 --session 이 붙지 않는다.
+    for line in _command_lines(solo):
+        assert not _has_session_flag(line), f"솔로 강등 backbone 에 --session: {line!r}"
+    assert "board.py claim T-NNNN" in solo and "board.py regression run" in solo
+
+
+def test_card_wave_claim_warning_stays_adjacent_after_demotion(bootstrap):
+    """불변식 2: 강등 후에도 claim 숨은전제 ⚠(promote 선행)이 강등 backbone claim 줄 바로 아래 인접."""
+    for identity in (LEAN_IDENTITY, None):
+        card = _card(bootstrap, identity)
+        lines = card.splitlines()
+        claim_i = _line_index(card, "board.py claim T-NNNN")
+        assert "⚠" in lines[claim_i + 1] and "promote" in lines[claim_i + 1]
+
+
+# ── 11. 엔진 귀속 교정 — pm_role 카탈로그 정합 (T-0280 codex must-fix 1~4) ─────────
+
+
+def test_card_finish_demotes_only_ticket_finish(bootstrap):
+    """must-fix #2: /pm-wave-finish 의 강등 CLI 엔진은 `ticket_finish.py` 하나뿐.
+
+    ticket_finish 가 내부서 complete 를 수행하므로 별도 `board.py complete` 강등 줄을 finish
+    아래 두면 수동 double-complete 를 유도한다 → finish 블록엔 complete 강등 줄이 없다. complete
+    직접줄은 fresh-adopter/concept 경로로 wave 절 *앞*(lifecycle 직접)에 유지(usability 게이트)."""
+    card = _card(bootstrap, LEAN_IDENTITY)
+    lines = card.splitlines()
+    # 스킬 진입 줄 자체로 앵커한다(complete 직접줄 주석의 "/pm-wave-finish" 언급과 충돌 회피).
+    finish_i = _line_index(card, "/pm-wave-finish T-NNNN")
+    qa_i = _line_index(card, "/pm-qa")
+    finish_block = lines[finish_i:qa_i]
+    assert any("ticket_finish.py" in ln for ln in finish_block)
+    # 커맨드 *부분*(주석 `#` 앞)에 board.py complete 가 없어야 한다 — ticket_finish 강등 줄의
+    # "내부서 board.py complete 수행" 설명 주석은 실행 줄이 아니라 무관.
+    finish_cmd_parts = [ln.split("#", 1)[0] for ln in finish_block]
+    assert not any("board.py complete" in part for part in finish_cmd_parts), \
+        "board.py complete 가 /pm-wave-finish 강등 엔진 커맨드로 남음(double-complete 유도)"
+    # complete 직접줄은 finish 스킬보다 앞(강등처럼 보이지 않게·lifecycle 직접 경로).
+    assert _line_index(card, "board.py complete") < finish_i
+
+
+def test_card_wave_claim_block_has_show_lint_claim(bootstrap):
+    """codex must-fix: /pm-wave-claim 강등 엔진 = board.py show/lint/claim 전부(카탈로그 순서
+    show→lint→claim). show/lint 는 DoD self-containment 검증 단계(read-only·⚠ 없음), claim 은
+    mutating·전제 ⚠ 인접. lean/솔로 양분기."""
+    for identity in (LEAN_IDENTITY, None):
+        card = _card(bootstrap, identity)
+        lines = card.splitlines()
+        claim_skill_i = _line_index(card, "/pm-wave-claim T-NNNN")
+        reg_skill_i = _line_index(card, "/pm-regression")
+        block = lines[claim_skill_i:reg_skill_i]
+        # 셋 다 강등 엔진 줄로 존재.
+        assert any("board.py show T-NNNN" in ln for ln in block), "claim 블록에 show 누락"
+        assert any("board.py lint" in ln for ln in block), "claim 블록에 lint 누락"
+        assert any("board.py claim T-NNNN" in ln for ln in block), "claim 블록에 claim 누락"
+        # 카탈로그 순서 show → lint → claim.
+        show_i = _line_index(card, "board.py show T-NNNN")
+        lint_i = next(i for i, ln in enumerate(lines) if "board.py lint" in ln)  # 첫 lint=claim 블록
+        claim_i = _line_index(card, "board.py claim T-NNNN")
+        assert show_i < lint_i < claim_i, "show→lint→claim 순서 위배"
+        # ⚠ 전제는 claim 줄 바로 아래 인접(불변식 2) — show/lint 는 read-only 라 ⚠ 없음.
+        assert "⚠" in lines[claim_i + 1] and "promote" in lines[claim_i + 1]
+        assert "⚠" not in lines[show_i + 1] and "⚠" not in lines[lint_i + 1]
+
+
+def test_card_qa_demotes_regression_and_lint(bootstrap):
+    """must-fix #3: /pm-qa 도 skill primary + 강등 엔진 패턴 — 엔진=board.py regression/lint."""
+    card = _card(bootstrap, LEAN_IDENTITY)
+    lines = card.splitlines()
+    qa_i = _line_index(card, "/pm-qa")
+    delegate_i = _line_index(card, "/pm-dev-delegate")
+    qa_block = lines[qa_i:delegate_i]
+    assert any("board.py regression run" in ln for ln in qa_block), "qa 강등 엔진에 regression 누락"
+    assert any("board.py lint" in ln for ln in qa_block), "qa 강등 엔진에 lint 누락"
+
+
+def test_card_external_review_is_direct_sibling_gate(bootstrap):
+    """must-fix #1: external_review 는 /pm-dev-delegate 의 강등 엔진이 아니라 직후 sibling
+    직접-CLI 게이트(래핑 스킬 없음·직접 OK 예외). dev-delegate 엔진은 Agent 툴(python3 줄 없음)."""
+    card = _card(bootstrap, LEAN_IDENTITY)
+    lines = card.splitlines()
+    delegate_i = _line_index(card, "/pm-dev-delegate")
+    review_i = _line_index(card, "external_review.py")
+    assert delegate_i < review_i, "external_review 가 dev-delegate 앞(직후 sibling 아님)"
+    # '직접 금지' 강등 프레이밍이 아니라 '직접(래핑 스킬 없음)' 게이트로 표기.
+    review_line = lines[review_i]
+    assert "직접" in review_line and "직접 금지" not in review_line
+    # dev-delegate 바로 아래는 Agent 툴 평문 note(python3 CLI 강등 줄이 아님).
+    delegate_note = lines[delegate_i + 1]
+    assert "Agent" in delegate_note and not delegate_note.strip().startswith("python3")
+
+
+def test_card_facade_engines_are_skill_only(bootstrap):
+    """must-fix #4 + 일반원칙: facade(pm-update.sh) 엔진은 raw pm_update.py python3 줄로 안 그린다 —
+    skill-only + 평문 note. raw pm_update.py 는 카드에 없다(facade 우회 금지)."""
+    card = _card(bootstrap, LEAN_IDENTITY)
+    assert "/pm-update" in card
+    assert "pm_update.py" not in card, "facade 우회 raw pm_update.py 가 카드에 렌더됨"
+    assert "pm-update.sh 파사드" in card
+    # /pm-update 바로 아래는 평문 facade note(python3 CLI 강등 줄이 아님).
+    lines = card.splitlines()
+    update_i = _line_index(card, "/pm-update")
+    assert not lines[update_i + 1].strip().startswith("python3")

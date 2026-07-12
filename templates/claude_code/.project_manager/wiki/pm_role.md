@@ -79,6 +79,23 @@ type: handoff
 | 전체 보드 (모든 세션) | `board.py list` — 타 PM 열람용·평시 불요 |
 | 방법론·규율·커맨드 표기 | 이 문서(pm_role) + 부트스트랩 커맨드 카드(커맨드 표기 단일 진실·ADR-0045) |
 
+## 스킬 우선 운영 규율 (backbone 직접호출 금지)
+
+PM wave 운영(claim·finish·qa·dev-delegate·handoff·regression)은 **스킬/command 로 invoke** 한다
+(claude=Skill 툴·opencode=command). backbone CLI 는 그 스킬이 감싸는 **내부 엔진** — PM 이 직접
+호출하지 않는다. 이유: 스킬 md 는 CLI 가 강제 못 하는 load-bearing 판단(읽기범위·메타학습·
+금지-재열거·우선순위·DoD 자족성 등)을 유발하며, backbone 을 직접 실행하면 그 판단이 통째로
+스킵된다(ADR-0052 Context).
+
+**직접 CLI 예외 = "래핑 스킬이 없는 op"**(규칙이지 임의 목록 아님): read-only 조회 · 아직
+명령어化 안 된 op(티켓 authoring `new`/`promote` · release `livegate record` · 희귀 ID/카테고리
+유지보수 `reid`/`prefix`/`migrate-identity`)는 감싸는 스킬이 없으니 직접 OK. authoring/release
+스킬이 생기면(로드맵·ADR-0049 잔여) 그때 스킬로 승격한다. **스킬이 있는 op 은 직접 금지 — 반드시
+그 스킬로.**
+
+> 커맨드 *표기*(실 인자·정체성 채움)는 여기 나열하지 않는다 — 부트스트랩 커맨드 카드가 단일
+> 진실(ADR-0045)이다. 이 절은 *규칙과 이유*만 담는다.
+
 ## skill 카탈로그 (PM workflow slash command)
 
 PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm-wave-claim`
@@ -90,7 +107,7 @@ PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm
 > 채움·숨은 전제 경고 인접)은 `/pm-bootstrap` 이 dump 하는 카드가 항상-정합 단일 진실이라 여기 표기를
 > 중복하지 않는다(정적 표는 정체성 placeholder·drift 원천이었음·ADR-0045 Context).
 
-| skill | 역할 | backbone CLI |
+| skill | 역할 | 감싸는 내부 엔진 (직접호출 금지) |
 |---|---|---|
 | `/pm-bootstrap` | 세션 시작 — board·git + **차수·log 본문·남은작업 자동 surface**(self-sufficient·ADR-0035) | `pm_bootstrap.py` |
 | `/pm-wave-claim T-NNNN` | ticket claim — DoD self-containment 검증 + claim | `board.py show/lint/claim` |
@@ -108,7 +125,7 @@ PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm
 
 환경·갱신 라이프사이클(wave 흐름 밖·facade-기반·ADR-0032):
 
-| skill | 역할 | backbone CLI |
+| skill | 역할 | 감싸는 내부 엔진 (직접호출 금지) |
 |---|---|---|
 | `/pm-env` | 환경 관리 — repo/worktree 슬롯·upstream show/switch(path↔URL) | `pm-config.sh`→`pm_config.py` |
 | `/pm-update` | 엔진 갱신 — upstream freshness 자동분기·manifest reconcile·adapter-drift 표면화 | `pm-update.sh`→`pm_update.py` |
