@@ -38,6 +38,7 @@ IDENTICAL_RELPATHS = [
     "skills/pm-handoff/SKILL.md",
     "skills/pm-dev-delegate/SKILL.md",
     "skills/pm-wave-claim/SKILL.md",
+    "skills/pm-worktree/SKILL.md",
     "agents/architect.md",
     "agents/code-reviewer.md",
     "agents/developer.md",

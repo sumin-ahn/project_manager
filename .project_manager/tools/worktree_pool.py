@@ -25,10 +25,12 @@ worktree 풀이 board 모듈에 의존하지 않게 하기 위함(import 금지�
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1518,3 +1520,249 @@ def _default_session() -> str:
     # leased ≥2 (모호) 또는 solo 무바인딩 → 국소 임시 명명 host-pid (lease 취득 전용 잔존).
     import socket
     return f"{socket.gethostname()}-{os.getpid()}"
+
+
+# ── 운영중 관리 backbone: dev/sync + CLI (ADR-0049/0051 파일럿 T-γ·T-0277) ─────────
+# worktree/submodule 운영 *중* 관리를 명령어化 하기 위한 두 backbone + argparse 진입점.
+# pm-worktree 스킬(어댑터·PM authoring)이 이 커맨드를 얇게 래핑한다 — 백본 로직은 전부 여기.
+#   - dev <sub> <branch> : 슬롯 worktree 의 submodule 을 dev 브랜치로 지정(on-branch 화) → 이후
+#       selective resync(`_resync_submodules_selective`)가 그 submodule 을 dev 로 판별해 skip
+#       (detached pin 으로 낚아채지 않음·ADR-0051 §D1 live-HEAD 모델). "내가 작업 중" 선언.
+#   - sync              : 현재 슬롯의 `_resync_submodules_selective` 를 수동 트리거(브랜치 전환
+#       없이 명시 재동기·detached=pin 재동기·on-branch=skip·dirty=skip+경고). T-0275 백본 공유.
+# 얇게 — 기존 primitive(`_resync_submodules_selective`·submodule 판별)를 재사용한다(중복 금지).
+
+
+def dev(slot: str, sub: str, branch: str, *, git_runner: GitRunner | None = None) -> tuple[int, str]:
+    """슬롯 worktree 의 submodule 을 dev 브랜치로 지정한다 — on-branch 화 (ADR-0051 §D1·T-0277).
+
+    `git -C <sub> checkout -b <branch>`(신규 생성)로 submodule 을 on-branch 로 만든다. 브랜치가
+    이미 있으면 `-b` 가 rc≠0 이므로 `git -C <sub> checkout <branch>`(전환)로 폴백한다(`_checkout`
+    의 create-or-switch 정신과 정합·단 submodule 컨텍스트). 결과적으로 그 submodule 의 live git
+    HEAD 가 symbolic ref(on-branch)가 되어, 이후 `_resync_submodules_selective`(T-0275)가 그
+    submodule 을 **dev 역할로 판별해 skip** 한다(detached pin 으로 낚아채지 않음·ADR-0051 크럭스 A)
+    — 즉 "이 submodule 은 내가 작업 중이니 pin 재동기로 건드리지 마" 선언(무스키마·역할은 별도
+    장부 없이 submodule HEAD 로 정함·ADR-0051 §Decision 1).
+
+    **`sub` 슬롯-경계 검증(codex must-fix·T-0277)**: `dev` 는 실 git side-effect(`checkout`)를
+    caller-공급 경로에 낸다. 이 도구는 LLM-구동 pm-internal 이라 `sub` 가 자연어에서 구성된다
+    (hallucination/오타) — 절대경로(`/etc/...`)·`..` traversal·목록 밖 경로를 그대로 `git -C <sub>
+    checkout` 에 넘기면 **슬롯 밖 다른 git repo 에 checkout** 을 실행해 "대상 슬롯 운영" 경계를
+    깬다. 그래서 checkout 전에 `sub` 를 그 슬롯의 실제 submodule 목록(`git submodule status` →
+    `_parse_submodule_paths`)과 **대조(allowlist)** 하고, 목록 밖이면 `SubmoduleNotInSlot` raise
+    (fail-closed — status 조회 실패/submodule 없음도 빈 목록 → 거부). allowlist 라 절대경로·
+    traversal 은 자동 거부(목록의 값은 항상 슬롯-상대 submodule 경로).
+
+    `sub` 는 **슬롯 worktree 상대 submodule 경로**(`git submodule status` 가 나열하는 경로·예
+    `vendor/sub`). runner 는 슬롯 worktree 바인딩(`_real_git_runner(slot_path(slot))`) + 다중 `-C`
+    (`["-C", sub, ...]`)로 superproject cwd 기준 submodule 에 재진입한다(`_submodule_dirty`·
+    `_resync_submodules_selective` 와 동형 배선). `(rc, out)` 반환 — 호출부(CLI)가 rc≠0 를 명시
+    에러로 surface 한다. `git_runner` 주입 시 그 runner(테스트 mock·DI seam 보존).
+    """
+    runner = git_runner or _real_git_runner(slot_path(slot))
+    # 슬롯 경계 검증(must-fix 1) — sub 를 슬롯 실제 submodule 목록과 대조(allowlist·fail-closed).
+    rc_st, out_st = runner(["submodule", "status"])
+    known = _parse_submodule_paths(out_st) if rc_st == 0 else []
+    if sub not in known:
+        raise SubmoduleNotInSlot(slot, sub, known)
+    rc, out = runner(["-C", sub, "checkout", "-b", branch])
+    if rc != 0:
+        # `-b` 실패 원인 판별(codex bundle) — 브랜치가 *이미 존재*할 때만 전환 폴백한다. 그 외
+        # (충돌/lock/잘못된 브랜치명)의 `-b` 실패까지 폴백하면 진단이 흐려지므로, `show-ref
+        # --verify --quiet refs/heads/<branch>` rc0(존재)일 때만 plain `checkout <branch>` 로
+        # 전환하고, 미존재(rc≠0)면 원 `-b` 실패(rc/out)를 그대로 전파한다(원인 명확).
+        rc_ref, _out_ref = runner(
+            ["-C", sub, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"]
+        )
+        if rc_ref == 0:
+            rc, out = runner(["-C", sub, "checkout", branch])
+    return rc, out
+
+
+def sync(slot: str, *, git_runner: GitRunner | None = None) -> None:
+    """현재 슬롯의 submodule 을 superproject pin 에 selective 재동기(수동 트리거) — (ADR-0051·T-0277).
+
+    T-0275 의 `_resync_submodules_selective` 를 **브랜치 전환 없이** 수동으로 부른다 — 브랜치를
+    바꾸지 않고 명시적으로 submodule 상태를 pin 에 맞추고 싶을 때의 진입(부트스트랩/checkout 경로
+    밖). 판별·거동은 전부 그 backbone 이 소유한다(중복 구현 금지·얇은 트리거):
+      - detached(consume) & clean → `git submodule update --init --recursive --force -- <sub>` 로 pin 재동기.
+      - on-branch(dev) → skip(dev 작업 보호·크럭스 A).
+      - detached & dirty → skip + 경고(미커밋 작업 유실 방지).
+      - submodule 없는 슬롯 → no-op.
+    fail-soft(raise 금지·경고는 stderr) — `_resync_submodules_selective` 계약 상속. `git_runner`
+    주입 시 그 runner(테스트 mock·DI seam), 미주입이면 슬롯 worktree 바인딩 실 runner.
+    """
+    _resync_submodules_selective(slot_path(slot), git_runner=git_runner)
+
+
+class SlotResolutionError(RuntimeError):
+    """CLI dev/sync 의 현재-슬롯 자동해소 실패 — 매칭 leased 슬롯 0개/≥2(모호) 또는 슬롯 형식 오류.
+
+    메시지는 세션명 + 후보 슬롯(또는 형식 위반) + `--slot` 안내를 담는다(호출부 main 이 그대로
+    stderr surface). (`RuntimeError` 서브클래스 — CLI main 이 `except SlotResolutionError` 로 rc 1.)
+    """
+
+
+class SubmoduleNotInSlot(ValueError):
+    """dev 대상 submodule 이 슬롯의 실제 submodule 목록에 없다 — 슬롯 경계 밖 checkout 차단 (must-fix·T-0277).
+
+    LLM-구동 pm-internal 도구가 실 checkout side-effect 를 caller-공급 경로에 내므로, 목록 밖
+    경로(절대경로·`..` traversal·오타)를 fail-closed 로 거부한다. `known` = 검증에 쓴 슬롯의
+    실제 submodule 경로 목록(진단용·CLI main 이 메시지에 surface).
+    """
+
+    def __init__(self, slot: str, sub: str, known: "list[str]"):
+        self.slot = slot
+        self.sub = sub
+        self.known = known
+        super().__init__(
+            f"submodule {sub!r} 이 슬롯 {slot} 의 submodule 목록에 없다 "
+            f"(등록: {known if known else '(없음/조회 실패)'}) — 슬롯 밖 경로·오타 거부(경계 보호)."
+        )
+
+
+# 슬롯 식별자 형식 — `work/<repo>_<N>`(<repo>=선두 alnum 슬러그·<N>=숫자). 앵커 + `/` 불허라
+# `slot_path` 결합이 슬롯 루트를 벗어날 수 없다(traversal·빈값·`work/` 단독 거부·must-fix 2).
+_SLOT_ID_RE = re.compile(r"^work/[A-Za-z0-9][A-Za-z0-9_.-]*_\d+$")
+
+
+def _normalize_slot(slot_arg: str) -> str:
+    """`--slot` 값을 슬롯 식별자 정규형(`work/<repo>_<N>`)으로 정규화 + 형식 검증 (must-fix 2·T-0277).
+
+    스킬/사용자가 `work/A_1`(정규형) 또는 `A_1`(접두 생략) 어느 쪽으로 줘도 받는다 —
+    `slot_path`/장부의 슬롯 식별자 관례(`work/<repo>_<N>`·`_slot_for`)와 정합. **`slot_path` 로
+    `REPO / slot` 결합하기 전에** `_SLOT_ID_RE` 로 형식을 검증한다 — caller-공급 문자열이라
+    `../x`·`work/../x`·빈값·`work/` 단독 같은 traversal/부적격 값이 슬롯 루트 밖을 가리키면
+    `SlotResolutionError` 로 중단한다(side-effect 를 슬롯 경계 안에 가둠).
+    """
+    s = slot_arg.strip()
+    slot = s if s.startswith("work/") else f"work/{s}"
+    if not _SLOT_ID_RE.match(slot):
+        raise SlotResolutionError(
+            f"슬롯 식별자 {slot_arg!r} 형식 오류 — `work/<repo>_<N>`(또는 접두 생략 `<repo>_<N>`) "
+            "형식만 허용한다(traversal·빈값·`work/` 단독·경로구분자 거부·슬롯 경계 보호)."
+        )
+    return slot
+
+
+def _slot_from_cwd() -> str | None:
+    """cwd 가 `<WORK_DIR>/<repo>_<N>[/...]` 안이면 그 슬롯 식별자(`work/<repo>_<N>`), 아니면 None.
+
+    슬롯 worktree(또는 그 하위 submodule) cwd 에서 커맨드를 부르면 정체성 인자 없이도 그 슬롯을
+    타깃하게 한다(pm_bootstrap `_worktree_cwd`/`_auto_slot` 의 cwd-유입 정신과 정합). WORK_DIR 밖
+    (예: multi-PM 루트)이면 None(→ session 해소로 폴백). 경로 해석 실패는 None(fail-soft).
+    """
+    try:
+        rel = Path(os.getcwd()).resolve().relative_to(WORK_DIR.resolve())
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    return f"work/{parts[0]}" if parts else None
+
+
+def _resolve_current_slot(slot_arg: str | None) -> str:
+    """dev/sync 의 대상 슬롯을 해소한다 — `--slot` > cwd > 세션 leased (T-0277).
+
+    우선순위(ticket: `--slot <name>` 인자 또는 cwd/local.conf/env):
+      1. `--slot <name>` 명시 → `_normalize_slot`(스킬이 정체성 명시 전달·권장 경로).
+      2. cwd 가 슬롯 worktree 안이면 그 슬롯(`_slot_from_cwd`).
+      3. 세션(`_default_session`·env/local.conf 유입)이 보유한 leased 슬롯 — 정확히 1개면 그것.
+
+    3에서 매칭 leased 슬롯이 0개(무바인딩)이거나 ≥2(모호)면 `SlotResolutionError` raise — CLI
+    main 이 rc 1 + `--slot` 안내로 surface 한다(침묵 오타깃 금지). `list_leases`(flock read)·
+    `_default_session`(board.session_name 동형)을 재사용한다(기존 관례).
+
+    **형식 검증(must-fix 2·T-0277)**: `--slot` 명시는 `_normalize_slot` 이, 그 외 유입도 반환 전
+    `_SLOT_ID_RE`(`_normalize_slot` 재적용)로 최종 슬롯이 `work/<repo>_<N>` 형식임을 강제한다 —
+    어느 source(--slot/cwd/session)든 부적격/traversal 값이 `slot_path` 결합으로 슬롯 경계를
+    벗어나지 못하게 하는 단일 불변식. `--slot` 은 **빈 문자열도 명시로 취급**(`is not None`)해
+    형식 검증에 태운다(빈값 거부).
+    """
+    if slot_arg is not None:
+        return _normalize_slot(slot_arg)  # 명시(빈값 포함) → 정규화 + 형식 검증.
+    cwd_slot = _slot_from_cwd()
+    if cwd_slot:
+        return _normalize_slot(cwd_slot)  # cwd 유입도 최종 형식 검증(단일 불변식).
+    sess = _default_session()
+    mine = [l for l in list_leases() if l.state == "leased" and l.session == sess]
+    if len(mine) == 1:
+        return _normalize_slot(mine[0].slot)  # 장부 유입도 최종 형식 검증(단일 불변식).
+    if not mine:
+        raise SlotResolutionError(
+            f"세션 {sess!r} 의 leased 슬롯이 없다 — `--slot work/<repo>_<N>` 으로 대상 슬롯을 명시하라."
+        )
+    raise SlotResolutionError(
+        f"세션 {sess!r} 의 leased 슬롯이 {len(mine)}개"
+        f"({', '.join(l.slot for l in mine)}) — `--slot` 으로 어느 슬롯인지 명시하라."
+    )
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    """argparse 진입점 — pm-worktree 스킬이 래핑할 `dev`/`sync` 커맨드 (ADR-0049 파일럿 T-γ·T-0277).
+
+    라이브러리 모듈에 얇은 CLI 를 얹는다(`if __name__ == "__main__"` 가드로 import 안전 — 다른
+    도구의 `spec_from_file_location` import 를 안 깬다). 스킬이
+    `python3 .project_manager/tools/worktree_pool.py dev <sub> <branch> [--slot ...]` /
+    `... worktree_pool.py sync [--slot ...]` 로 부른다. CLI 는 **실경로 wiring**(git_runner 미주입)
+    이고, 함수 레벨 DI seam(`dev`/`sync`/`_resync_submodules_selective` 의 git_runner)은 테스트가
+    쓴다. 사람이 읽는 stdout(무엇을 했는지)·skip/경고 사유는 backbone 이 stderr·실패는 rc 1 + 메시지.
+    """
+    parser = argparse.ArgumentParser(
+        prog="worktree_pool.py",
+        description="worktree/submodule 운영중 관리 backbone (dev/sync·ADR-0049/0051 파일럿 T-γ).",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    p_dev = subparsers.add_parser(
+        "dev", help="submodule 을 dev 브랜치로 지정(on-branch 화 → selective resync 가 skip).")
+    p_dev.add_argument("submodule", help="슬롯 worktree 상대 submodule 경로(예 vendor/sub).")
+    p_dev.add_argument("branch", help="지정할 dev 브랜치명(없으면 생성·있으면 전환).")
+    p_dev.add_argument(
+        "--slot", default=None,
+        help="대상 슬롯 work/<repo>_<N> (미지정=cwd/세션 자동해소).")
+
+    p_sync = subparsers.add_parser(
+        "sync", help="현재 슬롯 submodule 을 pin 에 selective 재동기(수동 트리거).")
+    p_sync.add_argument(
+        "--slot", default=None,
+        help="대상 슬롯 work/<repo>_<N> (미지정=cwd/세션 자동해소).")
+
+    args = parser.parse_args(argv)
+
+    try:
+        slot = _resolve_current_slot(args.slot)
+    except SlotResolutionError as exc:
+        print(f"[중단] 대상 슬롯 해소 실패 — {exc}", file=sys.stderr)
+        return 1
+
+    if args.command == "dev":
+        try:
+            rc, out = dev(slot, args.submodule, args.branch)
+        except SubmoduleNotInSlot as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
+        if rc != 0:
+            print(
+                f"[중단] 슬롯 {slot} · submodule {args.submodule!r} 을 dev 브랜치 "
+                f"{args.branch!r} 로 지정 실패 (rc={rc}): {str(out).strip()[:200]}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"✓ 슬롯 {slot} · submodule {args.submodule} → dev 브랜치 {args.branch!r} "
+            "(on-branch·이후 selective resync 가 이 submodule 을 skip)."
+        )
+        return 0
+
+    # args.command == "sync"
+    print(
+        f"# 슬롯 {slot} submodule selective 재동기 "
+        "(detached=pin 재동기·on-branch=skip·dirty=skip+경고)"
+    )
+    sync(slot)
+    print(f"✓ 슬롯 {slot} 재동기 완료 (skip/경고 사유는 위 stderr 참조).")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

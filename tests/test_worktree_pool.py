@@ -364,10 +364,18 @@ class _SubmoduleGit:
     sub 재진입). `status_rc≠0` 이면 `submodule status` 조회 실패(fail-soft no-op 검증용).
     """
 
-    def __init__(self, subs=None, *, head="feat", status_rc=0):
+    def __init__(self, subs=None, *, head="feat", status_rc=0, existing_branches=(),
+                 checkout_b_hard_fail=False):
         self.subs = dict(subs or {})
         self.head = head
         self.status_rc = status_rc
+        # `dev` 의 `checkout -b <branch>` 폴백(이미 존재하는 브랜치) 검증용 — 이 집합에 든
+        # 브랜치명은 실 git 처럼 `-b` rc≠0(already exists) + `show-ref refs/heads/<b>` rc0(존재)
+        # → dev 가 plain `checkout <b>` 로 전환 폴백. 목록 밖은 show-ref rc≠0(미존재).
+        self.existing_branches = set(existing_branches)
+        # `-b` 가 *기존 브랜치와 무관*하게 실패(충돌/lock 등)하는 경우 모델 — 미존재 브랜치의
+        # `-b` 실패는 show-ref rc≠0 라 dev 가 폴백하지 않고 원 rc≠0 를 전파해야(폴백 정밀화 검증).
+        self.checkout_b_hard_fail = checkout_b_hard_fail
         self.calls: list[list] = []
 
     def __call__(self, argv: list) -> tuple[int, str]:
@@ -394,6 +402,23 @@ class _SubmoduleGit:
                 return (0, "refs/heads/x\n") if role == "branch" else (1, "")
             if rest[:2] == ["status", "--porcelain"]:
                 return (0, " M f\n") if dirty else (0, "")
+            if rest[:3] == ["show-ref", "--verify", "--quiet"]:
+                # dev 폴백 정밀화 — `refs/heads/<b>` 존재 판정(존재=rc0·미존재=rc≠0).
+                ref = rest[3] if len(rest) > 3 else ""
+                br = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+                return (0, "") if br in self.existing_branches else (1, "")
+            if rest[:1] == ["checkout"]:
+                # `dev` — submodule 을 on-branch(dev)로. `-b <b>` 실패 모델: b 가 이미 존재하면
+                # rc≠0(already exists·→ dev 가 show-ref 확인 후 plain checkout 폴백), 또는
+                # checkout_b_hard_fail 이면 무관하게 rc≠0(충돌/lock·→ 폴백 안 함). 성공 시 role 을
+                # "branch"로 뒤집어 이후 selective resync 가 dev 로 판별·skip 하게 한다(실 git 모델).
+                if rest[:2] == ["checkout", "-b"] and len(rest) > 2:
+                    if rest[2] in self.existing_branches:
+                        return (128, f"fatal: a branch named '{rest[2]}' already exists\n")
+                    if self.checkout_b_hard_fail:
+                        return (1, "fatal: unable to create branch (index lock)\n")
+                self.subs[sub] = ("branch", dirty)
+                return (0, "")
         return (0, "")
 
     def did(self, *prefix) -> bool:
@@ -479,6 +504,262 @@ def test_checkout_required_failure_skips_resync(wp):
         wp._checkout_required("work/A_1", "feat", git_runner=git)
     assert not any(c[:1] == ["submodule"] for c in git.calls), \
         "checkout 실패인데 재동기(submodule status/update)를 시도함"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 운영중 관리 backbone: dev / sync (ADR-0049/0051 파일럿 T-γ·T-0277)
+# ════════════════════════════════════════════════════════════════════════
+# dev: submodule 을 on-branch(dev)로 만들어 이후 selective resync 가 skip 하게 한다("작업 중"
+# 선언). sync: `_resync_submodules_selective` 수동 트리거(브랜치 전환 없이 명시 재동기).
+
+
+def test_dev_makes_submodule_on_branch(wp):
+    """dev 가 submodule 을 dev 브랜치로 지정(`-C <sub> checkout -b <branch>`) — on-branch 화."""
+    git = _SubmoduleGit({"vendor/sub": ("detached", False)})
+    rc, _out = wp.dev("work/A_1", "vendor/sub", "feat-x", git_runner=git)
+    assert rc == 0
+    assert git.did("-C", "vendor/sub", "checkout", "-b", "feat-x")
+    # submodule 이 on-branch(dev)가 됐다 — 역할이 detached → branch 로 전이(실 git 모델).
+    assert git.subs["vendor/sub"][0] == "branch"
+
+
+def test_dev_then_selective_resync_skips_it(wp):
+    """비공허 통합 — dev 로 on-branch 화한 submodule 을 이후 selective resync 가 skip(dev 보호).
+
+    dev 가 detached 를 on-branch 로 뒤집으므로, 곧이은 `_resync_submodules_selective` 는 그
+    submodule 을 dev 역할로 판별해 재동기하지 않는다. dev 의 on-branch 화가 안 먹으면(role 미전이)
+    submodule 이 detached 로 남아 재동기 목록에 섞여 이 단언이 red(비공허).
+    """
+    git = _SubmoduleGit({"vendor/sub": ("detached", False)})
+    wp.dev("work/A_1", "vendor/sub", "feat-x", git_runner=git)
+    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    assert git.resynced() == [], "dev 지정한 submodule 이 selective resync 에 낚아채임(dev 파괴)"
+
+
+def test_dev_existing_branch_falls_back_to_plain_checkout(wp):
+    """dev — `-b <branch>` 가 rc≠0(이미 존재)이고 show-ref 로 존재 확인되면 `checkout <branch>` 폴백."""
+    git = _SubmoduleGit({"vendor/sub": ("detached", False)}, existing_branches={"dev-old"})
+    rc, _out = wp.dev("work/A_1", "vendor/sub", "dev-old", git_runner=git)
+    assert rc == 0
+    assert git.did("-C", "vendor/sub", "checkout", "-b", "dev-old"), "먼저 -b 를 시도해야"
+    assert git.did("-C", "vendor/sub", "show-ref", "--verify", "--quiet", "refs/heads/dev-old"), \
+        "폴백 전 show-ref 로 브랜치 존재를 확인해야(폴백 정밀화)"
+    assert git.did("-C", "vendor/sub", "checkout", "dev-old"), "-b 실패 후 plain checkout 폴백 안 됨"
+    assert git.subs["vendor/sub"][0] == "branch"
+
+
+def test_dev_checkout_b_hard_failure_propagates_without_fallback(wp):
+    """dev — 브랜치 미존재인데 `-b` 가 실패(충돌/lock)하면 원 rc≠0 전파·plain checkout 폴백 안 함.
+
+    codex bundle(폴백 정밀화·비공허) — show-ref rc≠0(미존재)이므로 폴백하면 안 된다. `-b` 실패를
+    무조건 "기존 브랜치"로 간주해 폴백하던 옛 로직이면 checkout 이 한 번 더 불려 red.
+    """
+    git = _SubmoduleGit({"vendor/sub": ("detached", False)}, checkout_b_hard_fail=True)
+    rc, out = wp.dev("work/A_1", "vendor/sub", "newbranch", git_runner=git)
+    assert rc != 0, "미존재 브랜치의 -b 실패는 그대로 전파해야(진단 흐림 방지)"
+    assert "lock" in out
+    assert not git.did("-C", "vendor/sub", "checkout", "newbranch"), \
+        "미존재(show-ref rc≠0)인데 plain checkout 폴백을 실행함"
+    assert git.subs["vendor/sub"][0] == "detached", "실패인데 on-branch(dev)로 전이됨"
+
+
+def test_dev_rejects_submodule_outside_slot(wp):
+    """dev — sub 가 슬롯 submodule 목록 밖(절대경로·traversal·오타)이면 거부·checkout 미실행 (must-fix 1).
+
+    비공허: 목록 대조(allowlist)를 없애면 슬롯 밖 경로에 `-C <sub> checkout` 이 실행돼 이 단언들이
+    red. 정상 submodule(vendor/sub)은 통과(대조군).
+    """
+    git = _SubmoduleGit({"vendor/sub": ("detached", False)})
+    for bad in ("/etc/evil", "../other-repo", "vendor/unknown"):
+        with pytest.raises(wp.SubmoduleNotInSlot):
+            wp.dev("work/A_1", bad, "feat", git_runner=git)
+    # 거부 케이스는 그 경로에 checkout side-effect 를 내지 않았다(경계 보호·비공허).
+    assert not any(c[:2] == ["-C", "/etc/evil"] for c in git.calls)
+    assert not any(c[:2] == ["-C", "../other-repo"] for c in git.calls)
+    assert not any(c[:2] == ["-C", "vendor/unknown"] for c in git.calls)
+    # 정상 submodule 은 통과(대조군) — 검증이 정상 경로를 막지 않음.
+    rc, _ = wp.dev("work/A_1", "vendor/sub", "feat", git_runner=git)
+    assert rc == 0
+    assert git.subs["vendor/sub"][0] == "branch"
+
+
+def test_dev_rejects_when_status_query_fails(wp):
+    """dev — `submodule status` rc≠0(조회 실패)면 빈 목록 → fail-closed 거부(검증 우회 금지·must-fix 1)."""
+    git = _SubmoduleGit({"vendor/sub": ("detached", False)}, status_rc=1)
+    with pytest.raises(wp.SubmoduleNotInSlot):
+        wp.dev("work/A_1", "vendor/sub", "feat", git_runner=git)
+    assert not any(c[:1] == ["-C"] and c[2:3] == ["checkout"] for c in git.calls), \
+        "status 조회 실패인데 checkout 을 실행함(fail-open)"
+
+
+def test_sync_detached_submodule_resyncs_to_pin(wp):
+    """sync — detached(consume) clean submodule 을 pin 에 수동 재동기(브랜치 전환 없이)."""
+    git = _SubmoduleGit({"vendor/sub": ("detached", False)})
+    wp.sync("work/A_1", git_runner=git)
+    assert git.resynced() == ["vendor/sub"]
+    # 브랜치 전환(슬롯 checkout) 없이 재동기만 — sync 는 명시 트리거.
+    assert not git.did("checkout", "--no-recurse-submodules"), "sync 는 브랜치 전환을 하지 않는다"
+
+
+def test_sync_on_branch_submodule_skipped(wp):
+    """sync — on-branch(dev) submodule 은 skip(작업 보호·크럭스 A·비공허)."""
+    git = _SubmoduleGit({"vendor/sub": ("branch", False)})
+    wp.sync("work/A_1", git_runner=git)
+    assert git.resynced() == [], "on-branch(dev) submodule 은 sync 로도 재동기하면 안 됨"
+
+
+def test_sync_dirty_detached_submodule_skipped_with_warning(wp, capsys):
+    """sync — detached 이나 dirty(미커밋) submodule 은 skip + 경고(작업 유실 방지)."""
+    git = _SubmoduleGit({"vendor/sub": ("detached", True)})
+    wp.sync("work/A_1", git_runner=git)
+    assert git.resynced() == []
+    err = capsys.readouterr().err
+    assert "vendor/sub" in err and "dirty" in err
+
+
+def test_sync_delegates_to_resync_backbone(wp, monkeypatch):
+    """배선 — sync 는 `_resync_submodules_selective`(T-0275 백본)를 슬롯 경로로 위임한다(중복 구현 X)."""
+    seen = {}
+
+    def spy(slot_path_, *, git_runner=None):
+        seen["slot_path"] = slot_path_
+        seen["git_runner"] = git_runner
+
+    monkeypatch.setattr(wp, "_resync_submodules_selective", spy)
+    sentinel = FakeGit()
+    wp.sync("work/A_1", git_runner=sentinel)
+    assert seen["slot_path"] == wp.slot_path("work/A_1")
+    assert seen["git_runner"] is sentinel
+
+
+# ════════════════════════════════════════════════════════════════════════
+# CLI 진입점 — argv 파싱 + 슬롯 해소 (dev/sync·--slot·ADR-0049 T-γ·T-0277)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_resolve_current_slot_explicit_slot_normalized(wp):
+    """`--slot` 명시 — `work/` 접두 유무 무관 정규형(`work/<repo>_<N>`) 반환."""
+    assert wp._resolve_current_slot("work/A_1") == "work/A_1"
+    assert wp._resolve_current_slot("A_1") == "work/A_1"
+
+
+def test_resolve_current_slot_from_session_lease(wp, monkeypatch):
+    """`--slot` 미지정 — 세션(PM_SESSION_NAME)이 보유한 단일 leased 슬롯으로 해소."""
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
+    assert wp._resolve_current_slot(None) == "work/A_1"
+
+
+def test_resolve_current_slot_no_lease_raises(wp, monkeypatch):
+    """`--slot` 미지정·매칭 leased 슬롯 0개 → SlotResolutionError(명시 요구·비공허)."""
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    # cwd 유입 차단 — 실제 cwd 는 tmp WORK_DIR 밖이라 _slot_from_cwd None(기본).
+    with pytest.raises(wp.SlotResolutionError):
+        wp._resolve_current_slot(None)
+
+
+def test_resolve_current_slot_ambiguous_raises(wp, monkeypatch):
+    """`--slot` 미지정·세션 leased 슬롯 ≥2(모호) → SlotResolutionError(명시 요구)."""
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    _seed(
+        wp,
+        _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"),
+        _lease(wp, slot="work/A_2", repo="A", session="me", state="leased"),
+    )
+    with pytest.raises(wp.SlotResolutionError):
+        wp._resolve_current_slot(None)
+
+
+def test_resolve_current_slot_rejects_malformed_slot(wp):
+    """`--slot` 형식검증 — traversal·빈값·`work/` 단독·경로구분자는 SlotResolutionError (must-fix 2).
+
+    비공허: 형식검증(`_SLOT_ID_RE`)을 없애면 `../x`·`work/../x` 가 `slot_path` 결합으로 슬롯 루트
+    밖을 가리켜 side-effect 경계가 깨진다. 정상 `work/A_1`/`A_1` 은 통과(대조군·아래 별도 테스트).
+    """
+    for bad in ("../x", "work/../x", "work/", "", "work/x/../y", "/abs/path", "work/A_1/sub"):
+        with pytest.raises(wp.SlotResolutionError):
+            wp._resolve_current_slot(bad)
+
+
+def test_resolve_current_slot_accepts_valid_slot_forms(wp):
+    """`--slot` 정상형(정규형/접두생략/underscore repo)은 통과·정규화 (must-fix 2 대조군)."""
+    assert wp._resolve_current_slot("work/A_1") == "work/A_1"
+    assert wp._resolve_current_slot("A_1") == "work/A_1"
+    assert wp._resolve_current_slot("work/project_manager_2") == "work/project_manager_2"
+    assert wp._resolve_current_slot("project_manager_2") == "work/project_manager_2"
+
+
+def test_slot_from_cwd_derives_slot_when_inside_worktree(wp, monkeypatch):
+    """cwd 유입 — cwd 가 `<WORK_DIR>/<repo>_<N>/...` 안이면 그 슬롯, 밖이면 None."""
+    slot_dir = wp.WORK_DIR / "A_1" / "vendor" / "sub"
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(slot_dir)
+    assert wp._slot_from_cwd() == "work/A_1"
+    monkeypatch.chdir(wp.REPO)   # WORK_DIR 밖
+    assert wp._slot_from_cwd() is None
+
+
+def test_main_dev_dispatches_to_dev_backbone(wp, monkeypatch, capsys):
+    """CLI — `dev <sub> <branch> --slot ...` 가 dev 백본을 해소된 슬롯/인자로 호출하고 rc 0."""
+    seen = {}
+
+    def spy_dev(slot, sub, branch, *, git_runner=None):
+        seen.update(slot=slot, sub=sub, branch=branch)
+        return 0, ""
+
+    monkeypatch.setattr(wp, "dev", spy_dev)
+    rc = wp.main(["dev", "vendor/sub", "feat-x", "--slot", "work/A_1"])
+    assert rc == 0
+    assert seen == {"slot": "work/A_1", "sub": "vendor/sub", "branch": "feat-x"}
+    assert "vendor/sub" in capsys.readouterr().out
+
+
+def test_main_dev_failure_returns_rc1(wp, monkeypatch, capsys):
+    """CLI — dev 백본 rc≠0 이면 main 이 rc 1 + stderr 에러 surface(침묵 성공 금지·비공허)."""
+    monkeypatch.setattr(wp, "dev", lambda *a, **k: (1, "boom"))
+    rc = wp.main(["dev", "vendor/sub", "feat-x", "--slot", "work/A_1"])
+    assert rc == 1
+    assert "boom" in capsys.readouterr().err
+
+
+def test_main_sync_dispatches_to_sync_backbone(wp, monkeypatch, capsys):
+    """CLI — `sync --slot ...` 가 sync 백본을 해소된 슬롯으로 호출하고 rc 0."""
+    seen = {}
+    monkeypatch.setattr(wp, "sync", lambda slot, *, git_runner=None: seen.update(slot=slot))
+    rc = wp.main(["sync", "--slot", "work/A_1"])
+    assert rc == 0
+    assert seen == {"slot": "work/A_1"}
+    assert "work/A_1" in capsys.readouterr().out
+
+
+def test_main_sync_unresolvable_slot_returns_rc1(wp, monkeypatch, capsys):
+    """CLI — 슬롯 자동해소 실패(SlotResolutionError)면 main 이 rc 1 + 안내(오타깃 금지·비공허)."""
+    monkeypatch.setenv("PM_SESSION_NAME", "nobody")
+    monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("슬롯 미해소인데 sync 를 호출함"))
+    rc = wp.main(["sync"])   # --slot 없음·매칭 leased 0개
+    assert rc == 1
+    assert "슬롯" in capsys.readouterr().err
+
+
+def test_main_rejects_traversal_slot_returns_rc1(wp, monkeypatch):
+    """CLI — `--slot ../x`(traversal)는 sync 백본 호출 전에 rc 1 로 거부 (must-fix 2·비공허)."""
+    monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("형식 위반 슬롯인데 sync 를 호출함"))
+    rc = wp.main(["sync", "--slot", "../x"])
+    assert rc == 1
+
+
+def test_main_dev_rejects_out_of_slot_submodule_returns_rc1(wp, monkeypatch, capsys):
+    """CLI — dev 가 슬롯 밖 submodule(SubmoduleNotInSlot) 이면 rc 1 + stderr 안내 (must-fix 1)."""
+    def boom(*a, **k):
+        raise wp.SubmoduleNotInSlot("work/A_1", "/etc/evil", ["vendor/sub"])
+    monkeypatch.setattr(wp, "dev", boom)
+    rc = wp.main(["dev", "/etc/evil", "feat", "--slot", "work/A_1"])
+    assert rc == 1
+    assert "/etc/evil" in capsys.readouterr().err
+
+
+# 실 git 백스톱(dev/sync)은 `_git_required`·`_git`·`_init_repo` 헬퍼 정의 이후에 둔다(아래
+# "실 git 통합" 구역·test_real_git_dev_and_sync_selective / test_real_git_dev_existing_branch_switches).
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1401,6 +1682,96 @@ def _mk_real_bare(wp, repo: str, tmp_path: Path, *, marker: str = "FAMILY") -> P
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
     return bare
+
+
+@_git_required
+def test_real_git_dev_and_sync_selective(proj, tmp_path):
+    """실 git 백스톱 — dev 가 submodule 을 on-branch 로 만들고, sync 는 detached=재동기·dev=skip (T-0277).
+
+    실 superproject + 2 submodule(consume·dev)로: (1) dev 로 dev submodule 을 브랜치화 →
+    on-branch 확인, (2) consume submodule 을 pin 과 어긋난 detached 로 만든 뒤 sync → consume 은
+    pin 으로 재동기되고 dev(on-branch)는 그대로(skip)임을 검증한다. mock 이 못 잡는 다중 `-C`
+    배선·실 `symbolic-ref`/`submodule update` 거동을 백스톱한다.
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+
+    # 두 submodule origin(각 2커밋 — pin 을 뒤로 되돌려 detached drift 를 만들 수 있게).
+    def _mk_sub_origin(name):
+        o = _init_repo(tmp_path / f"{name}-origin")
+        (o / "v.txt").write_text("v1\n", encoding="utf-8")
+        _git(o, "add", "v.txt"); _git(o, "commit", "-q", "-m", "v1")
+        c1 = _git(o, "rev-parse", "HEAD").stdout.strip()
+        (o / "v.txt").write_text("v2\n", encoding="utf-8")
+        _git(o, "add", "v.txt"); _git(o, "commit", "-q", "-m", "v2")
+        return o, c1
+
+    consume_origin, consume_c1 = _mk_sub_origin("consume")
+    dev_origin, _dev_c1 = _mk_sub_origin("dev")
+
+    # superproject 슬롯(실 git·submodule 은 로컬 file:// origin·-c protocol.file.allow=always).
+    slot = proj / "work" / "A_1"
+    slot.mkdir(parents=True, exist_ok=True)
+    _git(slot, "init", "-q", "-b", "main")
+    (slot / "README.md").write_text("super\n", encoding="utf-8")
+    _git(slot, "add", "README.md"); _git(slot, "commit", "-q", "-m", "super init")
+    allow = ["-c", "protocol.file.allow=always"]
+    _git(slot, *allow, "submodule", "add", str(consume_origin), "vendor/consume")
+    _git(slot, *allow, "submodule", "add", str(dev_origin), "libs/dev")
+    _git(slot, "commit", "-q", "-m", "add submodules")
+
+    # (1) dev — libs/dev 를 dev 브랜치로 지정 → on-branch.
+    rc, _out = wp.dev("work/A_1", "libs/dev", "mywork")
+    assert rc == 0
+    dev_head = _git(slot / "libs" / "dev", "symbolic-ref", "--short", "HEAD").stdout.strip()
+    assert dev_head == "mywork", f"dev submodule on-branch 아님: {dev_head!r}"
+
+    # consume 을 pin 과 어긋난 detached 로 — 워킹트리를 c1(구 커밋)으로 checkout(detached).
+    _git(slot / "vendor" / "consume", "checkout", "-q", consume_c1)
+    assert _git(slot / "vendor" / "consume", "rev-parse", "HEAD").stdout.strip() == consume_c1
+
+    # (2) sync — consume(detached)은 pin(v2)으로 재동기·dev(on-branch)는 skip(mywork 유지).
+    wp.sync("work/A_1")
+    consume_after = _git(slot / "vendor" / "consume", "rev-parse", "HEAD").stdout.strip()
+    assert consume_after != consume_c1, "detached consume 이 pin 으로 재동기 안 됨(sync 실패)"
+    dev_after = _git(slot / "libs" / "dev", "symbolic-ref", "--short", "HEAD").stdout.strip()
+    assert dev_after == "mywork", "on-branch dev submodule 이 sync 로 낚아채임(skip 실패)"
+
+
+@_git_required
+def test_real_git_dev_existing_branch_switches(proj, tmp_path):
+    """실 git 백스톱 — dev 가 *이미 존재하는* submodule 브랜치엔 `-b` 실패 후 plain checkout 전환 (폴백 정밀화·T-0277).
+
+    submodule 에 브랜치 b1·b2 를 만든 뒤 b1 로 다시 dev — `checkout -b b1` 이 실 git 에서 rc≠0
+    (already exists)이고 `show-ref refs/heads/b1` rc0(존재)이라 plain `checkout b1` 로 전환된다.
+    mock-only 이던 폴백 경로를 실 git 으로 백스톱한다(reviewer suggestion).
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+
+    sub_origin = _init_repo(tmp_path / "sub-origin")
+    (sub_origin / "v.txt").write_text("v1\n", encoding="utf-8")
+    _git(sub_origin, "add", "v.txt"); _git(sub_origin, "commit", "-q", "-m", "v1")
+
+    slot = proj / "work" / "A_1"
+    slot.mkdir(parents=True, exist_ok=True)
+    _git(slot, "init", "-q", "-b", "main")
+    (slot / "README.md").write_text("super\n", encoding="utf-8")
+    _git(slot, "add", "README.md"); _git(slot, "commit", "-q", "-m", "super init")
+    _git(slot, "-c", "protocol.file.allow=always", "submodule", "add",
+         str(sub_origin), "vendor/sub")
+    _git(slot, "commit", "-q", "-m", "add submodule")
+
+    # b1·b2 생성(각각 on-branch 로 전이) → 현재 b2.
+    assert wp.dev("work/A_1", "vendor/sub", "b1")[0] == 0
+    assert wp.dev("work/A_1", "vendor/sub", "b2")[0] == 0
+    assert _git(slot / "vendor" / "sub", "symbolic-ref", "--short", "HEAD").stdout.strip() == "b2"
+
+    # b1 은 이미 존재 → `-b` 실패·show-ref 존재확인 후 plain checkout 전환.
+    rc, _out = wp.dev("work/A_1", "vendor/sub", "b1")
+    assert rc == 0, "기존 브랜치 전환 폴백이 실패(rc≠0)"
+    head = _git(slot / "vendor" / "sub", "symbolic-ref", "--short", "HEAD").stdout.strip()
+    assert head == "b1", f"기존 브랜치로 전환 안 됨: {head!r}"
 
 
 @_git_required
