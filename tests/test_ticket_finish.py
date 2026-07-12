@@ -708,3 +708,224 @@ def test_default_python_venv_absent_falls_back_to_sys_executable(tf, tmp_path, m
     시스템 인터프리터에 pytest 가 깔린 형상은 venv/ 를 안 만든다 → 그 환경 pytest 를 쓴다."""
     monkeypatch.setattr(tf, "REPO", tmp_path)  # tmp 아래 venv/ 없음
     assert tf._default_python() == tf.sys.executable
+
+
+# ── 두-git 다중슬롯 seam — --session/--no-pytest disambiguation (T-0285·ADR-0027) ──
+#
+# ADR-0027 다중슬롯 형상(PM 홈 ② + worktree 슬롯 여럿)에선 `_regression_cwd(None)` 자동해소가
+# 모호해져 ② 홈(tests/ 부재)으로 폴백 → 회귀 red("no tests ran") → finish 가 *조용히* 차단됐다
+# (라이브 발견·PM 59차). `--session` 은 그 슬롯을 disambiguate 하고, `--no-pytest` 는 회귀를
+# skip 한다. 다중슬롯인데 미지정+진짜 모호면 조용한 false-red 대신 fail-loud 로 중단한다.
+# pm_handoff `_resolve_session_worktree_slot`/`_canonicalize_worktree_slot` 재사용(DRY).
+
+
+class _FakeHandoff:
+    """pm_handoff 대역 — ticket_finish glue(_resolve_finish_slot·main forward)를 hermetic 격리.
+
+    `_canonicalize_worktree_slot`/`_resolve_session_worktree_slot`/`_regression_cwd` 만 흉내낸다
+    (실 pm_bootstrap·areas/leases 장부 미접촉). `resolve_result` = **session 부재** 시
+    `_resolve_session_worktree_slot(None)` 반환((slot,None)|(None,None)|(None,모호메시지)).
+    session 명시(explicit)는 short-circuit 으로 그 슬롯을 그대로 반환한다.
+    """
+
+    def __init__(self, resolve_result):
+        self._resolve_result = resolve_result
+
+    @staticmethod
+    def _canonicalize_worktree_slot(s):
+        rest = s[len("work/"):] if s.lower().startswith("work/") else s
+        return f"work/{rest}"
+
+    @staticmethod
+    def _is_bare_worktree_slot(s):
+        import re
+        return bool(re.match(r"^(?:work/)?\d+$", s, re.IGNORECASE))
+
+    def _resolve_session_worktree_slot(self, worktree_slot=None):
+        if worktree_slot:
+            return worktree_slot, None  # explicit 우선(모호 게이트 우회).
+        return self._resolve_result
+
+    @staticmethod
+    def _regression_cwd(worktree_slot=None):
+        return f"/fake-repo/{worktree_slot}" if worktree_slot else "/fake-repo"
+
+
+def test_session_resolves_explicit_worktree_slot(tf):
+    """(a) --session <name> → explicit worktree 슬롯 `work/<name>` 결정론적 해소(장부 무관).
+
+    실 pm_handoff 를 쓰되 explicit 경로는 areas/leases 를 안 보고 short-circuit 이라 라이브
+    슬롯 상태와 무관하게 결정론적이다. 회귀 cwd = REPO/<slot>(main 이 _regression_cwd forward).
+    `work/` 접두·주변 공백도 흡수해 canonical `work/<name>` 로 통일한다.
+    """
+    for given in ("project_manager_1", "work/project_manager_1", "  project_manager_1  "):
+        slot, err = tf._resolve_finish_slot(given)
+        assert err is None, given
+        assert slot == "work/project_manager_1", given
+    cwd = tf._regression_cwd("work/project_manager_1")
+    assert cwd.replace(os.sep, "/").endswith("work/project_manager_1")
+
+
+def test_session_explicit_bypasses_ambiguity(tf, monkeypatch):
+    """--session 명시는 자동해소 모호 여부와 무관하게 그 슬롯 사용(explicit 우선·모호 게이트 우회).
+
+    이게 `--session` 의 존재 이유 — 다중슬롯 모호를 사용자가 직접 disambiguate 한다.
+    """
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, "모호!")))
+    slot, err = tf._resolve_finish_slot("project_manager_2")
+    assert err is None            # 명시했으므로 모호 아님(short-circuit)
+    assert slot == "work/project_manager_2"
+
+
+def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, capsys):
+    """(b) --no-pytest → [1/5] 회귀 skip(pytest 미호출)·board complete 는 --tests-pass 유지·rc 0.
+
+    log 스켈레톤 측정 total 은 "?" 로 렌더(PM 이 /pm-qa 별도 측정치로 채움). 회귀 fn 이 호출되면
+    AssertionError 로 실패해 skip 을 결정론적으로 단언한다.
+    """
+    board_calls: list[list[str]] = []
+
+    def boom_pytest():
+        raise AssertionError("skip_pytest=True 인데 회귀가 실행됨")
+
+    def spy_board(args):
+        board_calls.append(args)
+        return 0, "board ok"
+
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=boom_pytest,
+        run_board_fn=spy_board,
+        run_git_fn=lambda args: (0, ""),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "테스트 티켓",
+        affected_domain_fn=lambda tid: None,
+        log_file=tmp_path / "log.md",
+    )
+    rc = finisher.run("T-1234", section=None, dry_run=False, skip_pytest=True)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "회귀 측정 skip" in out
+    assert board_calls == [["complete", "T-1234", "--tests-pass"]]  # skip 이어도 --tests-pass 유지
+    assert "[완료] T-1234 부기 완료." in out
+    assert "회귀 ? / ?" in (tmp_path / "log.md").read_text(encoding="utf-8")  # 측정 total 없이 "?"
+
+
+def test_main_multislot_ambiguous_fails_loud_before_regression(tf, monkeypatch, capsys):
+    """(c) 다중슬롯 모호 + --session 부재 → 친화 에러·rc 1·회귀 미시작(조용한 ② false-red 제거).
+
+    fail-loud 는 run() 진입 *전*이라 회귀가 시작조차 안 된다([1/5] 미출력). 에러는 --session/
+    --no-pytest 안내를 담는다.
+    """
+    monkeypatch.setattr(
+        tf, "_load_pm_handoff",
+        lambda: _FakeHandoff((None, "등록 repo 2개(A, B) — 어느 repo 인지 모호하다.")),
+    )
+    rc = tf.main(["T-1234"])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "모호" in captured.err
+    assert "--session" in captured.err and "--no-pytest" in captured.err
+    assert "[1/5]" not in captured.out  # run()/회귀 진입 전 중단
+
+
+def test_main_session_forwards_resolved_regression_cwd(tf, monkeypatch):
+    """--session <name> (회귀 실행 경로) → main 이 해소된 worktree 를 regression_cwd forward."""
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+    captured: dict = {}
+
+    class _SpyFinisher(tf.TicketFinisher):
+        def __init__(self, **kw):
+            captured["regression_cwd"] = kw.get("regression_cwd")
+            super().__init__(**kw)
+
+        def run(self, **kw):
+            captured["skip_pytest"] = kw.get("skip_pytest")
+            return 0
+
+    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+    rc = tf.main(["T-1234", "--session", "project_manager_1"])
+    assert rc == 0
+    assert captured["regression_cwd"].replace(os.sep, "/").endswith("work/project_manager_1")
+    assert captured["skip_pytest"] is False
+
+
+def test_main_no_pytest_bypasses_ambiguity_gate(tf, monkeypatch):
+    """(must-fix) --no-pytest → 다중슬롯 모호여도 게이트 우회·슬롯 해소 미호출·rc 0(self-contradiction 제거).
+
+    이전엔 모호 게이트가 args.no_pytest 앞에서 돌아, 에러가 "--no-pytest 로 skip 하라"를 remedy 로
+    광고하면서 정작 --no-pytest 를 준 사용자를 rc 1 로 막는 dead-end 였다(codex+reviewer 동일 포착).
+    게이트를 `if not args.no_pytest:` 뒤로 옮겨, --no-pytest 면 회귀가 안 도므로 슬롯 해소 자체를
+    호출조차 안 하고 regression_cwd=None·skip 로 진행한다.
+    """
+    resolve_calls: list = []
+
+    def _spy_resolve(session):  # 호출되면 모호 반환 — 하지만 --no-pytest 면 호출조차 안 돼야.
+        resolve_calls.append(session)
+        return None, "등록 repo 2개(A, B) — 어느 repo 인지 모호하다."
+
+    monkeypatch.setattr(tf, "_resolve_finish_slot", _spy_resolve)
+    captured: dict = {}
+
+    class _SpyFinisher(tf.TicketFinisher):
+        def __init__(self, **kw):
+            captured["regression_cwd"] = kw.get("regression_cwd")
+            super().__init__(**kw)
+
+        def run(self, **kw):
+            captured["skip_pytest"] = kw.get("skip_pytest")
+            return 0
+
+    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+    rc = tf.main(["T-1234", "--no-pytest"])
+    assert rc == 0                          # 모호여도 우회(rc 1 아님·remedy dead-end 제거)
+    assert resolve_calls == []              # --no-pytest → 슬롯 해소 자체를 skip(회귀 cwd 무의미)
+    assert captured["regression_cwd"] is None
+    assert captured["skip_pytest"] is True
+
+
+def test_resolve_finish_slot_rejects_bare_slot_number(tf):
+    """(should-fix·pm_handoff `--session` 동형) --session bare 숫자(`4`·`work/4`·`Work/4`)는 fail-loud.
+
+    슬롯 번호는 repo 별 독립이라 repo≥2 면 bare 숫자만으론 모호 — pm_handoff `_is_bare_worktree_slot`
+    ingress 거부(T-0201 결정 B)를 재사용해 canonicalize→부재 dir 회귀 시도 전에 명시 에러로 막는다.
+    """
+    for bare in ("4", "work/4", "Work/4"):
+        slot, err = tf._resolve_finish_slot(bare)
+        assert slot is None, bare
+        assert err is not None and "repo-qualified" in err, bare
+    # repo-qualified 는 정상 통과(대비군) — 결정론적 explicit short-circuit.
+    assert tf._resolve_finish_slot("project_manager_1") == ("work/project_manager_1", None)
+
+
+def test_main_solo_forwards_no_regression_cwd(tf, monkeypatch):
+    """(d) 솔로/미해소 → main 이 regression_cwd=None 으로 TicketFinisher 생성(런타임 _regression_cwd 폴백 보존)."""
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+    captured: dict = {}
+
+    class _SpyFinisher(tf.TicketFinisher):
+        def __init__(self, **kw):
+            captured["regression_cwd"] = kw.get("regression_cwd")
+            super().__init__(**kw)
+
+        def run(self, **kw):
+            captured["skip_pytest"] = kw.get("skip_pytest")
+            return 0
+
+    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+    rc = tf.main(["T-1234"])
+    assert rc == 0
+    assert captured["regression_cwd"] is None   # 솔로 미주입 → 런타임 폴백(현행 100% 보존)
+    assert captured["skip_pytest"] is False
+
+
+def test_resolve_finish_slot_solo_returns_none(tf, monkeypatch):
+    """(d) 솔로(pm_handoff 자동해소 None) → (None, None)·모호 아님(fail-loud 미발동)."""
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+    assert tf._resolve_finish_slot(None) == (None, None)
+
+
+def test_resolve_finish_slot_pm_handoff_absent_fail_soft(tf, monkeypatch):
+    """pm_handoff 부재(None) → 부재는 (None,None)·명시는 단순 `work/` 접두(현행 폴백·솔로 무변경)."""
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: None)
+    assert tf._resolve_finish_slot(None) == (None, None)
+    assert tf._resolve_finish_slot("myrepo_2") == ("work/myrepo_2", None)

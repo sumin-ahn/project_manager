@@ -113,6 +113,51 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
     return str(REPO)
 
 
+# ── --session 슬롯 disambiguation (다중슬롯 finish·ADR-0027·pm_handoff 미러·T-0285) ──
+# ADR-0027 다중슬롯 형상(PM 홈 ② + worktree 슬롯 여럿)에선 `_regression_cwd(None)` 의
+# `_auto_slot` 자동해소가 모호(슬롯 2+)해져 ② 홈으로 폴백하고, ②엔 `tests/` 가 없어 회귀가
+# red("no tests ran")→finish 가 *조용히* 차단된다(라이브 발견·PM 59차). pm_handoff 는 이미
+# `--session`/`--worktree-slot` 로 슬롯을 disambiguate 하는데 ticket_finish 엔 그 수단이 없던 게
+# 근본이다. pm_handoff `_resolve_session_worktree_slot`(session-entry 슬롯 해소·default-1/단독/
+# idle-필터·진짜 모호면 fail-loud·T-0178)·`_canonicalize_worktree_slot`(`<name>`→`work/<name>`)을
+# 동적 로드해 재사용한다(DRY·해소 로직 복제 0). ticket_finish 는 이미 pm_handoff 동적 로드 seam 보유.
+
+def _resolve_finish_slot(session: str | None) -> tuple[str | None, str | None]:
+    """`--session` 값(또는 부재)에서 회귀 worktree 슬롯을 해소한다 — `(worktree_slot, error_msg)`.
+
+    pm_handoff `_resolve_session_worktree_slot` 를 동적 로드해 재사용한다(DRY). 반환:
+      - `(work/<name>, None)` — `--session <name>` 명시(canonical `work/<name>` explicit 우선·
+        areas/leases 미조회 short-circuit 이라 결정론적·라이브 장부 무관).
+      - `(work/<repo>_<N>, None)` — `--session` 부재인데 default-1/단독/idle-필터로 자동해소됨.
+      - `(None, None)` — solo/미해소(멀티-PM 미셋업) → 호출부 REPO 런타임 폴백(현행 100% 보존).
+      - `(None, error_msg)` — **진짜 모호**(멀티-PM under-specified·repo≥2·slot1 부재 비단독) →
+        호출부 fail-loud(조용한 ② 폴백+false-red 제거·이 티켓 핵심).
+
+    pm_handoff 부재/로드 실패는 fail-soft — `--session` 명시는 단순 `work/` 접두, 부재는
+    `(None, None)`(현행 REPO 폴백·솔로 무변경). 주변 공백은 벗겨 빈 문자열은 미지정(None)과 동형.
+    """
+    session = session.strip() if session else None
+    session = session or None
+    hp = _load_pm_handoff()
+    if hp is None:
+        return (f"work/{session}", None) if session else (None, None)
+    # bare 슬롯 번호(`4`·`work/4`·`Work/4`) 거부 (pm_handoff ingress 동형·T-0201 결정 B) — 슬롯
+    # 번호는 repo 별 독립이라 등록 repo ≥2 면 bare 숫자만으론 어느 repo 인지 모호하다. pm_handoff
+    # `_is_bare_worktree_slot` 를 재사용해 fail-loud 로 정합한다(canonicalize→부재 dir 회귀 시도
+    # 방지·pm_handoff `--session` 동형). repo-qualified(`<repo>_<N>`·`work/<repo>_<N>`)만 통과.
+    if session and hp._is_bare_worktree_slot(session):
+        return None, (
+            f"세션 슬롯 '{session}' 은 bare 슬롯 번호다 — repo-qualified 형식으로 지정하라 "
+            "(`--session <repo>_<N>`·예: project_manager_1). 슬롯 번호는 repo 별 독립이라 bare "
+            "숫자만으로는 어느 repo 인지 모호하다(ADR-0013·T-0201)."
+        )
+    worktree_slot = hp._canonicalize_worktree_slot(session) if session else None
+    try:
+        return hp._resolve_session_worktree_slot(worktree_slot)
+    except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 현행 폴백(모호 아님).
+        return (worktree_slot, None) if worktree_slot else (None, None)
+
+
 def _default_python() -> str:
     """플랫폼-인지 venv 인터프리터 경로 (없으면 sys.executable 폴백).
 
@@ -394,7 +439,7 @@ LOG_SKELETON_TEMPLATE = """\
 def build_log_skeleton(
     ticket_id: str,
     title: str,
-    new_total: int,
+    new_total: int | str,
     board_before: int,
     board_after: int,
     entry_type: str = "<!-- feat/fix/verify/… -->",
@@ -554,6 +599,7 @@ class TicketFinisher:
         ticket_id: str,
         section: str | None,
         dry_run: bool,
+        skip_pytest: bool = False,
     ) -> int:
         """ticket_id 완료 부기 전체 흐름을 실행한다.
 
@@ -561,40 +607,53 @@ class TicketFinisher:
 
         `section` 은 후방호환용으로 받기만 하고 무시한다 — status.md 합계표 섹션 행은
         ADR-0023(a안) 으로 제거됐다(judgment-only·테스트 수는 박제 안 함).
+
+        `skip_pytest`(--no-pytest·T-0285) 는 [1/5] 회귀 단계를 건너뛴다 — 측정은 PM 이 /pm-qa
+        등으로 별도. board complete 는 `--tests-pass` 를 유지한다(pm_handoff `--no-pytest` 동형·
+        회귀 red 아님·skip 로 진행). 다중슬롯 형상에서 회귀 cwd 를 정할 수 없을 때 우회 수단.
         """
         del section  # ADR-0023 — status 합계표 제거로 더 이상 쓰지 않음(후방호환 수용만).
-        print(f"[ticket_finish] {ticket_id} 완료 부기 시작 (dry_run={dry_run})")
+        print(
+            f"[ticket_finish] {ticket_id} 완료 부기 시작 "
+            f"(dry_run={dry_run}, skip_pytest={skip_pytest})"
+        )
 
         # ── 1. 회귀 실행 ──────────────────────────────────────────────
         # dry-run 도 pytest 를 실제 실행한다 — "부작용 없음"이지 "빠름"이 아니다.
-        # 파일·board·git 편집만 생략하므로 pytest 실행은 항상 수행.
+        # 파일·board·git 편집만 생략하므로 pytest 실행은 항상 수행. (--no-pytest 는 예외 — 측정 skip.)
         print("\n[1/5] 회귀 실행 중...")
-        if dry_run:
-            print("  [dry-run] pytest tests/ -q 실행 중 (파일·board·git 편집만 생략)...")
-        returncode, output = self._run_pytest_fn()
-        print(output.rstrip())
+        if skip_pytest:
+            # --no-pytest — 회귀 측정은 PM 이 별도(/pm-qa 등). board complete 는 --tests-pass 유지
+            # (pm_handoff --no-pytest 동형·red 아님·skip 로 진행). 측정 total 은 log 스켈레톤에서 "?".
+            print("  [--no-pytest] 회귀 측정 skip — 측정은 별도(/pm-qa 등). board complete 는 --tests-pass 유지.")
+            new_total: int | str = "?"
+        else:
+            if dry_run:
+                print("  [dry-run] pytest tests/ -q 실행 중 (파일·board·git 편집만 생략)...")
+            returncode, output = self._run_pytest_fn()
+            print(output.rstrip())
 
-        if not is_pytest_green(output, returncode):
-            print(
-                "\n[중단] 회귀 red — log/current.md·board·git 어떤 것도 건드리지 않는다.",
-                file=sys.stderr,
-            )
-            print(
-                "원인: pytest 가 실패를 보고했거나 출력 파싱 실패.",
-                file=sys.stderr,
-            )
-            return 1
+            if not is_pytest_green(output, returncode):
+                print(
+                    "\n[중단] 회귀 red — log/current.md·board·git 어떤 것도 건드리지 않는다.",
+                    file=sys.stderr,
+                )
+                print(
+                    "원인: pytest 가 실패를 보고했거나 출력 파싱 실패.",
+                    file=sys.stderr,
+                )
+                return 1
 
-        parsed = parse_pytest_output(output)
-        if parsed is None:
-            print(
-                "\n[중단] pytest 출력 파싱 실패 — passed 수를 읽지 못했다.",
-                file=sys.stderr,
-            )
-            return 1
+            parsed = parse_pytest_output(output)
+            if parsed is None:
+                print(
+                    "\n[중단] pytest 출력 파싱 실패 — passed 수를 읽지 못했다.",
+                    file=sys.stderr,
+                )
+                return 1
 
-        new_total, deselected = parsed
-        print(f"\n  ✓ green: passed={new_total}, deselected={deselected}")
+            new_total, deselected = parsed
+            print(f"\n  ✓ green: passed={new_total}, deselected={deselected}")
 
         # status.md 는 더 이상 갱신하지 않는다 (ADR-0023 a안 — judgment-only).
         # 테스트 수는 위 pytest 실측이 단일 진실·history 는 아래 log skeleton 으로 남는다.
@@ -719,6 +778,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="편집·board·git 없이 무엇을 바꿀지만 출력한다.",
     )
+    # ── 두-git 다중슬롯 seam (ADR-0027·pm_handoff 미러·T-0285) ──────────────────
+    # 분리된 PM 홈(②) + worktree 슬롯 여럿 형상에서 회귀를 어느 worktree(tests/ 보유)에서
+    # 돌릴지 disambiguate 한다 — pm_handoff `--session`/`--no-pytest` 와 동형.
+    parser.add_argument(
+        "--session",
+        metavar="<repo>_<N>",
+        default=None,
+        help=(
+            "세션 정체성 (multi-PM 슬롯 명시·선택·예: project_manager_1). 내부에서 `work/` "
+            "프리픽스를 유도해 회귀를 그 worktree(tests/ 보유)에서 돌린다(ADR-0027). 다중슬롯인데 "
+            "미지정이면 pm_handoff 자동해소(default-1/단독)·진짜 모호면 fail-loud. 솔로는 미지정."
+        ),
+    )
+    parser.add_argument(
+        "--no-pytest",
+        action="store_true",
+        help="[1/5] 회귀 단계를 skip 한다 (측정은 /pm-qa 등으로 별도·board complete 는 --tests-pass 유지).",
+    )
     return parser
 
 
@@ -752,11 +829,34 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
     args = build_parser().parse_args(argv)
-    finisher = TicketFinisher()
+
+    # 두-git 다중슬롯 회귀 cwd disambiguation (ADR-0027·pm_handoff 미러·T-0285) — **회귀를 실제로
+    # 돌 때만** 슬롯을 해소한다. `--no-pytest` 면 회귀가 안 돌아 regression cwd 가 무의미하므로
+    # 슬롯 해소·모호 게이트를 통째로 skip 한다(regression_cwd=None). 그러지 않으면 모호 에러가
+    # "--no-pytest 로 skip 하라"를 remedy 로 광고하면서 정작 --no-pytest 를 준 사용자를 막는
+    # self-contradiction 이 된다(codex+reviewer 동일 must-fix). --session 은 회귀 경로서 그대로 작동.
+    regression_cwd: str | None = None
+    if not args.no_pytest:
+        worktree_slot, ambiguity = _resolve_finish_slot(args.session)
+        if ambiguity is not None:
+            print(f"\n[중단] 회귀 슬롯 해소 모호 — {ambiguity}", file=sys.stderr)
+            print(
+                "  → `--session <repo>_<N>`(예: project_manager_1) 으로 슬롯을 명시하거나, "
+                "`--no-pytest` 로 회귀를 skip 하라(측정은 /pm-qa 등으로 별도).",
+                file=sys.stderr,
+            )
+            return 1
+        # 해소된 슬롯이 있으면 그 worktree 를 회귀 cwd 로 명시 forward(_regression_cwd 위임).
+        # solo/미해소(None)면 regression_cwd 미주입 → _default_run_pytest 런타임 폴백(현행 100% 보존).
+        if worktree_slot:
+            regression_cwd = _regression_cwd(worktree_slot)
+
+    finisher = TicketFinisher(regression_cwd=regression_cwd)
     return finisher.run(
         ticket_id=args.ticket_id,
         section=args.section,
         dry_run=args.dry_run,
+        skip_pytest=args.no_pytest,
     )
 
 

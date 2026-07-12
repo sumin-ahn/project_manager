@@ -19,6 +19,12 @@ dev/reviewer cycle 통과 (must-fix 0) 또는 PM 직접 구현 ticket 완료 시
 python3 .project_manager/tools/ticket_finish.py T-NNNN
 ```
 
+> `--session <repo>_<N>` (multi-PM·ADR-0027 두-git 형상) — 회귀를 돌릴 worktree 슬롯을 명시한다.
+> 분리된 PM 홈(②)엔 `tests/` 가 없어 회귀가 활성 worktree(①·`tests/` 보유)에서 돌아야 하는데, 슬롯이
+> 여럿이면 자동해소가 모호해질 수 있다. **솔로/단일슬롯/default-1 은 생략 가능**(자동해소)·미지정+진짜
+> 모호(repo≥2·slot-1 부재)면 **fail-loud**(어느 슬롯인지 `--session` 요구). pm_handoff `--session` 과 동형.
+> **`--no-pytest`** — 회귀를 별도(/pm-qa 등)로 이미 측정했을 때 회귀 단계를 skip(board complete 는
+> `--tests-pass` 유지). 모호 게이트도 우회한다(회귀 cwd 불필요).
 > `--section` 인자는 **deprecated no-op**(ADR-0023 — status.md 합계표 제거로 더 이상 쓰지 않음·후방호환 수용만).
 
 ## CLI 자동 처리
