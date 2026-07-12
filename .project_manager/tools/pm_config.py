@@ -17,7 +17,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config release <slot> [--force]                     # 작업완료 반납 / 수동 강제(백스톱)
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수·T-0054)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (T-0145·검증·fail-closed)
-    pm-config add-harness <harness> [--dry-run]            # 라이브 인스턴스에 두 번째 harness 어댑터 추가 (ADR-0048·T-0270)
+    pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가 (ADR-0048·T-0270·T-0282)
 
 서브커맨드별 엔진 배선:
   - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1[solo] ~ N×M 공용).
@@ -27,8 +27,9 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - status|whoami → worktree_pool.list_leases() + 이 세션 식별(repo/슬롯/branch surface).
   - release → worktree_pool.release(--force 면 force_release) — 수동 반납/강제만.
   - update → pm_update.main(argv) verbatim forward (rename 비용 0·중복 구현 금지).
-  - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=) verbatim forward (ADR-0048
-                  Decision 3·복사 스코프+인터페이스 예외 번역은 pm_import 단일 진실·중복 0·T-0270).
+  - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
+                  (ADR-0048 Decision 3·복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
+                  중복 0·T-0270·T-0282). `--from` 생략 시 dest local.conf upstream 자동 해소(imported 인스턴스).
 
 결정 (ADR-0011·ADR-0014·spike §8-5):
   - thin forwarder(`pm-config.sh/.cmd`)는 로직 0 — 이 디스패처가 엔진 배선의 단일 지점.
@@ -1249,12 +1250,17 @@ def cmd_add_harness(
         )
         return 1
     dest = dest_root if dest_root is not None else REPO
+    # --from(source_root) 은 optional — 생략 시 pm_import 가 dest local.conf upstream 에서 어댑터
+    # 소스를 자동 해소한다(T-0282·imported 인스턴스 갭). 기존 Namespace(테스트/구 호출)에 source 가
+    # 없어도 getattr 로 안전하게 None 폴백(하위호환·verbatim forward).
+    source_root = getattr(args, "source", None)
     # usage prog 정합 (T-0249·ADR-0043) — init/update forward 와 동형 위임-경계 가드. add_harness_cli
     # 는 자체 argparse 를 만들지 않고 main-style 로 출력·rc 반환하지만, 위임 경계를 init/update 와
     # 균일하게 감싸 pm_import 가 어떤 argparse usage 를 surface 하더라도 파일명("pm_import.py")이 새지
     # 않게 한다(에이전트가 칠 실 커맨드 pm-config add-harness 와 정합·경계 leak 0). rc 는 그대로 전파.
     with _forwarded_prog({"pm_import.py": f"{_FACADE_PROG} add-harness"}):
-        return pm_import_mod.add_harness_cli(dest, args.harness, dry_run=args.dry_run)
+        return pm_import_mod.add_harness_cli(
+            dest, args.harness, dry_run=args.dry_run, source_root=source_root)
 
 
 # ── 대화형 콘솔 (T-0069) ──────────────────────────────────────────────────────
@@ -1595,6 +1601,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_add_harness.add_argument(
         "harness",
         help="추가할 harness 어댑터 (claude|opencode·pm_import 가 검증). 어댑터 네임스페이스만 복사(비파괴).",
+    )
+    p_add_harness.add_argument(
+        "--from", dest="source", metavar="SOURCE", default=None,
+        help="어댑터 소스 프레임워크 checkout (생략 시 local.conf upstream 에서 자동 해소·"
+             "imported 인스턴스 갭·T-0282). URL upstream 이면 로컬 checkout 경로를 명시해야 한다.",
     )
     p_add_harness.add_argument(
         "--dry-run", action="store_true",

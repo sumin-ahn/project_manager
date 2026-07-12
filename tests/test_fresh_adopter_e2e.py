@@ -373,9 +373,12 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     assert base_doc in before and any(r.startswith(base_dir + "/") for r in before), \
         f"{base}: 스냅샷에 base 어댑터({base_dir}/**·{base_doc}) 부재"
 
-    # 라이브-안전 add-harness — render-only·hermetic(models seam = pm_import fixture stub). 최초 import 와
-    # 동일 in-process 경로(source_root 생략 → 기본 REPO·main `--from` 기본값과 동형).
-    plan = pm_import.add_harness(dest, added, dry_run=False)
+    # 라이브-안전 add-harness — render-only·hermetic(models seam = pm_import fixture stub). 소스는
+    # 명시 REPO(=프레임워크 checkout·채택자의 `--from`/path upstream 과 동형). T-0282 이후 add-harness
+    # 는 소스를 명시 --from > dest upstream(path) > dest(templates) 순으로 해소하는데, fresh 인스턴스는
+    # upstream 을 *URL*(origin)로 기록하므로 자동 해소 대상이 아니다 — 채택자는 로컬 checkout 을 명시한다.
+    # 이 e2e 의 초점은 소스 해소가 아니라 복사 스코프/바이트 불변이라 REPO 를 명시해 결정화한다.
+    plan = pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
     assert plan, f"{base}→{added}: add-harness plan 이 비어 있다."
 
     after = _snapshot_tree(dest)

@@ -2183,6 +2183,64 @@ def resolve_template_roots(source_root: Path, harness: str) -> list[Path]:
     return roots
 
 
+def _has_harness_templates(root: Path, harness: str) -> bool:
+    """root 가 harness 의 어댑터 소스 트리(templates/<dir>/…)를 전부 보유하는가."""
+    return all(
+        (root / "templates" / name).is_dir()
+        for name in HARNESS_TEMPLATE_DIRS[harness]
+    )
+
+
+def _resolve_add_harness_source(
+    dest_root: Path, harness: str, explicit: Path | None,
+) -> Path:
+    """add_harness 의 어댑터 소스 checkout 을 해소한다 (T-0282·ADR-0048 gap).
+
+    imported 인스턴스(scoped-core 사본·`templates/` 부재·② PM 홈 형상)는 dest 안에 어댑터
+    소스 트리가 없다 — 소스는 그 인스턴스의 **upstream 프레임워크 checkout** 이다(add-harness 를
+    *라이브 인스턴스*에 걸면 소스는 항상 그 인스턴스의 upstream 이다). 해소 우선순위:
+      1. explicit(`--from`)      → 그대로 (기존 계약·override).
+      2. dest local.conf upstream → classify_upstream=path 이고 그 경로에 templates/<harness>/
+                                    가 있으면 소스 (② upstream=work/project_manager_1).
+      3. dest 자신              → dest 에 templates/ 가 있으면 dest (framework-checkout 자기전환·
+                                    REPO 하드 기본이 맞던 유일 케이스·현행 회귀 보존).
+      4. 전부 실패              → 친화 FileNotFoundError (actionable).
+
+    URL upstream 은 이번 스코프 밖 — 엔진은 로컬 파일만 복사(git clone/fetch 안 함·ADR-0032 D5)
+    하므로 path upstream 만 자동 해소하고 URL 은 skip 해 말단(dest 자기전환 또는 친화 에러)으로
+    유도한다(명시 `--from` 요구). classify_upstream 으로 분기.
+    """
+    if explicit is not None:
+        return Path(explicit).resolve()
+    dest_root = Path(dest_root).resolve()
+
+    # ② 형상: dest 는 엔진 사본(templates 부재) — 소스는 upstream 프레임워크 checkout.
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if local_conf.is_file():
+        try:
+            upstream = _parse_conf_keys(
+                local_conf.read_text(encoding="utf-8")).get("upstream", "").strip()
+        except (UnicodeDecodeError, OSError):
+            upstream = ""
+        # path upstream 만 자동 해소 — URL 은 로컬 파일 소스가 아니므로 skip(--from 요구).
+        if upstream and classify_upstream(upstream) == "path":
+            # 상대 경로는 인스턴스 루트(dest) 기준·절대면 그대로(pathlib: 절대 우변 승).
+            candidate = (dest_root / upstream).resolve()
+            if _has_harness_templates(candidate, harness):
+                return candidate
+
+    # framework-checkout 자기전환(dest 에 templates/ 보유) — 현행 REPO 하드 기본의 회귀 보존.
+    if _has_harness_templates(dest_root, harness):
+        return dest_root
+
+    raise FileNotFoundError(
+        f"add_harness 소스 미해소: {dest_root} 에 templates/ 가 없고, local.conf upstream 도 "
+        f"templates/<harness> 를 가진 로컬 프레임워크 경로가 아니다. "
+        f"`--from <프레임워크 checkout>` 를 주거나 local.conf 의 upstream= 을 로컬 프레임워크 "
+        f"경로로 두라(URL upstream 은 자동 해소하지 않는다)."
+    )
+
+
 # ── add_harness (라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가 · ADR-0048) ──────
 # raw `--into --harness both` 재-import 는 91파일 full 재-laydown 으로 라이브 wiki dev-state/엔진을
 # 템플릿 starter 로 덮는다(ADR-0048 Context). add_harness 는 복사 스코프를 *추가되는 harness 의
@@ -2231,7 +2289,9 @@ def add_harness(
     모델 결정적 해소(resolve_opencode_model)·자유서술 TODO 표시(_run_manual_fill·비-LLM)만.
 
     dry_run=True 면 plan 만 산출·출력(파일시스템 미변경). 반환값 = 스코프 제한된 CopyAction plan.
-    source_root 생략 시 이 repo 루트(REPO)를 파일 소스로 쓴다(main `--from` 기본값과 동일).
+    source_root 생략 시 _resolve_add_harness_source 로 소스를 정한다(T-0282): dest local.conf
+    upstream(path·templates 보유) > dest 자신(templates 보유·framework-checkout 자기전환) > 친화
+    에러. imported 인스턴스(templates 부재·② 형상)도 upstream 에서 어댑터 소스를 해소한다.
     harness 는 단일('claude'|'opencode') — 'both'/미지원은 ValueError. dest 미존재는 FileNotFoundError.
     """
     if harness not in ADD_HARNESS_ADAPTER:
@@ -2244,7 +2304,7 @@ def add_harness(
         raise FileNotFoundError(
             f"add_harness: dest 가 존재하는 라이브 인스턴스 디렉토리가 아니다: {dest_root}"
         )
-    src_root = Path(source_root).resolve() if source_root is not None else REPO
+    src_root = _resolve_add_harness_source(dest_root, harness, source_root)
     template_root = resolve_template_roots(src_root, harness)[0]
 
     adapter_dir, root_doc = ADD_HARNESS_ADAPTER[harness]
