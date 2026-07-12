@@ -35,6 +35,10 @@ OC_MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.man
 # 추가/누락되면 fail — 의도적 어댑터 비대칭만 통과시킨다(전파 채널 우발 drift 차단).
 #   opencode 가 추가: .opencode 어댑터 트리(claude 의 .claude 대응).
 #   opencode 가 제외: .claude/* 어댑터 + regression.yml(claude-scoped CI 워크플로).
+# NOTE(T-0283): .opencode/plugins·.opencode/lib(ctx-guard shim+core)는 manifest 미등재 — 어댑터
+#   파일은 pm_import(rglob 전체트리 byte-copy)로만 출하되고, @target-owned 등재는 self-update 에서
+#   skip 이라 전파 0(기능 이득 없이 오해만). 커플링은 fresh pm_import 산출물 co-presence 로 가드
+#   (test_fresh_adopter_e2e·[[feature-ship-needs-fresh-adopter-gate]]).
 OPENCODE_ONLY_PATHS = {".opencode/agents", ".opencode/command"}
 CLAUDE_ONLY_PATHS = {".claude/agents", ".claude/skills", ".github/workflows/regression.yml"}
 

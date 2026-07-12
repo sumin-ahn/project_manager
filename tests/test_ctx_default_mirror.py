@@ -18,7 +18,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 BOARD = REPO / ".project_manager" / "tools" / "board.py"
 CLAUDE_GUARD = REPO / "templates" / "claude_code" / ".claude" / "ctx_guard.py"
-OPENCODE_GUARD = REPO / "templates" / "opencode" / ".opencode" / "plugins" / "ctx-guard.js"
+# opencode ctx-guard 상수는 진입점 shim(plugins/ctx-guard.js)이 아니라 core 모듈에 산다 — 진입점은
+# opencode 로드 규약(export=단일 함수·T-0283)을 위해 팩토리만 export 하는 얇은 shim 이고, 순수 헬퍼·
+# 상수·팩토리 본체는 lib/ctx-guard-core.cjs(opencode 미스캔·node require 대상)로 분리됐다.
+OPENCODE_GUARD = REPO / "templates" / "opencode" / ".opencode" / "lib" / "ctx-guard-core.cjs"
 
 
 def _grab(path: Path, pattern: str) -> int:

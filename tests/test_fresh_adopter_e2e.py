@@ -70,6 +70,20 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     assert rc == 0, f"{harness} import 실패 (rc={rc})"
     assert (dest / ".project_manager" / "tools" / "board.py").is_file()
 
+    # (a0·T-0283) opencode: ctx-guard shim↔core co-presence (load-bearing 커플링 가드). 어댑터 파일은
+    #   pm_import(rglob 전체트리 byte-copy)로만 출하된다 — manifest 미등재·self-update 채널 없음
+    #   (@target-owned 등재는 upstream=claude 루트에 .opencode/ 부재라 skip). 진입점 shim
+    #   (plugins/ctx-guard.js)이 core(lib/ctx-guard-core.cjs)를 import 하므로, 한쪽만 landing 하면
+    #   opencode 가 플러그인을 로드 못 한다(nudge/stop 死) → 실 출하 산출물에서 *함께* 도착을 못박는다
+    #   ([[feature-ship-needs-fresh-adopter-gate]] — source parity 로는 실 landing 을 보증 못 함).
+    if harness == "opencode":
+        shim = dest / ".opencode" / "plugins" / "ctx-guard.js"
+        core = dest / ".opencode" / "lib" / "ctx-guard-core.cjs"
+        assert shim.is_file(), f"opencode import 에 ctx-guard shim 미landing: {shim}"
+        assert core.is_file(), (
+            f"opencode import 에 ctx-guard core 미landing: {core} — shim 이 이걸 import 하므로 로드 깨짐"
+        )
+
     # (a) adopter 인스턴스 `board.py lint` clean — `.project_manager/wiki/` 트리의 dangling
     #     framework wikilink·thin·depends 누출이 여기서 터진다(adopter 엔 ADR 없음).
     lint = _board(dest, "lint")

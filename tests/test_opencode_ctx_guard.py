@@ -9,18 +9,27 @@ opencode plugin(`.opencode/plugins/ctx-guard.js`)이 컨텍스트 토큰을 추�
   2. plugin 정합  — plugin 파일 존재 + 필수 호출/구조 정적 검증:
        event 토큰추적 · permission.ask deny(새 작업만) · tool.execute.before throw(allow-list) ·
        임계값(ctx_*_pct / local.conf) 참조 · 멱등 가드 · STOP marker 직접 박제.
-  3. 순수 로직   — node 가 있으면 plugin 의 결정 로직(임계 분기·sanity 폴백·토큰누적·핸드오프
+  3. 순수 로직   — node 가 있으면 core 모듈의 결정 로직(임계 분기·sanity 폴백·토큰누적·핸드오프
        allow-list)을 이벤트/opencode 런타임 없이 자가검증. node 부재 시 skip (정적 검증만으로도 게이트).
+  4. 라이브 로드 — (T-0283·release-tier·`PM_OPENCODE_LIVE=1`+opencode 바이너리) 실 opencode 헤드리스가
+       플러그인을 autoload 성공(로드 실패 로그 부재 + factory 실행 마커)하는지 실측. 기본 skip(CI green 불변).
 
-JS 로직 실동작(실제 deny 강제·세션 정지)은 비결정적(T-0011 메모) → opencode Pro 환경
-수동 검증. 여기선 결정적 정적/순수 검증만. stdlib(+ 선택적 node)만 사용 — opencode CLI 미실행.
+로드 규약(실측 T-0283·opencode 1.17.18): `.opencode/plugins/` 안 각 파일의 export 를 순회해 *모두 함수*
+이길 요구·각각을 팩토리로 호출한다 — CJS `module.exports`(객체/단일함수)는 거부되고 비함수 export(상수)
+하나로도 로드 실패. 그래서 진입점 `plugins/ctx-guard.js` 는 ESM 으로 팩토리 하나만 export 하는 얇은 shim
+이고, 순수 헬퍼·상수·팩토리 본체는 plugins/ *바깥* CJS 모듈 `lib/ctx-guard-core.cjs`(opencode 미스캔·node
+require 대상)에 둔다. 정적/순수 검증은 그 core 를, autoload 규약은 라이브 로드 게이트가 본다.
+
+JS 로직 실동작(실제 deny 강제·세션 정지)은 비결정적(T-0011 메모) → opencode Pro 환경 수동 검증.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -28,7 +37,10 @@ OPENCODE = REPO / "templates" / "opencode" / ".opencode"
 
 PROJECT_CONFIG = OPENCODE / "opencode.jsonc"
 PLUGIN_DIR = OPENCODE / "plugins"
-PLUGIN_FILE = PLUGIN_DIR / "ctx-guard.js"
+PLUGIN_FILE = PLUGIN_DIR / "ctx-guard.js"  # ESM 진입점 shim (opencode autoload 대상).
+# 순수 헬퍼·상수·팩토리 본체 (CJS·node 자가검증 require 대상·opencode 미스캔·T-0283).
+CORE_DIR = OPENCODE / "lib"
+CORE_FILE = CORE_DIR / "ctx-guard-core.cjs"
 
 
 # ── jsonc 파서 (T-0011 test_opencode_permission_guard 선례 동일) ──────────────
@@ -53,6 +65,12 @@ def _load_config() -> dict:
 
 
 def _plugin_src() -> str:
+    """팩토리·헬퍼 로직 정적 검증 대상 = core 모듈(로직이 여기 산다·T-0283 이후)."""
+    return CORE_FILE.read_text(encoding="utf-8")
+
+
+def _shim_src() -> str:
+    """opencode 진입점 ESM shim(plugins/ctx-guard.js) 원문 — 로드 규약 shape 검증용."""
     return PLUGIN_FILE.read_text(encoding="utf-8")
 
 
@@ -85,9 +103,56 @@ def test_config_keeps_existing_permission_guard():
 # ── 2. plugin 정합: 파일 존재 + 필수 호출/구조 ──────────────────────────────
 
 def test_plugin_file_exists():
-    """plugin 단일 파일이 .opencode/plugins/ 에 존재 (opencode autoload 위치)."""
+    """진입점 shim 이 .opencode/plugins/ 에·core 모듈이 .opencode/lib/ 에 존재 (T-0283 분리)."""
     assert PLUGIN_DIR.is_dir(), f"plugin 디렉토리 없음: {PLUGIN_DIR}"
-    assert PLUGIN_FILE.exists(), f"ctx-guard plugin 없음: {PLUGIN_FILE}"
+    assert PLUGIN_FILE.exists(), f"ctx-guard 진입점 shim 없음: {PLUGIN_FILE}"
+    assert CORE_DIR.is_dir(), f"core lib 디렉토리 없음: {CORE_DIR}"
+    assert CORE_FILE.exists(), f"ctx-guard core 모듈 없음: {CORE_FILE}"
+
+
+def test_plugin_entry_is_esm_single_function_export():
+    """opencode 로드 규약(실측 T-0283): 진입점은 ESM 으로 팩토리 하나만 export 하는 shim 이다.
+
+    opencode 는 plugins/ 각 파일의 export 를 순회해 *모두 함수*이길 요구하고 각각을 팩토리로
+    호출한다 — CJS `module.exports`(객체·단일함수 불문)는 거부('Plugin export is not a function')
+    되고 비함수 export(상수)·헬퍼 함수까지 플러그인으로 오인한다. 이 회귀(T-0283 원 버그)를 막는
+    durable 정적 가드: 진입점이 (1) CJS module.exports 를 쓰지 않고 (2) core 를 import 하며
+    (3) 정확히 하나의 export 문(팩토리 CtxGuardPlugin)만 갖는다. (실 autoload 는 라이브 게이트가 봄.)
+    """
+    shim = _shim_src()
+    # 주석(//...) 줄을 제외한 실 코드만 검사 (설명 주석에 규약 언급이 있어 오탐 방지).
+    code = "\n".join(ln for ln in shim.splitlines() if not ln.lstrip().startswith("//"))
+    # (1) CJS export 금지 — 이게 정확히 로드 실패를 낸 원 버그 형태.
+    assert "module.exports" not in code, (
+        "진입점이 CJS module.exports 사용 (T-0283 회귀 — opencode 가 함수 아니라며 로드 거부)"
+    )
+    # (2) 팩토리 본체·헬퍼는 core 모듈에서 가져온다.
+    assert re.search(r'import\s+core\s+from\s+["\']\.\./lib/ctx-guard-core\.cjs["\']', shim), (
+        "진입점이 ../lib/ctx-guard-core.cjs 를 import 하지 않음"
+    )
+    # (3) export 문은 딱 하나(팩토리) — 상수/헬퍼를 함께 export 하면 opencode 가 오인/로드 실패.
+    #     주석(//...)은 제외하고 실 export 문장만 센다(줄 첫 토큰이 export).
+    export_lines = [
+        ln for ln in shim.splitlines() if re.match(r"\s*export\s", ln)
+    ]
+    assert len(export_lines) == 1, (
+        f"진입점 export 문이 정확히 1개가 아님(팩토리 하나만이어야·상수/헬퍼 export 금지): {export_lines}"
+    )
+    assert "CtxGuardPlugin" in export_lines[0], (
+        f"진입점의 단일 export 가 CtxGuardPlugin 팩토리가 아님: {export_lines[0]!r}"
+    )
+
+
+def test_ctx_guard_shim_and_core_co_present_in_source_tree():
+    """소스 트리 co-presence precheck (T-0283): shim(plugins/ctx-guard.js)과 core(lib/ctx-guard-core.cjs)가
+    함께 실재한다. shim 이 core 를 import 하므로 한쪽만 있으면 로드가 깨진다.
+
+    ⚠️ 이건 *소스 트리* precheck 일 뿐 — load-bearing 커플링 단언(실 출하 산출물 co-presence)은
+    fresh pm_import 산출물에서 본다(test_fresh_adopter_e2e·[[feature-ship-needs-fresh-adopter-gate]]).
+    어댑터 파일은 manifest 미등재 pm_import(rglob 전체트리)로만 출하되므로(self-update 채널 없음),
+    "함께 landing" 은 import 산출물에서 검증해야 실효다."""
+    assert PLUGIN_FILE.exists(), f"진입점 shim 없음: {PLUGIN_FILE}"
+    assert CORE_FILE.exists(), f"core 모듈 없음: {CORE_FILE}"
 
 
 def test_plugin_subscribes_message_events():
@@ -249,7 +314,7 @@ def test_js_sanitize_matches_hook_session_id_rule():
         pytest.skip("node 없음 — JS sanitize 동치 검증 skip (정적 검증만 적용)")
 
     script = r"""
-const m = require("./ctx-guard.js");
+const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 assert.strictEqual(typeof m.sanitizeSessionId, "function", "missing export: sanitizeSessionId");
 
@@ -306,7 +371,7 @@ def test_js_sanitize_equiv_python_on_ascii():
     ]
     # JS 결과를 node 로 일괄 산출.
     js_script = (
-        'const m=require("./ctx-guard.js");'
+        'const m=require("./ctx-guard-core.cjs");'
         "const cs=" + json.dumps(cases) + ";"
         'console.log(JSON.stringify(cs.map(c=>m.sanitizeSessionId(c))));'
     )
@@ -324,9 +389,10 @@ _NODE = shutil.which("node")
 
 
 def _run_node_check(script: str) -> str:
+    # cwd = core lib 디렉토리 → 스크립트의 `require("./ctx-guard-core.cjs")` 가 해소된다.
     return subprocess.run(
         [_NODE, "-e", script],
-        cwd=str(PLUGIN_DIR),
+        cwd=str(CORE_DIR),
         capture_output=True,
         text=True,
         timeout=30,
@@ -345,7 +411,7 @@ def test_plugin_pure_logic_node_selfcheck():
         pytest.skip("node 없음 — plugin 순수 로직 자가검증 skip (정적 검증만 적용)")
 
     script = r"""
-const m = require("./ctx-guard.js");
+const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 
 // export 표면 (테스트 가능한 순수 함수가 떼어져 있어야 한다).
@@ -392,7 +458,7 @@ def test_js_resolve_budget_pure_unit():
         pytest.skip("node 없음 — resolveBudget 순수 단위 skip (정적 검증만 적용)")
 
     script = r"""
-const m = require("./ctx-guard.js");
+const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 assert.strictEqual(typeof m.resolveBudget, "function", "missing export: resolveBudget");
 assert.strictEqual(m.CTX_WINDOW_TOKENS_DEFAULT, 200000, "CTX_WINDOW_TOKENS_DEFAULT 미러(200000) 아님");
@@ -432,16 +498,16 @@ console.log("JS_RESOLVE_BUDGET_OK");
 
 
 def test_plugin_requires_cleanly_in_node():
-    """node 가 plugin 을 깨끗이 require 한다 (문법·의존 오류 없음). node 부재 시 skip."""
+    """node 가 core 모듈을 깨끗이 require 한다 (문법·의존 오류 없음). node 부재 시 skip."""
     if _NODE is None:
         import pytest
 
         pytest.skip("node 없음 — require 검증 skip")
 
     out = _run_node_check(
-        'require("./ctx-guard.js"); console.log("REQUIRE_OK");'
+        'require("./ctx-guard-core.cjs"); console.log("REQUIRE_OK");'
     )
-    assert "REQUIRE_OK" in out, f"plugin require 실패: {out!r}"
+    assert "REQUIRE_OK" in out, f"core 모듈 require 실패: {out!r}"
 
 
 # ── 4. 핸드오프 도구 allow-list (ADR-0038 D2 — claude _is_handoff_* 미러) ─────
@@ -476,7 +542,7 @@ def test_js_handoff_allowlist_pure_unit():
         pytest.skip("node 없음 — 핸드오프 allow-list 순수 단위 skip (정적 검증만 적용)")
 
     script = r"""
-const m = require("./ctx-guard.js");
+const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 for (const fn of ["isHandoffBash","isHandoffTarget","isHandoffTool","isNewWorkPermission"]) {
   assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
@@ -577,7 +643,7 @@ def test_js_build_nudge_guidance():
         pytest.skip("node 없음 — JS buildNudgeGuidance 순수 단위 skip (정적 검증만 적용)")
 
     script = r"""
-const m = require("./ctx-guard.js");
+const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 assert.strictEqual(typeof m.buildNudgeGuidance, "function", "missing export: buildNudgeGuidance");
 const g = m.buildNudgeGuidance({ remainingPct: 18, usedPct: 82 }, { nudge_pct: 20, stop_pct: 10 });
@@ -590,3 +656,107 @@ console.log("JS_NUDGE_GUIDANCE_OK");
 """
     out = _run_node_check(script)
     assert "JS_NUDGE_GUIDANCE_OK" in out, f"JS buildNudgeGuidance 검증 실패. out={out!r}"
+
+
+# ── 5. 라이브-로드 게이트 (T-0283 · 실 opencode autoload · release-tier · 기본 skip) ──
+# 이 게이트의 존재이유: 유닛/정적 테스트는 순수함수(node require)만 봐서, opencode 가 plugin export
+# 형식(CJS 객체)을 거부해 *한 번도 로드 안 되던* 갭을 못 잡았다(T-0283). 실 opencode 를 헤드리스로
+# 띄워 로드 성공을 실측 단언한다 — release-tier·on-demand(`PM_OPENCODE_LIVE=1`), CI/기본 regression 은
+# opencode 바이너리 부재로 skip(green 불변). node 도 필요(shim→core import 는 bun 이 처리하나 skip 조건 대칭).
+
+_OPENCODE_BIN = shutil.which("opencode")
+PM_OPENCODE_LIVE = os.environ.get("PM_OPENCODE_LIVE") == "1"
+
+# factory 가 CTX_GUARD_LOAD_PROBE 세팅 시 stderr 로 내는 로드 마커(core.cjs 와 문자열 일치).
+_LOAD_MARKER = "[ctx-guard] plugin factory loaded"
+# opencode 가 로드 실패 시 남기는 로그 조각(실측 1.17.18).
+_LOAD_FAIL = "failed to load plugin"
+_EXPORT_NOT_FN = "Plugin export is not a function"
+
+import pytest  # noqa: E402  (라이브 게이트 데코레이터용 — 이 지점 이후만 사용)
+
+_live_skip = pytest.mark.skipif(
+    not PM_OPENCODE_LIVE or _OPENCODE_BIN is None or _NODE is None,
+    reason="라이브 로드 게이트 — PM_OPENCODE_LIVE=1 + opencode/node CLI 필요(기본 skip·CI green 불변).",
+)
+
+
+def _run_opencode_load(project_dir: str) -> str:
+    """헤드리스 opencode 를 project_dir 에서 1회 띄워 stderr+stdout(DEBUG 로그)을 반환한다.
+
+    - CTX_GUARD_LOAD_PROBE=1 → factory 실행 시 로드 마커를 stderr 로 낸다(실 세션엔 무음).
+    - 모델은 nonexistent → 플러그인 로드(모델 호출 *전* 단계) 후 즉시 실패(실 API 호출·비용 없음).
+    - --dir project_dir → opencode 가 그 트리의 .opencode/ 를 로드(PWD 해석 회피·adopter 경험 미러).
+    """
+    env = dict(os.environ, CTX_GUARD_LOAD_PROBE="1")
+    proc = subprocess.run(
+        [
+            _OPENCODE_BIN, "run", "--dir", project_dir,
+            "--print-logs", "--log-level", "DEBUG",
+            "-m", "nonexistent/model-t0283-loadgate", "noop",
+        ],
+        capture_output=True, text=True, timeout=180, env=env,
+    )
+    return (proc.stderr or "") + (proc.stdout or "")
+
+
+def _stage_opencode_project(root: Path, plugin_body: str | None = None) -> Path:
+    """임시 project dir 에 .opencode/{plugins,lib} 를 깐다(템플릿 트리 오염 방지 — opencode 는
+    package.json 수정·node_modules 설치를 project dir 에 한다). plugin_body 지정 시 진입점만 대체
+    (sensitivity 대조군용)·미지정 시 실제 출하 shim+core 를 복사한다."""
+    oc = root / ".opencode"
+    (oc / "plugins").mkdir(parents=True)
+    (oc / "lib").mkdir(parents=True)
+    shutil.copy2(CORE_FILE, oc / "lib" / "ctx-guard-core.cjs")
+    if plugin_body is None:
+        shutil.copy2(PLUGIN_FILE, oc / "plugins" / "ctx-guard.js")
+    else:
+        (oc / "plugins" / "ctx-guard.js").write_text(plugin_body, encoding="utf-8")
+    return root
+
+
+@_live_skip
+def test_live_opencode_loads_ctx_guard_plugin():
+    """실 opencode 헤드리스가 출하 ctx-guard 플러그인을 autoload 성공하는지 실측 (T-0283 핵심 게이트).
+
+    단언: (1) "failed to load plugin" 부재 (2) "Plugin export is not a function" 부재
+    (3) factory 실행 마커 존재 = 플러그인이 실제로 로드되고 팩토리가 돌았다. 유닛 green 만으론
+    못 잡던 갭(실 세션 로드 실패)을 이 게이트가 닫는다.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        _stage_opencode_project(Path(td))
+        log = _run_opencode_load(td)
+    assert _LOAD_FAIL not in log, (
+        f"opencode 가 ctx-guard 플러그인 로드 실패 (T-0283 회귀). 로그 꼬리:\n{log[-2500:]}"
+    )
+    assert _EXPORT_NOT_FN not in log, (
+        f"export 형식 회귀 — 함수 아님. 로그 꼬리:\n{log[-2500:]}"
+    )
+    assert _LOAD_MARKER in log, (
+        f"플러그인 factory 실행 마커 부재 — autoload 안 됨. 로그 꼬리:\n{log[-2500:]}"
+    )
+
+
+@_live_skip
+def test_live_gate_rejects_broken_object_export():
+    """sensitivity 대조군: T-0283 원 버그 형태(CJS 객체 export)를 심으면 이 게이트가 *실제로* 로드 실패를
+    잡는지 실측 — false-green(무조건 통과) 방지. 대조군 진입점만 교체하고 core 는 그대로 둔다.
+
+    이 대조군이 없으면 게이트가 opencode 로그 형식 변화 등으로 조용히 무력화돼도 초록으로 통과할 수 있다.
+    """
+    broken = (
+        "// T-0283 원 버그 재현(대조군) — CJS 객체 export = opencode 가 함수 아니라며 로드 거부.\n"
+        'const core = require("../lib/ctx-guard-core.cjs");\n'
+        "module.exports = { CtxGuardPlugin: core.CtxGuardPlugin, "
+        "parseLocalConf: core.parseLocalConf, NUDGE_PCT_DEFAULT: core.NUDGE_PCT_DEFAULT };\n"
+    )
+    with tempfile.TemporaryDirectory() as td:
+        _stage_opencode_project(Path(td), plugin_body=broken)
+        log = _run_opencode_load(td)
+    assert _LOAD_FAIL in log or _EXPORT_NOT_FN in log, (
+        "게이트 무력화 위험 — 깨진 CJS 객체 export 를 opencode 가 로드 실패로 보고하지 않았다 "
+        f"(로그 형식 변화?). 로그 꼬리:\n{log[-2500:]}"
+    )
+    assert _LOAD_MARKER not in log, (
+        f"대조군인데 factory 가 실행됨 — 로드 실패 재현 안 됨. 로그 꼬리:\n{log[-2500:]}"
+    )
