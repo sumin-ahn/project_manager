@@ -44,7 +44,28 @@ from pathlib import Path
 from typing import Callable
 
 REPO = Path(__file__).resolve().parents[2]
-LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
+
+
+def _resolve_log_file(repo: Path = REPO) -> Path:
+    """공유 `log/current.md` 경로 — worktree 슬롯 cwd 에서도 PM 홈 공유 로그를 가리킨다 (T-0284·ADR-0027).
+
+    자기분리 토폴로지(ADR-0027)에서 board/wiki/log 는 ② PM 홈이 소유하고 코드/tests 는 슬롯
+    worktree(`<home>/work/<repo>_<N>`)에 있다. 부트스트랩이 슬롯 cwd 에서 돌면 `REPO` 가 슬롯
+    worktree 라 REPO-앵커 로그(`REPO/.project_manager/wiki/log/current.md`)가 *부재*(공유 로그는
+    PM 홈 소유)해 log 마지막 entry 가 "미해소"로 뜬다 — `pm_log.py tail`(PM 홈에서 실행)과 비대칭.
+    슬롯 형상(`repo.parent.name == "work"`)이면 상위 PM 홈(`repo.parent.parent`)의 공유 로그가
+    *실재할 때만* 그걸 가리킨다. 슬롯이 아니거나(솔로·PM 홈 직접 실행) 상위 공유 로그 부재면
+    REPO-앵커 그대로 폴백한다 — 회귀 0·fail-soft·fresh 채택자(standalone repo) 무영향.
+    """
+    default = repo / ".project_manager" / "wiki" / "log" / "current.md"
+    if repo.parent.name == "work":
+        shared = repo.parent.parent / ".project_manager" / "wiki" / "log" / "current.md"
+        if shared.exists():
+            return shared
+    return default
+
+
+LOG_FILE = _resolve_log_file()
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 TOOLS_DIR = REPO / ".project_manager" / "tools"
 AREAS_FILE = REPO / ".project_manager" / "areas.md"   # legacy 별칭 (아래 _areas_file 가 board_root 추종)
@@ -938,6 +959,15 @@ def extract_remaining_work_section(pm_state_text: str) -> str | None:
 # 차수 announce 머리표 placeholder — pm_state 미해소/추론불가 시 `PM <?>차` (crash 금지).
 _SESSION_LABEL_PLACEHOLDER = "PM <?>차"
 
+# fresh 슬롯(첫 바인딩·pm_state·자기 슬롯 handoff 둘 다 부재) 명시 배너 (T-0284). fresh 는
+# "복구할 게 없음"이 명확하니, 스크램블 유발 "미해소/직접 확인" placeholder 대신 "새로 시작"을
+# 명시해 PM 이 legacy pm_state·git log 를 손으로 뒤지는 토큰 낭비를 차단한다(read/report만·
+# 자동 pm_state 생성은 pm_handoff 소관·ADR-0035 경계 유지).
+_FRESH_SLOT_BANNER = (
+    "🆕 첫 바인딩 슬롯 · 이전 세션 맥락 없음 · 차수=1(fresh) · 폴백 스캔 불요 — "
+    "새 PM 세션으로 시작하고 첫 /pm-handoff 가 pm_state 를 생성한다."
+)
+
 
 def _format_board_counts_line(counts: dict[str, int]) -> str:
     """board 카운트 한 줄을 만든다 — `--mine`(scoped) 라벨 명확화 (T-0194).
@@ -1665,6 +1695,13 @@ class PmBootstrap:
         if bound_session is not None and not isinstance(session_num, int):
             session_num = 1
 
+        # fresh 슬롯 판정 (T-0284): 명시 슬롯이 바인딩됐는데 자기 pm_state 도(파일 부재) 자기 슬롯
+        # handoff 도(log_num None) 전혀 없으면 = 이 슬롯의 첫 세션이라 복구할 컨텍스트가 없다. 이땐
+        # "미해소/직접 확인" placeholder(스크램블 유발) 대신 명시 "fresh" 배너를 dump하도록 빌더에
+        # 신호한다(surface-only·자동 pm_state 생성 안 함·ADR-0035). 솔로(bound None)는 슬롯 개념이
+        # 없어 fresh 배너 대상 아님(현행 placeholder 보존·회귀 0).
+        fresh_slot = bound_session is not None and state_text is None and log_num is None
+
         remaining_work = (
             extract_remaining_work_section(state_text) if state_text is not None else None
         )
@@ -1679,6 +1716,7 @@ class PmBootstrap:
             "state_session_num": state_num,
             "remaining_work": remaining_work,
             "state_path": str(state_path) if state_path is not None else "pm_state.md",
+            "fresh_slot": fresh_slot,
         }
 
     # ── user 연속성 surface (T-0208·ADR-0033 ③) ──────────────────────────
@@ -1866,9 +1904,14 @@ class PmBootstrap:
         # 차수 announce (T-0179) — bound slot pm_state 에서 추론한 `PM <N>차`. 미해소/추론불가는
         # placeholder(`?`) — self-surface 헤더이지 강제 아님(crash 금지).
         session_label = _format_session_label(handoff_ctx)
+        # fresh 슬롯 (T-0284) — 첫 바인딩(pm_state·자기 handoff 둘 다 부재). log/pm_state 섹션의
+        # "미해소/직접 확인" placeholder 를 명시 "fresh·이전맥락없음" 배너로 분기(스크램블 낭비 차단).
+        fresh_slot = bool(handoff_ctx and handoff_ctx.get("fresh_slot"))
 
         lines: list[str] = []
         lines.append(f"## {session_label} 부트스트랩 ({timestamp})")
+        if fresh_slot:
+            lines.append(_FRESH_SLOT_BANNER)
         # 차수 stale 교차검증 (T-0208) — pm_state 가 log 보다 뒤처졌으면(머신 간 미동기) 경고 1줄.
         stale_warning = _format_stale_warning(handoff_ctx)
         if stale_warning:
@@ -1943,6 +1986,10 @@ class PmBootstrap:
                 lines.append("</details>")
             else:
                 lines.append("- (본문 파싱 실패 — `pm_log.py tail` 로 직접 확인)")
+        elif fresh_slot:
+            # fresh 슬롯 (T-0284) — 이 슬롯의 이전 handoff 없음. 전역 마지막 entry 유입은 타 슬롯
+            # 컨텍스트 오염(MF-2·ADR-0047)이라 금지 — "복구할 게 없음"을 명시(스크램블 금지).
+            lines.append("- (🆕 첫 바인딩 슬롯 — 이 슬롯의 이전 handoff 없음 · 복구할 컨텍스트 없음)")
         else:
             lines.append("- (log/current.md 없음 또는 entry 파싱 실패)")
         lines.append("")
@@ -1954,6 +2001,12 @@ class PmBootstrap:
         if remaining_work:
             lines.append("")
             lines.append(remaining_work)
+        elif fresh_slot:
+            # fresh 슬롯 (T-0284) — pm_state 파일 부재(첫 /pm-handoff 가 생성). "미해소 — 직접 확인"
+            # 은 없는 legacy pm_state 를 뒤지게 만드는 스크램블이라 금지·복구할 남은작업 없음을 명시.
+            lines.append(
+                "- (🆕 첫 바인딩 슬롯 — pm_state 없음 · 첫 /pm-handoff 가 생성 · 복구할 남은작업 없음)"
+            )
         else:
             ptr_path = handoff_ctx.get("state_path") if handoff_ctx else self._pm_state_display_path()
             lines.append(

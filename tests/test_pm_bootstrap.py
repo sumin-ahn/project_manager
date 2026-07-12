@@ -373,3 +373,112 @@ def test_bootstrap_slot_status_absent_pool_graceful(bootstrap, tmp_path, capsys)
     # identity 는 나오되 슬롯 상태 절은 없다(백본 부재 fail-soft).
     assert "당신은 **A PM**" in out
     assert "### 슬롯 상태" not in out
+
+
+# ── T-0284: fresh 슬롯 self-sufficiency (스크램블 낭비 제거) ──────────────────
+
+
+def _make_fresh_bootstrap(bootstrap, wp, tmp_path):
+    """fresh 슬롯 부트스트랩 대역 — pm_state 파일 *부재* + 공유 로그엔 무태그(=타 슬롯) handoff 만.
+
+    fresh slot-2 라이브 시나리오 재현: 공유 로그(`pm_log.py tail` 이 보는 것)엔 무태그 handoff 가
+    있지만 slot-2 는 그걸 자기 것으로 안 봐(MF-2·ADR-0047) 자기 컨텍스트가 0 이다. per-slot
+    pm_state 도 아직 없다(첫 /pm-handoff 산물). 이 상태에서 부트스트랩이 "미해소" 스크램블 대신
+    명시 fresh surface 를 내야 한다.
+    """
+    log_file = tmp_path / "current.md"
+    # 무태그 handoff(솔로/slot-1 귀속) — slot-2 는 MF-2 로 무시. 본문에 표식 문구를 넣어 유입 여부 검증.
+    log_file.write_text(
+        "# log\n\n"
+        "## [2026-07-12] handoff | PM 5차 → 다음 PM 세션\n"
+        "- 남은작업: 타-슬롯-산출-표식\n",
+        encoding="utf-8",
+    )
+    areas_file = tmp_path / "areas.md"
+    areas_file.write_text("| repo | prefix |\n|---|---|\n| A | A |\n", encoding="utf-8")
+    # pm_state 파일 부재 — 첫 바인딩 슬롯. 존재하지 않는 경로를 주입(_resolve_pm_state_file 그대로 반환).
+    pm_state_file = tmp_path / "slots" / "A_2" / "pm_state.md"  # 미존재(mkdir 안 함).
+
+    board_output = "  [open   ] T-0001  something  pm  tag\n"
+
+    def fake_board(args):
+        if args[:1] == ["lint"]:
+            return 0, "✓ no lint issues\n"
+        return 0, board_output
+
+    def fake_git(args):
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return 0, "main\n"
+        if args[:2] == ["log", "--oneline"]:
+            return 0, "abc123 commit subject\n"
+        return 0, ""
+
+    ret = _slot_status_obj(wp, upstream="origin/a5", upstream_ok=True, submodules=[])
+    pool = FakePool(slot_status_ret=ret)
+    return bootstrap.PmBootstrap(
+        run_board_fn=fake_board,
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
+        run_git_fn=fake_git,
+        log_file=log_file,
+        areas_file=areas_file,
+        worktree_pool=pool,
+        board=_FakeBoard(),
+        pm_state_file=pm_state_file,
+    )
+
+
+def test_fresh_slot_dumps_explicit_surface_not_placeholder(bootstrap, wp, tmp_path, capsys):
+    """fresh 슬롯(pm_state 부재·자기 handoff 없음) → 명시 "fresh" surface · "미해소" placeholder 부재.
+
+    비공허(DoD): (a) `🆕 첫 바인딩 슬롯`+`차수=1(fresh)`+`폴백 스캔 불요` 명시 배너 존재 (b) "미해소"
+    스크램블 placeholder 부재. 또한 무태그 전역 handoff(`PM 5차`·본문 표식)를 자기 것으로 오인하지
+    않아야 한다(MF-2) — 차수는 1차·본문 유입 0. fresh 분기를 없애면(placeholder 로 되돌리면) red.
+    """
+    inst = _make_fresh_bootstrap(bootstrap, wp, tmp_path)
+    rc = inst.run(repo="A", slot=2)
+    assert rc == 0
+    out = capsys.readouterr().out
+    # (a) 명시 fresh surface 존재.
+    assert "🆕 첫 바인딩 슬롯" in out
+    assert "차수=1(fresh)" in out
+    assert "폴백 스캔 불요" in out
+    # (b) "미해소" placeholder 부재 — fresh 는 복구할 게 없으니 스크램블 유발 표현 금지.
+    assert "미해소" not in out
+    # 차수는 1차(fresh 규칙) — 무태그 전역 "PM 5차" 를 자기 것으로 오인하지 않는다.
+    assert "## PM 1차 부트스트랩" in out
+    # 타 슬롯(무태그) handoff 본문이 유입되지 않는다(MF-2).
+    assert "타-슬롯-산출-표식" not in out
+
+
+def test_resolve_log_file_slot_cwd_finds_shared_home(bootstrap, tmp_path):
+    """worktree 슬롯 cwd(REPO=`<home>/work/<repo>_N`)에서 상위 PM 홈 공유 로그를 해소한다 (T-0284 이슈2).
+
+    비공허: 슬롯 REPO 밑엔 로그가 없어도(공유 로그는 PM 홈 소유) 상위 공유 로그가 실재하면 그걸
+    가리킨다 — `pm_log.py tail`(PM 홈 실행)과 대칭. 해소를 REPO-앵커로 되돌리면 이 단언이 red.
+    """
+    home = tmp_path / "pm_home"
+    shared_log = home / ".project_manager" / "wiki" / "log" / "current.md"
+    shared_log.parent.mkdir(parents=True)
+    shared_log.write_text("# log\n", encoding="utf-8")
+    slot = home / "work" / "project_manager_2"
+    slot.mkdir(parents=True)
+    assert bootstrap._resolve_log_file(slot) == shared_log
+
+
+def test_resolve_log_file_slot_without_shared_falls_back(bootstrap, tmp_path):
+    """슬롯 형상이라도 상위 공유 로그 부재면 REPO-앵커 폴백 — false redirect 방지·fresh 채택자 무영향."""
+    slot = tmp_path / "work" / "A_1"
+    slot.mkdir(parents=True)  # 상위(tmp_path)에 공유 로그 없음.
+    assert (
+        bootstrap._resolve_log_file(slot)
+        == slot / ".project_manager" / "wiki" / "log" / "current.md"
+    )
+
+
+def test_resolve_log_file_standalone_uses_repo_anchor(bootstrap, tmp_path):
+    """슬롯이 아닌 REPO(PM 홈 직접·standalone 채택자)는 상위 탐색 없이 REPO-앵커 로그 그대로 (회귀 0)."""
+    repo = tmp_path / "myrepo"  # parent.name != "work".
+    assert (
+        bootstrap._resolve_log_file(repo)
+        == repo / ".project_manager" / "wiki" / "log" / "current.md"
+    )
