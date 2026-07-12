@@ -7,6 +7,36 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-13
+
+dual-harness(claude·opencode 병행) 채택 지원, worktree/submodule 풀 관리 도구,
+스킬-우선 PM 운영 규율(ADR-0052), 그리고 라이브 도그푸딩에서 발견한 출하 버그 수정.
+
+### Added
+- **dual-harness 채택** (`pm_config add-harness <claude|opencode>`) — 이미 채택한 인스턴스에 두 번째
+  하네스 어댑터를 나란히 추가한다. claude·opencode 를 한 인스턴스에서 병행 운영하고(엔진 공유·어댑터층만
+  분기), imported 인스턴스는 소스를 upstream fallback + `--from` 으로 해소한다. (T-0269/0270/0271/0282)
+- **worktree/submodule 풀 관리** — `pm-worktree` 스킬 + `worktree_pool.py`(`dev`/`sync` 서브커맨드):
+  pool 의 submodule 을 selective 재동기하고, 작업 중 submodule 을 dev 브랜치로 지정해 재동기로부터
+  보호하며, drift 난 detached submodule 을 pin 으로 수동 재동기한다. 부트스트랩이 슬롯 브랜치·upstream·
+  submodule status 를 surface 한다. (ADR-0049/0050/0051·T-0275/0276/0277/0278)
+- 릴리즈 라이브 게이트에 worktree/dual-harness 시나리오를 반영하고 케이스 수집 pin 을 cascade 했다. (T-0278)
+
+### Changed
+- **스킬-우선 PM 운영 규율** (ADR-0052) — PM 운영단계(claim/finish/qa/dev-delegate/handoff)는 스킬로
+  invoke 하고 backbone CLI 직접 우회를 금지한다. `pm_role` 에 규율을 명문화하고, 부트스트랩 커맨드 카드가
+  스킬-우선을 반영하며, durable 회귀 가드로 못박았다. (T-0279/0280/0281)
+- 용어 정합 sweep — 잔여 표현을 표준으로 통일했다. (T-0268)
+
+### Fixed
+- **opencode ctx-guard 플러그인 로드** — 플러그인 export 를 함수로 교정(ESM shim + `lib/` core 분리)해
+  실 opencode 세션에서 정상 로드되도록 했다(이전엔 유닛만 green·라이브 세션에선 로드된 적 없음). (T-0283)
+- **부트스트랩 fresh-slot self-sufficiency** — 새 슬롯 부트스트랩 출력의 스크램블 placeholder 를 제거해
+  첫 세션이 자족적으로 시작하도록 했다. (T-0284)
+- **ticket_finish 두-git seam** — 다중슬롯에서 회귀 cwd 해소가 모호하던 것을 `--session`/`--no-pytest`
+  로 해소했다(ADR-0027). (T-0285)
+- **worktree/repo origin-freshness** 2건 — 슬롯·repo 의 upstream 신선도 판정 버그를 고쳤다. (T-0273/0274)
+
 ## [1.0.6] - 2026-07-10
 
 세션 정체성 인자의 canonical 통일, 멀티-PM 차수·워크스페이스의 슬롯별 격리,
