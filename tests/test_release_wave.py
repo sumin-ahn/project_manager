@@ -787,19 +787,21 @@ def test_multirepo_wave_prompt_has_per_repo_mechanics():
 # false-green 으로 삼킨다 — pytest.ini strict-marker 는 *오타* 만 잡지 *소실* 은 못 잡는다. 그래서
 # 마커 달린 테스트 함수 수를 pin 해, 마커가 사라지거나 이름이 바뀌면 이 기계 가드가 즉시 red 로
 # 잡는다(T-0159 보완). 기대값은 테스트가 늘 때 의도적으로 함께 갱신한다.
-# release tier 는 ADR-0039 D1 로 라이브 tier 를 하나로 통합한 것이라, 마커가 이 파일(full/multirepo/
-# hard-stop)과 test_fresh_adopter_runtime_smoke.py(pm_update self-update 경로 2케이스) 두 파일에
-# 걸쳐 있다 — AST 수집은 두 파일을 모두 스캔한다.
+# release tier 는 ADR-0039 D1 로 라이브 tier 를 하나로 통합한 것이라, 마커가 여러 파일(이 파일·
+# test_fresh_adopter_runtime_smoke·test_command_card_usability·test_pm_worktree_live)에 걸쳐 있다 —
+# AST 수집은 `_RELEASE_TEST_FILES` 의 모든 파일을 스캔한다.
 
 _RELEASE_TEST_FILES = (
     Path(__file__),
     Path(__file__).parent / "test_fresh_adopter_runtime_smoke.py",
     Path(__file__).parent / "test_command_card_usability.py",
+    Path(__file__).parent / "test_pm_worktree_live.py",
 )
 # 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
 # 5(이 파일: full/multirepo × claude/opencode + hard-stop) + 2(runtime_smoke: pm_update opencode/claude)
-# + 2(command_card_usability: claude/opencode 카드 사용성·ADR-0046·T-0255).
-_EXPECTED_RELEASE_TESTS = 9
+# + 2(command_card_usability: claude/opencode 카드 사용성·ADR-0046·T-0255)
+# + 2(pm_worktree_live: claude/opencode 스킬 라이브 하네스·ADR-0050·T-0278).
+_EXPECTED_RELEASE_TESTS = 11
 
 
 def _pytest_marker_name(decorator) -> str | None:
@@ -844,12 +846,12 @@ def test_release_pin_matches_board_livegate_pin():
 
 
 def test_release_marker_count_is_pinned():
-    """`release` 마커 테스트 수(두 파일 합)가 고정값과 일치 — 마커 소실/개명 시 게이트 false-green 방어.
+    """`release` 마커 테스트 수(`_RELEASE_TEST_FILES` 합)가 고정값과 일치 — 마커 소실/개명 시 게이트 false-green 방어.
 
     근거(2026-07-02 실측): 릴리즈 게이트가 wrong-cwd + 잔재 tests/ 로 0개 수집·exit5 를 조용히
     내는 false-green 이 실제 발생. `-m release` selection 에서 마커가 빠진 테스트는 조용히 안 돌고,
     그 부재를 게이트가 못 본다. 이 수집-수 pin 이 마커 소실/개명 클래스를 red 로 세운다(T-0159 보완).
-    ADR-0039 로 라이브 tier 가 하나(release)라, 두 파일(_RELEASE_TEST_FILES)의 마커를 합산해 pin 한다.
+    ADR-0039 로 라이브 tier 가 하나(release)라, `_RELEASE_TEST_FILES` 파일들의 마커를 합산해 pin 한다.
     """
     actual = sum(_count_marked_tests(f, "release") for f in _RELEASE_TEST_FILES)
     assert actual == _EXPECTED_RELEASE_TESTS, (
