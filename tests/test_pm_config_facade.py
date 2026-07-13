@@ -203,6 +203,12 @@ class FakeGitRecorder:
 
     def __call__(self, argv):
         self.calls.append(list(argv))
+        # bare 실검증(T-0294·2조건) — 재사용 경로 테스트가 기본 유효 bare 로 판정되게 is-bare "true"
+        # + HEAD rc0 둘 다 모델(무효 bare fail-loud 는 test_pm_config_repo_add 가 별도 runner 로).
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return 0, "true"
+        if "rev-parse" in argv and "--verify" in argv and argv[-1] == "HEAD":
+            return 0, "0123abc"
         return self._rc, self._out
 
 
@@ -888,6 +894,12 @@ class _BaseAwareGit:
 
     def __call__(self, argv):
         self.calls.append(list(argv))
+        # `-C <bare> rev-parse --is-bare-repository` / `--verify HEAD` — bare 실검증(T-0294·2조건).
+        # 유효 bare 로 모델(is-bare "true" + HEAD rc0 둘 다).
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return 0, "true\n"
+        if "rev-parse" in argv and "--verify" in argv and argv[-1] == "HEAD":
+            return 0, "0123abc\n"
         # `-C <bare> symbolic-ref --short HEAD` — bare HEAD 해소.
         if "symbolic-ref" in argv:
             return 0, self._head + "\n"

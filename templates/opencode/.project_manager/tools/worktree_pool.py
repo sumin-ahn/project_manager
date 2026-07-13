@@ -175,16 +175,30 @@ class BareRepoMissing(RuntimeError):
     (cross-module 규격 — codex T-0063 게이트 포착).
     """
 
-    def __init__(self, repo: str, bare_path: "Path"):
+    def __init__(self, repo: str, bare_path: "Path", *, broken: bool = False):
         self.repo = repo
         self.bare_path = bare_path
-        super().__init__(
-            f"bare mirror for {repo!r} not found at {str(bare_path)!r} — "
-            f"`.repos/{repo}.git`(worktree 공유 .git 원)가 없다. areas.md 에 이미 등록됐으면 "
-            f"(multi-user: `.repos/` 는 gitignore·per-clone 이라 공유 안 됨) "
-            f"`pm-config repo add {repo}`(--git 불요)가 areas 등록 URL 로 mirror 를 hydrate 한다; "
-            f"미등록 신규 repo 면 `pm-config repo add {repo} --git <url>` (ADR-0011 §31·T-0291)"
-        )
+        # broken=True (T-0294) = 경로는 있으나 유효 bare 가 아님(부분/깨진 bare) — 부재와 구별해
+        # exists-but-broken 진단을 부재 케이스 수준으로 안내한다. broken=False = 종전 경로부재.
+        self.broken = broken
+        if broken:
+            super().__init__(
+                f"bare mirror for {repo!r} at {str(bare_path)!r} exists but is not a valid bare "
+                f"git repo — 부분/깨진 bare (중단된 `git clone --bare` 잔존 가능성·하네스 타임아웃/"
+                f"Ctrl-C·T-0294). `.repos/{repo}.git` 경로는 있으나 `git worktree add` 의 base 로 "
+                f"못 써 나중 날 git 에러로 죽는다. 자동 삭제는 하지 않는다(사용자 데이터 오판 위험·"
+                f"삭제는 사용자 위임) — `.repos/{repo}.git` 를 수동 삭제 후 "
+                f"`pm-config repo add {repo}`(--git 불요·areas 등록 URL 로 재hydrate·미등록이면 "
+                f"`--git <url>`)로 재생성하라 (ADR-0011 §31·T-0294)"
+            )
+        else:
+            super().__init__(
+                f"bare mirror for {repo!r} not found at {str(bare_path)!r} — "
+                f"`.repos/{repo}.git`(worktree 공유 .git 원)가 없다. areas.md 에 이미 등록됐으면 "
+                f"(multi-user: `.repos/` 는 gitignore·per-clone 이라 공유 안 됨) "
+                f"`pm-config repo add {repo}`(--git 불요)가 areas 등록 URL 로 mirror 를 hydrate 한다; "
+                f"미등록 신규 repo 면 `pm-config repo add {repo} --git <url>` (ADR-0011 §31·T-0291)"
+            )
 
 
 class Lease:
@@ -552,6 +566,47 @@ def bare_repo_path(repo: str) -> Path:
     같은 관례([[T-0061]]) — worktree 풀이 import 격리(board·pm_config 미import)라 자체 해소한다.
     """
     return REPOS_DIR / f"{repo}.git"
+
+
+def _is_valid_bare(bare_path: Path, *, runner: GitRunner) -> bool:
+    """`.repos/<repo>.git` 가 *worktree add 의 base 로 실제로 쓸 수 있는 bare git repo* 인지 검증 (T-0294).
+
+    `Path.exists()` 는 경로 존재만 본다 — 중단된 `git clone --bare`(하네스 타임아웃·Ctrl-C·
+    #5→#1 cascade)가 남긴 **부분·빈·깨진** `.repos/<repo>.git` 도 exists()=True 다. 그런 무효
+    bare 를 "존재 → 재사용"으로 통과시키면 repo add 는 rc0 success 인데 invariant(쓸 수 있는
+    bare)는 깨진 채, 나중 `git worktree add` 의 base 가 없어 날 git 에러로 죽는다(원인 안
+    드러남·audit #1→#4).
+
+    **두 조건 AND** (codex 게이트·실측 확정):
+      1. **bare 형식** — `git -C <bare> rev-parse --is-bare-repository` rc0 && stdout 에 `true`.
+      2. **HEAD 해소** — `git -C <bare> rev-parse --verify HEAD` **rc0**. is-bare(=`core.bare=true`)
+         만으론 부족하다: `git init --bare`(또는 objects fetch 전 죽은 clone)가 남긴 **빈/부분
+         bare** 는 core.bare=true 지만 HEAD/objects 가 없다(실측: is-bare "true"·`rev-parse
+         --verify HEAD` rc128·`rev-list --all --count` 0). `worktree add <path>` 는 HEAD 를
+         체크아웃하므로 **HEAD 해소 = base 가용성의 정확한 precondition** — rc 기반 검사(문자열
+         파싱 아님·견고)로 이 빈/부분 bare 를 broken 으로 잡는다.
+
+    부분 bare 는 discovery 가 상위 워킹트리로 올라가 is-bare `false`(rc0·`.repos/` 는 워킹트리
+    안)거나 상위도 repo 아니면 rc≠0(fatal) — 어느 쪽도 조건1 False. **fail-soft**: git 바이너리
+    부재·예외는 runner 가 (1, msg) 로 감싸므로 자연히 False(크래시 0·rc≠0 로 호출부 위임).
+
+    is-bare 파싱은 `"true" in out.split()`(reviewer sug) — `_real_git_runner` 가 stdout+stderr
+    를 결합 반환(T-0070)하므로, 유효 bare 라도 git 이 stderr 경고 한 줄을 내면 `out.strip()==
+    "true"` 는 false-negative(유효를 broken 오판)다. 공백 토큰에 `true` 존재로 그 경고에 안 흔들린다.
+
+    `runner` 는 argv 앞에 `-C <bare>` 를 받는 clone-runner 계열 — pm_config 의 sibling 헬퍼
+    (`_set_bare_fetch_refspec`·`_ensure_bare_branch_tracking`·`_resolve_base`)가 주입 runner 를
+    `-C <bare>` 로 재사용하는 관례와 동일(별도 DI seam 안 만듦·주입 mock 은 이 argv 로 유효/무효
+    bare 를 모델링). 절대경로 `-C` 는 중첩돼도(worktree_pool 실경로 `_real_git_runner(bare)` 와
+    이중 `-C`) idempotent(뒤 절대경로가 앞을 리셋)라 안전.
+    """
+    rc, out = runner(["-C", str(bare_path), "rev-parse", "--is-bare-repository"])
+    if rc != 0 or "true" not in out.split():
+        return False
+    # HEAD 해소 검증 — is-bare(형식)만으론 빈/부분 bare 를 통과시킨다(위 조건2). worktree add 의
+    # 체크아웃 대상 HEAD 가 해소돼야 base 로 쓸 수 있다. rc 기반(견고·문자열 무관).
+    head_rc, _ = runner(["-C", str(bare_path), "rev-parse", "--verify", "HEAD"])
+    return head_rc == 0
 
 
 # ── 보호 브랜치 pre-push 훅 (T-0076·하드·회사 repo 무영향 / T-0223·라이브 게이트 승격) ────
@@ -988,14 +1043,20 @@ def create_slot(
     """
     sess = session or _default_session()
 
-    # bare 부재 가드 — worktree 의 공유 .git 원이 없으면 base 가 없다(ADR-0011 §31). 침묵
-    # 폴백(multi-PM 루트 worktree)으로 가면 슬롯이 family repo 가 아닌 multi-PM 루트를 체크아웃해 토폴로지가
-    # 깨진다 → 명시 raise 로 `pm-config repo add` 선행 안내(ADR-0013 fail-soft 규율). 주입된
-    # git_runner(테스트 mock·bare base 도 그 runner 가 모킹)도 같은 가드를 거친다 — bare
-    # 부재 가드는 *경로 존재*에 대한 확인이지 실 git 호출이 아니므로 mock 모드에서도 유효.
+    # bare 부재/무효 가드 — worktree 의 공유 .git 원이 없거나 무효면 base 가 없다(ADR-0011 §31).
+    # 침묵 폴백(multi-PM 루트 worktree)으로 가면 슬롯이 family repo 가 아닌 multi-PM 루트를 체크아웃해
+    # 토폴로지가 깨진다 → 명시 raise 로 `pm-config repo add` 선행 안내(ADR-0013 fail-soft 규율).
+    #   1) 경로부재 → BareRepoMissing (종전·hydrate 안내).
+    #   2) 경로존재 but 무효(부분/깨진 bare·T-0294) → BareRepoMissing(broken=True). 중단된 clone 이
+    #      남긴 부분 bare 는 exists()=True 지만 worktree add 의 base 로 못 써 날 git 에러로 죽는다
+    #      (audit #1→#4). `_is_valid_bare`(rev-parse)로 실 bare 를 판정해 그 조용한 통과를 fail-loud
+    #      진단으로 닫는다. 주입된 git_runner(테스트 mock)도 같은 가드를 거친다 — mock 이 rev-parse
+    #      로 유효/무효 bare 를 모델링(DI seam 보존·실 git 안 탐).
     bare = bare_repo_path(repo)
     if not bare.exists():
         raise BareRepoMissing(repo, bare)
+    if not _is_valid_bare(bare, runner=git_runner or _real_git_runner(bare)):
+        raise BareRepoMissing(repo, bare, broken=True)
 
     with _lease_lock():
         leases = _read_ledger()
@@ -1072,11 +1133,20 @@ def create_slot(
         add_runner = git_runner or _real_git_runner_interactive(bare, timeout=GIT_TIMEOUT_SECONDS)
         rc, out = add_runner(add_argv)
         if rc != 0:
+            # 원인 힌트 (#4-bare·T-0294) — 식별 가능한 원인을 raw git out 앞에 붙인다. 상단 가드가
+            # broken bare 를 이미 걸러내지만, upfront rev-parse 는 통과했는데 objects 결손 등으로
+            # worktree add 만 죽는 잔여 부분-bare(또는 op 도중 손상)를 여기서 재판정해 안내한다.
+            bare_hint = ""
+            if not _is_valid_bare(bare, runner=git_runner or _real_git_runner(bare)):
+                bare_hint = (
+                    f"`.repos/{repo}.git` 가 유효 bare 가 아니다(부분/깨진 bare 가능성) — 수동 삭제 후 "
+                    f"`pm-config repo add {repo}` 로 재hydrate 하라 (T-0294). "
+                )
             # 트립/실패 안내 (T-0292) — 하네스 자동 호출이 timeout/실패로 죽었을 때 사용자에게 다음
             # 행동(터미널 직접 실행·무제한 opt-in)을 준다. rc 기반(out 은 인터랙티브면 빈 문자열).
             timeout_desc = "무제한" if GIT_TIMEOUT_SECONDS is None else f"{GIT_TIMEOUT_SECONDS}초"
             raise RuntimeError(
-                f"git worktree add failed for {slot!r} (rc={rc}, out={out!r}). "
+                f"git worktree add failed for {slot!r} (rc={rc}, out={out!r}). {bare_hint}"
                 f"매우 느린 op(대형 repo·느린 디스크/VPN)이면 timeout({timeout_desc}·PM_GIT_TIMEOUT)에 "
                 f"걸렸을 수 있다 — 터미널에서 `pm-config worktree add {repo}` 를 직접 실행하면 진행상황이 "
                 f"보이고, `PM_GIT_TIMEOUT=none` 으로 무제한 실행할 수 있다 (T-0292)."

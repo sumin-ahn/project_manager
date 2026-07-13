@@ -82,9 +82,10 @@ def proj(tmp_path):
 def _mk_bare_placeholder(wp, repo: str) -> Path:
     """`.repos/<repo>.git` 자리(디렉토리)를 만든다 — bare 부재 가드 통과용(mock git 경로).
 
-    bare 부재 가드(`create_slot`)는 *경로 존재*만 본다(실 git 무관). mock git_runner 로
-    worktree add 를 모킹하는 단위테스트가 가드를 통과하도록 placeholder 디렉토리를 둔다.
-    실 git 통합테스트는 `git clone --bare` 로 진짜 bare 를 만든다(이 헬퍼 미사용).
+    bare 가드(`create_slot`)는 *경로 존재*(exists) + *실 bare 검증*(rev-parse·T-0294) 둘 다 본다.
+    이 헬퍼는 경로 존재만 채우고, 실 bare 여부는 mock git_runner(FakeGit·is_bare=True 기본)가
+    `rev-parse --is-bare-repository`→"true" 로 모델링해 통과시킨다. 실 git 통합테스트는
+    `git clone --bare` 로 진짜 bare 를 만든다(이 헬퍼 미사용).
     """
     bare = wp.bare_repo_path(repo)
     bare.mkdir(parents=True, exist_ok=True)
@@ -113,7 +114,8 @@ class FakeGit:
     """
 
     def __init__(self, *, dirty: bool = False, head: "str | None" = None,
-                 fetch_rc: int = 0, origin_has_base: bool = True):
+                 fetch_rc: int = 0, origin_has_base: bool = True,
+                 is_bare: bool = True, head_resolves: bool = True):
         self.dirty = dirty
         self.head = head        # 슬롯 worktree 의 현재 브랜치(=HEAD)·checkout 으로 갱신.
         # base 파생 origin-freshness 모델(T-0274): `fetch origin` rc + `refs/remotes/origin/<base>`
@@ -121,10 +123,22 @@ class FakeGit:
         # 존재(→ origin/<base> 파생), False = 미해소(→ 로컬 <base> 폴백).
         self.fetch_rc = fetch_rc
         self.origin_has_base = origin_has_base
+        # bare 유효성 모델(T-0294·2조건 AND): (1) `rev-parse --is-bare-repository`=is_bare, (2)
+        # `rev-parse --verify HEAD` rc=head_resolves. **유효 bare = is_bare=True AND head_resolves=
+        # True** 둘 다. is_bare=True·head_resolves=False = core.bare=true 지만 HEAD 미해소(빈/부분
+        # bare·objects 없는 죽은 clone) → 가드가 broken 으로 잡는다(codex must-fix 재현).
+        self.is_bare = is_bare
+        self.head_resolves = head_resolves
         self.calls: list[list] = []
 
     def __call__(self, argv: list) -> tuple[int, str]:
         self.calls.append(list(argv))
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            # 실 bare 형식 판정(T-0294) — `-C <bare>` 프리픽스 유무 무관 argv 스캔. 유효=rc0/"true".
+            return (0, "true\n") if self.is_bare else (0, "false\n")
+        if "rev-parse" in argv and "--verify" in argv and argv[-1] == "HEAD":
+            # HEAD 해소 판정(T-0294) — 유효 bare 는 rc0, 빈/부분 bare 는 rc128(HEAD 미해소).
+            return (0, "0123abc\n") if self.head_resolves else (128, "fatal: Needed a single revision\n")
         if argv[:2] == ["status", "--porcelain"]:
             return (0, " M file.py\n") if self.dirty else (0, "")
         if argv == ["symbolic-ref", "--short", "HEAD"]:
@@ -932,6 +946,8 @@ def test_create_slot_worktree_add_failure_raises(wp):
     """worktree add 가 비0 → RuntimeError(불완전 슬롯 등록 방지)."""
     _mk_bare_placeholder(wp, "A")
     def failing(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")   # 유효 bare 로 가드 통과 → worktree add 까지 도달(T-0294).
         if argv[:2] == ["worktree", "add"]:
             return (1, "fatal: ...")
         return (0, "")
@@ -949,6 +965,8 @@ def test_create_slot_submodule_init_failure_raises_before_register(wp):
     """
     _mk_bare_placeholder(wp, "A")
     def failing(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")   # 유효 bare 로 가드 통과(T-0294).
         if argv[:1] == ["submodule"]:
             return (1, "fatal: submodule init failed")
         return (0, "")  # worktree add 등은 성공
@@ -966,6 +984,8 @@ def test_create_slot_submodule_init_success_registers(wp):
     """
     _mk_bare_placeholder(wp, "A")
     def succeeding(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")   # 유효 bare 로 가드 통과(T-0294).
         return (0, "")  # worktree add·submodule 모두 성공
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=succeeding)
     assert lease.state == "leased"
@@ -994,6 +1014,8 @@ def test_create_slot_submodule_init_failure_message_surfaces_rc(wp):
     """
     _mk_bare_placeholder(wp, "A")
     def failing_empty(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")   # 유효 bare 로 가드 통과(T-0294).
         if argv[:1] == ["submodule"]:
             return (1, "")  # 비0 + 빈 out (Windows 캡처 유실 재현)
         return (0, "")
@@ -1004,6 +1026,96 @@ def test_create_slot_submodule_init_failure_message_surfaces_rc(wp):
     assert "submodule" in msg  # 실행한 argv 가 메시지에 노출
     # 등록 전 raise → 불완전 슬롯 미등록(기존 계약 유지).
     assert wp.list_leases() == []
+
+
+# ════════════════════════════════════════════════════════════════════════
+# create_slot bare 실검증 — 부분/깨진 bare 조용히 통과 근절 (T-0294)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_create_slot_valid_bare_passes_guard(wp):
+    """DoD(1) 유효 bare → 통과 — 경로 존재 + rev-parse "true" 면 슬롯 정상 생성 (T-0294).
+
+    _is_valid_bare 가드가 유효 bare 를 막지 않음을 확증한다. sensitivity: 가드가 실제로
+    `rev-parse --is-bare-repository` 를 물었는지(경로 존재만 안 봄) 호출 기록으로 확인한다.
+    """
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit(is_bare=True)
+    lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
+    assert lease.slot == "work/A_1"
+    assert lease.state == "leased"
+    # 가드가 rev-parse 로 실 bare 를 판정했다(경로 존재만이 아님).
+    assert git.did("-C", str(wp.bare_repo_path("A")), "rev-parse", "--is-bare-repository")
+    assert git.did("worktree", "add")   # 유효 → worktree add 까지 도달
+
+
+def test_create_slot_broken_bare_fails_loud(wp):
+    """DoD(2) 경로존재 but 무효(rev-parse "false") → BareRepoMissing(broken=True) fail-loud (T-0294).
+
+    중단된 clone 이 남긴 부분/깨진 bare 는 exists()=True 지만 rev-parse 가 "true" 가 아니다 →
+    조용한 통과(worktree add 가 날 git 에러로 죽음) 대신 broken=True 진단으로 fail-loud 한다.
+    worktree add 는 불리지 않고(가드가 앞) 장부에 슬롯 0(불완전 슬롯 0).
+    """
+    _mk_bare_placeholder(wp, "A")          # 경로는 존재 (부분 bare 잔존 모사)
+    git = FakeGit(is_bare=False)           # rev-parse "false" = 무효 bare
+    with pytest.raises(wp.BareRepoMissing) as exc:
+        wp.create_slot("A", branch="a1", session="me", git_runner=git)
+    assert exc.value.broken is True
+    msg = str(exc.value)
+    assert "부분/깨진 bare" in msg          # exists-but-broken 진단(경로부재 메시지와 구별)
+    assert "재hydrate" in msg or "repo add" in msg   # 다음 행동 힌트(수동 삭제 후 재생성)
+    assert not git.did("worktree", "add"), "무효 bare 인데 worktree add 가 불림(조용한 통과 위험)"
+    assert wp.list_leases() == []
+
+
+def test_create_slot_bare_valid_format_but_no_head_fails_loud(wp):
+    """DoD(2·codex must-fix) is-bare "true" 지만 HEAD 미해소(빈/부분 bare) → fail-loud (T-0294).
+
+    `git init --bare`(또는 objects fetch 전 죽은 clone)가 남긴 빈 bare 는 core.bare=true(is-bare
+    "true")지만 `rev-parse --verify HEAD` rc≠0 — worktree add 의 base 로 못 쓴다(HEAD 체크아웃 실패).
+    is-bare 형식만 보면 통과시키던 갭(audit #1 잔존)을 HEAD 해소 검사가 닫는다. sensitivity: HEAD
+    검사를 빼면 이 케이스가 통과해 red — is_bare=True 인데 head_resolves=False 만으로 broken 판정.
+    """
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit(is_bare=True, head_resolves=False)   # 형식은 bare 지만 HEAD 미해소(빈 bare)
+    with pytest.raises(wp.BareRepoMissing) as exc:
+        wp.create_slot("A", branch="a1", session="me", git_runner=git)
+    assert exc.value.broken is True
+    assert not git.did("worktree", "add"), "HEAD 없는 bare 인데 worktree add 가 불림(조용한 통과)"
+    assert wp.list_leases() == []
+    # 가드가 HEAD 해소를 실제로 물었다(is-bare 만 아님).
+    assert git.did("-C", str(wp.bare_repo_path("A")), "rev-parse", "--verify", "HEAD")
+
+
+def test_create_slot_missing_vs_broken_bare_distinct(wp):
+    """DoD(3) 경로부재 → BareRepoMissing(broken=False) — 부재와 exists-but-broken 을 구별한다 (T-0294).
+
+    경로부재(placeholder 미생성)는 종전 broken=False(hydrate 안내), 경로존재+무효는 broken=True
+    (재생성 안내)로 갈린다 — 같은 예외 타입이지만 broken 플래그·메시지가 다르다.
+    """
+    # 경로부재: placeholder 안 만듦 → exists()=False → broken=False.
+    git = FakeGit(is_bare=True)
+    with pytest.raises(wp.BareRepoMissing) as exc_missing:
+        wp.create_slot("A", branch="a1", session="me", git_runner=git)
+    assert exc_missing.value.broken is False
+    assert "hydrate" in str(exc_missing.value)   # 종전 부재 안내(T-0291)
+
+
+def test_create_slot_bare_validation_uses_injected_runner(wp):
+    """DoD(4) DI mock 경로 무영향 — 판정은 주입 runner 로만(실 git 안 탐), mock 이 verdict 을 뒤집는다 (T-0294).
+
+    같은 경로(placeholder 존재)에서 주입 mock 의 is_bare 만 True/False 로 갈려 통과/fail-loud 가
+    갈린다 → 가드가 실 git 이 아닌 *주입 runner* 의 rev-parse 로 판정함을 보인다(DI seam 보존).
+    """
+    _mk_bare_placeholder(wp, "A")
+    # 유효 mock → 통과.
+    ok = FakeGit(is_bare=True)
+    lease = wp.create_slot("A", branch="a1", session="me", git_runner=ok)
+    assert lease.state == "leased"
+    # 같은 placeholder, 무효 mock → fail-loud (판정이 mock 에서 옴·경로는 동일).
+    bad = FakeGit(is_bare=False)
+    with pytest.raises(wp.BareRepoMissing):
+        wp.create_slot("A", branch="a2", session="me", git_runner=bad)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1231,6 +1343,9 @@ def test_create_slot_worktree_add_runs_in_bare_context(wp, monkeypatch):
         return FakeGit()  # 모든 git 호출 성공 stub(add 성공)
 
     monkeypatch.setattr(wp, "_real_git_runner_interactive", spy_interactive)
+    # bare 실검증 가드(T-0294)는 captured 러너(`_real_git_runner`)로 rev-parse 한다 — placeholder
+    # 는 실 bare 가 아니므로 실 러너면 무효 판정된다. FakeGit(is_bare=True)로 stub 해 가드 통과.
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: FakeGit())
     wp.create_slot("A", branch="a1", session="me", init_submodules=False)
     assert captured[0] == wp.bare_repo_path("A"), \
         f"worktree add 컨텍스트가 family bare 가 아님: {captured[0]!r}"
@@ -1699,6 +1814,28 @@ def _mk_real_bare(wp, repo: str, tmp_path: Path, *, marker: str = "FAMILY") -> P
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
     return bare
+
+
+@_git_required
+def test_real_git_is_valid_bare_requires_head_resolution(wp, tmp_path):
+    """실 git — `_is_valid_bare`: 빈 bare(HEAD 미해소)=False · 커밋 있는 bare=True (T-0294·codex must-fix·#3).
+
+    전 검증이 mock(FakeGit/GitFake)이라 codex 가 잡은 실 케이스(is-bare "true" 지만 HEAD 없는 빈
+    bare)를 mock 가정이 놓쳤다 — 그 갭을 실 git 로 고정한다. `git init --bare` 는 core.bare=true
+    (is-bare "true")지만 objects/HEAD 가 없어 `worktree add` base 로 못 쓴다(실측: `rev-parse
+    --verify HEAD` rc128). is-bare 형식만 보던 판정을 HEAD 해소(rc0) 검사가 닫음을 실 git 로 증명.
+    비네트워크·짧은 로컬 op(기존 실-git 테스트 관례). sensitivity: HEAD 검사를 빼면 (1) 이 True 로
+    뒤집혀 red(빈-bare 통과 회귀 재현).
+    """
+    # (1) 빈 bare — `git init --bare`(커밋/HEAD 없음) → is-bare "true" 지만 HEAD 미해소 → False.
+    empty_bare = tmp_path / "empty.git"
+    _git(tmp_path, "init", "--bare", "-q", str(empty_bare))
+    assert wp._is_valid_bare(empty_bare, runner=wp._real_git_runner(empty_bare)) is False, \
+        "빈 bare(HEAD 미해소)를 유효로 오판(is-bare 형식만 봄·codex must-fix)"
+    # (2) 커밋 있는 real repo → `clone --bare` → is-bare "true" + HEAD rc0 → True.
+    valid_bare = _mk_real_bare(wp, "A", tmp_path)
+    assert wp._is_valid_bare(valid_bare, runner=wp._real_git_runner(valid_bare)) is True, \
+        "정상 bare(HEAD 해소)를 broken 오판"
 
 
 @_git_required
@@ -2281,8 +2418,10 @@ def test_create_slot_worktree_add_and_submodule_use_interactive_on_real_path(wp,
     # submodule = 슬롯 경로 + 기본 timeout(=SUBMODULE_TIMEOUT·미지정) (T-0070 인터랙티브).
     assert (slot_p, None) in interactive_calls, \
         "submodule 단계가 인터랙티브 러너(기본 timeout)를 안 탐"
-    # branch 경로엔 base 파생 prep(fetch/show-ref)이 없어 capture 러너는 안 만들어진다.
-    assert capture_cwds == [], "branch 경로인데 capture 러너 생성됨(base prep 만 capture 여야)"
+    # branch 경로엔 base 파생 prep(fetch/show-ref)이 없다 — capture 러너는 bare 실검증 가드
+    # (T-0294·rev-parse)만 만든다(bare 컨텍스트·1회). worktree add/submodule 은 인터랙티브다.
+    assert capture_cwds == [bare], \
+        f"capture 러너는 bare 실검증(T-0294)만이어야 하는데: {capture_cwds!r}"
 
 
 def test_create_slot_worktree_add_injected_runner_preserves_di_seam(wp, monkeypatch):
@@ -2314,6 +2453,8 @@ def test_create_slot_worktree_add_failure_trip_message(wp):
     _mk_bare_placeholder(wp, "A")
 
     def failing(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")   # 유효 bare 로 가드 통과 → worktree add 도달(T-0294).
         if argv[:2] == ["worktree", "add"]:
             return (1, "")  # 인터랙티브 실패 재현: rc≠0·빈 out
         return (0, "")
@@ -2391,6 +2532,8 @@ class _SubmoduleFailRollbackGit:
 
     def __call__(self, argv: list) -> tuple[int, str]:
         self.calls.append(list(argv))
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")   # 유효 bare 로 가드 통과(T-0294) → worktree add·submodule 도달.
         if argv[:1] == ["submodule"]:
             return (1, "fatal: submodule clone failed")
         return (0, "")  # worktree add·remove 등은 성공
@@ -2428,6 +2571,8 @@ def test_create_slot_rollback_failure_still_raises_original(wp):
     _mk_bare_placeholder(wp, "A")
 
     def remove_rc_fail(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")   # 유효 bare 로 가드 통과(T-0294).
         if argv[:1] == ["submodule"]:
             return (1, "submodule failed")
         if argv[:2] == ["worktree", "remove"]:
@@ -2438,6 +2583,8 @@ def test_create_slot_rollback_failure_still_raises_original(wp):
     assert wp.list_leases() == []
 
     def remove_raises(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")   # 유효 bare 로 가드 통과(T-0294).
         if argv[:1] == ["submodule"]:
             return (1, "submodule failed")
         if argv[:2] == ["worktree", "remove"]:
@@ -2459,6 +2606,8 @@ def test_create_slot_worktree_add_failure_does_not_rollback(wp):
 
     def add_fail(argv):
         calls.append(list(argv))
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")   # 유효 bare 로 가드 통과(T-0294) → worktree add 실패 경로 도달.
         if argv[:2] == ["worktree", "add"]:
             return (1, "fatal: add failed")
         return (0, "")

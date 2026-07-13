@@ -850,6 +850,11 @@ def test_default_session_e2e_local_conf_match(board, monkeypatch):
 
     class _FakeGit:
         def __call__(self, argv):
+            # bare 실검증 가드(T-0294·2조건) — is-bare "true" + HEAD rc0 둘 다로 유효 bare 모델.
+            if "rev-parse" in argv and "--is-bare-repository" in argv:
+                return (0, "true\n")
+            if "rev-parse" in argv and "--verify" in argv and argv[-1] == "HEAD":
+                return (0, "0123abc\n")
             return (0, "")
 
     wp.create_slot("A", git_runner=_FakeGit(), test_cmd="make hil2")  # session 미지정 → _default_session

@@ -84,7 +84,8 @@ class GitFake:
     """
 
     def __init__(self, *, clone_rc=0, config_rc=0, fetch_rc=0, head="main",
-                 symref_rc=0, revparse_rc=0, branch_config_rc=0):
+                 symref_rc=0, revparse_rc=0, branch_config_rc=0,
+                 is_bare=True, head_resolves=True):
         self.calls: list[list] = []
         self._clone_rc = clone_rc
         self._config_rc = config_rc
@@ -95,9 +96,18 @@ class GitFake:
         self._symref_rc = symref_rc            # symbolic-ref --short HEAD rc
         self._revparse_rc = revparse_rc        # rev-parse --abbrev-ref HEAD rc (symref 실패 폴백)
         self._branch_config_rc = branch_config_rc   # config branch.<d>.remote/merge rc
+        # bare 실검증(T-0294·2조건 AND): (1) `rev-parse --is-bare-repository`=is_bare, (2) `rev-parse
+        # --verify HEAD` rc=head_resolves. **유효 bare = is_bare AND head_resolves 둘 다**. is_bare=
+        # True·head_resolves=False = core.bare=true 지만 HEAD 미해소(빈/부분 bare) → repo add fail-loud.
+        self._is_bare = is_bare
+        self._head_resolves = head_resolves
 
     def __call__(self, argv):
         self.calls.append(list(argv))
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n") if self._is_bare else (0, "false\n")
+        if "rev-parse" in argv and "--verify" in argv and argv[-1] == "HEAD":
+            return (0, "0123abc\n") if self._head_resolves else (128, "fatal: Needed a single revision\n")
         if argv and argv[0] == "clone":
             return self._clone_rc, ("" if self._clone_rc == 0 else "fatal: clone failed")
         if "config" in argv and "remote.origin.fetch" in argv:
@@ -219,6 +229,65 @@ def test_already_registered_bare_exists_still_corrects_refspec(pc, tmp_path):
     assert board.append_calls == []            # 등록 no-op
     assert _config_call(gitr) is not None        # refspec 보정은 그래도 수행
     assert _fetch_call(gitr) is not None
+
+
+# ── bare 실검증 — 부분/깨진 bare 조용히 통과 근절 (T-0294) ─────────────────────
+
+
+def test_repo_add_broken_bare_fails_loud_no_side_effects(pc, tmp_path, capsys):
+    """경로존재 but 무효 bare(rev-parse "false") → fail-loud rc1 + 진단, 부작용 0 (T-0294·DoD 2).
+
+    중단된 `git clone --bare` 가 남긴 부분/깨진 `.repos/<name>.git` 는 exists()=True 지만
+    `rev-parse --is-bare-repository` 가 "true" 가 아니다 → "존재→재사용"으로 조용히 통과(나중
+    worktree add 가 날 git 에러로 죽음)시키는 대신 rc1 + 수동 삭제·재hydrate 진단으로 막는다.
+    파괴적 자동삭제는 하지 않고(사용자 위임) 등록/보정도 하지 않는다(부작용 0).
+    """
+    board = FakeBoard(registered=())
+    gitr = GitFake(is_bare=False)               # 부분/깨진 bare 모델
+    repos = tmp_path / ".repos"
+    (repos / "svc.git").mkdir(parents=True)      # 경로는 존재(부분 bare 잔존 모사)
+    rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr, repos_dir=repos)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "유효한 bare git repo 가 아니다" in err   # exists-but-broken 진단
+    assert "수동 삭제" in err                        # 자동삭제 안 함·사용자 위임 안내
+    # 부작용 0 — 등록/refspec 보정/clone 어느 것도 하지 않았다(무효 판정 후 즉시 return 1).
+    assert board.append_calls == []
+    assert _clone_call(gitr) is None
+    assert _config_call(gitr) is None
+
+
+def test_repo_add_bare_valid_format_but_no_head_fails_loud(pc, tmp_path, capsys):
+    """is-bare "true" 지만 HEAD 미해소(빈 bare) → repo add fail-loud rc1 (T-0294·codex must-fix).
+
+    `git init --bare`/objects fetch 전 죽은 clone 이 남긴 빈 bare 는 core.bare=true 지만 HEAD 가
+    없어 worktree add base 로 못 쓴다 — is-bare 형식만 보면 재사용으로 통과하던 갭을 HEAD 해소
+    검사가 닫는다. is_bare=True·head_resolves=False 만으로 broken 판정·부작용 0.
+    """
+    board = FakeBoard(registered=())
+    gitr = GitFake(is_bare=True, head_resolves=False)   # 형식은 bare·HEAD 미해소(빈 bare)
+    repos = tmp_path / ".repos"
+    (repos / "svc.git").mkdir(parents=True)
+    rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr, repos_dir=repos)
+    assert rc == 1
+    assert "유효한 bare git repo 가 아니다" in capsys.readouterr().err
+    assert board.append_calls == []
+    assert _clone_call(gitr) is None
+
+
+def test_repo_add_valid_existing_bare_reused_not_fail(pc, tmp_path):
+    """대조 — 유효 bare(rev-parse "true")면 fail-loud 없이 재사용 rc0 (T-0294 sensitivity).
+
+    위 broken negative 와 같은 경로(bare 존재)에서 is_bare 만 True/False 로 갈려 rc0/rc1 이
+    갈린다 → `_is_valid_bare` 판정이 유일한 분기임을 보인다(가드 제거 시 broken 도 통과).
+    """
+    board = FakeBoard(registered=("svc",))
+    gitr = GitFake(is_bare=True)
+    repos = tmp_path / ".repos"
+    (repos / "svc.git").mkdir(parents=True)
+    rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr, repos_dir=repos)
+    assert rc == 0
+    assert _clone_call(gitr) is None            # 유효 → 재사용(clone skip)
 
 
 # ── 멱등 — 재실행 안전 (DoD 3) ───────────────────────────────────────────────

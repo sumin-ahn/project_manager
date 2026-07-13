@@ -769,8 +769,33 @@ def cmd_repo_add(
     # 후 prefix 칼럼이 비므로 `registered_prefixes()` 는 이 repo 를 못 센다. `registered_repos()`
     # 는 repo 칼럼을 직접 세어 중복 append(같은 repo 두 줄)를 막는다.
     already_registered = name in board_mod.registered_repos()
-    bare_exists = bare_path.exists()
     runner = clone_runner or _real_clone_runner()
+
+    # bare 는 *경로 존재*(exists)만이 아닌 *실 bare git repo* 인지로 판정한다 (T-0294) — 중단된
+    # `git clone --bare`(하네스 타임아웃·Ctrl-C)가 남긴 부분/빈/깨진 `.repos/<name>.git` 도
+    # exists()=True 라, 경로 존재만 보면 "존재 → 재사용"으로 조용히 통과시켜 무효 bare 를 재사용한다
+    # (repo add 는 rc0 인데 invariant 깨진 채·나중 worktree add 가 날 git 에러로 죽음·audit #1→#4).
+    # `_is_valid_bare`(rev-parse --is-bare-repository·worktree_pool)로 실 bare 를 판정해 그 통과를
+    # fail-loud 로 닫는다. **파괴적 재clone 신중(§결정)**: 깨진 bare 자동삭제는 위험(사용자 데이터
+    # 오판)이라 하지 않고, 정확 진단 + 수동 삭제 위임으로 안내한다(삭제는 사용자 위임 원칙). fail-soft:
+    # worktree_pool 로드 실패/헬퍼 부재(구 엔진)면 존재-검증 폴백(구 동작 보존·크래시 0).
+    wp_mod = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
+    valid_bare_fn = getattr(wp_mod, "_is_valid_bare", None) if wp_mod is not None else None
+    bare_present = bare_path.exists()
+    if bare_present and valid_bare_fn is not None and not valid_bare_fn(bare_path, runner=runner):
+        print(
+            f"[중단] `.repos/{name}.git` 경로는 있으나 유효한 bare git repo 가 아니다 — 부분/깨진 "
+            f"bare (중단된 `git clone --bare` 잔존 가능성·하네스 타임아웃/Ctrl-C). 경로 존재만 보면 "
+            f"재사용으로 조용히 통과하지만 `git worktree add` 의 base 로 못 써 나중 날 git 에러로 죽는다. "
+            f"자동 삭제는 하지 않는다(사용자 데이터 오판 위험·삭제는 사용자 위임) — `.repos/{name}.git` 를 "
+            f"수동 삭제 후 `pm-config repo add {name}`(--git 불요·areas 등록 URL 로 재hydrate·미등록이면 "
+            f"`--git <url>` 재제공)로 재생성하라 (T-0294·부작용 0·clone/등록/훅 전혀 하지 않았다).",
+            file=sys.stderr,
+        )
+        return 1
+    # 여기 도달 = bare 부재이거나 유효 bare (무효는 위에서 return 1) — 유효 bare 존재면 clone 건너뛰고
+    # 재사용, 부재면 clone (재)시도. 종전 `bare_exists` 의미(존재 → 재사용)를 실 bare 로 좁힌 것.
+    bare_exists = bare_present
 
     # clone 소스 git URL 해소 (T-0291) — `--git` 미제공 시 areas.md `git` 칼럼에서 해소해
     # multi-user 2번째 사용자의 bare mirror hydrate 를 완성한다(재제공 없이). None 이면
