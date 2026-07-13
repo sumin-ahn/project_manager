@@ -1037,6 +1037,77 @@ def cmd_status(
             f"  - {l.slot} · repo={l.repo} · branch={_live_branch(l.slot)} · "
             f"state={l.state} · session={l.session or '-'} · pid={l.pid}"
         )
+
+    # git worktree × 장부 정합(reconcile·T-0295) — 실 git worktree 와 장부를 대조해 drift 를
+    # surface 한다. **조회 전용·부작용 0**: 삭제/prune/이동 안 함 — 판정·복구 안내만(자동삭제는
+    # 사용자 위임·파일 삭제 원칙). reconcile 실패는 status 를 막지 않는다(fail-soft·advisory).
+    #   - orphan = git worktree 존재·장부 미등록(중단된 create/수동 add 잔존·audit #2·다음 create
+    #     번호 충돌·audit #4 의 근원). status 가 이걸 못 보던 게 audit #3.
+    #   - stale = 장부 등록·worktree 없음(dir 삭제/prune).
+    #   - incomplete = provisional("creating") — worktree add 후 확정 전 중단된 create 흔적.
+    try:
+        recon = wp.reconcile_worktrees()
+    except Exception:  # noqa: BLE001 — reconcile 실패가 status 를 막지 않는다(조회 전용).
+        recon = None
+    if recon is not None and (recon.orphans or recon.stale or recon.incomplete):
+        print("## ⚠ worktree × 장부 drift (조회 전용 — 자동삭제 안 함·정리는 사용자):")
+        for w in recon.orphans:
+            print(
+                f"  - [orphan] {w.slot} · git worktree 존재·장부 미등록 "
+                "(중단된 create/수동 add 잔존) — 다음 create 번호 충돌·status blind 원인"
+            )
+        for l in recon.stale:
+            print(
+                f"  - [stale] {l.slot} · 장부 등록(state={l.state})·git worktree 없음 "
+                "(dir 삭제/prune) — 장부 잔여"
+            )
+        for l in recon.incomplete:
+            print(
+                f"  - [incomplete] {l.slot} · 중단된 생성(state=creating·provisional) "
+                "— worktree add 후 확정 전 중단(SIGKILL 등) 가능성"
+            )
+        print(
+            "  복구:\n"
+            "    - orphan worktree(git 측·disk 에 존재·작업 있을 수 있음) → 확인 후 "
+            "`git -C .repos/<repo>.git worktree remove <경로>` 로 사용자가 삭제(위임 원칙).\n"
+            "    - stale/incomplete 중 worktree dir 이 사라진 dangling 장부 엔트리 → "
+            "`pm-config worktree prune-stale`(안전·이미 없는 worktree 의 부기만 정리).\n"
+            "    - incomplete 인데 worktree 가 남아있으면 위 `git worktree remove` 후 prune-stale."
+        )
+    return 0
+
+
+def cmd_worktree_prune_stale(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+) -> int:
+    """`worktree prune-stale` — worktree dir 이 사라진 dangling 장부 엔트리를 안전 정리 (T-0295).
+
+    status reconcile 이 surface 한 stale/incomplete 중 **worktree 가 물리적으로 부재**한 장부
+    엔트리를 제거한다(worktree_pool.prune_stale_leases). **안전**: 지울 worktree 파일이 없는
+    dangling 부기만 정리 — 사용자 데이터/worktree 삭제가 아니라 삭제-위임 원칙 위반이 아니다.
+    orphan *worktree*(git 측·disk 존재·작업 가능)는 손대지 않는다(그건 `git worktree remove` 로
+    사용자가). reconcile(status)이 조회-전용인 것과 분리된 **명시 user-invoked 정리 진입점**이다.
+
+    worktree_pool 주입으로 hermetic 테스트(실 장부 쓰기 없이 배선 검증).
+    """
+    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
+    if wp is None:
+        print(
+            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — dangling 엔트리 정리 불가 "
+            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+    pruned = wp.prune_stale_leases()
+    if pruned:
+        print(
+            f"✓ dangling 장부 엔트리 {len(pruned)}개 정리 (worktree 부재·이미 사라진 부기): "
+            f"{', '.join(pruned)}"
+        )
+    else:
+        print("정리할 dangling 엔트리 없음 (worktree 부재 장부 엔트리 0).")
     return 0
 
 
@@ -1664,6 +1735,14 @@ def build_parser() -> argparse.ArgumentParser:
              "미지정 시 repo areas/local.conf 로 해소(현행).",
     )
     p_wt_add.set_defaults(func=cmd_worktree_add)
+    # worktree prune-stale — worktree 가 사라진 dangling 장부 엔트리 안전 정리 (T-0295).
+    # status reconcile 의 stale/incomplete(worktree 부재) 정리 진입점(조회-전용 reconcile 과 분리·
+    # 명시 user-invoked). orphan worktree(git 측)는 `git worktree remove` 로 사용자가.
+    p_wt_prune = wt_sub.add_parser(
+        "prune-stale",
+        help="worktree dir 이 사라진 dangling 장부 엔트리 정리 (stale/incomplete·안전·T-0295)",
+    )
+    p_wt_prune.set_defaults(func=cmd_worktree_prune_stale)
 
     # status | whoami (같은 핸들러)
     p_status = sub.add_parser("status", help="풀/리스 상태 + 이 세션 repo/슬롯/branch")

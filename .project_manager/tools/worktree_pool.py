@@ -204,9 +204,10 @@ class BareRepoMissing(RuntimeError):
 class Lease:
     """리스 장부 한 엔트리 (ADR-0013 스키마·sealed spike §3b·amend T-0072).
 
-    슬롯=브랜치-무관 컨테이너·session/pid=점유 주체·state=leased|idle. **브랜치는 권위
-    필드가 아니다** — git 이 단일 진실(ADR-0013 amend T-0072)이라 장부에 저장하지 않고
-    `current_branch(slot)` 로 슬롯 worktree 의 live HEAD 에서 읽는다(드리프트 불가능).
+    슬롯=브랜치-무관 컨테이너·session/pid=점유 주체·state=leased|idle|creating. `creating` 은
+    create_slot 의 provisional 마커(worktree add 전 선기록·확정 시 leased·중단 시 흔적·T-0295).
+    **브랜치는 권위 필드가 아니다** — git 이 단일 진실(ADR-0013 amend T-0072)이라 장부에 저장하지
+    않고 `current_branch(slot)` 로 슬롯 worktree 의 live HEAD 에서 읽는다(드리프트 불가능).
     (dataclass 미사용 — 엔진 도구는 `spec_from_file_location` 으로 로드되는데 sys.modules
     미등록 시 dataclass 의 forward-ref 해소가 깨진다. 평범한 클래스로 그 결합을 피한다.)
     """
@@ -218,7 +219,7 @@ class Lease:
         self.session = session    # 점유 세션 식별자
         self.pid = pid            # 점유 프로세스 pid (stale 회수 판정)
         self.started = started    # 리스 시작 시각 (UTC ISO)
-        self.state = state        # "leased" | "idle"
+        self.state = state        # "leased" | "idle" | "creating"(provisional·T-0295)
         self.test_cmd = test_cmd  # 슬롯 바인딩 회귀/빌드명령 (T-0066·ADR-0014 amend·None=미지정)
 
     def __repr__(self) -> str:
@@ -317,6 +318,53 @@ class SlotStatus:
         return (f"SlotStatus(slot={self.slot!r}, branch={self.branch!r}, "
                 f"upstream={self.upstream!r}, upstream_ok={self.upstream_ok!r}, "
                 f"submodules={self.submodules!r})")
+
+
+class GitWorktree:
+    """`git worktree list --porcelain` 한 엔트리 — 실 git worktree 의 경로/브랜치/상태 (T-0295).
+
+    리스 장부(Lease)와 대조할 *실-git* 소스(`list_git_worktrees`). `slot` = 경로가 WORK_DIR
+    (=REPO/work) 바로 아래의 단일 디렉토리면 슬롯 식별자(`work/<repo>_<N>`), 아니면 None
+    (bare 원·multi-PM 루트·외부 worktree). `bare` = bare 원 엔트리(슬롯 아님·reconcile/슬롯번호
+    에서 제외). (dataclass 미사용 — Lease/SlotStatus 와 동일 이유: `spec_from_file_location`
+    로드 시 dataclass 의 forward-ref 해소가 깨진다. 평범한 클래스로 그 결합을 피한다.)
+    """
+
+    def __init__(self, path: str, slot: "str | None", branch: "str | None",
+                 detached: bool, bare: bool):
+        self.path = path          # `git worktree list` 가 준 절대경로
+        self.slot = slot          # "work/<repo>_<N>" (WORK_DIR 하위 단일 컴포넌트) 또는 None
+        self.branch = branch      # 체크아웃 브랜치명 (detached/bare 면 None)
+        self.detached = detached  # detached HEAD 여부
+        self.bare = bare          # bare 원 엔트리 여부(슬롯 아님)
+
+    def __repr__(self) -> str:
+        return (f"GitWorktree(path={self.path!r}, slot={self.slot!r}, "
+                f"branch={self.branch!r}, detached={self.detached!r}, bare={self.bare!r})")
+
+
+class ReconcileResult:
+    """리스 장부 × 실 git worktree 정합 결과 — orphan/stale/incomplete drift (조회 전용·T-0295).
+
+    - **orphans** = git worktree(슬롯 경로·non-bare)인데 장부에 없음(`GitWorktree` 리스트).
+      중단된 create/수동 add 잔존(audit #2) — 다음 create_slot 번호 충돌(#4)·status blind(#3).
+    - **stale** = 장부 확정 리스(leased/idle)인데 대응 git worktree 없음(`Lease` 리스트).
+      worktree dir 삭제/prune 됨(audit #3).
+    - **incomplete** = provisional("creating") 리스(`Lease` 리스트). worktree add 후 확정 전에
+      중단된 create 의 흔적(SIGKILL 도 커버) — 정리 대상.
+
+    (dataclass 미사용 — 위 클래스들과 동일 이유.)
+    """
+
+    def __init__(self, orphans: "list[GitWorktree]", stale: "list[Lease]",
+                 incomplete: "list[Lease]"):
+        self.orphans = orphans
+        self.stale = stale
+        self.incomplete = incomplete
+
+    def __repr__(self) -> str:
+        return (f"ReconcileResult(orphans={self.orphans!r}, stale={self.stale!r}, "
+                f"incomplete={self.incomplete!r})")
 
 
 def _now_utc() -> str:
@@ -910,6 +958,13 @@ def alloc(
         # 2) resume/branch 우선 re-alloc — 같은 작업스트림(브랜치)의 슬롯 재부착(연속성).
         if target_branch is not None:
             for lease in leases:
+                # provisional("creating")은 재부착 대상에서 제외한다 (T-0295·should-fix). worktree add
+                # 성공 후~submodule init 전 SIGKILL 로 남은 creating orphan 은 worktree 가 이미 그
+                # 브랜치를 체크아웃 중이라 live HEAD 로 매칭되는데, 이를 조용히 leased 로 재부착하면
+                # (a) reconcile 의 incomplete surface 를 우회하고 (b) submodule 미초기화 슬롯을
+                # leased 로 넘긴다. creating 은 reconcile/prune 경로로만 정리(설계 의도=surface+정리).
+                if lease.state == "creating":
+                    continue
                 # 이 슬롯이 target_branch 를 체크아웃 중인가 = live HEAD 로 매칭(저장 필드 아님·
                 # ADR-0013 amend T-0072). 드리프트 불가능 — git 이 단일 진실.
                 if (lease.repo == repo
@@ -926,6 +981,14 @@ def alloc(
         # 3) idle 슬롯 리스 (브랜치 무관 재사용 컨테이너).
         for lease in leases:
             if lease.repo == repo and lease.state == "idle":
+                # **위험차단 (T-0295·must-fix)**: worktree 물리 부재 슬롯은 리스하지 않는다. stale
+                # 엔트리(worktree dir 삭제/prune)가 force_release 등으로 idle 이 되면, 이 재사용
+                # 루프가 *없는 worktree* 를 leased 로 넘겨 이후 코드가 깨진다(codex 실측). fs 존재
+                # 가드는 **실경로(git_runner 미주입)에서만** 본다 — 주입 runner(hermetic 테스트)는
+                # 슬롯 존재를 모델링하는 권위라 건너뛴다(current_branch/slot_status 동형 규율). 부재
+                # 슬롯은 skip → 다음 후보/NeedsCreate(dangling idle 을 leased 로 승격하지 않음).
+                if git_runner is None and not slot_path(lease.slot).exists():
+                    continue
                 # 슬롯이 이미 target_branch 가 아니면 재체크아웃(live HEAD 비교·ADR-0013 amend
                 # T-0072). git 이 브랜치를 만든다 — 장부엔 branch 를 쓰지 않는다.
                 if (target_branch is not None
@@ -1060,144 +1123,185 @@ def create_slot(
 
     with _lease_lock():
         leases = _read_ledger()
-        used = _existing_slot_numbers(repo, leases)
+        # 슬롯번호 = **ledger ∪ 실 git worktree** 병합 (T-0295·audit #4). ledger 만 보면 orphan
+        # (worktree add 성공 후 lease 기록 전 죽어 disk 엔 있으나 ledger 엔 없는 슬롯·audit #2)
+        # 번호를 재사용해 `git worktree add` "already exists" 암호 에러가 난다. git worktree 실측을
+        # 합쳐 orphan 번호까지 회피한다(주입 runner 존중·DI seam). git 조회 실패는 fail-soft(빈 집합).
+        used = _existing_slot_numbers(repo, leases) | _git_slot_numbers(repo, git_runner=git_runner)
         n = 1
         while n in used:
             n += 1
         slot = _slot_for(repo, n)
         path = slot_path(slot)
 
-        # worktree add 는 `.repos/<repo>.git` bare 컨텍스트에서 — 슬롯이 그 family repo 의
-        # worktree 가 되게 한다(ADR-0011 §31). bare repo 도 `git -C <bare> worktree add <abs
-        # path>` 가 동작한다(슬롯 path 는 절대).
-        #   - branch 면 `-B`(create-or-reset)로 체크아웃 — `add <path> <ref>` 는 ref 가
-        #     기존이어야 하므로 신규 작업스트림 브랜치엔 못 쓴다. `-B` 가 신규/기존 모두
-        #     안전(슬롯=브랜치-무관 컨테이너·ADR-0013).
-        #   - base 면(branch 미지정·T-0075) 먼저 `fetch origin`(T-0274) 후 슬롯 브랜치
-        #     `<repo>_<N>` 를 *`origin/<base>` 최신에서 파생*(`--no-track -b <slot> <path>
-        #     origin/<base>`). 슬롯 브랜치 이름은 슬롯 식별자(`<repo>_<N>`·T-0072 live-branch 정합)
-        #     이고 base 만 의도한 분기점(develop 등). `add <path> <ref>` 가 아니라 `-b`(브랜치 생성)인
-        #     이유: ref 만 주면 detached 거나 base 브랜치 자체에 붙어 슬롯 작업이 base 를 오염한다 →
-        #     슬롯 전용 브랜치를 base 에서 새로 판다. `--no-track` = origin/<base> upstream 자동설정
-        #     억제(슬롯=작업스트림). (파생 기준·fetch·--no-track 상세는 아래 base 분기 주석.)
-        #   - 둘 다 미지정이면 **현행 보존**(`add <path>` = bare HEAD·회귀 0).
-        if branch is not None:
-            add_argv = ["worktree", "add", "-B", branch, str(path)]
-        elif base is not None:
-            # base 파생 — 슬롯을 *origin 최신*에서 시작한다 (T-0274). T-0152 refspec
-            # (`+refs/heads/*:refs/remotes/origin/*`)은 origin/* 만 갱신하고 로컬 `refs/heads/<base>`
-            # 는 clone 시점 동결이라, 로컬 base 에서 파면 슬롯이 origin 보다 stale 하게 시작한다.
-            # worktree add 전에 origin 을 fetch 하고(best-effort) `origin/<base>`(존재 시)에서 판다.
-            #   - fetch 실패(오프라인)면 경고 후 로컬 `<base>` 폴백 — 슬롯 생성은 막지 않는다
-            #     (worktree add 핵심 부작용 보존·`_set_bare_fetch_refspec` fail-soft 규율 정합).
-            #   - 파생 기준 ref = fetch 성공 + `refs/remotes/origin/<base>` resolvable → `origin/<base>`
-            #     (fetch 로 갱신된 최신), 아니면 로컬 `<base>`(폴백). 로컬 `refs/heads/<base>` 동결은
-            #     손대지 않는다(pool 슬롯은 자기 슬롯 브랜치를 파므로 로컬 base 직접 체크아웃 안 함·
-            #     fast-forward 는 범위 밖·리스크 회피).
-            #   - **`--no-track` 필수**: 슬롯 브랜치 `<repo>_<N>` 는 새 작업 브랜치(슬롯=작업스트림)라
-            #     origin/<base> tracking 을 걸지 않는다. 그런데 remote-tracking ref(origin/<base>)에서
-            #     `-b` 로 브랜치를 파면 git 기본 `branch.autoSetupMerge=true` 가 그 슬롯 브랜치에
-            #     upstream 을 *자동* 설정한다(A_1@{upstream}=origin/<base>·`git status`/무인자 `git pull`
-            #     이 슬롯 작업을 base 에 묶음). `--no-track` 으로 그 자동설정을 억제한다(로컬 <base>
-            #     폴백 경로에서도 안전 — no-op·codex 게이트 포착 결함).
-            # prep(fetch/show-ref)은 **capture 러너** — fetch out 을 경고 detail 로 쓰고 rc 로 origin
-            # 해소를 판정한다(짧은 로컬 op·인터랙티브 아님). worktree add *자체* 만 아래서 console-visible
-            # 러너로 실행한다(T-0292). 주입된 git_runner(mock)면 그대로(DI seam).
-            prep_runner = git_runner or _real_git_runner(bare)
-            ref = base
-            rc, out = prep_runner(["fetch", "origin"])
-            if rc != 0:
-                print(
-                    f"[경고] `git -C {bare} fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
-                    f"  로컬 `{base}`(동결 head)에서 슬롯을 판다 — 네트워크 복구 후 새 슬롯은 "
-                    "origin 최신에서 시작한다 (T-0274·fail-soft).",
-                    file=sys.stderr,
-                )
-            else:
-                rc, _ = prep_runner(
-                    ["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base}"]
-                )
-                if rc == 0:
-                    ref = f"origin/{base}"
-            add_argv = ["worktree", "add", "--no-track", "-b", f"{repo}_{n}", str(path), ref]
-        else:
-            add_argv = ["worktree", "add", str(path)]
-
-        # worktree add *자체* 는 **console-visible(인터랙티브) 러너**로 실행한다 (T-0292). 대형 repo 의
-        # full checkout(로컬 bare→worktree·느린 디스크/VPN/Windows)이 옛 captured 120s 에 false-kill
-        # 되던 블로커 해소 — 진행상황이 콘솔에 실시간 보이고 timeout 이 GIT_TIMEOUT_SECONDS(1800s·env
-        # `PM_GIT_TIMEOUT`·`none`=무제한)라 관대하다. submodule 단계와 동일 패턴(_real_git_runner_
-        # interactive). **DI seam 보존**: 주입된 git_runner(테스트 mock)가 있으면 그걸 쓴다(현행 테스트
-        # 무영향) — 인터랙티브는 `git_runner is None` 실경로만. 인터랙티브는 `(rc, "")` 반환(출력은 콘솔로
-        # 직접)이라 실패 메시지는 rc 기반 + 아래 트립 안내로 조정한다(git stderr 는 이미 콘솔에 감).
-        add_runner = git_runner or _real_git_runner_interactive(bare, timeout=GIT_TIMEOUT_SECONDS)
-        rc, out = add_runner(add_argv)
-        if rc != 0:
-            # 원인 힌트 (#4-bare·T-0294) — 식별 가능한 원인을 raw git out 앞에 붙인다. 상단 가드가
-            # broken bare 를 이미 걸러내지만, upfront rev-parse 는 통과했는데 objects 결손 등으로
-            # worktree add 만 죽는 잔여 부분-bare(또는 op 도중 손상)를 여기서 재판정해 안내한다.
-            bare_hint = ""
-            if not _is_valid_bare(bare, runner=git_runner or _real_git_runner(bare)):
-                bare_hint = (
-                    f"`.repos/{repo}.git` 가 유효 bare 가 아니다(부분/깨진 bare 가능성) — 수동 삭제 후 "
-                    f"`pm-config repo add {repo}` 로 재hydrate 하라 (T-0294). "
-                )
-            # 트립/실패 안내 (T-0292) — 하네스 자동 호출이 timeout/실패로 죽었을 때 사용자에게 다음
-            # 행동(터미널 직접 실행·무제한 opt-in)을 준다. rc 기반(out 은 인터랙티브면 빈 문자열).
-            timeout_desc = "무제한" if GIT_TIMEOUT_SECONDS is None else f"{GIT_TIMEOUT_SECONDS}초"
-            raise RuntimeError(
-                f"git worktree add failed for {slot!r} (rc={rc}, out={out!r}). {bare_hint}"
-                f"매우 느린 op(대형 repo·느린 디스크/VPN)이면 timeout({timeout_desc}·PM_GIT_TIMEOUT)에 "
-                f"걸렸을 수 있다 — 터미널에서 `pm-config worktree add {repo}` 를 직접 실행하면 진행상황이 "
-                f"보이고, `PM_GIT_TIMEOUT=none` 으로 무제한 실행할 수 있다 (T-0292)."
-            )
-
-        # submodule init — worktree add 는 submodule 자동 init 안 함(ADR-0013·spike §8-4(d)).
-        # `--force`: bare 에서 만든 fresh 슬롯의 worktree+submodule edge 에서 plain `--init` 이
-        # 체크아웃 못 하는 상태(`git submodule init failed: ''` — 실 Windows multi-PM 파일럿서 빈
-        # 에러로 죽음)를 강제 init 한다(T-0067). create_slot 은 *새 슬롯 생성 때만* 호출되고
-        # (기존 슬롯 재사용은 alloc·재init 안 함) fresh worktree 라 잃을 로컬 변경이 없으므로
-        # `--force` 안전. 솔로/submodule 없는 repo 는 `--init --recursive --force` 가 no-op rc 0.
-        #
-        # **인터랙티브 러너 (T-0070)**: 실경로(git_runner 미주입)에선 capture 러너 대신
-        # `_real_git_runner_interactive`(stdio 콘솔 상속·SUBMODULE_TIMEOUT 3600s)로 돈다 —
-        # 대형 submodule clone 이 600s 초과해 TimeoutExpired→(1,"")로 죽던 블로커 해소(진행
-        # 상황 화면 표시·credential 프롬프트·대형 clone 완주). worktree add 도 같은 이유로
-        # console-visible(T-0292·GIT_TIMEOUT_SECONDS)이고, 짧은 captured git(status·checkout·
-        # dirty·stash)만 capture 러너 그대로. **DI seam 보존**: 주입된 git_runner(테스트 mock)가
-        # 있으면 그걸 쓴다(현행 테스트 무영향) — 인터랙티브는 `git_runner is None` 실경로만.
-        #
-        # **원자적 롤백 (T-0070)**: 실패(rc≠0)면 leased 장부 등록 *전에* raise — 불완전 슬롯
-        # 차단(기존 동작). 단 worktree add 는 *이미 성공*했으므로 raise 전에 그 worktree 를
-        # 롤백한다(`_rollback_worktree`) — 안 지우면 댕글링 worktree("슬롯 없음"+재시도 "이미
-        # 존재")가 남는다. 롤백은 best-effort(2차 예외 삼킴 금지·원래 에러로 raise). 빈 out
-        # (Windows 인코딩 캡처 유실·인터랙티브는 항상 빈 out)에도 막히지 않게 rc + argv surface.
-        if init_submodules:
-            sub_runner = git_runner or _real_git_runner_interactive(path)
-            sub_argv = ["submodule", "update", "--init", "--recursive", "--force"]
-            rc, out = sub_runner(sub_argv)
-            if rc != 0:
-                _rollback_worktree(repo, path, git_runner=git_runner)
-                raise RuntimeError(
-                    f"git submodule init failed for {slot!r}: "
-                    f"rc={rc}, argv={sub_argv!r}, out={out!r}"
-                )
-
-        # branch 는 장부에 저장하지 않는다(ADR-0013 amend T-0072) — `git worktree add -B`
-        # 로 이미 그 브랜치를 슬롯 worktree 에 체크아웃했고(git=진실), 조회는 live
-        # current_branch(slot) 로 한다. `branch` 파라미터는 위 worktree add 구동용으로만 쓴다.
-        lease = Lease(
-            slot=slot,
-            repo=repo,
-            session=sess,
-            pid=os.getpid(),
-            started=_now_utc(),
-            state="leased",
-            test_cmd=test_cmd,
+        # **provisional lease 선기록 (T-0295·중단-안전)** — worktree add *전에* `state="creating"`
+        # lease 를 장부에 넣어 disk 에 흔적을 남긴다. 성공 시 `leased` 로 확정하고, 실패/예외/
+        # KeyboardInterrupt 는 아래 try/except 가 fs 롤백 + provisional 제거로 청소한다. **SIGKILL
+        # (kill -9)** 은 except/finally 가 안 돌지만 이 provisional 이 disk 에 남아 다음
+        # status/reconcile 이 incomplete 로 surface(→ 사용자 정리) — finally-rollback 만으론 못
+        # 잡던 SIGKILL 을 provisional 이 커버한다(결정 §provisional 우선). 슬롯번호도 이 엔트리로
+        # 예약된다(`_existing_slot_numbers` 가 세므로 후속 create_slot 이 재사용 안 함).
+        provisional = Lease(
+            slot=slot, repo=repo, session=sess, pid=os.getpid(),
+            started=_now_utc(), state="creating", test_cmd=test_cmd,
         )
-        leases.append(lease)
+        leases.append(provisional)
         _write_ledger(leases)
-        return lease
+
+        # add 성공(=fs 에 worktree 생성) 여부 — except 청소가 롤백(remove) 대상을 판정한다. add 자체
+        # 실패면 지울 worktree 가 없어 remove 를 안 부른다(기존 T-0070 롤백 범위 유지).
+        worktree_created = False
+        try:
+            # worktree add 는 `.repos/<repo>.git` bare 컨텍스트에서 — 슬롯이 그 family repo 의
+            # worktree 가 되게 한다(ADR-0011 §31). bare repo 도 `git -C <bare> worktree add <abs
+            # path>` 가 동작한다(슬롯 path 는 절대).
+            #   - branch 면 `-B`(create-or-reset)로 체크아웃 — `add <path> <ref>` 는 ref 가
+            #     기존이어야 하므로 신규 작업스트림 브랜치엔 못 쓴다. `-B` 가 신규/기존 모두
+            #     안전(슬롯=브랜치-무관 컨테이너·ADR-0013).
+            #   - base 면(branch 미지정·T-0075) 먼저 `fetch origin`(T-0274) 후 슬롯 브랜치
+            #     `<repo>_<N>` 를 *`origin/<base>` 최신에서 파생*(`--no-track -b <slot> <path>
+            #     origin/<base>`). 슬롯 브랜치 이름은 슬롯 식별자(`<repo>_<N>`·T-0072 live-branch 정합)
+            #     이고 base 만 의도한 분기점(develop 등). `add <path> <ref>` 가 아니라 `-b`(브랜치 생성)인
+            #     이유: ref 만 주면 detached 거나 base 브랜치 자체에 붙어 슬롯 작업이 base 를 오염한다 →
+            #     슬롯 전용 브랜치를 base 에서 새로 판다. `--no-track` = origin/<base> upstream 자동설정
+            #     억제(슬롯=작업스트림). (파생 기준·fetch·--no-track 상세는 아래 base 분기 주석.)
+            #   - 둘 다 미지정이면 **현행 보존**(`add <path>` = bare HEAD·회귀 0).
+            if branch is not None:
+                add_argv = ["worktree", "add", "-B", branch, str(path)]
+            elif base is not None:
+                # base 파생 — 슬롯을 *origin 최신*에서 시작한다 (T-0274). T-0152 refspec
+                # (`+refs/heads/*:refs/remotes/origin/*`)은 origin/* 만 갱신하고 로컬 `refs/heads/<base>`
+                # 는 clone 시점 동결이라, 로컬 base 에서 파면 슬롯이 origin 보다 stale 하게 시작한다.
+                # worktree add 전에 origin 을 fetch 하고(best-effort) `origin/<base>`(존재 시)에서 판다.
+                #   - fetch 실패(오프라인)면 경고 후 로컬 `<base>` 폴백 — 슬롯 생성은 막지 않는다
+                #     (worktree add 핵심 부작용 보존·`_set_bare_fetch_refspec` fail-soft 규율 정합).
+                #   - 파생 기준 ref = fetch 성공 + `refs/remotes/origin/<base>` resolvable → `origin/<base>`
+                #     (fetch 로 갱신된 최신), 아니면 로컬 `<base>`(폴백). 로컬 `refs/heads/<base>` 동결은
+                #     손대지 않는다(pool 슬롯은 자기 슬롯 브랜치를 파므로 로컬 base 직접 체크아웃 안 함·
+                #     fast-forward 는 범위 밖·리스크 회피).
+                #   - **`--no-track` 필수**: 슬롯 브랜치 `<repo>_<N>` 는 새 작업 브랜치(슬롯=작업스트림)라
+                #     origin/<base> tracking 을 걸지 않는다. 그런데 remote-tracking ref(origin/<base>)에서
+                #     `-b` 로 브랜치를 파면 git 기본 `branch.autoSetupMerge=true` 가 그 슬롯 브랜치에
+                #     upstream 을 *자동* 설정한다(A_1@{upstream}=origin/<base>·`git status`/무인자 `git pull`
+                #     이 슬롯 작업을 base 에 묶음). `--no-track` 으로 그 자동설정을 억제한다(로컬 <base>
+                #     폴백 경로에서도 안전 — no-op·codex 게이트 포착 결함).
+                # prep(fetch/show-ref)은 **capture 러너** — fetch out 을 경고 detail 로 쓰고 rc 로 origin
+                # 해소를 판정한다(짧은 로컬 op·인터랙티브 아님). worktree add *자체* 만 아래서 console-visible
+                # 러너로 실행한다(T-0292). 주입된 git_runner(mock)면 그대로(DI seam).
+                prep_runner = git_runner or _real_git_runner(bare)
+                ref = base
+                rc, out = prep_runner(["fetch", "origin"])
+                if rc != 0:
+                    print(
+                        f"[경고] `git -C {bare} fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
+                        f"  로컬 `{base}`(동결 head)에서 슬롯을 판다 — 네트워크 복구 후 새 슬롯은 "
+                        "origin 최신에서 시작한다 (T-0274·fail-soft).",
+                        file=sys.stderr,
+                    )
+                else:
+                    rc, _ = prep_runner(
+                        ["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base}"]
+                    )
+                    if rc == 0:
+                        ref = f"origin/{base}"
+                add_argv = ["worktree", "add", "--no-track", "-b", f"{repo}_{n}", str(path), ref]
+            else:
+                add_argv = ["worktree", "add", str(path)]
+
+            # worktree add *자체* 는 **console-visible(인터랙티브) 러너**로 실행한다 (T-0292). 대형 repo 의
+            # full checkout(로컬 bare→worktree·느린 디스크/VPN/Windows)이 옛 captured 120s 에 false-kill
+            # 되던 블로커 해소 — 진행상황이 콘솔에 실시간 보이고 timeout 이 GIT_TIMEOUT_SECONDS(1800s·env
+            # `PM_GIT_TIMEOUT`·`none`=무제한)라 관대하다. submodule 단계와 동일 패턴(_real_git_runner_
+            # interactive). **DI seam 보존**: 주입된 git_runner(테스트 mock)가 있으면 그걸 쓴다(현행 테스트
+            # 무영향) — 인터랙티브는 `git_runner is None` 실경로만. 인터랙티브는 `(rc, "")` 반환(출력은 콘솔로
+            # 직접)이라 실패 메시지는 rc 기반 + 아래 트립 안내로 조정한다(git stderr 는 이미 콘솔에 감).
+            add_runner = git_runner or _real_git_runner_interactive(bare, timeout=GIT_TIMEOUT_SECONDS)
+            rc, out = add_runner(add_argv)
+            if rc != 0:
+                # 원인 힌트 (#4-bare·T-0294) — 식별 가능한 원인을 raw git out 앞에 붙인다. 상단 가드가
+                # broken bare 를 이미 걸러내지만, upfront rev-parse 는 통과했는데 objects 결손 등으로
+                # worktree add 만 죽는 잔여 부분-bare(또는 op 도중 손상)를 여기서 재판정해 안내한다.
+                bare_hint = ""
+                if not _is_valid_bare(bare, runner=git_runner or _real_git_runner(bare)):
+                    bare_hint = (
+                        f"`.repos/{repo}.git` 가 유효 bare 가 아니다(부분/깨진 bare 가능성) — 수동 삭제 후 "
+                        f"`pm-config repo add {repo}` 로 재hydrate 하라 (T-0294). "
+                    )
+                # orphan/already-exists 진단 (#4-충돌·T-0295) — 슬롯번호를 git 병합으로 회피하지만,
+                # 병합 후 나타난 orphan·수동 add 잔존이 `add` 를 "already exists" 로 죽일 수 있다.
+                # out 문자열(captured/injected) 또는 실 git worktree 목록(인터랙티브는 out 이 콘솔 직행이라
+                # 실측)에 이 슬롯 경로가 이미 등록됐으면 orphan 정리 경로를 안내한다.
+                orphan_hint = ""
+                already = "already exists" in str(out).lower()
+                if not already:
+                    already = any(
+                        w.slot == slot for w in list_git_worktrees(repo, git_runner=git_runner)
+                    )
+                if already:
+                    orphan_hint = (
+                        f"경로 `{path}` 에 worktree 가 이미 등록돼 있다(orphan·중단된 create/수동 add "
+                        f"잔존 가능성·T-0295) — `pm-config status` 로 orphan/stale 을 확인하고 정리"
+                        f"(worktree prune 또는 수동 삭제)하라. "
+                    )
+                # 트립/실패 안내 (T-0292) — 하네스 자동 호출이 timeout/실패로 죽었을 때 사용자에게 다음
+                # 행동(터미널 직접 실행·무제한 opt-in)을 준다. rc 기반(out 은 인터랙티브면 빈 문자열).
+                timeout_desc = "무제한" if GIT_TIMEOUT_SECONDS is None else f"{GIT_TIMEOUT_SECONDS}초"
+                raise RuntimeError(
+                    f"git worktree add failed for {slot!r} (rc={rc}, out={out!r}). {bare_hint}{orphan_hint}"
+                    f"매우 느린 op(대형 repo·느린 디스크/VPN)이면 timeout({timeout_desc}·PM_GIT_TIMEOUT)에 "
+                    f"걸렸을 수 있다 — 터미널에서 `pm-config worktree add {repo}` 를 직접 실행하면 진행상황이 "
+                    f"보이고, `PM_GIT_TIMEOUT=none` 으로 무제한 실행할 수 있다 (T-0292)."
+                )
+            # add 성공 — fs 에 worktree 존재. 이후 단계(submodule)/interrupt 실패 시 except 가 이 슬롯을
+            # 롤백(remove)한다. add *자체* 실패면 worktree_created=False 라 remove 를 안 부른다(범위 유지).
+            worktree_created = True
+
+            # submodule init — worktree add 는 submodule 자동 init 안 함(ADR-0013·spike §8-4(d)).
+            # `--force`: bare 에서 만든 fresh 슬롯의 worktree+submodule edge 에서 plain `--init` 이
+            # 체크아웃 못 하는 상태(`git submodule init failed: ''` — 실 Windows multi-PM 파일럿서 빈
+            # 에러로 죽음)를 강제 init 한다(T-0067). create_slot 은 *새 슬롯 생성 때만* 호출되고
+            # (기존 슬롯 재사용은 alloc·재init 안 함) fresh worktree 라 잃을 로컬 변경이 없으므로
+            # `--force` 안전. 솔로/submodule 없는 repo 는 `--init --recursive --force` 가 no-op rc 0.
+            #
+            # **인터랙티브 러너 (T-0070)**: 실경로(git_runner 미주입)에선 capture 러너 대신
+            # `_real_git_runner_interactive`(stdio 콘솔 상속·SUBMODULE_TIMEOUT 3600s)로 돈다 —
+            # 대형 submodule clone 이 600s 초과해 TimeoutExpired→(1,"")로 죽던 블로커 해소(진행
+            # 상황 화면 표시·credential 프롬프트·대형 clone 완주). worktree add 도 같은 이유로
+            # console-visible(T-0292·GIT_TIMEOUT_SECONDS)이고, 짧은 captured git(status·checkout·
+            # dirty·stash)만 capture 러너 그대로. **DI seam 보존**: 주입된 git_runner(테스트 mock)가
+            # 있으면 그걸 쓴다(현행 테스트 무영향) — 인터랙티브는 `git_runner is None` 실경로만.
+            #
+            # **원자적 롤백 (T-0070·T-0295)**: 실패(rc≠0)면 raise 만 하고, 롤백(worktree remove)과
+            # provisional 제거는 아래 `except` 가 단일 경로로 처리한다 — worktree add 는 *이미 성공*
+            # 했으므로 그 worktree 를 지워야 댕글링("슬롯 없음"+재시도 "이미 존재")이 안 남는다. 빈 out
+            # (Windows 인코딩 캡처 유실·인터랙티브는 항상 빈 out)에도 막히지 않게 rc + argv surface.
+            if init_submodules:
+                sub_runner = git_runner or _real_git_runner_interactive(path)
+                sub_argv = ["submodule", "update", "--init", "--recursive", "--force"]
+                rc, out = sub_runner(sub_argv)
+                if rc != 0:
+                    raise RuntimeError(
+                        f"git submodule init failed for {slot!r}: "
+                        f"rc={rc}, argv={sub_argv!r}, out={out!r}"
+                    )
+
+            # 성공 — provisional 을 leased 로 **확정**한다(2차 write·branch 는 장부 미저장·ADR-0013
+            # amend T-0072·git=진실·조회는 live current_branch). provisional 을 그대로 반환(같은 필드).
+            provisional.state = "leased"
+            _write_ledger(leases)
+            return provisional
+        except BaseException:
+            # **중단-안전 청소 (T-0295)** — 실패(rc≠0 raise)·예외·KeyboardInterrupt 는 여기서 단일
+            # 경로로 정리한다: (1) worktree add 가 성공했으면(worktree_created) 그 worktree 를
+            # `_rollback_worktree`(remove --force·best-effort) 로 지운다(add 자체 실패면 지울 게 없어
+            # skip — T-0070 롤백 범위 유지). (2) provisional("creating") 엔트리를 장부에서 제거하고
+            # 다시 쓴다(불완전 슬롯 미등록·기존 계약). 롤백은 2차 예외를 삼켜 원래 에러를 가리지 않는다.
+            # (SIGKILL 은 여기 못 옴 — provisional 이 disk 에 남아 reconcile 이 incomplete 로 잡는다.)
+            if worktree_created:
+                _rollback_worktree(repo, path, git_runner=git_runner)
+            leases[:] = [l for l in leases if l.slot != slot]
+            _write_ledger(leases)
+            raise
 
 
 def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | None = None) -> Lease:
@@ -1259,6 +1363,187 @@ def list_leases() -> list[Lease]:
     """현재 리스 장부 전체를 읽어 반환한다 (조회·진단용·pm-config status)."""
     with _lease_lock():
         return _read_ledger()
+
+
+# ── git worktree × 장부 정합 (reconcile·중단-안전 슬롯번호·T-0295) ────────────────
+# 장부(Lease)는 우리 메타(session/pid/test_cmd)이고, 실제 worktree 는 git 이 소유한다
+# (`.repos/<repo>.git` bare 의 worktree 목록·ADR-0011 §31). create_slot 이 worktree add 성공
+# 후 lease 기록 전에 죽으면 둘이 어긋난다(orphan·audit #2). git worktree 목록을 *실-git 소스*
+# 로 삼아 (a) 슬롯번호를 orphan 까지 회피(#4)하고 (b) status 가 drift 를 surface(#3)한다.
+
+
+def _slot_from_worktree_path(path_str: str) -> "str | None":
+    """worktree 절대경로 → 슬롯 식별자 `work/<repo>_<N>` (WORK_DIR 하위 단일 컴포넌트만·T-0295).
+
+    슬롯은 WORK_DIR(=REPO/work) 바로 아래의 단일 디렉토리(`work/<repo>_<N>`)다. bare 원·multi-PM
+    루트·중첩 경로는 슬롯이 아니므로 None(슬롯번호/reconcile 에서 제외). 심링크(/tmp 등)는 양쪽을
+    `resolve()` 로 정규화해 장부 `slot_path`(REPO/slot) 파생과 일관 매칭한다.
+    """
+    try:
+        p = Path(path_str).resolve()
+        rel = p.relative_to(WORK_DIR.resolve())
+    except (ValueError, OSError):
+        return None
+    if len(rel.parts) != 1:
+        return None
+    return f"work/{rel.parts[0]}"
+
+
+def _parse_worktree_porcelain(out: str) -> list[GitWorktree]:
+    """`git worktree list --porcelain` 출력을 GitWorktree 리스트로 파싱한다 (T-0295).
+
+    porcelain 포맷 = 엔트리별 속성 라인(각 줄 `worktree <path>`·`HEAD <sha>`·`branch
+    refs/heads/<name>`·`detached`·`bare`·`locked`/`prunable` 등) + 빈 줄 구분. `worktree` 라인이
+    새 엔트리 시작이다. `branch` 는 `refs/heads/` 프리픽스를 벗겨 브랜치명만. 인식 못 하는 속성
+    라인은 무시(견고). 빈 출력/`worktree` 라인 전 잡음은 무시.
+    """
+    entries: list[GitWorktree] = []
+    cur: "dict | None" = None
+
+    def _flush() -> None:
+        if cur is None:
+            return
+        entries.append(GitWorktree(
+            path=cur["path"],
+            slot=_slot_from_worktree_path(cur["path"]),
+            branch=cur["branch"],
+            detached=cur["detached"],
+            bare=cur["bare"],
+        ))
+
+    for raw in out.splitlines():
+        line = raw.rstrip()
+        if line.startswith("worktree "):
+            _flush()
+            cur = {"path": line[len("worktree "):].strip(),
+                   "branch": None, "detached": False, "bare": False}
+        elif cur is None:
+            continue
+        elif line == "bare":
+            cur["bare"] = True
+        elif line == "detached":
+            cur["detached"] = True
+        elif line.startswith("branch "):
+            ref = line[len("branch "):].strip()
+            cur["branch"] = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+        # HEAD/locked/prunable/기타 속성은 무시(reconcile 판정에 불요).
+    _flush()
+    return entries
+
+
+def _discover_bares() -> "list[tuple[str, Path]]":
+    """`.repos/*.git` 에서 (repo, bare 경로) 목록 — reconcile 의 전-repo 열거원 (ADR-0011 §31·T-0295).
+
+    REPOS_DIR 부재면 빈 리스트(fail-soft). repo 이름 = `<name>.git` 의 stem(`.git` 제거).
+    """
+    if not REPOS_DIR.exists():
+        return []
+    out: "list[tuple[str, Path]]" = []
+    for p in sorted(REPOS_DIR.glob("*.git")):
+        out.append((p.name[:-len(".git")], p))
+    return out
+
+
+def list_git_worktrees(
+    repo: "str | None" = None, *, git_runner: GitRunner | None = None,
+) -> list[GitWorktree]:
+    """`git worktree list --porcelain` 로 실 git worktree 를 열거한다 — 장부 대조 소스 (T-0295).
+
+    `repo` 지정 → 그 repo 의 bare(`.repos/<repo>.git`) 컨텍스트 1개만. `repo=None` → `.repos/` 의
+    모든 bare 를 순회(전-repo·reconcile 용). 각 bare 에서 `git -C <bare> worktree list --porcelain`
+    을 **capture 러너**(`_real_git_runner`)로 실행한다 — 출력을 파싱해야 하므로 인터랙티브(출력이
+    콘솔 직행·빈 out)를 쓰지 않는다. 짧은 로컬 read-only op 라 유한 timeout 으로 충분.
+
+    **fail-soft**: git 부재·rc≠0·예외는 그 bare 를 건너뛴다(빈 기여·크래시 0·rc≠0 로 위임). **DI
+    seam 보존**: 주입 runner(테스트 mock)는 모든 bare 에 재사용(hermetic — porcelain 을 모델링·실
+    git 안 탐). 반환은 GitWorktree 리스트(bare 엔트리 포함·slot=None) — 호출부(reconcile/슬롯번호)가
+    non-bare 슬롯만 필터한다.
+    """
+    if repo is not None:
+        bares = [(repo, bare_repo_path(repo))]
+    else:
+        bares = _discover_bares()
+    result: list[GitWorktree] = []
+    for _r, bare in bares:
+        runner = git_runner or _real_git_runner(bare)
+        try:
+            rc, out = runner(["worktree", "list", "--porcelain"])
+        except Exception:  # noqa: BLE001 — fail-soft: 주입 runner raise 도 흡수(그 bare 건너뜀).
+            continue
+        if rc != 0:
+            continue
+        result.extend(_parse_worktree_porcelain(out))
+    return result
+
+
+def _git_slot_numbers(repo: str, *, git_runner: GitRunner | None = None) -> set[int]:
+    """실 git worktree 목록에서 이 repo 의 슬롯 번호 집합 (orphan 포함·슬롯번호 충돌 회피·T-0295).
+
+    `_existing_slot_numbers`(ledger 기준)와 **병합**해 create_slot 이 orphan(ledger 미등록·중단된
+    create/수동 add 잔존) worktree 번호와 충돌하지 않게 한다 — `git worktree add` "already exists"
+    암호 에러(audit #4) 근절.
+    """
+    nums: set[int] = set()
+    prefix = f"work/{repo}_"
+    for w in list_git_worktrees(repo, git_runner=git_runner):
+        if w.bare or not w.slot or not w.slot.startswith(prefix):
+            continue
+        tail = w.slot[len(prefix):]
+        if tail.isdigit():
+            nums.add(int(tail))
+    return nums
+
+
+def reconcile_worktrees(*, git_runner: GitRunner | None = None) -> ReconcileResult:
+    """리스 장부 × `list_git_worktrees` 대조로 drift 를 판정한다 — 조회 전용·부작용 0 (T-0295).
+
+    - **orphan** = git worktree(슬롯 경로·non-bare)인데 장부에 없음 — 중단된 create/수동 add 잔존
+      (audit #2). 다음 create_slot 번호 충돌(#4)·status blind(#3)의 근원.
+    - **stale** = 장부 확정 리스(leased/idle)인데 대응 git worktree 없음 — worktree dir 삭제/prune
+      (audit #3).
+    - **incomplete** = provisional("creating") 리스 — worktree add 후 확정 전 중단된 create 흔적
+      (SIGKILL 커버). 별도 카테고리라 stale 과 이중 계상하지 않는다.
+
+    **부작용 없음**(삭제/이동/prune 안 함) — surface + 복구 안내만(자동삭제는 사용자 위임·파일
+    삭제 원칙). 실 git 실패는 `list_git_worktrees` 가 fail-soft(빈 리스트)라 그 repo 확정 리스가
+    보수적으로 stale 로 degrade 할 수 있으나 advisory·조회 전용이라 무해.
+    """
+    leases = list_leases()
+    git_wts = list_git_worktrees(git_runner=git_runner)
+    slot_wts = [w for w in git_wts if w.slot and not w.bare]
+    lease_slots = {l.slot for l in leases}
+    git_slots = {w.slot for w in slot_wts}
+    orphans = [w for w in slot_wts if w.slot not in lease_slots]
+    incomplete = [l for l in leases if l.state == "creating"]
+    stale = [l for l in leases if l.state != "creating" and l.slot not in git_slots]
+    return ReconcileResult(orphans=orphans, stale=stale, incomplete=incomplete)
+
+
+def prune_stale_leases() -> list[str]:
+    """worktree 가 **확정 부재**인 dangling 장부 엔트리를 제거한다 — user-invoked 안전 cleanup (T-0295).
+
+    reconcile 이 surface 한 stale/incomplete 중 **worktree dir 이 물리적으로 사라진**(`slot_path
+    (slot).exists()` False) 엔트리를 장부에서 삭제한다. 제거된 슬롯 식별자 리스트를 반환한다.
+
+    **왜 안전한가 (삭제-위임 원칙 위반 아님)**: 이건 *사용자 데이터/worktree 삭제*가 아니라 이미
+    사라진 worktree 의 **dangling 부기 정리**다 — 지울 파일이 없다(dir 부재가 전제). 그래서:
+      - orphan **worktree**(git 측·disk 에 존재·작업이 있을 수 있음)는 **손대지 않는다** — 그건
+        `git worktree remove <path>` 로 사용자가 판단해 지운다(status reconcile 이 안내).
+      - worktree 가 **존재**하는 leased/idle/creating 엔트리도 손대지 않는다(dir 존재 → prune 안 함).
+        (leased 재사용·incomplete 정리는 release/사용자 몫.)
+
+    조회-전용 reconcile 과 분리한 **명시 user-invoked 프리미티브**(`pm-config worktree prune-stale`)라
+    status 는 여전히 부작용 0 다. `_lease_lock` + `_write_ledger`(atomic·다른 장부 op 와 동일 직렬화).
+    fs 존재 판정뿐이라 git 불요(hermetic).
+    """
+    pruned: list[str] = []
+    with _lease_lock():
+        leases = _read_ledger()
+        kept = [l for l in leases if slot_path(l.slot).exists()]
+        pruned = [l.slot for l in leases if not slot_path(l.slot).exists()]
+        if pruned:
+            _write_ledger(kept)
+    return pruned
 
 
 def current_branch(slot: str, *, git_runner: GitRunner | None = None) -> str | None:

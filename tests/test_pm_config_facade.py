@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -75,7 +76,7 @@ class FakeWorktreePool:
             super().__init__(slot)
 
     def __init__(self, *, leases=None, release_raises=None, force_returns="present",
-                 set_test_raises=None, live_branches=None):
+                 set_test_raises=None, live_branches=None, reconcile=None):
         self.leases = leases or []
         self.calls: list[tuple] = []
         self._release_raises = release_raises   # 예외 클래스 또는 None
@@ -84,6 +85,9 @@ class FakeWorktreePool:
         # slot → live 브랜치 매핑(ADR-0013 amend T-0072 — cmd_status 가 lease.branch 대신
         # current_branch(slot) 로 슬롯 git HEAD 를 live 조회). 미지정 슬롯은 None(detached).
         self._live_branches = live_branches or {}
+        # reconcile 결과(T-0295·cmd_status drift surface) — (orphans, stale, incomplete) 튜플
+        # 또는 None(=drift 없음·기본). 기존 status 테스트는 미지정 → 빈 결과라 drift 절 미출력(무영향).
+        self._reconcile = reconcile
 
     def create_slot(self, repo, *, base=None, test_cmd=None):
         # base (T-0075) — areas 의 그 repo base 를 cmd_worktree_add 가 전달한다(슬롯 브랜치
@@ -117,6 +121,13 @@ class FakeWorktreePool:
         # None(detached/조회불가) — cmd_status 가 "(detached/조회불가)" 로 surface.
         self.calls.append(("current_branch", slot))
         return self._live_branches.get(slot)
+
+    def reconcile_worktrees(self, *, git_runner=None):
+        # git worktree × 장부 정합 대역(T-0295) — cmd_status 가 drift 를 surface 하는 배선을
+        # 결정적으로 친다. reconcile 미지정이면 빈 결과(drift 없음·기존 status 테스트 무영향).
+        self.calls.append(("reconcile_worktrees",))
+        orphans, stale, incomplete = self._reconcile or ([], [], [])
+        return SimpleNamespace(orphans=orphans, stale=stale, incomplete=incomplete)
 
     def release(self, slot):
         self.calls.append(("release", slot))
@@ -1462,6 +1473,112 @@ def test_status_detached_branch_shows_placeholder(pc, monkeypatch, capsys):
 def test_status_engine_missing_errors(pc, monkeypatch, capsys):
     monkeypatch.setattr(pc, "_load_module", lambda name, filename: None)
     rc = pc.cmd_status(argparse.Namespace(command="status"))
+    assert rc == 1
+    assert "worktree_pool.py 엔진을 찾을 수 없다" in capsys.readouterr().err
+
+
+# ── status reconcile — orphan/stale/incomplete drift surface (T-0295) ────────
+
+
+def test_status_surfaces_orphan_drift(pc, capsys):
+    """DoD(1) — reconcile 이 orphan(git worktree 존재·장부 미등록)을 status 가 flag 한다 (T-0295)."""
+    orphan = SimpleNamespace(slot="work/svc_2", branch="svc_2")
+    wp = FakeWorktreePool(leases=[], reconcile=([orphan], [], []))
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    assert wp.did("reconcile_worktrees")
+    out = capsys.readouterr().out
+    assert "[orphan] work/svc_2" in out
+    assert "drift" in out
+    # 조회 전용 — 복구 안내는 있으나 자동삭제 표현은 없다(사용자 위임).
+    assert "자동삭제 안 함" in out
+
+
+def test_status_surfaces_stale_and_incomplete_drift(pc, capsys):
+    """DoD(2) — reconcile 이 stale(장부 등록·worktree 없음)·incomplete(creating)를 flag 한다 (T-0295)."""
+    stale = FakeLease(slot="work/svc_9", repo="svc", session="", state="idle")
+    incomplete = FakeLease(slot="work/svc_5", repo="svc", session="me", state="creating")
+    wp = FakeWorktreePool(leases=[], reconcile=([], [stale], [incomplete]))
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[stale] work/svc_9" in out
+    assert "[incomplete] work/svc_5" in out
+    assert "creating" in out
+
+
+def test_status_no_drift_omits_section(pc, monkeypatch, capsys):
+    """reconcile 이 빈 결과면 drift 절을 아예 출력하지 않는다(clean 상태 무소음·기존 status 무영향)."""
+    leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
+    wp = FakeWorktreePool(leases=leases)   # reconcile 미지정 → 빈 결과
+    monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "drift" not in out
+    assert "[orphan]" not in out and "[stale]" not in out and "[incomplete]" not in out
+
+
+def test_status_reconcile_failure_does_not_break_status(pc, capsys):
+    """reconcile_worktrees 가 예외를 던져도 status 는 rc0 로 끝난다(fail-soft·조회 전용·T-0295)."""
+    class _Boom(FakeWorktreePool):
+        def reconcile_worktrees(self, *, git_runner=None):
+            raise RuntimeError("git blew up")
+
+    wp = _Boom(leases=[FakeLease(slot="work/svc_1", repo="svc", state="idle")])
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "work/svc_1" in out          # 리스 장부는 정상 surface
+    assert "drift" not in out           # reconcile 실패 → drift 절 생략(크래시 0)
+
+
+def test_status_drift_guidance_recommends_prune_not_force_release(pc, capsys):
+    """must-fix(1) 안내정정 — drift 복구가 위험한 `release --force`(idle 화·삭제 안 함) 대신
+    `prune-stale`(안전 부기 정리) + orphan 은 `git worktree remove` 를 권한다 (T-0295)."""
+    stale = FakeLease(slot="work/svc_9", repo="svc", state="idle")
+    orphan = SimpleNamespace(slot="work/svc_2", branch="svc_2")
+    wp = FakeWorktreePool(leases=[], reconcile=([orphan], [stale], []))
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "prune-stale" in out                 # 안전 프리미티브 안내
+    assert "release --force" not in out         # 위험한 옛 안내 제거(force_release=idle 화·잔여)
+    assert "worktree remove" in out             # orphan 은 사용자가 git 로
+
+
+# ── worktree prune-stale 배선 — 안전 dangling cleanup (T-0295) ────────────────
+
+
+def test_worktree_prune_stale_wires_to_engine(pc, capsys):
+    """worktree prune-stale → worktree_pool.prune_stale_leases() 호출 + 정리 결과 surface (T-0295)."""
+    class _PruneWP(FakeWorktreePool):
+        def prune_stale_leases(self):
+            self.calls.append(("prune_stale_leases",))
+            return ["work/svc_1", "work/svc_2"]
+
+    wp = _PruneWP()
+    rc = pc.cmd_worktree_prune_stale(argparse.Namespace(), worktree_pool=wp)
+    assert rc == 0
+    assert wp.did("prune_stale_leases")
+    out = capsys.readouterr().out
+    assert "work/svc_1" in out and "work/svc_2" in out
+    assert "2개" in out
+
+
+def test_worktree_prune_stale_empty_is_harmless(pc, capsys):
+    """정리할 dangling 엔트리 없으면 무해 안내(rc0·크래시 0)."""
+    wp = FakeWorktreePool()
+    wp.prune_stale_leases = lambda: []
+    rc = pc.cmd_worktree_prune_stale(argparse.Namespace(), worktree_pool=wp)
+    assert rc == 0
+    assert "없음" in capsys.readouterr().out
+
+
+def test_worktree_prune_stale_engine_missing_errors(pc, monkeypatch, capsys):
+    """엔진 로드 실패 → rc1 + 안내(다른 서브커맨드 동형·크래시 0)."""
+    monkeypatch.setattr(pc, "_load_module", lambda name, filename: None)
+    rc = pc.cmd_worktree_prune_stale(argparse.Namespace())
     assert rc == 1
     assert "worktree_pool.py 엔진을 찾을 수 없다" in capsys.readouterr().err
 

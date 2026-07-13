@@ -1968,6 +1968,43 @@ def test_real_git_create_slot_branch_checkout_and_release(proj, tmp_path):
 
 
 @_git_required
+def test_real_git_list_git_worktrees_and_reconcile(proj, tmp_path):
+    """실 git 백스톱 — list_git_worktrees porcelain 파싱 + reconcile orphan/stale (T-0295).
+
+    porcelain 파싱은 mock 이 포맷을 틀리게 인코딩할 수 있는 파서라 실 git 출력으로 백스톱한다.
+    실 bare + 실 `worktree add` 로: (1) list_git_worktrees 가 슬롯을 branch 와 함께 열거(bare 원은
+    slot=None), (2) 장부만 비우면 그 worktree 를 orphan 으로, (3) worktree 를 실제 remove 하고
+    장부만 남기면 stale 로 reconcile 이 잡는지 검증한다.
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_real_bare(wp, "A", tmp_path)
+    lease = wp.create_slot("A", branch="a1", session="me", init_submodules=False)
+    assert lease.slot == "work/A_1"
+
+    # (1) list_git_worktrees — 슬롯 worktree 를 branch 와 함께 열거(bare 원은 slot=None).
+    wts = wp.list_git_worktrees("A")
+    by_slot = {w.slot: w for w in wts if w.slot}
+    assert "work/A_1" in by_slot, f"실 worktree 가 열거 안 됨: {[w.path for w in wts]!r}"
+    assert by_slot["work/A_1"].branch == "a1"
+    assert by_slot["work/A_1"].bare is False
+    assert any(w.bare and w.slot is None for w in wts), "bare 원 엔트리(slot=None) 누락"
+
+    # (2) 장부만 비우면(worktree 는 disk 에 남음) → orphan.
+    _seed(wp)   # 빈 장부
+    recon = wp.reconcile_worktrees()
+    assert {w.slot for w in recon.orphans} == {"work/A_1"}, "disk worktree·장부 없음이 orphan 미판정"
+    assert recon.stale == []
+
+    # (3) worktree 를 실제 remove(disk+등록 정리) 후 장부만 남김 → stale.
+    wp._rollback_worktree("A", wp.slot_path("work/A_1"))   # git worktree remove --force
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
+    recon2 = wp.reconcile_worktrees()
+    assert {l.slot for l in recon2.stale} == {"work/A_1"}, "장부만 남고 worktree 없음이 stale 미판정"
+    assert recon2.orphans == []
+
+
+@_git_required
 def test_real_git_create_slot_base_derives_slot_branch_from_base(proj, tmp_path):
     """실 git — create_slot(base=develop) 이 슬롯 브랜치 `A_1` 를 *develop tip 에서* 판다 (T-0075).
 
@@ -2418,10 +2455,12 @@ def test_create_slot_worktree_add_and_submodule_use_interactive_on_real_path(wp,
     # submodule = 슬롯 경로 + 기본 timeout(=SUBMODULE_TIMEOUT·미지정) (T-0070 인터랙티브).
     assert (slot_p, None) in interactive_calls, \
         "submodule 단계가 인터랙티브 러너(기본 timeout)를 안 탐"
-    # branch 경로엔 base 파생 prep(fetch/show-ref)이 없다 — capture 러너는 bare 실검증 가드
-    # (T-0294·rev-parse)만 만든다(bare 컨텍스트·1회). worktree add/submodule 은 인터랙티브다.
-    assert capture_cwds == [bare], \
-        f"capture 러너는 bare 실검증(T-0294)만이어야 하는데: {capture_cwds!r}"
+    # branch 경로엔 base 파생 prep(fetch/show-ref)이 없다 — capture 러너는 bare 컨텍스트에서
+    # (a) bare 실검증 가드(T-0294·rev-parse) + (b) 슬롯번호용 `git worktree list --porcelain`
+    # (T-0295·orphan 병합)만 만든다. 둘 다 bare 컨텍스트·짧은 read-only op(인터랙티브 아님).
+    # worktree add/submodule 은 인터랙티브다.
+    assert capture_cwds == [bare, bare], \
+        f"capture 러너는 bare 실검증(T-0294)+worktree list(T-0295)만이어야 하는데: {capture_cwds!r}"
 
 
 def test_create_slot_worktree_add_injected_runner_preserves_di_seam(wp, monkeypatch):
@@ -2635,6 +2674,309 @@ def test_rollback_worktree_uses_bare_context(wp, monkeypatch):
     wp._rollback_worktree("A", wp.slot_path("work/A_1"))
     assert captured and captured[0] == wp.bare_repo_path("A"), \
         f"롤백 remove 컨텍스트가 family bare 가 아님: {captured!r}"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# T-0295: list_git_worktrees · reconcile · 슬롯번호 git 병합 · provisional lease
+# ════════════════════════════════════════════════════════════════════════
+
+
+def _porcelain(*entries) -> str:
+    """`git worktree list --porcelain` 텍스트 픽스처.
+
+    각 entry = (path, branch_or_None, *flags). flags 에 "bare" 있으면 bare 엔트리, branch=None
+    이면 detached(HEAD 만), 아니면 `branch refs/heads/<branch>`. 실 git 포맷(빈 줄 구분)을 모사.
+    """
+    blocks = []
+    for path, branch, *flags in entries:
+        lines = [f"worktree {path}"]
+        if "bare" in flags:
+            lines.append("bare")
+        elif branch is None:
+            lines.append("HEAD " + "0" * 40)
+            lines.append("detached")
+        else:
+            lines.append("HEAD " + "1" * 40)
+            lines.append(f"branch refs/heads/{branch}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + "\n"
+
+
+class _WorktreeListGit:
+    """`worktree list --porcelain` 에 미리 정한 porcelain 을 돌려주는 mock runner (T-0295)."""
+
+    def __init__(self, porcelain: str, *, list_rc: int = 0):
+        self.porcelain = porcelain
+        self.list_rc = list_rc
+        self.calls: list[list] = []
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        if argv[:3] == ["worktree", "list", "--porcelain"]:
+            return (self.list_rc, self.porcelain)
+        return (0, "")
+
+
+def test_list_git_worktrees_parses_porcelain(wp):
+    """list_git_worktrees — porcelain 파싱: branch·detached·bare + WORK_DIR 하위 slot 파생 (T-0295)."""
+    _mk_bare_placeholder(wp, "A")
+    porc = _porcelain(
+        (str(wp.bare_repo_path("A")), None, "bare"),        # bare 원 → slot None
+        (str(wp.slot_path("work/A_1")), "A_1"),             # on-branch
+        (str(wp.slot_path("work/A_2")), None),              # detached
+    )
+    git = _WorktreeListGit(porc)
+    wts = wp.list_git_worktrees("A", git_runner=git)
+    by_slot = {w.slot: w for w in wts}
+    assert by_slot["work/A_1"].branch == "A_1"
+    assert by_slot["work/A_1"].bare is False and by_slot["work/A_1"].detached is False
+    assert by_slot["work/A_2"].detached is True and by_slot["work/A_2"].branch is None
+    bare_entry = next(w for w in wts if w.bare)
+    assert bare_entry.slot is None, "bare 원(WORK_DIR 밖)은 slot=None 이어야 함"
+
+
+def test_list_git_worktrees_failsoft_on_rc_and_raise(wp):
+    """list_git_worktrees fail-soft — rc≠0·runner 예외는 빈 리스트(크래시 0·T-0295)."""
+    _mk_bare_placeholder(wp, "A")
+    assert wp.list_git_worktrees("A", git_runner=_WorktreeListGit("", list_rc=1)) == []
+
+    def boom(argv):
+        raise OSError("git gone")
+    assert wp.list_git_worktrees("A", git_runner=boom) == []
+
+
+def test_reconcile_flags_orphan(wp):
+    """DoD(1) — git worktree 있고 장부 없음 → orphan (T-0295·audit #2/#3)."""
+    _mk_bare_placeholder(wp, "A")
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="leased"))
+    porc = _porcelain(
+        (str(wp.bare_repo_path("A")), None, "bare"),
+        (str(wp.slot_path("work/A_1")), "A_1"),
+        (str(wp.slot_path("work/A_2")), "A_2"),   # orphan(장부 미등록)
+    )
+    recon = wp.reconcile_worktrees(git_runner=_WorktreeListGit(porc))
+    assert {w.slot for w in recon.orphans} == {"work/A_2"}
+    assert recon.stale == [] and recon.incomplete == []
+
+
+def test_reconcile_flags_stale(wp):
+    """DoD(2) — 장부 있고 git worktree 없음 → stale (T-0295·audit #3)."""
+    _mk_bare_placeholder(wp, "A")
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", state="idle"))
+    porc = _porcelain(
+        (str(wp.bare_repo_path("A")), None, "bare"),
+        (str(wp.slot_path("work/A_1")), "A_1"),   # A_2 는 dir 삭제/prune → 목록에 없음
+    )
+    recon = wp.reconcile_worktrees(git_runner=_WorktreeListGit(porc))
+    assert {l.slot for l in recon.stale} == {"work/A_2"}
+    assert recon.orphans == [] and recon.incomplete == []
+
+
+def test_reconcile_flags_incomplete_creating(wp):
+    """provisional('creating') 리스는 incomplete 로 잡히고 stale 로 이중계상 안 함 (T-0295)."""
+    _mk_bare_placeholder(wp, "A")
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="creating"))
+    porc = _porcelain(
+        (str(wp.bare_repo_path("A")), None, "bare"),
+        (str(wp.slot_path("work/A_1")), "A_1"),   # add 성공 후 확정 전 SIGKILL 재현(worktree 존재)
+    )
+    recon = wp.reconcile_worktrees(git_runner=_WorktreeListGit(porc))
+    assert {l.slot for l in recon.incomplete} == {"work/A_1"}
+    assert recon.stale == []       # creating 은 stale 로 이중계상 안 함
+    assert recon.orphans == []     # 장부에 있으니 orphan 도 아님
+
+
+def test_reconcile_clean_when_ledger_matches_git(wp):
+    """sensitivity 대조 — 장부와 git 이 일치하면 drift 0(orphan/stale/incomplete 전부 빈 리스트)."""
+    _mk_bare_placeholder(wp, "A")
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="leased"))
+    porc = _porcelain(
+        (str(wp.bare_repo_path("A")), None, "bare"),
+        (str(wp.slot_path("work/A_1")), "A_1"),
+    )
+    recon = wp.reconcile_worktrees(git_runner=_WorktreeListGit(porc))
+    assert recon.orphans == [] and recon.stale == [] and recon.incomplete == []
+
+
+def test_create_slot_avoids_orphan_slot_number(wp):
+    """DoD(3) — 슬롯번호가 git worktree(orphan) 번호를 병합 회피한다 (T-0295·audit #4).
+
+    장부는 비었지만 git 엔 orphan work/A_1 이 등록돼 있다 — ledger 만 보면 A_1 재사용 →
+    `git worktree add` "already exists" 충돌. git 병합으로 A_2 를 판다.
+    """
+    _mk_bare_placeholder(wp, "A")
+    orphan_porc = _porcelain(
+        (str(wp.bare_repo_path("A")), None, "bare"),
+        (str(wp.slot_path("work/A_1")), "A_1"),   # orphan(장부엔 없음)
+    )
+
+    def git(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")
+        if "rev-parse" in argv and "--verify" in argv and argv and argv[-1] == "HEAD":
+            return (0, "abc\n")
+        if argv[:3] == ["worktree", "list", "--porcelain"]:
+            return (0, orphan_porc)
+        return (0, "")   # worktree add·submodule 성공
+    lease = wp.create_slot("A", session="me", git_runner=git)
+    assert lease.slot == "work/A_2", "orphan A_1 을 회피해 A_2 를 파야 함(git 병합·audit #4)"
+
+
+def test_create_slot_writes_provisional_before_worktree_add(wp):
+    """DoD(4)·SIGKILL 커버 — provisional('creating')이 worktree add *전에* disk 에 기록된다 (T-0295).
+
+    add 시점에 장부를 (create_slot 이 이미 락 보유·같은 스레드라 무락) 읽어 provisional 유무를
+    캡처한다 — 이게 SIGKILL(except/finally 안 도는 kill -9)에도 흔적이 남아 reconcile 이 청소할 수
+    있는 근거다. 성공 시 leased 로 확정(2차 write).
+    """
+    _mk_bare_placeholder(wp, "A")
+    seen = {}
+
+    def git(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")
+        if "rev-parse" in argv and "--verify" in argv and argv and argv[-1] == "HEAD":
+            return (0, "abc\n")
+        if argv[:2] == ["worktree", "add"]:
+            seen["at_add"] = [(l.slot, l.state) for l in wp._read_ledger()]
+            return (0, "")
+        return (0, "")
+    lease = wp.create_slot("A", session="me", git_runner=git)
+    assert seen["at_add"] == [("work/A_1", "creating")], \
+        "provisional('creating')이 worktree add 전에 disk 장부에 없음(SIGKILL 흔적 상실)"
+    assert lease.state == "leased"
+    assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "leased")]
+
+
+def test_create_slot_keyboard_interrupt_rolls_back_and_removes_provisional(wp):
+    """KeyboardInterrupt(add 성공 후 submodule 중) → worktree 롤백 + provisional 제거 + 재raise (T-0295).
+
+    except 가 **BaseException**(KeyboardInterrupt 포함)을 잡아 청소함을 입증 — `except Exception`
+    만이면 Ctrl-C 가 orphan worktree + provisional 을 남긴다(finally-rollback 보조 경로).
+    """
+    _mk_bare_placeholder(wp, "A")
+    removed = []
+
+    def git(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")
+        if "rev-parse" in argv and "--verify" in argv and argv and argv[-1] == "HEAD":
+            return (0, "abc\n")
+        if argv[:1] == ["submodule"]:
+            raise KeyboardInterrupt()               # add 성공 후 submodule 중 Ctrl-C
+        if argv[:2] == ["worktree", "remove"]:
+            removed.append(list(argv))
+            return (0, "")
+        return (0, "")                              # worktree add·list 성공
+    with pytest.raises(KeyboardInterrupt):
+        wp.create_slot("A", branch="a1", session="me", git_runner=git)
+    assert removed, "KeyboardInterrupt 인데 worktree 롤백(remove)이 안 불림(orphan 잔존)"
+    assert wp.list_leases() == [], "provisional('creating')이 제거 안 됨(Ctrl-C 후 장부 잔존)"
+
+
+def test_create_slot_already_exists_error_hints_orphan(wp):
+    """DoD(4) — worktree add "already exists" 실패에 orphan 진단 힌트가 실린다 (T-0295·#4-충돌)."""
+    _mk_bare_placeholder(wp, "A")
+
+    def git(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")
+        if "rev-parse" in argv and "--verify" in argv and argv and argv[-1] == "HEAD":
+            return (0, "abc\n")
+        if argv[:2] == ["worktree", "add"]:
+            return (1, "fatal: '.../work/A_1' already exists")
+        return (0, "")
+    with pytest.raises(RuntimeError) as exc:
+        wp.create_slot("A", branch="a1", session="me", git_runner=git)
+    msg = str(exc.value)
+    assert "orphan" in msg
+    assert "pm-config status" in msg
+    assert wp.list_leases() == []   # provisional 제거(불완전 슬롯 미등록)
+
+
+# ── T-0295 리뷰: 안전 prune · alloc 위험차단 · resume creating 제외 · 이중계상 가드 ──
+
+
+def test_reconcile_creating_without_worktree_is_incomplete_not_stale(wp):
+    """should-fix(3) — creating lease 인데 worktree 부재(add 전 SIGKILL): incomplete 1·stale 0 (T-0295).
+
+    `l.state != "creating"` 이중계상 가드의 load-bearing 시나리오 — worktree 없는 creating 은
+    git_slots 에 없어(slot not in git_slots) 가드 없으면 stale 로도 잡혀 이중 surface 된다. 이
+    케이스가 이전엔 무테스트였다(reviewer).
+    """
+    _mk_bare_placeholder(wp, "A")
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="creating"))
+    # git worktree 목록에 A_1 없음(add 전 SIGKILL = worktree 미생성).
+    porc = _porcelain((str(wp.bare_repo_path("A")), None, "bare"))
+    recon = wp.reconcile_worktrees(git_runner=_WorktreeListGit(porc))
+    assert {l.slot for l in recon.incomplete} == {"work/A_1"}
+    assert recon.stale == []       # 가드가 stale 이중계상 차단(load-bearing)
+    assert recon.orphans == []
+
+
+def test_prune_stale_leases_removes_absent_worktree_entries(wp):
+    """must-fix(1) cleanup — worktree dir 확정 부재(stale idle + worktree 없는 creating) 엔트리 제거 (T-0295).
+
+    이미 사라진 worktree 의 dangling 부기만 정리(사용자 데이터 삭제 아님). worktree dir 이 존재하는
+    엔트리는 손대지 않는다. sensitivity: prune 이 no-op 이면 A_1/A_2 잔여로 red.
+    """
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", state="idle"),        # dir 부재 → 제거
+          _lease(wp, slot="work/A_2", repo="A", state="creating"),    # dir 부재 → 제거
+          _lease(wp, slot="work/A_3", repo="A", state="leased"))      # dir 존재 → 유지
+    wp.slot_path("work/A_3").mkdir(parents=True, exist_ok=True)
+    pruned = wp.prune_stale_leases()
+    assert set(pruned) == {"work/A_1", "work/A_2"}
+    assert {l.slot for l in wp.list_leases()} == {"work/A_3"}
+
+
+def test_prune_stale_leases_keeps_present_worktree(wp):
+    """sensitivity — worktree dir 이 존재하면 어떤 state(creating 포함)든 prune 이 안 건드린다 (T-0295)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="creating"))
+    wp.slot_path("work/A_1").mkdir(parents=True, exist_ok=True)
+    assert wp.prune_stale_leases() == []
+    assert {l.slot for l in wp.list_leases()} == {"work/A_1"}
+
+
+def test_alloc_skips_idle_slot_with_missing_worktree(wp):
+    """must-fix(1) 위험차단 — worktree dir 없는 idle 슬롯을 alloc 이 leased 로 안 넘긴다 (T-0295·실경로).
+
+    stale 엔트리가 force_release 로 idle 이 되면 이 재사용 루프가 *없는 worktree* 를 leased 로
+    할당하던 위험(codex 실측). 실경로(git_runner 미주입) fs 가드가 부재 슬롯을 skip → NeedsCreate.
+    sensitivity: 가드 제거 시 leased 승격돼 red(alloc-nonexistent 재현).
+    """
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"))
+    # work/A_1 dir 미생성 = worktree 부재.
+    with pytest.raises(wp.NeedsCreate):
+        wp.alloc("A", session="me")   # git_runner 미주입 = 실경로 fs 가드
+    assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "idle")], \
+        "부재 worktree idle 이 leased 로 승격됨(위험차단 실패)"
+
+
+def test_alloc_reuses_idle_slot_with_present_worktree(wp):
+    """sensitivity 대조 — worktree dir 이 존재하는 idle 슬롯은 실경로에서도 정상 재사용 (T-0295)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"))
+    wp.slot_path("work/A_1").mkdir(parents=True, exist_ok=True)   # worktree 존재 모델
+    lease = wp.alloc("A", session="me")   # 실경로·target_branch 없음 → checkout 불요·git 안 탐
+    assert lease.slot == "work/A_1" and lease.state == "leased"
+
+
+def test_alloc_resume_does_not_reattach_creating_orphan(wp):
+    """should-fix(2) — creating orphan(worktree 존재·브랜치 체크아웃)을 alloc(resume=)이 재부착 안 함 (T-0295).
+
+    worktree add 성공 후~submodule init 전 SIGKILL 로 남은 creating lease 는 worktree 가 그 브랜치를
+    체크아웃 중이라 live HEAD 로 매칭되지만, resume 재부착 루프가 state=="creating" 을 제외해 조용한
+    creating→leased 승격(submodule 미초기화·incomplete surface 우회)을 막는다 → NeedsCreate.
+    sensitivity: 제외 가드 없으면 leased 로 재부착돼 red.
+    """
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="creating"))
+    git = FakeGit(head="a5-pay")   # 슬롯 live HEAD = a5-pay (creating 이지만 브랜치 체크아웃됨)
+    with pytest.raises(wp.NeedsCreate):
+        wp.alloc("A", resume="a5-pay", session="new", git_runner=git)
+    assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "creating")], \
+        "creating orphan 이 resume 으로 leased 재부착됨(should-fix 실패)"
 
 
 # ── (3) _real_git_runner stdout+stderr surface + except → (1, str(exc)) ──────
