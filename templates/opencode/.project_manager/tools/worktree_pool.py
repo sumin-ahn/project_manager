@@ -49,10 +49,45 @@ WORK_DIR = REPO / "work"                                        # worktree 풀 �
 REPOS_DIR = REPO / ".repos"                                     # worktree 의 공유 .git 원 (bare·ADR-0011 §31)
 REPO_HOOKS_DIR = LOCAL_DIR / "repo-hooks"                       # per-repo pre-push 보호훅(프레임워크 소유·gitignore·T-0076)
 
-GIT_TIMEOUT_SECONDS = 120
+# git subprocess 타임아웃 (초) — captured 러너(_real_git_runner)의 subprocess timeout + worktree
+# add console-visible 러너(_real_git_runner_interactive)의 상한. **타임아웃의 실패모드 = 정상 op 도
+# 죽임(false-kill·T-0292)** — 대형 repo 의 worktree add(로컬 bare→full checkout·느린 디스크/VPN/
+# Windows)가 진행 중인데도 짧은 고정값(옛 120)에 걸려 false-kill 되던 실측 블로커. submodule 선례
+# (T-0070·SUBMODULE_TIMEOUT)와 동형으로 env override + 관대한 기본으로 옮긴다.
+#
+# env override (T-0292·`_resolve_submodule_timeout` 미러): 코드 직수정은 worktree_pool.py=manifest
+#   엔진이라 다음 pm_update 가 원복 → **env `PM_GIT_TIMEOUT`(pm_update overwrite 를 넘어 persist)** 로
+#   튜닝한다. `0`/`none`/`unlimited`/빈값 → None(무제한 — 진행이 콘솔에 보이는 worktree add 에 안전·
+#   hang 은 콘솔 가시·Ctrl-C), 양의 정수 → 그 초, 미설정/비정상 → 기본 1800(30분·유한 관대). 무제한을
+#   기본으로 안 두는 건 captured 계열 fast op(status/checkout 등)의 silent-hang 방지(submodule 3600
+#   유한 기본과 동일 철학·무제한은 env opt-in).
+#
+# ⚠️ **무제한은 console-visible 러너에만** (codex 게이트·설계 모순 fix): `None`(무제한)은 진행이 콘솔에
+#   보이는 worktree-add 인터랙티브 러너에만 적용한다. **captured 러너(`_real_git_runner`)는 절대 무제한이
+#   되지 않는다** — silent(진행 안 보임)라 무제한이면 base 파생 `fetch origin` 네트워크 stall 시 silent hang
+#   한다. 그래서 captured 러너는 GIT_TIMEOUT_SECONDS 가 None 일 때 `_GIT_TIMEOUT_DEFAULT`(유한)로 폴백-캡한다
+#   (아래 `_real_git_runner`). 즉 captured=항상 유한·visible add=none 가능.
+_GIT_TIMEOUT_DEFAULT = 1800   # 기본 유한 상한 (초·30분) — 미설정/비정상 기본 + captured 러너 무제한 폴백 cap.
 
-# submodule init 인터랙티브 러너의 timeout (T-0070). 짧은 git(status·worktree add·
-# checkout)은 GIT_TIMEOUT_SECONDS(=120) 로 충분하지만, submodule clone 은 대형 family
+
+def _resolve_git_timeout() -> "int | None":
+    raw = os.environ.get("PM_GIT_TIMEOUT")
+    if raw is None:
+        return _GIT_TIMEOUT_DEFAULT
+    raw = raw.strip().lower()
+    if raw in ("0", "none", "unlimited", ""):
+        return None
+    try:
+        val = int(raw)
+        return val if val > 0 else None
+    except ValueError:
+        return _GIT_TIMEOUT_DEFAULT
+
+
+GIT_TIMEOUT_SECONDS = _resolve_git_timeout()
+
+# submodule init 인터랙티브 러너의 timeout (T-0070). 짧은 captured git(status·checkout·dirty·
+# stash)은 GIT_TIMEOUT_SECONDS(기본 1800·T-0292 env) 로 충분하지만, submodule clone 은 대형 family
 # repo + VPN 에서 600s 도 초과(실 Windows multi-PM 파일럿 "10분 아슬" 실증) → TimeoutExpired
 # 로 죽었다. 인터랙티브 러너는 stdio 를 콘솔에 상속(진행상황·credential 프롬프트 작동)하고
 # 이 대폭 확대된 timeout(또는 None=무제한)으로 큰 clone 을 끝까지 돌린다. 수동 콘솔 실행과
@@ -380,6 +415,12 @@ def _real_git_runner(cwd: Path) -> GitRunner:
     ⚠️ `_is_dirty` 는 결합된 출력을 `_porcelain_status_lines`(porcelain 형식 라인만 추림·아래)로
     필터하므로 stderr 경고가 섞여도 dirty 오탐이 없다 — 이 결합은 진단용이고 dirty 판정은
     porcelain 라인만 보는 경로로 분리돼 있다.
+
+    ⚠️ **captured 러너는 절대 무제한이 되지 않는다 (codex 게이트·설계 모순 fix)**: subprocess
+    timeout 은 `GIT_TIMEOUT_SECONDS or _GIT_TIMEOUT_DEFAULT` — GIT_TIMEOUT_SECONDS 가
+    None(PM_GIT_TIMEOUT=none)이어도 유한 fallback(1800s)으로 캡한다. captured 는 진행이 콘솔에
+    안 보여(silent) 무제한이면 network stall(base 파생 `fetch origin`) 시 silent hang 하기 때문.
+    무제한(None)은 진행이 콘솔에 보이는 worktree-add 인터랙티브 러너에만 허용한다.
     """
     git_binary = shutil.which("git")
 
@@ -393,7 +434,8 @@ def _real_git_runner(cwd: Path) -> GitRunner:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=GIT_TIMEOUT_SECONDS,
+                # captured=항상 유한: None(무제한)이면 silent hang → _GIT_TIMEOUT_DEFAULT 로 캡.
+                timeout=GIT_TIMEOUT_SECONDS or _GIT_TIMEOUT_DEFAULT,
             )
             return result.returncode, (result.stdout or "") + (result.stderr or "")
         except Exception as exc:  # noqa: BLE001 — fail-soft: 타임아웃/예외 메시지를 surface.
@@ -402,20 +444,27 @@ def _real_git_runner(cwd: Path) -> GitRunner:
     return runner
 
 
-def _real_git_runner_interactive(cwd: Path) -> GitRunner:
-    """submodule init 전용 인터랙티브 git runner — stdio 콘솔 상속·대폭 확대 timeout (T-0070).
+def _real_git_runner_interactive(
+    cwd: Path, *, timeout: "int | None" = SUBMODULE_TIMEOUT,
+) -> GitRunner:
+    """console-visible 인터랙티브 git runner — stdio 콘솔 상속·튜닝 가능한 timeout (T-0070·T-0292).
 
     `_real_git_runner` 와 달리 **capture 하지 않는다** — stdout/stderr/stdin 을 부모 콘솔에
     그대로 상속한다(`subprocess.run(..., capture_output 안 줌`). 그래서:
-      - 대형 submodule clone 의 진행상황이 화면에 실시간 표시된다(긴 침묵 대신).
+      - 대형 clone/checkout 의 진행상황이 화면에 실시간 표시된다(긴 침묵 대신).
       - git credential/auth 프롬프트가 작동한다(수동 콘솔 실행과 동일).
-      - timeout 이 `SUBMODULE_TIMEOUT`(3600s·또는 None=무제한)이라 600s 초과 대형 clone 이
-        TimeoutExpired 로 죽지 않는다(실 Windows multi-PM 파일럿 블로커 해소).
+      - `timeout` 이 관대(또는 None=무제한)라 느린 op 이 짧은 고정값에 false-kill 되지 않는다.
+
+    **두 호출부 (같은 패턴·다른 timeout)**:
+      - submodule init (T-0070) — `timeout` 미지정 → 기본 `SUBMODULE_TIMEOUT`(3600s·env
+        `PM_SUBMODULE_TIMEOUT`). 600s 초과 대형 clone 이 TimeoutExpired 로 죽던 블로커 해소.
+      - worktree add (T-0292) — `timeout=GIT_TIMEOUT_SECONDS`(1800s·env `PM_GIT_TIMEOUT`).
+        대형 repo 의 full checkout 이 옛 captured 120s 에 false-kill 되던 블로커 해소.
 
     반환 `(rc, "")` — 출력은 콘솔로 직접 갔으므로 캡처 문자열은 없다(rc 로만 성공/실패 판정).
     git 부재/예외는 `(1, str(exc))`(또는 부재 메시지) — `_real_git_runner` 와 같은 fail-soft.
-    `create_slot` 의 submodule 단계가 `git_runner is None` 인 실경로에서만 이걸 쓴다 — 주입된
-    git_runner(테스트 mock)가 있으면 그대로(DI seam 보존·인터랙티브 안 탐).
+    `create_slot` 의 submodule/worktree-add 단계가 `git_runner is None` 인 실경로에서만 이걸
+    쓴다 — 주입된 git_runner(테스트 mock)가 있으면 그대로(DI seam 보존·인터랙티브 안 탐).
 
     ⚠️ 비-tty(CI/pytest)서도 안전: 테스트는 git_runner 를 주입하므로 이 실 인터랙티브
     경로를 타지 않는다. 이 함수 자체의 단위테스트는 짧은 비-네트워크 git 명령(stdin 블록
@@ -430,7 +479,7 @@ def _real_git_runner_interactive(cwd: Path) -> GitRunner:
             # capture_output 미지정 = stdout/stderr/stdin 부모 콘솔 상속(인터랙티브).
             result = subprocess.run(
                 [git_binary, "-C", str(cwd), *argv],
-                timeout=SUBMODULE_TIMEOUT,
+                timeout=timeout,
             )
             return result.returncode, ""
         except Exception as exc:  # noqa: BLE001 — fail-soft: 타임아웃/예외 메시지 surface.
@@ -971,7 +1020,6 @@ def create_slot(
         #     슬롯 전용 브랜치를 base 에서 새로 판다. `--no-track` = origin/<base> upstream 자동설정
         #     억제(슬롯=작업스트림). (파생 기준·fetch·--no-track 상세는 아래 base 분기 주석.)
         #   - 둘 다 미지정이면 **현행 보존**(`add <path>` = bare HEAD·회귀 0).
-        add_runner = git_runner or _real_git_runner(bare)
         if branch is not None:
             add_argv = ["worktree", "add", "-B", branch, str(path)]
         elif base is not None:
@@ -991,8 +1039,12 @@ def create_slot(
             #     upstream 을 *자동* 설정한다(A_1@{upstream}=origin/<base>·`git status`/무인자 `git pull`
             #     이 슬롯 작업을 base 에 묶음). `--no-track` 으로 그 자동설정을 억제한다(로컬 <base>
             #     폴백 경로에서도 안전 — no-op·codex 게이트 포착 결함).
+            # prep(fetch/show-ref)은 **capture 러너** — fetch out 을 경고 detail 로 쓰고 rc 로 origin
+            # 해소를 판정한다(짧은 로컬 op·인터랙티브 아님). worktree add *자체* 만 아래서 console-visible
+            # 러너로 실행한다(T-0292). 주입된 git_runner(mock)면 그대로(DI seam).
+            prep_runner = git_runner or _real_git_runner(bare)
             ref = base
-            rc, out = add_runner(["fetch", "origin"])
+            rc, out = prep_runner(["fetch", "origin"])
             if rc != 0:
                 print(
                     f"[경고] `git -C {bare} fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
@@ -1001,7 +1053,7 @@ def create_slot(
                     file=sys.stderr,
                 )
             else:
-                rc, _ = add_runner(
+                rc, _ = prep_runner(
                     ["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base}"]
                 )
                 if rc == 0:
@@ -1009,9 +1061,26 @@ def create_slot(
             add_argv = ["worktree", "add", "--no-track", "-b", f"{repo}_{n}", str(path), ref]
         else:
             add_argv = ["worktree", "add", str(path)]
+
+        # worktree add *자체* 는 **console-visible(인터랙티브) 러너**로 실행한다 (T-0292). 대형 repo 의
+        # full checkout(로컬 bare→worktree·느린 디스크/VPN/Windows)이 옛 captured 120s 에 false-kill
+        # 되던 블로커 해소 — 진행상황이 콘솔에 실시간 보이고 timeout 이 GIT_TIMEOUT_SECONDS(1800s·env
+        # `PM_GIT_TIMEOUT`·`none`=무제한)라 관대하다. submodule 단계와 동일 패턴(_real_git_runner_
+        # interactive). **DI seam 보존**: 주입된 git_runner(테스트 mock)가 있으면 그걸 쓴다(현행 테스트
+        # 무영향) — 인터랙티브는 `git_runner is None` 실경로만. 인터랙티브는 `(rc, "")` 반환(출력은 콘솔로
+        # 직접)이라 실패 메시지는 rc 기반 + 아래 트립 안내로 조정한다(git stderr 는 이미 콘솔에 감).
+        add_runner = git_runner or _real_git_runner_interactive(bare, timeout=GIT_TIMEOUT_SECONDS)
         rc, out = add_runner(add_argv)
         if rc != 0:
-            raise RuntimeError(f"git worktree add failed for {slot!r}: {out!r}")
+            # 트립/실패 안내 (T-0292) — 하네스 자동 호출이 timeout/실패로 죽었을 때 사용자에게 다음
+            # 행동(터미널 직접 실행·무제한 opt-in)을 준다. rc 기반(out 은 인터랙티브면 빈 문자열).
+            timeout_desc = "무제한" if GIT_TIMEOUT_SECONDS is None else f"{GIT_TIMEOUT_SECONDS}초"
+            raise RuntimeError(
+                f"git worktree add failed for {slot!r} (rc={rc}, out={out!r}). "
+                f"매우 느린 op(대형 repo·느린 디스크/VPN)이면 timeout({timeout_desc}·PM_GIT_TIMEOUT)에 "
+                f"걸렸을 수 있다 — 터미널에서 `pm-config worktree add {repo}` 를 직접 실행하면 진행상황이 "
+                f"보이고, `PM_GIT_TIMEOUT=none` 으로 무제한 실행할 수 있다 (T-0292)."
+            )
 
         # submodule init — worktree add 는 submodule 자동 init 안 함(ADR-0013·spike §8-4(d)).
         # `--force`: bare 에서 만든 fresh 슬롯의 worktree+submodule edge 에서 plain `--init` 이
@@ -1023,9 +1092,10 @@ def create_slot(
         # **인터랙티브 러너 (T-0070)**: 실경로(git_runner 미주입)에선 capture 러너 대신
         # `_real_git_runner_interactive`(stdio 콘솔 상속·SUBMODULE_TIMEOUT 3600s)로 돈다 —
         # 대형 submodule clone 이 600s 초과해 TimeoutExpired→(1,"")로 죽던 블로커 해소(진행
-        # 상황 화면 표시·credential 프롬프트·대형 clone 완주). 짧은 git(worktree add 등)은
-        # capture 러너 그대로. **DI seam 보존**: 주입된 git_runner(테스트 mock)가 있으면 그걸
-        # 쓴다(현행 테스트 무영향) — 인터랙티브는 `git_runner is None` 실경로만.
+        # 상황 화면 표시·credential 프롬프트·대형 clone 완주). worktree add 도 같은 이유로
+        # console-visible(T-0292·GIT_TIMEOUT_SECONDS)이고, 짧은 captured git(status·checkout·
+        # dirty·stash)만 capture 러너 그대로. **DI seam 보존**: 주입된 git_runner(테스트 mock)가
+        # 있으면 그걸 쓴다(현행 테스트 무영향) — 인터랙티브는 `git_runner is None` 실경로만.
         #
         # **원자적 롤백 (T-0070)**: 실패(rc≠0)면 leased 장부 등록 *전에* raise — 불완전 슬롯
         # 차단(기존 동작). 단 worktree add 는 *이미 성공*했으므로 raise 전에 그 worktree 를

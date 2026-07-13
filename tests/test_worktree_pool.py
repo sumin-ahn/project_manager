@@ -1216,20 +1216,21 @@ def test_create_slot_round_trips_test_cmd_through_ledger(wp):
 
 
 def test_create_slot_worktree_add_runs_in_bare_context(wp, monkeypatch):
-    """create_slot 의 add_runner 가 `.repos/<repo>.git` bare 를 가리키는지(컨텍스트 배선·ADR-0011 §31).
+    """create_slot 의 worktree add 러너가 `.repos/<repo>.git` bare 를 가리키는지(컨텍스트 배선·ADR-0011 §31).
 
-    DI seam — git_runner 미주입이면 add_runner = `_real_git_runner(bare)`. `_real_git_runner(cwd)`
-    가 어떤 cwd 로 바인딩되는지 캡처해 그게 family bare(multi-PM 루트 REPO 아님)인지 결정적으로 검증한다
-    (`git -C <cwd>` 로 실행하므로 cwd=bare 면 add 가 bare 컨텍스트에서 일어난다).
+    DI seam — git_runner 미주입이면 worktree add = `_real_git_runner_interactive(bare, ...)`(T-0292
+    console-visible). 그 팩토리가 어떤 cwd 로 바인딩되는지 캡처해 family bare(multi-PM 루트 REPO 아님)
+    인지 결정적으로 검증한다(`git -C <cwd>` 로 실행하므로 cwd=bare 면 add 가 bare 컨텍스트에서 일어난다).
+    init_submodules=False 라 인터랙티브 팩토리는 worktree add 로만 불린다.
     """
     _mk_bare_placeholder(wp, "A")
     captured = []
 
-    def spy_real_git_runner(cwd):
+    def spy_interactive(cwd, *, timeout=None):
         captured.append(cwd)
         return FakeGit()  # 모든 git 호출 성공 stub(add 성공)
 
-    monkeypatch.setattr(wp, "_real_git_runner", spy_real_git_runner)
+    monkeypatch.setattr(wp, "_real_git_runner_interactive", spy_interactive)
     wp.create_slot("A", branch="a1", session="me", init_submodules=False)
     assert captured[0] == wp.bare_repo_path("A"), \
         f"worktree add 컨텍스트가 family bare 가 아님: {captured[0]!r}"
@@ -2248,19 +2249,19 @@ def test_real_git_resync_on_branch_submodule_preserved_under_recurse_true(proj, 
 # ── (1) submodule init = 인터랙티브 러너 (seam·실행 없이) ─────────────────────
 
 
-def test_create_slot_submodule_uses_interactive_runner_on_real_path(wp, monkeypatch):
-    """git_runner 미주입 실경로면 submodule 단계가 `_real_git_runner_interactive` 를 탄다(T-0070).
+def test_create_slot_worktree_add_and_submodule_use_interactive_on_real_path(wp, monkeypatch):
+    """git_runner 미주입 실경로면 worktree add(T-0292)·submodule(T-0070) 둘 다 console-visible 러너.
 
-    seam 으로 검증 — `_real_git_runner_interactive`/`_real_git_runner` 를 cwd 캡처 spy 로
-    교체해 *어느 러너 팩토리가 submodule cwd(슬롯 경로)에 대해 불렸는지* 본다. 실 인터랙티브
+    seam 으로 검증 — `_real_git_runner_interactive`/`_real_git_runner` 팩토리를 (cwd, timeout)
+    캡처 spy 로 교체해 *어느 러너가 어느 cwd·timeout 으로 불렸는지* 본다. 실 인터랙티브
     subprocess(stdin 블록)는 절대 실행하지 않는다 — spy 가 FakeGit 을 돌려줘 rc0 으로 흐른다.
     """
     _mk_bare_placeholder(wp, "A")
-    interactive_cwds: list = []
+    interactive_calls: list = []   # (cwd, timeout)
     capture_cwds: list = []
 
-    def spy_interactive(cwd):
-        interactive_cwds.append(cwd)
+    def spy_interactive(cwd, *, timeout=None):
+        interactive_calls.append((cwd, timeout))
         return FakeGit()  # 모든 git 호출 성공 stub(실 인터랙티브 subprocess 안 탐)
 
     def spy_capture(cwd):
@@ -2272,33 +2273,106 @@ def test_create_slot_submodule_uses_interactive_runner_on_real_path(wp, monkeypa
 
     wp.create_slot("A", branch="a1", session="me")  # git_runner 미주입 = 실경로
 
-    # submodule cwd = 슬롯 경로. 인터랙티브 러너가 그 슬롯 경로로 만들어졌어야 한다.
+    bare = wp.bare_repo_path("A")
     slot_p = wp.slot_path("work/A_1")
-    assert slot_p in interactive_cwds, \
-        "submodule 단계가 인터랙티브 러너를 안 탐(_real_git_runner_interactive 미사용)"
-    # worktree add(짧은 git)는 capture 러너(bare 컨텍스트) — 인터랙티브로 가면 안 됨.
-    assert wp.bare_repo_path("A") in capture_cwds, "worktree add 가 capture 러너를 안 탐"
-    assert wp.bare_repo_path("A") not in interactive_cwds, \
-        "worktree add 가 인터랙티브 러너로 감(submodule 만 인터랙티브여야)"
+    # worktree add(자체) = bare 컨텍스트 + GIT_TIMEOUT_SECONDS (T-0292 console-visible).
+    assert (bare, wp.GIT_TIMEOUT_SECONDS) in interactive_calls, \
+        "worktree add 가 console-visible 러너(GIT_TIMEOUT_SECONDS)를 안 탐"
+    # submodule = 슬롯 경로 + 기본 timeout(=SUBMODULE_TIMEOUT·미지정) (T-0070 인터랙티브).
+    assert (slot_p, None) in interactive_calls, \
+        "submodule 단계가 인터랙티브 러너(기본 timeout)를 안 탐"
+    # branch 경로엔 base 파생 prep(fetch/show-ref)이 없어 capture 러너는 안 만들어진다.
+    assert capture_cwds == [], "branch 경로인데 capture 러너 생성됨(base prep 만 capture 여야)"
 
 
-def test_create_slot_submodule_injected_runner_preserves_di_seam(wp, monkeypatch):
-    """git_runner 주입 시 submodule 도 그 주입 runner — 인터랙티브 러너 안 탐(DI seam 보존·현행).
+def test_create_slot_worktree_add_injected_runner_preserves_di_seam(wp, monkeypatch):
+    """git_runner 주입 시 worktree add 도 그 주입 runner — 인터랙티브 러너 안 탐(DI seam·T-0292).
 
-    인터랙티브 팩토리를 호출하면 즉시 실패하는 trap 으로 바꿔 — 주입 모드에서 그게 안
-    불리는지(현행 테스트 무영향) 결정적으로 입증한다.
+    인터랙티브 팩토리를 호출하면 즉시 실패하는 trap 으로 바꿔 — 주입 모드에서 worktree add 가
+    그걸 안 타는지(현행 테스트 무영향·seam 보존) 결정적으로 입증한다.
     """
     _mk_bare_placeholder(wp, "A")
 
-    def trap(cwd):  # 주입 모드에서 인터랙티브가 불리면 안 됨.
-        raise AssertionError("git_runner 주입인데 인터랙티브 러너가 불림(DI seam 깨짐)")
+    def trap(cwd, *, timeout=None):  # 주입 모드에서 인터랙티브가 불리면 안 됨.
+        raise AssertionError("git_runner 주입인데 worktree add 가 인터랙티브 러너를 탐(DI seam 깨짐)")
 
     monkeypatch.setattr(wp, "_real_git_runner_interactive", trap)
     git = FakeGit()
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
     assert lease.state == "leased"
-    # 주입 runner 가 submodule 도 처리(인터랙티브 우회).
+    # 주입 runner 가 worktree add·submodule 둘 다 처리(인터랙티브 우회).
+    assert git.did("worktree", "add", "-B", "a1")
     assert git.did("submodule", "update", "--init", "--recursive", "--force")
+
+
+def test_create_slot_worktree_add_failure_trip_message(wp):
+    """worktree add rc≠0 → 트립 안내(PM_GIT_TIMEOUT·터미널 직접 실행·`none` 무제한) surface (T-0292).
+
+    인터랙티브 실패(rc≠0·빈 out)를 주입 runner 로 재현 — 하네스 자동 호출이 죽었을 때
+    사용자에게 다음 행동을 주는 메시지 shape 을 본다(rc 기반·out 은 인터랙티브면 빈 문자열).
+    """
+    _mk_bare_placeholder(wp, "A")
+
+    def failing(argv):
+        if argv[:2] == ["worktree", "add"]:
+            return (1, "")  # 인터랙티브 실패 재현: rc≠0·빈 out
+        return (0, "")
+
+    with pytest.raises(RuntimeError) as exc:
+        wp.create_slot("A", branch="a1", session="me", git_runner=failing)
+    msg = str(exc.value)
+    assert "rc=1" in msg                       # rc 기반 진단(빈 out 에도)
+    assert "PM_GIT_TIMEOUT" in msg             # env 노브 안내
+    assert "pm-config worktree add A" in msg   # repo 이름 실린 직접-실행 안내
+    assert "PM_GIT_TIMEOUT=none" in msg        # 무제한 opt-in 안내
+    # 실패 시 장부 미등록(기존 동작 유지).
+    assert wp.list_leases() == []
+
+
+# ── T-0292: _resolve_git_timeout env override (PM_GIT_TIMEOUT·_resolve_submodule_timeout 미러) ──
+
+
+def test_resolve_git_timeout_default_when_unset(wp, monkeypatch):
+    """env 미설정 → 기본 1800(30분·유한 관대)."""
+    monkeypatch.delenv("PM_GIT_TIMEOUT", raising=False)
+    assert wp._resolve_git_timeout() == 1800
+
+
+def test_resolve_git_timeout_positive_int(wp, monkeypatch):
+    """양의 정수 → 그 초."""
+    monkeypatch.setenv("PM_GIT_TIMEOUT", "600")
+    assert wp._resolve_git_timeout() == 600
+
+
+def test_resolve_git_timeout_strips_whitespace_and_case(wp, monkeypatch):
+    """앞뒤 공백 strip + 대소문자 무시 후 파싱."""
+    monkeypatch.setenv("PM_GIT_TIMEOUT", "  900  ")
+    assert wp._resolve_git_timeout() == 900
+    monkeypatch.setenv("PM_GIT_TIMEOUT", "  NONE  ")
+    assert wp._resolve_git_timeout() is None
+
+
+def test_resolve_git_timeout_unlimited_sentinels(wp, monkeypatch):
+    """`0`/`none`/`unlimited`/빈값 → None(무제한·env opt-in·console-visible 이라 안전)."""
+    for raw in ("0", "none", "unlimited", ""):
+        monkeypatch.setenv("PM_GIT_TIMEOUT", raw)
+        assert wp._resolve_git_timeout() is None, f"{raw!r} → None 이어야"
+
+
+def test_resolve_git_timeout_non_numeric_falls_back_to_default(wp, monkeypatch):
+    """비정상(비숫자) env → 기본 1800 폴백(무해)."""
+    monkeypatch.setenv("PM_GIT_TIMEOUT", "soon")
+    assert wp._resolve_git_timeout() == 1800
+
+
+def test_git_timeout_seconds_reflects_env_at_module_load(proj, monkeypatch):
+    """모듈 로드 시 `GIT_TIMEOUT_SECONDS = _resolve_git_timeout()` — env 를 로드시점에 반영(SUBMODULE 동형)."""
+    monkeypatch.setenv("PM_GIT_TIMEOUT", "300")
+    mod = _load_wp_bound(proj)
+    assert mod.GIT_TIMEOUT_SECONDS == 300
+    monkeypatch.setenv("PM_GIT_TIMEOUT", "none")
+    mod2 = _load_wp_bound(proj)
+    assert mod2.GIT_TIMEOUT_SECONDS is None
 
 
 # ── (2) create_slot 원자적 롤백 ─────────────────────────────────────────────
@@ -2518,6 +2592,113 @@ def test_real_git_runner_interactive_uses_submodule_timeout(wp, monkeypatch):
     assert captured["kwargs"].get("timeout") == wp.SUBMODULE_TIMEOUT
     # stdio 상속 = capture_output 미지정(콘솔로 직접).
     assert "capture_output" not in captured["kwargs"], "인터랙티브가 capture 함(stdio 상속 깨짐)"
+
+
+def test_real_git_runner_interactive_forwards_explicit_timeout(wp, monkeypatch):
+    """`_real_git_runner_interactive(cwd, timeout=X)` 가 X 를 subprocess.run(timeout=X) 로 넘긴다 (T-0292).
+
+    sensitivity(reviewer should-fix): 명시 timeout forwarding 이 없으면(예 line 을 항상
+    SUBMODULE_TIMEOUT 로) worktree-add 가 GIT_TIMEOUT_SECONDS 대신 기본값을 써도 안 잡힌다
+    (false-green 갭). 기본값 forwarding 은 위 테스트가 덮으므로 여기선 *명시값*(999)을 덮는다.
+    """
+    captured = {}
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return _Result()
+
+    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(wp.subprocess, "run", fake_run)
+    runner = wp._real_git_runner_interactive(wp.REPO, timeout=999)
+    rc, out = runner(["worktree", "add", "x"])
+    assert rc == 0
+    assert out == ""
+    assert captured["kwargs"].get("timeout") == 999, "명시 timeout 이 subprocess 로 forwarding 안 됨"
+    assert "capture_output" not in captured["kwargs"], "인터랙티브가 capture 함(stdio 상속 깨짐)"
+
+
+def test_real_git_runner_interactive_none_timeout_forwards_none(wp, monkeypatch):
+    """console-visible 러너는 timeout=None(무제한)도 그대로 넘긴다 — 진행 가시라 안전(T-0292).
+
+    captured 러너와 대조: worktree-add 인터랙티브 러너는 GIT_TIMEOUT_SECONDS=None(PM_GIT_TIMEOUT=
+    none)이면 무제한이어야 한다(캡 안 함). captured 는 유한 캡(아래 대조 테스트)·visible 은 none 허용.
+    """
+    captured = {}
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return _Result()
+
+    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(wp.subprocess, "run", fake_run)
+    runner = wp._real_git_runner_interactive(wp.REPO, timeout=None)
+    rc, out = runner(["worktree", "add", "x"])
+    assert rc == 0
+    assert captured["kwargs"].get("timeout") is None, "console-visible 러너가 None(무제한)을 캡함"
+
+
+# ── T-0292: captured 러너는 절대 무제한이 안 됨 (codex 게이트·silent-hang 차단) ──
+
+
+def test_real_git_runner_caps_none_timeout_to_finite(wp, monkeypatch):
+    """captured 러너는 GIT_TIMEOUT_SECONDS=None(PM_GIT_TIMEOUT=none)이어도 유한 캡(silent-hang 차단·codex).
+
+    captured 러너는 콘솔에 진행이 안 보여(silent) 무제한이면 network stall(base 파생 `fetch origin`)
+    시 silent hang 한다. None → `_GIT_TIMEOUT_DEFAULT`(유한)로 폴백-캡한다. 무제한은 진행이 보이는
+    console-visible worktree-add 러너에만 허용(위 대조 테스트).
+    """
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return _Result()
+
+    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(wp.subprocess, "run", fake_run)
+    monkeypatch.setattr(wp, "GIT_TIMEOUT_SECONDS", None)  # PM_GIT_TIMEOUT=none 재현
+    runner = wp._real_git_runner(wp.REPO)
+    rc, out = runner(["fetch", "origin"])
+    assert rc == 0
+    assert captured["kwargs"].get("timeout") is not None, \
+        "captured 러너가 None(무제한)으로 감 — silent hang 위험(codex 게이트)"
+    assert captured["kwargs"].get("timeout") == wp._GIT_TIMEOUT_DEFAULT
+
+
+def test_real_git_runner_honors_finite_timeout(wp, monkeypatch):
+    """captured 러너가 유한 GIT_TIMEOUT_SECONDS 는 그대로 쓴다(캡은 None 만·env 값 존중·sensitivity).
+
+    None 만 캡하고 유한값은 통과시킨다 — 항상 `_GIT_TIMEOUT_DEFAULT` 로 하드코딩하면(env 무시)
+    이 테스트가 fail 한다(양방향 존중 회귀 가드).
+    """
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return _Result()
+
+    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(wp.subprocess, "run", fake_run)
+    monkeypatch.setattr(wp, "GIT_TIMEOUT_SECONDS", 300)  # 유한 env 값
+    runner = wp._real_git_runner(wp.REPO)
+    rc, out = runner(["status", "--porcelain"])
+    assert rc == 0
+    assert captured["kwargs"].get("timeout") == 300, "유한 GIT_TIMEOUT_SECONDS 가 존중 안 됨(캡 오작동)"
 
 
 # ── (3-가드) _is_dirty stderr 오탐 회귀 0 ────────────────────────────────────
