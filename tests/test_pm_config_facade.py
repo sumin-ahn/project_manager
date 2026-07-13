@@ -1190,6 +1190,27 @@ def test_worktree_add_test_flag_forwards_test_cmd(pc, capsys):
     assert "test_cmd 바인딩" in out and "ctest -R hil2" in out  # 사용자 surface
 
 
+def test_worktree_add_success_output_shows_bootstrap_binding_next_step(pc, capsys):
+    """성공 출력이 슬롯 N + `/pm-bootstrap <repo> --slot <N>` 바인딩 다음스텝을 안내 (T-0296·audit #6).
+
+    슬롯 fs 생성만으로 끝내지 않고, 슬롯을 세션에 바인딩하는 필수 다음스텝으로 이어준다. N 은
+    lease.slot(`work/<repo>_<N>`)에서 파싱한다(FakeWorktreePool → work/svc_1 → N=1). 솔로/단일
+    슬롯 무인자 부트스트랩 힌트도 곁들인다.
+    """
+    wp = FakeWorktreePool()   # create_slot → FakeLease(slot="work/svc_1", repo="svc")
+    rc = pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None), worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # 바인딩 다음스텝: 정확한 슬롯 번호(N=1)와 함께 pm-bootstrap 커맨드를 명시.
+    assert "/pm-bootstrap svc --slot 1" in out
+    assert "바인딩" in out
+    # 자동바인딩 아님(정체성=대화 맥락) + 솔로 힌트.
+    assert "자동 아님" in out
+    assert "무인자 `/pm-bootstrap`" in out
+
+
 def test_worktree_add_passes_areas_base_to_create_slot(pc, capsys):
     """worktree add <repo> → areas.md 그 repo base 를 create_slot(base=) 로 전달 (T-0075).
 

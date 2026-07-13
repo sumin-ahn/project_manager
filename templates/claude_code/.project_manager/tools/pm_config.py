@@ -941,6 +941,11 @@ def cmd_worktree_add(
     board._test_cmd 가 활성 슬롯의 이 값을 areas 위 레이어로 읽으므로, 빈입력에 기본값을 박으면
     areas per-repo test_cmd 를 잘못 덮는다 → 빈입력은 반드시 None(슬롯 미바인딩)이어야 한다.
 
+    **성공 출력 다음스텝 (T-0296·audit #6)**: 슬롯 fs 생성만으로 끝나지 않고, 다음 필수 스텝인
+    슬롯을 세션에 바인딩(`/pm-bootstrap <repo> --slot <N>`·정체성 선언)으로 이어준다. N 은 이미
+    보유한 `lease.slot`(`work/<repo>_<N>`)에서 파싱(신규 조회 0). **자동바인딩 안 함** — 바인딩은
+    여전히 사용자 명시 스텝(정체성=대화 맥락·lean multi-PM). 솔로/단일 슬롯은 무인자 부트스트랩 힌트.
+
     worktree_pool/board/input_fn/is_tty 주입으로 hermetic 테스트(실 worktree add·라이브 input
     없이 배선·분기 검증). board 는 프롬프트 표시값 areas 해소 재사용용(콘솔이 로드한 board 전달).
     """
@@ -975,9 +980,17 @@ def cmd_worktree_add(
         return 1
     slot_path = wp.slot_path(lease.slot)
     test_line = f"\n  test_cmd 바인딩: {lease.test_cmd!r} (이 슬롯 회귀명령)" if lease.test_cmd else ""
+    # 슬롯 번호 N (lease.slot = `work/<repo>_<N>`) 파싱 — /pm-bootstrap --slot <N> 바인딩 안내용
+    # (T-0296·audit #6). 이미 보유한 lease 에서만 뽑는다(신규 조회 0). 형식 이탈이면(prefix 불일치/
+    # 비숫자) 슬롯 식별자 그대로 fallback surface — 안내가 침묵하지 않게.
+    slot_prefix = f"work/{lease.repo}_"
+    slot_tail = lease.slot[len(slot_prefix):] if lease.slot.startswith(slot_prefix) else ""
+    slot_num = slot_tail if slot_tail.isdigit() else lease.slot
     print(
         f"✓ worktree 슬롯 생성: {lease.slot} (repo={lease.repo}) → {slot_path}{test_line}\n"
-        "  코드 작업은 이 슬롯 cwd 에서 — 보드/wiki 는 multi-PM 공유 `.project_manager`."
+        "  코드 작업은 이 슬롯 cwd 에서 — 보드/wiki 는 multi-PM 공유 `.project_manager`.\n"
+        f"  다음 스텝 — 이 슬롯을 세션에 바인딩: `/pm-bootstrap {lease.repo} --slot {slot_num}` "
+        "(정체성 선언·자동 아님). 솔로/단일 슬롯이면 무인자 `/pm-bootstrap` 가 자동바인딩."
     )
     # 보호 브랜치 pre-push 훅 (재)설치 (T-0076·멱등 자가치유) — 슬롯 op 마다 (재)설치해 엔진
     # update 후 기존 repo 도 다음 worktree add 에 훅을 얻는다(별도 명령 불요·회사 repo 무영향).
