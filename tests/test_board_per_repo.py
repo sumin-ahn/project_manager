@@ -324,6 +324,57 @@ def test_repo_base_no_registry_is_none(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# areas.md git 칼럼 URL 조회 (_areas_git_url · T-0291) — multi-user hydrate clone 원 URL
+# `--git` 미제공 시 cmd_repo_add 가 이 값으로 2번째 사용자의 bare mirror 를 hydrate 한다.
+# ════════════════════════════════════════════════════════════════════════
+
+def test_areas_git_url_resolves_from_areas(board):
+    """_areas_git_url(repo) → areas.md 그 repo 의 git 칼럼 URL (T-0291·hydrate clone 원)."""
+    board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
+    assert board._areas_git_url("service-a") == "git@github.com:me/a.git"
+    assert board._areas_git_url("service-b") == "git@github.com:me/b.git"
+
+
+def test_areas_git_url_absent_repo_is_none(board):
+    """미등록 repo → None (호출자 cmd_repo_add fail-loud·T-0291)."""
+    board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
+    assert board._areas_git_url("nope") is None
+
+
+def test_areas_git_url_no_registry_is_none(board):
+    """areas.md 부재(솔로) → None (T-0291)."""
+    assert board._areas_git_url("service-a") is None
+
+
+def test_areas_git_url_empty_column_is_none(board):
+    """git 칼럼 빈 값(부분 등록) → None (`--git` 명시 요구로 전환·T-0291)."""
+    areas = (
+        "# Area Registry\n\n"
+        "| repo | prefix | git | test_cmd | owner |\n"
+        "|---|---|---|---|---|\n"
+        "| service-a | PAY |  | pytest -q | alice |\n"
+    )
+    board.AREAS_FILE.write_text(areas, encoding="utf-8")
+    assert board._areas_git_url("service-a") is None
+
+
+def test_areas_git_url_duplicate_rows_first_match(board):
+    """중복 행이면 first-match (결정론적·_repo_base·_areas_row_for_prefix 동형·T-0291).
+
+    같은 repo=같은 URL 이라 실무상 결정론적이지만, 방어적으로 *첫 행* URL 을 반환함을 못박는다.
+    """
+    areas = (
+        "# Area Registry\n\n"
+        "| repo | prefix | git | test_cmd | owner |\n"
+        "|---|---|---|---|---|\n"
+        "| service-a | PAY | git@h:first/a.git | pytest -q | alice |\n"
+        "| service-a | PAY | git@h:second/a.git | pytest -q | alice |\n"
+    )
+    board.AREAS_FILE.write_text(areas, encoding="utf-8")
+    assert board._areas_git_url("service-a") == "git@h:first/a.git"
+
+
+# ════════════════════════════════════════════════════════════════════════
 # areas.md protected 칼럼 (T-0076) — 파싱·default 폴백·하위호환·areas_append·_repo_protected
 # ════════════════════════════════════════════════════════════════════════
 

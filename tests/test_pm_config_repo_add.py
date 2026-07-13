@@ -69,6 +69,11 @@ class FakeBoard:
     def _repo_protected(self, repo):
         return ["main", "master", "develop"]
 
+    def _areas_git_url(self, repo):
+        # board._areas_git_url 대역 (T-0291) — 이 파일 테스트는 all `--git` 제공이라 areas URL
+        # 해소가 불필요하다(None → `_resolve_clone_git_url` 이 CLI `--git` 값 사용). 존재만 보장.
+        return None
+
 
 class GitFake:
     """git runner 대역 — argv 를 기록하고 argv 모양에 따라 (rc, out) 을 돌려준다.

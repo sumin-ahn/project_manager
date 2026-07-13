@@ -7,6 +7,15 @@
   "compaction": {
     "auto": false
   },
+  // 서브에이전트(task)·도구 출력 절단 상향 (T-0289·라이브 실증): opencode 전역 tool_output
+  // 기본(max_lines=2000·max_bytes=51200[50KB])이 task 반환도 절단해, researcher/reviewer 의 큰
+  // 보고가 PM 에 온전히 도달하지 못했다. 상한을 올려 큰 서브에이전트 보고를 통과시키되, runaway
+  // 출력이 context 를 범람하지 않게 무한이 아닌 적정 상한(12000줄·512KB)을 둔다 — compaction-off +
+  // ctx-guard 가 창을 관리하므로 큰 출력이 남아도 ctx-stop 이 처리. 실사용 보고 크기 보고 조정 가능.
+  "tool_output": {
+    "max_lines": 12000,
+    "max_bytes": 524288
+  },
   // 위험 bash 명령 기본 가드 (claude 어댑터 .claude/settings.json deny 미러링 + opencode 추가).
   // 단일 진실 = 이 project config. agents/*.md 도 같은 패턴맵을 명시(coarse "allow"
   // override 차단 — opencode 는 permission 을 룰 리스트로 평탄화·누적하므로 agent 가

@@ -9,6 +9,11 @@ description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touche
 > `subagent_type: developer|code-reviewer` + `run_in_background` 옵션. ticket
 > 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
 
+> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
+> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
+> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
+> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+
 ## 사전 조건
 
 - ticket 이미 claim (`pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>` · 솔로(M=1)는 생략).

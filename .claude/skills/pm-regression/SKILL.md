@@ -8,6 +8,11 @@ description: "비차단 백그라운드 회귀 — full 테스트를 run_in_back
 > 회귀를 PM 이 기다리지 않게 한다. **full 회귀는 백그라운드로 pre-warm** 하고, push 시점엔 보통
 > 이미 green. **dev 작업 중엔 ticket 스코프**로 빠른 피드백. (모델: 동시 다중 PM ADR §회귀)
 
+> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
+> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
+> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
+> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+
 ## 두 경로
 - **회귀 = 전체 suite** · green 인 것만 push (pre-push 훅이 `board.py regression check`).
 - **백그라운드 pre-warm** = 이 skill. **티켓별 dev 루프** = `--ticket` 스코프(advisory).

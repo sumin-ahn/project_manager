@@ -346,8 +346,13 @@ prefix 남발)를 정리할 때 —
 3. **main push** — 사용자 승인 게이트 + `PM_ALLOW_PROTECTED_PUSH=1` (보호훅이 `livegate check`
    green 을 추가 요구·위 §보호 브랜치 가드).
 4. **annotated tag `vX.Y.Z`** push.
-5. **(gh 인증 시)** `gh release create vX.Y.Z --notes-file <CHANGELOG 해당 절 추출>` — GitHub
-   Release 생성. gh 미인증이면 생략(사용자 별도 처리).
+5. **GitHub Release 생성 (필수 · 태그만으론 릴리즈 아님)** — `gh release create vX.Y.Z --notes-file
+   <CHANGELOG 해당 절 추출> --verify-tag`. tag push(4)와 **별개 단계**다 — 태그는 있으나 Release
+   객체가 없으면 릴리즈 미완료다(PM 60 v1.1.0 실측: 태그만 push 돼 GitHub Release 누락). gh 미인증이면
+   생략하지 말고 사용자에게 넘기되 "릴리즈 미완료"로 명시한다.
+6. **릴리즈 완결 확인** — `gh release view vX.Y.Z` 로 Release 객체 존재를 확인해야 릴리즈 종료.
+   livegate·push·tag 는 기계 게이트가 강제하지만 GitHub Release 는 강제되지 않으므로(원격 상태 행위)
+   PM 이 이 확인으로 릴리즈를 닫는다.
 
 ## 인계 후 PM 세션 첫 turn 의 권장 액션
 

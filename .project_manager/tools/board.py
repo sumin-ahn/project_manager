@@ -558,6 +558,31 @@ def _repo_base(repo: str) -> str | None:
     return None
 
 
+def _areas_git_url(repo: str) -> str | None:
+    """그 repo 의 areas.md `git` 칼럼 URL (bare mirror clone 원·ADR-0014). 미등록/부재/빈 값 → None.
+
+    multi-user 공유 채택 폴더(= 하나의 git repo 를 여러 사람이 clone)에서 2번째 사용자가
+    `.repos/<repo>.git` bare mirror 를 hydrate 할 때(`pm-config repo add <repo>` — `--git`
+    불요·T-0291) clone 원 URL 을 여기서 해소한다. areas.md(git-tracked·공유)엔 URL 이 있으나
+    `.repos/`(gitignore·per-clone)엔 mirror 가 없는 상황 — 등록된 URL 을 재제공 없이 재사용한다.
+
+    repo 명은 areas.md `repo` 칼럼과 매칭한다(prefix 칼럼은 ADR-0042 로 비므로 **repo 명 키**).
+    중복 행이면 first-match(`_repo_base`·`_areas_row_for_prefix` 동형·같은 repo=같은 URL 이라
+    결정론적).
+
+    None 폴백(호출자 cmd_repo_add 가 fail-loud 또는 `--git` 명시 요구로 전환):
+      - areas.md 부재(솔로) — `_parse_areas()` 가 ([],[]).
+      - 그 repo 행이 없음(미등록).
+      - `git` 칼럼 자체가 없는 구 레지스트리(헤더에 git 없음 → 행 dict 에 git 키 없음).
+      - `git` 칼럼이 빈 값(부분 등록).
+    """
+    _header, rows = _parse_areas()
+    for row in rows:
+        if row.get("repo") == repo:
+            return row.get("git") or None
+    return None
+
+
 def _repo_protected(repo: str) -> list[str]:
     """그 repo 의 보호 브랜치 목록 (T-0076). 미지정/미등록/구 스키마 → `DEFAULT_PROTECTED`.
 
@@ -2043,14 +2068,92 @@ def _write_json_atomic(path: Path, data: dict) -> None:
     os.replace(str(tmp), str(path))
 
 
+# ── livegate 기록 위치 = 훅 read 위치 정렬 (T-0287·two-git 단일 소스) ─────────────
+# `livegate record` 는 push 보호훅이 읽는 **바로 그** livegate.json 에 기록해야 한다. 훅은 repo 의
+# git `core.hooksPath` 에 설치돼(worktree_pool.install_protected_hook), 같은 디렉토리의 sidecar
+# `engine-root`(PM 홈 REPO 절대경로 1줄)로 `<engine-root>/.project_manager/tools/board.py` 를 해소하고
+# 그 사본의 `.local/livegate.json` 을 `livegate check` 로 읽는다(worktree_pool `_PROTECTED_PRE_PUSH_HOOK`).
+# two-git 토폴로지(PM 홈+worktree·ADR-0027)에서 record 를 호출된 사본의 `REPO/.local` 에 그냥 쓰면,
+# worktree board.py 로 record 할 때 훅이 안 읽는 worktree `.local` 에 조용히 기록→pass 위장→push
+# 순간에야 불일치로 드러난다(PM 60 v1.1.0 릴리즈 실측). 그래서 record 도 훅과 **동일한 engine-root
+# sidecar 해소**를 공유해 같은 파일에 기록한다(단일 소스). 단일-repo/솔로(livegate 훅 없음)면 현행
+# `REPO/.local` 폴백이라 채택자 무변경.
+_LG_ENGINE_ROOT = "engine-root"  # 프레임워크 push 보호훅 활성 → PM 홈 .local (단일 소스).
+_LG_SOLO = "solo"                # livegate 훅 없음 → 호출된 사본 REPO/.local (단일-repo/솔로 무변경).
+_LG_BROKEN = "broken"            # 훅 sidecar 존재하나 engine-root 무효 → fail-loud(false-green 차단).
+
+
+def _git_config_get(cwd: str, key: str) -> str | None:
+    """`git -C <cwd> config --get <key>` 값 (미설정/비-repo/빈값이면 None).
+
+    인코딩 명시(git path 출력이 cp949 로 디코딩되지 않도록 utf-8·`_hooks_dir` 동형).
+    """
+    r = subprocess.run(["git", "-C", cwd, "config", "--get", key],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    val = r.stdout.strip() if r.returncode == 0 else ""
+    return val or None
+
+
+def _resolve_livegate_flag(cwd: str) -> tuple[Path, str]:
+    """record 가 기록할 livegate.json 경로 = **push 보호훅이 읽는 파일**로 정렬한다 (T-0287).
+
+    보호훅(`_PROTECTED_PRE_PUSH_HOOK`)과 동일 해소를 공유한다 — repo(`cwd`)의 git
+    `core.hooksPath` 옆 sidecar `engine-root`(PM 홈 REPO 절대경로 1줄)를 읽어, 그 root 에
+    board.py 가 실재하면(훅의 `[ -f "$engine_root/.../board.py" ]` fail-closed 게이트와 동일
+    검증) `<engine-root>/.project_manager/.local/livegate.json` 을 돌려준다. 반환:
+      - (PM 홈 .local livegate.json, `_LG_ENGINE_ROOT`) — 훅 활성·단일 소스.
+      - (`LIVEGATE_FLAG`, `_LG_SOLO`) — livegate 훅 없음(단일-repo/솔로·현행 폴백 무변경).
+      - (`LIVEGATE_FLAG`, `_LG_BROKEN`) — 훅 sidecar 는 있으나 engine-root 무효(빈값/board.py
+        부재). 이땐 훅 read 위치와 기록 위치가 갈릴 수 있어 호출부가 fail-loud 로 거부한다.
+    """
+    hooks_path = _git_config_get(cwd, "core.hooksPath")
+    if not hooks_path:
+        return LIVEGATE_FLAG, _LG_SOLO
+    # 상대 `core.hooksPath` 는 git 이 worktree root(=`cwd`) 기준으로 해소한다(프로세스 cwd 아님).
+    # 프레임워크 설치는 절대경로라 평시 무영향이나, 수동/상대 설정 방어로 git 시맨틱을 미러(T-0287).
+    hp = Path(hooks_path)
+    if not hp.is_absolute():
+        hp = Path(cwd) / hp
+    sidecar = hp / "engine-root"
+    if not sidecar.is_file():
+        # `core.hooksPath` 는 있으나 engine-root sidecar 부재 = livegate 보호훅 아님(예: PM 홈
+        # 자신의 R8 회귀 훅·채택자 custom 훅) → 솔로 폴백(오탐 fail-loud 방지).
+        return LIVEGATE_FLAG, _LG_SOLO
+    lines = sidecar.read_text(encoding="utf-8").splitlines()
+    engine_root = lines[0].strip() if lines else ""
+    if not engine_root:
+        return LIVEGATE_FLAG, _LG_BROKEN
+    root = Path(engine_root)
+    if not (root / ".project_manager" / "tools" / "board.py").is_file():
+        return LIVEGATE_FLAG, _LG_BROKEN
+    return root / ".project_manager" / ".local" / "livegate.json", _LG_ENGINE_ROOT
+
+
 def _livegate_record(args: argparse.Namespace) -> int:
     """`pytest -m release` 를 실행·측정하고 결과를 livegate.json 에 기록한다 (실행=기록).
 
     회귀와 동일한 cwd 해소(`_regression_cwd` — 활성 slot worktree)로 subprocess 실행 →
     **rc0 그리고 수집 N==pin** 일 때만 `pass @ <worktree HEAD>` 기록. rc!=0 또는 N!=pin 이면
-    `fail` 기록 + rc1(사유 표면화). 손기록 경로는 없다(위조/착오 차단·ADR-0039 D2).
+    `fail` 기록 + rc1(사유 표면화). 손기록 경로는 없다(위조/착오 차단·ADR-0039 D2). 기록 위치는
+    push 보호훅 read 위치(`_resolve_livegate_flag` — engine-root sidecar)와 정렬해 단일 소스다
+    (worktree/PM 홈 어느 board.py 로 돌려도 훅이 읽는 한 파일·T-0287).
     """
     cwd = _regression_cwd(getattr(args, "cwd", None))
+    # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스·T-0287) — **실행 전에** 해소한다. 훅과 같은
+    # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
+    # 읽는 한 파일에 기록. engine-root 무효(BROKEN)는 실행 전에 알 수 있으니, 값비싼 `pytest -m
+    # release`(라이브 wave)를 헛돌리기 전에 fail-loud 로 조기 거부한다(T-0287 리뷰 should-fix).
+    flag, mode = _resolve_livegate_flag(cwd)
+    if mode == _LG_BROKEN:
+        # 보호훅은 활성(hooksPath+engine-root sidecar)인데 engine-root 가 무효(board.py 미해소)
+        # → 기록 위치와 훅 read 위치가 갈릴 수 있어 pass 위장을 찍지 않고 fail-loud 거부한다
+        # (false-green 백스톱·ADR-0039). engine-root sidecar 수리 또는 `pm-config repo add` 재실행.
+        print("livegate: fail — 보호훅 engine-root sidecar 무효 "
+              "(hooksPath 설치됐으나 PM 홈 board.py 미해소) — 기록 위치와 훅 read 위치가 갈릴 수 "
+              "있어 거부(false-green 차단·T-0287). engine-root sidecar 수리 또는 "
+              "`pm-config repo add` 재실행. 릴리즈 차단.", file=sys.stderr)
+        return 1
     print(f"livegate: $ {LIVEGATE_TEST_CMD}  (cwd={cwd})")
     # 자식 pytest 인코딩을 코드로 명시(env 워크어라운드 아님) — cp949 콘솔에서도 UTF-8.
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
@@ -2065,8 +2168,8 @@ def _livegate_record(args: argparse.Namespace) -> int:
     head = _git_head_at(cwd)
     passed = rc == 0 and n == LIVEGATE_RELEASE_PIN
     status = "pass" if passed else "fail"
-    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(LIVEGATE_FLAG,
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(flag,
                        {"head": head, "status": status, "n": n, "rc": rc, "ts": now_utc()})
     if passed:
         print(f"livegate: pass @ {head[:8] or '?'} "

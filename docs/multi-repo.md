@@ -9,7 +9,7 @@
 가 ADR-0011 amend), 셋업·조회·진단은 루트의 `pm-config.sh`(`/.cmd`) 한 파사드로 한다:
 
 ```bash
-<manager>/pm-config.sh repo add <name> --git <url> --test "<cmd>"  # 패밀리에 repo 등록 + .repos clone
+<manager>/pm-config.sh repo add <name> [--git <url>] [--test "<cmd>"]  # repo 등록 + .repos clone (신규=--git 필수 / 기등록 repo 는 --git 없이 areas URL 로 mirror hydrate)
 <manager>/pm-config.sh worktree add <repo>                         # 새 worktree 슬롯 + submodule init
 <manager>/pm-config.sh status | whoami                             # 풀/리스 + 이 세션 repo/슬롯/branch
 <manager>/pm-config.sh release <slot> [--force]                    # 작업완료 반납 / 수동 강제(백스톱)

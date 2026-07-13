@@ -11,7 +11,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
 
 사용:
     pm-config init [<board init 인자>]                     # clone 당 1회 셋업 (board.py init 흡수·T-0065)
-    pm-config repo add <name> --git <url> [--test "<cmd>"] # 패밀리에 repo 등록 + .repos clone (--test optional)
+    pm-config repo add <name> [--git <url>] [--test "<cmd>"] # repo 등록 + .repos clone (신규=--git 필수 / 기등록 hydrate=areas URL·T-0291)
     pm-config worktree add <repo>                          # 새 슬롯 생성 + submodule init
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
     pm-config release <slot> [--force]                     # 작업완료 반납 / 수동 강제(백스톱)
@@ -623,6 +623,57 @@ def _forwarded_prog(prog_map: "dict[str, str]"):
 # ── 서브커맨드 핸들러 ─────────────────────────────────────────────────────────
 
 
+def _resolve_clone_git_url(name, cli_git, already_registered, board_mod):
+    """bare clone 소스 git URL 을 해소한다 (T-0291·multi-user hydrate). 실패 → None(fail-loud 신호).
+
+    `--git` 미제공 시 areas.md `git` 칼럼(레지스트리·git-tracked·공유)에서 URL 을 읽어,
+    already-registered repo 의 `.repos/<repo>.git` bare mirror 를 재제공 없이 hydrate 한다 —
+    하나의 채택 폴더를 여러 사람이 clone 할 때 mirror(`.repos/`·gitignore·per-clone)가 없는
+    2번째 사용자 시나리오. 반환 `None` 은 호출자(cmd_repo_add)가 rc 1 로 바꾸는 fail-loud
+    신호다(에러/경고 문구는 이 함수가 이미 print — 부작용 0·clone 전에 호출됨).
+
+      - already_registered:
+          - `--git` 미제공          → areas URL 로 해소(hydrate). areas 에도 URL 없으면 fail-loud.
+          - `--git` 제공·areas 값과 다름 → 경고 + **areas 값 우선**(등록=단일 진실·mirror origin 은
+                                        등록과 일치해야). CLI URL 로 바꾸려면 areas.md 를 직접 수정.
+          - `--git` 제공·일치/areas 빔  → `--git` 값.
+      - 미등록:
+          - `--git` 제공            → 그 값(신규 repo 등록).
+          - `--git` 미제공          → fail-loud(신규 repo 는 clone 원 URL 을 areas 에서 해소 불가).
+    """
+    areas_url = board_mod._areas_git_url(name) if already_registered else None
+
+    if cli_git:
+        if already_registered and areas_url and areas_url != cli_git:
+            print(
+                f"[경고] `--git {cli_git}` 가 areas.md 등록 URL({areas_url}) 과 다르다 — "
+                "등록이 단일 진실이므로 areas URL 로 bare mirror 를 만든다(mirror origin 은 "
+                "등록과 일치해야 한다). CLI URL 로 바꾸려면 areas.md 를 직접 수정하라.",
+                file=sys.stderr,
+            )
+            return areas_url
+        return cli_git
+
+    # `--git` 미제공
+    if already_registered:
+        if areas_url:
+            print(f"✓ `--git` 미제공 — areas.md 등록 URL 로 hydrate: {areas_url} (T-0291·2번째 사용자).")
+            return areas_url
+        print(
+            f"[중단] repo {name!r} 는 areas.md 등록됐으나 `git` 칼럼이 비어 clone 원 URL 을 "
+            "해소할 수 없다 — `--git <url>` 로 명시하라 (clone/등록 전혀 하지 않았다).",
+            file=sys.stderr,
+        )
+        return None
+    print(
+        f"[중단] `--git <url>` 필수 — repo {name!r} 는 areas.md 미등록이라 clone 원 URL 을 "
+        "areas 에서 해소할 수 없다(신규 repo 등록). multi-user 2번째 사용자 hydrate 라면 먼저 "
+        "등록(areas.md)을 공유받아야 한다 (clone/등록 전혀 하지 않았다).",
+        file=sys.stderr,
+    )
+    return None
+
+
 def cmd_repo_add(
     args: argparse.Namespace,
     *,
@@ -631,7 +682,12 @@ def cmd_repo_add(
     repos_dir: Path | None = None,
     worktree_pool=None,
 ) -> int:
-    """`repo add <name> --git <url> [--test "<cmd>"] [--base <branch>]` — 패밀리에 repo 등록 (ADR-0014·T-0075).
+    """`repo add <name> [--git <url>] [--test "<cmd>"] [--base <branch>]` — 패밀리에 repo 등록 (ADR-0014·T-0075).
+
+    **`--git` 은 optional (T-0291)**: 미제공 시 이미 등록된 repo 는 areas.md `git` 칼럼 URL 로
+    bare mirror 를 hydrate 한다(하나의 채택 폴더를 여러 사람이 clone 할 때 `.repos/` mirror 가
+    없는 2번째 사용자 시나리오·재제공 없이 재사용). 미등록 신규 repo 는 `--git` 필수(부작용 0
+    fail-loud). clone 소스 URL 해소는 `_resolve_clone_git_url` 이 담당한다(불일치 시 areas 우선).
 
     1. areas.md 레지스트리에 per-repo 줄을 기록한다(board.areas_append — repo/prefix/
        git/test_cmd/owner/base 칼럼·ADR-0014·T-0075). **prefix 는 빈 값으로 등록**한다 —
@@ -716,6 +772,20 @@ def cmd_repo_add(
     bare_exists = bare_path.exists()
     runner = clone_runner or _real_clone_runner()
 
+    # clone 소스 git URL 해소 (T-0291) — `--git` 미제공 시 areas.md `git` 칼럼에서 해소해
+    # multi-user 2번째 사용자의 bare mirror hydrate 를 완성한다(재제공 없이). None 이면
+    # fail-loud(미등록+`--git` 없음 등) — 어떤 부작용(clone·mkdir·등록)보다 앞에서 걸러
+    # 부작용 0 을 보장한다. 해소된 URL 을 이하 clone/areas_append 가 일관되게 쓴다.
+    # URL 은 **실제로 필요할 때만** 해소한다 — clone(bare 부재) 또는 신규 등록(미등록)일 때. 이미
+    # 등록 + bare 존재면 순수 no-op(refspec/tracking/보호훅 자가치유·아래 이미 등록 분기)라 URL 이
+    # 불필요하니, areas `git` 칼럼이 빈 레거시/부분 등록이어도 fail-loud 하지 않는다(codex 지적·
+    # `repo add` 재실행=훅 자가치유 경로 보존·`--git` optional 계약 완결).
+    git_url = None
+    if (not bare_exists) or (not already_registered):
+        git_url = _resolve_clone_git_url(name, args.git, already_registered, board_mod)
+        if git_url is None:
+            return 1
+
     # 두 부작용(bare clone + areas 등록)을 멱등화한다 — base 해소(T-0075)가 bare 에 의존
     # 하므로(bare HEAD/존재 검증) **clone 을 먼저**, 그 다음 base 해소·areas 등록 순서다.
 
@@ -725,11 +795,11 @@ def cmd_repo_add(
         print(f"✓ .repos/{name}.git 이미 존재 — clone 건너뜀 (재사용).")
     else:
         repos_dir.mkdir(parents=True, exist_ok=True)
-        rc, out = runner(["clone", "--bare", args.git, str(bare_path)])
+        rc, out = runner(["clone", "--bare", git_url, str(bare_path)])
         if rc != 0:
             print(
-                f"[경고] `git clone --bare {args.git}` 실패 (rc={rc}):\n{out}\n"
-                f"  네트워크/URL 확인 후 수동으로 `git clone --bare {args.git} {bare_path}` 하거나 "
+                f"[경고] `git clone --bare {git_url}` 실패 (rc={rc}):\n{out}\n"
+                f"  네트워크/URL 확인 후 수동으로 `git clone --bare {git_url} {bare_path}` 하거나 "
                 "재시도하라(등록은 clone 성공 후·멱등).",
                 file=sys.stderr,
             )
@@ -777,7 +847,7 @@ def cmd_repo_add(
     #    으로 튀게 했다. protected 도 빈 값 — `_repo_protected` 가 DEFAULT_PROTECTED(main/master/
     #    develop) 폴백한다(per-repo override 는 areas.md 를 직접 편집·후속 `--protected` 플래그 여지).
     board_mod.areas_append(
-        "", "", owner, repo=name, git=args.git, test_cmd=args.test, base=base,
+        "", "", owner, repo=name, git=git_url, test_cmd=args.test, base=base,
         protected="", area_owner=area_owner,
     )
     # --test 미지정(None) 이면 areas test_cmd 빈 값 — 해소 체인이 슬롯/local.conf 로
@@ -786,7 +856,7 @@ def cmd_repo_add(
     base_surface = base if base else "(미해소 — worktree add 가 bare HEAD 사용)"
     area_owner_surface = area_owner if area_owner else "(미상 — local.conf user= / git user.email 미설정)"
     print(
-        f"✓ areas.md 등록: {name} | git={args.git} | test_cmd={test_surface} | "
+        f"✓ areas.md 등록: {name} | git={git_url} | test_cmd={test_surface} | "
         f"owner={owner} | base={base_surface} | area_owner={area_owner_surface}"
     )
     # 5) 보호 브랜치 pre-push 훅 설치 (T-0076·멱등 자가치유) — 보호목록(areas protected→
@@ -1529,15 +1599,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    # repo add <name> --git <url> [--test "<cmd>"]  (--test optional·clone 우선)
+    # repo add <name> [--git <url>] [--test "<cmd>"]  (--test optional·clone 우선·--git 은 신규 repo 필수/기등록 hydrate 는 areas URL·T-0291)
     p_repo = sub.add_parser("repo", help="repo 등록 관리 (add)")
     repo_sub = p_repo.add_subparsers(dest="repo_command", metavar="<repo-command>")
     p_repo_add = repo_sub.add_parser(
         "add", help="패밀리에 repo 등록 + .repos/<name>.git bare clone (ADR-0014)"
     )
     p_repo_add.add_argument("name", help="repo 이름 (= prefix · per-repo ID 네임스페이스)")
-    p_repo_add.add_argument("--git", required=True, metavar="URL",
-                            help="repo git URL (bare clone 원)")
+    p_repo_add.add_argument("--git", metavar="URL", default=None,
+                            help="repo git URL (bare clone 원). 미제공 시 — already-registered "
+                                 "repo 는 areas.md `git` 칼럼 URL 로 hydrate(bare mirror clone·"
+                                 "multi-user 2번째 사용자·T-0291), 미등록 신규 repo 는 명확 에러"
+                                 "(URL 필수·부작용 0).")
     p_repo_add.add_argument("--test", metavar="CMD", default=None,
                             help="per-repo 테스트 명령 (areas.md test_cmd·회귀 게이트가 worktree 에서 실행). "
                                  "미지정 시 areas test_cmd 빈 값 — 해소 체인이 슬롯/local.conf 로 폴백(T-0066). "

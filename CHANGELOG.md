@@ -7,6 +7,29 @@
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-13
+
+라이브 도그푸딩·채택자 실사용에서 드러난 출하 결함 수정 (버그 wave).
+
+### Fixed
+- **opencode 서브에이전트 보고 절단** — opencode 전역 `tool_output` 기본 상한(2000줄/50KB)이
+  서브에이전트(task) 반환도 절단해, researcher/reviewer 의 큰 보고가 오케스트레이터에 온전히
+  도달하지 못하던 것을 상한 상향으로 해소했다. (T-0289)
+- **출하 스킬/커맨드 Windows 표기 파리티** — PM 스킬(claude)·커맨드(opencode)에 Windows 런처
+  `py`·`.cmd` 파사드 표기를 통일했다. Windows 세션이 literal `python3`/`.sh` 를 그대로 실행해
+  가짜 shim 실패·재시도로 시간을 낭비하던 것을 막는다. (T-0288)
+- **livegate record 기록 위치 seam** — 두-git(홈 + worktree) 토폴로지에서 `livegate record` 가
+  push 보호훅의 read 위치와 다른 곳에 기록될 수 있어 거짓 성공을 찍고 push 순간에야 드러나던 것을,
+  기록 위치를 훅 read 위치와 단일-소스로 정렬하고 불일치 시 fail-loud 로 거부하도록 고쳤다.
+  단일-repo 채택자는 무변경. (T-0287)
+- **릴리즈 절차 GitHub Release 단계 강제화** — 릴리즈 절차에서 GitHub Release 생성을 필수 단계로
+  승격하고 완결 확인 단계를 추가했다. 태그만 push 되고 Release 객체가 누락되던 것을 막는다. (T-0290)
+- **공유 채택 폴더의 다중 사용자 repo hydrate** — 하나의 채택 폴더를 여러 사람이 clone 해 쓸 때,
+  레지스트리(`areas.md` · git-tracked · 공유)엔 repo 가 등록돼 있으나 bare mirror(`.repos/` · gitignore ·
+  per-clone)가 없어 2번째 사용자가 repo 를 받지도 추가하지도 못하던 것을 고쳤다. `pm-config repo add
+  <repo>` 가 `--git` 없이도 `areas.md` 에 기록된 URL 로 mirror 를 hydrate 하고(불일치 시 등록 URL 우선),
+  `worktree add` 의 mirror-부재 에러가 그 해법을 안내한다. (T-0291)
+
 ## [1.1.0] - 2026-07-13
 
 dual-harness(claude·opencode 병행) 채택 지원, worktree/submodule 풀 관리 도구,

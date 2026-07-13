@@ -126,8 +126,11 @@ class BareRepoMissing(RuntimeError):
     """worktree 의 공유 .git 원(`.repos/<repo>.git` bare)이 없다 (ADR-0011 §31).
 
     [[ADR-0011]] §31 = `.repos/<repo>.git` 가 worktree 슬롯의 공유 .git 원(canonical).
-    이 bare 가 없으면 `git worktree add` 의 base 가 없다 — `pm-config repo add <repo>` 가
-    bare clone 을 먼저 만들어야 한다([[T-0061]]). 침묵 폴백으로 multi-PM 루트 자신의 worktree 를
+    이 bare mirror 가 없으면 `git worktree add` 의 base 가 없다 — `pm-config repo add <repo>` 가
+    bare clone 으로 mirror 를 (재)생성해야 한다([[T-0061]]). **repo 가 areas.md 에 이미
+    등록됐으면**(하나의 채택 폴더를 여러 사람이 clone 한 2번째 사용자·`.repos/` 는 gitignore·
+    per-clone 이라 공유 안 됨) `pm-config repo add <repo>` 를 **`--git` 없이** 실행하면 areas
+    등록 URL 로 mirror 를 hydrate 한다([[T-0291]]). 침묵 폴백으로 multi-PM 루트 자신의 worktree 를
     만들면 슬롯이 family repo 가 아닌 multi-PM 루트를 체크아웃해 토폴로지가 깨진다([[ADR-0013]]
     fail-soft 규율) → 명시 raise 로 선행 명령을 안내한다.
 
@@ -141,8 +144,11 @@ class BareRepoMissing(RuntimeError):
         self.repo = repo
         self.bare_path = bare_path
         super().__init__(
-            f"bare repo for {repo!r} not found at {str(bare_path)!r} — "
-            f"run `pm-config repo add {repo}` first (ADR-0011 §31)"
+            f"bare mirror for {repo!r} not found at {str(bare_path)!r} — "
+            f"`.repos/{repo}.git`(worktree 공유 .git 원)가 없다. areas.md 에 이미 등록됐으면 "
+            f"(multi-user: `.repos/` 는 gitignore·per-clone 이라 공유 안 됨) "
+            f"`pm-config repo add {repo}`(--git 불요)가 areas 등록 URL 로 mirror 를 hydrate 한다; "
+            f"미등록 신규 repo 면 `pm-config repo add {repo} --git <url>` (ADR-0011 §31·T-0291)"
         )
 
 

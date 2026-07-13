@@ -9,6 +9,11 @@ description: "사용자와 대화형으로 한 설계 주제를 진행하고 그
 > ⚠️ **혼자 §0~§6 을 다 쓰고 끝내지 않는다.** 실측은 먼저 파악해 보고하고, 옵션·결정은 사용자와 한 절씩 합의하며 채운다.
 > spike 는 **sealed 후 IMMUTABLE** — 생성 시 `status: draft`(편집·세션무관 resume), 합의+사용자 사인오프 시 `sealed (<date>)`. sealed 후 개정은 새 날짜 파일. (컨벤션 단일 진실: `raw/README.md` · ADR-0010.)
 
+> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
+> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
+> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
+> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+
 ## 언제 쓰나
 
 - 한 설계 주제를 **옵션 비교 + ADR/ticket 초안** 수준까지 사용자와 같이 익힐 때.

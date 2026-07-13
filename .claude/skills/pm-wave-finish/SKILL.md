@@ -9,6 +9,11 @@ description: "wave 안 ticket 완료 부기 — ticket_finish.py wrapper + 회�
 > `.project_manager/tools/ticket_finish.py`. 본 skill 은 호출 chain
 > + PM 손 잔여 작업 안내.
 
+> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
+> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
+> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
+> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+
 ## 사용 시점
 
 dev/reviewer cycle 통과 (must-fix 0) 또는 PM 직접 구현 ticket 완료 시.

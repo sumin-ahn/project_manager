@@ -142,7 +142,7 @@ class FakeBoard:
     """
 
     def __init__(self, *, registered=(), board_main_rc=0, repo_bases=None,
-                 repo_protecteds=None):
+                 repo_protecteds=None, repo_gits=None):
         self._registered = set(registered)
         self.append_calls: list[tuple] = []
         self.main_argv = None
@@ -150,6 +150,10 @@ class FakeBoard:
         # repo → base 매핑 (T-0075) — `_resolve_repo_base` 가 board._repo_base 를 부르므로
         # worktree add 가 areas base 를 create_slot 으로 전달하는 배선을 결정적으로 친다.
         self._repo_bases = repo_bases or {}
+        # repo → git URL 매핑 (T-0291) — `_resolve_clone_git_url` 이 board._areas_git_url 을
+        # 부른다. `--git` 미제공 hydrate 경로(2번째 사용자)가 areas URL 로 clone 하는 배선을
+        # 결정적으로 친다. 미지정 매핑은 None(areas 에 URL 없음·미등록/부분등록 폴백).
+        self._repo_gits = repo_gits or {}
         # repo → protected 목록 매핑 (T-0076) — `_resolve_repo_protected` 가
         # board._repo_protected 를 부른다. 미지정 매핑은 default(main/master/develop).
         self._repo_protecteds = repo_protecteds or {}
@@ -173,6 +177,11 @@ class FakeBoard:
     def _repo_base(self, repo):
         # board._repo_base 대역 (T-0075) — 매핑에 없으면 None(구 스키마/솔로/미지정 폴백).
         return self._repo_bases.get(repo)
+
+    def _areas_git_url(self, repo):
+        # board._areas_git_url 대역 (T-0291) — 매핑에 없으면 None(미등록/`git` 칼럼 빔 폴백).
+        # `_resolve_clone_git_url` 이 `--git` 미제공 hydrate·불일치 판정에 이 값을 쓴다.
+        return self._repo_gits.get(repo)
 
     def _repo_protected(self, repo):
         # board._repo_protected 대역 (T-0076) — 매핑에 없으면 default(main/master/develop)
@@ -691,6 +700,29 @@ def test_repo_add_already_registered_bare_exists_is_noop(pc, tmp_path):
     assert any("config" in c and "remote.origin.fetch" in c for c in gitr.calls)
 
 
+def test_repo_add_registered_bare_exists_no_git_empty_areas_is_noop(pc, tmp_path):
+    """이미 등록 + bare 존재 + `--git` 미제공 + areas `git` 칼럼 빔 → rc0 no-op(자가치유·T-0291 codex).
+
+    URL 은 clone(bare 부재)/신규 등록에만 필요 — 이 순수 no-op(refspec/tracking/보호훅 자가치유)
+    경로는 URL 불요라, 레거시/부분 등록(areas `git` 빔)이어도 fail-loud 하지 않는다. `repo add` 재실행
+    =훅 자가치유 경로(엔진 update 후 기존 repo 훅 획득)를 `--git` optional 계약이 깨지 않게 못박는다.
+    (my-fix 전엔 `_resolve_clone_git_url` 이 부작용 앞에서 무조건 돌아 이 케이스가 rc1 로 실패했다.)
+    """
+    board = FakeBoard(registered=("svc",))     # 등록됨·repo_gits 없음 → _areas_git_url None(빈 칼럼)
+    gitr = FakeGitRecorder(rc=0)
+    repos = tmp_path / ".repos"
+    (repos / "svc.git").mkdir(parents=True)     # bare 이미 있음
+    rc = pc.cmd_repo_add(
+        _repo_add_args(pc, name="svc", git=None),   # ← 명시적 no `--git`
+        board=board, clone_runner=gitr, repos_dir=repos,
+    )
+    assert rc == 0                              # URL 불요 no-op — fail-loud 아님
+    assert board.append_calls == []            # 중복 등록 안 함
+    assert _clone_argv(gitr) is None           # clone 안 함(bare 존재)
+    # 자가치유(refspec 보정)는 여전히 수행 — URL 불요 no-op 이 자가치유를 건너뛰지 않는다.
+    assert any("config" in c and "remote.origin.fetch" in c for c in gitr.calls)
+
+
 def test_repo_add_already_registered_bare_missing_retries_clone(pc, tmp_path):
     """이미 등록 + bare 부재 → 등록 건너뛰고 clone *재시도*(append 0·clone 1·rc 0).
 
@@ -713,6 +745,91 @@ def test_repo_add_already_registered_bare_missing_retries_clone(pc, tmp_path):
     assert argv[-1].endswith("svc.git")
     # clone 성공 직후 fetch refspec 보정도 수행한다(T-0152·origin/* remote-tracking ref).
     assert any("config" in c and "remote.origin.fetch" in c for c in gitr.calls)
+
+
+# ── multi-user hydrate: `--git` optional·areas URL 참조 (T-0291) ─────────────
+
+
+def test_repo_add_second_user_hydrates_from_areas_url_without_git(pc, tmp_path):
+    """2번째 사용자 clone (핵심·T-0291) — 등록됨 + bare 부재 + `--git` 없음 → areas URL 로 hydrate.
+
+    하나의 채택 폴더를 여러 사람이 clone 하면 areas.md(git-tracked)는 공유되나 `.repos/`
+    (gitignore·per-clone) bare mirror 는 안 넘어온다 → 2번째 사용자는 repo 가 등록됐어도
+    mirror 가 없다. URL 재제공 없이 `repo add <name>`(no `--git`) 로 areas 등록 URL 을 clone
+    원으로 bare mirror 를 hydrate 한다(clone 1·rc0·append 0). clone runner fake — 실 네트워크 0.
+    """
+    board = FakeBoard(registered=("svc",),
+                      repo_gits={"svc": "git@h:me/svc.git"})   # areas 등록 + git 칼럼 URL
+    gitr = FakeGitRecorder(rc=0)
+    repos = tmp_path / ".repos"                                # bare mirror 없음(2번째 사용자)
+    rc = pc.cmd_repo_add(
+        _repo_add_args(pc, name="svc", git=None),              # `--git` 미제공
+        board=board, clone_runner=gitr, repos_dir=repos,
+    )
+    assert rc == 0
+    assert board.append_calls == []            # 이미 등록 → append-only(중복 등록 안 함)
+    argv = _clone_argv(gitr)                    # areas URL 로 clone(hydrate)
+    assert argv is not None
+    assert argv[0] == "clone" and "--bare" in argv
+    assert argv[-2] == "git@h:me/svc.git"       # areas.md 등록 URL 이 clone 원(재제공 없이)
+    assert argv[-1].endswith("svc.git")
+
+
+def test_repo_add_unregistered_without_git_fails_loud_no_side_effects(pc, tmp_path, capsys):
+    """미등록 + `--git` 없음 → 명확 fail-loud·부작용 0 (T-0291).
+
+    신규 repo 는 clone 원 URL 을 areas 에서 해소할 수 없다 → clone/등록/훅·`.repos` mkdir
+    전혀 하지 않고 rc 1(어떤 부작용보다 앞에서 걸린다).
+    """
+    board = FakeBoard(registered=())           # 미등록
+    gitr = FakeGitRecorder(rc=0)
+    repos = tmp_path / ".repos"
+    rc = pc.cmd_repo_add(
+        _repo_add_args(pc, name="svc", git=None),   # `--git` 미제공
+        board=board, clone_runner=gitr, repos_dir=repos,
+    )
+    assert rc == 1
+    assert board.append_calls == []            # 등록 안 함
+    assert _clone_argv(gitr) is None           # clone 안 함(부작용 0)
+    assert not repos.exists()                  # `.repos` mkdir 도 안 함
+    assert "--git" in capsys.readouterr().err  # URL 필수 안내
+
+
+def test_repo_add_git_mismatch_prefers_areas_url_with_warning(pc, tmp_path, capsys):
+    """`--git` 이 areas 등록 URL 과 다르면 → 경고 + areas 값 우선 (T-0291·등록=단일 진실).
+
+    already-registered + bare 부재 + `--git <다른 url>` → mirror 는 areas 등록 URL 로 clone
+    하고(mirror origin 은 등록과 일치해야) 불일치를 경고한다. CLI URL 은 무시(areas 우선).
+    """
+    board = FakeBoard(registered=("svc",),
+                      repo_gits={"svc": "git@h:me/svc.git"})   # areas 등록 URL
+    gitr = FakeGitRecorder(rc=0)
+    repos = tmp_path / ".repos"
+    rc = pc.cmd_repo_add(
+        _repo_add_args(pc, name="svc", git="git@h:other/svc.git"),  # 다른 URL 제공
+        board=board, clone_runner=gitr, repos_dir=repos,
+    )
+    assert rc == 0
+    argv = _clone_argv(gitr)
+    assert argv is not None and argv[-2] == "git@h:me/svc.git"   # areas URL 우선(CLI 무시)
+    err = capsys.readouterr().err
+    assert "areas" in err.lower() and "git@h:other/svc.git" in err  # 불일치 경고 surface
+
+
+def test_repo_add_git_provided_new_repo_uses_cli_url(pc, tmp_path):
+    """신규 repo(`--git` 제공·미등록) 경로 무변경 — CLI URL 로 clone + 등록 (T-0291 회귀 가드)."""
+    board = FakeBoard(registered=())           # 미등록(신규)
+    gitr = FakeGitRecorder(rc=0)
+    repos = tmp_path / ".repos"
+    rc = pc.cmd_repo_add(
+        _repo_add_args(pc, name="svc", git="git@h:me/svc.git"),   # CLI URL 제공
+        board=board, clone_runner=gitr, repos_dir=repos,
+    )
+    assert rc == 0
+    argv = _clone_argv(gitr)
+    assert argv is not None and argv[-2] == "git@h:me/svc.git"   # CLI URL 로 clone
+    assert len(board.append_calls) == 1                          # 신규 등록
+    assert board.append_calls[0]["git"] == "git@h:me/svc.git"   # areas 에 CLI URL 기록
 
 
 def test_repo_add_clone_failure_returns_error(pc, tmp_path, capsys):

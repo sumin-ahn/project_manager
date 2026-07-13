@@ -8,6 +8,11 @@ description: "wave 안 ticket claim — board show + DoD self-containment PM 검
 > {{PROJECT_NAME}} PM wave 시작 시 ticket 1개를 자율 claim 하는 표준 절차. PM 의
 > ticket self-containment 검증을 *trigger 단위 강제* 한다.
 
+> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
+> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
+> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
+> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+
 ## 실행
 
 ```bash

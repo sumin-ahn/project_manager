@@ -10,6 +10,8 @@ description: "엔진 갱신 PM front door — pm-update.sh facade wrap + upstrea
 > 얹는다. 엔진(`pm_update`)은 파일-복사만(git 무지·ADR-0032 D5) — git freshness 는 이 스킬층이 담당.
 
 > **Windows 진입**: `./pm-update.sh` 는 bash 용 — PowerShell/cmd 에선 **`.\pm-update.cmd`**(동일 인자).
+> 아래 `python3 …` 커맨드(예 `board.py lint`)는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
+> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
 > PowerShell 5.x 는 `&&` 체이닝 미지원(ParseError) — `cd X && …` 대신 **도구의 workdir 파라미터**나
 > 명령 분리로 실행한다.
 

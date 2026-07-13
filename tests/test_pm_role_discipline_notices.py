@@ -38,3 +38,19 @@ def test_list_session_slot_scoping_notice_present():
     """T-0197: list 스코핑(--mine/--session/--slot) vs claim/mutation 행위자 --session 구분 안내."""
     text = _text()
     assert "list" in text and "--session" in text
+
+
+def test_release_procedure_github_release_step_is_required():
+    """T-0290: 릴리즈 절차의 GitHub Release 단계가 필수(soft '(gh 인증 시)' 재약화 차단)·완결 확인 有.
+
+    PM 60 v1.1.0 은 이 단계가 soft-optional("(gh 인증 시)…생략")이라 skip 돼 태그만 push·GitHub
+    Release 누락됐다. 필수 마커 문구와 완결-확인(`gh release view`) 단계 존재를 못박아 재발을 막는다
+    (문서 회귀 가드 — 내용 옳고 그름은 사람 리뷰).
+    """
+    text = _text()
+    assert "gh release create" in text, "릴리즈 절차에 GitHub Release 생성 단계가 없다"
+    # 필수 마커(이 단계 고유 문구) — 재약화되면 이 문구가 사라져 fail.
+    assert "태그만으론 릴리즈 아님" in text, \
+        "GitHub Release 단계가 필수로 명시되지 않았다(soft-optional 재약화 위험·PM 60 재발)"
+    # 완결 확인 단계 — 태그 push ≠ 릴리즈, PM 이 Release 객체 존재를 확인해 릴리즈를 닫는다.
+    assert "gh release view" in text, "릴리즈 완결 확인(gh release view) 단계가 없다"

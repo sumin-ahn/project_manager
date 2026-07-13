@@ -11,6 +11,11 @@ description: "PM 세션 시작 부트스트랩 — board 실측 / git 상태 / �
 > 자동 surface 한다(self-sufficient·ADR-0035). PM 손은 *그 dump 를 요약·판단 / 옵션 제시 / 결정 요청* 만.
 > backbone = `.project_manager/tools/pm_bootstrap.py`. 비즈니스 로직 0 — 엔진 CLI 호출 thin wrapper.
 
+> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
+> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
+> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
+> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+
 ## 사전 부트스트랩 (command 외부)
 
 command 실행 *전* PM 세션은 이미 다음을 읽어야 한다 (pm_role.md §부트스트랩):

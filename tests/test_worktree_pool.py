@@ -1248,6 +1248,22 @@ def test_create_slot_missing_bare_raises_guard(wp):
     assert wp.list_leases() == []
 
 
+def test_bare_repo_missing_message_guides_hydrate(wp):
+    """BareRepoMissing 메시지가 hydrate 경로를 안내한다 (T-0291·오해 회귀 가드).
+
+    2번째 사용자(등록됨·`.repos/` mirror 부재·multi-user 공유 채택 폴더)에게 `--git` 없는
+    `repo add <repo>` 가 areas 등록 URL 로 mirror 를 hydrate 함을 안내해야 한다 — 진짜 원인은
+    bare mirror 부재인데 "repo add 먼저"(URL 재제공 강제 오해)만 던지면 안 된다. 메시지 내용을
+    단언해 재약화/오해 회귀를 가드한다.
+    """
+    exc = wp.BareRepoMissing("svc", Path("/x/.repos/svc.git"))
+    msg = str(exc)
+    assert "svc" in msg and ".repos/svc.git" in msg   # 진짜 원인=bare mirror 부재 명시
+    assert "hydrate" in msg                            # hydrate 경로 안내(핵심·T-0291)
+    assert "--git 불요" in msg                          # URL 재제공 불요(오해 해소)
+    assert "areas" in msg.lower()                      # areas 등록 URL 로 hydrate
+
+
 # ════════════════════════════════════════════════════════════════════════
 # set_test_cmd — 기존 슬롯 리스의 test_cmd 갱신 (T-0069 · ADR-0014 amend)
 # flock(_lease_lock) + atomic write(_write_ledger) 재사용 · slot 부재 KeyError.

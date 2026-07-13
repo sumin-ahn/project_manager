@@ -177,7 +177,11 @@ def test_record_uses_regression_cwd_seam(live_board, monkeypatch):
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     live_board.cmd_livegate(_rec_args())
     assert fake.calls, "pytest subprocess 가 호출되지 않았다"
-    assert fake.calls[0]["kwargs"]["cwd"] == worktree, \
+    # record 는 pytest run 前에 `_resolve_livegate_flag`(→ git config)를 먼저 호출한다(T-0287
+    # fail-fast). 순서 무관하게 pytest run(shell=True)을 골라 cwd 를 검증한다.
+    pytest_call = next((c for c in fake.calls if c["kwargs"].get("shell")), None)
+    assert pytest_call is not None, "pytest -m release subprocess 가 호출되지 않았다"
+    assert pytest_call["kwargs"]["cwd"] == worktree, \
         "record 가 활성 slot worktree(=_regression_cwd)에서 돌지 않았다"
 
 
@@ -187,7 +191,10 @@ def test_record_explicit_cwd_override(live_board, monkeypatch):
     fake = _FakeRun(0, "11 passed, 812 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     live_board.cmd_livegate(_rec_args(cwd=override))
-    assert fake.calls[0]["kwargs"]["cwd"] == override
+    # pytest run(shell=True)을 순서 무관하게 선택 — record 는 그 前에 git config 를 부른다(T-0287 fail-fast).
+    pytest_call = next((c for c in fake.calls if c["kwargs"].get("shell")), None)
+    assert pytest_call is not None, "pytest -m release subprocess 가 호출되지 않았다"
+    assert pytest_call["kwargs"]["cwd"] == override
 
 
 def test_record_write_is_atomic_no_tmp_left(live_board, monkeypatch):

@@ -10,6 +10,11 @@ description: "통합 검증 게이트 — 회귀(pytest) + board.py lint + git s
 > 묶어 단일 PM report 를 낸다. **foreground 합성 게이트** — 결과를 보고 wave 진행/중단을 즉시 판단. 비즈니스
 > 로직 0 — 엔진 CLI/회귀/git 호출 thin wrapper.
 
+> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
+> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
+> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
+> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+
 ## 인접 command 와 구분
 - **pm-qa (이 command)** = *foreground* 합성 게이트. wave 경계에서 회귀+lint+git 을 한 번에 묶어 report·즉시 판단.
 - `/pm-wave-finish` = ticket 완료 부기(ticket_finish·board complete). 단일 ticket 종료.
