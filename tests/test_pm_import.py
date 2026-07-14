@@ -1758,6 +1758,29 @@ def test_opencode_model_binary_absent_todo_fallback(pm_import, tmp_path, capsys)
     assert "미치환" in err
 
 
+def test_opencode_model_render_load_failure_fails_loud(pm_import, tmp_path, monkeypatch):
+    """렌더러(pm_render) 로드 실패 시 폴백은 조용히 활성 토큰을 출하하지 않고 fail-loud (T-0310 codex must-fix).
+
+    회귀 방지: T-0310 이 줄-중화 로직을 pm_render.neutralize_model_todo 로 추출하며 import 폴백
+    (`_mark_model_todos`)이 pm_render 로드에 *의존*하게 됐다. 로드 실패 시 조용히 `[]` 를 반환하면
+    (초기 리팩터 동작) `model: "{{OPENCODE_PRO_MODEL}}"` 이 활성 상태로 출하돼 opencode 가 agent 를
+    거부한다(T-0077). 이 폴백 계약은 "미해소 model: 줄을 *반드시* 중화" 이므로, 중화 못 하면 broken
+    install 신호로 크게 터뜨려야 한다(silent-degrade 근절·robustness 값-연결 assert). pm_render 는
+    co-located 엔진이라 정상 설치에선 절대 미발화 — 이 테스트는 로드 실패를 monkeypatch 로 강제한다.
+    """
+    dest = _opencode_dest_with_token(pm_import, tmp_path, "RenderLoadFail")
+    relpaths = _copied_relpaths_of(dest)
+    # pm_render 로드 실패 시뮬레이션(co-located 엔진 부재/손상 = broken install).
+    monkeypatch.setattr(pm_import, "_load_pm_render_module", lambda: None)
+    # 비-tty·바이너리 부재 → 폴백(_mark_model_todos) 경로 → 로드 실패로 raise.
+    with pytest.raises(RuntimeError, match="pm_render"):
+        pm_import.resolve_opencode_model(
+            dest, relpaths, model_arg=None,
+            models_runner=_stub_models_runner(ok=False, models=[]),
+            stdin=io.StringIO(""),
+        )
+
+
 def test_opencode_model_fallback_only_comments_model_field_not_prose(pm_import, tmp_path):
     """폴백 주석화는 agent 의 `model:` 필드 줄만 — 엔진 사본 docstring 산문의 토큰은 안 건드린다(T-0077 PM 게이트).
 

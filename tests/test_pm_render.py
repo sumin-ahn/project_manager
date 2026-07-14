@@ -65,16 +65,16 @@ def test_operational_token_alone_not_dropped(pm_render):
 
 
 def test_operational_missing_key_leaks_not_silently_emptied(pm_render):
-    """OPERATIONAL_KEYS 에 있으나 operational dict 에 부재인 키는 빈 문자열로 silently 치환하지
-    않고 토큰을 남겨 RenderLeakError 로 잡는다 (codex·침묵 비움 금지).
+    """OPERATIONAL_KEYS 에 있으나 operational dict 에 부재인 키(intentional-TODO 아님)는 빈
+    문자열로 silently 치환하지 않고 토큰을 남겨 RenderLeakError 로 잡는다 (codex·침묵 비움 금지).
 
-    회귀: `_fill_operational` 가 `.get(key, "")` 였을 때, 기존 opencode 채택자의 local.conf 가
-    `opencode_pro_model` 미보유면 `model: {{OPENCODE_PRO_MODEL}}` 이 `model: ` 로 *조용히 비워져*
-    첫 @render pm_update 가 기존 모델 설정을 덮었다. 미보유 키는 잔존→leak 으로 표면화해야 한다.
+    회귀: `_fill_operational` 가 `.get(key, "")` 였을 때 미보유 키가 `` 로 *조용히 비워져*
+    탐지 신호가 사라졌다. 미보유 키는 잔존→leak 으로 표면화해야 한다. (OPENCODE_PRO_MODEL 은
+    intentional-TODO 예외라 별도 — test_opencode_pro_model_missing_graceful_todo_not_leak 참조.)
     """
-    tpl = "model: {{OPENCODE_PRO_MODEL}}\n"
+    tpl = "root: {{PROJECT_ROOT}}\n"
     with pytest.raises(pm_render.RenderLeakError):
-        # operational 에 다른 키만 보유·OPENCODE_PRO_MODEL 부재 → 빈 치환 아닌 leak.
+        # operational 에 다른 키만 보유·PROJECT_ROOT 부재 → 빈 치환 아닌 leak.
         pm_render.render_adapter(tpl, operational={"PROJECT_NAME": "acme"})
 
 
@@ -134,6 +134,143 @@ def test_opencode_pro_model_operational_resolved(pm_render):
         tpl, operational={"OPENCODE_PRO_MODEL": "anthropic/claude-opus-4"})
     assert out == "pro model: anthropic/claude-opus-4\n"
     assert "{{" not in out
+
+
+# ── 1. render_adapter — intentional-TODO graceful (T-0310·import↔self-update 대칭) ──
+
+def test_opencode_pro_model_missing_graceful_todo_not_leak(pm_render):
+    """OPENCODE_PRO_MODEL 미해소(local.conf 미보유)는 leak(자족 위반)이 아니라 intentional-TODO
+    로 graceful 중화된다 (T-0310·불변식 c 예외·import 대칭).
+
+    회귀 반전: @source 전파(ADR-0054) 후 opencode 채택자 self-update 가 미해소 토큰을 leak 으로
+    rc-fail(update 전멸)해 릴리즈 라이브 게이트가 포착했다. 이제 import(--fill manual)와 대칭 —
+    model: 줄을 주석화·토큰 제거해 자족 유지하고 채택자-fill 지점만 남긴다(rc0).
+    """
+    tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\nbody\n'
+    out = pm_render.render_adapter(tpl, operational={"PROJECT_NAME": "acme"})
+    # 리터럴 토큰 제거(자족 유지) — render leak 안 남.
+    assert "{{OPENCODE_PRO_MODEL}}" not in out
+    # model: 줄 주석화(YAML frontmatter 에 model 키 부재 → opencode 기본 모델·T-0077).
+    assert out.splitlines()[0].startswith("# model:")
+    # 채택자 발견경로: 형식 힌트 + TODO 안내 + 본문 무손상.
+    assert "<provider/model>" in out
+    assert "TODO" in out
+    assert "body" in out
+
+
+def test_leak_assert_integrity_other_token_still_leaks_with_model_todo(pm_render):
+    """불변식 c: OPENCODE_PRO_MODEL 이 graceful 중화돼도 산출물의 *다른* 미해소 토큰은 여전히
+    leak fail-loud — intentional-TODO placeholder 만 예외(false-green 근절 유지·T-0310).
+    """
+    tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\nvalue: {{GENUINELY_UNWIRED}}\n'
+    with pytest.raises(pm_render.RenderLeakError) as exc:
+        pm_render.render_adapter(tpl, operational={})
+    msg = str(exc.value)
+    # 진짜 미배선 토큰은 leak 목록에 올라 fail-loud.
+    assert "{{GENUINELY_UNWIRED}}" in msg
+    # OPENCODE_PRO_MODEL 은 중화됐으므로 leak 목록에 없다(예외만 허용).
+    assert "{{OPENCODE_PRO_MODEL}}" not in msg
+
+
+def test_opencode_pro_model_off_model_line_still_leaks(pm_render):
+    """intentional-TODO 예외는 `model:` 필드 줄 한정 — 산문/헤더의 미해소 OPENCODE_PRO_MODEL 은
+    중화 대상 아님 → 여전히 leak(진짜 미배선·불변식 c·false-green 근절)."""
+    tpl = "설명: {{OPENCODE_PRO_MODEL}} 사용 예시\n"
+    with pytest.raises(pm_render.RenderLeakError) as exc:
+        pm_render.render_adapter(tpl, operational={})
+    assert "{{OPENCODE_PRO_MODEL}}" in str(exc.value)
+
+
+def test_opencode_pro_model_empty_in_conf_still_leaks(pm_render):
+    """`opencode_pro_model=` 빈값(present-but-empty)은 intentional-TODO 로 중화하지 않고 leak 한다
+    (T-0218 빈값 가드 보존·codex T-0310 must-fix). 부재(absent)만 graceful TODO — 빈값은 오설정 신호.
+
+    회귀: T-0310 의 neutralize 가 `_assert_no_leak` *전에* 토큰을 제거하면 빈값 케이스가 조용히
+    TODO 로 swallow 돼 T-0218 빈값-leak(값을 채우라)을 우회한다(false-green). 부재 vs 빈값을 구분해
+    빈값은 leak 시켜야 한다. pm_import 는 해소 시에만 키를 쓰므로 빈값=손-편집/손상 신호.
+    """
+    tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
+    # 경로 ①: operational 에 빈 문자열로 존재 → _fill_operational 가 detected_empty 로 기록.
+    with pytest.raises(pm_render.RenderLeakError) as exc:
+        pm_render.render_adapter(tpl, operational={"OPENCODE_PRO_MODEL": ""})
+    assert "{{OPENCODE_PRO_MODEL}}" in str(exc.value)
+    assert "빈값" in str(exc.value), "빈값 원인 힌트(값을 채우라)가 소실."
+    # 경로 ②: 호출자(pm_update)가 local.conf `opencode_pro_model=` 를 excluded → empty_keys 로 전달.
+    with pytest.raises(pm_render.RenderLeakError) as exc2:
+        pm_render.render_adapter(
+            tpl, operational={"PROJECT_NAME": "acme"}, empty_keys=["OPENCODE_PRO_MODEL"])
+    assert "{{OPENCODE_PRO_MODEL}}" in str(exc2.value)
+
+
+# ── 1. neutralize_model_todo — 공유 중화(단일 진실) 단위 ─────────────────────
+
+def test_neutralize_model_todo_comments_and_neutralizes(pm_render):
+    """model: 줄을 주석화하고 토큰을 <provider/model> 로 중화 + TODO 꼬리(가용목록 없음 형식)."""
+    text = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
+    out, marked = pm_render.neutralize_model_todo(text)
+    assert marked is True
+    assert out == (
+        '# model: "<provider/model>"'
+        "  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 "
+        "provider/model(예: ollama/glm-5.2:cloud) 로 치환\n"
+    )
+
+
+def test_neutralize_model_todo_available_inlined(pm_render):
+    """조회된 가용 모델 목록은 TODO 꼬리에 인라인된다(사람이 바로 고르게)."""
+    text = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
+    out, marked = pm_render.neutralize_model_todo(
+        text, available=["ollama/glm-5.2:cloud", "anthropic/opus"])
+    assert marked is True
+    assert "가용: ollama/glm-5.2:cloud, anthropic/opus" in out
+    assert "{{OPENCODE_PRO_MODEL}}" not in out
+
+
+def test_neutralize_model_todo_noop_without_token(pm_render):
+    """토큰 부재(이미 해소된 model 값)면 무동작·marked False(회귀 0)."""
+    text = 'model: "anthropic/opus"\nbody\n'
+    out, marked = pm_render.neutralize_model_todo(text)
+    assert marked is False
+    assert out == text
+
+
+def test_neutralize_model_todo_idempotent(pm_render):
+    """이미 주석/TODO 붙은 줄은 재처리 안 함 — 멱등(self-update 재렌더 안정)."""
+    text = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
+    once, marked1 = pm_render.neutralize_model_todo(text)
+    twice, marked2 = pm_render.neutralize_model_todo(once)
+    assert marked1 is True
+    assert marked2 is False
+    assert twice == once
+
+
+def test_neutralize_model_todo_only_model_field_line(pm_render):
+    """`model:` 시작 줄만 대상 — 산문 줄의 토큰은 안 건드린다(markdown 무손상)."""
+    text = "설명: {{OPENCODE_PRO_MODEL}} 예시\n"
+    out, marked = pm_render.neutralize_model_todo(text)
+    assert marked is False
+    assert out == text
+
+
+def test_render_neutralize_matches_import_fallback_output(pm_render, pm_import, tmp_path):
+    """pm_import 폴백(_mark_model_todos)과 render_adapter 의 중화가 byte-동일 (단일 진실·T-0310).
+
+    import 은 pm_render.neutralize_model_todo 에 위임하므로, 같은 model: 템플릿 줄에서 양쪽이
+    같은 결과를 내야 self-update 재렌더가 spurious diff 를 안 만든다(import↔update 대칭 lock-in).
+    """
+    model_tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
+    # import 폴백을 파일에 적용(비-tty·가용목록 없음 경로 = available=[]).
+    dest = tmp_path / "adopter"
+    rel = Path(".opencode/agents/x.md")
+    f = dest / rel
+    f.parent.mkdir(parents=True)
+    f.write_text(model_tpl, encoding="utf-8")
+    pm_import._mark_model_todos(dest, {rel}, [])
+    import_out = f.read_text(encoding="utf-8")
+    # render_adapter 중화(operational 미해소) — self-update 경로.
+    render_out = pm_render.render_adapter(model_tpl, operational={})
+    assert import_out == render_out
+    assert "{{OPENCODE_PRO_MODEL}}" not in import_out
 
 
 # ── 1. render_adapter — leak assertion ──────────────────────────────────────
@@ -539,6 +676,62 @@ def test_opencode_pro_model_render_resolved_from_local_conf(pm_update, tmp_path)
     written = (dst / rel).read_text(encoding="utf-8")
     assert written == "model: anthropic/claude-opus-4\nbody\n"
     assert "{{" not in written
+
+
+def test_opencode_pro_model_unresolved_self_update_graceful(pm_update, tmp_path):
+    """self-update apply 가 opencode_pro_model *미해소*(local.conf 부재) model: 템플릿을 렌더할
+    때 leak crash 하지 않고 graceful TODO 중화한다 (T-0310·@source 자기-update 근본fix).
+
+    발단: opencode 채택자가 opencode 없이 import → local.conf 에 opencode_pro_model 부재 →
+    @source 재렌더(.opencode/agents)가 `{{OPENCODE_PRO_MODEL}}` 을 leak → apply RenderLeakError
+    → self-update 전체 실패(엔진 update 까지 막힘). 이제 중화·rc0 동치(라이브 게이트 포착 회귀).
+    """
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    rel = ".opencode/agents/architect.md"
+    (src / ".opencode/agents").mkdir(parents=True)
+    (src / rel).write_text('model: "{{OPENCODE_PRO_MODEL}}"\nbody\n', encoding="utf-8")
+    # 채택자 dest — local.conf 에 opencode_pro_model *부재*(해소 못 한 채택자).
+    _seed_render_dest(dst, local_conf="project_name=acme\n")
+    manifest = pm_update.read_manifest(
+        _write_manifest(src, [".opencode/agents @render"]))
+    changes, missing = pm_update.plan(src, manifest, dest_root=dst)
+    assert missing == []
+    # apply 가 crash 하지 않고 중화 산출을 기록(leak 0).
+    pm_update.apply(changes)
+    written = (dst / rel).read_text(encoding="utf-8")
+    assert "{{OPENCODE_PRO_MODEL}}" not in written          # 리터럴 토큰 제거(자족)
+    assert written.splitlines()[0].startswith("# model:")   # model: 줄 주석화
+    assert "body" in written
+
+
+def test_self_update_partial_graceful_engine_still_updates(pm_update, tmp_path):
+    """불변식 b: opencode_pro_model 한 토큰 미해소가 엔진/타 파일 update 전체를 막지 않는다
+    (부분-graceful·T-0310). @render 미해소 파일은 중화되고 일반 엔진 파일은 정상 update·crash 0."""
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    # (1) @render opencode agent — 미해소 model 토큰.
+    (src / ".opencode/agents").mkdir(parents=True)
+    (src / ".opencode/agents/architect.md").write_text(
+        'model: "{{OPENCODE_PRO_MODEL}}"\n', encoding="utf-8")
+    # (2) 일반 엔진 파일(비-@render·byte-copy).
+    (src / ".project_manager/tools").mkdir(parents=True)
+    (src / ".project_manager/tools/board.py").write_text("v2\n", encoding="utf-8")
+    _seed_render_dest(dst, local_conf="project_name=acme\n")
+    (dst / ".project_manager/tools").mkdir(parents=True, exist_ok=True)
+    (dst / ".project_manager/tools/board.py").write_text("v1\n", encoding="utf-8")
+    manifest = pm_update.read_manifest(_write_manifest(src, [
+        ".opencode/agents @render",
+        ".project_manager/tools/board.py",
+    ]))
+    changes, missing = pm_update.plan(src, manifest, dest_root=dst)
+    assert missing == []
+    pm_update.apply(changes)  # 한 토큰 미해소로 전체가 막히지 않음(crash 0).
+    # 엔진 파일 정상 update.
+    assert (dst / ".project_manager/tools/board.py").read_text(encoding="utf-8") == "v2\n"
+    # @render agent 는 graceful 중화(리터럴 토큰 0).
+    agent = (dst / ".opencode/agents/architect.md").read_text(encoding="utf-8")
+    assert "{{OPENCODE_PRO_MODEL}}" not in agent
 
 
 # ── 4. 빈값 operational silent-empty 가드 (T-0218·pm_update·pm_import 경로) ────

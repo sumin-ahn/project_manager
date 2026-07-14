@@ -8,8 +8,9 @@ shipping 고유분인 **pm_update self-update 경로 2케이스**(opencode/claud
 — 이 파일에 남은 라이브 테스트다.
 
 두 테스트는 import → pm_update(self-update) → 실 LLM 이 *post-update* 진입문서로 ticket 발행을 친다.
-import smoke·full wave 가 못 친 update 경로(opencode: .opencode/* @target-owned graceful skip /
-claude: .claude/* @render 재렌더·leak 0)를 커버한다. 비결정·느림·라이브 → release wave 와 같은
+import smoke·full wave 가 못 친 update 경로(opencode: .opencode/* @source 재렌더·미해소
+opencode_pro_model 을 intentional-TODO 로 graceful 중화·T-0310 / claude: .claude/* @render 재렌더·
+leak 0)를 커버한다. 비결정·느림·라이브 → release wave 와 같은
 `PM_ORCH_LIVE_RELEASE` 게이트(기본 skip·`PM_ORCH_LIVE_RELEASE=1` 일 때만). 프롬프트에 board.py 경로를
 *주지 않는다* — adopter 가 문서만으로 board 도구를 찾아 운영해야 통과(= 문서 운영성). side-effect
 (ticket 파일 생성)를 단언하므로 LLM 출력 phrasing 비결정에 강건하다.
@@ -132,8 +133,8 @@ def _tickets_in(dest: Path, status: str) -> set[str]:
 # 아래 두 테스트는 import 와 operate 사이에 *채택자 self-update*(pm_update)를 끼워, 활성화
 # (@render·@target-owned·모델 폴백 중화)가 바꾼 *update 경로*를 라이브로 검증한다:
 # import → pm_update(self-update) → 실 LLM 이 *post-update* 진입문서로 ticket 발행. import smoke 가
-# 못 친 update 경로(opencode: .opencode/* @target-owned graceful skip / claude: .claude/* @render 재렌더)를
-# 커버한다(회귀·rc 실측·codex 의 *기계* 검증 위에 *런타임* 층 1개 더).
+# 못 친 update 경로(opencode: .opencode/* @source 재렌더·미해소 모델토큰 graceful 중화 / claude:
+# .claude/* @render 재렌더)를 커버한다(회귀·rc 실측·codex 의 *기계* 검증 위에 *런타임* 층 1개 더).
 
 
 def _self_update(dest: Path) -> subprocess.CompletedProcess:
@@ -162,20 +163,25 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
     reason="release wave — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·사용자 트리거.",
 )
 def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
-    """opencode 채택자가 self-update 후에도 안 깨지고 board 운영 가능 (.opencode/* @target-owned skip 경로)."""
+    """opencode 채택자가 self-update 후에도 안 깨지고 board 운영 가능 (.opencode/* @source 재렌더 경로)."""
     pm_import = _load_pm_import()
     dest = _import_adopter(tmp_path, "opencode")
-    # 1) self-update: .opencode/* 는 @target-owned graceful skip(upstream=framework-root 가 안 들고 있음)·
-    #    엔진경로 동기·rc0(crash/clobber 0). 활성화 전엔 source-부재로 rc2 였던 경로(T-0137+self-update 확장).
+    # 1) self-update: .opencode/agents·command 는 @source(ADR-0054·templates/opencode) 재렌더로
+    #    *전파*된다(옛 @target-owned skip 아님). 이 채택자는 opencode 없이 import(=_import_adopter 가
+    #    _real_models_runner 를 (False,[]) 스텁) 해 local.conf 에 opencode_pro_model 이 미해소다 —
+    #    @source 재렌더가 `{{OPENCODE_PRO_MODEL}}` 을 만나면 T-0310 전엔 leak 으로 rc-fail(update 전멸)
+    #    이었다. 이제 render_adapter 가 import 와 대칭으로 intentional-TODO 중화 → rc0(엔진·어댑터 정상
+    #    update·crash/clobber 0). (릴리즈 라이브 게이트가 정확히 이 회귀를 포착한 지점.)
     upd = _self_update(dest)
     assert upd.returncode == 0, (
         f"opencode 채택자 pm_update 실패(rc={upd.returncode}) — activation 이 update 경로를 깸.\n"
         f"--- stdout ---\n{upd.stdout[-1500:]}\n--- stderr ---\n{upd.stderr[-800:]}"
     )
-    # .opencode/agents 는 skip(보존)돼야 — 리터럴 모델 토큰 0(neutralized 유지·@render leak 0).
+    # @source 재렌더 산출물엔 리터럴 모델 토큰 0 — 미해소 OPENCODE_PRO_MODEL 은 leak 이 아니라
+    # `# model: "<provider/model>"  # TODO:` 로 graceful 중화(자족 유지·render leak 0·T-0310).
     dev_text = (dest / ".opencode" / "agents" / "developer.md").read_text(encoding="utf-8")
     assert pm_import.OPENCODE_MODEL_TOKEN not in dev_text, \
-        "pm_update 후 .opencode/agents 에 리터럴 모델 토큰 잔존(@render leak·skip 안 됨)"
+        "pm_update 후 .opencode/agents 에 리터럴 모델 토큰 잔존(@render leak·중화 안 됨)"
     # 2) post-update 운영성: 실 opencode 가 update 후 AGENTS.md 로 ticket 발행.
     open_dir = dest / ".project_manager" / "wiki" / "tickets" / "open"
     before = {p.name for p in open_dir.glob("T-*.md")}

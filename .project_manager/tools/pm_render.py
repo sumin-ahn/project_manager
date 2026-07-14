@@ -23,6 +23,13 @@ post-render assertion 이 emission 순간 hard-fail(allow-list 없음). operatio
 `{{FOO}}`·미배선 토큰을 침묵 출하 대신 큰소리로 표면화한다. board.py `render-leak` lint 가
 상시 backstop(2중 차단).
 
+**단 하나의 예외 = intentional-TODO placeholder**(T-0310): `{{OPENCODE_PRO_MODEL}}` 은 채택자가
+opencode 없이 import 하면 결정적 해소가 불가능한 토큰이라, 미해소 시 leak(자족 위반)이 아니라
+`# model: "<provider/model>"  # TODO: …` 로 graceful 중화한다(pm_import --fill manual 과 대칭·
+채택자-fill 대기). 이건 자족 산출물 위반이 아니다 — 리터럴 `{{...}}` 토큰이 제거되고(자족 유지)
+채택자가 나중에 채우는 지점만 남는다. neutralize_model_todo 참조. 그 밖의 미해소 토큰은
+여전히 fail-loud(false-green 근절 유지).
+
 순수 함수 중심(stdlib). pm_update(재렌더)·pm_import(최초) 양쪽이 호출한다.
 """
 
@@ -50,8 +57,9 @@ OPERATIONAL_KEYS: tuple[str, ...] = (
     "TEST_CMD",
     "DATE",
     # opencode 어댑터 전용 — pm_import 가 local.conf 에 opencode_pro_model 을 기록(T-0033).
-    # opencode @render 활성화 시 `{{OPENCODE_PRO_MODEL}}` 토큰이 미배선이면 leak 하므로
-    # operational 채널에 포함한다(local.conf 재유도·plain replace).
+    # local.conf 에 해소돼 있으면 여기 operational 채널로 plain replace(정상 치환). *미해소*(채택자가
+    # opencode 없이 import·TODO 폴백)면 leak 이 아니라 intentional-TODO 로 graceful 중화한다
+    # (neutralize_model_todo·T-0310·import 대칭) — 아래 render_adapter 참조.
     "OPENCODE_PRO_MODEL",
 )
 
@@ -63,6 +71,67 @@ _ANY_TOKEN_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
 # 이제 *어느 어댑터에도 없어야 한다*(어댑터 free-form-free·ADR-0030). 잔존 시 미마이그레이션
 # 신호로 leak 처리한다(침묵 출하 대신 표면화).
 _STRAY_MARKER_RE = re.compile(r"<!--\s*/?pm:omit-if-empty\b[^>]*-->")
+
+# ── intentional-TODO placeholder (T-0310·import↔self-update 대칭) ──────────────
+# `{{OPENCODE_PRO_MODEL}}` 은 채택자가 opencode 없이/모델조회 실패로 import 하면 *결정적으로
+# 해소 못 하는* 토큰이다 — import(--fill manual)는 이걸 leak(자족 위반)으로 터뜨리지 않고 YAML
+# `model:` 필드 줄을 주석화하며 토큰을 `<provider/model>` 형식힌트로 *중화*해 graceful 하게
+# 넘긴다(채택자가 `opencode models`/손으로 나중에 채움·T-0077 는 값 비활성 → opencode 기본 모델).
+# self-update(pm_update)의 @render 재렌더(ADR-0054 @source 전파)도 같은 소스 토큰을 만나므로,
+# render_adapter 가 이 중화를 *공유 경로*로 수행해 import 와 대칭이 된다(byte-동일 산출 → 재렌더
+# 왕복 0). 이 예외는 **OPENCODE_PRO_MODEL 의 model: 필드 줄에만** 적용된다 — 그 밖의 미해소
+# 토큰(다른 위치의 OPENCODE_PRO_MODEL 포함·다른 `{{...}}`)은 계속 _assert_no_leak 가 fail-loud
+# (false-green 근절 유지·불변식 c).
+OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
+_OPENCODE_MODEL_KEY = "OPENCODE_PRO_MODEL"  # bare operational key — all_empty 판정용(빈값 vs 부재·T-0310)
+_MODEL_TODO_PLACEHOLDER = "<provider/model>"
+
+
+def _model_todo_tail(available: list[str] | None = None) -> str:
+    """중화된 `# model:` 줄 꼬리의 TODO 안내(채택자 발견경로). 조회된 가용 모델은 인라인한다.
+
+    pm_import 의 TODO 폴백(_mark_model_todos)과 **byte-동일** 문구여야 한다 — import 와
+    self-update 가 같은 산출을 내야 재렌더가 spurious diff 를 안 만든다(단일 진실).
+    """
+    if available:
+        return ("  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 provider/model 로 치환 "
+                f"(가용: {', '.join(available)})")
+    return ("  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 "
+            "provider/model(예: ollama/glm-5.2:cloud) 로 치환")
+
+
+def neutralize_model_todo(
+    text: str, available: list[str] | None = None
+) -> tuple[str, bool]:
+    """미해소 `{{OPENCODE_PRO_MODEL}}` 이 있는 YAML `model:` 필드 줄을 주석화·토큰 중화한다.
+
+    변환: `model: "{{OPENCODE_PRO_MODEL}}"` → `# model: "<provider/model>"  # TODO: …`.
+    줄을 통째 `# ` 로 주석화(YAML frontmatter 에서 model 키 부재 → opencode 기본 모델·T-0077)
+    하면서 리터럴 토큰을 `<provider/model>` 형식힌트로 제거(자족 산출물·render leak 회피·T-0133).
+
+    **model: 필드 줄만** 대상이다(`line.lstrip().startswith("model:")`) — 산문/헤더/docstring
+    의 토큰(예: README 의 "placeholder `{{OPENCODE_PRO_MODEL}}` 로 출하")은 `# ` prepend 시
+    markdown 이 깨지므로 건드리지 않는다. 그런 위치의 토큰은 render 가 계속 leak 으로 표면화한다.
+    비파괴·멱등: 이미 `# ` 주석이거나 `TODO` 가 붙은 줄은 재처리 안 함.
+
+    반환: (중화된 text, 중화 발생 여부). import(_mark_model_todos)·self-update(render_adapter)
+    양쪽이 공유하는 단일 진실 — 같은 입력에 같은 산출.
+    """
+    if OPENCODE_MODEL_TOKEN not in text:
+        return text, False
+    tail = _model_todo_tail(available)
+    out: list[str] = []
+    marked = False
+    for line in text.splitlines(keepends=True):
+        if (OPENCODE_MODEL_TOKEN in line and "TODO" not in line
+                and line.lstrip().startswith("model:")):
+            eol = "\n" if line.endswith("\n") else ""
+            body = line.rstrip("\n").replace(OPENCODE_MODEL_TOKEN, _MODEL_TODO_PLACEHOLDER)
+            out.append("# " + body + tail + eol)
+            marked = True
+        else:
+            out.append(line)
+    return "".join(out), marked
 
 
 class RenderLeakError(RuntimeError):
@@ -127,6 +196,17 @@ def render_adapter(
     # pm_update 가 excluded 한 빈값 key(empty_keys) + 렌더러가 직접 감지한 빈값 key 를 합쳐
     # leak 힌트에 싣는다(중복 제거·순서 보존).
     all_empty = list(dict.fromkeys([*(empty_keys or []), *detected_empty]))
+    # intentional-TODO graceful (T-0310·import 대칭): opencode_pro_model 이 local.conf 에
+    # *부재*(채택자가 opencode 없이 import — 키 자체가 없음)면 `{{OPENCODE_PRO_MODEL}}` 을 leak
+    # 시키는 대신 model: 줄을 주석화·중화한다(import --fill manual 과 byte-동일·재렌더 왕복 0·
+    # 불변식 a: 이미 해소돼 있으면 위 _fill_operational 가 치환해 no-op).
+    #   ⚠ **`opencode_pro_model=` 빈값(present-but-empty)은 중화하지 않는다** — 빈값은 미설정이
+    #   아니라 *오설정* 신호다(pm_import 는 해소 시에만 이 키를 쓰므로 빈값=손-편집/손상). T-0218
+    #   대로 leak 시켜 "값을 채우라" 로 표면화한다(codex T-0310 must-fix·false-green 근절). 빈값은
+    #   all_empty 에 실리므로 그때는 중화를 건너뛰어 토큰을 남긴다 → _assert_no_leak 가 잡는다.
+    # 그 밖의 미해소 토큰(다른 위치·다른 `{{...}}`)도 계속 fail-loud(불변식 c).
+    if _OPENCODE_MODEL_KEY not in all_empty:
+        result, _ = neutralize_model_todo(result)
     _assert_no_leak(result, source=source, empty_keys=all_empty)
     return result
 

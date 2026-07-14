@@ -717,8 +717,12 @@ _LOCAL_CONF_TO_OPERATIONAL = {
     "py": "PY",
     "test_cmd": "TEST_CMD",
     "date": "DATE",
-    # opencode 어댑터 전용 — pm_import 가 import 시 local.conf 에 기록(T-0033). opencode
-    # @render 활성화 시 `{{OPENCODE_PRO_MODEL}}` 을 local.conf 로 재유도(claude tree 엔 부재 → no-op).
+    # opencode 어댑터 전용 — pm_import 가 import 시 local.conf 에 기록(T-0033·모델 해소 시만).
+    # self-update 의 @source 재렌더(ADR-0054)가 `.opencode/agents` 를 렌더할 때 이 매핑으로
+    # local.conf 재유도. **미해소**(opencode 없이 import 한 채택자·local.conf 에 opencode_pro_model
+    # 부재)면 render_adapter 가 leak 으로 rc-fail 하지 않고 intentional-TODO 로 graceful 중화한다
+    # (pm_render.neutralize_model_todo·T-0310·import 대칭) — 한 토큰 미해소가 엔진/타 어댑터 update
+    # 전체를 막지 않는다(부분-graceful). claude tree 엔 토큰 부재 → no-op.
     "opencode_pro_model": "OPENCODE_PRO_MODEL",
 }
 

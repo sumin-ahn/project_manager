@@ -1009,8 +1009,11 @@ def substitute_placeholders(
 def _load_pm_render_module():
     """pm_render 모듈을 같은 tools/ 디렉토리에서 로드 (board.py 로더 패턴 동형·sys.path 무오염).
 
-    실패 시 None → 호출부가 render 단계 skip(검사 대상 0·무동작). render path 가 있는데
-    렌더러 부재면 토큰이 잔존하나, 그건 board.py render-leak lint 가 backstop 으로 잡는다."""
+    실패 시 None 반환 — **호출부마다 처리가 다르다**(T-0310): `_mark_model_todos`(모델 토큰 중화는
+    안전 출하의 load-bearing 계약)는 중화 불가를 조용히 넘기지 않고 **fail-loud**(raise) 하고,
+    `render_managed_files`/@render 처리는 skip(검사 대상 0·무동작·render path 토큰 잔존 시 board
+    render-leak lint 가 backstop). pm_render 는 co-located 엔진이라 정상 설치에선 항상 로드된다 —
+    로드 실패는 broken install 신호다."""
     render_py = Path(__file__).resolve().parent / "pm_render.py"
     try:
         spec = importlib.util.spec_from_file_location("pm_render", render_py)
@@ -1545,8 +1548,8 @@ def _mark_model_todos(
     """비-tty/opencode 부재 폴백: `model:` 줄을 주석화하고 그 안의 모델 토큰을 중화한다.
 
     _mark_todos 폴백을 흡수(T-0033) — 모델 토큰만 대상. 조회 성공 시 가용 모델 목록을 마커에
-    인라인해 사람이 바로 고를 수 있게 한다. _mark_todos 와 같은 비파괴 규칙(이미 TODO/주석인 줄은
-    건너뜀·copied_relpaths 범위 한정). 마크한 토큰([OPENCODE_MODEL_TOKEN] 또는 [])을 반환.
+    인라인해 사람이 바로 고를 수 있게 한다. 비파괴 규칙(이미 TODO/주석인 줄은 건너뜀·
+    copied_relpaths 범위 한정). 마크한 토큰([OPENCODE_MODEL_TOKEN] 또는 [])을 반환.
 
     T-0077: 미해소 시 `model:` 값을 활성으로 남기면(`model: "…"  # TODO`) opencode 가
     "configured model … is not valid" 로 agent 자체를 거부한다(실 파일럿 블로커). → 줄 *전체*를
@@ -1556,48 +1559,39 @@ def _mark_model_todos(
     T-0133(@render 활성화·동작 변경): 미해소 폴백이 주석 줄에 리터럴 `{{OPENCODE_PRO_MODEL}}` 을
     남기면 render `_assert_no_leak` 가 hard-fail 한다(@render path 산출물에 토큰 0 이어야 함). 그래서
     주석화하면서 토큰을 **형식 힌트 `<provider/model>` 로 중화**한다 → `# model: "<provider/model>"
-    # TODO: …`. (이전엔 리터럴 토큰을 그대로 보존했으나, 활성화가 그 동작과 양립 불가.) 채택자는
-    주석을 해제하고 `<provider/model>` 자리에 provider/model 을 채우거나 `--opencode-model` 재import.
+    # TODO: …`. 채택자는 주석을 해제하고 provider/model 을 채우거나 `--opencode-model` 재import.
+
+    T-0310(단일 진실·import↔self-update 대칭): 실 줄-중화 로직은 `pm_render.neutralize_model_todo`
+    로 옮겨 import(여기·render *이전* 폴백)와 self-update(pm_update 의 @render 재렌더·render_adapter
+    가 같은 함수 호출) 둘 다 **같은 산출**을 내게 한다(byte-동일·drift 0). 옛 opencode `@source`
+    비대칭(update 가 미해소 토큰을 leak 으로 rc-fail)의 근본 fix. 렌더러 로드 실패 시엔 **fail-loud**
+    (raise) — 이 폴백의 계약은 "미해소 `model:` 줄을 *반드시* 중화해 안전 출하"(T-0077)이므로, 중화
+    못 하면 조용히 활성 `{{OPENCODE_PRO_MODEL}}` 을 출하(opencode 가 agent 거부)하는 대신 크게
+    터뜨린다. pm_render 는 co-located 엔진이라 정상 설치에선 항상 로드된다(미발화) — 로드 실패는
+    broken install 신호이므로 loud 가 옳다(silent-degrade 근절·robustness 값-연결 assert·codex T-0310).
     """
-    # ⚠️ 토큰은 (T-0032 후) 전부 `.opencode/agents/*.md` 의 YAML frontmatter `model:` 줄에만
-    # 있다 — 주석은 반드시 **YAML 주석(`#`)** 이어야 한다. HTML 주석(`<!-- -->`)을 붙이면
-    # `# model: ... <!-- ... -->` 가 되어 frontmatter 파싱이 깨진다(T-0033 codex must-fix). `#` 뒤는
-    # 줄 끝까지 주석이라 가용목록의 `/`·`,` 도 안전. 줄 머리 `# ` 로 키 전체를 비활성화한다.
-    if available:
-        tail = f"  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 provider/model 로 치환 (가용: {', '.join(available)})"
-    else:
-        tail = "  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 provider/model(예: ollama/glm-5.2:cloud) 로 치환"
+    render_mod = _load_pm_render_module()
+    if render_mod is None:
+        # fail-loud: 렌더러(공유 중화 단일 진실)를 못 실으면 중화 불가 — 조용히 활성 토큰을 출하하는
+        # 대신 raise. 정상 설치에선 미발화(co-located 엔진). 로드 실패 = broken install → loud.
+        raise RuntimeError(
+            "pm_render 모듈 로드 실패 — opencode 모델 토큰 {{OPENCODE_PRO_MODEL}} 을 중화할 수 "
+            "없습니다. 활성 토큰을 출하하면 opencode 가 agent 를 거부합니다(T-0077). 엔진 설치를 "
+            "확인하세요(.project_manager/tools/pm_render.py)."
+        )
     marked = False
     for _rel, path in _iter_copied_files(dest_root, copied_relpaths):
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        new_text = text
-        changed = False
-        for line in text.splitlines(keepends=True):
-            # **YAML `model:` 필드 줄만** 주석화한다 — 토큰이 산문/헤더(예: README 의
-            # "placeholder `{{OPENCODE_PRO_MODEL}}` 로 출하된다"·`### 모델 선택`)에도 있어,
-            # `토큰 in line` 만 보면 그 줄까지 `# ` prepend 돼 마크다운이 깨진다(산문→H1). agent
-            # frontmatter 의 `model: "{{…}}"` 만 비활성 대상이므로 `model:` 시작 줄로 한정한다.
-            # 비파괴 멱등: 이미 주석(`#` 머리)이거나 TODO 붙은 줄은 재처리 안 함(`# model:` 은
-            # lstrip 이 `model:` 로 시작 안 해 자연히 skip).
-            if OPENCODE_MODEL_TOKEN in line and "TODO" not in line \
-                    and line.lstrip().startswith("model:"):
-                eol = "\n" if line.endswith("\n") else ""
-                # 토큰 중화 (T-0133·@render leak-safety): 줄을 주석화하면서 {{OPENCODE_PRO_MODEL}}
-                # 을 <provider/model> 로 치환해 *토큰을 제거*한다. @render 활성화로 .opencode/agents
-                # 가 render 대상이 됐고 render 의 _assert_no_leak 는 주석 안의 토큰도 잡으므로, 미해소
-                # 폴백이 토큰을 남기면 RenderLeakError. 중화하면 토큰 0(자족) + 채택자 발견경로(주석
-                # +TODO·fill 형식 힌트) 유지. (resolve 가 render 이전으로 이동했어도 이 줄은 필요 —
-                # 주석화한 줄에 토큰을 남기면 뒤따르는 render 가 여전히 leak.)
-                body = line.rstrip("\n").replace(OPENCODE_MODEL_TOKEN, "<provider/model>")
-                replacement = "# " + body + tail + eol
-                new_text = new_text.replace(line, replacement, 1)
-                marked = True
-                changed = True
+        # 공유 중화(pm_render): agent frontmatter 의 `model:` 필드 줄만 주석화·토큰 중화한다 —
+        # 산문/헤더(README 의 `{{OPENCODE_PRO_MODEL}}` 예시 등)는 건드리지 않는다(모듈 함수가
+        # `model:` 시작 줄로 한정·YAML 주석 안전). 비파괴 멱등도 그쪽이 보장.
+        new_text, changed = render_mod.neutralize_model_todo(text, available)
         if changed and new_text != text:
             path.write_text(new_text, encoding="utf-8")
+            marked = True
     return [OPENCODE_MODEL_TOKEN] if marked else []
 
 
