@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-07-14
+
+multi-PM 다중사용자 격리 robustness 완결 — 값-연결(격리·전파·표기·livegate) 근본 재설계 + 라이브 게이트. 다중사용자 공유 board 에서 타 사용자 미claim 티켓이 세션 뷰에 유출되던 격리 깨짐을 근본 fix 하고, 어댑터 safety-훅이 조용히 낡던 전파 갭을 닫았다.
+
+### Added
+- **멀티유저 세션 뷰 격리** (ADR-0053) — 다중사용자 공유 board 에서 세션 뷰(`list --mine`/`--session`/`--slot`)가 타 user 미claim open 을 열람하지 않는다(소유 = area_owner ?? created_by · `_distinct_ticket_users`≥2 strict-exclude · solo 는 all-open degrade 보존). 단일 predicate `_ticket_is_mine`. (T-0302 core · T-0304 기계 격리 게이트[각 슬롯 실 생성→뷰 섞임 검증])
+- **라이브 멀티유저 composite 게이트** — release-marked opencode 라이브 테스트가 2 user(alice/bob) 공유 board 에서 각자 티켓 생성 후 세션 뷰 섞임 격리를 실증(비-공허 가드). (T-0309)
+- **어댑터 hook/driver 전파** (ADR-0032 Q3 · ADR-0054) — engine-mirror 훅/드라이버(ctx-guard·hard-stop·statusline·회귀 게이트·relay 드라이버)를 `@source` source-remap 채널로 framework-owned 전파 + manifest 자기전파(신 엔트리가 기존 채택자에 도달). 엔진 safety-훅 fix 가 채택자에 닿는 채널을 신설(frozen 근절). (T-0303 core · T-0305)
+- **anti-degrade 진단 surface** — `board list` 가 다중사용자 strict-exclude/정체성 미해소 시 stderr loud-warn(remedy 포함·stdout 무오염) · `pm-config status` 가 정체성·isolation posture(registry 기준 · 실 격리는 `board list --mine` 이 authoritative). (T-0307)
+- **fresh opencode 채택자 drift-0 e2e** — pm_import↔pm_update 렌더 drift-0(byte-identical) + hook/driver 채택자 도달을 machine e2e 로 박제. (T-0308)
+
+### Fixed
+- **livegate check↔record 단일소스** — `livegate check` 도 record 와 동일한 engine-root sidecar 해소를 공유해, 어느 board.py 사본/cwd 로 check 하든 push 보호훅이 기록한 파일을 읽는다. wrong-copy stale 오독(false-green/false-red)을 원천 차단. (T-0306)
+- **settings.json auto-compact 토글 중복** — 정본 top-level `autoCompactEnabled` 로 단일화(env `DISABLE_AUTO_COMPACT` 중복 제거) + 출하 template critical env 존재를 검증하는 guard 테스트(권한-승인 재직렬화 드롭 fail-loud). (T-0300)
+- **livegate cwd fail-loud + slot-key 표기 정합** — 다중슬롯에서 livegate cwd 해소 모호를 fail-loud, slot-key 표기 sweep. (T-0298 · T-0299)
+
 ## [1.1.2] - 2026-07-14
 
 worktree add 타임아웃 false-kill 제거(3-layer) + worktree/lease 견고성(중단-안전·정합) + board submodule 자동 셋업.
