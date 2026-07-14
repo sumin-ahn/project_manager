@@ -367,12 +367,14 @@ def test_old_7col_mine_narrows_after_migrate(board, capsys):
         board.AREAS_FILE.read_text(encoding="utf-8")
         + "| service-b | ACC | g:b | pytest -q | reg | develop | main | bob |\n",
         encoding="utf-8")
+    # multi_user=True (alice·bob 두 area 소유자 = 다중사용자) — 단 my_user·owner 가 area_owner 로
+    # 둘 다 해소되므로 strict `owner == my_user` 가 먼저 판정하고 multi_user 게이트는 안 탄다(T-0302).
     my_pay = board._ticket_is_mine(
         "open", {"id": "T-PAY-009", "claimed_by": ""}, "alice", "pm-1",
-        board._area_owner_in_use())
+        board._area_owner_in_use(), True)
     my_acc = board._ticket_is_mine(
         "open", {"id": "T-ACC-009", "claimed_by": ""}, "alice", "pm-1",
-        board._area_owner_in_use())
+        board._area_owner_in_use(), True)
     assert my_pay is True    # 내 area open → 포함.
     assert my_acc is False   # bob area open → 제외(좁혀짐).
 

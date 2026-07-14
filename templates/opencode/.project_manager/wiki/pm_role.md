@@ -21,8 +21,9 @@ type: handoff
 ```
 1) CLAUDE.md                          ← 프로젝트 규칙·형상
 2) per-slot pm_state                  ← 내 동적 상태(세션 window·남은작업)
-   `.project_manager/.local/slots/<slot>/pm_state.md` · git-ignored · 솔로는
-   `wiki/pm_state.md` legacy 폴백(T-0166·ADR-0033)
+   `.project_manager/.local/slots/<repo>_<N>/pm_state.md`(예 `.../slots/project_manager_1/`)
+   · `<repo>_<N>` = 내 worktree(`work/<repo>_<N>`)의 basename(`work/` 뗀 것) · git-ignored ·
+   솔로는 `wiki/pm_state.md` legacy 폴백(T-0166·ADR-0033)
 3) /pm-bootstrap dump (CLI 한 번) — 아래를 한꺼번에 surface:
    · 커맨드 카드 — 이 세션이 쓸 전 커맨드를 정체성 채워 dump(커맨드 표기 단일 진실·ADR-0045)
    · 차수 · 직전 handoff entry 본문 · 남은작업(self-sufficient·ADR-0035)

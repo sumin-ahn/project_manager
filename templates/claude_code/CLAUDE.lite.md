@@ -15,7 +15,7 @@
 1. **이 파일** — 이미 로드됨.
 2. **보드** — `{{PY}} .project_manager/tools/board.py list` (지금 잡을 수 있는 ticket).
 3. **아키텍처** — [`architecture.md`](.project_manager/wiki/architecture.md) (현재-아키텍처 단일 진실 · ① live / ② target · ADR-0022 · 부트스트랩 1순위 · 충돌 시 이게 기준).
-4. **상태** — [`.project_manager/wiki/status.md`](.project_manager/wiki/status.md) (모듈 진행상태·비고 · judgment-only) + pm_state (세션 window·남은 작업 · 솔로는 `wiki/pm_state.md` · 멀티-PM 은 per-slot `.local/slots/<slot>/` · T-0166).
+4. **상태** — [`.project_manager/wiki/status.md`](.project_manager/wiki/status.md) (모듈 진행상태·비고 · judgment-only) + pm_state (세션 window·남은 작업 · 솔로는 `wiki/pm_state.md` · 멀티-PM 은 per-slot `.local/slots/<repo>_<N>/`(예 `project_manager_1`·= worktree `work/<repo>_<N>` basename) · T-0166).
 5. **직전 핸드오프** — `{{PY}} .project_manager/tools/pm_log.py tail` (마지막 entry 만).
 
 > 세션명 canonical = `<repo>_<N>`(multi-PM 정체성·ADR-0043) — `claim` 의 `--session <repo>_<N>` 인자로 전달(솔로 M=1 은 생략 가능·우선순위 `--session` > `$PM_SESSION_NAME`[구 `$CLAUDE_SESSION_NAME` alias] > 활성 슬롯 lease 1개면 그 세션(단일-lease 유도) > (솔로) `local.conf session=` > 미해소(귀속 쓰기 fail-loud) · leased ≥2 면 `local.conf` 층 skip[남의 세션 오귀속 차단]). 자유형은 M>1 에서 prefix 유도가 죽는다.

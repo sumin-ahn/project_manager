@@ -382,6 +382,43 @@ def _prefix_from_session(session: str | None = None) -> str | None:
     return None
 
 
+def _area_owner_from_session(session: str | None = None) -> str | None:
+    """세션 `<repo>_<N>` → areas.md 그 repo 행의 `area_owner` (T-0302·ADR-0053·`_prefix_from_session` 동형).
+
+    `list --session`/`--slot` 뷰의 **my_user 유도** — `_prefix_from_session` 과 같은 파싱(세션 해소 →
+    `_repo_from_session` → areas repo 행)이되 prefix 대신 area_owner 를 돌려준다. T-0198 이 `--session`/
+    `--slot` 의 my_user 를 "조회 한계"라며 *항상 None* 두던 것을 근절한다(그 세션 소유자로 (a) 를 좁혀
+    타 사용자 미claim open 유출을 차단). 다음은 모두 None → (a) 가 solo degrade/multi strict 로 처리:
+      - 세션 미해소(None·비바인딩) · 세션명이 `<repo>_<N>` 형태 아님(솔로 커스텀 세션명) ·
+      - 그 repo 가 areas.md 미등록(또는 area_owner 빈 값·areas.md 부재).
+    """
+    resolved = session_name(session)
+    if not resolved:
+        return None
+    repo = _repo_from_session(resolved)
+    if not repo:
+        return None
+    _header, rows = _parse_areas()
+    for row in rows:
+        if row.get("repo") == repo:
+            return row.get("area_owner") or None
+    return None
+
+
+def _area_owner_for_single_area() -> str | None:
+    """등록 area 가 정확히 1개면 그 `area_owner`, 아니면 None (T-0302·`--slot` my_user 유도).
+
+    `--slot N` 은 세션 *이름* 이 없어 repo→area_owner 유도(`_area_owner_from_session`)를 못 한다 —
+    등록 area 가 단 하나면(솔로·단일-repo 홈) 그 area 의 소유자가 유일 소유자이므로 그것으로 my_user 를
+    유도한다. area 가 여럿이면(multi-repo) 어느 슬롯 소유자인지 모호하므로 None(유도 skip·현행 보존).
+    `_ticket_area_owner` 의 no-prefix sole-area 폴백(line ~863)과 같은 '단일 area = 그 소유자' 논리다.
+    """
+    _header, rows = _parse_areas()
+    if len(rows) == 1:
+        return rows[0].get("area_owner") or None
+    return None
+
+
 def id_prefix(override: str | None = None, *, session: str | None = None) -> str | None:
     """Resolve ticket-ID namespace prefix (multi-repo areas·N×M·ADR-0016·ADR-0040 D3).
 
@@ -902,6 +939,30 @@ def _claimed_by_user(claimed_by: str | None) -> str | None:
     return claimed_by.rsplit("/", 1)[0] or None
 
 
+def _created_by_user(created_by: str | None) -> str | None:
+    """`created_by`(`<user>/<pm-slot>`·`<user>`·슬롯-only)에서 *user* 토큰 추출 (T-0302·ADR-0053).
+
+    `created_by` 는 `identity_tag` 산출(`<user>/<slot>`·session 미바인딩 시 user-only·user 미상
+    시 슬롯-only) 또는 `migrate-identity` backfill(부재 → *순수 user*·line `_migrate_ticket_fm`)이다.
+    `_ticket_owner` 의 2차 폴백 소유자(area_owner 미해소 시 항상-존재 소유)로 쓴다.
+
+    `_claimed_by_user`(슬롯-only=None)와 갈리는 지점: **`/` 없는 값을 user 로 본다** — backfill 이
+    부재 created_by 를 슬롯 없는 순수 user 로 채우므로(다중사용자 보드 migrate-identity 후 흔함) 그
+    항상-존재 소유자를 살려야 유출을 없앤다([[prefer-data-migration-over-fallback]]·spike §2 옵션 (i)).
+    `<user>/<slot>` 은 마지막 `/` 분리로 user 를 뽑고, 빈/None 은 None(미상). 드물게 `/` 없는 슬롯-only
+    created_by(user 미상 생성)를 user 로 오인할 수 있으나 — 그런 보드는 다중사용자 신호가 안 서면
+    solo degrade 라 무해하고, 서면 strict-exclude 라 안전하다(회귀 0).
+    """
+    if created_by is None:
+        return None
+    cb = str(created_by).strip()
+    if not cb:
+        return None
+    if "/" in cb:
+        return cb.rsplit("/", 1)[0] or None
+    return cb
+
+
 def _slot_matches(claimed_by: str, my_slot: str, *, suffix: bool = False) -> bool:
     """`claimed_by`(`<user>/<pm-slot>` 또는 legacy 슬롯-only)의 slot 토큰이 `my_slot` 인가.
 
@@ -919,14 +980,56 @@ def _slot_matches(claimed_by: str, my_slot: str, *, suffix: bool = False) -> boo
     return slot_token == my_slot or slot_token.endswith(f"_{my_slot}")
 
 
-def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
-                    my_slot: str, area_owner_in_use: bool,
-                    *, slot_suffix: bool = False) -> bool:
-    """이 티켓이 `--mine`/`--session`/`--slot` 뷰에 들어가는지 — (a) 내 area open ∨ (b) 내 claim.
+def _ticket_owner(fm: dict, area_owner_in_use: bool) -> str | None:
+    """open 티켓의 소유 user — `area_owner`(1차) ?? `created_by.user`(2차·항상-존재) (T-0302·ADR-0053).
 
-    단일 전역 플래그 `area_owner_in_use`(보드에 area_owner 가 운영 중인가·`cmd_list` 가 1회 계산)로
-    (a) 의 범위를 정한다 — per-user 2축 분기를 폐기했다(T-0168 동반 단순화·사용자 결정 2026-06-26).
-    데이터 정합은 `board migrate-identity` 가 책임지고 런타임 폴백은 전역 1개로 최소화한다.
+    세션 뷰 (a) "내 소유 open" 판정의 소유자를 완전-데이터로 해소한다(spike §2 옵션 (i)·사인오프):
+      - area_owner 파티션이 운영 중(`area_owner_in_use`)이면 그 티켓 area 의 `area_owner`
+        (`_ticket_area_owner`)를 1차로 쓰고, 미운영/미해소(경계-교차·미등록 area·미마이그 채택자)면
+      - `created_by` 의 user(`_created_by_user`·항상-존재 폴백)로 떨어진다.
+    둘 다 미상이면 None — 호출부(`_ticket_is_mine`)가 solo=degrade / multi=strict 로 가른다.
+    미해소 read 유출을 없앤다([[prefer-data-migration-over-fallback]]).
+    """
+    tid = fm.get("id") or ""
+    area_owner = _ticket_area_owner(tid) if area_owner_in_use else None
+    return area_owner or _created_by_user(fm.get("created_by"))
+
+
+def _distinct_ticket_users() -> int:
+    """보드 전체 티켓의 `created_by`/`claimed_by` 에서 해소되는 *distinct user* 수 (T-0302·ADR-0053).
+
+    **데이터-유도 다중사용자 신호**다(config 플래그 아님) — 세션 뷰 격리(`_ticket_is_mine`)가 소유
+    미해소 open 을 solo(≤1)면 all-open degrade(회귀 0), 다중(≥2)이면 strict-exclude 로 가르는 게이트다.
+    전 status 디렉토리를 1회 스캔해 `created_by`(→`_created_by_user`)·`claimed_by`(→`_claimed_by_user`)의
+    user 토큰을 집합에 모아 크기를 센다 — 슬롯-only claimed_by·미상은 집합에 안 든다(graceful). 깨진
+    티켓은 신호 산정에서 skip(fail-soft·크래시 0). areas 의 area_owner 가 아니라 *티켓* 귀속만 세는 건
+    spike §3 정의(소유 데이터가 티켓에 실려야 다중사용자로 본다)다.
+    """
+    users: set[str] = set()
+    for status in STATUS_DIRS:
+        for p in (tickets_dir() / status).glob("T-*.md"):
+            try:
+                fm, _ = load_ticket(p)
+            except (OSError, ValueError, yaml.YAMLError):
+                continue
+            cb_user = _created_by_user(fm.get("created_by"))
+            if cb_user:
+                users.add(cb_user)
+            claim_user = _claimed_by_user(fm.get("claimed_by"))
+            if claim_user:
+                users.add(claim_user)
+    return len(users)
+
+
+def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
+                    my_slot: str, area_owner_in_use: bool, multi_user: bool,
+                    *, slot_suffix: bool = False) -> bool:
+    """이 티켓이 `--mine`/`--session`/`--slot` 뷰에 들어가는지 — (b) 내 claim ∨ (a) 내 소유 open.
+
+    **단일 불변식**(전 surface 수렴·ADR-0053·point-patch 금지): 세션 뷰 멤버십 = (내 claim) ∪ (내
+    소유 open). 타 사용자 미claim open 은 절대 미포함. degrade("전체 open=mine")는 **solo(distinct
+    user ≤1·`multi_user` False)에서만** 허용한다 — 다중사용자 보드에서 소유 미해소 open 을 노출하던
+    유출(T1 `my_user None`·T2 `area_owner 미운영`)을 근절한다(spike §1).
 
     (b) 내 claim — 상태 무관 연속성. 두 갈래를 OR 한다:
       - user 일치: `claimed_by` 의 user(`_claimed_by_user`) == my_user (새 `<user>/<slot>` 형태).
@@ -934,12 +1037,12 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
         `--slot <N>` 은 suffix 매칭·T-0197).
         `my_user is not None and` 가드로 user-일치는 식별자가 있을 때만 — 무-identity 시 남의
         슬롯-only claim 을 내 것으로 오인하지 않는다(slot 일치는 항상 내 슬롯만 잡으므로 안전).
-    (a) 내 area open — status==open 한정:
-      - my_user 미상(None) 또는 area_owner 미운영(¬area_owner_in_use): 전체 open(빈 보드 금지·
-        미마이그레이션/솔로 안전 degrade — plain list 처럼).
-      - 그 외(user 해소 ∧ area_owner 운영): 그 티켓 area 의 area_owner == my_user 만.
+    (a) 내 소유 open — status==open 한정. `owner = _ticket_owner(fm, area_owner_in_use)`
+        (area_owner ?? created_by.user):
+      - my_user·owner 둘 다 해소 → strict `owner == my_user`(유출 0·유일 포함 규칙).
+      - 미해소(my_user None ∨ owner None) + `multi_user` → `return False`(strict-exclude).
+      - 미해소 + solo(¬multi_user) → `return True`(all-open degrade 보존·빈 보드 금지·회귀 0).
     """
-    tid = fm.get("id") or ""
     cb = fm.get("claimed_by") or ""
     # (b) 내 claim — user 일치(새 형태) OR slot 일치(legacy 슬롯-only·무-identity).
     if cb:
@@ -947,11 +1050,14 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
         if (my_user is not None and cb_user == my_user) or \
                 _slot_matches(cb, my_slot, suffix=slot_suffix):
             return True
-    # (a) 내 area 의 open.
+    # (a) 내 소유의 open.
     if status == "open":
-        if my_user is None or not area_owner_in_use:
-            return True
-        return _ticket_area_owner(tid) == my_user
+        owner = _ticket_owner(fm, area_owner_in_use)
+        if my_user and owner:
+            return owner == my_user       # 소유 해소 → strict(유출 0)
+        if multi_user:
+            return False                  # 다중사용자 + 미해소 → strict-exclude
+        return True                       # solo → all-open degrade 보존(회귀 0)
     return False
 
 
@@ -1688,15 +1794,34 @@ def _regression_cwd(override: str | None = None, session: str | None = None) -> 
     없다 — 회귀는 worktree cwd 에서 돌아야 한다(spike §8-4 c·[[ADR-0026]] 홈+worktree 표준).
     이 함수는 그 cwd 를 주입 가능한 seam 으로 노출한다.
 
-    해소 순서 (T-0058 seam → T-0122 주입 완성):
+    해소 순서 (T-0058 seam → T-0122 주입 완성 → T-0298 모호 fail-loud):
       - `override`(CLI `--cwd`·미래 호출자가 worktree 경로를 넘김) 가 있으면 그것,
       - 없으면 **활성 슬롯 경로**(`_active_slot_path(session)` — lease 장부에서 이 세션의 leased
         슬롯 worktree 경로·worktree_pool 미import·`session` 명시는 M>1 슬롯 순회용·ADR-0040 D2),
+      - 활성 슬롯이 미해소인데 **leased ≥2·세션/cwd 미지정**(진짜 모호)이면 `REPO` 침묵 폴백
+        대신 **fail-loud**(`sys.exit`) — `--session <repo>_<N>`/`--cwd <path>` 명시를 안내한다.
+        REPO(PM 홈·`tests/` 없음)로 조용히 폴백하면 livegate/회귀가 broken slot 을 수집해
+        false fail 을 내던 것(livegate `--cwd` 우회의 근원·PM 61+62 이월)을 근절한다 —
+        session_name 의 귀속-쓰기 fail-loud·T-0201(bare slot 입구 거부)·T-0220(rc5 vacuous-pass
+        근절)과 같은 "모호는 시끄럽게" 철학. **`session` 명시(비-None)·leased <2(솔로/단일)는
+        무변경** — 아래 `REPO` 폴백을 그대로 탄다(additive·솔로 100% 보존).
       - 그것도 없으면 **현 `REPO` 기본** (솔로/multi-PM-미배선 — additive·솔로 무변경).
     """
     if override:
         return override
-    return _active_slot_path(session) or str(REPO)
+    slot = _active_slot_path(session)
+    if slot:
+        return slot
+    # 활성 슬롯 미해소 + leased ≥2 + 세션/cwd 미지정 = genuine ambiguity → fail-loud.
+    # (session 명시면 `session is None` False → REPO 폴백·무변경 / leased <2 도 REPO 폴백·무변경.)
+    if session is None and len(_leased_sessions()) >= 2:
+        sys.exit(
+            "[중단] 회귀/livegate cwd 미해소 — 활성 슬롯이 여럿(leased ≥2)인데 세션/cwd "
+            "미지정으로 모호하다. REPO(PM 홈·tests 없음)로 침묵 폴백하면 broken slot 을 수집해 "
+            "false fail 이 되므로 거부한다. `--session <repo>_<N>` 로 슬롯을 명시하거나 "
+            "`--cwd <worktree 절대경로>` 로 직접 지정하라 (예: `--session project_manager_1`)."
+        )
+    return str(REPO)
 
 
 def _interp_runs(cmd: str) -> bool:
@@ -2138,8 +2263,14 @@ def _livegate_record(args: argparse.Namespace) -> int:
     `fail` 기록 + rc1(사유 표면화). 손기록 경로는 없다(위조/착오 차단·ADR-0039 D2). 기록 위치는
     push 보호훅 read 위치(`_resolve_livegate_flag` — engine-root sidecar)와 정렬해 단일 소스다
     (worktree/PM 홈 어느 board.py 로 돌려도 훅이 읽는 한 파일·T-0287).
+
+    `--session` 은 regression/handoff 과 동형으로 `session_name` 해소를 거쳐 `_regression_cwd` 에
+    thread 한다 (M>1 홈에서 슬롯 cwd 를 명시 — `--cwd` 절대경로 핀 우회 불요·T-0298). 무명시 +
+    leased ≥2 는 seam 이 fail-loud(모호는 시끄럽게) 하며, 그 메시지가 안내하는 `--session <repo>_<N>`
+    이 실제로 이 subparser 에서 수용돼 dead-end 가 아니다(remedy 정직·T-0285 anti-pattern 회피).
     """
-    cwd = _regression_cwd(getattr(args, "cwd", None))
+    cwd = _regression_cwd(getattr(args, "cwd", None),
+                          session=session_name(getattr(args, "session", None)))
     # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스·T-0287) — **실행 전에** 해소한다. 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
     # 읽는 한 파일에 기록. engine-root 무효(BROKEN)는 실행 전에 알 수 있으니, 값비싼 `pytest -m
@@ -3274,39 +3405,40 @@ def cmd_list(args: argparse.Namespace) -> int:
     # 재계산 안 함. 무플래그 list 는 필터 없이 전체(status 셀렉터만 적용).
     #
     # `--session NAME`/`--slot N` 은 `--mine` 의 *명시-인자* 버전이다 — 내 identity 대신 지목한
-    # slot 으로 `_ticket_is_mine` 을 돌린다(같은 (a) area open ∨ (b) claim 렌즈). `--session` 은
+    # slot 으로 `_ticket_is_mine` 을 돌린다(같은 (a) 내 소유 open ∨ (b) claim 렌즈). `--session` 은
     # 세션 이름 전체를 아니 완전 일치, `--slot N` 은 숫자만 아니 slot 규칙(`<repo>_<N>`) suffix
     # 매칭(`_slot_matches` suffix=True). 서로 배타적(argparse mutually exclusive) — 동시 지정 방지.
     #
-    # 비대칭(T-0198 DOC): `--session`/`--slot` 은 my_user 를 해소하지 않고 항상 None 으로 둔다
-    # (아래) — `_ticket_is_mine` 의 (a) area-open 분기(`my_user is None → 전체 open`)가 그래서
-    # *세션별로 못 좁히고* 항상 전체 open 을 반환한다. `--mine` 은 `user_name()` 을 해소해 내
-    # area 로 좁힐 수 있는 것과 다르다 — `--session`/`--slot` 조회는 "그 세션 claim + 전체
-    # open" 을 보여준다(잘못된 동작 아님·의도된 조회-전용 뷰 스코프의 한계일 뿐).
+    # my_user 유도(T-0198 근절·ADR-0053 ③): `--session`/`--slot` 도 이제 my_user 를 *유도* 한다 —
+    # `--session X` → `_area_owner_from_session(X)`(세션 repo → areas area_owner), `--slot N` →
+    # 등록 area 가 하나면 그 area_owner(`_area_owner_for_single_area`). 예전엔 항상 None 으로 둬
+    # (a) 가 세션별로 못 좁히고 전체 open 을 노출하던 것(다중사용자 유출)을 소유자로 좁혀 근절한다.
+    # 유도가 실패(미등록 area·솔로)하면 None → (a) 는 multi_user 게이트로 strict/degrade 처리.
     explicit_session = getattr(args, "session", None)
     explicit_slot = getattr(args, "slot", None)
     mine = getattr(args, "mine", False) or bool(explicit_session) or explicit_slot is not None
     slot_suffix = explicit_slot is not None
     if explicit_session:
-        my_user = None
+        my_user = _area_owner_from_session(explicit_session)
         my_slot = explicit_session
     elif explicit_slot is not None:
-        my_user = None
+        my_user = _area_owner_for_single_area()
         my_slot = str(explicit_slot)
     else:
         my_user = user_name() if mine else None
         my_slot = session_name() if mine else ""
         if mine and my_slot is None:
             # 세션 미바인딩(surface·required=False·ADR-0040) — slot-claim 필터를 못 좁힌다.
-            # 안내는 stderr 로 내 stdout 티켓 목록 포맷을 오염시키지 않는다(area-open 은 계속 표시).
+            # 안내는 stderr 로 내 stdout 티켓 목록 포맷을 오염시키지 않는다(소유 open 은 계속 표시).
             print("(비바인딩 — 세션 미해소·claim 필터 비활성; `--session <repo>_<N>` 로 지정)",
                   file=sys.stderr)
-    # graceful degrade(T-0168 단순화): (a) 풀(내 area open) 필터는 보드에 area_owner 가 *운영
-    # 중일 때만* 적용한다. areas.md 에 area_owner 가 하나도 안 채워졌으면(미마이그레이션 채택자·
-    # 솔로) area_owner_in_use=False → (a) 가 전체 open 으로 degrade(빈 보드 금지·plain list 처럼).
-    # per-user `_owns_any_area`+`area_filter` 2축 분기를 전역 1회 스캔 1개로 단순화(사용자 결정
-    # 2026-06-26: 데이터 정합은 migrate-identity 가 책임·런타임 폴백은 최소).
+    # graceful degrade(T-0168 단순화): (a) 풀(내 소유 open) 필터는 보드에 area_owner 가 *운영
+    # 중일 때만* 그 파티션을 1차 소유로 쓴다. areas.md 에 area_owner 가 하나도 안 채워졌으면
+    # (미마이그레이션 채택자·솔로) area_owner_in_use=False → 소유는 created_by.user 2차 폴백으로
+    # 해소한다(`_ticket_owner`). 다중사용자 판정(`multi_user`)은 티켓 귀속에서 1회 유도한다 —
+    # solo(≤1)면 미해소 open all-open degrade 보존, 다중(≥2)이면 strict-exclude(ADR-0053).
     area_owner_in_use = mine and _area_owner_in_use()
+    multi_user = mine and _distinct_ticket_users() > 1
     # status 뷰 셀렉터(T-0197): 기본(무-status)=활성만(done 접기) · `--status all`=전체(done 포함)
     # · `--status <특정>`=그 status 만(기존 동작 무변경).
     status_arg = getattr(args, "status", None)
@@ -3325,7 +3457,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             if args.tag and args.tag not in _tag_values(fm):
                 continue
             if mine and not _ticket_is_mine(status, fm, my_user, my_slot,
-                                            area_owner_in_use,
+                                            area_owner_in_use, multi_user,
                                             slot_suffix=slot_suffix):
                 continue
             rows.append((status, fm))
@@ -5707,6 +5839,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=["record", "check"])
     p.add_argument("--rev", help="check 대상 sha (보호훅이 push HEAD 를 넘김·record 는 무시)")
     p.add_argument("--cwd", help="record 의 pytest 실행 cwd (ADR-0014 seam·기본=활성 slot worktree)")
+    p.add_argument("--session", help="record 의 슬롯 세션 (M>1 홈에서 cwd 해소·regression 과 동형·"
+                                     "무명시+leased≥2 는 fail-loud·`--cwd` 우회 불요·T-0298)")
     p.set_defaults(fn=cmd_livegate)
 
     p = sub.add_parser("refresh", help="regenerate board.md")

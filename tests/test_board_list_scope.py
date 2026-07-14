@@ -66,11 +66,11 @@ def board(tmp_path, monkeypatch):
     return mod
 
 
-def _seed(board, tid, status, *, claimed_by=None, title="t"):
+def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
     path = board.TICKETS_DIR / status / f"{tid}-seed.md"
     board.dump_ticket(path, {"id": tid, "title": title, "status": status,
-                             "claimed_by": claimed_by, "depends_on": [],
-                             "tags": []}, "# seed\n")
+                             "created_by": created_by, "claimed_by": claimed_by,
+                             "depends_on": [], "tags": []}, "# seed\n")
     return path
 
 
@@ -156,11 +156,27 @@ def test_session_filter_includes_matching_claim(board, capsys):
     assert ids == ["T-0001"]
 
 
-def test_session_filter_includes_open_when_no_area_owner(board, capsys):
-    """area_owner 미운영(솔로/미마이그) → (a) 는 전체 open 으로 degrade(--mine 과 동형)."""
-    _seed(board, "T-0003", "open")
+def test_session_filter_includes_open_when_no_area_owner_solo(board, capsys):
+    """**solo(distinct user ≤1)에서만** area_owner 미운영 → 전체 open degrade (T-0302·ADR-0053).
+
+    이 보드엔 소유가 실린 티켓이 하나뿐(distinct user ≤1)이라 solo — degrade 로 open 표시가 맞다.
+    ⚠ 예전 이 단언은 degrade 자체를 '정답'으로 박제해 다중사용자 유출 버그를 가렸다. 이제 solo
+    조건을 명시하고, 다중사용자 seed 는 아래 strict-exclude 테스트가 별도로 못박는다."""
+    _seed(board, "T-0003", "open")   # 소유 미상·유일 티켓 → distinct user 0 = solo
     ids = _list_ids(board, capsys, session="myproject_3")
     assert ids == ["T-0003"]
+
+
+def test_session_filter_multi_user_excludes_unowned_open(board, capsys):
+    """다중사용자(distinct ≥2)면 solo degrade 가 확장되지 않는다 — 소유 미해소 open strict-exclude.
+
+    T-0302 근절: 옛 `--session` 은 my_user 를 항상 None 으로 둬 area_owner 미운영 시 전체 open 을
+    노출했다(타 사용자 미claim open 유출). alice/bob 두 사용자가 created_by 로 잡히면 다중사용자
+    신호가 서고, my_user 를 유도할 areas 가 없어도 미해소 open 은 제외된다."""
+    _seed(board, "T-0003", "open", created_by="alice/myproject_3")
+    _seed(board, "T-0004", "open", created_by="bob/other_9")
+    ids = _list_ids(board, capsys, session="myproject_3")
+    assert "T-0004" not in ids   # 타 사용자 미claim open 유출 차단(ADR-0053)
 
 
 def test_session_filter_legacy_slot_only_claim(board, capsys):

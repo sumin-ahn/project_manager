@@ -52,7 +52,15 @@ RENDER_TAG = "@render"
 # `@render` 와 독립 — `.claude/agents @render`(루트 upstream 에 존재해야 하는 엔진 리소스)는
 # render=True 이지만 target_owned=False 라, 잘못된 --from 에서 빠지면 skip 이 아니라 rc2 가 된다.
 TARGET_OWNED_TAG = "@target-owned"
-# read_manifest 가 path 행 끝에서 떼어낼 수 있는 마커들(복수·순서 무관).
+# manifest 의 source-remap 태그 (T-0303·ADR-0054) — path 행 끝 `  @source=<relpath>` 면 그 경로는
+# source_root 아래 canonical 소스(`<source_root>/<relpath>`)에서 읽되 dest 에는 manifest 경로로
+# 기록한다(_remap_to_dest). opencode 어댑터(`.opencode/*`)가 프레임워크 루트의
+# `templates/opencode/.opencode/*` 에 살지만 채택자 dest 엔 `.opencode/*` 로 전파돼야 하는 비대칭을
+# 잇는다(framework-owned·claude `.claude/*` 대칭). `@target-owned`(source-부재 정상·skip)와 대비:
+# @source 는 source 가 *실재*(templates/ 아래)하므로 부재면 rc2(엔진/템플릿 누락 은폐 금지).
+SOURCE_TAG_PREFIX = "@source="
+# read_manifest 가 path 행 끝에서 떼어낼 수 있는 boolean 마커들(복수·순서 무관). `@source=<path>` 는
+# 값 운반 마커라 prefix 검사로 별도 처리(이 튜플 밖).
 _MANIFEST_MARKERS = (RENDER_TAG, TARGET_OWNED_TAG)
 
 
@@ -65,6 +73,10 @@ class ManifestEntry(str):
     - `target_owned`(bool): path 행 끝에 `@target-owned` 태그가 있으면 True — 타깃 자신만 보유
       하는 어댑터라 엔진 upstream 에 source-부재가 정상(전파 대상 아님). source-부재 skip 의
       명시 판별자(T-0137). `@render` 와 독립이며, 두 마커는 한 행에 같이 올 수 있다(순서 무관).
+    - `source_rel`(str|None): path 행 끝에 `@source=<relpath>` 태그가 있으면 그 canonical 소스
+      상대경로(T-0303·ADR-0054) — source_root 아래 그 경로에서 읽되 dest 엔 manifest 경로(=`str(self)`)
+      로 기록한다(_source_root_rel·_remap_to_dest). 미주석=None → source 읽기 경로 = manifest 경로
+      (오늘 동작·후방호환). @render 와 공존 가능(토큰-form 소스 읽어 렌더).
 
     str 을 상속함으로써 read_manifest 의 반환이 path+플래그 의미를 가지면서도 `entry in entries`·
     `e.startswith(...)` 같은 기존 호출부/테스트를 한 줄도 깨지 않는다.
@@ -72,13 +84,19 @@ class ManifestEntry(str):
 
     render: bool
     target_owned: bool
+    source_rel: str | None
 
     def __new__(
-        cls, path: str, render: bool = False, target_owned: bool = False
+        cls,
+        path: str,
+        render: bool = False,
+        target_owned: bool = False,
+        source_rel: str | None = None,
     ) -> "ManifestEntry":
         obj = super().__new__(cls, path)
         obj.render = render
         obj.target_owned = target_owned
+        obj.source_rel = source_rel
         return obj
 
 
@@ -177,13 +195,17 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
 def read_manifest(path: Path) -> list[ManifestEntry]:
     """manifest 파일 → ManifestEntry 리스트 ('#' 주석·빈 줄 제외·마커 파싱).
 
-    각 항목은 `str` 서브클래스 ManifestEntry — 값은 path 문자열이고 `.render`·`.target_owned`
-    속성이 그 path 의 마커 여부를 운반한다. path 행 끝의 마커(`@render`·`@target-owned`)는
-    복수·순서 무관으로 인식해 전부 떼어내고 순수 경로만 ManifestEntry 값으로 남긴다.
-      - `@render`(T-0131)        → render=True (byte-copy 대신 render_adapter·§3.3)
-      - `@target-owned`(T-0137)  → target_owned=True (엔진 upstream source-부재가 정상·skip 판별)
-    예: `.opencode/agents  @render @target-owned` → path=`.opencode/agents`, 둘 다 True.
-    미주석=둘 다 False → 오늘과 동일(순수 copy2·전파 대상·후방호환).
+    각 항목은 `str` 서브클래스 ManifestEntry — 값은 path 문자열이고 `.render`·`.target_owned`·
+    `.source_rel` 속성이 그 path 의 마커 여부/값을 운반한다. path 행 끝의 마커(`@render`·
+    `@target-owned`·`@source=<path>`)는 복수·순서 무관으로 인식해 전부 떼어내고 순수 경로만
+    ManifestEntry 값으로 남긴다.
+      - `@render`(T-0131)         → render=True (byte-copy 대신 render_adapter·§3.3)
+      - `@target-owned`(T-0137)   → target_owned=True (엔진 upstream source-부재가 정상·skip 판별)
+      - `@source=<path>`(T-0303)  → source_rel=<path> (source_root 아래 canonical 소스에서 읽고
+                                     dest 엔 manifest 경로로 기록·source-remap·ADR-0054)
+    예: `.opencode/agents  @render @source=templates/opencode/.opencode/agents`
+        → path=`.opencode/agents`, render=True, source_rel=`templates/opencode/.opencode/agents`.
+    미주석=render/target_owned False·source_rel None → 오늘과 동일(순수 copy2·전파 대상·후방호환).
     """
     out: list[ManifestEntry] = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -194,14 +216,21 @@ def read_manifest(path: Path) -> list[ManifestEntry]:
         parts = line.split()
         render = False
         target_owned = False
-        while parts and parts[-1] in _MANIFEST_MARKERS:
+        source_rel: str | None = None
+        while parts and (
+            parts[-1] in _MANIFEST_MARKERS or parts[-1].startswith(SOURCE_TAG_PREFIX)
+        ):
             marker = parts.pop()
             if marker == RENDER_TAG:
                 render = True
             elif marker == TARGET_OWNED_TAG:
                 target_owned = True
+            elif marker.startswith(SOURCE_TAG_PREFIX):
+                # `@source=<path>` — 값 운반 마커. 빈 값(`@source=`)은 무의미하므로 None 취급
+                #   (source 읽기 경로 = manifest 경로·후방호환).
+                source_rel = marker[len(SOURCE_TAG_PREFIX):] or None
         line = " ".join(parts)
-        out.append(ManifestEntry(line, render, target_owned))
+        out.append(ManifestEntry(line, render, target_owned, source_rel))
     return out
 
 
@@ -299,6 +328,43 @@ def _dest_relpath_for(rel: str, dest_root: Path) -> str:
     rel_norm = rel.replace("\\", "/")
     if rel_norm == _TEMPLATE_REL and _is_board_separated(dest_root):
         return _BOARD_TEMPLATE_REL
+    return rel
+
+
+# ── @source source-remap (T-0303·ADR-0054·_dest_relpath_for dest-remap 의 대칭 source 쌍) ──
+# manifest 항목이 `@source=<relpath>` 를 달면 source_root 아래 그 canonical 경로에서 읽되(source_rel),
+# dest 엔 manifest 경로(str(entry))로 기록한다. opencode 어댑터(`.opencode/agents`·`command`)는
+# 채택자 dest 엔 `.opencode/*` 로 살지만 프레임워크 루트의 canonical 소스는 `templates/opencode/
+# .opencode/*` 에 있다(루트=claude·`.opencode/` 부재). 이 비대칭을 잇는 read-side remap.
+def _source_root_rel(entry) -> str:
+    """manifest 항목의 source-root 상대 *읽기* 경로 — @source= 있으면 source_rel, 없으면 str(entry).
+
+    기본(마커 부재·source_rel None)은 dest relpath 를 그대로 source-root 상대 읽기 경로로 쓴다
+    (오늘 동작·후방호환). `@source=<path>`(ADR-0054)가 있으면 source_root 아래 그 canonical 경로에서
+    읽는다 — dest 기록 경로는 manifest 경로 유지(_remap_to_dest 가 치환). 평문 str 항목(레거시 호출)은
+    source_rel 속성 부재 → str(entry)(getattr 폴백).
+    """
+    return getattr(entry, "source_rel", None) or str(entry)
+
+
+def _remap_to_dest(rel: str, source_rel: str, manifest_path: str) -> str:
+    """source-root relpath → manifest(dest) 기록 relpath (@source source-remap·T-0303·ADR-0054).
+
+    _iter_files 가 source_rel(canonical 소스) 아래에서 yield 한 relpath 의 source_rel prefix 를
+    manifest_path(dest)로 치환한다 — `_dest_relpath_for`(dest-remap)의 대칭 source 쌍. source_rel ==
+    manifest_path(마커 부재·기본)면 무변경(후방호환). 파일 항목(단일)은 yield 가 source_rel 자체라
+    manifest_path 로 통째 치환, 디렉토리 항목은 `source_rel/…` 하위를 `manifest_path/…` 로 옮긴다.
+    경로 비교는 OS-무관 posix-normalize(_iter_files 가 Windows 에서 `\\` 섞을 수 있음·_dest_relpath_for
+    동형)."""
+    if source_rel == manifest_path:
+        return rel
+    rel_norm = rel.replace("\\", "/")
+    src_norm = source_rel.replace("\\", "/")
+    if rel_norm == src_norm:
+        return manifest_path
+    prefix = src_norm + "/"
+    if rel_norm.startswith(prefix):
+        return manifest_path + "/" + rel_norm[len(prefix):]
     return rel
 
 
@@ -740,13 +806,22 @@ def plan(
     missing: list[str] = []
     for entry in manifest:
         rel = str(entry)
+        # @source= 있으면 source_root 아래 canonical 소스 경로(source_rel)에서 읽고, dest 엔
+        # manifest 경로(rel)로 기록한다(_remap_to_dest). 마커 부재면 source_rel == rel(오늘 동작).
+        source_rel = _source_root_rel(entry)
         # render_enabled=False(--target) 면 @render 태그를 강제로 끈다 — 템플릿은 토큰-form
         # 소스라 copy2 로 토큰을 보존해야 한다(렌더 시 operational leak·crash 회피).
         render = _entry_render_flag(entry) if render_enabled else False
-        if not (source_root / rel).exists():
+        if not (source_root / source_rel).exists():
+            # 부재 보고는 manifest(dest) 경로(rel) — missing-핸들러가 @target-owned 플래그를
+            # str(entry) key 로 조회한다. @source 항목은 non-@target-owned → source 부재면 rc2
+            # (템플릿 누락 은폐 금지·안전판).
             missing.append(rel)
             continue
-        for r, sp in _iter_files(source_root, rel):
+        for r, sp in _iter_files(source_root, source_rel):
+            # @source source-remap: yield relpath 의 source_rel prefix 를 manifest 경로로 치환
+            # (T-0303·_remap_to_dest). 마커 부재면 무변경(source_rel == rel).
+            r = _remap_to_dest(r, source_rel, rel)
             # board-분리 dest 면 `wiki/tickets/_template.md` 를 `board/tickets/_template.md` 로
             # 리매핑한다(T-0169·board_root() 추종) — source 는 upstream wiki/ 에서 그대로 읽되
             # dest 경로만 옮긴다. legacy dest·그 외 항목은 입력 그대로(무변경). 표시 relpath(r)도

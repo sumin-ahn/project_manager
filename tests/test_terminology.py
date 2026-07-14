@@ -158,3 +158,57 @@ def test_no_carry_term_in_canonical_source():
     assert not offenders, (
         f"폐기 용어 '{_CARRY_TERM}' 잔존 — '후속/이월' 로 정정하라 (T-0268): {offenders}"
     )
+
+
+# ── T-0299: slot-key 표기 가드 (모호한 <slot>/<N> → 명시형 <repo>_<N>) ──────────
+# per-slot pm_state 경로는 명시형 `slots/<repo>_<N>/pm_state.md`(예 `slots/project_manager_1/`)로
+# 가리킨다. 모호한 `slots/<slot>`(placeholder)·`slots/<N>`(= `--slot <N>` 탓에 "숫자 N"으로 오독)은
+# multi-slot PM 이 `.local/slots/<N>/` 를 헛찾게 한다(PM 63 실측). 명시형 = 코드 display 경로
+# (`pm_bootstrap._pm_state_display_path` → `slots/{repo}_{n}/`)·spike 와 정합. 재발을 기계로 못박는다
+# ([[T-0098]] terminology 가드 선례·재발 용어/규칙은 지식 아닌 테스트로).
+#
+# 스코프 = 사람이 읽는 **가이드 문서**만. 엔진 `.py`·`.gitignore` 는 **제외** — 코드는 T-0298 소관이고
+# `pm_handoff.py` 의 `slots/<N>` 은 divergent-bare(`--slot 4` verbatim) 마이그(T-0201)를 *설명*하는
+# 정당한 등장이다. `.claude/skills/*/SKILL.md`·opencode `.opencode/command/*.md`(SKILL 의 하니스 twin)도
+# 포함 — 그 사본 편집은 PM 직접(harness: 백그라운드 subagent 는 `.claude/` 쓰기 불가). REPO(=① worktree)
+# 밖 사본(② live pm_role/SKILL·②-owned architecture.md)은 이 스코프 밖(별도 sweep).
+# 리터럴 분할("slots/<"+…): 이 가드 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
+_SLOT_KEY_BARE = ("slots/<" + "slot>", "slots/<" + "N>")
+
+
+def _slot_key_guide_docs() -> list[Path]:
+    files: list[Path] = [
+        REPO / ".project_manager/wiki/pm_role.md",
+        REPO / "templates/claude_code/.project_manager/wiki/pm_role.md",
+        REPO / "templates/opencode/.project_manager/wiki/pm_role.md",
+        REPO / "templates/opencode/AGENTS.md",
+        REPO / "templates/opencode/AGENTS.lite.md",
+        REPO / "templates/claude_code/CLAUDE.lite.md",
+    ]
+    for g in (
+        ".claude/skills/*/SKILL.md",
+        "templates/claude_code/.claude/skills/*/SKILL.md",
+        "templates/opencode/.opencode/command/*.md",
+    ):
+        files += [Path(p) for p in glob.glob(str(REPO / g))]
+    return [f for f in files if f.is_file() and f.name != _SELF]
+
+
+def test_slot_key_notation_explicit_in_guide_docs():
+    """가이드 문서가 per-slot pm_state 를 명시형 `slots/<repo>_<N>` 로만 가리킨다 (T-0299).
+
+    모호한 `slots/<slot>`(placeholder)·`slots/<N>`(숫자 오독) 금지 — multi-slot PM 이
+    `.local/slots/<repo>_<N>/`(예 `project_manager_1`)를 헛찾던 표기 결함 재발 차단. 엔진
+    `.py`·`.gitignore` 는 스코프 밖(코드=T-0298·pm_handoff `slots/<N>` 는 T-0201 마이그 설명).
+    `.claude`/opencode 하니스 사본은 PM 직접 편집(harness) 후 green.
+    """
+    offenders = []
+    for f in _slot_key_guide_docs():
+        for lineno, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            for bare in _SLOT_KEY_BARE:
+                if bare in line:
+                    offenders.append(f"{f.relative_to(REPO).as_posix()}:{lineno} :: {bare}")
+    assert not offenders, (
+        "모호한 slot-key 표기 잔존 — 명시형 `slots/<repo>_<N>`"
+        f"(예 project_manager_1·= worktree basename) 로 정정하라 (T-0299): {offenders}"
+    )

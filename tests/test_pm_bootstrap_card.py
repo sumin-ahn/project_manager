@@ -131,6 +131,27 @@ def test_card_livegate_precondition_adjacent(bootstrap):
     assert "⚠" in warn and "release" in warn and "pin" in warn
 
 
+def test_card_livegate_guidance_is_executable_with_session(bootstrap):
+    """lean(멀티-PM) 카드의 livegate record 안내가 실행가능 형태 — `--session <repo>_<N>` 포함 (T-0298).
+
+    multi-lease 홈에서 `--session` 없는 record 는 cwd 모호 fail-loud 이므로, 안내 명령이 이 세션
+    정체성을 실어야 dead-end 가 아니다 — must-fix 1(livegate subparser --session 수용)과 정합.
+    """
+    card = _card(bootstrap, LEAN_IDENTITY)
+    lines = card.splitlines()
+    lg_i = _line_index(card, "livegate record")
+    assert "--session project_manager_1" in lines[lg_i], \
+        f"livegate 안내가 --session 을 안 실음(multi-lease dead-end): {lines[lg_i]!r}"
+
+
+def test_card_solo_livegate_guidance_omits_session(bootstrap):
+    """솔로(정체성 None)는 `livegate record`(무인자·현행 형태) — leased <2 라 폴백 무변경(T-0298)."""
+    card = _card(bootstrap, None)
+    lines = card.splitlines()
+    lg_i = _line_index(card, "livegate record")
+    assert "--session" not in lines[lg_i], f"솔로 livegate 안내에 --session 이 붙음: {lines[lg_i]!r}"
+
+
 def test_card_migrate_identity_precondition_adjacent(bootstrap):
     """migrate-identity 경고(단일세션)가 커맨드 줄 바로 아래에 인접한다(4대장 ④)."""
     card = _card(bootstrap, LEAN_IDENTITY)

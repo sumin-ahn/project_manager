@@ -22,7 +22,7 @@ command 실행 *전* PM 세션은 이미 다음을 읽어야 한다 (pm_role.md 
 
 1. `AGENTS.md` (= opencode PM 부트스트랩·위임 규약·env 단일 진실)
 2. `.project_manager/wiki/pm_role.md` (정적 운영 매뉴얼)
-3. per-slot pm_state — `.project_manager/.local/slots/<slot>/pm_state.md` (동적 상태 · 세션 window / 남은 작업 · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033)
+3. per-slot pm_state — `.project_manager/.local/slots/<repo>_<N>/pm_state.md` (예 `.../slots/project_manager_1/` · `<repo>_<N>` = 내 worktree `work/<repo>_<N>` 의 basename · 동적 상태 · 세션 window / 남은 작업 · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033)
 4. `.project_manager/wiki/status.md`
 
 board 상태·log 마지막 entry **본문**·차수·남은작업은 아래 CLI 가 자동 측정·surface 한다(self-sufficient·ADR-0035). 컨텍스트 인지·결정은 PM 의 몫.

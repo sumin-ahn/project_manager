@@ -63,7 +63,7 @@ build 세션이 시작되면 다음을 순서대로 수행한다. **Read tool �
 
 1. **이 문서(AGENTS.md)** — 이미 로드됨. opencode 실행 모델·위임·인코딩 규약 파악.
 2. **PM 운영 매뉴얼** — `.project_manager/wiki/pm_role.md` (정적 운영 매뉴얼: 책임·결정 권한·핸드오프).
-3. **PM 동적 상태** — per-slot `.project_manager/.local/slots/<slot>/pm_state.md` (세션 window·진행 중 의사결정·남은 작업 · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033).
+3. **PM 동적 상태** — per-slot `.project_manager/.local/slots/<repo>_<N>/pm_state.md`(예 `slots/project_manager_1/` · `<repo>_<N>` = worktree `work/<repo>_<N>` 의 basename) (세션 window·진행 중 의사결정·남은 작업 · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033).
    *없으면* 채택 setup 미완 — `board.py init` 이 template 에서 생성한다.
 4. **현재-진실 + 진행 상태** — `.project_manager/wiki/architecture.md`(**현재-아키텍처 단일 진실**·① live / ② target · ADR-0022 · 부트스트랩 1순위·충돌 시 기준) → `.project_manager/wiki/status.md`(모듈 진행상태·비고). ADR(`decisions/`)은 *왜*의 히스토리(현재 구속력 없음).
 5. **보드 조회** — 지금 잡을 수 있는 ticket 확인:

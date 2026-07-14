@@ -535,22 +535,27 @@ def test_area_owner_in_use_all_empty(board):
 
 
 def test_mine_solo_user_known_but_no_registry_not_empty(board, capsys):
-    """**핵심 회귀 가드**: git email 있어 my_user non-None 이지만 areas.md 부재(솔로).
+    """**핵심 회귀 가드**: git email 있어 my_user non-None 이지만 areas.md 부재(**solo**).
 
     흔한 솔로 케이스 — `git config user.email` 폴백으로 my_user 가 해소되지만 area_owner 가
     보드에 운영되지 않는다(_area_owner_in_use False). (a) 가 전체 open 으로 degrade 해야 한다
     — bootstrap 기본뷰 `list --mine` 보드가 비면 안 된다(빈 보드 금지·plain list 처럼).
-    """
+
+    ⚠ T-0302 정정: degrade 는 **solo(distinct user ≤1)에서만** 성립한다. 이 보드는 소유가 실린
+    user 가 solo@example.com 하나뿐이라야 solo다 — 남의 claim(T-0004)은 *slot-only*(user 차원
+    없음·distinct 에 안 셈)로 두어 solo 를 유지한다. user-form 남의 claim 제외는
+    `test_mine_excludes_others_claim` 가 별도로 못박고, 다중사용자 strict-exclude 는
+    `test_board_multipm.py` 의 세션 격리 스위트 소관이다."""
     board._git_config_email = lambda: "solo@example.com"  # type: ignore[assignment]
     _write_conf(board, session="pm-1")  # user 키 없음 → git email 폴백 탐
     _seed(board, "T-0001", "open")
     _seed(board, "T-0002", "open")
     _seed(board, "T-0003", "claimed", claimed_by="solo@example.com/pm-1")  # 내 user-claim
-    _seed(board, "T-0004", "claimed", claimed_by="other/pm-2")             # 남의 claim
+    _seed(board, "T-0004", "claimed", claimed_by="pm-2")   # 슬롯-only 남의 claim(user 미상)
     ids = _list_ids(board, capsys, mine=True)
-    # area_owner 미운영 → (a) 전체 open + (b) 내 user-claim. 빈 보드 아님.
+    # distinct user = {solo@example.com} = 1 → solo → (a) 전체 open + (b) 내 user-claim. 빈 보드 아님.
     assert set(ids) == {"T-0001", "T-0002", "T-0003"}
-    assert "T-0004" not in ids   # 남의 claim 은 (b) user 매칭 제외
+    assert "T-0004" not in ids   # 남의 슬롯(pm-2≠pm-1) claim 은 (b) slot 매칭 제외
 
 
 def test_mine_user_known_area_owner_in_use_filters_to_my_areas(board, capsys):

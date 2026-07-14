@@ -338,17 +338,45 @@ def test_bootstrap_slot_calls_bind_not_alloc(bootstrap, tmp_path, capsys):
 
 
 def test_bootstrap_slot_emits_lean_identity_surface(bootstrap, tmp_path, capsys):
-    """lean identity surface — 세션명 `X_2`·슬롯·라이브 브랜치·`--session X_2` 안내."""
+    """lean identity surface — 세션명 `X_2`·worktree·라이브 브랜치·`--session X_2` 안내."""
     wp = FakeWorktreePool(alloc_branch="x-feat")
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
     inst.run(repo="X", slot=2)
     out = capsys.readouterr().out
     assert "당신은 **X PM**" in out
     assert "세션=`X_2`" in out
-    assert "슬롯=`work/X_2`" in out
+    assert "worktree=`work/X_2`" in out
     assert "브랜치=`x-feat`" in out          # 라이브 브랜치(current_branch)
     assert "--session X_2" in out            # 보드 조작 명시 안내
     assert "보드=multi-PM 공유" in out
+
+
+def test_bootstrap_slot_identity_label_unified_worktree(bootstrap, tmp_path, capsys):
+    """lean variant 라벨이 공개-제품 variant 와 통일(`worktree=`)·옛 `슬롯=` 제거 (T-0298).
+
+    같은 슬롯 정체성을 두 표기(`슬롯=`/`worktree=`)로 부르던 혼선을 닫는다 — worktree 경로임을
+    명시하는 단일 용어로 통일.
+    """
+    wp = FakeWorktreePool()
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst.run(repo="X", slot=2)
+    out = capsys.readouterr().out
+    assert "worktree=`work/X_2`" in out
+    assert "슬롯=`work/X_2`" not in out       # 옛 라벨 제거(용어 통일)
+
+
+def test_bootstrap_slot_identity_appends_pm_state_path(bootstrap, tmp_path, capsys):
+    """lean identity surface 가 이 슬롯의 per-slot pm_state 경로를 병기한다 (T-0298).
+
+    독자가 pm_state 위치를 못 잡던 표기 혼선(identity=`work/<repo>_<N>` vs 실경로=`.local/slots/
+    <repo>_<N>/`)을 닫는다 — `_pm_state_display_path` 재사용 산출을 identity 뒤에 한 줄.
+    """
+    wp = FakeWorktreePool()
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst.run(repo="X", slot=2)
+    out = capsys.readouterr().out
+    assert "pm_state (이 슬롯):" in out
+    assert ".project_manager/.local/slots/X_2/pm_state.md" in out
 
 
 def test_bootstrap_slot_identity_branch_is_live(bootstrap, tmp_path, capsys):

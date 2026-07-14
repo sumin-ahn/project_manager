@@ -2458,10 +2458,22 @@ class PmBootstrap:
         others = identity["others"]
         protected_branch = identity.get("protected_branch")
 
+        # pm_state 경로 병기 (T-0298) — worktree(=slot 상대경로)/cwd(절대)/pm_state(.local/slots)
+        # 3항을 함께 실어 정체성 표기 혼선(`<slot>` placeholder / `work/<repo>_<N>` identity /
+        # `.local/slots/<repo>_<N>/` 실경로)을 닫는다. 경로 산출은 기존 `_pm_state_display_path`
+        # 재사용(중복 금지) — identity 슬롯키(`work/<repo>_<N>`)에서 `(repo, N)` 유도(_pm_state_
+        # display_path 인스턴스 메서드와 동형 파싱·출력 표기만·해소 로직 무변경).
+        slot_key: tuple[str, int] | None = None
+        if slot.startswith("work/"):
+            m = re.match(r"^(.+)_(\d+)$", slot[len("work/"):])
+            if m:
+                slot_key = (m.group(1), int(m.group(2)))
+        pm_state_path = _pm_state_display_path(slot_key, self._areas_file)
+
         lines: list[str] = []
         lines.append("### multi-PM identity surface (lean·T-0074)")
         lines.append(
-            f"- 당신은 **{repo} PM** · 세션=`{session}` · 슬롯=`{slot}` · "
+            f"- 당신은 **{repo} PM** · 세션=`{session}` · worktree=`{slot}` · "
             f"브랜치=`{branch}` · 보드=multi-PM 공유."
         )
         lines.append(
@@ -2469,6 +2481,7 @@ class PmBootstrap:
             "(정체성 = 에이전트 맥락·도구엔 명시 전달)."
         )
         lines.append(f"- cwd (작업 슬롯): `{slot_path}`")
+        lines.append(f"- pm_state (이 슬롯): `{pm_state_path}`")
         # 보호 브랜치 경고 (T-0076·소프트) — 라이브 브랜치가 보호목록이면.
         if protected_branch:
             lines.append(
@@ -2655,8 +2668,11 @@ class PmBootstrap:
         lines.append("")
 
         # 릴리즈 (직접 — 래핑 스킬 없음) — livegate record 는 release-marked pin(4대장 ③·인접 ⚠).
+        # 정체성(`sess`)을 실어 실행가능 형태로 emit — multi-lease 홈에서 `--session` 없는 record 는
+        # cwd 모호 fail-loud 이므로(T-0298), 이 세션 슬롯을 명시해 안내 명령이 dead-end 가 아니게 한다
+        # (솔로는 `sess`="" → 무인자·현행 형태·leased <2 라 폴백 무변경).
         lines.append("# 릴리즈 (직접 — 래핑 스킬 없음)")
-        lines.append(cmd("board.py", "livegate record"))
+        lines.append(cmd("board.py", f"livegate record{sess}"))
         lines.append(
             "  ⚠ record 는 `pytest -m release` 수집 pin 강제 — "
             "release-marked 0 수집이면 fail(릴리즈 차단)."

@@ -874,6 +874,283 @@ def test_read_manifest_render_preserved_with_target_owned(pm_update, tmp_path):
         "@target-owned 공존이 render 파싱을 깼다(board.py render-leak lint 회귀)."
 
 
+# ── @source= 마커 파싱 + source-remap (T-0303·ADR-0054) ──────────────────────
+# `@source=<relpath>` 는 값 운반 마커 — source_root 아래 canonical 소스에서 읽고 dest 엔 manifest
+# 경로로 기록한다(_source_root_rel·_remap_to_dest). @render/@target-owned(boolean)와 공존·순서무관.
+
+def test_read_manifest_source_marker_parsed(pm_update, tmp_path):
+    """`path @source=<relpath>` → source_rel=<relpath>, 순수 경로만 값으로 남는다(T-0303·ADR-0054)."""
+    manifest = _write_manifest(
+        tmp_path, [".opencode/agents  @source=templates/opencode/.opencode/agents"])
+    e = pm_update.read_manifest(manifest)[0]
+    assert str(e) == ".opencode/agents"
+    assert e.source_rel == "templates/opencode/.opencode/agents"
+    assert e.render is False
+    assert e.target_owned is False
+
+
+def test_read_manifest_render_and_source_coexist_order_independent(pm_update, tmp_path):
+    """`@render @source=<path>` 공존·순서무관 — render=True + source_rel 파싱, 순수 경로만 남는다."""
+    manifest = _write_manifest(tmp_path, [
+        ".opencode/agents   @render @source=templates/opencode/.opencode/agents",
+        ".opencode/command  @source=templates/opencode/.opencode/command @render",
+    ])
+    agents, command = pm_update.read_manifest(manifest)
+    assert str(agents) == ".opencode/agents"
+    assert agents.render is True and agents.target_owned is False
+    assert agents.source_rel == "templates/opencode/.opencode/agents"
+    assert str(command) == ".opencode/command"
+    assert command.render is True and command.target_owned is False
+    assert command.source_rel == "templates/opencode/.opencode/command"
+
+
+def test_read_manifest_no_source_marker_is_none(pm_update, tmp_path):
+    """@source 없는 항목(무마커·@render·@target-owned)은 source_rel None (후방호환·읽기 경로 = manifest 경로)."""
+    manifest = _write_manifest(tmp_path, [
+        ".project_manager/tools/board.py",
+        ".claude/agents  @render",
+        ".opencode/x  @target-owned",
+    ])
+    entries = pm_update.read_manifest(manifest)
+    assert all(e.source_rel is None for e in entries)
+
+
+def test_read_manifest_empty_source_value_is_none(pm_update, tmp_path):
+    """`@source=`(빈 값)은 무의미 → source_rel None (읽기 경로 = manifest 경로·후방호환)."""
+    e = pm_update.read_manifest(_write_manifest(tmp_path, [".opencode/agents  @source="]))[0]
+    assert str(e) == ".opencode/agents"
+    assert e.source_rel is None
+
+
+# ── 단위: _source_root_rel / _remap_to_dest (source-remap·_dest_relpath_for 대칭 쌍) ──
+
+def test_source_root_rel_uses_marker_else_str(pm_update, tmp_path):
+    """@source= 있으면 _source_root_rel = source_rel(canonical 소스), 없으면 str(entry)."""
+    sourced, plain = pm_update.read_manifest(_write_manifest(tmp_path, [
+        ".opencode/agents  @source=templates/opencode/.opencode/agents",
+        ".project_manager/tools/board.py",
+    ]))
+    assert pm_update._source_root_rel(sourced) == "templates/opencode/.opencode/agents"
+    assert pm_update._source_root_rel(plain) == ".project_manager/tools/board.py"
+
+
+def test_source_root_rel_plain_str_fallback(pm_update):
+    """평문 str 항목(레거시 호출·source_rel 속성 부재) → str 그대로(getattr 폴백·후방호환)."""
+    assert pm_update._source_root_rel(".project_manager/tools/board.py") == \
+        ".project_manager/tools/board.py"
+
+
+def test_remap_to_dest_directory_prefix(pm_update):
+    """디렉토리 @source: yield relpath 의 source_rel prefix → manifest 경로로 치환(하위 파일)."""
+    assert pm_update._remap_to_dest(
+        "templates/opencode/.opencode/agents/architect.md",
+        "templates/opencode/.opencode/agents",
+        ".opencode/agents",
+    ) == ".opencode/agents/architect.md"
+
+
+def test_remap_to_dest_file_whole(pm_update):
+    """파일 @source: yield 가 source_rel 자체 → manifest 경로로 통째 치환."""
+    assert pm_update._remap_to_dest(
+        "templates/opencode/.opencode/agents/pm.md",
+        "templates/opencode/.opencode/agents/pm.md",
+        ".opencode/agents/pm.md",
+    ) == ".opencode/agents/pm.md"
+
+
+def test_remap_to_dest_no_marker_passthrough(pm_update):
+    """source_rel == manifest_path(마커 부재·기본) → 무변경(후방호환)."""
+    assert pm_update._remap_to_dest(
+        ".project_manager/tools/board.py",
+        ".project_manager/tools/board.py",
+        ".project_manager/tools/board.py",
+    ) == ".project_manager/tools/board.py"
+
+
+def test_remap_to_dest_normalizes_windows_separators(pm_update):
+    """Windows 역슬래시 relpath 도 posix-normalize 후 치환(_dest_relpath_for 동형)."""
+    assert pm_update._remap_to_dest(
+        "templates\\opencode\\.opencode\\agents\\architect.md",
+        "templates/opencode/.opencode/agents",
+        ".opencode/agents",
+    ) == ".opencode/agents/architect.md"
+
+
+# ── T-0303 통합: @source 전파(self-update·--target no-op)·안전판·render 정합·claude 무영향 ──
+# opencode 채택자의 self-update 가 `.opencode/*` 를 templates/opencode canonical 소스서 전파하는지
+# (과거 @target-owned skip 으로 영영 stale 이던 치명 버그)·진짜 부재 시 rc2 안전판·--target self-copy
+# no-op·claude `.claude/* @render` 무영향·@render+@source 렌더 정합을 실 sync(apply)로 박는다.
+
+def test_self_update_propagates_opencode_adapters_from_templates_source(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """(a) opencode 채택자 self-update 가 `.opencode/agents`·`command` 를 templates/opencode 소스서 전파.
+
+    채택자 dest 엔 `.opencode/*` 로 살지만 프레임워크 루트(source)의 canonical 소스는
+    `templates/opencode/.opencode/*` 에 있다(루트=claude·`.opencode/` 부재). @source 마커가 root-상대
+    소스를 dest `.opencode/*` 로 remap 해 실 전파를 일으킨다. 실 apply 로 dest 파일 착지를 검증한다.
+    """
+    fake_repo = tmp_path / "adopter"        # 채택자 = dest(self-location REPO)
+    stored = tmp_path / "framework_root"    # upstream = 프레임워크 루트(templates/opencode 보유)
+
+    # source(프레임워크 루트): canonical .opencode 소스는 templates/opencode/.opencode/* 아래.
+    agent_src = stored / "templates" / "opencode" / ".opencode" / "agents" / "pm.md"
+    agent_src.parent.mkdir(parents=True, exist_ok=True)
+    agent_src.write_text("# pm agent (upstream 개선판)\n", encoding="utf-8")
+    cmd_src = stored / "templates" / "opencode" / ".opencode" / "command" / "pm-bootstrap.md"
+    cmd_src.parent.mkdir(parents=True, exist_ok=True)
+    cmd_src.write_text("# bootstrap (upstream 개선판)\n", encoding="utf-8")
+
+    # 채택자 dest manifest: @source 마커로 root-상대 소스 → dest `.opencode/*` remap.
+    dest_manifest = fake_repo / ".project_manager" / "engine.manifest"
+    dest_manifest.parent.mkdir(parents=True, exist_ok=True)
+    dest_manifest.write_text(
+        ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n"
+        ".opencode/command   @render @source=templates/opencode/.opencode/command\n",
+        encoding="utf-8",
+    )
+    _write_local_conf(fake_repo, f"upstream={stored}\nexternal_review_enabled=false\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main([])  # 실 sync(apply)
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"self-update 전파 실패(rc={rc}): {captured.err!r}"
+    landed_agent = fake_repo / ".opencode" / "agents" / "pm.md"
+    landed_cmd = fake_repo / ".opencode" / "command" / "pm-bootstrap.md"
+    assert landed_agent.exists(), ".opencode/agents/pm.md 가 전파되지 않음(source-remap 실패·치명 버그 재발)."
+    assert landed_cmd.exists(), ".opencode/command/pm-bootstrap.md 가 전파되지 않음."
+    assert landed_agent.read_text(encoding="utf-8") == "# pm agent (upstream 개선판)\n"
+    # 정상 전파 — rc2 안전판/skip 경로가 아니다.
+    assert "source 에 없음" not in captured.err
+    assert "[skip]" not in captured.out
+
+
+def test_self_update_source_templates_absent_errors_rc2(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """(b) @source 대상(templates/opencode) 진짜 부재면 rc2 — 안전판(non-@target-owned·은폐 금지).
+
+    @source 는 source 가 templates/ 아래 *실재*함을 전제한다 — 잘못된 --from(templates/opencode
+    없는 checkout·stripped)이면 진짜 누락이므로 graceful skip 이 아니라 rc2 로 멈춰야 한다
+    (@target-owned 폐지의 핵심 안전 회복·ADR-0054 Decision 4).
+    """
+    fake_repo = tmp_path / "adopter"
+    stored = tmp_path / "bad_checkout"   # templates/opencode 부재(잘못된/불완전 엔진 checkout)
+    (stored / ".project_manager").mkdir(parents=True)
+
+    dest_manifest = fake_repo / ".project_manager" / "engine.manifest"
+    dest_manifest.parent.mkdir(parents=True, exist_ok=True)
+    dest_manifest.write_text(
+        ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n",
+        encoding="utf-8",
+    )
+    _write_local_conf(fake_repo, f"upstream={stored}\nexternal_review_enabled=false\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main(["--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 2, "@source 소스(templates/opencode) 부재가 rc2 로 멈추지 않음(엔진/템플릿 누락 은폐)."
+    # 부재는 manifest(dest) 경로로 surface + non-@target-owned 이므로 skip 아님.
+    assert ".opencode/agents" in captured.err, "@source 소스 부재가 에러로 surface 되지 않음."
+    assert "[skip]" not in captured.out, "@source 부재를 skip 으로 처리함(안전판 무력화·@target-owned 아님)."
+
+
+def test_target_opencode_source_channel_self_copy_noop(pm_update, tmp_path, monkeypatch, capsys):
+    """(c) `--target opencode` self-copy no-op — @source 가 templates/opencode/.opencode/* 로 remap 되면
+    dest(templates/opencode/.opencode/*)와 동일 경로라 byte-identical → 변경 0.
+
+    source=프레임워크 루트·dest=templates/opencode 일 때 src==dst(self-copy)이므로 no-op 여야 한다
+    (--target 은 render 무시·copy2 비교).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    oc_dir = fake_repo / "templates" / "opencode"
+    # canonical .opencode 소스(= dest 와 동일 위치·self-copy 대상).
+    agent = oc_dir / ".opencode" / "agents" / "pm.md"
+    agent.parent.mkdir(parents=True, exist_ok=True)
+    agent.write_text("# pm agent\n", encoding="utf-8")
+    oc_manifest = oc_dir / ".project_manager" / "engine.manifest"
+    oc_manifest.parent.mkdir(parents=True, exist_ok=True)
+    oc_manifest.write_text(
+        ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n",
+        encoding="utf-8",
+    )
+    _write_local_conf(oc_dir, f"upstream={fake_repo}\nexternal_review_enabled=false\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main(["--target", "opencode", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"--target opencode self-copy 가 rc0 아님: {captured.err!r}"
+    assert "최신 — 변경 없음" in captured.out, \
+        f"self-copy 가 no-op 이 아님(변경 감지·src==dst 이어야 함): {captured.out!r}"
+
+
+def test_claude_render_only_entry_unaffected_by_source_channel(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """(d) claude `.claude/agents @render`(source_rel None) 는 @source 채널 도입에 무영향(후방호환).
+
+    @source 마커가 없는 항목은 _source_root_rel == str(entry)·_remap_to_dest no-op 이라 source 읽기
+    경로 = manifest 경로 그대로다. `.claude/agents/developer.md` 가 source `.claude/agents/*` 에서
+    remap 없이 그대로 전파됨을 실 apply 로 검증(native root-sourced 유지·ADR-0054 Decision 5).
+    """
+    fake_repo = tmp_path / "adopter"
+    stored = tmp_path / "framework_root"
+    claude_src = stored / ".claude" / "agents" / "developer.md"
+    claude_src.parent.mkdir(parents=True, exist_ok=True)
+    claude_src.write_text("# developer agent\n", encoding="utf-8")
+
+    dest_manifest = fake_repo / ".project_manager" / "engine.manifest"
+    dest_manifest.parent.mkdir(parents=True, exist_ok=True)
+    dest_manifest.write_text(".claude/agents  @render\n", encoding="utf-8")
+    _write_local_conf(fake_repo, f"upstream={stored}\nexternal_review_enabled=false\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main([])
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"claude @render-only 전파 실패(source 채널 도입이 native 경로 깸): {captured.err!r}"
+    landed = fake_repo / ".claude" / "agents" / "developer.md"
+    assert landed.exists(), ".claude/agents/developer.md 가 manifest 경로 그대로 전파되지 않음(remap 오작동)."
+    assert landed.read_text(encoding="utf-8") == "# developer agent\n"
+
+
+def test_render_with_source_marker_renders_operational_tokens(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """(e) `@render`+`@source` 정합 — @source 로 remap 한 토큰-form 소스를 채택자 local.conf 로 렌더해
+    dest `.opencode/*` 에 자족 산출물을 쓴다(operational 치환·source-remap 후에도 render 배선 정합).
+
+    canonical 소스의 `{{PROJECT_NAME}}` 토큰이 채택자 local.conf(project_name=)로 치환돼 dest 에
+    착지하는지 실 apply 로 검증(byte-copy 아닌 [render] 표기).
+    """
+    fake_repo = tmp_path / "adopter"
+    stored = tmp_path / "framework_root"
+    agent_src = stored / "templates" / "opencode" / ".opencode" / "agents" / "pm.md"
+    agent_src.parent.mkdir(parents=True, exist_ok=True)
+    agent_src.write_text("# pm for {{PROJECT_NAME}}\n", encoding="utf-8")
+
+    dest_manifest = fake_repo / ".project_manager" / "engine.manifest"
+    dest_manifest.parent.mkdir(parents=True, exist_ok=True)
+    dest_manifest.write_text(
+        ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n",
+        encoding="utf-8",
+    )
+    _write_local_conf(
+        fake_repo,
+        f"upstream={stored}\nproject_name=AcmePay\nexternal_review_enabled=false\n")
+
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    rc = pm_update.main([])
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"@render+@source 렌더 전파 실패: {captured.err!r}"
+    landed = fake_repo / ".opencode" / "agents" / "pm.md"
+    assert landed.exists(), "@render+@source 산출물이 dest 에 착지하지 않음."
+    rendered = landed.read_text(encoding="utf-8")
+    assert rendered == "# pm for AcmePay\n", f"operational 토큰 미치환(source-remap 후 render 정합 실패): {rendered!r}"
+    assert "{{PROJECT_NAME}}" not in rendered, "자족 산출물 위반(토큰 잔존)."
+    assert "[render]" in captured.out, "@source+@render 항목이 [render] 로 표기되지 않음(byte-copy 오분기)."
+
+
 # ── T-0146: pm_update --changes — baseline↔HEAD 변경점 요약 (read-only·D5) ────
 # 전부 git_runner 주입(DI seam)으로 hermetic — 라이브 git/네트워크 0. fake_git_runner 가
 # argv 패턴(rev-parse·cat-file·log·diff)별로 결정적 출력을 돌려준다.
