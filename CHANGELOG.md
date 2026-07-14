@@ -19,6 +19,7 @@ multi-PM 다중사용자 격리 robustness 완결 — 값-연결(격리·전파�
 - **fresh opencode 채택자 drift-0 e2e** — pm_import↔pm_update 렌더 drift-0(byte-identical) + hook/driver 채택자 도달을 machine e2e 로 박제. (T-0308)
 
 ### Fixed
+- **opencode self-update @render 비대칭 근본fix** — opencode 없이 import 한 채택자(모델 미해소)의 self-update(`pm_update`)가 `@source` 재렌더에서 미해소 `{{OPENCODE_PRO_MODEL}}` 을 leak 으로 rc-fail 시켜 **엔진 update 까지 전멸**하던 회귀(위 hook/driver `@source` 전파가 유입)를 근본 fix. 줄-중화 로직을 단일 진실(`pm_render.neutralize_model_todo`)로 추출해 import↔self-update 대칭화 — 미해소 모델은 graceful TODO placeholder 로 넘겨(부분-graceful·엔진/타 어댑터 정상 update) self-update 가 성공한다. 렌더러 로드 실패는 fail-loud, `opencode_pro_model=` 빈값(오설정)은 leak 으로 표면화(false-green 근절). 릴리즈 라이브 게이트가 포착한 blocker. (T-0310)
 - **livegate check↔record 단일소스** — `livegate check` 도 record 와 동일한 engine-root sidecar 해소를 공유해, 어느 board.py 사본/cwd 로 check 하든 push 보호훅이 기록한 파일을 읽는다. wrong-copy stale 오독(false-green/false-red)을 원천 차단. (T-0306)
 - **settings.json auto-compact 토글 중복** — 정본 top-level `autoCompactEnabled` 로 단일화(env `DISABLE_AUTO_COMPACT` 중복 제거) + 출하 template critical env 존재를 검증하는 guard 테스트(권한-승인 재직렬화 드롭 fail-loud). (T-0300)
 - **livegate cwd fail-loud + slot-key 표기 정합** — 다중슬롯에서 livegate cwd 해소 모호를 fail-loud, slot-key 표기 sweep. (T-0298 · T-0299)
