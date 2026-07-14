@@ -55,7 +55,9 @@
   },
   "autoCompactEnabled": false,
   "env": {
-    "DISABLE_AUTO_COMPACT": "1"
+    "DISABLE_AUTO_COMPACT": "1",
+    "BASH_DEFAULT_TIMEOUT_MS": "1800000",
+    "BASH_MAX_TIMEOUT_MS": "1800000"
   },
   "hooks": {
     "PostToolUse": [
@@ -95,7 +97,7 @@
       }
     ]
   },
-  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·멀티-유저 공유 안전·T-0202 portable-by-construction). 이 파일은 치환 토큰·절대경로 0 — 모든 머신/프로젝트에서 byte-identical 하게 동작하므로 import/update 가 경로를 재작성할 필요가 없다(pm_update 는 이 파일을 덮지 않음·인스턴스 소유). 네이티브 auto-compact 는 autoCompactEnabled:false + env DISABLE_AUTO_COMPACT 로 이중 비활성(hard-stop 단일 게이트·ADR-0038 D3). 훅 경로는 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} + 인터프리터는 래퍼(.sh)가 self-resolve(python3→python — PY 치환토큰 폐기·T-0202). statusLine 은 ${CLAUDE_PROJECT_DIR} 미지원이라 상대경로 래퍼(cwd=프로젝트루트면 동작·아니면 무표시 graceful·필요시 settings.local.json 절대경로 override). permissions.allow 는 보수적 기본값(python/python3/py 와일드카드가 PM 도구 호출 커버). 머신-특정 권한/오버라이드는 settings.local.json (gitignore) 으로 분리.",
+  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·멀티-유저 공유 안전·T-0202 portable-by-construction). 이 파일은 치환 토큰·절대경로 0 — 모든 머신/프로젝트에서 byte-identical 하게 동작하므로 import/update 가 경로를 재작성할 필요가 없다(pm_update 는 이 파일을 덮지 않음·인스턴스 소유). 네이티브 auto-compact 는 autoCompactEnabled:false + env DISABLE_AUTO_COMPACT 로 이중 비활성(hard-stop 단일 게이트·ADR-0038 D3). BASH_DEFAULT/MAX_TIMEOUT_MS=1800000(30분)은 대형 repo `worktree add`(로컬 bare→full checkout·느린 디스크/VPN/Windows)가 하네스 bash 툴 기본 2분/10분 상한에 false-kill 되던 것을 막는다(T-0293·3-layer 타임아웃 중 claude 하네스 레이어·엔진 `PM_GIT_TIMEOUT`[T-0292]·opencode `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS` 와 대칭). 넘으면 엔진 트립 메시지가 터미널 직접 실행 안내. env 는 시작 시 read — 값 변경 시 세션 재시작. 훅 경로는 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} + 인터프리터는 래퍼(.sh)가 self-resolve(python3→python — PY 치환토큰 폐기·T-0202). statusLine 은 ${CLAUDE_PROJECT_DIR} 미지원이라 상대경로 래퍼(cwd=프로젝트루트면 동작·아니면 무표시 graceful·필요시 settings.local.json 절대경로 override). permissions.allow 는 보수적 기본값(python/python3/py 와일드카드가 PM 도구 호출 커버). 머신-특정 권한/오버라이드는 settings.local.json (gitignore) 으로 분리.",
   "statusLine": {
     "type": "command",
     "command": ".claude/ctx_statusline.sh",

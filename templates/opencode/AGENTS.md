@@ -47,6 +47,11 @@
   PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`. (bash 문법을 규약으로 강제하지 않는다.)
 - **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 금지, 도구의 workdir
   파라미터나 명령 분리로 실행한다. 루트 facade 는 Windows 에선 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요).
+- **bash 툴 timeout (worktree add false-kill 방지·T-0293)**: 대형 repo `worktree add`(full checkout·느린
+  디스크/VPN)가 opencode bash 툴 기본 120초에 죽으면, opencode 실행 쉘에 **`export OPENCODE_EXPERIMENTAL_
+  BASH_DEFAULT_TIMEOUT_MS=1800000`**(30분)을 상속시킨다 — opencode 는 config 파일로 못 실어(`.env` 미로드·
+  실측) shell export/`.envrc`(direnv) 필요. `EXPERIMENTAL` = 버전 의존(회사 버전서 라이브 확인). 엔진
+  타임아웃은 `PM_GIT_TIMEOUT`(초·`none`=무제한). 상세는 `/pm-env` command §timeout 노브.
 
 > 인터프리터: `{{PY}}` 는 setup 시 채택 환경의 인터프리터로 치환된다
 > (`.project_manager/local.conf` 의 `py=` 가 단일 진실 — `board.py init` 이 설정 ·
