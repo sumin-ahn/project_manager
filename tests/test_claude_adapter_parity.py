@@ -68,8 +68,8 @@ def test_precompact_asymmetric_root_breadcrumb_template_autocompact_off():
       → `precompact_capture_hook.sh` 를 가리킴 (압축이 수동 핸드오프를 선점할 수 있는 유일한
       net-less tree 라 1줄 신호 보존).
     - template(auto-compact **OFF**·hard-stop 단일 게이트): PreCompact **없음** +
-      `autoCompactEnabled:false` + env `DISABLE_AUTO_COMPACT` (압축이 hard-stop 을 선점 못 하니
-      백스톱 불요). ctx-훅-템플릿-전용의 거울상 = precompact-root-전용.
+      `autoCompactEnabled:false` **단일 정본 토글** (env `DISABLE_AUTO_COMPACT` 중복 제거·T-0300·
+      claude-code-guide 확인·압축이 hard-stop 을 선점 못 하니 백스톱 불요). ctx-훅-템플릿-전용의 거울상 = precompact-root-전용.
     """
     root = json.loads((ROOT_CLAUDE / "settings.json").read_text(encoding="utf-8"))
     tmpl = json.loads((TEMPLATE_CLAUDE / "settings.json").read_text(encoding="utf-8"))
@@ -80,13 +80,14 @@ def test_precompact_asymmetric_root_breadcrumb_template_autocompact_off():
         f"root PreCompact 가 precompact 훅을 안 가리킴: {root_block}"
     )
     assert root.get("autoCompactEnabled") is not False, "root 는 auto-compact 유지여야 함"
-    # template: PreCompact 제거 + auto-compact 이중 비활성.
+    # template: PreCompact 제거 + auto-compact 정본 단일 토글(env 중복 제거·T-0300).
     assert tmpl.get("hooks", {}).get("PreCompact") is None, (
         "template settings.json 에 PreCompact 잔존 — auto-compact off 라 제거됐어야 함 (ADR-0038 D3)"
     )
     assert tmpl.get("autoCompactEnabled") is False, "template autoCompactEnabled:false 누락"
-    assert tmpl.get("env", {}).get("DISABLE_AUTO_COMPACT") == "1", (
-        "template env DISABLE_AUTO_COMPACT 누락 (이중 kill-switch)"
+    assert "DISABLE_AUTO_COMPACT" not in tmpl.get("env", {}), (
+        "template 에 중복 auto-compact 토글 env.DISABLE_AUTO_COMPACT 잔존 — 정본은 top-level "
+        "autoCompactEnabled 하나(T-0300 dedup·claude-code-guide 확인)"
     )
 
 
