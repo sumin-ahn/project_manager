@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +44,18 @@ def pm_import():
     # opencode import 가 라이브 `opencode models` 를 호출하지 않게 고정 — hermetic(설치 여부 무관·토큰 0).
     mod._real_models_runner = lambda: (False, [])
     return mod
+
+
+def _load_pm_update():
+    spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def pm_update():
+    return _load_pm_update()
 
 
 def _board(dest: Path, *args: str) -> subprocess.CompletedProcess:
@@ -436,3 +449,110 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     changed = sorted(r for r in before_rels & after_rels if before[r] != after[r])
     assert changed == [], (
         f"{base}→{added}: add-harness 가 기존 파일을 변경(byte diff≠0·5-file clobber 재발): {changed}")
+
+
+# ── T-0308: fresh opencode 채택자 drift-0 e2e (pm_import↔pm_update 전파 게이트·B-freshadopter) ──
+# T-0305 의 self-update e2e(test_pm_update.py)는 ManifestEntry/plan/apply 레벨이다. 이 층은 그와 상보인
+# **fresh-adopter 각도**: 실 pm_import 로 opencode 채택자를 만들고 → 엔진(프레임워크) 어댑터/드라이버를
+# mutate → 실 pm_update self-update(main())로 채택자에 전파됨을 못박고, 동시에 pm_import 렌더 산출 ==
+# pm_update 렌더 산출(drift-0·[[verify-engine-template-propagation]])임을 입증한다. hermetic: 라이브 LLM
+# 0(--opencode-model 결정적 치환·models seam 은 pm_import fixture stub)·네트워크 0(read_upstream_rev
+# stub·framework 는 비-git)·라이브 하니스 0. [[release-run-all-three-tiers]] 의 machine half — T-0304 라이브
+# composite 와 축이 다르다(재현 가능·on-demand 아님).
+#
+# 채택자가 opencode self-update 를 돌리려면 local.conf 에 opencode_pro_model 이 있어야 한다 — @render 가
+# `{{OPENCODE_PRO_MODEL}}` 를 재유도하는데 미보유면 pm_render._assert_no_leak 가 크래시(자족 산출물 위반).
+# --opencode-model 결정적 flag 로 import 가 agents 치환 + local.conf 기록 → pm_update 재렌더가 동일
+# 리터럴로 해소(drift-0 성립·크래시 0). 라이브 모델 조회 없이 결정적이다.
+_OPENCODE_MODEL = "anthropic/claude-test-t0308"
+
+
+def _build_opencode_framework(tmp_path: Path) -> Path:
+    """REPO 로부터 mutable opencode 프레임워크 소스를 만든다 (import + self-update 소스로 재사용).
+
+    opencode 채택자 engine.manifest 가 참조하는 root-상대 경로 전부를 담아 실 프레임워크 루트 레이아웃을
+    재현한다: 엔진(`.project_manager/`·tools·wiki methodology + 템플릿·engine.manifest)·`.gitattributes` +
+    @source 어댑터 canonical(`templates/opencode/.opencode/*`·`templates/opencode/.project_manager/
+    engine.manifest`). 이 세 트리면 pm_import(`templates/opencode/` 읽기)·pm_update self-update(root
+    `.project_manager/` + @source remap 읽기) 둘 다 결정적으로 rc0 동작한다(엔진 어느 항목도 missing 아님).
+    REPO 를 손대지 않도록 복사본을 쓴다 — 엔진 mutate 를 이 복사본에 가한다(격리)."""
+    framework = tmp_path / "framework"
+    ignore = shutil.ignore_patterns("__pycache__", ".git", "node_modules")
+    shutil.copytree(REPO / ".project_manager", framework / ".project_manager", ignore=ignore)
+    shutil.copytree(REPO / "templates" / "opencode",
+                    framework / "templates" / "opencode", ignore=ignore)
+    shutil.copy2(REPO / ".gitattributes", framework / ".gitattributes")
+    return framework
+
+
+def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
+        pm_import, pm_update, tmp_path, monkeypatch):
+    """fresh opencode import → 엔진 mutate → pm_update self-update 전파 + pm_import↔pm_update 렌더 drift-0.
+
+    (A) 엔진(프레임워크) 어댑터 command(@render) + lib 드라이버(byte-copy·engine-mirror) 를 mutate → 실
+        pm_update self-update 가 채택자 dest `.opencode/*` 로 전파. (B) mutate 전 self-update 는 `.opencode/**`
+        를 한 바이트도 안 바꾼다 = pm_import 렌더 산출 == pm_update 렌더 산출(drift-0·같은 소스→같은 산출).
+    (C) lib/ctx-guard-core.cjs(engine-mirror driver·T-0305 hook/driver 전파화)가 채택자에 도달.
+
+    (B) 의 no-op 은 (A) 의 mutate-전파와 결합돼 비-공허하다 — (A) 가 채널이 살아있음(mutate 가 실제로 전파)을,
+    (B) 가 동일 소스에선 두 렌더 채널이 byte-identical(재기록 diff 0)임을 각각 못박는다.
+    """
+    framework = _build_opencode_framework(tmp_path)
+
+    # hermetic self-update: read_upstream_rev(라이브 git baseline)를 stub + pm_update 가 이 stub 된
+    #   pm_import 를 쓰게 배선(서브프로세스/네트워크 0·framework 는 비-git 이라 어차피 None 이지만 명시 격리).
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    # fresh opencode 채택자 — 결정적 모델 flag(라이브 opencode 미실행·models seam 은 fixture stub).
+    dest = tmp_path / "adopter-opencode"
+    rc = pm_import.main([
+        "--new", str(dest), "--harness", "opencode", "--name", "Adopter",
+        "--fill", "manual", "--opencode-model", _OPENCODE_MODEL, "--from", str(framework),
+    ])
+    assert rc == 0, f"opencode import 실패 (rc={rc})"
+    conf = (dest / ".project_manager" / "local.conf").read_text(encoding="utf-8")
+    assert f"opencode_pro_model={_OPENCODE_MODEL}" in conf, (
+        "import 가 opencode_pro_model 을 local.conf 에 기록 안 함 — self-update @render 가 "
+        "{{OPENCODE_PRO_MODEL}} 를 재유도 못 해 _assert_no_leak 크래시(drift-0 전제 붕괴).")
+
+    # self-update dest = self-location(pm_update.REPO) → 채택자로 고정. source = --from framework(명시).
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    def _self_update() -> int:
+        return pm_update.main(["--from", str(framework)])
+
+    # 전파 대상 어댑터 산출물 스냅샷 (agents/command/lib/plugins/pm_orch) — 공허참 방지 sanity 포함.
+    before = _snapshot_tree(dest / ".opencode")
+    assert any(r.startswith("agents/") for r in before) and any(
+        r.startswith("command/") for r in before), \
+        "opencode 어댑터 스냅샷에 agents/command 부재(공허 테스트?)"
+    assert "lib/ctx-guard-core.cjs" in before, \
+        "engine-mirror driver(ctx-guard-core.cjs) 스냅샷 부재 — T-0305 lib 전파 대상 확인 불가"
+
+    # (B) drift-0 — mutate 전 self-update 는 `.opencode/**` 를 한 바이트도 안 바꾼다.
+    #     같은 소스(framework)에서 pm_import 가 낸 산출과 pm_update 가 낸 산출이 byte-identical 이면 재기록 0.
+    #     두 렌더 채널이 갈렸다면 self-update 가 어댑터 파일을 다른 바이트로 덮어 여기서 diff 로 터진다.
+    assert _self_update() == 0, "fresh opencode 채택자 self-update 가 rc0 아님(@render 크래시?)"
+    after_noop = _snapshot_tree(dest / ".opencode")
+    drifted = sorted(r for r in before if before[r] != after_noop.get(r))
+    assert drifted == [], (
+        f"pm_import↔pm_update 렌더 drift(같은 소스인데 self-update 가 `.opencode/*` 재기록): {drifted}")
+    assert set(after_noop) == set(before), \
+        "self-update 가 `.opencode/*` 파일을 추가/삭제(같은 소스 no-op 위반)"
+
+    # (A)+(C) 엔진 mutate → 전파. command(@render 어댑터)·lib(byte-copy·engine-mirror driver) 한 곳씩 sentinel.
+    sentinel = "SENTINEL_T0308_ENGINE_MUTATE"
+    cmd_src = framework / "templates" / "opencode" / ".opencode" / "command" / "pm-env.md"
+    lib_src = framework / "templates" / "opencode" / ".opencode" / "lib" / "ctx-guard-core.cjs"
+    cmd_src.write_text(cmd_src.read_text(encoding="utf-8") + f"\n<!-- {sentinel} -->\n", encoding="utf-8")
+    lib_src.write_text(lib_src.read_text(encoding="utf-8") + f"\n// {sentinel}\n", encoding="utf-8")
+
+    assert _self_update() == 0, "엔진 mutate 후 self-update 가 rc0 아님"
+    cmd_dest = (dest / ".opencode" / "command" / "pm-env.md").read_text(encoding="utf-8")
+    lib_dest = (dest / ".opencode" / "lib" / "ctx-guard-core.cjs").read_text(encoding="utf-8")
+    assert sentinel in cmd_dest, (
+        "엔진 command(@render 어댑터) 변경이 채택자 `.opencode/command` 로 전파 안 됨 (전파 채널 끊김)")
+    assert sentinel in lib_dest, (
+        "엔진 lib 드라이버(engine-mirror·T-0305 hook/driver 전파화) 변경이 채택자 `.opencode/lib` 로 "
+        "전파 안 됨 (hook/driver 미도달·frozen 재발)")
