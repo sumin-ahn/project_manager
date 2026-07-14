@@ -33,14 +33,37 @@ OC_MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.man
 
 # opencode 트리의 정당한 manifest 차이(harness-correct·화이트리스트). 임의 경로가 새로
 # 추가/누락되면 fail — 의도적 어댑터 비대칭만 통과시킨다(전파 채널 우발 drift 차단).
-#   opencode 가 추가: .opencode 어댑터 트리(claude 의 .claude 대응).
-#   opencode 가 제외: .claude/* 어댑터 + regression.yml(claude-scoped CI 워크플로).
-# NOTE(T-0283): .opencode/plugins·.opencode/lib(ctx-guard shim+core)는 manifest 미등재 — 어댑터
-#   파일은 pm_import(rglob 전체트리 byte-copy)로만 출하되고, @target-owned 등재는 self-update 에서
-#   skip 이라 전파 0(기능 이득 없이 오해만). 커플링은 fresh pm_import 산출물 co-presence 로 가드
-#   (test_fresh_adopter_e2e·[[feature-ship-needs-fresh-adopter-gate]]).
-OPENCODE_ONLY_PATHS = {".opencode/agents", ".opencode/command"}
-CLAUDE_ONLY_PATHS = {".claude/agents", ".claude/skills", ".github/workflows/regression.yml"}
+#   opencode 가 추가: .opencode 어댑터 트리(claude 의 .claude 대응) — agents·command·lib·plugins·
+#     pm_orch_opencode.py(hook/driver).
+#   opencode 가 제외: .claude/* 어댑터(agents·skills·ctx 훅·회귀 훅·relay 드라이버) + regression.yml
+#     (claude-scoped CI 워크플로).
+# NOTE(T-0305 supersedes T-0283): .opencode/lib·.opencode/plugins(ctx-guard core+shim)·pm_orch_opencode.py
+#   는 T-0283 당시 `@target-owned` 등재=self-update skip(전파 0)이라 미등재였으나, T-0303 `@source`
+#   채널(ADR-0054)이 그 비대칭(canonical=templates/opencode·루트 `.opencode/` 부재)을 이어 이제 engine
+#   update 로 *전파*된다(engine-mirror·frozen 근절). 대칭으로 claude 는 ctx 훅·relay 드라이버를 등재.
+#   settings.json·opencode.jsonc·루트 doc(CLAUDE/AGENTS)·local.conf 는 여전히 instance-owned(미등재).
+OPENCODE_ONLY_PATHS = {
+    ".opencode/agents", ".opencode/command",
+    ".opencode/lib", ".opencode/plugins", ".opencode/pm_orch_opencode.py",
+}
+CLAUDE_ONLY_PATHS = {
+    ".claude/agents", ".claude/skills", ".github/workflows/regression.yml",
+    ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
+    ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
+    ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",
+}
+# engine-mirror hook/driver 등록 경로 (T-0305) — self-prop assert 및 등록 회귀 가드가 참조.
+CLAUDE_HOOK_PATHS = frozenset({
+    ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
+    ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
+    ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",
+})
+OPENCODE_HOOK_PATHS = frozenset({
+    ".opencode/lib", ".opencode/plugins", ".opencode/pm_orch_opencode.py",
+})
+# manifest 자기전파 엔트리 (B-selfprop·T-0305·OQ-B1) — 3 매니페스트 모두 자신을 전파 대상에 넣어야
+#   신 엔트리(위 hook/driver)가 기존 채택자에 도달한다.
+SELF_PROP_PATH = ".project_manager/engine.manifest"
 
 # pm_import 가 *채택자 루트로 복사*하는 facade 파일명 집합 (engine.manifest L33-34 주석·
 # pm_import.plan_copy 동작). 템플릿 트리 전체가 채택자 루트로 복사되므로, 이 파일들이 각
@@ -102,6 +125,85 @@ def test_opencode_manifest_diff_is_whitelisted_only():
     )
 
 
+# ── 가드 2c: engine-mirror hook/driver 등록 + manifest 자기전파 (T-0305·ADR-0032 Q3) ──────────
+
+
+def _entry_source_rel(pm_update, manifest: Path, relpath: str) -> str | None:
+    """manifest 에서 relpath 엔트리의 `@source=<rel>` 값(없으면 None). 등록 여부·소스 remap 검증용."""
+    for entry in pm_update.read_manifest(manifest):
+        if str(entry) == relpath:
+            return getattr(entry, "source_rel", None)
+    return None
+
+
+def test_claude_manifests_register_engine_mirror_hooks_and_driver():
+    """루트·claude_code manifest 가 ctx 훅·회귀 훅·relay 드라이버를 engine-mirror 로 등록 (T-0305).
+
+    frozen 근절 — 이 파일들이 manifest 안이라야 pm-update self-update 로 전파된다(엔진 safety-훅 fix
+    가 채택자에 닿음). ctx 훅/드라이버는 ship 템플릿(templates/claude_code/.claude/*)이 canonical 이라
+    `@source=` remap 을 달고, run_tests_hook.sh 는 루트 `.claude/` 실재라 root-sourced(bare)."""
+    pm_update = _load_pm_update()
+    for name, manifest in (("root", ROOT_MANIFEST), ("claude_code", CC_MANIFEST)):
+        paths = _manifest_path_set(manifest)
+        missing = CLAUDE_HOOK_PATHS - paths
+        assert not missing, f"{name} manifest 에 engine-mirror hook/driver 미등록: {sorted(missing)}"
+        # ctx 훅/드라이버(루트 .claude/ 부재)는 @source=templates/claude_code/... remap 필수 —
+        # 안 달면 self-update 가 루트에서 소스를 못 찾아 rc2(전파 실패).
+        for rel in CLAUDE_HOOK_PATHS - {".claude/run_tests_hook.sh"}:
+            src = _entry_source_rel(pm_update, manifest, rel)
+            assert src == f"templates/claude_code/{rel}", (
+                f"{name} manifest {rel} 의 @source remap 이 templates/claude_code/ 를 가리키지 않음: {src!r}")
+
+
+def test_opencode_manifest_registers_engine_mirror_hooks_and_driver():
+    """opencode manifest 가 ctx-guard core/plugin·relay 드라이버를 @source 로 등록 (T-0305·T-0303 채널).
+
+    T-0283 미등재(전파 0)를 T-0303 @source 채널로 해소 — canonical=templates/opencode 라 remap 으로
+    루트-부재 비대칭을 잇고 이제 engine update 로 전파된다(frozen 근절)."""
+    pm_update = _load_pm_update()
+    paths = _manifest_path_set(OC_MANIFEST)
+    missing = OPENCODE_HOOK_PATHS - paths
+    assert not missing, f"opencode manifest 에 engine-mirror hook/driver 미등록: {sorted(missing)}"
+    for rel in OPENCODE_HOOK_PATHS:
+        src = _entry_source_rel(pm_update, OC_MANIFEST, rel)
+        assert src == f"templates/opencode/{rel}", (
+            f"opencode manifest {rel} 의 @source remap 이 templates/opencode/ 를 가리키지 않음: {src!r}")
+
+
+def test_all_manifests_self_propagate():
+    """3 매니페스트 모두 자기 자신(`.project_manager/engine.manifest`)을 전파 대상에 등록 (B-selfprop·OQ-B1).
+
+    없으면 이 파일에 새로 추가한 hook/driver 엔트리(=manifest 진화)가 기존 채택자에 영영 도달하지
+    못한다(import 시점 frozen manifest 영속) → "frozen 근절" 이 성립 불가. 루트는 self-flavor(bare),
+    claude_code/opencode 는 각자 flavor 매니페스트를 @source 로 읽는다(harness-flavor remap)."""
+    pm_update = _load_pm_update()
+    for name, manifest in (("root", ROOT_MANIFEST), ("claude_code", CC_MANIFEST), ("opencode", OC_MANIFEST)):
+        assert SELF_PROP_PATH in _manifest_path_set(manifest), (
+            f"{name} manifest 가 자기전파 엔트리({SELF_PROP_PATH}) 미등록 — 신 엔트리가 채택자에 미도달")
+    # claude_code/opencode 는 flavor 매니페스트를 @source 로 읽어야 자기 flavor 를 받는다(교차 오염 방지).
+    assert _entry_source_rel(pm_update, CC_MANIFEST, SELF_PROP_PATH) == \
+        "templates/claude_code/.project_manager/engine.manifest"
+    assert _entry_source_rel(pm_update, OC_MANIFEST, SELF_PROP_PATH) == \
+        "templates/opencode/.project_manager/engine.manifest"
+
+
+def test_instance_owned_config_not_registered():
+    """adopter config(settings.json·opencode.jsonc·루트 doc·local.conf·precompact)는 manifest 밖·미전파 (T-0305 DoD).
+
+    hooks/driver 는 전파하되 adopter-소유 config 는 전파하지 않는다(customization clobber 방지·ADR-0032 Q3).
+    precompact_capture_hook.sh 는 ship 템플릿 부재·루트 settings 전용이라 engine-mirror 아님(미등록)."""
+    forbidden = {
+        "root": (ROOT_MANIFEST, {
+            ".claude/settings.json", ".claude/precompact_capture_hook.sh",
+            "CLAUDE.md", ".project_manager/local.conf"}),
+        "claude_code": (CC_MANIFEST, {".claude/settings.json", "CLAUDE.md"}),
+        "opencode": (OC_MANIFEST, {".opencode/opencode.jsonc", "AGENTS.md", "AGENTS.lite.md"}),
+    }
+    for name, (manifest, forbidden_paths) in forbidden.items():
+        leaked = forbidden_paths & _manifest_path_set(manifest)
+        assert not leaked, f"{name} manifest 가 instance-owned config 를 등록(전파 위반): {sorted(leaked)}"
+
+
 # ── 가드 2b: content 정합 (공유 엔진 byte-identical) ─────────────────────────
 
 
@@ -138,6 +240,11 @@ def _engine_content_diffs(template_root: Path, manifest_entries=None) -> list[st
         if getattr(entry, "render", False) or getattr(entry, "target_owned", False):
             continue  # 렌더/타깃소유 = byte-copy 계약 밖
         rel = str(entry)
+        if rel == SELF_PROP_PATH:
+            # 매니페스트 자기전파(B-selfprop·T-0305): 매니페스트는 harness-flavor(루트↔claude_code↔
+            # opencode 주석/@source 상이)라 공유-엔진 byte-parity 대상이 아니다. path-set·self-prop·
+            # 등록 가드가 구조를 지키고, content 는 flavor-specific 이라 제외한다.
+            continue
         canon_files = _expand_manifest_files(REPO, rel)
         if not canon_files:
             continue  # canonical 부재 — 별개 사안(여기선 비교 불가)

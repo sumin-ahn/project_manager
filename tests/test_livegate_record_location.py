@@ -14,6 +14,10 @@ ADR-0027)에서 record 를 호출된 사본의 `REPO/.local` 에 그냥 쓰면, 
   - livegate 훅 없음(단일-repo/솔로)이면 현행 `REPO/.local` 폴백(채택자 무변경).
   - 훅 sidecar 는 있으나 engine-root 무효면 pass 대신 fail-loud(false-green 백스톱).
   - 훅 본문(worktree_pool)이 record 와 같은 engine-root 규약을 읽는지(공유 규약 드리프트 가드).
+  - `check` 도 `record` 와 **대칭**으로 `_resolve_livegate_flag` 를 거쳐(모듈상수 직독 제거·
+    T-0306) 어느 board.py 사본/cwd 로 check 하든 훅이 기록한 engine-root 파일을 읽는지
+    (single-source·wrong-copy false-green/false-red 차단)·engine-root 무효면 record 와 동형
+    fail-loud·솔로 폴백 무변경.
 
 **hermetic + 라이브 실행 금지**: 실 `pytest -m release` 는 절대 기동하지 않는다 — `subprocess.run`
 대역이 pytest 만 가로채고 git 은 실제로 돌려 `core.hooksPath` 해소를 충실히 검증한다. board.py
@@ -58,6 +62,10 @@ def _git(cwd, *argv):
 
 def _rec_args(cwd=None):
     return argparse.Namespace(action="record", rev=None, cwd=cwd)
+
+
+def _chk_args(rev, cwd=None):
+    return argparse.Namespace(action="check", rev=rev, cwd=cwd)
 
 
 class _PytestOnlyFake:
@@ -338,3 +346,116 @@ def test_resolve_relative_hookspath_resolves_against_worktree_root(tmp_path, mon
 
     assert mode == mod._LG_ENGINE_ROOT, "상대 core.hooksPath 를 worktree root 기준 해소하지 못함"
     assert flag == engine / ".project_manager" / ".local" / "livegate.json"
+
+
+# ── ⑥ check 단일 소스: record 와 대칭 (T-0306·모듈상수 직독 제거·wrong-copy 오독 차단) ──
+# check 도 record 와 **동일 해소**(`_resolve_livegate_flag`)를 거쳐 어느 board.py 사본/cwd 로 check
+# 하든 훅이 기록한 engine-root 파일을 읽는다(single-source). 모듈상수 `LIVEGATE_FLAG` 직독을 남겨두면
+# 호출-사본의 stale/wrong `.local` 을 읽어 false-green/false-red 오독이 난다 — 그걸 못박는다.
+
+
+def _write_livegate_json(path: Path, *, status: str, head: str, n=None, rc=0):
+    """livegate.json 을 직접 기록한다(record 실행 없이 check 소비만 테스트)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"head": head, "status": status,
+               "n": n if n is not None else 0, "rc": rc, "ts": "2026-07-14T00:00:00+00:00"}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+@_git_required
+def test_check_worktree_cwd_reads_engine_root_record(tmp_path, monkeypatch, capsys):
+    """worktree cwd 로 check 해도 훅 read 위치(engine-root .local)의 기록을 읽어 green (단일 소스).
+
+    호출-사본(worktree) LIVEGATE_FLAG 에는 **상충하는 fail** 을 심어, check 가 그 wrong-copy 를
+    읽으면 red 로 갈리게 해둔다 — green 이 나오면 engine-root(훅 기록)를 읽은 것이다(false-red 차단).
+    """
+    mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
+    hook_flag = _hook_read_flag(hooks_dir)
+    _write_livegate_json(hook_flag, status="pass", head=_HEAD_SHA,
+                         n=mod.LIVEGATE_RELEASE_PIN, rc=0)
+    # 호출-사본(worktree)의 순진한 위치엔 상충 fail — check 가 이걸 읽으면 안 된다.
+    _write_livegate_json(mod.LIVEGATE_FLAG, status="fail", head=_HEAD_SHA, n=0, rc=1)
+
+    rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
+
+    assert rc == 0, "worktree cwd check 가 engine-root(훅 기록) green 을 읽지 못함"
+    assert "green" in capsys.readouterr().out
+
+
+@_git_required
+def test_check_default_cwd_resolves_engine_root_not_module_const(tmp_path, monkeypatch):
+    """`--cwd` 미지정 → 이 board.py 사본의 REPO(=worktree)로 해소·engine-root 기록을 읽는다.
+
+    default cwd 가 모듈상수 LIVEGATE_FLAG 직독으로 폴백하면 worktree 의 상충 fail 을 읽어 red 가 난다.
+    green 이면 default(REPO)→hooksPath→engine-root 정렬이 살아있는 것(모듈상수 직독 제거 회귀).
+    """
+    mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
+    _write_livegate_json(_hook_read_flag(hooks_dir), status="pass", head=_HEAD_SHA,
+                         n=mod.LIVEGATE_RELEASE_PIN, rc=0)
+    _write_livegate_json(mod.LIVEGATE_FLAG, status="fail", head=_HEAD_SHA, n=0, rc=1)
+
+    rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=None))   # default → str(REPO)=worktree
+
+    assert rc == 0, "default cwd check 가 모듈상수(worktree 상충 fail)를 직독함 — single-source 깨짐"
+
+
+@_git_required
+def test_check_rev_mismatch_against_engine_root(tmp_path, monkeypatch, capsys):
+    """engine-root 기록이 pass 라도 push rev 가 다르면 rc1 rev 불일치(engine-root 값으로 판정)."""
+    mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
+    _write_livegate_json(_hook_read_flag(hooks_dir), status="pass", head=_HEAD_SHA,
+                         n=mod.LIVEGATE_RELEASE_PIN, rc=0)
+
+    rc = mod.cmd_livegate(_chk_args(rev="deadbeef" * 5, cwd=str(worktree)))
+
+    assert rc == 1
+    assert "rev 불일치" in capsys.readouterr().err
+
+
+@_git_required
+def test_check_broken_engine_root_fails_loud(tmp_path, monkeypatch, capsys):
+    """훅 sidecar 있으나 engine-root 무효(board.py 미해소) → check 는 record 와 동형 fail-loud rc1.
+
+    조용한 통과(false-green)도, 조용한 red 도 아닌 명시 거부 — 기록/훅 read 위치가 갈릴 수 있어
+    판정을 신뢰 못 하기 때문(record `test_record_broken_engine_root_fails_loud` 와 대칭).
+    """
+    mod, engine, worktree, hooks_dir = _make_topology(
+        tmp_path, monkeypatch, board_in_engine=False)
+
+    rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
+
+    assert rc == 1, "engine-root 무효인데 check 가 조용히 통과/red 판정하면 fail-loud 백스톱이 뚫린 것"
+    err = capsys.readouterr().err
+    assert "engine-root sidecar 무효" in err
+    assert "false-green 차단" in err
+
+
+@_git_required
+def test_check_solo_no_hookspath_reads_repo_local(tmp_path, monkeypatch, capsys):
+    """`core.hooksPath` 미설정(단일-repo/솔로) → 현행 REPO/.local(LIVEGATE_FLAG) 폴백 read 무변경."""
+    mod, engine, worktree, hooks_dir = _make_topology(
+        tmp_path, monkeypatch, with_hookspath=False)
+    _write_livegate_json(mod.LIVEGATE_FLAG, status="pass", head=_HEAD_SHA,
+                         n=mod.LIVEGATE_RELEASE_PIN, rc=0)
+
+    rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
+
+    assert rc == 0, "솔로 폴백에서 check 가 REPO/.local 기록을 못 읽음(회귀)"
+    assert "green" in capsys.readouterr().out
+
+
+@_git_required
+def test_check_absent_record_at_engine_root_blocks(tmp_path, monkeypatch, capsys):
+    """engine-root 로 정렬됐으나 아직 기록 없음 → rc1 '기록 없음'(호출-사본 stale 을 pass 로 오독 안 함).
+
+    호출-사본(worktree) LIVEGATE_FLAG 에 stale pass 를 심어도, check 는 engine-root(부재)를 봐서
+    '기록 없음' 을 낸다 — wrong-copy stale 을 green 으로 오독하지 않는다(false-green 차단).
+    """
+    mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
+    _write_livegate_json(mod.LIVEGATE_FLAG, status="pass", head=_HEAD_SHA,
+                         n=mod.LIVEGATE_RELEASE_PIN, rc=0)   # 호출-사본 stale pass
+
+    rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
+
+    assert rc == 1, "engine-root 무기록인데 호출-사본 stale pass 를 green 으로 오독함(single-source 깨짐)"
+    assert "기록 없음" in capsys.readouterr().err

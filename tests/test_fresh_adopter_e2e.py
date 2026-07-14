@@ -84,12 +84,23 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
             f"opencode import 에 ctx-guard core 미landing: {core} — shim 이 이걸 import 하므로 로드 깨짐"
         )
 
-    # (a) adopter 인스턴스 `board.py lint` clean — `.project_manager/wiki/` 트리의 dangling
-    #     framework wikilink·thin·depends 누출이 여기서 터진다(adopter 엔 ADR 없음).
-    lint = _board(dest, "lint")
+    # (a) adopter 인스턴스 blocking lint clean — `.project_manager/wiki/` 트리의 dangling framework
+    #     wikilink·thin·depends 누출은 `_ADVISORY_LINT_KINDS` 밖(blocking)이라 `--gate`(exit≠0)로 잡힌다.
+    #     fresh adopter 는 baseline-set(import 가 upstream_rev 기록)·seen-unset(seen 은 pm-update 관찰
+    #     때만) 이라 adapter-drift **관찰불가 advisory** 가 발화하는 게 정상이다(never-block·pm-update
+    #     nudge·option-a·T-0305) — advisory 는 `--gate` 를 차단 안 하므로 blocking clean 은 `--gate` 로
+    #     확인하고, 무인자 lint(advisory 표면화)는 아래에서 actionable 여부만 본다.
+    lint = _board(dest, "lint", "--gate")
     assert lint.returncode == 0, (
-        f"{harness} adopter `board.py lint` 비-clean — wiki 출하 doc 에 dangling [[ADR/T]]·thin 누출?\n"
-        f"--- stdout ---\n{lint.stdout}\n--- stderr ---\n{lint.stderr}"
+        f"{harness} adopter blocking lint 비-clean(`--gate` exit≠0) — wiki 출하 doc 에 dangling "
+        f"[[ADR/T]]·thin·depends 누출?\n--- stdout ---\n{lint.stdout}\n--- stderr ---\n{lint.stderr}"
+    )
+    # 무인자 lint 는 fresh adopter seen-unset 이라 adapter-drift 관찰불가 advisory 로 exit 1(표면화)이
+    #   정상 — advisory 가 명확·actionable(pm-update 안내)인지 확인한다(silent stale 아님·option-a).
+    surfaced = _board(dest, "lint")
+    assert "관찰불가" in surfaced.stdout and "pm-update" in surfaced.stdout, (
+        f"{harness}: fresh adopter seen-unset 관찰불가 advisory 가 actionable(pm-update 안내) 하지 않음\n"
+        f"--- stdout ---\n{surfaced.stdout}"
     )
 
     # (a') 루트 진입문서(CLAUDE.md/AGENTS.md·lite)는 `board.py lint` 스캔 *밖*이다 — 직접 스캔.
@@ -272,14 +283,23 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
     assert any(l.startswith("upstream_rev=") for l in conf_txt.splitlines()), \
         f"{harness}: import 가 upstream_rev baseline 미기록 (drift-lint 입력 부재)"
 
-    # seen 미기록 → graceful(발화 안 함).
-    clean = _board(dest, "lint")
-    assert "adapter-drift" not in clean.stdout, f"{harness}: seen 미기록인데 drift 발화(graceful 실패)"
+    # seen 미기록 → 관찰불가 advisory 발화 (option-a·T-0305·never-block). fresh adopter 는 항상
+    #   baseline-set·seen-unset 이라 첫 lint 가 관찰불가 advisory 를 낸다 — 아직 upstream 미관찰이라
+    #   drift 판정 불가인 *정직한 상태표현*이자 pm-update nudge(silent stale 근절). 과거 silent [] 를 대체.
+    observ = _board(dest, "lint")
+    assert "adapter-drift" in observ.stdout, f"{harness}: seen 미기록 관찰불가 advisory 미발화\n{observ.stdout}"
+    assert "관찰불가" in observ.stdout and "pm-update" in observ.stdout, (
+        f"{harness}: 관찰불가 advisory 가 명확·actionable(pm-update 안내) 하지 않음\n{observ.stdout}")
+    # never-block — seen-unset 관찰불가도 `--gate` 종료코드 0.
+    observ_gate = _board(dest, "lint", "--gate")
+    assert observ_gate.returncode == 0, (
+        f"{harness}: 관찰불가 advisory 가 `--gate` 차단(never-block 위배·exit {observ_gate.returncode})\n{observ_gate.stdout}")
 
-    # seen≠baseline 주입 → 발화.
+    # seen≠baseline 주입 → 실 drift 발화(관찰불가 아닌 "이후 변경됨" 변경-확인 메시지).
     conf.write_text(conf_txt + "upstream_seen_rev=ffff0000baselinedifferent\n", encoding="utf-8")
     fired = _board(dest, "lint")
     assert "adapter-drift" in fired.stdout, f"{harness}: 인위 drift 인데 adapter-drift 미발화\n{fired.stdout}"
+    assert "이후 변경됨" in fired.stdout, f"{harness}: 실 drift(이후 변경됨) 메시지 부재\n{fired.stdout}"
 
     # never-block — advisory 라 `--gate` 종료코드 0.
     gated = _board(dest, "lint", "--gate")

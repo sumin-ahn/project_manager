@@ -60,3 +60,19 @@
 #    @render 경로 밖 (PM 26/27 rescope·ADR-0030).
 .opencode/agents    @render @source=templates/opencode/.opencode/agents
 .opencode/command   @render @source=templates/opencode/.opencode/command
+# ctx-guard core/plugin·relay 드라이버 (엔진-미러·safety-hook·T-0305·ADR-0032 Q3 결착). 비-.md 코드라
+#   @render 아님(byte-copy·치환 토큰 0). T-0283 은 `@target-owned` 등재=self-update skip(전파 0)이라
+#   미등재로 뒀으나, T-0303 `@source` 채널이 그 비대칭(canonical=templates/opencode·루트 `.opencode/`
+#   부재)을 이어 이제 *전파*된다(frozen 근절) — ctx-guard-core.cjs 는 board 상수 미러(test_ctx_default_mirror).
+.opencode/lib       @source=templates/opencode/.opencode/lib
+.opencode/plugins   @source=templates/opencode/.opencode/plugins
+.opencode/pm_orch_opencode.py    @source=templates/opencode/.opencode/pm_orch_opencode.py
+# ── manifest 자기전파 (B-selfprop·T-0305·OQ-B1) ──────────────────
+# 매니페스트 자신을 전파해야 위 hook/driver 신 엔트리가 기존 opencode 채택자에 도달한다 — 안 그러면
+#   채택자는 import 시점 frozen manifest 를 유지해 신 엔트리를 영영 못 배운다(frozen 근절의 전제).
+#   opencode 채택자는 자기 flavor 매니페스트를 @source 로 byte-copy 받는다(토큰 0·@render 불요).
+.project_manager/engine.manifest    @source=templates/opencode/.project_manager/engine.manifest
+
+# ── opencode 어댑터 root-doc (instance-owned·미등록·전파 안 함) ──────────────────
+# AGENTS.md/AGENTS.lite.md·opencode.jsonc 는 adopter config/root doc(PROJECT_TAGLINE·권한)이라 manifest
+#   밖(claude settings.json/CLAUDE.md 대칭·T-0300 hygiene 소관).

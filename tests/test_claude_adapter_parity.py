@@ -109,8 +109,10 @@ def test_adapter_artifacts_byte_identical():
 
 
 # ── T-0202: settings.json portable-by-construction 가드 (manifest-out·render 미탑승) ──
-# 결정 A(사용자 2026-07-02): settings.json + 훅 래퍼(.sh)·훅 스크립트(.py)는 engine.manifest
-# **밖**(인스턴스 소유·pm_update 미갱신)이라 import/update 의 토큰 치환 파이프라인을 안 탄다.
+# 결정 A(사용자 2026-07-02) + T-0305 amend(ADR-0032 Q3): **settings.json** 은 engine.manifest **밖**
+# (adopter config·인스턴스 소유·pm_update 미갱신)이라 import/update 의 토큰 치환 파이프라인을 안 탄다.
+# (훅 스크립트 ctx_*.py·.sh·run_tests_hook.sh·pm_orch 는 T-0305 로 manifest-**in**=engine-mirror 전파 —
+#  이 가드는 settings.json 의 portable 성질만 검사하고 훅 파일 존재/실행비트는 확인한다.)
 # 대신 파일 자체가 portable-by-construction — 치환 토큰·머신-특정 절대경로 0(${CLAUDE_PROJECT_DIR}
 # +상대경로+래퍼 self-resolve)이라 어느 머신/프로젝트로 verbatim 복사돼도 그대로 동작한다. 이
 # 가드들이 그 성질을 못박는다(render 채널 부재의 백스톱·Windows JSON invalid-escape 원천 차단).

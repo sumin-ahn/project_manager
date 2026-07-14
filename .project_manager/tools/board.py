@@ -2320,16 +2320,38 @@ def _livegate_check(args: argparse.Namespace) -> int:
 
     기록 존재 ∧ status==pass ∧ head==rev → rc0. 아니면 rc1 + 사유 3분화(기록 부재 / red /
     rev 불일치 — 각각 다른 메시지로 훅이 그대로 surface). fail-soft 아님(명확 rc).
+
+    읽을 livegate.json 은 record 와 **동일 해소**(`_resolve_livegate_flag` — engine-root sidecar)
+    를 거친다(단일 소스·T-0306). 모듈상수 `LIVEGATE_FLAG` 직독이 아니라, 어느 board.py 사본/cwd 로
+    check 하든 push 보호훅이 기록한 **바로 그** 파일을 읽어 stale/wrong-copy 오독(false-green/
+    false-red)을 원천 차단한다 — record(`_livegate_record`)의 기록-위치 정렬(T-0287)과 대칭이다.
+    `cwd` = `--cwd`(record 와 대칭·미지정 시 이 board.py 사본의 `REPO` — 그 repo 의 `core.hooksPath`
+    로 engine-root 해소). engine-root 무효(`_LG_BROKEN`)는 record 와 **동형** fail-loud(조용한 통과 금지).
     """
     rev = getattr(args, "rev", None)
     if not rev:
         print("livegate check: --rev <sha> 필요 (push 대상 커밋).", file=sys.stderr)
         return 1
-    if not LIVEGATE_FLAG.exists():
+    # 읽을 위치를 push 보호훅 read 위치와 정렬(record 와 대칭·단일 소스·T-0306/T-0287). 훅과 같은
+    # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 사본으로 check 해도
+    # 훅이 기록한 한 파일을 읽는다. hooksPath 미설정/솔로면 현행 LIVEGATE_FLAG(REPO/.local) 폴백 무변경.
+    cwd = getattr(args, "cwd", None) or str(REPO)
+    flag, mode = _resolve_livegate_flag(cwd)
+    if mode == _LG_BROKEN:
+        # 보호훅 활성(hooksPath+engine-root sidecar)인데 engine-root 가 무효(board.py 미해소) →
+        # 기록 위치와 훅 read 위치가 갈릴 수 있어 pass/fail 판정을 신뢰 못 한다. 조용한 통과 대신
+        # record 와 동형 fail-loud 거부(false-green/false-red 백스톱·ADR-0039·T-0306). engine-root
+        # sidecar 수리 또는 `pm-config repo add` 재실행.
+        print("livegate: fail — 보호훅 engine-root sidecar 무효 "
+              "(hooksPath 설치됐으나 PM 홈 board.py 미해소) — 기록 위치와 훅 read 위치가 갈릴 수 "
+              "있어 거부(false-green 차단·T-0287). engine-root sidecar 수리 또는 "
+              "`pm-config repo add` 재실행. 릴리즈 차단.", file=sys.stderr)
+        return 1
+    if not flag.exists():
         print("livegate: 기록 없음 — `board.py livegate record` 필요 (릴리즈 차단).",
               file=sys.stderr)
         return 1
-    data = json.loads(LIVEGATE_FLAG.read_text(encoding="utf-8"))
+    data = json.loads(flag.read_text(encoding="utf-8"))
     if data.get("status") != "pass":
         n, rc = data.get("n"), data.get("rc")
         print(f"livegate: RED (status={data.get('status')}, 수집 {n}, rc={rc}) "
@@ -3449,6 +3471,10 @@ def cmd_list(args: argparse.Namespace) -> int:
     else:
         allowed_statuses = _LIST_ACTIVE_STATUSES
     rows: list[tuple[str, dict]] = []
+    # 세션격리 strict-exclude 신호(ADR-0053 #4·anti-degrade): 다중사용자 보드에서 소유 미해소
+    # open 을 이 뷰에서 조용히 드롭했는지 잡는다 — 아래 loud-warn(빈 spam 금지)의 실-드롭 트리거.
+    # solo(multi_user False)면 항상 False 라 재평가 자체를 안 함(오버헤드/오탐 0·회귀 0).
+    strict_exclude_fired = False
     for status in STATUS_DIRS:
         if status not in allowed_statuses:
             continue
@@ -3459,8 +3485,28 @@ def cmd_list(args: argparse.Namespace) -> int:
             if mine and not _ticket_is_mine(status, fm, my_user, my_slot,
                                             area_owner_in_use, multi_user,
                                             slot_suffix=slot_suffix):
+                # 이 제외가 *strict-exclude* 였는지 판정: 같은 predicate 를 multi_user=False 로
+                # 재평가해 solo(all-open degrade)라면 포함됐을 open 이면 = 다중사용자라서 드롭한
+                # 것(`_ticket_is_mine` 미해소 분기). 판정을 복제하지 않고 단일 predicate 를 재사용
+                # (ADR-0053 #6 point-patch 금지)해 실 드롭만 신호로 잡는다. 이미 발동했으면 재평가
+                # 생략(short-circuit). 소유 해소된 타 사용자 티켓 제외는 solo 에서도 제외라 무신호.
+                if multi_user and not strict_exclude_fired and _ticket_is_mine(
+                        status, fm, my_user, my_slot,
+                        area_owner_in_use, False, slot_suffix=slot_suffix):
+                    strict_exclude_fired = True
                 continue
             rows.append((status, fm))
+    # anti-degrade loud-warn(ADR-0053 #4·fail-loud): 다중사용자 격리가 조용히 티켓을 드롭했거나
+    # (strict_exclude_fired) 정체성이 미해소(my_user None)면 목록 출력 *전* stderr 1줄 경고 —
+    # silent degrade 근절. **stderr 라 stdout 목록 포맷 무오염**(회귀 파서·pm_bootstrap counts
+    # 무영향). solo(distinct user ≤1 → multi_user False)는 무경고(회귀 0·빈 warn spam 금지).
+    if mine and multi_user and (strict_exclude_fired or my_user is None):
+        print(
+            "⚠ 세션격리(strict-exclude): 다중사용자 보드에서 소유 미해소 open 을 이 뷰에서 "
+            "제외했다(타 사용자·미귀속 티켓). 내 티켓만 정확히 보려면 정체성 설정 — "
+            "`board init --owner <you>` 또는 `board migrate-identity`.",
+            file=sys.stderr,
+        )
     if not rows:
         print("(no tickets)")
         return 0
@@ -5499,16 +5545,20 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     둘 다 존재하고 **다르면** drift 1 finding(baseline 이후 upstream 이 앞섰다 = adapter-layer 가 낡았을 수
     있음). 한 키 2역 금지(race/자기비교 회피·codex round-3 NEW-2).
 
-    scope(codex MUST-FIX 4): 대상 = adapter-layer(facade·진입문서·settings) / 제외 = instance-state
-    (status·architecture·tickets·log·decisions·README 스캐폴드·lite — 채택자 소유·diverge 정상) /
-    hooks·driver = open(Q3·대상 단정 안 함). lint 가 파일 단위 diff 를 하지 않으므로(rev 비교만) scope 는
-    advisory 메시지로 안내하고, 제외 집합은 애초 비교 대상이 아니라 자동 충족된다.
+    scope(codex MUST-FIX 4·T-0305 Q3 결착): 대상 = manifest-제외 adapter-layer(settings.json·루트 doc·
+    facade·진입문서·local.conf — adopter config·전파 채널 없음) / 제외 = instance-state(status·
+    architecture·tickets·log·decisions·README 스캐폴드·lite — 채택자 소유·diverge 정상). **hooks·driver 는
+    이제 engine-mirror 전파 대상**(manifest 등록·T-0305·ADR-0032 Q3 결착) — pm-update 가 동기하므로
+    silent-stale 클래스가 근절됐다(과거 Q3 open·"대상 단정 안 함"에서 결착). lint 가 파일 단위 diff 를
+    하지 않으므로(rev 비교만) scope 는 advisory 메시지로 안내한다.
 
-    fail-soft (graceful 0-finding):
+    fail-soft / 관찰가시성 (T-0305):
       - `upstream` 미설정(솔로·non-adopter·templates/upstream 부재 환경) → [].
-      - baseline(`upstream_rev`) 미기록(아직 revision 추적 전·구 import) → [].
-      - seen(`upstream_seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → [] + 안내는 내지 않음
-        (false-positive flood 회피 — 관찰값 없으면 비교 불가). drift 는 *변경 확인*된 경우만 경고한다.
+      - baseline(`upstream_rev`) 미기록(아직 revision 추적 전·구 import) → [](관찰 기준점 자체 부재).
+      - baseline 은 있으나 seen(`upstream_seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → **관찰불가
+        advisory 1줄**(never-block). 과거엔 조용한 [](silent skip)였으나, hooks/driver 등 safety-critical
+        잔여가 *관찰 없이* 낡으면 "green 인데 고장"(hard-stop 미발화·회귀 게이트 무력)이라 관찰불가 자체를
+        표면화한다(T-0305·ADR-0032 Q3). advisory 라 `--gate` 미차단·1줄이라 flood 아님.
     """
     findings: list[tuple[str, str, str]] = []
     conf = local_config()
@@ -5520,10 +5570,19 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     baseline = (conf.get(_DRIFT_BASELINE_KEY) or "").strip()
     seen = (conf.get(_DRIFT_SEEN_KEY) or "").strip()
 
-    # baseline 미기록(구 import·revision 추적 전) 또는 seen 미기록(cache 부재 URL·pm-update 미실행)
-    # → graceful skip. 한쪽이라도 없으면 "마지막 동기 이후 변경"을 단정할 수 없어 경고하지 않는다
-    # (false-positive flood 회피·baseline B 의 핵심).
-    if not baseline or not seen:
+    # baseline 미기록(구 import·revision 추적 전) → graceful [] (관찰 기준점 자체가 아직 없음).
+    if not baseline:
+        return findings
+
+    # baseline 은 있으나 seen(현재 관찰값) 미기록 — drift 를 판정할 수 없다. 과거엔 조용한 []
+    # (silent skip)였으나, hooks/driver·adapter-layer 잔여가 *관찰 없이* 낡으면 "green 인데 고장"
+    # 이라 관찰불가 자체를 advisory 로 표면화한다(T-0305·ADR-0032 Q3·never-block·1줄이라 flood 아님).
+    if not seen:
+        findings.append((
+            "adapter-layer", "adapter-drift",
+            f"upstream_seen_rev 미기록 — upstream 관찰값이 없어 baseline({baseline[:12]}) 이후 "
+            f"adapter-layer(settings·루트 doc·facade) drift 를 판정할 수 없음(관찰불가). "
+            f"`pm-update`(upstream fetch)로 관찰값을 기록하면 추적된다 (never-block·hooks/driver 는 전파됨)"))
         return findings
 
     # 두 rev 가 같으면 baseline 이후 upstream 변경 없음 → clean.
@@ -5838,7 +5897,9 @@ def build_parser() -> argparse.ArgumentParser:
                             "실행·수집 pin 강제·기록 / check=보호훅이 HEAD-매칭 green 검증")
     p.add_argument("action", choices=["record", "check"])
     p.add_argument("--rev", help="check 대상 sha (보호훅이 push HEAD 를 넘김·record 는 무시)")
-    p.add_argument("--cwd", help="record 의 pytest 실행 cwd (ADR-0014 seam·기본=활성 slot worktree)")
+    p.add_argument("--cwd", help="record=pytest 실행 cwd(기본=활성 slot worktree) / "
+                                 "check=livegate.json 해소 cwd(훅 정렬·기본=이 board.py 사본 REPO) "
+                                 "(ADR-0014 seam·record↔check 대칭·T-0306)")
     p.add_argument("--session", help="record 의 슬롯 세션 (M>1 홈에서 cwd 해소·regression 과 동형·"
                                      "무명시+leased≥2 는 fail-loud·`--cwd` 우회 불요·T-0298)")
     p.set_defaults(fn=cmd_livegate)

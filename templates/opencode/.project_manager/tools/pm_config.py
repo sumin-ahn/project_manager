@@ -254,6 +254,60 @@ def _default_user() -> str | None:
     return _git_config_email()
 
 
+# areas.md canonical 칼럼 순서상 `area_owner` 의 위치(마지막·index 7·board `_AREAS_COLUMNS`).
+# 구 헤더(area_owner 이전) + 신 canonical row 가 append 된 업그레이드 행을 이 위치로 폴백 read
+# 한다(board `_parse_areas` 의 wider-row 관용과 동형·유실 방지).
+_CANONICAL_AREA_OWNER_IDX = 7
+
+
+def _distinct_area_owners() -> int:
+    """areas.md 의 distinct non-empty `area_owner` 수 — pm_config 자체 파싱(다중사용자 최소 신호·ADR-0053).
+
+    `cmd_status` 의 isolation posture(strict/degrade/solo) 판정용 *coarse* 신호다. board.py 를
+    import 하지 않으므로([[ADR-0013]] isolation·touches 격리) `_local_conf_session` 동형으로
+    areas.md 를 stdlib 로 직접 읽는다 — board 의 격리 *판정*(`_ticket_is_mine`·티켓 스캔
+    `_distinct_ticket_users`)은 복제하지 않고, 공유 레지스트리(areas.md)의 `area_owner` 칼럼만
+    헤더-인식으로 센다. 실 strict-exclude 여부는 `board list --mine` loud-warn(ADR-0053 #4)이
+    authoritative — 여긴 정체성·모드 posture 만.
+
+    헤더에서 `area_owner` 칼럼을 찾는다(ADR-0014·신 스키마). 헤더에 없어도 데이터 행이 canonical
+    폭(≥8 셀)이면 마지막(`_CANONICAL_AREA_OWNER_IDX`)에서 읽어 구-헤더+신-row 업그레이드의 유실을
+    막는다. 구분선(`|---|`) skip. 파일/칼럼 부재·파싱 실패는 0(fail-soft·solo 취급·크래시 0).
+    """
+    af = REPO / ".project_manager" / "areas.md"
+    try:
+        lines = af.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return 0    # 부재/읽기실패/손상 UTF-8 → 0(solo 취급·크래시 0·docstring fail-soft 계약).
+    owners: set[str] = set()
+    header_idx: int | None = None
+    header_seen = False
+    for line in lines:
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if cells and all(c and set(c) <= {"-", ":"} for c in cells):
+            continue  # 구분선(|---|:--:|) skip.
+        if not header_seen:
+            header_seen = True
+            lowered = [c.lower() for c in cells]
+            if "area_owner" in lowered:
+                header_idx = lowered.index("area_owner")
+            continue
+        # 데이터 행: 헤더에 area_owner 가 있으면 그 위치, 없어도 canonical 폭이면 마지막에서
+        # 읽는다(구 헤더 + 신 canonical row 업그레이드·board `_parse_areas` 동형).
+        if header_idx is not None and header_idx < len(cells):
+            val = cells[header_idx]
+        elif header_idx is None and len(cells) > _CANONICAL_AREA_OWNER_IDX:
+            val = cells[_CANONICAL_AREA_OWNER_IDX]
+        else:
+            val = ""
+        if val:
+            owners.add(val)
+    return len(owners)
+
+
 def _local_conf_test_cmd() -> str | None:
     """`.project_manager/local.conf` 의 `test_cmd=` (없거나 OSError → None).
 
@@ -1035,6 +1089,36 @@ def cmd_status(
         return wp.current_branch(slot) or "(detached/조회불가)"
 
     print(f"# pm-config {args.command} — 세션: {sess or '(비바인딩)'}")
+
+    # 정체성·세션격리 posture surface(ADR-0053 #4·anti-degrade 진단): resolved user + isolation
+    # 상태(strict/degrade/solo) + remedy. board.py 를 import 하지 않고([[ADR-0013]] isolation)
+    # user 는 `_default_user`(자체 해소·`_local_conf_session` 동형), 다중사용자 여부는 areas.md
+    # `area_owner` 자체 파싱(`_distinct_area_owners`)으로 판정한다 — board 의 격리 *판정*은 복제
+    # 하지 않고 최소 신호만.
+    #
+    # **정직화(should-fix·오안심 방지)**: 여기 posture 는 areas.md `area_owner`(registry) *coarse*
+    # 신호다. board `list --mine` 의 실 strict-exclude 는 티켓 귀속(created_by/claimed_by·
+    # `_distinct_ticket_users`)으로 판정하며 — 부분마이그레이션 보드(티켓은 2명·area_owner 미채움/
+    # 1개)에서 두 신호가 갈린다(그게 ADR-0053 이 겨냥하는 degrade-risk 케이스). 그래서 무조건 "정상"
+    # 단언을 금하고, 신호 출처·한계를 문구에 노출하고 authoritative 신호로 `board list --mine`
+    # (strict-exclude loud-warn)을 가리킨다([[robustness-value-connections-before-ship]] silent-degrade
+    # 근절 취지). board 티켓 스캔 복제는 하지 않는다([[ADR-0013]] 유지).
+    resolved_user = _default_user()
+    multi_user = _distinct_area_owners() > 1
+    _remedy = "`board init --owner <you>` 또는 `board migrate-identity`"
+    _authoritative = "실 격리는 `board list --mine`(strict-exclude loud-warn)이 authoritative"
+    print(f"## 정체성(user): {resolved_user or '(미해소 — local.conf user= / git config user.email 미설정)'}")
+    if not multi_user:
+        print("## 세션격리(registry/area_owner 기준): solo (단일/미등록 registry) — 단, 티켓 귀속"
+              "(created_by/claimed_by)이 다중이면 세션 뷰가 strict-exclude 될 수 있다. "
+              f"{_authoritative}.")
+    elif resolved_user is not None:
+        print("## 세션격리(registry/area_owner 기준): strict (다중사용자·정체성 해소 — 세션 뷰 = "
+              f"내 소유 open + claim). {_authoritative}.")
+    else:
+        print("## 세션격리(registry/area_owner 기준): ⚠ degrade-risk (다중사용자·정체성 미해소 — "
+              f"소유 미해소 open 이 `board list --mine` 에서 strict-exclude). remedy: {_remedy}")
+
     if mine:
         print("## 이 세션의 리스:")
         for l in mine:

@@ -64,6 +64,37 @@
 .claude/agents    @render
 .claude/skills    @render
 
+# ── 서브에이전트 훅/드라이버 (엔진-미러·framework-owned 전파·T-0305·ADR-0032 Q3 결착) ──────
+# ctx-guard·hard-stop·statusline·회귀 게이트 훅·relay 드라이버는 board 상수/pm_relay 엔진의 미러라
+#   (test_ctx_default_mirror 가 board↔ctx_guard 상수 동기 강제) framework-owned 전파 대상이다 —
+#   engine safety-훅 fix(hard-stop·resolve_budget·회귀 게이트)가 채택자에 닿게(frozen 근절·H1).
+#   canonical 소스는 ship 템플릿 `templates/claude_code/.claude/*` 에 산다(루트 `.claude/` 는 ①
+#   워크트리 자신의 어댑터라 ctx 훅 부재) — `@source=<루트-상대>` 마커가 그 소스를 채택자 dest
+#   `.claude/*` 로 remap 한다(T-0303·ADR-0054·opencode `.opencode/*` 대칭·read-side source-remap).
+#   run_tests_hook.sh 는 루트 `.claude/` 에도 byte-identical 로 실재라 root-sourced(bare·agents/skills
+#   동형). 이 파일들은 치환 토큰 0·portable-by-construction(주석의 `{{PY}}` 는 '폐기' 문서화
+#   리터럴)이라 byte-copy 안전(render 채널 불요·.md 아님).
+#   ⚠️ instance-owned 예외(미등록·전파 안 함): settings.json(권한·adopter config·T-0202)·
+#     precompact_capture_hook.sh(ship 템플릿 부재·루트 settings 전용)·CLAUDE.md(루트 doc)·local.conf.
+.claude/ctx_guard.py       @source=templates/claude_code/.claude/ctx_guard.py
+.claude/ctx_stop_hook.py   @source=templates/claude_code/.claude/ctx_stop_hook.py
+.claude/ctx_stop_hook.sh   @source=templates/claude_code/.claude/ctx_stop_hook.sh
+.claude/ctx_statusline.py  @source=templates/claude_code/.claude/ctx_statusline.py
+.claude/ctx_statusline.sh  @source=templates/claude_code/.claude/ctx_statusline.sh
+.claude/pm_orch_claude.py  @source=templates/claude_code/.claude/pm_orch_claude.py
+.claude/run_tests_hook.sh
+
+# ── manifest 자기전파 (B-selfprop·T-0305·OQ-B1) ──────────────────
+# manifest 자신을 전파 대상에 넣어야 *이 파일에 새로 추가된 엔트리*(위 hook/driver)가 기존 채택자에
+#   도달한다 — 안 그러면 채택자는 import 시점 frozen manifest 를 영영 유지해 신 엔트리를 영영 못
+#   배운다(frozen 근절의 전제). 신 엔트리는 매니페스트 갱신 다음 sync 부터 적용(pm_import manifest
+#   진화·T-0142 동형). 루트는 자기 자신(bare)을 byte-copy 전파(② adopter#0 = root-flavored·매니페스트는
+#   토큰 0 이라 @render 불요). 매니페스트는 harness 별로 다르므로(루트↔claude_code↔opencode 주석/@source
+#   상이) 공유-엔진 byte-parity 대상이 아니다 — content-parity 가드는 이 경로를 flavor-specific 로
+#   화이트리스트 제외한다(test_manifest_template_parity SELF_PROP_PATH). claude_code/opencode 는 각자
+#   flavor 매니페스트를 @source 로 읽는다(각 파일 참조).
+.project_manager/engine.manifest
+
 # ── 설정 (엔진) ──────────────────────────────────────────────────
 .project_manager/.gitignore
 .gitattributes

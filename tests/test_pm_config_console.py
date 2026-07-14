@@ -12,6 +12,7 @@ cmd_set_test_cmd)는 monkeypatch 로 가로채 *어떤 핸들러가 어떤 인�
 """
 from __future__ import annotations
 
+import argparse
 import importlib.util
 from pathlib import Path
 
@@ -584,3 +585,169 @@ def test_console_autoloads_engines_when_not_injected(pc, monkeypatch, capsys):
     rc = pc.run_console(input_fn=_inputs("q"))
     assert rc == 0
     assert wp.calls.count(("list_leases",)) >= 1   # 자동 로드된 wp 가 렌더에 쓰임
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ADR-0053 #4 — cmd_status 세션격리 posture surface (T-0307).
+#
+# resolved user + isolation 상태(strict/degrade/solo) + remedy 를 노출한다. board.py 를 import
+# 하지 않고([[ADR-0013]]) user 는 `_default_user`(자체 해소), 다중사용자 여부는 areas.md
+# `area_owner` 자체 파싱(`_distinct_area_owners`)으로 판정한다 — 최소 신호만(board 격리 판정 무복제).
+# ════════════════════════════════════════════════════════════════════════
+
+_MARK_SOLO = "세션격리(registry/area_owner 기준): solo"
+_MARK_STRICT = "세션격리(registry/area_owner 기준): strict"
+_MARK_DEGRADE = "degrade-risk"          # degrade 상태 전용 토큰(strict/solo 문구엔 부재)
+_MARK_AUTHORITATIVE = "board list --mine"   # authoritative 신호 pointer (전 상태 노출·오안심 방지)
+_CANON_HEADER = "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |"
+_CANON_SEP = "|---|---|---|---|---|---|---|---|"
+
+
+def _status_out(pc, monkeypatch, capsys, *, user, area_owners):
+    """cmd_status 를 hermetic 하게 돌려 stdout 을 돌려준다 (두 신호를 직접 주입)."""
+    monkeypatch.setattr(pc, "_default_user", lambda: user)
+    monkeypatch.setattr(pc, "_distinct_area_owners", lambda: area_owners)
+    monkeypatch.setattr(pc, "_default_session", lambda: "s1")
+    wp = FakeWorktreePool(leases=[])
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    return capsys.readouterr().out
+
+
+def test_status_surface_solo(pc, monkeypatch, capsys):
+    """단일사용자(distinct area_owner ≤1) → solo·resolved user 노출·degrade-risk 아님.
+
+    should-fix: 무조건 "정상" 단언 금지 + registry coarse 신호 명시 + authoritative pointer 노출."""
+    out = _status_out(pc, monkeypatch, capsys, user="alice@x", area_owners=1)
+    assert _MARK_SOLO in out
+    assert "alice@x" in out                 # resolved user surface
+    assert _MARK_DEGRADE not in out
+    assert "정상" not in out                  # 오안심 단언 제거(정직화)
+    assert _MARK_AUTHORITATIVE in out        # authoritative 신호 pointer 노출
+
+
+def test_status_surface_strict(pc, monkeypatch, capsys):
+    """다중사용자 + 정체성 해소 → strict(격리 활성)·resolved user 노출·degrade-risk 아님."""
+    out = _status_out(pc, monkeypatch, capsys, user="alice@x", area_owners=2)
+    assert _MARK_STRICT in out
+    assert "alice@x" in out
+    assert _MARK_DEGRADE not in out
+    assert _MARK_AUTHORITATIVE in out        # authoritative 신호 pointer 노출
+
+
+def test_status_surface_degrade_with_remedy(pc, monkeypatch, capsys):
+    """다중사용자 + 정체성 미해소 → degrade-risk + remedy(board init --owner / migrate-identity)."""
+    out = _status_out(pc, monkeypatch, capsys, user=None, area_owners=2)
+    assert _MARK_DEGRADE in out
+    assert "board init --owner" in out       # remedy 1
+    assert "migrate-identity" in out         # remedy 2
+    assert "미해소" in out                    # resolved user = (미해소) surface
+    assert _MARK_AUTHORITATIVE in out        # authoritative 신호 pointer 노출
+
+
+def test_status_surface_solo_unresolved_user_not_falsely_reassure(pc, monkeypatch, capsys):
+    """solo + 정체성 미해소 → registry 기준 solo(격리 판정 아님)이되 "정상" 오안심 없이 한계·
+    authoritative pointer 노출(should-fix). solo 는 remedy 로 nag 하지 않되 warn 확인처는 가리킨다."""
+    out = _status_out(pc, monkeypatch, capsys, user=None, area_owners=0)
+    assert _MARK_SOLO in out
+    assert _MARK_DEGRADE not in out
+    assert "정상" not in out                  # 오안심 단언 없음
+    assert _MARK_AUTHORITATIVE in out        # 한계 인지 → authoritative 신호로 유도
+    assert "board init --owner" not in out   # solo 는 remedy 로 nag 하지 않음
+
+
+def test_status_surface_never_loads_board(pc, monkeypatch, capsys):
+    """cmd_status 는 isolation posture 를 board.py 로드 없이 낸다(ADR-0013 isolation·자체 해소)."""
+    loaded: list[str] = []
+    orig = pc._load_module
+
+    def spy(name, filename):
+        loaded.append(name)
+        return orig(name, filename)
+
+    monkeypatch.setattr(pc, "_load_module", spy)
+    monkeypatch.setattr(pc, "_default_user", lambda: None)
+    monkeypatch.setattr(pc, "_distinct_area_owners", lambda: 2)
+    monkeypatch.setattr(pc, "_default_session", lambda: "s1")
+    wp = FakeWorktreePool(leases=[])
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert _MARK_DEGRADE in out              # isolation surface 렌더됨
+    assert "board" not in loaded             # board.py 로드 0(자체 해소로 신호 산출)
+
+
+# ── _distinct_area_owners 자체 파싱 단위 (board import 없이 다중사용자 신호) ────
+
+
+def _write_areas(pc, monkeypatch, tmp_path, text):
+    proj = tmp_path / ".project_manager"
+    proj.mkdir(parents=True, exist_ok=True)
+    (proj / "areas.md").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(pc, "REPO", tmp_path)
+
+
+def test_distinct_area_owners_multi(pc, monkeypatch, tmp_path):
+    _write_areas(pc, monkeypatch, tmp_path,
+                 f"# Areas\n\n{_CANON_HEADER}\n{_CANON_SEP}\n"
+                 "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
+                 "| beta | BE | g:b | pytest -q | reg | develop | main | bob |\n")
+    assert pc._distinct_area_owners() == 2
+
+
+def test_distinct_area_owners_single(pc, monkeypatch, tmp_path):
+    _write_areas(pc, monkeypatch, tmp_path,
+                 f"{_CANON_HEADER}\n{_CANON_SEP}\n"
+                 "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n")
+    assert pc._distinct_area_owners() == 1
+
+
+def test_distinct_area_owners_dedup(pc, monkeypatch, tmp_path):
+    """같은 area_owner 가 여러 area 를 소유해도 distinct 는 1(사람 수 신호)."""
+    _write_areas(pc, monkeypatch, tmp_path,
+                 f"{_CANON_HEADER}\n{_CANON_SEP}\n"
+                 "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
+                 "| gamma | GA | g:g | pytest -q | reg | develop | main | alice |\n")
+    assert pc._distinct_area_owners() == 1
+
+
+def test_distinct_area_owners_empty_cells_ignored(pc, monkeypatch, tmp_path):
+    """빈 area_owner 셀(미마이그 채택자)은 안 센다."""
+    _write_areas(pc, monkeypatch, tmp_path,
+                 f"{_CANON_HEADER}\n{_CANON_SEP}\n"
+                 "| alpha | AL | g:a | pytest -q | reg | develop | main |  |\n"
+                 "| beta | BE | g:b | pytest -q | reg | develop | main | bob |\n")
+    assert pc._distinct_area_owners() == 1   # bob 만(빈 셀 제외)
+
+
+def test_distinct_area_owners_absent_is_zero(pc, monkeypatch, tmp_path):
+    monkeypatch.setattr(pc, "REPO", tmp_path)   # areas.md 부재 → solo 취급
+    assert pc._distinct_area_owners() == 0
+
+
+def test_distinct_area_owners_corrupt_utf8_is_zero(pc, monkeypatch, tmp_path):
+    """손상 UTF-8 바이트는 크래시 없이 0 — docstring fail-soft 계약 정합(suggestion)."""
+    proj = tmp_path / ".project_manager"
+    proj.mkdir(parents=True, exist_ok=True)
+    (proj / "areas.md").write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+    monkeypatch.setattr(pc, "REPO", tmp_path)
+    assert pc._distinct_area_owners() == 0
+
+
+def test_distinct_area_owners_old_schema_no_column_zero(pc, monkeypatch, tmp_path):
+    """구 스키마(area_owner 칼럼 없음)·데이터 폭도 canonical 미만 → 0(solo·미마이그)."""
+    _write_areas(pc, monkeypatch, tmp_path,
+                 "| repo | prefix | git | test_cmd | owner |\n"
+                 "|---|---|---|---|---|\n"
+                 "| alpha | AL | g:a | pytest -q | reg |\n")
+    assert pc._distinct_area_owners() == 0
+
+
+def test_distinct_area_owners_upgrade_wider_row(pc, monkeypatch, tmp_path):
+    """구 헤더(area_owner 없음) + 신 canonical row(8칸) → 마지막(index 7)에서 area_owner read."""
+    _write_areas(pc, monkeypatch, tmp_path,
+                 "| repo | prefix | git | test_cmd | owner |\n"
+                 "|---|---|---|---|---|\n"
+                 "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
+                 "| beta | BE | g:b | pytest -q | reg | develop | main | bob |\n")
+    assert pc._distinct_area_owners() == 2

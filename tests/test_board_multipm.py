@@ -1849,3 +1849,112 @@ def test_area_owner_for_single_area(board):
 def test_area_owner_for_single_area_multi_is_none(board):
     board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
     assert board._area_owner_for_single_area() is None   # 2 area → 모호 → None
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ADR-0053 #4 — anti-degrade loud-warn (cmd_list · T-0307).
+#
+# 다중사용자 보드에서 세션 격리가 조용히 티켓을 드롭(strict-exclude)하거나 정체성이 미해소면
+# 목록 출력 *전* stderr 로 loud-warn 1줄(remedy 포함). solo(distinct user ≤1)는 무경고. stderr
+# 라 stdout 목록 포맷은 무오염(회귀 파서·pm_bootstrap counts 무영향). "빈 warn spam 금지" —
+# 소유 해소된 타 사용자 티켓만 제외되는 clean strict 는 경고하지 않는다.
+# ════════════════════════════════════════════════════════════════════════
+
+_WARN_MARK = "세션격리"          # loud-warn 식별 토큰(stderr 전용)
+_REMEDY_INIT = "board init --owner"
+_REMEDY_MIGRATE = "migrate-identity"
+
+
+def _list_args(**flags):
+    return argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
+                              mine=flags.get("mine", False),
+                              session=flags.get("session"), slot=flags.get("slot"))
+
+
+def _ids_from(out: str) -> list[str]:
+    """cmd_list stdout 에서 ticket ID 만 추출 (`  [status] T-XXXX  …` 행)."""
+    ids = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("[") and "]" in line:
+            ids.append(line.split("]", 1)[1].split()[0])
+    return ids
+
+
+def test_cmd_list_loud_warn_on_strict_exclude(board, capsys):
+    """다중사용자 + 소유 미해소 open strict-exclude 발동 → stderr loud-warn 1줄(remedy 포함).
+
+    my_user(alice) 는 해소됐지만 소유 미상 open(T-0003)이 다중사용자라서 drop 됐다 →
+    실 drop 신호를 잡아 경고. stdout 목록은 무오염(T-0001 만·경고 문자열 부재)."""
+    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")   # 내 소유 open
+    _seed_full(board, "T-0002", "claimed", claimed_by="bob/beta_1")   # bob → 2번째 user 신호
+    _seed_full(board, "T-0003", "open")                              # 소유 미상 → strict-exclude
+    rc = board.cmd_list(_list_args(mine=True))
+    assert rc == 0
+    cap = capsys.readouterr()
+    # stderr: loud-warn + 두 remedy.
+    assert _WARN_MARK in cap.err
+    assert _REMEDY_INIT in cap.err
+    assert _REMEDY_MIGRATE in cap.err
+    assert cap.err.count("\n") == 1          # 정확히 1줄(spam 금지)
+    # stdout: 목록 무오염 — 경고 문자열 부재·strict-exclude 로 T-0003 drop·내 소유만.
+    assert _WARN_MARK not in cap.out
+    assert _ids_from(cap.out) == ["T-0001"]
+
+
+def test_cmd_list_loud_warn_on_identity_unresolved(board, capsys):
+    """다중사용자 + 정체성 미해소(my_user None) → loud-warn. stdout(no tickets) 무오염.
+
+    `--session alpha_1` 이나 areas 부재로 소유자 유도 실패(None) + 티켓 created_by 2명(다중사용자)
+    → 모든 open 이 strict-exclude. 미해소 정체성을 remedy 와 함께 경고."""
+    _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
+    _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
+    rc = board.cmd_list(_list_args(session="alpha_1"))
+    assert rc == 0
+    cap = capsys.readouterr()
+    assert _WARN_MARK in cap.err
+    assert _REMEDY_INIT in cap.err
+    # stdout: 전부 strict-exclude → (no tickets)·경고 문자열 부재.
+    assert _WARN_MARK not in cap.out
+    assert cap.out.strip() == "(no tickets)"
+
+
+def test_cmd_list_solo_no_warn(board, capsys):
+    """solo(distinct user ≤1) — 소유 미해소 open 도 degrade 로 포함·무경고(회귀 0)."""
+    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")   # 유일 user
+    _seed_full(board, "T-0002", "open")                              # 소유 미상(degrade 포함)
+    rc = board.cmd_list(_list_args(mine=True))
+    assert rc == 0
+    cap = capsys.readouterr()
+    assert _WARN_MARK not in cap.err                 # solo → 무경고
+    assert set(_ids_from(cap.out)) == {"T-0001", "T-0002"}
+
+
+def test_cmd_list_clean_strict_no_warn(board, capsys):
+    """다중사용자여도 *소유 해소된* 타 사용자 티켓만 제외되는 clean strict 는 무경고(빈 warn spam 금지).
+
+    alice 의 --mine 은 bob 소유 open 을 제외하지만, 그 제외는 solo 에서도 제외될 소유-해소
+    티켓이라 strict-exclude 신호가 아니다. my_user 도 해소됨 → 경고 없음."""
+    board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
+    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")  # 내 소유
+    _seed_full(board, "T-BE-001", "open", created_by="bob/beta_1")     # bob 소유(해소됨)
+    rc = board.cmd_list(_list_args(mine=True))
+    assert rc == 0
+    cap = capsys.readouterr()
+    assert _WARN_MARK not in cap.err                 # clean strict → 무경고
+    assert _ids_from(cap.out) == ["T-AL-001"]
+
+
+def test_cmd_list_plain_no_mine_no_warn(board, capsys):
+    """무플래그 list(전체 뷰·mine=False) — 격리 미적용이라 다중사용자여도 무경고·전체 표시."""
+    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
+    _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
+    rc = board.cmd_list(_list_args(mine=False))
+    assert rc == 0
+    cap = capsys.readouterr()
+    assert _WARN_MARK not in cap.err
+    assert set(_ids_from(cap.out)) == {"T-0001", "T-0002"}   # 전체(필터 없음)

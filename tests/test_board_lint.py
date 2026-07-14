@@ -1739,14 +1739,19 @@ def test_adapter_drift_graceful_when_baseline_unrecorded(board, monkeypatch):
     assert board.lint_adapter_drift() == []
 
 
-def test_adapter_drift_graceful_when_seen_unrecorded(board, monkeypatch):
-    # seen(`upstream_seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → graceful 0
-    # (관찰값 없으면 비교 불가 → flood 회피·flag 안 함).
+def test_adapter_drift_observability_advisory_when_seen_unrecorded(board, monkeypatch):
+    # baseline 은 있으나 seen(`upstream_seen_rev`) 미기록 → 관찰불가 advisory (T-0305·ADR-0032 Q3).
+    # 과거엔 조용한 [](silent skip)였으나, safety-critical 잔여가 *관찰 없이* 낡는 "green 인데 고장"을
+    # 막으려 관찰불가 자체를 표면화한다(never-block·1줄이라 flood 아님).
     _wire_conf(board, monkeypatch, {
         "upstream": "https://github.com/example/project_manager",
         "upstream_rev": "aaaaaaaaaaaa1111",
     })
-    assert board.lint_adapter_drift() == []
+    findings = board.lint_adapter_drift()
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "adapter-layer" and kind == "adapter-drift"
+    assert "관찰불가" in detail and "upstream_seen_rev" in detail and "pm-update" in detail
 
 
 def test_adapter_drift_graceful_when_conf_empty(board, monkeypatch):
@@ -1755,14 +1760,17 @@ def test_adapter_drift_graceful_when_conf_empty(board, monkeypatch):
     assert board.lint_adapter_drift() == []
 
 
-def test_adapter_drift_blank_values_treated_as_absent(board, monkeypatch):
-    # 키는 있으나 빈 값(`upstream_seen_rev=`) → 미기록과 동치 → graceful 0.
+def test_adapter_drift_blank_seen_treated_as_unrecorded(board, monkeypatch):
+    # seen 키는 있으나 빈 값(`upstream_seen_rev=   `) → strip 후 미기록과 동치 → 관찰불가 advisory
+    # (T-0305·never-block). baseline 빈값이면 여전히 graceful [](관찰 기준점 부재).
     _wire_conf(board, monkeypatch, {
         "upstream": "https://github.com/example/project_manager",
         "upstream_rev": "aaaaaaaaaaaa1111",
         "upstream_seen_rev": "   ",
     })
-    assert board.lint_adapter_drift() == []
+    findings = board.lint_adapter_drift()
+    assert len(findings) == 1 and findings[0][1] == "adapter-drift"
+    assert "관찰불가" in findings[0][2]
 
 
 def test_adapter_drift_uses_two_distinct_keys(board, monkeypatch):

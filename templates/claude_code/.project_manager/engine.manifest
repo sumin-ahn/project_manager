@@ -53,6 +53,30 @@
 .claude/agents    @render
 .claude/skills    @render
 
+# ── 서브에이전트 훅/드라이버 (엔진-미러·framework-owned 전파·T-0305·ADR-0032 Q3 결착) ──────
+# ctx-guard·hard-stop·statusline·회귀 게이트 훅·relay 드라이버는 board 상수/pm_relay 엔진의 미러라
+#   (test_ctx_default_mirror 가 board↔ctx_guard 상수 동기 강제) framework-owned 전파 대상이다 —
+#   engine safety-훅 fix 가 채택자에 닿게(frozen 근절·H1). canonical 소스는 ship 템플릿
+#   `templates/claude_code/.claude/*` 라 `@source=<루트-상대>` 마커가 채택자 dest `.claude/*` 로
+#   remap 한다(T-0303·ADR-0054·프레임워크 루트 `.claude/` 는 ctx 훅 부재·`--target` self-copy no-op).
+#   run_tests_hook.sh 는 프레임워크 루트 `.claude/` 에도 byte-identical 로 실재라 root-sourced(bare).
+#   치환 토큰 0·portable-by-construction 이라 byte-copy 안전(render 불요·.md 아님).
+#   ⚠️ instance-owned 예외(미등록): settings.json(권한·T-0202)·CLAUDE.md(루트 doc)·local.conf.
+.claude/ctx_guard.py       @source=templates/claude_code/.claude/ctx_guard.py
+.claude/ctx_stop_hook.py   @source=templates/claude_code/.claude/ctx_stop_hook.py
+.claude/ctx_stop_hook.sh   @source=templates/claude_code/.claude/ctx_stop_hook.sh
+.claude/ctx_statusline.py  @source=templates/claude_code/.claude/ctx_statusline.py
+.claude/ctx_statusline.sh  @source=templates/claude_code/.claude/ctx_statusline.sh
+.claude/pm_orch_claude.py  @source=templates/claude_code/.claude/pm_orch_claude.py
+.claude/run_tests_hook.sh
+
+# ── manifest 자기전파 (B-selfprop·T-0305·OQ-B1) ──────────────────
+# 매니페스트 자신을 전파해 신 엔트리(위 hook/driver)가 기존 채택자에 도달한다(frozen 근절의 전제).
+#   claude 채택자는 자기 flavor 매니페스트(`templates/claude_code/.project_manager/engine.manifest`)를
+#   @source 로 byte-copy 받는다(매니페스트는 토큰 0 이라 @render 불요·content-parity 가드는 ROOT
+#   manifest 만 스캔하므로 이 flavor 엔트리는 애초 대상 밖).
+.project_manager/engine.manifest    @source=templates/claude_code/.project_manager/engine.manifest
+
 # ── 설정 (엔진) ──────────────────────────────────────────────────
 .project_manager/.gitignore
 .gitattributes

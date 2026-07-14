@@ -1880,3 +1880,172 @@ def test_apply_board_separated_writes_template_into_board(pm_update, tmp_path, m
     assert board_tmpl.read_text(encoding="utf-8") == \
         (source / _TEMPLATE_REL).read_text(encoding="utf-8")
     assert not wiki_tmpl.exists(), "board-분리 sync 가 wiki/tickets/_template.md 를 부활(drift)."
+
+
+# ── T-0305: engine-mirror hook/driver self-update 전파 e2e (frozen 근절 실증) ──────────────
+# engine safety-훅(ctx-stop·회귀 게이트)이 manifest **밖**이면 채택자는 import 시점 frozen 사본을
+# 영영 유지해 엔진 fix 가 영영 안 갔다(stale 신호도 없음). 이제 hook 이 manifest 안(@source remap·
+# root-sourced)이라 pm_update self-update 가 엔진 변경을 채택자 dest 로 전파한다. plan/apply 로 실
+# apply 착지를 검증한다 — "엔진 safety-훅 변경이 채택자에 도달"(frozen 근절 DoD).
+
+
+def test_self_update_propagates_engine_safety_hook_via_source_remap(pm_update, tmp_path):
+    """@source hook 엔트리: 엔진(ship 템플릿) safety-훅 변경이 채택자 dest 로 전파(frozen 근절·H1).
+
+    upstream(프레임워크 루트)의 canonical 소스는 templates/claude_code/.claude/ctx_stop_hook.sh 에
+    있고, manifest 엔트리 `.claude/ctx_stop_hook.sh @source=templates/claude_code/.claude/ctx_stop_hook.sh`
+    가 그 소스를 채택자 dest `.claude/ctx_stop_hook.sh` 로 remap 한다. 엔진에서 훅을 고치면 pm_update
+    self-update 가 채택자의 frozen(import 시점 동결) 사본을 엔진 NEW 로 덮어쓴다 — 이게 프레임워크 자산이
+    채택자에 닿는 유일한 채널(과거엔 manifest-out 이라 채널 자체가 없었다)."""
+    upstream = tmp_path / "framework"
+    adopter = tmp_path / "adopter"
+    src_rel = "templates/claude_code/.claude/ctx_stop_hook.sh"
+    dst_rel = ".claude/ctx_stop_hook.sh"
+
+    # upstream canonical 소스 = 엔진 NEW safety fix (예: hard-stop 임계 수정).
+    src = upstream / src_rel
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("#!/bin/sh\n# NEW hard-stop safety fix\nexit 0\n", encoding="utf-8")
+
+    # 채택자의 frozen 사본 = OLD (엔진 fix 이전·import 시점 동결).
+    frozen = adopter / dst_rel
+    frozen.parent.mkdir(parents=True, exist_ok=True)
+    frozen.write_text("#!/bin/sh\n# OLD frozen hook\nexit 0\n", encoding="utf-8")
+
+    # 실 manifest 엔트리(@source remap) — read_manifest 파싱을 거친 ManifestEntry.
+    entries = _manifest_entries(pm_update, [f"{dst_rel}    @source={src_rel}"])
+
+    # plan: dest=adopter·render_enabled=True(hook 은 .sh → @render 없어도 byte-copy). @source 라
+    #   source_root/src_rel 읽고 dest 엔 dst_rel 로 기록(remap·root 어댑터엔 ctx 훅 부재 비대칭 해소).
+    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True)
+    assert not missing, f"@source 소스가 upstream 에 실재하는데 missing(rc2 위험): {missing}"
+    assert [c[0] for c in changes] == [dst_rel], f"dest remap 경로 불일치: {[c[0] for c in changes]}"
+
+    # apply → 채택자 frozen 사본이 엔진 NEW 로 덮인다(전파 착지·frozen 근절 실증).
+    pm_update.apply(changes)
+    landed = frozen.read_text(encoding="utf-8")
+    assert "NEW hard-stop safety fix" in landed, "엔진 safety-훅 변경이 채택자에 미전파(frozen 잔존)"
+    assert "OLD frozen hook" not in landed, "채택자 frozen 사본이 엔진 NEW 로 덮이지 않음"
+
+
+def test_self_update_root_sourced_hook_propagates(pm_update, tmp_path):
+    """root-sourced(bare) hook(run_tests_hook.sh): 루트 `.claude/` 실재분도 self-update 로 전파.
+
+    ctx 훅은 @source(ship 템플릿) 이나 run_tests_hook.sh 는 루트 `.claude/` 에 byte-identical 로
+    실재라 bare 등록(agents/skills 동형). bare 엔트리는 source_root/<rel> 을 그대로 읽어 dest 로 복사한다."""
+    upstream = tmp_path / "framework"
+    adopter = tmp_path / "adopter"
+    rel = ".claude/run_tests_hook.sh"
+
+    src = upstream / rel
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("#!/bin/sh\n# NEW regression gate\nexit 0\n", encoding="utf-8")
+    frozen = adopter / rel
+    frozen.parent.mkdir(parents=True, exist_ok=True)
+    frozen.write_text("#!/bin/sh\n# OLD gate\nexit 0\n", encoding="utf-8")
+
+    entries = _manifest_entries(pm_update, [rel])  # bare (source_rel None → 루트 상대 = rel)
+    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True)
+    assert not missing
+    assert [c[0] for c in changes] == [rel]
+    pm_update.apply(changes)
+    assert "NEW regression gate" in frozen.read_text(encoding="utf-8")
+
+
+def test_source_remapped_hook_missing_source_reports_rc2_class(pm_update, tmp_path):
+    """@source hook 의 canonical 소스가 upstream 에 진짜 부재면 missing 으로 잡힌다(non-@target-owned).
+
+    @source 는 source 가 templates/ 아래 *실재* 함을 전제하므로 부재 = 엔진/템플릿 누락(오타·불완전
+    checkout)이지 target-owned skip 이 아니다 → main 이 rc2 로 막는다(누락 은폐 금지·안전판). 여기선
+    plan 레벨에서 missing 에 실림을 확인(main rc2 경로의 입력)."""
+    upstream = tmp_path / "framework"   # templates/ 없음 (불완전 checkout)
+    adopter = tmp_path / "adopter"
+    dst_rel = ".claude/ctx_guard.py"
+    src_rel = "templates/claude_code/.claude/ctx_guard.py"
+    entries = _manifest_entries(pm_update, [f"{dst_rel}    @source={src_rel}"])
+    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True)
+    assert changes == []
+    assert missing == [dst_rel], f"@source 소스 부재가 missing(rc2 입력)으로 안 잡힘: {missing}"
+    # @source 엔트리는 target_owned=False → main 이 skip 아닌 rc2(엔진 누락).
+    assert not any(pm_update._entry_target_owned_flag(e) for e in entries)
+
+
+# ── T-0305: manifest 자기전파 flavor 보존 e2e (self-prop 이 flavor 매니페스트 clobber 안 함) ──────
+# self-prop 엔트리(`.project_manager/engine.manifest`)가 3 flavor(root·claude_code·opencode)에 모두
+# 있으므로, `--target <flavor>` sync 가 flavor 매니페스트를 *자기 자신*(claude→claude·op→op)에서
+# 읽어야(=@source remap + resolve_manifest_for_dest dest-우선) 한 flavor 가 다른 flavor 를 덮지 않는다.
+# 만약 claude_code self-prop 이 bare(@source 없음)면 `--target claude_code` 가 source 루트 매니페스트
+# (root flavor)를 읽어 claude 매니페스트를 clobber → flavor 오염. 그 회귀를 e2e 로 박제한다.
+
+
+def _make_flavor_manifest_repo(root: Path) -> None:
+    """fake REPO — root·claude_code·opencode 각 flavor 매니페스트(자기전파 엔트리 + 고유 FLAVOR 마커).
+
+    각 매니페스트는 self-prop 1줄만 담아 격리한다. root 는 bare(자기 flavor), 템플릿은
+    `@source=templates/<flavor>/...` 로 자기 flavor 를 읽는다(clobber 방지의 핵심)."""
+    specs = {
+        root / ".project_manager" / "engine.manifest":
+            "# FLAVOR: root\n.project_manager/engine.manifest\n",
+        root / "templates" / "claude_code" / ".project_manager" / "engine.manifest":
+            "# FLAVOR: claude\n.project_manager/engine.manifest    "
+            "@source=templates/claude_code/.project_manager/engine.manifest\n",
+        root / "templates" / "opencode" / ".project_manager" / "engine.manifest":
+            "# FLAVOR: opencode\n.project_manager/engine.manifest    "
+            "@source=templates/opencode/.project_manager/engine.manifest\n",
+    }
+    for path, text in specs.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def _stub_no_baseline_git(pm_update, monkeypatch) -> None:
+    """baseline rev 기록을 라이브 git 없이 graceful 생략(read_upstream_rev→None)."""
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+
+@pytest.mark.parametrize("target,flavor,foreign", [
+    ("claude_code", "claude", "root"),
+    ("opencode", "opencode", "root"),
+])
+def test_self_prop_target_sync_preserves_flavor_manifest(
+        pm_update, tmp_path, monkeypatch, target, flavor, foreign):
+    """`--target <flavor>` 가 flavor 매니페스트를 자기 flavor 로 유지(root/타 flavor 로 clobber 안 함).
+
+    self-prop 이 `@source=templates/<flavor>/...` + resolve_manifest_for_dest(dest 우선)라 flavor
+    매니페스트를 자기 자신에서 읽는다(self no-op) — bare 였다면 source 루트(root flavor)를 읽어 덮었다."""
+    fake_repo = tmp_path / "framework"
+    _make_flavor_manifest_repo(fake_repo)
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    _stub_no_baseline_git(pm_update, monkeypatch)
+
+    dest_manifest = fake_repo / "templates" / target / ".project_manager" / "engine.manifest"
+    before = dest_manifest.read_text(encoding="utf-8")
+
+    rc = pm_update.main(["--from", str(fake_repo), "--target", target])
+    assert rc == 0, f"--target {target} sync 실패 (rc={rc})"
+
+    after = dest_manifest.read_text(encoding="utf-8")
+    assert f"FLAVOR: {flavor}" in after, (
+        f"--target {target} 후 {flavor} 매니페스트의 flavor 마커 소실(clobber?): {after!r}")
+    assert f"FLAVOR: {foreign}" not in after, (
+        f"--target {target} 가 {foreign} flavor 매니페스트로 {flavor} 를 clobber(self-prop remap 실패): {after!r}")
+    assert after == before, "flavor 매니페스트가 자기전파에서 변경됨(self no-op 이어야)"
+
+
+def test_self_prop_self_update_preserves_root_flavor(pm_update, tmp_path, monkeypatch):
+    """self-update(--target 없음)는 root(bare) self-prop 으로 root flavor 매니페스트를 유지(② adopter#0)."""
+    fake_repo = tmp_path / "framework"
+    _make_flavor_manifest_repo(fake_repo)
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    _stub_no_baseline_git(pm_update, monkeypatch)
+    _write_local_conf(fake_repo, f"upstream={fake_repo}\n")
+
+    root_manifest = fake_repo / ".project_manager" / "engine.manifest"
+    before = root_manifest.read_text(encoding="utf-8")
+    rc = pm_update.main([])  # self-location: dest=REPO=fake_repo.
+    assert rc == 0
+    after = root_manifest.read_text(encoding="utf-8")
+    assert "FLAVOR: root" in after and "FLAVOR: claude" not in after and "FLAVOR: opencode" not in after
+    assert after == before, "root self-update 가 root 매니페스트를 변경(self no-op 이어야)"
