@@ -67,6 +67,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -2413,6 +2414,185 @@ def _instance_project_name(dest_root: Path) -> str:
     return dest_root.name
 
 
+# ── board submodule 셋업 (ADR-0033 · T-0297) ─────────────────────────────────
+# `--new --board-submodule --board-remote <url>` 은 board(tickets+areas)를 superproject inline 이
+# 아니라 **별도 git submodule**(`.project_manager/board`)로 세운다(ADR-0033 — board 전용 git·공유
+# remote·`ignore=all`). inline 기본(플래그 없음)은 이 경로를 전혀 타지 않아 완전 무변경(현행 --new
+# 회귀). 공유 remote 의 호스팅/권한 생성은 사용자 게이트 — 엔진은 URL 을 받아 배선만 한다.
+
+_BOARD_SUBMODULE_PATH = ".project_manager/board"  # 표준 `git submodule add` 은 name == path.
+_BOARD_SETUP_GIT_TIMEOUT_SECONDS = 600  # remote clone/submodule add (네트워크·큰 board 여유·T-0070 결).
+
+# board submodule areas.md 스캐폴드 canonical 칼럼 — board._AREAS_COLUMNS 를 미러한다(pm_import 는
+# stdlib-only·board import 회피). drift 는 test 가 board 를 로드해 대조한다(가드).
+_BOARD_AREAS_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base",
+                        "protected", "area_owner")
+
+
+def _board_setup_git(argv: list[str], cwd: Path | None) -> tuple[int, str]:
+    """board submodule 셋업용 git 실행 → (rc, stdout+stderr). fail-soft(예외→(1,msg)).
+
+    `-c protocol.file.allow=always` 를 상시 얹어 로컬/`file://` remote(hermetic 테스트·self-split
+    로컬 board) 의 submodule 전송을 허용한다 — ssh/https remote 는 그 transport 만 제어하므로 무영향
+    (CVE-2022-39253 이후 file transport 는 submodule 재귀에서 기본 차단). git identity·credential 은
+    사용자 환경 상속(공유 board=사용자-신뢰·credential helper/ssh-agent 그대로 작동). URL 은 호출부가
+    `validate_upstream_value` 로 형태-안전 검증(credential-in-url·leading-dash·비허용 scheme 거부)한다.
+    """
+    git_binary = shutil.which("git")
+    if git_binary is None:
+        return 1, "git 바이너리를 찾을 수 없음 (PATH)."
+    try:
+        result = subprocess.run(
+            [git_binary, "-c", "protocol.file.allow=always", *argv],
+            cwd=str(cwd) if cwd is not None else None,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_BOARD_SETUP_GIT_TIMEOUT_SECONDS)
+        return result.returncode, (result.stdout or "") + (result.stderr or "")
+    except Exception as exc:  # noqa: BLE001 — fail-soft: rc!=0 로 호출부 위임.
+        return 1, str(exc)
+
+
+def _board_areas_scaffold() -> str:
+    """신규 공유 board 의 초기 areas.md (canonical 8칼럼 헤더만·데이터 행 0).
+
+    board.py `_areas_header_line()`/`_areas_separator_line()` 와 같은 형식이다. 등록 repo 0 →
+    `registered_prefixes()` 빈 set → 솔로 `T-NNNN`(합류/멀티-repo 등록 전). 이후 `board.py init
+    --prefix` / `pm-config repo add` 가 데이터 행을 append 한다(append-only 레지스트리).
+    """
+    header = "| " + " | ".join(_BOARD_AREAS_COLUMNS) + " |"
+    separator = "|" + "|".join("---" for _ in _BOARD_AREAS_COLUMNS) + "|"
+    return (
+        "# Area Registry\n\n"
+        "> per-repo 레지스트리 (ADR-0014 · ADR-0033). `board.py init --prefix` / "
+        "`pm-config repo add` 가 등록.\n\n"
+        f"{header}\n{separator}\n"
+    )
+
+
+def _cleanup_partial_board(dest_root: Path) -> None:
+    """submodule add 실패 후 부분 board 잔재 정리 (best-effort).
+
+    board working tree·staged gitlink·`.git/modules` 캐시·(우리가 만든) `.gitmodules` 를 최대한
+    원복한다(실패는 삼킴 — 이미 fail-loud 중). --new 는 빈 dest 보장이라 이번 run 이 만든 것뿐 →
+    통째 되돌려도 사용자 자산 위험 0. 남은 트리 복사분(wiki/tickets 등)은 유지한다.
+
+    **재시도는 fresh/비운 dest 로** — `setup_board_submodule` 첫 게이트가 `board/` 존재 시 중단하고
+    `main` 의 `--new` 가드가 비-빈 dest 를 거부하므로, *같은* dest 재실행은 막힌다. 남은 트리를
+    수동 정리(또는 새 경로)한 뒤 재-import 한다.
+    """
+    board_dir = dest_root / ".project_manager" / "board"
+    _board_setup_git(["rm", "-f", "--cached", _BOARD_SUBMODULE_PATH], cwd=dest_root)
+    _board_setup_git(["submodule", "deinit", "-f", _BOARD_SUBMODULE_PATH], cwd=dest_root)
+    shutil.rmtree(board_dir, ignore_errors=True)
+    shutil.rmtree(dest_root / ".git" / "modules" / ".project_manager" / "board",
+                  ignore_errors=True)
+    gitmodules = dest_root / ".gitmodules"
+    if gitmodules.exists():
+        gitmodules.unlink()
+
+
+def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
+    """--new --board-submodule: board(tickets+areas)를 `.project_manager/board` submodule 로 셋업.
+
+    (ADR-0033 — board 전용 git·공유 remote·`ignore=all`. T-0297.) 반환 rc(0=성공·비0=fail-loud).
+
+    순서(부작용 원자성·부분 홈 최소화):
+      1. remote 를 temp 로 clone. **비었으면**(신규 공유 board) 복사된 wiki/tickets 스캐폴드(치환
+         완료·open/claimed/blocked/done + _template + README) + canonical areas.md 를 seed →
+         commit → push. **내용 있으면**(2번째 유저 합류) skip(기존 board 재사용).
+         (빈 remote 를 *직접* `submodule add` 하면 git 이 checkout 할 커밋이 없어 rc128 로 거부한다 —
+          실측. 그래서 add *전* 에 remote 를 non-empty 로 만들어 두 경로를 수렴시킨다.)
+      2. `git submodule add <url> .project_manager/board` — remote 가 non-empty 라 checkout 성공.
+      3. `.gitmodules` 에 `ignore = all`(committed·공유 default) 설정 — board PM-commit 이 design(코드)
+         git status 를 오염시키지 않게(누출 0·② 참조 형상). board.py init 이 추가로 `.git/config`
+         ignore=all 도 설정한다(`_configure_board_submodule` 재사용·per-clone).
+      4. 복사된 dormant `wiki/tickets` 제거 — board 는 이제 submodule 에 산다(`board_root()` 가
+         `board/tickets` 존재로 board/ 로 해소하므로 wiki/tickets 는 잉여·② 형상엔 부재).
+    """
+    board_dir = dest_root / ".project_manager" / "board"
+    copied_tickets = dest_root / ".project_manager" / "wiki" / "tickets"
+    if board_dir.exists():
+        print(f"오류: {_BOARD_SUBMODULE_PATH} 가 이미 존재 — board submodule 셋업 중단.",
+              file=sys.stderr)
+        return 1
+    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_"))
+    try:
+        # ── 1. clone remote → temp; 비었으면 스캐폴드 seed ──
+        rc, out = _board_setup_git(["clone", remote_url, str(tmp_clone)], cwd=None)
+        if rc != 0:
+            print(f"오류: board remote clone 실패 (rc={rc}) — {remote_url}\n{out.strip()}",
+                  file=sys.stderr)
+            return rc or 1
+        rc_head, _ = _board_setup_git(["rev-parse", "--verify", "HEAD"], cwd=tmp_clone)
+        seeded = rc_head != 0  # HEAD 없음 = 커밋 0 = 빈 remote(신규 공유 board).
+        if seeded:
+            if not copied_tickets.is_dir():
+                print("오류: 복사된 wiki/tickets 부재 — board 스캐폴드 불가(트리 복사 확인).",
+                      file=sys.stderr)
+                return 1
+            shutil.copytree(copied_tickets, tmp_clone / "tickets")
+            for status in ("open", "claimed", "blocked", "done"):
+                sd = tmp_clone / "tickets" / status
+                sd.mkdir(parents=True, exist_ok=True)
+                (sd / ".gitkeep").touch(exist_ok=True)  # 빈 status dir git 추적(합류 유저 checkout).
+            (tmp_clone / "areas.md").write_text(_board_areas_scaffold(), encoding="utf-8")
+            for step in (["add", "-A"],
+                         ["commit", "-m", "board scaffold (pm-import --new --board-submodule)"],
+                         ["push", "origin", "HEAD"]):
+                rc, out = _board_setup_git(step, cwd=tmp_clone)
+                if rc != 0:
+                    print(f"오류: board seed `git {step[0]}` 실패 (rc={rc})\n{out.strip()}",
+                          file=sys.stderr)
+                    return rc or 1
+        else:
+            # 내용 있는 remote(합류) — **실제 board 인지 검증**(codex+reviewer must-fix). 오타/비-board
+            #   URL 을 주면 clone 은 성공하고 seeded=False 로 흘러 아래(try 밖)에서 submodule add + step 4
+            #   가 dormant wiki/tickets 를 무조건 제거 → board/tickets 부재인데 폴백처(wiki/tickets)도
+            #   삭제 = 깨진 dual-inert board 를 rc0 "완료"로 낸다. add·dest mutation *전*(부작용 0·finally
+            #   가 temp 정리)에 tickets/·areas.md 존재로 board 형태를 확인해 명확 실패시킨다.
+            if not (tmp_clone / "tickets").is_dir() or not (tmp_clone / "areas.md").exists():
+                print(
+                    f"오류: --board-remote {remote_url!r} 은 유효한 board repo 가 아닙니다 "
+                    f"(tickets/·areas.md 부재). 신규면 *빈* remote 를, 합류면 기존 board remote 를 "
+                    f"주세요 (오타·비-board URL 확인).",
+                    file=sys.stderr)
+                return 1
+    finally:
+        shutil.rmtree(tmp_clone, ignore_errors=True)
+
+    # ── 2. submodule add (remote 는 이제 non-empty — checkout 성공) ──
+    rc, out = _board_setup_git(
+        ["submodule", "add", remote_url, _BOARD_SUBMODULE_PATH], cwd=dest_root)
+    if rc != 0:
+        print(f"오류: git submodule add 실패 (rc={rc}) — {remote_url}\n{out.strip()}",
+              file=sys.stderr)
+        if seeded:
+            # 방금 우리가 remote 를 scaffold+push 했으므로 remote 는 이제 non-empty 다 — fresh dest 로
+            #   재시도하면 합류(재사용) 경로를 탄다(빈 remote 초기화 아님·중복 scaffold 없음).
+            print("  (remote 는 이미 scaffold 됨 — fresh dest 로 재시도 시 기존 board 합류 경로).",
+                  file=sys.stderr)
+        _cleanup_partial_board(dest_root)
+        return rc or 1
+
+    # ── 3. .gitmodules ignore=all (committed·공유 default) — 표준 submodule add 는 name==path ──
+    rc, out = _board_setup_git(
+        ["config", "-f", str(dest_root / ".gitmodules"),
+         f"submodule.{_BOARD_SUBMODULE_PATH}.ignore", "all"], cwd=dest_root)
+    if rc != 0:
+        # 비차단 — board.py init 의 _configure_board_submodule 이 .git/config 로 보완한다.
+        print(f"경고: .gitmodules ignore=all 설정 실패 (rc={rc}) — "
+              f".git/config 로 보완(board.py init).\n{out.strip()}", file=sys.stderr)
+
+    # ── 4. dormant wiki/tickets 제거 (board 는 submodule 에 산다) ──
+    if copied_tickets.is_dir():
+        shutil.rmtree(copied_tickets, ignore_errors=True)
+
+    label = "신규 스캐폴드 seed+push" if seeded else "기존 board 재사용(합류)"
+    print(f"✓ board submodule 셋업: {_BOARD_SUBMODULE_PATH} "
+          f"(remote={remote_url} · {label} · ignore=all · ADR-0033)")
+    return 0
+
+
 def git_init(dest_root: Path) -> int:
     """--new 대상에 git init. 이미 .git 있으면 skip(0). returncode 를 반환한다.
 
@@ -2553,6 +2733,14 @@ def main(argv: list[str] | None = None) -> int:
                          "opencode 어댑터 미포함이면 무시(claude-only)")
     ap.add_argument("--dry-run", action="store_true",
                     help="적용 없이 fill 계획만 출력 (실 하니스 미호출·파일시스템 미변경)")
+    ap.add_argument("--board-submodule", action="store_true",
+                    help="board(tickets+areas)를 별도 git submodule(.project_manager/board)로 셋업 "
+                         "(ADR-0033·공유 board). --new + --board-remote <url> 필수. "
+                         "미지정(기본)=board 를 superproject inline(무변경).")
+    ap.add_argument("--board-remote", dest="board_remote", metavar="URL", default=None,
+                    help="공유 board 의 remote URL (--board-submodule 필수). 빈 remote 면 tickets "
+                         "구조+areas.md 로 초기화 후 push, 내용 있으면 재사용(합류). URL 안전검증 "
+                         "(credential-in-url·leading-dash·비허용 scheme 거부).")
     args = ap.parse_args(argv)
 
     # --upstream 명시값은 *부작용 전* 입구에서 fail-closed 검증(T-0145·T-0078 동형). 나쁜 값
@@ -2568,6 +2756,29 @@ def main(argv: list[str] | None = None) -> int:
     source_root = Path(args.source).resolve()
     project_name = args.name or dest_root.name
     today = datetime.date.today().isoformat()
+
+    # --board-submodule (ADR-0033·T-0297): board 를 별도 git submodule 로 셋업. --new + --board-remote
+    #   <url> 필수(공유 board 의 본질=remote·미제공 fail-loud). --new 없이 단독은 거부(범위=신규 홈
+    #   셋업). *부작용 전* 입구에서 fail-closed 검증(--upstream·MF2 git_init 규율 정합). inline 기본
+    #   (플래그 없음)은 이 게이트를 통과해 완전 무변경.
+    if args.board_submodule:
+        if not is_new:
+            print("오류: --board-submodule 은 --new 와 함께만 씁니다 (신규 PM 홈 셋업 범위). "
+                  "기존 프로젝트엔 수동 `git submodule add` 를 쓰세요.", file=sys.stderr)
+            return 1
+        if not args.board_remote:
+            print("오류: --board-submodule 은 --board-remote <url> 이 필수입니다 "
+                  "(공유 board 의 본질은 remote). 예: --board-remote git@github.com:you/board.git",
+                  file=sys.stderr)
+            return 1
+        ok, reason = validate_upstream_value(args.board_remote)
+        if not ok:
+            print(f"오류: --board-remote 값 거부 — {reason}", file=sys.stderr)
+            return 1
+    elif args.board_remote:
+        print("오류: --board-remote 는 --board-submodule 과 함께 씁니다 "
+              "(board submodule 셋업 없이는 무의미).", file=sys.stderr)
+        return 1
 
     try:
         template_roots = resolve_template_roots(source_root, args.harness)
@@ -2647,6 +2858,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"  백업 위치: {BACKUP_DIR_NAME}/{today}/  · {git_note}")
     print(f"  → {n_copy} 파일 복사 ({n_backup} 백업), placeholder 치환, board.py init")
+    if args.board_submodule:
+        print(f"  board submodule: {args.board_remote} → {_BOARD_SUBMODULE_PATH} "
+              f"(빈 remote 면 구조 init+push·ignore=all·ADR-0033)")
 
     # fill 단계 계획/게이트 미리보기 (dry-run·실행 공통). 실 하니스 호출 여부는 opt-in 게이트
     # (PM_IMPORT_LIVE_HARNESS=1 AND --fill auto)로 결정한다 — 여기서는 의도만 출력한다.
@@ -2741,6 +2955,18 @@ def main(argv: list[str] | None = None) -> int:
     n_render = render_managed_files(dest_root, subs, copied_relpaths)
     if n_render:
         print(f"✓ {n_render} 파일 render (operational 토큰 치환·ADR-0028·ADR-0031)")
+
+    # ── board submodule 셋업 (ADR-0033·T-0297): --new --board-submodule 일 때만. board.py init
+    #    (아래 run_board_init) *이전* 에 둬야 (a) board_root() 가 board/ 로 해소되고 (b) board.py
+    #    init 의 _configure_board_submodule() 이 .git/config ignore=all 을 설정한다. substitute·
+    #    render *이후* — 복사·치환이 끝난 wiki/tickets 를 스캐폴드로 board 에 seed 하기 때문. inline
+    #    기본(플래그 없음)은 이 블록을 건너뛰어 완전 무변경(현행 --new 회귀). 실패 시 fail-loud.
+    if is_new and args.board_submodule:
+        board_rc = setup_board_submodule(dest_root, args.board_remote)
+        if board_rc != 0:
+            print("오류: board submodule 셋업 실패 — import 미완(board 미배선·부분 홈).",
+                  file=sys.stderr)
+            return board_rc
 
     # MF1: board.py init 은 local.conf 를 무조건 덮으므로(local.conf 는 복사/백업 대상 트리
     #      밖), --into 재-import 면 기존 per-clone 설정(external_review·reviewer_cmd·prefix
