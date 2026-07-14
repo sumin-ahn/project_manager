@@ -7,6 +7,36 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-07-14
+
+worktree add 타임아웃 false-kill 제거(3-layer) + worktree/lease 견고성(중단-안전·정합) + board submodule 자동 셋업.
+
+### Added
+- **`pm-import --new --board-submodule --board-remote <url>`** — `--new` 의 board(tickets+areas)를
+  별도 git submodule(`.project_manager/board`)로 자동 셋업한다(두-git 분리·multi-PM 공유 board·ADR-0033).
+  빈 remote 는 tickets 폴더구조+areas.md 를 seed(commit+push)하고, 기존 board remote 는 재사용(합류)하며,
+  `submodule.<path>.ignore=all` 을 설정한다. 잘못된(비-board) remote 는 명확히 fail-loud. inline 기본은
+  완전 무변경. (T-0297)
+- **worktree add 타임아웃 튜닝 노브** — 엔진 `PM_GIT_TIMEOUT`(초·`none`=무제한)·claude 하네스
+  `BASH_DEFAULT_TIMEOUT_MS`/`BASH_MAX_TIMEOUT_MS`·opencode 하네스
+  `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS` 를 노출한다(기본 30분·`/pm-env` 문서화). (T-0292·T-0293)
+
+### Fixed
+- **worktree add false-kill (타임아웃 3-layer)** — 대형 repo 의 `worktree add`(로컬 bare→full checkout·
+  느린 디스크/VPN/Windows)가 *진행 중인데도* 짧은 고정 타임아웃(120초)에 죽던 것을 고쳤다. 엔진은
+  console-visible 러너 + 관대한 튜닝 가능 타임아웃으로, 그걸 호출하는 하네스(claude·opencode) bash 툴
+  타임아웃도 30분으로 상향해 3층 모두 정상-느린 op 을 false-kill 하지 않게 했다. (T-0292·T-0293)
+- **부분·깨진 bare mirror 의 조용한 통과** — `repo add`/`worktree add` 가 bare mirror 를 *경로 존재*로만
+  판정해, 중단된 clone(하네스 타임아웃·Ctrl-C)이 남긴 부분/빈 bare 를 조용히 재사용하고 나중 `worktree add`
+  가 날 git 에러로 죽던 것을, 실 bare 검증(`rev-parse --is-bare-repository` + HEAD 해소)으로 fail-loud
+  진단하게 고쳤다(파괴적 자동삭제 없음). (T-0294)
+- **create_slot 중단 시 orphan + status 미탐지 + 번호 충돌** — worktree 생성이 외부 중단(Ctrl-C/kill)되면
+  장부에 없는 orphan worktree 가 남고 `status` 가 이를 못 보며 다음 슬롯 생성이 번호 충돌하던 것을 —
+  provisional lease(중단-안전) + git↔장부 reconcile(orphan/stale/incomplete surface·조회 전용) + 안전
+  cleanup(`worktree prune-stale`)로 고쳤다. (T-0295)
+- **worktree add → 슬롯 바인딩 안내 누락** — `worktree add` 성공 출력이 다음 필수 스텝
+  (`/pm-bootstrap <repo> --slot <N>` 바인딩)으로 이어주지 않던 것을 안내 한 줄로 보강했다. (T-0296)
+
 ## [1.1.1] - 2026-07-13
 
 라이브 도그푸딩·채택자 실사용에서 드러난 출하 결함 수정 (버그 wave).
