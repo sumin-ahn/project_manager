@@ -535,6 +535,19 @@ def _board_list(home: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _set_home_user(home: Path, user: str) -> None:
+    """home local.conf 에 `user=` 를 append(last-wins) — 필터 뷰 querying identity 를 그 user 로 스탬프.
+
+    user-first(ADR-0056·T-0312): `list --session <slot>` 은 **현재 사용자 ∩ 슬롯**이라, 각 identity 의
+    세션 뷰는 *그 user 로* 조회해야 자기 claim 이 보인다(옛 area_owner-derivation 폐기 — `--session` 이
+    area_owner 로 user 를 유도하지 않는다). `load_local_config` 는 KEY 마지막 값 채택이라 append 가
+    이긴다(`_append_tiny_ctx_window` 동형). machine composite(`test_board_scoping_isolation`
+    `_write_conf(user=…)`)의 라이브 짝.
+    """
+    conf = home / ".project_manager" / "local.conf"
+    conf.write_text(conf.read_text(encoding="utf-8") + f"\nuser={user}\n", encoding="utf-8")
+
+
 def _parse_list_rows(stdout: str) -> list[tuple[str, str]]:
     """board.py list 출력에서 (status, ticket_id) 목록을 파싱 (`  [status ] T-...  title …`).
 
@@ -588,6 +601,10 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
     # (a)·(c) 각 identity 세션 뷰 — 타 user 미열람 · 자기 열람.
     prefixes = [p for _r, p, _s, _u in identities]
     for _repo, prefix, session, user in identities:
+        # user-first(ADR-0056·T-0312): 세션 뷰 querying identity = 현재 사용자. 각 identity 의
+        # `--session <slot>` 뷰는 *그 user 로* 조회해야 자기 슬롯 claim 이 보인다(area_owner-derivation
+        # 폐기). 그 user 로 스탬프 후 조회 — 아니면 over-exclude(자기 claim 도 안 보임).
+        _set_home_user(home, user)
         view = _board_list(home, "--session", session)
         assert view.returncode == 0, (
             f"board.py list --session {session} rc={view.returncode}\n{view.stderr[-800:]}\n" + tail)
