@@ -447,7 +447,11 @@ def id_prefix(override: str | None = None, *, session: str | None = None) -> str
     (None)하면 `cmd_new` 가 fail-loud(오네임스페이스 방지).
     """
     if override:
-        return override
+        # override 를 등록된 canonical case 로 해소 (ADR-0055·prefix 동일성=case-insensitive fold):
+        # 입력 `aaa` 가 등록 `AAA` 로 fold-매치되면 등록 case `AAA` 로 발행(네임스페이스 분할 방지).
+        # 미등록이면 입력 그대로 — 최초 사용이 canonical case 를 확립하고, 발행 시 `_next_id` 가
+        # 기존 티켓 시리즈 case 로 정련한다(기존 `T-AAA-*` 를 `--prefix aaa` 가 이어감).
+        return _fold_lookup(override, registered_prefixes()) or override
     # 2. 세션 유도 — 바인딩된 세션명 `<repo>_<N>` → repo → areas.md prefix (단일 진실).
     #    session override 를 thread — M>1 슬롯 순회가 슬롯별 정확 해소(전역 재해소 false-green 차단).
     derived = _prefix_from_session(session)
@@ -746,25 +750,64 @@ def _ticket_id_number(tid: str) -> int | None:
 # 하이픈 acronym)을 *해소*해야 하므로 넓지만, *새* 카테고리 prefix 입력은 좁게 권장형식으로 못박아
 # mess 재발을 막는다(작업 카테고리 = 짧은 소문자·언더스코어). 유도/등록된 legacy prefix 는 검증
 # 안 한다(cmd_new 는 명시 override 만·cmd_init 은 명시 --prefix 만 검사).
-_PREFIX_RESERVED: frozenset[str] = frozenset({"none"})   # `none`=무prefix(T-NNNN) 1급 인자(T-0239)·실 prefix 예약
-_PREFIX_FORMAT_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")           # 권장 형식(짧은 소문자·숫자·언더스코어)
+_PREFIX_RESERVED: frozenset[str] = frozenset({"none"})   # `none`=무prefix(T-NNNN) 1급 인자(T-0239)·실 prefix 예약 (case-insensitive·ADR-0055)
+_PREFIX_FORMAT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]*$")    # 형식 sanity (영숫자 시작·이후 영숫자/`_`·대소문자 허용·ADR-0055)
 
 
 def _validate_prefix(prefix: str) -> str | None:
-    """명시 `--prefix` sanity — 위반 사유 메시지 반환, 정상이면 None (ADR-0042).
+    """명시 `--prefix` 형식 sanity — 위반 사유 메시지 반환, 정상이면 None (ADR-0042·ADR-0055).
 
-    - 예약어(`none`): 무prefix(`T-NNNN`) 네임스페이스의 1급 인자로 예약(rename/merge 의
-      from/to/into·T-0239)이라 실 prefix 로 등록/사용 금지.
-    - 형식 `[a-z0-9][a-z0-9_]*`(첫 글자 영숫자 — 소비측 ID grammar `_TICKET_PREFIX_BODY` 와 정합·codex R4): 짧은 소문자 작업 카테고리 권장 — 대문자·특수문자·하이픈·공백·빈
-      문자열은 fail-loud(카테고리 난립·표기 mess 예방).
+    - 예약어(`none`·대소문자 무관): 무prefix(`T-NNNN`) 네임스페이스의 1급 인자로 예약(rename/
+      merge 의 from/to/into·T-0239)이라 실 prefix 로 등록/사용 금지. prefix 동일성이
+      case-insensitive fold 이므로 `NONE`/`None` 도 같은 예약어로 fold 돼 거부된다(ADR-0055).
+    - 형식 `[A-Za-z0-9][A-Za-z0-9_]*`(첫 글자 영숫자·이후 영숫자/`_`): **대소문자 모두 허용**
+      (ADR-0055 — prefix 동일성은 case-insensitive fold 이되 canonical case 는 보존). 하이픈·
+      공백·특수문자·빈 문자열은 fail-loud(하이픈은 ID 구분자와 충돌 — 이번 변경 범위 아님).
     """
-    if prefix in _PREFIX_RESERVED:
+    if prefix.lower() in _PREFIX_RESERVED:
         return (f"prefix {prefix!r} 은 예약어 — 무prefix(T-NNNN) 네임스페이스의 1급 인자다"
-                "(ADR-0042 §3.2·rename/merge). 실 prefix 로 쓸 수 없다.")
+                "(ADR-0042 §3.2·rename/merge·`none` 은 case-insensitive·ADR-0055). 실 prefix 로 쓸 수 없다.")
     if not _PREFIX_FORMAT_RE.match(prefix):
-        return (f"prefix {prefix!r} 형식 위반 — 작업 카테고리는 `[a-z0-9][a-z0-9_]*`(첫 글자 영숫자 — 소비측 ID grammar `_TICKET_PREFIX_BODY` 와 정합·codex R4)(짧은 소문자·숫자·"
-                "언더스코어) 권장. 대문자·특수문자·하이픈·공백은 금지(ADR-0042).")
+        return (f"prefix {prefix!r} 형식 위반 — 작업 카테고리는 "
+                "`[A-Za-z0-9][A-Za-z0-9_]*`(첫 글자 영숫자·이후 영숫자/`_`·대소문자 허용·"
+                "ADR-0055). 하이픈·특수문자·공백·빈 문자열은 금지"
+                "(하이픈은 `T-{prefix}-NNN` ID 구분자와 충돌·ADR-0042).")
     return None
+
+
+def _fold_lookup(prefix: str, pool: set[str]) -> str | None:
+    """`pool` 에서 `prefix` 와 case-insensitive fold 로 같은 항목을 찾아 반환·없으면 None (ADR-0055).
+
+    prefix 동일성은 소문자 fold 비교다 — 등록/발행된 canonical case 를 대소문자 무관하게 되찾는다
+    (`aaa` 입력 → 등록 `AAA` 반환). 첫 매치를 돌려준다(레지스트리는 fold-유일하므로 매치는 최대 1개).
+    """
+    fold = prefix.lower()
+    return next((p for p in pool if p.lower() == fold), None)
+
+
+def _case_only_conflict(prefix: str, existing: set[str]) -> str | None:
+    """`prefix` 가 기존 항목에 *대소문자만 다르게* fold-매치되면 그 기존 항목, 아니면 None (ADR-0055).
+
+    정확-case 일치는 None(멱등·같은 항목) — case 만 다른 근접 중복(`aaa` vs 기존 `AAA`)만 잡아
+    네임스페이스 분할을 fail-loud 로 막는 데 쓴다(등록·rename/merge dst·repo add). **모든 fold
+    매치를 훑는다**(codex must-fix): 이미 오염된 pool 에 exact `aaa` 와 case-only `AAA` 가 함께
+    있으면 `_fold_lookup` 의 첫-매치(set 순회·비결정)가 exact 를 먼저 만나 split 를 놓칠 수 있으므로,
+    case 가 다른 매치가 하나라도 있으면 결정적으로(정렬 첫) 그것을 충돌로 반환한다.
+    """
+    fold = prefix.lower()
+    conflicts = sorted(p for p in existing if p.lower() == fold and p != prefix)
+    return conflicts[0] if conflicts else None
+
+
+def _fold_key(prefix: str | None) -> str | None:
+    """prefix 의 네임스페이스 동일성 키 — 문자열은 소문자 fold, None(무prefix)은 그대로 (ADR-0055).
+
+    prefix 동일성은 case-insensitive fold 이므로 `AAA`≡`aaa` 는 같은 키(`aaa`)로, legacy 무prefix
+    (None)는 None 과만 같은 키다. rename/merge/delete 의 **source-측 매칭·collision 정규화**가 이
+    키로 비교해 `T-AAA-*` 를 `aaa` source 로 잡고, `T-AAA-001`/`T-aaa-001` 오염 공존을 collision 으로
+    잡는다(canonical case 보존과 별개 — 여긴 *비교* 층이라 소문자 fold 만).
+    """
+    return prefix.lower() if prefix is not None else None
 
 
 # ── 티켓 ID 참조 rewriter 코어 (ADR-0042 §3.3 step 4·T-0238) ───────────────────
@@ -2497,17 +2540,44 @@ def next_numeric_id(base_dir: Path, statuses: tuple[str, ...],
 _ID_SCAN_STATUSES: tuple[str, ...] = (*STATUS_DIRS, ".drafts")
 
 
+def _next_prefixed_id(prefix: str) -> str:
+    """Next `T-<canonical>-NNN` for `prefix`, matched **case-insensitively** (ADR-0055).
+
+    prefix 동일성은 case-insensitive fold 이되 발행 ID 는 *기존 시리즈* case(canonical)를 이어쓴다
+    — `--prefix aaa` 가 case-분할 `T-aaa-*` 를 새로 파지 않고 기존 `T-AAA-*` 를 잇게 한다. 파일명을
+    LITERAL prefix + `re.IGNORECASE` 로 매치(하이픈 포함 prefix 도 번호 경계 모호성 0·현행
+    `T-{prefix}-(\\d+)-` 규칙과 동형)해 prefix 가 fold-일치하는 모든 case 변종의 최대 번호+1 을
+    센다(case-insensitive 카운트). canonical case = 최저 번호 티켓의 실제 case(결정적). fold-일치
+    티켓이 없으면 입력 case 그대로(최초 사용이 canonical case 확립)·번호 1.
+    """
+    fold_re = re.compile(rf"^T-({re.escape(prefix)})-(\d+)-", re.IGNORECASE)
+    max_num = 0
+    canonical = prefix                 # 최초 사용: 입력 case 가 canonical.
+    anchor_num: int | None = None      # 최저 번호(그 티켓 case 를 canonical 로·결정적).
+    for d in _ID_SCAN_STATUSES:
+        for p in (tickets_dir() / d).glob("T-*.md"):
+            m = fold_re.match(p.name)
+            if not m:
+                continue
+            num = int(m.group(2))
+            max_num = max(max_num, num)
+            if anchor_num is None or num < anchor_num:
+                anchor_num = num
+                canonical = m.group(1)   # 파일명에 쓰인 실제 case (예 `AAA`).
+    return f"T-{canonical}-{max_num + 1:03d}"
+
+
 def _next_id(prefix: str | None = None) -> str:
     """Next ticket ID. Namespaced per prefix so concurrent areas never collide.
 
     prefix=None → legacy `T-NNNN` (4-digit). prefix="PAY" → `T-PAY-NNN` (3-digit),
-    counted independently (scans only `T-PAY-*`). The legacy regex `T-(\\d+)-`
-    never matches a prefixed file, so the two namespaces stay disjoint.
+    counted independently. The legacy regex `T-(\\d+)-` never matches a prefixed
+    file, so the two namespaces stay disjoint. prefix 동일성은 case-insensitive fold —
+    `--prefix aaa` 는 기존 `T-AAA-*` 시리즈를 이어간다(`_next_prefixed_id`·ADR-0055).
+    legacy 경로(prefix=None)는 무변경(`T-NNNN` 회귀 0).
     """
     if prefix:
-        n = next_numeric_id(tickets_dir(), _ID_SCAN_STATUSES,
-                            f"T-{prefix}-*.md", rf"T-{re.escape(prefix)}-(\d+)-")
-        return f"T-{prefix}-{n:03d}"
+        return _next_prefixed_id(prefix)
     n = next_numeric_id(tickets_dir(), _ID_SCAN_STATUSES, "T-*.md", r"T-(\d+)-")
     return f"T-{n:04d}"
 
@@ -2832,8 +2902,19 @@ def cmd_init(args: argparse.Namespace) -> int:
             return 1
     namespaced = bool(prefix)  # prefix 있음 = multi-repo 네임스페이스 모드(협업 아님·ADR-0016)
     if namespaced:
-        if prefix in registered_prefixes():
+        registered = registered_prefixes()
+        # case-only 근접중복 검출은 등록 ∪ **티켓** prefix (ADR-0055·`_validate_dst_prefix` 와 대칭) —
+        # 미등록 `T-aaa-*` 티켓이 있는데 `init --prefix AAA` 하는 case-불일치도 fail-loud 로 안내한다.
+        existing = registered | _existing_ticket_prefixes()
+        if prefix in registered:
             print(f"prefix {prefix!r} 이미 등록됨 (areas.md) — local.conf 만 갱신.")
+        elif (conflict := _case_only_conflict(prefix, existing)) is not None:
+            # case-only 중복 거부 (ADR-0055) — 이미 있는 `AAA` 와 대소문자만 다른 `aaa` 등록은
+            # 레지스트리/티켓과 fold-충돌한다(네임스페이스 분할). 기존 canonical case 로 안내.
+            print(f"[중단] prefix {prefix!r} 은 기존 {conflict!r} 과 대소문자만 다르다 "
+                  f"(prefix 동일성은 case-insensitive·ADR-0055). 기존 case {conflict!r} 를 "
+                  "그대로 쓰라 (areas 미변경·부작용 0).", file=sys.stderr)
+            return 1
         else:
             if not args.area:
                 print(f"새 prefix {prefix!r} 등록엔 --area <설명> 필요.", file=sys.stderr)
@@ -3563,13 +3644,14 @@ def cmd_prefix_list(args: argparse.Namespace) -> int:
 # slug 파일명 rename → 홈 git clean 가드 → board-git 백업 commit. 티켓 물리삭제 없음.
 
 def _parse_prefix_arg(raw: str) -> str | None:
-    """CLI prefix 인자 → 실 prefix(str) 또는 None(무prefix). 예약어 `none` → None.
+    """CLI prefix 인자 → 실 prefix(str) 또는 None(무prefix). 예약어 `none`(대소문자 무관) → None.
 
     `none` 은 이름 없는(`T-NNNN`) 네임스페이스의 1급 인자(ADR-0042 §3.2)라 from/to/into 어디서든
-    `None`(무prefix) 로 해소된다. `none` 이 실 prefix 로 등록될 수 없게 예약돼 있어(`_validate_prefix`)
-    실 카테고리와 충돌하지 않는다.
+    `None`(무prefix) 로 해소된다. prefix 동일성이 case-insensitive fold 이므로 `NONE`/`None` 도
+    같은 예약어로 fold 된다(ADR-0055). `none` 이 실 prefix 로 등록될 수 없게 예약돼 있어
+    (`_validate_prefix`) 실 카테고리와 충돌하지 않는다.
     """
-    return None if raw in _PREFIX_RESERVED else raw
+    return None if raw.lower() in _PREFIX_RESERVED else raw
 
 
 def _format_ticket_id(prefix: str | None, num: int) -> str:
@@ -3609,12 +3691,28 @@ def _scan_prefix_tickets() -> list[dict[str, Any]]:
     return out
 
 
+def _existing_ticket_prefixes() -> set[str]:
+    """티켓 ID 에 실제로 쓰인 prefix 집합 (canonical case·ADR-0055 fold 네임스페이스 판정용).
+
+    `_scan_prefix_tickets` 의 canonical ID 해소(frontmatter id 우선·파일명 폴백)를 재사용해
+    숫자-slug 모호성 없이 실 prefix 만 모은다. rename/merge dst 의 case-only 중복 검출이 이
+    집합에 fold-비교한다(기존 `T-AAA-*` 가 있으면 dst `aaa` 를 fail-loud).
+    """
+    return {p for t in _scan_prefix_tickets() if (p := t["prefix"])}
+
+
 def _rename_map(src: str | None, dst: str | None,
                 tickets: list[dict[str, Any]]) -> dict[str, str]:
-    """rename 무충돌 맵 — src 네임스페이스 티켓의 prefix 만 dst 로 교체(번호 유지)."""
+    """rename 무충돌 맵 — src 네임스페이스 티켓의 prefix 만 dst 로 교체(번호 유지).
+
+    src 매칭은 **case-insensitive fold**(`_fold_key`·ADR-0055) — `rename aaa bbb` 가 기존
+    `T-AAA-*`(prefix `AAA`)를 잡아 relabel 한다(case 만 다르면 silent no-op 하던 갭 봉합). dst 는
+    `_validate_dst_prefix` 가 exact canonical case 를 강제하므로 그대로 발행 case 다.
+    """
+    src_key = _fold_key(src)
     id_map: dict[str, str] = {}
     for t in tickets:
-        if t["prefix"] != src:
+        if _fold_key(t["prefix"]) != src_key:
             continue
         new_id = _format_ticket_id(dst, t["num"])
         if new_id != t["id"]:
@@ -3630,12 +3728,16 @@ def _merge_append_map(sources: list[str | None], into: str | None,
     created 안에서 기존 상대순서를 보존한다(ADR-0042 §Decision 3·finance_dev append 사례).
     created 부재(빈 문자열) 티켓은 정렬에서 맨 앞(최고령)으로 간다 — created 없는 티켓은 대개
     구세대(초기 도입 전) 산출물이라 최고령 배치가 자연스럽다(suggestion 채택·현행 유지).
+
+    source membership 은 **case-insensitive fold**(`_fold_key`·ADR-0055) — `merge aaa --into bbb`
+    가 기존 `T-AAA-*` source 를 모은다. into(대상) max 계산은 exact(`== into`) — `_validate_dst_prefix`
+    가 into 를 exact canonical case 로 강제하므로 case-혼동이 없다(source 측만 fold).
     """
-    src_index = {p: i for i, p in enumerate(sources)}
-    src_tickets = [t for t in tickets if t["prefix"] in src_index]
+    src_index = {_fold_key(p): i for i, p in enumerate(sources)}
+    src_tickets = [t for t in tickets if _fold_key(t["prefix"]) in src_index]
     start = max((t["num"] for t in tickets if t["prefix"] == into), default=0)
     ordered = sorted(
-        src_tickets, key=lambda t: (t["created"], src_index[t["prefix"]], t["num"]))
+        src_tickets, key=lambda t: (t["created"], src_index[_fold_key(t["prefix"])], t["num"]))
     id_map: dict[str, str] = {}
     for i, t in enumerate(ordered, start=start + 1):
         new_id = _format_ticket_id(into, i)
@@ -3650,12 +3752,16 @@ def _merge_reorder_map(sources: list[str | None], into: str | None,
 
     전체 interleave 라 대상 티켓 ID 도 바뀌어 전 참조 rewrite(17k refs 고위험)라 opt-in 이다.
     tiebreak: 대상 그룹 먼저(-1), 그다음 source 목록 순서, 그다음 기존 번호.
+
+    source membership 은 case-insensitive fold(`_fold_key`·ADR-0055)·into 그룹은 exact(`== into`·
+    `_validate_dst_prefix` 가 canonical case 강제) — `_merge_append_map` 과 동일 규율.
     """
-    src_index = {p: i for i, p in enumerate(sources)}
-    involved = [t for t in tickets if t["prefix"] == into or t["prefix"] in src_index]
+    src_index = {_fold_key(p): i for i, p in enumerate(sources)}
+    involved = [t for t in tickets
+                if t["prefix"] == into or _fold_key(t["prefix"]) in src_index]
 
     def _key(t: dict[str, Any]) -> tuple[str, int, int]:
-        group = -1 if t["prefix"] == into else src_index[t["prefix"]]
+        group = -1 if t["prefix"] == into else src_index[_fold_key(t["prefix"])]
         return (t["created"], group, t["num"])
 
     id_map: dict[str, str] = {}
@@ -3671,13 +3777,15 @@ def _collision_key(tid: str) -> tuple[str | None, int] | str:
 
     문자열 비교로는 `T-001` 과 `T-0001` 이 서로 다른 최종 ID 로 보여 zero-pad 폭만 다른 *같은
     논리 티켓번호*의 공존을 놓친다(내부 reviewer should-fix). `(prefix, int)` 로 정규화해 폭
-    불일치도 같은 키로 묶어 abort 로 잡는다. 순번 미파싱(malformed)은 리터럴 문자열로 폴백해
-    자기끼리만 충돌 판정(오검출 없음).
+    불일치도 같은 키로 묶어 abort 로 잡는다. prefix 는 **case-insensitive fold**(`_fold_key`·
+    ADR-0055) — 이미 오염된 `T-AAA-001`/`T-aaa-001` 공존 보드에서 rename/merge 가 그 case-split 를
+    collision 으로 잡는다(무손실 abort). 순번 미파싱(malformed)은 리터럴 문자열로 폴백해 자기끼리만
+    충돌 판정(오검출 없음).
     """
     num = _ticket_id_number(tid)
     if num is None:
         return tid
-    return (_ticket_prefix(tid), num)
+    return (_fold_key(_ticket_prefix(tid)), num)
 
 
 def _detect_collisions(id_map: dict[str, str], all_ids: set[str]) -> list[str]:
@@ -3899,15 +4007,26 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
 
 
 def _validate_dst_prefix(raw: str, parsed: str | None) -> str | None:
-    """대상 카테고리(dst/into) 형식 sanity — 위반 메시지 반환·정상이면 None.
+    """대상 카테고리(dst/into) 형식 sanity + case-only 중복 거부 — 위반 메시지·정상이면 None (ADR-0055).
 
     `none`(parsed=None)은 항상 허용(이름 지우기·무prefix). 실 prefix 는 새/재사용 카테고리
-    이름이므로 `_validate_prefix`(예약어+`[a-z0-9][a-z0-9_]*`(첫 글자 영숫자 — 소비측 ID grammar `_TICKET_PREFIX_BODY` 와 정합·codex R4))로 못박아 malformed ID 발행을 막는다.
-    source prefix 는 *기존* 발행분이라 검증하지 않는다(대문자·하이픈 legacy 존중).
+    이름이므로 `_validate_prefix`(예약어+`[A-Za-z0-9][A-Za-z0-9_]*`·대소문자 허용·ADR-0055)로
+    못박아 malformed ID 발행을 막는다. source prefix 는 *기존* 발행분이라 검증하지 않는다(하이픈
+    legacy 존중). 형식 통과 후 dst 가 기존 prefix(등록 ∪ 티켓)에 대소문자만 다르게 fold-매치되면
+    fail-loud — `_detect_collisions` 는 case-민감이라 `T-aaa-005` 와 `T-AAA-005` 를 다른 ID 로 봐
+    case-분할을 못 잡으므로, 여기서 기존 canonical case 로 안내해 분할을 원천 차단한다.
     """
     if parsed is None:
         return None
-    return _validate_prefix(raw)
+    reason = _validate_prefix(raw)
+    if reason:
+        return reason
+    conflict = _case_only_conflict(raw, registered_prefixes() | _existing_ticket_prefixes())
+    if conflict is not None:
+        return (f"대상 prefix {raw!r} 은 기존 {conflict!r} 과 대소문자만 다르다 "
+                f"(prefix 동일성은 case-insensitive·ADR-0055·네임스페이스 분할 방지). "
+                f"기존 case {conflict!r} 로 지정하라.")
+    return None
 
 
 def cmd_prefix_rename(args: argparse.Namespace) -> int:
@@ -3956,9 +4075,11 @@ def cmd_prefix_merge(args: argparse.Namespace) -> int:
     if reason:
         print(f"[중단] {reason}", file=sys.stderr)
         return 1
-    if into in sources:
-        print(f"[중단] --into 대상({args.into})이 source 목록에 있다 — 자기 자신에 merge 불가.",
-              file=sys.stderr)
+    if _fold_key(into) in {_fold_key(s) for s in sources}:
+        # 자기-merge 가드도 case-insensitive (ADR-0055) — `merge aaa --into AAA` 는 fold-동일
+        # 네임스페이스라 자기 자신에 merge 다(source fold-매칭이 노출한 클래스).
+        print(f"[중단] --into 대상({args.into})이 source 목록에 있다 — 자기 자신에 merge 불가"
+              "(대소문자 무관·ADR-0055).", file=sys.stderr)
         return 1
     reorder = bool(getattr(args, "reorder_chronological", False))
 
@@ -4043,7 +4164,10 @@ def cmd_prefix_delete(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     dry_run = bool(getattr(args, "dry_run", False))
-    count = sum(1 for t in _scan_prefix_tickets() if t["prefix"] == target)
+    # 티켓 존재 카운트는 **case-insensitive fold**(`_fold_key`·ADR-0055) — `delete AAA` 가 case-변종
+    # `T-aaa-*` 도 세어, fold-비지 않은 네임스페이스를 "빈 것"으로 오판해 등록만 지우는 것을 막는다.
+    target_key = _fold_key(target)
+    count = sum(1 for t in _scan_prefix_tickets() if _fold_key(t["prefix"]) == target_key)
     if count > 0:
         print(f"[중단] prefix {args.prefix} 에 티켓 {count}개 — delete 는 빈(0티켓) prefix 전용"
               f"(무손실·물리삭제 없음). 개명은 `board.py prefix rename {args.prefix} <B|none>`, "

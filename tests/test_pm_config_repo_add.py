@@ -390,6 +390,22 @@ def test_repo_add_idempotent_by_repo_name_not_prefix(pc, tmp_path):
     assert board.append_calls == []           # 중복 등록 안 됨(멱등)
 
 
+def test_repo_add_rejects_case_only_duplicate_repo_name(pc, tmp_path, capsys):
+    """`repo add svc` 인데 이미 `SVC` 등록 → rc 1·부작용 0 (repo명 case-insensitive·ADR-0055·T-0311·DoD 3).
+
+    case 만 다른 근접 중복은 레지스트리에 fold-충돌하는 두 행을 만든다(네임스페이스 분할) — clone/
+    등록/훅 어떤 부작용보다 앞에서 fail-loud 하고 등록 canonical case 로 안내한다.
+    """
+    board = FakeBoard(registered=("SVC",))    # 대문자로 이미 등록됨
+    gitr = GitFake()
+    rc = pc.cmd_repo_add(_args(name="svc"), board=board, clone_runner=gitr,
+                         repos_dir=tmp_path / ".repos")
+    assert rc == 1
+    assert "대소문자만 다르다" in capsys.readouterr().err
+    assert board.append_calls == []           # 등록 안 됨
+    assert _clone_call(gitr) is None          # clone 도 안 함(부작용 0)
+
+
 # ── 헬퍼 직접 단위 (배선 격리) ───────────────────────────────────────────────
 
 

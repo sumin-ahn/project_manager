@@ -799,6 +799,23 @@ def cmd_repo_add(
         )
         return 1
 
+    # case-only 중복 거부 (ADR-0055·repo명=prefix 동일성=case-insensitive fold) — 정확-case 는
+    # 아래 already_registered 재사용(멱등) 경로로 빠지지만, case 만 다른 근접 중복(`svc` vs 등록
+    # `SVC`)은 레지스트리에 fold-충돌하는 두 행을 만든다(네임스페이스 분할). **어떤 부작용(clone·
+    # mkdir·등록·훅)보다 앞에서** 등록 canonical case 로 안내하고 fail-loud(부작용 0).
+    registered_names = board_mod.registered_repos()
+    if name not in registered_names:
+        fold = name.lower()
+        conflict = next((r for r in registered_names if r.lower() == fold), None)
+        if conflict is not None:
+            print(
+                f"[중단] repo {name!r} 은 이미 등록된 {conflict!r} 과 대소문자만 다르다 "
+                f"(repo명·prefix 동일성은 case-insensitive·ADR-0055). 등록된 case {conflict!r} 를 "
+                "그대로 쓰라 (clone/등록/훅 전혀 하지 않았다·부작용 0).",
+                file=sys.stderr,
+            )
+            return 1
+
     # owner = areas.md 등록 식별자(registrant·**귀속 쓰기**) — 미해소면 fail-loud
     # (**어떤 부작용(bare clone·areas_append·훅 설치)보다 앞에서**·board.cmd_init owner 와 동형·
     # ADR-0040 D1). _default_session 이 미바인딩(leased ≥2·무바인딩)에서 None 을 돌려주므로,
@@ -821,8 +838,9 @@ def cmd_repo_add(
     bare_path = repos_dir / f"{name}.git"
     # 멱등 재등록 판별은 **repo명**으로 한다(prefix 로 세지 않는다) — 자동시드 폐지(ADR-0042)
     # 후 prefix 칼럼이 비므로 `registered_prefixes()` 는 이 repo 를 못 센다. `registered_repos()`
-    # 는 repo 칼럼을 직접 세어 중복 append(같은 repo 두 줄)를 막는다.
-    already_registered = name in board_mod.registered_repos()
+    # 는 repo 칼럼을 직접 세어 중복 append(같은 repo 두 줄)를 막는다. 위 case-only 가드에서 이미
+    # 조회한 `registered_names` 를 재사용한다(같은 areas 스냅샷·중복 조회 dedupe).
+    already_registered = name in registered_names
     runner = clone_runner or _real_clone_runner()
 
     # bare 는 *경로 존재*(exists)만이 아닌 *실 bare git repo* 인지로 판정한다 (T-0294) — 중단된

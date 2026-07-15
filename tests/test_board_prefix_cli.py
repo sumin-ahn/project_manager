@@ -213,6 +213,14 @@ def test_collision_key_normalizes_prefix_and_number(board):
     assert board._collision_key("garbage") == "garbage"  # 순번 미파싱 → 리터럴
 
 
+def test_collision_key_folds_prefix_case(board):
+    """`_collision_key` prefix 는 case-insensitive fold — `T-AAA-001`/`T-aaa-001` 같은 키 (ADR-0055·T-0311)."""
+    assert board._collision_key("T-AAA-001") == board._collision_key("T-aaa-001")
+    assert board._collision_key("T-AAA-001") == ("aaa", 1)   # canonical 비교키는 소문자
+    # 경계: `AB` vs `ABC` 는 fold 해도 다른 네임스페이스(substring-prefix 오검출 금지).
+    assert board._collision_key("T-AB-001") != board._collision_key("T-ABC-001")
+
+
 # ════════════════════════════════════════════════════════════════════════
 # rename — 무충돌 교체 / 충돌 안내 / none 양방향
 # ════════════════════════════════════════════════════════════════════════
@@ -282,6 +290,48 @@ def test_rename_no_matching_tickets_is_noop(board, capsys):
     rc = board.cmd_prefix_rename(_ns(src="ghost", dst="bar", dry_run=False))
     assert rc == 0
     assert "티켓이 없다" in capsys.readouterr().out
+
+
+def test_rename_rejects_case_only_dst_conflict(board, capsys):
+    """dst 가 기존 `T-AAA-*` 에 대소문자만 다르게 fold-매치 → rc 1·무변경 (ADR-0055·T-0311·DoD 3).
+
+    `_detect_collisions` 는 case-민감이라 `T-aaa-001` vs `T-AAA-001` 를 못 잡는다 — `_validate_dst_prefix`
+    가 fold-비교로 case-분할을 원천 차단한다.
+    """
+    _seed_ticket(board, "T-AAA-001")
+    _seed_ticket(board, "T-bbb-001")
+    rc = board.cmd_prefix_rename(_ns(src="bbb", dst="aaa", dry_run=False))
+    assert rc == 1
+    assert "대소문자만 다르다" in capsys.readouterr().err
+    assert _ids_on_disk(board) == {"T-AAA-001", "T-bbb-001"}   # 무변경(case-분할 없음)
+
+
+def test_rename_to_new_prefix_still_allowed(board):
+    """dst 가 fold-충돌 없는 새 prefix 면 정상 rename (case-only 가드가 정상 rename 을 막지 않음)."""
+    _seed_ticket(board, "T-AAA-001")
+    _seed_ticket(board, "T-bbb-001")
+    rc = board.cmd_prefix_rename(_ns(src="bbb", dst="ccc", dry_run=False))
+    assert rc == 0
+    assert _ids_on_disk(board) == {"T-AAA-001", "T-ccc-001"}
+
+
+def test_rename_source_is_case_insensitive(board):
+    """SOURCE 도 case-insensitive fold — `rename aaa bbb` 가 기존 `T-AAA-*` 를 relabel(no-op 아님·ADR-0055·T-0311 codex must-fix 1)."""
+    _seed_ticket(board, "T-AAA-001")
+    _seed_ticket(board, "T-AAA-002")
+    rc = board.cmd_prefix_rename(_ns(src="aaa", dst="bbb", dry_run=False))
+    assert rc == 0
+    assert _ids_on_disk(board) == {"T-bbb-001", "T-bbb-002"}   # 소문자 src 가 대문자 시리즈 잡음
+
+
+def test_rename_polluted_fold_namespace_collides(board, capsys):
+    """오염 보드(`T-AAA-001`+`T-aaa-001` 공존) rename → collision abort·무변경 (ADR-0055·collision fold·T-0311 fix 3)."""
+    _seed_ticket(board, "T-AAA-001")
+    _seed_ticket(board, "T-aaa-001")   # 같은 fold+번호 = 이미 case-split 오염
+    rc = board.cmd_prefix_rename(_ns(src="aaa", dst="ccc", dry_run=False))
+    assert rc == 1
+    assert "충돌" in capsys.readouterr().err
+    assert _ids_on_disk(board) == {"T-AAA-001", "T-aaa-001"}   # 무손실 abort
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -403,6 +453,58 @@ def test_merge_no_source_tickets_is_noop(board, capsys):
     assert "변경 없음" in capsys.readouterr().out
 
 
+def test_merge_rejects_case_only_into_conflict(board, capsys):
+    """`merge bbb --into aaa` 인데 기존 `T-AAA-*` 존재 → rc 1·무변경 (ADR-0055·T-0311·DoD 3)."""
+    _seed_ticket(board, "T-AAA-001")
+    _seed_ticket(board, "T-bbb-001")
+    rc = board.cmd_prefix_merge(
+        _ns(sources=["bbb"], into="aaa", reorder_chronological=False, dry_run=False))
+    assert rc == 1
+    assert "대소문자만 다르다" in capsys.readouterr().err
+    assert _ids_on_disk(board) == {"T-AAA-001", "T-bbb-001"}   # 무변경
+
+
+def test_merge_into_exact_canonical_case_appends(board):
+    """`merge bbb --into AAA`(정확 canonical case) → 기존 `T-AAA-*` 뒤에 append (case-only 가드 통과·무분할)."""
+    _seed_ticket(board, "T-AAA-001")
+    _seed_ticket(board, "T-bbb-001")
+    rc = board.cmd_prefix_merge(
+        _ns(sources=["bbb"], into="AAA", reorder_chronological=False, dry_run=False))
+    assert rc == 0
+    assert _ids_on_disk(board) == {"T-AAA-001", "T-AAA-002"}   # bbb-001 → AAA-002 (분할 없음)
+
+
+def test_merge_source_is_case_insensitive(board):
+    """SOURCE 도 case-insensitive fold — `merge aaa --into bbb` 가 `T-AAA-*` source 를 모아 append (ADR-0055·T-0311 codex must-fix 2)."""
+    _seed_ticket(board, "T-bbb-001", created="2026-06-01")
+    _seed_ticket(board, "T-AAA-001", created="2026-08-01")
+    rc = board.cmd_prefix_merge(
+        _ns(sources=["aaa"], into="bbb", reorder_chronological=False, dry_run=False))
+    assert rc == 0
+    assert _ids_on_disk(board) == {"T-bbb-001", "T-bbb-002"}   # AAA-001 → bbb-002 (max=1 뒤 append)
+
+
+def test_merge_source_case_insensitive_reorder(board):
+    """`--reorder-chronological` 경로도 source fold 매칭 — `T-AAA-*` 가 created 순 재번호에 포함 (T-0311 must-fix 2)."""
+    _seed_ticket(board, "T-bbb-001", created="2026-08-01")
+    _seed_ticket(board, "T-AAA-001", created="2026-06-01")
+    rc = board.cmd_prefix_merge(
+        _ns(sources=["aaa"], into="bbb", reorder_chronological=True, dry_run=False))
+    assert rc == 0
+    assert _ids_on_disk(board) == {"T-bbb-001", "T-bbb-002"}   # 둘 다 bbb 로 1..2 재번호(AAA 포함)
+
+
+def test_merge_self_into_via_fold_rejected(board, capsys):
+    """`merge aaa --into AAA`(fold-동일) → 자기 자신 merge 로 fail-loud (self-guard fold·ADR-0055·T-0311)."""
+    _seed_ticket(board, "T-AAA-001")
+    rc = board.cmd_prefix_merge(
+        _ns(sources=["aaa"], into="AAA", reorder_chronological=False, dry_run=False))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "자기 자신" in err or "다르다" in err
+    assert _ids_on_disk(board) == {"T-AAA-001"}               # 무변경
+
+
 def test_merge_dry_run_reports_scale_no_write(board, capsys):
     _seed_ticket(board, "T-0001")
     _seed_ticket(board, "T-foo-001")
@@ -481,6 +583,15 @@ def test_delete_nonempty_prefix_fails_loud(board, capsys):
     assert "티켓 1개" in err
     assert "rename" in err and "merge" in err
     assert _ids_on_disk(board) == {"T-foo-001"}  # 물리삭제 없음
+
+
+def test_delete_count_is_case_insensitive(board, capsys):
+    """`delete AAA` 는 case-변종 `T-aaa-*` 티켓도 세어 fail-loud — 빈 것 오판 안 함 (ADR-0055·T-0311 fix 4)."""
+    _seed_ticket(board, "T-aaa-001")   # 대상과 case 만 다른 티켓 존재
+    rc = board.cmd_prefix_delete(_ns(prefix="AAA", dry_run=False))
+    assert rc == 1
+    assert "티켓 1개" in capsys.readouterr().err   # count fold → 1 (0 아님)
+    assert _ids_on_disk(board) == {"T-aaa-001"}    # 물리삭제 없음
 
 
 def test_delete_none_rejected(board, capsys):

@@ -755,13 +755,16 @@ def test_init_namespaced_registers_and_emits_namespaced_id(init_board):
 # ════════════════════════════════════════════════════════════════════════
 
 def test_validate_prefix_helper(board):
-    """`_validate_prefix` 단위 — 예약어/대문자/특수문자 거부, 정상 소문자 통과."""
+    """`_validate_prefix` 단위 — 예약어(case-insensitive)/특수문자 거부·대소문자 통과 (ADR-0055)."""
     assert board._validate_prefix("none") is not None      # 예약어
-    assert board._validate_prefix("Foo") is not None        # 대문자
-    assert board._validate_prefix("pay-x") is not None       # 하이픈
+    assert board._validate_prefix("NONE") is not None       # 예약어 (case-insensitive fold·ADR-0055)
+    assert board._validate_prefix("None") is not None       # 예약어 (case-insensitive fold·ADR-0055)
+    assert board._validate_prefix("pay-x") is not None       # 하이픈 (ID 구분자 충돌)
     assert board._validate_prefix("pay x") is not None       # 공백
     assert board._validate_prefix("") is not None            # 빈 문자열
-    assert board._validate_prefix("pay") is None             # 정상
+    assert board._validate_prefix("pay") is None             # 정상 소문자
+    assert board._validate_prefix("Foo") is None             # 대문자 허용 (ADR-0055)
+    assert board._validate_prefix("AAA") is None             # 대문자 허용 (ADR-0055)
     assert board._validate_prefix("bill_ing") is None        # 언더스코어 허용
     assert board._validate_prefix("p2") is None              # 숫자 허용
 
@@ -776,12 +779,14 @@ def test_cmd_new_rejects_reserved_prefix_none(board, capsys):
         assert list((board.TICKETS_DIR / status).glob("T-*.md")) == []
 
 
-def test_cmd_new_rejects_uppercase_prefix(board, capsys):
-    """`new --prefix Foo`(대문자) → rc 1·부작용 0 (형식 [a-z0-9_]+ 위반)."""
-    rc = board.cmd_new(_new_args(prefix="Foo"))
-    assert rc == 1
-    assert "형식 위반" in capsys.readouterr().err
-    assert list((board.TICKETS_DIR / "open").glob("T-*.md")) == []
+def test_cmd_new_accepts_uppercase_prefix(board):
+    """`new --prefix AAA`(대문자) → rc 0·`T-AAA-001` 발행 (ADR-0055·case 허용·DoD 1)."""
+    rc = board.cmd_new(_new_args(prefix="AAA"))
+    assert rc == 0
+    created = list((board.TICKETS_DIR / "open").glob("T-AAA-001-*.md"))
+    assert len(created) == 1
+    fm, _ = board.load_ticket(created[0])
+    assert fm["id"] == "T-AAA-001"
 
 
 def test_cmd_new_accepts_valid_lowercase_prefix(board):
@@ -799,12 +804,102 @@ def test_cmd_init_rejects_reserved_prefix_none(init_board, capsys):
     assert not init_board.AREAS_FILE.exists()
 
 
-def test_cmd_init_rejects_uppercase_prefix(init_board, capsys):
-    """`init --prefix Foo`(대문자) → rc 1·부작용 0 (areas 미생성)."""
-    rc = init_board.cmd_init(_init_args(prefix="Foo", area="x", owner="me"))
+def test_cmd_init_accepts_uppercase_prefix(init_board):
+    """`init --prefix AAA`(대문자) → rc 0·areas 등록 (ADR-0055·case 허용)."""
+    rc = init_board.cmd_init(_init_args(prefix="AAA", area="x", owner="me"))
+    assert rc == 0
+    assert init_board.registered_prefixes() == {"AAA"}     # 등록 case 보존
+
+
+# ════════════════════════════════════════════════════════════════════════
+# prefix case-insensitivity (ADR-0055·T-0311·DoD) — 대소문자 허용 + fold 동일성
+# + canonical case 보존. 단일 불변식: "prefix 비교는 case-insensitive, canonical case 보존".
+# ════════════════════════════════════════════════════════════════════════
+
+def test_fold_lookup_and_case_only_conflict_helpers(board):
+    """`_fold_lookup`(canonical 되찾기)·`_case_only_conflict`(case-only 근접중복) 단위 (ADR-0055)."""
+    assert board._fold_lookup("aaa", {"AAA"}) == "AAA"      # fold 로 등록 case 되찾기
+    assert board._fold_lookup("AAA", {"AAA"}) == "AAA"      # 정확 매치
+    assert board._fold_lookup("zzz", {"AAA"}) is None       # 무매치
+    assert board._case_only_conflict("aaa", {"AAA"}) == "AAA"   # case-only 근접중복
+    assert board._case_only_conflict("AAA", {"AAA"}) is None    # 정확 매치 = 중복 아님(멱등)
+    assert board._case_only_conflict("bbb", {"AAA"}) is None    # 무관
+    # 오염 pool (exact + case-only 공존) — 모든 fold 매치를 훑어 결정적으로 split 를 잡는다
+    # (codex must-fix: `_fold_lookup` 첫-매치가 exact 를 먼저 만나 놓치던 비결정 결함).
+    assert board._case_only_conflict("aaa", {"AAA", "aaa"}) == "AAA"   # exact 있어도 case-only 검출
+    assert board._case_only_conflict("AAA", {"AAA", "aaa"}) == "aaa"   # 반대 방향도 결정적
+
+
+def test_next_id_case_fold_continues_existing_series(board):
+    """`--prefix aaa` 는 기존 `T-AAA-*` 시리즈를 이어간다(case-fold 카운트·등록 case 보존·DoD 2)."""
+    _seed_ticket(board, "T-AAA-003")
+    # 소문자 입력이 대문자 시리즈로 fold → 등록 case `AAA` 로 이어 발행(신규 `T-aaa-*` 안 만듦).
+    assert board._next_id("aaa") == "T-AAA-004"
+    assert board._next_id("AAA") == "T-AAA-004"   # 대문자 입력도 동일
+
+
+def test_cmd_new_lowercase_input_continues_uppercase_series(board):
+    """실 명령 경로: `T-AAA-*` 보드에 `new --prefix aaa` → `T-AAA-002`(신규 `T-aaa-*` 없음·DoD 2)."""
+    _seed_ticket(board, "T-AAA-001")
+    rc = board.cmd_new(_new_args(prefix="aaa", title="lower input"))
+    assert rc == 0
+    assert list((board.TICKETS_DIR / "open").glob("T-AAA-002-*.md"))     # 등록 case 로 이어감
+    assert list((board.TICKETS_DIR / "open").glob("T-aaa-*.md")) == []   # case-분할 없음
+
+
+def test_id_prefix_override_resolves_registered_canonical_case(board):
+    """override `aaa` 가 등록 `AAA` 로 fold-매치되면 등록 case `AAA` 로 해소 (ADR-0055·surface #4)."""
+    board.areas_append("AAA", "결제", "alice")            # 대문자 등록
+    assert board.id_prefix("aaa") == "AAA"                # 소문자 입력 → 등록 canonical
+    assert board.id_prefix("AAA") == "AAA"                # 정확 case 유지
+    assert board.id_prefix("zzz") == "zzz"                # 미등록 → 입력 그대로
+
+
+def test_cmd_init_rejects_case_only_duplicate_prefix(init_board, capsys):
+    """`init --prefix aaa` 가 이미 등록된 `AAA` 와 case-only 중복 → rc 1·부작용 0 (DoD 3)."""
+    assert init_board.cmd_init(_init_args(prefix="AAA", area="x", owner="me")) == 0
+    rc = init_board.cmd_init(_init_args(prefix="aaa", area="x", owner="me"))
     assert rc == 1
-    assert "형식 위반" in capsys.readouterr().err
-    assert not init_board.AREAS_FILE.exists()
+    assert "대소문자만 다르다" in capsys.readouterr().err
+    assert init_board.registered_prefixes() == {"AAA"}    # 새 `aaa` 행 안 생김(단일 등록 유지)
+
+
+def test_next_id_lowercase_and_legacy_unaffected(board):
+    """소문자 보드·legacy `T-NNNN` 은 case 변경에 무영향 (회귀 0·DoD 4)."""
+    _seed_ticket(board, "T-pay-005")
+    assert board._next_id("pay") == "T-pay-006"           # 소문자 시리즈 그대로 이어감
+    _seed_ticket(board, "T-0009")
+    assert board._next_id(None) == "T-0010"               # legacy 순번 그대로
+
+
+def test_next_id_substring_prefix_boundary(board):
+    """`AB` vs `ABC` 는 다른 네임스페이스 — `-` 경계 durable 가드(fold 해도 substring 오검출 금지·T-0311)."""
+    _seed_ticket(board, "T-ABC-001")
+    _seed_ticket(board, "T-ABC-002")
+    assert board._next_id("AB") == "T-AB-001"             # ABC 시리즈에 간섭 안 받음
+    _seed_ticket(board, "T-AB-005")
+    assert board._next_id("AB") == "T-AB-006"             # AB 만 카운트
+    assert board._next_id("ABC") == "T-ABC-003"           # ABC 만 카운트
+
+
+def test_fold_key_helper(board):
+    """`_fold_key` — 문자열 소문자 fold·None(무prefix) 보존 (source 매칭·collision 정규화 비교키·ADR-0055)."""
+    assert board._fold_key("AAA") == "aaa"
+    assert board._fold_key("aaa") == "aaa"
+    assert board._fold_key(None) is None                  # legacy 무prefix 는 None 키
+    assert board._fold_key("AB") != board._fold_key("ABC")   # substring 경계 보존
+
+
+def test_cmd_init_rejects_case_only_vs_unregistered_tickets(board, capsys):
+    """미등록 `T-aaa-*` 티켓이 있는데 `init --prefix AAA` → case-불일치 fail-loud (등록∪티켓 대칭·T-0311 fix 5).
+
+    `board` 픽스처(areas 부재)에 티켓만 심고 init 대칭 가드가 티켓 prefix 까지 본다는 걸 확증한다.
+    """
+    _seed_ticket(board, "T-aaa-001")                      # 미등록·소문자 시리즈만 존재
+    rc = board.cmd_init(_init_args(prefix="AAA", area="x", owner="me"))
+    assert rc == 1
+    assert "대소문자만 다르다" in capsys.readouterr().err
+    assert not board.AREAS_FILE.exists()                  # 등록 안 함(부작용 0)
 
 
 # ════════════════════════════════════════════════════════════════════════
