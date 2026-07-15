@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-07-15
+
+채택자(v1.1.0) 버그 wave — prefix 대소문자 + 세션/슬롯 뷰 격리를 채택자 관점으로 정합. 다 실버그·v1.1.3 재현 확인. dual gate(내부 reviewer + codex) 통과.
+
+### Fixed
+- **prefix 대소문자 허용** (ADR-0055 amends ADR-0042) — 생성/rename 검증이 소문자-only 라, 보드에 대문자 prefix 티켓(`T-AAA-*`)이 존재·정상 list 되는데도 `board new --prefix AAA` 를 자기 도구가 거부하던 등록측(`_REPO_NAME_RE`)·파싱측(`_TICKET_PREFIX_RE`)과의 3중 문법 불일치를 정합. prefix 동일성 = **case-insensitive fold**(대문자 허용)·canonical(등록/최초-사용) case **보존**(저장 소문자 강제·ID 재번호 없음 → 기존 대문자 보드 무손실·마이그 0). 등록/rename/merge/delete/repo-add 는 case-only 근접중복 fail-loud. (T-0311)
+- **세션/슬롯 뷰 user-first** (ADR-0056 refines ADR-0053) — 필터 뷰(`list --mine`/`--session`/`--slot`)의 querying identity 를 area_owner-derived 에서 **현재 사용자**(`user_name()`)로 고정하고, `--session`/`--slot` 을 **내 것 ∩ 그 슬롯**(claim: user AND slot)으로 좁힌다. **타 사용자는 어떤 필터 뷰에도 안 나온다**(전체는 무필터 `list` 전용). bootstrap `--slot N` 카운트가 슬롯 정체성으로 조회(라벨 "(slot N)")되고 커맨드 카드가 `--mine`(전 슬롯)/`--session`(∩ 이 슬롯) 을 구분한다. legacy 슬롯-only claim 은 진짜 solo(distinct ticket-user AND distinct area_owner 둘 다 ≤1)에서만 slot 매칭 포함(multi-user 는 strict-exclude·`migrate-identity` backfill). 채택자 실측 S1(bootstrap 카운트)·S2(claim 가시성)·S3(필터 축) 종결. (T-0312)
+
 ## [1.1.3] - 2026-07-14
 
 multi-PM 다중사용자 격리 robustness 완결 — 값-연결(격리·전파·표기·livegate) 근본 재설계 + 라이브 게이트. 다중사용자 공유 board 에서 타 사용자 미claim 티켓이 세션 뷰에 유출되던 격리 깨짐을 근본 fix 하고, 어댑터 safety-훅이 조용히 낡던 전파 갭을 닫았다.
