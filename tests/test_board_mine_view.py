@@ -419,18 +419,34 @@ def test_mine_claim_uses_rsplit_user(board, capsys):
     assert ids == ["T-ACC-009"]
 
 
-def test_mine_legacy_slot_only_claim_my_slot_included(board, capsys):
-    """**round-4 must-fix**: user 해소 상태에서도 legacy 슬롯-only claim 이 *내 슬롯*이면 잡힌다.
+def test_mine_solo_git_email_legacy_slot_only_included(board, capsys):
+    """**codex R2 회귀 가드**: git email 로 my_user 해소된 solo(distinct user ≤1)도 자기 슬롯의
+    legacy 슬롯-only claim 을 --mine 에서 계속 본다.
 
-    구 데이터(`claimed_by=<slot>`·user 차원 없음)를 마이그레이션 전에도 숨기지 않는다 —
-    (b) 의 `or cb == my_slot` 갈래가 내 슬롯(my_slot==pm-1)의 슬롯-only claim 을 포함한다.
-    이전 단순화(_claimed_by_user 만)는 이를 누락해 내 in-progress 가 --mine 에서 빠졌다.
+    게이트가 `not multi_user`(진짜 solo)라 git email 유무와 무관. `my_user is None` proxy 였으면
+    git email 만 설정한 흔한 solo 에서 legacy 슬롯 claim 이 사라지는 과보정(round-1)이 났다.
     """
-    _write_conf(board, user="alice", session="pm-1")
-    _write_areas(board)
-    _seed(board, "T-ACC-005", "claimed", claimed_by="pm-1")  # 슬롯-only·내 슬롯
+    board._git_config_email = lambda: "solo@example.com"  # type: ignore[assignment]
+    _write_conf(board, session="pm-1")                      # user= 없음 → git email 폴백(my_user 해소)
+    _seed(board, "T-ACC-005", "claimed", claimed_by="pm-1")  # legacy 슬롯-only·내 슬롯
     ids = _list_ids(board, capsys, mine=True)
-    assert ids == ["T-ACC-005"]
+    assert ids == ["T-ACC-005"]     # solo → legacy 슬롯-only 포함(git email 해소돼도)
+
+
+def test_mine_multiuser_legacy_slot_only_excluded(board, capsys):
+    """multi_user(distinct ≥2)면 legacy 슬롯-only claim(user 토큰 없음)은 ambiguous → 제외.
+
+    `migrate-identity` 로 user 를 backfill 해야 표시된다. 내 user-qualified claim 은 계속 보이고,
+    남의 user-qualified claim 은 별도로 제외된다(user 불일치)."""
+    board._git_config_email = lambda: "alice"  # type: ignore[assignment]
+    _write_conf(board, session="pm-1")
+    _seed(board, "T-ACC-004", "claimed", claimed_by="alice/pm-1")   # 내 user-qualified (distinct: alice)
+    _seed(board, "T-ACC-005", "claimed", claimed_by="pm-1")         # legacy 슬롯-only
+    _seed(board, "T-ACC-006", "claimed", claimed_by="bob/pm-2")     # bob → distinct 2 → multi_user
+    ids = _list_ids(board, capsys, mine=True)
+    assert "T-ACC-004" in ids          # 내 user-qualified → 포함
+    assert "T-ACC-005" not in ids      # multi_user → legacy 슬롯-only ambiguous 제외
+    assert "T-ACC-006" not in ids      # 남의 user-qualified → 제외
 
 
 def test_mine_legacy_slot_only_claim_other_slot_excluded(board, capsys):
@@ -473,14 +489,57 @@ def test_mine_solo_user_none_not_empty(board, capsys):
     assert "T-0004" not in ids
 
 
+# 단일-소유자 2-area 레지스트리 — genuinely solo(내 repo 2개·distinct area_owner 1·codex R3).
+_SOLO_TWO_AREA = (
+    "# Area Registry\n\n"
+    "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+    "|---|---|---|---|---|---|---|---|\n"
+    "| service-a | PAY | g:a | pytest -q | reg | develop | main | alice |\n"
+    "| service-b | ACC | g:b | pytest -q | reg | develop | main | alice |\n"
+)
+
+
 def test_mine_solo_includes_all_open(board, capsys):
-    """솔로 폴백 (a) = 전체 open(area_owner 필터 비적용·user 미상이라 소유 판정 불가)."""
+    """솔로 폴백 (a) = 전체 open — **genuinely solo**(단일 area_owner) + user 미상이면 소유 판정 불가.
+
+    codex R3 정정: solo = distinct ticket-user ≤1 AND distinct area_owner ≤1. 여기 레지스트리는
+    두 area 모두 alice 소유(내 repo 2개·distinct owner 1)라 진짜 solo → all-open degrade. area_owner
+    가 *다른* 2명이면 multi-user 라 strict-exclude 다(→ test_mine_multiowner_all_legacy_no_leak)."""
     _write_conf(board, session="pm-1")
-    _write_areas(board)  # areas 있어도 user 미상이면 area_owner 판정 안 함
+    board.AREAS_FILE.write_text(_SOLO_TWO_AREA, encoding="utf-8")  # 단일 owner → genuinely solo
     _seed(board, "T-PAY-001", "open")
     _seed(board, "T-ACC-001", "open")
     ids = _list_ids(board, capsys, mine=True)
     assert set(ids) == {"T-PAY-001", "T-ACC-001"}
+
+
+def test_distinct_area_owners_counts_multiplicity(board):
+    """`_distinct_area_owners` — areas.md 의 non-empty area_owner distinct 수(codex R3 solo 완결 신호)."""
+    board.AREAS_FILE.write_text(_AREAS, encoding="utf-8")            # PAY→alice · ACC→bob
+    assert board._distinct_area_owners() == 2
+    board.AREAS_FILE.write_text(_SOLO_TWO_AREA, encoding="utf-8")    # 둘 다 alice
+    assert board._distinct_area_owners() == 1
+    board.AREAS_FILE.unlink()                                        # 부재 → 0(솔로 신호 보존)
+    assert board._distinct_area_owners() == 0
+
+
+def test_mine_multiowner_all_legacy_no_leak(board, capsys):
+    """**codex R3 leak 가드**: 다중-owner areas(alice·bob) + claim 이 전부 legacy 슬롯-only(user 토큰 0)
+    인 보드. `_distinct_ticket_users()` 만으론 solo 오판(distinct ≤1)이지만 `_distinct_area_owners()`
+    (=2)로 multi-user 판정 → `--slot 1` 이 타 area(bob)의 legacy `service-b_1` 을 suffix 매칭으로
+    안 끌어온다(ADR-0056 무유출). 내 user-qualified claim 은 계속 보여 비공허.
+
+    OLD(area_owner 다중성 미반영): solo 오판 → legacy 포함 경로 발동 → bob area legacy claim 누출.
+    """
+    _write_conf(board, user="alice", session="service-a_1")
+    _write_areas(board)  # PAY→alice · ACC→bob (distinct area_owner 2 → multi-user)
+    _seed(board, "T-PAY-006", "claimed", claimed_by="alice/service-a_1")  # 내 user-qualified·_1
+    _seed(board, "T-PAY-005", "claimed", claimed_by="service-a_1")        # 내 area·legacy 슬롯-only·_1
+    _seed(board, "T-ACC-005", "claimed", claimed_by="service-b_1")        # bob area·legacy 슬롯-only·_1
+    ids = _list_ids(board, capsys, slot=1)
+    assert "T-PAY-006" in ids        # 비공허 — 내 user-qualified claim 은 보임
+    assert "T-ACC-005" not in ids    # bob area legacy claim 누출 0(codex R3 핵심)
+    assert "T-PAY-005" not in ids    # multi-user → legacy 슬롯-only 는 ambiguous 라 내 area 도 제외
 
 
 def test_mine_solo_claim_matches_my_slot(board, capsys):

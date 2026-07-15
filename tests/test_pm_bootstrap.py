@@ -265,8 +265,12 @@ def _slot_status_obj(wp, *, upstream="origin/a5", upstream_ok=True, submodules=N
     )
 
 
-def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool):
-    """격리된 PmBootstrap — board/git/log/pm_state stub, worktree_pool/board mock 주입(lease 테스트 동형)."""
+def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool, board_fn=None):
+    """격리된 PmBootstrap — board/git/log/pm_state stub, worktree_pool/board mock 주입(lease 테스트 동형).
+
+    `board_fn` 미지정이면 무해한 기본 board 러너(open 1건·lint clean)를 쓴다 — 슬롯-스코프 카운트
+    조회(argv/라벨)를 검증하는 테스트는 커스텀 러너를 주입해 board list argv 를 캡처한다(T-0312).
+    """
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
     areas_file = tmp_path / "areas.md"
@@ -276,10 +280,12 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool):
 
     board_output = "  [open   ] T-0001  something  pm  tag\n"
 
-    def fake_board(args):
+    def default_board(args):
         if args[:1] == ["lint"]:
             return 0, "✓ no lint issues\n"
         return 0, board_output
+
+    fake_board = board_fn if board_fn is not None else default_board
 
     def fake_git(args):
         if args[:2] == ["rev-parse", "--abbrev-ref"]:
@@ -373,6 +379,57 @@ def test_bootstrap_slot_status_absent_pool_graceful(bootstrap, tmp_path, capsys)
     # identity 는 나오되 슬롯 상태 절은 없다(백본 부재 fail-soft).
     assert "당신은 **A PM**" in out
     assert "### 슬롯 상태" not in out
+
+
+# ── S1 (ADR-0056·T-0312): 슬롯 정체성 부트스트랩 = 슬롯-스코프 카운트 ─────────────
+
+
+def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path, capsys):
+    """**S1**: 슬롯 정체성(--repo/--slot) 부트스트랩은 카운트를 `list --session <repo>_<N>`(내 것 ∩
+    그 슬롯)로 뽑고 라벨 "(slot N)" 로 announce 한다 — user-wide `list --mine`(전 슬롯) mislabel 근절.
+
+    비공허: board list 호출 argv 가 `--session A_1`(≠`--mine`)이고, 렌더 카운트 라벨이 "(slot 1)"
+    (≠"(mine)")임을 확증한다 — S1 증상("claimed 4 (mine)" 인데 `list --session` 은 0)의 근본.
+    """
+    calls: list[list[str]] = []
+    # slot 뷰(내 것 ∩ 슬롯) = open 1(슬롯무관 backlog) + claimed 2(이 슬롯 진행분).
+    slot_list_out = (
+        "  [open   ] T-A-001  backlog     -           -\n"
+        "  [claimed] T-A-010  wip a       alice/A_1   -\n"
+        "  [claimed] T-A-011  wip b       alice/A_1   -\n"
+    )
+    slot_done_out = "  [done   ] T-A-009  done a       alice/A_1   -\n"
+
+    def fake_board(args):
+        calls.append(args)
+        if args[:1] == ["lint"]:
+            return 0, "✓ no lint issues\n"
+        if args == ["list", "--status", "done", "--session", "A_1"]:
+            return 0, slot_done_out
+        if args == ["list", "--session", "A_1"]:
+            return 0, slot_list_out
+        raise AssertionError(f"슬롯 정체성인데 슬롯-스코프 아님: {args}")
+
+    pool = FakePool(slot_status_ret=_slot_status_obj(wp, submodules=[]))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=pool, board_fn=fake_board)
+    rc = inst.run(repo="A", slot=1)
+    assert rc == 0
+    out = capsys.readouterr().out
+
+    # 1) board list 는 --mine 이 아니라 그 슬롯 정체성(--session A_1)으로 조회됐다(default + done).
+    list_calls = [c for c in calls if c[:1] == ["list"]]
+    assert list_calls == [
+        ["list", "--session", "A_1"],
+        ["list", "--status", "done", "--session", "A_1"],
+    ]
+    assert not any("--mine" in c for c in calls), "슬롯 정체성인데 --mine 로 조회(S1 mislabel 재현)"
+    # 2) 카운트 라벨 = "(slot 1)" (그 슬롯 정체성으로 조회) — user-wide "(mine)" mislabel 근절.
+    assert "claimed: 2 (slot 1)" in out
+    assert "open: 1 (slot 1)" in out
+    assert "done: 1 (slot 1)" in out
+    assert "(mine)" not in out
+    # 3) open ticket 은 슬롯무관 backlog 로 명시(카운트 slot-scope 와 혼동 방지).
+    assert "open ticket (claim 가능·backlog·슬롯무관): T-A-001" in out
 
 
 # ── T-0284: fresh 슬롯 self-sufficiency (스크램블 낭비 제거) ──────────────────

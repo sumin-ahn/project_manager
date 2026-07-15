@@ -287,8 +287,9 @@ def _import_multipm_home(tmp_path: Path, harness: str,
         _seed_git_repo(origins / repo)
         add_args = ["repo", "add", repo, "--git", str(origins / repo)]
         # area_owners 지정 시 그 repo 의 area_owner(=그 area 의 user 소유)를 `--user` 로 스탬프한다
-        # (multi-USER composite). areas.md `area_owner` 칼럼이 `_area_owner_from_session`·`_ticket_owner`
-        # 의 소유 유도 소스다 — distinct 2 user 여야 세션 뷰가 strict-exclude(섞임 격리)로 돈다.
+        # (multi-USER composite). areas.md `area_owner` 칼럼은 `_ticket_owner`(open 소유)의 소유 유도
+        # 소스다 — distinct 2 user 여야 세션 뷰가 strict-exclude(섞임 격리)로 돈다. querying identity 는
+        # user-first(ADR-0056)로 현재 사용자다(area_owner-derived 폐기).
         if area_owners and repo in area_owners:
             add_args += ["--user", area_owners[repo]]
         added = _pm_config(home, *add_args)
@@ -459,8 +460,8 @@ def test_release_wave_multirepo_claude_full_wave(tmp_path):
 
 # 각 identity = (repo, prefix, session, user). prefix(al/be)는 repo(alpha/beta)와 별개 축(ID
 # 네임스페이스·소문자 sanity `_validate_prefix`) — `test_board_scoping_isolation._seed_composite` 와
-# 동일 매핑을 라이브 홈에 재현한다. 세션 `<repo>_1` 이 `_area_owner_from_session` 로 소유자를 유도
-# 한다(alpha_1→alice·beta_1→bob·areas.md `area_owner` 칼럼).
+# 동일 매핑을 라이브 홈에 재현한다. areas.md `area_owner` 칼럼이 open 티켓 소유(`_ticket_owner`·
+# alpha→alice·beta→bob)를 정의한다(user-first·ADR-0056: querying identity 는 현재 사용자).
 _MULTIUSER_REPOS = ("alpha", "beta")
 _MULTIUSER_AREA_OWNERS = {"alpha": "alice", "beta": "bob"}
 _MULTIUSER_IDENTITIES = (
@@ -991,8 +992,8 @@ def test_import_multiuser_home_sets_up_two_distinct_area_owners(tmp_path):
 
     라이브 multiuser composite 테스트의 전제(셋업)를 hermetic 하게 검증 — area_owner 가 distinct 2
     user 로 안 서면 세션 뷰가 solo degrade 로 돌아 섞임 격리가 무의미해지고 라이브가 가짜 PASS 로
-    숨는다(여기서 잡힌다). `_area_owner_from_session("alpha_1")→alice`·`("beta_1")→bob` 유도의
-    areas.md 소스(repo→area_owner 매핑)를 못박는다. models 조회는 `_real_models_runner` 스텁 차단.
+    숨는다(여기서 잡힌다). areas.md 의 repo→area_owner 매핑(alpha→alice·beta→bob·open 소유
+    `_ticket_owner`)을 못박는다. models 조회는 `_real_models_runner` 스텁 차단.
     """
     home = _import_multiuser_home(tmp_path, "opencode")
 

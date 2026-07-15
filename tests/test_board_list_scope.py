@@ -1,19 +1,19 @@
-"""`board list --session/--slot` 필터 + 기본뷰 done 접기 단위 테스트 (T-0197).
+"""`board list --session/--slot` 필터 + 기본뷰 done 접기 단위 테스트 (T-0197·ADR-0056 user-first).
 
 `list` 가 `--session`/`--slot` 을 거부하던 argparse 에러(opencode PM 실증)를 없애고,
-`--mine` 과 같은 (a) 내 area open ∨ (b) 내 claim 렌즈를 **명시 식별자**로 돌린다. +
-기본 status 뷰는 활성만(open/claimed/blocked) — done 은 `--status all`(또는 `--status done`)
-에서만 보인다(done 184개 범람 해소).
+**현재 사용자 ∩ 그 슬롯**(claim: user AND slot·open: 슬롯무관 내 backlog·ADR-0056) 렌즈를 **명시
+식별자**로 돌린다 — querying identity 는 항상 현재 사용자(local.conf user=)다. + 기본 status 뷰는
+활성만(open/claimed/blocked) — done 은 `--status all`(또는 `--status done`)에서만 보인다.
 
 이 파일이 검증하는 계약:
-  1. `--session NAME` — 그 세션 이름의 open+claim (완전 일치).
-  2. `--slot N` — slot 규약(`<repo>_<N>`) suffix 매칭.
+  1. `--session NAME` — 현재 사용자 ∩ 그 세션(user AND slot claim·완전 일치). 타 사용자 무유출.
+  2. `--slot N` — 현재 사용자 ∩ 슬롯 _N (slot 규약 `<repo>_<N>` suffix 매칭).
   3. `--status` 셀렉터 — 기본=활성만 · `all`=전체(done 포함) · 특정값=그것만(기존 동작).
   4. argparse 가 `--session`/`--slot`/`--status all`/`--mine` 모두를 에러 없이 받는다
      (opencode PM 실증 회귀 방지) + `--mine`/`--session`/`--slot` 상호 배타.
 
 hermetic 패턴은 `test_board_mine_view.py` 와 동형 — board.py 의 경로 전역을 tmp 프로젝트로
-monkeypatch 하고 git 폴백은 stub 한다.
+monkeypatch 하고 git 폴백은 stub 한다. querying identity 는 local.conf `user=` 로 명시한다.
 """
 from __future__ import annotations
 
@@ -64,6 +64,12 @@ def board(tmp_path, monkeypatch):
     (pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
     return mod
+
+
+def _write_conf(board, **kv) -> None:
+    """local.conf 를 쓴다 — querying identity(user=) 명시용 (ADR-0056 user-first)."""
+    board.LOCAL_CONF.write_text(
+        "".join(f"{k}={v}\n" for k, v in kv.items()), encoding="utf-8")
 
 
 def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
@@ -146,12 +152,26 @@ def test_list_mine_and_session_mutually_exclusive():
 
 
 # ════════════════════════════════════════════════════════════════════════
-# --session NAME — 그 세션 이름의 open+claim (완전 일치)
+# --session NAME — 현재 사용자 ∩ 그 세션 (claim: user AND slot·타 사용자 무유출·ADR-0056)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_session_filter_includes_matching_claim(board, capsys):
-    _seed(board, "T-0001", "claimed", claimed_by="alice/myproject_3")
-    _seed(board, "T-0002", "claimed", claimed_by="bob/myproject_9")
+def test_session_filter_includes_my_claim_in_that_session(board, capsys):
+    """현재 사용자(alice) ∩ 세션 — 내 그-세션 claim 만(user AND slot). 남의(bob) claim 무포함."""
+    _write_conf(board, user="alice")
+    _seed(board, "T-0001", "claimed", claimed_by="alice/myproject_3")   # 내 것·그 세션
+    _seed(board, "T-0002", "claimed", claimed_by="bob/myproject_9")     # 남의 것 → 제외
+    ids = _list_ids(board, capsys, session="myproject_3")
+    assert ids == ["T-0001"]
+
+
+def test_session_filter_excludes_other_user_same_slot_claim(board, capsys):
+    """**타 사용자 무유출(codex leak 가드)**: 같은 슬롯 번호라도 남의 user-qualified claim 은 제외.
+
+    querying user=alice·`--session myproject_3`. bob 이 같은 세션명 슬롯에서 claim 한
+    `bob/myproject_3` 은 slot 은 맞지만 user 가 달라(user AND slot) strict-exclude 된다."""
+    _write_conf(board, user="alice")
+    _seed(board, "T-0001", "claimed", claimed_by="alice/myproject_3")   # 내 것
+    _seed(board, "T-0002", "claimed", claimed_by="bob/myproject_3")     # 남의 것·같은 슬롯 → 제외
     ids = _list_ids(board, capsys, session="myproject_3")
     assert ids == ["T-0001"]
 
@@ -187,10 +207,12 @@ def test_session_filter_legacy_slot_only_claim(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# --slot N — slot 규약(<repo>_<N>) suffix 매칭
+# --slot N — 현재 사용자 ∩ 슬롯 _N (slot 규약 <repo>_<N> suffix 매칭·ADR-0056)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_slot_filter_matches_repo_prefixed_session(board, capsys):
+def test_slot_filter_matches_my_claims_across_repos_same_number(board, capsys):
+    """`--slot 3` = 내(alice) claim ∩ 슬롯 _3 — repo 교차라도 슬롯 번호 _3 이면 잡는다(suffix 매칭)."""
+    _write_conf(board, user="alice")
     _seed(board, "T-0005", "claimed", claimed_by="alice/myproject_3")
     _seed(board, "T-0006", "claimed", claimed_by="alice/otherproj_3")
     ids = _list_ids(board, capsys, slot=3)
@@ -198,13 +220,24 @@ def test_slot_filter_matches_repo_prefixed_session(board, capsys):
 
 
 def test_slot_filter_does_not_match_different_number(board, capsys):
+    _write_conf(board, user="alice")
     _seed(board, "T-0007", "claimed", claimed_by="alice/myproject_3")
     ids = _list_ids(board, capsys, slot=9)
     assert ids == []
 
 
+def test_slot_filter_excludes_other_user_same_slot(board, capsys):
+    """**타 사용자 무유출(codex leak 가드)**: `--slot 3` 이 남의 `bob/x_3` claim 을 slot 번호로 안 끌어온다."""
+    _write_conf(board, user="alice")
+    _seed(board, "T-0005", "claimed", claimed_by="alice/myproject_3")   # 내 것
+    _seed(board, "T-0099", "claimed", claimed_by="bob/otherproj_3")     # 남의 것·같은 슬롯 번호 → 제외
+    ids = _list_ids(board, capsys, slot=3)
+    assert ids == ["T-0005"]
+
+
 def test_slot_filter_matches_legacy_pure_number_slot(board, capsys):
-    """slot 토큰이 순수 숫자(레거시)면 `--slot N` 완전 일치로도 잡힌다."""
+    """slot 토큰이 순수 숫자(레거시)면 `--slot N` 완전 일치로도 잡힌다(내 것·user AND slot)."""
+    _write_conf(board, user="alice")
     _seed(board, "T-0008", "claimed", claimed_by="alice/3")
     ids = _list_ids(board, capsys, slot=3)
     assert ids == ["T-0008"]

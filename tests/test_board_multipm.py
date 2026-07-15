@@ -99,6 +99,10 @@ def board(tmp_path, monkeypatch):
     # 읽는다 — 실 PM 세션 env 가 hermetic 테스트로 새지 않게 제거(장부/local.conf 만이 세션 소스).
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    # user-first(ADR-0056): 필터 뷰 my_user 는 `user_name()`(local.conf user= > git email) 로 해소된다.
+    # git 폴백을 None 으로 stub 해 실 git config user.email 이 hermetic 테스트로 새지 않게 한다
+    # (test_board_mine_view/scoping_isolation 동형·명시 테스트는 local.conf user= 로 덮는다).
+    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
     mod._proj = proj  # 테스트 편의 핸들 (tmp 프로젝트 루트)
     return mod
 
@@ -1705,7 +1709,8 @@ def test_validate_prefix_rejects_leading_underscore(board):
 # ════════════════════════════════════════════════════════════════════════
 
 # 두 사용자 per-user area — alice(repo alpha·prefix AL)·bob(repo beta·prefix BE).
-# 세션명 `alpha_1`(alice)·`beta_1`(bob) 이 `_area_owner_from_session` 로 각 소유자를 유도한다.
+# area_owner(alpha→alice·beta→bob)는 open 티켓 *소유* 정의(`_ticket_owner`)다 — user-first(ADR-0056)
+# 후 querying identity 는 이걸로 유도하지 않고 항상 현재 사용자(local.conf user=)다.
 _TWO_USER_AREAS = (
     "# Area Registry\n\n"
     "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
@@ -1745,14 +1750,16 @@ def _mine_ids(board, capsys, **flags):
 def test_session_excludes_other_users_unclaimed_open(board, capsys):
     """**증상 직접 해소**: created_by=타인·claimed_by=null·open 이 `--session` 결과서 제외.
 
-    현행(버그): `--session` 은 my_user 를 항상 None 으로 둬(T-0198) area-open 이 전체 open 으로
-    새(bob open 유출). fix 후: `_area_owner_from_session("alpha_1")`→alice 로 좁혀 bob open 제외.
+    user-first (ADR-0056): `--session` 의 querying identity = **현재 사용자**(local.conf user=alice).
+    open 소유는 area_owner(alpha→alice·beta→bob)로 해소 → alice 세션은 bob 소유 open(T-BE-001) 제외.
+    (옛 T-0198 은 my_user 를 항상 None 으로 둬 area-open 이 전체 open 으로 새던 것을 근절.)
     """
     board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
+    _write_conf(board, "user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")   # alice 소유 open
     _seed_full(board, "T-BE-001", "open", created_by="bob/beta_1")      # bob 미claim open
     ids = _mine_ids(board, capsys, session="alpha_1")
-    assert "T-BE-001" not in ids     # 타 사용자 미claim open 유출 차단(ADR-0053)
+    assert "T-BE-001" not in ids     # 타 사용자 미claim open 유출 차단(ADR-0056)
     assert ids == ["T-AL-001"]
 
 
@@ -1780,10 +1787,12 @@ def test_mine_includes_my_claim_and_my_area_open(board, capsys):
 
 
 def test_slot_derives_owner_from_single_area(board, capsys):
-    """`--slot N` — 등록 area 가 하나면 그 area_owner 로 my_user 유도(타 사용자 open 제외).
+    """`--slot N` open (a) 는 area_owner 로 소유 해소 — 현재 사용자(alice) area 의 open 만.
 
-    단일 area(alpha·area_owner=alice) 홈에서 `--slot 1` 은 alice 로 유도된다 → bob 이 created_by
-    인 경계-교차 open 은 제외. 예전엔 my_user None 이라 전체 open 을 노출했다(T-0198 근절)."""
+    user-first (ADR-0056): querying identity = 현재 사용자(local.conf user=alice). open 소유는
+    area_owner(alpha→alice) 1차라 같은 area 의 bob-생성 open(T-AL-009)도 소유=alice 로 해소돼
+    alice 의 슬롯 뷰에 든다(open 은 슬롯무관 backlog·소유=area_owner). 예전엔 area_owner 를
+    *querying identity* 로도 썼으나(T-0302) 이제 조회 정체성은 현재 사용자다."""
     single = (
         "# Area Registry\n\n"
         "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
@@ -1791,6 +1800,7 @@ def test_slot_derives_owner_from_single_area(board, capsys):
         "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
     )
     board.AREAS_FILE.write_text(single, encoding="utf-8")
+    _write_conf(board, "user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-AL-009", "open", created_by="bob/alpha_2")   # 같은 area·bob 생성
     # area_owner 운영 중 → 소유=area_owner(alice) 1차 → 둘 다 alice area → 둘 다 포함.
@@ -1870,7 +1880,7 @@ def test_session_multi_user_no_area_owner_excludes_unowned_open(board, capsys):
     assert "T-0002" not in ids     # 타 사용자 미claim open 유출 차단(솔로 degrade 미확장)
 
 
-# ── 신규 헬퍼 단위테스트 — _distinct_ticket_users·_ticket_owner·_area_owner_from_session ──
+# ── 헬퍼 단위테스트 — _distinct_ticket_users·_ticket_owner·_created_by_user ──
 
 def test_distinct_ticket_users_counts_created_and_claimed(board):
     """created_by/claimed_by 의 distinct user 를 센다 — 슬롯-only·미상은 제외."""
@@ -1918,32 +1928,107 @@ def test_ticket_owner_none_when_unresolved(board):
     assert board._ticket_owner({"id": "T-0001"}, area_owner_in_use=False) is None
 
 
-def test_area_owner_from_session_resolves(board):
-    board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
-    assert board._area_owner_from_session("alpha_1") == "alice"
-    assert board._area_owner_from_session("beta_1") == "bob"
+# NB (ADR-0056·T-0312): `_area_owner_from_session`/`_area_owner_for_single_area`(T-0198/T-0302)는
+# querying identity 유도 배선이 폐기되며 함께 제거됐다 — area_owner 는 이제 open 소유 정의
+# (`_ticket_owner`)로만 존속하고, 필터 뷰 my_user 는 항상 `user_name()`(현재 사용자)이다. 그
+# 두 헬퍼의 단위테스트도 함께 삭제(dead-code 가드 없음). user-first 매칭·slot 교집합은 아래
+# 세션-격리 스위트 + user-first 스위트가 검증한다.
 
 
-def test_area_owner_from_session_unregistered_repo_none(board):
-    board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
-    assert board._area_owner_from_session("gamma_1") is None   # 미등록 repo
-    assert board._area_owner_from_session("pm") is None        # 비-슬롯 형태
+# ════════════════════════════════════════════════════════════════════════
+# user-first 뷰 스코프 — 현재 사용자 ∩ 슬롯 · 타 사용자 무유출 (ADR-0056·T-0312).
+#
+# 불변식(단일): 필터 뷰 = 현재 사용자(user_name()) 것. --mine = 내 것 전 슬롯 · --session/--slot
+# = 내 것 ∩ 그 슬롯(claim: user AND slot·open: 슬롯무관 내 backlog). 타 사용자는 어떤 필터 뷰
+# 에도 안 나온다(전체는 무필터 list). area_owner 설정/미설정 양쪽 커버 + solo degrade 회귀 0.
+# ════════════════════════════════════════════════════════════════════════
+
+def _seed_userfirst_board(board, *, areas: bool):
+    """현재 사용자=alice·multi-user(alice+bob)·multi-slot 합성 보드를 심는다.
+
+    alice: alpha_1 에 open(T-AL-001)+claim(T-AL-002) · alpha_2 에 claim(T-AL-003·타 슬롯).
+    bob: beta_1 에 open(T-BE-001)+claim(T-BE-002·타 사용자). `areas`=True 면 area_owner 운영
+    (alpha→alice·beta→bob)·False 면 레지스트리 부재(소유는 created_by.user 2차 폴백).
+    """
+    if areas:
+        board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
+    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")     # 내 open
+    _seed_full(board, "T-AL-002", "claimed", claimed_by="alice/alpha_1")  # 내 claim·alpha_1
+    _seed_full(board, "T-AL-003", "claimed", claimed_by="alice/alpha_2")  # 내 claim·alpha_2(타 슬롯)
+    _seed_full(board, "T-BE-001", "open", created_by="bob/beta_1")        # 타 사용자 open
+    _seed_full(board, "T-BE-002", "claimed", claimed_by="bob/beta_1")     # 타 사용자 claim
 
 
-def test_area_owner_for_single_area(board):
-    single = (
-        "# Area Registry\n\n"
-        "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
-        "|---|---|---|---|---|---|---|---|\n"
-        "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
-    )
-    board.AREAS_FILE.write_text(single, encoding="utf-8")
-    assert board._area_owner_for_single_area() == "alice"
+_BOB_TICKETS = {"T-BE-001", "T-BE-002"}
 
 
-def test_area_owner_for_single_area_multi_is_none(board):
-    board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
-    assert board._area_owner_for_single_area() is None   # 2 area → 모호 → None
+@pytest.mark.parametrize("areas", [True, False])
+def test_userfirst_no_other_user_leak_in_any_filter_view(board, capsys, areas):
+    """타 사용자 무유출 (area_owner 설정/미설정 양쪽): --mine·--session·--slot 어디에도 bob 티켓 0."""
+    _seed_userfirst_board(board, areas=areas)
+    for flags in ({"mine": True}, {"session": "alpha_1"}, {"slot": 1}):
+        ids = set(_mine_ids(board, capsys, **flags))
+        assert not (_BOB_TICKETS & ids), f"{flags} 필터 뷰에 bob 티켓 유출(ADR-0056): {ids}"
+
+
+def test_userfirst_mine_is_all_my_slots(board, capsys):
+    """--mine = 내 것 **전 슬롯** — 내 open + 모든 슬롯의 내 claim(alpha_1·alpha_2). bob 무포함."""
+    _seed_userfirst_board(board, areas=True)
+    ids = set(_mine_ids(board, capsys, mine=True))
+    assert ids == {"T-AL-001", "T-AL-002", "T-AL-003"}
+
+
+def test_userfirst_session_intersects_slot_excludes_my_other_slot_claim(board, capsys):
+    """**S2**: --session alpha_1 = 내 것 ∩ 그 슬롯 — 내 open(슬롯무관) + alpha_1 claim만.
+
+    타 슬롯의 내 claim(T-AL-003·alpha_2)은 --session alpha_1 엔 안 보이고(정상) --mine 엔 보인다.
+    """
+    _seed_userfirst_board(board, areas=True)
+    ids = set(_mine_ids(board, capsys, session="alpha_1"))
+    # 내 open(T-AL-001·슬롯무관 backlog) + 내 alpha_1 claim(T-AL-002). alpha_2 claim 제외.
+    assert ids == {"T-AL-001", "T-AL-002"}
+    assert "T-AL-003" not in ids                      # 타 슬롯의 내 claim → slot 뷰서 제외
+    assert "T-AL-003" in set(_mine_ids(board, capsys, mine=True))  # --mine 엔 나옴(전 슬롯)
+
+
+def test_userfirst_slot_number_intersects(board, capsys):
+    """--slot 2 = 내 것 ∩ 슬롯 _2 — 내 alpha_2 claim(T-AL-003)만·alpha_1 claim 제외·bob 무포함."""
+    _seed_userfirst_board(board, areas=True)
+    ids = set(_mine_ids(board, capsys, slot=2))
+    assert "T-AL-003" in ids                          # 내 claim·slot _2
+    assert "T-AL-002" not in ids                      # 내 claim·slot _1 → --slot 2 제외
+    assert not (_BOB_TICKETS & ids)
+
+
+def test_userfirst_solo_degrade_unaffected(board, capsys):
+    """solo(현재 사용자 미설정·git stub None) — legacy slot degrade + all-open 보존(회귀 0).
+
+    conf user= 없음 → my_user None → --session alpha_1 은 slot 매칭(내 슬롯 claim) + all-open
+    degrade(distinct user ≤1). 다중사용자 격리는 identity 해소 시에만·솔로는 빈 보드 금지."""
+    _seed_full(board, "T-0001", "open")                              # 소유 미상 open
+    _seed_full(board, "T-0002", "claimed", claimed_by="alpha_1")     # 슬롯-only·내 슬롯
+    _seed_full(board, "T-0003", "claimed", claimed_by="alpha_2")     # 슬롯-only·타 슬롯
+    ids = set(_mine_ids(board, capsys, session="alpha_1"))
+    assert ids == {"T-0001", "T-0002"}                # all-open degrade + 내 슬롯 claim, 타 슬롯 제외
+
+
+def test_userfirst_multiuser_excludes_user_qualified_and_ambiguous_legacy(board, capsys):
+    """**codex leak+ambiguity 가드 (durable)**: 다중사용자 보드(distinct ≥2)에서 `--slot N` 은
+    (1) 남의 user-qualified claim(`bob/repo_1`)을 slot 번호로 끌어오지 않고 (2) user 토큰 없는
+    legacy 슬롯-only claim(`repo_1`)도 ambiguous 라 strict-exclude 한다(migrate-identity backfill 전제).
+
+    my_user 미해소(no conf·git stub None)에서도 user-qualified 는 귀속 불가로 제외. legacy 는 진짜
+    solo(¬multi_user)에서만 slot degrade 로 보인다(별도 회귀 가드·test_board_mine_view). 여기선
+    distinct 2(alice·bob)라 multi_user → 셋 다 제외.
+    """
+    _seed_full(board, "T-0001", "claimed", claimed_by="alice/repo_1")   # user-qualified·slot _1
+    _seed_full(board, "T-0002", "claimed", claimed_by="bob/repo_1")     # user-qualified·slot _1(남)
+    _seed_full(board, "T-0003", "claimed", claimed_by="repo_1")         # legacy 슬롯-only·slot _1
+    # no conf → my_user None. distinct users = {alice, bob} = 2 → multi_user.
+    ids = set(_mine_ids(board, capsys, slot=1))
+    assert "T-0001" not in ids and "T-0002" not in ids  # user-qualified → 귀속 불가·남 → 누출 0
+    assert "T-0003" not in ids                          # multi_user → legacy 슬롯-only ambiguous 제외
 
 
 # ════════════════════════════════════════════════════════════════════════

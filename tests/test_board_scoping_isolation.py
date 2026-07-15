@@ -109,7 +109,8 @@ def board(tmp_path, monkeypatch):
 
 
 # ── composite 매트릭스: repo alpha(prefix al·area_owner alice) · beta(prefix be·bob) ──
-# 세션 alpha_1/alpha_2(alice)·beta_1/beta_2(bob) 가 `_area_owner_from_session` 로 소유자를 유도한다.
+# 세션 alpha_1/alpha_2(alice)·beta_1/beta_2(bob). user-first(ADR-0056): querying identity 는 조회
+# 시점 현재 사용자(local.conf user=)·open 소유는 area_owner 로 해소된다(area_owner=open 소유 정의).
 # prefix 는 소문자(`_validate_prefix` 게이트) — repo 명(alpha/beta)과 ID prefix(al/be)는 별개 축.
 _COMPOSITE_AREAS = (
     "# Area Registry\n\n"
@@ -198,22 +199,32 @@ def _seed_composite(board, capsys, *, areas: bool = True) -> types.SimpleNamespa
 # ════════════════════════════════════════════════════════════════════════
 
 def test_session_view_isolates_users_real_create_to_view(board, capsys):
-    """실 생성 composite 에서 `--session <repo>_<N>` 이 소유자별로 정확히 갈린다.
+    """실 생성 composite 에서 `--session <repo>_<N>` = 현재 사용자 ∩ 그 슬롯 (user-first·ADR-0056).
 
-    (a) alice 세션(alpha_1)은 bob 의 미claim open 을 미열람 · (c) 자기 open+claim(양 슬롯) 열람.
-    fix 후 `_area_owner_from_session("alpha_1")→alice` 로 좁혀 유출 차단(옛 my_user 항상 None 근절).
+    querying identity 는 **현재 사용자**(local.conf user=)·claim 은 user AND slot 교집합·open 은
+    슬롯무관 내 backlog. (a) 타 사용자 무유출 · (b) 타 슬롯의 내 claim 은 slot 뷰서 제외(--mine 엔 나옴).
     """
     comp = _seed_composite(board, capsys)
 
-    alice_ids = set(_view(board, capsys, session="alpha_1"))
-    # (a) bob 의 미claim open 유출 0.
-    assert not (comp.bob_open & alice_ids), "alice 세션에 bob 미claim open 유출(ADR-0053 위반)"
-    # (c) alice 자기 open+claim(양 슬롯·user 연속성) 전부 열람.
-    assert alice_ids == comp.alice_all
+    # alice 정체성으로 alpha_1 슬롯 조회 — 내 open(양 슬롯·슬롯무관 backlog) + 내 alpha_1 claim.
+    _write_conf(board, user="alice", session="alpha_1")
+    alice_s1 = set(_view(board, capsys, session="alpha_1"))
+    assert not (comp.bob_all & alice_s1), "alice 세션에 bob 티켓 유출(ADR-0056 위반)"
+    # claim 은 그 슬롯만(al1_claim)·타 슬롯 내 claim(al2_claim)은 제외·내 open 은 양 슬롯.
+    assert alice_s1 == {comp.al1_open, comp.al2_open, comp.al1_claim}
+    assert comp.al2_claim not in alice_s1
 
-    bob_ids = set(_view(board, capsys, session="beta_2"))
-    assert not (comp.alice_all & bob_ids), "bob 세션에 alice 티켓 유출"
-    assert bob_ids == comp.bob_all
+    # 같은 alice 의 --mine = 내 것 **전 슬롯**(양 슬롯 claim + open).
+    alice_mine = set(_view(board, capsys, mine=True))
+    assert not (comp.bob_all & alice_mine), "alice --mine 에 bob 티켓 유출"
+    assert alice_mine == comp.alice_all
+
+    # bob 정체성으로 beta_2 슬롯 조회 — 대칭. alice 티켓 무유출·claim 은 beta_2 만.
+    _write_conf(board, user="bob", session="beta_2")
+    bob_s2 = set(_view(board, capsys, session="beta_2"))
+    assert not (comp.alice_all & bob_s2), "bob 세션에 alice 티켓 유출"
+    assert bob_s2 == {comp.be1_open, comp.be2_open, comp.be2_claim}
+    assert comp.be1_claim not in bob_s2
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -235,35 +246,39 @@ def test_mine_view_isolates_users_real_create_to_view(board, capsys):
 # ════════════════════════════════════════════════════════════════════════
 
 def test_slot_view_isolates_slot_number(board, capsys):
-    """`--slot N` — slot 번호별 claim 만 열람하고 다른 슬롯 claim 은 미열람 (b).
+    """`--slot N` = 현재 사용자(alice) ∩ 슬롯 _N — 내 그-슬롯 claim 만 (user-first·ADR-0056).
 
-    등록 area 가 2개(모호)면 `--slot N` 은 my_user 를 못 유도(None) → 다중사용자 게이트가 소유
-    미해소 open 을 전부 strict-exclude 한다(open 유출 0). claim 은 slot 규칙(`<repo>_<N>`) suffix
-    매칭이라 slot 번호가 repo-교차 namespace 로 잡히지만(문서화된 시맨틱), **slot1 뷰는 slot2 전용
-    claim 을 절대 열람하지 않는다** — 슬롯 격리축.
+    **타 사용자 무유출(codex leak 가드)**: slot 번호가 repo-교차라도 `--slot 1` 은 bob 의 `_1` claim
+    (be1_claim)을 slot 번호로 끌어오지 않는다(user AND slot). 내 slot_2 claim(al2_claim)도 slot_1
+    뷰선 제외(슬롯 격리축). open 은 슬롯무관 내 backlog(area_owner=alice)라 함께 보인다.
     """
     comp = _seed_composite(board, capsys)
+    _write_conf(board, user="alice", session="alpha_1")
 
     slot1_ids = set(_view(board, capsys, slot=1))
-    # slot1 claim(양 user 의 _1)만 · slot2 전용 claim 미열람 · open 은 다중사용자 strict-exclude.
-    assert slot1_ids == {comp.al1_claim, comp.be1_claim}
-    assert comp.al2_claim not in slot1_ids and comp.be2_claim not in slot1_ids
-    assert not (comp.bob_open & slot1_ids)   # 미해소 open 유출 0
+    assert comp.al1_claim in slot1_ids                # 내 slot_1 claim
+    assert comp.al2_claim not in slot1_ids            # 내 slot_2 claim → slot_1 뷰 제외(슬롯 격리)
+    assert not (comp.bob_all & slot1_ids)             # bob(타 사용자) 무유출 — be1_claim 도 제외
+    assert comp.be1_claim not in slot1_ids            # 명시: 같은 _1 슬롯이라도 남의 user-claim 제외
 
     slot2_ids = set(_view(board, capsys, slot=2))
-    assert slot2_ids == {comp.al2_claim, comp.be2_claim}
-    assert comp.al1_claim not in slot2_ids and comp.be1_claim not in slot2_ids
+    assert comp.al2_claim in slot2_ids                # 내 slot_2 claim
+    assert comp.al1_claim not in slot2_ids            # 내 slot_1 claim → slot_2 뷰 제외
+    assert not (comp.bob_all & slot2_ids)             # bob 무유출
 
 
 def test_session_excludes_other_users_slot_exclusive_claim(board, capsys):
-    """(b) 명시: alice slot1 세션(alpha_1)이 bob 의 slot2 **전용** claim(beta_2)을 미열람한다.
+    """(b) 명시: alice(현재 사용자) slot1 세션(alpha_1)이 bob 의 어떤 claim 도 미열람한다.
 
-    타 user·타 슬롯 claim 은 user 불일치(cb_user=bob≠alice) ∧ slot 불일치(beta_2≠alpha_1)로 이중 제외.
+    타 user claim 은 user 불일치(cb_user=bob≠alice)로 제외 — bob 의 slot2 전용 claim(beta_2)도,
+    slot1 claim(beta_1)도 모두. 비공허: alice 자기 alpha_1 claim(al1_claim)은 보여 뷰가 안 빈다.
     """
     comp = _seed_composite(board, capsys)
+    _write_conf(board, user="alice", session="alpha_1")
     alice_ids = set(_view(board, capsys, session="alpha_1"))
+    assert comp.al1_claim in alice_ids                # 비공허 — 내 alpha_1 claim 은 보임
     assert comp.be2_claim not in alice_ids
-    assert not (comp.bob_claim & alice_ids)
+    assert not (comp.bob_all & alice_ids)             # bob 티켓(claim·open) 전부 무유출
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -324,7 +339,7 @@ def _make_pre_fix_is_mine(board):
     """ADR-0053(T-0302) fix **이전**의 `_ticket_is_mine` 재현 — multi_user 게이트 없이
     `my_user is None ∨ not area_owner_in_use` 면 전체 open=mine 으로 degrade(=유출·spike §1)."""
     def _is_mine(status, fm, my_user, my_slot, area_owner_in_use, multi_user,
-                 *, slot_suffix=False):
+                 *, slot_suffix=False, slot_scoped=False):
         cb = fm.get("claimed_by") or ""
         if cb:
             cb_user = board._claimed_by_user(cb)
@@ -346,8 +361,9 @@ def test_pre_fix_session_scoping_leaks_red_proof(board, capsys, monkeypatch):
     green 스위트의 `assert bob_open not in ids` 가 바로 이 유출을 잡는다(catch 검증·[[verify-real-output-not-just-review]]).
     """
     comp = _seed_composite(board, capsys)   # 실 predicate 로는 격리(위 green 테스트가 확증)
-    # 옛 동작 재현: (T1) --session 이 area_owner 유도 전이라 my_user 항상 None + (degrade) 전체 open.
-    monkeypatch.setattr(board, "_area_owner_from_session", lambda *a, **k: None)
+    # 옛 동작 재현: (T1) --session 의 my_user 가 미해소(None·no-conf) + (degrade) 전체 open=mine.
+    # user-first(ADR-0056) 후엔 querying identity=현재 사용자라 conf 없으면 None → 이 degrade sim 이
+    # bob 미claim open 을 alice 세션 뷰에 섞는다(격리 단언이 잡을 대상).
     monkeypatch.setattr(board, "_ticket_is_mine", _make_pre_fix_is_mine(board))
 
     leaked = set(_view(board, capsys, session="alpha_1"))

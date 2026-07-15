@@ -103,6 +103,14 @@ def _line_index(card: str, needle: str) -> int:
     raise AssertionError(f"카드에 {needle!r} 줄이 없음")
 
 
+def _line_containing(card: str, needle: str) -> str:
+    """`needle` 을 담은 첫 줄 전체를 돌려준다(스코프 문구 단언용)."""
+    for line in card.splitlines():
+        if needle in line:
+            return line
+    raise AssertionError(f"카드에 {needle!r} 줄이 없음")
+
+
 def test_card_claim_precondition_adjacent(bootstrap):
     """claim 경고(promote 선행)가 claim 커맨드 줄 바로 아래에 인접한다(4대장 ①)."""
     card = _card(bootstrap, LEAN_IDENTITY)
@@ -196,8 +204,24 @@ def test_card_mine_guide_precedes_full_board(bootstrap):
     # 전체 보드 줄 = `board.py list`(필터 없음) + "타 PM 열람용" 강등 주석.
     full_i = _line_index(card, "타 PM 열람용")
     assert mine_i < full_i, "--mine 이 전체 보드보다 뒤에 옴(ADR-0047 자기 공간 우선 위배)"
-    # 자기 세션 렌즈도 기본 조회면에 함께 앞세운다(=--mine 명시형).
+    # 자기 세션 렌즈(--session)도 기본 조회면에 함께 앞세운다(내 것 ∩ 이 슬롯·user-first).
     assert "list --session project_manager_1" in card
+
+
+def test_card_distinguishes_mine_and_session_scope(bootstrap):
+    """**user-first (ADR-0056·T-0312)**: 카드가 `--mine`(내 것 전 슬롯) vs `--session`(내 것 ∩ 이
+    슬롯) 의 스코프를 명확히 구분한다 — PM 이 "내 슬롯 작업" 조회 커맨드를 카드만 보고 안다.
+
+    `--session` 을 "=--mine 명시형"(동등)으로 오표기하면 slot ∩ 를 전 슬롯으로 오독한다(정정 회귀 가드).
+    """
+    card = _card(bootstrap, LEAN_IDENTITY)
+    mine_line = _line_containing(card, "list --mine")
+    session_line = _line_containing(card, "list --session project_manager_1")
+    # --mine 은 "전 슬롯" 명시 · --session 은 "이 슬롯" 명시(스코프 구분).
+    assert "전 슬롯" in mine_line, f"--mine 줄이 전-슬롯 스코프를 안 밝힘: {mine_line!r}"
+    assert "이 슬롯" in session_line, f"--session 줄이 이-슬롯 스코프를 안 밝힘: {session_line!r}"
+    # 옛 "=--mine 명시형"(동등) 오표기가 남지 않았다(둘은 이제 스코프가 다르다).
+    assert "=--mine 명시형" not in card
 
 
 # ── 5. 찾아가기 포인터 절 (사용자 "찾아가는 법 가이드") ────────────────────────

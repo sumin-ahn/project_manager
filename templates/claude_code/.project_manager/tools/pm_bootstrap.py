@@ -969,16 +969,27 @@ _FRESH_SLOT_BANNER = (
 )
 
 
-def _format_board_counts_line(counts: dict[str, int]) -> str:
-    """board 카운트 한 줄을 만든다 — `--mine`(scoped) 라벨 명확화 (T-0194).
+def _slot_count_label(session: str) -> str:
+    """`<repo>_<N>` 세션 키 → 카운트 스코프 라벨 `"slot N"` (ADR-0056 #6·T-0312).
 
-    `counts` 는 항상 `board list --mine` 스코프(T-0164) — status 별로 "내 area open"
-    또는 "내 claim" 만 센 값이라 실측(예 done 25)이 전체 done(184) 과 크게 다를 수 있다
-    (done/claimed/blocked 는 --mine 이 곧 "내 claim" 이라 전체보다 훨씬 작을 소지가 큼).
-    라벨에 `(mine)` 을 명시해 "전체 done" 처럼 오독하지 않게 한다. total 병기(옵션 b)는
-    `_collect_board` 의 회귀 가드 충돌로 이번 범위에서 보류(docstring 참조).
+    말단 `_<N>` 의 숫자 N 을 뽑아 `"slot N"` 으로 라벨한다 — bootstrap 카운트가 `--mine`(user·전
+    슬롯)이 아니라 *그 슬롯 정체성*(`list --session <repo>_<N>`)으로 조회됐음을 announce 한다(S1
+    mislabel 근절). 비-슬롯형(말단이 숫자 아님·커스텀 세션명)이면 전체 세션명으로 폴백한다.
     """
-    parts = [f"{label}: {counts[key]} (mine)" for key, label in (
+    tail = session.rsplit("_", 1)[-1]
+    return f"slot {tail}" if tail.isdigit() else f"slot {session}"
+
+
+def _format_board_counts_line(counts: dict[str, int], scope_label: str = "mine") -> str:
+    """board 카운트 한 줄을 만든다 — 수집 스코프 라벨 명확화 (T-0194·T-0312).
+
+    `counts` 는 `_collect_board` 가 뽑은 스코프 값이다 — status 별로 "내 area open" 또는 "내
+    claim" 만 센 값이라 실측(예 done 25)이 전체 done(184) 과 크게 다를 수 있다(done/claimed/
+    blocked 는 전체보다 훨씬 작을 소지가 큼). `scope_label` 로 그 스코프를 명시해 "전체 done"
+    처럼 오독하지 않게 한다 — 솔로/무바인딩은 `"mine"`(user·전 슬롯), 명시 슬롯 바인딩(`--repo`/
+    `--slot`·multi-PM)은 `"slot N"`(그 슬롯 정체성으로 조회·ADR-0056 S1·`list --session`↔카운트 정합).
+    """
+    parts = [f"{label}: {counts[key]} ({scope_label})" for key, label in (
         ("done", "done"), ("open", "open"), ("claimed", "claimed"), ("blocked", "blocked")
     )]
     return "- " + " / ".join(parts)
@@ -1267,28 +1278,39 @@ class PmBootstrap:
     # ── 데이터 수집 ──────────────────────────────────────────────────────
 
     def _collect_board(self) -> dict:
-        """board list --mine(+ done 별도 조회) + lint 결과를 수집한다. `list` 실패만 여전히 sys.exit(1).
+        """board list(내 것 렌즈·+ done 별도 조회) + lint 결과를 수집한다. `list` 실패만 여전히 sys.exit(1).
 
-        기본 보드 뷰 = `--mine`(T-0164·ADR-0033 ④) — 부트스트랩이 전체 contention 을
-        떠안지 않고 *내 것*(내 area open + 내 claim)만 surface 한다. 솔로(user 미상)는
-        board 가 전체 open + 내 슬롯 claim 으로 graceful 폴백하므로 현행과 사실상 동등
-        (`board list --mine` 의 솔로 폴백·spike §2.D). 전체 보드(contention 가시)는
-        무플래그 `board list` 로 PM 이 명시 조회한다.
+        렌즈는 슬롯 정체성에 따라 갈린다 (ADR-0056 S1·T-0312):
+          - **명시 슬롯 바인딩**(`--repo`/`--slot`·multi-PM·`self._bound_slot` 세팅)이면 **그 슬롯
+            정체성**으로 조회한다(`list --session <repo>_<N>` = 현재-사용자 ∩ 그 슬롯). 예전엔
+            무조건 `list --mine`(user·전 슬롯)로 뽑아 "claimed 4 (mine)" 이 `list --session REPO_3`
+            과 어긋나던 mislabel(S1)을 근절 — 카운트 = 그 세션 뷰와 정합. 라벨 "(slot N)".
+          - **솔로/무바인딩**(`_bound_slot` None)이면 현행 `--mine`(내 area open + 내 claim·전
+            슬롯) 유지. 솔로(user 미상)는 board 가 전체 open + 내 슬롯 claim 으로 graceful 폴백
+            하므로 현행과 사실상 동등(spike §2.D). 라벨 "(mine)".
+        전체 보드(contention 가시)는 무플래그 `board list` 로 PM 이 명시 조회한다.
 
-        반환 `counts` 는 항상 이 `--mine` 스코프 값이다(T-0194 — 실측 done 25(mine) vs
-        전체 184 오해). 라벨 명확화는 빌더(`_format_board_counts_line`)가 담당한다.
+        반환 `counts` 는 이 렌즈 스코프 값이다(T-0194 — 실측 done 25(mine) vs 전체 184 오해).
+        라벨 명확화는 빌더(`_format_board_counts_line`)가 `counts_scope` 로 담당한다.
 
         **done 카운트는 default 뷰(무-`--status`) 비의존**(T-0198 — done-count 0 회귀 fix):
         `board.py list`(무-status)가 done 을 접어(T-0197) 활성 상태(open/claimed/blocked)만
-        보여주므로, 위 `["list", "--mine"]` 호출 출력엔 done 행이 아예 없어 `counts["done"]`
-        이 항상 0 이었다(T-0194 가 예고한 done(mine) surface 를 T-0197 이 무력화). 그래서
-        done 전용으로 `["list", "--status", "done", "--mine"]` 을 **별도 호출**해 그 출력만
-        파싱한 done 카운트로 덮어쓴다 — open/claimed/blocked 는 첫 호출(default 뷰) 그대로
-        (그 상태들은 default 뷰에 이미 있으므로 재조회 불요). `list` 호출이 2회로 늘어
-        (구 가드가 정확히 1회만 허용했다) `test_collect_board_default_view_is_mine` 가 이
-        신규 배선(list 2회: default·done)에 맞게 함께 갱신됐다.
+        보여주므로, 위 default 뷰 호출 출력엔 done 행이 아예 없어 `counts["done"]` 이 항상
+        0 이었다(T-0194 가 예고한 done surface 를 T-0197 이 무력화). 그래서 done 전용으로
+        `["list", "--status", "done", *lens]` 을 **별도 호출**해 그 출력만 파싱한 done 카운트로
+        덮어쓴다 — open/claimed/blocked 는 첫 호출(default 뷰) 그대로(그 상태들은 default 뷰에
+        이미 있으므로 재조회 불요). `list` 호출은 2회다(default·done).
         """
-        rc, output = self._run_board_fn(["list", "--mine"])
+        # 렌즈 선택 — 명시 슬롯 바인딩이면 그 슬롯 정체성(`--session <repo>_<N>`)·아니면 `--mine`.
+        slot_session = self._bound_session_name() if self._bound_slot else None
+        if slot_session:
+            lens = ["--session", slot_session]
+            counts_scope = _slot_count_label(slot_session)
+        else:
+            lens = ["--mine"]
+            counts_scope = "mine"
+
+        rc, output = self._run_board_fn(["list", *lens])
         if rc != 0:
             print(f"[중단] board.py list 실패 (rc={rc}):\n{output}", file=sys.stderr)
             sys.exit(1)
@@ -1299,7 +1321,7 @@ class PmBootstrap:
         # done 전용 재조회 — default 뷰가 done 을 접어(T-0197) 위 counts["done"] 이 항상 0
         # 이 되는 회귀를 막는다. 이 호출이 실패해도(구버전 board.py 등) done=0 으로 fail-soft
         # 하고 abort 하지 않는다(핵심 list 는 이미 성공했으므로 done 카운트만 저하 없는 선에서).
-        done_rc, done_output = self._run_board_fn(["list", "--status", "done", "--mine"])
+        done_rc, done_output = self._run_board_fn(["list", "--status", "done", *lens])
         if done_rc == 0:
             counts["done"] = parse_board_counts(done_output)["done"]
 
@@ -1311,6 +1333,7 @@ class PmBootstrap:
 
         return {
             "counts": counts,
+            "counts_scope": counts_scope,
             "open_tickets": open_tickets,
             "lint": lint_result,
             "lint_blocking": lint_rc != 0,
@@ -1922,9 +1945,10 @@ class PmBootstrap:
             lines.append(user_continuity)
         lines.append("")
 
-        # Board 섹션 — 카운트는 `--mine`(scoped) 라벨 명확화(T-0194).
+        # Board 섹션 — 카운트 스코프 라벨 명확화(T-0194·T-0312). 명시 슬롯 바인딩이면 "(slot N)"
+        # (그 슬롯 정체성으로 조회·ADR-0056 S1)·솔로/무바인딩이면 "(mine)".
         lines.append("### Board")
-        lines.append(_format_board_counts_line(counts))
+        lines.append(_format_board_counts_line(counts, board.get("counts_scope", "mine")))
         if pytest_result is not None:
             lines.append(
                 f"- 회귀: {pytest_result['passed']} / {pytest_result['total']} 통과"
@@ -1932,10 +1956,12 @@ class PmBootstrap:
         else:
             lines.append("- 회귀: (skip — handoff entry 참조 · --with-pytest 로 재측정)")
         lines.append(f"- lint: {lint}")
+        # open = 내 claim-가능 backlog(미claim·슬롯무관·ADR-0056 #3) — 위 카운트의 claimed(=이
+        # 슬롯 진행분)와 다른 축이다(open 은 슬롯 스코프 아님). 헷갈리지 않게 "backlog·슬롯무관" 명시.
         if open_tickets:
-            lines.append(f"- open ticket 목록 (claim 가능): {', '.join(open_tickets)}")
+            lines.append(f"- open ticket (claim 가능·backlog·슬롯무관): {', '.join(open_tickets)}")
         else:
-            lines.append("- open ticket 목록 (claim 가능): (없음)")
+            lines.append("- open ticket (claim 가능·backlog·슬롯무관): (없음)")
         lines.append("")
 
         # Git 섹션
@@ -2038,11 +2064,12 @@ class PmBootstrap:
         # 권장 첫 turn 섹션
         lines.append("### 권장 첫 turn")
         lines.append("PM 세션 시작합니다.")
-        # 카운트는 `--mine`(scoped) — 라벨 명확화(T-0194). 위 `_format_board_counts_line` 과
-        # 동일 데이터를 요약 문장체로 표기(선두 "- " 없이·마침표로 마감).
+        # 카운트 스코프 라벨 — 위 `_format_board_counts_line` 과 동일 데이터·스코프(mine/slot N·
+        # T-0194·T-0312)를 요약 문장체로 표기(선두 "- " 없이·마침표로 마감).
+        _scope = board.get("counts_scope", "mine")
         board_summary = (
-            f"done {counts['done']} (mine) / open {counts['open']} (mine) / "
-            f"claimed {counts['claimed']} (mine) / blocked {counts['blocked']} (mine)."
+            f"done {counts['done']} ({_scope}) / open {counts['open']} ({_scope}) / "
+            f"claimed {counts['claimed']} ({_scope}) / blocked {counts['blocked']} ({_scope})."
         )
         if pytest_result is not None:
             regression_summary = (
@@ -2596,15 +2623,20 @@ class PmBootstrap:
         lines.append("")
 
         # 내 작업 보기 (read-only 조회·직접 — 래핑 스킬 없음·ADR-0047 자기 공간 우선).
+        # user-first (ADR-0056): 두 렌즈의 스코프를 명확히 구분 — --mine=내 것 전 슬롯 /
+        # --session=내 것 ∩ 이 슬롯. "내 슬롯 작업"은 --session 이 정확한 커맨드다(타 사용자 무유출).
         lines.append("# 내 작업 보기 (read-only 조회·직접 — ADR-0047 자기 공간 우선)")
-        lines.append(cmd("board.py", "list --mine", "내 티켓(open+claim)·기본 조회면"))
+        lines.append(cmd(
+            "board.py", "list --mine",
+            "내 것 전 슬롯(내 open + 모든 슬롯의 내 claim)·user-wide 기본 조회",
+        ))
         if session:
             lines.append(cmd(
                 "board.py", f"list --session {session}",
-                "내 세션 뷰 렌즈(=--mine 명시형·조회 전용·아무것도 안 바꿈)",
+                "내 것 ∩ 이 슬롯(내 open + 이 슬롯 claim만)·이 슬롯 작업 조회·조회 전용",
             ))
         lines.append(cmd(
-            "board.py", "list", "전체 보드(모든 세션) — 타 PM 열람용·평시 불요",
+            "board.py", "list", "전체 보드(모든 세션·타 사용자 포함) — 타 PM 열람용·평시 불요",
         ))
         lines.append("")
 
