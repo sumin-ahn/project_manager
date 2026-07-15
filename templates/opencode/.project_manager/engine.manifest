@@ -30,6 +30,10 @@
 # pm_config: multi-PM 셋업/관리 파사드 디스패처 (ADR-0011·0014). 루트 forwarder pm-config.sh/.cmd 는
 #   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 동형·manifest 밖)
 .project_manager/tools/pm_config.py
+# identity_args: 공용 정체성 인자 모듈 — --repo/--slot 파싱(discriminated) + 리스(활성슬롯) 읽기·해소
+#   단일 진실(ADR-0057·B-1). 전 CLI 순차 채택(T-0314/0315/0316/0317/0318) — 신설 도구라 등록 필수
+#   (미등록=전파 안 됨·pm_render 사례).
+.project_manager/tools/identity_args.py
 
 # ── 방법론 문서 (엔진 · 프로젝트별 칸은 *.local.md / local.conf, manifest 밖) ──
 .project_manager/wiki/pm_role.md
