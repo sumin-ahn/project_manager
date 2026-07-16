@@ -7,6 +7,33 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-16
+
+슬롯 정체성 CLI 플래그를 **decomposed `--repo`/`--slot`** 단일 방식으로 통일한다([[ADR-0057]] supersede [[ADR-0043]]). 여러 세대에 걸쳐 누적된 `--session`(actor)·`--worktree-slot`·`--session-num` 별칭을 **BREAKING 제거**하고, 전 도구가 공용 `identity_args` 모듈로 수렴한다. T-0313 슬롯-모호 remedy 오안내가 근본 소멸. 이중게이트(내부 reviewer + codex) 통과.
+
+### BREAKING
+- **정체성 CLI 플래그 통일 → `--repo`/`--slot`** (ADR-0057) — 아래 구 별칭을 **제거**했다(back-compat 없음). 정체성 인자를 받는 전 도구(board·pm_bootstrap·pm_handoff·ticket_finish·pm_config·worktree_pool)가 공용 `identity_args` 로 수렴.
+
+  | 구 (제거됨) | 신 (canonical) |
+  |---|---|
+  | `--session <repo>_<N>` (actor) | `--repo <repo> --slot <N>` |
+  | `--worktree-slot work/<repo>_<N>` | `--slot <N>` (`--repo` 와 함께) |
+  | `--session-num <N>` (pm_handoff 차수) | `--session-seq <N>` |
+  | bare `--slot <N>` (`--repo` 없음) | `--repo <repo> --slot <N>` (단독 `--slot` 은 fail-loud) |
+
+  - `--repo X --slot N` → 슬롯 정체성 `<repo>_<N>`. `--repo X` 단독(actor) → 그 repo 활성 슬롯이 정확히 1개면 자동 해소·≥2 또는 0 이면 fail-loud. `--slot` 단독(`--repo` 없음) → fail-loud. 인자 전무 → 기존 해소 체인(`$PM_SESSION_NAME` > 활성 슬롯 lease 1개 > `local.conf session=`)은 **불변**.
+  - **free-form `--session <name>` CLI 제거** — 커스텀 세션명은 `$PM_SESSION_NAME` 환경변수(또는 `local.conf session=`)로 바인딩한다. `board.py claim` 은 이제 `--repo`/`--slot`(+ `--user`)만 받는다.
+  - `--session-seq`(handoff 차수·뷰-무관)·하니스 `--session-id`(대화 연속성)는 정체성과 무관해 **유지**한다.
+  - **채택자 마이그레이션**: `board.py claim --session myproj_1` → `board.py claim --repo myproj --slot 1` · `pm_handoff --session-num 19` → `--session-seq 19` · `--worktree-slot work/myproj_1` → `--repo myproj --slot 1`.
+  - **다운스트림 lockstep** (finance/회사 등 채택자): BREAKING 이라 미갱신 어댑터/스크립트의 구 플래그 호출은 깨진다. `pm_update`(엔진 흡수) + `add-harness` refresh(어댑터 표면)로 흡수한 뒤 위 매핑대로 호출 표기를 갱신한다.
+
+### Changed
+- **공용 `identity_args` 모듈** (T-0322) — 정체성 인자 파싱(`add_identity_args`/discriminated `parse_identity`)과 리스 원장 읽기를 전 도구 단일 진실로 수렴(도구별 복붙 제거·DRY).
+- **docs/skill/command-card + 어댑터·템플릿 전수 sweep** (T-0320) — 25개 shipped 표면(pm_role·pm_playbook·skills·CLAUDE.md·AGENTS.md·opencode command·tickets/README + templates)을 새 표기로 정합(drift-0·byte-identical). parity 가드(T-0319·28 테스트)가 도구-간 semantics 동형 + shipped old-flag 부재를 steady-state 로 잠근다(재발 시 red).
+
+### Fixed
+- **슬롯-모호 remedy 오안내 근본 소멸** (T-0313 → 통일 흡수) — handoff/ticket_finish·pm_config 의 fail-loud 가 실재하지 않는 플래그를 가리키던 오안내가, 통일된 `--repo`/`--slot` 로 근본 해소.
+
 ## [1.1.4] - 2026-07-15
 
 채택자(v1.1.0) 버그 wave — prefix 대소문자 + 세션/슬롯 뷰 격리를 채택자 관점으로 정합. 다 실버그·v1.1.3 재현 확인. dual gate(내부 reviewer + codex) 통과.
