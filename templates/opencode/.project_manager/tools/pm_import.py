@@ -1826,6 +1826,19 @@ class FillResult:
                 f"values={list(self.values)!r}, todos={self.todos!r})")
 
 
+def _load_watchdog():
+    """엔진 pm_relay 의 첫-이벤트 워치독을 지연 로드한다 (T-0336·deep-import seam·순환 회피).
+
+    pm_import 와 pm_relay 는 형제(`.project_manager/tools/`) — importlib 로 직접 로드해
+    PYTHONPATH 의존 없이(테스트 spec_from_file_location 경로 포함) run_with_first_event_watchdog·
+    StallWatchdogError·env 노브 해소기를 빌려 쓴다(board._load_domain_module 선례 동형)."""
+    engine_path = Path(__file__).resolve().parent / "pm_relay.py"
+    spec = importlib.util.spec_from_file_location("pm_relay", engine_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _real_harness_runner(
     argv: list[str], prompt: str, cwd: Path | str | None = None
 ) -> tuple[bool, str]:
@@ -1836,17 +1849,31 @@ def _real_harness_runner(
 
     SF: cwd 가 주어지면 *대상 repo* 에서 구동한다(run_fill 이 dest_root 를 바인딩). 호출자
     cwd 가 아니라 import 대상에서 돌아야 하니스의 작업 디렉토리·파일 접근이 분석 대상과 맞는다.
-    """
+
+    T-0336: opencode 경로(`opencode run …`)는 엔진 첫-이벤트 워치독을 경유한다 — startup network
+    fetch stall(PM 70)에 무한 hang 하지 않고 유한 재시도 후 fail-soft((False, stall 안내)). claude
+    경로는 무변경(관측된 stall 클래스는 opencode 스타트업 고유)."""
+    use_watchdog = tuple(argv[:2]) == OPENCODE_FILL_CMD
+    engine = _load_watchdog() if use_watchdog else None
     try:
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=FILL_TIMEOUT_SECONDS,
-            cwd=str(cwd) if cwd is not None else None,
-        )
+        if engine is not None:
+            result = engine.run_with_first_event_watchdog(
+                argv,
+                first_event_timeout=engine.first_event_timeout_default(),
+                overall_timeout=FILL_TIMEOUT_SECONDS,
+                retries=engine.stall_retries_default(),
+                cwd=str(cwd) if cwd is not None else None,
+            )
+        else:
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=FILL_TIMEOUT_SECONDS,
+                cwd=str(cwd) if cwd is not None else None,
+            )
         output = result.stdout or ""
         if result.stderr:
             output += f"\n[stderr]\n{result.stderr}"
@@ -1856,6 +1883,8 @@ def _real_harness_runner(
     except FileNotFoundError:
         return False, f"[하니스 명령 '{argv[0] if argv else '?'}' 를 찾을 수 없음 — 설치/PATH 확인]"
     except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
+        if engine is not None and isinstance(exc, engine.StallWatchdogError):
+            return False, f"[opencode 첫-이벤트 stall — 재시도 소진(fail-soft): {exc}]"
         return False, f"[하니스 실행 오류: {exc}]"
 
 

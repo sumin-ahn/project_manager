@@ -67,13 +67,17 @@ class OpencodeCliDriver:
 
     def __init__(self, parse_opencode_json, *, agent: str = DEFAULT_AGENT,
                  opencode_bin: str = OPENCODE_BIN, timeout: int = TURN_TIMEOUT_SEC,
-                 runner=subprocess.run) -> None:
+                 runner=subprocess.run, stall_error=None) -> None:
         # parse_opencode_json 은 엔진 순수 헬퍼 주입(DI) — driver 가 파싱 로직을 중복 보유하지 않음.
         self._parse = parse_opencode_json
         self.agent = agent
         self.opencode_bin = opencode_bin
         self.timeout = timeout
         self.runner = runner  # subprocess.run seam(테스트 stub 가능).
+        # 프로덕션 runner(_make_watchdog_runner)가 첫-이벤트 stall 소진 시 던지는 엔진
+        # StallWatchdogError 클래스(main 이 주입). None 이면 빈 튜플 → `except ()` 는 아무것도
+        # 안 잡는다(FakeRunner 주입 테스트 경로 무영향). fail-loud→turn-level fail-soft 로 수습.
+        self._stall_error_types = (stall_error,) if stall_error is not None else ()
         # opencode 세션은 `-s <sid>` 로 어디서든 resume 되나(claude 의 cwd-scope 제약 없음),
         # `--dir` 로 child cwd 를 격리하므로 세션별 cwd 를 기억해 relay 에 재사용한다. 이건
         # *어댑터*-국소 세션 메타(opencode CLI 고유)지 relay 대화 상태가 아니다 —
@@ -129,6 +133,12 @@ class OpencodeCliDriver:
             completed = self.runner(
                 cmd, capture_output=True, text=True, timeout=self.timeout
             )
+        except self._stall_error_types as exc:
+            # 첫-이벤트 stall 재시도 소진(T-0336) = fail-loud. 무한 hang(startup network fetch
+            # stall·PM 70) 대신 유한 재시도 후 여기 도달 → loud stderr + turn-level fail-soft
+            # (relay 루프는 살아 다음 입력을 받는다·기존 timeout/OSError 처리와 동일 결).
+            sys.stderr.write(f"[pm-orch] {exc}\n")
+            return None, None
         except subprocess.TimeoutExpired:
             sys.stderr.write(f"[pm-orch] opencode turn timeout ({self.timeout}s)\n")
             return None, None
@@ -143,6 +153,23 @@ class OpencodeCliDriver:
 
         lines = (completed.stdout or "").splitlines()
         return self._parse(lines)
+
+
+def _make_watchdog_runner(engine):
+    """프로덕션 기본 runner — 엔진 첫-이벤트 워치독으로 opencode 를 실행(T-0336·startup stall→유한 재시도).
+
+    driver 의 `runner` seam(테스트가 FakeRunner 주입)을 유지하면서, 프로덕션 main 만 이 runner 로
+    현행 600s hard 가드(overall_timeout=self.timeout) *안쪽에* 첫-이벤트 감시를 더한다. capture_output/
+    text kwargs 는 흡수(워치독이 항상 캡처·text). first_event/retries 는 env 노브(engine 해소기)로.
+    StallWatchdogError 는 잡지 않고 올려보낸다 — driver `_turn` 이 loud stderr + fail-soft 로 수습."""
+    def runner(cmd, *, capture_output=True, text=True, timeout=TURN_TIMEOUT_SEC, **_kwargs):
+        return engine.run_with_first_event_watchdog(
+            cmd,
+            first_event_timeout=engine.first_event_timeout_default(),
+            overall_timeout=timeout,
+            retries=engine.stall_retries_default(),
+        )
+    return runner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -165,7 +192,14 @@ def main(argv: list[str] | None = None) -> int:
     engine, root = _load_engine()
 
     cwd = args.cwd or os.getcwd()
-    driver = OpencodeCliDriver(engine.parse_opencode_json, agent=args.agent)
+    # 프로덕션 driver 는 첫-이벤트 워치독 runner 로 opencode 를 구동(startup stall→유한 재시도·
+    # T-0336). 소진 시 StallWatchdogError → driver `_turn` 이 loud + fail-soft(stall_error 주입).
+    driver = OpencodeCliDriver(
+        engine.parse_opencode_json,
+        agent=args.agent,
+        runner=_make_watchdog_runner(engine),
+        stall_error=engine.StallWatchdogError,
+    )
     supervisor = engine.Supervisor(driver, root=root)
 
     sys.stderr.write(

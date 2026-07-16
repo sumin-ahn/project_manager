@@ -62,6 +62,34 @@ _REVIEWER_SUBAGENT = "code-reviewer"
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
 
+_TOOLS = Path(__file__).resolve().parents[1] / ".project_manager" / "tools"
+
+
+def _load_pm_relay():
+    """엔진 pm_relay(첫-이벤트 워치독)를 importlib 로 로드 (T-0336·release 라이브 헬퍼용)."""
+    spec = importlib.util.spec_from_file_location("pm_relay", _TOOLS / "pm_relay.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _run_opencode_live(argv, *, cwd, env, timeout):
+    """opencode 라이브 호출을 엔진 첫-이벤트 워치독으로 감싼다 (T-0336).
+
+    startup network fetch stall(PM 70)에 무한 hang 하지 않도록 첫-이벤트 감시 + 유한 재시도.
+    소진 시 StallWatchdogError → 테스트 **fail-loud**(라이브 환경 문제 가시화). overall_timeout 은
+    기존 turn 상한(1800s) 유지 — mid-turn(정상 긴 생성) 침묵은 그 백스톱이 담당. subprocess.run 과
+    동일한 CompletedProcess(returncode·stdout·stderr)를 반환해 side-effect 단언은 무변경."""
+    engine = _load_pm_relay()
+    return engine.run_with_first_event_watchdog(
+        argv,
+        first_event_timeout=engine.first_event_timeout_default(),
+        overall_timeout=timeout,
+        retries=engine.stall_retries_default(),
+        cwd=str(cwd),
+        env=env,
+    )
+
 
 def _full_wave_prompt(entry_doc: str) -> str:
     """PM 세션이 full wave(new→claim→**developer 위임**→**code-reviewer 위임**→complete)를 운영하라는 프롬프트.
@@ -199,15 +227,14 @@ def test_release_wave_opencode_full_wave(tmp_path):
     """
     dest = _import_adopter(tmp_path, "opencode")
 
-    proc = subprocess.run(
+    proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스라 opencode 가 `--dir` 디렉토리를
         # external_directory 로 보고 권한을 auto-reject → AGENTS.md 도 못 읽고 wave 시작 실패한다.
         # 이 플래그로 권한을 통과시켜야 wave 완주(throwaway tmp adopter 격리라 안전·PM 36 probe 실측).
         ["opencode", "run", "--agent", "build", "--dir", str(dest),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
          _full_wave_prompt("AGENTS.md")],
-        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
+        cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
     # side-effect(hard) — full wave 의 핵심 결과(developer 위임 산출 probe.txt·done 전이).
@@ -398,14 +425,13 @@ def test_release_wave_multirepo_opencode_full_wave(tmp_path):
     """
     home = _import_multipm_home(tmp_path, "opencode")
 
-    proc = subprocess.run(
+    proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스 격리(throwaway tmp home)라 안전 —
         # 단일 wave 테스트와 동일 근거(opencode 가 --dir 디렉토리를 external 로 보고 auto-reject).
         ["opencode", "run", "--agent", "build", "--dir", str(home),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
          _multirepo_wave_prompt()],
-        cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
+        cwd=str(home), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
     # side-effect(hard) — repo별 done ticket(per-repo prefix) + 슬롯 파일(슬롯 격리).
@@ -642,14 +668,13 @@ def test_release_wave_multiuser_composite_opencode(tmp_path):
     """
     home = _import_multiuser_home(tmp_path, "opencode")
 
-    proc = subprocess.run(
+    proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스 격리(throwaway tmp home)라 안전 —
         # multi-repo 라이브 테스트와 동일 근거(opencode 가 --dir 디렉토리를 external 로 보고 auto-reject).
         ["opencode", "run", "--agent", "build", "--dir", str(home),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
          _multiuser_wave_prompt()],
-        cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
+        cwd=str(home), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
     # side-effect(hard) — 각 user 세션 뷰가 타 user 티켓을 미열람·자기만 열람(뷰 섞임 0).

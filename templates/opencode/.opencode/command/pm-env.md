@@ -75,6 +75,15 @@ description: "PM 환경 관리 단일 command — pm-config.sh facade wrap. repo
 넘으면 엔진 트립 메시지가 "터미널 직접 실행(`PM_GIT_TIMEOUT=none`)"을 안내한다. opencode 로 worktree add 가
 느린 대형 repo 에서 죽으면 위 export 를 먼저 확인.
 
+### opencode stall 워치독 노브 — 무한 hang 방지 (T-0336)
+
+opencode `run` 스타트업 fetch stall(간헐 brownout·자체 회복 없음·실측 PM 70)을 호출층 첫-이벤트
+워치독이 kill+재시도로 닫는다. 노브(env·초):
+- `PM_OC_FIRST_EVENT_TIMEOUT`(기본 90) — 첫 json 이벤트까지 무소식 허용 시간.
+- `PM_OC_STALL_RETRIES`(기본 2) — 소진 시 fail-loud. 각 재시도는 stderr 1줄 loud.
+적용 표면: relay driver·pm_import `--fill auto`·release 라이브 테스트 (provider/원인 무관).
+
+
 ## 결정
 - **단일 command**(trigger/인자 분기·사용자 확정) — `pm-config` 대화형 콘솔과 동형 진입.
 - thin — 비즈니스 로직 0. upstream 전환 백엔드(검증·atomic·디커플)는 엔진(`pm_config upstream`·T-0145).

@@ -23,7 +23,13 @@ hook·pm_handoff·pm_bootstrap 는 **무수정**(읽기만) — supervisor 는 �
 """
 from __future__ import annotations
 
+import os
 import re
+import signal
+import subprocess
+import sys
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Protocol, TextIO
@@ -167,6 +173,254 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None]:
                     reply_parts.append(text)
     reply = "".join(reply_parts) if reply_parts else None
     return session_id, reply
+
+
+# ── opencode 첫-이벤트 stall 워치독 (T-0336 · 하니스-무관 순수 헬퍼·parse_opencode_json 동거) ──
+# opencode `run` 이 스타트업 network fetch stall 에 빠지면 `--format json` stdout 이벤트가 0바이트로
+# **영원히** 멈춘다(PM 70 라이브 실측·정상 run 은 첫 이벤트 ~0.2–2초·헝 run 은 240초+ 창 지나도 자체
+# 회복 없음·upstream #13841 진단 일치). 호출층에서 이를 닫는다: 첫 stdout 이벤트가 N초 내 안 오면
+# 프로세스 그룹째 kill → 재시도(M회) → 소진 시 fail-loud. provider/원인 무관(내부 어느 fetch 가
+# 멈추든 동작). mid-turn(정상 긴 생성) 침묵은 이번 범위 밖 — overall_timeout(호출부의 기존 hard
+# 가드·예: pm_orch_opencode.TURN_TIMEOUT_SEC=600)이 그대로 백스톱. provider 노브(headerTimeout 등)는
+# stall 이 provider 스트림 fetch *밖*에서 발생해 무효 실측(PM 70) — 워치독이 클래스를 커버한다.
+
+# env 노브 (worktree_pool 의 PM_GIT_TIMEOUT 네이밍 결). 세 표면(opencode driver·pm_import fill·
+# release 라이브 헬퍼)이 아래 두 해소기로 이 기본값을 공유한다. 값을 바꾸려면 export 후 재실행.
+FIRST_EVENT_TIMEOUT_ENV = "PM_OC_FIRST_EVENT_TIMEOUT"   # 첫-이벤트 대기 상한(초).
+STALL_RETRIES_ENV = "PM_OC_STALL_RETRIES"               # stall 시 재시도 횟수.
+# 기본 90초 = 느린 cloud 시작 대비 보수적(정상 첫 이벤트 ~0.2–2초·PM 70). 재시도 기본 2회.
+DEFAULT_FIRST_EVENT_TIMEOUT_SEC = 90.0
+DEFAULT_STALL_RETRIES = 2
+# 워치독 폴 간격·kill 후 grace(자식 잔존 방지·짧게). 매직넘버 회피 상수.
+_WATCHDOG_POLL_INTERVAL_SEC = 0.1
+_KILL_GRACE_SEC = 5.0
+
+
+class StallWatchdogError(RuntimeError):
+    """첫-이벤트 워치독이 모든 재시도를 소진(반복 startup stall) → fail-loud.
+
+    헬퍼는 raise 만 하고 *정책은 호출부가* 정한다:
+      - opencode driver `_turn`: catch → loud stderr + fail-soft turn(None,None·relay 루프 생존).
+      - pm_import fill(`_real_harness_runner`): catch → (False, 에러텍스트)(기존 fail-soft 계약).
+      - release 라이브 헬퍼: uncatch → 테스트 fail-loud(라이브 환경 문제 가시화).
+    """
+
+
+def _env_positive_float(name: str, default: float) -> float:
+    """env 노브를 양수 float 로 해소(빈/불량/비양수는 default·fail-soft)."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _env_nonneg_int(name: str, default: int) -> int:
+    """env 노브를 음이 아닌 int 로 해소(빈/불량/음수는 default·fail-soft)."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+def first_event_timeout_default() -> float:
+    """PM_OC_FIRST_EVENT_TIMEOUT env(초) 또는 기본 90. 세 표면 공유 해소기."""
+    return _env_positive_float(FIRST_EVENT_TIMEOUT_ENV, DEFAULT_FIRST_EVENT_TIMEOUT_SEC)
+
+
+def stall_retries_default() -> int:
+    """PM_OC_STALL_RETRIES env 또는 기본 2. 세 표면 공유 해소기."""
+    return _env_nonneg_int(STALL_RETRIES_ENV, DEFAULT_STALL_RETRIES)
+
+
+def _kill_process_group(proc) -> None:
+    """proc 를 프로세스 그룹째 kill(자식 잔존 방지) + 짧은 grace. 이미 종료면 no-op.
+
+    POSIX: `os.killpg(getpgid, SIGKILL)`(Popen 이 start_new_session 으로 새 그룹장). Windows:
+    `proc.kill()`(CREATE_NEW_PROCESS_GROUP). 예외는 삼킨다(best-effort — 이미 죽었을 수 있음)."""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
+    except (ProcessLookupError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=_KILL_GRACE_SEC)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+class _WatchedPopen:
+    """실 subprocess.Popen 을 감싸 첫-stdout-이벤트 관측 + 프로세스그룹 kill 을 제공.
+
+    reader 스레드가 stdout 을 줄단위로 읽어 누적하고 첫 *비어있지-않은* 라인에서 first_event 를
+    set 한다(startup stall = 첫 라인조차 영원히 안 옴). stall 시 메인 루프가 kill 하면 reader 의
+    blocking readline 이 EOF 로 풀린다. stderr 도 별도 스레드로 드레인(파이프 버퍼 데드락 방지).
+    fake(테스트)로 대체 가능한 얇은 어댑터 — 워치독 로직은 run_with_first_event_watchdog 이 쥔다."""
+
+    def __init__(self, argv, *, cwd=None, env=None, text=True):
+        popen_kwargs = dict(
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env,
+        )
+        if text:
+            popen_kwargs.update(text=True, encoding="utf-8", errors="replace")
+        # 프로세스 그룹 분리 — kill 시 자식(모델 fetch 서브프로세스 등)까지 그룹째 정리.
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+        elif os.name == "nt":  # pragma: no cover — POSIX 회귀 환경
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        self._proc = subprocess.Popen(argv, **popen_kwargs)
+        self._first_event = threading.Event()
+        self._stdout_chunks: list[str] = []
+        self._stderr_chunks: list[str] = []
+        self._stdout_reader = threading.Thread(target=self._pump_stdout, daemon=True)
+        self._stderr_reader = threading.Thread(target=self._pump_stderr, daemon=True)
+        self._stdout_reader.start()
+        self._stderr_reader.start()
+
+    def _pump_stdout(self) -> None:
+        stream = self._proc.stdout
+        if stream is None:
+            self._first_event.set()
+            return
+        try:
+            for line in iter(stream.readline, ""):
+                self._stdout_chunks.append(line)
+                if line.strip():
+                    self._first_event.set()
+        except (ValueError, OSError):
+            pass
+        finally:
+            self._first_event.set()  # EOF(빈 출력 포함) — 대기 루프를 풀어준다.
+
+    def _pump_stderr(self) -> None:
+        stream = self._proc.stderr
+        if stream is None:
+            return
+        try:
+            for line in iter(stream.readline, ""):
+                self._stderr_chunks.append(line)
+        except (ValueError, OSError):
+            pass
+
+    def first_event_ready(self) -> bool:
+        return self._first_event.is_set()
+
+    def poll(self):
+        return self._proc.poll()
+
+    def kill(self) -> None:
+        _kill_process_group(self._proc)
+
+    def communicate(self, timeout=None):
+        """프로세스 종료를 기다려 (stdout, stderr) 누적을 반환. timeout 초과 시 TimeoutExpired."""
+        self._proc.wait(timeout=timeout)  # TimeoutExpired 를 그대로 전파(overall 백스톱).
+        self._stdout_reader.join(timeout=_KILL_GRACE_SEC)
+        self._stderr_reader.join(timeout=_KILL_GRACE_SEC)
+        return "".join(self._stdout_chunks), "".join(self._stderr_chunks)
+
+    @property
+    def returncode(self):
+        return self._proc.returncode
+
+
+def _default_watchdog_log(message: str) -> None:
+    """워치독 loud 1줄 sink(기본 stderr — stdout 은 PM 대화 채널 보존)."""
+    sys.stderr.write(message + "\n")
+    sys.stderr.flush()
+
+
+def run_with_first_event_watchdog(
+    argv,
+    *,
+    first_event_timeout: float,
+    overall_timeout: float,
+    retries: int,
+    cwd=None,
+    env=None,
+    text: bool = True,
+    popen=None,
+    clock=None,
+    sleep=None,
+    log=None,
+    poll_interval: float = _WATCHDOG_POLL_INTERVAL_SEC,
+):
+    """argv 를 첫-이벤트 워치독으로 실행 — startup stall 을 유한 재시도로 닫는다 (T-0336).
+
+    각 시도: 프로세스 시작 → stdout 첫 이벤트를 first_event_timeout 초 내 관측하는지 감시.
+      - 관측(또는 첫 이벤트 없이 빠른 종료) → 완료까지 드레인(overall_timeout 백스톱) 후
+        subprocess.CompletedProcess(returncode·stdout·stderr) 반환.
+      - 미관측(stall) → 프로세스 그룹째 kill·loud 1줄·다음 시도.
+    모든 시도(= retries+1) 소진 → StallWatchdogError(fail-loud·호출부가 정책 결정).
+
+    DI seam(hermetic 테스트·바이너리 불요):
+      popen : argv -> proc(first_event_ready()/poll()/kill()/communicate(timeout)/returncode).
+              기본 = _WatchedPopen(cwd/env/text 바인딩).
+      clock : () -> 초(단조). 기본 time.monotonic.
+      sleep : (초) -> None. 기본 time.sleep(폴 간격 양보). fake 는 여기서 clock 을 전진시킨다.
+      log   : (str) -> None. 기본 stderr 1줄.
+    overall_timeout 은 호출부의 기존 hard 가드(예: TURN_TIMEOUT_SEC=600)를 그대로 받아 mid-turn
+    침묵의 백스톱으로 쓴다 — 워치독은 그 *안쪽*에 startup 첫-이벤트 감시를 더한다.
+    """
+    if popen is None:
+        def popen(_argv):  # 기본 실 Popen 어댑터(cwd/env/text 클로저).
+            return _WatchedPopen(_argv, cwd=cwd, env=env, text=text)
+    clock = clock if clock is not None else time.monotonic
+    sleep = sleep if sleep is not None else time.sleep
+    log = log if log is not None else _default_watchdog_log
+
+    attempts = retries + 1  # retries=재시도 횟수 → 총 시도 = retries+1(최초 1 + 재시도 M).
+    last_reason = ""
+    for attempt in range(1, attempts + 1):
+        proc = popen(argv)
+        start = clock()
+        first_deadline = start + first_event_timeout
+        overall_deadline = start + overall_timeout
+        stalled = False
+        while True:
+            if proc.first_event_ready():
+                break  # 첫 이벤트 관측 → 드레인 단계로.
+            if proc.poll() is not None:
+                break  # 첫 이벤트 없이 종료(빠른 exit·에러) → 드레인이 결과 수습.
+            now = clock()
+            if now >= first_deadline or now >= overall_deadline:
+                stalled = True  # 첫-이벤트 창 초과(또는 극단적 overall 초과) = startup stall.
+                break
+            sleep(poll_interval)
+        if stalled:
+            proc.kill()
+            last_reason = f"{first_event_timeout:.0f}s 무이벤트"
+            log(
+                f"[pm-orch] stall watchdog: {last_reason} kill·재시도 {attempt}/{attempts}"
+            )
+            continue
+        remaining = overall_deadline - clock()
+        if remaining < 0:
+            remaining = 0.0
+        try:
+            stdout, stderr = proc.communicate(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise  # overall(mid-turn) 백스톱 — 기존 TimeoutExpired 계약을 그대로 유지.
+        return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+    raise StallWatchdogError(
+        f"opencode 첫-이벤트 stall 이 {attempts}회 연속 발생({last_reason}) — 재시도 소진. "
+        "startup network fetch stall 의심(PM 70·upstream #13841)."
+    )
 
 
 def _sanitize_session_id(session_id: str) -> str:
