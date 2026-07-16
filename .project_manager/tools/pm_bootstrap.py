@@ -183,6 +183,29 @@ def _load_tool(name: str):
         return None
 
 
+def _load_identity_args():
+    """공용 `identity_args` 모듈을 동적 로드한다 (ADR-0057 canonical 정체성 인자·T-0322/T-0315).
+
+    `_load_worktree_pool`/`_load_board`/`_load_tool` 과 동형 — `spec_from_file_location`
+    (스크립트-위치 앵커·sys.path 무오염) — 스크립트 직접실행(`__main__`)·테스트
+    `spec_from_file_location` 로드 양쪽에서 똑같이 동작한다(sibling import 관성 회피). 부재/
+    로드 실패 시 None(fail-soft) — `_repo_slot_numbers`/`_auto_slot` 는 이를 "장부를 읽을 수
+    없음"과 동일하게 흡수해 bare-bootstrap 솔로 경로를 깨지 않는다(B-1).
+    """
+    import importlib.util
+
+    ia_path = TOOLS_DIR / "identity_args.py"
+    if not ia_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("identity_args", ia_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+        return None
+
+
 def _registered_repos(areas_file: Path | None = None) -> list[str]:
     """areas.md 레지스트리에서 등록된 repo 이름 목록 (identity surface '등록영역' 표면용).
 
@@ -217,43 +240,20 @@ def _registered_repos(areas_file: Path | None = None) -> list[str]:
 def _repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
     """`leases_file` 장부에서 `repo` 의 **활성(leased)** worktree 슬롯 번호(`work/<repo>_<N>`→N)를 반환한다.
 
-    slot 식별자 형식은 `work/<repo>_<N>` 이니 그 repo 의 엔트리에서 N 을 파싱한다. **`state` 가
-    `leased` 인 엔트리만 센다**(`state` 키 부재→`leased` 로 back-compat·worktree_pool `from_dict`
-    default 동형) — idle(반납) 슬롯은 *죽은 세션*이라 자동바인딩/연속성 라우팅 대상이 아니다(codex
-    must-fix·ADR-0035 "활성 세션 연속성"). 같은 슬롯 N 의 중복 장부 엔트리는 **dedup** 해 "슬롯
-    개수" 오진을 막는다(정렬된 unique 목록 반환).
+    **공용 `identity_args.repo_slot_numbers` 위임**(ADR-0057·T-0322 흡수·T-0315 채택) — 리스
+    읽기 코어(state=leased 필터·state 키 부재 back-compat·dedup·fail-soft None)는 그 모듈이
+    단일 진실로 소유한다(byte-for-byte 동형 보존). 이 로컬 wrapper 는 `_auto_slot`·
+    `_resolve_session_slot` 의 기존 호출 시그니처를 무손실 보존하기 위한 얇은 위임이다(touches
+    격리 관성은 유지 — `_load_identity_args` 의 동적 로드로 sys.path 무오염).
 
-    파일 부재/JSON 깨짐/스키마 불일치 → **None**(fail-soft·"읽을 수 없음" 신호); 정상 read 인데
-    그 repo 의 leased 슬롯이 0개면 빈 리스트 `[]`("읽었으나 활성 슬롯 없음"). 호출부는 두 경우를
-    구분할 수 있다(`_auto_slot`·`_resolve_session_slot` 가 같은 stdlib json 파싱을 공유·DRY).
-
-    **worktree_pool 을 import 하지 않는다**(touches 격리·ADR-0013) — `_registered_repos` 가
-    areas.md 를 stdlib 로 읽는 것과 동형으로 장부 파일을 직접 read 한다(데이터 결합만).
+    파일 부재/JSON 깨짐/스키마 불일치·`identity_args` 로드 실패 → **None**(fail-soft·"읽을 수
+    없음" 신호); 정상 read 인데 그 repo 의 leased 슬롯이 0개면 빈 리스트 `[]`("읽었으나 활성
+    슬롯 없음"). 호출부는 두 경우를 구분할 수 있다.
     """
-    if not leases_file.exists():
+    ia = _load_identity_args()
+    if ia is None:
         return None
-    try:
-        data = json.loads(leases_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    leases = data.get("leases", [])
-    if not isinstance(leases, list):
-        return None
-    slot_re = re.compile(rf"^work/{re.escape(repo)}_(\d+)$")
-    slot_nums: set[int] = set()
-    for row in leases:
-        if not isinstance(row, dict) or row.get("repo") != repo:
-            continue
-        # 활성(leased) 슬롯만 — idle(반납) 은 죽은 세션이라 라우팅 대상 아님(codex must-fix).
-        # state 키 부재는 leased 로 본다(worktree_pool from_dict default·back-compat).
-        if row.get("state", "leased") != "leased":
-            continue
-        m = slot_re.match(str(row.get("slot") or ""))
-        if m:
-            slot_nums.add(int(m.group(1)))
-    return sorted(slot_nums)
+    return ia.repo_slot_numbers(repo, leases_file)
 
 
 def _auto_slot(
@@ -269,15 +269,19 @@ def _auto_slot(
 
     판정:
       1. `_registered_repos` 재사용 — areas.md 등록 repo 가 정확히 1개인가(아니면 None).
-      2. `_repo_slot_numbers` 로 그 repo 의 **leased** 슬롯 번호(dedup)를 read — 정확히 1개인가.
+      2. **공용 `identity_args.resolve_actor_slot` 위임**(ADR-0057·T-0322 흡수·T-0315 채택) —
+         그 repo 의 **leased** 슬롯이 정확히 1개면 그 세션을, 0개면 None 을 돌려준다. ≥2개(모호)
+         는 그 프리미티브가 `identity_args.SlotResolutionError` 로 raise 하지만, 이 함수는
+         **순수 resolver 계약**(정확히 1 아니면 항상 None·fail-soft)이라 그 예외를 여기서 흡수해
+         orchestration 을 보존한다 — guarded fail-loud 는 별도 `_resolve_session_slot` 전용.
 
-    **idle 필터 영향(codex must-fix)**: `_repo_slot_numbers` 가 leased 만 세므로, `{1:idle, 2:leased}`
+    **idle 필터 영향(codex must-fix)**: 공용 프리미티브가 leased 만 세므로, `{1:idle, 2:leased}`
     는 이전 None(2개→폴백) 대신 leased={2}→exactly-1→슬롯2 로 해소된다 — incidental(`_regression_cwd`·
     display)이 *활성* 슬롯을 찾는 것이라 오히려 정합·개선(의도된 변화). solo `{1:leased}`→1 은 불변.
 
-    파일 부재/스키마 불일치/JSON 깨짐 → None(fail-soft — 자동바인딩은 *추가 편의*이지 강제
-    아님·실패는 현행 솔로로 폴백). `areas_file` 미지정(None)이면 `_registered_repos` 가
-    `_areas_file()`(board_root 추종·T-0162 A6)로 해소한다.
+    파일 부재/스키마 불일치/JSON 깨짐/`identity_args` 로드 실패 → None(fail-soft — 자동바인딩은
+    *추가 편의*이지 강제 아님·실패는 현행 솔로로 폴백). `areas_file` 미지정(None)이면
+    `_registered_repos` 가 `_areas_file()`(board_root 추종·T-0162 A6)로 해소한다.
 
     **순수 resolver·반환 규격 불변(`(repo,N)` | None)** — 모든 incidental 호출부(`_worktree_cwd`·
     `_pm_state_display_path`·handoff `_regression_cwd`)가 이 fail-soft None 폴백에 기댄다.
@@ -287,10 +291,17 @@ def _auto_slot(
     if len(repos) != 1:
         return None
     repo = repos[0]
-    slot_nums = _repo_slot_numbers(repo, leases_file)
-    if not slot_nums or len(slot_nums) != 1:
+    ia = _load_identity_args()
+    if ia is None:
         return None
-    return repo, slot_nums[0]
+    try:
+        session = ia.resolve_actor_slot(repo, leases_file)
+    except ia.SlotResolutionError:
+        return None  # ≥2 활성 슬롯(모호) — 순수 resolver 계약상 fail-soft None(raise 아님).
+    if session is None:
+        return None
+    _, _, slot_tail = session.rpartition("_")
+    return repo, int(slot_tail)
 
 
 # ── guarded session-entry 슬롯해소 (default-1 + fail-loud·T-0178·ADR-0035) ─────
@@ -1280,10 +1291,10 @@ class PmBootstrap:
     def _collect_board(self) -> dict:
         """board list(내 것 렌즈·+ done 별도 조회) + lint 결과를 수집한다. `list` 실패만 여전히 sys.exit(1).
 
-        렌즈는 슬롯 정체성에 따라 갈린다 (ADR-0056 S1·T-0312):
+        렌즈는 슬롯 정체성에 따라 갈린다 (ADR-0056 S1·T-0312·ADR-0057):
           - **명시 슬롯 바인딩**(`--repo`/`--slot`·multi-PM·`self._bound_slot` 세팅)이면 **그 슬롯
-            정체성**으로 조회한다(`list --session <repo>_<N>` = 현재-사용자 ∩ 그 슬롯). 예전엔
-            무조건 `list --mine`(user·전 슬롯)로 뽑아 "claimed 4 (mine)" 이 `list --session REPO_3`
+            정체성**으로 조회한다(`list --repo <repo> --slot <N>` = 현재-사용자 ∩ 그 슬롯). 예전엔
+            무조건 `list --mine`(user·전 슬롯)로 뽑아 "claimed 4 (mine)" 이 `list --repo REPO --slot 3`
             과 어긋나던 mislabel(S1)을 근절 — 카운트 = 그 세션 뷰와 정합. 라벨 "(slot N)".
           - **솔로/무바인딩**(`_bound_slot` None)이면 현행 `--mine`(내 area open + 내 claim·전
             슬롯) 유지. 솔로(user 미상)는 board 가 전체 open + 내 슬롯 claim 으로 graceful 폴백
@@ -1301,10 +1312,18 @@ class PmBootstrap:
         덮어쓴다 — open/claimed/blocked 는 첫 호출(default 뷰) 그대로(그 상태들은 default 뷰에
         이미 있으므로 재조회 불요). `list` 호출은 2회다(default·done).
         """
-        # 렌즈 선택 — 명시 슬롯 바인딩이면 그 슬롯 정체성(`--session <repo>_<N>`)·아니면 `--mine`.
+        # 렌즈 선택 — 명시 슬롯 바인딩이면 그 슬롯 정체성(`--repo <repo> --slot <N>`·ADR-0057)·
+        # 아니면 `--mine`. `slot_session`(`<repo>_<N>`)의 말단 `_<N>` 만 잘라 분해한다 — repo 이름에
+        # `_` 가 있어도(예: `project_manager`) rpartition 이 *마지막* `_` 에서만 갈라 정확하다.
         slot_session = self._bound_session_name() if self._bound_slot else None
         if slot_session:
-            lens = ["--session", slot_session]
+            repo_part, _, num_part = slot_session.rpartition("_")
+            if repo_part and num_part.isdigit():
+                lens = ["--repo", repo_part, "--slot", num_part]
+            else:
+                # 비-슬롯형(커스텀 세션명·말단이 숫자 아님) — decomposed 표면엔 대응 불가한
+                # 드문 엣지라 `--mine` 으로 안전 폴백한다(라벨은 그대로 slot_session 기반 유지).
+                lens = ["--mine"]
             counts_scope = _slot_count_label(slot_session)
         else:
             lens = ["--mine"]
@@ -2273,9 +2292,9 @@ class PmBootstrap:
                     print()
                     print(self._build_identity_markdown(identity))
                 # 커맨드 카드 (ADR-0045) — identity surface 뒤. 이 세션이 쓸 전 커맨드를 정체성
-                # (`--session <repo>_<N>`) 채운 완성형으로 dump("--help 자체를 안 가게"). lean 은
-                # session 채운 형태·솔로(identity None/session 부재)는 --session 없는 형태로 분기.
-                # 렌더 실패는 fail-soft(카드 절 생략·위 dump 는 유지).
+                # (`--repo <repo> --slot <N>`·ADR-0057) 채운 완성형으로 dump("--help 자체를 안
+                # 가게"). lean 은 정체성 채운 형태·솔로(identity None/session 부재)는 정체성
+                # 인자 없는 형태로 분기. 렌더 실패는 fail-soft(카드 절 생략·위 dump 는 유지).
                 card = self._safe_command_card(identity)
                 if card:
                     print()
@@ -2363,8 +2382,9 @@ class PmBootstrap:
 
         slot_path = wp.slot_path(lease.slot)
         # 세션 정체성 = 슬롯키(`work/<repo>_<N>` → `<repo>_<N>`) — alloc 도 명시 multi-PM 이므로
-        # identity 에 `session` 을 채운다(T-0250 codex·ADR-0043/0045). 이게 없으면 커맨드 카드가
-        # `session` 키 부재를 솔로로 오판해 `--session` 빠진 카드를 dump → claim(required) fail-loud.
+        # identity 에 `session` 을 채운다(T-0250 codex·ADR-0045·ADR-0057). 이게 없으면 커맨드
+        # 카드가 `session` 키 부재를 솔로로 오판해 `--repo/--slot` 빠진 카드를 dump → claim(required)
+        # fail-loud.
         session = lease.slot[len("work/"):] if lease.slot.startswith("work/") else lease.slot
         # 브랜치는 슬롯 worktree 의 git HEAD 에서 live 조회(ADR-0013 amend T-0072 —
         # git=진실·장부 저장 폐지). detached/조회불가는 None → identity surface 가 "(미지정)".
@@ -2472,7 +2492,7 @@ class PmBootstrap:
         return branch if branch in protected else None
 
     def _build_slot_identity_markdown(self, identity: dict) -> str:
-        """lean identity + 상태점검 markdown — 세션명·라이브 브랜치·`--session` 안내·다른 PM 현황.
+        """lean identity + 상태점검 markdown — 세션명·라이브 브랜치·`--repo/--slot` 안내·다른 PM 현황.
 
         라이브 브랜치가 보호목록(T-0076)이면 🚫 경고 줄을 정체성 선언 직후 surface 한다
         (소프트 인지 — 하드 강제는 pre-push 훅).
@@ -2504,8 +2524,8 @@ class PmBootstrap:
             f"브랜치=`{branch}` · 보드=multi-PM 공유."
         )
         lines.append(
-            f"- **보드/리스 조작은 `--session {session}` 을 명시**한다 "
-            "(정체성 = 에이전트 맥락·도구엔 명시 전달)."
+            f"- **보드/리스 조작은 `--repo {repo} --slot {session.rsplit('_', 1)[-1]}` 을 명시**한다 "
+            "(정체성 = 에이전트 맥락·도구엔 명시 전달·ADR-0057)."
         )
         lines.append(f"- cwd (작업 슬롯): `{slot_path}`")
         lines.append(f"- pm_state (이 슬롯): `{pm_state_path}`")
@@ -2548,11 +2568,13 @@ class PmBootstrap:
         """이 세션이 쓸 전 커맨드를 정체성 채운 완성형으로 dump 하는 커맨드 카드 (ADR-0045).
 
         identity surface 뒤에 코드 생성해, PM 이 --help 왕복 없이 세션 전체를 운영하게 한다
-        ("--help 자체를 안 가게"·사용자 지시). 정체성(`--session <repo>_<N>`·ADR-0043 canonical)은
-        **실값으로 보간**하고, 사용자 입력(`T-NNNN`·`<PFX>`·`<요약>` 등)만 placeholder 로 남긴다.
+        ("--help 자체를 안 가게"·사용자 지시). 정체성(`--repo <repo> --slot <N>`·ADR-0057
+        canonical — 구 ADR-0043 `--session <repo>_<N>` 을 supersede)은 **실값으로 보간**하고,
+        사용자 입력(`T-NNNN`·`<PFX>`·`<요약>` 등)만 placeholder 로 남긴다.
 
-        identity: lean(멀티-PM) 모드면 `session` 키를 담은 dict → `--session <session>` 을 채운다.
-                  None 또는 `session` 부재(솔로/legacy alloc)면 `--session` 없는 현행 형태로 분기.
+        identity: lean(멀티-PM) 모드면 `session`+`repo` 키를 담은 dict → 세션 문자열(`<repo>_<N>`)
+                  에서 슬롯 번호를 분리해 `--repo <repo> --slot <N>` 을 채운다. None 또는
+                  `session`/`repo` 부재(솔로/legacy alloc)면 정체성 인자 없는 현행 형태로 분기.
 
         숨은 전제 4대장(claim=promote 선행·prefix rename/merge=홈 git clean·livegate record=
         release-marked pin·migrate-identity=단일세션) + reid=홈 git clean 을 해당 커맨드 줄 바로
@@ -2570,8 +2592,12 @@ class PmBootstrap:
         (ADR-0045 비중복) 카드 상단 1줄 pointer 로 pm_role 규율 절을 가리킨다.
         """
         session = identity.get("session") if identity else None
-        # 정체성 인자 — lean 이면 ` --session <session>`, 솔로면 빈 문자열(현행 형태·ADR-0045).
-        sess = f" --session {session}" if session else ""
+        repo_name = identity.get("repo") if identity else None
+        # 세션 문자열(`<repo>_<N>`)의 *마지막* `_` 로 슬롯 번호를 분리 — repo 이름 내부 언더스코어와
+        # 무관하다(항상 마지막 세그먼트가 N·`_build_slot_identity_markdown` 의 동형 파싱 관용구).
+        slot_num = session.rsplit("_", 1)[-1] if session else None
+        # 정체성 인자 — lean 이면 ` --repo <repo> --slot <N>`, 솔로면 빈 문자열(현행 형태·ADR-0057 신 표기).
+        sess = f" --repo {repo_name} --slot {slot_num}" if session and repo_name else ""
 
         def cmd(name: str, args: str, comment: str = "") -> str:
             """`python3 .project_manager/tools/<name> <args>` (+ ` # 주석`) 한 줄 렌더."""
@@ -2581,7 +2607,7 @@ class PmBootstrap:
         def skill(invocation: str, comment: str = "") -> str:
             """`/pm-…` 스킬 진입 줄(wave 운영 primary·ADR-0052).
 
-            `python3` 로 시작하지 않으므로 카드↔CLI argparse 정합 가드·정체성 `--session`
+            `python3` 로 시작하지 않으므로 카드↔CLI argparse 정합 가드·정체성 `--repo/--slot`
             검사(불변식 3)의 대상이 아니다 — backbone 은 아래 `engine()` 줄로 종속화한다.
             """
             return f"{invocation}  # {comment}" if comment else invocation
@@ -2590,7 +2616,7 @@ class PmBootstrap:
                    note: str = "스킬이 부르는 내부 엔진·직접 금지") -> str:
             """스킬에 종속된 backbone 줄 — 2-스페이스 들여쓰기 + '직접 금지' 주석(강등 표기).
 
-            `python3 …` 로 시작해(들여쓰기는 strip 됨) 정체성 `--session` 보간·카드↔CLI
+            `python3 …` 로 시작해(들여쓰기는 strip 됨) 정체성 `--repo/--slot` 보간·카드↔CLI
             argparse 정합 가드의 대상으로 남는다(불변식 1·3 무손상). 스킬 줄(`/pm-…`)만 그
             가드 밖이다.
             """
@@ -2598,12 +2624,12 @@ class PmBootstrap:
 
         lines: list[str] = []
         lines.append("### 이 세션 커맨드 카드 (정체성 채움·--help 불요·단일 진실·ADR-0045)")
-        # 정체성 헤더 — 실값 보간(placeholder 0). 솔로는 --session 불요 명시.
+        # 정체성 헤더 — 실값 보간(placeholder 0). 솔로는 정체성 인자 불요 명시.
         if session:
             branch = (identity.get("branch") if identity else None) or "(미지정)"
             lines.append(
                 f"정체성: 세션=`{session}` · 브랜치=`{branch}` — 보드/리스 조작은 "
-                f"`--session {session}` 명시(정체성=에이전트 맥락·도구엔 명시 전달)."
+                f"`--repo {repo_name} --slot {slot_num}` 명시(정체성=에이전트 맥락·도구엔 명시 전달)."
             )
             slot_path = identity.get("slot_path") if identity else None
             if slot_path:
@@ -2613,7 +2639,7 @@ class PmBootstrap:
                 )
         else:
             lines.append(
-                "정체성: 솔로(단일 세션) — `--session` 명시 불요(env `PM_SESSION_NAME` / "
+                "정체성: 솔로(단일 세션) — `--repo`/`--slot` 명시 불요(env `PM_SESSION_NAME` / "
                 "local.conf `session=` 로 자동 해소)."
             )
         # 스킬-우선 운영 pointer — 규칙/why 는 pm_role 이 단일 진실(재설명 금지·ADR-0045 비중복·ADR-0052).
@@ -2624,7 +2650,8 @@ class PmBootstrap:
 
         # 내 작업 보기 (read-only 조회·직접 — 래핑 스킬 없음·ADR-0047 자기 공간 우선).
         # user-first (ADR-0056): 두 렌즈의 스코프를 명확히 구분 — --mine=내 것 전 슬롯 /
-        # --session=내 것 ∩ 이 슬롯. "내 슬롯 작업"은 --session 이 정확한 커맨드다(타 사용자 무유출).
+        # --repo/--slot=내 것 ∩ 이 슬롯. "내 슬롯 작업"은 --repo/--slot 이 정확한 커맨드다
+        # (타 사용자 무유출·ADR-0057 신 표기).
         lines.append("# 내 작업 보기 (read-only 조회·직접 — ADR-0047 자기 공간 우선)")
         lines.append(cmd(
             "board.py", "list --mine",
@@ -2632,7 +2659,7 @@ class PmBootstrap:
         ))
         if session:
             lines.append(cmd(
-                "board.py", f"list --session {session}",
+                "board.py", f"list --repo {repo_name} --slot {slot_num}",
                 "내 것 ∩ 이 슬롯(내 open + 이 슬롯 claim만)·이 슬롯 작업 조회·조회 전용",
             ))
         lines.append(cmd(
@@ -2693,14 +2720,14 @@ class PmBootstrap:
         lines.append(skill("/pm-handoff", "세션 종료 7단계 자동화"))
         handoff_args = '--session-seq <N> --wave-summary "<요약>"'
         if session:
-            handoff_args = f"--session {session} {handoff_args}"
+            handoff_args = f"--repo {repo_name} --slot {slot_num} {handoff_args}"
         lines.append(engine("pm_handoff.py", handoff_args))
         lines.append(skill("/pm-update", "엔진 갱신 — upstream freshness·manifest reconcile"))
         lines.append("  ↳ 엔진=pm-update.sh 파사드(freshness+reconcile)·직접 CLI 아님 — skill-only.")
         lines.append("")
 
         # 릴리즈 (직접 — 래핑 스킬 없음) — livegate record 는 release-marked pin(4대장 ③·인접 ⚠).
-        # 정체성(`sess`)을 실어 실행가능 형태로 emit — multi-lease 홈에서 `--session` 없는 record 는
+        # 정체성(`sess`)을 실어 실행가능 형태로 emit — multi-lease 홈에서 정체성 인자 없는 record 는
         # cwd 모호 fail-loud 이므로(T-0298), 이 세션 슬롯을 명시해 안내 명령이 dead-end 가 아니게 한다
         # (솔로는 `sess`="" → 무인자·현행 형태·leased <2 라 폴백 무변경).
         lines.append("# 릴리즈 (직접 — 래핑 스킬 없음)")
@@ -2821,8 +2848,10 @@ def build_parser() -> argparse.ArgumentParser:
     # ── multi-PM 모드 (ADR-0013·0011) — 무인자(솔로)면 미사용·현행 보존 ──
     # positional `repo`(nargs="?") — handoff rewriter 산출 `/pm-bootstrap <repo> --slot N`
     # (pm_handoff.py `_inject_slot_into_template`)을 raw CLI 가 그대로 수용하기 위한 흡수구
-    # (ADR-0043·rewriter↔CLI 정합). `--repo` 와 alias 관계(dest 는 분리해 불일치 감지) — 정합은
-    # parse 후 `resolve_repo_arg` 가 한다(둘 다 주고 값 다르면 fail-loud). 미지정이면 None →
+    # (ADR-0043 §2 기능 잔존·rewriter↔CLI 정합) — ADR-0057 로 canonical 이 분해형 `--repo/--slot`
+    # 로 굳어진 뒤에도 **positional 은 유지**한다(진입 명령 관행·`--repo` 도 여전히 동작·불일치
+    # fail-loud·사용자 결정). `--repo` 와 alias 관계(dest 는 분리해 불일치 감지) — 정합은 parse 후
+    # `resolve_repo_arg` 가 한다(둘 다 주고 값 다르면 fail-loud). 미지정이면 None →
     # 무인자 자동바인딩(T-0178) 경로 보존.
     parser.add_argument(
         "repo_positional",
@@ -2831,30 +2860,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "multi-PM 모드 — repo 이름(positional). `--repo` 의 alias — handoff rewriter 산출 "
-            "`/pm-bootstrap <repo> --slot N` 정합용 (ADR-0043). `--repo` 와 둘 다 주면 값 일치 필수."
+            "`/pm-bootstrap <repo> --slot N` 정합용 (ADR-0043 §2). `--repo` 와 둘 다 주면 값 일치 필수."
         ),
     )
-    parser.add_argument(
-        "--repo",
-        metavar="이름",
-        default=None,
-        help=(
-            "multi-PM 모드 — repo 워크트리 슬롯을 alloc 하고 identity surface 를 출력한다 "
-            "(ADR-0013). 무인자(솔로)면 현행 부트스트랩만 (alloc 경로 미진입). positional `repo` "
-            "와 alias — 둘 다 주면 값이 일치해야 한다."
-        ),
-    )
-    parser.add_argument(
-        "--slot",
-        metavar="N",
-        type=int,
-        default=None,
-        help=(
-            "multi-PM 모드 — 슬롯 번호를 직접 선언해 바인딩(lean·T-0074). 세션=`<repo>_<N>`·"
-            "슬롯=`work/<repo>_<N>` 에 직접 bind(pool alloc 아님). --repo 전용. 주면 alloc "
-            "대신 bind 경로로 간다(--branch/--resume 와 배타)."
-        ),
-    )
+    # `--repo`/`--slot` — 공용 `identity_args.add_identity_args` 채택(ADR-0057 canonical·
+    # T-0322 흡수·T-0315 정합). bare `--slot` fail-loud·slot<1 거부는 `parse_identity`(main())
+    # 가 담당 — 로컬 중복 검증 제거(identity_args 문서의 slot≥1 계약 보존 참고).
+    ia = _load_identity_args()
+    if ia is None:
+        raise RuntimeError(
+            "identity_args 모듈을 로드할 수 없다 — .project_manager/tools/identity_args.py "
+            "확인 (ADR-0057 canonical 정체성 인자·엔진 필수 peer 모듈)."
+        )
+    ia.add_identity_args(parser)
     parser.add_argument(
         "--branch",
         metavar="브랜치",
@@ -2923,17 +2941,23 @@ def main(argv: list[str] | None = None) -> int:
             # default-1(`{1,2}`→1)·단독·idle-필터 해소도 포함하므로 "단일 슬롯" 한정 문구 제거.
             print(f"슬롯 자동 해소: repo={args.repo} · slot={args.slot}",
                   file=sys.stderr)
-    # --branch/--resume/--slot 은 --repo multi-PM 모드 전용 — repo 없이 주면 오용 신호로 거부.
-    if args.repo is None and (
-        args.branch is not None or args.resume is not None or args.slot is not None
-    ):
-        build_parser().error("--branch/--resume/--slot 은 --repo multi-PM 모드 전용이다.")
+    # 정체성 인자 fail-loud 검증(ADR-0057 canonical) — bare `--slot`(--repo 없이)·slot<1 은
+    # 공용 `identity_args.parse_identity` 가 한 곳에서 담당한다(로컬 중복 검증 제거·메시지도
+    # 전 도구 동일·카드↔CLI 정합). `build_parser()` 가 이미 `identity_args` 로드를 검증했으므로
+    # (실패 시 RuntimeError) 여기서 재로드는 항상 성공한다.
+    ia = _load_identity_args()
+    if ia is not None:
+        try:
+            ia.parse_identity(args)
+        except ValueError as exc:
+            build_parser().error(str(exc))
+    # --branch/--resume 은 --repo multi-PM 모드 전용 — repo 없이 주면 오용 신호로 거부
+    # (--slot 단독은 위 parse_identity 가 이미 걸렀다).
+    if args.repo is None and (args.branch is not None or args.resume is not None):
+        build_parser().error("--branch/--resume 은 --repo multi-PM 모드 전용이다.")
     # --slot(직접 바인딩·lean)은 --branch/--resume(alloc 경로)과 배타 — 둘은 다른 경로다.
     if args.slot is not None and (args.branch is not None or args.resume is not None):
         build_parser().error("--slot 은 --branch/--resume 과 함께 쓸 수 없다 (bind vs alloc 경로).")
-    # 슬롯 번호는 1부터 — `work/<repo>_<N>` 네이밍과 정합. 0/음수는 무의미 슬롯이라 거부(codex 게이트).
-    if args.slot is not None and args.slot < 1:
-        build_parser().error("--slot 은 1 이상의 슬롯 번호여야 한다 (work/<repo>_<N>).")
     bootstrap = PmBootstrap()
     return bootstrap.run(
         output_json=args.output_json,

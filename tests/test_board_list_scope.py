@@ -1,16 +1,21 @@
-"""`board list --session/--slot` 필터 + 기본뷰 done 접기 단위 테스트 (T-0197·ADR-0056 user-first).
+"""`board list --repo/--slot` 필터 + 기본뷰 done 접기 단위 테스트 (T-0197·ADR-0056 user-first·
+ADR-0057 decomposed 인자 통일·T-0314).
 
-`list` 가 `--session`/`--slot` 을 거부하던 argparse 에러(opencode PM 실증)를 없애고,
-**현재 사용자 ∩ 그 슬롯**(claim: user AND slot·open: 슬롯무관 내 backlog·ADR-0056) 렌즈를 **명시
-식별자**로 돌린다 — querying identity 는 항상 현재 사용자(local.conf user=)다. + 기본 status 뷰는
-활성만(open/claimed/blocked) — done 은 `--status all`(또는 `--status done`)에서만 보인다.
+`list` 가 `--repo`/`--slot`(decomposed·ADR-0057) 을 거부하지 않고, **현재 사용자 ∩ 그 슬롯**(claim:
+user AND slot·open: 슬롯무관 내 backlog·ADR-0056) 렌즈를 **명시 식별자**로 돌린다 — querying identity
+는 항상 현재 사용자(local.conf user=)다. + 기본 status 뷰는 활성만(open/claimed/blocked) — done 은
+`--status all`(또는 `--status done`)에서만 보인다.
 
 이 파일이 검증하는 계약:
-  1. `--session NAME` — 현재 사용자 ∩ 그 세션(user AND slot claim·완전 일치). 타 사용자 무유출.
-  2. `--slot N` — 현재 사용자 ∩ 슬롯 _N (slot 규약 `<repo>_<N>` suffix 매칭).
-  3. `--status` 셀렉터 — 기본=활성만 · `all`=전체(done 포함) · 특정값=그것만(기존 동작).
-  4. argparse 가 `--session`/`--slot`/`--status all`/`--mine` 모두를 에러 없이 받는다
-     (opencode PM 실증 회귀 방지) + `--mine`/`--session`/`--slot` 상호 배타.
+  1. `--repo X --slot N`(kind=slot) — 현재 사용자 ∩ 그 세션(user AND slot claim·완전 일치·구
+     `--session <repo>_<N>` 과 동형). 타 사용자 무유출.
+  2. `--repo X`(kind=repo·슬롯 무) — 현재 사용자 ∩ **그 repo 의 내 슬롯 전체**(prefix 매칭·신규
+     repo-scope 뷰 — 구 bare `--slot N`[cross-repo suffix 매칭]을 대체).
+  3. `--slot N` 단독(`--repo` 없음) — fail-loud(ADR-0057 결정 2·uniform·solo 예외 없음).
+  4. `--status` 셀렉터 — 기본=활성만 · `all`=전체(done 포함) · 특정값=그것만(기존 동작).
+  5. argparse 가 `--repo`/`--slot`(함께)/`--status all`/`--mine` 모두를 에러 없이 받는다
+     (opencode PM 실증 회귀 방지 계승) + `--mine`/`--repo` 상호 배타(cmd_list 런타임 검사 — 두 개
+     플래그[`--repo`+`--slot`]가 함께 필요해 argparse mutex group 을 못 쓴다).
 
 hermetic 패턴은 `test_board_mine_view.py` 와 동형 — board.py 의 경로 전역을 tmp 프로젝트로
 monkeypatch 하고 git 폴백은 stub 한다. querying identity 는 local.conf `user=` 로 명시한다.
@@ -83,7 +88,7 @@ def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
 def _list_ids(board, capsys, **flags) -> list[str]:
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
-                              session=flags.get("session"), slot=flags.get("slot"))
+                              repo=flags.get("repo"), slot=flags.get("slot"))
     rc = board.cmd_list(args)
     assert rc == 0
     out = capsys.readouterr().out
@@ -96,22 +101,25 @@ def _list_ids(board, capsys, **flags) -> list[str]:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# argparse — --session/--slot 에러 부재 (opencode PM 실증 회귀 방지)
+# argparse — --repo/--slot 에러 부재(opencode PM 실증 회귀 방지 계승) + 해소 규칙 3케이스
 # ════════════════════════════════════════════════════════════════════════
 
-def test_list_session_flag_parses_without_error():
-    parser = None
+def test_list_repo_and_slot_flags_parse_together():
+    """`--repo X --slot N`(kind=slot) — 함께 줘도(구 `--session`/bare `--slot` 과 달리) 에러 없다."""
     import importlib.util as _il
     spec = _il.spec_from_file_location("board_cli", TOOLS / "board.py")
     mod = _il.module_from_spec(spec)
     spec.loader.exec_module(mod)
     parser = mod.build_parser()
-    args = parser.parse_args(["list", "--session", "myproject_3"])
-    assert args.session == "myproject_3"
+    args = parser.parse_args(["list", "--repo", "myproject", "--slot", "3"])
+    assert args.repo == "myproject"
+    assert args.slot == 3
     assert args.cmd == "list"
 
 
-def test_list_slot_flag_parses_without_error():
+def test_list_slot_flag_parses_at_argparse_level_without_repo():
+    """`--slot 3`(단독) 은 argparse 레벨에선 에러 없이 파싱된다 — "`--repo` 필수" 검증은
+    `parse_identity`/`cmd_list` 런타임 몫(카드↔CLI 정합은 유지하되 검사는 한 곳에 모은다)."""
     import importlib.util as _il
     spec = _il.spec_from_file_location("board_cli2", TOOLS / "board.py")
     mod = _il.module_from_spec(spec)
@@ -119,6 +127,7 @@ def test_list_slot_flag_parses_without_error():
     parser = mod.build_parser()
     args = parser.parse_args(["list", "--slot", "3"])
     assert args.slot == 3
+    assert args.repo is None
 
 
 def test_list_status_all_flag_parses_without_error():
@@ -131,63 +140,60 @@ def test_list_status_all_flag_parses_without_error():
     assert args.status == "all"
 
 
-def test_list_session_and_slot_mutually_exclusive():
-    import importlib.util as _il
-    spec = _il.spec_from_file_location("board_cli4", TOOLS / "board.py")
-    mod = _il.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    parser = mod.build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["list", "--session", "a", "--slot", "1"])
+def test_list_slot_alone_without_repo_fails_loud(board):
+    """해소 규칙 3케이스 — `--slot N` 단독(`--repo` 없음) 은 `cmd_list` 가 fail-loud(ADR-0057 결정 2)."""
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_list(argparse.Namespace(status=None, tag=None, mine=False,
+                                          repo=None, slot=3))
+    assert "--repo" in str(exc.value)
 
 
-def test_list_mine_and_session_mutually_exclusive():
-    import importlib.util as _il
-    spec = _il.spec_from_file_location("board_cli5", TOOLS / "board.py")
-    mod = _il.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    parser = mod.build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["list", "--mine", "--session", "a"])
+def test_list_mine_and_repo_mutually_exclusive_at_dispatch(board):
+    """`--mine` 과 `--repo`(+`--slot`) 는 상호 배타 — decomposed 두 플래그가 함께 필요해(kind=slot)
+    argparse mutex group 을 못 쓰므로 `cmd_list` 런타임에서 거부한다(구 argparse-level mutex 대체)."""
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_list(argparse.Namespace(status=None, tag=None, mine=True,
+                                          repo="a", slot=None))
+    assert "--mine" in str(exc.value)
 
 
 # ════════════════════════════════════════════════════════════════════════
-# --session NAME — 현재 사용자 ∩ 그 세션 (claim: user AND slot·타 사용자 무유출·ADR-0056)
+# --repo X --slot N (kind=slot) — 현재 사용자 ∩ 그 세션(완전 일치·구 --session 동형)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_session_filter_includes_my_claim_in_that_session(board, capsys):
-    """현재 사용자(alice) ∩ 세션 — 내 그-세션 claim 만(user AND slot). 남의(bob) claim 무포함."""
+def test_repo_slot_filter_includes_my_claim_in_that_slot(board, capsys):
+    """현재 사용자(alice) ∩ 슬롯 — 내 그-슬롯 claim 만(user AND slot). 남의(bob) claim 무포함."""
     _write_conf(board, user="alice")
-    _seed(board, "T-0001", "claimed", claimed_by="alice/myproject_3")   # 내 것·그 세션
+    _seed(board, "T-0001", "claimed", claimed_by="alice/myproject_3")   # 내 것·그 슬롯
     _seed(board, "T-0002", "claimed", claimed_by="bob/myproject_9")     # 남의 것 → 제외
-    ids = _list_ids(board, capsys, session="myproject_3")
+    ids = _list_ids(board, capsys, repo="myproject", slot=3)
     assert ids == ["T-0001"]
 
 
-def test_session_filter_excludes_other_user_same_slot_claim(board, capsys):
+def test_repo_slot_filter_excludes_other_user_same_slot_claim(board, capsys):
     """**타 사용자 무유출(codex leak 가드)**: 같은 슬롯 번호라도 남의 user-qualified claim 은 제외.
 
-    querying user=alice·`--session myproject_3`. bob 이 같은 세션명 슬롯에서 claim 한
+    querying user=alice·`--repo myproject --slot 3`. bob 이 같은 슬롯에서 claim 한
     `bob/myproject_3` 은 slot 은 맞지만 user 가 달라(user AND slot) strict-exclude 된다."""
     _write_conf(board, user="alice")
     _seed(board, "T-0001", "claimed", claimed_by="alice/myproject_3")   # 내 것
     _seed(board, "T-0002", "claimed", claimed_by="bob/myproject_3")     # 남의 것·같은 슬롯 → 제외
-    ids = _list_ids(board, capsys, session="myproject_3")
+    ids = _list_ids(board, capsys, repo="myproject", slot=3)
     assert ids == ["T-0001"]
 
 
-def test_session_filter_includes_open_when_no_area_owner_solo(board, capsys):
+def test_repo_slot_filter_includes_open_when_no_area_owner_solo(board, capsys):
     """**solo(distinct user ≤1)에서만** area_owner 미운영 → 전체 open degrade (T-0302·ADR-0053).
 
     이 보드엔 소유가 실린 티켓이 하나뿐(distinct user ≤1)이라 solo — degrade 로 open 표시가 맞다.
     ⚠ 예전 이 단언은 degrade 자체를 '정답'으로 박제해 다중사용자 유출 버그를 가렸다. 이제 solo
     조건을 명시하고, 다중사용자 seed 는 아래 strict-exclude 테스트가 별도로 못박는다."""
     _seed(board, "T-0003", "open")   # 소유 미상·유일 티켓 → distinct user 0 = solo
-    ids = _list_ids(board, capsys, session="myproject_3")
+    ids = _list_ids(board, capsys, repo="myproject", slot=3)
     assert ids == ["T-0003"]
 
 
-def test_session_filter_multi_user_excludes_unowned_open(board, capsys):
+def test_repo_slot_filter_multi_user_excludes_unowned_open(board, capsys):
     """다중사용자(distinct ≥2)면 solo degrade 가 확장되지 않는다 — 소유 미해소 open strict-exclude.
 
     T-0302 근절: 옛 `--session` 은 my_user 를 항상 None 으로 둬 area_owner 미운영 시 전체 open 을
@@ -195,52 +201,55 @@ def test_session_filter_multi_user_excludes_unowned_open(board, capsys):
     신호가 서고, my_user 를 유도할 areas 가 없어도 미해소 open 은 제외된다."""
     _seed(board, "T-0003", "open", created_by="alice/myproject_3")
     _seed(board, "T-0004", "open", created_by="bob/other_9")
-    ids = _list_ids(board, capsys, session="myproject_3")
+    ids = _list_ids(board, capsys, repo="myproject", slot=3)
     assert "T-0004" not in ids   # 타 사용자 미claim open 유출 차단(ADR-0053)
 
 
-def test_session_filter_legacy_slot_only_claim(board, capsys):
-    """legacy 슬롯-only claim(`claimed_by=<slot>`)도 --session 완전 일치로 잡힌다."""
+def test_repo_slot_filter_legacy_slot_only_claim(board, capsys):
+    """legacy 슬롯-only claim(`claimed_by=<slot>`)도 `--repo X --slot N` 완전 일치로 잡힌다."""
     _seed(board, "T-0004", "claimed", claimed_by="myproject_3")
-    ids = _list_ids(board, capsys, session="myproject_3")
+    ids = _list_ids(board, capsys, repo="myproject", slot=3)
     assert ids == ["T-0004"]
 
 
-# ════════════════════════════════════════════════════════════════════════
-# --slot N — 현재 사용자 ∩ 슬롯 _N (slot 규약 <repo>_<N> suffix 매칭·ADR-0056)
-# ════════════════════════════════════════════════════════════════════════
-
-def test_slot_filter_matches_my_claims_across_repos_same_number(board, capsys):
-    """`--slot 3` = 내(alice) claim ∩ 슬롯 _3 — repo 교차라도 슬롯 번호 _3 이면 잡는다(suffix 매칭)."""
+def test_repo_slot_filter_cross_repo_same_number_does_not_leak(board, capsys):
+    """**BREAKING 확인**: `--repo myproject --slot 3` 은 `otherproj_3`(다른 repo·같은 번호) 를
+    안 끌어온다 — 구 bare `--slot N`(cross-repo suffix 매칭)이 ADR-0057 로 제거된 결과다."""
     _write_conf(board, user="alice")
     _seed(board, "T-0005", "claimed", claimed_by="alice/myproject_3")
     _seed(board, "T-0006", "claimed", claimed_by="alice/otherproj_3")
-    ids = _list_ids(board, capsys, slot=3)
-    assert set(ids) == {"T-0005", "T-0006"}
-
-
-def test_slot_filter_does_not_match_different_number(board, capsys):
-    _write_conf(board, user="alice")
-    _seed(board, "T-0007", "claimed", claimed_by="alice/myproject_3")
-    ids = _list_ids(board, capsys, slot=9)
-    assert ids == []
-
-
-def test_slot_filter_excludes_other_user_same_slot(board, capsys):
-    """**타 사용자 무유출(codex leak 가드)**: `--slot 3` 이 남의 `bob/x_3` claim 을 slot 번호로 안 끌어온다."""
-    _write_conf(board, user="alice")
-    _seed(board, "T-0005", "claimed", claimed_by="alice/myproject_3")   # 내 것
-    _seed(board, "T-0099", "claimed", claimed_by="bob/otherproj_3")     # 남의 것·같은 슬롯 번호 → 제외
-    ids = _list_ids(board, capsys, slot=3)
+    ids = _list_ids(board, capsys, repo="myproject", slot=3)
     assert ids == ["T-0005"]
 
 
-def test_slot_filter_matches_legacy_pure_number_slot(board, capsys):
-    """slot 토큰이 순수 숫자(레거시)면 `--slot N` 완전 일치로도 잡힌다(내 것·user AND slot)."""
+# ════════════════════════════════════════════════════════════════════════
+# --repo X (kind=repo·슬롯 무) — 현재 사용자 ∩ 그 repo 의 내 슬롯 전체(prefix 매칭·신규)
+# ════════════════════════════════════════════════════════════════════════
+
+def test_repo_alone_view_matches_all_my_slots_in_that_repo(board, capsys):
+    """`--repo X` 단독 — 그 repo 의 내 슬롯 전체(어느 N 이든). 다른 repo 는 제외(spike §3.1)."""
     _write_conf(board, user="alice")
-    _seed(board, "T-0008", "claimed", claimed_by="alice/3")
-    ids = _list_ids(board, capsys, slot=3)
-    assert ids == ["T-0008"]
+    _seed(board, "T-0020", "claimed", claimed_by="alice/myproject_3")
+    _seed(board, "T-0021", "claimed", claimed_by="alice/myproject_7")
+    _seed(board, "T-0022", "claimed", claimed_by="alice/otherproj_3")   # 다른 repo → 제외
+    ids = _list_ids(board, capsys, repo="myproject")
+    assert set(ids) == {"T-0020", "T-0021"}
+
+
+def test_repo_alone_view_excludes_other_user_same_repo(board, capsys):
+    """**타 사용자 무유출**: `--repo X` 가 남의 `bob/X_N` claim 을 안 끌어온다(user AND repo-prefix)."""
+    _write_conf(board, user="alice")
+    _seed(board, "T-0023", "claimed", claimed_by="alice/myproject_3")
+    _seed(board, "T-0024", "claimed", claimed_by="bob/myproject_9")     # 남의 것·같은 repo → 제외
+    ids = _list_ids(board, capsys, repo="myproject")
+    assert ids == ["T-0023"]
+
+
+def test_repo_alone_view_open_backlog_slot_agnostic(board, capsys):
+    """`--repo X` 뷰에서도 open 은 슬롯무관 내 backlog — solo degrade 로 표시(ADR-0056 #3)."""
+    _seed(board, "T-0025", "open")   # 소유 미상·유일 티켓 → solo
+    ids = _list_ids(board, capsys, repo="myproject")
+    assert ids == ["T-0025"]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -278,8 +287,8 @@ def test_default_view_empty_when_only_done(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# CLI --help 위생 (T-0248·ADR-0043/ADR-0042) — ticket 인자 metavar `T-NNNN`,
-# `list --session` 뷰/actor 구분 문구, `new --prefix` 카테고리 help.
+# CLI --help 위생 (T-0248·ADR-0043/ADR-0042·ADR-0057) — ticket 인자 metavar `T-NNNN`,
+# `list --repo`/`--slot` canonical 문구, `new --prefix` 카테고리 help.
 # ════════════════════════════════════════════════════════════════════════
 
 # ticket id 를 받는 서브커맨드 전건 (idea promote/kill 은 idea-ID 라 제외).
@@ -325,18 +334,15 @@ def test_idea_id_arg_keeps_plain_metavar():
         assert "T-NNNN" not in usage, f"idea {verb} 에 ticket metavar 오적용: {usage!r}"
 
 
-def test_list_session_help_distinguishes_view_from_actor():
-    """`list --session` help 는 뷰 렌즈 ↔ actor `--session` 이 별개임을 명시한다 (ADR-0043)."""
+def test_list_repo_slot_uses_canonical_adr0057_wording():
+    """`list --repo`/`--slot` help 는 canonical ADR-0057 wording — 구 '뷰 렌즈 ↔ actor 별개'
+    문구(ADR-0043 §4)는 폐기됐다: 인자 표면이 전 서브 동형이라 그 구분 자체가 사라졌다."""
     list_parser = _subparser(_fresh_parser(), "list")
-    session_help = None
-    for action in list_parser._actions:
-        if action.dest == "session":
-            session_help = action.help
-            break
-    assert session_help is not None, "list --session action 이 없다"
-    assert "뷰 렌즈" in session_help
-    assert "actor" in session_help
-    assert "별개" in session_help
+    dests = {action.dest: action for action in list_parser._actions}
+    assert "session" not in dests, "list 에 구 --session action 잔존 (ADR-0057 grep 잔여 0 위반)"
+    assert "repo" in dests, "list --repo action 이 없다"
+    assert "slot" in dests, "list --slot action 이 없다"
+    assert "ADR-0057" in dests["repo"].help
 
 
 def test_new_prefix_help_frames_as_category_not_namespace():

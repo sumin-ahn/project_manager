@@ -10,9 +10,11 @@ multi-user 보드 공유의 기반층 — board 산출(ticket frontmatter·areas
   2. **identity 합성** `identity_tag` — `<user>/<pm-slot>`·user 미상이면 슬롯만(하위호환).
   3. **ticket created_by** — `cmd_new` 가 생성 시 set(provenance).
   4. **ticket claimed_by** — `cmd_claim` 이 user/slot 차원으로 set·구 슬롯-only 값 graceful.
+  5. **actor 정체성 인자** `--repo`/`--slot`(ADR-0057) — `cmd_claim` 의 3 해소 케이스(kind=
+     slot/repo/none) + `--slot` 단독 fail-loud (T-0314).
 
-**hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_CONF`·`TICKETS_DIR` 등)은 import
-시점에 실 repo 절대경로로 고정된다 — tmp 프로젝트로 monkeypatch 재지정하고 git 폴백은
+**hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_CONF`·`TICKETS_DIR`·`LEASES_FILE` 등)은
+import 시점에 실 repo 절대경로로 고정된다 — tmp 프로젝트로 monkeypatch 재지정하고 git 폴백은
 `_git_config_email` 을 monkeypatch 해 실 git config/실 루트를 절대 건드리지 않는다
 (test_board_multipm.py·test_board_per_repo.py 의 hermetic 패턴 동류).
 """
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -83,6 +86,7 @@ def board(tmp_path, monkeypatch):
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": pm / ".local",
         "BOARD_LOCK": pm / ".local" / "board.lock",
+        "LEASES_FILE": pm / ".local" / "worktree-leases.json",  # `--repo` 단독 actor 해소용(T-0314)
         "PM_STATE_FILE": wiki / "pm_state.md",
         "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
     }
@@ -98,6 +102,17 @@ def board(tmp_path, monkeypatch):
 def _write_conf(board, **kv) -> None:
     board.LOCAL_CONF.write_text(
         "".join(f"{k}={v}\n" for k, v in kv.items()), encoding="utf-8")
+
+
+def _write_leases(board, *rows) -> None:
+    """리스 장부(`LEASES_FILE`)에 (repo, slot 정수) 행을 leased 상태로 쓴다 — `identity_args.
+    resolve_actor_slot` 이 읽는 실 스키마(repo·slot=`work/<repo>_<N>`·session·state) 동형
+    (test_identity_args.py `_write_leases` 동형)."""
+    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    leases = [{"repo": r["repo"], "slot": f"work/{r['repo']}_{r['slot']}",
+               "session": f"{r['repo']}_{r['slot']}", "state": r.get("state", "leased")}
+              for r in rows]
+    board.LEASES_FILE.write_text(json.dumps({"leases": leases}), encoding="utf-8")
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -220,8 +235,8 @@ def _seed_open(board, tid="T-0001"):
     return path
 
 
-def _claim_args(tid="T-0001", session=None, user=None):
-    return argparse.Namespace(id=tid, session=session, user=user)
+def _claim_args(tid="T-0001", repo=None, slot=None, user=None):
+    return argparse.Namespace(id=tid, repo=repo, slot=slot, user=user)
 
 
 def test_cmd_claim_sets_claimed_by_user_slot(board):
@@ -244,9 +259,57 @@ def test_cmd_claim_claimed_by_slot_only_when_user_unknown(board):
     assert fm["claimed_by"] == "pm-1"
 
 
-def test_cmd_claim_session_override_still_works(board):
-    """args.session override 가 슬롯 차원을, args.user 가 user 차원을 채운다."""
+# ════════════════════════════════════════════════════════════════════════
+# cmd_claim — `--repo`/`--slot`(ADR-0057) 해소 3케이스 + `--slot` 단독 fail-loud (T-0314)
+# ════════════════════════════════════════════════════════════════════════
+
+def test_cmd_claim_repo_and_slot_resolve_to_composed_session(board):
+    """kind=slot(`--repo X --slot N`) — 리스 조회 없이 즉시 `"<repo>_<N>"` 으로 완전 해소.
+
+    구 `args.session` 임의 문자열 override(예: `"pay-pm"`)는 decomposed 인자로는 재현 불가 —
+    ADR-0057 이후 슬롯 정체성은 항상 `<repo>_<N>` 형태(internal 표현 불변)다."""
     _seed_open(board)
-    assert board.cmd_claim(_claim_args(session="pay-pm", user="bob")) == 0
+    assert board.cmd_claim(_claim_args(repo="pay", slot=3, user="bob")) == 0
     fm, _ = board.load_ticket(list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))[0])
-    assert fm["claimed_by"] == "bob/pay-pm"
+    assert fm["claimed_by"] == "bob/pay_3"
+
+
+def test_cmd_claim_repo_alone_resolves_single_active_lease(board):
+    """kind=repo(`--repo X` 단독) — 그 repo 의 활성 리스가 정확히 1개면 그 세션으로 해소
+    (`identity_args.resolve_actor_slot`·ADR-0057 결정 3)."""
+    _write_leases(board, {"repo": "pay", "slot": 3})
+    _seed_open(board)
+    assert board.cmd_claim(_claim_args(repo="pay", user="bob")) == 0
+    fm, _ = board.load_ticket(list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))[0])
+    assert fm["claimed_by"] == "bob/pay_3"
+
+
+def test_cmd_claim_repo_alone_ambiguous_fails_loud(board):
+    """kind=repo — 그 repo 의 활성 리스가 ≥2 개면 SlotResolutionError 로 fail-loud
+    (기존 SlotResolutionError 의미 보존·신규 solo 분기 아님)."""
+    _write_leases(board, {"repo": "pay", "slot": 1}, {"repo": "pay", "slot": 2})
+    _seed_open(board)
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_claim(_claim_args(repo="pay", user="bob"))
+    assert "pay" in str(exc.value)
+
+
+def test_cmd_claim_repo_alone_zero_active_slots_fails_loud(board):
+    """kind=repo — 명시 `--repo X` 인데 그 repo 활성 리스가 0개면 **fail-loud** (codex r2·ADR-0057).
+    None 폴백하면 kind=none 과 구분 못 해 env/단일-lease 로 silent 오귀속(`--repo typo` → 다른 repo
+    세션으로 claim) — 명시 repo 는 해소되거나 명시적으로 실패한다. 여기선 다른 repo 활성 lease 를 둬
+    (폴백 유혹) `--repo pay`(0슬롯)가 그 세션으로 오귀속되지 않고 fail-loud 함을 lock."""
+    _write_leases(board, {"repo": "other", "slot": 1})  # 단일 lease(다른 repo) — 옛 폴백 오귀속 유혹
+    _seed_open(board)
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_claim(_claim_args(repo="pay", user="bob"))
+    assert "pay" in str(exc.value) and "활성 슬롯" in str(exc.value)
+
+
+def test_cmd_claim_slot_alone_without_repo_fails_loud(board):
+    """`--slot N` 단독(`--repo` 없음) — `parse_identity` 가 ValueError·`cmd_claim` 이 fail-loud
+    (ADR-0057 결정 2 — uniform·solo 예외 없음)."""
+    _seed_open(board)
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_claim(_claim_args(slot=3, user="bob"))
+    assert "--repo" in str(exc.value)

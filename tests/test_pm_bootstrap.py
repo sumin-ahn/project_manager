@@ -385,11 +385,13 @@ def test_bootstrap_slot_status_absent_pool_graceful(bootstrap, tmp_path, capsys)
 
 
 def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path, capsys):
-    """**S1**: 슬롯 정체성(--repo/--slot) 부트스트랩은 카운트를 `list --session <repo>_<N>`(내 것 ∩
-    그 슬롯)로 뽑고 라벨 "(slot N)" 로 announce 한다 — user-wide `list --mine`(전 슬롯) mislabel 근절.
+    """**S1**: 슬롯 정체성(--repo/--slot) 부트스트랩은 카운트를 `list --repo <repo> --slot <N>`
+    (ADR-0057·내 것 ∩ 그 슬롯)로 뽑고 라벨 "(slot N)" 로 announce 한다 — user-wide `list --mine`
+    (전 슬롯) mislabel 근절.
 
-    비공허: board list 호출 argv 가 `--session A_1`(≠`--mine`)이고, 렌더 카운트 라벨이 "(slot 1)"
-    (≠"(mine)")임을 확증한다 — S1 증상("claimed 4 (mine)" 인데 `list --session` 은 0)의 근본.
+    비공허: board list 호출 argv 가 `--repo A --slot 1`(≠`--mine`)이고, 렌더 카운트 라벨이
+    "(slot 1)"(≠"(mine)")임을 확증한다 — S1 증상("claimed 4 (mine)" 인데 `list --repo/--slot` 은
+    0)의 근본.
     """
     calls: list[list[str]] = []
     # slot 뷰(내 것 ∩ 슬롯) = open 1(슬롯무관 backlog) + claimed 2(이 슬롯 진행분).
@@ -404,9 +406,9 @@ def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path,
         calls.append(args)
         if args[:1] == ["lint"]:
             return 0, "✓ no lint issues\n"
-        if args == ["list", "--status", "done", "--session", "A_1"]:
+        if args == ["list", "--status", "done", "--repo", "A", "--slot", "1"]:
             return 0, slot_done_out
-        if args == ["list", "--session", "A_1"]:
+        if args == ["list", "--repo", "A", "--slot", "1"]:
             return 0, slot_list_out
         raise AssertionError(f"슬롯 정체성인데 슬롯-스코프 아님: {args}")
 
@@ -416,11 +418,11 @@ def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path,
     assert rc == 0
     out = capsys.readouterr().out
 
-    # 1) board list 는 --mine 이 아니라 그 슬롯 정체성(--session A_1)으로 조회됐다(default + done).
+    # 1) board list 는 --mine 이 아니라 그 슬롯 정체성(--repo A --slot 1)으로 조회됐다(default + done).
     list_calls = [c for c in calls if c[:1] == ["list"]]
     assert list_calls == [
-        ["list", "--session", "A_1"],
-        ["list", "--status", "done", "--session", "A_1"],
+        ["list", "--repo", "A", "--slot", "1"],
+        ["list", "--status", "done", "--repo", "A", "--slot", "1"],
     ]
     assert not any("--mine" in c for c in calls), "슬롯 정체성인데 --mine 로 조회(S1 mislabel 재현)"
     # 2) 카운트 라벨 = "(slot 1)" (그 슬롯 정체성으로 조회) — user-wide "(mine)" mislabel 근절.

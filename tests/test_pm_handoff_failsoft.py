@@ -289,6 +289,10 @@ def test_run_default_1_threads_slot_to_pm_state_cwd_and_entry(handoff, tmp_path,
     _write_leases(
         tmp_path / ".project_manager" / ".local" / "worktree-leases.json",
         [("project_manager", 1), ("project_manager", 2)])
+    # L1(ADR-0057 라이더·T-0316): 명시/해소 슬롯이 리스엔 있어도 worktree 디렉토리가 물리적으로
+    # 없으면 `_regression_cwd` 가 REPO 로 fail-soft 폴백한다 — 이 테스트는 slot1 cwd 로의
+    # threading 자체를 검증하므로 그 디렉토리를 실제로 만들어 L1 폴백을 피한다.
+    (tmp_path / "work" / "project_manager_1").mkdir(parents=True, exist_ok=True)
     inst, log_file, captured = _bare_handoff_capturing_cwd(handoff, tmp_path)
 
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
@@ -317,6 +321,8 @@ def test_run_idle_slot1_threads_to_leased_slot2(handoff, tmp_path, monkeypatch):
             {"repo": "project_manager", "slot": "work/project_manager_1", "state": "idle"},
             {"repo": "project_manager", "slot": "work/project_manager_2", "state": "leased"},
         ]}), encoding="utf-8")
+    # L1(ADR-0057 라이더·T-0316) — 실 worktree 디렉토리 부재 시 REPO 폴백을 피하려고 실제로 만든다.
+    (tmp_path / "work" / "project_manager_2").mkdir(parents=True, exist_ok=True)
     inst, log_file, captured = _bare_handoff_capturing_cwd(handoff, tmp_path)
 
     rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)

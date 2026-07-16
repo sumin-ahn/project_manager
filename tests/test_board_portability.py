@@ -400,15 +400,16 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
 
 
 def test_init_rerun_explicit_session_updates_and_preserves(board, monkeypatch, tmp_path):
-    """(d) --session 명시 시 session 만 갱신, 나머지 커스텀 키는 보존(set-or-replace)."""
+    """(d) `--repo`/`--slot`(ADR-0057) 명시 시 session 만 갱신, 나머지 커스텀 키는 보존
+    (set-or-replace)."""
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
-    args = argparse.Namespace(prefix=None, area=None, owner=None, session="newsess")
+    args = argparse.Namespace(prefix=None, area=None, owner=None, repo="newsess", slot=2)
 
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert "session=newsess" in conf_text
+    assert "session=newsess_2" in conf_text
     assert "session=my-pm" not in conf_text
     # session 갱신은 나머지 커스텀 키를 건드리지 않는다.
     assert "external_review_enabled=false" in conf_text

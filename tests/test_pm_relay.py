@@ -21,6 +21,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -439,6 +440,30 @@ def test_blank_lines_skipped(orch, tmp_path):
     sup.run_loop("/cwd", io.StringIO("\n  \nreal\n"), io.StringIO())
     assert len(driver.relays) == 1
     assert driver.relays[0][1] == "real"
+
+
+# ── ADR-0057/T-0318 — 정체성 인자(--repo/--slot) 통일 감사 (pm-internal) ────────
+
+
+def test_engine_core_exposes_no_identity_cli_surface():
+    """pm_relay.py(엔진 core)는 정체성(`--repo`/`--slot`/구 `--session`/`--worktree-slot`) CLI 플래그를
+    전혀 노출하지 않는다(T-0318 감사 결론) — `argparse` 자체를 import 하지 않는 순수 라이브러리다
+    (하니스별 CLI 는 어댑터 `pm_orch_claude.py`/`pm_orch_opencode.py`(templates/) 몫 — 엔진은
+    `Supervisor.run_loop(cwd, ...)` 로 호출자가 이미 해소한 cwd 를 받는다). ADR-0057 의 "구 alias
+    제거"·"bare --slot fail-loud" DoD 는 이 파일에 **적용 대상이 없다**(제거할 identity alias 가
+    처음부터 없음) — 재발 방지 가드로 이 감사 결론을 고정한다.
+
+    `--session-id`(claude/opencode 대화-연속성 id·`new_session_id`/`_sanitize_session_id`)는
+    multi-PM repo/slot 정체성과 무관한 별개 개념이라 이 감사 대상에서 명시 제외한다(음의
+    lookahead 로 `--session-id` 는 건드리지 않고 `--session`(단독)·`--worktree-slot`·
+    `--session-num` 만 스캔).
+    """
+    text = (TOOLS / "pm_relay.py").read_text(encoding="utf-8")
+    assert "import argparse" not in text, "엔진 core 에 argparse CLI 가 생기면 어댑터/엔진 경계가 흐려진다."
+    assert re.search(r"--session(?!-id)\b", text) is None, \
+        "정체성 --session 플래그가 있으면 안 된다(구 alias·어댑터 몫)."
+    for legacy in ("--worktree-slot", "--session-num"):
+        assert legacy not in text, f"엔진 core 에 구 alias {legacy!r} 가 있으면 안 된다."
 
 
 # ── claude driver (어댑터) 얇은 단위 — subprocess seam DI ────────────────────

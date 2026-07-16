@@ -177,7 +177,7 @@ def _worker_claim(proj_str: str, tid: str, ready, go, out_q) -> None:
     err = io.StringIO()
     try:
         with contextlib.redirect_stderr(err):
-            rc = board.cmd_claim(_Args(id=tid, session=f"sess-{os.getpid()}"))
+            rc = board.cmd_claim(_Args(id=tid, repo=f"sess-{os.getpid()}", slot=1))
         out_q.put(("WIN" if rc == 0 else "LOSE", err.getvalue()))
     except BaseException as e:  # noqa: BLE001 — 예측 못 한 死 = 부모 행, 무조건 보고
         # FileNotFoundError 도 여기로 — fix 후엔 cmd_claim 이 안 던지므로 *절대* 안 와야 한다.
@@ -444,7 +444,7 @@ def test_claim_load_window_race_lost_cleanly(board, capsys):
 
     board.find_ticket = racing_find
     try:
-        rc = board.cmd_claim(_Args(id=tid, session="loser"))  # 미처리 예외면 여기서 죽음(fail)
+        rc = board.cmd_claim(_Args(id=tid, repo="loser", slot=1))  # 미처리 예외면 여기서 죽음(fail)
     finally:
         board.find_ticket = orig_find
 
@@ -464,7 +464,7 @@ def test_claim_normal_rejections_unaffected(board, capsys):
     cp = board.TICKETS_DIR / "claimed" / "T-0009-x.md"
     board.dump_ticket(cp, {"id": "T-0009", "title": "x", "status": "claimed",
                            "depends_on": []}, "# x\n")
-    assert board.cmd_claim(_Args(id="T-0009", session="s")) == 1
+    assert board.cmd_claim(_Args(id="T-0009", repo="s", slot=1)) == 1
     err = capsys.readouterr().err
     assert "currently in claimed/" in err and "claim race lost" not in err, err
 
@@ -475,7 +475,7 @@ def test_claim_normal_rejections_unaffected(board, capsys):
     tgt = board.TICKETS_DIR / "open" / "T-0011-tgt.md"
     board.dump_ticket(tgt, {"id": "T-0011", "title": "tgt", "status": "open",
                             "depends_on": ["T-0010"]}, "# tgt\n")
-    assert board.cmd_claim(_Args(id="T-0011", session="s")) == 1
+    assert board.cmd_claim(_Args(id="T-0011", repo="s", slot=1)) == 1
     err = capsys.readouterr().err
     assert "is open/, not done" in err and "claim race lost" not in err, err
 
@@ -483,7 +483,7 @@ def test_claim_normal_rejections_unaffected(board, capsys):
     tgt2 = board.TICKETS_DIR / "open" / "T-0012-tgt.md"
     board.dump_ticket(tgt2, {"id": "T-0012", "title": "tgt2", "status": "open",
                              "depends_on": ["T-9999"]}, "# tgt2\n")
-    assert board.cmd_claim(_Args(id="T-0012", session="s")) == 1
+    assert board.cmd_claim(_Args(id="T-0012", repo="s", slot=1)) == 1
     err = capsys.readouterr().err
     assert "dependency T-9999 not found" in err and "claim race lost" not in err, err
 
@@ -491,7 +491,7 @@ def test_claim_normal_rejections_unaffected(board, capsys):
     ok = board.TICKETS_DIR / "open" / "T-0013-ok.md"
     board.dump_ticket(ok, {"id": "T-0013", "title": "ok", "status": "open",
                            "depends_on": []}, "# ok\n")
-    assert board.cmd_claim(_Args(id="T-0013", session="s")) == 0
+    assert board.cmd_claim(_Args(id="T-0013", repo="s", slot=1)) == 0
     assert list((board.TICKETS_DIR / "claimed").glob("T-0013-*.md"))
 
 
@@ -528,7 +528,7 @@ def test_claim_critical_section_holds_board_lock(board):
 
     board.load_ticket = probing_load
     try:
-        rc = board.cmd_claim(_Args(id=tid, session="s"))
+        rc = board.cmd_claim(_Args(id=tid, repo="s", slot=1))
     finally:
         board.load_ticket = orig_load
 

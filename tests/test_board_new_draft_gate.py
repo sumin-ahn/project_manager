@@ -310,7 +310,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path):
         seed_id = "-".join(seed_path[0].stem.split("-")[:2])
 
     assert board.cmd_claim(
-        argparse.Namespace(id=seed_id, session="me", user="me")) == 0, \
+        argparse.Namespace(id=seed_id, repo="me", slot=1, user="me")) == 0, \
         "seed 티켓 claim 실패(테스트 전제 붕괴)."
     rc = board.cmd_complete(argparse.Namespace(
         id=seed_id, tests_pass=True, allow_missing_log=True, allow_untested=False))

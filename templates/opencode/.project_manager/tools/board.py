@@ -190,39 +190,36 @@ def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
     return "".join(out)
 
 
-def _leased_sessions() -> list[str]:
-    """lease 장부에서 state=="leased" 행들의 session 목록 (count-based 유도용·ADR-0040 D1).
+def _load_identity_args():
+    """공용 정체성 인자 모듈(`identity_args.py`·T-0322·ADR-0057)을 같은 tools/ 디렉토리에서
+    경로 로드한다 (`_load_pm_update_module`/`_load_domain_module` 동형 — 스크립트-위치 앵커·
+    sys.path 무오염).
 
-    board 는 worktree_pool 을 import 하지 않는다(ADR-0013 isolation) — `_active_slot_test_cmd`
-    와 *동형*의 stdlib json point-read 로 리스 장부 파일(`LEASES_FILE`)을 직접 읽는다
-    (모듈 결합 아님·areas.md 를 읽듯 데이터 결합만). 리스는 worktree_pool 이 atomic-replace
-    (`os.replace`)로 쓰므로 락 없는 point-read 도 일관 스냅샷을 본다. 장부 부재/파싱실패/손상은
-    빈 리스트(fail-soft — 세션 해소가 장부 손상으로 죽지 않게). session 이 빈/None 인 행은 제외.
+    board.py 는 스크립트 실행(`python3 tools/board.py`)과 테스트(`spec_from_file_location`)
+    양쪽으로 로드되는데, 어느 쪽이든 `Path(__file__).resolve().parent` 는 정확히 tools/ 를
+    가리키므로 이 경로-앵커 로더가 양쪽에서 동일하게 동작한다 — 평범한 `import identity_args`
+    는 스크립트 실행에서만(sys.path[0] 에 우연히 tools/ 가 실림) 동작하고, 테스트 로드에선
+    sys.path 에 tools/ 가 없어 실패한다.
+
+    identity_args 는 board.py 의 전 서브(claim·init·list·migrate-identity·regression·livegate·
+    reid) 정체성 파싱에 **load-bearing**이다 — 로드 실패는 엔진 자체 손상이므로(lint 계열의
+    advisory fail-soft 관용구와 달리) 조용히 흡수하지 않고 그대로 예외를 낸다(fail-loud).
     """
-    if not LEASES_FILE.exists():
-        return []
-    try:
-        data = json.loads(LEASES_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
-    if not isinstance(data, dict):
-        return []
-    leases = data.get("leases", [])
-    if not isinstance(leases, list):
-        return []
-    sessions: list[str] = []
-    for row in leases:
-        if isinstance(row, dict) and row.get("state") == "leased":
-            sess = row.get("session")
-            if sess:
-                sessions.append(sess)
-    return sessions
+    ia_path = Path(__file__).resolve().parent / "identity_args.py"
+    spec = importlib.util.spec_from_file_location("identity_args", ia_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+identity_args = _load_identity_args()
 
 
 def session_name(override: str | None = None, *, required: bool = False) -> str | None:
     """세션 식별자 해소 — count-based 유도 (ADR-0040 D1·T-0073 층위 amend·3모듈 *동형*):
 
-        override(--session)
+        override(`--repo`/`--slot` 해소값·ADR-0057 — 액터 서브가 `_actor_session_override` 로
+                 미리 계산해 넘긴다)
           > $PM_SESSION_NAME (env·harness 무관 엔진 식별자)
           > $CLAUDE_SESSION_NAME (env·deprecated alias·silent back-compat)
           > lease 장부 state=="leased" 행이 정확히 1개면 그 session   (단일-lease 유도)
@@ -237,7 +234,7 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
     값과 local.conf 값이 다르면 유도값(lease) 승 — 저장 쪽지보다 슬롯 파생 진실.
 
     `required=True`(귀속 쓰기: claim·migrate·init owner 기본값)에서 미해소(None)면 fail-loud —
-    `--session <repo>_<N>` 명시를 안내하고 `sys.exit` 한다(silent 오귀속 금지). `required=False`
+    `--repo <repo> --slot <N>` 명시를 안내하고 `sys.exit` 한다(silent 오귀속 금지). `required=False`
     (surface: whoami/status/list --mine)면 None 을 반환한다(호출부가 "(비바인딩)" 표시). 구
     `<host>-<pid>` 최종 폴백은 세션-귀속 아닌 국소 용처(worktree_pool `_default_session` 의
     lease 취득 임시 명명)에만 잔존한다 — 여기(귀속 해소)선 제거.
@@ -251,7 +248,7 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
         return env
-    leased = _leased_sessions()
+    leased = identity_args.leased_sessions(LEASES_FILE)
     if len(leased) == 1:
         return leased[0]
     if not leased:
@@ -263,7 +260,7 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
     if required:
         sys.exit(
             "[중단] 세션 미해소 — 활성 슬롯이 여럿이거나 바인딩이 없다. 귀속 조작은 "
-            "`--session <repo>_<N>` 로 세션을 명시하라 (예: `--session project_manager_1`)."
+            "`--repo <repo> --slot <N>` 로 세션을 명시하라 (예: `--repo project_manager --slot 1`)."
         )
     return None
 
@@ -334,6 +331,47 @@ def identity_tag(session_override: str | None = None,
     if pm is None:
         return user
     return f"{user}/{pm}" if user else pm
+
+
+def _actor_session_override(args: argparse.Namespace) -> str | None:
+    """`--repo`/`--slot`(ADR-0057)에서 actor 연산(claim·init·migrate-identity·regression·
+    livegate record·reid)의 세션 override 문자열을 해소한다 — 구 `args.session` 을 대체하는
+    단일 seam(전 actor 서브 공유·중복 0).
+
+    `identity_args.parse_identity` 로 kind 를 가른다:
+      - kind="slot"(`--repo X --slot N`) — 리스 조회 없이 즉시 `"<repo>_<N>"`(완전 해소·정체성
+        문자열 그대로 — 옛 `--session <repo>_<N>` 과 byte-identical).
+      - kind="repo"(`--repo X` 단독) — `identity_args.resolve_actor_slot`(repo X 의 활성 리스가
+        정확히 1개면 그 세션·≥2개는 `SlotResolutionError`·**0개는 fail-loud**). 명시 repo 는
+        해소되거나 명시적으로 실패한다 — 0개를 None 폴백하면 kind=none 과 구분 못 해 다른 세션
+        silent 오귀속(codex r2). **kind=none(인자 전무)만** None → 기존 no-flag 체인.
+      - kind="none"(인자 전무) — None → 기존 체인 그대로(무변경).
+    `--slot` 단독(`--repo` 없음)·`--slot < 1` 은 `parse_identity` 가 `ValueError` 로 거부한다 —
+    여기서 잡아 board.py 관례(`[중단]` 접두)로 fail-loud 한다.
+    """
+    try:
+        identity = identity_args.parse_identity(args)
+    except ValueError as e:
+        sys.exit(f"[중단] {e}")
+    if identity.kind == "slot":
+        return identity.session
+    if identity.kind == "repo":
+        # `--repo X` 명시 = actor 정체성을 X 로 하겠다는 의도. 활성 1슬롯이면 해소, ≥2면 fail-loud.
+        # **0개(미해소)도 fail-loud** — None 반환하면 호출부가 "인자 전무(kind=none)"와 구분 못 해
+        # env/단일-lease/local.conf 로 폴백→다른 세션으로 **silent 오귀속**(예 `--repo typo` 가 단일
+        # lease 세션으로 claim). ADR-0057 의 명시-정체성 계약·오귀속 방지 목적이라 explicit-unresolved
+        # 는 폴백 아니라 명시적 실패로 닫는다(codex r2·kind=none 만 폴백·[[answer-feasibility-dont-decide]] 정신).
+        try:
+            session = identity_args.resolve_actor_slot(identity.repo, LEASES_FILE)
+        except identity_args.SlotResolutionError as e:
+            sys.exit(f"[중단] {e}")
+        if session is None:
+            sys.exit(
+                f"[중단] repo '{identity.repo}' 의 활성 슬롯을 해소할 수 없다(활성 리스 0개). "
+                f"`--repo {identity.repo} --slot <N>` 으로 슬롯을 명시하거나, 인자 없이(자동 해소) 실행하라."
+            )
+        return session
+    return None
 
 
 def _repo_from_session(session: str) -> str | None:
@@ -984,21 +1022,25 @@ def _created_by_user(created_by: str | None) -> str | None:
     return cb
 
 
-def _slot_matches(claimed_by: str, my_slot: str, *, suffix: bool = False) -> bool:
+def _slot_matches(claimed_by: str, my_slot: str, *, mode: str = "exact") -> bool:
     """`claimed_by`(`<user>/<pm-slot>` 또는 legacy 슬롯-only)의 slot 토큰이 `my_slot` 인가.
 
-    `suffix=False`(기본·`--mine`/`--session`): 완전 일치 — slot 식별자 전체를 안다.
-    `suffix=True`(`--slot <N>`): slot 규칙(`work/<repo>_<N>` → 세션 이름 `<repo>_<N>`·
-    T-0074/pm_bootstrap `_repo_slot_numbers`)상 숫자 N 만으론 repo 접두를 모르므로,
-    slot 토큰이 `_<N>` 로 끝나거나(=`<repo>_<N>`) 토큰 자체가 `<N>`(레거시 순수 슬롯번호)인
-    경우 모두 매칭한다.
+    `mode="exact"`(기본·`--mine`/`--repo X --slot N`): 완전 일치 — slot 식별자 전체를 안다.
+    `mode="repo"`(`--repo X` 단독·view/actor repo-scope·ADR-0057 결정 3): slot 규칙
+    (`work/<repo>_<N>` → 세션 이름 `<repo>_<N>`)상 `my_slot` 이 repo 이름이므로, slot 토큰의
+    repo(`_repo_from_session`·repo 명 `_` 안전·`--repo project` 가 `project_manager_1` 오매칭 안 함)가
+    `my_slot`(그 repo 의 어느 슬롯이든) 이거나 토큰 자체가 `my_slot`(드문 비-숫자
+    커스텀 슬롯)이면 매칭한다 — "그 repo 의 내 슬롯 전체"(spike §3.1).
+
+    (구 `suffix=True` — 숫자 N 만으로 repo 불문 cross-repo 매칭하던 bare `--slot N` 뷰는
+    ADR-0057 로 제거됐다: `--slot` 은 이제 `--repo` 없이는 fail-loud 라 도달 불가능한 경로.)
     """
     if not claimed_by:
         return False
     slot_token = claimed_by.rsplit("/", 1)[-1]
-    if not suffix:
-        return slot_token == my_slot
-    return slot_token == my_slot or slot_token.endswith(f"_{my_slot}")
+    if mode == "repo":
+        return slot_token == my_slot or _repo_from_session(slot_token) == my_slot
+    return slot_token == my_slot
 
 
 def _ticket_owner(fm: dict, area_owner_in_use: bool) -> str | None:
@@ -1044,8 +1086,8 @@ def _distinct_ticket_users() -> int:
 
 def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
                     my_slot: str, area_owner_in_use: bool, multi_user: bool,
-                    *, slot_suffix: bool = False, slot_scoped: bool = False) -> bool:
-    """이 티켓이 `--mine`/`--session`/`--slot` 뷰에 들어가는지 — (b) 내 claim ∨ (a) 내 소유 open.
+                    *, slot_mode: str = "exact", slot_scoped: bool = False) -> bool:
+    """이 티켓이 `--mine`/`--repo`/`--slot` 뷰에 들어가는지 — (b) 내 claim ∨ (a) 내 소유 open.
 
     **단일 불변식**(전 surface 수렴·ADR-0053·ADR-0056·point-patch 금지): 필터 뷰 멤버십 = (내
     claim) ∪ (내 소유 open). 타 사용자의 claim·미claim open 은 **어떤 필터 뷰에도 안 나온다** —
@@ -1055,10 +1097,10 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
 
     (b) 내 claim — 상태 무관 연속성 (user-first·ADR-0056). `claimed_by` 의 user 토큰 유무로 가른다:
       - **user-qualified**(`_claimed_by_user(cb)` non-None·`<user>/<slot>`): 내 것 iff `cb_user ==
-        my_user`. **slot-scoped 뷰**(`--session`/`--slot`)면 `_slot_matches` AND 로 *내 것 ∩ 그
-        슬롯*(타 슬롯의 내 claim 은 slot 뷰서 제외·`--mine` 엔 나옴). **비제약 뷰**(`--mine`)면 user
-        만(전 슬롯). 타 사용자 claim(user 불일치)·my_user 미해소(귀속 불가)는 제외 — 남의 user-claim
-        을 slot 번호로 끌어오는 누출 0.
+        my_user`. **slot-scoped 뷰**(`--repo`/`--slot`·ADR-0057)면 `_slot_matches` AND 로 *내 것
+        ∩ 그 슬롯(또는 그 repo 의 내 슬롯 전체)*(타 슬롯의 내 claim 은 slot 뷰서 제외·`--mine`
+        엔 나옴). **비제약 뷰**(`--mine`)면 user 만(전 슬롯). 타 사용자 claim(user 불일치)·my_user
+        미해소(귀속 불가)는 제외 — 남의 user-claim 을 slot 번호로 끌어오는 누출 0.
       - **legacy 슬롯-only**(`cb_user is None`·user 토큰 없음): **진짜 solo(distinct user ≤1·
         `not multi_user`)에서만** `_slot_matches`(내 슬롯)로 포함한다. 게이트가 `my_user is None` 이
         아니라 `not multi_user` 인 건 `user_name()` 이 git email 폴백으로 solo 도 my_user 를 해소할
@@ -1080,9 +1122,9 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
             # user-qualified claim(`<user>/<slot>`) — 내 것 iff user 일치(+ slot-scoped 면 그 슬롯).
             # my_user 미해소(None)면 귀속 불가 → 미포함(남의 user-claim 을 slot 번호로 끌어오는 누출 0).
             if my_user is not None and cb_user == my_user and (
-                    not slot_scoped or _slot_matches(cb, my_slot, suffix=slot_suffix)):
+                    not slot_scoped or _slot_matches(cb, my_slot, mode=slot_mode)):
                 return True
-        elif not multi_user and _slot_matches(cb, my_slot, suffix=slot_suffix):
+        elif not multi_user and _slot_matches(cb, my_slot, mode=slot_mode):
             # legacy 슬롯-only claim(user 토큰 없음) — **진짜 solo(distinct user ≤1·not multi_user)**
             # 에서만 slot 매칭으로 포함. 게이트가 `my_user is None` 이 아니라 `not multi_user` 인 건
             # `user_name()` 이 git email 폴백으로 solo 도 my_user 를 해소할 수 있어(흔함) my_user
@@ -1838,7 +1880,7 @@ def _regression_cwd(override: str | None = None, session: str | None = None) -> 
       - 없으면 **활성 슬롯 경로**(`_active_slot_path(session)` — lease 장부에서 이 세션의 leased
         슬롯 worktree 경로·worktree_pool 미import·`session` 명시는 M>1 슬롯 순회용·ADR-0040 D2),
       - 활성 슬롯이 미해소인데 **leased ≥2·세션/cwd 미지정**(진짜 모호)이면 `REPO` 침묵 폴백
-        대신 **fail-loud**(`sys.exit`) — `--session <repo>_<N>`/`--cwd <path>` 명시를 안내한다.
+        대신 **fail-loud**(`sys.exit`) — `--repo <repo> --slot <N>`/`--cwd <path>` 명시를 안내한다.
         REPO(PM 홈·`tests/` 없음)로 조용히 폴백하면 livegate/회귀가 broken slot 을 수집해
         false fail 을 내던 것(livegate `--cwd` 우회의 근원·PM 61+62 이월)을 근절한다 —
         session_name 의 귀속-쓰기 fail-loud·T-0201(bare slot 입구 거부)·T-0220(rc5 vacuous-pass
@@ -1853,12 +1895,12 @@ def _regression_cwd(override: str | None = None, session: str | None = None) -> 
         return slot
     # 활성 슬롯 미해소 + leased ≥2 + 세션/cwd 미지정 = genuine ambiguity → fail-loud.
     # (session 명시면 `session is None` False → REPO 폴백·무변경 / leased <2 도 REPO 폴백·무변경.)
-    if session is None and len(_leased_sessions()) >= 2:
+    if session is None and len(identity_args.leased_sessions(LEASES_FILE)) >= 2:
         sys.exit(
             "[중단] 회귀/livegate cwd 미해소 — 활성 슬롯이 여럿(leased ≥2)인데 세션/cwd "
             "미지정으로 모호하다. REPO(PM 홈·tests 없음)로 침묵 폴백하면 broken slot 을 수집해 "
-            "false fail 이 되므로 거부한다. `--session <repo>_<N>` 로 슬롯을 명시하거나 "
-            "`--cwd <worktree 절대경로>` 로 직접 지정하라 (예: `--session project_manager_1`)."
+            "false fail 이 되므로 거부한다. `--repo <repo> --slot <N>` 로 슬롯을 명시하거나 "
+            "`--cwd <worktree 절대경로>` 로 직접 지정하라 (예: `--repo project_manager --slot 1`)."
         )
     return str(REPO)
 
@@ -1985,7 +2027,7 @@ def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
 
 
 # ── M>1 회귀 슬롯 해소 (ADR-0040 D2·b-1) ────────────────────────────────────
-# 훅은 `--session` 을 못 넘긴다(pre-push 훅 스크립트 무변경·check||run 체인). 명시/env/단일-lease
+# 훅은 `--repo/--slot` 을 못 넘긴다(pre-push 훅 스크립트 무변경·check||run 체인). 명시/env/단일-lease
 # 는 그 슬롯(현행 결과 동일)이지만, 활성 슬롯이 여럿(leased ≥2·무명시)이면 **어느 세션이 push 하든**
 # 전 leased 슬롯이 green 이어야 한다 — check-first(저비용·기록 baseline)로 이미 green 인 슬롯의
 # pytest 재실행을 억제하고 stale/red 만 run, 하나라도 red 면 push 차단(ADR-0039 보호훅 all-or-
@@ -2117,27 +2159,27 @@ def cmd_regression(args: argparse.Namespace) -> int:
     """run = 측정+기록(HEAD 키), check = HEAD 가 green 인지 (pre-push 훅이 호출).
 
     M>1(leased ≥2) 홈은 전 leased 슬롯 all-or-nothing 으로 해소한다 (ADR-0040 D2·b-1): 훅은
-    --session 을 못 넘기므로 활성 슬롯이 여럿이면 슬롯별 check-first(저비용) 후 stale/red 만
+    --repo/--slot 을 못 넘기므로 활성 슬롯이 여럿이면 슬롯별 check-first(저비용) 후 stale/red 만
     run 하며 하나라도 red 면 push 를 차단한다 (ADR-0039 보호훅 all-or-nothing 철학과 동형).
 
     **보호 게이트는 ambient env(PM_SESSION_NAME/CLAUDE_SESSION_NAME)로 좁혀지면 안 된다**
     (codex): 훅 프로세스가 env 세션을 상속하면 "어느 세션이 push 하든 전 leased 슬롯 green"이
-    조용히 자기 슬롯 단일 경로로 우회된다. 그래서 M>1 디스패치 판정은 **CLI `--session` 명시**
-    (문서화된 의도적 조작)만 단일-슬롯으로 좁히고 env 는 이 판정에서 제외한다 — 단일-lease/솔로/
-    명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로 유효.)
+    조용히 자기 슬롯 단일 경로로 우회된다. 그래서 M>1 디스패치 판정은 **CLI `--repo`/`--slot` 명시**
+    (문서화된 의도적 조작·ADR-0057)만 단일-슬롯으로 좁히고 env 는 이 판정에서 제외한다 — 단일-lease/
+    솔로/명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로 유효.)
     """
-    # 디스패치 판정은 CLI --session(명시) 만 본다 — env 세션은 M>1 게이트를 조용히 좁히므로
+    # 디스패치 판정은 CLI --repo/--slot(명시) 만 본다 — env 세션은 M>1 게이트를 조용히 좁히므로
     # 여기선 제외(위 docstring·codex). explicit 없고 leased ≥2 면 env 유무 무관 전-슬롯 순회.
-    explicit_session = getattr(args, "session", None)
-    if explicit_session is None:
-        leased = _leased_sessions()
+    explicit_override = _actor_session_override(args)
+    if explicit_override is None:
+        leased = identity_args.leased_sessions(LEASES_FILE)
         if len(leased) >= 2:
             slots = sorted(set(leased))
             return (_regression_multi_run(args, slots) if args.action == "run"
                     else _regression_multi_check(slots))
-    # 단일-슬롯 (명시 --session·단일-lease·솔로·env<M2) — 현행 경로. sess 는 슬롯 test_cmd/cwd
+    # 단일-슬롯 (명시 --repo/--slot·단일-lease·솔로·env<M2) — 현행 경로. sess 는 슬롯 test_cmd/cwd
     # threading 용(env 유효·위에서 M>1 만 걸러냄).
-    sess = session_name(explicit_session)
+    sess = session_name(explicit_override)
     if args.action == "run":
         touches = (_ticket_touches(args.ticket) if getattr(args, "ticket", None)
                    else (args.touches.split(",") if getattr(args, "touches", None) else []))
@@ -2303,13 +2345,14 @@ def _livegate_record(args: argparse.Namespace) -> int:
     push 보호훅 read 위치(`_resolve_livegate_flag` — engine-root sidecar)와 정렬해 단일 소스다
     (worktree/PM 홈 어느 board.py 로 돌려도 훅이 읽는 한 파일·T-0287).
 
-    `--session` 은 regression/handoff 과 동형으로 `session_name` 해소를 거쳐 `_regression_cwd` 에
-    thread 한다 (M>1 홈에서 슬롯 cwd 를 명시 — `--cwd` 절대경로 핀 우회 불요·T-0298). 무명시 +
-    leased ≥2 는 seam 이 fail-loud(모호는 시끄럽게) 하며, 그 메시지가 안내하는 `--session <repo>_<N>`
-    이 실제로 이 subparser 에서 수용돼 dead-end 가 아니다(remedy 정직·T-0285 anti-pattern 회피).
+    `--repo`/`--slot`(ADR-0057)은 regression/handoff 과 동형으로 `session_name` 해소를 거쳐
+    `_regression_cwd` 에 thread 한다 (M>1 홈에서 슬롯 cwd 를 명시 — `--cwd` 절대경로 핀 우회
+    불요·T-0298). 무명시 + leased ≥2 는 seam 이 fail-loud(모호는 시끄럽게) 하며, 그 메시지가
+    안내하는 `--repo <repo> --slot <N>` 이 실제로 이 subparser 에서 수용돼 dead-end 가 아니다
+    (remedy 정직·T-0285 anti-pattern 회피).
     """
     cwd = _regression_cwd(getattr(args, "cwd", None),
-                          session=session_name(getattr(args, "session", None)))
+                          session=session_name(_actor_session_override(args)))
     # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스·T-0287) — **실행 전에** 해소한다. 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
     # 읽는 한 파일에 기록. engine-root 무효(BROKEN)는 실행 전에 알 수 있으니, 값비싼 `pytest -m
@@ -2592,11 +2635,13 @@ def _slugify(text: str, max_len: int = 40) -> str:
 
 def cmd_claim(args: argparse.Namespace) -> int:
     # claim = 귀속 쓰기(spike §1 row a·최악 클래스 silent 오귀속) — 세션 미해소면 fail-loud
-    # (ADR-0040 D1·required=True). 명시 --session > env > 단일-lease 유도 > (solo) local.conf.
-    sess = session_name(args.session, required=True)
+    # (ADR-0040 D1·required=True). 명시 --repo/--slot(ADR-0057) > env > 단일-lease 유도 >
+    # (solo) local.conf.
+    override = _actor_session_override(args)
+    sess = session_name(override, required=True)
     # claimed_by 는 `<user>/<slot>` (assignee·ADR-0033 ③·T-0161) — user 미상이면 슬롯만
     # (graceful·기존 슬롯-only 값과 형태 동일). 진행메시지/board surface 는 슬롯(sess)을 쓴다.
-    assignee = identity_tag(session_override=args.session,
+    assignee = identity_tag(session_override=override,
                             user_override=getattr(args, "user", None))
 
     # claim STRICT 1단계 (ADR-0033 ②·spike §3.6): board 가 별도 git 이면 먼저 pull --rebase
@@ -2918,8 +2963,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             # owner = areas.md 등록 식별자(registrant) — 협업 소유자(다중-사람)가 아니라
             # single user 의 등록 출처 표식이다(ADR-0016·ADR-0002 amend). 기본 = 현 세션.
             # 등록 owner 기본값 = 귀속 쓰기(ADR-0040 D1·required=True) — 세션 미해소면 fail-loud
-            # (`--owner`/`--session` 명시 유도). --owner 명시면 session_name 미호출(short-circuit).
-            owner = args.owner or session_name(required=True)
+            # (`--owner`/`--repo`/`--slot` 명시 유도). --owner 명시면 session_name 미호출(short-circuit).
+            owner = args.owner or _actor_session_override(args) or session_name(required=True)
             # area_owner = 그 area 의 *user* 소유(`--mine` 풀 입력·ADR-0033 ③·T-0161) —
             # registrant `owner`(슬롯/세션)와 별개 칼럼(overload 금지·ADR-0014 refine).
             # cmd_repo_add 와 동형 해소: `--user` 명시 > local.conf user= > git config
@@ -2932,7 +2977,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     # multi 홈은 이 키를 무시하고 세션/prefix 를 lease 장부에서 유도한다(session_name·
     # id_prefix). solo 채택자 폴백(후방호환)을 위해 write 는 유지하되, multi 홈은 흡수 후
     # 이 키를 제거해도 동작 동일(위생).
-    sess = args.session or (f"{prefix.lower()}-pm" if namespaced else "pm")
+    # --repo/--slot(ADR-0057) 로 명시하면 "<repo>_<N>" 으로 완전 해소(리스 조회 불요·kind=slot).
+    # --repo 단독이면 그 repo 의 활성 리스가 1개일 때만 해소(0개/무인자 → None → 아래 default).
+    override = _actor_session_override(args)
+    sess = override or (f"{prefix.lower()}-pm" if namespaced else "pm")
     if not LOCAL_CONF.exists():
         # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
         conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
@@ -2976,8 +3024,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         # session·prefix 는 명시 인자일 때만 set-or-replace(재등록 UX 보존). 인자 없으면
         # 기존 session 보존 — 없으면 default(`pm`/`<prefix>-pm`)로 표면화만. (둘 다 solo-legacy·
         # multi 홈은 유도로 무시 — ADR-0040 D4.)
-        if args.session:
-            updates["session"] = args.session
+        if override:
+            updates["session"] = override
         if namespaced:
             updates["prefix"] = prefix
         merged = _set_conf_keys(text, updates)
@@ -2988,8 +3036,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             merged += "\n"
         LOCAL_CONF.write_text(merged, encoding="utf-8")
         surface_sess = existing.get("session") or sess
-        if args.session:
-            surface_sess = args.session
+        if override:
+            surface_sess = override
     print(f"✓ local.conf: {('prefix=' + prefix + ' · ') if namespaced else ''}session={surface_sess}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
         PM_STATE_FILE.write_text(PM_STATE_TEMPLATE.read_text(encoding="utf-8"),
@@ -3278,10 +3326,10 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
     abort(식별자 없이는 backfill 불가). `--dry-run` 은 쓰기 0·per-file 미리보기. `--scope`
     active(open+claimed) | all(기본·done 포함). 멱등(빈 필드만)·비파괴(순서/body/표 보존).
 
-    `--session`/slot 은 출력·기본 identity 표시용이며 **backfill 대상 슬롯을 바꾸지 않는다**.
-    슬롯-only `claimed_by`(`pm-1` 같은 `/` 없는 값)는 user 차원만 prepend 하고 *기존 슬롯
-    토큰을 보존*한다(`pm-1` → `<user>/pm-1`). `--session` 은 부재 created_by 의 표시값과
-    로그 표기에만 쓰이고, 이미 기록된 슬롯 토큰을 자신의 값으로 덮어쓰지 않는다(비파괴).
+    `--repo`/`--slot`(ADR-0057)은 출력·기본 identity 표시용이며 **backfill 대상 슬롯을 바꾸지
+    않는다**. 슬롯-only `claimed_by`(`pm-1` 같은 `/` 없는 값)는 user 차원만 prepend 하고 *기존
+    슬롯 토큰을 보존*한다(`pm-1` → `<user>/pm-1`). `--repo`/`--slot` 은 부재 created_by 의
+    표시값과 로그 표기에만 쓰이고, 이미 기록된 슬롯 토큰을 자신의 값으로 덮어쓰지 않는다(비파괴).
 
     **단일-세션 업그레이드 op (동시성 모델·T-0168)**: migrate-identity 는 *단일-세션* 업그레이드
     op 다. 다른 세션이 claim/complete 로 보드를 변경하는 중엔 실행하지 말 것 — 조용한 창에서
@@ -3303,16 +3351,17 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     # backfill slot = 귀속 쓰기(claimed_by 에 박음·ADR-0040 D1·required=True) — 세션 미해소면
-    # fail-loud(None 슬롯으로 backfill 하면 오귀속). 명시 --session > env > 단일-lease 유도.
-    slot = session_name(getattr(args, "session", None), required=True)
+    # fail-loud(None 슬롯으로 backfill 하면 오귀속). 명시 --repo/--slot(ADR-0057) > env >
+    # 단일-lease 유도.
+    slot = session_name(_actor_session_override(args), required=True)
     dry_run = bool(getattr(args, "dry_run", False))
     scope = getattr(args, "scope", "all") or "all"
     statuses = ("open", "claimed") if scope == "active" else STATUS_DIRS
 
     tag = "[dry-run] " if dry_run else ""
     # scope 문구 정합(ADR-0056·T-0312): migrate 는 소유 무관 *전 티켓*을 스캔·backfill 한다
-    # (all=done 포함 전체·active=open+claimed). `list --mine`/`--session`(=현재-사용자 ∩ 슬롯 뷰)와
-    # 스캔 대상이 다르므로 "전체 스캔" 을 명시해 두 기준이 어긋나 보이는 오독(S2)을 없앤다.
+    # (all=done 포함 전체·active=open+claimed). `list --mine`/`--repo`/`--slot`(=현재-사용자 ∩
+    # 슬롯 뷰)와 스캔 대상이 다르므로 "전체 스캔" 을 명시해 두 기준이 어긋나 보이는 오독(S2)을 없앤다.
     scope_note = "전체 스캔·소유 무관" if scope == "all" else "open+claimed 스캔·소유 무관"
     print(f"{tag}migrate-identity — user={user} · slot={slot} · scope={scope} ({scope_note})")
 
@@ -3405,7 +3454,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         # created_by = `<user>/<pm-slot>` (provenance·불변·생성 시 set·ADR-0033 ③·T-0161).
         # "누가 추가했나" = 중복-작업 방지의 출처 표식. user 미상이면 슬롯만(graceful).
         fm["created_by"] = identity_tag(
-            session_override=getattr(args, "session", None),
+            session_override=None,  # `new` 서브는 --session/--repo/--slot 미정의 — created_by 는 identity_tag 내부 체인 해소(ADR-0057·거동 무변경)
             user_override=getattr(args, "user", None))
         fm["claimed_by"] = None
         fm["claimed_at"] = None
@@ -3503,42 +3552,52 @@ def _tag_values(fm: dict[str, Any]) -> list[str]:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    # `--mine`(T-0164·ADR-0033 ④) / `--session`·`--slot`(T-0197) 뷰: 단일 공유 보드의 렌즈 —
-    # **현재 사용자**의 area open + claim. identity 입력(T-0161)을 한 번 해소해 행마다 재계산 안
-    # 함. 무플래그 list 는 필터 없이 전체(status 셀렉터만 적용).
+    # `--mine`(T-0164·ADR-0033 ④) / `--repo`·`--slot`(ADR-0057 — 구 `--session`/bare `--slot`
+    # 뷰 렌즈[T-0197] 를 흡수) 뷰: 단일 공유 보드의 렌즈 — **현재 사용자**의 area open + claim.
+    # identity 입력(T-0161)을 한 번 해소해 행마다 재계산 안 함. 무플래그 list 는 필터 없이
+    # 전체(status 셀렉터만 적용).
     #
     # user-first (ADR-0056·T-0312): 필터 뷰의 "me" 는 **항상 현재 사용자**(`user_name()` =
-    # local.conf user= > git config user.email)다. `--session`/`--slot` 의 my_user 를
+    # local.conf user= > git config user.email)다. `--repo`/`--slot` 의 my_user 를
     # area_owner-derived(`_area_owner_from_session`/`_area_owner_for_single_area`·T-0198/T-0302)로
     # 유도하던 배선을 폐기한다 — area_owner 미설정(흔함)이면 my_user=None 이 돼 slot-only 매칭·
     # all-open degrade 로 타 슬롯 claim·타 사용자 티켓이 유출되던 근본을 없앤다. area_owner 는
     # 이제 open-티켓 *소유* 정의(`_ticket_owner`)로만 남고, "누가 조회하는가" 와 무관하다.
     #
-    # 뷰 스코프:
+    # 뷰 스코프(ADR-0057 결정 3·spike §3.1 — 인자 표면만 흡수·ADR-0056 뷰 로직 자체는 불변):
     #   - `--mine` = 내 것(내 claim ∪ 내 open), **전 슬롯**(slot_scoped=False).
-    #   - `--session NAME`/`--slot N` = 내 것 **∩ 그 슬롯**(slot_scoped=True) — claim 을 user AND
-    #     slot 으로 좁힌다(`_ticket_is_mine`). `--session` 은 세션 이름 완전 일치, `--slot N` 은
-    #     숫자만 아니 slot 규칙(`<repo>_<N>`) suffix 매칭(`_slot_matches` suffix=True). 서로 배타적
-    #     (argparse mutually exclusive)·타 사용자는 어느 필터 뷰에도 안 나온다(무필터 `list` 전용).
-    explicit_session = getattr(args, "session", None)
-    explicit_slot = getattr(args, "slot", None)
-    mine = getattr(args, "mine", False) or bool(explicit_session) or explicit_slot is not None
-    slot_suffix = explicit_slot is not None
-    # slot-scoped 뷰(--session/--slot)는 claim 을 그 슬롯으로 교집합한다(--mine 은 전 슬롯·ADR-0056).
-    slot_scoped = bool(explicit_session) or explicit_slot is not None
-    if explicit_session:
+    #   - `--repo X --slot N`(kind=slot) = 내 것 **∩ 그 슬롯**(slot_scoped=True·완전 일치) — 옛
+    #     `--session <repo>_<N>` 과 동형(`_slot_matches` mode="exact").
+    #   - `--repo X`(kind=repo·슬롯 무) = 내 것 **∩ 그 repo 의 내 슬롯 전체**(slot_scoped=True·
+    #     `_slot_matches` mode="repo"·prefix 매칭) — 신규 repo-scope 뷰. 옛 bare `--slot N`
+    #     (repo 불문 cross-repo suffix 매칭)은 제거됐다 — `--slot` 단독은 이제 fail-loud.
+    #   `--mine` 과 `--repo`(+`--slot`)는 상호 배타(뷰 스코프는 하나만) — 타 사용자는 어느 필터
+    #   뷰에도 안 나온다(무필터 `list` 전용).
+    try:
+        identity = identity_args.parse_identity(args)
+    except ValueError as e:
+        sys.exit(f"[중단] {e}")
+    explicit_mine = bool(getattr(args, "mine", False))
+    if explicit_mine and identity.kind != "none":
+        sys.exit("[중단] --mine 은 --repo/--slot 과 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
+    mine = explicit_mine or identity.kind != "none"
+    # slot-scoped 뷰(--repo/--slot)는 claim 을 그 슬롯(또는 그 repo)으로 교집합한다(--mine 은
+    # 전 슬롯·ADR-0056).
+    slot_scoped = identity.kind != "none"
+    slot_mode = "repo" if identity.kind == "repo" else "exact"
+    if identity.kind == "slot":
         my_user = user_name()
-        my_slot = explicit_session
-    elif explicit_slot is not None:
+        my_slot = identity.session
+    elif identity.kind == "repo":
         my_user = user_name()
-        my_slot = str(explicit_slot)
+        my_slot = identity.repo
     else:
         my_user = user_name() if mine else None
         my_slot = session_name() if mine else ""
         if mine and my_slot is None:
             # 세션 미바인딩(surface·required=False·ADR-0040) — slot-claim 필터를 못 좁힌다.
             # 안내는 stderr 로 내 stdout 티켓 목록 포맷을 오염시키지 않는다(소유 open 은 계속 표시).
-            print("(비바인딩 — 세션 미해소·claim 필터 비활성; `--session <repo>_<N>` 로 지정)",
+            print("(비바인딩 — 세션 미해소·claim 필터 비활성; `--repo <repo> --slot <N>` 로 지정)",
                   file=sys.stderr)
     # graceful degrade(T-0168 단순화): (a) 풀(내 소유 open) 필터는 보드에 area_owner 가 *운영
     # 중일 때만* 그 파티션을 1차 소유로 쓴다. areas.md 에 area_owner 가 하나도 안 채워졌으면
@@ -3548,10 +3607,11 @@ def cmd_list(args: argparse.Namespace) -> int:
     # 다중사용자 판정(`multi_user`·solo 정의 완결·codex R3): **티켓 user 토큰이든 area_owner 든
     # 둘 중 하나라도 distinct ≥2 면 multi-user**. `_distinct_ticket_users`(티켓 귀속만 셈) 단독이면
     # 다중-owner 보드라도 claim 이 전부 legacy 슬롯-only(user 토큰 0)일 때 ≤1 로 떨어져 solo 로
-    # 오판 → legacy 슬롯-only 포함 경로가 발동해 `--slot N` 이 타 area 의 legacy `<repo>_N` 을
-    # suffix 매칭으로 끌어오는 누출이 났다(ADR-0056 위반). `_distinct_area_owners`(areas 소유 다중성)
-    # 를 OR 로 더해 그 클래스를 닫는다. solo(둘 다 ≤1)면 미해소 open all-open degrade + legacy
-    # 슬롯-only 포함 보존, 다중이면 strict-exclude(ADR-0053·ADR-0056).
+    # 오판 → legacy 슬롯-only 포함 경로가 발동해 (당시) bare `--slot N`(repo 불문 cross-repo
+    # suffix 매칭 — ADR-0057 로 제거됨)이 타 area 의 legacy `<repo>_N` 을 끌어오는 누출이 났다
+    # (ADR-0056 위반). `_distinct_area_owners`(areas 소유 다중성)를 OR 로 더해 그 클래스를 닫는다.
+    # solo(둘 다 ≤1)면 미해소 open all-open degrade + legacy 슬롯-only 포함 보존, 다중이면
+    # strict-exclude(ADR-0053·ADR-0056).
     area_owner_in_use = mine and _area_owner_in_use()
     multi_user = mine and (_distinct_ticket_users() > 1 or _distinct_area_owners() > 1)
     # status 뷰 셀렉터(T-0197): 기본(무-status)=활성만(done 접기) · `--status all`=전체(done 포함)
@@ -3577,7 +3637,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 continue
             if mine and not _ticket_is_mine(status, fm, my_user, my_slot,
                                             area_owner_in_use, multi_user,
-                                            slot_suffix=slot_suffix,
+                                            slot_mode=slot_mode,
                                             slot_scoped=slot_scoped):
                 # 이 제외가 *strict-exclude* 였는지 판정: 같은 predicate 를 multi_user=False 로
                 # 재평가해 solo(all-open degrade)라면 포함됐을 open 이면 = 다중사용자라서 드롭한
@@ -3586,7 +3646,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 # 생략(short-circuit). 소유 해소된 타 사용자 티켓 제외는 solo 에서도 제외라 무신호.
                 if multi_user and not strict_exclude_fired and _ticket_is_mine(
                         status, fm, my_user, my_slot,
-                        area_owner_in_use, False, slot_suffix=slot_suffix,
+                        area_owner_in_use, False, slot_mode=slot_mode,
                         slot_scoped=slot_scoped):
                     strict_exclude_fired = True
                 continue
@@ -4266,10 +4326,19 @@ def cmd_reid(args: argparse.Namespace) -> int:
         claimed_by = fm.get("claimed_by")
         if claimed_by:
             claimed_slot = str(claimed_by).rsplit("/", 1)[-1]   # `<user>/<slot>` → slot (또는 slot-only)
-            current = session_name(getattr(args, "session", None))
+            current = session_name(_actor_session_override(args))
             if current is None or claimed_slot != current:
+                # remedy 는 ADR-0057 canonical `--repo/--slot` 로 안내 — `claimed_slot` 이
+                # `<repo>_<N>` 형태면 분해해 그대로 보여주고(정직한 remedy), 아니면(솔로 커스텀
+                # 세션명) 소유 세션명만 병기한다(그 형태는 --repo/--slot 로 재현 불가).
+                remedy_repo = _repo_from_session(claimed_slot)
+                if remedy_repo is not None:
+                    remedy_num = claimed_slot.rsplit("_", 1)[-1]
+                    remedy = f"--repo {remedy_repo} --slot {remedy_num}"
+                else:
+                    remedy = f"--repo <repo> --slot <N>(소유 세션 `{claimed_slot}`)"
                 print(f"[중단] {old_id} 은 `{claimed_by}` 가 claim 중 — reid 는 단일세션 op 다. 소유 "
-                      f"세션에서 `--session {claimed_slot}` 로 재실행하거나 먼저 unclaim 하라.",
+                      f"세션에서 `{remedy}` 로 재실행하거나 먼저 unclaim 하라.",
                       file=sys.stderr)
                 return None, 1
         # NEW collision — `_detect_collisions` 재사용(zero-pad 폭 정규화 포함). {OLD:NEW} 를 전 티켓
@@ -5921,21 +5990,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="status 뷰 셀렉터(T-0197): 생략 시 활성만(open/claimed/blocked·done 접기)· "
                         "특정 status 하나만 보려면 그 값(예: done)· 전체(done 포함)는 `all`.")
     p.add_argument("--tag")
-    scope = p.add_mutually_exclusive_group()
-    scope.add_argument("--mine", action="store_true",
+    p.add_argument("--mine", action="store_true",
                    help="내 것만 (렌즈·단일 보드 위 필터·ADR-0033 ④·ADR-0056·user-first): 내 open"
                         "(area_owner==나 ∨ created_by==나) + 내 claim(claimed_by.user==나)·**전 슬롯**. "
                         "querying identity=현재 사용자(local.conf user= > git email). 타 사용자는 "
-                        "안 나온다. solo(user 미상)는 전체 open + 내 슬롯 claim 으로 graceful degrade.")
-    scope.add_argument("--session", help="뷰 렌즈 — 현재 사용자 **∩ 그 세션(슬롯)**(ADR-0056·조회 전용 뷰 스코프): "
-                        "내 open(슬롯무관 backlog) + 그 세션에서의 내 claim(claimed_by.user==나 AND slot==그 세션)만 "
-                        "비춘다. 타 사용자·타 슬롯의 내 claim 은 strict-exclude(내 타 슬롯 claim 은 `--mine` 엔 나옴). "
-                        "**actor `--session`(claim 등 귀속 쓰기)과는 같은 플래그명이지만 별개 의미**(ADR-0043) — "
-                        "여기선 아무것도 안 바꾸는 뷰 렌즈일 뿐이다. 전체 보드(타 사용자 포함)는 무필터 `list`.")
-    scope.add_argument("--slot", type=int,
-                        help="`--session` 의 슬롯-번호 버전(ADR-0056): 현재 사용자 ∩ 슬롯 _N. slot 식별자가 "
-                             "`<repo>_<N>` 규칙이라 N 만으로 suffix 매칭한다(repo 접두 불문). 타 사용자 claim·"
-                             "타 슬롯의 내 claim 은 strict-exclude(타 사용자 무유출). open 은 슬롯무관 내 backlog.")
+                        "안 나온다. solo(user 미상)는 전체 open + 내 슬롯 claim 으로 graceful degrade. "
+                        "`--repo`/`--slot` 과 상호 배타(뷰 스코프는 하나만·cmd_list 런타임 검사).")
+    # `--repo`/`--slot`(ADR-0057 canonical) — 조회 전용 뷰 스코프: 내 open(슬롯무관 backlog) + 그
+    # 슬롯(또는 그 repo 의 내 슬롯 전체)에서의 내 claim 만 비춘다(user-first·ADR-0056). actor
+    # `--repo`/`--slot`(claim 등 귀속 쓰기)과 플래그명은 같으나 여기선 아무것도 안 바꾸는 뷰
+    # 렌즈일 뿐이다(ADR-0057 §갈림 A — 구 `--session` 뷰 렌즈/bare `--slot` 을 흡수). 전체 보드
+    # (타 사용자 포함)는 무필터 `list`.
+    identity_args.add_identity_args(p)
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("show", help="show one ticket")
@@ -5944,7 +6010,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("claim", help="atomic claim — mv open → claimed")
     p.add_argument("id", metavar="T-NNNN")
-    p.add_argument("--session", help="session name = pm slot (default $PM_SESSION_NAME or hostname-pid)")
+    identity_args.add_identity_args(p)
     p.add_argument("--user", help="user 식별자 — claimed_by 의 user 차원 (default: local.conf user= / "
                    "git config user.email · ADR-0033 ③)")
     p.set_defaults(fn=cmd_claim)
@@ -5998,7 +6064,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--owner", help="등록 식별자(registrant·기본: session 이름)")
     p.add_argument("--user", help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력·ADR-0033 ③·T-0161). "
                                   "미지정 시 local.conf user= / git config user.email 로 해소(없으면 빈 값).")
-    p.add_argument("--session", help="세션 이름 (기본: <prefix>-pm)")
+    identity_args.add_identity_args(p)
     p.set_defaults(fn=cmd_init)
 
     p = sub.add_parser("migrate-identity",
@@ -6011,9 +6077,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="변경 미리보기(쓰기 0·per-file 요약). 먼저 실행 권장.")
     p.add_argument("--user", help="identity override (기본: local.conf user= / git config "
                    "user.email · 미해소 시 abort)")
-    p.add_argument("--session", help="slot 표시값 (기본: $PM_SESSION_NAME / local.conf "
-                   "session= / hostname-pid) — backfill 대상 슬롯을 *바꾸지 않음*. 슬롯-only "
-                   "claimed_by 는 기존 슬롯 토큰을 보존하고 user 차원만 prepend(비파괴)")
+    identity_args.add_identity_args(p)  # slot 표시값(기본: $PM_SESSION_NAME/local.conf session=) —
+    # backfill 대상 슬롯을 *바꾸지 않음*. 슬롯-only claimed_by 는 기존 슬롯 토큰을 보존하고
+    # user 차원만 prepend(비파괴).
     p.add_argument("--scope", choices=["active", "all"], default="all",
                    help="active=open+claimed 만 · all=done 포함(기본)")
     p.set_defaults(fn=cmd_migrate_identity)
@@ -6023,7 +6089,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=["run", "check"])
     p.add_argument("--cmd", help="테스트 명령 (기본: 활성 repo areas.md test_cmd → local.conf test_cmd → pytest -q)")
     p.add_argument("--cwd", help="회귀 실행 cwd (ADR-0014 seam·기본 REPO; multi-PM은 활성 repo worktree·T-0060 배선)")
-    p.add_argument("--session", help="명시 슬롯 세션 (이 슬롯만 회귀·M>1 홈에서 무명시면 전 leased 슬롯 all-or-nothing·ADR-0040 D2)")
+    identity_args.add_identity_args(p)  # 명시 슬롯(이 슬롯만 회귀·M>1 홈에서 무명시면 전 leased
+    # 슬롯 all-or-nothing·ADR-0040 D2)
     p.add_argument("--ticket", help="이 ticket 의 touches 로 스코프 (dev 빠른 루프·advisory)")
     p.add_argument("--touches", help="comma-separated 파일로 스코프 (advisory)")
     p.set_defaults(fn=cmd_regression)
@@ -6036,8 +6103,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cwd", help="record=pytest 실행 cwd(기본=활성 slot worktree) / "
                                  "check=livegate.json 해소 cwd(훅 정렬·기본=이 board.py 사본 REPO) "
                                  "(ADR-0014 seam·record↔check 대칭·T-0306)")
-    p.add_argument("--session", help="record 의 슬롯 세션 (M>1 홈에서 cwd 해소·regression 과 동형·"
-                                     "무명시+leased≥2 는 fail-loud·`--cwd` 우회 불요·T-0298)")
+    identity_args.add_identity_args(p)  # record 의 슬롯(M>1 홈에서 cwd 해소·regression 과 동형·
+    # 무명시+leased≥2 는 fail-loud·`--cwd` 우회 불요·T-0298)
     p.set_defaults(fn=cmd_livegate)
 
     p = sub.add_parser("refresh", help="regenerate board.md")
@@ -6086,7 +6153,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("old_id", metavar="OLD-ID", help="재부여할 기존 티켓 ID (예: T-0036)")
     p.add_argument("new_id", metavar="NEW-ID",
                    help="새 티켓 ID — T-NNNN 또는 T-<prefix>-NNN (발행 문법·prefix 자유 입력)")
-    p.add_argument("--session", help="세션명 <repo>_<N> (claim 중 티켓의 소유 세션 확인용)")
+    identity_args.add_identity_args(p)  # claim 중 티켓의 소유 세션 확인용
     p.add_argument("--dry-run", action="store_true", help="규모 preview(N ID·M refs·K 파일)·쓰기 0")
     p.set_defaults(fn=cmd_reid)
 

@@ -4,7 +4,7 @@
 사용:
     venv/bin/python .project_manager/tools/pm_handoff.py \\
       --session-seq <N차> \\
-      [--session <repo>_<N>] \\
+      [--repo <name> [--slot <N>]] \\
       --wave-summary "<wave 1~3 한 줄 요약>" \\
       [--dry-run] [--no-pytest]
 
@@ -53,6 +53,19 @@ TOOLS_DIR = REPO / ".project_manager" / "tools"                          # workt
 # import 하지 않는다(touches 격리·데이터 결합만) — pm_bootstrap 을 동적로드해 그 판정을 재사용.
 AREAS_FILE = REPO / ".project_manager" / "areas.md"                       # legacy 별칭 (아래 _areas_file 가 추종)
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+
+# ── identity_args sibling import (ADR-0057·T-0322 공용 정체성 모듈) ──────────────
+# `--repo`/`--slot` 파싱 + 리스 해소를 공용 모듈 identity_args 에서 가져온다. 프로덕션
+# 실행(`python3 .../pm_handoff.py`)은 인터프리터가 스크립트 디렉토리(tools/)를
+# `sys.path[0]` 으로 자동 세팅해 `import identity_args` 가 그냥 동작하지만, 테스트는
+# `spec_from_file_location` 으로 이 모듈을 로드하므로(패키지 아님) sys.path 가 자동으로
+# 채워지지 않는다 — `Path(__file__).resolve().parent`(=tools/) 를 명시적으로 앞에 꽂아
+# 스크립트·테스트 양쪽에서 동형으로 import 되게 한다(T-0322 결정: 도구 zero-import 관성은
+# 유지하되 이 leaf util 은 예외적으로 sibling import).
+_TOOLS_DIR_FOR_IMPORT = Path(__file__).resolve().parent
+if str(_TOOLS_DIR_FOR_IMPORT) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR_FOR_IMPORT))
+import identity_args  # noqa: E402 — sys.path 세팅 후 import (위 설명)
 
 
 # ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────
@@ -141,6 +154,8 @@ def _regression_cwd(
     worktree_slot: str | None = None,
     areas_file: Path | None = None,
     leases_file: Path = LEASES_FILE,
+    *,
+    repo_root: Path | None = None,
 ) -> str:
     """회귀를 실행할 작업 디렉토리를 해소한다 (T-0124·분리된 PM 홈+worktree 모델).
 
@@ -148,20 +163,37 @@ def _regression_cwd(
     돌아야 한다. 이 함수가 그 경로를 해소한다.
 
     해소 순서:
-      - `worktree_slot`(multi-PM `--worktree-slot` 명시) 가 있으면 `REPO / worktree_slot`,
+      - `worktree_slot`(명시 `--repo`/`--slot`·ADR-0057) 가 있으면 `repo_root / worktree_slot`
+        (단 그 디렉토리가 실제로 없으면 **L1**: stale 슬롯 → `repo_root` 로 폴백·경고 1줄),
       - 없으면 bootstrap `_auto_slot` 으로 단일 self-host 슬롯을 자동해소(`work/<repo>_<N>`),
-      - 그것도 없으면(솔로/모호/부재) **현 `REPO` 기본** (fail-soft 폴백·솔로 무변경).
+      - 그것도 없으면(솔로/모호/부재) **현 `repo_root` 기본** (fail-soft 폴백·솔로 무변경).
 
     판정 로직은 pm_bootstrap `_auto_slot` 재사용(count-based 단일 self-host·T-0123 동형) —
-    복붙하지 않고 동적 로드한다(DRY). areas/leases 는 명시 인자로 노출해 hermetic 테스트 가능.
-    `areas_file` 미지정이면 `_areas_file()`(board_root 추종·T-0162 A6)로 해소한다 — board/
-    분리(ADR-0033 ①) 후 areas 가 board/ 안으로 옮겨가므로 legacy 위치를 보면 _auto_slot 이
-    등록 repo 를 0개로 세 self-host 슬롯을 미해소한다.
+    복붙하지 않고 동적 로드한다(DRY). areas/leases/repo_root 는 명시 인자로 노출해 hermetic
+    테스트 가능. `areas_file` 미지정이면 `_areas_file()`(board_root 추종·T-0162 A6)로 해소한다 —
+    board/ 분리(ADR-0033 ①) 후 areas 가 board/ 안으로 옮겨가므로 legacy 위치를 보면 _auto_slot 이
+    등록 repo 를 0개로 세 self-host 슬롯을 미해소한다. `repo_root` 미지정이면 모듈 `REPO`.
+
+    **L1(ADR-0057 라이더)**: 명시 `worktree_slot` 이 리스 장부 조인(M3)은 통과했더라도
+    실제 worktree 디렉토리가 물리적으로 없을 수 있다(장부-파일시스템 out-of-sync·저빈도 엣지) —
+    그대로 `subprocess.run(cwd=...)` 에 넘기면 `FileNotFoundError` 로 크래시한다. 여기서 존재를
+    확인해 없으면 **REPO 로 폴백**(비차단·경고 1줄)한다 — M3(장부 자체가 모순 — 하드 fail-loud)와
+    boundary 를 정합시킨다: 장부-불일치는 loud reject, 장부는 맞는데 디스크만 stale 이면 soft 폴백.
     """
+    if repo_root is None:
+        repo_root = REPO
     if areas_file is None:
         areas_file = _areas_file()
     if worktree_slot:
-        return str(REPO / worktree_slot)
+        candidate = repo_root / worktree_slot
+        if candidate.is_dir():
+            return str(candidate)
+        print(
+            f"  ⚠ 명시 슬롯 '{worktree_slot}' 의 worktree 디렉토리가 없다 ({candidate}) — "
+            "REPO 로 폴백한다 (stale 슬롯·ADR-0057 L1).",
+            file=sys.stderr,
+        )
+        return str(repo_root)
     bp = _load_pm_bootstrap()
     if bp is not None:
         try:
@@ -170,8 +202,8 @@ def _regression_cwd(
             auto = None
         if auto:
             repo, n = auto
-            return str(REPO / f"work/{repo}_{n}")
-    return str(REPO)
+            return str(repo_root / f"work/{repo}_{n}")
+    return str(repo_root)
 
 
 # ── per-slot pm_state 경로 해소 (multi-PM 연속성·ADR-0033 §3.1·T-0166) ─────────
@@ -254,18 +286,16 @@ def _resolve_state_slot(
     """pm_state slot 키(`<repo>_<N>`)를 해소한다 — 명시 슬롯 우선·없으면 guarded default-1 자동.
 
     해소 순서:
-      - `worktree_slot`(multi-PM `--worktree-slot` 명시·`work/<repo>_<N>` 또는 `<repo>_<N>`)
+      - `worktree_slot`(명시 `--repo`/`--slot`·ADR-0057·`work/<repo>_<N>` 또는 `<repo>_<N>`)
         가 있으면 leading `work/` 를 벗긴 `<repo>_<N>` 을 슬롯 키로.
       - 없으면 bootstrap `_resolve_session_slot`(guarded default-1·T-0178) 으로 자동해소 →
         `<repo>_<N>`. `{1,2}`→slot 1·`{3}`-sole→slot 3·단일 self-host→그것.
       - 그것도 없으면(solo/부재) **None** — 호출부가 legacy `wiki/pm_state.md` 로 폴백.
 
-    **T-0201 결정 = B(입구 거부)**: bare 슬롯 번호(`<N>`)는 repo 별 독립(worktree_pool
-    `_existing_slot_numbers(repo, …)`·`prefix=f"work/{repo}_"`)이라 repo ≥2 면 본질적으로
-    모호하다 — `project_manager_1`·`finance_1` 공존 가능. 그래서 이 함수는 bare 토큰을
-    *정규화하지 않는다* — CLI argparse ingress(`main()`)가 bare `--worktree-slot` 을 명확한
-    에러로 **거부**해 이 함수엔 이미 repo-qualified(`work/<repo>_<N>`·`<repo>_<N>`) 슬롯만
-    들어온다는 전제다(입구 거부가 근본·정규화는 소비자마다 재발하는 두더지잡기).
+    **T-0201 결정 = B(입구 거부) 계승**: `--repo`/`--slot`(ADR-0057)은 타입이 분리돼 있어(`--slot`
+    은 `int`·`--repo` 필수 — `identity_args.parse_identity`) bare 슬롯 번호 자체가 발생하지 않는다
+    — `main()` ingress(`_resolve_explicit_identity_slot`)가 이미 repo-qualified(`work/<repo>_<N>`)
+    로 조립해 넘기므로, 이 함수는 그 형식만 받는다는 전제로 정규화하지 않는다(입구 단일화가 근본).
 
     **continuity(세션-window read/write) 정합** (T-0178 should-fix·spike §1·§3): `_auto_slot`
     (exactly-1)은 `{1,2}` 를 None 으로 떨궈 *없는 legacy* 로 새서 slot 1 연속성을 끊었다 —
@@ -305,7 +335,7 @@ def _resolve_state_slot(
 
 
 # ── session-entry guarded 슬롯해소 (멀티-PM 모호 → fail-loud + 실행 슬롯 threading·T-0178·ADR-0035) ──
-# bare handoff(`--worktree-slot` 미지정)는 *어느 슬롯의* 연속성을 이어야 하는지 명확해야 한다.
+# bare handoff(`--repo`/`--slot` 미지정·ADR-0057)는 *어느 슬롯의* 연속성을 이어야 하는지 명확해야 한다.
 # 멀티-PM 셋업이 모호(등록 repo ≥2·한 repo 슬롯 ≥2 중 slot1 부재)하면, 없는 legacy `wiki/pm_state.md`
 # 로 조용히 폴백해 *빈 legacy fork·연속성 단절*(spike §1·§2 D2)을 내는 대신 명시 에러로 중단한다.
 #
@@ -324,11 +354,11 @@ def _resolve_session_worktree_slot(
     """bare handoff 의 실행 슬롯을 해소한다 — `(resolved_slot, error_msg)`.
 
     반환:
-      - `(worktree_slot, None)` — 명시 `--worktree-slot` 이면 그대로(downstream explicit 우선).
-        **T-0201 결정 = B(입구 거부)**: bare `<N>` 은 CLI argparse ingress(`main()`)가 이미
-        명확한 에러로 거부하므로, 이 함수엔 repo-qualified(`work/<repo>_<N>`·`<repo>_<N>`) 슬롯만
+      - `(worktree_slot, None)` — `worktree_slot` 인자가 이미 주어져 있으면 그대로(downstream
+        explicit 우선). 이 함수엔 `main()` ingress 가 `--repo`/`--slot`(ADR-0057)을
+        `_resolve_explicit_identity_slot` 으로 이미 `work/<repo>_<N>` canonical 화한 값만
         도달한다는 전제 — 여기서 재정규화하지 않는다(정규화를 소비자마다 스레딩하면 새 소비자가
-        생길 때마다 재발하는 두더지잡기 — 입구 거부가 근본).
+        생길 때마다 재발하는 두더지잡기 — 입구 단일화가 근본).
       - `(None, None)` — solo/미해소(멀티-PM 미셋업·bootstrap 부재·판정 실패). 현행 legacy/REPO
         폴백 유지(자기-호스트 solo 무변경).
       - `(f"work/<repo>_<N>", None)` — default-1/단독/idle-필터 후 활성 슬롯으로 해소. run() 이
@@ -359,6 +389,59 @@ def _resolve_session_worktree_slot(
         return None, None  # solo/미해소 → 현행 폴백.
     repo, n = auto
     return f"work/{repo}_{n}", None
+
+
+# ── 명시 `--repo`/`--slot` → 실행 슬롯 (ADR-0057 §3.1 해소 + M3 라이더) ──────────
+# `main()` ingress 가 `identity_args.parse_identity(args)` 로 얻은 discriminated 결과에서
+# repo/slot 두 필드만 뽑아 이 함수에 넘긴다 — CLI 파싱과 리스-조인 검증을 분리해 ticket_finish
+# 도 (자기 `--repo`/`--slot` 파싱 후) 동일 함수를 재사용할 수 있게 한다(동적 로드·DRY).
+def _resolve_explicit_identity_slot(
+    repo: str | None,
+    slot: int | None,
+    leases_file: Path | None = None,
+) -> tuple[str | None, str | None]:
+    """명시 `--repo`(+`--slot`) 를 실행 worktree 슬롯으로 해소한다 — `(worktree_slot, error_msg)`.
+
+    ADR-0057 §3.1 해소 규칙(actor 연산·handoff/ticket_finish 둘 다 actor):
+      - `repo`·`slot` 둘 다 주어짐 → `work/<repo>_<slot>` 조립. **M3**(라이더): 리스 장부가
+        읽히면(`identity_args.repo_slot_numbers` 가 `None` 아님) 그 슬롯이 실제 **활성(leased)**
+        리스에 있는지 검증한다 — 없으면 세션↔repo 조인 불일치로 `(None, error_msg)`(fail-loud).
+        장부 미해독(파일 부재/깨짐 → `None`)은 *검증불가*라 fail-soft(그대로 신뢰) — "판정불가"와
+        "모순"은 다르게 다룬다(과잉 차단 방지).
+      - `repo` 만 주어짐(슬롯 무) → `identity_args.resolve_actor_slot` 로 활성 슬롯 해소.
+        활성 슬롯 ≥2(`SlotResolutionError`)나 0개(미해소)는 모두 *명시 요청이 조인 안 된 것*이라
+        M3 와 같은 결로 `(None, error_msg)` (fail-loud) — repo 만 명시했는데 조용히 무관한
+        auto-resolve 경로로 새는 것을 막는다.
+      - 둘 다 없음(`repo is None`) → `(None, None)` — 호출부가 기존 no-flag 자동해소
+        (`_resolve_session_worktree_slot(None, ...)`)로 이어간다(이 함수 관여 밖).
+
+    `leases_file` 미지정이면 *호출 시점* REPO 기준으로 재구성한다(monkeypatch 추종·hermetic —
+    다른 리스 해소 함수들과 동형).
+    """
+    if repo is None:
+        return None, None
+    if leases_file is None:
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    if slot is not None:
+        known = identity_args.repo_slot_numbers(repo, leases_file)
+        if known is not None and slot not in known:
+            listing = ", ".join(str(n) for n in known) if known else "없음"
+            return None, (
+                f"[M3] 세션↔repo 조인 불일치 — repo '{repo}' 의 활성 슬롯({listing}) 중 "
+                f"{slot} 이 없다. `--slot` 을 정확히 지정하라 (ADR-0057)."
+            )
+        return f"work/{repo}_{slot}", None
+    # repo 만(슬롯 무) — actor 활성슬롯 자동해소(ADR-0057 결정 3).
+    try:
+        resolved = identity_args.resolve_actor_slot(repo, leases_file)
+    except identity_args.SlotResolutionError as exc:
+        return None, str(exc)
+    if resolved is None:
+        return None, (
+            f"[M3] repo '{repo}' 에 활성(leased) 슬롯이 없다 — 세션↔repo 조인 불가. "
+            "`--slot <N>` 으로 명시하거나 셋업을 확인하라 (ADR-0057)."
+        )
+    return f"work/{resolved}", None
 
 
 def _pm_state_path(
@@ -1694,7 +1777,7 @@ class PmHandoff:
         # 원래 명시 인자를 별도 보존. 슬롯 자동해소(아래)는 read/write 연속성 경로에만 적용.
         explicit_worktree_slot = worktree_slot
         # session-entry 슬롯 해소 + 실행 슬롯 threading (T-0178·codex round2 must-fix) — bare
-        # handoff(`--worktree-slot` 미지정)에서 default-1/단독/idle-필터 슬롯을 *한 번* 해소해
+        # handoff(`--repo`/`--slot` 미지정)에서 default-1/단독/idle-필터 슬롯을 *한 번* 해소해
         # 실행 슬롯에 박는다. 그러면 downstream 전부(pm_state·회귀cwd·handoff entry)가 *명시
         # 슬롯 우선* 경로로 같은 슬롯을 일관되게 쓴다(self-split 에서 회귀를 활성 worktree 서
         # 돌림·continuity/회귀cwd 비대칭 제거). 멀티-PM 모호면 fail-loud(slot 안 박고 중단).
@@ -1922,12 +2005,12 @@ class PmHandoff:
 
         # ── multi-PM 모드: --done 작업완료 슬롯 release (ADR-0013) ─────────────────
         # 세션종료/회전 ≠ release — --done 명시 시에만 슬롯을 idle 반납한다. release 는 비가역
-        # 이라 *명시* `--worktree-slot`(explicit_worktree_slot)만 반납한다 — 자동해소(default-1)
+        # 이라 *명시* `--repo`/`--slot`(explicit_worktree_slot)만 반납한다 — 자동해소(default-1)
         # 슬롯은 read/write 연속성에만 쓰고 release 하지 않는다(의도치 않은 반납 차단·T-0178).
         if done:
             if not explicit_worktree_slot:
                 print(
-                    "\n[중단] --done 은 --session <repo>_<N>(또는 legacy alias --worktree-slot) 이 필요하다 (어느 슬롯을 반납할지).",
+                    "\n[중단] --done 은 --repo <name> [--slot <N>] 이 필요하다 (어느 슬롯을 반납할지).",
                     file=sys.stderr,
                 )
                 return 1
@@ -2005,61 +2088,36 @@ def build_parser() -> argparse.ArgumentParser:
         description="PM 핸드오프 7단계 자동화 헬퍼.",
     )
     # 대화형 경로 — session-seq(차수)·wave-summary 는 필수 (검증은 main 에서 수동).
-    # canonical = --session-seq (ADR-0043) · --session-num 은 deprecated alias 무기한 수용.
-    # 차수는 "세션 정체성"이 아니라 "슬롯 시퀀스" — --session(정체성) 과 명명 충돌 회피 rename.
+    # 차수는 "세션 정체성"이 아니라 "슬롯 시퀀스" — 정체성(--repo/--slot)과는 별개(ADR-0057
+    # — actor `--session` 삭제로 이름충돌 없이 `--session-seq` 유지).
     parser.add_argument(
         "--session-seq",
         metavar="N",
         default=None,
-        help="떠나는 PM 세션 차수 (예: 28·canonical·ADR-0043). 필수 (또는 deprecated --session-num).",
-    )
-    parser.add_argument(
-        "--session-num",
-        metavar="N",
-        default=None,
-        help="[deprecated·--session-seq 로 대체] 세션 차수 alias — 값 동일. 구형 호출 무기한 수용(ADR-0043).",
+        help="떠나는 PM 세션 차수 (예: 28). 필수.",
     )
     parser.add_argument(
         "--wave-summary",
         metavar="요약",
         help="떠나는 PM 세션의 wave 종합 1~2 줄 요약 (사람 작성). 필수.",
     )
-    # ── multi-PM 모드 (ADR-0013·ADR-0043) — 솔로 미지정이면 미사용·현행 보존 ──
-    # canonical = --session <repo>_<N>(정체성 단일 문자열) · --worktree-slot 은 deprecated alias.
-    parser.add_argument(
-        "--session",
-        metavar="<repo>_<N>",
-        default=None,
-        help=(
-            "세션 정체성 (canonical·ADR-0043) — `<repo>_<N>`(예: project_manager_1). 내부에서 "
-            "`work/` 프리픽스를 유도해 worktree 슬롯으로 쓴다. multi-PM 모드 전용(솔로는 미지정). "
-            "구형 --worktree-slot 은 alias(값 불일치 시 fail-loud)."
-        ),
-    )
-    parser.add_argument(
-        "--worktree-slot",
-        metavar="슬롯",
-        default=None,
-        help=(
-            "[deprecated·--session 으로 대체] multi-PM 슬롯 alias (`work/<repo>_<N>` 1순위·"
-            "`<repo>_<N>` 도 수용·자동 canonical 화). bare 슬롯 번호(`4`)는 repo 별 모호라 거부. "
-            "handoff entry 에 slot/branch 를 기록(회전 재부착 단서). --done 과 함께면 작업완료 "
-            "release. --session 과 값 불일치 시 fail-loud(ADR-0043)."
-        ),
-    )
+    # ── multi-PM 모드 정체성 (ADR-0013·ADR-0057) — 솔로 미지정이면 미사용·현행 보존 ──
+    # canonical = 분해형 `--repo <name> [--slot <N>]`(전 CLI 통일·구 alias --session/
+    # --worktree-slot/--session-num 은 즉시 삭제). --repo 단독은 활성(leased) 슬롯 1개면
+    # 자동해소, 0개/≥2개는 fail-loud(M3 라이더 — `_resolve_explicit_identity_slot`).
+    identity_args.add_identity_args(parser)
     parser.add_argument(
         "--branch",
         metavar="브랜치",
         default=None,
-        help="multi-PM 모드 — 이 세션의 작업스트림 브랜치 (--session <repo>_<N> 과 함께·handoff entry 기록).",
+        help="multi-PM 모드 — 이 세션의 작업스트림 브랜치 (--repo/--slot 과 함께·handoff entry 기록).",
     )
     parser.add_argument(
         "--done",
         action="store_true",
         help=(
             "multi-PM 모드 — 작업완료 시 worktree 슬롯을 release(idle 반납·ADR-0013). "
-            "--session <repo>_<N>(또는 legacy alias --worktree-slot) 필요. "
-            "미지정이면 세션종료/회전 ≠ release(리스 유지)."
+            "--repo <name> [--slot <N>] 필요. 미지정이면 세션종료/회전 ≠ release(리스 유지)."
         ),
     )
     parser.add_argument(
@@ -2079,7 +2137,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "유지보수 모드 — pm_state.md 세션 식별 절의 오형식 `**N차차+**`(T-0100 잔재) 를 "
             "`**N차**` 로 멱등·비파괴 정규화한다 (ADR-0044). session-seq/wave-summary 불요. "
-            "먼저 `--dry-run` 으로 diff 를 선검토한 뒤 재실행해 적용하길 권장. --session <repo>_<N> "
+            "먼저 `--dry-run` 으로 diff 를 선검토한 뒤 재실행해 적용하길 권장. --repo/--slot "
             "로 슬롯별 pm_state 지정 가능(솔로는 미지정→legacy)."
         ),
     )
@@ -2103,96 +2161,6 @@ def _set_console_codepage_utf8() -> None:
         pass
 
 
-# CLI ingress 검증·정규화(T-0201 결정 = B) — bare 슬롯 번호(순수 숫자 `<N>`)는 repo 별 독립
-# (worktree_pool `_existing_slot_numbers(repo, …)`·`prefix=f"work/{repo}_"`)이라 등록 repo
-# ≥2 면 본질적으로 모호하다(`project_manager_1`·`finance_1` 공존 가능). 정규화(A안)로 소비자마다
-# 폴백을 스레딩하면 새 소비자가 생길 때마다 재발하는 두더지잡기(codex round-1/round-2 실증) —
-# 입구에서 명확한 에러로 거부하는 게 근본이다.
-#
-# **canonical 형식 = `work/<repo>_<N>`** — downstream 소비자(`_regression_cwd`→`REPO/<slot>`·
-# `--done` release→lease 키 exact-match·`_parse_worktree_slot`→`work/` 접두 필수)가 전부 `work/`
-# 접두 형식을 전제한다(codex round-3). 그래서 repo-qualified 지만 `work/` 무접두인 `<repo>_<N>` 은
-# 정상 수용하되, ingress 에서 **결정적 문자열 접두 부착**으로 `work/<repo>_<N>` 로 만들어 thread
-# 한다(모호성 0·단일 지점·A안의 repo-추론 정규화와 다름). 이후 run() 내부는 전부 `work/<repo>_<N>`
-# 만 받는다. `work/` 접두 판정은 case-insensitive(`Work/4` 변형이 verbatim 으로 안 새게).
-_WORK_PREFIX = "work/"
-_BARE_WORKTREE_SLOT_RE = re.compile(r"^(?:work/)?\d+$", re.IGNORECASE)
-
-
-def _strip_work_prefix_ci(worktree_slot: str) -> str:
-    """leading `work/`(대소문자 무관)를 벗긴 나머지를 반환한다 (`Work/4`→`4`·T-0201 하드닝)."""
-    if worktree_slot[: len(_WORK_PREFIX)].lower() == _WORK_PREFIX:
-        return worktree_slot[len(_WORK_PREFIX):]
-    return worktree_slot
-
-
-def _is_bare_worktree_slot(worktree_slot: str) -> bool:
-    """`--worktree-slot` 값이 repo 미지정 bare 숫자(`"4"`·`"work/4"`·`"Work/4"`)인지 판정한다 (T-0201).
-
-    호출부(`main()`)가 `strip()` 후 넘긴다는 전제 — 정규식은 `(?:work/)?\\d+` case-insensitive.
-    """
-    return bool(_BARE_WORKTREE_SLOT_RE.match(worktree_slot))
-
-
-def _canonicalize_worktree_slot(worktree_slot: str) -> str:
-    """repo-qualified `--worktree-slot` 을 canonical `work/<repo>_<N>` 로 정규화한다 (T-0201).
-
-    이미 `work/`(대소문자 무관) 접두면 접두를 소문자 `work/` 로 통일해 재부착, 무접두
-    `<repo>_<N>` 이면 `work/` 를 붙인다 — **결정적 문자열 접두 부착**(repo 추론 없음·모호성 0).
-    bare 숫자는 `main()` 게이트가 이미 거부했으므로 여기 도달하지 않는다(repo-qualified 전제).
-    """
-    rest = _strip_work_prefix_ci(worktree_slot)
-    return f"{_WORK_PREFIX}{rest}"
-
-
-# ── 세션 정체성/차수 alias 병합 (ADR-0043) ──────────────────────────────────────
-# canonical(--session/--session-seq)·구형 alias(--worktree-slot/--session-num) 를 각각 병합한다.
-# 둘 다 주면 값이 일치해야 한다 — 불일치는 추측 없이 fail-loud(어느 걸 채택할지 임의 결정 금지).
-# canonical 우선(둘 다 있으면 canonical 값 채택). alias 무기한 수용(기존 채택자 무파손).
-def _reconcile_session_seq(
-    session_seq: str | None,
-    session_num: str | None,
-    parser: argparse.ArgumentParser,
-) -> str | None:
-    """`--session-seq`(canonical)·`--session-num`(deprecated alias) 병합 (ADR-0043).
-
-    둘 다 주면 strip 후 값이 같아야 한다 — 불일치는 fail-loud(`parser.error`·SystemExit).
-    canonical(`--session-seq`) 우선. 미지정이면 None 반환.
-    """
-    if session_seq is not None and session_num is not None:
-        if str(session_seq).strip() != str(session_num).strip():
-            parser.error(
-                f"--session-seq({session_seq!r}) 와 --session-num({session_num!r}) 값이 불일치한다 — "
-                "하나만 주거나 값을 맞춰라 (--session-num 은 deprecated alias·ADR-0043)."
-            )
-    return session_seq if session_seq is not None else session_num
-
-
-def _reconcile_session_slot(
-    session: str | None,
-    worktree_slot: str | None,
-    parser: argparse.ArgumentParser,
-) -> str | None:
-    """`--session`(canonical 정체성 `<repo>_<N>`)·`--worktree-slot`(deprecated alias) 병합 (ADR-0043).
-
-    각 값을 canonical `work/<repo>_<N>` 형태로 비교 — 둘 다 주고 다른 슬롯을 가리키면 fail-loud.
-    canonical(`--session`) 우선. 반환은 병합된 원시 슬롯 문자열(이후 `main()` 의 기존 ingress
-    파이프라인이 bare 거부→`work/` canonical 화 처리)·미지정이면 None. 주변 공백은 벗겨 빈 문자열은
-    미지정(None)과 동형 취급(T-0201 하드닝 정합).
-    """
-    sess = session.strip() if session is not None else None
-    sess = sess or None
-    slot = worktree_slot.strip() if worktree_slot is not None else None
-    slot = slot or None
-    if sess is not None and slot is not None:
-        if _canonicalize_worktree_slot(sess) != _canonicalize_worktree_slot(slot):
-            parser.error(
-                f"--session({sess!r}) 과 --worktree-slot({slot!r}) 이 다른 슬롯을 가리킨다 — "
-                "하나만 주거나 값을 맞춰라 (--worktree-slot 은 deprecated alias·ADR-0043)."
-            )
-    return sess if sess is not None else slot
-
-
 def main(argv: list[str] | None = None) -> int:
     # 콘솔/파이프 출력을 UTF-8 로 재설정 — cp949 콘솔이나 리다이렉트된 stdout 에서
     # 이모지·em-dash(—) print 가 UnicodeEncodeError 로 죽는 것을 막는다 (T-0017).
@@ -2209,54 +2177,46 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     handoff = PmHandoff()
 
-    # 세션 정체성/차수 alias 병합 (ADR-0043) — canonical(--session/--session-seq) 우선·구형
-    # (--worktree-slot/--session-num)은 무기한 수용·둘 다 주고 값 불일치면 추측 없이 fail-loud.
-    # _reconcile_session_slot 이 주변 공백을 벗기고 빈 문자열→None(T-0201 하드닝 정합)까지 처리하므로
-    # 아래 기존 ingress 파이프라인(--branch 가드·bare 거부·canonical 화)은 무변경으로 이어진다.
-    session_seq = _reconcile_session_seq(args.session_seq, args.session_num, parser)
-    args.worktree_slot = _reconcile_session_slot(args.session, args.worktree_slot, parser)
+    # 세션 정체성 해소 (ADR-0057·identity_args) — 분해형 `--repo/--slot` canonical.
+    # `--slot` 단독(--repo 없음)·slot<1 은 parse_identity 가 ValueError 로 판정(fail-loud).
+    try:
+        identity = identity_args.parse_identity(args)
+    except ValueError as exc:
+        parser.error(str(exc))
 
-    # --branch 는 --worktree-slot 동반 필요 — 슬롯 없는 브랜치는 회전 재부착 단서로
-    # 불완전(어느 슬롯에 재부착할지 모름)하므로 조용히 무시하지 않고 거부한다(오용 축소·ADR-0013).
+    # 명시 --repo(+--slot) → 실행 슬롯(`work/<repo>_<N>`) 해소 + **M3**(세션↔repo 조인 검증·
+    # fail-loud). 정체성 인자 전무(kind='none')면 (None, None) — run() 의 기존 no-flag
+    # 자동해소(session-entry guarded·default-1/idle-필터·진짜 모호는 fail-loud)로 이어간다.
+    args.worktree_slot, identity_err = _resolve_explicit_identity_slot(identity.repo, identity.slot)
+    if identity_err is not None:
+        parser.error(identity_err)
+
+    # --branch 는 슬롯 정체성 동반 필요 — 슬롯 없는 브랜치는 회전 재부착 단서로 불완전
+    # (어느 슬롯에 재부착할지 모름)하므로 조용히 무시하지 않고 거부한다(오용 축소·ADR-0013).
     if args.branch and not args.worktree_slot:
-        parser.error("--branch 는 --session <repo>_<N>(또는 legacy alias --worktree-slot) 과 함께 써야 한다 (multi-PM 모드 회전 재부착 단서·ADR-0013).")
-
-    # bare 슬롯 번호 거부(T-0201 결정 = B) — 슬롯 번호는 repo 별 독립이라 repo 미명시 bare
-    # 숫자(`"4"`·`"work/4"`·`"Work/4"`)는 등록 repo ≥2 면 본질적으로 모호하다. 정규화 대신
-    # 입구에서 명확한 에러로 거부한다(두더지잡기 방지).
-    if args.worktree_slot and _is_bare_worktree_slot(args.worktree_slot):
         parser.error(
-            f"세션 슬롯 '{args.worktree_slot}' 은 bare 슬롯 번호다 — repo-qualified 형식으로 지정하라 "
-            "(--session `<repo>_<N>` 1순위·구형 --worktree-slot `work/<repo>_<N>` 도 수용). 슬롯 번호는 "
-            "repo 별 독립이라 bare 숫자만으로는 어느 repo 인지 모호하다(ADR-0013)."
+            "--branch 는 --repo <name> [--slot <N>] 과 함께 써야 한다 "
+            "(multi-PM 모드 회전 재부착 단서·ADR-0013)."
         )
-
-    # canonical 정규화(T-0201·codex round-3) — repo-qualified 지만 `work/` 무접두(`<repo>_<N>`)
-    # 이거나 대문자 접두(`Work/`)면 결정적으로 소문자 `work/` 접두로 통일한다. downstream 소비자
-    # (`_regression_cwd`·`--done` lease release·`_parse_worktree_slot` slot-injection)가 전부
-    # `work/<repo>_<N>` 형식을 전제하므로, 여기서 한 번 canonical 화해 thread 하면 run() 내부는
-    # 무변경으로 정합한다(무접두 형식이 downstream 3곳서 부분 고장나던 갭 해소).
-    if args.worktree_slot:
-        args.worktree_slot = _canonicalize_worktree_slot(args.worktree_slot)
 
     # ── 오형식 차수 정규화 모드 (--normalize-session-anchors·ADR-0044·§1.6) ──────
     # 세션 식별 절의 `**N차차+**`(T-0100 잔재) → `**N차**` 멱등·비파괴 정규화. 핸드오프
     # 7단계와 독립된 유지보수 모드라 session-seq/wave-summary required 체크 *앞에서* 분기해
-    # 조기 반환한다(위 ingress 파이프라인으로 canonical 화된 슬롯을 per-slot 대상 해소에 재사용).
+    # 조기 반환한다(위 ingress 파이프라인으로 해소된 슬롯을 per-slot 대상 해소에 재사용).
     if args.normalize_session_anchors:
         return _run_normalize_session_anchors(args.worktree_slot, args.dry_run)
 
-    # 대화형 경로 — session-seq(또는 deprecated --session-num)·wave-summary 수동 필수.
+    # 대화형 경로 — session-seq·wave-summary 수동 필수.
     missing = [
         flag
-        for flag, val in (("--session-seq", session_seq), ("--wave-summary", args.wave_summary))
+        for flag, val in (("--session-seq", args.session_seq), ("--wave-summary", args.wave_summary))
         if not val
     ]
     if missing:
         parser.error(f"{', '.join(missing)} 가 필수다.")
 
     return handoff.run(
-        session_num=session_seq,
+        session_num=args.session_seq,
         wave_summary=args.wave_summary,
         dry_run=args.dry_run,
         skip_pytest=args.no_pytest,

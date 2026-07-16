@@ -100,7 +100,7 @@ def _list_ids(board, capsys, **flags) -> list[str]:
     """cmd_list 를 돌려 출력에서 ticket ID 목록을 추출한다."""
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
-                              session=flags.get("session"), slot=flags.get("slot"))
+                              repo=flags.get("repo"), slot=flags.get("slot"))
     rc = board.cmd_list(args)
     assert rc == 0
     out = capsys.readouterr().out
@@ -523,23 +523,14 @@ def test_distinct_area_owners_counts_multiplicity(board):
     assert board._distinct_area_owners() == 0
 
 
-def test_mine_multiowner_all_legacy_no_leak(board, capsys):
-    """**codex R3 leak 가드**: 다중-owner areas(alice·bob) + claim 이 전부 legacy 슬롯-only(user 토큰 0)
-    인 보드. `_distinct_ticket_users()` 만으론 solo 오판(distinct ≤1)이지만 `_distinct_area_owners()`
-    (=2)로 multi-user 판정 → `--slot 1` 이 타 area(bob)의 legacy `service-b_1` 을 suffix 매칭으로
-    안 끌어온다(ADR-0056 무유출). 내 user-qualified claim 은 계속 보여 비공허.
-
-    OLD(area_owner 다중성 미반영): solo 오판 → legacy 포함 경로 발동 → bob area legacy claim 누출.
-    """
-    _write_conf(board, user="alice", session="service-a_1")
-    _write_areas(board)  # PAY→alice · ACC→bob (distinct area_owner 2 → multi-user)
-    _seed(board, "T-PAY-006", "claimed", claimed_by="alice/service-a_1")  # 내 user-qualified·_1
-    _seed(board, "T-PAY-005", "claimed", claimed_by="service-a_1")        # 내 area·legacy 슬롯-only·_1
-    _seed(board, "T-ACC-005", "claimed", claimed_by="service-b_1")        # bob area·legacy 슬롯-only·_1
-    ids = _list_ids(board, capsys, slot=1)
-    assert "T-PAY-006" in ids        # 비공허 — 내 user-qualified claim 은 보임
-    assert "T-ACC-005" not in ids    # bob area legacy claim 누출 0(codex R3 핵심)
-    assert "T-PAY-005" not in ids    # multi-user → legacy 슬롯-only 는 ambiguous 라 내 area 도 제외
+# NB(ADR-0057·T-0323): `test_mine_multiowner_all_legacy_no_leak`(codex R3 leak 가드)는
+# 삭제됐다 — bare `--slot N`(repo 불문 cross-repo suffix 매칭)이 이 테스트가 지키던 정확한
+# 취약 클래스였는데, ADR-0057 이 그 인자 표면 자체를 제거했다(`--slot` 은 이제 `--repo` 필수 —
+# 같은 슬롯 번호가 *다른* repo 를 가리켜 충돌할 길이 CLI 층에서 구조적으로 막힌다). `--repo
+# service-a --slot 1` 로 갱신해도 repo 불일치로 타 area 티켓이 애초에 안 걸려 무의미(공허 통과)
+# 해진다 — `_distinct_area_owners` multi-user 판정 자체는 단위테스트(`test_distinct_area_owners_
+# counts_multiplicity`)와 다른 통합 테스트(test_userfirst_multiuser_excludes_user_qualified_and_
+# ambiguous_legacy 등)가 계속 커버한다.
 
 
 def test_mine_solo_claim_matches_my_slot(board, capsys):

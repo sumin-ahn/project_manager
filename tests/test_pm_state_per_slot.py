@@ -705,133 +705,14 @@ def test_run_gates_green_migrates_then_writes_per_slot(hf):
     assert not legacy.exists(), "게이트 green → legacy 는 slot 으로 이동(제거)."
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# CLI ingress — bare `--worktree-slot` 거부 + canonical 정규화 (T-0201 결정 = B·codex round-3)
-# 슬롯 번호는 repo 별 독립이라 repo 미명시 bare 숫자는 등록 repo ≥2 면 본질적으로 모호 → 입구에서
-# 명확한 에러로 거부. repo-qualified 는 canonical `work/<repo>_<N>` 로 결정적 접두 부착 후 thread —
-# downstream(`_regression_cwd`·`--done` release·`_parse_worktree_slot`)이 전부 `work/` 접두 전제.
-# ══════════════════════════════════════════════════════════════════════════
-
-# ── bare 판정 단위 ──────────────────────────────────────────────────────────
-
-def test_is_bare_worktree_slot_detects_pure_number(hf):
-    """`_is_bare_worktree_slot` — 순수 숫자(`"4"`)·`work/` 접두 숫자(`"work/4"`·`"Work/4"`) bare 판정."""
-    assert hf._is_bare_worktree_slot("4") is True
-    assert hf._is_bare_worktree_slot("work/4") is True
-    assert hf._is_bare_worktree_slot("Work/4") is True  # case-insensitive 하드닝.
-
-
-def test_is_bare_worktree_slot_accepts_repo_qualified(hf):
-    """repo-qualified(`<repo>_<N>`·`work/<repo>_<N>`) 는 bare 아님 — 정상 통과 대상."""
-    assert hf._is_bare_worktree_slot("project_manager_4") is False
-    assert hf._is_bare_worktree_slot("work/project_manager_4") is False
-
-
-# ── canonical 정규화 단위 ────────────────────────────────────────────────────
-
-def test_canonicalize_worktree_slot_adds_prefix_when_absent(hf):
-    """무접두 `<repo>_<N>` → `work/<repo>_<N>`(결정적 접두 부착·repo 추론 없음)."""
-    assert hf._canonicalize_worktree_slot("project_manager_4") == "work/project_manager_4"
-
-
-def test_canonicalize_worktree_slot_idempotent_when_prefixed(hf):
-    """이미 `work/<repo>_<N>` → 그대로(double-prefix 없음)."""
-    assert hf._canonicalize_worktree_slot("work/project_manager_4") == "work/project_manager_4"
-
-
-def test_canonicalize_worktree_slot_lowercases_prefix(hf):
-    """대문자 접두(`Work/`)는 소문자 `work/` 로 통일(downstream exact-match 정합)."""
-    assert hf._canonicalize_worktree_slot("Work/project_manager_4") == "work/project_manager_4"
-
-
-# ── main() ingress 거부 (bare) ──────────────────────────────────────────────
-
-def test_main_rejects_bare_worktree_slot(hf, capsys):
-    """`--worktree-slot 4`(bare) → main() 이 parser.error 로 명확히 거부(SystemExit·비-0)."""
-    with pytest.raises(SystemExit) as exc_info:
-        hf.main([
-            "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
-            "--worktree-slot", "4",
-        ])
-    assert exc_info.value.code != 0
-    err = capsys.readouterr().err
-    assert "--worktree-slot" in err
-    assert "repo-qualified" in err or "bare" in err
-
-
-def test_main_rejects_bare_work_prefixed_worktree_slot(hf, capsys):
-    """`--worktree-slot work/4`(work/ 접두 + bare 숫자) 도 동일하게 거부된다(대칭 메시지 assert)."""
-    with pytest.raises(SystemExit) as exc_info:
-        hf.main([
-            "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
-            "--worktree-slot", "work/4",
-        ])
-    assert exc_info.value.code != 0
-    err = capsys.readouterr().err
-    assert "--worktree-slot" in err
-    assert "repo-qualified" in err or "bare" in err
-
-
-def test_main_rejects_whitespace_padded_bare_slot(hf, capsys):
-    """`--worktree-slot " 4 "`(공백 패딩 bare) → strip 후 bare 로 판정돼 거부(하드닝)."""
-    with pytest.raises(SystemExit) as exc_info:
-        hf.main([
-            "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
-            "--worktree-slot", " 4 ",
-        ])
-    assert exc_info.value.code != 0
-
-
-# ── main() ingress 정규화 → run() 전달 슬롯 캡처 (hermetic·DI stub) ──────────
-# run() 을 실제로 실행하면 프로덕션 `PmHandoff()`(주입 없음)가 실 canonical LOG_FILE/
-# PM_PLAYBOOK_FILE 에 handoff entry 를 append 하는 라이브 부작용을 낸다(hermetic 위반·비가역).
-# 그래서 `PmHandoff.run` 을 인자 캡처 stub 으로 monkeypatch 해 run() 을 끝까지 돌리지 않고
-# *main() 이 run() 에 넘기는 worktree_slot 값* 만 검증한다.
-
-def _capture_run_slot(hf, monkeypatch) -> dict:
-    """`PmHandoff.run` 을 인자 캡처 stub 으로 대체한다 — run() 미실행·부작용 0."""
-    captured: dict = {}
-
-    def _stub(self, **kwargs):
-        captured.update(kwargs)
-        return 0
-
-    monkeypatch.setattr(hf.PmHandoff, "run", _stub)
-    return captured
-
-
-def test_main_canonicalizes_unprefixed_repo_qualified_slot(hf, monkeypatch):
-    """`--worktree-slot project_manager_4`(무접두 repo-qualified) → run() 에 `work/project_manager_4`
-    전달(codex round-3: 무접두는 downstream 3곳서 부분 고장 → ingress 서 canonical 화)."""
-    captured = _capture_run_slot(hf, monkeypatch)
-    rc = hf.main([
-        "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
-        "--worktree-slot", "project_manager_4",
-    ])
-    assert rc == 0
-    assert captured["worktree_slot"] == "work/project_manager_4"
-
-
-def test_main_passes_prefixed_slot_unchanged(hf, monkeypatch):
-    """이미 `work/<repo>_<N>` → run() 에 그대로 전달(double-prefix 없음)."""
-    captured = _capture_run_slot(hf, monkeypatch)
-    rc = hf.main([
-        "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
-        "--worktree-slot", "work/project_manager_4",
-    ])
-    assert rc == 0
-    assert captured["worktree_slot"] == "work/project_manager_4"
-
-
-def test_main_canonicalizes_case_and_whitespace_variants(hf, monkeypatch):
-    """`--worktree-slot " Work/project_manager_4 "`(대문자 접두 + 공백) → `work/project_manager_4`."""
-    captured = _capture_run_slot(hf, monkeypatch)
-    rc = hf.main([
-        "--session-num", "4", "--wave-summary", "신규", "--no-pytest",
-        "--worktree-slot", " Work/project_manager_4 ",
-    ])
-    assert rc == 0
-    assert captured["worktree_slot"] == "work/project_manager_4"
+# NB(ADR-0057·T-0323): 이 절이 통째로 검증하던 `--worktree-slot`(raw 문자열) CLI ingress +
+# `_is_bare_worktree_slot`/`_canonicalize_worktree_slot`(bare 판정·canonical 접두 정규화)는
+# T-0316 이 BREAKING 제거했다 — canonical 은 이제 분해형 `--repo <name> [--slot <N>]`
+# (`identity_args.parse_identity`)이라, bare 숫자 문자열이 CLI 로 들어올 경로 자체가 없다
+# (`--slot` 단독은 `--repo` 필수 위반으로 구조적 fail-loud). 그 대체 동작(`--repo`/`--slot` 해소·
+# M3 리스 조인·`_resolve_explicit_identity_slot`)은 test_pm_handoff.py 의 "ADR-0057 세션
+# 정체성 canonical" 스위트(`test_resolve_explicit_identity_slot_*`·`hf.main(["--repo", ...])`)
+# 가 대체 커버한다 — 여기선 dead 테스트만 제거.
 
 
 # ══════════════════════════════════════════════════════════════════════════

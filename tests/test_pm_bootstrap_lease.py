@@ -347,7 +347,8 @@ def test_bootstrap_slot_emits_lean_identity_surface(bootstrap, tmp_path, capsys)
     assert "세션=`X_2`" in out
     assert "worktree=`work/X_2`" in out
     assert "브랜치=`x-feat`" in out          # 라이브 브랜치(current_branch)
-    assert "--session X_2" in out            # 보드 조작 명시 안내
+    assert "--repo X --slot 2" in out        # 보드 조작 명시 안내 (ADR-0057·decomposed)
+    assert "--session X_2" not in out        # 옛 actor 플래그 잔존 금지 (BREAKING·--session-seq 차수는 무관)
     assert "보드=multi-PM 공유" in out
 
 
@@ -754,34 +755,39 @@ def test_bootstrap_slot_below_one_rejected(bootstrap):
 
 
 def test_handoff_parser_worktree_flags(handoff):
+    """파서가 분해형 `--repo`/`--slot`(ADR-0057) + `--branch`/`--done` 조합을 받아들인다.
+
+    `worktree_slot`(=`work/<repo>_<N>`)은 이제 parser.parse_args() 직후가 아니라 `main()`
+    ingress 가 `_resolve_explicit_identity_slot` 로 파생하므로(T-0316), 이 parser-레벨 테스트는
+    분해 필드(`repo`/`slot`)까지만 검증한다."""
     parser = handoff.build_parser()
     ns = parser.parse_args(
-        ["--session-num", "5", "--wave-summary", "x",
-         "--worktree-slot", "work/A_2", "--branch", "a5", "--done"]
+        ["--session-seq", "5", "--wave-summary", "x",
+         "--repo", "A", "--slot", "2", "--branch", "a5", "--done"]
     )
-    assert ns.worktree_slot == "work/A_2" and ns.branch == "a5" and ns.done is True
+    assert ns.repo == "A" and ns.slot == 2 and ns.branch == "a5" and ns.done is True
 
 
 def test_handoff_branch_without_slot_rejected(handoff):
-    """--branch 만(--worktree-slot 없이) → parser.error 거부 (조용히 무시 X·오용 축소).
+    """--branch 만(--repo/--slot 없이) → parser.error 거부 (조용히 무시 X·오용 축소).
 
     슬롯 없는 브랜치는 회전 재부착 단서로 불완전 — 어느 슬롯에 재부착할지 모른다.
     `--no-pytest`·`--dry-run` 을 함께 줘 가드가 없을 때(sensitivity)도 실 회귀·파일편집
     없이 정상 종료하게 한다 — 그러면 parser.error 미발생이 단언 실패로 즉시 드러난다.
     """
     with pytest.raises(SystemExit):
-        handoff.main(["--session-num", "5", "--wave-summary", "x",
+        handoff.main(["--session-seq", "5", "--wave-summary", "x",
                       "--branch", "a5", "--no-pytest", "--dry-run"])
 
 
 def test_handoff_branch_with_slot_accepted_by_parser(handoff):
-    """--branch + --worktree-slot 동반은 파서 통과 (가드는 슬롯 없는 경우만 거부)."""
+    """--branch + --repo/--slot(ADR-0057) 동반은 파서 통과 (main() 의 가드는 슬롯 없는 경우만 거부)."""
     parser = handoff.build_parser()
     ns = parser.parse_args(
-        ["--session-num", "5", "--wave-summary", "x",
-         "--worktree-slot", "work/A_2", "--branch", "a5"]
+        ["--session-seq", "5", "--wave-summary", "x",
+         "--repo", "A", "--slot", "2", "--branch", "a5"]
     )
-    assert ns.branch == "a5" and ns.worktree_slot == "work/A_2"
+    assert ns.branch == "a5" and ns.repo == "A" and ns.slot == 2
 
 
 # ── 10. sensitivity — 배선 무력화 시 fail 재현 ─────────────────────────────────

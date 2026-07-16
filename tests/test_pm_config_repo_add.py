@@ -662,3 +662,52 @@ def test_real_clone_sets_default_branch_upstream_tracking(pc, tmp_path):
     )
     assert up.returncode == 0, f"main@{{upstream}} 미해소: {up.stdout}{up.stderr}"
     assert up.stdout.strip() == "origin/main"
+
+
+# ── owner 미해소 remedy 힌트 — 존재하는 플래그만 안내 (T-0317·T-0313 findings·ADR-0057) ─────
+#
+# `repo add` 의 owner 미해소 fail-loud 가 없는 `--session <repo>_<N>` 를 안내하던 오안내
+# (T-0313 findings)를 이 티켓이 흡수한다 — `repo add` 의 유일한 정체성 플래그는 `--owner`
+# 뿐이라, remedy 는 그것만 가리켜야 한다(플래그 통일 wave 로 근본 소멸·ADR-0057).
+
+
+def _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path):
+    """`pc.REPO` 를 tmp 로 재지정 — `_default_session` 이 실 루트 local.conf/리스장부를
+    읽지 않게(hermetic). local.conf·리스장부 둘 다 부재 → `_default_session()` None(미바인딩)."""
+    (tmp_path / ".project_manager").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pc, "REPO", tmp_path)
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+
+
+def test_repo_add_owner_unresolved_hint_omits_nonexistent_session_flag(
+        pc, tmp_path, monkeypatch, capsys):
+    """owner 미해소 remedy 힌트가 존재하지 않는 `--session` 을 더 이상 안내하지 않는다
+    (T-0313 pm_config 분 fix) — `repo add` 의 실 정체성 플래그(`--owner`)만 안내한다.
+    부작용 0(clone/등록 안 함)도 함께 확인한다.
+    """
+    _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path)
+    board = FakeBoard(registered=())
+    gitr = GitFake()
+    rc = pc.cmd_repo_add(
+        _args(owner=None), board=board, clone_runner=gitr, repos_dir=tmp_path / ".repos",
+    )
+    assert rc == 1
+    assert board.append_calls == []    # areas 등록 안 함(부작용 0)
+    assert gitr.calls == []             # clone/base 해소 git 호출 안 함(부작용 0)
+    err = capsys.readouterr().err
+    assert "owner 미해소" in err
+    assert "--session" not in err       # T-0313: 존재하지 않는 플래그 안내 제거
+    assert "--owner" in err             # 실 존재하는 유일한 정체성 플래그로 안내
+
+
+def test_repo_add_owner_explicit_bypasses_unresolved_session(pc, tmp_path, monkeypatch):
+    """`--owner` 명시면 세션 미바인딩이어도 정상 등록(short-circuit) — 회귀 0 확인."""
+    _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path)
+    board = FakeBoard(registered=())
+    gitr = GitFake()
+    rc = pc.cmd_repo_add(
+        _args(owner="me"), board=board, clone_runner=gitr, repos_dir=tmp_path / ".repos",
+    )
+    assert rc == 0
+    assert board.append_calls and board.append_calls[0]["repo"] == "svc"

@@ -44,7 +44,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.util
-import json
 import os
 import re
 import shutil
@@ -135,35 +134,7 @@ def _local_conf_session() -> str | None:
     return None
 
 
-def _leased_sessions() -> list[str]:
-    """lease 장부 state=="leased" 행들의 session 목록 (count-based 유도·ADR-0040 D1).
-
-    board.py·worktree_pool 을 import 하지 않으므로([[ADR-0013]] isolation·touches 격리) 리스
-    장부 파일을 stdlib json 으로 직접 point-read 한다(`board._leased_sessions`·worktree_pool
-    `_leased_sessions` 와 *동형*). 경로는 호출 시점 `REPO` 에서 구성한다(monkeypatch 존중·
-    `_local_conf_session` 과 동형). 장부 부재/파싱실패/손상은 빈 리스트(fail-soft). session 이
-    빈/None 인 행은 제외.
-    """
-    ledger = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    try:
-        data = json.loads(ledger.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(data, dict):
-        return []
-    rows = data.get("leases", [])
-    if not isinstance(rows, list):
-        return []
-    sessions: list[str] = []
-    for row in rows:
-        if isinstance(row, dict) and row.get("state") == "leased":
-            sess = row.get("session")
-            if sess:
-                sessions.append(sess)
-    return sessions
-
-
-def _default_session() -> str | None:
+def _default_session(*, identity=None) -> str | None:
     """세션 식별자 — board.py `session_name()` 과 *동형* 우선순위 (ADR-0040 D1·T-0073):
     `$PM_SESSION_NAME` > `$CLAUDE_SESSION_NAME`(deprecated alias·silent) > lease 장부
     state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) > (장부 부재·leased 0 =
@@ -176,14 +147,25 @@ def _default_session() -> str | None:
     수정·ADR-0040). `<host>-<pid>` 최종 폴백은 세션-귀속 아닌 국소 용처(worktree_pool lease
     취득)에만 잔존 — 여기(surface 해소)선 제거.
 
-    board.py 를 import 하지 않으므로([[ADR-0013]] isolation·touches 격리) 같은 해소를 자체
-    구현한다. 저장측(worktree_pool)과 매칭측(여기)이 어긋나면 "이 세션의 리스" surface 가
-    board 매칭과 어긋난다(T-0066 must-fix) — 세 모듈을 같은 우선순위로 통일한다.
+    lease 장부(`state=="leased"` 행의 session 목록) 읽기는 공용 `identity_args.leased_sessions`
+    로 위임한다(ADR-0057 §Consequences B-1 — pm_config 로컬 `_leased_sessions` 사본을 흡수·
+    board.py/worktree_pool 의 동형 사본과 단일 진실로 수렴). board.py 를 직접 import 하지
+    않는 관성([[ADR-0013]] isolation·touches 격리)은 여기서도 유지한다 — `_load_module`
+    (spec_from_file_location) 로 `identity_args` 를 로드한다(board.py·worktree_pool 로딩과
+    동형 패턴·스크립트 직접 실행/테스트 양쪽에서 동일하게 동작). `identity` 주입으로 hermetic
+    테스트 가능(미주입 시 실 모듈 로드 — `identity_args` 는 파일 IO 0 순수 모듈이라 실 로드도
+    안전·부작용 0). 장부 경로는 호출 시점 `REPO` 에서 구성한다(monkeypatch 존중·
+    `_local_conf_session` 과 동형).
+
+    저장측(worktree_pool)과 매칭측(여기)이 어긋나면 "이 세션의 리스" surface 가 board 매칭과
+    어긋난다(T-0066 must-fix) — 세 모듈을 같은 우선순위로 통일한다.
     """
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
         return env
-    leased = _leased_sessions()
+    identity_mod = identity or _load_module("identity_args", "identity_args.py")
+    leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    leased = identity_mod.leased_sessions(leases_file) if identity_mod is not None else []
     if len(leased) == 1:
         return leased[0]
     if not leased:
@@ -820,13 +802,14 @@ def cmd_repo_add(
     # (**어떤 부작용(bare clone·areas_append·훅 설치)보다 앞에서**·board.cmd_init owner 와 동형·
     # ADR-0040 D1). _default_session 이 미바인딩(leased ≥2·무바인딩)에서 None 을 돌려주므로,
     # 그대로 areas_append 에 넘기면 board 가 owner 를 문자열 "None" 으로 areas.md 에 누출한다 —
-    # 그 전에 차단한다. `--owner <id>` 명시 또는 `--session <repo>_<N>` 로 세션 명시.
+    # 그 전에 차단한다. `repo add` 의 정체성 인자는 `--owner <id>` 뿐(T-0313 findings·ADR-0057 —
+    # 존재하지 않는 `--session` 을 안내하던 오안내를 제거) — 명시하거나 세션을 바인딩하라.
     owner = args.owner or _default_session()
     if not owner:
         print(
             "[중단] 등록 owner 미해소 — 활성 슬롯이 여럿이거나 세션 바인딩이 없다. "
-            "`--owner <id>` 를 주거나 `--session <repo>_<N>` 로 세션을 명시하라 "
-            "(clone/등록/훅 전혀 하지 않았다).",
+            "`--owner <id>` 로 등록 식별자를 명시하거나 세션을 바인딩(단일 활성 슬롯/"
+            "`$PM_SESSION_NAME`)하라 (clone/등록/훅 전혀 하지 않았다).",
             file=sys.stderr,
         )
         return 1

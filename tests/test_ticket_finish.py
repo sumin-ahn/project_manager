@@ -539,21 +539,22 @@ def _write_selfhost_leases(path: Path, entries: list[dict]) -> None:
     path.write_text(_selfhost_json.dumps({"leases": entries}), encoding="utf-8")
 
 
-def _bind_pm_handoff_seams(tf, monkeypatch, areas: Path, leases: Path):
-    """pm_handoff 를 로드하고 `_regression_cwd` 를 areas/leases 명시 인자 lambda 로 감싸 주입.
+def _bind_pm_handoff_seams(tf, monkeypatch, areas: Path, leases: Path, repo_root: Path | None = None):
+    """pm_handoff 를 로드하고 `_regression_cwd` 를 areas/leases(+repo_root) 명시 인자 lambda 로 감싸 주입.
 
     pm_handoff `_regression_cwd`(과 그 하부 `_auto_slot`)의 areas/leases 는 def-time 바운드
     기본 인자라 모듈 전역 setattr rebind 가 무효다(가짜 seam). 그래서 원본 `_regression_cwd`
-    를 닫아 `worktree_slot` 만 받고 areas/leases 를 *명시 인자로* 넘기는 lambda 로 교체한다 —
-    이게 실 장부/areas 미접촉 hermetic 해소의 유효한 seam 이다. ticket_finish wrapper 는
-    `hp._regression_cwd(slot)` 로 호출하므로 이 교체가 그대로 위임 경로에 먹힌다.
+    를 닫아 `worktree_slot` 만 받고 areas/leases/repo_root 를 *명시 인자로* 넘기는 lambda 로
+    교체한다 — 이게 실 장부/areas/REPO 미접촉 hermetic 해소의 유효한 seam 이다(repo_root 미지정
+    이면 real 의 기본값=REPO). ticket_finish wrapper 는 `hp._regression_cwd(slot)` 로 호출하므로
+    이 교체가 그대로 위임 경로에 먹힌다.
     """
     hp = tf._load_pm_handoff()
     assert hp is not None  # 동적 로드 성공 전제 (없으면 폴백 테스트로 분리)
     real = hp._regression_cwd
     monkeypatch.setattr(
         hp, "_regression_cwd",
-        lambda worktree_slot=None: real(worktree_slot, areas, leases),
+        lambda worktree_slot=None: real(worktree_slot, areas, leases, repo_root=repo_root),
     )
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: hp)
     return hp
@@ -581,7 +582,11 @@ def test_regression_cwd_self_host_resolves_worktree_slot(tf, tmp_path, monkeypat
 
 
 def test_regression_cwd_explicit_slot_overrides_auto(tf, tmp_path, monkeypatch):
-    """명시 worktree_slot 우선 — auto 판정을 무시하고 그 슬롯 경로 반환."""
+    """명시 worktree_slot 우선 — auto 판정을 무시하고 그 슬롯 경로 반환.
+
+    L1(ADR-0057 라이더 — stale 슬롯은 REPO 폴백)이 발동하지 않으려면 그 디렉토리가 실존해야
+    하므로, `repo_root` 를 tmp_path 로 둬 `work/foo_2` 를 실제로 만든다.
+    """
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_selfhost_areas(areas, ["myrepo"])
@@ -589,7 +594,8 @@ def test_regression_cwd_explicit_slot_overrides_auto(tf, tmp_path, monkeypatch):
         {"slot": "work/myrepo_7", "repo": "myrepo",
          "session": "myrepo_7", "state": "leased"},
     ])
-    _bind_pm_handoff_seams(tf, monkeypatch, areas, leases)
+    (tmp_path / "work" / "foo_2").mkdir(parents=True)
+    _bind_pm_handoff_seams(tf, monkeypatch, areas, leases, repo_root=tmp_path)
     result = tf._regression_cwd("work/foo_2")
     assert result.replace(os.sep, "/").endswith("work/foo_2")
 
@@ -710,36 +716,48 @@ def test_default_python_venv_absent_falls_back_to_sys_executable(tf, tmp_path, m
     assert tf._default_python() == tf.sys.executable
 
 
-# ── 두-git 다중슬롯 seam — --session/--no-pytest disambiguation (T-0285·ADR-0027) ──
+# ── 두-git 다중슬롯 seam — --repo/--slot/--no-pytest disambiguation (T-0285·ADR-0027·ADR-0057) ──
 #
 # ADR-0027 다중슬롯 형상(PM 홈 ② + worktree 슬롯 여럿)에선 `_regression_cwd(None)` 자동해소가
 # 모호해져 ② 홈(tests/ 부재)으로 폴백 → 회귀 red("no tests ran") → finish 가 *조용히* 차단됐다
-# (라이브 발견·PM 59차). `--session` 은 그 슬롯을 disambiguate 하고, `--no-pytest` 는 회귀를
-# skip 한다. 다중슬롯인데 미지정+진짜 모호면 조용한 false-red 대신 fail-loud 로 중단한다.
-# pm_handoff `_resolve_session_worktree_slot`/`_canonicalize_worktree_slot` 재사용(DRY).
+# (라이브 발견·PM 59차). `--repo`/`--slot`(ADR-0057 decomposed) 은 그 슬롯을 disambiguate 하고,
+# `--no-pytest` 는 회귀를 skip 한다. 다중슬롯인데 미지정+진짜 모호면 조용한 false-red 대신
+# fail-loud 로 중단한다. pm_handoff `_resolve_explicit_identity_slot`(M3 조인검증)·
+# `_resolve_session_worktree_slot` 재사용(DRY).
+
+
+def _bind_pm_handoff_repo(tf, monkeypatch, repo_root: Path):
+    """pm_handoff 를 로드해 `REPO` 를 `repo_root` 로 monkeypatch 하고 그 인스턴스를 고정
+    반환하도록 `tf._load_pm_handoff` 를 교체한다 — `_resolve_explicit_identity_slot`(M3 리스
+    조인검증)·`_regression_cwd`(L1) 의 leases_file/repo_root 기본 해소가 이 tmp_path 를 보게
+    만드는 hermetic seam(실 장부·실 REPO 미접촉)."""
+    hp = tf._load_pm_handoff()
+    assert hp is not None
+    monkeypatch.setattr(hp, "REPO", repo_root)
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: hp)
+    return hp
 
 
 class _FakeHandoff:
     """pm_handoff 대역 — ticket_finish glue(_resolve_finish_slot·main forward)를 hermetic 격리.
 
-    `_canonicalize_worktree_slot`/`_resolve_session_worktree_slot`/`_regression_cwd` 만 흉내낸다
-    (실 pm_bootstrap·areas/leases 장부 미접촉). `resolve_result` = **session 부재** 시
-    `_resolve_session_worktree_slot(None)` 반환((slot,None)|(None,None)|(None,모호메시지)).
-    session 명시(explicit)는 short-circuit 으로 그 슬롯을 그대로 반환한다.
+    `_resolve_explicit_identity_slot`/`_resolve_session_worktree_slot`/`_regression_cwd` 만
+    흉내낸다(실 pm_bootstrap·areas/leases 장부 미접촉). `resolve_result` = **--repo/--slot 부재**
+    시 `_resolve_session_worktree_slot(None)` 반환((slot,None)|(None,None)|(None,모호메시지)).
+    `explicit_result` 미지정이면 `_resolve_explicit_identity_slot`(repo,slot)이 리스 검증 없이
+    단순 조립(`work/<repo>_<slot 또는 1>`)한다 — explicit 은 모호 게이트를 우회한다는 성질만 흉내.
     """
 
-    def __init__(self, resolve_result):
+    def __init__(self, resolve_result, explicit_result=None):
         self._resolve_result = resolve_result
+        self._explicit_result = explicit_result
 
-    @staticmethod
-    def _canonicalize_worktree_slot(s):
-        rest = s[len("work/"):] if s.lower().startswith("work/") else s
-        return f"work/{rest}"
-
-    @staticmethod
-    def _is_bare_worktree_slot(s):
-        import re
-        return bool(re.match(r"^(?:work/)?\d+$", s, re.IGNORECASE))
+    def _resolve_explicit_identity_slot(self, repo, slot):
+        if self._explicit_result is not None:
+            return self._explicit_result
+        if repo is None:
+            return None, None
+        return f"work/{repo}_{slot if slot is not None else 1}", None
 
     def _resolve_session_worktree_slot(self, worktree_slot=None):
         if worktree_slot:
@@ -751,30 +769,63 @@ class _FakeHandoff:
         return f"/fake-repo/{worktree_slot}" if worktree_slot else "/fake-repo"
 
 
-def test_session_resolves_explicit_worktree_slot(tf):
-    """(a) --session <name> → explicit worktree 슬롯 `work/<name>` 결정론적 해소(장부 무관).
+def test_repo_slot_resolves_explicit_worktree_slot(tf, tmp_path, monkeypatch):
+    """(a) --repo/--slot → explicit worktree 슬롯 `work/<repo>_<N>` 결정론적 해소.
 
-    실 pm_handoff 를 쓰되 explicit 경로는 areas/leases 를 안 보고 short-circuit 이라 라이브
-    슬롯 상태와 무관하게 결정론적이다. 회귀 cwd = REPO/<slot>(main 이 _regression_cwd forward).
-    `work/` 접두·주변 공백도 흡수해 canonical `work/<name>` 로 통일한다.
+    실 pm_handoff 를 쓰되 리스 장부 부재(`_bind_pm_handoff_repo` 의 tmp_path repo_root)라
+    **M3**(세션↔repo 조인검증)는 검증불가·fail-soft(신뢰) — 결정론적. 회귀 cwd =
+    REPO/<slot>(main 이 `_regression_cwd` forward) — L1(stale→REPO 폴백)이 발동하지 않게
+    그 디렉토리를 실제로 만든다.
     """
-    for given in ("project_manager_1", "work/project_manager_1", "  project_manager_1  "):
-        slot, err = tf._resolve_finish_slot(given)
-        assert err is None, given
-        assert slot == "work/project_manager_1", given
+    _bind_pm_handoff_repo(tf, monkeypatch, tmp_path)
+    (tmp_path / "work" / "project_manager_1").mkdir(parents=True)
+    slot, err = tf._resolve_finish_slot("project_manager", 1)
+    assert err is None
+    assert slot == "work/project_manager_1"
     cwd = tf._regression_cwd("work/project_manager_1")
     assert cwd.replace(os.sep, "/").endswith("work/project_manager_1")
 
 
-def test_session_explicit_bypasses_ambiguity(tf, monkeypatch):
-    """--session 명시는 자동해소 모호 여부와 무관하게 그 슬롯 사용(explicit 우선·모호 게이트 우회).
+def test_repo_alone_bypasses_ambiguity(tf, monkeypatch):
+    """--repo(+--slot) 명시는 자동해소 모호 여부와 무관하게 그 슬롯 사용(explicit 우선·모호 게이트 우회).
 
-    이게 `--session` 의 존재 이유 — 다중슬롯 모호를 사용자가 직접 disambiguate 한다.
+    이게 분해형 `--repo`/`--slot` 의 존재 이유 — 다중슬롯 모호를 사용자가 직접 disambiguate 한다.
+    `resolve_result`(--repo/--slot 부재 경로용)가 모호를 반환해도 explicit 경로는 그와 무관하다.
     """
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, "모호!")))
-    slot, err = tf._resolve_finish_slot("project_manager_2")
+    slot, err = tf._resolve_finish_slot("project_manager", 2)
     assert err is None            # 명시했으므로 모호 아님(short-circuit)
     assert slot == "work/project_manager_2"
+
+
+# ── M3(라이더) — 세션↔repo 조인 불일치 fail-loud (pm_handoff `_resolve_explicit_identity_slot` 위임) ──
+
+def test_resolve_finish_slot_m3_rejects_repo_join_mismatch(tf, tmp_path, monkeypatch):
+    """명시 --repo/--slot 이 실제 활성 리스와 조인 불일치 → fail-loud(조용히 안 넘김·ADR-0057 M3)."""
+    _bind_pm_handoff_repo(tf, monkeypatch, tmp_path)
+    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    leases.parent.mkdir(parents=True)
+    leases.write_text(
+        '{"leases": [{"slot": "work/myrepo_1", "repo": "myrepo", "session": "myrepo_1", '
+        '"state": "leased"}]}',
+        encoding="utf-8",
+    )
+    slot, err = tf._resolve_finish_slot("myrepo", 99)
+    assert slot is None
+    assert err is not None and "M3" in err and "조인" in err
+
+
+def test_resolve_finish_slot_repo_alone_resolves_single_active(tf, tmp_path, monkeypatch):
+    """--repo 단독 + 그 repo 활성 슬롯 정확히 1개 → actor 자동해소(ADR-0057 결정 3)."""
+    _bind_pm_handoff_repo(tf, monkeypatch, tmp_path)
+    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    leases.parent.mkdir(parents=True)
+    leases.write_text(
+        '{"leases": [{"slot": "work/myrepo_3", "repo": "myrepo", "session": "myrepo_3", '
+        '"state": "leased"}]}',
+        encoding="utf-8",
+    )
+    assert tf._resolve_finish_slot("myrepo", None) == ("work/myrepo_3", None)
 
 
 def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, capsys):
@@ -811,9 +862,9 @@ def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, caps
 
 
 def test_main_multislot_ambiguous_fails_loud_before_regression(tf, monkeypatch, capsys):
-    """(c) 다중슬롯 모호 + --session 부재 → 친화 에러·rc 1·회귀 미시작(조용한 ② false-red 제거).
+    """(c) 다중슬롯 모호 + --repo/--slot 부재 → 친화 에러·rc 1·회귀 미시작(조용한 ② false-red 제거).
 
-    fail-loud 는 run() 진입 *전*이라 회귀가 시작조차 안 된다([1/5] 미출력). 에러는 --session/
+    fail-loud 는 run() 진입 *전*이라 회귀가 시작조차 안 된다([1/5] 미출력). 에러는 --repo/
     --no-pytest 안내를 담는다.
     """
     monkeypatch.setattr(
@@ -824,12 +875,12 @@ def test_main_multislot_ambiguous_fails_loud_before_regression(tf, monkeypatch, 
     captured = capsys.readouterr()
     assert rc == 1
     assert "모호" in captured.err
-    assert "--session" in captured.err and "--no-pytest" in captured.err
+    assert "--repo" in captured.err and "--no-pytest" in captured.err
     assert "[1/5]" not in captured.out  # run()/회귀 진입 전 중단
 
 
-def test_main_session_forwards_resolved_regression_cwd(tf, monkeypatch):
-    """--session <name> (회귀 실행 경로) → main 이 해소된 worktree 를 regression_cwd forward."""
+def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
+    """--repo/--slot (회귀 실행 경로) → main 이 해소된 worktree 를 regression_cwd forward."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
     captured: dict = {}
 
@@ -843,7 +894,7 @@ def test_main_session_forwards_resolved_regression_cwd(tf, monkeypatch):
             return 0
 
     monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
-    rc = tf.main(["T-1234", "--session", "project_manager_1"])
+    rc = tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"])
     assert rc == 0
     assert captured["regression_cwd"].replace(os.sep, "/").endswith("work/project_manager_1")
     assert captured["skip_pytest"] is False
@@ -859,8 +910,8 @@ def test_main_no_pytest_bypasses_ambiguity_gate(tf, monkeypatch):
     """
     resolve_calls: list = []
 
-    def _spy_resolve(session):  # 호출되면 모호 반환 — 하지만 --no-pytest 면 호출조차 안 돼야.
-        resolve_calls.append(session)
+    def _spy_resolve(repo, slot):  # 호출되면 모호 반환 — 하지만 --no-pytest 면 호출조차 안 돼야.
+        resolve_calls.append((repo, slot))
         return None, "등록 repo 2개(A, B) — 어느 repo 인지 모호하다."
 
     monkeypatch.setattr(tf, "_resolve_finish_slot", _spy_resolve)
@@ -883,18 +934,14 @@ def test_main_no_pytest_bypasses_ambiguity_gate(tf, monkeypatch):
     assert captured["skip_pytest"] is True
 
 
-def test_resolve_finish_slot_rejects_bare_slot_number(tf):
-    """(should-fix·pm_handoff `--session` 동형) --session bare 숫자(`4`·`work/4`·`Work/4`)는 fail-loud.
+def test_main_slot_without_repo_rejected(tf, capsys):
+    """--slot 단독(--repo 없음) — identity_args.parse_identity 가 ValueError → parser.error(fail-loud).
 
-    슬롯 번호는 repo 별 독립이라 repo≥2 면 bare 숫자만으론 모호 — pm_handoff `_is_bare_worktree_slot`
-    ingress 거부(T-0201 결정 B)를 재사용해 canonicalize→부재 dir 회귀 시도 전에 명시 에러로 막는다.
+    (pm_handoff `--slot` 단독 거부 동형 — ADR-0057 uniform 규칙.)
     """
-    for bare in ("4", "work/4", "Work/4"):
-        slot, err = tf._resolve_finish_slot(bare)
-        assert slot is None, bare
-        assert err is not None and "repo-qualified" in err, bare
-    # repo-qualified 는 정상 통과(대비군) — 결정론적 explicit short-circuit.
-    assert tf._resolve_finish_slot("project_manager_1") == ("work/project_manager_1", None)
+    with pytest.raises(SystemExit):
+        tf.main(["T-1234", "--slot", "4"])
+    assert "--repo" in capsys.readouterr().err
 
 
 def test_main_solo_forwards_no_regression_cwd(tf, monkeypatch):
@@ -921,11 +968,14 @@ def test_main_solo_forwards_no_regression_cwd(tf, monkeypatch):
 def test_resolve_finish_slot_solo_returns_none(tf, monkeypatch):
     """(d) 솔로(pm_handoff 자동해소 None) → (None, None)·모호 아님(fail-loud 미발동)."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
-    assert tf._resolve_finish_slot(None) == (None, None)
+    assert tf._resolve_finish_slot(None, None) == (None, None)
 
 
 def test_resolve_finish_slot_pm_handoff_absent_fail_soft(tf, monkeypatch):
-    """pm_handoff 부재(None) → 부재는 (None,None)·명시는 단순 `work/` 접두(현행 폴백·솔로 무변경)."""
+    """pm_handoff 부재(None) → 부재+무인자는 (None,None)·명시(repo+slot)는 단순 `work/` 조립
+    (M3 리스 조인검증 불가하니 신뢰·현행 폴백 패턴·솔로 무변경). repo 단독은 M3 검증(actor 활성슬롯
+    해소)이 pm_handoff 없인 불가하니 미해소(None,None)."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: None)
-    assert tf._resolve_finish_slot(None) == (None, None)
-    assert tf._resolve_finish_slot("myrepo_2") == ("work/myrepo_2", None)
+    assert tf._resolve_finish_slot(None, None) == (None, None)
+    assert tf._resolve_finish_slot("myrepo", 2) == ("work/myrepo_2", None)
+    assert tf._resolve_finish_slot("myrepo", None) == (None, None)

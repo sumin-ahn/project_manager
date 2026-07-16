@@ -68,8 +68,8 @@ class _FakeRun:
         return types.SimpleNamespace(returncode=self.rc, stdout=self.stdout, stderr="")
 
 
-def _rec_args(cwd=None, session=None):
-    return argparse.Namespace(action="record", rev=None, cwd=cwd, session=session)
+def _rec_args(cwd=None, repo=None, slot=None):
+    return argparse.Namespace(action="record", rev=None, cwd=cwd, repo=repo, slot=slot)
 
 
 def _chk_args(rev=None):
@@ -197,11 +197,12 @@ def test_record_explicit_cwd_override(live_board, monkeypatch):
     assert pytest_call["kwargs"]["cwd"] == override
 
 
-# ── record ⑥ multi-lease cwd 해소: --session 이 슬롯 핀 (T-0298·--cwd 우회 불요) ──
-# `livegate record` 는 이제 `--session` 을 받아 regression/handoff 과 동형(session_name)으로
-# `_regression_cwd` 에 thread 한다. multi-lease(leased≥2) 홈에서 --session 명시면 그 슬롯 cwd
-# 로 해소돼 pytest 가 돌고(rc0), 무명시면 seam 이 fail-loud(모호는 시끄럽게) — 광고한 remedy
-# (`--session <repo>_<N>`)가 실제로 수용돼 dead-end 가 아니다(T-0285 anti-pattern 회피).
+# ── record ⑥ multi-lease cwd 해소: --repo/--slot 이 슬롯 핀 (T-0298·ADR-0057·--cwd 우회 불요) ──
+# `livegate record` 는 이제 `--repo`/`--slot`(ADR-0057)을 받아 regression/handoff 과 동형
+# (session_name)으로 `_regression_cwd` 에 thread 한다. multi-lease(leased≥2) 홈에서 --repo/--slot
+# 명시면 그 슬롯 cwd 로 해소돼 pytest 가 돌고(rc0), 무명시면 seam 이 fail-loud(모호는 시끄럽게) —
+# 광고한 remedy(`--repo <repo> --slot <N>`)가 실제로 수용돼 dead-end 가 아니다(T-0285 anti-pattern
+# 회피).
 
 def _seed_two_leases(live_board):
     """활성 슬롯 2개(A_1·B_1)를 리스 장부에 심는다 (multi-lease genuine-ambiguity 전제)."""
@@ -213,14 +214,15 @@ def _seed_two_leases(live_board):
 
 
 def test_record_multilease_with_session_resolves_slot(live_board, monkeypatch):
-    """(a) multi-lease + `--session B_1` → 그 슬롯 worktree cwd 해소·rc0 (fail-loud 아님·--cwd 불요)."""
+    """(a) multi-lease + `--repo B --slot 1`(ADR-0057) → 그 슬롯 worktree cwd 해소·rc0
+    (fail-loud 아님·--cwd 불요)."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _seed_two_leases(live_board)
     fake = _FakeRun(0, "12 passed, 811 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
-    rc = live_board.cmd_livegate(_rec_args(session="B_1"))
-    assert rc == 0, "명시 --session 은 슬롯 해소 → fail-loud 아님"
+    rc = live_board.cmd_livegate(_rec_args(repo="B", slot=1))
+    assert rc == 0, "명시 --repo/--slot 은 슬롯 해소 → fail-loud 아님"
     pytest_call = next((c for c in fake.calls if c["kwargs"].get("shell")), None)
     assert pytest_call is not None, "pytest -m release subprocess 가 호출되지 않았다"
     assert pytest_call["kwargs"]["cwd"] == str(live_board.REPO / "work/B_1"), \
@@ -230,7 +232,7 @@ def test_record_multilease_with_session_resolves_slot(live_board, monkeypatch):
 
 
 def test_record_multilease_no_session_fails_loud(live_board, monkeypatch):
-    """(b) multi-lease + 무명시(--session 없음) → 여전히 fail-loud(SystemExit·--session/--cwd 안내)."""
+    """(b) multi-lease + 무명시(--repo/--slot 없음) → 여전히 fail-loud(SystemExit·--repo/--cwd 안내)."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _seed_two_leases(live_board)
@@ -239,7 +241,7 @@ def test_record_multilease_no_session_fails_loud(live_board, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         live_board.cmd_livegate(_rec_args())
     msg = str(exc.value)
-    assert "--session" in msg and "--cwd" in msg
+    assert "--repo" in msg and "--cwd" in msg
     # fail-loud 는 값비싼 pytest -m release 를 돌리기 전에 거부해야 한다(cwd seam·record 앞단).
     assert not any(c["kwargs"].get("shell") for c in fake.calls), \
         "모호한데도 pytest -m release 를 돌렸다 (fail-loud 가 seam 에서 안 막음)"

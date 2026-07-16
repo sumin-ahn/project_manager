@@ -140,18 +140,36 @@ def _new(board, capsys, *, prefix, session, user, title) -> str:
     return m.group(1)
 
 
+def _split_session(session: str) -> tuple[str, int]:
+    """세션 문자열 `<repo>_<N>` 을 (repo, slot 정수) 로 분해 — 테스트 helper 전용(ADR-0057
+    decomposed CLI 를 흉내: `cmd_claim`/`cmd_list` 는 이제 `args.repo`/`args.slot` 만 읽는다)."""
+    repo, _, num = session.rpartition("_")
+    return repo, int(num)
+
+
 def _claim(board, capsys, tid, *, session, user) -> None:
-    """실 `cmd_claim` 으로 claim(claimed_by=<user>/<slot> 스탬프). board-git 비활성이라 즉시 확정."""
-    rc = board.cmd_claim(argparse.Namespace(id=tid, session=session, user=user))
+    """실 `cmd_claim` 으로 claim(claimed_by=<user>/<slot> 스탬프) — `--repo`/`--slot`(ADR-0057)
+    로 호출한다. board-git 비활성이라 즉시 확정."""
+    repo, slot = _split_session(session)
+    rc = board.cmd_claim(argparse.Namespace(id=tid, repo=repo, slot=slot, user=user))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_claim rc={rc}: {out}"
 
 
 def _view(board, capsys, **flags) -> list[str]:
-    """실 `cmd_list` 렌즈(mine/session/slot)를 돌려 출력에서 ticket ID 목록을 추출한다."""
+    """실 `cmd_list` 렌즈(mine/repo/slot)를 돌려 출력에서 ticket ID 목록을 추출한다.
+
+    `session="<repo>_<N>"` 편의 kwarg 는 내부에서 repo/slot(exact 완전일치) 으로 분해한다(호출부
+    가독성 보존 — ADR-0057 이후 `cmd_list` 는 `args.repo`/`args.slot` 만 읽는다). `repo=`(단독=
+    repo-scope 뷰)/`slot=`(단독이면 `--repo` 없어 fail-loud) 직접 지정도 지원한다.
+    """
+    repo = flags.get("repo")
+    slot = flags.get("slot")
+    if flags.get("session") is not None:
+        repo, slot = _split_session(flags["session"])
     rc = board.cmd_list(argparse.Namespace(
         status=flags.get("status"), tag=None, mine=flags.get("mine", False),
-        session=flags.get("session"), slot=flags.get("slot")))
+        repo=repo, slot=slot))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_list rc={rc}: {out}"
     ids: list[str] = []
@@ -242,29 +260,40 @@ def test_mine_view_isolates_users_real_create_to_view(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# surface 3 — `list --slot N` : (b) slot1 뷰가 slot2 전용 티켓 미열람
+# surface 3 — `list --repo X`(kind=repo·신규 repo-scope 뷰) + bare `--slot N` fail-loud (ADR-0057
+# 결정 2/3·T-0314 — 구 bare `--slot N`[repo 불문 cross-repo suffix 매칭]을 대체)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_slot_view_isolates_slot_number(board, capsys):
-    """`--slot N` = 현재 사용자(alice) ∩ 슬롯 _N — 내 그-슬롯 claim 만 (user-first·ADR-0056).
+def test_bare_slot_without_repo_fails_loud_in_composite(board, capsys):
+    """구 bare `--slot N`(repo 불문 cross-repo 매칭)은 ADR-0057 로 제거됐다 — composite
+    다중슬롯 맥락에서도 `--repo` 없는 `--slot` 은 여전히 fail-loud(uniform·solo 예외 없음)."""
+    _seed_composite(board, capsys)
+    _write_conf(board, user="alice", session="alpha_1")
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_list(argparse.Namespace(status=None, tag=None, mine=False,
+                                          repo=None, slot=1))
+    assert "--repo" in str(exc.value)
 
-    **타 사용자 무유출(codex leak 가드)**: slot 번호가 repo-교차라도 `--slot 1` 은 bob 의 `_1` claim
-    (be1_claim)을 slot 번호로 끌어오지 않는다(user AND slot). 내 slot_2 claim(al2_claim)도 slot_1
-    뷰선 제외(슬롯 격리축). open 은 슬롯무관 내 backlog(area_owner=alice)라 함께 보인다.
-    """
+
+def test_repo_alone_view_shows_all_my_slots_in_repo(board, capsys):
+    """`--repo alpha` 단독(kind=repo) = 현재 사용자(alice) ∩ **그 repo 의 내 슬롯 전체**
+    (user-first·ADR-0056·신규 repo-scope 뷰 — spike §3.1).
+
+    **타 사용자 무유출(codex leak 가드 계승)**: alice 의 alpha_1+alpha_2 claim 을 모두 보이고
+    (repo-prefix 매칭), bob(beta·타 사용자·타 repo) 은 어느 쪽도 안 섞인다."""
     comp = _seed_composite(board, capsys)
     _write_conf(board, user="alice", session="alpha_1")
 
-    slot1_ids = set(_view(board, capsys, slot=1))
-    assert comp.al1_claim in slot1_ids                # 내 slot_1 claim
-    assert comp.al2_claim not in slot1_ids            # 내 slot_2 claim → slot_1 뷰 제외(슬롯 격리)
-    assert not (comp.bob_all & slot1_ids)             # bob(타 사용자) 무유출 — be1_claim 도 제외
-    assert comp.be1_claim not in slot1_ids            # 명시: 같은 _1 슬롯이라도 남의 user-claim 제외
+    alpha_ids = set(_view(board, capsys, repo="alpha"))
+    assert comp.al1_claim in alpha_ids                # 내 alpha_1 claim
+    assert comp.al2_claim in alpha_ids                # 신규: 내 alpha_2 claim 도 포함(그 repo 전체)
+    assert not (comp.bob_all & alpha_ids)             # bob(타 사용자·타 repo) 무유출
 
-    slot2_ids = set(_view(board, capsys, slot=2))
-    assert comp.al2_claim in slot2_ids                # 내 slot_2 claim
-    assert comp.al1_claim not in slot2_ids            # 내 slot_1 claim → slot_2 뷰 제외
-    assert not (comp.bob_all & slot2_ids)             # bob 무유출
+    beta_ids = set(_view(board, capsys, repo="beta"))
+    assert comp.al1_claim not in beta_ids and comp.al2_claim not in beta_ids  # repo 불일치 → 제외
+    assert not (comp.bob_all & beta_ids)              # bob(타 사용자) claim/open 전부 무유출
+    # open 은 슬롯무관 backlog(ADR-0056 #3) — repo 뷰와 무관하게 내 open 은 그대로 보인다.
+    assert beta_ids == {comp.al1_open, comp.al2_open}
 
 
 def test_session_excludes_other_users_slot_exclusive_claim(board, capsys):
@@ -297,7 +326,7 @@ def _make_board_runner(board):
             return 0, "✓ no lint issues\n"
         status = argv[argv.index("--status") + 1] if "--status" in argv else None
         args = argparse.Namespace(status=status, tag=None, mine="--mine" in argv,
-                                  session=None, slot=None)
+                                  repo=None, slot=None)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = board.cmd_list(args)
@@ -339,12 +368,12 @@ def _make_pre_fix_is_mine(board):
     """ADR-0053(T-0302) fix **이전**의 `_ticket_is_mine` 재현 — multi_user 게이트 없이
     `my_user is None ∨ not area_owner_in_use` 면 전체 open=mine 으로 degrade(=유출·spike §1)."""
     def _is_mine(status, fm, my_user, my_slot, area_owner_in_use, multi_user,
-                 *, slot_suffix=False, slot_scoped=False):
+                 *, slot_mode="exact", slot_scoped=False):
         cb = fm.get("claimed_by") or ""
         if cb:
             cb_user = board._claimed_by_user(cb)
             if (my_user is not None and cb_user == my_user) or \
-                    board._slot_matches(cb, my_slot, suffix=slot_suffix):
+                    board._slot_matches(cb, my_slot, mode=slot_mode):
                 return True
         if status == "open":
             if my_user is None or not area_owner_in_use:

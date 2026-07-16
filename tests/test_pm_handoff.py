@@ -636,7 +636,8 @@ def test_regression_cwd_single_self_host_resolves_slot(hf, tmp_path):
 
 
 def test_regression_cwd_explicit_slot_overrides_auto(hf, tmp_path):
-    # 명시 worktree_slot 우선 — auto 판정을 무시하고 그 슬롯 경로 반환.
+    # 명시 worktree_slot 우선 — auto 판정을 무시하고 그 슬롯 경로 반환. 디렉토리가 실존해야
+    # L1(stale→REPO 폴백) 이 발동하지 않는다 — repo_root 를 tmp_path 로 둬 실존을 보장한다.
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
@@ -644,7 +645,10 @@ def test_regression_cwd_explicit_slot_overrides_auto(hf, tmp_path):
         {"slot": "work/project_manager_1", "repo": "project_manager",
          "session": "project_manager_1", "state": "leased"},
     ])
-    result = hf._regression_cwd("work/foo_2", areas_file=areas, leases_file=leases)
+    (tmp_path / "work" / "foo_2").mkdir(parents=True)
+    result = hf._regression_cwd(
+        "work/foo_2", areas_file=areas, leases_file=leases, repo_root=tmp_path
+    )
     assert result.replace(os.sep, "/").endswith("work/foo_2")
 
 
@@ -714,20 +718,20 @@ def test_regression_cwd_bootstrap_absent_falls_back(hf, tmp_path, monkeypatch):
     assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
 
 
-# ── ADR-0043 세션 정체성 canonical: --session/--session-seq + 구형 alias 무기한 ──────
+# ── ADR-0057 세션 정체성 canonical: --repo/--slot(decomposed) + --session-seq(차수) ──
 #
-# canonical(--session `<repo>_<N>` · --session-seq N)을 신설하고 구형(--worktree-slot·
-# --session-num)을 deprecated alias 로 무기한 수용한다. 둘 다 주고 값 불일치 → fail-loud
-# (추측 금지). 솔로(미지정) 현행 경로 무변경. main() ingress→run() 전달 kwargs 를 캡처해
-# 병합·work/ 프리픽스 유도·bare 거부·fail-loud 를 durable 하게 못박는다(T-0246·비-vacuous).
+# ADR-0043 의 단일문자열 `--session`/구형 alias(`--worktree-slot`·`--session-num`)를 뒤집고
+# 전 CLI 를 분해형 `--repo <name> [--slot <N>]` 로 통일한다(alias 0·즉시삭제·BREAKING).
+# `--session-seq`(차수·비정체성)는 유지. main() ingress→run() 전달 kwargs 를 캡처해 해소·
+# M3(세션↔repo 조인 검증)·fail-loud 를 durable 하게 못박는다(T-0246 관용구 계승·비-vacuous).
 
 
 @pytest.fixture
 def captured_run(hf, monkeypatch):
     """PmHandoff.run 을 가로채 kwargs 를 캡처(실 회귀/파일편집 없이 ingress 만 검증).
 
-    main() 이 alias 병합·canonical 화·필수 검증을 마치고 run() 에 넘기는 kwargs 를 그대로
-    포착한다 — fail-loud(parser.error·SystemExit) 케이스에선 run 미도달이라 dict 가 빈 채 남는다.
+    main() 이 identity 해소·필수 검증을 마치고 run() 에 넘기는 kwargs 를 그대로 포착한다 —
+    fail-loud(parser.error·SystemExit) 케이스에선 run 미도달이라 dict 가 빈 채 남는다.
     """
     calls: dict = {}
 
@@ -739,82 +743,95 @@ def captured_run(hf, monkeypatch):
     return calls
 
 
-# --- 차수 인자: --session-seq(canonical) / --session-num(deprecated alias) ---
+# --- 차수 인자: --session-seq(정체성과 무관·유지) ---
 
 def test_session_seq_canonical_accepted(hf, captured_run):
     assert hf.main(["--session-seq", "42", "--wave-summary", "x", "--no-pytest"]) == 0
     assert captured_run["session_num"] == "42"
 
 
-def test_session_num_deprecated_alias_accepted(hf, captured_run):
-    # 구형 --session-num 무기한 수용 — 값 동일하게 run(session_num=) 으로 전달.
-    assert hf.main(["--session-num", "42", "--wave-summary", "x", "--no-pytest"]) == 0
-    assert captured_run["session_num"] == "42"
-
-
-def test_session_seq_and_num_agree_accepted(hf, captured_run):
-    assert hf.main(
-        ["--session-seq", "42", "--session-num", "42", "--wave-summary", "x", "--no-pytest"]
-    ) == 0
-    assert captured_run["session_num"] == "42"
-
-
-def test_session_seq_and_num_mismatch_fails_loud(hf, captured_run):
-    with pytest.raises(SystemExit):
-        hf.main(
-            ["--session-seq", "42", "--session-num", "43", "--wave-summary", "x", "--no-pytest"]
-        )
-    assert captured_run == {}  # run 미도달 — 추측 없이 거부.
-
-
 def test_session_seq_missing_rejected(hf, captured_run):
-    # canonical/alias 둘 다 미지정 → 필수 누락 거부(대화형 경로).
+    # 미지정 → 필수 누락 거부(대화형 경로).
     with pytest.raises(SystemExit):
         hf.main(["--wave-summary", "x", "--no-pytest"])
     assert captured_run == {}
 
 
-# --- 정체성 인자: --session(canonical) / --worktree-slot(deprecated alias) ---
+# --- 정체성 인자: --repo/--slot(decomposed canonical·ADR-0057) — hermetic (REPO monkeypatch) ---
+#
+# `_resolve_explicit_identity_slot` 의 leases_file 기본값은 *호출 시점* 모듈 `REPO` 에서 재구성
+# 되므로(monkeypatch 추종), `hf.REPO` 를 tmp_path 로 돌려 실 장부(이 워크트리의 진짜
+# worktree-leases.json)를 절대 건드리지 않는 결정론적 CLI 테스트를 만든다.
 
-def test_session_canonical_derives_work_prefix(hf, captured_run):
-    # --session <repo>_<N> → 내부에서 work/ 프리픽스 유도 → worktree_slot=work/<repo>_<N>.
+def test_repo_and_slot_derive_work_prefix(hf, tmp_path, captured_run, monkeypatch):
+    # --repo X --slot N → work/<repo>_<N>. 리스 장부 부재(tmp_path)라 M3 는 검증불가·fail-soft(신뢰).
+    monkeypatch.setattr(hf, "REPO", tmp_path)
     assert hf.main(
-        ["--session", "project_manager_1", "--session-seq", "7", "--wave-summary", "x", "--no-pytest"]
-    ) == 0
-    assert captured_run["worktree_slot"] == "work/project_manager_1"
-
-
-def test_worktree_slot_deprecated_alias_accepted(hf, captured_run):
-    # 구형 --worktree-slot(qualified) 무기한 수용 — canonical 그대로 유지.
-    assert hf.main(
-        ["--worktree-slot", "work/project_manager_1", "--session-seq", "7",
+        ["--repo", "project_manager", "--slot", "1", "--session-seq", "7",
          "--wave-summary", "x", "--no-pytest"]
     ) == 0
     assert captured_run["worktree_slot"] == "work/project_manager_1"
 
 
-def test_session_and_worktree_slot_agree_accepted(hf, captured_run):
-    # --session <repo>_<N> 과 --worktree-slot work/<repo>_<N> 은 같은 슬롯 → 일치·canonical 채택.
+def test_repo_alone_resolves_single_active_slot(hf, tmp_path, captured_run, monkeypatch):
+    # --repo 단독 + 그 repo 활성(leased) 슬롯 정확히 1개 → actor 자동해소(ADR-0057 결정 3).
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    leases.parent.mkdir(parents=True)
+    _write_leases(leases, [
+        {"slot": "work/myrepo_3", "repo": "myrepo", "session": "myrepo_3", "state": "leased"},
+    ])
     assert hf.main(
-        ["--session", "project_manager_1", "--worktree-slot", "work/project_manager_1",
-         "--session-seq", "7", "--wave-summary", "x", "--no-pytest"]
+        ["--repo", "myrepo", "--session-seq", "7", "--wave-summary", "x", "--no-pytest"]
     ) == 0
-    assert captured_run["worktree_slot"] == "work/project_manager_1"
+    assert captured_run["worktree_slot"] == "work/myrepo_3"
 
 
-def test_session_and_worktree_slot_mismatch_fails_loud(hf, captured_run):
+def test_repo_alone_zero_active_slots_fails_loud(hf, tmp_path, captured_run, monkeypatch):
+    # --repo 단독인데 그 repo 활성 슬롯 0개 → M3(explicit 요청 조인 불가) fail-loud.
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    leases.parent.mkdir(parents=True)
+    _write_leases(leases, [])
+    with pytest.raises(SystemExit):
+        hf.main(["--repo", "myrepo", "--session-seq", "7", "--wave-summary", "x", "--no-pytest"])
+    assert captured_run == {}
+
+
+def test_repo_alone_ambiguous_slots_fails_loud(hf, tmp_path, captured_run, monkeypatch):
+    # --repo 단독인데 그 repo 활성 슬롯 ≥2 → SlotResolutionError(identity_args) fail-loud.
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    leases.parent.mkdir(parents=True)
+    _write_leases(leases, [
+        {"slot": "work/myrepo_1", "repo": "myrepo", "session": "myrepo_1", "state": "leased"},
+        {"slot": "work/myrepo_2", "repo": "myrepo", "session": "myrepo_2", "state": "leased"},
+    ])
+    with pytest.raises(SystemExit):
+        hf.main(["--repo", "myrepo", "--session-seq", "7", "--wave-summary", "x", "--no-pytest"])
+    assert captured_run == {}
+
+
+def test_repo_and_slot_mismatch_fails_loud_m3(hf, tmp_path, captured_run, monkeypatch):
+    # M3(라이더) — 명시 --repo/--slot 이 실제 활성 리스와 조인 불일치 → fail-loud(조용히 안 넘김).
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    leases.parent.mkdir(parents=True)
+    _write_leases(leases, [
+        {"slot": "work/myrepo_1", "repo": "myrepo", "session": "myrepo_1", "state": "leased"},
+    ])
     with pytest.raises(SystemExit):
         hf.main(
-            ["--session", "project_manager_1", "--worktree-slot", "work/finance_2",
-             "--session-seq", "7", "--wave-summary", "x", "--no-pytest"]
+            ["--repo", "myrepo", "--slot", "99", "--session-seq", "7",
+             "--wave-summary", "x", "--no-pytest"]
         )
-    assert captured_run == {}  # run 미도달 — 서로 다른 슬롯이면 추측 없이 거부.
+    assert captured_run == {}
 
 
-def test_session_bare_number_rejected(hf, captured_run):
-    # --session 4 는 bare 슬롯 번호 — repo 별 모호라 ingress 가 거부(ADR-0013·아래로 안 샘).
+def test_slot_without_repo_rejected(hf, captured_run):
+    # --slot 단독(--repo 없음) — identity_args.parse_identity 가 ValueError → parser.error(fail-loud).
     with pytest.raises(SystemExit):
-        hf.main(["--session", "4", "--session-seq", "7", "--wave-summary", "x", "--no-pytest"])
+        hf.main(["--slot", "4", "--session-seq", "7", "--wave-summary", "x", "--no-pytest"])
     assert captured_run == {}
 
 
@@ -824,35 +841,79 @@ def test_solo_unspecified_worktree_slot_none(hf, captured_run):
     assert captured_run["worktree_slot"] is None
 
 
-# --- 병합 헬퍼 직접 단위 (parser.error seam 포함) ---
+# --- `_resolve_explicit_identity_slot` 직접 단위 (M3 라이더 핵심 로직) ---
 
-def test_reconcile_session_seq_prefers_canonical(hf):
-    parser = hf.build_parser()
-    assert hf._reconcile_session_seq("42", "42", parser) == "42"
-    assert hf._reconcile_session_seq("42", None, parser) == "42"
-    assert hf._reconcile_session_seq(None, "42", parser) == "42"
-    assert hf._reconcile_session_seq(None, None, parser) is None
+def test_resolve_explicit_identity_slot_none_when_no_repo(hf, tmp_path):
+    assert hf._resolve_explicit_identity_slot(None, None, tmp_path / "absent.json") == (None, None)
 
 
-def test_reconcile_session_slot_canonical_equivalence(hf):
-    parser = hf.build_parser()
-    # 무접두 <repo>_<N> 과 work/ 접두는 같은 슬롯 → 일치(fail 안 함)·canonical(--session) 채택.
-    assert hf._reconcile_session_slot(
-        "project_manager_1", "work/project_manager_1", parser
-    ) == "project_manager_1"
-    # alias 만 → alias 값(이후 main 파이프라인이 canonical 화).
-    assert hf._reconcile_session_slot(None, "work/project_manager_1", parser) == "work/project_manager_1"
-    # 빈/공백 → None (미지정 동형·T-0201 하드닝 정합).
-    assert hf._reconcile_session_slot("  ", None, parser) is None
-    assert hf._reconcile_session_slot(None, None, parser) is None
+def test_resolve_explicit_identity_slot_missing_ledger_trusts_explicit(hf, tmp_path):
+    # 장부 부재(판정불가) → fail-soft: repo/slot 명시를 그대로 신뢰해 조립.
+    result = hf._resolve_explicit_identity_slot("myrepo", 5, tmp_path / "absent.json")
+    assert result == ("work/myrepo_5", None)
 
 
-def test_reconcile_helpers_mismatch_raise(hf):
-    parser = hf.build_parser()
-    with pytest.raises(SystemExit):
-        hf._reconcile_session_seq("42", "43", parser)
-    with pytest.raises(SystemExit):
-        hf._reconcile_session_slot("project_manager_1", "work/finance_2", parser)
+def test_resolve_explicit_identity_slot_m3_matches_active_lease(hf, tmp_path):
+    leases = tmp_path / "leases.json"
+    _write_leases(leases, [
+        {"slot": "work/myrepo_1", "repo": "myrepo", "session": "myrepo_1", "state": "leased"},
+    ])
+    assert hf._resolve_explicit_identity_slot("myrepo", 1, leases) == ("work/myrepo_1", None)
+
+
+def test_resolve_explicit_identity_slot_m3_rejects_mismatch(hf, tmp_path):
+    leases = tmp_path / "leases.json"
+    _write_leases(leases, [
+        {"slot": "work/myrepo_1", "repo": "myrepo", "session": "myrepo_1", "state": "leased"},
+    ])
+    slot, err = hf._resolve_explicit_identity_slot("myrepo", 99, leases)
+    assert slot is None
+    assert err is not None and "조인" in err and "M3" in err
+
+
+def test_resolve_explicit_identity_slot_repo_alone_resolves(hf, tmp_path):
+    leases = tmp_path / "leases.json"
+    _write_leases(leases, [
+        {"slot": "work/myrepo_2", "repo": "myrepo", "session": "myrepo_2", "state": "leased"},
+    ])
+    assert hf._resolve_explicit_identity_slot("myrepo", None, leases) == ("work/myrepo_2", None)
+
+
+def test_resolve_explicit_identity_slot_repo_alone_zero_active(hf, tmp_path):
+    leases = tmp_path / "leases.json"
+    _write_leases(leases, [])
+    slot, err = hf._resolve_explicit_identity_slot("myrepo", None, leases)
+    assert slot is None
+    assert err is not None and "M3" in err
+
+
+def test_resolve_explicit_identity_slot_repo_alone_ambiguous(hf, tmp_path):
+    leases = tmp_path / "leases.json"
+    _write_leases(leases, [
+        {"slot": "work/myrepo_1", "repo": "myrepo", "session": "myrepo_1", "state": "leased"},
+        {"slot": "work/myrepo_2", "repo": "myrepo", "session": "myrepo_2", "state": "leased"},
+    ])
+    slot, err = hf._resolve_explicit_identity_slot("myrepo", None, leases)
+    assert slot is None
+    assert err is not None and "--slot" in err
+
+
+# --- `_regression_cwd` L1(라이더) — 명시 슬롯 stale → REPO 폴백 경계 ---
+
+def test_regression_cwd_explicit_slot_stale_falls_back_to_repo(hf, tmp_path, capsys):
+    # L1 — 명시 worktree_slot 이 리스 조인(M3)은 통과했더라도 디스크에 실제 디렉토리가 없으면
+    # (장부-파일시스템 out-of-sync) FileNotFoundError 로 죽는 대신 REPO 로 soft 폴백·경고 1줄.
+    result = hf._regression_cwd("work/foo_2", repo_root=tmp_path)
+    assert result == str(tmp_path)
+    err = capsys.readouterr().err
+    assert "work/foo_2" in err and "L1" in err
+
+
+def test_regression_cwd_explicit_slot_existing_dir_not_stale(hf, tmp_path):
+    # L1 경계 반대편 — 디렉토리가 실제 존재하면 그대로(stale 아님·폴백 미발동).
+    (tmp_path / "work" / "foo_2").mkdir(parents=True)
+    result = hf._regression_cwd("work/foo_2", repo_root=tmp_path)
+    assert result == str(tmp_path / "work" / "foo_2")
 
 
 # ── ADR-0044 handoff 헤더 세션 정체성 태그 (T-0252) ──────────────────────────────
@@ -944,13 +1005,14 @@ def test_run_solo_omits_session_tag_byte_compat(hf, tmp_path, capsys):
     assert "PM 7차 → 다음 PM 세션" in out  # 태그·괄호 없는 현행 헤더.
 
 
-def test_session_done_canonical_reaches_release(hf, captured_run):
-    """codex 게이트(2026-07-10 wave A) — canonical `--session <repo>_<N> --done` 이 release 대상
-    (worktree_slot=`work/<repo>_<N>`·done=True)으로 run 에 도달한다. alias(`--worktree-slot`)로만
-    release 되던 경로가 canonical `--session` 으로도 확실히 이어지는지 직접 못박아 전환 회귀 차단.
+def test_done_repo_slot_reaches_release(hf, tmp_path, captured_run, monkeypatch):
+    """codex 게이트(2026-07-10 wave A) 계승 — `--repo/--slot --done` 이 release 대상
+    (worktree_slot=`work/<repo>_<N>`·done=True)으로 run 에 도달한다(ADR-0057 decomposed 화 후에도
+    release 배선이 확실히 이어지는지 직접 못박아 전환 회귀 차단).
     """
+    monkeypatch.setattr(hf, "REPO", tmp_path)
     assert hf.main(
-        ["--session", "project_manager_1", "--done", "--session-seq", "7",
+        ["--repo", "project_manager", "--slot", "1", "--done", "--session-seq", "7",
          "--wave-summary", "x", "--no-pytest"]
     ) == 0
     assert captured_run["worktree_slot"] == "work/project_manager_1"

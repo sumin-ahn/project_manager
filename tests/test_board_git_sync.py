@@ -203,7 +203,7 @@ def test_claim_strict_push_conflict_rolls_back_and_race_lost(board, tmp_path):
     # 우리 claim — pull(우리 클론은 아직 안 당김) 후 로컬은 open 으로 보이지만 push 가 충돌해야 함.
     # 단, pull --rebase 가 remote 의 winner claim 을 끌어오면 ticket 이 claimed/ 로 이동 →
     # 그 경우 find_ticket 단계에서 race-lost(cannot claim). 둘 다 race-lost(작업 차단)면 정답.
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="me", user="me"))
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me"))
     assert rc == 1, "remote 선점/충돌인데 claim 이 성공함 — 중복작업 방지 깨짐."
     # 거짓 소유 0: 우리 board 에서 ticket 이 claimed/ 에 *우리 이름으로* 남아 있으면 안 된다.
     ours_claimed = list((board_dir / "tickets" / "claimed").glob("T-0001-*.md"))
@@ -224,7 +224,7 @@ def test_claim_strict_offline_fails_explicitly(board, tmp_path):
     # remote 제거 → pull --rebase 가 도달 불가로 실패.
     _force_rmtree(bare)
 
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="me", user="me"))
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me"))
     assert rc == 1, "offline 인데 claim 이 성공함 — claim 은 remote 도달 없이 확정 금지."
     # ticket 은 여전히 open/ 에 있어야 한다(로컬 claim 안 남김).
     assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
@@ -275,7 +275,7 @@ def test_claim_strict_success_confirms_and_pushes(board, tmp_path):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="me", user="me"))
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me"))
     assert rc == 0, "경쟁 없는 claim 이 실패함."
     claimed = list((board_dir / "tickets" / "claimed").glob("T-0001-*.md"))
     assert claimed, "claim 성공인데 ticket 이 claimed/ 로 안 옮겨짐."
@@ -363,7 +363,7 @@ def test_claim_confirm_rollback_reset_throw_never_traceback(board, tmp_path, mon
     claimed = list((board_dir / "tickets" / "claimed").glob("T-0001-*.md"))
     if claimed:
         claimed[0].rename(board_dir / "tickets" / "open" / "T-0001-t.md")
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="me", user="me"))
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me"))
     assert rc == 1, "reset throw 경로에서 cmd_claim 이 race-lost rc=1 을 안 냄(traceback 위험)."
 
 
@@ -391,7 +391,7 @@ def test_claim_preserves_best_effort_backlog(board, tmp_path):
         "best-effort backlog commit 이 로컬에 안 쌓임."
 
     # 2) 이제 claim T-0001 — prefetch pull --rebase 가 backlog 를 보존한 채 진행, 성공 push.
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="me", user="me"))
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me"))
     assert rc == 0, "backlog 있는 상태의 claim 이 실패함."
     # backlog(T-0002) commit 이 로컬+remote 에 여전히 존재해야 한다(유실 0).
     log = _git(["log", "--oneline"], board_dir).stdout
@@ -440,7 +440,7 @@ def test_claim_dirty_board_prints_commit_guidance_not_offline(board, tmp_path, c
     tk = board_dir / "tickets" / "open" / "T-0001-t.md"
     tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="me", user="me"))
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me"))
     assert rc == 1, "dirty board claim 이 차단 안 됨(prefetch 못 하는데 진행)."
     err = capsys.readouterr().err
     assert "uncommitted" in err and "offline 아님" in err, \
@@ -544,7 +544,7 @@ def test_complete_best_effort_offline_still_completes(board, tmp_path, capsys):
     bare = tmp_path / "bare-cmp"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
-    assert board.cmd_claim(argparse.Namespace(id="T-0001", session="me", user="me")) == 0
+    assert board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me")) == 0
 
     _force_rmtree(bare)  # 이제 remote 도달 불가.
     rc = board.cmd_complete(argparse.Namespace(
@@ -662,7 +662,7 @@ def test_claim_detached_prints_checkout_guidance_not_offline(board, tmp_path, ca
     board_dir = _make_board_git(tmp_path, remote=bare)
     _detach_head(board_dir)
 
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="me", user="me"))
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me"))
     assert rc == 1, "detached board claim 이 차단 안 됨(anchor 없는데 진행)."
     err = capsys.readouterr().err
     assert "detached HEAD" in err and "checkout" in err, \

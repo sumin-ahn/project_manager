@@ -140,7 +140,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     assert m, f"{harness} 발행된 ticket 을 list 에서 못 찾음:\n{listing.stdout}"
     tid = m.group(0)
 
-    claim = _board(dest, "claim", tid, "--session", "pilot")
+    claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, f"{harness} `board.py claim {tid}` 실패: {claim.stderr}"
 
     done = _board(

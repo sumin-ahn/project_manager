@@ -2092,21 +2092,27 @@ def _slot_from_cwd() -> str | None:
 
 
 def _resolve_current_slot(slot_arg: str | None) -> str:
-    """dev/sync 의 대상 슬롯을 해소한다 — `--slot` > cwd > 세션 leased (T-0277).
+    """dev/sync 의 대상 슬롯을 해소한다 — 명시 슬롯 문자열 > cwd > 세션 leased (T-0277·T-0318).
 
-    우선순위(ticket: `--slot <name>` 인자 또는 cwd/local.conf/env):
-      1. `--slot <name>` 명시 → `_normalize_slot`(스킬이 정체성 명시 전달·권장 경로).
+    `slot_arg` 는 CLI `--repo`/`--slot` 로 정체성이 완전 해소된 경우 `main`(`identity.kind ==
+    "slot"`)이 조립해 넘기는 `<repo>_<N>` 문자열이다(ADR-0057 §3.1) — 이 함수 자체는 어느
+    source 문자열이든 정규화·검증만 한다(`--slot` CLI 인자 자체를 직접 받지 않는다).
+
+    우선순위:
+      1. `slot_arg` 명시(빈 문자열 포함) → `_normalize_slot`(main 의 명시 --repo/--slot 조립·
+         권장 경로).
       2. cwd 가 슬롯 worktree 안이면 그 슬롯(`_slot_from_cwd`).
       3. 세션(`_default_session`·env/local.conf 유입)이 보유한 leased 슬롯 — 정확히 1개면 그것.
 
     3에서 매칭 leased 슬롯이 0개(무바인딩)이거나 ≥2(모호)면 `SlotResolutionError` raise — CLI
-    main 이 rc 1 + `--slot` 안내로 surface 한다(침묵 오타깃 금지). `list_leases`(flock read)·
-    `_default_session`(board.session_name 동형)을 재사용한다(기존 관례).
+    main 이 rc 1 + `--repo/--slot` 안내로 surface 한다(침묵 오타깃 금지). `list_leases`(flock
+    read)·`_default_session`(board.session_name 동형)을 재사용한다(기존 관례). (인자 전무 시
+    이 no-flag 체인은 ADR-0040 불변 — ADR-0057 은 명시 인자 표면만 바꾼다.)
 
-    **형식 검증(must-fix 2·T-0277)**: `--slot` 명시는 `_normalize_slot` 이, 그 외 유입도 반환 전
-    `_SLOT_ID_RE`(`_normalize_slot` 재적용)로 최종 슬롯이 `work/<repo>_<N>` 형식임을 강제한다 —
-    어느 source(--slot/cwd/session)든 부적격/traversal 값이 `slot_path` 결합으로 슬롯 경계를
-    벗어나지 못하게 하는 단일 불변식. `--slot` 은 **빈 문자열도 명시로 취급**(`is not None`)해
+    **형식 검증(must-fix 2·T-0277)**: `slot_arg` 명시는 `_normalize_slot` 이, 그 외 유입도 반환
+    전 `_SLOT_ID_RE`(`_normalize_slot` 재적용)로 최종 슬롯이 `work/<repo>_<N>` 형식임을 강제한다
+    — 어느 source(명시/cwd/session)든 부적격/traversal 값이 `slot_path` 결합으로 슬롯 경계를
+    벗어나지 못하게 하는 단일 불변식. `slot_arg` 는 **빈 문자열도 명시로 취급**(`is not None`)해
     형식 검증에 태운다(빈값 거부).
     """
     if slot_arg is not None:
@@ -2120,24 +2126,81 @@ def _resolve_current_slot(slot_arg: str | None) -> str:
         return _normalize_slot(mine[0].slot)  # 장부 유입도 최종 형식 검증(단일 불변식).
     if not mine:
         raise SlotResolutionError(
-            f"세션 {sess!r} 의 leased 슬롯이 없다 — `--slot work/<repo>_<N>` 으로 대상 슬롯을 명시하라."
+            f"세션 {sess!r} 의 leased 슬롯이 없다 — `--repo <name> --slot <N>` 으로 대상 슬롯을 명시하라."
         )
     raise SlotResolutionError(
         f"세션 {sess!r} 의 leased 슬롯이 {len(mine)}개"
-        f"({', '.join(l.slot for l in mine)}) — `--slot` 으로 어느 슬롯인지 명시하라."
+        f"({', '.join(l.slot for l in mine)}) — `--repo <name> --slot <N>` 으로 어느 슬롯인지 명시하라."
     )
 
 
+def _load_identity_args():
+    """공용 정체성 모듈 `identity_args.py` 를 로드한다 (T-0318·T-0322 채택·ADR-0057 결정 5).
+
+    `__file__` 기준(스크립트-위치 앵커) — `REPO` 전역이 아니라 이 파일 자신의 실제 디스크 경로로
+    해석한다. 테스트가 `_load_wp_bound` 로 이 모듈을 로드한 뒤 `REPO`/`LEASES_FILE` 등 전역을
+    tmp 경로로 재배선해도(hermetic), `identity_args.py` 는 항상 이 파일과 같은 tools/ 디렉토리에
+    물리적으로 있으므로 `__file__` 앵커는 재배선 영향을 받지 않는다(스크립트+테스트 양쪽 동작).
+
+    다른 도구의 sibling 로더(`pm_config._load_module`·`pm_bootstrap._load_worktree_pool`)와
+    동형 관용구 — 이 도구가 `identity_args` 를 import 하는 새 coupling 은 ADR-0013 격리 예외로
+    T-0322 가 이미 승인(리스 IO 층은 `worktree_pool` 을 되-import 하지 않는 단방향 관계).
+    """
+    import importlib.util
+    path = Path(__file__).resolve().parent / "identity_args.py"
+    spec = importlib.util.spec_from_file_location("identity_args", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _resolve_actor_slot_for_repo(repo: str) -> str:
+    """`--repo` 단독(슬롯 무) actor 해소 — 공용 `identity_args.resolve_actor_slot` 위임 (T-0318·
+    ADR-0057 결정 3).
+
+    dev/sync 는 실 git side-effect 를 내는 actor 연산이라 claim/finish 등과 동일 규칙을 따른다:
+    그 repo 의 활성(leased) 슬롯이 정확히 1개면 자동 해소, 0개/≥2개는 fail-loud(`--slot <N>`
+    명시 안내). 로컬 리스 읽기를 재구현하지 않는다(B-1·T-0322 결정) — `identity_args` 가 리스
+    장부를 직접 point-read 한다. `identity_args.SlotResolutionError`(모호·다른 모듈의 클래스)는
+    이 모듈의 `SlotResolutionError` 로 번역해 전파한다 — CLI `main` 의 단일 except 로 수렴시키기
+    위함(호출부가 두 예외 타입을 각각 알 필요 없음).
+    """
+    ia = _load_identity_args()
+    try:
+        session = ia.resolve_actor_slot(repo, LEASES_FILE)
+    except ia.SlotResolutionError as exc:
+        raise SlotResolutionError(str(exc)) from exc
+    if session is None:
+        raise SlotResolutionError(
+            f"repo {repo!r} 의 활성(leased) 슬롯이 없다 — `--slot <N>` 으로 대상 슬롯을 명시하라."
+        )
+    return _normalize_slot(session)  # session="<repo>_<N>" → 최종 형식 검증(단일 불변식).
+
+
 def main(argv: "list[str] | None" = None) -> int:
-    """argparse 진입점 — pm-worktree 스킬이 래핑할 `dev`/`sync` 커맨드 (ADR-0049 파일럿 T-γ·T-0277).
+    """argparse 진입점 — pm-worktree 스킬이 래핑할 `dev`/`sync` 커맨드 (ADR-0049 파일럿 T-γ·T-0277·
+    ADR-0057 결정 5·T-0318).
 
     라이브러리 모듈에 얇은 CLI 를 얹는다(`if __name__ == "__main__"` 가드로 import 안전 — 다른
     도구의 `spec_from_file_location` import 를 안 깬다). 스킬이
-    `python3 .project_manager/tools/worktree_pool.py dev <sub> <branch> [--slot ...]` /
-    `... worktree_pool.py sync [--slot ...]` 로 부른다. CLI 는 **실경로 wiring**(git_runner 미주입)
-    이고, 함수 레벨 DI seam(`dev`/`sync`/`_resync_submodules_selective` 의 git_runner)은 테스트가
-    쓴다. 사람이 읽는 stdout(무엇을 했는지)·skip/경고 사유는 backbone 이 stderr·실패는 rc 1 + 메시지.
+    `python3 .project_manager/tools/worktree_pool.py dev <sub> <branch> [--repo <name> [--slot <N>]]` /
+    `... worktree_pool.py sync [--repo <name> [--slot <N>]]` 로 부른다. CLI 는 **실경로 wiring**
+    (git_runner 미주입)이고, 함수 레벨 DI seam(`dev`/`sync`/`_resync_submodules_selective` 의
+    git_runner)은 테스트가 쓴다. 사람이 읽는 stdout(무엇을 했는지)·skip/경고 사유는 backbone 이
+    stderr·실패는 rc 1 + 메시지.
+
+    정체성 인자는 공용 `identity_args`(`add_identity_args`·`parse_identity`)로 통일한다(ADR-0057·
+    T-0322 채택) — 구 bare `--slot <slot-id>`(전체 슬롯 문자열)는 제거하고 분해형 `--repo <name>
+    [--slot <N>]` 만 받는다. `parse_identity` 의 discriminated `kind` 로 해소 경로가 갈린다:
+      - `kind="slot"`(`--repo`+`--slot` 모두 명시) → `<repo>_<N>` 조립 후 `_resolve_current_slot`
+        (기존 명시-슬롯 정규화/검증 경로 재사용).
+      - `kind="repo"`(`--repo` 단독) → actor 해소(`_resolve_actor_slot_for_repo` — 활성 슬롯 1개면
+        해소·0개/≥2개 fail-loud). bare `--slot`(`--repo` 없이)은 `parse_identity` 가 `ValueError`
+        로 fail-loud(DoD).
+      - `kind="none"`(인자 전무) → 기존 no-flag 체인(`_resolve_current_slot(None)`·cwd→세션
+        leased·ADR-0040 불변).
     """
+    ia = _load_identity_args()
     parser = argparse.ArgumentParser(
         prog="worktree_pool.py",
         description="worktree/submodule 운영중 관리 backbone (dev/sync·ADR-0049/0051 파일럿 T-γ).",
@@ -2148,20 +2211,27 @@ def main(argv: "list[str] | None" = None) -> int:
         "dev", help="submodule 을 dev 브랜치로 지정(on-branch 화 → selective resync 가 skip).")
     p_dev.add_argument("submodule", help="슬롯 worktree 상대 submodule 경로(예 vendor/sub).")
     p_dev.add_argument("branch", help="지정할 dev 브랜치명(없으면 생성·있으면 전환).")
-    p_dev.add_argument(
-        "--slot", default=None,
-        help="대상 슬롯 work/<repo>_<N> (미지정=cwd/세션 자동해소).")
+    ia.add_identity_args(p_dev)
 
     p_sync = subparsers.add_parser(
         "sync", help="현재 슬롯 submodule 을 pin 에 selective 재동기(수동 트리거).")
-    p_sync.add_argument(
-        "--slot", default=None,
-        help="대상 슬롯 work/<repo>_<N> (미지정=cwd/세션 자동해소).")
+    ia.add_identity_args(p_sync)
 
     args = parser.parse_args(argv)
 
     try:
-        slot = _resolve_current_slot(args.slot)
+        identity = ia.parse_identity(args)
+    except ValueError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        if identity.kind == "slot":
+            slot = _resolve_current_slot(f"{identity.repo}_{identity.slot}")
+        elif identity.kind == "repo":
+            slot = _resolve_actor_slot_for_repo(identity.repo)
+        else:  # kind == "none" — 인자 전무, 기존 no-flag 체인(ADR-0040 불변).
+            slot = _resolve_current_slot(None)
     except SlotResolutionError as exc:
         print(f"[중단] 대상 슬롯 해소 실패 — {exc}", file=sys.stderr)
         return 1

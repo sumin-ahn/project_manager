@@ -105,8 +105,8 @@ def _ids_on_disk(board) -> set[str]:
 
 
 def _ns(old_id: str, new_id: str, *, dry_run: bool = False,
-        session: str | None = None) -> argparse.Namespace:
-    return argparse.Namespace(old_id=old_id, new_id=new_id, dry_run=dry_run, session=session)
+        repo: str | None = None, slot: int | None = None) -> argparse.Namespace:
+    return argparse.Namespace(old_id=old_id, new_id=new_id, dry_run=dry_run, repo=repo, slot=slot)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -397,7 +397,7 @@ def test_reid_collision_with_draft_ticket_aborts(board, capsys):
 
 def test_reid_other_session_claim_aborts(board, capsys):
     _seed_ticket(board, "T-0036", status="claimed", claimed_by="alice/other_1")
-    rc = board.cmd_reid(_ns("T-0036", "T-0250", session="mine_1"))
+    rc = board.cmd_reid(_ns("T-0036", "T-0250", repo="mine", slot=1))
     assert rc == 1
     err = capsys.readouterr().err
     assert "claim 중" in err and "단일세션" in err
@@ -406,7 +406,7 @@ def test_reid_other_session_claim_aborts(board, capsys):
 
 def test_reid_own_session_claim_allowed(board):
     _seed_ticket(board, "T-0036", status="claimed", claimed_by="me/proj_1")
-    rc = board.cmd_reid(_ns("T-0036", "T-0250", session="proj_1"))
+    rc = board.cmd_reid(_ns("T-0036", "T-0250", repo="proj", slot=1))
     assert rc == 0
     renamed = board.TICKETS_DIR / "claimed" / "T-0250-slug.md"
     fm, _ = board.load_ticket(renamed)
@@ -417,7 +417,7 @@ def test_reid_own_session_claim_allowed(board):
 def test_reid_own_session_claim_slot_only_allowed(board):
     """claimed_by 가 slot-only(`proj_1`·user 미상)여도 슬롯 매칭이면 허용."""
     _seed_ticket(board, "T-0036", status="claimed", claimed_by="proj_1")
-    rc = board.cmd_reid(_ns("T-0036", "T-0250", session="proj_1"))
+    rc = board.cmd_reid(_ns("T-0036", "T-0250", repo="proj", slot=1))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-0250"}
 
@@ -595,6 +595,7 @@ def test_cli_reid_dispatches_to_cmd_reid(board):
 
 def test_cli_reid_session_flag_parsed(board):
     parser = board.build_parser()
-    args = parser.parse_args(["reid", "T-0036", "T-0250", "--session", "proj_1"])
-    assert args.session == "proj_1"
+    args = parser.parse_args(["reid", "T-0036", "T-0250", "--repo", "proj", "--slot", "1"])
+    assert args.repo == "proj"
+    assert args.slot == 1
     assert args.dry_run is False

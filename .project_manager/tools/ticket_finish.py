@@ -61,6 +61,17 @@ TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵�
 # areas.md 경로는 상수로 굳히지 않는다(T-0162 A6) — board/ 분리(ADR-0033 ①) 시 board/ 안으로
 # 옮겨가므로, `_resolve_per_repo_test_cmd` 가 board 모듈의 `areas_file()`(board_root 추종)에 위임.
 
+# ── identity_args sibling import (ADR-0057·T-0322 공용 정체성 모듈) ──────────────
+# `--repo`/`--slot` 파싱을 공용 모듈 identity_args 에서 가져온다. 스크립트 직접 실행은 인터프리터가
+# tools/ 를 `sys.path[0]` 으로 자동 세팅해 그냥 동작하지만, 테스트는 `spec_from_file_location` 으로
+# 로드하므로(패키지 아님) sys.path 가 자동으로 안 채워진다 — `Path(__file__).resolve().parent`
+# (=tools/) 를 명시적으로 앞에 꽂아 스크립트·테스트 양쪽에서 동형으로 import 되게 한다(pm_handoff
+# 와 동일 관용구·T-0322 결정).
+_TOOLS_DIR_FOR_IMPORT = Path(__file__).resolve().parent
+if str(_TOOLS_DIR_FOR_IMPORT) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR_FOR_IMPORT))
+import identity_args  # noqa: E402 — sys.path 세팅 후 import (위 설명)
+
 
 # ── 회귀 cwd 자동해소 (self-host·T-0149 — pm_handoff `_regression_cwd` 재사용·DRY) ────
 # 분리된 PM 홈(②·ADR-0027)엔 `tests/` 가 없으므로, ② 홈 cwd 에서 ticket_finish 를 돌리면
@@ -113,49 +124,46 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
     return str(REPO)
 
 
-# ── --session 슬롯 disambiguation (다중슬롯 finish·ADR-0027·pm_handoff 미러·T-0285) ──
+# ── --repo/--slot 슬롯 disambiguation (다중슬롯 finish·ADR-0027·pm_handoff 미러·T-0285·ADR-0057) ──
 # ADR-0027 다중슬롯 형상(PM 홈 ② + worktree 슬롯 여럿)에선 `_regression_cwd(None)` 의
 # `_auto_slot` 자동해소가 모호(슬롯 2+)해져 ② 홈으로 폴백하고, ②엔 `tests/` 가 없어 회귀가
 # red("no tests ran")→finish 가 *조용히* 차단된다(라이브 발견·PM 59차). pm_handoff 는 이미
-# `--session`/`--worktree-slot` 로 슬롯을 disambiguate 하는데 ticket_finish 엔 그 수단이 없던 게
-# 근본이다. pm_handoff `_resolve_session_worktree_slot`(session-entry 슬롯 해소·default-1/단독/
-# idle-필터·진짜 모호면 fail-loud·T-0178)·`_canonicalize_worktree_slot`(`<name>`→`work/<name>`)을
-# 동적 로드해 재사용한다(DRY·해소 로직 복제 0). ticket_finish 는 이미 pm_handoff 동적 로드 seam 보유.
+# `--repo`/`--slot`(ADR-0057)로 슬롯을 disambiguate 하는데 ticket_finish 엔 그 수단이 없던 게
+# 근본이다. pm_handoff `_resolve_explicit_identity_slot`(명시 identity → M3 조인검증 해소)·
+# `_resolve_session_worktree_slot`(session-entry 슬롯 해소·default-1/단독/idle-필터·진짜 모호면
+# fail-loud·T-0178)을 동적 로드해 재사용한다(DRY·해소 로직 복제 0). ticket_finish 는 이미
+# pm_handoff 동적 로드 seam 보유.
 
-def _resolve_finish_slot(session: str | None) -> tuple[str | None, str | None]:
-    """`--session` 값(또는 부재)에서 회귀 worktree 슬롯을 해소한다 — `(worktree_slot, error_msg)`.
+def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None, str | None]:
+    """`--repo`/`--slot`(또는 둘 다 부재)에서 회귀 worktree 슬롯을 해소한다 — `(worktree_slot, error_msg)`.
 
-    pm_handoff `_resolve_session_worktree_slot` 를 동적 로드해 재사용한다(DRY). 반환:
-      - `(work/<name>, None)` — `--session <name>` 명시(canonical `work/<name>` explicit 우선·
-        areas/leases 미조회 short-circuit 이라 결정론적·라이브 장부 무관).
-      - `(work/<repo>_<N>, None)` — `--session` 부재인데 default-1/단독/idle-필터로 자동해소됨.
+    pm_handoff 를 동적 로드해 재사용한다(DRY). 반환:
+      - `(work/<repo>_<N>, None)` — `--repo`(+`--slot`) 명시 → pm_handoff
+        `_resolve_explicit_identity_slot` 로 **M3**(세션↔repo 조인 검증) 통과 후 결정론적 해소.
+      - `(work/<repo>_<N>, None)` — `--repo`/`--slot` 둘 다 부재인데 default-1/단독/idle-필터로
+        자동해소됨(no-flag 기본·ADR-0040 불변).
       - `(None, None)` — solo/미해소(멀티-PM 미셋업) → 호출부 REPO 런타임 폴백(현행 100% 보존).
-      - `(None, error_msg)` — **진짜 모호**(멀티-PM under-specified·repo≥2·slot1 부재 비단독) →
-        호출부 fail-loud(조용한 ② 폴백+false-red 제거·이 티켓 핵심).
+      - `(None, error_msg)` — **진짜 모호**(멀티-PM under-specified·repo≥2·slot1 부재 비단독) 또는
+        **M3**(명시 repo/slot 이 리스 장부와 조인 불일치) → 호출부 fail-loud.
 
-    pm_handoff 부재/로드 실패는 fail-soft — `--session` 명시는 단순 `work/` 접두, 부재는
-    `(None, None)`(현행 REPO 폴백·솔로 무변경). 주변 공백은 벗겨 빈 문자열은 미지정(None)과 동형.
+    `repo`/`slot` 둘 다 `None`(kind='none')이면 기존 no-flag 자동해소로 위임 — pm_handoff
+    부재/로드 실패는 fail-soft `(None, None)`(현행 REPO 폴백·솔로 무변경). `repo`/`slot` 명시인데
+    pm_handoff 부재면 M3 검증(리스 조인)을 할 수 없으므로 단순 조립만 해 신뢰한다(현행 폴백 패턴).
     """
-    session = session.strip() if session else None
-    session = session or None
     hp = _load_pm_handoff()
+    if repo is None and slot is None:
+        if hp is None:
+            return None, None
+        try:
+            return hp._resolve_session_worktree_slot(None)
+        except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 현행 폴백(모호 아님).
+            return None, None
     if hp is None:
-        return (f"work/{session}", None) if session else (None, None)
-    # bare 슬롯 번호(`4`·`work/4`·`Work/4`) 거부 (pm_handoff ingress 동형·T-0201 결정 B) — 슬롯
-    # 번호는 repo 별 독립이라 등록 repo ≥2 면 bare 숫자만으론 어느 repo 인지 모호하다. pm_handoff
-    # `_is_bare_worktree_slot` 를 재사용해 fail-loud 로 정합한다(canonicalize→부재 dir 회귀 시도
-    # 방지·pm_handoff `--session` 동형). repo-qualified(`<repo>_<N>`·`work/<repo>_<N>`)만 통과.
-    if session and hp._is_bare_worktree_slot(session):
-        return None, (
-            f"세션 슬롯 '{session}' 은 bare 슬롯 번호다 — repo-qualified 형식으로 지정하라 "
-            "(`--session <repo>_<N>`·예: project_manager_1). 슬롯 번호는 repo 별 독립이라 bare "
-            "숫자만으로는 어느 repo 인지 모호하다(ADR-0013·T-0201)."
-        )
-    worktree_slot = hp._canonicalize_worktree_slot(session) if session else None
-    try:
-        return hp._resolve_session_worktree_slot(worktree_slot)
-    except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 현행 폴백(모호 아님).
-        return (worktree_slot, None) if worktree_slot else (None, None)
+        # pm_handoff 부재 — M3(리스 조인) 검증 불가하니 단순 조립만(현행 폴백 패턴·솔로 무변경).
+        if slot is not None:
+            return f"work/{repo}_{slot}", None
+        return None, None
+    return hp._resolve_explicit_identity_slot(repo, slot)
 
 
 def _default_python() -> str:
@@ -778,19 +786,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="편집·board·git 없이 무엇을 바꿀지만 출력한다.",
     )
-    # ── 두-git 다중슬롯 seam (ADR-0027·pm_handoff 미러·T-0285) ──────────────────
+    # ── 두-git 다중슬롯 seam (ADR-0027·pm_handoff 미러·T-0285·ADR-0057) ──────────
     # 분리된 PM 홈(②) + worktree 슬롯 여럿 형상에서 회귀를 어느 worktree(tests/ 보유)에서
-    # 돌릴지 disambiguate 한다 — pm_handoff `--session`/`--no-pytest` 와 동형.
-    parser.add_argument(
-        "--session",
-        metavar="<repo>_<N>",
-        default=None,
-        help=(
-            "세션 정체성 (multi-PM 슬롯 명시·선택·예: project_manager_1). 내부에서 `work/` "
-            "프리픽스를 유도해 회귀를 그 worktree(tests/ 보유)에서 돌린다(ADR-0027). 다중슬롯인데 "
-            "미지정이면 pm_handoff 자동해소(default-1/단독)·진짜 모호면 fail-loud. 솔로는 미지정."
-        ),
-    )
+    # 돌릴지 disambiguate 한다 — pm_handoff `--repo`/`--slot`/`--no-pytest` 와 동형(canonical
+    # 분해형·ADR-0057). `--repo` 단독은 활성(leased) 슬롯 1개면 자동해소·0/≥2 는 fail-loud(M3).
+    identity_args.add_identity_args(parser)
     parser.add_argument(
         "--no-pytest",
         action="store_true",
@@ -828,21 +828,26 @@ def main(argv: list[str] | None = None) -> int:
                 _stream.reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
-    # 두-git 다중슬롯 회귀 cwd disambiguation (ADR-0027·pm_handoff 미러·T-0285) — **회귀를 실제로
-    # 돌 때만** 슬롯을 해소한다. `--no-pytest` 면 회귀가 안 돌아 regression cwd 가 무의미하므로
-    # 슬롯 해소·모호 게이트를 통째로 skip 한다(regression_cwd=None). 그러지 않으면 모호 에러가
-    # "--no-pytest 로 skip 하라"를 remedy 로 광고하면서 정작 --no-pytest 를 준 사용자를 막는
-    # self-contradiction 이 된다(codex+reviewer 동일 must-fix). --session 은 회귀 경로서 그대로 작동.
+    # 정체성 인자 *검증*(`--slot` 단독·`slot < 1` = ADR-0057 uniform fail-loud)은 `--no-pytest` 와
+    # 무관하게 **항상** 수행한다(pm_handoff 동형·codex 게이트 — 안 그러면 `--no-pytest --slot 4` 같은
+    # ADR-0057 위반 입력이 조용히 통과). 반면 두-git 다중슬롯 회귀 cwd 해소·모호 게이트는 **회귀를 실제로
+    # 돌 때만**(ADR-0027·pm_handoff 미러·T-0285) — `--no-pytest` 면 regression cwd 가 무의미하고, 모호
+    # 에러가 "--no-pytest 로 skip 하라"를 광고하며 정작 --no-pytest 준 사용자를 막는 self-contradiction 회피.
+    try:
+        identity = identity_args.parse_identity(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     regression_cwd: str | None = None
     if not args.no_pytest:
-        worktree_slot, ambiguity = _resolve_finish_slot(args.session)
+        worktree_slot, ambiguity = _resolve_finish_slot(identity.repo, identity.slot)
         if ambiguity is not None:
             print(f"\n[중단] 회귀 슬롯 해소 모호 — {ambiguity}", file=sys.stderr)
             print(
-                "  → `--session <repo>_<N>`(예: project_manager_1) 으로 슬롯을 명시하거나, "
-                "`--no-pytest` 로 회귀를 skip 하라(측정은 /pm-qa 등으로 별도).",
+                "  → `--repo <name> [--slot <N>]`(예: --repo project_manager --slot 1) 으로 슬롯을 "
+                "명시하거나, `--no-pytest` 로 회귀를 skip 하라(측정은 /pm-qa 등으로 별도).",
                 file=sys.stderr,
             )
             return 1

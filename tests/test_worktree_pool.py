@@ -647,7 +647,7 @@ def test_sync_delegates_to_resync_backbone(wp, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# CLI 진입점 — argv 파싱 + 슬롯 해소 (dev/sync·--slot·ADR-0049 T-γ·T-0277)
+# CLI 진입점 — argv 파싱 + 슬롯 해소 (dev/sync·--repo/--slot·ADR-0049 T-γ·T-0277·ADR-0057·T-0318)
 # ════════════════════════════════════════════════════════════════════════
 
 
@@ -714,7 +714,7 @@ def test_slot_from_cwd_derives_slot_when_inside_worktree(wp, monkeypatch):
 
 
 def test_main_dev_dispatches_to_dev_backbone(wp, monkeypatch, capsys):
-    """CLI — `dev <sub> <branch> --slot ...` 가 dev 백본을 해소된 슬롯/인자로 호출하고 rc 0."""
+    """CLI — `dev <sub> <branch> --repo A --slot 1` 이 dev 백본을 해소된 슬롯/인자로 호출하고 rc 0."""
     seen = {}
 
     def spy_dev(slot, sub, branch, *, git_runner=None):
@@ -722,7 +722,7 @@ def test_main_dev_dispatches_to_dev_backbone(wp, monkeypatch, capsys):
         return 0, ""
 
     monkeypatch.setattr(wp, "dev", spy_dev)
-    rc = wp.main(["dev", "vendor/sub", "feat-x", "--slot", "work/A_1"])
+    rc = wp.main(["dev", "vendor/sub", "feat-x", "--repo", "A", "--slot", "1"])
     assert rc == 0
     assert seen == {"slot": "work/A_1", "sub": "vendor/sub", "branch": "feat-x"}
     assert "vendor/sub" in capsys.readouterr().out
@@ -731,16 +731,16 @@ def test_main_dev_dispatches_to_dev_backbone(wp, monkeypatch, capsys):
 def test_main_dev_failure_returns_rc1(wp, monkeypatch, capsys):
     """CLI — dev 백본 rc≠0 이면 main 이 rc 1 + stderr 에러 surface(침묵 성공 금지·비공허)."""
     monkeypatch.setattr(wp, "dev", lambda *a, **k: (1, "boom"))
-    rc = wp.main(["dev", "vendor/sub", "feat-x", "--slot", "work/A_1"])
+    rc = wp.main(["dev", "vendor/sub", "feat-x", "--repo", "A", "--slot", "1"])
     assert rc == 1
     assert "boom" in capsys.readouterr().err
 
 
 def test_main_sync_dispatches_to_sync_backbone(wp, monkeypatch, capsys):
-    """CLI — `sync --slot ...` 가 sync 백본을 해소된 슬롯으로 호출하고 rc 0."""
+    """CLI — `sync --repo A --slot 1` 이 sync 백본을 해소된 슬롯으로 호출하고 rc 0."""
     seen = {}
     monkeypatch.setattr(wp, "sync", lambda slot, *, git_runner=None: seen.update(slot=slot))
-    rc = wp.main(["sync", "--slot", "work/A_1"])
+    rc = wp.main(["sync", "--repo", "A", "--slot", "1"])
     assert rc == 0
     assert seen == {"slot": "work/A_1"}
     assert "work/A_1" in capsys.readouterr().out
@@ -750,15 +750,15 @@ def test_main_sync_unresolvable_slot_returns_rc1(wp, monkeypatch, capsys):
     """CLI — 슬롯 자동해소 실패(SlotResolutionError)면 main 이 rc 1 + 안내(오타깃 금지·비공허)."""
     monkeypatch.setenv("PM_SESSION_NAME", "nobody")
     monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("슬롯 미해소인데 sync 를 호출함"))
-    rc = wp.main(["sync"])   # --slot 없음·매칭 leased 0개
+    rc = wp.main(["sync"])   # 인자 전무(kind=none)·매칭 leased 0개
     assert rc == 1
     assert "슬롯" in capsys.readouterr().err
 
 
-def test_main_rejects_traversal_slot_returns_rc1(wp, monkeypatch):
-    """CLI — `--slot ../x`(traversal)는 sync 백본 호출 전에 rc 1 로 거부 (must-fix 2·비공허)."""
+def test_main_rejects_traversal_repo_returns_rc1(wp, monkeypatch):
+    """CLI — `--repo ../x --slot 1`(traversal)는 sync 백본 호출 전에 rc 1 로 거부 (must-fix 2·비공허)."""
     monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("형식 위반 슬롯인데 sync 를 호출함"))
-    rc = wp.main(["sync", "--slot", "../x"])
+    rc = wp.main(["sync", "--repo", "../x", "--slot", "1"])
     assert rc == 1
 
 
@@ -767,9 +767,88 @@ def test_main_dev_rejects_out_of_slot_submodule_returns_rc1(wp, monkeypatch, cap
     def boom(*a, **k):
         raise wp.SubmoduleNotInSlot("work/A_1", "/etc/evil", ["vendor/sub"])
     monkeypatch.setattr(wp, "dev", boom)
-    rc = wp.main(["dev", "/etc/evil", "feat", "--slot", "work/A_1"])
+    rc = wp.main(["dev", "/etc/evil", "feat", "--repo", "A", "--slot", "1"])
     assert rc == 1
     assert "/etc/evil" in capsys.readouterr().err
+
+
+# ── ADR-0057/T-0318 — --repo/--slot 통일 신규 표면 (구 alias 제거·actor repo-alone·bare --slot) ──
+
+
+def test_main_bare_slot_without_repo_fails_loud(wp, monkeypatch, capsys):
+    """CLI — bare `--slot`(--repo 없음)은 parse_identity 가 ValueError → main 이 rc 1(DoD)."""
+    monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("bare --slot 인데 sync 를 호출함"))
+    rc = wp.main(["sync", "--slot", "1"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--repo" in err
+
+
+def test_main_repo_alone_resolves_single_active_slot(wp, monkeypatch, capsys):
+    """CLI — `--repo A`(슬롯 무) 단독은 actor 해소 — 그 repo 활성 슬롯이 1개면 자동 해소."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="someone-else", state="leased"))
+    seen = {}
+    monkeypatch.setattr(wp, "sync", lambda slot, *, git_runner=None: seen.update(slot=slot))
+    rc = wp.main(["sync", "--repo", "A"])
+    assert rc == 0
+    assert seen == {"slot": "work/A_1"}
+
+
+def test_main_repo_alone_ambiguous_active_slots_fails_loud(wp, monkeypatch, capsys):
+    """CLI — `--repo A` 단독인데 활성 슬롯이 ≥2개면 rc 1 + `--slot` 안내(모호 거부)."""
+    _seed(
+        wp,
+        _lease(wp, slot="work/A_1", repo="A", session="s1", state="leased"),
+        _lease(wp, slot="work/A_2", repo="A", session="s2", state="leased"),
+    )
+    monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("모호한데 sync 를 호출함"))
+    rc = wp.main(["sync", "--repo", "A"])
+    assert rc == 1
+    assert "--slot" in capsys.readouterr().err
+
+
+def test_main_repo_alone_no_active_slot_fails_loud(wp, monkeypatch, capsys):
+    """CLI — `--repo A` 단독인데 그 repo 의 활성 슬롯이 0개면 rc 1(오타깃 금지)."""
+    monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("활성 슬롯 없는데 sync 를 호출함"))
+    rc = wp.main(["sync", "--repo", "A"])
+    assert rc == 1
+    assert "--slot" in capsys.readouterr().err
+
+
+def test_main_sync_rejects_legacy_session_flag(wp):
+    """CLI `sync` 파서에 구 `--session` alias 가 없다 — argparse 가 미등록 인자로 거부 (ADR-0057 B-2)."""
+    with pytest.raises(SystemExit):
+        wp.main(["sync", "--session", "A_1"])
+
+
+def test_main_dev_rejects_legacy_worktree_slot_flag(wp):
+    """CLI `dev` 파서에 구 `--worktree-slot` alias 가 없다 — argparse 가 미등록 인자로 거부 (ADR-0057 B-2)."""
+    with pytest.raises(SystemExit):
+        wp.main(["dev", "vendor/sub", "feat", "--worktree-slot", "A_1"])
+
+
+def test_resolve_actor_slot_for_repo_translates_identity_args_ambiguous(wp):
+    """`_resolve_actor_slot_for_repo` — identity_args.SlotResolutionError(모호)를 이 모듈의
+    SlotResolutionError 로 번역해 전파(main 의 단일 except 로 수렴·B-1)."""
+    _seed(
+        wp,
+        _lease(wp, slot="work/A_1", repo="A", session="s1", state="leased"),
+        _lease(wp, slot="work/A_2", repo="A", session="s2", state="leased"),
+    )
+    with pytest.raises(wp.SlotResolutionError):
+        wp._resolve_actor_slot_for_repo("A")
+
+
+def test_resolve_actor_slot_for_repo_single_active_normalizes(wp):
+    """`_resolve_actor_slot_for_repo` — 활성 슬롯 1개면 정규형 `work/<repo>_<N>` 반환."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s1", state="leased"))
+    assert wp._resolve_actor_slot_for_repo("A") == "work/A_1"
+
+
+def test_resolve_actor_slot_for_repo_none_active_fails_loud(wp):
+    """`_resolve_actor_slot_for_repo` — 그 repo 활성 슬롯이 0개면 SlotResolutionError."""
+    with pytest.raises(wp.SlotResolutionError):
+        wp._resolve_actor_slot_for_repo("A")
 
 
 # 실 git 백스톱(dev/sync)은 `_git_required`·`_git`·`_init_repo` 헬퍼 정의 이후에 둔다(아래
@@ -3845,10 +3924,15 @@ def _install_engine(engine_root: Path) -> None:
     존재하고 훅은 sidecar `engine-root`(=이 engine_root)로 그걸 찾는다. board.py 는 단일 파일이라
     그것만 복사하면 `livegate check` 가 standalone 동작(yaml=런타임 의존·테스트 env 보유). board.py
     REPO=Path(__file__).parents[2]=engine_root → livegate.json 을 engine_root/.project_manager/.local 에서 읽는다.
+
+    `identity_args.py`(ADR-0057·T-0322)도 함께 심는다 — board.py 가 같은 tools/ 디렉토리에서
+    경로-앵커 로드(`_load_identity_args`)하는 **load-bearing sibling**이라, 빠지면 이 최소-격리
+    엔진(board.py 단일 파일)이 import 시점에 fail-loud 로 죽는다(전 서브에 정체성 파싱 필수).
     """
     tools = engine_root / ".project_manager" / "tools"
     tools.mkdir(parents=True, exist_ok=True)
     shutil.copy(str(TOOLS / "board.py"), str(tools / "board.py"))
+    shutil.copy(str(TOOLS / "identity_args.py"), str(tools / "identity_args.py"))
 
 
 def _write_livegate(engine_root: Path, *, head: str, status: str = "pass",

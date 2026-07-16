@@ -267,3 +267,76 @@ def test_add_harness_missing_dest_end_to_end_rc1(pc, pim, tmp_path, capsys):
     err = capsys.readouterr().err
     assert "Traceback" not in err
     assert "디렉토리가 아니다" in err
+
+
+# ── identity_args 공용 모듈 채택 (T-0317 · ADR-0057 §Consequences B-1) ──────────
+#
+# pm_config 로컬 `_leased_sessions`(구 pm_config.py:138) 를 제거하고 공용 `identity_args.
+# leased_sessions` 로 위임한다. sibling 모듈이 스크립트 직접 실행 + 테스트(spec_from_file_
+# location) 양쪽에서 동일하게 로드됨을 확인한다.
+
+
+def test_pm_config_local_leased_sessions_removed(pc):
+    """pm_config 로컬 `_leased_sessions` 사본이 제거됐다 — 공용 모듈로 완전 흡수(ADR-0057 B-1)."""
+    assert not hasattr(pc, "_leased_sessions")
+
+
+def test_pm_config_loads_identity_args_sibling_module(pc):
+    """sibling 모듈 `identity_args` 를 `_load_module` 로 로드 가능 — board.py/worktree_pool.py
+    와 동형 패턴(spec_from_file_location)이라 스크립트 직접 실행·테스트 양쪽에서 동작한다
+    (정적 top-level import 는 ADR-0013 격리 관성상 쓰지 않음)."""
+    mod = pc._load_module("identity_args", "identity_args.py")
+    assert mod is not None
+    assert hasattr(mod, "leased_sessions")
+    assert hasattr(mod, "parse_identity")
+    assert hasattr(mod, "add_identity_args")
+
+
+def test_default_session_delegates_to_identity_args_leased_sessions(pc, tmp_path, monkeypatch):
+    """`_default_session` 이 리스 장부 읽기를 주입된 `identity_args` 대역의 `leased_sessions`
+    로 위임한다 — 배선(호출 인자·반환값 사용) 단언. 장부 경로는 `REPO`(monkeypatch) 기준으로
+    호출 시점 구성됨도 함께 확인한다.
+    """
+    monkeypatch.setattr(pc, "REPO", tmp_path)
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    calls = []
+
+    class FakeIdentity:
+        @staticmethod
+        def leased_sessions(leases_file):
+            calls.append(leases_file)
+            return ["svc_1"]
+
+    assert pc._default_session(identity=FakeIdentity()) == "svc_1"
+    assert calls == [tmp_path / ".project_manager" / ".local" / "worktree-leases.json"]
+
+
+def test_default_session_identity_leased_zero_falls_back_to_local_conf(pc, tmp_path, monkeypatch):
+    """주입 대역이 leased 0개를 돌려주면(장부 부재/solo) local.conf `session=` 폴백 체인은
+    여전히 동작한다 — identity_args 로 위임한 뒤에도 `_default_session` 나머지 우선순위(ADR-0040
+    D1)는 불변임을 확인한다.
+    """
+    monkeypatch.setattr(pc, "REPO", tmp_path)
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    pm_dir = tmp_path / ".project_manager"
+    pm_dir.mkdir(parents=True, exist_ok=True)
+    (pm_dir / "local.conf").write_text("session=from-conf\n", encoding="utf-8")
+
+    class FakeIdentityEmpty:
+        @staticmethod
+        def leased_sessions(leases_file):
+            return []
+
+    assert pc._default_session(identity=FakeIdentityEmpty()) == "from-conf"
+
+
+def test_default_session_no_identity_injected_uses_real_module(pc, tmp_path, monkeypatch):
+    """`identity=` 미주입 시 실 `identity_args` 모듈을 로드해 동작한다(순수 모듈·파일 IO 0 —
+    스크립트 직접 실행과 동일 경로)."""
+    monkeypatch.setattr(pc, "REPO", tmp_path)
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    # 장부·local.conf 둘 다 부재 → 미해소(None) — 크래시 없이 실 모듈 경로가 동작함을 확인.
+    assert pc._default_session() is None

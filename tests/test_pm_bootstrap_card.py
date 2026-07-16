@@ -1,18 +1,21 @@
-"""부트스트랩 커맨드 카드 (T-0250 · ADR-0045·0047) 단위 테스트.
+"""부트스트랩 커맨드 카드 (T-0250 · ADR-0045·0047·0057) 단위 테스트.
 
 `pm_bootstrap._build_command_card_markdown(identity)` 는 이 세션이 쓸 전 커맨드를 정체성
-(`--session <repo>_<N>`·ADR-0043 canonical) 채운 완성형으로 코드 생성 dump 한다
-("--help 자체를 안 가게"·사용자 지시). 검증 축:
+(`--repo <repo> --slot <N>`·ADR-0057 canonical — 구 ADR-0043 `--session <repo>_<N>` 을
+supersede) 채운 완성형으로 코드 생성 dump 한다("--help 자체를 안 가게"·사용자 지시). 검증 축:
 
-  - 정체성 실값 보간 — 카드에 `<repo>_<N>` 류 정체성 placeholder 부재(session 실값만).
+  - 정체성 실값 보간 — 카드에 `<repo>_<N>` 류 정체성 placeholder 부재(repo/slot 실값만).
   - 사용자 입력(`T-NNNN`·`<PFX>`·`<요약>`)은 placeholder 로 남는다(ADR-0045 §Decision 1).
   - 숨은 전제 4대장(claim/prefix/livegate/migrate-identity) + reid=홈 git clean 이 해당
     커맨드 줄 바로 아래 1줄 ⚠ 경고로 인접(ADR-0045 §Decision 2 — 인접성이 학습 보장).
   - "정체성 불요" 절(ticket_finish·external_review·pm_log·pm_update·domain)·"자기 것 보기"
     (--mine 우선·전체 보드 강등·ADR-0047)·"찾아가기" 포인터 절 존재.
-  - 솔로(정체성 미해소)는 `--session` 없는 형태로 분기 · fail-soft(렌더 실패=None).
+  - 솔로(정체성 미해소)는 `--repo`/`--slot` 없는 형태로 분기 · fail-soft(렌더 실패=None).
   - **drift 가드(durable)**: dump 된 board.py/pm_handoff.py 커맨드 전건이 실 CLI argparse 로
     `parse_args` 가능(카드↔CLI 정합·D1 canonical 못박기). 카드 카피가 CLI 와 어긋나면 red.
+    정체성 토큰(`--repo`/`--slot`)은 공용 `identity_args` canonical grammar 로 별도 검증한다
+    (board.py/pm_handoff.py 의 실 CLI 채택은 T-0314/T-0316 몫 — 이 가드가 그 병행 롤아웃에
+    coupling 되지 않게 구조(subcommand·비-정체성 옵션)와 정체성을 분리 검증한다).
 
 엔진 canonical(루트 .project_manager/tools/*.py)을 importlib 로 직접 검증한다. 카드 렌더는
 순수 함수(identity dict → str)라 대부분 I/O 없이 헬퍼를 직접 호출한다. run() 통합 2건만
@@ -20,6 +23,7 @@ worktree_pool/board/git/log 를 DI mock 으로 hermetic 하게 구동한다(실 
 """
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import re
 import shlex
@@ -53,6 +57,12 @@ def handoff_mod():
     return _load("pm_handoff")
 
 
+@pytest.fixture(scope="module")
+def ia_mod():
+    """공용 `identity_args` — 카드가 내는 정체성 토큰(`--repo`/`--slot`)의 canonical grammar 원천."""
+    return _load("identity_args")
+
+
 # 정체성 dict — lean(멀티-PM) 모드가 카드에 넘기는 형태(`_bind_and_identity` 산출과 동형).
 LEAN_IDENTITY = {
     "repo": "project_manager",
@@ -75,14 +85,15 @@ def _card(bootstrap, identity):
 
 
 def test_card_identity_is_real_value_not_placeholder(bootstrap):
-    """카드에 정체성이 실값(`project_manager_1`)으로 보간되고 placeholder 문자가 없다."""
+    """카드에 정체성이 실값(`project_manager`·`1`)으로 보간되고 placeholder 문자가 없다(ADR-0057)."""
     card = _card(bootstrap, LEAN_IDENTITY)
-    # 세션 실값이 `--session` 인자로 채워졌다.
-    assert "--session project_manager_1" in card
+    # 정체성 실값이 `--repo`/`--slot` 인자로 채워졌다.
+    assert "--repo project_manager --slot 1" in card
     # 정체성 placeholder(`<repo>_<N>`·`<session>`·`<N>` 세션형)가 문자 그대로 남지 않았다.
     assert "<repo>_<N>" not in card
     assert "<session>" not in card
-    assert "--session <" not in card, "정체성 placeholder 가 남음(실값 보간 안 됨)"
+    assert "--repo <" not in card, "정체성 placeholder 가 남음(실값 보간 안 됨)"
+    assert "--slot <" not in card, "정체성 placeholder 가 남음(실값 보간 안 됨)"
 
 
 def test_card_keeps_user_input_placeholders(bootstrap):
@@ -139,25 +150,27 @@ def test_card_livegate_precondition_adjacent(bootstrap):
     assert "⚠" in warn and "release" in warn and "pin" in warn
 
 
-def test_card_livegate_guidance_is_executable_with_session(bootstrap):
-    """lean(멀티-PM) 카드의 livegate record 안내가 실행가능 형태 — `--session <repo>_<N>` 포함 (T-0298).
+def test_card_livegate_guidance_is_executable_with_repo_slot(bootstrap):
+    """lean(멀티-PM) 카드의 livegate record 안내가 실행가능 형태 — `--repo <repo> --slot <N>` 포함
+    (T-0298·ADR-0057 신 표기).
 
-    multi-lease 홈에서 `--session` 없는 record 는 cwd 모호 fail-loud 이므로, 안내 명령이 이 세션
-    정체성을 실어야 dead-end 가 아니다 — must-fix 1(livegate subparser --session 수용)과 정합.
+    multi-lease 홈에서 정체성 인자 없는 record 는 cwd 모호 fail-loud 이므로, 안내 명령이 이 세션
+    정체성을 실어야 dead-end 가 아니다.
     """
     card = _card(bootstrap, LEAN_IDENTITY)
     lines = card.splitlines()
     lg_i = _line_index(card, "livegate record")
-    assert "--session project_manager_1" in lines[lg_i], \
-        f"livegate 안내가 --session 을 안 실음(multi-lease dead-end): {lines[lg_i]!r}"
+    assert "--repo project_manager --slot 1" in lines[lg_i], \
+        f"livegate 안내가 --repo/--slot 을 안 실음(multi-lease dead-end): {lines[lg_i]!r}"
 
 
-def test_card_solo_livegate_guidance_omits_session(bootstrap):
+def test_card_solo_livegate_guidance_omits_repo_slot(bootstrap):
     """솔로(정체성 None)는 `livegate record`(무인자·현행 형태) — leased <2 라 폴백 무변경(T-0298)."""
     card = _card(bootstrap, None)
     lines = card.splitlines()
     lg_i = _line_index(card, "livegate record")
-    assert "--session" not in lines[lg_i], f"솔로 livegate 안내에 --session 이 붙음: {lines[lg_i]!r}"
+    assert "--repo" not in lines[lg_i], f"솔로 livegate 안내에 --repo 가 붙음: {lines[lg_i]!r}"
+    assert "--slot" not in lines[lg_i], f"솔로 livegate 안내에 --slot 이 붙음: {lines[lg_i]!r}"
 
 
 def test_card_migrate_identity_precondition_adjacent(bootstrap):
@@ -182,7 +195,7 @@ def test_card_reid_precondition_adjacent(bootstrap):
 
 
 def test_card_identity_free_section(bootstrap):
-    """정체성-free CLI 도구가 카드에 명시된다(--session 불요·ADR-0045 §Decision 3).
+    """정체성-free CLI 도구가 카드에 명시된다(--repo/--slot 불요·ADR-0045 §Decision 3).
 
     "정체성 불요" 절(pm_log·domain 조회) + wave 절의 정체성-free CLI 엔진(ticket_finish·
     external_review)이 노출된다. pm_update.py 는 facade(/pm-update) 뒤로 감춰져 raw CLI 로
@@ -204,22 +217,22 @@ def test_card_mine_guide_precedes_full_board(bootstrap):
     # 전체 보드 줄 = `board.py list`(필터 없음) + "타 PM 열람용" 강등 주석.
     full_i = _line_index(card, "타 PM 열람용")
     assert mine_i < full_i, "--mine 이 전체 보드보다 뒤에 옴(ADR-0047 자기 공간 우선 위배)"
-    # 자기 세션 렌즈(--session)도 기본 조회면에 함께 앞세운다(내 것 ∩ 이 슬롯·user-first).
-    assert "list --session project_manager_1" in card
+    # 자기 슬롯 렌즈(--repo/--slot)도 기본 조회면에 함께 앞세운다(내 것 ∩ 이 슬롯·user-first).
+    assert "list --repo project_manager --slot 1" in card
 
 
-def test_card_distinguishes_mine_and_session_scope(bootstrap):
-    """**user-first (ADR-0056·T-0312)**: 카드가 `--mine`(내 것 전 슬롯) vs `--session`(내 것 ∩ 이
+def test_card_distinguishes_mine_and_slot_scope(bootstrap):
+    """**user-first (ADR-0056·T-0312)**: 카드가 `--mine`(내 것 전 슬롯) vs `--repo/--slot`(내 것 ∩ 이
     슬롯) 의 스코프를 명확히 구분한다 — PM 이 "내 슬롯 작업" 조회 커맨드를 카드만 보고 안다.
 
-    `--session` 을 "=--mine 명시형"(동등)으로 오표기하면 slot ∩ 를 전 슬롯으로 오독한다(정정 회귀 가드).
+    `--repo/--slot` 을 "=--mine 명시형"(동등)으로 오표기하면 slot ∩ 를 전 슬롯으로 오독한다(정정 회귀 가드).
     """
     card = _card(bootstrap, LEAN_IDENTITY)
     mine_line = _line_containing(card, "list --mine")
-    session_line = _line_containing(card, "list --session project_manager_1")
-    # --mine 은 "전 슬롯" 명시 · --session 은 "이 슬롯" 명시(스코프 구분).
+    slot_line = _line_containing(card, "list --repo project_manager --slot 1")
+    # --mine 은 "전 슬롯" 명시 · --repo/--slot 은 "이 슬롯" 명시(스코프 구분).
     assert "전 슬롯" in mine_line, f"--mine 줄이 전-슬롯 스코프를 안 밝힘: {mine_line!r}"
-    assert "이 슬롯" in session_line, f"--session 줄이 이-슬롯 스코프를 안 밝힘: {session_line!r}"
+    assert "이 슬롯" in slot_line, f"--repo/--slot 줄이 이-슬롯 스코프를 안 밝힘: {slot_line!r}"
     # 옛 "=--mine 명시형"(동등) 오표기가 남지 않았다(둘은 이제 스코프가 다르다).
     assert "=--mine 명시형" not in card
 
@@ -242,9 +255,9 @@ def test_card_navigation_pointer_section(bootstrap):
 def _command_lines(card: str) -> list[str]:
     """카드에서 실행 커맨드 줄만(`python3 .project_manager/tools/…` 로 시작) 추린다.
 
-    헤더 산문(솔로 안내의 "`--session` 명시 불요" 등)은 커맨드가 아니므로 제외한다 —
-    "커맨드에 --session 이 붙나" 판정은 실행 줄만 봐야 정확하다. trailing `# 주석`(예:
-    "complete 는 --session 없음")도 잘라내 순수 커맨드 부분만 돌려준다.
+    헤더 산문(솔로 안내의 "`--repo`/`--slot` 명시 불요" 등)은 커맨드가 아니므로 제외한다 —
+    "커맨드에 정체성 인자가 붙나" 판정은 실행 줄만 봐야 정확하다. trailing `# 주석`도 잘라내
+    순수 커맨드 부분만 돌려준다.
     """
     out: list[str] = []
     for ln in card.splitlines():
@@ -254,31 +267,32 @@ def _command_lines(card: str) -> list[str]:
     return out
 
 
-def _has_session_flag(command_line: str) -> bool:
-    """커맨드 줄이 정체성 인자 `--session` 을 (exact 토큰) 담는지 — `--session-seq` 는 별개."""
-    return "--session" in command_line.split()
+def _has_identity_flag(command_line: str) -> bool:
+    """커맨드 줄이 정체성 인자 `--repo`/`--slot` 을 (exact 토큰) 담는지 (ADR-0057 신 표기)."""
+    tokens = command_line.split()
+    return "--repo" in tokens or "--slot" in tokens
 
 
-def test_card_solo_branch_omits_session(bootstrap):
-    """솔로(identity None)는 `--session` 없는 현행 형태로 분기한다(커맨드 줄에 --session 부재)."""
+def test_card_solo_branch_omits_identity_flags(bootstrap):
+    """솔로(identity None)는 정체성 인자(`--repo`/`--slot`) 없는 현행 형태로 분기한다."""
     card = _card(bootstrap, None)
-    # 실행 커맨드 줄 어디에도 정체성 --session 이 붙지 않는다(`--session-seq` 는 별개 토큰).
+    # 실행 커맨드 줄 어디에도 정체성 인자가 붙지 않는다.
     for line in _command_lines(card):
-        assert not _has_session_flag(line), f"솔로 커맨드에 --session 이 붙음: {line!r}"
-    # 솔로 헤더 명시 + claim/regression 이 --session 없이 렌더.
+        assert not _has_identity_flag(line), f"솔로 커맨드에 정체성 인자가 붙음: {line!r}"
+    # 솔로 헤더 명시 + claim/regression 이 정체성 인자 없이 렌더.
     assert "솔로(단일 세션)" in card
     assert "board.py claim T-NNNN" in card
     assert "board.py regression run" in card
-    # 자기 세션 렌즈 줄(list --session)은 세션이 없으니 생략된다.
-    assert "list --session" not in card
+    # 자기 슬롯 렌즈 줄(list --repo/--slot)은 정체성이 없으니 생략된다.
+    assert "list --repo" not in card
 
 
-def test_card_lean_branch_fills_session(bootstrap):
-    """lean(session 있음)은 정체성 헤더 + actor 커맨드에 --session 을 채운다."""
+def test_card_lean_branch_fills_repo_slot(bootstrap):
+    """lean(session 있음)은 정체성 헤더 + actor 커맨드에 `--repo/--slot` 을 채운다(ADR-0057)."""
     card = _card(bootstrap, LEAN_IDENTITY)
     assert "세션=`project_manager_1`" in card
-    assert "board.py claim T-NNNN --session project_manager_1" in card
-    assert "board.py regression run --session project_manager_1" in card
+    assert "board.py claim T-NNNN --repo project_manager --slot 1" in card
+    assert "board.py regression run --repo project_manager --slot 1" in card
 
 
 def test_card_missing_session_key_renders_solo_defensive(bootstrap):
@@ -289,13 +303,13 @@ def test_card_missing_session_key_renders_solo_defensive(bootstrap):
                        "branch": "a5", "registered_repos": ["A"]}  # session 결손(비정상)
     card = _card(bootstrap, broken_identity)
     for line in _command_lines(card):
-        assert not _has_session_flag(line)
+        assert not _has_identity_flag(line)
     assert "솔로(단일 세션)" in card
 
 
 def test_alloc_identity_includes_session(bootstrap):
     """codex T-0250 must-fix: `--repo` alloc 경로 identity 가 `session`(슬롯키)을 포함해야 한다 —
-    없으면 카드가 멀티-PM 을 솔로로 오판해 `--session` 빠진 claim 을 안내(fail-loud 유발)."""
+    없으면 카드가 멀티-PM 을 솔로로 오판해 정체성 인자 빠진 claim 을 안내(fail-loud 유발)."""
     class _StubLease:
         slot = "work/project_manager_2"
 
@@ -313,9 +327,9 @@ def test_alloc_identity_includes_session(bootstrap):
     inst._resolve_worktree_pool = lambda: _StubPool()
     identity = inst._alloc_and_identity("project_manager", None, None)
     assert identity.get("session") == "project_manager_2", "alloc identity 는 슬롯키를 session 으로 채운다."
-    # 그 identity 로 렌더한 카드는 actor 커맨드에 --session 을 채운다(솔로 오판 0).
+    # 그 identity 로 렌더한 카드는 actor 커맨드에 --repo/--slot 을 채운다(솔로 오판 0·ADR-0057).
     card = _card(bootstrap, identity)
-    assert "board.py claim T-NNNN --session project_manager_2" in card
+    assert "board.py claim T-NNNN --repo project_manager --slot 2" in card
     assert "솔로" not in card
 
 
@@ -369,11 +383,66 @@ def _iter_card_cli_commands(card: str):
         yield tool, tokens
 
 
-def test_card_commands_parse_against_real_cli(bootstrap, board_mod, handoff_mod):
-    """dump 된 board.py/pm_handoff.py 커맨드 전건이 실 CLI argparse 로 parse 가능하다.
+def _split_identity_tokens(tokens: list[str]) -> tuple[list[str], list[str]]:
+    """토큰열에서 정체성 인자 페어(`--repo <val>`·`--slot <val>`)를 분리한다 (ADR-0057).
 
-    카드 카피가 각 CLI help 와 어긋나면(옵션 rename·필수 인자 추가 등) parse 가 SystemExit
-    로 실패해 이 가드가 red 가 된다 — 카드↔CLI 정합을 못박는 durable 가드(D1 canonical).
+    카드는 이미 새 canonical 표기(`--repo/--slot`)로 정체성을 보간하지만, 각 CLI(board.py·
+    pm_handoff.py) 의 실 argparse 채택은 별도 티켓(T-0314·T-0316) 몫이라 이 worktree 시점에
+    아직 landing 되지 않았을 수 있다 — 이 드리프트 가드가 그 병행 롤아웃 타이밍에 결합되지
+    않도록, 정체성 토큰은 공용 `identity_args` canonical grammar 로, 나머지(subcommand·기타
+    옵션)는 실 CLI argparse 로 각각 독립 검증한다(`_assert_command_parses`).
+    """
+    identity: list[str] = []
+    rest: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("--repo", "--slot") and i + 1 < len(tokens):
+            identity.extend([tok, tokens[i + 1]])
+            i += 2
+            continue
+        rest.append(tok)
+        i += 1
+    return identity, rest
+
+
+def _assert_command_parses(tool: str, tokens: list[str], parsers: dict, ia) -> None:
+    """토큰을 정체성/구조 부분으로 나눠 각각 실 파서로 parse 를 단언한다(drift 가드 공용 코어).
+
+    구조(subcommand·비-정체성 옵션) 부분은 실 CLI(board.py/pm_handoff.py) argparse 로 —
+    카드 카피가 옵션 rename·필수 인자 추가 등으로 어긋나면 여기서 red. 정체성 부분
+    (`--repo`/`--slot`)은 공용 `identity_args` canonical grammar(`add_identity_args` +
+    `parse_identity`)로 — 도구 실 CLI 의 --repo/--slot 채택(T-0314·T-0316)과 무관하게
+    ADR-0057 해소 규칙 위반(예: slot<1)을 잡는다.
+    """
+    identity_tokens, rest_tokens = _split_identity_tokens(tokens)
+    try:
+        parsers[tool].parse_args(rest_tokens)
+    except SystemExit as exc:  # argparse 는 parse 실패 시 SystemExit.
+        pytest.fail(f"카드 커맨드가 {tool} CLI 로 parse 실패: {rest_tokens} (exit={exc.code})")
+    if not identity_tokens:
+        return
+    id_parser = argparse.ArgumentParser()
+    ia.add_identity_args(id_parser)
+    try:
+        ns = id_parser.parse_args(identity_tokens)
+    except SystemExit as exc:
+        pytest.fail(
+            f"정체성 토큰이 identity_args grammar 로 parse 실패: {identity_tokens} (exit={exc.code})"
+        )
+    try:
+        ia.parse_identity(ns)
+    except ValueError as exc:
+        pytest.fail(f"정체성 토큰이 ADR-0057 해소 규칙 위반: {identity_tokens} ({exc})")
+
+
+def test_card_commands_parse_against_real_cli(bootstrap, board_mod, handoff_mod, ia_mod):
+    """dump 된 board.py/pm_handoff.py 커맨드 전건이 실 CLI argparse 로 parse 가능하다(구조
+    부분) + 정체성 토큰(`--repo`/`--slot`)이 ADR-0057 canonical grammar 로 parse 가능하다
+    (identity_args). 카드 카피가 각 CLI help 와 어긋나면(옵션 rename·필수 인자 추가 등) 구조
+    parse 가 SystemExit 로 실패해 이 가드가 red 가 된다 — 카드↔CLI 정합을 못박는 durable
+    가드(D1 canonical). 도구 실 CLI 의 --repo/--slot 채택은 별도 티켓(T-0314·T-0316) 몫이라
+    이 가드는 그 병행 롤아웃에도 결정적이다(`_assert_command_parses` 분리 검증).
     """
     card = _card(bootstrap, LEAN_IDENTITY)
     parsers = {
@@ -384,10 +453,7 @@ def test_card_commands_parse_against_real_cli(bootstrap, board_mod, handoff_mod)
     # 카드가 커맨드를 실제로 담고 있어야 한다(vacuous-pass 방지 — 추출 0 이면 가드 무의미).
     assert len(commands) >= 12, f"카드에서 추출된 CLI 커맨드가 너무 적음({len(commands)})"
     for tool, tokens in commands:
-        try:
-            parsers[tool].parse_args(tokens)
-        except SystemExit as exc:  # argparse 는 parse 실패 시 SystemExit.
-            pytest.fail(f"카드 커맨드가 {tool} CLI 로 parse 실패: {tokens} (exit={exc.code})")
+        _assert_command_parses(tool, tokens, parsers, ia_mod)
 
 
 def test_card_drift_guard_is_sensitive(bootstrap, board_mod):
@@ -473,22 +539,22 @@ def test_run_lean_emits_card_after_identity_surface(bootstrap, tmp_path, capsys)
     assert "multi-PM identity surface" in out
     assert "이 세션 커맨드 카드" in out
     assert out.index("multi-PM identity surface") < out.index("이 세션 커맨드 카드")
-    # 정체성 실값(X_2)이 카드 커맨드에 채워졌다.
-    assert "board.py claim T-NNNN --session X_2" in out
+    # 정체성 실값(X·2)이 카드 커맨드에 채워졌다(ADR-0057).
+    assert "board.py claim T-NNNN --repo X --slot 2" in out
 
 
 def test_run_solo_emits_solo_card(bootstrap, tmp_path, capsys):
-    """run() 솔로(무인자·자동바인딩 미해소)가 --session 없는 솔로 카드를 emit 한다."""
+    """run() 솔로(무인자·자동바인딩 미해소)가 정체성 인자 없는 솔로 카드를 emit 한다."""
     inst = _make_bootstrap(bootstrap, tmp_path)  # worktree_pool 없음 → 솔로 경로
     rc = inst.run()
     assert rc == 0
     out = capsys.readouterr().out
     assert "이 세션 커맨드 카드" in out
     assert "솔로(단일 세션)" in out
-    # 솔로 카드의 실행 커맨드 줄엔 --session 이 붙지 않는다(헤더 산문/주석 언급은 제외).
+    # 솔로 카드의 실행 커맨드 줄엔 정체성 인자가 붙지 않는다(헤더 산문/주석 언급은 제외).
     card_section = out.split("이 세션 커맨드 카드", 1)[1]
     for line in _command_lines(card_section):
-        assert not _has_session_flag(line), f"솔로 카드 커맨드에 --session: {line!r}"
+        assert not _has_identity_flag(line), f"솔로 카드 커맨드에 정체성 인자: {line!r}"
 
 
 def test_run_json_mode_omits_card(bootstrap, tmp_path, capsys):
@@ -554,7 +620,7 @@ def test_card_skilled_ops_render_all_seven_skill_entries(bootstrap):
         assert skill_entry in card, f"스킬 진입 {skill_entry!r} 누락"
 
 
-def test_card_skill_lines_excluded_from_argparse_guard(bootstrap, board_mod, handoff_mod):
+def test_card_skill_lines_excluded_from_argparse_guard(bootstrap, board_mod, handoff_mod, ia_mod):
     """불변식 3: `/pm-…` 스킬 줄은 카드↔CLI argparse 정합 가드의 파싱 대상이 아니다.
 
     가드(`_iter_card_cli_commands`)는 backbone `python3 …/board.py|pm_handoff.py` 줄만 추출한다 —
@@ -574,24 +640,22 @@ def test_card_skill_lines_excluded_from_argparse_guard(bootstrap, board_mod, han
     assert len(commands) >= 12, f"강등 후 backbone 추출이 너무 적음({len(commands)})"
     parsers = {"board.py": board_mod.build_parser(), "pm_handoff.py": handoff_mod.build_parser()}
     for tool, tokens in commands:
-        try:
-            parsers[tool].parse_args(tokens)
-        except SystemExit as exc:
-            pytest.fail(f"강등 backbone 이 {tool} CLI parse 실패: {tokens} (exit={exc.code})")
+        _assert_command_parses(tool, tokens, parsers, ia_mod)
 
 
 def test_card_demoted_backbone_keeps_identity_interpolation(bootstrap):
-    """불변식 1: 강등된 backbone 줄도 정체성 `--session <session>` 실값 보간 유지(lean),
-    솔로는 `--session` 없는 분기 유지(강등이 정체성 보간을 깨지 않음)."""
+    """불변식 1: 강등된 backbone 줄도 정체성 `--repo <repo> --slot <N>` 실값 보간 유지(lean·
+    ADR-0057), 솔로는 정체성 인자 없는 분기 유지(강등이 정체성 보간을 깨지 않음)."""
     lean = _card(bootstrap, LEAN_IDENTITY)
-    assert "board.py claim T-NNNN --session project_manager_1" in lean
-    assert "board.py regression run --session project_manager_1" in lean
-    assert "pm_handoff.py --session project_manager_1 --session-seq <N>" in lean
-    assert "--session <" not in lean, "강등 backbone 에 정체성 placeholder 잔존"
+    assert "board.py claim T-NNNN --repo project_manager --slot 1" in lean
+    assert "board.py regression run --repo project_manager --slot 1" in lean
+    assert "pm_handoff.py --repo project_manager --slot 1 --session-seq <N>" in lean
+    assert "--repo <" not in lean, "강등 backbone 에 정체성 placeholder 잔존"
+    assert "--slot <" not in lean, "강등 backbone 에 정체성 placeholder 잔존"
     solo = _card(bootstrap, None)
-    # 솔로 실행 줄(강등 backbone 포함)엔 정체성 --session 이 붙지 않는다.
+    # 솔로 실행 줄(강등 backbone 포함)엔 정체성 인자가 붙지 않는다.
     for line in _command_lines(solo):
-        assert not _has_session_flag(line), f"솔로 강등 backbone 에 --session: {line!r}"
+        assert not _has_identity_flag(line), f"솔로 강등 backbone 에 정체성 인자: {line!r}"
     assert "board.py claim T-NNNN" in solo and "board.py regression run" in solo
 
 

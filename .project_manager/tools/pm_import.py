@@ -1145,6 +1145,12 @@ def run_board_init(dest_root: Path) -> int:
     비대화형(stdin 비-tty)이면 external_review opt-in 은 board.py 가 안전쪽(OFF)으로 건너뛴다.
     stdin=DEVNULL 의 isatty() 가 Windows 서 신뢰불가([[T-0068]] 류 함정)라, env 로
     `PM_NONINTERACTIVE=1` 을 명시 전달해 결정적으로 skip 시킨다 (T-0071·isatty 폴백 보조).
+
+    `PYTHONDONTWRITEBYTECODE=1` 도 함께 전달한다(ADR-0057·T-0322) — board.py 는 이제 같은
+    tools/ 디렉토리의 `identity_args.py` 를 `importlib.util.spec_from_file_location` 으로
+    동적 로드하는데, 이 실행이 갓 복사된 새 프로젝트 트리 안(`dest_root`)에서 일어나므로 표준
+    바이트코드 캐싱이 `dest_root/.project_manager/tools/__pycache__/` 를 새로 만든다 — fresh
+    import 직후 빌드 산출물이 섞이는 것을 막는다(`test_import_excludes_pycache`).
     """
     board = dest_root / ".project_manager" / "tools" / "board.py"
     if not board.exists():
@@ -1154,7 +1160,7 @@ def run_board_init(dest_root: Path) -> int:
         [sys.executable, str(board), "init"],
         cwd=str(dest_root),
         stdin=subprocess.DEVNULL,
-        env={**os.environ, "PM_NONINTERACTIVE": "1"},
+        env={**os.environ, "PM_NONINTERACTIVE": "1", "PYTHONDONTWRITEBYTECODE": "1"},
         encoding="utf-8",
         errors="replace",
     )

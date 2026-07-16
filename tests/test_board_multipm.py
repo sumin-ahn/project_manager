@@ -507,9 +507,9 @@ def test_cmd_new_single_registered_repo_honors_explicit_prefix(board):
 # cmd_init team 경로
 # ════════════════════════════════════════════════════════════════════════
 
-def _init_args(prefix=None, area=None, owner=None, session=None, user=None):
+def _init_args(prefix=None, area=None, owner=None, repo=None, slot=None, user=None):
     return argparse.Namespace(prefix=prefix, area=area, owner=owner,
-                              session=session, user=user)
+                              repo=repo, slot=slot, user=user)
 
 
 @pytest.fixture
@@ -542,13 +542,13 @@ def test_cmd_init_team_rerun_no_duplicate_areas(init_board):
     """이미 등록된 prefix 로 재실행 → areas.md 중복행 없음, local.conf 만 갱신."""
     init_board.cmd_init(_init_args(prefix="pay", area="결제", owner="alice"))
     # 재실행: --area 없이도 통과해야 한다 (이미 등록).
-    rc = init_board.cmd_init(_init_args(prefix="pay", session="pay-pm2"))
+    rc = init_board.cmd_init(_init_args(prefix="pay", repo="pay", slot=2))
     assert rc == 0
     areas = init_board.AREAS_FILE.read_text(encoding="utf-8")
     assert areas.count("| pay |") == 1          # 중복 등록 안 됨
     conf = init_board.LOCAL_CONF.read_text(encoding="utf-8")
     assert "prefix=pay" in conf
-    assert "session=pay-pm2" in conf            # local.conf 갱신됨
+    assert "session=pay_2" in conf              # local.conf 갱신됨
 
 
 def test_cmd_init_new_prefix_without_area_rejected(init_board):
@@ -1117,12 +1117,12 @@ def test_session_name_override_beats_everything(board, monkeypatch):
 
 
 def test_session_name_required_fail_loud_when_unresolved(board, monkeypatch):
-    """required=True + 미해소(solo 무바인딩) → fail-loud(SystemExit·`--session` 안내)."""
+    """required=True + 미해소(solo 무바인딩) → fail-loud(SystemExit·`--repo/--slot` 안내)."""
     _clear_env(monkeypatch)
     with pytest.raises(SystemExit) as exc:
         board.session_name(required=True)
-    # 안내 문구에 `--session <repo>_<N>` 형식이 들어간다.
-    assert "--session" in str(exc.value)
+    # 안내 문구에 `--repo <repo> --slot <N>` 형식이 들어간다(ADR-0057).
+    assert "--repo" in str(exc.value)
 
 
 def test_session_name_required_fail_loud_when_ambiguous(board, monkeypatch):
@@ -1157,12 +1157,13 @@ def test_cmd_claim_fail_loud_when_session_ambiguous(board, monkeypatch):
 
 
 def test_cmd_claim_explicit_session_bypasses_fail_loud(board, monkeypatch):
-    """명시 --session 이면 모호해도 fail-loud 하지 않는다(세션 해소 override 0층)."""
+    """명시 --repo/--slot 이면 모호해도 fail-loud 하지 않는다(세션 해소 override 0층)."""
     _clear_env(monkeypatch)
     _write_ledger(board, {"session": "a_1"}, {"session": "b_1"})
     _seed_ticket(board, "T-0001", status="open")
-    # 명시 session → session_name 이 즉시 반환(SystemExit 없음). claim 이 정상 진행돼 rc=0.
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", session="a_1", user="me"))
+    # 명시 --repo/--slot(kind=slot) → session_name 이 즉시 반환(SystemExit 없음). claim 이 정상
+    # 진행돼 rc=0.
+    rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="a", slot=1, user="me"))
     assert rc == 0
 
 
@@ -1603,11 +1604,11 @@ def test_regression_multi_run_ignores_env_session(
 
 def test_regression_run_explicit_session_narrows_in_multi(
         multi_reg_board, monkeypatch):
-    """M2+ 라도 CLI --session 명시는 그 슬롯 단일 경로로 좁힌다 (문서화된 의도적 조작만 허용)."""
+    """M2+ 라도 CLI --repo/--slot 명시는 그 슬롯 단일 경로로 좁힌다 (문서화된 의도적 조작만 허용)."""
     b = multi_reg_board
     fake = _FakeRun(0)
     monkeypatch.setattr(b.subprocess, "run", fake)
-    rc = b.cmd_regression(_run_args(session="A_1"))
+    rc = b.cmd_regression(_run_args(repo="A", slot=1))
     assert rc == 0
     # 단일-슬롯 경로 — 공유 REGRESSION_FLAG·A_1 cwd 하나만(슬롯 순회 아님).
     assert len(fake.calls) == 1
@@ -1644,17 +1645,17 @@ def test_regression_cwd_single_lease_resolves_slot(board, monkeypatch):
 
 
 def test_regression_cwd_two_leases_no_session_fails_loud(board, monkeypatch):
-    """(b) leased ≥2 + 세션/cwd 미지정 → fail-loud(SystemExit·--session/--cwd 안내).
+    """(b) leased ≥2 + 세션/cwd 미지정 → fail-loud(SystemExit·--repo/--slot/--cwd 안내).
 
     REPO(PM 홈·tests 없음) 침묵 폴백이 broken slot 을 수집해 false fail 을 내던 것을 근절 —
-    안내 메시지에 `--session`·`--cwd` 두 우회를 모두 실어 자기해결 동선을 준다.
+    안내 메시지에 `--repo/--slot`·`--cwd` 두 우회를 모두 실어 자기해결 동선을 준다.
     """
     _clear_env(monkeypatch)
     _write_ledger(board, {"session": "A_1"}, {"session": "B_1"})
     with pytest.raises(SystemExit) as exc:
         board._regression_cwd()
     msg = str(exc.value)
-    assert "--session" in msg
+    assert "--repo" in msg
     assert "--cwd" in msg
 
 
@@ -1731,10 +1732,10 @@ def _seed_full(board, tid, status, *, created_by=None, claimed_by=None,
 
 
 def _mine_ids(board, capsys, **flags):
-    """cmd_list 를 돌려 출력에서 ticket ID 목록을 뽑는다 (mine/session/slot 렌즈)."""
+    """cmd_list 를 돌려 출력에서 ticket ID 목록을 뽑는다 (mine/repo/slot 렌즈·ADR-0057)."""
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
-                              session=flags.get("session"), slot=flags.get("slot"))
+                              repo=flags.get("repo"), slot=flags.get("slot"))
     rc = board.cmd_list(args)
     assert rc == 0
     ids = []
@@ -1748,17 +1749,18 @@ def _mine_ids(board, capsys, **flags):
 # ── DoD (a): 타 사용자 미claim open 미포함 (--session·--mine) ──────────────────
 
 def test_session_excludes_other_users_unclaimed_open(board, capsys):
-    """**증상 직접 해소**: created_by=타인·claimed_by=null·open 이 `--session` 결과서 제외.
+    """**증상 직접 해소**: created_by=타인·claimed_by=null·open 이 `--repo/--slot` 결과서 제외.
 
-    user-first (ADR-0056): `--session` 의 querying identity = **현재 사용자**(local.conf user=alice).
-    open 소유는 area_owner(alpha→alice·beta→bob)로 해소 → alice 세션은 bob 소유 open(T-BE-001) 제외.
-    (옛 T-0198 은 my_user 를 항상 None 으로 둬 area-open 이 전체 open 으로 새던 것을 근절.)
+    user-first (ADR-0056): `--repo/--slot`(ADR-0057) 의 querying identity = **현재 사용자**
+    (local.conf user=alice). open 소유는 area_owner(alpha→alice·beta→bob)로 해소 → alice 세션은
+    bob 소유 open(T-BE-001) 제외. (옛 T-0198 은 my_user 를 항상 None 으로 둬 area-open 이 전체
+    open 으로 새던 것을 근절.)
     """
     board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
     _write_conf(board, "user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")   # alice 소유 open
     _seed_full(board, "T-BE-001", "open", created_by="bob/beta_1")      # bob 미claim open
-    ids = _mine_ids(board, capsys, session="alpha_1")
+    ids = _mine_ids(board, capsys, repo="alpha", slot=1)
     assert "T-BE-001" not in ids     # 타 사용자 미claim open 유출 차단(ADR-0056)
     assert ids == ["T-AL-001"]
 
@@ -1787,7 +1789,8 @@ def test_mine_includes_my_claim_and_my_area_open(board, capsys):
 
 
 def test_slot_derives_owner_from_single_area(board, capsys):
-    """`--slot N` open (a) 는 area_owner 로 소유 해소 — 현재 사용자(alice) area 의 open 만.
+    """`--repo/--slot`(ADR-0057) open (a) 는 area_owner 로 소유 해소 — 현재 사용자(alice) area 의
+    open 만.
 
     user-first (ADR-0056): querying identity = 현재 사용자(local.conf user=alice). open 소유는
     area_owner(alpha→alice) 1차라 같은 area 의 bob-생성 open(T-AL-009)도 소유=alice 로 해소돼
@@ -1804,7 +1807,7 @@ def test_slot_derives_owner_from_single_area(board, capsys):
     _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-AL-009", "open", created_by="bob/alpha_2")   # 같은 area·bob 생성
     # area_owner 운영 중 → 소유=area_owner(alice) 1차 → 둘 다 alice area → 둘 다 포함.
-    ids = _mine_ids(board, capsys, slot=1)
+    ids = _mine_ids(board, capsys, repo="alpha", slot=1)
     assert set(ids) == {"T-AL-001", "T-AL-009"}
 
 
@@ -1871,12 +1874,12 @@ def test_multi_user_unresolved_owner_strict_excludes(board, capsys):
 
 
 def test_session_multi_user_no_area_owner_excludes_unowned_open(board, capsys):
-    """`--session` + area_owner 미운영 + 다중사용자 → 소유 미해소 open strict-exclude.
+    """`--repo/--slot`(ADR-0057) + area_owner 미운영 + 다중사용자 → 소유 미해소 open strict-exclude.
 
     my_user 를 유도할 areas 가 없어도(→None) multi_user 게이트가 미해소 open 유출을 막는다."""
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
-    ids = _mine_ids(board, capsys, session="alpha_1")
+    ids = _mine_ids(board, capsys, repo="alpha", slot=1)
     assert "T-0002" not in ids     # 타 사용자 미claim open 유출 차단(솔로 degrade 미확장)
 
 
@@ -1965,9 +1968,10 @@ _BOB_TICKETS = {"T-BE-001", "T-BE-002"}
 
 @pytest.mark.parametrize("areas", [True, False])
 def test_userfirst_no_other_user_leak_in_any_filter_view(board, capsys, areas):
-    """타 사용자 무유출 (area_owner 설정/미설정 양쪽): --mine·--session·--slot 어디에도 bob 티켓 0."""
+    """타 사용자 무유출 (area_owner 설정/미설정 양쪽): --mine·`--repo --slot`·`--repo`(ADR-0057)
+    어디에도 bob 티켓 0."""
     _seed_userfirst_board(board, areas=areas)
-    for flags in ({"mine": True}, {"session": "alpha_1"}, {"slot": 1}):
+    for flags in ({"mine": True}, {"repo": "alpha", "slot": 1}, {"repo": "alpha"}):
         ids = set(_mine_ids(board, capsys, **flags))
         assert not (_BOB_TICKETS & ids), f"{flags} 필터 뷰에 bob 티켓 유출(ADR-0056): {ids}"
 
@@ -1980,12 +1984,14 @@ def test_userfirst_mine_is_all_my_slots(board, capsys):
 
 
 def test_userfirst_session_intersects_slot_excludes_my_other_slot_claim(board, capsys):
-    """**S2**: --session alpha_1 = 내 것 ∩ 그 슬롯 — 내 open(슬롯무관) + alpha_1 claim만.
+    """**S2**: `--repo alpha --slot 1`(ADR-0057) = 내 것 ∩ 그 슬롯 — 내 open(슬롯무관) +
+    alpha_1 claim만.
 
-    타 슬롯의 내 claim(T-AL-003·alpha_2)은 --session alpha_1 엔 안 보이고(정상) --mine 엔 보인다.
+    타 슬롯의 내 claim(T-AL-003·alpha_2)은 `--repo alpha --slot 1` 엔 안 보이고(정상) --mine 엔
+    보인다.
     """
     _seed_userfirst_board(board, areas=True)
-    ids = set(_mine_ids(board, capsys, session="alpha_1"))
+    ids = set(_mine_ids(board, capsys, repo="alpha", slot=1))
     # 내 open(T-AL-001·슬롯무관 backlog) + 내 alpha_1 claim(T-AL-002). alpha_2 claim 제외.
     assert ids == {"T-AL-001", "T-AL-002"}
     assert "T-AL-003" not in ids                      # 타 슬롯의 내 claim → slot 뷰서 제외
@@ -1993,9 +1999,10 @@ def test_userfirst_session_intersects_slot_excludes_my_other_slot_claim(board, c
 
 
 def test_userfirst_slot_number_intersects(board, capsys):
-    """--slot 2 = 내 것 ∩ 슬롯 _2 — 내 alpha_2 claim(T-AL-003)만·alpha_1 claim 제외·bob 무포함."""
+    """`--repo alpha --slot 2`(ADR-0057) = 내 것 ∩ 슬롯 _2 — 내 alpha_2 claim(T-AL-003)만·
+    alpha_1 claim 제외·bob 무포함."""
     _seed_userfirst_board(board, areas=True)
-    ids = set(_mine_ids(board, capsys, slot=2))
+    ids = set(_mine_ids(board, capsys, repo="alpha", slot=2))
     assert "T-AL-003" in ids                          # 내 claim·slot _2
     assert "T-AL-002" not in ids                      # 내 claim·slot _1 → --slot 2 제외
     assert not (_BOB_TICKETS & ids)
@@ -2004,19 +2011,20 @@ def test_userfirst_slot_number_intersects(board, capsys):
 def test_userfirst_solo_degrade_unaffected(board, capsys):
     """solo(현재 사용자 미설정·git stub None) — legacy slot degrade + all-open 보존(회귀 0).
 
-    conf user= 없음 → my_user None → --session alpha_1 은 slot 매칭(내 슬롯 claim) + all-open
-    degrade(distinct user ≤1). 다중사용자 격리는 identity 해소 시에만·솔로는 빈 보드 금지."""
+    conf user= 없음 → my_user None → `--repo alpha --slot 1`(ADR-0057) 은 slot 매칭(내 슬롯 claim)
+    + all-open degrade(distinct user ≤1). 다중사용자 격리는 identity 해소 시에만·솔로는 빈 보드 금지."""
     _seed_full(board, "T-0001", "open")                              # 소유 미상 open
     _seed_full(board, "T-0002", "claimed", claimed_by="alpha_1")     # 슬롯-only·내 슬롯
     _seed_full(board, "T-0003", "claimed", claimed_by="alpha_2")     # 슬롯-only·타 슬롯
-    ids = set(_mine_ids(board, capsys, session="alpha_1"))
+    ids = set(_mine_ids(board, capsys, repo="alpha", slot=1))
     assert ids == {"T-0001", "T-0002"}                # all-open degrade + 내 슬롯 claim, 타 슬롯 제외
 
 
 def test_userfirst_multiuser_excludes_user_qualified_and_ambiguous_legacy(board, capsys):
-    """**codex leak+ambiguity 가드 (durable)**: 다중사용자 보드(distinct ≥2)에서 `--slot N` 은
-    (1) 남의 user-qualified claim(`bob/repo_1`)을 slot 번호로 끌어오지 않고 (2) user 토큰 없는
-    legacy 슬롯-only claim(`repo_1`)도 ambiguous 라 strict-exclude 한다(migrate-identity backfill 전제).
+    """**codex leak+ambiguity 가드 (durable)**: 다중사용자 보드(distinct ≥2)에서 `--repo repo --slot 1`
+    (ADR-0057)은 (1) 남의 user-qualified claim(`bob/repo_1`)을 slot 번호로 끌어오지 않고 (2) user
+    토큰 없는 legacy 슬롯-only claim(`repo_1`)도 ambiguous 라 strict-exclude 한다(migrate-identity
+    backfill 전제).
 
     my_user 미해소(no conf·git stub None)에서도 user-qualified 는 귀속 불가로 제외. legacy 는 진짜
     solo(¬multi_user)에서만 slot degrade 로 보인다(별도 회귀 가드·test_board_mine_view). 여기선
@@ -2026,7 +2034,7 @@ def test_userfirst_multiuser_excludes_user_qualified_and_ambiguous_legacy(board,
     _seed_full(board, "T-0002", "claimed", claimed_by="bob/repo_1")     # user-qualified·slot _1(남)
     _seed_full(board, "T-0003", "claimed", claimed_by="repo_1")         # legacy 슬롯-only·slot _1
     # no conf → my_user None. distinct users = {alice, bob} = 2 → multi_user.
-    ids = set(_mine_ids(board, capsys, slot=1))
+    ids = set(_mine_ids(board, capsys, repo="repo", slot=1))
     assert "T-0001" not in ids and "T-0002" not in ids  # user-qualified → 귀속 불가·남 → 누출 0
     assert "T-0003" not in ids                          # multi_user → legacy 슬롯-only ambiguous 제외
 
@@ -2048,7 +2056,7 @@ _REMEDY_MIGRATE = "migrate-identity"
 def _list_args(**flags):
     return argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
-                              session=flags.get("session"), slot=flags.get("slot"))
+                              repo=flags.get("repo"), slot=flags.get("slot"))
 
 
 def _ids_from(out: str) -> list[str]:
@@ -2086,11 +2094,11 @@ def test_cmd_list_loud_warn_on_strict_exclude(board, capsys):
 def test_cmd_list_loud_warn_on_identity_unresolved(board, capsys):
     """다중사용자 + 정체성 미해소(my_user None) → loud-warn. stdout(no tickets) 무오염.
 
-    `--session alpha_1` 이나 areas 부재로 소유자 유도 실패(None) + 티켓 created_by 2명(다중사용자)
-    → 모든 open 이 strict-exclude. 미해소 정체성을 remedy 와 함께 경고."""
+    `--repo alpha --slot 1`(ADR-0057)이나 areas 부재로 소유자 유도 실패(None) + 티켓 created_by
+    2명(다중사용자) → 모든 open 이 strict-exclude. 미해소 정체성을 remedy 와 함께 경고."""
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
-    rc = board.cmd_list(_list_args(session="alpha_1"))
+    rc = board.cmd_list(_list_args(repo="alpha", slot=1))
     assert rc == 0
     cap = capsys.readouterr()
     assert _WARN_MARK in cap.err
