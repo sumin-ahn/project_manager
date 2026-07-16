@@ -488,6 +488,80 @@ def parse_open_tickets(board_output: str) -> list[str]:
     return tickets
 
 
+# claimed 행 파서 — 정체성 토큰 앵커 (T-0331·codex must-fix 1). board.py cmd_list 행 형식:
+# `  [{status:7s}] {id}  {title:60s}  {claimed:18s}  {tags}`. claimed_by 는 `<user>/<session>`
+# (ADR-0033 ③) 또는 legacy 슬롯-only `<session>`(구형 `pm-2` 류 비-`_N` 값 포함 — board 는 여전히
+# 수용). 파싱은 **고정폭 컬럼 위치 기반**(codex R1 처방·R3 채택): board.py cmd_list 의 출력 포맷
+# `  [{status:7s}] {id}  {title[:60]:60s}  {claimed:18s}  {tags}` 에서 제목 컬럼은 60폭 고정
+# (사전 절단·패딩)이라, id 뒤 2공백 다음 60자를 건너뛴 위치의 첫 토큰이 곧 claimed_by 다.
+# 내용 기반 매칭(EOL-앵커 정체성 토큰)은 세 결함 클래스를 연쇄로 냈다(codex R1~R3): 이중공백
+# 제목 오추출 → `/` tag 행 통째 누락 → `_N`-꼬리 tag/legacy 세션형 오인. 위치 기반은 제목·tags
+# 내용을 아예 읽지 않아 그 클래스 전체가 소멸한다. 포맷 drift 백스톱 = board.py cmd_list 를
+# 실제 실행해 stdout 을 먹이는 통합 테스트(should-fix·format 복사본 coupling 제거).
+_CLAIMED_LINE_HEAD_RE = re.compile(
+    rf"^\s*\[claimed\s*\]\s+({_TICKET_ID})  "  # status + id + 2공백(포맷 리터럴) — 이후 60폭 제목 컬럼
+)
+_TITLE_COL_WIDTH = 60  # board.py cmd_list `{title[:60]:60s}` 와 정합(통합 가드가 drift 시 red)
+
+
+def parse_other_session_claims(
+    board_output: str, my_session: str | None
+) -> dict[str, list[str]]:
+    """board list 출력에서 *내 세션이 아닌* 세션의 claimed 티켓을 세션별로 묶는다 (T-0331).
+
+    부트스트랩 대시보드가 이미 "다른 활성 PM" 을 보여주듯(조정용 표면·ADR-0056 위반 아님),
+    공유 backlog 오독(PM 69: 타 슬롯이 방금 claim 한 티켓을 "내 몫" 으로 착각)을 막는 조정
+    신호다. claimed 행의 `claimed_by`(`<user>/<session>`·ADR-0033 ③ 또는 legacy 슬롯-only)에서
+    세션(마지막 `/` 뒤·`/` 없으면 값 전체)을 뽑아 내 바운드 세션(`my_session`·`<repo>_<N>`)과
+    같은 것은 뺀다.
+
+    `my_session` 미해소(진짜 솔로·None)면 "내 것" 을 세션으로 못 가려 전부 뺀다(빈 dict) — 이
+    조정 신호는 슬롯 바운드(멀티-PM/self-host)에서만 낸다.
+
+    **데이터 출처**: `_collect_board` 가 넘기는 `board_output` 은 무렌즈 full board `list`
+    (`--status claimed`·전 세션·사용자 무관·codex must-fix 2)다 — 스코프/유저 뷰가 아니므로 동일
+    사용자 타 슬롯 + 타 사용자 claim 이 모두 담겨, 슬롯-바인딩 경로에서도 타 세션이 확실히 병기된다.
+
+    반환: {session: [ticket_id, ...]} — 등장 순서 보존. 내 세션·미해소는 미포함.
+    """
+    if not my_session:
+        return {}
+    claims: dict[str, list[str]] = {}
+    for line in board_output.splitlines():
+        match = _CLAIMED_LINE_HEAD_RE.match(line)
+        if not match:
+            continue
+        ticket_id = match.group(1)
+        # 고정폭 제목 컬럼(60) + 2공백 구분자 건너뛴 위치의 첫 토큰 = claimed_by (제목·tags 내용 불독).
+        after_title = line[match.end() + _TITLE_COL_WIDTH:]
+        claimed_tokens = after_title.split()
+        if not claimed_tokens:
+            continue  # claimed 컬럼 부재(포맷 밖 행) — skip
+        claimed_by = claimed_tokens[0]
+        if claimed_by == "-":
+            continue  # 누락/placeholder claimed_by 방어(tags 오인 차단·codex R4 suggestion)
+        session = claimed_by.rsplit("/", 1)[-1]
+        if session == my_session:
+            continue
+        claims.setdefault(session, []).append(ticket_id)
+    return claims
+
+
+def _format_other_session_claims_line(other_claims: dict[str, list[str]]) -> str | None:
+    """타 세션 claimed 현황 1줄을 만든다 — 1건 이상이면 문자열, 0건이면 None(줄 생략) (T-0331).
+
+    형식: `- 타 세션 진행(claimed): N건 — <세션>: T-a, T-b · <세션2>: T-c` (티켓 제목 무노출·ID
+    만). N = 타 세션 claimed 티켓 총수(격리 뷰 아님·조정용·ADR-0056 위반 아님).
+    """
+    if not other_claims:
+        return None
+    total = sum(len(tickets) for tickets in other_claims.values())
+    groups = " · ".join(
+        f"{session}: {', '.join(tickets)}" for session, tickets in other_claims.items()
+    )
+    return f"- 타 세션 진행(claimed): {total}건 — {groups}"
+
+
 def parse_lint_result(lint_output: str) -> str:
     """board lint 출력에서 결과 요약을 반환한다.
 
@@ -991,18 +1065,33 @@ def _slot_count_label(session: str) -> str:
     return f"slot {tail}" if tail.isdigit() else f"slot {session}"
 
 
+# open 카운트만의 스코프 라벨 — done/claimed/blocked 의 슬롯-스코프 라벨과 다른 축 (T-0331).
+# open 은 미claim 이라 슬롯이 없다(board.py `_ticket_in_view`): slot-scoped 뷰에서도 (a) 는
+# 슬롯무관 backlog 로 `--mine` 과 동일한 전역 대기열 수다(ADR-0056 #3·산출 불변). slot-scoped
+# 라벨("(slot N)")을 그대로 붙이면 그 공유 대기열(그중 타 슬롯이 방금 claim 한 것 포함)을
+# "내 슬롯 몫" 으로 오독한다(PM 69 slot-2 실증) → open 만 이 라벨로 정정한다.
+_OPEN_SCOPE_LABEL = "공유 backlog·슬롯무관"
+
+
 def _format_board_counts_line(counts: dict[str, int], scope_label: str = "mine") -> str:
-    """board 카운트 한 줄을 만든다 — 수집 스코프 라벨 명확화 (T-0194·T-0312).
+    """board 카운트 한 줄을 만든다 — 수집 스코프 라벨 명확화 (T-0194·T-0312·T-0331).
 
     `counts` 는 `_collect_board` 가 뽑은 스코프 값이다 — status 별로 "내 area open" 또는 "내
     claim" 만 센 값이라 실측(예 done 25)이 전체 done(184) 과 크게 다를 수 있다(done/claimed/
     blocked 는 전체보다 훨씬 작을 소지가 큼). `scope_label` 로 그 스코프를 명시해 "전체 done"
     처럼 오독하지 않게 한다 — 솔로/무바인딩은 `"mine"`(user·전 슬롯), 명시 슬롯 바인딩(`--repo`/
     `--slot`·multi-PM)은 `"slot N"`(그 슬롯 정체성으로 조회·ADR-0056 S1·`list --session`↔카운트 정합).
+
+    **open 만 예외**(T-0331): done/claimed/blocked 는 슬롯-스코프 카운트라 `scope_label` 을
+    붙이지만, open 은 슬롯무관 공유 backlog(전역 수)라 `_OPEN_SCOPE_LABEL` 로 정정한다 —
+    slot-scoped 라벨을 붙여 공유 대기열을 "내 슬롯 몫" 으로 오독하는 것(PM 69)을 못박아 막는다.
     """
-    parts = [f"{label}: {counts[key]} ({scope_label})" for key, label in (
-        ("done", "done"), ("open", "open"), ("claimed", "claimed"), ("blocked", "blocked")
-    )]
+    parts = [
+        f"{label}: {counts[key]} ({_OPEN_SCOPE_LABEL if key == 'open' else scope_label})"
+        for key, label in (
+            ("done", "done"), ("open", "open"), ("claimed", "claimed"), ("blocked", "blocked")
+        )
+    ]
     return "- " + " / ".join(parts)
 
 
@@ -1344,6 +1433,19 @@ class PmBootstrap:
         if done_rc == 0:
             counts["done"] = parse_board_counts(done_output)["done"]
 
+        # 타 세션 claim 현황 (T-0331·codex must-fix 2) — **전용 무렌즈 full board 조회**. 위
+        # default 뷰(--repo/--slot·--mine)는 board.py `_ticket_in_view` 상 내 claim 만 담아 타
+        # 세션(동일 사용자 타 슬롯·타 사용자)이 안 나오므로, 슬롯-바인딩 경로에서도 확실히
+        # 병기하려면 렌즈 없는 전-세션 조회가 필요하다(dormant 출하 금지·PM 결정). fail-soft:
+        # 실패(rc≠0·구버전 board.py)면 빈 dict → 현황 줄 생략(핵심 list 는 이미 성공·abort 안 함).
+        claimed_rc, claimed_output = self._run_board_fn(["list", "--status", "claimed"])
+        if claimed_rc == 0:
+            other_claims = parse_other_session_claims(
+                claimed_output, self._bound_session_name()
+            )
+        else:
+            other_claims = {}
+
         # `--gate` 로 호출 — 차단 카테고리에만 rc=1, advisory(status drift·
         # unstable-ref-advice)는 rc=0 (board.cmd_lint). dump-then-warn(T-0195) —
         # blocking 이어도 여기서 abort 하지 않고 플래그만 실어 반환한다.
@@ -1354,6 +1456,7 @@ class PmBootstrap:
             "counts": counts,
             "counts_scope": counts_scope,
             "open_tickets": open_tickets,
+            "other_claims": other_claims,
             "lint": lint_result,
             "lint_blocking": lint_rc != 0,
             "lint_gate_output": lint_output,
@@ -1981,6 +2084,11 @@ class PmBootstrap:
             lines.append(f"- open ticket (claim 가능·backlog·슬롯무관): {', '.join(open_tickets)}")
         else:
             lines.append("- open ticket (claim 가능·backlog·슬롯무관): (없음)")
+        # 타 세션 claim 현황 (T-0331) — 공유 backlog 중 타 세션이 이미 붙든 것을 같은 화면에 병기해
+        # PM 69 오독(공유 대기열을 "내 몫" 으로 착각)을 막는다. 0건이면 줄 생략(None).
+        other_claims_line = _format_other_session_claims_line(board.get("other_claims") or {})
+        if other_claims_line:
+            lines.append(other_claims_line)
         lines.append("")
 
         # Git 섹션
@@ -2084,10 +2192,12 @@ class PmBootstrap:
         lines.append("### 권장 첫 turn")
         lines.append("PM 세션 시작합니다.")
         # 카운트 스코프 라벨 — 위 `_format_board_counts_line` 과 동일 데이터·스코프(mine/slot N·
-        # T-0194·T-0312)를 요약 문장체로 표기(선두 "- " 없이·마침표로 마감).
+        # T-0194·T-0312)를 요약 문장체로 표기(선두 "- " 없이·마침표로 마감). open 만 슬롯무관 공유
+        # backlog 라벨(`_OPEN_SCOPE_LABEL`·T-0331·codex must-fix 3) — 요약부도 카운트 라인과 동일
+        # 규칙으로 정정해 "open N (slot 1)" 오독을 양쪽에서 못박는다.
         _scope = board.get("counts_scope", "mine")
         board_summary = (
-            f"done {counts['done']} ({_scope}) / open {counts['open']} ({_scope}) / "
+            f"done {counts['done']} ({_scope}) / open {counts['open']} ({_OPEN_SCOPE_LABEL}) / "
             f"claimed {counts['claimed']} ({_scope}) / blocked {counts['blocked']} ({_scope})."
         )
         if pytest_result is not None:

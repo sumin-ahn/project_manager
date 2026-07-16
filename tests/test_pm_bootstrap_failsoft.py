@@ -178,10 +178,11 @@ def test_collect_board_default_view_is_mine():
     부트스트랩이 전체 contention 을 떠안지 않고 *내 것*만 surface 한다 — 솔로(user 미상)는
     board 의 graceful 폴백으로 현행과 사실상 동등(`--mine` 솔로 폴백·spike §2.D).
 
-    `list` 호출은 **2 회**다(T-0198 — done-count 0 회귀 fix): 첫 호출은 default 뷰
-    (`["list", "--mine"]` — open/claimed/blocked, T-0197 이 done 을 접음), 두 번째는 done
-    전용(`["list", "--status", "done", "--mine"]`) — default 뷰가 done 을 안 보여줘서 생긴
-    회귀(done(mine) 이 항상 0)를 이 재조회가 메꾼다. 둘 다 `--mine` 렌즈를 유지한다."""
+    `list` 호출은 **3 회**다: (1) default 뷰(`["list", "--mine"]` — open/claimed/blocked,
+    T-0197 이 done 을 접음) (2) done 전용(`["list", "--status", "done", "--mine"]` — default
+    뷰가 done 을 안 보여줘서 생긴 done(mine) 항상 0 회귀[T-0198] 를 메꿈) (3) 타 세션 현황용
+    **무렌즈 full-board claimed 조회**(`["list", "--status", "claimed"]` — T-0331 must-fix 2·전
+    세션·사용자 무관·슬롯-바인딩에서도 병기). default/done 은 `--mine` 렌즈 유지·claimed 은 무렌즈."""
     mod = _load_module()
     captured: list[list[str]] = []
 
@@ -198,6 +199,7 @@ def test_collect_board_default_view_is_mine():
     assert list_calls == [
         ["list", "--mine"],
         ["list", "--status", "done", "--mine"],
+        ["list", "--status", "claimed"],
     ]
 
 

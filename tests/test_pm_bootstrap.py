@@ -401,6 +401,12 @@ def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path,
         "  [claimed] T-A-011  wip b       alice/A_1   -\n"
     )
     slot_done_out = "  [done   ] T-A-009  done a       alice/A_1   -\n"
+    # 타 세션 현황용 무렌즈 full-board claimed 조회(T-0331·must-fix 2) — 여기선 내 세션(A_1) claim
+    # 만 담아 타 세션 0건(현황 줄 생략)으로 둔다(이 테스트 초점=슬롯-스코프 카운트).
+    full_claimed_out = (
+        "  [claimed] T-A-010  wip a       alice/A_1   -\n"
+        "  [claimed] T-A-011  wip b       alice/A_1   -\n"
+    )
 
     def fake_board(args):
         calls.append(args)
@@ -408,6 +414,8 @@ def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path,
             return 0, "✓ no lint issues\n"
         if args == ["list", "--status", "done", "--repo", "A", "--slot", "1"]:
             return 0, slot_done_out
+        if args == ["list", "--status", "claimed"]:  # 무렌즈 전-세션 조회(T-0331).
+            return 0, full_claimed_out
         if args == ["list", "--repo", "A", "--slot", "1"]:
             return 0, slot_list_out
         raise AssertionError(f"슬롯 정체성인데 슬롯-스코프 아님: {args}")
@@ -418,20 +426,71 @@ def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path,
     assert rc == 0
     out = capsys.readouterr().out
 
-    # 1) board list 는 --mine 이 아니라 그 슬롯 정체성(--repo A --slot 1)으로 조회됐다(default + done).
+    # 1) 카운트는 슬롯 정체성(--repo A --slot 1)으로 조회(default + done) + 타 세션 현황은 무렌즈
+    #    full-board claimed 로 별도 조회(T-0331 must-fix 2·전 세션·사용자 무관·슬롯-바인딩에서도 병기).
     list_calls = [c for c in calls if c[:1] == ["list"]]
     assert list_calls == [
         ["list", "--repo", "A", "--slot", "1"],
         ["list", "--status", "done", "--repo", "A", "--slot", "1"],
+        ["list", "--status", "claimed"],
     ]
     assert not any("--mine" in c for c in calls), "슬롯 정체성인데 --mine 로 조회(S1 mislabel 재현)"
     # 2) 카운트 라벨 = "(slot 1)" (그 슬롯 정체성으로 조회) — user-wide "(mine)" mislabel 근절.
     assert "claimed: 2 (slot 1)" in out
-    assert "open: 1 (slot 1)" in out
+    assert "open: 1 (공유 backlog·슬롯무관)" in out
     assert "done: 1 (slot 1)" in out
     assert "(mine)" not in out
     # 3) open ticket 은 슬롯무관 backlog 로 명시(카운트 slot-scope 와 혼동 방지).
     assert "open ticket (claim 가능·backlog·슬롯무관): T-A-001" in out
+
+
+def test_bootstrap_slot_identity_renders_other_session_claims(bootstrap, wp, tmp_path, capsys):
+    """**T-0331 must-fix 2c (positive-render)**: 슬롯 정체성(--repo A --slot 1) 부트스트랩이 무렌즈
+    full-board claimed 조회로 *타 세션* claim 을 실 markdown 에 병기하고 내 세션 claim 은 뺀다.
+
+    dormant 출하 금지(PM 결정): 스코프 뷰가 타 세션을 숨겨도, 전용 무렌즈 조회가 동일 사용자 타
+    슬롯(alice/A_2) + 타 사용자(bob/A_3) claim 을 "타 세션 진행(claimed)" 줄로 실제 렌더한다.
+    """
+    calls: list[list[str]] = []
+    slot_list_out = (
+        "  [open   ] T-A-001  backlog     -           -\n"
+        "  [claimed] T-A-010  wip mine    alice/A_1   -\n"
+    )
+    # 무렌즈 full-board claimed = 내 세션(A_1) + 타 세션(A_2 동일 사용자·A_3 타 사용자).
+    # board.py cmd_list 실 포맷(고정폭 60/18) — 위치 파서(codex R3)가 요구하는 컬럼 정렬.
+    full_claimed_out = "".join(
+        f"  [{'claimed':7s}] {tid}  {title[:60]:60s}  {claimed:18s}  -\n"
+        for tid, title, claimed in [
+            ("T-A-010", "wip mine", "alice/A_1"),
+            ("T-A-020", "wip a2", "alice/A_2"),
+            ("T-A-030", "wip a3", "bob/A_3"),
+        ]
+    )
+
+    def fake_board(args):
+        calls.append(args)
+        if args[:1] == ["lint"]:
+            return 0, "✓ no lint issues\n"
+        if args == ["list", "--status", "done", "--repo", "A", "--slot", "1"]:
+            return 0, ""
+        if args == ["list", "--status", "claimed"]:
+            return 0, full_claimed_out
+        if args == ["list", "--repo", "A", "--slot", "1"]:
+            return 0, slot_list_out
+        raise AssertionError(f"예상 밖 board 호출: {args}")
+
+    pool = FakePool(slot_status_ret=_slot_status_obj(wp, submodules=[]))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=pool, board_fn=fake_board)
+    rc = inst.run(repo="A", slot=1)
+    assert rc == 0
+    out = capsys.readouterr().out
+
+    # 타 세션 현황 줄이 실제 markdown 에 렌더됐다 — 타 세션(A_2·A_3) 2건·내 것(A_1) 제외.
+    other_line = next(ln for ln in out.splitlines() if ln.startswith("- 타 세션 진행(claimed):"))
+    assert "2건" in other_line
+    assert "A_2: T-A-020" in other_line and "A_3: T-A-030" in other_line
+    # 내 세션 claim(A_1/T-A-010)은 타 세션 줄에 안 들어간다(오귀속 회귀 가드).
+    assert "A_1" not in other_line and "T-A-010" not in other_line
 
 
 # ── T-0284: fresh 슬롯 self-sufficiency (스크램블 낭비 제거) ──────────────────

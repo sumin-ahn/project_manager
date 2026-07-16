@@ -558,7 +558,7 @@ def test_format_board_counts_line_labels_mine():
     counts = {"done": 25, "open": 6, "claimed": 2, "blocked": 0}
     line = mod._format_board_counts_line(counts)
     assert "done: 25 (mine)" in line
-    assert "open: 6 (mine)" in line
+    assert "open: 6 (공유 backlog·슬롯무관)" in line
     assert "claimed: 2 (mine)" in line
     assert "blocked: 0 (mine)" in line
 
@@ -931,13 +931,19 @@ def test_run_surfaces_user_continuity_line(tmp_path, capsys):
 # ── run() 통합: board 카운트 `--mine` 라벨 명확화 (T-0194) ─────────────────────
 
 def test_run_markdown_board_counts_labeled_mine(tmp_path, capsys):
-    """markdown Board 섹션 + 권장 첫 turn 요약 둘 다 `(mine)` 라벨을 단다."""
+    """markdown Board 섹션 + 권장 첫 turn 요약 둘 다 done/claimed/blocked 는 `(mine)`, **open 만
+    `(공유 backlog·슬롯무관)`**(T-0331) 라벨을 단다 — 두 표면 모두 동일 규칙(must-fix 3: 요약부도 정정)."""
     mod = _load_module()
     inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
     assert inst.run() == 0
     out = capsys.readouterr().out
+    # done/claimed/blocked = slot/mine 스코프.
     assert "done: 0 (mine)" in out
     assert "done 0 (mine)" in out
+    # open = 슬롯무관 공유 backlog — Board 섹션(`open: N`)·요약(`open N`) 양쪽 정정(must-fix 3).
+    assert "open: 1 (공유 backlog·슬롯무관)" in out
+    assert "open 1 (공유 backlog·슬롯무관)" in out
+    assert "open: 1 (mine)" not in out and "open 1 (mine)" not in out
 
 
 def test_run_json_board_counts_include_mine_alias(tmp_path, capsys):
