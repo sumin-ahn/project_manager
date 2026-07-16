@@ -43,7 +43,7 @@ python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
 
 이건 "나는 `<repo>_<N>` PM" *정체성 선언 + 상태점검* 이다 — 출력의 identity surface(세션=`<repo>_<N>`·
 슬롯·라이브 브랜치·보드 공유) + 다른 활성 PM 현황을 받는다. **이후 이 세션은 보드/리스 조작에
-`--session <repo>_<N>` 을 명시**한다(정체성=대화 맥락·도구엔 명시 전달). 슬롯은 미리
+`--repo <repo> --slot <N>` 을 명시**한다(정체성=대화 맥락·도구엔 명시 전달). 슬롯은 미리
 `pm-config worktree add <repo>` 로 만들어 둔다. (솔로/무인자면 위 무-인자 dump 그대로.)
 
 옵션:

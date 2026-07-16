@@ -82,13 +82,13 @@ build 세션이 시작되면 다음을 순서대로 수행한다. **Read tool �
 ### 세션 식별
 
 - **PM 세션명 canonical = `<repo>_<N>`** (multi-PM 정체성 — `<repo>`=프로젝트 repo·`<N>`=PM 슬롯
-  번호 · ADR-0043). board.py 조작 시 `--session` 인자로 이 표기로 전달한다:
+  번호 · ADR-0043). board.py 조작 시 `--repo <repo> --slot <N>` 인자로 전달한다(ADR-0057 — 구 세션 플래그 대체):
   ```bash
-  {{PY}} .project_manager/tools/board.py claim T-NNNN --session <repo>_<N>   # 예: --session myproj_1
+  {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1
   ```
-  canonical 표기라야 board 가 repo prefix 를 유도한다 (canonical 이 아닌 자유형 세션명은 M>1 에서 prefix 유도가 조용히 죽음).
-  **솔로(M=1)** 는 `--session` 을 생략해도 된다 — 아래 식별 우선순위 체인이 해소한다.
-  (board.py 식별 우선순위·ADR-0040: `--session` 인자 > `$PM_SESSION_NAME`[구 `$CLAUDE_SESSION_NAME` = deprecated alias] > **활성 슬롯 lease 가 정확히 1개면 그 세션**[단일-lease 유도] > [lease 장부 부재·leased 0 = 솔로] local.conf `session=` > 미해소[귀속 쓰기는 fail-loud·`--session <repo>_<N>` 명시 요구]. leased ≥2[모호]면 local.conf 층을 건너뛴다 — 남의 세션 silent 오귀속 차단.)
+  `--repo` 를 명시해야 board 가 repo prefix 를 유도한다.
+  **솔로(M=1)** 는 `--repo/--slot` 을 생략해도 된다 — 아래 식별 우선순위 체인이 해소한다.
+  (board.py 식별 우선순위·ADR-0040: `--repo`/`--slot` 인자 > `$PM_SESSION_NAME`[구 `$CLAUDE_SESSION_NAME` = deprecated alias] > **활성 슬롯 lease 가 정확히 1개면 그 세션**[단일-lease 유도] > [lease 장부 부재·leased 0 = 솔로] local.conf `session=` > 미해소[귀속 쓰기는 fail-loud·`--repo <repo> --slot <N>` 명시 요구]. leased ≥2[모호]면 local.conf 층을 건너뛴다 — 남의 세션 silent 오귀속 차단.)
 - 위임(task subagent · 폴백 프로세스)의 식별 라벨 — `orch-dev-TNNNN` / `orch-review-TNNNN` (§3).
 
 ### 첫 turn 권장 보고 (부트스트랩 직후)
@@ -255,7 +255,7 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"        # 읽�
 # 보드
 {{PY}} .project_manager/tools/board.py list
 {{PY}} .project_manager/tools/board.py show T-NNNN
-{{PY}} .project_manager/tools/board.py claim T-NNNN --session <repo>_<N>   # 솔로(M=1)면 생략 가능 (§세션 식별)
+{{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 솔로(M=1)면 생략 가능 (§세션 식별)
 {{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass
 {{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint           # depends_on·thin-ticket 검사

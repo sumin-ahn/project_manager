@@ -38,9 +38,9 @@ python3 .project_manager/tools/pm_handoff.py \
 ```
 
 > `--session-seq` 은 **숫자만**(`19`) — CLI 가 "차" 를 붙여 `PM 19차` 로 포맷한다(`19차` 줘도
-> 후행 "차" 정규화로 이중부착 방지·T-0100). 구형 `--session-num` 은 deprecated alias 로 계속
-> 동작(ADR-0043). multi-PM 이면 세션 정체성은 canonical `--session <repo>_<N>` 으로 준다
-> (구형 `--worktree-slot work/<repo>_<N>` 도 alias 수용).
+> 후행 "차" 정규화로 이중부착 방지·T-0100). 차수는 `--session-seq` 로만 준다(구형 차수 별칭은
+> ADR-0057 로 제거). multi-PM 이면 세션 정체성은 canonical `--repo <repo> --slot <N>` 으로 준다
+> (구형 세션·worktree-슬롯 별칭은 ADR-0057 로 제거).
 
 옵션:
 - `--dry-run` — log/current.md / pm_state.md 변경 미적용·stdout 미리보기만.

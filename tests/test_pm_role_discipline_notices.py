@@ -35,9 +35,9 @@ def test_allow_untested_test_less_done_notice_present():
 
 
 def test_list_session_slot_scoping_notice_present():
-    """T-0197: list 스코핑(--mine/--session/--slot) vs claim/mutation 행위자 --session 구분 안내."""
+    """T-0197: list 스코핑(--mine/--repo/--slot) vs claim/mutation 행위자 --repo/--slot 구분 안내 (ADR-0057 표기 통일)."""
     text = _text()
-    assert "list" in text and "--session" in text
+    assert "list" in text and "--repo" in text and "--slot" in text
 
 
 def test_release_procedure_github_release_step_is_required():

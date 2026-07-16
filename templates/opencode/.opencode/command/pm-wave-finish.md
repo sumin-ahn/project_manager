@@ -33,10 +33,10 @@ reconfigure)하므로 env prefix 불필요 — Windows/CP949·PowerShell 서도 
 python3 .project_manager/tools/ticket_finish.py T-NNNN
 ```
 
-> `--session <repo>_<N>` (multi-PM·ADR-0027 두-git 형상) — 회귀를 돌릴 worktree 슬롯 명시. 분리된 PM
+> `--repo <repo> --slot <N>` (multi-PM·ADR-0027 두-git 형상) — 회귀를 돌릴 worktree 슬롯 명시. 분리된 PM
 > 홈(②)엔 `tests/` 가 없어 회귀가 활성 worktree(①)에서 돌아야 하는데 슬롯이 여럿이면 자동해소가 모호할 수
 > 있다. 솔로/단일슬롯/default-1 은 생략 가능·미지정+진짜 모호(repo≥2·slot-1 부재)면 fail-loud. pm_handoff
-> `--session` 동형. **`--no-pytest`** — 회귀를 별도 측정했을 때 skip(board complete `--tests-pass` 유지·모호
+> `--repo/--slot` 동형. **`--no-pytest`** — 회귀를 별도 측정했을 때 skip(board complete `--tests-pass` 유지·모호
 > 게이트 우회).
 
 ## CLI 자동 처리

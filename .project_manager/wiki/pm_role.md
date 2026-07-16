@@ -48,9 +48,9 @@ type: handoff
 > architecture 갱신 + ADR amend/supersede). `architecture.md`·`status.md` content-truth(구조·구현상태
 > 판정·비고)는 **architect 가 유지·PM 은 점검**(저자 아님).
 
-**세션 정체성(ADR-0043·ADR-0040):** 정체성 = `<repo>_<N>`(canonical 단일 문자열)이고 board/리스
-조작은 `--session <repo>_<N>` 로 명시 전달한다(env 미보존이라 `export` 불가·불필요). **실값은
-부트스트랩 카드가 정체성 채워 dump** 하므로 손으로 외우지 않는다. 솔로(단일 세션)는 `--session`
+**세션 정체성(ADR-0057·ADR-0043·ADR-0040):** 정체성 = `<repo>_<N>`(canonical 단일 문자열)이고 board/리스
+조작은 `--repo <repo> --slot <N>` 로 명시 전달한다(ADR-0057 — 구 세션 플래그를 대체). **실값은
+부트스트랩 카드가 정체성 채워 dump** 하므로 손으로 외우지 않는다. 솔로(단일 세션)는 `--repo/--slot`
 불요 — env `PM_SESSION_NAME`/local.conf `session=` 자동 해소(현행 무변경·상세 순서는 §세션 식별 규칙).
 
 ## 찾아가는 법 (상황 → 소스)
@@ -104,7 +104,7 @@ PM 한 wave 의 표준 흐름 = `/pm-bootstrap` (세션 시작) → 반복{ `/pm
 (세션 종료). 자세한 wave 정의·구성 단계는 [`pm_playbook.md`](pm_playbook.md) §"Wave 패턴" 참조.
 
 > **커맨드 *표기*(실 인자·정체성)의 단일 진실 = 부트스트랩 커맨드 카드(코드 생성·ADR-0045).**
-> 아래 표는 *방법론*(어떤 wave 에 어떤 skill·왜)만 담는다 — 실제 호출줄(정체성 `--session <repo>_<N>`
+> 아래 표는 *방법론*(어떤 wave 에 어떤 skill·왜)만 담는다 — 실제 호출줄(정체성 `--repo <repo> --slot <N>`
 > 채움·숨은 전제 경고 인접)은 `/pm-bootstrap` 이 dump 하는 카드가 항상-정합 단일 진실이라 여기 표기를
 > 중복하지 않는다(정적 표는 정체성 placeholder·drift 원천이었음·ADR-0045 Context).
 
@@ -223,31 +223,32 @@ PM 이 Agent 툴로 spawn 하는 서브에이전트 = **4축**. PM 은 5번째(d
 ## 세션 식별 규칙
 
 - **PM 세션 정체성 = `<repo>_<N>`** (canonical 단일 문자열·ADR-0043) — board/리스 조작은
-  `--session <repo>_<N>` 명시(부트스트랩 카드가 실값 채워 dump·손 암기 불요). 솔로(단일 세션)는
-  `--session` 불요 — env `PM_SESSION_NAME`/local.conf `session=` 자동 해소(아래 해소 순서).
-- 구현 세션: 짧은 식별자 (알파벳·역할명 등). `board.py claim --session <name>` 으로 명시.
-- orchestrator 위임 시 PM 이 Agent 툴로 서브에이전트를 spawn — 세션명은
-  `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류로 claim 시 명시 전달.
+  `--repo <repo> --slot <N>` 명시(ADR-0057·부트스트랩 카드가 실값 채워 dump·손 암기 불요). 솔로(단일 세션)는
+  `--repo/--slot` 불요 — env `PM_SESSION_NAME`/local.conf `session=` 자동 해소(아래 해소 순서).
+- 구현 세션: 짧은 식별자 (알파벳·역할명 등). `$PM_SESSION_NAME=<name>` 환경변수로 바인딩(ADR-0057 로 free-form 세션 플래그 제거).
+- orchestrator 위임 시 PM 이 Agent 툴로 서브에이전트를 spawn — 서브에이전트 식별 라벨은
+  `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류(free-form·board 조작은 PM 담당이라 서브는 claim
+  안 함). 라벨을 board 귀속에 써야 하면 `$PM_SESSION_NAME` 바인딩으로만(claim 플래그 없음).
 
 **세션 정체성은 저장하지 않고 유도한다 (ADR-0040):** 세션명·티켓 prefix 는 per-clone
 `local.conf` 에 박아두는 상태가 아니라 **유도되는 값**이다. 해소 순서 =
-`명시(--session/--prefix) > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에
+`명시(--repo/--slot·--prefix) > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에
 leased 슬롯이 정확히 1개면 그 세션(count-based 유도) > (solo 홈·lease 부재) local.conf
 session=/prefix= legacy 폴백`. **leased ≥2 인 multi 홈은 local.conf 층을 건너뛴다** — per-clone
 저장값으로 남의 슬롯을 self-identify 하던 클래스(silent 오귀속)를 원천 차단. 모호(leased ≥2·
 무명시)한데 귀속 조작(claim/complete/unclaim/release/new owner)을 시도하면 **fail-loud**
-(`--session <repo>_<N>` 명시 유도), 조회 surface(whoami/status)는 `(비바인딩)` 표시. solo
+(`--repo <repo> --slot <N>` 명시 유도), 조회 surface(whoami/status)는 `(비바인딩)` 표시. solo
 채택자는 lease 장부가 없어 legacy 폴백 = 현행 무변경 — `local.conf session=`/`prefix=` 는
 **solo 형상 전용 legacy** 라 multi 홈은 흡수 후 제거해도(남아도 무시) 동작 동일.
 
 > 실제 사용된 세션 목록 (sliding window) 은 동적 상태라 [`pm_state.md`](pm_state.md)
 > §"세션 식별 (현재까지 사용된 이름)" 으로 분리됐다 — `/pm-handoff` 가 자동 갱신.
 
-**`list` 스코핑(조회) vs `claim`/`complete` 의 `--session`(행위자) — 구분(T-0197):** `board.py list`
-의 `--session`/`--slot`/`--mine` 은 **조회 전용 뷰 필터**(그 식별자의 open+claim 렌즈)다.
-`claim`/`complete`/`migrate-identity` 의 `--session` 은 **행위자 지정**(누구 이름으로 claim 하는지)
-— 의미가 다르다. `list --session X` 는 이제 에러 없이 동작(과거 argparse 가 거부해 opencode PM 이
-계속 에러났었다) — 두 용법을 혼동해도 최소한 크래시는 안 난다.
+**`list` 스코핑(조회) vs `claim`/`complete` 의 `--repo`/`--slot`(행위자) — 구분(T-0197·ADR-0057):** `board.py list`
+의 `--repo`/`--slot`/`--mine` 은 **조회 전용 뷰 필터**(그 식별자의 open+claim 렌즈)다.
+`claim`/`complete`/`migrate-identity` 의 `--repo`/`--slot` 은 **행위자 지정**(누구 이름으로 claim 하는지)
+— 같은 플래그지만 문맥(조회 vs 귀속)에 따라 의미가 다르다. 미해소 시 귀속 조작은 fail-loud
+(`--repo <repo> --slot <N>` 명시 요구)·조회는 `(비바인딩)` 표시로 크래시 없이 진행된다.
 
 **채택자 파급 — 단일 등록 홈의 ID 네임스페이스 (ADR-0040):** areas.md 에 repo 를 **정확히
 1개** 등록한 홈은 이제 `--prefix` 없이도 새 티켓이 그 repo 의 `T-<prefix>-NNN` 로 발행된다

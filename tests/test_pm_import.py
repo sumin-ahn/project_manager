@@ -2674,13 +2674,13 @@ def test_opencode_tickets_readme_no_claude_specific_session_env(pm_import):
     """tickets/README.md 의 세션 식별 절이 claude-특화 잔존 0 인지(드리프트 가드 allowlist 정합).
 
     claude 원본의 `CLAUDE_SESSION_NAME 환경변수` 단독 우선 안내(claude-특화)를 opencode 는 harness-무관
-    `--session` 1순위 안내로 적응했다. 그 한 줄 외 나머지 본문은 claude 와 동일해야 파리티가 의미를 가진다.
+    `--repo`/`--slot` 1순위 안내로 적응했다(ADR-0057). 그 한 줄 외 나머지 본문은 claude 와 동일해야 파리티가 의미를 가진다.
     """
     oc_readme = (
         REPO / "templates" / "opencode" / ".project_manager" / "wiki" / "tickets" / "README.md"
     ).read_text(encoding="utf-8")
-    # harness-무관 1순위 안내가 들어있어야 한다.
-    assert "--session" in oc_readme
+    # harness-무관 1순위 안내가 들어있어야 한다(ADR-0057: --repo/--slot 로 통일).
+    assert "--repo" in oc_readme and "--slot" in oc_readme
     assert "harness-무관" in oc_readme, "세션 식별 절이 harness-무관 안내로 적응되지 않음."
     # claude 원본의 'CLAUDE_SESSION_NAME 환경변수\n1.' 단독 우선 형태가 그대로 남아있지 않아야 한다.
     assert "1. `CLAUDE_SESSION_NAME` 환경변수" not in oc_readme, \
