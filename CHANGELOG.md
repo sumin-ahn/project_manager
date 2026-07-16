@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-07-17
+
+opencode 문제해결 + 누락-기능 수정 patch — 대용량 write/edit silent-truncation 어댑터 가드(upstream 미해결 실측·라이브 재현) + worktree 슬롯 제거 단일 원자 커맨드. 이중게이트(내부 reviewer + codex 다라운드) 통과·라이브 매트릭스 실측 포함. (계획됐던 opencode subagent 기본 background 화는 sentinel 라이브 실측에서 headless 결과+작업 유실이 확정돼 **drop** — 상세는 PM 홈 log verify entry.)
+
+### Added
+- **opencode safe-write 가드 3층** (T-0334) — ① `tool.execute.before` **deny-and-redirect**: write/edit args 16KB(기본·`PM_SAFE_WRITE_DENY_BYTES`) 초과 시 throw + 모델-facing 유도(기존 파일 재작성→`edit` 분할·신규 대형 파일→`safe_write`). ② **`safe_write` custom tool**: 8KB chunk(기본·`PM_SAFE_WRITE_CHUNK_BYTES`) 강제 create/append — root containment 커널 강제(create=`openSync "wx"`·append=`O_NOFOLLOW`·절대경로/lexical/realpath-symlink 3중 거부). ③ opencode.jsonc 모델 `limit { context, output }` 명시(1.17.19 config 검증이 둘 다 요구·미명시 시 output 32000 hardcoded fallback). 근거 실측: 무가드 237KB 단일 write = **silent 실패**(파일 미생성·tool call 미성립·finish "stop" 위장)·무툴 대형 응답 = 정확히 32000 토큰 절단. 한계 명기: tool-call JSON 자체 절단은 plugin 이 못 잡음(upstream #18108·#19604·#17471 추적).
+- **`pm-config worktree remove <slot> [--force]`** (T-0333) — 슬롯 통째 제거 단일 원자 커맨드: 리스/장부 확인→dirty·활성 리스 거부(`--force`=stash 보존+**stash-후 dirty 재검사**로 submodule 내부 변경 유실 차단)→`git worktree remove`(+prune)→전용 브랜치 정리(`-d` 고정=머지 시에만 삭제·미머지 보존·공유 브랜치 스킵)→장부 삭제. **장부까지 지워 `add` 가 빈 번호 재사용** — 수동 제거→dangling 장부→번호 skip footgun 종결. 제거 3분법: 등록 슬롯=`remove` / dangling 장부=`prune-stale` / orphan worktree=사용자 `git worktree remove`. pm-env 스킬/커맨드 3표면 동기.
+
 ## [1.2.1] - 2026-07-16
 
 v1.2.0 직후 backlog 소거 patch — 게이트 무결성·부트스트랩 오독 방지·nudge 능동화·문서 정합. 이중게이트(내부 reviewer + codex·codex 반려 2건 재작업 수렴) 통과·라이브 검증 포함.

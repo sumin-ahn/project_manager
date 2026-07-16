@@ -139,6 +139,25 @@ class ReleaseRefused(Exception):
         super().__init__(f"refusing to release dirty slot {slot!r} (require_clean=True)")
 
 
+class RemoveRefused(Exception):
+    """dirty 또는 활성(leased/creating) 슬롯을 force=False 로 remove_slot 하려 함 (작업 유실·사용중 슬롯 보호·T-0333).
+
+    `release` 의 dirty 거부 철학과 동형이되, remove 는 슬롯을 *통째로* 없애므로 활성 리스
+    (다른 세션 사용 중·in-flight 생성)까지 거부한다 — force=True 로만 무시(dirty 는 stash
+    보존 후 강제 제거). 정석 흐름은 `release`(→idle) 후 `remove`(idle 슬롯). `reason` ∈
+    {"dirty", "active-lease"}·`state` = active-lease 시 슬롯 상태(leased/creating·진단용).
+    """
+
+    def __init__(self, slot: str, reason: str, *, state: "str | None" = None):
+        self.slot = slot
+        self.reason = reason      # "dirty" | "active-lease"
+        self.state = state        # active-lease 시 슬롯 state (leased/creating)
+        detail = f" (state={state})" if state else ""
+        super().__init__(
+            f"refusing to remove slot {slot!r} — {reason}{detail} (force=True 로 무시)"
+        )
+
+
 class CheckoutFailed(Exception):
     """슬롯 worktree 의 branch checkout 실패 (ADR-0013).
 
@@ -365,6 +384,41 @@ class ReconcileResult:
     def __repr__(self) -> str:
         return (f"ReconcileResult(orphans={self.orphans!r}, stale={self.stale!r}, "
                 f"incomplete={self.incomplete!r})")
+
+
+class RemoveResult:
+    """`remove_slot` 결과 — 무엇을 지웠고 슬롯 전용 브랜치를 어떻게 처리했는지 (보고용·T-0333).
+
+    - `slot` — 제거한 슬롯 식별자(`work/<repo>_<N>`).
+    - `branch` — 제거 당시 슬롯 worktree 의 live 브랜치(`current_branch`·None=detached/조회불가).
+    - `branch_action` — 슬롯 전용 브랜치(`<repo>_<N>`·`git worktree add` 가 슬롯명으로 판 브랜치)
+      처리 결과:
+        - "deleted" — 전용 브랜치가 main(bare HEAD)에 머지돼 삭제(`git branch -d` rc0).
+        - "preserved-unmerged" — 전용 브랜치가 미머지라 보존(`git branch -d` rc≠0·작업 유실 방지).
+        - "skipped-shared" — 슬롯이 전용 브랜치(`<repo>_<N>`)가 아닌 공유/다른 브랜치(main 등)를
+          체크아웃 중이라 브랜치 삭제 자체를 스킵(공유 브랜치 보호).
+        - "none" — detached/조회불가라 지울 브랜치 판별 불가.
+    - `stashed` — force + dirty 라 제거 전 변경을 stash 로 보존 시도했는지(stash 성공 시에만 True·
+      실패면 remove_slot 이 RuntimeError 로 중단하므로 여기 도달 안 함).
+    - `forced_state` — `--force` 로 **활성 리스**(leased/creating·사용 중)를 override 하고 제거했을 때
+      그 원래 state(예 "leased"·CLI 가 강제 회수 경고 surface). idle 슬롯이었으면 None(정상 제거·경고 불요).
+
+    (dataclass 미사용 — Lease/ReconcileResult 등과 동일 이유: `spec_from_file_location` 로드 시
+    dataclass 의 forward-ref 해소가 깨진다. 평범한 클래스로 그 결합을 피한다.)
+    """
+
+    def __init__(self, slot: str, *, branch: "str | None", branch_action: str,
+                 stashed: bool, forced_state: "str | None" = None):
+        self.slot = slot
+        self.branch = branch
+        self.branch_action = branch_action
+        self.stashed = stashed
+        self.forced_state = forced_state   # force 로 override 한 활성 state(leased/creating)·None=idle 정상.
+
+    def __repr__(self) -> str:
+        return (f"RemoveResult(slot={self.slot!r}, branch={self.branch!r}, "
+                f"branch_action={self.branch_action!r}, stashed={self.stashed!r}, "
+                f"forced_state={self.forced_state!r})")
 
 
 def _now_utc() -> str:
@@ -1058,6 +1112,142 @@ def force_release(slot: str, *, git_runner: GitRunner | None = None) -> Lease | 
         target.pid = 0
         _write_ledger(leases)
         return target
+
+
+def remove_slot(
+    slot: str,
+    *,
+    force: bool = False,
+    git_runner: GitRunner | None = None,
+) -> "RemoveResult | None":
+    """슬롯을 *통째로* 제거한다 — worktree remove + 전용 브랜치 정리 + 장부 엔트리 삭제 (원자·user-invoked·T-0333).
+
+    `create_slot` 의 역연산 — 슬롯 lifecycle 에서 *제거 본체*가 수동 `git worktree remove`
+    위임이던 gap 을 닫는다(PM 69 footgun 체인: 수동 remove → dangling 장부 → `add` 가 번호
+    skip → 뒤늦은 prune). 이 한 커맨드가 리스 확인 → dirty 검사 → `git worktree remove`
+    (+ `git worktree prune`) → 슬롯 전용 브랜치 정리 → 장부 엔트리 제거를 원자로 한다.
+
+    **삭제-위임 원칙(사용자 명시 호출 전제)** — PM 이 자율 실행하지 않는다(호출부 CLI 가
+    사용자 명시 `pm-config worktree remove <slot>`). `prune-stale`(worktree 부재 장부만 정리)과
+    달리 실 worktree 를 지운다. orphan worktree(장부 미등록)는 여전히 `git worktree remove`.
+
+    원자 시퀀스:
+      ① 리스/장부 확인 — 엔트리 없으면 `None` 반환(무해 종료·이미 정리됨·orphan 은 위 참조).
+      ② 활성 리스 확인 — `state != "idle"`(leased/creating·사용 중)이면 `RemoveRefused`
+         ("active-lease")·`force=True` 로만 무시(정석은 `release` 먼저·override 시 원래 state 를
+         `RemoveResult.forced_state` 에 실어 CLI 가 강제-회수 경고). **dirty 검사** — dirty 면
+         `RemoveRefused`("dirty")·`force=True` 면 stash 보존 후 강제. **stash 실패(rc≠0)** 또는
+         **stash 후에도 여전히 dirty**(submodule 내부 변경 등 top-level stash 가 못 담는 잔존)면
+         제거를 중단(`RuntimeError`·장부/worktree/브랜치 미변경) — 어느 경우도 `worktree remove
+         --force` 로 날리는 작업 유실을 막는다(codex must-fix·R2 class-fix 일반 불변식).
+      ③ `git worktree remove [--force]`(+ `git worktree prune`) — `.repos/<repo>.git` bare
+         컨텍스트(공유 .git 원·ADR-0011 §31). 실패(rc≠0)면 `RuntimeError`(장부/브랜치 미변경·단
+         force+dirty 는 stash 가 이미 생성돼 있을 수 있음 — 작업은 보존됨).
+      ④ 슬롯 전용 브랜치(`<repo>_<N>`) 정리 — 슬롯이 그 전용 브랜치를 체크아웃 중이면
+         `git branch -d`(머지 완료 시에만 삭제·미머지면 rc≠0 로 거부=보존·작업 유실 방지).
+         공유/다른 브랜치(main 등)면 삭제 자체를 스킵. detached 면 판별 불가(none).
+      ⑤ 장부 엔트리 제거 — `add` 가 빈 번호를 **재사용**(번호 skip footgun 종결·이 티켓 핵심).
+
+    ⚠️ **미머지-보존 브랜치 캐비앗** (create_slot 기존 한계·T-0333 결함 아님): ④ 가 미머지라
+    전용 브랜치 `<repo>_<N>` 를 보존하면, 나중에 같은 번호의 슬롯을 base-경로로 재생성
+    (`create_slot(base=)` 가 `-b <repo>_<N>`)하려 할 때 `git worktree add` 가 "already exists"
+    (브랜치 잔존)로 죽는다. 재사용하려면 그 보존 브랜치를 먼저 정리(수동 `git branch -D`/머지)한
+    뒤 재시도한다. (create_slot 자체 수정은 이 티켓 범위 밖 — 후속 티켓 후보.)
+
+    **fs 존재 가드는 실경로(git_runner 미주입)에서만** 본다 — 주입 runner(hermetic 테스트)는
+    슬롯 상태를 모델링하는 권위라 건너뛴다(`alloc` idle-reuse 동형). 슬롯 전용 브랜치명은
+    슬롯 식별자 tail(`<repo>_<N>`)로, `git worktree add` 가 슬롯 경로 basename 으로 자동 판
+    브랜치와 정합한다(create_slot 결정). `cmd_release`/`cmd_worktree_prune_stale` 패턴대로
+    `git_runner` 주입으로 실 git 없이 배선 검증(DI seam).
+    """
+    with _lease_lock():
+        leases = _read_ledger()
+        target = next((l for l in leases if l.slot == slot), None)
+        # ① 리스/장부 확인 — 엔트리 없으면 무해 종료(orphan 은 git worktree remove·prune-stale).
+        if target is None:
+            return None
+
+        # ② 활성 리스 확인 — leased/creating(사용 중·in-flight)은 force 로만(release 먼저가 정석).
+        # force override 면 원래 활성 state 를 실어 CLI 가 강제-회수 경고를 낸다(reviewer should-fix).
+        forced_state = target.state if target.state != "idle" else None
+        if forced_state is not None and not force:
+            raise RemoveRefused(slot, "active-lease", state=forced_state)
+
+        path = slot_path(slot)
+        # fs 존재 가드는 실경로(git_runner 미주입)에서만 — 주입 runner 는 슬롯 상태를 모델링
+        # (alloc idle-reuse 동형). 실경로 worktree 부재(이미 사라짐)면 remove 를 건너뛰고 장부만 정리.
+        real_path_missing = git_runner is None and not path.exists()
+
+        # ② dirty 검사 — dirty 면 거부(작업 유실 방지)·force 면 stash 보존 후 강제.
+        stashed = False
+        if not real_path_missing and _is_dirty(path, git_runner=git_runner):
+            if not force:
+                raise RemoveRefused(slot, "dirty")
+            # force — dirty 를 stash 보존. **stash 실패(rc≠0)면 제거를 중단**(작업 유실 방지·codex
+            # must-fix): 아직 아무것도 안 지웠으므로 장부/worktree/브랜치 미변경으로 raise 한다.
+            # 이 가드가 없으면 stash 못 뜬 dirty 변경을 `worktree remove --force` 가 날린다.
+            rc_s, out_s = _stash(path, git_runner=git_runner)
+            if rc_s != 0:
+                raise RuntimeError(
+                    f"git stash failed for {slot!r} (rc={rc_s}, out={str(out_s).strip()[:200]!r}) — "
+                    "dirty 변경을 보존하지 못해 제거를 중단한다(작업 유실 방지·장부/worktree/브랜치 "
+                    "미변경). 수동으로 정리/커밋 후 재시도하라."
+                )
+            stashed = True
+            # **stash 성공 후 재검사** (codex R2 must-fix·class-fix 일반 불변식): top-level
+            # `git stash push --include-untracked` 는 **submodule 내부 변경을 담지 못한다**. worktree
+            # 풀 슬롯은 submodule init 을 하므로(ADR-0013), stash rc0 라도 dirty submodule 작업이
+            # stash 를 빠져나가 `worktree remove --force` 로 유실될 수 있다. submodule 전용 감지 대신
+            # *일반 불변식* 으로 — stash 후에도 여전히 dirty 면(=stash 가 못 담는 변경 잔존) 제거를
+            # 중단한다(장부/worktree/브랜치 미변경·stash 는 이미 생성됐을 수 있음).
+            if _is_dirty(path, git_runner=git_runner):
+                raise RuntimeError(
+                    f"slot {slot!r} 이 stash 후에도 dirty — stash 로 보존 못 하는 변경 잔존"
+                    "(submodule 내부 변경 가능). 제거를 중단한다(작업 유실 방지·장부/worktree/브랜치 "
+                    "미변경·stash 는 이미 생성됐을 수 있음). 해당 worktree 에서 수동 정리(커밋/push) "
+                    "후 재시도하라."
+                )
+
+        # 슬롯 전용 브랜치 판별은 worktree remove *전에* — 제거 후엔 슬롯 HEAD 조회 불가.
+        branch = current_branch(slot, git_runner=git_runner)
+
+        bare = bare_repo_path(target.repo)
+        bare_runner = git_runner or _real_git_runner(bare)
+
+        # ③ git worktree remove (+ prune) — bare 컨텍스트(공유 .git 원·ADR-0011 §31·_rollback_worktree
+        # 동형). force 면 --force(dirty stash 후·submodule/locked 강제). 실패는 raise — 장부/브랜치를
+        # 손대기 전이라 미변경(단 force+dirty 는 위 stash 가 이미 생성돼 있을 수 있음·작업은 보존됨).
+        # worktree 부재(real_path_missing)면 remove 스킵·prune 만.
+        if not real_path_missing:
+            remove_argv = ["worktree", "remove", str(path)] + (["--force"] if force else [])
+            rc, out = bare_runner(remove_argv)
+            if rc != 0:
+                raise RuntimeError(
+                    f"git worktree remove failed for {slot!r} (rc={rc}, out={out!r}) — "
+                    "장부/브랜치 미변경(원자). dirty/submodule/locked 면 `--force` 로 재시도하라."
+                )
+        bare_runner(["worktree", "prune"])  # best-effort 등록 정리(remove 후·부재 슬롯 dangling admin).
+
+        # ④ 슬롯 전용 브랜치 정리 — 전용 브랜치(`<repo>_<N>`)만·머지 완료 시에만 삭제.
+        dedicated = slot[len("work/"):]   # "<repo>_<N>" = 슬롯 식별자 = create_slot 전용 브랜치명.
+        if branch is None:
+            branch_action = "none"          # detached/조회불가 — 지울 브랜치 판별 불가.
+        elif branch != dedicated:
+            # 슬롯이 전용 브랜치가 아닌 공유/다른 브랜치(main 등)를 체크아웃 중 → 삭제 스킵(공유 보호).
+            branch_action = "skipped-shared"
+        else:
+            # 전용 브랜치 — `git branch -d`(머지 완료 시에만 삭제·미머지면 rc≠0 로 거부=보존).
+            # bare HEAD(=main·기본 브랜치)에 머지됐는지를 git 이 판정한다("머지 완료(main 에 포함)").
+            rc_b, _out_b = bare_runner(["branch", "-d", branch])
+            branch_action = "deleted" if rc_b == 0 else "preserved-unmerged"
+
+        # ⑤ 장부 엔트리 제거 — `add` 가 빈 번호를 재사용(번호 skip footgun 종결·T-0333 핵심).
+        leases[:] = [l for l in leases if l.slot != slot]
+        _write_ledger(leases)
+        return RemoveResult(
+            slot=slot, branch=branch, branch_action=branch_action,
+            stashed=stashed, forced_state=forced_state,
+        )
 
 
 def create_slot(

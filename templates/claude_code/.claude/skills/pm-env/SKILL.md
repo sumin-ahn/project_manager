@@ -1,6 +1,6 @@
 ---
 name: pm-env
-description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo add · worktree add(→pm-bootstrap 바인딩 안내) · slot status/release · upstream show/switch(path↔URL). multi-PM 셋업·upstream 전환의 단일 진입. Triggers: 'pm-env', 'repo 추가', 'worktree 추가', 'slot 상태', 'upstream 전환', '환경 관리'."
+description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo add · worktree add(→pm-bootstrap 바인딩 안내) · slot status/release/remove · upstream show/switch(path↔URL). multi-PM 셋업·upstream 전환의 단일 진입. Triggers: 'pm-env', 'repo 추가', 'worktree 추가', 'slot 상태', '슬롯 제거', 'upstream 전환', '환경 관리'."
 ---
 
 # /pm-env — PM 환경 관리 (pm-config facade)
@@ -33,11 +33,23 @@ description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo 
 추가 후 PM 에게 안내: **"이제 `/pm-bootstrap <repo> --slot N` 으로 이 슬롯에 바인딩하세요"**
 — `pm_bootstrap` 의 multi-PM identity surface(T-0074)와 연결(정체성=세션 맥락).
 
-### slot status / release
+### slot status / release / remove
 ```bash
 ./pm-config.sh status | whoami        # 풀/리스 + 이 세션 repo/슬롯/branch
-./pm-config.sh release <slot> [--force]
+./pm-config.sh release <slot> [--force]        # 작업완료 반납(idle 화·재사용) / --force=강제 백스톱
+./pm-config.sh worktree remove <slot> [--force] # 슬롯 통째 제거(원자·번호 재사용·T-0333)
 ```
+- **release vs remove**: `release` = idle 화(슬롯 폴더 유지·풀 재사용). `remove` = **통째 제거** —
+  `git worktree remove` + 슬롯 전용 브랜치(`<repo>_<N>`) 정리(머지 완료 시 삭제·미머지 보존·공유 브랜치 스킵)
+  + 장부 엔트리 삭제. 장부까지 지워 `add` 가 **빈 번호를 재사용**한다(수동 remove → dangling 장부 →
+  번호 skip footgun 종결). dirty/활성 리스는 거부(`--force` 로만·dirty 는 stash 보존).
+- **제거 3분법**: 등록 슬롯 통째=`worktree remove <slot>` / dangling 장부(worktree 부재)=`worktree
+  prune-stale`(안전) / orphan worktree(장부 미등록)=사용자 `git worktree remove`. **사용자 명시 호출
+  전제** — PM 이 자율로 슬롯을 제거하지 않는다(삭제-위임 원칙).
+- **캐비앗**: 미머지 전용 브랜치는 보존되며(작업 유실 방지) 같은 번호 슬롯의 base-경로 재생성
+  (`worktree add`)을 'already exists' 로 막는다 — 재사용하려면 보존 브랜치 정리(머지/삭제) 후 재시도.
+  `--force` 로 활성(사용 중) 슬롯을 강제 회수하면 '⚠ 강제 회수' 경고가 stderr 로 뜨고, dirty 를
+  stash 보존하면 '복구: git stash list/pop (공유 refs/stash)' 안내가 나온다(리뷰 반영·T-0333).
 
 ### upstream show / switch (path ↔ URL · T-0145)
 ```bash
