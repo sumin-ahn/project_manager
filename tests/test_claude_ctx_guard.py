@@ -225,6 +225,9 @@ def test_statusline_render_colors(guard, statusline):
     # nudge (used 75, 잔여 25 <= 30·> 20): 노랑·"곧 정지".
     nudge = statusline.build_statusline(_sl(150_000), {})
     assert "\033[33m" in nudge and "곧 정지" in nudge
+    # nudge2 (used 78, 잔여 22 <= 23[=min(20+3,30)]·> 20): 빨강·"정지 임박" (2단 strong·T-0328).
+    nudge2 = statusline.build_statusline(_sl(156_000), {})
+    assert "\033[31m" in nudge2 and "정지 임박" in nudge2
     # stop (used 92, 잔여 8 <= 20): 빨강·"정지 임계".
     stop = statusline.build_statusline(_sl(184_000), {})
     assert "\033[31m" in stop and "정지 임계" in stop
@@ -242,12 +245,26 @@ def test_statusline_render_colors_respects_budget_override(guard, statusline):
 
 
 def test_classify_boundaries(guard):
+    # nudge2_threshold = min(stop_pct + CTX_NUDGE2_MARGIN_PCT, nudge_pct) = min(10+3, 20) = 13.
     th = {"nudge_pct": 20, "stop_pct": 10}
     assert guard.classify(50, th) == "ok"
-    assert guard.classify(80, th) == "nudge"   # 잔여 20 == nudge_pct → nudge.
-    assert guard.classify(79, th) == "ok"      # 잔여 21 > nudge_pct → ok.
-    assert guard.classify(90, th) == "stop"    # 잔여 10 == stop_pct → stop.
-    assert guard.classify(89, th) == "nudge"   # 잔여 11 > stop_pct → nudge.
+    assert guard.classify(80, th) == "nudge"    # 잔여 20 == nudge_pct → nudge (1단).
+    assert guard.classify(79, th) == "ok"       # 잔여 21 > nudge_pct → ok.
+    assert guard.classify(86, th) == "nudge"    # 잔여 14 (13 < 14 <= 20) → nudge (1단).
+    assert guard.classify(87, th) == "nudge2"   # 잔여 13 == nudge2_threshold → nudge2 (2단).
+    assert guard.classify(89, th) == "nudge2"   # 잔여 11 (10 < 11 <= 13) → nudge2 (2단).
+    assert guard.classify(90, th) == "stop"     # 잔여 10 == stop_pct → stop.
+    assert guard.classify(91, th) == "stop"     # 잔여 9 < stop_pct → stop.
+
+
+def test_nudge2_threshold_derivation(guard):
+    # 2단 임계 = stop_pct + margin(3), nudge_pct 로 캡 (config 노브 신설 없이 파생).
+    assert guard.CTX_NUDGE2_MARGIN_PCT == 3
+    assert guard.nudge2_threshold({"nudge_pct": 30, "stop_pct": 20}) == 23   # min(23, 30).
+    assert guard.nudge2_threshold({"nudge_pct": 20, "stop_pct": 10}) == 13   # min(13, 20).
+    # nudge 밴드가 좁으면(stop+3 > nudge) nudge_pct 로 캡 — nudge2 가 ok 영역으로 안 샌다.
+    assert guard.nudge2_threshold({"nudge_pct": 21, "stop_pct": 20}) == 21   # min(23, 21).
+    assert guard.nudge2_threshold({"nudge_pct": 22, "stop_pct": 20}) == 22   # min(23, 22).
 
 
 # ── 3. 훅: transcript 토큰합 → used % + deny ───────────────────────────────
@@ -819,3 +836,144 @@ def test_hook_ups_ok_band_passes_regardless_of_prompt(stop_hook, tmp_path):
 def test_is_handoff_prompt_unit(stop_hook, stdin, expected):
     # 좁은 매칭 계약 단위 검증 — 정확 커맨드 `/pm-handoff` 단독 또는 공백 뒤 인자만 True.
     assert stop_hook._is_handoff_prompt(stdin) is expected
+
+
+# ── 7. graceful nudge 2단(strong·stop 직전·ADR-0037·T-0328) — 능동 유도 재안내 ──────────────
+# 1단(soft)이 비었던 자리에 2단(strong)을 추가: 모델이 1단을 무시했거나 1단 창을 건너뛴 세션에
+# hard-stop 직전 "지금 즉시 /pm-handoff·새 작업 금지" 강하게 재안내. 별도 `.nudge2` marker(세션당
+# 1회·1단과 독립). 1단 문구·hard-stop 경로는 무변경(이 스코프는 2단 추가만). 밴드(기본 30/20):
+# nudge2_threshold=23 → 잔여 (20,23] 이 nudge2, (23,30] 이 nudge(1단).
+
+def _nudge2_transcript(tmp_path: Path) -> Path:
+    # 156_000 / 200_000 = 78% used → 잔여 22 (20 < 22 <= 23) → nudge2 밴드.
+    return _write_transcript(tmp_path, [("assistant", {"input_tokens": 156_000})])
+
+
+def test_build_nudge2_guidance(guard):
+    # 2단 안내문 = 능동 유도(즉시 /pm-handoff·새 tool 작업 금지·hard-stop 직전). 여전히 안내(비차단).
+    g = guard.build_nudge2_guidance(82, {"nudge_pct": 20, "stop_pct": 10})
+    assert "ctx-nudge/최종" in g
+    assert "잔여 18%" in g          # remaining_pct(82) = 18.
+    assert "hard-stop" in g
+    assert "/pm-handoff" in g
+    assert "10%" in g               # stop_pct 안내.
+    assert "강제 정지" in g
+    assert "ADR-0037" in g
+    # 1단 문구와 구별된다 (별개 강도 표지).
+    assert g != guard.build_nudge_guidance(82, {"nudge_pct": 20, "stop_pct": 10})
+
+
+def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
+    # nudge2 레벨(잔여 22 — stop 20 < 22 <= nudge2_threshold 23) + UserPromptSubmit → strong 주입.
+    stdin = {
+        "transcript_path": str(_nudge2_transcript(tmp_path)),
+        "session_id": "sess-nudge2",
+        "hook_event_name": "UserPromptSubmit",
+    }
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert rc == 0
+    hso = output["hookSpecificOutput"]
+    assert hso["hookEventName"] == "UserPromptSubmit"
+    assert "additionalContext" in hso
+    assert "ctx-nudge/최종" in hso["additionalContext"]   # 2단 강도 표지.
+    assert "/pm-handoff" in hso["additionalContext"]
+    # 비차단: deny/block 아님.
+    assert "permissionDecision" not in hso
+    assert output.get("decision") != "block"
+    # nudge2 marker(.nudge2) 생성·stop(.done) 미생성.
+    ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    assert (ctx / "sess-nudge2.nudge2").exists()
+    assert not (ctx / "sess-nudge2.done").exists()
+
+
+def test_hook_nudge2_pretooluse_passes_no_injection(stop_hook, tmp_path):
+    # nudge2 레벨 + PreToolUse(주입 채널 없음) → 통과(도구 진행)·주입/marker 없음 (1단 동형).
+    stdin = {"transcript_path": str(_nudge2_transcript(tmp_path)), "session_id": "sess-n2-ptu"}
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert rc == 0 and output is None
+    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-n2-ptu.nudge2").exists()
+
+
+def test_hook_nudge2_idempotent_single_injection(stop_hook, tmp_path):
+    # 같은 세션 두 번 nudge2(UserPromptSubmit)여도 주입은 1회 (.nudge2 marker 가드).
+    stdin = {
+        "transcript_path": str(_nudge2_transcript(tmp_path)),
+        "session_id": "sess-n2-idem",
+        "hook_event_name": "UserPromptSubmit",
+    }
+    rc1, out1 = stop_hook.evaluate(stdin, tmp_path, {})
+    rc2, out2 = stop_hook.evaluate(stdin, tmp_path, {})
+    assert "additionalContext" in out1["hookSpecificOutput"]   # 1회차 주입.
+    assert out2 is None                                        # 2회차 통과(이미 주입).
+
+
+def test_hook_nudge2_fires_independent_of_nudge1(stop_hook, tmp_path):
+    # 2단은 1단 발화 여부와 독립: 세션이 nudge(1단) 창을 건너뛰고 곧장 nudge2 밴드로 진입해도
+    # 2단은 발화한다 (.nudge2 생성·.nudge 은 미생성 — 1단은 안 거쳤으므로).
+    stdin = {
+        "transcript_path": str(_nudge2_transcript(tmp_path)),
+        "session_id": "sess-n2-solo",
+        "hook_event_name": "UserPromptSubmit",
+    }
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert "ctx-nudge/최종" in output["hookSpecificOutput"]["additionalContext"]
+    ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    assert (ctx / "sess-n2-solo.nudge2").exists()
+    assert not (ctx / "sess-n2-solo.nudge").exists()
+
+
+def test_hook_nudge1_then_nudge2_both_fire(stop_hook, tmp_path):
+    # 세션이 nudge(1단·잔여 25)를 거쳐 nudge2(2단·잔여 22)로 진행 → 두 marker 다 생성·각 문구 구별.
+    sid = "sess-both"
+    # 1단: 잔여 25 (nudge_threshold 23 < 25 <= nudge 30).
+    nudge_stdin = {
+        "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])),
+        "session_id": sid, "hook_event_name": "UserPromptSubmit",
+    }
+    rc1, out1 = stop_hook.evaluate(nudge_stdin, tmp_path, {})
+    assert "ctx-nudge]" in out1["hookSpecificOutput"]["additionalContext"]  # 1단 표지.
+    # 2단: 같은 세션이 nudge2 밴드 진입 (transcript 경로 덮어씀).
+    nudge2_stdin = {
+        "transcript_path": str(_nudge2_transcript(tmp_path)),
+        "session_id": sid, "hook_event_name": "UserPromptSubmit",
+    }
+    rc2, out2 = stop_hook.evaluate(nudge2_stdin, tmp_path, {})
+    assert "ctx-nudge/최종" in out2["hookSpecificOutput"]["additionalContext"]  # 2단 표지.
+    ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    assert (ctx / f"{sid}.nudge").exists()
+    assert (ctx / f"{sid}.nudge2").exists()
+
+
+def test_hook_nudge2_independent_from_stop(stop_hook, tmp_path):
+    # nudge2(.nudge2) 발동해도 stop 은 별개로 deny+박제 (marker 분리·2단 fail-safe 독립).
+    sid = "sess-n2-stop"
+    nudge2_stdin = {
+        "transcript_path": str(_nudge2_transcript(tmp_path)),
+        "session_id": sid, "hook_event_name": "UserPromptSubmit",
+    }
+    stop_hook.evaluate(nudge2_stdin, tmp_path, {})  # nudge2 주입.
+    stop_stdin = {
+        "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])),
+        "session_id": sid,
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},  # 새 작업 도구.
+    }
+    rc, output = stop_hook.evaluate(stop_stdin, tmp_path, {})
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"  # stop 정상 작동.
+    ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    assert (ctx / f"{sid}.nudge2").exists()
+    assert (ctx / f"{sid}.done").exists()
+
+
+def test_nudge2_margin_mirrors_opencode(guard):
+    # 양 하네스 파리티: 2단 임계 마진(+3)이 claude·opencode 어댑터에서 동일 (한 곳만 바꾸면 어긋남).
+    import re
+    opencode_core = (
+        REPO / "templates" / "opencode" / ".opencode" / "lib" / "ctx-guard-core.cjs"
+    ).read_text(encoding="utf-8")
+    m = re.search(r"const\s+NUDGE2_MARGIN_PCT\s*=\s*(\d+)", opencode_core)
+    assert m, "opencode ctx-guard-core.cjs 에 NUDGE2_MARGIN_PCT 상수 없음"
+    assert int(m.group(1)) == guard.CTX_NUDGE2_MARGIN_PCT, (
+        f"2단 마진 미러 불일치: claude={guard.CTX_NUDGE2_MARGIN_PCT} opencode={m.group(1)}"
+    )

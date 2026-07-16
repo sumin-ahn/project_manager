@@ -76,9 +76,9 @@ ticket 본문이 self-contained 의무를 지므로 위임 프롬프트는 bespo
 
 PM 이 `Agent` 툴로 spawn 한다. `subagent_type` 으로 전용 정의를 쓴다 (세 축: 설계/구현/검토):
 
-- **설계** — `subagent_type: architect` ([`.claude/agents/architect.md`](../../.claude/agents/architect.md), Opus). 설계 노동(idea 검토·ADR 초안·spec 추출·가설 검증·인터페이스). **산출은 PM 이 비준** — 발행·board·idea promote 는 PM.
-- **구현** — `subagent_type: developer` ([`.claude/agents/developer.md`](../../.claude/agents/developer.md))
-- **검토** — `subagent_type: code-reviewer` ([`.claude/agents/code-reviewer.md`](../../.claude/agents/code-reviewer.md))
+- **설계(architect)** — `subagent_type: architect` ([`.claude/agents/architect.md`](../../.claude/agents/architect.md), Opus). 설계 노동(idea 검토·ADR 초안·spec 추출·가설 검증·인터페이스). **산출은 PM 이 비준** — 발행·board·idea promote 는 PM.
+- **구현(developer)** — `subagent_type: developer` ([`.claude/agents/developer.md`](../../.claude/agents/developer.md))
+- **검토(code-reviewer)** — `subagent_type: code-reviewer` ([`.claude/agents/code-reviewer.md`](../../.claude/agents/code-reviewer.md))
 
 세 정의가 역할·제약·부트스트랩·프로젝트 제약을 이미 담고 있으므로 PM 의 Agent
 프롬프트는 한 줄이면 된다 (구현/검토는 `/pm-dev-delegate` skill 이 표준 프롬프트를 dump):

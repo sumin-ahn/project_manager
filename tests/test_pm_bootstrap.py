@@ -541,3 +541,66 @@ def test_resolve_log_file_standalone_uses_repo_anchor(bootstrap, tmp_path):
         bootstrap._resolve_log_file(repo)
         == repo / ".project_manager" / "wiki" / "log" / "current.md"
     )
+
+
+# ── main() 인자 가드: --branch/--resume repo-필수 검사가 auto-resolve **앞**이다 (T-0327) ──
+
+
+def _spy_never_called(msg: str):
+    """호출되면 AssertionError 로 즉시 실패하는 `_resolve_session_slot` 대역 + 호출 플래그."""
+    flag = {"called": False}
+
+    def _spy():
+        flag["called"] = True
+        raise AssertionError(msg)
+
+    return _spy, flag
+
+
+def test_branch_without_repo_errors_before_auto_resolve(bootstrap, monkeypatch):
+    """`--branch`(무 `--repo`) 는 auto-resolve 가 args.repo 를 채우기 **전에** 즉시 거부된다.
+
+    회귀 표적(T-0327): 가드가 auto-resolve 뒤에 있으면 auto-resolve 가 자동바인딩으로 args.repo 를
+    채운 뒤 가드를 통과 → branch 가 그 슬롯에 silent 부착됐다. 가드를 앞으로 옮겨
+    `_resolve_session_slot` 이 호출되기도 전에 error(rc 2)로 끝나는지 확인한다.
+
+    비공허: spy 로 auto-resolve **미호출**을 단언한다 — 가드가 정말 auto-resolve 앞이라는 증거.
+    가드를 다시 뒤로 옮기면 spy 가 호출돼 AssertionError 로 red.
+    """
+    spy, flag = _spy_never_called("auto-resolve 는 branch 가드 뒤라 호출되면 안 된다")
+    monkeypatch.setattr(bootstrap, "_resolve_session_slot", spy)
+    with pytest.raises(SystemExit) as exc:
+        bootstrap.main(["--branch", "wip-x"])
+    assert exc.value.code == 2
+    assert flag["called"] is False
+
+
+def test_resume_without_repo_errors_before_auto_resolve(bootstrap, monkeypatch):
+    """`--resume`(무 `--repo`)도 branch 와 동형 — auto-resolve 앞 가드에서 rc 2·auto-resolve 미호출 (T-0327)."""
+    spy, flag = _spy_never_called("auto-resolve 는 resume 가드 뒤라 호출되면 안 된다")
+    monkeypatch.setattr(bootstrap, "_resolve_session_slot", spy)
+    with pytest.raises(SystemExit) as exc:
+        bootstrap.main(["--resume", "prev-wip"])
+    assert exc.value.code == 2
+    assert flag["called"] is False
+
+
+def test_repo_with_branch_unchanged_reaches_run(bootstrap, monkeypatch):
+    """`--repo R --branch X` 는 가드 이동에 불변 — 통과해 `PmBootstrap.run` 에 그대로 전달된다.
+
+    repo 명시라 auto-resolve 는 원래 skip 이고, repo 가 있으니 branch 가드도 통과해야 한다. 가드
+    이동이 이 정상 경로를 오탐 거부하지 않음을 확인한다.
+
+    비공허: run 이 repo="A"·branch="wip-x" 로 정확히 전달됨을 단언 — 가드가 오탐 거부하면 SystemExit 로 red.
+    """
+    captured = {}
+
+    def _fake_run(self, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bootstrap.PmBootstrap, "run", _fake_run)
+    rc = bootstrap.main(["--repo", "A", "--branch", "wip-x"])
+    assert rc == 0
+    assert captured.get("repo") == "A"
+    assert captured.get("branch") == "wip-x"

@@ -17,9 +17,12 @@ description: "엔진 갱신 PM front door — pm-update.sh facade wrap + upstrea
 > 명령 분리로 실행한다.
 
 ## 인접 command 와 구분
-- **pm-update (이 command)** = 엔진 *갱신*(upstream→채택자).
+- **pm-update (이 command)** = 엔진 + host 어댑터 *갱신*(upstream→채택자).
 - `/pm-env` = 환경 관리(repo/worktree/slot · upstream show/switch). upstream *값* 전환은 거기서.
 - `/pm-bootstrap` = 세션 시작 상태점검(갱신 아님).
+- **dual-harness guest 어댑터**(opencode 인스턴스에 `add-harness` 로 얹은 `.claude/*` 등)는 host manifest
+  밖이라 이 pm-update 범위 밖 — `pm_update` 가 안 건드린다. 갱신은 `add-harness <harness>` 재실행으로
+  받는다(refresh·기존 인스턴스 위 live-safe·ADR-0058).
 
 ## 사용 시점
 - upstream(프레임워크)에 새 엔진 변경이 났을 때 · 주기적 freshness 점검.

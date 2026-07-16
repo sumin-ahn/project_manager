@@ -35,6 +35,12 @@ from pathlib import Path
 CTX_NUDGE_PCT_DEFAULT = 30  # 잔여 <= 이 % → "곧 정지" 넛지 (아직 일은 계속).
 CTX_STOP_PCT_DEFAULT = 20   # 잔여 <= 이 % → 정지·핸드오프 트리거.
 
+# 2단(strong) nudge 임계 마진 (%p·파생값·T-0328·ADR-0037). nudge2 밴드 = stop_pct < 잔여 <=
+# min(stop_pct + 이 마진, nudge_pct) — hard-stop 직전 강한 유도(1단 soft 를 모델이 무시해도 재안내).
+# config 노브 신설 없이 stop_pct 에서 파생(config surface 최소). opencode ctx-guard-core.cjs
+# NUDGE2_MARGIN_PCT 와 미러(양 하네스 파리티).
+CTX_NUDGE2_MARGIN_PCT = 3
+
 # 기본 ctx 예산(분모) — resolve_budget 의 최종 폴백(오버라이드·generic 미설정 시).
 # claude 기본 200k. local.conf ``ctx_window_tokens_<harness>``/``ctx_window_tokens`` 로 조정(ADR-0041).
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
@@ -243,14 +249,26 @@ def remaining_pct(used_pct: int) -> int:
     return max(0, 100 - used_pct)
 
 
-def classify(used_pct: int, thresholds: dict[str, int]) -> str:
-    """used % → 'ok' | 'nudge' | 'stop' (잔여 기준).
+def nudge2_threshold(thresholds: dict[str, int]) -> int:
+    """2단(strong) nudge 임계(%p) — stop_pct + margin 파생, nudge_pct 로 캡 (T-0328).
 
-    잔여 <= stop_pct → 'stop'. 잔여 <= nudge_pct → 'nudge'. 그 외 'ok'.
+    nudge2 밴드 = stop_pct < 잔여 <= 이 값. margin(+3)이 nudge 밴드를 넘지 않게 min 으로 캡해
+    nudge2 가 nudge 밴드 밖(ok 영역)으로 새지 않는다. opencode nudge2Threshold 와 동형.
+    """
+    return min(thresholds["stop_pct"] + CTX_NUDGE2_MARGIN_PCT, thresholds["nudge_pct"])
+
+
+def classify(used_pct: int, thresholds: dict[str, int]) -> str:
+    """used % → 'ok' | 'nudge' | 'nudge2' | 'stop' (잔여 기준·T-0328 2단 nudge).
+
+    잔여 <= stop_pct → 'stop'. stop_pct < 잔여 <= nudge2_threshold → 'nudge2'(strong·stop 직전).
+    nudge2_threshold < 잔여 <= nudge_pct → 'nudge'(soft·1단). 그 외 'ok'.
     """
     remaining = remaining_pct(used_pct)
     if remaining <= thresholds["stop_pct"]:
         return "stop"
+    if remaining <= nudge2_threshold(thresholds):
+        return "nudge2"
     if remaining <= thresholds["nudge_pct"]:
         return "nudge"
     return "ok"
@@ -268,4 +286,18 @@ def build_nudge_guidance(used_pct: int, thresholds: dict[str, int]) -> str:
         f"[ctx-nudge] 컨텍스트 사용 {used_pct}% (잔여 {remaining}%) — 핸드오프 준비 구간. "
         f"지금 진행 중인 단계(ticket/wave)를 마무리한 뒤, 새 큰 작업을 시작하지 말고 "
         f"`/pm-handoff` 로 핸드오프하라. 잔여 {thresholds['stop_pct']}% 도달 시 자동 정지된다 (ADR-0037)."
+    )
+
+
+def build_nudge2_guidance(used_pct: int, thresholds: dict[str, int]) -> str:
+    """2단(strong) nudge 안내문 — stop 직전 능동 유도 (ADR-0037·T-0328). 여전히 비차단 안내.
+
+    1단(soft)이 통했으면 안 오지만, 모델이 1단을 무시했거나 1단 창을 건너뛴 세션에 hard-stop
+    직전 강하게 재안내한다 — "새 tool 작업 시작 말고 지금 즉시 /pm-handoff". hard-stop 과 달리
+    아직 차단은 아니다(안내만·엔진 박제 X). 1단 문구는 무변경 — 이건 2단 추가.
+    """
+    remaining = remaining_pct(used_pct)
+    return (
+        f"[ctx-nudge/최종] 잔여 {remaining}% — hard-stop 직전. 새 tool 작업을 시작하지 말고 "
+        f"지금 즉시 `/pm-handoff` 를 실행하라. 잔여 {thresholds['stop_pct']}% 도달 시 강제 정지된다 (ADR-0037)."
     )

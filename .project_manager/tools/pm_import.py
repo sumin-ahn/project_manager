@@ -159,12 +159,88 @@ OPERATIONAL_TOKENS = (
 # 치환 대상 파일 확장자 (루트 README §3.2 sed 의 --include 와 동일).
 SUBSTITUTE_SUFFIXES = (".md", ".json", ".sh", ".py")
 
-# operational placeholder 치환에서 *제외*하는 엔진 문서 (repo 기준 relpath).
-# local.conf 가 런타임 해소 + pm_update 동기화 대상이라 리터럴 유지(루트 README §4·D11).
-SED_EXCLUDE_RELPATHS = frozenset({
+# operational placeholder 치환에서 *제외*하는 방법론 문서 (repo 기준 relpath) — engine.manifest 파생.
+# 하드코딩 목록(과거 pm_role.md·pm_playbook.md 리터럴 frozenset) 대신 manifest 의 `.project_manager/wiki/`
+# 직속 비-템플릿 `.md`(= 방법론 문서 절)에서 결정적으로 유도한다(T-0329 A4). 이 문서들은 `{{PROJECT_NAME}}`·
+# `{{DATE}}` 토큰을 *메커니즘 설명*으로 담아(placeholder 아님·local.conf 가 런타임 해소·루트 README §4·D11)
+# 치환하면 문서가 concrete 값으로 변질되므로 제외한다. 파생이라 신규 방법론 .md 가 manifest 에 추가되면
+# 자동 편입 — "목록 수동 추가 잊음 → 조용한 placeholder 오치환" 클래스 종결.
+#
+# ⚠️ 파생 기준 manifest 는 **모듈-import 시점(실행 checkout)이 아니라 치환 시점의 dest 인스턴스**
+# (`dest_root/.project_manager/engine.manifest`)다 (codex must-fix·T-0329 재작업). pm_import 는
+# `--from <다른 framework checkout>` 에서 복사할 수 있어(구버전 로컬 도구가 신버전 upstream 을 흡수하는
+# 실 운영 경로), *실제 복사되는 쪽* manifest 가 기준이어야 upstream 진화(신규 직속 방법론 문서)가 자동
+# 편입된다 — 모듈-시점 상수는 실행 checkout 의 manifest 에 묶여 이 보장을 잃는다. 치환은 복사 *이후*
+# 단계라 dest manifest 는 그 시점에 실재한다(manifest = self-prop 복사 대상). 각 치환 call site 는 아래
+# `_dest_sed_exclude(dest_root)` 로 dest 기준 제외 집합을 산출해 `_should_substitute` 에 넘긴다.
+
+# manifest 부재·로드 실패(broken-manifest)에서도 기존 제외를 조용히 잃지 않게 하는 리터럴 floor
+# (should-fix). 정상 경로(manifest 파싱 성공)는 파생 결과를, 실패 경로만 이 floor 를 반환한다.
+SED_EXCLUDE_FLOOR = frozenset({
     ".project_manager/wiki/pm_role.md",
     ".project_manager/wiki/pm_playbook.md",
 })
+
+
+def _is_template_scaffold(filename: str) -> bool:
+    """파일명이 템플릿 스캐폴드 관례(`*.template.md`·`_template.md`·`*_template.md`)인가.
+
+    템플릿(예: pm_state.template.md)은 `{{DATE}}` 등 토큰을 *렌더 대상*(도구·skill 이 새 산출물
+    생성 시 채움)으로 담아, 토큰을 *설명*으로 담는 방법론 문서(pm_role·pm_playbook)와 성격이 다르다.
+    치환-제외 집합엔 넣지 않는다(현행 동작 보존 — 템플릿의 operational 토큰은 import 치환 대상)."""
+    stem = filename[:-len(".md")] if filename.endswith(".md") else filename
+    return stem.endswith(".template") or stem == "_template" or stem.endswith("_template")
+
+
+def _derive_sed_exclude_relpaths(manifest_path: Path) -> frozenset:
+    """치환-제외 방법론 문서(repo 기준 relpath·POSIX) 집합을 engine.manifest 에서 파생한다.
+
+    규칙 = manifest 엔트리 중 `.project_manager/wiki/` **직속** `.md` 파일 중 *템플릿이 아닌* 것.
+    서브디렉토리(`tickets/_template.md`·`raw/spikes/_template.md`·`domain/_template.md`)는 "직속"
+    조건으로, 직속 템플릿(`pm_state.template.md`)은 `_is_template_scaffold` 로 제외된다 — 현재
+    산출은 정확히 {pm_role.md, pm_playbook.md}.
+
+    manifest 파싱은 pm_update.read_manifest 재사용(새 파서 신설 없음·_render_managed_relpaths 동형).
+    manifest 부재·로드 실패 → 리터럴 floor SED_EXCLUDE_FLOOR (fail-soft — 빈 집합이면 broken-manifest
+    엣지에서 pm_role·pm_playbook 이 조용히 오치환되므로 기존 제외를 floor 로 보장·should-fix). 정상
+    파싱은 파생 결과를 그대로 반환한다(manifest 가 방법론 문서를 명시적으로 뺐다면 그 판단을 존중)."""
+    wiki_prefix = ".project_manager/wiki/"
+    if not manifest_path.is_file():
+        return SED_EXCLUDE_FLOOR
+    pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
+    try:
+        spec = importlib.util.spec_from_file_location("pm_update", pm_update_py)
+        if spec is None or spec.loader is None:
+            return SED_EXCLUDE_FLOOR
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        entries = mod.read_manifest(manifest_path)
+    except Exception:  # noqa: BLE001 — 로드/파싱 실패는 floor 로 폴백(기존 제외 보존·should-fix).
+        return SED_EXCLUDE_FLOOR
+    out: set = set()
+    for entry in entries:
+        rel = str(entry).replace("\\", "/")
+        if not rel.startswith(wiki_prefix):
+            continue
+        remainder = rel[len(wiki_prefix):]
+        if "/" in remainder:  # 서브디렉토리 — 방법론 문서 절이 아님(직속만)
+            continue
+        if not remainder.endswith(".md"):
+            continue
+        if _is_template_scaffold(remainder):  # 템플릿 스캐폴드 — 치환 대상(제외 아님)
+            continue
+        out.add(rel)
+    return frozenset(out)
+
+
+def _dest_sed_exclude(dest_root: Path) -> frozenset:
+    """dest 인스턴스의 engine.manifest 기준 치환-제외 집합 (치환 시점 산출·codex must-fix).
+
+    모듈-import 시점(실행 checkout)이 아니라 *복사가 끝난 dest* 의 manifest 에서 파생한다 — pm_import
+    는 `--from <다른 checkout>` 에서 복사할 수 있어, 실제 dest 에 실린 manifest 가 기준이어야 upstream
+    진화(신규 직속 방법론 문서)가 자동 편입된다. manifest 는 self-prop 복사 대상이라 치환(복사 이후)
+    단계엔 dest 에 실재한다. 부재/실패는 SED_EXCLUDE_FLOOR(fail-soft)."""
+    return _derive_sed_exclude_relpaths(dest_root / ".project_manager" / "engine.manifest")
 
 # 복사/스캔 제외 디렉토리명 (무겁고 재설치 대상 / stale 산출물 / VCS 메타).
 #   node_modules — opencode 의존성(재설치 대상). __pycache__ — stale 바이트코드(.pyc).
@@ -936,11 +1012,14 @@ def _is_engine_source(rel: Path) -> bool:
     return p.startswith(".project_manager/tools/") or "/.project_manager/tools/" in p
 
 
-def _should_substitute(rel: Path) -> bool:
-    """이 파일이 operational placeholder 치환 대상인가."""
+def _should_substitute(rel: Path, exclude_relpaths: frozenset) -> bool:
+    """이 파일이 operational placeholder 치환 대상인가.
+
+    exclude_relpaths = dest 인스턴스 manifest 파생 치환-제외 집합(`_dest_sed_exclude`) — 호출부가
+    치환 시점에 dest 기준으로 산출해 넘긴다(모듈-시점 상수 아님·codex must-fix·T-0329 재작업)."""
     if rel.suffix not in SUBSTITUTE_SUFFIXES:
         return False
-    if rel.as_posix() in SED_EXCLUDE_RELPATHS:
+    if rel.as_posix() in exclude_relpaths:
         return False
     if _is_engine_source(rel):  # 엔진 소스(.py)는 verbatim — 주석의 토큰-문서는 placeholder 아님
         return False
@@ -969,10 +1048,11 @@ def substitute_placeholders(
     빈값이 render 가드 도달 전에 이미 지워졌다(codex must-fix — 최초 import 경로 사각).
     """
     changed = 0
+    sed_exclude = _dest_sed_exclude(dest_root)  # 치환 시점·dest manifest 기준(codex must-fix)
     for rel in sorted(copied_relpaths):
         if any(part in COPY_EXCLUDE_DIR_NAMES for part in rel.parts):
             continue
-        if not _should_substitute(rel):
+        if not _should_substitute(rel, sed_exclude):
             continue
         path = dest_root / rel
         if not path.is_file():
@@ -1496,10 +1576,11 @@ def _substitute_model_token(
     대상 = `.opencode/agents/*.md` 의 `model:` 필드(T-0032 후 주 타깃)·AGENTS.md 잔존분.
     """
     changed = 0
+    sed_exclude = _dest_sed_exclude(dest_root)  # 치환 시점·dest manifest 기준(codex must-fix)
     for rel in sorted(copied_relpaths):
         if any(part in COPY_EXCLUDE_DIR_NAMES for part in rel.parts):
             continue
-        if not _should_substitute(rel):
+        if not _should_substitute(rel, sed_exclude):
             continue
         path = dest_root / rel
         if not path.is_file():

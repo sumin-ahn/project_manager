@@ -298,8 +298,12 @@ flowchart TB
 | 하니스별 어댑터 세부 | [`templates/claude_code/`](templates/claude_code/README.md) · [`templates/opencode/`](templates/opencode/README.md) |
 
 도입 후 엔진 갱신은 채택자 루트에서 `./pm-update.sh` 로 받는다. manifest 에 있는 경로만
-덮어쓰므로 인스턴스 상태는 건드리지 않는다. 외부 코드리뷰는 기본 꺼져 있고, 켜면 코드
-diff 가 외부로 전송되므로 프로젝트가 직접 opt-in 을 결정한다.
+덮어쓰므로 인스턴스 상태는 건드리지 않는다. `pm_update` 는 엔진과 도입 때 고른 host 어댑터를
+갱신한다 — dual-harness 로 `add-harness <harness>` 해서 나란히 붙인 guest 어댑터(예 claude
+인스턴스에 얹은 `.opencode/*`)는 host manifest 밖이라 `pm_update` 범위 밖이고, 갱신은
+`add-harness <harness>` 를 다시 돌려 받는다(refresh·기존 인스턴스 위 live-safe·ADR-0058).
+외부 코드리뷰는 기본 꺼져 있고, 켜면 코드 diff 가 외부로 전송되므로 프로젝트가 직접
+opt-in 을 결정한다.
 
 ---
 

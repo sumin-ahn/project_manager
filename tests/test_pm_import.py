@@ -27,7 +27,7 @@ requires_symlink = pytest.mark.skipif(
     reason="Windows: symlink requires Developer Mode/admin",
 )
 
-# operational placeholder 치환에서 제외하는 엔진 문서 (pm_import.SED_EXCLUDE_RELPATHS 와 동치).
+# operational placeholder 치환에서 제외하는 방법론 문서 (pm_import.SED_EXCLUDE_FLOOR·manifest 파생과 동치).
 ENGINE_DOCS_KEEP_LITERAL = (
     ".project_manager/wiki/pm_role.md",
     ".project_manager/wiki/pm_playbook.md",
@@ -177,6 +177,91 @@ def test_engine_docs_keep_literal_placeholders(pm_import, tmp_path):
         assert "{{TEST_CMD}}" not in text, f"{rel} 에 {{{{TEST_CMD}}}} 잔존 — T-0219 로 폐기된 토큰."
         if rel.endswith("pm_role.md"):  # PROJECT_NAME 리터럴은 pm_role 만 보유 (playbook 은 원래 없음)
             assert "{{PROJECT_NAME}}" in text, f"{rel} 에서 {{{{PROJECT_NAME}}}} 가 치환/유실 — 리터럴 유지여야 한다."
+
+
+# ── A4: 치환-제외 집합은 dest engine.manifest 파생 (T-0329·codex must-fix 재작업) ──
+
+def test_sed_exclude_floor_and_canonical_derivation(pm_import):
+    """치환-제외가 하드코딩/모듈-시점 상수 대신 파생이고, 리터럴 floor·canonical manifest 파생 모두
+    현행 방법론 문서 집합과 일치한다.
+
+    - SED_EXCLUDE_FLOOR = broken-manifest fail-soft floor(should-fix) == {pm_role, pm_playbook}.
+    - 이 repo canonical manifest 파생도 동일(직속 템플릿 pm_state.template.md·서브디렉토리
+      _template.md 는 비편입).
+    - 모듈-시점 상수 `SED_EXCLUDE_RELPATHS` 는 제거됐다(must-fix — dest 시점 산출로 대체)."""
+    assert pm_import.SED_EXCLUDE_FLOOR == frozenset(ENGINE_DOCS_KEEP_LITERAL)
+    canonical = pm_import._derive_sed_exclude_relpaths(
+        REPO / ".project_manager" / "engine.manifest"
+    )
+    assert canonical == frozenset(ENGINE_DOCS_KEEP_LITERAL)
+    assert not hasattr(pm_import, "SED_EXCLUDE_RELPATHS"), \
+        "모듈-시점 상수는 제거돼야 한다(실행 checkout 이 아니라 dest 시점 산출·must-fix)"
+
+
+def test_sed_exclude_auto_includes_new_methodology_doc(pm_import, tmp_path):
+    """신규 방법론 .md 가 manifest 에 추가되면 파생 제외 집합에 자동 편입된다(수동 목록 불요).
+
+    함께 못박는 비편입 경계: 직속 템플릿 스캐폴드(`pm_state.template.md`)·서브디렉토리
+    템플릿(`tickets/_template.md`)·비-wiki 경로(`.claude/agents`)는 편입되지 않는다."""
+    manifest = tmp_path / "engine.manifest"
+    manifest.write_text(
+        "# 방법론 문서 절\n"
+        ".project_manager/tools/board.py\n"
+        ".project_manager/wiki/pm_role.md\n"
+        ".project_manager/wiki/pm_playbook.md\n"
+        ".project_manager/wiki/pm_newdoc.md\n"            # 신규 방법론 문서 — 자동 편입 대상
+        ".project_manager/wiki/pm_state.template.md\n"    # 직속 템플릿 스캐폴드 — 비편입
+        ".project_manager/wiki/tickets/_template.md\n"    # 서브디렉토리 — 비편입(직속 아님)
+        ".claude/agents  @render\n",                      # 비-wiki — 비편입
+        encoding="utf-8",
+    )
+    derived = pm_import._derive_sed_exclude_relpaths(manifest)
+    assert derived == frozenset({
+        ".project_manager/wiki/pm_role.md",
+        ".project_manager/wiki/pm_playbook.md",
+        ".project_manager/wiki/pm_newdoc.md",
+    })
+
+
+def test_sed_exclude_missing_manifest_floors_not_empty(pm_import, tmp_path):
+    """manifest 부재/로드 실패 시 빈 집합이 아니라 리터럴 floor 로 폴백 — broken-manifest 엣지에서도
+    기존 제외(pm_role·pm_playbook)를 조용히 잃지 않는다(should-fix)."""
+    derived = pm_import._derive_sed_exclude_relpaths(tmp_path / "absent.manifest")
+    assert derived == pm_import.SED_EXCLUDE_FLOOR
+    assert derived == frozenset(ENGINE_DOCS_KEEP_LITERAL)
+
+
+def test_substitute_excludes_new_methodology_doc_via_dest_manifest(pm_import, tmp_path):
+    """`--from <신 upstream>` 흡수 회귀 (codex must-fix): dest 인스턴스 manifest 에 신규 직속 방법론
+    .md 가 실리면 substitute 가 그 문서를 치환에서 제외한다 — 제외 집합이 *실행 checkout* 이 아니라
+    복사가 끝난 *dest* manifest 기준으로 산출되기 때문.
+
+    pm_newdoc.md 는 이 repo(실행 checkout) manifest 엔 없다 — 모듈-시점 상수였다면 제외 못 해 그
+    문서의 {{PROJECT_NAME}}(메커니즘 설명)가 오치환됐을 것이다. 대조로 scaffold(status.md)의 실
+    placeholder 는 정상 치환된다."""
+    dest = tmp_path / "inst"
+    wiki = dest / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    (dest / ".project_manager" / "engine.manifest").write_text(
+        ".project_manager/wiki/pm_role.md\n"
+        ".project_manager/wiki/pm_playbook.md\n"
+        ".project_manager/wiki/pm_newdoc.md\n",   # 신 upstream 이 실은 신규 직속 방법론 문서
+        encoding="utf-8",
+    )
+    # 방법론 문서: {{PROJECT_NAME}} 를 *메커니즘 설명*으로 담음(치환되면 오치환).
+    (wiki / "pm_newdoc.md").write_text(
+        "설명: {{PROJECT_NAME}} 는 local.conf 가 런타임 해소한다.\n", encoding="utf-8")
+    # scaffold: {{PROJECT_NAME}} 를 *실 placeholder* 로 담음(치환 대상).
+    (wiki / "status.md").write_text("# {{PROJECT_NAME}} 보드\n", encoding="utf-8")
+    copied = {
+        Path(".project_manager/wiki/pm_newdoc.md"),
+        Path(".project_manager/wiki/status.md"),
+    }
+    n = pm_import.substitute_placeholders(dest, {"{{PROJECT_NAME}}": "Acme"}, copied)
+    assert "{{PROJECT_NAME}}" in (wiki / "pm_newdoc.md").read_text(encoding="utf-8"), \
+        "신규 방법론 문서가 오치환 — dest manifest 파생 제외 미적용(module-시점 상수 회귀)"
+    assert "Acme" in (wiki / "status.md").read_text(encoding="utf-8")
+    assert n == 1  # status.md 만 치환(pm_newdoc.md 는 제외)
 
 
 # ── D11 seam: local.conf operational 값이 sed 치환값과 일치 ─────────────────

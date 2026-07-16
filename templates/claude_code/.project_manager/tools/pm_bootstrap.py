@@ -2925,6 +2925,13 @@ def main(argv: list[str] | None = None) -> int:
         args.repo = resolve_repo_arg(args.repo_positional, args.repo)
     except ValueError as exc:
         build_parser().error(str(exc))
+    # --branch/--resume 은 --repo multi-PM 모드 전용 — repo 없이 주면 오용 신호로 거부. 이 검사는
+    # auto-resolve **앞**에 둔다 (T-0327): 기준은 파싱 직후의 사용자 명시값(`args.repo is None`
+    # as-parsed)이다. auto-resolve 뒤였다면 자동바인딩이 args.repo 를 채운 뒤 이 가드를 통과해
+    # branch/resume 이 자동바인딩된 슬롯에 silent 부착됐다. (--slot 단독 오용은 아래 parse_identity
+    # 가 담당.)
+    if args.repo is None and (args.branch is not None or args.resume is not None):
+        build_parser().error("--branch/--resume 은 --repo multi-PM 모드 전용이다.")
     # guarded 자동바인딩 (T-0178·ADR-0035) — `--repo`/`--slot` 둘 다 없는 bare 무인자 호출에서,
     # `_resolve_session_slot` 으로 repo-안 default-1 규칙(slot1>단독>fail-loud)으로 해소한다.
     #   - 해소(`(repo,N)`) → 그 슬롯에 자동 bind(기존 `--slot` bind 경로 재사용·세션=`<repo>_<N>`).
@@ -2951,10 +2958,6 @@ def main(argv: list[str] | None = None) -> int:
             ia.parse_identity(args)
         except ValueError as exc:
             build_parser().error(str(exc))
-    # --branch/--resume 은 --repo multi-PM 모드 전용 — repo 없이 주면 오용 신호로 거부
-    # (--slot 단독은 위 parse_identity 가 이미 걸렀다).
-    if args.repo is None and (args.branch is not None or args.resume is not None):
-        build_parser().error("--branch/--resume 은 --repo multi-PM 모드 전용이다.")
     # --slot(직접 바인딩·lean)은 --branch/--resume(alloc 경로)과 배타 — 둘은 다른 경로다.
     if args.slot is not None and (args.branch is not None or args.resume is not None):
         build_parser().error("--slot 은 --branch/--resume 과 함께 쓸 수 없다 (bind vs alloc 경로).")

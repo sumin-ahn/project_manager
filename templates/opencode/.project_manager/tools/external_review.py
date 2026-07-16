@@ -15,6 +15,7 @@
   - 코드 diff 가 *외부로 전송*되므로 기본 OFF. local.conf `external_review_enabled=true`
     또는 `board.py init` / `pm_update` 시 opt-in 으로 켠다. 비활성 시 actual 호출은
     no-op(exit 0)이고 `--dry-run` 은 항상 허용(로컬 미리보기·미전송), `--force` 로 1회 강제.
+    단 빈/공백 diff 는 dry-run·비활성 포함 무조건 exit 1 (false-green 원천 차단·T-0326).
 
 종료 코드/신호:
   - 리뷰어 실패(인증/한도/네트워크/타임아웃) → exit 1 + stdout 에 FALLBACK_INTERNAL
@@ -153,6 +154,18 @@ _OUTPUT_FORMAT_BLOCK = """\
 - (없으면 "없음"으로 표기)
 
 """
+
+# 빈-diff fail-loud 안내 (T-0326 — adopter#0 false-green 원천 차단).
+# 검토 경로에 tracked 변경이 없어 diff 가 비면 codex 는 "변경 없음"을 통과로 판정해 가짜
+# 통과(false-green)를 낸다. codex 호출 전에 이 메시지로 fail-loud 한다 (우회 플래그 없음).
+_EMPTY_DIFF_GUIDANCE = (
+    "오류: 리뷰할 diff 가 없습니다 (검토 경로에 tracked 변경 없음).\n"
+    "  빈 diff 를 리뷰하면 외부 리뷰어가 '변경 없음'을 통과로 판정해 가짜 통과(false-green)가\n"
+    "  발생합니다 — 외부 리뷰어를 호출하지 않고 중단합니다.\n"
+    "  · adopter#0/worktree 형상: 실 변경이 있는 worktree cwd 의 canonical 사본에서\n"
+    "    `--paths <경로>` 로 실행하세요 (REPO 앵커가 PM 홈을 가리키면 diff 가 빕니다).\n"
+    "  · 신규 파일만 변경했다면 먼저 `git add` 후 재실행하세요 (diff 는 tracked 변경만 봅니다)."
+)
 
 
 # ── 설정 ──────────────────────────────────────────────────────────────────
@@ -617,7 +630,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
                         help="게이트 ticket 표식 (로깅용)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="diff·프롬프트만 출력, 외부 호출/전송 안 함 (비활성이어도 허용)")
+                        help="diff·프롬프트만 출력, 외부 호출/전송 안 함 (비활성이어도 허용·빈 diff 면 exit 1)")
     parser.add_argument("--force", action="store_true",
                         help="external_review_enabled=false 여도 1회 강제 실행 (외부 전송 발생)")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
@@ -688,6 +701,14 @@ def main(argv: list[str] | None = None) -> int:
         diff = extract_diff(args.base, paths, denylist=_denylist_patterns(conf))
     except RuntimeError as exc:
         print(f"오류: {exc}", file=sys.stderr)
+        return 1
+
+    # 빈-diff fail-loud 가드 (diff 추출 직후·codex invoke 전·T-0326). 빈 diff(공백-only 포함)를
+    # 리뷰하면 가짜 통과(false-green)가 나므로 어떤 형상·모드에서도 무조건 fail 한다 — 우회
+    # 플래그 없음. 기존 오류 규약(비-0 = 1)과 정합. dry-run/비활성 no-op 보다 앞서므로 잘못된
+    # 형상(worktree 아닌 곳에서 실행 등)은 codex 전송 없이 미리보기 단계에서도 드러난다.
+    if not diff.strip():
+        print(_EMPTY_DIFF_GUIDANCE, file=sys.stderr)
         return 1
 
     prompt = build_prompt(diff=diff, adr_refs=args.adr, gate=args.gate)

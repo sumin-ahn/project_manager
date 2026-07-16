@@ -658,6 +658,81 @@ console.log("JS_NUDGE_GUIDANCE_OK");
     assert "JS_NUDGE_GUIDANCE_OK" in out, f"JS buildNudgeGuidance 검증 실패. out={out!r}"
 
 
+# ── graceful nudge 2단(strong·stop 직전·ADR-0037·T-0328) — 정적 + node 순수 검증 ──────────────
+# 1단 유지 + 2단 추가: hard-stop 직전 "지금 즉시 /pm-handoff·새 작업 금지" 강한 재안내. 2단 임계 =
+# min(stop_pct+3, nudge_pct) 파생(config 노브 신설 없음). fired.nudge2 로 세션당 1회·1단과 독립.
+
+
+def test_plugin_injects_nudge2_to_model():
+    """2단(strong) nudge 도 모델 컨텍스트에 비차단 주입 + 사람용 2단 toast (T-0328).
+
+    1단(soft) 유지 + 2단(strong) 추가: computeCtxState 가 nudge2 레벨을 내고, event 가 그때
+    pendingNudgeText 를 2단 안내로 세팅(fired.nudge2 멱등·1단과 독립)하며 사람용 toast 도 2단 표시.
+    """
+    src = _plugin_src()
+    # 2단 임계 파생(마진 상수·nudge2Threshold) — claude CTX_NUDGE2_MARGIN_PCT 미러.
+    assert re.search(r"const\s+NUDGE2_MARGIN_PCT\s*=\s*3", src), "NUDGE2_MARGIN_PCT=3 상수(claude 미러) 없음"
+    assert "function nudge2Threshold" in src, "2단 임계 파생함수(nudge2Threshold) 없음"
+    # computeCtxState 가 nudge2 레벨을 낸다.
+    assert '"nudge2"' in src, "computeCtxState 에 nudge2 레벨 없음"
+    # 2단 안내 빌더 + 감지 시 주입 대기 세팅 + fired.nudge2 멱등.
+    assert "buildNudge2Guidance" in src, "2단 안내 빌더(buildNudge2Guidance) 없음"
+    assert "pendingNudgeText = buildNudge2Guidance" in src, "nudge2 감지 시 주입 대기 세팅 누락"
+    assert "fired.nudge2" in src, "2단 1회 가드(fired.nudge2) 없음"
+    # 사람용 2단 toast.
+    assert "notifyNudge2" in src, "2단 toast(notifyNudge2) 경로 없음"
+
+
+def test_js_nudge2_band_and_guidance():
+    """node 로 2단 임계 파생(nudge2Threshold)·4-밴드 판정(computeCtxState)·2단 안내문 검증.
+
+    claude ctx_guard.nudge2_threshold·classify·build_nudge2_guidance 동형. node 부재 시 skip.
+    """
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — 2단 nudge 순수 단위 skip (정적 검증만 적용)")
+
+    script = r"""
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+for (const fn of ["nudge2Threshold","buildNudge2Guidance","computeCtxState"]) {
+  assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
+}
+assert.strictEqual(m.NUDGE2_MARGIN_PCT, 3, "NUDGE2_MARGIN_PCT 미러(3) 아님");
+
+// nudge2Threshold = min(stop_pct + 3, nudge_pct) 파생 (nudge_pct 로 캡).
+assert.strictEqual(m.nudge2Threshold({nudge_pct:30, stop_pct:20}), 23);
+assert.strictEqual(m.nudge2Threshold({nudge_pct:20, stop_pct:10}), 13);
+assert.strictEqual(m.nudge2Threshold({nudge_pct:21, stop_pct:20}), 21); // nudge 밴드 좁으면 캡.
+
+// computeCtxState 4-밴드 (limit 1000, 30/20 → nudge2_threshold 23).
+const t = {nudge_pct:30, stop_pct:20};
+assert.strictEqual(m.computeCtxState(500, 1000, t).level, "ok");     // 잔여 50%
+assert.strictEqual(m.computeCtxState(700, 1000, t).level, "nudge");  // 잔여 30% (nudge 경계·<=)
+assert.strictEqual(m.computeCtxState(760, 1000, t).level, "nudge");  // 잔여 24% (>23)
+assert.strictEqual(m.computeCtxState(770, 1000, t).level, "nudge2"); // 잔여 23% (nudge2 경계·<=)
+assert.strictEqual(m.computeCtxState(790, 1000, t).level, "nudge2"); // 잔여 21%
+assert.strictEqual(m.computeCtxState(800, 1000, t).level, "stop");   // 잔여 20% (stop 경계·<=)
+
+// buildNudge2Guidance 문구 (claude build_nudge2_guidance 동형·strong).
+const g = m.buildNudge2Guidance({remainingPct:18, usedPct:82}, {nudge_pct:20, stop_pct:10});
+assert.ok(g.includes("ctx-nudge/최종"), "ctx-nudge/최종 누락: " + g);
+assert.ok(g.includes("잔여 18%"), "잔여% 누락: " + g);
+assert.ok(g.includes("hard-stop"), "hard-stop 누락");
+assert.ok(g.includes("/pm-handoff"), "/pm-handoff 누락");
+assert.ok(g.includes("10%"), "stop_pct 안내 누락");
+assert.ok(g.includes("강제 정지"), "강제 정지 누락");
+// 1단 문구와 구별된다 (별개 강도 표지).
+const g1 = m.buildNudgeGuidance({remainingPct:18, usedPct:82}, {nudge_pct:20, stop_pct:10});
+assert.ok(g !== g1, "2단 문구가 1단과 동일 — 강도 구별 없음");
+
+console.log("JS_NUDGE2_OK");
+"""
+    out = _run_node_check(script)
+    assert "JS_NUDGE2_OK" in out, f"JS 2단 nudge 검증 실패. out={out!r}"
+
+
 # ── 5. 라이브-로드 게이트 (T-0283 · 실 opencode autoload · release-tier · 기본 skip) ──
 # 이 게이트의 존재이유: 유닛/정적 테스트는 순수함수(node require)만 봐서, opencode 가 plugin export
 # 형식(CJS 객체)을 거부해 *한 번도 로드 안 되던* 갭을 못 잡았다(T-0283). 실 opencode 를 헤드리스로

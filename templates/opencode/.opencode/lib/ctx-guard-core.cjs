@@ -36,6 +36,11 @@ const path = require("node:path");
 const NUDGE_PCT_DEFAULT = 30; // 잔여 ≤ 이 % → 넛지 (일은 계속).
 const STOP_PCT_DEFAULT = 20; // 잔여 ≤ 이 % → 정지·핸드오프.
 
+// 2단(strong) nudge 임계 마진 (%p·파생값·T-0328·ADR-0037). nudge2 밴드 = stop_pct < 잔여 ≤
+// min(stop_pct + 이 마진, nudge_pct) — hard-stop 직전 강한 유도(1단 soft 를 모델이 무시해도 재안내).
+// config 노브 신설 없이 stop_pct 에서 파생. claude ctx_guard.CTX_NUDGE2_MARGIN_PCT 와 미러.
+const NUDGE2_MARGIN_PCT = 3;
+
 // ── ctx 예산 기본 (board.py CTX_WINDOW_TOKENS_DEFAULT 미러 · ADR-0041) ──────────
 // 정지/넛지 분모(100% 기준)의 최종 폴백. 물리 window auto-detect 개념 폐기 —
 // resolveBudget 이 하네스별 오버라이드 > generic > 이 기본 순으로 예산 하나를 해소한다.
@@ -141,10 +146,19 @@ function accumulateTokens(tokens) {
   return input + output + reasoning + cacheRead + cacheWrite;
 }
 
+// ── 순수 함수: 2단(strong) nudge 임계 (stop_pct + margin·nudge_pct 캡·T-0328) ────────
+// nudge2 밴드 = stop_pct < 잔여 ≤ 이 값. margin(+3)이 nudge 밴드를 넘지 않게 min 으로 캡해
+// nudge2 가 nudge 밴드 밖(ok 영역)으로 새지 않는다. claude ctx_guard.nudge2_threshold 와 동형.
+function nudge2Threshold(thresholds) {
+  const stop = thresholds && thresholds.stop_pct != null ? thresholds.stop_pct : STOP_PCT_DEFAULT;
+  const nudge = thresholds && thresholds.nudge_pct != null ? thresholds.nudge_pct : NUDGE_PCT_DEFAULT;
+  return Math.min(stop + NUDGE2_MARGIN_PCT, nudge);
+}
+
 // ── 순수 함수: ctx 상태 판정 (테스트 핵심) ──────────────────────────────────
 // used: accumulateTokens 결과, limit: 해소된 ctx 예산(resolveBudget·ADR-0041·구 물리한도 폐기),
-// thresholds: resolveThresholds 결과. 반환: { remainingPct, usedPct, level: "ok"|"nudge"|"stop" }.
-//   limit 미상(0/음수/NaN)이면 판정 불가 → level "ok"(과도 정지 방지·안전).
+// thresholds: resolveThresholds 결과. 반환: { remainingPct, usedPct, level: "ok"|"nudge"|"nudge2"|"stop" }.
+//   nudge2(T-0328) = stop 직전 강한 유도 밴드. limit 미상(0/음수/NaN)이면 판정 불가 → level "ok"(과도 정지 방지·안전).
 function computeCtxState(used, limit, thresholds) {
   const u = Number(used) || 0;
   const lim = Number(limit);
@@ -156,6 +170,7 @@ function computeCtxState(used, limit, thresholds) {
   const remainingPct = 100 - usedPct;
   let level = "ok";
   if (remainingPct <= stop_pct) level = "stop";
+  else if (remainingPct <= nudge2Threshold(thresholds)) level = "nudge2";
   else if (remainingPct <= nudge_pct) level = "nudge";
   return { remainingPct, usedPct, level };
 }
@@ -173,6 +188,20 @@ function buildNudgeGuidance(state, thresholds) {
     `[ctx-nudge] 컨텍스트 사용 ${used}% (잔여 ${remaining}%) — 핸드오프 준비 구간. ` +
     `지금 진행 중인 단계(ticket/wave)를 마무리한 뒤, 새 큰 작업을 시작하지 말고 ` +
     `/pm-handoff 로 핸드오프하라. 잔여 ${stopPct}% 도달 시 자동 정지된다 (ADR-0037).`
+  );
+}
+
+// ── 순수 함수: 2단(strong) nudge 안내문 (stop 직전 능동 유도·ADR-0037·T-0328) ──────────
+// claude ctx_guard.build_nudge2_guidance 미러. 1단(soft)을 모델이 무시했거나 1단 창을 건너뛴
+// 세션에 hard-stop 직전 강하게 재안내한다 — "새 tool 작업 시작 말고 지금 즉시 /pm-handoff".
+// 여전히 비차단 안내(엔진 박제 X). 1단 문구는 무변경 — 이건 2단 추가.
+function buildNudge2Guidance(state, thresholds) {
+  const remaining = Math.round((state && state.remainingPct) || 0);
+  const stopPct =
+    thresholds && thresholds.stop_pct != null ? thresholds.stop_pct : STOP_PCT_DEFAULT;
+  return (
+    `[ctx-nudge/최종] 잔여 ${remaining}% — hard-stop 직전. 새 tool 작업을 시작하지 말고 ` +
+    `지금 즉시 /pm-handoff 를 실행하라. 잔여 ${stopPct}% 도달 시 강제 정지된다 (ADR-0037).`
   );
 }
 
@@ -261,8 +290,8 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   if (process.env.CTX_GUARD_LOAD_PROBE) {
     process.stderr.write("[ctx-guard] plugin factory loaded (CTX_GUARD_LOAD_PROBE)\n");
   }
-  // 세션당 1회 가드 (멱등성).
-  const fired = { nudge: false, stop: false };
+  // 세션당 1회 가드 (멱등성). nudge2(T-0328)는 1단 발화 여부와 독립(1단 창을 건너뛴 세션도 발화).
+  const fired = { nudge: false, nudge2: false, stop: false };
   // graceful nudge 모델-주입 대기 텍스트 (ADR-0037). event(message.updated)서 nudge 감지 시
   // 세팅 → 다음 모델 호출의 experimental.chat.system.transform 이 1회 소비(push 후 null).
   let pendingNudgeText = null;
@@ -307,6 +336,25 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
               `[ctx-guard] 잔여 컨텍스트 ~${Math.round(state.remainingPct)}% ` +
               `(넛지 임계 ${t.nudge_pct}%). 지금 티켓을 마무리하고, 큰 작업을 새로 ` +
               `시작하지 마라. 잔여 ${t.stop_pct}% 도달 시 자동 정지·핸드오프.`,
+            variant: "warning",
+          },
+        });
+      }
+    } catch {
+      /* toast 실패는 무시 — 넛지는 best-effort. */
+    }
+  }
+
+  // 2단 넛지: 1회 강한 toast(stop 직전·T-0328). notifyNudge 와 별개로 사람용 2단 표시(없으면 무음).
+  async function notifyNudge2(state, t) {
+    try {
+      if (client && client.tui && client.tui.showToast) {
+        await client.tui.showToast({
+          body: {
+            message:
+              `[ctx-guard/최종] 잔여 컨텍스트 ~${Math.round(state.remainingPct)}% — hard-stop 직전. ` +
+              `새 작업을 시작하지 말고 지금 즉시 /pm-handoff 를 실행하라. ` +
+              `잔여 ${t.stop_pct}% 도달 시 강제 정지된다.`,
             variant: "warning",
           },
         });
@@ -363,6 +411,12 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       if (state.level === "stop" && !fired.stop) {
         fired.stop = true;
         writeStopMarker(); // STOP marker 직접 박제 (ADR-0038 D2·무조건·relay 회전 신호·no --trigger).
+      } else if (state.level === "nudge2" && !fired.nudge2) {
+        // 2단(strong·stop 직전·T-0328) — 1단 발화 여부와 독립(1단 창을 건너뛴 세션도 발화).
+        fired.nudge2 = true;
+        await notifyNudge2(state, t); // 2단 강한 toast (사람 UI·1회).
+        // 2단 모델-주입 안내 대기 (ADR-0037·T-0328) — 1단과 동일 채널(system.transform 1회 소비).
+        pendingNudgeText = buildNudge2Guidance(state, t);
       } else if (state.level === "nudge" && !fired.nudge) {
         fired.nudge = true;
         await notifyNudge(state, t); // 넛지 toast (사람 UI·1회).
@@ -418,8 +472,10 @@ module.exports = {
   resolveThresholds,
   resolveBudget,
   accumulateTokens,
+  nudge2Threshold,
   computeCtxState,
   buildNudgeGuidance,
+  buildNudge2Guidance,
   findEngineRoot,
   sanitizeSessionId,
   // 핸드오프 도구 allow-list (ADR-0038 D2 — claude _is_handoff_* 미러·테스트용 export).
@@ -429,5 +485,6 @@ module.exports = {
   isNewWorkPermission,
   NUDGE_PCT_DEFAULT,
   STOP_PCT_DEFAULT,
+  NUDGE2_MARGIN_PCT,
   CTX_WINDOW_TOKENS_DEFAULT,
 };

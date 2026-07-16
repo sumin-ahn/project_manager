@@ -61,16 +61,28 @@ TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵�
 # areas.md 경로는 상수로 굳히지 않는다(T-0162 A6) — board/ 분리(ADR-0033 ①) 시 board/ 안으로
 # 옮겨가므로, `_resolve_per_repo_test_cmd` 가 board 모듈의 `areas_file()`(board_root 추종)에 위임.
 
-# ── identity_args sibling import (ADR-0057·T-0322 공용 정체성 모듈) ──────────────
-# `--repo`/`--slot` 파싱을 공용 모듈 identity_args 에서 가져온다. 스크립트 직접 실행은 인터프리터가
-# tools/ 를 `sys.path[0]` 으로 자동 세팅해 그냥 동작하지만, 테스트는 `spec_from_file_location` 으로
-# 로드하므로(패키지 아님) sys.path 가 자동으로 안 채워진다 — `Path(__file__).resolve().parent`
-# (=tools/) 를 명시적으로 앞에 꽂아 스크립트·테스트 양쪽에서 동형으로 import 되게 한다(pm_handoff
-# 와 동일 관용구·T-0322 결정).
-_TOOLS_DIR_FOR_IMPORT = Path(__file__).resolve().parent
-if str(_TOOLS_DIR_FOR_IMPORT) not in sys.path:
-    sys.path.insert(0, str(_TOOLS_DIR_FOR_IMPORT))
-import identity_args  # noqa: E402 — sys.path 세팅 후 import (위 설명)
+# ── identity_args sibling 로드 (ADR-0057·T-0322 공용 정체성 모듈) ──────────────
+# `--repo`/`--slot` 파싱을 공용 모듈 identity_args 에서 가져온다. 스크립트-위치 앵커
+# (`Path(__file__).resolve().parent`=tools/)에서 `spec_from_file_location` 으로 동적 로드해
+# sys.path 를 오염시키지 않는다 (board.py `_load_identity_args`·pm_handoff 와 동형). 스크립트
+# 직접 실행(sys.path[0]=tools/)이든 테스트 로드(spec_from_file_location·패키지 아님이라 sys.path
+# 미충전)든 어느 쪽이든 `Path(__file__).resolve().parent` 가 정확히 tools/ 라 동일하게 동작한다
+# (T-0322 결정·pm_handoff 동일 관용구).
+
+def _load_identity_args():
+    """공용 정체성 인자 모듈(identity_args.py)을 같은 tools/ 에서 경로 로드한다 (board.py
+    `_load_identity_args`·pm_handoff 동형·sys.path 무오염). `--repo/--slot` 정체성 파싱에
+    load-bearing 이라 로드 실패는 엔진 손상 — 예외를 그대로 낸다(fail-loud·board.py 동일)."""
+    import importlib.util
+
+    ia_path = Path(__file__).resolve().parent / "identity_args.py"
+    spec = importlib.util.spec_from_file_location("identity_args", ia_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+identity_args = _load_identity_args()
 
 
 # ── 회귀 cwd 자동해소 (self-host·T-0149 — pm_handoff `_regression_cwd` 재사용·DRY) ────

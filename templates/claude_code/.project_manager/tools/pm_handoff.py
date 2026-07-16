@@ -54,18 +54,32 @@ TOOLS_DIR = REPO / ".project_manager" / "tools"                          # workt
 AREAS_FILE = REPO / ".project_manager" / "areas.md"                       # legacy 별칭 (아래 _areas_file 가 추종)
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 
-# ── identity_args sibling import (ADR-0057·T-0322 공용 정체성 모듈) ──────────────
-# `--repo`/`--slot` 파싱 + 리스 해소를 공용 모듈 identity_args 에서 가져온다. 프로덕션
-# 실행(`python3 .../pm_handoff.py`)은 인터프리터가 스크립트 디렉토리(tools/)를
-# `sys.path[0]` 으로 자동 세팅해 `import identity_args` 가 그냥 동작하지만, 테스트는
-# `spec_from_file_location` 으로 이 모듈을 로드하므로(패키지 아님) sys.path 가 자동으로
-# 채워지지 않는다 — `Path(__file__).resolve().parent`(=tools/) 를 명시적으로 앞에 꽂아
-# 스크립트·테스트 양쪽에서 동형으로 import 되게 한다(T-0322 결정: 도구 zero-import 관성은
-# 유지하되 이 leaf util 은 예외적으로 sibling import).
-_TOOLS_DIR_FOR_IMPORT = Path(__file__).resolve().parent
-if str(_TOOLS_DIR_FOR_IMPORT) not in sys.path:
-    sys.path.insert(0, str(_TOOLS_DIR_FOR_IMPORT))
-import identity_args  # noqa: E402 — sys.path 세팅 후 import (위 설명)
+# ── identity_args sibling 로드 (ADR-0057·T-0322 공용 정체성 모듈) ──────────────
+# `--repo`/`--slot` 파싱 + 리스 해소를 공용 모듈 identity_args 에서 가져온다. 스크립트-위치 앵커
+# (`Path(__file__).resolve().parent`=tools/)에서 `spec_from_file_location` 으로 동적 로드해
+# sys.path 를 오염시키지 않는다 (board.py `_load_identity_args`·아래 worktree_pool/pm_bootstrap
+# 로더와 동형). 스크립트 직접 실행(sys.path[0]=tools/)이든 테스트 로드(spec_from_file_location·
+# 패키지 아님이라 sys.path 미충전)든 어느 쪽이든 `Path(__file__).resolve().parent` 가 정확히
+# tools/ 라 동일하게 동작한다 (T-0322 결정: 도구 zero-import 관성은 유지하되 이 leaf util 은
+# 예외적으로 sibling 로드).
+
+def _load_identity_args():
+    """공용 정체성 인자 모듈(identity_args.py)을 같은 tools/ 에서 경로 로드한다 (board.py
+    `_load_identity_args`·아래 worktree_pool/pm_bootstrap 로더 동형·sys.path 무오염).
+
+    identity_args 는 `--repo/--slot` 정체성 파싱에 load-bearing 이라(main ingress 가 그 결과로
+    액터/리스를 해소) 로드 실패는 엔진 손상이다 — lint 계열의 fail-soft 로 흡수하지 않고 예외를
+    그대로 낸다(fail-loud·board.py 동일)."""
+    import importlib.util
+
+    ia_path = Path(__file__).resolve().parent / "identity_args.py"
+    spec = importlib.util.spec_from_file_location("identity_args", ia_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+identity_args = _load_identity_args()
 
 
 # ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────

@@ -88,6 +88,26 @@ def _mark_nudged(root: Path, session_id: str) -> None:
         pass
 
 
+# ── nudge2 멱등 marker (ADR-0037 2단 strong nudge·T-0328) — 1단 `.nudge` 과 분리(`.nudge2`) ──
+# 2단은 1단 발화 여부와 독립(1단 창을 건너뛴 세션도 2단은 발화)이라 별도 marker 로 각 세션당 1회.
+def _nudge2_marker_path(root: Path, session_id: str) -> Path:
+    return root / _MARKER_DIR / f"{session_id}.nudge2"
+
+
+def _already_nudged2(root: Path, session_id: str) -> bool:
+    return _nudge2_marker_path(root, session_id).exists()
+
+
+def _mark_nudged2(root: Path, session_id: str) -> None:
+    path = _nudge2_marker_path(root, session_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ctx-nudge2 injected\n", encoding="utf-8")
+    except OSError:
+        # marker 를 못 써도 안내 자체는 유효 — best-effort.
+        pass
+
+
 # ── 핸드오프 도구 allow-list (ADR-0038 D2) ────────────────────────────────────
 # hard-stop 중 진행 중인 rich `/pm-handoff` 가 완주하도록 핸드오프 도구를 통과시킨다. 매칭은
 # **hook allow 를 반환하지 않고** None(통과) 으로 두어 settings.json standing deny(force-push·rm)를
@@ -249,6 +269,19 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
         if output is None:
             return 0, None
         _mark_nudged(root, session_id)
+        return 0, output
+
+    if state == "nudge2":
+        # graceful nudge 2단(strong·stop 직전·ADR-0037·T-0328) — 여전히 비차단 안내(엔진 박제 X).
+        # 멱등(세션 1회·.nudge2 marker). 1단(.nudge)과 독립 — 1단 창을 건너뛴 세션도 2단은 발화한다.
+        # nudge 와 동일 채널: UserPromptSubmit 만 주입(nudge_output)·PreToolUse 면 None → 통과.
+        session_id = _session_id(stdin)
+        if _already_nudged2(root, session_id):
+            return 0, None
+        output = nudge_output(stdin, ctx_guard.build_nudge2_guidance(used, thresholds))
+        if output is None:
+            return 0, None
+        _mark_nudged2(root, session_id)
         return 0, output
 
     # state == "stop" — hard-stop(ADR-0038 D2: 새 작업만 정지·핸드오프 도구 예외).

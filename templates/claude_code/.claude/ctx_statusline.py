@@ -7,6 +7,7 @@ claude Code 가 statusLine 입력 JSON 을 stdin 으로 준다 (``context_window
 
   - ok    : 회색 ctx N%
   - nudge : 노랑 "ctx N% — 곧 정지(핸드오프 준비)"
+  - nudge2: 빨강 "ctx N% — 정지 임박(지금 /pm-handoff)" (2단 strong·T-0328)
   - stop  : 빨강 "ctx N% — 정지 임계·핸드오프"
 
 statusLine 은 **흐름을 안 끊는다**(가시화만) — 하드 정지는 PreToolUse 훅(ctx_stop_hook.py).
@@ -27,7 +28,7 @@ _GREY = "\033[90m"
 _YELLOW = "\033[33m"
 _RED = "\033[31m"
 
-_COLOR = {"ok": _GREY, "nudge": _YELLOW, "stop": _RED}
+_COLOR = {"ok": _GREY, "nudge": _YELLOW, "nudge2": _RED, "stop": _RED}
 
 
 def render_line(used_pct: int, state: str) -> str:
@@ -35,6 +36,8 @@ def render_line(used_pct: int, state: str) -> str:
     color = _COLOR.get(state, _GREY)
     if state == "stop":
         body = f"ctx {used_pct}% — 정지 임계·핸드오프"
+    elif state == "nudge2":
+        body = f"ctx {used_pct}% — 정지 임박(지금 /pm-handoff)"
     elif state == "nudge":
         body = f"ctx {used_pct}% — 곧 정지(핸드오프 준비)"
     else:
