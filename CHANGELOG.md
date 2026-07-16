@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-16
+
+v1.2.0 직후 backlog 소거 patch — 게이트 무결성·부트스트랩 오독 방지·nudge 능동화·문서 정합. 이중게이트(내부 reviewer + codex·codex 반려 2건 재작업 수렴) 통과·라이브 검증 포함.
+
+### Fixed
+- **external_review 빈-diff fail-loud** (T-0326) — 빈/공백 diff 를 외부 리뷰어 호출 전에 exit 1 로 차단(원인·조치 안내 포함). 분리 형상(adopter#0 등)에서 stale 사본 실행이 "변경 없음 통과"로 위장하던 false-green 원천 차단. dry-run 포함 무조건 fail.
+- **pm_bootstrap `--branch`/`--resume` repo-가드 순서** (T-0327) — 가드를 auto-resolve 앞으로 이동, `--repo` 없는 호출이 자동바인딩 슬롯에 silent 부착되던 edge 차단(에러 문구 불변).
+- **pm_bootstrap 보드 요약 open 라벨 오독 방지** (T-0331) — open 카운트 라벨을 `(공유 backlog·슬롯무관)` 으로 정정(보드 섹션+첫-turn 요약 양쪽·done/claimed 는 슬롯-스코프 유지) + **타 세션 진행(claimed) 현황 1줄** 병기(전용 무렌즈 조회·fail-soft) + pm-bootstrap 카드에 "board 숫자는 스냅샷 — 옵션 제시 전 `list --mine` 교차 확인" 지침. claimed 행 파서는 고정폭 컬럼 위치 기반(제목/tags 내용 불독·cmd_list 실행 통합 가드).
+- **pm_import 치환-제외 목록 하드코딩 제거** (T-0329) — 방법론 문서 제외 집합을 치환 시점 dest 인스턴스 manifest 에서 파생(신규 방법론 문서 자동 편입·`--from` 흡수 경로 정합) + broken-manifest 폴백 floor. identity_args 로더 관용구 통일·pm_playbook 라벨 정렬 동반.
+
+### Changed
+- **graceful nudge 2단 강화** (T-0328·ADR-0037 확장) — hard-stop 직전 strong 밴드(`min(stop+3%p, nudge)` 파생·노브 추가 없음) 신설: "지금 즉시 `/pm-handoff`" 능동 유도·단계별 멱등·claude/opencode 파리티·statusline 빨강 "정지 임박" 표시.
+- **nudge 주입-도달 라이브 durable 테스트** (T-0286) — on-demand(`PM_ORCH_LIVE=1`) probe 기반 시나리오 2건(claude 라이브 1회 실통과·opencode 는 upstream tool-loop hang 확증 후 skip 박제). CI 기본 skip·release pin 불변.
+- **dual-harness guest 어댑터 갱신 채널 정식화** (T-0330·ADR-0058) — "엔진+host 어댑터=`pm_update` / dual-harness 로 얹은 guest 어댑터=`add-harness <harness>` 재실행(refresh·live-safe)" 를 출하 문서 5표면에 명시(guest-flavor 채택자는 기존대로 pm_update 전파·ADR-0054).
+
 ## [1.2.0] - 2026-07-16
 
 슬롯 정체성 CLI 플래그를 **decomposed `--repo`/`--slot`** 단일 방식으로 통일한다([[ADR-0057]] supersede [[ADR-0043]]). 여러 세대에 걸쳐 누적된 `--session`(actor)·`--worktree-slot`·`--session-num` 별칭을 **BREAKING 제거**하고, 전 도구가 공용 `identity_args` 모듈로 수렴한다. T-0313 슬롯-모호 remedy 오안내가 근본 소멸. 이중게이트(내부 reviewer + codex) 통과.
