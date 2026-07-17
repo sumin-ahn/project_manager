@@ -138,6 +138,192 @@ STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 
 
+# ── PM-홈 worktree 오실행 가드 (T-0345·mutation dispatch 게이트) ───────────────
+# board 계열 도구를 PM 홈(②)의 등록 worktree(`work/<repo>_<N>`) cwd 에서 실행하면 도구가 cwd
+# 기준 자기-앵커(REPO)로 그 worktree 트리에 조용히 착지해 stray 산출을 낸다 — `board.py new`
+# 가 잘못된 ID 네임스페이스의 `T-0001` 을, `ticket_finish` 가 stray `wiki/log/current.md` 를
+# 만든다(PM 71 한 세션 3회 실측). worktree(①)는 코드 전용이고 board 는 PM 홈(②)이 소유하기
+# 때문이다(ADR-0027). 이 silent-misanchor 클래스를 **fail-loud** 로 폐쇄한다 — mutation 명령이
+# 착지 *전에* 실제 PM 홈 경로를 안내하며 중단한다. 자동 재앵커(silent redirect)는 택하지
+# 않았다: 오탐 시 *다른* board 에 조용히 쓰는 더 나쁜 silent 결과가 되고, 두-git 경계를
+# 가로지르는 board-git sync/counter 재해소가 취약하다. fail-loud 는 최소·안전하며 [[T-0335]]
+# (silent 자동화보다 명시)·livegate seam(T-0287)의 동형 규율이다.
+#
+# **게이트 = mutation subcommand 전수·단일 dispatch 지점**(main()). 개별 cmd 배선 대신 아래
+# 분류 상수(`_MUTATION_SUBCOMMANDS`)로 dispatch 에서 한 번 판정한다 — 신규 mutation subcommand
+# 추가 시 누락되는 클래스는 메타 가드 테스트(`test_board_worktree_misanchor_guard`·분류 상수 vs
+# 실 등록 subcommand 전수 대조)가 잡는다. 읽기-경로·anchor-keyed sidecar(regression·livegate —
+# worktree 에서 도는 게 설계 의도·`.local` sidecar 만 씀)·솔로/standalone(worktree 형상 아님)은
+# 무영향(감지 실패 시 현행 동작·오탐 0·fail-soft). `_worktree_cwd`/`_auto_slot`(②에서 ①찾기·
+# 회귀 cwd 해소)의 *역방향*: 여기선 ①에서 실행된 걸 잡는다.
+#
+# 분류 원칙: **PM 홈 소유 상태를 쓰는 명령**(티켓 상태전이·생성·ID/prefix relabel·idea·wiki
+# family-scope retag·clone init·파생 board.md 재생성)은 게이트. **조회(read)** 와 **anchor-keyed
+# sidecar**(regression/livegate·설계상 worktree 실행)는 비게이트. 각 항목 근거는 아래 상수 주석.
+
+# board 상태(티켓/idea/prefix/id/areas/wiki-scope/파생 board.md)를 쓰거나 clone 을 init 하는
+# mutation subcommand — dispatch 게이트가 이 집합에만 worktree 오실행 가드를 적용한다.
+# (idea/prefix 서브그룹은 `<group> <sub>` 점표기.) reid=ID 재부여·promote-scope=wiki family_scope
+# retag·refresh=파생 board.md 재생성(worktree refresh 는 정당 사용 없음·stray dashboard 방지).
+_MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
+    "new", "promote", "claim", "complete", "block", "unclaim", "unblock",
+    "init", "migrate-identity", "promote-scope", "reid", "refresh",
+    "idea new", "idea promote", "idea kill",
+    "prefix rename", "prefix strip", "prefix merge", "prefix delete",
+})
+# 조회(read-only·board 상태 미변경) — 게이트 없음.
+_READ_SUBCOMMANDS: frozenset[str] = frozenset({
+    "list", "show", "lint", "idea list", "prefix list",
+})
+# anchor-keyed sidecar — board 상태 아님. regression=`.local/regression.json`, livegate=
+# 공유 engine-root `livegate.json`(둘 다 anchor HEAD 로 키·**worktree cwd 실행이 설계 의도**).
+# 게이트하면 릴리즈/회귀 흐름이 깨진다(ADR-0039·T-0287) — 비게이트.
+_SIDECAR_SUBCOMMANDS: frozenset[str] = frozenset({
+    "regression", "livegate",
+})
+
+
+def _resolved_subcommand(args: argparse.Namespace) -> str:
+    """argparse Namespace 에서 실행된 subcommand 를 점표기로 해소한다(idea/prefix 서브그룹 포함).
+
+    top-level dest=`cmd`, 서브그룹 dest=`idea_cmd`/`prefix_cmd` — dispatch 게이트가 mutation
+    분류를 조회할 키를 만든다. (미지정/불명 → "".)
+    """
+    cmd = getattr(args, "cmd", None) or ""
+    if cmd == "idea":
+        return f"idea {getattr(args, 'idea_cmd', '') or ''}".strip()
+    if cmd == "prefix":
+        return f"prefix {getattr(args, 'prefix_cmd', '') or ''}".strip()
+    return cmd
+
+
+def _git_rev_parse(anchor: Path, *args: str, runner: Any = subprocess.run) -> str | None:
+    """`git -C <anchor> rev-parse <args>` 결과(strip)를 반환. git 아님/오류/빈 값이면 None
+    (fail-soft — 솔로/standalone·비-git 트리 무영향). `runner` 는 hermetic 테스트 주입 seam."""
+    try:
+        r = runner(["git", "-C", str(anchor), "rev-parse", *args],
+                   capture_output=True, text=True, check=False)
+    except Exception:
+        return None
+    if getattr(r, "returncode", 1) != 0:
+        return None
+    out = (r.stdout or "").strip()
+    return out or None
+
+
+def _is_linked_worktree(anchor: Path, *, runner: Any = subprocess.run) -> bool:
+    """`anchor` 가 linked git worktree(main checkout 아님)인가.
+
+    linked worktree 는 `git rev-parse --git-dir` 가 `<common>/worktrees/<name>` 을 가리켜
+    `--git-common-dir`(=`<common>`)와 **다르다**. 일반 checkout·PM 홈은 둘 다 `.git` 로 동일
+    (→ False). git 아님/오류면 False(fail-soft — 솔로/standalone 무영향).
+    """
+    git_dir = _git_rev_parse(anchor, "--git-dir", runner=runner)
+    common_dir = _git_rev_parse(anchor, "--git-common-dir", runner=runner)
+    if git_dir is None or common_dir is None:
+        return False
+
+    def _abs(p: str) -> Path:
+        pp = Path(p)
+        return pp if pp.is_absolute() else (anchor / pp).resolve()
+
+    return _abs(git_dir) != _abs(common_dir)
+
+
+def _has_real_board(pm_dir: Path) -> bool:
+    """`.project_manager` 디렉토리(`pm_dir`)가 *실제* board 를 소유하는가.
+
+    board/ 분리(ADR-0033 ①·submodule)면 `board/tickets`, legacy 면 `wiki/tickets` 의 상태
+    디렉토리에 실 티켓(`T-*.md`)이 하나라도 있으면 True. 빈 scaffold(README/_template/
+    `.gitkeep` 만 — worktree 출하 형상)는 False: worktree 자신의 scaffold 를 '실 board' 로
+    오인해 가드를 무력화하지 않게 한다.
+    """
+    for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
+        if not base.is_dir():
+            continue
+        for status in STATUS_DIRS:
+            status_dir = base / status
+            if status_dir.is_dir() and any(status_dir.glob("T-*.md")):
+                return True
+    return False
+
+
+def _registers_worktree(pm_home: Path, anchor: Path, *, runner: Any = subprocess.run) -> bool:
+    """`pm_home` 이 `anchor` 를 **자기 worktree 로 등록**하는가 — git worktree 메타/경로 관례로 확인.
+
+    조상 스캔이 '실 board 를 가진 최근접 디렉토리'를 찾아도, 그게 *실제로* 이 anchor 를 자기
+    worktree 로 두는 PM 홈인지 미검증이면, 무관한 프레임워크 PM 홈 하위에 우연히 중첩된 linked
+    worktree 를 엉뚱한 pm_home 으로 오귀속한다(reviewer should-fix). 아래 둘 중 하나면 등록으로 인정:
+      (a) anchor 경로가 `<pm_home>/work/<name>` 형태 — 프레임워크 worktree 등록 관례(leases slot·
+          `_regression_cwd` 가 `repo_root / "work/<repo>_<N>"` 조립·동형), 또는
+      (b) anchor 의 `git rev-parse --git-common-dir`(공유 git 저장소)이 `pm_home` 하위 —
+          `<pm_home>/.repos/<repo>.git`(ADR-0027 두-git) 또는 `<pm_home>/.git`(단일 git worktree).
+    둘 다 아니면 False → 호출부가 None(기존 fail-soft·오탐 0).
+    """
+    # (a) work/<name> 관례 — git 불요(경로만).
+    if anchor.parent.name == "work" and anchor.parent.parent == pm_home:
+        return True
+    # (b) 공유 git-common-dir 이 pm_home 하위.
+    common = _git_rev_parse(anchor, "--git-common-dir", runner=runner)
+    if common is not None:
+        common_path = Path(common)
+        if not common_path.is_absolute():
+            common_path = (anchor / common_path).resolve()
+        try:
+            common_path.relative_to(pm_home)
+            return True
+        except ValueError:
+            pass
+    return False
+
+
+def _pm_home_worktree_misanchor(anchor: Path, *, runner: Any = subprocess.run) -> Path | None:
+    """`anchor`(도구 자기-앵커=REPO)가 **다른 PM 홈의 등록 worktree** 안이면 그 PM 홈 경로를,
+    아니면 None(fail-soft·솔로/standalone 무영향·오탐 0).
+
+    3중 conjunction (오탐 0 지향·ticket §인터페이스 recipe):
+      1. anchor 자신이 *실 board* 를 소유하지 않음 — 소유하면 정당(①-자체 board 사용이 있는
+         가상 채택자도 무영향). ①(공개 제품 worktree)은 코드 전용·board 미소유라 항상 통과
+         (ADR-0027).
+      2. anchor 가 linked git worktree — 솔로/standalone(일반 checkout·PM 홈)은 여기서 탈락.
+      3. 상위 PM 홈 식별 + **등록 확인** — anchor 조상 중 *실 board* 를 가진 최근접 디렉토리를
+         찾고, 그 홈이 `_registers_worktree`(work/<name> 관례 또는 git-common-dir 하위)로 anchor 를
+         실제 자기 worktree 로 두는지 확인. 등록 안 하면 None(무관 중첩 오탐 방지). 못 찾아도 None.
+    """
+    if _has_real_board(anchor / ".project_manager"):
+        return None
+    if not _is_linked_worktree(anchor, runner=runner):
+        return None
+    for parent in anchor.parents:
+        if _has_real_board(parent / ".project_manager"):
+            # 최근접 board-owner 가 anchor 를 자기 worktree 로 등록해야 그 홈을 안내한다
+            # (무관 프레임워크 홈 하위 우연 중첩이면 등록 실패 → None·fail-soft).
+            return parent if _registers_worktree(parent, anchor, runner=runner) else None
+    return None
+
+
+def _guard_worktree_misanchor(action: str, *, runner: Any = subprocess.run) -> bool:
+    """쓰기-경로 진입 가드 — `anchor`(호출 시점 module-global `REPO`·hermetic monkeypatch
+    추종)가 PM 홈 등록 worktree 면 fail-loud 후 True(차단), 아니면 False(통과).
+
+    `REPO` 를 default 인자로 굳히지 않고 *호출 시점* 에 읽는다 — import 시점 상수로 캡처하면
+    테스트의 `monkeypatch.setattr(board, "REPO", tmp)` 가 무시되고 실 worktree 앵커가 굳는다
+    (pm_handoff LEASES_FILE 재해소와 동형 규율).
+    """
+    anchor = REPO
+    pm_home = _pm_home_worktree_misanchor(anchor, runner=runner)
+    if pm_home is None:
+        return False
+    print(
+        f"[중단] `{action}` 을(를) worktree(코드 전용) 트리에서 실행했습니다 — board 상태는 "
+        f"PM 홈이 소유합니다(ADR-0027). 이대로면 이 worktree 에 stray 티켓/log 를 잘못 만듭니다.\n"
+        f"  → PM 홈에서 실행하세요:  cd {pm_home}\n"
+        f"  (현재 앵커: {anchor})",
+        file=sys.stderr,
+    )
+    return True
+
+
 # ── utilities ──────────────────────────────────────────────────────────
 
 def local_config() -> dict[str, str]:
@@ -6225,6 +6411,12 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
     args = build_parser().parse_args(argv)
+    # PM-홈 worktree 오실행 가드 (T-0345) — mutation subcommand 전수·단일 dispatch 지점.
+    # board 상태를 쓰는 명령만(read·sidecar 제외) 착지 *전에* fail-loud. 분류는 위 상수·미래
+    # 누락은 메타 가드 테스트가 잡는다.
+    subcommand = _resolved_subcommand(args)
+    if subcommand in _MUTATION_SUBCOMMANDS and _guard_worktree_misanchor(f"board.py {subcommand}"):
+        return 1
     return args.fn(args)
 
 

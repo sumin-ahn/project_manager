@@ -34,6 +34,16 @@ def tf():
     return _load_module()
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_misanchor_guard(tf, monkeypatch):
+    """T-0345: 이 테스트 파일은 실 worktree 에서 도는데, `tf.main()` 을 부르는 테스트들이 새
+    PM-홈 worktree 오실행 가드에 걸린다(실 worktree = 실 linked worktree → 가드 발화). 이 파일은
+    가드가 아니라 main() 의 정체성/모호 게이트 등 orthogonal 로직을 검증하므로, 오실행 감지를
+    None(미해소)로 격리해 가드를 통과시킨다. 가드 자체의 검증은 전용 파일
+    `test_board_worktree_misanchor_guard.py` 가 담당한다."""
+    monkeypatch.setattr(tf, "_pm_home_misanchor", lambda: None, raising=False)
+
+
 # ── parse_pytest_output / is_pytest_green: 조합·rc 가드 ───────────────────────
 
 def test_parse_pytest_output_passed_only(tf):

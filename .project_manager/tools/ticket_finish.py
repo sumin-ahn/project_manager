@@ -237,6 +237,42 @@ def _load_board_module():
     return mod
 
 
+# ── PM-홈 worktree 오실행 가드 (T-0345·쓰기-경로 전용) ─────────────────────────
+# ticket_finish 를 PM 홈(②)의 등록 worktree cwd 에서 오실행하면 REPO 가 worktree 로 착지해
+# stray `wiki/log/current.md` append(+ board.py complete 오실행)를 낸다(PM 71 실측). board.py
+# 와 *동일 detector*(`_pm_home_worktree_misanchor`·단일 진실)를 deep-import seam 으로 재사용해
+# main() 진입에서 fail-loud 한다 — 부기 어떤 단계(회귀/log append/complete/stage)도 착지 전에
+# 중단한다. detector 로드 실패/미해소는 fail-soft(현행 동작·오탐 0).
+
+def _pm_home_misanchor() -> Path | None:
+    """이 도구 앵커(REPO·*호출 시점* module-global — hermetic monkeypatch 추종)가 PM 홈의
+    등록 worktree 면 그 PM 홈 경로를, 아니면 None. board.py 의 detector 를 재사용(DRY·단일
+    진실)한다 — board 로드 실패면 None(fail-soft)."""
+    mod = _load_board_module()
+    if mod is None or not hasattr(mod, "_pm_home_worktree_misanchor"):
+        return None
+    try:
+        return mod._pm_home_worktree_misanchor(REPO)
+    except Exception:
+        return None
+
+
+def _guard_worktree_misanchor() -> bool:
+    """쓰기-경로 진입 가드 — 오실행이면 fail-loud 후 True(차단), 아니면 False(통과)."""
+    pm_home = _pm_home_misanchor()
+    if pm_home is None:
+        return False
+    print(
+        "[중단] `ticket_finish` 를 worktree(코드 전용) 트리에서 실행했습니다 — 완료 부기(log·"
+        "board·git)는 PM 홈이 소유합니다(ADR-0027). 이대로면 이 worktree 에 stray log/티켓을 "
+        "잘못 만듭니다.\n"
+        f"  → PM 홈에서 실행하세요:  cd {pm_home}\n"
+        f"  (현재 앵커: {REPO})",
+        file=sys.stderr,
+    )
+    return True
+
+
 def _resolve_per_repo_test_cmd() -> str | None:
     """multi-PM 모드 활성 repo 의 per-repo test_cmd(문자열)를 해소한다. 솔로면 None.
 
@@ -842,6 +878,11 @@ def main(argv: list[str] | None = None) -> int:
                 pass
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # PM-홈 worktree 오실행 가드(T-0345) — 부기 어떤 부작용(회귀/log append/complete/stage)도
+    # 나기 *전에* fail-loud. 읽기 경로 없음(ticket_finish 는 전부 쓰기 부기)이라 진입에서 한 번.
+    if _guard_worktree_misanchor():
+        return 1
 
     # 정체성 인자 *검증*(`--slot` 단독·`slot < 1` = ADR-0057 uniform fail-loud)은 `--no-pytest` 와
     # 무관하게 **항상** 수행한다(pm_handoff 동형·codex 게이트 — 안 그러면 `--no-pytest --slot 4` 같은

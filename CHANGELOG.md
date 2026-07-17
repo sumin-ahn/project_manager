@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-07-17
+
+cwd 오실행 stray 클래스 폐쇄 patch — 단일 티켓(T-0345). 이중게이트(내부 reviewer + codex 반려 1건 재작업 수렴) 통과.
+
+### Fixed
+- **PM-홈 worktree cwd 오실행 fail-loud 가드** (T-0345) — board 쓰기-경로(mutation subcommand 전수)와 `ticket_finish` 를 PM 홈의 등록 worktree(코드 전용·board 미소유) cwd 에서 실행하면, worktree 트리에 stray 티켓/log 를 **조용히 만들던 것**을 실행 전 fail-loud(실제 PM 홈 경로 안내)로 차단. 감지 = 3중 conjunction(실-board 미소유 ∧ linked git worktree ∧ 조상 PM 홈 board 소유) — 솔로/standalone·비-git·PM 홈 cwd 는 무영향(오탐 0). 읽기 경로(list/show/lint)는 무-게이트 유지. 실측 재현 픽스처(stray 티켓·stray log·오경보) 포함.
+
 ## [1.2.3] - 2026-07-17
 
 v1.2.2 잔여 소진 patch — "버전 N 작업 중 발견분은 버전 N 에 탑재" 규율 아래 신뢰성 감지·worktree 안전성·부트스트랩 freshness·문서 정합을 일괄 마감. 이중게이트(내부 reviewer 5 PASS + codex 반려 3건 재작업 수렴) 통과. 파일-전달 규약(v1.2.2 T-0337)의 edit-denied 에이전트 실행 가능성도 라이브 확증 완료(T-0338 — opencode `safe_write` 는 permission deny 와 무관하게 가용[tools 맵=override 실측]·claude 는 Bash 경로·갭 0).
