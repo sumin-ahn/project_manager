@@ -2534,12 +2534,15 @@ def test_create_slot_worktree_add_and_submodule_use_interactive_on_real_path(wp,
     # submodule = 슬롯 경로 + 기본 timeout(=SUBMODULE_TIMEOUT·미지정) (T-0070 인터랙티브).
     assert (slot_p, None) in interactive_calls, \
         "submodule 단계가 인터랙티브 러너(기본 timeout)를 안 탐"
-    # branch 경로엔 base 파생 prep(fetch/show-ref)이 없다 — capture 러너는 bare 컨텍스트에서
-    # (a) bare 실검증 가드(T-0294·rev-parse) + (b) 슬롯번호용 `git worktree list --porcelain`
-    # (T-0295·orphan 병합)만 만든다. 둘 다 bare 컨텍스트·짧은 read-only op(인터랙티브 아님).
-    # worktree add/submodule 은 인터랙티브다.
-    assert capture_cwds == [bare, bare], \
-        f"capture 러너는 bare 실검증(T-0294)+worktree list(T-0295)만이어야 하는데: {capture_cwds!r}"
+    # 이 pin 의 **의도 = interactive vs capture 러너 구분**(worktree add/submodule=console-visible
+    # 인터랙티브·짧은 read-only op=capture) — 그 의도를 보존하며 프로파일만 갱신한다. branch 경로엔
+    # base 파생 prep(fetch/show-ref)이 없고, capture 러너는 bare 컨텍스트에서 (a) bare 실검증 가드
+    # (T-0294·rev-parse) + (b) 슬롯번호용 `git worktree list --porcelain`(T-0295·orphan 병합) +
+    # (c) branch-존재 검사 `git branch --list <branch>`(T-0343·기존 브랜치면 checkout·부재면 -B)만
+    # 만든다 — 셋 다 bare 컨텍스트·짧은 read-only op(인터랙티브 아님). worktree add/submodule 은
+    # 인터랙티브다(위 두 단언).
+    assert capture_cwds == [bare, bare, bare], \
+        f"capture 러너는 bare 실검증(T-0294)+worktree list(T-0295)+branch --list(T-0343)만이어야 하는데: {capture_cwds!r}"
 
 
 def test_create_slot_worktree_add_injected_runner_preserves_di_seam(wp, monkeypatch):

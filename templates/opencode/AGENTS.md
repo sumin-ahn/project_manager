@@ -30,6 +30,12 @@
 - **엔진 = 공유 python.** PM 운영 로직은 `.project_manager/tools/*.py` (board.py·pm_*.py)에
   있다. PM 은 bash tool 로 이 CLI 를 호출·해석한다. **엔진은 0 수정** — 어댑터(이 문서·
   `.opencode/`)만 타깃별로 다르다.
+- **config = 프로세스 시작 시 로드·캐싱 (변경은 재시작 후 반영).** opencode 는
+  `opencode.jsonc`·플러그인(`.opencode/plugins/`·`lib/`)·에이전트 frontmatter
+  (`.opencode/agents/*.md`)를 **세션 프로세스 시작 시 한 번 읽어 캐싱**한다 — 실행 중 이 파일들을
+  고쳐도 **그 세션엔 반영되지 않는다**(PM 59 라이브 실측). 권한·모델·플러그인·ctx-guard 노브를
+  바꿨으면 opencode 를 **재시작**해야 새 값이 산다 (위임된 subagent 도 부모 세션 시작 시점의
+  config 로 뜬다).
 - **인코딩 = 엔진이 코드로 처리.** 엔진이 인코딩을 코드로 처리(PM 7차·C1 파일·C2 콘솔 reconfigure) —
   env prefix 불필요. Windows/CP949 환경서도 env 없이 한글 ticket·wiki 가 깨지지 않는다. §1.
 
@@ -120,7 +126,8 @@ task tool 인자:
 
 - subagent 의 `tools:`/`permission:`/`model:` (`.opencode/agents/*.md` frontmatter) 가 그대로
   권한·모델을 정한다 — `--agent build/plan` 분기·`-m` 모델 명시 **불필요**. 자식 세션이
-  fresh 컨텍스트(200K 격리)에서 subagent 정의대로 구동한다 (실증).
+  fresh 컨텍스트(200K 격리)에서 subagent 정의대로 구동한다 (실증). **단 frontmatter 를 고쳤으면
+  opencode 를 재시작해야 반영된다** — config 는 프로세스 시작 시 캐싱된다(§0 config 캐싱).
 - PM 은 task 결과로 위임 완료를 인지한다. 순차 위임(dev → reviewer)은 opencode 가 자식
   세션으로 관리한다.
 

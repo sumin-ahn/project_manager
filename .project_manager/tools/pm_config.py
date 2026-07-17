@@ -1297,8 +1297,9 @@ def cmd_worktree_remove(
     # 미머지 보존 브랜치 캐비앗(reviewer emergent gap) — 같은 번호 base-경로 재생성이 막힌다.
     if result.branch_action == "preserved-unmerged":
         print(
-            f"  ⚠ 미머지 브랜치 {result.branch} 보존됨 — 같은 번호 슬롯의 base-경로 재생성"
-            "(worktree add)이 'already exists' 로 막힌다. 재사용하려면 이 브랜치 정리(머지/삭제) 후 재시도."
+            f"  ⚠ 미머지 브랜치 {result.branch} 보존됨 — 같은 번호 슬롯 재생성은 브랜치 잔존을"
+            " 선-검출해 명확히 멈춘다(SlotBranchExists·T-0335). 정리(머지/삭제) 후 새 슬롯 재생성하거나,"
+            f" 미머지 작업을 이어가려면 그 브랜치를 수동 checkout(`git worktree add <path> {result.branch}`·리셋 없음)."
         )
     return 0
 

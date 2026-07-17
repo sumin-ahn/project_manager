@@ -485,6 +485,280 @@ def test_real_git_remove_slot_preserves_unmerged_branch(proj, tmp_path):
     assert "A_1" in branches, "미머지 브랜치가 삭제됨(작업 유실)"
 
 
+@_git_required
+def test_real_git_base_recreate_after_preserved_branch_fails_loud(proj, tmp_path):
+    """T-0335 — remove(미머지 보존) 후 같은 번호 base-경로 재생성이 SlotBranchExists 로 fail-loud (오귀인 정정·DoD 핵심).
+
+    슬롯 A_1 을 base-경로(base=main)로 만들고 미머지 커밋을 얹은 뒤 release+remove → 전용 브랜치
+    A_1 은 보존(preserved-unmerged)된다. 같은 번호(A_1)를 base-경로로 재생성하면 **옛 동작**은
+    cryptic `fatal: a branch named 'A_1' already exists`(rc≠0) + already-exists 오귀인(orphan-
+    worktree 정리 안내)으로 죽었다(T-0333 reviewer 실측). **이제** create_slot 이 선-검출해
+    `SlotBranchExists`(결정 (b)·정확한 원인=브랜치 잔존 + 두 갈래 안내)로 fail-loud 하고, provisional
+    lease 는 롤백된다(중단-안전·T-0295). 실 git·hermetic 임시 repo.
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    bare = _mk_real_bare(wp, "A", tmp_path)
+
+    # 슬롯 A_1 을 base-경로(base=main)로 생성 — 슬롯 전용 브랜치 A_1 을 판다.
+    wp.create_slot("A", base="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path("work/A_1")
+    # 슬롯 브랜치 A_1 에 main 에 없는 커밋(미머지) — remove 시 `branch -d` 가 거부(보존).
+    (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
+    _git(slot_dir, "add", "wip.txt")
+    _git(slot_dir, "commit", "-q", "-m", "unmerged work")
+
+    wp.release("work/A_1")
+    result = wp.remove_slot("work/A_1")
+    assert result.branch_action == "preserved-unmerged", \
+        f"미머지 전용 브랜치 A_1 이 보존 안 됨: {result.branch_action!r}"
+    assert "A_1" in _git(bare, "branch", "--list", "A_1").stdout, "보존 브랜치 A_1 이 bare 에 없음"
+
+    # 같은 번호(A_1) base-경로 재생성 — 선-검출로 fail-loud(cryptic already exists·orphan 오귀인 제거).
+    with pytest.raises(wp.SlotBranchExists) as exc:
+        wp.create_slot("A", base="main", session="me", init_submodules=False)
+    msg = str(exc.value)
+    assert exc.value.branch == "A_1"
+    assert exc.value.slot == "work/A_1"
+    assert exc.value.base == "main"
+    # 정확한 원인(브랜치 잔존) — orphan/worktree 경로 오귀인이 아니다(T-0333 결함 정정).
+    assert "orphan" not in msg.lower(), f"orphan-worktree 오귀인 잔존: {msg!r}"
+    assert "브랜치" in msg and "A_1" in msg
+    # provisional lease 롤백 — 장부에 A_1 잔존 안 함(중단-안전·T-0295).
+    assert all(l.slot != "work/A_1" for l in wp.list_leases()), "provisional lease 롤백 실패(장부 dangling)"
+    # add 전에 죽었으므로 worktree dir 도 안 남는다.
+    assert not wp.slot_path("work/A_1").is_dir(), "실패한 재생성이 worktree 를 남김"
+
+
+@_git_required
+def test_real_git_branch_resume_preserved_unmerged_no_reset(proj, tmp_path):
+    """T-0343 — 미머지 보존 브랜치를 create_slot(branch=)로 재개 → 보존 커밋 잔존(리셋 없음·데이터-유실 클래스 종결·DoD).
+
+    슬롯 A_1(base=main)에 미머지 커밋을 얹고 release+remove → 전용 브랜치 A_1 보존. 그 브랜치를
+    `create_slot(branch="A_1")` 로 재개하면 **옛 `-B`** 는 A_1 을 bare HEAD(main)로 **리셋**해 미머지
+    커밋을 잃었다(T-0335 codex 데이터-유실 클래스). **T-0343** 은 기존 브랜치를 그 tip 에서 **checkout**
+    (리셋 없음)해 보존 커밋이 슬롯 HEAD 로 살아있음을 확증한다. 실 git·hermetic 임시 repo.
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    bare = _mk_real_bare(wp, "A", tmp_path)
+
+    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_1 @ main
+    slot_dir = wp.slot_path("work/A_1")
+    (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
+    _git(slot_dir, "add", "wip.txt")
+    _git(slot_dir, "commit", "-q", "-m", "unmerged work")
+    preserved_sha = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
+
+    wp.release("work/A_1")
+    result = wp.remove_slot("work/A_1")
+    assert result.branch_action == "preserved-unmerged"
+    assert not slot_dir.is_dir()
+    assert "A_1" in _git(bare, "branch", "--list", "A_1").stdout, "보존 브랜치 A_1 이 bare 에 없음"
+
+    # 재개 — create_slot(branch="A_1") → 기존 브랜치 checkout(리셋 없음·`-B` 아님).
+    lease = wp.create_slot("A", branch="A_1", session="me", init_submodules=False)
+    assert lease.slot == "work/A_1"
+    resumed_dir = wp.slot_path("work/A_1")
+    # 슬롯 HEAD 가 보존 커밋 그대로 — bare HEAD(main)로 리셋되지 않았다(핵심 확증).
+    assert _git(resumed_dir, "rev-parse", "HEAD").stdout.strip() == preserved_sha, \
+        "재개 슬롯이 보존 커밋을 잃음(-B 리셋 재발·데이터-유실)"
+    # 미머지 파일이 워킹트리에 존재(작업 이어가기 가능).
+    assert (resumed_dir / "wip.txt").read_text(encoding="utf-8") == "wip\n", "미머지 작업 파일이 유실됨"
+    # 현재 브랜치가 A_1 checkout(detached 아님).
+    assert wp.current_branch("work/A_1") == "A_1", "재개 슬롯이 A_1 브랜치 checkout 상태가 아님"
+
+
+@_git_required
+def test_real_git_branch_exists_detection_color_safe(proj, tmp_path):
+    """T-0343 codex must-fix — ambient `color.branch=always` 서도 branch-존재 판정 정확 (ANSI 오염 백스톱·실 git).
+
+    평문 `git branch --list <b>` 는 `color.branch=always` 서 출력에 ANSI escape(`\\x1b[m`)가 섞여
+    `.split()` 토큰이 브랜치명과 불일치 → 기존 브랜치를 "없음"으로 오판 → checkout 대신 `-B` 로 가
+    리셋-유실 재개방(codex 실측). `_slot_branch_exists` 는 `--format=%(refname:short)`(color-safe plain)
+    로 뽑아 막는다. **fake 출력은 평문이라 이 오염을 못 재현** — 실 git 에 color 를 박아 두 경로를
+    실측: (1) 슬롯-전용 브랜치 선-검출(SlotBranchExists) 여전히 발화 + (2) branch= checkout 이 보존
+    커밋을 리셋 없이 유지.
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    bare = _mk_real_bare(wp, "A", tmp_path)
+    # ANSI 오염 재현 — 평문 `branch --list` 를 깨는 조건(색을 non-TTY 에도 강제).
+    _git(bare, "config", "color.branch", "always")
+    _git(bare, "config", "color.ui", "always")
+
+    # 슬롯 A_1(base=main)에 미머지 커밋 → release+remove → 전용 브랜치 A_1 보존.
+    wp.create_slot("A", base="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path("work/A_1")
+    (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
+    _git(slot_dir, "add", "wip.txt")
+    _git(slot_dir, "commit", "-q", "-m", "unmerged work")
+    preserved_sha = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
+    wp.release("work/A_1")
+    assert wp.remove_slot("work/A_1").branch_action == "preserved-unmerged"
+
+    # (1) base-경로 재생성 선-검출: color 오염에도 A_1 존재를 정확 감지 → SlotBranchExists.
+    with pytest.raises(wp.SlotBranchExists):
+        wp.create_slot("A", base="main", session="me", init_submodules=False)
+    assert all(l.slot != "work/A_1" for l in wp.list_leases()), "선-검출 실패 시 provisional 잔존"
+
+    # (2) branch= 재개: color 오염에도 A_1 존재를 정확 감지 → checkout(리셋 없음)·보존 커밋 유지.
+    lease = wp.create_slot("A", branch="A_1", session="me", init_submodules=False)
+    assert lease.slot == "work/A_1"
+    resumed_dir = wp.slot_path("work/A_1")
+    assert _git(resumed_dir, "rev-parse", "HEAD").stdout.strip() == preserved_sha, \
+        "color.branch=always 오염으로 브랜치를 '없음' 오판 → -B 리셋(데이터-유실 재발·must-fix 미해소)"
+    assert wp.current_branch("work/A_1") == "A_1"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# create_slot 미머지-보존 브랜치 충돌 — 선-검출 fail-loud (T-0335·DI seam·hermetic)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class _CreateBaseFakeGit:
+    """create_slot base/else/branch-경로 DI seam mock — bare 검증·branch --list(전용 브랜치 잔존)·fetch/show-ref·worktree add.
+
+    `slot_branch_exists` → `_slot_branch_exists` 의 `git branch --list --format=%(refname:short)
+    <branch>` 가 그 브랜치를 리스트(잔존·T-0335 선-검출/T-0343 checkout 분기 트리거)한다. False 면
+    빈 출력(미존재·정상 생성/`-B`). helper 는 `--format=%(refname:short)`(color-safe plain·T-0343)로
+    뽑고 **splitlines 정확-일치**로 판정하므로, 존재 시 브랜치명만 실은 평문 라인(`A_1\\n`·프리픽스/
+    ANSI 없음)을 돌려준다·미존재 시 빈 출력. rc 는 무시(branch --list 는 매치 없어도 rc0).
+    """
+
+    def __init__(self, *, slot_branch_exists=False):
+        self.slot_branch_exists = slot_branch_exists
+        self.calls: list[list] = []
+
+    def __call__(self, argv: list) -> tuple[int, str]:
+        self.calls.append(list(argv))
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")                       # 유효 bare 형식(T-0294)
+        if "rev-parse" in argv and "--verify" in argv and argv[-1] == "HEAD":
+            return (0, "0123abc\n")                    # HEAD 해소(T-0294)
+        if argv[:2] == ["branch", "--list"]:
+            name = argv[-1]                            # 브랜치 패턴 = 마지막 인자(--format 은 중간)
+            # `%(refname:short)` 평문 — 프리픽스/ANSI 없이 브랜치명만(splitlines 정확-일치·color-safe).
+            return (0, f"{name}\n") if self.slot_branch_exists else (0, "")
+        if argv[:2] == ["fetch", "origin"]:
+            return (0, "")
+        if argv[:3] == ["show-ref", "--verify", "--quiet"]:
+            return (0, "")                             # origin/<base> 해소
+        if argv == ["symbolic-ref", "--short", "HEAD"]:
+            return (0, "A_1\n")
+        return (0, "")                                 # worktree add/list·submodule 등 성공
+
+    def did(self, *prefix) -> bool:
+        return any(c[: len(prefix)] == list(prefix) for c in self.calls)
+
+
+def _mk_bare_dir(wp, repo):
+    """bare 부재 가드(`bare.exists()`) 통과용 placeholder — is-bare 유효성은 injected mock 이 모델."""
+    wp.bare_repo_path(repo).mkdir(parents=True, exist_ok=True)
+
+
+def test_create_slot_base_preexisting_branch_raises_slot_branch_exists(wp):
+    """T-0335 — create_slot(base=) 이 파려는 슬롯 전용 브랜치가 이미 존재하면 SlotBranchExists (선-검출·fail-loud)."""
+    _mk_bare_dir(wp, "A")
+    git = _CreateBaseFakeGit(slot_branch_exists=True)
+    with pytest.raises(wp.SlotBranchExists) as exc:
+        wp.create_slot("A", base="develop", session="me", init_submodules=False, git_runner=git)
+    assert exc.value.branch == "A_1"
+    assert exc.value.base == "develop"
+    assert exc.value.slot == "work/A_1"
+    # 선-검출 = worktree add 를 아예 안 부른다(add 전에 raise·cryptic 에러 회피). color-safe argv 확인.
+    assert git.did("branch", "--list", "--format=%(refname:short)", "A_1")
+    assert not git.did("worktree", "add")
+    # 오귀인 제거 — 진단이 브랜치 잔존이지 orphan-worktree 가 아니다.
+    assert "orphan" not in str(exc.value).lower()
+    # provisional lease 롤백(중단-안전·T-0295) — 장부에 A_1 잔존 안 함.
+    assert all(l.slot != "work/A_1" for l in wp.list_leases())
+
+
+def test_create_slot_base_no_preexisting_branch_proceeds(wp):
+    """대조 — 전용 브랜치 미존재면 선-검출 통과 → 정상 worktree add (선-검출이 정상 경로를 막지 않음)."""
+    _mk_bare_dir(wp, "A")
+    git = _CreateBaseFakeGit(slot_branch_exists=False)
+    lease = wp.create_slot("A", base="develop", session="me", init_submodules=False, git_runner=git)
+    assert lease.slot == "work/A_1"
+    assert git.did("branch", "--list", "--format=%(refname:short)", "A_1")   # 선-검출(color-safe)은 수행하되,
+    assert git.did("worktree", "add", "--no-track", "-b", "A_1")     # 미존재라 정상 진행.
+
+
+def test_create_slot_else_path_preexisting_branch_also_guarded(wp):
+    """T-0335 클래스-fix — base 미지정(else) 경로도 슬롯 전용 브랜치 잔존을 선-검출 (같은 브랜치명 자동 생성).
+
+    `git worktree add <path>`(base·branch 미지정)는 git 이 path basename(=A_1)으로 브랜치를 자동
+    생성하므로 base-경로와 **동일 충돌 클래스**다 — 솔로/무base 사용자도 fail-loud 로 보호한다.
+    """
+    _mk_bare_dir(wp, "A")
+    git = _CreateBaseFakeGit(slot_branch_exists=True)
+    with pytest.raises(wp.SlotBranchExists) as exc:
+        wp.create_slot("A", session="me", init_submodules=False, git_runner=git)  # base 미지정 = else
+    assert exc.value.branch == "A_1"
+    assert exc.value.base is None                 # else-경로는 base None.
+    assert not git.did("worktree", "add")
+
+
+def test_create_slot_branch_path_existing_branch_checks_out_no_reset(wp):
+    """T-0343 — 명시 `branch=` 가 기존 브랜치면 checkout(`add <path> <branch>`·리셋 없음·`-B` 아님).
+
+    branch-존재 검사(`_slot_branch_exists`·color-safe `--format=%(refname:short)`) → 존재하면 그 tip
+    에서 checkout 한다(리셋 없음·보존 커밋 유지). 옛 `-B`(create-or-reset)는 기존 브랜치를 bare HEAD 로
+    리셋해 미머지-보존 커밋을 잃던 데이터-유실 클래스(T-0335 codex) — T-0343 이 이 checkout 분기로 API
+    에서 닫는다. 명시 `branch=` 는 SlotBranchExists(슬롯-전용 브랜치 선-검출·base/else 전용)를 안 탄다
+    (사용자 직접 지정=명시 의도).
+    """
+    _mk_bare_dir(wp, "A")
+    git = _CreateBaseFakeGit(slot_branch_exists=True)   # 요청 브랜치 존재를 모델
+    lease = wp.create_slot("A", branch="a1", session="me", init_submodules=False, git_runner=git)
+    assert lease.slot == "work/A_1"                      # SlotBranchExists 안 남(명시 branch= 는 가드 밖).
+    assert git.did("branch", "--list", "--format=%(refname:short)", "a1")   # color-safe 존재 검사 수행,
+    # 기존 브랜치 → checkout(리셋 없음)·`-B` 절대 안 씀(보존 커밋 유실 방지·T-0343).
+    assert git.did("worktree", "add", str(wp.slot_path("work/A_1")), "a1")
+    assert not any(c[:3] == ["worktree", "add", "-B"] for c in git.calls)
+
+
+def test_create_slot_branch_path_new_branch_uses_dash_b(wp):
+    """T-0343 무회귀 — 명시 `branch=` 가 신규 브랜치면 `-B`(생성·리셋 대상 없어 안전·기존 동작 보존).
+
+    `add <path> <newbranch>` 는 "invalid reference" 로 죽으므로 신규 브랜치는 `-B`(create)로 판다 —
+    존재 검사 rc≠0/빈 출력 경로가 옛 `-B` 동작을 그대로 유지함을 박제(checkout 분기가 신규를 안 깬다).
+    """
+    _mk_bare_dir(wp, "A")
+    git = _CreateBaseFakeGit(slot_branch_exists=False)  # 요청 브랜치 부재
+    lease = wp.create_slot("A", branch="a1", session="me", init_submodules=False, git_runner=git)
+    assert lease.slot == "work/A_1"
+    assert git.did("branch", "--list", "--format=%(refname:short)", "a1")   # color-safe 존재 검사 수행,
+    assert git.did("worktree", "add", "-B", "a1")       # 부재 → -B 생성(무회귀).
+
+
+def test_create_slot_post_hoc_branch_exists_not_misattributed_orphan(wp):
+    """T-0335 오귀인 정정 — worktree add 가 'a branch named ... already exists' 로 죽으면 브랜치 진단(orphan 아님).
+
+    선-검출을 우회(branch --list 빈)했으나 worktree add 가 브랜치-존재 에러를 내는 잔여/레이스 경로
+    에서도, 옛 코드의 already-exists 부분매치 오귀인(orphan-worktree 정리 안내)을 내지 않고 브랜치
+    잔존 진단을 낸다(post-hoc 분리 판정·클래스-fix 방어).
+    """
+    _mk_bare_dir(wp, "A")
+
+    class _G(_CreateBaseFakeGit):
+        def __call__(self, argv):
+            if argv[:2] == ["worktree", "add"]:
+                self.calls.append(list(argv))
+                return (128, "fatal: a branch named 'A_1' already exists\n")
+            return super().__call__(argv)
+
+    git = _G(slot_branch_exists=False)   # 선-검출은 통과(빈), add 가 브랜치-존재로 죽음.
+    with pytest.raises(RuntimeError) as exc:
+        wp.create_slot("A", base="develop", session="me", init_submodules=False, git_runner=git)
+    msg = str(exc.value)
+    assert "A_1" in msg
+    # 오귀인 제거 — orphan/worktree 경로 정리 안내가 아니라 브랜치 잔존 안내.
+    assert "orphan" not in msg.lower()
+    assert "브랜치" in msg
+
+
 # ════════════════════════════════════════════════════════════════════════
 # cmd_worktree_remove — CLI 배선 (pm_config·mock worktree_pool 주입)
 # ════════════════════════════════════════════════════════════════════════
@@ -656,13 +930,19 @@ def test_cmd_remove_no_forced_state_no_warning(pc, capsys):
 
 
 def test_cmd_remove_preserved_unmerged_caveat_surfaces(pc, capsys):
-    """reviewer emergent gap — 미머지 보존 시 '같은 번호 base-경로 재생성 막힘' 캐비앗 1줄."""
+    """reviewer emergent gap — 미머지 보존 시 재생성 캐비앗 1줄 (T-0335 선-검출 진단·재개=수동 checkout 문구).
+
+    재개 안내는 **수동 checkout**(`git worktree add`)으로 준다 — `create_slot(branch=)` 의 `-B`
+    create-or-reset 데이터-유실(codex must-fix)을 피한다. 문구에 SlotBranchExists + 수동 checkout 확인.
+    """
     wp = FakeWP(branch_action="preserved-unmerged", branch="A_1")
     rc = pc.cmd_worktree_remove(argparse.Namespace(slot="work/A_1", force=False), worktree_pool=wp)
     assert rc == 0
     out = capsys.readouterr().out
     assert "보존(미머지)" in out
-    assert "already exists" in out and "재시도" in out
+    assert "SlotBranchExists" in out
+    # 재개는 수동 checkout(`git worktree add`)으로 — branch= (-B reset) 유도 아님.
+    assert "수동 checkout" in out and "git worktree add" in out
 
 
 def test_cmd_remove_stash_failure_surfaces_rc1(pc, capsys):

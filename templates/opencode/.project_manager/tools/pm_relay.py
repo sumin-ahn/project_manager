@@ -230,6 +230,18 @@ def _env_nonneg_int(name: str, default: int) -> int:
     return value if value >= 0 else default
 
 
+def _env_positive_int(name: str, default: int) -> int:
+    """env 노브를 양의 int 로 해소(빈/불량/비양수는 default·fail-soft)."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 def first_event_timeout_default() -> float:
     """PM_OC_FIRST_EVENT_TIMEOUT env(초) 또는 기본 90. 세 표면 공유 해소기."""
     return _env_positive_float(FIRST_EVENT_TIMEOUT_ENV, DEFAULT_FIRST_EVENT_TIMEOUT_SEC)
@@ -423,6 +435,78 @@ def run_with_first_event_watchdog(
     )
 
 
+# ── opencode 출력 cap-hit(32k 절단) detector (T-0339 · 하니스-무관 순수 헬퍼) ──────────────────
+# opencode 는 outbound 응답이 출력 cap(32000 토큰·`opencode.jsonc` 실효 = min(limit.output,32000))을
+# 넘으면 응답을 **조용히 절단** 하고 finish 를 "stop" 으로 위장한다(T-0334 라이브 확증) — 수신자(PM)는
+# 절단을 감지하지 못한다. T-0337 파일-전달 규약이 우회책이나, *절단이 실제로 일어났는지* 알 장치가
+# 없으면 우회 실패가 조용히 지나간다. 이 detector 가 출력 소비 지점(Supervisor.run_loop)에서 응답이
+# cap 근방인지 보고 loud advisory 를 낸다. **advisory·never-block** — 경고+로그만·파이프라인 무중단
+# (오탐이 relay 를 죽이면 안 됨). claude 는 범위 밖: claude 는 truncation 을 stop_reason=max_tokens 로
+# *네이티브 노출* 하므로 silent 절단 클래스가 아니다(T-0334 는 opencode 한정 실측) — run_loop 배선은
+# 하니스-무관 크기 advisory 라 claude 응답도 지나가나 임계가 정상 응답보다 한참 위라 무영향.
+
+CAP_TOKENS = 32000                   # opencode 실효 출력 cap(T-0334·opencode.jsonc limit.output).
+# 정확 토크나이저는 쓰지 않는다(무거운 의존·하니스-무관 유지·ticket §결정). char 수를 보수적 token
+# 근사로 환산한다: char↔token 비는 내용마다 다르나(영어/코드 ≈3.5–4·한글 ≈1.5–2.5 char/token), 순수
+# 한글은 실 토크나이저에서 그보다 dense(<1.5)일 수 있어 32000~43200자 절단을 놓칠 위험이 있다. 그
+# 한글-dominant false-negative 창을 닫기 위해 char 길이 하한을 **극단 dense CJK(~1.2 char/token)**
+# 기준으로 보수 하향한다 — genuine 32k-token 응답은 이 밀도에서도 ≈38400 char 다.
+CAP_HIT_MIN_CHARS_PER_TOKEN = 1.2    # char/token 보수적 하한(극단 dense CJK 기준·상한 token 근사).
+CAP_HIT_RATIO = 0.90                 # cap 근방 밴드 = char 하한의 90% 이상이면 절단 의심.
+# char 임계 = 32000 × 1.2 × 0.90 = 34560 char. 이 값은 (a) 내용 혼합 전반의 genuine 절단 char 길이
+# (영어 128k·코드 112k·혼합 80k·한글 48k·극단 dense CJK 38k) *아래* 라 절단을 놓치지 않고
+# (false-negative 회피 — 순수 한글 dense 창 포함), (b) 정상 PM relay 응답(수백~수 KB·verbose handoff
+# ~15KB)보다 여전히 >2x 위라 오탐 0(false-positive 회피). 두 경계 폭이 넓어 단일 char 임계로 양쪽을
+# 만족한다(정확 token 수 불필요·advisory 목적엔 절단 *의심* 표면화면 충분).
+CAP_HIT_CHAR_THRESHOLD = int(CAP_TOKENS * CAP_HIT_MIN_CHARS_PER_TOKEN * CAP_HIT_RATIO)  # 34560
+CAP_HIT_THRESHOLD_ENV = "PM_OC_CAP_HIT_THRESHOLD"  # char 임계 override(필요 시만·양의 정수).
+
+
+def cap_hit_char_threshold_default() -> int:
+    """PM_OC_CAP_HIT_THRESHOLD env(양의 char 수) 또는 기본 34560. cap-hit 감지 char 임계 해소기."""
+    return _env_positive_int(CAP_HIT_THRESHOLD_ENV, CAP_HIT_CHAR_THRESHOLD)
+
+
+def detect_output_cap_hit(text, *, char_threshold: int | None = None,
+                          cap_tokens: int = CAP_TOKENS) -> tuple[bool, str]:
+    """outbound 응답이 opencode 출력 cap(≈32k 토큰) 근방인지 감지 — silent 절단 의심 (T-0339).
+
+    반환 (hit, reason). hit=True 면 응답이 cap-hit 임계(char) 이상이라 절단 의심 → 호출부가 loud
+    advisory 를 낸다(never-block). hit=False 면 reason="". 정확 token 수는 근사(보수적 상한) —
+    char↔token 비가 내용마다 달라 exact 는 못 주나 절단 *의심* 표면화엔 충분(advisory 목적).
+
+    char_threshold=None 이면 env 노브(PM_OC_CAP_HIT_THRESHOLD) 또는 기본을 쓴다. text 가 비거나
+    None 이면 무발화(정상 크기 = 무조건 통과·오탐 0 보장의 하한 경로).
+    """
+    if char_threshold is None:
+        char_threshold = cap_hit_char_threshold_default()
+    length = len(text) if text else 0
+    if length < char_threshold:
+        return False, ""
+    approx_tokens = int(length / CAP_HIT_MIN_CHARS_PER_TOKEN)  # 보수적 상한 근사(token).
+    reason = (
+        f"응답 {length} 자(≈{approx_tokens} tok 보수적 근사) ≥ 임계 {char_threshold} 자 — "
+        f"opencode 출력 cap {cap_tokens} tok 근방"
+    )
+    return True, reason
+
+
+def cap_hit_warning_message(reason: str) -> str:
+    """cap-hit loud advisory 1줄 — T-0337 파일-전달 규약 안내 포함(경고 문구 요구·ticket §결정).
+
+    run_loop 배선은 하니스-무관이라 claude 대형 응답에도 발화할 수 있다 — opencode 한정으로 단정하지
+    않고 **조건부**('opencode 하니스라면')로 문구를 중립화해 오해 소지를 없앤다(claude 는 truncation 을
+    stop_reason 으로 네이티브 노출하므로 이 silent-절단 클래스가 아님·§메모). 규약 안내는 유지한다.
+    stdout(=PM 대화 채널)은 오염하지 않는다 — 호출부가 이 문자열을 stderr/log 로 낸다."""
+    return (
+        f"[pm-orch] ⚠ 출력 상한(32k tok) 근방: {reason}. **opencode 하니스라면** 이 응답이 silent "
+        "절단됐을 가능성이 있다 — opencode 는 32k 출력 토큰에서 응답을 조용히 자르고 finish 를 'stop' "
+        "으로 위장한다(T-0334·수신자 감지 불가). 잘렸다면 파일-전달 규약(T-0337)으로 재시도하라: 대형 "
+        "산출물은 파일로 쓰고(opencode 는 safe_write 8KB 청크·write 는 16KB 초과 거부), 응답엔 절대경로 "
+        "+ 핵심 요약 ≤10줄만 반환."
+    )
+
+
 def _sanitize_session_id(session_id: str) -> str:
     """marker 파일명 안전화 — ctx_stop_hook._session_id 와 동일 규칙(파일명 안전 문자만·64자).
 
@@ -457,11 +541,14 @@ class Supervisor:
     def stop_marker_present(self, session_id: str) -> bool:
         return stop_marker_present(self.root, session_id)
 
-    def run_loop(self, cwd: str, in_stream: TextIO, out_stream: TextIO) -> int:
+    def run_loop(self, cwd: str, in_stream: TextIO, out_stream: TextIO,
+                 cap_hit_log=None) -> int:
         """바깥 루프 — spawn → relay → STOP 감지 → respawn(+직전 입력 재전송) → repeat.
 
         - in_stream: 사용자 입력 라인 소스(stdin·테스트는 StringIO).
         - out_stream: PM reply 출력 sink(stdout·테스트는 StringIO).
+        - cap_hit_log: cap-hit(32k 절단 의심) loud advisory sink(기본 stderr·테스트는 list.append).
+          출력 소비 지점에서 응답이 cap 근방이면 경고만 낸다(never-block·stdout 무오염·T-0339).
         - 반환 = exit code(0=정상 종료 EOF/quit · GUARD_TRIPPED_RC=연속 respawn 가드 발동).
 
         직전 입력 재전송: STOP 을 유발한(차단된) turn 의 사용자 입력을 `pending` 지역 변수에
@@ -474,6 +561,7 @@ class Supervisor:
         turn)이 한 번이라도 끼면 0 리셋. 카운터가 max 초과면 진단 1줄 쓰고 종료(병적 케이스만
         발동·정상 회전은 영향 0). 카운터는 *지역 변수* — 인스턴스 상태 아님(stateless 유지).
         """
+        cap_hit_log = cap_hit_log if cap_hit_log is not None else _default_watchdog_log
         session_id = self._spawn(cwd, out_stream)
         pending: str | None = None  # respawn 후 재전송할 직전(차단된) 입력.
         consecutive_respawns = 0    # 같은 입력 재전송이 연속 STOP 한 횟수(지역·병적 케이스 감지).
@@ -497,6 +585,16 @@ class Supervisor:
             if reply is not None:
                 out_stream.write(reply + "\n")
                 out_stream.flush()
+                # 출력 소비 지점 — 응답이 출력 상한(32k tok) 근방이면 silent 절단 의심 loud advisory
+                # (never-block·stdout 은 이미 위에서 그대로 전달·경고는 별도 sink·T-0339). advisory 는
+                # relay 를 절대 못 죽인다 — detect/message/sink write 전 경로를 try/except 로 감싼다
+                # (병적 sink·근사 예외가 파이프라인을 중단시키면 안 됨·never-block 을 코드로 못박음).
+                try:
+                    cap_hit, cap_reason = detect_output_cap_hit(reply)
+                    if cap_hit:
+                        cap_hit_log(cap_hit_warning_message(cap_reason))
+                except Exception:  # noqa: BLE001 — advisory 는 어떤 이유로도 relay 를 막지 않는다.
+                    pass
 
             # 매 turn 직후 1회 stat — marker 있으면 떠나는 세션은 hook 이 이미 차단됨
             # (harvest 안 함) → 회전. 이 turn 의 입력은 차단됐을 수 있으니 새 PM 에 재전송.

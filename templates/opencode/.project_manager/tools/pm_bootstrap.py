@@ -721,9 +721,16 @@ def _behind_warning(scope: dict) -> str:
 
 
 def _format_freshness(scope: dict) -> str:
-    """freshness scope 한 줄 표기 — fetch/behind/ahead/상태 + 동기·경고 노트 (T-0217)."""
+    """freshness scope 한 줄 표기 — fetch/behind/ahead/상태 + 동기·경고 노트 (T-0217·T-0341).
+
+    offline(fetch 실패)이면 origin 대비 실측을 못 하므로 remote-tracking 스냅샷을 "최신" 으로
+    주장하지 않는다 — behind 0·upstream 미상은 "판정불가 — 스냅샷일 수 있음" fail-soft
+    (T-0341·PM 69 stale-read: stale board 를 "최신" 으로 오신뢰하는 사고 차단). behind>0 은
+    fetch 성공/실패 무관하게 로컬이 이미 아는 뒤처짐이라 그대로 표기(경고 note 는 별도 병기).
+    """
     parts: list[str] = []
-    if not scope.get("fetched"):
+    fetched = scope.get("fetched")
+    if not fetched:
         parts.append("⚠ fetch 실패 (offline·현행 유지)")
     if scope.get("detached"):
         parts.append("detached HEAD")
@@ -731,9 +738,11 @@ def _format_freshness(scope: dict) -> str:
         behind = scope.get("behind")
         ahead = scope.get("ahead") or 0
         if behind is None:
-            parts.append("upstream 없음")
+            # upstream 미설정/조회불가 — offline 이면 판정불가로 감싼다(fail-soft).
+            parts.append("판정불가 — 스냅샷일 수 있음" if not fetched else "upstream 없음")
         elif behind == 0 and ahead == 0:
-            parts.append("최신")
+            # online 이면 진짜 최신, offline 이면 실측 못 한 stale 스냅샷일 뿐(판정불가).
+            parts.append("판정불가 — 스냅샷일 수 있음" if not fetched else "최신")
         else:
             parts.append(f"behind {behind} / ahead {ahead}")
     if scope.get("note"):
@@ -1214,6 +1223,35 @@ def _format_slot_status_lines(status: dict | None) -> list[str]:
         tokens = " · ".join(_format_submodule_token(sub) for sub in submodules)
         lines.append(f"- submodule: {tokens}")
     return lines
+
+
+# ── 슬롯 시대차 경고 (T-0341·PM 69 stale-read) ────────────────────────────────
+# 슬롯 worktree 의 HEAD 가 base(main) 대비 behind N 커밋이면 옛-시대 코드로 작업할 위험이
+# 있다(PM 69 slot-2 실측 — v1.0.6 시대 코드로 작업 직전). identity surface 에 경고 줄을
+# 표면화한다. offline(base fetch 실패)면 판정불가 fail-soft. 없으면(최신·base 미해소) 줄 생략.
+
+def _format_slot_era_warning(info: dict | None) -> str | None:
+    """슬롯 시대차 info(`_slot_era_info` 반환) → 경고 줄 또는 None (T-0341).
+
+    - `undetermined` True → offline fail-soft("판정불가 — 스냅샷일 수 있음").
+    - `behind` > 0 → loud 경고(behind N·권장 액션 1줄).
+    - behind 0/None·info None → None(최신/미해소 → 줄 생략·오탐 0).
+    """
+    if not info:
+        return None
+    base = info.get("base")
+    if info.get("undetermined"):
+        return (
+            f"- ⚠ **슬롯 시대차 판정불가** — base `{base}` 최신 fetch 실패(offline) · "
+            "슬롯 HEAD 가 stale 스냅샷일 수 있음 (온라인 시 재부트스트랩 권장)"
+        )
+    behind = info.get("behind") or 0
+    if behind <= 0:
+        return None
+    return (
+        f"- ⚠ **슬롯 시대차** — HEAD 가 base `{base}` 대비 **behind {behind} 커밋** — "
+        f"옛-시대 코드로 작업할 위험 (`git -C <슬롯> rebase origin/{base}` 또는 최신 base 재분기 검토)"
+    )
 
 
 # ── 핵심 흐름 ──────────────────────────────────────────────────────────────
@@ -2384,6 +2422,9 @@ class PmBootstrap:
                     data["worktree"] = self._bind_and_identity(repo, slot)
                 elif multipm_alloc:
                     data["worktree"] = alloc_identity  # 위 앞단 alloc 결과 재사용(재-alloc 금지).
+                if data.get("worktree") is not None:
+                    # 슬롯 시대차 (T-0341) — freshness fetch 뒤라 origin/<base> 최신 재사용.
+                    data["worktree"]["slot_era"] = self._slot_era_info(repo, freshness)
                 print(json.dumps(data, ensure_ascii=False, indent=2))
             else:
                 markdown = self._build_markdown(
@@ -2394,11 +2435,14 @@ class PmBootstrap:
                 if multipm_lean:
                     # lean 정체성 선언(T-0074) — bind + identity surface + 다른 활성 PM 상태점검.
                     identity = self._bind_and_identity(repo, slot)
+                    # 슬롯 시대차 (T-0341) — freshness fetch 뒤라 origin/<base> 최신 재사용.
+                    identity["slot_era"] = self._slot_era_info(repo, freshness)
                     print()
                     print(self._build_slot_identity_markdown(identity))
                 elif multipm_alloc:
                     # 기존 --repo alloc + identity surface (위 앞단 alloc 결과 재사용).
                     identity = alloc_identity
+                    identity["slot_era"] = self._slot_era_info(repo, freshness)
                     print()
                     print(self._build_identity_markdown(identity))
                 # 커맨드 카드 (ADR-0045) — identity surface 뒤. 이 세션이 쓸 전 커맨드를 정체성
@@ -2601,6 +2645,81 @@ class PmBootstrap:
             return None
         return branch if branch in protected else None
 
+    def _resolve_slot_base(self, repo: str) -> str | None:
+        """그 repo 의 base 브랜치 — areas.md `base` 칼럼 (T-0341·명시 등록만·codex must-fix).
+
+        슬롯 시대차(behind base) 비교 대상. board 직접 import 금지(touches 격리·`_protected_warning`
+        동형) — 주입/동적로드된 board 의 `_repo_base`(areas.md `base` 칼럼)를 getattr 로 쓴다.
+        **명시 등록된 base 만** 신뢰한다 — 미등록/areas 부재/`base` 칼럼 부재면 None(시대차 진짜
+        생략·오탐 0). `_repo_protected` 는 폴백에 쓰지 않는다: 그 헬퍼는 미등록 repo 에도
+        default(`main`)를 돌려줘 "미해소=생략" 을 잘못된 origin/main 판정으로 바꾼다(codex must-fix).
+        board 부재/헬퍼 부재/파싱 실패도 None(fail-soft).
+        """
+        board_mod = self._board or _load_board()
+        if not board_mod:
+            return None
+        repo_base = getattr(board_mod, "_repo_base", None)
+        if repo_base is None:
+            return None
+        try:
+            base = repo_base(repo)
+        except Exception:  # noqa: BLE001 — fail-soft: 시대차는 소프트(실패=판정 생략).
+            return None
+        return base or None
+
+    def _slot_scope_fetched(self, freshness: list[dict] | None) -> bool | None:
+        """freshness 목록에서 현재 슬롯 cwd scope 의 `fetched` 상태 (T-0341 시대차 판정용).
+
+        슬롯 cwd(`_worktree_cwd`)와 dir 이 일치하는 freshness scope 의 fetch 성공 여부를
+        돌려준다 — 시대차 판정이 origin/<base> stale(offline) 여부를 *기존 freshness fetch
+        결과에서 재사용*(신규 fetch 남발 금지·§결정). 매칭 scope 부재/경로 해소 실패 → None
+        (호출부가 best-effort 로 계산·fetch 실패만 판정불가 처리).
+        """
+        try:
+            wt = Path(self._worktree_cwd(self._bound_slot)).resolve()
+        except Exception:  # noqa: BLE001 — fail-soft: cwd 해소 실패는 None(best-effort).
+            return None
+        for scope in freshness or []:
+            try:
+                if Path(scope.get("dir", "")).resolve() == wt:
+                    return bool(scope.get("fetched"))
+            except Exception:  # noqa: BLE001 — 경로 비교 실패는 다음 scope.
+                continue
+        return None
+
+    def _slot_era_info(self, repo: str, freshness: list[dict] | None) -> dict | None:
+        """슬롯 HEAD 가 base(main) 대비 behind N 커밋인지 판정한다 (T-0341·PM 69 stale-read).
+
+        *기존 freshness fetch*(T-0217·슬롯 cwd scope)로 갱신된 `origin/<base>` 를 재사용해
+        `git rev-list --count HEAD..origin/<base>` 로 behind 를 센다 — **신규 fetch 안 함**
+        (§결정). **fetch 성공을 증명한 경우에만** behind 를 계산한다(stale ref 오신뢰 금지). 반환:
+          - None — base 미해소(areas 미등록) · freshness scope 매칭 실패(fetch 미증명·codex
+            suggestion) · online 인데 rev-list 실패(조용히 생략).
+          - {"base": <br>, "undetermined": True} — 슬롯 cwd scope fetch 실패(offline)라
+            origin/<base> 가 stale → 판정불가(fail-soft).
+          - {"base": <br>, "behind": N} — behind 확정(fetch 증명·N==0 이면 최신·경고 무발화).
+        """
+        base = self._resolve_slot_base(repo)
+        if not base:
+            return None
+        fetched = self._slot_scope_fetched(freshness)
+        if fetched is False:
+            # offline — origin/<base> 가 stale 스냅샷이라 behind 실측 불가(§결정 offline fail-soft).
+            return {"base": base, "undetermined": True}
+        if fetched is not True:
+            # freshness scope 매칭 실패(None) — fetch 성공을 *증명 못 함*. stale origin/<base>
+            # 위에서 behind 를 계산하면 오신뢰(false behind/최신)라 계산 안 하고 생략(codex suggestion).
+            return None
+        d = self._worktree_cwd(self._bound_slot)
+        rc, out = self._run_git_fn(["-C", d, "rev-list", "--count", f"HEAD..origin/{base}"])
+        if rc != 0:
+            return None
+        try:
+            behind = int((out or "").strip())
+        except (ValueError, TypeError):
+            return None
+        return {"base": base, "behind": behind}
+
     def _build_slot_identity_markdown(self, identity: dict) -> str:
         """lean identity + 상태점검 markdown — 세션명·라이브 브랜치·`--repo/--slot` 안내·다른 PM 현황.
 
@@ -2646,6 +2765,11 @@ class PmBootstrap:
                 "feature 브랜치를 checkout 후 작업하고, main 갱신이 필요하면 사용자에게 맡긴다 "
                 "(pre-push 훅이 하드 차단·T-0076)."
             )
+        # 슬롯 시대차 경고 (T-0341·PM 69 stale-read) — HEAD 가 base(main) 대비 behind N 이면
+        # 옛-시대 코드로 작업할 위험을 경고(offline 이면 판정불가 fail-soft·최신/미해소면 줄 생략).
+        era_line = _format_slot_era_warning(identity.get("slot_era"))
+        if era_line:
+            lines.append(era_line)
         # 슬롯 상태 (T-0276) — upstream + submodule 역할(drift 경고 vs dev-ahead 정보). 백본
         # 미제공/submodule 없으면 해당 줄 생략(fail-soft·submodule 줄 조건부).
         lines.extend(self._slot_status_block(identity))
@@ -2915,6 +3039,11 @@ class PmBootstrap:
         lines.append(
             "- 코드 작업은 이 슬롯 cwd 에서 — 보드/wiki 는 multi-PM 공유 `.project_manager`."
         )
+        # 슬롯 시대차 경고 (T-0341·PM 69 stale-read) — HEAD 가 base(main) 대비 behind N 이면
+        # 옛-시대 코드로 작업할 위험을 경고(offline 이면 판정불가 fail-soft·최신/미해소면 줄 생략).
+        era_line = _format_slot_era_warning(identity.get("slot_era"))
+        if era_line:
+            lines.append(era_line)
         # 슬롯 상태 (T-0276) — upstream + submodule 역할(drift 경고 vs dev-ahead 정보). 백본
         # 미제공/submodule 없으면 해당 줄 생략(fail-soft·submodule 줄 조건부).
         lines.extend(self._slot_status_block(identity))

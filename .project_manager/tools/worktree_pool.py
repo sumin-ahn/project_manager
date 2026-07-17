@@ -220,6 +220,56 @@ class BareRepoMissing(RuntimeError):
             )
 
 
+class SlotBranchExists(RuntimeError):
+    """create_slot 이 파려는 슬롯 전용 브랜치 `<repo>_<N>` 가 이미 존재한다 — 미머지-보존 브랜치 충돌 (T-0335).
+
+    `remove_slot` ④ 가 **미머지 전용 브랜치**(`<repo>_<N>`)를 보존(작업 유실 방지)한 뒤, 같은 번호
+    슬롯을 branch-무지정 경로로 재생성하면 `git worktree add` 가 `fatal: a branch named '<repo>_<N>'
+    already exists`(rc≠0)로 죽는다. 두 경로 모두 슬롯 전용 브랜치 `<repo>_<N>` 를 판다 — base-경로는
+    명시 `--no-track -b <repo>_<N> <path> origin/<base>`, else-경로(base·branch 둘 다 미지정)는 git 이
+    슬롯 path basename(=`<repo>_<N>`)으로 브랜치를 자동 생성한다. 슬롯번호는 ledger∪git-worktree
+    병합(T-0295)으로 회피하지만, 그 병합은 **worktree 없이 잔존하는 브랜치**(보존 브랜치는 worktree 를
+    안 가짐·브랜치 축은 슬롯번호 축과 독립)를 못 본다.
+
+    옛 동작은 이 실패를 create_slot 의 already-exists 진단이 "worktree 경로 이미 등록(orphan)"으로
+    **오귀인**했다(T-0333 reviewer 실측 — orphan 정리 안내를 냈지만 지울 orphan worktree 는 없다).
+    이 예외가 그 오귀인을 정정한다: **정확한 원인(브랜치 잔존) + 두 갈래 선택**(브랜치 정리 후 새 슬롯
+    재생성 / 그 브랜치를 checkout 해 재개)을 fail-loud 로 준다(결정 (b)·데이터 유실 없음 — 현재도 loud 실패였다).
+
+    **왜 (a) 브랜치 재사용-체크아웃이 아니라 (b) fail-loud 인가**: base-경로는 슬롯을 *`base`(origin/
+    <base> 최신)에서* 시작하도록 요청한 것이다. 보존 브랜치는 정의상 `base` 에 없는 커밋을 가져
+    미머지된 것이라(그래서 remove_slot ④ 가 보존했다) 그 브랜치를 *base-경로에서* 재사용하면 슬롯이
+    요청한 base 가 아닌 옛 미머지 작업 위에서 **조용히** 시작한다(base ≠ 브랜치 HEAD·silent 시맨틱
+    어긋남). 사용자가 옛 작업 재개를 모른 채 진행할 위험이라 — 재개는 **명시 의사로만**(그 브랜치를
+    슬롯에 checkout) 열어 둔다. 이 코드베이스의 fail-loud 규율(`BareRepoMissing`·`RemoveRefused`)과 정합.
+
+    ✅ **재개 경로는 둘 다 리셋 없이 안전 (T-0343 근본 fix)**: 그 브랜치를 checkout 해 미머지 작업을
+    이어가려면 (1) 수동 `git worktree add <path> <repo>_<N>` 또는 (2) `create_slot(branch=<repo>_<N>)`
+    — 둘 다 **기존 브랜치를 그 tip 에서 checkout**(리셋 없음)한다. create_slot 의 branch-경로가 옛날엔
+    `-B`(create-or-reset)라 기존 브랜치를 리셋해 보존 커밋을 잃었으나(T-0335 codex), T-0343 이 존재
+    브랜치 checkout 분기로 그 데이터-유실 클래스를 API 에서 닫았다.
+
+    **`RuntimeError` 서브클래스**인 이유: `BareRepoMissing` 과 동형 — 파사드 `pm_config.
+    cmd_worktree_add` 가 `create_slot` 실패를 `except RuntimeError` 로 잡아 사용자 안내 rc 1 로
+    surface 한다. `base` = 요청 base(없으면 None·else-경로).
+    """
+
+    def __init__(self, slot: str, branch: str, base: "str | None"):
+        self.slot = slot
+        self.branch = branch
+        self.base = base
+        base_desc = f"base {base!r} 에서 " if base is not None else ""
+        super().__init__(
+            f"슬롯 전용 브랜치 {branch!r} 가 이미 존재한다 — {base_desc}슬롯 {slot!r} 을 재생성할 수 "
+            f"없다(`git worktree add` 가 'a branch named {branch!r} already exists' 로 죽는다). 미머지-"
+            f"보존 브랜치(remove_slot 이 작업 유실 방지로 보존) 잔존 가능성 — 다음 중 택1: (1) 그 "
+            f"브랜치를 정리(`git branch -d {branch}` 머지 완료 시·미머지면 `git branch -D {branch}` 로 "
+            f"폐기) 후 새 슬롯 재생성, 또는 (2) 그 브랜치의 미머지 작업을 그 브랜치로 **checkout 해 재개** "
+            f"— 수동 `git worktree add {slot} {branch}` 또는 `create_slot(branch={branch})`(둘 다 리셋 "
+            f"없이 보존 커밋 tip 에서 checkout·T-0343). (T-0335·데이터 유실 없음)."
+        )
+
+
 class Lease:
     """리스 장부 한 엔트리 (ADR-0013 스키마·sealed spike §3b·amend T-0072).
 
@@ -711,6 +761,31 @@ def _is_valid_bare(bare_path: Path, *, runner: GitRunner) -> bool:
     return head_rc == 0
 
 
+def _slot_branch_exists(runner: GitRunner, branch: str) -> bool:
+    """로컬 브랜치 `branch` 가 존재하는지 — **color-safe** machine-readable 출력으로 판정 (T-0343·T-0335 통합).
+
+    create_slot 의 두 곳이 브랜치 존재를 본다: (1) branch 미지정 경로의 슬롯-전용 브랜치 `<repo>_<N>`
+    선-검출(→ `SlotBranchExists` fail-loud·T-0335), (2) 명시 `branch=` 경로의 checkout(기존)/`-B`(신규)
+    분기(→ 기존 브랜치 리셋-유실 방지·T-0343). 둘 다 이 단일 helper 를 경유한다.
+
+    ⚠️ **평문 `git branch --list <b>` 는 ambient `color.branch=always` 서 ANSI 오염**(codex 실측:
+    출력 `'  A_1\\x1b[m\\n'` → `.split()` 토큰 `'A_1\\x1b[m'` 이 브랜치명과 불일치 → 기존 브랜치를
+    "없음"으로 오판 → (2)가 checkout 대신 `-B` 로 가서 리셋-유실 재개방). 그래서 **`--format=
+    %(refname:short)`**(ref-filter 포맷·색 atom 없음)로 뽑는다 — `color.branch=always` 여도 평문
+    (`'A_1\\n'`·실측)이라 오염이 없다. **splitlines 정확-일치**(`line.strip()==branch`)로 판정:
+    exact 패턴(`--list <b>`·glob 메타 없음)이라 그 브랜치만 리스트하고, `_real_git_runner` 의
+    stdout+stderr 결합(T-0070)에 stderr 경고가 섞여도 그 라인은 브랜치명과 정확-일치하지 않아
+    안전(`.split()` 부분매치보다 견고).
+
+    **rc 무시** — `git branch --list` 는 매치 없어도 rc0 이라 rc 기반(show-ref/rev-parse)은 못 쓴다
+    (게다가 주입 runner 의 generic 폴백 rc0 이 "존재" 오탐돼 hermetic 테스트를 깬다·T-0335 실측).
+    출력 라인 정확-일치만 신뢰한다. 주입 runner(테스트 mock)의 generic 폴백 `(0, "")` 은 빈
+    splitlines → **"부재"**(안전 기본 — checkout 대신 `-B` 생성·리셋 대상 없음).
+    """
+    _rc, out = runner(["branch", "--list", "--format=%(refname:short)", branch])
+    return any(line.strip() == branch for line in str(out).splitlines())
+
+
 # ── 보호 브랜치 pre-push 훅 (T-0076·하드·회사 repo 무영향 / T-0223·라이브 게이트 승격) ────
 # 훅 = `.project_manager/.local/repo-hooks/<repo>/pre-push`(프레임워크 소유·gitignore).
 # bare(`.repos/<repo>.git`)의 `core.hooksPath` 를 그 디렉토리로 set → 슬롯 push 가 이 훅에
@@ -1148,11 +1223,15 @@ def remove_slot(
          공유/다른 브랜치(main 등)면 삭제 자체를 스킵. detached 면 판별 불가(none).
       ⑤ 장부 엔트리 제거 — `add` 가 빈 번호를 **재사용**(번호 skip footgun 종결·이 티켓 핵심).
 
-    ⚠️ **미머지-보존 브랜치 캐비앗** (create_slot 기존 한계·T-0333 결함 아님): ④ 가 미머지라
-    전용 브랜치 `<repo>_<N>` 를 보존하면, 나중에 같은 번호의 슬롯을 base-경로로 재생성
-    (`create_slot(base=)` 가 `-b <repo>_<N>`)하려 할 때 `git worktree add` 가 "already exists"
-    (브랜치 잔존)로 죽는다. 재사용하려면 그 보존 브랜치를 먼저 정리(수동 `git branch -D`/머지)한
-    뒤 재시도한다. (create_slot 자체 수정은 이 티켓 범위 밖 — 후속 티켓 후보.)
+    ⚠️ **미머지-보존 브랜치 상호작용** (T-0333 캐비앗 → T-0335 진단 정정): ④ 가 미머지라 전용
+    브랜치 `<repo>_<N>` 를 보존하면, 나중에 같은 번호의 슬롯을 branch-무지정 경로(base-경로 `-b
+    <repo>_<N>` 또는 else-경로 path-basename 자동 `-b`)로 재생성할 수 없다(그 브랜치가 이미 존재).
+    create_slot 은 이제 이를 **선-검출해 fail-loud**(`SlotBranchExists`·오귀인 orphan-worktree 진단
+    제거·T-0335) — 정확한 원인(브랜치 잔존) + 두 갈래(그 브랜치 정리[머지/삭제] 후 새 슬롯 재생성 /
+    그 브랜치를 checkout 해 재개)를 안내한다. 재개는 수동 `git worktree add <path> <repo>_<N>` 또는
+    `create_slot(branch=<repo>_<N>)` — **둘 다 리셋 없이 보존 커밋 tip 에서 checkout**(T-0343 이
+    create_slot branch-경로의 `-B` create-or-reset 데이터-유실을 존재 브랜치 checkout 분기로 닫음).
+    데이터 유실 없음(현재도 loud 실패였다).
 
     **fs 존재 가드는 실경로(git_runner 미주입)에서만** 본다 — 주입 runner(hermetic 테스트)는
     슬롯 상태를 모델링하는 권위라 건너뛴다(`alloc` idle-reuse 동형). 슬롯 전용 브랜치명은
@@ -1342,12 +1421,36 @@ def create_slot(
         # 실패면 지울 worktree 가 없어 remove 를 안 부른다(기존 T-0070 롤백 범위 유지).
         worktree_created = False
         try:
+            # 슬롯 전용 브랜치 `<repo>_<N>` 선-검출 (T-0335·결정 (b)) — branch 미지정(base·else) 경로는
+            # 그 브랜치를 판다(base=명시 `-b <repo>_<N>`·else=git 이 슬롯 path basename 으로 자동 `-b`).
+            # 미머지-보존 브랜치(remove_slot ④ 가 작업 유실 방지로 보존)가 잔존하면 `worktree add` 가
+            # `fatal: a branch named '<repo>_<N>' already exists`(rc≠0)로 죽는다 — 슬롯번호 병합
+            # (ledger∪git-worktree·T-0295)은 **worktree 없이 잔존하는 브랜치**를 못 본다(브랜치 축은
+            # 슬롯번호 축과 독립). 여기서 선-검출해 정확한 원인+두 갈래를 fail-loud 로 준다(오귀인
+            # orphan-worktree 진단 제거). 명시 `branch=` 경로는 이 선-검출을 안 타고 아래서 존재→checkout/
+            # 부재→`-B` 로 분기한다(T-0343·기존 브랜치 리셋-유실 방지·명시 의도). try 안에서 raise →
+            # 아래 `except` 가 provisional lease 를 롤백한다(worktree_created=False 라 롤백할 worktree 는
+            # 없음·중단-안전). 검출은 `_slot_branch_exists`(color-safe `--format=%(refname:short)`·
+            # splitlines 정확-일치·rc 무시 — 평문 `branch --list` 는 `color.branch=always` 서 ANSI 오염·
+            # rc 기반은 주입 runner generic 폴백 rc0 오탐·T-0335/T-0343).
+            if branch is None:
+                slot_branch = f"{repo}_{n}"
+                pre_runner = git_runner or _real_git_runner(bare)
+                if _slot_branch_exists(pre_runner, slot_branch):
+                    raise SlotBranchExists(slot, slot_branch, base)
             # worktree add 는 `.repos/<repo>.git` bare 컨텍스트에서 — 슬롯이 그 family repo 의
             # worktree 가 되게 한다(ADR-0011 §31). bare repo 도 `git -C <bare> worktree add <abs
             # path>` 가 동작한다(슬롯 path 는 절대).
-            #   - branch 면 `-B`(create-or-reset)로 체크아웃 — `add <path> <ref>` 는 ref 가
-            #     기존이어야 하므로 신규 작업스트림 브랜치엔 못 쓴다. `-B` 가 신규/기존 모두
-            #     안전(슬롯=브랜치-무관 컨테이너·ADR-0013).
+            #   - branch 면 존재 여부로 분기 (T-0343 근본 fix): **기존 브랜치는 checkout**
+            #     (`add <path> <branch>`·그 tip 에서·**리셋 없음**)·**신규 브랜치는 `-B`**(생성).
+            #     옛 코드는 신규/기존 모두 `-B`(create-or-**reset**)로 통일했는데, `-B <branch>` 는 기존
+            #     브랜치를 start-point(미지정 시 bare HEAD)로 **리셋**해 미머지-보존 브랜치를 `branch=` 로
+            #     넘기면 보존 커밋 ref 를 잃는 **데이터-유실 클래스**였다(T-0335 codex 포착). 명시 `branch=`
+            #     는 "이 브랜치를 슬롯에" 라는 명시 의도라, 기존 브랜치를 그 tip 에서 그대로 checkout 한다
+            #     (base-경로의 silent 재사용=기각한 (a) 와 달리 명시 의도라 놀람 없음). 신규 브랜치는
+            #     `add <path> <newbranch>` 가 "invalid reference" 로 죽으므로 `-B`(=생성·리셋 대상 없어
+            #     안전)로 판다. 이 fix 로 `SlotBranchExists` 안내의 "그 브랜치로 재개"(create_slot(branch=)
+            #     또는 수동 `git worktree add <path> <repo>_<N>`)가 **둘 다 리셋 없는 안전 경로**가 된다.
             #   - base 면(branch 미지정·T-0075) 먼저 `fetch origin`(T-0274) 후 슬롯 브랜치
             #     `<repo>_<N>` 를 *`origin/<base>` 최신에서 파생*(`--no-track -b <slot> <path>
             #     origin/<base>`). 슬롯 브랜치 이름은 슬롯 식별자(`<repo>_<N>`·T-0072 live-branch 정합)
@@ -1357,7 +1460,16 @@ def create_slot(
             #     억제(슬롯=작업스트림). (파생 기준·fetch·--no-track 상세는 아래 base 분기 주석.)
             #   - 둘 다 미지정이면 **현행 보존**(`add <path>` = bare HEAD·회귀 0).
             if branch is not None:
-                add_argv = ["worktree", "add", "-B", branch, str(path)]
+                # 기존 브랜치 → checkout(리셋 없음·보존 커밋 유지)·신규 → -B(생성) — T-0343 근본 fix.
+                # `_slot_branch_exists`(color-safe `--format=%(refname:short)`·splitlines 정확-일치·
+                # 위 slot-branch 선-검출과 동일 helper)로 존재를 본다: 존재하면 `add <path> <branch>`
+                # (그 브랜치 tip 에서 checkout·리셋 없음)·부재하면 `-B <branch>`(신규 생성·리셋 대상 없어
+                # 안전). base 파생 prep 과 별개의 capture 러너 1회(실경로 capture-프로파일 반영·회귀 갱신).
+                branch_runner = git_runner or _real_git_runner(bare)
+                if _slot_branch_exists(branch_runner, branch):
+                    add_argv = ["worktree", "add", str(path), branch]
+                else:
+                    add_argv = ["worktree", "add", "-B", branch, str(path)]
             elif base is not None:
                 # base 파생 — 슬롯을 *origin 최신*에서 시작한다 (T-0274). T-0152 refspec
                 # (`+refs/heads/*:refs/remotes/origin/*`)은 origin/* 만 갱신하고 로컬 `refs/heads/<base>`
@@ -1421,23 +1533,44 @@ def create_slot(
                 # 병합 후 나타난 orphan·수동 add 잔존이 `add` 를 "already exists" 로 죽일 수 있다.
                 # out 문자열(captured/injected) 또는 실 git worktree 목록(인터랙티브는 out 이 콘솔 직행이라
                 # 실측)에 이 슬롯 경로가 이미 등록됐으면 orphan 정리 경로를 안내한다.
+                #
+                # ⚠️ **오귀인 정정 (T-0335)**: `git worktree add` 의 "already exists" 는 두 원인이 있다 —
+                # (1) worktree **경로** 잔존(orphan·이 블록의 대상), (2) 슬롯 전용 **브랜치**(`<repo>_<N>`)
+                # 잔존(`a branch named '<repo>_<N>' already exists`·미머지-보존 브랜치). 옛 코드는 "already
+                # exists" 부분매치만 보아 (2)를 (1)로 **오귀인**해 orphan 정리 안내를 냈지만 지울 orphan
+                # worktree 는 없었다(T-0333 reviewer 실측). base·else 경로는 위 선-검출(SlotBranchExists)이
+                # (2)를 먼저 잡지만, 여기서도 브랜치-존재 에러를 orphan 으로 낚지 않게 원인을 분리 판정한다
+                # (클래스-fix·잔여/미래 경로 방어).
+                out_l = str(out).lower()
+                branch_exists_err = "a branch named" in out_l and "already exists" in out_l
+                branch_hint = ""
                 orphan_hint = ""
-                already = "already exists" in str(out).lower()
-                if not already:
-                    already = any(
-                        w.slot == slot for w in list_git_worktrees(repo, git_runner=git_runner)
+                if branch_exists_err:
+                    branch_hint = (
+                        f"슬롯 전용 브랜치 `{repo}_{n}` 가 이미 존재한다(미머지-보존 브랜치 잔존 가능성·"
+                        f"remove_slot ④·T-0335) — 그 브랜치를 정리(`git branch -d/-D {repo}_{n}`·머지) 후 "
+                        f"새 슬롯 재생성하거나, 미머지 작업을 이어가려면 그 브랜치를 checkout 해 재개하라 "
+                        f"(수동 `git worktree add {str(path)} {repo}_{n}` 또는 `create_slot(branch={repo}_{n})`·"
+                        f"둘 다 리셋 없음·T-0343). "
                     )
-                if already:
-                    orphan_hint = (
-                        f"경로 `{path}` 에 worktree 가 이미 등록돼 있다(orphan·중단된 create/수동 add "
-                        f"잔존 가능성·T-0295) — `pm-config status` 로 orphan/stale 을 확인하고 정리"
-                        f"(worktree prune 또는 수동 삭제)하라. "
-                    )
+                else:
+                    # worktree-path orphan — (브랜치 아닌) "already exists" 또는 실 git worktree 목록에 슬롯 등록.
+                    already = "already exists" in out_l
+                    if not already:
+                        already = any(
+                            w.slot == slot for w in list_git_worktrees(repo, git_runner=git_runner)
+                        )
+                    if already:
+                        orphan_hint = (
+                            f"경로 `{path}` 에 worktree 가 이미 등록돼 있다(orphan·중단된 create/수동 add "
+                            f"잔존 가능성·T-0295) — `pm-config status` 로 orphan/stale 을 확인하고 정리"
+                            f"(worktree prune 또는 수동 삭제)하라. "
+                        )
                 # 트립/실패 안내 (T-0292) — 하네스 자동 호출이 timeout/실패로 죽었을 때 사용자에게 다음
                 # 행동(터미널 직접 실행·무제한 opt-in)을 준다. rc 기반(out 은 인터랙티브면 빈 문자열).
                 timeout_desc = "무제한" if GIT_TIMEOUT_SECONDS is None else f"{GIT_TIMEOUT_SECONDS}초"
                 raise RuntimeError(
-                    f"git worktree add failed for {slot!r} (rc={rc}, out={out!r}). {bare_hint}{orphan_hint}"
+                    f"git worktree add failed for {slot!r} (rc={rc}, out={out!r}). {bare_hint}{branch_hint}{orphan_hint}"
                     f"매우 느린 op(대형 repo·느린 디스크/VPN)이면 timeout({timeout_desc}·PM_GIT_TIMEOUT)에 "
                     f"걸렸을 수 있다 — 터미널에서 `pm-config worktree add {repo}` 를 직접 실행하면 진행상황이 "
                     f"보이고, `PM_GIT_TIMEOUT=none` 으로 무제한 실행할 수 있다 (T-0292)."

@@ -46,8 +46,10 @@ description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo 
 - **제거 3분법**: 등록 슬롯 통째=`worktree remove <slot>` / dangling 장부(worktree 부재)=`worktree
   prune-stale`(안전) / orphan worktree(장부 미등록)=사용자 `git worktree remove`. **사용자 명시 호출
   전제** — PM 이 자율로 슬롯을 제거하지 않는다(삭제-위임 원칙).
-- **캐비앗**: 미머지 전용 브랜치는 보존되며(작업 유실 방지) 같은 번호 슬롯의 base-경로 재생성
-  (`worktree add`)을 'already exists' 로 막는다 — 재사용하려면 보존 브랜치 정리(머지/삭제) 후 재시도.
+- **캐비앗**: 미머지 전용 브랜치는 보존되며(작업 유실 방지) 같은 번호 슬롯 재생성은 브랜치 잔존을
+  선-검출해 명확한 진단(`SlotBranchExists`·T-0335)으로 멈춘다 — 보존 브랜치 정리(머지/삭제) 후
+  재시도하거나, 그 작업을 재개하려면 **수동 checkout**(`git worktree add <슬롯경로> <브랜치>`·리셋
+  없음)으로 (기존 브랜치는 엔진 branch-경로도 T-0343 부터 리셋 없는 checkout — 유실 클래스 종결).
   `--force` 로 활성(사용 중) 슬롯을 강제 회수하면 '⚠ 강제 회수' 경고가 stderr 로 뜨고, dirty 를
   stash 보존하면 '복구: git stash list/pop (공유 refs/stash)' 안내가 나온다(리뷰 반영·T-0333).
 

@@ -54,11 +54,17 @@ _THRESHOLD = [
     ("바이트 임계", ("8KB", "8 KB")),
 ]
 
-# opencode 하네스 관용 — 대형 파일 쓰기 = safe_write(8KB chunk) · write 16KB deny (T-0334).
-_OPENCODE_EXTRA = [
+# opencode 하네스 관용 — 대형 파일 쓰기 = safe_write(8KB chunk). 4 카드 공통 요구.
+_OPENCODE_SAFE_WRITE = [
     ("safe_write 지시", ("safe_write",)),
+]
+# write 16KB deny 임계는 write-capable 역할(developer·architect)에만 요구한다 — read-only 역할
+# (researcher·code-reviewer)은 write·edit 가 전면 deny 라 16KB 임계 자체가 무의미(그 문구를 read-only
+# 카드에 넣으면 write 가 16KB 까지는 되는 듯 오인 · T-0342: read-only 카드 16KB 문구 정합).
+_OPENCODE_WRITE_16KB_DENY = [
     ("write deny 임계(16KB)", ("16KB", "16 KB")),
 ]
+_OPENCODE_WRITE_CAPABLE_ROLES = ("developer", "architect")
 
 # 출하 doc 이 wikilink 하면 안 되는 framework-내부 ID (채택자 트리엔 부재 → dangling · T-0090).
 _FRAMEWORK_WIKILINK = re.compile(r"\[\[(ADR-\d+|T-\d+|idea-\d+)\]\]")
@@ -122,17 +128,24 @@ def test_card_convention_states_threshold(label, path):
 
 @pytest.mark.parametrize("label,path", OPENCODE_CARDS)
 def test_opencode_card_convention_uses_safe_write(label, path):
-    """opencode 4 카드 규약 절이 safe_write(8KB 청크)·write 16KB deny 를 명시한다 (T-0334 연계).
+    """opencode 4 카드 규약 절이 safe_write(8KB 청크)를 명시한다 (T-0334 연계).
 
     opencode write 는 16KB 초과를 거부하므로 대형 파일 쓰기는 safe_write chunk 로 해야 한다 —
     inbound(tool_output) 이 아니라 outbound(생성) 축의 파일-쓰기 채널을 카드가 안내해야 함.
+    write 16KB deny 임계 명시는 write-capable 역할(developer·architect)에만 요구한다 — read-only
+    역할(researcher·code-reviewer)은 write·edit 전면 deny 라 16KB 임계가 무의미(T-0342).
     """
     region = _convention_region(path)
     assert region, f"{label} ({path.relative_to(REPO)}): 규약 절 마커 부재 (T-0337)"
-    missing = [name for name, tokens in _OPENCODE_EXTRA if not any(t in region for t in tokens)]
+    required = list(_OPENCODE_SAFE_WRITE)
+    write_capable = path.stem in _OPENCODE_WRITE_CAPABLE_ROLES
+    if write_capable:
+        required += _OPENCODE_WRITE_16KB_DENY
+    missing = [name for name, tokens in required if not any(t in region for t in tokens)]
+    extra = "·write 16KB deny" if write_capable else ""
     assert not missing, (
         f"{label} ({path.relative_to(REPO)}) 규약 절에 opencode 대형-쓰기 지시 누락: {missing} "
-        f"— safe_write(8KB 청크)·write 16KB deny 를 명시해야 함 (T-0334 · T-0337)"
+        f"— safe_write(8KB 청크){extra} 를 명시해야 함 (T-0334 · T-0337 · T-0342)"
     )
 
 
