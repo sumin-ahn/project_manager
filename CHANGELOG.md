@@ -13,6 +13,7 @@ v1.2.2 잔여 소진 patch — "버전 N 작업 중 발견분은 버전 N 에 �
 
 ### Added
 - **opencode 32k cap-hit detector** (T-0339) — 출력 상한(32k tok) silent 절단("stop" 위장)을 호출층에서 감지: relay 출력 소비 지점에서 응답이 cap 근방(char 임계 34560 = 32000×1.2char/tok 하한×0.90·정확 토크나이저 미의존 보수 근사·오탐 0 마진)이면 loud advisory(파일-전달 규약 안내 포함)·**never-block**(emission try/except)·env `PM_OC_CAP_HIT_THRESHOLD`. claude 는 `stop_reason=max_tokens` 네이티브 노출이라 범위 밖.
+- **opencode command 수기 사본 silent-drift 가드** (T-0344) — claude 스킬(`.claude/skills/*/SKILL.md`)과 opencode command 사본(`.opencode/command/*.md`·자동 전파 채널 없는 수기 적응)의 대응쌍을 pair-pin(정규화 content hash) 테스트로 잠금 — 어느 한쪽 변경·신규 스킬 사본 누락 시 red + 정합 지시(재-pin 은 테스트 파일 직접 실행으로 drop-in 출력). canonical 갱신이 사본에 조용히 누락되는 클래스 제거(full 자동 생성기 전까지의 forcing function).
 - **부트스트랩 board freshness·슬롯 시대차 경고** (T-0341) — offline(fetch 실패) 시 "최신" 오단정 제거("판정불가 — 스냅샷일 수 있음" fail-soft) + 슬롯 worktree HEAD 가 base 브랜치 대비 behind N 커밋이면 identity surface 에 경고(lean/alloc/JSON 3표면·advisory·areas 등록 base 만 신뢰·기존 freshness fetch 재사용=신규 fetch 0). 다중 사용자/슬롯 공유 board 의 stale 스냅샷 오신뢰 방지.
 
 ### Fixed
