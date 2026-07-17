@@ -270,19 +270,50 @@ class SlotBranchExists(RuntimeError):
         )
 
 
+# Lease 직렬화 키 분류 (T-0350·additive 스키마 클래스 폐쇄). from_dict 는 canonical 을 각
+# 필드로 소비하고, 그 외 미지 키는 `extra` 로 보존해 to_dict 가 재방출한다(구·신 엔진 왕복 무손실).
+#   - CANONICAL = 이 엔진 버전이 아는 1급 필드(각자 self.* 로 소비·extra 아님).
+#   - DROP = legacy 최상위 `branch`(ADR-0013 amend T-0072 로 권위 폐지) — extra 로도 보존하지
+#     않는다. 표시는 git=진실(`current_branch`)이라 장부에 branch 를 되살리면 드리프트 원천이
+#     재생긴다(테스트 `test_from_dict_ignores_legacy_branch_key` 가 이 무시를 못박음). git 필드
+#     안의 `branch` 서브키(작업 브랜치 스냅)와는 다른 축 — 그건 git blob 의 일부로 보존된다.
+_LEASE_CANONICAL_KEYS = frozenset(
+    {"slot", "repo", "session", "pid", "started", "state", "test_cmd", "git"}
+)
+_LEASE_DROP_KEYS = frozenset({"branch"})
+
+
 class Lease:
-    """리스 장부 한 엔트리 (ADR-0013 스키마·sealed spike §3b·amend T-0072).
+    """리스 장부 한 엔트리 (ADR-0013 스키마·sealed spike §3b·amend T-0072·git 필드 amend T-0350/ADR-0060).
 
     슬롯=브랜치-무관 컨테이너·session/pid=점유 주체·state=leased|idle|creating. `creating` 은
     create_slot 의 provisional 마커(worktree add 전 선기록·확정 시 leased·중단 시 흔적·T-0295).
-    **브랜치는 권위 필드가 아니다** — git 이 단일 진실(ADR-0013 amend T-0072)이라 장부에 저장하지
-    않고 `current_branch(slot)` 로 슬롯 worktree 의 live HEAD 에서 읽는다(드리프트 불가능).
+    **브랜치 *표시*는 권위 필드가 아니다** — git 이 단일 진실(ADR-0013 amend T-0072)이라 장부에
+    저장하지 않고 `current_branch(slot)` 로 슬롯 worktree 의 live HEAD 에서 읽는다(드리프트 불가능).
+
+    **`git` 필드 (additive·T-0350·ADR-0060·엔진 전용 write·md 아님)**: 슬롯 git 상태를 *기대*
+    (drift 감지 기준) 축으로 기계 기록한다 — `{base:{branch,commit}, branch, head, submodules:
+    [{path,pin}], recorded_at}`(스키마 = spike §F9). T-0072 를 뒤집지 않는다: 표시는 여전히 live
+    조회(`current_branch`)·기록은 별개의 *기대* 축(submodule pin/drift 모델을 본체로 대칭 확장).
+    write 시점 = 부트스트랩 bind/alloc·핸드오프·create(release 시 정리)·compare 시점 = 0단계
+    (`compare_slot_git`·T-0351 소비). 미기록(구 슬롯) = drift 감지 비활성(결정 ⑪). raw dict 로
+    들고 있어 미지 서브키까지 왕복 보존한다(None=미기록·to_dict 는 None 이면 키 자체를 뺀다).
+
+    **`extra` (미지 키 보존·T-0350)**: 이 엔진 버전이 모르는 최상위 키(`task`[T-035x] 등 향후
+    additive 키)를 `from_dict` 가 `extra` dict 로 보존하고 `to_dict` 가 재방출한다. 장부 지속은
+    `_read_ledger`→`_write_ledger`(from_dict→to_dict) 왕복 하나로 수렴하는데, **신규 키를 모르는
+    엔진(adopter#0 import 사본 lag 로 버전 skew 실재)이 아무 op 라도 하면 그 read-modify-write
+    왕복에서 *모든 슬롯*의 신규 키가 소실**된다 — base/head 기록이 조용히 날아가면 drift 감지가
+    가짜 기준 위에서 돌아 무의미해진다([[robustness-value-connections-before-ship]] silent
+    degrade). extra 보존이 그 왕복을 무손실로 만들어 additive 전략 전체를 안전하게 닫는다.
+
     (dataclass 미사용 — 엔진 도구는 `spec_from_file_location` 으로 로드되는데 sys.modules
     미등록 시 dataclass 의 forward-ref 해소가 깨진다. 평범한 클래스로 그 결합을 피한다.)
     """
 
     def __init__(self, slot: str, repo: str, session: str,
-                 pid: int, started: str, state: str, test_cmd: str | None = None):
+                 pid: int, started: str, state: str, test_cmd: str | None = None,
+                 git: "dict | None" = None, extra: "dict | None" = None):
         self.slot = slot          # "work/<repo>_<N>" (브랜치 무관)
         self.repo = repo          # repo 이름 (per-repo 네임스페이스)
         self.session = session    # 점유 세션 식별자
@@ -290,11 +321,14 @@ class Lease:
         self.started = started    # 리스 시작 시각 (UTC ISO)
         self.state = state        # "leased" | "idle" | "creating"(provisional·T-0295)
         self.test_cmd = test_cmd  # 슬롯 바인딩 회귀/빌드명령 (T-0066·ADR-0014 amend·None=미지정)
+        self.git = git            # 슬롯 git 스냅 dict(base/branch/head/submodules/recorded_at)·None=미기록·T-0350
+        # 미지 최상위 키 보존(additive 스키마 클래스 폐쇄·T-0350). mutable 기본 회피(None 센티넬).
+        self.extra = dict(extra) if extra else {}
 
     def __repr__(self) -> str:
         return (f"Lease(slot={self.slot!r}, repo={self.repo!r}, "
                 f"session={self.session!r}, pid={self.pid!r}, state={self.state!r}, "
-                f"test_cmd={self.test_cmd!r})")
+                f"test_cmd={self.test_cmd!r}, git={self.git!r})")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Lease):
@@ -302,7 +336,7 @@ class Lease:
         return self.to_dict() == other.to_dict()
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "slot": self.slot,
             "repo": self.repo,
             "session": self.session,
@@ -311,12 +345,25 @@ class Lease:
             "state": self.state,
             "test_cmd": self.test_cmd,
         }
+        # git 은 *있을 때만* 방출한다 — 구 장부(git 필드 부재)를 로드·재기록해도 `git: null` 을
+        # 덧붙이지 않아 왕복이 무손실(하위호환·DoD). test_cmd 는 T-0066 부터 항상 방출(구 거동 유지).
+        if self.git is not None:
+            d["git"] = self.git
+        # 미지 키 재방출(구·신 엔진 왕복 무손실). extra 엔 canonical/legacy-branch 가 없다
+        # (from_dict 가 배제) — canonical 을 덮을 위험 없음.
+        d.update(self.extra)
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Lease":
-        # 하위호환 read: test_cmd 부재(구 장부)는 None. 구 장부의 legacy `branch` 키는
-        # 관용적으로 *무시*한다(ADR-0013 amend T-0072 — branch 는 권위 필드가 아니다·
-        # git 에서만 온다). 키가 있어도 d.get 으로 읽지 않을 뿐 로드는 깨지지 않는다.
+        # 하위호환 read: test_cmd 부재(구 장부)는 None·git 부재는 None. 구 장부의 legacy 최상위
+        # `branch` 키는 관용적으로 *무시*한다(ADR-0013 amend T-0072 — branch 는 권위 필드가
+        # 아니다·표시는 git 에서만 온다). canonical/legacy-branch 를 뺀 나머지 미지 키는 `extra`
+        # 로 보존해 to_dict 가 재방출한다(구·신 엔진 왕복 무손실·additive 스키마 클래스 폐쇄·T-0350).
+        extra = {
+            k: v for k, v in d.items()
+            if k not in _LEASE_CANONICAL_KEYS and k not in _LEASE_DROP_KEYS
+        }
         return cls(
             slot=d["slot"],
             repo=d["repo"],
@@ -325,6 +372,8 @@ class Lease:
             started=d.get("started", ""),
             state=d.get("state", "leased"),
             test_cmd=d.get("test_cmd"),
+            git=d.get("git"),
+            extra=extra,
         )
 
 
@@ -473,6 +522,16 @@ class RemoveResult:
 
 def _now_utc() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _now_local() -> str:
+    """벽시계(로컬 tz) ISO8601 — git 스냅 `recorded_at` 용 (T-0350·spike §F9 `+09:00` 정합).
+
+    리스 `started` 는 UTC(`_now_utc`)지만 `recorded_at` 은 **로컬 벽시계**로 둔다 — 사람이
+    "여기 두고 간다"고 인지하는 스냅 시각이라 벽시계가 자연스럽고, spike §F9 스키마도 `+09:00`
+    (로컬 offset)로 예시한다. `.astimezone()` 로 tz-aware(offset 포함)라 UTC 와 무손실 상호변환
+    가능 — 둘 다 명시 offset ISO8601 이라 모호성 없음(표시 tz 만 다름·비교엔 무관)."""
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 # ── 자체 파일락 (board.py 와 같은 패턴·독립 구현·import 금지) ───────────────────
@@ -1036,6 +1095,17 @@ def reclaim_stale(*, git_runner: GitRunner | None = None) -> list[str]:
             lease.state = "idle"
             lease.session = ""
             lease.pid = 0
+            # ⚠️ **git 은 의도적으로 보존한다 — 여기 `lease.git = None` 을 넣지 마라** (T-0350·crash-resume
+            #    계약·load-bearing). release/force_release 는 반대로 git 을 정리(None)하는데 이 **비대칭은
+            #    의도적**이다: 그쪽은 *명시적 teardown*(작업완료 반납 → 기대 리셋)이지만, reclaim 은
+            #    **crash(pid 죽음) 회수**라 다르다. 죽은 세션이 남긴 스냅(head/base)이 reclaim 을 넘어
+            #    살아야, 다음 부트스트랩 0단계 compare(T-0351)가 live 를 "내 crash 커밋의 후손
+            #    (descendant=notice·정상 재개)" vs "외부 개입(diverged=FAIL-LOUD)"으로 가른다
+            #    (`_head_relation`·㉒). 지우면 그 판정이 unrecorded 로 무력화돼 crash-resume 이 조용히
+            #    깨진다. base 도 슬롯 파생 원점(슬롯 속성)이라 같은 워크스트림 재개 시 보존이 옳다.
+            #    표면상 모순돼 보이는 release/force_release 의 `git=None` 은 여기 비대칭으로 해소된다 —
+            #    향후 '일관성 fix' 로 여기 git 정리를 넣으면 crash-resume 판정이 조용히 사라진다
+            #    (`test_reclaim_stale_preserves_git_for_crash_resume` 가 그 회귀를 하드 차단).
             reclaimed.append(lease.slot)
             changed = True
         if changed:
@@ -1082,6 +1152,10 @@ def alloc(
                         and current_branch(lease.slot, git_runner=git_runner) != target_branch):
                     # checkout 실패면 raise — git=진실이므로 부분 실패 시 호출부에 위임(ADR-0013).
                     _checkout_required(lease.slot, target_branch, git_runner=git_runner)
+                    # 브랜치 재배치가 일어난 경우만 arrival 스냅 갱신 + 장부 write(T-0350·base 보존).
+                    # 순수 재진입(브랜치 동일)은 상태 변화가 없어 스냅/write 를 생략한다(재진입 비용 0).
+                    _apply_git_snapshot(lease, git_runner=git_runner)
+                    _write_ledger(leases)
                 return lease
 
         # 2) resume/branch 우선 re-alloc — 같은 작업스트림(브랜치)의 슬롯 재부착(연속성).
@@ -1104,6 +1178,7 @@ def alloc(
                     lease.session = sess
                     lease.pid = os.getpid()
                     lease.started = _now_utc()
+                    _apply_git_snapshot(lease, git_runner=git_runner)  # arrival 스냅(기대 baseline·base 보존·T-0350).
                     _write_ledger(leases)
                     return lease
 
@@ -1128,6 +1203,7 @@ def alloc(
                 lease.session = sess
                 lease.pid = os.getpid()
                 lease.started = _now_utc()
+                _apply_git_snapshot(lease, git_runner=git_runner)  # arrival 스냅(기대 baseline·base 보존·T-0350).
                 _write_ledger(leases)
                 return lease
 
@@ -1164,6 +1240,7 @@ def release(
         target.state = "idle"
         target.session = ""
         target.pid = 0
+        target.git = None    # release 시 정리 — idle 슬롯은 활성 git 기대가 없다(T-0350·다음 alloc 이 재스냅).
         _write_ledger(leases)
         return target
 
@@ -1185,6 +1262,7 @@ def force_release(slot: str, *, git_runner: GitRunner | None = None) -> Lease | 
         target.state = "idle"
         target.session = ""
         target.pid = 0
+        target.git = None    # release 시 정리(force 백스톱도 동일·T-0350·다음 alloc 이 재스냅).
         _write_ledger(leases)
         return target
 
@@ -1611,6 +1689,10 @@ def create_slot(
             # 성공 — provisional 을 leased 로 **확정**한다(2차 write·branch 는 장부 미저장·ADR-0013
             # amend T-0072·git=진실·조회는 live current_branch). provisional 을 그대로 반환(같은 필드).
             provisional.state = "leased"
+            # create git 스냅(T-0350·ADR-0060) — base 를 아는 유일 지점이다(base_branch=base·
+            # commit=방금 파생된 fresh 슬롯 tip). base 미지정(branch·else 경로)이면 base 는 미기록
+            # (drift 감지는 사용자 set-base 후 활성·결정 ⑪). fail-soft — 스냅 실패가 create 를 안 막는다.
+            _apply_git_snapshot(provisional, base_branch=base, git_runner=git_runner)
             _write_ledger(leases)
             return provisional
         except BaseException:
@@ -1648,10 +1730,12 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
     회수될 수 있다("무영향" 아님). 현 사람-only 파일럿엔 relay 미가동이라 **dormant**.
     relay+사람 공존을 실제로 쓸 때 사람 bind 보호(reclaim 제외 마커 등)가 후속 필요하다.
 
-    **branch 는 건드리지 않는다** — 브랜치는 git=단일 진실이라 슬롯 worktree HEAD 에서 live
-    조회(`current_branch(slot)`·ADR-0013 amend T-0072). bind 는 리스 장부의 점유 메타(session/
-    state/started/pid)만 갱신한다. `git_runner` 파라미터는 DI seam 시그니처 정합(현 구현은 git
-    호출이 없어 미사용)·향후 확장 여지를 위해 유지한다.
+    **branch *표시* 는 건드리지 않는다** — 브랜치는 git=단일 진실이라 슬롯 worktree HEAD 에서
+    live 조회(`current_branch(slot)`·ADR-0013 amend T-0072). bind 는 리스 장부의 점유 메타
+    (session/state/started/pid)를 갱신하고, **arrival git 스냅**(`lease.git` 기대 baseline·
+    branch/head/submodules·기존 `base` 보존)을 additive 로 기록한다(T-0350·ADR-0060). `git_runner`
+    는 그 스냅의 DI seam — 미주입 실경로에서 슬롯 worktree 가 없으면 스냅은 fail-soft no-op(기존
+    git 유지). 표시(live)와 기대(기록)는 2축이라 branch 표시 단일 진실은 그대로다.
 
     `_lease_lock` + `_write_ledger`(atomic) — 기존 alloc/release/set_test_cmd 와 동일한
     read-modify-write 직렬화. board.py 를 import 하지 않는다(ADR-0013 isolation·touches 격리).
@@ -1678,6 +1762,8 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
             target.state = "leased"
             target.pid = os.getpid()
             target.started = _now_utc()
+        # arrival git 스냅(기대 baseline·기존 base 보존·T-0350·fail-soft — 슬롯 부재면 no-op).
+        _apply_git_snapshot(target, git_runner=git_runner)
         _write_ledger(leases)
         return target
 
@@ -1977,6 +2063,256 @@ def set_test_cmd(slot: str, cmd: str | None) -> Lease:
         target.test_cmd = cmd
         _write_ledger(leases)
         return target
+
+
+# ── 슬롯 git 진실: 스냅 기록(write) + 비교(compare) + is-ancestor 판정 (T-0350·ADR-0060) ───────
+# 슬롯 git 상태를 *기대*(drift 감지 기준) 축으로 lease 장부에 기계 기록한다(live 표시는 T-0072
+# 그대로·2축). submodule 의 pin/drift 모델(T-0275/0276)을 본체(superproject)로 대칭 확장 — 개념
+# 신설 0. write=부트스트랩 bind/alloc·핸드오프·create(release 시 정리)·compare=0단계(T-0351 소비).
+
+# head 비교 결과(㉒ `merge-base --is-ancestor` 완화) — GitCompareResult.head_relation 값.
+HEAD_MATCH = "match"            # 기록 head == live head (같은 branch) → 통과.
+HEAD_DESCENDANT = "descendant"  # live 가 기록 head 의 후손 + 같은 branch → crash 후 재개(notice·통과).
+HEAD_DIVERGED = "diverged"      # 브랜치 변경 또는 비후손(리셋·되감기) → FAIL-LOUD.
+HEAD_UNKNOWN = "unknown"        # 기록/live head 미상 → 판정 불가(통과 취급).
+
+
+def _slot_head(git_runner: GitRunner) -> "str | None":
+    """슬롯 worktree HEAD 커밋 sha (live·`git rev-parse HEAD`·fail-soft None·`current_branch` 동형 규율)."""
+    try:
+        rc, out = git_runner(["rev-parse", "HEAD"])
+    except Exception:  # noqa: BLE001 — fail-soft: 주입 runner raise 도 None(raise 금지 규칙).
+        return None
+    if rc != 0:
+        return None
+    return out.strip() or None
+
+
+def _snapshot_submodule_pins(git_runner: GitRunner) -> "list[dict]":
+    """`git submodule status` → `[{path, pin}]` (T-0350·기록=기대 축).
+
+    pin = submodule 의 현재 체크아웃 sha(선두 flag 제거) — "여기 두고 간다"의 기준값(재개 시 이
+    sha 와 달라지면 drift·`_submodule_pin_drift`). `_submodule_statuses`(T-0276)와 같은 `submodule
+    status` primitive 를 읽되 sha 만 뽑는다. rc≠0(조회 불가/submodule 없음)·예외 → 빈 목록(fail-soft).
+    """
+    try:
+        rc, out = git_runner(["submodule", "status"])
+    except Exception:  # noqa: BLE001 — fail-soft: 빈 목록(스냅에 submodule 생략).
+        return []
+    if rc != 0:
+        return []
+    pins: list[dict] = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        # 라인 형식 `<flag><40-hex-sha> <path>[ (<describe>)]` — flag(공백/+/-/U)는 line[0].
+        # 공백 flag 는 split 이 이미 떼어내 parts[0]=sha, 그 외 flag 는 parts[0]=flag+sha.
+        raw = parts[0]
+        sha = raw[1:] if raw[:1] in ("+", "-", "U") else raw
+        pins.append({"path": parts[1], "pin": sha})
+    return pins
+
+
+def _snapshot_slot_git(slot: str, *, git_runner: GitRunner | None = None) -> "dict | None":
+    """슬롯의 live git 상태를 스냅한다 — `{branch, head, submodules, recorded_at}` (base 제외·T-0350).
+
+    write 프리미티브의 원료(base 는 호출부가 결정: create=새 기록·alloc/bind=기존 보존). 전부
+    fail-soft(`current_branch`/`slot_status` 동형·raise 금지). 슬롯 경로 부재 가드는 **실경로
+    (git_runner 미주입)에서만** 본다 — 주입 runner(hermetic 테스트)는 존재/HEAD 를 모델링하는
+    권위라 건너뛴다. 슬롯 부재(실경로)면 None(스냅 불가 → 호출부가 기존 git 을 유지)."""
+    runner = git_runner
+    if runner is None:
+        path = slot_path(slot)
+        if not path.exists():
+            return None
+        runner = _real_git_runner(path)
+    return {
+        "branch": current_branch(slot, git_runner=runner),
+        "head": _slot_head(runner),
+        "submodules": _snapshot_submodule_pins(runner),
+        "recorded_at": _now_local(),
+    }
+
+
+def _apply_git_snapshot(lease: "Lease", *, base_branch: "str | None" = None,
+                        git_runner: GitRunner | None = None) -> None:
+    """`lease.git` 을 live 슬롯 스냅으로 갱신한다 — write 프리미티브 본체(in-place·fail-soft·T-0350).
+
+    base 규칙(3표·rebase 로만 변경·결정 ⑨): `base_branch` 주어짐(create·set-base) = base 를
+    **새로** 기록(commit=방금 스냅한 head — fresh 슬롯 tip 이 파생 base) / 미주어짐(alloc/bind
+    arrival) = 기존 `lease.git.base` **보존**. 스냅 불가(슬롯 부재 등 None)면 기존 git 을 clobber
+    하지 않고 그대로 둔다(silent 손실 방지). 예외 흡수 — 스냅 실패가 리스 lifecycle op 을 막지 않는다.
+    """
+    try:
+        snap = _snapshot_slot_git(lease.slot, git_runner=git_runner)
+        if snap is None:
+            return  # 슬롯 부재/스냅 불가 → 기존 git 유지(clobber 안 함).
+        if base_branch is not None:
+            base = {"branch": base_branch, "commit": snap.get("head")}
+        elif isinstance(lease.git, dict):
+            base = lease.git.get("base")
+        else:
+            base = None
+        if base is not None:
+            snap = {"base": base, **snap}   # base 를 앞에(스키마 순서·cosmetic).
+        lease.git = snap
+    except Exception:  # noqa: BLE001 — fail-soft: 스냅 실패가 alloc/bind/create 를 막지 않는다.
+        pass
+
+
+def record_git_snapshot(slot: str, *, base_branch: "str | None" = None,
+                        git_runner: GitRunner | None = None) -> "Lease | None":
+    """슬롯 현재 git 상태를 `lease.git` 에 기록하는 독립 write 프리미티브 (핸드오프·T-0350).
+
+    부트스트랩 bind/alloc·create 는 자기 lock 안에서 `_apply_git_snapshot` 을 인라인 호출하지만,
+    핸드오프("여기 두고 간다")처럼 lifecycle op 밖에서 스냅을 찍는 호출부(pm_handoff·T-0351)를
+    위한 standalone 진입점이다. `_lease_lock`+`_write_ledger`(atomic) — alloc/release 와 동일한
+    read-modify-write 직렬화. 장부에 슬롯이 없으면 None(무해). 갱신된 Lease 반환."""
+    with _lease_lock():
+        leases = _read_ledger()
+        target = next((l for l in leases if l.slot == slot), None)
+        if target is None:
+            return None
+        _apply_git_snapshot(target, base_branch=base_branch, git_runner=git_runner)
+        _write_ledger(leases)
+        return target
+
+
+def _is_ancestor(git_runner: GitRunner, ancestor: str, descendant: str) -> bool:
+    """`git merge-base --is-ancestor <ancestor> <descendant>` — ancestor 가 descendant 의 조상인가 (㉒·T-0350).
+
+    rc0=조상(True)·rc1=아님(False)·rc>1 또는 예외=False(보수적 — 판정 불가는 "후손 아님"으로 →
+    FAIL-LOUD 쪽으로 기운다·경보를 놓치기보다 잘못 울리는 게 낫다). git 결정론 판정(추측 아님)."""
+    try:
+        rc, _out = git_runner(["merge-base", "--is-ancestor", ancestor, descendant])
+    except Exception:  # noqa: BLE001 — fail-soft: 판정 불가는 후손 아님(보수적).
+        return False
+    return rc == 0
+
+
+def _head_relation(recorded_branch: "str | None", recorded_head: "str | None",
+                   live_branch: "str | None", live_head: "str | None",
+                   *, git_runner: GitRunner | None) -> str:
+    """기록 head vs live head 관계 판정 (㉒ `merge-base --is-ancestor` 완화·T-0350).
+
+    - head 한쪽이라도 미상 → `unknown`(판정 불가·통과 취급).
+    - 브랜치 변경 → `diverged`(사고·FAIL-LOUD).
+    - 같은 branch·head 동일 → `match`(통과).
+    - 같은 branch·head 다름 & live 가 기록 head 의 **후손** → `descendant`(crash 후 재개·내 커밋·
+      notice·통과). crash 후 재개(핸드오프 못 하고 죽음)를 경보 소음으로 만들지 않는다.
+    - 같은 branch·head 다름 & **비후손**(리셋·되감기·divergent) → `diverged`(FAIL-LOUD)."""
+    if not recorded_head or not live_head:
+        return HEAD_UNKNOWN
+    if recorded_branch != live_branch:
+        return HEAD_DIVERGED
+    if recorded_head == live_head:
+        return HEAD_MATCH
+    if git_runner is not None and _is_ancestor(git_runner, recorded_head, live_head):
+        return HEAD_DESCENDANT
+    return HEAD_DIVERGED
+
+
+def _submodule_pin_drift(recorded_subs: "list", live_subs: "list") -> "list[str]":
+    """기록 submodule pin ≠ live pin 인 path 목록 (T-0350·T-0275/0276 pin/drift 대칭·경고 축)."""
+    live_map = {
+        s["path"]: s.get("pin") for s in live_subs
+        if isinstance(s, dict) and "path" in s
+    }
+    drift: list[str] = []
+    for s in recorded_subs or []:
+        if not isinstance(s, dict) or "path" not in s:
+            continue
+        if live_map.get(s["path"]) != s.get("pin"):
+            drift.append(s["path"])
+    return drift
+
+
+class GitCompareResult:
+    """기록된 `lease.git`(기대) vs 슬롯 live 상태 비교 결과 — 부트스트랩 0단계 소비 (T-0350·소비처 T-0351).
+
+    - `unrecorded` — git 미기록(구 슬롯·git 필드 부재/슬롯 없음) → drift 감지 **비활성**. 0단계는
+      차단이 아니라 loud 표시 + 사용자 질의(`set-base`·결정 ⑪). ok/fail 어느 쪽도 아닌 별도 상태.
+    - `recorded`/`live` — 기록 git dict / live 스냅 dict(branch·head·submodules).
+    - `branch_match` — 기록 branch == live branch. False = 브랜치 변경(사고·FAIL-LOUD·표 branch 축).
+    - `head_relation` — `match`/`descendant`/`diverged`/`unknown`(㉒ is-ancestor 완화·위 상수).
+    - `submodule_drift` — 기록 pin ≠ live pin 인 submodule path 목록(경고·T-0275/0276 대칭).
+    - ⚠️ **`base` 는 이 티켓(T-0350)에서 recorded-only — compare 가 surface 하지 않는다**(비교축은
+      branch+head+submodule 뿐). 인터페이스 산문의 "base=사고 시 FAIL-LOUD"·"base 대비 N behind"
+      판정은 0단계([[T-0351]])·F10(rebase·wave-2d)로 이월된다 — 여기선 `recorded["base"]`(inert
+      breadcrumb)로 *전달만* 하고 비교/계산을 붙이지 않는다. 소비처가 base 를 비교축으로 오해하지
+      않도록 명시(delivered compare 는 base 를 판정에 안 쓴다).
+
+    (dataclass 미사용 — Lease/SlotStatus 등과 동일 이유: `spec_from_file_location` 로드 시
+    dataclass 의 forward-ref 해소가 깨진다.)
+    """
+
+    def __init__(self, slot: str, *, unrecorded: bool, recorded: "dict | None",
+                 live: dict, branch_match: bool, head_relation: str,
+                 submodule_drift: "list[str]"):
+        self.slot = slot
+        self.unrecorded = unrecorded
+        self.recorded = recorded
+        self.live = live
+        self.branch_match = branch_match
+        self.head_relation = head_relation
+        self.submodule_drift = submodule_drift
+
+    @property
+    def fail_loud(self) -> bool:
+        """명시적 FAIL-LOUD — branch 변경(사고) 또는 head diverged(리셋·비후손). unrecorded 는
+        fail 아님(사용자 질의 대상·결정 ⑪)."""
+        if self.unrecorded:
+            return False
+        return (not self.branch_match) or self.head_relation == HEAD_DIVERGED
+
+    @property
+    def ok(self) -> bool:
+        """0단계 통과 여부 — 기록 있고 FAIL-LOUD 아님. unrecorded 는 ok 아님(질의 필요·별도 처리)."""
+        return (not self.unrecorded) and (not self.fail_loud)
+
+    def __repr__(self) -> str:
+        return (f"GitCompareResult(slot={self.slot!r}, unrecorded={self.unrecorded!r}, "
+                f"branch_match={self.branch_match!r}, head_relation={self.head_relation!r}, "
+                f"submodule_drift={self.submodule_drift!r})")
+
+
+def compare_slot_git(slot: str, *, git_runner: GitRunner | None = None) -> GitCompareResult:
+    """기록된 `lease.git`(기대) vs 슬롯 live 상태를 비교한다 — compare 프리미티브 (T-0350·0단계 소비·T-0351).
+
+    장부에서 슬롯 lease 를 읽어 그 `git` 스냅(기대)을 live 스냅과 대조한다. `_lease_lock` 은 장부
+    read 동안만 짧게 잡고 git 조회(subprocess)는 lock 밖에서 한다. 미기록(git 필드 없음/슬롯 없음)
+    이면 `unrecorded=True`(drift 감지 비활성·결정 ⑪). head 비교는 `merge-base --is-ancestor` 로
+    완화(㉒·crash 후 재개를 경보 소음으로 안 만든다). 판정 정책(FAIL/notice/질의)은 0단계(T-0351)
+    가 `ok`/`fail_loud`/`unrecorded`/`head_relation` 을 읽어 결정한다(엔진=surface·PM=확인)."""
+    with _lease_lock():
+        leases = _read_ledger()
+    target = next((l for l in leases if l.slot == slot), None)
+    recorded = target.git if (target is not None and isinstance(target.git, dict)) else None
+    live = _snapshot_slot_git(slot, git_runner=git_runner) or {}
+    if recorded is None:
+        return GitCompareResult(
+            slot, unrecorded=True, recorded=None, live=live,
+            branch_match=False, head_relation=HEAD_UNKNOWN, submodule_drift=[],
+        )
+    # head 비교용 runner — 주입 우선, 아니면 슬롯 실경로(부재면 None → is-ancestor 스킵·unknown).
+    runner = git_runner
+    if runner is None and slot_path(slot).exists():
+        runner = _real_git_runner(slot_path(slot))
+    return GitCompareResult(
+        slot,
+        unrecorded=False,
+        recorded=recorded,
+        live=live,
+        branch_match=recorded.get("branch") == live.get("branch"),
+        head_relation=_head_relation(
+            recorded.get("branch"), recorded.get("head"),
+            live.get("branch"), live.get("head"), git_runner=runner,
+        ),
+        submodule_drift=_submodule_pin_drift(
+            recorded.get("submodules") or [], live.get("submodules") or []
+        ),
+    )
 
 
 # ── 내부 헬퍼 ────────────────────────────────────────────────────────────────
