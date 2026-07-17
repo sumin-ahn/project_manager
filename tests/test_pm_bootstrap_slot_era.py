@@ -17,8 +17,14 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+
+def _idle_lease(slot: str):
+    """0단계(T-0351) 실재 검사 통과용 idle 리스 시드 — phase-0 는 slot/state/session/extra 만 읽는다."""
+    return SimpleNamespace(slot=slot, repo="", session="", state="idle", extra={})
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -36,6 +42,18 @@ def _load_module(name: str = "pm_bootstrap"):
 @pytest.fixture(scope="module")
 def bootstrap():
     return _load_module()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_engine_anchor(bootstrap, monkeypatch):
+    """0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다 (worktree ①에서 로드돼 실 REPO 가 등록
+    worktree 사본으로 보이는 문제 회피·test_pm_bootstrap_lease 동형). 실 board 를 로드해
+    `_pm_home_worktree_misanchor`→None 만 패치하고 board=None 경로가 그 패치본을 받게 한다."""
+    real_board = bootstrap._load_board()
+    if real_board is not None:
+        monkeypatch.setattr(real_board, "_pm_home_worktree_misanchor",
+                            lambda anchor, **_kw: None, raising=False)
+    monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
 
 
 # ── board 대역: 시대차 base 해소용(`_repo_base`/`_repo_protected`) ────────────
@@ -80,7 +98,8 @@ class _EraPool:
         return _FakeLease(self._slot, repo)
 
     def list_leases(self):
-        return []
+        # 0단계 실재 검사(T-0351) 통과용 idle 시드(회귀 0·idle=점유 아님).
+        return [_idle_lease(self._slot)]
 
     def current_branch(self, slot, *, git_runner=None):
         return self._branch

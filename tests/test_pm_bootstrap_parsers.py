@@ -24,10 +24,19 @@ HANDOFF_PY = TOOLS / "pm_handoff.py"
 
 
 def _load_module(name: str = "pm_bootstrap"):
-    """pm_bootstrap 를 경로 로드한다 (도구는 패키지가 아니므로 importlib)."""
+    """pm_bootstrap 를 경로 로드한다 (도구는 패키지가 아니므로 importlib).
+
+    로드 직후 0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다 — 엔진 테스트는 worktree ①(엔진
+    canonical)에서 로드돼 실 REPO 가 PM 홈 등록 worktree 사본으로 보여 anchor 가 거부하기 때문(모듈이
+    per-test 라 autouse 대신 로더에서 처리·다른 부트스트랩 테스트의 autouse 픽스처와 동형)."""
     spec = importlib.util.spec_from_file_location(name, BOOTSTRAP_PY)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    if name == "pm_bootstrap":
+        real_board = mod._load_board()
+        if real_board is not None:
+            real_board._pm_home_worktree_misanchor = lambda anchor, **_kw: None
+        mod._load_board = lambda: real_board
     return mod
 
 

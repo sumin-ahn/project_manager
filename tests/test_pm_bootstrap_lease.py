@@ -41,6 +41,22 @@ def handoff():
     return _load("pm_handoff")
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_engine_anchor(bootstrap, monkeypatch):
+    """0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다.
+
+    엔진 테스트는 worktree ①(엔진 canonical·`work/<repo>_<N>`)에서 로드되므로 실 `REPO` 가 PM 홈
+    등록 worktree 사본으로 보인다 → 0단계 앵커 검사(`board._pm_home_worktree_misanchor(REPO)`)가
+    거부한다(프로덕션 ②-홈에선 실 board 소유로 통과·`work/`-misuse 만 거부). 실 board 를 로드해
+    `_pm_home_worktree_misanchor`→None 으로만 패치(나머지 board 동작=실물 보존)하고, board=None 경로가
+    그 패치본을 받게 `_load_board` 를 대체한다 — board 를 명시 주입한 구성은 영향 없음(`self._board` 승)."""
+    real_board = bootstrap._load_board()
+    if real_board is not None:
+        monkeypatch.setattr(real_board, "_pm_home_worktree_misanchor",
+                            lambda anchor, **_kw: None, raising=False)
+    monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
+
+
 # ── worktree_pool DI mock (hermetic — 실 장부/git 미접촉) ─────────────────────
 
 
@@ -52,13 +68,34 @@ class _FakeLease:
 
 
 class _FakeLeaseEntry:
-    """list_leases() 가 돌려주는 장부 엔트리 대역 — state/session/slot surface (상태점검용)."""
+    """list_leases() 가 돌려주는 장부 엔트리 대역 — state/session/slot surface (상태점검용).
 
-    def __init__(self, slot: str, repo: str, session: str, *, state: str = "leased"):
+    `extra` = 미지 최상위 키 보존(T-0350·`Lease.extra` 동형) — 0단계 readonly carve-out(⑬·T-0351)
+    이 `extra["role"]=="readonly"` 를 읽으므로 그 키를 실을 수 있게 둔다."""
+
+    def __init__(self, slot: str, repo: str, session: str, *, state: str = "leased",
+                 extra: dict | None = None):
         self.slot = slot
         self.repo = repo
         self.session = session
         self.state = state
+        self.extra = extra or {}
+
+
+class _FakeCompare:
+    """`compare_slot_git` 결과 대역 (T-0350 GitCompareResult 소비 표면·0단계 record-vs-live·T-0351).
+
+    0단계는 `fail_loud`/`unrecorded`/`submodule_drift`/`recorded`/`live` 만 읽으므로 그것들만 든다."""
+
+    def __init__(self, *, fail_loud: bool = False, unrecorded: bool = False,
+                 head_relation: str = "match", submodule_drift: list | None = None,
+                 recorded: dict | None = None, live: dict | None = None):
+        self.fail_loud = fail_loud
+        self.unrecorded = unrecorded
+        self.head_relation = head_relation
+        self.submodule_drift = submodule_drift or []
+        self.recorded = recorded or {}
+        self.live = live or {}
 
 
 class _FakeNeedsCreate(Exception):
@@ -76,7 +113,9 @@ class FakeWorktreePool:
 
     def __init__(self, *, alloc_raises_needs_create: bool = False,
                  alloc_slot: str = "work/A_1", alloc_branch: str | None = "a5",
-                 force_detached: bool = False):
+                 force_detached: bool = False,
+                 present_slots: "tuple[str, ...] | None" = ("work/X_2",),
+                 compare_result=None):
         self.NeedsCreate = _FakeNeedsCreate
         self._alloc_raises = alloc_raises_needs_create
         self._alloc_slot = alloc_slot
@@ -87,6 +126,12 @@ class FakeWorktreePool:
         self.release_calls: list[dict] = []
         self.current_branch_calls: list[str] = []
         self.release_raises_keyerror = False
+        # 0단계(T-0351) 실재 검사가 통과하도록 사전 시드하는 **idle** 슬롯 — lean 테스트는 실재하는
+        # 슬롯(idle 리스)에 bind 하므로(§F1b "장부·폴더에 실재"), 그 idle 리스를 list_leases 에 실어
+        # phantom-거부를 피한다. idle 이라 점유(leased)·"다른 활성 PM" surface 엔 안 잡힌다(회귀 0).
+        self._present_slots: tuple[str, ...] = present_slots or ()
+        # 0단계 record-vs-live(compare_slot_git·T-0350) 결과 대역 — None=미설정(정합 검사 no-op).
+        self._compare_result = compare_result
         # 슬롯 → live 브랜치 매핑(ADR-0013 amend T-0072 — identity/release surface 가
         # lease.branch 대신 current_branch(slot) 를 읽는다). alloc 이 effective 를 기록.
         self._live_branch: dict[str, str | None] = {}
@@ -105,14 +150,23 @@ class FakeWorktreePool:
         return _FakeLease(slot, repo, self._live_branch.get(slot))
 
     def list_leases(self):
-        # 상태점검 surface — bind 된 슬롯(이 세션) + 미리 심은 다른 활성 리스.
+        # 상태점검 surface — bind 된 슬롯(이 세션) + 미리 심은 다른 활성 리스 + 0단계 실재 검사용
+        # idle 시드(§F1b·bind 전에도 슬롯이 실재하도록).
         leased: list = []
         for slot, repo, session in [
             (c["slot"], c["repo"], c["session"]) for c in self.bind_calls
         ]:
             leased.append(_FakeLeaseEntry(slot, repo, session, state="leased"))
+        for slot in self._present_slots:
+            _, _, tail = slot.rpartition("/")
+            repo = tail.rsplit("_", 1)[0]
+            leased.append(_FakeLeaseEntry(slot, repo, "", state="idle"))
         leased.extend(self._extra_leases)
         return leased
+
+    def compare_slot_git(self, slot, *, git_runner=None):
+        # 0단계 record-vs-live(T-0350 compare 프리미티브) 대역 — 설정된 결과(없으면 None=검사 no-op).
+        return self._compare_result
 
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         self.alloc_calls.append({"repo": repo, "branch": branch, "resume": resume})

@@ -47,6 +47,18 @@ def bootstrap():
     return _load("pm_bootstrap")
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_engine_anchor(bootstrap, monkeypatch):
+    """0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다 (worktree ①에서 로드돼 실 REPO 가 등록
+    worktree 사본으로 보이는 문제 회피·test_pm_bootstrap_lease 동형). 실 board 를 로드해
+    `_pm_home_worktree_misanchor`→None 만 패치하고 board=None 경로가 그 패치본을 받게 한다."""
+    real_board = bootstrap._load_board()
+    if real_board is not None:
+        monkeypatch.setattr(real_board, "_pm_home_worktree_misanchor",
+                            lambda anchor, **_kw: None, raising=False)
+    monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
+
+
 @pytest.fixture(scope="module")
 def board_mod():
     return _load("board")
@@ -477,17 +489,20 @@ class _FakeLease:
 class _FakeWorktreePool:
     """카드 통합용 최소 worktree_pool mock — bind/list/current_branch/slot_path 만."""
 
-    def __init__(self, *, branch: str | None = "feature-x"):
+    def __init__(self, *, branch: str | None = "feature-x", present_slot: str = "work/X_2"):
         self.NeedsCreate = RuntimeError
         self._branch = branch
         self._bound: list[str] = []
+        self._present_slot = present_slot  # 0단계 실재 검사(T-0351)용 idle 시드 슬롯.
 
     def bind_slot(self, slot, repo, session, *, git_runner=None):
         self._bound.append(slot)
         return _FakeLease(slot, repo, self._branch)
 
     def list_leases(self):
-        return []
+        # 0단계 실재 검사(T-0351) 통과용 idle 시드 — phase-0 는 slot/state/session/extra 만 읽는다.
+        from types import SimpleNamespace
+        return [SimpleNamespace(slot=self._present_slot, repo="", session="", state="idle", extra={})]
 
     def current_branch(self, slot, *, git_runner=None):
         return self._branch

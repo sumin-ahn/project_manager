@@ -17,8 +17,14 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+
+def _idle_lease(slot: str):
+    """0단계(T-0351) 실재 검사 통과용 idle 리스 시드 — phase-0 는 slot/state/session/extra 만 읽는다."""
+    return SimpleNamespace(slot=slot, repo="", session="", state="idle", extra={})
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -39,6 +45,18 @@ def wp():
 @pytest.fixture(scope="module")
 def bootstrap():
     return _load("pm_bootstrap")
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_engine_anchor(bootstrap, monkeypatch):
+    """0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다 (worktree ①에서 로드돼 실 REPO 가 등록
+    worktree 사본으로 보이는 문제 회피·test_pm_bootstrap_lease 동형). 실 board 를 로드해
+    `_pm_home_worktree_misanchor`→None 만 패치하고 board=None 경로가 그 패치본을 받게 한다."""
+    real_board = bootstrap._load_board()
+    if real_board is not None:
+        monkeypatch.setattr(real_board, "_pm_home_worktree_misanchor",
+                            lambda anchor, **_kw: None, raising=False)
+    monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
 
 
 # ── backbone slot_status: mock git_runner 로 역할/upstream/submodule 판별 구동 ────
@@ -226,7 +244,8 @@ class FakePool:
         return _FakeLease(self._slot, repo)
 
     def list_leases(self):
-        return []
+        # 0단계 실재 검사(T-0351)가 통과하도록 이 슬롯을 idle 리스로 시드(회귀 0·idle=점유 아님).
+        return [_idle_lease(self._slot)]
 
     def current_branch(self, slot, *, git_runner=None):
         return self._branch
@@ -246,7 +265,8 @@ class FakePoolNoStatus:
         return _FakeLease(slot, repo)
 
     def list_leases(self):
-        return []
+        # 0단계 실재 검사(T-0351) 통과용 idle 시드 — 이 풀은 lean(work/A_1) 테스트가 쓴다.
+        return [_idle_lease("work/A_1")]
 
     def current_branch(self, slot, *, git_runner=None):
         return "a5"
@@ -532,7 +552,7 @@ def _make_fresh_bootstrap(bootstrap, wp, tmp_path):
         return 0, ""
 
     ret = _slot_status_obj(wp, upstream="origin/a5", upstream_ok=True, submodules=[])
-    pool = FakePool(slot_status_ret=ret)
+    pool = FakePool(slot="work/A_2", slot_status_ret=ret)  # slot-2 시나리오 — 0단계 실재 시드도 A_2.
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),

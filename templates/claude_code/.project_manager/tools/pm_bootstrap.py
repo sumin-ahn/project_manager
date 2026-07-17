@@ -2364,6 +2364,17 @@ class PmBootstrap:
         #     자동해소(현행 보존·순서 무관). board 러너는 슬롯 무관(REPO 고정).
         multipm_lean = repo is not None and slot is not None
         multipm_alloc = repo is not None and slot is None
+
+        # ── 0단계 검증 (⑧·spike §F1b·[[T-0351]]) — dump/alloc 을 뿌리기 *전에* "내가 올바른
+        # 슬롯/위치를 쓰고 있나"를 기계로 검증한다. 실패 시 **부분 dump 도 금지**(dump 가 뜨면 PM 이
+        # 그것을 세션의 진실로 믿는다·결정 ⑧) — preflight 가 비-0 을 돌려주면 여기서 alloc/수집/dump
+        # 이전에 즉시 중단한다. 엔진 앵커(무조건)+슬롯 실재·점유·기록정합(lean 조건)+보호브랜치 warn.
+        # solo(repo None)/alloc(slot None)는 슬롯 검사 자연 no-op·앵커만 무조건(결정 2·
+        # [[solo-is-subset-of-multipm]]). alloc 앞단에 둬 앵커 거부 시 신규 lease 잔존을 예방한다.
+        preflight_rc = self._phase0_preflight(repo, slot)
+        if preflight_rc != 0:
+            return preflight_rc
+
         alloc_identity: dict | None = None
         if multipm_lean:
             self._bound_slot = f"work/{repo}_{slot}"
@@ -2470,6 +2481,243 @@ class PmBootstrap:
             if alloc_identity is not None:
                 self._release_alloc_lease_failsoft(alloc_identity["slot"])
             raise
+
+    # ── 0단계 검증 (⑧·spike §F1b·[[T-0351]]·dump 이전 · 실패 시 부분 dump 금지) ─────────
+    # 부트스트랩이 dump 를 뿌리기 전에 "올바른 슬롯/위치인가"를 기계 검증한다(사용자: "제일 먼저
+    # 체크할 건 내가 올바른 슬롯을 쓰고 있나"). 엔진 앵커(무조건)+슬롯 실재·점유·기록정합(lean 조건)
+    # +보호브랜치 warn. 판정 근거는 전부 기계(장부·git·compare 프리미티브)이고 로직 중복은 없다 —
+    # 엔진 앵커는 board T-0345 가드를, 기록 vs live 는 worktree_pool T-0350 compare(㉒)를 **소비만**한다.
+
+    def _phase0_preflight(self, repo: str | None, slot: int | None) -> int:
+        """0단계 — dump/alloc 이전 위치·소유·상태 검증 (⑧·spike §F1b). 0=통과·비-0=거부(FAIL-LOUD).
+
+        검사:
+          1. **엔진 앵커** (무조건·cwd 무관·F6) — REPO(엔진 파일 위치)가 PM 홈이 아니라 worktree
+             사본이면 거부 (T-0345 클래스·`board._pm_home_worktree_misanchor` 소비·부트스트랩은 현행
+             이 클래스에 무방비였다).
+          2~5 **슬롯 검사** — 슬롯이 명시된 lean 경로(`--repo --slot`·무인자 자동해소 포함)만 돈다.
+             solo(repo None)·alloc(slot None)는 슬롯이 없어 자연 no-op(결정 2·[[solo-is-subset-of-multipm]]).
+            2. **작업공간 실재** — 장부 lease 도 없고 폴더도 없으면 거부(phantom 슬롯 바인딩 방지).
+            3. **타 점유자** — 다른 세션이 그 슬롯을 leased 로 보유하면 거부(결정 ③·readonly ⑬ 예외).
+            4. **보호브랜치/origin-추적** — **warn 만**(거부는 후속 T-0360·⑧ 이행 순서·readonly 예외).
+            5. **기록 vs live** — `compare_slot_git` 소비(㉒·불일치=FAIL-LOUD·미기록=loud+질의 훅·T-0352).
+        """
+        # 1. 엔진 앵커 (무조건) — worktree 사본에서 부트스트랩하면 거부.
+        if self._reject_worktree_copy_anchor():
+            return 1
+        # 2~5 슬롯 검사 — lean(명시 슬롯)만. solo/alloc 은 슬롯이 없어 자연 no-op(결정 2).
+        if repo is None or slot is None:
+            return 0
+        slot_id = f"work/{repo}_{slot}"
+        session = f"{repo}_{slot}"
+        wp = self._resolve_worktree_pool()  # multi-PM 인데 풀 부재면 명시 에러(SystemExit·dump 이전).
+        lease = self._phase0_find_lease(wp, slot_id)
+        # readonly 공유 슬롯(⑬) carve-out — 타-task 점유·보호브랜치 검사 비적용 예외 자리(§F11·T-0358
+        # 이 채운다). 지금은 lease.extra 의 role 만 읽는 훅 — 현행 슬롯엔 role 이 없어 항상 False(회귀 0).
+        readonly = self._phase0_is_readonly(lease)
+        # 2. 작업공간 실재 (장부·폴더).
+        if lease is None and not self._phase0_slot_folder_exists(wp, slot_id):
+            print(
+                f"[중단·0단계] 슬롯 {slot_id} 이(가) 장부·폴더 어디에도 없습니다 — 미생성 슬롯을 "
+                f"바인딩하면 phantom 작업공간에 세션을 dump 합니다.\n"
+                f"  → 먼저 슬롯을 생성하세요:  {_CARD_TOOL_INVOKE}/pm_config.py worktree add {repo}\n"
+                f"    (또는 `--slot` 번호를 실재하는 슬롯으로 맞추세요.)",
+                file=sys.stderr,
+            )
+            return 1
+        # 2b. 불완전 생성(creating·T-0295) — **세션 동일 여부·readonly 무관** 차단(별도 조건). readonly
+        #     carve-out 미적용: readonly 는 *점유/보호브랜치* 예외지 *불완전 생성* 예외가 아니다(반쯤
+        #     만든 슬롯은 readonly 여도 못 쓴다). bind_slot 이 기존 엔트리를 무조건 leased 로 덮어(T-0295
+        #     "점유 메타만 갱신·reclaim 안 거침") in-flight/중단 create 를 훼손하고, reclaim_stale 은
+        #     creating 을 무시·alloc 은 creating 재부착 제외 — 아무도 안전히 진입 불가한 불완전 상태다.
+        if self._phase0_incomplete_create(lease):
+            print(
+                f"[중단·0단계] 슬롯 {slot_id} 이(가) 생성 중/중단된 불완전 상태입니다(state=creating) — "
+                f"이대로 바인딩하면 진행 중이거나 중단된 슬롯 생성을 훼손합니다.\n"
+                f"  → 다른 세션이 생성 중이면 완료를 기다리세요. 중단 흔적이면 상태 확인 후 정리하세요:\n"
+                f"     {_CARD_TOOL_INVOKE}/pm_config.py worktree status   "
+                f"(incomplete → git worktree remove + `worktree prune-stale`).",
+                file=sys.stderr,
+            )
+            return 1
+        # 3. 타 점유자 (readonly ⑬ 예외 — 공유가 정상).
+        if not readonly:
+            holder = self._phase0_other_holder(lease, session)
+            if holder is not None:
+                print(
+                    f"[중단·0단계] 슬롯 {slot_id} 을(를) 다른 세션 `{holder}` 이(가) 점유 중입니다 "
+                    f"(leased) — 남의 작업공간에 바인딩할 수 없습니다(결정 ③).\n"
+                    f"  → 그 세션의 완료를 기다리거나, 다른 슬롯을 쓰거나, 새 슬롯을 alloc 하세요.",
+                    file=sys.stderr,
+                )
+                return 1
+        # 4. 보호브랜치/origin-추적 = warn 만 (거부는 T-0360·readonly 예외·detached).
+        if not readonly:
+            self._phase0_protected_warn(wp, repo, slot_id)
+        # 5. 기록 vs live 정합 (compare 소비·㉒).
+        return self._phase0_record_vs_live(wp, slot_id)
+
+    def _reject_worktree_copy_anchor(self) -> bool:
+        """엔진 앵커(REPO=엔진 파일 위치)가 PM 홈이 아니라 worktree 사본이면 거부 (T-0345 클래스·무조건).
+
+        board mutation 의 PM-홈 강제(T-0345)와 **같은 클래스** — `board._pm_home_worktree_misanchor
+        (REPO)` 를 소비한다(판정 로직 재구현 금지). 부트스트랩은 현행 이 클래스에 무방비였다: worktree
+        (코드 전용) 트리에서 부트스트랩하면 그 트리를 세션 진실로 dump 한다. **cwd 는 판정에 불참**
+        (F6)·앵커는 REPO 만. board 직접 import 금지(touches 격리)라 주입/동적로드 board 의 헬퍼를
+        `getattr` 로 쓴다(DI 보존·`_protected_warning` 동형) — board/헬퍼 부재·예외는 fail-soft(검사
+        생략·솔로/standalone 무영향·오탐 0). True=거부(REPO 가 PM 홈 등록 worktree)."""
+        board_mod = self._board or _load_board()
+        guard = getattr(board_mod, "_pm_home_worktree_misanchor", None) if board_mod else None
+        if guard is None:
+            return False
+        try:
+            pm_home = guard(REPO)
+        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 통과(오탐 0).
+            return False
+        if pm_home is None:
+            return False
+        print(
+            f"[중단·0단계] 부트스트랩을 worktree(코드 전용) 트리에서 실행했습니다 — 세션 상태는 "
+            f"PM 홈이 소유합니다(ADR-0027). 이대로면 이 worktree 를 세션 진실로 잘못 dump 합니다.\n"
+            f"  → PM 홈에서 실행하세요:  cd {pm_home}\n"
+            f"  (현재 엔진 앵커: {REPO})",
+            file=sys.stderr,
+        )
+        return True
+
+    def _phase0_find_lease(self, wp, slot_id: str):
+        """장부에서 `slot_id` lease 를 찾는다 — 없거나 조회 실패면 None (fail-soft)."""
+        try:
+            for lease in wp.list_leases():
+                if getattr(lease, "slot", None) == slot_id:
+                    return lease
+        except Exception:  # noqa: BLE001 — fail-soft: 장부 조회 실패는 None(실재/점유 판정 보수적).
+            return None
+        return None
+
+    def _phase0_slot_folder_exists(self, wp, slot_id: str) -> bool:
+        """슬롯 worktree 폴더가 실재하는가 (`slot_path(slot).exists()`·조회 실패는 False)."""
+        try:
+            return wp.slot_path(slot_id).exists()
+        except Exception:  # noqa: BLE001 — fail-soft: 경로 해소 실패는 미실재로 취급(보수적).
+            return False
+
+    def _phase0_is_readonly(self, lease) -> bool:
+        """그 슬롯이 readonly 공유 자산(⑬·`role="readonly"`)인가 — 0단계 타-점유·보호브랜치 검사의
+        carve-out 예외 자리 (spike §F11·⑬=T-0358 이 채운다).
+
+        readonly 슬롯은 배타 대여 없이 **공유**하는 research 전용 자산이라(§F11) 타-task 점유·보호브랜치
+        (detached=브랜치 없음) 검사가 **비적용**이다. 지금은 lease.extra(additive·T-0350 미지키 보존)의
+        `role` 만 읽는 훅 — 현행 슬롯엔 role 이 없어 항상 False(회귀 0). readonly 도입(T-0358) 후
+        이 훅이 활성된다. lease None/미지 스키마는 False(fail-soft)."""
+        if lease is None:
+            return False
+        extra = getattr(lease, "extra", None) or {}
+        try:
+            return extra.get("role") == "readonly"
+        except Exception:  # noqa: BLE001 — fail-soft: 미지 extra 스키마는 non-readonly.
+            return False
+
+    def _phase0_incomplete_create(self, lease) -> bool:
+        """그 슬롯이 불완전 생성(`state="creating"`·provisional/중단 마커·T-0295)인가 — 0단계 차단 대상.
+
+        creating 은 create_slot 의 provisional 마커(worktree add *전* 선기록·확정 시 leased·중단 시
+        흔적). 이 상태 슬롯은 아무도 안전히 진입 불가하다: bind_slot 은 기존 엔트리를 무조건 leased 로
+        덮고(in-flight/중단 create 훼손)·reclaim_stale 는 creating 을 무시(leased 만)·alloc 은 creating
+        재부착 제외. 그래서 **세션 동일 여부·readonly 무관** 차단한다(내 중단 흔적이든 타 세션 in-flight
+        든 슬롯이 불완전한 건 동일). lease None/미상 state 는 False(fail-soft·`_phase0_other_holder` 와
+        분리 — 그 함수는 'leased by other' 의미를 유지한다)."""
+        if lease is None:
+            return False
+        return getattr(lease, "state", None) == "creating"
+
+    def _phase0_other_holder(self, lease, session: str) -> str | None:
+        """그 슬롯을 **다른 세션**이 leased 로 점유 중이면 그 세션명, 아니면 None (결정 ③).
+
+        내 세션(`session`)이 이미 잡은 것(crash 후 재개)·idle·미기록은 점유 아님(None). state 가
+        `leased` 이고 session 이 나와 다를 때만 타 점유자다. **creating 은 여기서 다루지 않는다** —
+        불완전 생성은 `_phase0_incomplete_create` 가 세션·readonly 무관으로 별도 차단한다(2b)."""
+        if lease is None:
+            return None
+        if getattr(lease, "state", None) != "leased":
+            return None
+        holder = getattr(lease, "session", None)
+        if holder and holder != session:
+            return holder
+        return None
+
+    def _phase0_protected_warn(self, wp, repo: str, slot_id: str) -> None:
+        """슬롯 live 브랜치가 보호목록(main 등)이면 **경고만** 낸다 (⑧·이 티켓=warn·거부는 T-0360).
+
+        ⑧의 보호브랜치/origin-추적 *거부*는 채택자-facing BREAKING 급 — main-checkout 슬롯을 쓰던
+        채택자를 갱신 즉시 깨뜨리고, adopter#0 slot-1 도 현재 main+origin/main(릴리즈 livegate·codex
+        `--paths` 기준). → 이 티켓은 **warn 만 출하**하고, 거부 활성은 readonly 슬롯(⑬)이 main-참조
+        역할을 이전한 뒤 후속 T-0360 이 한다(spike §F1b 이행 순서·[[cross-cutting-breaking-blast-radius]]).
+        `_protected_warning`(T-0076) 헬퍼를 재사용해 보호 판정만 하고, 경고에 T-0360/readonly 해소를
+        안내한다. detached/조회불가/board 부재는 조용히 생략(fail-soft·soft 경고는 안 깨진다)."""
+        try:
+            branch = wp.current_branch(slot_id)
+        except Exception:  # noqa: BLE001 — fail-soft: 브랜치 조회불가는 경고 생략.
+            return
+        protected = self._protected_warning(repo, branch)
+        if protected is None:
+            return
+        print(
+            f"[경고·0단계] 슬롯 {slot_id} 이(가) 보호 브랜치 `{protected}` 를 직접 체크아웃한 상태입니다 "
+            f"— 지금은 경고만 하지만 향후(T-0360) 진입 거부로 전환됩니다. 작업은 전용 브랜치에서 하거나, "
+            f"main-참조 역할은 readonly 슬롯(T-0358)으로 옮기세요.",
+            file=sys.stderr,
+        )
+
+    def _phase0_record_vs_live(self, wp, slot_id: str) -> int:
+        """기록된 lease.git(기대) vs 슬롯 live 정합 — `compare_slot_git`(T-0350·㉒) 소비 (결정 ⑪·㉒).
+
+        T-0350 의 compare 프리미티브를 **호출만** 한다(compare/판정 로직 재구현 금지). 판정 정책만 여기서:
+          - `fail_loud`(브랜치 변경·head diverged=리셋/비후손·㉒) → **FAIL-LOUD**(거부·1). 두고 간
+            상태와 다르다 = 외부 개입 신호(submodule drift 재동기 동형·감지=기계·해소=사용자).
+          - `unrecorded`(구 슬롯·git 필드 부재) → **차단 아님·loud 표시**("기준점 미기록 — drift 감지
+            비활성") + 질의 훅(사용자 `set-base` 질의는 [[T-0352]]·⑪ 이 같은 0단계 지점에서 채운다).
+          - `ok`(기록 있고 fail 아님·match/descendant[㉒ crash 후 재개 notice]) → 통과. submodule pin
+            drift 는 비차단 경고(재동기 검토).
+        ⚠️ **base 대비 drift 는 여기서 감지 안 함** — `compare_slot_git` 의 `fail_loud` 는 branch+head+
+        submodule 만 본다(T-0350 서 base=recorded-only breadcrumb). base 불일치 FAIL·"base 대비 N behind"
+        판정은 F10 rebase(wave-2d)·후속 T-0360 으로 이월된다(reviewer 추적성).
+        `compare_slot_git` 미구현 풀(구버전·mock)·예외는 fail-soft(정합 검사 생략·통과) — 소프트 진단.
+        반환 0=통과·1=FAIL-LOUD 거부."""
+        compare = getattr(wp, "compare_slot_git", None)
+        if compare is None:
+            return 0  # 구버전 풀 — 정합 검사 비활성(fail-soft·소프트 진단).
+        try:
+            result = compare(slot_id)
+        except Exception:  # noqa: BLE001 — fail-soft: compare 실패는 정합 검사 생략(통과).
+            return 0
+        if getattr(result, "fail_loud", False):
+            recorded = getattr(result, "recorded", None) or {}
+            live = getattr(result, "live", None) or {}
+            print(
+                f"[중단·0단계] 슬롯 {slot_id} 의 git 상태가 두고 간 기록과 다릅니다 — 외부 개입 가능성.\n"
+                f"  기록(기대): branch={recorded.get('branch')!r} head={recorded.get('head')!r}\n"
+                f"  실제(live): branch={live.get('branch')!r} head={live.get('head')!r}"
+                f"  (head_relation={getattr(result, 'head_relation', None)!r})\n"
+                f"  정당한 외부 변경이면 사용자 판단 후 명시 재동기하세요(submodule drift 재동기 동형).",
+                file=sys.stderr,
+            )
+            return 1
+        if getattr(result, "unrecorded", False):
+            # 미기록(구 슬롯) — 차단 아님·loud 표시 + 질의 훅(T-0352·⑪ 이 사용자 set-base 질의를 채운다).
+            print(
+                f"[알림·0단계] 슬롯 {slot_id} 의 기준점이 미기록입니다 — drift 감지 비활성(구 슬롯).\n"
+                f"  기준점을 지정하면(향후 `set-base`·T-0352) 그때부터 정합 감지가 작동합니다.",
+                file=sys.stderr,
+            )
+            return 0  # loud 표시만·차단 아님(결정 ⑪).
+        drift = getattr(result, "submodule_drift", None) or []
+        if drift:
+            print(
+                f"[경고·0단계] 슬롯 {slot_id} submodule pin drift: {', '.join(drift)} — 재동기 검토.",
+                file=sys.stderr,
+            )
+        return 0
 
     # ── multi-PM 모드: worktree 슬롯 alloc + identity surface (ADR-0013·0011) ────
 
