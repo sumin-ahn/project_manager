@@ -661,7 +661,12 @@ def cmd_capture(args: argparse.Namespace) -> int:
     둘 다 없으면 `(채록할 domain 변화 없음)`. **read-only·항상 exit 0**(advisory·작업 무차단).
     """
     if args.tickets:
-        touches = _touches_from_tickets(args.tickets)
+        # --tickets 는 nargs='+' — 공백 나열(T-a T-b)·콤마분리("T-a,T-b") 둘 다 수용한다
+        # (CLI 관용·"mechanize don't instruct"·자연스러운 나열이 usage 에러로 실패하던 클래스
+        # 소멸·T-0346). 토큰 리스트를 콤마로 합쳐 기존 콤마-split 집계(_touches_from_tickets)에
+        # 위임 — 콤마-단일-문자열 호환을 그대로 보존한다(join 후 split 이 양형식을 흡수). ticket
+        # ID 는 공백을 안 담으므로 space-split 이 무모호(경로를 받는 --touches 는 콤마 유지·비대칭).
+        touches = _touches_from_tickets(",".join(args.tickets))
     else:
         # --touches a,b,c — affected 동형(콤마분리·공백 trim·빈 토큰 제거).
         touches = [t.strip() for t in args.touches.split(",") if t.strip()]
@@ -947,8 +952,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cap_target = p_capture.add_mutually_exclusive_group(required=True)
     cap_target.add_argument(
-        "--tickets", metavar="T-a,T-b",
-        help="이 세션 완료 ticket 들 — 각 frontmatter touches 를 집계해 채록 대상을 띄운다.",
+        "--tickets", nargs="+", metavar="T-NNNN",
+        help="이 세션 완료 ticket 들 — 각 frontmatter touches 를 집계해 채록 대상을 띄운다. "
+             "공백 나열(T-a T-b)·콤마분리(\"T-a,T-b\") 둘 다 수용 (ticket ID 는 공백 무포함이라 무모호).",
     )
     cap_target.add_argument(
         "--touches", metavar="a,b,c",

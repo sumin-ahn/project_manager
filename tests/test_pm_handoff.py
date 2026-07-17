@@ -567,6 +567,10 @@ def test_run_checklist_includes_domain_capture_reminder(hf, tmp_path, capsys):
     # capture 리마인더 — domain capture 명령과 채록 의도가 checklist 에 보인다.
     assert "domain capture" in out
     assert "capture --tickets" in out
+    # 실형식 예시 명시 — 모호한 placeholder(`<이 세션 done…>`)가 아니라 콤마분리 실값을
+    # 보여준다("출하 가이드=실값 명시성"·T-0373). placeholder 잔존을 회귀로 막는다.
+    assert '--tickets "T-0001,T-0002"' in out
+    assert "<이 세션 done" not in out
     # checklist 항목으로 ([ ]) 렌더 — 단순 산문이 아니라 잔여 작업 항목.
     assert any(
         line.strip().startswith("[ ]") and "domain capture" in line

@@ -60,7 +60,7 @@ python3 .project_manager/tools/pm_handoff.py \
    - **회귀/incident** — 회귀 "N passed / 상태" **1줄(green 도 — baseline)** + 비-자명 incident. 회귀는 1줄 load-bearing 이라 항상 적는다(pm_bootstrap default skip 의 "handoff 참조" 안내와 정합).
    - **정지 후 thread-tail 검토** — ctx-trigger 자동 채움분은 *초안*이다. 새 PM 이 슬롯을 검토·편집한다(민감 발화 노출 최소화·과/부족 추출 보정).
    - **FORBIDDEN (대량 재열거 금지 — source 가 답한다):** board done/open/claimed/blocked 카운트 (→ `board.py list`) · open ticket ID 목록 (→ `pm_bootstrap`) · commit 해시·push 상태 (→ `git log`/`git status`) · 직전 complete entry 산출물 재요약 (→ 인접 entry. "읽기 범위" 로 가리켜라). 재열거는 중복이고 중복은 stale 화로 거짓말한다. (회귀 1줄 baseline 은 예외 — 위 회귀/incident 라인에 유지.)
-2. **domain capture (채록) 검토** — `python3 .project_manager/tools/domain.py capture --tickets <이 세션 done ticket 들>` 실행. 출력의 *영향 페이지*(`⚠ `=stale) 와 *coverage gap*(담당 페이지 없는 touched 경로)을 보고 관련 domain 페이지를 갱신하거나 신규 scaffold 한다. **surface-only** — 도구는 *무엇을 갱신/신설할지 띄울 뿐*, 본문 자동생성·`updated:` 자동스탬프는 안 한다(stale 탐지 거짓 방지·ADR-0018 §7b). 갱신할 것 없으면 생략.
+2. **domain capture (채록) 검토** — `python3 .project_manager/tools/domain.py capture --tickets "T-0001,T-0002"`(이 세션 done ticket ID — 콤마분리 또는 공백 나열 `T-0001 T-0002`) 실행. 출력의 *영향 페이지*(`⚠ `=stale) 와 *coverage gap*(담당 페이지 없는 touched 경로)을 보고 관련 domain 페이지를 갱신하거나 신규 scaffold 한다. **surface-only** — 도구는 *무엇을 갱신/신설할지 띄울 뿐*, 본문 자동생성·`updated:` 자동스탬프는 안 한다(stale 탐지 거짓 방지·ADR-0018 §7b). 갱신할 것 없으면 생략.
 3. **git commit** — 핸드오프 commit message 형식: `PM 세션(N차) 핸드오프 — pm_state.md sliding window + log/current.md handoff entry + PM (N+1)차 인계`. trailer `Co-Authored-By: Claude`.
 4. **마지막 응답에 인계 프롬프트(트리거) 코드블록 출력** — 다음 세션은 `/pm-bootstrap` 실행(트리거 붙여넣기 or 직접). 인계 본문은 부트스트랩이 log entry 에서 자동 dump 하므로 손-채움 불요(ADR-0035).
 

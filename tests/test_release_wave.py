@@ -1115,17 +1115,19 @@ _RELEASE_TEST_FILES = (
     Path(__file__).parent / "test_fresh_adopter_runtime_smoke.py",
     Path(__file__).parent / "test_command_card_usability.py",
     Path(__file__).parent / "test_pm_worktree_live.py",
+    Path(__file__).parent / "test_pm_release_live.py",
 )
 # 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
 # 6(이 파일: full/multirepo × claude/opencode + hard-stop + multiuser-composite opencode·T-0309)
 # + 2(runtime_smoke: pm_update opencode/claude)
 # + 2(command_card_usability: claude/opencode 카드 사용성·ADR-0046·T-0255)
-# + 2(pm_worktree_live: claude/opencode 스킬 라이브 하네스·ADR-0050·T-0278).
+# + 2(pm_worktree_live: claude/opencode 스킬 라이브 하네스·ADR-0050·T-0278)
+# + 2(pm_release_live: claude hard/opencode best-effort 릴리즈 스킬 라이브·ADR-0049·T-0349).
 # ⚠ 커플드-pin: 이 값을 올리면 touches 밖의 전역 pin 도 함께 정합돼야 `livegate record`(수집
 #   N==pin)가 통과한다(orchestrator 가 갱신·test_command_card_usability.py 주석 참조):
 #   board.LIVEGATE_RELEASE_PIN · tests/test_board_livegate.py(하드코딩 fake/assert) ·
 #   tests/test_worktree_pool.py(_LIVEGATE_RELEASE_PIN 미러) · templates/*/board.py(pm_update 전파).
-_EXPECTED_RELEASE_TESTS = 12
+_EXPECTED_RELEASE_TESTS = 14
 
 
 def _pytest_marker_name(decorator) -> str | None:

@@ -1264,6 +1264,36 @@ def test_capture_tickets_blank_token_skipped(dm, monkeypatch):
     assert calls == ["T-1", "T-2"]  # 빈 토큰엔 _touches_from_ticket 호출 안 함.
 
 
+def test_capture_tickets_space_separated_nargs(dm, tmp_path, monkeypatch, capsys):
+    # nargs='+' — 공백 나열(T-1 T-2 를 별개 argv 로)을 수용해 집계한다. 자연스러운 나열이
+    # usage 에러로 실패하던 클래스 소멸(mechanize don't instruct·T-0346).
+    _write_page(tmp_path, "a.md", frontmatter="title: A페이지\ntype: concept\ncovers:\n  - src/a/**")
+    _write_page(tmp_path, "b.md", frontmatter="title: B페이지\ntype: concept\ncovers:\n  - src/b/**")
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    ticket_touches = {"T-1": ["src/a/x.py"], "T-2": ["src/b/y.py"]}
+    monkeypatch.setattr(dm, "_touches_from_ticket", lambda tid: ticket_touches.get(tid, []))
+    rc = dm.main(["capture", "--tickets", "T-1", "T-2"])  # 공백 나열 = 별개 argv 토큰.
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "A페이지" in out and "B페이지" in out  # 두 ticket touches union → 두 페이지.
+
+
+def test_capture_tickets_mixed_space_and_comma(dm, tmp_path, monkeypatch, capsys):
+    # 혼합 형식 — 일부 argv 는 콤마분리, 일부는 공백 나열. join(",")→split 이 양형식을 흡수해
+    # 세 ticket 모두 집계(콤마-단일-문자열 backward compat 은 test_capture_tickets_aggregates_touches
+    # 가 이미 잠근다 — 여기선 혼합·nargs 경로를 잠근다·T-0346).
+    _write_page(tmp_path, "a.md", frontmatter="title: A페이지\ntype: concept\ncovers:\n  - src/a/**")
+    _write_page(tmp_path, "b.md", frontmatter="title: B페이지\ntype: concept\ncovers:\n  - src/b/**")
+    _write_page(tmp_path, "c.md", frontmatter="title: C페이지\ntype: concept\ncovers:\n  - src/c/**")
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    ticket_touches = {"T-1": ["src/a/x.py"], "T-2": ["src/b/y.py"], "T-3": ["src/c/z.py"]}
+    monkeypatch.setattr(dm, "_touches_from_ticket", lambda tid: ticket_touches.get(tid, []))
+    rc = dm.main(["capture", "--tickets", "T-1,T-2", "T-3"])  # 콤마 토큰 + 공백 나열.
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "A페이지" in out and "B페이지" in out and "C페이지" in out
+
+
 def test_capture_requires_tickets_or_touches(dm):
     # 둘 다 없으면 argparse SystemExit (mutually exclusive·required).
     with pytest.raises(SystemExit):

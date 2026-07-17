@@ -35,8 +35,8 @@ audience: pm-internal
 ## 정체성 / 슬롯
 
 이 스킬의 커맨드는 **대상 슬롯**에 실 git 부작용(`checkout`·`submodule update`)을 낸다 — 정체성
-(에이전트 맥락)을 도구에 **명시 전달**해 오타깃을 막는다: `--slot work/<repo>_<N>` 을 명시한다
-(예: `--slot work/project_manager_1`). 생략하면 cwd·세션 leased 슬롯으로 해소하나, 미해소(0개)·
+(에이전트 맥락)을 도구에 **명시 전달**해 오타깃을 막는다: `--repo <repo> --slot <N>` 을 명시한다
+(예: `--repo project_manager --slot 1`). 생략하면 cwd·세션 leased 슬롯으로 해소하나, 미해소(0개)·
 모호(≥2)면 rc 1 로 명확히 실패한다(침묵 no-op 아님). submodule 경로·슬롯은 형식/목록 검증을
 거쳐 슬롯 경계 밖(절대경로·`..`)은 거부된다.
 
@@ -46,10 +46,10 @@ audience: pm-internal
 
 ```bash
 # ① submodule 을 dev 브랜치로 지정 → 이후 selective resync 가 skip (dev 작업 보호)
-python3 .project_manager/tools/worktree_pool.py dev <submodule_path> <branch> --slot work/<repo>_<N>
+python3 .project_manager/tools/worktree_pool.py dev <submodule_path> <branch> --repo <repo> --slot <N>
 
 # ② 현재 슬롯 submodule 수동 재동기 (detached=pin 재동기·on-branch=skip·dirty=skip+경고)
-python3 .project_manager/tools/worktree_pool.py sync --slot work/<repo>_<N>
+python3 .project_manager/tools/worktree_pool.py sync --repo <repo> --slot <N>
 ```
 
 - `<submodule_path>` = 슬롯 worktree 상대 경로(= `git submodule status` 표기·예 `vendor/sub`).

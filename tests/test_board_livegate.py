@@ -98,26 +98,26 @@ def test_livegate_ran_count_parses_summary(live_board, output, expected):
 # ── record ① rc0 ∧ N==pin → pass ───────────────────────────────────────────
 
 def test_record_rc0_pin_match_records_pass(live_board, monkeypatch, capsys):
-    """rc0 이고 수집 N==pin(12) → status='pass' 기록 + rc0 (정상 릴리즈 green)."""
-    fake = _FakeRun(0, "12 passed, 811 deselected in 45.67s")
+    """rc0 이고 수집 N==pin(14) → status='pass' 기록 + rc0 (정상 릴리즈 green)."""
+    fake = _FakeRun(0, "14 passed, 811 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     rc = live_board.cmd_livegate(_rec_args())
     assert rc == 0
     data = _read_flag(live_board)
     assert data["status"] == "pass"
-    assert data["n"] == live_board.LIVEGATE_RELEASE_PIN == 12
+    assert data["n"] == live_board.LIVEGATE_RELEASE_PIN == 14
     assert data["rc"] == 0
     assert data["head"] == "cafef00dcafef00d0011223344556677"
     assert "ts" in data
     out = capsys.readouterr().out
     assert "pass @ cafef00d" in out
-    assert "release 12/12 green" in out
+    assert "release 14/14 green" in out
 
 
 # ── record ② rc0 ∧ N!=pin → fail (수집 위장 차단) ───────────────────────────
 
 def test_record_rc0_pin_mismatch_records_fail(live_board, monkeypatch, capsys):
-    """rc0 이지만 수집 N(5)!=pin(12) → status='fail' + rc1 (마커 소실 false-green 차단).
+    """rc0 이지만 수집 N(5)!=pin(14) → status='fail' + rc1 (마커 소실 false-green 차단).
 
     rc0 만으로는 "적게 수집됐지만 red 아님"을 green 으로 삼킬 수 있다 — 수집 pin 이 그
     수집 위장을 red 로 세운다(T-0190/T-0220 원칙의 라이브 확장).
@@ -131,7 +131,7 @@ def test_record_rc0_pin_mismatch_records_fail(live_board, monkeypatch, capsys):
     assert data["n"] == 5
     assert data["rc"] == 0
     err = capsys.readouterr().err
-    assert "수집 5 ≠ pin 12" in err
+    assert "수집 5 ≠ pin 14" in err
     assert "수집 위장 차단" in err
 
 
@@ -150,17 +150,17 @@ def test_record_rc5_no_tests_records_fail(live_board, monkeypatch):
 # ── record ③ rc!=0 → fail (실행 N==pin 이어도) ──────────────────────────────
 
 def test_record_rc_nonzero_records_fail(live_board, monkeypatch, capsys):
-    """rc!=0 → status='fail' + rc1 — 수집 N==pin(12) 이어도 red 는 fail.
+    """rc!=0 → status='fail' + rc1 — 수집 N==pin(14) 이어도 red 는 fail.
 
-    rc 게이트가 수집 N 과 독립임을 확인: 12개 실행(1 red)이라 N=12 이지만 rc1 → fail.
+    rc 게이트가 수집 N 과 독립임을 확인: 14개 실행(1 red)이라 N=14 이지만 rc1 → fail.
     """
-    fake = _FakeRun(1, "1 failed, 11 passed, 811 deselected in 40.0s")
+    fake = _FakeRun(1, "1 failed, 13 passed, 811 deselected in 40.0s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     rc = live_board.cmd_livegate(_rec_args())
     assert rc == 1
     data = _read_flag(live_board)
     assert data["status"] == "fail"
-    assert data["n"] == 12         # 실행은 12 이지만
+    assert data["n"] == 14         # 실행은 14 이지만
     assert data["rc"] == 1         # red 라 fail
     err = capsys.readouterr().err
     assert "release red (rc=1)" in err
@@ -173,7 +173,7 @@ def test_record_uses_regression_cwd_seam(live_board, monkeypatch):
     worktree = str(live_board._proj / "work" / "slot1")
     # `_active_slot_path(session=None)` 시그니처(ADR-0040 D2) — 선택 인자 수용.
     monkeypatch.setattr(live_board, "_active_slot_path", lambda session=None: worktree)
-    fake = _FakeRun(0, "12 passed, 811 deselected in 45.67s")
+    fake = _FakeRun(0, "14 passed, 811 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     live_board.cmd_livegate(_rec_args())
     assert fake.calls, "pytest subprocess 가 호출되지 않았다"
@@ -188,7 +188,7 @@ def test_record_uses_regression_cwd_seam(live_board, monkeypatch):
 def test_record_explicit_cwd_override(live_board, monkeypatch):
     """명시 `--cwd` 는 활성 slot 해소를 우회해 그 경로에서 돈다 (ADR-0014 override)."""
     override = str(live_board._proj / "elsewhere")
-    fake = _FakeRun(0, "12 passed, 811 deselected in 45.67s")
+    fake = _FakeRun(0, "14 passed, 811 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     live_board.cmd_livegate(_rec_args(cwd=override))
     # pytest run(shell=True)을 순서 무관하게 선택 — record 는 그 前에 git config 를 부른다(T-0287 fail-fast).
@@ -219,7 +219,7 @@ def test_record_multilease_with_session_resolves_slot(live_board, monkeypatch):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _seed_two_leases(live_board)
-    fake = _FakeRun(0, "12 passed, 811 deselected in 45.67s")
+    fake = _FakeRun(0, "14 passed, 811 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     rc = live_board.cmd_livegate(_rec_args(repo="B", slot=1))
     assert rc == 0, "명시 --repo/--slot 은 슬롯 해소 → fail-loud 아님"
@@ -236,7 +236,7 @@ def test_record_multilease_no_session_fails_loud(live_board, monkeypatch):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _seed_two_leases(live_board)
-    fake = _FakeRun(0, "12 passed, 811 deselected in 45.67s")
+    fake = _FakeRun(0, "14 passed, 811 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     with pytest.raises(SystemExit) as exc:
         live_board.cmd_livegate(_rec_args())
@@ -249,7 +249,7 @@ def test_record_multilease_no_session_fails_loud(live_board, monkeypatch):
 
 def test_record_write_is_atomic_no_tmp_left(live_board, monkeypatch):
     """기록은 atomic write(temp + os.replace) — 성공 후 .tmp 잔재가 없다."""
-    fake = _FakeRun(0, "12 passed, 811 deselected in 45.67s")
+    fake = _FakeRun(0, "14 passed, 811 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     live_board.cmd_livegate(_rec_args())
     tmp = live_board.LIVEGATE_FLAG.with_suffix(live_board.LIVEGATE_FLAG.suffix + ".tmp")
@@ -319,7 +319,7 @@ def test_check_requires_rev(live_board, capsys):
 
 def test_record_pass_then_check_green_roundtrip(live_board, monkeypatch, capsys):
     """record 로 pass 기록 후, 그 head 로 check 하면 green (실행=기록→소비 일관)."""
-    fake = _FakeRun(0, "12 passed, 811 deselected in 45.67s")
+    fake = _FakeRun(0, "14 passed, 811 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     assert live_board.cmd_livegate(_rec_args()) == 0
     recorded_head = _read_flag(live_board)["head"]

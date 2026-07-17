@@ -2012,7 +2012,7 @@ class PmHandoff:
         # ── 7. 잔여 PM 수동 작업 출력 ──────────────────────────────────────────
         print("\n[7/7] PM 이 손으로 할 잔여 작업:")
         print("  [ ] log/current.md handoff entry 본문 채우기 — lean 3섹션(읽기범위·메타학습·다음intent)+회귀/incident(회귀 1줄 baseline). board/git/log 대량 재열거 금지(/pm-bootstrap 라이브).")
-        print("  [ ] domain capture 검토 — `domain.py capture --tickets <이 세션 done>` 출력 보고 ⚠/gap 페이지 갱신/신설(채록·ADR-0018 §7b·surface-only).")
+        print("  [ ] domain capture 검토 — `domain.py capture --tickets \"T-0001,T-0002\"`(이 세션 done ticket ID·콤마분리 또는 공백 나열) 출력 보고 ⚠/gap 페이지 갱신/신설(채록·ADR-0018 §7b·surface-only).")
         print("  [ ] pm_state.md '진행 중인 의사결정' 표 갱신")
         print("  [ ] pm_state.md '남은 작업 전체 그림' 갱신")
         print("  [ ] git commit (Co-Authored-By: Claude 트레일러 포함)")

@@ -13,6 +13,8 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config init [<board init 인자>]                     # clone 당 1회 셋업 (board.py init 흡수·T-0065)
     pm-config repo add <name> [--git <url>] [--test "<cmd>"] # repo 등록 + .repos clone (신규=--git 필수 / 기등록 hydrate=areas URL·T-0291)
     pm-config worktree add <repo>                          # 새 슬롯 생성 + submodule init
+    pm-config worktree prune-stale                         # worktree 사라진 dangling 장부 엔트리 정리 (T-0295)
+    pm-config worktree remove <slot> [--force]             # 슬롯 통째 제거 — worktree+브랜치+장부 (원자·T-0333)
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
     pm-config release <slot> [--force]                     # 작업완료 반납 / 수동 강제(백스톱)
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수·T-0054)

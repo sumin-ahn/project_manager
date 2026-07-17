@@ -1,6 +1,6 @@
 ---
 description: "worktree/submodule 운영중 관리 — submodule 을 dev 브랜치로 지정(pool selective resync 로부터 보호)·drift 난 detached submodule 을 pin 으로 수동 재동기. backbone CLI .project_manager/tools/worktree_pool.py (dev/sync) thin wrapper. Triggers: 'submodule dev 지정', 'submodule 작업 중 선언', 'worktree submodule drift 재동기', 'worktree 브랜치 관리', 'pm-worktree'."
-argument-hint: "dev <submodule> <branch> --slot work/<repo>_<N>  |  sync --slot work/<repo>_<N>"
+argument-hint: "dev <submodule> <branch> --repo <repo> --slot <N>  |  sync --repo <repo> --slot <N>"
 audience: pm-internal
 ---
 
@@ -41,10 +41,10 @@ env prefix 불필요(드물게 필요하면 셸별 문법 — bash `PYTHONUTF8=1
 
 ```bash
 # ① submodule 을 dev 브랜치로 지정 → 이후 selective resync 가 skip (dev 작업 보호)
-python3 .project_manager/tools/worktree_pool.py dev <submodule_path> <branch> --slot work/<repo>_<N>
+python3 .project_manager/tools/worktree_pool.py dev <submodule_path> <branch> --repo <repo> --slot <N>
 
 # ② 현재 슬롯 submodule 수동 재동기 (detached=pin 재동기·on-branch=skip·dirty=skip+경고)
-python3 .project_manager/tools/worktree_pool.py sync --slot work/<repo>_<N>
+python3 .project_manager/tools/worktree_pool.py sync --repo <repo> --slot <N>
 ```
 
 - `<submodule_path>` = 슬롯 worktree 상대 경로(= `git submodule status` 표기·예 `vendor/sub`).
