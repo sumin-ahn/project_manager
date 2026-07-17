@@ -7,6 +7,19 @@
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-07-17
+
+v1.2.2 잔여 소진 patch — "버전 N 작업 중 발견분은 버전 N 에 탑재" 규율 아래 신뢰성 감지·worktree 안전성·부트스트랩 freshness·문서 정합을 일괄 마감. 이중게이트(내부 reviewer 5 PASS + codex 반려 3건 재작업 수렴) 통과. 파일-전달 규약(v1.2.2 T-0337)의 edit-denied 에이전트 실행 가능성도 라이브 확증 완료(T-0338 — opencode `safe_write` 는 permission deny 와 무관하게 가용[tools 맵=override 실측]·claude 는 Bash 경로·갭 0).
+
+### Added
+- **opencode 32k cap-hit detector** (T-0339) — 출력 상한(32k tok) silent 절단("stop" 위장)을 호출층에서 감지: relay 출력 소비 지점에서 응답이 cap 근방(char 임계 34560 = 32000×1.2char/tok 하한×0.90·정확 토크나이저 미의존 보수 근사·오탐 0 마진)이면 loud advisory(파일-전달 규약 안내 포함)·**never-block**(emission try/except)·env `PM_OC_CAP_HIT_THRESHOLD`. claude 는 `stop_reason=max_tokens` 네이티브 노출이라 범위 밖.
+- **부트스트랩 board freshness·슬롯 시대차 경고** (T-0341) — offline(fetch 실패) 시 "최신" 오단정 제거("판정불가 — 스냅샷일 수 있음" fail-soft) + 슬롯 worktree HEAD 가 base 브랜치 대비 behind N 커밋이면 identity surface 에 경고(lean/alloc/JSON 3표면·advisory·areas 등록 base 만 신뢰·기존 freshness fetch 재사용=신규 fetch 0). 다중 사용자/슬롯 공유 board 의 stale 스냅샷 오신뢰 방지.
+
+### Fixed
+- **worktree 슬롯 재생성 충돌 fail-loud** (T-0335) — remove 가 보존한 미머지 브랜치와 같은 번호 재생성이 cryptic `already exists`(rc255) + orphan-worktree 오귀인으로 죽던 것 → `SlotBranchExists` **선-검출**(base·else 경로 공통)·명확한 두 갈래 안내(정리 후 재시도 / 수동 checkout 재개).
+- **create_slot `branch=` 데이터-유실 클래스 종결** (T-0343) — `-B`(create-or-reset)가 기존 브랜치를 리셋해 보존 커밋을 잃을 수 있던 것 → 기존 브랜치는 **리셋 없는 checkout** 분기(신규만 `-B`)·존재 판정은 color-safe helper(`git branch --list --format=%(refname:short)`·ambient `color.branch=always` ANSI 오염 방어·실 git 백스톱 테스트).
+- **opencode 문서·카드 정합** (T-0342) — config(opencode.jsonc·plugin·agent frontmatter)는 **프로세스 시작 시 로드·캐싱**(변경=완전 재시작 필요) 을 AGENTS.md 에 명시 · read-only 에이전트 카드의 "write 16KB 거부" 문구를 실체(write/edit 전면 deny → `safe_write`·bash)로 정정(가드 read-only-aware 분리·write-capable 요구 무약화) · 옛 `.nudge` 잔재 전수 점검(cruft 0 확인).
+
 ## [1.2.2] - 2026-07-17
 
 opencode 문제해결 + 누락-기능 수정 patch — 대용량 write/edit silent-truncation 어댑터 가드(upstream 미해결 실측·라이브 재현) + worktree 슬롯 제거 단일 원자 커맨드. 이중게이트(내부 reviewer + codex 다라운드) 통과·라이브 매트릭스 실측 포함. (계획됐던 opencode subagent 기본 background 화는 sentinel 라이브 실측에서 headless 결과+작업 유실이 확정돼 **drop** — 상세는 PM 홈 log verify entry.)
