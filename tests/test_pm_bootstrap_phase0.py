@@ -139,8 +139,11 @@ class _OldPool(_FakePool):
     compare_slot_git = None  # 속성 자체를 제거(getattr → None → 정합 검사 skip)
 
 
-def _make(bootstrap, tmp_path, *, board, worktree_pool=None):
-    """격리된 PmBootstrap — board/git/log/pm_state/areas hermetic stub, board/pool 주입."""
+def _make(bootstrap, tmp_path, *, board, worktree_pool=None, git_fn=None):
+    """격리된 PmBootstrap — board/git/log/pm_state/areas hermetic stub, board/pool 주입.
+
+    `git_fn` 주입 시 그 git 러너를 쓴다(미기록 후보 merge-base 모델·T-0352). None 이면 기본
+    fake_git(merge-base 는 (0,"") → 후보 미해소·기존 테스트 무영향)."""
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
     areas_file = tmp_path / "areas.md"
@@ -163,7 +166,7 @@ def _make(bootstrap, tmp_path, *, board, worktree_pool=None):
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
-        run_git_fn=fake_git,
+        run_git_fn=git_fn or fake_git,
         log_file=log_file,
         areas_file=areas_file,
         worktree_pool=worktree_pool,
@@ -406,6 +409,71 @@ def test_record_vs_live_unrecorded_loud_but_passes(bootstrap, tmp_path, capsys):
     err = capsys.readouterr().err
     assert "미기록" in err and "drift 감지 비활성" in err
     assert pool.compare_calls == ["work/X_2"]
+
+
+# ── 6b. 미기록 경로 후보 제시 (자동 채택 없음·차단 아님·T-0352·⑪) ─────────────
+
+
+def _candidate_git(merge_bases: dict):
+    """미기록 후보 merge-base 모델 git fn — `merge-base HEAD <br>` → sha(dict) (T-0352 후보 제시).
+
+    `merge_bases` = 후보브랜치→sha. 그 외 표준 fake_git 응답(abbrev-ref·log)도 준다."""
+    def git_fn(args):
+        if "merge-base" in args and args[-2:-1] == ["HEAD"]:
+            br = args[-1]
+            sha = merge_bases.get(br)
+            return (0, sha + "\n") if sha else (1, "")     # 미등록 후보 → rc≠0(미해소)
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return 0, "main\n"
+        if args[:2] == ["log", "--oneline"]:
+            return 0, "abc123 subj\n"
+        return 0, ""
+    return git_fn
+
+
+def test_unrecorded_presents_base_candidates(bootstrap, tmp_path, capsys):
+    """미기록 0단계 — merge-base 로 해소되는 후보를 제시(spike §F9 형식·자동 채택 없음·T-0352·⑪)."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    cmp = _FakeCompare(unrecorded=True)
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")], compare_result=cmp)
+    git_fn = _candidate_git({"origin/main": "df10dc6abc999", "origin/develop": "aa11bb22cc33"})
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool, git_fn=git_fn)
+    rc = inst.run(repo="X", slot=2)
+    assert rc == 0, "후보 제시는 차단이 아니다(loud 표시만·결정 ⑪)"
+    err = capsys.readouterr().err
+    assert "미기록" in err and "후보" in err
+    assert "origin/main" in err and "df10dc6" in err            # spike §F9 형식(merge-base sha)
+    assert "origin/develop" in err                              # 다중 후보 join
+    assert "자동 채택 안 함" in err                              # 추론 금지 명시
+
+
+def test_unrecorded_no_candidate_line_when_none_resolve(bootstrap, tmp_path, capsys):
+    """merge-base 가 아무 후보도 못 해소하면 후보 줄 생략(오탐 0·sensitivity) — 미기록 알림은 유지."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    cmp = _FakeCompare(unrecorded=True)
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")], compare_result=cmp)
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)  # 기본 fake_git → merge-base (0,"")
+    rc = inst.run(repo="X", slot=2)
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "미기록" in err
+    assert "후보" not in err, "해소된 후보가 없는데 후보 줄이 떴다(오탐)"
+
+
+def test_unrecorded_candidate_not_auto_recorded(bootstrap, tmp_path, capsys):
+    """후보는 **제시만** — 자동 기록/채택 안 함(set_base·record_git_snapshot 미호출·추론 금지 못박음).
+
+    _FakePool 은 set_base/record_git_snapshot 을 정의하지 않으므로, 0단계가 자동 기록을 시도하면
+    AttributeError 로 죽는다 — 통과(rc 0)가 곧 '자동 채택 없음'의 구조적 증거다. 추가로 후보 줄이
+    '자동 채택 안 함' 을 명시하는지 확인한다(사용자 결정 위임·결정 ⑪)."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    cmp = _FakeCompare(unrecorded=True)
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")], compare_result=cmp)
+    git_fn = _candidate_git({"origin/main": "df10dc6abc999"})
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool, git_fn=git_fn)
+    assert inst.run(repo="X", slot=2) == 0            # 자동 기록 시도했으면 AttributeError 로 죽었을 것
+    assert "자동 채택 안 함" in capsys.readouterr().err
+    assert pool.bind_calls == ["work/X_2"]            # 정상 진행(차단 아님)
 
 
 def test_record_vs_live_ok_passes(bootstrap, tmp_path, capsys):

@@ -4552,3 +4552,415 @@ def test_apply_git_snapshot_preserves_existing_git_when_snap_fails(wp):
     # git_runner 미주입 + 슬롯 worktree 부재 → _snapshot_slot_git None → 기존 git 유지(no-op).
     wp._apply_git_snapshot(lease, git_runner=None)
     assert lease.git == existing
+
+
+# ════════════════════════════════════════════════════════════════════════
+# set-base / rebase 기준-gate 계약 / status (기준점 미기록 flow — 자동 추론 금지·T-0352)
+# ════════════════════════════════════════════════════════════════════════
+
+_BASE_TIP = "c" * 40      # set-base 로 지정한 base 브랜치 tip(슬롯 HEAD 와 구별되는 값).
+
+
+class _BaseGit:
+    """set-base/status/rebase-gate 커스텀 runner — FakeGit 이 안 다루는 rev-parse verify·rev-list count 모델.
+
+    `tips` = ref→sha(`rev-parse --verify <ref>^{commit}` 해소·미등록 ref=rc128), `behind` = base→N
+    (`rev-list --count HEAD..<base>`·미등록=rc128), `head`/`head_sha`/`subs` = 스냅 필드. 슬롯 tip
+    (`rev-parse HEAD`)과 base 브랜치 tip(`--verify`)을 **다른 sha** 로 두어 set-base 가 base.commit 을
+    슬롯 HEAD 가 아니라 브랜치 tip 으로 기록하는지 구별한다."""
+
+    def __init__(self, *, tips=None, behind=None, head="feat", head_sha=_NEW_SHA, subs=""):
+        self.tips = tips or {}
+        self.behind = behind or {}
+        self.head = head
+        self.head_sha = head_sha
+        self.subs = subs
+        self.calls: list[list] = []
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        if argv[:2] == ["rev-parse", "--verify"]:
+            ref = argv[-1]
+            key = ref[: -len("^{commit}")] if ref.endswith("^{commit}") else ref
+            sha = self.tips.get(key)
+            return (0, sha + "\n") if sha else (128, "fatal: bad revision\n")
+        if argv == ["rev-parse", "HEAD"]:
+            return (0, self.head_sha + "\n")
+        if argv[:2] == ["rev-list", "--count"]:
+            spec = argv[-1]                              # "HEAD..<base>"
+            base = spec.split("..", 1)[1] if ".." in spec else spec
+            n = self.behind.get(base)
+            return (0, f"{n}\n") if n is not None else (128, "fatal: unknown revision\n")
+        if argv == ["symbolic-ref", "--short", "HEAD"]:
+            return (0, self.head + "\n") if self.head else (1, "detached\n")
+        if argv == ["submodule", "status"]:
+            return (0, self.subs)
+        return (0, "")
+
+    def did(self, *prefix) -> bool:
+        return any(c[: len(prefix)] == list(prefix) for c in self.calls)
+
+
+# ── _parse_base_ref / _resolve_base_commit ──────────────────────────────────
+
+
+def test_parse_base_ref_splits_on_first_at(wp):
+    """`<branch>[@<commit>]` — 첫 @ 에서 분해(브랜치 only·@commit·빈 인자)."""
+    assert wp._parse_base_ref("origin/main") == ("origin/main", None)
+    assert wp._parse_base_ref("origin/main@df10dc6") == ("origin/main", "df10dc6")
+    assert wp._parse_base_ref("main@") == ("main", None)   # 빈 commit → None(브랜치 tip)
+    assert wp._parse_base_ref("") == ("", None)
+
+
+def test_resolve_base_commit_uses_rev_parse_verify(wp):
+    """_resolve_base_commit — `rev-parse --verify <ref>^{commit}` 로 브랜치 tip sha 를 해소."""
+    git = _BaseGit(tips={"origin/main": _BASE_TIP})
+    assert wp._resolve_base_commit("work/A_1", "origin/main", git_runner=git) == _BASE_TIP
+    assert git.did("rev-parse", "--verify", "origin/main^{commit}")
+
+
+def test_resolve_base_commit_unresolvable_ref_returns_none(wp):
+    """해소 불가 ref(rc≠0)면 None(fail-soft → 상위가 slot HEAD 폴백 또는 `-`)."""
+    git = _BaseGit(tips={})
+    assert wp._resolve_base_commit("work/A_1", "nope", git_runner=git) is None
+
+
+# ── _apply_git_snapshot base_commit (T-0352 확장·하위호환) ────────────────────
+
+
+def test_apply_git_snapshot_explicit_base_commit_used(wp):
+    """base_commit 명시(set-base) → base.commit 이 그 값(슬롯 HEAD 가 아님)."""
+    lease = wp.Lease(slot="work/A_1", repo="A", session="s", pid=1, started="t", state="leased")
+    git = FakeGit(head="feat", head_sha=_NEW_SHA)
+    wp._apply_git_snapshot(lease, base_branch="origin/main", base_commit=_BASE_TIP, git_runner=git)
+    assert lease.git["base"] == {"branch": "origin/main", "commit": _BASE_TIP}   # 슬롯 HEAD(_NEW_SHA) 아님
+
+
+def test_apply_git_snapshot_base_commit_none_falls_back_to_head(wp):
+    """base_commit None(create 기존 거동) → base.commit = 방금 스냅한 head(하위호환·회귀 차단)."""
+    lease = wp.Lease(slot="work/A_1", repo="A", session="s", pid=1, started="t", state="leased")
+    git = FakeGit(head="A_1", head_sha=_NEW_SHA)
+    wp._apply_git_snapshot(lease, base_branch="develop", git_runner=git)   # base_commit 미지정
+    assert lease.git["base"] == {"branch": "develop", "commit": _NEW_SHA}
+
+
+# ── set_base (사용자 명시 base 기록·자동 추론 금지) ──────────────────────────
+
+
+def test_set_base_records_branch_tip_as_commit(wp):
+    """set_base — commit 생략 시 base.commit = 그 브랜치 tip(rev-parse verify·슬롯 HEAD 아님)·장부 영속."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = _BaseGit(tips={"origin/main": _BASE_TIP}, head="feat", head_sha=_NEW_SHA)
+    lease = wp.set_base("work/A_1", "origin/main", git_runner=git)
+    assert lease.git["base"] == {"branch": "origin/main", "commit": _BASE_TIP}
+    assert wp.list_leases()[0].git["base"]["commit"] == _BASE_TIP     # 장부 영속
+
+
+def test_set_base_explicit_commit_pins_that_commit(wp):
+    """set_base(commit=명시 `@<commit>`) → 그 커밋을 base.commit 으로 verify 후 기록."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = _BaseGit(tips={"df10dc6": _BASE_TIP}, head="feat", head_sha=_NEW_SHA)
+    lease = wp.set_base("work/A_1", "origin/main", commit="df10dc6", git_runner=git)
+    assert lease.git["base"] == {"branch": "origin/main", "commit": _BASE_TIP}
+
+
+def test_set_base_only_records_user_branch_no_inference(wp):
+    """set_base 는 **사용자가 준 브랜치만** base.branch 로 기록한다(자동 추론 0·결정 ⑪).
+
+    merge-base·origin/main 추측을 절대 안 한다 — base.branch 는 인자 그대로."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = _BaseGit(tips={"develop": _BASE_TIP})
+    lease = wp.set_base("work/A_1", "develop", git_runner=git)
+    assert lease.git["base"]["branch"] == "develop"
+    # merge-base 를 통한 추론 흔적이 없다(사용자 지정만·verify 만 부른다).
+    assert not any(c[:1] == ["merge-base"] for c in git.calls)
+
+
+def test_set_base_unknown_slot_returns_none(wp):
+    """장부에 없는 슬롯 → None(record_git_snapshot 위임·무해)."""
+    assert wp.set_base("work/A_9", "origin/main", git_runner=_BaseGit(tips={"origin/main": _BASE_TIP})) is None
+
+
+def test_set_base_records_live_branch_head_alongside_base(wp):
+    """set_base 는 base 만이 아니라 live branch/head/submodule 스냅도 함께 기록(미기록 슬롯 초기화)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = _BaseGit(tips={"origin/main": _BASE_TIP}, head="feat-x", head_sha=_NEW_SHA,
+                   subs=" aaa111 vendor/lib\n")
+    lease = wp.set_base("work/A_1", "origin/main", git_runner=git)
+    assert lease.git["branch"] == "feat-x" and lease.git["head"] == _NEW_SHA
+    assert lease.git["submodules"] == [{"path": "vendor/lib", "pin": "aaa111"}]
+
+
+# ── set_base FAIL-LOUD on unresolvable ref (codex must-fix ① — 조용히 틀린 base 차단) ──
+
+
+def test_set_base_unresolvable_ref_fail_loud(wp):
+    """set_base — base ref 해소 불가(오타·미fetch)면 `BaseRefUnresolvable` FAIL-LOUD·**기록 안 함**(must-fix ①).
+
+    옛 코드는 slot HEAD 로 조용히 폴백해 `base=origin/typo@<슬롯HEAD>`(무관한 커밋)를 기록했고 drift
+    감지가 garbage baseline 위에서 돌았다 — 이 티켓 중심 계약("조용히 틀린 base 차단") 위반. 이제 record
+    이전에 거부한다."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = _BaseGit(tips={}, head="feat", head_sha=_NEW_SHA)   # origin/typo 미해소
+    with pytest.raises(wp.BaseRefUnresolvable) as exc:
+        wp.set_base("work/A_1", "origin/typo", git_runner=git)
+    assert exc.value.ref == "origin/typo"
+    assert wp._read_recorded_base("work/A_1") is None          # 조용히 기록되지 않음(계약 못박음)
+
+
+def test_set_base_explicit_bad_commit_fail_loud(wp):
+    """set_base(@bad-commit) — 명시 커밋이 해소 안 되면 fail-loud(slot HEAD 폴백 금지·기록 안 함)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = _BaseGit(tips={"origin/main": _BASE_TIP})   # 'deadbad' 미등록
+    with pytest.raises(wp.BaseRefUnresolvable):
+        wp.set_base("work/A_1", "origin/main", commit="deadbad", git_runner=git)
+    assert wp._read_recorded_base("work/A_1") is None
+
+
+def test_set_base_valid_ref_still_records_after_failloud_guard(wp):
+    """회귀 — 유효 ref 는 정상 기록(fail-loud 가드가 정상 경로를 막지 않는다)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = _BaseGit(tips={"origin/main": _BASE_TIP}, head="feat", head_sha=_NEW_SHA)
+    lease = wp.set_base("work/A_1", "origin/main", git_runner=git)
+    assert lease.git["base"] == {"branch": "origin/main", "commit": _BASE_TIP}
+
+
+def test_apply_git_snapshot_create_path_slot_head_fallback_untouched(wp):
+    """create 경로(base_commit=None→slot HEAD 폴백)는 must-fix ① 에 무손상 — fresh 슬롯 tip==base 정답.
+
+    fail-loud 는 set_base 레벨에서만. `_apply_git_snapshot`/`record_git_snapshot` 의 base_commit=None
+    폴백은 create(fresh 슬롯) 정당 하위호환이라 그대로 유지된다(회귀 차단)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = FakeGit(head="A_1", head_sha=_NEW_SHA)
+    lease = wp.record_git_snapshot("work/A_1", base_branch="develop", git_runner=git)  # base_commit 미지정
+    assert lease.git["base"] == {"branch": "develop", "commit": _NEW_SHA}   # slot HEAD 폴백 유지
+
+
+# ── _read_recorded_base ──────────────────────────────────────────────────────
+
+
+def test_read_recorded_base_returns_dict_when_recorded(wp):
+    _seed_git_lease(wp, base={"branch": "origin/main", "commit": _BASE_TIP})
+    assert wp._read_recorded_base("work/A_1") == {"branch": "origin/main", "commit": _BASE_TIP}
+
+
+def test_read_recorded_base_none_when_unrecorded(wp):
+    """git 필드가 있어도 base 서브키 없으면 None(미기록)."""
+    _seed_git_lease(wp)   # base 미지정
+    assert wp._read_recorded_base("work/A_1") is None
+
+
+def test_read_recorded_base_none_when_no_git_field(wp):
+    """구 슬롯(git 필드 자체 부재) → None."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    assert wp._read_recorded_base("work/A_1") is None
+
+
+def test_read_recorded_base_unknown_slot_none(wp):
+    assert wp._read_recorded_base("work/A_9") is None
+
+
+# ── resolve_rebase_base — rebase 기준-gate 계약(본체 wave-2d) ─────────────────
+
+
+def test_resolve_rebase_base_refuses_when_unrecorded_no_onto(wp):
+    """기준 미기록 + --onto 없음 → RebaseBaseRequired 거부(기준 없이 rebase 불가·추론 금지·계약)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    with pytest.raises(wp.RebaseBaseRequired) as exc:
+        wp.resolve_rebase_base("work/A_1")
+    assert exc.value.slot == "work/A_1"
+    assert "set-base" in str(exc.value)         # 해소 경로 안내
+
+
+def test_resolve_rebase_base_returns_recorded_base_branch(wp):
+    """기준 기록됨 + --onto 없음 → 기록된 base.branch 반환(그 최신으로 rebase)."""
+    _seed_git_lease(wp, base={"branch": "origin/main", "commit": _BASE_TIP})
+    assert wp.resolve_rebase_base("work/A_1") == "origin/main"
+
+
+def test_resolve_rebase_base_onto_records_and_returns(wp):
+    """--onto 명시 → 그 값을 base 로 **기록**(1회 해소)하고 반환(진행)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = _BaseGit(tips={"develop": _BASE_TIP})
+    result = wp.resolve_rebase_base("work/A_1", onto="develop", git_runner=git)
+    assert result == "develop"
+    # 기록 확인 — 미기록이 --onto 1회로 해소됨.
+    assert wp._read_recorded_base("work/A_1") == {"branch": "develop", "commit": _BASE_TIP}
+
+
+def test_resolve_rebase_base_onto_overrides_existing_base(wp):
+    """--onto 는 기존 기록 base 도 덮어 기록(사용자 명시 우선)."""
+    _seed_git_lease(wp, base={"branch": "origin/main", "commit": _OLD_SHA})
+    git = _BaseGit(tips={"release/2": _BASE_TIP})
+    assert wp.resolve_rebase_base("work/A_1", onto="release/2", git_runner=git) == "release/2"
+    assert wp._read_recorded_base("work/A_1")["branch"] == "release/2"
+
+
+def test_resolve_rebase_base_onto_unresolvable_propagates(wp):
+    """--onto 해소 불가 → `set_base` 의 `BaseRefUnresolvable` 전파 (must-fix ②·silent onto 반환 아님·기록 안 됨).
+
+    옛 코드는 set_base 반환값을 무시하고 항상 onto 를 반환해, 해소 실패에도 gate 가 통과했다."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = _BaseGit(tips={})   # onto 미해소
+    with pytest.raises(wp.BaseRefUnresolvable):
+        wp.resolve_rebase_base("work/A_1", onto="origin/typo", git_runner=git)
+    assert wp._read_recorded_base("work/A_1") is None   # 기록 안 됨(진행 계약 미충족 → 반환 없음)
+
+
+def test_resolve_rebase_base_onto_unregistered_slot_raises(wp):
+    """--onto 인데 슬롯이 장부 미등록 → `set_base` None → `RebaseBaseRequired` raise(silent onto 반환 금지·must-fix ②)."""
+    git = _BaseGit(tips={"develop": _BASE_TIP})   # ref 는 해소되나 슬롯이 장부에 없음
+    with pytest.raises(wp.RebaseBaseRequired):
+        wp.resolve_rebase_base("work/A_9", onto="develop", git_runner=git)
+
+
+# ── base_behind_count / slot_git_status (조회·미기록 N-behind `-`) ────────────
+
+
+def test_base_behind_count_parses_rev_list(wp):
+    """base_behind_count — `rev-list --count HEAD..<base>` 정수 파싱."""
+    git = _BaseGit(behind={"origin/main": 3})
+    assert wp.base_behind_count("work/A_1", "origin/main", git_runner=git) == 3
+
+
+def test_base_behind_count_failsoft_none(wp):
+    """rev-list 실패(미해소 ref·rc≠0) → None(계산 불가)."""
+    git = _BaseGit(behind={})
+    assert wp.base_behind_count("work/A_1", "origin/main", git_runner=git) is None
+
+
+def test_slot_git_status_unrecorded_behind_is_none_with_reason(wp):
+    """미기록 슬롯 → behind None + reason(미기록 — CLI `-` 표기·자동 추론 금지·결정 ⑪)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    git = _BaseGit(head="feat", head_sha=_NEW_SHA)
+    st = wp.slot_git_status("work/A_1", git_runner=git)
+    assert st["base"] is None
+    assert st["behind"] is None
+    assert "미기록" in st["behind_reason"]
+
+
+def test_slot_git_status_recorded_computes_behind(wp):
+    """기록 슬롯 → base.branch 대비 N behind 계산 + branch/head 표시."""
+    _seed_git_lease(wp, base={"branch": "origin/main", "commit": _BASE_TIP})
+    git = _BaseGit(behind={"origin/main": 5}, head="feat", head_sha=_NEW_SHA)
+    st = wp.slot_git_status("work/A_1", git_runner=git)
+    assert st["base"] == {"branch": "origin/main", "commit": _BASE_TIP}
+    assert st["behind"] == 5 and st["behind_reason"] is None
+    assert st["branch"] == "feat" and st["head"] == _NEW_SHA
+
+
+def test_slot_git_status_recorded_but_base_unresolvable_behind_none(wp):
+    """기록됐지만 base.branch 해소 실패(rev-list rc≠0) → behind None + reason(해소 실패·`-`)."""
+    _seed_git_lease(wp, base={"branch": "origin/gone", "commit": _BASE_TIP})
+    git = _BaseGit(behind={}, head="feat")   # origin/gone 미등록 → rc≠0
+    st = wp.slot_git_status("work/A_1", git_runner=git)
+    assert st["behind"] is None and "해소 실패" in st["behind_reason"]
+
+
+# ── CLI (main) — set-base / status 진입 ──────────────────────────────────────
+
+
+def _mk_slot_dir(wp, slot="work/A_1"):
+    """tmp 슬롯 worktree 디렉토리를 만든다(실경로 CLI 가 slot_path.exists() 로 스냅 진입하도록)."""
+    p = wp.slot_path(slot)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def test_cli_set_base_records_and_reports(wp, proj, monkeypatch, capsys):
+    """CLI `set-base <slot> <branch>` — 실경로 wiring 으로 base 기록 + rc 0 + stdout(장부 영속)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    _mk_slot_dir(wp)
+    git = _BaseGit(tips={"origin/main": _BASE_TIP}, head="feat", head_sha=_NEW_SHA)
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)   # 실경로 → 커스텀 runner
+    rc = wp.main(["set-base", "work/A_1", "origin/main"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "기준점 기록" in out and "origin/main" in out
+    assert wp._read_recorded_base("work/A_1") == {"branch": "origin/main", "commit": _BASE_TIP}
+
+
+def test_cli_set_base_prefix_omitted_slot_form(wp, proj, monkeypatch, capsys):
+    """CLI set-base 는 접두 생략 `<repo>_<N>` 슬롯 형식도 정규화해 받는다."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    _mk_slot_dir(wp)
+    git = _BaseGit(tips={"origin/main": _BASE_TIP})
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    assert wp.main(["set-base", "A_1", "origin/main"]) == 0        # 접두 생략
+
+
+def test_cli_set_base_unknown_slot_rc1(wp, proj, monkeypatch, capsys):
+    """CLI set-base — worktree 는 있으나 장부 미등록(orphan) 슬롯이면 rc 1 + 안내(등록 슬롯에만 기록).
+
+    ref 는 해소되게(worktree 존재+monkeypatch runner) 두고 장부에만 없게 해 "장부에 없다" 경로를 태운다
+    (must-fix ① fail-loud 는 ref/worktree 해소 실패이므로 그 앞단을 통과시켜야 이 분기 도달)."""
+    _mk_slot_dir(wp, "work/A_9")   # worktree 존재 → ref 해소 통과 · 장부엔 미등록
+    git = _BaseGit(tips={"origin/main": _BASE_TIP})
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    rc = wp.main(["set-base", "work/A_9", "origin/main"])
+    assert rc == 1
+    assert "장부에 없다" in capsys.readouterr().err
+
+
+def test_cli_set_base_bad_slot_format_rc1(wp, capsys):
+    """CLI set-base — traversal/부적격 슬롯 형식은 rc 1 거부(슬롯 경계 보호·_normalize_slot)."""
+    rc = wp.main(["set-base", "../evil", "origin/main"])
+    assert rc == 1
+    assert "형식 오류" in capsys.readouterr().err
+
+
+def test_cli_set_base_absent_worktree_fail_loud_rc1(wp, capsys):
+    """CLI set-base — 슬롯 worktree 부재면 ref 해소 불가로 fail-loud rc 1·**기록 안 됨**(must-fix ①·silent 오기록 차단)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    # 슬롯 디렉토리 미생성 → _resolve_base_commit None → BaseRefUnresolvable → rc 1.
+    rc = wp.main(["set-base", "work/A_1", "origin/main"])
+    assert rc == 1
+    assert "해소할 수 없습니다" in capsys.readouterr().err
+    assert wp._read_recorded_base("work/A_1") is None      # 조용히 기록되지 않음
+
+
+def test_cli_set_base_unresolvable_ref_rc1(wp, proj, monkeypatch, capsys):
+    """CLI set-base — worktree 는 있으나 ref 해소 불가(오타)면 rc 1 fail-loud·**기록 안 됨**(must-fix ①)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    _mk_slot_dir(wp)
+    git = _BaseGit(tips={})   # 어떤 ref 도 해소 안 됨
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    rc = wp.main(["set-base", "work/A_1", "origin/typo"])
+    assert rc == 1
+    assert "해소할 수 없습니다" in capsys.readouterr().err
+    assert wp._read_recorded_base("work/A_1") is None
+
+
+def test_cli_status_unrecorded_shows_dash(wp, capsys):
+    """CLI `status <slot>` — 미기록 슬롯이면 "base 대비 behind" 가 `-`(계산 불가·이유·DoD)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    rc = wp.main(["status", "work/A_1"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "base 대비 behind: -" in out and "미기록" in out
+
+
+def test_cli_status_recorded_shows_n(wp, proj, monkeypatch, capsys):
+    """CLI status — 기록 슬롯이면 base 대비 N 커밋 표기(실경로 wiring)."""
+    _seed_git_lease(wp, base={"branch": "origin/main", "commit": _BASE_TIP})
+    _mk_slot_dir(wp)
+    git = _BaseGit(behind={"origin/main": 2}, head="feat", head_sha=_NEW_SHA)
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    rc = wp.main(["status", "work/A_1"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "base 대비 behind: 2 커밋" in out
+    assert "origin/main" in out
+
+
+def test_cli_status_no_arg_resolves_session_slot(wp, monkeypatch, capsys):
+    """CLI `status`(무인자) → cwd/세션 leased 슬롯으로 해소(`_resolve_current_slot(None)`·suggestion ③).
+
+    위치인자 생략 경로(무인자=내 슬롯)를 직접 커버한다 — 세션 해소를 고정하고 그 슬롯이 조회됨을 확인."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="A_1", state="leased"))
+    monkeypatch.setattr(wp, "_default_session", lambda: "A_1")   # 세션 해소 고정
+    monkeypatch.setattr(wp, "_slot_from_cwd", lambda: None)      # cwd 유입 없음 → 세션 경로
+    rc = wp.main(["status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "work/A_1" in out and "미기록" in out    # 세션 슬롯 해소 + 미기록 base(`-`)

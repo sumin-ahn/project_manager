@@ -1230,6 +1230,12 @@ def _format_slot_status_lines(status: dict | None) -> list[str]:
 # 있다(PM 69 slot-2 실측 — v1.0.6 시대 코드로 작업 직전). identity surface 에 경고 줄을
 # 표면화한다. offline(base fetch 실패)면 판정불가 fail-soft. 없으면(최신·base 미해소) 줄 생략.
 
+# 미기록 슬롯(v1.3.0 이전)의 base 후보 — 0단계 미기록 경로가 `git merge-base HEAD <cand>` 로 제시
+# **만** 한다(자동 채택 없음·추론 금지·결정 ⑪·T-0352·spike §F9). 흔한 base 브랜치를 훑어 merge-base
+# 가 해소되는 것만 후보로 보여주고, 사용자가 `set-base` 로 명시 지정한다(엔진=surface·사용자=결정).
+_UNRECORDED_BASE_CANDIDATE_BRANCHES = ("origin/main", "origin/master", "origin/develop")
+
+
 def _format_slot_era_warning(info: dict | None) -> str | None:
     """슬롯 시대차 info(`_slot_era_info` 반환) → 경고 줄 또는 None (T-0341).
 
@@ -2704,10 +2710,14 @@ class PmBootstrap:
             )
             return 1
         if getattr(result, "unrecorded", False):
-            # 미기록(구 슬롯) — 차단 아님·loud 표시 + 질의 훅(T-0352·⑪ 이 사용자 set-base 질의를 채운다).
+            # 미기록(구 슬롯) — 차단 아님·loud 표시 + **후보 제시**(자동 채택 없음·T-0352·결정 ⑪).
+            # 후보는 merge-base 로 계산해 *보여주기만* 하고 자동 기록하지 않는다(추론 금지 — 틀려도
+            # 조용한 base 위에서 drift 감지가 도는 것을 원천 차단·[[mechanize-dont-instruct-llm]]).
+            cand_line = self._unrecorded_base_candidate_line(wp, slot_id)
             print(
                 f"[알림·0단계] 슬롯 {slot_id} 의 기준점이 미기록입니다 — drift 감지 비활성(구 슬롯).\n"
-                f"  기준점을 지정하면(향후 `set-base`·T-0352) 그때부터 정합 감지가 작동합니다.",
+                f"  기준점을 지정하면(`set-base {slot_id} <branch>[@<commit>]`) 그때부터 정합 감지가 "
+                f"작동합니다.{cand_line}",
                 file=sys.stderr,
             )
             return 0  # loud 표시만·차단 아님(결정 ⑪).
@@ -2718,6 +2728,41 @@ class PmBootstrap:
                 file=sys.stderr,
             )
         return 0
+
+    def _unrecorded_base_candidates(self, slot_dir: str) -> list[tuple[str, str]]:
+        """미기록 슬롯의 base 후보 — `git merge-base HEAD <cand>` 가 해소되는 (branch, sha) 목록 (T-0352·⑪).
+
+        **제시용일 뿐 자동 채택 없음**(추론 금지·결정 ⑪). 흔한 base 브랜치
+        (`_UNRECORDED_BASE_CANDIDATE_BRANCHES`)와 HEAD 의 merge-base 를 계산해, 해소되는 것만 후보로
+        모은다(예: "후보: `origin/main`(merge-base `df10dc6`)"). merge-base 실패/미해소 후보는 제외,
+        전부 fail-soft(빈 목록). 기존 freshness fetch 를 재사용하지 않고 로컬 remote-tracking ref 로만
+        계산한다 — *제시*라 stale 여부는 무관(사용자가 `set-base` 로 최종 지정)."""
+        cands: list[tuple[str, str]] = []
+        for br in _UNRECORDED_BASE_CANDIDATE_BRANCHES:
+            try:
+                rc, out = self._run_git_fn(["-C", slot_dir, "merge-base", "HEAD", br])
+            except Exception:  # noqa: BLE001 — fail-soft: 후보 계산 실패는 그 후보만 건너뛴다.
+                continue
+            sha = (out or "").strip()
+            if rc == 0 and sha:
+                cands.append((br, sha))
+        return cands
+
+    def _unrecorded_base_candidate_line(self, wp, slot_id: str) -> str:
+        """미기록 0단계 후보 제시 줄(`\\n  후보: …`) 또는 빈 문자열 (T-0352·자동 채택 없음).
+
+        슬롯 경로(`wp.slot_path`)를 얻어 `_unrecorded_base_candidates` 로 후보를 계산하고, 있으면
+        spike §F9 형식("후보: `origin/main`(merge-base `<sha>`)")으로 포맷한다. 후보 없음·경로 해소
+        실패는 빈 문자열(줄 생략·오탐 0). fail-soft(loud 알림 자체를 막지 않는다)."""
+        try:
+            slot_dir = str(wp.slot_path(slot_id))
+        except Exception:  # noqa: BLE001 — fail-soft: 경로 해소 실패는 후보 줄 생략.
+            return ""
+        cands = self._unrecorded_base_candidates(slot_dir)
+        if not cands:
+            return ""
+        shown = " · ".join(f"`{br}`(merge-base `{sha[:12]}`)" for br, sha in cands)
+        return f"\n  후보: {shown} — 자동 채택 안 함(사용자가 `set-base` 로 결정·결정 ⑪)."
 
     # ── multi-PM 모드: worktree 슬롯 alloc + identity surface (ADR-0013·0011) ────
 

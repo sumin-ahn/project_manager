@@ -71,8 +71,8 @@ PAIR_PINS: dict[str, tuple[str, str]] = {
                       "979cf0354391d683d3225defa6c365725363916e83acf51c354dcd56d06ce2d8"),
     "pm-wave-finish": ("139d771c5bf8c52d069f0d346a09e85493f1d005a1c2d75210864f509044bf34",
                        "6d6a548cd6fe88d6edcbde6c45d8c3ff42885d9ff813d937e179685d99a0f6ab"),
-    "pm-worktree": ("1b28122c8d9062f6a8b1d2a195129906057faa3e85a68892880b34abf45aedcb",
-                    "a750d83a5598c2e6305bd4f5fe7d6b7b971977d51d4a5481caf296ad1cb13bb3"),
+    "pm-worktree": ("c287b3cbbf4268d982cd9749db35fcfeb778acb372873164a5d604cdf2267729",
+                    "2ae1bcc33502605327973a9c4d434bd277c8c5fa5499061fd0b8ee1cbf6c3ff4"),
     "spike-new": ("06bf270347ff2a67f02816dbce70a059fb86f01e76d0e97ad5ce588027276aa3",
                   "c6f5d5d8ce1a8100c992735358f8305104cc692ac50f0a1fe78faf10635b9297"),
 }

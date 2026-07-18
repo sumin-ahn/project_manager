@@ -2136,20 +2136,25 @@ def _snapshot_slot_git(slot: str, *, git_runner: GitRunner | None = None) -> "di
 
 
 def _apply_git_snapshot(lease: "Lease", *, base_branch: "str | None" = None,
+                        base_commit: "str | None" = None,
                         git_runner: GitRunner | None = None) -> None:
     """`lease.git` 을 live 슬롯 스냅으로 갱신한다 — write 프리미티브 본체(in-place·fail-soft·T-0350).
 
     base 규칙(3표·rebase 로만 변경·결정 ⑨): `base_branch` 주어짐(create·set-base) = base 를
-    **새로** 기록(commit=방금 스냅한 head — fresh 슬롯 tip 이 파생 base) / 미주어짐(alloc/bind
-    arrival) = 기존 `lease.git.base` **보존**. 스냅 불가(슬롯 부재 등 None)면 기존 git 을 clobber
-    하지 않고 그대로 둔다(silent 손실 방지). 예외 흡수 — 스냅 실패가 리스 lifecycle op 을 막지 않는다.
+    **새로** 기록 / 미주어짐(alloc/bind arrival) = 기존 `lease.git.base` **보존**. base 를 새로
+    기록할 때 commit 은:
+      - `base_commit` 명시(set-base — 그 브랜치 tip 또는 사용자 `@<commit>`·T-0352) = 그 값.
+      - `base_commit` None(create — fresh 슬롯 tip 이 파생 base·기존 거동) = 방금 스냅한 head.
+    스냅 불가(슬롯 부재 등 None)면 기존 git 을 clobber 하지 않고 그대로 둔다(silent 손실 방지).
+    예외 흡수 — 스냅 실패가 리스 lifecycle op 을 막지 않는다.
     """
     try:
         snap = _snapshot_slot_git(lease.slot, git_runner=git_runner)
         if snap is None:
             return  # 슬롯 부재/스냅 불가 → 기존 git 유지(clobber 안 함).
         if base_branch is not None:
-            base = {"branch": base_branch, "commit": snap.get("head")}
+            commit = base_commit if base_commit is not None else snap.get("head")
+            base = {"branch": base_branch, "commit": commit}
         elif isinstance(lease.git, dict):
             base = lease.git.get("base")
         else:
@@ -2162,19 +2167,23 @@ def _apply_git_snapshot(lease: "Lease", *, base_branch: "str | None" = None,
 
 
 def record_git_snapshot(slot: str, *, base_branch: "str | None" = None,
+                        base_commit: "str | None" = None,
                         git_runner: GitRunner | None = None) -> "Lease | None":
-    """슬롯 현재 git 상태를 `lease.git` 에 기록하는 독립 write 프리미티브 (핸드오프·T-0350).
+    """슬롯 현재 git 상태를 `lease.git` 에 기록하는 독립 write 프리미티브 (핸드오프·set-base·T-0350/T-0352).
 
     부트스트랩 bind/alloc·create 는 자기 lock 안에서 `_apply_git_snapshot` 을 인라인 호출하지만,
-    핸드오프("여기 두고 간다")처럼 lifecycle op 밖에서 스냅을 찍는 호출부(pm_handoff·T-0351)를
-    위한 standalone 진입점이다. `_lease_lock`+`_write_ledger`(atomic) — alloc/release 와 동일한
-    read-modify-write 직렬화. 장부에 슬롯이 없으면 None(무해). 갱신된 Lease 반환."""
+    핸드오프("여기 두고 간다")·set-base(기준점 명시 기록·T-0352)처럼 lifecycle op 밖에서 스냅을
+    찍는 호출부(pm_handoff·`set_base`)를 위한 standalone 진입점이다. `base_commit` 은 set-base 가
+    base.commit 을 그 브랜치 tip(또는 사용자 `@<commit>`)으로 명시할 때 쓴다(None=create 기존 거동·
+    slot HEAD). `_lease_lock`+`_write_ledger`(atomic) — alloc/release 와 동일한 read-modify-write
+    직렬화. 장부에 슬롯이 없으면 None(무해). 갱신된 Lease 반환."""
     with _lease_lock():
         leases = _read_ledger()
         target = next((l for l in leases if l.slot == slot), None)
         if target is None:
             return None
-        _apply_git_snapshot(target, base_branch=base_branch, git_runner=git_runner)
+        _apply_git_snapshot(target, base_branch=base_branch, base_commit=base_commit,
+                            git_runner=git_runner)
         _write_ledger(leases)
         return target
 
@@ -2313,6 +2322,199 @@ def compare_slot_git(slot: str, *, git_runner: GitRunner | None = None) -> GitCo
             recorded.get("submodules") or [], live.get("submodules") or []
         ),
     )
+
+
+# ── set-base / rebase 기준-gate 계약 / status (기준점 미기록 flow·T-0352·spike §F9/F10) ──
+# 기준점(base) 미기록 슬롯(v1.3.0 이전 전부)을 **자동 추론 없이** 다룬다(결정 ⑪): 엔진=상태 surface·
+# PM=확인·사용자=결정 (prefix 확인 ①ⓑ 와 동형·[[mechanize-dont-instruct-llm]]). `git merge-base HEAD
+# origin/main` 추측은 rebase 이력·다중 후보(main/develop)에서 **조용히 틀리고**, 그 위에서 drift 감지가
+# 돌면 무의미해진다 → 추론 금지·사용자 명시 질의. set_base=사용자 지정 base 기록(T-0350 write 소비)·
+# resolve_rebase_base=rebase 기준-gate **계약**(본체 wave-2d·⑩)·slot_git_status=조회(미기록 N-behind `-`).
+
+
+def _parse_base_ref(base_arg: str) -> "tuple[str, str | None]":
+    """`<branch>[@<commit>]` 인자를 (branch, commit|None) 로 분해한다 (set-base·spike §F9·T-0352).
+
+    첫 `@` 에서 가른다(`str.partition`) — `origin/main@df10dc6` → ("origin/main", "df10dc6"),
+    `origin/main` → ("origin/main", None). `@` 없으면 commit 미지정(그 브랜치 tip 이 base commit).
+    브랜치명에 `@` 가 든 드문 ref(`@{upstream}` 등)는 이 표면에서 지원하지 않는다(문서화·CLI 진입)."""
+    branch, sep, commit = base_arg.partition("@")
+    return branch, (commit if sep and commit else None)
+
+
+def _resolve_base_commit(slot: str, ref: str, *, git_runner: GitRunner | None = None) -> "str | None":
+    """`ref`(브랜치 또는 커밋)의 커밋 sha 를 슬롯 worktree 에서 해소한다 (set-base commit=branch tip·T-0352).
+
+    `git rev-parse --verify <ref>^{commit}` — 브랜치면 tip, 커밋이면 그 커밋. 해소 불가(rc≠0)·슬롯
+    부재·예외 → None(fail-soft·`_apply_git_snapshot` 이 slot HEAD 로 폴백·degraded 기록). 실경로
+    (runner 미주입)는 슬롯 worktree 바인딩 runner, 슬롯 부재면 None(`_slot_head` 동형 규율)."""
+    runner = git_runner
+    if runner is None:
+        p = slot_path(slot)
+        if not p.exists():
+            return None
+        runner = _real_git_runner(p)
+    try:
+        rc, out = runner(["rev-parse", "--verify", f"{ref}^{{commit}}"])
+    except Exception:  # noqa: BLE001 — fail-soft: 해소 불가는 None.
+        return None
+    if rc != 0:
+        return None
+    return (out or "").strip() or None
+
+
+class BaseRefUnresolvable(RuntimeError):
+    """set-base 의 base ref(브랜치 또는 `@<commit>`)를 슬롯 worktree 에서 해소할 수 없다 — FAIL-LOUD (T-0352·codex must-fix).
+
+    이 티켓의 중심 계약 = **조용히 틀린 base 차단**. 옛 코드는 해소 불가 ref 를 slot HEAD 로 폴백해
+    `base=origin/typo@<슬롯HEAD>` 로 조용히 오기록했고(오타·미fetch), drift 감지가 garbage baseline
+    위에서 돌았다. create 경로(fresh 슬롯 tip==브랜치 tip=정답)의 slot-HEAD 폴백과 달리 set-base 의
+    잘못된-ref 경로는 slot HEAD 가 **무관한 커밋**이라 silent 오기록이다. 그래서 set_base 는 ref 해소
+    실패 시 record 이전에 이 예외로 거부한다(사용자가 실재 브랜치/커밋을 주거나 fetch 하도록).
+
+    (`RuntimeError` 서브클래스 — `RebaseBaseRequired`/`BareRepoMissing` 동형·CLI 파사드가 rc 1 로 surface.)"""
+
+    def __init__(self, slot: str, ref: str):
+        self.slot = slot
+        self.ref = ref
+        super().__init__(
+            f"base ref {ref!r} 를 슬롯 {slot!r} 에서 해소할 수 없습니다 — 실재하는 브랜치/커밋을 "
+            f"지정하거나(오타 확인), 원격 ref 면 먼저 fetch 하세요. (조용히 틀린 base 로 기록하지 "
+            f"않습니다 — 자동 추론/폴백 금지·결정 ⑪·T-0352.)"
+        )
+
+
+def set_base(slot: str, base_ref: str, *, commit: "str | None" = None,
+             git_runner: GitRunner | None = None) -> "Lease | None":
+    """슬롯 기준점(base)을 **사용자 명시**로 기록한다 — `/pm-worktree set-base` 백본 (결정 ⑪·T-0352).
+
+    미기록 슬롯(v1.3.0 이전)의 base 를 **추론 없이** 사용자가 지정해 기록한다(그때부터 drift 감지
+    작동). `base_ref` = 기준 브랜치(예 `origin/main`), `commit` = 명시 `@<commit>`(생략 = 그 브랜치
+    tip). base.commit 해소:
+      - `commit` 명시 → 그 커밋(rev-parse verify).
+      - 생략 → `base_ref` tip(rev-parse verify).
+      - **해소 불가 → `BaseRefUnresolvable` FAIL-LOUD**(record 안 함·codex must-fix). slot HEAD 폴백
+        금지 — 무관한 커밋으로 조용히 오기록하면 drift 감지가 garbage baseline 위에서 돌아 이 티켓
+        계약("조용히 틀린 base 차단")을 스스로 위반한다. (create 경로의 slot-HEAD 폴백은
+        `_apply_git_snapshot`/`record_git_snapshot` 레벨에 그대로 — fresh 슬롯 tip==브랜치 tip=정답.)
+    T-0350 write 프리미티브(`record_git_snapshot(base_branch=,base_commit=)`)를 소비한다 — 자체 장부
+    write 를 재구현하지 않는다(base_commit=검증된 실 sha·None 폴백 경로를 안 탄다). **자동 추론 절대
+    금지**(엔진=surface·사용자=결정). 장부에 슬롯이 없으면 None. 갱신된 Lease 반환."""
+    resolved = _resolve_base_commit(
+        slot, commit if commit is not None else base_ref, git_runner=git_runner
+    )
+    if resolved is None:
+        # ref 해소 실패(오타·미fetch·슬롯 worktree 부재) → record 이전에 거부(silent 오기록 차단).
+        raise BaseRefUnresolvable(slot, commit if commit is not None else base_ref)
+    return record_git_snapshot(slot, base_branch=base_ref, base_commit=resolved,
+                               git_runner=git_runner)
+
+
+def _read_recorded_base(slot: str) -> "dict | None":
+    """장부에서 슬롯의 기록된 base(`lease.git.base`)를 읽는다 — 미기록이면 None (T-0352·rebase gate/status 소비).
+
+    `_lease_lock` 은 장부 read 동안만 짧게 잡는다(git 조회는 lock 밖·`compare_slot_git` 동형)."""
+    with _lease_lock():
+        leases = _read_ledger()
+    target = next((l for l in leases if l.slot == slot), None)
+    if target is None or not isinstance(target.git, dict):
+        return None
+    base = target.git.get("base")
+    return base if isinstance(base, dict) else None
+
+
+class RebaseBaseRequired(RuntimeError):
+    """rebase 대상 슬롯에 기준점(base)이 미기록이라 rebase 를 거부한다 (계약·결정 ⑪·T-0352·본체 wave-2d ⑩).
+
+    기준점 없이 rebase 하면 "어디로 rebase" 가 정의되지 않는다(추론 금지·spike §F9). `--onto <branch>`
+    를 명시하면 그것을 기준으로 진행하고 그 값을 base 로 기록한다(1회 해소·`resolve_rebase_base(onto=)`).
+    이 티켓은 그 **계약**만 정의하고 rebase 엔진 본체는 wave-2d(⑩)가 이 gate 를 소비해 구현한다.
+
+    (`RuntimeError` 서브클래스 — `BareRepoMissing`/`SlotBranchExists` 동형·파사드가 rc 1 로 surface.)"""
+
+    def __init__(self, slot: str):
+        self.slot = slot
+        super().__init__(
+            f"슬롯 {slot!r} 의 기준점(base)이 미기록이라 rebase 를 거부한다 — 기준 없이 rebase 불가"
+            f"(추론 금지·결정 ⑪). `--onto <branch>` 로 기준을 명시하면 진행 + 그 값을 base 로 기록"
+            f"(1회 해소), 또는 먼저 `set-base {slot} <branch>[@<commit>]` 로 기준점을 지정하라."
+        )
+
+
+def resolve_rebase_base(slot: str, *, onto: "str | None" = None,
+                        git_runner: GitRunner | None = None) -> str:
+    """rebase 기준-gate **계약** — 기준 없으면 거부·`--onto` 명시 시 진행+기록 (결정 ⑪·T-0352·본체 wave-2d).
+
+    rebase 엔진 본체(F10·⑩·wave-2d)가 "어느 base 로 rebase" 를 이 gate 로 해소한다 — 본체는 아직
+    미구현이고 이 티켓은 gate 계약만 정의·테스트로 못박는다:
+      - `onto` 명시 → 그것을 base 로 **기록**(`set_base`·1회 해소)하고 그 브랜치를 반환(진행).
+        **base 가 실제로 기록됐을 때만 반환** — `set_base` 가 ref 해소 실패로 `BaseRefUnresolvable`
+        을 던지면 자연 전파, 슬롯 장부 미등록으로 `None`(기록 실패)을 반환하면 `RebaseBaseRequired`
+        로 명시 실패한다(codex must-fix — silent onto 반환 금지·"진행+기록" 계약이 깨지지 않게).
+      - `onto` 없음 + 기록된 base 있음 → 기록된 `base.branch` 반환(그 최신으로 rebase).
+      - `onto` 없음 + 미기록 → `RebaseBaseRequired` raise(거부 — 기준 없이 rebase 불가·추론 금지).
+    반환값 = rebase 가 향할 base 브랜치명(본체가 소비). 자동 rebase 없음(사용자 명시·spike §F10)."""
+    if onto is not None:
+        lease = set_base(slot, onto, git_runner=git_runner)   # 1회 해소·해소 실패는 BaseRefUnresolvable 전파.
+        if lease is None:
+            # 슬롯 장부 미등록 → base 기록 실패. onto 를 조용히 반환하면 "진행+기록" 계약 위반.
+            raise RebaseBaseRequired(slot)
+        return onto
+    base = _read_recorded_base(slot)
+    if base and base.get("branch"):
+        return base["branch"]
+    raise RebaseBaseRequired(slot)
+
+
+def base_behind_count(slot: str, base_branch: str, *,
+                      git_runner: GitRunner | None = None) -> "int | None":
+    """슬롯 HEAD 가 `base_branch` 대비 몇 커밋 behind 인가 — `git rev-list --count HEAD..<base_branch>` (T-0352·spike §F10).
+
+    base 기록의 배당금: "base 대비 N commits behind" = rebase 필요 판단 근거(spike §F9). `base_branch`
+    (예 `origin/main`)의 live tip 대비 HEAD 가 뒤진 커밋 수. **fetch 안 함**(조회 — 현재 remote-tracking
+    ref 기준·era-warning `_slot_era_info` 동형). rev-list 실패(rc≠0)·미해소·슬롯 부재·파싱 실패 →
+    None(계산 불가 → 상위에서 `-` 표기)."""
+    runner = git_runner
+    if runner is None:
+        p = slot_path(slot)
+        if not p.exists():
+            return None
+        runner = _real_git_runner(p)
+    try:
+        rc, out = runner(["rev-list", "--count", f"HEAD..{base_branch}"])
+    except Exception:  # noqa: BLE001 — fail-soft: 계산 불가는 None.
+        return None
+    if rc != 0:
+        return None
+    try:
+        return int((out or "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def slot_git_status(slot: str, *, git_runner: GitRunner | None = None) -> dict:
+    """슬롯 git 구성 조회 — base·branch·head·**base 대비 N behind** (`/pm-worktree status` 백본·T-0352·spike §F10).
+
+    미기록(base 없음)이면 `behind=None`·`behind_reason`=이유(계산 불가 → CLI `-` 표기·자동 추론
+    금지·결정 ⑪). 기록 있으면 `base_behind_count` 로 N 을 센다. branch/head 는 live 조회
+    (`current_branch`/`_slot_head`·표시 축). submodule pin/drift·dirty·`--task` 일괄 조회는 rebase
+    본체와 함께 wave-2d(F10 조회 확장)로 이월 — 이 티켓은 미기록 N-behind `-` 계약이 스코프. 전부
+    fail-soft. 반환 dict: `slot`·`base`({branch,commit}|None)·`branch`·`head`·`behind`(int|None)·
+    `behind_reason`(str|None)."""
+    base = _read_recorded_base(slot)
+    runner = git_runner
+    if runner is None and slot_path(slot).exists():
+        runner = _real_git_runner(slot_path(slot))
+    branch = current_branch(slot, git_runner=runner) if runner is not None else None
+    head = _slot_head(runner) if runner is not None else None
+    if base and base.get("branch"):
+        behind = base_behind_count(slot, base["branch"], git_runner=runner)
+        reason = None if behind is not None else "base.branch 해소 실패(ref 부재/fetch 필요)"
+    else:
+        behind = None
+        reason = "기준점 미기록 — `set-base` 로 지정 필요(자동 추론 금지·결정 ⑪)"
+    return {"slot": slot, "base": base, "branch": branch, "head": head,
+            "behind": behind, "behind_reason": reason}
 
 
 # ── 내부 헬퍼 ────────────────────────────────────────────────────────────────
@@ -2836,17 +3038,89 @@ def _resolve_actor_slot_for_repo(repo: str) -> str:
     return _normalize_slot(session)  # session="<repo>_<N>" → 최종 형식 검증(단일 불변식).
 
 
+# ── set-base / status CLI 핸들러 (위치인자 <slot> — pool-management op·명시 슬롯·spike §F9/F10) ──
+# dev/sync 의 --repo/--slot identity 와 달리 대상 슬롯을 **위치인자**로 직접 받는다: set-base·status·
+# (wave-2d rebase)는 자기 세션 슬롯이 아닌 임의 슬롯도 관리 대상이라(pool 관리·결정 ⑪) 슬롯을 명시
+# 지정한다. status 는 위치인자 생략 시 cwd/세션 leased 로 해소(무인자=내 슬롯).
+
+
+def _cmd_set_base(args) -> int:
+    """`set-base <slot> <branch>[@<commit>]` CLI 핸들러 — 기준점 사용자 명시 기록 (결정 ⑪·T-0352).
+
+    자동 추론 없이 사용자가 지정한 base 를 `set_base`(→ T-0350 write)로 기록한다. 슬롯 형식 오류·
+    ref 해소 실패(오타·미fetch·슬롯 worktree 부재 → `BaseRefUnresolvable`)·장부 미등록은 rc 1 로 명시
+    실패(silent 오기록 방지·codex must-fix)."""
+    try:
+        slot = _normalize_slot(args.slot)
+    except SlotResolutionError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    base_ref, commit = _parse_base_ref(args.base)
+    if not base_ref:
+        print(f"[중단] set-base 기준 인자 {args.base!r} 가 비었다 — `<branch>[@<commit>]` 형식으로 주라.",
+              file=sys.stderr)
+        return 1
+    try:
+        lease = set_base(slot, base_ref, commit=commit)
+    except BaseRefUnresolvable as exc:
+        print(f"[중단] {exc}", file=sys.stderr)   # ref 해소 실패 → 조용히 오기록하지 않고 fail-loud.
+        return 1
+    if lease is None:
+        print(f"[중단] 슬롯 {slot} 이 리스 장부에 없다 — set-base 는 등록된 슬롯에만 기준점을 기록한다.",
+              file=sys.stderr)
+        return 1
+    recorded = lease.git.get("base") if isinstance(lease.git, dict) else None
+    if not recorded or recorded.get("branch") != base_ref:
+        # 방어적 — 여기 오면 ref 는 해소됐으나 스냅이 실패한 극히 드문 race(경로 삭제 등).
+        print(f"[중단] 슬롯 {slot} 기준점 기록 실패 — 슬롯 worktree 를 스냅할 수 없다(경로 부재/git 오류). "
+              "슬롯이 실재하는지 확인하라.", file=sys.stderr)
+        return 1
+    print(f"✓ 슬롯 {slot} 기준점 기록: base = {recorded.get('branch')}@{(recorded.get('commit') or '?')[:12]} "
+          "— 이제부터 부트스트랩 0단계 drift 감지가 이 기준으로 작동한다(결정 ⑪).")
+    return 0
+
+
+def _cmd_status(args) -> int:
+    """`status [<slot>]` CLI 핸들러 — 슬롯 git 구성 조회(base·branch·head·base 대비 N behind·T-0352).
+
+    미기록 슬롯이면 "base 대비 behind" 는 `-`(계산 불가·이유 표기) — 추론 금지(결정 ⑪). 위치인자
+    생략 시 cwd/세션 leased 슬롯으로 해소(무인자=내 슬롯·`_resolve_current_slot`)."""
+    try:
+        slot = _resolve_current_slot(args.slot)   # 위치인자 명시(정규화/검증) or None(cwd/세션 해소)
+    except SlotResolutionError as exc:
+        print(f"[중단] 대상 슬롯 해소 실패 — {exc}", file=sys.stderr)
+        return 1
+    st = slot_git_status(slot)
+    base = st["base"]
+    base_str = (f"{base.get('branch')}@{(base.get('commit') or '?')[:12]}"
+                if base and base.get("branch") else "(미기록)")
+    behind_str = str(st["behind"]) if st["behind"] is not None else "-"
+    print(f"# 슬롯 {slot} git 구성 (조회 — 손-git 불요·spike §F10)")
+    print(f"  base:   {base_str}")
+    print(f"  branch: {st['branch'] or '(detached/미상)'}")
+    print(f"  head:   {(st['head'] or '(미상)')[:12]}")
+    if st["behind"] is None:
+        print(f"  base 대비 behind: {behind_str}  ({st['behind_reason']})")
+    else:
+        print(f"  base 대비 behind: {behind_str} 커밋")
+    return 0
+
+
 def main(argv: "list[str] | None" = None) -> int:
-    """argparse 진입점 — pm-worktree 스킬이 래핑할 `dev`/`sync` 커맨드 (ADR-0049 파일럿 T-γ·T-0277·
-    ADR-0057 결정 5·T-0318).
+    """argparse 진입점 — pm-worktree 스킬이 래핑할 `dev`/`sync`/`set-base`/`status` 커맨드 (ADR-0049
+    파일럿 T-γ·T-0277·ADR-0057 결정 5·T-0318·T-0352).
 
     라이브러리 모듈에 얇은 CLI 를 얹는다(`if __name__ == "__main__"` 가드로 import 안전 — 다른
     도구의 `spec_from_file_location` import 를 안 깬다). 스킬이
     `python3 .project_manager/tools/worktree_pool.py dev <sub> <branch> [--repo <name> [--slot <N>]]` /
-    `... worktree_pool.py sync [--repo <name> [--slot <N>]]` 로 부른다. CLI 는 **실경로 wiring**
-    (git_runner 미주입)이고, 함수 레벨 DI seam(`dev`/`sync`/`_resync_submodules_selective` 의
-    git_runner)은 테스트가 쓴다. 사람이 읽는 stdout(무엇을 했는지)·skip/경고 사유는 backbone 이
-    stderr·실패는 rc 1 + 메시지.
+    `... sync [--repo <name> [--slot <N>]]` / `... set-base <slot> <branch>[@<commit>]` /
+    `... status [<slot>]` 로 부른다. CLI 는 **실경로 wiring**(git_runner 미주입)이고, 함수 레벨 DI
+    seam(`dev`/`sync`/`set_base`/`slot_git_status` 의 git_runner)은 테스트가 쓴다. 사람이 읽는
+    stdout(무엇을 했는지)·skip/경고 사유는 backbone 이 stderr·실패는 rc 1 + 메시지.
+
+    **두 인자 표면**: `dev`/`sync` 는 --repo/--slot identity(자기 세션 슬롯 대상)·`set-base`/`status`
+    는 위치인자 `<slot>`(임의 슬롯 pool 관리·결정 ⑪). set-base/status 는 identity 파싱 전에 분기
+    처리한다(그 args 표면 없음).
 
     정체성 인자는 공용 `identity_args`(`add_identity_args`·`parse_identity`)로 통일한다(ADR-0057·
     T-0322 채택) — 구 bare `--slot <slot-id>`(전체 슬롯 문자열)는 제거하고 분해형 `--repo <name>
@@ -2876,7 +3150,28 @@ def main(argv: "list[str] | None" = None) -> int:
         "sync", help="현재 슬롯 submodule 을 pin 에 selective 재동기(수동 트리거).")
     ia.add_identity_args(p_sync)
 
+    # set-base / status — 위치인자 <slot>(dev/sync 의 --repo/--slot identity 와 다른 표면·pool 관리).
+    p_set_base = subparsers.add_parser(
+        "set-base",
+        help="슬롯 기준점(base)을 사용자 명시로 기록(추론 금지·결정 ⑪) → 이후 drift 감지 작동.")
+    p_set_base.add_argument("slot", help="대상 슬롯(`work/<repo>_<N>` 또는 접두 생략 `<repo>_<N>`).")
+    p_set_base.add_argument(
+        "base", metavar="branch[@commit]",
+        help="기준 브랜치[@커밋] — 커밋 생략 시 그 브랜치 tip(예 origin/main·origin/main@df10dc6).")
+
+    p_status = subparsers.add_parser(
+        "status",
+        help="슬롯 git 구성 조회(base·branch·head·base 대비 N behind·미기록 시 `-`).")
+    p_status.add_argument("slot", nargs="?", default=None,
+                          help="대상 슬롯(생략 시 cwd/세션 leased 슬롯으로 해소).")
+
     args = parser.parse_args(argv)
+
+    # set-base / status — 위치인자 <slot> 경로(identity 파싱 미진입·그 args 표면 없음·spike §F9/F10).
+    if args.command == "set-base":
+        return _cmd_set_base(args)
+    if args.command == "status":
+        return _cmd_status(args)
 
     try:
         identity = ia.parse_identity(args)
