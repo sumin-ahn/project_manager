@@ -4964,3 +4964,182 @@ def test_cli_status_no_arg_resolves_session_slot(wp, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "work/A_1" in out and "미기록" in out    # 세션 슬롯 해소 + 미기록 base(`-`)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# top-level `tasks` 컬렉션 + task 바인딩 (⑥·㉑·T-0353)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_task_serialization_round_trip(wp):
+    """Task 가 to_dict/from_dict 왕복 보존(prefix·pid·started + 미지 키 extra·Lease 동형)."""
+    t = wp.Task(name="job1", prefix="PAY", pid=42, started="t",
+                extra={"future": {"k": 1}})
+    d = t.to_dict()
+    assert d["name"] == "job1" and d["prefix"] == "PAY" and d["pid"] == 42
+    assert d["future"] == {"k": 1}          # 미지 키 재방출
+    restored = wp.Task.from_dict(d)
+    assert restored == t                    # __eq__ = to_dict 동등
+
+
+def test_task_default_prefix_none(wp):
+    """prefix 미지정 = None(기본 없음·①ⓑ)."""
+    t = wp.Task(name="job1", pid=1, started="t")
+    assert t.prefix is None
+    assert t.to_dict()["prefix"] is None
+
+
+def test_write_ledger_preserves_sibling_tasks_collection(wp):
+    """`_write_ledger`(leases 만 쓰는 모든 생명주기 op)가 형제 top-level `tasks` 를 보존한다.
+
+    옛 `{"leases": [...]}` 통짜 쓰기는 tasks 를 조용히 드롭했다(silent drop) — top-level round-trip
+    (T-0353)이 이를 닫는다. alloc/release/reclaim 등 어떤 leases op 도 tasks 를 안 날려야 한다."""
+    ledger = {
+        "leases": [{"slot": "work/A_1", "repo": "A", "session": "me", "pid": 7,
+                    "started": "t", "state": "leased", "test_cmd": None}],
+        "tasks": [{"name": "job1", "prefix": "PAY", "pid": 111, "started": "t"}],
+        "future_top_level": {"x": 1},   # 미지 최상위 키도 보존돼야 한다.
+    }
+    wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    # leases-only 재기록(모든 리스 op 이 이 형태) — tasks·미지 키가 살아남아야.
+    with wp._lease_lock():
+        wp._write_ledger(wp._read_ledger())
+        rewritten = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
+    assert rewritten["tasks"][0]["name"] == "job1"
+    assert rewritten["tasks"][0]["prefix"] == "PAY"
+    assert rewritten["future_top_level"] == {"x": 1}
+    assert rewritten["leases"][0]["slot"] == "work/A_1"
+
+
+def test_write_tasks_preserves_sibling_leases_collection(wp):
+    """대칭 — `_write_tasks` 가 형제 `leases` 를 보존한다(둘은 같은 파일·같은 락·독립 컬렉션)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
+    with wp._lease_lock():
+        wp._write_tasks([wp.Task(name="job1", pid=1, started="t")])
+        data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
+    assert data["leases"][0]["slot"] == "work/A_1"   # 리스 생존
+    assert data["tasks"][0]["name"] == "job1"
+
+
+def test_bind_task_creates_new_record_with_zero_workspaces(wp):
+    """`--task` 신규 — 장부에 없던 task 를 생성(prefix=None·pid=내 pid·슬롯 0개 시작 가능·⑥)."""
+    record, action, reclaimed_from = wp.bind_task("newjob")
+    assert action == "created" and reclaimed_from is None
+    assert record.name == "newjob" and record.prefix is None
+    assert record.pid == os.getpid()
+    # 장부에 영속 + 서술 디렉토리 신설.
+    assert wp.find_task("newjob").name == "newjob"
+    assert wp.task_dir("newjob").exists()
+    # 슬롯 리스는 0개(task 는 슬롯과 직교·⑥).
+    assert wp.list_leases() == []
+
+
+def test_bind_task_resume_same_pid(wp):
+    """기존 task 를 내 pid 로 재개 = resumed(crash 전 나·재진입)."""
+    wp.bind_task("job1")                             # created (pid=os.getpid())
+    record, action, reclaimed_from = wp.bind_task("job1")  # 같은 프로세스 재호출
+    assert action == "resumed" and reclaimed_from is None
+    assert record.pid == os.getpid()
+
+
+def test_bind_task_reclaims_dead_pid_reports_prior_pid(wp):
+    """기록 pid 가 죽었으면(crash) 회수 후 진입 = reclaimed + reclaimed_from=이전 pid(loud notice·㉑ 정직화)."""
+    with wp._lease_lock():
+        wp._write_tasks([wp.Task(name="job1", prefix="PAY", pid=999999, started="t")])
+    record, action, reclaimed_from = wp.bind_task("job1")
+    assert action == "reclaimed"
+    assert reclaimed_from == 999999            # 회수한 이전 pid surface(notice 근거)
+    assert record.pid == os.getpid()           # 내 것으로 회수
+    assert record.prefix == "PAY"              # prefix 는 유지(바인딩이 안 만짐·T-0357 이 변경)
+
+
+def test_bind_task_rejects_alive_other_session(wp):
+    """살아있는 다른 세션이 점유하면 TaskActiveElsewhere(동시 세션 거부·㉑)."""
+    with wp._lease_lock():
+        # 살아있는 pid(현재 프로세스) 지만 "다른 세션" 을 모델 — 내 pid 와 다른 pid 로 주입 시
+        # 거부돼야 하므로, _pid_alive 를 참으로 고정하고 다른 pid 를 기록한다.
+        wp._write_tasks([wp.Task(name="job1", pid=os.getpid(), started="t")])
+    # 다른 세션(pid≠내 pid)이 살아있는 상황 — pid 를 강제로 다르게 잡아 거부 경로 진입.
+    import pytest as _pt
+    with _pt.raises(wp.TaskActiveElsewhere):
+        wp.bind_task("job1", pid=os.getpid() + 1)  # 내 pid 가 아닌 세션이 들어오려 함(기록 pid 살아있음)
+
+
+def test_bind_task_pid_liveness_is_load_bearing(wp, monkeypatch):
+    """생존 판정(`_pid_alive`)이 거부 로직의 load-bearing — 무력화하면 dead 도 alive 로 봐 거부.
+
+    reclaim_stale 의 sensitivity 핀(pid 판정 무력화 시 회수 안 됨)과 동형."""
+    with wp._lease_lock():
+        wp._write_tasks([wp.Task(name="job1", pid=888888, started="t")])   # dead pid
+    monkeypatch.setattr(wp, "_pid_alive", lambda pid: True)                  # 판정 무력화
+    import pytest as _pt
+    with _pt.raises(wp.TaskActiveElsewhere):
+        wp.bind_task("job1")     # dead 인데 alive 로 오판 → 거부(판정이 load-bearing 임을 입증)
+
+
+def test_bind_task_does_not_touch_slots_dir(wp):
+    """task 바인딩은 `.local/slots/` 를 건드리지 않는다(마이그레이션 0·DoD·⑥ 직교)."""
+    slots_dir = wp.LOCAL_DIR / "slots"
+    slots_dir.mkdir(parents=True, exist_ok=True)
+    (slots_dir / "sentinel").write_text("x", encoding="utf-8")
+    wp.bind_task("job1")
+    assert (slots_dir / "sentinel").read_text(encoding="utf-8") == "x"   # 무변경
+    # 신설된 건 tasks 디렉토리뿐.
+    assert wp.task_dir("job1").exists()
+
+
+def test_list_tasks_and_find_task(wp):
+    """list_tasks 전체·find_task 이름 조회(부재 None)."""
+    wp.bind_task("a")
+    wp.bind_task("b")
+    names = {t.name for t in wp.list_tasks()}
+    assert names == {"a", "b"}
+    assert wp.find_task("a").name == "a"
+    assert wp.find_task("nope") is None
+
+
+# ── task 명 검증 (엔진층·traversal/절대경로/빈 이름/예약패턴 거부·must-fix·T-0353) ──
+
+
+import pytest as _pytest_task
+
+
+@_pytest_task.mark.parametrize("bad", [
+    "../../evil", "..", ".hidden", ".", "a/b", "a\\b", "/tmp/x", "", "   ",
+    " leading", "trailing ",
+])
+def test_bind_task_rejects_unsafe_name_in_engine(wp, bad):
+    """엔진 진입점(bind_task)이 부적합 task 명을 fail-loud 거부 — mkdir·장부 write 미발생(must-fix).
+
+    `task_dir(name)` 무검증 조인이 traversal/절대경로/빈 이름을 작업트리 밖에 만들던 클래스
+    (reviewer 실측 `--task ../../evil` → git-tracked). 엔진층 검증이라 CLI 우회(T-0354~0357)도 못 뚫는다."""
+    with _pytest_task.raises(wp.InvalidTaskName):
+        wp.bind_task(bad)
+    # 부작용 0 — 장부에 tasks 미기록, tasks 디렉토리 미생성.
+    assert wp.list_tasks() == []
+    assert not (wp.LOCAL_DIR / "tasks").exists() or list((wp.LOCAL_DIR / "tasks").iterdir()) == []
+
+
+def test_bind_task_valid_name_passes(wp):
+    """정상 이름은 통과(오탐 0) — 대시·언더스코어·정수-접미 자유 포맷 허용."""
+    for ok in ("payments-refactor", "job_v2", "hotfix3", "task2"):
+        record, action, _ = wp.bind_task(ok)
+        assert record.name == ok and action == "created"
+
+
+def test_bind_task_rejects_reserved_pattern_when_repos_given(wp):
+    """예약명 이중화(should-fix) — 엔진 진입점이 registered_repos 로 `<repo>_<N>` 거부(primitive 자기완결)."""
+    with _pytest_task.raises(wp.InvalidTaskName):
+        wp.bind_task("project_manager_1", registered_repos=["project_manager"])
+    # 미등록 repo 형태는 자유 포맷 허용(실재 슬롯과만 충돌 방지).
+    record, _, _ = wp.bind_task("sikdan_2", registered_repos=["project_manager"])
+    assert record.name == "sikdan_2"
+
+
+def test_validate_task_name_is_load_bearing_before_writes(wp):
+    """검증이 write/mkdir *이전* — 거부 시 장부·디렉토리 흔적 0(부작용 순서 핀)."""
+    with _pytest_task.raises(wp.InvalidTaskName):
+        wp.bind_task("../escape")
+    assert not (wp.LOCAL_DIR / "tasks" / "..").exists()
+    assert wp.list_tasks() == []

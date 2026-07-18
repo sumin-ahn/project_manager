@@ -50,6 +50,25 @@ python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
 `--repo <repo> --slot <N>` 을 명시**한다(정체성=대화 맥락·도구엔 명시 전달). 슬롯은 미리
 `pm-config worktree add <repo>` 로 만들어 둔다. (솔로/무인자면 위 무-인자 dump 그대로.)
 
+**task 모드 (작업 단위 정체성·T-0353)** — 사용자가 `/pm-bootstrap --task <이름>` 처럼 task 를 주면
+그 인자를 그대로 엔진에 forward 한다. task 는 슬롯 축과 **직교**한 작업스트림 정체성이다(슬롯 0개로도
+시작 가능·auto-task 는 없다):
+
+```bash
+python3 .project_manager/tools/pm_bootstrap.py --task <이름>
+python3 .project_manager/tools/pm_bootstrap.py --task <이름> --repo <repo> --slot <N>
+```
+
+- 장부에 없던 이름 → **신규 task 생성**(작업공간 0개로 시작·F2 alloc 은 후속). 있으면 → **resume**
+  (prefix 상태·서술 pm_state 포인터 surface).
+- 출력의 *task identity surface* 는 정체성 + **prefix 상태(기본=없음)** 를 보인다 — PM 이 사용자와
+  확인한다(prefix 변경 명령은 후속 `task prefix`).
+- 같은 task 를 **다른 창에서 이미 열고 있으면**(살아있는 세션) 거부한다("다른 창에서 열려 있음") —
+  드문 2창 동시 열람을 막는다(비정상 종료면 자동 회수 후 재개 가능·회수 진입 시 "다른 창 작업중일 수
+  있음" 경고를 surface).
+- task 명은 **경로 문자(`/`·`\`·`..`·선행 `.`) 없는 단일 이름**이어야 하고, 자유 포맷이되
+  `<등록 repo>_<N>`(슬롯 세션 예약 패턴)은 거부된다.
+
 옵션:
 - `--json` — JSON 출력 (다른 command 의 wrapper 소비용).
 - `--with-pytest` — 회귀 측정 opt-in (default 는 skip). 직전 handoff entry 의 회귀

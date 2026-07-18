@@ -2337,6 +2337,7 @@ class PmBootstrap:
         branch: str | None = None,
         resume: str | None = None,
         slot: int | None = None,
+        task: str | None = None,
     ) -> int:
         """부트스트랩 정보를 수집해 출력한다.
 
@@ -2380,6 +2381,16 @@ class PmBootstrap:
         preflight_rc = self._phase0_preflight(repo, slot)
         if preflight_rc != 0:
             return preflight_rc
+
+        # ── F1 task 바인딩 (spike §3b F1·⑥·㉑·[[T-0353]]) — 0단계 통과 *후* 진입. `--task <이름>`
+        # 이면 신규/resume 바인딩하고 동시 세션(살아있는 다른 pid)은 거부한다. 거부는 dump 이전에
+        # 중단(㉑·부분 dump 금지 = 0단계와 동형 — dump 가 뜨면 PM 이 그것을 세션 진실로 믿는다).
+        # task 는 슬롯 축과 직교(⑥)라 아래 alloc/lean(--repo/--slot)·솔로 경로는 그대로 돈다.
+        task_info: dict | None = None
+        if task is not None:
+            task_info = self._bind_task_or_reject(task)
+            if task_info is None:
+                return 1  # 살아있는 다른 세션 점유(㉑) — 거부(부분 dump 금지).
 
         alloc_identity: dict | None = None
         if multipm_lean:
@@ -2442,6 +2453,8 @@ class PmBootstrap:
                 if data.get("worktree") is not None:
                     # 슬롯 시대차 (T-0341) — freshness fetch 뒤라 origin/<base> 최신 재사용.
                     data["worktree"]["slot_era"] = self._slot_era_info(repo, freshness)
+                if task_info is not None:
+                    data["task"] = task_info  # F1 task identity(신규/resume·prefix 상태·T-0353).
                 print(json.dumps(data, ensure_ascii=False, indent=2))
             else:
                 markdown = self._build_markdown(
@@ -2470,6 +2483,11 @@ class PmBootstrap:
                 if card:
                     print()
                     print(card)
+                # F1 task identity surface (T-0353) — 신규/resume·prefix 상태(기본 없음·①ⓑ)·
+                # 서술 pm_state 포인터. 슬롯 identity(있으면) 뒤에 얹는다(task=직교 축·⑥).
+                if task_info is not None:
+                    print()
+                    print(self._build_task_identity_markdown(task_info))
 
             # blocking lint — dump-then-warn(T-0195·abort-before-dump 제거). 위에서 이미
             # markdown/JSON 전체(board/git/log/pm_state)를 dump 했으니, 여기서 마지막으로
@@ -2799,6 +2817,99 @@ class PmBootstrap:
                 wp.release(slot, require_clean=False)
         except Exception:  # noqa: BLE001 — best-effort: cleanup 실패가 원 abort 를 가리지 않는다.
             pass
+
+    def _bind_task_or_reject(self, task: str) -> dict | None:
+        """`--task` 신규/resume 바인딩 (F1·⑥·㉑·T-0353). 동시 세션(살아있는 다른 pid)이면 None(거부).
+
+        `worktree_pool.bind_task` 로 신규/resume/reclaim 을 처리한다 — 살아있는 다른 세션 점유는
+        `TaskActiveElsewhere` → 여기서 stderr 안내 + None(caller 가 dump 이전 중단·㉑). 성공 시
+        surface 용 dict(name·prefix·action·서술 pm_state 경로/존재)를 반환한다. task 는 슬롯 축과
+        직교(⑥)라 이 바인딩은 `.local/slots/` 를 건드리지 않는다(마이그레이션 0·DoD).
+        """
+        wp = self._resolve_worktree_pool()
+        try:
+            # 등록 repo 집합을 넘겨 예약명(<repo>_<N>)을 엔진 진입점에서도 방어(primitive 자기완결·
+            # should-fix) — CLI 의 빠른 거부(main)와 이중화. 명 검증(traversal/절대경로/빈 이름·
+            # must-fix)은 registered_repos 무관하게 엔진에서 항상 돈다.
+            record, action, reclaimed_from = wp.bind_task(
+                task, registered_repos=_registered_repos(self._areas_file)
+            )
+        except wp.TaskActiveElsewhere as exc:
+            print(
+                f"[중단·F1] task {task!r} 이(가) 다른 살아있는 세션(pid {exc.pid})에서 열려 "
+                f"있습니다 — 같은 task 를 두 창에서 동시에 열 수 없습니다(㉑).\n"
+                f"  → 그 창을 쓰거나, 그 세션이 끝난 뒤 다시 여세요. (그 세션이 비정상 종료됐다면 "
+                f"pid 가 죽어 자동 회수되니 잠시 후 재시도.)",
+                file=sys.stderr,
+            )
+            return None
+        except wp.InvalidTaskName as exc:
+            print(
+                f"[중단·F1] task 명 {task!r} 이(가) 부적합합니다 — {exc.reason}.\n"
+                f"  → task 명은 경로 문자(`/`·`\\`·`..`·선행 `.`) 없는 단일 이름이어야 하고, "
+                f"슬롯 세션 예약 패턴(<등록 repo>_<N>)은 쓸 수 없습니다(⑥).",
+                file=sys.stderr,
+            )
+            return None
+        pm_state = wp.task_dir(task) / "pm_state.md"
+        return {
+            "name": record.name,
+            "prefix": record.prefix,          # None = prefix 없음(기본·①ⓑ)
+            "action": action,                 # created | resumed | reclaimed
+            "started": getattr(record, "started", None),
+            # 회수한 이전 pid(>0 이면 loud notice — 다른 창이 아직 작업 중일 수 있음·㉑ 정직화).
+            "reclaimed_from_pid": reclaimed_from,
+            "pm_state_path": str(pm_state),
+            "pm_state_exists": pm_state.exists(),
+        }
+
+    def _build_task_identity_markdown(self, task_info: dict) -> str:
+        """F1 task identity surface — 정체성·prefix 상태(기본 없음·①ⓑ)·서술 pm_state 포인터 (T-0353).
+
+        prefix 는 이 task 세션의 board prefix 상태를 surface 한다(기본 None → "(없음)") → PM 이
+        사용자와 확인. 변경 명령은 `task prefix`(T-0357). 작업공간(슬롯) 연결은 F2 alloc(T-0354)이
+        채우므로 여기선 task 정체성·prefix·서술 상태만 보인다(신규는 슬롯 0개로 시작 가능·⑥).
+        """
+        name = task_info["name"]
+        prefix = task_info.get("prefix")
+        prefix_display = f"`{prefix}`" if prefix else "(없음)"
+        action = task_info.get("action")
+        action_label = {
+            "created": "신규 task",
+            "resumed": "재개(resume)",
+            "reclaimed": "재개(회수·이전 세션 crash)",
+        }.get(action, action or "")
+        pm_state_path = task_info.get("pm_state_path")
+        pm_state_exists = task_info.get("pm_state_exists")
+
+        lines: list[str] = []
+        lines.append("### task identity surface (T-0353)")
+        lines.append(
+            f"- 당신은 **task `{name}`** PM · prefix={prefix_display} · 상태={action_label}."
+        )
+        # ㉑ 정직화 loud notice — dead-pid 회수(reclaimed)는 crash 재개가 다수지만, 기록 pid=부트스트랩
+        # 프로세스라 "다른 창이 아직 살아 작업 중"인 경우도 못 가른다(pid 는 이미 죽음). 감지=기계·
+        # 해소=사용자로 명시 경고한다(차단 아님·조상추적 비채택 근거는 bind_task docstring).
+        reclaimed_from = task_info.get("reclaimed_from_pid")
+        if action == "reclaimed" and reclaimed_from:
+            started = task_info.get("started") or "(미상)"
+            lines.append(
+                f"- ⚠️ **회수 진입** — 이 task 는 다른 프로세스(pid {reclaimed_from})가 열어 두고 "
+                f"종료(핸드오프) 기록 없이 회수됐습니다 (task 시작: {started}). **다른 창에서 아직 "
+                f"작업 중일 수 있습니다** — 그 창이 살아 있으면 한쪽을 닫으세요(중복 작업 방지)."
+            )
+        lines.append(
+            f"- **prefix 상태 = {prefix_display}** (기본=없음·①ⓑ) — 사용자와 확인. "
+            "변경은 `task prefix`(T-0357)."
+        )
+        # 작업공간(슬롯) 연결 = F2 alloc(T-0354) 스코프 — 이 티켓은 task 정체성 primitive 만.
+        lines.append(
+            "- 작업공간(슬롯): F2 alloc(T-0354)에서 연결 — 신규 task 는 슬롯 0개로 시작 가능(⑥)."
+        )
+        if pm_state_path:
+            suffix = "" if pm_state_exists else " (아직 없음 — 첫 핸드오프가 생성·T-0356)"
+            lines.append(f"- pm_state (이 task·서술): `{pm_state_path}`{suffix}")
+        return "\n".join(lines)
 
     def _alloc_and_identity(
         self, repo: str, branch: str | None, resume: str | None
@@ -3469,8 +3580,11 @@ def main(argv: list[str] | None = None) -> int:
     #   - 해소(`(repo,N)`) → 그 슬롯에 자동 bind(기존 `--slot` bind 경로 재사용·세션=`<repo>_<N>`).
     #   - None(solo·멀티-PM 미셋업) → 현행 솔로(무변경·자동바인딩 없음).
     #   - SlotResolutionError(멀티-PM 셋업 모호) → 침묵 폴백 대신 명시 에러(`--repo`/`--slot` 안내).
-    # 명시 `--repo`/`--slot` 경로는 이 분기를 타지 않아 무변경.
-    if args.repo is None and args.slot is None:
+    # 명시 `--repo`/`--slot` 경로는 이 분기를 타지 않아 무변경. **`--task` 단독은 자동바인딩 제외**
+    # (T-0353·⑥) — task 는 슬롯 0개로 시작 가능해야 하므로 슬롯 자동해소를 태우지 않는다(auto-task
+    # 없음의 대칭 — task 는 auto-slot 도 안 한다). `--task X --repo Y [--slot N]` 은 repo 가 명시라
+    # 어차피 이 분기 밖.
+    if args.repo is None and args.slot is None and getattr(args, "task", None) is None:
         try:
             auto = _resolve_session_slot()
         except SlotResolutionError as exc:
@@ -3493,6 +3607,14 @@ def main(argv: list[str] | None = None) -> int:
     # --slot(직접 바인딩·lean)은 --branch/--resume(alloc 경로)과 배타 — 둘은 다른 경로다.
     if args.slot is not None and (args.branch is not None or args.resume is not None):
         build_parser().error("--slot 은 --branch/--resume 과 함께 쓸 수 없다 (bind vs alloc 경로).")
+    # task 명 예약 패턴 거부 (⑥·T-0353) — `<등록 repo>_<N>` 슬롯 세션명과 시각적·기계적 충돌 방지.
+    # 등록 repo 집합(areas 유래)을 넘겨 순수 검증(`is_reserved_task_name`)을 IO 층 밖에서 한다.
+    if getattr(args, "task", None) is not None and ia is not None:
+        if ia.is_reserved_task_name(args.task, _registered_repos()):
+            build_parser().error(
+                f"task 명 {args.task!r} 은 슬롯 세션 예약 패턴(<등록 repo>_<N>)과 충돌한다 — "
+                "슬롯 정체성과 헷갈리지 않게 다른 이름을 쓰라 (⑥ 예약)."
+            )
     bootstrap = PmBootstrap()
     return bootstrap.run(
         output_json=args.output_json,
@@ -3501,6 +3623,7 @@ def main(argv: list[str] | None = None) -> int:
         branch=args.branch,
         resume=args.resume,
         slot=args.slot,
+        task=getattr(args, "task", None),
     )
 
 

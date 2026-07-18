@@ -53,8 +53,8 @@ SKILL_ONLY_ALLOWLIST = frozenset({"pm-regression"})
 # 갱신 절차는 모듈 docstring 참고 (양쪽 사본 정합 후 둘 다 갱신 — `python3 이_파일.py` 로 현
 # 트리 전체 블록을 붙여넣기용으로 출력).
 PAIR_PINS: dict[str, tuple[str, str]] = {
-    "pm-bootstrap": ("2b24e3a85e2a0f32d494d91c294d32b2580f2ccbf56a9addbc2a9f3228484296",
-                     "940bd14fe2962511bbeaa2ce54e853fa082e797487c9384ee4b78597a38b6d0a"),
+    "pm-bootstrap": ("fd642f09629f04262de493d3ad39890fcd4941364fd9a41ddde9d2c6bc9bdee2",
+                     "98d689127c14cdbef28f182f52f9e7fba2f0acf35f377be321098672537e16ea"),
     "pm-dev-delegate": ("5f5159065d577d98ee622dc9bb99214fded2e374ec8a1979113c3487f4ccda0f",
                         "3b5f83f6bd144e8ca98a5d3d063537dfb00a055266e1a3b400fac89b9e4cc535"),
     "pm-env": ("d3e1a66def06bd7216b248cf06a19c3047abdce36bc08611d0a7d9856baf9f97",

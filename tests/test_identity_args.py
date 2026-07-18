@@ -60,6 +60,16 @@ def test_add_identity_args_defaults_none_when_omitted(ia):
     ns = _parse(ia, [])
     assert ns.repo is None
     assert ns.slot is None
+    assert ns.task is None  # T-0353 additive 축 — 기본 None(기존 무인자 무영향).
+
+
+def test_add_identity_args_registers_task(ia):
+    # T-0353 — `--task` 축 additive. 슬롯 축과 직교(공존 가능).
+    ns = _parse(ia, ["--task", "payments-refactor"])
+    assert ns.task == "payments-refactor"
+    assert ns.repo is None and ns.slot is None
+    ns2 = _parse(ia, ["--task", "job1", "--repo", "A", "--slot", "2"])
+    assert ns2.task == "job1" and ns2.repo == "A" and ns2.slot == 2
 
 
 # ── parse_identity — discriminated 해소 규칙 전수 (ADR-0057 §3.1) ────────────
@@ -121,6 +131,47 @@ def test_parse_identity_returns_discriminated_dataclass_not_bare_string(ia):
     identity = ia.parse_identity(ns)
     assert not isinstance(identity, str)
     assert hasattr(identity, "kind")
+
+
+# ── task 축 귀속 + 예약 패턴 거부 (T-0353·⑥) ─────────────────────────────────
+
+
+def test_parse_identity_task_is_orthogonal_to_slot_axis(ia):
+    """`--task` 는 slot 축과 직교 — kind 는 repo/slot 로 그대로 결정되고 task 만 실린다(⑥)."""
+    # task 단독 → kind 는 여전히 none(슬롯 축 없음)·task 값만.
+    idn = ia.parse_identity(_parse(ia, ["--task", "myjob"]))
+    assert idn.kind == "none" and idn.task == "myjob"
+    assert idn.repo is None and idn.slot is None
+    # task + repo/slot → kind=slot(현행 규칙 불변)·task 공존.
+    ids = ia.parse_identity(_parse(ia, ["--task", "myjob", "--repo", "A", "--slot", "2"]))
+    assert ids.kind == "slot" and ids.session == "A_2" and ids.task == "myjob"
+
+
+def test_parse_identity_task_absent_is_none(ia):
+    """`--task` 미지정이면 Identity.task 는 None — 기존 caller 무영향(100% 불변)."""
+    assert ia.parse_identity(_parse(ia, ["--repo", "A", "--slot", "1"])).task is None
+    assert ia.parse_identity(_parse(ia, [])).task is None
+
+
+def test_is_reserved_task_name_rejects_registered_repo_slot_pattern(ia):
+    """`<등록 repo>_<N>` 패턴 task 명은 예약 거부(⑥·슬롯 세션명 충돌 방지)."""
+    registered = ["project_manager", "finance"]
+    # 등록 repo + _정수 → 예약(거부).
+    assert ia.is_reserved_task_name("project_manager_1", registered) is True
+    assert ia.is_reserved_task_name("finance_12", registered) is True
+    # repo 이름에 언더스코어가 있어도 마지막 _N 을 정확히 매칭(전체 앵커).
+    assert ia.is_reserved_task_name("my_repo_3", ["my_repo"]) is True
+
+
+def test_is_reserved_task_name_allows_free_format(ia):
+    """등록 repo 와 무관한 자유 포맷 task 명은 허용(⑥ — 실재 슬롯과만 충돌 방지)."""
+    registered = ["project_manager", "finance"]
+    for ok in ("payments-refactor", "project_manager", "sikdan_2", "hotfix", "job_v2_thing"):
+        # sikdan_2: sikdan 은 미등록 repo 라 _2 여도 슬롯 세션과 충돌 안 함 → 허용.
+        assert ia.is_reserved_task_name(ok, registered) is False, ok
+    # 등록 repo 지만 _N 형태가 아니면 허용(예: 이름만·trailing 비정수).
+    assert ia.is_reserved_task_name("finance_prod", registered) is False
+    assert ia.is_reserved_task_name("finance", registered) is False
 
 
 # ── leased_sessions — board/pm_config `_leased_sessions` 흡수 ────────────────

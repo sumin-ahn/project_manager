@@ -49,21 +49,27 @@ class Identity:
     `pm_relay` 의 동일 회피 관용구를 따른다.)
     """
 
-    def __init__(self, kind: str, repo: str | None, slot: int | None, session: str | None):
+    def __init__(self, kind: str, repo: str | None, slot: int | None, session: str | None,
+                 task: str | None = None):
         self.kind = kind
         self.repo = repo
         self.slot = slot
         self.session = session
+        # task 축(T-0353·spike §3b F0) — `--task` 명시 시 그 task 이름(없으면 None). slot 축과
+        # **직교**한다: task 는 `--repo --slot` 과 공존 가능(task 바인딩 + 슬롯 바인딩)하고, 단독
+        # (`--task` 만)으로도 존재한다. 그래서 `kind`(slot/repo/none·repo/slot 축) 는 task 유무로
+        # 바뀌지 않는다 — task 를 안 쓰는 caller 는 이 필드를 무시하면 현행과 동일(⑥·100% 불변).
+        self.task = task
 
     def __repr__(self) -> str:
         return (f"Identity(kind={self.kind!r}, repo={self.repo!r}, "
-                f"slot={self.slot!r}, session={self.session!r})")
+                f"slot={self.slot!r}, session={self.session!r}, task={self.task!r})")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Identity):
             return NotImplemented
-        return (self.kind, self.repo, self.slot, self.session) == (
-            other.kind, other.repo, other.slot, other.session)
+        return (self.kind, self.repo, self.slot, self.session, self.task) == (
+            other.kind, other.repo, other.slot, other.session, other.task)
 
 
 def add_identity_args(parser: argparse.ArgumentParser) -> None:
@@ -83,6 +89,13 @@ def add_identity_args(parser: argparse.ArgumentParser) -> None:
         "--slot", metavar="N", type=int, default=None,
         help="슬롯 번호 — --repo 필수(단독 사용 불가). 함께 주면 세션 <repo>_<N> 로 해소.",
     )
+    parser.add_argument(
+        "--task", metavar="이름", default=None,
+        help="task 이름 — 작업 단위 정체성 축(T-0353·spike §3b F0). 슬롯 축과 직교(단독/`--repo "
+             "--slot` 공존 가능). 포맷 자유(prefix 아님)·유일성=사람 안. `<등록 repo>_<N>` 예약 "
+             "패턴은 거부(⑥·슬롯 세션명 충돌 방지·`is_reserved_task_name`). **현재 소비=pm_bootstrap "
+             "뿐** — 전 도구 해소 체인 확산은 T-0355 예정(그때까지 타 도구는 수용하나 무시).",
+    )
 
 
 def parse_identity(args: argparse.Namespace) -> Identity:
@@ -97,15 +110,34 @@ def parse_identity(args: argparse.Namespace) -> Identity:
     """
     repo = getattr(args, "repo", None)
     slot = getattr(args, "slot", None)
+    # task 축(T-0353·spike §3b F0·1단 귀속) — repo/slot 축과 직교. 여기선 값만 실어주고(kind 는
+    # repo/slot 로 그대로 결정), `<등록 repo>_<N>` 예약 패턴 거부는 등록 repo 집합이 필요하므로
+    # 순수 층 밖에서(`is_reserved_task_name`·caller 가 등록 repo 를 넘김) 검증한다(이 함수=파일 IO 0).
+    task = getattr(args, "task", None)
     if slot is not None and repo is None:
         raise ValueError("--slot 은 --repo 필수 — --repo <name> --slot <N>")
     if slot is not None and slot < 1:
         raise ValueError("--slot 은 1 이상의 슬롯 번호여야 한다 (work/<repo>_<N>).")
     if repo is not None and slot is not None:
-        return Identity(kind="slot", repo=repo, slot=slot, session=f"{repo}_{slot}")
+        return Identity(kind="slot", repo=repo, slot=slot, session=f"{repo}_{slot}", task=task)
     if repo is not None:
-        return Identity(kind="repo", repo=repo, slot=None, session=None)
-    return Identity(kind="none", repo=None, slot=None, session=None)
+        return Identity(kind="repo", repo=repo, slot=None, session=None, task=task)
+    return Identity(kind="none", repo=None, slot=None, session=None, task=task)
+
+
+def is_reserved_task_name(name: str, registered_repos: "list[str] | set[str]") -> bool:
+    """task 명이 `<등록 repo>_<N>` 슬롯 세션 패턴과 충돌하면 True — ⑥ 예약(task 명 검증·T-0353).
+
+    순수 함수(파일 IO 0) — 등록 repo 집합을 caller 가 넘긴다(`parse_identity` 의 순수 층 규율
+    보존·등록 repo 는 areas/leases 유래라 IO 층 밖). 등록된 각 repo `R` 에 대해 `^R_<정수>$` 를
+    검사한다: task 이름이 그 형태면(예 `myproj_2`) 슬롯 세션 정체성(`<repo>_<N>`)과 시각적·기계적
+    으로 충돌하므로 거부한다(⑥ — task 는 자유 포맷이되 슬롯 세션 이름공간은 예약). **등록 repo
+    집합에 없는** repo 로 시작하는 `_N` 형태는 무관(자유 포맷 허용) — 실재 슬롯과만 충돌 방지한다.
+    """
+    for repo in registered_repos:
+        if re.match(rf"^{re.escape(repo)}_\d+$", name):
+            return True
+    return False
 
 
 # ── 리스 IO 층 (worktree-leases.json 원장 point-read·ADR-0013 격리 관성) ──────────

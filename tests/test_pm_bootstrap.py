@@ -683,3 +683,42 @@ def test_repo_with_branch_unchanged_reaches_run(bootstrap, monkeypatch):
     assert rc == 0
     assert captured.get("repo") == "A"
     assert captured.get("branch") == "wip-x"
+
+
+# ── F1 --task 배선 (main·⑥ 예약 거부·auto-slot 제외·T-0353) ─────────────────
+
+
+def test_task_reserved_name_rejected_at_cli(bootstrap, monkeypatch):
+    """`--task <등록 repo>_<N>` = 슬롯 세션 예약 패턴 → rc2 거부(⑥·run 미도달)."""
+    monkeypatch.setattr(bootstrap, "_registered_repos", lambda *a, **k: ["project_manager"])
+    monkeypatch.setattr(bootstrap.PmBootstrap, "run",
+                        lambda self, **kw: (_ for _ in ()).throw(
+                            AssertionError("run 도달 금지 — 예약 거부여야")))
+    with pytest.raises(SystemExit) as exc:
+        bootstrap.main(["--task", "project_manager_1"])
+    assert exc.value.code == 2
+
+
+def test_task_free_name_reaches_run(bootstrap, monkeypatch):
+    """자유 포맷 task 명은 통과해 run(task=…) 으로 전달된다(비공허)."""
+    monkeypatch.setattr(bootstrap, "_registered_repos", lambda *a, **k: ["project_manager"])
+    captured = {}
+    monkeypatch.setattr(bootstrap.PmBootstrap, "run",
+                        lambda self, **kw: captured.update(kw) or 0)
+    rc = bootstrap.main(["--task", "payments-refactor"])
+    assert rc == 0
+    assert captured.get("task") == "payments-refactor"
+
+
+def test_task_alone_does_not_trigger_slot_auto_resolve(bootstrap, monkeypatch):
+    """`--task` 단독은 슬롯 자동해소를 태우지 않는다(⑥·task=슬롯 0개 시작 가능·T-0353)."""
+    monkeypatch.setattr(bootstrap, "_registered_repos", lambda *a, **k: [])
+    spy, flag = _spy_never_called("--task 단독은 auto-slot 해소를 호출하면 안 된다(⑥)")
+    monkeypatch.setattr(bootstrap, "_resolve_session_slot", spy)
+    captured = {}
+    monkeypatch.setattr(bootstrap.PmBootstrap, "run",
+                        lambda self, **kw: captured.update(kw) or 0)
+    rc = bootstrap.main(["--task", "job1"])
+    assert rc == 0
+    assert flag["called"] is False
+    assert captured.get("task") == "job1" and captured.get("repo") is None

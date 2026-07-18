@@ -43,8 +43,9 @@ from typing import Callable
 # 자동 타깃한다.
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_DIR = REPO / ".project_manager" / ".local"               # per-clone scratch (git-ignored)
-LEASES_FILE = LOCAL_DIR / "worktree-leases.json"               # 리스 장부 (ADR-0013)
+LEASES_FILE = LOCAL_DIR / "worktree-leases.json"               # 리스 장부 (ADR-0013) — leases[] + tasks[](T-0353)
 LEASES_LOCK = LOCAL_DIR / "worktree-leases.lock"               # 장부 read-modify-write 직렬화 락
+TASKS_DIR = LOCAL_DIR / "tasks"                                # task 서술 공간(.local/tasks/<이름>/·pm_state·메타·⑮·T-0353)
 WORK_DIR = REPO / "work"                                        # worktree 풀 루트 (multi-PM 루트 gitignore)
 REPOS_DIR = REPO / ".repos"                                     # worktree 의 공유 .git 원 (bare·ADR-0011 §31)
 REPO_HOOKS_DIR = LOCAL_DIR / "repo-hooks"                       # per-repo pre-push 보호훅(프레임워크 소유·gitignore·T-0076)
@@ -156,6 +157,39 @@ class RemoveRefused(Exception):
         super().__init__(
             f"refusing to remove slot {slot!r} — {reason}{detail} (force=True 로 무시)"
         )
+
+
+class TaskActiveElsewhere(Exception):
+    """같은 task 를 살아있는 다른 세션이 열고 있다 — 동시 세션 거부(㉑·T-0353).
+
+    task 활성 pid 생존검사(부트스트랩 진입 시): 기록된 pid 가 **살아있고 내 pid 와 다르면** 이
+    예외로 거부한다("다른 창에서 열려 있음"). pid 가 죽었으면(crash) 조용히 회수 후 진입(정상
+    재개) — `reclaim_stale` 의 pid-생존 판정(`_pid_alive`)과 **동형 primitive**(신설 개념 0).
+    의도적 2창 동시 열람은 막힌다(드묾·사고 재개방보다 낫다·㉑ 트레이드오프 수용).
+    """
+
+    def __init__(self, name: str, pid: int):
+        self.name = name
+        self.pid = pid
+        super().__init__(
+            f"task {name!r} 이(가) 다른 살아있는 세션(pid {pid})에서 열려 있습니다"
+        )
+
+
+class InvalidTaskName(Exception):
+    """task 명이 안전한 단일 path 컴포넌트가 아니거나 예약 패턴이다 — fail-loud (T-0353·must-fix).
+
+    `task_dir(name)=TASKS_DIR/name` 이 무검증이면 `--task ../../evil`·`/tmp/x`·`a/b`·빈 문자열이
+    작업트리 밖/임의 경로에 디렉토리를 만들고 장부를 오염시킨다(reviewer 실측). 검증은 **엔진층
+    (bind_task 진입점)**에 둔다 — CLI 검증만으론 T-0354~0357 의 bind_task 직접 소비가 우회된다.
+    거부: 빈/공백·path separator(`/`·`\\`)·선행 `.`(숨김/상대 traversal)·단일 컴포넌트 아님·(등록
+    repo 넘기면) `<repo>_<N>` 슬롯 세션 예약(⑥). `reason` = 위반 사유(진단용).
+    """
+
+    def __init__(self, name: str, reason: str):
+        self.name = name
+        self.reason = reason
+        super().__init__(f"부적합 task 명 {name!r} — {reason}")
 
 
 class CheckoutFailed(Exception):
@@ -373,6 +407,66 @@ class Lease:
             state=d.get("state", "leased"),
             test_cmd=d.get("test_cmd"),
             git=d.get("git"),
+            extra=extra,
+        )
+
+
+# Task 직렬화 키 분류 (T-0353·Lease 동형 additive 스키마). canonical 을 각 필드로 소비하고 그
+# 외 미지 키는 `extra` 로 보존해 왕복 무손실(구·신 엔진 skew·향후 additive task 서브키 대비).
+_TASK_CANONICAL_KEYS = frozenset({"name", "prefix", "pid", "started"})
+
+
+class Task:
+    """리스 장부 top-level `tasks` 컬렉션 한 엔트리 — 작업 단위 정체성 (T-0353·spike §3b·ADR-0059).
+
+    task = 슬롯과 **직교**한 작업스트림 정체성(슬롯 0개로도 존재 가능·⑥). 슬롯-키 lease 행과 별개의
+    top-level 컬렉션에 산다(같은 파일·같은 `_lease_lock`/atomic replace 직렬화). 필드:
+      - `name`   — task 이름(사람이 정하는 자유 포맷·`<등록 repo>_<N>` 예약 제외·유일성=사람 안·⑥).
+      - `prefix` — 이 task 세션의 board prefix(기본 None=없음·변경은 `task prefix`·T-0357·①ⓑ).
+      - `pid`    — 현재 열려 있는 세션 pid(동시 세션 거부·㉑·`_pid_alive` 생존검사). 0=미점유.
+      - `started`— task 레코드 생성 시각(UTC ISO).
+
+    저장 위치 = 리스 장부 파일 top-level `tasks`(promote 확정·PM 73·결정론 ⓐ 출처 1개·⑨ 저장소
+    신설 불요·⑳ pm_update 활성 pid 검사 단일 파일 스캔). `.local/tasks/<name>/` 는 **서술
+    (pm_state.md)만** — 기계 상태는 장부(⑨ 경계). 미지 최상위 task 키는 `extra` 로 왕복 보존
+    (Lease 동형·additive 스키마 클래스 폐쇄). (dataclass 미사용 — Lease 와 같은 forward-ref 회피.)
+    """
+
+    def __init__(self, name: str, prefix: "str | None" = None,
+                 pid: int = 0, started: str = "", extra: "dict | None" = None):
+        self.name = name
+        self.prefix = prefix      # board prefix (None=없음·T-0357 이 변경·①ⓑ)
+        self.pid = pid            # 현재 열려있는 세션 pid (㉑ 동시세션 생존검사·0=미점유)
+        self.started = started    # 레코드 생성 시각 (UTC ISO)
+        self.extra = dict(extra) if extra else {}
+
+    def __repr__(self) -> str:
+        return (f"Task(name={self.name!r}, prefix={self.prefix!r}, "
+                f"pid={self.pid!r}, started={self.started!r})")
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Task):
+            return NotImplemented
+        return self.to_dict() == other.to_dict()
+
+    def to_dict(self) -> dict:
+        d = {
+            "name": self.name,
+            "prefix": self.prefix,
+            "pid": self.pid,
+            "started": self.started,
+        }
+        d.update(self.extra)      # 미지 키 재방출(왕복 무손실·canonical 을 덮을 위험 없음)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Task":
+        extra = {k: v for k, v in d.items() if k not in _TASK_CANONICAL_KEYS}
+        return cls(
+            name=d["name"],
+            prefix=d.get("prefix"),
+            pid=int(d.get("pid", 0)),
+            started=d.get("started", ""),
             extra=extra,
         )
 
@@ -599,28 +693,52 @@ def _lease_lock() -> Iterator[None]:
 # ── 장부 읽기/쓰기 (락 보유 전제) ────────────────────────────────────────────
 
 
-def _read_ledger() -> list[Lease]:
-    """리스 장부를 읽는다. 부재/손상 → 빈 리스트(fail-soft). **_lease_lock 보유 전제**."""
+def _read_ledger_raw() -> dict:
+    """장부 파일의 **최상위 dict 원본**을 읽는다. 부재/손상/비-dict → 빈 dict(fail-soft).
+    **_lease_lock 보유 전제**.
+
+    `leases`(슬롯 리스)·`tasks`(T-0353)·향후 additive 최상위 컬렉션이 한 파일에 공존하므로,
+    특정 컬렉션만 갱신할 때(`_write_ledger`/`_write_tasks`) 나머지 최상위 키를 무손실 보존하는
+    read-modify-write 의 read 측이다. Lease-내부 미지 키 보존(T-0350·`extra`)의 **최상위판** —
+    구 엔진(신규 최상위 키를 모르는 import 사본 lag)이 아무 op 해도 형제 컬렉션이 안 날아가게
+    한다([[robustness-value-connections-before-ship]] silent degrade 방지)."""
     if not LEASES_FILE.exists():
-        return []
+        return {}
     try:
         data = json.loads(LEASES_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return []
-    return [Lease.from_dict(d) for d in data.get("leases", [])]
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def _write_ledger(leases: list[Lease]) -> None:
-    """리스 장부를 atomic replace 로 쓴다. **_lease_lock 보유 전제**.
-
-    tmp 파일에 쓰고 os.replace 로 교체 — 부분쓰기로 장부가 깨지는 것을 막는다(원자 교체).
-    """
+def _write_ledger_raw(data: dict) -> None:
+    """최상위 dict 를 atomic replace 로 쓴다 (tmp→os.replace·부분쓰기 방지). **_lease_lock 보유 전제**."""
     LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({"leases": [l.to_dict() for l in leases]},
-                         ensure_ascii=False, indent=2)
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
     tmp = LEASES_FILE.with_suffix(".json.tmp")
     tmp.write_text(payload + "\n", encoding="utf-8")
     os.replace(str(tmp), str(LEASES_FILE))
+
+
+def _read_ledger() -> list[Lease]:
+    """리스 장부의 `leases` 컬렉션을 읽는다. 부재/손상 → 빈 리스트(fail-soft). **_lease_lock 보유 전제**."""
+    rows = _read_ledger_raw().get("leases", [])
+    if not isinstance(rows, list):
+        return []
+    return [Lease.from_dict(d) for d in rows]
+
+
+def _write_ledger(leases: list[Lease]) -> None:
+    """`leases` 컬렉션만 교체해 장부를 atomic replace 로 쓴다. **_lease_lock 보유 전제**.
+
+    **형제 최상위 키 보존**(T-0353·top-level round-trip): 현 파일 원본을 읽어(`_read_ledger_raw`)
+    `leases` 키만 새 값으로 덮고 나머지(`tasks`·미지 additive 컬렉션)는 그대로 재방출한다 — 옛
+    `{"leases": [...]}` 통짜 쓰기는 형제 컬렉션을 조용히 드롭했다(silent drop). read-modify-write
+    가 같은 `_lease_lock` 안에서 직렬화되므로 read↔write 사이 파일 변동은 없다.
+    """
+    data = _read_ledger_raw()
+    data["leases"] = [l.to_dict() for l in leases]
+    _write_ledger_raw(data)
 
 
 # ── git DI seam ────────────────────────────────────────────────────────────
@@ -1111,6 +1229,127 @@ def reclaim_stale(*, git_runner: GitRunner | None = None) -> list[str]:
         if changed:
             _write_ledger(leases)
     return reclaimed
+
+
+# ── task 컬렉션 (top-level `tasks`·슬롯과 직교·⑥·T-0353) ───────────────────────
+# 리스 장부 파일의 top-level `tasks` 배열에 산다(leases 와 형제·같은 `_lease_lock`/atomic).
+# 슬롯 0개로도 존재 가능(task 는 alloc 전에 먼저 생긴다). 동시 세션 거부(㉑)는 pid 생존검사로
+# reclaim_stale 과 동형 판정(`_pid_alive`)한다 — 신설 개념 0.
+
+
+def _validate_task_name(name: str, registered_repos: "list[str] | set[str] | None" = None) -> None:
+    """task 명을 안전한 단일 path 컴포넌트로 검증한다 — 위반 시 `InvalidTaskName`(fail-loud·must-fix).
+
+    `task_dir(name)` 이 무검증 조인이라 traversal/절대경로/빈 문자열이 작업트리 밖에 디렉토리를
+    만들고 장부를 오염시킨다(reviewer 실측 `--task ../../evil` → git-tracked `.project_manager/evil`).
+    **엔진 진입점(bind_task)**에서 검증해 CLI 우회(T-0354~0357 직접 소비)까지 닫는다. 거부 순서:
+    빈/공백 → path separator(`/`·`\\`) → 선행 `.`(숨김/`.`/`..` 상대) → 단일 컴포넌트 아님. mkdir·
+    장부 write **이전**에 raise 한다(부작용 0). `registered_repos` 주면 `<repo>_<N>` 예약(⑥)도 거부
+    (primitive 자기완결·CLI 의 빠른 거부와 이중화·should-fix). 예약 판정 정규식은 CLI 의
+    `identity_args.is_reserved_task_name` 과 동형(모듈 격리라 inline·ADR-0013)."""
+    if not name or not name.strip():
+        raise InvalidTaskName(name, "빈 이름(공백 포함)")
+    if name != name.strip():
+        raise InvalidTaskName(name, "선행/후행 공백")
+    if "/" in name or "\\" in name:
+        raise InvalidTaskName(name, "path separator(`/`·`\\`) 불가 — 단일 이름이어야")
+    if name.startswith("."):
+        raise InvalidTaskName(name, "선행 `.` 불가(숨김/`.`/`..` 상대경로 traversal 방지)")
+    if Path(name).name != name:
+        raise InvalidTaskName(name, "단일 path 컴포넌트가 아님")
+    if registered_repos:
+        for repo in registered_repos:
+            if re.match(rf"^{re.escape(repo)}_\d+$", name):
+                raise InvalidTaskName(name, f"슬롯 세션 예약 패턴(<{repo}>_<N>·⑥)")
+
+
+def task_dir(name: str) -> Path:
+    """task 서술 공간 `.local/tasks/<name>/` 경로 (pm_state.md·메타·⑮). 기계 상태는 장부·서술만 여기(⑨)."""
+    return TASKS_DIR / name
+
+
+def _read_tasks() -> list[Task]:
+    """장부의 `tasks` 컬렉션을 읽는다. 부재/손상 → 빈 리스트(fail-soft). **_lease_lock 보유 전제**."""
+    rows = _read_ledger_raw().get("tasks", [])
+    if not isinstance(rows, list):
+        return []
+    return [Task.from_dict(d) for d in rows if isinstance(d, dict) and d.get("name")]
+
+
+def _write_tasks(tasks: list[Task]) -> None:
+    """`tasks` 컬렉션만 교체해 장부를 atomic replace 로 쓴다 — 형제 `leases`·미지 키 보존(top-level
+    round-trip). **_lease_lock 보유 전제**."""
+    data = _read_ledger_raw()
+    data["tasks"] = [t.to_dict() for t in tasks]
+    _write_ledger_raw(data)
+
+
+def list_tasks() -> list[Task]:
+    """전 task 레코드 (조회 전용·부작용 0). pm_update 활성 pid 스캔 등 단일 파일 스캔 소비(⑳)."""
+    with _lease_lock():
+        return _read_tasks()
+
+
+def find_task(name: str) -> "Task | None":
+    """이름으로 task 레코드를 찾는다 — 없으면 None."""
+    with _lease_lock():
+        for t in _read_tasks():
+            if t.name == name:
+                return t
+    return None
+
+
+def bind_task(name: str, *, pid: "int | None" = None,
+              registered_repos: "list[str] | set[str] | None" = None) -> tuple[Task, str, "int | None"]:
+    """task 를 신규/resume 바인딩한다 — 명 검증(must-fix) + 동시 세션 거부(㉑) + 서술 디렉토리 신설 (T-0353).
+
+    반환 `(task, action, reclaimed_from_pid)` — action ∈ {"created", "resumed", "reclaimed"}:
+      - **created**  — 장부에 없던 task 를 신규 생성(prefix=None·기본 없음·pid=내 pid·슬롯 0개 시작).
+      - **resumed**  — 기존 task 를 내 pid(같은 세션·crash 전 나) 로 재개.
+      - **reclaimed**— 기존 task 의 pid 가 죽어(또는 미점유) 회수 후 진입. `reclaimed_from_pid` =
+        회수한 이전 pid(>0 이면 loud notice 대상·아래 ㉑ 경계 참조). created/resumed 는 None.
+
+    **명 검증(must-fix)**: `_validate_task_name` 을 mkdir·장부 write **이전**에 돌려 traversal/절대경로/
+    빈 이름/예약패턴(`registered_repos` 주면)을 fail-loud(`InvalidTaskName`) — 엔진층 배치라 T-0354~
+    0357 의 직접 소비도 우회 못 한다.
+
+    **㉑ 동시 세션 거부의 실효 경계 (정직화·must-fix②)**: 기록 pid 가 **살아있고 내 pid 와 다르면**
+    `TaskActiveElsewhere`(부트스트랩이 dump 이전에 거부). 그러나 **기록 pid = 부트스트랩 헬퍼
+    프로세스**라(dump 후 즉사) alive 거부의 실효 창은 **두 부트스트랩이 동시에 도는 순간뿐**이다 —
+    이후 두 번째 창이 같은 task 를 열면 pid 가 죽어 `reclaimed` 로 통과한다. 이는 슬롯 lease pid 와
+    **동일 semantics**(ADR-0013 이 heartbeat/타임아웃 회수를 조기회수 위험으로 기각·슬롯의 실 보호는
+    session 명[phase0]이지만 task 는 두 창이 같은 이름이라 pid 가 유일 판별자)다. 크로스플랫폼
+    프로세스 조상 추적은 과설계라 **비채택** — 대신 `reclaimed_from_pid>0` 이면 호출부(부트스트랩)가
+    **loud notice**("다른 창이 아직 작업 중일 수 있다")를 surface 한다(감지=기계·해소=사용자·0단계
+    미기록 질의와 동형). 차단 아님(crash 재개가 다수 케이스).
+
+    `_pid_alive` 는 `reclaim_stale` 과 같은 생존 primitive(동형·신설 0). prefix 는 여기서 안 만진다
+    — 생성 시 None·재개 시 기존 값 유지(변경 = `task prefix`·T-0357). `.local/tasks/<name>/` 는
+    mkdir(exist_ok) — 기계 상태는 장부·서술만 여기(⑨).
+    """
+    _validate_task_name(name, registered_repos)   # mkdir·장부 write 이전 fail-loud(부작용 0).
+    pid = os.getpid() if pid is None else pid
+    with _lease_lock():
+        tasks = _read_tasks()
+        existing = next((t for t in tasks if t.name == name), None)
+        if existing is None:
+            task = Task(name=name, prefix=None, pid=pid, started=_now_utc())
+            tasks.append(task)
+            _write_tasks(tasks)
+            task_dir(name).mkdir(parents=True, exist_ok=True)
+            return task, "created", None
+        # 동시 세션 거부 — 기록 pid 가 살아있고 내가 아니면(다른 창) 거부(㉑·위 경계 참조).
+        if existing.pid and existing.pid != pid and _pid_alive(existing.pid):
+            raise TaskActiveElsewhere(name, existing.pid)
+        # dead(crash/미점유 회수) 또는 same pid(내 재개) → 진입. pid 를 내 것으로 갱신.
+        if existing.pid == pid:
+            action, reclaimed_from = "resumed", None
+        else:
+            action, reclaimed_from = "reclaimed", existing.pid  # 회수한 이전 pid(>0=loud notice)
+        existing.pid = pid
+        _write_tasks(tasks)
+        task_dir(name).mkdir(parents=True, exist_ok=True)
+        return existing, action, reclaimed_from
 
 
 def alloc(

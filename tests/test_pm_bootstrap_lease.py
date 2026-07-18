@@ -104,6 +104,33 @@ class _FakeNeedsCreate(Exception):
         super().__init__(repo)
 
 
+class _FakeTaskActiveElsewhere(Exception):
+    """worktree_pool.TaskActiveElsewhere 대역 (T-0353·㉑ 동시 세션 거부)."""
+
+    def __init__(self, name: str, pid: int):
+        self.name = name
+        self.pid = pid
+        super().__init__(name)
+
+
+class _FakeInvalidTaskName(Exception):
+    """worktree_pool.InvalidTaskName 대역 (T-0353·must-fix task 명 검증)."""
+
+    def __init__(self, name: str, reason: str):
+        self.name = name
+        self.reason = reason
+        super().__init__(reason)
+
+
+class _FakeTaskRecord:
+    """bind_task 반환 Task 대역 — surface 가 읽는 name·prefix·started."""
+
+    def __init__(self, name: str, prefix: "str | None", started: str = "2026-07-18T00:00:00+00:00"):
+        self.name = name
+        self.prefix = prefix
+        self.started = started
+
+
 class FakeWorktreePool:
     """worktree_pool 인터페이스를 흉내내는 mock — 호출을 기록만 한다(실 부작용 0).
 
@@ -115,8 +142,24 @@ class FakeWorktreePool:
                  alloc_slot: str = "work/A_1", alloc_branch: str | None = "a5",
                  force_detached: bool = False,
                  present_slots: "tuple[str, ...] | None" = ("work/X_2",),
-                 compare_result=None):
+                 compare_result=None,
+                 task_dir_root: "Path | None" = None,
+                 task_prefix: "str | None" = None,
+                 task_action: str = "created",
+                 task_raises_pid: "int | None" = None,
+                 task_reclaimed_from: "int | None" = None,
+                 task_invalid_reason: "str | None" = None):
         self.NeedsCreate = _FakeNeedsCreate
+        # task 축(T-0353·F1) — bind_task/task_dir/TaskActiveElsewhere/InvalidTaskName 대역.
+        self.TaskActiveElsewhere = _FakeTaskActiveElsewhere
+        self.InvalidTaskName = _FakeInvalidTaskName
+        self._task_dir_root = task_dir_root       # None=미설정(테스트가 세팅)
+        self._task_prefix = task_prefix           # bind_task 반환 prefix(기본 None=없음)
+        self._task_action = task_action           # created|resumed|reclaimed
+        self._task_raises_pid = task_raises_pid   # 설정 시 bind_task 가 거부(㉑ alive)
+        self._task_reclaimed_from = task_reclaimed_from  # reclaimed 시 회수한 이전 pid(loud notice)
+        self._task_invalid_reason = task_invalid_reason  # 설정 시 InvalidTaskName(명 검증 거부)
+        self.bind_task_calls: list[dict] = []
         self._alloc_raises = alloc_raises_needs_create
         self._alloc_slot = alloc_slot
         self._alloc_branch = alloc_branch
@@ -191,6 +234,22 @@ class FakeWorktreePool:
 
     def slot_path(self, slot):
         return Path("/tmp/multipm") / slot
+
+    def task_dir(self, name):
+        root = self._task_dir_root or (Path("/tmp/multipm") / "tasks")
+        return root / name
+
+    def bind_task(self, name, *, pid=None, registered_repos=None):
+        # F1 task 바인딩 대역 — 명 검증 거부(InvalidTaskName)/alive 점유 거부(㉑), 아니면
+        # (record, action, reclaimed_from) 3-튜플 반환 + 디렉토리 신설.
+        self.bind_task_calls.append({"name": name, "registered_repos": registered_repos})
+        if self._task_invalid_reason is not None:
+            raise self.InvalidTaskName(name, self._task_invalid_reason)
+        if self._task_raises_pid is not None:
+            raise self.TaskActiveElsewhere(name, self._task_raises_pid)
+        self.task_dir(name).mkdir(parents=True, exist_ok=True)
+        return (_FakeTaskRecord(name, self._task_prefix),
+                self._task_action, self._task_reclaimed_from)
 
     def release(self, slot, *, require_clean=True, **_kw):
         self.release_calls.append({"slot": slot, "require_clean": require_clean})
@@ -1420,3 +1479,136 @@ def test_run_solo_leaves_bound_slot_none(bootstrap, tmp_path, capsys):
     rc = inst.run()  # 솔로
     assert rc == 0
     assert seen["bound_slot"] is None
+
+
+# ── F1 --task 부트스트랩 (신규/resume·prefix surface·㉑ 동시세션 거부·T-0353) ──
+
+
+def test_bootstrap_task_new_surfaces_identity(bootstrap, tmp_path, capsys):
+    """`--task` 신규 — task identity surface(정체성·prefix 없음·상태=신규) dump·rc0."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="created")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    rc = inst.run(task="payments-refactor")
+    assert rc == 0
+    assert [c["name"] for c in wp.bind_task_calls] == ["payments-refactor"]
+    # 예약명 이중화(should-fix) — 엔진 진입점에 등록 repo 집합이 전달된다.
+    assert wp.bind_task_calls[0]["registered_repos"] is not None
+    out = capsys.readouterr().out
+    assert "task identity surface" in out
+    assert "task `payments-refactor`" in out
+    assert "신규 task" in out
+
+
+def test_bootstrap_task_prefix_surface_default_none(bootstrap, tmp_path, capsys):
+    """prefix 상태 surface — 기본 없음(①ⓑ) 이면 '(없음)' 표시."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_prefix=None)
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst.run(task="job1")
+    out = capsys.readouterr().out
+    assert "prefix 상태 = (없음)" in out
+    assert "task prefix" in out   # 변경 명령 pointer(T-0357)
+
+
+def test_bootstrap_task_prefix_surface_shows_value(bootstrap, tmp_path, capsys):
+    """지정된 prefix 는 값으로 surface(기본 없음 대비)."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
+                          task_prefix="PAY", task_action="resumed")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst.run(task="job1")
+    out = capsys.readouterr().out
+    assert "prefix=`PAY`" in out
+    assert "재개(resume)" in out
+
+
+def test_bootstrap_task_resume_reads_pm_state_pointer(bootstrap, tmp_path, capsys):
+    """resume — 서술 pm_state 포인터 surface(읽기 경로·쓰기는 T-0356)."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="resumed")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst.run(task="job1")
+    out = capsys.readouterr().out
+    assert "pm_state (이 task" in out
+    assert "tasks/job1/pm_state.md" in out
+
+
+def test_bootstrap_task_active_elsewhere_rejects_before_dump(bootstrap, tmp_path, capsys):
+    """㉑ — 살아있는 다른 세션 점유면 rc1 로 거부하고 **부분 dump 도 금지**(⑧ 동형)."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_raises_pid=4242)
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    rc = inst.run(task="job1")
+    assert rc == 1
+    captured = capsys.readouterr()
+    # stderr 에 거부 안내(pid) — stdout(dump)엔 board/task surface 가 없다(부분 dump 금지).
+    assert "다른 살아있는 세션" in captured.err and "4242" in captured.err
+    assert "task identity surface" not in captured.out
+    assert "board" not in captured.out.lower() or captured.out.strip() == ""
+
+
+def test_bootstrap_task_with_slot_runs_both_surfaces(bootstrap, tmp_path, capsys):
+    """`--task X --repo Y --slot N` — 슬롯 lean identity + task identity 둘 다 surface(직교·⑥)."""
+    wp = FakeWorktreePool(alloc_slot="work/A_2", alloc_branch="a5",
+                          present_slots=("work/A_2",),
+                          task_dir_root=tmp_path / "tasks")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    rc = inst.run(task="job1", repo="A", slot=2)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "당신은 **A PM**" in out          # 슬롯 lean identity(기존·불변)
+    assert "task `job1`" in out             # task identity(추가·직교)
+    assert [c["name"] for c in wp.bind_task_calls] == ["job1"] and wp.bind_calls  # 둘 다 바인딩
+
+
+def test_bootstrap_task_json_includes_task(bootstrap, tmp_path, capsys):
+    """--json 출력에 task 키(name·prefix·action) 포함."""
+    import json as _json
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_prefix="PAY",
+                          task_action="resumed")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst.run(task="job1", output_json=True)
+    data = _json.loads(capsys.readouterr().out)
+    assert data["task"]["name"] == "job1"
+    assert data["task"]["prefix"] == "PAY"
+    assert data["task"]["action"] == "resumed"
+
+
+def test_bootstrap_no_task_omits_task_surface(bootstrap, tmp_path, capsys):
+    """`--task` 미지정(기존 --repo alloc)엔 task surface 가 안 뜬다(100% 불변·⑥)."""
+    wp = FakeWorktreePool(alloc_slot="work/A_2", alloc_branch="a5")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst.run(repo="A", branch="a5")
+    out = capsys.readouterr().out
+    assert "task identity surface" not in out
+    assert wp.bind_task_calls == []
+
+
+def test_bootstrap_task_reclaimed_emits_loud_notice(bootstrap, tmp_path, capsys):
+    """㉑ 정직화 — dead-pid 회수(reclaimed·이전 pid>0) 진입 시 loud notice(다른 창 작업중 가능)."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
+                          task_action="reclaimed", task_reclaimed_from=54321)
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst.run(task="job1")
+    out = capsys.readouterr().out
+    assert "회수 진입" in out
+    assert "54321" in out
+    assert "다른 창에서 아직" in out
+
+
+def test_bootstrap_task_created_has_no_reclaim_notice(bootstrap, tmp_path, capsys):
+    """created/resumed(회수 아님)엔 notice 가 안 뜬다(오탐 0·reclaimed_from None)."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
+                          task_action="created", task_reclaimed_from=None)
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst.run(task="job1")
+    out = capsys.readouterr().out
+    assert "회수 진입" not in out
+
+
+def test_bootstrap_task_invalid_name_rejected_rc1(bootstrap, tmp_path, capsys):
+    """엔진 명 검증 거부(InvalidTaskName) → rc1·부분 dump 금지(must-fix)."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
+                          task_invalid_reason="path separator(`/`·`\\`) 불가 — 단일 이름이어야")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    rc = inst.run(task="../../evil")
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "부적합" in captured.err
+    assert "task identity surface" not in captured.out
