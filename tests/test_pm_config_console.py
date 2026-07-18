@@ -95,6 +95,23 @@ class FakeWorktreePool:
         self.calls.append(("list_leases",))
         return self.leases
 
+    def list_tasks(self):
+        # task 축 대역(T-0361 cockpit·T-0353) — 콘솔 테스트는 leases=[] 상태에서 cmd_status 를
+        # 태우므로 명명 task 없음([])이면 충분. task 축 헤더만 렌더된다(회귀 0).
+        self.calls.append(("list_tasks",))
+        return []
+
+    def slots_for_task(self, name):
+        self.calls.append(("slots_for_task", name))
+        return [l for l in self.leases
+                if getattr(l, "state", None) == "leased" and l.session == name]
+
+    def slot_git_status(self, slot, *, git_runner=None):
+        # 슬롯 git 요약 대역(T-0361·§F8) — 최소 dict(base 미기록·branch/head 미조회).
+        self.calls.append(("slot_git_status", slot))
+        return {"slot": slot, "base": None, "branch": None, "head": None,
+                "behind": None, "behind_reason": "기준점 미기록 — `set-base` 로 지정"}
+
     def create_slot(self, repo, *, base=None, test_cmd=None, readonly=False):
         # base (T-0075) — cmd_worktree_add 가 areas 의 그 repo base 를 전달한다. 이 콘솔
         # 테스트는 빌드명령 경로만 검증하므로 base/readonly 는 받기만 하고 기록 튜플엔 안 넣는다.

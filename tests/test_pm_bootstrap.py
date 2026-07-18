@@ -348,7 +348,9 @@ def test_bootstrap_lean_surfaces_dev_ahead_vs_drift(bootstrap, wp, tmp_path, cap
     assert "⚠ drift(pin≠working)" in out
     # dev-ahead 는 경고가 아니다 — ⚠ 가 dev 토큰 앞에 붙지 않는다(구별 확증).
     assert "⚠ dev-ahead" not in out
-    assert pool.slot_status_calls == ["work/A_1"]
+    # slot_status 는 이 슬롯에 대해 소비된다 — 0단계 main-참조 게이트(origin/main upstream 판정·T-0360)
+    # 와 표시 surface 가 각각 1회씩 호출하므로 2회(둘 다 work/A_1·비공허: 표시가 slot_status 로 구동).
+    assert pool.slot_status_calls == ["work/A_1", "work/A_1"]
 
 
 def test_bootstrap_omits_submodule_line_when_none(bootstrap, wp, tmp_path, capsys):

@@ -3151,24 +3151,34 @@ class RebaseBaseRequired(RuntimeError):
         )
 
 
-def resolve_rebase_base(slot: str, *, onto: "str | None" = None,
+def resolve_rebase_base(slot: str, *, onto: "str | None" = None, record: bool = True,
                         git_runner: GitRunner | None = None) -> str:
-    """rebase 기준-gate **계약** — 기준 없으면 거부·`--onto` 명시 시 진행+기록 (결정 ⑪·T-0352·본체 wave-2d).
+    """rebase 기준-gate — 기준 없으면 거부·`--onto` 명시 시 진행(+`record` 시 기록) (결정 ⑪·T-0352·T-0359).
 
-    rebase 엔진 본체(F10·⑩·wave-2d)가 "어느 base 로 rebase" 를 이 gate 로 해소한다 — 본체는 아직
-    미구현이고 이 티켓은 gate 계약만 정의·테스트로 못박는다:
-      - `onto` 명시 → 그것을 base 로 **기록**(`set_base`·1회 해소)하고 그 브랜치를 반환(진행).
-        **base 가 실제로 기록됐을 때만 반환** — `set_base` 가 ref 해소 실패로 `BaseRefUnresolvable`
-        을 던지면 자연 전파, 슬롯 장부 미등록으로 `None`(기록 실패)을 반환하면 `RebaseBaseRequired`
-        로 명시 실패한다(codex must-fix — silent onto 반환 금지·"진행+기록" 계약이 깨지지 않게).
-      - `onto` 없음 + 기록된 base 있음 → 기록된 `base.branch` 반환(그 최신으로 rebase).
+    rebase 엔진 본체(F10·⑩)가 "어느 base 로 rebase" 를 이 gate 로 해소한다:
+      - `onto` 명시 + `record=True`(기본·standalone 계약) → 그것을 base 로 **즉시 기록**(`set_base`·
+        1회 해소)하고 반환. **base 가 실제로 기록됐을 때만 반환** — `set_base` 가 ref 해소 실패로
+        `BaseRefUnresolvable` 을 던지면 자연 전파, 슬롯 장부 미등록으로 `None`(기록 실패)을 반환하면
+        `RebaseBaseRequired` 로 명시 실패한다(codex must-fix — silent onto 반환 금지).
+      - `onto` 명시 + `record=False`(**rebase 본체 경로·T-0359 must-fix**) → onto 를 **검증만**한다
+        (`_resolve_base_commit`·해소 불가면 `BaseRefUnresolvable`). set_base 부작용(즉시 기록) **없음**
+        — 장부는 건드리지 않고 브랜치명만 반환한다. 호출부(`_rebase_one`)가 **rebase 성공 시에만**
+        base+head+recorded_at 을 원자 기록한다. 이유: onto 를 rebase *이전에* 기록하면 이후 충돌/사용자
+        abort 시 장부는 새 base 를 주장하나 tree 는 옛 base 라 "충돌=장부 미갱신" 계약을 위반하고
+        status N-behind 를 조용히 오표시한다(no-onto 충돌 경로는 불변인데 onto 만 비대칭이던 갭).
+      - `onto` 없음 + 기록된 base 있음 → 기록된 `base.branch` 반환(그 최신으로 rebase·부작용 없음).
       - `onto` 없음 + 미기록 → `RebaseBaseRequired` raise(거부 — 기준 없이 rebase 불가·추론 금지).
     반환값 = rebase 가 향할 base 브랜치명(본체가 소비). 자동 rebase 없음(사용자 명시·spike §F10).
 
     **readonly 거부(⑬·T-0358)**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
-    rebase 는 슬롯 git 을 바꾸는 mutation 이라 read-only 기준면엔 불가(진입 가드)."""
+    rebase 는 슬롯 git 을 바꾸는 mutation 이라 read-only 기준면엔 불가(진입 가드·record 무관 선행)."""
     _reject_readonly_mutation(slot, "rebase", git_runner=git_runner)
     if onto is not None:
+        if not record:
+            # rebase 본체 경로 — 검증만(해소 불가=BaseRefUnresolvable·T-0352 기존 계약 유지)·기록 없음.
+            if _resolve_base_commit(slot, onto, git_runner=git_runner) is None:
+                raise BaseRefUnresolvable(slot, onto)
+            return onto
         lease = set_base(slot, onto, git_runner=git_runner)   # 1회 해소·해소 실패는 BaseRefUnresolvable 전파.
         if lease is None:
             # 슬롯 장부 미등록 → base 기록 실패. onto 를 조용히 반환하면 "진행+기록" 계약 위반.
@@ -3207,14 +3217,15 @@ def base_behind_count(slot: str, base_branch: str, *,
 
 
 def slot_git_status(slot: str, *, git_runner: GitRunner | None = None) -> dict:
-    """슬롯 git 구성 조회 — base·branch·head·**base 대비 N behind** (`/pm-worktree status` 백본·T-0352·spike §F10).
+    """슬롯 git 구성 조회 — base·branch·head·**base 대비 N behind**·submodule pin/drift·dirty (`/pm-worktree status` 백본·T-0352/T-0359·spike §F10).
 
     미기록(base 없음)이면 `behind=None`·`behind_reason`=이유(계산 불가 → CLI `-` 표기·자동 추론
     금지·결정 ⑪). 기록 있으면 `base_behind_count` 로 N 을 센다. branch/head 는 live 조회
-    (`current_branch`/`_slot_head`·표시 축). submodule pin/drift·dirty·`--task` 일괄 조회는 rebase
-    본체와 함께 wave-2d(F10 조회 확장)로 이월 — 이 티켓은 미기록 N-behind `-` 계약이 스코프. 전부
-    fail-soft. 반환 dict: `slot`·`base`({branch,commit}|None)·`branch`·`head`·`behind`(int|None)·
-    `behind_reason`(str|None)."""
+    (`current_branch`/`_slot_head`·표시 축). **submodule pin/drift(`_submodule_statuses`·T-0276
+    재사용·역할별 `SubmoduleStatus`)·dirty(`_is_dirty`)는 wave-2d(⑩·T-0359)에서 조회에 합류**한다
+    (rebase 선-검사가 보는 것과 같은 primitive). 전부 fail-soft. 반환 dict: `slot`·`base`
+    ({branch,commit}|None)·`branch`·`head`·`behind`(int|None)·`behind_reason`(str|None)·
+    `submodules`(list[SubmoduleStatus]·runner 미해소면 [])·`dirty`(bool·runner 미해소면 False)."""
     base = _read_recorded_base(slot)
     runner = git_runner
     if runner is None and slot_path(slot).exists():
@@ -3227,8 +3238,210 @@ def slot_git_status(slot: str, *, git_runner: GitRunner | None = None) -> dict:
     else:
         behind = None
         reason = "기준점 미기록 — `set-base` 로 지정 필요(자동 추론 금지·결정 ⑪)"
+    # submodule pin/drift·dirty — runner 해소 시에만(슬롯 부재/미주입이면 조회 불가 → 빈/False).
+    submodules = _submodule_statuses(runner) if runner is not None else []
+    dirty = _is_dirty(slot_path(slot), git_runner=runner) if runner is not None else False
     return {"slot": slot, "base": base, "branch": branch, "head": head,
-            "behind": behind, "behind_reason": reason}
+            "behind": behind, "behind_reason": reason,
+            "submodules": submodules, "dirty": dirty}
+
+
+def status(*, task: "str | None" = None, slot: "str | None" = None,
+           git_runner: GitRunner | None = None) -> "list[dict]":
+    """슬롯 git 구성 일괄 조회 — 단일 슬롯 / `--task` 전 슬롯 / 무인자=내 task 전 슬롯 (§F10·⑩·T-0359).
+
+    대상 슬롯 해소(택일):
+      - `slot` 명시 → 그 슬롯 하나(`_normalize_slot` 형식 검증·traversal 차단).
+      - `task` 명시 → `slots_for_task(task)`(session==task 이고 leased 인 슬롯·T-0354).
+      - 둘 다 생략 → 내 task 전 슬롯(`slots_for_task(_default_session())` — env/local.conf 유입
+        세션 정체성이 보유한 leased 슬롯·spike §F10 "무인자=내 task 전체").
+    각 슬롯을 `slot_git_status`(base·branch·head·N behind·submodule pin/drift·dirty)로 조회하고
+    `role`(work/readonly·⑬·T-0358)을 얹어 슬롯별 dict 리스트로 돌려준다. 손-git 불요·조회 전용
+    (부작용 0). 미기록 base 는 `behind=None`(CLI `-`·자동 추론 금지·결정 ⑪).
+
+    `git_runner` 주입 시 그 runner(테스트 hermetic — 모든 슬롯 공용)·미주입이면 슬롯별 실 runner
+    (`slot_git_status` 가 슬롯 worktree 바인딩)."""
+    if slot is not None:
+        slots = [_normalize_slot(slot)]
+    elif task is not None:
+        slots = [l.slot for l in slots_for_task(task)]
+    else:
+        slots = [l.slot for l in slots_for_task(_default_session())]
+    rows: list[dict] = []
+    for s in slots:
+        row = slot_git_status(s, git_runner=git_runner)
+        row["role"] = _slot_role(s)
+        rows.append(row)
+    return rows
+
+
+# ── rebase (단일/일괄·선-검사·충돌 그대로+loud·장부 원자 갱신·자동 rebase 없음·⑩·T-0359·§F10) ──
+# 슬롯 base 를 사용자 명시로만 옮긴다(자동 rebase 없음·결정 ⑤ 정신). 슬롯마다 독립 처리:
+# 선-검사 3종(소유/dirty/rebase 진행중) → 실패면 스킵+loud, 통과면 대상 base 최신 fetch → git rebase.
+# 충돌은 **그 상태 그대로 두고 fail-loud**(엔진 임의 abort 금지 — 해소는 사용자 git rebase --continue|
+# --abort·다음 부트스트랩 0단계 T-0351 가 "rebase 진행 중" 으로 감지·안내). 장부 갱신은 **성공 시에만**
+# 원자적(base.commit=새 base tip·head=새 tip·recorded_at·record_git_snapshot 소비). 기준점 미기록 +
+# --onto 없음 = 거부(추론 금지·resolve_rebase_base gate·결정 ⑪).
+
+REBASE_REBASED = "rebased"        # 성공 — 장부 원자 갱신 완료.
+REBASE_SKIPPED = "skipped"        # 선-검사/거부 스킵(loud) — reason 참조.
+REBASE_CONFLICT = "conflict"      # rebase 가 rc≠0(충돌 등) — 그 상태 그대로·장부 미갱신·loud.
+
+
+class RebaseSlotResult:
+    """rebase 한 슬롯 하나의 결과 — outcome + 진단 (일괄 요약 원료·T-0359·§F10).
+
+    - `outcome` ∈ {`rebased`(성공·장부 원자 갱신), `skipped`(선-검사/거부 스킵+loud),
+      `conflict`(rebase rc≠0·그 상태 그대로 + fail-loud·장부 미갱신)}.
+    - `reason` — skipped/conflict 사유(진단·CLI loud surface). skipped: `readonly`/`not-owner`/
+      `dirty`/`in-progress`/`no-base`/`unresolvable-onto`/`unregistered`. conflict: git 출력 요약.
+    - `base` — rebase 가 향한(또는 향할) base 브랜치명(해소된 경우·None=해소 전 스킵).
+    - `new_head` — 성공 시 rebase 후 슬롯 HEAD sha(진단·None=미성공).
+
+    (dataclass 미사용 — Lease/RemoveResult 등과 동일 이유: `spec_from_file_location` 로드 시
+    dataclass 의 forward-ref 해소가 깨진다.)"""
+
+    def __init__(self, slot: str, outcome: str, *, reason: "str | None" = None,
+                 base: "str | None" = None, new_head: "str | None" = None):
+        self.slot = slot
+        self.outcome = outcome
+        self.reason = reason
+        self.base = base
+        self.new_head = new_head
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == REBASE_REBASED
+
+    def __repr__(self) -> str:
+        return (f"RebaseSlotResult(slot={self.slot!r}, outcome={self.outcome!r}, "
+                f"reason={self.reason!r}, base={self.base!r}, new_head={self.new_head!r})")
+
+
+def _rebase_in_progress(slot: str, *, git_runner: GitRunner | None = None) -> bool:
+    """슬롯 worktree 에 rebase 가 진행 중인가 — `.git/rebase-merge` | `rebase-apply` 존재 (T-0359·spike §F10).
+
+    worktree 슬롯의 per-worktree git 디렉토리 위치를 `git rev-parse --git-path <name>` 로 해소하고
+    (worktree 는 `.git` 이 gitdir 를 가리키는 파일이라 직접 경로 조합 불가) 그 경로 실재를 본다. 둘
+    중 하나라도 있으면 rebase 진행 중(선-검사 스킵 사유). git 조회 실패·예외 → False(fail-soft·
+    진행중 미검출 시 rebase 시도가 git 자체 'already a rebase in progress' 로 rc≠0 → conflict 로
+    수렴·이중 안전). `git_runner` 미주입이면 슬롯 worktree 바인딩 실 runner(부재면 False)."""
+    runner = git_runner
+    if runner is None:
+        p = slot_path(slot)
+        if not p.exists():
+            return False
+        runner = _real_git_runner(p)
+    for name in ("rebase-merge", "rebase-apply"):
+        try:
+            rc, out = runner(["rev-parse", "--git-path", name])
+        except Exception:  # noqa: BLE001 — fail-soft: 판정 불가는 진행중 아님(rebase 가 이중 안전).
+            continue
+        if rc != 0:
+            continue
+        raw = (out or "").strip()
+        if not raw:
+            continue
+        path = Path(raw)
+        if not path.is_absolute():
+            path = slot_path(slot) / raw   # rev-parse --git-path 는 cwd(슬롯) 상대일 수 있다.
+        if path.exists():
+            return True
+    return False
+
+
+def _rebase_one(slot: str, *, onto: "str | None", owner: str,
+                git_runner: GitRunner | None = None) -> RebaseSlotResult:
+    """슬롯 하나 rebase — 선-검사 → fetch → git rebase → 성공 시 장부 원자 갱신 (T-0359·§F10).
+
+    선-검사(스킵+loud·순서): readonly(공유 기준면·mutation 불가·⑬) → 소유(내 세션 leased 아님) →
+    dirty(clean 전제) → rebase 진행 중. 통과하면 `resolve_rebase_base` gate(미기록+onto 없음=거부·
+    onto=진행+기록·결정 ⑪) 로 대상 base 브랜치를 해소하고, `origin/<base>` 최신을 fetch 후 `git
+    rebase` 한다. rc≠0(충돌 등) = **그 상태 그대로 두고 conflict**(엔진 임의 abort 금지). 성공 =
+    `record_git_snapshot(base_branch, base_commit=새 base tip)` 로 base.commit·head·recorded_at 을
+    원자 갱신(§F10). **raise 하지 않는다** — 모든 조건을 RebaseSlotResult 로 돌려 일괄 독립성을
+    보장한다(한 슬롯의 예외가 나머지를 막지 않음)."""
+    def skip(reason: str, base: "str | None" = None) -> RebaseSlotResult:
+        return RebaseSlotResult(slot, REBASE_SKIPPED, reason=reason, base=base)
+
+    # ── 선-검사 (스킵 + loud·독립) ─────────────────────────────────────────
+    if _slot_role(slot) == _LEASE_ROLE_READONLY:
+        return skip("readonly")   # 공유 기준면 — mutation 불가(⑬·T-0358·refresh 로만 갱신).
+    with _lease_lock():
+        lease = next((l for l in _read_ledger() if l.slot == slot), None)
+    if lease is None or lease.state != "leased" or lease.session != owner:
+        holder = lease.session if (lease is not None and lease.state == "leased") else ""
+        return skip("not-owner" if not holder else f"not-owner:{holder}")
+    runner = git_runner
+    if runner is None:
+        p = slot_path(slot)
+        if not p.exists():
+            return skip("no-worktree")
+        runner = _real_git_runner(p)
+    if _is_dirty(slot_path(slot), git_runner=runner):
+        return skip("dirty")      # rebase 는 clean 전제(미커밋 변경 유실 방지).
+    if _rebase_in_progress(slot, git_runner=runner):
+        return skip("in-progress")  # 이미 진행 중 — 사용자 해소(continue/abort) 먼저.
+
+    # ── base 해소 gate (미기록+onto 없음=거부·onto=검증만·**기록은 성공 시에만**·⑪·T-0352·T-0359 must-fix) ──
+    # record=False: onto 를 rebase *이전에* 기록하지 않는다(해소만 검증) — 이후 충돌/abort 시 장부가
+    # 새 base 를 거짓 주장하는 것을 막는다(no-onto 충돌 경로와 대칭·장부는 성공 시에만 원자 갱신).
+    try:
+        base_branch = resolve_rebase_base(slot, onto=onto, record=False, git_runner=runner)
+    except RebaseBaseRequired:
+        return skip("no-base")            # 기준점 미기록 + --onto 없음 → 거부(추론 금지).
+    except BaseRefUnresolvable:
+        return skip("unresolvable-onto")  # --onto ref 해소 실패(오타·미fetch).
+    except ReadonlySlotMutation:
+        return skip("readonly")           # 방어적(위 role 가드와 이중) — mutation 거부.
+
+    # ── 대상 base 최신 fetch → git rebase ──────────────────────────────────
+    target = base_branch
+    rc, out = runner(["fetch", "origin"])
+    if rc != 0:
+        print(
+            f"[경고] 슬롯 {slot} `git fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
+            f"  로컬 `{base_branch}`(동결)로 rebase 를 시도한다 — 네트워크 복구 후 재시도 권장 "
+            "(T-0359·fail-soft).",
+            file=sys.stderr,
+        )
+    else:
+        if not base_branch.startswith("origin/"):
+            rc2, _ = runner(["show-ref", "--verify", "--quiet",
+                             f"refs/remotes/origin/{base_branch}"])
+            if rc2 == 0:
+                target = f"origin/{base_branch}"
+    rc, out = runner(["rebase", target])
+    if rc != 0:
+        # 충돌(또는 실패) — **그 상태 그대로 두고 fail-loud**. 엔진이 임의 abort 하지 않는다
+        # (해소는 사용자 git rebase --continue|--abort). 장부는 **완전 불변**(onto 든 no-onto 든
+        # base/head/recorded_at 미갱신·미완·spike §F10 — resolve_rebase_base(record=False)로 onto 를
+        # 미리 기록하지 않았기에 가능·T-0359 must-fix) → 다음 부트스트랩 0단계(T-0351)가 "rebase
+        # 진행 중" 으로 감지·안내한다.
+        return RebaseSlotResult(slot, REBASE_CONFLICT, base=base_branch,
+                                reason=str(out).strip()[:200])
+
+    # ── 성공 → 장부 원자 갱신(**유일 기록 지점**·base.commit=새 base tip·head=새 tip·recorded_at·§F10) ──
+    # onto 든 no-onto 든 base 는 여기서만 기록된다(성공 원자 갱신) — 충돌 경로는 장부를 안 건드린다.
+    base_tip = _resolve_base_commit(slot, target, git_runner=runner)
+    record_git_snapshot(slot, base_branch=base_branch, base_commit=base_tip,
+                        git_runner=runner)
+    return RebaseSlotResult(slot, REBASE_REBASED, base=base_branch,
+                            new_head=_slot_head(runner))
+
+
+def rebase(slots: "list[str]", *, onto: "str | None" = None,
+           git_runner: GitRunner | None = None) -> "list[RebaseSlotResult]":
+    """슬롯 base 를 사용자 명시로 rebase — 단일/일괄·슬롯 독립·자동 rebase 없음 (⑩·T-0359·spike §F10).
+
+    `slots` = 대상 슬롯 식별자 리스트(단일이면 1개·일괄이면 `slots_for_task` 결과). 각 슬롯을
+    `_rebase_one` 로 **독립** 처리한다 — 한 슬롯의 충돌/스킵이 나머지를 막지 않는다(일괄 독립성·
+    spike §F10). 소유 판별 축 = 내 세션(`_default_session()` — env/local.conf 유입·`_resolve_current_
+    slot` 동형): 그 세션이 leased 로 보유하지 않은 슬롯은 `not-owner` 스킵(loud). `onto` 생략 =
+    기록된 base.branch 최신으로 rebase(미기록이면 거부·결정 ⑪). 반환 = 슬롯별 `RebaseSlotResult`
+    리스트(호출부가 성공/스킵/충돌 요약)."""
+    owner = _default_session()
+    return [_rebase_one(s, onto=onto, owner=owner, git_runner=git_runner) for s in slots]
 
 
 # ── 내부 헬퍼 ────────────────────────────────────────────────────────────────
@@ -3806,31 +4019,136 @@ def _cmd_set_base(args) -> int:
     return 0
 
 
-def _cmd_status(args) -> int:
-    """`status [<slot>]` CLI 핸들러 — 슬롯 git 구성 조회(base·branch·head·base 대비 N behind·T-0352).
+def _print_status_row(row: dict) -> None:
+    """슬롯 git 구성 dict 한 줄 렌더(base·branch·head·N behind·submodule pin/drift·dirty·T-0359).
 
-    미기록 슬롯이면 "base 대비 behind" 는 `-`(계산 불가·이유 표기) — 추론 금지(결정 ⑪). 위치인자
-    생략 시 cwd/세션 leased 슬롯으로 해소(무인자=내 슬롯·`_resolve_current_slot`)."""
+    미기록 base 는 `-`(계산 불가·이유·추론 금지·⑪). submodule 은 역할별 경고 마크(⚠=drift/
+    uninitialized··=pinned/dev-ahead·T-0276)로 표시(빈 목록=submodule 없는 슬롯 → 줄 생략)."""
+    slot = row["slot"]
+    base = row.get("base")
+    base_str = (f"{base.get('branch')}@{(base.get('commit') or '?')[:12]}"
+                if base and base.get("branch") else "(미기록)")
+    behind = row.get("behind")
+    print(f"# 슬롯 {slot} git 구성 (조회 — 손-git 불요·spike §F10)")
+    print(f"  role:   {row.get('role') or _slot_role(slot)}")   # work | readonly (⑬·T-0358)
+    print(f"  base:   {base_str}")
+    print(f"  branch: {row.get('branch') or '(detached/미상)'}")
+    print(f"  head:   {(row.get('head') or '(미상)')[:12]}")
+    if behind is None:
+        print(f"  base 대비 behind: -  ({row.get('behind_reason')})")
+    else:
+        print(f"  base 대비 behind: {behind} 커밋")
+    print(f"  dirty:  {'예 (미커밋 변경 있음)' if row.get('dirty') else '아니오 (clean)'}")
+    for s in (row.get("submodules") or []):
+        mark = "⚠" if getattr(s, "warning", False) else "·"
+        dirty_tag = " ·dirty" if getattr(s, "dirty", False) else ""
+        print(f"  submodule {mark} {s.path}: {s.kind}{dirty_tag}")
+
+
+def _cmd_status(args) -> int:
+    """`status [<slot>] [--task <이름>]` CLI 핸들러 — 슬롯 git 구성 조회 단일/일괄 (T-0352/T-0359·§F10).
+
+    대상: `--task <이름>`(그 task 보유 전 슬롯 일괄) > 위치인자 `<slot>`(단일) > 무인자(내 task 전
+    슬롯·`_default_session` 유입). 슬롯별 base·branch·head·base 대비 N behind(미기록=`-`·추론 금지·⑪)
+    ·submodule pin/drift·dirty·role 을 조회한다(`status` 백본)."""
+    task = getattr(args, "task", None)
+    slot_arg = getattr(args, "slot", None)
+    if task and slot_arg:
+        print("[중단] status 는 `<slot>`(단일) 또는 `--task <이름>`(일괄) 중 하나만 받는다.",
+              file=sys.stderr)
+        return 1
     try:
-        slot = _resolve_current_slot(args.slot)   # 위치인자 명시(정규화/검증) or None(cwd/세션 해소)
+        if task:
+            rows = status(task=task)
+        elif slot_arg:
+            rows = status(slot=slot_arg)
+        else:
+            rows = status()   # 무인자 = 내 task 전 슬롯(spike §F10).
     except SlotResolutionError as exc:
         print(f"[중단] 대상 슬롯 해소 실패 — {exc}", file=sys.stderr)
         return 1
-    st = slot_git_status(slot)
-    base = st["base"]
-    base_str = (f"{base.get('branch')}@{(base.get('commit') or '?')[:12]}"
-                if base and base.get("branch") else "(미기록)")
-    behind_str = str(st["behind"]) if st["behind"] is not None else "-"
-    print(f"# 슬롯 {slot} git 구성 (조회 — 손-git 불요·spike §F10)")
-    print(f"  role:   {_slot_role(slot)}")   # work | readonly (⑬·T-0358)
-    print(f"  base:   {base_str}")
-    print(f"  branch: {st['branch'] or '(detached/미상)'}")
-    print(f"  head:   {(st['head'] or '(미상)')[:12]}")
-    if st["behind"] is None:
-        print(f"  base 대비 behind: {behind_str}  ({st['behind_reason']})")
-    else:
-        print(f"  base 대비 behind: {behind_str} 커밋")
+    if not rows:
+        print("# 조회 대상 슬롯 없음 — 내 세션이 보유한 leased 슬롯이 없다 "
+              "(`--task <이름>` 또는 `<slot>` 으로 대상을 명시하라).")
+        return 0
+    for i, row in enumerate(rows):
+        if i:
+            print()   # 슬롯 간 구분 공백(일괄).
+        _print_status_row(row)
     return 0
+
+
+def _rebase_skip_reason(reason: "str | None") -> str:
+    """rebase 스킵 사유 코드 → 사람이 읽는 loud 설명 (CLI·T-0359)."""
+    if reason and reason.startswith("not-owner:"):
+        holder = reason.split(":", 1)[1]
+        return f"세션 {holder!r} 이(가) 보유 — 내 슬롯 아님(rebase 차단·소유검사)"
+    return {
+        "readonly": "readonly 공유 슬롯 — mutation 불가(refresh 로만 갱신·⑬)",
+        "not-owner": "내 세션 소유(leased) 슬롯이 아니다 — 남의/미점유 슬롯 rebase 차단",
+        "dirty": "미커밋 변경(dirty) — rebase 는 clean 전제(정리 후 재시도)",
+        "in-progress": "이미 rebase 진행 중 — `git rebase --continue|--abort` 로 먼저 해소",
+        "no-base": "기준점(base) 미기록 + --onto 없음 — `set-base` 지정 또는 `--onto <branch>`(추론 금지·⑪)",
+        "unresolvable-onto": "`--onto` ref 해소 실패(오타·미fetch — 실재 브랜치/커밋 지정)",
+        "no-worktree": "슬롯 worktree 경로 부재",
+    }.get(reason or "", reason or "미상")
+
+
+def _cmd_rebase(args) -> int:
+    """`rebase <slot> [--onto <b>]` (단일) · `rebase --task <이름> [--onto <b>]` (일괄) CLI 핸들러 (⑩·T-0359·§F10).
+
+    슬롯 독립 처리 — 선-검사(소유/dirty/rebase 진행중) 스킵 + 충돌 그대로 fail-loud(엔진 abort 안
+    함) + 성공 시 장부 원자 갱신. 끝에 성공/스킵/충돌 요약. 단일은 성공해야 rc 0(스킵/충돌=rc 1),
+    일괄은 충돌이 있으면 rc 1(주의 필요·나머지는 독립 진행).
+
+    ⚠️ **선행조건(⑳)**: 활성 백그라운드 위임(dev) 중인 슬롯은 rebase 하지 마라 — 서브에이전트는
+    하네스 안 프로세스라 엔진이 못 본다(기계 신호 부재·[[parallel-dev-shared-tree-clobber]] 변형).
+    스킬/카드에 명문화·실행 전 사용자 확인."""
+    task = args.task
+    slot_arg = args.slot
+    if task and slot_arg:
+        print("[중단] rebase 는 `<slot>`(단일) 또는 `--task <이름>`(일괄) 중 하나만 받는다.",
+              file=sys.stderr)
+        return 1
+    if not task and not slot_arg:
+        print("[중단] rebase 대상을 지정하라 — `<slot>`(단일) 또는 `--task <이름>`(일괄).",
+              file=sys.stderr)
+        return 1
+    batch = bool(task)
+    if batch:
+        slots = [l.slot for l in slots_for_task(task)]
+        if not slots:
+            print(f"# task {task!r} 이(가) 보유한 leased 슬롯이 없다 — rebase 대상 0.")
+            return 0
+    else:
+        try:
+            slots = [_normalize_slot(slot_arg)]
+        except SlotResolutionError as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
+
+    results = rebase(slots, onto=args.onto)
+    n_ok = n_skip = n_conflict = 0
+    for r in results:
+        if r.outcome == REBASE_REBASED:
+            n_ok += 1
+            print(f"✓ 슬롯 {r.slot} rebase 성공 — base {r.base} 최신으로 이동 "
+                  f"(head {(r.new_head or '?')[:12]} · 장부 base.commit/head/recorded_at 원자 갱신).")
+        elif r.outcome == REBASE_CONFLICT:
+            n_conflict += 1
+            print(f"✗ 슬롯 {r.slot} rebase 충돌 — **그 상태 그대로** 두었다(엔진 임의 abort 안 함). "
+                  f"해소는 사용자: 슬롯에서 `git rebase --continue`(충돌 해결 후) 또는 `git rebase "
+                  f"--abort`(취소). 장부 base 미갱신 → 다음 부트스트랩 0단계가 '진행 중' 감지. "
+                  f"git: {r.reason}", file=sys.stderr)
+        else:
+            n_skip += 1
+            print(f"— 슬롯 {r.slot} rebase 스킵 ({_rebase_skip_reason(r.reason)}).",
+                  file=sys.stderr)
+    print(f"\n# rebase 요약: 성공 {n_ok} · 스킵 {n_skip} · 충돌 {n_conflict} "
+          "(일괄=슬롯 독립·한 충돌이 나머지를 안 막음·§F10).")
+    if batch:
+        return 1 if n_conflict else 0
+    return 0 if n_ok == 1 else 1   # 단일 — 성공해야 rc 0(스킵/충돌=요청 미수행·rc 1).
 
 
 def _cmd_refresh(args) -> int:
@@ -3907,9 +4225,22 @@ def main(argv: "list[str] | None" = None) -> int:
 
     p_status = subparsers.add_parser(
         "status",
-        help="슬롯 git 구성 조회(role·base·branch·head·base 대비 N behind·미기록 시 `-`).")
+        help="슬롯 git 구성 조회(role·base·branch·head·N behind·submodule pin/drift·dirty·미기록 시 `-`·단일/일괄).")
     p_status.add_argument("slot", nargs="?", default=None,
-                          help="대상 슬롯(생략 시 cwd/세션 leased 슬롯으로 해소).")
+                          help="대상 슬롯(단일·생략 시 내 task 전 슬롯 일괄).")
+    p_status.add_argument("--task", default=None,
+                          help="그 task 보유 전 슬롯 일괄 조회(`<slot>` 과 배타).")
+
+    # rebase <slot> [--onto <b>] (단일) · rebase --task <이름> [--onto <b>] (일괄) — 위치인자/pool 관리.
+    p_rebase = subparsers.add_parser(
+        "rebase",
+        help="슬롯 base 를 사용자 명시로 rebase(단일/일괄·선-검사·충돌 그대로+loud·장부 원자 갱신·⑩).")
+    p_rebase.add_argument("slot", nargs="?", default=None,
+                          help="대상 슬롯(단일·`--task` 와 배타).")
+    p_rebase.add_argument("--task", default=None,
+                          help="그 task 보유 전 슬롯 일괄 rebase(`<slot>` 과 배타).")
+    p_rebase.add_argument("--onto", default=None,
+                          help="rebase 기준 브랜치(생략 시 기록된 base.branch 최신·미기록이면 거부·⑪).")
 
     # refresh <slot> [--onto <branch>] — readonly 공유 슬롯 갱신(⑬·T-0358·§F11·위치인자 <slot>).
     p_refresh = subparsers.add_parser(
@@ -3921,11 +4252,13 @@ def main(argv: "list[str] | None" = None) -> int:
 
     args = parser.parse_args(argv)
 
-    # set-base / status / refresh — 위치인자 <slot> 경로(identity 파싱 미진입·pool 관리·spike §F9/F10/F11).
+    # set-base / status / rebase / refresh — 위치인자 <slot> 경로(identity 파싱 미진입·pool 관리·spike §F9/F10/F11).
     if args.command == "set-base":
         return _cmd_set_base(args)
     if args.command == "status":
         return _cmd_status(args)
+    if args.command == "rebase":
+        return _cmd_rebase(args)
     if args.command == "refresh":
         return _cmd_refresh(args)
 

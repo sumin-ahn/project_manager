@@ -42,10 +42,15 @@ description: "PM 환경 관리 단일 command — pm-config.sh facade wrap. repo
 
 ### slot status / release / remove
 ```bash
-./pm-config.sh status | whoami        # 풀/리스 + 이 세션 repo/슬롯/branch
+./pm-config.sh status | whoami        # 2축 cockpit — task 상황 + slot 풀·슬롯당 git 요약
 ./pm-config.sh release <slot> [--force]        # 작업완료 반납(idle 화·재사용) / --force=강제 백스톱
 ./pm-config.sh worktree remove <slot> [--force] # 슬롯 통째 제거(원자·번호 재사용·T-0333)
 ```
+- **status 2축 cockpit**(⑥·§F8·T-0361): 다슬롯 관리 부담을 두 축으로 한눈에 —
+  ① **task 상황** = 사람이 명명한 task 별 {보유 작업공간(`work/<repo>_<N>`)·prefix}(slot-모드 세션 제외).
+  ② **slot 풀** = 슬롯별 {state·보유 task·role(work/readonly)} + **슬롯당 git 요약**
+  `<branch>@<head> (base: <b>@<sha> · N behind)`. behind 는 base 기록(`set-base`·T-0350)이 있을 때만
+  세고, 미기록이면 `-` + 이유(자동 추론 금지·결정 ⑪). readonly 슬롯은 branch `(detached)`·base 만 의미.
 - **release vs remove**: `release` = idle 화(슬롯 폴더 유지·풀 재사용). `remove` = **통째 제거** —
   `git worktree remove` + 슬롯 전용 브랜치(`<repo>_<N>`) 정리(머지 완료 시 삭제·미머지 보존·공유 브랜치 스킵)
   + 장부 엔트리 삭제. 장부까지 지워 `add` 가 **빈 번호를 재사용**한다(수동 remove → dangling 장부 →

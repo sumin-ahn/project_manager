@@ -114,7 +114,7 @@ class FakeWorktreePool:
                  set_test_raises=None, live_branches=None, reconcile=None,
                  alloc_returns=None, alloc_raises=None, task_record="__unset__",
                  end_task_result=None, validate_raises=False,
-                 set_prefix_result="__unset__"):
+                 set_prefix_result="__unset__", tasks=None, slot_git=None):
         self.leases = leases or []
         self.calls: list[tuple] = []
         self._release_raises = release_raises   # 예외 클래스 또는 None
@@ -139,6 +139,12 @@ class FakeWorktreePool:
         # reconcile 결과(T-0295·cmd_status drift surface) — (orphans, stale, incomplete) 튜플
         # 또는 None(=drift 없음·기본). 기존 status 테스트는 미지정 → 빈 결과라 drift 절 미출력(무영향).
         self._reconcile = reconcile
+        # task 축(T-0361 cockpit·T-0353/0354/0357) — list_tasks 가 돌려줄 Task 대역 리스트.
+        # 미지정 → [] (task 없음 절). 각 Task 대역은 name·prefix 필드(SimpleNamespace).
+        self._tasks = tasks or []
+        # slot → slot_git_status dict(T-0361·§F8·T-0350). 미지정 슬롯은 _live_branches 기반
+        # 최소 dict(base 미기록·behind None)로 합성해 git 요약 배선을 fail-soft 로 친다.
+        self._slot_git = slot_git or {}
 
     def create_slot(self, repo, *, base=None, test_cmd=None, readonly=False):
         # base (T-0075) — areas 의 그 repo base 를 cmd_worktree_add 가 전달한다(슬롯 브랜치
@@ -176,6 +182,28 @@ class FakeWorktreePool:
         # None(detached/조회불가) — cmd_status 가 "(detached/조회불가)" 로 surface.
         self.calls.append(("current_branch", slot))
         return self._live_branches.get(slot)
+
+    def list_tasks(self):
+        # task 축 대역(T-0361 cockpit·T-0353) — 명명 task 레코드 리스트. 미지정 → [].
+        self.calls.append(("list_tasks",))
+        return self._tasks
+
+    def slots_for_task(self, name):
+        # task 명의 leased 슬롯 대역(T-0361·T-0354) — session==name 인 leased 슬롯(장부 진실 동형).
+        self.calls.append(("slots_for_task", name))
+        return [l for l in self.leases
+                if getattr(l, "state", None) == "leased" and l.session == name]
+
+    def slot_git_status(self, slot, *, git_runner=None):
+        # 슬롯 git 요약 대역(T-0361·§F8·T-0350) — 명시 dict 우선, 없으면 live_branches 기반
+        # 최소 dict(base 미기록·behind None)로 합성한다. 실 slot_git_status 반환 shape 동형:
+        # slot·base({branch,commit}|None)·branch·head·behind(int|None)·behind_reason(str|None).
+        self.calls.append(("slot_git_status", slot))
+        if slot in self._slot_git:
+            return self._slot_git[slot]
+        return {"slot": slot, "base": None, "branch": self._live_branches.get(slot),
+                "head": None, "behind": None,
+                "behind_reason": "기준점 미기록 — `set-base` 로 지정"}
 
     def reconcile_worktrees(self, *, git_runner=None):
         # git worktree × 장부 정합 대역(T-0295) — cmd_status 가 drift 를 surface 하는 배선을
@@ -1653,6 +1681,185 @@ def test_status_engine_missing_errors(pc, monkeypatch, capsys):
     rc = pc.cmd_status(argparse.Namespace(command="status"))
     assert rc == 1
     assert "worktree_pool.py 엔진을 찾을 수 없다" in capsys.readouterr().err
+
+
+# ── status 2축 cockpit — task 상황 + slot 풀·슬롯당 git 요약 (T-0361·§F8·결정 ⑥⑪) ──
+
+
+def _git_status(*, base=None, branch=None, head=None, behind=None, behind_reason=None):
+    """slot_git_status 반환 shape 대역(T-0361·§F8) — 명시 필드로 조립."""
+    return {"slot": "?", "base": base, "branch": branch, "head": head,
+            "behind": behind, "behind_reason": behind_reason}
+
+
+def test_status_task_axis_lists_named_tasks_and_workspaces(pc, monkeypatch, capsys):
+    """DoD — task 축이 명명 task 별 {보유 작업공간·prefix} 를 surface (T-0361·결정 ⑥·T-0353/0354/0357).
+
+    task=`payjob`(prefix=PAY·슬롯 2개 보유)·`readmod`(prefix 없음·슬롯 0개). slot-모드 세션(`me`)은
+    task 축에 안 올라온다(auto-task 폐기·2축 분리)."""
+    leases = [
+        FakeLease(slot="work/svc_1", repo="svc", session="payjob", state="leased"),
+        FakeLease(slot="work/svc_2", repo="svc", session="payjob", state="leased"),
+        FakeLease(slot="work/svc_9", repo="svc", session="me", state="leased"),
+    ]
+    tasks = [SimpleNamespace(name="payjob", prefix="PAY"),
+             SimpleNamespace(name="readmod", prefix=None)]
+    wp = FakeWorktreePool(leases=leases, tasks=tasks)
+    monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    task_axis = out.split("task 상황")[1].split("slot 풀")[0]
+    # payjob 은 prefix=PAY + 슬롯 2개, readmod 는 prefix 없음(기본) + 슬롯 0개.
+    assert "payjob" in task_axis and "PAY" in task_axis
+    assert "work/svc_1" in task_axis and "work/svc_2" in task_axis
+    assert "readmod" in task_axis and "없음(기본)" in task_axis
+    assert "보유 작업공간 없음" in task_axis
+    # slot-모드 세션 `me` 는 task 축에 없다(2축 분리·결정 ⑥).
+    assert "me" not in task_axis
+
+
+def test_status_task_axis_empty_when_no_named_tasks(pc, capsys):
+    """DoD — 명명 task 0 이면 task 축은 "(task 없음 …)" 안내(slot-모드 세션은 slot 풀 축에만)."""
+    leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
+    wp = FakeWorktreePool(leases=leases, tasks=[])
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "task 상황" in out
+    assert "task 없음" in out
+
+
+def test_status_slot_git_summary_behind_when_base_recorded(pc, monkeypatch, capsys):
+    """DoD — base 기록 있으면 슬롯 git 요약 = `branch@head (base: b@sha · N behind)` (T-0361·§F8·T-0350)."""
+    leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
+    slot_git = {
+        "work/svc_1": _git_status(
+            base={"branch": "origin/main", "commit": "def6789012345"},
+            branch="feat-x", head="abc1234567890", behind=3, behind_reason=None),
+    }
+    wp = FakeWorktreePool(leases=leases, slot_git=slot_git)
+    monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    # branch@head(단축 8) + base branch@commit(단축 8) + N behind.
+    assert "feat-x@abc12345" in out
+    assert "base: origin/main@def67890" in out
+    assert "3 behind" in out
+    assert ("slot_git_status", "work/svc_1") in wp.calls
+
+
+def test_status_slot_git_summary_unrecorded_base_shows_reason(pc, monkeypatch, capsys):
+    """DoD — base 미기록이면 behind=`-` + 이유(자동 추론 금지·결정 ⑪·침묵 추론 금지)."""
+    leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
+    slot_git = {
+        "work/svc_1": _git_status(
+            base=None, branch="feat-x", head="abc1234567890", behind=None,
+            behind_reason="기준점 미기록 — `set-base` 로 지정"),
+    }
+    wp = FakeWorktreePool(leases=leases, slot_git=slot_git)
+    monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "base: -" in out
+    assert "기준점 미기록" in out
+    assert "set-base" in out
+
+
+def test_status_slot_git_summary_base_recorded_but_unresolved(pc, monkeypatch, capsys):
+    """base 는 기록됐으나 behind 계산 불가(ref 미해소/fetch 필요) → base 표시 + `- (이유)`."""
+    leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
+    slot_git = {
+        "work/svc_1": _git_status(
+            base={"branch": "origin/dev", "commit": "0011223344"},
+            branch="feat", head="99887766", behind=None,
+            behind_reason="base.branch 해소 실패(ref 부재/fetch 필요)"),
+    }
+    wp = FakeWorktreePool(leases=leases, slot_git=slot_git)
+    monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "base: origin/dev@00112233" in out
+    assert "해소 실패" in out
+    assert "behind" not in out.split("slot 풀")[1] or "- (" in out.split("slot 풀")[1]
+
+
+def test_status_readonly_slot_git_shows_detached_and_role(pc, monkeypatch, capsys):
+    """DoD — readonly 슬롯은 role 표시·git 요약 branch `(detached)`·base 만 의미 (T-0361·⑬·T-0358)."""
+    leases = [
+        FakeLease(slot="work/svc_1", repo="svc", session="", state="leased", role="readonly"),
+    ]
+    slot_git = {
+        "work/svc_1": _git_status(
+            base={"branch": "origin/main", "commit": "aabbccdd1122"},
+            branch="feat-live", head="ffee00112233", behind=0, behind_reason=None),
+    }
+    wp = FakeWorktreePool(leases=leases, slot_git=slot_git)
+    monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    pool = out.split("slot 풀")[1]
+    assert "role=readonly" in pool
+    # readonly = branch 축은 (detached)(무소유 기준면)이라 live branch 를 요약에 안 씌운다.
+    assert "(detached)@" in pool
+    assert "feat-live@" not in pool          # readonly 는 branch 이름을 요약에 안 실음
+    assert "base: origin/main@aabbccdd" in pool
+
+
+def test_status_slot_git_summary_task_attribution(pc, monkeypatch, capsys):
+    """slot 풀 축의 "보유 task" — session 이 명명 task 면 그 task, 아니면 `-` (T-0361·⑥ session 축)."""
+    leases = [
+        FakeLease(slot="work/svc_1", repo="svc", session="payjob", state="leased"),
+        FakeLease(slot="work/svc_2", repo="svc", session="me", state="leased"),
+    ]
+    tasks = [SimpleNamespace(name="payjob", prefix="PAY")]
+    wp = FakeWorktreePool(leases=leases, tasks=tasks)
+    monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    pool = capsys.readouterr().out.split("slot 풀")[1]
+    svc1 = pool.split("work/svc_1")[1].split("work/svc_2")[0]
+    svc2 = pool.split("work/svc_2")[1]
+    assert "보유 task=payjob" in svc1        # session=task 명 → task 귀속
+    assert "보유 task=-" in svc2             # slot-모드 세션 → task 아님
+
+
+def test_status_slot_git_failure_keeps_task_axis(pc, monkeypatch, capsys):
+    """must-fix — slot_git_status 가 던져도 장부 축(보유 task·role)은 유지·git 요약만 fail-soft 대체.
+
+    slot 풀 축 명세({state·보유 task·role})는 git 요약과 분리다 — git 실패로 장부 정보(task 귀속)까지
+    사라지면 silent degrade. git 실패 시 `보유 task=…` 는 그대로 출력하고 git 부분만 `(조회 불가)`."""
+    class _Boom(FakeWorktreePool):
+        def slot_git_status(self, slot, *, git_runner=None):
+            raise RuntimeError("git blew up")
+
+    leases = [FakeLease(slot="work/svc_1", repo="svc", session="payjob", state="leased")]
+    tasks = [SimpleNamespace(name="payjob", prefix="PAY")]
+    wp = _Boom(leases=leases, tasks=tasks)
+    monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "work/svc_1" in out                  # 리스 장부 축은 정상 surface
+    assert "보유 task=payjob" in out             # 장부 축(task 귀속)은 git 실패에도 유지(must-fix)
+    assert "(조회 불가)" in out                  # git 요약만 fail-soft 대체(크래시 0)
+
+
+def test_status_idle_lease_not_attributed_to_none_task(pc, monkeypatch, capsys):
+    """방어(reviewer) — name 미보유 task 레코드가 있어도 idle lease(session 빈값)가 `보유 task=None`
+    으로 오귀인되지 않는다(task_names 는 truthy name 만·None 혼입 차단)."""
+    leases = [FakeLease(slot="work/svc_2", repo="svc", session="", state="idle")]
+    tasks = [SimpleNamespace(name=None, prefix=None)]   # name 미보유 레코드(방어 대상)
+    wp = FakeWorktreePool(leases=leases, tasks=tasks)
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    pool = capsys.readouterr().out.split("slot 풀")[1]
+    assert "보유 task=None" not in pool          # None 오귀인 없음
+    assert "보유 task=-" in pool                  # idle/무귀속 슬롯은 `-`
 
 
 # ── status reconcile — orphan/stale/incomplete drift surface (T-0295) ────────

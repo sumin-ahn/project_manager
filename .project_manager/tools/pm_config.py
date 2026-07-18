@@ -1078,20 +1078,69 @@ def cmd_worktree_add(
     return 0
 
 
+# 슬롯 git 요약(cmd_status cockpit)에서 head/base 커밋 sha 를 단축 표기하는 길이 (T-0361·§F8).
+# git 관용 short-sha(7)보다 한 자리 넉넉히 잡아 멀티-repo 풀에서 충돌 여지를 줄인다.
+_SLOT_SHA_SHORT = 8
+
+
+def _short_sha(sha: "str | None") -> str:
+    """커밋 sha 를 cockpit 표기용으로 단축한다 — None/빈값은 `?` (T-0361·fail-soft 표시)."""
+    if not sha:
+        return "?"
+    return sha[:_SLOT_SHA_SHORT]
+
+
+def _slot_git_summary(status: dict, *, readonly: bool = False) -> str:
+    """슬롯 git 상태 dict(`worktree_pool.slot_git_status`)를 한 줄 요약으로 렌더한다 (T-0361·§F8·결정 ⑥⑪).
+
+    포맷 = `<branch>@<head 단축> (base: <base.branch>@<base.commit 단축> · N behind)`.
+      - behind = base 기록이 있고 계산됐을 때만 정수. 미기록 = `-` + 이유(자동 추론 금지·결정 ⑪).
+        기록됐으나 ref 미해소(fetch 필요)면 behind=None + reason → `- (<reason>)`.
+      - readonly 슬롯(⑬·T-0358) = branch 축은 `(detached)`(무소유·research 기준면)·base 만 의미.
+    데이터는 전부 `slot_git_status`(live branch/head + 장부 base·T-0350)에서 파생 — 신설 저장소 없음.
+    """
+    if readonly:
+        branch_disp = "(detached)"
+    else:
+        branch_disp = status.get("branch") or "(detached/조회불가)"
+    head_disp = _short_sha(status.get("head"))
+    base = status.get("base")
+    if base and base.get("branch"):
+        base_part = f"base: {base['branch']}@{_short_sha(base.get('commit'))}"
+        behind = status.get("behind")
+        if behind is not None:
+            behind_part = f"{behind} behind"
+        else:
+            reason = status.get("behind_reason") or "base ref 미해소(fetch 필요)"
+            behind_part = f"- ({reason})"
+        return f"{branch_disp}@{head_disp} ({base_part} · {behind_part})"
+    # base 미기록 — 침묵 추론 금지, 이유를 표기한다(prefix 확인·기준점 질의와 동형·결정 ⑪).
+    reason = status.get("behind_reason") or "기준점 미기록 — `set-base` 로 지정"
+    return f"{branch_disp}@{head_disp} (base: - · {reason})"
+
+
 def cmd_status(
     args: argparse.Namespace,
     *,
     worktree_pool=None,
 ) -> int:
-    """`status | whoami` — 풀/리스 + 이 세션 repo/슬롯/branch surface (ADR-0011·0013).
+    """`status | whoami` — 2축 cockpit(task 상황 + slot 풀·슬롯당 git 요약) (ADR-0011·0013·T-0361·§F8).
 
-    worktree_pool.list_leases() 로 전체 리스 장부를 surface 하고, 이 세션($CLAUDE_
-    SESSION_NAME)이 보유한 leased 슬롯을 별도로 강조한다(whoami 의 "나" 표면).
-    status·whoami 는 같은 데이터·같은 핸들러 — whoami 는 이 세션 줄을 머리에 둔다.
+    **2축 cockpit (결정 ⑥·§F8)** — 다슬롯 관리 부담을 한눈에 보이게 두 축으로 나눈다:
+      - **task 축** — 사람이 명명한 task 별 {보유 작업공간(`work/<repo>_<N>` 목록)·prefix}
+        (`list_tasks`+`slots_for_task`·T-0353/0354/0357). auto-task 폐기 덕에 slot 축과 깔끔히
+        분리된다 — slot-모드 세션은 task 없이 slot 풀 축에만 나타난다.
+      - **slot 풀 축** — 슬롯별 {state·보유 task·role} + **슬롯당 git 요약**
+        (`<branch>@<head> (base: <b>@<sha> · N behind)`·`slot_git_status`). behind 는 base 기록
+        (T-0350 `git.base`)이 있을 때만·미기록은 `-`+이유(자동 추론 금지·결정 ⑪).
 
     브랜치는 `worktree_pool.current_branch(slot)` 로 슬롯 worktree 의 git HEAD 에서 **live**
     조회한다(ADR-0013 amend T-0072 — git=진실·장부 저장 폐지). 사용자가 슬롯서 직접 `git
     checkout` 해도 즉시 반영·드리프트 없음. detached/조회불가는 "(detached/조회불가)".
+
+    status·whoami 는 같은 데이터·같은 핸들러 — whoami 는 이 세션 줄을 머리에 둔다. 데이터는
+    전부 장부(기계)에서 파생([[living-truth-docs-anti-ossification]]) — 신설 저장소 없음. 전
+    surface(task/slot/git)는 fail-soft — 조회 실패가 status 를 막지 않는다(조회 전용).
 
     worktree_pool 주입으로 hermetic 테스트.
     """
@@ -1151,7 +1200,52 @@ def cmd_status(
     else:
         print("## 이 세션의 리스: (없음)")
 
-    print("## 풀 전체 리스 장부:")
+    # task 축(결정 ⑥·§F8) — 사람이 명명한 task 별 {보유 작업공간·prefix}. list_tasks(T-0353)
+    # + slots_for_task(T-0354·session==task 명의 leased 슬롯). auto-task 폐기라 slot-모드 세션은
+    # 이 축에 안 올라온다(task 없이 slot 풀 축에만). getattr fail-soft — task API 부재(구 엔진)면
+    # 축을 생략(회귀 0). task 명 집합은 slot 풀 축의 "보유 task" 귀속에도 쓴다.
+    list_tasks_fn = getattr(wp, "list_tasks", None)
+    slots_for_task_fn = getattr(wp, "slots_for_task", None)
+    tasks = []
+    if callable(list_tasks_fn):
+        try:
+            tasks = list_tasks_fn() or []
+        except Exception:  # noqa: BLE001 — task 조회 실패가 status 를 막지 않는다(조회 전용·fail-soft).
+            tasks = []
+    # truthy name 만 — 레코드가 name 미보유(None/빈값)면 집합에 넣지 않는다(방어). None 이 섞이면
+    # idle lease(session=None/"")가 `보유 task=None` 으로 오귀인될 수 있다(reviewer suggestion).
+    task_names = {n for n in (getattr(t, "name", None) for t in tasks) if n}
+    if list_tasks_fn is not None:
+        print("## task 상황 (사람이 명명한 작업스트림·slot-모드 세션 제외):")
+        if not tasks:
+            print("  (task 없음 — 명명한 task 미등록·세션은 아래 풀 축에만 나타남)")
+        for t in tasks:
+            slots = []
+            if callable(slots_for_task_fn):
+                try:
+                    slots = slots_for_task_fn(t.name) or []
+                except Exception:  # noqa: BLE001 — 슬롯 귀속 실패는 fail-soft(작업공간 미표시).
+                    slots = []
+            ws = ", ".join(s.slot for s in slots) or "(보유 작업공간 없음)"
+            prefix = getattr(t, "prefix", None) or "없음(기본)"
+            print(f"  - {t.name} · prefix={prefix} · 작업공간: {ws}")
+
+    # 슬롯 git 요약 헬퍼(§F8) — slot_git_status(T-0350 base + live branch/head)를 한 줄로.
+    # 조회 실패/API 부재는 fail-soft(요약 줄 생략) — 리스 장부 축은 그대로 surface.
+    slot_git_status_fn = getattr(wp, "slot_git_status", None)
+
+    def _slot_git_line(slot: str, *, readonly: bool) -> "str | None":
+        if not callable(slot_git_status_fn):
+            return None
+        try:
+            status = slot_git_status_fn(slot)
+        except Exception:  # noqa: BLE001 — git 조회 실패는 요약 생략(status 무중단·조회 전용).
+            return None
+        if not isinstance(status, dict):
+            return None
+        return _slot_git_summary(status, readonly=readonly)
+
+    print("## slot 풀 (풀 전체 리스 장부 · 슬롯별 state·보유 task·role + git 요약):")
     if not leases:
         print("  (리스 없음 — 아직 worktree 슬롯이 생성되지 않음)")
     for l in leases:
@@ -1162,6 +1256,14 @@ def cmd_status(
             f"  - {l.slot} · repo={l.repo} · branch={_live_branch(l.slot)} · "
             f"state={l.state} · session={l.session or '-'} · pid={l.pid}{role_str}"
         )
+        # 보유 task 귀속(장부 축) — lease.session 이 task 명이면 그 task 가 이 슬롯을 보유(⑥ session
+        # 축). slot-모드/idle 슬롯(session 이 task 명 아님/빈값)은 `-`. **장부 유래라 항상 출력** —
+        # slot 풀 축 명세({state·보유 task·role})는 git 요약과 분리다(must-fix). git 요약(§F8)만
+        # fail-soft: 조회 실패/API 부재면 그 부분만 `(조회 불가)` 로 대체하고 task 귀속은 잃지 않는다.
+        task_disp = l.session if (l.session and l.session in task_names) else "-"
+        git_line = _slot_git_line(l.slot, readonly=role == "readonly")
+        git_part = git_line if git_line is not None else "(조회 불가)"
+        print(f"      ↳ 보유 task={task_disp} · git: {git_part}")
 
     # git worktree × 장부 정합(reconcile·T-0295) — 실 git worktree 와 장부를 대조해 drift 를
     # surface 한다. **조회 전용·부작용 0**: 삭제/prune/이동 안 함 — 판정·복구 안내만(자동삭제는

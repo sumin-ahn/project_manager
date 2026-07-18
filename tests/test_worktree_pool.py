@@ -5759,3 +5759,374 @@ def test_main_status_surfaces_role(wp, monkeypatch, capsys):
     rc = wp.main(["status", "A_1"])
     assert rc == 0
     assert "role:" in capsys.readouterr().out
+
+
+# ════════════════════════════════════════════════════════════════════════
+# T-0359 — status(submodule/dirty·단일/일괄) + rebase(선-검사·충돌 그대로·장부 원자·§F10·⑩)
+# ════════════════════════════════════════════════════════════════════════
+
+_REBASED_BASE_TIP = "d" * 40   # rebase 후 base 브랜치 tip(성공 장부 갱신 검증값).
+_REBASED_HEAD = "e" * 40       # rebase 후 슬롯 HEAD sha.
+
+
+class _RebaseGit:
+    """rebase/status 커스텀 runner — fetch·rebase·rev-parse(--verify/--git-path)·submodule·dirty 모델.
+
+    `rebase_rc`(단일) 또는 `rebase_seq`(호출 순서별 rc 리스트·일괄 독립성 검증) 로 rebase 결과를
+    모델링한다. `sub_detached` = submodule 이 detached(=drift 후보·symbolic-ref rc≠0)인지."""
+
+    def __init__(self, *, dirty=False, head="feat", head_sha=_REBASED_HEAD,
+                 fetch_rc=0, origin_has_base=True, rebase_rc=0, rebase_seq=None,
+                 tips=None, subs="", sub_detached=False):
+        self.dirty = dirty
+        self.head = head
+        self.head_sha = head_sha
+        self.fetch_rc = fetch_rc
+        self.origin_has_base = origin_has_base
+        self.rebase_rc = rebase_rc
+        self.rebase_seq = list(rebase_seq) if rebase_seq is not None else None
+        self.tips = tips or {}
+        self.subs = subs
+        self.sub_detached = sub_detached
+        self.calls: list[list] = []
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        if argv[:1] == ["-C"]:                       # submodule 컨텍스트(-C <sub> ...).
+            sub_argv = argv[2:]
+            if sub_argv[:1] == ["symbolic-ref"]:
+                return (1, "detached\n") if self.sub_detached else (0, "refs/heads/x\n")
+            return (0, "")                           # -C <sub> status --porcelain 등 → clean.
+        if argv[:2] == ["rev-parse", "--git-path"]:
+            return (0, f".git/{argv[-1]}\n")         # 경로만 반환·실재는 fs(미생성=False).
+        if argv[:2] == ["rev-parse", "--verify"]:
+            ref = argv[-1]
+            key = ref[: -len("^{commit}")] if ref.endswith("^{commit}") else ref
+            sha = self.tips.get(key)
+            return (0, sha + "\n") if sha else (128, "fatal: bad revision\n")
+        if argv == ["rev-parse", "HEAD"]:
+            return (0, self.head_sha + "\n")
+        if argv == ["symbolic-ref", "--short", "HEAD"]:
+            return (0, self.head + "\n") if self.head else (1, "detached\n")
+        if argv == ["submodule", "status"]:
+            return (0, self.subs)
+        if argv[:2] == ["status", "--porcelain"]:
+            return (0, " M f\n") if self.dirty else (0, "")
+        if argv[:2] == ["fetch", "origin"]:
+            return (self.fetch_rc, "" if self.fetch_rc == 0 else "fatal: could not fetch\n")
+        if argv[:3] == ["show-ref", "--verify", "--quiet"]:
+            return (0, "") if self.origin_has_base else (1, "")
+        if argv[:1] == ["rebase"]:
+            if self.rebase_seq is not None:
+                rc = self.rebase_seq.pop(0) if self.rebase_seq else 0
+            else:
+                rc = self.rebase_rc
+            return (rc, "" if rc == 0 else "CONFLICT (content): merge conflict in f\n")
+        return (0, "")
+
+    def did(self, *prefix) -> bool:
+        return any(c[: len(prefix)] == list(prefix) for c in self.calls)
+
+
+# ── status — submodule pin/drift + dirty 합류(T-0359 조회 확장) ───────────────
+
+
+def test_slot_git_status_includes_dirty_and_submodules(wp):
+    """slot_git_status 가 dirty(bool) + submodules(list) 를 조회에 합류(T-0359 — wave-2d 확장)."""
+    _seed_git_lease(wp, base={"branch": "origin/main", "commit": _BASE_TIP})
+    git = _RebaseGit(dirty=True, subs="+deadbeef vendor/x\n", sub_detached=True)
+    st = wp.slot_git_status("work/A_1", git_runner=git)
+    assert st["dirty"] is True
+    assert len(st["submodules"]) == 1
+    sub = st["submodules"][0]
+    assert sub.path == "vendor/x" and sub.kind == "drift" and sub.warning is True
+
+
+def test_slot_git_status_clean_no_submodules(wp):
+    """dirty=False·submodule 없음 → dirty False·submodules []."""
+    _seed_git_lease(wp, base={"branch": "origin/main", "commit": _BASE_TIP})
+    git = _RebaseGit(dirty=False, subs="")
+    st = wp.slot_git_status("work/A_1", git_runner=git)
+    assert st["dirty"] is False and st["submodules"] == []
+
+
+# ── status(단일/일괄/무인자) ─────────────────────────────────────────────────
+
+
+def test_status_single_slot_returns_one_row(wp):
+    """status(slot=…) → 그 슬롯 하나(role 포함)."""
+    _seed_git_lease(wp, base={"branch": "origin/main", "commit": _BASE_TIP}, session="job")
+    git = _RebaseGit()
+    rows = wp.status(slot="work/A_1", git_runner=git)
+    assert len(rows) == 1 and rows[0]["slot"] == "work/A_1" and rows[0]["role"] == "work"
+
+
+def test_status_task_batch_returns_all_owned(wp):
+    """status(task=…) → 그 task 보유 leased 슬롯 전부(idle·타 session 제외)."""
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", session="job", state="leased"),
+          _lease(wp, slot="work/A_3", repo="A", session="job", pid=0, state="idle"),
+          _lease(wp, slot="work/B_1", repo="B", session="other", state="leased"))
+    git = _RebaseGit()
+    rows = wp.status(task="job", git_runner=git)
+    assert sorted(r["slot"] for r in rows) == ["work/A_1", "work/A_2"]
+
+
+def test_status_no_arg_resolves_my_task_slots(wp, monkeypatch):
+    """status() 무인자 → 내 task(_default_session) 전 슬롯(spike §F10)."""
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", session="job", state="leased"))
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    git = _RebaseGit()
+    rows = wp.status(git_runner=git)
+    assert sorted(r["slot"] for r in rows) == ["work/A_1", "work/A_2"]
+
+
+# ── rebase — 선-검사(스킵+loud) ──────────────────────────────────────────────
+
+
+def _seed_rebase_lease(wp, *, slot="work/A_1", repo="A", session="job",
+                       base=None, role="work"):
+    """rebase 전제 leased 엔트리(git.base 기록·role 지정)."""
+    git = {"branch": "feat", "head": _OLD_SHA, "submodules": [], "recorded_at": "t"}
+    if base is not None:
+        git = {"base": base, **git}
+    _seed(wp, wp.Lease(slot=slot, repo=repo, session=session, pid=os.getpid(),
+                       started="t", state="leased", git=git, role=role))
+
+
+def test_rebase_skips_not_owned_slot_loud(wp, monkeypatch):
+    """선-검사 — 내 세션 소유(leased) 슬롯이 아니면 스킵(not-owner)·rebase 미시도."""
+    _seed_rebase_lease(wp, session="other",
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    git = _RebaseGit()
+    [r] = wp.rebase(["work/A_1"], git_runner=git)
+    assert r.outcome == wp.REBASE_SKIPPED and r.reason.startswith("not-owner")
+    assert not git.did("rebase")   # rebase 자체를 시도하지 않음
+
+
+def test_rebase_skips_dirty_slot_loud(wp, monkeypatch):
+    """선-검사 — dirty(미커밋)면 스킵(dirty·rebase 는 clean 전제)."""
+    _seed_rebase_lease(wp, base={"branch": "origin/main", "commit": _OLD_SHA})
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    git = _RebaseGit(dirty=True)
+    [r] = wp.rebase(["work/A_1"], git_runner=git)
+    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "dirty"
+    assert not git.did("rebase")
+
+
+def test_rebase_skips_in_progress_slot_loud(wp, monkeypatch):
+    """선-검사 — rebase 진행 중이면 스킵(in-progress·먼저 해소)."""
+    _seed_rebase_lease(wp, base={"branch": "origin/main", "commit": _OLD_SHA})
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(wp, "_rebase_in_progress", lambda slot, **k: True)
+    git = _RebaseGit()
+    [r] = wp.rebase(["work/A_1"], git_runner=git)
+    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "in-progress"
+    assert not git.did("rebase")
+
+
+def test_rebase_skips_readonly_slot(wp, monkeypatch):
+    """선-검사 — readonly 공유 슬롯은 mutation 불가(스킵 readonly·refresh 로만)."""
+    _seed_rebase_lease(wp, session="", role="readonly",
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    git = _RebaseGit()
+    [r] = wp.rebase(["work/A_1"], git_runner=git)
+    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "readonly"
+
+
+def test_rebase_refuses_unrecorded_base_no_onto(wp, monkeypatch):
+    """미기록 base + --onto 없음 → 스킵(no-base·거부·추론 금지·⑪)."""
+    _seed_rebase_lease(wp)   # base 미기록
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    git = _RebaseGit()
+    [r] = wp.rebase(["work/A_1"], git_runner=git)
+    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "no-base"
+    assert not git.did("rebase")
+
+
+# ── rebase — 성공(장부 원자 갱신) / 충돌(그대로 + loud·미갱신) ────────────────
+
+
+def test_rebase_success_atomically_updates_ledger(wp, monkeypatch):
+    """성공 → 장부 원자 갱신(base.commit=새 base tip·head=새 tip·recorded_at)."""
+    _seed_rebase_lease(wp, base={"branch": "origin/main", "commit": _OLD_SHA})
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
+                     head_sha=_REBASED_HEAD)
+    [r] = wp.rebase(["work/A_1"], git_runner=git)
+    assert r.outcome == wp.REBASE_REBASED and r.base == "origin/main"
+    assert r.new_head == _REBASED_HEAD
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    assert recorded["base"] == {"branch": "origin/main", "commit": _REBASED_BASE_TIP}
+    assert recorded["head"] == _REBASED_HEAD
+    assert git.did("fetch", "origin") and git.did("rebase", "origin/main")
+
+
+def test_rebase_conflict_leaves_state_and_does_not_update_ledger(wp, monkeypatch):
+    """충돌 → 그 상태 그대로(엔진 abort 안 함) + 장부 base **미갱신**(미완·§F10)."""
+    _seed_rebase_lease(wp, base={"branch": "origin/main", "commit": _OLD_SHA})
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    git = _RebaseGit(rebase_rc=1, tips={"origin/main": _REBASED_BASE_TIP})
+    [r] = wp.rebase(["work/A_1"], git_runner=git)
+    assert r.outcome == wp.REBASE_CONFLICT and "CONFLICT" in (r.reason or "")
+    # 엔진이 임의 abort 하지 않았다.
+    assert not git.did("rebase", "--abort")
+    # 장부 base.commit 미갱신(옛 _OLD_SHA 유지).
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    assert recorded["base"]["commit"] == _OLD_SHA
+
+
+def test_rebase_onto_conflict_leaves_ledger_fully_unchanged(wp, monkeypatch):
+    """--onto + 충돌 → 장부 **완전 불변**(base branch/commit·head·recorded_at) — onto 를 rebase 이전에
+    기록하지 않는다(T-0359 must-fix·no-onto 충돌 경로와 대칭·거짓 base 주장 차단)."""
+    _seed_rebase_lease(wp, base={"branch": "origin/main", "commit": _OLD_SHA})
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    # onto=develop 는 해소되나(검증 통과) rebase 는 충돌(rc1) — 장부는 옛 origin/main 그대로여야.
+    git = _RebaseGit(rebase_rc=1, origin_has_base=True,
+                     tips={"develop": _REBASED_BASE_TIP, "origin/develop": _REBASED_BASE_TIP})
+    [r] = wp.rebase(["work/A_1"], onto="develop", git_runner=git)
+    assert r.outcome == wp.REBASE_CONFLICT
+    assert not git.did("rebase", "--abort")   # 엔진 abort 안 함
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    # base 는 develop 로 조용히 기록되지 않았다 — 옛 origin/main@_OLD_SHA 완전 보존.
+    assert recorded["base"] == {"branch": "origin/main", "commit": _OLD_SHA}
+    assert recorded["head"] == _OLD_SHA and recorded["recorded_at"] == "t"
+
+
+def test_rebase_onto_resolves_and_records_base(wp, monkeypatch):
+    """--onto 명시 → 그 기준으로 진행 + base 기록(gate 소비·resolve_rebase_base)."""
+    _seed_rebase_lease(wp)   # base 미기록 — onto 로 해소
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    git = _RebaseGit(rebase_rc=0, origin_has_base=True,
+                     tips={"develop": _REBASED_BASE_TIP, "origin/develop": _REBASED_BASE_TIP},
+                     head_sha=_REBASED_HEAD)
+    [r] = wp.rebase(["work/A_1"], onto="develop", git_runner=git)
+    assert r.outcome == wp.REBASE_REBASED and r.base == "develop"
+    assert git.did("rebase", "origin/develop")   # origin/<base> 최신 타깃
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    assert recorded["base"]["branch"] == "develop"
+
+
+# ── rebase — 일괄 독립성(한 충돌이 나머지를 안 막음) ─────────────────────────
+
+
+def test_rebase_batch_independent_one_conflict_does_not_block_rest(wp, monkeypatch):
+    """일괄 — 첫 슬롯 충돌이 나머지 rebase 를 막지 않는다(슬롯 독립·§F10)."""
+    def _mk(slot):
+        return wp.Lease(slot=slot, repo="A", session="job", pid=os.getpid(),
+                        started="t", state="leased",
+                        git={"base": {"branch": "origin/main", "commit": _OLD_SHA},
+                             "branch": "feat", "head": _OLD_SHA, "submodules": [],
+                             "recorded_at": "t"})
+    _seed(wp, _mk("work/A_1"), _mk("work/A_2"))
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    # 첫 rebase 호출=충돌(rc1)·두번째=성공(rc0) — 슬롯-무관 순서 모델.
+    git = _RebaseGit(rebase_seq=[1, 0], tips={"origin/main": _REBASED_BASE_TIP},
+                     head_sha=_REBASED_HEAD)
+    results = wp.rebase(["work/A_1", "work/A_2"], git_runner=git)
+    outcomes = {r.slot: r.outcome for r in results}
+    assert outcomes["work/A_1"] == wp.REBASE_CONFLICT
+    assert outcomes["work/A_2"] == wp.REBASE_REBASED   # 앞 충돌이 안 막음
+    # A_2 만 장부 갱신(A_1 은 충돌이라 미갱신).
+    leases = {l.slot: l.git["base"]["commit"] for l in wp.list_leases()}
+    assert leases["work/A_1"] == _OLD_SHA and leases["work/A_2"] == _REBASED_BASE_TIP
+
+
+# ── _rebase_in_progress (git-path + fs 실재) ─────────────────────────────────
+
+
+def test_rebase_in_progress_detects_rebase_merge_dir(wp):
+    """.git/rebase-merge 실재 → 진행 중(True)·부재 → False."""
+    p = wp.slot_path("work/A_1")
+    (p / ".git").mkdir(parents=True, exist_ok=True)
+    git = _RebaseGit()
+    assert wp._rebase_in_progress("work/A_1", git_runner=git) is False
+    (p / ".git" / "rebase-merge").mkdir()
+    assert wp._rebase_in_progress("work/A_1", git_runner=git) is True
+
+
+# ── CLI(main) — status 일괄 / rebase ─────────────────────────────────────────
+
+
+def test_cli_status_task_batch_lists_all(wp, proj, monkeypatch, capsys):
+    """CLI `status --task <이름>` — 보유 슬롯 전부 렌더."""
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", session="job", state="leased"))
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: _RebaseGit())
+    rc = wp.main(["status", "--task", "job"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "work/A_1" in out and "work/A_2" in out
+
+
+def test_cli_status_slot_and_task_conflict_rc1(wp, capsys):
+    """CLI status — `<slot>` + `--task` 동시는 rc 1(배타)."""
+    rc = wp.main(["status", "work/A_1", "--task", "job"])
+    assert rc == 1
+    assert "하나만" in capsys.readouterr().err
+
+
+def test_cli_rebase_single_success_rc0(wp, proj, monkeypatch, capsys):
+    """CLI `rebase <slot>` 성공 → rc 0 + '성공' + 장부 갱신(실경로 wiring)."""
+    _seed_rebase_lease(wp, base={"branch": "origin/main", "commit": _OLD_SHA})
+    _mk_slot_dir(wp, "work/A_1")
+    git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP}, head_sha=_REBASED_HEAD)
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    rc = wp.main(["rebase", "work/A_1"])
+    assert rc == 0
+    assert "성공" in capsys.readouterr().out
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    assert recorded["base"]["commit"] == _REBASED_BASE_TIP
+
+
+def test_cli_rebase_single_conflict_rc1_loud(wp, proj, monkeypatch, capsys):
+    """CLI rebase 단일 충돌 → rc 1 + stderr loud(그 상태 그대로·미갱신)."""
+    _seed_rebase_lease(wp, base={"branch": "origin/main", "commit": _OLD_SHA})
+    _mk_slot_dir(wp, "work/A_1")
+    git = _RebaseGit(rebase_rc=1, tips={"origin/main": _REBASED_BASE_TIP})
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    rc = wp.main(["rebase", "work/A_1"])
+    assert rc == 1
+    assert "충돌" in capsys.readouterr().err
+
+
+def test_cli_rebase_no_target_rc1(wp, capsys):
+    """CLI rebase — 대상 미지정(슬롯도 --task 도 없음)이면 rc 1 안내."""
+    rc = wp.main(["rebase"])
+    assert rc == 1
+    assert "대상을 지정" in capsys.readouterr().err
+
+
+def test_cli_rebase_batch_summary_rc0(wp, proj, monkeypatch, capsys):
+    """CLI `rebase --task <이름>` — 일괄 성공 요약 + rc 0."""
+    def _mk(slot):
+        return wp.Lease(slot=slot, repo="A", session="job", pid=os.getpid(),
+                        started="t", state="leased",
+                        git={"base": {"branch": "origin/main", "commit": _OLD_SHA},
+                             "branch": "feat", "head": _OLD_SHA, "submodules": [],
+                             "recorded_at": "t"})
+    _seed(wp, _mk("work/A_1"), _mk("work/A_2"))
+    _mk_slot_dir(wp, "work/A_1")
+    _mk_slot_dir(wp, "work/A_2")
+    monkeypatch.setattr(wp, "_real_git_runner",
+                        lambda cwd: _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
+                                               head_sha=_REBASED_HEAD))
+    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    rc = wp.main(["rebase", "--task", "job"])
+    assert rc == 0
+    assert "요약" in capsys.readouterr().out
+
+
+def test_cli_rebase_slot_and_task_conflict_rc1(wp, capsys):
+    """CLI rebase — `<slot>` + `--task` 동시는 rc 1(배타)."""
+    rc = wp.main(["rebase", "work/A_1", "--task", "job"])
+    assert rc == 1
+    assert "하나만" in capsys.readouterr().err

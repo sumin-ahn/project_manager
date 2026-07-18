@@ -10,7 +10,8 @@
   - solo(슬롯 없음) 자연 no-op: 앵커만 · 슬롯 검사(풀) 미진입.
   - 작업공간 실재: 장부·폴더 부재면 거부.
   - 타 점유자: 다른 세션 leased 면 거부 · idle/내 세션이면 통과 · readonly(⑬)는 bind(점유) 거부(should-fix).
-  - 보호브랜치: **warn 만**(거부 아님·rc 0) + T-0360 안내.
+  - main-참조(보호브랜치 직접 checkout / origin-추적 upstream): **진입 거부**(rc 1·부분 dump 금지) +
+    해소 2택 실값(readonly 생성 / 작업 브랜치 전환) · readonly role 예외(§F11).
   - 기록 vs live: compare_slot_git 소비 — fail_loud=거부 / 미기록=loud+통과 / ok=통과 / submodule drift=warn.
   - 재구현 아님: compare_slot_git 을 실제로 호출(소비)한다.
   - sensitivity: 각 거부 배선을 무력화하면 통과로 뒤집힌다.
@@ -94,6 +95,16 @@ class _FakeCompare:
         self.live = live or {}
 
 
+class _FakeSlotStatus:
+    """slot_status 결과 대역 — 0단계 origin-추적 거부는 `upstream_ok`·`upstream` 을 소비 (T-0276·§F9 축 2).
+
+    `upstream` = `@{upstream}` 해소명(예 `origin/main`·`origin/a5`) — 보호 브랜치 원격만 거부한다."""
+
+    def __init__(self, *, upstream_ok=False, upstream=None):
+        self.upstream_ok = upstream_ok
+        self.upstream = upstream
+
+
 class _NeedsCreate(Exception):
     def __init__(self, repo):
         self.repo = repo
@@ -103,11 +114,14 @@ class _NeedsCreate(Exception):
 class _FakePool:
     """worktree_pool DI mock — 0단계 슬롯 검사(실재·점유·기록정합)를 구동한다(실 부작용 0)."""
 
-    def __init__(self, *, leases=None, branch="feature-x", compare_result=None):
+    def __init__(self, *, leases=None, branch="feature-x", compare_result=None,
+                 upstream_ok=False, upstream=None):
         self.NeedsCreate = _NeedsCreate
         self._leases = list(leases or [])
         self._branch = branch
         self._compare_result = compare_result
+        self._upstream_ok = upstream_ok
+        self._upstream = upstream
         self.bind_calls: list[str] = []
         self.compare_calls: list[str] = []
         self.list_leases_calls = 0
@@ -130,7 +144,7 @@ class _FakePool:
         return _FakeLease("work/%s_1" % repo, repo, self._branch)
 
     def slot_status(self, slot, *, git_runner=None):
-        return None
+        return _FakeSlotStatus(upstream_ok=self._upstream_ok, upstream=self._upstream)
 
     def compare_slot_git(self, slot, *, git_runner=None):
         self.compare_calls.append(slot)
@@ -361,29 +375,93 @@ def test_leased_and_idle_states_not_treated_as_creating(bootstrap, tmp_path, cap
         assert inst.run(repo="X", slot=2) == 0, f"{state} 를 creating 으로 오차단"
 
 
-# ── 5. 보호브랜치 = warn 만 (거부 아님·T-0360 안내) ──────────────────────────
+# ── 5. main-참조(보호브랜치/origin-추적) = 진입 거부 (T-0360·⑧·§F9·부분 dump 금지) ──
 
 
-def test_protected_branch_warns_but_passes(bootstrap, tmp_path, capsys):
-    """보호 브랜치(main) 직접 체크아웃 = **경고만**(rc 0·거부 아님) + 후속 T-0360 안내."""
+def test_protected_branch_rejects_before_dump(bootstrap, tmp_path, capsys):
+    """보호 브랜치(main) 직접 체크아웃 = **진입 거부**(rc 1·부분 dump 금지) — warn→거부 승격(T-0360)."""
     board = _FakeBoard(anchor_pm_home=None, protected=["main"])
     pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")], branch="main")
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
     rc = inst.run(repo="X", slot=2)
-    assert rc == 0, "보호브랜치를 이 티켓에서 거부했다(warn-only 위반·거부는 T-0360)"
-    err = capsys.readouterr().err
-    assert "보호 브랜치" in err and "main" in err
-    assert "T-0360" in err  # 후속 거부 활성 티켓 안내.
-    assert pool.bind_calls == ["work/X_2"]  # dump/bind 는 정상 진행.
+    assert rc == 1, "보호브랜치 main 직접 checkout 이 거부되지 않았다(warn→거부 승격 미적용)"
+    cap = capsys.readouterr()
+    assert cap.out == "", "거부인데 부분 dump 가 떴다(0단계 계약 위반)"
+    assert "보호 브랜치" in cap.err and "main" in cap.err
+    assert pool.bind_calls == [], "거부인데 bind_slot 이 불렸다(부분 dump)"
 
 
-def test_non_protected_branch_no_warning(bootstrap, tmp_path, capsys):
-    """비보호 브랜치는 경고 없음(sensitivity — warn 이 브랜치 조건부임을 입증)."""
+def test_protected_upstream_tracking_rejects_before_dump(bootstrap, tmp_path, capsys):
+    """보호브랜치 원격(origin/main) origin-추적 = **진입 거부**(rc 1·§F9 축 2) — `main`+`origin/main` 슬롯 concern.
+
+    브랜치는 비보호(feature-x)여도 upstream 이 보호 브랜치 원격(origin/main)을 가리키면 main-참조로 거부."""
     board = _FakeBoard(anchor_pm_home=None, protected=["main"])
-    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")], branch="feature-x")
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")],
+                     branch="feature-x", upstream_ok=True, upstream="origin/main")
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+    rc = inst.run(repo="X", slot=2)
+    assert rc == 1, "보호브랜치 원격(origin/main) origin-추적 슬롯이 거부되지 않았다(§F9 축 2 미적용)"
+    cap = capsys.readouterr()
+    assert cap.out == ""
+    assert "origin-추적" in cap.err and "origin/main" in cap.err
+    assert pool.bind_calls == []
+
+
+def test_feature_branch_upstream_not_rejected(bootstrap, tmp_path, capsys):
+    """자기 feature 브랜치 추적(origin/a5)은 정상 작업 슬롯 — 거부 안 함 (오탐 0·sensitivity).
+
+    T-0273/0274 로 슬롯이 자기 workstream(origin/<branch>)을 추적하는 건 정상이다 — §F9 concern 은
+    `origin/main` 추적뿐이라 임의 upstream 을 막으면 정상 슬롯을 깬다(회귀 방어)."""
+    board = _FakeBoard(anchor_pm_home=None, protected=["main"])
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")],
+                     branch="a5", upstream_ok=True, upstream="origin/a5")
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+    rc = inst.run(repo="X", slot=2)
+    assert rc == 0, "자기 feature 브랜치 추적(origin/a5) 슬롯을 잘못 거부했다(오탐)"
+    assert "origin-추적" not in capsys.readouterr().err
+    assert pool.bind_calls == ["work/X_2"]
+
+
+def test_reject_message_has_two_resolution_choices(bootstrap, tmp_path, capsys):
+    """거부 메시지 = 해소 2택 **실값**(readonly 생성 커맨드 / 작업 브랜치 전환 커맨드) — sensitivity.
+
+    안내 부재 시 채택자가 BREAKING 거부를 어떻게 푸는지 알 수 없다(§F9·DoD sensitivity)."""
+    board = _FakeBoard(anchor_pm_home=None, protected=["main"])
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")], branch="main")
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
     inst.run(repo="X", slot=2)
-    assert "보호 브랜치" not in capsys.readouterr().err
+    err = capsys.readouterr().err
+    # (a) readonly 슬롯 생성 실값 — repo 치환 포함.
+    assert "worktree add X --readonly" in err
+    # (b) 작업 브랜치 전환 실값 — slot_id·session 치환 포함.
+    assert "git -C work/X_2 switch -c X_2" in err
+
+
+def test_non_main_reference_slot_passes(bootstrap, tmp_path, capsys):
+    """비보호 브랜치 + upstream 미설정(작업 슬롯 정상형)은 거부 없이 통과 (sensitivity — 조건부성 입증)."""
+    board = _FakeBoard(anchor_pm_home=None, protected=["main"])
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")],
+                     branch="feature-x", upstream_ok=False)
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+    rc = inst.run(repo="X", slot=2)
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "보호 브랜치" not in err and "origin-추적" not in err
+    assert pool.bind_calls == ["work/X_2"]
+
+
+def test_readonly_role_exempt_from_main_reference_reject(bootstrap, tmp_path):
+    """readonly 슬롯(role="readonly")은 main-참조 거부 예외(§F11·⑬) — main 브랜치여도 거부하지 않는다.
+
+    readonly 는 main-참조 역할을 이전받는 대상이라 그 자체가 거부되면 자기충돌(§F1b 이행 순서). bind
+    flow 에선 2c 가 먼저 거부하지만, 판정 함수의 self-consistency 를 직접 검증한다(role carve-out)."""
+    board = _FakeBoard(anchor_pm_home=None, protected=["main"])
+    pool = _FakePool(branch="main", upstream_ok=True)
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+    ro_lease = _LeaseEntry("work/X_2", state="idle", role="readonly")
+    assert inst._phase0_protected_reject(pool, "X", "work/X_2", "X_2", ro_lease) == 0
+    work_lease = _LeaseEntry("work/X_2", state="idle", role="work")
+    assert inst._phase0_protected_reject(pool, "X", "work/X_2", "X_2", work_lease) == 1
 
 
 # ── 6. 기록 vs live 정합 (compare_slot_git 소비·㉒) ──────────────────────────

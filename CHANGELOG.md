@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### BREAKING
+- **부트스트랩 0단계 main-참조 슬롯 진입 거부** (T-0360) — 슬롯 HEAD 가 **보호 브랜치(main 등) 직접 checkout** 또는 **보호 브랜치 원격(origin/main 등)을 upstream 으로 추적** 상태면 `/pm-bootstrap` 0단계가 **부분 dump 도 없이 진입 거부**한다(기존 = 경고 후 통과). 정상 작업 슬롯의 feature upstream(예 `origin/<feature>`) 추적은 거부 대상이 아니다. main 직접 checkout·수동 tracking 은 `--no-track`(신규 파생 경로에만 적용)이 못 막는 무방비 구멍이었고, 방어가 pre-push 훅(T-0076) 하나뿐이라 커밋이 다 된 뒤 push 순간에야 막혔다 — 진입 시점으로 앞당겨 canonical/보호 브랜치 오염 커밋을 원천 차단한다. readonly 공유 슬롯(detached·role=readonly)은 예외(브랜치 자체가 없음).
+
+  - **채택자 영향**: main-checkout(또는 origin-추적) 슬롯을 쓰던 채택자는 갱신 즉시 부트스트랩이 거부된다 — 부분 dump 도 안 나온다(세션 진실 오염 방지).
+  - **해소 절차 (택1)** — 거부 메시지가 실값 커맨드로 안내한다:
+    - (a) 코드 읽기 기준면이 필요하면 readonly 슬롯을 만든다: `pm-config worktree add <repo> --readonly`
+    - (b) 이 슬롯을 작업 브랜치로 전환한다(main 직접 checkout 이탈): `git -C work/<repo>_<N> switch -c <repo>_<N>`
+  - **릴리즈 절차 재배선**: 릴리즈 livegate `--cwd`·codex `--paths` 가 지목하던 "origin/main 이 도는 slot-1" 역할은 readonly 공유 슬롯(detached·origin/main 기준면)으로 이전됐다(pm-release 스킬/커맨드 §2). readonly 슬롯은 무리스라 `--slot` 로 안 잡히므로 릴리즈는 `livegate record --cwd <readonly 슬롯 절대경로>` 로 핀한다.
+  - **다운스트림 lockstep** (finance/회사 등 채택자): BREAKING 이라 main-checkout 슬롯 운용은 갱신 후 거부된다. `pm_update`(엔진 흡수) 후 위 해소 절차대로 각 슬롯을 readonly 또는 작업 브랜치로 정리하고, 릴리즈 절차를 쓰는 채택자는 livegate 핀을 readonly 슬롯 `--cwd` 로 갱신한다.
+
 ## [1.2.4] - 2026-07-17
 
 cwd 오실행 stray 클래스 폐쇄 patch — 단일 티켓(T-0345). 이중게이트(내부 reviewer + codex 반려 1건 재작업 수렴) 통과.

@@ -1,6 +1,6 @@
 ---
-description: "릴리즈 절차 명령어化 — adopter#0 sync 선행 → livegate record(slot-1 핀·수집 N 확인) → main push(대화 승인·자동 안 함) → tag → gh release create → gh release view 완결 확인 → adopter#0 흡수 → audience 라벨. backbone = board.py livegate record/check + pm_update(=/pm-update). 공개 main push 는 사용자 승인 게이트 유지. Triggers: '릴리즈 내', 'release vX.Y.Z', '태그·GitHub Release', 'pm-release'."
-argument-hint: "vX.Y.Z --repo <repo>  (릴리즈 버전·slot-1 은 --slot 1 로 핀)"
+description: "릴리즈 절차 명령어化 — adopter#0 sync 선행 → livegate record(readonly 슬롯 핀·수집 N 확인) → main push(대화 승인·자동 안 함) → tag → gh release create → gh release view 완결 확인 → adopter#0 흡수 → audience 라벨. backbone = board.py livegate record/check + pm_update(=/pm-update). 공개 main push 는 사용자 승인 게이트 유지. Triggers: '릴리즈 내', 'release vX.Y.Z', '태그·GitHub Release', 'pm-release'."
+argument-hint: "vX.Y.Z --repo <repo>  (릴리즈 버전·main-참조 readonly 슬롯은 --cwd 로 핀)"
 audience: pm-internal
 ---
 
@@ -47,18 +47,26 @@ false-block)를 낸다 — livegate record 를 돌리기 **전에** ② PM 홈�
 ./pm-update.sh --from <worktree-canonical-경로>     # 예 work/project_manager_1 (upstream=경로면 --from 생략 가능)
 ```
 
-### 2. livegate record (slot-1 핀 · 수집 N 확인 · false-green 방지)
+### 2. livegate record (readonly 슬롯 핀 · 수집 N 확인 · false-green 방지)
 
 릴리즈 라이브 wave 를 **실측**해 green(수집 pin 충족)을 push 대상 rev 에 기록한다(손기록 없음·보호훅이 소비).
 
+**main-참조 역할은 readonly 슬롯이 진다(T-0358·T-0360)**: 부트스트랩 0단계가 main 직접 checkout·
+origin-추적 슬롯 진입을 거부하므로, 릴리즈 라이브 tier·codex `--paths` 가 돌던 "origin/main 이 도는
+슬롯" 역할은 readonly 공유 슬롯(detached·origin/main 기준면)으로 이전됐다. readonly 슬롯은 무리스
+(unleased)라 `--repo --slot` 로 해소되지 않으므로 **`--cwd <readonly 슬롯 절대경로>`** 로 핀한다.
+
 ```bash
-# 다중슬롯: slot-1 을 명시 핀 (라이브 릴리즈 브랜치 = origin/main 이 도는 슬롯). PM_ORCH_LIVE_RELEASE=1 필수.
-PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record --repo <repo> --slot 1
-#   (또는 슬롯 worktree 절대경로 핀: --cwd <slot-1 절대경로>)
+# main-참조 기준면 = readonly 슬롯(T-0358·detached·origin/main 추적). PM_ORCH_LIVE_RELEASE=1 필수.
+PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record --repo <repo> --cwd <readonly 슬롯 절대경로>
+#   readonly 슬롯 경로는 `pm-config worktree status` 의 role=readonly 행에서 확인.
 ```
 
-- **slot-1 핀**: `--repo <repo> --slot 1`(또는 `--cwd`)로 릴리즈 슬롯을 명시한다 — 무명시 + leased ≥2
-  이면 seam 이 fail-loud(모호는 시끄럽게)한다. 침묵 폴백 금지.
+- **readonly 슬롯 핀(`--cwd`)**: 무리스 공유 슬롯이라 `--slot` 로 안 잡힌다 — `--cwd <절대경로>` 로 명시한다.
+  무명시 + leased ≥2 이면 seam 이 fail-loud(모호는 시끄럽게)한다. 침묵 폴백 금지.
+- **codex `--paths` 도 readonly 슬롯 기준**: 릴리즈 전 codex 교차검증(`external_review`)의 `--paths` 도
+  같은 readonly 슬롯 worktree 를 가리킨다 — canonical(origin/main) 읽기 기준면이 그리로 이전됐다(stale
+  import 사본 false 결과 방지·§1 sync 선행과 짝).
 - **`PM_ORCH_LIVE_RELEASE=1`**: 없으면 release wave 가 skip → **수집 N=0** → record fail(수집 위장 차단).
   라이브 tier(claude+opencode)를 실제로 태우려면 반드시 set.
 - **수집 N 확인**: board 가 `release N/<pin> green ✓` 를 출력한다 — N 이 pin 과 다르면 fail 로 릴리즈를
@@ -122,6 +130,7 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record -
 
 - backbone: `board.py livegate record`/`livegate check`(ADR-0039) · `pm_update`(pm-update 커맨드) · `git`/`gh`.
 - ADR-0049(명령어化 4요소·청중) · ADR-0039(livegate·라이브 tier 단일) · T-0290(gh release view 완결) ·
-  T-0344(opencode command pair-pin). 라이브 하네스 테스트 = tests/test_pm_release_live.py(ADR-0050).
+  T-0344(opencode command pair-pin) · T-0360(main-참조 역할 readonly 이전·거부 활성). 라이브 하네스
+  테스트 = tests/test_pm_release_live.py(ADR-0050).
 
 </command-instruction>

@@ -2433,7 +2433,7 @@ class PmBootstrap:
         # ── 0단계 검증 (⑧·spike §F1b·[[T-0351]]) — dump/alloc 을 뿌리기 *전에* "내가 올바른
         # 슬롯/위치를 쓰고 있나"를 기계로 검증한다. 실패 시 **부분 dump 도 금지**(dump 가 뜨면 PM 이
         # 그것을 세션의 진실로 믿는다·결정 ⑧) — preflight 가 비-0 을 돌려주면 여기서 alloc/수집/dump
-        # 이전에 즉시 중단한다. 엔진 앵커(무조건)+슬롯 실재·점유·기록정합(lean 조건)+보호브랜치 warn.
+        # 이전에 즉시 중단한다. 엔진 앵커(무조건)+슬롯 실재·점유·기록정합(lean 조건)+main-참조 거부(T-0360).
         # solo(repo None)/alloc(slot None)는 슬롯 검사 자연 no-op·앵커만 무조건(결정 2·
         # [[solo-is-subset-of-multipm]]). alloc 앞단에 둬 앵커 거부 시 신규 lease 잔존을 예방한다.
         preflight_rc = self._phase0_preflight(repo, slot)
@@ -2573,7 +2573,7 @@ class PmBootstrap:
     # ── 0단계 검증 (⑧·spike §F1b·[[T-0351]]·dump 이전 · 실패 시 부분 dump 금지) ─────────
     # 부트스트랩이 dump 를 뿌리기 전에 "올바른 슬롯/위치인가"를 기계 검증한다(사용자: "제일 먼저
     # 체크할 건 내가 올바른 슬롯을 쓰고 있나"). 엔진 앵커(무조건)+슬롯 실재·점유·기록정합(lean 조건)
-    # +보호브랜치 warn. 판정 근거는 전부 기계(장부·git·compare 프리미티브)이고 로직 중복은 없다 —
+    # +main-참조 거부(보호브랜치/origin-추적·T-0360). 판정 근거는 전부 기계(장부·git·compare 프리미티브)이고 로직 중복은 없다 —
     # 엔진 앵커는 board T-0345 가드를, 기록 vs live 는 worktree_pool T-0350 compare(㉒)를 **소비만**한다.
 
     def _phase0_preflight(self, repo: str | None, slot: int | None) -> int:
@@ -2587,7 +2587,8 @@ class PmBootstrap:
              solo(repo None)·alloc(slot None)는 슬롯이 없어 자연 no-op(결정 2·[[solo-is-subset-of-multipm]]).
             2. **작업공간 실재** — 장부 lease 도 없고 폴더도 없으면 거부(phantom 슬롯 바인딩 방지).
             3. **타 점유자** — 다른 세션이 그 슬롯을 leased 로 보유하면 거부(결정 ③·readonly ⑬ 예외).
-            4. **보호브랜치/origin-추적** — **warn 만**(거부는 후속 T-0360·⑧ 이행 순서·readonly 예외).
+            4. **보호브랜치/origin-추적** — main-참조(보호브랜치 직접 checkout 또는 upstream 설정)면
+               **거부**(T-0360·부분 dump 금지·⑧·§F9·readonly 예외).
             5. **기록 vs live** — `compare_slot_git` 소비(㉒·불일치=FAIL-LOUD·미기록=loud+질의 훅·T-0352).
         """
         # 1. 엔진 앵커 (무조건) — worktree 사본에서 부트스트랩하면 거부.
@@ -2650,8 +2651,9 @@ class PmBootstrap:
                 file=sys.stderr,
             )
             return 1
-        # 4. 보호브랜치/origin-추적 = warn 만 (거부는 T-0360).
-        self._phase0_protected_warn(wp, repo, slot_id)
+        # 4. main-참조(보호브랜치 직접 checkout / origin-추적 upstream) = 진입 거부 (T-0360·⑧·§F9).
+        if self._phase0_protected_reject(wp, repo, slot_id, session, lease):
+            return 1
         # 5. 기록 vs live 정합 (compare 소비·㉒).
         return self._phase0_record_vs_live(wp, slot_id)
 
@@ -2743,28 +2745,86 @@ class PmBootstrap:
             return holder
         return None
 
-    def _phase0_protected_warn(self, wp, repo: str, slot_id: str) -> None:
-        """슬롯 live 브랜치가 보호목록(main 등)이면 **경고만** 낸다 (⑧·이 티켓=warn·거부는 T-0360).
+    def _phase0_protected_reject(self, wp, repo: str, slot_id: str, session: str, lease) -> int:
+        """슬롯 live 상태가 main-참조(보호브랜치 직접 checkout 또는 origin-추적 upstream)면 **진입 거부** (⑧·§F9·T-0360).
 
-        ⑧의 보호브랜치/origin-추적 *거부*는 채택자-facing BREAKING 급 — main-checkout 슬롯을 쓰던
-        채택자를 갱신 즉시 깨뜨리고, adopter#0 slot-1 도 현재 main+origin/main(릴리즈 livegate·codex
-        `--paths` 기준). → 이 티켓은 **warn 만 출하**하고, 거부 활성은 readonly 슬롯(⑬)이 main-참조
-        역할을 이전한 뒤 후속 T-0360 이 한다(spike §F1b 이행 순서·[[cross-cutting-breaking-blast-radius]]).
-        `_protected_warning`(T-0076) 헬퍼를 재사용해 보호 판정만 하고, 경고에 T-0360/readonly 해소를
-        안내한다. detached/조회불가/board 부재는 조용히 생략(fail-soft·soft 경고는 안 깨진다)."""
-        try:
-            branch = wp.current_branch(slot_id)
-        except Exception:  # noqa: BLE001 — fail-soft: 브랜치 조회불가는 경고 생략.
-            return
-        protected = self._protected_warning(repo, branch)
-        if protected is None:
-            return
+        T-0351 이 깐 warn 골격을 **거부로 승격**한다(BREAKING). 근거(§F9): `--no-track`(ADR-0051 D3·
+        T-0274)은 신규 파생 경로에만 upstream 자동설정을 억제하므로 **main 직접 checkout·수동 tracking
+        은 무방비** — 커밋이 다 된 뒤 pre-push 훅(T-0076)이 마지막에 잡는 구멍(PM 71 "① 오염 커밋")을
+        진입 시점으로 앞당긴다. 실패 시 **부분 dump 도 금지**(0단계 계약 — dump 가 뜨면 PM 이 그것을
+        세션 진실로 믿는다). 판정 두 축은 `_phase0_main_reference_reason` 가 소비만 한다(중복 로직 0).
+
+        **readonly 예외(§F11·⑬)**: readonly 공유 슬롯(role="readonly")은 detached(브랜치 없음·upstream
+        없음)라 두 축에 자연 미해당하지만, role 로도 명시 carve-out 한다 — main-참조 역할을 이전받는
+        슬롯이 곧 readonly 이므로 그 자체가 거부되면 자기충돌(§F1b 이행 순서). (bind flow 에선 2c 가
+        readonly 를 이미 거부해 여기 도달 전이지만, 판정 함수의 self-consistency 를 위해 방어한다.)
+
+        반환 0=통과·1=거부(FAIL-LOUD·부분 dump 금지). 거부 메시지엔 해소 2택(readonly 생성 / 작업
+        브랜치 전환)을 **실값**으로 싣는다(spike §F9)."""
+        # readonly 예외 (§F11·⑬) — 무브랜치 공유 자산은 main-참조 판정 대상이 아니다(역할 이전 대상 자기보호).
+        if self._phase0_is_readonly(lease):
+            return 0
+        reason = self._phase0_main_reference_reason(wp, repo, slot_id)
+        if reason is None:
+            return 0
         print(
-            f"[경고·0단계] 슬롯 {slot_id} 이(가) 보호 브랜치 `{protected}` 를 직접 체크아웃한 상태입니다 "
-            f"— 지금은 경고만 하지만 향후(T-0360) 진입 거부로 전환됩니다. 작업은 전용 브랜치에서 하거나, "
-            f"main-참조 역할은 readonly 슬롯(T-0358)으로 옮기세요.",
+            f"[중단·0단계] 슬롯 {slot_id} 이(가) {reason} — main-참조 상태는 진입 거부입니다(T-0360). "
+            f"이 슬롯에서 작업하면 커밋이 canonical/보호 브랜치에 얹혀 ① 오염으로 이어집니다(방어를 "
+            f"pre-push 훅에서 진입 시점으로 앞당김·§F9).\n"
+            f"  → 해소 (택1):\n"
+            f"     (a) 코드 읽기 기준면이 필요하면 readonly 슬롯을 만드세요:\n"
+            f"         {_CARD_TOOL_INVOKE}/pm_config.py worktree add {repo} --readonly\n"
+            f"     (b) 이 슬롯을 작업 브랜치로 전환하세요(main 직접 checkout 이탈):\n"
+            f"         git -C {slot_id} switch -c {session}",
             file=sys.stderr,
         )
+        return 1
+
+    def _phase0_main_reference_reason(self, wp, repo: str, slot_id: str) -> str | None:
+        """슬롯이 main-참조 상태인지 판정 — 사유 문구(거부용) or None(통과) (§F9·두 축).
+
+        두 축(어느 하나라도 해당 시 거부) — spike §F9 의 concern 은 `main`+`origin/main` 슬롯이다:
+          1. **보호브랜치 직접 checkout** — 슬롯 HEAD 브랜치가 보호목록(main 등)이면. `_protected_warning`
+             (T-0076) 재사용(보호목록=`board._repo_protected`).
+          2. **보호브랜치 원격 origin-추적** — `@{upstream}` 이 보호 브랜치 원격(`origin/main` 등)을 가리키면.
+             ⚠️ *임의* upstream 이 아니다 — 정상 작업 슬롯은 자기 feature 브랜치(`origin/a5` 등)를 추적하는
+             게 정상(T-0273/0274·미해소=경고)이라 그건 통과시킨다. 보호브랜치 원격을 추적할 때만 main-참조.
+        보호브랜치 직접 checkout 이 우선(더 구체적 사유). detached(브랜치 None·upstream 없음·readonly
+        등)·조회불가·풀 미지원은 None(fail-soft·오탐 0)."""
+        try:
+            branch = wp.current_branch(slot_id)
+        except Exception:  # noqa: BLE001 — fail-soft: 브랜치 조회불가는 판정 생략(오탐 0).
+            branch = None
+        protected = self._protected_warning(repo, branch)
+        if protected is not None:
+            return f"보호 브랜치 `{protected}` 를 직접 체크아웃한 상태입니다"
+        upstream = self._phase0_protected_upstream(wp, repo, slot_id)
+        if upstream is not None:
+            return f"보호 브랜치 원격(`{upstream}`)을 origin-추적하는 상태입니다"
+        return None
+
+    def _phase0_protected_upstream(self, wp, repo: str, slot_id: str) -> str | None:
+        """슬롯 `@{upstream}` 이 **보호 브랜치 원격**(`origin/main` 등)을 추적하면 그 upstream 이름, 아니면 None (§F9 축 2).
+
+        판정 로직 재구현 금지 — worktree_pool 의 `slot_status`(T-0276·`_upstream_status` 흡수)를 호출만
+        한다. upstream `<remote>/<branch>` 의 branch 부분(첫 `/` 이후·`feature/x` 도 보존)이 보호목록
+        (`_protected_warning`)이면 main-참조로 판정한다. **자기 feature 브랜치 추적(`origin/a5`)은 정상
+        작업 슬롯이라 제외**(오탐 0 — §F9 concern 은 `origin/main` 추적). slot_status 미지원(구 풀)·None·
+        미해소 upstream·`/` 없는 이름·예외는 None(fail-soft·보수 판정)."""
+        getter = getattr(wp, "slot_status", None)
+        if getter is None:
+            return None
+        try:
+            status = getter(slot_id)
+        except Exception:  # noqa: BLE001 — fail-soft: 상태 조회 실패는 판정 생략(오탐 0).
+            return None
+        if status is None or not getattr(status, "upstream_ok", False):
+            return None
+        upstream = getattr(status, "upstream", None)
+        if not upstream or "/" not in upstream:
+            return None
+        tracked_branch = upstream.split("/", 1)[1]  # origin/main → main · origin/feature/x → feature/x
+        return upstream if self._protected_warning(repo, tracked_branch) is not None else None
 
     def _phase0_record_vs_live(self, wp, slot_id: str) -> int:
         """기록된 lease.git(기대) vs 슬롯 live 정합 — `compare_slot_git`(T-0350·㉒) 소비 (결정 ⑪·㉒).
