@@ -6,9 +6,11 @@
 `created_by`/`claimed_by` 를 실제 스탬프한 뒤 **뷰가 서로 섞이는지**를 검증한다 — 라이브 composite
 (opencode·release tier)와 *동형의 create→view 경로*를 무-LLM 으로 못박는다(사용자 발의·PM 64).
 
-검증하는 불변식 (ADR-0053·spike §0):
-  세션 뷰(`--mine`/`--session`/`--slot`) 멤버십 = (내 claim) ∪ (내 소유 open).
+검증하는 불변식 (ADR-0053·spike §0·[[ADR-0059]] Decision 10):
+  세션 뷰(`--mine`/`--session`/`--slot`/`--task`) 멤버십 = (내 claim) ∪ (내 소유 open).
   타 사용자 미claim open 은 절대 미포함. degrade("전체 open=mine")는 solo(distinct user ≤1)에서만.
+  task 렌즈(`--task <이름>`·T-0365)는 claim 축을 그 task 바인딩(`claimed_by==<user>/<task>`·⑲)으로
+  좁힌 task-aware 대응 — slot 세션값 `<user>/<repo>_<N>` 과 ⑥ 예약으로 기계 판별(추가 필드 0).
 
 명시 cross-contamination 단언 (PM 64 필수 형상):
   (a) alice 세션이 bob 미claim open **미열람**              — session/mine 뷰
@@ -16,9 +18,9 @@
   (c) 각자 자기 open+claim **열람**                          — session/mine 뷰
   (d) solo(distinct ≤1) fallback 전체 open **보존**          — 회귀 0
 
-전 surface: `list --mine`·`list --session`·`list --slot`·bootstrap `_collect_board` 카운트
-(`pm_bootstrap.py` **코드변경 0**·`_ticket_is_mine` 상속 검증) + RED-증명(git 금지 하에서 monkeypatch
-로 pre-fix degrade 를 시뮬해 동일 데이터에서 섞임이 실제로 감지됨을 durable 박제).
+전 surface: `list --mine`·`list --session`·`list --slot`·`list --task`(T-0365)·bootstrap
+`_collect_board` 카운트(`pm_bootstrap.py` **코드변경 0**·`_ticket_is_mine` 상속 검증) + RED-증명(git
+금지 하에서 monkeypatch 로 pre-fix degrade 를 시뮬해 동일 데이터에서 섞임이 실제로 감지됨을 durable 박제).
 
 **hermetic 필수**: board.py 경로 전역을 tmp 프로젝트로 monkeypatch 재지정하고 git 폴백은 stub —
 실 루트의 areas.md·tickets/·local.conf 를 절대 건드리지 않는다(test_board_multipm.py 동형).
@@ -157,11 +159,12 @@ def _claim(board, capsys, tid, *, session, user) -> None:
 
 
 def _view(board, capsys, **flags) -> list[str]:
-    """실 `cmd_list` 렌즈(mine/repo/slot)를 돌려 출력에서 ticket ID 목록을 추출한다.
+    """실 `cmd_list` 렌즈(mine/repo/slot/task)를 돌려 출력에서 ticket ID 목록을 추출한다.
 
     `session="<repo>_<N>"` 편의 kwarg 는 내부에서 repo/slot(exact 완전일치) 으로 분해한다(호출부
     가독성 보존 — ADR-0057 이후 `cmd_list` 는 `args.repo`/`args.slot` 만 읽는다). `repo=`(단독=
-    repo-scope 뷰)/`slot=`(단독이면 `--repo` 없어 fail-loud) 직접 지정도 지원한다.
+    repo-scope 뷰)/`slot=`(단독이면 `--repo` 없어 fail-loud)/`task=`(task 바인딩 렌즈·T-0365) 직접
+    지정도 지원한다.
     """
     repo = flags.get("repo")
     slot = flags.get("slot")
@@ -169,7 +172,7 @@ def _view(board, capsys, **flags) -> list[str]:
         repo, slot = _split_session(flags["session"])
     rc = board.cmd_list(argparse.Namespace(
         status=flags.get("status"), tag=None, mine=flags.get("mine", False),
-        repo=repo, slot=slot))
+        repo=repo, slot=slot, task=flags.get("task")))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_list rc={rc}: {out}"
     ids: list[str] = []
@@ -308,6 +311,131 @@ def test_session_excludes_other_users_slot_exclusive_claim(board, capsys):
     assert comp.al1_claim in alice_ids                # 비공허 — 내 alpha_1 claim 은 보임
     assert comp.be2_claim not in alice_ids
     assert not (comp.bob_all & alice_ids)             # bob 티켓(claim·open) 전부 무유출
+
+
+# ════════════════════════════════════════════════════════════════════════
+# surface 5 — `list --task <이름>` : task 바인딩 렌즈 (T-0365·[[ADR-0059]] Decision 10)
+#   멤버십 = claimed_by==<user>/<task> claim ∪ 내 소유 open backlog. 타 user·타 task·slot claim
+#   미열람. ⑥ 예약(task 명 ≠ `<repo>_<N>`) 으로 slot 세션값과 기계 판별(claimed_by 재사용·추가 필드 0).
+# ════════════════════════════════════════════════════════════════════════
+
+def _claim_task(board, capsys, tid, *, task, user) -> None:
+    """실 `cmd_claim --task` 로 task-mode claim (claimed_by=<user>/<task> 스탬프·⑲ claimed_by 재사용).
+
+    `_claim`(slot-mode·`--repo`/`--slot`)의 task 짝 — `--task <이름>` 이 정체성 축이라 claimed_by 의
+    slot 토큰 자리에 task 이름이 들어간다(`_actor_session_override` 가 task 를 세션 override 로 반환).
+    """
+    rc = board.cmd_claim(argparse.Namespace(
+        id=tid, repo=None, slot=None, task=task, user=user))
+    out = capsys.readouterr().out
+    assert rc == 0, f"cmd_claim --task rc={rc}: {out}"
+
+
+def _seed_task_composite(board, capsys):
+    """slot claim composite 위에 task-mode claim 을 얹어 slot/task 두 축을 한 보드에서 섞는다.
+
+    alice: slot claim(alpha_1/alpha_2·from _seed_composite) + task 'refactor' claim + open backlog.
+    bob:   slot claim(beta_1/beta_2) + task 'docs' claim + open backlog. 두 축이 공존해야 렌즈가
+    서로 안 섞임(기계 판별·⑥)을 실 데이터로 검증할 수 있다.
+    """
+    comp = _seed_composite(board, capsys)
+    al_task = _new(board, capsys, prefix="al", session="alpha_1", user="alice",
+                   title="alice refactor wip")
+    _claim_task(board, capsys, al_task, task="refactor", user="alice")
+    be_task = _new(board, capsys, prefix="be", session="beta_1", user="bob",
+                   title="bob docs wip")
+    _claim_task(board, capsys, be_task, task="docs", user="bob")
+    comp.al_refactor = al_task
+    comp.be_docs = be_task
+    return comp
+
+
+def test_task_lens_isolates_by_binding(board, capsys):
+    """`--task refactor`(alice) = 이 task 명의 claim + 내 소유 open backlog · 타 user·타 task·slot 미열람.
+
+    (b) claim 축은 claimed_by==<user>/<task> 로 좁혀진다 — alice 의 slot claim(alpha_1/alpha_2)은
+    같은 user 라도 task 토큰 불일치(⑥ 판별)라 제외, bob(타 user)·bob task(docs)도 제외. (a) open 은
+    ADR-0053 task 대응으로 내 소유 backlog(슬롯무관) 포함.
+    """
+    comp = _seed_task_composite(board, capsys)
+    _write_conf(board, user="alice", session="alpha_1")
+
+    ids = set(_view(board, capsys, task="refactor"))
+    assert comp.al_refactor in ids                       # (b) 이 task 명의 claim
+    assert comp.al1_claim not in ids                     # 내 slot claim = 타 task 토큰 → 제외(⑥)
+    assert comp.al2_claim not in ids
+    assert comp.be_docs not in ids                       # 타 user·타 task claim 제외
+    assert not (comp.bob_all & ids), "task 렌즈에 bob 티켓 유출"
+    assert comp.al1_open in ids and comp.al2_open in ids  # (a) 내 소유 open backlog(슬롯무관)
+    assert ids == {comp.al_refactor, comp.al1_open, comp.al2_open}
+
+
+def test_task_and_slot_lenses_machine_discriminate(board, capsys):
+    """⑥ 예약 규칙 기계 판별: slot claim `<user>/<repo>_<N>` 은 --task 렌즈에, task claim
+    `<user>/<task>` 는 --slot 렌즈에 서로 안 섞인다(claimed_by 재사용·추가 필드 0·§F5b).
+
+    같은 user(alice)의 두 claim 형태를 두 렌즈로 교차 조회해 각 렌즈가 자기 축의 claim 만 매칭하고
+    타 축 claim 을 걸러냄을 실 데이터로 못박는다(DoD: slot 값 vs task 값 판별).
+    """
+    comp = _seed_task_composite(board, capsys)
+    _write_conf(board, user="alice", session="alpha_1")
+
+    # task 렌즈: task claim O · slot claim X.
+    task_ids = set(_view(board, capsys, task="refactor"))
+    assert comp.al_refactor in task_ids
+    assert comp.al1_claim not in task_ids, "slot claim <alice>/<alpha_1> 이 --task 렌즈에 섞임(⑥ 위반)"
+
+    # slot 렌즈: slot claim O · task claim X.
+    slot_ids = set(_view(board, capsys, session="alpha_1"))
+    assert comp.al1_claim in slot_ids
+    assert comp.al_refactor not in slot_ids, "task claim <alice>/<refactor> 가 --slot 렌즈에 섞임(⑥ 위반)"
+
+
+def test_list_task_flag_is_consumed_not_silent_noop(board, capsys):
+    """(이월 ②) 파서-수용/핸들러-소비: cmd_list 가 `--task` 를 실제 소비해 필터가 좁혀진다.
+
+    `--task` 는 list 파서에 등록돼(add_identity_args) *수용*되지만, 핸들러가 무시하면(옛 동작·silent
+    no-op) 무필터 전체 보드가 나와 타 user·타 task claim 이 섞인다 — 그 부재를 assert 로 못박는다
+    (`test_pm_bootstrap_card_parity` 등록-only 가드의 behavior 짝). 존재하지 않는 task 도 whole-board
+    와 달라야(claim 0 → 내 open 만) 필터가 실제로 걸렸음이 증명된다.
+    """
+    comp = _seed_task_composite(board, capsys)
+    _write_conf(board, user="alice", session="alpha_1")
+
+    task_ids = set(_view(board, capsys, task="refactor"))
+    whole = set(_view(board, capsys))                    # 무필터 전체 보드(모든 user·claim)
+    # 소비됐다면 task 렌즈 ⊊ 전체(bob·타 task 제외)·미소비(no-op)면 전체와 동일.
+    assert task_ids < whole, "--task 가 silent no-op — 렌즈가 전체 보드와 동일(핸들러 미소비)"
+    assert not (comp.bob_all & task_ids), "무필터라면 섞였을 bob 티켓이 task 렌즈에 없다(필터 실동작)"
+
+    # 존재하지 않는 task → claim 0 → 내 소유 open backlog 만(전체 보드 아님·필터 실동작 재확인).
+    none_ids = set(_view(board, capsys, task="nonexistent"))
+    assert comp.al_refactor not in none_ids and comp.al1_claim not in none_ids
+    assert none_ids == {comp.al1_open, comp.al2_open}
+
+
+def test_task_lens_rejects_reserved_slot_pattern(board, capsys):
+    """read 경로 깔때기 소비(codex must-fix·T-0355 게이트): `--task alpha_1`(슬롯 예약 패턴·⑥) fail-loud.
+
+    cmd_list 가 `_validate_actor_task_or_exit` 를 안 태우면 예약 패턴 task 명이 `_slot_matches` exact
+    에서 slot claim `<user>/alpha_1` 을 task claim 처럼 매칭해 ⑥ 기계 판별이 깨진다 — 거부가 그 유출
+    경로 자체를 닫는다(부작용 0 조회도 소비 지점 폐쇄에 합류·전 surface 단일 규칙).
+    """
+    _seed_composite(board, capsys)
+    _write_conf(board, user="alice", session="alpha_1")
+    with pytest.raises(SystemExit) as exc:
+        _view(board, capsys, task="alpha_1")
+    assert "예약" in str(exc.value) or "--task" in str(exc.value)
+
+
+def test_task_lens_mutually_exclusive_with_other_scopes(board, capsys):
+    """`--task` 는 --mine/--repo/--slot 과 상호 배타(뷰 스코프는 하나·모호 방지) — 함께 주면 fail-loud."""
+    _seed_composite(board, capsys)
+    _write_conf(board, user="alice", session="alpha_1")
+    for extra in ({"mine": True}, {"repo": "alpha"}, {"repo": "alpha", "slot": 1}):
+        with pytest.raises(SystemExit) as exc:
+            _view(board, capsys, task="refactor", **extra)
+        assert "--task" in str(exc.value)
 
 
 # ════════════════════════════════════════════════════════════════════════

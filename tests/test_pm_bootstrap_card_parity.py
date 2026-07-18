@@ -164,10 +164,10 @@ def test_definition_leaves_and_flags_exist_in_parser(tree):
     파서-backed 도구만 강제(worktree_pool/external_review 는 build_parser 없음 → 강제 제외·카드가
     지어낸 도구 방지는 카드↔정의서 대조가 커버). 정의서가 옵션 rename·삭제로 어긋나면 red.
 
-    이월 메모 [[T-0365]] (codex suggestion·구현 금지·이 티켓 스코프 밖): 이 가드는 flag 이 파서에
-    *등록*됐는지만 본다 — 파서는 수용하나 핸들러가 무시하는 flag(예: cmd_list 가 소비 안 하는
-    `--task`·① 이월분)은 여기서 green 이다. flag 의 *실 동작*(핸들러가 실제로 소비하나)까지 검증하는
-    behavior test 는 T-0365(--task 렌즈 구현)에서 그 렌즈와 함께 추가한다.
+    구조 메모: 이 가드는 flag 이 파서에 *등록*됐는지만 본다 — 파서는 수용하나 핸들러가 무시하는
+    flag 는 여기선 green 이다(등록≠동작). flag 의 *실 동작*(핸들러가 실제로 소비하나)까지 검증하는
+    behavior test 는 `test_board_scoping_isolation.test_list_task_flag_is_consumed_not_silent_noop`
+    (T-0365 이월 ②·`--task` 소비 지점)이 별도로 못박는다.
     """
     tools_dir = _TREES[tree]
     bootstrap = _load(tools_dir, "pm_bootstrap")
@@ -287,7 +287,8 @@ def test_task_mode_covers_new_task_commands():
     가 실제로 추가한 **parser-backed** task 관리 leaf 만 명시 required 로 못박는다 — 새 서브커맨드가
     카드에서 조용히 빠지는 클래스의 teeth. (worktree_pool refresh/rebase 는 build_parser 없는
     스킬-렌더 backbone 이라 parser-backed required 대상이 아니다 — readonly 카드의 status 는 별도
-    test 로 covered. board `list --task` 스코프 렌즈는 cmd_list 미소비라 T-0365 이월·현재 카드 제외.)
+    test 로 covered. board `list --task` 스코프 렌즈(T-0365)는 이제 cmd_list 가 소비하며 task 카드에
+    `list`(+`--task` 정체성 suffix·base render `list`)로 렌더된다.)
     """
     bootstrap = _load(_TREES["root"], "pm_bootstrap")
     declared = {(rec.tool, rec.subpath) for rec in bootstrap._CARD_MODE_CLI["task"]}

@@ -3894,21 +3894,41 @@ def cmd_list(args: argparse.Namespace) -> int:
     #   - `--repo X`(kind=repo·슬롯 무) = 내 것 **∩ 그 repo 의 내 슬롯 전체**(slot_scoped=True·
     #     `_slot_matches` mode="repo"·prefix 매칭) — 신규 repo-scope 뷰. 옛 bare `--slot N`
     #     (repo 불문 cross-repo suffix 매칭)은 제거됐다 — `--slot` 단독은 이제 fail-loud.
-    #   `--mine` 과 `--repo`(+`--slot`)는 상호 배타(뷰 스코프는 하나만) — 타 사용자는 어느 필터
-    #   뷰에도 안 나온다(무필터 `list` 전용).
+    #   - `--task <이름>`(T-0365·[[ADR-0059]] Decision 10) = 내 것 **∩ 그 task**(slot_scoped=True·
+    #     완전 일치) — 멤버십 = claimed_by 바인딩이 그 task(`<user>/<task>`·⑲ claimed_by 재사용)인
+    #     claim + 내 소유 open backlog. task 는 slot 축과 직교(⑥)지만 조회 렌즈로선 slot 축을 task
+    #     이름으로 재사용한다 — `_slot_matches` exact 가 claimed_by 의 `/` 뒤 토큰을 task 와 대조하고
+    #     ⑥ 예약(task 명 ≠ `<repo>_<N>`) 덕에 slot 세션값 `<user>/<repo>_<N>` 과 **기계 판별**된다
+    #     (추가 필드 0·§F5b). `_ticket_is_mine` 단일 predicate 를 그대로 상속(point-patch 금지).
+    #   `--mine`·`--repo`(+`--slot`)·`--task` 는 상호 배타(뷰 스코프는 하나만) — 타 사용자는 어느
+    #   필터 뷰에도 안 나온다(무필터 `list` 전용).
     try:
         identity = identity_args.parse_identity(args)
     except ValueError as e:
         sys.exit(f"[중단] {e}")
     explicit_mine = bool(getattr(args, "mine", False))
+    # task 렌즈(`--task <이름>`) — slot 축과 직교(⑥)지만 조회 뷰로선 별개 필터 스코프라 --mine/
+    # --repo/--slot 과 상호 배타(어느 축으로 좁힐지 모호 방지·뷰 스코프는 하나). None=미지정.
+    task_lens = identity.task
+    if task_lens is not None:
+        # read 경로도 깔때기 소비(T-0355 게이트·codex must-fix) — 미검증이면 `--task alpha_1`(슬롯
+        # 예약 패턴·⑥) 입력이 `_slot_matches` exact 에서 slot claim 을 task 처럼 매칭해 기계 판별이
+        # 깨진다. 부작용 0 조회지만 소비 지점 폐쇄(전 surface 단일 규칙)에 합류한다.
+        _validate_actor_task_or_exit(task_lens)
+    if task_lens is not None and (explicit_mine or identity.kind != "none"):
+        sys.exit("[중단] --task 는 --mine/--repo/--slot 과 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
     if explicit_mine and identity.kind != "none":
         sys.exit("[중단] --mine 은 --repo/--slot 과 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
-    mine = explicit_mine or identity.kind != "none"
-    # slot-scoped 뷰(--repo/--slot)는 claim 을 그 슬롯(또는 그 repo)으로 교집합한다(--mine 은
-    # 전 슬롯·ADR-0056).
-    slot_scoped = identity.kind != "none"
+    mine = explicit_mine or identity.kind != "none" or task_lens is not None
+    # slot-scoped 뷰(--repo/--slot·--task)는 claim 을 그 슬롯/repo/task 로 교집합한다(--mine 은
+    # 전 슬롯·전 task·ADR-0056). task 렌즈는 slot 축을 task 이름으로 재사용(claimed_by 재사용·⑲·
+    # F5b) — slot_mode="exact"(task 토큰 완전 일치)라 ⑥ 예약으로 slot 세션과 기계 판별.
+    slot_scoped = identity.kind != "none" or task_lens is not None
     slot_mode = "repo" if identity.kind == "repo" else "exact"
-    if identity.kind == "slot":
+    if task_lens is not None:
+        my_user = user_name()
+        my_slot = task_lens
+    elif identity.kind == "slot":
         my_user = user_name()
         my_slot = identity.session
     elif identity.kind == "repo":

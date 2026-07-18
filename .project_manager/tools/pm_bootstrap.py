@@ -150,7 +150,10 @@ _CARD_SLOT_CLI = (
     _C_PM_LOG_TAIL, _C_DOMAIN_AFFECTED,
 )
 _CARD_TASK_CLI = (
-    _C_BOARD_LIST_MINE, _C_PC_ALLOC, _C_PC_RELEASE, _C_PC_TASK_PREFIX,
+    # `_C_BOARD_LIST` = task-스코프 뷰 `list --task <이름>`(T-0365·[[ADR-0059]] Decision 10) — `--task`
+    # 는 정체성 축이라 실값 보간(suffix)이고 base render 는 `list`(슬롯 카드의 slot-scoped 뷰와 동형).
+    # `_C_BOARD_LIST_MINE` = user-wide(전 task·직교 렌즈·ADR-0056 불변).
+    _C_BOARD_LIST, _C_BOARD_LIST_MINE, _C_PC_ALLOC, _C_PC_RELEASE, _C_PC_TASK_PREFIX,
     _C_PC_TASK_END, _C_BOARD_CLAIM, _C_BOARD_SHOW, _C_BOARD_LINT, _C_BOARD_REGRESSION,
     _C_TICKET_FINISH, _C_PM_HANDOFF, _C_PM_LOG_TAIL,
 )
@@ -3698,15 +3701,18 @@ class PmBootstrap:
         lines.append("")
 
         lines.append("# 내 작업 보기 (read-only 조회·직접 — ADR-0047 자기 공간 우선)")
+        # task 스코프 렌즈(`list --task <이름>`·T-0365·[[ADR-0059]] Decision 10) — 이 task 명의
+        # claim(claimed_by==<user>/<task>·⑲) + 내 소유 open backlog. `--task` 는 정체성 축이라 실값
+        # 보간(suffix·ti)이고 base render 는 `list`(_C_BOARD_LIST) — 슬롯 카드의 slot-scoped 뷰와 동형.
+        lines.append(cmd(
+            _C_BOARD_LIST,
+            "이 task 스코프(내 open + 이 task 명의 claim)·task 작업 조회·조회 전용",
+            suffix=ti,
+        ))
         lines.append(cmd(
             _C_BOARD_LIST_MINE,
-            "내 것 전 슬롯(내 open + 모든 슬롯의 내 claim)·user-wide 기본 조회",
+            "내 것 전 슬롯·전 task(user-wide·직교 렌즈·ADR-0056)·기본 user 조회",
         ))
-        # task 스코프 렌즈(`list --task <이름>`)는 cmd_list 미소비(전체 보드 출력) — 실행 불가능한
-        # 의미라 카드에 안 뿌린다(카드=현재 동작하는 것만·⑰). --task 렌즈 구현은 [[T-0365]](wave 3) 이월.
-        lines.append(
-            "  ↳ 이 task 스코프 렌즈(`list --task <이름>`)는 T-0365(wave 3) 이월 — 현재는 --mine 로 조회."
-        )
         lines.append("")
 
         # task 작업공간 (F2·⑥) — task 명의로 idle 슬롯 대여/반납. 자동 생성 안 함(풀 소진=사용자 게이트).

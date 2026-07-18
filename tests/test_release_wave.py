@@ -646,6 +646,43 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
             f"실 {harness}: {user} 세션({session}) 뷰가 자기 티켓(T-{prefix}-*)을 미열람 — 섞임 격리가 "
             f"자기 것까지 지움(over-exclude).\n뷰={sorted(ids)}\n" + tail)
 
+    # task 렌즈(`--task <이름>`·T-0365·[[ADR-0059]] Decision 10) 라이브 커버 — 기계 composite
+    # (`test_board_scoping_isolation` 의 task 축 surface)와 **짝**(decision: 둘 중 하나만 갱신하면
+    # 라이브/기계 뷰가 어긋난다). 라이브 wave 는 slot-mode claim(claimed_by=<user>/<repo>_1)만 남기므로
+    # 그 위에서 task 렌즈가 (i) 타 user 무유출 (ii) slot claim 을 task 이름으로 안 끌어옴(⑥ 기계 판별·
+    # claimed_by 재사용) 을 실증한다. task 바인딩 claim 이 없는 fresh task 명은 (claim 0 + 내 소유 open
+    # backlog) 로 좁혀져야 한다 — 무필터 전체 보드로 새지 않음(핸들러가 `--task` 를 실 소비).
+    owned_open_by_prefix = {p: {tid for st, tid in all_rows
+                                if tid.startswith(f"T-{p}-") and st == "open"}
+                            for _r, p, _s, _u in identities}
+    owned_claimed_by_prefix = {p: {tid for st, tid in all_rows
+                                   if tid.startswith(f"T-{p}-") and st == "claimed"}
+                               for _r, p, _s, _u in identities}
+    for repo, prefix, session, user in identities:
+        _set_home_user(home, user)
+        # ⑥ 예약(task 명 ≠ <repo>_<N>)에 안 걸리는 자유 task 명 — slot 토큰(<repo>_1)과 겹치지
+        # 않아야 판별 검증이 유효(예 `alpha_1` 을 주면 slot 토큰과 우연 일치해 공허해진다).
+        fresh_task = f"{prefix}-probe-task"
+        tview = _board_list(home, "--task", fresh_task)
+        assert tview.returncode == 0, (
+            f"board.py list --task {fresh_task} rc={tview.returncode}\n{tview.stderr[-800:]}\n" + tail)
+        tids = {tid for _st, tid in _parse_list_rows(tview.stdout)}
+        others = [op for op in prefixes if op != prefix]
+        leaked = {tid for tid in tids if any(tid.startswith(f"T-{op}-") for op in others)}
+        assert not leaked, (
+            f"실 {harness}: {user} task 렌즈(--task {fresh_task})에 타 user 티켓 유출 {sorted(leaked)} — "
+            f"task-aware 세션 격리 위반(ADR-0059).\n뷰={sorted(tids)}\n" + tail)
+        # slot claim(<user>/<repo>_1·T-{prefix}-* claimed)은 task 이름과 안 겹쳐(⑥) task 렌즈에서
+        # 걸러진다 — 남는 건 claim 0 + 내 소유 open backlog. 미claim open 은 실재(전제 assert)라 뷰가 안 빈다.
+        assert not (owned_claimed_by_prefix[prefix] & tids), (
+            f"실 {harness}: {user} task 렌즈(--task {fresh_task})에 slot claim "
+            f"{sorted(owned_claimed_by_prefix[prefix] & tids)} 유입 — ⑥ 기계 판별 실패(slot 토큰을 task 로 매칭).\n"
+            f"뷰={sorted(tids)}\n" + tail)
+        assert tids == owned_open_by_prefix[prefix], (
+            f"실 {harness}: {user} task 렌즈(--task {fresh_task}) != 내 소유 open backlog "
+            f"{sorted(owned_open_by_prefix[prefix])} — 필터 미소비(silent no-op·전체 보드 유출) 또는 "
+            f"over-exclude.\n뷰={sorted(tids)}\n" + tail)
+
 
 @pytest.mark.release
 @pytest.mark.skipif(
