@@ -45,6 +45,7 @@ python3 .project_manager/tools/pm_handoff.py \
 옵션:
 - `--dry-run` — log/current.md / pm_state.md 변경 미적용·stdout 미리보기만.
 - `--no-pytest` — 회귀 측정 skip (직전 wave 종결 commit 의 숫자 신뢰 시·**비권장**).
+- `--task <이름>` — task 모드(F7·T-0356): 세션 종료의 연속성 앵커를 slot→task 로 이동한다. pm_state 를 `.local/tasks/<이름>/` 에 기록(첫 핸드오프가 template 에서 생성)·dashboard 자기 섹션 `## <이름>`·log 헤더 태그 `(task:<이름>)`. lease 는 유지(세션 종료 ≠ task 종료). `--repo/--slot` 과 직교 — 함께 주면 슬롯은 cwd/회전 단서로만 쓰인다. 이름은 **공백·괄호·path 문자 없는 단일 토큰**(슬롯 예약 `<repo>_<N>` 불가) — 하류 CLI 인자 경계·log 태그 delimiter 파손 방지.
 
 ## CLI 자동 처리 단계
 

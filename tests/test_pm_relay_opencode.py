@@ -327,6 +327,37 @@ def test_opencode_driver_parser_flags(driver_mod):
     assert ns2.agent == "pm"  # PM primary 기본.
 
 
+def test_opencode_driver_parser_accepts_task(driver_mod):
+    """opencode driver build_parser 가 `--task <이름>` 을 수용(claude 와 대칭·기본 None·F7·T-0356)."""
+    parser = driver_mod.build_parser()
+    assert parser.parse_args(["--task", "mytask"]).task == "mytask"
+    assert parser.parse_args([]).task is None
+
+
+def test_opencode_main_forwards_task_to_supervisor(driver_mod, monkeypatch, tmp_path):
+    """opencode main 이 `--task` 를 engine.Supervisor(task=...) 로 forward 한다 (재진입 배선·claude 대칭)."""
+    captured: dict = {}
+
+    class _FakeSup:
+        def __init__(self, driver, *, root, task=None):
+            captured["task"] = task
+
+        def run_loop(self, cwd, in_stream, out_stream):
+            return 0
+
+    class _FakeEngine:
+        Supervisor = _FakeSup
+        StallWatchdogError = RuntimeError
+
+        @staticmethod
+        def parse_opencode_json(lines):
+            return None, None
+
+    monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
+    rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
+    assert rc == 0 and captured["task"] == "mytask"
+
+
 def test_opencode_driver_repo_root_finds_engine(driver_mod, tmp_path):
     """repo_root 가 pm_handoff.py 가 있는 조상을 엔진 루트로 찾는다(JS findEngineRoot 동형)."""
     (tmp_path / ".project_manager" / "tools").mkdir(parents=True)

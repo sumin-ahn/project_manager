@@ -16,7 +16,9 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config worktree prune-stale                         # worktree 사라진 dangling 장부 엔트리 정리 (T-0295)
     pm-config worktree remove <slot> [--force]             # 슬롯 통째 제거 — worktree+브랜치+장부 (원자·T-0333)
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
-    pm-config release <slot> [--force]                     # 작업완료 반납 / 수동 강제(백스톱)
+    pm-config alloc <repo> --task <이름>                    # task 명의로 idle 최소 번호 슬롯 대여 (F2·⑤·T-0354·자동 생성 안 함)
+    pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사·F3) / 수동 강제(백스톱)
+    pm-config task end <이름>                               # task 종료 — claimed 소진 게이트(⑲)·dirty 게이트·일괄 반납 + _ended 아카이브(②·T-0354)
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수·T-0054)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (T-0145·검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가 (ADR-0048·T-0270·T-0282)
@@ -27,7 +29,11 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
                 로 `.repos/<name>.git`(worktree 풀 공유 .git 원·ADR-0011).
   - worktree add → worktree_pool.create_slot(새 슬롯 + `git submodule update --init`).
   - status|whoami → worktree_pool.list_leases() + 이 세션 식별(repo/슬롯/branch surface).
-  - release → worktree_pool.release(--force 면 force_release) — 수동 반납/강제만.
+  - alloc    → worktree_pool.alloc(repo, session=<task>) — idle 최소 번호 대여(⑤ 논리층·PM 자율).
+               풀 소진(NeedsCreate)이면 자동 생성 안 하고 `worktree add` 승인 요청(물리층=사용자).
+  - release → worktree_pool.release(--task 면 owner_task 소유검사·F3·--force 면 force_release) — 수동 반납/강제만.
+  - task end → board.scan_task_tickets(⑲ claimed 소진 게이트) → worktree_pool.end_task(dirty 게이트·
+               일괄 idle 반납·서술 폴더 `_ended/<이름>-<날짜>/` 아카이브 이동·②·삭제 아님).
   - update → pm_update.main(argv) verbatim forward (rename 비용 0·중복 구현 금지).
   - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
                   (ADR-0048 Decision 3·복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
@@ -1350,11 +1356,15 @@ def cmd_release(
     *,
     worktree_pool=None,
 ) -> int:
-    """`release <slot> [--force]` — 작업완료 반납 / 수동 강제 백스톱 (ADR-0013).
+    """`release <slot> [--task <이름>] [--force]` — 작업완료 반납 / 수동 강제 백스톱 (ADR-0013·T-0354 F3).
 
     - 기본: worktree_pool.release(slot) — dirty 면 ReleaseRefused(수동 정리 요구).
-    - --force: worktree_pool.force_release(slot) — dirty/leased 무시 강제 idle 화
-      (dirty 는 stash 보존 시도). 장부에 슬롯 없으면 무해 종료.
+    - `--task <이름>`: 소유검사(F3) — 이 슬롯이 그 task 명의(lease.session)가 아니면 `NotTaskOwner`
+      로 거부(다른 task/세션 슬롯을 실수로 idle 화 방지). dirty 판정보다 먼저. `--task` 미지정은
+      현행 slot-only 반납(백스톱).
+    - `--force`: worktree_pool.force_release(slot) — dirty/leased **무시 강제** idle 화(dirty 는
+      stash 보존 시도). 장부에 슬롯 없으면 무해 종료. force 는 순수 백스톱이라 `--task` 소유검사도
+      건너뛴다(override 의도).
 
     런타임 alloc/release 자동화는 파사드 비관여(bootstrap/handoff) — 여기는 수동
     반납/강제만(spike §8-5·§3e). worktree_pool 주입으로 hermetic 테스트.
@@ -1376,10 +1386,19 @@ def cmd_release(
             print(f"✓ 슬롯 {args.slot!r} 강제 반납(idle 화) — dirty 는 stash 보존 시도.")
         return 0
 
+    owner_task = getattr(args, "task", None)
     try:
-        wp.release(args.slot)
+        wp.release(args.slot, owner_task=owner_task)
     except KeyError:
         print(f"[중단] 슬롯 {args.slot!r} 에 대한 리스가 없다.", file=sys.stderr)
+        return 1
+    except wp.NotTaskOwner as exc:
+        held = f"session {exc.holder!r} 보유 중" if exc.holder else "미점유(idle)"
+        print(
+            f"[중단] 슬롯 {args.slot!r} 은 task {owner_task!r} 소유가 아니다 — 반납 거부(F3·{held}). "
+            "내 task 가 대여한 슬롯만 `--task` 로 반납할 수 있다(다른 task 슬롯 보호).",
+            file=sys.stderr,
+        )
         return 1
     except wp.ReleaseRefused:
         print(
@@ -1388,7 +1407,213 @@ def cmd_release(
             file=sys.stderr,
         )
         return 1
-    print(f"✓ 슬롯 {args.slot!r} 작업완료 반납(idle 화) — 풀에 재사용 컨테이너로 반환.")
+    task_line = f" (task {owner_task!r} 소유검사 통과)" if owner_task else ""
+    print(f"✓ 슬롯 {args.slot!r} 작업완료 반납(idle 화){task_line} — 풀에 재사용 컨테이너로 반환.")
+    return 0
+
+
+def cmd_alloc(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+    board=None,
+) -> int:
+    """`alloc <repo> --task <이름>` — 기바인딩 task 명의로 idle 최소 번호 슬롯 대여 (F2·§F2b·⑤ 논리층).
+
+    worktree_pool.alloc(repo, session=<task>) 로 idle **최소 번호** 슬롯을 leased 로 전이한다 —
+    session 축에 task 정체성을 실어(⑥ 직교) 이후 `release --task`/`task end` 소유검사가 매칭한다.
+    같은 task 가 이미 이 repo 슬롯을 보유하면 그걸 반환(idempotent·번호 안정). idle 슬롯이 없으면
+    NeedsCreate → **대여 실패 + 사용자 생성 요청**(자동 생성 금지·⑤). 새 슬롯은 디스크(코드 전체
+    사본×슬롯)라 물리층이고 사용자 승인(`worktree add`)이 게이트다 — alloc/release=PM 자율(논리
+    층)·create/remove=사용자 승인(물리층)의 2층 분리를 CLI 로 표면화한다(⑤).
+
+    **명 검증 + 기바인딩 요구(must-fix ②)**: `--task` 이름이 lease session 으로 **기록**되므로 write
+    -capable 진입점이다 — 공유 엔진 validator(`_validate_task_name`·예약패턴 검증엔 등록 repo 전달)로
+    선검증해 traversal/절대경로/빈 이름/`<repo>_<N>` 예약(⑥ 기계판별 구멍)을 fail-loud rc1 한다. 나아가
+    **task 는 기바인딩이어야 한다**(reviewer suggestion): `find_task` 부재면 rc1 로 "먼저 `/pm-bootstrap
+    --task <이름>` 으로 task 를 만들라" 안내 — 정체성 *생성*은 F1(bootstrap) 단일 지점이고 alloc(F2)은
+    이미 존재하는 task 에 슬롯을 붙일 뿐이다(spike F1→F2 순서 정합·⑥ 검증 자연 상속). board 부재/헬퍼
+    부재는 registered_repos=None 으로 graceful(traversal 검증은 그대로·예약패턴만 완화).
+
+    worktree_pool/board 주입으로 hermetic 테스트(실 git alloc 없이 배선·분기 검증).
+    """
+    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
+    if wp is None:
+        print(
+            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — 슬롯 대여 불가 "
+            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 명 검증(must-fix ②) — 공유 엔진 validator. registered_repos 는 예약패턴(`<repo>_<N>`·⑥) 거부용
+    # (board 에서 fail-soft 해소·부재면 None → traversal 검증만). InvalidTaskName → rc1(부작용 이전).
+    board_mod = board or _load_module("board", "board.py")
+    registered = None
+    _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
+    if _reg_fn is not None:
+        try:
+            registered = _reg_fn()
+        except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴 검증만 완화·traversal 유지).
+            registered = None
+    try:
+        wp._validate_task_name(args.task, registered)
+    except wp.InvalidTaskName as exc:
+        print(
+            f"[중단] 부적합 task 명 {args.task!r} — {exc.reason}. `--task` 는 안전한 단일 이름이어야 "
+            "하고 슬롯 예약패턴(`<repo>_<N>`·⑥)은 쓸 수 없다.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 기바인딩 요구(reviewer suggestion) — task 생성은 F1(bootstrap) 단일 지점. 미바인딩이면 안내 rc1.
+    if wp.find_task(args.task) is None:
+        print(
+            f"[중단] task {args.task!r} 이(가) 아직 없다 — alloc 은 기존 task 에 슬롯을 붙일 뿐 "
+            "정체성을 생성하지 않는다(F1→F2 순서). 먼저 `/pm-bootstrap --task "
+            f"{args.task}` 로 task 를 만든 뒤 다시 `alloc` 하라.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        lease = wp.alloc(args.repo, session=args.task)
+    except wp.NeedsCreate:
+        print(
+            f"[중단] repo {args.repo!r} 에 대여 가능한 idle 슬롯이 없다 — 풀 소진. 새 슬롯은 "
+            "디스크(코드 전체 사본×슬롯)라 자동 생성하지 않는다(⑤·물리층=사용자 승인). "
+            f"`pm-config worktree add {args.repo}` 승인 후 다시 `alloc` 하라.",
+            file=sys.stderr,
+        )
+        return 1
+    except wp.BareRepoMissing as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    except wp.CheckoutFailed as exc:
+        print(f"[중단] 슬롯 체크아웃 실패: {exc}", file=sys.stderr)
+        return 1
+
+    slot_path = wp.slot_path(lease.slot)
+    print(
+        f"✓ 슬롯 대여: {lease.slot} (repo={lease.repo} · task={args.task}) → {slot_path}\n"
+        f"  이 슬롯은 task {args.task!r} 명의로 leased — 코드 작업은 이 슬롯 cwd 에서. "
+        f"보드/wiki 는 multi-PM 공유 `.project_manager`.\n"
+        f"  반납: `pm-config release {lease.slot} --task {args.task}` (작업완료 시 idle 반납)."
+    )
+    return 0
+
+
+def cmd_task_end(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+    board=None,
+) -> int:
+    """`task end <이름>` — task 종료 (F4·②⑲): claimed 소진 게이트 → dirty 게이트 → clean 시 일괄 반납 + 아카이브 이동.
+
+    순서(각 단계 통과해야 다음):
+      1. **claimed 티켓 소진 게이트(⑲)** — board 스캔(`scan_task_tickets`·자체 스캔·`list --task`
+         렌즈 T-0365 미완). 이 task 명의(`<user>/<task>`)로 claimed 인 티켓이 남아있으면 목록 +
+         **거부**. 해소 = `board complete`(완료) 또는 `board unclaim`(claimed→open) — **사용자 판단**
+         이라 task end 가 자동 실행하지 않는다(목록+거부까지). task 지정 prefix 의 open 티켓은
+         **정보 표시만**(차단 안 함·①·prefix≠경계).
+      2. **dirty 게이트** — 보유 작업공간(session==task)에 미커밋 변경이 있으면 목록 + 거부(사용자
+         정리 후 재시도). worktree_pool.end_task 가 판정(아무 부작용 0).
+      3. **전부 clean** → 보유 슬롯 일괄 idle 반납(worktree **삭제 안 함**·반납=idle) → 장부 task
+         레코드 제거 → 서술 폴더 `.local/tasks/<이름>/` 를 `_ended/<이름>-<날짜>/` 로 **이동**
+         (삭제 아님·②·이름 재사용 시 옛 pm_state resume 오염 방지).
+
+    worktree_pool/board 주입으로 hermetic 테스트. board 부재/스캔 실패는 claimed 게이트를
+    graceful skip(엔진 dirty/반납은 진행) — board 없는 순수 슬롯 정리도 되게(크래시 0).
+    """
+    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
+    if wp is None:
+        print(
+            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — task 종료 불가 "
+            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+    name = args.name
+
+    # 명 검증(must-fix ②) — end_task 가 장부 write·`shutil.move` 하는 write-capable 진입점이라
+    # 엔진이 자체 검증(fail-loud)하지만, CLI 도 board 스캔 이전에 선-fail 로 clean 하게 rc1 한다
+    # (traversal/절대경로/빈 이름 → 잘못된 스캔·이동 시도 자체를 안 함). InvalidTaskName 이 없는
+    # 구 엔진(사본 lag)이면 getattr 로 graceful skip(엔진 검증이 최종 백스톱).
+    _invalid = getattr(wp, "InvalidTaskName", None)
+    _validator = getattr(wp, "_validate_task_name", None)
+    if _validator is not None and _invalid is not None:
+        try:
+            _validator(name)
+        except _invalid as exc:
+            print(
+                f"[중단] 부적합 task 명 {name!r} — {exc.reason}. task 이름은 안전한 단일 이름이어야 한다.",
+                file=sys.stderr,
+            )
+            return 1
+
+    # 1) claimed 소진 게이트(⑲) — board 스캔. task 레코드 prefix 로 prefix-open 정보도 함께.
+    task_rec = wp.find_task(name)
+    prefix = task_rec.prefix if task_rec is not None else None
+    board_mod = board or _load_module("board", "board.py")
+    scan = None
+    scanner = getattr(board_mod, "scan_task_tickets", None) if board_mod else None
+    if scanner is not None:
+        try:
+            scan = scanner(_default_user(), name, prefix)
+        except Exception:  # noqa: BLE001 — board 스캔 실패는 claimed 게이트 graceful skip(엔진은 진행).
+            scan = None
+    if scan and scan.get("claimed"):
+        print(
+            f"[중단] task {name!r} 명의로 claimed 인 티켓이 남아있다 — 종료 거부(⑲·소진 게이트):",
+            file=sys.stderr,
+        )
+        for row in scan["claimed"]:
+            print(f"  - {row['id']} [{row['status']}] {row['title']}", file=sys.stderr)
+        print(
+            "  해소: 각 티켓을 `board complete`(완료) 또는 `board unclaim`(claimed→open) 처리 후 "
+            "재시도하라. task end 는 자동 unclaim/complete 하지 않는다(완료/보류는 사용자 판단).",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 2) dirty 게이트 + 3) clean 시 일괄 반납 + 서술 폴더 아카이브 이동 — 엔진 end_task.
+    result = wp.end_task(name)
+    if result.refused:
+        print(
+            f"[중단] task {name!r} 보유 작업공간에 dirty(미커밋 변경)가 있다 — 종료 거부:",
+            file=sys.stderr,
+        )
+        for slot in result.dirty:
+            print(f"  - {slot}", file=sys.stderr)
+        print(
+            "  각 슬롯에서 커밋/정리(또는 `pm-config release <slot> --force` 로 stash 보존) 후 재시도하라.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 성공 — 반납 + 이동 결과 surface.
+    if result.released:
+        print(
+            f"✓ task {name!r} 보유 슬롯 {len(result.released)}개 idle 반납(worktree 유지·풀 재사용): "
+            f"{', '.join(result.released)}"
+        )
+    else:
+        print(f"✓ task {name!r} 보유 슬롯 없음(반납 대상 0).")
+    if result.moved_to is not None:
+        print(f"✓ 서술 폴더 아카이브 이동(삭제 아님·②): {result.moved_from} → {result.moved_to}")
+    else:
+        print(f"  서술 폴더 없음(.local/tasks/{name}/ 부재) — 장부 task 레코드만 제거.")
+
+    # task 지정 prefix 의 open 티켓 = 정보 표시만(차단 안 함·①·prefix≠경계).
+    if scan and scan.get("prefix_open"):
+        print(f"ℹ task 지정 prefix {prefix!r} 의 open 티켓(정보·경계 아님·차단 안 함):")
+        for row in scan["prefix_open"]:
+            print(f"  - {row['id']} {row['title']}")
+
+    print(
+        f"✓ task {name!r} 종료 완료 — 이름 재사용 안전(아카이브 이동으로 옛 pm_state 오염 없음·②)."
+    )
     return 0
 
 
@@ -1971,12 +2196,39 @@ def build_parser() -> argparse.ArgumentParser:
     p_up_set.add_argument("value", help="upstream 값 (git URL 또는 로컬 경로·self-describing)")
     p_upstream.set_defaults(func=cmd_upstream)
 
-    # release <slot> [--force]
+    # alloc <repo> --task <이름> — task 명의로 idle 최소 번호 슬롯 대여 (F2·§F2b·⑤ 논리층·자동 생성 안 함)
+    p_alloc = sub.add_parser(
+        "alloc",
+        help="task 명의로 idle 최소 번호 슬롯 대여 (F2·⑤ 논리층·풀 소진 시 생성 요청·자동 생성 안 함)",
+    )
+    p_alloc.add_argument("repo", help="슬롯을 대여할 repo 이름 (areas.md 등록된 것)")
+    p_alloc.add_argument(
+        "--task", required=True, metavar="<이름>",
+        help="이 슬롯을 대여할 task 이름 (lease session 명의 — release/task end 소유검사 근거·⑥)",
+    )
+    p_alloc.set_defaults(func=cmd_alloc)
+
+    # release <slot> [--task <이름>] [--force]
     p_release = sub.add_parser("release", help="작업완료 반납 / 수동 강제(백스톱)")
     p_release.add_argument("slot", help="반납할 슬롯 (work/<repo>_<N>)")
+    p_release.add_argument(
+        "--task", metavar="<이름>", default=None,
+        help="task 소유검사(F3) — 이 슬롯이 그 task 명의(session)가 아니면 반납 거부(다른 task 슬롯 보호)",
+    )
     p_release.add_argument("--force", action="store_true",
-                           help="dirty/leased 무시 강제 idle 화 (dirty 는 stash 보존 시도)")
+                           help="dirty/leased 무시 강제 idle 화 (dirty 는 stash 보존 시도·--task 소유검사도 우회)")
     p_release.set_defaults(func=cmd_release)
+
+    # task end <이름> — task 종료: claimed 소진 게이트(⑲)·dirty 게이트·clean 시 일괄 반납 + 아카이브 이동(②)
+    p_task = sub.add_parser("task", help="task 정체성 관리 (end)")
+    task_sub = p_task.add_subparsers(dest="task_command", metavar="<task-command>")
+    p_task_end = task_sub.add_parser(
+        "end",
+        help="task 종료 — claimed 소진 게이트(⑲)·dirty 게이트·전부 clean 시 일괄 idle 반납 + "
+             "서술 폴더 _ended 아카이브 이동(②·삭제 아님·worktree 미삭제)",
+    )
+    p_task_end.add_argument("name", help="종료할 task 이름")
+    p_task_end.set_defaults(func=cmd_task_end)
 
     # add-harness <harness> [--dry-run] — 라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가
     # (ADR-0048·T-0270). pm_import.add_harness_cli 로 verbatim 위임(cmd_add_harness) — harness 는
@@ -2096,6 +2348,10 @@ def main(argv: list[str] | None = None) -> int:
     # `upstream` 만 주고 하위 동작(show/set)을 안 줬으면 그 그룹 도움말 surface(repo/worktree 동형).
     if args.command == "upstream" and getattr(args, "upstream_action", None) is None:
         parser.parse_args(["upstream", "--help"])
+        return 1
+    # `task` 만 주고 하위 동작(end)을 안 줬으면 그 그룹 도움말 surface(repo/worktree/upstream 동형).
+    if args.command == "task" and getattr(args, "task_command", None) is None:
+        parser.parse_args(["task", "--help"])
         return 1
 
     return args.func(args)

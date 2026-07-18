@@ -400,6 +400,91 @@ def test_supervisor_state_unchanged_across_turns(orch, tmp_path):
     assert before["driver"] is after["driver"]
 
 
+# ── task 정체성 (b) 명시 전달 (F7·T-0356) — 재진입 프롬프트 --task 주입·respawn forward ──
+
+def test_build_bootstrap_prompt_task_injects_flag(orch):
+    """build_bootstrap_prompt(task) 가 재진입 프롬프트에 `/pm-bootstrap --task <name>` 실값을 박는다.
+
+    task 없으면 bare `/pm-bootstrap`(현행 BOOTSTRAP_PROMPT 와 byte-동일·하위호환)."""
+    assert orch.build_bootstrap_prompt() == orch.BOOTSTRAP_PROMPT
+    assert "/pm-bootstrap" in orch.BOOTSTRAP_PROMPT and "--task" not in orch.BOOTSTRAP_PROMPT
+    assert "/pm-bootstrap --task mytask" in orch.build_bootstrap_prompt("mytask")
+
+
+def test_supervisor_no_task_bare_bootstrap_byte_compat(orch, tmp_path):
+    """task 미지정 Supervisor 는 bare `/pm-bootstrap`(현행 byte-호환·슬롯/솔로)."""
+    driver = _make_driver(orch, tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path)
+    assert sup.bootstrap == orch.BOOTSTRAP_PROMPT
+    assert "--task" not in sup.bootstrap
+
+
+def test_supervisor_explicit_bootstrap_override_wins(orch, tmp_path):
+    """명시 bootstrap override(테스트/커스텀)가 task 파생보다 우선 — 하위호환 seam 보존."""
+    driver = _make_driver(orch, tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, bootstrap="CUSTOM", task="mytask")
+    assert sup.bootstrap == "CUSTOM"
+
+
+def test_supervisor_task_bakes_and_forwards_on_respawn(orch, tmp_path):
+    """Supervisor(task=...) 가 재진입 프롬프트에 --task 를 baked-in 하고 spawn/respawn 이 forward 한다.
+
+    (b) 명시 전달 — 회전된 새 PM 이 같은 task 를 resume. spawn·respawn 모두 self.bootstrap 을 쓰므로
+    respawn 후에도 task 가 유지된다(cwd 추론 없이·stateless). task 는 별도 인스턴스 필드로 retain 하지
+    않는다(stateless 불변식 — bootstrap 에 흡수)."""
+    seen: list[str] = []
+
+    class _RecordDriver(FakeDriver):
+        def spawn(self, cwd, session_id, bootstrap):
+            seen.append(bootstrap)
+            return super().spawn(cwd, session_id, bootstrap)
+
+    driver = _RecordDriver(
+        tmp_path, marker_dir=orch.MARKER_DIR, sanitize=orch._sanitize_session_id,
+        stop_after_relays=1,
+    )
+    sup = orch.Supervisor(driver, root=tmp_path, task="mytask")
+    assert "--task mytask" in sup.bootstrap
+    # stateless 불변식 — task 는 인스턴스 필드로 안 남는다(bootstrap 에만 흡수).
+    assert "task" not in vars(sup)
+    # 한 입력 → relay 1회 후 STOP → respawn(재전송). spawn 2회(초기+respawn) 모두 task 포함.
+    sup.run_loop("/cwd", io.StringIO("hello\n"), io.StringIO())
+    assert len(seen) >= 2
+    assert all("/pm-bootstrap --task mytask" in b for b in seen)
+
+
+# ── claude driver CLI --task 수용/forward (F7·T-0356·4곳 중 claude) ─────────────
+
+def test_claude_driver_parser_accepts_task(driver_mod):
+    """claude driver build_parser 가 `--task <이름>` 을 수용(기본 None)."""
+    parser = driver_mod.build_parser()
+    assert parser.parse_args(["--task", "mytask"]).task == "mytask"
+    assert parser.parse_args([]).task is None
+
+
+def test_claude_main_forwards_task_to_supervisor(driver_mod, monkeypatch, tmp_path):
+    """claude main 이 `--task` 를 engine.Supervisor(task=...) 로 forward 한다 (재진입 배선)."""
+    captured: dict = {}
+
+    class _FakeSup:
+        def __init__(self, driver, *, root, task=None):
+            captured["task"] = task
+
+        def run_loop(self, cwd, in_stream, out_stream):
+            return 0
+
+    class _FakeEngine:
+        Supervisor = _FakeSup
+
+        @staticmethod
+        def parse_stream_json(lines):
+            return None, None
+
+    monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
+    rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
+    assert rc == 0 and captured["task"] == "mytask"
+
+
 def test_new_session_id_unique_uuid(orch):
     a, b = orch.new_session_id(), orch.new_session_id()
     assert a != b

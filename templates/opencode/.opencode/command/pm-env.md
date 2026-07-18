@@ -54,6 +54,25 @@ description: "PM 환경 관리 단일 command — pm-config.sh facade wrap. repo
   `--force` 로 활성(사용 중) 슬롯을 강제 회수하면 '⚠ 강제 회수' 경고가 stderr 로 뜨고, dirty 를
   stash 보존하면 '복구: git stash list/pop (공유 refs/stash)' 안내가 나온다(리뷰 반영·T-0333).
 
+### alloc / release --task / task end — task 단위 자원 대여 (F2·F3·F4·⑤·T-0354)
+
+task = 슬롯과 **직교**하는 작업스트림 정체성(⑥). task 명의로 슬롯을 대여/반납하고 task 를 종료한다:
+```bash
+./pm-config.sh alloc <repo> --task <이름>          # idle 최소 번호 슬롯을 task 명의로 대여
+./pm-config.sh release <slot> --task <이름>        # task 소유검사 후 반납(내 task 슬롯만)
+./pm-config.sh task end <이름>                      # task 종료 — 소진 게이트 + 일괄 반납 + 아카이브
+```
+- **alloc**(PM 자율·논리층·⑤): idle **최소 번호** 슬롯을 `--task` 명의(lease session)로 leased 전이.
+  풀에 idle 슬롯이 없으면 **자동 생성하지 않고**(디스크=코드 전체 사본×슬롯) `worktree add <repo>`
+  **승인 요청**으로 멈춘다 — create/remove(물리층)=사용자 승인, alloc/release(논리층)=PM 자율(2층 분리·⑤).
+- **release --task**: 그 슬롯이 내 task 명의(session)가 아니면 거부(다른 task 슬롯 보호). dirty 거부는
+  현행 유지(`--force`=stash 보존 강제·소유검사 우회 백스톱). clean=idle 반납(폴더 유지·풀 재사용).
+- **task end**: ① 이 task 명의로 **claimed 인 티켓**이 남아있으면 목록 + 거부(소진 게이트·⑲) — 해소는
+  `board complete`(완료) 또는 `board unclaim`(claimed→open)로 **사용자 판단**(task end 가 자동 실행 안 함).
+  ② 보유 작업공간 **dirty** 면 목록 + 거부. ③ 전부 clean 이면 보유 슬롯 일괄 idle 반납(worktree **삭제
+  안 함**) + 장부 task 레코드 제거 + 서술 폴더를 `.local/tasks/_ended/<이름>-<날짜>/` 로 **이동**(삭제
+  아님·이름 재사용 시 옛 pm_state 오염 방지·②). task 지정 prefix 의 open 티켓은 **정보 표시만**(차단 안 함·①).
+
 ### upstream show / switch (path ↔ URL · T-0145)
 ```bash
 ./pm-config.sh upstream show

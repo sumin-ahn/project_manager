@@ -1270,6 +1270,51 @@ def _distinct_ticket_users() -> int:
     return len(users)
 
 
+def scan_task_tickets(user: str | None, task: str,
+                      prefix: str | None = None) -> dict[str, list[dict]]:
+    """task end 소진 게이트용 티켓 스캔 (⑲·T-0354·자체 스캔·조회 전용·부작용 0).
+
+    `board list --task` 렌즈(T-0365·wave 3)가 아직 없으므로 `pm-config task end` 가 이걸로
+    자체 스캔한다. 두 축을 한 번의 status 디렉토리 순회로 모은다:
+
+      - **claimed** — **진행 중(open/claimed/blocked)** 티켓 중 `claimed_by` 의 slot 토큰(마지막 `/`
+        뒤·`_slot_matches`)이 `task` 와 일치하는 것. `task` 세션의 claim 형태 = `<user>/<task>`
+        (identity_tag·⑥ slot 값 `<repo>_<N>` 예약과 기계 판별·task 명은 자유 포맷). `user` 가 주어지고
+        claimed_by 에 user 토큰이 있으면 그 user 도 일치해야 한다(교차사용자 동명 task 오귀속 방지).
+        slot-only claim(user 토큰 없음)은 graceful 포함. **terminal status(`done`)는 제외한다(must-fix
+        ①)** — `cmd_complete` 는 done 이동 시 `claimed_by` 를 지우지 않으므로(status/completed_at 만),
+        `<user>/<task>` 로 claim→complete 한 티켓이 done/ 에 claimed_by 를 남긴다. done 을 담으면 그
+        티켓은 `unclaim`(status=="claimed" 요구)도 불가라 **해소 수단이 없어 task end 가 영구 차단**된다
+        (⑲ "해소=complete 또는 unclaim" 설계와 모순). 완료된 작업은 소진 게이트 대상이 아니다. 이게
+        비어야 task end 가 반납/이동으로 진행한다(거부 게이트).
+      - **prefix_open** — `prefix` 가 주어지면 그 prefix(`_ticket_prefix`)의 `open` 티켓. **정보
+        표시만**(차단 안 함·①·prefix≠경계) — task 지정 prefix 의 backlog 를 참고로 보여줄 뿐.
+
+    각 row = {"id", "title", "status"}. 깨진 티켓은 skip(fail-soft). board 를 import 하지 않는
+    pm_config 가 `_load_module` 로 로드해 소비한다(ADR-0013 isolation·ticket-스캔 단일 진실=board).
+    """
+    claimed: list[dict] = []
+    prefix_open: list[dict] = []
+    for status in STATUS_DIRS:
+        for p in sorted((tickets_dir() / status).glob("T-*.md")):
+            try:
+                fm, _ = load_ticket(p)
+            except (OSError, ValueError, yaml.YAMLError):
+                continue
+            tid = fm.get("id") or p.stem
+            row = {"id": tid, "title": fm.get("title") or "", "status": status}
+            cb = fm.get("claimed_by") or ""
+            # terminal status(done)는 claimed 축에서 제외 — done 은 claimed_by 잔존이라도 완료됨이고
+            # 해소 수단(unclaim=claimed 전용)이 없어 담으면 task end 영구 차단(must-fix ①·회귀 가드 존재).
+            if status != "done" and cb and _slot_matches(cb, task):
+                cb_user = _claimed_by_user(cb)
+                if user is None or cb_user is None or cb_user == user:
+                    claimed.append(row)
+            if prefix and status == "open" and _ticket_prefix(tid) == prefix:
+                prefix_open.append(row)
+    return {"claimed": claimed, "prefix_open": prefix_open}
+
+
 def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
                     my_slot: str, area_owner_in_use: bool, multi_user: bool,
                     *, slot_mode: str = "exact", slot_scoped: bool = False) -> bool:

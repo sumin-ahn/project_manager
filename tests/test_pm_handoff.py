@@ -1021,3 +1021,147 @@ def test_done_repo_slot_reaches_release(hf, tmp_path, captured_run, monkeypatch)
     ) == 0
     assert captured_run["worktree_slot"] == "work/project_manager_1"
     assert captured_run["done"] is True
+
+
+# ── task 모드 귀속 (F7·T-0356) — pm_state task 경로·dashboard 키·log 태그·lease 유지 ──────
+#
+# 세션 종료(핸드오프)의 연속성 앵커를 slot→task 로 이동한다. `--task <name>` 이 pm_state 를
+# `.local/tasks/<name>/` 에 기록(첫 핸드오프가 template seed)·dashboard 자기 섹션 `## <name>`·
+# log 헤더 태그 `(task:<name>)`. lease 는 유지(세션 종료 ≠ task 종료·F4). log 태그는 서술형 괄호·
+# 슬롯 태그와 구분되게 sentinel `task:` 로 박는다.
+
+
+def test_main_task_forwarded_to_run(hf, captured_run):
+    """main() 이 `--task <name>` 을 run(task=...) 로 forward 한다 (ingress 배선·T-0356)."""
+    assert hf.main(
+        ["--session-seq", "7", "--wave-summary", "x", "--no-pytest", "--task", "mytask"]
+    ) == 0
+    assert captured_run["task"] == "mytask"
+
+
+@pytest.mark.parametrize("bad", [
+    "../evil", "a/b", "..", ".hidden", "  ", "x\\y",
+    # 문자 도메인 협소화(T-0356 codex 2건) — 공유 validator 상속으로 handoff 도 whitespace/괄호 거부.
+    "my task", "a\tb", "foo)bar", "foo(bar",
+])
+def test_main_task_traversal_rejected(hf, captured_run, bad):
+    """--task 검증 — 공유 엔진 validator(`worktree_pool._validate_task_name`)로 부적합 명 fail-loud.
+
+    traversal/절대경로/빈 이름/선행 `.` + **whitespace·괄호**(하류 CLI 인자 경계·log 태그 delimiter
+    파손 방지·codex 2건) 를 부작용 이전에 거부한다. handoff 는 bind_task 우회 CLI 라 여기서 shared
+    validator 로 닫아 도메인 협소화를 자동 상속한다. 거부 시 run 미도달(captured 비어 있음)."""
+    with pytest.raises(SystemExit):
+        hf.main(
+            ["--session-seq", "7", "--wave-summary", "x", "--no-pytest", "--task", bad]
+        )
+    assert captured_run == {}
+
+
+def test_main_task_reserved_slot_name_rejected(hf, captured_run, monkeypatch):
+    """예약명(`<repo>_<N>`) task 거부 — shared validator 가 registered_repos(board fail-soft)로 판별.
+
+    `--task project_manager_1` 오입력이 dashboard `## project_manager_1` 를 실 slot-1 섹션과 충돌
+    시키는 것을 차단한다(reviewer). board.registered_repos 를 monkeypatch 로 hermetic 주입한다."""
+    class _FakeBoard:
+        @staticmethod
+        def registered_repos():
+            return ["project_manager"]
+
+    monkeypatch.setattr(hf, "_load_board", lambda: _FakeBoard())
+    with pytest.raises(SystemExit):
+        hf.main(
+            ["--session-seq", "7", "--wave-summary", "x", "--no-pytest",
+             "--task", "project_manager_1"]
+        )
+    assert captured_run == {}
+    # 미등록 repo 형태(자유 포맷)는 통과 — run 도달(예약 판별이 실 슬롯과만 충돌 방지·오탐 0).
+    assert hf.main(
+        ["--session-seq", "7", "--wave-summary", "x", "--no-pytest", "--task", "sikdan_2"]
+    ) == 0
+    assert captured_run["task"] == "sikdan_2"
+
+
+def test_run_task_writes_task_tag_and_dashboard_key(hf, tmp_path, capsys):
+    """task 모드 — log 헤더 태그 `(task:<name>)`(sentinel)·dashboard 자기 섹션 `## <name>`(verbatim).
+
+    hermetic(명시 pm_state 주입) dry_run 으로 태그/키 생성 배선만 본다. 슬롯 태그(`<repo>_<N>`)와
+    달리 sentinel `task:` 접두를 붙여 서술형 괄호와 기계 구분한다. dashboard 는 verbatim 이라
+    sentinel 없이 `## mytask`(interface 2)."""
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    log_file = tmp_path / "current.md"
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+    )
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=True, skip_pytest=False, task="mytask"
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # log 헤더 태그 = sentinel `(task:mytask)`.
+    assert "PM 7차 (task:mytask) → 다음 PM 세션" in out
+    # bare `(mytask)`(서술 괄호와 오탐 원천)이 아님.
+    assert "PM 7차 (mytask)" not in out
+    # dashboard 자기 섹션은 verbatim task 명(sentinel 없음).
+    assert "## mytask" in out
+    assert "## task:mytask" not in out
+
+
+def test_run_task_seeds_and_records_pm_state(hf, tmp_path, capsys, monkeypatch):
+    """첫 task 핸드오프 — 부재 pm_state 를 template 에서 seed 후 `.local/tasks/<name>/` 에 기록.
+
+    실 경로 해소(명시 주입 없음·REPO monkeypatch)로 F7 앵커 이동을 못박는다: task pm_state 가
+    task 서술 공간에 생성되고(첫 핸드오프·T-0353 surface 약속) 세션 window 가 이 차수를 담는다.
+    dashboard 자기 섹션 `## <name>`·log 태그 `(task:<name>)`. lease 는 건드리지 않는다(done=False —
+    worktree_pool release 미호출·세션 종료 ≠ task 종료·F4)."""
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    # tracked pm_state template(seed 원천) — board.py init 과 동일 skeleton(세션 식별 앵커 보유).
+    template = tmp_path / ".project_manager" / "wiki" / "pm_state.template.md"
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    log_file = tmp_path / "current.md"
+    dashboard_file = tmp_path / "dashboard.md"
+
+    # lease 유지 증거 — release 가 불리면 fail 하는 sentinel worktree_pool(done=False 라 미호출 기대).
+    class _NoReleasePool:
+        def release(self, *a, **k):  # noqa: ANN002 ANN003
+            raise AssertionError("task 세션 종료가 lease 를 release 하면 안 된다(F7·세션종료≠task종료)")
+
+    task_pm_state = (
+        tmp_path / ".project_manager" / ".local" / "tasks" / "mytask" / "pm_state.md"
+    )
+    assert not task_pm_state.exists()  # 첫 핸드오프 전엔 부재.
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook,
+        dashboard_file=dashboard_file,
+        worktree_pool=_NoReleasePool(),
+    )
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+    )
+    assert rc == 0
+    # task pm_state 가 task 서술 공간에 생성·기록(sliding window 가 7차 반영).
+    assert task_pm_state.exists()
+    state_text = task_pm_state.read_text(encoding="utf-8")
+    assert "7차" in state_text
+    # dashboard 자기 섹션 `## mytask`.
+    assert "## mytask" in dashboard_file.read_text(encoding="utf-8")
+    # log 헤더 태그 = sentinel `(task:mytask)`.
+    assert "PM 7차 (task:mytask)" in log_file.read_text(encoding="utf-8")

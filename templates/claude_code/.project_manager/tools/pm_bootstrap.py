@@ -862,12 +862,17 @@ def infer_session_num(pm_state_text: str) -> int | str | None:
 # 형식: `## [YYYY-MM-DD] handoff | PM N차 (<repo>_<M>) → 다음 PM 세션`(솔로는 태그 생략 —
 # `… PM N차 → …`·`… PM N차 인계 — …`). optional `(?P<session>...)` = 세션 정체성 태그
 # (ADR-0044·pm_handoff `_session_tag`) — 슬롯 필터(자기 슬롯 태그 entry 만)의 캡처 그룹.
-# 캡처는 **canonical `<repo>_<N>` 만**(`[A-Za-z0-9][A-Za-z0-9_-]*_\d+`·pm_config `_REPO_NAME_RE`+`_N`)
-# 으로 제약한다(should-fix) — 서술형 괄호(`PM 4차 (아침 대화)`)를 세션 태그로 오인해 솔로에서
-# entry 를 drop 하지 않게. 비-canonical 괄호는 `.*` 로 흡수돼 session=None(무태그 폴백).
+# 캡처는 두 형식: **canonical 슬롯 `<repo>_<N>`**(`[A-Za-z0-9][A-Za-z0-9_-]*_\d+`·pm_config
+# `_REPO_NAME_RE`+`_N`) 또는 **task 태그 `task:<name>`**(F7·T-0356·sentinel `task:` + `[^)]+`).
+# 슬롯 형식의 `_\d+` 종결·task 형식의 `task:` 접두 둘 다 서술형 괄호(`PM 4차 (아침 대화)`·`(회의 3)`)를
+# 배제한다(should-fix) — 솔로에서 서술 괄호를 세션 태그로 오인해 entry 를 drop 하지 않게. task 명은
+# 자유 포맷(한글·공백 허용)이라 bare `(<name>)` 로는 서술 괄호와 오탐이 나므로, pm_handoff 가 태그를
+# `(task:<name>)` sentinel 로 박고 여기서 `task:` 로 판별한다(무태그 흡수 회귀 불변). 비-canonical·
+# 비-task 괄호는 `.*` 로 흡수돼 session=None(무태그 폴백).
+_TASK_TAG_PREFIX = "task:"   # pm_handoff `_TASK_TAG_PREFIX` 미러 (ADR-0013 모듈 격리라 각 모듈 inline).
 _LOG_HANDOFF_HEADER_RE = re.compile(
     r"^(?P<line>## \[\d{4}-\d{2}-\d{2}\]\s+handoff\s*\|\s*PM\s+(?P<num>\d+)차"
-    r"(?:\s*\((?P<session>[A-Za-z0-9][A-Za-z0-9_-]*_\d+)\))?.*)$",
+    r"(?:\s*\((?P<session>[A-Za-z0-9][A-Za-z0-9_-]*_\d+|task:[^)]+)\))?.*)$",
     re.MULTILINE,
 )
 
@@ -879,9 +884,15 @@ def _session_owns_untagged(bound_session: str | None) -> bool:
     (연속성 보존·제로 마이그레이션). **slot-2+ 는 무태그를 무시**하고 자기 태그 entry 만 센다
     (핵심 회귀 가드·codex 제언). bound_session 이 None(솔로)이거나 canonical `<repo>_1`(slot-1)이면
     True, 그 외(slot-2+·비정형 non-None)면 False.
-    """
+
+    **task 세션(`task:<name>`·F7·T-0356)은 항상 False** — task 는 자기 태그(`(task:<name>)`) entry 만
+    소유하고 태그-도입 이전 무태그 legacy(솔로/slot-1 계보)는 자기 것이 아니다. sentinel 판별을
+    trailing `_N` 검사보다 **앞에** 둔다: task 명이 우연히 `_1` 로 끝나면(`task:foo_1`) trailing 검사가
+    slot-1 로 오판(True)하기 때문(회귀 가드)."""
     if bound_session is None:
         return True
+    if bound_session.startswith(_TASK_TAG_PREFIX):
+        return False
     m = re.search(r"_(\d+)$", bound_session)
     return m is not None and int(m.group(1)) == 1
 

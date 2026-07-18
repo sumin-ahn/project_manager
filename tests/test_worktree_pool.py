@@ -60,6 +60,8 @@ def _load_wp_bound(proj: Path):
         "LOCAL_DIR": local,
         "LEASES_FILE": local / "worktree-leases.json",
         "LEASES_LOCK": local / "worktree-leases.lock",
+        "TASKS_DIR": local / "tasks",   # task 서술 공간 tmp 재배선(T-0353·⑮) — 미재배선 시 실
+                                        # repo `.local/tasks/` 로 누출(bind_task/end_task hermetic).
         "WORK_DIR": proj / "work",
         "REPOS_DIR": proj / ".repos",   # worktree 공유 .git 원(bare) tmp 재배선·ADR-0011 §31
         "REPO_HOOKS_DIR": local / "repo-hooks",  # 보호 pre-push 훅 디렉토리 tmp 재배선(T-0076)
@@ -5108,12 +5110,19 @@ import pytest as _pytest_task
 @_pytest_task.mark.parametrize("bad", [
     "../../evil", "..", ".hidden", ".", "a/b", "a\\b", "/tmp/x", "", "   ",
     " leading", "trailing ",
+    # 문자 도메인 협소화(T-0356 codex 2건) — 하류 구문 표면 파손 방지:
+    "my task",      # 내부 공백 → CLI/relay `--task <이름>` 인자 경계 파손.
+    "a\tb",         # 탭(임의 whitespace) → 동상.
+    "foo)bar",      # `)` → log 헤더 태그 `(task:…)` delimiter 조기 종료 → 파서 bound 불일치.
+    "foo(bar",      # `(` → 동상(태그 delimiter).
 ])
 def test_bind_task_rejects_unsafe_name_in_engine(wp, bad):
     """엔진 진입점(bind_task)이 부적합 task 명을 fail-loud 거부 — mkdir·장부 write 미발생(must-fix).
 
     `task_dir(name)` 무검증 조인이 traversal/절대경로/빈 이름을 작업트리 밖에 만들던 클래스
-    (reviewer 실측 `--task ../../evil` → git-tracked). 엔진층 검증이라 CLI 우회(T-0354~0357)도 못 뚫는다."""
+    (reviewer 실측 `--task ../../evil` → git-tracked). 엔진층 검증이라 CLI 우회(T-0354~0357)도 못 뚫는다.
+    문자 도메인은 하류 구문 표면(CLI 인자 경계·log 태그 delimiter)에 맞춰 협소화한다(whitespace·괄호 거부·
+    T-0356 codex 2건의 단일 불변식·per-surface 이스케이프 회피)."""
     with _pytest_task.raises(wp.InvalidTaskName):
         wp.bind_task(bad)
     # 부작용 0 — 장부에 tasks 미기록, tasks 디렉토리 미생성.
@@ -5122,8 +5131,8 @@ def test_bind_task_rejects_unsafe_name_in_engine(wp, bad):
 
 
 def test_bind_task_valid_name_passes(wp):
-    """정상 이름은 통과(오탐 0) — 대시·언더스코어·정수-접미 자유 포맷 허용."""
-    for ok in ("payments-refactor", "job_v2", "hotfix3", "task2"):
+    """정상 이름은 통과(오탐 0) — 대시·언더스코어·정수-접미·한글 자유 포맷 허용(협소화가 정상 명을 안 막음)."""
+    for ok in ("payments-refactor", "job_v2", "hotfix3", "task2", "한글작업"):
         record, action, _ = wp.bind_task(ok)
         assert record.name == ok and action == "created"
 
@@ -5143,3 +5152,194 @@ def test_validate_task_name_is_load_bearing_before_writes(wp):
         wp.bind_task("../escape")
     assert not (wp.LOCAL_DIR / "tasks" / "..").exists()
     assert wp.list_tasks() == []
+
+
+# ════════════════════════════════════════════════════════════════════════
+# alloc 최소 번호 대여 (결정론 ⓒ·T-0354·F2)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_alloc_leases_minimal_idle_number(wp):
+    """idle 후보가 여럿이면 **최소 번호**를 대여한다(장부 파일 순서 무관·결정론 ⓒ).
+
+    장부를 일부러 역순(3·1·2)으로 심어 first-in-ledger 선택이 아님을 강제 — 정렬이 없으면
+    work/A_3 를 골라 이 테스트가 fail 한다(sensitivity)."""
+    _seed(wp,
+          _lease(wp, slot="work/A_3", repo="A", session="", pid=0, state="idle"),
+          _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"),
+          _lease(wp, slot="work/A_2", repo="A", session="", pid=0, state="idle"))
+    git = FakeGit()
+    lease = wp.alloc("A", session="task-x", git_runner=git)
+    assert lease.slot == "work/A_1"     # 최소 번호
+    assert lease.session == "task-x"    # task 정체성이 session 축에 실림(⑥)
+
+
+def test_alloc_task_session_is_release_ownership_key(wp):
+    """alloc(session=task) 로 대여한 슬롯은 그 task 의 release 소유검사를 통과한다(왕복·F2↔F3)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"))
+    git = FakeGit(dirty=False)
+    wp.alloc("A", session="job", git_runner=git)
+    lease = wp.release("work/A_1", owner_task="job", git_runner=git)  # 같은 task → 통과
+    assert lease.state == "idle"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# release --task 소유검사 (F3·T-0354)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_release_owner_task_match_releases(wp):
+    """release owner_task 일치 → 정상 idle 반납."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"))
+    git = FakeGit(dirty=False)
+    lease = wp.release("work/A_1", owner_task="job", git_runner=git)
+    assert lease.state == "idle"
+
+
+def test_release_owner_task_mismatch_raises_not_task_owner(wp):
+    """release owner_task 불일치 → NotTaskOwner(다른 task 슬롯 보호·부작용 0)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"))
+    git = FakeGit(dirty=False)
+    with pytest.raises(wp.NotTaskOwner) as ei:
+        wp.release("work/A_1", owner_task="job", git_runner=git)
+    assert ei.value.holder == "other"
+    assert wp.list_leases()[0].state == "leased"     # 거부 — 여전히 leased
+
+
+def test_release_owner_task_precedes_dirty_check(wp, proj):
+    """소유검사가 dirty 판정보다 먼저 — 남의 dirty 슬롯도 stash 시도 없이 NotTaskOwner(부작용 0)."""
+    (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"))
+    git = FakeGit(dirty=True)
+    with pytest.raises(wp.NotTaskOwner):
+        wp.release("work/A_1", owner_task="job", git_runner=git)
+    assert not git.did("stash", "push")      # 소유검사 먼저라 stash 조차 안 함
+
+
+def test_release_no_owner_task_skips_ownership_check(wp):
+    """owner_task=None(백스톱·현행) → 소유검사 우회(session 무관 slot-only 반납)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="whoever", state="leased"))
+    git = FakeGit(dirty=False)
+    lease = wp.release("work/A_1", git_runner=git)   # owner_task 미지정
+    assert lease.state == "idle"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# slots_for_task (조회·소유검사 근거·T-0354)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_slots_for_task_returns_only_leased_owned(wp):
+    """slots_for_task = session==name 이고 leased 인 슬롯만(idle·타 session 제외)."""
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", session="job", pid=0, state="idle"),
+          _lease(wp, slot="work/B_1", repo="B", session="other", state="leased"))
+    slots = sorted(l.slot for l in wp.slots_for_task("job"))
+    assert slots == ["work/A_1"]
+
+
+# ════════════════════════════════════════════════════════════════════════
+# end_task — task 종료(dirty 게이트·일괄 반납·아카이브 이동·②·T-0354·F4)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_end_task_clean_releases_all_removes_record_and_archives(wp, proj):
+    """전부 clean → 보유 슬롯 일괄 idle 반납(worktree 미삭제) + task 레코드 제거 + 서술 폴더 _ended 이동(②)."""
+    (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
+    (proj / "work" / "A_2").mkdir(parents=True, exist_ok=True)
+    wp.bind_task("job")                                        # task 레코드 + .local/tasks/job/
+    (wp.task_dir("job") / "pm_state.md").write_text("state", encoding="utf-8")
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", session="job", state="leased"))
+    git = FakeGit(dirty=False)
+    result = wp.end_task("job", git_runner=git)
+    assert not result.refused
+    assert set(result.released) == {"work/A_1", "work/A_2"}
+    # 반납=idle·worktree 폴더는 삭제 안 함(미삭제 확인).
+    states = {l.slot: l.state for l in wp.list_leases()}
+    assert states == {"work/A_1": "idle", "work/A_2": "idle"}
+    assert (proj / "work" / "A_1").exists() and (proj / "work" / "A_2").exists()
+    # task 레코드 제거.
+    assert wp.find_task("job") is None
+    # 서술 폴더 이동(삭제 아님) — 원본 부재·목적지 존재·내용 보존.
+    assert not wp.task_dir("job").exists()
+    assert result.moved_to is not None and result.moved_to.exists()
+    assert (result.moved_to / "pm_state.md").read_text(encoding="utf-8") == "state"
+
+
+def test_end_task_dirty_refuses_with_no_side_effects(wp, proj):
+    """보유 슬롯 dirty → 거부(released/moved 없음·슬롯 leased·task 레코드·서술 폴더 모두 잔존)."""
+    (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
+    wp.bind_task("job")
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"))
+    git = FakeGit(dirty=True)
+    result = wp.end_task("job", git_runner=git)
+    assert result.refused
+    assert result.dirty == ["work/A_1"]
+    assert result.released == [] and result.moved_to is None
+    # 부작용 0.
+    assert wp.list_leases()[0].state == "leased"
+    assert wp.find_task("job") is not None
+    assert wp.task_dir("job").exists()
+
+
+def test_end_task_no_descriptor_folder_graceful(wp):
+    """서술 폴더 부재(장부 task 레코드만) → 이동 없음(moved_to None)·반납/제거는 수행."""
+    with wp._lease_lock():
+        wp._write_tasks([wp.Task(name="job", pid=1, started="t")])   # 폴더 없이 레코드만
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"))
+    git = FakeGit(dirty=False)
+    result = wp.end_task("job", git_runner=git)
+    assert result.moved_to is None
+    assert result.released == ["work/A_1"]
+    assert wp.find_task("job") is None
+    assert wp.list_leases()[0].state == "idle"
+
+
+def test_end_task_no_owned_slots_still_ends(wp):
+    """보유 슬롯 0 이어도 task 레코드 제거 + 서술 폴더 이동은 수행(released 빈 리스트)."""
+    wp.bind_task("job")
+    git = FakeGit(dirty=False)
+    result = wp.end_task("job", git_runner=git)
+    assert result.released == [] and not result.refused
+    assert wp.find_task("job") is None
+    assert result.moved_to is not None and result.moved_to.exists()
+
+
+def test_end_task_archive_dir_collision_uniquifies(wp):
+    """같은 날 같은 이름 재종료 목적지 충돌 → `-2` 로 유일화(덮어써 기록 유실 방지·②)."""
+    import datetime as _dt
+    date = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d")
+    ended = wp.TASKS_DIR / "_ended"
+    (ended / f"job-{date}").mkdir(parents=True, exist_ok=True)      # 선점 목적지
+    wp.bind_task("job")
+    (wp.task_dir("job") / "x").write_text("y", encoding="utf-8")
+    git = FakeGit(dirty=False)
+    result = wp.end_task("job", git_runner=git)
+    assert result.moved_to == ended / f"job-{date}-2"
+    assert result.moved_to.exists()
+
+
+def test_end_task_rejects_unsafe_name_before_writes(wp, proj):
+    """end_task 불법 이름(traversal) → InvalidTaskName·장부/이동 부작용 0 (must-fix ②·bind_task 동형).
+
+    무검증이면 `../evil` 이 `_archive_dest` 파생 후 `.local/tasks` 밖으로 `shutil.move` 한다 —
+    엔진 진입점에서 write/이동 이전 fail-loud 로 닫는다(T-0353 클래스 재발 차단)."""
+    # 세션이 불법 이름인 leased 슬롯을 심어(현실엔 없지만) 검증이 반납 이전임을 강제.
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="../evil", state="leased"))
+    git = FakeGit(dirty=False)
+    for bad in ("../evil", "/abs/x", "a/b", "  "):
+        with pytest.raises(wp.InvalidTaskName):
+            wp.end_task(bad, git_runner=git)
+    # 부작용 0 — 슬롯 여전히 leased(반납 안 됨).
+    assert wp.list_leases()[0].state == "leased"
+
+
+def test_end_task_valid_name_still_ends(wp):
+    """정상 이름은 검증 통과 후 종료(검증이 정상 경로를 막지 않음·sensitivity 대조)."""
+    wp.bind_task("job")
+    git = FakeGit(dirty=False)
+    result = wp.end_task("job", git_runner=git)
+    assert not result.refused and wp.find_task("job") is None

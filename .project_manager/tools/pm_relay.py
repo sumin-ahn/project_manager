@@ -39,11 +39,24 @@ MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 
 # child 에 줄 bootstrap 프롬프트 — 새 PM 이 file(board+handoff)에서 맥락을 재유도하게 유도.
 # 맥락 자체를 주입하지 않는다(stateless·file-as-memory) — 새 세션이 직접 읽게 한다.
-BOOTSTRAP_PROMPT = (
-    "너는 이 프로젝트의 PM 세션이다. 이전 PM 세션이 컨텍스트 한계로 회전됐다. "
-    "먼저 `/pm-bootstrap` 을 수행하고 `log/current.md` 의 최신 handoff entry 를 읽어 "
-    "직전 세션의 작업을 이어받아라. 준비되면 'READY' 라고만 답하라."
-)
+def build_bootstrap_prompt(task: str | None = None) -> str:
+    """재진입 부트스트랩 프롬프트를 빌드한다 — task 명시 시 `/pm-bootstrap --task <name>` 로 주입.
+
+    **relay task 전달 = (b) 명시 전달**(sealed·PM 73·T-0356·F7): supervisor 가 받은 task 정체성을
+    재진입 프롬프트에 실값으로 박아, 컨텍스트 한계로 회전된 새 PM 세션이 같은 task 를 재바인딩
+    (resume)하게 한다. cwd/env 추론(a)은 기각(F6 "cwd 는 해소에 참여하지 않는다"·결정론 ⓐ "cwd/env
+    추론 금지"와 모순·ADR-0057 불변) — 정체성은 per-call 명시 전달이다. task 슬롯 0개 엣지에서도 (b)만
+    동작한다. task 없으면(슬롯/솔로) bare `/pm-bootstrap`(현행·byte-동일)."""
+    cmd = f"/pm-bootstrap --task {task}" if task else "/pm-bootstrap"
+    return (
+        "너는 이 프로젝트의 PM 세션이다. 이전 PM 세션이 컨텍스트 한계로 회전됐다. "
+        f"먼저 `{cmd}` 을 수행하고 `log/current.md` 의 최신 handoff entry 를 읽어 "
+        "직전 세션의 작업을 이어받아라. 준비되면 'READY' 라고만 답하라."
+    )
+
+
+# 기본(task 무·슬롯/솔로) 재진입 프롬프트 — 현행 bare `/pm-bootstrap` 프롬프트와 byte-동일.
+BOOTSTRAP_PROMPT = build_bootstrap_prompt()
 
 # 종료 명령 — supervisor 루프를 끝낸다(EOF 와 동치).
 QUIT_COMMANDS = frozenset({"/quit", "/exit"})
@@ -529,13 +542,17 @@ class Supervisor:
     """
 
     def __init__(self, driver: SessionDriver, *, root: Path,
-                 bootstrap: str = BOOTSTRAP_PROMPT,
+                 bootstrap: str | None = None, task: str | None = None,
                  max_consecutive_respawns: int = MAX_CONSECUTIVE_RESPAWNS) -> None:
         # 협력자·고정 config 만 — 대화/작업 상태 필드 없음(stateless 단언의 근거).
         # max_consecutive_respawns 는 *config* 상수(불변 임계)지 작업/대화 상태가 아니다.
         self.driver = driver
         self.root = Path(root)
-        self.bootstrap = bootstrap
+        # task 정체성(F7·T-0356·(b) 명시 전달)은 재진입 프롬프트에 baked-in 되어 `self.bootstrap` 에
+        # 흡수된다 — 별도 인스턴스 필드로 retain 하지 않는다(stateless 불변식 유지·respawn 은 같은
+        # bootstrap 을 재사용해 task 를 자동 forward). bootstrap 명시 override(테스트/커스텀)가 우선,
+        # 없으면 task 로 빌드(task None 이면 현행 bare BOOTSTRAP_PROMPT 와 byte-동일).
+        self.bootstrap = bootstrap if bootstrap is not None else build_bootstrap_prompt(task)
         self.max_consecutive_respawns = max_consecutive_respawns
 
     def stop_marker_present(self, session_id: str) -> bool:

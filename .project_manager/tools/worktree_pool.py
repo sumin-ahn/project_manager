@@ -192,6 +192,25 @@ class InvalidTaskName(Exception):
         super().__init__(f"부적합 task 명 {name!r} — {reason}")
 
 
+class NotTaskOwner(Exception):
+    """release `--task <이름>` 이 그 task 명의가 아닌 슬롯을 반납하려 함 — 소유검사 거부 (T-0354·F3).
+
+    슬롯↔task 연결 = lease.session == task 이름 (alloc `--task` 가 session=task 로 리스·⑥).
+    `--task` 를 준 release 는 이 소유검사를 통과해야 반납한다 — 다른 task/세션이 쓰는 슬롯을
+    실수로 idle 화(작업 뺏기)하지 않게. `holder` = 실제 그 슬롯을 leased 중인 session(진단용·
+    빈 문자열이면 idle/미점유). slot-only 반납(`--task` 미지정·백스톱)은 이 검사를 안 탄다.
+    """
+
+    def __init__(self, slot: str, task: str, holder: str):
+        self.slot = slot
+        self.task = task
+        self.holder = holder
+        held = f"session {holder!r}" if holder else "미점유(idle)"
+        super().__init__(
+            f"슬롯 {slot!r} 은 task {task!r} 소유가 아님 — {held} 이(가) 보유 중"
+        )
+
+
 class CheckoutFailed(Exception):
     """슬롯 worktree 의 branch checkout 실패 (ADR-0013).
 
@@ -1146,6 +1165,16 @@ def install_protected_hook(
     return rc == 0
 
 
+def _slot_number(slot: str) -> float:
+    """슬롯 식별자(`work/<repo>_<N>`)의 번호 N — 정렬 키 (T-0354·최소 번호 대여 결정론 ⓒ).
+
+    마지막 `_` 뒤 tail 이 숫자면 그 int, 아니면(비-숫자 커스텀 슬롯) `inf` 로 밀어 숫자 슬롯을
+    앞세운다(결정론적 정렬·부재/이상 슬롯이 최소 자리를 차지하지 않게). repo 명에 `_` 가 들어가도
+    (`project_manager`) 마지막 `_` 분리라 정확하다(슬롯 번호는 항상 최후 마디)."""
+    tail = slot.rsplit("_", 1)[-1]
+    return int(tail) if tail.isdigit() else float("inf")
+
+
 def _existing_slot_numbers(repo: str, leases: list[Lease]) -> set[int]:
     """장부에 이미 있는 이 repo 의 슬롯 번호 집합."""
     nums: set[int] = set()
@@ -1242,15 +1271,32 @@ def _validate_task_name(name: str, registered_repos: "list[str] | set[str] | Non
 
     `task_dir(name)` 이 무검증 조인이라 traversal/절대경로/빈 문자열이 작업트리 밖에 디렉토리를
     만들고 장부를 오염시킨다(reviewer 실측 `--task ../../evil` → git-tracked `.project_manager/evil`).
-    **엔진 진입점(bind_task)**에서 검증해 CLI 우회(T-0354~0357 직접 소비)까지 닫는다. 거부 순서:
-    빈/공백 → path separator(`/`·`\\`) → 선행 `.`(숨김/`.`/`..` 상대) → 단일 컴포넌트 아님. mkdir·
-    장부 write **이전**에 raise 한다(부작용 0). `registered_repos` 주면 `<repo>_<N>` 예약(⑥)도 거부
-    (primitive 자기완결·CLI 의 빠른 거부와 이중화·should-fix). 예약 판정 정규식은 CLI 의
-    `identity_args.is_reserved_task_name` 과 동형(모듈 격리라 inline·ADR-0013)."""
+    **엔진 진입점(bind_task)**에서 검증해 CLI 우회(T-0354~0357 직접 소비)까지 닫는다. mkdir·장부 write
+    **이전**에 raise 한다(부작용 0). `registered_repos` 주면 `<repo>_<N>` 예약(⑥)도 거부(primitive
+    자기완결·CLI 의 빠른 거부와 이중화·should-fix). 예약 판정 정규식은 CLI 의
+    `identity_args.is_reserved_task_name` 과 동형(모듈 격리라 inline·ADR-0013).
+
+    **문자 도메인 = 하류 구문 표면에 맞춘 협소화**(T-0356 codex 2건의 단일 불변식·per-surface 이스케이프
+    회피). 거부 순서와 표면 근거:
+      - 빈/공백-only → 빈 이름.
+      - **모든 whitespace**(스페이스·탭 등·선행/후행/내부 전부) → task 명은 하류 *인자 경계*다: CLI
+        `--task <이름>`(shell word)·relay 재진입 프롬프트 `/pm-bootstrap --task <이름>`(slash 인자
+        경계)이 공백에서 쪼개져 정체성이 파손된다(codex 실증 `my task` → 인자 경계 깨짐).
+      - **괄호 `(`·`)`** → log 헤더 태그 `(task:<이름>)`(pm_handoff `_TASK_TAG_PREFIX`)의 delimiter 다:
+        `)` 포함 명은 태그를 조기 종료시켜 파서(`task:[^)]+`)의 bound_session 매칭이 어긋나 task 연속성
+        추론/본문 추출이 파손된다(codex 실증 `foo)bar` → 태그 `(task:foo)bar)` 조기 매칭).
+      - path separator(`/`·`\\`) → 선행 `.`(숨김/`.`/`..` 상대) → 단일 컴포넌트 아님(traversal).
+    한글·하이픈·언더스코어·숫자는 유지 — 어느 표면(CLI·log 태그·path)과도 무충돌."""
     if not name or not name.strip():
         raise InvalidTaskName(name, "빈 이름(공백 포함)")
-    if name != name.strip():
-        raise InvalidTaskName(name, "선행/후행 공백")
+    if any(ch.isspace() for ch in name):
+        raise InvalidTaskName(
+            name, "공백·탭 등 whitespace 불가 (CLI/relay `--task <이름>` slash 인자 경계 파손 방지)"
+        )
+    if "(" in name or ")" in name:
+        raise InvalidTaskName(
+            name, "괄호 `(`·`)` 불가 (log 헤더 태그 `(task:<이름>)` delimiter 파손 방지)"
+        )
     if "/" in name or "\\" in name:
         raise InvalidTaskName(name, "path separator(`/`·`\\`) 불가 — 단일 이름이어야")
     if name.startswith("."):
@@ -1352,6 +1398,127 @@ def bind_task(name: str, *, pid: "int | None" = None,
         return existing, action, reclaimed_from
 
 
+# 종료된 task 서술 폴더의 아카이브 루트 — `.local/tasks/_ended/`. 선행 `_` 라 `_validate_task_name`
+# 이 실 task 명으로는 거부하므로(⑥ path 컴포넌트 규칙) 아카이브 하위와 실 task 가 절대 충돌하지 않는다.
+_ENDED_DIR_NAME = "_ended"
+
+
+def slots_for_task(name: str) -> list[Lease]:
+    """이 task(session==name) 명의로 **leased** 인 슬롯 리스트 (조회 전용·부작용 0·T-0354).
+
+    슬롯↔task 연결 = `lease.session == task 이름` — alloc `--task <이름>` 이 session=이름 으로
+    슬롯을 리스하므로(⑥ 직교 정체성이 lease 의 session 축에 실린다). release `--task` 소유검사와
+    `end_task` 의 dirty 검사·일괄 반납 대상이 이걸 본다. idle/미점유 슬롯은 session 이 비어 제외.
+    """
+    with _lease_lock():
+        return [l for l in _read_ledger() if l.state == "leased" and l.session == name]
+
+
+class EndTaskResult:
+    """`end_task` 결과 — 반납/이동 요약 또는 dirty 거부 (T-0354·F4).
+
+    `dirty` 가 비어있지 않으면 **거부**(아무것도 반납/이동하지 않음) — 호출부가 목록을 보이고
+    사용자 정리를 요구한다. 비어있으면 `released`(idle 반납한 슬롯)·`moved_to`(아카이브 목적지·
+    서술 폴더 부재 시 None)가 결과다. dataclass 미사용 — Lease 등과 동일(forward-ref 회피).
+    """
+
+    def __init__(self, name: str, *, released: list[str], dirty: list[str],
+                 moved_from: "Path | None", moved_to: "Path | None"):
+        self.name = name
+        self.released = released      # idle 로 반납한 슬롯 식별자(정렬)
+        self.dirty = dirty            # dirty 라 거부 사유가 된 슬롯 식별자(정렬·비어있으면 성공)
+        self.moved_from = moved_from  # 이동 전 서술 폴더(.local/tasks/<name>/·부재면 None)
+        self.moved_to = moved_to      # 아카이브 목적지(.local/tasks/_ended/<name>-<날짜>/·부재면 None)
+
+    @property
+    def refused(self) -> bool:
+        return bool(self.dirty)
+
+    def __repr__(self) -> str:
+        return (f"EndTaskResult(name={self.name!r}, released={self.released!r}, "
+                f"dirty={self.dirty!r}, moved_to={self.moved_to!r})")
+
+
+def _archive_dest(name: str) -> Path:
+    """종료 task 서술 폴더의 이동 목적지 `.local/tasks/_ended/<name>-<UTC날짜>/` (T-0354·②).
+
+    같은 날 같은 이름 재종료 시 충돌하면 `-2`·`-3`… 로 유일화한다(덮어써 기록 유실 방지). 날짜는
+    UTC `YYYYMMDD`(`_now_utc` 와 같은 시계·표시만 날짜 단위). 이동이라 삭제-위임 원칙 무저촉이고,
+    이름 재사용 시 옛 pm_state 를 resume 처럼 오인하는 조용한 오염을 막는다(②).
+    """
+    date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+    ended_root = TASKS_DIR / _ENDED_DIR_NAME
+    dest = ended_root / f"{name}-{date}"
+    n = 2
+    while dest.exists():
+        dest = ended_root / f"{name}-{date}-{n}"
+        n += 1
+    return dest
+
+
+def end_task(name: str, *, git_runner: GitRunner | None = None) -> EndTaskResult:
+    """task 를 종료한다 — 보유 슬롯 dirty 검사 → (clean 이면) 일괄 idle 반납 + 장부 제거 + 서술 폴더 아카이브 이동 (T-0354·F4·②).
+
+    **claimed 티켓 소진 게이트(⑲)는 여기서 보지 않는다** — board 스캔은 board 소유(pm_config 가
+    board 로드로 선-검사하고, 통과 시에만 이 함수를 부른다·import 격리 ADR-0013). 이 함수는
+    worktree/장부/서술 폴더만 다룬다:
+
+      1. `slots_for_task(name)` 보유 슬롯 중 **dirty** 가 하나라도 있으면 → 거부(`EndTaskResult.
+         refused`·released/moved 없음·아무 부작용 0). 사용자 정리 후 재시도.
+      2. 전부 clean → 보유 슬롯을 일괄 **idle 반납**(worktree 폴더는 유지·삭제 안 함·release 와
+         동일 전이: session/pid 비우고 git 스냅 정리) → 장부의 task 레코드 제거 → 서술 폴더
+         `.local/tasks/<name>/` 를 `_ended/<name>-<날짜>/` 로 **이동**(삭제 아님·②).
+
+    **명 검증(must-fix ②·T-0353 클래스 재발 차단)**: `_validate_task_name` 을 장부 write·`shutil.move`
+    **이전**에 돌려 traversal/절대경로/빈 이름을 fail-loud(`InvalidTaskName`) — `bind_task` 와 동형의
+    엔진 진입점 방어다. 무검증이면 `end_task("../evil")` 이 `_archive_dest` 파생 후 `.local/tasks` 밖으로
+    `shutil.move` 한다(reviewer/codex 재현·bind_task 만 걸리던 구멍). 예약패턴(`<repo>_<N>`·⑥)은 생성
+    시점(bind_task/cmd_alloc)에서 걸리는 **생성 관심사**라 여기선 registered_repos 를 요구하지 않는다
+    (종료엔 path-safety 만 필요·session 은 이미 장부에 있음). dirty 검사·반납·장부/task write 는 **한
+    `_lease_lock` 안에서** 직렬화한다(release/reclaim 동형·부분상태 차단). 폴더 이동은 락 밖(fs op·장부
+    무관). git_runner 주입으로 hermetic.
+    """
+    _validate_task_name(name)   # 장부 write·shutil.move 이전 fail-loud(부작용 0·must-fix ②)
+    with _lease_lock():
+        leases = _read_ledger()
+        owned = [l for l in leases if l.state == "leased" and l.session == name]
+
+        # 1) dirty 검사 — 하나라도 dirty 면 거부(부작용 0·장부 미변경).
+        dirty: list[str] = []
+        for lease in owned:
+            path = slot_path(lease.slot)
+            if path.exists() and _is_dirty(path, git_runner=git_runner):
+                dirty.append(lease.slot)
+        if dirty:
+            return EndTaskResult(name, released=[], dirty=sorted(dirty),
+                                 moved_from=None, moved_to=None)
+
+        # 2a) 전부 clean → 보유 슬롯 일괄 idle 반납(worktree 유지·release 동형 전이).
+        released: list[str] = []
+        for lease in owned:
+            lease.state = "idle"
+            lease.session = ""
+            lease.pid = 0
+            lease.git = None    # release 와 동일 — idle 슬롯은 활성 git 기대 없음(다음 alloc 재스냅).
+            released.append(lease.slot)
+        if released:
+            _write_ledger(leases)
+
+        # 2b) 장부의 task 레코드 제거(같은 락·형제 leases 는 위에서 이미 반영됨).
+        tasks = [t for t in _read_tasks() if t.name != name]
+        _write_tasks(tasks)
+
+    # 2c) 서술 폴더 이동(락 밖·fs op) — 부재면 이동 없음(장부만 정리된 task·graceful).
+    src = task_dir(name)
+    dest: "Path | None" = None
+    if src.exists():
+        dest = _archive_dest(name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dest))
+    return EndTaskResult(name, released=sorted(released), dirty=[],
+                         moved_from=src if dest is not None else None, moved_to=dest)
+
+
 def alloc(
     repo: str,
     *,
@@ -1421,30 +1588,37 @@ def alloc(
                     _write_ledger(leases)
                     return lease
 
-        # 3) idle 슬롯 리스 (브랜치 무관 재사용 컨테이너).
-        for lease in leases:
-            if lease.repo == repo and lease.state == "idle":
-                # **위험차단 (T-0295·must-fix)**: worktree 물리 부재 슬롯은 리스하지 않는다. stale
-                # 엔트리(worktree dir 삭제/prune)가 force_release 등으로 idle 이 되면, 이 재사용
-                # 루프가 *없는 worktree* 를 leased 로 넘겨 이후 코드가 깨진다(codex 실측). fs 존재
-                # 가드는 **실경로(git_runner 미주입)에서만** 본다 — 주입 runner(hermetic 테스트)는
-                # 슬롯 존재를 모델링하는 권위라 건너뛴다(current_branch/slot_status 동형 규율). 부재
-                # 슬롯은 skip → 다음 후보/NeedsCreate(dangling idle 을 leased 로 승격하지 않음).
-                if git_runner is None and not slot_path(lease.slot).exists():
-                    continue
-                # 슬롯이 이미 target_branch 가 아니면 재체크아웃(live HEAD 비교·ADR-0013 amend
-                # T-0072). git 이 브랜치를 만든다 — 장부엔 branch 를 쓰지 않는다.
-                if (target_branch is not None
-                        and current_branch(lease.slot, git_runner=git_runner) != target_branch):
-                    # checkout 을 먼저 — 실패하면 raise(idle 슬롯 상태 보존·부분 leased 전이 차단).
-                    _checkout_required(lease.slot, target_branch, git_runner=git_runner)
-                lease.state = "leased"
-                lease.session = sess
-                lease.pid = os.getpid()
-                lease.started = _now_utc()
-                _apply_git_snapshot(lease, git_runner=git_runner)  # arrival 스냅(기대 baseline·base 보존·T-0350).
-                _write_ledger(leases)
-                return lease
+        # 3) idle 슬롯 리스 — **최소 번호 우선**(결정론 ⓒ·번호 안정·T-0354). 같은 repo 의 idle
+        #    후보를 슬롯 번호 오름차순으로 정렬해 최소 가용 번호부터 대여한다(대여 중 불변·반납 후
+        #    재사용). 옛 코드는 장부 파일 순서(대개 생성순이나 remove+재생성 후 뒤섞일 수 있음)로
+        #    첫 idle 을 골라 번호가 비결정적이었다 — 정렬로 못박아 alloc CLI 의 "최소 번호 대여"를
+        #    보장한다. 비-숫자 tail 슬롯(드문 커스텀)은 뒤로 밀어 숫자 슬롯 우선(`_slot_number`).
+        idle_for_repo = sorted(
+            (l for l in leases if l.repo == repo and l.state == "idle"),
+            key=lambda l: _slot_number(l.slot),
+        )
+        for lease in idle_for_repo:
+            # **위험차단 (T-0295·must-fix)**: worktree 물리 부재 슬롯은 리스하지 않는다. stale
+            # 엔트리(worktree dir 삭제/prune)가 force_release 등으로 idle 이 되면, 이 재사용
+            # 루프가 *없는 worktree* 를 leased 로 넘겨 이후 코드가 깨진다(codex 실측). fs 존재
+            # 가드는 **실경로(git_runner 미주입)에서만** 본다 — 주입 runner(hermetic 테스트)는
+            # 슬롯 존재를 모델링하는 권위라 건너뛴다(current_branch/slot_status 동형 규율). 부재
+            # 슬롯은 skip → 다음 후보/NeedsCreate(dangling idle 을 leased 로 승격하지 않음).
+            if git_runner is None and not slot_path(lease.slot).exists():
+                continue
+            # 슬롯이 이미 target_branch 가 아니면 재체크아웃(live HEAD 비교·ADR-0013 amend
+            # T-0072). git 이 브랜치를 만든다 — 장부엔 branch 를 쓰지 않는다.
+            if (target_branch is not None
+                    and current_branch(lease.slot, git_runner=git_runner) != target_branch):
+                # checkout 을 먼저 — 실패하면 raise(idle 슬롯 상태 보존·부분 leased 전이 차단).
+                _checkout_required(lease.slot, target_branch, git_runner=git_runner)
+            lease.state = "leased"
+            lease.session = sess
+            lease.pid = os.getpid()
+            lease.started = _now_utc()
+            _apply_git_snapshot(lease, git_runner=git_runner)  # arrival 스냅(기대 baseline·base 보존·T-0350).
+            _write_ledger(leases)
+            return lease
 
         # 4) 풀 소진 — idle 슬롯 없음. 새 슬롯 생성은 fs 행위라 사용자 게이트(호출부).
         raise NeedsCreate(repo)
@@ -1454,12 +1628,16 @@ def release(
     slot: str,
     *,
     require_clean: bool = True,
+    owner_task: str | None = None,
     git_runner: GitRunner | None = None,
 ) -> Lease:
     """슬롯을 반납한다 — 작업완료 시(ADR-0013). idle 로 전이한 Lease 반환.
 
     - **dirty + require_clean=True → `ReleaseRefused`** — 수동 정리 요구(작업 유실 방지).
     - **require_clean=False(자동경로) → dirty 면 stash 보존 후 idle 화** — 자동화에서 막힘 방지.
+    - **owner_task 주면 소유검사(T-0354·F3)** — 그 슬롯의 leased session 이 owner_task 와 다르면
+      `NotTaskOwner`(다른 task 의 슬롯 반납 차단). 검사는 dirty 판정보다 먼저(내 것이 아니면
+      dirty 여부를 볼 이유가 없다). `--task` 미지정(owner_task=None·slot-only 백스톱)은 안 탄다.
 
     슬롯은 idle 로 전이(재사용 컨테이너로 풀에 반납)하고 session/pid 를 비운다 —
     worktree 폴더 자체는 유지(다음 리스가 재사용·remove 는 force_release/수동).
@@ -1469,6 +1647,11 @@ def release(
         target = next((l for l in leases if l.slot == slot), None)
         if target is None:
             raise KeyError(f"no lease for slot {slot!r}")
+
+        # task 소유검사 (F3) — dirty/stash 어떤 부작용보다 먼저. 내 task 명의(session)가 아니면
+        # 아무것도 바꾸지 않고 raise(다른 세션 작업을 실수로 idle 화하지 않음).
+        if owner_task is not None and target.session != owner_task:
+            raise NotTaskOwner(slot, owner_task, target.session)
 
         path = slot_path(slot)
         if path.exists() and _is_dirty(path, git_runner=git_runner):

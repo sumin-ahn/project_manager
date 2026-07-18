@@ -718,3 +718,76 @@ def test_list_without_mine_does_not_resolve_identity(board, capsys, monkeypatch)
     monkeypatch.setattr(board, "user_name", _boom)
     ids = _list_ids(board, capsys, mine=False)
     assert ids == ["T-0001"]
+
+
+# ════════════════════════════════════════════════════════════════════════
+# scan_task_tickets — task end 소진 게이트 스캔 (⑲·T-0354·자체 스캔)
+# ════════════════════════════════════════════════════════════════════════
+
+def test_scan_task_tickets_matches_user_slash_task_claimed(board):
+    """claimed_by == `<user>/<task>` 인 티켓을 상태 무관 claimed 로 잡는다(⑲)."""
+    _seed(board, "T-0001", "claimed", claimed_by="alice/mytask")
+    _seed(board, "T-0002", "blocked", claimed_by="alice/mytask")
+    _seed(board, "T-0003", "open")                              # 미claim — 안 잡힘
+    _seed(board, "T-0004", "claimed", claimed_by="bob/other")   # 다른 task — 안 잡힘
+    scan = board.scan_task_tickets("alice", "mytask")
+    ids = {r["id"] for r in scan["claimed"]}
+    assert ids == {"T-0001", "T-0002"}
+
+
+def test_scan_task_tickets_other_user_same_task_excluded(board):
+    """user 가 주어지면 동명 task 라도 다른 user 의 claim 은 제외(교차사용자 오귀속 방지)."""
+    _seed(board, "T-0001", "claimed", claimed_by="alice/job")
+    _seed(board, "T-0002", "claimed", claimed_by="bob/job")     # 같은 task 명·다른 user
+    scan = board.scan_task_tickets("alice", "job")
+    assert {r["id"] for r in scan["claimed"]} == {"T-0001"}
+
+
+def test_scan_task_tickets_slot_only_claim_graceful(board):
+    """user 토큰 없는 slot-only claim(`job`)은 task 토큰만으로 graceful 포함(legacy·user 미상)."""
+    _seed(board, "T-0001", "claimed", claimed_by="job")         # slot-only
+    scan = board.scan_task_tickets("alice", "job")
+    assert {r["id"] for r in scan["claimed"]} == {"T-0001"}
+
+
+def test_scan_task_tickets_prefix_open_info_only(board):
+    """prefix 를 주면 그 prefix 의 open 티켓을 prefix_open 으로 모은다(정보·차단 아님·①)."""
+    _seed(board, "T-PAY-001", "open")
+    _seed(board, "T-PAY-002", "claimed", claimed_by="alice/mytask")  # open 아님 — prefix_open 제외
+    _seed(board, "T-ACC-001", "open")                               # 다른 prefix — 제외
+    scan = board.scan_task_tickets("alice", "mytask", prefix="PAY")
+    assert {r["id"] for r in scan["prefix_open"]} == {"T-PAY-001"}
+    # claimed 축은 prefix 와 독립 — mytask claim 은 여전히 잡힌다.
+    assert {r["id"] for r in scan["claimed"]} == {"T-PAY-002"}
+
+
+def test_scan_task_tickets_no_prefix_no_prefix_open(board):
+    """prefix 미지정이면 prefix_open 은 항상 비어있다(정보 축 off)."""
+    _seed(board, "T-PAY-001", "open")
+    scan = board.scan_task_tickets("alice", "mytask")
+    assert scan["prefix_open"] == []
+
+
+def test_scan_task_tickets_empty_when_no_match(board):
+    """일치 티켓이 없으면 두 축 모두 빈 리스트(게이트 통과 신호·거짓 거부 없음)."""
+    _seed(board, "T-0001", "open")
+    scan = board.scan_task_tickets("alice", "mytask")
+    assert scan == {"claimed": [], "prefix_open": []}
+
+
+def test_scan_task_tickets_done_claimed_excluded(board):
+    """**must-fix ①·회귀 가드**: done+claimed_by 잔존은 claimed 축에서 제외 → task end 통과.
+
+    `cmd_complete` 는 done 이동 시 `claimed_by` 를 안 지운다 → `<user>/<task>` claim→complete 한
+    티켓이 done/ 에 claimed_by 를 남긴다. 이걸 담으면(옛 상태 무관 스캔) 그 티켓은 `unclaim`(claimed
+    전용)도 불가라 task end 가 영구 차단됐다(⑲ 해소수단 부재 모순). done 은 소진 게이트 대상이 아니다."""
+    _seed(board, "T-0001", "done", claimed_by="alice/mytask")     # 완료·claimed_by 잔존
+    scan = board.scan_task_tickets("alice", "mytask")
+    assert scan["claimed"] == []     # done 은 제외 → 게이트 통과(영구 차단 해소)
+
+
+def test_scan_task_tickets_blocked_still_gated(board):
+    """진행 중(blocked)의 내 claim 은 여전히 claimed 축(완료 아님·소진 게이트 유지·done 만 예외)."""
+    _seed(board, "T-0001", "blocked", claimed_by="alice/mytask")
+    scan = board.scan_task_tickets("alice", "mytask")
+    assert {r["id"] for r in scan["claimed"]} == {"T-0001"}

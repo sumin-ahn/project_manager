@@ -184,6 +184,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent", default=DEFAULT_AGENT,
         help=f"opencode agent(기본 {DEFAULT_AGENT}=PM primary). custom primary 부재 시 build 폴백.",
     )
+    parser.add_argument(
+        "--task", default=None, metavar="이름",
+        help="task 정체성(F7·T-0356) — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <이름>` 실값을 "
+             "박아 같은 task 를 resume 하게 한다((b) 명시 전달·cwd 추론 금지). 미지정이면 bare "
+             "`/pm-bootstrap`(슬롯/솔로).",
+    )
     return parser
 
 
@@ -200,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         runner=_make_watchdog_runner(engine),
         stall_error=engine.StallWatchdogError,
     )
-    supervisor = engine.Supervisor(driver, root=root)
+    supervisor = engine.Supervisor(driver, root=root, task=args.task)
 
     sys.stderr.write(
         f"[pm-orch] opencode supervisor 시작 (cwd={cwd} agent={args.agent}). "

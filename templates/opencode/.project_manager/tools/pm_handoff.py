@@ -164,6 +164,27 @@ def _load_pm_bootstrap():
         return None
 
 
+def _load_board():
+    """board 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
+
+    _load_worktree_pool 과 동형 — REPO/tools 스크립트-위치 앵커. `--task` 이름 검증에서 예약패턴
+    (`<repo>_<N>`·⑥) 거부용 `registered_repos()` 를 fail-soft 로 얻는 데만 쓴다(부재면 None →
+    traversal·구문 검증만·pm_config.cmd_alloc 동형·board.py 직접 import 는 안 함·touches 격리).
+    """
+    import importlib.util
+
+    b_path = TOOLS_DIR / "board.py"
+    if not b_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("board", b_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — fail-soft: 로드 실패는 예약패턴 검증만 완화(traversal 유지).
+        return None
+
+
 def _regression_cwd(
     worktree_slot: str | None = None,
     areas_file: Path | None = None,
@@ -244,6 +265,23 @@ def _legacy_pm_state_file() -> Path:
 def _slots_root() -> Path:
     """per-slot 상태 디렉토리 루트 (`.project_manager/.local/slots/`·gitignored·spike §3.1)."""
     return REPO / ".project_manager" / ".local" / "slots"
+
+
+def _task_pm_state_file(task: str) -> Path:
+    """task 서술 공간 pm_state 경로 (`.local/tasks/<task>/pm_state.md`·⑮·T-0353/T-0356·F7).
+
+    세션 종료(핸드오프)의 연속성 앵커가 slot→task 로 이동한 task 모드에서 pm_state 를 여기
+    기록한다. worktree_pool.task_dir(name)/pm_state.md 의 미러 — ADR-0013 모듈 격리라 cross-import
+    대신 REPO 파생으로 동형화한다(`_slots_root` 와 같은 관례·monkeypatch(REPO) 추종·hermetic)."""
+    return REPO / ".project_manager" / ".local" / "tasks" / task / "pm_state.md"
+
+
+def _pm_state_template_file() -> Path:
+    """tracked pm_state skeleton (`wiki/pm_state.template.md`) — board.py init 과 동일 seed 원천.
+
+    task 모드 첫 핸드오프가 task pm_state 를 이 템플릿에서 생성한다(T-0353 surface 약속:
+    "아직 없음 — 첫 핸드오프가 생성·T-0356"). board.py cmd_init 과 동일하게 verbatim 복사한다."""
+    return REPO / ".project_manager" / "wiki" / "pm_state.template.md"
 
 
 # canonical 슬롯 키(`<repo>_<N>`)에서 trailing 숫자(`<N>`)를 뽑는다 — divergent bare dir
@@ -648,6 +686,16 @@ def _worktree_line(worktree_slot: str | None, branch: str | None) -> str:
         return ""
     branch_part = branch if branch else "(미지정)"
     return f"- worktree: slot=`{worktree_slot}` · branch=`{branch_part}` (회전 재부착 단서·ADR-0013)\n"
+
+
+# task 세션 정체성의 log 헤더 태그 sentinel — task 모드(F7)는 헤더 태그를 `(task:<name>)` 로
+# 박아 서술형 괄호(`PM 4차 (아침 대화)`)·슬롯 태그(`<repo>_<N>`)와 기계적으로 구분한다. task 명은
+# 자유 포맷(한글·공백 허용)이라 bare `(<name>)` 로는 서술 괄호와 오탐이 나서 무태그 흡수 회귀
+# (`test_handoff_regex_ignores_descriptive_parens_for_solo`)를 깬다 — sentinel 이 그 클래스를
+# 닫는다. pm_bootstrap 소비측(`_LOG_HANDOFF_HEADER_RE`·`_session_owns_untagged`)의 `task:` 판별과
+# 미러(ADR-0013 모듈 격리라 상수를 각 모듈에 inline). dashboard 자기 섹션은 sentinel 없이 verbatim
+# `## <task>`(interface 2) — 사람 가독 표면과 기계 파싱 표면의 요구가 달라 값을 분리한다.
+_TASK_TAG_PREFIX = "task:"
 
 
 def _session_tag(session: str | None) -> str:
@@ -1725,6 +1773,24 @@ class PmHandoff:
             return
         print("  출하 변경 없음 (미push diff 가 비-출하·또는 push 없음) — release 라이브 불요.")
 
+    # ── task 모드 첫-핸드오프 pm_state seed (F7·T-0356) ────────────────────────────
+
+    def _seed_task_pm_state_if_absent(self) -> None:
+        """task pm_state 가 없으면 tracked template 에서 생성한다 (F7·첫 핸드오프가 생성·T-0356).
+
+        `self._pm_state_file`(= `_task_pm_state_file(task)`)이 부재면 `pm_state.template.md` 를
+        verbatim 복사(board.py cmd_init 과 동일 seed)해 세션 식별 절이 있는 skeleton 을 만든다 —
+        직후 sliding window(step3)가 이 세션 entry 를 채운다. 이미 있으면 no-op(멱등·이후 핸드오프
+        는 기존 window 갱신). template 부재면 seed 생략(step3 fail-soft warn 로 이어짐)."""
+        if self._pm_state_file.exists():
+            return
+        template = _pm_state_template_file()
+        if not template.exists():
+            return
+        self._pm_state_file.parent.mkdir(parents=True, exist_ok=True)
+        self._pm_state_file.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+        print(f"  ✓ task pm_state 생성 ({self._pm_state_file} · 첫 핸드오프·template seed)")
+
     # ── slot 대시보드 자기 섹션 overwrite step (수정형·ADR-0047·T-0260) ───────────
 
     def _write_dashboard_section(
@@ -1776,6 +1842,7 @@ class PmHandoff:
         worktree_slot: str | None = None,
         branch: str | None = None,
         done: bool = False,
+        task: str | None = None,
     ) -> int:
         """PM 핸드오프 7단계 자동화 전체 흐름을 실행한다.
 
@@ -1783,10 +1850,18 @@ class PmHandoff:
             기록해 회전 재부착 연속성 단서를 남긴다. 미지정(솔로)이면 현행 lean 스키마 보존.
         done: 작업완료(--done) — worktree 슬롯을 release(idle 반납). worktree_slot
             필요. 미지정이면 release 안 함(세션종료/회전 ≠ release·ADR-0013).
+        task: task 모드(F7·T-0356) — 세션 종료의 연속성 앵커를 slot→task 로 이동한다. pm_state 를
+            `.local/tasks/<task>/` 에 기록(첫 핸드오프가 template 에서 생성)·dashboard 자기 섹션은
+            `## <task>`·log 헤더 태그는 `(task:<task>)`. lease 는 유지한다(세션 종료 ≠ task 종료·F4).
+            `--repo/--slot` 과 직교 — 함께 오면 worktree_slot 은 cwd·회전 단서로만 쓰이고 연속성
+            앵커는 task 다. task-only(슬롯 0개)면 슬롯 자동해소를 우회한다(⑥).
 
         반환: 0=성공, 1=실패 (중단).
         """
         date_str = datetime.date.today().isoformat()
+        # task 모드(F7) — 명시 pm_state 주입(hermetic 테스트) 없이 `--task` 가 오면 연속성 앵커를
+        # task 로 잡는다. 명시 주입은 hermetic 경로 보존(주입 pm_state 를 그대로 씀).
+        task_mode = task is not None and not self._pm_state_file_explicit
         # release(--done)는 *명시* 슬롯만 반납한다(비가역) — 자동해소 슬롯을 release 하지 않게
         # 원래 명시 인자를 별도 보존. 슬롯 자동해소(아래)는 read/write 연속성 경로에만 적용.
         explicit_worktree_slot = worktree_slot
@@ -1796,7 +1871,10 @@ class PmHandoff:
         # 슬롯 우선* 경로로 같은 슬롯을 일관되게 쓴다(self-split 에서 회귀를 활성 worktree 서
         # 돌림·continuity/회귀cwd 비대칭 제거). 멀티-PM 모호면 fail-loud(slot 안 박고 중단).
         # 명시 주입(테스트·_pm_state_file_explicit)은 슬롯 해소를 건너뛴다(hermetic 경로 보존).
-        if not self._pm_state_file_explicit:
+        # task-only(슬롯 미동반)면 슬롯 자동해소(모호 fail-loud)를 우회한다 — task 는 슬롯 0개로도
+        # 동작(⑥)하고 연속성 앵커가 task 라 슬롯 해소가 불필요하다. task+명시 슬롯이면 아래 해소가
+        # 그 명시 슬롯을 그대로 돌려주므로(모호 없음) cwd/회전 단서로 쓴다.
+        if not self._pm_state_file_explicit and not (task_mode and not worktree_slot):
             resolved_slot, ambiguity = _resolve_session_worktree_slot(worktree_slot)
             if ambiguity is not None:
                 print(
@@ -1816,8 +1894,12 @@ class PmHandoff:
         # **읽기 위치(target 경로)만 정하고 파일은 옮기지 않는다**(migrate=False) — 회귀/출하
         # 게이트(아래)가 red 면 "중단 시 pm_state 무접촉" 보장을 지켜야 하므로, legacy→slot
         # 이동은 *모든 중단 게이트 통과 후·pm_state 첫 접촉 직전*([3/7] 앞)에 1회 수행한다.
+        # task 모드(F7)면 슬롯 대신 task 서술 공간(`.local/tasks/<task>/pm_state.md`)을 앵커로 쓴다.
         if not self._pm_state_file_explicit:
-            self._pm_state_file = _pm_state_path(worktree_slot, migrate=False)
+            if task_mode:
+                self._pm_state_file = _task_pm_state_file(task)
+            else:
+                self._pm_state_file = _pm_state_path(worktree_slot, migrate=False)
         print(
             f"[pm_handoff] PM {session_num}차 핸드오프 시작 "
             f"(dry_run={dry_run}, skip_pytest={skip_pytest}, "
@@ -1860,14 +1942,22 @@ class PmHandoff:
         # 세션 정체성 태그(ADR-0044) — 해소된 슬롯(`work/<repo>_<N>`)에서 canonical `<repo>_<N>`
         # 를 유도해 헤더에 박는다(감사 메타·상태 저장 아님·ADR-0040 무충돌·태그 값에 `work/`
         # 프리픽스 없음). 솔로(미해소)면 None → 태그 생략·현행 헤더 byte-호환.
-        _parsed_slot = _parse_worktree_slot(worktree_slot)
-        session_identity = f"{_parsed_slot[0]}_{_parsed_slot[1]}" if _parsed_slot else None
+        # task 모드(F7): 연속성 앵커 = task. dashboard 자기 섹션 = `## <task>`(verbatim·interface 2),
+        # log 헤더 태그 = `(task:<name>)`(sentinel·서술괄호/슬롯태그와 기계 구분·interface 3). 두 표면의
+        # 요구가 달라(사람 가독 vs 기계 파싱) 값을 분리한다. slot 모드는 둘 다 canonical `<repo>_<N>`.
+        if task is not None:
+            session_identity = task
+            log_session_tag = f"{_TASK_TAG_PREFIX}{task}"
+        else:
+            _parsed_slot = _parse_worktree_slot(worktree_slot)
+            session_identity = f"{_parsed_slot[0]}_{_parsed_slot[1]}" if _parsed_slot else None
+            log_session_tag = session_identity
         skeleton = build_handoff_log_skeleton(
             session_num=_normalize_session_num(session_num),
             date=date_str,
             worktree_slot=worktree_slot,
             branch=branch,
-            session=session_identity,
+            session=log_session_tag,
         )
 
         if dry_run:
@@ -1914,8 +2004,15 @@ class PmHandoff:
         # 직전에 legacy → slot 이동을 1회 수행한다. 게이트 red 면 여기 못 와 legacy 무접촉
         # (codex must-fix — "중단 시 pm_state 무접촉" 보존). dry_run 은 이동 안 함(미리보기 —
         # 진입부 migrate=False target 을 그대로 읽음). 명시 주입(테스트)은 재해소 안 함.
+        # task 모드(F7)는 slot legacy 마이그레이션 대상이 아니다 — task pm_state 는 task 자기 공간의
+        # 신규 형식이라 재파싱/이동이 불필요하다(결정: 마이그레이션 0). 대신 **첫 핸드오프가 생성**
+        # 한다(T-0353 surface 약속) — 부재 시 tracked template 에서 seed 해 아래 sliding window 가
+        # 세션 식별 절을 채운다(board.py init 과 동일 verbatim 복사). dry_run 은 seed 안 함(미리보기).
         if not dry_run and not self._pm_state_file_explicit:
-            self._pm_state_file = _migrate_legacy_pm_state(worktree_slot)
+            if task_mode:
+                self._seed_task_pm_state_if_absent()
+            else:
+                self._pm_state_file = _migrate_legacy_pm_state(worktree_slot)
 
         # ── 3·4. pm_state.md sliding window 정리 + 길이 검증 ───────────────────
         # pm_state.md 부재(board.py init 미실행 clone)는 치명 아님 — fail-soft.
@@ -2205,6 +2302,34 @@ def main(argv: list[str] | None = None) -> int:
     if identity_err is not None:
         parser.error(identity_err)
 
+    # --task 이름 검증 — **공유 엔진 validator**(`worktree_pool._validate_task_name`·pm_config.cmd_alloc
+    # 동형)로 traversal/절대경로/빈 이름/whitespace/괄호 + `<repo>_<N>` 예약(⑥)을 fail-loud 한다. handoff
+    # 는 bind_task 를 우회하는 별도 CLI 진입점이라 여기서 닫는다 — per-surface 이스케이프 대신 단일
+    # validator 로 도메인을 협소화(T-0356 codex 2건)해 whitespace/괄호 거부까지 자동 상속한다. 예약명
+    # (`--task project_manager_1`)도 거부해 dashboard `## project_manager_1` 가 실 slot-1 섹션과 충돌하는
+    # 것을 막는다(reviewer). registered_repos 는 board 에서 fail-soft 해소(부재/실패면 None → 구문 검증만).
+    if identity.task is not None:
+        wp = _load_worktree_pool()
+        if wp is None:
+            parser.error(
+                "worktree_pool 엔진을 찾을 수 없다 — --task 검증 불가 "
+                f"({TOOLS_DIR / 'worktree_pool.py'} 부재/로드 실패·multi-PM 셋업/엔진 전파 확인)."
+            )
+        board_mod = _load_board()
+        registered = None
+        _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
+        if _reg_fn is not None:
+            try:
+                registered = _reg_fn()
+            except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴만 완화·traversal 유지).
+                registered = None
+        try:
+            wp._validate_task_name(identity.task, registered)
+        except wp.InvalidTaskName as exc:
+            parser.error(
+                f"--task 이름 {identity.task!r} 이(가) 부적합 — {exc.reason}. 안전한 단일 이름 "
+                "(공백·괄호·path 문자·슬롯 예약패턴 `<repo>_<N>` 불가)이어야 한다."
+            )
     # --branch 는 슬롯 정체성 동반 필요 — 슬롯 없는 브랜치는 회전 재부착 단서로 불완전
     # (어느 슬롯에 재부착할지 모름)하므로 조용히 무시하지 않고 거부한다(오용 축소·ADR-0013).
     if args.branch and not args.worktree_slot:
@@ -2237,6 +2362,7 @@ def main(argv: list[str] | None = None) -> int:
         worktree_slot=args.worktree_slot,
         branch=args.branch,
         done=args.done,
+        task=identity.task,
     )
 
 

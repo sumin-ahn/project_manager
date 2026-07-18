@@ -754,6 +754,16 @@ def test_session_owns_untagged_slot2plus_ignores(bs):
     assert bs._session_owns_untagged("project_manager_11") is False
 
 
+def test_session_owns_untagged_task_always_false(bs):
+    """task 세션(`task:<name>`·F7·T-0356)은 무태그 legacy 를 자기 것으로 보지 않는다(항상 False).
+
+    무태그 entry = 태그 도입 이전 솔로/slot-1 계보라 task 것이 아니다. sentinel 판별을 trailing
+    `_N` 검사보다 앞에 둬, task 명이 우연히 `_1` 로 끝나도(`task:foo_1`) slot-1 오판(True)을 막는다."""
+    assert bs._session_owns_untagged("task:mytask") is False
+    assert bs._session_owns_untagged("task:foo_1") is False   # `_1` trailing 오판 회귀 가드.
+    assert bs._session_owns_untagged("task:한글작업") is False
+
+
 # ── last_handoff_header_line 슬롯 필터: user 연속성 cross-slot 유입 차단 (codex R3) ──
 
 def test_last_handoff_header_line_slot2_uses_own_not_global(bs):
@@ -1161,6 +1171,61 @@ def test_handoff_regex_descriptive_parens_with_number_not_canonical(bs):
     """서술형에 숫자가 있어도(`(회의 3)`) 후행 `_N` 없으면 태그 아님 — 솔로 소유."""
     log = "## [2026-07-10] handoff | PM 5차 (회의 3) → 다음 PM 세션\n- 솔로.\n"
     assert bs.parse_last_handoff_session_num(log) == 5
+
+
+# ── task 태그 파서 (F7·T-0356) — sentinel `task:` 캡처·소유·차수/본문 추론·슬롯 회귀 불변 ──
+
+
+def test_handoff_regex_captures_task_tag(bs):
+    """RE 가 sentinel 태그 `(task:<name>)` 를 세션 그룹으로 캡처한다 (자유 포맷·한글·하이픈·언더스코어).
+
+    task 명은 validator 가 공백·괄호를 거부(T-0356 협소화)하므로 태그엔 그 문자가 안 온다 — RE 소비측은
+    `task:[^)]+` 로 넓게 두되(관용) 캡처 케이스는 유효 명(한글 포함)으로 커버한다."""
+    for name in ("mytask", "my-task", "한글작업", "job_v2"):
+        line = f"## [2026-07-10] handoff | PM 7차 (task:{name}) → 다음 PM 세션"
+        m = bs._LOG_HANDOFF_HEADER_RE.search(line)
+        assert m is not None and m.group("session") == f"task:{name}", name
+
+
+def test_handoff_task_tag_owned_and_num_inferred(bs):
+    """task bound_session(`task:<name>`)이 자기 태그 entry 만 소유 — 차수 추론·본문 추출 성공.
+
+    entry 추출/차수 추론(DoD)이 task 태그로 동작함을 못박는다: 태그된 최고차를 차수로 잡고
+    (`parse_last_handoff_session_num`), 자기-task handoff 본문을 dump 한다(`extract_slot_handoff_entry`)."""
+    log = (
+        "## [2026-07-10] handoff | PM 3차 (task:mytask) → 다음 PM 세션\n"
+        "- mytask 3차 본문.\n\n"
+        "## [2026-07-11] handoff | PM 4차 (task:mytask) → 다음 PM 세션\n"
+        "- mytask 4차 본문.\n"
+    )
+    assert bs.parse_last_handoff_session_num(log, bound_session="task:mytask") == 4
+    entry = bs.extract_slot_handoff_entry(log, bound_session="task:mytask")
+    assert entry is not None and "mytask 4차 본문" in entry["body"]
+
+
+def test_handoff_task_tag_excludes_other_task_and_slot(bs):
+    """task bound 는 타 task·슬롯 태그 entry 를 자기 것으로 안 본다(cross-anchor 유입 차단)."""
+    log = (
+        "## [2026-07-10] handoff | PM 9차 (project_manager_2) → 다음 PM 세션\n- 슬롯 본문.\n\n"
+        "## [2026-07-11] handoff | PM 3차 (task:other) → 다음 PM 세션\n- other 본문.\n\n"
+        "## [2026-07-12] handoff | PM 5차 (task:mytask) → 다음 PM 세션\n- mytask 본문.\n"
+    )
+    # mytask 는 자기 태그(5차)만 — 슬롯 9차·other 3차 유입 0.
+    assert bs.parse_last_handoff_session_num(log, bound_session="task:mytask") == 5
+    entry = bs.extract_slot_handoff_entry(log, bound_session="task:mytask")
+    assert entry is not None and "mytask 본문" in entry["body"]
+    assert "슬롯 본문" not in entry["body"] and "other 본문" not in entry["body"]
+
+
+def test_handoff_slot_bound_ignores_task_tags(bs):
+    """슬롯 회귀 불변 — 슬롯 bound(`<repo>_<N>`)는 task 태그 entry 를 자기 것으로 안 본다.
+
+    task 태그 도입이 슬롯 필터를 오염시키지 않음을 못박는다(양방향 격리)."""
+    log = (
+        "## [2026-07-10] handoff | PM 8차 (task:mytask) → 다음 PM 세션\n- task 본문.\n\n"
+        "## [2026-07-11] handoff | PM 2차 (project_manager_2) → 다음 PM 세션\n- 슬롯2 본문.\n"
+    )
+    assert bs.parse_last_handoff_session_num(log, bound_session="project_manager_2") == 2
 
 
 # ── reconcile_session_num: 순수 함수 단위 (DoD·test_pm_state_per_slot 확장) ────
