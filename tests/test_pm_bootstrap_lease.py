@@ -68,17 +68,19 @@ class _FakeLease:
 
 
 class _FakeLeaseEntry:
-    """list_leases() 가 돌려주는 장부 엔트리 대역 — state/session/slot surface (상태점검용).
+    """list_leases() 가 돌려주는 장부 엔트리 대역 — state/session/slot/role surface (상태점검용).
 
-    `extra` = 미지 최상위 키 보존(T-0350·`Lease.extra` 동형) — 0단계 readonly carve-out(⑬·T-0351)
-    이 `extra["role"]=="readonly"` 를 읽으므로 그 키를 실을 수 있게 둔다."""
+    `role` = canonical 슬롯 role(T-0358 이 `Lease.role` 로 승격) — 0단계 readonly carve-out(⑬·
+    `_phase0_is_readonly`)이 **`lease.role`** 을 직접 읽는다("readonly"=공유 자산·타-점유/보호브랜치
+    검사 비적용). `extra` = 미지 최상위 키 보존(T-0350·`Lease.extra` 동형·role 은 canonical 로 이관)."""
 
     def __init__(self, slot: str, repo: str, session: str, *, state: str = "leased",
-                 extra: dict | None = None):
+                 role: str = "work", extra: dict | None = None):
         self.slot = slot
         self.repo = repo
         self.session = session
         self.state = state
+        self.role = role
         self.extra = extra or {}
 
 
@@ -142,6 +144,7 @@ class FakeWorktreePool:
                  alloc_slot: str = "work/A_1", alloc_branch: str | None = "a5",
                  force_detached: bool = False,
                  present_slots: "tuple[str, ...] | None" = ("work/X_2",),
+                 readonly_slots: "tuple[str, ...] | None" = None,
                  compare_result=None,
                  task_dir_root: "Path | None" = None,
                  task_prefix: "str | None" = None,
@@ -173,6 +176,9 @@ class FakeWorktreePool:
         # 슬롯(idle 리스)에 bind 하므로(§F1b "장부·폴더에 실재"), 그 idle 리스를 list_leases 에 실어
         # phantom-거부를 피한다. idle 이라 점유(leased)·"다른 활성 PM" surface 엔 안 잡힌다(회귀 0).
         self._present_slots: tuple[str, ...] = present_slots or ()
+        # readonly 공유 슬롯(⑬·T-0358) 시드 — role="readonly"·무소유(session 없음)·leased state
+        # (create_slot 확정 형태). 0단계 carve-out(타-점유/보호브랜치 비적용)이 이걸 읽는다.
+        self._readonly_slots: tuple[str, ...] = readonly_slots or ()
         # 0단계 record-vs-live(compare_slot_git·T-0350) 결과 대역 — None=미설정(정합 검사 no-op).
         self._compare_result = compare_result
         # 슬롯 → live 브랜치 매핑(ADR-0013 amend T-0072 — identity/release surface 가
@@ -204,6 +210,11 @@ class FakeWorktreePool:
             _, _, tail = slot.rpartition("/")
             repo = tail.rsplit("_", 1)[0]
             leased.append(_FakeLeaseEntry(slot, repo, "", state="idle"))
+        for slot in self._readonly_slots:
+            _, _, tail = slot.rpartition("/")
+            repo = tail.rsplit("_", 1)[0]
+            # readonly = role="readonly"·무소유(session="")·leased(create_slot 확정형·⑬·T-0358).
+            leased.append(_FakeLeaseEntry(slot, repo, "", state="leased", role="readonly"))
         leased.extend(self._extra_leases)
         return leased
 
@@ -512,6 +523,58 @@ def test_bootstrap_slot_identity_detached_shows_placeholder(bootstrap, tmp_path,
     inst.run(repo="X", slot=2)
     out = capsys.readouterr().out
     assert "브랜치=`(미지정)`" in out
+
+
+# ── readonly 공유 슬롯 0단계 carve-out (⑬·T-0358·seam #1 파급) ─────────────────
+# `Lease.role` 을 canonical 필드로 승격(T-0358)하면 extra 에서 빠지므로, T-0351 의 extra["role"]
+# 훅은 조용히 무력화된다 → `_phase0_is_readonly` 를 canonical `lease.role` read 로 갱신했다.
+# 아래가 그 파급(readonly lease → 0단계 carve-out 실동작)을 못박는다.
+
+
+def test_phase0_is_readonly_reads_canonical_role_not_extra(bootstrap, tmp_path):
+    """seam #1 — `_phase0_is_readonly` 는 canonical `lease.role` 을 읽는다(extra 아님·T-0358).
+
+    role 이 `_LEASE_CANONICAL_KEYS` 로 승격되며 extra 에서 빠졌으므로 옛 extra["role"] 훅은
+    무력화된다. sensitivity: role="work"이되 extra={"role":"readonly"}(stale 스키마)는 **False** —
+    canonical role 만 신뢰하고 extra 경유는 무시해야 훅 무력화 회귀가 없다."""
+    inst = _make_bootstrap(bootstrap, tmp_path)
+    ro = _FakeLeaseEntry("work/A_1", "A", "", state="leased", role="readonly")
+    work = _FakeLeaseEntry("work/A_1", "A", "s", state="leased", role="work")
+    stale_extra = _FakeLeaseEntry("work/A_1", "A", "s", state="leased", role="work",
+                                  extra={"role": "readonly"})
+    assert inst._phase0_is_readonly(ro) is True
+    assert inst._phase0_is_readonly(work) is False
+    assert inst._phase0_is_readonly(stale_extra) is False   # extra 경유 무시(canonical role 만)
+    assert inst._phase0_is_readonly(None) is False
+
+
+def test_bootstrap_readonly_slot_bind_refused(bootstrap, tmp_path, capsys):
+    """⑬ should-fix — readonly 공유 슬롯 바인딩은 0단계에서 거부(rc1·무소유 공유 자산·T-0358).
+
+    0단계 carve-out(F6)은 *조회 지칭*만 허용하고 bind 는 *점유*라 의미가 다르다 — `/pm-bootstrap
+    --slot N` 오지정을 fail-loud 로 막는다(bind_slot 엔진 `ReadonlySlotNotLeasable` 의 user-facing 짝)."""
+    wp = FakeWorktreePool(present_slots=())
+    wp._extra_leases = [_FakeLeaseEntry("work/X_2", "X", "",
+                                        state="leased", role="readonly")]
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    rc = inst.run(repo="X", slot=2)
+    assert rc == 1
+    assert "readonly" in capsys.readouterr().err
+    assert wp.bind_calls == [], "readonly bind 거부인데 bind_slot 이 불렸다"
+
+
+def test_bootstrap_work_slot_other_holder_rejected_sensitivity(bootstrap, tmp_path, capsys):
+    """sensitivity 대조 — 같은 슬롯이 role="work"(비-readonly)면 타 세션 점유로 0단계 rc1 거부(다른 사유).
+
+    readonly 는 bind 거부(readonly 사유)·work 는 other-holder 거부(다른 세션 사유) — 둘의 사유가 갈려야
+    role 판별이 실제로 작동함을 입증(양쪽 rc1 이되 메시지 다름)."""
+    wp = FakeWorktreePool(present_slots=())
+    wp._extra_leases = [_FakeLeaseEntry("work/X_2", "X", "other_sess",
+                                        state="leased", role="work")]
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    rc = inst.run(repo="X", slot=2)
+    assert rc == 1
+    assert "다른 세션" in capsys.readouterr().err
 
 
 def test_bootstrap_slot_surfaces_other_active_pms(bootstrap, tmp_path, capsys):

@@ -1,6 +1,6 @@
 ---
 name: pm-env
-description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo add · worktree add(→pm-bootstrap 바인딩 안내) · slot status/release/remove · upstream show/switch(path↔URL). multi-PM 셋업·upstream 전환의 단일 진입. Triggers: 'pm-env', 'repo 추가', 'worktree 추가', 'slot 상태', '슬롯 제거', 'upstream 전환', '환경 관리'."
+description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo add · worktree add(→pm-bootstrap 바인딩 안내·--readonly 공유 슬롯) · slot status/release/remove · upstream show/switch(path↔URL). multi-PM 셋업·upstream 전환의 단일 진입. Triggers: 'pm-env', 'repo 추가', 'worktree 추가', 'readonly 슬롯', 'slot 상태', '슬롯 제거', 'upstream 전환', '환경 관리'."
 ---
 
 # /pm-env — PM 환경 관리 (pm-config facade)
@@ -28,14 +28,20 @@ description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo 
 
 ### worktree add — 슬롯 생성 (→ bootstrap 바인딩 안내)
 ```bash
-./pm-config.sh worktree add <repo>
+./pm-config.sh worktree add <repo>              # 작업 슬롯(배타 대여·세션 바인딩)
+./pm-config.sh worktree add <repo> --readonly   # readonly 공유 슬롯(⑬·research 기준면)
 ```
 추가 후 PM 에게 안내: **"이제 `/pm-bootstrap <repo> --slot N` 으로 이 슬롯에 바인딩하세요"**
 — `pm_bootstrap` 의 multi-PM identity surface(T-0074)와 연결(정체성=세션 맥락).
+- **`--readonly`**(⑬·T-0358): research 전용 **read-only 공유 슬롯** — 코드를 *읽어* PM 홈 wiki
+  (domain·architecture·status)를 쓰는 읽기 기준면이다. detached HEAD(released base·git 이 같은 브랜치
+  두 worktree 를 못 물림)·role=readonly·**session/pid 없음·배타 대여 없음**(공유가 정상). 무소유 공유
+  자산이라 **바인딩(`/pm-bootstrap --slot`)·release 도 거부**되고, 갱신은 [[pm-worktree]] `refresh` 로만
+  (set-base/rebase/dev/sync 도 거부). 제거는 `worktree remove --force`.
 
 ### slot status / release / remove
 ```bash
-./pm-config.sh status | whoami        # 풀/리스 + 이 세션 repo/슬롯/branch
+./pm-config.sh status | whoami        # 풀/리스 + 이 세션 repo/슬롯/branch (readonly 슬롯은 role=readonly)
 ./pm-config.sh release <slot> [--force]        # 작업완료 반납(idle 화·재사용) / --force=강제 백스톱
 ./pm-config.sh worktree remove <slot> [--force] # 슬롯 통째 제거(원자·번호 재사용·T-0333)
 ```
@@ -64,6 +70,7 @@ task = 슬롯과 **직교**하는 작업스트림 정체성(⑥). task 명의로
 - **alloc**(PM 자율·논리층·⑤): idle **최소 번호** 슬롯을 `--task` 명의(lease session)로 leased 전이.
   풀에 idle 슬롯이 없으면 **자동 생성하지 않고**(디스크=코드 전체 사본×슬롯) `worktree add <repo>`
   **승인 요청**으로 멈춘다 — create/remove(물리층)=사용자 승인, alloc/release(논리층)=PM 자율(2층 분리·⑤).
+  (readonly 공유 슬롯은 배타 대여 없음·alloc/release 대상 아님·⑬.)
 - **release --task**: 그 슬롯이 내 task 명의(session)가 아니면 거부(다른 task 슬롯 보호). dirty 거부는
   현행 유지(`--force`=stash 보존 강제·소유검사 우회 백스톱). clean=idle 반납(폴더 유지·풀 재사용).
 - **task end**: ① 이 task 명의로 **claimed 인 티켓**이 남아있으면 목록 + 거부(소진 게이트·⑲) — 해소는
@@ -126,4 +133,4 @@ opencode `run` 스타트업 fetch stall(간헐 brownout·자체 회복 없음·�
 
 ## 참고
 - 설계: ADR-0032(D3 스킬화·D4 upstream 하이브리드) · backbone facade `pm-config.sh`→`pm_config.py`.
-- [[pm-update]](전환한 upstream 으로 갱신) · [[pm-bootstrap]](worktree add 후 슬롯 바인딩).
+- [[pm-update]](전환한 upstream 으로 갱신) · [[pm-bootstrap]](worktree add 후 슬롯 바인딩) · [[pm-worktree]](readonly 슬롯 refresh).

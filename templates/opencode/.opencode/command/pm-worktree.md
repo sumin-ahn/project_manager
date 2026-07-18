@@ -1,6 +1,6 @@
 ---
-description: "worktree/submodule 운영중 관리 — submodule 을 dev 브랜치로 지정(pool selective resync 로부터 보호)·drift 난 detached submodule 을 pin 으로 수동 재동기·슬롯 기준점(base) 사용자 명시 기록(set-base)·슬롯 git 구성 조회(status). backbone CLI .project_manager/tools/worktree_pool.py (dev/sync/set-base/status) thin wrapper. Triggers: 'submodule dev 지정', 'submodule 작업 중 선언', 'worktree submodule drift 재동기', 'worktree 브랜치 관리', '슬롯 기준점 지정', 'set-base', 'worktree status', 'pm-worktree'."
-argument-hint: "dev <submodule> <branch> --repo <repo> --slot <N>  |  sync --repo <repo> --slot <N>  |  set-base <slot> <branch>[@<commit>]  |  status [<slot>]"
+description: "worktree/submodule 운영중 관리 — submodule 을 dev 브랜치로 지정(pool selective resync 로부터 보호)·drift 난 detached submodule 을 pin 으로 수동 재동기·슬롯 기준점(base) 사용자 명시 기록(set-base)·슬롯 git 구성 조회(status)·readonly 공유 슬롯 갱신(refresh). backbone CLI .project_manager/tools/worktree_pool.py (dev/sync/set-base/status/refresh) thin wrapper. Triggers: 'submodule dev 지정', 'submodule 작업 중 선언', 'worktree submodule drift 재동기', 'worktree 브랜치 관리', '슬롯 기준점 지정', 'set-base', 'worktree status', 'readonly 슬롯 갱신', 'refresh', 'pm-worktree'."
+argument-hint: "dev <submodule> <branch> --repo <repo> --slot <N>  |  sync --repo <repo> --slot <N>  |  set-base <slot> <branch>[@<commit>]  |  status [<slot>]  |  refresh <slot> [--onto <branch>]"
 audience: pm-internal
 ---
 
@@ -35,8 +35,11 @@ user-entrypoint)의 확장이 아니라 **운영중-관리** — 청중이 다�
 - **기준점(base) 지정** — 부트스트랩 0단계가 "기준점 미기록 — drift 감지 비활성" 을 loud 표시하고
   후보를 제시하면(v1.3.0 이전 슬롯), 사용자가 고른 기준을 `set-base` 로 기록한다("이 슬롯 base 는
   origin/main"). 그때부터 drift 감지가 작동한다(자동 추론 없음·사용자 결정·결정 ⑪).
-- **슬롯 git 구성 조회** — 슬롯의 base·branch·head·**base 대비 N behind** 를 `status` 로 본다
+- **슬롯 git 구성 조회** — 슬롯의 role·base·branch·head·**base 대비 N behind** 를 `status` 로 본다
   (손-git 조합 불요). 기준점 미기록이면 "base 대비 behind" 는 `-`(계산 불가).
+- **readonly 공유 슬롯 갱신** — research 전용 read-only 슬롯(⑬·`worktree add --readonly` 로 생성)을
+  released 최신 tip 으로 `refresh` 한다("readonly 슬롯 최신으로 갱신해"). fetch → detached HEAD 이동.
+  dirty(누군가 씀·신호)면 거부(조용히 reset 안 함).
 
 ## 실행
 
@@ -55,8 +58,11 @@ python3 .project_manager/tools/worktree_pool.py sync --repo <repo> --slot <N>
 # ③ 슬롯 기준점(base) 사용자 명시 기록 (미기록 슬롯 해소 → 이후 drift 감지 작동·자동 추론 금지)
 python3 .project_manager/tools/worktree_pool.py set-base <slot> <branch>[@<commit>]
 
-# ④ 슬롯 git 구성 조회 (base·branch·head·base 대비 N behind·미기록이면 behind `-`)
+# ④ 슬롯 git 구성 조회 (role·base·branch·head·base 대비 N behind·미기록이면 behind `-`)
 python3 .project_manager/tools/worktree_pool.py status [<slot>]
+
+# ⑤ readonly 공유 슬롯 갱신 (fetch → detached HEAD 이동 + submodule 재동기·dirty=거부+loud·⑬)
+python3 .project_manager/tools/worktree_pool.py refresh <slot> [--onto <branch>]
 ```
 
 - `<submodule_path>` = 슬롯 worktree 상대 경로(= `git submodule status` 표기·예 `vendor/sub`).
@@ -72,9 +78,17 @@ python3 .project_manager/tools/worktree_pool.py status [<slot>]
   오기록하지 않으니, 실재하는 브랜치/커밋을 지정하거나 fetch 후 재시도한다. 미기록 슬롯이 있어야
   부트스트랩 0단계가 후보(예 "`origin/main`(merge-base `df10dc6`)")를
   제시한다 — 사용자가 그중 하나를 골라 이 명령으로 기록한다.
-- `status`: `<slot>` 생략 시 cwd/세션 leased 슬롯으로 해소(무인자=내 슬롯). "base 대비 N behind" 는
-  기준점이 있어야 계산된다 — 미기록이면 `-`(계산 불가·자동 추론 금지). rebase(기준 변경) 본체는
-  후속(wave-2d): 기준 없으면 거부되고 `--onto <branch>` 로 기준을 명시해야 진행+기록된다.
+- `status`: `<slot>` 생략 시 cwd/세션 leased 슬롯으로 해소(무인자=내 슬롯). role(work/readonly)·
+  base·branch·head 를 surface. "base 대비 N behind" 는 기준점이 있어야 계산된다 — 미기록이면 `-`
+  (계산 불가·자동 추론 금지). rebase(기준 변경) 본체는 후속(wave-2d): 기준 없으면 거부되고
+  `--onto <branch>` 로 기준을 명시해야 진행+기록된다.
+- `refresh`: **readonly 공유 슬롯(⑬) 전용** — fetch → detached HEAD 를 기준(`--onto <branch>` 또는
+  기록된 base.branch) 최신 tip 으로 이동하고 **submodule 을 재동기**한다(gitlink 옛 pin 잔존→stale+dirty
+  자가 잠금 방지). 이동한 tip 을 base.commit 으로 재기록한다(기준면=released base 이동). **dirty 면
+  거부 + loud**(read-only 슬롯의 dirty 는 "누군가 여기 썼다"는 신호 — 조용히 reset 하지 않는다·사용자가
+  보고 판단). 기준 미해소(추론 금지)·대상이 readonly 가 아니면 rc 1. **lease/mutation 거부**: readonly
+  슬롯에 `set-base`/`dev`/`sync`(및 rebase 본체)·`release`/바인딩(`/pm-bootstrap --slot`)은 엔진이
+  거부한다(문서 검증 기준면·무소유 공유 자산·갱신은 refresh 만·⑬·§F11).
 - **`--slot` 을 명시**(dev/sync)하거나 **`<slot>` 위치인자를 지정**(set-base/status)해 오타깃을
   막는다(정체성=에이전트 맥락·도구엔 명시 전달). 미해소(0)·모호(≥2)면 rc 1 로 명확히 실패한다
   (침묵 no-op 아님). submodule 경로·슬롯은 형식/목록 검증을 거쳐 슬롯 경계 밖(절대경로·`..`)은 거부된다.
@@ -87,6 +101,11 @@ python3 .project_manager/tools/worktree_pool.py status [<slot>]
   금지·사용자 질의**(엔진=상태 surface·PM=확인·사용자=결정·결정 ⑪) — `set-base` 로 명시 지정한다.
   `merge-base` 추측은 rebase 이력·다중 후보에서 조용히 틀리고, 그 가짜 base 위에서 drift 감지가 돌면
   무의미해진다.
+- readonly 공유 슬롯(⑬·§F11) = **detached·배타 대여 없음·session/pid 없음**. git 이 같은 브랜치를 두
+  worktree 에 못 물려 detached HEAD 로 작업 슬롯과 공존한다(submodule pin 모델 동형). 슬롯이 read-only
+  지 *작업*이 read-only 가 아니다 — 소비자(architect·researcher·PM domain fill)는 활발히 쓰되 쓰기
+  대상이 **PM 홈 wiki** 이고 슬롯은 읽기 기준면(released base)일 뿐. 그래서 슬롯 git 을 바꾸는 엔진
+  mutation(set-base/rebase/dev/sync)은 거부하고 갱신은 `refresh`(fetch→detach 이동·dirty=거부)만.
 
 ## 잔여 PM 손
 
@@ -99,9 +118,9 @@ python3 .project_manager/tools/worktree_pool.py status [<slot>]
 ## 참고
 
 - backbone: `.project_manager/tools/worktree_pool.py`(`dev`/`sync`/`_resync_submodules_selective`/
-  `set_base`/`slot_git_status`/`resolve_rebase_base`).
+  `set_base`/`slot_git_status`/`resolve_rebase_base`/`refresh`/`create_slot(readonly=)`).
 - ADR-0049(명령어化 4요소·청중) · ADR-0051(worktree/submodule lifecycle·live-HEAD) ·
-  ADR-0013(git=진실·branch 비권위) · ADR-0060(슬롯 git 진실·기대 축·기준점 미기록=사용자 질의).
-  라이브 하네스 테스트 = T-0278(ADR-0050).
+  ADR-0013(git=진실·branch 비권위) · ADR-0060(슬롯 git 진실·기대 축·기준점 미기록=사용자 질의) ·
+  ADR-0061(슬롯 git 조작 + readonly 공유 슬롯·⑬·T-0358). 라이브 하네스 테스트 = T-0278(ADR-0050).
 
 </command-instruction>

@@ -29,10 +29,16 @@ description: "PM 환경 관리 단일 command — pm-config.sh facade wrap. repo
 
 ### worktree add — 슬롯 생성 (→ bootstrap 바인딩 안내)
 ```bash
-./pm-config.sh worktree add <repo>
+./pm-config.sh worktree add <repo>              # 작업 슬롯(배타 대여·세션 바인딩)
+./pm-config.sh worktree add <repo> --readonly   # readonly 공유 슬롯(⑬·research 기준면)
 ```
 추가 후 PM 에게 안내: **"이제 `/pm-bootstrap <repo> --slot N` 으로 이 슬롯에 바인딩하세요"**
 — `pm_bootstrap` 의 multi-PM identity surface(T-0074)와 연결(정체성=세션 맥락).
+- **`--readonly`**(⑬·T-0358): research 전용 **read-only 공유 슬롯** — 코드를 *읽어* PM 홈 wiki
+  (domain·architecture·status)를 쓰는 읽기 기준면이다. detached HEAD(released base·git 이 같은 브랜치
+  두 worktree 를 못 물림)·role=readonly·**session/pid 없음·배타 대여 없음**(공유가 정상). 무소유 공유
+  자산이라 **바인딩(`/pm-bootstrap --slot`)·release 도 거부**되고, 갱신은 `/pm-worktree refresh` 로만
+  (set-base/rebase/dev/sync 도 거부). 제거는 `worktree remove --force`.
 
 ### slot status / release / remove
 ```bash

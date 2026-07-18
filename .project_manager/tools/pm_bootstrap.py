@@ -2600,9 +2600,6 @@ class PmBootstrap:
         session = f"{repo}_{slot}"
         wp = self._resolve_worktree_pool()  # multi-PM 인데 풀 부재면 명시 에러(SystemExit·dump 이전).
         lease = self._phase0_find_lease(wp, slot_id)
-        # readonly 공유 슬롯(⑬) carve-out — 타-task 점유·보호브랜치 검사 비적용 예외 자리(§F11·T-0358
-        # 이 채운다). 지금은 lease.extra 의 role 만 읽는 훅 — 현행 슬롯엔 role 이 없어 항상 False(회귀 0).
-        readonly = self._phase0_is_readonly(lease)
         # 2. 작업공간 실재 (장부·폴더).
         if lease is None and not self._phase0_slot_folder_exists(wp, slot_id):
             print(
@@ -2613,9 +2610,8 @@ class PmBootstrap:
                 file=sys.stderr,
             )
             return 1
-        # 2b. 불완전 생성(creating·T-0295) — **세션 동일 여부·readonly 무관** 차단(별도 조건). readonly
-        #     carve-out 미적용: readonly 는 *점유/보호브랜치* 예외지 *불완전 생성* 예외가 아니다(반쯤
-        #     만든 슬롯은 readonly 여도 못 쓴다). bind_slot 이 기존 엔트리를 무조건 leased 로 덮어(T-0295
+        # 2b. 불완전 생성(creating·T-0295) — **세션 동일 여부·role 무관** 차단(별도 조건). readonly 든
+        #     아니든 반쯤 만든 슬롯은 못 쓴다. bind_slot 이 기존 엔트리를 무조건 leased 로 덮어(T-0295
         #     "점유 메타만 갱신·reclaim 안 거침") in-flight/중단 create 를 훼손하고, reclaim_stale 은
         #     creating 을 무시·alloc 은 creating 재부착 제외 — 아무도 안전히 진입 불가한 불완전 상태다.
         if self._phase0_incomplete_create(lease):
@@ -2628,20 +2624,34 @@ class PmBootstrap:
                 file=sys.stderr,
             )
             return 1
-        # 3. 타 점유자 (readonly ⑬ 예외 — 공유가 정상).
-        if not readonly:
-            holder = self._phase0_other_holder(lease, session)
-            if holder is not None:
-                print(
-                    f"[중단·0단계] 슬롯 {slot_id} 을(를) 다른 세션 `{holder}` 이(가) 점유 중입니다 "
-                    f"(leased) — 남의 작업공간에 바인딩할 수 없습니다(결정 ③).\n"
-                    f"  → 그 세션의 완료를 기다리거나, 다른 슬롯을 쓰거나, 새 슬롯을 alloc 하세요.",
-                    file=sys.stderr,
-                )
-                return 1
-        # 4. 보호브랜치/origin-추적 = warn 만 (거부는 T-0360·readonly 예외·detached).
-        if not readonly:
-            self._phase0_protected_warn(wp, repo, slot_id)
+        # 2c. readonly 공유 슬롯(⑬·T-0358·should-fix)은 **바인딩(점유) 대상이 아니다** — `/pm-bootstrap
+        #     --slot N` 오지정 방어. readonly 는 무소유 공유 자산(session/pid 없음·배타 대여 없음)이고,
+        #     0단계 carve-out(F6)이 readonly 를 *조회 지칭*엔 허용하지만 bind 는 *점유*라 의미가 다르다.
+        #     bind_slot 엔진 불변식(`ReadonlySlotNotLeasable`)과 동형이되 여기서 fail-loud user-facing 으로
+        #     닫는다(엔진 raise 가 부트스트랩 flow 로 새어 traceback 나는 것 방지). 이 거부가 있으면 아래
+        #     타-점유(3)·보호브랜치(4) 검사는 readonly 를 볼 일이 없다(모두 work 슬롯).
+        if self._phase0_is_readonly(lease):
+            print(
+                f"[중단·0단계] 슬롯 {slot_id} 은(는) readonly 공유 슬롯(⑬)이라 바인딩(점유)할 수 없습니다 "
+                f"— 무소유 공유 자산(배타 대여 없음)이라 세션 정체성을 선언하는 대상이 아닙니다.\n"
+                f"  → 코드를 읽어 참조하는 용도면 bind 없이 그 worktree 를 읽으세요. 최신 갱신은 "
+                f"`/pm-worktree refresh {session}`(fetch→detach). 작업 슬롯이 필요하면 `--slot` 번호를 "
+                f"작업 슬롯으로 맞추거나 새 슬롯을 alloc 하세요.",
+                file=sys.stderr,
+            )
+            return 1
+        # 3. 타 점유자 (결정 ③) — readonly 는 2c 에서 이미 거부돼 여기 도달 시 항상 work 슬롯.
+        holder = self._phase0_other_holder(lease, session)
+        if holder is not None:
+            print(
+                f"[중단·0단계] 슬롯 {slot_id} 을(를) 다른 세션 `{holder}` 이(가) 점유 중입니다 "
+                f"(leased) — 남의 작업공간에 바인딩할 수 없습니다(결정 ③).\n"
+                f"  → 그 세션의 완료를 기다리거나, 다른 슬롯을 쓰거나, 새 슬롯을 alloc 하세요.",
+                file=sys.stderr,
+            )
+            return 1
+        # 4. 보호브랜치/origin-추적 = warn 만 (거부는 T-0360).
+        self._phase0_protected_warn(wp, repo, slot_id)
         # 5. 기록 vs live 정합 (compare 소비·㉒).
         return self._phase0_record_vs_live(wp, slot_id)
 
@@ -2691,20 +2701,19 @@ class PmBootstrap:
             return False
 
     def _phase0_is_readonly(self, lease) -> bool:
-        """그 슬롯이 readonly 공유 자산(⑬·`role="readonly"`)인가 — 0단계 타-점유·보호브랜치 검사의
-        carve-out 예외 자리 (spike §F11·⑬=T-0358 이 채운다).
+        """그 슬롯이 readonly 공유 자산(⑬·`role="readonly"`)인가 — 0단계 **바인딩 거부** 판별 (spike §F11·T-0358).
 
-        readonly 슬롯은 배타 대여 없이 **공유**하는 research 전용 자산이라(§F11) 타-task 점유·보호브랜치
-        (detached=브랜치 없음) 검사가 **비적용**이다. 지금은 lease.extra(additive·T-0350 미지키 보존)의
-        `role` 만 읽는 훅 — 현행 슬롯엔 role 이 없어 항상 False(회귀 0). readonly 도입(T-0358) 후
-        이 훅이 활성된다. lease None/미지 스키마는 False(fail-soft)."""
+        readonly 슬롯은 무소유 공유 자산(session/pid 없음·배타 대여 없음)이라 `/pm-bootstrap --slot N`
+        바인딩(점유) 대상이 아니다 — 0단계가 이를 fail-loud 로 거부한다(should-fix·bind_slot 엔진 불변식
+        `ReadonlySlotNotLeasable` 의 user-facing 짝). 0단계 carve-out(F6·identity_args)이 readonly 를
+        *조회 지칭*엔 허용하지만 bind 는 *점유*라 의미가 다르다. 판별 축은 canonical `lease.role`(T-0358 이
+        additive 1급 필드로 승격) — 구 장부(role 부재)는 `from_dict` 가 "work" 로 read 하므로 항상
+        non-readonly(회귀 0·하위호환). **`lease.extra` 가 아니라 `lease.role` 을 읽는다**: T-0358 이 role 을
+        `_LEASE_CANONICAL_KEYS` 로 승격하며 extra 에서 빠졌으므로(canonical=각 필드로 소비), extra 경유
+        훅은 조용히 무력화된다 — 그 파급을 canonical 필드 read 로 닫는다. lease None/미상 스키마는 False."""
         if lease is None:
             return False
-        extra = getattr(lease, "extra", None) or {}
-        try:
-            return extra.get("role") == "readonly"
-        except Exception:  # noqa: BLE001 — fail-soft: 미지 extra 스키마는 non-readonly.
-            return False
+        return getattr(lease, "role", "work") == "readonly"
 
     def _phase0_incomplete_create(self, lease) -> bool:
         """그 슬롯이 불완전 생성(`state="creating"`·provisional/중단 마커·T-0295)인가 — 0단계 차단 대상.

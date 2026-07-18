@@ -9,8 +9,8 @@
   - 엔진 앵커(무조건): worktree 사본이면 거부 + 부분 dump 금지 · PM 홈이면 통과 · REPO 로 소비.
   - solo(슬롯 없음) 자연 no-op: 앵커만 · 슬롯 검사(풀) 미진입.
   - 작업공간 실재: 장부·폴더 부재면 거부.
-  - 타 점유자: 다른 세션 leased 면 거부 · idle/내 세션이면 통과 · readonly(⑬)는 carve-out(비적용).
-  - 보호브랜치: **warn 만**(거부 아님·rc 0) + T-0360 안내 · readonly 예외.
+  - 타 점유자: 다른 세션 leased 면 거부 · idle/내 세션이면 통과 · readonly(⑬)는 bind(점유) 거부(should-fix).
+  - 보호브랜치: **warn 만**(거부 아님·rc 0) + T-0360 안내.
   - 기록 vs live: compare_slot_git 소비 — fail_loud=거부 / 미기록=loud+통과 / ok=통과 / submodule drift=warn.
   - 재구현 아님: compare_slot_git 을 실제로 호출(소비)한다.
   - sensitivity: 각 거부 배선을 무력화하면 통과로 뒤집힌다.
@@ -68,12 +68,16 @@ class _FakeLease:
 
 
 class _LeaseEntry:
-    """장부 엔트리 대역 — 0단계는 slot/state/session/extra 만 읽는다(실재·점유·readonly)."""
+    """장부 엔트리 대역 — 0단계는 slot/state/session/role 을 읽는다(실재·점유·readonly).
 
-    def __init__(self, slot, *, state="idle", session="", extra=None):
+    `role` = canonical 슬롯 role(T-0358 이 `Lease.role` 로 승격) — `_phase0_is_readonly` 가
+    **`lease.role`** 을 직접 읽는다(extra 아님·extra 승격 파급 seam #1)."""
+
+    def __init__(self, slot, *, state="idle", session="", role="work", extra=None):
         self.slot = slot
         self.state = state
         self.session = session
+        self.role = role
         self.extra = extra or {}
 
 
@@ -299,16 +303,20 @@ def test_my_session_holder_passes(bootstrap, tmp_path, capsys):
     assert inst.run(repo="X", slot=2) == 0
 
 
-def test_readonly_slot_skips_occupancy(bootstrap, tmp_path, capsys):
-    """readonly 슬롯(⑬·role="readonly")은 타 점유 검사 **비적용**(carve-out) — 공유가 정상."""
+def test_readonly_slot_bind_refused(bootstrap, tmp_path, capsys):
+    """readonly 슬롯(⑬·role="readonly")은 **바인딩(점유) 거부** — 무소유 공유 자산(should-fix·T-0358).
+
+    0단계 carve-out(F6)은 *조회 지칭*만 허용하고 bind 는 *점유*라 의미가 다르다 — `/pm-bootstrap
+    --slot N` 오지정을 fail-loud 로 막는다(bind_slot 엔진 `ReadonlySlotNotLeasable` 의 user-facing 짝)."""
     board = _FakeBoard(anchor_pm_home=None, protected=[])
-    # 다른 세션 leased 이지만 role=readonly → 점유 거부하지 않는다.
     pool = _FakePool(leases=[
-        _LeaseEntry("work/X_2", state="leased", session="X_9", extra={"role": "readonly"})
+        _LeaseEntry("work/X_2", state="leased", session="", role="readonly")
     ])
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
     rc = inst.run(repo="X", slot=2)
-    assert rc == 0, "readonly 슬롯인데 타-점유로 거부됐다(carve-out 미적용)"
+    assert rc == 1, "readonly 슬롯 바인딩이 통과됐다(점유 거부 미적용)"
+    assert "readonly" in capsys.readouterr().err
+    assert pool.bind_calls == [], "readonly bind 거부인데 bind_slot 이 불렸다"
 
 
 # ── 4b. 불완전 생성(creating·T-0295) — 세션·readonly 무관 차단 (must-fix·codex) ──
@@ -337,7 +345,7 @@ def test_creating_slot_not_exempted_by_readonly(bootstrap, tmp_path, capsys):
     반쯤 만들어진 슬롯은 readonly 여도 못 쓴다(codex 지적) — carve-out 이 creating 을 살려주면 안 된다."""
     board = _FakeBoard(anchor_pm_home=None, protected=[])
     pool = _FakePool(leases=[
-        _LeaseEntry("work/X_2", state="creating", session="X_9", extra={"role": "readonly"})
+        _LeaseEntry("work/X_2", state="creating", session="X_9", role="readonly")
     ])
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
     assert inst.run(repo="X", slot=2) == 1, "readonly carve-out 이 creating(불완전 생성)을 통과시켰다"

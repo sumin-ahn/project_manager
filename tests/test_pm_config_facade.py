@@ -47,7 +47,7 @@ class FakeLease:
     """worktree_pool.Lease 의 최소 대역 — 배선 검증에 필요한 필드만."""
 
     def __init__(self, slot, repo, branch=None, session="s1", pid=1, state="leased",
-                 test_cmd=None):
+                 test_cmd=None, role="work"):
         self.slot = slot
         self.repo = repo
         self.branch = branch
@@ -55,6 +55,7 @@ class FakeLease:
         self.pid = pid
         self.state = state
         self.test_cmd = test_cmd  # T-0066 — 슬롯 바인딩 회귀명령(파사드 print surface)
+        self.role = role          # ⑬·T-0358 — work | readonly (cmd_status role surface)
 
 
 class FakeWorktreePool:
@@ -101,6 +102,14 @@ class FakeWorktreePool:
             self.reason = reason
             super().__init__(name)
 
+    class ReadonlySlotNotLeasable(RuntimeError):
+        # readonly 공유 슬롯 lease-op 거부 대역 (⑬·T-0358·should-fix) — release/force_release 가
+        # readonly 를 가리키면 이 예외로 rc1 surface 하는 CLI 경로를 검증.
+        def __init__(self, slot="work/r_1", op="release"):
+            self.slot = slot
+            self.op = op
+            super().__init__(f"{slot} readonly {op}")
+
     def __init__(self, *, leases=None, release_raises=None, force_returns="present",
                  set_test_raises=None, live_branches=None, reconcile=None,
                  alloc_returns=None, alloc_raises=None, task_record="__unset__",
@@ -131,11 +140,15 @@ class FakeWorktreePool:
         # 또는 None(=drift 없음·기본). 기존 status 테스트는 미지정 → 빈 결과라 drift 절 미출력(무영향).
         self._reconcile = reconcile
 
-    def create_slot(self, repo, *, base=None, test_cmd=None):
+    def create_slot(self, repo, *, base=None, test_cmd=None, readonly=False):
         # base (T-0075) — areas 의 그 repo base 를 cmd_worktree_add 가 전달한다(슬롯 브랜치
-        # 파생 base). 호출 인자에 base 를 함께 기록해 배선 검증.
+        # 파생 base). 호출 인자에 base 를 함께 기록해 배선 검증. (4-tuple 유지 — 기존 assertion 무영향.)
         self.calls.append(("create_slot", repo, test_cmd, base))
-        return FakeLease(slot=f"work/{repo}_1", repo=repo, test_cmd=test_cmd)
+        # readonly (⑬·T-0358) — --readonly 플래그 전달 배선을 별도 속성으로 기록(4-tuple 불변).
+        self.last_readonly = readonly
+        role = "readonly" if readonly else "work"
+        return FakeLease(slot=f"work/{repo}_1", repo=repo, test_cmd=None if readonly else test_cmd,
+                         role=role)
 
     def install_protected_hook(self, repo, protected):
         # 보호 브랜치 pre-push 훅 (재)설치 대역 (T-0076) — repo·protected 목록을 기록해
@@ -1273,6 +1286,35 @@ def test_worktree_add_calls_create_slot(pc, capsys):
     assert "work/svc_1" in capsys.readouterr().out
 
 
+def test_worktree_add_readonly_flag_forwards_readonly(pc, capsys):
+    """worktree add <repo> --readonly → create_slot(repo, readonly=True) (⑬·T-0358).
+
+    readonly 공유 슬롯 — 세션 바인딩 없음(무소유)·갱신은 refresh 로만. 출력이 role=readonly 와
+    refresh 안내를 surface 하고, pm-bootstrap 바인딩 다음스텝은 뜨지 않는다(무소유)."""
+    wp = FakeWorktreePool()
+    rc = pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None, readonly=True), worktree_pool=wp,
+        board=FakeBoard(),
+    )
+    assert rc == 0
+    assert wp.last_readonly is True                       # --readonly → create_slot(readonly=True)
+    out = capsys.readouterr().out
+    assert "readonly 공유 슬롯" in out and "role=readonly" in out
+    assert "refresh" in out                               # 갱신은 refresh 로만
+    assert "/pm-bootstrap svc --slot" not in out          # 무소유 — 바인딩 다음스텝 없음
+
+
+def test_worktree_add_default_not_readonly(pc, capsys):
+    """worktree add <repo>(플래그 없음) → create_slot(readonly=False)·기존 바인딩 다음스텝(sensitivity 대조)."""
+    wp = FakeWorktreePool()
+    rc = pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None), worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 0
+    assert wp.last_readonly is False
+    assert "/pm-bootstrap svc --slot 1" in capsys.readouterr().out
+
+
 def test_worktree_add_test_flag_forwards_test_cmd(pc, capsys):
     """worktree add <repo> --test "<cmd>" → create_slot(repo, test_cmd=cmd) (T-0066·ADR-0014 amend)."""
     wp = FakeWorktreePool()
@@ -1448,7 +1490,7 @@ def test_worktree_add_create_failure_errors(pc, capsys):
     """create_slot 이 RuntimeError(예: worktree add 실패)면 rc 1 + 명시 에러."""
     wp = FakeWorktreePool()
 
-    def boom(repo, *, base=None, test_cmd=None):
+    def boom(repo, *, base=None, test_cmd=None, readonly=False):
         raise RuntimeError("git worktree add failed")
     wp.create_slot = boom
     rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", test=None), worktree_pool=wp,
@@ -1471,7 +1513,7 @@ def test_worktree_add_bare_missing_caught_as_runtime_error(pc, capsys):
 
     wp = FakeWorktreePool()
 
-    def bare_missing(repo, *, base=None, test_cmd=None):
+    def bare_missing(repo, *, base=None, test_cmd=None, readonly=False):
         raise wp_mod.BareRepoMissing(repo, TOOLS.parent / ".repos" / f"{repo}.git")
     wp.create_slot = bare_missing
     rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", test=None), worktree_pool=wp,
@@ -1504,6 +1546,25 @@ def test_status_lists_leases(pc, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "work/svc_1" in out
     assert "work/svc_2" in out
+
+
+def test_status_surfaces_readonly_role(pc, monkeypatch, capsys):
+    """status → readonly 슬롯은 `role=readonly` 를 surface·work 슬롯은 role 표기 없음(⑬·T-0358)."""
+    leases = [
+        FakeLease(slot="work/svc_1", repo="svc", branch="feat", session="me", state="leased"),
+        FakeLease(slot="work/svc_2", repo="svc", branch=None, session="",
+                  state="leased", role="readonly"),
+    ]
+    wp = FakeWorktreePool(leases=leases)
+    monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
+    rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    full = out.split("풀 전체 리스 장부")[1]
+    assert "role=readonly" in full                    # readonly 슬롯 role surface
+    # work 슬롯(svc_1) 줄엔 role 표기 없음(기본은 생략).
+    svc1_line = next(l for l in full.splitlines() if "work/svc_1" in l)
+    assert "role=" not in svc1_line
 
 
 def test_whoami_highlights_my_lease(pc, monkeypatch, capsys):
@@ -1743,6 +1804,16 @@ def test_release_dirty_refused(pc, capsys):
     )
     assert rc == 1
     assert "dirty" in capsys.readouterr().err
+
+
+def test_release_readonly_slot_refused(pc, capsys):
+    """release(비-force) 가 readonly 공유 슬롯이면 ReadonlySlotNotLeasable → rc 1 + 안내(⑬·T-0358)."""
+    wp = FakeWorktreePool(release_raises=FakeWorktreePool.ReadonlySlotNotLeasable)
+    rc = pc.cmd_release(
+        argparse.Namespace(slot="work/svc_1", force=False), worktree_pool=wp
+    )
+    assert rc == 1
+    assert "readonly" in capsys.readouterr().err
 
 
 def test_release_unknown_slot_errors(pc, capsys):

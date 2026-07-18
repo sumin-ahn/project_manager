@@ -1039,8 +1039,11 @@ def cmd_worktree_add(
     # board 직접 import 금지(ADR-0013 isolation) — 주입/로드된 board 의 `_repo_base` 만 쓴다.
     base = _resolve_repo_base(args.repo, board=board)
 
+    # readonly 공유 슬롯(⑬·T-0358) — research 전용 read-only 기준면. detached HEAD·role="readonly"·
+    # session/pid 없음. 생성 자체는 결정 ⑤ 그대로 사용자 승인 flow(디스크=코드 전체 사본).
+    readonly = getattr(args, "readonly", False)
     try:
-        lease = wp.create_slot(args.repo, base=base, test_cmd=test_cmd)
+        lease = wp.create_slot(args.repo, base=base, test_cmd=test_cmd, readonly=readonly)
     except RuntimeError as exc:
         print(f"[중단] worktree 슬롯 생성 실패: {exc}", file=sys.stderr)
         return 1
@@ -1052,12 +1055,22 @@ def cmd_worktree_add(
     slot_prefix = f"work/{lease.repo}_"
     slot_tail = lease.slot[len(slot_prefix):] if lease.slot.startswith(slot_prefix) else ""
     slot_num = slot_tail if slot_tail.isdigit() else lease.slot
-    print(
-        f"✓ worktree 슬롯 생성: {lease.slot} (repo={lease.repo}) → {slot_path}{test_line}\n"
-        "  코드 작업은 이 슬롯 cwd 에서 — 보드/wiki 는 multi-PM 공유 `.project_manager`.\n"
-        f"  다음 스텝 — 이 슬롯을 세션에 바인딩: `/pm-bootstrap {lease.repo} --slot {slot_num}` "
-        "(정체성 선언·자동 아님). 솔로/단일 슬롯이면 무인자 `/pm-bootstrap` 가 자동바인딩."
-    )
+    if readonly:
+        # readonly 공유 슬롯 — 세션 바인딩 없음(무소유·공유 자산). 갱신은 refresh 로만.
+        print(
+            f"✓ readonly 공유 슬롯 생성: {lease.slot} (repo={lease.repo}·role=readonly) → {slot_path}\n"
+            "  research 전용 read-only 기준면(detached HEAD·배타 대여 없음·session/pid 없음). 코드를\n"
+            "  *읽어* PM 홈 wiki(domain·architecture·status)를 쓰는 역할의 읽기 기준면이다(⑬·T-0358).\n"
+            f"  갱신은 `/pm-worktree refresh {lease.repo}_{slot_num}` 로만(fetch→detach 이동·dirty=거부). "
+            "set-base/rebase/dev/sync 는 거부된다."
+        )
+    else:
+        print(
+            f"✓ worktree 슬롯 생성: {lease.slot} (repo={lease.repo}) → {slot_path}{test_line}\n"
+            "  코드 작업은 이 슬롯 cwd 에서 — 보드/wiki 는 multi-PM 공유 `.project_manager`.\n"
+            f"  다음 스텝 — 이 슬롯을 세션에 바인딩: `/pm-bootstrap {lease.repo} --slot {slot_num}` "
+            "(정체성 선언·자동 아님). 솔로/단일 슬롯이면 무인자 `/pm-bootstrap` 가 자동바인딩."
+        )
     # 보호 브랜치 pre-push 훅 (재)설치 (T-0076·멱등 자가치유) — 슬롯 op 마다 (재)설치해 엔진
     # update 후 기존 repo 도 다음 worktree add 에 훅을 얻는다(별도 명령 불요·회사 repo 무영향).
     if _install_protected_hook(args.repo, board=board, worktree_pool=wp):
@@ -1142,9 +1155,12 @@ def cmd_status(
     if not leases:
         print("  (리스 없음 — 아직 worktree 슬롯이 생성되지 않음)")
     for l in leases:
+        # role(work/readonly·⑬·T-0358) — readonly 공유 슬롯은 무소유(session/pid 없음)·detached.
+        role = getattr(l, "role", "work")
+        role_str = f" · role={role}" if role != "work" else ""
         print(
             f"  - {l.slot} · repo={l.repo} · branch={_live_branch(l.slot)} · "
-            f"state={l.state} · session={l.session or '-'} · pid={l.pid}"
+            f"state={l.state} · session={l.session or '-'} · pid={l.pid}{role_str}"
         )
 
     # git worktree × 장부 정합(reconcile·T-0295) — 실 git worktree 와 장부를 대조해 drift 를
@@ -1382,7 +1398,11 @@ def cmd_release(
         return 1
 
     if args.force:
-        lease = wp.force_release(args.slot)
+        try:
+            lease = wp.force_release(args.slot)
+        except getattr(wp, "ReadonlySlotNotLeasable", ()) as exc:
+            print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — 강제 반납도 대상 아님(⑬·T-0358).
+            return 1
         if lease is None:
             print(f"✓ 슬롯 {args.slot!r} 장부에 없음 — 이미 정리됨(무해).")
         else:
@@ -1394,6 +1414,9 @@ def cmd_release(
         wp.release(args.slot, owner_task=owner_task)
     except KeyError:
         print(f"[중단] 슬롯 {args.slot!r} 에 대한 리스가 없다.", file=sys.stderr)
+        return 1
+    except getattr(wp, "ReadonlySlotNotLeasable", ()) as exc:
+        print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — 반납 대상 아님(⑬·T-0358).
         return 1
     except wp.NotTaskOwner as exc:
         held = f"session {exc.holder!r} 보유 중" if exc.holder else "미점유(idle)"
@@ -2252,6 +2275,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--test", metavar="<cmd>", default=None,
         help="이 슬롯에 바인딩할 회귀/빌드명령 (T-0066·같은 repo 슬롯별 빌드변형·HIL config). "
              "미지정 시 repo areas/local.conf 로 해소(현행).",
+    )
+    p_wt_add.add_argument(
+        "--readonly", action="store_true",
+        help="research 전용 read-only 공유 슬롯 생성 (⑬·T-0358·detached HEAD·role=readonly·"
+             "session/pid 없음·배타 대여 없음). 코드를 읽어 PM 홈 wiki 를 쓰는 읽기 기준면. "
+             "갱신은 `/pm-worktree refresh` 로만·set-base/rebase/dev/sync 는 거부.",
     )
     p_wt_add.set_defaults(func=cmd_worktree_add)
     # worktree prune-stale — worktree 가 사라진 dangling 장부 엔트리 안전 정리 (T-0295).

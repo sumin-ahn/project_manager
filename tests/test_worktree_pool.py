@@ -5417,3 +5417,345 @@ def test_end_task_valid_name_still_ends(wp):
     git = FakeGit(dirty=False)
     result = wp.end_task("job", git_runner=git)
     assert not result.refused and wp.find_task("job") is None
+
+
+# ════════════════════════════════════════════════════════════════════════
+# readonly 공유 슬롯 — role 필드 / detached 생성 / mutation 거부 / refresh (⑬·T-0358·§F11)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_lease_role_default_work_omitted_from_dict(wp):
+    """role 기본("work")은 to_dict 가 방출하지 않는다 — 구 장부 왕복 byte-무손실(git 필드 동형·T-0358)."""
+    lease = wp.Lease(slot="work/A_1", repo="A", session="me", pid=1, started="t", state="leased")
+    assert lease.role == "work"
+    d = lease.to_dict()
+    assert "role" not in d                    # 기본이면 키 자체를 안 넣는다(하위호환).
+
+
+def test_lease_role_readonly_round_trips(wp):
+    """role="readonly"는 to_dict 방출·from_dict read — 왕복 보존(T-0358·additive)."""
+    lease = wp.Lease(slot="work/A_1", repo="A", session="", pid=0, started="t",
+                     state="leased", role="readonly")
+    d = lease.to_dict()
+    assert d["role"] == "readonly"
+    restored = wp.Lease.from_dict(d)
+    assert restored.role == "readonly"
+    assert restored == lease                  # __eq__(to_dict 동등)이 role 포함
+
+
+def test_from_dict_missing_role_defaults_work_backcompat(wp):
+    """구 장부(role 부재) 로드 → role="work"(하위호환 read)·재기록해도 role 키 안 생김(T-0358·회귀 유지)."""
+    old = {"slot": "work/A_1", "repo": "A", "session": "me", "pid": 7,
+           "started": "t", "state": "leased", "test_cmd": None}
+    lease = wp.Lease.from_dict(old)
+    assert lease.role == "work"
+    d = lease.to_dict()
+    assert "role" not in d                    # role: "work" 를 덧붙이지 않는다(왕복 무손실)
+    assert d == old
+
+
+def test_create_slot_readonly_detached_no_session_role_recorded(wp):
+    """create_slot(readonly=True) — `worktree add --detach`·role="readonly"·session/pid 없음·base 기록(⑬·§F11)."""
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit()
+    lease = wp.create_slot("A", base="main", session="me", git_runner=git)  # base 있는 대조 세팅 위해 별도
+    # 위는 일반 슬롯(대조) — 아래가 readonly 검증.
+    lease = wp.create_slot("A", base="main", readonly=True, git_runner=git)
+    # detached 생성 — `git worktree add --detach <path> [ref]`(슬롯 전용 브랜치 -b 안 씀).
+    assert git.did("worktree", "add", "--detach")
+    assert not git.did("worktree", "add", "--no-track", "-b", "A_2")   # readonly 는 슬롯 브랜치 안 판다
+    # 무소유 확정 — role="readonly"·session/pid 없음.
+    assert lease.role == "readonly"
+    assert lease.session == "" and lease.pid == 0
+    assert lease.state == "leased"
+    # base(released 기준면)를 스냅에 기록 — 문서 검증 기준(§F9).
+    assert isinstance(lease.git, dict) and lease.git.get("base", {}).get("branch") == "main"
+    # 장부에도 role="readonly" 로 반영.
+    ro = next(l for l in wp.list_leases() if l.slot == lease.slot)
+    assert ro.role == "readonly" and ro.session == ""
+
+
+def test_create_slot_readonly_origin_base_fetch(wp):
+    """readonly 생성 — fetch origin 후 origin/<base> 해소되면 그 최신에서 detach(작업 슬롯 파생 규율 동형)."""
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit(origin_has_base=True)
+    wp.create_slot("A", base="main", readonly=True, git_runner=git)
+    assert git.did("fetch", "origin")
+    assert git.did("worktree", "add", "--detach", str(wp.slot_path("work/A_1")), "origin/main")
+
+
+def test_readonly_slot_excluded_from_reclaim_stale(wp):
+    """readonly 슬롯(pid=0)은 reclaim_stale 회수 대상이 아니다 — role 가드(⑬·회수 시 유실 방지·T-0358)."""
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", pid=0, started="t",
+                       state="leased", role="readonly"))
+    git = FakeGit()
+    reclaimed = wp.reclaim_stale(git_runner=git)
+    assert reclaimed == []                     # pid=0(죽음) 이지만 readonly 라 회수 안 함
+    after = wp.list_leases()[0]
+    assert after.state == "leased" and after.role == "readonly"   # idle 화 안 됨
+
+
+def test_readonly_slot_excluded_from_alloc(wp):
+    """readonly 슬롯은 alloc idle-탐색 대상이 아니다(idle 아님·무소유) → 풀 소진 NeedsCreate(⑬)."""
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", pid=0, started="t",
+                       state="leased", role="readonly"))
+    git = FakeGit()
+    with pytest.raises(wp.NeedsCreate):
+        wp.alloc("A", session="me", git_runner=git)
+
+
+# ── mutation 거부 (set-base·rebase·dev·sync × readonly = 에러·엔진 경로 한정·결정 ④) ──
+
+
+def _seed_readonly(wp, slot="work/A_1", repo="A", *, base=True):
+    git = {"base": {"branch": "main", "commit": "c0"}, "branch": None, "head": "h0",
+           "submodules": [], "recorded_at": "t"} if base else None
+    _seed(wp, wp.Lease(slot=slot, repo=repo, session="", pid=0, started="t",
+                       state="leased", role="readonly", git=git))
+
+
+def test_set_base_rejected_on_readonly(wp):
+    """set_base 가 readonly 슬롯이면 ReadonlySlotMutation(base 는 released 기준면·mutation 불가·T-0358)."""
+    _seed_readonly(wp)
+    git = FakeGit()
+    with pytest.raises(wp.ReadonlySlotMutation) as ei:
+        wp.set_base("work/A_1", "origin/main", git_runner=git)
+    assert ei.value.op == "set-base"
+
+
+def test_resolve_rebase_base_rejected_on_readonly(wp):
+    """resolve_rebase_base(rebase gate) 가 readonly 슬롯이면 ReadonlySlotMutation(진입 가드·T-0358)."""
+    _seed_readonly(wp)
+    git = FakeGit()
+    with pytest.raises(wp.ReadonlySlotMutation) as ei:
+        wp.resolve_rebase_base("work/A_1", onto="origin/main", git_runner=git)
+    assert ei.value.op == "rebase"
+
+
+def test_dev_rejected_on_readonly(wp):
+    """dev(submodule on-branch checkout) 가 readonly 슬롯이면 ReadonlySlotMutation(T-0358)."""
+    _seed_readonly(wp)
+    git = FakeGit()
+    with pytest.raises(wp.ReadonlySlotMutation) as ei:
+        wp.dev("work/A_1", "vendor/x", "feat", git_runner=git)
+    assert ei.value.op == "dev"
+
+
+def test_sync_rejected_on_readonly(wp):
+    """sync(submodule pin 재동기) 가 readonly 슬롯이면 ReadonlySlotMutation(fail-soft 보다 우선·T-0358)."""
+    _seed_readonly(wp)
+    git = FakeGit()
+    with pytest.raises(wp.ReadonlySlotMutation) as ei:
+        wp.sync("work/A_1", git_runner=git)
+    assert ei.value.op == "sync"
+
+
+def test_mutation_allowed_on_work_slot_sensitivity(wp):
+    """sensitivity 대조 — work 슬롯(role 기본)엔 mutation 거부가 안 걸린다(readonly 만 예외)."""
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="me", pid=os.getpid(),
+                       started="t", state="leased"))   # role="work"
+    git = _BaseGit(tips={"origin/main": _BASE_TIP}, head="a1", head_sha=_NEW_SHA)
+    # set_base 가 ReadonlySlotMutation 을 던지지 않는다(정상 기록 경로 — 거부 가드 미발동).
+    lease = wp.set_base("work/A_1", "origin/main", git_runner=git)
+    assert lease is not None and lease.git["base"]["branch"] == "origin/main"
+
+
+# ── refresh (fetch → detach 이동·dirty=거부+loud·no-base·not-readonly·⑬·§F11) ──
+
+
+def test_refresh_fast_forwards_detached_head(wp):
+    """refresh — clean readonly 슬롯을 fetch 후 origin/<base> 최신 tip 으로 detach 이동(⑬·§F11)."""
+    _seed_readonly(wp)
+    git = FakeGit(origin_has_base=True)   # clean·fetch rc0·origin/main 해소
+    ref = wp.refresh("work/A_1", git_runner=git)
+    assert ref == "origin/main"
+    assert git.did("fetch", "origin")
+    assert git.did("checkout", "--detach", "origin/main")   # detached HEAD 이동
+
+
+def test_refresh_resyncs_submodules(wp):
+    """refresh — checkout 후 submodule 재동기 명시 수행(must-fix ①·gitlink stale/자가잠금 방지·⑬)."""
+    _seed_readonly(wp)
+    git = FakeGit(origin_has_base=True)
+    wp.refresh("work/A_1", git_runner=git)
+    # `checkout --detach` 뒤 `submodule update --init --recursive --force`(전체 재동기·readonly=dev 없음).
+    assert git.did("submodule", "update", "--init", "--recursive", "--force")
+
+
+def test_refresh_submodule_failure_fails_loud(wp):
+    """refresh — submodule 재동기 rc≠0 이면 RefreshRefused(git-error·반쯤 갱신 성공보고 금지·must-fix ①)."""
+    _seed_readonly(wp)
+
+    class _SubFailGit(FakeGit):
+        def __call__(self, argv):
+            if argv[:2] == ["submodule", "update"]:
+                self.calls.append(list(argv))
+                return (1, "fatal: submodule sync failed")
+            return super().__call__(argv)
+
+    git = _SubFailGit(origin_has_base=True)
+    with pytest.raises(wp.RefreshRefused) as ei:
+        wp.refresh("work/A_1", git_runner=git)
+    assert ei.value.reason == "git-error"
+
+
+def test_refresh_updates_base_commit_when_onto_omitted(wp):
+    """refresh(onto 생략) — base.commit 을 새 head 로 갱신(must-fix ②·옛 커밋 잔존 불일치 방지·⑬).
+
+    기록된 base.commit="c0"(옛). onto 없이 refresh → HEAD 는 origin/main 최신으로 이동했으니 장부
+    base.commit 도 새 head(FakeGit head_sha)로 갱신돼야 status "N behind"·기준면 기록 불일치가 안 남는다."""
+    _seed_readonly(wp)   # git.base = {branch:"main", commit:"c0"}
+    git = FakeGit(origin_has_base=True, head_sha=_NEW_SHA)
+    wp.refresh("work/A_1", git_runner=git)
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
+    assert recorded["branch"] == "main"        # 논리 branch 보존
+    assert recorded["commit"] == _NEW_SHA      # 새 head 로 갱신(옛 "c0" 아님)
+
+
+def test_refresh_onto_overrides_recorded_base(wp):
+    """refresh --onto 명시 → 그 기준으로 이동(기록된 base.branch 무시)·base 도 그 값으로 갱신(⑬)."""
+    _seed_readonly(wp)
+    git = FakeGit(origin_has_base=True, head_sha=_NEW_SHA)
+    ref = wp.refresh("work/A_1", onto="develop", git_runner=git)
+    assert ref == "origin/develop"
+    assert git.did("checkout", "--detach", "origin/develop")
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
+    assert recorded == {"branch": "develop", "commit": _NEW_SHA}   # base branch+commit 둘 다 갱신
+
+
+def test_refresh_dirty_refused_loud(wp):
+    """refresh — dirty(누군가 씀·신호)면 거부 + loud(조용히 reset 안 함·⑬·§F11·결정)."""
+    _seed_readonly(wp)
+    git = FakeGit(dirty=True)   # 미커밋 변경 있음
+    with pytest.raises(wp.RefreshRefused) as ei:
+        wp.refresh("work/A_1", git_runner=git)
+    assert ei.value.reason == "dirty"
+    # 조용히 reset 안 함 — checkout --detach 를 부르지 않았다.
+    assert not git.did("checkout", "--detach", "origin/main")
+
+
+def test_refresh_no_base_no_onto_refused(wp):
+    """refresh — base 미기록 + --onto 없음 → 거부(추론 금지·결정 ⑪ 정신·⑬)."""
+    _seed_readonly(wp, base=False)   # base 미기록
+    git = FakeGit()
+    with pytest.raises(wp.RefreshRefused) as ei:
+        wp.refresh("work/A_1", git_runner=git)
+    assert ei.value.reason == "no-base"
+
+
+def test_refresh_rejected_on_non_readonly(wp):
+    """refresh — 대상이 readonly 가 아니면 거부(작업 슬롯 detach 이동=브랜치 위치 유실·⑬)."""
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="me", pid=1, started="t",
+                       state="leased"))   # role="work"
+    git = FakeGit()
+    with pytest.raises(wp.RefreshRefused) as ei:
+        wp.refresh("work/A_1", onto="origin/main", git_runner=git)
+    assert ei.value.reason == "not-readonly"
+
+
+def test_slot_role_helper_defaults_work_for_absent(wp):
+    """_slot_role — 미등록 슬롯/구 장부(role 부재)는 "work"(fail-soft·mutation 거부 기본 non-readonly)."""
+    assert wp._slot_role("work/absent_9") == "work"
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="me", pid=1, started="t", state="leased"))
+    assert wp._slot_role("work/A_1") == "work"
+    _seed_readonly(wp, slot="work/A_1")
+    assert wp._slot_role("work/A_1") == "readonly"
+
+
+# ── lease-lifecycle 거부: release / force_release / bind_slot × readonly (should-fix·⑬) ──
+
+
+def test_release_rejected_on_readonly(wp):
+    """release 가 readonly 슬롯이면 ReadonlySlotNotLeasable(무소유 공유 자산·idle 화→alloc 탈취 방지·T-0358)."""
+    _seed_readonly(wp)
+    git = FakeGit()
+    with pytest.raises(wp.ReadonlySlotNotLeasable) as ei:
+        wp.release("work/A_1", git_runner=git)
+    assert ei.value.op == "release"
+    # 장부 미변경 — 여전히 leased·role readonly(idle 화 안 됨).
+    after = wp.list_leases()[0]
+    assert after.state == "leased" and after.role == "readonly"
+
+
+def test_force_release_rejected_on_readonly(wp):
+    """force_release(강제 백스톱)도 readonly 슬롯이면 거부(release 동형·⑬)."""
+    _seed_readonly(wp)
+    git = FakeGit()
+    with pytest.raises(wp.ReadonlySlotNotLeasable) as ei:
+        wp.force_release("work/A_1", git_runner=git)
+    assert ei.value.op == "force-release"
+
+
+def test_bind_slot_rejected_on_readonly(wp):
+    """bind_slot 이 기존 readonly 슬롯을 가리키면 거부(점유≠조회 지칭·/pm-bootstrap 오지정 방어·⑬)."""
+    _seed_readonly(wp)
+    git = FakeGit()
+    with pytest.raises(wp.ReadonlySlotNotLeasable) as ei:
+        wp.bind_slot("work/A_1", "A", "A_1", git_runner=git)
+    assert ei.value.op == "bind"
+    # role 유실 없음 — 여전히 readonly·무소유(leased 로 덮이지 않음).
+    after = wp.list_leases()[0]
+    assert after.role == "readonly" and after.session == ""
+
+
+def test_lease_ops_allowed_on_work_slot_sensitivity(wp):
+    """sensitivity 대조 — work 슬롯엔 release/force_release/bind_slot 거부가 안 걸린다(readonly 만 예외)."""
+    # release: work 슬롯 정상 idle 화.
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="me", pid=os.getpid(),
+                       started="t", state="leased"))
+    git = FakeGit()
+    released = wp.release("work/A_1", git_runner=git)
+    assert released.state == "idle"
+    # bind_slot: work 슬롯 정상 바인딩.
+    _seed(wp, wp.Lease(slot="work/A_2", repo="A", session="", pid=0, started="t", state="idle"))
+    bound = wp.bind_slot("work/A_2", "A", "A_2", git_runner=git)
+    assert bound.state == "leased" and bound.session == "A_2"
+
+
+# ── CLI: refresh / readonly mutation surface (⑬·T-0358·§F11) ─────────────────
+
+
+def test_main_refresh_dispatches_to_refresh_backbone(wp, monkeypatch, capsys):
+    """CLI — `refresh <slot> --onto <b>` 이 refresh 백본을 정규화 슬롯/onto 로 호출하고 rc 0(⑬)."""
+    seen = {}
+
+    def spy_refresh(slot, *, onto=None, git_runner=None):
+        seen.update(slot=slot, onto=onto)
+        return "origin/main"
+
+    monkeypatch.setattr(wp, "refresh", spy_refresh)
+    rc = wp.main(["refresh", "A_1", "--onto", "main"])
+    assert rc == 0
+    assert seen == {"slot": "work/A_1", "onto": "main"}
+    assert "refresh" in capsys.readouterr().out
+
+
+def test_main_refresh_dirty_refused_returns_rc1(wp, monkeypatch, capsys):
+    """CLI — refresh 가 RefreshRefused(dirty) 면 rc 1 + stderr loud(조용히 reset 금지·⑬)."""
+    def boom(*a, **k):
+        raise wp.RefreshRefused("work/A_1", "dirty")
+    monkeypatch.setattr(wp, "refresh", boom)
+    rc = wp.main(["refresh", "A_1"])
+    assert rc == 1
+    assert "미커밋" in capsys.readouterr().err
+
+
+def test_main_set_base_readonly_surfaces_rc1(wp, capsys):
+    """CLI — set-base 가 readonly 슬롯이면 ReadonlySlotMutation → rc 1 + stderr 안내(⑬·T-0358)."""
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", pid=0, started="t",
+                       state="leased", role="readonly"))
+    rc = wp.main(["set-base", "A_1", "origin/main"])
+    assert rc == 1
+    assert "readonly" in capsys.readouterr().err
+
+
+def test_main_status_surfaces_role(wp, monkeypatch, capsys):
+    """CLI — status 가 슬롯 role(readonly)을 surface(⑬·T-0358)."""
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", pid=0, started="t",
+                       state="leased", role="readonly"))
+    monkeypatch.setattr(wp, "slot_git_status", lambda slot, **k: {
+        "slot": slot, "base": {"branch": "main", "commit": "c0"}, "branch": None,
+        "head": "h0", "behind": None, "behind_reason": "미기록"})
+    rc = wp.main(["status", "A_1"])
+    assert rc == 0
+    assert "role:" in capsys.readouterr().out

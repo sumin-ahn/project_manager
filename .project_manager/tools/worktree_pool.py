@@ -331,7 +331,7 @@ class SlotBranchExists(RuntimeError):
 #     재생긴다(테스트 `test_from_dict_ignores_legacy_branch_key` 가 이 무시를 못박음). git 필드
 #     안의 `branch` 서브키(작업 브랜치 스냅)와는 다른 축 — 그건 git blob 의 일부로 보존된다.
 _LEASE_CANONICAL_KEYS = frozenset(
-    {"slot", "repo", "session", "pid", "started", "state", "test_cmd", "git"}
+    {"slot", "repo", "session", "pid", "started", "state", "test_cmd", "git", "role"}
 )
 _LEASE_DROP_KEYS = frozenset({"branch"})
 
@@ -366,7 +366,8 @@ class Lease:
 
     def __init__(self, slot: str, repo: str, session: str,
                  pid: int, started: str, state: str, test_cmd: str | None = None,
-                 git: "dict | None" = None, extra: "dict | None" = None):
+                 git: "dict | None" = None, role: str = "work",
+                 extra: "dict | None" = None):
         self.slot = slot          # "work/<repo>_<N>" (브랜치 무관)
         self.repo = repo          # repo 이름 (per-repo 네임스페이스)
         self.session = session    # 점유 세션 식별자
@@ -375,13 +376,18 @@ class Lease:
         self.state = state        # "leased" | "idle" | "creating"(provisional·T-0295)
         self.test_cmd = test_cmd  # 슬롯 바인딩 회귀/빌드명령 (T-0066·ADR-0014 amend·None=미지정)
         self.git = git            # 슬롯 git 스냅 dict(base/branch/head/submodules/recorded_at)·None=미기록·T-0350
+        # 슬롯 role (additive·T-0358·⑬·spike §F11): "work"(기본·배타 대여 작업 슬롯) | "readonly"
+        # (research 전용 공유 슬롯·detached·session/pid 없음·alloc/release/reclaim 대상 제외). role 이
+        # 0단계 carve-out(pm_bootstrap `_phase0_is_readonly`)·F6 소유검사 예외(identity_args)·엔진
+        # mutation 거부(set-base/rebase/dev/sync)의 canonical 판별 축이다.
+        self.role = role
         # 미지 최상위 키 보존(additive 스키마 클래스 폐쇄·T-0350). mutable 기본 회피(None 센티넬).
         self.extra = dict(extra) if extra else {}
 
     def __repr__(self) -> str:
         return (f"Lease(slot={self.slot!r}, repo={self.repo!r}, "
                 f"session={self.session!r}, pid={self.pid!r}, state={self.state!r}, "
-                f"test_cmd={self.test_cmd!r}, git={self.git!r})")
+                f"test_cmd={self.test_cmd!r}, git={self.git!r}, role={self.role!r})")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Lease):
@@ -402,6 +408,11 @@ class Lease:
         # 덧붙이지 않아 왕복이 무손실(하위호환·DoD). test_cmd 는 T-0066 부터 항상 방출(구 거동 유지).
         if self.git is not None:
             d["git"] = self.git
+        # role 은 *기본("work")이 아닐 때만* 방출한다 (T-0358·git 필드 조건방출과 동형·하위호환).
+        # 구 장부(role 부재=work 슬롯)를 로드·재기록해도 `role: "work"` 를 덧붙이지 않아 왕복이
+        # byte-무손실이다(from_dict 가 부재 시 "work" 로 read). readonly 슬롯만 role 을 장부에 남긴다.
+        if self.role != "work":
+            d["role"] = self.role
         # 미지 키 재방출(구·신 엔진 왕복 무손실). extra 엔 canonical/legacy-branch 가 없다
         # (from_dict 가 배제) — canonical 을 덮을 위험 없음.
         d.update(self.extra)
@@ -426,6 +437,7 @@ class Lease:
             state=d.get("state", "leased"),
             test_cmd=d.get("test_cmd"),
             git=d.get("git"),
+            role=d.get("role", "work"),   # 하위호환 read: 구 장부(role 부재) = "work"(작업 슬롯·T-0358).
             extra=extra,
         )
 
@@ -1233,6 +1245,10 @@ def reclaim_stale(*, git_runner: GitRunner | None = None) -> list[str]:
         for lease in leases:
             if lease.state != "leased":
                 continue
+            # readonly 공유 슬롯(⑬·T-0358) 제외 — session/pid 없는 무소유 공유 자산이라 pid=0(죽음)
+            # 으로 보여도 회수 대상이 아니다(회수하면 idle 화돼 alloc 이 잡아채 role 이 유실된다·§F11).
+            if lease.role == "readonly":
+                continue
             if _pid_alive(lease.pid):
                 continue
             # stale — pid 죽음. dirty 면 stash 로 보존하고 idle 화.
@@ -1677,6 +1693,12 @@ def release(
         if target is None:
             raise KeyError(f"no lease for slot {slot!r}")
 
+        # readonly 공유 슬롯은 반납(idle 화) 대상이 아니다 (⑬·T-0358·should-fix) — 무소유 공유 자산이라
+        # release 하면 idle 이 돼 alloc 이 work 슬롯으로 점유(role 유실). 보유 중인 lease.role 을 직접
+        # 검사한다(`_reject_readonly_mutation`/`_slot_role` 은 lock 재취득 → non-reentrant 데드락).
+        if target.role == _LEASE_ROLE_READONLY:
+            raise ReadonlySlotNotLeasable(slot, "release")
+
         # task 소유검사 (F3) — dirty/stash 어떤 부작용보다 먼저. 내 task 명의(session)가 아니면
         # 아무것도 바꾸지 않고 raise(다른 세션 작업을 실수로 idle 화하지 않음).
         if owner_task is not None and target.session != owner_task:
@@ -1707,6 +1729,10 @@ def force_release(slot: str, *, git_runner: GitRunner | None = None) -> Lease | 
         target = next((l for l in leases if l.slot == slot), None)
         if target is None:
             return None
+        # readonly 공유 슬롯은 강제 반납도 대상이 아니다 (⑬·T-0358·should-fix·release 동형) — 무소유
+        # 공유 자산이라 idle 화하면 alloc 이 work 슬롯으로 점유(role 유실). 보유 lease.role 직접 검사.
+        if target.role == _LEASE_ROLE_READONLY:
+            raise ReadonlySlotNotLeasable(slot, "force-release")
         path = slot_path(slot)
         if path.exists() and _is_dirty(path, git_runner=git_runner):
             _stash(path, git_runner=git_runner)  # 강제라도 작업은 보존 시도.
@@ -1867,6 +1893,7 @@ def create_slot(
     init_submodules: bool = True,
     git_runner: GitRunner | None = None,
     test_cmd: str | None = None,
+    readonly: bool = False,
 ) -> Lease:
     """새 슬롯을 *생성*하고 leased 로 리스한다 — 풀 확장 (NeedsCreate 게이트 통과 후·ADR-0013).
 
@@ -1897,6 +1924,14 @@ def create_slot(
          `--force` 는 worktree+submodule edge(bare 에서 만든 fresh 슬롯)서 plain `--init` 이
          체크아웃 못 하는 상태를 강제 init — fresh 슬롯이라 잃을 로컬 변경 0(T-0067).
       5. 장부에 leased 엔트리 등록.
+
+    **`readonly=True` (⑬·T-0358·spike §F11)**: research 전용 read-only 공유 슬롯을 만든다 —
+    슬롯 전용 브랜치를 파지 않고 `git worktree add --detach <path> <base sha>` 로 **detached
+    HEAD** 로 만든다(§F11 실측 — `git worktree add <path> main` 은 같은 브랜치를 두 worktree 가
+    점유 못 해 `fatal: 'main' is already used by worktree at …` 로 죽는다 → `--detach` 필수).
+    `base` = released `main` 의 기준면(문서 검증 기준·released 지점). lease 는 `role="readonly"`·
+    **session/pid 없음**(공유 자산·배타 대여 안 함)·alloc/release/reclaim 대상 제외(공유가 정상).
+    base 는 스냅(`lease.git.base`)에 기록해 문서 검증 기준면을 남긴다(B축 verified_at 선행 자산).
 
     git_runner 가 주입되면 그 runner 로 모든 git 호출(테스트 hermetic). 미주입이면
     `.repos/<repo>.git` bare 컨텍스트의 실 git 으로 worktree add 후, 슬롯 경로 컨텍스트로
@@ -1962,7 +1997,7 @@ def create_slot(
             # 없음·중단-안전). 검출은 `_slot_branch_exists`(color-safe `--format=%(refname:short)`·
             # splitlines 정확-일치·rc 무시 — 평문 `branch --list` 는 `color.branch=always` 서 ANSI 오염·
             # rc 기반은 주입 runner generic 폴백 rc0 오탐·T-0335/T-0343).
-            if branch is None:
+            if branch is None and not readonly:
                 slot_branch = f"{repo}_{n}"
                 pre_runner = git_runner or _real_git_runner(bare)
                 if _slot_branch_exists(pre_runner, slot_branch):
@@ -1988,7 +2023,35 @@ def create_slot(
             #     슬롯 전용 브랜치를 base 에서 새로 판다. `--no-track` = origin/<base> upstream 자동설정
             #     억제(슬롯=작업스트림). (파생 기준·fetch·--no-track 상세는 아래 base 분기 주석.)
             #   - 둘 다 미지정이면 **현행 보존**(`add <path>` = bare HEAD·회귀 0).
-            if branch is not None:
+            if readonly:
+                # readonly 공유 슬롯(⑬·T-0358·§F11) — 슬롯 전용 브랜치를 파지 않고 **detached HEAD**
+                # 로 만든다. 같은 브랜치(main 등)를 두 worktree 가 점유 못 하는 git 제약(§F11 실측)을
+                # detached 로 우회하고, 부수효과로 브랜치 미점유·실수 커밋이 브랜치를 안 움직여 피해가
+                # 국소화된다(submodule pin=detached 모델 동형). base 를 released 기준면에서 detach:
+                #   - base 미지정 → bare HEAD 에서 detach(`add --detach <path>`).
+                #   - base 지정 → fetch origin(best-effort) 후 origin/<base> 해소되면 그 최신, 아니면
+                #     로컬 <base>(폴백)에서 detach. base 파생 작업 슬롯의 fetch/폴백 규율과 동형.
+                ref = base
+                if base is not None:
+                    prep_runner = git_runner or _real_git_runner(bare)
+                    rc, out = prep_runner(["fetch", "origin"])
+                    if rc != 0:
+                        print(
+                            f"[경고] `git -C {bare} fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
+                            f"  로컬 `{base}`(동결 head)에서 readonly 슬롯을 detach 한다 — 네트워크 복구 후 "
+                            "`/pm-worktree refresh` 로 최신 released tip 으로 갱신하라 (T-0358·fail-soft).",
+                            file=sys.stderr,
+                        )
+                    else:
+                        rc, _ = prep_runner(
+                            ["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base}"]
+                        )
+                        if rc == 0:
+                            ref = f"origin/{base}"
+                add_argv = ["worktree", "add", "--detach", str(path)]
+                if ref is not None:
+                    add_argv.append(ref)
+            elif branch is not None:
                 # 기존 브랜치 → checkout(리셋 없음·보존 커밋 유지)·신규 → -B(생성) — T-0343 근본 fix.
                 # `_slot_branch_exists`(color-safe `--format=%(refname:short)`·splitlines 정확-일치·
                 # 위 slot-branch 선-검출과 동일 helper)로 존재를 본다: 존재하면 `add <path> <branch>`
@@ -2140,6 +2203,13 @@ def create_slot(
             # 성공 — provisional 을 leased 로 **확정**한다(2차 write·branch 는 장부 미저장·ADR-0013
             # amend T-0072·git=진실·조회는 live current_branch). provisional 을 그대로 반환(같은 필드).
             provisional.state = "leased"
+            if readonly:
+                # readonly 공유 슬롯(⑬·T-0358) — 무소유 확정: session/pid 를 비우고 role 을 박는다.
+                # state 는 "leased"(alloc idle-탐색·release 소유탐색이 session 매칭이라 무소유는 자연
+                # 제외·reclaim_stale 은 role 가드로 제외). role 이 0단계 carve-out·mutation 거부의 축.
+                provisional.session = ""
+                provisional.pid = 0
+                provisional.role = "readonly"
             # create git 스냅(T-0350·ADR-0060) — base 를 아는 유일 지점이다(base_branch=base·
             # commit=방금 파생된 fresh 슬롯 tip). base 미지정(branch·else 경로)이면 base 는 미기록
             # (drift 감지는 사용자 set-base 후 활성·결정 ⑪). fail-soft — 스냅 실패가 create 를 안 막는다.
@@ -2195,6 +2265,12 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
     with _lease_lock():
         leases = _read_ledger()
         target = next((l for l in leases if l.slot == slot), None)
+        # readonly 공유 슬롯은 바인딩(점유) 대상이 아니다 (⑬·T-0358·should-fix) — bind 는 *점유*고
+        # 0단계 carve-out(F6)은 *조회 지칭*만 허용한다(의미 불일치). readonly 를 무조건 leased 로 덮으면
+        # role 이 유실되고 무소유 공유 자산이 배타 점유된다. `/pm-bootstrap --slot N` 오지정 방어(엔진
+        # 불변식). 보유 lease.role 직접 검사(lock 재취득 데드락 회피). target None(신규)은 work 로 생성.
+        if target is not None and target.role == _LEASE_ROLE_READONLY:
+            raise ReadonlySlotNotLeasable(slot, "bind")
         if target is None:
             # 없으면 새 Lease append (직접 바인딩 — 풀 탐색/생성 게이트 없음).
             target = Lease(
@@ -2783,6 +2859,185 @@ def compare_slot_git(slot: str, *, git_runner: GitRunner | None = None) -> GitCo
 # resolve_rebase_base=rebase 기준-gate **계약**(본체 wave-2d·⑩)·slot_git_status=조회(미기록 N-behind `-`).
 
 
+# ── readonly 공유 슬롯 — role 조회 / mutation 거부 / refresh (⑬·T-0358·spike §F11) ──
+# readonly 슬롯은 코드를 *읽어* PM 홈 wiki(domain·architecture·status)를 쓰는 research 기준면이다:
+# 슬롯 자체는 read-only(detached·배타 대여 없음)이고, mutation op(set-base·rebase·dev·sync)은 **엔진
+# 경로에서 거부**한다(fs 레벨 쓰기 차단은 안 함·결정 ④). 갱신은 `refresh`(fetch → detach 이동·dirty=
+# 거부+loud)만 허용한다 — read-only 슬롯의 dirty 는 "누군가 여기 썼다"는 신호라 조용히 reset 하지 않는다.
+
+_LEASE_ROLE_READONLY = "readonly"   # role 값(identity_args._LEASE_ROLE_READONLY 정합·모듈 격리 inline).
+
+
+def _slot_role(slot: str) -> str:
+    """슬롯의 role 을 장부에서 읽는다 — 미등록/미기록이면 "work" (T-0358·mutation 거부/status 소비).
+
+    `_read_recorded_base` 와 동형으로 `_lease_lock` 은 장부 read 동안만 짧게 잡는다. 슬롯이 장부에
+    없거나 role 필드가 없으면(구 장부) "work"(작업 슬롯·하위호환·fail-soft)."""
+    with _lease_lock():
+        leases = _read_ledger()
+    target = next((l for l in leases if l.slot == slot), None)
+    return target.role if target is not None else "work"
+
+
+class ReadonlySlotMutation(RuntimeError):
+    """readonly 공유 슬롯(⑬·role="readonly")에 mutation op(set-base·rebase·dev·sync)을 시도함 — 거부 (T-0358·§F11).
+
+    readonly 슬롯은 문서 검증 기준면(released base)이라 슬롯의 git 상태를 바꾸는 엔진 op 을 거부한다
+    (갱신은 `refresh` 만·fetch→detach 이동). fs 레벨 쓰기 차단은 안 한다(결정 ④ — 엔진 경로 한정).
+    `op` = 거부된 연산명(진단용). (`RuntimeError` 서브클래스 — `BareRepoMissing` 동형·파사드 rc 1.)"""
+
+    def __init__(self, slot: str, op: str):
+        self.slot = slot
+        self.op = op
+        super().__init__(
+            f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly·⑬)이라 `{op}` 를 거부한다 — 문서 검증 "
+            f"기준면(released base·detached)이라 git 상태를 바꾸는 op 은 불가하다. 갱신은 "
+            f"`/pm-worktree refresh {slot} [--onto <branch>]`(fetch→detach 이동)로만 한다(T-0358·§F11)."
+        )
+
+
+def _reject_readonly_mutation(slot: str, op: str, *, git_runner: GitRunner | None = None) -> None:
+    """슬롯이 readonly(⑬)면 `ReadonlySlotMutation` raise — set-base/rebase/dev/sync 진입 가드 (T-0358).
+
+    엔진 경로 한정 거부(결정 ④). 판별 축은 canonical `lease.role`(0단계 carve-out·F6 예외와 동일 축).
+    git_runner 는 시그니처 정합용(현 판별은 장부만 읽어 미사용). **`_lease_lock` 을 취득한다**(자체
+    `_slot_role`) — 이미 락을 쥔 호출부(release/bind_slot)는 이 헬퍼 대신 보유 중인 `lease.role` 을
+    직접 검사한다(non-reentrant flock 재취득 = 데드락)."""
+    if _slot_role(slot) == _LEASE_ROLE_READONLY:
+        raise ReadonlySlotMutation(slot, op)
+
+
+class ReadonlySlotNotLeasable(RuntimeError):
+    """readonly 공유 슬롯(⑬)에 lease-lifecycle op(release·force_release·bind)을 시도함 — 거부 (T-0358·should-fix).
+
+    readonly 슬롯은 **무소유 공유 자산**(배타 대여 없음·session/pid 없음)이라 대여/반납/바인딩(점유)의
+    대상이 아니다. 자동 경로(alloc idle-탐색·reclaim_stale)는 이미 자연/가드로 닫혔으나, **명시 지정**
+    (`release <slot>`·`force_release`·`/pm-bootstrap --slot`)이 뚫려 있었다 — idle 화되면 alloc 이 그
+    슬롯을 work 슬롯으로 점유해 role 이 유실되는 깨진 상태를 부른다. 0단계 carve-out(F6)이 readonly 를
+    *조회 지칭*엔 허용하지만 bind 는 *점유*라 의미가 다르다(이 거부가 그 틈을 닫는다). `op` = 거부된
+    연산명(진단용). 제거는 `worktree remove --force`, 갱신은 `refresh`. (`RuntimeError` — 파사드 rc 1.)"""
+
+    def __init__(self, slot: str, op: str):
+        self.slot = slot
+        self.op = op
+        super().__init__(
+            f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly·⑬)이라 `{op}`(대여/반납/바인딩) 대상이 "
+            f"아니다 — 무소유 공유 자산(배타 대여 없음·session/pid 없음). 제거하려면 "
+            f"`worktree remove {slot} --force`, 최신 갱신은 `/pm-worktree refresh {slot}` (T-0358·§F11)."
+        )
+
+
+class RefreshRefused(RuntimeError):
+    """readonly 슬롯 `refresh` 거부 — dirty(누군가 씀·신호) / base 미해소 / non-readonly (T-0358·§F11).
+
+    `reason` ∈ {"dirty", "no-base", "not-readonly"}:
+      - **dirty** — read-only 슬롯에 미커밋 변경이 있다 = "누군가 여기 썼다"는 신호. 조용히 reset 하면
+        신호가 사라진다 → 거부 + loud(감지=기계·해소=사용자·submodule drift 동형·결정). 사용자가 보고
+        판단한다(수동 정리/조사 후 재시도).
+      - **no-base** — `--onto` 미지정 + 기록된 base.branch 도 없어 어디로 갱신할지 불명(추론 금지).
+      - **not-readonly** — 대상 슬롯이 readonly 가 아니다(refresh 는 detached 공유 슬롯 전용 — 작업
+        슬롯을 detach 로 이동하면 브랜치 위치를 잃는다). (`RuntimeError` — 파사드 rc 1.)"""
+
+    def __init__(self, slot: str, reason: str, *, detail: str = ""):
+        self.slot = slot
+        self.reason = reason
+        tail = f" — {detail}" if detail else ""
+        msg = {
+            "dirty": (f"슬롯 {slot!r} 에 미커밋 변경이 있어 refresh 를 거부한다 — read-only 슬롯의 dirty 는 "
+                      f"'누군가 여기 썼다'는 신호다(조용히 reset 안 함). 변경을 확인·정리한 뒤 재시도하라"),
+            "no-base": (f"슬롯 {slot!r} 의 기준점(base)이 미기록이고 `--onto` 도 없어 어디로 refresh 할지 "
+                        f"불명이다(추론 금지) — `--onto <branch>` 로 갱신 기준을 명시하라"),
+            "not-readonly": (f"슬롯 {slot!r} 은 readonly 공유 슬롯이 아니다 — refresh 는 detached read-only "
+                             f"슬롯 전용이다(작업 슬롯을 detach 이동하면 브랜치 위치를 잃는다)"),
+            "git-error": (f"슬롯 {slot!r} refresh 중 git 오류"),
+        }.get(reason, f"슬롯 {slot!r} refresh 거부({reason})")
+        super().__init__(msg + tail + f" (T-0358·§F11).")
+
+
+def refresh(slot: str, *, onto: "str | None" = None,
+            git_runner: GitRunner | None = None) -> str:
+    """readonly 공유 슬롯을 released 최신으로 갱신한다 — fetch → detached HEAD 이동 (⑬·T-0358·§F11).
+
+    read-only 슬롯(detached·문서 검증 기준면)을 최신 released tip 으로 fast-forward 하는 유일 경로다
+    (mutation op 은 거부·`refresh` 만 허용). 순서:
+      1. **readonly 확인** — 대상 슬롯이 readonly 가 아니면 `RefreshRefused("not-readonly")`(작업 슬롯을
+         detach 이동하면 브랜치 위치 유실).
+      2. **기준 해소** — `onto`(명시) > 기록된 `base.branch`. 둘 다 없으면 `RefreshRefused("no-base")`
+         (추론 금지·결정 ⑪ 정신).
+      3. **dirty 거부 + loud** — 슬롯 worktree 에 미커밋 변경이 있으면 `RefreshRefused("dirty")`. read-only
+         슬롯의 dirty 는 "누군가 썼다"는 신호라 조용히 reset 하지 않는다(감지=기계·해소=사용자).
+      4. **fetch → detach 이동** — `git fetch origin`(best-effort) 후 기준의 최신 tip(`origin/<branch>`
+         해소되면 그 최신·아니면 로컬 `<branch>`)으로 `git checkout --detach <ref>`(detached HEAD 이동).
+      4b. **submodule 재동기** — `git submodule update --init --recursive --force`(gitlink 옛 pin 잔존
+         →stale+dirty 자가 잠금 방지·must-fix ①·readonly=dev submodule 없어 전체 재동기 안전).
+      5. **스냅 갱신** — `record_git_snapshot(base_branch=해소된 branch)` — base.commit 을 새 head 로
+         갱신한다(onto 생략[기록된 base 로 refresh]에도 갱신·must-fix ② — HEAD 이동했는데 장부 base.commit
+         옛값 잔존 불일치 방지). refresh 는 base 가 정당하게 바뀌는 유일 지점(⑨ "rebase 로만" 의 readonly 예외).
+    반환 = detach 이동한 기준 ref(본체 CLI 가 보고). `git_runner` 주입 시 그 runner(테스트 hermetic·
+    미주입이면 슬롯 worktree 바인딩 실 runner)."""
+    if _slot_role(slot) != _LEASE_ROLE_READONLY:
+        raise RefreshRefused(slot, "not-readonly")
+    # 기준 해소 — onto 명시 > 기록된 base.branch (추론 금지).
+    base_branch = onto
+    if base_branch is None:
+        recorded = _read_recorded_base(slot)
+        if recorded and recorded.get("branch"):
+            base_branch = recorded["branch"]
+    if not base_branch:
+        raise RefreshRefused(slot, "no-base")
+
+    runner = git_runner
+    if runner is None:
+        p = slot_path(slot)
+        if not p.exists():
+            raise RefreshRefused(slot, "git-error",
+                                 detail=f"슬롯 worktree 경로 {p} 가 없다")
+        runner = _real_git_runner(p)
+
+    # dirty = 거부 + loud (조용히 reset 금지·신호 보존).
+    if _is_dirty(slot_path(slot), git_runner=runner):
+        raise RefreshRefused(slot, "dirty")
+
+    # fetch → 최신 tip 해소(origin/<branch> 우선·로컬 폴백) → detach 이동.
+    ref = base_branch
+    rc, out = runner(["fetch", "origin"])
+    if rc != 0:
+        print(
+            f"[경고] 슬롯 {slot} `git fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
+            f"  로컬 `{base_branch}`(동결 head)로 detach 이동한다 — 네트워크 복구 후 재-refresh 하라 "
+            "(T-0358·fail-soft).",
+            file=sys.stderr,
+        )
+    else:
+        # base_branch 가 이미 `origin/…` 면 그대로·순수 브랜치명이면 origin/<branch> 해소 시도.
+        if not base_branch.startswith("origin/"):
+            rc2, _ = runner(["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base_branch}"])
+            if rc2 == 0:
+                ref = f"origin/{base_branch}"
+    rc, out = runner(["checkout", "--detach", ref])
+    if rc != 0:
+        raise RefreshRefused(slot, "git-error",
+                             detail=f"`git checkout --detach {ref}` 실패 (rc={rc}): {str(out).strip()[:200]}")
+    # submodule 재동기 (must-fix ①·codex) — `checkout --detach` 는 superproject HEAD 만 옮기고
+    # submodule gitlink 는 **옛 pin 잔존** → readonly 기준면이 stale + `git status` dirty(gitlink 변경)
+    # 로 남아 **다음 refresh 가 자기 dirty 거부에 걸리는 자가 잠금**이 된다(create_slot 은 init 하는데
+    # refresh 는 안 하던 비대칭). readonly 슬롯은 mutation(dev) 거부라 on-branch(dev) submodule 이
+    # 존재할 수 없으니(보호 대상 0), selective 가 아닌 **전체 재동기**(`--init --recursive --force`·
+    # create_slot 관례 정합)가 안전하다. rc≠0 은 fail-loud(기준면이 반쯤 갱신된 채 성공 보고 금지).
+    rc, out = runner(["submodule", "update", "--init", "--recursive", "--force"])
+    if rc != 0:
+        raise RefreshRefused(slot, "git-error",
+                             detail=f"submodule 재동기 실패 (rc={rc}): {str(out).strip()[:200]}")
+    # 스냅 갱신 (must-fix ②·codex) — base 를 **해소된 branch 로 재기록**해 base.commit=새 head 로
+    # 갱신한다. onto 생략(기록된 base.branch 로 refresh)에도 base_branch 를 넘겨야, HEAD 는 최신
+    # origin/<base> 로 이동했는데 장부 base.commit 은 옛 커밋으로 남아 status "N behind"·기준면 기록이
+    # 실제와 어긋나는 불일치를 막는다. refresh(readonly 전용)는 set-base/rebase 외에 base 가 바뀌는
+    # *유일한 정당 지점*이다(⑨ "base 는 rebase 로만" 결정의 readonly 예외 — detached 기준면 이동이 곧
+    # base 이동). base_commit 미지정 → `_apply_git_snapshot` 이 방금 스냅한 head 를 commit 으로 쓴다.
+    record_git_snapshot(slot, base_branch=base_branch, git_runner=git_runner)
+    return ref
+
+
 def _parse_base_ref(base_arg: str) -> "tuple[str, str | None]":
     """`<branch>[@<commit>]` 인자를 (branch, commit|None) 로 분해한다 (set-base·spike §F9·T-0352).
 
@@ -2850,7 +3105,11 @@ def set_base(slot: str, base_ref: str, *, commit: "str | None" = None,
         `_apply_git_snapshot`/`record_git_snapshot` 레벨에 그대로 — fresh 슬롯 tip==브랜치 tip=정답.)
     T-0350 write 프리미티브(`record_git_snapshot(base_branch=,base_commit=)`)를 소비한다 — 자체 장부
     write 를 재구현하지 않는다(base_commit=검증된 실 sha·None 폴백 경로를 안 탄다). **자동 추론 절대
-    금지**(엔진=surface·사용자=결정). 장부에 슬롯이 없으면 None. 갱신된 Lease 반환."""
+    금지**(엔진=surface·사용자=결정). 장부에 슬롯이 없으면 None. 갱신된 Lease 반환.
+
+    **readonly 거부(⑬·T-0358)**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise
+    (base 는 released 기준면·mutation 불가·갱신은 refresh 만). ref 해소/장부 write 이전 가드."""
+    _reject_readonly_mutation(slot, "set-base", git_runner=git_runner)
     resolved = _resolve_base_commit(
         slot, commit if commit is not None else base_ref, git_runner=git_runner
     )
@@ -2904,7 +3163,11 @@ def resolve_rebase_base(slot: str, *, onto: "str | None" = None,
         로 명시 실패한다(codex must-fix — silent onto 반환 금지·"진행+기록" 계약이 깨지지 않게).
       - `onto` 없음 + 기록된 base 있음 → 기록된 `base.branch` 반환(그 최신으로 rebase).
       - `onto` 없음 + 미기록 → `RebaseBaseRequired` raise(거부 — 기준 없이 rebase 불가·추론 금지).
-    반환값 = rebase 가 향할 base 브랜치명(본체가 소비). 자동 rebase 없음(사용자 명시·spike §F10)."""
+    반환값 = rebase 가 향할 base 브랜치명(본체가 소비). 자동 rebase 없음(사용자 명시·spike §F10).
+
+    **readonly 거부(⑬·T-0358)**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
+    rebase 는 슬롯 git 을 바꾸는 mutation 이라 read-only 기준면엔 불가(진입 가드)."""
+    _reject_readonly_mutation(slot, "rebase", git_runner=git_runner)
     if onto is not None:
         lease = set_base(slot, onto, git_runner=git_runner)   # 1회 해소·해소 실패는 BaseRefUnresolvable 전파.
         if lease is None:
@@ -3301,7 +3564,11 @@ def dev(slot: str, sub: str, branch: str, *, git_runner: GitRunner | None = None
     (`["-C", sub, ...]`)로 superproject cwd 기준 submodule 에 재진입한다(`_submodule_dirty`·
     `_resync_submodules_selective` 와 동형 배선). `(rc, out)` 반환 — 호출부(CLI)가 rc≠0 를 명시
     에러로 surface 한다. `git_runner` 주입 시 그 runner(테스트 mock·DI seam 보존).
+
+    **readonly 거부(⑬·T-0358)**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
+    dev 는 submodule 을 on-branch 로 checkout 하는 mutation 이라 read-only 기준면엔 불가(진입 가드).
     """
+    _reject_readonly_mutation(slot, "dev", git_runner=git_runner)
     runner = git_runner or _real_git_runner(slot_path(slot))
     # 슬롯 경계 검증(must-fix 1) — sub 를 슬롯 실제 submodule 목록과 대조(allowlist·fail-closed).
     rc_st, out_st = runner(["submodule", "status"])
@@ -3334,7 +3601,12 @@ def sync(slot: str, *, git_runner: GitRunner | None = None) -> None:
       - submodule 없는 슬롯 → no-op.
     fail-soft(raise 금지·경고는 stderr) — `_resync_submodules_selective` 계약 상속. `git_runner`
     주입 시 그 runner(테스트 mock·DI seam), 미주입이면 슬롯 worktree 바인딩 실 runner.
+
+    **readonly 거부(⑬·T-0358)**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
+    sync 는 submodule 을 pin 으로 재동기(checkout)하는 mutation 이라 read-only 기준면엔 불가(진입
+    가드·fail-soft 계약보다 우선 — 이건 op 전면 거부지 조회 실패가 아니다).
     """
+    _reject_readonly_mutation(slot, "sync", git_runner=git_runner)
     _resync_submodules_selective(slot_path(slot), git_runner=git_runner)
 
 
@@ -3513,6 +3785,9 @@ def _cmd_set_base(args) -> int:
         return 1
     try:
         lease = set_base(slot, base_ref, commit=commit)
+    except ReadonlySlotMutation as exc:
+        print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — mutation 거부(⑬·T-0358).
+        return 1
     except BaseRefUnresolvable as exc:
         print(f"[중단] {exc}", file=sys.stderr)   # ref 해소 실패 → 조용히 오기록하지 않고 fail-loud.
         return 1
@@ -3547,6 +3822,7 @@ def _cmd_status(args) -> int:
                 if base and base.get("branch") else "(미기록)")
     behind_str = str(st["behind"]) if st["behind"] is not None else "-"
     print(f"# 슬롯 {slot} git 구성 (조회 — 손-git 불요·spike §F10)")
+    print(f"  role:   {_slot_role(slot)}")   # work | readonly (⑬·T-0358)
     print(f"  base:   {base_str}")
     print(f"  branch: {st['branch'] or '(detached/미상)'}")
     print(f"  head:   {(st['head'] or '(미상)')[:12]}")
@@ -3554,6 +3830,25 @@ def _cmd_status(args) -> int:
         print(f"  base 대비 behind: {behind_str}  ({st['behind_reason']})")
     else:
         print(f"  base 대비 behind: {behind_str} 커밋")
+    return 0
+
+
+def _cmd_refresh(args) -> int:
+    """`refresh <slot> [--onto <branch>]` CLI 핸들러 — readonly 슬롯 갱신 (⑬·T-0358·§F11).
+
+    fetch → detached HEAD 를 기준(onto 또는 기록된 base.branch) 최신 tip 으로 이동한다. dirty(누군가
+    씀·신호)·미readonly·base 미해소는 rc 1 로 명시 실패(`RefreshRefused`·조용히 reset 안 함)."""
+    try:
+        slot = _normalize_slot(args.slot)
+    except SlotResolutionError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    try:
+        ref = refresh(slot, onto=args.onto)
+    except RefreshRefused as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    print(f"✓ 슬롯 {slot} refresh: detached HEAD → {ref} 최신 tip 으로 이동(fetch→detach·⑬·T-0358).")
     return 0
 
 
@@ -3612,17 +3907,27 @@ def main(argv: "list[str] | None" = None) -> int:
 
     p_status = subparsers.add_parser(
         "status",
-        help="슬롯 git 구성 조회(base·branch·head·base 대비 N behind·미기록 시 `-`).")
+        help="슬롯 git 구성 조회(role·base·branch·head·base 대비 N behind·미기록 시 `-`).")
     p_status.add_argument("slot", nargs="?", default=None,
                           help="대상 슬롯(생략 시 cwd/세션 leased 슬롯으로 해소).")
 
+    # refresh <slot> [--onto <branch>] — readonly 공유 슬롯 갱신(⑬·T-0358·§F11·위치인자 <slot>).
+    p_refresh = subparsers.add_parser(
+        "refresh",
+        help="readonly 공유 슬롯을 released 최신으로 갱신(fetch→detach 이동·dirty=거부+loud·⑬).")
+    p_refresh.add_argument("slot", help="대상 readonly 슬롯(`work/<repo>_<N>` 또는 접두 생략 `<repo>_<N>`).")
+    p_refresh.add_argument("--onto", default=None,
+                           help="갱신 기준 브랜치(생략 시 기록된 base.branch·둘 다 없으면 거부).")
+
     args = parser.parse_args(argv)
 
-    # set-base / status — 위치인자 <slot> 경로(identity 파싱 미진입·그 args 표면 없음·spike §F9/F10).
+    # set-base / status / refresh — 위치인자 <slot> 경로(identity 파싱 미진입·pool 관리·spike §F9/F10/F11).
     if args.command == "set-base":
         return _cmd_set_base(args)
     if args.command == "status":
         return _cmd_status(args)
+    if args.command == "refresh":
+        return _cmd_refresh(args)
 
     try:
         identity = ia.parse_identity(args)
@@ -3644,6 +3949,9 @@ def main(argv: "list[str] | None" = None) -> int:
     if args.command == "dev":
         try:
             rc, out = dev(slot, args.submodule, args.branch)
+        except ReadonlySlotMutation as exc:
+            print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — mutation 거부(⑬·T-0358).
+            return 1
         except SubmoduleNotInSlot as exc:
             print(f"[중단] {exc}", file=sys.stderr)
             return 1
@@ -3665,7 +3973,11 @@ def main(argv: "list[str] | None" = None) -> int:
         f"# 슬롯 {slot} submodule selective 재동기 "
         "(detached=pin 재동기·on-branch=skip·dirty=skip+경고)"
     )
-    sync(slot)
+    try:
+        sync(slot)
+    except ReadonlySlotMutation as exc:
+        print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — mutation 거부(⑬·T-0358).
+        return 1
     print(f"✓ 슬롯 {slot} 재동기 완료 (skip/경고 사유는 위 stderr 참조).")
     return 0
 
