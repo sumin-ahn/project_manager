@@ -164,10 +164,13 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # board 상태(티켓/idea/prefix/id/areas/wiki-scope/파생 board.md)를 쓰거나 clone 을 init 하는
 # mutation subcommand — dispatch 게이트가 이 집합에만 worktree 오실행 가드를 적용한다.
 # (idea/prefix 서브그룹은 `<group> <sub>` 점표기.) reid=ID 재부여·promote-scope=wiki family_scope
-# retag·refresh=파생 board.md 재생성(worktree refresh 는 정당 사용 없음·stray dashboard 방지).
+# retag·refresh=파생 board.md 재생성(worktree refresh 는 정당 사용 없음·stray dashboard 방지)·
+# verified-at-backfill=PM 홈 현재-진실 문서(architecture/status/domain) frontmatter 쓰기(ADR-0063·
+# worktree 엔 그 문서가 없어 no-op 이나 PM 홈 실행이 설계 의도라 오실행 가드).
 _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "new", "promote", "claim", "complete", "block", "unclaim", "unblock",
     "init", "migrate-identity", "promote-scope", "reid", "refresh",
+    "verified-at-backfill",
     "idea new", "idea promote", "idea kill",
     "prefix rename", "prefix strip", "prefix merge", "prefix delete",
 })
@@ -5879,9 +5882,14 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #   - adr-author : ADR frontmatter `author: <user>/<pm-slot>` provenance 권고 (T-0165·ADR-0033 ③).
 #     "누가 결정했나"(provenance·연속성 아님)를 박는 발행측 규칙 — board.py 는 ADR 을 발행하지 않으므로
 #     부재/형식어긋남을 권고만 한다. solo·구 ADR(author 부재)은 정상이라 push 미차단(never-block).
+#   - architecture-stale·status-stale·domain-stale : 현재-진실 문서 freshness — 문서
+#     frontmatter `verified_at: <sha>` 이후 그 문서 매핑 경로에 커밋이 있으면 "재검증 필요"
+#     권고(ADR-0063·date 비교 대체). architect 재검증·PM 점검 대상이지 push 결함이 아니므로
+#     visibility 만·never-block(ADR-0022/0023 소유 불변·ADR-0015 "막지 않고 보이게").
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
      "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
+     "status-stale", "domain-stale",
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
      "adr-author"})
 
@@ -5999,73 +6007,279 @@ def lint_adr_author() -> list[tuple[str, str, str]]:
     return findings
 
 
-def _coerce_date(val) -> datetime.date | None:
-    """frontmatter date 값을 `datetime.date` 로 정규화한다 (파싱 불가 → None·fail-soft).
+# ── 현재-진실 문서 freshness = verified_at sha 판정 (ADR-0063·date 비교 대체) ──────────
+# architecture.md·status.md·domain 페이지의 freshness 를 frontmatter `verified_at: <sha>`
+# 기준으로 판정한다: "그 sha 이후 문서 매핑 경로에 커밋이 있나"의 이진 기계 판정(ADR-0063
+# Decision 2). date 비교("최신이겠지" 해석 구멍·결정 ⑭ 위반)를 대체한다. architecture.md·
+# status.md 는 엔진 코드 트리를, domain 페이지는 covers→pathspec(domain.py 재사용)을 매핑
+# 경로로 쓴다. 판정은 advisory(`_ADVISORY_LINT_KINDS`·never-block·architect 재검증·PM 점검·
+# ADR-0022/0023 소유 불변).
 
-    yaml 은 unquoted `2026-06-19` 를 `datetime.date` 로, quoted `'2026-06-19'` 를 str 로
-    파싱한다(ticket 은 quote·ADR 은 unquote 관례). 둘 다 수용한다. datetime(시각 포함)은
-    `.date()` 로, ISO str 은 `fromisoformat` 로, 그 외(None·빈값·잘못된 형식)는 None.
-    """
-    if isinstance(val, datetime.datetime):
-        return val.date()
-    if isinstance(val, datetime.date):
-        return val
-    if isinstance(val, str):
-        try:
-            return datetime.date.fromisoformat(val.strip())
-        except ValueError:
+# architecture.md·status.md 의 verified_at 매핑 경로 = 엔진 코드 트리. 이 문서들이 판정
+# 대상으로 삼는 코드다. 디렉토리 전체를 pathspec 으로 잡아 over-approx(과경고 < 미경고·
+# domain covers_to_pathspec 동형) — 그 트리 어느 파일이 sha 이후 커밋돼도 "재검증해" 신호.
+_CURRENT_TRUTH_ENGINE_PATHS: tuple[str, ...] = (".project_manager/tools",)
+
+
+def _git_commits_between(sha: str, pathspecs: list[str], *,
+                         runner=None) -> bool | None:
+    """`<sha>..HEAD` 에 `pathspecs` 경로 커밋이 있으면 True·없으면 False·판정불가 None.
+
+    verified_at 판정의 핵심 — `git log --oneline <sha>..HEAD -- <pathspecs>` 출력이 비지
+    않으면 그 sha 이후 매핑 경로가 바뀐 것(stale). fail-soft(모두 None):
+      - sha 빈값·pathspec 전부 빈 → None (판정 대상 없음).
+      - git 바이너리 부재·미지 sha(rc≠0·`bad revision`)·타임아웃/예외 → None (skip).
+    None 은 "판정불가(unknown)"라 호출부가 finding 을 내지 않는다(현행 freshness fail-soft
+    성격·솔로/신규 clone 무탈). `runner` 는 테스트 hermetic seam(argv→(rc, stdout))·미주입
+    시 실 subprocess(`git -C REPO`)를 쓴다."""
+    sha = (sha or "").strip()
+    pathspecs = [p for p in pathspecs if p]
+    if not sha or not pathspecs:
+        return None
+    if runner is None:
+        if shutil.which("git") is None:
             return None
-    return None
 
+        def runner(argv: list[str]) -> tuple[int, str]:
+            try:
+                r = subprocess.run(
+                    ["git", "-C", str(REPO), *argv],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
+                return r.returncode, r.stdout or ""
+            except Exception:  # noqa: BLE001 — fail-soft: 타임아웃/예외를 rc≠0 로.
+                return 1, ""
 
-def lint_architecture_freshness() -> list[tuple[str, str, str]]:
-    """architecture.md freshness 강제함수 advisory (ADR-0022 Decision 3·never-block).
-
-    `decisions/` 의 최신 ADR date(frontmatter `updated` 우선·없으면 `created` 의 최대값)가
-    `architecture.md` frontmatter `updated` 보다 *더 최신*이면 "architect 가 architecture.md
-    갱신 필요" 권고를 낸다 — 새 ADR 이 결정을 바꿨는데 현재-진실 doc(architecture.md)이
-    따라가지 않은 신호. kind=`architecture-stale`(`_ADVISORY_LINT_KINDS` 등재로 `--gate`
-    종료코드 비기여·visibility>enforcement).
-
-    fail-soft: architecture.md 부재·frontmatter 없음·date 파싱 불가·decisions/ 부재 →
-    [] (솔로/신규 clone·architecture 미사용 무영향). decisions/README.md·_template 류
-    비-ADR 파일은 `[0-9]*.md` 글롭으로 제외(NNNN-slug 만)."""
-    findings: list[tuple[str, str, str]] = []
-    if not DECISIONS_DIR.is_dir() or not ARCHITECTURE_FILE.exists():
-        return findings
-
-    # architecture.md frontmatter updated — 부재/파싱 불가면 비교 불가 → graceful skip.
     try:
-        arch_fm, _ = load_ticket(ARCHITECTURE_FILE)
+        rc, out = runner(["log", "--oneline", f"{sha}..HEAD", "--", *pathspecs])
+    except Exception:  # noqa: BLE001 — 주입 runner raise 도 unknown(None).
+        return None
+    if rc != 0:
+        return None
+    return bool(out.strip())
+
+
+def _verified_at_finding(doc_file: Path, pathspecs, label: str, kind: str, *,
+                         runner=None) -> list[tuple[str, str, str]]:
+    """문서 `verified_at` sha 이후 `pathspecs` 에 커밋 있으면 finding 1개·아니면 [].
+
+    fail-soft: 문서 부재·frontmatter 없음/깨짐·`verified_at` 부재 → [](명시 skip — solo/
+    신규 clone·아직 verified_at 미부여 문서 무영향·false-green 아님). 판정불가(None)도 [].
+    stale(True)일 때만 `(label, kind, detail)` 1개."""
+    if not doc_file.exists():
+        return []
+    try:
+        fm, _ = load_ticket(doc_file)
     except Exception:  # noqa: BLE001 — frontmatter 없음/깨짐은 skip(비차단).
-        return findings
-    arch_updated = _coerce_date((arch_fm or {}).get("updated"))
-    if arch_updated is None:
-        return findings
+        return []
+    sha = str((fm or {}).get("verified_at") or "").strip()
+    if not sha:
+        return []
+    if _git_commits_between(sha, list(pathspecs), runner=runner) is not True:
+        return []
+    return [(label, kind,
+             f"verified_at({sha[:12]}) 이후 매핑 경로에 커밋 있음 — architect 재검증 필요")]
 
-    # decisions/ 최신 ADR date (updated>created 의 최대값) + 그 ADR id 추적.
-    latest_date: datetime.date | None = None
-    latest_adr = ""
-    for p in sorted(DECISIONS_DIR.glob("[0-9]*.md")):
-        try:
-            fm, _ = load_ticket(p)
-        except Exception:  # noqa: BLE001 — 깨진/frontmatter 없는 ADR 은 skip.
-            continue
-        fm = fm or {}
-        d = _coerce_date(fm.get("updated")) or _coerce_date(fm.get("created"))
-        if d is None:
-            continue
-        if latest_date is None or d > latest_date:
-            latest_date = d
-            latest_adr = _adr_id_from_path(p)
 
-    if latest_date is not None and latest_date > arch_updated:
+def lint_architecture_freshness(*, runner=None) -> list[tuple[str, str, str]]:
+    """architecture.md freshness advisory — `verified_at` sha 판정 (ADR-0063·never-block).
+
+    architecture.md frontmatter `verified_at: <sha>` *이후* 엔진 코드 트리
+    (`_CURRENT_TRUTH_ENGINE_PATHS`)에 커밋이 있으면 "architect 재검증 필요" 권고를 낸다 —
+    검증 기준 sha 이후 코드가 바뀌었다는 이진 기계 판정(date "최신이겠지" 해석 구멍 대체·
+    결정 ⑭). kind=`architecture-stale`(`_ADVISORY_LINT_KINDS` 등재·`--gate` 비기여).
+    fail-soft: 문서 부재·frontmatter 없음·verified_at 부재·git 불가 → [](명시 skip)."""
+    return _verified_at_finding(
+        ARCHITECTURE_FILE, _CURRENT_TRUTH_ENGINE_PATHS,
+        "architecture.md", "architecture-stale", runner=runner)
+
+
+def lint_status_freshness(*, runner=None) -> list[tuple[str, str, str]]:
+    """status.md freshness advisory — `verified_at` sha 판정 (ADR-0063·never-block).
+
+    status.md frontmatter `verified_at: <sha>` *이후* 엔진 코드 트리에 커밋이 있으면
+    "모듈 진행 상태 재검증 필요" 권고. lint_architecture_freshness 와 동일 규칙·매핑 경로
+    (status.md 는 엔진 모듈 진행 상태를 기록·ADR-0023 judgment-only 소유 불변).
+    kind=`status-stale`(advisory). fail-soft: 부재/verified_at 부재/git 불가 → []."""
+    return _verified_at_finding(
+        STATUS_FILE, _CURRENT_TRUTH_ENGINE_PATHS,
+        "status.md", "status-stale", runner=runner)
+
+
+def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
+    """domain 페이지 freshness advisory — `verified_at` sha 판정 (ADR-0063·never-block).
+
+    각 domain 페이지(`covers:` 보유)의 frontmatter `verified_at: <sha>` *이후* 그 페이지
+    covers 경로에 커밋이 있으면 `domain-stale` 권고. **경로 매핑은 domain.py 재사용**(신설 0):
+    페이지 covers 글롭 → `domain.covers_to_pathspec`(affected/page_stale 가 쓰는 그 매핑)로
+    git pathspec 을 만든다 — 별도 매핑 저장소를 두지 않는다(ADR-0063 Decision 2·ADR-0018).
+    fail-soft: domain.py 부재/로드 실패·페이지 없음·verified_at 부재·covers 빈·git 불가 →
+    [](명시 skip). `updated` date 기반 `lint_domain` stale 과는 별개 축(이건 sha 기준)."""
+    domain = _load_domain_module()
+    if domain is None:
+        return []
+    try:
+        pages = domain.load_pages(domain.DOMAIN_DIR)
+    except Exception:  # noqa: BLE001 — 스캔 실패는 [] 로 흡수(board lint 정상 진행).
+        return []
+    findings: list[tuple[str, str, str]] = []
+    for page in pages:
+        sha = str(page.get("verified_at") or "").strip()
+        if not sha:
+            continue  # verified_at 미부여 페이지 — 명시 skip(false-green 아님).
+        covers = page.get("covers") or []
+        pathspecs = [ps for ps in (domain.covers_to_pathspec(g) for g in covers) if ps]
+        if not pathspecs:
+            continue  # 코드-무관 개념(covers 빈)·좁힐 prefix 없는 글롭 → skip.
+        if _git_commits_between(sha, pathspecs, runner=runner) is not True:
+            continue
+        label = page.get("title") or domain.page_slug(page)
         findings.append((
-            "architecture.md", "architecture-stale",
-            f"최신 ADR({latest_adr}·{latest_date.isoformat()}) > "
-            f"architecture.md updated({arch_updated.isoformat()}) — "
-            f"architect 가 architecture.md 갱신 필요"))
+            label, "domain-stale",
+            f"verified_at({sha[:12]}) 이후 covers 경로에 커밋 있음 — 페이지 재검증 필요"))
     return findings
+
+
+# ── verified_at 초기 backfill (ADR-0063 Decision 5·1회 데이터 마이그레이션) ────────────
+# 기존 현재-진실 문서(architecture.md·status.md·covers 보유 domain 페이지)에 초기 `verified_at`
+# sha 를 채운다. 런타임 fallback 누적([[prefer-data-migration-over-fallback]]) 대신 한 번의
+# 마이그레이션 — 이후 lint 는 verified_at 이 항상 있다고 전제(부재는 fail-soft skip 유지).
+
+def _repo_head_sha() -> str | None:
+    """REPO(`git -C REPO`)의 현재 HEAD sha (조회 불가 → None·fail-soft)."""
+    if shutil.which("git") is None:
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_BOARD_GIT_TIMEOUT_SECONDS)
+    except Exception:  # noqa: BLE001 — 타임아웃/바이너리 이상은 None(fail-soft).
+        return None
+    if r.returncode != 0:
+        return None
+    return (r.stdout or "").strip() or None
+
+
+def _insert_verified_at(text: str, sha: str) -> str | None:
+    """frontmatter 닫는 `---` 바로 앞에 `verified_at: <sha>` 한 줄 삽입 (최소 변경).
+
+    hand-authored 현재-진실 문서 frontmatter 를 **전체 재-dump 없이**(키 순서·date 정규화
+    clobber 회피) 한 줄만 넣는다. 반환 = 삽입된 새 텍스트, None = 대상 아님:
+      - frontmatter 블록(`---` 시작 + 닫는 `---`)이 없음.
+      - `verified_at:` 이 이미 있음(멱등·재실행 안전).
+    """
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return None
+    close = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if close is None:
+        return None
+    if any(re.match(r"\s*verified_at\s*:", ln) for ln in lines[1:close]):
+        return None
+    # 닫는 --- 앞 라인이 개행으로 끝나지 않으면 보정(파일 끝 무개행 방어).
+    if lines[close - 1] and not lines[close - 1].endswith("\n"):
+        lines[close - 1] += "\n"
+    lines.insert(close, f"verified_at: {sha}\n")
+    return "".join(lines)
+
+
+def _verified_at_backfill_targets() -> list[Path]:
+    """backfill 대상 문서 경로 — architecture.md·status.md + covers 보유 domain 페이지."""
+    targets: list[Path] = []
+    if ARCHITECTURE_FILE.exists():
+        targets.append(ARCHITECTURE_FILE)
+    if STATUS_FILE.exists():
+        targets.append(STATUS_FILE)
+    domain = _load_domain_module()
+    if domain is not None:
+        try:
+            for page in domain.load_pages(domain.DOMAIN_DIR):
+                if page.get("covers"):
+                    targets.append(Path(page["path"]))
+        except Exception:  # noqa: BLE001 — domain 스캔 실패는 arch/status 만 backfill.
+            pass
+    return targets
+
+
+def _is_commit_sha(sha: str) -> bool:
+    """`sha` 가 REPO 의 실존 commit 인가 (`git rev-parse --verify <sha>^{commit}`·codex must-fix).
+
+    backfill 쓰기 지점 검증용 — 오타/비존재 sha 가 문서에 영속되면 `_git_commits_between` 의
+    fail-soft(rc≠0→None)에 흡수돼 그 문서의 freshness 판정이 **영구 조용 skip**(false-green) 된다.
+    검증 불가(git 부재·timeout)도 False — 기록은 확실할 때만 한다."""
+    if shutil.which("git") is None:
+        return False
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_BOARD_GIT_TIMEOUT_SECONDS)
+    except Exception:  # noqa: BLE001 — 검증 불가는 False(기록 거부 쪽으로).
+        return False
+    return r.returncode == 0
+
+
+def backfill_verified_at(sha: str, *, dry_run: bool = False) -> list[tuple[Path, str]]:
+    """현재-진실 문서에 초기 `verified_at: <sha>` 를 1회 backfill (ADR-0063 Decision 5).
+
+    대상 = architecture.md·status.md + covers 보유 domain 페이지(`_verified_at_backfill_targets`).
+    이미 verified_at 이 있으면/frontmatter 가 없으면 skip(멱등). 반환 = `[(경로, 상태), …]`
+    (상태 ∈ `added`/`skip:already`/`skip:no-frontmatter`/`skip:read-error`). dry_run 이면 파일을
+    쓰지 않고 무엇이 바뀔지만 계산한다."""
+    results: list[tuple[Path, str]] = []
+    for path in _verified_at_backfill_targets():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            results.append((path, "skip:read-error"))
+            continue
+        new_text = _insert_verified_at(text, sha)
+        if new_text is None:
+            has_fm = text.lstrip().startswith("---")
+            results.append((path, "skip:already" if has_fm else "skip:no-frontmatter"))
+            continue
+        if not dry_run:
+            path.write_text(new_text, encoding="utf-8")
+        results.append((path, "added"))
+    return results
+
+
+def cmd_verified_at_backfill(args: argparse.Namespace) -> int:
+    """`verified-at-backfill` — 현재-진실 문서에 초기 verified_at sha 를 채운다 (1회·ADR-0063)."""
+    sha = (args.sha or "").strip()
+    if sha:
+        # 명시 --sha 는 기록 전 commit 실존 검증(codex must-fix) — 오타 sha 가 영속되면
+        # freshness 판정이 영구 조용 skip(false-green) 되므로 abort 가 정답.
+        if not _is_commit_sha(sha):
+            print(f"verified-at-backfill: --sha {sha} 가 이 repo 의 commit 으로 검증되지 않는다 "
+                  "— 기록 중단(비존재 sha 는 freshness 판정 영구 skip·false-green).",
+                  file=sys.stderr)
+            return 1
+    else:
+        sha = _repo_head_sha() or ""
+        if not sha:
+            print("verified-at-backfill: --sha 미지정·HEAD 조회 실패 — 기준 sha 미정.",
+                  file=sys.stderr)
+            return 1
+    results = backfill_verified_at(sha, dry_run=args.dry_run)
+    if not results:
+        print("verified-at-backfill: 대상 문서 없음 (architecture.md·status.md·domain 부재).")
+        return 0
+    prefix = "[dry-run] " if args.dry_run else ""
+    added = 0
+    for path, state in results:
+        try:
+            shown = path.relative_to(REPO).as_posix()
+        except ValueError:
+            shown = str(path)
+        if state == "added":
+            added += 1
+            print(f"{prefix}verified_at: {sha[:12]} 삽입 → {shown}")
+        else:
+            print(f"{prefix}skip({state}) → {shown}")
+    print(f"{prefix}{added}개 문서에 verified_at 삽입 (기준 sha {sha[:12]}).")
+    return 0
 
 
 # adapter-drift baseline 의 두 local.conf 키 (T-0141·ADR-0032 Decision 2·codex round-3 NEW-2).
@@ -6213,12 +6427,15 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     adapter-layer drift advisory(adapter-drift·T-0141·ADR-0032·never-block·baseline rev 비교) +
     render-leak(리터럴 `{{...}}` 누출·ADR-0028·blocking·@render 산출물 한정·활성화 전 무발화) +
     un-migrated-overlay(어댑터 .md 리터럴 free-form 토큰 잔존·T-0132·§3.6·ADR-0031·advisory·never-block) +
-    adr-author(ADR `author: <user>/<pm-slot>` provenance 권고·T-0165·ADR-0033 ③·advisory·never-block)."""
+    adr-author(ADR `author: <user>/<pm-slot>` provenance 권고·T-0165·ADR-0033 ③·advisory·never-block) +
+    현재-진실 문서 freshness(architecture-stale·status-stale·domain-stale·verified_at sha 판정·
+    ADR-0063·advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
             + lint_domain() + lint_adr_lifecycle() + lint_adr_author()
-            + lint_architecture_freshness() + lint_adapter_drift()
+            + lint_architecture_freshness() + lint_status_freshness()
+            + lint_domain_freshness() + lint_adapter_drift()
             + lint_render_leak() + lint_unmigrated_overlay())
 
 
@@ -6460,6 +6677,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="push 게이트 모드 — 차단 카테고리(dangling/unstable-ref/dependency/"
                         "thin)에만 종료코드 1, status drift 자문성은 0")
     p.set_defaults(fn=cmd_lint)
+
+    p = sub.add_parser(
+        "verified-at-backfill",
+        help="현재-진실 문서(architecture.md·status.md·domain)에 초기 verified_at sha 채움 (1회·ADR-0063)")
+    p.add_argument("--sha", help="기준 커밋 sha (미지정 시 REPO HEAD — released 지점 권장)")
+    p.add_argument("--dry-run", action="store_true", help="쓰기 0·무엇이 바뀔지만 표시")
+    p.set_defaults(fn=cmd_verified_at_backfill)
 
     p = sub.add_parser("promote-scope",
                        help="family wiki scope retag — `repoA → shared` (ADR-0015)")

@@ -336,6 +336,7 @@ _MUTATION_ARGVS = [
     ["promote-scope", "somedoc.md", "--to", "shared"],
     ["reid", "T-0100", "T-0101"],
     ["refresh"],
+    ["verified-at-backfill"],
     ["idea", "new", "아이디어"],
     ["idea", "promote", "0001"],
     ["idea", "kill", "0001"],

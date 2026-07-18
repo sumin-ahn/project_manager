@@ -1281,125 +1281,189 @@ def test_adr_author_graceful_no_decisions(board, monkeypatch, tmp_path):
     assert board.lint_adr_author() == []
 
 
-# ── architecture.md freshness lint (T-0101·ADR-0022·advisory) ─────────────────
+# ── 현재-진실 문서 freshness = verified_at sha 판정 (T-0363·ADR-0063·advisory) ─────
+# lint_architecture_freshness·lint_status_freshness·lint_domain_freshness 는 문서 frontmatter
+# `verified_at: <sha>` *이후* 매핑 경로에 커밋이 있으면 `*-stale` finding 을 낸다(date 비교
+# 대체·ADR-0063). git 은 주입 runner(argv→(rc, stdout)) 로 hermetic 하게 대역한다.
 
-def _write_adr_dated(decisions_dir, num, *, created, updated=None):
-    """hermetic ADR md fixture — date frontmatter 만 의미 있음 (unquoted yaml date)."""
-    fm = ["title: t", "type: decision", "status: accepted", f"created: {created}"]
-    if updated is not None:
-        fm.append(f"updated: {updated}")
-    (decisions_dir / f"{num}-slug.md").write_text(
-        "---\n" + "\n".join(fm) + "\n---\n\n# ADR-" + num + "\n\nbody\n",
-        encoding="utf-8",
-    )
+def _stale_git(argv):
+    """`git log <sha>..HEAD -- …` 에 커밋이 *있는* 것처럼 (0, 비지 않은 출력)."""
+    return (0, "abc1234 some commit\n")
 
 
-def _write_architecture(arch_file, *, updated):
-    """hermetic architecture.md fixture — frontmatter updated 만 의미 있음."""
-    arch_file.write_text(
-        f"---\ntitle: Architecture\ntype: architecture\nupdated: {updated}\n---\n\n# Architecture\n",
-        encoding="utf-8",
-    )
+def _clean_git(argv):
+    """sha 이후 매핑 경로 커밋 *없음* — (0, 빈 출력)."""
+    return (0, "")
+
+
+def _unknown_sha_git(argv):
+    """미지 sha(rc≠0·`bad revision`) — 판정불가 → skip."""
+    return (1, "fatal: bad revision\n")
+
+
+def _write_verified_doc(path, *, verified_at=None, extra="type: architecture"):
+    """hermetic 현재-진실 문서 fixture — verified_at 유무를 제어한다."""
+    fm = ["title: Doc", extra]
+    if verified_at is not None:
+        fm.append(f"verified_at: {verified_at}")
+    path.write_text("---\n" + "\n".join(fm) + "\n---\n\n# Doc\n", encoding="utf-8")
 
 
 @pytest.fixture
-def arch_wiring(board, monkeypatch, tmp_path):
-    """decisions/ + architecture.md 를 tmp 로 monkeypatch. (decisions_dir, arch_file) 반환."""
-    d = tmp_path / "decisions"
-    d.mkdir()
-    arch = tmp_path / "architecture.md"
-    monkeypatch.setattr(board, "DECISIONS_DIR", d)
-    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
-    return d, arch
+def arch_file(board, monkeypatch, tmp_path):
+    """ARCHITECTURE_FILE 을 tmp 로 monkeypatch 하고 그 경로를 반환한다."""
+    p = tmp_path / "architecture.md"
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", p)
+    return p
 
 
-def test_architecture_freshness_flags_newer_adr(board, arch_wiring):
-    # ① 최신 ADR date > architecture updated → finding 1.
-    decisions_dir, arch = arch_wiring
-    _write_architecture(arch, updated="2026-06-10")
-    _write_adr_dated(decisions_dir, "0001", created="2026-06-05")
-    _write_adr_dated(decisions_dir, "0002", created="2026-06-15")  # 최신·arch 보다 뒤
-    findings = board.lint_architecture_freshness()
+# (a) verified_at 이후 매핑 경로 커밋 있으면 architecture-stale 표면 (sensitivity 양성 대조).
+def test_architecture_freshness_flags_when_commits_after_sha(board, arch_file):
+    _write_verified_doc(arch_file, verified_at="deadbeef")
+    findings = board.lint_architecture_freshness(runner=_stale_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "architecture.md"
     assert kind == "architecture-stale"
-    assert "ADR-0002" in detail and "2026-06-15" in detail and "2026-06-10" in detail
+    assert "deadbeef" in detail
 
 
-def test_architecture_freshness_uses_updated_over_created(board, arch_wiring):
-    # updated 우선 — created 는 옛날이어도 updated 가 최신이면 그 date 로 비교.
-    decisions_dir, arch = arch_wiring
-    _write_architecture(arch, updated="2026-06-10")
-    _write_adr_dated(decisions_dir, "0001", created="2026-06-01", updated="2026-06-20")
-    findings = board.lint_architecture_freshness()
-    assert len(findings) == 1
-    assert "2026-06-20" in findings[0][2]
+# (b) sha 이후 매핑 경로 커밋 없으면 clean.
+def test_architecture_freshness_clean_when_no_commits_after_sha(board, arch_file):
+    _write_verified_doc(arch_file, verified_at="deadbeef")
+    assert board.lint_architecture_freshness(runner=_clean_git) == []
 
 
-def test_architecture_freshness_clean_when_architecture_newer(board, arch_wiring):
-    # ② architecture 가 최신(또는 동일) → finding 0.
-    decisions_dir, arch = arch_wiring
-    _write_architecture(arch, updated="2026-06-20")
-    _write_adr_dated(decisions_dir, "0001", created="2026-06-05")
-    _write_adr_dated(decisions_dir, "0002", created="2026-06-20")  # 동일 date → not >
-    assert board.lint_architecture_freshness() == []
+# (c) sensitivity — verified_at 부재면 stale runner 라도 조용히 skip(false-green 아님).
+def test_architecture_freshness_skip_when_verified_at_absent(board, arch_file):
+    _write_verified_doc(arch_file, verified_at=None)   # verified_at 없음
+    # 매핑 경로에 커밋이 *있다고* 답하는 runner 여도, verified_at 이 없으면 판정 대상 아님 → [].
+    assert board.lint_architecture_freshness(runner=_stale_git) == []
 
 
-def test_architecture_freshness_graceful_when_architecture_absent(board, arch_wiring):
-    # ③ architecture.md 부재 → graceful [] (fail-soft).
-    decisions_dir, arch = arch_wiring  # arch 파일은 만들지 않음
-    _write_adr_dated(decisions_dir, "0001", created="2026-06-15")
-    assert not arch.exists()
-    assert board.lint_architecture_freshness() == []
+def test_architecture_freshness_skip_when_doc_absent(board, arch_file):
+    # 문서 파일 자체가 없음 → graceful [] (솔로/신규 clone·fail-soft).
+    assert not arch_file.exists()
+    assert board.lint_architecture_freshness(runner=_stale_git) == []
 
 
-def test_architecture_freshness_graceful_no_frontmatter(board, arch_wiring):
-    # architecture.md 가 frontmatter 없음 → graceful [].
-    decisions_dir, arch = arch_wiring
-    arch.write_text("# Architecture\n\nno frontmatter\n", encoding="utf-8")
-    _write_adr_dated(decisions_dir, "0001", created="2026-06-15")
-    assert board.lint_architecture_freshness() == []
+def test_architecture_freshness_skip_when_no_frontmatter(board, arch_file):
+    arch_file.write_text("# Architecture\n\nno frontmatter\n", encoding="utf-8")
+    assert board.lint_architecture_freshness(runner=_stale_git) == []
 
 
-def test_architecture_freshness_graceful_unparseable_date(board, arch_wiring):
-    # architecture updated 가 date 로 파싱 불가 → graceful [] (비교 불가).
-    decisions_dir, arch = arch_wiring
-    arch.write_text(
-        "---\ntitle: Architecture\nupdated: 'not-a-date'\n---\n\n# Architecture\n",
-        encoding="utf-8",
-    )
-    _write_adr_dated(decisions_dir, "0001", created="2026-06-15")
-    assert board.lint_architecture_freshness() == []
-
-
-def test_architecture_freshness_skips_non_adr_files(board, arch_wiring):
-    # decisions/README.md 류 비-ADR(NNNN-slug 아님) 파일은 글롭으로 제외.
-    decisions_dir, arch = arch_wiring
-    _write_architecture(arch, updated="2026-06-10")
-    # README.md 가 미래 date 여도 NNNN-slug 글롭에 안 잡혀 무시.
-    (decisions_dir / "README.md").write_text(
-        "---\ntitle: r\nupdated: 2026-12-31\n---\n\n# README\n", encoding="utf-8")
-    _write_adr_dated(decisions_dir, "0001", created="2026-06-05")  # arch 보다 이전
-    assert board.lint_architecture_freshness() == []
-
-
-def test_architecture_freshness_graceful_no_decisions(board, monkeypatch, tmp_path):
-    # decisions/ 부재 → [] (솔로/신규 clone 무영향).
-    arch = tmp_path / "architecture.md"
-    _write_architecture(arch, updated="2026-06-10")
-    monkeypatch.setattr(board, "DECISIONS_DIR", tmp_path / "nope")
-    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
-    assert board.lint_architecture_freshness() == []
+def test_architecture_freshness_skip_when_sha_unknown(board, arch_file):
+    # verified_at 있으나 git 이 미지 sha(rc≠0) → 판정불가 skip(fail-soft).
+    _write_verified_doc(arch_file, verified_at="deadbeef")
+    assert board.lint_architecture_freshness(runner=_unknown_sha_git) == []
 
 
 def test_architecture_freshness_in_advisory_kinds(board):
-    # architecture-stale 은 advisory — --gate 종료코드 비기여.
     assert "architecture-stale" in board._ADVISORY_LINT_KINDS
 
 
-def test_architecture_freshness_is_advisory_never_blocks(board, monkeypatch, tmp_path):
-    # ④ architecture-stale finding 만 있으면 --gate 종료코드 0 (never-block) sensitivity.
+# ── status.md freshness (동일 규칙·status-stale) ──────────────────────────────
+
+@pytest.fixture
+def status_file(board, monkeypatch, tmp_path):
+    p = tmp_path / "status.md"
+    monkeypatch.setattr(board, "STATUS_FILE", p)
+    return p
+
+
+def test_status_freshness_flags_when_commits_after_sha(board, status_file):
+    _write_verified_doc(status_file, verified_at="cafe0001", extra="type: status")
+    findings = board.lint_status_freshness(runner=_stale_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "status.md"
+    assert kind == "status-stale"
+    assert "cafe0001" in detail
+
+
+def test_status_freshness_clean_when_no_commits(board, status_file):
+    _write_verified_doc(status_file, verified_at="cafe0001", extra="type: status")
+    assert board.lint_status_freshness(runner=_clean_git) == []
+
+
+def test_status_freshness_skip_when_verified_at_absent(board, status_file):
+    _write_verified_doc(status_file, verified_at=None, extra="type: status")
+    assert board.lint_status_freshness(runner=_stale_git) == []
+
+
+def test_status_freshness_in_advisory_kinds(board):
+    assert "status-stale" in board._ADVISORY_LINT_KINDS
+
+
+# ── domain 페이지 freshness (covers→pathspec 재사용·domain-stale) ─────────────
+
+def test_domain_freshness_flags_when_commits_after_sha(board, monkeypatch, tmp_path):
+    # verified_at 보유·covers 있는 domain 페이지 + stale runner → domain-stale 1.
+    domain_dir = tmp_path / "domain"
+    _domain_page(
+        domain_dir, "engine.md",
+        frontmatter="title: 엔진\ntype: concept\ncovers:\n  - .project_manager/tools/**\n"
+                    "verified_at: beef0002",
+        body="\nbody\n",
+    )
+    _wire_domain(board, monkeypatch, domain_dir)
+    findings = board.lint_domain_freshness(runner=_stale_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "엔진"
+    assert kind == "domain-stale"
+    assert "beef0002" in detail
+
+
+def test_domain_freshness_clean_when_no_commits(board, monkeypatch, tmp_path):
+    domain_dir = tmp_path / "domain"
+    _domain_page(
+        domain_dir, "engine.md",
+        frontmatter="title: 엔진\ntype: concept\ncovers:\n  - .project_manager/tools/**\n"
+                    "verified_at: beef0002",
+        body="\nbody\n",
+    )
+    _wire_domain(board, monkeypatch, domain_dir)
+    assert board.lint_domain_freshness(runner=_clean_git) == []
+
+
+def test_domain_freshness_skip_when_verified_at_absent(board, monkeypatch, tmp_path):
+    # sensitivity — covers 는 있으나 verified_at 없는 페이지는 stale runner 라도 skip.
+    domain_dir = tmp_path / "domain"
+    _domain_page(
+        domain_dir, "engine.md",
+        frontmatter="title: 엔진\ntype: concept\ncovers:\n  - .project_manager/tools/**",
+        body="\nbody\n",
+    )
+    _wire_domain(board, monkeypatch, domain_dir)
+    assert board.lint_domain_freshness(runner=_stale_git) == []
+
+
+def test_domain_freshness_skip_when_no_covers(board, monkeypatch, tmp_path):
+    # covers 없는(코드-무관) 페이지는 verified_at 이 있어도 매핑 경로 0 → skip.
+    domain_dir = tmp_path / "domain"
+    _domain_page(
+        domain_dir, "concept.md",
+        frontmatter="title: 개념\ntype: concept\nverified_at: beef0002",
+        body="\nbody\n",
+    )
+    _wire_domain(board, monkeypatch, domain_dir)
+    assert board.lint_domain_freshness(runner=_stale_git) == []
+
+
+def test_domain_freshness_graceful_when_domain_absent(board, monkeypatch):
+    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
+    assert board.lint_domain_freshness(runner=_stale_git) == []
+
+
+def test_domain_freshness_in_advisory_kinds(board):
+    assert "domain-stale" in board._ADVISORY_LINT_KINDS
+
+
+# ── never-block + lint_tickets 통합 ───────────────────────────────────────────
+
+def test_freshness_findings_are_advisory_never_block(board, monkeypatch):
+    # architecture/status/domain-stale finding 만 있으면 --gate 종료코드 0 (never-block).
     monkeypatch.setattr(board, "lint_dependencies", lambda: [])
     monkeypatch.setattr(board, "lint_bodies", lambda: [])
     monkeypatch.setattr(board, "lint_ideas", lambda: [])
@@ -1410,20 +1474,23 @@ def test_architecture_freshness_is_advisory_never_blocks(board, monkeypatch, tmp
     monkeypatch.setattr(board, "lint_domain", lambda: [])
     monkeypatch.setattr(board, "lint_adr_lifecycle", lambda: [])
     monkeypatch.setattr(board, "lint_adapter_drift", lambda: [])
-    # 이 테스트 의도 = architecture-stale advisory 격리지 render-leak 실-트리 의존 아님 — 실
-    # 어댑터 스캔 결합을 끊어 테스트 위생 유지(T-0170·A 적용 후 자연 green 이나 명시적 격리).
     monkeypatch.setattr(board, "lint_render_leak", lambda: [])
     monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
     monkeypatch.setattr(board, "lint_architecture_freshness", lambda: [
-        ("architecture.md", "architecture-stale", "최신 ADR > architecture updated")])
-    # advisory: --gate 는 0(차단 0), 무인자는 finding 표면화로 1.
-    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
-    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
+        ("architecture.md", "architecture-stale", "sha 이후 커밋 있음")])
+    monkeypatch.setattr(board, "lint_status_freshness", lambda: [
+        ("status.md", "status-stale", "sha 이후 커밋 있음")])
+    monkeypatch.setattr(board, "lint_domain_freshness", lambda: [
+        ("엔진", "domain-stale", "sha 이후 covers 커밋 있음")])
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0    # 차단 0
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1   # finding 표면화
 
 
-def test_lint_tickets_includes_architecture_freshness(board, monkeypatch):
-    # lint_tickets 통합 — architecture freshness finding 이 전체 보고에 포함된다.
-    sentinel = [("architecture.md", "architecture-stale", "sentinel")]
+def test_lint_tickets_includes_freshness_lints(board, monkeypatch):
+    # lint_tickets 통합 — 세 freshness finding 이 전체 보고에 포함된다.
+    arch = ("architecture.md", "architecture-stale", "arch")
+    status = ("status.md", "status-stale", "status")
+    dom = ("엔진", "domain-stale", "domain")
     monkeypatch.setattr(board, "lint_dependencies", lambda: [])
     monkeypatch.setattr(board, "lint_bodies", lambda: [])
     monkeypatch.setattr(board, "lint_ideas", lambda: [])
@@ -1433,8 +1500,98 @@ def test_lint_tickets_includes_architecture_freshness(board, monkeypatch):
     monkeypatch.setattr(board, "lint_scopes", lambda: [])
     monkeypatch.setattr(board, "lint_domain", lambda: [])
     monkeypatch.setattr(board, "lint_adr_lifecycle", lambda: [])
-    monkeypatch.setattr(board, "lint_architecture_freshness", lambda: sentinel)
-    assert sentinel[0] in board.lint_tickets()
+    monkeypatch.setattr(board, "lint_architecture_freshness", lambda: [arch])
+    monkeypatch.setattr(board, "lint_status_freshness", lambda: [status])
+    monkeypatch.setattr(board, "lint_domain_freshness", lambda: [dom])
+    result = board.lint_tickets()
+    assert arch in result and status in result and dom in result
+
+
+# ── verified-at-backfill (1회 데이터 마이그레이션·ADR-0063 Decision 5) ─────────
+
+def test_insert_verified_at_inserts_before_closing_fence(board):
+    text = "---\ntitle: Doc\ntype: architecture\n---\n\n# Doc\n"
+    out = board._insert_verified_at(text, "abc123")
+    assert "verified_at: abc123\n" in out
+    # 닫는 --- 앞·본문 보존.
+    assert out.index("verified_at: abc123") < out.index("---\n\n# Doc")
+    assert out.endswith("# Doc\n")
+
+
+def test_insert_verified_at_idempotent_when_present(board):
+    text = "---\ntitle: Doc\nverified_at: old\n---\n\n# Doc\n"
+    assert board._insert_verified_at(text, "new") is None  # 이미 있음 → no-op
+
+
+def test_insert_verified_at_none_when_no_frontmatter(board):
+    assert board._insert_verified_at("# Doc\n\nno fm\n", "abc") is None
+
+
+def test_backfill_verified_at_fills_targets(board, monkeypatch, tmp_path):
+    arch = tmp_path / "architecture.md"
+    status = tmp_path / "status.md"
+    _write_verified_doc(arch, verified_at=None)
+    _write_verified_doc(status, verified_at=None, extra="type: status")
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
+    monkeypatch.setattr(board, "STATUS_FILE", status)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: None)  # domain 무관 격리
+    results = board.backfill_verified_at("sha9999")
+    states = {p.name: state for p, state in results}
+    assert states == {"architecture.md": "added", "status.md": "added"}
+    assert "verified_at: sha9999" in arch.read_text(encoding="utf-8")
+    assert "verified_at: sha9999" in status.read_text(encoding="utf-8")
+
+
+def test_backfill_verified_at_dry_run_writes_nothing(board, monkeypatch, tmp_path):
+    arch = tmp_path / "architecture.md"
+    _write_verified_doc(arch, verified_at=None)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
+    monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "nope-status.md")
+    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
+    results = board.backfill_verified_at("sha9999", dry_run=True)
+    assert ("added" in [s for _p, s in results])
+    assert "verified_at" not in arch.read_text(encoding="utf-8")  # dry-run 미쓰기
+
+
+def test_backfill_verified_at_skips_already_present(board, monkeypatch, tmp_path):
+    arch = tmp_path / "architecture.md"
+    _write_verified_doc(arch, verified_at="existing")
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
+    monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "nope-status.md")
+    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
+    results = board.backfill_verified_at("sha9999")
+    assert results == [(arch, "skip:already")]
+    assert "verified_at: existing" in arch.read_text(encoding="utf-8")  # 원본 sha 보존
+
+
+def test_cmd_backfill_rejects_unverifiable_explicit_sha(board, monkeypatch, tmp_path, capsys):
+    """명시 --sha 는 commit 실존 검증 후에만 기록 (codex must-fix) — 오타/비존재 sha 가 영속되면
+    `_git_commits_between` fail-soft(None)에 흡수돼 그 문서 freshness 가 영구 조용 skip(false-green)."""
+    arch = tmp_path / "architecture.md"
+    _write_verified_doc(arch, verified_at=None)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
+    monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "nope-status.md")
+    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
+    monkeypatch.setattr(board, "_is_commit_sha", lambda sha: False)
+    rc = board.cmd_verified_at_backfill(SimpleNamespace(sha="deadbeef", dry_run=False))
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "검증되지 않는다" in err
+    assert "verified_at" not in arch.read_text(encoding="utf-8")  # abort — 미기록
+
+
+def test_cmd_backfill_accepts_verified_explicit_sha(board, monkeypatch, tmp_path, capsys):
+    """검증 통과한 명시 --sha 는 기록 진행 (거부 게이트의 대조군 — 과차단 아님)."""
+    arch = tmp_path / "architecture.md"
+    _write_verified_doc(arch, verified_at=None)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
+    monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "nope-status.md")
+    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
+    monkeypatch.setattr(board, "_is_commit_sha", lambda sha: True)
+    rc = board.cmd_verified_at_backfill(SimpleNamespace(sha="goodsha1", dry_run=False))
+    capsys.readouterr()
+    assert rc == 0
+    assert "verified_at: goodsha1" in arch.read_text(encoding="utf-8")
 
 
 # ── render-leak 트리 성격 게이트 (local.conf 부재=소스 트리 무발화 · T-0170·ADR-0028) ──
@@ -1569,6 +1726,7 @@ def test_unmigrated_kind_is_advisory_gate_excluded(board, monkeypatch, tmp_path)
     for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
                "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
                "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
+               "lint_status_freshness", "lint_domain_freshness",
                "lint_adapter_drift", "lint_render_leak", "_run_lint_hooks"):
         monkeypatch.setattr(board, fn, lambda: [])
     issues = board.lint_unmigrated_overlay()
@@ -1675,6 +1833,7 @@ def test_lint_tickets_includes_unmigrated_overlay(board, monkeypatch):
     for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
                "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
                "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
+               "lint_status_freshness", "lint_domain_freshness",
                "lint_adapter_drift", "lint_render_leak"):
         monkeypatch.setattr(board, fn, lambda: [])
     monkeypatch.setattr(board, "lint_unmigrated_overlay", lambda: sentinel)

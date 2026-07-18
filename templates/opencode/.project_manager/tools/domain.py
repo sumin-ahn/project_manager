@@ -284,9 +284,12 @@ def page_stale(page: dict, *, git_runner: GitRunner | None = None) -> bool | Non
 def parse_page(path: Path) -> dict:
     """한 domain 페이지를 파싱한다.
 
-    Returns: {path, title, type, covers: list[str], derived: bool, updated, status}.
+    Returns: {path, title, type, covers: list[str], derived: bool, updated, status,
+    verified_at}.
     frontmatter 파싱은 board.load_ticket 재사용(임의 frontmatter md 파서·DRY).
     covers 부재 → []·derived 부재 → False·status 부재 → None(정식 취급·draft 아님).
+    `verified_at` 은 이 페이지 지식이 대조한 검증 기준 커밋 sha(ADR-0063·board.py freshness
+    lint 가 "그 sha 이후 covers 경로 커밋 있나"로 판정) — 부재/비-문자열 → None(freshness skip).
     board 미로드/frontmatter 깨짐은 호출부가 처리하도록 예외를 그대로 전파한다(load_pages
     가 graceful skip). `status` 는 capture-draft 가 쓴 `draft` 진실 — load_pages 가 이로
     미승인 초안을 index 에서 제외한다(suffix 가 아닌 frontmatter status 가 필터 기준).
@@ -308,6 +311,10 @@ def parse_page(path: Path) -> dict:
     # status — 문자열만 취한다(부재·비-문자열 → None = 정식 페이지·draft 제외 대상 아님).
     status = fm.get("status")
     status = status if isinstance(status, str) else None
+    # verified_at — 검증 기준 sha(부재/빈값 → None = freshness lint skip·ADR-0063). YAML 이 짧은
+    # all-digit sha 를 int 로 파싱해도 board 쪽 str() 처리와 대칭이게 str 정규화(codex suggestion).
+    verified_at = fm.get("verified_at")
+    verified_at = str(verified_at).strip() or None if verified_at is not None else None
     return {
         "path": path,
         "title": fm.get("title") or "",
@@ -316,6 +323,7 @@ def parse_page(path: Path) -> dict:
         "derived": bool(fm.get("derived")),
         "updated": fm.get("updated"),
         "status": status,
+        "verified_at": verified_at,
     }
 
 
