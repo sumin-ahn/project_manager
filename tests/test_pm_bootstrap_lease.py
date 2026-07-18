@@ -1612,3 +1612,104 @@ def test_bootstrap_task_invalid_name_rejected_rc1(bootstrap, tmp_path, capsys):
     captured = capsys.readouterr()
     assert "부적합" in captured.err
     assert "task identity surface" not in captured.out
+
+
+# ── F7 resume-read 소비 배선 (task 태그 귀속·task pm_state 본문 dump·T-0374) ──────
+# T-0356 이 낸 log 태그 파서(`(task:<이름>)`)+handoff task pm_state 쓰기를 부트스트랩 dump 가
+# 직접 소비하는지 검증한다. slot/solo 불변은 기존 441 테스트(this 파일 + per_slot)가 담보.
+
+
+def _task_read_bootstrap(bootstrap, tmp_path, *, action="resumed", log_text=None):
+    """task resume-read 부트스트랩 — 주입 pm_state 를 우회(_pm_state_file=None)해 task 서술
+    pm_state(`.local/tasks/<이름>/pm_state.md`) 실해소 경로를 태운다(F7). log 는 원하면 주입."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action=action)
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst._pm_state_file = None  # 주입 우회 → task pm_state 해소 경로 진입(F7·T-0374)
+    if log_text is not None:
+        inst._log_file.write_text(log_text, encoding="utf-8")
+    return inst, wp
+
+
+def _write_task_pm_state(tmp_path, name, text):
+    """task 서술 pm_state 파일을 fake task_dir(tmp_path/tasks/<name>)에 쓴다."""
+    d = tmp_path / "tasks" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "pm_state.md").write_text(text, encoding="utf-8")
+
+
+def test_bound_session_name_task_returns_tag(bootstrap, tmp_path):
+    """`_bound_session_name` = `task:<이름>` (log/pm_state 귀속)·`_slot_session_name` 은 task-무관."""
+    inst = _make_bootstrap(bootstrap, tmp_path,
+                           worktree_pool=FakeWorktreePool(task_dir_root=tmp_path / "tasks"))
+    inst._task_name = "payments-refactor"
+    assert inst._bound_session_name() == "task:payments-refactor"
+    # 슬롯 스코프(board/lease/대시보드)는 task 태그를 안 본다 — task-무관 슬롯 정체성.
+    assert not (inst._slot_session_name() or "").startswith("task:")
+
+
+def test_task_resume_dumps_pm_state_body(bootstrap, tmp_path, capsys):
+    """resume — task 서술 pm_state 본문(차수 추론 + '남은 작업' 절)을 dump(포인터가 아닌 소비)."""
+    _write_task_pm_state(
+        tmp_path, "job1",
+        "# pm_state\n\n"
+        "## 세션 식별 (현재까지 사용된 이름)\n"
+        "  - **3차** job1 세션\n"
+        "  - **2차** job1 세션\n\n"
+        "## 남은 작업 전체 그림\n"
+        "- [ ] TASK-남은작업-표식-A\n",
+    )
+    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="resumed")
+    rc = inst.run(task="job1")
+    assert rc == 0
+    out = capsys.readouterr().out
+    # 차수 추론(3차 → 4차)·남은작업 절 본문이 실제로 dump(포인터만이 아니라 소비).
+    assert "## PM 4차 부트스트랩" in out
+    assert "TASK-남은작업-표식-A" in out
+
+
+def test_task_first_session_absent_pm_state_falls_back_to_pointer(bootstrap, tmp_path, capsys):
+    """첫 세션(파일 부재) — 슬롯 fresh 배너/1차 강제 없이 T-0353 포인터 fallback 만 남는다(DoD)."""
+    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="created")
+    rc = inst.run(task="job1")  # task pm_state 미작성 → 부재.
+    assert rc == 0
+    out = capsys.readouterr().out
+    # 현행 포인터 fallback(task identity surface)은 유지.
+    assert "pm_state (이 task" in out and "tasks/job1/pm_state.md" in out
+    # 슬롯 전용 fresh 배너("첫 바인딩 슬롯")·강제 1차는 task 첫세션에 뜨지 않는다(포인터 fallback).
+    assert "🆕 첫 바인딩 슬롯" not in out
+    assert "## PM 1차 부트스트랩" not in out
+
+
+def test_task_tag_log_entry_attributed_and_session_inferred(bootstrap, tmp_path, capsys):
+    """task 태그 handoff entry(`(task:job1)`) 를 자기 것으로 귀속·차수 추론(3차→4차)·본문 dump."""
+    log = (
+        "# log\n\n"
+        "## [2026-07-18] handoff | PM 3차 (task:job1) → 다음 PM 세션\n"
+        "- 남은작업: TASK태그-본문-표식\n"
+    )
+    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="resumed", log_text=log)
+    rc = inst.run(task="job1")  # task pm_state 부재 — 차수는 log 태그 entry 에서만 추론.
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "## PM 4차 부트스트랩" in out              # log 태그 entry 차수 추론(3→4)
+    assert "TASK태그-본문-표식" in out                # 자기 태그 entry 본문 dump(귀속)
+
+
+def test_task_ignores_untagged_and_slot_tagged_log(bootstrap, tmp_path, capsys):
+    """task 세션은 무태그(솔로/slot-1)·타 슬롯 태그 handoff 를 자기 것으로 오귀속하지 않는다."""
+    log = (
+        "# log\n\n"
+        "## [2026-07-12] handoff | PM 7차 → 다음 PM 세션\n"
+        "- 남은작업: 무태그-타슬롯-표식\n\n"
+        "## [2026-07-13] handoff | PM 5차 (project_manager_1) → 다음 PM 세션\n"
+        "- 남은작업: 슬롯태그-표식\n"
+    )
+    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="created", log_text=log)
+    rc = inst.run(task="job1")  # task 태그 entry 0개 → 자기 컨텍스트 없음.
+    assert rc == 0
+    out = capsys.readouterr().out
+    # 무태그 PM 7차·슬롯태그 PM 5차 를 자기 차수/본문으로 흡수하지 않는다(귀속 격리).
+    assert "## PM 7차 부트스트랩" not in out
+    assert "## PM 5차 부트스트랩" not in out
+    assert "무태그-타슬롯-표식" not in out
+    assert "슬롯태그-표식" not in out

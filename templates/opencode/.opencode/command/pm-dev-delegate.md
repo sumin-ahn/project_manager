@@ -1,5 +1,5 @@
 ---
-description: "orchestrator(PM) dev/code-reviewer 위임 표준 절차 — 사전조건 + touches disjoint cross-check + domain 소환(domain affected). 위임 프롬프트 본문은 AGENTS.md §3.4(dev)/§3.5(reviewer) 단일 진실 참조. claim 은 별도(pm-wave-claim). Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
+description: "orchestrator(PM) dev/code-reviewer 위임 표준 절차 — 사전조건 + touches disjoint cross-check + domain 소환(domain affected) + task-mode 작업 위치(F6 절대경로) 주입. 위임 프롬프트 본문은 AGENTS.md §3.4(dev)/§3.5(reviewer) 단일 진실 참조. claim 은 별도(pm-wave-claim). Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
 argument-hint: "T-NNNN [developer|code-reviewer]"
 ---
 
@@ -45,6 +45,21 @@ python3 .project_manager/tools/domain.py affected --ticket T-NNNN
 - 매칭된 페이지 경로를 developer 위임 프롬프트에 인용/전달한다. **⚠ stale 페이지는 "맹신 말 것"**
   경고를 동반 — 담당 코드 변경 후 미갱신이라 정보가 상했을 수 있다.
 
+## task-mode 작업 위치 주입 (F6 해소 절대경로 · T-0355)
+
+task-mode(v1.3.0 — 한 task 가 worktree 를 0개 이상 빌려 도는 모델) 위임에선 dev 가 **어느
+worktree 에서** 구현할지를 PM 이 **F6 로 해소한 절대경로**로 위임 프롬프트에 명시 주입한다 (dev 가
+짐작하지 않게 — cwd 는 해소에 비참여·T-0345). 해소값은 실행-위치 필요 도구가 그대로 surface 한다:
+
+```bash
+python3 .project_manager/tools/board.py regression run --task <이름> [--repo <X> [--slot <N>]]
+# 출력: "regression: 작업공간(task <이름>) → <worktree 절대경로>"
+```
+
+- 그 `<worktree 절대경로>`를 AGENTS.md §3.4 developer 위임 프롬프트의 **작업 위치**로 동반한다.
+- task 가 슬롯을 2개↑ 보유해 모호하면 F6 이 **에러**(⑦·암묵 선택 금지) — `--repo`/`--slot` 로 특정 후 주입.
+- 슬롯 세션(비-task)·솔로(M=1)는 종전대로 — 이 주입은 task-mode 에서만.
+
 ## touches disjoint 안전성 cross-check (병렬 wave)
 
 병렬 위임 (dev 여럿 동시) 시 위임 전 검증:
@@ -60,7 +75,8 @@ PM 이 내장 `task` tool 을 호출한다 (`subagent_type` · `description` · 
 `tools:`/`permission:`/`model:` (`.opencode/agents/*.md`) 가 권한·모델을 정한다.
 
 - **developer 위임 프롬프트** — AGENTS.md §3.4 가 단일 진실. (소환된 domain 페이지가 있으면 그
-  경로를 프롬프트에 동반하고 ⚠ 표시분은 "맹신 말 것" 경고를 붙인다.)
+  경로를 프롬프트에 동반하고 ⚠ 표시분은 "맹신 말 것" 경고를 붙인다. task-mode 면 위 F6 해소
+  worktree 절대경로를 **작업 위치**로 동반한다.)
 - **code-reviewer 위임 프롬프트** — AGENTS.md §3.5 가 단일 진실. (status.md / log 갱신은 PM 담당 —
   그 누락은 dev must-fix 아님. 소환된 domain 페이지가 있으면 그 wiki DoD 반영 여부도 점검.)
 
@@ -95,6 +111,8 @@ AGENTS.md §3.7 (`opencode run --agent build/plan`) 참조.
   ticket 본문 보강.
 - **single-source** — dev/reviewer 표준 프롬프트는 복제하지 않고 AGENTS.md §3.4/§3.5 참조 (ADR-0008
   lean).
+- **해소 절대경로 주입** — task-mode dev 위임은 F6 로 해소한 worktree 절대경로 실값을 프롬프트에
+  명시(짐작 제거·cwd 비참여·T-0355). ⑰ 카드 생성화(T-0362) 전이라 현 wave 는 프롬프트 명시 주입까지.
 
 ## 참고
 

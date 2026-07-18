@@ -1329,6 +1329,13 @@ class PmBootstrap:
         # 유지(→ `_worktree_cwd` 가 `_auto_slot` 으로 자동해소). board 러너는 무관(REPO 고정).
         self._bound_slot: str | None = None
 
+        # task 세션 식별자(F7·T-0374) — `--task <이름>` 바인딩 성공 시 run() 진입부에서 세팅
+        # (task=슬롯과 직교 축·⑥). log/pm_state 귀속을 task 태그(`task:<이름>`)·task 서술 pm_state
+        # (`.local/tasks/<이름>/pm_state.md`)로 좁혀 resume-read(차수·남은작업)를 완결한다(F7 루프).
+        # None(무-task)이면 모든 task 분기가 no-op → slot/solo dump 100% 불변(회귀 가드).
+        self._task_name: str | None = None
+        self._task_pm_state_file: Path | None = None
+
     # ── git/pytest 러너 cwd 해소 (worktree·T-0125) ───────────────────────
 
     def _worktree_cwd(self, slot: str | None = None) -> str:
@@ -1459,7 +1466,7 @@ class PmBootstrap:
         # 렌즈 선택 — 명시 슬롯 바인딩이면 그 슬롯 정체성(`--repo <repo> --slot <N>`·ADR-0057)·
         # 아니면 `--mine`. `slot_session`(`<repo>_<N>`)의 말단 `_<N>` 만 잘라 분해한다 — repo 이름에
         # `_` 가 있어도(예: `project_manager`) rpartition 이 *마지막* `_` 에서만 갈라 정확하다.
-        slot_session = self._bound_session_name() if self._bound_slot else None
+        slot_session = self._slot_session_name() if self._bound_slot else None
         if slot_session:
             repo_part, _, num_part = slot_session.rpartition("_")
             if repo_part and num_part.isdigit():
@@ -1496,7 +1503,7 @@ class PmBootstrap:
         claimed_rc, claimed_output = self._run_board_fn(["list", "--status", "claimed"])
         if claimed_rc == 0:
             other_claims = parse_other_session_claims(
-                claimed_output, self._bound_session_name()
+                claimed_output, self._slot_session_name()
             )
         else:
             other_claims = {}
@@ -1751,7 +1758,24 @@ class PmBootstrap:
         ]
 
     def _bound_session_name(self) -> str | None:
-        """차수 유도/본문 dump 슬롯 필터용 bound 세션 키(`<repo>_<N>`) (ADR-0044·MF-1 write↔read 대칭).
+        """차수 유도/본문 dump 귀속용 bound 세션 키 — **log/pm_state 귀속 필터** 전용 (ADR-0044·F7·T-0374).
+
+        **task 모드(`--task <이름>`·F7)면 `task:<이름>` 태그**를 반환한다 — handoff write 측이
+        task 세션 종료를 `(task:<이름>)` sentinel 태그로 박고 task 서술 pm_state 를 쓰므로
+        (T-0356), 이 read 측이 같은 키로 자기 태그 entry(차수·본문)를 되읽어 F7 resume 루프를
+        닫는다(write↔read 대칭). task 는 슬롯 축과 직교(⑥)라 `--task X --repo Y --slot N` 조합도
+        log/pm_state 귀속은 task 가 앵커다(handoff write 측 `session_identity=task` 와 정합).
+
+        task 무설정이면 슬롯/auto 정체성으로 폴백한다(`_slot_session_name`·slot/solo 반환 불변).
+        board/lease/대시보드 스코프는 task 와 무관한 슬롯 축이라 그쪽은 `_slot_session_name` 을
+        직접 쓴다 — 이 함수는 log/pm_state 귀속(연속성)만 담당한다.
+        """
+        if self._task_name is not None:
+            return f"{_TASK_TAG_PREFIX}{self._task_name}"
+        return self._slot_session_name()
+
+    def _slot_session_name(self) -> str | None:
+        """슬롯/auto 정체성 키(`<repo>_<N>`) — board/lease/대시보드 스코프 전용 (task-무관·ADR-0044).
 
         명시 multi-PM 모드(`_bound_slot`=`work/<repo>_<N>`)면 `work/` 접두를 벗긴 `<repo>_<N>`.
         무인자(솔로)면 handoff **write 측**(`_resolve_session_worktree_slot`)과 **같은 경로로**
@@ -1760,6 +1784,10 @@ class PmBootstrap:
         되읽는다. 이 write↔read 대칭이 없으면(구: 무인자→None→솔로 read) 단일 self-host 에서
         handoff 가 쓴 `(<repo>_1)` 태그 entry 를 부트스트랩이 버려 차수 유실·T-0208 stale 침묵
         무력화가 났다(adopter#0 실증 버그). 등록 repo 0개(진짜 솔로)·모호·판정불가 → None.
+
+        **task 와 직교** (T-0374): board 카운트 렌즈·lease/대시보드 자기-제외는 task 태그가 아니라
+        슬롯 정체성으로 가른다(task+슬롯 조합에서 자기 슬롯을 "타 PM" 으로 오표시하는 것 방지). task
+        무설정이면 `_bound_session_name` 과 값이 같아 slot/solo 경로 100% 불변이다.
         """
         if self._bound_slot:
             if self._bound_slot.startswith("work/"):
@@ -1844,6 +1872,13 @@ class PmBootstrap:
         """
         if self._pm_state_file is not None:
             return self._pm_state_file
+        # task 모드(F7·T-0374) — 연속성 앵커가 slot→task 로 이동한 세션은 task 서술 pm_state
+        # (`.local/tasks/<이름>/pm_state.md`)를 읽는다(handoff write 측 `_task_pm_state_file` 미러).
+        # 슬롯 축과 직교(⑥)라 슬롯 해소·legacy 폴백 앞단에 둔다(`--task X --repo Y --slot N` 조합도
+        # log/pm_state 는 task 앵커). 파일 부재(첫 세션)는 그대로 반환 — `_collect_handoff_context` 가
+        # `.exists()` 로 걸러 차수/남은작업 surface 를 생략하고 현행 포인터 fallback(task identity)만 남긴다.
+        if self._task_name is not None:
+            return self._task_pm_state_file
         pm_handoff = _load_tool("pm_handoff")
         if pm_handoff is None:
             return None
@@ -1888,19 +1923,31 @@ class PmBootstrap:
         log_next = log_num + 1 if log_num is not None else None
         session_num, session_stale = reconcile_session_num(state_num, log_next)
 
+        # task 세션(`task:<이름>`·F7·T-0374)은 fresh 슬롯 배너/1차 강제 대상이 **아니다** —
+        # DoD "첫 세션(파일 부재)은 현행 포인터 fallback". task 첫 세션(pm_state·log 둘 다 미해소)은
+        # 슬롯-first 1차/fresh 배너(슬롯 용어) 대신 handoff_ctx=None 으로 접혀 task identity surface
+        # (T-0353 포인터)만 fallback 으로 남는다. task resume 은 log 태그(`task:<이름>`) entry 로 차수를
+        # 추론하므로(log_num→N+1=int) 아래 int 강제 분기가 불필요해 이 gate 는 resume 을 안 깬다.
+        is_task_session = (
+            bound_session is not None and bound_session.startswith(_TASK_TAG_PREFIX)
+        )
+
         # fresh 슬롯 규칙 (ADR-0044): 명시 슬롯 바인딩인데 자기 슬롯 차수가 전혀 안 잡히면
         # (pm_state·log 둘 다 미해소) 1차부터 — slot-2+ 는 무태그 기존 로그를 무시하므로 fresh
         # 슬롯이 placeholder(`?`) 대신 슬롯-first(1차)로 announce 된다. 솔로(bound None)는 현행
-        # placeholder 보존(회귀 0) — 이 규칙은 명시 슬롯(bound_session 해소)에서만 발동한다.
-        if bound_session is not None and not isinstance(session_num, int):
+        # placeholder 보존(회귀 0) — 이 규칙은 명시 슬롯(bound_session 해소·task 제외)에서만 발동한다.
+        if bound_session is not None and not is_task_session and not isinstance(session_num, int):
             session_num = 1
 
         # fresh 슬롯 판정 (T-0284): 명시 슬롯이 바인딩됐는데 자기 pm_state 도(파일 부재) 자기 슬롯
         # handoff 도(log_num None) 전혀 없으면 = 이 슬롯의 첫 세션이라 복구할 컨텍스트가 없다. 이땐
         # "미해소/직접 확인" placeholder(스크램블 유발) 대신 명시 "fresh" 배너를 dump하도록 빌더에
-        # 신호한다(surface-only·자동 pm_state 생성 안 함·ADR-0035). 솔로(bound None)는 슬롯 개념이
-        # 없어 fresh 배너 대상 아님(현행 placeholder 보존·회귀 0).
-        fresh_slot = bound_session is not None and state_text is None and log_num is None
+        # 신호한다(surface-only·자동 pm_state 생성 안 함·ADR-0035). 솔로(bound None)·task(F7·포인터
+        # fallback)는 슬롯 fresh 배너 대상 아님(현행 placeholder/포인터 보존·회귀 0).
+        fresh_slot = (
+            bound_session is not None and not is_task_session
+            and state_text is None and log_num is None
+        )
 
         remaining_work = (
             extract_remaining_work_section(state_text) if state_text is not None else None
@@ -2035,20 +2082,20 @@ class PmBootstrap:
     def _lease_others(self) -> list[dict]:
         """자기 제외 leased 슬롯 목록을 lease 장부에서 직접 read 한다 (대시보드 부재 폴백).
 
-        `wiki/log/dashboard.md` 부재 시 폴백 — leased 엔트리에서 자기 세션(`_bound_session_name`)
-        제외분을 `[{"session","slot"}]` 로 반환한다. 장부 부재/깨짐/leased 0개는 빈 목록.
+        `wiki/log/dashboard.md` 부재 시 폴백 — leased 엔트리에서 자기 슬롯(`_slot_session_name`·
+        task-무관)제외분을 `[{"session","slot"}]` 로 반환한다. 장부 부재/깨짐/leased 0개는 빈 목록.
         """
         pairs = self._read_leased_sessions_slots()
         if not pairs:
             return []
-        bound = self._bound_session_name()
+        bound = self._slot_session_name()
         return [{"session": s, "slot": slot} for s, slot in pairs if s != bound]
 
     def _collect_dashboard_others(self) -> dict | None:
         """타 슬롯 대시보드 섹션(자기 제외) light dump 데이터를 수집한다 (ADR-0047 ③·T-0260).
 
         - `wiki/log/dashboard.md` 존재 → `pm_handoff.parse_dashboard_sections`(동적로드·DRY)로
-          파싱해 자기 세션(`_bound_session_name`) 제외 + **활성(leased) 슬롯과 교집합** 섹션들을
+          파싱해 자기 슬롯(`_slot_session_name`·task-무관) 제외 + **활성(leased) 슬롯과 교집합** 섹션들을
           `{"mode":"dashboard","others":[{"session","body"}]}` 로 반환. 자기 섹션은 표시 안 함
           (자기 컨텍스트는 pm_state/log 몫·ADR-0047). `--done` 으로 release 된 idle 슬롯 섹션은
           활성 집합에 없어 배제된다(MF-1·codex·stale idle 노출 0). 활성 집합 판정불가(장부 부재)면
@@ -2070,7 +2117,7 @@ class PmBootstrap:
                 except Exception:  # noqa: BLE001 — fail-soft: 파싱 실패는 lease 폴백.
                     sections = None
                 if sections is not None:
-                    bound = self._bound_session_name()
+                    bound = self._slot_session_name()
                     # MF-1: 활성(leased) 슬롯과 교집합 — release/idle 슬롯의 stale 섹션 배제.
                     # 활성 집합 None(장부 판정불가)이면 필터 no-op(현행 표시 보존).
                     active = self._active_leased_sessions()
@@ -2402,6 +2449,12 @@ class PmBootstrap:
             task_info = self._bind_task_or_reject(task)
             if task_info is None:
                 return 1  # 살아있는 다른 세션 점유(㉑) — 거부(부분 dump 금지).
+            # task 정체성을 인스턴스에 확정한다 (F7·T-0374) — 이후 모든 수집(log_entry/handoff_ctx/
+            # user_continuity)이 `_bound_session_name`=`task:<이름>`·task 서술 pm_state 를 귀속으로
+            # 본다(resume-read 소비 배선). 슬롯 축과 직교(⑥)라 `_bound_slot` 은 아래 alloc/lean 이
+            # 그대로 채운다. 수집(freshness 이하) *앞단*에 둬 확정된 정체성을 전 수집이 본다.
+            self._task_name = task_info["name"]
+            self._task_pm_state_file = Path(task_info["pm_state_path"])
 
         alloc_identity: dict | None = None
         if multipm_lean:

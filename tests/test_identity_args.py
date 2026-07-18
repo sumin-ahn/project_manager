@@ -332,3 +332,200 @@ def test_resolve_actor_slot_error_is_dedicated_exception_type(ia, tmp_path):
     assert isinstance(excinfo.value, ia.SlotResolutionError)
     assert isinstance(excinfo.value, Exception)
     assert "A" in str(excinfo.value)
+
+
+# ── F6 작업공간 2단 해소 — resolve_task_workspace (T-0355·spike §3b F6·결정 ⑦) ──────
+# 표 4행: (a) --repo X --slot N=그 슬롯(미보유=에러) (b) --repo X=유일해소/모호=에러
+# (c) 아무것도 없음=통틀어 유일/모호=에러 (d) --slot 단독=parse 단계 ValueError.
+# + readonly 공유 슬롯(role=readonly) carve-out(소유검사 비적용) + cwd 비참여(T-0345 불변).
+
+
+def _tw(ia, argv: list[str], leases: Path):
+    return ia.resolve_task_workspace(ia.parse_identity(_parse(ia, argv)), leases)
+
+
+def test_f6_none_unique_holding_auto_resolves(ia, tmp_path):
+    """행(c): 위치 인자 없음 + task 보유가 통틀어 유일 → 그 슬롯 자동 해소."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "job1", "state": "leased",
+         "test_cmd": "pytest -q"},
+    ])
+    ws = _tw(ia, ["--task", "job1"], leases)
+    assert ws.slot == "work/A_1"
+    assert ws.repo == "A"
+    assert ws.session == "job1"
+    assert ws.test_cmd == "pytest -q"
+    assert ws.readonly is False
+
+
+def test_f6_none_ambiguous_holding_raises(ia, tmp_path):
+    """행(c) 모호(⑦): task 가 통틀어 2개↑ 보유 → 에러(첫번째 암묵 선택 금지)."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "job2", "state": "leased"},
+        {"slot": "work/B_1", "repo": "B", "session": "job2", "state": "leased"},
+    ])
+    with pytest.raises(ia.WorkspaceResolutionError, match=r"모호"):
+        _tw(ia, ["--task", "job2"], leases)
+
+
+def test_f6_repo_only_unique_in_repo_resolves(ia, tmp_path):
+    """행(b): --repo X 만 + task 가 X 에서 유일 보유 → 그 슬롯."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "job3", "state": "leased"},
+        {"slot": "work/B_1", "repo": "B", "session": "job3", "state": "leased"},
+    ])
+    ws = _tw(ia, ["--task", "job3", "--repo", "B"], leases)
+    assert ws.slot == "work/B_1" and ws.repo == "B"
+
+
+def test_f6_repo_only_multiple_in_repo_raises(ia, tmp_path):
+    """행(b) 모호(⑦): --repo X 만인데 X 에서 2개↑ 보유 → 에러(번호 요구)."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "job4", "state": "leased"},
+        {"slot": "work/A_2", "repo": "A", "session": "job4", "state": "leased"},
+    ])
+    with pytest.raises(ia.WorkspaceResolutionError, match=r"--slot"):
+        _tw(ia, ["--task", "job4", "--repo", "A"], leases)
+
+
+def test_f6_repo_only_none_in_repo_raises(ia, tmp_path):
+    """행(b) 경계: --repo X 만인데 task 가 X 에서 0개 보유 → 에러(대여 안내)."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "job5", "state": "leased"},
+    ])
+    with pytest.raises(ia.WorkspaceResolutionError, match=r"alloc"):
+        _tw(ia, ["--task", "job5", "--repo", "Z"], leases)
+
+
+def test_f6_slot_owned_by_task_resolves(ia, tmp_path):
+    """행(a): --repo X --slot N 이 내 task 보유 슬롯 → 그 작업공간."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "job6", "state": "leased"},
+        {"slot": "work/A_2", "repo": "A", "session": "job6", "state": "leased"},
+    ])
+    ws = _tw(ia, ["--task", "job6", "--repo", "A", "--slot", "2"], leases)
+    assert ws.slot == "work/A_2"
+
+
+def test_f6_slot_not_owned_by_task_raises(ia, tmp_path):
+    """행(a): --repo X --slot N 이 내 task 보유 아님 → 에러(F6 소유검사)."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "job7", "state": "leased"},
+    ])
+    with pytest.raises(ia.WorkspaceResolutionError, match=r"보유가 아니"):
+        _tw(ia, ["--task", "job7", "--repo", "A", "--slot", "9"], leases)
+
+
+def test_f6_slot_only_without_repo_rejected_at_parse(ia):
+    """행(d): --slot 단독(--repo 없음)은 parse_identity 가 이미 ValueError (repo 없는 번호는 식별자 아님)."""
+    ns = _parse(ia, ["--task", "job8", "--slot", "3"])  # argparse 자체는 통과(조합 규칙은 parse_identity)
+    with pytest.raises(ValueError, match=r"--repo"):
+        ia.parse_identity(ns)
+
+
+def test_f6_readonly_slot_carve_out_skips_ownership(ia, tmp_path):
+    """readonly 공유 슬롯(role=readonly·⑬) carve-out — 내 task 보유 아니어도 조회 지칭 허용."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/R_1", "repo": "R", "role": "readonly", "state": "leased"},
+    ])
+    ws = _tw(ia, ["--task", "job9", "--repo", "R", "--slot", "1"], leases)
+    assert ws.slot == "work/R_1"
+    assert ws.readonly is True
+
+
+def test_f6_non_readonly_unowned_slot_still_raises(ia, tmp_path):
+    """carve-out 은 role=readonly 에만 — 남의 task 가 쓰는 work 슬롯은 여전히 소유검사 거부."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/R_1", "repo": "R", "session": "other", "state": "leased"},
+    ])
+    with pytest.raises(ia.WorkspaceResolutionError):
+        _tw(ia, ["--task", "job9", "--repo", "R", "--slot", "1"], leases)
+
+
+def test_f6_ignores_idle_slots(ia, tmp_path):
+    """idle(반납) 슬롯은 보유로 안 센다 — leased 만 F6 대상(slots_for_task 정합)."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "job10", "state": "idle"},
+        {"slot": "work/A_2", "repo": "A", "session": "job10", "state": "leased"},
+    ])
+    ws = _tw(ia, ["--task", "job10"], leases)
+    assert ws.slot == "work/A_2"  # idle A_1 제외 → A_2 유일
+
+
+def test_f6_state_absent_treated_as_leased(ia, tmp_path):
+    """state 키 부재 = leased 로 본다 (worktree_pool.from_dict default·back-compat 정합)."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "job11"},  # state 부재
+    ])
+    ws = _tw(ia, ["--task", "job11"], leases)
+    assert ws.slot == "work/A_1"
+
+
+def test_f6_cwd_does_not_participate(ia, tmp_path, monkeypatch):
+    """cwd 비참여(T-0345 불변) — 실행 위치를 어디서 호출하든 장부+명시 인자로만 해소."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "job12", "state": "leased"},
+        {"slot": "work/B_1", "repo": "B", "session": "job12", "state": "leased"},
+    ])
+    # cwd 를 B_1 worktree 로 바꿔도 --repo 명시가 A 면 A 로 해소(cwd 가 B 로 끌어당기지 않음).
+    monkeypatch.chdir(tmp_path)
+    ws = _tw(ia, ["--task", "job12", "--repo", "A"], leases)
+    assert ws.slot == "work/A_1"
+
+
+# ── task_prefix — F5 task 설정 prefix point-read (T-0355) ─────────────────────
+
+
+def test_task_prefix_reads_from_tasks_collection(ia, tmp_path):
+    leases = tmp_path / "worktree-leases.json"
+    leases.write_text(json.dumps({
+        "leases": [],
+        "tasks": [{"name": "job1", "prefix": "PAY"}, {"name": "job2", "prefix": None}],
+    }), encoding="utf-8")
+    assert ia.task_prefix("job1", leases) == "PAY"
+    assert ia.task_prefix("job2", leases) is None      # 미설정
+    assert ia.task_prefix("absent", leases) is None    # 없는 task
+    assert ia.task_prefix("job1", tmp_path / "absent.json") is None  # 장부 부재 fail-soft
+
+
+# ── validate_task_name — CLI 층 공유 validator (T-0355 게이트 must-fix·깔때기 검증) ──
+
+
+@pytest.mark.parametrize("bad", [
+    "", "   ", "a b", "a\tb", "foo)bar", "(x)", "a/b", "a\\b",
+    ".hidden", "..", ".", "sub/name",
+])
+def test_validate_task_name_rejects_unsafe(ia, bad):
+    """공백/괄호/path/선행 `.` 등 하류 표면 파손 문자를 fail-loud(InvalidTaskName·ValueError)."""
+    with pytest.raises(ia.InvalidTaskName):
+        ia.validate_task_name(bad)
+    # ValueError 서브클래스라 caller 의 기존 except ValueError 가 잡는다.
+    with pytest.raises(ValueError):
+        ia.validate_task_name(bad)
+
+
+@pytest.mark.parametrize("ok", ["job1", "payments-refactor", "결제_리팩터", "a_2_3", "T-0355work"])
+def test_validate_task_name_accepts_safe(ia, ok):
+    """한글·하이픈·언더스코어·숫자 단일 이름은 통과(부작용 0·예외 미발생)."""
+    ia.validate_task_name(ok)                    # registered_repos 없이 통과
+    ia.validate_task_name(ok, ["other"])         # 무관 repo 예약패턴 미충돌
+
+
+def test_validate_task_name_rejects_reserved_slot_pattern(ia):
+    """registered_repos 주면 `<repo>_<N>` 슬롯 세션 예약 패턴 거부(⑥·is_reserved_task_name 재사용)."""
+    with pytest.raises(ia.InvalidTaskName, match=r"예약"):
+        ia.validate_task_name("project_manager_1", ["project_manager"])
+    # 미등록 repo 로 시작하는 _N 은 무관(자유 포맷 허용).
+    ia.validate_task_name("project_manager_1", ["finance"])

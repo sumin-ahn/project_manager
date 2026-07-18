@@ -57,6 +57,7 @@ REPO = _find_repo_root()
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
+LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"  # 리스 장부 (ADR-0013·F6 task 해소 read-only·T-0355)
 TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵커 (회귀 cwd 해소·T-0149)
 # areas.md 경로는 상수로 굳히지 않는다(T-0162 A6) — board/ 분리(ADR-0033 ①) 시 board/ 안으로
 # 옮겨가므로, `_resolve_per_repo_test_cmd` 가 board 모듈의 `areas_file()`(board_root 추종)에 위임.
@@ -893,8 +894,43 @@ def main(argv: list[str] | None = None) -> int:
         identity = identity_args.parse_identity(args)
     except ValueError as exc:
         parser.error(str(exc))
+
+    # task 명 검증(must-fix·T-0355 게이트) — board 정체성 깔때기와 **동일 공유 validator**
+    # (`identity_args.validate_task_name`·worktree_pool 엔진 validator 와 동형·로직 중복 0)를 소비해,
+    # F6 실행-위치 해소 이전 불법 task 명(traversal/공백/`<repo>_<N>` 예약)을 fail-loud 한다. `--slot`
+    # 검증과 동형으로 `--no-pytest` 무관 **항상** 수행(회귀 skip 여도 정체성 검증은 우회 안 됨). 예약패턴
+    # (⑥) 판정용 registered_repos 는 board 모듈에서 fail-soft 해소(부재/실패 시 char/traversal 검증만).
+    if identity.task:
+        registered = None
+        _bmod = _load_board_module()
+        if _bmod is not None and hasattr(_bmod, "registered_repos"):
+            try:
+                registered = _bmod.registered_repos()
+            except Exception:  # noqa: BLE001 — areas 파싱 실패는 예약패턴 검증만 완화(char/traversal 유지).
+                registered = None
+        try:
+            identity_args.validate_task_name(identity.task, registered)
+        except identity_args.InvalidTaskName as exc:
+            print(
+                f"\n[중단] 부적합 task 명 {identity.task!r} — {exc.reason} "
+                "(`--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴 `<repo>_<N>`(⑥)은 쓸 수 없다).",
+                file=sys.stderr,
+            )
+            return 1
+
     regression_cwd: str | None = None
-    if not args.no_pytest:
+    if not args.no_pytest and identity.task:
+        # task-mode(`--task`) 회귀 작업공간 F6 해소(spike §3b F6·⑦·T-0355) — task 가 보유한 슬롯
+        # 중 실행 위치를 특정하고 그 worktree 절대경로를 회귀 cwd 로 고정·surface 한다(cwd 비참여·
+        # T-0345 불변). 모호/미보유는 fail-loud. slot-mode(`--repo`/`--slot`) 는 아래 기존 경로.
+        try:
+            ws = identity_args.resolve_task_workspace(identity, LEASES_FILE)
+        except identity_args.WorkspaceResolutionError as exc:
+            print(f"\n[중단] 회귀 작업공간 해소 — {exc}", file=sys.stderr)
+            return 1
+        print(f"작업공간(task {identity.task}) → {REPO / ws.slot}")
+        regression_cwd = _regression_cwd(ws.slot)
+    elif not args.no_pytest:
         worktree_slot, ambiguity = _resolve_finish_slot(identity.repo, identity.slot)
         if ambiguity is not None:
             print(f"\n[중단] 회귀 슬롯 해소 모호 — {ambiguity}", file=sys.stderr)

@@ -539,6 +539,17 @@ def _actor_session_override(args: argparse.Namespace) -> str | None:
         identity = identity_args.parse_identity(args)
     except ValueError as e:
         sys.exit(f"[중단] {e}")
+    if identity.task:
+        # task-mode 귀속(F0 1단·F5b·spike §3b) — claimed_by/created_by 는 `<user>/<task>`. 작업공간
+        # (F6 2단·실행 위치)이 아니라 **정체성 축**이라 여기서 task 이름을 그대로 세션 override 로
+        # 돌린다(`--repo --slot` 공존 시에도 task 가 귀속을 이김·⑥ 예약으로 slot 세션과 기계 판별).
+        #
+        # **깔때기 1회 검증(must-fix·T-0355 게이트)**: 이 분기를 claim/new/migrate/reid 가 지나고, F6
+        # 실행-위치 도구(regression/livegate/ticket_finish)는 `_resolve_task_workspace_cwd` 가 F6 이전
+        # 같은 `_validate_actor_task_or_exit` 를 부른다 — 무검증 task 명이 created_by/claimed_by/
+        # lease-session 으로 영속되는 클래스를 소비 지점 전체에서 한 번에 닫는다(point-patch 아님).
+        _validate_actor_task_or_exit(identity.task)
+        return identity.task
     if identity.kind == "slot":
         return identity.session
     if identity.kind == "repo":
@@ -558,6 +569,53 @@ def _actor_session_override(args: argparse.Namespace) -> str | None:
             )
         return session
     return None
+
+
+def _validate_actor_task_or_exit(task: str) -> None:
+    """task 명 공유 validator 소비 — 불법이면 fail-loud (must-fix·T-0355 게이트·깔때기 단일 지점).
+
+    정체성 깔때기(`_actor_session_override`·귀속)와 F6 실행-위치 해소(`_resolve_task_workspace_cwd`)가
+    **같은 한 지점**을 소비해, 무검증 task 명이 created_by/claimed_by/lease-session 으로 영속되거나
+    실행-위치로 쓰이기 **이전** 부작용 0 로 거부한다. 공유 validator = `identity_args.validate_task_name`
+    (worktree_pool 엔진 validator 와 동형·로직 중복 0). 예약패턴(`<repo>_<N>`·⑥) 판정용 registered_repos
+    는 areas 에서 fail-soft 해소(파싱 실패 시 char/traversal 검증만·cmd_alloc[T-0354] 패턴 동형).
+    """
+    try:
+        registered = registered_repos()
+    except Exception:  # noqa: BLE001 — areas 파싱 실패는 예약패턴 검증만 완화(char/traversal 유지).
+        registered = None
+    try:
+        identity_args.validate_task_name(task, registered)
+    except identity_args.InvalidTaskName as e:
+        sys.exit(
+            f"[중단] {e} — `--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴"
+            f"(`<repo>_<N>`·⑥)은 쓸 수 없다."
+        )
+
+
+def _resolve_task_workspace_cwd(args: argparse.Namespace) -> tuple[str, str | None] | None:
+    """task-mode(`--task`) 실행 위치를 F6 로 해소해 `(절대경로, 슬롯 test_cmd)` 를 반환한다 (T-0355·⑦).
+
+    `--task` 미지정이면 `None`(task 아님·호출부는 기존 slot-mode 경로 유지). task 지정이면
+    `identity_args.resolve_task_workspace`(F6 4행 표·모호=에러)로 슬롯을 특정하고 그 worktree
+    **절대경로**(`REPO / ws.slot`)를 돌린다 — cwd 는 해소에 참여하지 않고(T-0345 불변) 순전히 장부+
+    명시 인자로만 판정한다. F6 모호/미보유는 fail-loud(`[중단]` 접두·board 관례). 슬롯 test_cmd 는
+    바인딩된 회귀명령(None=미바인딩·호출부 폴백).
+    """
+    if not getattr(args, "task", None):
+        return None
+    try:
+        identity = identity_args.parse_identity(args)
+    except ValueError as e:
+        sys.exit(f"[중단] {e}")
+    # F6 해소 이전 깔때기 검증(must-fix) — 불법 task 명이 실행-위치로 쓰이기 전 fail-loud(귀속 경로와
+    # 동일 validator·일관 메시지). F6 의 "보유 작업공간 없음" 보다 앞서 정확한 사유를 준다.
+    _validate_actor_task_or_exit(identity.task)
+    try:
+        ws = identity_args.resolve_task_workspace(identity, LEASES_FILE)
+    except identity_args.WorkspaceResolutionError as e:
+        sys.exit(f"[중단] {e}")
+    return str(REPO / ws.slot), ws.test_cmd
 
 
 def _repo_from_session(session: str) -> str | None:
@@ -2399,6 +2457,20 @@ def cmd_regression(args: argparse.Namespace) -> int:
     (문서화된 의도적 조작·ADR-0057)만 단일-슬롯으로 좁히고 env 는 이 판정에서 제외한다 — 단일-lease/
     솔로/명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로 유효.)
     """
+    # task-mode(`--task`) 실행 위치 F6 해소(spike §3b F6·⑦) — 특정 슬롯 worktree 절대경로를 cwd
+    # 로 고정하고 슬롯 test_cmd 를 실어 잘못된 형제-슬롯 유도를 피한다(F6 이 슬롯 확정). 절대경로를
+    # surface 해 dev/git 짐작 여지를 없앤다(cwd 비참여·T-0345 불변). run 만 실행 위치가 필요하다.
+    if args.action == "run" and getattr(args, "task", None):
+        task_cwd, task_test_cmd = _resolve_task_workspace_cwd(args)
+        if getattr(args, "cwd", None) is None:
+            args.cwd = task_cwd
+        if getattr(args, "cmd", None) is None:
+            # F6 이 슬롯을 **확정**했으므로 그 슬롯 test_cmd 를 직접 싣는다 — session 유도
+            # (`_active_slot_test_cmd(<task>)`)는 같은 task 의 **형제 슬롯 첫-매칭**을 반환해 오매칭
+            # 여지가 있다(reviewer). 미바인딩(None)이면 슬롯 레이어를 건너뛰고 repo/local 폴백
+            # (`session=None`)으로 — 형제 슬롯 test_cmd 를 타지 않는다(결정론).
+            args.cmd = task_test_cmd or _test_cmd(None, session=None)
+        print(f"regression: 작업공간(task {args.task}) → {task_cwd}")
     # 디스패치 판정은 CLI --repo/--slot(명시) 만 본다 — env 세션은 M>1 게이트를 조용히 좁히므로
     # 여기선 제외(위 docstring·codex). explicit 없고 leased ≥2 면 env 유무 무관 전-슬롯 순회.
     explicit_override = _actor_session_override(args)
@@ -2582,6 +2654,13 @@ def _livegate_record(args: argparse.Namespace) -> int:
     안내하는 `--repo <repo> --slot <N>` 이 실제로 이 subparser 에서 수용돼 dead-end 가 아니다
     (remedy 정직·T-0285 anti-pattern 회피).
     """
+    # task-mode(`--task`) 실행 위치 F6 해소(spike §3b F6·⑦) — 특정 슬롯 worktree 절대경로를 cwd 로
+    # 고정하고 surface 한다(cwd 비참여·T-0345 불변·livegate 는 고정 release cmd 라 test_cmd 는 불요).
+    if getattr(args, "task", None):
+        task_cwd, _ = _resolve_task_workspace_cwd(args)
+        if getattr(args, "cwd", None) is None:
+            args.cwd = task_cwd
+        print(f"livegate: 작업공간(task {args.task}) → {task_cwd}")
     cwd = _regression_cwd(getattr(args, "cwd", None),
                           session=session_name(_actor_session_override(args)))
     # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스·T-0287) — **실행 전에** 해소한다. 훅과 같은
@@ -3620,12 +3699,23 @@ def cmd_new(args: argparse.Namespace) -> int:
     # 명시 --prefix sanity (ADR-0042·예약어 `none`·형식 [a-z0-9_]+) — 위반이면 ID 스캔·파일
     # 발행 전에 부작용 0 으로 즉시 거부. 유도/count-based 로 해소된 legacy prefix 는 검증하지
     # 않는다(기존 발행분 존중) — 사용자가 *명시*한 override 만 입력측 sanity 대상이다.
+    # task-mode(`--task`)는 정체성 깔때기(`_actor_session_override`)를 지나 **task 명 검증**(무검증
+    # created_by 영속 차단·must-fix·T-0355 게이트)을 받고 세션 override(=task 이름·F5b)를 해소한다 —
+    # cmd_new 는 구조상 이 깔때기를 안 지나므로 여기서 명시 소비해 소비 지점 폐쇄에 합류한다. 무-task 는
+    # None(기존 created_by 체인 무변경). 부작용(ID 발행·파일 write) 이전이라 불법 task 는 여기서 fail-loud.
+    task_session = _actor_session_override(args)
     override = getattr(args, "prefix", None)
     if override:
         reason = _validate_prefix(override)
         if reason:
             print(f"[중단] {reason}", file=sys.stderr)
             return 1
+    elif task_session:
+        # F5 우선순위: --prefix 명시 > task 설정 prefix > 유도 체인. task 설정값은 `task prefix`
+        # (T-0357)가 검증하고 기록하므로 여기선 신뢰(입력측 sanity 재검증 불요·기본 None=무prefix).
+        task_pfx = identity_args.task_prefix(task_session, LEASES_FILE)
+        if task_pfx:
+            override = task_pfx
     prefix = id_prefix(override)
     # multi-repo 네임스페이스 가드는 **레지스트리 *존재*가 아니라 등록 repo *개수*** 기준이다.
     # 등록 prefix 가 ≥2 면 진짜 ID 충돌 가능성이 있으니 prefix 필수(namespace 강제). 등록이
@@ -3685,7 +3775,9 @@ def cmd_new(args: argparse.Namespace) -> int:
         # created_by = `<user>/<pm-slot>` (provenance·불변·생성 시 set·ADR-0033 ③·T-0161).
         # "누가 추가했나" = 중복-작업 방지의 출처 표식. user 미상이면 슬롯만(graceful).
         fm["created_by"] = identity_tag(
-            session_override=None,  # `new` 서브는 --session/--repo/--slot 미정의 — created_by 는 identity_tag 내부 체인 해소(ADR-0057·거동 무변경)
+            # task-mode(`--task`)면 created_by = <user>/<task>(F5b 귀속 축·provenance·깔때기 검증 통과분).
+            # 무-task 는 종전대로 session_override=None → identity_tag 내부 체인 해소(ADR-0057·거동 무변경).
+            session_override=(task_session or None),
             user_override=getattr(args, "user", None))
         fm["claimed_by"] = None
         fm["claimed_at"] = None
@@ -6282,6 +6374,8 @@ def build_parser() -> argparse.ArgumentParser:
                    "default: local.conf prefix / 없으면 none(무prefix 1급 → legacy T-NNNN)")
     p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf user= / "
                    "git config user.email · ADR-0033 ③)")
+    p.add_argument("--task", help="task 이름 — task-mode 발행 (F5·spike §3b). `--prefix` 생략 시 task "
+                   "설정 prefix(기본 없음)·created_by 는 <user>/<task>. 슬롯 세션 예약 패턴 <repo>_<N> 금지(⑥).")
     p.set_defaults(fn=cmd_new)
 
     p = sub.add_parser("promote", help="draft(board-git 미커밋) 티켓을 승격 — 본문 채운 뒤 board-git sync "

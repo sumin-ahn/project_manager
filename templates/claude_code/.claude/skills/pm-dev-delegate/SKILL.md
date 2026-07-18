@@ -34,6 +34,19 @@ python3 .project_manager/tools/domain.py affected --ticket T-NNNN
 - `(영향 domain 페이지 없음)` → 소환할 것 없음·생략.
 - 매칭된 페이지 경로를 아래 developer 위임 프롬프트에 인용/전달한다. **⚠ stale 페이지는 "맹신 말 것"** 경고를 동반 — 담당 코드 변경 후 미갱신이라 정보가 상했을 수 있다(enforcement 아닌 visibility·Q3).
 
+## task-mode 작업 위치 주입 (F6 해소 절대경로 · T-0355)
+
+task-mode(v1.3.0 — 한 task 가 worktree 를 0개 이상 빌려 도는 모델) 위임에선 dev 가 **어느 worktree 에서** 구현할지를 PM 이 **F6 로 해소한 절대경로**로 위임 프롬프트에 명시 주입한다 (dev/git 이 짐작하지 않게 — cwd 는 해소에 비참여·T-0345). 해소값은 실행-위치 필요 도구가 그대로 surface 한다:
+
+```bash
+python3 .project_manager/tools/board.py regression run --task <이름> [--repo <X> [--slot <N>]]
+# 출력: "regression: 작업공간(task <이름>) → <worktree 절대경로>"
+```
+
+- 그 `<worktree 절대경로>`를 developer 위임 프롬프트의 **작업 위치**로 박아 넣는다(짐작 제거).
+- task 가 슬롯을 2개↑ 보유해 모호하면 F6 이 **에러**(⑦·암묵 선택 금지) — `--repo`/`--slot` 로 특정 후 주입.
+- 슬롯 세션(비-task)·솔로(M=1)는 종전대로 — 이 주입은 task-mode 에서만.
+
 ## 실행 패턴
 
 ### developer 위임
@@ -47,6 +60,7 @@ Agent 툴 호출:
     "T-NNNN 을 구현하라.
 
      세션명: orch-dev-TNNNN (board.py 조작은 orchestrator(PM) 담당·dev 는 코드+테스트만).
+     작업 위치(worktree 절대경로): <F6 해소 절대경로 — task-mode 시·슬롯/솔로는 생략>.
 
      ticket 본문은 python3 .project_manager/tools/board.py show T-NNNN 로 확인.
      본문이 self-contained — 목표/인터페이스/결정/DoD/참고 절 대로 구현.
@@ -118,6 +132,7 @@ attribute* 가능. PM 이 진짜 영역 확인 후 fix 분기 결정.
 - **dev 자기 보고 표준 형식 강제** — 위임 프롬프트에 *DoD 각 항목별 충족 evidence* 명시 요구.
 - **background 우선** — 병렬 wave 효율 ↑. 단 검토 결과에 다음 ticket 의존 시 foreground.
 - **위임 프롬프트는 한 줄** — ticket 본문이 self-contained 의무 → 추가 컨텍스트 불필요. 길어지면 ticket 본문 보강.
+- **해소 절대경로 주입** — task-mode dev 위임은 F6 로 해소한 worktree 절대경로 실값을 프롬프트에 명시(짐작 제거·cwd 비참여·T-0355). ⑰ 카드 생성화(T-0362) 전이라 현 wave 는 프롬프트 명시 주입까지.
 
 ## 참고
 

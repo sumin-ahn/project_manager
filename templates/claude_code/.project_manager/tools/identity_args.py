@@ -140,6 +140,73 @@ def is_reserved_task_name(name: str, registered_repos: "list[str] | set[str]") -
     return False
 
 
+class InvalidTaskName(ValueError):
+    """CLI 정체성 깔때기의 task 명 검증 실패 — 공백/괄호/path/선행 `.`/예약패턴 (fail-loud·T-0355 게이트).
+
+    `worktree_pool._validate_task_name`(엔진 bind 층)과 **동형 규칙·독립 구현**이다 — board 는
+    worktree_pool 을 import 하지 않으므로(ADR-0013 격리 관성·`is_reserved_task_name` 이 예약 정규식을
+    이미 같은 근거로 mirror) CLI 층 공유 validator 를 여기 둔다. board 의 정체성 깔때기
+    (`_actor_session_override`·`cmd_new`)가 이 **하나**를 소비해, 무검증 task 명이 `created_by`/
+    `claimed_by`/lease-session 으로 영속되는 클래스를 소비 지점 전체에서 한 번에 닫는다. `ValueError`
+    서브클래스라 caller 의 기존 `except ValueError`(parse_identity fail-loud 관례)가 그대로 잡는다.
+    """
+
+    def __init__(self, name: str, reason: str):
+        self.name = name
+        self.reason = reason
+        super().__init__(f"부적합 task 명 {name!r} — {reason}")
+
+
+def validate_task_name(name: str, registered_repos: "list[str] | set[str] | None" = None) -> None:
+    """CLI 층 task 명 검증 — 위반 시 `InvalidTaskName`(fail-loud) (T-0355·worktree_pool._validate_task_name 동형).
+
+    task 명 영속 지점(`created_by`/`claimed_by`·lease session)이 무검증 값을 저장하지 못하게 board
+    정체성 깔때기가 **부작용 이전** 소비하는 공유 validator. 문자 도메인은 하류 구문 표면(CLI 인자
+    경계·relay slash·log 태그 delimiter·path)에 맞춘 협소화로 worktree_pool 엔진 validator 와 규칙이
+    동형이다(모듈 격리라 독립 구현·`is_reserved_task_name` 재사용). 거부: 빈/공백-only·whitespace·괄호
+    `(`/`)`·path separator(`/`·`\\`)·선행 `.`(traversal)·단일 컴포넌트 아님·(registered_repos 주면)
+    `<repo>_<N>` 슬롯 세션 예약(⑥). 한글·하이픈·언더스코어·숫자는 통과(어느 표면과도 무충돌).
+    """
+    if not name or not name.strip():
+        raise InvalidTaskName(name, "빈 이름(공백 포함)")
+    if any(ch.isspace() for ch in name):
+        raise InvalidTaskName(
+            name, "공백·탭 등 whitespace 불가 (CLI/relay `--task <이름>` 인자 경계 파손 방지)")
+    if "(" in name or ")" in name:
+        raise InvalidTaskName(
+            name, "괄호 `(`·`)` 불가 (log 헤더 태그 `(task:<이름>)` delimiter 파손 방지)")
+    if "/" in name or "\\" in name:
+        raise InvalidTaskName(name, "path separator(`/`·`\\`) 불가 — 단일 이름이어야")
+    if name.startswith("."):
+        raise InvalidTaskName(name, "선행 `.` 불가(숨김/`.`/`..` 상대경로 traversal 방지)")
+    if Path(name).name != name:
+        raise InvalidTaskName(name, "단일 path 컴포넌트가 아님")
+    if registered_repos and is_reserved_task_name(name, registered_repos):
+        raise InvalidTaskName(name, "슬롯 세션 예약 패턴(<repo>_<N>·⑥)")
+
+
+def task_prefix(name: str, leases_file: Path) -> str | None:
+    """장부 top-level `tasks` 컬렉션에서 task `name` 의 board prefix 를 읽는다 — 없으면 None (T-0355·F5).
+
+    `board.py new --task <이름>` 이 `--prefix` 명시가 없을 때 task 설정 prefix(F5·`task prefix`
+    로 설정·T-0357·기본 None)를 참조한다. 순수 point-read(부작용 0·`worktree_pool` 미import·
+    ADR-0013 데이터 결합) — 부재/손상/미설정 → None(fail-soft·caller 가 유도 체인으로 폴백).
+    """
+    try:
+        data = json.loads(leases_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    tasks = data.get("tasks", [])
+    if not isinstance(tasks, list):
+        return None
+    for t in tasks:
+        if isinstance(t, dict) and t.get("name") == name:
+            return t.get("prefix") or None
+    return None
+
+
 # ── 리스 IO 층 (worktree-leases.json 원장 point-read·ADR-0013 격리 관성) ──────────
 
 
@@ -245,4 +312,141 @@ def resolve_actor_slot(repo: str, leases_file: Path) -> str | None:
         f"repo '{repo}' 활성 슬롯 {len(slot_nums)}개"
         f"({', '.join(f'work/{repo}_{n}' for n in slot_nums)}) 중 하나로 특정할 수 없다 — "
         f"`--slot <N>` 으로 명시하라."
+    )
+
+
+# ── F6 작업공간(slot) 2단 해소 — task-aware (T-0355·spike §3b F6·결정 ⑦) ──────────
+# 실행 위치가 필요한 도구(regression run·livegate record·ticket_finish·dev-delegate)가
+# **어느 worktree 에서 도는지**를 task 보유 슬롯 중에서 특정한다. 위 `resolve_actor_slot`
+# (slot-mode `--repo` 단독·활성 lease 유일해소)와 판정 축이 다르다 — 이건 **task 축**(lease.session
+# == task 이름·⑥)이라 "내 task 가 보유한 슬롯"을 본다. cwd 는 해소에 **비참여**(T-0345 불변) —
+# 순전히 리스 장부 + 명시 인자(`--repo`/`--slot`/`--task`)로만 판정한다.
+
+_LEASE_ROLE_READONLY = "readonly"   # role="readonly" 공유 슬롯(⑬·F11) — 무소유가 정상·소유검사 예외.
+
+
+class Workspace:
+    """F6 작업공간 해소 결과 — 실행 위치(slot·절대경로 surface 소스) + 슬롯 메타 (T-0355·spike §3b F6).
+
+    `resolve_task_workspace` 가 반환한다. `slot` = "work/<repo>_<N>"(worktree_pool.slot_path 와
+    같은 상대형 — caller 가 `REPO / slot` 으로 **절대경로 surface**). `repo` = 그 repo. `session` =
+    그 슬롯 lease.session(task-mode 는 task 이름·readonly 공유 슬롯은 무소유라 None 일 수 있음).
+    `test_cmd` = 슬롯 바인딩 회귀명령(None=미바인딩·caller 가 다음 레이어 폴백·T-0066). `readonly` =
+    role="readonly" 공유 자산이라 소유검사를 우회했는지(⑬ carve-out·진단용).
+
+    (dataclass 미사용 — `Identity`·`worktree_pool.Lease` 와 동일: `spec_from_file_location` 로드 시
+    `from __future__ import annotations` 결합으로 forward-ref 해소가 깨진다. 평범한 클래스로 회피.)
+    """
+
+    def __init__(self, slot: str, repo: str | None, session: str | None,
+                 test_cmd: str | None = None, readonly: bool = False):
+        self.slot = slot
+        self.repo = repo
+        self.session = session
+        self.test_cmd = test_cmd
+        self.readonly = readonly
+
+    def __repr__(self) -> str:
+        return (f"Workspace(slot={self.slot!r}, repo={self.repo!r}, session={self.session!r}, "
+                f"test_cmd={self.test_cmd!r}, readonly={self.readonly!r})")
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Workspace):
+            return NotImplemented
+        return (self.slot, self.repo, self.session, self.test_cmd, self.readonly) == (
+            other.slot, other.repo, other.session, other.test_cmd, other.readonly)
+
+
+class WorkspaceResolutionError(Exception):
+    """F6 작업공간 해소 실패 — 미보유·모호(≥2)·`--slot` 단독 등 (fail-loud·결정 ⑦·T-0355).
+
+    결정 ⑦: 같은 repo 슬롯 ≥2 를 허용하되 **유일=자동 해소·모호=에러**(첫번째/최근 암묵 선택
+    금지·[[mechanize-dont-instruct-llm]]). caller(board·ticket_finish)가 자기 관례(`[중단]` 접두)로
+    surface 한다. `SlotResolutionError`(slot-mode `--repo` 단독)와 **별개** — 이건 task-mode
+    작업공간(F6 표) 전용이라 판정 축(내 task 보유)이 다르다.
+    """
+
+
+def _lease_dict_rows(leases_file: Path) -> list[dict]:
+    """장부 `leases` 배열의 dict 행만 (F6 해소 원천·조회 전용). 부재/손상 → 빈 리스트(fail-soft)."""
+    rows = _load_lease_rows(leases_file)
+    if rows is None:
+        return []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
+    """F6 2단 작업공간 해소 — task 가 보유한 슬롯 중 실행 위치를 특정한다 (T-0355·spike §3b F6·⑦).
+
+    표(4행·spike §3b F6):
+      - `--repo X --slot N`(kind="slot") → 그 작업공간 — **내 task 보유 아니면 에러**. 단 그 슬롯이
+        role="readonly" 공유 자산이면 소유검사 **비적용**(⑬ carve-out — 조회/참조 지칭 허용·무소유가
+        정상·쓰기 거부는 F11/wave 2d 몫).
+      - `--repo X` 만(kind="repo") → 내 task 가 X 에서 보유한 게 유일하면 그것 / 0·≥2 는 **에러**.
+      - 아무것도 없음(kind="none"·task 만) → 내 task 보유가 통틀어 유일하면 그것 / 0·≥2 는 **에러**.
+      - `--slot N` 만 → `parse_identity` 가 이미 `ValueError`(여기 도달 전 — repo 없는 번호는 식별자 아님).
+
+    슬롯↔task 연결 = `lease.session == task 이름`(⑥·`worktree_pool.slots_for_task` 정합) — leased
+    (`state` 부재는 leased 로 봄·`worktree_pool.from_dict` default 동형). cwd 는 해소에 **참여하지
+    않는다**(T-0345 불변). 모호(⑦)·미보유는 `WorkspaceResolutionError`(fail-loud). `identity.task`
+    가 있어야 한다(1단 귀속·caller 는 task-mode 에서만 호출).
+    """
+    task = identity.task
+    rows = _lease_dict_rows(leases_file)
+    # 이 task 가 보유한 leased 슬롯(session==task·state=leased·부재=leased·slots_for_task 정합).
+    held = [r for r in rows
+            if r.get("session") == task and r.get("state", "leased") == "leased"]
+
+    if identity.kind == "slot":
+        target = f"work/{identity.repo}_{identity.slot}"
+        owned = next((r for r in held if r.get("slot") == target), None)
+        if owned is not None:
+            return Workspace(slot=target, repo=owned.get("repo") or identity.repo,
+                             session=task, test_cmd=owned.get("test_cmd"))
+        # readonly 공유 슬롯 carve-out(⑬·F11) — role="readonly" 자산은 무소유가 정상이라 F6
+        # 소유검사를 비적용하고 조회/참조 지칭을 허용한다(장부에 그 슬롯이 실재해야). 쓰기 조작
+        # 거부는 F11 의 readonly 거부(wave 2d·T-0358/0359) 몫 — 여기선 소유검사 예외만 배선한다.
+        ro = next((r for r in rows
+                   if r.get("slot") == target and r.get("role") == _LEASE_ROLE_READONLY), None)
+        if ro is not None:
+            return Workspace(slot=target, repo=ro.get("repo") or identity.repo,
+                             session=ro.get("session") or None,
+                             test_cmd=ro.get("test_cmd"), readonly=True)
+        raise WorkspaceResolutionError(
+            f"작업공간 {target} 은 task {task!r} 보유가 아니다 — F6 소유검사 거부(⑦). 내 task 가 "
+            f"보유한 슬롯을 `--repo/--slot` 으로 지칭하거나 `/pm-env alloc {identity.repo} --task "
+            f"{task}` 로 대여하라 (readonly 공유 슬롯이면 조회 지칭은 허용)."
+        )
+
+    if identity.kind == "repo":
+        in_repo = [r for r in held if r.get("repo") == identity.repo]
+        if len(in_repo) == 1:
+            r = in_repo[0]
+            return Workspace(slot=r.get("slot"), repo=identity.repo,
+                             session=task, test_cmd=r.get("test_cmd"))
+        if not in_repo:
+            raise WorkspaceResolutionError(
+                f"task {task!r} 이(가) repo {identity.repo!r} 에서 보유한 작업공간이 없다 — "
+                f"`/pm-env alloc {identity.repo} --task {task}` 로 먼저 대여하라."
+            )
+        slots = ", ".join(sorted(r.get("slot") or "" for r in in_repo))
+        raise WorkspaceResolutionError(
+            f"task {task!r} 이(가) repo {identity.repo!r} 에서 {len(in_repo)}개 작업공간({slots})을 "
+            f"보유 — 모호하다(⑦·암묵 선택 금지). `--slot <N>` 으로 번호를 명시하라."
+        )
+
+    # kind == "none" — 위치 인자 없음(task 만). 통틀어 유일해소 / 0·≥2 는 에러.
+    if len(held) == 1:
+        r = held[0]
+        return Workspace(slot=r.get("slot"), repo=r.get("repo"),
+                         session=task, test_cmd=r.get("test_cmd"))
+    if not held:
+        raise WorkspaceResolutionError(
+            f"task {task!r} 이(가) 보유한 작업공간이 없다 — `/pm-env alloc <repo> --task {task}` "
+            f"로 먼저 대여하라."
+        )
+    slots = ", ".join(sorted(r.get("slot") or "" for r in held))
+    raise WorkspaceResolutionError(
+        f"task {task!r} 이(가) {len(held)}개 작업공간({slots})을 보유 — 통틀어 모호하다(⑦). "
+        f"`--repo <X> [--slot <N>]` 으로 작업공간을 명시하라."
     )

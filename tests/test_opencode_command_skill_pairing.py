@@ -55,8 +55,8 @@ SKILL_ONLY_ALLOWLIST = frozenset({"pm-regression"})
 PAIR_PINS: dict[str, tuple[str, str]] = {
     "pm-bootstrap": ("fd642f09629f04262de493d3ad39890fcd4941364fd9a41ddde9d2c6bc9bdee2",
                      "98d689127c14cdbef28f182f52f9e7fba2f0acf35f377be321098672537e16ea"),
-    "pm-dev-delegate": ("5f5159065d577d98ee622dc9bb99214fded2e374ec8a1979113c3487f4ccda0f",
-                        "3b5f83f6bd144e8ca98a5d3d063537dfb00a055266e1a3b400fac89b9e4cc535"),
+    "pm-dev-delegate": ("b6c309912e152c3931c1972cf6dba554ee7e725e94cd997232324c587a5ac049",
+                        "713b033b1dac9d571eb4c0d9e52460ebf736d14fd870af5d4f9c5484ec2c97ff"),
     "pm-env": ("48e457b6c8f921a2fc4bacc49222df9c11717d97dc4727452e6cea74e506f674",
                "4c574f655ec737b86f99000d1864ffa693581a0efa9c092311c32ea943ea0c24"),
     "pm-handoff": ("5817a3955091a7b5fb831fce58a28bef5bd729e8de1c4bcb665c3c15d7d1f7e5",
