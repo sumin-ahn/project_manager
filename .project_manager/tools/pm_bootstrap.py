@@ -41,7 +41,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -79,6 +79,89 @@ LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 # 관례(T-0219·Windows 는 `py`·CLAUDE.md 노트). 경로는 multi-PM 공유 루트 기준 상대(도그푸딩
 # 관례와 정합·PM 이 공유 루트에서 board/wiki 조작).
 _CARD_TOOL_INVOKE = "python3 .project_manager/tools"
+
+
+# ── 커맨드 카드 공용 정의서 (파서-생성화·T-0362·⑰·§F12) ─────────────────────────
+# 카드 커맨드 토큰(도구·서브커맨드·플래그)의 **단일 진실**. 손 문자열 하드코딩(옛 inline
+# `cmd("board.py", "list --mine", …)`)을 이 정의서로 대체한다 — "가이드가 실제 옵션과 다른" 게
+# 구조적으로 불가능해진다(⑰·⑭ PM 실수 기계 차단·ADR-0057 parse_identity 단일화 선례). 카드
+# 렌더(`_build_command_card_markdown`)는 이 정의서를 소비하고, 카드↔CLI 정합 test
+# (`test_pm_bootstrap_card_parity.py`)가 정의서 ↔ 실 argparse 를 양방향 대조한다:
+#   - `subpath` = 그 도구 `build_parser()` 의 서브커맨드 **leaf 경로**(flag-only 도구는 `()`).
+#     정합 test 가 이게 실 등록 leaf 인지 introspection 으로 검증(카드→파서).
+#   - `flags`   = 렌더에 등장하는 **비-정체성** 옵션(정체성 `--repo/--slot/--task` 은 identity
+#     축으로 별도 검증). 정합 test 가 각 flag 이 그 leaf 에 실 등록됐는지 검증(카드→파서).
+#   - `render`  = 카드에 찍히는 정확한 인자 문자열(정체성/task 명 suffix 는 caller 가 보간·ADR-0057
+#     "정체성은 실값·사용자 입력만 placeholder"). byte 동일성으로 기존 카드 회귀 무손상.
+# 방식 = **공용 정의서(정의서 primary) + test-측 introspection**: 카드는 curated·모드-스코프·
+# 주석/⚠/스킬-강등이 섞인 사람-facing 가이드라 순수 introspection 으로는 생성 불가 → 토큰만
+# 정의서로 단일화하고, 파서 정합은 introspection(T-0348 `_registered_leaves` 방식 재사용)으로 못박는다.
+class _CardCmd(NamedTuple):
+    tool: str            # 도구 파일명 (예 "board.py")
+    render: str          # 카드에 찍히는 인자 문자열 (정체성 suffix 제외·byte 동일성 원천)
+    subpath: tuple       # build_parser() 서브커맨드 leaf 경로 (flag-only 도구는 ())
+    flags: tuple         # 렌더의 비-정체성 옵션 (정합 test 가 leaf 실 등록 여부 검증)
+
+
+# 슬롯/솔로 카드 CLI 커맨드 (현행 표면·byte 동일) — 정체성 suffix 는 render 에 미포함(caller 보간).
+_C_BOARD_LIST_MINE = _CardCmd("board.py", "list --mine", ("list",), ("--mine",))
+_C_BOARD_LIST = _CardCmd("board.py", "list", ("list",), ())
+_C_BOARD_NEW = _CardCmd("board.py", 'new "<제목>" --prefix <PFX>', ("new",), ("--prefix",))
+_C_BOARD_PROMOTE = _CardCmd("board.py", "promote T-NNNN", ("promote",), ())
+_C_BOARD_COMPLETE = _CardCmd("board.py", "complete T-NNNN --tests-pass", ("complete",), ("--tests-pass",))
+_C_BOARD_SHOW = _CardCmd("board.py", "show T-NNNN", ("show",), ())
+_C_BOARD_LINT = _CardCmd("board.py", "lint", ("lint",), ())
+_C_BOARD_CLAIM = _CardCmd("board.py", "claim T-NNNN", ("claim",), ())
+_C_BOARD_REGRESSION = _CardCmd("board.py", "regression run", ("regression",), ())
+_C_TICKET_FINISH = _CardCmd("ticket_finish.py", "<T-NNNN>", (), ())
+_C_EXTERNAL_REVIEW = _CardCmd(
+    "external_review.py", "--ticket T-NNNN --adr ADR-NNNN", (), ("--ticket", "--adr"))
+_C_PM_HANDOFF = _CardCmd(
+    "pm_handoff.py", '--session-seq <N> --wave-summary "<요약>"', (),
+    ("--session-seq", "--wave-summary"))
+_C_BOARD_LIVEGATE = _CardCmd("board.py", "livegate record", ("livegate",), ())
+_C_BOARD_PREFIX_LIST = _CardCmd("board.py", "prefix list", ("prefix", "list"), ())
+_C_BOARD_PREFIX_RENAME = _CardCmd("board.py", "prefix rename <OLD> <NEW>", ("prefix", "rename"), ())
+_C_BOARD_PREFIX_MERGE = _CardCmd("board.py", "prefix merge <SRC> --into <DST>", ("prefix", "merge"), ("--into",))
+_C_BOARD_REID = _CardCmd("board.py", "reid <OLD-ID> <NEW-ID>", ("reid",), ())
+_C_BOARD_MIGRATE_IDENTITY = _CardCmd("board.py", "migrate-identity --dry-run", ("migrate-identity",), ("--dry-run",))
+_C_PM_LOG_TAIL = _CardCmd("pm_log.py", "tail", ("tail",), ())
+_C_DOMAIN_AFFECTED = _CardCmd("domain.py", "affected --ticket <T-NNNN>", ("affected",), ("--ticket",))
+
+# task 모드 CLI 커맨드 (F1~F7·T-0353~0359·⑥) — task 명은 정체성 축이라 alloc/release/wave 는
+# `--task <실명>` 실값 보간(caller). task end/prefix 의 name 위치인자는 정체성 중간삽입이라
+# 정합 대조를 깨므로(render+suffix 비연속) `<이름>` placeholder 로 유지(사용자 입력·헤더가 실명 표기).
+_C_PC_ALLOC = _CardCmd("pm_config.py", "alloc <repo>", ("alloc",), ())
+_C_PC_RELEASE = _CardCmd("pm_config.py", "release <slot>", ("release",), ())
+_C_PC_TASK_END = _CardCmd("pm_config.py", "task end <이름>", ("task", "end"), ())
+_C_PC_TASK_PREFIX = _CardCmd("pm_config.py", "task prefix <이름> <p|none>", ("task", "prefix"), ())
+
+# readonly 공유 슬롯(⑬·T-0358) CLI 커맨드 — 조회만.
+_C_PC_STATUS = _CardCmd("pm_config.py", "status", ("status",), ())
+
+# 모드별 정의서 (정합 test 의 authoritative 스코프 — 카드 렌더가 소비하는 CLI 커맨드 전량).
+# 정합 test 는 각 모드 카드에서 CLI 줄을 추출해 이 목록과 leaf 단위 양방향 대조한다(카드↔정의서)
+# + 각 record 를 실 파서로 검증(정의서↔파서). skill(`/pm-…`) 줄은 CLI 가 아니라 대상 밖.
+_CARD_SLOT_CLI = (
+    _C_BOARD_LIST_MINE, _C_BOARD_LIST, _C_BOARD_NEW, _C_BOARD_PROMOTE, _C_BOARD_COMPLETE,
+    _C_BOARD_SHOW, _C_BOARD_LINT, _C_BOARD_CLAIM, _C_BOARD_REGRESSION, _C_TICKET_FINISH,
+    _C_EXTERNAL_REVIEW, _C_PM_HANDOFF, _C_BOARD_LIVEGATE, _C_BOARD_PREFIX_LIST,
+    _C_BOARD_PREFIX_RENAME, _C_BOARD_PREFIX_MERGE, _C_BOARD_REID, _C_BOARD_MIGRATE_IDENTITY,
+    _C_PM_LOG_TAIL, _C_DOMAIN_AFFECTED,
+)
+_CARD_TASK_CLI = (
+    _C_BOARD_LIST_MINE, _C_PC_ALLOC, _C_PC_RELEASE, _C_PC_TASK_PREFIX,
+    _C_PC_TASK_END, _C_BOARD_CLAIM, _C_BOARD_SHOW, _C_BOARD_LINT, _C_BOARD_REGRESSION,
+    _C_TICKET_FINISH, _C_PM_HANDOFF, _C_PM_LOG_TAIL,
+)
+_CARD_READONLY_CLI = (
+    _C_PC_STATUS, _C_PM_LOG_TAIL,
+)
+_CARD_MODE_CLI = {
+    "slot": _CARD_SLOT_CLI,
+    "task": _CARD_TASK_CLI,
+    "readonly": _CARD_READONLY_CLI,
+}
 
 
 # ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────
@@ -3370,9 +3453,15 @@ class PmBootstrap:
         # 정체성 인자 — lean 이면 ` --repo <repo> --slot <N>`, 솔로면 빈 문자열(현행 형태·ADR-0057 신 표기).
         sess = f" --repo {repo_name} --slot {slot_num}" if session and repo_name else ""
 
-        def cmd(name: str, args: str, comment: str = "") -> str:
-            """`python3 .project_manager/tools/<name> <args>` (+ ` # 주석`) 한 줄 렌더."""
-            line = f"{_CARD_TOOL_INVOKE}/{name} {args}".rstrip()
+        def cmd(rec: _CardCmd, comment: str = "", suffix: str = "", prefix: str = "") -> str:
+            """공용 정의서 record → `python3 .project_manager/tools/<tool> <prefix><render><suffix>` 한 줄.
+
+            커맨드 토큰(도구·서브커맨드·플래그)은 `rec`(공용 정의서·T-0362) 단일 진실에서 온다 —
+            손 문자열 하드코딩 제거. `suffix`/`prefix` = 정체성(`--repo/--slot`·task 명) 등 caller 가
+            실값 보간하는 꼬리/머리(ADR-0057 "정체성은 실값·사용자 입력만 placeholder"; pm_handoff 는
+            정체성이 앞에 오므로 `prefix`).
+            """
+            line = f"{_CARD_TOOL_INVOKE}/{rec.tool} {prefix}{rec.render}{suffix}".rstrip()
             return f"{line}  # {comment}" if comment else line
 
         def skill(invocation: str, comment: str = "") -> str:
@@ -3383,15 +3472,25 @@ class PmBootstrap:
             """
             return f"{invocation}  # {comment}" if comment else invocation
 
-        def engine(name: str, args: str,
-                   note: str = "스킬이 부르는 내부 엔진·직접 금지") -> str:
+        def engine(rec: _CardCmd, note: str = "스킬이 부르는 내부 엔진·직접 금지",
+                   suffix: str = "", prefix: str = "") -> str:
             """스킬에 종속된 backbone 줄 — 2-스페이스 들여쓰기 + '직접 금지' 주석(강등 표기).
 
             `python3 …` 로 시작해(들여쓰기는 strip 됨) 정체성 `--repo/--slot` 보간·카드↔CLI
             argparse 정합 가드의 대상으로 남는다(불변식 1·3 무손상). 스킬 줄(`/pm-…`)만 그
             가드 밖이다.
             """
-            return "  " + cmd(name, args, f"↳ {note}")
+            return "  " + cmd(rec, f"↳ {note}", suffix, prefix)
+
+        # ── 모드별 렌더 (T-0362·§F12·⑰) — 현재 모드분만 dump(신호 대 잡음·컨텍스트 잠식 방지).
+        # task 세션(`--task`·F1~F7)이면 task 커맨드, readonly 공유 슬롯(⑬·role=readonly)이면
+        # 조회만, 그 외(슬롯/솔로)면 현행 슬롯 카드(+ task 모드 발견성 1줄). 안 쓸 커맨드는 안 뿌린다.
+        task_name = getattr(self, "_task_name", None)
+        role = (identity.get("role") if identity else None)
+        if task_name:
+            return self._task_command_card_lines(task_name, cmd, skill, engine)
+        if role == "readonly":
+            return self._readonly_command_card_lines(identity, cmd, skill)
 
         lines: list[str] = []
         lines.append("### 이 세션 커맨드 카드 (정체성 채움·--help 불요·단일 진실·ADR-0045)")
@@ -3417,6 +3516,12 @@ class PmBootstrap:
         lines.append(
             "> wave 운영은 스킬로 invoke·backbone 직접호출 금지 → pm_role §스킬 우선 운영 규율"
         )
+        # task 모드 발견성 1줄 (T-0362·§F12·인터페이스 ③) — 슬롯 카드는 슬롯 커맨드만 뿌리되,
+        # task 모드의 *존재*만 표기해 발견성과 컨텍스트 누수 방지를 양립(상세 커맨드는 그 모드에서).
+        lines.append(
+            "> 여러 repo 묶음 작업(task) = `--task <이름>` 모드 — 상세 커맨드는 그 모드 카드에서"
+            "(부트스트랩 `--task <이름>` 로 진입)."
+        )
         lines.append("")
 
         # 내 작업 보기 (read-only 조회·직접 — 래핑 스킬 없음·ADR-0047 자기 공간 우선).
@@ -3425,16 +3530,17 @@ class PmBootstrap:
         # (타 사용자 무유출·ADR-0057 신 표기).
         lines.append("# 내 작업 보기 (read-only 조회·직접 — ADR-0047 자기 공간 우선)")
         lines.append(cmd(
-            "board.py", "list --mine",
+            _C_BOARD_LIST_MINE,
             "내 것 전 슬롯(내 open + 모든 슬롯의 내 claim)·user-wide 기본 조회",
         ))
         if session:
             lines.append(cmd(
-                "board.py", f"list --repo {repo_name} --slot {slot_num}",
+                _C_BOARD_LIST,
                 "내 것 ∩ 이 슬롯(내 open + 이 슬롯 claim만)·이 슬롯 작업 조회·조회 전용",
+                suffix=sess,
             ))
         lines.append(cmd(
-            "board.py", "list", "전체 보드(모든 세션·타 사용자 포함) — 타 PM 열람용·평시 불요",
+            _C_BOARD_LIST, "전체 보드(모든 세션·타 사용자 포함) — 타 PM 열람용·평시 불요",
         ))
         lines.append("")
 
@@ -3443,13 +3549,13 @@ class PmBootstrap:
         # 종료=/pm-wave-finish→ticket_finish 가 complete 를 내부 수행·중복 실행 말 것).
         lines.append("# 티켓 lifecycle 직접 (래핑 스킬 없음·ADR-0052 예외)")
         lines.append(cmd(
-            "board.py", 'new "<제목>" --prefix <PFX>', "draft 발행(본문은 board 밖에서 채움)",
+            _C_BOARD_NEW, "draft 발행(본문은 board 밖에서 채움)",
         ))
         lines.append(cmd(
-            "board.py", "promote T-NNNN", "draft → open(본문 채운 뒤·claim 선행조건)",
+            _C_BOARD_PROMOTE, "draft → open(본문 채운 뒤·claim 선행조건)",
         ))
         lines.append(cmd(
-            "board.py", "complete T-NNNN --tests-pass",
+            _C_BOARD_COMPLETE,
             "직접 완료 — fresh-adopter/concept(--allow-untested)·정상 wave 는 /pm-wave-finish",
         ))
         lines.append("")
@@ -3464,20 +3570,20 @@ class PmBootstrap:
         # /pm-wave-claim 엔진 = board.py show/lint/claim (pm_role 카탈로그 순서 — show/lint 는
         # DoD self-containment 검증 단계·read-only·⚠ 없음, claim 이 mutating·전제 ⚠ 인접).
         lines.append(skill("/pm-wave-claim T-NNNN", "ticket claim — DoD 자족 검증 + claim"))
-        lines.append(engine("board.py", "show T-NNNN"))
-        lines.append(engine("board.py", "lint"))
-        lines.append(engine("board.py", f"claim T-NNNN{sess}"))
+        lines.append(engine(_C_BOARD_SHOW))
+        lines.append(engine(_C_BOARD_LINT))
+        lines.append(engine(_C_BOARD_CLAIM, suffix=sess))
         lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
         lines.append(skill("/pm-regression", "비차단 백그라운드 회귀 pre-warm + 완료 알림"))
-        lines.append(engine("board.py", f"regression run{sess}"))
+        lines.append(engine(_C_BOARD_REGRESSION, suffix=sess))
         lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 부기 — 회귀+log+board+stage"))
         lines.append(engine(
-            "ticket_finish.py", "<T-NNNN>",
+            _C_TICKET_FINISH,
             "스킬이 부르는 내부 엔진·직접 금지 — 내부서 board.py complete 수행",
         ))
         lines.append(skill("/pm-qa", "통합 검증 게이트 — 회귀+lint+git 단일 report"))
-        lines.append(engine("board.py", f"regression run{sess}"))
-        lines.append(engine("board.py", "lint"))
+        lines.append(engine(_C_BOARD_REGRESSION, suffix=sess))
+        lines.append(engine(_C_BOARD_LINT))
         lines.append(skill(
             "/pm-dev-delegate T-NNNN --role developer|code-reviewer",
             "orchestrator 위임 표준 프롬프트(dev / reviewer)",
@@ -3485,14 +3591,12 @@ class PmBootstrap:
         lines.append("  ↳ 엔진=Agent 툴(위임)·직접 CLI 아님 — skill-only.")
         # external_review = 래핑 스킬 없는 별도 codex 게이트(직접 OK 예외·reviewer 병행). 위임 직후 sibling.
         lines.append(cmd(
-            "external_review.py", "--ticket T-NNNN --adr ADR-NNNN",
+            _C_EXTERNAL_REVIEW,
             "codex 외부 교차검증 게이트 — 직접(래핑 스킬 없음)·reviewer 병행",
         ))
         lines.append(skill("/pm-handoff", "세션 종료 7단계 자동화"))
-        handoff_args = '--session-seq <N> --wave-summary "<요약>"'
-        if session:
-            handoff_args = f"--repo {repo_name} --slot {slot_num} {handoff_args}"
-        lines.append(engine("pm_handoff.py", handoff_args))
+        handoff_prefix = f"--repo {repo_name} --slot {slot_num} " if session else ""
+        lines.append(engine(_C_PM_HANDOFF, prefix=handoff_prefix))
         lines.append(skill("/pm-update", "엔진 갱신 — upstream freshness·manifest reconcile"))
         lines.append("  ↳ 엔진=pm-update.sh 파사드(freshness+reconcile)·직접 CLI 아님 — skill-only.")
         lines.append("")
@@ -3502,7 +3606,7 @@ class PmBootstrap:
         # cwd 모호 fail-loud 이므로(T-0298), 이 세션 슬롯을 명시해 안내 명령이 dead-end 가 아니게 한다
         # (솔로는 `sess`="" → 무인자·현행 형태·leased <2 라 폴백 무변경).
         lines.append("# 릴리즈 (직접 — 래핑 스킬 없음)")
-        lines.append(cmd("board.py", f"livegate record{sess}"))
+        lines.append(cmd(_C_BOARD_LIVEGATE, suffix=sess))
         lines.append(
             "  ⚠ record 는 `pytest -m release` 수집 pin 강제 — "
             "release-marked 0 수집이면 fail(릴리즈 차단)."
@@ -3512,20 +3616,20 @@ class PmBootstrap:
         # ID·카테고리 유지보수 (드묾·전제 주의) — prefix rename/merge·reid=홈 git clean(4대장 ②·
         # reid 추가)·migrate-identity=단일세션(4대장 ④). 각 커맨드 줄 바로 아래 1줄 ⚠.
         lines.append("# ID·카테고리 유지보수 (드묾·전제 주의)")
-        lines.append(cmd("board.py", "prefix list", "카테고리 현황(read-only)"))
-        lines.append(cmd("board.py", "prefix rename <OLD> <NEW>"))
+        lines.append(cmd(_C_BOARD_PREFIX_LIST, "카테고리 현황(read-only)"))
+        lines.append(cmd(_C_BOARD_PREFIX_RENAME))
         lines.append(
             "  ⚠ rename 은 홈 git working tree clean 필수 — "
             "wiki/log 참조 rewrite 라 미커밋 있으면 거부."
         )
-        lines.append(cmd("board.py", "prefix merge <SRC> --into <DST>"))
+        lines.append(cmd(_C_BOARD_PREFIX_MERGE))
         lines.append("  ⚠ merge 도 홈 git clean 전제(참조 rewrite·미커밋 있으면 거부).")
         lines.append(cmd(
-            "board.py", "reid <OLD-ID> <NEW-ID>", "오발행 ID 교정(번호·prefix 무손실)",
+            _C_BOARD_REID, "오발행 ID 교정(번호·prefix 무손실)",
         ))
         lines.append("  ⚠ reid 도 홈 git clean 전제(참조 rewrite 원자성·미커밋 있으면 거부).")
         lines.append(cmd(
-            "board.py", "migrate-identity --dry-run", "ADR-0033 이전 데이터 일회성 backfill",
+            _C_BOARD_MIGRATE_IDENTITY, "ADR-0033 이전 데이터 일회성 backfill",
         ))
         lines.append(
             "  ⚠ migrate-identity 는 단일-세션 op — "
@@ -3537,8 +3641,8 @@ class PmBootstrap:
         # 스킬 없는 read-only op 만. ticket_finish/external_review/pm_update 는 위 wave 운영서
         # 각 스킬의 강등 backbone 으로 이미 표기(ADR-0052).
         lines.append("# 정체성 불요 (read-only 조회·직접 — cwd/conf/env 자동 해소)")
-        lines.append(cmd("pm_log.py", "tail"))
-        lines.append(cmd("domain.py", "affected --ticket <T-NNNN>"))
+        lines.append(cmd(_C_PM_LOG_TAIL))
+        lines.append(cmd(_C_DOMAIN_AFFECTED))
         lines.append("")
 
         # 찾아가기 (부트스트랩 dump 에 없는 것 — 포인터만·정식 서술은 pm_role·T-0251).
@@ -3555,6 +3659,149 @@ class PmBootstrap:
         lines.append("- 현재-아키텍처: `wiki/architecture.md`(충돌 시 단일 진실)")
         lines.append("- 결정 히스토리: `wiki/decisions/README.md` 색인(ADR 상한)")
         lines.append("- 방법론·규율: `wiki/pm_role.md`")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _card_navigation_lines(self_tag: str) -> list[str]:
+        """찾아가기 포인터 절 (모드 공용·부트스트랩 dump 에 없는 것 — 평시 안 읽음·필요할 때만)."""
+        return [
+            "# 찾아가기 (부트스트랩에 없는 것 — 평시 안 읽음·필요할 때만)",
+            f"- 내 티켓 상세: `{_CARD_TOOL_INVOKE}/board.py show T-NNNN`",
+            f"- 내 과거 세션: `wiki/log/current.md` 에서 자기 태그 {self_tag} 검색(핸드오프 entry)",
+            "- 타 PM 현황: 부트스트랩 대시보드(상세는 그 슬롯 태그 log entry)",
+            "- 현재-아키텍처: `wiki/architecture.md`(충돌 시 단일 진실)",
+            "- 결정 히스토리: `wiki/decisions/README.md` 색인(ADR 상한)",
+            "- 방법론·규율: `wiki/pm_role.md`",
+        ]
+
+    def _task_command_card_lines(self, task_name: str, cmd, skill, engine) -> str:
+        """task 모드 커맨드 카드 (T-0362·§F12·F1~F7·⑥) — task 세션이 쓸 task-스코프 커맨드만 dump.
+
+        task 는 슬롯 축과 직교(⑥)라 정체성 앵커가 task 명(`--task <name>`)이다(log/pm_state 귀속·
+        board/lease 소유검사). 슬롯-전용 커맨드(worktree 관리·prefix rename/merge·livegate)는 안
+        뿌린다(신호 대 잡음·컨텍스트 잠식 방지) — task 작업공간 대여/반납·task 정체성·task-스코프
+        wave 운영만. 커맨드 토큰은 공용 정의서(`_CARD_TASK_CLI`) 단일 진실에서 온다(손 하드코딩 0).
+        """
+        # task 정체성 suffix/prefix — 실값 보간(ADR-0057). `<name>` 은 실 task 명(placeholder 아님).
+        ti = f" --task {task_name}"
+        lines: list[str] = []
+        lines.append(
+            "### 이 세션 커맨드 카드 (task 모드·정체성 채움·--help 불요·단일 진실·ADR-0045·T-0362)"
+        )
+        lines.append(
+            f"정체성: task=`{task_name}` — 슬롯 축과 직교(⑥)·log/pm_state 는 task 앵커. "
+            f"보드/리스 조작은 `--task {task_name}` 명시(정체성=에이전트 맥락·도구엔 명시 전달)."
+        )
+        lines.append(
+            "> wave 운영은 스킬로 invoke·backbone 직접호출 금지 → pm_role §스킬 우선 운영 규율"
+        )
+        lines.append("")
+
+        lines.append("# 내 작업 보기 (read-only 조회·직접 — ADR-0047 자기 공간 우선)")
+        lines.append(cmd(
+            _C_BOARD_LIST_MINE,
+            "내 것 전 슬롯(내 open + 모든 슬롯의 내 claim)·user-wide 기본 조회",
+        ))
+        # task 스코프 렌즈(`list --task <이름>`)는 cmd_list 미소비(전체 보드 출력) — 실행 불가능한
+        # 의미라 카드에 안 뿌린다(카드=현재 동작하는 것만·⑰). --task 렌즈 구현은 [[T-0365]](wave 3) 이월.
+        lines.append(
+            "  ↳ 이 task 스코프 렌즈(`list --task <이름>`)는 T-0365(wave 3) 이월 — 현재는 --mine 로 조회."
+        )
+        lines.append("")
+
+        # task 작업공간 (F2·⑥) — task 명의로 idle 슬롯 대여/반납. 자동 생성 안 함(풀 소진=사용자 게이트).
+        lines.append("# task 작업공간 (F2·⑥ — task 명의 슬롯 대여/반납)")
+        lines.append(cmd(
+            _C_PC_ALLOC, "idle 최소번호 슬롯 대여(자동 생성 안 함·풀 소진 시 add 요청)", suffix=ti,
+        ))
+        lines.append(cmd(
+            _C_PC_RELEASE, "작업완료 반납(소유검사 F3 — 이 task 명의 슬롯만)", suffix=ti,
+        ))
+        lines.append("")
+
+        # task 정체성 (F5·F7) — prefix 지정/해제 + task 종료(일괄 반납·아카이브). name 은 위치인자(보간).
+        lines.append("# task 정체성 (F5·F7 — prefix·종료)")
+        lines.append(cmd(
+            _C_PC_TASK_PREFIX, "ticket prefix 지정/변경/해제(`none`=해제·중간 변경 자유)",
+        ))
+        lines.append(cmd(
+            _C_PC_TASK_END, "task 종료 — 일괄 idle 반납 + 서술 폴더 _ended 아카이브(worktree 미삭제)",
+        ))
+        lines.append(
+            "  ⚠ task end 는 claimed 소진(⑲) + 전 슬롯 clean 전제 — 미완 claim/dirty 있으면 거부."
+        )
+        lines.append("")
+
+        # wave 운영 (스킬 primary·ADR-0052) — 강등 backbone 은 task 정체성(`--task`) 보간. 슬롯 카드와
+        # 동형이나 정체성 축만 slot→task. 숨은전제 ⚠ 는 claim 강등 줄 바로 아래 인접(불변식 2).
+        lines.append("# wave 운영 (스킬로 invoke — backbone CLI 엔진은 직접 금지·ADR-0052)")
+        lines.append(skill("/pm-wave-claim T-NNNN", "ticket claim — DoD 자족 검증 + claim"))
+        lines.append(engine(_C_BOARD_SHOW))
+        lines.append(engine(_C_BOARD_LINT))
+        lines.append(engine(_C_BOARD_CLAIM, suffix=ti))
+        lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
+        lines.append(skill("/pm-regression", "비차단 백그라운드 회귀 pre-warm + 완료 알림"))
+        lines.append(engine(_C_BOARD_REGRESSION, suffix=ti))
+        lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 부기 — 회귀+log+board+stage"))
+        # ticket_finish 는 identity.task 있을 때만 task 작업공간 F6 로 회귀 cwd 를 해소한다 —
+        # task 세션은 `--task` 를 실어야 slot/solo 로 오해소하지 않는다(다른 task backbone 과 동형).
+        lines.append(engine(
+            _C_TICKET_FINISH,
+            "스킬이 부르는 내부 엔진·직접 금지 — 내부서 board.py complete 수행",
+            suffix=ti,
+        ))
+        lines.append(skill("/pm-handoff", "task 세션 종료 7단계 자동화"))
+        lines.append(engine(_C_PM_HANDOFF, prefix=f"--task {task_name} "))
+        lines.append("")
+
+        lines.append("# 정체성 불요 (read-only 조회·직접 — cwd/conf/env 자동 해소)")
+        lines.append(cmd(_C_PM_LOG_TAIL))
+        lines.append("")
+
+        lines.extend(self._card_navigation_lines(f"`(task:{task_name})`"))
+        return "\n".join(lines)
+
+    def _readonly_command_card_lines(self, identity: dict | None, cmd, skill) -> str:
+        """readonly 공유 슬롯(⑬·T-0358·role=readonly) 커맨드 카드 (T-0362·§F12) — 조회/갱신만 dump.
+
+        readonly 는 무소유 공유 자산(session/pid 없음·배타 대여 없음·detached HEAD)이라 board
+        claim/complete·set-base/rebase/dev/sync 는 의미가 없다(거부) — 조회(`status`)와 released
+        최신화(`refresh`)만 뿌린다. worktree_pool 엔진은 build_parser 가 없어 CLI 강등 줄을 짓지
+        않고 `/pm-worktree` 스킬 + 평문 note 로만 표기(카드↔CLI 정합 대상은 파서-backed 도구만).
+        """
+        lines: list[str] = []
+        slot = (identity.get("slot") if identity else None) or "<slot>"
+        lines.append(
+            "### 이 세션 커맨드 카드 (readonly 공유 슬롯·조회 전용·⑬·T-0362)"
+        )
+        lines.append(
+            f"정체성: readonly 공유 슬롯(`{slot}`·role=readonly·무소유 공유 자산·⑬) — 코드 읽기 "
+            "기준면. 배타 대여/세션 바인딩 없음(claim/complete 대상 아님)."
+        )
+        lines.append(
+            "> readonly 는 조회·갱신(refresh)만 — set-base/rebase/dev/sync·claim/complete 는 거부(⑬)."
+        )
+        lines.append("")
+
+        lines.append("# 조회 (read-only·직접)")
+        lines.append(cmd(_C_PC_STATUS, "풀/리스 상태 + 이 세션 repo/슬롯/branch"))
+        lines.append(cmd(_C_PM_LOG_TAIL, "최근 log entry"))
+        lines.append(skill(
+            f"/pm-worktree status {slot}",
+            "슬롯 git 구성 조회(role·base·head·submodule pin/drift·dirty)",
+        ))
+        lines.append("  ↳ 엔진=worktree_pool.py status (backbone·직접 CLI 아님).")
+        lines.append("")
+
+        lines.append("# 갱신 (readonly 슬롯 최신화·⑬)")
+        lines.append(skill(
+            f"/pm-worktree refresh {slot}",
+            "released 최신 tip 으로 fetch → detached HEAD 이동(dirty=거부·조용한 reset 안 함)",
+        ))
+        lines.append("  ↳ 엔진=worktree_pool.py refresh (backbone·직접 CLI 아님).")
+        lines.append("")
+
+        lines.extend(self._card_navigation_lines("`(readonly 공유 슬롯)`"))
         return "\n".join(lines)
 
     def _build_identity_markdown(self, identity: dict) -> str:
