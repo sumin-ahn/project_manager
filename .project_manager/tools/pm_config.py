@@ -18,6 +18,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
     pm-config alloc <repo> --task <이름>                    # task 명의로 idle 최소 번호 슬롯 대여 (F2·⑤·T-0354·자동 생성 안 함)
     pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사·F3) / 수동 강제(백스톱)
+    pm-config task prefix <이름> <p|none>                   # task 의 ticket prefix 지정/변경/해제 (F5·중간 변경 자유·`none`=해제·T-0357)
     pm-config task end <이름>                               # task 종료 — claimed 소진 게이트(⑲)·dirty 게이트·일괄 반납 + _ended 아카이브(②·T-0354)
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수·T-0054)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (T-0145·검증·fail-closed)
@@ -32,6 +33,8 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - alloc    → worktree_pool.alloc(repo, session=<task>) — idle 최소 번호 대여(⑤ 논리층·PM 자율).
                풀 소진(NeedsCreate)이면 자동 생성 안 하고 `worktree add` 승인 요청(물리층=사용자).
   - release → worktree_pool.release(--task 면 owner_task 소유검사·F3·--force 면 force_release) — 수동 반납/강제만.
+  - task prefix → board._validate_prefix(입력 sanity·소비 grammar 단일 진실) → worktree_pool.set_task_prefix
+                (장부 flock/스키마 단일 소유·`none`=해제·직접 JSON write 금지·F5·T-0357).
   - task end → board.scan_task_tickets(⑲ claimed 소진 게이트) → worktree_pool.end_task(dirty 게이트·
                일괄 idle 반납·서술 폴더 `_ended/<이름>-<날짜>/` 아카이브 이동·②·삭제 아님).
   - update → pm_update.main(argv) verbatim forward (rename 비용 0·중복 구현 금지).
@@ -1617,6 +1620,102 @@ def cmd_task_end(
     return 0
 
 
+# `none` = prefix 해제 리터럴(무prefix·T-NNNN 발행) — board `_PREFIX_RESERVED` 와 동형(case-insensitive
+# fold·ADR-0055). setter 는 이 리터럴을 board `_validate_prefix`(예약어 거부) 이전에 가로채 해제로 번역한다.
+_TASK_PREFIX_NONE_LITERAL = "none"
+
+
+def cmd_task_prefix(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+    board=None,
+) -> int:
+    """`task prefix <이름> <p|none>` — task 의 ticket prefix 지정/변경/해제 (F5·T-0357·중간 변경 자유).
+
+    task 레코드(T-0353·장부 top-level `tasks`)의 board prefix 를 opt-in 으로 지정/변경(`<p>`)하거나
+    해제(`none`)한다 — prefix 는 task 와 **완전 독립·분류 라벨이지 경계 아님**(claim 강제 없음·①). 지정
+    시 `board.py new --task <이름>` 이 3단 해소(명시 `--prefix` > task 설정 > 기본 없음·F5)로 그 prefix 를
+    자동으로 단다. **중간 변경 자유**(task 종속으로 못 바꾸는 설계 금지·①ⓒ) — 진행 중 언제든 바꾼다.
+
+    검증 순서(각 통과해야 다음·부작용 이전 fail-loud rc1):
+      1. **task 명 검증** — 공유 엔진 validator(`_validate_task_name`·예약패턴엔 등록 repo 전달)로
+         traversal/절대경로/빈 이름/`<repo>_<N>` 예약(⑥)을 거부. alloc/task end 와 동일 깔때기.
+      2. **prefix 값 해소** — `none`(대소문자 무관·ADR-0055 fold)은 **해제 리터럴** → None(무prefix).
+         그 외는 board **소비측 grammar 단일 진실**(`_validate_prefix`·ADR-0042 `[a-z0-9_]` 형식·예약어)로
+         선검증 — `board.py new` 가 task prefix 를 재검증 없이 신뢰(T-0355)하므로 여기가 유일 입력 게이트다.
+      3. **저장** — `worktree_pool.set_task_prefix`(장부 flock/스키마 단일 소유·직접 JSON write 금지)로
+         atomic 갱신. task 부재면 rc1 안내(생성은 F1[bootstrap] 단일 지점).
+
+    worktree_pool/board 주입으로 hermetic 테스트. board 부재/헬퍼 부재는 registered_repos=None·형식
+    검증 graceful skip(traversal 검증은 엔진 validator 로 유지) — 순수 슬롯 정리와 동형 fail-soft.
+    """
+    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
+    if wp is None:
+        print(
+            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — task prefix 설정 불가 "
+            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+    name = args.name
+    value = args.value
+
+    # 1) task 명 검증(must-fix) — 공유 엔진 validator. registered_repos 는 예약패턴(`<repo>_<N>`·⑥)
+    # 거부용(board fail-soft 해소·부재면 None → traversal 검증만). InvalidTaskName → rc1(부작용 이전).
+    board_mod = board or _load_module("board", "board.py")
+    registered = None
+    _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
+    if _reg_fn is not None:
+        try:
+            registered = _reg_fn()
+        except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴 검증만 완화·traversal 유지).
+            registered = None
+    try:
+        wp._validate_task_name(name, registered)
+    except wp.InvalidTaskName as exc:
+        print(
+            f"[중단] 부적합 task 명 {name!r} — {exc.reason}. task 이름은 안전한 단일 이름이어야 한다.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 2) prefix 값 해소 — `none`(fold)은 해제, 그 외는 board `_validate_prefix`(소비 grammar 단일 진실).
+    if value.lower() == _TASK_PREFIX_NONE_LITERAL:
+        new_prefix: str | None = None
+    else:
+        validate = getattr(board_mod, "_validate_prefix", None) if board_mod else None
+        if validate is not None:
+            reason = validate(value)
+            if reason:
+                print(f"[중단] {reason}", file=sys.stderr)
+                return 1
+        new_prefix = value
+
+    # 3) 저장 — worktree_pool 헬퍼(장부 flock/스키마 단일 소유). task 부재 → rc1(생성은 F1 단일 지점).
+    updated = wp.set_task_prefix(name, new_prefix)
+    if updated is None:
+        print(
+            f"[중단] task {name!r} 이(가) 아직 없다 — prefix 설정은 기존 task 레코드를 갱신할 뿐 "
+            "정체성을 생성하지 않는다(F1→F5). 먼저 `/pm-bootstrap --task "
+            f"{name}` 로 task 를 만든 뒤 다시 설정하라.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if new_prefix is None:
+        print(
+            f"✓ task {name!r} prefix 해제 — 이후 `board.py new --task {name}` 은 무prefix(T-NNNN)로 발행 "
+            "(명시 `--prefix` 는 여전히 1회 오버라이드·F5)."
+        )
+    else:
+        print(
+            f"✓ task {name!r} prefix = {new_prefix!r} — 이후 `board.py new --task {name}` 이 이 prefix 를 "
+            "자동으로 단다(명시 `--prefix` 가 이김·F5 3단 해소). 분류 라벨이지 경계 아님(claim 강제 없음·①)."
+        )
+    return 0
+
+
 def cmd_update(
     forward_args: list[str],
     *,
@@ -2220,7 +2319,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_release.set_defaults(func=cmd_release)
 
     # task end <이름> — task 종료: claimed 소진 게이트(⑲)·dirty 게이트·clean 시 일괄 반납 + 아카이브 이동(②)
-    p_task = sub.add_parser("task", help="task 정체성 관리 (end)")
+    p_task = sub.add_parser("task", help="task 정체성 관리 (prefix·end)")
     task_sub = p_task.add_subparsers(dest="task_command", metavar="<task-command>")
     p_task_end = task_sub.add_parser(
         "end",
@@ -2229,6 +2328,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_task_end.add_argument("name", help="종료할 task 이름")
     p_task_end.set_defaults(func=cmd_task_end)
+
+    # task prefix <이름> <p|none> — task 의 ticket prefix 지정/변경/해제(F5·T-0357·중간 변경 자유·①).
+    # `board.py new --task` 가 3단 해소(명시 --prefix > task 설정 > 기본 없음)로 이 값을 소비한다.
+    p_task_prefix = task_sub.add_parser(
+        "prefix",
+        help="task 의 ticket prefix 지정/변경/해제 (F5·중간 변경 자유·`none`=해제·분류 라벨≠경계·①)",
+    )
+    p_task_prefix.add_argument("name", help="대상 task 이름")
+    p_task_prefix.add_argument(
+        "value",
+        help="설정할 prefix (ADR-0042 `[a-z0-9_]` 형식·소문자 권장) 또는 `none`(해제·무prefix)",
+    )
+    p_task_prefix.set_defaults(func=cmd_task_prefix)
 
     # add-harness <harness> [--dry-run] — 라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가
     # (ADR-0048·T-0270). pm_import.add_harness_cli 로 verbatim 위임(cmd_add_harness) — harness 는

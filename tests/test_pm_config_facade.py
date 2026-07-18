@@ -104,7 +104,8 @@ class FakeWorktreePool:
     def __init__(self, *, leases=None, release_raises=None, force_returns="present",
                  set_test_raises=None, live_branches=None, reconcile=None,
                  alloc_returns=None, alloc_raises=None, task_record="__unset__",
-                 end_task_result=None, validate_raises=False):
+                 end_task_result=None, validate_raises=False,
+                 set_prefix_result="__unset__"):
         self.leases = leases or []
         self.calls: list[tuple] = []
         self._release_raises = release_raises   # 예외 클래스 또는 None
@@ -120,6 +121,9 @@ class FakeWorktreePool:
         self._task_record = task_record
         # end_task(T-0354) — 반환할 EndTaskResult 대역(SimpleNamespace).
         self._end_task_result = end_task_result
+        # set_task_prefix(T-0357·F5) — 반환할 갱신 Task 대역 또는 None(task 부재). "__unset__"
+        # 기본은 인자(name, prefix) 를 실은 SimpleNamespace 로 해소(대다수 테스트가 성공 경로).
+        self._set_prefix_result = set_prefix_result
         # slot → live 브랜치 매핑(ADR-0013 amend T-0072 — cmd_status 가 lease.branch 대신
         # current_branch(slot) 로 슬롯 git HEAD 를 live 조회). 미지정 슬롯은 None(detached).
         self._live_branches = live_branches or {}
@@ -206,6 +210,14 @@ class FakeWorktreePool:
         return SimpleNamespace(name=name, released=[], dirty=[], refused=False,
                                moved_from=None, moved_to=None)
 
+    def set_task_prefix(self, name, prefix):
+        # task prefix 지정/변경/해제 write 백엔드 대역 (T-0357·F5) — (name, prefix) 를 기록.
+        # "__unset__" 기본은 갱신 Task(prefix 반영) 로 해소, None 은 task 부재(rc1 경로) 모델.
+        self.calls.append(("set_task_prefix", name, prefix))
+        if self._set_prefix_result == "__unset__":
+            return SimpleNamespace(name=name, prefix=prefix)
+        return self._set_prefix_result
+
     def did(self, name) -> bool:
         return any(c[0] == name for c in self.calls)
 
@@ -267,6 +279,16 @@ class FakeBoard:
         # board._repo_protected 대역 (T-0076) — 매핑에 없으면 default(main/master/develop)
         # 폴백(`_resolve_repo_protected` 가 이 값을 install_protected_hook 으로 전달).
         return self._repo_protecteds.get(repo, ["main", "master", "develop"])
+
+    def _validate_prefix(self, prefix):
+        # board._validate_prefix 대역 (T-0357·소비 grammar 단일 진실) — 예약어 `none`·형식
+        # `[A-Za-z0-9][A-Za-z0-9_]*` 위반이면 사유 문자열, 정상이면 None(ADR-0042·ADR-0055 동형).
+        import re as _re
+        if prefix.lower() == "none":
+            return f"prefix {prefix!r} 은 예약어"
+        if not _re.match(r"^[A-Za-z0-9][A-Za-z0-9_]*$", prefix):
+            return f"prefix {prefix!r} 형식 위반"
+        return None
 
     def scan_task_tickets(self, user, task, prefix=None):
         # scan_task_tickets 대역 (T-0354·⑲) — 호출 인자 기록 + 미리 정한 결과 반환.
@@ -2480,6 +2502,135 @@ def test_main_routes_task_end_to_engine(pc, monkeypatch):
     rc = pc.main(["task", "end", "job"])
     assert rc == 0
     assert wp.did("end_task")
+
+
+# ════════════════════════════════════════════════════════════════════════
+# task prefix <이름> <p|none> (F5·T-0357·중간 변경 자유·분류 라벨≠경계·①)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_task_prefix_sets_prefix(pc, capsys):
+    """task prefix <이름> <p> → set_task_prefix(이름, p) 로 저장·rc0(지정)."""
+    wp = FakeWorktreePool()
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="job", value="pay"), worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 0
+    assert ("set_task_prefix", "job", "pay") in wp.calls
+    out = capsys.readouterr().out
+    assert "pay" in out and "job" in out
+
+
+def test_task_prefix_none_clears_and_skips_format_validation(pc, capsys):
+    """value=`none` → 해제(prefix=None)·board `_validate_prefix` 미호출(해제 리터럴 선-가로채기)."""
+    wp = FakeWorktreePool()
+    board = FakeBoard()
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="job", value="none"), worktree_pool=wp, board=board
+    )
+    assert rc == 0
+    assert ("set_task_prefix", "job", None) in wp.calls   # None = 해제로 저장
+    out = capsys.readouterr().out
+    assert "해제" in out
+
+
+def test_task_prefix_none_case_insensitive_clears(pc):
+    """`NONE`/`None` 도 fold 로 해제 리터럴(ADR-0055 case-insensitive)."""
+    for literal in ("NONE", "None", "nOnE"):
+        wp = FakeWorktreePool()
+        rc = pc.cmd_task_prefix(
+            argparse.Namespace(name="job", value=literal), worktree_pool=wp, board=FakeBoard()
+        )
+        assert rc == 0
+        assert ("set_task_prefix", "job", None) in wp.calls
+
+
+def test_task_prefix_validates_task_name_before_write(pc, capsys):
+    """불법/예약 task 명 → InvalidTaskName → rc1(set_task_prefix 미호출·must-fix)."""
+    wp = FakeWorktreePool(validate_raises=True)
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="../evil", value="pay"), worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 1
+    assert not wp.did("set_task_prefix")   # 검증이 write 이전
+
+
+def test_task_prefix_forwards_registered_repos_for_reserved_check(pc):
+    """task 명 검증에 등록 repo 전달 — 예약패턴(`<repo>_<N>`·⑥) 판별 근거(alloc/task end 동형)."""
+    wp = FakeWorktreePool()
+    board = FakeBoard(registered=("svc", "acc"))
+    pc.cmd_task_prefix(
+        argparse.Namespace(name="job", value="pay"), worktree_pool=wp, board=board
+    )
+    val = [c for c in wp.calls if c[0] == "_validate_task_name"]
+    assert val and set(val[0][2]) == {"svc", "acc"}
+
+
+def test_task_prefix_bad_format_refused(pc, capsys):
+    """형식 위반(하이픈 등·ADR-0042) → board `_validate_prefix` 사유 → rc1(set_task_prefix 미호출)."""
+    wp = FakeWorktreePool()
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="job", value="bad-prefix"), worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 1
+    assert not wp.did("set_task_prefix")   # 입력 sanity 실패 → 저장 안 함
+    err = capsys.readouterr().err
+    assert "형식 위반" in err
+
+
+def test_task_prefix_task_missing_refuses_with_bootstrap_hint(pc, capsys):
+    """set_task_prefix→None(task 부재) → rc1 + `/pm-bootstrap --task` 안내(생성은 F1 단일 지점)."""
+    wp = FakeWorktreePool(set_prefix_result=None)   # task 부재 모델
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="ghost", value="pay"), worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "pm-bootstrap" in err and "ghost" in err
+
+
+def test_task_prefix_engine_missing_errors(pc, capsys, monkeypatch):
+    """worktree_pool 부재(None) → 명시 에러 rc1(침묵 무력화 금지·ADR-0013)."""
+    monkeypatch.setattr(pc, "_load_module", lambda name, filename: None)
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="job", value="pay"), worktree_pool=None, board=None
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "worktree_pool" in err
+
+
+def test_task_prefix_board_absent_skips_format_but_stores(pc, monkeypatch):
+    """board 부재(_validate_prefix 없음) → 형식 검증 graceful skip·저장은 진행(traversal 은 엔진 유지)."""
+    wp = FakeWorktreePool()
+    # board 로드 실패(None) 모사 — 형식 validator·registered_repos 부재(hermetic).
+    monkeypatch.setattr(pc, "_load_module", lambda name, filename: None)
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="job", value="pay"), worktree_pool=wp, board=None
+    )
+    # board None → registered_repos None(예약 완화)·_validate_prefix skip → set_task_prefix 진행.
+    assert rc == 0
+    assert ("set_task_prefix", "job", "pay") in wp.calls
+
+
+def test_main_routes_task_prefix_to_engine(pc, monkeypatch):
+    """main(["task","prefix","job","pay"]) → cmd_task_prefix → set_task_prefix 라우팅."""
+    wp = FakeWorktreePool()
+    board = FakeBoard()
+    monkeypatch.setattr(
+        pc, "_load_module",
+        lambda name, filename: wp if name == "worktree_pool" else (board if name == "board" else None))
+    rc = pc.main(["task", "prefix", "job", "pay"])
+    assert rc == 0
+    assert ("set_task_prefix", "job", "pay") in wp.calls
+
+
+def test_task_prefix_surfaced_in_task_group_help(pc, capsys):
+    """`task prefix` 가 task 그룹 도움말에 노출(end 와 나란히·발견성)."""
+    with pytest.raises(SystemExit):
+        pc.main(["task", "--help"])
+    out = capsys.readouterr().out
+    assert "prefix" in out and "end" in out
 
 
 def test_main_task_group_without_sub_shows_help(pc, capsys):

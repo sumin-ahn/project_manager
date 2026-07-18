@@ -1398,6 +1398,35 @@ def bind_task(name: str, *, pid: "int | None" = None,
         return existing, action, reclaimed_from
 
 
+def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
+    """task 레코드의 board prefix 를 지정/변경/해제한다 — 갱신된 `Task`·task 부재 시 `None` (T-0357·F5).
+
+    `pm-config task prefix <이름> <p|none>` 의 write 백엔드다 — 장부 top-level `tasks` 레코드
+    (T-0353)의 `prefix` 필드를 `prefix`(문자열=지정/변경·None=해제) 로 덮는다. **중간 변경 자유**
+    (task 종속 없음·①ⓒ) — bind_task 는 prefix 를 안 만지고(생성=None·재개=유지) 변경은 여기 단일
+    지점이다. `board.py new --task <이름>` 이 `identity_args.task_prefix` 로 이 값을 read 해 F5 3단
+    해소(명시 `--prefix` > task 설정 > 기본 없음)에 쓴다.
+
+    **장부 IO 는 이 모듈이 단일 소유**(직접 JSON read/write 금지·flock/스키마·ADR-0013) — `_lease_lock`
+    아래 `_read_tasks`/`_write_tasks`(형제 `leases`·미지 top-level 키 무손실 round-trip)로 atomic 하게
+    갱신한다. task 부재면 `None`(호출부가 rc1 안내) — 생성은 F1(bootstrap) 단일 지점이라 여기서
+    task 를 만들지 않는다.
+
+    **명 검증(must-fix)**: `_validate_task_name` 을 장부 write **이전**에 돌려 traversal/절대경로/빈
+    이름을 fail-loud(`InvalidTaskName`) — write-capable 엔진 진입점이라 CLI 우회(직접 소비)도 닫는다.
+    prefix *형식* sanity(`[a-z0-9_]`·`none` 예약·ADR-0042)는 CLI 입력측(pm_config)이 소비 grammar
+    단일 진실(`board._validate_prefix`)로 선검증한다 — 여기선 저장만(board.py new 가 신뢰·T-0355)."""
+    _validate_task_name(name)   # 장부 write 이전 fail-loud(부작용 0·must-fix).
+    with _lease_lock():
+        tasks = _read_tasks()
+        target = next((t for t in tasks if t.name == name), None)
+        if target is None:
+            return None
+        target.prefix = prefix
+        _write_tasks(tasks)
+        return target
+
+
 # 종료된 task 서술 폴더의 아카이브 루트 — `.local/tasks/_ended/`. 선행 `_` 라 `_validate_task_name`
 # 이 실 task 명으로는 거부하므로(⑥ path 컴포넌트 규칙) 아카이브 하위와 실 task 가 절대 충돌하지 않는다.
 _ENDED_DIR_NAME = "_ended"

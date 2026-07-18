@@ -73,6 +73,23 @@ task = 슬롯과 **직교**하는 작업스트림 정체성(⑥). task 명의로
   안 함**) + 장부 task 레코드 제거 + 서술 폴더를 `.local/tasks/_ended/<이름>-<날짜>/` 로 **이동**(삭제
   아님·이름 재사용 시 옛 pm_state 오염 방지·②). task 지정 prefix 의 open 티켓은 **정보 표시만**(차단 안 함·①).
 
+### task prefix — task 의 ticket prefix 지정/변경/해제 (F5·중간 변경 자유·T-0357)
+
+task 의 ticket prefix 를 opt-in 으로 지정/변경/해제한다 — prefix 는 task 와 **완전 독립·분류 라벨이지
+경계 아님**(claim 강제 없음·①):
+```bash
+./pm-config.sh task prefix <이름> <p>       # task <이름> 의 board prefix 를 <p> 로 지정/변경
+./pm-config.sh task prefix <이름> none      # 해제(무prefix·T-NNNN 로 발행)
+```
+- **중간 변경 자유** — task 진행 중 언제든 지정/변경/해제(task 종속으로 못 바꾸는 설계 금지·①ⓒ). 기본은
+  **없음**(opt-in).
+- **포맷**: ADR-0042 `[a-z0-9_]` 형식(그 외 rc1·소문자 권장). `none` 은 해제 리터럴(무prefix). task
+  미존재면 rc1(생성은 `/pm-bootstrap --task` 단일 지점).
+- **`board.py new` 3단 해소**: 명시 `--prefix` > task 지정 prefix > 기본 없음. task 에 prefix 를 지정하면
+  그 task 명의(`--task <이름>`) 발행이 자동으로 그 prefix 를 단다(명시 `--prefix` 가 이김·1회 오버라이드).
+- prefix 는 **분류 라벨이지 경계가 아니다** — claim 에 prefix 강제 없음. 티켓 카테고리 *관리*(list/rename/
+  merge)는 별개 표면 `board.py prefix`(현행 불변).
+
 ### upstream show / switch (path ↔ URL · T-0145)
 ```bash
 ./pm-config.sh upstream show

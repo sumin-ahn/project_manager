@@ -5101,6 +5101,80 @@ def test_list_tasks_and_find_task(wp):
     assert wp.find_task("nope") is None
 
 
+# ── set_task_prefix — task prefix 지정/변경/해제 (F5·T-0357·장부 단일 소유·중간 변경 자유) ──
+
+
+def test_set_task_prefix_sets_and_reads_back(wp):
+    """`set_task_prefix` 가 task 레코드 prefix 를 지정하고 find_task 로 되읽힌다 (F5·지정)."""
+    wp.bind_task("job1")                             # created·prefix=None(기본 없음)
+    updated = wp.set_task_prefix("job1", "pay")
+    assert updated is not None and updated.prefix == "pay"
+    assert wp.find_task("job1").prefix == "pay"      # 영속(장부 write)
+
+
+def test_set_task_prefix_none_clears(wp):
+    """prefix=None → 해제(무prefix). 지정 후 해제하면 다시 None (F5·`none` 해제)."""
+    wp.bind_task("job1")
+    wp.set_task_prefix("job1", "pay")
+    updated = wp.set_task_prefix("job1", None)
+    assert updated.prefix is None
+    assert wp.find_task("job1").prefix is None
+
+
+def test_set_task_prefix_mid_change_is_free(wp):
+    """중간 변경 자유(①ⓒ) — 진행 중 prefix 를 pay→acc→해제 로 자유롭게 바꾼다(task 종속 없음)."""
+    wp.bind_task("job1")
+    assert wp.set_task_prefix("job1", "pay").prefix == "pay"
+    assert wp.set_task_prefix("job1", "acc").prefix == "acc"   # 변경
+    assert wp.set_task_prefix("job1", None).prefix is None     # 해제
+    assert wp.set_task_prefix("job1", "pay").prefix == "pay"   # 재지정
+
+
+def test_set_task_prefix_missing_task_returns_none(wp):
+    """부재 task → None(호출부가 rc1 안내·생성은 F1 단일 지점) — 새 레코드 만들지 않음."""
+    assert wp.set_task_prefix("absent", "pay") is None
+    assert wp.list_tasks() == []                     # task 생성 안 함(부작용 0)
+
+
+def test_set_task_prefix_validates_task_name_before_write(wp):
+    """write-capable 엔진 진입점 — 불법 task 명은 장부 write 이전 InvalidTaskName(부작용 0·must-fix)."""
+    with _pytest_task.raises(wp.InvalidTaskName):
+        wp.set_task_prefix("../evil", "pay")
+    assert wp.list_tasks() == []
+
+
+def test_set_task_prefix_preserves_sibling_leases_and_tasks(wp):
+    """prefix 변경이 형제 `leases`·다른 task·미지 최상위 키를 보존(top-level round-trip·flock 단일 소유)."""
+    ledger = {
+        "leases": [{"slot": "work/A_1", "repo": "A", "session": "me", "pid": 7,
+                    "started": "t", "state": "leased", "test_cmd": None}],
+        "tasks": [{"name": "job1", "prefix": None, "pid": 111, "started": "t"},
+                  {"name": "job2", "prefix": "acc", "pid": 222, "started": "t"}],
+        "future_top_level": {"x": 1},
+    }
+    wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    wp.set_task_prefix("job1", "pay")
+    data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
+    by_name = {t["name"]: t for t in data["tasks"]}
+    assert by_name["job1"]["prefix"] == "pay"        # 대상만 변경
+    assert by_name["job2"]["prefix"] == "acc"        # 형제 task 보존
+    assert data["leases"][0]["slot"] == "work/A_1"   # 리스 보존
+    assert data["future_top_level"] == {"x": 1}      # 미지 최상위 키 보존
+
+
+def test_set_task_prefix_read_by_identity_args_task_prefix(wp):
+    """소비측 통합 — `set_task_prefix` 가 쓴 값을 `identity_args.task_prefix`(board.py new F5 소비)가 읽는다."""
+    ia_spec = importlib.util.spec_from_file_location("ia_test", TOOLS / "identity_args.py")
+    ia = importlib.util.module_from_spec(ia_spec)
+    ia_spec.loader.exec_module(ia)          # 순수 point-read(leases_file 인자) — 전역 재배선 불요.
+    wp.bind_task("job1")
+    wp.set_task_prefix("job1", "pay")
+    assert ia.task_prefix("job1", wp.LEASES_FILE) == "pay"
+    wp.set_task_prefix("job1", None)
+    assert ia.task_prefix("job1", wp.LEASES_FILE) is None   # 해제도 소비측에 반영
+
+
 # ── task 명 검증 (엔진층·traversal/절대경로/빈 이름/예약패턴 거부·must-fix·T-0353) ──
 
 

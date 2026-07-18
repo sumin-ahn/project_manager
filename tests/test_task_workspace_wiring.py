@@ -187,6 +187,47 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
     assert seen["created_by"] == "smahn/job5"         # created_by=<user>/<task>(F5b)
 
 
+def _stub_new_env(board, monkeypatch, *, tasks):
+    """cmd_new 3단 해소 테스트용 공통 stub — id_prefix override 캡처 + 부작용 격리(F5·T-0357)."""
+    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    board.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
+    seen = {}
+    monkeypatch.setattr(board, "id_prefix",
+                        lambda override, session=None: seen.__setitem__("override", override) or override)
+    monkeypatch.setattr(board, "identity_tag",
+                        lambda session_override=None, user_override=None: "u/x")
+    monkeypatch.setattr(board, "registered_prefixes", lambda: [])
+    monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
+    monkeypatch.setattr(board, "refresh_board", lambda: None)
+    monkeypatch.setattr(board, "_board_git_sync_best_effort", lambda msg: None)
+    monkeypatch.setattr(board, "_next_id", lambda prefix: f"{prefix or 'T'}-0001")
+    (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
+    tmpl = board.REPO / "tmpl.md"
+    tmpl.write_text("---\nid: T-NNNN\ntitle: <제목>\n---\n본문\n", encoding="utf-8")
+    monkeypatch.setattr(board, "template_file", lambda: tmpl)
+    monkeypatch.setattr(board, "tickets_dir", lambda: board.REPO / "tickets")
+    (board.REPO / "tickets" / "open").mkdir(parents=True, exist_ok=True)
+    return seen
+
+
+def test_new_explicit_prefix_wins_over_task(board, monkeypatch):
+    """3단 해소 tier1 — 명시 `--prefix` 가 task 설정 prefix 를 이긴다(1회 오버라이드·F5)."""
+    seen = _stub_new_env(board, monkeypatch, tasks=[{"name": "job5", "prefix": "PAY"}])
+    ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
+                            estimate="small", prefix="ACC", user="smahn", task="job5")
+    assert board.cmd_new(ns) == 0
+    assert seen["override"] == "ACC"                 # 명시 --prefix 가 task 설정(PAY)을 이김(tier1)
+
+
+def test_new_no_prefix_no_task_defaults_none(board, monkeypatch):
+    """3단 해소 tier3 — `--prefix` 없음 + task 없음(또는 task prefix None) → 무prefix(기본 없음)."""
+    seen = _stub_new_env(board, monkeypatch, tasks=[])
+    ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
+                            estimate="small", prefix=None, user="smahn", task=None)
+    assert board.cmd_new(ns) == 0
+    assert seen["override"] is None                  # 무prefix → id_prefix(None) → legacy T-NNNN(tier3)
+
+
 # ── ticket_finish.py — task-mode 회귀 작업공간 F6 배선 ───────────────────────
 
 
