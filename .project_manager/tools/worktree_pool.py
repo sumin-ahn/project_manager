@@ -331,7 +331,7 @@ class SlotBranchExists(RuntimeError):
 #     재생긴다(테스트 `test_from_dict_ignores_legacy_branch_key` 가 이 무시를 못박음). git 필드
 #     안의 `branch` 서브키(작업 브랜치 스냅)와는 다른 축 — 그건 git blob 의 일부로 보존된다.
 _LEASE_CANONICAL_KEYS = frozenset(
-    {"slot", "repo", "session", "pid", "started", "state", "test_cmd", "git", "role"}
+    {"slot", "repo", "session", "pid", "started", "state", "test_cmd", "git", "role", "bound"}
 )
 _LEASE_DROP_KEYS = frozenset({"branch"})
 
@@ -367,7 +367,7 @@ class Lease:
     def __init__(self, slot: str, repo: str, session: str,
                  pid: int, started: str, state: str, test_cmd: str | None = None,
                  git: "dict | None" = None, role: str = "work",
-                 extra: "dict | None" = None):
+                 bound: bool = False, extra: "dict | None" = None):
         self.slot = slot          # "work/<repo>_<N>" (브랜치 무관)
         self.repo = repo          # repo 이름 (per-repo 네임스페이스)
         self.session = session    # 점유 세션 식별자
@@ -381,13 +381,23 @@ class Lease:
         # 0단계 carve-out(pm_bootstrap `_phase0_is_readonly`)·F6 소유검사 예외(identity_args)·엔진
         # mutation 거부(set-base/rebase/dev/sync)의 canonical 판별 축이다.
         self.role = role
+        # bind-origin 마커 (additive·T-0389·⑬ 동형 조건방출): True = 사람 발의 `bind_slot`(직접 슬롯
+        # 바인딩)이 점유한 슬롯. `bind_slot` 이 적는 pid 는 *ephemeral bootstrap subprocess* pid 라
+        # 즉사하는데, 사람 경로는 명시 `release` 로만 반납한다(pid 는 정보용) — 그런데 F2 task alloc
+        # (v1.3.x)이 진입 시 `reclaim_stale` 을 부르면 `state==leased && pid 죽음` 으로 이 bind lease 를
+        # stale 오판해 회수(idle 화)한다. `reclaim_stale` 이 `bound` lease 를 회수 대상에서 제외해 그
+        # 사람 정체성 유실을 닫는다([[ADR-0013]] Amendment(T-0074)가 처방한 "reclaim 제외 마커"). pool
+        # 경로(alloc idle-리스·create_slot·release/force_release teardown)는 이 마커를 기록하지 않거나
+        # 해제해 현행 pid-회수 거동을 유지한다. 구 장부(키 부재)=False 동치·마이그레이션 0.
+        self.bound = bound
         # 미지 최상위 키 보존(additive 스키마 클래스 폐쇄·T-0350). mutable 기본 회피(None 센티넬).
         self.extra = dict(extra) if extra else {}
 
     def __repr__(self) -> str:
         return (f"Lease(slot={self.slot!r}, repo={self.repo!r}, "
                 f"session={self.session!r}, pid={self.pid!r}, state={self.state!r}, "
-                f"test_cmd={self.test_cmd!r}, git={self.git!r}, role={self.role!r})")
+                f"test_cmd={self.test_cmd!r}, git={self.git!r}, role={self.role!r}, "
+                f"bound={self.bound!r})")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Lease):
@@ -413,6 +423,11 @@ class Lease:
         # byte-무손실이다(from_dict 가 부재 시 "work" 로 read). readonly 슬롯만 role 을 장부에 남긴다.
         if self.role != "work":
             d["role"] = self.role
+        # bound 는 *True 일 때만* 방출한다 (T-0389·git/role 조건방출과 동형·하위호환). 구 장부(bound
+        # 부재=False·pool 슬롯)를 로드·재기록해도 `bound: false` 를 덧붙이지 않아 왕복이 byte-무손실
+        # 이다(from_dict 가 부재 시 False 로 read). 사람 bind 슬롯만 bound 를 장부에 남긴다.
+        if self.bound:
+            d["bound"] = True
         # 미지 키 재방출(구·신 엔진 왕복 무손실). extra 엔 canonical/legacy-branch 가 없다
         # (from_dict 가 배제) — canonical 을 덮을 위험 없음.
         d.update(self.extra)
@@ -438,6 +453,7 @@ class Lease:
             test_cmd=d.get("test_cmd"),
             git=d.get("git"),
             role=d.get("role", "work"),   # 하위호환 read: 구 장부(role 부재) = "work"(작업 슬롯·T-0358).
+            bound=bool(d.get("bound", False)),  # 하위호환 read: 구 장부(bound 부재) = False(pool 슬롯·T-0389).
             extra=extra,
         )
 
@@ -1249,6 +1265,15 @@ def reclaim_stale(*, git_runner: GitRunner | None = None) -> list[str]:
             # 으로 보여도 회수 대상이 아니다(회수하면 idle 화돼 alloc 이 잡아채 role 이 유실된다·§F11).
             if lease.role == "readonly":
                 continue
+            # 사람 bind 슬롯(bound·T-0389) 제외 — `bind_slot` 이 적는 pid 는 ephemeral bootstrap
+            # subprocess pid 라 즉사하는데, 사람 경로는 명시 `release` 로만 반납한다(pid=정보용).
+            # F2 task alloc(v1.3.x)의 `reclaim_stale` 진입이 이 bind lease 를 `leased && pid 죽음`
+            # = stale 오판해 회수(session 비움·idle 화)하면 사람 정체성이 유실된다(PM 78 실측: 타 창
+            # 세션 bind slot 2 가 alloc 에 회수됨). bound 를 회수 대상에서 제외해 닫는다([[ADR-0013]]
+            # Amendment(T-0074)가 처방한 "reclaim 제외 마커"). crash 후 자동 회수는 없다 — slot bind 는
+            # 0단계 세션명 점유검사 + 재bind(직접 지정)로 자연 회복(열린 질문 수용).
+            if lease.bound:
+                continue
             if _pid_alive(lease.pid):
                 continue
             # stale — pid 죽음. dirty 면 stash 로 보존하고 idle 화.
@@ -1545,6 +1570,7 @@ def end_task(name: str, *, git_runner: GitRunner | None = None) -> EndTaskResult
             lease.session = ""
             lease.pid = 0
             lease.git = None    # release 와 동일 — idle 슬롯은 활성 git 기대 없음(다음 alloc 재스냅).
+            lease.bound = False  # task 종료 = bind 점유 종료 — 사람 bind 마커 해제(release 동형 lifecycle·T-0389).
             released.append(lease.slot)
         if released:
             _write_ledger(leases)
@@ -1619,6 +1645,13 @@ def alloc(
                 # leased 로 넘긴다. creating 은 reconcile/prune 경로로만 정리(설계 의도=surface+정리).
                 if lease.state == "creating":
                     continue
+                # 사람 bind 슬롯(bound·T-0389)은 branch-매칭 재부착 대상에서 제외한다. `alloc(repo,
+                # branch=X)`/`resume=X` 가 그 브랜치를 체크아웃 중인 *타 세션 bound lease* 를 만나면
+                # session/pid/bound 를 덮어 사람 bind 정체성을 탈취한다(핵심 목표가 이 경로에서 깨짐).
+                # 같은 세션 재진입은 1경로 idempotent 가 이미 처리하므로 여기서 bound=skip 이 안전
+                # (bound 슬롯은 명시 release/재bind 로만 소유가 바뀐다·codex must-fix).
+                if lease.bound:
+                    continue
                 # 이 슬롯이 target_branch 를 체크아웃 중인가 = live HEAD 로 매칭(저장 필드 아님·
                 # ADR-0013 amend T-0072). 드리프트 불가능 — git 이 단일 진실.
                 if (lease.repo == repo
@@ -1629,6 +1662,7 @@ def alloc(
                     lease.session = sess
                     lease.pid = os.getpid()
                     lease.started = _now_utc()
+                    lease.bound = False  # pool 대여 — 사람 bind 마커 해제(현행 pid-회수 거동 유지·T-0389).
                     _apply_git_snapshot(lease, git_runner=git_runner)  # arrival 스냅(기대 baseline·base 보존·T-0350).
                     _write_ledger(leases)
                     return lease
@@ -1661,6 +1695,7 @@ def alloc(
             lease.session = sess
             lease.pid = os.getpid()
             lease.started = _now_utc()
+            lease.bound = False  # pool 대여 — 사람 bind 마커 해제(현행 pid-회수 거동 유지·T-0389).
             _apply_git_snapshot(lease, git_runner=git_runner)  # arrival 스냅(기대 baseline·base 보존·T-0350).
             _write_ledger(leases)
             return lease
@@ -1714,6 +1749,7 @@ def release(
         target.session = ""
         target.pid = 0
         target.git = None    # release 시 정리 — idle 슬롯은 활성 git 기대가 없다(T-0350·다음 alloc 이 재스냅).
+        target.bound = False  # 명시 반납 = bind 점유 종료 — 사람 bind 마커 해제(T-0389·git=None 동형 teardown).
         _write_ledger(leases)
         return target
 
@@ -1740,6 +1776,7 @@ def force_release(slot: str, *, git_runner: GitRunner | None = None) -> Lease | 
         target.session = ""
         target.pid = 0
         target.git = None    # release 시 정리(force 백스톱도 동일·T-0350·다음 alloc 이 재스냅).
+        target.bound = False  # 강제 반납도 bind 점유 종료 — 사람 bind 마커 해제(T-0389·release 동형).
         _write_ledger(leases)
         return target
 
@@ -2243,13 +2280,17 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
     회복하지만, `bind_slot` 은 슬롯을 직접 지정받으므로 회수가 필요 없다 — pid 는 정보용으로만
     기록(`os.getpid()`)하고 liveness 판정에 쓰지 않는다(명시 `release` 로만 반납).
 
-    ⚠️ **cross-path 한계(reviewer 게이트·[[ADR-0013]] Amendment(T-0074))**: 여기 적는 pid 는
+    ⚠️ **cross-path 보호(bound 마커·[[ADR-0013]] Amendment(T-0074)·T-0389)**: 여기 적는 pid 는
     *ephemeral bootstrap 프로세스* pid 라 bootstrap 종료 후 죽는다. **사람 경로는 회수를 안 하지만
-    (위), 자동 relay 경로의 `alloc` 은 진입 시 `reclaim_stale` 를 부른다 — 같은 장부를
-    공유하므로, relay 가 가동 중이면 이 bind 엔트리를 `state==leased && pid 죽음` 으로 보고
-    idle 화(session 비움)할 수 있다.** 즉 사람 bind 와 자동 alloc 이 *동시 가동*하면 사람 정체성이
-    회수될 수 있다("무영향" 아님). 현 사람-only 파일럿엔 relay 미가동이라 **dormant**.
-    relay+사람 공존을 실제로 쓸 때 사람 bind 보호(reclaim 제외 마커 등)가 후속 필요하다.
+    (위), 타 세션 `alloc`(F2 task alloc·relay 등)은 진입 시 `reclaim_stale` 를 부른다 — 같은
+    장부를 공유하므로, 방치하면 이 bind 엔트리를 `state==leased && pid 죽음` = stale 로 오판해
+    idle 화(session 비움)한다** (PM 78 실측: F2 task `alloc` 이 타 창 세션 bind slot 을 회수). 이를
+    막기 위해 bind 는 lease 에 **`bound=True` 마커**(additive·조건방출·구 장부 부재=False)를 박고
+    `reclaim_stale` 은 `bound` lease 를 회수 대상에서 제외한다 — 사람 bind 정체성이 타 alloc 의
+    reclaim 에 유실되지 않는다. 반납은 명시 경로(`release`/`force_release`/`pm_handoff --done`)로만
+    이뤄지고 그때 마커가 해제된다(pool 재대여 slot 은 alloc 이 마커 clear·현행 pid-회수 복귀).
+    한계: bound lease 는 crash(bootstrap 후 세션 crash) 후 자동 회수가 없다 — slot bind 는 0단계
+    세션명 점유검사 + 재bind(직접 지정)로 자연 회복되므로 수용(T-0389 열린 질문).
 
     **branch *표시* 는 건드리지 않는다** — 브랜치는 git=단일 진실이라 슬롯 worktree HEAD 에서
     live 조회(`current_branch(slot)`·ADR-0013 amend T-0072). bind 는 리스 장부의 점유 메타
@@ -2272,7 +2313,8 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
         if target is not None and target.role == _LEASE_ROLE_READONLY:
             raise ReadonlySlotNotLeasable(slot, "bind")
         if target is None:
-            # 없으면 새 Lease append (직접 바인딩 — 풀 탐색/생성 게이트 없음).
+            # 없으면 새 Lease append (직접 바인딩 — 풀 탐색/생성 게이트 없음). bound=True 로 사람
+            # bind 마커를 박아 이후 alloc 의 reclaim_stale 이 즉사 pid 로 오판·회수하지 못하게 한다(T-0389).
             target = Lease(
                 slot=slot,
                 repo=repo,
@@ -2280,15 +2322,18 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
                 pid=os.getpid(),
                 started=_now_utc(),
                 state="leased",
+                bound=True,
             )
             leases.append(target)
         else:
-            # 있으면 점유 메타만 갱신 (branch·test_cmd 는 보존). reclaim 안 거침.
+            # 있으면 점유 메타만 갱신 (branch·test_cmd 는 보존). reclaim 안 거침. bound 마커도 박는다
+            # (기존 슬롯 재bind — pool 대여였던 슬롯을 사람이 직접 점유로 승격·T-0389).
             target.repo = repo
             target.session = session
             target.state = "leased"
             target.pid = os.getpid()
             target.started = _now_utc()
+            target.bound = True
         # arrival git 스냅(기대 baseline·기존 base 보존·T-0350·fail-soft — 슬롯 부재면 no-op).
         _apply_git_snapshot(target, git_runner=git_runner)
         _write_ledger(leases)

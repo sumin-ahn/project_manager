@@ -5467,6 +5467,19 @@ def test_end_task_no_owned_slots_still_ends(wp):
     assert result.moved_to is not None and result.moved_to.exists()
 
 
+def test_end_task_clears_bound_marker(wp, proj):
+    """end_task 일괄 idle 반납은 release 동형 lifecycle — bound 마커도 해제한다(codex suggestion·T-0389)."""
+    (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
+    wp.bind_task("job")
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="job", pid=os.getpid(),
+                       started="t", state="leased", bound=True))   # 사람 bind 슬롯
+    git = FakeGit(dirty=False)
+    result = wp.end_task("job", git_runner=git)
+    assert result.released == ["work/A_1"]
+    released = wp.list_leases()[0]
+    assert released.state == "idle" and released.bound is False   # 반납 시 마커 해제
+
+
 def test_end_task_archive_dir_collision_uniquifies(wp):
     """같은 날 같은 이름 재종료 목적지 충돌 → `-2` 로 유일화(덮어써 기록 유실 방지·②)."""
     import datetime as _dt
@@ -5587,6 +5600,204 @@ def test_readonly_slot_excluded_from_alloc(wp):
     git = FakeGit()
     with pytest.raises(wp.NeedsCreate):
         wp.alloc("A", session="me", git_runner=git)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# bound 마커 — 사람 bind 슬롯 reclaim 제외 (T-0389 · ADR-0013 Amendment(T-0074))
+# bind_slot 이 적는 pid 는 ephemeral bootstrap subprocess pid 라 즉사한다. 방치하면 타 세션
+# alloc 의 reclaim_stale 이 `leased && pid 죽음` = stale 로 오판·회수(PM 78 실측). bound
+# 마커로 reclaim 대상에서 제외한다. pool 경로(alloc idle-리스·release)는 마커를 해제해
+# 현행 pid-회수 거동을 유지. 마커는 additive(구 장부 부재=False·마이그레이션 0).
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_bound_default_false_omitted_from_dict(wp):
+    """bound 기본(False)은 to_dict 가 방출하지 않는다 — 구 장부 왕복 byte-무손실(role 필드 동형·T-0389)."""
+    lease = wp.Lease(slot="work/A_1", repo="A", session="me", pid=1, started="t", state="leased")
+    assert lease.bound is False
+    assert "bound" not in lease.to_dict()      # 기본이면 키 자체를 안 넣는다(하위호환).
+
+
+def test_bound_true_round_trips(wp):
+    """bound=True 는 to_dict 방출·from_dict read — 왕복 보존(T-0389·additive·role 동형)."""
+    lease = wp.Lease(slot="work/A_1", repo="A", session="me", pid=1, started="t",
+                     state="leased", bound=True)
+    d = lease.to_dict()
+    assert d["bound"] is True
+    restored = wp.Lease.from_dict(d)
+    assert restored.bound is True
+    assert restored == lease                   # __eq__(to_dict 동등)이 bound 포함
+
+
+def test_from_dict_missing_bound_defaults_false_backcompat(wp):
+    """구 장부(bound 부재) 로드 → bound=False(하위호환 read)·재기록해도 bound 키 안 생김(T-0389)."""
+    old = {"slot": "work/A_1", "repo": "A", "session": "me", "pid": 7,
+           "started": "t", "state": "leased", "test_cmd": None}
+    lease = wp.Lease.from_dict(old)
+    assert lease.bound is False
+    d = lease.to_dict()
+    assert "bound" not in d                     # bound: false 를 덧붙이지 않는다(왕복 무손실)
+    assert d == old
+
+
+def test_bind_slot_sets_bound_marker(wp):
+    """bind_slot 은 사람 bind 마커(bound=True)를 박고 장부에 영속화한다(신규·기존 슬롯 공통·T-0389)."""
+    # 신규 슬롯 append 경로.
+    lease = wp.bind_slot("work/A_1", "A", "A_1")
+    assert lease.bound is True
+    assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is True
+    # 기존 슬롯 update-in-place 경로(pool idle 슬롯을 사람이 직접 점유로 승격).
+    _seed(wp, wp.Lease(slot="work/A_2", repo="A", session="", pid=0, started="t", state="idle"))
+    lease2 = wp.bind_slot("work/A_2", "A", "A_2")
+    assert lease2.bound is True
+    assert next(l for l in wp.list_leases() if l.slot == "work/A_2").bound is True
+
+
+def test_bound_lease_excluded_from_reclaim_stale(wp):
+    """bound 슬롯(pid 죽음)은 reclaim_stale 회수 대상이 아니다 — 사람 bind 정체성 보호(T-0389).
+
+    `bind_slot` 이 적는 pid 는 즉사하는 ephemeral bootstrap subprocess pid 라, 방치하면
+    `leased && pid 죽음` = stale 로 오판된다. bound 마커가 그 회수를 막는다(readonly 가드 동형).
+    """
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", pid=999999,
+                       started="t", state="leased", bound=True))   # pid 죽음 + bound
+    git = FakeGit()
+    reclaimed = wp.reclaim_stale(git_runner=git)
+    assert reclaimed == []                      # pid 죽음이지만 bound 라 회수 안 함
+    after = wp.list_leases()[0]
+    assert after.state == "leased" and after.session == "A_1" and after.bound is True   # idle 화 안 됨
+
+
+def test_unbound_pool_lease_still_reclaimed(wp):
+    """bound 아닌 pool 슬롯(pid 죽음)은 현행대로 reclaim_stale 이 회수한다(T-0389·bound 보호는 bind 한정)."""
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="dead", pid=999999,
+                       started="t", state="leased"))   # bound 기본 False
+    git = FakeGit()
+    reclaimed = wp.reclaim_stale(git_runner=git)
+    assert reclaimed == ["work/A_1"]            # bound 아니라 현행 회수
+    assert wp.list_leases()[0].state == "idle"
+
+
+def test_old_ledger_lease_reclaimed_backcompat(wp):
+    """구 장부(bound 키 부재) 슬롯은 bound=False 동치라 pid 죽으면 현행대로 회수된다(T-0389 하위호환).
+
+    additive 마커의 부재=False 동치를 reclaim 경로에서 실증한다 — 마이그레이션 없이 구 장부가
+    현행 pid-회수 거동을 그대로 유지(bound 보호는 신규 bind_slot 이 명시로 박은 슬롯에만 발동).
+    """
+    # bound 키가 아예 없는 raw 장부를 파일로 직접 심는다(from_dict 하위호환 read 경로).
+    _seed(wp, wp.Lease.from_dict({"slot": "work/A_1", "repo": "A", "session": "dead",
+                                  "pid": 999999, "started": "t", "state": "leased"}))
+    git = FakeGit()
+    assert wp.reclaim_stale(git_runner=git) == ["work/A_1"]
+    assert wp.list_leases()[0].state == "idle"
+
+
+def test_bound_lease_survives_other_session_alloc_pm78(wp):
+    """PM 78 재현 — bind 후 타 명의 alloc 이 그 bound lease 를 못 뺏는다 → NeedsCreate.
+
+    F2 task alloc(타 세션)은 진입 시 reclaim_stale 을 부른다. bound 슬롯의 pid 가 죽어 있어도
+    (ephemeral bootstrap pid) 회수되지 않으므로, 그 슬롯은 leased 로 남아 alloc idle-탐색에
+    안 걸린다(풀 소진). 실측 결함(타 창 세션 bind slot 이 alloc 에 회수됨)의 회귀 차단.
+    """
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", pid=999999,
+                       started="t", state="leased", bound=True))   # 타 창 사람 bind(pid 죽음)
+    git = FakeGit()
+    # 타 명의(task main) alloc — 진입 reclaim_stale 이 bound 슬롯을 회수하지 못하고, 유일 슬롯이
+    # leased 라 idle 후보가 없다 → NeedsCreate(사용자 게이트).
+    with pytest.raises(wp.NeedsCreate):
+        wp.alloc("A", session="main", git_runner=git)
+    # bound 슬롯은 유실 없이 그대로(session/state/bound 보존).
+    survived = wp.list_leases()[0]
+    assert survived.session == "A_1" and survived.state == "leased" and survived.bound is True
+
+
+def test_alloc_branch_realloc_does_not_hijack_other_session_bound(wp):
+    """codex must-fix — resume/branch 재부착(2경로)이 타 세션 bound lease 를 탈취하지 않는다(T-0389).
+
+    `alloc(repo, branch=X)`/`resume=X` 가 그 브랜치를 체크아웃 중인 *타 세션 bound* 슬롯을 만나도
+    session/pid/bound 를 덮지 않는다(사람 bind 정체성 보호). 유일 슬롯이 bound 라 재부착 후보에서
+    제외 → 풀 소진 NeedsCreate. bound 슬롯은 세션/브랜치/마커 그대로 보존.
+    """
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", pid=999999,
+                       started="t", state="leased", bound=True))
+    git = FakeGit(head="a5-pay")   # bound 슬롯 live HEAD = a5-pay(요청 branch 와 매칭)
+    with pytest.raises(wp.NeedsCreate):
+        wp.alloc("A", branch="a5-pay", session="thief", git_runner=git)
+    survived = wp.list_leases()[0]
+    assert survived.session == "A_1" and survived.state == "leased" and survived.bound is True
+    assert wp.current_branch("work/A_1", git_runner=git) == "a5-pay"   # 탈취 재체크아웃 없음
+
+
+def test_alloc_branch_realloc_reattaches_unbound_same_branch(wp):
+    """대조(sensitivity) — bound 아닌 슬롯은 branch-매칭 재부착이 현행대로 동작한다(2경로 회귀 유지·T-0389)."""
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="old", pid=999999,
+                       started="t", state="leased"))   # bound 아님
+    git = FakeGit(head="a5-pay")
+    lease = wp.alloc("A", resume="a5-pay", session="new", git_runner=git)
+    assert lease.slot == "work/A_1" and lease.session == "new"   # 정상 재부착
+    assert lease.bound is False
+
+
+def test_alloc_idle_relance_clears_bound_marker(wp, proj):
+    """pool alloc 이 idle 슬롯을 재대여할 때 bound 마커를 해제한다 — 이후 현행 pid-회수 거동 복귀(T-0389).
+
+    bind→release 후 남은 idle 슬롯을 pool alloc 이 잡으면 사람 bind 소유가 아니므로 bound 를
+    clear 한다(마커가 잔존하면 reclaim 이 영영 안 돼 풀이 안 풀린다).
+    """
+    (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
+    # idle 슬롯에 bound 마커가 남아있는 엣지(방어) — alloc 이 재대여하며 해제해야 한다.
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", pid=0, started="t",
+                       state="idle", bound=True))
+    git = FakeGit()
+    leased = wp.alloc("A", session="me", git_runner=git)
+    assert leased.slot == "work/A_1" and leased.bound is False   # pool 대여 = 마커 해제
+    assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is False
+
+
+def test_release_clears_bound_marker(wp):
+    """명시 release 는 bind 점유를 종료 — bound 마커를 해제한다(git=None 동형 teardown·T-0389)."""
+    wp.bind_slot("work/A_1", "A", "A_1")        # bound=True
+    released = wp.release("work/A_1", require_clean=False)
+    assert released.state == "idle" and released.bound is False
+    assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is False
+
+
+def test_force_release_clears_bound_marker(wp):
+    """force_release 도 bind 점유를 종료 — bound 마커 해제(release 동형·백스톱·T-0389)."""
+    wp.bind_slot("work/A_1", "A", "A_1")        # bound=True
+    released = wp.force_release("work/A_1")
+    assert released.state == "idle" and released.bound is False
+    assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is False
+
+
+def test_reclaim_bound_guard_sensitivity(wp, monkeypatch):
+    """sensitivity — bound 가드가 load-bearing 임을 박제한다.
+
+    bound 가드를 무력화(모든 lease.bound 를 False 로 보면)하면 죽은-pid bound 슬롯이 회수된다
+    (=PM 78 결함 재현). 정상 로직은 bound 를 존중해 회수하지 않는다.
+    """
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", pid=999999,
+                       started="t", state="leased", bound=True))
+    git = FakeGit()
+    # 정상: bound 라 회수 안 됨.
+    assert wp.reclaim_stale(git_runner=git) == []
+
+    # 무력화: bound 판정을 죽이면(항상 False) 죽은-pid 슬롯이 회수된다(가드 부재 시 결함 재현).
+    _seed(wp, wp.Lease(slot="work/A_2", repo="A", session="A_2", pid=999999,
+                       started="t", state="leased", bound=True))
+
+    # 가드 무력화: reclaim 루프가 참조하는 bound 를 강제 False 로. _read_ledger 를 감싸
+    # bound 를 지운 리스를 돌려준다(가드가 없는 것과 동치 = PM 78 결함 재현).
+    real_read = wp._read_ledger
+
+    def stripped_read():
+        leases = real_read()
+        for l in leases:
+            l.bound = False
+        return leases
+
+    monkeypatch.setattr(wp, "_read_ledger", stripped_read)
+    assert wp.reclaim_stale(git_runner=git) == ["work/A_2"], "bound 가드 무력화 시 죽은-pid 슬롯 회수(결함 재현)"
 
 
 # ── mutation 거부 (set-base·rebase·dev·sync × readonly = 에러·엔진 경로 한정·결정 ④) ──
