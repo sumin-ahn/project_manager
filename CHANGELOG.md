@@ -7,7 +7,34 @@
 
 ## [Unreleased]
 
-## [1.3.3] - 2026-07-19
+## [1.3.4] - 2026-07-20
+
+세션/task 라이프사이클 장부 정합 3결함 폐쇄 + 표면(메시지) 개선 — 전부 additive·BREAKING 없음.
+adopter#0 도그푸딩(PM 78 task 모드 첫 실전)이 실측으로 발견한 것들. 전 변경 이중게이트(내부
+reviewer + codex·2건은 codex must-fix 재작업 수렴) 통과·회귀 4035.
+
+### Fixed
+- **pm_handoff 종료 git 재스냅 배선** (T-0388) — 핸드오프가 "두고 간 상태"를 lease 장부에 재기록하지
+  않아(도착 스냅만 잔존), 세션 중 브랜치가 바뀌면(릴리즈 등) 차기 부트스트랩 0단계가 `diverged`
+  외부-개입 **오경보**로 FAIL-LOUD 하던 갭 폐쇄. 부기 완료 후 `record_git_snapshot(slot)` 호출
+  (base 보존·`--done` 경로 제외·fail-soft loud).
+- **사람 bind lease 의 reclaim/재부착 보호 — `Lease.bound` 마커** (T-0389) — `bind_slot` 의 pid 는
+  즉사하는 bootstrap subprocess pid 라, 타 명의 `alloc` 진입 `reclaim_stale` 이 stale 오판으로 남의
+  세션/task 바인딩을 회수(정체성 탈취)할 수 있었다(T-0074 가 dormant 로 박제한 cross-path 를 F2 task
+  alloc 출하가 live 화·PM 78 실측). `bound: true`(additive·구 장부=false·마이그레이션 0)를 bind 가
+  기록, reclaim 과 alloc branch/resume 재부착 경로가 제외. 해제는 명시 lifecycle 전이에서만.
+- **부트스트랩 `--task` 동반 `--repo/--slot` = task 명의 원스텝 바인딩** (T-0390) — 종전엔 세션 명의
+  bind + task 작업공간 0개라 직후 F6 이 loud 차단하고 `pm-config alloc` 별도 스텝을 요구. 이제 지정
+  슬롯을 `bind_slot(session=<task명>)` 로 리스해 부트스트랩 한 줄로 작업 가능(멱등 재진입·타 명의
+  점유는 거부·슬롯-only/task-only 경로 100% 불변). 카드 슬롯 번호는 슬롯 식별자에서 파생(task명
+  session 오염 기계 차단).
+
+### Added / Changed (표면·거동 변경 0)
+- **메시지 3건** (T-0391) — ① 신규 task 첫 부트스트랩: `task 1차` + "🆕 신규 task — 복구할 인계
+  없음" 사유 명시(종전 "(log/current.md 없음 또는 entry 파싱 실패)" 오독 제거) ② 0단계 diverged
+  FAIL-LOUD: head 관계 판정 근거 + 정당 판단 시 재동기 커맨드 실값 제시 — `worktree_pool.py record
+  <slot>` CLI 신설(`record_git_snapshot` thin 노출·자동 실행 없음·해소 주체=사용자 불변) ③ 핸드오프
+  재스냅 출력: 실갱신 vs 무변경(스냅 불가·기존 유지) 구분. pm-worktree 스킬 열거에 `record` 반영.
 
 세션 뷰의 축을 "생성 세션" 하나로 통일하는 뷰 계층 변경 — 타 세션 티켓 정보는 기본 출력에서 완전히
 사라진다(카운트 줄 포함). 전 변경 이중게이트(내부 reviewer + codex 3라운드 수렴) 통과·회귀 3996.
