@@ -2774,6 +2774,18 @@ def record_git_snapshot(slot: str, *, base_branch: "str | None" = None,
         return target
 
 
+def read_lease(slot: str) -> "Lease | None":
+    """슬롯 lease 를 장부에서 읽어 반환한다 — read-only 조회 프리미티브 (`record_git_snapshot` 짝·T-0391).
+
+    `record_git_snapshot` 이 갱신하는 `lease.git`(도착 기대 스냅)을 *갱신 전에* 조회하려는
+    호출부(pm_handoff `_record_slot_snapshot` 의 실갱신/무변경 판별)를 위한 얇은 단일-lease
+    read. `_read_ledger` 를 짧게 lock 안에서 훑어 slot 일치 lease 를 반환한다(없으면 None).
+    부작용/git 조회 없음(순수 장부 read)."""
+    with _lease_lock():
+        leases = _read_ledger()
+        return next((l for l in leases if l.slot == slot), None)
+
+
 def _is_ancestor(git_runner: GitRunner, ancestor: str, descendant: str) -> bool:
     """`git merge-base --is-ancestor <ancestor> <descendant>` — ancestor 가 descendant 의 조상인가 (㉒·T-0350).
 
@@ -4229,6 +4241,36 @@ def _cmd_refresh(args) -> int:
     return 0
 
 
+def _cmd_record(args) -> int:
+    """`record <slot>` CLI 핸들러 — 도착 스냅(lease.git)을 live 로 재기록 (T-0391·base 보존).
+
+    0단계 record-vs-live diverged FAIL-LOUD 를 사용자가 정당(의도한 브랜치 전환·릴리즈 등)이라
+    판단했을 때의 명시 재동기 진입 — `record_git_snapshot(slot)`(base 미전달=기존 base 보존·
+    arrival 동형) 프리미티브를 CLI 로 노출한다(감지=기계·해소=사용자·자동 실행 없음). 슬롯 형식
+    오류·장부 미등록·스냅 불가는 rc 1 로 명시 실패(silent 무변경 방지)."""
+    try:
+        slot = _normalize_slot(args.slot)
+    except SlotResolutionError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    before = read_lease(slot)
+    before_git = before.git if (before is not None and isinstance(before.git, dict)) else None
+    lease = record_git_snapshot(slot)
+    if lease is None:
+        print(f"[중단] 슬롯 {slot} 이 리스 장부에 없다 — record 는 등록된 슬롯에만 스냅을 기록한다.",
+              file=sys.stderr)
+        return 1
+    after_git = lease.git if isinstance(lease.git, dict) else None
+    if after_git is None or after_git == before_git:
+        # 스냅 불가(슬롯 worktree 경로 부재 등 → `_apply_git_snapshot` 이 기존 git 보존)·무변경.
+        print(f"[중단] 슬롯 {slot} git 스냅 재기록 실패 — 슬롯 worktree 를 스냅할 수 없다(경로 부재/git 오류). "
+              "슬롯이 실재하는지 확인하라.", file=sys.stderr)
+        return 1
+    print(f"✓ 슬롯 {slot} 도착 스냅 재기록: branch=`{after_git.get('branch')}` "
+          f"head=`{(after_git.get('head') or '?')[:12]}` (base 보존·이후 0단계 정합이 이 스냅 기준·T-0391).")
+    return 0
+
+
 def main(argv: "list[str] | None" = None) -> int:
     """argparse 진입점 — pm-worktree 스킬이 래핑할 `dev`/`sync`/`set-base`/`status` 커맨드 (ADR-0049
     파일럿 T-γ·T-0277·ADR-0057 결정 5·T-0318·T-0352).
@@ -4309,9 +4351,17 @@ def main(argv: "list[str] | None" = None) -> int:
     p_refresh.add_argument("--onto", default=None,
                            help="갱신 기준 브랜치(생략 시 기록된 base.branch·둘 다 없으면 거부).")
 
+    # record <slot> — 도착 기대 스냅(lease.git)을 live 로 재기록(base 보존·T-0391·위치인자 <slot>).
+    # 0단계 record-vs-live diverged FAIL-LOUD 를 사용자가 정당(의도한 브랜치 전환 등)이라 판단했을
+    # 때의 명시 재동기 진입 — `record_git_snapshot` 프리미티브의 CLI 노출(감지=기계·해소=사용자).
+    p_record = subparsers.add_parser(
+        "record",
+        help="슬롯 도착 스냅(lease.git·branch/head)을 live 로 재기록(base 보존) — 0단계 diverged 정당 판단 시 명시 재동기.")
+    p_record.add_argument("slot", help="대상 슬롯(`work/<repo>_<N>` 또는 접두 생략 `<repo>_<N>`).")
+
     args = parser.parse_args(argv)
 
-    # set-base / status / rebase / refresh — 위치인자 <slot> 경로(identity 파싱 미진입·pool 관리·spike §F9/F10/F11).
+    # set-base / status / rebase / refresh / record — 위치인자 <slot> 경로(identity 파싱 미진입·pool 관리·spike §F9/F10/F11·T-0391).
     if args.command == "set-base":
         return _cmd_set_base(args)
     if args.command == "status":
@@ -4320,6 +4370,8 @@ def main(argv: "list[str] | None" = None) -> int:
         return _cmd_rebase(args)
     if args.command == "refresh":
         return _cmd_refresh(args)
+    if args.command == "record":
+        return _cmd_record(args)
 
     try:
         identity = ia.parse_identity(args)

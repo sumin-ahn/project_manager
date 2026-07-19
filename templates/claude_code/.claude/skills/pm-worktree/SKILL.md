@@ -1,6 +1,6 @@
 ---
 name: pm-worktree
-description: "worktree/submodule 운영중 관리 — submodule 을 dev 브랜치로 지정(pool selective resync 로부터 보호)·drift 난 detached submodule 을 pin 으로 수동 재동기·슬롯 기준점(base) 사용자 명시 기록(set-base)·슬롯 git 구성 조회(status·단일/일괄·submodule pin/drift·dirty)·슬롯 base rebase(단일/일괄·선-검사·충돌 그대로+loud·장부 원자 갱신·자동 rebase 없음)·readonly 공유 슬롯 갱신(refresh). backbone CLI .project_manager/tools/worktree_pool.py (dev/sync/set-base/status/rebase/refresh) thin wrapper. Triggers: 'submodule dev 지정', 'submodule 작업 중 선언', 'worktree submodule drift 재동기', 'worktree 브랜치 관리', '슬롯 기준점 지정', 'set-base', 'worktree status', '슬롯 rebase', 'worktree rebase', '슬롯 base 변경', 'readonly 슬롯 갱신', 'refresh', 'pm-worktree'."
+description: "worktree/submodule 운영중 관리 — submodule 을 dev 브랜치로 지정(pool selective resync 로부터 보호)·drift 난 detached submodule 을 pin 으로 수동 재동기·슬롯 기준점(base) 사용자 명시 기록(set-base)·슬롯 git 구성 조회(status·단일/일괄·submodule pin/drift·dirty)·슬롯 base rebase(단일/일괄·선-검사·충돌 그대로+loud·장부 원자 갱신·자동 rebase 없음)·readonly 공유 슬롯 갱신(refresh)·슬롯 lease git 스냅 명시 재동기(record — 0단계 diverged 정당 판단 시). backbone CLI .project_manager/tools/worktree_pool.py (dev/sync/set-base/status/rebase/refresh/record) thin wrapper. Triggers: 'submodule dev 지정', 'submodule 작업 중 선언', 'worktree submodule drift 재동기', 'worktree 브랜치 관리', '슬롯 기준점 지정', 'set-base', 'worktree status', '슬롯 rebase', 'worktree rebase', '슬롯 base 변경', 'readonly 슬롯 갱신', 'refresh', '슬롯 재동기', 'record', 'pm-worktree'."
 audience: pm-internal
 ---
 
@@ -11,8 +11,8 @@ audience: pm-internal
 > 부트스트랩)로부터 보호하고, drift 난 detached(consume) submodule 을 pin 으로 **수동 재동기**하며,
 > 슬롯 **기준점(base)을 사용자 명시로 기록**(`set-base`)하고, 슬롯 git 구성을 **조회**(`status`·단일/
 > 일괄·submodule pin/drift·dirty)하며, 슬롯 base 를 **rebase**(단일/일괄·선-검사·충돌 그대로+loud·
-> 장부 원자 갱신)하고, readonly 공유 슬롯을 released 최신으로 **갱신**(`refresh`)한다. backbone =
-> `.project_manager/tools/worktree_pool.py`(`dev`/`sync`/`set-base`/`status`/`rebase`/`refresh`). 비즈니스
+> 장부 원자 갱신)하고, readonly 공유 슬롯을 released 최신으로 **갱신**(`refresh`)하고, 슬롯 lease git 스냅을 **명시 재동기**(`record` — 부트스트랩 0단계 diverged 를 사용자가 정당 판단했을 때·T-0391)한다. backbone =
+> `.project_manager/tools/worktree_pool.py`(`dev`/`sync`/`set-base`/`status`/`rebase`/`refresh`/`record`). 비즈니스
 > 로직 0 — 엔진 CLI 호출 thin wrapper (ADR-0049 명령어化 4요소·ADR-0051 live-HEAD 역할모델).
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
@@ -54,7 +54,7 @@ main 으로 rebase 해" 라고 지시하면 PM 이 이 스킬을 부른다. 셋�
 낸다 — 정체성(에이전트 맥락)을 도구에 **명시 전달**해 오타깃을 막는다. `dev`/`sync` 는 `--repo <repo>
 --slot <N>` 을 명시한다(예: `--repo project_manager --slot 1`) — 생략하면 cwd·세션 leased 슬롯으로
 해소하나, 미해소(0개)·모호(≥2)면 rc 1 로 명확히 실패한다(침묵 no-op 아님). `set-base`/`status`/
-`rebase`/`refresh` 는 대상 슬롯을 **위치인자 `<slot>`** 으로 직접 지정한다(임의 슬롯 pool 관리 — 자기
+`rebase`/`refresh`/`record` 는 대상 슬롯을 **위치인자 `<slot>`** 으로 직접 지정한다(임의 슬롯 pool 관리 — 자기
 세션 슬롯이 아닐 수 있음). `status`/`rebase` 는 `--task <이름>` 으로 그 task 보유 전 슬롯을 일괄
 지칭한다. submodule 경로·슬롯은 형식/목록 검증을 거쳐 슬롯 경계 밖(절대경로·`..`)은 거부된다.
 

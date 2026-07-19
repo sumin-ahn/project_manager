@@ -4405,6 +4405,58 @@ def test_record_git_snapshot_unknown_slot_returns_none(wp):
     assert wp.record_git_snapshot("work/A_9", git_runner=FakeGit()) is None
 
 
+# ── read_lease + record CLI (0단계 diverged 정당 판단 시 명시 재동기·T-0391) ─────
+
+
+def test_read_lease_returns_matching_lease_or_none(wp):
+    """read_lease — 슬롯 lease 조회(순수 장부 read·record_git_snapshot 짝)·미등록은 None (T-0391)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    lease = wp.read_lease("work/A_1")
+    assert lease is not None and lease.slot == "work/A_1"
+    assert wp.read_lease("work/A_9") is None
+
+
+def test_cmd_record_success_reports_updated_snapshot(wp, monkeypatch, capsys):
+    """record CLI — 스냅 갱신 성공 시 재기록 branch/head surface·rc 0 (감지=기계·해소=사용자·T-0391)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    before = type("_L", (), {"git": {"branch": "old", "head": "aaaaaaaa"}})()
+    after = type("_L", (), {"git": {"branch": "v1.3.3", "head": "bbbbbbbbbbbb"}})()
+    monkeypatch.setattr(wp, "read_lease", lambda slot: before)
+    monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: after)
+    rc = wp.main(["record", "A_1"])   # 접두 생략도 _normalize_slot 이 work/ 붙임.
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "도착 스냅 재기록" in out and "v1.3.3" in out
+
+
+def test_cmd_record_ledger_missing_slot_fails(wp, monkeypatch, capsys):
+    """record CLI — 장부 미등록(record None)이면 rc 1 명시 실패(silent 무변경 방지)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    monkeypatch.setattr(wp, "read_lease", lambda slot: None)
+    monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: None)
+    rc = wp.main(["record", "A_1"])
+    assert rc == 1
+    assert "리스 장부에 없다" in capsys.readouterr().err
+
+
+def test_cmd_record_no_change_fails_loud(wp, monkeypatch, capsys):
+    """record CLI — 스냅 불가로 before==after(무변경)면 rc 1(성공 위장 금지·기존 git 보존 인지)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    same = {"branch": "v1.3.3", "head": "bbbbbbbb"}
+    monkeypatch.setattr(wp, "read_lease", lambda slot: type("_L", (), {"git": same})())
+    monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: type("_L", (), {"git": same})())
+    rc = wp.main(["record", "A_1"])
+    assert rc == 1
+    assert "스냅할 수 없다" in capsys.readouterr().err
+
+
+def test_cmd_record_bad_slot_rejected(wp, capsys):
+    """record CLI — traversal/부적격 슬롯 형식은 rc 1(슬롯 경계 보호·_normalize_slot)."""
+    rc = wp.main(["record", "../evil"])
+    assert rc == 1
+    assert "형식 오류" in capsys.readouterr().err
+
+
 def test_alloc_records_arrival_git_snapshot(wp):
     """alloc(idle 리스 경로) 이 arrival git 스냅을 기록한다(부트스트랩 bind/alloc 시 스냅·interface)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"))

@@ -1102,6 +1102,18 @@ _FRESH_SLOT_BANNER = (
     "새 PM 세션으로 시작하고 첫 /pm-handoff 가 pm_state 를 생성한다."
 )
 
+# task 첫세션(신규 task·pm_state·자기 task handoff 둘 다 부재) 표면 (T-0391). task 는 슬롯 축과
+# 직교(⑥)라 슬롯 fresh 배너/1차 강제 대상이 아니어서, 첫세션이 차수 placeholder(`PM <?>차`)+"log
+# 없음/파싱 실패"로 나 오류처럼 읽혔다(PM 78 실측·접힘은 설계인데 사유 미표기). 신규 task 사유를
+# 명시해 PM 이 없는 인계/pm_state 를 손으로 뒤지는 스크램블을 막는다(fresh 슬롯 표면과 동형·surface-only).
+_TASK_FIRST_SESSION_LABEL = "task 1차"
+_TASK_FIRST_SESSION_LOG_NOTICE = (
+    "(🆕 신규 task — 복구할 인계 없음 · 첫 /pm-handoff 가 pm_state 를 생성)"
+)
+_TASK_FIRST_SESSION_STATE_NOTICE = (
+    "(🆕 신규 task — pm_state 없음 · 첫 /pm-handoff 가 생성 · 복구할 남은작업 없음)"
+)
+
 
 def _slot_count_label(session: str) -> str:
     """`<repo>_<N>` 세션 키 → 카운트 스코프 라벨 `"slot N"` (ADR-0056 #6·T-0312).
@@ -1266,6 +1278,29 @@ def _format_slot_status_lines(status: dict | None) -> list[str]:
 # **만** 한다(자동 채택 없음·추론 금지·결정 ⑪·T-0352·spike §F9). 흔한 base 브랜치를 훑어 merge-base
 # 가 해소되는 것만 후보로 보여주고, 사용자가 `set-base` 로 명시 지정한다(엔진=surface·사용자=결정).
 _UNRECORDED_BASE_CANDIDATE_BRANCHES = ("origin/main", "origin/master", "origin/develop")
+
+
+def _phase0_diverge_reason(result) -> str:
+    """0단계 record-vs-live FAIL-LOUD 의 판정 근거 한 줄 (T-0391·surface-only).
+
+    `compare_slot_git` 의 `fail_loud`(branch 변경 또는 head diverged)를 사람이 읽을 수 있는
+    사유로 푼다 — `head_relation`/`branch_match` 원값만으로는 PM 이 "왜 diverged 인지"를 코드
+    정독으로 재구성해야 했다(PM 78 실측·컨텍스트 낭비). 판정/거동은 안 바꾸고 근거만 표면화한다.
+      - branch_match False → 브랜치가 바뀜(세션 중 checkout·외부 개입).
+      - branch 동일·head_relation diverged → 같은 브랜치인데 live HEAD 가 기록 커밋의 후손이
+        아님(reset·force·rebase 등 되감기/divergent — 내 커밋 위 진행이 아님).
+    """
+    recorded = getattr(result, "recorded", None) or {}
+    live = getattr(result, "live", None) or {}
+    if not getattr(result, "branch_match", True):
+        return (
+            f"기록 branch `{recorded.get('branch')}` ≠ live branch `{live.get('branch')}` — "
+            "브랜치가 바뀜(세션 중 checkout 또는 외부 개입)"
+        )
+    return (
+        "같은 브랜치인데 live HEAD 가 기록 커밋의 후손이 아님 — "
+        "reset·force·rebase 등 되감기/divergent(내 커밋 위 진행이 아님)"
+    )
 
 
 def _format_slot_era_warning(info: dict | None) -> str | None:
@@ -2163,9 +2198,19 @@ class PmBootstrap:
         open_tickets = board["open_tickets"]
         lint = board["lint"]
 
+        # task 첫세션 (T-0391) — 신규 task 로 바인딩됐는데 인계 컨텍스트가 전무(pm_state·자기 task
+        # handoff 둘 다 부재 → `_collect_handoff_context` 가 None). 슬롯 축과 직교(⑥)라 fresh 슬롯
+        # 배너/1차 강제 대상이 아니어서, 아래 차수/log/pm_state 섹션이 placeholder 로 나 오류처럼
+        # 읽혔다 — 신규 task 사유를 명시 분기한다(surface-only·판정 무변경). task resume 은
+        # handoff_ctx 가 해소돼(log 태그 entry→차수) 이 분기에 안 걸린다(현행 보존).
+        task_first_session = self._task_name is not None and handoff_ctx is None
         # 차수 announce (T-0179) — bound slot pm_state 에서 추론한 `PM <N>차`. 미해소/추론불가는
-        # placeholder(`?`) — self-surface 헤더이지 강제 아님(crash 금지).
-        session_label = _format_session_label(handoff_ctx)
+        # placeholder(`?`) — self-surface 헤더이지 강제 아님(crash 금지). task 첫세션은 슬롯 차수
+        # placeholder 대신 `task 1차` 로 명시(T-0391).
+        session_label = (
+            _TASK_FIRST_SESSION_LABEL if task_first_session
+            else _format_session_label(handoff_ctx)
+        )
         # fresh 슬롯 (T-0284) — 첫 바인딩(pm_state·자기 handoff 둘 다 부재). log/pm_state 섹션의
         # "미해소/직접 확인" placeholder 를 명시 "fresh·이전맥락없음" 배너로 분기(스크램블 낭비 차단).
         fresh_slot = bool(handoff_ctx and handoff_ctx.get("fresh_slot"))
@@ -2257,6 +2302,10 @@ class PmBootstrap:
             # fresh 슬롯 (T-0284) — 이 슬롯의 이전 handoff 없음. 전역 마지막 entry 유입은 타 슬롯
             # 컨텍스트 오염(MF-2·ADR-0047)이라 금지 — "복구할 게 없음"을 명시(스크램블 금지).
             lines.append("- (🆕 첫 바인딩 슬롯 — 이 슬롯의 이전 handoff 없음 · 복구할 컨텍스트 없음)")
+        elif task_first_session:
+            # task 첫세션 (T-0391) — 신규 task 라 자기 task handoff entry 부재. "log 없음/파싱 실패"
+            # 는 신규 task 접힘을 오류처럼 보이게 하므로 신규 task 사유를 명시(스크램블 차단).
+            lines.append(f"- {_TASK_FIRST_SESSION_LOG_NOTICE}")
         else:
             lines.append("- (log/current.md 없음 또는 entry 파싱 실패)")
         lines.append("")
@@ -2274,6 +2323,10 @@ class PmBootstrap:
             lines.append(
                 "- (🆕 첫 바인딩 슬롯 — pm_state 없음 · 첫 /pm-handoff 가 생성 · 복구할 남은작업 없음)"
             )
+        elif task_first_session:
+            # task 첫세션 (T-0391) — task 서술 pm_state 부재(첫 /pm-handoff 가 생성·T-0356). 없는
+            # pm_state 를 "직접 확인"으로 뒤지게 만드는 스크램블 대신 신규 task 사유를 명시.
+            lines.append(f"- {_TASK_FIRST_SESSION_STATE_NOTICE}")
         else:
             ptr_path = handoff_ctx.get("state_path") if handoff_ctx else self._pm_state_display_path()
             lines.append(
@@ -2890,9 +2943,14 @@ class PmBootstrap:
             print(
                 f"[중단·0단계] 슬롯 {slot_id} 의 git 상태가 두고 간 기록과 다릅니다 — 외부 개입 가능성.\n"
                 f"  기록(기대): branch={recorded.get('branch')!r} head={recorded.get('head')!r}\n"
-                f"  실제(live): branch={live.get('branch')!r} head={live.get('head')!r}"
-                f"  (head_relation={getattr(result, 'head_relation', None)!r})\n"
-                f"  정당한 외부 변경이면 사용자 판단 후 명시 재동기하세요(submodule drift 재동기 동형).",
+                f"  실제(live): branch={live.get('branch')!r} head={live.get('head')!r}\n"
+                f"  판정 근거: {_phase0_diverge_reason(result)} "
+                f"(head_relation={getattr(result, 'head_relation', None)!r}·"
+                f"branch_match={getattr(result, 'branch_match', None)!r})\n"
+                f"  정당한 외부 변경(의도한 브랜치 전환·릴리즈 등)이면 사용자 판단 후 아래 커맨드로 도착 스냅을 "
+                f"live 로 재동기하세요(감지=기계·해소=사용자·자동 실행 안 함):\n"
+                f"    {_CARD_TOOL_INVOKE}/worktree_pool.py record {slot_id}\n"
+                f"  (submodule pin drift 만이면 별도 — `worktree_pool.py sync`·기준점 변경은 `set-base`.)",
                 file=sys.stderr,
             )
             return 1

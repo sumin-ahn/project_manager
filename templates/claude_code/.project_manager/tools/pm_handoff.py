@@ -1723,11 +1723,18 @@ class PmHandoff:
         T-0350 write 프리미티브 `worktree_pool.record_git_snapshot(slot)` 만 호출한다 — base 는
         미전달(기존 보존·arrival 동형)·판정 로직 재구현 없음. fail-soft: worktree_pool 부재
         (솔로/미셋업)·슬롯 미바인딩/장부 부재(record None)·스냅 예외는 무해 skip(핸드오프
-        차단 안 함). release(--done·git 정리) 경로는 호출부에서 제외한다."""
+        차단 안 함). release(--done·git 정리) 경로는 호출부에서 제외한다.
+
+        **실갱신 vs 무변경 구분 출력(T-0391·dual-gate suggestion)**: `record_git_snapshot` 은 슬롯
+        live 스냅이 불가하면(worktree 경로 부재 등) 기존 `lease.git` 을 clobber 하지 않고 그대로
+        둔다(`_apply_git_snapshot` no-op·silent 손실 방지). 그럴 때 옛 branch/head 를 "✓ 기록"으로
+        내면 갱신 안 됐는데 성공처럼 읽힌다 — 재스냅 *전* lease.git(`read_lease`)과 *후* 값을 비교해
+        실제 바뀌었을 때만 "재스냅 기록", 무변경이면 "스냅 불가·기존 유지"로 구분 출력한다."""
         wp = self._worktree_pool or _load_worktree_pool()
         if wp is None:
             print("  worktree_pool 미배선(솔로/미셋업) — git 재스냅 skip(무해).")
             return
+        before_git = self._lease_git_before(wp, slot)
         try:
             lease = wp.record_git_snapshot(slot)
         except Exception as exc:  # noqa: BLE001 — fail-soft: 재스냅 실패가 핸드오프를 막지 않는다.
@@ -1736,11 +1743,37 @@ class PmHandoff:
         if lease is None:
             print(f"  ⚠ slot {slot!r} 리스 장부에 없음 — git 재스냅 skip(무해).", file=sys.stderr)
             return
-        git = lease.git if isinstance(lease.git, dict) else {}
-        print(
-            f"  ✓ git 재스냅 기록: {slot} → "
-            f"branch=`{git.get('branch')}` head=`{git.get('head')}` (여기 두고 간다·ADR-0013)"
-        )
+        after_git = lease.git if isinstance(lease.git, dict) else None
+        if after_git is not None and after_git != before_git:
+            print(
+                f"  ✓ git 재스냅 기록: {slot} → "
+                f"branch=`{after_git.get('branch')}` head=`{after_git.get('head')}` "
+                "(실갱신·여기 두고 간다·ADR-0013)"
+            )
+        else:
+            # 무변경 — 슬롯 live 스냅 불가(worktree 경로 부재 등)로 기존 기록 유지(clobber 방지·무해).
+            print(
+                f"  · git 재스냅 무변경: {slot} — 슬롯 live 스냅 불가·기존 기록 유지"
+                "(스냅 불가·차기 0단계는 기존 스냅 기준·무해)."
+            )
+
+    def _lease_git_before(self, wp, slot: str) -> "dict | None":
+        """재스냅 *전* 슬롯 lease.git 을 조회한다 — 실갱신/무변경 판별용 (T-0391·fail-soft).
+
+        worktree_pool `read_lease`(순수 장부 read·`record_git_snapshot` 짝)로 현재 스냅을 읽는다.
+        구버전 풀(`read_lease` 부재)·조회 실패·미기록은 None(→ 후 값이 dict 면 실갱신으로 취급·
+        보수적: 판별 불가는 '기록'으로 표기해 무변경 오표기보다 정보 손실이 적다)."""
+        reader = getattr(wp, "read_lease", None)
+        if reader is None:
+            return None
+        try:
+            lease = reader(slot)
+        except Exception:  # noqa: BLE001 — fail-soft: 조회 실패는 None(판별 보수적 폴백).
+            return None
+        if lease is None:
+            return None
+        git = getattr(lease, "git", None)
+        return git if isinstance(git, dict) else None
 
     # ── 기본 subprocess 구현 (실제 실행) ──────────────────────────────────────
 

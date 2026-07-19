@@ -671,3 +671,57 @@ def test_task_alone_does_not_trigger_slot_auto_resolve(bootstrap, monkeypatch):
     assert rc == 0
     assert flag["called"] is False
     assert captured.get("task") == "job1" and captured.get("repo") is None
+
+
+# ── T-0391 ①: task 첫세션 사유 명시 (placeholder/스크램블 대신) ─────────────────
+# 신규 task 첫 부트스트랩(pm_state·자기 task handoff 둘 다 부재 → handoff_ctx=None)이 슬롯 차수
+# placeholder(`PM <?>차`)+"(log/current.md 없음 또는 entry 파싱 실패)"로 나 오류처럼 읽혔다(PM 78).
+# `_build_markdown` 단위(test_slot_dashboard 동형)로 task 첫세션 분기의 세 표면을 직접 구동한다.
+
+_T0391_BOARD = {"counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
+                "open_tickets": [], "lint": "clean"}
+_T0391_GIT = {"branch": "main", "commits": [], "working_tree": "clean"}
+
+
+def test_task_first_session_labels_task_1cha_not_placeholder(bootstrap):
+    """task 첫세션(handoff_ctx None + _task_name 세팅) → 헤더 `task 1차` · `PM <?>차` placeholder 부재."""
+    inst = bootstrap.PmBootstrap(run_git_fn=lambda a: (0, ""))
+    inst._task_name = "payments-refactor"
+    md = inst._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, "ts", None, None)
+    assert "## task 1차 부트스트랩" in md
+    assert "PM <?>차" not in md
+
+
+def test_task_first_session_log_and_state_notice_not_scramble(bootstrap):
+    """task 첫세션 → log/pm_state 섹션이 "없음/파싱 실패"·"직접 확인" 스크램블 대신 신규 task 사유 명시."""
+    inst = bootstrap.PmBootstrap(run_git_fn=lambda a: (0, ""))
+    inst._task_name = "payments-refactor"
+    md = inst._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, "ts", None, None)
+    # log 섹션 — 신규 task 사유 명시(스크램블 유발 표현 부재).
+    assert "신규 task — 복구할 인계 없음" in md
+    assert "log/current.md 없음 또는 entry 파싱 실패" not in md
+    # pm_state 섹션 — 신규 task 사유 명시("직접 확인" 스크램블 부재).
+    assert "신규 task — pm_state 없음" in md
+    assert "직접 확인" not in md
+
+
+def test_non_task_first_session_keeps_placeholder(bootstrap):
+    """비-task(솔로·_task_name None) + handoff_ctx None → 현행 placeholder/포인터 보존(회귀 0)."""
+    inst = bootstrap.PmBootstrap(run_git_fn=lambda a: (0, ""))
+    # _task_name 은 기본 None — task 분기 미발동.
+    md = inst._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, "ts", None, None)
+    assert "## PM <?>차 부트스트랩" in md
+    assert "log/current.md 없음 또는 entry 파싱 실패" in md
+    assert "task 1차" not in md
+
+
+def test_task_resume_not_forced_to_task_first_branch(bootstrap):
+    """task resume(handoff_ctx 해소·session_num int) → task 첫세션 분기 미발동(현행 `PM N차` 보존)."""
+    inst = bootstrap.PmBootstrap(run_git_fn=lambda a: (0, ""))
+    inst._task_name = "payments-refactor"
+    ctx = {"session_num": 3, "session_stale": False, "state_session_num": 2,
+           "remaining_work": None, "state_path": "pm_state.md", "fresh_slot": False}
+    md = inst._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, "ts", ctx, None)
+    assert "## PM 3차 부트스트랩" in md
+    assert "task 1차" not in md
+    assert "신규 task — 복구할 인계 없음" not in md

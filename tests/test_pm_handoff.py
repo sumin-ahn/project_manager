@@ -1184,11 +1184,16 @@ class _SnapPool:
     모델링한다. release/current_branch 는 --done 경로 공존 검증용(release 시 재스냅 skip 대조).
     """
 
-    def __init__(self, *, lease_git=None, return_none=False):
+    def __init__(self, *, lease_git=None, before_git=None, return_none=False):
         self.snap_calls: list[tuple] = []
         self.release_calls: list[tuple] = []
         self._lease_git = lease_git or {"branch": "v1.3.3", "head": "f0cd6cf"}
+        # 재스냅 *전* lease.git (실갱신/무변경 판별·T-0391). 기본은 after 와 달라 실갱신으로 읽힌다.
+        self._before_git = before_git or {"branch": "v1.3.2", "head": "old0000"}
         self._return_none = return_none
+
+    def read_lease(self, slot):
+        return type("_L", (), {"git": self._before_git})()
 
     def record_git_snapshot(self, slot, **kwargs):
         self.snap_calls.append((slot, kwargs))
@@ -1237,7 +1242,25 @@ def test_run_records_slot_snapshot_after_bookkeeping(hf, tmp_path, capsys):
     out = capsys.readouterr().out
     # 재스냅 시점 = 부기([2/7] log·[3/7] pm_state) 완료 후 — 출력 순서로 확인.
     assert out.index("[재스냅]") > out.index("[7/7]")
+    # before(v1.3.2) ≠ after(v1.3.3) → 실갱신 표기(옛 값 성공 위장 아님·T-0391).
     assert "git 재스냅 기록: work/project_manager_1" in out
+    assert "실갱신" in out
+
+
+def test_run_snapshot_no_change_distinguished_from_real_update(hf, tmp_path, capsys):
+    """T-0391 ③: 재스냅 전/후 lease.git 동일(스냅 불가·기존 유지)이면 "무변경"으로 구분 출력(옛 값 성공 위장 금지)."""
+    same = {"branch": "v1.3.3", "head": "f0cd6cf"}
+    pool = _SnapPool(before_git=same, lease_git=same)   # before == after → 스냅 불가·무변경 모델.
+    handoff = _hermetic_handoff(hf, tmp_path, pool)
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True,
+        worktree_slot="work/project_manager_1",
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "git 재스냅 무변경" in out
+    assert "기존 기록 유지" in out
+    assert "실갱신" not in out           # 무변경을 성공(실갱신)으로 오표기하지 않는다.
 
 
 def test_run_snapshot_failsoft_when_ledger_missing_slot(hf, tmp_path, capsys):

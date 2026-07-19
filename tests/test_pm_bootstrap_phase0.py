@@ -86,10 +86,11 @@ class _FakeCompare:
     """compare_slot_git 결과 대역 (T-0350 GitCompareResult 소비 표면·0단계 record-vs-live)."""
 
     def __init__(self, *, fail_loud=False, unrecorded=False, head_relation="match",
-                 submodule_drift=None, recorded=None, live=None):
+                 submodule_drift=None, recorded=None, live=None, branch_match=True):
         self.fail_loud = fail_loud
         self.unrecorded = unrecorded
         self.head_relation = head_relation
+        self.branch_match = branch_match
         self.submodule_drift = submodule_drift or []
         self.recorded = recorded or {}
         self.live = live or {}
@@ -482,6 +483,45 @@ def test_record_vs_live_fail_loud_rejects(bootstrap, tmp_path, capsys):
     assert "0단계" in cap.err and "다릅니다" in cap.err
     assert pool.compare_calls == ["work/X_2"], "compare_slot_git 을 소비(호출)하지 않았다"
     assert pool.bind_calls == []
+
+
+def test_fail_loud_output_surfaces_reason_and_resync_command(bootstrap, tmp_path, capsys):
+    """T-0391 ②: fail_loud 출력이 판정 근거 + 재동기 커맨드 실값(`worktree_pool.py record <slot>`)을 담는다.
+
+    head diverged(같은 브랜치·비후손)면 "후손이 아님" 근거, 그리고 자동 실행 아닌 사용자용 record
+    커맨드 실값이 정확한 slot_id 로 제시돼야 한다(PM 78 코드 정독 낭비 폐쇄·감지=기계·해소=사용자)."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    cmp = _FakeCompare(fail_loud=True, head_relation="diverged", branch_match=True,
+                       recorded={"branch": "feat", "head": "aaa"},
+                       live={"branch": "feat", "head": "bbb"})
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")], compare_result=cmp)
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+    rc = inst.run(repo="X", slot=2)
+    assert rc == 1
+    err = capsys.readouterr().err
+    # 판정 근거 — 같은 브랜치·head 비후손(리셋/되감기) 사유 명시.
+    assert "판정 근거" in err
+    assert "후손이 아님" in err
+    assert "head_relation='diverged'" in err
+    # 재동기 커맨드 실값 — CLI 로 노출된 record 서브커맨드·정확한 slot_id·자동 실행 아님.
+    assert "worktree_pool.py record work/X_2" in err
+    assert "자동 실행 안 함" in err
+
+
+def test_fail_loud_output_branch_change_reason(bootstrap, tmp_path, capsys):
+    """T-0391 ②: branch_match False(브랜치 변경)면 근거가 "브랜치가 바뀜"으로 분기(head 비후손과 구분)."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    cmp = _FakeCompare(fail_loud=True, head_relation="diverged", branch_match=False,
+                       recorded={"branch": "v1.3.2", "head": "aaa"},
+                       live={"branch": "v1.3.3", "head": "bbb"})
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle")], compare_result=cmp)
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+    rc = inst.run(repo="X", slot=2)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "브랜치가 바뀜" in err
+    assert "v1.3.2" in err and "v1.3.3" in err
+    assert "worktree_pool.py record work/X_2" in err
 
 
 def test_record_vs_live_unrecorded_loud_but_passes(bootstrap, tmp_path, capsys):
