@@ -80,7 +80,7 @@ class RemoveFakeGit:
     """remove_slot DI seam 용 mock git — status/symbolic-ref/worktree remove·prune/branch -d/stash 모델.
 
     - `dirty` → `status --porcelain` 이 변경 1줄(=dirty)·아니면 빈(=clean).
-    - `head` → 슬롯 worktree 의 현재 브랜치(`symbolic-ref --short HEAD`). None=detached(rc≠0).
+    - `head` → 슬롯 worktree 의 현재 브랜치(`symbolic-ref HEAD` full ref·T-0377). None=detached(rc≠0).
     - `branch_merged` → `git branch -d` rc(True=머지완료 rc0 삭제·False=미머지 rc1 보존).
     - `remove_rc` → `git worktree remove` rc(0=성공·≠0=실패→RuntimeError).
     - `stash_rc` → `git stash push` rc(0=성공 보존·≠0=실패→제거 중단·작업 유실 방지·codex must-fix).
@@ -103,8 +103,8 @@ class RemoveFakeGit:
         self.calls.append(list(argv))
         if argv[:2] == ["status", "--porcelain"]:
             return (0, " M f.py\n") if self.dirty else (0, "")
-        if argv == ["symbolic-ref", "--short", "HEAD"]:
-            return (1, "fatal: not a symbolic ref\n") if self.head is None else (0, self.head + "\n")
+        if argv == ["symbolic-ref", "HEAD"]:   # full ref — current_branch 가 refs/heads/ strip (T-0377).
+            return (1, "fatal: not a symbolic ref\n") if self.head is None else (0, "refs/heads/" + self.head + "\n")
         if argv[:2] == ["worktree", "remove"]:
             return (self.remove_rc, "" if self.remove_rc == 0 else "fatal: cannot remove worktree\n")
         if argv[:2] == ["worktree", "prune"]:
@@ -644,8 +644,8 @@ class _CreateBaseFakeGit:
             return (0, "")
         if argv[:3] == ["show-ref", "--verify", "--quiet"]:
             return (0, "")                             # origin/<base> 해소
-        if argv == ["symbolic-ref", "--short", "HEAD"]:
-            return (0, "A_1\n")
+        if argv == ["symbolic-ref", "HEAD"]:           # full ref (T-0377).
+            return (0, "refs/heads/A_1\n")
         return (0, "")                                 # worktree add/list·submodule 등 성공
 
     def did(self, *prefix) -> bool:

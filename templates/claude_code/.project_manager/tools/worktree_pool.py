@@ -2482,24 +2482,35 @@ def prune_stale_leases() -> list[str]:
     return pruned
 
 
+# `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — `refs/heads/<name>`. 이 접두 **정확히**를
+# 제거해야 순수 브랜치명이 된다(모호성 접두가 붙는 `--short` 대신 full ref 를 읽는 이유·T-0377).
+_SYMREF_BRANCH_PREFIX = "refs/heads/"
+
+
 def current_branch(slot: str, *, git_runner: GitRunner | None = None) -> str | None:
-    """슬롯 worktree 의 git HEAD 에서 현재 브랜치를 **live** 로 읽는다 (ADR-0013 amend T-0072).
+    """슬롯 worktree 의 git HEAD 에서 현재 브랜치를 **live** 로 읽는다 (ADR-0013 amend T-0072·T-0377).
 
-    `git symbolic-ref --short HEAD` → 브랜치명. 브랜치가 git 의 단일 진실 —
-    장부에 저장된 복사본이 아니라 슬롯 worktree 의 실제 HEAD 를 매번 조회한다(사용자가
-    슬롯서 직접 `git checkout` 해도 즉시 반영·드리프트 불가능).
+    `git symbolic-ref HEAD` → `refs/heads/<name>` 에서 `refs/heads/` 접두를 정확히 제거해 브랜치명.
+    브랜치가 git 의 단일 진실 — 장부에 저장된 복사본이 아니라 슬롯 worktree 의 실제 HEAD 를 매번
+    조회한다(사용자가 슬롯서 직접 `git checkout` 해도 즉시 반영·드리프트 불가능).
 
-    **`symbolic-ref --short HEAD` 를 쓰는 이유 (codex T-0072 게이트)**: `rev-parse --abbrev-ref
-    HEAD` 는 (a) detached 를 `"HEAD"` 문자열로, (b) **unborn 브랜치**(아직 커밋 0 인 새 브랜치)를
-    rc≠0 에러로 줘서 — *이름이 있는* unborn 브랜치를 detached/조회불가로 오판한다(→ "(미지정)").
-    `symbolic-ref --short HEAD` 는 unborn 브랜치도 그 이름을 rc=0 으로 주고, detached 일 때만
-    "ref HEAD is not a symbolic ref" 로 rc≠0 이라 — "현재 브랜치명 or 브랜치 아님"의 정석
-    primitive 다(git=진실·ADR-0013 amend 정합). 우리 풀 슬롯은 bare(커밋 보유)에서 만들어 unborn
-    이 드물지만, git 이 이름을 주면 보여야 한다.
+    **`symbolic-ref HEAD`(full ref·`--short` 없이)를 쓰는 이유 (codex T-0072/T-0377 게이트)**:
+    `rev-parse --abbrev-ref HEAD` 는 (a) detached 를 `"HEAD"` 문자열로, (b) **unborn 브랜치**(아직
+    커밋 0 인 새 브랜치)를 rc≠0 에러로 줘서 — *이름이 있는* unborn 브랜치를 detached/조회불가로
+    오판한다(→ "(미지정)"). `symbolic-ref HEAD` 는 unborn 브랜치도 `refs/heads/<name>` 을 rc=0 으로
+    주고, detached 일 때만 "ref HEAD is not a symbolic ref" 로 rc≠0 이라 — "현재 브랜치명 or 브랜치
+    아님"의 정석 primitive 다(git=진실·ADR-0013 amend 정합). **`--short` 를 뺀 이유(T-0377)**:
+    `--short` 는 브랜치명과 같은 이름의 태그가 있으면(릴리즈가 `v1.3.0` 브랜치를 그대로 `v1.3.0`
+    태그로 찍은 경우) 모호성 회피로 `heads/v1.3.0` 을 돌려줘 순수 브랜치명이 아니었다 — 장부 기록
+    (`v1.3.0`)과 불일치해 부트스트랩 0단계가 가짜 "외부 개입" FAIL-LOUD 로 차단됐다(PM 76 실측).
+    full ref 는 태그 존재와 무관하게 항상 `refs/heads/<정확한 브랜치명>` 이라 모호성 자체가 없고,
+    `refs/heads/` 접두만 정확히 벗기면 진짜 이름이 `heads/x` 인 브랜치(합법·`heads/x` → 그대로 보존)
+    도 오인하지 않는다(`--short` 후 `heads/` strip 은 이 브랜치를 `x` 로 오인한다·codex must-fix).
 
     `None` 반환(전부 fail-soft·예외 raise 금지·표시층이 "(detached/조회불가)" 등으로 변환):
       - detached HEAD — `symbolic-ref` 가 rc≠0(symbolic ref 아님).
       - git 호출 실패 (rc≠0) — 손상/락/git 부재 등.
+      - `refs/heads/` 로 시작 안 하는 이상 출력 — 보수적으로 None(브랜치 아님).
       - 슬롯 경로 부재 — worktree 폴더가 아직 없거나 지워짐.
 
     `git_runner` 미주입 시 실경로는 `_real_git_runner(slot_path(slot))` 로 해소한다
@@ -2516,12 +2527,15 @@ def current_branch(slot: str, *, git_runner: GitRunner | None = None) -> str | N
             return None
         runner = _real_git_runner(path)
     try:
-        rc, out = runner(["symbolic-ref", "--short", "HEAD"])
+        rc, out = runner(["symbolic-ref", "HEAD"])
     except Exception:  # noqa: BLE001 — fail-soft: 주입 runner raise 도 None(규칙: raise 금지).
         return None
     if rc != 0:  # detached(symbolic ref 아님)·git 부재/실패 → 브랜치 없음.
         return None
-    return out.strip() or None
+    ref = out.strip()
+    if not ref.startswith(_SYMREF_BRANCH_PREFIX):  # 이상 출력(브랜치 아님) → 보수적 None.
+        return None
+    return ref[len(_SYMREF_BRANCH_PREFIX):] or None
 
 
 def slot_status(slot: str, *, git_runner: GitRunner | None = None) -> SlotStatus:
@@ -2529,7 +2543,7 @@ def slot_status(slot: str, *, git_runner: GitRunner | None = None) -> SlotStatus
 
     부트스트랩이 현재 슬롯 상태를 1회 surface 하는 backbone. **T-0275 의 submodule 역할
     판별을 재사용**한다(중복 구현 금지):
-      - `current_branch(slot)` — 브랜치(live·`symbolic-ref --short HEAD`·ADR-0013 amend T-0072).
+      - `current_branch(slot)` — 브랜치(live·`symbolic-ref HEAD` full ref·ADR-0013 amend T-0072·T-0377).
       - `_upstream_status` — `@{upstream}` 해소 여부(T-0273/0274 로 슬롯 tracking 설정 → 해소).
       - `_submodule_statuses` — `git submodule status`(`_parse_submodule_entries`) + submodule 당
         `git -C <sub> symbolic-ref -q HEAD`(on-branch/detached) + `_submodule_dirty` 로 역할 판정

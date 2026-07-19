@@ -114,10 +114,10 @@ class FakeGit:
     `clean` 이면 status --porcelain 이 빈 문자열(=clean), `dirty` 면 변경 1줄을 돌려준다.
     실 git 을 안 쓰고 dirty/stash/checkout/worktree-add/submodule 경로를 결정적으로 검증.
 
-    **live branch 모델(ADR-0013 amend T-0072)**: `head` 가 슬롯 worktree 의 현재 HEAD(브랜치)
-    를 모델링한다 — `symbolic-ref --short HEAD` 가 그걸 돌려주고, `checkout <b>`/`-B <b>` 는
-    실 git 처럼 head 를 갱신한다(`current_branch(slot)` live 조회·alloc 매칭이 이걸 본다).
-    `head=None` 이면 detached(실 git 처럼 `symbolic-ref` 가 rc≠0 → current_branch None).
+    **live branch 모델(ADR-0013 amend T-0072·T-0377)**: `head` 가 슬롯 worktree 의 현재 HEAD(브랜치)
+    를 모델링한다 — `symbolic-ref HEAD` 가 `refs/heads/<head>`(full ref)를 돌려주고, `checkout
+    <b>`/`-B <b>` 는 실 git 처럼 head 를 갱신한다(`current_branch(slot)` live 조회·alloc 매칭이 이걸
+    본다). `head=None` 이면 detached(실 git 처럼 `symbolic-ref` 가 rc≠0 → current_branch None).
 
     **git 스냅 모델(T-0350·ADR-0060)**: `head_sha` = `rev-parse HEAD`(슬롯 tip·스냅 head 필드),
     `submodule_status_out` = `submodule status` 원문(빈=submodule 없음·스냅 pin 파싱), `ancestor_ok`
@@ -163,10 +163,11 @@ class FakeGit:
             return (0, "") if self.ancestor_ok else (1, "")  # ㉒ head 후손 판정(rc0=조상).
         if argv[:2] == ["status", "--porcelain"]:
             return (0, " M file.py\n") if self.dirty else (0, "")
-        if argv == ["symbolic-ref", "--short", "HEAD"]:
-            # detached(head=None) → 실 git 처럼 rc≠0(symbolic ref 아님·→ current_branch None).
+        if argv == ["symbolic-ref", "HEAD"]:
+            # T-0377: full ref(`--short` 없이) 반환 — current_branch 가 refs/heads/ 접두를 벗긴다
+            # (동명 태그 모호성 접두 회피). detached(head=None) → 실 git 처럼 rc≠0(symbolic ref 아님).
             return (1, "fatal: ref HEAD is not a symbolic ref\n") if self.head is None \
-                else (0, self.head + "\n")
+                else (0, "refs/heads/" + self.head + "\n")
         if argv[:1] == ["checkout"]:
             # `checkout <b>` 또는 `checkout -B <b>` — 실 git 처럼 head 를 갱신(브랜치 전환).
             self.head = argv[-1]
@@ -313,9 +314,10 @@ class _CheckoutFailGit:
             return (1, "fatal: checkout failed")  # head 미갱신(실패).
         if argv[:2] == ["status", "--porcelain"]:
             return (0, "")
-        if argv == ["symbolic-ref", "--short", "HEAD"]:
+        if argv == ["symbolic-ref", "HEAD"]:
+            # T-0377: full ref 반환 — current_branch 가 refs/heads/ 접두를 벗긴다.
             return (1, "fatal: ref HEAD is not a symbolic ref\n") if self.head is None \
-                else (0, self.head + "\n")
+                else (0, "refs/heads/" + self.head + "\n")
         return (0, "")
 
 
@@ -428,8 +430,9 @@ class _SubmoduleGit:
         if argv[:1] == ["checkout"]:
             self.head = argv[-1]          # 실 git 처럼 head 갱신(브랜치 전환).
             return (0, "")
-        if argv == ["symbolic-ref", "--short", "HEAD"]:
-            return (0, self.head + "\n") if self.head else (1, "")
+        if argv == ["symbolic-ref", "HEAD"]:
+            # T-0377: full ref 반환 — current_branch 가 refs/heads/ 접두를 벗긴다.
+            return (0, "refs/heads/" + self.head + "\n") if self.head else (1, "")
         if argv[:1] == ["-C"] and len(argv) >= 3:
             sub, rest = argv[1], argv[2:]
             role, dirty = self.subs.get(sub, ("detached", False))
@@ -3392,30 +3395,32 @@ def test_does_not_import_board(wp):
 
 
 class _SymbolicRefGit:
-    """`symbolic-ref --short HEAD` 를 (rc, out) 으로 모델링하는 주입 runner (T-0072·codex 게이트).
+    """`symbolic-ref HEAD`(full ref·`--short` 없이)를 (rc, out) 으로 모델링하는 주입 runner (T-0072·T-0377·codex 게이트).
 
-    detached(rc≠0)/조회불가/정상·unborn 브랜치(rc0+이름)를 결정적으로 친다 — current_branch
-    의 분기를 hermetic 하게 검증한다(실 git 없이·DI seam). 그 외 git 호출은 (0, "").
+    detached(rc≠0)/조회불가/정상·unborn 브랜치(rc0+`refs/heads/<name>`)를 결정적으로 친다 —
+    current_branch 의 분기(rc≠0→None·refs/heads/ 접두 strip·비-브랜치 ref→None)를 hermetic
+    하게 검증한다(실 git 없이·DI seam). 그 외 git 호출은 (0, ""). `out` 은 full ref 를 준다
+    (`--short` 를 안 쓰는 이유=동명 태그 모호성 접두 회피·T-0377).
     """
 
-    def __init__(self, *, rc: int = 0, out: str = "main\n"):
+    def __init__(self, *, rc: int = 0, out: str = "refs/heads/main\n"):
         self.rc = rc
         self.out = out
         self.calls: list[list] = []
 
     def __call__(self, argv: list) -> tuple[int, str]:
         self.calls.append(list(argv))
-        if argv == ["symbolic-ref", "--short", "HEAD"]:
+        if argv == ["symbolic-ref", "HEAD"]:
             return (self.rc, self.out)
         return (0, "")
 
 
 def test_current_branch_returns_live_head(wp):
-    """정상 — symbolic-ref 가 브랜치명을 돌려주면 그 브랜치(strip)를 반환한다(live 조회)."""
-    git = _SymbolicRefGit(rc=0, out="a5-pay\n")
+    """정상 — symbolic-ref 가 full ref 를 돌려주면 refs/heads/ 접두를 벗겨 브랜치명 반환(live 조회)."""
+    git = _SymbolicRefGit(rc=0, out="refs/heads/a5-pay\n")
     assert wp.current_branch("work/A_1", git_runner=git) == "a5-pay"
-    # symbolic-ref --short HEAD 를 실제로 호출했다(live·저장 복사본 아님).
-    assert ["symbolic-ref", "--short", "HEAD"] in git.calls
+    # symbolic-ref HEAD(full ref·`--short` 없이·T-0377)를 실제로 호출했다(live·저장 복사본 아님).
+    assert ["symbolic-ref", "HEAD"] in git.calls
 
 
 def test_current_branch_detached_head_returns_none(wp):
@@ -3424,14 +3429,20 @@ def test_current_branch_detached_head_returns_none(wp):
     assert wp.current_branch("work/A_1", git_runner=git) is None
 
 
+def test_current_branch_non_branch_ref_returns_none(wp):
+    """`refs/heads/` 로 시작 안 하는 이상 출력(브랜치 아님) → 보수적 None (T-0377)."""
+    git = _SymbolicRefGit(rc=0, out="refs/tags/v1.3.0\n")
+    assert wp.current_branch("work/A_1", git_runner=git) is None
+
+
 def test_current_branch_unborn_branch_returns_name(wp):
-    """unborn 브랜치(아직 커밋 0) — symbolic-ref 가 이름을 rc0 으로 준다 → 그 이름 반환.
+    """unborn 브랜치(아직 커밋 0) — symbolic-ref HEAD 가 `refs/heads/<name>` 을 rc0 으로 준다 → 이름 반환.
 
     codex T-0072 게이트의 must-fix 회귀: rev-parse --abbrev-ref 는 unborn 을 rc≠0 으로 줘
-    detached 로 *오판*(→ None="미지정")했으나, symbolic-ref 는 unborn 브랜치명을 그대로 준다
-    (git=진실·ADR-0013 amend — 이름이 있으면 보여야 한다).
+    detached 로 *오판*(→ None="미지정")했으나, symbolic-ref HEAD 는 unborn 도 full ref 를 그대로
+    준다(git=진실·ADR-0013 amend — 이름이 있으면 보여야 한다·`--short` 없어도 unborn 거동 보존).
     """
-    git = _SymbolicRefGit(rc=0, out="main\n")
+    git = _SymbolicRefGit(rc=0, out="refs/heads/main\n")
     assert wp.current_branch("work/A_1", git_runner=git) == "main"
 
 
@@ -3445,6 +3456,29 @@ def test_current_branch_empty_output_returns_none(wp):
     """빈 출력(rc0 이지만 브랜치명 없음) → None(보수적·이상 출력 흡수)."""
     git = _SymbolicRefGit(rc=0, out="\n")
     assert wp.current_branch("work/A_1", git_runner=git) is None
+
+
+def test_current_branch_tag_collision_returns_pure_name(wp):
+    """동명 태그+브랜치(릴리즈 `v1.3.0` 브랜치+태그) → `symbolic-ref HEAD` 는 full ref 라
+    태그 존재와 무관하게 `refs/heads/v1.3.0` 을 주고, 접두를 벗겨 순수명 반환 (T-0377·가짜 외부개입 해소).
+
+    `--short` 는 동명 태그 시 모호성 회피로 `heads/v1.3.0` 을 돌려줘 장부 기록(`v1.3.0`)과 불일치→
+    0단계 가짜 diverged FAIL-LOUD 로 차단됐다(PM 76 실측). full ref 로 바꾸면 모호성 자체가 사라져
+    (`refs/heads/<정확한명>` 고정) 태그와 무관하게 순수명이 나온다.
+    """
+    git = _SymbolicRefGit(rc=0, out="refs/heads/v1.3.0\n")
+    assert wp.current_branch("work/A_1", git_runner=git) == "v1.3.0"
+
+
+def test_current_branch_real_heads_prefixed_branch_preserved(wp):
+    """진짜 이름이 `heads/x` 인 브랜치(합법·`git check-ref-format --branch heads/v1.3.0` 통과)를
+    `x` 로 오인하지 않는다 — full ref `refs/heads/heads/v1.3.0` → `heads/v1.3.0` (T-0377·codex must-fix 회귀).
+
+    사후 `heads/` strip 방식은 이 브랜치를 `v1.3.0` 으로 오인했다 — `refs/heads/` 접두만 정확히
+    벗기면 나머지 `heads/v1.3.0` 이 온전히 보존된다.
+    """
+    git = _SymbolicRefGit(rc=0, out="refs/heads/heads/v1.3.0\n")
+    assert wp.current_branch("work/A_1", git_runner=git) == "heads/v1.3.0"
 
 
 def test_current_branch_missing_slot_path_returns_none_real_path(wp):
@@ -3495,6 +3529,26 @@ def test_current_branch_real_git_reads_checked_out_branch(proj, tmp_path):
     slot_dir = wp.slot_path(lease.slot)
     _git(slot_dir, "checkout", "-q", "-b", "a2-hotfix")
     assert wp.current_branch(lease.slot) == "a2-hotfix"
+
+
+@_git_required
+def test_current_branch_real_git_tag_collision_returns_pure_name(proj, tmp_path):
+    """실 git — 브랜치명과 같은 이름의 태그가 있어도 current_branch 는 순수 브랜치명 반환 (T-0377·PM 76 재현).
+
+    릴리즈가 `v1.3.0` 브랜치를 그대로 `v1.3.0` 태그로 찍은 상황을 실제로 만들어(`git tag v1.3.0`),
+    `symbolic-ref HEAD`(full ref) 방식이 `--short` 의 모호성 접두(`heads/v1.3.0`) 없이 순수명
+    `v1.3.0` 을 준다는 걸 실 git 으로 백스톱한다 — 부트스트랩 0단계 가짜 "외부 개입" 차단 해소.
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_real_bare(wp, "A", tmp_path)
+    lease = wp.create_slot("A", branch="v1.3.0", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+
+    # 동명 태그 생성 — 이 상태에서 `symbolic-ref --short HEAD` 는 heads/v1.3.0 을 준다(모호성 회피).
+    _git(slot_dir, "tag", "v1.3.0")
+    # full ref 방식이라 태그와 무관하게 순수 브랜치명(장부 기록과 일치).
+    assert wp.current_branch(lease.slot) == "v1.3.0"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -4516,6 +4570,36 @@ def test_compare_slot_git_no_submodule_drift_when_pins_match(wp):
     assert res.submodule_drift == []
 
 
+def test_compare_slot_git_tag_collision_branch_is_not_fail_loud(wp):
+    """동명 태그+브랜치 — live current_branch 가 full ref 로 순수명 `v1.3.0` 을 주므로 match·통과 (T-0377).
+
+    릴리즈가 `v1.3.0` 브랜치를 그대로 `v1.3.0` 태그로 찍은 슬롯: current_branch 가 `symbolic-ref
+    HEAD`(full ref)로 태그와 무관하게 순수명 `v1.3.0` 을 돌려줘 장부 기록(`v1.3.0`)과 일치 → 가짜
+    diverged FAIL-LOUD 미발화(PM 76 0단계 차단 회귀). 정규화는 current_branch 단일 지점에서만
+    일어나고 compare 는 손대지 않는다(비교측 fallback 없음).
+    """
+    _seed_git_lease(wp, branch="v1.3.0", head=_OLD_SHA)
+    # FakeGit(head="v1.3.0") → symbolic-ref HEAD 가 refs/heads/v1.3.0 → current_branch "v1.3.0".
+    res = wp.compare_slot_git(
+        "work/A_1", git_runner=FakeGit(head="v1.3.0", head_sha=_OLD_SHA))
+    assert res.branch_match is True and res.head_relation == wp.HEAD_MATCH
+    assert res.fail_loud is False and res.ok is True
+
+
+def test_compare_slot_git_polluted_recorded_heads_prefix_stays_mismatch(wp):
+    """오염 장부(`heads/v1.3.0` 기록) vs live 순수명(`v1.3.0`) → branch mismatch 유지·FAIL-LOUD (T-0377).
+
+    compare 는 비교측 fallback 정규화를 하지 않는다 — recorded 의 `heads/v1.3.0` 은 live `v1.3.0`
+    과 진짜 다른 이름일 수 있어(진짜 `heads/` 브랜치) mismatch 로 남아야 한다. 정규화 배포 전
+    오염된 장부는 비교측이 조용히 삼키지 않고, PM 이 `record_git_snapshot` 일회 재기록으로 원천
+    정정한다([[prefer-data-migration-over-fallback]] — fallback 누적 금지·codex must-fix).
+    """
+    _seed_git_lease(wp, branch="heads/v1.3.0", head=_OLD_SHA)   # 정규화 전 오염된 recorded.
+    res = wp.compare_slot_git("work/A_1", git_runner=FakeGit(head="v1.3.0", head_sha=_OLD_SHA))
+    assert res.branch_match is False
+    assert res.fail_loud is True and res.ok is False
+
+
 # ════════════════════════════════════════════════════════════════════════
 # reclaim_stale git 보존 (crash-resume 계약·release/force_release 와 의도적 비대칭 · T-0350 dual-review)
 # ════════════════════════════════════════════════════════════════════════
@@ -4593,8 +4677,9 @@ class _BaseGit:
             base = spec.split("..", 1)[1] if ".." in spec else spec
             n = self.behind.get(base)
             return (0, f"{n}\n") if n is not None else (128, "fatal: unknown revision\n")
-        if argv == ["symbolic-ref", "--short", "HEAD"]:
-            return (0, self.head + "\n") if self.head else (1, "detached\n")
+        if argv == ["symbolic-ref", "HEAD"]:
+            # T-0377: full ref 반환 — current_branch 가 refs/heads/ 접두를 벗긴다.
+            return (0, "refs/heads/" + self.head + "\n") if self.head else (1, "detached\n")
         if argv == ["submodule", "status"]:
             return (0, self.subs)
         return (0, "")
@@ -5806,8 +5891,9 @@ class _RebaseGit:
             return (0, sha + "\n") if sha else (128, "fatal: bad revision\n")
         if argv == ["rev-parse", "HEAD"]:
             return (0, self.head_sha + "\n")
-        if argv == ["symbolic-ref", "--short", "HEAD"]:
-            return (0, self.head + "\n") if self.head else (1, "detached\n")
+        if argv == ["symbolic-ref", "HEAD"]:
+            # T-0377: full ref 반환 — current_branch 가 refs/heads/ 접두를 벗긴다.
+            return (0, "refs/heads/" + self.head + "\n") if self.head else (1, "detached\n")
         if argv == ["submodule", "status"]:
             return (0, self.subs)
         if argv[:2] == ["status", "--porcelain"]:

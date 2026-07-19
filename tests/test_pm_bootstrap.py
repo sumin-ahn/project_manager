@@ -65,7 +65,7 @@ def _hermetic_engine_anchor(bootstrap, monkeypatch):
 def _make_runner(
     *,
     branch_rc: int = 0,
-    branch_out: str = "a5\n",
+    branch_out: str = "refs/heads/a5\n",   # full ref — current_branch 가 refs/heads/ strip (T-0377).
     upstream_rc: int = 0,
     upstream_out: str = "origin/a5\n",
     submodule_status: str = "",
@@ -81,8 +81,8 @@ def _make_runner(
     dirty = dirty or set()
 
     def runner(argv: list) -> tuple[int, str]:
-        # 슬롯 자신의 브랜치 (current_branch — symbolic-ref --short HEAD).
-        if argv[:2] == ["symbolic-ref", "--short"]:
+        # 슬롯 자신의 브랜치 (current_branch — symbolic-ref HEAD full ref·T-0377).
+        if argv == ["symbolic-ref", "HEAD"]:
             return branch_rc, branch_out
         # 슬롯 브랜치의 upstream 추적 브랜치.
         if argv[:2] == ["rev-parse", "--abbrev-ref"]:
@@ -170,8 +170,8 @@ def test_slot_status_absorbs_runner_exception(wp):
     """
     def raising(argv):
         # 브랜치 조회는 정상(current_branch 자체 흡수) — 그 이후 단계에서 raise.
-        if argv[:2] == ["symbolic-ref", "--short"]:
-            return 0, "a5\n"
+        if argv == ["symbolic-ref", "HEAD"]:   # full ref (T-0377).
+            return 0, "refs/heads/a5\n"
         raise RuntimeError("git exploded")
 
     status = wp.slot_status("work/A_1", git_runner=raising)  # raise 하면 이 줄에서 터짐.
