@@ -7,6 +7,11 @@
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-07-19
+
+세션 뷰의 축을 "생성 세션" 하나로 통일하는 뷰 계층 변경 — 타 세션 티켓 정보는 기본 출력에서 완전히
+사라진다(카운트 줄 포함). 전 변경 이중게이트(내부 reviewer + codex 3라운드 수렴) 통과·회귀 3996.
+
 ### BREAKING
 - **`board list` 세션 기본 뷰 = 생성-세션 스트림·타 세션분 완전 비노출** (ADR-0067·ADR-0066 amend) —
   무인자 `board.py list`(및 부트스트랩 dump)와 명시 세션 뷰 `board list --repo X --slot N` 이 이제 **그
@@ -19,6 +24,9 @@
     동일 identity 해소 경로 재사용). 미명시 시 현행(user-only / 유도 세션) 유지.
   - **`--mine`(user-wide·전 세션)·`--all`·strict-exclude(타 사용자 차단) 의미론 불변.** 솔로/무바인딩
     (세션 미해소)은 user-단위(--mine) 폴백(solo=subset·N=1 이면 user 스트림=세션 스트림이라 등가).
+  - **세션 뷰의 claim 판정도 session 라벨 축** — `claimed_by` 의 세션 토큰 일치로 판정(user 무관·open
+    의 생성-세션 판정과 대칭). user 미해소(git email 부재) 상태에서도 자기 세션 claim 이 보인다. user
+    축 조회는 `--mine` 몫.
   - **부트스트랩 dump 정합** — "그 외 open N건" 줄·open 전용 backlog 라벨(`_OPEN_SCOPE_LABEL`)·`--all`
     전량 재조회(접힘 모수)·"타 세션 진행(claimed)" 현황 줄 제거. "다른 활성 PM" 슬롯 레지스트리(환경
     정보·leases 유래)는 유지. 무인자 출력·부트스트랩 dump 를 파싱/의존하던 스크립트·문서는 `--all` 로
