@@ -1,6 +1,7 @@
 ---
 name: pm-qa
 description: "통합 검증 게이트 — 회귀(pytest) + board.py lint + git status/최근 commit 을 한 trigger 로 묶어 단일 PM report. wave 종료 직전 / wave 시작 baseline / ticket 완료 / 사용자 'qa·회귀 확인·통합 검증' 시. red 면 후속 단계 중단(fail-soft 아님). Triggers: '통합 검증', 'qa', '회귀 확인', 'wave 종료 검증', 'baseline 측정', 'pm-qa'."
+audience: pm-internal
 ---
 
 # /pm-qa — 통합 검증 게이트

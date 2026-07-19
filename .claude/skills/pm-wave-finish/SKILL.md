@@ -1,6 +1,7 @@
 ---
 name: pm-wave-finish
 description: "wave 안 ticket 완료 부기 — ticket_finish.py wrapper + 회귀 측정 + log/current.md skeleton + board complete + git stage. 모듈 판정·비고·log/current.md 서술·git commit 은 PM 손. Triggers: 'T-NNNN 완료', 'ticket 정리', 'finish', 'pm-wave-finish'."
+audience: pm-internal
 ---
 
 # /pm-wave-finish T-NNNN — wave ticket 완료 부기

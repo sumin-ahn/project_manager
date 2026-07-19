@@ -1,6 +1,7 @@
 ---
 name: pm-dev-delegate
 description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check + background 옵션. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
+audience: pm-internal
 ---
 
 # /pm-dev-delegate T-NNNN [--role developer|code-reviewer] [--background] — orchestrator 위임

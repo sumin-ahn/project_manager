@@ -1,6 +1,7 @@
 ---
 name: pm-bootstrap
 description: "PM 세션 시작 부트스트랩 — board 실측 / git 상태 / 회귀 / log 마지막 entry / 첫 turn 권장 액션 template 채움. backbone CLI .project_manager/tools/pm_bootstrap.py thin wrapper. Triggers: 'PM 부트스트랩', 'PM 세션 시작', '첫 turn 권장 액션', 'pm-bootstrap'."
+audience: user-entrypoint
 ---
 
 # /pm-bootstrap — PM 세션 시작 부트스트랩

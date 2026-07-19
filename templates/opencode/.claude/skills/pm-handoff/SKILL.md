@@ -1,6 +1,7 @@
 ---
 name: pm-handoff
 description: "PM 세션 종료 핸드오프 7단계 자동화 — log entry skeleton append + pm_state.md sliding window 정리 + 인계 프롬프트 stdout + 회귀 측정 + git status. backbone CLI .project_manager/tools/pm_handoff.py thin wrapper. Triggers: '핸드오프', '인계', 'PM 세션 종료', 'pm-handoff'."
+audience: user-entrypoint
 ---
 
 # /pm-handoff — PM 세션 종료 핸드오프 자동화

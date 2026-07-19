@@ -1,6 +1,7 @@
 ---
 name: spike-new
 description: "사용자와 대화형으로 한 설계 주제를 진행하고 그 산출을 raw/spikes/ 에 박제하는 설계 스킬. 혼자 다 쓰지 않는다 — 실측 현황은 먼저 파악해 보고하고, 옵션·결정은 사용자와 한 절씩 합의하며 채운다. ADR/ticket 은 spike 파일 안 DRAFT 초안으로만(decisions/·board 안 건드림), 실제 발행은 PM 이 raw 초안 참고해 진행. spike 는 status: draft 동안 편집·세션무관 resume, 합의+사인오프 시 sealed 후 IMMUTABLE (ADR-0010). Triggers: '설계 spike', 'spike 만들어', 'raw 설계안', 'design spike', 'spike-new'."
+audience: pm-internal
 ---
 
 # /spike-new <주제> — 대화형 설계 spike

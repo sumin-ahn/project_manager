@@ -1,6 +1,7 @@
 ---
 name: pm-wave-claim
 description: "wave 안 ticket claim — board show + DoD self-containment PM 검증 + claim. ticket 본문에 placeholder / depends_on 미충족 / wikilink dangling 있으면 차단. Triggers: 'T-NNNN claim', 'ticket 잡기', 'wave 시작', 'pm-wave-claim'."
+audience: pm-internal
 ---
 
 # /pm-wave-claim T-NNNN — wave 시작 ticket claim

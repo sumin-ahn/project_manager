@@ -1,6 +1,7 @@
 ---
 name: pm-update
 description: "엔진 갱신 PM front door — pm-update.sh facade wrap + upstream freshness 자동분기(URL→cache clone/fetch·경로→pull/경고) + manifest reconcile(harness-correct·PM-주도·사용자 개입 0) + adapter-drift 표면화. 채택자가 upstream 프레임워크 변경을 흡수할 때. Triggers: '엔진 갱신', 'pm-update', '프레임워크 업데이트', 'upstream 동기'."
+audience: pm-internal
 ---
 
 # /pm-update — 엔진 갱신 (facade-기반 PM front door)
