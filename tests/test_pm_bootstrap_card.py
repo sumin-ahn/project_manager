@@ -115,6 +115,27 @@ def test_card_keeps_user_input_placeholders(bootstrap):
         assert token in card, f"사용자 입력 placeholder {token!r} 가 카드에 없음"
 
 
+def test_card_slot_number_from_slot_identifier_not_session(bootstrap):
+    """T-0390 codex must-fix — `--slot <N>` 은 슬롯 식별자(`work/<repo>_<N>`)에서 파생, session 아님.
+
+    task+slot 경로에선 `identity["session"]` 이 task명(`job1`)이라 옛 `session.rsplit("_",1)[-1]`
+    전제가 깨져 `--slot job1` 류 오염 명령을 낳는다. 카드 렌더가 슬롯 식별자를 원천으로 쓰면
+    session 이 task명이어도 항상 실 슬롯 번호(`2`)를 채운다 — 전제 깨진 값이 흘러들어도 기계적으로
+    닫힘(task 모드가 실제로 이 슬롯 카드 경로를 안 타더라도 방어)."""
+    task_session_identity = {
+        "repo": "A",
+        "session": "job1",            # task 명의(슬롯 번호 아님) — 옛 파생이 오염되던 지점.
+        "slot": "work/A_2",           # 실 슬롯 식별자 — 슬롯 번호 원천.
+        "slot_path": "/home/x/work/A_2",
+        "branch": "a5",
+        "others": [],
+        "protected_branch": None,
+    }
+    card = _card(bootstrap, task_session_identity)
+    assert "--repo A --slot 2" in card       # 슬롯 번호는 slot 식별자에서 정확히 파생
+    assert "--slot job1" not in card         # session(task명) 오염 방지(must-fix)
+
+
 # ── 2. 숨은 전제 4대장 + reid 인접 경고 (DoD ①) ──────────────────────────────
 
 

@@ -1606,8 +1606,12 @@ def test_bootstrap_task_active_elsewhere_rejects_before_dump(bootstrap, tmp_path
     assert "board" not in captured.out.lower() or captured.out.strip() == ""
 
 
-def test_bootstrap_task_with_slot_runs_both_surfaces(bootstrap, tmp_path, capsys):
-    """`--task X --repo Y --slot N` — 슬롯 lean identity + task identity 둘 다 surface(직교·⑥)."""
+def test_bootstrap_task_with_slot_binds_slot_under_task_name(bootstrap, tmp_path, capsys):
+    """`--task X --repo Y --slot N` — 슬롯을 **task 명의**로 bind(T-0390·⑥) — F6/`list --task` 즉시 해소.
+
+    슬롯 점유 주체가 task 명의라(bind_slot session=task명) 슬롯-세션 전제의 lean surface
+    (`multi-PM identity surface`·세션=`<repo>_<N>`)는 생략하고, 작업공간을 task identity 절에
+    접합한다. task 바인딩·슬롯 바인딩 둘 다 일어난다(직교·⑥)."""
     wp = FakeWorktreePool(alloc_slot="work/A_2", alloc_branch="a5",
                           present_slots=("work/A_2",),
                           task_dir_root=tmp_path / "tasks")
@@ -1615,9 +1619,65 @@ def test_bootstrap_task_with_slot_runs_both_surfaces(bootstrap, tmp_path, capsys
     rc = inst.run(task="job1", repo="A", slot=2)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "당신은 **A PM**" in out          # 슬롯 lean identity(기존·불변)
-    assert "task `job1`" in out             # task identity(추가·직교)
-    assert [c["name"] for c in wp.bind_task_calls] == ["job1"] and wp.bind_calls  # 둘 다 바인딩
+    assert "task `job1`" in out                         # task identity(주 정체성·직교)
+    # 슬롯은 task 명의(job1)로 리스됐다 — <repo>_<N> 세션 명의가 아니다(F6/`list --task` 해소 축).
+    assert wp.bind_calls == [{"slot": "work/A_2", "repo": "A", "session": "job1"}]
+    assert [c["name"] for c in wp.bind_task_calls] == ["job1"]   # task 도 바인딩(둘 다)
+    # 슬롯-세션 전제 lean surface 는 생략(세션=`A_2` 헤더 없음·이중 정체성 표기 회피).
+    assert "multi-PM identity surface" not in out
+    # 작업공간은 task identity 절에 접합(이 부트스트랩서 task 명의 리스·alloc 후속 불요).
+    assert "작업공간: `work/A_2`" in out
+    assert "task 명의 리스" in out
+    # 커맨드 카드에 task명이 슬롯 번호로 새어 `--slot job1` 오염 명령이 생기지 않는다(T-0390 must-fix).
+    assert "--slot job1" not in out
+
+
+def test_bootstrap_task_with_slot_idempotent_reentry(bootstrap, tmp_path, capsys):
+    """같은 task 명의로 이미 leased 인 슬롯 재진입은 멱등(0단계 통과·재bind·T-0390 결정)."""
+    wp = FakeWorktreePool(present_slots=(), task_dir_root=tmp_path / "tasks")
+    # 이 슬롯이 이미 task 명의(job1)로 leased — 이전 부트스트랩 잔재.
+    wp._extra_leases = [_FakeLeaseEntry("work/A_2", "A", "job1", state="leased")]
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    rc = inst.run(task="job1", repo="A", slot=2)
+    assert rc == 0, "같은 task 명의 재진입인데 0단계가 거부했다(멱등 위반)"
+    assert wp.bind_calls == [{"slot": "work/A_2", "repo": "A", "session": "job1"}]
+
+
+def test_bootstrap_task_with_slot_other_task_holder_rejected(bootstrap, tmp_path, capsys):
+    """타 명의(타 task/세션)가 leased 한 슬롯을 task 로 지정하면 0단계 거부 — 뺏지 않음(T-0390 결정)."""
+    wp = FakeWorktreePool(present_slots=(), task_dir_root=tmp_path / "tasks")
+    # 이 슬롯은 다른 명의(other_task)가 점유 중 — task job1 이 지정해도 인수 금지.
+    wp._extra_leases = [_FakeLeaseEntry("work/A_2", "A", "other_task", state="leased")]
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    rc = inst.run(task="job1", repo="A", slot=2)
+    assert rc == 1
+    assert "다른 세션" in capsys.readouterr().err
+    assert wp.bind_calls == [], "타 명의 점유인데 bind_slot 이 불렸다(인수 발생)"
+
+
+def test_bootstrap_task_with_slot_session_named_holder_rejected(bootstrap, tmp_path, capsys):
+    """`<repo>_<N>` 세션 명의로 leased 한 슬롯도 task 로 지정 시 타 점유로 거부(뺏지 않음·T-0390)."""
+    wp = FakeWorktreePool(present_slots=(), task_dir_root=tmp_path / "tasks")
+    # 슬롯-only 부트스트랩이 잡아둔 세션 명의(A_2) — task job1 이 지정해도 뺏지 않는다.
+    wp._extra_leases = [_FakeLeaseEntry("work/A_2", "A", "A_2", state="leased")]
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    rc = inst.run(task="job1", repo="A", slot=2)
+    assert rc == 1
+    assert wp.bind_calls == []
+
+
+def test_bootstrap_task_with_slot_json_worktree_session_is_task(bootstrap, tmp_path, capsys):
+    """--json — task+slot 이면 worktree.session 이 task 명의(F6/list --task 해소 축·T-0390)."""
+    import json as _json
+    wp = FakeWorktreePool(alloc_slot="work/A_2", alloc_branch="a5",
+                          present_slots=("work/A_2",), task_dir_root=tmp_path / "tasks")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst.run(task="job1", repo="A", slot=2, output_json=True)
+    data = _json.loads(capsys.readouterr().out)
+    assert data["worktree"]["session"] == "job1"          # 슬롯 명의 = task 명(A_2 아님)
+    assert data["worktree"]["slot"] == "work/A_2"
+    assert data["task"]["name"] == "job1"
+    assert data["task"]["workspace_slot"] == "work/A_2"   # 작업공간 접합(alloc 후속 불요 문면)
 
 
 def test_bootstrap_task_json_includes_task(bootstrap, tmp_path, capsys):

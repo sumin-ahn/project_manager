@@ -5398,6 +5398,20 @@ def test_slots_for_task_returns_only_leased_owned(wp):
     assert slots == ["work/A_1"]
 
 
+def test_bind_slot_task_name_immediately_resolves_via_slots_for_task(wp):
+    """T-0390 — `bind_slot(session=<task명>)` 하면 `slots_for_task(<task명>)`(F6 축)가 즉시 그 슬롯을 본다.
+
+    부트스트랩 task+slot 경로가 슬롯을 task 명의로 bind 하면(session=task명), F6 해소 프리미티브
+    (`slots_for_task`·session==name 축)가 별도 alloc 없이 그 슬롯을 소유로 잡는다 — PM 78 의
+    `pm_config alloc` 추가 스텝 마찰이 부트스트랩 한 줄로 닫힌다."""
+    lease = wp.bind_slot("work/A_2", "A", "payments")
+    assert lease.session == "payments" and lease.bound is True
+    resolved = wp.slots_for_task("payments")
+    assert [l.slot for l in resolved] == ["work/A_2"]
+    # sensitivity — 슬롯-세션 명의(A_2)로는 그 task 로 해소되지 않는다(축 분리 확인).
+    assert wp.slots_for_task("A_2") == []
+
+
 # ════════════════════════════════════════════════════════════════════════
 # end_task — task 종료(dirty 게이트·일괄 반납·아카이브 이동·②·T-0354·F4)
 # ════════════════════════════════════════════════════════════════════════
