@@ -46,6 +46,11 @@
 #   scaffold·개정 대상 back-ref 부기·README 색인·log decide entry 원자화. 신설 도구라 등록 필수
 #   (미등록=전파 안 됨·pm_render 사례). ADR 실경로는 인스턴스 소유(decisions/·manifest 밖·self-location 해소)
 .project_manager/tools/pm_adr.py
+# contradiction_lint: 모순 lint (ADR-0064·T-0369) — 결정 개정(amends/supersedes) 시점에 옛 결정을
+#   [[wikilink]] 참조하는 문서의 잔여 모순 후보를 표면화(탐지=LLM·DI seam·기본 dry / 판정=사람·advisory).
+#   pm_adr.py 발행 명령이 트리거로 호출(개정에만 발화). 신설 도구라 등록 필수(미등록=전파 안 됨·
+#   pm_render 사례). wikilink 문법·파일 수집은 board.py 재사용(자체 매핑 신설 0)
+.project_manager/tools/contradiction_lint.py
 
 # ── 방법론 문서 (엔진 · 프로젝트별 칸은 *.local.md / local.conf, manifest 밖) ──
 .project_manager/wiki/pm_role.md

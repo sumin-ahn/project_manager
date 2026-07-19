@@ -96,6 +96,11 @@ backbone 은 **파생 가능한 기계 부분만** 채운다(pm-handoff/ticket_f
 5. **정합 확인** — `python3 .project_manager/tools/board.py lint` 로 adr-lifecycle advisory 가 clean 인지
    확인(발행이 back-ref 를 채웠으므로 clean 이어야 정상). warning 이 stderr 로 나왔으면(대상 파일 부재·
    README 구조 불일치) 해당 부분을 손으로 보정한다.
+6. **모순 lint advisory 확인**(개정 시·ADR-0064) — amends/supersedes 발행이면 backbone 이 stderr 로
+   개정 대상을 참조하는 문서 목록을 표면화한다. 그 문서들이 새 결정과 **모순되는 잔여 서술**을 담고
+   있는지 대조해(옛 결정 전제 문장이 뒤집힌 결정과 어긋나는지) 필요 시 함께 고친다(판정=사람·차단 아님·
+   PM 19~21 "redefine 후 자산 갱신 누락" 클래스). 프롬프트가 필요하면
+   `python3 .project_manager/tools/contradiction_lint.py --new-adr ADR-NNNN --amends ADR-MMMM --show-prompt`.
 
 ## 결정 (모델 · ADR-0049 · ADR-0021 · ADR-0065)
 
@@ -116,9 +121,11 @@ backbone 은 **파생 가능한 기계 부분만** 채운다(pm-handoff/ticket_f
 - ADR-0049(PM 관리 명령어化 4요소·청중 라벨) · ADR-0021(ADR lifecycle amends/refines/supersedes
   back-ref lint) · ADR-0050(스킬 라이브 하네스 테스트) · ADR-0065(opencode 스킬 단일 소비) ·
   decisions/README.md §"새 ADR 추가 절차"(이 명령이 자동화하는 손 절차의 단일 진실).
-- **contradiction lint 배선점**(ADR-0064·T-0369) — 이 발행/개정 명령이 ADR-0064 모순 lint 가
-  걸리는 지점이다(T-0369 가 이 티켓에 depends). T-0369 에서 발행/개정 시 LLM 모순 탐지를 이 명령에
-  트리거로 배선한다(판정은 사람·mechanize-dont-instruct-llm).
+- **contradiction lint 트리거**(ADR-0064·T-0369·**배선됨**) — 이 발행/개정 명령이 ADR-0064 모순 lint
+  의 트리거다. `--amends`/`--supersedes`(개정)일 때 backbone 이 `contradiction_lint.py` 를 호출해,
+  개정된 결정을 `[[wikilink]]` 참조하는 문서(back-ref 범위)의 **잔여 모순 후보**를 재정의 순간(인지 시점)
+  에 stderr advisory 로 표면화한다. 탐지=LLM(기본 dry·미호출·프롬프트 표면화)·판정=사람(차단 아님·
+  mechanize-dont-instruct-llm). 신규 plain 발행·`--refines` 는 참조 스코프가 없거나 대상 불변이라 발화 안 함.
 - 라이브 하네스 테스트 = 실 LLM 이 스킬로 ADR 발행/개정 → 파일/색인/back-ref/log 실 상태 단언
   (ADR-0050·on-demand `PM_ORCH_LIVE`). backbone 은 기계 단위테스트(`tests/test_pm_adr.py`)로,
   스킬(프롬프트)은 라이브로 검증한다(ADR-0050 분업).

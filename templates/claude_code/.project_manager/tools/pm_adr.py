@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import re
 import sys
 from pathlib import Path
@@ -593,6 +594,51 @@ class AdrIssuer:
         self._log_file.write_text(existing + "\n" + plan["log_entry"], encoding="utf-8")
 
 
+# ── contradiction lint 트리거 (ADR-0064·T-0369) ───────────────────────────────
+# 결정을 개정(amends/supersedes)하는 바로 이 명령이 ADR-0064 모순 lint 의 배선점이다 — 재정의 순간
+# (인지 시점)에 옛 결정을 참조하는 문서의 잔여 모순을 표면화한다. **개정에만** 발화한다(신규 plain 발행·
+# refines 는 참조 스코프가 없거나 대상 불변이라 잔여 모순을 안 만든다). 탐지=LLM(기본 dry·미호출)·판정=
+# 사람(advisory·차단 아님) — 이 트리거는 어떤 경우에도 발행을 막지 않는다(fail-soft·감싸 호출).
+
+CONTRADICTION_LINT_PY = Path(__file__).resolve().parent / "contradiction_lint.py"
+
+
+def _load_contradiction_lint():
+    """contradiction_lint.py 를 sibling import 한다 (실패 시 None·graceful·advisory 는 부가 기능)."""
+    spec = importlib.util.spec_from_file_location("_pm_adr_contradiction", CONTRADICTION_LINT_PY)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        return None
+    return mod
+
+
+def emit_contradiction_advisory(
+    *, new_number: int, title: str, adr_text: str, amends: list[int], supersedes: list[int],
+) -> None:
+    """개정(amends/supersedes) 시 모순 lint advisory 를 stderr 로 표면화한다(ADR-0064·인지 시점).
+
+    개정 대상이 없으면 no-op. contradiction_lint 미로드/오류는 조용히 무시(fail-soft — 부가
+    advisory 가 발행을 막지 않는다). LLM 은 호출하지 않는다(dry·비용 0) — 스코프+안내만 표면화한다."""
+    targets = [adr_id(n) for n in (amends + supersedes)]
+    if not targets:
+        return
+    cl = _load_contradiction_lint()
+    if cl is None:
+        return
+    try:
+        new_id = adr_id(new_number)
+        result = cl.ContradictionLinter().lint(  # dry (run_fn=None·LLM 미호출)
+            new_adr_id=new_id, new_adr_title=title, new_adr_text=adr_text, target_ids=targets,
+        )
+        print("\n" + cl.format_advisory(new_id, targets, result), file=sys.stderr)
+    except Exception:
+        return  # advisory 는 fail-soft — 어떤 오류도 발행을 막지 않는다.
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def _parse_id_list(tokens: list[str]) -> list[int]:
@@ -686,6 +732,14 @@ def cmd_new(args: argparse.Namespace) -> int:
 
     for w in plan["warnings"]:
         print(f"  ⚠ {w}", file=sys.stderr)
+
+    # 모순 lint 트리거 (ADR-0064·T-0369) — 개정(amends/supersedes)에만 발화. dry-run/apply 공통으로
+    # 인지 시점(재정의 명령)에 잔여 모순 스코프를 표면화한다(advisory·fail-soft·차단 아님).
+    emit_contradiction_advisory(
+        new_number=number, title=args.title, adr_text=plan["adr_text"],
+        amends=amends, supersedes=supersedes,
+    )
+
     print("\n남은 PM 손작업: ADR 본문 서술(Context/Decision/Consequences/References) + "
           "README 개정 요약 cell + log decide 본문 + git commit.")
     return 0
