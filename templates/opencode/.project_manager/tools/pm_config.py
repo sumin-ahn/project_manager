@@ -474,6 +474,11 @@ def _validate_repo_name(name: str) -> bool:
 # 막아야 하므로(잘못된 base 기록 방지) 이 sentinel 로 호출부에 신호한다.
 _BASE_INVALID = object()
 
+# `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — `refs/heads/<name>`. 이 접두 **정확히**를
+# 제거해야 순수 브랜치명이 된다(동명 태그 존재 시 `heads/<name>` 로 오염되는 `--short` 대신 full
+# ref 를 읽는 이유·T-0377 계보·worktree_pool._SYMREF_BRANCH_PREFIX 와 동일 규칙).
+_SYMREF_BRANCH_PREFIX = "refs/heads/"
+
 
 def _resolve_base(base_arg: str | None, bare_path: Path, *, runner: GitRunner):
     """repo add base 브랜치를 해소한다 (T-0075). bare(`.repos/<name>.git`)는 존재 전제.
@@ -481,8 +486,8 @@ def _resolve_base(base_arg: str | None, bare_path: Path, *, runner: GitRunner):
     git 호출은 주입된 clone `runner` 를 `-C <bare>` 로 재사용한다(별도 DI seam 안 만듦·
     `_real_clone_runner` 가 `git <argv>` 형태라 `-C` 를 argv 로 넣으면 그 repo 컨텍스트).
 
-      - `base_arg` 미지정(None) → bare HEAD 해소(`git -C <bare> symbolic-ref --short HEAD`
-        = 원격 default 브랜치)를 base 로 명시값화한다. 해소 실패(rc≠0/빈 출력)는 빈 문자열
+      - `base_arg` 미지정(None) → bare HEAD 해소(`git -C <bare> symbolic-ref HEAD` full ref·T-0377
+        = 원격 default 브랜치)를 base 로 명시값화한다. 해소 실패(rc≠0/비-브랜치 ref)는 빈 문자열
         ("미해소"·worktree add 가 bare HEAD 폴백·현행 동작) — repo 등록 자체는 막지 않는다.
       - `base_arg` 지정 → **로컬 브랜치** 검증(`git -C <bare> show-ref --verify --quiet
         refs/heads/<b>` rc==0). `show-ref --verify` 는 exact-ref primitive(revision 문법
@@ -494,10 +499,13 @@ def _resolve_base(base_arg: str | None, bare_path: Path, *, runner: GitRunner):
     반환: 해소된 base 문자열(빈 문자열 = 미해소·None 동등) 또는 `_BASE_INVALID`(검증 실패).
     """
     if base_arg is None:
-        rc, out = runner(["-C", str(bare_path), "symbolic-ref", "--short", "HEAD"])
-        if rc != 0:
+        # full ref(`--short` 아님) → `refs/heads/` 접두 정확 제거 (T-0377 계보·동명 태그 존재 시
+        # `--short` 가 `heads/<name>` 로 오염되던 모호성 회피). 실패·비-브랜치 ref → 미해소("").
+        rc, out = runner(["-C", str(bare_path), "symbolic-ref", "HEAD"])
+        ref = out.strip()
+        if rc != 0 or not ref.startswith(_SYMREF_BRANCH_PREFIX):
             return ""  # bare HEAD 해소 실패 → 미해소(worktree add 가 bare HEAD 폴백·현행).
-        return out.strip()
+        return ref[len(_SYMREF_BRANCH_PREFIX):]
     # refs/heads/<b> exact-ref 검증 — 태그·SHA·HEAD·원격 ref·revision 문법(main~0·main^{}) 거부,
     # 로컬 브랜치만 통과(T-0078). show-ref --verify 는 revision 문법을 적용 안 하는 exact-ref primitive.
     rc, _out = runner(
@@ -568,8 +576,8 @@ def _ensure_bare_branch_tracking(bare_path: Path, *, runner: GitRunner) -> None:
     worktree 가 공유 common config(`branch.*`)로 **상속**한다(worktree-local config.worktree 아님).
 
     동작:
-      1. 기본 브랜치 = bare HEAD 해소(`git -C <bare> symbolic-ref --short HEAD`, 실패 시
-         `git -C <bare> rev-parse --abbrev-ref HEAD` 폴백).
+      1. 기본 브랜치 = bare HEAD 해소(`git -C <bare> symbolic-ref HEAD` full ref·T-0377, 실패·
+         비-브랜치 ref 시 `git -C <bare> rev-parse --abbrev-ref HEAD` 폴백).
       2. `git -C <bare> config branch.<d>.remote origin` (set=덮어쓰기·멱등).
       3. `git -C <bare> config branch.<d>.merge refs/heads/<d>`.
     비-bare `git clone` 이 checked-out 기본 브랜치만 tracking 거는 동작을 미러 — **기본 브랜치만**
@@ -580,11 +588,15 @@ def _ensure_bare_branch_tracking(bare_path: Path, *, runner: GitRunner) -> None:
     실패는 경고를 surface 하되 repo add 자체는 막지 않는다(tracking 은 *추가 가드*이지 repo add
     핵심 부작용 아님). bare 는 존재 전제(clone 성공/재사용 후 호출).
     """
-    rc, out = runner(["-C", str(bare_path), "symbolic-ref", "--short", "HEAD"])
-    if rc != 0:
-        # detached·비-symbolic HEAD 폴백 — 현재 브랜치명을 rev-parse 로 시도.
+    # full ref(`--short` 아님) → `refs/heads/` 접두 정확 제거 (T-0377 계보·동명 태그 모호성 회피).
+    rc, out = runner(["-C", str(bare_path), "symbolic-ref", "HEAD"])
+    ref = out.strip()
+    if rc == 0 and ref.startswith(_SYMREF_BRANCH_PREFIX):
+        default_branch = ref[len(_SYMREF_BRANCH_PREFIX):]
+    else:
+        # detached·비-symbolic HEAD(비-브랜치 ref) 폴백 — 현재 브랜치명을 rev-parse 로 시도.
         rc, out = runner(["-C", str(bare_path), "rev-parse", "--abbrev-ref", "HEAD"])
-    default_branch = out.strip()
+        default_branch = out.strip()
     if rc != 0 or not default_branch or default_branch == "HEAD":
         print(
             f"[경고] bare 기본 브랜치 해소 실패 (rc={rc}): {out.strip()[:200]}\n"
@@ -746,7 +758,7 @@ def cmd_repo_add(
        worktree add 가 이 bare 를 base 로 슬롯을 만든다).
 
     **base 브랜치 해소 (T-0075)** — clone 후, areas 등록 *전*(등록 줄에 base 를 박아야 하므로):
-      - `--base` 미지정 → bare HEAD(`git -C .repos/<name>.git symbolic-ref --short HEAD`
+      - `--base` 미지정 → bare HEAD(`git -C .repos/<name>.git symbolic-ref HEAD` full ref·T-0377
         = 원격 default 브랜치)를 해소해 명시값화·기록. worktree add 가 슬롯 브랜치를 그
         base 에서 파생한다(T-0075). HEAD 해소 실패 시 base 빈 값(현행 bare HEAD 동작 폴백).
       - `--base <b>` 지정 → 로컬 브랜치 검증(`git -C .repos/<name>.git show-ref --verify --quiet refs/heads/<b>` rc==0).

@@ -74,6 +74,11 @@ AREAS_FILE = REPO / ".project_manager" / "areas.md"   # legacy 별칭 (아래 _a
 # 격리·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형·데이터 결합만).
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 
+# `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — `refs/heads/<name>`. 이 접두 **정확히**를
+# 제거해야 순수 브랜치명이 된다(동명 태그 존재 시 `heads/<name>` 로 오염되는 `--short` 대신 full
+# ref 를 읽는 이유·T-0377 계보·worktree_pool._SYMREF_BRANCH_PREFIX 와 동일 규칙).
+_SYMREF_BRANCH_PREFIX = "refs/heads/"
+
 # 커맨드 카드 (ADR-0045) — 도구 호출 접두. 카드는 이 세션이 쓸 전 커맨드를 정체성 채운
 # 완성형으로 dump 한다("--help 자체를 안 가게"·사용자 지시). `python3` 은 머신-불변 doc 표면
 # 관례(T-0219·Windows 는 `py`·CLAUDE.md 노트). 경로는 multi-PM 공유 루트 기준 상대(도그푸딩
@@ -1750,11 +1755,14 @@ class PmBootstrap:
         d = str(scope_dir)
         f_rc, _f_out = self._run_git_fn(["-C", d, "fetch", "origin"])
         scope["fetched"] = f_rc == 0
-        b_rc, b_out = self._run_git_fn(["-C", d, "symbolic-ref", "--short", "HEAD"])
-        if b_rc == 0 and b_out.strip():
-            scope["branch"] = b_out.strip()
+        # full ref(`--short` 아님) → `refs/heads/` 접두 정확 제거로 순수 브랜치명 (T-0377 계보·동명
+        # 태그 존재 시 `--short` 가 `heads/<name>` 로 표시를 오염시키던 모호성 회피).
+        b_rc, b_out = self._run_git_fn(["-C", d, "symbolic-ref", "HEAD"])
+        b_ref = b_out.strip()
+        if b_rc == 0 and b_ref.startswith(_SYMREF_BRANCH_PREFIX):
+            scope["branch"] = b_ref[len(_SYMREF_BRANCH_PREFIX):]
         else:
-            # symbolic-ref 실패(rc≠0·빈 출력) = detached HEAD — 자동 pull 대상 아님.
+            # symbolic-ref 실패(rc≠0)·비-브랜치 ref = detached HEAD — 자동 pull 대상 아님.
             scope["detached"] = True
         # dirty 는 tri-state (codex must-fix): True(변경 있음)·False(확정 clean)·None(status
         # 조회 실패=clean 미확인). None 은 자동 pull 을 막는다(freshness_decision `dirty is False`).

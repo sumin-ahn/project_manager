@@ -1048,9 +1048,9 @@ class _BaseAwareGit:
             return 0, "true\n"
         if "rev-parse" in argv and "--verify" in argv and argv[-1] == "HEAD":
             return 0, "0123abc\n"
-        # `-C <bare> symbolic-ref --short HEAD` — bare HEAD 해소.
+        # `-C <bare> symbolic-ref HEAD` — bare HEAD 해소(full ref·T-0377·동명 태그 모호성 회피).
         if "symbolic-ref" in argv:
-            return 0, self._head + "\n"
+            return 0, f"refs/heads/{self._head}\n"
         # `-C <bare> show-ref --verify --quiet refs/heads/<b>` — 로컬 브랜치 exact-ref 검증(T-0078).
         if "show-ref" in argv and "--verify" in argv:
             ref = argv[-1]
@@ -1077,6 +1077,25 @@ def test_repo_add_base_default_resolves_bare_head(pc, tmp_path):
     # symbolic-ref 가 bare 컨텍스트(`-C <bare>`)로 불렸는지.
     sym = [c for c in gitr.calls if "symbolic-ref" in c]
     assert sym and "-C" in sym[0]
+
+
+def test_repo_add_base_default_tag_collision_pure_branch(pc, tmp_path):
+    """T-0381: --base 미지정 + 기본 브랜치 = 동명 태그(full ref) → base 순수명 `v1.3.0` 기록.
+
+    `symbolic-ref --short HEAD` 라면 동명 태그(`v1.3.0` 브랜치 == `v1.3.0` 태그) 모호성 회피로
+    `heads/v1.3.0` 을 줘 잘못된 base 를 areas 에 박았다 — full ref(`symbolic-ref HEAD`) 전환으로
+    항상 `refs/heads/v1.3.0` → `refs/heads/` 접두만 벗겨 순수명 `v1.3.0` (T-0377 계보·클래스 마감).
+    """
+    board = FakeBoard(registered=())
+    gitr = _BaseAwareGit(head="v1.3.0")   # symbolic-ref HEAD → refs/heads/v1.3.0
+    rc = pc.cmd_repo_add(
+        _repo_add_args(pc, name="svc", base=None),
+        board=board, clone_runner=gitr, repos_dir=tmp_path / ".repos",
+    )
+    assert rc == 0
+    assert board.append_calls[0]["base"] == "v1.3.0"   # `heads/v1.3.0` 오염 아님
+    # full ref 로 전환 — `--short`(모호성 접두 오염원) 미사용.
+    assert not any("--short" in c for c in gitr.calls)
 
 
 def test_repo_add_base_explicit_validated_and_recorded(pc, tmp_path):

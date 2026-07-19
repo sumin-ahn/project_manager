@@ -117,7 +117,9 @@ class GitFake:
         if "fetch" in argv:
             return self._fetch_rc, ("" if self._fetch_rc == 0 else "fatal: could not fetch")
         if "symbolic-ref" in argv:
-            return self._symref_rc, (self._head + "\n" if self._symref_rc == 0
+            # full ref (T-0377) — `symbolic-ref HEAD` 는 `refs/heads/<name>`. 동명 태그 모호성
+            # 회피(`--short` 폐기)·rev-parse --abbrev-ref 는 short(`<name>`) 유지.
+            return self._symref_rc, (f"refs/heads/{self._head}\n" if self._symref_rc == 0
                                      else "fatal: ref HEAD is not a symbolic ref\n")
         if "rev-parse" in argv and "--abbrev-ref" in argv:
             return self._revparse_rc, (self._head + "\n" if self._revparse_rc == 0
@@ -540,6 +542,24 @@ def test_ensure_bare_branch_tracking_revparse_fallback(pc, tmp_path):
     calls = _branch_config_calls(gitr)
     assert ["-C", str(bare), "config", "branch.main.remote", "origin"] in calls
     assert ["-C", str(bare), "config", "branch.main.merge", "refs/heads/main"] in calls
+
+
+def test_ensure_bare_branch_tracking_tag_collision_pure_branch(pc, tmp_path):
+    """T-0381: 기본 브랜치명 = 동명 태그(full ref `refs/heads/v1.3.0`) → tracking 은 순수명 대상.
+
+    `symbolic-ref --short HEAD` 라면 동명 태그 모호성 회피로 `heads/v1.3.0` 을 줘 `branch.heads/
+    v1.3.0.*` 오염명으로 tracking 을 박을 뻔했다 — full ref(`symbolic-ref HEAD`) 전환으로 항상
+    `refs/heads/v1.3.0` → `refs/heads/` 접두만 벗겨 순수명 `v1.3.0` (T-0377 계보·클래스 마감).
+    """
+    bare = tmp_path / "svc.git"
+    gitr = GitFake(head="v1.3.0")   # symbolic-ref HEAD → refs/heads/v1.3.0
+    pc._ensure_bare_branch_tracking(bare, runner=gitr)
+    calls = _branch_config_calls(gitr)
+    assert ["-C", str(bare), "config", "branch.v1.3.0.remote", "origin"] in calls
+    assert ["-C", str(bare), "config", "branch.v1.3.0.merge", "refs/heads/v1.3.0"] in calls
+    # full ref 로 전환 — `--short` 모호성 접두 미사용·symbolic-ref HEAD 를 실제로 호출.
+    assert not any("--short" in c for c in gitr.calls)
+    assert ["-C", str(bare), "symbolic-ref", "HEAD"] in gitr.calls
 
 
 # ── 통합 — 실 git 으로 origin/main remote-tracking ref 생성 고정 (codex/reviewer 권고) ──

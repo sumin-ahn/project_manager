@@ -154,8 +154,8 @@ def _era_git_fn(bootstrap, *, slot_behind=0, fetch_rc=0, calls=None):
             sub = args[2:]
             if sub == ["fetch", "origin"]:
                 return (fetch_rc, "" if fetch_rc == 0 else "fatal: could not read remote\n")
-            if sub == ["symbolic-ref", "--short", "HEAD"]:
-                return (0, "A_1\n")
+            if sub == ["symbolic-ref", "HEAD"]:  # full ref (T-0377).
+                return (0, "refs/heads/A_1\n")
             if sub == ["status", "-s"]:
                 return (0, "")
             if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:
@@ -472,8 +472,8 @@ def test_run_freshness_offline_says_undetermined_not_latest(bootstrap, tmp_path,
             sub = args[2:]
             if sub == ["fetch", "origin"]:
                 return (1, "fatal: could not read remote\n")  # offline
-            if sub == ["symbolic-ref", "--short", "HEAD"]:
-                return (0, "main\n")
+            if sub == ["symbolic-ref", "HEAD"]:  # full ref (T-0377).
+                return (0, "refs/heads/main\n")
             if sub == ["status", "-s"]:
                 return (0, "")
             if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:

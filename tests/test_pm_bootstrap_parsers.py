@@ -625,8 +625,8 @@ def _make_hermetic_bootstrap(
             # 주므로 이 fixture 에선 checkout/pull 은 안 불리지만 안전하게 handler 를 둔다.
             if sub == ["fetch", "origin"]:
                 return (0, "")
-            if sub == ["symbolic-ref", "--short", "HEAD"]:
-                return (0, "main\n")
+            if sub == ["symbolic-ref", "HEAD"]:  # full ref (T-0377).
+                return (0, "refs/heads/main\n")
             if sub == ["rev-parse", "--short", "HEAD"]:
                 return (0, "abc1234\n")
             if sub == ["status", "-s"]:
@@ -1293,8 +1293,8 @@ def _scope_git_fn(dir_str, *, fetch_rc=0, branch="main", detached=False, dirty=F
         sub = args[2:]
         if sub == ["fetch", "origin"]:
             return (fetch_rc, "" if fetch_rc == 0 else "fatal: could not read from remote\n")
-        if sub == ["symbolic-ref", "--short", "HEAD"]:
-            return (1, "") if detached else (0, f"{branch}\n")
+        if sub == ["symbolic-ref", "HEAD"]:  # full ref (T-0377).
+            return (1, "") if detached else (0, f"refs/heads/{branch}\n")
         if sub == ["status", "-s"]:
             if status_rc != 0:
                 return (status_rc, "fatal: not a git repository\n")
@@ -1349,6 +1349,28 @@ def test_sync_scope_status_failure_behind_no_pull(tmp_path):
     # 경고 표면화 — behind 유지 + 차단 사유(status 미확인).
     assert scope["behind"] == 2
     assert scope["note"] and "status 미확인" in scope["note"]
+
+
+def test_collect_scope_git_tag_collision_yields_pure_branch(tmp_path):
+    """T-0381: 동명 태그 존재(full ref `refs/heads/v1.3.0`) → 표시 브랜치는 순수명 `v1.3.0`.
+
+    `symbolic-ref --short HEAD` 는 브랜치와 같은 이름의 태그가 있으면(릴리즈가 `v1.3.0` 브랜치를
+    그대로 `v1.3.0` 태그로 찍은 경우) 모호성 회피로 `heads/v1.3.0` 을 줘 표시를 오염시켰다(PM 76
+    실측). full ref(`symbolic-ref HEAD`)는 태그 존재와 무관하게 항상 `refs/heads/<정확한 이름>` 이라
+    `refs/heads/` 접두만 정확히 벗기면 순수 브랜치명이 된다 (T-0377 계보·클래스 마감).
+    """
+    mod = _load_module()
+    d = tmp_path / "repo"
+    calls: list[list[str]] = []
+    inst = mod.PmBootstrap(
+        run_git_fn=_scope_git_fn(str(d), branch="v1.3.0", behind=0, ahead=0, dirty=False, calls=calls))
+    scope = inst._sync_scope("① worktree", d)
+    # full ref → `refs/heads/` 접두 정확 제거 → 순수명(`heads/v1.3.0` 오염 아님).
+    assert scope["branch"] == "v1.3.0"
+    assert scope["detached"] is False
+    # `--short`(모호성 접두 오염원) 는 절대 호출하지 않는다 — full ref(`symbolic-ref HEAD`)로 전환됐다.
+    assert ["-C", str(d), "symbolic-ref", "HEAD"] in calls
+    assert not any("--short" in a for a in calls)
 
 
 # ── _default_run_git 네트워크 timeout → fail-soft (reviewer must-fix ③) ────────
@@ -1482,8 +1504,8 @@ def test_sync_board_submodule_branch_preserving_pull(tmp_path):
         sub = args[2:]
         if sub == ["fetch", "origin"]:
             return (0, "")
-        if sub == ["symbolic-ref", "--short", "HEAD"]:
-            return (0, "main\n")
+        if sub == ["symbolic-ref", "HEAD"]:  # full ref (T-0377).
+            return (0, "refs/heads/main\n")
         if sub == ["status", "-s"]:
             return (0, "")  # clean
         if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:
@@ -1534,8 +1556,8 @@ def _repo_scope_git_fn(repo_dir, *, behind, ahead=0, dirty=False, pull_rc=0):
             sub = args[2:]
             if sub == ["fetch", "origin"]:
                 return (0, "")
-            if sub == ["symbolic-ref", "--short", "HEAD"]:
-                return (0, "main\n")
+            if sub == ["symbolic-ref", "HEAD"]:  # full ref (T-0377).
+                return (0, "refs/heads/main\n")
             if sub == ["status", "-s"]:
                 return (0, " M x\n" if dirty else "")
             if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:
@@ -1588,8 +1610,8 @@ def test_run_freshness_fetch_failure_failsoft_continues(tmp_path, capsys):
             sub = args[2:]
             if sub == ["fetch", "origin"]:
                 return (1, "fatal: could not read from remote repository\n")
-            if sub == ["symbolic-ref", "--short", "HEAD"]:
-                return (0, "main\n")
+            if sub == ["symbolic-ref", "HEAD"]:  # full ref (T-0377).
+                return (0, "refs/heads/main\n")
             if sub == ["status", "-s"]:
                 return (0, "")
             if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:
