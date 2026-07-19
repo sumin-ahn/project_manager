@@ -82,7 +82,10 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record -
    # 사용자 승인 필요 — 스킬은 이 명령을 대신 돌리지 않는다(보호훅 + livegate 이중 안전).
    PM_ALLOW_PROTECTED_PUSH=1 git push origin main
    ```
-2. **annotated tag** `vX.Y.Z` push (`git tag -a vX.Y.Z -m ... && git push origin vX.Y.Z`).
+2. **annotated tag** `vX.Y.Z` push — refspec 을 **명시**한다:
+   `git tag -a vX.Y.Z -m ... && git push origin refs/tags/vX.Y.Z:refs/tags/vX.Y.Z`
+   (릴리즈 브랜치명=태그명 컨벤션에서 `git push origin vX.Y.Z` 는 "src refspec matches more than
+   one" 으로 실패한다 — v1.3.1 실측·T-0383).
 3. **GitHub Release 생성**(필수·태그만으론 릴리즈 아님·T-0290):
    ```bash
    gh release create vX.Y.Z --notes-file <CHANGELOG 해당 절 추출> --verify-tag
