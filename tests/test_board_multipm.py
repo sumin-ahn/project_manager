@@ -1630,6 +1630,103 @@ def test_regression_multi_check_message_carries_rc5_hint(
 
 
 # ════════════════════════════════════════════════════════════════════════
+# T-0378 — 명시 `--cwd`(run) 대칭: eager actor 해소가 `--repo` 단독 + 활성 ≥2 에서
+# SlotResolutionError 를 오발화하던 것을 soft 해소로 닫는다(livegate cf14d9b 동형·
+# pm-release §2 readonly-핀 처방 `regression run --repo <r> --cwd <readonly>` 소진).
+# --cwd 핀은 단일 위치라 M>1 순회도 건너뛰고, session 은 슬롯 test_cmd 유도에만 남는다
+# (cwd override 최우선) — 명시 슬롯은 그 test_cmd 유지, 모호는 repo/local 폴백.
+# ════════════════════════════════════════════════════════════════════════
+
+def _seed_repo_two_slots(board, repo="proj"):
+    """repo 하나에 활성 leased 슬롯 2개(<repo>_1·<repo>_2) — resolve_actor_slot 모호 전제.
+
+    작업 슬롯 + readonly(leased) 슬롯이 같은 repo 활성 ≥2 가 되는 릴리즈 형상 재현.
+    """
+    _seed_lease(board, f"{repo}_1", repo, slot=f"work/{repo}_1")
+    _seed_lease(board, f"{repo}_2", repo, slot=f"work/{repo}_2")
+
+
+def test_actor_override_repo_ambiguous_hard_exits_reproduces_misfire(
+        reg_board, monkeypatch):
+    """재현 판정: `--repo` 단독 + 활성 ≥2 → `_actor_session_override`(soft=False) 가 SystemExit.
+
+    v1.3.0 릴리즈가 잡은 결함 클래스(livegate cf14d9b)의 regression 판 — eager 해소가 `--cwd`
+    핀을 무시하고 `--repo` 단독 actor 특정을 타 SlotResolutionError 로 오발화한다. soft=False
+    는 현행 하드 실패라 **결함이 실재함을 박제**하고, soft=True 는 raise 대신 None(핀 존중)임을
+    같은 자리에서 못박는다(수정의 핵심 seam).
+    """
+    _clear_env(monkeypatch)
+    _seed_repo_two_slots(reg_board)
+    args = argparse.Namespace(repo="proj", slot=None, task=None)
+    with pytest.raises(SystemExit):
+        reg_board._actor_session_override(args)            # soft=False (현행·오발화 재현)
+    assert reg_board._actor_session_override(args, soft=True) is None
+
+
+def test_regression_run_explicit_cwd_repo_ambiguous_no_misfire(
+        reg_board, monkeypatch):
+    """수정: 활성 ≥2 + `regression run --repo <r> --cwd <path>` → 오발화 없이 그 cwd 실행.
+
+    eager 해소가 SlotResolutionError 로 죽던 것을 --cwd 핀이 soft 해소로 존중한다 —
+    pm-release §2 처방(`--repo <r> --cwd <readonly>`)이 실제로 통과(dead-end 아님).
+    """
+    _clear_env(monkeypatch)
+    _seed_repo_two_slots(reg_board)
+    override = str(reg_board._proj / "readonly_slot")
+    fake = _FakeRun(0)
+    monkeypatch.setattr(reg_board.subprocess, "run", fake)
+    rc = reg_board.cmd_regression(_run_args(repo="proj", cwd=override))  # 오발화면 SystemExit
+    assert rc == 0
+    # 단일 subprocess 가 그 cwd(override)에서 — M>1 순회 아님.
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["kwargs"]["cwd"] == override
+
+
+def test_regression_run_explicit_cwd_skips_multi_dispatch(
+        multi_reg_board, monkeypatch):
+    """--cwd 핀은 leased ≥2 라도 M>1 all-or-nothing 순회를 건너뛴다(명시 cwd=단일 위치).
+
+    무명시면 전-슬롯 순회(2 subprocess)지만, --cwd 명시면 그 한 경로에서 단일 실행 +
+    공유 REGRESSION_FLAG 기록(per-slot 플래그 안 만듦).
+    """
+    b = multi_reg_board
+    override = str(b._proj / "pinned")
+    fake = _FakeRun(0)
+    monkeypatch.setattr(b.subprocess, "run", fake)
+    rc = b.cmd_regression(_run_args(cwd=override))
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["kwargs"]["cwd"] == override
+    assert b.REGRESSION_FLAG.exists()
+    assert not (b.LOCAL_DIR / "regression-A_1.json").exists()
+
+
+def test_regression_run_explicit_slot_cwd_keeps_slot_test_cmd(
+        reg_board, monkeypatch):
+    """--repo/--slot 명시 + --cwd → 그 슬롯 test_cmd 유지(soft 는 kind=slot 무영향).
+
+    모호(--repo 단독)만 repo/local 폴백을 타고, 명시 슬롯은 슬롯 test_cmd 를 그대로 유도한다
+    — 부분 대칭(결정 절 (a)): slot test_cmd 는 pickable 할 때만 유지.
+    """
+    _clear_env(monkeypatch)
+    _seed_repo_two_slots(reg_board)
+    # proj_1 슬롯에 test_cmd 바인딩(슬롯별 빌드변형).
+    data = json.loads(reg_board.LEASES_FILE.read_text(encoding="utf-8"))
+    for r in data["leases"]:
+        if r["session"] == "proj_1":
+            r["test_cmd"] = "SLOT1_CMD"
+    reg_board.LEASES_FILE.write_text(json.dumps(data), encoding="utf-8")
+    override = str(reg_board._proj / "pinned")
+    fake = _FakeRun(0)
+    monkeypatch.setattr(reg_board.subprocess, "run", fake)
+    rc = reg_board.cmd_regression(_run_args(repo="proj", slot=1, cwd=override))
+    assert rc == 0
+    # 명시 슬롯(proj_1)의 test_cmd 가 실렸다(모호 폴백과 달리 pickable).
+    assert fake.calls[0]["args"][0].startswith("SLOT1_CMD")
+    assert fake.calls[0]["kwargs"]["cwd"] == override
+
+
+# ════════════════════════════════════════════════════════════════════════
 # _regression_cwd — multi-slot genuine-ambiguity fail-loud (T-0298)
 # 활성 슬롯 미해소 + leased ≥2 + 세션/cwd 미지정 = 진짜 모호 → REPO(PM 홈·tests 없음)
 # 침묵 폴백(broken slot 수집 → false fail) 대신 fail-loud(--session/--cwd 안내).

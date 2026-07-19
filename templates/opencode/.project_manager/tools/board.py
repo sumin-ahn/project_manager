@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -522,10 +523,18 @@ def identity_tag(session_override: str | None = None,
     return f"{user}/{pm}" if user else pm
 
 
-def _actor_session_override(args: argparse.Namespace) -> str | None:
+def _actor_session_override(args: argparse.Namespace, *, soft: bool = False) -> str | None:
     """`--repo`/`--slot`(ADR-0057)에서 actor 연산(claim·init·migrate-identity·regression·
     livegate record·reid)의 세션 override 문자열을 해소한다 — 구 `args.session` 을 대체하는
     단일 seam(전 actor 서브 공유·중복 0).
+
+    **`soft=True`**(T-0378·명시 `--cwd` 핀 호출부 전용) — `--repo` 단독 해소가 모호(활성 ≥2·
+    `SlotResolutionError`)하거나 미해소(활성 0)여도 `sys.exit` 대신 `None` 을 돌린다. 실행 위치가
+    `--cwd` 로 핀된 regression run 은 session 이 cwd/디스패치에 불요하고 슬롯 test_cmd 유도에만
+    남으므로(cwd override 최우선), 모호/미해소를 하드 실패시키지 않고 test_cmd 폴백(repo/local)에
+    맡긴다 — livegate cf14d9b(`--cwd` 시 eager 해소 생략)의 동형 처방. `--slot` 명시(kind="slot")·
+    task 는 애초에 raise 하지 않으므로 soft 무영향(그 슬롯 test_cmd 를 그대로 유지). 사용 오류
+    (ValueError — `--slot` 단독·`--slot < 1`)는 soft 여도 하드 실패(모호 아님·usage error).
 
     `identity_args.parse_identity` 로 kind 를 가른다:
       - kind="slot"(`--repo X --slot N`) — 리스 조회 없이 즉시 `"<repo>_<N>"`(완전 해소·정체성
@@ -564,8 +573,12 @@ def _actor_session_override(args: argparse.Namespace) -> str | None:
         try:
             session = identity_args.resolve_actor_slot(identity.repo, LEASES_FILE)
         except identity_args.SlotResolutionError as e:
+            if soft:
+                return None   # --cwd 핀(T-0378) — 모호를 cwd 실행이 존중, test_cmd 폴백에 맡김.
             sys.exit(f"[중단] {e}")
         if session is None:
+            if soft:
+                return None   # --cwd 핀(T-0378) — 미해소도 cwd 실행이 존중(soft).
             sys.exit(
                 f"[중단] repo '{identity.repo}' 의 활성 슬롯을 해소할 수 없다(활성 리스 0개). "
                 f"`--repo {identity.repo} --slot <N>` 으로 슬롯을 명시하거나, 인자 없이(자동 해소) 실행하라."
@@ -1791,18 +1804,21 @@ def _board_git_enabled() -> bool:
     return (board_root() / ".git").exists()
 
 
-def _board_git(args: list[str], *, check: bool = False) -> subprocess.CompletedProcess:
+def _board_git(args: list[str], *, check: bool = False,
+               timeout: float | None = None) -> subprocess.CompletedProcess:
     """board git working dir(`board_root()`)에서 git 명령을 실행한다 (UTF-8·timeout 고정).
 
     엔진 subprocess 관례: UTF-8 디코딩(한글 ticket/경로 안전)·짧은 timeout·`errors=replace`.
     `-C board_root()` 로 작업 디렉토리를 board git 으로 고정한다(cwd 의존 0). `check=False`
     가 기본 — 호출부가 returncode 로 분기하며, 예외(timeout·바이너리 이상)는 호출부가
-    fail-soft 로 처리한다.
+    fail-soft 로 처리한다. `timeout` 미지정은 `_BOARD_GIT_TIMEOUT_SECONDS`(30s) — advisory
+    freshness fetch 처럼 대화형 hang 을 짧게 끊어야 하는 호출부만 override 한다(T-0379·기존
+    경로 무변경).
     """
     return subprocess.run(
         ["git", "-C", str(board_root()), *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=_BOARD_GIT_TIMEOUT_SECONDS, check=check)
+        timeout=_BOARD_GIT_TIMEOUT_SECONDS if timeout is None else timeout, check=check)
 
 
 def _board_git_head() -> str | None:
@@ -2476,15 +2492,26 @@ def cmd_regression(args: argparse.Namespace) -> int:
         print(f"regression: 작업공간(task {args.task}) → {task_cwd}")
     # 디스패치 판정은 CLI --repo/--slot(명시) 만 본다 — env 세션은 M>1 게이트를 조용히 좁히므로
     # 여기선 제외(위 docstring·codex). explicit 없고 leased ≥2 면 env 유무 무관 전-슬롯 순회.
-    explicit_override = _actor_session_override(args)
-    if explicit_override is None:
+    #
+    # **명시 `--cwd`(run) 대칭 — livegate cf14d9b 동형**(T-0378·T-0360 test_cmd 얽힘 잔여 소진):
+    # `--cwd` 가 명시되면 실행 위치가 그 경로로 핀돼(단일 위치) session 이 cwd/디스패치에 불요하다.
+    # 그런데 eager `_actor_session_override` 가 `--repo` 단독+활성 ≥2(또는 0)에서 SlotResolutionError
+    # 를 오발화해 pm-release §2 readonly-핀 처방(`regression run --repo <r> --cwd <readonly>`)을 막던
+    # 것 — livegate 와 같은 노출이다. `--cwd` 핀이면 actor 해소를 **soft**(모호/미해소 → None·raise
+    # 아님)로 낮춰 그 cwd 실행을 존중하고 M>1 순회도 건너뛴다(명시 cwd=단일 위치). session 은 슬롯
+    # test_cmd 유도에만 남으므로(cwd override 최우선) `--repo`/`--slot` 명시면 그 슬롯 test_cmd 를
+    # 그대로 유지하고(soft 는 kind=slot 을 안 건드림·pickable 할 때만), 모호(→None)면 `--cmd`/repo/
+    # local 폴백을 탄다(결정 절 (a)).
+    _run_cwd_pinned = args.action == "run" and getattr(args, "cwd", None)
+    explicit_override = _actor_session_override(args, soft=bool(_run_cwd_pinned))
+    if not _run_cwd_pinned and explicit_override is None:
         leased = identity_args.leased_sessions(LEASES_FILE)
         if len(leased) >= 2:
             slots = sorted(set(leased))
             return (_regression_multi_run(args, slots) if args.action == "run"
                     else _regression_multi_check(slots))
-    # 단일-슬롯 (명시 --repo/--slot·단일-lease·솔로·env<M2) — 현행 경로. sess 는 슬롯 test_cmd/cwd
-    # threading 용(env 유효·위에서 M>1 만 걸러냄).
+    # 단일-슬롯 (명시 --repo/--slot·단일-lease·솔로·env<M2·명시 --cwd 핀) — 현행 경로. sess 는 슬롯
+    # test_cmd/cwd threading 용(env 유효·위에서 M>1 만 걸러냄·--cwd 핀은 soft 해소).
     sess = session_name(explicit_override)
     if args.action == "run":
         touches = (_ticket_touches(args.ticket) if getattr(args, "ticket", None)
@@ -3884,6 +3911,121 @@ def _tag_values(fm: dict[str, Any]) -> list[str]:
     return [str(t) for t in (fm.get("tags") or [])]
 
 
+# ── board-git freshness 표면화 (T-0379·T-0341 판정 재사용·advisory·never-block) ──
+# 세션 중간의 board 읽기(`list`)에도 board submodule 최신도를 1줄 표면화한다 — 부트스트랩
+# 이후 시점의 stale 오독(PM 69 사고: 타 슬롯이 stale board 스냅샷을 최신처럼 신뢰)의 잔여
+# 갈래를 닫는다. 판정은 **신규 구현 0** — 부트스트랩(T-0341)이 소비하는 pm_bootstrap 의 순수
+# 판정(`_format_freshness`·`parse_git_ahead_behind`·`_behind_warning`)을 그대로 재사용해 두
+# 소비처(부트스트랩·list)가 같은 하나를 본다(중복 판정 금지). board 비-git(솔로·legacy)은
+# freshness 개념이 없어 조용히 생략(오탐 0). list 는 read-only 조회라 pull 하지 않고 표면화만.
+
+
+# advisory freshness fetch 조율 (T-0379 should-fix) — `list` 는 대화형으로 세션당 수십 회 도는
+# 로컬-only 명령이라, 매 호출 원격 fetch(30s timeout)는 offline/VPN-hang 시 호출당 최대 30s 블록·
+# online 도 매번 round-trip 이 advisory 1줄 대비 과하다. ① fetch 전 FETCH_HEAD mtime TTL 가드로
+# 직전 fetch 를 cross-process 재사용(별도 캐시 파일 없음)·② advisory fetch timeout 을 5s 로 단축.
+_FRESHNESS_FETCH_TTL_SECONDS = 60      # 이 창 안이면 직전 fetch 결과 재사용(fetch 생략).
+_FRESHNESS_FETCH_TIMEOUT_SECONDS = 5   # advisory fetch 상한(대화형 hang 완화·기존 30s 경로 불변).
+
+
+def _board_fetch_head_fresh(ttl: float) -> bool:
+    """board-git FETCH_HEAD mtime 이 `ttl` 초 이내면 True — 직전 fetch 재사용(fetch 생략·T-0379).
+
+    별도 캐시 파일/상태 신설 없이 git 자신의 FETCH_HEAD mtime 만으로 **cross-process** TTL 판정.
+    경로는 `git rev-parse --git-path FETCH_HEAD`(submodule/worktree gitdir 레이아웃 무관 해소).
+    FETCH_HEAD 부재(한 번도 fetch 안 함)·경로 조회 실패·stat 실패면 False(fetch 진행·보수적).
+    """
+    try:
+        r = _board_git(["rev-parse", "--git-path", "FETCH_HEAD"])
+    except Exception:  # noqa: BLE001 — 경로 조회 예외는 stale 취급(fetch 진행).
+        return False
+    if r.returncode != 0 or not r.stdout.strip():
+        return False
+    p = Path(r.stdout.strip())
+    if not p.is_absolute():
+        p = board_root() / p   # rev-parse 는 -C board_root() 기준 상대 경로를 낼 수 있다.
+    try:
+        return (time.time() - p.stat().st_mtime) < ttl
+    except OSError:
+        return False           # FETCH_HEAD 부재(한 번도 fetch 안 함) → fetch 진행.
+
+
+def _load_pm_bootstrap_module():
+    """pm_bootstrap 모듈을 같은 tools/ 에서 로드 (freshness 순수 판정 재사용·T-0379).
+
+    `_load_pm_update_module` 동형 seam — board.py 가 형제 모듈의 순수 함수를 재사용할 때 쓴다.
+    실패 시 None → 호출부가 freshness 표면화를 조용히 생략(fail-soft·advisory 라 무발화)."""
+    pmb_py = Path(__file__).resolve().parent / "pm_bootstrap.py"
+    try:
+        spec = importlib.util.spec_from_file_location("pm_bootstrap", pmb_py)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — 로드 실패는 무발화(freshness 생략·advisory).
+        return None
+
+
+def _board_git_freshness_line() -> str | None:
+    """board submodule freshness 를 부트스트랩과 **같은 판정**으로 1줄 만든다 (T-0379·없으면 None).
+
+    board 비-git(솔로·legacy·`_board_git_enabled()` False)이거나 pm_bootstrap 로드 실패면 None
+    (표면화 생략·오탐 0). 그 외엔 board-git 을 fetch(원격 실측·offline 이면 fail-soft) 후
+    detached/dirty/ahead·behind 를 board.py 자체 board-git 함수로 수집해, pm_bootstrap 의
+    `_format_freshness`(T-0341 부트스트랩 소비 판정)로 포맷한다 — **판정 단일화**(중복 0). list
+    는 read-only 라 pull 하지 않는다(부트스트랩의 자동 ff-pull 과 달리 표면화만·never-block).
+    offline(fetch 실패)이면 remote-tracking 스냅샷을 "최신"으로 주장하지 않고 "판정불가 —
+    스냅샷일 수 있음"으로 fail-soft(T-0341 의 stale-read 오단정 제거 거동 그대로 상속).
+    """
+    # board-git 존재 확인을 **먼저** — 비-git 솔로는 pm_bootstrap(4천줄) 로드도 fetch 도 안 한다.
+    if not _board_git_enabled():
+        return None
+    pmb = _load_pm_bootstrap_module()
+    if pmb is None:
+        return None
+    # fetch 전 TTL 가드(T-0379 should-fix): 직전 fetch 가 TTL 이내면 재사용(원격 실측된 스냅샷이라
+    # fetched=True)·fetch 생략. 아니면 advisory 짧은 timeout(5s)으로 fetch(offline 이면 fail-soft).
+    if _board_fetch_head_fresh(_FRESHNESS_FETCH_TTL_SECONDS):
+        fetched = True
+    else:
+        try:
+            fetched = _board_git(
+                ["fetch", "origin"],
+                timeout=_FRESHNESS_FETCH_TIMEOUT_SECONDS).returncode == 0
+        except Exception:  # noqa: BLE001 — fetch 예외(timeout·offline)는 fail-soft(판정불가).
+            fetched = False
+    detached = _board_git_head_detached()
+    ahead = behind = None
+    try:
+        ab = _board_git(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+        if ab.returncode == 0:
+            parsed = pmb.parse_git_ahead_behind(ab.stdout)
+            if parsed is not None:
+                ahead, behind = parsed
+    except Exception:  # noqa: BLE001 — rev-list 예외는 upstream 미상(behind None) 취급.
+        pass
+    scope = {"fetched": fetched, "detached": detached, "dirty": None,
+             "ahead": ahead, "behind": behind, "note": None}
+    if behind and behind > 0:
+        # behind>0 에서만 dirty 를 조회(로컬 git status·common 경로 무오버헤드)해 경고 사유를
+        # 정확히 채운다(`_behind_warning` = ⚠ behind N — 수동 동기 필요 (fetch/dirty/diverged)).
+        scope["dirty"] = bool(_board_git_status_porcelain().strip())
+        scope["note"] = pmb._behind_warning(scope)
+    return f"board-git: {pmb._format_freshness(scope)}"
+
+
+def _print_board_freshness() -> None:
+    """board freshness 1줄을 **stderr** 로 표면화한다 (advisory·stdout 목록 포맷 무오염·T-0379).
+
+    stdout 이 아니라 stderr 인 이유: `board list` stdout 를 파싱하는 소비처(회귀 파서·
+    pm_bootstrap counts·아래 anti-degrade warn 과 동형)를 오염시키지 않는다. board 비-git/
+    로드 실패면 None → 무출력(조용히 생략·오탐 0)."""
+    line = _board_git_freshness_line()
+    if line is not None:
+        print(line, file=sys.stderr)
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     # `--mine`(T-0164·ADR-0033 ④) / `--repo`·`--slot`(ADR-0057 — 구 `--session`/bare `--slot`
     # 뷰 렌즈[T-0197] 를 흡수) 뷰: 단일 공유 보드의 렌즈 — **현재 사용자**의 area open + claim.
@@ -4015,6 +4157,9 @@ def cmd_list(args: argparse.Namespace) -> int:
             "`board init --owner <you>` 또는 `board migrate-identity`.",
             file=sys.stderr,
         )
+    # board-git freshness 표면화 (T-0379·advisory·stderr) — 각 list 변형 공통·양 return 경로
+    # ("(no tickets)"·행 있음)를 커버하도록 여기서 한 번 소환. board 비-git 이면 무출력.
+    _print_board_freshness()
     if not rows:
         print("(no tickets)")
         return 0
