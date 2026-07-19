@@ -185,6 +185,25 @@ def test_record_uses_regression_cwd_seam(live_board, monkeypatch):
         "record 가 활성 slot worktree(=_regression_cwd)에서 돌지 않았다"
 
 
+def test_record_explicit_cwd_skips_actor_slot_resolution(live_board, monkeypatch):
+    """명시 `--cwd` + `--repo` 단독 + 활성 슬롯 ≥2 → 모호 fail 미발화·그 cwd 에서 실행 (v1.3.0 릴리즈 실측 결함 회귀).
+
+    readonly 공유 슬롯(T-0358·leased) 추가로 repo 활성 슬롯이 2가 되면, eager session 해소
+    (`_actor_session_override`→`resolve_actor_slot`)가 `--cwd` 핀에도 불구하고 SlotResolutionError 로
+    죽던 결함 — pm-release §2 처방(`record --repo <repo> --cwd <readonly>`)을 막았다. `--cwd` 명시면
+    session 해소 자체를 생략함을 못박는다."""
+    override = str(live_board._proj / "readonly_slot")
+    def _boom(*a, **k):
+        raise AssertionError("--cwd 명시인데 actor session 해소가 호출됨 (eager 해소 재발)")
+    monkeypatch.setattr(live_board, "_actor_session_override", _boom)
+    fake = _FakeRun(0, "14 passed, 811 deselected in 45.67s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    rc = live_board.cmd_livegate(_rec_args(cwd=override, repo="proj"))
+    assert rc == 0
+    pytest_call = next((c for c in fake.calls if c["kwargs"].get("shell")), None)
+    assert pytest_call is not None and pytest_call["kwargs"]["cwd"] == override
+
+
 def test_record_explicit_cwd_override(live_board, monkeypatch):
     """명시 `--cwd` 는 활성 slot 해소를 우회해 그 경로에서 돈다 (ADR-0014 override)."""
     override = str(live_board._proj / "elsewhere")

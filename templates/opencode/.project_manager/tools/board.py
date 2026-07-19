@@ -2664,8 +2664,14 @@ def _livegate_record(args: argparse.Namespace) -> int:
         if getattr(args, "cwd", None) is None:
             args.cwd = task_cwd
         print(f"livegate: 작업공간(task {args.task}) → {task_cwd}")
-    cwd = _regression_cwd(getattr(args, "cwd", None),
-                          session=session_name(_actor_session_override(args)))
+    # `--cwd` 명시(릴리즈 readonly 슬롯 핀·T-0360 재배선)면 session 해소 자체를 생략한다 —
+    # `_regression_cwd` 는 override 최우선이라 session 이 불요한데, eager 해소가 `--repo` 단독
+    # actor 특정(resolve_actor_slot)을 타서 readonly(leased) 슬롯 추가로 활성 ≥2 가 되는 순간
+    # 모호 fail-loud 를 오발화시켰다(v1.3.0 릴리즈 실측 발견 — pm-release §2 처방을 막던 결함).
+    _explicit_cwd = getattr(args, "cwd", None)
+    cwd = _regression_cwd(_explicit_cwd,
+                          session=(None if _explicit_cwd
+                                   else session_name(_actor_session_override(args))))
     # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스·T-0287) — **실행 전에** 해소한다. 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
     # 읽는 한 파일에 기록. engine-root 무효(BROKEN)는 실행 전에 알 수 있으니, 값비싼 `pytest -m
