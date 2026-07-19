@@ -44,8 +44,8 @@ _SCANNED_DIRS = (
     "templates/claude_code/.claude/agents",
     "templates/claude_code/.claude/skills",
     "templates/opencode/.opencode/agents",
-    "templates/opencode/.opencode/command",
-    ".claude/skills",   # ① canonical 사본 — pm_update 로 templates/claude_code 로 전파된다
+    "templates/opencode/.claude/skills",   # opencode 도 canonical 스킬 단일 소비(ADR-0065·command 은퇴)
+    ".claude/skills",   # ① canonical — pm_update --target 로 양 하네스 미러로 전파된다
     ".claude/agents",
 )
 

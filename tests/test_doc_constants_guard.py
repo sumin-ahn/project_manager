@@ -29,7 +29,7 @@ def _read(rel: str) -> str:
 
 WAVE_CLAIM_DOCS = (
     ".claude/skills/pm-wave-claim/SKILL.md",
-    "templates/opencode/.opencode/command/pm-wave-claim.md",
+    "templates/opencode/.claude/skills/pm-wave-claim/SKILL.md",  # ADR-0065 단일 소비 미러(command 은퇴)
 )
 
 

@@ -1,22 +1,18 @@
 ---
+name: pm-wave-finish
 description: "wave 안 ticket 완료 부기 — ticket_finish.py wrapper + 회귀 측정 + log/current.md skeleton + board complete + git stage. 모듈 판정·비고·log/current.md 서술·git commit 은 PM 손. Triggers: 'T-NNNN 완료', 'ticket 정리', 'finish', 'pm-wave-finish'."
-argument-hint: "T-NNNN"
 ---
-
-<command-instruction>
 
 # /pm-wave-finish T-NNNN — wave ticket 완료 부기
 
 > {{PROJECT_NAME}} PM wave 안 ticket 완료 시 부기 자동화. backbone =
-> `.project_manager/tools/ticket_finish.py`. 본 command 는 호출 chain
-> + PM 손 잔여 작업 안내. 비즈니스 로직 0 — 엔진 CLI 호출 thin wrapper.
+> `.project_manager/tools/ticket_finish.py`. 본 skill 은 호출 chain
+> + PM 손 잔여 작업 안내.
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
 > 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
 > **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
 > 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
-
-ticket 번호는 `$ARGUMENTS` 에서 받는다 (예: `T-0007`).
 
 ## 사용 시점
 
@@ -24,20 +20,17 @@ dev/reviewer cycle 통과 (must-fix 0) 또는 PM 직접 구현 ticket 완료 시
 
 ## 실행
 
-opencode bash tool 로 실행. `--section` 인자는 **deprecated no-op**(ADR-0023 — status.md 합계표
-제거로 더 이상 쓰지 않음·후방호환 수용만). 엔진이 인코딩을 코드로 처리(PM 7차·C1 파일·C2 콘솔
-reconfigure)하므로 env prefix 불필요 — Windows/CP949·PowerShell 서도 env 없이 동작. 드물게 필요하면
-셸별 문법(PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`).
-
 ```bash
 python3 .project_manager/tools/ticket_finish.py T-NNNN
 ```
 
-> `--repo <repo> --slot <N>` (multi-PM·ADR-0027 두-git 형상) — 회귀를 돌릴 worktree 슬롯 명시. 분리된 PM
-> 홈(②)엔 `tests/` 가 없어 회귀가 활성 worktree(①)에서 돌아야 하는데 슬롯이 여럿이면 자동해소가 모호할 수
-> 있다. 솔로/단일슬롯/default-1 은 생략 가능·미지정+진짜 모호(repo≥2·slot-1 부재)면 fail-loud. pm_handoff
-> `--repo/--slot` 동형. **`--no-pytest`** — 회귀를 별도 측정했을 때 skip(board complete `--tests-pass` 유지·모호
-> 게이트 우회).
+> `--repo <repo> --slot <N>` (multi-PM·ADR-0027 두-git 형상) — 회귀를 돌릴 worktree 슬롯을 명시한다.
+> 분리된 PM 홈(②)엔 `tests/` 가 없어 회귀가 활성 worktree(①·`tests/` 보유)에서 돌아야 하는데, 슬롯이
+> 여럿이면 자동해소가 모호해질 수 있다. **솔로/단일슬롯/default-1 은 생략 가능**(자동해소)·미지정+진짜
+> 모호(repo≥2·slot-1 부재)면 **fail-loud**(어느 슬롯인지 `--slot` 요구). pm_handoff `--repo/--slot` 과 동형.
+> **`--no-pytest`** — 회귀를 별도(/pm-qa 등)로 이미 측정했을 때 회귀 단계를 skip(board complete 는
+> `--tests-pass` 유지). 모호 게이트도 우회한다(회귀 cwd 불필요).
+> `--section` 인자는 **deprecated no-op**(ADR-0023 — status.md 합계표 제거로 더 이상 쓰지 않음·후방호환 수용만).
 
 ## CLI 자동 처리
 
@@ -50,7 +43,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
 
 ## 잔여 PM 손작업 (CLI 후)
 
-1. **status.md 모듈 *판정/비고*** — architect content-truth·PM 점검(ADR-0022/0023). 모듈 상태가 바뀌었으면 architect 가 *코드 대조*로 갱신·PM 점검. **테스트 수는 박제하지 않는다**(pytest 실측). CLI 자동화 안 함.
+1. **status.md 모듈 *판정/비고*** — architect content-truth·PM 점검(ADR-0022/0023). 모듈 상태가 바뀌었으면(라이브 결선/완성) architect 가 *코드 대조*로 갱신·PM 점검. **테스트 수는 박제하지 않는다**(pytest 실측). CLI 자동화 안 함.
 2. **log/current.md complete entry 본문 서술** — skeleton 의 `<PM: 무엇을·왜>` 를 실제 내용으로:
    - 변경 파일 목록
    - 단위 테스트 수·증가량
@@ -64,18 +57,11 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
 
 ## 결정
 
-- **thin wrapper** — 모듈 판정·commit 자동화 안 함 (의도적). 현재-진실 doc(status 판정) 직접 편집·자동 commit 의 부수 영향 회피. *자동화는 잡일까지·판정/서술/commit 은 architect/PM 손* 패턴 정합.
+- **모듈 판정·commit 자동화 안 함 (의도적)** — 현재-진실 doc(status 판정) 직접 편집·자동 commit 의 부수 영향 회피. *자동화는 잡일까지·판정/서술/commit 은 architect/PM 손* 패턴 정합.
 - **fail-soft 가 아니다** — 회귀 red 시 즉시 중단. ticket complete 차단 (board.py complete 의 `--tests-pass` 가드).
-- **wave 종결 commit message 형식** — `PM 세션(N차) wave M — <ticket 목록> + <핵심 메타 학습 요약>`. wave 단위 단일 commit.
+- **wave 종결 commit message 형식** — `PM 세션(N차) wave M — <ticket 목록> + <핵심 메타 학습 요약>`. wave 단위 단일 commit (history bisect/cherry-pick 어려움 trade-off).
 
 ## 참고
 
 - `.project_manager/tools/ticket_finish.py` — backbone CLI
 - `.project_manager/wiki/pm_role.md` — wave 패턴 단일 진실
-- `AGENTS.md` — opencode PM wave·엔진 호출 규약
-
-</command-instruction>
-
-<user-request>
-$ARGUMENTS
-</user-request>

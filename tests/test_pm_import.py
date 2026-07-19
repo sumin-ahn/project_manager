@@ -2923,8 +2923,11 @@ def test_add_harness_apply_opencode_creates_adapter_and_preserves_devstate(pm_im
 
 
 def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_import, tmp_path):
-    """apply(claude→opencode 인스턴스·반대 방향): `.claude/**`(agents·skills 제외)+`CLAUDE.md`
+    """apply(claude→opencode 인스턴스·반대 방향): `.claude/**`(agents 제외)+`CLAUDE.md`
     신규·기존 opencode 어댑터/wiki/엔진 불변. (DoD "양 harness apply" 문자 충족.)
+
+    ADR-0065(단일 소비) 이후 opencode 인스턴스는 이미 `.claude/skills`(canonical 스킬)를 갖는다 —
+    claude add-harness 는 그 공유 스킬을 재적재/변경하지 않는다(byte-불변 preserve 로 확인).
     """
     dest = _build_live_instance(pm_import, tmp_path / "opencode_apply", "opencode")
     # 라이브 dev-state·엔진·타(기존) harness 파일의 apply 전 바이트 스냅샷.
@@ -2933,6 +2936,13 @@ def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_impo
     opencode_doc = dest / "AGENTS.md"
     opencode_agent = dest / ".opencode" / "agents" / "pm.md"
     before = {p: p.read_bytes() for p in (wiki_role, engine_board, opencode_doc, opencode_agent)}
+    # `.claude/skills` 는 opencode 단일 소비(ADR-0065)로 인스턴스에 **이미 존재** — add-harness 가
+    #   건드리면 안 되므로(공유 canonical) apply 전 스냅샷에 넣어 byte-불변을 검증한다.
+    skills_dir = dest / ".claude" / "skills"
+    assert skills_dir.is_dir(), (
+        "opencode 인스턴스에 `.claude/skills` 부재 — 단일 소비 스킬 출하가 안 됨(ADR-0065 전제 붕괴).")
+    for f in skills_dir.rglob("SKILL.md"):
+        before[f] = f.read_bytes()
 
     plan = pm_import.add_harness(dest, "claude", dry_run=False, source_root=REPO)
     assert plan, "apply plan 이 비어 있다."
@@ -2940,11 +2950,10 @@ def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_impo
     # claude 어댑터 파일이 실제로 생성됐다(root doc + target-owned 어댑터 파일).
     assert (dest / "CLAUDE.md").is_file()
     assert (dest / ".claude" / "settings.json").is_file()
-    # @render 엔진 리소스(agents·skills)는 add-harness 가 깔지 않는다(pm_update 소관).
+    # @render 엔진 리소스 `.claude/agents` 는 add-harness 가 깔지 않는다(pm_update 소관). `.claude/skills`
+    #   는 opencode 단일 소비로 이미 존재하되 add-harness 가 재적재/변경하지 않는다(아래 byte-불변 loop).
     assert not (dest / ".claude" / "agents").exists(), \
         "claude add-harness 가 @render 엔진 리소스 .claude/agents 를 오적재."
-    assert not (dest / ".claude" / "skills").exists(), \
-        "claude add-harness 가 @render 엔진 리소스 .claude/skills 를 오적재."
     # operational 토큰이 치환됐다(claude 어댑터 산출물에 raw 토큰 잔존 0).
     assert _grep_token_files(dest / ".claude", "{{PROJECT_NAME}}", exclude_engine_docs=True) == [], \
         "apply 후 .claude 에 {{PROJECT_NAME}} 미치환 잔존."

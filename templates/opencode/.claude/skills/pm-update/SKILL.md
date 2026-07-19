@@ -1,14 +1,13 @@
 ---
+name: pm-update
 description: "엔진 갱신 PM front door — pm-update.sh facade wrap + upstream freshness 자동분기(URL→cache clone/fetch·경로→pull/경고) + manifest reconcile(harness-correct·PM-주도·사용자 개입 0) + adapter-drift 표면화. 채택자가 upstream 프레임워크 변경을 흡수할 때. Triggers: '엔진 갱신', 'pm-update', '프레임워크 업데이트', 'upstream 동기'."
 ---
 
-<command-instruction>
-
 # /pm-update — 엔진 갱신 (facade-기반 PM front door)
 
-> {{PROJECT_NAME}} 채택자가 upstream 프레임워크 엔진 변경을 흡수한다. raw `pm_update.py` 대신 이 command 를
-> invoke — facade(`./pm-update.sh`) backbone 위에 **upstream freshness 자동분기 · manifest reconcile · drift
-> 표면화**를 얹는다. 엔진(`pm_update`)은 파일-복사만(git 무지·ADR-0032 D5) — git freshness 는 이 command 층.
+> 채택자가 upstream 프레임워크 엔진 변경을 흡수한다. raw `pm_update.py` 대신 이 스킬을 invoke —
+> facade(`./pm-update.sh`) backbone 위에 **upstream freshness 자동분기 · manifest reconcile · drift 표면화**를
+> 얹는다. 엔진(`pm_update`)은 파일-복사만(git 무지·ADR-0032 D5) — git freshness 는 이 스킬층이 담당.
 
 > **Windows 진입**: `./pm-update.sh` 는 bash 용 — PowerShell/cmd 에선 **`.\pm-update.cmd`**(동일 인자).
 > 아래 `python3 …` 커맨드(예 `board.py lint`)는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
@@ -16,11 +15,11 @@ description: "엔진 갱신 PM front door — pm-update.sh facade wrap + upstrea
 > PowerShell 5.x 는 `&&` 체이닝 미지원(ParseError) — `cd X && …` 대신 **도구의 workdir 파라미터**나
 > 명령 분리로 실행한다.
 
-## 인접 command 와 구분
-- **pm-update (이 command)** = 엔진 + host 어댑터 *갱신*(upstream→채택자).
-- `/pm-env` = 환경 관리(repo/worktree/slot · upstream show/switch). upstream *값* 전환은 거기서.
-- `/pm-bootstrap` = 세션 시작 상태점검(갱신 아님).
-- **dual-harness guest 어댑터**(opencode 인스턴스에 `add-harness` 로 얹은 `.claude/*` 등)는 host manifest
+## 인접 스킬과 구분
+- **pm-update (이 스킬)** = 엔진 + host 어댑터 *갱신*(upstream→채택자).
+- [[pm-env]] = 환경 관리(repo/worktree/slot · upstream show/switch). upstream *값* 전환은 거기서.
+- [[pm-bootstrap]] = 세션 시작 상태점검(갱신 아님).
+- **dual-harness guest 어댑터**(claude 인스턴스에 `add-harness` 로 얹은 `.opencode/*` 등)는 host manifest
   밖이라 이 pm-update 범위 밖 — `pm_update` 가 안 건드린다. 갱신은 `add-harness <harness>` 재실행으로
   받는다(refresh·기존 인스턴스 위 live-safe·ADR-0058).
 
@@ -66,9 +65,9 @@ commit 수 + 받을 엔진파일. 엔진 read-only(T-0146·`git log`/`diff`·fet
 ### 3. manifest reconcile (pm_update *전* · PM-주도 · 사용자 개입 0)
 upstream 의 **harness-correct** manifest 를 채택자로 먼저 맞춘다 — 새 엔진 항목(예 pm_import.py)이 *기존* 채택자에 도달하려면 채택자 manifest 가 그 항목을 먼저 알아야 한다(pm_update 는 dest manifest 우선).
 ```bash
-cp <cache-or-path>/templates/opencode/.project_manager/engine.manifest .project_manager/engine.manifest
+cp <cache-or-path>/templates/<harness>/.project_manager/engine.manifest .project_manager/engine.manifest
 ```
-⚠️ **루트 manifest 가 아니라 `templates/opencode/` manifest** — 루트는 claude-scoped 라 opencode 채택자에 clobber(codex round-2·self-list 폐기).
+⚠️ **루트 manifest 가 아니라 `templates/<harness>/` manifest**(`<harness>`=이 채택자의 claude_code | opencode) — 루트는 claude-scoped 라 opencode 채택자에 clobber(codex round-2·self-list 폐기).
 
 ### 4. 엔진 갱신 (facade)
 ```bash
@@ -84,14 +83,11 @@ python3 .project_manager/tools/board.py lint
 `adapter-drift` advisory 가 남아 있으면(facade·진입문서 등 manifest-제외 잔여가 upstream 이후 변경) PM 에게 보고 — 자동전파 대상 아님(B 전파=채택자 customization clobber·비파괴), 수기 검토 안내(never-block).
 
 ## 결정
-- 엔진(`pm_update`) 무변경 — git freshness 는 이 command 층(이식성·오프라인·도그푸딩 보존·ADR-0032 D5).
-- facade(`./pm-update.sh`) backbone — self-locating·cwd-robust. 기존 `pm-*` command thin-wrapper 패턴 동형.
+- 엔진(`pm_update`) 무변경 — git freshness 는 이 스킬층(이식성·오프라인·도그푸딩 보존·ADR-0032 D5).
+- facade(`./pm-update.sh`) backbone — self-locating·cwd-robust. 기존 `pm-*` 스킬 thin-wrapper 패턴 동형.
 - manifest reconcile = harness-correct(self-list 아님)·PM-주도(사용자 개입 0·codex round-2).
-- URL clone/fetch 의 redirect/host-allowlist/submodule 가드는 이 command 가 강제(위 `$GIT` env) — 엔진 도달성 호출 밖 표면(ADR-0032 D5 분담).
-- ⚠️ opencode 채택자: 이 command(`.opencode/command/`)는 `@target-owned` 라 `pm_update` 가 전파하지 않는다 — 새 command 는 **re-import 로 도달**(엔진 `board.py` drift-lint 는 정상 전파·visibility). `/pm-import` 가이드의 re-import 경로 참조.
+- URL clone/fetch 의 redirect/host-allowlist/submodule 가드는 이 스킬이 강제(위 `$GIT` env) — 엔진 도달성 호출 밖 표면(ADR-0032 D5 분담).
 
 ## 참고
-- 설계: ADR-0032(D3 스킬화·D4 upstream 하이브리드·D5 엔진/command 경계) · backbone facade `pm-update.sh`→`pm_update.py`.
-- `/pm-env`(upstream 전환) · drift-lint = `board.py lint` adapter-drift(T-0141).
-
-</command-instruction>
+- 설계: ADR-0032(D3 스킬화·D4 upstream 하이브리드·D5 엔진/스킬 경계) · backbone facade `pm-update.sh`→`pm_update.py`.
+- [[pm-env]](upstream 전환) · drift-lint = `board.py lint` adapter-drift(T-0141).

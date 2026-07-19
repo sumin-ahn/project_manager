@@ -1,28 +1,19 @@
 ---
+name: pm-wave-claim
 description: "wave 안 ticket claim — board show + DoD self-containment PM 검증 + claim. ticket 본문에 placeholder / depends_on 미충족 / wikilink dangling 있으면 차단. Triggers: 'T-NNNN claim', 'ticket 잡기', 'wave 시작', 'pm-wave-claim'."
-argument-hint: "T-NNNN"
 ---
-
-<command-instruction>
 
 # /pm-wave-claim T-NNNN — wave 시작 ticket claim
 
 > {{PROJECT_NAME}} PM wave 시작 시 ticket 1개를 자율 claim 하는 표준 절차. PM 의
-> ticket self-containment 검증을 *trigger 단위 강제* 한다. backbone = `board.py`.
-> 비즈니스 로직 0 — 엔진 CLI 호출 + PM 손 검증.
+> ticket self-containment 검증을 *trigger 단위 강제* 한다.
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
 > 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
 > **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
 > 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
 
-ticket 번호는 `$ARGUMENTS` 에서 받는다 (예: `T-0007`).
-
 ## 실행
-
-opencode bash tool 로 순서대로 실행. 엔진이 인코딩을 코드로 처리(PM 7차·C1 파일·C2 콘솔
-reconfigure)하므로 env prefix 불필요 — Windows/CP949·PowerShell 서도 env 없이 동작. 드물게
-필요하면 셸별 문법(PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`).
 
 ```bash
 # 1. ticket 본문 dump
@@ -40,14 +31,14 @@ python3 .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   
 ## PM 검증 체크리스트 (claim 전)
 
 다음 항목 *전부 충족* 시에만 claim. 하나라도 실패하면 ticket 본문 보강 우선
-(self-contained 의무).
+(pm_playbook.md §메타 정책 "Ticket 본문" — self-contained 의무).
 
 - [ ] **표준 섹션 존재** — 목표 / 인터페이스 / 결정 / 완료 조건 / 참고 / 메모(템플릿 6절). board.py lint 는 이 중 **목표·완료 조건·참고 3개만** 누락 차단(`_REQUIRED_SECTIONS`) — 나머지(인터페이스·결정·메모)는 PM 판단으로 채운다. `<...>` placeholder 0개도 lint 차단.
 - [ ] **depends_on 모두 done** — 의존 ticket 이 아직 open/claimed 면 차단. blocked 의존은 reason 확인.
 - [ ] **touches 명시** — wave 병렬 시 touches disjoint 안전성 검증 substrate. 누락 시 보강.
-- [ ] **wikilink dangling 0개** — `[[name]]` 참조가 실제 존재하는 페이지·메모리·ADR·ticket 인가.
+- [ ] **wikilink dangling 0개** — `[[name]]` 참조가 실제 존재하는 페이지·메모리·ADR·ticket 인가 (lint 또는 별도 회귀 가드).
 - [ ] **DoD verify-able** — *충족 evidence 측정 방법* 이 ticket 본문에 명시 (테스트 + 단위 수·라이브 검증 절차·spec 정합 확인 등).
-- [ ] **컨텍스트 예산** — touches 에 대형 파일이 있거나 이해에 광범위 읽기가 필요하면 dev(cold subagent) 컨텍스트 truncation 위험. 분할하거나 본문에 정확한 함수/라인·패턴 reference 를 박아 dev 읽기 범위를 좁힌다 (본문 = dev 컨텍스트 방화벽). opencode 200K 압박 시 특히 주의.
+- [ ] **컨텍스트 예산** — touches 에 대형 파일이 있거나 이해에 광범위 읽기가 필요하면 dev(cold subagent) 컨텍스트 truncation 위험. 분할하거나 본문에 정확한 함수/라인·패턴 reference 를 박아 dev 읽기 범위를 좁힌다 (본문 = dev 컨텍스트 방화벽).
 - [ ] **PM 자율 vs 사용자 게이트 분류** — 보호 영역 / mission scope / 외부 비가역 행위 영향 시 사용자 게이트 통과 확인 (pm_role.md §사용자 게이트).
   - (보호 영역: `.project_manager/wiki/pm_role.local.md` §보호 영역)
 
@@ -69,17 +60,10 @@ PM 자율 영역 (pm_role.md §"자율 + 사후 로그"):
 
 ## 결정
 
-- **thin wrapper** — 자동화 부분은 board.py lint 가 placeholder·표준 섹션(목표·완료 조건·참고 3개)·순환 의존만. DoD verify-able·본문 self-containment·게이트 분류는 PM 인지.
+- **PM 검증은 손작업** — 자동화 부분은 board.py lint 가 placeholder·표준 섹션(목표·완료 조건·참고 3개)·순환 의존만. DoD verify-able·본문 self-containment·게이트 분류는 PM 인지.
 - **wave 안 1 ticket 1 claim** — 동시 다중 claim 회피 (touches conflict 위험·orchestrator 단순화).
-- **dev/reviewer 위임 ticket 도 PM claim** — board.py claim 은 orchestrator(PM) 영역. 서브에이전트는 구현/검토만.
+- **dev/reviewer 위임 ticket 도 PM claim** — board.py claim 은 orchestrator(PM) 영역 (pm_playbook.md §"위임 — 두 가지 방식" 방식 A). 서브에이전트는 구현/검토만.
 
 ## 참고
 
 - `.project_manager/wiki/pm_role.md` — ticket 본문 self-contained 의무·claim 워크플로
-- `AGENTS.md` — opencode PM 위임·엔진 호출 규약
-
-</command-instruction>
-
-<user-request>
-$ARGUMENTS
-</user-request>

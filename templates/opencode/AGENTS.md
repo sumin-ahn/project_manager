@@ -57,7 +57,7 @@
   디스크/VPN)가 opencode bash 툴 기본 120초에 죽으면, opencode 실행 쉘에 **`export OPENCODE_EXPERIMENTAL_
   BASH_DEFAULT_TIMEOUT_MS=1800000`**(30분)을 상속시킨다 — opencode 는 config 파일로 못 실어(`.env` 미로드·
   실측) shell export/`.envrc`(direnv) 필요. `EXPERIMENTAL` = 버전 의존(회사 버전서 라이브 확인). 엔진
-  타임아웃은 `PM_GIT_TIMEOUT`(초·`none`=무제한). 상세는 `/pm-env` command §timeout 노브.
+  타임아웃은 `PM_GIT_TIMEOUT`(초·`none`=무제한). 상세는 `/pm-env` 스킬 §timeout 노브.
 
 > 인터프리터: `{{PY}}` 는 setup 시 채택 환경의 인터프리터로 치환된다
 > (`.project_manager/local.conf` 의 `py=` 가 단일 진실 — `board.py init` 이 설정 ·
@@ -296,7 +296,7 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"
 |---|---|
 | `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py · pm_log.py (공유 엔진 · 0 수정) |
 | `.project_manager/wiki/` | 비-코드 산출물 (작업/결정/사양/상태/**domain 지식 레이어**(§10)/pm_role·pm_state·pm_playbook/log/raw) |
-| `.opencode/command/` | PM workflow slash command (skill 등가 · T-0003) — pm-bootstrap · pm-wave-claim · pm-dev-delegate · pm-qa · pm-wave-finish · pm-handoff · pm-env · pm-update · spike-new (전체 목록은 `.opencode/command/` 디렉토리) |
+| `.claude/skills/` | PM workflow 스킬 — canonical `SKILL.md` **단일 소비**(ADR-0065). opencode(≥1.17.19)가 `.claude/skills/*/SKILL.md` 를 네이티브 스캔·슬래시(`/pm-…` · `run --command <스킬명>`) 호출한다 — claude 와 같은 스킬을 양 하네스가 공유(옛 `.opencode/command/` 수기 사본 채널 은퇴·T-0364). pm-bootstrap · pm-wave-claim · pm-dev-delegate · pm-qa · pm-wave-finish · pm-handoff · pm-env · pm-update · pm-worktree · pm-release · spike-new (전체는 `.claude/skills/` 디렉토리 · 스킬 스캔 비활성화 금지 = `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 미설정) |
 | `.opencode/agents/` | pm primary 정의 (mode: primary · relay deterministic spawn 타깃 · ADR-0009·ADR-0020) + researcher · architect · developer · code-reviewer subagent 정의 (mode: subagent · 4축 gather/design/build/evaluate · task tool 위임 1차 · T-0004) |
 | `AGENTS.md` | 이 파일 — PM 부트스트랩·위임·인코딩 어댑터 (= claude_code 의 CLAUDE.md) |
 

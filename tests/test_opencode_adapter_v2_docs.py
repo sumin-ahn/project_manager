@@ -24,7 +24,10 @@ AGENTS_MD = OPENCODE / "AGENTS.md"
 AGENTS_LITE_MD = OPENCODE / "AGENTS.lite.md"
 ARCHITECT_MD = OPENCODE / ".opencode" / "agents" / "architect.md"
 RESEARCHER_MD = OPENCODE / ".opencode" / "agents" / "researcher.md"
-PM_DEV_DELEGATE_MD = OPENCODE / ".opencode" / "command" / "pm-dev-delegate.md"
+# ADR-0065(단일 소비·T-0364): opencode 는 `.opencode/command` 수기 사본 채널을 은퇴하고 canonical
+#   `.claude/skills` 를 네이티브 소비한다. opencode pm-dev-delegate 출하 표면 = 그 스킬 미러다.
+PM_DEV_DELEGATE_MIRROR = OPENCODE / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+PM_DEV_DELEGATE_CANONICAL = REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
 
 
 def _load_agent_frontmatter(path: Path) -> dict:
@@ -166,83 +169,48 @@ def test_agents_md_lists_researcher_subagent_type():
     )
 
 
-# ── pm-dev-delegate command 파리티 (출하 trigger 면 · T-0110) ─────────────────
-
-def test_opencode_pm_dev_delegate_command_exists():
-    """opencode pm-dev-delegate command 가 존재한다 (출하 파리티 · T-0110).
-
-    claude_code 에는 `.claude/skills/pm-dev-delegate/SKILL.md` 가 있는데 opencode 어댑터엔
-    그 등가 command 가 빠져 있던 command 파리티 갭을 못박는다 (T-0110 · researcher 자매 갭).
-    """
-    assert PM_DEV_DELEGATE_MD.exists(), (
-        f"opencode pm-dev-delegate command 없음: {PM_DEV_DELEGATE_MD} "
-        f"(command 파리티 갭 · T-0110)"
-    )
-
-
-def test_opencode_pm_dev_delegate_is_command_format():
-    """opencode pm-dev-delegate 가 opencode command 형식이다 (skill 형식 blind copy 아님 · T-0110).
-
-    opencode command 는 `<command-instruction>` 래퍼 + `$ARGUMENTS` 주입 + frontmatter
-    `description:`/`argument-hint:` 패턴이다 (pm-wave-finish.md 미러). claude skill 의
-    `name:`/`Triggers:` 어휘를 적응 변환했는지 형식으로 단언한다 (T-0110).
-    """
-    text = PM_DEV_DELEGATE_MD.read_text(encoding="utf-8")
-    fm = _load_agent_frontmatter(PM_DEV_DELEGATE_MD)
-    assert "description" in fm, "pm-dev-delegate frontmatter 에 description 없음 (command 형식 · T-0110)"
-    assert "argument-hint" in fm, (
-        "pm-dev-delegate frontmatter 에 argument-hint 없음 (command 형식 · T-0110)"
-    )
-    # claude skill frontmatter 어휘(name:)를 적응 변환했는지 — opencode command 엔 없어야.
-    assert "name" not in fm, (
-        "pm-dev-delegate frontmatter 에 claude skill 어휘 'name:' 잔존 — command 형식으로 적응 필요 (T-0110)"
-    )
-    assert "<command-instruction>" in text and "</command-instruction>" in text, (
-        "pm-dev-delegate 에 <command-instruction> 래퍼 없음 (opencode command 형식 위반 · T-0110)"
-    )
-    assert "<user-request>\n$ARGUMENTS\n</user-request>" in text, (
-        "pm-dev-delegate 에 $ARGUMENTS 주입(<user-request> 블록) 없음 (opencode command 형식 · T-0110)"
-    )
+# ── pm-dev-delegate 출하 표면 (단일 소비·ADR-0065·T-0364) ─────────────────────
+# T-0110 원안은 opencode `.opencode/command/pm-dev-delegate.md` 가 **command 형식으로 적응**
+# (`<command-instruction>` 래퍼·`$ARGUMENTS` 주입·`argument-hint`·`run_in_background`→task tool 어휘)
+# 됐는지를 5개 테스트로 못박았다. ADR-0065(단일 소비)가 그 command 수기 사본 채널을 **은퇴**시키고
+# opencode 가 canonical `.claude/skills/pm-dev-delegate/SKILL.md` 를 네이티브 소비하게 바꿨다 — 그
+# 결과 command-형식 적응 자체가 소멸한다(opencode 는 claude-flavored canonical 스킬을 그대로 읽음).
+# 따라서 아래 3 테스트는 **은퇴**(단일 소비와 구조적 비양립):
+#   - is_command_format: canonical 스킬은 `<command-instruction>`/`$ARGUMENTS`/`argument-hint` 없이
+#     `name:`+`description:` 스킬 형식이다(정반대) → 은퇴.
+#   - references_agents_md_prompts(§3.4/§3.5): canonical 스킬은 위임 표준 프롬프트를 *자체 보유*하고
+#     AGENTS.md §3.4 를 참조하지 않는다 → 은퇴.
+#   - uses_task_tool_vocab(`run_in_background` 금지): canonical 스킬은 claude 어휘(`run_in_background`
+#     3회)를 유지하며 opencode LLM 이 네이티브 소비 시 적응한다(ADR-0065 Consequences: opencode-authored
+#     인자배선/어휘 가치의 의도적 collapse) → 은퇴.
+# 남는 불변식 2개(출하 존재 + 출하 doc wikilink 위생)만 단일 소비 미러 표면으로 전환해 보존한다.
+# (surface 무결성=byte-정합은 test_opencode_command_skill_pairing 이 전 스킬 전수 커버.)
 
 
-def test_opencode_pm_dev_delegate_references_agents_md_prompts():
-    """pm-dev-delegate 가 dev/reviewer 표준 프롬프트를 복제하지 않고 AGENTS.md §3.4/§3.5 를 참조한다.
+def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
+    """opencode pm-dev-delegate 출하 표면이 canonical 스킬 미러로 존재·byte-정합 (단일 소비·ADR-0065).
 
-    single-source(ADR-0008 lean) — 표준 프롬프트 복제는 stale 원천이므로 command 본문은 trigger +
-    절차만 thin 하게 두고 AGENTS.md 를 참조해야 한다 (T-0110 적응 규칙).
-    """
-    text = PM_DEV_DELEGATE_MD.read_text(encoding="utf-8")
-    assert "§3.4" in text and "§3.5" in text, (
-        "pm-dev-delegate 가 AGENTS.md §3.4(dev)/§3.5(reviewer) 표준 프롬프트를 참조하지 않음 "
-        "(single-source 위반 · T-0110)"
-    )
-
-
-def test_opencode_pm_dev_delegate_uses_task_tool_vocab():
-    """pm-dev-delegate 가 claude harness 어휘 대신 opencode task tool 어휘를 쓴다 (T-0110 적응 규칙).
-
-    claude 의 `Agent 툴`/`subagent_type`/`run_in_background` harness background 표현을 task tool
-    어휘로 치환했는지 단언한다 — `run_in_background` 잔존 0 (harness background 표현 제거).
-    """
-    text = PM_DEV_DELEGATE_MD.read_text(encoding="utf-8")
-    assert "task tool" in text, (
-        "pm-dev-delegate 가 opencode task tool 위임 어휘를 안 씀 (claude Agent 툴 어휘 잔존? · T-0110)"
-    )
-    assert "run_in_background" not in text, (
-        "pm-dev-delegate 에 claude harness 'run_in_background' 표현 잔존 — "
-        "task 병렬(opencode 자식 세션 관리)로 치환 필요 (T-0110)"
-    )
+    T-0110 "opencode 가 pm-dev-delegate 를 출하한다" 불변식을 단일 소비로 계승 — 이제 출하 표면은
+    `templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md`(canonical `.claude/skills` 미러)다.
+    수기 command 사본(diverged 적응)이 아니라 canonical 과 1바이트도 다르지 않은 미러여야 한다."""
+    assert PM_DEV_DELEGATE_MIRROR.is_file(), (
+        f"opencode pm-dev-delegate 출하 스킬 미러 없음: {PM_DEV_DELEGATE_MIRROR} "
+        "(ADR-0065 단일 소비 출하 누락 · `pm_update --target opencode` 로 전파).")
+    assert PM_DEV_DELEGATE_CANONICAL.is_file(), (
+        f"canonical pm-dev-delegate 스킬 없음: {PM_DEV_DELEGATE_CANONICAL}")
+    assert PM_DEV_DELEGATE_MIRROR.read_bytes() == PM_DEV_DELEGATE_CANONICAL.read_bytes(), (
+        "opencode pm-dev-delegate 미러가 canonical 과 byte drift — 단일 소비 출하 무결성 위반 "
+        "(`pm_update --target opencode` 재전파).")
 
 
 def test_opencode_pm_dev_delegate_no_framework_wikilink():
-    """pm-dev-delegate(출하 doc)가 framework ADR/ticket 을 wikilink 하지 않는다 (T-0090·T-0110).
+    """pm-dev-delegate 출하 스킬 미러가 framework ADR/ticket 을 wikilink 하지 않는다 (T-0090·T-0110 계승).
 
-    어댑터엔 그 ADR/ticket 파일이 없어 [[…]] 는 dangling 이다 — plain text(예 'ADR-0008')로.
-    """
-    hits = _FRAMEWORK_WIKILINK.findall(PM_DEV_DELEGATE_MD.read_text(encoding="utf-8"))
+    어댑터/채택자 트리엔 그 ADR/ticket 파일이 없어 [[…]] 는 dangling 이다 — plain text(예 'ADR-0008')로.
+    단일 소비 미러 표면으로 전환해 출하 doc 위생 불변식을 보존한다."""
+    hits = _FRAMEWORK_WIKILINK.findall(PM_DEV_DELEGATE_MIRROR.read_text(encoding="utf-8"))
     assert not hits, (
-        f"pm-dev-delegate 에 framework wikilink {hits} 잔존 — plain text 로 (T-0090·T-0110)"
-    )
+        f"pm-dev-delegate 미러에 framework wikilink {hits} 잔존 — plain text 로 (T-0090·T-0110·ADR-0065)")
 
 
 # ── (b) relay 네이밍 (ADR-0020 — spawn supervisor 만 개명) ─────────────────────

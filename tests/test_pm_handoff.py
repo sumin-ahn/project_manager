@@ -504,18 +504,19 @@ def test_shipped_pm_playbook_prompt_is_trigger_only():
 
 
 def test_shipped_handoff_procedure_docs_have_no_handfill_instruction():
-    """핸드오프 절차 문서(pm_role·claude SKILL·opencode command)가 폐기된 `<핵심 인계 사항>`
+    """핸드오프 절차 문서(pm_role·claude SKILL·opencode 스킬 미러)가 폐기된 `<핵심 인계 사항>`
     손-채움을 *살아있는 단계*로 지시하지 않는다.
 
     프롬프트 emit(`build_handoff_prompt_output`)은 트리거화됐는데(T-0180) 절차 미러 문서가
     "그 절을 채우라"고 stale 로 남으면 다음 PM 이 *없는 슬롯*을 찾는다 — code-mirror 갱신 ↔
     doc-mirror stale 비대칭은 반복 클래스라([[feature-ship-needs-fresh-adopter-gate]]) 기계로 박는다.
-    출하 파일 자체를 가드(canonical = 사본 byte-identical 은 parity 가드가 별도 강제).
+    출하 파일 자체를 가드(canonical = 사본 byte-identical 은 parity 가드가 별도 강제). ADR-0065
+    (단일 소비·T-0364): opencode 표면은 `.opencode/command` 은퇴 후 `.claude/skills` 미러다.
     """
     procedure_docs = [
         REPO / ".project_manager" / "wiki" / "pm_role.md",
         REPO / ".claude" / "skills" / "pm-handoff" / "SKILL.md",
-        REPO / "templates" / "opencode" / ".opencode" / "command" / "pm-handoff.md",
+        REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-handoff" / "SKILL.md",
     ]
     import re
     # 줄바꿈/blockquote `>`/공백으로 쪼개져도 잡는 bounded loose match — 헤더 blockquote 가

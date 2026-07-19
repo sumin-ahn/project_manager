@@ -2,8 +2,9 @@
 
 ADR-0010 은 spike 를 **`status: draft` 동안 편집 가능 → 사용자 사인오프 시 sealed → 그 뒤
 IMMUTABLE** 로 정의한다. 그 생애주기가 claude 스킬(`.claude/skills/spike-new/SKILL.md`)에는
-반영됐으나 opencode 커맨드(`templates/opencode/.opencode/command/spike-new.md`)와 출하
-`wiki/raw/README.md`(2 템플릿)에는 구 all-immutable 모델로 남아 stale/자기모순이던 것을 못박는다.
+반영됐으나 opencode 출하 스킬 미러(`templates/opencode/.claude/skills/spike-new/SKILL.md` —
+ADR-0065 단일 소비·command 은퇴 후)와 출하 `wiki/raw/README.md`(2 템플릿)에는 구 all-immutable
+모델로 남아 stale/자기모순이던 것을 못박는다.
 
 diff-scoped 리뷰는 *부재*(한쪽 표면이 생애주기 서술을 안 담음)를 못 본다 — 이 가드가 그 갭을
 회귀로 막는다.
@@ -27,8 +28,8 @@ REPO = Path(__file__).resolve().parents[1]
 
 # claude 스킬 = canonical 진실 (수정 대상 아님·읽기 전용 reference).
 CLAUDE_SKILL = REPO / ".claude" / "skills" / "spike-new" / "SKILL.md"
-# opencode 커맨드 = canonical 에 맞춰야 하는 표면.
-OPENCODE_CMD = REPO / "templates" / "opencode" / ".opencode" / "command" / "spike-new.md"
+# opencode 도 canonical 스킬 단일 소비(ADR-0065·command 은퇴·T-0364) — 출하 미러가 canonical 정합해야 하는 표면.
+OPENCODE_CMD = REPO / "templates" / "opencode" / ".claude" / "skills" / "spike-new" / "SKILL.md"
 
 # raw/README 3벌 — 같은 문서의 세 트리 사본 (manifest 밖·손 동기·아래 docstring 근거).
 RAW_README_CANONICAL = REPO / ".project_manager" / "wiki" / "raw" / "README.md"
@@ -53,7 +54,7 @@ _LIFECYCLE_MARKERS = [
 
 _LIFECYCLE_SURFACES = [
     ("claude SKILL.md (canonical)", CLAUDE_SKILL),
-    ("opencode spike-new command", OPENCODE_CMD),
+    ("opencode spike-new 스킬 미러", OPENCODE_CMD),
 ]
 
 # raw/README 예외절(ADR-0010) 핵심 마커 — 코디네이트된 구모델 회귀(3벌 동시 revert)를 잡는다.

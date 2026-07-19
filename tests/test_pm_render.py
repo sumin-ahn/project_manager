@@ -856,7 +856,8 @@ _ADAPTER_SURFACES = [
     REPO / "templates" / "claude_code" / ".claude" / "agents",
     REPO / "templates" / "claude_code" / ".claude" / "skills",
     REPO / "templates" / "opencode" / ".opencode" / "agents",
-    REPO / "templates" / "opencode" / ".opencode" / "command",
+    # ADR-0065(단일 소비·T-0364): opencode `.opencode/command` 은퇴 → canonical `.claude/skills` 미러.
+    REPO / "templates" / "opencode" / ".claude" / "skills",
 ]
 
 

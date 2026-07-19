@@ -33,21 +33,23 @@ OC_MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.man
 
 # opencode 트리의 정당한 manifest 차이(harness-correct·화이트리스트). 임의 경로가 새로
 # 추가/누락되면 fail — 의도적 어댑터 비대칭만 통과시킨다(전파 채널 우발 drift 차단).
-#   opencode 가 추가: .opencode 어댑터 트리(claude 의 .claude 대응) — agents·command·lib·plugins·
-#     pm_orch_opencode.py(hook/driver).
-#   opencode 가 제외: .claude/* 어댑터(agents·skills·ctx 훅·회귀 훅·relay 드라이버) + regression.yml
-#     (claude-scoped CI 워크플로).
+#   opencode 가 추가: .opencode 어댑터 트리(claude 의 .claude 대응) — agents·lib·plugins·
+#     pm_orch_opencode.py(hook/driver). (`.opencode/command` 은 T-0364/ADR-0065 로 은퇴 — PM-workflow
+#     스킬은 `.claude/skills` 단일 소비로 전환돼 이제 opencode 도 등록·claude 와 공유 경로.)
+#   opencode 가 제외: .claude/agents(opencode 는 .opencode/agents)·ctx 훅·회귀 훅·relay 드라이버 +
+#     regression.yml(claude-scoped CI 워크플로). `.claude/skills` 는 **더 이상 제외 아님** — opencode
+#     (≥1.17.x)가 네이티브 스캔하는 canonical 스킬을 claude 와 동일 bare @render 로 공유한다(ADR-0065).
 # NOTE(T-0305 supersedes T-0283): .opencode/lib·.opencode/plugins(ctx-guard core+shim)·pm_orch_opencode.py
 #   는 T-0283 당시 `@target-owned` 등재=self-update skip(전파 0)이라 미등재였으나, T-0303 `@source`
 #   채널(ADR-0054)이 그 비대칭(canonical=templates/opencode·루트 `.opencode/` 부재)을 이어 이제 engine
 #   update 로 *전파*된다(engine-mirror·frozen 근절). 대칭으로 claude 는 ctx 훅·relay 드라이버를 등재.
 #   settings.json·opencode.jsonc·루트 doc(CLAUDE/AGENTS)·local.conf 는 여전히 instance-owned(미등재).
 OPENCODE_ONLY_PATHS = {
-    ".opencode/agents", ".opencode/command",
+    ".opencode/agents",
     ".opencode/lib", ".opencode/plugins", ".opencode/pm_orch_opencode.py",
 }
 CLAUDE_ONLY_PATHS = {
-    ".claude/agents", ".claude/skills", ".github/workflows/regression.yml",
+    ".claude/agents", ".github/workflows/regression.yml",
     ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
     ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",

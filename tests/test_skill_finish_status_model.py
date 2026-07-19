@@ -2,20 +2,21 @@
 
 배경: ADR-0023 으로 `ticket_finish.py` 는 status.md 합계표/스칼라를 더 이상 갱신하지 않고
 `--section` 을 deprecated no-op 로 받는다. 그런데 pm-wave-finish 스킬 문서(claude SKILL ×2 +
-opencode command)와 pm_role 카탈로그가 한동안 "CLI 가 status.md 스칼라 갱신" 이라는 *거짓 서술*을
+opencode 표면)와 pm_role 카탈로그가 한동안 "CLI 가 status.md 스칼라 갱신" 이라는 *거짓 서술*을
 남겨 채택자를 오도했다(T-0108·이 세션 통합 메타 "redefine 후 기존 자산 갱신 누락" 클래스). 이
 가드는 그 정확한 stale 문구의 재발과 `--section` deprecated 문서화의 회귀를 차단한다.
+(ADR-0065·T-0364: opencode 표면은 `.opencode/command` 은퇴 후 `.claude/skills` 미러다.)
 """
 
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-# pm-wave-finish 출하 문서 3종 (root dogfood + claude_code 템플릿 + opencode command).
+# pm-wave-finish 출하 문서 3종 (root dogfood + claude_code 템플릿 + opencode 스킬 미러·ADR-0065).
 WAVE_FINISH_DOCS = [
     REPO / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
     REPO / "templates" / "claude_code" / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
-    REPO / "templates" / "opencode" / ".opencode" / "command" / "pm-wave-finish.md",
+    REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
 ]
 
 TICKET_FINISH = REPO / ".project_manager" / "tools" / "ticket_finish.py"

@@ -29,7 +29,9 @@ def _adapter_md_files() -> list[Path]:
         OPENCODE / "AGENTS.md",
         OPENCODE / "AGENTS.lite.md",
     ]
-    candidates += sorted((OPENCODE / ".opencode" / "command").glob("*.md"))
+    # ADR-0065(단일 소비·T-0364): opencode `.opencode/command` 은퇴 → PM-workflow 표면은
+    #   canonical `.claude/skills` 미러. bash env prefix 위생을 그 미러 표면으로 계승 검사한다.
+    candidates += sorted((OPENCODE / ".claude" / "skills").glob("*/SKILL.md"))
     candidates += sorted((OPENCODE / ".opencode" / "agents").glob("*.md"))
     return [p for p in candidates if p.exists()]
 

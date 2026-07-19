@@ -128,6 +128,6 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record -
 
 - backbone: `board.py livegate record`/`livegate check`(ADR-0039) · `pm_update`([[pm-update]]) · `git`/`gh`.
 - ADR-0049(명령어化 4요소·청중) · ADR-0039(livegate·라이브 tier 단일) · T-0290(gh release view 완결) ·
-  T-0344(opencode command pair-pin) · T-0360(main-참조 역할 readonly 이전·거부 활성). 라이브 하네스
-  테스트 = `tests/test_pm_release_live.py`(ADR-0050).
+  T-0364(opencode 스킬 단일 소비·ADR-0065·command 채널 은퇴) · T-0360(main-참조 역할 readonly 이전·거부
+  활성). 라이브 하네스 테스트 = `tests/test_pm_release_live.py`(ADR-0050).
 - 보호훅 = 보호 브랜치 push 차단 + `livegate check` green 요구(pm_role §릴리즈 절차).

@@ -35,7 +35,7 @@ RENDER_SCOPED_DIRS = (
     "templates/claude_code/.claude/agents",     # T-0135 (claude)
     "templates/claude_code/.claude/skills",
     "templates/opencode/.opencode/agents",      # T-0136 (opencode)
-    "templates/opencode/.opencode/command",
+    "templates/opencode/.claude/skills",        # ADR-0065 단일 소비 미러(command 은퇴·T-0364)
 )
 
 

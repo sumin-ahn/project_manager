@@ -1,23 +1,22 @@
 ---
-description: "PM 환경 관리 단일 command — pm-config.sh facade wrap. repo add · worktree add(→pm-bootstrap 바인딩 안내) · slot status/release/remove · upstream show/switch(path↔URL). multi-PM 셋업·upstream 전환의 단일 진입. Triggers: 'pm-env', 'repo 추가', 'worktree 추가', 'slot 상태', '슬롯 제거', 'upstream 전환', '환경 관리'."
+name: pm-env
+description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo add · worktree add(→pm-bootstrap 바인딩 안내·--readonly 공유 슬롯) · slot status/release/remove · upstream show/switch(path↔URL). multi-PM 셋업·upstream 전환의 단일 진입. Triggers: 'pm-env', 'repo 추가', 'worktree 추가', 'readonly 슬롯', 'slot 상태', '슬롯 제거', 'upstream 전환', '환경 관리'."
 ---
-
-<command-instruction>
 
 # /pm-env — PM 환경 관리 (pm-config facade)
 
-> {{PROJECT_NAME}} PM 환경 셋업·조회를 한 command 로 — `./pm-config.sh` facade backbone 위에
-> repo/worktree/slot/upstream 분기. multi-PM 토폴로지(여러 repo·worktree 슬롯)와 upstream 값 전환의 단일
-> 진입. thin — `pm-config` 가 CLI 계약 단일 진실(서브커맨드 추가돼도 이 command 변경 불필요).
+> PM 환경 셋업·조회를 한 스킬로 — `./pm-config.sh` facade backbone 위에 repo/worktree/slot/upstream 분기.
+> multi-PM 토폴로지(여러 repo·worktree 슬롯)와 upstream 값 전환의 단일 진입. thin — `pm-config` 가 CLI 계약
+> 단일 진실(서브커맨드 추가돼도 이 스킬 변경 불필요).
 
 > **Windows 진입**: `./pm-config.sh` 는 bash 용 — PowerShell/cmd 에선 **`.\pm-config.cmd`**(동일 인자·
 > pm_import 가 루트로 복사). PowerShell 5.x 는 `&&` 체이닝 미지원(ParseError) — `cd X && …` 대신
 > **도구의 workdir 파라미터**나 명령 분리로 실행한다.
 
-## 인접 command 와 구분
-- **pm-env (이 command)** = 환경 *셋업/조회*(repo·worktree·slot·upstream 값).
-- `/pm-update` = 환경이 가리키는 upstream 으로 엔진 *갱신*. upstream 값을 여기서 전환 → pm-update 가 적용.
-- `/pm-bootstrap` = 세션 *시작* 시 슬롯 바인딩·상태점검.
+## 인접 스킬과 구분
+- **pm-env (이 스킬)** = 환경 *셋업/조회*(repo·worktree·slot·upstream 값).
+- [[pm-update]] = 환경이 가리키는 upstream 으로 엔진 *갱신*. upstream 값을 여기서 전환 → pm-update 가 적용.
+- [[pm-bootstrap]] = 세션 *시작* 시 슬롯 바인딩·상태점검.
 
 ## 분기 (trigger·인자로)
 
@@ -37,7 +36,7 @@ description: "PM 환경 관리 단일 command — pm-config.sh facade wrap. repo
 - **`--readonly`**(⑬·T-0358): research 전용 **read-only 공유 슬롯** — 코드를 *읽어* PM 홈 wiki
   (domain·architecture·status)를 쓰는 읽기 기준면이다. detached HEAD(released base·git 이 같은 브랜치
   두 worktree 를 못 물림)·role=readonly·**session/pid 없음·배타 대여 없음**(공유가 정상). 무소유 공유
-  자산이라 **바인딩(`/pm-bootstrap --slot`)·release 도 거부**되고, 갱신은 `/pm-worktree refresh` 로만
+  자산이라 **바인딩(`/pm-bootstrap --slot`)·release 도 거부**되고, 갱신은 [[pm-worktree]] `refresh` 로만
   (set-base/rebase/dev/sync 도 거부). 제거는 `worktree remove --force`.
 
 ### slot status / release / remove
@@ -71,11 +70,12 @@ task = 슬롯과 **직교**하는 작업스트림 정체성(⑥). task 명의로
 ```bash
 ./pm-config.sh alloc <repo> --task <이름>          # idle 최소 번호 슬롯을 task 명의로 대여
 ./pm-config.sh release <slot> --task <이름>        # task 소유검사 후 반납(내 task 슬롯만)
-./pm-config.sh task end <이름>                      # task 종료 — 소진 게이트 + 일괄 반납 + 아카이브
+./pm-config.sh task end <이름>                     # task 종료 — 소진 게이트 + 일괄 반납 + 아카이브
 ```
 - **alloc**(PM 자율·논리층·⑤): idle **최소 번호** 슬롯을 `--task` 명의(lease session)로 leased 전이.
   풀에 idle 슬롯이 없으면 **자동 생성하지 않고**(디스크=코드 전체 사본×슬롯) `worktree add <repo>`
   **승인 요청**으로 멈춘다 — create/remove(물리층)=사용자 승인, alloc/release(논리층)=PM 자율(2층 분리·⑤).
+  (readonly 공유 슬롯은 배타 대여 없음·alloc/release 대상 아님·⑬.)
 - **release --task**: 그 슬롯이 내 task 명의(session)가 아니면 거부(다른 task 슬롯 보호). dirty 거부는
   현행 유지(`--force`=stash 보존 강제·소유검사 우회 백스톱). clean=idle 반납(폴더 유지·풀 재사용).
 - **task end**: ① 이 task 명의로 **claimed 인 티켓**이 남아있으면 목록 + 거부(소진 게이트·⑲) — 해소는
@@ -106,7 +106,7 @@ task 의 ticket prefix 를 opt-in 으로 지정/변경/해제한다 — prefix �
 ./pm-config.sh upstream show
 ./pm-config.sh upstream set <url|path>
 ```
-`set` 은 검증 후 `local.conf upstream=` atomic 재기록(타 키 보존·fail-closed): URL→`git ls-remote` 도달성 · 경로→존재+checkout. 값 self-describing(https/ssh/file→URL · 그 외→경로)이라 **전환 후 `/pm-update` 가 자동 적응**(URL→cache clone · 경로→pull).
+`set` 은 검증 후 `local.conf upstream=` atomic 재기록(타 키 보존·fail-closed): URL→`git ls-remote` 도달성 · 경로→존재+checkout. 값 self-describing(https/ssh/file→URL · 그 외→경로)이라 **전환 후 [[pm-update]] 가 자동 적응**(URL→cache clone · 경로→pull).
 
 ### worktree add timeout 노브 — 하네스 false-kill 방지 (T-0293·3-layer)
 
@@ -115,14 +115,14 @@ task 의 ticket prefix 를 opt-in 으로 지정/변경/해제한다 — prefix �
 
 - **엔진** `PM_GIT_TIMEOUT`(초·`none`/`0`/`unlimited`=무제한·기본 1800) — worktree add console-visible
   러너(T-0292). `export PM_GIT_TIMEOUT=none` 으로 초대형 repo 무제한(진행 콘솔 가시·hang 은 Ctrl-C).
-- **opencode 하네스** `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS`(ms) — opencode bash 툴 기본
-  120초. **opencode 는 config 파일로 못 실어**(`.env` 자동로드 없음·실측) → **shell export** 로:
-  `export OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=1800000`(shell 프로파일·`.envrc`/direnv·
-  opencode 실행 쉘에 상속). `EXPERIMENTAL` = 버전 의존이니 **회사 버전서 라이브 확인**(라이브 실측 규율).
-- **claude 하네스**(참고·claude 어댑터) `BASH_DEFAULT/MAX_TIMEOUT_MS`(ms·`.claude/settings.json` env).
+- **claude 하네스** `BASH_DEFAULT_TIMEOUT_MS`·`BASH_MAX_TIMEOUT_MS`(ms·기본 1800000=30분) —
+  `.claude/settings.json` `env` 블록에 출하 기본. 값 변경 시 세션 재시작(env 는 시작 시 read).
+- **opencode 하네스** `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS`(ms) — opencode 는 config 파일로
+  못 실어(`.env` 자동로드 없음·실측) **shell export** 로: `export OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=1800000`
+  (shell 프로파일/direnv `.envrc`). `EXPERIMENTAL` = 버전 의존이니 회사 버전서 라이브 확인.
 
-넘으면 엔진 트립 메시지가 "터미널 직접 실행(`PM_GIT_TIMEOUT=none`)"을 안내한다. opencode 로 worktree add 가
-느린 대형 repo 에서 죽으면 위 export 를 먼저 확인.
+넘으면 엔진 트립 메시지가 "터미널 직접 실행(`PM_GIT_TIMEOUT=none`)"을 안내한다. 값을 바꾸려면 위 3
+표면(엔진 env·claude settings.json·opencode shell export)을 각각 조정.
 
 ### opencode stall 워치독 노브 — 무한 hang 방지 (T-0336)
 
@@ -132,14 +132,10 @@ opencode `run` 스타트업 fetch stall(간헐 brownout·자체 회복 없음·�
 - `PM_OC_STALL_RETRIES`(기본 2) — 소진 시 fail-loud. 각 재시도는 stderr 1줄 loud.
 적용 표면: relay driver·pm_import `--fill auto`·release 라이브 테스트 (provider/원인 무관).
 
-
 ## 결정
-- **단일 command**(trigger/인자 분기·사용자 확정) — `pm-config` 대화형 콘솔과 동형 진입.
+- **단일 스킬**(trigger/인자 분기·사용자 확정) — `pm-config` 대화형 콘솔과 동형 진입.
 - thin — 비즈니스 로직 0. upstream 전환 백엔드(검증·atomic·디커플)는 엔진(`pm_config upstream`·T-0145).
-- ⚠️ opencode 채택자: 이 command(`.opencode/command/`)는 `@target-owned` 라 `pm_update` 가 전파하지 않는다 — 새 command 는 **re-import 로 도달**. `/pm-import` 가이드의 re-import 경로 참조.
 
 ## 참고
 - 설계: ADR-0032(D3 스킬화·D4 upstream 하이브리드) · backbone facade `pm-config.sh`→`pm_config.py`.
-- `/pm-update`(전환한 upstream 으로 갱신) · `/pm-bootstrap`(worktree add 후 슬롯 바인딩).
-
-</command-instruction>
+- [[pm-update]](전환한 upstream 으로 갱신) · [[pm-bootstrap]](worktree add 후 슬롯 바인딩) · [[pm-worktree]](readonly 슬롯 refresh).

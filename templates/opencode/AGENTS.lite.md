@@ -1,7 +1,8 @@
 # AGENTS.md — opencode PM 어댑터 (lite 진입·경량·자족)
 
-> opencode 세션 진입점 **lite 판**. 이 한 파일 + 공유 엔진(`board.py`) + `.opencode/command/`
-> 만으로 PM happy-path(부트스트랩 → ticket 발행 → 위임 → finish)를 자족 운영하도록 압축했다.
+> opencode 세션 진입점 **lite 판**. 이 한 파일 + 공유 엔진(`board.py`) + `.claude/skills/`
+> (canonical PM-workflow 스킬·ADR-0065 단일 소비·opencode 가 네이티브 스캔)만으로 PM
+> happy-path(부트스트랩 → ticket 발행 → 위임 → finish)를 자족 운영하도록 압축했다.
 > Claude Code 비의존 — opencode LLM(로컬 gemma / 회사 Pro)이 이 문서만 읽고 PM 을 운영한다.
 > **무거운 방법론(`pm_role.md`·`pm_playbook.md`)은 auto-load 하지 않는다** — happy-path 밖일 때만
 > lazy Read(§9·§참고). 회사 200K 배포 1급. (2D 무게축 lite-A · ADR-0006)
@@ -71,7 +72,7 @@
 ```
 
 추가: `status.md` 모듈 행 · `log/current.md` entry · 회귀 `{{TEST_CMD}}` green · git commit(`Co-Authored-By` 트레일러).
-`.opencode/command/` 의 pm-* 커맨드가 스칼라·skeleton·stage 자동화.
+`.claude/skills/` 의 pm-* 스킬(슬래시 `/pm-…`·ADR-0065 단일 소비)이 스칼라·skeleton·stage 자동화.
 
 ## 6. 결정 권한 (요약)
 
@@ -97,7 +98,7 @@
 |---|---|
 | `.project_manager/tools/` | 공유 엔진 board.py·pm_*.py (0 수정) |
 | `.project_manager/wiki/` | status·pm_state / **domain**(살아있는 지식·`domain.py`) / pm_role·pm_playbook(lazy) / log / decisions / raw |
-| `.opencode/command/` · `.opencode/agents/` | PM workflow 커맨드 · subagent(task tool 위임 1차) |
+| `.claude/skills/` · `.opencode/agents/` | PM workflow 스킬(단일 소비·ADR-0065·슬래시 `/pm-…`) · subagent(task tool 위임 1차) |
 | `AGENTS.md` | 이 파일(= claude_code 의 CLAUDE.md lite) |
 
 ## 9. 막혔을 때 / lazy 참조 (happy-path 밖 → 그때 Read)

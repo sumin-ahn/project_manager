@@ -1,7 +1,7 @@
 """스킬 md ↔ CLI 커맨드 **존재** 정합 가드 (T-0347 · spike §F13 · 결정 ⑱ · [[ADR-0062]]).
 
-배경 — **실패 모드가 기능적이다**: 스킬 문서(`.claude/skills/**/SKILL.md`·opencode
-`command/*.md`)의 ```bash 블록은 채택자·PM 이 그대로 복붙해 도는 실행 지시다. 거기 적힌
+배경 — **실패 모드가 기능적이다**: 스킬 문서(`.claude/skills/**/SKILL.md` — 양 하네스가
+단일 소비·ADR-0065·opencode 미러 포함)의 ```bash 블록은 채택자·PM 이 그대로 복붙해 도는 실행 지시다. 거기 적힌
 서브커맨드·플래그가 CLI 파서에서 사라지거나 이름이 바뀌면(예 v1.2.0 이 `--session` 제거·ADR-0057)
 그 지시는 런타임에 **깨진다**. 살아있는 실사례 [[T-0346]](pm-handoff 가이드 `--tickets` 형식이 CLI
 실형식과 어긋난 live drift)·물린 전례 [[T-0324]](구 `--session` 하드코딩이 두 가드 사각을 통과해
@@ -39,13 +39,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-# 스캔 표면 — claude 스킬 + templates 사본 전수(claude 스킬 + opencode command·fresh-adopter
-# 파리티·결정 ㉓). templates/claude_code 는 `.claude/skills` 의 pm_update 동기 사본이라 같은
-# 커맨드를 재검사하지만, 사본이 drift 하면(전파 누락) 거기서 잡히는 것이 곧 파리티 가드다.
+# 스캔 표면 — canonical 스킬 + 양 하네스 templates 미러 전수(ADR-0065 단일 소비). opencode 는
+# `.opencode/command` 수기 사본 채널을 은퇴하고(T-0364) canonical `.claude/skills` 를 네이티브
+# 스캔·소비하므로, 그 출하 미러(templates/opencode/.claude/skills)도 같은 커맨드를 재검사한다.
+# templates/* 는 root `.claude/skills` 의 pm_update --target 동기 미러라, 미러가 drift 하면
+# (전파 누락) 거기서 잡히는 것이 곧 파리티 가드다.
 _SCAN_DIRS = (
     ".claude/skills",
     "templates/claude_code/.claude/skills",
-    "templates/opencode/.opencode/command",
+    "templates/opencode/.claude/skills",
 )
 
 # 파사드 셸 디스패처(`./pm-config.sh …`)는 인자를 verbatim 으로 대상 도구에 forward 한다 —
@@ -280,18 +282,15 @@ def _extract_bash_commands(text: str) -> "list[tuple[str, list[str]]]":
 
 
 def _canonical_skill_names() -> "set[str]":
-    """실재하는 스킬/커맨드 이름 집합(claude 스킬 dir + opencode command stem) ∪ 파사드 진입점."""
+    """실재하는 스킬 이름 집합(canonical + 양 하네스 미러 스킬 dir) ∪ 파사드 진입점 (ADR-0065)."""
     names: "set[str]" = set(_FACADE_STEMS)
-    for rel in (".claude/skills", "templates/claude_code/.claude/skills"):
+    for rel in (".claude/skills", "templates/claude_code/.claude/skills",
+                "templates/opencode/.claude/skills"):
         base = REPO / rel
         if base.is_dir():
             for sub in base.iterdir():
                 if sub.is_dir() and (sub / "SKILL.md").is_file():
                     names.add(sub.name)
-    command_dir = REPO / "templates/opencode/.opencode/command"
-    if command_dir.is_dir():
-        for md in command_dir.glob("*.md"):
-            names.add(md.stem)
     return names
 
 
@@ -336,8 +335,8 @@ def test_skill_bash_commands_reference_existing_cli():
         "sensitivity: 스킬 md ```bash 에서 커맨드를 0개 추출 — 추출 정규식/스캔 경로가 stale 하거나"
         " 스킬 md 구조가 바뀌었다. 공허 통과(green 이지만 무보증)를 막기 위해 실패시킨다."
     )
-    # templates 전수(결정 ㉓): 세 표면(claude 스킬·claude_code 사본·opencode command)이 모두
-    # 실 커맨드를 냈는지 — 한 표면이라도 0 이면 파리티 커버리지 구멍.
+    # templates 전수(ADR-0065 단일 소비): 세 표면(canonical 스킬·claude_code 미러·opencode 미러)이
+    # 모두 실 커맨드를 냈는지 — 한 표면이라도 0 이면 파리티 커버리지 구멍.
     assert surfaces_with_targets == set(_SCAN_DIRS), (
         "sensitivity: 커맨드를 낸 표면이 전수(_SCAN_DIRS)가 아님 — "
         f"{sorted(set(_SCAN_DIRS) - surfaces_with_targets)} 표면이 스캔에서 비었다(파리티 구멍)."

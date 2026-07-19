@@ -69,10 +69,12 @@ LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
 
-# 검증 대상 스킬(① canonical·T-0349). claude=SKILL.md·opencode=command md — 라이브 프롬프트에
-# *유일 컨텍스트*로 임베드된다(진입문서 경로 미제공·스킬 사용성). backbone=board.py livegate + pm_update.
+# 검증 대상 스킬(① canonical·T-0349). ADR-0065(단일 소비·T-0364): opencode 는 `.opencode/command`
+# 사본 채널을 은퇴하고 canonical `.claude/skills` 를 네이티브 소비한다 — opencode 검증 표면 = 그 스킬
+# 미러(byte-identical). 라이브 프롬프트에 *유일 컨텍스트*로 임베드된다(진입문서 경로 미제공·스킬
+# 사용성). backbone=board.py livegate + pm_update.
 _CLAUDE_SKILL = REPO / ".claude" / "skills" / "pm-release" / "SKILL.md"
-_OPENCODE_SKILL = REPO / "templates" / "opencode" / ".opencode" / "command" / "pm-release.md"
+_OPENCODE_SKILL = REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-release" / "SKILL.md"
 
 # 시나리오 파라미터(단일 진실) — 릴리즈 버전(가공)·livegate side-effect 경로.
 _RELEASE_VERSION = "v9.9.9"
@@ -500,7 +502,7 @@ def test_pm_release_live_opencode_best_effort(tmp_path):
 
 
 def test_pm_release_skill_files_exist_and_reference_backbone():
-    """검증 대상 스킬 2종(claude SKILL.md·opencode command md)이 존재하고 릴리즈 backbone 체인을 참조한다.
+    """검증 대상 스킬 2종(claude SKILL.md·opencode 스킬 미러)이 존재하고 릴리즈 backbone 체인을 참조한다.
 
     라이브 프롬프트가 임베드하는 스킬이 소실/개명되면 라이브가 read 에서 죽거나 가짜가 되므로,
     always-run 가드로 존재 + 체인(livegate record/check·pm_update·gh release create/view)과 이 스킬의

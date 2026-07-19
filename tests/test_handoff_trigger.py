@@ -262,16 +262,16 @@ def test_handoff_prompt_template_is_lean(handoff):
 
 
 def test_no_stale_handoff_guidance_across_tree():
-    """루트 + 템플릿(pm_update 동기화분 + 어댑터 사본)의 handoff 가이드 파일에 옛 verbose 문구가
-    남지 않았는지 (ADR-0008·codex 게이트 회귀 방지). 어댑터 사본(opencode command·SKILL)은
-    pm_update 가 안 닿거나 별도라 명시 가드한다."""
+    """루트 + 템플릿(pm_update 동기화분 + 어댑터 미러)의 handoff 가이드 파일에 옛 verbose 문구가
+    남지 않았는지 (ADR-0008·codex 게이트 회귀 방지). opencode 도 canonical 스킬 단일 소비
+    (ADR-0065·command 은퇴·T-0364)라 그 출하 미러(templates/opencode/.claude/skills)를 가드한다."""
     candidates = [
         REPO / ".project_manager/wiki/pm_playbook.md",
         REPO / ".claude/skills/pm-handoff/SKILL.md",
         REPO / "templates/claude_code/.project_manager/wiki/pm_playbook.md",
         REPO / "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
         REPO / "templates/opencode/.project_manager/wiki/pm_playbook.md",
-        REPO / "templates/opencode/.opencode/command/pm-handoff.md",
+        REPO / "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
     ]
     stale_phrases = ("5~10 불릿", "5~10개 불릿", "board 상태 / 진행 중 작업", "board 상태·진행 중 작업")
     for path in candidates:
