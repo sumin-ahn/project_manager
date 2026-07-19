@@ -1832,6 +1832,7 @@ def _mine_ids(board, capsys, **flags):
     """cmd_list 를 돌려 출력에서 ticket ID 목록을 뽑는다 (mine/repo/slot 렌즈·ADR-0057)."""
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
+                              all=flags.get("all", False), task=flags.get("task"),
                               repo=flags.get("repo"), slot=flags.get("slot"))
     rc = board.cmd_list(args)
     assert rc == 0
@@ -1946,12 +1947,14 @@ def test_solo_all_open_degrade_preserved(board, capsys):
 
 
 def test_solo_no_identity_all_open_preserved(board, capsys):
-    """무-identity solo(created_by/claimed_by user 0) — 전체 open degrade 무변경(T-0164 폴백)."""
+    """무-identity solo(created_by/claimed_by user 0) — `--all` 전체 뷰는 전 활성 티켓 표시(무변경).
+
+    ADR-0066(T-0385): 무인자 기본은 세션 스코프(내 스트림)로 바뀌어 무관 open 을 접으므로, "전체
+    표시" 검증은 `--all`(기존 무인자 전체 뷰의 이관)로 돈다. `--mine` 솔로 degrade 는 별도 스위트."""
     _seed_full(board, "T-0001", "open")
     _seed_full(board, "T-0002", "open")
     _seed_full(board, "T-0003", "claimed", claimed_by="alpha_1")   # 슬롯-only(user 차원 없음)
-    ids = _mine_ids(board, capsys, session="alpha_1")
-    # distinct user = 0(슬롯-only 는 안 셈) → solo → 전체 open + 슬롯 claim.
+    ids = _mine_ids(board, capsys, all=True)
     assert set(ids) == {"T-0001", "T-0002", "T-0003"}
 
 
@@ -2157,6 +2160,7 @@ _REMEDY_SINGLE_SESSION = "단일-세션 op"
 def _list_args(**flags):
     return argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
+                              all=flags.get("all", False), task=flags.get("task"),
                               repo=flags.get("repo"), slot=flags.get("slot"))
 
 
@@ -2237,12 +2241,14 @@ def test_cmd_list_clean_strict_no_warn(board, capsys):
     assert _ids_from(cap.out) == ["T-AL-001"]
 
 
-def test_cmd_list_plain_no_mine_no_warn(board, capsys):
-    """무플래그 list(전체 뷰·mine=False) — 격리 미적용이라 다중사용자여도 무경고·전체 표시."""
+def test_cmd_list_all_no_warn(board, capsys):
+    """`--all` 전체 뷰(mine=False) — 격리 미적용이라 다중사용자여도 무경고·전체 표시(ADR-0066 이관).
+
+    무인자 기본 뷰(default_view)는 세션 스코프라 이 검증은 `--all`(기존 무인자 전체 뷰)로 돈다."""
     _write_conf(board, "user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
-    rc = board.cmd_list(_list_args(mine=False))
+    rc = board.cmd_list(_list_args(all=True))
     assert rc == 0
     cap = capsys.readouterr()
     assert _WARN_MARK not in cap.err

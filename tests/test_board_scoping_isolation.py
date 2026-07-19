@@ -172,7 +172,7 @@ def _view(board, capsys, **flags) -> list[str]:
         repo, slot = _split_session(flags["session"])
     rc = board.cmd_list(argparse.Namespace(
         status=flags.get("status"), tag=None, mine=flags.get("mine", False),
-        repo=repo, slot=slot, task=flags.get("task")))
+        all=flags.get("all", False), repo=repo, slot=slot, task=flags.get("task")))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_list rc={rc}: {out}"
     ids: list[str] = []
@@ -403,7 +403,7 @@ def test_list_task_flag_is_consumed_not_silent_noop(board, capsys):
     _write_conf(board, user="alice", session="alpha_1")
 
     task_ids = set(_view(board, capsys, task="refactor"))
-    whole = set(_view(board, capsys))                    # 무필터 전체 보드(모든 user·claim)
+    whole = set(_view(board, capsys, all=True))          # 무필터 전체 보드(모든 user·claim·ADR-0066 `--all`)
     # 소비됐다면 task 렌즈 ⊊ 전체(bob·타 task 제외)·미소비(no-op)면 전체와 동일.
     assert task_ids < whole, "--task 가 silent no-op — 렌즈가 전체 보드와 동일(핸들러 미소비)"
     assert not (comp.bob_all & task_ids), "무필터라면 섞였을 bob 티켓이 task 렌즈에 없다(필터 실동작)"
@@ -445,8 +445,8 @@ def test_task_lens_mutually_exclusive_with_other_scopes(board, capsys):
 def _make_board_runner(board):
     """pm_bootstrap `run_board_fn` seam 을 **실 board.cmd_list** 로 배선한다(subprocess 없이).
 
-    `_collect_board` 이 부르는 `["list","--mine"]`·`["list","--status","done","--mine"]`·
-    `["lint","--gate"]` 를 dispatch — 격리는 `--mine`(=`_ticket_is_mine`) 가 담당하므로 이
+    `_collect_board` 이 부르는 `["list","--mine"]`·`["list","--all"]`·`["list","--status","done",
+    "--mine"]`·`["lint","--gate"]` 를 dispatch — 격리는 `--mine`(=`_ticket_is_mine`) 가 담당하므로 이
     러너가 bootstrap 카운트가 그 predicate 를 그대로 상속함을 태운다(pm_bootstrap.py 무변경).
     """
     def run(argv):
@@ -454,7 +454,7 @@ def _make_board_runner(board):
             return 0, "✓ no lint issues\n"
         status = argv[argv.index("--status") + 1] if "--status" in argv else None
         args = argparse.Namespace(status=status, tag=None, mine="--mine" in argv,
-                                  repo=None, slot=None)
+                                  all="--all" in argv, task=None, repo=None, slot=None)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = board.cmd_list(args)
@@ -478,12 +478,16 @@ def test_bootstrap_collect_board_inherits_isolation(board, capsys):
     result = bs._collect_board()
 
     open_tickets = set(result["open_tickets"])
-    assert not (comp.bob_open & open_tickets), "bootstrap open_tickets 에 bob open 유출"
+    assert not (comp.bob_open & open_tickets), "bootstrap open_tickets(--mine 리스트) 에 bob open 유출"
     assert open_tickets == {comp.al1_open, comp.al2_open}
-    # 카운트도 alice 것만 — open 2(내 area open)·claimed 2(내 claim)·done 0. bob 이 새면 값이 커진다.
-    assert result["counts"]["open"] == 2
+    # claimed/done 은 `--mine`(=`_ticket_is_mine`) 격리 상속 — alice 것만(claimed 2·done 0).
     assert result["counts"]["claimed"] == 2
     assert result["counts"]["done"] == 0
+    # **open 만 예외**(ADR-0066·codex R2): open 카운트는 표시 계약과 같은 **전량 모수**(공유 풀·
+    # `--all`)라 alice 2 + bob 2 = 4. 화면 상단 "open: N" 이 하단 "스트림 상세 + 그 외 open M건" 과
+    # 같은 풀을 세야 자기모순이 없다. open 은 예전부터 슬롯무관 공유 backlog(ADR-0056 #3).
+    assert result["counts"]["open"] == 4
+    assert result["counts"]["open"] == len(result["stream_open"]) + result["other_open_count"]
 
 
 # ════════════════════════════════════════════════════════════════════════

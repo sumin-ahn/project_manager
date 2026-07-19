@@ -423,9 +423,11 @@ def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path,
         "  [claimed] T-A-011  wip b       alice/A_1   -\n"
     )
     slot_done_out = "  [done   ] T-A-009  done a       alice/A_1   -\n"
-    # 타 세션 현황용 무렌즈 full-board claimed 조회(T-0331·must-fix 2) — 여기선 내 세션(A_1) claim
-    # 만 담아 타 세션 0건(현황 줄 생략)으로 둔다(이 테스트 초점=슬롯-스코프 카운트).
-    full_claimed_out = (
+    # 전체 보드(`--all`) 조회 — 접힘 카운트 모수(공유 풀 전량) + 타 세션 claim 현황(T-0331·ADR-0066).
+    # 여기선 공유 풀에 T-A-001 open 1건 + 내 세션(A_1) claim 만 담아 타 세션 0건(현황 줄 생략)·
+    # 무스트림(슬롯 세션) → 그 외 open 1건 접힘으로 둔다(이 테스트 초점=슬롯-스코프 카운트).
+    full_all_out = (
+        "  [open   ] T-A-001  backlog     -           -\n"
         "  [claimed] T-A-010  wip a       alice/A_1   -\n"
         "  [claimed] T-A-011  wip b       alice/A_1   -\n"
     )
@@ -436,8 +438,8 @@ def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path,
             return 0, "✓ no lint issues\n"
         if args == ["list", "--status", "done", "--repo", "A", "--slot", "1"]:
             return 0, slot_done_out
-        if args == ["list", "--status", "claimed"]:  # 무렌즈 전-세션 조회(T-0331).
-            return 0, full_claimed_out
+        if args == ["list", "--all"]:  # 전체 보드(접힘 모수·전-세션 claim·ADR-0066).
+            return 0, full_all_out
         if args == ["list", "--repo", "A", "--slot", "1"]:
             return 0, slot_list_out
         raise AssertionError(f"슬롯 정체성인데 슬롯-스코프 아님: {args}")
@@ -453,17 +455,19 @@ def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path,
     list_calls = [c for c in calls if c[:1] == ["list"]]
     assert list_calls == [
         ["list", "--repo", "A", "--slot", "1"],
+        ["list", "--all"],
         ["list", "--status", "done", "--repo", "A", "--slot", "1"],
-        ["list", "--status", "claimed"],
     ]
     assert not any("--mine" in c for c in calls), "슬롯 정체성인데 --mine 로 조회(S1 mislabel 재현)"
     # 2) 카운트 라벨 = "(slot 1)" (그 슬롯 정체성으로 조회) — user-wide "(mine)" mislabel 근절.
     assert "claimed: 2 (slot 1)" in out
-    assert "open: 1 (공유 backlog·슬롯무관)" in out
+    assert "open: 1 (backlog·기본 접힘·전체는 list --all)" in out
     assert "done: 1 (slot 1)" in out
     assert "(mine)" not in out
-    # 3) open ticket 은 슬롯무관 backlog 로 명시(카운트 slot-scope 와 혼동 방지).
-    assert "open ticket (claim 가능·backlog·슬롯무관): T-A-001" in out
+    # 3) open backlog 는 세션 기본 뷰(ADR-0066)로 접힌다 — 슬롯 세션(무-task=무스트림)이라 상세 없이
+    #    "그 외 open N건 (접힘)" + 전체 안내로 대체(fresh 화면에 무관 backlog 상세 노출 근절).
+    assert "그 외 open 1건 (접힘·내 스트림 아님) — 전체는 `board.py list --all`" in out
+    assert "T-A-001" not in out   # 무스트림 세션 — open 상세 미노출(접힘)
 
 
 def test_bootstrap_slot_identity_renders_other_session_claims(bootstrap, wp, tmp_path, capsys):
@@ -478,9 +482,9 @@ def test_bootstrap_slot_identity_renders_other_session_claims(bootstrap, wp, tmp
         "  [open   ] T-A-001  backlog     -           -\n"
         "  [claimed] T-A-010  wip mine    alice/A_1   -\n"
     )
-    # 무렌즈 full-board claimed = 내 세션(A_1) + 타 세션(A_2 동일 사용자·A_3 타 사용자).
+    # 전체 보드(`--all`) = 내 세션(A_1) + 타 세션(A_2 동일 사용자·A_3 타 사용자) claim (+open backlog).
     # board.py cmd_list 실 포맷(고정폭 60/18) — 위치 파서(codex R3)가 요구하는 컬럼 정렬.
-    full_claimed_out = "".join(
+    full_all_out = "  [open   ] T-A-001  backlog     -           -\n" + "".join(
         f"  [{'claimed':7s}] {tid}  {title[:60]:60s}  {claimed:18s}  -\n"
         for tid, title, claimed in [
             ("T-A-010", "wip mine", "alice/A_1"),
@@ -495,8 +499,8 @@ def test_bootstrap_slot_identity_renders_other_session_claims(bootstrap, wp, tmp
             return 0, "✓ no lint issues\n"
         if args == ["list", "--status", "done", "--repo", "A", "--slot", "1"]:
             return 0, ""
-        if args == ["list", "--status", "claimed"]:
-            return 0, full_claimed_out
+        if args == ["list", "--all"]:
+            return 0, full_all_out
         if args == ["list", "--repo", "A", "--slot", "1"]:
             return 0, slot_list_out
         raise AssertionError(f"예상 밖 board 호출: {args}")
@@ -513,6 +517,77 @@ def test_bootstrap_slot_identity_renders_other_session_claims(bootstrap, wp, tmp
     assert "A_2: T-A-020" in other_line and "A_3: T-A-030" in other_line
     # 내 세션 claim(A_1/T-A-010)은 타 세션 줄에 안 들어간다(오귀속 회귀 가드).
     assert "A_1" not in other_line and "T-A-010" not in other_line
+
+
+def test_bootstrap_rendered_open_count_matches_fold_multiuser(bootstrap, wp, tmp_path, capsys):
+    """**codex R2 must-fix (렌더 dump 수준)**: 다중사용자에서 화면 상단 "open: N" 카운트가 하단
+    "스트림 상세 + 그 외 open M건" 과 같은 전량 모수를 세어 자기모순(상단 0 / 하단 1건)이 없다.
+
+    `--all` 공유 풀 open 2(내 T-A-001 + 타 사용자 T-A-050)·`--repo/--slot` 렌즈는 1(내 것). 수정 전엔
+    counts["open"] 이 --mine(1)이라 "open: 1" 인데 접힘은 --all(2)이라 "그 외 open 2건" 으로 갈렸다.
+    수정 후 둘 다 2(슬롯 세션=무스트림 → 스트림 상세 0·접힘 2·counts open 2)."""
+    import re
+
+    slot_list_out = "  [open   ] T-A-001  mine backlog  -   -\n"
+    full_all_out = (
+        "  [open   ] T-A-001  mine backlog  -   -\n"
+        "  [open   ] T-A-050  team backlog  -   -\n"
+    )
+
+    def fake_board(args):
+        if args[:1] == ["lint"]:
+            return 0, "✓ no lint issues\n"
+        if args == ["list", "--status", "done", "--repo", "A", "--slot", "1"]:
+            return 0, ""
+        if args == ["list", "--all"]:
+            return 0, full_all_out
+        if args == ["list", "--repo", "A", "--slot", "1"]:
+            return 0, slot_list_out
+        raise AssertionError(f"예상 밖 board 호출: {args}")
+
+    pool = FakePool(slot_status_ret=_slot_status_obj(wp, submodules=[]))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=pool, board_fn=fake_board)
+    assert inst.run(repo="A", slot=1) == 0
+    out = capsys.readouterr().out
+
+    # 상단 카운트 = 전량 모수 2 (수정 전 --mine 1 아님).
+    assert "open: 2 (backlog·기본 접힘·전체는 list --all)" in out
+    assert "open: 1 (" not in out
+    # 하단 접힘 = 2 (슬롯 세션=무스트림·스트림 상세 0).
+    assert "그 외 open 2건 (접힘·내 스트림 아님)" in out
+    # 렌더 정합: 상단 open 카운트 == 스트림 상세 수(0) + 접힘 수(2).
+    top = int(re.search(r"open: (\d+) \(backlog", out).group(1))
+    fold = int(re.search(r"그 외 open (\d+)건", out).group(1))
+    assert top == fold == 2
+
+
+def test_collect_board_multiuser_stream_open_ownership_agnostic(bootstrap, tmp_path, monkeypatch):
+    """**codex must-fix + suggestion 3c**: 다중사용자에서 task prefix(PAY) 스트림 open 이 타 사용자
+    (bob) 소유여도 stream_open 에 포함되고 접힘 카운트는 `--all` 공유 풀 전량을 모수로 센다.
+
+    이전 버그: stream_open/other_open_count 를 `--mine`(소유·strict-exclude) 출력에서 계산해 팀원
+    소유의 내-prefix open 이 누락(스트림 0 오표시)·접힘 카운트가 board.py 전량과 갈렸다. fix 후엔
+    `["list","--all"]` 전량에서 prefix 분류(소유 무관 스트림 라벨·ADR-0066 명확화)."""
+    leases = tmp_path / "leases.json"
+    leases.write_text('{"tasks":[{"name":"refactor","prefix":"PAY"}]}', encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "LEASES_FILE", leases)
+    all_out = (
+        "  [open   ] T-PAY-001  s   bob/other    -\n"    # 타 사용자 소유·내 스트림
+        "  [open   ] T-ACC-001  a   alice/x      -\n"    # 타 스트림 → 접힘
+    )
+
+    def fn(argv):
+        if argv[:1] == ["lint"]:
+            return 0, "✓ no lint issues\n"
+        if argv == ["list", "--all"]:
+            return 0, all_out
+        return 0, ""   # --mine·--status done 등은 빈 출력(이 테스트 초점=--all 전량 분류)
+
+    bs = bootstrap.PmBootstrap(run_board_fn=fn)
+    bs._task_name = "refactor"
+    result = bs._collect_board()
+    assert result["stream_open"] == ["T-PAY-001"]   # bob 소유여도 스트림(소유 무관 라벨)
+    assert result["other_open_count"] == 1          # T-ACC-001 접힘(전량 모수)
 
 
 # ── T-0284: fresh 슬롯 self-sufficiency (스크램블 낭비 제거) ──────────────────

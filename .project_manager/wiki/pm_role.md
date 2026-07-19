@@ -40,7 +40,7 @@ type: handoff
   per-slot `pm_state.md` · 연속성 = 자기 슬롯 태그 handoff entry(ADR-0044). **자기 공간만 잘 관리**한다.
 - **공유 = 가볍게:** 타 PM 작업은 부트스트랩 **대시보드 slot 1줄**로만 받는다(상세 열람 X) ·
   `log/current.md` 는 프로젝트 히스토리라 평시 통독하지 않고 *필요한 슬롯 태그 entry 만* 검색 ·
-  전체 보드(`board.py list`)는 열람용. 솔로(M=1)는 대시보드·슬롯 태그 무의미(현행 무변경).
+  전체 보드(`board.py list --all`)는 열람용(무인자 기본 뷰=내 스트림·ADR-0066). 솔로(M=1)는 대시보드·슬롯 태그 무의미(현행 무변경).
 
 > **현재-진실 vs 히스토리 (ADR-0022·ADR-0023):** `architecture.md` = 현재-아키텍처 단일 진실.
 > `decisions/` ADR 은 *왜*의 히스토리(근거·**현재 구속력 없음**) — 현재-기준 아님. 옛 ADR 과 현재
@@ -77,7 +77,7 @@ type: handoff
 | 결정 히스토리 (왜 이렇게) | `wiki/decisions/README.md` 색인 — ADR 상한(*왜*의 히스토리·현재 구속력 없음) |
 | 무엇을·왜 (우선순위·방향) | `wiki/roadmap.md` |
 | 모듈 진행 상태 (judgment) | `wiki/status.md` |
-| 전체 보드 (모든 세션) | `board.py list` — 타 PM 열람용·평시 불요 |
+| 전체 보드 (모든 세션) | `board.py list --all` — 타 PM 열람용·평시 불요 (무인자=내 스트림·ADR-0066) |
 | 방법론·규율·커맨드 표기 | 이 문서(pm_role) + 부트스트랩 커맨드 카드(커맨드 표기 단일 진실·ADR-0045) |
 
 ## 스킬 우선 운영 규율 (backbone 직접호출 금지)

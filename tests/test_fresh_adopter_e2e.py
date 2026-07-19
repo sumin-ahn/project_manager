@@ -134,10 +134,16 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     new = _board(dest, "new", "adopter smoke", "--touches", "README.md")
     assert new.returncode == 0, f"{harness} `board.py new` 실패: {new.stderr}"
 
-    listing = _board(dest, "list", "--status", "open")
-    assert listing.returncode == 0, f"{harness} `board.py list` 실패: {listing.stderr}"
+    # bare list = 내 스트림 기본 뷰(ADR-0066) — 미배정 open 은 접힘. 전체 상세는 --all 로 확인하되,
+    # bare 접힘 꼬리 줄이 존재를 알리는지(유실 방지 불변식)도 함께 단언한다.
+    folded = _board(dest, "list", "--status", "open")
+    assert folded.returncode == 0, f"{harness} `board.py list` 실패: {folded.stderr}"
+    assert "그 외 open" in folded.stdout, (
+        f"{harness} bare list 접힘 꼬리 줄 부재(유실 방지 불변식·ADR-0066):\n{folded.stdout}")
+    listing = _board(dest, "list", "--all", "--status", "open")
+    assert listing.returncode == 0, f"{harness} `board.py list --all` 실패: {listing.stderr}"
     m = re.search(r"T-\d+", listing.stdout)
-    assert m, f"{harness} 발행된 ticket 을 list 에서 못 찾음:\n{listing.stdout}"
+    assert m, f"{harness} 발행된 ticket 을 list --all 에서 못 찾음:\n{listing.stdout}"
     tid = m.group(0)
 
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")

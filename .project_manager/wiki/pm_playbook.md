@@ -285,7 +285,7 @@ append-only `log/current.md` 라 시간이 갈수록 커진다. → 떠나는 �
 
 **FORBIDDEN (본문 재열거 금지 — 전부 source 가 답한다):**
 
-- ❌ board done/open/claimed/blocked **카운트** (→ `board.py list`·`/pm-bootstrap` 라이브).
+- ❌ board done/open/claimed/blocked **카운트** (→ `board.py list`[무인자=내 스트림·전체는 `--all`·ADR-0066]·`/pm-bootstrap` 라이브).
 - ❌ **open ticket ID 목록** (→ `pm_bootstrap` 가 라이브로 출력).
 - ❌ **commit 해시·push 상태** (→ `git log`/`git status`).
 - ❌ **직전 complete entry 산출물 재요약** (→ 인접 entry. "읽기 범위" 로 가리켜라).

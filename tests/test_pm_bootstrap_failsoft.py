@@ -179,10 +179,10 @@ def test_collect_board_default_view_is_mine():
     board 의 graceful 폴백으로 현행과 사실상 동등(`--mine` 솔로 폴백·spike §2.D).
 
     `list` 호출은 **3 회**다: (1) default 뷰(`["list", "--mine"]` — open/claimed/blocked,
-    T-0197 이 done 을 접음) (2) done 전용(`["list", "--status", "done", "--mine"]` — default
-    뷰가 done 을 안 보여줘서 생긴 done(mine) 항상 0 회귀[T-0198] 를 메꿈) (3) 타 세션 현황용
-    **무렌즈 full-board claimed 조회**(`["list", "--status", "claimed"]` — T-0331 must-fix 2·전
-    세션·사용자 무관·슬롯-바인딩에서도 병기). default/done 은 `--mine` 렌즈 유지·claimed 은 무렌즈."""
+    T-0197 이 done 을 접음) (2) 전체 보드(`["list", "--all"]` — 세션 기본 뷰 접힘 카운트의 모수=
+    공유 풀 전량 + 타 세션 claim 현황을 한 조회에서·ADR-0066·T-0385) (3) done 전용(`["list",
+    "--status", "done", "--mine"]` — default 뷰가 done 을 안 보여줘서 생긴 done(mine) 항상 0
+    회귀[T-0198] 를 메꿈). default/done 은 `--mine` 렌즈·open 접힘 모수+claim 현황은 `--all`."""
     mod = _load_module()
     captured: list[list[str]] = []
 
@@ -198,8 +198,8 @@ def test_collect_board_default_view_is_mine():
     list_calls = [a for a in captured if a[0] == "list"]
     assert list_calls == [
         ["list", "--mine"],
+        ["list", "--all"],
         ["list", "--status", "done", "--mine"],
-        ["list", "--status", "claimed"],
     ]
 
 

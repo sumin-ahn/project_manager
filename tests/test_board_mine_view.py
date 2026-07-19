@@ -100,6 +100,7 @@ def _list_ids(board, capsys, **flags) -> list[str]:
     """cmd_list 를 돌려 출력에서 ticket ID 목록을 추출한다."""
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
+                              all=flags.get("all", False), task=flags.get("task"),
                               repo=flags.get("repo"), slot=flags.get("slot"))
     rc = board.cmd_list(args)
     assert rc == 0
@@ -683,40 +684,46 @@ def test_mine_all_area_owner_empty_degrades_to_all_open(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# board list (무플래그) 무변경 — additive
+# board list --all (기존 무인자 전체 뷰의 이관·ADR-0066·T-0385) — area 필터 미적용·전체 보드
 # ════════════════════════════════════════════════════════════════════════
 
-def test_list_without_mine_unchanged(board, capsys):
-    """무플래그 list 는 area 필터 미적용 — status 는 기본뷰(활성만·done 접기·T-0197)."""
+def test_list_all_unchanged(board, capsys):
+    """`--all` = 기존 무인자 전체 뷰 그대로(area 필터 미적용) — status 는 기본뷰(활성만·done 접기·T-0197).
+
+    ADR-0066 로 무인자 기본은 세션 스코프(내 스트림)로 바뀌었고, 예전 전체 뷰(모든 세션·타 사용자
+    포함)는 `--all` 로 이관됐다. 이 테스트가 그 이관을 못박는다."""
     _write_conf(board, user="alice", session="pm-1")
     _write_areas(board)
     _seed(board, "T-PAY-001", "open")
     _seed(board, "T-ACC-001", "open")
     _seed(board, "T-ACC-005", "claimed", claimed_by="bob/pm-2")
     _seed(board, "T-ACC-006", "done", claimed_by="bob/pm-2")
-    ids = _list_ids(board, capsys, mine=False)
+    ids = _list_ids(board, capsys, all=True)
     assert set(ids) == {"T-PAY-001", "T-ACC-001", "T-ACC-005"}
 
 
-def test_list_without_mine_status_all_includes_done(board, capsys):
-    """무플래그 list `--status all` 은 done 포함 전체(T-0197 — 기존 무변경 동작은 all 로 이관)."""
+def test_list_all_status_all_includes_done(board, capsys):
+    """`--all --status all` 은 done 포함 전체(T-0197 — 기존 무변경 동작은 all 로 이관)."""
     _write_conf(board, user="alice", session="pm-1")
     _write_areas(board)
     _seed(board, "T-PAY-001", "open")
     _seed(board, "T-ACC-006", "done", claimed_by="bob/pm-2")
-    ids = _list_ids(board, capsys, mine=False, status="all")
+    ids = _list_ids(board, capsys, all=True, status="all")
     assert set(ids) == {"T-PAY-001", "T-ACC-006"}
 
 
-def test_list_without_mine_does_not_resolve_identity(board, capsys, monkeypatch):
-    """무플래그 list 는 identity 해소를 호출하지 않는다(불필요 IO 회피·additive)."""
+def test_list_all_does_not_resolve_identity(board, capsys, monkeypatch):
+    """`--all` 전체 뷰는 identity 해소를 호출하지 않는다(불필요 IO 회피·additive).
+
+    무인자 기본 뷰(default_view)는 세션 스코프라 identity 를 해소하지만, `--all` 은 필터 없는
+    전체 보드라 정체성 무해소다(기존 무인자 list 의 additive 성질을 `--all` 이 계승)."""
     _seed(board, "T-0001", "open")
 
     def _boom(*a, **k):
-        raise AssertionError("user_name must not be called without --mine")
+        raise AssertionError("user_name must not be called with --all")
 
     monkeypatch.setattr(board, "user_name", _boom)
-    ids = _list_ids(board, capsys, mine=False)
+    ids = _list_ids(board, capsys, all=True)
     assert ids == ["T-0001"]
 
 

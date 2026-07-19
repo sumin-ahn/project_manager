@@ -89,9 +89,11 @@ def _seed_idea(board, iid, status, *, tags, title="t"):
     return path
 
 
+# `all=True` — 태그 렌더/필터는 뷰 스코프와 직교한 검증이라 전체 뷰(`--all`·ADR-0066)에서 돈다
+# (무인자 기본은 이제 세션 스코프라 무관 open 을 접어 단건 seed 가 상세 행으로 안 뜬다).
 def _list_args(*, tag=None, status=None):
     return argparse.Namespace(status=status, tag=tag, mine=False,
-                              session=None, slot=None)
+                              all=True, task=None, repo=None, slot=None)
 
 
 # ════════════════════════════════════════════════════════════════════════

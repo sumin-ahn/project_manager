@@ -223,12 +223,13 @@ def test_card_identity_free_section(bootstrap):
 
 
 def test_card_mine_guide_precedes_full_board(bootstrap):
-    """`list --mine` 이 기본 조회로 앞서고, 전체 보드 뷰는 "타 PM 열람용·평시 불요" 로 강등."""
+    """`list --mine` 이 기본 조회로 앞서고, 전체 보드 뷰(`list --all`)는 "타 PM 열람·평시 불요" 로 강등."""
     card = _card(bootstrap, LEAN_IDENTITY)
     mine_i = _line_index(card, "list --mine")
-    # 전체 보드 줄 = `board.py list`(필터 없음) + "타 PM 열람용" 강등 주석.
-    full_i = _line_index(card, "타 PM 열람용")
+    # 전체 보드 줄 = `board.py list --all`(ADR-0066·기존 무인자 전체 뷰 이관) + "타 PM 열람" 강등 주석.
+    full_i = _line_index(card, "타 PM 열람")
     assert mine_i < full_i, "--mine 이 전체 보드보다 뒤에 옴(ADR-0047 자기 공간 우선 위배)"
+    assert "list --all" in card, "전체 보드 뷰가 `list --all` 로 렌더 안 됨(ADR-0066)"
     # 자기 슬롯 렌즈(--repo/--slot)도 기본 조회면에 함께 앞세운다(내 것 ∩ 이 슬롯·user-first).
     assert "list --repo project_manager --slot 1" in card
 
@@ -779,16 +780,17 @@ def test_card_facade_engines_are_skill_only(bootstrap):
 #   2. 타 세션 claim 현황 1줄 — 유(1건+)/무(0건 생략) 2케이스 + board.py 포맷 coupling 가드.
 
 
-def test_board_counts_open_label_is_shared_backlog(bootstrap):
-    """interface 1: open 카운트 라벨은 slot-scope 가 아니라 `(공유 backlog·슬롯무관)` (T-0331).
+def test_board_counts_open_label_is_folded_backlog(bootstrap):
+    """interface 1: open 카운트 라벨은 slot-scope 가 아니라 접힘 backlog 라벨 (T-0331·ADR-0066).
 
-    done/claimed/blocked 는 넘긴 slot-scope 라벨(`(slot 1)`)을 유지하고 open 만 정정 — 공유
-    대기열을 "내 슬롯 몫" 으로 오독(PM 69 slot-2)하던 것을 라벨로 못박아 막는다.
+    done/claimed/blocked 는 넘긴 slot-scope 라벨(`(slot 1)`)을 유지하고 open 만 정정 — 세션 기본
+    뷰가 무관 open 을 상세에서 접으므로 이 카운트가 곧 접힘 backlog 임을 라벨로 명시(상세는 내
+    스트림만·전체는 `list --all`).
     """
     counts = {"done": 201, "open": 1, "claimed": 0, "blocked": 0}
     line = bootstrap._format_board_counts_line(counts, "slot 1")
-    # open 은 공유 backlog 라벨.
-    assert "open: 1 (공유 backlog·슬롯무관)" in line
+    # open 은 접힘 backlog 라벨(ADR-0066).
+    assert "open: 1 (backlog·기본 접힘·전체는 list --all)" in line
     # done/claimed/blocked 는 slot-scope 라벨 유지.
     assert "done: 201 (slot 1)" in line
     assert "claimed: 0 (slot 1)" in line
@@ -797,11 +799,11 @@ def test_board_counts_open_label_is_shared_backlog(bootstrap):
     assert "open: 1 (slot 1)" not in line
 
 
-def test_board_counts_open_label_shared_even_in_mine(bootstrap):
-    """솔로/`--mine` 스코프에서도 open 라벨은 공유 backlog(슬롯무관) — open 산출이 늘 전역이라."""
+def test_board_counts_open_label_folded_even_in_mine(bootstrap):
+    """솔로/`--mine` 스코프에서도 open 라벨은 접힘 backlog(전체는 list --all) — open 산출이 늘 전역이라."""
     counts = {"done": 25, "open": 6, "claimed": 2, "blocked": 0}
     line = bootstrap._format_board_counts_line(counts)  # scope_label default "mine"
-    assert "open: 6 (공유 backlog·슬롯무관)" in line
+    assert "open: 6 (backlog·기본 접힘·전체는 list --all)" in line
     assert "done: 25 (mine)" in line
     assert "open: 6 (mine)" not in line
 
@@ -958,9 +960,9 @@ def test_parse_other_session_claims_against_real_board_cmd_list(
     board_mod = _hermetic_board(tmp_path, monkeypatch)
     mine = _seed_claim(board_mod, capsys, session="alpha_1", user="alice", title="mine wip")
     other = _seed_claim(board_mod, capsys, session="alpha_2", user="alice", title="other wip")
-    # 무렌즈 full board claimed 조회(= _collect_board 의 전용 호출과 동일 argv) — 실제 실행.
+    # 전체 보드 claimed 조회(= _collect_board 의 전용 호출과 동일 argv·`--all`·ADR-0066) — 실제 실행.
     rc = board_mod.cmd_list(argparse.Namespace(
-        status="claimed", tag=None, mine=False, repo=None, slot=None))
+        status="claimed", tag=None, mine=False, all=True, task=None, repo=None, slot=None))
     out = capsys.readouterr().out
     assert rc == 0, out
     # 두 claim 이 실제로 렌더됐다(가드 non-vacuous).

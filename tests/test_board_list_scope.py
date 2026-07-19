@@ -88,6 +88,7 @@ def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
 def _list_ids(board, capsys, **flags) -> list[str]:
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
+                              all=flags.get("all", False), task=flags.get("task"),
                               repo=flags.get("repo"), slot=flags.get("slot"))
     rc = board.cmd_list(args)
     assert rc == 0
@@ -256,33 +257,36 @@ def test_repo_alone_view_open_backlog_slot_agnostic(board, capsys):
 # 기본뷰 done 접기 + --status all/특정값
 # ════════════════════════════════════════════════════════════════════════
 
-def test_default_view_hides_done(board, capsys):
+# status 셀렉터는 전체 뷰(`--all`·ADR-0066 로 기존 무인자 전체 뷰 이관)에 적용된다 — 무인자
+# 기본은 이제 세션 스코프(내 스트림)라 status 셀렉터 검증은 `--all` 로 돈다(status 축은 뷰 스코프와
+# 직교·`--all` 이 done 접기/전체를 그대로 계승).
+def test_all_view_hides_done(board, capsys):
     _seed(board, "T-0010", "open")
     _seed(board, "T-0011", "claimed", claimed_by="a/b")
     _seed(board, "T-0012", "blocked")
     _seed(board, "T-0013", "done", claimed_by="a/b")
-    ids = _list_ids(board, capsys)
+    ids = _list_ids(board, capsys, all=True)
     assert set(ids) == {"T-0010", "T-0011", "T-0012"}
 
 
 def test_status_all_shows_done(board, capsys):
     _seed(board, "T-0014", "open")
     _seed(board, "T-0015", "done", claimed_by="a/b")
-    ids = _list_ids(board, capsys, status="all")
+    ids = _list_ids(board, capsys, all=True, status="all")
     assert set(ids) == {"T-0014", "T-0015"}
 
 
 def test_status_done_still_works(board, capsys):
-    """기존 `--status done`(특정 status 하나만) 동작은 무변경."""
+    """기존 `--status done`(특정 status 하나만) 동작은 무변경(`--all` 전체 뷰 위에서)."""
     _seed(board, "T-0016", "open")
     _seed(board, "T-0017", "done", claimed_by="a/b")
-    ids = _list_ids(board, capsys, status="done")
+    ids = _list_ids(board, capsys, all=True, status="done")
     assert ids == ["T-0017"]
 
 
-def test_default_view_empty_when_only_done(board, capsys):
+def test_all_view_empty_when_only_done(board, capsys):
     _seed(board, "T-0018", "done", claimed_by="a/b")
-    ids = _list_ids(board, capsys)
+    ids = _list_ids(board, capsys, all=True)
     assert ids == []
 
 

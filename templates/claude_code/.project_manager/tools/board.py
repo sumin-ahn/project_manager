@@ -1396,7 +1396,7 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
 
     **단일 불변식**(전 surface 수렴·ADR-0053·ADR-0056·point-patch 금지): 필터 뷰 멤버십 = (내
     claim) ∪ (내 소유 open). 타 사용자의 claim·미claim open 은 **어떤 필터 뷰에도 안 나온다** —
-    전체는 무필터 `list` 전용. querying identity(`my_user`)는 항상 **현재 사용자**(cmd_list 가
+    전체는 `list --all` 전용(ADR-0066·기존 무필터 무인자 `list` 의 이관). querying identity(`my_user`)는 항상 **현재 사용자**(cmd_list 가
     `user_name()` 해소·ADR-0056·area_owner-derived 폐기)다. degrade("전체 open=mine")는
     **solo(distinct user ≤1·`multi_user` False)에서만** 허용한다(spike §1).
 
@@ -1445,6 +1445,43 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
             return False                  # 다중사용자 + 미해소 → strict-exclude
         return True                       # solo → all-open degrade 보존(회귀 0)
     return False
+
+
+# 세션 기본 뷰(무인자 `list`·부트스트랩 dump 공통·ADR-0066) 접힘 안내 꼬리 명령.
+_DEFAULT_VIEW_ALL_CMD = "board.py list --all"
+
+
+def _default_view_bucket(status: str, fm: dict, my_user: str | None,
+                         my_session: str | None, my_stream_prefix: str | None,
+                         area_owner_in_use: bool, multi_user: bool) -> str:
+    """세션 기본 뷰(무인자 `list`·ADR-0066) 티켓 분류 — 'detail'·'other_open'·'skip'.
+
+    ADR-0066: 세션의 기본 화면은 **내 스트림**만 상세로 보이고 무관 open backlog 는 카운트로
+    접는다. 분류:
+      - **detail** — ① 내 세션(슬롯/task) claim ② 내 스트림 open(현 세션이 task 이고 그 task 가
+        prefix 를 지정했으면 그 prefix 의 open). claim 판정은 `_ticket_is_mine` claim 분기를
+        그대로 재사용한다(단일 predicate·point-patch 금지) — status!=open 이라 (a) open 소유 풀은
+        구조적으로 미경유하고 순수 claim 매칭만 발동한다.
+      - **other_open** — 그 외 open(내 스트림 아닌 미claim 대기열). 상세 접고 카운트로 집계 →
+        "그 외 open N건" 꼬리 줄이 존재를 항상 알린다(유실 방지·ADR-0066).
+      - **skip** — 내 것 아닌 claimed/blocked 등. 기본 뷰 비표시(전체는 `--all`).
+
+    `my_stream_prefix` 판별은 caller(`cmd_list`)가 `identity_args.task_prefix(session, LEASES_FILE)`
+    로 해소한다 — 무prefix·슬롯-모드(task 아님)면 None 이라 모든 open 이 other_open 으로 접힌다
+    (solo 단일슬롯도 동일 규칙·solo 특례 없음).
+    """
+    if status == "open":
+        tid = fm.get("id") or ""
+        if my_stream_prefix and _ticket_prefix(tid) == my_stream_prefix:
+            return "detail"          # ② 내 스트림 open
+        return "other_open"          # 그 외 open → 접힘 카운트
+    # 비-open(claimed/blocked/done) — 내 세션 claim 이면 상세. `_ticket_is_mine` 단일 predicate
+    # 재사용(slot-scoped·exact)이라 claim 분기만 발동하고 (a) open 풀은 status!=open 이라 미경유.
+    if my_session and _ticket_is_mine(status, fm, my_user, my_session,
+                                      area_owner_in_use, multi_user,
+                                      slot_mode="exact", slot_scoped=True):
+        return "detail"              # ① 내 세션 claim
+    return "skip"
 
 
 def registered_prefixes() -> set[str]:
@@ -4029,8 +4066,9 @@ def _print_board_freshness() -> None:
 def cmd_list(args: argparse.Namespace) -> int:
     # `--mine`(T-0164·ADR-0033 ④) / `--repo`·`--slot`(ADR-0057 — 구 `--session`/bare `--slot`
     # 뷰 렌즈[T-0197] 를 흡수) 뷰: 단일 공유 보드의 렌즈 — **현재 사용자**의 area open + claim.
-    # identity 입력(T-0161)을 한 번 해소해 행마다 재계산 안 함. 무플래그 list 는 필터 없이
-    # 전체(status 셀렉터만 적용).
+    # identity 입력(T-0161)을 한 번 해소해 행마다 재계산 안 함. **무인자 list 는 세션 기본 뷰**
+    # (내 스트림 상세 + 그 외 open 접기·ADR-0066·아래 default_view)이고, 필터 없는 전체(모든 세션·
+    # 타 사용자)는 `--all` 이다(status 셀렉터는 어느 뷰에도 적용).
     #
     # user-first (ADR-0056·T-0312): 필터 뷰의 "me" 는 **항상 현재 사용자**(`user_name()` =
     # local.conf user= > git config user.email)다. `--repo`/`--slot` 의 my_user 를
@@ -4053,7 +4091,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     #     ⑥ 예약(task 명 ≠ `<repo>_<N>`) 덕에 slot 세션값 `<user>/<repo>_<N>` 과 **기계 판별**된다
     #     (추가 필드 0·§F5b). `_ticket_is_mine` 단일 predicate 를 그대로 상속(point-patch 금지).
     #   `--mine`·`--repo`(+`--slot`)·`--task` 는 상호 배타(뷰 스코프는 하나만) — 타 사용자는 어느
-    #   필터 뷰에도 안 나온다(무필터 `list` 전용).
+    #   필터 뷰에도 안 나온다(`list --all` 전용·ADR-0066).
     try:
         identity = identity_args.parse_identity(args)
     except ValueError as e:
@@ -4072,6 +4110,14 @@ def cmd_list(args: argparse.Namespace) -> int:
     if explicit_mine and identity.kind != "none":
         sys.exit("[중단] --mine 은 --repo/--slot 과 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
     mine = explicit_mine or identity.kind != "none" or task_lens is not None
+    # `--all`(ADR-0066·T-0385) = 기존 무인자 전체 뷰(모든 세션·타 사용자 포함)의 이관. 무인자
+    # 기본은 이제 **세션 기본 뷰**(default_view — 내 스트림 상세 + 그 외 open 접기)다. `--all` 은
+    # 렌즈(`--mine`/`--repo`/`--slot`/`--task`)와 상호 배타(뷰 스코프는 하나만). default_view 는
+    # 어떤 렌즈도 `--all` 도 없을 때(순수 무인자) 발동한다.
+    all_flag = bool(getattr(args, "all", False))
+    if all_flag and mine:
+        sys.exit("[중단] --all 은 --mine/--repo/--slot/--task 와 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
+    default_view = not all_flag and not mine
     # slot-scoped 뷰(--repo/--slot·--task)는 claim 을 그 슬롯/repo/task 로 교집합한다(--mine 은
     # 전 슬롯·전 task·ADR-0056). task 렌즈는 slot 축을 task 이름으로 재사용(claimed_by 재사용·⑲·
     # F5b) — slot_mode="exact"(task 토큰 완전 일치)라 ⑥ 예약으로 slot 세션과 기계 판별.
@@ -4087,8 +4133,12 @@ def cmd_list(args: argparse.Namespace) -> int:
         my_user = user_name()
         my_slot = identity.repo
     else:
-        my_user = user_name() if mine else None
-        my_slot = session_name() if mine else ""
+        # 무렌즈 경로 — `--mine`(user-wide) 또는 기본 뷰(default_view·세션 스코프·ADR-0066). 둘 다
+        # 현재 사용자/세션을 해소한다(전체 뷰 `--all` 만 정체성 무해소·additive). 기본 뷰의 my_slot
+        # (=현 세션)은 ① 내 세션 claim 매칭과 ② task-prefix 스트림 판별의 입력이다.
+        resolve_identity = mine or default_view
+        my_user = user_name() if resolve_identity else None
+        my_slot = session_name() if resolve_identity else ""
         if mine and my_slot is None:
             # 세션 미바인딩(surface·required=False·ADR-0040) — slot-claim 필터를 못 좁힌다.
             # 안내는 stderr 로 내 stdout 티켓 목록 포맷을 오염시키지 않는다(소유 open 은 계속 표시).
@@ -4107,8 +4157,16 @@ def cmd_list(args: argparse.Namespace) -> int:
     # (ADR-0056 위반). `_distinct_area_owners`(areas 소유 다중성)를 OR 로 더해 그 클래스를 닫는다.
     # solo(둘 다 ≤1)면 미해소 open all-open degrade + legacy 슬롯-only 포함 보존, 다중이면
     # strict-exclude(ADR-0053·ADR-0056).
-    area_owner_in_use = mine and _area_owner_in_use()
-    multi_user = mine and (_distinct_ticket_users() > 1 or _distinct_area_owners() > 1)
+    area_owner_in_use = (mine or default_view) and _area_owner_in_use()
+    multi_user = (mine or default_view) and (
+        _distinct_ticket_users() > 1 or _distinct_area_owners() > 1)
+    # 기본 뷰(ADR-0066)의 **내 스트림 prefix** — 현 세션이 task 이고 그 task 가 board prefix 를
+    # 지정했으면(F5·`task prefix`·T-0357) 그 prefix 의 open 이 스트림 상세다. 슬롯-모드(session 이
+    # `<repo>_<N>`)·무prefix·무바인딩이면 None → 모든 open 이 접힘(solo 포함·특례 없음). task 세션
+    # 식별자 해소는 `identity_args.task_prefix`(장부 point-read·부작용 0) 재사용(cmd_new F5 동형).
+    my_stream_prefix = None
+    if default_view and my_slot:
+        my_stream_prefix = identity_args.task_prefix(my_slot, LEASES_FILE)
     # status 뷰 셀렉터(T-0197): 기본(무-status)=활성만(done 접기) · `--status all`=전체(done 포함)
     # · `--status <특정>`=그 status 만(기존 동작 무변경).
     status_arg = getattr(args, "status", None)
@@ -4123,12 +4181,24 @@ def cmd_list(args: argparse.Namespace) -> int:
     # open 을 이 뷰에서 조용히 드롭했는지 잡는다 — 아래 loud-warn(빈 spam 금지)의 실-드롭 트리거.
     # solo(multi_user False)면 항상 False 라 재평가 자체를 안 함(오버헤드/오탐 0·회귀 0).
     strict_exclude_fired = False
+    # 기본 뷰(ADR-0066)의 접힘 카운트 — 상세(내 세션 claim·내 스트림 open) 밖의 open 티켓 수.
+    # N>0 이면 목록 꼬리에 "그 외 open N건" 1줄로 존재를 항상 알린다(유실 방지).
+    other_open_count = 0
     for status in STATUS_DIRS:
         if status not in allowed_statuses:
             continue
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, _ = load_ticket(p)
             if args.tag and args.tag not in _tag_values(fm):
+                continue
+            if default_view:
+                bucket = _default_view_bucket(status, fm, my_user, my_slot,
+                                              my_stream_prefix, area_owner_in_use,
+                                              multi_user)
+                if bucket == "detail":
+                    rows.append((status, fm))
+                elif bucket == "other_open":
+                    other_open_count += 1
                 continue
             if mine and not _ticket_is_mine(status, fm, my_user, my_slot,
                                             area_owner_in_use, multi_user,
@@ -4163,14 +4233,24 @@ def cmd_list(args: argparse.Namespace) -> int:
     # board-git freshness 표면화 (T-0379·advisory·stderr) — 각 list 변형 공통·양 return 경로
     # ("(no tickets)"·행 있음)를 커버하도록 여기서 한 번 소환. board 비-git 이면 무출력.
     _print_board_freshness()
+    # 접힘 카운트 꼬리(ADR-0066·N>0 시 항상·stdout — 카운트는 뷰의 일부). 상세 0건이라도 접힌
+    # backlog 가 있으면 "(no tickets)" 대신 이 줄로 존재를 알린다(유실 방지·전체는 `--all`).
+    def _emit_fold_tail() -> None:
+        if default_view and other_open_count > 0:
+            print(f"그 외 open {other_open_count}건 — 전체는 `{_DEFAULT_VIEW_ALL_CMD}`")
+
     if not rows:
-        print("(no tickets)")
+        if default_view and other_open_count > 0:
+            _emit_fold_tail()
+        else:
+            print("(no tickets)")
         return 0
     for status, fm in rows:
         tags = ",".join(_tag_values(fm))
         claimed = fm.get("claimed_by") or ""
         title = (fm.get("title") or "")[:60]
         print(f"  [{status:7s}] {fm['id']}  {title:60s}  {claimed:18s}  {tags}")
+    _emit_fold_tail()
     return 0
 
 
@@ -6746,7 +6826,11 @@ def build_parser() -> argparse.ArgumentParser:
     # 슬롯(또는 그 repo 의 내 슬롯 전체)에서의 내 claim 만 비춘다(user-first·ADR-0056). actor
     # `--repo`/`--slot`(claim 등 귀속 쓰기)과 플래그명은 같으나 여기선 아무것도 안 바꾸는 뷰
     # 렌즈일 뿐이다(ADR-0057 §갈림 A — 구 `--session` 뷰 렌즈/bare `--slot` 을 흡수). 전체 보드
-    # (타 사용자 포함)는 무필터 `list`.
+    # (타 사용자 포함)는 `list --all`(ADR-0066·무인자 기본은 세션 스트림 뷰).
+    p.add_argument("--all", action="store_true",
+                   help="전체 보드 (ADR-0066): 무인자 기본 뷰(내 스트림 상세 + 그 외 open 접기)를 끄고 "
+                        "모든 세션·타 사용자 티켓을 상세로 보인다(경합 가시·타 PM 열람). 뷰 스코프라 "
+                        "`--mine`/`--repo`/`--slot`/`--task` 와 상호 배타.")
     identity_args.add_identity_args(p)
     p.set_defaults(fn=cmd_list)
 
