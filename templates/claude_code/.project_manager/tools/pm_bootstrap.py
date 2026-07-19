@@ -111,8 +111,9 @@ class _CardCmd(NamedTuple):
 # 슬롯/솔로 카드 CLI 커맨드 (현행 표면·byte 동일) — 정체성 suffix 는 render 에 미포함(caller 보간).
 _C_BOARD_LIST_MINE = _CardCmd("board.py", "list --mine", ("list",), ("--mine",))
 _C_BOARD_LIST = _CardCmd("board.py", "list", ("list",), ())
-# `list --all`(ADR-0066·T-0385) — 무인자 기본이 세션 스코프(내 스트림)로 바뀌어, 기존 무인자
-# 전체 뷰(모든 세션·타 사용자·경합 가시)는 `--all` 로 이관됐다. 타 PM 열람·평시 불요.
+# `list --all`(ADR-0066·T-0385·ADR-0067) — 무인자 기본이 세션 스코프(내 세션 스트림만·타 세션분
+# 완전 비노출)로 바뀌어, 기존 무인자 전체 뷰(모든 세션·타 사용자·경합 가시)는 `--all` 로 이관됐다.
+# 타 PM 열람·backlog 확인은 이 명시 조회 몫(기본 뷰엔 카운트 줄도 없음). 평시 불요.
 _C_BOARD_LIST_ALL = _CardCmd("board.py", "list --all", ("list",), ("--all",))
 _C_BOARD_NEW = _CardCmd("board.py", 'new "<제목>" --prefix <PFX>', ("new",), ("--prefix",))
 _C_BOARD_PROMOTE = _CardCmd("board.py", "promote T-NNNN", ("promote",), ())
@@ -582,91 +583,12 @@ def parse_open_tickets(board_output: str) -> list[str]:
     return tickets
 
 
-# 티켓 ID → prefix(카테고리) 추출 — board.py `_ticket_prefix` 와 *동형*(내부 하이픈 2세그먼트가
-# prefix 신호·legacy `T-NNNN` 은 None). 세션 기본 뷰(ADR-0066·T-0385)의 "내 스트림 open" 판별에
-# 쓴다 — task 지정 board prefix 와 open 티켓 prefix 를 대조해 스트림 상세/접힘을 가른다. board 를
-# import 하지 않는 관성 유지(deep-import seam)라 grammar 만 정합(위 `_TICKET_ID` 와 같은 근거).
-_TICKET_PREFIX_RE = re.compile(r"^T-(?P<prefix>[A-Za-z0-9][A-Za-z0-9_-]*)-\d+$")
-
-
-def _open_ticket_prefix(tid: str) -> str | None:
-    """`T-<prefix>-<num>` → prefix · legacy `T-NNNN`(prefix 없음) → None (board `_ticket_prefix` 동형)."""
-    match = _TICKET_PREFIX_RE.match(tid or "")
-    return match.group("prefix") if match else None
-
-
-# claimed 행 파서 — 정체성 토큰 앵커 (T-0331·codex must-fix 1). board.py cmd_list 행 형식:
-# `  [{status:7s}] {id}  {title:60s}  {claimed:18s}  {tags}`. claimed_by 는 `<user>/<session>`
-# (ADR-0033 ③) 또는 legacy 슬롯-only `<session>`(구형 `pm-2` 류 비-`_N` 값 포함 — board 는 여전히
-# 수용). 파싱은 **고정폭 컬럼 위치 기반**(codex R1 처방·R3 채택): board.py cmd_list 의 출력 포맷
-# `  [{status:7s}] {id}  {title[:60]:60s}  {claimed:18s}  {tags}` 에서 제목 컬럼은 60폭 고정
-# (사전 절단·패딩)이라, id 뒤 2공백 다음 60자를 건너뛴 위치의 첫 토큰이 곧 claimed_by 다.
-# 내용 기반 매칭(EOL-앵커 정체성 토큰)은 세 결함 클래스를 연쇄로 냈다(codex R1~R3): 이중공백
-# 제목 오추출 → `/` tag 행 통째 누락 → `_N`-꼬리 tag/legacy 세션형 오인. 위치 기반은 제목·tags
-# 내용을 아예 읽지 않아 그 클래스 전체가 소멸한다. 포맷 drift 백스톱 = board.py cmd_list 를
-# 실제 실행해 stdout 을 먹이는 통합 테스트(should-fix·format 복사본 coupling 제거).
-_CLAIMED_LINE_HEAD_RE = re.compile(
-    rf"^\s*\[claimed\s*\]\s+({_TICKET_ID})  "  # status + id + 2공백(포맷 리터럴) — 이후 60폭 제목 컬럼
-)
-_TITLE_COL_WIDTH = 60  # board.py cmd_list `{title[:60]:60s}` 와 정합(통합 가드가 drift 시 red)
-
-
-def parse_other_session_claims(
-    board_output: str, my_session: str | None
-) -> dict[str, list[str]]:
-    """board list 출력에서 *내 세션이 아닌* 세션의 claimed 티켓을 세션별로 묶는다 (T-0331).
-
-    부트스트랩 대시보드가 이미 "다른 활성 PM" 을 보여주듯(조정용 표면·ADR-0056 위반 아님),
-    공유 backlog 오독(PM 69: 타 슬롯이 방금 claim 한 티켓을 "내 몫" 으로 착각)을 막는 조정
-    신호다. claimed 행의 `claimed_by`(`<user>/<session>`·ADR-0033 ③ 또는 legacy 슬롯-only)에서
-    세션(마지막 `/` 뒤·`/` 없으면 값 전체)을 뽑아 내 바운드 세션(`my_session`·`<repo>_<N>`)과
-    같은 것은 뺀다.
-
-    `my_session` 미해소(진짜 솔로·None)면 "내 것" 을 세션으로 못 가려 전부 뺀다(빈 dict) — 이
-    조정 신호는 슬롯 바운드(멀티-PM/self-host)에서만 낸다.
-
-    **데이터 출처**: `_collect_board` 가 넘기는 `board_output` 은 전체 보드 `list --all`
-    (ADR-0066·전 세션·사용자 무관·claimed 행만 매칭·codex must-fix 2)다 — 스코프/유저 뷰가 아니므로
-    동일 사용자 타 슬롯 + 타 사용자 claim 이 모두 담겨, 슬롯-바인딩 경로에서도 타 세션이 확실히 병기된다.
-
-    반환: {session: [ticket_id, ...]} — 등장 순서 보존. 내 세션·미해소는 미포함.
-    """
-    if not my_session:
-        return {}
-    claims: dict[str, list[str]] = {}
-    for line in board_output.splitlines():
-        match = _CLAIMED_LINE_HEAD_RE.match(line)
-        if not match:
-            continue
-        ticket_id = match.group(1)
-        # 고정폭 제목 컬럼(60) + 2공백 구분자 건너뛴 위치의 첫 토큰 = claimed_by (제목·tags 내용 불독).
-        after_title = line[match.end() + _TITLE_COL_WIDTH:]
-        claimed_tokens = after_title.split()
-        if not claimed_tokens:
-            continue  # claimed 컬럼 부재(포맷 밖 행) — skip
-        claimed_by = claimed_tokens[0]
-        if claimed_by == "-":
-            continue  # 누락/placeholder claimed_by 방어(tags 오인 차단·codex R4 suggestion)
-        session = claimed_by.rsplit("/", 1)[-1]
-        if session == my_session:
-            continue
-        claims.setdefault(session, []).append(ticket_id)
-    return claims
-
-
-def _format_other_session_claims_line(other_claims: dict[str, list[str]]) -> str | None:
-    """타 세션 claimed 현황 1줄을 만든다 — 1건 이상이면 문자열, 0건이면 None(줄 생략) (T-0331).
-
-    형식: `- 타 세션 진행(claimed): N건 — <세션>: T-a, T-b · <세션2>: T-c` (티켓 제목 무노출·ID
-    만). N = 타 세션 claimed 티켓 총수(격리 뷰 아님·조정용·ADR-0056 위반 아님).
-    """
-    if not other_claims:
-        return None
-    total = sum(len(tickets) for tickets in other_claims.values())
-    groups = " · ".join(
-        f"{session}: {', '.join(tickets)}" for session, tickets in other_claims.items()
-    )
-    return f"- 타 세션 진행(claimed): {total}건 — {groups}"
+# (ADR-0067) 세션 기본 뷰가 타 세션분을 board.py 층에서 완전 비노출하도록 바뀌어, 부트스트랩
+# 층의 "그 외 open 접힘 카운트"(task-prefix 스트림 판정용 `_open_ticket_prefix`)와 "타 세션 claim
+# 현황"(claimed 행 위치기반 파서 `parse_other_session_claims`·`_format_other_session_claims_line`)은
+# 폐기됐다 — 기본 dump 는 세션 렌즈 조회(`list --repo X --slot N`/`--mine`)의 open_tickets 를 그대로
+# 쓰고, 전-세션/전체는 명시 `board.py list --all` 이 담당한다. "다른 활성 PM" 슬롯 레지스트리는
+# 별도 메커니즘(`_collect_dashboard_others`·leases 유래)이라 유지된다.
 
 
 def parse_lint_result(lint_output: str) -> str:
@@ -1192,31 +1114,21 @@ def _slot_count_label(session: str) -> str:
     return f"slot {tail}" if tail.isdigit() else f"slot {session}"
 
 
-# open 카운트만의 스코프 라벨 — done/claimed/blocked 의 슬롯-스코프 라벨과 다른 축 (T-0331).
-# open 은 미claim 이라 슬롯이 없다(board.py `_ticket_in_view`): slot-scoped 뷰에서도 (a) 는
-# 슬롯무관 backlog 로 `--mine` 과 동일한 전역 대기열 수다(ADR-0056 #3·산출 불변). slot-scoped
-# 라벨("(slot N)")을 그대로 붙이면 그 공유 대기열(그중 타 슬롯이 방금 claim 한 것 포함)을
-# "내 슬롯 몫" 으로 오독한다(PM 69 slot-2 실증) → open 만 이 라벨로 정정한다.
-# ADR-0066·T-0385: 세션 기본 뷰는 무관 open backlog 를 상세에서 접으므로, 이 카운트가 곧
-# **접힘 backlog** 수임을 라벨로 명시한다(상세는 내 스트림만·전체는 `board.py list --all`).
-_OPEN_SCOPE_LABEL = "backlog·기본 접힘·전체는 list --all"
-
-
 def _format_board_counts_line(counts: dict[str, int], scope_label: str = "mine") -> str:
-    """board 카운트 한 줄을 만든다 — 수집 스코프 라벨 명확화 (T-0194·T-0312·T-0331).
+    """board 카운트 한 줄을 만든다 — 수집 스코프 라벨 명확화 (T-0194·T-0312·ADR-0067).
 
-    `counts` 는 `_collect_board` 가 뽑은 스코프 값이다 — status 별로 "내 area open" 또는 "내
-    claim" 만 센 값이라 실측(예 done 25)이 전체 done(184) 과 크게 다를 수 있다(done/claimed/
-    blocked 는 전체보다 훨씬 작을 소지가 큼). `scope_label` 로 그 스코프를 명시해 "전체 done"
-    처럼 오독하지 않게 한다 — 솔로/무바인딩은 `"mine"`(user·전 슬롯), 명시 슬롯 바인딩(`--repo`/
-    `--slot`·multi-PM)은 `"slot N"`(그 슬롯 정체성으로 조회·ADR-0056 S1·`list --session`↔카운트 정합).
+    `counts` 는 `_collect_board` 가 뽑은 스코프 값이다 — status 별로 "내 세션 생성 open" 또는 "내
+    세션 claim" 만 센 값이라 실측(예 done 25)이 전체 done(184) 과 크게 다를 수 있다(done/open/
+    claimed/blocked 모두 전체보다 훨씬 작을 소지가 큼). `scope_label` 로 그 스코프를 명시해 "전체
+    done" 처럼 오독하지 않게 한다 — 솔로/무바인딩은 `"mine"`(user·전 슬롯), 명시 슬롯 바인딩
+    (`--repo`/`--slot`·multi-PM)은 `"slot N"`(그 슬롯 정체성으로 조회·ADR-0056 S1·카운트 정합).
 
-    **open 만 예외**(T-0331): done/claimed/blocked 는 슬롯-스코프 카운트라 `scope_label` 을
-    붙이지만, open 은 슬롯무관 공유 backlog(전역 수)라 `_OPEN_SCOPE_LABEL` 로 정정한다 —
-    slot-scoped 라벨을 붙여 공유 대기열을 "내 슬롯 몫" 으로 오독하는 것(PM 69)을 못박아 막는다.
+    **open 도 세션 스코프**(ADR-0067): 세션 기본 뷰가 open 을 내 세션 생성분만 보이므로(ADR-0066 의
+    슬롯무관 공유 backlog 전량·접힘 카운트 폐기) 네 status 모두 같은 `scope_label` 을 붙인다 —
+    옛 `_OPEN_SCOPE_LABEL`(공유 backlog 정정) 축이 소멸(open 이 더는 전역 대기열 수가 아님).
     """
     parts = [
-        f"{label}: {counts[key]} ({_OPEN_SCOPE_LABEL if key == 'open' else scope_label})"
+        f"{label}: {counts[key]} ({scope_label})"
         for key, label in (
             ("done", "done"), ("open", "open"), ("claimed", "claimed"), ("blocked", "blocked")
         )
@@ -1559,8 +1471,8 @@ class PmBootstrap:
           - **솔로/무바인딩**(`_bound_slot` None)이면 현행 `--mine`(내 area open + 내 claim·전
             슬롯) 유지. 솔로(user 미상)는 board 가 전체 open + 내 슬롯 claim 으로 graceful 폴백
             하므로 현행과 사실상 동등(spike §2.D). 라벨 "(mine)".
-        전체 보드(contention 가시)는 `board list --all` 로 PM 이 명시 조회한다(ADR-0066·무인자 기본은
-        세션 스트림 뷰). open 접힘 카운트 모수·타 세션 claim 현황도 이 `--all` 전량 조회에서 함께 뽑는다.
+        전체 보드(contention 가시·backlog 확인·타 세션 claim)는 `board list --all` 로 PM 이 명시
+        조회한다(ADR-0067·무인자 기본은 내 세션 스트림만·타 세션 티켓 정보는 기본 dump 에서 완전 제거).
 
         반환 `counts` 는 이 렌즈 스코프 값이다(T-0194 — 실측 done 25(mine) vs 전체 184 오해).
         라벨 명확화는 빌더(`_format_board_counts_line`)가 `counts_scope` 로 담당한다.
@@ -1595,37 +1507,12 @@ class PmBootstrap:
             print(f"[중단] board.py list 실패 (rc={rc}):\n{output}", file=sys.stderr)
             sys.exit(1)
 
+        # 세션 기본 뷰(ADR-0067): 이 렌즈 조회(`list --repo X --slot N` 또는 `--mine`)가 곧 **내 세션
+        # 스트림**(내 세션 생성 open + 내 세션 claim)이다 — board.py 가 타 세션분을 완전 비노출한다.
+        # `open_tickets`·`counts` 는 그 스트림 모수 그대로다(ADR-0066 의 `--all` 전량 정렬·접힘 카운트·
+        # 타 세션 claim 현황은 폐기 — 타 세션 티켓 정보는 기본 dump 에서 완전 제거·명시 `--all` 몫).
         counts = parse_board_counts(output)
         open_tickets = parse_open_tickets(output)
-
-        # 전체 보드(`--all`) 1회 조회 — 세션 기본 뷰의 **접힘 카운트 모수(공유 풀 전량)** + **타 세션
-        # claim 현황** 을 함께 뽑는다(ADR-0066·T-0385·codex must-fix). `--all` 은 활성(open/claimed/
-        # blocked) 전량이라 open 행·claimed 행을 한 출력에서 각 파서가 매칭한다(별도 조회 불요).
-        # fail-soft: `--all` 실패(구버전 board.py)면 open 은 --mine 폴백·claim 현황은 생략(abort 안 함).
-        all_rc, all_output = self._run_board_fn(["list", "--all"])
-        all_open = parse_open_tickets(all_output) if all_rc == 0 else open_tickets
-        # counts["open"] 도 표시 계약과 **같은 전량 모수**(공유 풀·`--all`)로 정렬 (codex R2 must-fix).
-        # 안 맞추면 다중사용자에서 상단 "open: N"(--mine·소유·strict-exclude)과 하단 "스트림 상세 +
-        # 그 외 open M건"(--all 전량)이 같은 화면에서 갈려 자기모순(상단 0 / 하단 1건)이 뜬다.
-        # counts["open"] == len(stream_open) + other_open_count 가 항상 성립하도록 못박는다. `--all`
-        # 실패면 --mine 카운트 유지(fail-soft·open 도 --mine 폴백과 정합). open 은 예전부터 슬롯무관
-        # 공유 backlog(ADR-0056 #3)라 전량 표기가 스코프 의미와도 일관.
-        if all_rc == 0:
-            counts["open"] = len(all_open)
-
-        # 세션 기본 뷰(ADR-0066·T-0385): open **상세**는 내 스트림만. 현 세션이 task 이고 그 task 가
-        # board prefix 를 지정했으면(F5·`task prefix`) 그 prefix 의 open 이 스트림 상세, 나머지는 접힘
-        # 카운트. 슬롯/솔로/무-task 세션은 스트림 없음(prefix None) → open 전부 접힘(솔로 특례 없음·
-        # [[solo-is-subset-of-multipm]]). **접힘 모수 = `--all` 전량**(소유 무관·prefix 는 스트림 라벨
-        # 이지 소유 경계 아님·ADR-0066 명확화) — `--mine`(소유·strict-exclude)로 세면 다중사용자에서
-        # 팀원 소유의 내-prefix open 이 누락돼 board.py `_default_view_bucket`(전량 분류)과 갈린다.
-        stream_prefix = self._my_stream_prefix()
-        if stream_prefix:
-            stream_open = [t for t in all_open
-                           if _open_ticket_prefix(t) == stream_prefix]
-        else:
-            stream_open = []
-        other_open_count = len(all_open) - len(stream_open)
 
         # done 전용 재조회 — default 뷰가 done 을 접어(T-0197) 위 counts["done"] 이 항상 0
         # 이 되는 회귀를 막는다. 이 호출이 실패해도(구버전 board.py 등) done=0 으로 fail-soft
@@ -1633,17 +1520,6 @@ class PmBootstrap:
         done_rc, done_output = self._run_board_fn(["list", "--status", "done", *lens])
         if done_rc == 0:
             counts["done"] = parse_board_counts(done_output)["done"]
-
-        # 타 세션 claim 현황 (T-0331·codex must-fix 2) — 위 `--all` 전체 보드 출력에서 함께 파싱
-        # (claimed 행만 매칭·별도 조회 불요). default 뷰(--repo/--slot·--mine)는 내 claim 만 담아 타
-        # 세션(동일 사용자 타 슬롯·타 사용자)이 안 나오므로 전-세션 가시엔 `--all` 이 필요하다(dormant
-        # 출하 금지·PM 결정). fail-soft: `--all` 실패면 빈 dict → 현황 줄 생략(핵심 list 는 이미 성공).
-        if all_rc == 0:
-            other_claims = parse_other_session_claims(
-                all_output, self._slot_session_name()
-            )
-        else:
-            other_claims = {}
 
         # `--gate` 로 호출 — 차단 카테고리에만 rc=1, advisory(status drift·
         # unstable-ref-advice)는 rc=0 (board.cmd_lint). dump-then-warn(T-0195) —
@@ -1655,31 +1531,10 @@ class PmBootstrap:
             "counts": counts,
             "counts_scope": counts_scope,
             "open_tickets": open_tickets,
-            "stream_open": stream_open,
-            "other_open_count": other_open_count,
-            "other_claims": other_claims,
             "lint": lint_result,
             "lint_blocking": lint_rc != 0,
             "lint_gate_output": lint_output,
         }
-
-    def _my_stream_prefix(self) -> str | None:
-        """현 세션의 **내 스트림** board prefix — task 세션이 prefix 를 지정했으면 그 값, 아니면 None.
-
-        세션 기본 뷰(ADR-0066·T-0385)의 open 상세/접힘을 가른다. `self._task_name`(task 바인딩 성공
-        시 run() 이 세팅·슬롯/솔로는 None)을 `identity_args.task_prefix`(장부 point-read·부작용 0·
-        board.py cmd_new F5 와 동형 해소)로 board prefix 로 푼다. task 무설정·prefix 무지정·장부 부재는
-        모두 None(fail-soft) → 스트림 없음(모든 open 접힘). identity_args 로드 실패도 None(솔로 무해).
-        """
-        if self._task_name is None:
-            return None
-        ia = _load_identity_args()
-        if ia is None:
-            return None
-        try:
-            return ia.task_prefix(self._task_name, LEASES_FILE)
-        except Exception:  # noqa: BLE001 — fail-soft: 장부 read 실패는 스트림 없음(None).
-            return None
 
     def _collect_pytest(self) -> dict | None:
         """pytest 회귀를 실행하고 결과를 반환한다.
@@ -2340,25 +2195,14 @@ class PmBootstrap:
         else:
             lines.append("- 회귀: (skip — handoff entry 참조 · --with-pytest 로 재측정)")
         lines.append(f"- lint: {lint}")
-        # open 상세는 **내 스트림**만(세션 기본 뷰·ADR-0066·T-0385). task 세션이 board prefix 를
-        # 지정했으면 그 prefix 의 open 을 나열하고 나머지는 접힘 카운트로, 무스트림(슬롯/솔로/무-task)
-        # 이면 상세 없이 접힘 카운트 + 전체 안내로 대체한다(fresh 세션 첫 화면에 무관 backlog 오독
-        # 근절). N>0 접힘 줄이 존재를 항상 알려 유실 방지는 유지(카운트 줄이 승계·ADR-0066).
-        stream_open = board.get("stream_open") or []
-        other_open_count = board.get("other_open_count", 0)
-        if stream_open:
-            lines.append(f"- open ticket (내 스트림·claim 가능): {', '.join(stream_open)}")
-        if other_open_count > 0:
-            lines.append(
-                f"- 그 외 open {other_open_count}건 (접힘·내 스트림 아님) — "
-                "전체는 `board.py list --all`")
-        elif not stream_open:
+        # open 상세 = **내 세션 스트림**만(세션 기본 뷰·ADR-0067). `open_tickets` 는 이미 세션 렌즈
+        # (`_collect_board`)로 뽑혀 내 세션 생성 open 만 담는다 — 타 세션분(그 외 open 접힘 카운트·타
+        # 세션 claim 현황)은 기본 dump 에서 완전 제거(명시 `board.py list --all` 몫·ADR-0067). 슬롯
+        # 레지스트리("다른 활성 PM"·환경 정보)는 dashboard 섹션에서 별도 유지(조정용·티켓 정보 아님).
+        if open_tickets:
+            lines.append(f"- open ticket (claim 가능): {', '.join(open_tickets)}")
+        else:
             lines.append("- open ticket (claim 가능): (없음)")
-        # 타 세션 claim 현황 (T-0331) — 공유 backlog 중 타 세션이 이미 붙든 것을 같은 화면에 병기해
-        # PM 69 오독(공유 대기열을 "내 몫" 으로 착각)을 막는다. 0건이면 줄 생략(None).
-        other_claims_line = _format_other_session_claims_line(board.get("other_claims") or {})
-        if other_claims_line:
-            lines.append(other_claims_line)
         lines.append("")
 
         # Git 섹션
@@ -2462,12 +2306,12 @@ class PmBootstrap:
         lines.append("### 권장 첫 turn")
         lines.append("PM 세션 시작합니다.")
         # 카운트 스코프 라벨 — 위 `_format_board_counts_line` 과 동일 데이터·스코프(mine/slot N·
-        # T-0194·T-0312)를 요약 문장체로 표기(선두 "- " 없이·마침표로 마감). open 만 슬롯무관 공유
-        # backlog 라벨(`_OPEN_SCOPE_LABEL`·T-0331·codex must-fix 3) — 요약부도 카운트 라인과 동일
-        # 규칙으로 정정해 "open N (slot 1)" 오독을 양쪽에서 못박는다.
+        # T-0194·T-0312·ADR-0067)를 요약 문장체로 표기(선두 "- " 없이·마침표로 마감). open 도 이제
+        # 세션 스코프(내 세션 생성분·ADR-0067)라 네 status 모두 같은 `_scope` 라벨을 쓴다(옛 open
+        # 전용 `_OPEN_SCOPE_LABEL` 축 소멸 — open 이 더는 슬롯무관 공유 backlog 전량이 아님).
         _scope = board.get("counts_scope", "mine")
         board_summary = (
-            f"done {counts['done']} ({_scope}) / open {counts['open']} ({_OPEN_SCOPE_LABEL}) / "
+            f"done {counts['done']} ({_scope}) / open {counts['open']} ({_scope}) / "
             f"claimed {counts['claimed']} ({_scope}) / blocked {counts['blocked']} ({_scope})."
         )
         if pytest_result is not None:
@@ -3610,9 +3454,9 @@ class PmBootstrap:
         lines.append("")
 
         # 내 작업 보기 (read-only 조회·직접 — 래핑 스킬 없음·ADR-0047 자기 공간 우선).
-        # user-first (ADR-0056): 두 렌즈의 스코프를 명확히 구분 — --mine=내 것 전 슬롯 /
-        # --repo/--slot=내 것 ∩ 이 슬롯. "내 슬롯 작업"은 --repo/--slot 이 정확한 커맨드다
-        # (타 사용자 무유출·ADR-0057 신 표기).
+        # 두 렌즈의 스코프 구분(ADR-0067) — --mine=user 축(내 것 전 슬롯) / --repo/--slot=세션 뷰
+        # (그 세션 스트림 = 그 세션 생성 open + 그 세션 claim·session 라벨 축). "내 슬롯 작업"은
+        # --repo/--slot 이 정확한 커맨드다(ADR-0057 신 표기).
         lines.append("# 내 작업 보기 (read-only 조회·직접 — ADR-0047 자기 공간 우선)")
         lines.append(cmd(
             _C_BOARD_LIST_MINE,
@@ -3621,11 +3465,11 @@ class PmBootstrap:
         if session:
             lines.append(cmd(
                 _C_BOARD_LIST,
-                "내 것 ∩ 이 슬롯(내 open + 이 슬롯 claim만)·이 슬롯 작업 조회·조회 전용",
+                "이 세션 스트림(이 세션 생성 open + 이 세션 claim)·이 슬롯 작업 조회·조회 전용",
                 suffix=sess,
             ))
-        # ADR-0066: 무인자 `list` 는 이제 세션 기본 뷰(내 스트림 상세 + 그 외 open 접기)다. 전체
-        # 보드(모든 세션·타 사용자·경합 가시)는 명시 `--all` — 기존 무인자 전체 뷰의 이관.
+        # ADR-0067: 무인자 `list` 는 이제 세션 기본 뷰(내 세션 스트림만·타 세션분 완전 비노출)다. 전체
+        # 보드(모든 세션·타 사용자·경합 가시·backlog 확인)는 명시 `--all` — 기존 무인자 전체 뷰의 이관.
         lines.append(cmd(
             _C_BOARD_LIST_ALL, "전체 보드(모든 세션·타 사용자 포함) — 타 PM 열람·경합 가시·평시 불요",
         ))

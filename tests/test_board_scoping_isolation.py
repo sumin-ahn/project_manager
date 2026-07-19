@@ -131,9 +131,13 @@ def _write_conf(board, **kv) -> None:
 
 
 def _new(board, capsys, *, prefix, session, user, title) -> str:
-    """실 `cmd_new` 로 티켓을 발행하고(created_by 스탬프) 발행 ID 를 stdout 에서 캡처한다."""
+    """실 `cmd_new` 로 티켓을 발행하고(created_by = <user>/<repo>_<N> 스탬프) 발행 ID 를 캡처한다.
+
+    ADR-0067: `cmd_new` 의 `--repo`/`--slot`(decomposed 세션 기록)으로 created_by 에 생성-세션을
+    박아야 세션 기본 뷰 스트림 판정(`_created_by_session`)이 그 세션 open 을 잡는다."""
+    repo, slot = _split_session(session)
     rc = board.cmd_new(argparse.Namespace(
-        prefix=prefix, session=session, user=user, title=title,
+        prefix=prefix, repo=repo, slot=slot, task=None, user=user, title=title,
         touches=None, depends=None, tag=None, estimate="small"))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_new rc={rc}: {out}"
@@ -220,32 +224,32 @@ def _seed_composite(board, capsys, *, areas: bool = True) -> types.SimpleNamespa
 # ════════════════════════════════════════════════════════════════════════
 
 def test_session_view_isolates_users_real_create_to_view(board, capsys):
-    """실 생성 composite 에서 `--session <repo>_<N>` = 현재 사용자 ∩ 그 슬롯 (user-first·ADR-0056).
+    """실 생성 composite 에서 `--repo X --slot N` = **그 세션 스트림**(생성 open + 그 세션 claim·ADR-0067).
 
-    querying identity 는 **현재 사용자**(local.conf user=)·claim 은 user AND slot 교집합·open 은
-    슬롯무관 내 backlog. (a) 타 사용자 무유출 · (b) 타 슬롯의 내 claim 은 slot 뷰서 제외(--mine 엔 나옴).
+    open 은 `created_by` 세션이 alpha_1 인 것만(같은 사용자 타 슬롯 alpha_2 생성 open 은 제외 — PM 77
+    누출의 fix)·claim 은 그 슬롯. (a) 타 사용자 무유출 · (b) 타 슬롯의 내 claim·타 슬롯 생성 open 제외.
     """
     comp = _seed_composite(board, capsys)
 
-    # alice 정체성으로 alpha_1 슬롯 조회 — 내 open(양 슬롯·슬롯무관 backlog) + 내 alpha_1 claim.
+    # alice 정체성으로 alpha_1 슬롯 조회 — alpha_1 생성 open + alpha_1 claim 만(생성-세션 스트림).
     _write_conf(board, user="alice", session="alpha_1")
     alice_s1 = set(_view(board, capsys, session="alpha_1"))
     assert not (comp.bob_all & alice_s1), "alice 세션에 bob 티켓 유출(ADR-0056 위반)"
-    # claim 은 그 슬롯만(al1_claim)·타 슬롯 내 claim(al2_claim)은 제외·내 open 은 양 슬롯.
-    assert alice_s1 == {comp.al1_open, comp.al2_open, comp.al1_claim}
-    assert comp.al2_claim not in alice_s1
+    # 생성 open(alpha_1)만·타 슬롯 생성 open(al2_open)·타 슬롯 claim(al2_claim) 제외(ADR-0067).
+    assert alice_s1 == {comp.al1_open, comp.al1_claim}
+    assert comp.al2_open not in alice_s1 and comp.al2_claim not in alice_s1
 
-    # 같은 alice 의 --mine = 내 것 **전 슬롯**(양 슬롯 claim + open).
+    # 같은 alice 의 --mine = 내 것 **전 슬롯**(양 슬롯 claim + open·의미론 불변·ADR-0067).
     alice_mine = set(_view(board, capsys, mine=True))
     assert not (comp.bob_all & alice_mine), "alice --mine 에 bob 티켓 유출"
     assert alice_mine == comp.alice_all
 
-    # bob 정체성으로 beta_2 슬롯 조회 — 대칭. alice 티켓 무유출·claim 은 beta_2 만.
+    # bob 정체성으로 beta_2 슬롯 조회 — 대칭. alice 티켓 무유출·생성 open+claim 은 beta_2 만.
     _write_conf(board, user="bob", session="beta_2")
     bob_s2 = set(_view(board, capsys, session="beta_2"))
     assert not (comp.alice_all & bob_s2), "bob 세션에 alice 티켓 유출"
-    assert bob_s2 == {comp.be1_open, comp.be2_open, comp.be2_claim}
-    assert comp.be1_claim not in bob_s2
+    assert bob_s2 == {comp.be2_open, comp.be2_claim}
+    assert comp.be1_open not in bob_s2 and comp.be1_claim not in bob_s2
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -445,9 +449,10 @@ def test_task_lens_mutually_exclusive_with_other_scopes(board, capsys):
 def _make_board_runner(board):
     """pm_bootstrap `run_board_fn` seam 을 **실 board.cmd_list** 로 배선한다(subprocess 없이).
 
-    `_collect_board` 이 부르는 `["list","--mine"]`·`["list","--all"]`·`["list","--status","done",
-    "--mine"]`·`["lint","--gate"]` 를 dispatch — 격리는 `--mine`(=`_ticket_is_mine`) 가 담당하므로 이
-    러너가 bootstrap 카운트가 그 predicate 를 그대로 상속함을 태운다(pm_bootstrap.py 무변경).
+    `_collect_board` 이 부르는 `["list","--mine"]`·`["list","--status","done","--mine"]`·
+    `["lint","--gate"]` 를 dispatch — 격리는 `--mine`(=`_ticket_is_mine`) 가 담당하므로 이 러너가
+    bootstrap 카운트가 그 predicate 를 그대로 상속함을 태운다(pm_bootstrap.py 무변경·ADR-0067 로 옛
+    `["list","--all"]` 재조회는 폐기됐으나 러너는 방어적으로 여전히 수용).
     """
     def run(argv):
         if argv[:1] == ["lint"]:
@@ -483,11 +488,10 @@ def test_bootstrap_collect_board_inherits_isolation(board, capsys):
     # claimed/done 은 `--mine`(=`_ticket_is_mine`) 격리 상속 — alice 것만(claimed 2·done 0).
     assert result["counts"]["claimed"] == 2
     assert result["counts"]["done"] == 0
-    # **open 만 예외**(ADR-0066·codex R2): open 카운트는 표시 계약과 같은 **전량 모수**(공유 풀·
-    # `--all`)라 alice 2 + bob 2 = 4. 화면 상단 "open: N" 이 하단 "스트림 상세 + 그 외 open M건" 과
-    # 같은 풀을 세야 자기모순이 없다. open 은 예전부터 슬롯무관 공유 backlog(ADR-0056 #3).
-    assert result["counts"]["open"] == 4
-    assert result["counts"]["open"] == len(result["stream_open"]) + result["other_open_count"]
+    # open 카운트도 이제 `--mine` 스코프(ADR-0067 — 옛 `--all` 전량 모수·접힘 카운트 폐기)라 alice
+    # 소유 open 2건. `_collect_board` 는 `--all` 재조회를 안 하므로 stream_open/other_open_count 키도 없다.
+    assert result["counts"]["open"] == 2
+    assert "stream_open" not in result and "other_open_count" not in result
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -516,20 +520,25 @@ def _make_pre_fix_is_mine(board):
 
 
 def test_pre_fix_session_scoping_leaks_red_proof(board, capsys, monkeypatch):
-    """RED-증명(T1·`--session`): 옛 코드는 `--session` my_user 를 항상 None 으로 둬(T-0198) +
-    degrade 로 bob 의 미claim open 을 alice 세션에 유출한다 — 동일 composite 데이터에서 실증.
+    """RED-증명(ADR-0067·`--repo/--slot` 세션 뷰): 옛 세션 뷰는 open 을 user-단위(`_ticket_is_mine`·
+    슬롯무관 backlog)로 보여 같은 사용자의 **타 슬롯 생성 open**(al2_open·alpha_2)을 alpha_1 뷰에
+    유출했다(PM 77 발단). 생성-세션 스트림 fix 는 이를 제외한다.
 
-    green 스위트의 `assert bob_open not in ids` 가 바로 이 유출을 잡는다(catch 검증·[[verify-real-output-not-just-review]]).
-    """
-    comp = _seed_composite(board, capsys)   # 실 predicate 로는 격리(위 green 테스트가 확증)
-    # 옛 동작 재현: (T1) --session 의 my_user 가 미해소(None·no-conf) + (degrade) 전체 open=mine.
-    # user-first(ADR-0056) 후엔 querying identity=현재 사용자라 conf 없으면 None → 이 degrade sim 이
-    # bob 미claim open 을 alice 세션 뷰에 섞는다(격리 단언이 잡을 대상).
-    monkeypatch.setattr(board, "_ticket_is_mine", _make_pre_fix_is_mine(board))
+    green 스위트의 `assert al2_open not in alice_s1` 가 바로 이 유출을 잡는다(catch 검증·
+    [[verify-real-output-not-just-review]])."""
+    comp = _seed_composite(board, capsys)   # 실 predicate(생성-세션 스트림)로는 격리(위 green 테스트가 확증)
+    _write_conf(board, user="alice", session="alpha_1")
+    # 옛 동작 재현: 세션 뷰가 생성-세션 스트림 대신 user-단위(`_ticket_is_mine`·slot-scoped)로 판정 —
+    # open 은 슬롯무관이라 alice 소유의 alpha_2 생성 open 도 alpha_1 뷰에 섞인다(ADR-0067 이 닫은 누출).
+    def _pre_fix_in_view(status, fm, my_user, my_session, area_owner_in_use, multi_user):
+        return board._ticket_is_mine(status, fm, my_user, my_session or "", area_owner_in_use,
+                                     multi_user, slot_mode="exact", slot_scoped=True)
+
+    monkeypatch.setattr(board, "_in_default_view", _pre_fix_in_view)
 
     leaked = set(_view(board, capsys, session="alpha_1"))
-    # RED: pre-fix degrade 는 bob 의 미claim open 을 alice 세션에 섞는다(격리 단언이 잡을 대상).
-    assert comp.bob_open <= leaked, "pre-fix degrade 가 유출을 재현 못함 — RED-proof 무효(sim 오류)"
+    # RED: pre-fix user-단위 open 은 alice 의 타 슬롯(alpha_2) 생성 open 을 alpha_1 세션 뷰에 섞는다.
+    assert comp.al2_open in leaked, "pre-fix user-단위 open 이 유출 재현 못함 — RED-proof 무효(sim 오류)"
 
 
 def test_pre_fix_mine_unmigrated_leaks_red_proof(board, capsys, monkeypatch):
@@ -570,6 +579,74 @@ def test_solo_single_user_fallback_preserves_all_open(board, capsys):
     ids = set(_view(board, capsys, mine=True))
     # distinct user = {alice} = 1 → solo → 전체 open(o1·o2) + 내 claim(c1) 보존.
     assert ids == {o1, o2, c1}
+
+
+# ════════════════════════════════════════════════════════════════════════
+# codex must-fix (cmd_new --repo/--slot 경로) — 생성-세션 기록 + prefix 유도
+# ════════════════════════════════════════════════════════════════════════
+
+def test_new_repo_slot_user_unresolved_open_visible_in_own_session_view(board, capsys):
+    """**codex must-fix 1**: user 미해소 발행이면 `identity_tag` 가 슬롯-only(slash 없음)를 낸다.
+
+    `_created_by_session` 이 slash 없는 값을 전부 None(세션 부재)으로 봤으면 그 open 이 자기 slot
+    세션 뷰(`--repo alpha --slot 1`)에서 즉시 소실됐다(ADR-0067 "생성 세션 open" 위반). ⑥ 슬롯 세션
+    예약 패턴 판별로 session 토큰으로 취급 → 자기 생성 open 이 보여야 한다.
+    """
+    # conf user= 없음 + git stub None → user 미해소 → created_by = 슬롯-only "alpha_1"(slash 없음).
+    tid = _new(board, capsys, prefix="al", session="alpha_1", user=None, title="unresolved user open")
+    path = next((board.TICKETS_DIR / "open").glob(f"{tid}-*.md"))
+    fm, _ = board.load_ticket(path)
+    assert fm["created_by"] == "alpha_1", (
+        f"user 미해소 발행 created_by 가 슬롯-only(모호 값) 아님 — sim 무효: {fm['created_by']}")
+    # alpha_1 세션 뷰에 그 open 이 보인다(생성-세션 스트림 소실 회귀 방지).
+    ids = set(_view(board, capsys, session="alpha_1"))
+    assert tid in ids, f"user 미해소 슬롯-발행 open 이 자기 세션 뷰에서 소실(must-fix 1 미해소): {ids}"
+
+
+def test_new_repo_slot_derives_prefix_multi_repo(board, capsys):
+    """**codex must-fix 2**: 등록 repo ≥2 에서 `new --repo alpha --slot 1`(무 --prefix)이 해소한
+    세션으로 prefix 를 유도(alpha→al)해 발행 성공한다.
+
+    `id_prefix(override, session=task_session)` 로 세션을 안 넘기면 전역 재해소(모호 None)로 유도 실패 →
+    "prefix 필요"(등록 repo ≥2 가드)로 거부되던 회귀."""
+    board.AREAS_FILE.write_text(_COMPOSITE_AREAS, encoding="utf-8")   # alpha=al · beta=be (2 등록)
+    rc = board.cmd_new(argparse.Namespace(
+        prefix=None, repo="alpha", slot=1, task=None, user="alice",
+        title="multi repo derive", touches=None, depends=None, tag=None, estimate="small"))
+    out = capsys.readouterr().out
+    assert rc == 0, f"multi-repo(등록 2)에서 `--repo/--slot` prefix 유도 실패(거부됨): {out}"
+    m = _CREATED_RE.search(out)
+    assert m, f"created ID 없음: {out}"
+    assert m.group(1).startswith("T-al-"), f"alpha→al prefix 유도 실패(전역 재해소 fallback?): {m.group(1)}"
+
+
+def test_claim_repo_slot_querying_user_unresolved_visible_in_own_session_view(board, capsys):
+    """**codex R2 must-fix**: user-qualified claim(`alice/alpha_1`)이 있는데 **조회 user 가 미해소**(git
+    email 부재)면, 옛 세션 뷰(user-first `_ticket_is_mine` 재사용)는 my_user None 이라 자기 세션 claim
+    을 숨겼다(cb_user!=None·my_user None → user 분기 실패·legacy 분기도 미발동). R2 는 세션 뷰 claim
+    축을 session 라벨로 통일 — 조회 user 미해소여도 세션(alpha_1)이 일치하면 보인다(open 판정과 uniform).
+    """
+    tid = _new(board, capsys, prefix="al", session="alpha_1", user="alice", title="wip")
+    _claim(board, capsys, tid, session="alpha_1", user="alice")
+    cpath = next((board.TICKETS_DIR / "claimed").glob(f"{tid}-*.md"))
+    fm, _ = board.load_ticket(cpath)
+    assert fm["claimed_by"] == "alice/alpha_1", f"claim 스탬프 예상 밖 — sim 무효: {fm['claimed_by']}"
+    # 조회 user 미해소(conf user= 없음·git stub None) — 세션만 alpha_1 로 조회.
+    ids = set(_view(board, capsys, session="alpha_1"))
+    assert tid in ids, f"조회 user 미해소인데 자기 세션 claim 이 세션 뷰에서 소실(R2 must-fix 미해소): {ids}"
+
+
+def test_slot_view_claim_session_label_user_agnostic_real_create(board, capsys):
+    """**codex R2 companion**: 세션 토큰 동일·user 상이 claim 이 세션 뷰에 보인다(session=라벨·open
+    ownership-agnostic 과 대칭). bob 이 alpha_1 세션으로 claim 한 것이 alpha_1 세션 뷰에 나온다."""
+    # alice·bob 둘 다 alpha_1 세션으로 실 claim (동명 세션·user 상이) — session 라벨 축 검증.
+    a = _new(board, capsys, prefix="al", session="alpha_1", user="alice", title="alice wip")
+    _claim(board, capsys, a, session="alpha_1", user="alice")
+    b = _new(board, capsys, prefix="al", session="alpha_1", user="bob", title="bob wip")
+    _claim(board, capsys, b, session="alpha_1", user="bob")
+    _write_conf(board, user="alice", session="alpha_1")
+    ids = set(_view(board, capsys, session="alpha_1"))
+    assert {a, b} <= ids, f"타 user(bob)의 같은 세션(alpha_1) claim 이 세션 뷰에 안 보임(라벨 축 위반): {ids}"
 
 
 # ════════════════════════════════════════════════════════════════════════

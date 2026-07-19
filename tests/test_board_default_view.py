@@ -1,24 +1,25 @@
-"""세션 기본 뷰(무인자 `board list`) + `--all` 단위 테스트 (ADR-0066·T-0385).
+"""세션 기본 뷰(무인자 `board list`) + `--all` 단위 테스트 (ADR-0067·T-0386).
 
-ADR-0066: 세션의 기본 화면(무인자 `list`)은 **내 스트림**만 상세로 보이고 무관 open backlog 는
-"그 외 open N건" 카운트 1줄로 접는다. 전체 보드는 명시 `--all`(기존 무인자 전체 뷰의 이관).
+ADR-0067(ADR-0066 amend): 세션의 기본 화면(무인자 `list`·명시 세션 뷰)은 **그 세션이 생성한 open +
+그 세션 claim** 만 출력한다 — 타 세션분은 카운트 줄 포함 **완전 비노출**(ADR-0066 의 "그 외 open N건"
+접힘 카운트·task-prefix 스트림 판정 폐기). 전체 보드는 명시 `--all`. 스트림 판정 = `created_by` 세션.
 
 이 파일이 검증하는 계약:
-  1. **내 세션 claim 상세** — claimed_by 가 내 세션(슬롯/task exact)이면 상세, 타 세션 claim 은 skip.
-  2. **내 스트림 open 상세** — 현 세션이 task 이고 그 task 가 board prefix 를 지정했으면 그 prefix 의
-     open 만 상세, 나머지 open 은 접힘 카운트.
-  3. **무스트림 접힘** — 슬롯-모드/무prefix/솔로 단일슬롯은 스트림 없음 → 모든 open 접힘(특례 없음).
-  4. **접힘 꼬리 줄** — "그 외 open N건 — 전체는 `board.py list --all`"(N>0 시)·상세 0건이어도 존재.
-  5. **`--all`** — 필터 없는 전체 보드(모든 세션·타 사용자)·정체성 무해소·상호 배타.
+  1. **생성-세션 스트림 open** — open 은 `created_by` 세션이 현 세션과 일치할 때만 상세. 타 세션 생성
+     open(같은 사용자 타 슬롯 포함)은 완전 비노출(행·카운트 0).
+  2. **내 세션 claim 상세** — claimed_by 가 내 세션(슬롯/task exact)이면 상세, 타 세션 claim 은 skip.
+  3. **세션 부재 created_by**(user-only·backfill 대상) — 바인딩 세션 뷰에서 비노출.
+  4. **무바인딩/솔로 폴백** — 세션 미해소면 user-단위(--mine) 폴백(solo=subset·등가).
+  5. **접힘 카운트 줄 부재** — "그 외 open" 꼬리 줄이 어떤 경우에도 안 나온다.
+  6. **`--all`** — 필터 없는 전체 보드(모든 세션·타 사용자)·정체성 무해소·상호 배타.
 
 hermetic 패턴은 `test_board_mine_view.py` 와 동형 — board.py 경로 전역을 tmp 프로젝트로 monkeypatch
-하고, 추가로 LEASES_FILE(세션/task prefix 유도)·PM_SESSION_NAME/CLAUDE_SESSION_NAME env 를 통제한다.
+하고, 추가로 LEASES_FILE·PM_SESSION_NAME/CLAUDE_SESSION_NAME env 를 통제한다.
 """
 from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 from pathlib import Path
 
 import pytest
@@ -75,11 +76,6 @@ def _write_conf(board, **kv) -> None:
         "".join(f"{k}={v}\n" for k, v in kv.items()), encoding="utf-8")
 
 
-def _write_tasks(board, *tasks: dict) -> None:
-    """LEASES_FILE 에 top-level `tasks`(name·prefix) 를 박는다 — task_prefix 유도 입력."""
-    board.LEASES_FILE.write_text(json.dumps({"tasks": list(tasks)}), encoding="utf-8")
-
-
 def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
     path = board.TICKETS_DIR / status / f"{tid}-seed.md"
     board.dump_ticket(path, {"id": tid, "title": title, "status": status,
@@ -89,7 +85,7 @@ def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
 
 
 def _run(board, capsys, **flags) -> str:
-    """무인자/`--all` cmd_list 를 돌려 전체 stdout 을 반환한다(접힘 꼬리 줄 포함)."""
+    """무인자/`--all` cmd_list 를 돌려 전체 stdout 을 반환한다."""
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
                               all=flags.get("all", False), task=flags.get("task"),
@@ -108,11 +104,53 @@ def _ids(out: str) -> list[str]:
     return ids
 
 
-_FOLD_TAIL = "전체는 `board.py list --all`"
+def _assert_no_fold(out: str) -> None:
+    """접힘 카운트 줄이 어떤 형태로도 안 나온다(ADR-0067 — 타 세션분 카운트 포함 완전 비노출)."""
+    assert "그 외 open" not in out
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ① 내 세션 claim 상세 + 그 외 skip
+# ① 생성-세션 스트림 open — created_by 세션 일치만 상세·타 세션 생성분 완전 비노출
+# ════════════════════════════════════════════════════════════════════════
+
+def test_default_view_stream_open_by_created_session(board, capsys):
+    """open 은 `created_by` 세션이 현 세션과 일치할 때만 상세 — 타 세션 생성분(같은 사용자 타 슬롯
+    포함)은 카운트 줄 없이 완전 비노출(ADR-0067 스트림 판정=생성 세션)."""
+    _write_conf(board, user="alice", session="project_manager_1")
+    _seed(board, "T-0001", "open", created_by="alice/project_manager_1")  # 내 세션 생성 → 상세
+    _seed(board, "T-0002", "open", created_by="bob/project_manager_2")    # 타 세션 → 비노출
+    _seed(board, "T-0003", "open", created_by="alice/project_manager_2")  # 같은 사용자 타 슬롯 → 비노출
+    out = _run(board, capsys)
+    assert _ids(out) == ["T-0001"]
+    assert "T-0002" not in out and "T-0003" not in out
+    _assert_no_fold(out)
+
+
+def test_default_view_created_session_matches_task_session(board, capsys, monkeypatch):
+    """task 세션도 동일 — created_by 세션 == 현 task 세션인 open 만 상세(task-prefix 판정 폐기)."""
+    monkeypatch.setenv("PM_SESSION_NAME", "refactor")   # 세션 = task 이름
+    _seed(board, "T-PAY-001", "open", created_by="alice/refactor")   # 내 task 세션 생성 → 상세
+    _seed(board, "T-PAY-002", "open", created_by="bob/other")        # 타 세션 → 비노출
+    _seed(board, "T-ACC-001", "open", created_by="alice/refactor")   # prefix 무관·내 세션 → 상세
+    out = _run(board, capsys)
+    assert set(_ids(out)) == {"T-PAY-001", "T-ACC-001"}
+    assert "T-PAY-002" not in out
+    _assert_no_fold(out)
+
+
+def test_default_view_created_session_ownership_agnostic(board, capsys, monkeypatch):
+    """스트림은 생성 세션 라벨이지 소유 경계가 아니다 — created_by user 가 타인이어도 세션이 내
+    세션이면 상세(다중사용자에서도)."""
+    monkeypatch.setenv("PM_SESSION_NAME", "refactor")
+    _seed(board, "T-PAY-001", "open", created_by="bob/refactor")   # bob 소유·내 세션 생성 → 상세
+    _seed(board, "T-ACC-001", "open", created_by="alice/other")    # alice·타 세션 → 비노출(distinct 2=multi)
+    out = _run(board, capsys)
+    assert _ids(out) == ["T-PAY-001"]
+    _assert_no_fold(out)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ② 내 세션 claim 상세 + 그 외 skip
 # ════════════════════════════════════════════════════════════════════════
 
 def test_default_view_shows_my_session_claim(board, capsys):
@@ -122,6 +160,7 @@ def test_default_view_shows_my_session_claim(board, capsys):
     _seed(board, "T-0002", "claimed", claimed_by="bob/project_manager_2")    # 타 세션 → skip
     out = _run(board, capsys)
     assert _ids(out) == ["T-0001"]
+    _assert_no_fold(out)
 
 
 def test_default_view_solo_legacy_slot_claim_shown(board, capsys):
@@ -132,94 +171,99 @@ def test_default_view_solo_legacy_slot_claim_shown(board, capsys):
     assert _ids(out) == ["T-0003"]
 
 
-# ════════════════════════════════════════════════════════════════════════
-# ② 내 스트림 open (task prefix) + 그 외 open 접힘
-# ════════════════════════════════════════════════════════════════════════
-
-def test_default_view_stream_open_shown_for_task_prefix(board, capsys, monkeypatch):
-    """현 세션이 task(refactor·prefix=PAY)면 그 prefix 의 open 만 상세·그 외 open 은 접힘."""
-    monkeypatch.setenv("PM_SESSION_NAME", "refactor")   # 세션 = task 이름
-    _write_tasks(board, {"name": "refactor", "prefix": "PAY"})
-    _seed(board, "T-PAY-001", "open")   # 내 스트림 open → 상세
-    _seed(board, "T-PAY-002", "open")   # 내 스트림 open → 상세
-    _seed(board, "T-ACC-001", "open")   # 타 스트림 open → 접힘
-    _seed(board, "T-0009", "open")      # 무prefix open → 접힘
-    out = _run(board, capsys)
-    assert set(_ids(out)) == {"T-PAY-001", "T-PAY-002"}
-    # 그 외 open 2건(T-ACC-001·T-0009) 접힘 꼬리.
-    assert "그 외 open 2건" in out and _FOLD_TAIL in out
-    assert "T-ACC-001" not in out and "T-0009" not in out
-
-
-def test_default_view_task_without_prefix_folds_all_open(board, capsys, monkeypatch):
-    """task 세션이지만 prefix 미지정이면 스트림 없음 → 모든 open 접힘(무스트림)."""
-    monkeypatch.setenv("PM_SESSION_NAME", "refactor")
-    _write_tasks(board, {"name": "refactor", "prefix": None})   # prefix 없음
-    _seed(board, "T-PAY-001", "open")
-    _seed(board, "T-0009", "open")
-    out = _run(board, capsys)
-    assert _ids(out) == []                       # 상세 0건
-    assert "그 외 open 2건" in out and _FOLD_TAIL in out
-
-
-# ════════════════════════════════════════════════════════════════════════
-# ③ 무스트림(슬롯-모드/솔로 단일슬롯) — 모든 open 접힘·특례 없음
-# ════════════════════════════════════════════════════════════════════════
-
-def test_default_view_slot_session_folds_all_open(board, capsys):
-    """슬롯-모드 세션(`<repo>_<N>`·무-task)은 스트림 없음 → 내 claim 만 상세·open 전부 접힘."""
+def test_default_view_claim_axis_is_session_label_user_agnostic(board, capsys):
+    """ADR-0067 (codex R2): claim 축도 **session 라벨**(user 무관·open 생성-세션과 대칭). 같은 세션의
+    타 user claim·user 미해소 발행 legacy 슬롯-only claim 도 세션이 일치하면 보인다(소실 회귀 방지)."""
     _write_conf(board, user="alice", session="project_manager_1")
-    _seed(board, "T-0001", "claimed", claimed_by="alice/project_manager_1")  # 내 claim → 상세
-    _seed(board, "T-0002", "open")   # 접힘
-    _seed(board, "T-0003", "open")   # 접힘
+    _seed(board, "T-0001", "claimed", claimed_by="alice/project_manager_1")  # 내 user·내 세션
+    _seed(board, "T-0002", "claimed", claimed_by="bob/project_manager_1")    # 타 user·같은 세션 → 보임(라벨)
+    _seed(board, "T-0003", "claimed", claimed_by="project_manager_1")        # legacy 슬롯-only·같은 세션 → 보임
+    _seed(board, "T-0004", "claimed", claimed_by="alice/project_manager_2")  # 타 세션 → 제외
+    out = _run(board, capsys)
+    assert set(_ids(out)) == {"T-0001", "T-0002", "T-0003"}
+    assert "T-0004" not in out
+    _assert_no_fold(out)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ③ 세션 부재 created_by(user-only·backfill 대상) — 바인딩 세션 뷰에서 비노출
+# ════════════════════════════════════════════════════════════════════════
+
+def test_default_view_created_by_without_session_hidden(board, capsys):
+    """`created_by` 에 세션 부분이 없는 legacy open(user-only)은 바인딩 세션 스트림에 안 든다 —
+    backfill 대상(런타임 fallback 없음·ADR-0067). 카운트 줄도 없다."""
+    _write_conf(board, user="alice", session="project_manager_1")
+    _seed(board, "T-0001", "open", created_by="alice/project_manager_1")  # 내 세션 생성 → 상세
+    _seed(board, "T-0005", "open", created_by="alice")   # 세션 부재(user-only) → 비노출
     out = _run(board, capsys)
     assert _ids(out) == ["T-0001"]
-    assert "그 외 open 2건" in out and _FOLD_TAIL in out
-    assert "T-0002" not in out and "T-0003" not in out
-
-
-def test_default_view_solo_single_slot_folds_open_uniform(board, capsys):
-    """**solo 특례 없음**(ADR-0066): 단일슬롯 솔로도 open 은 접힘(무스트림 규칙 동일)."""
-    _write_conf(board, session="project_manager_1")   # solo·무-task
-    _seed(board, "T-0002", "open")
-    out = _run(board, capsys)
-    assert _ids(out) == []
-    assert "그 외 open 1건" in out and _FOLD_TAIL in out
+    assert "T-0005" not in out
+    _assert_no_fold(out)
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ④ 접힘 꼬리 줄 존재/부재 · (no tickets)
+# ④ 무바인딩/솔로 — user-단위(--mine) 폴백 (solo=subset·특례 아님)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_default_view_no_fold_line_when_no_other_open(board, capsys):
-    """그 외 open 0건이면 접힘 꼬리 줄 없음 — 내 claim 만 있으면 상세만."""
-    _write_conf(board, user="alice", session="project_manager_1")
-    _seed(board, "T-0001", "claimed", claimed_by="alice/project_manager_1")
+def test_default_view_unbound_falls_back_to_user_stream(board, capsys):
+    """세션 미해소(무바인딩)면 user-단위 폴백 — 내 소유(user) open + 타 사용자 open 은 strict-exclude."""
+    _write_conf(board, user="alice")   # session= 없음 → 무바인딩
+    _seed(board, "T-0001", "open", created_by="alice/whatever")  # owner alice → 상세
+    _seed(board, "T-0002", "open", created_by="bob/x")           # owner bob·multi_user → 제외
     out = _run(board, capsys)
     assert _ids(out) == ["T-0001"]
-    assert "그 외 open" not in out
+    _assert_no_fold(out)
 
 
-def test_default_view_fold_tail_without_any_detail(board, capsys):
-    """상세 0건이라도 접힌 backlog 가 있으면 "(no tickets)" 대신 접힘 꼬리 줄을 낸다(유실 방지)."""
-    _write_conf(board, session="project_manager_1")
-    _seed(board, "T-0002", "open")
+def test_default_view_solo_no_identity_degrades_to_all_open(board, capsys):
+    """진짜 솔로(user·session 둘 다 미상·단일 사용자)면 all-open degrade — 소유 미해소 open 도 상세."""
+    # conf 없음 → user 미상·session 미상. distinct user ≤1 → not multi_user → degrade.
+    _seed(board, "T-0002", "open", created_by=None)
     out = _run(board, capsys)
-    assert "(no tickets)" not in out
-    assert "그 외 open 1건" in out and _FOLD_TAIL in out
+    assert _ids(out) == ["T-0002"]
+    _assert_no_fold(out)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ⑤ 명시 세션 뷰(--repo/--slot)도 생성-세션 스트림 (user-단위 아님)
+# ════════════════════════════════════════════════════════════════════════
+
+def test_slot_view_uses_created_session_stream(board, capsys):
+    """`--repo X --slot N` 명시 세션 뷰: open 은 그 세션 생성분 + 그 세션 claim 만 — 같은 사용자
+    타 슬롯 생성 open 은 안 나온다(옛 user-단위 open 누출 근절·ADR-0067)."""
+    _write_conf(board, user="alice")
+    _seed(board, "T-0001", "open", created_by="alice/proj_1")   # 그 슬롯 생성 → 상세
+    _seed(board, "T-0002", "open", created_by="alice/proj_2")   # 같은 사용자 타 슬롯 → 비노출
+    _seed(board, "T-0003", "claimed", claimed_by="alice/proj_1")  # 그 슬롯 claim → 상세
+    out = _run(board, capsys, repo="proj", slot=1)
+    assert set(_ids(out)) == {"T-0001", "T-0003"}
+    assert "T-0002" not in out
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ⑥ (no tickets) · 접힘 줄 부재
+# ════════════════════════════════════════════════════════════════════════
+
+def test_default_view_no_stream_shows_no_tickets(board, capsys):
+    """스트림에 아무것도 없으면 (no tickets) — 타 세션 open 이 있어도 카운트 줄 없이 그냥 비어있다."""
+    _write_conf(board, user="alice", session="project_manager_1")
+    _seed(board, "T-0002", "open", created_by="bob/project_manager_2")   # 타 세션 → 완전 비노출
+    out = _run(board, capsys)
+    assert "(no tickets)" in out
+    _assert_no_fold(out)
 
 
 def test_default_view_truly_empty_shows_no_tickets(board, capsys):
-    """상세도 접힌 open 도 0이면 "(no tickets)"."""
+    """상세도 없고 open 도 없으면 (no tickets)."""
     _write_conf(board, session="project_manager_1")
-    _seed(board, "T-0009", "done", claimed_by="bob/project_manager_2")   # done·타 세션 → skip·비-open
+    _seed(board, "T-0009", "done", claimed_by="bob/project_manager_2")   # done·타 세션 → skip
     out = _run(board, capsys)
     assert "(no tickets)" in out
-    assert "그 외 open" not in out
+    _assert_no_fold(out)
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ⑤ --all — 전체 보드 · 상호 배타
+# ⑦ --all — 전체 보드 · 상호 배타
 # ════════════════════════════════════════════════════════════════════════
 
 def test_all_flag_shows_full_board(board, capsys):
@@ -227,10 +271,10 @@ def test_all_flag_shows_full_board(board, capsys):
     _write_conf(board, user="alice", session="project_manager_1")
     _seed(board, "T-0001", "claimed", claimed_by="alice/project_manager_1")
     _seed(board, "T-0002", "claimed", claimed_by="bob/project_manager_2")   # 타 세션도 표시
-    _seed(board, "T-0003", "open")
+    _seed(board, "T-0003", "open", created_by="bob/project_manager_2")      # 타 세션 생성 open 도 표시
     out = _run(board, capsys, all=True)
     assert set(_ids(out)) == {"T-0001", "T-0002", "T-0003"}
-    assert "그 외 open" not in out
+    _assert_no_fold(out)
 
 
 def test_all_does_not_resolve_identity(board, capsys, monkeypatch):
@@ -262,7 +306,7 @@ def test_all_mutually_exclusive_with_repo_slot(board):
 
 
 def test_all_mutually_exclusive_with_task(board):
-    """`--all` + `--task` 도 상호 배타 — fail-loud (뷰 스코프는 하나만·codex suggestion 3b)."""
+    """`--all` + `--task` 도 상호 배타 — fail-loud (뷰 스코프는 하나만)."""
     with pytest.raises(SystemExit) as exc:
         board.cmd_list(argparse.Namespace(status=None, tag=None, mine=False,
                                           all=True, task="refactor", repo=None, slot=None))
@@ -270,34 +314,7 @@ def test_all_mutually_exclusive_with_task(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ⑥ 다중사용자 거동 — 접힘 모수=공유 풀 전량·prefix=소유 무관 라벨 (ADR-0066 명확화·codex 3a)
-# ════════════════════════════════════════════════════════════════════════
-
-def test_default_view_multiuser_team_open_in_fold_count(board, capsys):
-    """다중사용자·무스트림: 타 사용자(bob) 소유 open 도 접힘 카운트에 포함 — strict-exclude 는
-    `--mine` 렌즈 declutter 이지 기본 뷰 접힘 모수의 필터가 아니다(접힘 모수=공유 풀 전량)."""
-    _write_conf(board, user="alice", session="project_manager_1")
-    _seed(board, "T-0001", "open", created_by="alice/project_manager_1")   # 내 소유
-    _seed(board, "T-0002", "open", created_by="bob/project_manager_2")     # 타 사용자 → distinct 2=multi_user
-    out = _run(board, capsys)
-    assert _ids(out) == []                         # 슬롯 세션(무스트림) → 상세 0
-    assert "그 외 open 2건" in out and _FOLD_TAIL in out   # 소유 무관 전량 접힘(bob 것도 포함)
-
-
-def test_default_view_multiuser_stream_open_ownership_agnostic(board, capsys, monkeypatch):
-    """다중사용자·task 세션: 내 스트림 prefix(PAY) open 이 타 사용자(bob) 소유여도 스트림 상세 —
-    prefix 는 스트림 라벨이지 소유 경계가 아니다(ADR-0066 명확화)."""
-    monkeypatch.setenv("PM_SESSION_NAME", "refactor")
-    _write_tasks(board, {"name": "refactor", "prefix": "PAY"})
-    _seed(board, "T-PAY-001", "open", created_by="bob/other")     # bob 소유·내 스트림
-    _seed(board, "T-ACC-001", "open", created_by="alice/x")       # alice·타 스트림 (distinct 2=multi_user)
-    out = _run(board, capsys)
-    assert set(_ids(out)) == {"T-PAY-001"}         # bob 소유여도 스트림 상세(소유 무관)
-    assert "그 외 open 1건" in out and _FOLD_TAIL in out
-
-
-# ════════════════════════════════════════════════════════════════════════
-# 파서 — `--all` 등록
+# ⑧ 파서 — `--all` 등록
 # ════════════════════════════════════════════════════════════════════════
 
 def test_list_all_flag_parses(board):

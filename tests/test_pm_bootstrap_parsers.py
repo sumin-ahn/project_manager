@@ -562,12 +562,12 @@ def test_format_stale_warning_none_when_not_stale():
 # ── _format_board_counts_line (T-0194·`--mine`(scoped) 라벨 명확화) ────────────
 
 def test_format_board_counts_line_labels_mine():
-    """각 status 카운트 뒤에 `(mine)` 이 붙어 --mine 스코프임이 드러난다."""
+    """각 status 카운트 뒤에 `(mine)` 이 붙어 --mine 스코프임이 드러난다 — open 도 세션 스코프(ADR-0067)."""
     mod = _load_module()
     counts = {"done": 25, "open": 6, "claimed": 2, "blocked": 0}
     line = mod._format_board_counts_line(counts)
     assert "done: 25 (mine)" in line
-    assert "open: 6 (backlog·기본 접힘·전체는 list --all)" in line
+    assert "open: 6 (mine)" in line   # ADR-0067: open 도 세션 스코프(옛 backlog 라벨 폐기)
     assert "claimed: 2 (mine)" in line
     assert "blocked: 0 (mine)" in line
 
@@ -940,19 +940,18 @@ def test_run_surfaces_user_continuity_line(tmp_path, capsys):
 # ── run() 통합: board 카운트 `--mine` 라벨 명확화 (T-0194) ─────────────────────
 
 def test_run_markdown_board_counts_labeled_mine(tmp_path, capsys):
-    """markdown Board 섹션 + 권장 첫 turn 요약 둘 다 done/claimed/blocked 는 `(mine)`, **open 만
-    접힘 backlog 라벨**(T-0331·ADR-0066) 을 단다 — 두 표면 모두 동일 규칙(must-fix 3: 요약부도 정정)."""
+    """markdown Board 섹션 + 권장 첫 turn 요약 둘 다 네 status 모두 `(mine)` 스코프 라벨(ADR-0067):
+    open 도 세션 스코프(내 세션 생성분)라 옛 open 전용 backlog 라벨(T-0331·ADR-0066)은 폐기됐다."""
     mod = _load_module()
     inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
     assert inst.run() == 0
     out = capsys.readouterr().out
-    # done/claimed/blocked = slot/mine 스코프.
+    # 네 status 모두 mine 스코프 — Board 섹션(`open: N`)·요약(`open N`) 양쪽.
     assert "done: 0 (mine)" in out
     assert "done 0 (mine)" in out
-    # open = 슬롯무관 공유 backlog — Board 섹션(`open: N`)·요약(`open N`) 양쪽 정정(must-fix 3).
-    assert "open: 1 (backlog·기본 접힘·전체는 list --all)" in out
-    assert "open 1 (backlog·기본 접힘·전체는 list --all)" in out
-    assert "open: 1 (mine)" not in out and "open 1 (mine)" not in out
+    assert "open: 1 (mine)" in out
+    assert "open 1 (mine)" in out
+    assert "backlog·기본 접힘" not in out   # 옛 open 전용 라벨 폐기(ADR-0067)
 
 
 def test_run_json_board_counts_include_mine_alias(tmp_path, capsys):

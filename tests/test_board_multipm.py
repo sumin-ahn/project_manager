@@ -1886,14 +1886,13 @@ def test_mine_includes_my_claim_and_my_area_open(board, capsys):
     assert set(ids) == {"T-AL-001", "T-BE-005"}
 
 
-def test_slot_derives_owner_from_single_area(board, capsys):
-    """`--repo/--slot`(ADR-0057) open (a) 는 area_owner 로 소유 해소 — 현재 사용자(alice) area 의
-    open 만.
+def test_slot_view_open_is_created_session_not_area_owner(board, capsys):
+    """`--repo X --slot N` open = 그 세션 **생성분만**(ADR-0067 생성-세션 스트림) — area_owner 소유
+    해소가 아니다.
 
-    user-first (ADR-0056): querying identity = 현재 사용자(local.conf user=alice). open 소유는
-    area_owner(alpha→alice) 1차라 같은 area 의 bob-생성 open(T-AL-009)도 소유=alice 로 해소돼
-    alice 의 슬롯 뷰에 든다(open 은 슬롯무관 backlog·소유=area_owner). 예전엔 area_owner 를
-    *querying identity* 로도 썼으나(T-0302) 이제 조회 정체성은 현재 사용자다."""
+    옛 동작(T-0302): slot 뷰 open 은 area_owner 로 소유 해소(같은 area 의 bob-생성 open 도 alice
+    소유로 포함). ADR-0067: open 은 `created_by` 세션이 alpha_1 인 것만 — 같은 area·같은 소유
+    (area_owner=alice)여도 타 슬롯(alpha_2) 생성 open(T-AL-009)은 제외된다(PM 77 누출 fix)."""
     single = (
         "# Area Registry\n\n"
         "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
@@ -1902,11 +1901,10 @@ def test_slot_derives_owner_from_single_area(board, capsys):
     )
     board.AREAS_FILE.write_text(single, encoding="utf-8")
     _write_conf(board, "user=alice\nsession=alpha_1\n")
-    _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")
-    _seed_full(board, "T-AL-009", "open", created_by="bob/alpha_2")   # 같은 area·bob 생성
-    # area_owner 운영 중 → 소유=area_owner(alice) 1차 → 둘 다 alice area → 둘 다 포함.
+    _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")   # 그 세션 생성 → 상세
+    _seed_full(board, "T-AL-009", "open", created_by="bob/alpha_2")     # 타 슬롯 생성 → 비노출(소유 무관)
     ids = _mine_ids(board, capsys, repo="alpha", slot=1)
-    assert set(ids) == {"T-AL-001", "T-AL-009"}
+    assert set(ids) == {"T-AL-001"}
 
 
 # ── DoD (c): created_by 2차 폴백 (area_owner 미설정 채택자) ────────────────────
@@ -2108,35 +2106,35 @@ def test_userfirst_slot_number_intersects(board, capsys):
     assert not (_BOB_TICKETS & ids)
 
 
-def test_userfirst_solo_degrade_unaffected(board, capsys):
-    """solo(현재 사용자 미설정·git stub None) — legacy slot degrade + all-open 보존(회귀 0).
+def test_userfirst_slot_view_session_stream_and_legacy_claim(board, capsys):
+    """`--repo alpha --slot 1` 세션 뷰(ADR-0067): 그 세션 생성 open + 그 세션 claim 만.
 
-    conf user= 없음 → my_user None → `--repo alpha --slot 1`(ADR-0057) 은 slot 매칭(내 슬롯 claim)
-    + all-open degrade(distinct user ≤1). 다중사용자 격리는 identity 해소 시에만·솔로는 빈 보드 금지."""
-    _seed_full(board, "T-0001", "open")                              # 소유 미상 open
-    _seed_full(board, "T-0002", "claimed", claimed_by="alpha_1")     # 슬롯-only·내 슬롯
-    _seed_full(board, "T-0003", "claimed", claimed_by="alpha_2")     # 슬롯-only·타 슬롯
+    open 은 생성-세션 스트림이라 세션 부재 created_by(T-0001)는 비노출(옛 solo all-open degrade 는
+    세션 뷰에 적용 안 됨). claim 은 legacy 슬롯-only(alpha_1·solo=not multi_user)도 exact 매칭이면
+    포함·타 슬롯(alpha_2)은 제외."""
+    _seed_full(board, "T-0001", "open")                              # created_by 부재 → 비노출(backfill 대상)
+    _seed_full(board, "T-0002", "claimed", claimed_by="alpha_1")     # 슬롯-only·내 슬롯 → 상세
+    _seed_full(board, "T-0003", "claimed", claimed_by="alpha_2")     # 슬롯-only·타 슬롯 → 제외
     ids = set(_mine_ids(board, capsys, repo="alpha", slot=1))
-    assert ids == {"T-0001", "T-0002"}                # all-open degrade + 내 슬롯 claim, 타 슬롯 제외
+    assert ids == {"T-0002"}                          # 세션 생성 open 0 + 내 슬롯 legacy claim
 
 
-def test_userfirst_multiuser_excludes_user_qualified_and_ambiguous_legacy(board, capsys):
-    """**codex leak+ambiguity 가드 (durable)**: 다중사용자 보드(distinct ≥2)에서 `--repo repo --slot 1`
-    (ADR-0057)은 (1) 남의 user-qualified claim(`bob/repo_1`)을 slot 번호로 끌어오지 않고 (2) user
-    토큰 없는 legacy 슬롯-only claim(`repo_1`)도 ambiguous 라 strict-exclude 한다(migrate-identity
-    backfill 전제).
+def test_userfirst_slot_view_session_label_shows_all_same_session_claims(board, capsys):
+    """**ADR-0067 (codex R2)**: `--repo repo --slot 1` 세션 뷰의 claim 축 = **session 라벨**(user 무관·
+    open 생성-세션과 대칭). 세션 repo_1 의 claim 은 형태 불문 모두 보인다 — user-qualified(alice·bob)·
+    user 미해소 발행 legacy 슬롯-only(`repo_1`).
 
-    my_user 미해소(no conf·git stub None)에서도 user-qualified 는 귀속 불가로 제외. legacy 는 진짜
-    solo(¬multi_user)에서만 slot degrade 로 보인다(별도 회귀 가드·test_board_mine_view). 여기선
-    distinct 2(alice·bob)라 multi_user → 셋 다 제외.
+    옛 동작(user-first): my_user 미해소 시 user-qualified 는 귀속 불가로·legacy 는 multi_user ambiguous
+    로 제외했다. R2 는 세션 뷰 축을 session 라벨로 통일 — user 필터(내 것만)는 `--mine` 렌즈 몫이다.
+    (ADR-0057 leak 가드[bare `--slot N` cross-repo]는 `--slot` 단독 fail-loud + 완전 세션 exact 로 승계.)
     """
-    _seed_full(board, "T-0001", "claimed", claimed_by="alice/repo_1")   # user-qualified·slot _1
-    _seed_full(board, "T-0002", "claimed", claimed_by="bob/repo_1")     # user-qualified·slot _1(남)
-    _seed_full(board, "T-0003", "claimed", claimed_by="repo_1")         # legacy 슬롯-only·slot _1
-    # no conf → my_user None. distinct users = {alice, bob} = 2 → multi_user.
+    _seed_full(board, "T-0001", "claimed", claimed_by="alice/repo_1")   # user-qualified·세션 repo_1
+    _seed_full(board, "T-0002", "claimed", claimed_by="bob/repo_1")     # 타 user·같은 세션 → 보임(라벨)
+    _seed_full(board, "T-0003", "claimed", claimed_by="repo_1")         # legacy 슬롯-only·같은 세션 → 보임
+    _seed_full(board, "T-0004", "claimed", claimed_by="alice/repo_2")   # 타 세션(repo_2) → 제외
     ids = set(_mine_ids(board, capsys, repo="repo", slot=1))
-    assert "T-0001" not in ids and "T-0002" not in ids  # user-qualified → 귀속 불가·남 → 누출 0
-    assert "T-0003" not in ids                          # multi_user → legacy 슬롯-only ambiguous 제외
+    assert ids == {"T-0001", "T-0002", "T-0003"}        # 세션 repo_1 라벨 일치 → 전부(user 무관)
+    assert "T-0004" not in ids                          # 타 세션 → 제외(session 라벨 불일치)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -2199,11 +2197,12 @@ def test_cmd_list_loud_warn_on_strict_exclude(board, capsys):
 def test_cmd_list_loud_warn_on_identity_unresolved(board, capsys):
     """다중사용자 + 정체성 미해소(my_user None) → loud-warn. stdout(no tickets) 무오염.
 
-    `--repo alpha --slot 1`(ADR-0057)이나 areas 부재로 소유자 유도 실패(None) + 티켓 created_by
-    2명(다중사용자) → 모든 open 이 strict-exclude. 미해소 정체성을 remedy 와 함께 경고."""
+    `--mine`(user-단위 렌즈·ADR-0067 세션 뷰 아님)에서 areas 부재로 소유자 유도 실패(None) + 티켓
+    created_by 2명(다중사용자) → 모든 open 이 strict-exclude. 미해소 정체성을 remedy 와 함께 경고.
+    (`--repo/--slot` 세션 뷰는 생성-세션 스트림이라 strict-exclude 경고 대상이 아니다·ADR-0067.)"""
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
-    rc = board.cmd_list(_list_args(repo="alpha", slot=1))
+    rc = board.cmd_list(_list_args(mine=True))
     assert rc == 0
     cap = capsys.readouterr()
     assert _WARN_MARK in cap.err

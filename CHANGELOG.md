@@ -7,6 +7,25 @@
 
 ## [Unreleased]
 
+### BREAKING
+- **`board list` 세션 기본 뷰 = 생성-세션 스트림·타 세션분 완전 비노출** (ADR-0067·ADR-0066 amend) —
+  무인자 `board.py list`(및 부트스트랩 dump)와 명시 세션 뷰 `board list --repo X --slot N` 이 이제 **그
+  세션이 생성한 open(`created_by` 세션 일치) + 그 세션 claim** 만 출력한다. ADR-0066 의 **"그 외 open
+  N건" 접힘 카운트 줄은 제거**됐고(타 세션 정보의 기본 노출도 컨텍스트 누수로 간주), open 카운트 모수도
+  내 스트림으로 좁혀졌다. 전체/타 세션은 명시 `board list --all`(경합 가시·backlog 확인·타 PM 열람) 몫.
+  - **스트림 판정 = 생성 세션**(uniform·슬롯/task 공통) — ADR-0066 의 **task-prefix 스트림 판정을 폐기**
+    (prefix 는 ID 라벨일 뿐). 같은 사용자의 타 슬롯 생성 open 도 명시 세션 뷰에서 비노출(PM 77 누출 fix).
+  - **`board new --repo X --slot N`** 추가 — created_by 에 `<user>/<repo>_<N>` 생성-세션을 기록(claim 과
+    동일 identity 해소 경로 재사용). 미명시 시 현행(user-only / 유도 세션) 유지.
+  - **`--mine`(user-wide·전 세션)·`--all`·strict-exclude(타 사용자 차단) 의미론 불변.** 솔로/무바인딩
+    (세션 미해소)은 user-단위(--mine) 폴백(solo=subset·N=1 이면 user 스트림=세션 스트림이라 등가).
+  - **부트스트랩 dump 정합** — "그 외 open N건" 줄·open 전용 backlog 라벨(`_OPEN_SCOPE_LABEL`)·`--all`
+    전량 재조회(접힘 모수)·"타 세션 진행(claimed)" 현황 줄 제거. "다른 활성 PM" 슬롯 레지스트리(환경
+    정보·leases 유래)는 유지. 무인자 출력·부트스트랩 dump 를 파싱/의존하던 스크립트·문서는 `--all` 로
+    갱신 필요.
+  - 발단: fresh 슬롯/task 세션 첫 화면·기본 조회에 타 세션 티켓(그 세션이 안 만든 것)이 섞여 컨텍스트
+    누수(사용자 재문제제기·PM 77). 유실 방지는 카운트 상시 노출이 아니라 명시 조회·핸드오프 인계로 이동.
+
 ## [1.3.2] - 2026-07-19
 
 세션 기본 뷰를 "내 스트림"으로 좁히는 뷰 계층 변경(무관 backlog 는 카운트 접기) + 릴리즈 절차 문서

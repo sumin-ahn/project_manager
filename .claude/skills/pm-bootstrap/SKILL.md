@@ -76,7 +76,7 @@ python3 .project_manager/tools/pm_bootstrap.py --task <이름> --repo <repo> --s
 
 CLI 가 markdown 표 dump:
 
-- **board**: `done / open / claimed / blocked` (done/claimed/blocked=슬롯-스코프·**open=공유 backlog·슬롯무관** — 타 세션이 방금 claim 한 것도 섞일 수 있음). claimed > 0 이거나 "타 세션 진행(claimed)" 줄이 있으면 *다른 세션 진행 중*. **board 숫자는 스냅샷 — 옵션 제시 전 `board.py list --mine` 으로 claim 주체를 교차 확인**(부분 push/오프라인 창).
+- **board**: `done / open / claimed / blocked` — 전부 **내 세션 스코프**(ADR-0067: open=내 세션이 생성한 스트림·claim=내 세션). 타 세션분(open/claim)은 기본 dump 에 안 나온다 — 공유 풀 전체·타 PM 현황은 명시 조회 `board.py list --all`(전체)·`--mine`(내 전 세션) 로만. **board 숫자는 스냅샷 — 옵션 제시 전 `board.py list --mine` 으로 claim 주체를 교차 확인**(부분 push/오프라인 창).
 - **회귀**: default 는 `(skip — handoff entry 참조 · --with-pytest 로 재측정)`.
   `--with-pytest` 명시 시 `N / N passed`. red 면 즉시 baseline fix 필요 (wave 시작 차단).
 - **git**: 브랜치 + 최근 5 commit + working tree clean 여부. dirty 면 직전 핸드오프 commit 누락 확인.

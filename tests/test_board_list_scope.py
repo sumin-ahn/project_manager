@@ -171,25 +171,30 @@ def test_repo_slot_filter_includes_my_claim_in_that_slot(board, capsys):
     assert ids == ["T-0001"]
 
 
-def test_repo_slot_filter_excludes_other_user_same_slot_claim(board, capsys):
-    """**타 사용자 무유출(codex leak 가드)**: 같은 슬롯 번호라도 남의 user-qualified claim 은 제외.
+def test_repo_slot_view_claim_axis_is_session_label_user_agnostic(board, capsys):
+    """**ADR-0067 (codex R2)**: `--repo X --slot N` 세션 뷰의 claim 축 = session 라벨(user 무관·open
+    생성-세션과 대칭). 같은 슬롯의 타 user claim(`bob/myproject_3`)도 세션이 일치하면 보인다.
 
-    querying user=alice·`--repo myproject --slot 3`. bob 이 같은 슬롯에서 claim 한
-    `bob/myproject_3` 은 slot 은 맞지만 user 가 달라(user AND slot) strict-exclude 된다."""
+    user 필터(내 것만)는 `--mine` 렌즈 몫이다 — 세션 뷰와 축이 다름을 대비로 못박는다."""
     _write_conf(board, user="alice")
-    _seed(board, "T-0001", "claimed", claimed_by="alice/myproject_3")   # 내 것
-    _seed(board, "T-0002", "claimed", claimed_by="bob/myproject_3")     # 남의 것·같은 슬롯 → 제외
+    _seed(board, "T-0001", "claimed", claimed_by="alice/myproject_3")   # 내 세션 claim
+    _seed(board, "T-0002", "claimed", claimed_by="bob/myproject_3")     # 타 user·같은 세션 → 보임(라벨)
     ids = _list_ids(board, capsys, repo="myproject", slot=3)
-    assert ids == ["T-0001"]
+    assert set(ids) == {"T-0001", "T-0002"}
+    # 대비: --mine(user 축)은 alice 것만 — bob claim 은 user 불일치로 제외(축이 다름).
+    mine = _list_ids(board, capsys, mine=True)
+    assert set(mine) == {"T-0001"}
 
 
-def test_repo_slot_filter_includes_open_when_no_area_owner_solo(board, capsys):
-    """**solo(distinct user ≤1)에서만** area_owner 미운영 → 전체 open degrade (T-0302·ADR-0053).
+def test_repo_slot_filter_open_is_created_session_stream(board, capsys):
+    """`--repo X --slot N` open = 그 세션(myproject_3) **생성분만** (ADR-0067 생성-세션 스트림).
 
-    이 보드엔 소유가 실린 티켓이 하나뿐(distinct user ≤1)이라 solo — degrade 로 open 표시가 맞다.
-    ⚠ 예전 이 단언은 degrade 자체를 '정답'으로 박제해 다중사용자 유출 버그를 가렸다. 이제 solo
-    조건을 명시하고, 다중사용자 seed 는 아래 strict-exclude 테스트가 별도로 못박는다."""
-    _seed(board, "T-0003", "open")   # 소유 미상·유일 티켓 → distinct user 0 = solo
+    세션 뷰(kind=slot)는 `_in_default_view`(생성-세션 스트림)를 탄다 — 옛 user-단위/all-open degrade 는
+    무바인딩 default 뷰에만 남고, 명시 세션 뷰엔 안 쓴다. 세션 부재 created_by(legacy·backfill 대상)나
+    타 슬롯 생성 open 은 비노출."""
+    _seed(board, "T-0003", "open", created_by="alice/myproject_3")   # 그 세션 생성 → 상세
+    _seed(board, "T-0005", "open")                                   # created_by 부재 → 비노출(backfill 대상)
+    _seed(board, "T-0006", "open", created_by="alice/myproject_9")   # 타 슬롯 생성 → 비노출
     ids = _list_ids(board, capsys, repo="myproject", slot=3)
     assert ids == ["T-0003"]
 

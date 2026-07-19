@@ -173,16 +173,15 @@ def test_collect_board_done_query_failure_degrades_to_zero():
 # ── 기본 보드 뷰 = --mine (T-0164·ADR-0033 ④) ────────────────────────────────
 
 def test_collect_board_default_view_is_mine():
-    """_collect_board 가 list 를 `--mine` 렌즈(default 뷰 + done 전용)로 부른다 (T-0164·T-0198).
+    """_collect_board 가 list 를 `--mine` 렌즈(세션 스트림 + done 전용)로만 부른다 (T-0164·T-0198·ADR-0067).
 
-    부트스트랩이 전체 contention 을 떠안지 않고 *내 것*만 surface 한다 — 솔로(user 미상)는
+    부트스트랩이 전체 contention 을 떠안지 않고 *내 세션 스트림*만 surface 한다 — 솔로(user 미상)는
     board 의 graceful 폴백으로 현행과 사실상 동등(`--mine` 솔로 폴백·spike §2.D).
 
-    `list` 호출은 **3 회**다: (1) default 뷰(`["list", "--mine"]` — open/claimed/blocked,
-    T-0197 이 done 을 접음) (2) 전체 보드(`["list", "--all"]` — 세션 기본 뷰 접힘 카운트의 모수=
-    공유 풀 전량 + 타 세션 claim 현황을 한 조회에서·ADR-0066·T-0385) (3) done 전용(`["list",
-    "--status", "done", "--mine"]` — default 뷰가 done 을 안 보여줘서 생긴 done(mine) 항상 0
-    회귀[T-0198] 를 메꿈). default/done 은 `--mine` 렌즈·open 접힘 모수+claim 현황은 `--all`."""
+    `list` 호출은 **2 회**다(ADR-0067 — 옛 `["list", "--all"]` 접힘 모수·타 세션 claim 재조회 폐기):
+    (1) 세션 뷰(`["list", "--mine"]` — open/claimed/blocked, T-0197 이 done 을 접음·이 렌즈가 곧 내
+    세션 스트림) (2) done 전용(`["list", "--status", "done", "--mine"]` — default 뷰가 done 을 안
+    보여줘서 생긴 done(mine) 항상 0 회귀[T-0198] 를 메꿈)."""
     mod = _load_module()
     captured: list[list[str]] = []
 
@@ -198,9 +197,9 @@ def test_collect_board_default_view_is_mine():
     list_calls = [a for a in captured if a[0] == "list"]
     assert list_calls == [
         ["list", "--mine"],
-        ["list", "--all"],
         ["list", "--status", "done", "--mine"],
     ]
+    assert not any("--all" in a for a in list_calls), "폐기된 --all 재조회(ADR-0067)"
 
 
 # ── 빈 repo: rev-parse rc≠0 + symbolic-ref OK + log rc≠0 → fail-soft ──────────
