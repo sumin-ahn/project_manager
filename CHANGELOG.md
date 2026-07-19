@@ -7,6 +7,31 @@
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-07-19
+
+릴리즈 브랜치명=태그명 컨벤션에서 세션 시작이 가짜 "외부 개입" 경보로 차단되던 결함 수정(브랜치명
+해소 full-ref 전환·전 소비자) + `regression run --cwd` 핀의 모호 오발화 수정 + `board list` 에
+board-git 최신성 1줄 표면화. 전 수정 이중게이트(내부 reviewer + codex) 통과·회귀 3982.
+
+### Fixed
+- **동명 태그+브랜치에서 세션 시작 가짜 차단** — 릴리즈가 브랜치명을 그대로 태그로 찍으면(예
+  `v1.3.0` 브랜치+태그) git 브랜치명 조회(`symbolic-ref --short`)가 모호성 회피 `heads/<name>` 을
+  돌려줘, 슬롯 git 기록-대-실측 비교가 "외부 개입" FAIL-LOUD 로 부트스트랩을 차단했다(매 릴리즈
+  재발 구조). 브랜치명 해소를 full ref(`symbolic-ref HEAD` → `refs/heads/` 정확 제거)로 전환해
+  모호성을 원천 제거 — 진짜 이름이 `heads/x` 인 브랜치도 오인하지 않는다. 같은 클래스의 잔존
+  소비자(부트스트랩 freshness 표시·repo 등록 기본브랜치 해소 2곳)도 동일 패턴으로 마감.
+- **`regression run --repo <r> --cwd <경로>` 모호 오발화** — readonly 슬롯 추가 등으로 repo 활성
+  슬롯이 2개 이상이면 `--cwd` 로 실행 위치를 핀했는데도 actor 슬롯 특정이 모호 오류로 죽던 결함.
+  v1.3.0 의 livegate `--cwd` 수정과 동형으로 폐쇄 — `--cwd` 명시 시 모호하면 조용히 repo/local
+  test_cmd 폴백(명시 `--slot` 의 슬롯 test_cmd 유도는 유지). push 게이트(check 경로)는 불변.
+
+### Added
+- **`board list` board-git 최신성 표면화** — 모든 list 변형이 board-git freshness 1줄(`최신`/
+  `판정불가 — 스냅샷일 수 있음`/behind ⚠)을 **stderr** 로 advisory 표기 — stale board 스냅샷을
+  최신으로 오독하는 클래스의 잔여 표면 폐쇄(부트스트랩 표면화와 같은 판정·오프라인 시 "최신"
+  오단정 없음). 매 호출 원격 조회 비용은 60s TTL 가드+5s 상한으로 완화 — 비-git(solo) 형상은
+  표기·조회 모두 없음.
+
 ## [1.3.0] - 2026-07-19
 
 task-단위 PM(named task 정체성·readonly 공유 슬롯·슬롯 git 엔진화) + PM 운영 명령어化(티켓 authoring·codex 게이트·ADR 발행·릴리즈) + 진실유지 기계화(verified_at sha lint·contradiction lint) + opencode 스킬 단일 소비 전환. 전 티켓 이중게이트(내부 reviewer + codex) 통과·회귀 3952·라이브 dual-harness 실측.
