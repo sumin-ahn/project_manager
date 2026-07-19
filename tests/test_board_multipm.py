@@ -2148,6 +2148,10 @@ def test_userfirst_multiuser_excludes_user_qualified_and_ambiguous_legacy(board,
 _WARN_MARK = "세션격리"          # loud-warn 식별 토큰(stderr 전용)
 _REMEDY_INIT = "board init --owner"
 _REMEDY_MIGRATE = "migrate-identity"
+# T-0382: loud-warn 은 remedy 를 *실행 가능한 실값*으로 명시해야 한다(사용자가 커맨드를 기억할
+# 필요 0·[[mechanize-dont-instruct-llm]]) — 정확한 backfill 커맨드 + 단일-세션 op 전제.
+_REMEDY_MIGRATE_EXACT = "python3 .project_manager/tools/board.py migrate-identity --dry-run"
+_REMEDY_SINGLE_SESSION = "단일-세션 op"
 
 
 def _list_args(**flags):
@@ -2243,3 +2247,77 @@ def test_cmd_list_plain_no_mine_no_warn(board, capsys):
     cap = capsys.readouterr()
     assert _WARN_MARK not in cap.err
     assert set(_ids_from(cap.out)) == {"T-0001", "T-0002"}   # 전체(필터 없음)
+
+
+# ── T-0382: solo email-변경 오판 재현 + strict-exclude 경보 remedy 기계화 (D18 L2 폐쇄) ──
+#
+# 솔로 사용자가 `git config user.email` 을 바꾸면(old@x→new@x) 옛 티켓 created_by=old@x 와 새
+# 티켓 created_by=new@x 가 공존 → `_distinct_ticket_users`=2 → `multi_user=True` **오판** →
+# strict-exclude 가 옛 open 을 `--mine` 뷰에서 드롭한다. 판정 휴리스틱 추가(정체성=데이터 밖
+# 사실이라 solo/진짜-2인 구분 불가)는 기각(결정 절)하고, 발동 순간의 경보에 복구 커맨드를 기계
+# 명시해 실사용자가 즉시 정합을 회복하게 한다. 아래는 그 현행 동작 명세화 + remedy 실값 lock.
+
+
+def test_cmd_list_email_change_solo_misjudged_multi_user(board, capsys):
+    """재현: email-변경 solo 가 2인으로 오판돼 옛 open 이 --mine 서 드롭 + loud-warn 발화(remedy 실값).
+
+    한 사람이 email 을 old@example.com → new@example.com 로 바꾼 상태 —
+      - T-0001: 옛 email 로 스탬프된 open(created_by=old) → owner=old 해소·new 와 불일치라 드롭.
+      - T-0002: 정체성 스탬프 이전 legacy open(created_by 부재) → solo 라면 all-open degrade 로
+        보이던 것이, distinct=2 오판(multi_user)으로 strict-exclude 되어 **조용히** 드롭 → warn 트리거.
+      - T-0003: 새 email 로 claim(claimed_by=new) → 내 것.
+    distinct ticket-user = {old@example.com, new@example.com} = 2 → multi_user True(오판). --mine 은
+    T-0003 만 남기고 옛 open 두 개를 드롭하며, 미해소 드롭을 잡아 loud-warn 을 낸다. 경보에는 backfill
+    remedy 실값 + 단일-세션 op 전제가 실려야 한다."""
+    _write_conf(board, "user=new@example.com\nsession=alpha_1\n")
+    _seed_full(board, "T-0001", "open", created_by="old@example.com/alpha_1")     # 옛 email open
+    _seed_full(board, "T-0002", "open")                                          # legacy(정체성 전) open
+    _seed_full(board, "T-0003", "claimed", claimed_by="new@example.com/alpha_1")  # 새 email claim
+    rc = board.cmd_list(_list_args(mine=True))
+    assert rc == 0
+    cap = capsys.readouterr()
+    # multi_user 오판 → 옛 open 두 개 드롭·새 claim 만 남음(현행 동작).
+    assert _ids_from(cap.out) == ["T-0003"]
+    assert "T-0001" not in cap.out and "T-0002" not in cap.out
+    # loud-warn 발화 + remedy 기계 명시(정확한 커맨드·단일-세션 op·email 변경 사유 후보).
+    assert _WARN_MARK in cap.err
+    assert _REMEDY_MIGRATE_EXACT in cap.err
+    assert _REMEDY_SINGLE_SESSION in cap.err
+    assert "email" in cap.err
+    assert cap.err.count("\n") == 1              # stderr 1줄(spam 금지·stdout 무오염)
+    assert _WARN_MARK not in cap.out
+
+
+def test_cmd_list_loud_warn_carries_exact_migrate_remedy(board, capsys):
+    """loud-warn 문구에 migrate-identity backfill remedy **실값 커맨드**가 실린다(단언·회귀 lock).
+
+    발동 조건(다중사용자 + 소유 미해소 open strict-exclude)에서, 사용자가 커맨드를 기억할 필요
+    없이 즉시 붙여넣을 수 있는 정확한 backfill 명령 + 단일-세션 op 전제를 경보가 담는지 못박는다."""
+    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
+    _seed_full(board, "T-0002", "claimed", claimed_by="bob/beta_1")   # 2번째 user 신호
+    _seed_full(board, "T-0003", "open")                              # 소유 미상 → strict-exclude
+    rc = board.cmd_list(_list_args(mine=True))
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert _WARN_MARK in err
+    assert _REMEDY_MIGRATE_EXACT in err          # 정확한 실값 커맨드
+    assert _REMEDY_SINGLE_SESSION in err         # 단일-세션 op 전제(경보 문구 유지)
+    assert _REMEDY_INIT in err                   # 진짜 다중사용자 경로도 병기
+
+
+def test_cmd_list_genuine_multiuser_strict_exclude_unchanged(board, capsys):
+    """판정 로직 무변경 회귀: 진짜 2인(서로 다른 사용자) 보드에서 strict-exclude 정상 발동 유지.
+
+    remedy 문구 기계화(T-0382)는 경보 *surface* 만 손댄다 — `_distinct_ticket_users`·multi_user
+    게이트·`_ticket_is_mine` 로직은 그대로다. 진짜 다중사용자면 타 사용자 소유 open 은 여전히
+    --mine 서 제외되고, 미해소 드롭이 있으면 경보가 난다."""
+    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")   # 내 소유
+    _seed_full(board, "T-0002", "open", created_by="bob/beta_1")      # bob 소유(해소됨) → strict 제외
+    _seed_full(board, "T-0003", "open")                              # 소유 미상 → strict-exclude
+    rc = board.cmd_list(_list_args(mine=True))
+    assert rc == 0
+    cap = capsys.readouterr()
+    assert _ids_from(cap.out) == ["T-0001"]      # 내 소유만(bob·미상 제외)
+    assert _WARN_MARK in cap.err                 # 미해소 드롭 → 경보 발화

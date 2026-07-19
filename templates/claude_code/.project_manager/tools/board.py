@@ -4153,8 +4153,11 @@ def cmd_list(args: argparse.Namespace) -> int:
     if mine and multi_user and (strict_exclude_fired or my_user is None):
         print(
             "⚠ 세션격리(strict-exclude): 다중사용자 보드에서 소유 미해소 open 을 이 뷰에서 "
-            "제외했다(타 사용자·미귀속 티켓). 내 티켓만 정확히 보려면 정체성 설정 — "
-            "`board init --owner <you>` 또는 `board migrate-identity`.",
+            "제외했다(타 사용자·미귀속 티켓). solo 인데 email(git config user.email)을 바꿨다면 "
+            "옛 티켓 귀속(old→new)이 어긋나 2인으로 오판된 것 — created_by/claimed_by 를 backfill "
+            "로 정합: `python3 .project_manager/tools/board.py migrate-identity --dry-run` "
+            "(단일-세션 op·다른 세션 claim 중 실행 금지). 진짜 다중사용자면 정체성 설정 "
+            "`board init --owner <you>`.",
             file=sys.stderr,
         )
     # board-git freshness 표면화 (T-0379·advisory·stderr) — 각 list 변형 공통·양 return 경로
