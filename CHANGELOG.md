@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-19
+
+task-단위 PM(named task 정체성·readonly 공유 슬롯·슬롯 git 엔진화) + PM 운영 명령어化(티켓 authoring·codex 게이트·ADR 발행·릴리즈) + 진실유지 기계화(verified_at sha lint·contradiction lint) + opencode 스킬 단일 소비 전환. 전 티켓 이중게이트(내부 reviewer + codex) 통과·회귀 3952·라이브 dual-harness 실측.
+
 ### BREAKING
 - **부트스트랩 0단계 main-참조 슬롯 진입 거부** (T-0360) — 슬롯 HEAD 가 **보호 브랜치(main 등) 직접 checkout** 또는 **보호 브랜치 원격(origin/main 등)을 upstream 으로 추적** 상태면 `/pm-bootstrap` 0단계가 **부분 dump 도 없이 진입 거부**한다(기존 = 경고 후 통과). 정상 작업 슬롯의 feature upstream(예 `origin/<feature>`) 추적은 거부 대상이 아니다. main 직접 checkout·수동 tracking 은 `--no-track`(신규 파생 경로에만 적용)이 못 막는 무방비 구멍이었고, 방어가 pre-push 훅(T-0076) 하나뿐이라 커밋이 다 된 뒤 push 순간에야 막혔다 — 진입 시점으로 앞당겨 canonical/보호 브랜치 오염 커밋을 원천 차단한다. readonly 공유 슬롯(detached·role=readonly)은 예외(브랜치 자체가 없음).
 
@@ -16,6 +20,22 @@
     - (b) 이 슬롯을 작업 브랜치로 전환한다(main 직접 checkout 이탈): `git -C work/<repo>_<N> switch -c <repo>_<N>`
   - **릴리즈 절차 재배선**: 릴리즈 livegate `--cwd`·codex `--paths` 가 지목하던 "origin/main 이 도는 slot-1" 역할은 readonly 공유 슬롯(detached·origin/main 기준면)으로 이전됐다(pm-release 스킬/커맨드 §2). readonly 슬롯은 무리스라 `--slot` 로 안 잡히므로 릴리즈는 `livegate record --cwd <readonly 슬롯 절대경로>` 로 핀한다.
   - **다운스트림 lockstep** (finance/회사 등 채택자): BREAKING 이라 main-checkout 슬롯 운용은 갱신 후 거부된다. `pm_update`(엔진 흡수) 후 위 해소 절차대로 각 슬롯을 readonly 또는 작업 브랜치로 정리하고, 릴리즈 절차를 쓰는 채택자는 livegate 핀을 readonly 슬롯 `--cwd` 로 갱신한다.
+
+- **opencode `command/*.md` PM-workflow 사본 채널 은퇴 — canonical 스킬 단일 소비** (T-0364·ADR-0065) — opencode ≥**1.17.19** 가 `.claude/skills/*/SKILL.md` 를 네이티브 스캔하고 슬래시(`run --command <스킬명>`)로 호출하므로(라이브 실측), 수기 command 사본 11종을 제거하고 opencode 템플릿도 canonical `SKILL.md` 미러(`.claude/skills`·bare @render)를 싣는다. 수기 사본 pair-pin 재-pin 수고·silent-drift 채널 소멸.
+  - **채택자 영향**: opencode 1.17.19 미만은 스킬 스캔이 없어 지원하지 않는다(폴백 없음). `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 미설정 전제. 기존 인스턴스의 `.opencode/command/*.md` 잔재는 무해하나 갱신 후 제거를 권장(엔진 lint 는 legacy-compat 로 계속 스캔).
+
+### Added
+- **task-단위 PM (named task 정체성 축)** (T-0350~T-0357) — 슬롯 축과 직교하는 사람-명명 작업 단위: `--task <이름>` 귀속(`claimed_by=<user>/<task>`·예약 패턴 `<repo>_<N>` 금지·단일 validator 깔때기)·task prefix 설정·부트스트랩 0단계 preflight(엔진 앵커/작업공간/불완전 생성/타 점유/기록-live 정합 기계 검증·실패 시 부분 dump 금지)·슬롯 기준점(base) 장부 기록(set-base)·`board list --task` 렌즈(T-0365·read 경로도 검증 깔때기).
+- **readonly 공유 슬롯** (T-0358) — research/기준면 전용 detached 슬롯: `pm-config worktree add <repo> --readonly`·배타 대여 없음·mutation/lease-op 거부·`refresh`(fetch→detach 이동+submodule 재동기·dirty 거부).
+- **슬롯 git 운영 엔진화** (T-0359·T-0361) — `pm-worktree status`(단일/일괄·submodule pin/drift·dirty)·`rebase`(선-검사 4종·충돌=그대로+loud·`--abort` 미호출·장부 원자 갱신)·`pm-config status` 2축 cockpit(task 축+slot 풀·branch@head·base 대비 behind).
+- **PM 운영 명령어化 4종** (ADR-0049) — `/pm-ticket`(티켓 authoring: draft→5절 fill 검증→promote·placeholder/절-삭제 게이트)·`/pm-review`(codex 게이트 규율: worktree 앵커·stage 선행·경로 핀 + PM 홈 앵커 능동 차단)·`/pm-adr`(ADR 발행 원자화: 채번·lifecycle back-ref 발행시점 부기·README 색인 이동·log entry·YAML 안전 직렬화)·`/pm-release`(릴리즈 순서 고정·main push 는 승인 게이트 유지). 전 스킬 frontmatter `audience` 라벨(user-entrypoint/pm-internal) 완비(T-0370).
+- **진실유지 기계화** — 현재-진실 문서 freshness 를 `verified_at: <sha>` 이후 매핑경로 커밋 유무의 이진 판정으로 교체(T-0363·date 근사 폐기·`verified-at-backfill` 1회 커맨드·sha 실존 검증) + **contradiction lint**(T-0369·ADR-0064): ADR 개정(amends/supersedes) 순간 옛 결정을 참조하는 문서의 잔여 모순 후보를 advisory 표면화(탐지 LLM DI·기본 dry·판정 사람).
+- **커맨드 카드 파서-생성화** (T-0362) — 부트스트랩 카드가 공용 정의서에서 모드별(task/slot/readonly) 렌더·카드↔CLI (tool,render)급 정합 가드.
+
+### Changed
+- **보호브랜치 커밋 차단이 진입 시점으로** — 위 BREAKING(T-0360) 참조.
+- **promote/발행 게이트 강화** (T-0366) — 본문 5절(목표/인터페이스/결정/DoD/참고) 존재+절별 placeholder 잔존을 authoring 게이트에서 차단(전역 lint 는 3절 불변·레거시 무영향).
+- **external_review 안전화** (T-0367) — adopter#0 PM 홈 앵커에서 `--paths` 없이 실행 시 diff 추출 전 fail-loud+worktree 재지정 안내(빈-diff 사후 차단의 사전 승격).
 
 ## [1.2.4] - 2026-07-17
 
