@@ -1407,3 +1407,130 @@ def test_snapshot_updates_lease_and_next_phase0_passes(hf, tmp_path):
     after = wp.compare_slot_git("work/project_manager_1")
     assert after.branch_match
     assert after.head_relation == wp.HEAD_MATCH
+
+
+# ── 핸드오프 완료 task 정상-종료 pid=0 기록 ("여기 두고 간다"의 task 판·T-0392) ─────────
+#
+# task 장부 pid = dump 후 즉사하는 bootstrap subprocess pid(㉑·T-0353)라, pm_handoff 가 종료를 안
+# 기록하면 정상 인계 후 재개도 dead-pid → bind_task `reclaimed`("재개(회수·이전 세션 crash)" +
+# "⚠️ 회수 진입") 로 상시 오탐한다(PM 78 실측). task 모드 완료 단계에서 pid=0(미점유)으로 비워
+# 차기 부트스트랩이 clean resumed 로 재개하게 한다 — 슬롯 재스냅(T-0388)과 동형 배치·fail-soft·
+# dry_run 예고·slot/솔로 모드(--task 없음)는 무영향.
+
+
+class _TaskPidPool(_SnapPool):
+    """_SnapPool + release_task_pid 호출 기록 (T-0392 task pid 배선 검증).
+
+    `omit_task_pid` 면 release_task_pid 속성 미노출(구버전 풀·getattr 가드 fail-soft 모델).
+    `task_pid_none` 면 release_task_pid 가 None(task 장부 부재) 반환(fail-soft loud 모델)."""
+
+    def __init__(self, *, omit_task_pid=False, task_pid_none=False, **kwargs):
+        super().__init__(**kwargs)
+        self.task_pid_calls: list[str] = []
+        self._task_pid_none = task_pid_none
+        if not omit_task_pid:
+            self.release_task_pid = self._do_release_task_pid
+
+    def _do_release_task_pid(self, name):
+        self.task_pid_calls.append(name)
+        if self._task_pid_none:
+            return None
+        return type("_T", (), {"name": name, "pid": 0})()
+
+
+def _task_mode_handoff(hf, tmp_path, monkeypatch, pool):
+    """task_mode(=명시 pm_state 미주입·--task) 진입 hermetic PmHandoff (T-0392).
+
+    task_mode = task not None AND pm_state 미명시 → REPO monkeypatch + template seed 로 실 앵커
+    해소를 태우되 mock worktree_pool 로 release_task_pid 배선만 격리 검증한다(task-only=슬롯 미해소)."""
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    template = tmp_path / ".project_manager" / "wiki" / "pm_state.template.md"
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    return hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=tmp_path / "current.md",
+        pm_playbook_file=playbook,
+        dashboard_file=tmp_path / "dashboard.md",
+        worktree_pool=pool,
+    )
+
+
+def test_run_task_mode_releases_task_pid_after_bookkeeping(hf, tmp_path, monkeypatch, capsys):
+    """task 모드 핸드오프가 부기 완료 후 release_task_pid 를 task 명으로 1회 호출 — 정상-종료 pid=0 기록(T-0392)."""
+    pool = _TaskPidPool()
+    handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+    )
+    assert rc == 0
+    assert pool.task_pid_calls == ["mytask"]
+    out = capsys.readouterr().out
+    # 완료 단계(부기 후) 배치 — [3/7] pm_state 부기 뒤.
+    assert out.index("[task] 정상-종료 task pid 기록") > out.index("[3/7]")
+    assert "task 정상-종료 기록: mytask → pid=0" in out
+
+
+def test_run_task_mode_dry_run_previews_task_pid_without_call(hf, tmp_path, monkeypatch, capsys):
+    """dry_run task 모드 — pid=0 기록 예고만 출력·write 프리미티브 미호출(미리보기)."""
+    pool = _TaskPidPool()
+    handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=True, skip_pytest=True, task="mytask"
+    )
+    assert rc == 0
+    assert pool.task_pid_calls == []
+    assert "[dry-run] task pid=0(미점유) 기록 예고: mytask" in capsys.readouterr().out
+
+
+def test_run_task_mode_failsoft_when_task_absent(hf, tmp_path, monkeypatch, capsys):
+    """release_task_pid 가 None(task 장부 부재)이면 무해 skip·핸드오프 완주 (fail-soft loud)."""
+    pool = _TaskPidPool(task_pid_none=True)
+    handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+    )
+    assert rc == 0                               # fail-soft — 기록 실패가 핸드오프를 막지 않는다.
+    assert pool.task_pid_calls == ["mytask"]
+    assert "장부에 없음" in capsys.readouterr().err
+
+
+def test_run_task_mode_failsoft_when_pool_lacks_primitive(hf, tmp_path, monkeypatch, capsys):
+    """구버전 풀(release_task_pid 부재)이면 무해 skip·핸드오프 완주 (getattr 가드·fail-soft)."""
+    pool = _TaskPidPool(omit_task_pid=True)
+    handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+    )
+    assert rc == 0
+    assert pool.task_pid_calls == []
+    assert "구버전" in capsys.readouterr().err
+
+
+def test_run_slot_mode_no_task_does_not_release_task_pid(hf, tmp_path):
+    """슬롯 모드(--repo/--slot·--task 없음·task_mode False) — release_task_pid 미호출(무영향·T-0392).
+
+    슬롯 재스냅(T-0388)은 정상 동작하되 task pid 기록은 task 모드 전용이라 건드리지 않는다."""
+    pool = _TaskPidPool()
+    handoff = _hermetic_handoff(hf, tmp_path, pool)   # 명시 pm_state → task_mode 진입 자체 없음.
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True,
+        worktree_slot="work/project_manager_1",
+    )
+    assert rc == 0
+    assert pool.snap_calls == [("work/project_manager_1", {})]   # 슬롯 재스냅은 정상 동작
+    assert pool.task_pid_calls == []                             # task pid 는 미호출
+
+
+def test_run_solo_no_task_does_not_release_task_pid(hf, tmp_path):
+    """솔로(슬롯 미해소·--task 없음) — release_task_pid 미호출(task_mode False·무영향·T-0392)."""
+    pool = _TaskPidPool()
+    handoff = _hermetic_handoff(hf, tmp_path, pool)
+    rc = handoff.run(session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True)
+    assert rc == 0
+    assert pool.task_pid_calls == []

@@ -1775,6 +1775,41 @@ class PmHandoff:
         git = getattr(lease, "git", None)
         return git if isinstance(git, dict) else None
 
+    def _release_task_pid(self, task: str) -> None:
+        """task 정상-종료를 장부에 기록한다 — `pid=0`(미점유) 세팅 (T-0392·"여기 두고 간다"의 task 판).
+
+        핸드오프 부기(log·pm_state) 완료 후 task 모드에서 호출한다. task 장부 pid 는 dump 후 즉사하는
+        bootstrap subprocess pid(㉑·T-0353)라, 종료를 안 기록하면 **정상 인계 후 재개도** dead-pid →
+        `bind_task` 가 `reclaimed`("재개(회수·이전 세션 crash)" + "⚠️ 회수 진입")로 상시 오탐한다
+        (PM 78 실측). write 프리미티브 `worktree_pool.release_task_pid(task)` 만 호출해 pid 를 0 으로
+        비워, 차기 부트스트랩이 clean `resumed`(경고 없음)로 재개하게 한다 — 진짜 crash(핸드오프 없이
+        죽어 pid>0 잔존)만 회수 경고를 받는다.
+
+        `_record_slot_snapshot`(슬롯 lease 재스냅·T-0388)과 동형 배치·fail-soft loud: worktree_pool
+        부재(솔로/미셋업)·구버전 풀(release_task_pid 부재)·task 부재(record None)·예외는 무해 skip
+        (핸드오프 차단 안 함)."""
+        wp = self._worktree_pool or _load_worktree_pool()
+        if wp is None:
+            print("  worktree_pool 미배선(솔로/미셋업) — task pid 미기록 skip(무해).")
+            return
+        primitive = getattr(wp, "release_task_pid", None)
+        if primitive is None:
+            print("  ⚠ worktree_pool 구버전(release_task_pid 부재) — task pid 미기록 skip(무해).",
+                  file=sys.stderr)
+            return
+        try:
+            task_rec = primitive(task)
+        except Exception as exc:  # noqa: BLE001 — fail-soft: task pid 기록 실패가 핸드오프를 막지 않는다.
+            print(f"  ⚠ task pid 기록 실패 — {exc} (skip·무해).", file=sys.stderr)
+            return
+        if task_rec is None:
+            print(f"  ⚠ task {task!r} 장부에 없음 — task pid 미기록 skip(무해).", file=sys.stderr)
+            return
+        print(
+            f"  ✓ task 정상-종료 기록: {task} → pid=0(미점유) "
+            "(다음 재개=clean resume·crash 회수 경고 없음·T-0392)"
+        )
+
     # ── 기본 subprocess 구현 (실제 실행) ──────────────────────────────────────
 
     def _default_run_pytest(self) -> tuple[int, str]:
@@ -2195,6 +2230,20 @@ class PmHandoff:
                 print(f"  [dry-run] git 재스냅 예고: {self._worktree_slot} (실행 생략).")
             else:
                 self._record_slot_snapshot(self._worktree_slot)
+
+        # ── task 모드: 정상-종료 task pid 기록 (T-0392·"두고 간다"의 task 판) ────────
+        # task 장부 pid = dump 후 즉사하는 bootstrap subprocess pid(㉑·T-0353)라, 핸드오프가 종료를
+        # 안 기록하면 정상 인계 후 재개도 dead-pid → bind_task `reclaimed`(crash 회수 경고)로 상시
+        # 오탐한다(PM 78 실측). 완료 단계에서 pid=0(미점유)으로 비워 차기 부트스트랩이 clean resumed
+        # 로 재개하게 한다 — 진짜 crash(핸드오프 없이 죽어 pid>0 잔존)만 회수 경고를 받는다. 슬롯
+        # 재스냅(T-0388)과 동형 배치·fail-soft(내부 무해 skip). dry_run 은 예고만. slot/솔로 모드
+        # (task_mode=False)는 무영향. task_mode True 면 task 는 not None(정의상).
+        if task_mode:
+            print("\n[task] 정상-종료 task pid 기록 (여기 두고 간다·T-0392)...")
+            if dry_run:
+                print(f"  [dry-run] task pid=0(미점유) 기록 예고: {task} (실행 생략).")
+            else:
+                self._release_task_pid(task)
 
         # ── multi-PM 모드: --done 작업완료 슬롯 release (ADR-0013) ─────────────────
         # 세션종료/회전 ≠ release — --done 명시 시에만 슬롯을 idle 반납한다. release 는 비가역

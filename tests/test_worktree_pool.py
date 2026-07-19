@@ -5312,6 +5312,80 @@ def test_set_task_prefix_read_by_identity_args_task_prefix(wp):
     assert ia.task_prefix("job1", wp.LEASES_FILE) is None   # 해제도 소비측에 반영
 
 
+# ── release_task_pid — task 정상-종료 pid=0 기록 + bind 재분류 (T-0392·핸드오프 "두고 간다") ──
+#
+# task 장부 pid = dump 후 즉사하는 bootstrap subprocess pid(㉑·T-0353)라, pm_handoff 가 종료를 안
+# 기록하면 정상 인계 후 재개도 dead-pid → bind_task `reclaimed`(crash 회수 loud notice)로 상시 오탐
+# 한다(PM 78 실측). release_task_pid 가 pid 를 0(미점유)으로 비우고, bind_task 가 미점유를 `resumed`
+# 로 재분류해 정상 인계 상시 경고를 없앤다 — 진짜 crash(pid>0 잔존)만 회수 경고를 받는다.
+
+
+def test_bind_task_unoccupied_pid_zero_is_resumed_not_reclaimed(wp):
+    """장부 pid=0(미점유=정상 인계) 재개 = resumed(reclaimed_from None) — crash 회수 경고 없음(T-0392)."""
+    with wp._lease_lock():
+        wp._write_tasks([wp.Task(name="job1", prefix="PAY", pid=0, started="t")])
+    record, action, reclaimed_from = wp.bind_task("job1")
+    assert action == "resumed"                  # 미점유는 clean resume(reclaimed 아님)
+    assert reclaimed_from is None               # loud notice 근거 없음(정상 인계)
+    assert record.pid == os.getpid()            # 내 것으로 갱신
+    assert record.prefix == "PAY"               # prefix 유지(바인딩 무접촉)
+
+
+def test_release_task_pid_sets_pid_zero_and_returns_record(wp):
+    """release_task_pid 가 task 레코드 pid 를 0(미점유)으로 세팅하고 갱신 레코드를 돌려준다(정상-종료 기록)."""
+    wp.bind_task("job1")                         # created (pid=os.getpid())
+    updated = wp.release_task_pid("job1")
+    assert updated is not None and updated.pid == 0
+    assert wp.find_task("job1").pid == 0         # 영속(장부 write)
+
+
+def test_release_task_pid_then_bind_resumes_clean(wp):
+    """T-0392 핵심 라운드트립 — 정상-종료(release_task_pid→pid=0) 후 재개 = resumed(경고 없음)·reclaimed 아님.
+
+    핸드오프가 pid 를 비워 두면 다음 부트스트랩이 dead-pid 회수(crash 경고)가 아니라 clean resume 으로
+    진입한다(PM 78 정상 인계 상시 crash 경고 해소). 정상 경로 상시 경보를 없애 진짜 경보만 남긴다."""
+    wp.bind_task("job1")                         # created (pid=os.getpid())
+    released = wp.release_task_pid("job1")        # 정상-종료 → pid=0(미점유)
+    assert released is not None and released.pid == 0
+    record, action, reclaimed_from = wp.bind_task("job1")   # 재개
+    assert action == "resumed" and reclaimed_from is None    # clean resume·회수 경고 없음
+    assert record.pid == os.getpid()             # 내 것으로 갱신
+
+
+def test_release_task_pid_missing_task_returns_none(wp):
+    """부재 task → None(fail-soft·무해) — 새 레코드 만들지 않음(부작용 0·솔로/슬롯 모드 무해)."""
+    assert wp.release_task_pid("absent") is None
+    assert wp.list_tasks() == []                 # task 생성 안 함
+
+
+def test_release_task_pid_validates_task_name_before_write(wp):
+    """write-capable 엔진 진입점 — 불법 task 명은 장부 write 이전 InvalidTaskName(부작용 0·must-fix·set_task_prefix 동형)."""
+    with _pytest_task.raises(wp.InvalidTaskName):
+        wp.release_task_pid("../evil")
+    assert wp.list_tasks() == []
+
+
+def test_release_task_pid_preserves_sibling_leases_and_tasks(wp):
+    """pid 비우기가 형제 `leases`·다른 task·미지 최상위 키를 보존(top-level round-trip·flock 단일 소유)."""
+    ledger = {
+        "leases": [{"slot": "work/A_1", "repo": "A", "session": "me", "pid": 7,
+                    "started": "t", "state": "leased", "test_cmd": None}],
+        "tasks": [{"name": "job1", "prefix": "PAY", "pid": 111, "started": "t"},
+                  {"name": "job2", "prefix": "acc", "pid": 222, "started": "t"}],
+        "future_top_level": {"x": 1},
+    }
+    wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    wp.release_task_pid("job1")
+    data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
+    by_name = {t["name"]: t for t in data["tasks"]}
+    assert by_name["job1"]["pid"] == 0           # 대상만 비움
+    assert by_name["job1"]["prefix"] == "PAY"    # 다른 필드는 무접촉(pid 만 비움)
+    assert by_name["job2"]["pid"] == 222         # 형제 task 보존
+    assert data["leases"][0]["slot"] == "work/A_1"   # 리스 보존
+    assert data["future_top_level"] == {"x": 1}      # 미지 최상위 키 보존
+
+
 # ── task 명 검증 (엔진층·traversal/절대경로/빈 이름/예약패턴 거부·must-fix·T-0353) ──
 
 

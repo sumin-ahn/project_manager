@@ -1392,9 +1392,11 @@ def bind_task(name: str, *, pid: "int | None" = None,
 
     반환 `(task, action, reclaimed_from_pid)` — action ∈ {"created", "resumed", "reclaimed"}:
       - **created**  — 장부에 없던 task 를 신규 생성(prefix=None·기본 없음·pid=내 pid·슬롯 0개 시작).
-      - **resumed**  — 기존 task 를 내 pid(같은 세션·crash 전 나) 로 재개.
-      - **reclaimed**— 기존 task 의 pid 가 죽어(또는 미점유) 회수 후 진입. `reclaimed_from_pid` =
-        회수한 이전 pid(>0 이면 loud notice 대상·아래 ㉑ 경계 참조). created/resumed 는 None.
+      - **resumed**  — 기존 task 를 재개(경고 없음·clean): 내 pid(같은 세션·crash 전 나) **또는**
+        미점유(pid 0/None — 핸드오프가 정상-종료로 pid 를 비워 둠·`release_task_pid`·T-0392).
+      - **reclaimed**— 기존 task 의 pid 가 **죽은 채 잔존**(핸드오프 없이 crash·pid>0)해 회수 후 진입.
+        `reclaimed_from_pid` = 회수한 이전 pid(>0 이면 loud notice 대상·아래 ㉑ 경계 참조).
+        created/resumed 는 None. (정상 인계=미점유는 resumed 로 분류돼 crash 경고를 받지 않는다·T-0392.)
 
     **명 검증(must-fix)**: `_validate_task_name` 을 mkdir·장부 write **이전**에 돌려 traversal/절대경로/
     빈 이름/예약패턴(`registered_repos` 주면)을 fail-loud(`InvalidTaskName`) — 엔진층 배치라 T-0354~
@@ -1428,11 +1430,16 @@ def bind_task(name: str, *, pid: "int | None" = None,
         # 동시 세션 거부 — 기록 pid 가 살아있고 내가 아니면(다른 창) 거부(㉑·위 경계 참조).
         if existing.pid and existing.pid != pid and _pid_alive(existing.pid):
             raise TaskActiveElsewhere(name, existing.pid)
-        # dead(crash/미점유 회수) 또는 same pid(내 재개) → 진입. pid 를 내 것으로 갱신.
-        if existing.pid == pid:
+        # 진입 분류(pid 를 내 것으로 갱신):
+        #   - same pid(내 재개) 또는 **미점유(pid 0/None=정상 인계·핸드오프가 두고 감·T-0392)**
+        #     → resumed(경고 없음·clean). 정상 종료 후 재개는 dead-pid 회수가 아니라 clean resume 이다.
+        #   - 죽은 pid(>0 잔존=핸드오프 없이 crash) → reclaimed + reclaimed_from(loud notice).
+        # 미점유를 resumed 로 재분류하는 게 T-0392 의 핵심 — 정상 인계 상시 crash 경고를 없애 진짜
+        # 경보(pid>0 잔존)만 남긴다(구분이 목적·산 pid 거부·죽은 pid 회수 거동은 불변).
+        if existing.pid == pid or not existing.pid:
             action, reclaimed_from = "resumed", None
         else:
-            action, reclaimed_from = "reclaimed", existing.pid  # 회수한 이전 pid(>0=loud notice)
+            action, reclaimed_from = "reclaimed", existing.pid  # 죽은 이전 pid(>0=loud notice·crash)
         existing.pid = pid
         _write_tasks(tasks)
         task_dir(name).mkdir(parents=True, exist_ok=True)
@@ -1464,6 +1471,39 @@ def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
         if target is None:
             return None
         target.prefix = prefix
+        _write_tasks(tasks)
+        return target
+
+
+def release_task_pid(name: str) -> "Task | None":
+    """task 정상-종료 기록 — 장부 task 레코드 `pid=0`(미점유) 세팅 (T-0392·핸드오프 "두고 간다"의 task 판).
+
+    pm_handoff task 모드 완료 단계가 호출한다. task 장부 pid 는 dump 후 즉사하는 bootstrap subprocess
+    pid(㉑ 정직화·T-0353)라, 핸드오프가 종료를 기록하지 않으면 **정상 인계 후 재개도** dead-pid →
+    `bind_task` 가 `reclaimed`(crash 회수 loud notice)로 상시 오탐한다(PM 78 실측). 종료 시 pid 를
+    0(미점유)으로 비워 두면 다음 부트스트랩이 clean `resumed`(경고 없음)로 재개한다 — 진짜 crash
+    (핸드오프 없이 죽어 pid>0 잔존)만 회수 경고를 받게 구분한다. T-0388(슬롯 lease 재스냅·session
+    end="두고 간다")의 task 축 짝. task end(F7·`end_task`)와는 별개 — end 는 레코드 제거·아카이브,
+    이건 세션 인계라 레코드는 유지하고 pid 만 비운다.
+
+    반환 = 갱신된 `Task`. **task 부재면 `None`(fail-soft·무해)** — 솔로/슬롯 모드(task 레코드 없음)나
+    이미 end 된 task 에서 무해히 no-op(호출부 fail-soft loud). 신규 상태/필드 없이 기존 "미점유" 값
+    (pid=0)을 재사용하는 최소 변경(heartbeat/장수 pid 추적은 T-0353 이 기각한 그대로 비채택).
+
+    **장부 IO 는 이 모듈이 단일 소유**(직접 JSON 금지·flock/스키마·ADR-0013) — `_lease_lock` 아래
+    `_read_tasks`/`_write_tasks`(형제 `leases`·미지 top-level 키 무손실 round-trip)로 atomic 갱신한다.
+
+    **명 검증(must-fix·T-0353 클래스)**: `_validate_task_name` 을 장부 write **이전**에 돌려 traversal/
+    절대경로/빈 이름을 fail-loud(`InvalidTaskName`) — 형제 write 진입점(`set_task_prefix`·`end_task`)과
+    동형 방어. 예약패턴(`<repo>_<N>`·⑥)은 생성 관심사라 여기선 registered_repos 미요구(end_task 동형·
+    종료엔 path-safety 만 필요·session 은 이미 장부에 있음)."""
+    _validate_task_name(name)   # 장부 write 이전 fail-loud(부작용 0·must-fix).
+    with _lease_lock():
+        tasks = _read_tasks()
+        target = next((t for t in tasks if t.name == name), None)
+        if target is None:
+            return None
+        target.pid = 0             # 미점유 표기 = 정상-종료(다음 재개=clean resumed·bind_task 재분류).
         _write_tasks(tasks)
         return target
 
