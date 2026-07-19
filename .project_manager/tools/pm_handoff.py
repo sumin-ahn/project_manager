@@ -1709,6 +1709,39 @@ class PmHandoff:
         print(f"  ✓ worktree 슬롯 release: {slot} → idle (작업완료 반납·ADR-0013·branch={live_branch})")
         return 0
 
+    # ── 핸드오프 완료: bound 슬롯 git 재스냅 ("여기 두고 간다"·T-0388) ───────────────
+
+    def _record_slot_snapshot(self, slot: str) -> None:
+        """bound 슬롯의 live git 을 `lease.git` 에 재기록한다 — "여기 두고 간다" (T-0388).
+
+        핸드오프 부기(log·pm_state) 완료 후, 슬롯의 현재 branch/HEAD 를 리스 장부에 재스냅해
+        차기 부트스트랩 0단계 record-vs-live 정합(`compare_slot_git`·㉒)이 보는 *도착 스냅* 을
+        갱신한다. 세션 중 브랜치/HEAD 가 바뀌면(예: 릴리즈 v1.3.2→v1.3.3) bind 의 옛 도착 스냅만
+        남아 0단계가 `diverged` FAIL-LOUD 로 정당한 자기 진행을 외부-개입 오경보로 차단하기
+        때문이다(PM 78 실측).
+
+        T-0350 write 프리미티브 `worktree_pool.record_git_snapshot(slot)` 만 호출한다 — base 는
+        미전달(기존 보존·arrival 동형)·판정 로직 재구현 없음. fail-soft: worktree_pool 부재
+        (솔로/미셋업)·슬롯 미바인딩/장부 부재(record None)·스냅 예외는 무해 skip(핸드오프
+        차단 안 함). release(--done·git 정리) 경로는 호출부에서 제외한다."""
+        wp = self._worktree_pool or _load_worktree_pool()
+        if wp is None:
+            print("  worktree_pool 미배선(솔로/미셋업) — git 재스냅 skip(무해).")
+            return
+        try:
+            lease = wp.record_git_snapshot(slot)
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 재스냅 실패가 핸드오프를 막지 않는다.
+            print(f"  ⚠ git 재스냅 실패 — {exc} (skip·무해).", file=sys.stderr)
+            return
+        if lease is None:
+            print(f"  ⚠ slot {slot!r} 리스 장부에 없음 — git 재스냅 skip(무해).", file=sys.stderr)
+            return
+        git = lease.git if isinstance(lease.git, dict) else {}
+        print(
+            f"  ✓ git 재스냅 기록: {slot} → "
+            f"branch=`{git.get('branch')}` head=`{git.get('head')}` (여기 두고 간다·ADR-0013)"
+        )
+
     # ── 기본 subprocess 구현 (실제 실행) ──────────────────────────────────────
 
     def _default_run_pytest(self) -> tuple[int, str]:
@@ -2113,6 +2146,22 @@ class PmHandoff:
         print("  [ ] pm_state.md '진행 중인 의사결정' 표 갱신")
         print("  [ ] pm_state.md '남은 작업 전체 그림' 갱신")
         print("  [ ] git commit (Co-Authored-By: Claude 트레일러 포함)")
+
+        # ── 핸드오프 완료: bound 슬롯 git 재스냅 ("여기 두고 간다"·T-0388) ─────────────
+        # 부기(log·pm_state) 완료 후 bound 슬롯의 live git 을 lease.git 에 재기록한다 — 세션
+        # 중 브랜치/HEAD 변경(예: 릴리즈 v1.3.2→v1.3.3)이 차기 부트스트랩 0단계 record-vs-live
+        # 정합(compare_slot_git·㉒)을 `diverged` FAIL-LOUD 로 오탐시켜 정당한 자기 진행을
+        # 외부-개입 오경보로 차단하는 것을 막는다(PM 78 실측). base 미전달=기존 보존(arrival
+        # 동형)·판정 재구현 없이 T-0350 write 프리미티브만 호출. --done(release→idle·git 정리)
+        # 은 대상 아님 — idle 슬롯은 활성 git 기대가 없다(다음 alloc 이 arrival 재스냅). 슬롯
+        # 미해소(솔로)·dry_run 은 skip. worktree_pool 부재·장부 부재는 _record_slot_snapshot
+        # 내부에서 fail-soft(무해 skip).
+        if not done and self._worktree_slot is not None:
+            print("\n[재스냅] bound 슬롯 git 재스냅 (여기 두고 간다·T-0388)...")
+            if dry_run:
+                print(f"  [dry-run] git 재스냅 예고: {self._worktree_slot} (실행 생략).")
+            else:
+                self._record_slot_snapshot(self._worktree_slot)
 
         # ── multi-PM 모드: --done 작업완료 슬롯 release (ADR-0013) ─────────────────
         # 세션종료/회전 ≠ release — --done 명시 시에만 슬롯을 idle 반납한다. release 는 비가역

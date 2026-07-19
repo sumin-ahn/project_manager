@@ -1166,3 +1166,221 @@ def test_run_task_seeds_and_records_pm_state(hf, tmp_path, capsys, monkeypatch):
     assert "## mytask" in dashboard_file.read_text(encoding="utf-8")
     # log 헤더 태그 = sentinel `(task:mytask)`.
     assert "PM 7차 (task:mytask)" in log_file.read_text(encoding="utf-8")
+
+
+# ── 핸드오프 완료 git 재스냅 ("여기 두고 간다"·T-0388) ─────────────────────────────
+#
+# 세션 중 브랜치/HEAD 가 바뀌면(예: 릴리즈) bind 의 옛 도착 스냅만 남아 차기 부트스트랩 0단계
+# record-vs-live 정합이 `diverged` FAIL-LOUD 로 정당한 진행을 외부-개입 오경보로 차단한다(PM 78
+# 실측). 핸드오프 부기(log·pm_state) 완료 후 bound 슬롯의 live git 을 lease.git 에 재기록해 이를
+# 닫는다. base 미전달(기존 보존)·판정 재구현 없이 T-0350 write 프리미티브(`record_git_snapshot`)만
+# 호출·솔로/미바인딩/장부 부재/--done(release→idle)은 fail-soft 로 제외.
+
+
+class _SnapPool:
+    """record_git_snapshot 호출을 기록하는 hermetic mock worktree_pool (T-0388 배선 검증).
+
+    `return_none` 이면 record_git_snapshot 이 None(장부에 슬롯 없음)을 돌려줘 fail-soft 경로를
+    모델링한다. release/current_branch 는 --done 경로 공존 검증용(release 시 재스냅 skip 대조).
+    """
+
+    def __init__(self, *, lease_git=None, return_none=False):
+        self.snap_calls: list[tuple] = []
+        self.release_calls: list[tuple] = []
+        self._lease_git = lease_git or {"branch": "v1.3.3", "head": "f0cd6cf"}
+        self._return_none = return_none
+
+    def record_git_snapshot(self, slot, **kwargs):
+        self.snap_calls.append((slot, kwargs))
+        if self._return_none:
+            return None
+        return type("_L", (), {"git": self._lease_git})()
+
+    def release(self, slot, **kwargs):
+        self.release_calls.append((slot, kwargs))
+        return type("_L", (), {"state": "idle", "git": None})()
+
+    def current_branch(self, slot, **kwargs):
+        return "v1.3.3"
+
+
+def _hermetic_handoff(hf, tmp_path, pool):
+    """명시 pm_state/log/dashboard 주입 + mock worktree_pool 로 hermetic PmHandoff 구성."""
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    return hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=tmp_path / "current.md",
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+        dashboard_file=tmp_path / "dashboard.md",
+        worktree_pool=pool,
+    )
+
+
+def test_run_records_slot_snapshot_after_bookkeeping(hf, tmp_path, capsys):
+    """핸드오프가 부기 완료 후 bound 슬롯으로 record_git_snapshot 을 1회 호출한다 (base 미전달·arrival 보존)."""
+    pool = _SnapPool()
+    handoff = _hermetic_handoff(hf, tmp_path, pool)
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True,
+        worktree_slot="work/project_manager_1",
+    )
+    assert rc == 0
+    # bound 슬롯으로 정확히 1회·base kwarg 미전달(기존 base 보존·arrival 동형·판정 재구현 없음).
+    assert pool.snap_calls == [("work/project_manager_1", {})]
+    out = capsys.readouterr().out
+    # 재스냅 시점 = 부기([2/7] log·[3/7] pm_state) 완료 후 — 출력 순서로 확인.
+    assert out.index("[재스냅]") > out.index("[7/7]")
+    assert "git 재스냅 기록: work/project_manager_1" in out
+
+
+def test_run_snapshot_failsoft_when_ledger_missing_slot(hf, tmp_path, capsys):
+    """record_git_snapshot 이 None(슬롯 미바인딩/장부 부재)이면 무해 skip·핸드오프 완주 (fail-soft)."""
+    pool = _SnapPool(return_none=True)
+    handoff = _hermetic_handoff(hf, tmp_path, pool)
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True,
+        worktree_slot="work/project_manager_1",
+    )
+    assert rc == 0                       # fail-soft — 재스냅 실패가 핸드오프를 막지 않는다.
+    assert pool.snap_calls == [("work/project_manager_1", {})]
+    assert "리스 장부에 없음" in capsys.readouterr().err
+
+
+def test_run_solo_no_slot_skips_snapshot(hf, tmp_path):
+    """솔로(슬롯 미해소·self._worktree_slot None) — 재스냅 자체를 시도하지 않는다(무회귀)."""
+    pool = _SnapPool()
+    handoff = _hermetic_handoff(hf, tmp_path, pool)
+    rc = handoff.run(session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True)
+    assert rc == 0
+    assert pool.snap_calls == []
+
+
+def test_run_dry_run_previews_snapshot_without_call(hf, tmp_path, capsys):
+    """dry_run — 재스냅 예고만 출력하고 write 프리미티브는 호출하지 않는다(미리보기)."""
+    pool = _SnapPool()
+    handoff = _hermetic_handoff(hf, tmp_path, pool)
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=True, skip_pytest=True,
+        worktree_slot="work/project_manager_1",
+    )
+    assert rc == 0
+    assert pool.snap_calls == []
+    assert "[dry-run] git 재스냅 예고" in capsys.readouterr().out
+
+
+def test_run_done_release_skips_snapshot(hf, tmp_path):
+    """--done(release→idle·git 정리) 경로는 재스냅 대상이 아니다 — idle 슬롯은 활성 git 기대가 없다."""
+    pool = _SnapPool()
+    handoff = _hermetic_handoff(hf, tmp_path, pool)
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True,
+        worktree_slot="work/project_manager_1", done=True,
+    )
+    assert rc == 0
+    # release 는 호출·재스냅은 skip(다음 alloc 이 arrival 재스냅으로 덮으므로 무의미+idle git 무결성).
+    assert pool.release_calls == [("work/project_manager_1", {"require_clean": False})]
+    assert pool.snap_calls == []
+
+
+def test_snapshot_updates_lease_and_next_phase0_passes(hf, tmp_path):
+    """PM 78 재현(real git + real worktree_pool) — 세션 중 브랜치 변경 후 핸드오프 재스냅이 차기
+    부트스트랩 0단계(compare_slot_git) 외부-개입 오탐을 닫는다.
+
+    도착 스냅(v1.3.2@c1)만 남은 채 세션 중 v1.3.3@c2 로 브랜치가 바뀌면 재스냅 전 0단계 compare
+    는 branch 변경 → `diverged` FAIL-LOUD(버그 재현). 핸드오프 재스냅이 lease.git 을 live(v1.3.3@c2)
+    로 갱신(base=v1.3.2@c1 보존)하면 0단계가 `match` 로 통과한다."""
+    import importlib.util as _ilu
+    import subprocess as _sp
+
+    proj = tmp_path / "proj"
+    local = proj / ".project_manager" / ".local"
+    local.mkdir(parents=True, exist_ok=True)
+    (proj / "work").mkdir(parents=True, exist_ok=True)
+    spec = _ilu.spec_from_file_location("wp_h388", TOOLS / "worktree_pool.py")
+    wp = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(wp)
+    for _name, _val in {
+        "REPO": proj, "LOCAL_DIR": local,
+        "LEASES_FILE": local / "worktree-leases.json",
+        "LEASES_LOCK": local / "worktree-leases.lock",
+        "WORK_DIR": proj / "work",
+    }.items():
+        setattr(wp, _name, _val)
+
+    slot_dir = proj / "work" / "project_manager_1"
+    slot_dir.mkdir(parents=True)
+
+    def _git(*argv):
+        env = dict(os.environ)
+        env.update({
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        })
+        return _sp.run(["git", "-C", str(slot_dir), *argv], check=True,
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", env=env)
+
+    _git("init", "-q", "-b", "v1.3.2")
+    (slot_dir / "f.txt").write_text("a\n", encoding="utf-8")
+    _git("add", "f.txt")
+    _git("commit", "-q", "-m", "c1")
+    c1 = _git("rev-parse", "HEAD").stdout.strip()
+
+    # 리스 seed + arrival 스냅(v1.3.2@c1·base 기록) — 부트스트랩 bind 도착 시점 모사.
+    lease = wp.Lease(slot="work/project_manager_1", repo="project_manager",
+                     session="project_manager_1", pid=os.getpid(), started="t", state="leased")
+    with wp._lease_lock():
+        wp._write_ledger([lease])
+    wp.record_git_snapshot("work/project_manager_1", base_branch="v1.3.2")
+
+    # 세션 중 브랜치 변경 — v1.3.2 → v1.3.3 (릴리즈 커밋 모사).
+    _git("checkout", "-q", "-b", "v1.3.3")
+    (slot_dir / "f.txt").write_text("b\n", encoding="utf-8")
+    _git("add", "f.txt")
+    _git("commit", "-q", "-m", "c2")
+    c2 = _git("rev-parse", "HEAD").stdout.strip()
+
+    # 재스냅 전 — 차기 0단계 compare 는 브랜치 변경 → diverged FAIL-LOUD (버그 재현).
+    before = wp.compare_slot_git("work/project_manager_1")
+    assert not before.branch_match
+    assert before.head_relation == wp.HEAD_DIVERGED
+
+    # 핸드오프 — 재스냅 배선(real pool·git_runner 미전달=실 git)이 lease.git 을 live 로 갱신.
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=tmp_path / "current.md",
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+        dashboard_file=tmp_path / "dashboard.md",
+        worktree_pool=wp,
+    )
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True,
+        worktree_slot="work/project_manager_1",
+    )
+    assert rc == 0
+
+    # lease.git 이 live branch/head 로 갱신 + base(v1.3.2@c1)는 보존(base 미전달·arrival 동형).
+    updated = wp.list_leases()[0]
+    assert updated.git["branch"] == "v1.3.3"
+    assert updated.git["head"] == c2
+    assert updated.git["base"] == {"branch": "v1.3.2", "commit": c1}
+
+    # 재스냅 후 — 차기 0단계 compare 통과(match·외부-개입 오탐 폐쇄).
+    after = wp.compare_slot_git("work/project_manager_1")
+    assert after.branch_match
+    assert after.head_relation == wp.HEAD_MATCH
