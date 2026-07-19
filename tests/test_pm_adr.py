@@ -90,6 +90,46 @@ def test_cli_rejects_bad_slug_before_side_effects(adr, capsys, monkeypatch, wiki
     assert sorted(p.name for p in decisions.iterdir()) == before
 
 
+def test_cli_rejects_bad_amends_id_rc2(adr, capsys, monkeypatch, wiki):
+    """CLI new --amends <오형식> → rc 2·한 줄 오류(traceback 아님)·decisions 무변경 (T-0376).
+
+    옛엔 parse_adr_num ValueError 가 uncaught traceback 으로 노출 — slug 게이트와 동형의
+    입구 거부로 전환. 정상 ID 경로는 기존 e2e 가 커버(과차단 아님)."""
+    decisions, log = wiki
+    monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
+    monkeypatch.setattr(adr, "LOG_FILE", log)
+    before = sorted(p.name for p in decisions.iterdir())
+    rc = adr.main(["new", "--title", "T", "--slug", "t", "--amends", "ADR-oops"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "개정대상 ID" in err and "Traceback" not in err
+    assert sorted(p.name for p in decisions.iterdir()) == before
+
+
+def test_cli_author_defaults_to_identity_resolution(adr, capsys, monkeypatch, wiki):
+    """--author 생략 → board identity_tag 해소값 채움·명시 인자 우선·해소 불가는 현행 빈 값 (T-0376)."""
+    decisions, log = wiki
+    monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
+    monkeypatch.setattr(adr, "LOG_FILE", log)
+    monkeypatch.setattr(adr, "_resolve_default_author", lambda: "alice/pm_1")
+    rc = adr.main(["new", "--title", "T1", "--slug", "auto-author"])
+    assert rc == 0
+    capsys.readouterr()
+    made = next(p for p in decisions.glob("*auto-author*"))
+    assert "author: alice/pm_1" in made.read_text(encoding="utf-8")
+    # 명시 인자 우선.
+    rc = adr.main(["new", "--title", "T2", "--slug", "explicit-author", "--author", "bob/pm_2"])
+    assert rc == 0
+    capsys.readouterr()
+    made2 = next(p for p in decisions.glob("*explicit-author*"))
+    assert "author: bob/pm_2" in made2.read_text(encoding="utf-8")
+    # 해소 불가(None) → 현행 빈 값 경로 유지(발행은 성공).
+    monkeypatch.setattr(adr, "_resolve_default_author", lambda: None)
+    rc = adr.main(["new", "--title", "T3", "--slug", "no-author"])
+    assert rc == 0
+    capsys.readouterr()
+
+
 # ── frontmatter / 본문 scaffold ────────────────────────────────────────────────
 
 

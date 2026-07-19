@@ -641,6 +641,22 @@ def emit_contradiction_advisory(
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
+def _resolve_default_author() -> "str | None":
+    """`--author` 생략 시 board `identity_tag()` sibling 재사용 — `<user>/<pm-slot>` 해소 (T-0376).
+
+    board.py 의 기존 identity 해소 체인(local.conf user → git config user.email·세션 토큰)을
+    그대로 쓴다(자체 로직 신설 0·[[ADR-0033]] provenance 형식 일치). 로드/해소 실패는 None
+    (fail-soft — 호출부가 현행 빈 값 경로 유지·발행을 못 깨게)."""
+    try:
+        board_path = Path(__file__).resolve().parent / "board.py"
+        spec = importlib.util.spec_from_file_location("_pm_adr_board_identity", board_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.identity_tag()
+    except Exception:  # noqa: BLE001 — identity 해소 실패는 advisory 경로로(발행 무영향).
+        return None
+
+
 def _parse_id_list(tokens: list[str]) -> list[int]:
     """`--amends ADR-0061 --amends 62` 또는 콤마 묶음(`--related a,b`)을 정수/문자열로 파싱."""
     out: list[int] = []
@@ -699,15 +715,26 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(f"[중단] {exc}", file=sys.stderr)
         return 2
 
-    amends = _parse_id_list(args.amends)
-    supersedes = _parse_id_list(args.supersedes)
-    refines = _parse_id_list(args.refines)
+    # 개정대상 ID 도 부작용 이전 입구에서 rc 2 한 줄 오류로 거부한다(T-0376 — 옛엔 parse_adr_num
+    # ValueError 가 traceback 으로 노출·slug 게이트와 동형 패턴).
+    try:
+        amends = _parse_id_list(args.amends)
+        supersedes = _parse_id_list(args.supersedes)
+        refines = _parse_id_list(args.refines)
+    except ValueError as exc:
+        print(f"[중단] 개정대상 ID 형식 오류 — {exc} (`ADR-NNNN` 또는 숫자만 허용)", file=sys.stderr)
+        return 2
     related = _parse_str_list(args.related)
     tags = _parse_str_list(args.tags)
 
+    # --author 생략 시 기존 identity 해소 체인 재사용(T-0376·board.identity_tag —
+    # local.conf user → git config user.email → 세션 토큰). 명시 인자 우선·해소 불가(None)면
+    # 현행(빈 값 → lint_adr_author advisory) 유지 — 새 해소 로직 신설 0.
+    author = args.author or _resolve_default_author() or ""
+
     issuer = AdrIssuer(decisions_dir=DECISIONS_DIR, log_file=LOG_FILE)
     plan = issuer.plan(
-        title=args.title, slug=args.slug, scope=args.scope, author=args.author,
+        title=args.title, slug=args.slug, scope=args.scope, author=author,
         status=args.status, amends=amends, supersedes=supersedes, refines=refines,
         related=related, tags=tags,
     )
