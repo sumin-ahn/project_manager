@@ -59,6 +59,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 _TOOLS = [
     ("pm_config", "pm-config"),
     ("pm_log", "pm_log.py"),
+    ("pm_adr", "pm_adr.py"),
 ]
 
 # literal 서브커맨드 단어(소문자·숫자·하이픈; add-harness/prune-stale 포함). placeholder

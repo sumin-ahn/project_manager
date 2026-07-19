@@ -97,6 +97,64 @@ def _tickets_dir() -> Path:
 # 기본 검토 경로 (--paths·local.conf review_paths 미지정 시)
 DEFAULT_PATHS: list[str] = ["src/", "tests/", "scripts/", ".project_manager/tools/"]
 
+
+# ── PM 홈 앵커 재지정 감지 (T-0367·adopter#0 false-green 게이트) ────────────────
+# adopter#0(ADR-0027)에서 external_review 의 import 사본은 PM 홈(②)에 있어 REPO 가 PM 홈으로
+# 해소된다 — 실 코드 변경은 canonical worktree(①)에 있으므로 `git diff` 가 비어 codex 가 "변경
+# 없음"을 통과로 판정하는 false-green 이 난다([[adopter0-gates-use-worktree-canonical]]·PM 65).
+# board.py `_pm_home_worktree_misanchor`(T-0345)의 *역방향*: 거긴 worktree 에서 실행된 board 조작을
+# 잡고, 여긴 PM 홈에서 실행된 외부 리뷰를 잡아 worktree 로 재지정한다. 순수 filesystem 판정(subprocess
+# 불요)이라 hermetic — REPO 를 module-level 로 두어 테스트가 monkeypatch 하고, 헬퍼는 anchor/conf 를
+# 명시 인자로 받아 DI seam 이 된다(board `_has_real_board` 를 import 없이 동형 복제·각 파일 self-contained).
+
+def _owns_real_board(pm_dir: Path) -> bool:
+    """`.project_manager` 디렉토리(`pm_dir`)가 실 티켓(`T-*.md`)을 가진 board 를 소유하는가.
+
+    board/ 분리(ADR-0033 ①)면 `board/tickets`, legacy 면 `wiki/tickets` 상태 디렉토리에 실 티켓이
+    하나라도 있으면 True. 빈 scaffold(README/_template 만 — worktree 출하 형상)는 False (worktree
+    자신을 PM 홈으로 오인해 가드 오탐 내지 않게·board.py `_has_real_board` 동형)."""
+    for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
+        if not base.is_dir():
+            continue
+        for status in STATUS_DIRS:
+            status_dir = base / status
+            if status_dir.is_dir() and any(status_dir.glob("T-*.md")):
+                return True
+    return False
+
+
+def _canonical_worktree(anchor: Path) -> Path | None:
+    """adopter#0 PM 홈 `anchor` 의 canonical 코드 worktree(재지정 대상) 경로 — 없으면 None.
+
+    `<anchor>/work/*` 스캔 중 엔진 사본(`.project_manager/tools/external_review.py`)을 가진 첫
+    디렉토리를 반환한다(board.py `_registers_worktree` (a) `work/<name>` 등록 관례와 동형). 없으면
+    None(무관 형상·재지정 대상 없음).
+
+    local.conf `upstream` 은 재지정 대상 결정에 **쓰지 않는다** — upstream 은 URL 이거나 무관한
+    로컬 checkout(`pm_import --from <로컬>` 정규 채택자·T-0053 자동 기록)일 수 있어, 실 board 를
+    소유한 정규 채택자에서 stale/무관 checkout 으로 오안내하며 정상 리뷰를 hard-block 한다(빈-diff
+    백스톱도 실 diff 가 non-empty 면 무력). `work/` 슬롯 스캔만으로 adopter#0(ADR-0027) 재지정을
+    완전 커버하고, upstream 분기는 잉여+오탐만 더한다 — 제거가 동등 커버리지·최소·오탐 0(codex/reviewer
+    이중 게이트 수렴 must-fix)."""
+    work_dir = anchor / "work"
+    if work_dir.is_dir():
+        for sub in sorted(work_dir.iterdir()):
+            if (sub / ".project_manager" / "tools" / "external_review.py").is_file():
+                return sub
+    return None
+
+
+def _pm_home_reanchor(anchor: Path) -> Path | None:
+    """`anchor`(REPO=도구 자기-앵커)가 adopter#0 PM 홈이면 재지정 대상 worktree 를, 아니면 None.
+
+    2중 conjunction (오탐 0 지향·fail-soft): (1) anchor 가 실 board 소유(PM 홈) — worktree(①·코드
+    전용·board 미소유)에서 실행하면 여기서 탈락해 None(정상·재지정 불요), (2) anchor 아래 canonical
+    코드 worktree(`work/<name>`) 존재. 솔로/일반 채택자(로컬 upstream 포함)는 (1) 또는 (2) 미충족으로
+    None(무영향)."""
+    if not _owns_real_board(anchor / ".project_manager"):
+        return None
+    return _canonical_worktree(anchor)
+
 # 외부 리뷰어 기본 명령 (local.conf reviewer_cmd 로 교체 가능)
 DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 
@@ -165,6 +223,19 @@ _EMPTY_DIFF_GUIDANCE = (
     "  · adopter#0/worktree 형상: 실 변경이 있는 worktree cwd 의 canonical 사본에서\n"
     "    `--paths <경로>` 로 실행하세요 (REPO 앵커가 PM 홈을 가리키면 diff 가 빕니다).\n"
     "  · 신규 파일만 변경했다면 먼저 `git add` 후 재실행하세요 (diff 는 tracked 변경만 봅니다)."
+)
+
+# PM 홈 앵커 재지정 안내 (T-0367 — adopter#0 false-green 게이트 승격). 위 빈-diff 안내(:166)를
+# *능동 게이트*로 승격한다: REPO 앵커가 adopter#0 PM 홈(import 사본)을 가리키면, 빈 diff 로 실패할
+# 때까지 기다리지 않고 diff 추출 전에 canonical 코드 worktree 재지정을 안내하며 fail-loud 한다.
+_PM_HOME_ANCHOR_GUIDANCE = (
+    "오류: 외부 리뷰를 adopter#0 PM 홈(import 사본)에서 실행했습니다 — 실 코드 변경은 worktree 에\n"
+    "  있어 여기서는 diff 가 비어 가짜 통과(false-green)가 납니다 (REPO 앵커가 PM 홈을 가리킴).\n"
+    "  · canonical 코드 worktree 에서 재실행하세요:  cd {worktree}\n"
+    "    리뷰 경로는 `--ticket T-NNNN`(touches 로 자동) 또는 `--paths <경로>`(직접 지정)로 핀하세요.\n"
+    "  · 이 앵커에서 의도적으로 실행하려면 `--paths <경로>` 로 명시하세요 — override 는 `--paths` 만\n"
+    "    받습니다(`--ticket` 은 여전히 차단·touches 상대경로라 PM 홈 git 기준 빈 diff false-green).\n"
+    "  (현재 앵커: {anchor})"
 )
 
 
@@ -679,6 +750,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.output_dir:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+
+    # PM 홈 앵커 재지정 가드 (T-0367 — adopter#0 false-green 게이트 승격). REPO 앵커가 adopter#0
+    # PM 홈(실 board 소유 + canonical 코드 worktree 보유)을 가리키고 `--paths` 로 명시 override 하지
+    # 않았다면, import 사본을 리뷰해 빈 diff false-green 이 나기 전에 fail-loud 로 차단하고 canonical
+    # worktree 재지정을 안내한다(빈-diff 안내 :166 을 능동 게이트로 승격). diff 추출·dry-run·비활성
+    # no-op 보다 앞서므로 잘못된 형상은 codex 전송 없이 미리보기에서도 드러난다. `--paths` 명시 시엔
+    # 통과(deliberate override) — 그래도 빈 diff 면 아래 빈-diff 가드가 백스톱. REPO 는 호출 시점 읽어
+    # (module global) 테스트 monkeypatch 를 추종한다.
+    if not args.paths:
+        reanchor_target = _pm_home_reanchor(REPO)
+        if reanchor_target is not None:
+            print(_PM_HOME_ANCHOR_GUIDANCE.format(worktree=reanchor_target, anchor=REPO),
+                  file=sys.stderr)
+            return 1
 
     # 경로 결정: --paths > --ticket touches > local.conf review_paths > DEFAULT_PATHS
     if args.paths:

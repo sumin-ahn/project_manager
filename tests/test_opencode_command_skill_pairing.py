@@ -25,6 +25,7 @@ templates 미전파 대상).
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -32,8 +33,16 @@ ROOT_SKILLS = REPO / ".claude" / "skills"
 OPENCODE_SKILLS_MIRROR = REPO / "templates" / "opencode" / ".claude" / "skills"
 OPENCODE_COMMAND_DIR = REPO / "templates" / "opencode" / ".opencode" / "command"
 
-# 옛 'command = skill 등가' 주장 문구 (등가-주장만 — '은퇴' historical 노트는 정당·제외).
-_STALE_EQUIVALENCE_PHRASES = ("skill 등가", "skill등가", "command 등가", "커맨드 등가")
+# 옛 등가-주장 클래스의 한/영 변형 정규식 (T-0375·codex suggestion — 좁은 리터럴 4종에서 확대).
+# 잡는 것: "command/커맨드 가 skill/스킬 의 등가·equivalent" 주장 + "쌍(으로) 출하/동시 출하" 의무 주장.
+# 안 잡는 것: 무관 등가 표현(README 의 "CLAUDE.md 에 대응하는 opencode 등가물" 등 — command↔skill
+# 짝이 아닌 문맥)·은퇴 historical 설명("채널 은퇴·T-0364").
+_STALE_EQUIVALENCE_RES = (
+    re.compile(r"(skill|스킬)\s*[-=]?\s*등가"),
+    re.compile(r"(command|커맨드)\s*[-=]?\s*등가"),
+    re.compile(r"skill[- ]?equivalent|equivalent\s+to\s+(the\s+)?skill", re.IGNORECASE),
+    re.compile(r"쌍(으로)?\s*(동시\s*)?출하|동시\s*출하"),
+)
 # 출하 진입문서 — 등가-주장 잔재 스캔 대상.
 _SHIP_ENTRY_DOCS = (
     "templates/opencode/AGENTS.md",
@@ -128,11 +137,31 @@ def test_no_command_skill_equivalence_phrase_residue():
             continue
         scanned += 1
         text = p.read_text(encoding="utf-8")
-        for phrase in _STALE_EQUIVALENCE_PHRASES:
-            if phrase in text:
-                offenders.append(f"{rel}: '{phrase}'")
+        for rx in _STALE_EQUIVALENCE_RES:
+            m = rx.search(text)
+            if m:
+                offenders.append(f"{rel}: '{m.group(0)}'")
     # sensitivity: 스캔 대상 0 = 경로 stale (공허 통과 방지).
     assert scanned, "sensitivity: 스캔한 출하 진입문서 0 — _SHIP_ENTRY_DOCS 경로 stale."
     assert not offenders, (
         "출하 진입문서에 옛 'command = skill 등가' 주장 잔존 — ADR-0065 단일 소비로 정정하라:\n  "
         + "\n  ".join(offenders))
+
+
+def test_equivalence_guard_catches_phrase_variants():
+    """sensitivity (T-0375) — 확대 정규식이 한/영 변형 등가-주장을 실제로 잡는다(non-vacuous).
+
+    변형 케이스가 전부 ≥1 정규식에 걸리고, 정당 문구(무관 등가·은퇴 설명)는 안 걸림을 못박는다."""
+    should_catch = (
+        "command 는 skill 등가 다", "커맨드=등가", ".opencode/command (skill-equivalent)",
+        "this command is equivalent to the skill", "opencode 등가물을 쌍으로 출하한다",
+        "command 를 동시 출하", "스킬 등가",
+    )
+    should_pass = (
+        "command 채널 은퇴·T-0364", "CLAUDE.md 에 대응하는 opencode 등가물",
+        "canonical SKILL.md 단일 소비",
+    )
+    for s in should_catch:
+        assert any(rx.search(s) for rx in _STALE_EQUIVALENCE_RES), f"변형 미검출: {s!r}"
+    for s in should_pass:
+        assert not any(rx.search(s) for rx in _STALE_EQUIVALENCE_RES), f"정당 문구 오검출: {s!r}"

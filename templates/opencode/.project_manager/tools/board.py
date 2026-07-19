@@ -3768,7 +3768,8 @@ def cmd_new(args: argparse.Namespace) -> int:
         body = tmpl_body.replace("T-NNNN", tid).replace("<제목>", args.title)
         # lint 판정은 `tid` 치환과 무관(placeholder/section 검사가 `T-NNNN` 자체를 안 봄) —
         # 발행 전에 판정해 쓰기 경로(open/ vs drafts_dir())를 정한다(open/ 창 노출 0).
-        is_draft = _board_git_enabled() and bool(_body_lint_issues(tid, body))
+        is_draft = _board_git_enabled() and bool(
+            _body_lint_issues(tid, body, strict_sections=True))
 
         fm: dict[str, Any] = dict(tmpl_fm)
         fm["id"] = tid
@@ -3841,7 +3842,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
         return 1
     fm, body = load_ticket(path)
     if _board_git_enabled():
-        remaining = _body_lint_issues(args.id, body)
+        remaining = _body_lint_issues(args.id, body, strict_sections=True)
         if remaining:
             print(f"promote 거부 — {args.id} 에 아직 미충전 {len(remaining)}건:",
                   file=sys.stderr)
@@ -5022,20 +5023,45 @@ def lint_dependencies() -> list[tuple[str, str, str]]:
 # The `## 메모` placeholder is intentionally NOT listed: that section is a work
 # journal filled at completion time, so an empty 메모 is normal for a complete,
 # claimable ticket and must not count as "thin".
+#
+# 각 항목은 `_template.md` 의 절별 뼈대 문장 리터럴이라 *채우면 사라진다* — 실 본문엔 안 나타나
+# 오탐 0(placeholder 잔존만 잡는다). ADR-0049 4요소 authoring flow(T-0366)에서 promote 게이트가
+# 이 집합을 재사용(`_body_lint_issues` 단일 깔때기)하므로, 뼈대만 채운 절(인터페이스·결정·참고
+# pattern-reference)까지 걸러야 "자족성 = placeholder 0" 이 성립한다. 목표/DoD 뿐 아니라
+# 인터페이스·결정·참고 절의 미충전도 여기서 promote-차단된다.
 _PLACEHOLDERS: tuple[str, ...] = (
-    "무엇을 만들 / 바꿀 / 검증할지",
-    "핵심 산출물 (파일, 동작)",
-    "[[xxxxx]]",
-    "<제목>",
+    "무엇을 만들 / 바꿀 / 검증할지",      # ## 목표 절 미충전
+    "이 ticket 이 만들거나 바꾸는",        # ## 인터페이스 절 미충전 (T-0366)
+    "구현 방향에 대한 확정 사항",           # ## 결정 절 미충전 (T-0366)
+    "핵심 산출물 (파일, 동작)",            # ## 완료 조건(DoD) 미충전
+    "[[architecture]] 관련 절",            # ## 참고 절 미충전 (T-0366)
+    "[[xxxxx]]",                           # ## 참고 ADR/spec 미충전
+    "T-XXXX",                              # ## 참고 pattern-reference 미충전 (T-0366)
+    "<제목>",                              # 제목 미치환
 )
 _REQUIRED_SECTIONS: tuple[str, ...] = ("## 목표", "## 완료 조건", "## 참고")
+# authoring 게이트(`cmd_new` 발행·`cmd_promote` 승격) 전용 strict 절 집합 — ADR-0049 자족성이
+# 요구하는 5절(목표/인터페이스/결정/DoD/참고) 전부의 *존재*를 강제한다. placeholder 검사는 절을
+# **통째로 삭제한** 회피(뼈대 문장이 없으니 잔존 토큰도 없음)를 못 잡으므로(T-0366 codex must-fix),
+# 절 자체의 부재를 thin 으로 세운다. 전역 lint(`lint_bodies`)는 레거시 blast-radius(인터페이스/결정
+# 절 없는 기존 open/claimed 티켓이 blocking 화) 때문에 3절 불변(`_REQUIRED_SECTIONS`)을 유지하고,
+# 이 strict 집합은 authoring **두 소비 지점**만 `strict_sections=True` 로 opt-in 한다(단일 깔때기·
+# 소비측 파라미터 — 판정 로직은 한 함수).
+_STRICT_REQUIRED_SECTIONS: tuple[str, ...] = (
+    "## 목표", "## 인터페이스", "## 결정", "## 완료 조건", "## 참고")
 
 
-def _body_lint_issues(tid: str, body: str) -> list[tuple[str, str, str]]:
-    """단일 티켓 본문의 self-containment issue — `lint_bodies` 와 `cmd_new` 발행-게이트가 공유(T-0196).
+def _body_lint_issues(tid: str, body: str, *,
+                      strict_sections: bool = False) -> list[tuple[str, str, str]]:
+    """단일 티켓 본문의 self-containment issue — `lint_bodies` 와 authoring 게이트가 공유(T-0196).
 
     `lint_bodies` 의 검사 로직(placeholder·thin)을 단일-티켓 단위로 추출한 것 — `board.py new`
-    가 방금 만든 티켓 하나만 즉석 검사해 board-git 승격(sync) 여부를 정할 때도 재사용한다.
+    발행 게이트·`board.py promote` 승격 게이트가 방금/승격 대상 티켓 하나를 즉석 검사할 때 재사용한다.
+
+    `strict_sections`: authoring 게이트(발행·승격)만 True — 5절(목표/인터페이스/결정/DoD/참고) 전부의
+    존재를 강제한다(절 삭제 회피 차단·T-0366). False(기본·전역 `lint_bodies` 경로)는 3절 불변
+    (`_REQUIRED_SECTIONS`)만 요구 — 인터페이스/결정 절 없는 레거시 티켓의 blast-radius 회피.
+    placeholder 검사는 두 모드 공통(단일 규칙).
     """
     issues: list[tuple[str, str, str]] = []
     prose = _strip_code(body)
@@ -5043,7 +5069,8 @@ def _body_lint_issues(tid: str, body: str) -> list[tuple[str, str, str]]:
         if placeholder in prose:
             issues.append((tid, "placeholder",
                            f"unfilled template text: {placeholder!r}"))
-    for section in _REQUIRED_SECTIONS:
+    required = _STRICT_REQUIRED_SECTIONS if strict_sections else _REQUIRED_SECTIONS
+    for section in required:
         if section not in body:
             issues.append((tid, "thin",
                            f"missing standard section: {section}"))
@@ -5286,6 +5313,9 @@ _WIKILINK_RE = re.compile(r"\[\[([A-Za-z0-9_\s.\-]+?)(?:\|[^\]]+)?\]\]")
 # framework ADR/idea 를 [[bracket]] 참조하면 *영구 dangling* 이 된다 — 이는 정상이며
 # push 를 막아선 안 된다(T-0129·ADR-0015 "차단은 최소·advisory 우선"). `_collect_wikilink_files`
 # 의 scaffold rel 목록과 동일 — POSIX 경계로 비교(_rel_to_repo 는 `/` 정규화).
+# `.opencode/command/` 는 ADR-0065 로 출하 은퇴됐지만 **legacy-compat 로 유지** — 은퇴 전 import 한
+# 채택자 트리엔 command 파일이 잔존하고(pm_update 는 복사만·은퇴 경로 삭제 안 함), 여기서 빼면 그
+# 파일들의 framework wikilink 가 scaffold-advisory 대신 blocking dangling 으로 오분류된다(T-0375 판정).
 _SCAFFOLD_PATH_PREFIXES: tuple[str, ...] = (
     ".claude/agents/", ".claude/skills/", ".opencode/agents/", ".opencode/command/")
 
@@ -5320,6 +5350,7 @@ def _collect_wikilink_files() -> list[Path]:
         p = REPO / name
         if p.exists():
             files.append(p)
+    # `.opencode/command` = 은퇴 경로(ADR-0065)·legacy-compat 스캔 유지(_SCAFFOLD_PATH_PREFIXES 주석).
     for rel in (".claude/agents", ".claude/skills", ".opencode/agents", ".opencode/command"):
         d = REPO / rel
         if d.is_dir():
@@ -5577,7 +5608,8 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
 
 # 어댑터 스캐폴드 .md 글롭 — 채택자 tree 에 출하되는 harness 어댑터 본문 (존재하는 것만).
 #   claude   : `.claude/agents/*.md`·`.claude/skills/**/SKILL.md`
-#   opencode : `.opencode/agents/*.md`·`.opencode/command/*.md`
+#   opencode : `.opencode/agents/*.md`·`.opencode/command/*.md`(출하 은퇴 ADR-0065·legacy-compat —
+#              은퇴 전 채택자 트리 잔존 파일 스캔 유지·_SCAFFOLD_PATH_PREFIXES 주석 참조)
 # 각 경로는 harness 별 존재 여부가 다르므로(claude 채택자엔 `.opencode` 부재·역도) 있을 때만 스캔.
 # root 문서(CLAUDE.md·AGENTS.md 등)는 *제외* (T-0133): 채택자가 통째로 손편집하는 instance-owned
 # scaffold 라 free-form 의 canonical home 이다(manifest 제외). 거기의 raw free-form 토큰은

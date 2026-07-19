@@ -185,6 +185,8 @@ def test_promote_commits_when_body_filled(board, tmp_path):
     filled_body = (
         f"# {ticket_id} — 제목\n\n"
         "## 목표\n실제 목표를 채웠다.\n\n"
+        "## 인터페이스\n실제 인터페이스 규격.\n\n"
+        "## 결정\n실제 구현 방향.\n\n"
         "## 완료 조건 (Definition of Done)\n- [ ] 실제 산출물\n\n"
         "## 참고\n- 실제 참고 사항\n\n"
         "## 메모\n"
@@ -251,6 +253,8 @@ def test_draft_not_leaked_by_unrelated_promote(board, tmp_path):
             filled_body = (
                 f"# {filled_id} — 두 번째\n\n"
                 "## 목표\n실제 목표.\n\n"
+                "## 인터페이스\n규격.\n\n"
+                "## 결정\n방향.\n\n"
                 "## 완료 조건 (Definition of Done)\n- [ ] 산출물\n\n"
                 "## 참고\n- 참고\n\n## 메모\n"
             )
@@ -301,6 +305,8 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path):
                 filled_body = (
                     f"# {seed_id} — 실 티켓\n\n"
                     "## 목표\n실제 목표.\n\n"
+                    "## 인터페이스\n규격.\n\n"
+                    "## 결정\n방향.\n\n"
                     "## 완료 조건 (Definition of Done)\n- [ ] 산출물\n\n"
                     "## 참고\n- 참고\n\n## 메모\n"
                 )
