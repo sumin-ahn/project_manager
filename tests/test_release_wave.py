@@ -610,7 +610,9 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
             f"--- stderr(tail) ---\n{proc.stderr[-1000:]}")
 
     # (전제) 전체 보드 — 두 user 가 티켓을 만들었고 각자 미claim open 을 남겼나.
-    full = _board_list(home, "--status", "all")
+    # 전제 확인 = 전체 보드 상세 — ADR-0066 이후 무인자 기본 뷰는 내 스트림 스코프(미귀속 open 접힘)
+    # 이라 `--all` 로 전체를 본다(v1.3.2 livegate red 근본원인).
+    full = _board_list(home, "--all", "--status", "all")
     assert full.returncode == 0, (
         f"board.py list --status all rc={full.returncode}\n{full.stderr[-800:]}\n" + tail)
     all_rows = _parse_list_rows(full.stdout)

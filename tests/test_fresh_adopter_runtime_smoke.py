@@ -111,14 +111,15 @@ def _import_adopter(tmp_path: Path, harness: str) -> Path:
 def _board_list_recognizes_ticket(dest: Path) -> bool:
     """adopter 의 board.py list 가 ticket(T-)을 인식하는지 (= 형식적으로 유효한 발행).
 
-    `--status all` 로 조회한다 — T-0197 이후 인자 없는 `list` 기본은 활성만(open/claimed/blocked)
-    보이고 done 은 접는다. lifecycle(new→claim→complete) 완료 후엔 활성 ticket 이 0 이라 기본
-    뷰가 비어 보이므로, 발행된 ticket 이 *어느 상태에 있든* 형식적으로 유효한지 확인하려면
-    done 포함 전체 뷰(`all`)를 써야 한다(T-0199·라이브 smoke red 근본원인).
+    `--all --status all` 로 조회한다 — T-0197 이후 인자 없는 `list` 기본은 활성만 보이고 done 은
+    접으며(→ `--status all`), ADR-0066(T-0385) 이후 무인자 기본 뷰는 내 스트림 스코프라 미귀속
+    open 이 "그 외 open N건" 으로 접힌다(→ `--all` 전체 상세). 발행된 ticket 이 *어느 상태·어느
+    스트림에 있든* 형식적으로 유효한지 확인하는 헬퍼라 전체 상세 뷰가 필요하다(T-0199 계보·
+    v1.3.2 livegate red 근본원인).
     """
     listing = subprocess.run(
         [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"),
-         "list", "--status", "all"],
+         "list", "--all", "--status", "all"],
         cwd=str(dest),
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
