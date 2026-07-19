@@ -7,6 +7,29 @@
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-07-19
+
+세션 기본 뷰를 "내 스트림"으로 좁히는 뷰 계층 변경(무관 backlog 는 카운트 접기) + 릴리즈 절차 문서
+결함 수정. 전 변경 이중게이트(내부 reviewer + codex 3라운드 수렴) 통과·회귀 4004·실데이터 3표면
+실출력 검증.
+
+### BREAKING
+- **`board list` 무인자 기본 뷰 = 내 스트림 스코프** (ADR-0066) — 무인자 `board.py list`(및 부트스트랩
+  dump)가 이제 **내 세션 claimed + 내 task prefix 의 open** 만 상세로 보이고, 그 외 open backlog 는
+  "그 외 open N건 — 전체는 `board.py list --all`" **카운트 1줄로 접는다**(유실 방지 유지·N>0 항상
+  표시). 기존 무인자 전체 뷰는 신설 **`board list --all`** 로 이관 — 무인자 출력을 파싱/의존하던
+  스크립트·문서는 `--all` 로 갱신 필요. `--mine`/`--task`/`--repo`+`--slot` 렌즈·strict-exclude·open
+  데이터 모델(슬롯 무소속·claim 조정)은 불변. 접힘/스트림/카운트의 모수는 공유 풀 전량(소유 무관 —
+  strict-exclude 는 `--mine` 렌즈 한정). solo 특례 없음(단일슬롯 솔로도 open 은 접힘).
+  - 발단: fresh 슬롯/task 세션 첫 화면에 무관 backlog 가 상세로 섞여 오독·노이즈(실측). 티켓은
+    사용자/스트림 소속이지 슬롯 소속이 아니므로, 기본 화면은 자기 스트림만 — 공유 backlog 의 존재는
+    카운트 줄이 승계한다.
+
+### Fixed
+- **릴리즈 절차 태그 push 실패** — 릴리즈 안내(pm-release 스킬)의 태그 push 명령이 브랜치명=태그명
+  컨벤션에서 refspec 모호("src refspec matches more than one")로 실패하던 것(v1.3.1 릴리즈 실측) →
+  `git push origin refs/tags/vX.Y.Z:refs/tags/vX.Y.Z` 명시형으로 교체.
+
 ## [1.3.1] - 2026-07-19
 
 릴리즈 브랜치명=태그명 컨벤션에서 세션 시작이 가짜 "외부 개입" 경보로 차단되던 결함 수정(브랜치명
