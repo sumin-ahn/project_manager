@@ -9,9 +9,9 @@
 
 ## [1.3.4] - 2026-07-20
 
-세션/task 라이프사이클 장부 정합 3결함 폐쇄 + 표면(메시지) 개선 — 전부 additive·BREAKING 없음.
+세션/task 라이프사이클 장부 정합 4결함 폐쇄 + 표면(메시지) 개선 — 전부 additive·BREAKING 없음.
 adopter#0 도그푸딩(PM 78 task 모드 첫 실전)이 실측으로 발견한 것들. 전 변경 이중게이트(내부
-reviewer + codex·2건은 codex must-fix 재작업 수렴) 통과·회귀 4035.
+reviewer + codex·2건은 codex must-fix 재작업 수렴) 통과·회귀 4047.
 
 ### Fixed
 - **pm_handoff 종료 git 재스냅 배선** (T-0388) — 핸드오프가 "두고 간 상태"를 lease 장부에 재기록하지
@@ -28,6 +28,10 @@ reviewer + codex·2건은 codex must-fix 재작업 수렴) 통과·회귀 4035.
   슬롯을 `bind_slot(session=<task명>)` 로 리스해 부트스트랩 한 줄로 작업 가능(멱등 재진입·타 명의
   점유는 거부·슬롯-only/task-only 경로 100% 불변). 카드 슬롯 번호는 슬롯 식별자에서 파생(task명
   session 오염 기계 차단).
+- **task 정상-종료 기록 — 재개 crash 오탐 제거** (T-0392) — task 장부 pid 는 즉사하는 bootstrap
+  subprocess pid 라, 핸드오프가 정상-종료를 기록하지 않으면 **모든 재개**가 "회수(이전 세션 crash·
+  다른 창 작업중일 수 있음)" 경고로 표시됐다. 핸드오프 완료 단계가 `release_task_pid`(pid=0)를
+  기록하고 재개가 clean resume 으로 분류된다 — 진짜 crash(pid>0 잔존)·산 pid 거부(2창)는 현행 유지.
 
 ### Added / Changed (표면·거동 변경 0)
 - **메시지 3건** (T-0391) — ① 신규 task 첫 부트스트랩: `task 1차` + "🆕 신규 task — 복구할 인계
