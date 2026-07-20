@@ -2520,6 +2520,20 @@ class PmBootstrap:
             # 그대로 채운다. 수집(freshness 이하) *앞단*에 둬 확정된 정체성을 전 수집이 본다.
             self._task_name = task_info["name"]
             self._task_pm_state_file = Path(task_info["pm_state_path"])
+            # ── W3 진입 검증 (I2·ⓐC·[[ADR-0068]]) — task 보유 슬롯 **전수** 0단계 검증. 슬롯별
+            # fault(stale·불완전생성·main-참조·기록↔live diverged) 를 모아 하나라도 있으면 **진입
+            # 차단**(rc 1·부분 dump 금지) — 전 fault 를 한 번에 표시(순차 발견 금지·해소 전 진행 없음·
+            # ⓐC). 0개 보유=검증 no-op(진입). `--repo/--slot` 편입 슬롯의 검증 관계(bind 는 이 gate
+            # *뒤*·아래 dump 절에서 일어남):
+            #   - **최초 편입**: 아직 task 명의 lease 가 없어 `slots_for_task` 집합에 미포함 →
+            #     이 gate 는 안 본다. 대신 위 `_phase0_preflight` 가 lean 경로(`--repo/--slot`)로
+            #     그 슬롯을 이미 검증했다(빈틈 없음).
+            #   - **멱등 재진입**(이미 task 명의 leased): 집합에 포함돼 여기서 재검증된다 — 같은
+            #     프리미티브라 무해하고, stale 등 엣지에선 gate 가 preflight 보다 더 엄격(의도).
+            # 차단 후 재진입은 dead-pid reclaim 멱등이라 안전하다. dump/alloc 이전(0단계와 동형 —
+            # dump 가 뜨면 PM 이 그것을 세션 진실로 믿는다).
+            if self._validate_task_slot_set(task_info["name"]) != 0:
+                return 1
 
         alloc_identity: dict | None = None
         if multipm_lean:
@@ -2589,6 +2603,9 @@ class PmBootstrap:
                     # (alloc 후속 불요임을 문면화). slot 미동반 task-only 는 미접합(현행·⑥).
                     if multipm_lean and data.get("worktree") is not None:
                         task_info["workspace_slot"] = data["worktree"]["slot"]
+                    # 보유 슬롯 전수 열거 행렬(I2·ADR-0068) — bind(위 편입 포함) 뒤라 편입 슬롯도
+                    # 합류한다. 진입 검증(_validate_task_slot_set)을 이미 통과한 집합의 surface.
+                    task_info["slot_set"] = self._task_slot_set_rows(task_info["name"])
                     data["task"] = task_info  # F1 task identity(신규/resume·prefix 상태·T-0353).
                 print(json.dumps(data, ensure_ascii=False, indent=2))
             else:
@@ -2629,6 +2646,9 @@ class PmBootstrap:
                 # F1 task identity surface (T-0353) — 신규/resume·prefix 상태(기본 없음·①ⓑ)·
                 # 서술 pm_state 포인터. 슬롯 identity(있으면) 뒤에 얹는다(task=직교 축·⑥).
                 if task_info is not None:
+                    # 보유 슬롯 전수 열거 행렬(I2·ADR-0068) — bind(위 편입 포함) 뒤라 편입 슬롯도
+                    # 합류한다. 진입 검증을 이미 통과한 집합의 surface.
+                    task_info["slot_set"] = self._task_slot_set_rows(task_info["name"])
                     print()
                     print(self._build_task_identity_markdown(task_info))
 
@@ -3129,22 +3149,212 @@ class PmBootstrap:
             f"- **prefix 상태 = {prefix_display}** (기본=없음·①ⓑ) — 사용자와 확인. "
             "변경은 `task prefix`(T-0357)."
         )
-        # 작업공간(슬롯) 연결 — `--task X --repo Y --slot N` 이면 이 부트스트랩이 지정 슬롯을 task
-        # 명의로 이미 리스했다(T-0390·workspace_slot). 그때는 alloc 후속 불요임을 문면화한다. slot
-        # 미동반(task-only)이면 F2 alloc(T-0354) 스코프 — 신규 task 는 슬롯 0개로 시작 가능(⑥).
+        # 작업공간(슬롯) — I2 보유 집합 **전수 열거**(ADR-0068). 진입 검증(_validate_task_slot_set)을
+        # 통과한 집합의 surface(슬롯·repo·branch·head·기록↔live·dirty 행렬). `--repo/--slot` 편입
+        # 슬롯도 bind 뒤 조회라 같은 행렬에 합류한다(T-0390). generic "F2 alloc 에서 연결" 안내는
+        # 0개 보유일 때만(spike §3a). slots_for_task 미제공 구 풀은 편입 슬롯 단일 표기로 graceful.
         workspace_slot = task_info.get("workspace_slot")
-        if workspace_slot:
+        slot_set = task_info.get("slot_set") or []
+        if slot_set:
+            self._append_task_slot_matrix(lines, name, slot_set, workspace_slot)
+        elif workspace_slot:
+            # graceful fallback (slots_for_task 미제공 풀) — 편입 슬롯 단일 표기.
             lines.append(
                 f"- 작업공간: `{workspace_slot}` (이 부트스트랩서 task 명의 리스·F2 alloc 후속 불요·T-0390)."
             )
         else:
+            # 0개 보유 — 진입(검증 no-op) + generic 안내는 여기서만(spike §3a).
+            lines.append("- 작업공간: (없음)")
             lines.append(
-                "- 작업공간(슬롯): F2 alloc(T-0354)에서 연결 — 신규 task 는 슬롯 0개로 시작 가능(⑥)."
+                "  작업공간(슬롯): F2 alloc(T-0354)에서 연결 — 신규 task 는 슬롯 0개로 시작 가능(⑥)."
             )
         if pm_state_path:
             suffix = "" if pm_state_exists else " (아직 없음 — 첫 핸드오프가 생성·T-0356)"
             lines.append(f"- pm_state (이 task·서술): `{pm_state_path}`{suffix}")
         return "\n".join(lines)
+
+    # ── W3: task 보유 슬롯 집합 — 진입 전수 검증(I2·ⓐC) + 열거 행렬 (ADR-0068·spike §3a) ──
+
+    # 기록↔live 상태 → 행렬 표기(재열거 surface·전수 검증 통과분). diverged 는 진입 검증이
+    # 차단하므로 정상 열거엔 나타나지 않으나 방어적으로 매핑한다(fail-soft 열거는 크래시 0).
+    _RECORD_LIVE_MARK = {"ok": "✓", "unrecorded": "미기록", "unknown": "미상", "diverged": "⚠diverged"}
+
+    def _validate_task_slot_set(self, task: str) -> int:
+        """task 보유 슬롯 **전수** 0단계 검증 — fault 1+ = 진입 차단 (I2·ⓐC·ADR-0068 W3).
+
+        `slots_for_task(task)` 보유 집합 각각에 기존 0단계 프리미티브(folder 실재·불완전 생성·
+        보호브랜치·기록↔live compare — `_phase0_*`·`compare_slot_git` **재사용**·판정 재구현 0)를
+        돌려 fault 를 모은다. 하나라도 있으면 **전 fault 를 한 번에** stderr 로 표시하고(각 슬롯·
+        판정 근거·해소 커맨드 실값·순차 발견 금지) rc 1 로 진입을 차단한다 — 부분 dump 금지(0단계
+        동형·"해소 전 진행 없음"·ⓐC). 감지=기계·해소=사용자(부트스트랩 밖 record/prune-stale 등
+        실행 후 재진입). 0개 보유 = no-op(검증 대상 없음·진입). slots_for_task 미제공(구 풀)·조회
+        실패는 fail-soft 통과(대상 해소 불가·소프트 진단). 반환 0=통과·1=차단(FAIL-LOUD)."""
+        wp = self._worktree_pool or _load_worktree_pool()
+        if wp is None:
+            return 0
+        slots_fn = getattr(wp, "slots_for_task", None)
+        if not callable(slots_fn):
+            return 0  # 구 풀 — 전수 검증 비활성(fail-soft·소프트 진단).
+        try:
+            leases = list(slots_fn(task) or [])
+        except Exception:  # noqa: BLE001 — fail-soft: 집합 조회 실패는 검증 no-op(진입).
+            return 0
+        faults: list[tuple[str, tuple[str, str, str]]] = []
+        for lease in sorted(leases, key=lambda x: getattr(x, "slot", "")):
+            fault = self._task_slot_fault(wp, lease, task)
+            if fault is not None:
+                faults.append((getattr(lease, "slot", "(미상)"), fault))
+        if not faults:
+            return 0
+        lines = [
+            f"[중단·진입검증] task {task!r} 보유 슬롯 {len(faults)}개가 0단계 검증에 실패했습니다 — "
+            f"진입 차단(부분 dump 금지·ADR-0068 I2·ⓐC). **아래 전부를** 해소한 뒤 다시 부트스트랩하세요 "
+            f"(해소 전 진행 없음·순차 발견 금지):",
+        ]
+        for slot_id, (label, reason, resolve) in faults:
+            lines.append(f"  - {slot_id}: {label}")
+            lines.append(f"      근거: {reason}")
+            lines.append(f"      해소: {resolve}")
+        print("\n".join(lines), file=sys.stderr)
+        return 1
+
+    def _task_slot_fault(self, wp, lease, task: str) -> "tuple[str, str, str] | None":
+        """task 보유 슬롯 1개의 0단계 fault → (label, 근거, 해소커맨드) 또는 None(통과) (W3·재사용).
+
+        기존 0단계 프리미티브를 per-slot 재사용한다(판정 재구현 0) — 각 검사는 **print 없이** 사유+
+        해소만 돌려줘 caller 가 전 fault 를 일괄 표시하게 한다(순차 발견 금지). 검사 순서(우선):
+          1. **stale** (장부 有·worktree 폴더 無) — T-0393 이 회귀 경로서 fail-loud 로 정한 클래스.
+             `slots_for_task` 로 이미 장부엔 있으므로 폴더 부재만 보면 stale(해소=prune-stale).
+          2. **불완전 생성** (state=creating·T-0295).
+          3. **main-참조** (보호브랜치 직접 checkout / origin-추적·§F9·`_phase0_main_reference_reason`).
+          4. **기록↔live diverged** (`compare_slot_git` fail_loud·㉒·`_phase0_diverge_reason` 근거).
+        task 자기 명의 슬롯이라 타-점유(결정 ③)는 자연 무해(session==task)라 대상 아님(생략)."""
+        slot_id = getattr(lease, "slot", None)
+        if not slot_id:
+            return None
+        repo = getattr(lease, "repo", None) or slot_id.rpartition("/")[2].rsplit("_", 1)[0]
+        # 1. stale (장부 有·폴더 無).
+        if not self._phase0_slot_folder_exists(wp, slot_id):
+            return (
+                "stale (장부에 lease 존재·worktree 폴더 부재)",
+                "장부엔 이 슬롯의 task 명의 lease 가 있으나 worktree 디렉터리가 없습니다 — "
+                "외부 삭제/미생성(T-0393 클래스·엉뚱한 트리 vacuous 진입 방지).",
+                f"{_CARD_TOOL_INVOKE}/pm_config.py worktree prune-stale",
+            )
+        # 2. 불완전 생성.
+        if self._phase0_incomplete_create(lease):
+            return (
+                "불완전 생성 (state=creating)",
+                "생성 중/중단된 슬롯이라 안전히 진입할 수 없습니다(T-0295).",
+                f"{_CARD_TOOL_INVOKE}/pm_config.py worktree status",
+            )
+        # 3. main-참조(보호브랜치 직접/원격추적).
+        reason = self._phase0_main_reference_reason(wp, repo, slot_id)
+        if reason is not None:
+            return (
+                "main-참조 (보호브랜치 직접 checkout / origin-추적)",
+                f"{reason} — 이 슬롯 커밋이 canonical/보호 브랜치로 새면 ① 오염(§F9).",
+                f"git -C {slot_id} switch -c {task}",
+            )
+        # 4. 기록↔live diverged.
+        compare = getattr(wp, "compare_slot_git", None)
+        if callable(compare):
+            try:
+                result = compare(slot_id)
+            except Exception:  # noqa: BLE001 — fail-soft: compare 실패는 fault 아님(통과).
+                result = None
+            if result is not None and getattr(result, "fail_loud", False):
+                return (
+                    "기록↔live diverged (외부 개입 가능성)",
+                    _phase0_diverge_reason(result),
+                    f"{_CARD_TOOL_INVOKE}/worktree_pool.py record {slot_id}",
+                )
+        return None
+
+    def _task_slot_set_rows(self, task: str) -> list[dict]:
+        """task 보유 슬롯 전수 열거 행렬 데이터 (I2 surface·fail-soft·부작용 0).
+
+        `slots_for_task(task)` → 슬롯별 {slot·repo·branch·head·record_live·dirty} dict 리스트를
+        돌려준다 — 진입 검증(_validate_task_slot_set) **통과 후** surface 렌더(markdown 행렬·JSON)가
+        소비한다. slots_for_task 미제공(구 풀)/조회 실패는 빈 리스트(→ "(없음)" 분기·graceful).
+        매 필드 조회는 fail-soft(재열거는 크래시 0)."""
+        wp = self._worktree_pool or _load_worktree_pool()
+        if wp is None:
+            return []
+        slots_fn = getattr(wp, "slots_for_task", None)
+        if not callable(slots_fn):
+            return []
+        try:
+            leases = list(slots_fn(task) or [])
+        except Exception:  # noqa: BLE001 — fail-soft: 조회 실패는 빈 열거(surface 줄 축약).
+            return []
+        rows: list[dict] = []
+        for lease in sorted(leases, key=lambda x: getattr(x, "slot", "")):
+            slot_id = getattr(lease, "slot", None)
+            if not slot_id:
+                continue
+            rows.append(self._task_slot_row(wp, lease, slot_id))
+        return rows
+
+    def _task_slot_row(self, wp, lease, slot_id: str) -> dict:
+        """슬롯 1개의 열거 행 — branch/head/dirty(`slot_git_status`) + 기록↔live(`compare_slot_git`)."""
+        repo = getattr(lease, "repo", None) or slot_id.rpartition("/")[2].rsplit("_", 1)[0]
+        status = self._task_slot_git_status(wp, slot_id)
+        head = status.get("head")
+        head_disp = head[:12] if isinstance(head, str) and head else "(미상)"
+        return {
+            "slot": slot_id,
+            "repo": repo,
+            "branch": status.get("branch") or "(detached)",
+            "head": head_disp,
+            "dirty": bool(status.get("dirty")),
+            "record_live": self._task_slot_record_live(wp, slot_id),
+        }
+
+    def _task_slot_git_status(self, wp, slot_id: str) -> dict:
+        """`slot_git_status(slot)`(branch·head·dirty·T-0359) fail-soft 조회 — 미제공/실패는 {}."""
+        fn = getattr(wp, "slot_git_status", None)
+        if not callable(fn):
+            return {}
+        try:
+            return fn(slot_id) or {}
+        except Exception:  # noqa: BLE001 — fail-soft: 상태 조회 실패는 빈 dict(행 표시 흡수).
+            return {}
+
+    def _task_slot_record_live(self, wp, slot_id: str) -> str:
+        """기록↔live 상태 문자열 — `compare_slot_git` 소비 (ok|unrecorded|diverged|unknown·fail-soft)."""
+        fn = getattr(wp, "compare_slot_git", None)
+        if not callable(fn):
+            return "unknown"
+        try:
+            result = fn(slot_id)
+        except Exception:  # noqa: BLE001 — fail-soft: compare 실패는 unknown(표시만).
+            return "unknown"
+        if result is None:
+            return "unknown"
+        if getattr(result, "unrecorded", False):
+            return "unrecorded"
+        if getattr(result, "fail_loud", False):
+            return "diverged"
+        return "ok"
+
+    def _append_task_slot_matrix(
+        self, lines: list, task: str, slot_set: list, workspace_slot: "str | None"
+    ) -> None:
+        """보유 슬롯 전수 열거 행렬을 `lines` 에 추가 (I2·spike §3a·T-0398 렌더 문법과 동형).
+
+        헤더 `작업공간 (task 'X' 보유 N — 전수 검증):` + 슬롯별 `slot · repo · branch · head ·
+        기록↔live <mark> · <dirty>` 행(`_render_task_slots`[pm_config·T-0398]과 같은 ` · ` bullet
+        문법). `--repo/--slot` 편입 슬롯(workspace_slot)은 행 끝에 표기를 단다(T-0390 합류 문면)."""
+        lines.append(f"- 작업공간 (task {task!r} 보유 {len(slot_set)} — 전수 검증):")
+        for row in slot_set:
+            tag = " ·이 부트스트랩 편입(T-0390)" if workspace_slot and row["slot"] == workspace_slot else ""
+            dirty_disp = "dirty" if row["dirty"] else "clean"
+            mark = self._RECORD_LIVE_MARK.get(row["record_live"], row["record_live"])
+            lines.append(
+                f"    - {row['slot']} · repo={row['repo']} · branch={row['branch']} · "
+                f"head={row['head']} · 기록↔live {mark} · {dirty_disp}{tag}"
+            )
 
     def _alloc_and_identity(
         self, repo: str, branch: str | None, resume: str | None
