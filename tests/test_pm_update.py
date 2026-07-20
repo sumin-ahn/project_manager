@@ -361,28 +361,31 @@ def test_detect_manifest_skew_upstream_missing_fail_soft(pm_update, tmp_path):
     assert status == "upstream_missing" and new_entries == []
 
 
-def test_main_suppresses_baseline_on_manifest_skew(pm_update, tmp_path, monkeypatch, capsys):
-    """실 sync 시 로컬 manifest 가 구형(신규 등재분 미포함)이면 loud 경고 + upstream_rev 미갱신."""
+def test_main_selfheal_supersedes_skew_suppression(pm_update, tmp_path, monkeypatch, capsys):
+    """T-0395 amend(T-0396): 구형 로컬 manifest + 읽기 가능한 upstream 이면 baseline 억제가 아니라
+    **자기치유** — upstream 승격으로 skew 가 정의상 0 이 되어, skew/억제 메시지 없이 baseline 이
+    갱신된다(치유 후 정합). T-0395 억제는 upstream manifest 읽기 실패 잔여 케이스 안전망으로만 남고,
+    읽기 가능한 구형 로컬은 이 경로가 대체한다(회사 실측 근절)."""
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "src"
-    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
-    _write_dest_manifest(fake_repo, [SENTINEL_REL])  # 구형 로컬 manifest — NEW_ENGINE_REL 누락.
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL, MANIFEST_SELF_REL])
+    _write_dest_manifest(fake_repo, [SENTINEL_REL, MANIFEST_SELF_REL])  # 구형 — NEW_ENGINE_REL 누락.
     _write_local_conf(fake_repo, f"upstream={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "wouldbaselinerev")
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "amendrev")
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
 
-    rc = pm_update.main([])  # 실 sync — sentinel 복사(apply)까지 도달.
+    rc = pm_update.main([])  # 실 sync.
     assert rc == 0
     out = capsys.readouterr().out
-    assert "manifest skew" in out and NEW_ENGINE_REL in out, \
-        f"skew loud 경고+신규 등재 목록 미출력: {out!r}"
-    assert "억제" in out, f"baseline 억제 안내 미출력: {out!r}"
+    assert "manifest skew" not in out and "억제" not in out, \
+        f"읽기 가능한 구형 로컬인데 T-0395 억제가 자기치유로 대체 안 됨: {out!r}"
+    assert "자기치유" in out and NEW_ENGINE_REL in out, f"자기치유 loud 미출력: {out!r}"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert "upstream_rev" not in conf, \
-        f"skew 인데 upstream_rev baseline 이 갱신됨(false-최신 은폐): {conf.get('upstream_rev')!r}"
+    assert conf.get("upstream_rev") == "amendrev", \
+        f"치유 후 정합인데 baseline 미갱신(억제 잔존): {conf.get('upstream_rev')!r}"
 
 
 def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkeypatch, capsys):
@@ -432,12 +435,13 @@ def test_main_records_baseline_when_upstream_manifest_absent(pm_update, tmp_path
         f"fail-soft 인데 baseline 미갱신: {conf.get('upstream_rev')!r}"
 
 
-def test_main_dry_run_shows_skew_without_recording(pm_update, tmp_path, monkeypatch, capsys):
-    """--dry-run 도 동일 대조 결과(skew 경고)를 표시하되 baseline 은 기록하지 않는다."""
+def test_main_dry_run_shows_selfheal_not_skew_without_recording(pm_update, tmp_path, monkeypatch, capsys):
+    """T-0395 amend(T-0396): --dry-run 은 읽기 가능한 구형 로컬을 skew 억제로 표시하지 않고 **자기치유
+    예정**으로 표시하며, baseline 은 기록하지 않는다(read-only)."""
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "src"
-    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
-    _write_dest_manifest(fake_repo, [SENTINEL_REL])
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL, MANIFEST_SELF_REL])
+    _write_dest_manifest(fake_repo, [SENTINEL_REL, MANIFEST_SELF_REL])
     _write_local_conf(fake_repo, f"upstream={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
@@ -448,8 +452,10 @@ def test_main_dry_run_shows_skew_without_recording(pm_update, tmp_path, monkeypa
     rc = pm_update.main(["--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "manifest skew" in out and NEW_ENGINE_REL in out, \
-        f"dry-run 이 skew 대조 결과를 표시하지 않음: {out!r}"
+    assert "manifest skew" not in out and "억제" not in out, \
+        f"dry-run 이 읽기 가능한 구형 로컬을 skew 억제로 오표시: {out!r}"
+    assert "자기치유 예정" in out and NEW_ENGINE_REL in out, \
+        f"dry-run 이 자기치유 예정을 표시하지 않음: {out!r}"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert "upstream_rev" not in conf, "dry-run 인데 baseline 기록됨(부작용 누출)"
 
@@ -481,6 +487,248 @@ def test_main_target_mode_skips_skew_detection(pm_update, tmp_path, monkeypatch,
     conf = pm_update._read_local_conf(target_root / ".project_manager" / "local.conf")
     assert conf.get("upstream_rev") == "targetrev1", \
         f"--target 인데 baseline 미갱신(현행 거동 위반): {conf.get('upstream_rev')!r}"
+
+
+# ── manifest 자기치유 (T-0396·self-update 2-pass 단일 실행) ─────────────────────
+# 구형 로컬 manifest 를 upstream manifest 로 승격해 신규 등재분을 한 번의 실행으로 도달시킨다.
+# manifest 자기전파 엔트리(T-0305) — upstream 이 항상 등재. 회사 실측 형상 재현에 함께 넣어
+# 로컬 manifest 파일까지 자기치유되는지(신규 등재분 반영) 검증한다.
+MANIFEST_SELF_REL = ".project_manager/engine.manifest"
+
+
+def test_resolve_manifest_selfheal_promotes_upstream_on_new_entry(pm_update, tmp_path):
+    """upstream 이 신규 등재 → ('heal', added=[신규], manifest=upstream_entries)."""
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
+    _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL])  # 구형 로컬 manifest.
+
+    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    assert result["status"] == "heal"
+    assert result["added"] == [NEW_ENGINE_REL] and result["removed"] == []
+    assert {str(e) for e in result["manifest"]} == {SENTINEL_REL, NEW_ENGINE_REL}, \
+        "승격 manifest 가 upstream 등재분 전체가 아님"
+
+
+def test_resolve_manifest_selfheal_diverged_when_local_only_paths(pm_update, tmp_path):
+    """로컬-전용 경로 존재(커스텀 추가) → ('diverged', manifest=None) — 승격 안 함.
+
+    로컬이 upstream 의 부분집합이 아니면 전체 교체가 커스텀을 클로버하므로 승격하지 않고 현행 로컬
+    manifest 를 유지한다([[T-0395]] skew 대조가 upstream 신규분 안전망). "항목 제외"(로컬⊂upstream)와 구별."""
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL])
+    _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL, NEW_ENGINE_REL])  # 로컬-전용 경로.
+
+    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    assert result["status"] == "diverged" and result["manifest"] is None
+    assert result["removed"] == [NEW_ENGINE_REL]
+
+
+def test_resolve_manifest_selfheal_flavor_source_not_clobbered_by_root(pm_update, tmp_path):
+    """codex MF 회귀: flavor 채택자(@source self-prop)는 root(bare)가 아니라 **flavor upstream** 과
+    비교/승격한다 — root 승격으로 flavor manifest 의 `@source` self-prop 을 bare 로 클로버하지 않는다.
+
+    naive 경로-집합 비교였다면 로컬(@source)과 root(bare)를 대조해 flavor manifest 를 root 로 덮었다.
+    self-prop 의 @source 를 따라 flavor↔flavor 로 비교하면 마커가 정합해 신규분만 승격되고 @source 가 보존된다."""
+    source = tmp_path / "src"
+    # root(bare) manifest — 신규 등재 포함(flavor 채택자가 이걸 승격 대상으로 삼으면 클로버).
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
+    # flavor upstream manifest(templates/claude_code) — flavor self-prop(@source)·신규 등재 포함.
+    flavor_rel = "templates/claude_code/.project_manager/engine.manifest"
+    flavor_self = f"{MANIFEST_SELF_REL}    @source={flavor_rel}"
+    (source / "templates" / "claude_code" / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (source / flavor_rel).write_text(
+        "\n".join([SENTINEL_REL, NEW_ENGINE_REL, flavor_self]) + "\n", encoding="utf-8")
+    # 채택자(dest) manifest — flavor self-prop(@source)·구형(NEW_ENGINE_REL 미등재).
+    _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL, flavor_self])
+
+    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    assert result["status"] == "heal", \
+        f"flavor 채택자가 flavor upstream 과 자기치유 안 됨(root 대조로 diverged?): {result['status']}"
+    assert result["added"] == [NEW_ENGINE_REL]
+    selfprop = [e for e in result["manifest"] if str(e) == MANIFEST_SELF_REL]
+    assert selfprop and selfprop[0].source_rel == flavor_rel, \
+        "승격 manifest 의 self-prop 이 flavor @source 를 보존 안 함(root bare 로 클로버)"
+
+
+def test_resolve_manifest_selfheal_diverged_on_marker_edit(pm_update, tmp_path):
+    """공통 경로의 마커가 로컬에서 편집(예: @render 추가)되면 → ('diverged') — 마커 클로버 방지.
+
+    경로 집합만 보면 subset(removed 0)이라 heal 로 오판하지만, 공통 경로의 마커/@source divergence 를
+    감지해 승격을 막는다(codex MF 강화)."""
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])  # root: bare SENTINEL + NEW.
+    _write_dest_manifest(tmp_path / "dest", [f"{SENTINEL_REL}    @render"])  # SENTINEL 에 @render 로컬 편집.
+
+    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    assert result["status"] == "diverged" and result["manifest"] is None, \
+        f"공통 경로 마커 divergence 인데 승격됨(클로버): {result['status']}"
+
+
+def test_resolve_manifest_selfheal_in_sync_when_identical(pm_update, tmp_path):
+    """로컬 manifest 텍스트가 upstream 과 동일 → ('in_sync', manifest=None·로컬 유지)."""
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL])
+    # upstream 과 동일 텍스트로 dest manifest 를 쓴다(개행/순서 동일).
+    (tmp_path / "dest" / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "dest" / ".project_manager" / "engine.manifest").write_text(
+        SENTINEL_REL + "\n", encoding="utf-8")
+
+    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    assert result["status"] == "in_sync" and result["manifest"] is None
+
+
+def test_resolve_manifest_selfheal_upstream_missing_fail_soft(pm_update, tmp_path):
+    """upstream engine.manifest 부재 → ('upstream_missing', manifest=None) (fail-soft·T-0395 안전망)."""
+    source = tmp_path / "src"  # engine.manifest 미생성.
+    source.mkdir(parents=True, exist_ok=True)
+    _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL])
+
+    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    assert result["status"] == "upstream_missing" and result["manifest"] is None
+
+
+def test_resolve_manifest_selfheal_no_local_manifest(pm_update, tmp_path):
+    """로컬 manifest 부재(fresh) → ('no_local', manifest=None) (resolve 가 이미 source 기준)."""
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL])
+    (tmp_path / "dest").mkdir(parents=True, exist_ok=True)  # dest manifest 없음.
+
+    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    assert result["status"] == "no_local" and result["manifest"] is None
+
+
+def test_main_selfheal_reaches_new_entry_in_one_run(pm_update, tmp_path, monkeypatch, capsys):
+    """회사 실측 재현: 구 manifest + 신 등재 upstream → **한 번의 pm_update** 로 신규 파일 도달.
+
+    로컬 manifest 가 구형(NEW_ENGINE_REL 미등재)이어도 upstream manifest 승격으로 plan 이
+    신규 파일을 실어 apply 가 dest 에 복사한다. manifest 자기전파(T-0305)로 로컬 manifest 파일도
+    upstream 판으로 갱신되고, 치유 후 정합이므로 baseline 이 갱신된다(다음 sync 부터 최신 추적).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL, MANIFEST_SELF_REL])
+    _write_dest_manifest(fake_repo, [SENTINEL_REL, MANIFEST_SELF_REL])  # 구형 — 신규 등재 누락.
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "healedrev")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main([])  # 단일 실행.
+    assert rc == 0
+    # ① 신규 엔진 파일이 한 번의 실행으로 dest 에 도달(자기치유 핵심 DoD).
+    assert (fake_repo / NEW_ENGINE_REL).exists(), \
+        "신규 등재 엔진 파일이 한 번의 pm_update 로 도달 안 함(자기치유 실패)"
+    # ② 로컬 manifest 파일이 upstream 판으로 갱신(신규 등재분 반영·self-prop).
+    healed = (fake_repo / ".project_manager" / "engine.manifest").read_text(encoding="utf-8")
+    assert NEW_ENGINE_REL in healed, "로컬 manifest 자기치유 안 됨(신규 등재분 미반영)"
+    # ③ 자기치유 loud + 치유 후 정합이라 baseline 갱신(skew 미발화).
+    out = capsys.readouterr().out
+    assert "자기치유" in out and NEW_ENGINE_REL in out, f"자기치유 loud 미출력: {out!r}"
+    assert "manifest skew" not in out, f"치유 후에도 skew 발화(정합 위반): {out!r}"
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert conf.get("upstream_rev") == "healedrev", \
+        f"치유 후 정합인데 baseline 미갱신: {conf.get('upstream_rev')!r}"
+
+
+def test_main_dry_run_shows_selfheal_without_side_effects(pm_update, tmp_path, monkeypatch, capsys):
+    """--dry-run 은 자기치유 예정을 표시하되 파일/manifest/baseline 을 건드리지 않는다."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL, MANIFEST_SELF_REL])
+    _write_dest_manifest(fake_repo, [SENTINEL_REL, MANIFEST_SELF_REL])
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main(["--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "자기치유 예정" in out and NEW_ENGINE_REL in out, \
+        f"dry-run 이 자기치유 예정을 표시하지 않음: {out!r}"
+    assert not (fake_repo / NEW_ENGINE_REL).exists(), "dry-run 인데 신규 파일 복사됨(부작용)"
+    healed = (fake_repo / ".project_manager" / "engine.manifest").read_text(encoding="utf-8")
+    assert NEW_ENGINE_REL not in healed, "dry-run 인데 로컬 manifest 갱신됨(부작용)"
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert "upstream_rev" not in conf, "dry-run 인데 baseline 기록됨(부작용)"
+
+
+def test_main_target_mode_skips_selfheal(pm_update, tmp_path, monkeypatch, capsys):
+    """--target(엔진 export)은 자기치유 비발화 — 타깃 manifest(루트보다 적은 등재)를 그대로 쓴다.
+
+    타깃 manifest 는 루트와 의도적으로 다르므로(어댑터 비대칭) upstream 승격하면 대량 오탐/오전파.
+    현행(타깃 manifest 기준)을 유지한다 — 자기치유는 self-update(채택자 흡수) 경로 한정.
+    """
+    fake_repo = tmp_path / "fake_repo"
+    target_root = fake_repo / "templates" / "tgt"
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])  # 루트 = 2 등재.
+    _write_dest_manifest(target_root, [SENTINEL_REL])  # 타깃 = 1 등재(의도적 차이).
+    _write_local_conf(target_root, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "targetrev2")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main(["--from", str(source), "--target", "tgt"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "자기치유" not in out, f"--target 에서 자기치유 발화(오탐): {out!r}"
+    # 타깃 manifest 기준이라 NEW_ENGINE_REL 은 전파되지 않는다(의도적 어댑터 비대칭 유지).
+    assert not (target_root / NEW_ENGINE_REL).exists(), \
+        "--target 인데 루트-전용 등재분이 타깃으로 새어 전파됨(승격 오발화)"
+
+
+def test_main_flavor_selfheal_skew_uses_flavor_manifest_no_false_suppress(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """codex R3 회귀: flavor 채택자(@source self-prop) 는 치유 후 root-only 경로를 skew 오탐하지 않는다.
+
+    skew 대조 upstream manifest 를 selfheal 이 해소한 flavor 경로로 통일(T-0395 탐지 == T-0396 승격
+    기준). root manifest 에만 있는 경로(`root_only`)가 있어도, flavor 채택자는 flavor upstream 과
+    대조하므로 skew/억제 없이 신규분이 도달하고 baseline 이 갱신된다. (fix 부재면 root 대조로
+    root_only 가 skew 오탐돼 baseline 억제.)"""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "src"
+    flavor_rel = "templates/claude_code/.project_manager/engine.manifest"
+    flavor_self = f"{MANIFEST_SELF_REL}    @source={flavor_rel}"
+    root_only_rel = ".project_manager/tools/__pm_update_root_only__.py"
+    # 공유 source 파일(플랜 apply 가 읽는다).
+    for rel in (SENTINEL_REL, NEW_ENGINE_REL, root_only_rel):
+        f = source / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f"# src {rel}\n", encoding="utf-8")
+    # root manifest(bare self-prop) — root-only 경로 + 신규 포함(flavor 채택자가 이걸로 skew 하면 오탐).
+    (source / ".project_manager" / "engine.manifest").write_text(
+        "\n".join([SENTINEL_REL, root_only_rel, NEW_ENGINE_REL, MANIFEST_SELF_REL]) + "\n",
+        encoding="utf-8")
+    # flavor upstream manifest(@source self-prop) — 공유 + 신규, root-only 없음.
+    (source / flavor_rel).parent.mkdir(parents=True, exist_ok=True)
+    (source / flavor_rel).write_text(
+        "\n".join([SENTINEL_REL, NEW_ENGINE_REL, flavor_self]) + "\n", encoding="utf-8")
+    # 채택자 manifest = flavor(@source self-prop)·구형(NEW_ENGINE_REL 미등재).
+    _write_dest_manifest(fake_repo, [SENTINEL_REL, flavor_self])
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "flavorrev")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "manifest skew" not in out and "억제" not in out, \
+        f"flavor 채택자가 root-only 경로를 skew 오탐(대조 기준 불일치): {out!r}"
+    assert "자기치유" in out and NEW_ENGINE_REL in out, f"자기치유 loud 미출력: {out!r}"
+    assert (fake_repo / NEW_ENGINE_REL).exists(), "flavor 자기치유가 신규 파일 미도달"
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert conf.get("upstream_rev") == "flavorrev", \
+        f"flavor 치유 후 정합인데 baseline 미갱신(root skew 오탐 억제?): {conf.get('upstream_rev')!r}"
 
 
 # ── MF1(codex): URL upstream + --from 생략 → 명확·actionable 에러 (D5 경계·침묵 실패 금지) ──

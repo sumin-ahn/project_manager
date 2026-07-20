@@ -706,7 +706,9 @@ def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
     return bool(pm_import.record_upstream_rev(dest_root, rev))
 
 
-def detect_manifest_skew(local_manifest: list, source_root: Path) -> tuple[str, list[str]]:
+def detect_manifest_skew(
+    local_manifest: list, source_root: Path, *, upstream_manifest: Path | None = None
+) -> tuple[str, list[str]]:
     """upstream engine.manifest ↔ 로컬(sync 에 쓰인) manifest 대조 — 신규 등재분 탐지(T-0395).
 
     로컬 manifest 가 구형이면 `pm_update` 는 로컬 등재분만 복사해 upstream 이 새로 등재한 엔진
@@ -716,16 +718,22 @@ def detect_manifest_skew(local_manifest: list, source_root: Path) -> tuple[str, 
     호출부(main)가, 신규 등재분 실제 도달(자기치유)은 [[T-0396]] 이 맡는다(분리: 탐지는 무해).
 
     `local_manifest` 는 실 sync 가 쓴 manifest(resolve_manifest_for_dest 산출 — dest 우선·없으면
-    source). upstream manifest 는 source_root 의 engine.manifest 를 직접 읽는다. 두 집합의 순수
-    경로(마커 제외·ManifestEntry 가 이미 떼어냄·str(e))를 비교해 upstream 에만 있는 경로를 신규
-    등재분으로 본다 — 로컬에서 제거된 경로(local−upstream)는 관심 밖(신규 도달 누락만 차단 대상).
+    source). 대조 upstream manifest 는 `upstream_manifest` 인자(있으면)를, 없으면 source_root 의
+    root engine.manifest 를 읽는다. **flavor-correct 통일**(codex R3·T-0396): [[T-0396]] selfheal 이
+    채택자 self-prop `@source` 를 따라 flavor upstream manifest 를 해소하므로, main 은 *그 동일 경로*를
+    이 인자로 넘겨 두 기전(T-0395 탐지 / T-0396 승격)의 대조 기준을 flavor 로 정합시킨다 — 안 그러면
+    flavor 채택자가 치유 후에도 root-only 경로(`.claude/agents` 등)를 skew 오탐해 baseline 이 억제된다.
+    인자 미주입(직접 호출·레거시)은 root 폴백(후방호환). 두 집합의 순수 경로(마커 제외·ManifestEntry
+    가 이미 떼어냄·str(e))를 비교해 upstream 에만 있는 경로를 신규 등재분으로 본다 — 로컬에서 제거된
+    경로(local−upstream)는 관심 밖(신규 도달 누락만 차단 대상).
 
     반환 (status, new_entries):
       - ('upstream_missing', []) : upstream engine.manifest 부재/읽기 실패(구 upstream) — fail-soft.
       - ('in_sync', [])          : 신규 등재분 0(정합) — baseline 갱신 진행.
       - ('skew', [<path>…])      : 로컬에 없는 upstream 등재 경로 존재 — baseline 억제 대상(정렬).
     """
-    upstream_manifest = Path(source_root) / ".project_manager" / "engine.manifest"
+    if upstream_manifest is None:
+        upstream_manifest = Path(source_root) / ".project_manager" / "engine.manifest"
     try:
         upstream_entries = read_manifest(upstream_manifest)
     except (FileNotFoundError, OSError):
@@ -761,6 +769,155 @@ def _print_manifest_skew_finding(
         )
     elif status == "in_sync" and dry_run:
         print("manifest 정합 — upstream 신규 등재분 0(baseline 갱신 진행 예정).")
+
+
+# manifest self-prop 엔트리(채택자 engine.manifest 가 자기 자신을 전파 대상으로 등재한 행·T-0305)의
+# path — flavor-correct upstream 해소(resolve_manifest_selfheal)와 root 폴백의 단일 기준.
+_MANIFEST_SELF_REL = ".project_manager/engine.manifest"
+
+
+def _manifest_marker_key(entry) -> tuple:
+    """ManifestEntry 의 마커 3종(@render/@target-owned/@source)을 비교키 튜플로 — 경로 집합만으론
+    못 잡는 flavor 차이(예: `@source=templates/claude_code/...` vs bare)를 selfheal 이 감지하게 한다.
+
+    평문 str 항목(레거시)은 getattr 폴백으로 (False, False, None)(마커 없음·후방호환).
+    """
+    return (
+        bool(getattr(entry, "render", False)),
+        bool(getattr(entry, "target_owned", False)),
+        getattr(entry, "source_rel", None),
+    )
+
+
+def _selfprop_upstream_rel(local_entries: list) -> str:
+    """채택자 로컬 manifest 의 self-prop 엔트리(`.project_manager/engine.manifest`)를 따라 flavor-correct
+    upstream manifest 의 source-root 상대 *읽기* 경로를 낸다(T-0396·codex MF).
+
+    claude_code/opencode 채택자의 self-prop 는 `@source=templates/<harness>/.project_manager/
+    engine.manifest` 라, 그 @source(=_source_root_rel)가 같은 flavor upstream manifest 를 가리킨다.
+    self-prop 엔트리가 없거나 bare(@source 부재)면 root manifest(`_MANIFEST_SELF_REL`·현행 폴백).
+    이로써 flavor↔flavor 비교가 성립해 root(bare) 승격이 flavor manifest 를 클로버하지 않는다.
+    """
+    for entry in local_entries:
+        if str(entry) == _MANIFEST_SELF_REL:
+            return _source_root_rel(entry)  # @source 있으면 그 경로·없으면 str(entry)=_MANIFEST_SELF_REL
+    return _MANIFEST_SELF_REL
+
+
+def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
+    """self-update manifest 자기치유 (T-0396·2-pass 단일 실행) — upstream engine.manifest 를
+    이번 sync 의 **계획 기준 manifest 로 승격**해 신규 등재분을 한 번의 실행으로 도달시킨다.
+
+    채택자가 bare `pm-update`/CLI 로 흡수할 때, 로컬 engine.manifest 가 구형이면
+    resolve_manifest_for_dest 가 그 구형 로컬 manifest 를 집어 plan 이 신규 등재 경로(upstream 이
+    새로 등재한 엔진 파일)를 아예 안 실었다 — 다음 sync 전까진 영영 미도달(회사 실측 2026-07-20:
+    구 manifest·pm_handoff identity_args 미등재 → AttributeError·손 manifest 교체로만 복구). 이
+    함수는 upstream manifest 를 plan 기준으로 승격한다. manifest 자신도 self-prop 엔트리(T-0305·
+    upstream 항상 등재)라 같은 plan 안에서 로컬 manifest 파일이 upstream 판으로 apply 된다 —
+    별도 write 없이 정상 순서(missing-check 후·실 apply 시·dry-run 무부작용)에서 갱신된다.
+
+    **flavor-correct upstream 해소** (codex MF·T-0305 `@source` self-prop): 비교/승격 대상 upstream
+    manifest 는 root(`source_root/.project_manager/engine.manifest`·claude-scoped·bare)가 아니라 채택자
+    self-prop 엔트리의 `@source` 를 따라간 *같은 flavor* manifest 다. claude_code/opencode 채택자의
+    self-prop 는 `.project_manager/engine.manifest @source=templates/<harness>/.project_manager/
+    engine.manifest` 라, 이를 무시하고 root 를 승격하면 flavor manifest(@source 마커 보유)를 root(bare)로
+    **클로버**해 하네스-특정 remap 구조를 깬다. self-prop 의 @source(=`_source_root_rel`)로 flavor upstream
+    을 읽어 flavor↔flavor 로 비교하면 마커가 정합하고 신규 등재분만 승격된다. self-prop 부재/bare 는
+    root 로 폴백(현행).
+
+    T-0142("manifest 진화=스킬 reconcile·self-list 아님")의 통제-상실 우려(채택자 로컬 manifest
+    커스텀 제외)는 **전체 교체 + diff loud 표시**로 대체한다(자동 병합 안 함·호출부가 표시).
+    flavor upstream manifest 부재/읽기 실패면 fail-soft(로컬 유지·plan 무변경) — [[T-0395]] 의
+    baseline 억제가 그 잔여 경로 안전망이다. --target(엔진 export)은 호출하지 않는다(타깃
+    manifest 가 루트와 의도적으로 다름·skew 검출과 동일 경계).
+
+    반환 dict:
+      - status  : 'upstream_missing'(flavor upstream 부재·fail-soft) | 'no_local'(로컬 manifest 부재·
+                  이미 source manifest 기준) | 'in_sync'(로컬==upstream 또는 경로 동일·무변경) |
+                  'diverged'(로컬-전용 경로 또는 공통 경로 마커/@source divergence=커스텀 편집·승격
+                  안 함·[[T-0395]] 안전망) | 'heal'(로컬 ⊂ upstream·마커 정합·신규 등재 존재·승격)
+      - added   : flavor upstream 에만 있는 순수 경로(신규/재-등재·정렬) — 'heal' 이면 이번 sync 로 도달
+      - removed : 로컬 manifest 에만 있던 순수 경로('diverged' 판정 근거·정렬)
+      - manifest: plan 이 쓸 ManifestEntry 리스트 — 'heal' 이면 flavor upstream_entries, 그 외 None
+                  (None 이면 호출부가 resolve_manifest_for_dest 산출 로컬 manifest 를 그대로 쓴다).
+      - upstream_manifest: 대조에 쓴 flavor-correct upstream engine.manifest **Path** — 호출부(main)가
+                  이 경로를 detect_manifest_skew 에 그대로 넘겨 두 기전의 대조 기준을 flavor 로 정합시킨다
+                  (codex R3). 로컬 manifest 부재('no_local')는 self-prop 이 없어 root 폴백 경로.
+    """
+    dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"
+    root_manifest = Path(source_root) / ".project_manager" / "engine.manifest"
+    if not dest_manifest.exists():
+        # 로컬 manifest 부재(fresh/구 import) — resolve_manifest_for_dest 가 이미 source manifest 를
+        #   집으므로 plan 이 upstream 기준(신규 등재 포함)으로 돈다. 승격 불요(무변경·현행). self-prop
+        #   이 없어 skew 대조는 root(=resolve 산출과 동일) 로 정합.
+        return {"status": "no_local", "added": [], "removed": [],
+                "manifest": None, "upstream_manifest": root_manifest}
+    local_entries = read_manifest(dest_manifest)
+    # flavor-correct upstream 읽기 경로 — 채택자 self-prop 엔트리의 @source 를 따라간다(부재/bare 는 root).
+    upstream_rel = _selfprop_upstream_rel(local_entries)
+    upstream_manifest = Path(source_root) / upstream_rel
+    try:
+        upstream_text = upstream_manifest.read_text(encoding="utf-8")
+        upstream_entries = read_manifest(upstream_manifest)
+    except (FileNotFoundError, OSError):
+        # flavor upstream 읽기 실패 — skew 대조도 같은 경로를 넘겨 upstream_missing 으로 정합(fail-soft).
+        return {"status": "upstream_missing", "added": [], "removed": [],
+                "manifest": None, "upstream_manifest": upstream_manifest}
+    local_text = dest_manifest.read_text(encoding="utf-8")
+    if local_text == upstream_text:
+        return {"status": "in_sync", "added": [], "removed": [],
+                "manifest": None, "upstream_manifest": upstream_manifest}
+    # 경로 + 마커(@render/@target-owned/@source) 동시 비교 — 경로 집합만 보면 flavor manifest 의
+    #   @source self-prop 을 root bare 로 덮는 클로버를 못 잡는다(codex MF). 공통 경로의 마커가
+    #   하나라도 갈리면(로컬 커스텀 편집·잘못된 flavor 대조) 승격하지 않는다.
+    local_markers = {str(e): _manifest_marker_key(e) for e in local_entries}
+    upstream_markers = {str(e): _manifest_marker_key(e) for e in upstream_entries}
+    added = sorted(set(upstream_markers) - set(local_markers))
+    removed = sorted(set(local_markers) - set(upstream_markers))
+    marker_divergent = sorted(
+        p for p in (set(local_markers) & set(upstream_markers))
+        if local_markers[p] != upstream_markers[p]
+    )
+    if removed or marker_divergent:
+        # 로컬-전용 경로 또는 공통 경로 마커 divergence = 로컬이 flavor upstream 의 단순 부분집합이
+        #   아니다(채택자 커스텀 편집·마커 손질). 전체 교체하면 그 커스텀/구조를 클로버하므로 승격하지
+        #   않고 현행 로컬 manifest 를 유지한다. upstream 신규 등재분은 [[T-0395]] skew 대조가
+        #   surface 한다(안전망). "항목 제외" 커스텀(로컬⊂upstream·마커 정합)은 아래 heal 로 전체 교체.
+        return {"status": "diverged", "added": added, "removed": removed,
+                "manifest": None, "upstream_manifest": upstream_manifest}
+    if not added:
+        # 경로/마커 동일(주석만 차이) — 도달할 신규 등재 경로 0. manifest 자신도 self-prop 엔트리라
+        #   plan 이 파일은 갱신한다(승격 불요). in_sync 로 취급(baseline 갱신 진행).
+        return {"status": "in_sync", "added": [], "removed": [],
+                "manifest": None, "upstream_manifest": upstream_manifest}
+    # 로컬 ⊂ upstream(removed 0·마커 정합·added>0) — 구형/항목-제외 형상. flavor upstream 을 계획
+    #   기준으로 승격해 신규(또는 재-등재) 경로를 한 번의 sync 로 도달시킨다(전체 교체·자동 병합 없음).
+    return {"status": "heal", "added": added, "removed": [],
+            "manifest": upstream_entries, "upstream_manifest": upstream_manifest}
+
+
+def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -> None:
+    """resolve_manifest_selfheal 결과를 사람이 읽을 형태로 출력(T-0396·loud diff).
+
+    - 'heal'            : loud — upstream manifest 를 계획 기준으로 승격(전체 교체·자동 병합 없음).
+                          upstream 이 새로/재-등재한 경로(+·이번 sync 로 도달)를 표시한다. 로컬 ⊂
+                          upstream 이 승격 조건이라 로컬-전용 제거분은 없다(있으면 'diverged').
+    - 'upstream_missing': 무출력 — [[T-0395]] skew 대조가 이어서 fail-soft note 를 낸다(중복 회피).
+    - 'diverged'/'in_sync'/'no_local'/'skipped': 무출력 — 'diverged'(로컬-전용 경로=다른 하네스/커스텀)는
+                          승격 안 하고 [[T-0395]] skew 대조에 맡긴다(중복 회피).
+
+    승격 자체는 호출부(main)가 plan manifest 를 교체해 수행 — 이 함수는 출력만.
+    """
+    if selfheal.get("status") != "heal":
+        return
+    added = selfheal["added"]
+    verb = "자기치유 예정" if dry_run else "자기치유"
+    print(
+        f"→ engine.manifest {verb} — upstream manifest 를 계획 기준으로 승격 "
+        f"(전체 교체·자동 병합 없음·T-0396): 신규 등재 +{len(added)}"
+    )
+    for path in added:
+        print(f"    + {path}  (upstream 신규/재-등재 — 이번 sync 로 도달)")
 
 
 # local.conf key(lowercase) → operational token key(uppercase·pm_render). board.py init 은
@@ -1118,6 +1275,23 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     manifest = read_manifest(manifest_path)
+
+    # ── manifest 자기치유 (T-0396·self-update 2-pass) — upstream engine.manifest 를 이번 sync 의
+    #    계획 기준으로 승격해, 로컬 manifest 가 구형이어도 신규 등재분이 한 번의 실행으로 plan→apply
+    #    에 실린다(회사 실측: bare CLI 흡수가 신규 등재분 미도달). manifest 자신도 self-prop 엔트리
+    #    (T-0305)라 같은 plan 안에서 로컬 파일이 upstream 판으로 갱신된다(별도 write 불요). upstream
+    #    manifest 부재/읽기 실패는 fail-soft(로컬 유지) — [[T-0395]] baseline 억제가 그 잔여 경로
+    #    안전망. --target(엔진 export)은 타깃 manifest 가 루트와 의도적으로 달라 승격하지 않는다
+    #    (현행·아래 skew 검출과 동일 경계). 승격 후 skew 는 정의상 0(manifest==upstream).
+    selfheal: dict = {
+        "status": "skipped", "added": [], "removed": [],
+        "manifest": None, "upstream_manifest": None,
+    }
+    if not args.target:
+        selfheal = resolve_manifest_selfheal(effective_dest, source_root)
+        if selfheal["manifest"] is not None:
+            manifest = selfheal["manifest"]
+
     # --target(루트→templates/<name>) 은 render 를 끈다 — 템플릿은 토큰-form 소스라 copy2 로
     # 토큰을 보존해야 한다(렌더 시 local.conf 부재 → operational leak·_assert_no_leak crash).
     # render 는 채택자 self-update(--target 없음·local.conf 보유)와 pm_import 경로에서만.
@@ -1181,16 +1355,28 @@ def main(argv: list[str] | None = None) -> int:
     #    타깃별 manifest(templates/*/engine.manifest)가 루트와 *의도적으로* 다르므로(어댑터
     #    비대칭·@target-owned 등) 대조하면 대량 오탐 + baseline 억제가 된다. --target 은 검출/억제
     #    를 비발화하고 현행 거동(무조건 baseline 갱신)을 유지한다(codex must-fix).
+    #
+    #    **flavor-correct 대조 기준 통일** (codex R3): skew 대조 upstream manifest 는 selfheal 이
+    #    해소한 *동일* flavor-correct 경로(`selfheal["upstream_manifest"]`)를 넘긴다 — 안 그러면
+    #    flavor 채택자(@source self-prop)가 치유 후에도 root-only 경로(`.claude/agents` 등)를 skew
+    #    오탐해 baseline 이 억제된다(T-0396 승격 기준 == T-0395 탐지 기준). 승격되면 manifest==flavor
+    #    upstream 이라 skew 는 정의상 0.
     skew_status, skew_new = (
-        ("skipped", []) if args.target else detect_manifest_skew(manifest, source_root)
+        ("skipped", [])
+        if args.target
+        else detect_manifest_skew(
+            manifest, source_root, upstream_manifest=selfheal["upstream_manifest"]
+        )
     )
 
     if not changes:
         print("최신 — 변경 없음.")
+        _print_manifest_selfheal_finding(selfheal, dry_run=args.dry_run)
         _print_manifest_skew_finding(skew_status, skew_new, dry_run=args.dry_run)
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
+        _print_manifest_selfheal_finding(selfheal, dry_run=True)
         _print_manifest_skew_finding(skew_status, skew_new, dry_run=True)
         return 0
 
@@ -1198,6 +1384,7 @@ def main(argv: list[str] | None = None) -> int:
     msg = f"✓ {len(changes)} 파일 동기화"
     print(msg)
 
+    _print_manifest_selfheal_finding(selfheal, dry_run=False)
     _print_manifest_skew_finding(skew_status, skew_new, dry_run=False)
 
     # upstream_rev baseline 갱신(T-0145·ADR-0032 D2) — 매 sync 마다 source(upstream) HEAD 를
