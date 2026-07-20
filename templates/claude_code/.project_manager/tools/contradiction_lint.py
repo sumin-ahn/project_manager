@@ -108,6 +108,37 @@ def _build_excerpt(file_lines: list[str], ref_idxs: list[int]) -> str:
     return "\n".join(out)
 
 
+# ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
+# baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
+# 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
+# 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
+# vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
+# (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
+ENGINE_REV = "v1.3.5"
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (T-0397·fail-loud·skew→명시 에러).
+
+    불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
+    지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
+    """
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True  # T-0397 — fail-soft 로더가 재-raise 식별
+        raise err
+
+
+def _is_engine_rev_skew(exc) -> bool:
+    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (T-0397·fail-soft 재-raise 식별)."""
+    return getattr(exc, "_engine_rev_skew", False)
+
+
 # ── board 재사용 (wikilink 문법·파일 수집·신설 매핑 0) ────────────────────────────
 
 def _load_board():
@@ -118,8 +149,11 @@ def _load_board():
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-    except Exception:
+    except Exception as exc:
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — board 사본 skew 는 fail-loud(삼키지 않는다).
         return None
+    _verify_engine_rev(mod, "board.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
     return mod
 
 

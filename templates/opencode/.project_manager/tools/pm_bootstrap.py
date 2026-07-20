@@ -208,6 +208,45 @@ def _dashboard_file() -> Path:
     return REPO / ".project_manager" / "wiki" / "log" / "dashboard.md"
 
 
+# ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
+# baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
+# 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
+# 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
+# vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
+# (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
+ENGINE_REV = "v1.3.5"
+
+# _load_tool(generic)이 이름으로 로드하는 것 중 rev 스탬프를 지닌(계측된) 형제만 대조.
+# pm_log 등 미계측 도구는 제외(정상 사본에서도 ENGINE_REV 부재라 오탐). 계측 확대 시 추가.
+_STAMPED_SIBLINGS = frozenset({"pm_handoff.py", "pm_bootstrap.py"})
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (T-0397·fail-loud·skew→명시 에러).
+
+    불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
+    지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
+    """
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True  # T-0397 — fail-soft 로더가 재-raise 식별
+        raise err
+
+
+def _is_engine_rev_skew(exc) -> bool:
+    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (T-0397).
+
+    fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
+    판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
+    (예: 신 pm_bootstrap→신 board→구 identity_args 검출이 None 강등되지 않게)."""
+    return getattr(exc, "_engine_rev_skew", False)
+
+
 # ── worktree_pool import seam (multi-PM 모드·ADR-0013) ───────────────────────────
 # multi-PM 인자(--repo)를 받았을 때만 alloc 경로에 진입한다. 솔로 무인자 경로는 이
 # 모듈을 전혀 쓰지 않으므로 import 실패가 무해(fail-soft) — 단 --repo 를 줬는데
@@ -228,9 +267,12 @@ def _load_worktree_pool():
         spec = importlib.util.spec_from_file_location("worktree_pool", wp_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
-    except Exception:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
         return None
+    _verify_engine_rev(mod, "worktree_pool.py")  # T-0397 — 로드 성공 후 skew 는 fail-loud(try 밖)
+    return mod
 
 
 def _load_board():
@@ -249,9 +291,12 @@ def _load_board():
         spec = importlib.util.spec_from_file_location("board", BOARD_PY)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
-    except Exception:  # noqa: BLE001 — fail-soft: 보호 경고는 소프트(로드 실패=경고 생략).
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 보호 경고는 소프트(로드 실패=경고 생략).
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — board 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
         return None
+    _verify_engine_rev(mod, "board.py")  # T-0397 — 로드 성공 후 skew 는 fail-loud(try 밖)
+    return mod
 
 
 def _load_tool(name: str):
@@ -273,9 +318,14 @@ def _load_tool(name: str):
         spec = importlib.util.spec_from_file_location(name, tool_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
-    except Exception:  # noqa: BLE001 — fail-soft: 차수/dump 는 소프트(로드 실패=placeholder).
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 차수/dump 는 소프트(로드 실패=placeholder).
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
         return None
+    # T-0397 불변식: stamped sibling(pm_handoff·pm_bootstrap …)을 로드하는 지점은 verify.
+    if f"{name}.py" in _STAMPED_SIBLINGS:
+        _verify_engine_rev(mod, f"{name}.py")
+    return mod
 
 
 def _load_identity_args():
@@ -296,9 +346,12 @@ def _load_identity_args():
         spec = importlib.util.spec_from_file_location("identity_args", ia_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
-    except Exception:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
         return None
+    _verify_engine_rev(mod, "identity_args.py")  # T-0397 — 로드 성공 후 skew 는 fail-loud(try 밖)
+    return mod
 
 
 def _registered_repos(areas_file: Path | None = None) -> list[str]:

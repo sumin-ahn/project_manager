@@ -380,6 +380,40 @@ def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
     return "".join(out)
 
 
+# ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
+# baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
+# 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
+# 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
+# vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
+# (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
+ENGINE_REV = "v1.3.5"
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (T-0397·fail-loud·skew→명시 에러).
+
+    불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
+    지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
+    """
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True  # T-0397 — fail-soft 로더가 재-raise 식별
+        raise err
+
+
+def _is_engine_rev_skew(exc) -> bool:
+    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (T-0397).
+
+    fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
+    판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다."""
+    return getattr(exc, "_engine_rev_skew", False)
+
+
 def _load_identity_args():
     """공용 정체성 인자 모듈(`identity_args.py`·T-0322·ADR-0057)을 같은 tools/ 디렉토리에서
     경로 로드한다 (`_load_pm_update_module`/`_load_domain_module` 동형 — 스크립트-위치 앵커·
@@ -399,6 +433,7 @@ def _load_identity_args():
     spec = importlib.util.spec_from_file_location("identity_args", ia_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    _verify_engine_rev(mod, "identity_args.py")  # T-0397 — 사본 skew fail-loud
     return mod
 
 
@@ -2642,7 +2677,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
 # (실행=기록·손기록 없음), 보호훅이 `livegate check --rev <sha>` 로 push HEAD 가 green 인지
 # 소비한다. false-green 방어를 위해 rc0 만으로는 부족하고 수집 N==pin 을 함께 요구한다
 # (T-0190 수집 pin·T-0220 rc5 vacuous-pass 근절의 원칙을 라이브 채널로 확장).
-LIVEGATE_RELEASE_PIN = 15  # `pytest -m release` 로 돌아야 하는 라이브/사이클 케이스 수 (단일 진실·T-0278 worktree 라이브 +2·T-0309 멀티유저 composite +1·T-0349 pm-release 라이브 +2·T-0400 task 사이클 e2e +1[기계 e2e·ADR-0068 사이클 게이트]).
+LIVEGATE_RELEASE_PIN = 16  # `pytest -m release` 로 돌아야 하는 라이브/사이클 케이스 수 (단일 진실·T-0278 worktree 라이브 +2·T-0309 멀티유저 composite +1·T-0349 pm-release 라이브 +2·T-0400 task 사이클 e2e +1[기계 e2e·ADR-0068 사이클 게이트]·T-0397 engine_rev↔CHANGELOG bump 정합 +1[기계·릴리즈마다 rev bump 강제]).
                            # tests/test_release_wave.py `_EXPECTED_RELEASE_TESTS` 와 값 공유.
 LIVEGATE_TEST_CMD = "pytest -m release -q"   # 라이브 릴리즈 wave selection.
 
@@ -4036,8 +4071,11 @@ def _load_pm_bootstrap_module():
             return None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        _verify_engine_rev(mod, "pm_bootstrap.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
         return mod
-    except Exception:  # noqa: BLE001 — 로드 실패는 무발화(freshness 생략·advisory).
+    except Exception as exc:  # noqa: BLE001 — 로드 실패는 무발화(freshness 생략·advisory).
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — pm_bootstrap 사본 skew 는 fail-loud(삼키지 않는다).
         return None
 
 
@@ -6667,7 +6705,10 @@ def _load_domain_module():
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-    except Exception:  # noqa: BLE001 — 로드 실패는 None 으로 흡수(비차단).
+        _verify_engine_rev(mod, "domain.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
+    except Exception as exc:  # noqa: BLE001 — 로드 실패는 None 으로 흡수(비차단).
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — domain 사본 skew 는 fail-loud(삼키지 않는다).
         return None
     return mod
 

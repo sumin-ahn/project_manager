@@ -37,8 +37,8 @@ SYNC_TIMEOUT = 60
 # livegate fixture 의 `n` — board.LIVEGATE_RELEASE_PIN(릴리즈 wave 케이스 수)의 미러. 이 파일은
 # 격리 원칙상 board.py 를 import 하지 않으므로(모듈 docstring) 값을 여기 둔다. 판정상 무관하다 —
 # `_livegate_check` 는 status==pass ∧ head==rev 만 보고 n 은 안 보기 때문(check 채널·green 판정 무관).
-# 값 자체는 board.LIVEGATE_RELEASE_PIN(=15·T-0278/T-0309/T-0349/T-0400) 과 schema 충실성 위해 맞춰 둔다(무관하나 혼란 방지).
-_LIVEGATE_RELEASE_PIN = 15
+# 값 자체는 board.LIVEGATE_RELEASE_PIN(=16·T-0278/T-0309/T-0349/T-0400/T-0397) 과 schema 충실성 위해 맞춰 둔다(무관하나 혼란 방지).
+_LIVEGATE_RELEASE_PIN = 16
 
 
 # ── 모듈 로드 + tmp 재배선 (부모·자식 공용) ─────────────────────────────────
@@ -4196,6 +4196,9 @@ def _install_engine(engine_root: Path) -> None:
     `identity_args.py`(ADR-0057·T-0322)도 함께 심는다 — board.py 가 같은 tools/ 디렉토리에서
     경로-앵커 로드(`_load_identity_args`)하는 **load-bearing sibling**이라, 빠지면 이 최소-격리
     엔진(board.py 단일 파일)이 import 시점에 fail-loud 로 죽는다(전 서브에 정체성 파싱 필수).
+
+    (T-0397 rev 스탬프는 board·identity_args 소스에 baked 리터럴이라 둘 다 실 복사본이면 서로
+    일치한다 — engine_rev.py 는 런타임 verify 가 읽지 않으므로 이 최소 격리 엔진엔 불요.)
     """
     tools = engine_root / ".project_manager" / "tools"
     tools.mkdir(parents=True, exist_ok=True)

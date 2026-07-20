@@ -36,6 +36,12 @@ def _load(name: str):
     return mod
 
 
+# T-0397 — ticket_finish 의 board 로더(count_board_done·get_ticket_*)가 로드한 board 모듈의
+# ENGINE_REV 를 실 엔진 rev 와 대조한다. 이 파일의 미니 fake board 도 유효 rev 스탬프를 지녀야
+# skew 로 오판되지 않는다(값은 실 engine_rev 에서 읽어 baked — 하드코딩·릴리즈 커플링 회피).
+_ENGINE_REV_STAMP = f"ENGINE_REV = {_load('engine_rev').ENGINE_REV!r}\n"
+
+
 def _make_board_dir(root: Path) -> Path:
     """`.project_manager/board/tickets/{open,...}` 를 만들어 board/ 분리 형상을 모사한다."""
     board_dir = root / ".project_manager" / "board"
@@ -248,7 +254,7 @@ TICKETS_DIR = _BASE / "wiki_dir"      # legacy 상수(스테일) — 부르면 �
 def _write_fake_board(tmp_path: Path) -> Path:
     """진실(board_dir/done=1)과 스테일(wiki_dir/done=99)을 가르는 미니 board.py 를 만든다."""
     bp = tmp_path / "fake_board.py"
-    bp.write_text(_FAKE_BOARD_PY, encoding="utf-8")
+    bp.write_text(_ENGINE_REV_STAMP + _FAKE_BOARD_PY, encoding="utf-8")  # T-0397 rev 스탬프
     (tmp_path / "board_dir" / "done").mkdir(parents=True, exist_ok=True)
     (tmp_path / "board_dir" / "done" / "T-0001-real.md").write_text("# real\n", encoding="utf-8")
     (tmp_path / "wiki_dir" / "done").mkdir(parents=True, exist_ok=True)
@@ -275,7 +281,8 @@ def test_ticket_finish_count_board_done_calls_tickets_dir_not_constant(ticket_fi
 def test_ticket_finish_count_board_done_failsoft_on_broken_board(ticket_finish, tmp_path):
     """board.py 로드/속성 실패 → -1 (fail-soft·현행 보존 — tickets_dir() 부재여도 graceful)."""
     bp = tmp_path / "broken_board.py"
-    bp.write_text("def tickets_dir():\n    raise RuntimeError('boom')\n", encoding="utf-8")
+    bp.write_text(_ENGINE_REV_STAMP + "def tickets_dir():\n    raise RuntimeError('boom')\n",
+                  encoding="utf-8")  # T-0397 rev 스탬프 — 로드는 통과, tickets_dir() 만 boom→fail-soft
     assert ticket_finish.count_board_done(bp) == -1
 
 

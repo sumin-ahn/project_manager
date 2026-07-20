@@ -63,6 +63,41 @@ LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 # tools/ 라 동일하게 동작한다 (T-0322 결정: 도구 zero-import 관성은 유지하되 이 leaf util 은
 # 예외적으로 sibling 로드).
 
+# ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
+# baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
+# 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
+# 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
+# vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
+# (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
+ENGINE_REV = "v1.3.5"
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (T-0397·fail-loud·skew→명시 에러).
+
+    불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
+    지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
+    """
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True  # T-0397 — fail-soft 로더가 재-raise 식별
+        raise err
+
+
+def _is_engine_rev_skew(exc) -> bool:
+    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (T-0397).
+
+    fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
+    판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
+    (예: 신 pm_handoff→신 worktree_pool→구 형제 검출이 조용히 None 강등되지 않게)."""
+    return getattr(exc, "_engine_rev_skew", False)
+
+
 def _load_identity_args():
     """공용 정체성 인자 모듈(identity_args.py)을 같은 tools/ 에서 경로 로드한다 (board.py
     `_load_identity_args`·아래 worktree_pool/pm_bootstrap 로더 동형·sys.path 무오염).
@@ -76,6 +111,7 @@ def _load_identity_args():
     spec = importlib.util.spec_from_file_location("identity_args", ia_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    _verify_engine_rev(mod, "identity_args.py")  # T-0397 — 사본 skew fail-loud
     return mod
 
 
@@ -134,9 +170,14 @@ def _load_worktree_pool():
         spec = importlib.util.spec_from_file_location("worktree_pool", wp_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
-    except Exception:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — 중첩 로드에서 검출된 형제 skew 는 fail-loud(삼키지 않는다).
         return None
+    # T-0397 — 로드 성공 후 rev skew 는 fail-loud(try 밖이라 fail-soft 로 삼켜지지 않는다).
+    # 부재(파일 없음)는 위에서 이미 None 폴백 — 여기선 "present-but-skewed" 만 표출.
+    _verify_engine_rev(mod, "worktree_pool.py")
+    return mod
 
 
 # ── pm_bootstrap import seam (회귀 cwd 자동해소·T-0124) ───────────────────────────
@@ -159,9 +200,12 @@ def _load_pm_bootstrap():
         spec = importlib.util.spec_from_file_location("pm_bootstrap", bp_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
-    except Exception:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — pm_bootstrap(및 그 중첩 형제) skew 는 fail-loud(삼키지 않는다).
         return None
+    _verify_engine_rev(mod, "pm_bootstrap.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
+    return mod
 
 
 def _load_board():
@@ -180,9 +224,12 @@ def _load_board():
         spec = importlib.util.spec_from_file_location("board", b_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
-    except Exception:  # noqa: BLE001 — fail-soft: 로드 실패는 예약패턴 검증만 완화(traversal 유지).
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 예약패턴 검증만 완화(traversal 유지).
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — board 사본 skew 는 fail-loud(삼키지 않는다).
         return None
+    _verify_engine_rev(mod, "board.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
+    return mod
 
 
 def validate_task_name_engine(task: str) -> None:

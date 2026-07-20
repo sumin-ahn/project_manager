@@ -18,6 +18,10 @@
 
 # ── 도구 (순수 엔진) ─────────────────────────────────────────────
 .project_manager/tools/board.py
+# engine_rev: 엔진 사본 rev 스탬프 단일 진실 (T-0397) — sibling 로더가 로드한 형제 모듈의
+#   ENGINE_REV 를 이 값과 대조해 사본 skew(신 도구+구 형제)를 로드 시점 fail-loud 로 표출.
+#   신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례). 릴리즈 bump 유일 지점.
+.project_manager/tools/engine_rev.py
 # domain: v2 도메인 지식 레이어 엔진 (ADR-0018·covers 파서·touches∩covers·staleness·freshness lint·capture). domain/ 페이지는 인스턴스 소유(manifest 밖)
 .project_manager/tools/domain.py
 .project_manager/tools/pm_bootstrap.py

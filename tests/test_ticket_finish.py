@@ -363,10 +363,21 @@ def test_get_ticket_touches_non_list_returns_empty(tf, tmp_path):
     assert tf.get_ticket_touches(tmp_path / "nope-board.py", "T-0001") == []
 
 
+# T-0397 — get_ticket_touches 의 board 로더가 로드한 board 모듈의 ENGINE_REV 를 실 엔진 rev 와
+# 대조한다. fake board 대역도 유효 rev 스탬프를 지녀야 skew 로 오판되지 않는다(값은 실 engine_rev
+# 에서 읽어 baked — 하드코딩·릴리즈 커플링 회피).
+def _real_engine_rev() -> str:
+    spec = importlib.util.spec_from_file_location("engine_rev", TOOLS / "engine_rev.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.ENGINE_REV
+
+
 def _write_fake_board(tmp_path, touches_repr):
     """find_ticket/load_ticket 만 정의하는 board.py 대역을 tmp 에 쓴다(hermetic)."""
     board_py = tmp_path / "fake_board.py"
     board_py.write_text(
+        f"ENGINE_REV = {_real_engine_rev()!r}\n"  # T-0397 rev 스탬프
         "def find_ticket(ticket_id):\n"
         "    return ('open', 'p')\n"
         "def load_ticket(path):\n"

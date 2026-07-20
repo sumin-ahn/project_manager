@@ -1156,6 +1156,7 @@ _RELEASE_TEST_FILES = (
     Path(__file__).parent / "test_pm_worktree_live.py",
     Path(__file__).parent / "test_pm_release_live.py",
     Path(__file__).parent / "test_task_cycle_e2e.py",
+    Path(__file__).parent / "test_engine_rev_release.py",
 )
 # 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
 # 6(이 파일: full/multirepo × claude/opencode + hard-stop + multiuser-composite opencode·T-0309)
@@ -1165,11 +1166,13 @@ _RELEASE_TEST_FILES = (
 # + 2(pm_release_live: claude hard/opencode best-effort 릴리즈 스킬 라이브·ADR-0049·T-0349)
 # + 1(test_task_cycle_e2e: task 사이클 완주 기계 e2e·ADR-0068 사이클 게이트·T-0400 — 라이브 LLM
 #     불요·순수 기계지만 release 티어에 편입해 릴리즈마다 사이클 완주를 강제).
+# + 1(test_engine_rev_release: engine_rev.ENGINE_REV ↔ CHANGELOG 최신 릴리스 버전 정합·T-0397 —
+#     기계·릴리즈마다 rev bump 를 강제·bump 누락을 릴리즈 게이트에서 red).
 # ⚠ 커플드-pin: 이 값을 올리면 touches 밖의 전역 pin 도 함께 정합돼야 `livegate record`(수집
 #   N==pin)가 통과한다(orchestrator 가 갱신·test_command_card_usability.py 주석 참조):
 #   board.LIVEGATE_RELEASE_PIN · tests/test_board_livegate.py(하드코딩 fake/assert) ·
 #   tests/test_worktree_pool.py(_LIVEGATE_RELEASE_PIN 미러) · templates/*/board.py(pm_update 전파).
-_EXPECTED_RELEASE_TESTS = 15
+_EXPECTED_RELEASE_TESTS = 16
 
 
 def _pytest_marker_name(decorator) -> str | None:

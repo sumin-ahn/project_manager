@@ -301,6 +301,9 @@ def _detected_py() -> str:
     있으므로 spec_from_file_location 으로 직접 로드 — sys.path 오염 없이 호출 가능.
     어떤 이유로든 로드/호출이 실패하면 "python3" 폴백(리눅스 현행 동치).
     """
+    # T-0397 rev-스탬프 대조 예외(의도): 이 board.py 는 pm_import 자신의 형제(=import 하는
+    # canonical 프레임워크 소스 트리)라 pm_import 와 항상 같은 사본이다 — skew 가 구조적으로
+    # 불가능(채택자 dest 가 아니라 source 를 읽는다). 그래서 여기선 verify 를 걸지 않는다.
     board_py = Path(__file__).resolve().parent / "board.py"
     try:
         spec = importlib.util.spec_from_file_location("_board_for_detect_py", board_py)

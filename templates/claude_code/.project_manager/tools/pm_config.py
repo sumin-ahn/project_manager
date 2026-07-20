@@ -77,6 +77,45 @@ GIT_TIMEOUT_SECONDS = 600   # clone 은 네트워크 — 부트스트랩/worktre
 GitRunner = Callable[[list], "tuple[int, str]"]
 
 
+# ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
+# baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
+# 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
+# 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
+# vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
+# (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
+ENGINE_REV = "v1.3.5"
+
+# rev 스탬프를 지닌(=T-0397 계측된) 형제 파일만 대조 대상 — pm_update/pm_import 등 미계측
+# 모듈은 ENGINE_REV 가 없어(정상 사본에서도) 오탐이 나므로 제외한다. 계측 확대 시 여기 추가.
+_STAMPED_SIBLINGS = frozenset({"identity_args.py", "board.py", "worktree_pool.py"})
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (T-0397·fail-loud·skew→명시 에러).
+
+    불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
+    지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
+    """
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True  # T-0397 — fail-soft 로더가 재-raise 식별
+        raise err
+
+
+def _is_engine_rev_skew(exc) -> bool:
+    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (T-0397).
+
+    fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
+    판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
+    (예: 신 pm_config→신 board→구 identity_args 검출이 None 강등되지 않게)."""
+    return getattr(exc, "_engine_rev_skew", False)
+
+
 # ── 엔진 모듈 동적 로드 (스크립트-위치 앵커·pm_bootstrap 선례) ──────────────────
 # board.py·worktree_pool.py 는 같은 tools/ 에 있다. spec_from_file_location 으로
 # 로드한다 — 패키지 설치 없이 동작(board.py·pm_*.py 와 같은 로드 관례). 부재/로드
@@ -92,9 +131,13 @@ def _load_module(name: str, filename: str):
         spec = importlib.util.spec_from_file_location(name, path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
-    except Exception:  # noqa: BLE001 — 로드 실패는 호출부가 명시 에러로 보고.
+    except Exception as exc:  # noqa: BLE001 — 로드 실패는 호출부가 명시 에러로 보고.
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
         return None
+    if filename in _STAMPED_SIBLINGS:  # T-0397 — rev 스탬프 형제만 대조(skew fail-loud·try 밖)
+        _verify_engine_rev(mod, filename)
+    return mod
 
 
 def _real_clone_runner() -> GitRunner:
