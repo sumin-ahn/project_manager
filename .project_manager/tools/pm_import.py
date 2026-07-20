@@ -7,7 +7,7 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
 
 사용:
     pm_import.py (--into <기존프로젝트> | --new <프로젝트>)   # 모드 택1
-                 --harness {claude,opencode,both}            # 어댑터 (default: claude)
+                 --harness {claude,opencode,both,codex}      # 어댑터 (default: claude)
                  --weight  {full,lite}                        # 무게축 (default: full)
                  [--from <프레임워크-checkout>]               # 소스 (default: 이 repo 루트)
                  [--name <표시이름>]                          # {{PROJECT_NAME}} (default: 디렉토리명)
@@ -24,7 +24,8 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
     - 자유서술 3종({{PROJECT_CONSTRAINTS}}·{{PROTECTED_PATHS}}·{{USER_GATE_ITEMS}})은 보존(아래 fill).
   board init·local.conf 동기화 직후 **fill 단계**(T-0009)가 자유서술 placeholder 를 처리한다:
     - --fill manual(기본): 하니스 미구동, placeholder 를 `<!-- TODO: ... -->` 로 표시(채택자가 손으로).
-    - --fill auto: 대상 repo 분석 프롬프트로 하니스(claude -p / opencode run --format json)를
+    - --fill auto: 대상 repo 분석 프롬프트로 하니스(claude -p / opencode run --format json /
+      codex exec --json)를
       헤드리스 구동해 placeholder 값 + (해당 시) CLAUDE.md/pm_role.local.md 초안을 *제안*한다.
       생성물은 제안일 뿐 — 적용은 사용자 리뷰 전제(비가역 회피). --dry-run 이면 실 하니스를
       호출하지 않고 fill *계획*(채울 대상 토큰·결정된 harness·opt-in 게이트 상태)만 출력한다
@@ -73,7 +74,10 @@ from typing import Callable
 
 REPO = Path(__file__).resolve().parents[2]
 
-HARNESS_CHOICES = ("claude", "opencode", "both")
+# import 어댑터 선택. codex = 세 번째 하네스(ADR-0070). `both`(claude+opencode)는 legacy 조합 키로
+# 유지하되 **신규 조합 키는 만들지 않는다**(claude+codex 등) — N번째 하네스 공존은 add-harness 채널로
+# 통일한다(조합 폭발[7키] 회피·uniform 규칙·ADR-0070 D5 ②·[[solo-is-subset-of-multipm]] 결).
+HARNESS_CHOICES = ("claude", "opencode", "both", "codex")
 WEIGHT_CHOICES = ("full", "lite")
 
 FILL_CHOICES = ("auto", "manual")
@@ -100,9 +104,13 @@ OPENCODE_MODELS_CMD = ("opencode", "models")
 # AND --fill auto 동시 충족 시만 실 runner 호출 — 둘 중 하나라도 없으면 stub/manual 강제.
 LIVE_HARNESS_ENV = "PM_IMPORT_LIVE_HARNESS"
 
-# 하니스 헤드리스 구동 명령 (fill auto). claude 는 stdout 캡처, opencode 는 --format json 파싱.
+# 하니스 헤드리스 구동 명령 (fill auto). claude 는 stdout 캡처, opencode 는 --format json 파싱,
+# codex 는 `exec --json` JSONL 파싱(최종 agent_message). codex 는 stdin 미닫힘 시 무기한 대기(실측·
+# spike §D3)라 _real_harness_runner 가 stdin=DEVNULL 을 부여하고, -s workspace-write·--skip-git-repo-check·
+# -C <dest> 는 _build_runner_argv 가 붙인다. codex 는 `model` 생략=사용자 config 상속(harness-특수 분기 0·ADR-0070 D5).
 CLAUDE_FILL_CMD = ("claude", "-p")
 OPENCODE_FILL_CMD = ("opencode", "run")
+CODEX_FILL_CMD = ("codex", "exec")
 
 # 하니스 호출 타임아웃 (초) — repo 분석 1회.
 FILL_TIMEOUT_SECONDS = 300
@@ -133,17 +141,25 @@ HARNESS_TEMPLATE_DIRS = {
     "claude": ("claude_code",),
     "opencode": ("opencode",),
     "both": ("claude_code", "opencode"),
+    "codex": ("codex",),
 }
 
-# add_harness(ADR-0048) 어댑터 네임스페이스 = {adapter dir, root doc}. 라이브 인스턴스에 두 번째
+# add_harness(ADR-0048) 어댑터 네임스페이스 = {adapter dir(들), root doc}. 라이브 인스턴스에 두 번째
 # harness 를 *비파괴로 추가*할 때 복사 스코프를 이 네임스페이스로 구조적으로 제한한다 — 그 밖
 # (엔진·wiki dev-state·타 harness·설정·파사드)은 plan 에 애초에 안 들어와 clobber 가 불가능
 # (Decision 2·5). @render 엔진 리소스(`.claude/agents`·`.claude/skills`)는 네임스페이스 안이라도
 # 제외한다(engine.manifest 가 @render 표시 — _render_managed_relpaths 로 결정적 파생·generic).
-# 단일 harness(claude|opencode)만 추가한다('both' 는 최초 import 소관).
+# 단일 harness(claude|opencode|codex)만 추가한다('both' 는 최초 import 소관).
+#
+# 값 shape = **`(adapter_dirs: tuple, root_doc)`** (ADR-0070 D5 ①·비준 2026-07-21). claude/opencode 는
+# 어댑터 dir 가 하나라 단일-원소 튜플(`(".claude",)`)이고, codex 는 네임스페이스가 **둘**로 갈린다 —
+# `.codex/`(agents·config·hooks·relay) + `.agents/`(skills·remap·G2 실측 강제) — 이 dual-namespace 가
+# 값 shape 일반화를 기계적으로 강제했다(2-튜플 → dirs-튜플). 소비처(_in_adapter_namespace·add_harness
+# unpack)는 dirs 를 iterate 한다([[cross-cutting-breaking-blast-radius]] — shape 변경 소비처 선-스코프).
 ADD_HARNESS_ADAPTER = {
-    "claude": (".claude", "CLAUDE.md"),
-    "opencode": (".opencode", "AGENTS.md"),
+    "claude": ((".claude",), "CLAUDE.md"),
+    "opencode": ((".opencode",), "AGENTS.md"),
+    "codex": ((".codex", ".agents"), "AGENTS.md"),
 }
 
 # sed 치환 대상 operational placeholder (루트 README §4 표). 자유서술 3종은 여기 없음(보존).
@@ -1855,8 +1871,13 @@ def _real_harness_runner(
 
     T-0336: opencode 경로(`opencode run …`)는 엔진 첫-이벤트 워치독을 경유한다 — startup network
     fetch stall(PM 70)에 무한 hang 하지 않고 유한 재시도 후 fail-soft((False, stall 안내)). claude
-    경로는 무변경(관측된 stall 클래스는 opencode 스타트업 고유)."""
+    경로는 무변경(관측된 stall 클래스는 opencode 스타트업 고유).
+
+    ADR-0070 D5: codex 경로(`codex exec …`)는 **stdin=DEVNULL 로 구동**한다 — stdin 미닫힘 시
+    "Reading additional input from stdin..." 로 무기한 대기(실측·spike §D3). claude/opencode 는
+    argv 로 프롬프트를 받아 stdin 불요라 현행(None=상속) 유지."""
     use_watchdog = tuple(argv[:2]) == OPENCODE_FILL_CMD
+    is_codex = tuple(argv[:2]) == CODEX_FILL_CMD
     engine = _load_watchdog() if use_watchdog else None
     try:
         if engine is not None:
@@ -1876,6 +1897,8 @@ def _real_harness_runner(
                 errors="replace",
                 timeout=FILL_TIMEOUT_SECONDS,
                 cwd=str(cwd) if cwd is not None else None,
+                # codex: stdin 미닫힘 시 무기한 대기(실측) → DEVNULL. claude 는 None(상속·현행).
+                stdin=subprocess.DEVNULL if is_codex else None,
             )
         output = result.stdout or ""
         if result.stderr:
@@ -1908,13 +1931,33 @@ def _build_fill_prompt(dest_root: Path, tokens: list[str]) -> str:
     )
 
 
-def _build_runner_argv(harness: str, prompt: str) -> list[str]:
-    """하니스별 헤드리스 구동 명령 조립. claude → `claude -p "<p>"`,
-    opencode → `opencode run "<p>" --format json` (token/cost 파싱 위해 json 출력)."""
+def _build_runner_argv(
+    harness: str, prompt: str, dest_root: Path | None = None
+) -> list[str]:
+    """하니스별 헤드리스 구동 명령 조립(runner 매핑·명시 등록·ADR-0070 D5).
+
+      claude   → `claude -p "<p>"`
+      opencode → `opencode run "<p>" --format json` (token/cost 파싱 위해 json 출력)
+      codex    → `codex exec --json -s workspace-write --skip-git-repo-check [-C <dest>] "<p>"`
+                 (프롬프트=마지막 positional·stdin=DEVNULL 은 _real_harness_runner 가 부여)
+
+    미지원 harness 는 **fail-loud**(ValueError). 과거 codex 가 이 매핑에 없어 조용히 `claude -p`
+    로 폴백해 *잘못된 바이너리*를 호출하고 출력만 harness=codex 로 오표기하던 클래스를 닫는다 —
+    모르는 harness 는 명시 등록을 강제(제4 하네스도 여기서 재발 방지·ADR-0070 D5·silent 폴백 금지)."""
+    if harness == "claude":
+        return [*CLAUDE_FILL_CMD, prompt]
     if harness == "opencode":
         return [*OPENCODE_FILL_CMD, prompt, "--format", "json"]
-    # claude (기본·both→claude)
-    return [*CLAUDE_FILL_CMD, prompt]
+    if harness == "codex":
+        argv = [*CODEX_FILL_CMD, "--json", "-s", "workspace-write", "--skip-git-repo-check"]
+        if dest_root is not None:
+            argv += ["-C", str(dest_root)]     # workdir 핀(codex 는 -C 로 작업 디렉토리 고정)
+        argv.append(prompt)                    # 프롬프트 = 마지막 positional
+        return argv
+    raise ValueError(
+        f"_build_runner_argv: 미지원 fill harness {harness!r} — 지원: claude·opencode·codex. "
+        f"silent 폴백 금지(잘못된 바이너리 호출·오표기 방지·runner 매핑에 명시 등록 필요·ADR-0070 D5)."
+    )
 
 
 def _parse_opencode_json(output: str) -> str:
@@ -1940,6 +1983,34 @@ def _parse_opencode_json(output: str) -> str:
             if texts:
                 return "\n".join(texts)
     return output
+
+
+def _parse_codex_json(output: str) -> str:
+    """codex `exec --json` JSONL 출력에서 최종 응답 텍스트 추출(fail-soft·_parse_opencode_json 동형).
+
+    codex 는 줄당 JSON 이벤트(thread.started·turn.started·item.*·turn.completed·error)를 낸다.
+    응답 = `item.type == "agent_message"` 인 item 의 `.text`(마지막 것 = 최종 응답·엔진
+    pm_relay.parse_codex_json 규칙과 정합). JSON 파싱 불가·구조 상이·미발견이면 원문 그대로
+    반환(사람이 읽게 — _parse_opencode_json 과 같은 fail-soft). pm_import 자족(형제 파서 미러·
+    _parse_opencode_json 선례 + 시그니처/목적 상이 — pm_relay 쪽은 orchestration 용 3-튜플
+    (thread_id·reply·usage)·여긴 fill 초안용 str·fail-soft. 순환 import 는 어느 쪽이든 없음)."""
+    reply = ""
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            evt = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(evt, dict):
+            continue
+        item = evt.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                reply = text  # 최종(마지막) agent_message 로 갱신.
+    return reply if reply else output
 
 
 def _live_harness_allowed(mode: str) -> bool:
@@ -2140,7 +2211,7 @@ def run_fill(
         return FillResult(mode="manual", note="자유서술 placeholder 가 트리에 없음 — 처리 불필요.")
 
     prompt = _build_fill_prompt(dest_root, tokens)
-    argv = _build_runner_argv(harness, prompt)
+    argv = _build_runner_argv(harness, prompt, dest_root)   # codex 는 -C <dest> workdir 핀 필요
 
     # 실 runner 결정: 주입 stub 이 있으면 그걸(테스트). 없고 live 면 실 바이너리. 아니면 미구동.
     # SF: 실 바이너리는 대상 repo(dest_root)에서 구동되도록 cwd 를 바인딩한다(호출자 cwd 아님).
@@ -2163,7 +2234,13 @@ def run_fill(
         )
 
     ok, output = effective_runner(argv, prompt)
-    text = _parse_opencode_json(output) if harness == "opencode" else output
+    # 하니스별 응답 파싱: opencode=--format json·codex=exec --json JSONL(agent_message)·claude=평문.
+    if harness == "opencode":
+        text = _parse_opencode_json(output)
+    elif harness == "codex":
+        text = _parse_codex_json(output)
+    else:
+        text = output
 
     result = FillResult(mode="auto", harness=harness, live=live)
     result.runner_calls.append(list(argv))
@@ -2232,12 +2309,12 @@ def ensure_pm_playbook_local_stub(dest_root: Path, backup_root: Path | None) -> 
 
 
 def _harness_binary_available(harness: str) -> bool:
-    """fill 구동 하니스의 실 바이너리(claude/opencode)가 PATH 에 있는가.
+    """fill 구동 하니스의 실 바이너리(claude/opencode/codex)가 PATH 에 있는가.
 
     shutil.which 로 탐지한다. 테스트는 monkeypatch(pm_import.shutil.which) 또는 PATH 조작으로
     부재를 stub 한다. 알 수 없는 harness 면 보수적으로 False(폴백 유도).
     """
-    binary = {"claude": "claude", "opencode": "opencode"}.get(harness)
+    binary = {"claude": "claude", "opencode": "opencode", "codex": "codex"}.get(harness)
     if binary is None:
         return False
     return shutil.which(binary) is not None
@@ -2371,18 +2448,43 @@ def _resolve_add_harness_source(
 # 복사 머신 0). 운영 진입(pm_config add-harness)이 이 core 로 verbatim 위임한다(Decision 3).
 
 
+# codex 어댑터(`​.codex/agents/*.toml`·`config.toml`·hooks)는 **trusted project + hook trust 승인
+# 후에만** 발화한다(codex 0.144.x 실측·spike §1.2). import/add-harness 직후 신선 인스턴스는 이 2단계가
+# 미승인 상태 — 조용히 두면 위임 subagent 스폰·PreCompact ctx tripwire 가 안 뜬다. `-c projects.<path>.
+# trust_level` CLI override 는 **안 먹으므로**(실측·spike §D3 보조) 대화형 승인이 유일 경로다(ADR-0070 D5).
+def _print_codex_trust_guidance() -> None:
+    """codex 어댑터 laydown 후 loud 2단계 trust 안내 (ADR-0070 D5·spike §3.5).
+
+    import(`--harness codex`)·add-harness(기존 인스턴스에 codex 추가) 완료 출력 끝에 붙는다 —
+    채택자가 첫 부트스트랩 전에 밟아야 할 trust 2단계 + 검증 커맨드를 눈에 띄게(loud) 안내한다.
+    """
+    print("")
+    print("⚠️  codex 어댑터 활성화 전 2단계 trust 승인 필요 (미승인 시 위임/훅 미발화):")
+    print("  ① 이 디렉토리에서 대화형 `codex` 를 1회 열어 프로젝트 trust 를 수락한다")
+    print("     (`.codex/agents/*.toml`·`config.toml` 은 trusted project 한정 로드).")
+    print("  ② codex 안에서 `/hooks` 로 hook trust 를 승인한다 (PreCompact ctx tripwire 발화 전제).")
+    print("  검증: 대화형 codex 에서 위임 4축(architect/developer/code-reviewer/researcher)이 "
+          "스폰 목록에 뜨는지 확인한다.")
+    print("  ⚠️ `-c projects.<path>.trust_level=trusted` CLI override 는 안 먹는다(실측) — "
+          "위 ① 대화형 승인이 필수다.")
+
+
 def _in_adapter_namespace(
-    rel: Path, adapter_dir: str, root_doc: str, render_managed: set[str],
+    rel: Path, adapter_dirs: tuple, root_doc: str, render_managed: set[str],
 ) -> bool:
     """rel(dst relpath)이 추가 harness 의 어댑터 네임스페이스 안인가 (ADR-0048 Decision 2).
 
-    네임스페이스 = {adapter dir 하위, root doc} − @render 엔진 리소스. adapter dir 하위이거나
-    root doc 정확일치여야 하고, 그 중 @render manifest path(`​.claude/agents`·`.claude/skills`)
-    하위는 엔진 소유라 제외한다(opencode 는 @render 없어 `.opencode/**` 단순). 이 밖은 전부
-    False → 엔진·wiki·타 harness·설정·파사드가 plan 에 애초에 안 들어온다(구조적 안전).
+    네임스페이스 = {adapter dir(들) 하위, root doc} − @render 엔진 리소스. adapter_dirs 중 하나의
+    하위이거나 root doc 정확일치여야 하고, 그 중 @render manifest path(`​.claude/agents`·`.claude/skills`)
+    하위는 엔진 소유라 제외한다(opencode 는 @render 없어 `.opencode/**` 단순). adapter_dirs 는 튜플 —
+    claude/opencode 는 단일(`.claude`/`.opencode`), codex 는 이중(`.codex` agents·config·hooks +
+    `.agents` skills·ADR-0070 D5 ①). 이 밖은 전부 False → 엔진·wiki·타 harness·설정·파사드가 plan 에
+    애초에 안 들어온다(구조적 안전).
     """
     rel_posix = rel.as_posix()
-    if rel_posix != root_doc and not rel_posix.startswith(adapter_dir + "/"):
+    in_ns = rel_posix == root_doc or any(
+        rel_posix.startswith(d + "/") for d in adapter_dirs)
+    if not in_ns:
         return False
     # @render 엔진 리소스(engine.manifest 표시)는 어댑터 네임스페이스 안이라도 엔진 소유 — 제외.
     if _is_render_managed(rel_posix, render_managed):
@@ -2429,7 +2531,9 @@ def add_harness(
     src_root = _resolve_add_harness_source(dest_root, harness, source_root)
     template_root = resolve_template_roots(src_root, harness)[0]
 
-    adapter_dir, root_doc = ADD_HARNESS_ADAPTER[harness]
+    adapter_dirs, root_doc = ADD_HARNESS_ADAPTER[harness]
+    # 스코프 표시 문자열 — dirs 튜플을 `d/**` 로 합친다(codex=`.codex/** + .agents/**`·단일은 그대로).
+    adapter_scope = " + ".join(f"{d}/**" for d in adapter_dirs)
     # native-@render *엔진* 리소스(target-owned·source 아님) relpath 를 소스 어댑터 트리의
     # engine.manifest 에서 결정적 파생(generic). `.claude/agents`·`.claude/skills`(엔진)는 제외되나
     # `.opencode/agents`·`.opencode/command`(@render @source=…·framework-owned guest 어댑터·ADR-0054)는
@@ -2449,14 +2553,14 @@ def add_harness(
     plan = [
         a for a in full_actions
         if _in_adapter_namespace(
-            a.dst.relative_to(dest_root), adapter_dir, root_doc, render_managed)
+            a.dst.relative_to(dest_root), adapter_dirs, root_doc, render_managed)
     ]
 
     n_new = sum(1 for a in plan if a.backup is None and not a._git_safe_skip)
     n_refresh = len(plan) - n_new
     print(f"[pm_import add-harness] {harness} → {dest_root}")
     print(f"  소스: {src_root}/templates/{HARNESS_TEMPLATE_DIRS[harness][0]}")
-    print(f"  스코프: 어댑터 네임스페이스만 ({adapter_dir}/** + {root_doc} · "
+    print(f"  스코프: 어댑터 네임스페이스만 ({adapter_scope} + {root_doc} · "
           f"@render 엔진 리소스 제외)")
     for a in plan:
         print(a.describe())
@@ -2483,7 +2587,10 @@ def add_harness(
     # 자유서술 placeholder 는 TODO 표시(비-LLM·main manual 흐름과 동일·ADR-0048 fill 불요).
     _run_manual_fill(dest_root, copied_relpaths)
     print(f"✓ add-harness 완료: {harness} 어댑터 {len(plan)} 파일 복사 · "
-          f"{n_subst} 파일 토큰 치환 (스코프: {adapter_dir}/** + {root_doc})")
+          f"{n_subst} 파일 토큰 치환 (스코프: {adapter_scope} + {root_doc})")
+    # codex 는 laydown 만으로 활성화되지 않는다 — trusted project + hook trust 2단계 안내(ADR-0070 D5).
+    if harness == "codex":
+        _print_codex_trust_guidance()
     return plan
 
 
@@ -3188,6 +3295,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"✓ import 완료: {dest_root}")
     print("  다음: 자유서술 placeholder 제안 검토·반영(--fill auto 했으면) + 첫 ticket 발행.")
+    # codex 어댑터는 laydown 후 trusted project + hook trust 2단계 승인이 있어야 발화(ADR-0070 D5).
+    if args.harness == "codex":
+        _print_codex_trust_guidance()
     return 0
 
 

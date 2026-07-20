@@ -91,15 +91,18 @@ def _plan_relpaths(plan, dest: Path) -> list[str]:
     return sorted(a.dst.resolve().relative_to(dest.resolve()).as_posix() for a in plan)
 
 
+# 어댑터 네임스페이스 참조 규칙(구현과 독립). ADR-0070 D5 ①: adapter dir 는 튜플(codex 는 이중
+# `.codex`+`.agents`·나머지는 단일). render_excl = @render 엔진 리소스(claude 만 — codex/opencode 는 없음).
 _ADD_HARNESS_NS = {
-    "opencode": (".opencode", "AGENTS.md", ()),
-    "claude": (".claude", "CLAUDE.md", (".claude/agents/", ".claude/skills/")),
+    "opencode": ((".opencode",), "AGENTS.md", ()),
+    "claude": ((".claude",), "CLAUDE.md", (".claude/agents/", ".claude/skills/")),
+    "codex": ((".codex", ".agents"), "AGENTS.md", ()),
 }
 
 
 def _rel_in_namespace(rel: str, added_harness: str) -> bool:
-    adapter_dir, root_doc, render_excl = _ADD_HARNESS_NS[added_harness]
-    in_ns = rel == root_doc or rel.startswith(adapter_dir + "/")
+    adapter_dirs, root_doc, render_excl = _ADD_HARNESS_NS[added_harness]
+    in_ns = rel == root_doc or any(rel.startswith(d + "/") for d in adapter_dirs)
     return in_ns and not any(rel.startswith(x) for x in render_excl)
 
 
@@ -229,6 +232,94 @@ def test_add_harness_imported_instance_errors_without_resolvable_source(pm_impor
     with pytest.raises(FileNotFoundError) as exc:
         pm_import.add_harness(dest, "opencode", dry_run=True)      # source_root=None
     assert "--from" in str(exc.value)
+
+
+# ── codex add-harness (세 번째 하네스·ADR-0070 D5·T-0403) ─────────────────────
+# codex 어댑터 네임스페이스 = `.codex/**`(agents·config·hooks·relay) + `.agents/**`(skills remap) +
+# `AGENTS.md`(공통 코어). 라이브 호스트(claude 또는 opencode)에 비파괴 추가. AGENTS.md 는 opencode 와
+# byte-identical(공통 코어) → opencode 호스트에선 git-safe skip 으로 무충돌(D3 C-v2 부수 이득).
+
+import shutil as _shutil_for_git       # noqa: E402 — 실 git 가용 게이트(explicit commit 케이스).
+import subprocess as _sp_for_git       # noqa: E402
+
+requires_git = pytest.mark.skipif(
+    _shutil_for_git.which("git") is None,
+    reason="git 바이너리 부재 — 실 git commit 통합 케이스 skip(dry-run 케이스는 항상 실행).",
+)
+
+
+def _git_commit_all(dest: Path) -> None:
+    """dest git repo 의 현재 트리를 전부 커밋 — 이후 파일이 '추적&미변경'(git-safe)이 되게 한다."""
+    ident = ["-c", "user.email=t@t", "-c", "user.name=t"]
+    _sp_for_git.run(["git", "-C", str(dest), "add", "-A"], check=True, capture_output=True)
+    _sp_for_git.run(["git", "-C", str(dest), *ident, "commit", "-m", "seed"],
+                    check=True, capture_output=True)
+
+
+def test_add_harness_codex_onto_claude_host_lays_down_adapter(pm_import, tmp_path):
+    """claude 호스트에 codex add(dry-run): codex 어댑터(.codex/**·.agents/skills·AGENTS.md)만 산출·
+    엔진/wiki/claude 어댑터 불가침·전부 codex 네임스페이스 안(dual-namespace 스코프 정확성)."""
+    dest = _build_live_instance(pm_import, tmp_path / "cl_host", "claude")
+    _set_conf_upstream(dest, str(REPO))
+    plan = pm_import.add_harness(dest, "codex", dry_run=True)      # source_root=None
+    rels = _plan_relpaths(plan, dest)
+    assert rels, "plan 이 비어 있다 — codex 어댑터가 해소돼야 한다."
+    assert "AGENTS.md" in rels                                     # claude 호스트엔 없던 공통 코어 신규
+    assert any(r.startswith(".codex/agents/") for r in rels), rels
+    assert any(r.startswith(".agents/skills/") for r in rels), rels
+    # 전부 codex 네임스페이스 안(불변식).
+    assert all(_rel_in_namespace(r, "codex") for r in rels), rels
+    # 네임스페이스 밖(엔진·wiki·claude 어댑터·파사드)은 0개.
+    assert not [r for r in rels if r.startswith(".project_manager/")], rels
+    assert not [r for r in rels if r.startswith(".claude/")], rels
+    assert "CLAUDE.md" not in rels
+    # dry-run = 파일시스템 미변경.
+    assert not (dest / ".codex").exists()
+    assert not (dest / ".agents").exists()
+
+
+def test_add_harness_codex_namespace_invariant_zero_outside(pm_import, tmp_path):
+    """불변식(ADR-0048 Decision 5·codex): codex add plan 이 codex 네임스페이스 밖 relpath 0개."""
+    dest = _build_live_instance(pm_import, tmp_path / "cl_host_inv", "claude")
+    _set_conf_upstream(dest, str(REPO))
+    plan = pm_import.add_harness(dest, "codex", dry_run=True)
+    rels = _plan_relpaths(plan, dest)
+    outside = [r for r in rels if not _rel_in_namespace(r, "codex")]
+    assert outside == [], f"codex add plan 에 네임스페이스 밖 relpath 포함(불변식 위반): {outside}"
+
+
+@requires_git
+def test_add_harness_codex_onto_opencode_host_agents_md_git_safe_skip(pm_import, tmp_path):
+    """opencode 호스트에 codex add: AGENTS.md 는 공통 코어라 git 추적&미변경이면 git-safe skip
+    (백업 없이 덮기) — 파괴적 백업 churn 없이 무충돌(D3 C-v2 부수 이득). codex 어댑터는 신규 안착."""
+    dest = _build_live_instance(pm_import, tmp_path / "oc_host", "opencode")
+    _git_commit_all(dest)                                         # AGENTS.md 를 추적&미변경으로
+    _set_conf_upstream(dest, str(REPO))                          # (local.conf 만 dirty·AGENTS.md 는 clean)
+    plan = pm_import.add_harness(dest, "codex", dry_run=True)     # source_root=None
+    agents = next((a for a in plan if a.dst == dest / "AGENTS.md"), None)
+    assert agents is not None, "AGENTS.md 가 codex add plan 에 없다(공통 코어 laydown)."
+    assert agents._git_safe_skip is True, "AGENTS.md 가 git-safe skip 이 아님(파괴적 백업 churn 위험)."
+    assert agents.backup is None
+    assert "[copy · git-safe]" in agents.describe()
+    # codex 고유 어댑터는 opencode 호스트엔 없어 신규 안착.
+    rels = _plan_relpaths(plan, dest)
+    assert any(r.startswith(".codex/agents/") for r in rels), rels
+    assert any(r.startswith(".agents/skills/") for r in rels), rels
+
+
+def test_add_harness_codex_apply_prints_trust_guidance(pm_import, tmp_path, capsys):
+    """codex add-harness 실적용 완료 출력에 loud 2단계 trust 안내(D5) + 실제 laydown sanity."""
+    dest = _build_live_instance(pm_import, tmp_path / "cl_host_apply", "claude")
+    _set_conf_upstream(dest, str(REPO))
+    pm_import.add_harness(dest, "codex", dry_run=False)           # 실적용
+    out = capsys.readouterr().out
+    assert "2단계 trust 승인" in out              # loud 헤더(copy 로그 `.../hooks/` 경로와 충돌 회피)
+    assert "hook trust" in out
+    assert "trust_level" in out
+    # 실제로 laydown 됐는지 sanity.
+    assert (dest / "AGENTS.md").is_file()
+    assert (dest / ".codex" / "agents").is_dir()
+    assert (dest / ".agents" / "skills").is_dir()
 
 
 # ── pm_config `--from` 노출 + source_root forward ─────────────────────────────

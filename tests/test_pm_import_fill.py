@@ -13,6 +13,8 @@ main 의 auto 경로는 게이트 통과 시 *실* runner 를 부르므로 테�
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -84,6 +86,8 @@ def test_exposes_fill_symbols(pm_import):
     assert callable(pm_import.run_fill)
     assert pm_import.FILL_CHOICES == ("auto", "manual")
     assert pm_import.FILL_HARNESS_CHOICES == ("claude", "opencode")
+    # codex fill runner 매핑 (ADR-0070 D5·silent claude 폴백 소멸).
+    assert pm_import.CODEX_FILL_CMD == ("codex", "exec")
     assert pm_import.FREE_FORM_TOKENS == FREE_FORM_TOKENS
     assert pm_import.OPENCODE_MODEL_TOKEN == OPENCODE_MODEL_TOKEN
     assert pm_import.LIVE_HARNESS_ENV == "PM_IMPORT_LIVE_HARNESS"
@@ -305,6 +309,113 @@ def test_fill_harness_resolution(pm_import, monkeypatch):
     assert pm_import._resolve_fill_harness(None, "opencode") == "opencode"
     assert pm_import._resolve_fill_harness(None, "both") == "claude"  # both→claude 우선(존재).
     assert pm_import._resolve_fill_harness("opencode", "claude") == "opencode"  # override.
+    # codex 는 standalone — --harness codex → fill harness codex(claude 폴백 아님·ADR-0070 D5).
+    assert pm_import._resolve_fill_harness(None, "codex") == "codex"
+
+
+# ── codex fill runner (ADR-0070 D5·silent claude 폴백 소멸·T-0403 재작업) ──────
+# 과거 버그: `--harness codex --fill auto` 가 codex fill runner 미등록으로 조용히 `claude -p` 로
+# 폴백하고 출력만 harness=codex 로 오표기(PM_IMPORT_LIVE_HARNESS=1 에서 잘못된 바이너리 호출).
+# 수정: codex runner 명시 등록(codex exec --json·stdin DEVNULL·codex JSONL 파서) + 미지원 harness fail-loud.
+
+def test_build_runner_argv_codex(pm_import, tmp_path):
+    """codex → `codex exec --json -s workspace-write --skip-git-repo-check -C <dest> <prompt>`
+    (과거 silent `claude -p` 폴백 소멸). dest_root 생략 시 -C 없이 조립(cwd 바인딩이 workdir 담당)."""
+    argv = pm_import._build_runner_argv("codex", "PROMPT", tmp_path)
+    assert argv[:2] == ["codex", "exec"]
+    assert "--json" in argv and "--skip-git-repo-check" in argv
+    assert argv[argv.index("-s") + 1] == "workspace-write"
+    assert argv[argv.index("-C") + 1] == str(tmp_path)
+    assert argv[-1] == "PROMPT"                          # 프롬프트 = 마지막 positional
+    assert argv[0] != "claude"                           # 오폴백 회귀 방지(회귀 가드)
+    # dest_root 생략 → -C 없이 조립.
+    argv2 = pm_import._build_runner_argv("codex", "P")
+    assert argv2[:2] == ["codex", "exec"] and "-C" not in argv2
+
+
+def test_build_runner_argv_unknown_harness_fail_loud(pm_import):
+    """미지원 harness 는 silent claude 폴백이 아니라 fail-loud (잘못된 바이너리 호출·오표기 방지·
+    제4 하네스 재발 방지·ADR-0070 D5)."""
+    with pytest.raises(ValueError) as exc:
+        pm_import._build_runner_argv("bogus", "P")
+    assert "bogus" in str(exc.value)
+
+
+def test_parse_codex_json_extracts_agent_message(pm_import):
+    """codex `exec --json` JSONL → 최종 agent_message .text 추출·미발견/비-JSON 은 원문 fail-soft."""
+    jsonl = ('{"type":"thread.started","thread_id":"t1"}\n'
+             '{"type":"item.completed","item":{"type":"agent_message","text":"첫 제안"}}\n'
+             '{"type":"item.completed","item":{"type":"agent_message","text":"최종 제안"}}\n'
+             '{"type":"turn.completed","usage":{"input":10,"output":5}}')
+    assert pm_import._parse_codex_json(jsonl) == "최종 제안"       # 마지막 agent_message
+    assert pm_import._parse_codex_json("not json at all") == "not json at all"  # fail-soft
+    # agent_message 없음(예: 도구만) → 원문 반환(fail-soft).
+    no_msg = '{"type":"turn.completed","usage":{}}'
+    assert pm_import._parse_codex_json(no_msg) == no_msg
+
+
+def test_run_fill_codex_uses_codex_parser_and_labels_codex(pm_import, tmp_path):
+    """codex fill: 응답을 codex JSONL 파서(agent_message)로 추출·FillResult.harness=codex(오표기 소멸)·
+    argv=codex 커맨드(과거 silent claude 오호출 회귀 방지)."""
+    dest = _make_imported_tree(pm_import, tmp_path, harness="codex", name="CodexFill")
+    jsonl = ('{"type":"thread.started","thread_id":"t1"}\n'
+             '{"type":"item.completed","item":{"type":"agent_message","text":"코덱스 제안 텍스트"}}\n'
+             '{"type":"turn.completed","usage":{"input":10,"output":5}}')
+    stub = _StubRunner(ok=True, output=jsonl)
+    result = pm_import.run_fill(dest, "codex", live=False, runner=stub)
+    assert result.mode == "auto"
+    assert result.harness == "codex"                     # 오표기 소멸(claude 아님)
+    # codex JSONL agent_message 텍스트가 추출됐다(원문 JSONL 그대로가 아님).
+    assert any("코덱스 제안 텍스트" == v for v in result.values.values()), result.values
+    # argv = codex 커맨드(claude 오호출 회귀 방지) + dest workdir 핀.
+    assert stub.calls, "stub 미호출"
+    argv0 = stub.calls[0][0]
+    assert argv0[:2] == ["codex", "exec"] and argv0[0] != "claude", argv0
+    assert "-C" in argv0
+
+
+def test_real_harness_runner_codex_stdin_devnull(pm_import, monkeypatch):
+    """_real_harness_runner: codex 는 stdin=DEVNULL(미닫힘 무기한 대기 방지·실측)·claude 는 None(상속·현행)."""
+    captured: dict = {}
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def fake_run(argv, **kw):
+        captured["stdin"] = kw.get("stdin")
+        return _FakeCompleted()
+
+    monkeypatch.setattr(pm_import.subprocess, "run", fake_run)
+    # codex → DEVNULL.
+    pm_import._real_harness_runner(pm_import._build_runner_argv("codex", "P"), "P")
+    assert captured["stdin"] is pm_import.subprocess.DEVNULL
+    # claude → None(상속·현행 무변경 — codex-특수 stdin 이 다른 하니스에 새지 않음).
+    captured.clear()
+    pm_import._real_harness_runner(pm_import._build_runner_argv("claude", "P"), "P")
+    assert captured["stdin"] is None
+
+
+# ── codex live fill (gated·실 실행은 T-0407·과금) ─────────────────────────────
+
+_codex_live_gate = pytest.mark.skipif(
+    os.environ.get("PM_IMPORT_LIVE_HARNESS", "").strip() not in ("1", "true", "yes", "on")
+    or shutil.which("codex") is None,
+    reason="codex live fill — PM_IMPORT_LIVE_HARNESS=1 + codex 바이너리 필요(실 실행은 T-0407·과금).",
+)
+
+
+@_codex_live_gate
+def test_codex_live_fill_real_binary(pm_import, tmp_path):
+    """[gated·실 실행 T-0407·과금] 실 codex 바이너리로 codex fill — argv=codex exec·harness=codex 라벨.
+
+    게이트(PM_IMPORT_LIVE_HARNESS + codex 설치) 미충족이면 collection 단계에서 skip(일반 서브셋
+    무영향). 충족 시 실 gpt-5.5 구동 — argv 가 codex 커맨드이고 라벨이 정합(claude 오호출 아님)."""
+    dest = _make_imported_tree(pm_import, tmp_path, harness="codex", name="CodexLive")
+    result = pm_import.run_fill(dest, "codex", live=True, copied_relpaths=None)
+    assert result.harness == "codex"
+    assert result.runner_calls and result.runner_calls[0][:2] == ["codex", "exec"]
 
 
 # ── DoD ⑤: --dry-run + --fill auto → 제안 출력·파일 미변경 ────────────────────

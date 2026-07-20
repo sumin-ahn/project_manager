@@ -108,7 +108,7 @@ def test_exposes_symbols(pm_import):
     assert callable(pm_import.plan_copy)
     assert callable(pm_import.substitute_placeholders)
     assert callable(pm_import.resolve_template_roots)
-    assert pm_import.HARNESS_CHOICES == ("claude", "opencode", "both")
+    assert pm_import.HARNESS_CHOICES == ("claude", "opencode", "both", "codex")
 
 
 # ── ① --new: 트리 존재 · board init 산출 · 잔여 operational {{ 0 ──────────────
@@ -706,6 +706,75 @@ def test_both_excludes_node_modules(pm_import, tmp_path):
     rc = pm_import.main(["--new", str(dest), "--harness", "both", "--name", "D2"])
     assert rc == 0
     assert not (dest / ".opencode" / "node_modules").exists()
+
+
+# ── ②b --harness codex: 세 번째 하네스 스캐폴드 (ADR-0070 D5·T-0403) ───────────
+
+def test_harness_maps_include_codex(pm_import):
+    """3맵에 codex 편입 — 신규 조합 키는 없음(both 만 legacy·공존은 add-harness·D5 ②)."""
+    assert "codex" in pm_import.HARNESS_CHOICES
+    assert pm_import.HARNESS_TEMPLATE_DIRS["codex"] == ("codex",)
+    # 조합 폭발 회피: claude+codex 등 신규 조합 키 불신설(both 만 유지).
+    assert set(pm_import.HARNESS_CHOICES) == {"claude", "opencode", "both", "codex"}
+
+
+def test_codex_new_creates_tree_and_inits(pm_import, tmp_path):
+    """`--new --harness codex`: codex 어댑터(AGENTS.md·.codex/agents/*.toml·.agents/skills) +
+    공유 엔진 + board init 산출. CLAUDE.md 는 없다(codex 는 공통 코어 AGENTS.md 를 native 로드)."""
+    dest = tmp_path / "cxproj"
+    rc = pm_import.main(["--new", str(dest), "--harness", "codex", "--name", "Codex Proj"])
+    assert rc == 0
+    # codex 어댑터 (dual namespace: .codex agents/config/hooks + .agents skills).
+    assert (dest / "AGENTS.md").is_file()
+    assert (dest / ".codex" / "agents" / "developer.toml").is_file()
+    assert (dest / ".agents" / "skills" / "pm-adr" / "SKILL.md").is_file()
+    # 공통 코어 전략(D3 C-v2): codex 는 CLAUDE.md 를 두지 않는다.
+    assert not (dest / "CLAUDE.md").exists()
+    # 공유 엔진 + board init 산출.
+    assert (dest / ".project_manager" / "tools" / "board.py").is_file()
+    assert (dest / ".project_manager" / "local.conf").is_file()
+    assert (dest / ".project_manager" / "wiki" / "pm_state.md").is_file()
+    assert (dest / ".git").exists()
+
+
+def test_codex_scaffold_no_opencode_model_token_leak(pm_import, tmp_path):
+    """codex 는 모델 해소 분기가 없다(D5·gpt-5.5 상속) — 어댑터에 {{OPENCODE_PRO_MODEL}} 잔존 0.
+
+    opencode 의 OPENCODE_MODEL_TOKEN/resolve_opencode_model 류 분기를 codex 엔 추가하지 않았으므로,
+    codex 스캐폴드엔 그 토큰 자체가 없어야 한다(있으면 미해소 leak·harness-특수 분기 필요 신호)."""
+    dest = tmp_path / "cxproj_notoken"
+    rc = pm_import.main(["--new", str(dest), "--harness", "codex", "--name", "NoModel"])
+    assert rc == 0
+    # 어댑터 파일(.codex/·.agents/·AGENTS.md)에 opencode 모델 토큰 잔존 0.
+    for sub in (dest / ".codex", dest / ".agents", dest / "AGENTS.md"):
+        paths = [sub] if sub.is_file() else sub.rglob("*")
+        for p in paths:
+            if p.is_file():
+                assert pm_import.OPENCODE_MODEL_TOKEN not in p.read_text(encoding="utf-8"), p
+
+
+def test_codex_import_prints_trust_guidance(pm_import, tmp_path, capsys):
+    """codex import 완료 출력에 loud 2단계 trust 안내(대화형 trust + hook trust + trust_level 미작동).
+
+    (안내 고유 prose 로 단언 — 스캐폴드 copy 로그의 `.project_manager/hooks/` 파일 경로와 충돌 회피.)"""
+    dest = tmp_path / "cxproj_trust"
+    rc = pm_import.main(["--new", str(dest), "--harness", "codex", "--name", "Trust"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "2단계 trust 승인" in out              # loud 헤더
+    assert "hook trust" in out                   # ② /hooks 승인 단계
+    assert "trust_level" in out                  # -c override 안 먹음 명시(실측)
+    assert "codex" in out.lower()
+
+
+def test_non_codex_import_no_trust_guidance(pm_import, tmp_path, capsys):
+    """claude import 는 codex trust 안내를 내지 않는다(하네스 게이트 — 오출력 방지)."""
+    dest = tmp_path / "claude_notrust"
+    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "NoTrust"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "2단계 trust 승인" not in out
+    assert "hook trust" not in out
 
 
 # ── ③ 자유서술 placeholder 3종 보존 (T-0009 몫) ──────────────────────────────
@@ -2806,8 +2875,15 @@ def _rel_in_namespace(rel: str, added_harness: str) -> bool:
 
 def test_add_harness_exposed(pm_import):
     assert callable(pm_import.add_harness)
-    assert pm_import.ADD_HARNESS_ADAPTER["opencode"] == (".opencode", "AGENTS.md")
-    assert pm_import.ADD_HARNESS_ADAPTER["claude"] == (".claude", "CLAUDE.md")
+    # ADR-0070 D5 ①: 값 shape = (adapter_dirs: tuple, root_doc). claude/opencode 는 단일-원소
+    # 튜플, codex 는 이중(.codex agents/config/hooks + .agents skills·dual-namespace 강제).
+    assert pm_import.ADD_HARNESS_ADAPTER["opencode"] == ((".opencode",), "AGENTS.md")
+    assert pm_import.ADD_HARNESS_ADAPTER["claude"] == ((".claude",), "CLAUDE.md")
+    assert pm_import.ADD_HARNESS_ADAPTER["codex"] == ((".codex", ".agents"), "AGENTS.md")
+    # shape 불변식: 모든 값 = (dirs:튜플[str], root_doc:str) — 소비처 iterate 전제.
+    for harness, (dirs, root_doc) in pm_import.ADD_HARNESS_ADAPTER.items():
+        assert isinstance(dirs, tuple) and dirs and all(isinstance(d, str) for d in dirs), harness
+        assert isinstance(root_doc, str) and root_doc, harness
 
 
 def test_add_harness_dry_run_opencode_scope(pm_import, tmp_path):
