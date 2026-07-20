@@ -176,6 +176,32 @@ _CARD_MODE_CLI = {
 }
 
 
+# ── codex 하네스 감지 + 카드 codex 절 (ADR-0069/0070 C-v2·spike §3.5) ──────────
+# codex 전용 정적 진입 doc 이 없는 C-v2 구조(ADR-0069)에서, 부트스트랩 카드가 codex 실행모델·
+# 위임 지침의 전달 채널이다(카드=운영 진실 표면·ADR-0045 — 정적 doc 이 아니라 엔진 발화라
+# pm_update 갱신이 도달). 하네스 감지는 codex shell tool env 실측 마커로 기계 판정한다
+# (`CODEX_THREAD_ID`=<uuid>·`CODEX_CI`=1·spike §D3 env 프로브·thread 019f8003·exec 경로). env
+# 미설정 시 절 부재=정상(다른 하네스 카드 무변·회귀 0). ⚠ 대화형 TUI 세션의 env 마커 존치는
+# 미실측(exec 경로만 확인) — T-0407 라이브 항목이 확인하고 불일치 시 predicate 를 그 티켓에서 보강.
+def _is_codex_harness() -> bool:
+    """codex 하네스면 True — `CODEX_THREAD_ID` 또는 `CODEX_CI` env 마커(기계 판정·추측 아님)."""
+    return bool(os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI"))
+
+
+# codex 절 본문(정적 진입 doc 대체·spike §3.5 3요소). 카드 렌더 끝에 감지 시 append 된다 —
+# ① 위임=세션 내 spawn(`.codex/agents` 4축·`codex exec --agent` 부재) ② trust 2단계 힌트
+# ③ 방법론 소재(공통 코어 AGENTS.md 자동 로드 + 이 카드 + `.agents/skills`·CLAUDE.md 미로드).
+_CODEX_CARD_SECTION = "\n".join((
+    "# codex 하네스 (실행모델·위임 — 정적 진입 doc 없음·ADR-0069/0070 C-v2)",
+    "- **위임 = 세션 내 spawn** — `.codex/agents/{architect,developer,code-reviewer,researcher}` 를 "
+    "codex 가 이 세션 안에서 스폰(부모 sandbox 상속)·`codex exec --agent` 플래그 부재라 외부 프로세스 위임 없음.",
+    "- **trust 2단계** — ① 대화형 `codex` 1회 열어 프로젝트 trust 수락 ② `/hooks` 로 hook trust 승인. "
+    "`-c projects.<path>.trust_level=trusted` CLI override 는 안 먹음(실측).",
+    "- **방법론 소재** — 공통 코어 `AGENTS.md`(codex 자동 로드) + 이 카드 + `.agents/skills`"
+    "(`$<스킬명>` 멘션(예 `$pm-bootstrap`)·auto-trigger). `CLAUDE.md` 는 codex 미로드.",
+))
+
+
 # ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────
 # board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다(ADR-0033 ①).
 # 그러면 등록영역 surface(`_registered_repos`)·단일 self-host 자동바인딩(`_auto_slot`)이
@@ -3783,9 +3809,9 @@ class PmBootstrap:
         task_name = getattr(self, "_task_name", None)
         role = (identity.get("role") if identity else None)
         if task_name:
-            return self._task_command_card_lines(task_name, cmd, skill, engine)
+            return self._task_command_card_lines(task_name, cmd, skill, engine) + self._codex_card_section()
         if role == "readonly":
-            return self._readonly_command_card_lines(identity, cmd, skill)
+            return self._readonly_command_card_lines(identity, cmd, skill) + self._codex_card_section()
 
         lines: list[str] = []
         lines.append("### 이 세션 커맨드 카드 (정체성 채움·--help 불요·단일 진실·ADR-0045)")
@@ -3956,7 +3982,7 @@ class PmBootstrap:
         lines.append("- 현재-아키텍처: `wiki/architecture.md`(충돌 시 단일 진실)")
         lines.append("- 결정 히스토리: `wiki/decisions/README.md` 색인(ADR 상한)")
         lines.append("- 방법론·규율: `wiki/pm_role.md`")
-        return "\n".join(lines)
+        return "\n".join(lines) + self._codex_card_section()
 
     @staticmethod
     def _card_navigation_lines(self_tag: str) -> list[str]:
@@ -3970,6 +3996,17 @@ class PmBootstrap:
             "- 결정 히스토리: `wiki/decisions/README.md` 색인(ADR 상한)",
             "- 방법론·규율: `wiki/pm_role.md`",
         ]
+
+    @staticmethod
+    def _codex_card_section() -> str:
+        """codex 하네스면 카드 codex 절(앞 공백 1줄 포함)을, 아니면 빈 문자열을 돌려준다.
+
+        모든 모드 카드(슬롯·솔로·task·readonly) 렌더 끝에 append 되며, 호출이
+        `_build_command_card_markdown`(→ `_safe_command_card` try/except) 안이라 감지/문자열화가
+        터져도 fail-soft(절 생략·부트스트랩 무손상·ADR-0045). 비-codex 하네스는
+        빈 문자열 → 카드 byte 무변(env 미설정=절 부재=정상·회귀 0).
+        """
+        return f"\n\n{_CODEX_CARD_SECTION}" if _is_codex_harness() else ""
 
     def _task_command_card_lines(self, task_name: str, cmd, skill, engine) -> str:
         """task 모드 커맨드 카드 (T-0362·§F12·F1~F7·⑥) — task 세션이 쓸 task-스코프 커맨드만 dump.

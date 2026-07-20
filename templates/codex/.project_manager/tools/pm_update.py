@@ -1435,6 +1435,8 @@ def _render_new_entry_doc(
 # (codex R2·내부 reviewer 수렴): `.opencode/pm-instructions.md.bak` 같은 suffix 나 문자열-내
 # 부분일치를 "이미 등록"으로 오인하지 않게 한다.
 _JSONC_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+# 최상위(depth==1) `"instructions"` 키 + 배열 여는 `[` — brace-depth 스캐너가 이 위치에서 match.
+_INSTR_KEY_RE = re.compile(r'"instructions"\s*:\s*\[')
 
 
 def _mask_jsonc_comments(text: str) -> str:
@@ -1485,33 +1487,106 @@ def _mask_jsonc_comments(text: str) -> str:
     return "".join(out)
 
 
+def _scan_array_end(masked: str, body_start: int) -> int:
+    """배열 `[` 직후 body_start 부터 매칭되는 `]` 위치를 문자열/중첩 존중으로 찾는다(배열 body 끝).
+
+    문자열 리터럴 내 `]`·중첩 `[...]` 은 건너뛴다. 닫는 `]` 부재(비정상)면 끝(len) 반환."""
+    i, n = body_start, len(masked)
+    depth = 0
+    in_str = False
+    while i < n:
+        c = masked[i]
+        if in_str:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "[":
+            depth += 1
+        elif c == "]":
+            if depth == 0:
+                return i
+            depth -= 1
+        i += 1
+    return n
+
+
+def _find_toplevel_instructions(masked: str) -> tuple[int | None, int | None, int | None]:
+    """주석-마스킹된 jsonc 에서 **최상위(depth==1)** `"instructions"` 배열을 brace-depth 추적으로 찾는다.
+
+    중첩 객체(agent/provider 블록 등)의 `"instructions"` 는 무시한다(codex R2) — opencode 가 읽는
+    진입 지침 배열은 최상위 키 하나다. 문자열 리터럴 내 brace/bracket 은 세지 않는다(문자열 상태 추적).
+
+    반환 (body_start, body_end, root_end):
+      - 최상위 instructions 배열 존재 → (배열 `[` 직후, 닫는 `]` 위치, None): 검사/append 용.
+      - 부재 → (None, None, 최상위 여는 `{` 직후 오프셋): 신설 블록 삽입 위치.
+      - 최상위 `{` 부재(비정상) → (None, None, None)."""
+    i, n = 0, len(masked)
+    depth = 0
+    root_end: int | None = None
+    in_str = False
+    while i < n:
+        c = masked[i]
+        if in_str:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            # 최상위(depth==1)의 "instructions" 키만 후보 — 중첩(depth>1)은 무시.
+            if depth == 1:
+                m = _INSTR_KEY_RE.match(masked, i)
+                if m:
+                    body_start = m.end()  # 여는 `[` 직후
+                    return body_start, _scan_array_end(masked, body_start), None
+            in_str = True
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+            if depth == 1 and root_end is None:
+                root_end = i + 1  # 최상위 여는 `{` 직후
+            i += 1
+            continue
+        if c == "}":
+            depth -= 1
+            i += 1
+            continue
+        i += 1
+    return None, None, root_end
+
+
 def _ensure_jsonc_instructions(jsonc_text: str) -> tuple[str, bool]:
-    """opencode.jsonc `instructions` 배열에 신형 지침 경로를 idempotent 추가(comment-preserving).
+    """opencode.jsonc **최상위** `instructions` 배열에 신형 지침 경로를 idempotent 추가(comment-preserving).
 
-    반환 (new_text, changed). 이미 (비-주석) 배열 원소로 있으면 무변경. 배열이 있으나 경로가
-    없으면 배열 앞에 삽입. 배열 자체가 없으면 최상위 `{` 직후 신설 블록 삽입. JSONC(주석)라
-    json.load 불가 — 주석을 **오프셋 보존 마스킹**한 사본에서 탐지/삽입 위치를 구하고 원본에 같은
-    오프셋으로 write 한다(비파괴·주석·타 키·provider 보존).
+    반환 (new_text, changed). 최상위 배열에 이미 (비-주석) 원소로 있으면 무변경. 최상위 배열이
+    있으나 경로가 없으면 배열 앞에 삽입. 최상위 배열이 없으면 최상위 `{` 직후 신설 블록 삽입.
+    JSONC(주석)라 json.load 불가 — 주석을 **오프셋 보존 마스킹**한 사본 위에서 **brace-depth 추적**
+    으로 위치를 구하고 원본에 같은 오프셋으로 write 한다(비파괴·주석·타 키·provider 보존).
 
-    등록-확인은 **quoted-string 원소 정확 대조**다(codex R2·내부 reviewer 수렴): substring 검사는
-    주석-아웃된 경로(`// ".opencode/pm-instructions.md"`)나 suffix 문자열
-    (`.opencode/pm-instructions.md.bak`)을 "이미 등록"으로 오인해 마이그레이션을 무음 skip 시킬 수
-    있다 — 마스킹으로 주석을 지우고, 배열 body 의 quoted 원소 리스트와 정확 일치만 idempotent 로 본다."""
+    **최상위(depth==1) 한정** (codex R2): 중첩 객체(agent/provider)의 `"instructions"` 가 파일에서
+    먼저 나와도 그 중첩 배열에 삽입하지 않는다 — opencode 가 로드하는 진입 지침은 최상위 키다.
+    등록-확인은 **quoted-string 원소 정확 대조**(substring 오인 방지·주석-아웃/`.bak` suffix)."""
     rel = _ENTRY_DOC_PM_INSTRUCTIONS_REL
     masked = _mask_jsonc_comments(jsonc_text)  # 주석 blank(오프셋 == 원본)
-    instr = re.search(r'"instructions"\s*:\s*\[(.*?)\]', masked, re.DOTALL)
-    if instr:
-        elements = _JSONC_STRING_RE.findall(instr.group(1))  # 마스킹본 → 주석-아웃 원소 제외
+    body_start, body_end, root_end = _find_toplevel_instructions(masked)
+    if body_start is not None:
+        elements = _JSONC_STRING_RE.findall(masked[body_start:body_end])  # 주석-아웃 원소 제외
         if rel in elements:
-            return jsonc_text, False  # idempotent — 이미 등록된 배열 원소(정확 일치)
-        insert_at = instr.start(1)  # 배열 여는 `[` 직후 (마스킹 오프셋 == 원본)
-        return jsonc_text[:insert_at] + f'\n    "{rel}",' + jsonc_text[insert_at:], True
-    brace = re.search(r"\{", masked)
-    if brace is None:
-        return jsonc_text, False  # `{` 없음 — 비정상 config·무변경(안전)
-    at = brace.end()
+            return jsonc_text, False  # idempotent — 최상위 배열에 이미 등록
+        return jsonc_text[:body_start] + f'\n    "{rel}",' + jsonc_text[body_start:], True
+    if root_end is None:
+        return jsonc_text, False  # 최상위 `{` 없음 — 비정상 config·무변경(안전)
     block = f'\n  "instructions": [\n    "{rel}"\n  ],'
-    return jsonc_text[:at] + block + jsonc_text[at:], True
+    return jsonc_text[:root_end] + block + jsonc_text[root_end:], True
 
 
 def _entry_doc_backup_root(dest_root: Path) -> Path:

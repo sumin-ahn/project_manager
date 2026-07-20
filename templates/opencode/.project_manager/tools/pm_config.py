@@ -2651,7 +2651,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_add_harness.add_argument(
         "harness",
-        help="추가할 harness 어댑터 (claude|opencode·pm_import 가 검증). 어댑터 네임스페이스만 복사(비파괴).",
+        help="추가할 harness 어댑터 (claude|opencode|codex·pm_import 가 검증). 어댑터 네임스페이스만 복사(비파괴).",
     )
     p_add_harness.add_argument(
         "--from", dest="source", metavar="SOURCE", default=None,
