@@ -706,6 +706,63 @@ def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
     return bool(pm_import.record_upstream_rev(dest_root, rev))
 
 
+def detect_manifest_skew(local_manifest: list, source_root: Path) -> tuple[str, list[str]]:
+    """upstream engine.manifest ↔ 로컬(sync 에 쓰인) manifest 대조 — 신규 등재분 탐지(T-0395).
+
+    로컬 manifest 가 구형이면 `pm_update` 는 로컬 등재분만 복사해 upstream 이 새로 등재한 엔진
+    경로(신규 등재분)가 도달하지 않는데, upstream_rev baseline 은 무조건 최신으로 갱신돼
+    drift-lint 가 "최신"으로 침묵한다(회사 채택자 실측 2026-07-20: 구형 identity_args 잔존 →
+    pm_handoff AttributeError). 이 함수는 그 skew 를 **탐지만** 한다 — baseline 억제/경고는
+    호출부(main)가, 신규 등재분 실제 도달(자기치유)은 [[T-0396]] 이 맡는다(분리: 탐지는 무해).
+
+    `local_manifest` 는 실 sync 가 쓴 manifest(resolve_manifest_for_dest 산출 — dest 우선·없으면
+    source). upstream manifest 는 source_root 의 engine.manifest 를 직접 읽는다. 두 집합의 순수
+    경로(마커 제외·ManifestEntry 가 이미 떼어냄·str(e))를 비교해 upstream 에만 있는 경로를 신규
+    등재분으로 본다 — 로컬에서 제거된 경로(local−upstream)는 관심 밖(신규 도달 누락만 차단 대상).
+
+    반환 (status, new_entries):
+      - ('upstream_missing', []) : upstream engine.manifest 부재/읽기 실패(구 upstream) — fail-soft.
+      - ('in_sync', [])          : 신규 등재분 0(정합) — baseline 갱신 진행.
+      - ('skew', [<path>…])      : 로컬에 없는 upstream 등재 경로 존재 — baseline 억제 대상(정렬).
+    """
+    upstream_manifest = Path(source_root) / ".project_manager" / "engine.manifest"
+    try:
+        upstream_entries = read_manifest(upstream_manifest)
+    except (FileNotFoundError, OSError):
+        return "upstream_missing", []
+    local_paths = {str(e) for e in local_manifest}
+    new_entries = sorted({str(e) for e in upstream_entries} - local_paths)
+    return ("skew", new_entries) if new_entries else ("in_sync", [])
+
+
+def _print_manifest_skew_finding(
+    status: str, new_entries: list[str], *, dry_run: bool = False
+) -> None:
+    """detect_manifest_skew 결과를 사람이 읽을 형태로 출력(T-0395·loud 경고).
+
+    - 'skew'            : loud 경고 + 신규 등재 경로 목록(reconcile 필요 surface).
+    - 'upstream_missing': fail-soft 경고 1줄(구 upstream·부재 — 대조 생략·현행 유지).
+    - 'in_sync'         : dry-run 에서만 정합 표시(실 sync 는 조용히 baseline 갱신으로 진행).
+    - 'skipped'         : 무출력 — --target(엔진 export) 경로는 skew 대조 비발화(현행 거동).
+
+    baseline 억제/갱신 자체는 호출부(main)가 status 로 결정한다 — 이 함수는 출력만.
+    """
+    if status == "skew":
+        print(
+            f"⚠️  manifest skew — upstream engine.manifest 에 등재됐으나 로컬 manifest 에 없는 "
+            f"신규 경로 {len(new_entries)}건(이번 sync 로 도달하지 않음·manifest reconcile 필요):"
+        )
+        for path in new_entries:
+            print(f"    + {path}")
+    elif status == "upstream_missing":
+        print(
+            "note: upstream engine.manifest 를 읽을 수 없어(구 upstream·부재) manifest 정합 "
+            "대조를 건너뛴다(fail-soft·현행 유지)."
+        )
+    elif status == "in_sync" and dry_run:
+        print("manifest 정합 — upstream 신규 등재분 0(baseline 갱신 진행 예정).")
+
+
 # local.conf key(lowercase) → operational token key(uppercase·pm_render). board.py init 은
 # py·test_cmd·project_name 만 기록 — 나머지(project_root·project_tagline·date)는 local.conf
 # 에 없으므로 매핑 부재 시 빈값(render 시 그 토큰이 남아있으면 leak assertion 이 잡는다·그러나
@@ -1115,23 +1172,49 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
 
+    # ── manifest skew 탐지 (T-0395) — upstream engine.manifest 와 로컬(sync 에 쓰인) manifest
+    #    를 대조해 "로컬에 없는 upstream 신규 등재 경로"(신규 엔진 파일)를 찾는다. 로컬 manifest
+    #    가 구형이면 신규 경로가 이번 sync 로 도달하지 않으므로, 아래 baseline 갱신을 억제해
+    #    drift-lint 가 계속 skew 를 울리게 한다(false-최신 차단). --dry-run 도 동일 대조 결과 표시.
+    #
+    #    **self-update(채택자 흡수) 경로 한정** — `--target`(루트→templates/<name> 엔진 export)은
+    #    타깃별 manifest(templates/*/engine.manifest)가 루트와 *의도적으로* 다르므로(어댑터
+    #    비대칭·@target-owned 등) 대조하면 대량 오탐 + baseline 억제가 된다. --target 은 검출/억제
+    #    를 비발화하고 현행 거동(무조건 baseline 갱신)을 유지한다(codex must-fix).
+    skew_status, skew_new = (
+        ("skipped", []) if args.target else detect_manifest_skew(manifest, source_root)
+    )
+
     if not changes:
         print("최신 — 변경 없음.")
+        _print_manifest_skew_finding(skew_status, skew_new, dry_run=args.dry_run)
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
+        _print_manifest_skew_finding(skew_status, skew_new, dry_run=True)
         return 0
 
     apply(changes)
     msg = f"✓ {len(changes)} 파일 동기화"
     print(msg)
 
+    _print_manifest_skew_finding(skew_status, skew_new, dry_run=False)
+
     # upstream_rev baseline 갱신(T-0145·ADR-0032 D2) — 매 sync 마다 source(upstream) HEAD 를
-    # local.conf 에 박아 drift-lint(T-0141)의 "마지막 동기 이후" 기준점을 최신화한다. source 가
-    # 로컬 git checkout 일 때만(URL upstream 은 로컬 checkout 없어 graceful 생략). best-effort —
-    # 기록 실패가 동기화 자체를 무효화하지 않는다(파일은 이미 적용됨). --target 모드는 effective_
-    # dest(templates/<name>)의 conf 에 기록(루트 오염 방지·maybe_prompt_external_review 와 동형).
-    if record_upstream_rev_baseline(effective_dest, source_root):
+    # local.conf 에 박아 drift-lint(T-0141)의 "마지막 동기 이후" 기준점을 최신화한다. 단
+    # **manifest skew**(로컬 manifest 구형·신규 등재분 미도달·T-0395)면 갱신을 억제한다 —
+    # baseline 을 최신으로 박으면 drift-lint 가 "최신"으로 침묵해 신규 엔진 파일 누락을 은폐한다
+    # (회사 채택자 실측). skew 아님(정합·또는 upstream manifest 부재 fail-soft)이면 현행대로 갱신.
+    # source 가 로컬 git checkout 일 때만(URL upstream 은 로컬 checkout 없어 graceful 생략).
+    # best-effort — 기록 실패가 동기화 자체를 무효화하지 않는다(파일은 이미 적용됨). --target
+    # 모드는 effective_dest(templates/<name>)의 conf 에 기록(루트 오염 방지·maybe_prompt 와 동형).
+    if skew_status == "skew":
+        print(
+            f"→ manifest skew({len(skew_new)}건)로 upstream_rev baseline 갱신을 **억제**한다 "
+            "— drift-lint 가 계속 이 skew 를 울리게 둔다. 로컬 engine.manifest 를 reconcile 한 "
+            "뒤 다시 pm-update 하라(신규 등재분 자기치유는 T-0396)."
+        )
+    elif record_upstream_rev_baseline(effective_dest, source_root):
         rev = _read_local_conf(
             effective_dest / ".project_manager" / "local.conf").get("upstream_rev", "")
         print(f"✓ local.conf upstream_rev baseline 갱신 (drift-lint 기준점): {rev}")

@@ -54,6 +54,29 @@ def _write_local_conf(dest_root: Path, text: str) -> Path:
     return local_conf
 
 
+def _write_dest_manifest(dest_root: Path, entries: list[str]) -> Path:
+    """dest(로컬) engine.manifest — resolve_manifest_for_dest 가 dest 우선으로 집게 만든다."""
+    manifest = dest_root / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("\n".join(entries) + "\n", encoding="utf-8")
+    return manifest
+
+
+def _make_upstream_manifest(root: Path, entries: list[str]) -> None:
+    """source(upstream) 트리 — 등재 경로별 sentinel 파일 + 그를 담은 engine.manifest.
+
+    _make_upstream 의 다-경로 버전 — manifest 에 여러 등재분을 넣어 skew(로컬 manifest 가
+    이 중 일부를 누락)를 시뮬레이션한다.
+    """
+    for rel in entries:
+        f = root / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f"# upstream sentinel {rel}\n", encoding="utf-8")
+    manifest = root / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("\n".join(entries) + "\n", encoding="utf-8")
+
+
 # ── _read_local_conf 파싱 단위 (board.local_config 규칙 미러) ────────────────
 
 def test_read_local_conf_parses_key_value(pm_update, tmp_path):
@@ -287,6 +310,177 @@ def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypa
     assert rc == 0
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert "upstream_rev" not in conf, "dry-run 인데 upstream_rev 가 기록됨(부작용 누출)"
+
+
+# ── T-0395: manifest skew → baseline 갱신 억제 (false-최신 차단·drift 은폐 방지) ──
+
+NEW_ENGINE_REL = ".project_manager/tools/__pm_update_new_engine__.py"
+
+
+def test_detect_manifest_skew_flags_new_upstream_entries(pm_update, tmp_path):
+    """upstream manifest 에만 있는(로컬 manifest 부재) 등재 경로 → ('skew', [신규…]) 정렬."""
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
+    local_manifest = pm_update.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
+
+    status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
+    assert status == "skew"
+    assert new_entries == [NEW_ENGINE_REL], f"신규 등재분 미탐지/오탐: {new_entries!r}"
+
+
+def test_detect_manifest_skew_in_sync_when_manifests_match(pm_update, tmp_path):
+    """로컬 manifest 가 upstream 등재분을 모두 포함 → ('in_sync', []) (신규 등재분 0)."""
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL])
+    local_manifest = pm_update.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
+
+    status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
+    assert status == "in_sync" and new_entries == []
+
+
+def test_detect_manifest_skew_markers_stripped_before_compare(pm_update, tmp_path):
+    """마커(@render 등)는 read_manifest 가 떼어내므로 순수 경로 기준 비교 — 마커 차이는 skew 아님."""
+    source = tmp_path / "src"
+    (source / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (source / ".project_manager" / "engine.manifest").write_text(
+        SENTINEL_REL + "  @render\n", encoding="utf-8")
+    local_manifest = pm_update.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
+
+    status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
+    assert status == "in_sync" and new_entries == [], \
+        "마커만 다른 동일 경로를 신규 등재분으로 오탐(순수 경로 비교 위반)"
+
+
+def test_detect_manifest_skew_upstream_missing_fail_soft(pm_update, tmp_path):
+    """upstream engine.manifest 부재/읽기 실패 → ('upstream_missing', []) (fail-soft·현행 유지)."""
+    source = tmp_path / "src"  # engine.manifest 미생성
+    source.mkdir(parents=True, exist_ok=True)
+    local_manifest = pm_update.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
+
+    status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
+    assert status == "upstream_missing" and new_entries == []
+
+
+def test_main_suppresses_baseline_on_manifest_skew(pm_update, tmp_path, monkeypatch, capsys):
+    """실 sync 시 로컬 manifest 가 구형(신규 등재분 미포함)이면 loud 경고 + upstream_rev 미갱신."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
+    _write_dest_manifest(fake_repo, [SENTINEL_REL])  # 구형 로컬 manifest — NEW_ENGINE_REL 누락.
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "wouldbaselinerev")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main([])  # 실 sync — sentinel 복사(apply)까지 도달.
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "manifest skew" in out and NEW_ENGINE_REL in out, \
+        f"skew loud 경고+신규 등재 목록 미출력: {out!r}"
+    assert "억제" in out, f"baseline 억제 안내 미출력: {out!r}"
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert "upstream_rev" not in conf, \
+        f"skew 인데 upstream_rev baseline 이 갱신됨(false-최신 은폐): {conf.get('upstream_rev')!r}"
+
+
+def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkeypatch, capsys):
+    """로컬 manifest 가 upstream 과 정합이면 현행대로 upstream_rev baseline 갱신 + skew 경고 없음."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL])
+    _write_dest_manifest(fake_repo, [SENTINEL_REL])  # 정합 로컬 manifest.
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "insyncrev7")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "manifest skew" not in out, f"정합인데 skew 오탐: {out!r}"
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert conf.get("upstream_rev") == "insyncrev7", \
+        f"정합 sync 인데 baseline 미갱신: {conf.get('upstream_rev')!r}"
+
+
+def test_main_records_baseline_when_upstream_manifest_absent(pm_update, tmp_path, monkeypatch, capsys):
+    """upstream manifest 부재(구 upstream)면 대조 생략·현행대로 baseline 갱신 + fail-soft note."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "src"
+    # source 에 sentinel 파일은 있으나 engine.manifest 는 없음(구 upstream). dest manifest 로 sync.
+    sentinel = source / SENTINEL_REL
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("# upstream sentinel\n", encoding="utf-8")
+    _write_dest_manifest(fake_repo, [SENTINEL_REL])
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "failsoftrev")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "fail-soft" in out, f"upstream manifest 부재 fail-soft note 미출력: {out!r}"
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert conf.get("upstream_rev") == "failsoftrev", \
+        f"fail-soft 인데 baseline 미갱신: {conf.get('upstream_rev')!r}"
+
+
+def test_main_dry_run_shows_skew_without_recording(pm_update, tmp_path, monkeypatch, capsys):
+    """--dry-run 도 동일 대조 결과(skew 경고)를 표시하되 baseline 은 기록하지 않는다."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
+    _write_dest_manifest(fake_repo, [SENTINEL_REL])
+    _write_local_conf(fake_repo, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main(["--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "manifest skew" in out and NEW_ENGINE_REL in out, \
+        f"dry-run 이 skew 대조 결과를 표시하지 않음: {out!r}"
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert "upstream_rev" not in conf, "dry-run 인데 baseline 기록됨(부작용 누출)"
+
+
+def test_main_target_mode_skips_skew_detection(pm_update, tmp_path, monkeypatch, capsys):
+    """--target(엔진 export) 경로는 타깃별 manifest 차이로 skew 를 오탐하지 않는다 — 검출/억제 비발화.
+
+    타깃 manifest(templates/<name>/engine.manifest)가 루트(source)보다 등재분이 적어도(의도적
+    어댑터 비대칭) skew 경고/baseline 억제가 발화하면 안 된다(codex must-fix). 현행 거동(무조건
+    baseline 갱신)을 유지한다 — skew 검출은 self-update(채택자 흡수) 경로 한정.
+    """
+    fake_repo = tmp_path / "fake_repo"
+    target_root = fake_repo / "templates" / "tgt"
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])  # 루트 manifest = 2 등재.
+    _write_dest_manifest(target_root, [SENTINEL_REL])  # 타깃 manifest = 1 등재(의도적 차이).
+    _write_local_conf(target_root, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "targetrev1")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    rc = pm_update.main(["--from", str(source), "--target", "tgt"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "manifest skew" not in out and "억제" not in out, \
+        f"--target 에서 skew 검출/억제가 발화함(오탐): {out!r}"
+    conf = pm_update._read_local_conf(target_root / ".project_manager" / "local.conf")
+    assert conf.get("upstream_rev") == "targetrev1", \
+        f"--target 인데 baseline 미갱신(현행 거동 위반): {conf.get('upstream_rev')!r}"
 
 
 # ── MF1(codex): URL upstream + --from 생략 → 명확·actionable 에러 (D5 경계·침묵 실패 금지) ──
