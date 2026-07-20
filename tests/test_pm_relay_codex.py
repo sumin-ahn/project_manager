@@ -1,0 +1,690 @@
+"""codex relay (ADR-0009 · ADR-0070 T-0404) 단위 테스트.
+
+엔진 core 의 `parse_codex_json`(claude `parse_stream_json`·opencode `parse_opencode_json` 대칭·
+순수·단 usage 를 3번째로 냄)과 codex driver(`pm_orch_codex.py`·SessionDriver 구현)를 importlib 로
+직접 검증한다. 실 codex 불요 — FakeRunner DI(claude/opencode driver 테스트 패턴)로 subprocess
+폭발 없이 CLI 조립/파싱/ctx 가드만 본다.
+
+검증 축 (ticket DoD):
+  ① parse_codex_json 순수 — thread.started→tid · item.* agent_message→reply · turn.completed.usage
+     → usage · 비-JSON/비-dict skip · edge.
+  ② driver spawn — 엔진 uuid4 **무시** 하고 출력 파싱 thread_id 반환 · `--json` · `--skip-git-repo-check`
+     · `-C` 격리 · **stdin=DEVNULL**(⚠ 미닫힘 시 codex 무기한 대기·실측) · resume 없음.
+  ③ driver relay_turn — `resume <tid>` · reply 파싱 · spawn cwd 재사용.
+  ④ driver close — 세션 cwd 메타 정리.
+  ⑤ fail-soft — timeout·OSError → 빈 reply(루프 생존) · subprocess 폭발 가드.
+  ⑥ driver-side ctx 기계 가드(ADR-0070 D4 ①) — usage 예산 초과 시 stop marker 박제 · 예산 해소
+     precedence · Supervisor 회전(driver 자신의 가드가 marker → 엔진 무수정 회전).
+
+엔진 Supervisor 재사용(spawn→relay→respawn 회전)은 `test_pm_relay.py` 가 FakeDriver 로 이미 커버 —
+여기선 codex 고유 표면 + codex driver 의 실제 ctx-가드 경로로 회전을 재확인. 엔진 운영코드는
+무수정(ADR-0009 불변식).
+
++ live smoke — 실 codex(`@skipif`·기본 skip). 게이트만 둔다 — 본체(연속성·resume·tid==marker·
+  과금 수집 N)는 T-0407 몫.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json as _json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+TOOLS = REPO / ".project_manager" / "tools"
+CODEX_DRIVER = REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def orch():
+    return _load("pm_relay", TOOLS / "pm_relay.py")
+
+
+@pytest.fixture(scope="module")
+def driver_mod():
+    return _load("pm_orch_codex", CODEX_DRIVER)
+
+
+# ── codex JSONL 이벤트 헬퍼 (실측 형식·codex 0.144.x·spike §1.2) ──────────────
+
+def _codex_ev(**kw) -> str:
+    return _json.dumps(kw)
+
+
+def _codex_stream(tid: str, reply: str, usage: dict | None = None) -> str:
+    """대표 codex --json 이벤트 스트림 1턴: thread.started → item.completed(agent_message) → turn.completed.
+
+    usage 는 **실 wire dict**(`*_tokens` 키·codex 0.144.6 실측) — 파서가 contract 로 정규화한다."""
+    events = [
+        _codex_ev(type="thread.started", thread_id=tid),
+        _codex_ev(type="turn.started"),
+        _codex_ev(type="item.completed", item={"type": "agent_message", "text": reply}),
+    ]
+    if usage is not None:
+        events.append(_codex_ev(type="turn.completed", usage=usage))
+    else:
+        events.append(_codex_ev(type="turn.completed"))
+    return "\n".join(events)
+
+
+def _usage_from_wire(orch, **wire) -> dict:
+    """wire(`*_tokens` 키·실측 형식)를 **실 파서** 로 정규화해 contract usage 를 얻는다.
+
+    가드 테스트가 파서-정규화 경계를 실제로 타게 해 자기정합 false-green(테스트가 접미사 없는
+    contract 키를 직접 지어내 wire→contract 정규화를 건너뛰던 원 결함)을 제거한다 — 정규화가
+    깨지면 used==0 → marker 미박제 → 테스트가 정직하게 실패한다(codex/opencode 리뷰 수렴 결함 방어)."""
+    _, _, usage = orch.parse_codex_json([
+        _codex_ev(type="thread.started", thread_id="t"),
+        _codex_ev(type="turn.completed", usage=wire),
+    ])
+    return usage
+
+
+# ── ① parse_codex_json (순수·tid/reply/usage 추출·비-JSON skip·edge) ──────────
+
+def test_parse_codex_extracts_thread_reply_usage(orch):
+    """실측 형식(codex 0.144.6·PM 프로브 5회): thread.started.thread_id → tid · item agent_message.text
+    → reply · turn.completed.usage 의 **`*_tokens` wire 키** → 접미사 없는 contract 로 정규화."""
+    tid = "019f7ff4-d535-1234"
+    lines = [
+        _codex_ev(type="thread.started", thread_id=tid),
+        _codex_ev(type="turn.started"),
+        _codex_ev(type="item.completed",
+                  item={"type": "agent_message", "text": "PONG"}),
+        # 실측 wire 키(접미사 _tokens)·PM 라이브 프로브 권위 값.
+        _codex_ev(type="turn.completed",
+                  usage={"input_tokens": 12481, "cached_input_tokens": 9600,
+                         "output_tokens": 105, "reasoning_output_tokens": 92}),
+    ]
+    got_tid, reply, usage = orch.parse_codex_json(lines)
+    assert got_tid == tid
+    assert reply == "PONG"
+    # wire → contract 정규화(접미사 제거) — driver 인터페이스는 접미사 없는 키.
+    assert usage == {"input": 12481, "cached_input": 9600, "output": 105, "reasoning_output": 92}
+
+
+def test_parse_codex_reply_takes_last_agent_message(orch):
+    """스트리밍 item.started→completed 시 최종(마지막) agent_message 전체 텍스트를 취한다."""
+    lines = [
+        _codex_ev(type="thread.started", thread_id="t1"),
+        _codex_ev(type="item.started", item={"type": "agent_message", "text": "partial"}),
+        _codex_ev(type="item.completed",
+                  item={"type": "agent_message", "text": "partial full answer"}),
+    ]
+    _, reply, _ = orch.parse_codex_json(lines)
+    assert reply == "partial full answer"
+
+
+def test_parse_codex_ignores_non_agent_message_items(orch):
+    """reasoning 등 agent_message 아닌 item 은 reply 로 취하지 않는다."""
+    lines = [
+        _codex_ev(type="thread.started", thread_id="t2"),
+        _codex_ev(type="item.completed", item={"type": "reasoning", "text": "thinking..."}),
+        _codex_ev(type="item.completed", item={"type": "agent_message", "text": "actual reply"}),
+    ]
+    _, reply, _ = orch.parse_codex_json(lines)
+    assert reply == "actual reply"
+
+
+def test_parse_codex_skips_malformed_lines(orch):
+    """비-JSON / 부분 라인 skip (claude·opencode 파서와 동일 robust 정책)."""
+    lines = [
+        "not json at all",
+        "",
+        "{broken",
+        _codex_ev(type="thread.started", thread_id="t3"),
+        "noise {",
+        _codex_ev(type="item.completed", item={"type": "agent_message", "text": "answer"}),
+    ]
+    got_tid, reply, _ = orch.parse_codex_json(lines)
+    assert got_tid == "t3" and reply == "answer"
+
+
+def test_parse_codex_ignores_non_dict_events(orch):
+    """JSON 배열/스칼라 라인은 dict 가 아니라 skip(robust)."""
+    lines = [
+        "[1,2,3]", "42",
+        _codex_ev(type="thread.started", thread_id="t4"),
+        _codex_ev(type="item.completed", item={"type": "agent_message", "text": "x"}),
+    ]
+    got_tid, reply, _ = orch.parse_codex_json(lines)
+    assert got_tid == "t4" and reply == "x"
+
+
+def test_parse_codex_empty_and_no_content(orch):
+    assert orch.parse_codex_json([]) == (None, None, None)
+    # thread.started 만 있고 reply/usage 없음.
+    assert orch.parse_codex_json(
+        [_codex_ev(type="thread.started", thread_id="t5")]) == ("t5", None, None)
+
+
+def test_parse_codex_thread_started_missing_id(orch):
+    """thread.started 인데 thread_id 누락/비-문자열이면 tid None(driver 가 치명 처리)."""
+    lines = [
+        _codex_ev(type="thread.started"),
+        _codex_ev(type="item.completed", item={"type": "agent_message", "text": "r"}),
+    ]
+    got_tid, reply, _ = orch.parse_codex_json(lines)
+    assert got_tid is None and reply == "r"
+
+
+def test_parse_codex_agent_message_without_text(orch):
+    """agent_message item 인데 text 누락/빈문자열이면 누적 안 함(edge robust — 최종 비어있지-않은 것)."""
+    lines = [
+        _codex_ev(type="thread.started", thread_id="t6"),
+        _codex_ev(type="item.completed", item={"type": "agent_message"}),
+        _codex_ev(type="item.completed", item={"type": "agent_message", "text": ""}),
+        _codex_ev(type="item.completed", item={"type": "agent_message", "text": "real"}),
+    ]
+    got_tid, reply, _ = orch.parse_codex_json(lines)
+    assert got_tid == "t6" and reply == "real"
+
+
+def test_parse_codex_first_thread_id_wins(orch):
+    """thread_id 는 첫 thread.started 값(resume 권위 id — 이후 등장은 무시)."""
+    lines = [
+        _codex_ev(type="thread.started", thread_id="first"),
+        _codex_ev(type="thread.started", thread_id="second"),
+    ]
+    got_tid, _, _ = orch.parse_codex_json(lines)
+    assert got_tid == "first"
+
+
+def test_parse_codex_usage_takes_last_turn_completed(orch):
+    """usage 는 마지막 turn.completed 값(멀티-turn 스트림 방어) — wire 키 정규화."""
+    lines = [
+        _codex_ev(type="thread.started", thread_id="t7"),
+        _codex_ev(type="turn.completed", usage={"input_tokens": 1}),
+        _codex_ev(type="turn.completed", usage={"input_tokens": 2}),
+    ]
+    _, _, usage = orch.parse_codex_json(lines)
+    assert usage == {"input": 2, "cached_input": 0, "output": 0, "reasoning_output": 0}
+
+
+def test_parse_codex_usage_reads_only_tokens_suffix_keys(orch):
+    """회귀 가드 — 파서는 **`*_tokens` wire 키만** 읽는다(접미사 없는 키는 0).
+
+    원 결함(codex/opencode 리뷰 수렴): 접미사 없는 `input`/`output` 을 읽어 실 codex 의 `input_tokens`
+    를 놓쳐 used==0 → ctx 가드 영구 사멸. 접미사 없는 키만 담긴 usage 는 전부 0 으로 정규화돼야 한다."""
+    lines = [
+        _codex_ev(type="thread.started", thread_id="t8"),
+        # 잘못된(접미사 없는) 키 — 무시돼 전부 0.
+        _codex_ev(type="turn.completed",
+                  usage={"input": 999, "output": 999, "reasoning_output": 999}),
+    ]
+    _, _, usage = orch.parse_codex_json(lines)
+    assert usage == {"input": 0, "cached_input": 0, "output": 0, "reasoning_output": 0}
+
+
+# ── codex driver (FakeRunner DI·실 codex 무호출) ─────────────────────────────
+
+class _FakeCompleted:
+    def __init__(self, stdout, returncode=0, stderr=""):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+# ── ② driver spawn (엔진 uuid4 무시·출력 tid 반환·--json·--skip-git-repo-check·-C·stdin=DEVNULL) ─
+
+def test_codex_driver_spawn_ignores_uuid_returns_thread_id(orch, driver_mod):
+    """spawn 이 엔진 uuid4 인자를 **무시** 하고 codex 출력에서 파싱한 thread_id 를 반환한다
+    (codex thread_id 사전지정 불가·실측 → 출력 파싱이 권위)."""
+    captured = {}
+    codex_tid = "019f-CODEX-ISSUED"
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return _FakeCompleted(_codex_stream(codex_tid, "READY"))
+
+    driver = driver_mod.CodexCliDriver(orch.parse_codex_json, runner=fake_run)
+    engine_uuid = "11111111-2222-3333-4444-555555555555"
+    observed = driver.spawn("/repo/root", engine_uuid, "bootstrap text")
+    # 엔진 uuid4 가 아니라 codex 가 발급한 thread_id 를 반환.
+    assert observed == codex_tid
+    assert observed != engine_uuid
+    cmd = captured["cmd"]
+    # sandbox 명시 핀(codex R4) — 사용자 전역 config 무관 workspace-write(spawn/resume 공통).
+    assert cmd[:6] == ["codex", "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check"]
+    assert "-C" in cmd and "/repo/root" in cmd  # child cwd 격리.
+    assert "resume" not in cmd  # 첫 spawn 은 resume 안 함.
+    assert cmd[-1] == "bootstrap text"  # PROMPT positional 은 맨 끝.
+    # ⚠ stdin close 필수 — 미닫힘 시 codex 가 stdin 무기한 대기(라이브 실측·spike §D3).
+    assert captured["kwargs"].get("stdin") == subprocess.DEVNULL
+
+
+def test_codex_driver_spawn_thread_parse_failure_raises(orch, driver_mod):
+    """thread_id 파싱 실패 = 치명·명시 중단 (opencode sid-fail 동형).
+
+    codex 는 thread_id 사전지정 불가라 uuid 폴백 시 `resume <uuid>` 가 존재하지 않는 세션을
+    가리켜 연속성 침묵 파손 → 폴백 대신 RuntimeError 로 명시 중단(relay 는 유효 세션 없이 못 돈다)."""
+    def fake_run(cmd, **kwargs):
+        return _FakeCompleted("no thread here\nplain text")  # 비-JSON → tid None.
+
+    driver = driver_mod.CodexCliDriver(orch.parse_codex_json, runner=fake_run)
+    with pytest.raises(RuntimeError, match="thread"):
+        driver.spawn("/r", "engine-uuid-ignored", "boot")
+
+
+# ── ③ driver relay_turn (resume <tid>·reply 파싱·spawn cwd 재사용) ────────────
+
+def test_codex_driver_relay_uses_resume(orch, driver_mod):
+    """relay_turn 이 `resume <tid>` 로 같은 세션을 이어가고 reply 를 반환 + stdin=DEVNULL."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return _FakeCompleted(_codex_stream("tid_r", "hello back"))
+
+    driver = driver_mod.CodexCliDriver(orch.parse_codex_json, runner=fake_run)
+    reply = driver.relay_turn("tid_r", "ping")
+    assert reply == "hello back"
+    cmd = captured["cmd"]
+    assert "resume" in cmd
+    assert cmd[cmd.index("resume") + 1] == "tid_r"
+    assert cmd[-1] == "ping"
+    assert captured["kwargs"].get("stdin") == subprocess.DEVNULL
+
+
+def test_codex_driver_dash_c_precedes_resume(orch, driver_mod):
+    """`-C` 는 exec-레벨 플래그라 `resume` 서브커맨드 *앞*(티켓 명세 `[-C] [resume]` 순).
+
+    resume 뒤에 -C 를 두면 resume 이 -C 를 거부할 때 cwd 격리가 파손된다. spawn 으로 cwd 를 기억시킨
+    뒤 relay(resume+-C 동시 경로)에서 상대 위치를 단언. (resume+-C 실효 자체는 T-0407 라이브 확인.)"""
+    cmds = []
+
+    def fake_run(cmd, **kwargs):
+        cmds.append(cmd)
+        return _FakeCompleted(_codex_stream("tid_pos", "ok"))
+
+    driver = driver_mod.CodexCliDriver(orch.parse_codex_json, runner=fake_run)
+    driver.spawn("/repo/root", "uuid", "boot")  # cwd 기억(tid_pos).
+    driver.relay_turn("tid_pos", "msg")         # resume + -C 동시.
+    relay_cmd = cmds[-1]
+    assert "-C" in relay_cmd and "resume" in relay_cmd
+    assert relay_cmd.index("-C") < relay_cmd.index("resume"), (
+        f"-C 가 resume 뒤에 있음(cwd 격리 파손 위험): {relay_cmd}")
+
+
+def test_codex_driver_relay_reuses_spawn_cwd(orch, driver_mod):
+    """relay 가 spawn 때의 cwd(-C)를 재사용한다 — child cwd 격리 일관."""
+    dirs = []
+
+    def fake_run(cmd, **kwargs):
+        dirs.append(cmd[cmd.index("-C") + 1] if "-C" in cmd else None)
+        return _FakeCompleted(_codex_stream("tid_cwd", "ok"))
+
+    driver = driver_mod.CodexCliDriver(orch.parse_codex_json, runner=fake_run)
+    tid = driver.spawn("/repo/root", "uuid", "boot")
+    driver.relay_turn(tid, "msg")
+    assert dirs == ["/repo/root", "/repo/root"]
+
+
+def test_codex_driver_relay_unknown_session_no_dir(orch, driver_mod):
+    """모르는 세션(메타 없음) relay 는 -C 없이도 fail-soft(빈 cwd 메타)."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompleted(_codex_stream("tid_u", "r"))
+
+    driver = driver_mod.CodexCliDriver(orch.parse_codex_json, runner=fake_run)
+    reply = driver.relay_turn("tid_never_spawned", "x")
+    assert reply == "r"
+    assert "-C" not in captured["cmd"]  # cwd 메타 없으면 -C 생략.
+
+
+# ── ④ driver close (세션 cwd 메타 정리) ──────────────────────────────────────
+
+def test_codex_driver_close_clears_meta(orch, driver_mod):
+    def fake_run(cmd, **kwargs):
+        return _FakeCompleted(_codex_stream("tid_c", "READY"))
+
+    driver = driver_mod.CodexCliDriver(orch.parse_codex_json, runner=fake_run)
+    tid = driver.spawn("/r", "uuid", "boot")
+    assert tid in driver._session_cwd
+    assert driver.close(tid) is None
+    assert tid not in driver._session_cwd  # 메타 정리.
+    # 모르는 세션 close 도 fail-soft(예외 없음).
+    assert driver.close("tid_never") is None
+
+
+# ── ⑤ driver fail-soft (timeout·실행실패·subprocess 폭발 가드) ────────────────
+
+def test_codex_driver_relay_timeout_returns_empty(orch, driver_mod):
+    """subprocess timeout 은 fail-soft — 빈 reply(루프 안 죽음)."""
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    driver = driver_mod.CodexCliDriver(orch.parse_codex_json, runner=fake_run)
+    assert driver.relay_turn("tid", "x") == ""
+
+
+def test_codex_driver_relay_oserror_returns_empty(orch, driver_mod):
+    """codex 바이너리 부재(OSError)도 fail-soft."""
+    def fake_run(cmd, **kwargs):
+        raise OSError("codex not found")
+
+    driver = driver_mod.CodexCliDriver(orch.parse_codex_json, runner=fake_run)
+    assert driver.relay_turn("tid", "x") == ""
+
+
+def test_codex_driver_does_not_spawn_real_subprocess(orch, driver_mod, monkeypatch):
+    """driver 경로가 (FakeRunner 주입 시) 실 subprocess.run/Popen 을 호출하지 않는다."""
+    import subprocess as _sp
+
+    def _boom(*a, **k):
+        raise AssertionError("driver 가 실 subprocess 를 호출했다")
+
+    monkeypatch.setattr(_sp, "run", _boom)
+    monkeypatch.setattr(_sp, "Popen", _boom)
+
+    def fake_run(cmd, **kwargs):
+        return _FakeCompleted(_codex_stream("tid_safe", "READY"))
+
+    driver = driver_mod.CodexCliDriver(orch.parse_codex_json, runner=fake_run)
+    tid = driver.spawn("/r", "uuid", "boot")
+    assert driver.relay_turn(tid, "x") == "READY"
+
+
+# ── ⑥ driver-side ctx 기계 가드 (ADR-0070 D4 ①·usage 예산 초과 → marker 박제) ──
+
+def test_codex_maybe_mark_ctx_writes_marker_over_budget(orch, driver_mod, tmp_path):
+    """실 wire usage 가 예산 정지점(잔여 20%↔사용 80%)에 도달하면 driver 가 post-turn marker 를 박제 →
+    supervisor 가 stat 가능(엔진 write_post_turn_marker DI). used = input+output+reasoning_output."""
+    driver = driver_mod.CodexCliDriver(
+        orch.parse_codex_json, ctx_budget=1000,
+        mark_stop=orch.write_post_turn_marker, root=tmp_path,
+    )
+    # used = 700+80+20 = 800 = 1000*(100-20)/100 → 정지점 도달(경계 포함). cached 600 은 input 부분집합·가산 안 함.
+    usage = _usage_from_wire(orch, input_tokens=700, cached_input_tokens=600,
+                             output_tokens=80, reasoning_output_tokens=20)
+    driver._maybe_mark_ctx("tid_over", usage)
+    assert orch.stop_marker_present(tmp_path, "tid_over") is True
+
+
+def test_codex_maybe_mark_ctx_noop_under_budget(orch, driver_mod, tmp_path):
+    """예산 정지점 미만이면 marker 안 씀(실 wire usage 경로)."""
+    driver = driver_mod.CodexCliDriver(
+        orch.parse_codex_json, ctx_budget=1000,
+        mark_stop=orch.write_post_turn_marker, root=tmp_path,
+    )
+    # used = 300+100+100 = 500 < 800.
+    usage = _usage_from_wire(orch, input_tokens=300, cached_input_tokens=200,
+                             output_tokens=100, reasoning_output_tokens=100)
+    driver._maybe_mark_ctx("tid_under", usage)
+    assert orch.stop_marker_present(tmp_path, "tid_under") is False
+
+
+def test_codex_maybe_mark_ctx_excludes_cached_input(orch, driver_mod, tmp_path):
+    """cached_input 이중 계상 방지 — cached 를 (잘못) 더하면 정지점 초과지만, 제외하면 미만 → marker 안 씀.
+
+    실측: input_tokens 가 cached_input_tokens 를 포함(input ⊃ cached). used = input+output+reasoning
+    = 500+100+50 = 650 < 800(정지점). cached 400 을 더하면 1050 ≥ 800 이라 이 가드가 깨지면(누가 cached
+    를 합산하면) marker 가 잘못 박제돼 이 테스트가 실패한다."""
+    driver = driver_mod.CodexCliDriver(
+        orch.parse_codex_json, ctx_budget=1000,
+        mark_stop=orch.write_post_turn_marker, root=tmp_path,
+    )
+    usage = _usage_from_wire(orch, input_tokens=500, cached_input_tokens=400,
+                             output_tokens=100, reasoning_output_tokens=50)
+    driver._maybe_mark_ctx("tid_cached", usage)
+    assert orch.stop_marker_present(tmp_path, "tid_cached") is False
+
+
+def test_codex_maybe_mark_ctx_honors_stop_pct_override(orch, driver_mod, tmp_path):
+    """ctx_stop_pct override — stop_pct=40 이면 잔여 40%↔사용 60% 에서 정지(기본 20 보다 이르게)."""
+    driver = driver_mod.CodexCliDriver(
+        orch.parse_codex_json, ctx_budget=1000, stop_pct=40,
+        mark_stop=orch.write_post_turn_marker, root=tmp_path,
+    )
+    # used = 500+60+40 = 600 = 1000*(100-40)/100 → 정지(기본 stop_pct=20 이면 800 이라 미달).
+    usage = _usage_from_wire(orch, input_tokens=500, output_tokens=60, reasoning_output_tokens=40)
+    driver._maybe_mark_ctx("tid_sp", usage)
+    assert orch.stop_marker_present(tmp_path, "tid_sp") is True
+
+
+def test_codex_maybe_mark_ctx_disabled_without_budget(orch, driver_mod, tmp_path):
+    """예산 미설정(None)이면 가드 no-op — 아무리 usage 커도 marker 안 씀."""
+    driver = driver_mod.CodexCliDriver(
+        orch.parse_codex_json, ctx_budget=None,
+        mark_stop=orch.write_post_turn_marker, root=tmp_path,
+    )
+    driver._maybe_mark_ctx("tid_x", _usage_from_wire(orch, input_tokens=10 ** 9))
+    assert orch.stop_marker_present(tmp_path, "tid_x") is False
+
+
+def test_codex_maybe_mark_ctx_disabled_without_mark_stop(orch, driver_mod, tmp_path):
+    """mark_stop 미주입이면 가드 no-op(예외 없이 조용히 skip)."""
+    driver = driver_mod.CodexCliDriver(
+        orch.parse_codex_json, ctx_budget=1000, mark_stop=None, root=tmp_path,
+    )
+    # 예외 없이 통과(박제 트리거 자체가 없음).
+    driver._maybe_mark_ctx("tid_y", _usage_from_wire(orch, input_tokens=10 ** 9))
+    assert orch.stop_marker_present(tmp_path, "tid_y") is False
+
+
+def test_codex_resolve_stop_pct(driver_mod):
+    """ctx_stop_pct 해소 — conf 값 우선·비정상/범위 밖/미설정은 기본 20 (ctx_guard.ctx_thresholds 대칭)."""
+    resolve = driver_mod.resolve_stop_pct
+    assert resolve({"ctx_stop_pct": "15"}) == 15
+    assert resolve({}) == driver_mod.CTX_STOP_PCT_DEFAULT
+    assert resolve({"ctx_stop_pct": "abc"}) == driver_mod.CTX_STOP_PCT_DEFAULT
+    assert resolve({"ctx_stop_pct": "0"}) == driver_mod.CTX_STOP_PCT_DEFAULT     # 범위 밖(≤0) → 기본.
+    assert resolve({"ctx_stop_pct": "100"}) == driver_mod.CTX_STOP_PCT_DEFAULT   # 범위 밖(≥100) → 기본.
+
+
+def test_codex_resolve_ctx_budget_precedence(driver_mod):
+    """ctx 예산 해소 순서: ctx_window_tokens_codex > ctx_window_tokens > 200000 (ADR-0041)."""
+    resolve = driver_mod.resolve_ctx_budget
+    # codex 키가 generic 보다 우선.
+    assert resolve({"ctx_window_tokens_codex": "300000", "ctx_window_tokens": "500000"}) == 300000
+    assert resolve({"ctx_window_tokens_codex": "300000"}) == 300000
+    # codex 키 없으면 generic.
+    assert resolve({"ctx_window_tokens": "500000"}) == 500000
+    # 둘 다 없으면 기본.
+    assert resolve({}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
+    # 비정수/≤0 은 다음 층 폴백.
+    assert resolve({"ctx_window_tokens_codex": "abc", "ctx_window_tokens": "200000"}) == 200000
+    assert resolve({"ctx_window_tokens_codex": "0"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
+
+
+# ── marker 계약 payload (post-turn vs pre-turn·codex R2) ─────────────────────
+
+def test_codex_post_turn_marker_payload_roundtrip(orch, tmp_path):
+    """엔진 write_post_turn_marker → stop_marker_is_post_turn True (payload sentinel roundtrip).
+
+    codex driver 가 트리거하는 post-turn marker 는 첫 토큰 sentinel 로 pre-turn 과 구분된다 —
+    Supervisor 가 이 판정으로 재전송 여부를 가른다(이중 실행 방지·codex R2)."""
+    assert orch.write_post_turn_marker(tmp_path, "sid-pt") is True
+    assert orch.stop_marker_present(tmp_path, "sid-pt") is True
+    assert orch.stop_marker_is_post_turn(tmp_path, "sid-pt") is True
+
+
+def test_pre_turn_marker_is_not_post_turn(orch, tmp_path):
+    """기존 opencode/claude marker payload("ctx-stop …"·sentinel 부재)는 pre-turn(재전송) — 의미 불변.
+
+    부재 marker 도 False(안전 기본). 이 default 가 opencode/claude 재전송 경로의 회귀 0 을 보장한다."""
+    # marker 부재 → False.
+    assert orch.stop_marker_is_post_turn(tmp_path, "sid-none") is False
+    # opencode/claude 가 쓰는 실 payload → pre-turn(False).
+    mp = orch._marker_path(tmp_path, "sid-pre")
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text("ctx-stop handoff triggered\n", encoding="utf-8")
+    assert orch.stop_marker_present(tmp_path, "sid-pre") is True
+    assert orch.stop_marker_is_post_turn(tmp_path, "sid-pre") is False
+
+
+# ── 엔진 Supervisor + codex driver 결합 (post-turn 회전·재전송 금지·codex R2 핵심 가드) ──
+
+def test_supervisor_with_codex_driver_post_turn_no_resend(orch, driver_mod, tmp_path):
+    """codex post-turn marker 회전 — turn 실행 *후* 박제라 그 입력을 **재전송하지 않는다**(이중 실행 방지).
+
+    opencode/claude pre-turn(입력 *처리 전* 차단)은 회전 후 그 입력을 재전송하지만, codex 는 turn 이
+    이미 실행·응답됐으므로 Supervisor 가 재전송 없이 회전한다(codex R2 must-fix). marker 는 codex
+    driver 자신의 `_maybe_mark_ctx`(usage 예산 초과 → 엔진 write_post_turn_marker)가 박제 — 통합 경로.
+    'first' 입력이 정확히 **1회만** relay(부작용 1회)되고 회전이 일어남을 단언. (구 pre-turn 재전송이면
+    'first' 가 2회 relay 돼 이 단언이 실패 → 이중 실행 결함을 못박는다.)"""
+    relayed = []          # relay 로 전달된 프롬프트 순서(spawn bootstrap 은 제외).
+    spawn_count = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        if "resume" not in cmd:  # spawn(fresh exec) → 새 thread_id 발급.
+            spawn_count["n"] += 1
+            return _FakeCompleted(_codex_stream(f"tid{spawn_count['n']}", "READY", usage=None))
+        prompt = cmd[-1]
+        relayed.append(prompt)
+        tid = cmd[cmd.index("resume") + 1]
+        # 'first' turn 만 예산 초과(실 wire 키) → driver 가 post-turn marker 박제(그 turn 은 이미 실행됨).
+        usage = ({"input_tokens": 900, "output_tokens": 100, "reasoning_output_tokens": 0}
+                 if prompt == "first" else None)
+        return _FakeCompleted(_codex_stream(tid, f"reply:{prompt}", usage=usage))
+
+    import io
+    driver = driver_mod.CodexCliDriver(
+        orch.parse_codex_json, ctx_budget=1000,
+        mark_stop=orch.write_post_turn_marker, root=tmp_path, runner=fake_run,
+    )
+    sup = orch.Supervisor(driver, root=tmp_path)
+    rc = sup.run_loop("/repo/root", io.StringIO("first\nsecond\n"), io.StringIO())
+    assert rc == 0
+    assert spawn_count["n"] == 2               # 회전 발생(초기 spawn + post-turn respawn).
+    assert relayed.count("first") == 1         # 'first' 재전송 안 됨 — 정확히 1회(부작용 1회).
+    assert relayed == ["first", "second"]      # 재전송이면 ["first","first","second"] 가 됐을 것.
+
+
+def test_supervisor_codex_spawn_marker_rotates_before_first_input(orch, driver_mod, tmp_path):
+    """spawn 의 bootstrap turn 이 예산 초과 post-turn marker 를 남기면, 첫 사용자 입력은 그 (과예산)
+    세션이 아니라 회전된 새 세션으로 relay 된다 (codex R3 엣지 — 'marker 존재 → 추가 입력 0' 불변식).
+
+    구 결함: run_loop 이 spawn 직후 marker 를 안 보고 첫 입력을 과예산 sid 로 relay(지연 회전·입력
+    1회 추가 실행). 수정 후: spawn marker → 첫 입력 처리 전 회전 → 새 sid 가 첫 입력 처리."""
+    relayed = []  # (sid, prompt) — 어느 세션에 무슨 입력이 relay 됐나.
+    spawn_count = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        if "resume" not in cmd:  # spawn(bootstrap turn).
+            spawn_count["n"] += 1
+            # 첫 spawn 의 bootstrap turn 만 예산 초과 → codex driver 가 post-turn marker 박제.
+            usage = ({"input_tokens": 900, "output_tokens": 100, "reasoning_output_tokens": 0}
+                     if spawn_count["n"] == 1 else None)
+            return _FakeCompleted(_codex_stream(f"tid{spawn_count['n']}", "READY", usage=usage))
+        tid = cmd[cmd.index("resume") + 1]
+        relayed.append((tid, cmd[-1]))
+        return _FakeCompleted(_codex_stream(tid, f"reply:{cmd[-1]}", usage=None))
+
+    import io
+    driver = driver_mod.CodexCliDriver(
+        orch.parse_codex_json, ctx_budget=1000,
+        mark_stop=orch.write_post_turn_marker, root=tmp_path, runner=fake_run,
+    )
+    sup = orch.Supervisor(driver, root=tmp_path)
+    rc = sup.run_loop("/repo/root", io.StringIO("input1\n"), io.StringIO())
+    assert rc == 0
+    assert spawn_count["n"] == 2                  # 초기 spawn(marker) + 회전 spawn.
+    # 첫 입력은 과예산 tid1 이 아니라 회전된 tid2 로 relay(추가 입력 0 불변식). 구 결함이면 tid1 로 감.
+    assert relayed == [("tid2", "input1")]
+
+
+# ── driver CLI 배선 (parser·main·repo_root) ───────────────────────────────────
+
+def test_codex_driver_parser_flags(driver_mod):
+    parser = driver_mod.build_parser()
+    ns = parser.parse_args(["--cwd", "/some/repo"])
+    assert ns.cwd == "/some/repo"
+    ns2 = parser.parse_args([])
+    assert ns2.cwd is None  # 기본 = 실행 dir(main 에서 os.getcwd()).
+    # --task 수용(claude/opencode 대칭·기본 None·F7·T-0356).
+    assert parser.parse_args(["--task", "mytask"]).task == "mytask"
+    assert parser.parse_args([]).task is None
+
+
+def test_codex_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_path):
+    """codex main 이 --task 를 Supervisor 로 forward + local.conf 예산을 driver 에 주입한다."""
+    captured: dict = {}
+
+    class _FakeSup:
+        def __init__(self, driver, *, root, task=None):
+            captured["task"] = task
+            captured["driver"] = driver
+
+        def run_loop(self, cwd, in_stream, out_stream):
+            return 0
+
+    def _fake_write_marker(root, sid):
+        return True
+
+    class _FakeEngine:
+        Supervisor = _FakeSup
+        write_post_turn_marker = staticmethod(_fake_write_marker)
+
+        @staticmethod
+        def parse_codex_json(lines):
+            return None, None, None
+
+    # local.conf codex 예산·정지임계 주입 확인(해소 precedence 가 main 배선에 실제로 닿음).
+    (tmp_path / ".project_manager").mkdir()
+    (tmp_path / ".project_manager" / "local.conf").write_text(
+        "ctx_window_tokens_codex=333000\nctx_stop_pct=15\n", encoding="utf-8")
+    monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
+    rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
+    assert rc == 0 and captured["task"] == "mytask"
+    assert captured["driver"]._ctx_budget == 333000
+    assert captured["driver"]._stop_pct == 15
+    assert captured["driver"]._mark_stop is _fake_write_marker
+
+
+def test_codex_driver_repo_root_finds_engine(driver_mod, tmp_path):
+    """repo_root 가 pm_handoff.py 가 있는 조상을 엔진 루트로 찾는다(opencode findEngineRoot 동형)."""
+    (tmp_path / ".project_manager" / "tools").mkdir(parents=True)
+    (tmp_path / ".project_manager" / "tools" / "pm_handoff.py").write_text("x")
+    nested = tmp_path / ".codex"
+    nested.mkdir()
+    assert driver_mod.repo_root(nested) == tmp_path.resolve()
+
+
+# ── live smoke (실 codex · 기본 skip · T-0407 이 본체 확장) ───────────────────
+
+PM_RELAY_LIVE = os.environ.get("PM_RELAY_LIVE") == "1"
+
+
+@pytest.mark.skipif(
+    not PM_RELAY_LIVE or not shutil.which("codex"),
+    reason="live smoke — PM_RELAY_LIVE=1 + codex CLI 필요(기본 skip·T-0407 이 본체 확장·CI green 불변).",
+)
+def test_live_codex_thread_marker_identity_smoke(orch, driver_mod, tmp_path):
+    """실 codex 1회 e2e 스켈레톤 (T-0407 확장 게이트) — spawn → resume 연속성 → marker 동일성.
+
+    ⚠ stdin close 필수(codex 무기한 대기 방어)는 driver 가 stdin=DEVNULL 로 박제한다. 라이브 검증
+    본체(연속성·resume·driver-파싱 tid == marker tid·과금 수집 N·릴리즈 편입)는 T-0407 몫 —
+    여기선 skipif 게이트 + 최소 spawn/resume/marker 골격만 둔다(기본 skip·CI green 불변)."""
+    driver = driver_mod.CodexCliDriver(
+        orch.parse_codex_json, mark_stop=orch.write_post_turn_marker, root=tmp_path,
+    )
+    observed = driver.spawn(
+        str(tmp_path), orch.new_session_id(),  # 엔진 uuid4 — driver 가 무시할 값.
+        "Remember this code word: MANGO77. Reply with exactly: STORED",
+    )
+    assert observed, "spawn 이 codex 출력에서 thread_id 를 파싱하지 못함"
+    reply = driver.relay_turn(
+        observed, "What was the code word? Reply with only the code word."
+    )
+    assert "MANGO77" in reply.upper(), f"resume 연속성 실패 — reply={reply!r}"
+    # driver-파싱 tid 로 쓴 marker 를 supervisor 가 stat 하는지(sid 예측 성립) 확인.
+    marker = orch._marker_path(tmp_path, observed)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("ctx-stop handoff triggered\n", encoding="utf-8")
+    assert orch.stop_marker_present(tmp_path, observed) is True

@@ -83,8 +83,9 @@
 #   토큰 보유 → @render(토큰-form 치환·--target 은 copy2 로 보존·G6 포맷무관 전제). config.toml·hooks.json 은
 #   제외 — instance-owned adopter config(opencode.jsonc/AGENTS.md 대칭·아래 root-doc 절).
 .codex/agents               @render @source=templates/codex/.codex/agents
-# (relay 드라이버 .codex/pm_orch_codex.py 는 T-0404 이 추가 — engine-mirror·비-.md 코드라 byte-copy·
-#   @source 전파 등록·opencode pm_orch_opencode.py 대칭. 이 골격 티켓 T-0402 범위 밖.)
+# relay 드라이버 (engine-mirror·비-.md 코드라 @render 아님·byte-copy). canonical=templates/codex·루트
+#   부재 → @source remap 으로 전파(frozen 근절·opencode pm_orch_opencode.py 대칭·T-0404).
+.codex/pm_orch_codex.py     @source=templates/codex/.codex/pm_orch_codex.py
 
 # ── manifest 자기전파 (B-selfprop·opencode engine.manifest 대칭) ──────────────────
 # codex 채택자가 자기 flavor 매니페스트를 @source 로 byte-copy 받아 위 신 엔트리(및 T-0404 relay)가

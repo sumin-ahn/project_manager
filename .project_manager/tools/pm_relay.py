@@ -112,6 +112,48 @@ def clear_marker(root: Path, session_id: str) -> bool:
         return False
 
 
+# ── marker payload 계약 (T-0404·codex R2 — 두 정지 의미론 구분) ────────────────
+# marker 파일 존재 = "이 세션 회전하라" 신호(Supervisor 가 stat). 단 *언제* 박제됐냐로 의미가 갈린다:
+#   • pre-turn(기본·opencode/claude ctx_stop_hook): 입력을 *처리하기 전* PreToolUse hard-stop 으로
+#     박제 → 그 turn 입력은 **차단**됐다 → Supervisor 는 회전 후 그 입력을 **재전송**(in-flight 보존).
+#     payload 는 자유 텍스트("ctx-stop …"·sentinel 부재)라 아래 판정이 False → 기존 재전송 경로 그대로.
+#   • post-turn(codex driver _maybe_mark_ctx): `turn.completed` *후* 박제 → 그 turn 은 이미 실행·
+#     응답됐다(정상 turn) → 재전송하면 **이중 실행**(중복 커밋/쓰기/부작용). payload 첫 토큰에 이
+#     sentinel 을 실어 Supervisor 가 **재전송 없이** 회전(다음 *새* 입력부터 새 세션).
+# 기본이 pre-turn(sentinel 부재)이라 기존 opencode/claude marker("ctx-stop …")는 의미 불변(회귀 0).
+POST_TURN_MARKER_SENTINEL = "post-turn"
+
+
+def write_post_turn_marker(root: Path, session_id: str) -> bool:
+    """post-turn STOP marker 박제(best-effort) — payload 첫 토큰에 sentinel 을 실어 pre-turn 과 구분.
+
+    codex driver 처럼 turn *실행 후* 예산 초과를 판정하는 경로가 쓴다(opencode/claude 의 pre-turn
+    hard-stop 과 달리, 그 입력을 재전송하면 이미 실행된 turn 을 이중 실행). marker 파일명/경로 규칙은
+    엔진 `_marker_path` 로 통일(Supervisor 예측·hook 규약과 동일). 실패는 fail-soft(호출부 relay 무중단)."""
+    path = _marker_path(root, session_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"{POST_TURN_MARKER_SENTINEL} ctx-stop handoff triggered\n", encoding="utf-8"
+        )
+        return True
+    except OSError:
+        return False
+
+
+def stop_marker_is_post_turn(root: Path, session_id: str) -> bool:
+    """marker payload 가 post-turn(이미 실행된 turn 후 박제) 표식인지 — 첫 토큰 sentinel 로 판정.
+
+    True 면 Supervisor 는 회전하되 그 turn 입력을 **재전송하지 않는다**(이중 실행 방지). marker 부재/
+    판독 실패/sentinel 부재는 False = pre-turn(안전 기본·기존 opencode/claude 재전송 동작 불변)."""
+    try:
+        payload = _marker_path(root, session_id).read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return False
+    tokens = payload.split(maxsplit=1)
+    return bool(tokens) and tokens[0] == POST_TURN_MARKER_SENTINEL
+
+
 def parse_stream_json(lines) -> tuple[str | None, str | None]:
     """`claude -p --output-format stream-json` 출력에서 (session_id, result) 추출.
 
@@ -186,6 +228,83 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None]:
                     reply_parts.append(text)
     reply = "".join(reply_parts) if reply_parts else None
     return session_id, reply
+
+
+def _codex_usage_contract(wire: dict) -> dict:
+    """codex wire usage(`*_tokens` 키)를 엔진 contract(`{input,cached_input,output,reasoning_output}`)로 정규화.
+
+    실측(codex 0.144.6·PM 라이브 프로브 5회): `turn.completed.usage` 의 실 wire 키는 접미사 `_tokens`
+    형(`input_tokens`·`cached_input_tokens`·`output_tokens`·`reasoning_output_tokens` — 예 input_tokens=
+    12481·cached_input_tokens=9600·output_tokens=105·reasoning_output_tokens=92). 파서가 이 **wire→contract
+    경계를 소유** 해 driver 인터페이스(접미사 없는 contract 키)를 하니스-무관으로 유지한다 — driver 는
+    codex wire 형태를 몰라도 된다(claude/opencode 파서가 각자 wire 를 흡수하는 것과 동형). 비-정수/누락
+    키는 0. (cached_input 은 contract 에 실어 관측 가능하게 두되, driver 의 사용 합산은 이를 제외한다 —
+    input_tokens 가 cached_input_tokens 를 포함하는 상위집합이라 이중 계상 방지·codex driver `_maybe_mark_ctx`.)
+    """
+    def _n(key: str) -> int:
+        val = wire.get(key)
+        return val if isinstance(val, int) and not isinstance(val, bool) else 0
+
+    return {
+        "input": _n("input_tokens"),
+        "cached_input": _n("cached_input_tokens"),
+        "output": _n("output_tokens"),
+        "reasoning_output": _n("reasoning_output_tokens"),
+    }
+
+
+def parse_codex_json(lines) -> tuple[str | None, str | None, dict | None]:
+    """`codex exec --json` 출력(JSONL)에서 (thread_id, reply, usage) 추출.
+
+    claude `parse_stream_json`·opencode `parse_opencode_json` 과 **대칭** 위치의 codex 어댑터용
+    순수 헬퍼 — codex 는 thread_id 를 사전지정 못 하고 `thread.started` 이벤트로 발급하므로
+    (opencode sid 동형) 출력 파싱으로 획득한다. usage 는 codex driver 의 driver-side 기계 ctx
+    가드(ADR-0070 D4 ①·relay 경로엔 opencode plugin 같은 marker 채널이 없어 driver 가 예산을
+    직접 판정)의 원천이라 claude/opencode 파서와 달리 3번째 값으로 usage 를 함께 낸다.
+
+    - thread_id: `thread.started` 이벤트의 `thread_id`(첫 등장값 = resume 권위 id). 없으면 None
+      (driver 가 치명 처리 — resume 불가).
+    - reply: `item.*` 이벤트의 agent_message(`item.type == "agent_message"`) `text` — 최종
+      (마지막 비어있지-않은) 값. item.started→completed 스트리밍 시 completed 가 최종 전체
+      텍스트로 덮어쓴다. reasoning 등 다른 item 은 제외. 없으면 None. (실측 wire shape 은 T-0407
+      라이브 smoke 가 확정 — item 의 텍스트 필드가 다르면 여기 한 지점만 조정.)
+    - usage: `turn.completed` 이벤트의 `usage`(마지막 등장값)를 wire(`*_tokens`)→contract
+      (`{input,cached_input,output,reasoning_output}`)로 `_codex_usage_contract` 가 정규화한 값.
+      없으면 None. (**실측 wire 키는 접미사 `_tokens`** — 접미사 없는 키를 읽으면 used==0 으로
+      ctx 가드가 영구 사멸한다·PM 라이브 프로브 5회 권위·codex/opencode 리뷰 수렴 결함.)
+    - 비-JSON / 비-dict 라인은 skip(claude·opencode 파서와 동일 robust 정책).
+    """
+    import json  # 지연 import — 순수 헬퍼만 쓰는 경로의 import 비용 회피(claude·opencode 파서 대칭).
+
+    thread_id: str | None = None
+    reply: str | None = None
+    usage: dict | None = None
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue  # 비-JSON / 부분 라인 skip.
+        if not isinstance(event, dict):
+            continue
+        etype = event.get("type")
+        if etype == "thread.started":
+            tid = event.get("thread_id")
+            if thread_id is None and isinstance(tid, str) and tid:
+                thread_id = tid
+        elif isinstance(etype, str) and etype.startswith("item"):
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    reply = text  # 최종(마지막) agent_message 전체 텍스트로 갱신.
+        elif etype == "turn.completed":
+            u = event.get("usage")
+            if isinstance(u, dict):
+                usage = _codex_usage_contract(u)  # wire(_tokens) → contract 정규화.
+    return thread_id, reply, usage
 
 
 # ── opencode 첫-이벤트 stall 워치독 (T-0336 · 하니스-무관 순수 헬퍼·parse_opencode_json 동거) ──
@@ -558,6 +677,9 @@ class Supervisor:
     def stop_marker_present(self, session_id: str) -> bool:
         return stop_marker_present(self.root, session_id)
 
+    def stop_marker_is_post_turn(self, session_id: str) -> bool:
+        return stop_marker_is_post_turn(self.root, session_id)
+
     def run_loop(self, cwd: str, in_stream: TextIO, out_stream: TextIO,
                  cap_hit_log=None) -> int:
         """바깥 루프 — spawn → relay → STOP 감지 → respawn(+직전 입력 재전송) → repeat.
@@ -584,6 +706,28 @@ class Supervisor:
         consecutive_respawns = 0    # 같은 입력 재전송이 연속 STOP 한 횟수(지역·병적 케이스 감지).
 
         while True:
+            # 불변식(T-0404·codex R3): **marker 를 지닌 세션엔 추가 입력을 relay 하지 않는다.**
+            # spawn/respawn 의 bootstrap turn 이 예산을 넘겨 post-turn marker 를 남겼으면(codex driver)
+            # 첫 입력 처리 *전* 여기서 회전한다 — 안 그러면 과예산 세션에 입력 1회가 추가 실행된다
+            # (지연 회전). bootstrap 은 이미 실행됐으니 재전송 없음(항상 post-turn·이 창은 입력 relay
+            # 전이라 pre-turn 재전송 대상이 아님). pre-turn 하니스(opencode/claude)는 fresh spawn 에
+            # marker 를 남길 채널이 없어 이 분기에 안 들어온다(영향 0). 병적 spawn-loop(예산이 bootstrap
+            # turn 보다도 작음)는 같은 회전 카운터로 막는다(정상 회전은 다음 정상 turn 이 0 리셋).
+            if self.stop_marker_present(session_id):
+                consecutive_respawns += 1
+                if consecutive_respawns > self.max_consecutive_respawns:
+                    out_stream.write(
+                        f"[relay] spawn 직후 연속 {consecutive_respawns}회 ctx-STOP — 무한 회전 "
+                        f"차단(max={self.max_consecutive_respawns}). 종료. ctx 예산이 bootstrap "
+                        "turn 보다 작은지 점검.\n"
+                    )
+                    out_stream.flush()
+                    self.driver.close(session_id)
+                    clear_marker(self.root, session_id)
+                    return GUARD_TRIPPED_RC
+                session_id = self._respawn(cwd, session_id, out_stream)
+                continue  # 새 sid 로 재-loop — 입력은 회전된 세션이 받는다.
+
             if pending is not None:
                 text, pending = pending, None  # 재전송 — 사용자 새 입력을 읽지 않는다.
                 is_resend = True
@@ -616,11 +760,15 @@ class Supervisor:
             # 매 turn 직후 1회 stat — marker 있으면 떠나는 세션은 hook 이 이미 차단됨
             # (harvest 안 함) → 회전. 이 turn 의 입력은 차단됐을 수 있으니 새 PM 에 재전송.
             if self.stop_marker_present(session_id):
+                # marker 계약 두 의미론(T-0404·codex R2): post-turn(codex driver)은 turn *실행 후*
+                # 박제라 그 입력은 이미 실행·응답됨 → **재전송 금지**(재전송하면 이중 실행·중복
+                # 부작용). pre-turn(기본·opencode/claude hook)은 입력 *처리 전* 차단이라 재전송으로
+                # in-flight 의도를 보존한다(기존 동작 불변 — payload 에 sentinel 없어 post_turn=False).
+                post_turn = self.stop_marker_is_post_turn(session_id)
                 # 카운터는 "같은 입력의 연속 재전송-STOP" 횟수만 센다. 매 resend-chain 은 *fresh
-                # 입력의 STOP*(is_resend=False)으로 시작하고 그 분기가 0 으로 리셋하므로(아래),
-                # trip 판정에 닿는 리셋은 **이 line(255)** 이 담당한다 — 새 chain 은 항상 0 부터.
-                # (정상 회전: 긴 작업→자연 STOP→다음 *새* 입력 = 여기서 리셋되어 병적 아님.)
-                if is_resend:
+                # 입력의 STOP*(is_resend=False)으로 시작하고 그 분기가 0 으로 리셋한다. post-turn 은
+                # 재전송이 없어 그 무한 회전 클래스가 성립하지 않으므로 리셋(pre-turn resend 만 증분).
+                if is_resend and not post_turn:
                     consecutive_respawns += 1
                 else:
                     consecutive_respawns = 0
@@ -634,7 +782,8 @@ class Supervisor:
                     self.driver.close(session_id)
                     clear_marker(self.root, session_id)
                     return GUARD_TRIPPED_RC
-                pending = text
+                if not post_turn:
+                    pending = text  # pre-turn: 차단된 입력 재전송. post-turn: 이미 실행됨·재전송 생략.
                 session_id = self._respawn(cwd, session_id, out_stream)
             else:
                 # 이 turn 이 respawn 없이 끝났다 = 진전(성공 turn). 카운터를 0 으로 pin 해 둔다 —

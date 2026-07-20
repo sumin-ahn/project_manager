@@ -60,8 +60,9 @@ CLAUDE_ONLY_PATHS = {
 }
 # codex 트리(ADR-0070)의 정당한 manifest 차이(3-way·화이트리스트). claude_code 대비:
 #   codex 가 추가: .codex/agents(TOML 4축 custom agent·claude .claude/agents 대응) · .agents/skills
-#     (codex 네이티브 스킬 네임스페이스 — root `.claude/skills` 를 @source 로 remap·D2). (relay
-#     드라이버 .codex/pm_orch_codex.py 는 T-0404 이 추가 — 이 골격 티켓 T-0402 범위 밖·미등록.)
+#     (codex 네이티브 스킬 네임스페이스 — root `.claude/skills` 를 @source 로 remap·D2) ·
+#     .codex/pm_orch_codex.py(relay 드라이버·engine-mirror·@source 전파·claude .claude/pm_orch_claude.py·
+#     opencode .opencode/pm_orch_opencode.py 대응·T-0404).
 #   codex 가 제외: CLAUDE_ONLY_PATHS 전부 **+ .claude/skills**. opencode 는 .claude/skills 를 claude 와
 #     공유(bare @render·같은 파일명 스캔)했지만 codex 는 스킬 네임스페이스가 `.agents/skills` 라
 #     .claude/skills 자체는 codex manifest 에서 빠진다(→ .agents/skills remap 으로 대체). 이 한 줄이
@@ -69,6 +70,7 @@ CLAUDE_ONLY_PATHS = {
 CODEX_ONLY_PATHS = {
     ".codex/agents",
     ".agents/skills",
+    ".codex/pm_orch_codex.py",
 }
 CODEX_DROPPED_PATHS = CLAUDE_ONLY_PATHS | {".claude/skills"}
 # engine-mirror hook/driver 등록 경로 (T-0305) — self-prop assert 및 등록 회귀 가드가 참조.
@@ -79,6 +81,11 @@ CLAUDE_HOOK_PATHS = frozenset({
 })
 OPENCODE_HOOK_PATHS = frozenset({
     ".opencode/lib", ".opencode/plugins", ".opencode/pm_orch_opencode.py",
+})
+# codex engine-mirror 드라이버 등록 경로 (ADR-0070·T-0404) — relay 드라이버만(ctx 가드는 driver-side·
+#   config.toml/hooks.json 은 instance-owned). canonical=templates/codex 라 @source remap 필수.
+CODEX_HOOK_PATHS = frozenset({
+    ".codex/pm_orch_codex.py",
 })
 # manifest 자기전파 엔트리 (B-selfprop·T-0305·OQ-B1) — 3 매니페스트 모두 자신을 전파 대상에 넣어야
 #   신 엔트리(위 hook/driver)가 기존 채택자에 도달한다.
@@ -226,6 +233,22 @@ def test_opencode_manifest_registers_engine_mirror_hooks_and_driver():
         src = _entry_source_rel(pm_update, OC_MANIFEST, rel)
         assert src == f"templates/opencode/{rel}", (
             f"opencode manifest {rel} 의 @source remap 이 templates/opencode/ 를 가리키지 않음: {src!r}")
+
+
+def test_codex_manifest_registers_relay_driver():
+    """codex manifest 가 relay 드라이버(pm_orch_codex.py)를 @source 로 등록 (ADR-0070·T-0404).
+
+    canonical=templates/codex(루트 `.codex/` 부재)라 @source remap 필수 — 안 달면 self-update 가
+    루트에서 소스를 못 찾아 rc2(전파 실패). opencode pm_orch_opencode.py 등록 가드 대칭.
+    (ctx 가드는 driver-side usage 판정이라 별도 hook 파일 없음·config.toml/hooks.json 은 instance-owned.)"""
+    pm_update = _load_pm_update()
+    paths = _manifest_path_set(CODEX_MANIFEST)
+    missing = CODEX_HOOK_PATHS - paths
+    assert not missing, f"codex manifest 에 engine-mirror relay 드라이버 미등록: {sorted(missing)}"
+    for rel in CODEX_HOOK_PATHS:
+        src = _entry_source_rel(pm_update, CODEX_MANIFEST, rel)
+        assert src == f"templates/codex/{rel}", (
+            f"codex manifest {rel} 의 @source remap 이 templates/codex/ 를 가리키지 않음: {src!r}")
 
 
 def test_all_manifests_self_propagate():
