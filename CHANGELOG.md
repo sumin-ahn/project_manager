@@ -7,6 +7,50 @@
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-07-20
+
+task 세션 표면의 **슬롯-집합 1급화**(ADR-0068) + 엔진 업데이트-채널 견고화. adopter#0 도그푸딩
+(PM 78 task 모드 실전 + 회사 채택자 흡수 실패)이 실측으로 드러낸 두 결함군을 한 릴리즈로 닫는다.
+전 변경 이중게이트(내부 reviewer + codex, 여러 건 codex 다라운드 수렴) 통과·회귀 4152·사이클 e2e
+릴리즈 게이트 신설.
+
+### task 세션 슬롯-집합 1급화 (ADR-0068)
+task 는 슬롯의 묶음인데 세션 lifecycle 표면들이 "세션=슬롯 1개" 문법을 상속해 묶음 처리가 끊기던
+것을 불변식 4개(집합 변경=재열거·진입 전수 열거·alloc 항상-신규·지목은 실행 순간만)로 재설계.
+
+- **부트스트랩 진입 = 보유 집합 전수 열거+검증** (T-0399) — task 모드가 보유 슬롯 전체를 행렬로
+  열거하고 슬롯별 0단계 검증(기록↔live·점유·보호브랜치·stale/creating). fault 1+ = 진입 차단(전
+  fault 일괄 표시+해소 커맨드). 0슬롯=no-op.
+- **task alloc = 항상 신규 대여** (T-0398·BREAKING(task 축)) — `alloc --task` 의 멱등(기존 슬롯을
+  신규처럼 반환하던 silent aliasing) 폐기 → 항상 idle 신규 대여(같은 repo 복수 보유 지원). 집합
+  변경 연산(alloc·release·task end·add)은 결과 집합 재열거. `worktree add <repo> --task <이름>` =
+  생성 직후 그 슬롯 task 명의 대여. task-명의 lease 도 reclaim/재부착 보호(tasks 장부 조인).
+- **핸드오프 퇴장 = 집합 전체 두고-가기** (T-0393) — 재스냅은 보유 전 슬롯, 회귀는 변경 흔적 있는
+  슬롯만(stale 슬롯 fail-loud). task 회귀 cwd 미배선(REPO 폴백 red)도 해소.
+- **인계 트리거 = `--task` 앵커** (T-0394) — task 모드 핸드오프 트리거가 `/pm-bootstrap --task
+  <이름>`(슬롯 자동 수령). 엔진층 task명 validator choke.
+- **task 사이클 e2e = 릴리즈 게이트** (T-0400) — 생성→편입→작업→핸드오프→재개 완주를 실 엔진/실
+  git 로 검증하는 기계 e2e 를 livegate 수집 pin 에 편입. "단위게이트 green·사이클 단절" 클래스를
+  릴리즈마다 차단.
+
+### 엔진 업데이트-채널 견고화
+회사 채택자가 pm-update 후에도 신규 엔진 파일이 안 와 AttributeError 로 깨진 사건의 근본 해소.
+
+- **pm_update manifest 자기치유** (T-0396·amends ADR-0032/T-0142) — self-update 가 upstream
+  manifest 를 계획 기준으로 승격(2-pass 단일 실행)해 구형 로컬 manifest 라도 한 번에 신규 등재분이
+  도달. self-prop `@source` 따라 flavor↔flavor 대조(클로버 차단).
+- **manifest skew 탐지 + baseline 억제** (T-0395) — 로컬 manifest 가 upstream 신규 등재분을 놓친
+  상태에서 upstream_rev baseline 을 최신으로 찍어 drift-lint 가 침묵하던 false-최신 차단(loud
+  경고+갱신 억제).
+- **엔진 버전 스탬프 정합 fail-loud** (T-0397) — 도구 사본 skew(신 도구+구 sibling)를 로드 시점에
+  "엔진 사본 불일치·pm-update" 명시 에러로(baked `ENGINE_REV` 대조·부분복사도 검출).
+  `engine_rev.py --bump vX.Y.Z` 로 버전 일괄 갱신·릴리즈 태그와 정합 가드.
+
+### BREAKING
+- **`alloc --task <이름>` 이 항상 신규 idle 슬롯을 대여**한다(T-0398) — 기존 멱등(같은 repo 보유 시
+  기존 슬롯 반환)에 의존하던 스크립트는 거동이 바뀐다. task 축은 v1.3.x 신설이라 실사용 채택자
+  영향은 없다고 본다.
+
 ## [1.3.4] - 2026-07-20
 
 세션/task 라이프사이클 장부 정합 4결함 폐쇄 + 표면(메시지) 개선 — 전부 additive·BREAKING 없음.
