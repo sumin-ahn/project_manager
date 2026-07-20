@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[ctx-tripwire] compaction 임박 — 지금 /pm-handoff 로 상태 박제하라(조용한 compaction=컨텍스트 손실·D4)' 1>&2"
+          }
+        ]
+      }
+    ]
+  }
+}

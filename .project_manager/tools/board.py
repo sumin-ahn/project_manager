@@ -3446,7 +3446,8 @@ def cmd_init(args: argparse.Namespace) -> int:
                  "# 운용 시 하네스별 예산 분리(ADR-0041 — ctx_window_tokens_<harness> > generic > 200K·\n"
                  "# 물리한도 개념 폐기·claude/opencode 독립). 미설정 시 위 generic 값이 분모.\n"
                  "# ctx_window_tokens_claude=500000\n"
-                 "# ctx_window_tokens_opencode=200000\n")
+                 "# ctx_window_tokens_opencode=200000\n"
+                 "# ctx_window_tokens_codex=200000\n")
         LOCAL_CONF.write_text(conf, encoding="utf-8")
         surface_sess = sess
     else:

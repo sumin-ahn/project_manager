@@ -1,0 +1,17 @@
+# templates/codex/.codex/config.toml — codex 어댑터 대화형 ctx 가드 (instance-owned·ADR-0070 D4).
+# 이 파일은 trusted project 로 승인된 뒤에만 로드된다(codex trust 모델·실측). manifest 미등록 =
+# 채택자 소유 노브(pm_update 미전파 — settings.json/opencode.jsonc 대칭·hook trust 재승인 churn 회피).
+# 반입 가능 키(실측): model·sandbox/approval·features·hooks·model_auto_compact_token_limit.
+# machine-local 키(model_provider*·profile/profiles·notify·otel)는 로드 시 무시되므로 기재하지 않는다.
+
+# D4 ②(대화형 경로): auto-compact 임계를 크게 올려 사실상 off 를 지향한다. 완전 off 스위치는
+#   미확인(라이브 실측 항목) — off 불가여도 auto-compact 는 최후 backstop 이고, 임박 시점의 손실은
+#   아래 hooks.json 의 PreCompact tripwire 가 loud 하게 경고한다(조용한 compaction 방지).
+model_auto_compact_token_limit = 900000
+
+[features]
+multi_agent = true    # .codex/agents/*.toml in-session spawn (stable·기본 on·명시)
+hooks = true          # PreCompact tripwire 발화 전제
+
+[sandbox_workspace_write]
+network_access = false    # egress 차단(안전 경계)·채택자 필요 시 완화
