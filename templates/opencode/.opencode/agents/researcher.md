@@ -36,7 +36,7 @@ permission:
 > [architect/developer 의 `build`(쓰기)와 다른 점 — researcher 는 파일을 만들거나 고치지 않는다]),
 > 인터페이스(role·권한·프롬프트)는 동일하다. 폴백의 모델은 opencode 기본(`--agent plan` 내장
 > primary 는 이 정의의 `model:` 을 읽지 않는다 — Pro 강제는 `-m <model>`).
-> (AGENTS.md §3 · ADR-0006 §3/D3/D5 supersede — PM 9차)
+> (`.opencode/pm-instructions.md` §2 위임 규약 · ADR-0006 §3/D3/D5 supersede — PM 9차)
 
 ## 핵심 원칙
 

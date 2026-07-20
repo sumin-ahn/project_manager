@@ -91,6 +91,11 @@
 # ⚠️ `.opencode/command` 는 은퇴(T-0364·ADR-0065) — PM-workflow 스킬은 위 `.claude/skills` 단일
 #    소비로 전환됐다(agent 정의만 `.opencode/agents` 로 잔존).
 .opencode/agents    @render @source=templates/opencode/.opencode/agents
+# pm-instructions: opencode-고유 PM 운영 지침(실행 모델·위임 규약·config 캐싱). AGENTS.md 공통 코어
+#   (instance-owned·harness-neutral)에서 이관·opencode.jsonc `instructions` 배열로 함께 로드(ADR-0069·
+#   T-0401). 기존 instance-owned 진입 doc 과 달리 @source 전파 등록이라 방법론 갱신이 채택자에 도달한다.
+#   operational 토큰(PY·TEST_CMD) 보유 → @render(치환·--target 은 copy2 로 토큰-form 보존).
+.opencode/pm-instructions.md    @render @source=templates/opencode/.opencode/pm-instructions.md
 # ctx-guard core/plugin·relay 드라이버 (엔진-미러·safety-hook·T-0305·ADR-0032 Q3 결착). 비-.md 코드라
 #   @render 아님(byte-copy·치환 토큰 0). T-0283 은 `@target-owned` 등재=self-update skip(전파 0)이라
 #   미등재로 뒀으나, T-0303 `@source` 채널이 그 비대칭(canonical=templates/opencode·루트 `.opencode/`

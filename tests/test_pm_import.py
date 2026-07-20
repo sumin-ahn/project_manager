@@ -818,7 +818,7 @@ def test_bad_source_returns_nonzero(pm_import, tmp_path):
 # lite 변종 고유 마커 / full 진입 고유 마커. lite 파일 1행은 "# X.md — ... lite 진입 ...".
 LITE_MARKER = "lite 진입"
 FULL_CLAUDE_MARKER = "자동 로드되는 진입점"        # full CLAUDE.md 만의 문구.
-FULL_AGENTS_MARKER = "opencode 세션이 시작될 때 자동 로드"  # full AGENTS.md 만의 문구.
+FULL_AGENTS_MARKER = "harness-neutral 공통 코어"  # full AGENTS.md 만의 문구(ADR-0069·T-0401 공통 코어 헤더).
 
 
 def _lite_md_files(root: Path) -> list[Path]:

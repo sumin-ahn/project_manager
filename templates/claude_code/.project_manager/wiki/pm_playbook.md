@@ -68,8 +68,9 @@ type: reference
 ticket 본문이 self-contained 의무를 지므로 위임 프롬프트는 bespoke 일 필요 없다.
 
 > **harness 노트:** 아래 위임 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준이다.
-> **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — 도구·어휘·subagent 정의는 `AGENTS.md` §3·
-> `.opencode/agents/` 를 본다. 위임 *원칙·절차*(축 분리·touches disjoint·single-source 프롬프트·산출 비준은
+> **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — 도구·어휘·subagent 정의는
+> `.opencode/pm-instructions.md` §2(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/`
+> 를 본다. 위임 *원칙·절차*(축 분리·touches disjoint·single-source 프롬프트·산출 비준은
 > PM)는 양 harness 동일 — 아래 본문은 그 원칙을 claude 어휘로 보일 뿐이다.
 
 ### 방식 A — orchestrator 서브에이전트 (Agent 툴, 권장)

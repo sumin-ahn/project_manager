@@ -46,6 +46,9 @@ OC_MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.man
 #   settings.json·opencode.jsonc·루트 doc(CLAUDE/AGENTS)·local.conf 는 여전히 instance-owned(미등재).
 OPENCODE_ONLY_PATHS = {
     ".opencode/agents",
+    # pm-instructions.md (ADR-0069·T-0401): AGENTS.md 공통 코어에서 이관한 opencode-고유 운영 지침
+    #   (실행 모델·위임 규약). @render @source 전파 등록이라 claude_code 엔 없는 opencode-only 경로.
+    ".opencode/pm-instructions.md",
     ".opencode/lib", ".opencode/plugins", ".opencode/pm_orch_opencode.py",
 }
 CLAUDE_ONLY_PATHS = {

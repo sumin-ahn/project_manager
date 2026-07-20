@@ -29,6 +29,9 @@ OPENCODE = REPO / "templates" / "opencode"
 
 AGENTS_MD = OPENCODE / "AGENTS.md"
 AGENTS_LITE_MD = OPENCODE / "AGENTS.lite.md"
+# ADR-0069·T-0401: 위임 규약(task tool·subagent_type 매핑)이 AGENTS.md 공통 코어에서
+#   pm-instructions.md 로 이관됐다(opencode.jsonc instructions 로드). 위임 규약 문구 단언은 이관처를 본다.
+PM_INSTRUCTIONS_MD = OPENCODE / ".opencode" / "pm-instructions.md"
 AGENT_FILES = [
     OPENCODE / ".opencode" / "agents" / "developer.md",
     OPENCODE / ".opencode" / "agents" / "code-reviewer.md",
@@ -115,26 +118,33 @@ def test_no_dash_m_pro_model_anywhere():
     )
 
 
-# ── (b) AGENTS.md task tool 위임 · subagent_type 매핑 문구 존재 ──────────────
+# ── (b) task tool 위임 · subagent_type 매핑 문구 존재 (ADR-0069·T-0401: pm-instructions.md 이관) ──
 
-def test_agents_md_documents_task_tool_delegation():
-    """AGENTS.md 가 네이티브 task tool 위임(1차)을 규약으로 명시한다."""
-    text = AGENTS_MD.read_text(encoding="utf-8")
+def test_pm_instructions_documents_task_tool_delegation():
+    """위임 규약(네이티브 task tool 1차)이 pm-instructions.md 에 명시된다 (T-0032·ADR-0069 이관).
+
+    T-0401: 위임 규약(§3)이 AGENTS.md 공통 코어에서 pm-instructions.md 로 이관됐다(opencode.jsonc
+    instructions 배열 로드). task tool / subagent_type 매핑 문구 단언은 이관처를 본다.
+    """
+    text = PM_INSTRUCTIONS_MD.read_text(encoding="utf-8")
     assert "task" in text and "subagent_type" in text, (
-        "AGENTS.md 에 task tool / subagent_type 위임 문구가 없음 (T-0032)"
+        "pm-instructions.md 에 task tool / subagent_type 위임 문구가 없음 (T-0032·T-0401)"
     )
     # role → subagent_type 매핑표의 세 타입이 모두 문서화돼야 한다.
     for subagent_type in ("developer", "code-reviewer", "architect"):
         assert subagent_type in text, (
-            f"AGENTS.md 에 subagent_type {subagent_type!r} 매핑 누락 (T-0032)"
+            f"pm-instructions.md 에 subagent_type {subagent_type!r} 매핑 누락 (T-0032·T-0401)"
         )
 
 
-def test_agents_md_demotes_opencode_run_to_fallback():
-    """AGENTS.md 가 `opencode run` 을 폴백으로 명시(강등)한다 — 삭제가 아닌 강등."""
-    text = AGENTS_MD.read_text(encoding="utf-8")
-    assert "opencode run" in text, "AGENTS.md 에서 opencode run 폴백이 사라짐 (강등 ≠ 삭제)"
-    assert "폴백" in text, "AGENTS.md 에 opencode run 폴백(강등) 문구가 없음 (T-0032)"
+def test_pm_instructions_demotes_opencode_run_to_fallback():
+    """위임 규약이 `opencode run` 을 폴백으로 명시(강등)한다 — 삭제가 아닌 강등 (pm-instructions.md 이관).
+
+    T-0401: opencode run 폴백 서술(§3.7)도 위임 규약과 함께 pm-instructions.md 로 이관됐다.
+    """
+    text = PM_INSTRUCTIONS_MD.read_text(encoding="utf-8")
+    assert "opencode run" in text, "pm-instructions.md 에서 opencode run 폴백이 사라짐 (강등 ≠ 삭제)"
+    assert "폴백" in text, "pm-instructions.md 에 opencode run 폴백(강등) 문구가 없음 (T-0032·T-0401)"
 
 
 def test_agent_fallback_run_mapping_matches_permission():

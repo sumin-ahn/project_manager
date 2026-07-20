@@ -35,7 +35,7 @@ permission:
 > [`plan` 은 읽기 전용이라 쓰기가 막힌다]), 인터페이스(role·권한·프롬프트)는 동일하다. 폴백의 모델은
 > opencode 기본(`--agent build` 내장 primary 는 이 정의의 `model:` 을 읽지 않는다 — Pro 강제는 `-m <model>`).
 > 코드/엔진은 수정하지 않는다(이 정의 지침).
-> (AGENTS.md §3 · ADR-0006 §3/D3/D5 supersede — PM 9차 · spike §3.2)
+> (`.opencode/pm-instructions.md` §2 위임 규약 · ADR-0006 §3/D3/D5 supersede — PM 9차 · spike §3.2)
 
 ## 핵심 원칙
 
@@ -60,7 +60,7 @@ python3 .project_manager/tools/board.py show T-NNNN
 
 ## 부트스트랩 (작업 시작 시)
 
-1. `AGENTS.md` — opencode 실행 모델·엔진 호출(인코딩)·위임 규약·PM 결정 권한
+1. `AGENTS.md`(공통 코어) — 엔진 호출(인코딩)·PM 결정 권한·안전 가드 · `.opencode/pm-instructions.md`(instructions 배열로 함께 자동 로드) — opencode 실행 모델·위임 규약
 2. `.project_manager/wiki/architecture.md` — 구조·모듈 의존성·계약
 3. `.project_manager/wiki/status.md` — 모듈 진행 상태
 4. 관련 `decisions/`(ADR) · `specs/` — 위임받은 주제에 닿는 기존 결정·사양 (grep 로 탐색)

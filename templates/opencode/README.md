@@ -11,9 +11,13 @@ Claude Project Framework 의 **opencode 어댑터** 타깃. 루트 엔진(`.proj
 
 opencode LLM(로컬 gemma / 회사 Pro)이 `AGENTS.md` 를 진입으로 PM 을 self-driven 으로 구동한다.
 claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — 엔진은 루트와 공유하고
-여기 어댑터만 타깃 고유다. (PM 구동·위임 규약의 단일 진실 = `AGENTS.md §3`; 이 README 는 채택 경로 안내.)
+여기 어댑터만 타깃 고유다. (PM 구동 = `AGENTS.md`(harness-neutral 공통 코어) + `.opencode/pm-instructions.md`
+(opencode 실행 모델·위임 규약·`instructions` 배열로 함께 자동 로드); 이 README 는 채택 경로 안내.)
 
-- **`AGENTS.md`** (full 진입) — PM 부트스트랩·위임·인코딩 규약. opencode build 세션이 곧 PM 이다.
+- **`AGENTS.md`** (full 진입·harness-neutral 공통 코어) — PM 부트스트랩·엔진 호출(인코딩)·완료 부기·
+  결정 권한·안전 가드. opencode build 세션이 곧 PM 이다. (실행 모델·위임 규약은 아래 pm-instructions.)
+- **`.opencode/pm-instructions.md`** — opencode-고유 실행 모델·위임 규약. `opencode.jsonc` `instructions`
+  배열로 공통 코어와 함께 자동 로드된다 (@source 전파 — 방법론 갱신이 채택자에 도달·ADR-0069).
 - **`AGENTS.lite.md`** (경량 진입) — 한 파일 + 공유 엔진 + `.claude/skills/` 만으로 PM
   happy-path(부트스트랩 → 발행 → 위임 → finish)를 자족 운영하도록 압축한 판. 회사 200K 배포 1급.
   도입 시 `--weight lite` 로 선택 (아래 §채택).
@@ -26,13 +30,13 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
   네이티브 스캔·슬래시(`/pm-…`) 호출하므로 claude 와 **같은 스킬을 양 하네스가 공유**한다(옛
   `.opencode/command/` 수기 사본 채널 은퇴·T-0364). 스킬 스캔 비활성화 금지(`OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 미설정).
 
-### 위임 규약 단일 진실 = `AGENTS.md §3`
+### 위임 규약 단일 진실 = `.opencode/pm-instructions.md §2`
 
 위임 1차는 **opencode 네이티브 `task` tool** 이다 — PM(build primary)이 `task` tool 을
 `subagent_type=developer|code-reviewer|architect|researcher` 로 호출하면 opencode 가 `.opencode/agents/*.md`
 를 별도 자식 세션(fresh 200K 격리·subagent `model:` 대로)에서 구동한다. `opencode run` 외부
-프로세스는 headless·CI·task tool 미노출 빌드용 **폴백**으로 강등됐다(§3.7). 자세한 규약·프롬프트는
-`AGENTS.md §3` 가 단일 진실. 결정 근거는 ADR-0006(§3·D2·D3·D5).
+프로세스는 headless·CI·task tool 미노출 빌드용 **폴백**으로 강등됐다(pm-instructions.md §2.7). 자세한 규약·프롬프트는
+`.opencode/pm-instructions.md §2`(공통 코어 `AGENTS.md` 와 함께 자동 로드)가 단일 진실. 결정 근거는 ADR-0006(§3·D2·D3·D5).
 
 ## 채택 (pm_import — 정규 경로)
 
@@ -104,6 +108,7 @@ python3 .project_manager/tools/pm_update.py --from ../../
 
 ## 참고
 
-- `AGENTS.md` — PM 부트스트랩·위임(§3)·인코딩 규약 단일 진실 (= claude_code 의 `CLAUDE.md`).
-- ADR-0006 — opencode 어댑터 타깃: 위임·인코딩·모델·self-driven import 결정.
+- `AGENTS.md` — PM 부트스트랩·엔진 호출(인코딩)·완료 부기·결정·안전 가드 공통 코어 (= claude_code 의 `CLAUDE.md`).
+- `.opencode/pm-instructions.md` — opencode 실행 모델·위임 규약 (`opencode.jsonc` `instructions` 배열 자동 로드·@source 전파).
+- ADR-0006 · ADR-0069 — opencode 어댑터 타깃 + 진입 doc 공통 코어/하네스별 전달 채널 결정.
 - 루트 [`README.md`](../../README.md) — 프레임워크 전체 가이드(네 기둥·도입·워크플로·이식성·계보).

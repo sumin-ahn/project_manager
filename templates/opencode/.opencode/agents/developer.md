@@ -33,7 +33,7 @@ permission:
 > 구동한다 (PM 9차 deciding test 실증). **폴백 = `opencode run --agent build` 외부 프로세스**(headless·
 > CI·task tool 미노출 빌드 — `build`=쓰기 권한), 인터페이스(role·권한·프롬프트)는 동일하다. 폴백의 모델은
 > opencode 기본(내장 `build` primary 는 이 정의의 `model:` 을 읽지 않는다 — Pro 강제는 `-m <model>`).
-> (AGENTS.md §3 · ADR-0006 §3/D3/D5 supersede — PM 9차)
+> (`.opencode/pm-instructions.md` §2 위임 규약 · ADR-0006 §3/D3/D5 supersede — PM 9차)
 
 ## 핵심 원칙
 
@@ -57,7 +57,7 @@ python3 .project_manager/tools/board.py show T-NNNN
 
 ## 부트스트랩 (작업 시작 시)
 
-1. `AGENTS.md` — opencode 실행 모델·엔진 호출(인코딩)·위임 규약
+1. `AGENTS.md`(공통 코어) — 엔진 호출(인코딩)·안전 가드 · `.opencode/pm-instructions.md`(instructions 배열로 함께 자동 로드) — opencode 실행 모델·위임 규약
 2. `.project_manager/wiki/status.md` — 모듈 진행 상태
 3. ticket 본문:
    ```bash

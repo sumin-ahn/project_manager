@@ -1,43 +1,17 @@
-# AGENTS.md — opencode PM 어댑터
+# AGENTS.md — PM 어댑터 공통 코어
 
-> opencode 세션이 시작될 때 자동 로드되는 진입점. **이 파일이 PM(Project Manager) 운영의
-> 자족적 매뉴얼이다.** Claude Code 비의존 — opencode LLM(로컬 gemma / 회사 Pro)이 이 문서만
-> 읽고 스스로 PM 을 부트스트랩·운영한다.
+> 세션 진입점의 **harness-neutral 공통 코어**. 프로젝트 정체성·엔진 호출 규약(인코딩)·작업 완료
+> 부기·PM 결정 권한·안전 가드 — 어느 하네스에서든 참인 PM 운영의 기반이다. 어느 하네스의 LLM
+> 이든 이 문서를 읽고 PM 을 부트스트랩·운영한다.
 >
-> 대응 관계: 이 파일 = Claude Code 타깃의 `CLAUDE.md`. 단 **그대로 번역이 아니라**
-> opencode 실행 모델(build primary + 네이티브 `task` tool 위임)에 맞게 재서술했다. (ADR-0006 · PM 9차)
+> 하네스-고유 실행 모델·위임 규약은 각 하네스의 **네이티브 채널**로 별도 전달된다 — 이 공통
+> 코어는 그 위에 공유된다(하네스별 운영 지침이 자동 로드돼 얹힌다). 어느 진입점이든 공통 코어 +
+> 하네스 지침으로 동일하게 PM 으로 구동된다. (ADR-0006 · amended by ADR-0069)
 
 ## 프로젝트 한 줄
 
 {{PROJECT_TAGLINE}}
 <!-- TODO: {{PROJECT_NAME}} 가 무엇을 하는 시스템인지 1~2 문장. -->
-
-## 0. opencode 실행 모델 (PM 멘탈 모델)
-
-- **PM(orchestrator) = `pm` primary agent (1차) · build primary (폴백).**
-  - **1차 = `pm` primary** (`.opencode/agents/pm.md` · `mode: primary`). relay(ADR-0009·세션 회전
-    supervisor·ADR-0020 개명)가 PM 세션을 **deterministic 하게 spawn** 하는 타깃이다 — `opencode run --agent pm` 으로 올바른
-    모델(Pro)·풀권한·안전 가드가 박힌 PM 세션이 뜬다. pm.md 본문은 thin — 이 문서로 부트스트랩하라고
-    가리킨다.
-  - **폴백 = build primary.** 회사판 opencode 가 custom primary(`mode: primary`)를 노출/허용하는지
-    **미검증**(opencode-pm-adapter spike §6)이므로, `pm` primary agent 가 안 떠도 PM 부트스트랩이 안 깨지게 한다 —
-    이 문서를 읽은 build 세션도 곧 PM 이다(plan/build 두 타입만 노출해도 무관). **PM 동작의 단일 진실은
-    이 문서**이므로 어느 진입점이든 동일하게 PM 으로 구동된다. (additive — ADR-0006 amendment, 비준은 PM)
-- **위임 = 네이티브 `task` tool.** PM 은 dev/reviewer/architect 역할을 내장 `task` tool 로
-  위임한다 — opencode 가 `.opencode/agents/*.md` (mode: subagent) 를 **별도 자식 세션**에서
-  구동한다 (fresh 컨텍스트 = 200K 격리 · 자식 model/권한이 subagent 정의대로 — PM 9차 실증).
-  **폴백 = `opencode run` 외부 프로세스** (headless·CI·task tool 미노출 빌드). §3 위임 규약.
-- **엔진 = 공유 python.** PM 운영 로직은 `.project_manager/tools/*.py` (board.py·pm_*.py)에
-  있다. PM 은 bash tool 로 이 CLI 를 호출·해석한다. **엔진은 0 수정** — 어댑터(이 문서·
-  `.opencode/`)만 타깃별로 다르다.
-- **config = 프로세스 시작 시 로드·캐싱 (변경은 재시작 후 반영).** opencode 는
-  `opencode.jsonc`·플러그인(`.opencode/plugins/`·`lib/`)·에이전트 frontmatter
-  (`.opencode/agents/*.md`)를 **세션 프로세스 시작 시 한 번 읽어 캐싱**한다 — 실행 중 이 파일들을
-  고쳐도 **그 세션엔 반영되지 않는다**(PM 59 라이브 실측). 권한·모델·플러그인·ctx-guard 노브를
-  바꿨으면 opencode 를 **재시작**해야 새 값이 산다 (위임된 subagent 도 부모 세션 시작 시점의
-  config 로 뜬다).
-- **인코딩 = 엔진이 코드로 처리.** 엔진이 인코딩을 코드로 처리(PM 7차·C1 파일·C2 콘솔 reconfigure) —
-  env prefix 불필요. Windows/CP949 환경서도 env 없이 한글 ticket·wiki 가 깨지지 않는다. §1.
 
 ## 1. 엔진 호출 규약 (인코딩)
 
@@ -53,11 +27,6 @@
   PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`. (bash 문법을 규약으로 강제하지 않는다.)
 - **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 금지, 도구의 workdir
   파라미터나 명령 분리로 실행한다. 루트 facade 는 Windows 에선 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요).
-- **bash 툴 timeout (worktree add false-kill 방지·T-0293)**: 대형 repo `worktree add`(full checkout·느린
-  디스크/VPN)가 opencode bash 툴 기본 120초에 죽으면, opencode 실행 쉘에 **`export OPENCODE_EXPERIMENTAL_
-  BASH_DEFAULT_TIMEOUT_MS=1800000`**(30분)을 상속시킨다 — opencode 는 config 파일로 못 실어(`.env` 미로드·
-  실측) shell export/`.envrc`(direnv) 필요. `EXPERIMENTAL` = 버전 의존(회사 버전서 라이브 확인). 엔진
-  타임아웃은 `PM_GIT_TIMEOUT`(초·`none`=무제한). 상세는 `/pm-env` 스킬 §timeout 노브.
 
 > 인터프리터: `{{PY}}` 는 setup 시 채택 환경의 인터프리터로 치환된다
 > (`.project_manager/local.conf` 의 `py=` 가 단일 진실 — `board.py init` 이 설정 ·
@@ -65,9 +34,10 @@
 
 ## 2. PM 부트스트랩 (세션 시작 시 순서)
 
-build 세션이 시작되면 다음을 순서대로 수행한다. **Read tool 로 파일을 읽을 땐 절대 경로를 쓴다.**
+PM 세션이 시작되면 다음을 순서대로 수행한다. **Read tool 로 파일을 읽을 땐 절대 경로를 쓴다.**
 
-1. **이 문서(AGENTS.md)** — 이미 로드됨. opencode 실행 모델·위임·인코딩 규약 파악.
+1. **이 문서(AGENTS.md·공통 코어)** — 이미 로드됨. 엔진 호출(인코딩) 규약(§1) 파악. 하네스-고유
+   실행 모델·위임 규약은 각 하네스의 네이티브 채널이 별도로 전달한다(공통 코어와 함께 로드).
 2. **PM 운영 매뉴얼** — `.project_manager/wiki/pm_role.md` (정적 운영 매뉴얼: 책임·결정 권한·핸드오프).
 3. **PM 동적 상태** — per-slot `.project_manager/.local/slots/<repo>_<N>/pm_state.md`(예 `slots/project_manager_1/` · `<repo>_<N>` = worktree `work/<repo>_<N>` 의 basename) (세션 window·진행 중 의사결정·남은 작업 · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033).
    *없으면* 채택 setup 미완 — `board.py init` 이 template 에서 생성한다.
@@ -95,7 +65,7 @@ build 세션이 시작되면 다음을 순서대로 수행한다. **Read tool �
   `--repo` 를 명시해야 board 가 repo prefix 를 유도한다.
   **솔로(M=1)** 는 `--repo/--slot` 을 생략해도 된다 — 아래 식별 우선순위 체인이 해소한다.
   (board.py 식별 우선순위·ADR-0040: `--repo`/`--slot` 인자 > `$PM_SESSION_NAME`[구 `$CLAUDE_SESSION_NAME` = deprecated alias] > **활성 슬롯 lease 가 정확히 1개면 그 세션**[단일-lease 유도] > [lease 장부 부재·leased 0 = 솔로] local.conf `session=` > 미해소[귀속 쓰기는 fail-loud·`--repo <repo> --slot <N>` 명시 요구]. leased ≥2[모호]면 local.conf 층을 건너뛴다 — 남의 세션 silent 오귀속 차단.)
-- 위임(task subagent · 폴백 프로세스)의 식별 라벨 — `orch-dev-TNNNN` / `orch-review-TNNNN` (§3).
+- 위임의 식별 라벨 — `orch-dev-TNNNN` / `orch-review-TNNNN` (위임 규약은 하네스 네이티브 채널).
 
 ### 첫 turn 권장 보고 (부트스트랩 직후)
 
@@ -104,118 +74,9 @@ build 세션이 시작되면 다음을 순서대로 수행한다. **Read tool �
 3. **다음 옵션 N개** — CLI 가 surface 한 pm_state "남은 작업" + open ticket 기반.
 4. **결정 요청** — *무엇부터 갈까요?* + 권장 시퀀스 1줄. (결정은 사용자.)
 
-## 3. 위임 규약 (네이티브 `task` tool — 1차)
-
-PM 은 ticket 구현/검토/설계를 직접 하지 않고 **내장 `task` tool 로 subagent 에 위임**한다.
-위임 흐름은 `claim → 위임(dev) → 검토(reviewer) → finish` 다.
-
-### 3.1 위임 = `task` tool 호출
-
-PM(build primary)이 내장 `task` tool 을 호출한다 — opencode 가 `.opencode/agents/*.md`
-(mode: subagent) 를 **별도 자식 세션**에서 구동하고 결과를 task 결과로 PM 에 돌려준다
-(PM 9차 deciding test 실증 — opencode agent list 등록 + task tool json `"subagent_type"`/
-`"output"` + 자식이 부모와 다른 sessionId·subagent `model:` 대로 구동).
-
-task tool 인자:
-
-- `subagent_type` — 위임 대상 (아래 §3.2 매핑: `developer` / `code-reviewer` / `architect` / `researcher`).
-- `description` — 짧은 한 줄 (예: `"T-NNNN 구현"`).
-- `prompt` — role 프롬프트 (§3.4/§3.5).
-
-특성:
-
-- subagent 의 `tools:`/`permission:`/`model:` (`.opencode/agents/*.md` frontmatter) 가 그대로
-  권한·모델을 정한다 — `--agent build/plan` 분기·`-m` 모델 명시 **불필요**. 자식 세션이
-  fresh 컨텍스트(200K 격리)에서 subagent 정의대로 구동한다 (실증). **단 frontmatter 를 고쳤으면
-  opencode 를 재시작해야 반영된다** — config 는 프로세스 시작 시 캐싱된다(§0 config 캐싱).
-- PM 은 task 결과로 위임 완료를 인지한다. 순차 위임(dev → reviewer)은 opencode 가 자식
-  세션으로 관리한다.
-
-### 3.2 role → subagent_type 매핑
-
-| PM role | task `subagent_type` | 권한 (agent 정의가 강제) |
-|---|---|---|
-| orchestrator(PM) | (위임 안 함 — build primary 자신) | — |
-| developer | `developer` | 쓰기 (read/edit/write/bash/glob/grep) |
-| code-reviewer | `code-reviewer` | 읽기 (edit/write false — generate ≠ evaluate) |
-| architect | `architect` | 설계 (읽기 + 문서 쓰기) |
-| researcher | `researcher` | 읽기 (read/glob/grep/bash·edit/write false — gather, 조사·사실수집) |
-
-> **위임 가이드** — researcher = bounded fact-gathering(여러 파일·로그·레퍼런스를 훑어 사실·인용·목록 추출).
-> *결론만* 돌려받고, 여러 출처를 가로지르는 synthesis(교차 통찰)는 PM 이 직접 흡수한다(degrade 방지).
-
-### 3.3 위임 전 사전 조건
-
-- ticket 이미 claim (세션 정체성 canonical `<repo>_<N>` · 솔로 M=1 은 생략) · depends_on 모두 done · touches 명시 · DoD verify-able.
-- **컨텍스트 예산** — touches 가 대형 파일·광범위 읽기를 요구하면 dev 가 truncation 위험.
-  본문이 정확한 함수/라인·패턴 reference 로 읽기를 좁히는지 확인 (안 되면 위임 전 본문 보강·분할).
-- **병렬 위임 시 touches disjoint** — 동시 위임할 ticket 들의 touches 가 완전히 겹치지
-  않을 때만. (task 병렬은 opencode 가 자식 세션을 관리한다. `opencode run` 폴백 경로의
-  병렬은 세션 DB 락 가능성 — 미검증·순차 안전, §3.7 노트.)
-
-### 3.4 위임 프롬프트 (developer)
-
-ticket 본문이 self-contained 이므로 프롬프트는 짧다:
-
-```
-T-NNNN 을 구현하라.
-
-세션명: orch-dev-TNNNN (board.py 조작은 PM 담당 · 너는 코드 + 테스트만).
-ticket 본문은 다음으로 확인:
-  {{PY}} .project_manager/tools/board.py show T-NNNN
-본문이 단일 진실 — 목표/인터페이스/결정/DoD/참고 절대로 구현.
-
-완료 시 보고:
-- 변경 파일 목록
-- 신규 테스트 수
-- 전체 회귀 결과 ({{TEST_CMD}}: A / B passed)
-- DoD 항목별 충족 evidence
-```
-
-### 3.5 위임 프롬프트 (code-reviewer)
-
-```
-T-NNNN 의 변경을 검토하라.
-변경 파일: <touches 인자 그대로 인용>.
-status.md / log 갱신은 PM 담당 — 그 누락은 dev must-fix 아님.
-
-완료 시 보고:
-- must-fix (수정 필수 · {{PROJECT_CONSTRAINTS}} 위반 · 결함)
-- should-fix (권장 · 운영 영향)
-- suggestion (개선 옵션)
-- 통과/반려 명시
-```
-
-### 3.6 reviewer 후 PM 처리
-
-- **PM 직접 fix** — 1줄·1패턴. cycle 시간 절약.
-- **dev 재작업** — 여러 줄 또는 같은 file 작업 중.
-- **별도 ticket 후보** — 본 ticket 범위 외.
-- **reviewer cross-check** — reviewer 도 틀릴 수 있다. should-fix 처리 전 코드 흐름 독립
-  점검 · 부정확이면 변경 불필요 + log 영구 기록.
-
-### 3.7 외부 프로세스 진입 (폴백) — `opencode run`
-
-`task` tool 을 못 쓰는 환경 — headless 자동화·CI·task tool 미노출 빌드 — 에서만 동일
-인터페이스를 외부 프로세스로 띄운다:
-
-```bash
-opencode run --agent build --format json "<dev/architect 프롬프트>"   # 쓰기
-opencode run --agent plan  --format json "<reviewer 프롬프트>"        # 읽기
-```
-
-- `--agent build` — 쓰기 권한 (dev·**architect** — 설계 초안 문서 쓰기 필요). `--agent plan` — 읽기 전용 (reviewer).
-- **모델 = opencode 기본.** `--agent build/plan` 은 opencode **내장 primary** 라 우리 subagent
-  (`.opencode/agents/*.md`)의 `model:` 필드를 읽지 않는다 (native task 1차와 다른 점 — 거긴 정의대로 구동).
-  폴백서 Pro/특정 모델을 강제하려면 `-m <model>` 을 명시한다.
-- `--format json` — ANSI escape 회피, 결과를 PM 이 파싱 가능하게.
-- 컨텍스트는 프로세스마다 fresh → 200K 한도를 위임으로 격리. PM 은 exit code + json 결과로
-  완료를 인지한다. **병렬 `opencode run` 은 세션 DB 락 가능성 — 미검증·순차 안전**
-  (병렬 필요 시 XDG sandbox 격리 검토).
-
 ## 4. 작업 완료 부기 (PM 손)
 
-위임 결과를 받고 ticket 을 닫을 때:
+ticket 을 닫을 때:
 
 ```bash
 {{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass
@@ -251,7 +112,7 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"        # 읽�
 ### 프로젝트 고유 제약 (절대 위반 금지)
 
 {{PROJECT_CONSTRAINTS}}
-<!-- TODO: 이 프로젝트의 아키텍처 불변식·안전 경계. 위임 프롬프트(§3.5)에도 인용된다.
+<!-- TODO: 이 프로젝트의 아키텍처 불변식·안전 경계. 위임 프롬프트(reviewer)에도 인용된다.
      제약이 없으면 이 절을 통째로 삭제해도 된다. -->
 
 ## 7. 자주 쓰는 명령
@@ -271,13 +132,6 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"        # 읽�
 {{PY}} .project_manager/tools/pm_log.py tail          # 마지막 entry (의미단위 읽기)
 {{PY}} .project_manager/tools/pm_log.py archive --before YYYY-MM-DD
 
-# 위임 (1차 = 네이티브 task tool · 모델은 subagent 정의가 정함)
-#   PM 이 task tool 호출: subagent_type=developer|code-reviewer|architect|researcher, description, prompt (§3.1)
-# 위임 폴백 (headless·CI·task tool 미노출 — 내장 build/plan primary 라 subagent model: 안 읽음;
-#   모델은 opencode 기본, Pro/특정 모델 강제 시 -m <model>)
-opencode run --agent build --format json "<dev/architect 프롬프트>"
-opencode run --agent plan  --format json "<reviewer 프롬프트>"
-
 # 핸드오프 (세션 종료)
 {{PY}} .project_manager/tools/pm_handoff.py --dry-run
 
@@ -285,20 +139,22 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"
 {{PY}} .project_manager/tools/pm_update.py --from <upstream> --dry-run
 ```
 
+> 위임(dev/reviewer/architect/researcher)은 각 하네스의 네이티브 채널로 한다 — 위임 규약(도구·
+> 프롬프트·role 매핑)의 단일 진실은 하네스별 운영 지침이 담는다.
+
 > **ctx 예산 (핸드오프 임계 분모 · ADR-0041):** ctx 정지/넛지 %의 100% 기준은 `.project_manager/local.conf`
-> 의 `ctx_window_tokens_<harness>`(예 `ctx_window_tokens_opencode=200000`) > generic `ctx_window_tokens` >
-> 200000 순으로 해소된다. 하네스별 키가 우선 — 한 repo 를 claude·opencode 로 동시 운용하면 각자 예산을
-> 독립 설정한다 (미설정 시 기본 200000).
+> 의 `ctx_window_tokens_<harness>`(하네스별 키) > generic `ctx_window_tokens` > 200000 순으로 해소된다.
+> 하네스별 키가 우선 — 한 repo 를 여러 하네스로 동시 운용하면 각자 예산을 독립 설정한다 (미설정 시 기본 200000).
 
 ## 8. 핵심 디렉토리
 
-| 경로 | 의미 |
+| 경로 / 구성요소 | 의미 |
 |---|---|
 | `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py · pm_log.py (공유 엔진 · 0 수정) |
 | `.project_manager/wiki/` | 비-코드 산출물 (작업/결정/사양/상태/**domain 지식 레이어**(§10)/pm_role·pm_state·pm_playbook/log/raw) |
-| `.claude/skills/` | PM workflow 스킬 — canonical `SKILL.md` **단일 소비**(ADR-0065). opencode(≥1.17.19)가 `.claude/skills/*/SKILL.md` 를 네이티브 스캔·슬래시(`/pm-…` · `run --command <스킬명>`) 호출한다 — claude 와 같은 스킬을 양 하네스가 공유(옛 `.opencode/command/` 수기 사본 채널 은퇴·T-0364). pm-bootstrap · pm-wave-claim · pm-dev-delegate · pm-qa · pm-wave-finish · pm-handoff · pm-env · pm-update · pm-worktree · pm-release · spike-new (전체는 `.claude/skills/` 디렉토리 · 스킬 스캔 비활성화 금지 = `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 미설정) |
-| `.opencode/agents/` | pm primary 정의 (mode: primary · relay deterministic spawn 타깃 · ADR-0009·ADR-0020) + researcher · architect · developer · code-reviewer subagent 정의 (mode: subagent · 4축 gather/design/build/evaluate · task tool 위임 1차 · T-0004) |
-| `AGENTS.md` | 이 파일 — PM 부트스트랩·위임·인코딩 어댑터 (= claude_code 의 CLAUDE.md) |
+| PM-workflow 스킬 | canonical `SKILL.md` **단일 소비**(ADR-0065) — 하네스가 네이티브 스캔·슬래시(`/pm-…`) 호출 (스킬 스캔 비활성화 금지). |
+| 하네스 어댑터 (하네스별 디렉토리) | subagent 정의 + 하네스-고유 실행 모델·위임 채널 (경로·규약은 하네스 운영 지침). |
+| `AGENTS.md` | 이 파일 — PM 부트스트랩·공통 코어 (하네스 공용 진입 doc). |
 
 ## 9. 막혔을 때
 
@@ -306,7 +162,7 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"
 - 잘못 claim → `board.py unclaim`.
 - ticket 본문 부족 → 먼저 본문 보강하고 계속 (본문이 단일 진실).
 - 모르는 결정 필요 → ADR 작성 후 진행 (`.project_manager/wiki/decisions/`).
-- 위임(task 결과 또는 폴백 프로세스 exit≠0)이 깨지거나 결과가 불완전 → 재위임 전에 ticket 본문·컨텍스트 예산 점검 (§3.3).
+- 위임이 깨지거나 결과가 불완전 → 재위임 전에 ticket 본문·컨텍스트 예산을 점검한다.
 
 ## 10. domain 지식 레이어 (살아있는 프로젝트 지식)
 
@@ -340,4 +196,4 @@ capture`) → 채록 → `covers` 코드가 페이지 `updated` *후* 바뀌면 
 
 - `.project_manager/wiki/pm_role.md` — PM 책임·결정 권한·핸드오프 단일 진실
 - `.project_manager/wiki/pm_playbook.md` — Wave 패턴·메타 정책 (필요 시 Read)
-- ADR-0006 (`.project_manager/wiki/decisions/`) — opencode 어댑터 결정 (위임·인코딩·모델·self-driven)
+- ADR-0006 · ADR-0069 (`.project_manager/wiki/decisions/`) — 진입 doc 공통 코어 + 하네스별 전달 채널 결정
