@@ -185,6 +185,38 @@ def _load_board():
         return None
 
 
+def validate_task_name_engine(task: str) -> None:
+    """공유 validator(`worktree_pool._validate_task_name`)로 task 명을 fail-loud 검증한다 (T-0394).
+
+    **엔진층 단일 choke** — main() CLI 뿐 아니라 `PmHandoff.run()`·`build_handoff_prompt_output()`
+    직접 호출도 task 를 소비(pm_state 경로·log 태그·dashboard 섹션·트리거 삽입)하기 전 이 함수를
+    통과해야 한다. per-surface 이스케이프 대신 단일 validator 로 도메인을 협소화하는 T-0356 클래스
+    (직접 소비도 우회 불가)를 handoff 진입점 전체에 적용한다 — `"my task"`(공백)·`../evil`(traversal)·
+    `<repo>_<N>`(슬롯 예약패턴) 류가 CLI 를 우회해 트리거 파싱 파손·경로 이탈을 내는 갭을 닫는다.
+
+    registered_repos 는 board 에서 fail-soft 해소(부재/파싱 실패면 None → 예약패턴만 완화하고
+    traversal/whitespace/괄호/빈이름 구문 검증은 유지). worktree_pool 로드 실패는 검증 불가라
+    RuntimeError(fail-loud) — silent skip 이 갭을 재오픈하지 않게 한다.
+
+    raise: `worktree_pool.InvalidTaskName`(부적합 task 명) · `RuntimeError`(worktree_pool 엔진 부재).
+    """
+    wp = _load_worktree_pool()
+    if wp is None:
+        raise RuntimeError(
+            "worktree_pool 엔진을 찾을 수 없다 — --task 이름 검증 불가 "
+            f"({TOOLS_DIR / 'worktree_pool.py'} 부재/로드 실패·multi-PM 셋업/엔진 전파 확인)."
+        )
+    board_mod = _load_board()
+    registered = None
+    _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
+    if _reg_fn is not None:
+        try:
+            registered = _reg_fn()
+        except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴만 완화·traversal 유지).
+            registered = None
+    wp._validate_task_name(task, registered)
+
+
 def _regression_cwd(
     worktree_slot: str | None = None,
     areas_file: Path | None = None,
@@ -1135,12 +1167,28 @@ def _inject_slot_into_template(template: str, worktree_slot: str | None) -> str:
     return template.replace(_BARE_BOOTSTRAP_TRIGGER, qualified)
 
 
+def _inject_task_into_template(template: str, task: str) -> str:
+    """복사 블록 템플릿의 bare `/pm-bootstrap` 을 task-qualified 로 치환한다 (T-0394).
+
+    task 모드 핸드오프면 트리거를 `/pm-bootstrap --task <task>` 로 치환한다 — 다음 세션이
+    task 앵커로 재개(차수 추론·per-task pm_state 포인터·clean resume 실링크)하게 연속성을
+    보존한다. task 는 slot 과 직교이고(F7·T-0356), 진입 시 ADR-0068 W3(T-0399)가 보유 슬롯
+    집합을 자동 수령하므로 트리거에 슬롯을 열거하지 않는다(트리거 = 재개 명령 1:1·ADR-0035).
+    task 이름은 호출부(`build_handoff_prompt_output`)가 `validate_task_name_engine` 로 삽입 전
+    검증하므로 단일 안전 토큰(공백·괄호·path 문자·예약패턴 불가)이 보장돼 quoting 이 불필요하다.
+    슬롯/솔로 모드는 이 경로를 타지 않는다(호출부에서 task None).
+    """
+    qualified = f"{_BARE_BOOTSTRAP_TRIGGER} --task {task}"
+    return template.replace(_BARE_BOOTSTRAP_TRIGGER, qualified)
+
+
 def build_handoff_prompt_output(
     pm_playbook_text: str,
     session_num: int | str,
     wave_summary: str,
     date_str: str,
     worktree_slot: str | None = None,
+    task: str | None = None,
 ) -> str:
     """인계 프롬프트 stdout 출력 문자열을 빌드한다 (T-0180 — 트리거로 축소).
 
@@ -1149,9 +1197,12 @@ def build_handoff_prompt_output(
     log handoff entry 에서 자동 dump 하므로, 프롬프트는 더 이상 `<핵심 인계 사항>` 손-채움을
     싣지 않는다 — 같은 인계를 두 곳에 적던 중복 제거(spike §3 옵션 C·ADR-0035).
 
-    `worktree_slot`(`work/<repo>_<N>`·기본 None)이 set 이면 복사 블록의 bare `/pm-bootstrap` 을
+    `task`(기본 None)가 set 이면 task 모드 핸드오프 — 트리거를 `/pm-bootstrap --task <task>` 로
+    주입한다(T-0394). task 는 slot 보다 우선(직교 앵커·F7·T-0356)이라 슬롯 열거 없이 task-only 로
+    출력하고, 다음 세션은 진입 시 보유 슬롯 집합을 자동 수령한다(ADR-0068 W3·T-0399). task None 일
+    때만 `worktree_slot`(`work/<repo>_<N>`·기본 None)이 set 이면 복사 블록의 bare `/pm-bootstrap` 을
     `/pm-bootstrap <repo> --slot <N>` 로 주입해, 멀티-PM 다음 세션이 슬롯을 정확히 바인딩하게
-    한다(T-0185). None·비정형이면 bare 유지(하위호환·fail-soft). pm_playbook.md 템플릿 파일은
+    한다(T-0185). 둘 다 None·비정형이면 bare 유지(하위호환·fail-soft). pm_playbook.md 템플릿 파일은
     건드리지 않는다 — 치환은 추출된 텍스트 안에서만 contained.
     """
     template = extract_handoff_prompt_template(pm_playbook_text)
@@ -1161,7 +1212,13 @@ def build_handoff_prompt_output(
             f"앵커: '{_HANDOFF_PROMPT_SECTION_ANCHOR}'\n"
             "pm_playbook.md §'다음 PM 세션 부트스트랩 프롬프트 (템플릿)' 을 직접 복사하라."
         )
-    template = _inject_slot_into_template(template, worktree_slot)
+    if task is not None:
+        # 삽입 전 공유 validator 로 fail-loud — build_handoff_prompt_output() 직접 호출도 우회 못 하게
+        # 트리거 경계에서 닫는다(T-0394·T-0356 클래스). run() 은 진입에서 이미 검증하므로 멱등 재검증.
+        validate_task_name_engine(task)
+        template = _inject_task_into_template(template, task)
+    else:
+        template = _inject_slot_into_template(template, worktree_slot)
 
     header = (
         f"=== 인계 프롬프트 (PM {session_num}차 → 다음 PM 세션) ===\n"
@@ -2158,6 +2215,20 @@ class PmHandoff:
 
         반환: 0=성공, 1=실패 (중단).
         """
+        # task 이름 검증 — main() CLI 뿐 아니라 run() 직접 호출도 우회 못 하게 엔진층 단일 choke
+        # (validate_task_name_engine·T-0394)를 *어떤 task 소비(pm_state 경로·log 태그·dashboard·트리거)
+        # 이전에* 통과시킨다. traversal(`../evil`)·whitespace(`my task`)·슬롯 예약패턴이 pm_state 디렉토리
+        # 이탈·트리거 파싱 파손을 내는 갭을 닫는다(T-0356 클래스). 부적합/엔진부재는 부작용 0 로 중단(1).
+        if task is not None:
+            try:
+                validate_task_name_engine(task)
+            except Exception as exc:  # noqa: BLE001 — InvalidTaskName(.reason)·RuntimeError(엔진 부재)
+                print(
+                    f"\n[중단] --task 이름 {task!r} 이(가) 부적합 — {getattr(exc, 'reason', exc)} "
+                    "(log/current.md·pm_state 어떤 것도 건드리지 않는다.)",
+                    file=sys.stderr,
+                )
+                return 1
         date_str = datetime.date.today().isoformat()
         # task 모드(F7) — 명시 pm_state 주입(hermetic 테스트) 없이 `--task` 가 오면 연속성 앵커를
         # task 로 잡는다. 명시 주입은 hermetic 경로 보존(주입 pm_state 를 그대로 씀).
@@ -2414,6 +2485,12 @@ class PmHandoff:
             wave_summary=wave_summary,
             date_str=date_str,
             worktree_slot=self._worktree_slot,
+            # task 모드(F7)면 트리거를 task-only(`--task <task>`)로 — 슬롯 재부착만 안내하던
+            # 갭 보완(T-0394·트리거=재개 명령 1:1·ADR-0035). 정체성 판정 축은 이 run() 전체에서
+            # `task is not None` 로 단일화한다(log 헤더 태그·dashboard 섹션·:2295 와 동축) — 명시
+            # pm_state 주입(hermetic·_pm_state_file_explicit) 경로도 로그/대시보드가 task 로 처리하는
+            # 한 트리거도 task 여야 일관(codex must-fix). slot/솔로(task None)는 100% 불변.
+            task=task,
         )
         print(prompt_output)
 
@@ -2671,26 +2748,19 @@ def main(argv: list[str] | None = None) -> int:
     # (`--task project_manager_1`)도 거부해 dashboard `## project_manager_1` 가 실 slot-1 섹션과 충돌하는
     # 것을 막는다(reviewer). registered_repos 는 board 에서 fail-soft 해소(부재/실패면 None → 구문 검증만).
     if identity.task is not None:
-        wp = _load_worktree_pool()
-        if wp is None:
-            parser.error(
-                "worktree_pool 엔진을 찾을 수 없다 — --task 검증 불가 "
-                f"({TOOLS_DIR / 'worktree_pool.py'} 부재/로드 실패·multi-PM 셋업/엔진 전파 확인)."
-            )
-        board_mod = _load_board()
-        registered = None
-        _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
-        if _reg_fn is not None:
-            try:
-                registered = _reg_fn()
-            except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴만 완화·traversal 유지).
-                registered = None
+        # 공유 엔진 validator(validate_task_name_engine) — main()·run()·prompt builder 공통 choke.
+        # traversal/절대경로/빈이름/whitespace/괄호 + `<repo>_<N>` 예약(⑥)을 fail-loud 한다. handoff 는
+        # bind_task 를 우회하는 별도 CLI 진입점이라 여기서 닫는다(T-0356 클래스). 예약명
+        # (`--task project_manager_1`)도 거부해 dashboard `## project_manager_1` 가 실 slot-1 섹션과
+        # 충돌하는 것을 막는다(reviewer). InvalidTaskName 은 `.reason` 진단 노출, 엔진 부재는 RuntimeError.
         try:
-            wp._validate_task_name(identity.task, registered)
-        except wp.InvalidTaskName as exc:
+            validate_task_name_engine(identity.task)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        except Exception as exc:  # noqa: BLE001 — worktree_pool.InvalidTaskName(.reason 진단)
             parser.error(
-                f"--task 이름 {identity.task!r} 이(가) 부적합 — {exc.reason}. 안전한 단일 이름 "
-                "(공백·괄호·path 문자·슬롯 예약패턴 `<repo>_<N>` 불가)이어야 한다."
+                f"--task 이름 {identity.task!r} 이(가) 부적합 — {getattr(exc, 'reason', exc)}. "
+                "안전한 단일 이름(공백·괄호·path 문자·슬롯 예약패턴 `<repo>_<N>` 불가)이어야 한다."
             )
     # --branch 는 슬롯 정체성 동반 필요 — 슬롯 없는 브랜치는 회전 재부착 단서로 불완전
     # (어느 슬롯에 재부착할지 모름)하므로 조용히 무시하지 않고 거부한다(오용 축소·ADR-0013).

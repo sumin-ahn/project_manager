@@ -439,6 +439,212 @@ def test_build_handoff_prompt_output_malformed_slot_falls_back_bare(hf, bad_slot
     assert "--slot" not in out
 
 
+# ── task 모드 트리거 (T-0394) — 4경로 트리거 문면 (task-only / task+slot / slot / solo) ──
+# task 세션 연속성 앵커는 task(로그 태그 `task:<이름>`·per-task pm_state)라 인계 트리거가
+# `--task <이름>` 을 실어야 다음 세션이 task resume 으로 재개한다. 슬롯 재부착만 안내하면(구버전)
+# 슬롯 모드로 재개돼 차수 추론·pm_state 포인터·clean resume 링크가 끊긴다(PM 78 실측).
+
+
+def test_build_handoff_prompt_output_task_only_emits_task_trigger(hf):
+    """task-only(슬롯 미동반)면 `/pm-bootstrap --task <이름>` 트리거 (T-0394).
+
+    ADR-0068 W3(T-0399)가 진입 시 보유 슬롯 집합을 자동 수령하므로 트리거는 슬롯을 열거하지
+    않는다 — task 앵커만 실어 clean task resume 을 보존한다.
+    """
+    out = hf.build_handoff_prompt_output(
+        pm_playbook_text=_TRIGGER_PLAYBOOK,
+        session_num=78,
+        wave_summary="요약",
+        date_str="2026-07-20",
+        worktree_slot=None,
+        task="mytask",
+    )
+    assert "/pm-bootstrap --task mytask" in out
+    # 슬롯 열거 없음(task-only) · bare 잔존 없음.
+    assert "--slot" not in out
+    template = hf.extract_handoff_prompt_template(_TRIGGER_PLAYBOOK)
+    injected = hf._inject_task_into_template(template, "mytask")
+    assert "/pm-bootstrap\n" not in injected
+    assert "/pm-bootstrap " not in injected.replace("/pm-bootstrap --task", "")
+
+
+def test_build_handoff_prompt_output_task_with_slot_stays_task_only(hf):
+    """task+slot 동반이어도 트리거는 task-only(`--task <이름>`) (T-0394·task 우선·직교 앵커).
+
+    task 는 slot 과 직교하고 진입 시 보유 슬롯이 자동 수령되므로, 슬롯이 동반돼도 트리거엔
+    슬롯을 싣지 않는다(트리거 = 재개 명령 1:1·ADR-0035). slot-qualified 재부착 안내가 task 를
+    덮지 않게 가드.
+    """
+    out = hf.build_handoff_prompt_output(
+        pm_playbook_text=_TRIGGER_PLAYBOOK,
+        session_num=78,
+        wave_summary="요약",
+        date_str="2026-07-20",
+        worktree_slot="work/repoA_2",
+        task="mytask",
+    )
+    assert "/pm-bootstrap --task mytask" in out
+    # slot 이 동반돼도 슬롯 재부착 문면(`repoA --slot 2`)은 트리거에 안 나온다.
+    assert "--slot" not in out
+    assert "repoA" not in out
+
+
+def test_build_handoff_prompt_output_slot_only_unchanged_by_task_feature(hf):
+    """슬롯-only(task None)는 T-0394 도입 후에도 slot-qualified 트리거 100% 불변 (회귀)."""
+    out = hf.build_handoff_prompt_output(
+        pm_playbook_text=_TRIGGER_PLAYBOOK,
+        session_num=78,
+        wave_summary="요약",
+        date_str="2026-07-20",
+        worktree_slot="work/repoA_2",
+        task=None,
+    )
+    assert "/pm-bootstrap repoA --slot 2" in out
+    assert "--task" not in out
+
+
+def test_build_handoff_prompt_output_solo_unchanged_by_task_feature(hf):
+    """솔로(slot None·task None)는 T-0394 도입 후에도 bare `/pm-bootstrap` 100% 불변 (회귀)."""
+    out = hf.build_handoff_prompt_output(
+        pm_playbook_text=_TRIGGER_PLAYBOOK,
+        session_num=78,
+        wave_summary="요약",
+        date_str="2026-07-20",
+        worktree_slot=None,
+        task=None,
+    )
+    assert "/pm-bootstrap" in out
+    assert "--slot" not in out
+    assert "--task" not in out
+
+
+def test_run_task_mode_emits_task_trigger(hf, tmp_path, capsys):
+    """run(task=...) 이 [5/7] 에 task-only 트리거를 emit 한다 (T-0394·호출부 배선).
+
+    명시 pm_state 주입(hermetic) 없이 --task 를 run 에 주면 build_handoff_prompt_output 에
+    task 가 전달돼 `/pm-bootstrap --task <이름>` 이 나온다 — task_mode 배선을 가드.
+    """
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_TRIGGER_PLAYBOOK, encoding="utf-8")
+    log_file = tmp_path / "current.md"
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook,
+        # pm_state_file 미주입 — task 모드가 per-task pm_state 경로를 자체 해소(task_mode=True).
+    )
+    rc = handoff.run(
+        session_num=78,
+        wave_summary="요약",
+        dry_run=True,
+        skip_pytest=True,
+        task="mytask",
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # task-only 트리거가 [5/7] 복사 블록에 나온다 — task 배선 가드. (전체 run 출력엔 무관한
+    # `/pm-bootstrap`·`--slot` 산문 언급이 있어 정밀 slot-부재는 pure-function 테스트가 담당.)
+    assert "/pm-bootstrap --task mytask" in out
+
+
+@pytest.mark.parametrize("bad_task", ["my task", "foo)bar", "../evil", "a/b"])
+def test_build_handoff_prompt_output_rejects_invalid_task(hf, bad_task):
+    """build_handoff_prompt_output() 직접 호출도 invalid task 를 삽입 전 거부한다 (T-0394 codex R2).
+
+    main() CLI 를 우회한 prompt builder 직접 호출에서 whitespace(`my task`)·괄호(`foo)bar`)·
+    traversal(`../evil`)·separator(`a/b`) 가 트리거에 삽입돼 파싱 파손·경로 이탈을 내던 갭 —
+    엔진층 단일 validator(validate_task_name_engine)가 formatter 경계에도 걸렸는지 가드한다.
+    """
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 — worktree_pool.InvalidTaskName(동적 로드)
+        hf.build_handoff_prompt_output(
+            pm_playbook_text=_TRIGGER_PLAYBOOK,
+            session_num=78,
+            wave_summary="요약",
+            date_str="2026-07-20",
+            task=bad_task,
+        )
+    assert type(excinfo.value).__name__ == "InvalidTaskName"
+
+
+def test_validate_task_name_engine_rejects_and_accepts(hf):
+    """공유 엔진 validator 가 invalid 거부·valid 통과 (T-0394 codex R2·단일 choke 함수)."""
+    import pytest as _pytest
+
+    with _pytest.raises(Exception) as excinfo:  # noqa: PT011
+        hf.validate_task_name_engine("my task")
+    assert type(excinfo.value).__name__ == "InvalidTaskName"
+    # valid 단일 토큰은 통과(예외 없음).
+    hf.validate_task_name_engine("mytask")
+
+
+def test_run_rejects_invalid_task_before_side_effects(hf, tmp_path, capsys):
+    """run(task=...) 직접 호출도 invalid task 면 부작용 0 로 중단(1) (T-0394 codex R2).
+
+    run() 진입 검증이 pm_state/log 어떤 것도 건드리기 전 fail-loud — traversal `../evil` 이
+    작업트리 밖 디렉토리를 만들거나 트리거를 파손하지 못하게 가드한다.
+    """
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_TRIGGER_PLAYBOOK, encoding="utf-8")
+    log_file = tmp_path / "current.md"
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook,
+    )
+    rc = handoff.run(
+        session_num=78,
+        wave_summary="요약",
+        dry_run=True,
+        skip_pytest=True,
+        task="../evil",
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "부적합" in err
+    # 부작용 0 — log 파일 미생성.
+    assert not log_file.exists()
+
+
+def test_run_task_mode_explicit_pm_state_emits_task_trigger(hf, tmp_path, capsys):
+    """명시 pm_state_file(hermetic) + task 조합에서도 [5/7] 이 task-only 트리거를 emit 한다 (T-0394).
+
+    정체성 판정 축은 run() 전체에서 `task is not None` 단일 — 명시 pm_state 주입 경로도 로그
+    헤더 태그(`task:<이름>`)·dashboard 섹션이 task 로 처리한다. 트리거만 `task_mode`
+    (`not _pm_state_file_explicit` 포함)로 갈라지면 로그/대시보드↔트리거 불일치(codex must-fix)라,
+    같은 축으로 통일됐는지 명시 pm_state 경로로 가드한다.
+    """
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_TRIGGER_PLAYBOOK, encoding="utf-8")
+    log_file = tmp_path / "current.md"
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,  # 명시 주입 → _pm_state_file_explicit True (task_mode False)
+    )
+    rc = handoff.run(
+        session_num=78,
+        wave_summary="요약",
+        dry_run=True,
+        skip_pytest=True,
+        task="mytask",
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # 명시 pm_state 여도 트리거는 task-only (task is not None 축으로 통일).
+    assert "/pm-bootstrap --task mytask" in out
+
+
 def test_run_passes_worktree_slot_to_prompt(hf, tmp_path, capsys):
     """run() 이 self._worktree_slot 을 build_handoff_prompt_output 에 전달한다 (T-0185·호출부).
 
