@@ -30,6 +30,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 ROOT_MANIFEST = REPO / ".project_manager" / "engine.manifest"
 CC_MANIFEST = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
 OC_MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
+CODEX_MANIFEST = REPO / "templates" / "codex" / ".project_manager" / "engine.manifest"
 
 # opencode 트리의 정당한 manifest 차이(harness-correct·화이트리스트). 임의 경로가 새로
 # 추가/누락되면 fail — 의도적 어댑터 비대칭만 통과시킨다(전파 채널 우발 drift 차단).
@@ -57,6 +58,19 @@ CLAUDE_ONLY_PATHS = {
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
     ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",
 }
+# codex 트리(ADR-0070)의 정당한 manifest 차이(3-way·화이트리스트). claude_code 대비:
+#   codex 가 추가: .codex/agents(TOML 4축 custom agent·claude .claude/agents 대응) · .agents/skills
+#     (codex 네이티브 스킬 네임스페이스 — root `.claude/skills` 를 @source 로 remap·D2). (relay
+#     드라이버 .codex/pm_orch_codex.py 는 T-0404 이 추가 — 이 골격 티켓 T-0402 범위 밖·미등록.)
+#   codex 가 제외: CLAUDE_ONLY_PATHS 전부 **+ .claude/skills**. opencode 는 .claude/skills 를 claude 와
+#     공유(bare @render·같은 파일명 스캔)했지만 codex 는 스킬 네임스페이스가 `.agents/skills` 라
+#     .claude/skills 자체는 codex manifest 에서 빠진다(→ .agents/skills remap 으로 대체). 이 한 줄이
+#     opencode 화이트리스트와 codex 를 가르는 핵심 비대칭.
+CODEX_ONLY_PATHS = {
+    ".codex/agents",
+    ".agents/skills",
+}
+CODEX_DROPPED_PATHS = CLAUDE_ONLY_PATHS | {".claude/skills"}
 # engine-mirror hook/driver 등록 경로 (T-0305) — self-prop assert 및 등록 회귀 가드가 참조.
 CLAUDE_HOOK_PATHS = frozenset({
     ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
@@ -80,6 +94,7 @@ FACADE_EXTS = (".sh", ".cmd")
 TEMPLATE_ROOTS = {
     "claude_code": REPO / "templates" / "claude_code",
     "opencode": REPO / "templates" / "opencode",
+    "codex": REPO / "templates" / "codex",
 }
 
 
@@ -130,6 +145,44 @@ def test_opencode_manifest_diff_is_whitelisted_only():
     )
 
 
+def test_codex_manifest_diff_is_whitelisted_only():
+    """codex 템플릿 manifest 는 harness-correct 하게 다르되, 차이가 화이트리스트에만 있어야 한다 (ADR-0070·T-0402).
+
+    claude_code 대비 codex 의 추가(.codex/agents·.agents/skills)/제외(CLAUDE_ONLY_PATHS + .claude/skills)가
+    의도적 어댑터 비대칭에만 있음을 단언 — 임의 경로가 새로 들고/빠지면 fail(3-way 전파 채널 우발 drift
+    차단). opencode 와의 핵심 차이 = codex 는 .claude/skills 도 제외(→ .agents/skills 로 remap)한다."""
+    cc = _manifest_path_set(CC_MANIFEST)
+    cx = _manifest_path_set(CODEX_MANIFEST)
+    added = cx - cc        # codex 가 추가한 경로
+    dropped = cc - cx      # codex 가 제외한 경로
+    assert added == CODEX_ONLY_PATHS, (
+        f"codex manifest 추가 경로가 화이트리스트와 불일치 — "
+        f"예상 {sorted(CODEX_ONLY_PATHS)}, 실제 {sorted(added)}"
+    )
+    assert dropped == CODEX_DROPPED_PATHS, (
+        f"codex manifest 제외 경로가 화이트리스트와 불일치 — "
+        f"예상 {sorted(CODEX_DROPPED_PATHS)}, 실제 {sorted(dropped)}"
+    )
+
+
+def test_codex_and_opencode_agents_md_byte_identical():
+    """codex ↔ opencode 공통 코어 AGENTS.md 가 byte-identical (ADR-0070 D3 C-v2·신규 가드 클래스·T-0402).
+
+    진입 doc 을 얇은 harness-neutral 공통 코어로 축소(ADR-0069)하고 opencode↔codex 템플릿 트리를
+    byte-parity 로 못박는다 — add-harness 로 opencode+codex 공존 시 진입 doc 파일명 충돌(둘 다 AGENTS.md)이
+    내용 수렴(byte-identical → git-safe skip)으로 자연 소멸한다. AGENTS.md 는 instance-owned(manifest 밖·
+    미전파)라 기존 manifest content-parity 가드가 안 보던 신규 가드 클래스(spike architect 보고 ⑤)."""
+    oc_agents = REPO / "templates" / "opencode" / "AGENTS.md"
+    cx_agents = REPO / "templates" / "codex" / "AGENTS.md"
+    assert oc_agents.is_file(), f"opencode AGENTS.md 없음: {oc_agents}"
+    assert cx_agents.is_file(), f"codex AGENTS.md 없음: {cx_agents}"
+    assert oc_agents.read_bytes() == cx_agents.read_bytes(), (
+        "codex/opencode 공통 코어 AGENTS.md 가 byte-identical 아님 — 진입 doc 공통 코어 수렴 위반 "
+        "(ADR-0070 D3 C-v2). 한쪽만 수정됐다면 다른 쪽에도 반영해 byte-parity 를 유지하라 "
+        "(instance-owned 라 manifest 전파가 안 잡는 표면)."
+    )
+
+
 # ── 가드 2c: engine-mirror hook/driver 등록 + manifest 자기전파 (T-0305·ADR-0032 Q3) ──────────
 
 
@@ -176,20 +229,23 @@ def test_opencode_manifest_registers_engine_mirror_hooks_and_driver():
 
 
 def test_all_manifests_self_propagate():
-    """3 매니페스트 모두 자기 자신(`.project_manager/engine.manifest`)을 전파 대상에 등록 (B-selfprop·OQ-B1).
+    """4 매니페스트 모두 자기 자신(`.project_manager/engine.manifest`)을 전파 대상에 등록 (B-selfprop·OQ-B1·ADR-0070).
 
     없으면 이 파일에 새로 추가한 hook/driver 엔트리(=manifest 진화)가 기존 채택자에 영영 도달하지
     못한다(import 시점 frozen manifest 영속) → "frozen 근절" 이 성립 불가. 루트는 self-flavor(bare),
-    claude_code/opencode 는 각자 flavor 매니페스트를 @source 로 읽는다(harness-flavor remap)."""
+    claude_code/opencode/codex 는 각자 flavor 매니페스트를 @source 로 읽는다(harness-flavor remap)."""
     pm_update = _load_pm_update()
-    for name, manifest in (("root", ROOT_MANIFEST), ("claude_code", CC_MANIFEST), ("opencode", OC_MANIFEST)):
+    for name, manifest in (("root", ROOT_MANIFEST), ("claude_code", CC_MANIFEST),
+                           ("opencode", OC_MANIFEST), ("codex", CODEX_MANIFEST)):
         assert SELF_PROP_PATH in _manifest_path_set(manifest), (
             f"{name} manifest 가 자기전파 엔트리({SELF_PROP_PATH}) 미등록 — 신 엔트리가 채택자에 미도달")
-    # claude_code/opencode 는 flavor 매니페스트를 @source 로 읽어야 자기 flavor 를 받는다(교차 오염 방지).
+    # claude_code/opencode/codex 는 flavor 매니페스트를 @source 로 읽어야 자기 flavor 를 받는다(교차 오염 방지).
     assert _entry_source_rel(pm_update, CC_MANIFEST, SELF_PROP_PATH) == \
         "templates/claude_code/.project_manager/engine.manifest"
     assert _entry_source_rel(pm_update, OC_MANIFEST, SELF_PROP_PATH) == \
         "templates/opencode/.project_manager/engine.manifest"
+    assert _entry_source_rel(pm_update, CODEX_MANIFEST, SELF_PROP_PATH) == \
+        "templates/codex/.project_manager/engine.manifest"
 
 
 def test_instance_owned_config_not_registered():
@@ -203,6 +259,10 @@ def test_instance_owned_config_not_registered():
             "CLAUDE.md", ".project_manager/local.conf"}),
         "claude_code": (CC_MANIFEST, {".claude/settings.json", "CLAUDE.md"}),
         "opencode": (OC_MANIFEST, {".opencode/opencode.jsonc", "AGENTS.md", "AGENTS.lite.md"}),
+        # codex(ADR-0070·§3.6): AGENTS.md(공통 코어 root doc)·.codex/config.toml·.codex/hooks.json 는
+        #   adopter config/root doc 라 manifest 밖(미전파·trust 재승인 churn 회피). config/hooks 는
+        #   T-0406 이 물리 배치하되 여기선 "manifest 에 미등록"만 단언(경로 부재 무관·경로집합 검사).
+        "codex": (CODEX_MANIFEST, {"AGENTS.md", ".codex/config.toml", ".codex/hooks.json"}),
     }
     for name, (manifest, forbidden_paths) in forbidden.items():
         leaked = forbidden_paths & _manifest_path_set(manifest)

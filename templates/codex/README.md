@@ -1,0 +1,102 @@
+# codex 어댑터 타깃
+
+Claude Project Framework 의 **codex(OpenAI Codex CLI) 어댑터** 타깃. 루트 엔진(`.project_manager/`)을
+공유하고 어댑터층(`.codex/`·`.agents/skills`·`AGENTS.md`)만 이 타깃에서 다르다. (ADR-0005·ADR-0006·ADR-0070)
+
+> 프레임워크 **전체 가이드**(네 기둥·도입 절차·placeholder 표·워크플로·이식성 등급·계보)는
+> 하니스 무관 공통 문서 — **루트 [`README.md`](../../README.md)**. 이 문서는 *codex 어댑터
+> 고유분*만 담는다 (claude_code [`../claude_code/README.md`](../claude_code/README.md)·opencode
+> [`../opencode/README.md`](../opencode/README.md) 타깃과 대칭).
+
+## 어댑터층
+
+codex CLI(`codex exec`)가 `AGENTS.md`(공통 코어)를 진입으로 PM 을 self-driven 으로 구동한다.
+claude_code 의 `CLAUDE.md`+`.claude/`·opencode 의 `AGENTS.md`+`.opencode/` 에 대응하는 codex 등가물 —
+엔진은 루트와 공유하고 여기 어댑터만 타깃 고유다.
+
+- **PM = 메인세션** (ADR-0070 D1) — `codex exec` 가 `AGENTS.md` 를 자동 로드해 그 세션이 곧 PM 이다.
+  codex 는 headless 명명-agent 타깃(`--agent pm` 등가)이 없어(`codex exec --agent` 플래그 부재),
+  opencode 의 `pm.md`(mode: primary) 에 해당하는 파일이 **없다**. relay 는 `codex exec --json` 으로
+  세션을 열어 `thread.started.thread_id` 를 파싱하고 `codex exec resume <id>` 로 이어간다(T-0404).
+- **`AGENTS.md`** (공통 코어·harness-neutral·instance-owned) — PM 부트스트랩·엔진 호출(인코딩)·완료
+  부기·결정 권한·안전 가드. `templates/opencode/AGENTS.md` 와 **byte-identical**(공통 코어 수렴·가드).
+- **codex 전용 정적 진입 doc 없음** (ADR-0070 D3 C-v2) — `AGENTS.override.md`·`.codex/AGENTS.md`
+  같은 codex 전용 진입 문서를 두지 않는다. codex 방법론 전달 채널 3개:
+  - **위임 4축** = `.codex/agents/{architect,code-reviewer,developer,researcher}.toml` (아래).
+  - **운영 규율** = canonical 스킬(`.agents/skills`·아래).
+  - **실행 모델·위임 규약** = `/pm-bootstrap` 커맨드 카드가 하네스 감지(`CODEX_THREAD_ID`/`CODEX_CI`
+    env)로 codex 절을 발화(T-0405).
+  - **부수 이득**: 방법론이 전부 pm_update 갱신 도달 채널(TOML @source·스킬·엔진 카드)에 실려 —
+    instance-owned 진입 doc 의 drift 표면이 codex 엔 애초에 생기지 않는다.
+- **`.codex/agents/*.toml`** — codex 명명 custom agent 4축(architect·code-reviewer·developer·
+  researcher). 위임 = codex multi_agent **in-session spawn**(부모 sandbox 상속). 필수 필드
+  `name`/`description`/`developer_instructions`(≈system prompt) + `sandbox_mode`(developer/architect=
+  `workspace-write`·code-reviewer/researcher=`read-only`). `model` 키 없음 — 사용자 config 기본 상속(D5).
+  `developer_instructions` 의 `{{PROJECT_NAME}}` 는 import/pm_update 가 채택자 값으로 치환.
+- **`.agents/skills/`** — PM workflow 스킬 (pm-bootstrap·pm-ticket·pm-dev-delegate·pm-review·pm-qa·
+  pm-handoff·pm-release·spike-new … 전체는 `.agents/skills/` 디렉토리). **canonical `SKILL.md` 단일
+  소비**(ADR-0065) — codex 가 `.agents/skills/*/SKILL.md`(project·cwd→root 스캔)를 네이티브 소비
+  (`$skill` 멘션·description 매칭 auto-trigger). canonical 소스는 root `.claude/skills`(claude/opencode
+  와 동일 단일 진실)이고 `@source` 가 codex 네임스페이스 `.agents/skills` 로 remap 한다(ADR-0054).
+- **`.codex/config.toml`·`.codex/hooks.json`** (T-0406·instance-owned) — compaction 노브·PreCompact
+  tripwire·ctx 가드. 채택자 소유(트리에 실재하되 pm_update 미전파).
+
+## trust 선행 (codex 고유·2단계)
+
+codex 의 `.codex/config.toml`·`.codex/hooks.json`·`.codex/agents/*.toml` 은 **trusted project + hook
+trust 승인** 후에만 발화한다. import/add-harness 직후 1회:
+
+1. 대화형 `codex` 를 한 번 열어 이 프로젝트 **trust 를 수락**한다.
+2. `/hooks` 로 **hook trust 를 승인**한다.
+3. 검증 — 스폰 대상 목록에 `architect`/`code-reviewer`/`developer`/`researcher` 가 보이면 로드 성공.
+
+> `-c projects.<path>.trust_level=trusted` CLI override 는 **먹지 않는다**(실측) — user config
+> `[projects]` 영속 trust 가 있어야 project-level `.codex/agents` 가 로드된다.
+
+## 채택 (pm_import — 정규 경로)
+
+채택은 **manager 루트의 `pm-import.sh`(`/.cmd`) 파사드**(= `pm_import.py` 호출)로 한다 — 어댑터
+복사·placeholder 치환·board init·git init(`--new`)까지 한 번에 처리한다.
+
+```bash
+# 신규 프로젝트 (디렉토리 생성 + git init)
+<manager>/pm-import.sh --new <PATH> --harness codex
+
+# 기존 프로젝트에 도입 (비파괴·충돌 파일 백업)
+<manager>/pm-import.sh --into <PATH> --harness codex
+
+# 적용 전 계획만 미리보기 (파일시스템 미변경) — 권장
+<manager>/pm-import.sh --new <PATH> --harness codex --dry-run
+```
+
+> Windows 는 `pm-import.cmd`. codex 는 opencode 와 달리 모델 placeholder 해소가 **불요**하다 —
+> `.codex/agents/*.toml` 에 `model` 키가 없어 사용자 config 기본(gpt-5.5)을 상속한다(D5).
+> 기존 인스턴스에 codex 를 얹으려면 `add-harness codex`(opencode 공존 시 공통 코어 `AGENTS.md` 가
+> byte-identical → git-safe skip·무충돌).
+
+## 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
+
+루트에서 이 타깃으로 엔진을 동기화한다 (엔진 경로만 덮어씀 — 어댑터 보존·flavor manifest·ADR-0054).
+
+**루트에서 직접 (`--target` 플래그):**
+```bash
+# 루트 repo 에서
+python3 .project_manager/tools/pm_update.py --from . --target codex --dry-run
+python3 .project_manager/tools/pm_update.py --from . --target codex
+```
+
+**타깃 내부에서 실행 (self-location):**
+```bash
+cd templates/codex
+python3 .project_manager/tools/pm_update.py --from ../../ --dry-run
+python3 .project_manager/tools/pm_update.py --from ../../
+```
+
+## 참고
+
+- `AGENTS.md` — PM 부트스트랩·엔진 호출(인코딩)·완료 부기·결정·안전 가드 공통 코어
+  (= claude_code 의 `CLAUDE.md`·opencode 의 `AGENTS.md`·byte-identical).
+- `.codex/agents/*.toml` — codex 위임 4축 custom agent (in-session spawn·`developer_instructions`).
+- ADR-0070 — codex 어댑터 타깃 + 어댑터 구성 단일 진실 · ADR-0069 — 진입 doc 공통 코어 + 하네스별
+  전달 채널 · ADR-0054 — @source 전파 채널 · ADR-0065 — 스킬 단일 소비.
+- 루트 [`README.md`](../../README.md) — 프레임워크 전체 가이드(네 기둥·도입·워크플로·이식성·계보).
