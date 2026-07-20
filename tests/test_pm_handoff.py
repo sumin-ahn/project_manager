@@ -1534,3 +1534,510 @@ def test_run_solo_no_task_does_not_release_task_pid(hf, tmp_path):
     rc = handoff.run(session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True)
     assert rc == 0
     assert pool.task_pid_calls == []
+
+
+# ── task 퇴장: 변경 슬롯 회귀(F6) + 보유 전 슬롯 재스냅 (ADR-0068 W2·T-0393) ─────────────
+#
+# task 세션은 보유 슬롯 **집합**을 두고 나간다: ① 회귀는 변경 흔적(lease 스냅 대비 head 전진/dirty)
+# 있는 보유 슬롯 각각에서(F6 해소·명시 --repo/--slot 우선 유지·0개=skip)·② 재스냅은 보유 전 슬롯
+# (현행 1슬롯 한정 폐지). slot/솔로 모드(--task 없음)는 100% 불변.
+
+
+class _TaskSetPool(_SnapPool):
+    """task 다중슬롯 회귀/재스냅 mock — slots_for_task + compare_slot_git + slot_git_status (T-0393).
+
+    `slots` = slots_for_task 가 돌려줄 보유 슬롯 식별자 리스트. `states` = slot→변경 상태 dict
+    (`unrecorded`/`branch_match`/`head_relation`/`dirty`·미지정은 head match·clean·recorded=무변경).
+    compare_slot_git·slot_git_status 를 mock 해 `_slot_has_changes` 판정을 격리 검증한다. 재스냅
+    프리미티브(read_lease·record_git_snapshot)는 _SnapPool 상속(snap_calls 기록)."""
+
+    HEAD_MATCH = "match"
+
+    def __init__(self, slots, states=None, **kwargs):
+        super().__init__(**kwargs)
+        self._task_slots = slots
+        self._states = states or {}
+
+    def slots_for_task(self, name):
+        return [type("_L", (), {"slot": s})() for s in self._task_slots]
+
+    def compare_slot_git(self, slot):
+        st = self._states.get(slot, {})
+        return type("_C", (), {
+            "unrecorded": st.get("unrecorded", False),
+            "branch_match": st.get("branch_match", True),
+            "head_relation": st.get("head_relation", "match"),
+        })()
+
+    def slot_git_status(self, slot):
+        return {"dirty": self._states.get(slot, {}).get("dirty", False)}
+
+
+def _task_reg_handoff(hf, tmp_path, pool, pytest_fn):
+    """task 회귀/재스냅 검증용 hermetic PmHandoff — 명시 pm_state(hermetic) + mock pool + 관찰 pytest_fn.
+
+    명시 pm_state 주입이라 task_mode(pid 기록)는 진입 안 하지만, task 회귀 모드(task_regression =
+    task not None AND 명시 slot 없음)와 보유 전 슬롯 재스냅은 태운다(그 두 축이 이 파일 검증 대상)."""
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    return hf.PmHandoff(
+        run_pytest_fn=pytest_fn,
+        run_git_fn=lambda args: (0, ""),
+        log_file=tmp_path / "current.md",
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+        dashboard_file=tmp_path / "dashboard.md",
+        worktree_pool=pool,
+    )
+
+
+def _recording_pytest(handoff_box, result=(0, "1 passed in 0.01s\n")):
+    """호출 시점 self._worktree_slot 을 기록하는 pytest_fn 팩토리 (per-slot cwd 관찰용).
+
+    `handoff_box` = [handoff] 1-원소 리스트(핸드오프를 나중에 담아 클로저가 참조). 반환 러너는
+    호출마다 현재 _worktree_slot(회귀 cwd 해소 입력)을 cwds 에 append 한다."""
+    cwds: list = []
+
+    def _run():
+        cwds.append(handoff_box[0]._worktree_slot)
+        return result
+
+    return _run, cwds
+
+
+def test_task_regression_runs_in_held_workspace(hf, tmp_path, capsys):
+    """task-only 핸드오프가 변경 흔적 있는 보유 슬롯(작업공간)에서 회귀를 돌린다 — F6 해소(T-0393)."""
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)
+    pool = _TaskSetPool(["work/project_manager_1"],
+                        states={"work/project_manager_1": {"dirty": True}})   # dirty=변경.
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    )
+    assert rc == 0
+    # 회귀가 task 보유 슬롯 worktree(=cwd 해소 입력)에서 1회 — REPO 폴백("no tests ran") 아님.
+    assert cwds == ["work/project_manager_1"]
+    out = capsys.readouterr().out
+    assert "▷ work/project_manager_1 회귀" in out
+    assert "dirty" in out
+
+
+def test_task_regression_runs_each_changed_slot(hf, tmp_path, capsys):
+    """보유 슬롯 2+ — 변경 흔적 있는 슬롯 각각에서 회귀(집합 처리·T-0393·ADR-0068 ⓑB)."""
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)
+    pool = _TaskSetPool(
+        ["work/a_1", "work/b_1"],
+        states={"work/a_1": {"dirty": True},
+                "work/b_1": {"head_relation": "descendant"}},   # 커밋 전진.
+    )
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    )
+    assert rc == 0
+    assert cwds == ["work/a_1", "work/b_1"]   # 두 변경 슬롯 각각에서.
+
+
+def test_task_regression_skips_unchanged_slots(hf, tmp_path, capsys):
+    """무변경 슬롯(head match·clean·recorded)은 회귀 skip — 변경 0개면 명시 skip·회귀 실행 없음(신호 0)."""
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)
+    pool = _TaskSetPool(["work/a_1"], states={})   # 기본=match·clean·recorded → 무변경.
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    )
+    assert rc == 0
+    assert cwds == []   # 회귀 자체가 실행되지 않는다.
+    out = capsys.readouterr().out
+    assert "변경 흔적 없음" in out
+    assert "변경 슬롯 없음" in out
+
+
+def test_task_regression_mixed_only_changed_runs(hf, tmp_path, capsys):
+    """변경+무변경 혼재 — 변경 슬롯만 회귀·무변경은 skip 사유 출력(T-0393)."""
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)
+    pool = _TaskSetPool(
+        ["work/a_1", "work/b_1"],
+        states={"work/a_1": {"dirty": True}},   # b_1 미지정=무변경.
+    )
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    )
+    assert rc == 0
+    assert cwds == ["work/a_1"]   # 변경 슬롯만.
+    out = capsys.readouterr().out
+    assert "work/b_1 — 변경 흔적 없음" in out
+
+
+def test_task_regression_unrecorded_slot_conservatively_included(hf, tmp_path):
+    """스냅 미기록(unrecorded) 슬롯은 보수적으로 변경 취급 → 회귀 포함(직전 green 근거 없음·T-0393)."""
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)
+    pool = _TaskSetPool(["work/a_1"], states={"work/a_1": {"unrecorded": True}})
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    )
+    assert rc == 0
+    assert cwds == ["work/a_1"]
+
+
+def test_task_regression_red_slot_blocks_handoff(hf, tmp_path, capsys):
+    """변경 슬롯 회귀가 red 면 핸드오프 차단(rc 1)·부기 미접촉(T-0393·회귀 게이트 불변)."""
+    box = [None]
+    pytest_fn, _cwds = _recording_pytest(box, result=(1, "1 failed in 0.01s\n"))
+    pool = _TaskSetPool(["work/a_1"], states={"work/a_1": {"dirty": True}})
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    )
+    assert rc == 1
+    assert "회귀 red" in capsys.readouterr().err
+
+
+def test_task_regression_zero_held_slots_skips(hf, tmp_path, capsys):
+    """보유 슬롯 0개 — 회귀 대상 없음 명시 skip(REPO 폴백 red 아님)·핸드오프 완주(T-0393)."""
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)
+    pool = _TaskSetPool([])   # 보유 0개.
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    )
+    assert rc == 0
+    assert cwds == []
+    assert "보유 슬롯 0개" in capsys.readouterr().out
+
+
+def test_task_regression_stale_slot_fails_loud_not_repo_green(hf, tmp_path, capsys):
+    """stale 슬롯(장부엔 있으나 worktree dir 부재)이 변경으로 분류돼도 REPO 폴백 green 으로 핸드오프가
+    통과하지 않는다 — fail-loud red 차단(vacuous-pass 금지·codex R3·T-0393·T-0220 클래스).
+
+    `slot_path` 가 부재 경로를 돌려주는 pool → `_slot_worktree_missing` True → 회귀 실행 전 fail-loud."""
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)   # 실행되면 안 됨(REPO 폴백 회귀 금지).
+
+    class _StaleSlotPool(_TaskSetPool):
+        def slot_path(self, slot):
+            return tmp_path / "gone" / slot   # 항상 부재(stale worktree).
+
+    pool = _StaleSlotPool(["work/a_1"], states={"work/a_1": {"dirty": True}})   # 변경으로 분류.
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    )
+    assert rc == 1                       # fail-loud — REPO green 으로 통과 안 됨.
+    assert cwds == []                    # 회귀(REPO 폴백조차) 미실행.
+    err = capsys.readouterr().err
+    assert "stale" in err
+    assert "vacuous-pass" in err
+
+
+def test_task_regression_explicit_slot_priority_unchanged(hf, tmp_path, capsys):
+    """명시 --repo/--slot 동반 시 우선순위 불변 — task 다중슬롯 경로 안 타고 그 슬롯 단일 회귀(T-0393)."""
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)
+    # 명시 슬롯이 있으면 task 회귀 모드 진입 안 함 → slots_for_task 를 회귀 판정에 안 씀(2슬롯 무시).
+    pool = _TaskSetPool(["work/a_1", "work/b_1"],
+                        states={"work/a_1": {"dirty": True}, "work/b_1": {"dirty": True}})
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False,
+        task="mytask", worktree_slot="work/project_manager_1",
+    )
+    assert rc == 0
+    # 명시 슬롯 단일 cwd 로 1회 — task 다중슬롯 루프(▷) 미진입.
+    assert cwds == ["work/project_manager_1"]
+    out = capsys.readouterr().out
+    assert "▷" not in out
+    assert "✓ green: 1 passed" in out
+
+
+def test_task_shipping_surface_per_changed_slot(hf, tmp_path, capsys, monkeypatch):
+    """[1b] 출하 변경 surface 를 회귀가 돈 변경-슬롯 각각에서 돌린다 — 두 번째 슬롯만 출하 경로 변경
+    stub → 그 슬롯이 surface 되는지(codex must-fix·집합 1급화 일관·T-0393).
+
+    단일 _regression_cwd(None) 자동해소면 한 트리만 보고 두 번째 슬롯의 SHIPPING_GLOBS 변경을
+    놓친다 — 변경-슬롯 집합(회귀와 공유)을 슬롯별로 돌려 각 worktree 의 출하 변경을 표시한다."""
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    # 회귀·출하 cwd 해소(_regression_cwd(slot)=REPO/slot)가 실 디렉토리로 해소되도록 슬롯 worktree 생성.
+    (tmp_path / "work" / "a_1").mkdir(parents=True)
+    (tmp_path / "work" / "b_1").mkdir(parents=True)
+
+    def _git(args):
+        # `git -C <worktree> diff --name-only HEAD` 만 관찰 — b_1 worktree 에서만 출하 경로(엔진 파일)
+        # 변경을 돌려주고(그 슬롯=미검증 출하 변경), a_1·기타 명령은 빈 출력(비-출하).
+        joined = " ".join(args)
+        if "diff" in args and "--name-only" in args and "HEAD" in args and "..HEAD" not in joined:
+            if str(tmp_path / "work" / "b_1") in args:
+                return 0, ".project_manager/tools/board.py\n"
+            return 0, ""
+        return 0, ""   # ls-files·baseline rev-parse 등 → 빈(비-출하·baseline 미해소).
+
+    box = [None]
+    pytest_fn, _cwds = _recording_pytest(box)
+    pool = _TaskSetPool(["work/a_1", "work/b_1"],
+                        states={"work/a_1": {"dirty": True}, "work/b_1": {"dirty": True}})
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    handoff = hf.PmHandoff(
+        run_pytest_fn=pytest_fn,
+        run_git_fn=_git,
+        log_file=tmp_path / "current.md",
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+        dashboard_file=tmp_path / "dashboard.md",
+        worktree_pool=pool,
+    )
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # [1b] 두 슬롯 각각 surface 헤더.
+    assert "▷ work/a_1 출하 변경:" in out
+    assert "▷ work/b_1 출하 변경:" in out
+    # b_1 만 미검증 출하 변경(엔진 파일) 발동·a_1 은 비-출하.
+    b_idx = out.index("▷ work/b_1 출하 변경:")
+    a_idx = out.index("▷ work/a_1 출하 변경:")
+    assert "미검증 출하 변경 1파일" in out[b_idx:]           # b_1 발동.
+    assert "출하 변경 없음" in out[a_idx:b_idx]              # a_1 은 비-출하.
+
+
+def test_task_shipping_surface_per_changed_slot_under_no_pytest(hf, tmp_path, capsys, monkeypatch):
+    """`--task --no-pytest` — 회귀 skip 이어도 변경-슬롯을 열거해 [1b] 가 슬롯별 surface 를 돈다
+    (codex R2 must-fix — skip_pytest 여도 REPO 폴백 단일 검사로 후퇴하지 않음·T-0393).
+
+    2슬롯 다 변경(dirty)·b_1 worktree 만 SHIPPING_GLOBS 변경 stub → b_1 만 발동·a_1 비-출하."""
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    (tmp_path / "work" / "a_1").mkdir(parents=True)
+    (tmp_path / "work" / "b_1").mkdir(parents=True)
+
+    def _git(args):
+        joined = " ".join(args)
+        if "diff" in args and "--name-only" in args and "HEAD" in args and "..HEAD" not in joined:
+            if str(tmp_path / "work" / "b_1") in args:
+                return 0, ".project_manager/tools/board.py\n"
+            return 0, ""
+        return 0, ""
+
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)   # skip_pytest → 회귀 미실행 확인용.
+    pool = _TaskSetPool(["work/a_1", "work/b_1"],
+                        states={"work/a_1": {"dirty": True}, "work/b_1": {"dirty": True}})
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    handoff = hf.PmHandoff(
+        run_pytest_fn=pytest_fn,
+        run_git_fn=_git,
+        log_file=tmp_path / "current.md",
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+        dashboard_file=tmp_path / "dashboard.md",
+        worktree_pool=pool,
+    )
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+    )
+    assert rc == 0
+    assert cwds == []   # --no-pytest — 회귀는 실행되지 않는다(열거만 수행).
+    out = capsys.readouterr().out
+    assert "[--no-pytest] 회귀 측정 skip." in out
+    # 회귀 skip 이어도 [1b] 가 변경-슬롯 각각 surface(REPO 폴백 단일 검사 아님).
+    assert "▷ work/a_1 출하 변경:" in out
+    assert "▷ work/b_1 출하 변경:" in out
+    b_idx = out.index("▷ work/b_1 출하 변경:")
+    a_idx = out.index("▷ work/a_1 출하 변경:")
+    assert "미검증 출하 변경 1파일" in out[b_idx:]
+    assert "출하 변경 없음" in out[a_idx:b_idx]
+
+
+def test_task_resnap_records_all_held_slots(hf, tmp_path, capsys):
+    """재스냅 = 보유 전 슬롯 루프(현행 1슬롯 한정 폐지·T-0393·ADR-0068 퇴장)."""
+    pool = _TaskSetPool(["work/a_1", "work/b_1"])
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, "1 passed\n"))
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+    )
+    assert rc == 0
+    # 보유 전 슬롯 각각 record_git_snapshot(base 미전달·T-0388 프리미티브 재사용).
+    assert pool.snap_calls == [("work/a_1", {}), ("work/b_1", {})]
+    assert "[재스냅] task 보유 슬롯" in capsys.readouterr().out
+
+
+def test_task_resnap_zero_held_slots_skips(hf, tmp_path, capsys):
+    """task 보유 0개 — 재스냅 대상 없음 명시 skip(무해·T-0393)."""
+    pool = _TaskSetPool([])
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, "1 passed\n"))
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+    )
+    assert rc == 0
+    assert pool.snap_calls == []
+    assert "재스냅 대상 없음" in capsys.readouterr().out
+
+
+def test_task_resnap_dry_run_previews_all_slots(hf, tmp_path, capsys):
+    """dry_run task 재스냅 — 보유 슬롯별 예고만·write 프리미티브 미호출(미리보기·T-0393)."""
+    pool = _TaskSetPool(["work/a_1", "work/b_1"])
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, "1 passed\n"))
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=True, skip_pytest=True, task="mytask"
+    )
+    assert rc == 0
+    assert pool.snap_calls == []
+    out = capsys.readouterr().out
+    assert "[dry-run] git 재스냅 예고: work/a_1" in out
+    assert "[dry-run] git 재스냅 예고: work/b_1" in out
+
+
+def test_slot_mode_resnap_single_unchanged_by_task_axis(hf, tmp_path):
+    """slot 모드(task None) 재스냅은 단일 bound 슬롯 그대로 — task 축이 slot/솔로를 안 건드린다(T-0393 불변)."""
+    pool = _TaskSetPool(["work/a_1", "work/b_1"])   # slots_for_task 는 task 모드에서만 소비.
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, "1 passed\n"))
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True,
+        worktree_slot="work/project_manager_1",   # task 없음 → slot 모드.
+    )
+    assert rc == 0
+    # slot 모드 = 명시 bound 슬롯 단일 재스냅(보유 집합 열거 미진입).
+    assert pool.snap_calls == [("work/project_manager_1", {})]
+
+
+def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path, monkeypatch):
+    """통합(real git worktree 2개 + real worktree_pool) — task-only 핸드오프가 **변경 슬롯만 회귀**하고
+    **보유 전 슬롯을 실 장부에 재스냅**한다 (T-0393·reviewer should-fix·shape drift false-green 방지).
+
+    mock 만으로는 slots_for_task/compare_slot_git/slot_git_status 의 실 반환 shape drift 시 false-green
+    여지가 있다 — T-0388 `test_snapshot_updates_lease_and_next_phase0_passes` 패턴을 확장해 2슬롯 중
+    b_1 만 커밋 전진(head descendant=변경)시키고 a_1 은 arrival 그대로(무변경) 둔 뒤, 실 엔진으로:
+      ① 회귀는 b_1(변경 슬롯)에서만 돈다(a_1 은 skip·직전 green 불변).
+      ② 재스냅은 a_1·b_1 **둘 다** 실 장부 lease.git 을 live 로 갱신한다(보유 전 슬롯 루프)."""
+    import importlib.util as _ilu
+    import subprocess as _sp
+
+    proj = tmp_path / "proj"
+    local = proj / ".project_manager" / ".local"
+    local.mkdir(parents=True, exist_ok=True)
+    (proj / "work").mkdir(parents=True, exist_ok=True)
+    spec = _ilu.spec_from_file_location("wp_h393", TOOLS / "worktree_pool.py")
+    wp = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(wp)
+    for _name, _val in {
+        "REPO": proj, "LOCAL_DIR": local,
+        "LEASES_FILE": local / "worktree-leases.json",
+        "LEASES_LOCK": local / "worktree-leases.lock",
+        "WORK_DIR": proj / "work",
+    }.items():
+        setattr(wp, _name, _val)
+    # _regression_cwd(slot)=REPO/slot 해소가 실 worktree 를 보게 pm_handoff.REPO 도 proj 로.
+    monkeypatch.setattr(hf, "REPO", proj)
+
+    def _mkgit(slot_dir):
+        def g(*argv):
+            env = dict(os.environ)
+            env.update({
+                "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+            })
+            return _sp.run(["git", "-C", str(slot_dir), *argv], check=True,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", env=env)
+        return g
+
+    # 두 슬롯 worktree 실 git init + arrival 커밋.
+    a_dir = proj / "work" / "a_1"
+    b_dir = proj / "work" / "b_1"
+    a_dir.mkdir(parents=True)
+    b_dir.mkdir(parents=True)
+    ga, gb = _mkgit(a_dir), _mkgit(b_dir)
+    for g, slot_dir, tag in ((ga, a_dir, "a"), (gb, b_dir, "b")):
+        g("init", "-q", "-b", "main")
+        (slot_dir / "f.txt").write_text(f"{tag}1\n", encoding="utf-8")
+        g("add", "f.txt")
+        g("commit", "-q", "-m", f"{tag}1")
+
+    # 리스 seed(둘 다 session="mytask"·slots_for_task 대상) + arrival 스냅(도착 시점 모사).
+    leases = [
+        wp.Lease(slot="work/a_1", repo="a", session="mytask",
+                 pid=os.getpid(), started="t", state="leased"),
+        wp.Lease(slot="work/b_1", repo="b", session="mytask",
+                 pid=os.getpid(), started="t", state="leased"),
+    ]
+    with wp._lease_lock():
+        wp._write_ledger(leases)
+    wp.record_git_snapshot("work/a_1", base_branch="main")
+    wp.record_git_snapshot("work/b_1", base_branch="main")
+    a_head = ga("rev-parse", "HEAD").stdout.strip()   # a_1 은 이후 불변.
+
+    # b_1 만 세션 중 커밋 전진(head descendant = 변경 흔적)·a_1 은 arrival 그대로(무변경).
+    (b_dir / "f.txt").write_text("b2\n", encoding="utf-8")
+    gb("add", "f.txt")
+    gb("commit", "-q", "-m", "b2")
+    b_head2 = gb("rev-parse", "HEAD").stdout.strip()
+
+    # 변경 판정 사전 확인(실 엔진) — a_1=match(무변경)·b_1=descendant(변경).
+    assert wp.compare_slot_git("work/a_1").head_relation == wp.HEAD_MATCH
+    assert wp.compare_slot_git("work/b_1").head_relation == wp.HEAD_DESCENDANT
+
+    # 회귀가 돈 슬롯 cwd 관찰(주입 pytest_fn — 실 pytest 대신 슬롯만 기록·green).
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+    )
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    handoff = hf.PmHandoff(
+        run_pytest_fn=pytest_fn,
+        run_git_fn=lambda args: (0, ""),   # 출하 surface·[6/7] git 은 비관찰(비차단).
+        log_file=tmp_path / "current.md",
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+        dashboard_file=tmp_path / "dashboard.md",
+        worktree_pool=wp,
+    )
+    box[0] = handoff
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    )
+    assert rc == 0
+
+    # ① 회귀는 변경 슬롯 b_1 에서만(a_1 은 무변경 skip) — 실 compare_slot_git/slot_git_status 판정.
+    assert cwds == ["work/b_1"]
+
+    # ② 재스냅 = 보유 전 슬롯 — a_1·b_1 둘 다 lease.git 이 live head 로(실 장부 재열람).
+    updated = {l.slot: l for l in wp.list_leases()}
+    assert updated["work/a_1"].git["head"] == a_head       # 무변경이라도 재스냅 대상(live=arrival).
+    assert updated["work/b_1"].git["head"] == b_head2      # 변경분 live(c2)로 갱신.
+    # base(arrival main)는 재스냅에서 보존(base 미전달·arrival 동형).
+    assert updated["work/b_1"].git["base"]["branch"] == "main"

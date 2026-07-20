@@ -1775,6 +1775,81 @@ class PmHandoff:
         git = getattr(lease, "git", None)
         return git if isinstance(git, dict) else None
 
+    # ── task 퇴장: 보유 슬롯 집합 열거·변경 판정·전 슬롯 재스냅 (ADR-0068 W2·T-0393) ──────
+
+    def _task_held_slots(self, task: str) -> list[str]:
+        """task(session==name) 명의로 leased 인 슬롯 식별자 리스트 — `slots_for_task` 재사용 (T-0393·조회 전용).
+
+        ADR-0068 퇴장 의미론: task 세션은 보유 슬롯 **집합**을 두고 나간다. `worktree_pool.
+        slots_for_task(task)`(T-0354·tasks 장부 조인·session==task 이고 leased 인 슬롯)를 소비해
+        보유 집합을 열거한다(재열거 로직 재구현 없음). worktree_pool 부재(솔로/미셋업)·구버전
+        (slots_for_task 부재)·예외는 빈 리스트(fail-soft — 회귀/재스냅 skip 으로 이어지고 핸드오프를
+        차단하지 않는다)."""
+        wp = self._worktree_pool or _load_worktree_pool()
+        if wp is None:
+            return []
+        fn = getattr(wp, "slots_for_task", None)
+        if fn is None:
+            return []
+        try:
+            leases = fn(task)
+        except Exception:  # noqa: BLE001 — fail-soft: 열거 실패는 빈 리스트(회귀/재스냅 skip).
+            return []
+        return [l.slot for l in leases if getattr(l, "slot", None)]
+
+    def _slot_has_changes(self, slot: str) -> tuple[bool, str]:
+        """슬롯이 도착/직전 스냅(`lease.git`) 대비 변경 흔적(head 전진 또는 dirty)이 있는지 (ADR-0068 변경 판정·T-0393).
+
+        반환 `(changed, reason)` — reason 은 출력용 사유 문구. 판정(ⓑB·spike §2-2·"변경 흔적 있는
+        보유 슬롯만 회귀"):
+          - 스냅 미기록(`unrecorded`) → 보수적으로 changed(직전 green 근거가 없으니 회귀 포함).
+          - branch 변경(`not branch_match`) 또는 head 가 match 아님(descendant/diverged/unknown) →
+            changed(세션 중 커밋 전진/리셋).
+          - dirty(미커밋 변경) → changed(compare 는 head 만 봐 커밋 안 한 작업을 못 잡는다).
+          - head match + branch match + clean → **unchanged**(직전 green 불변·회귀 신호 0·skip).
+        판정 프리미티브는 재구현하지 않고 worktree_pool `compare_slot_git`(도착 스냅 vs live·T-0350)+
+        `slot_git_status`(dirty·T-0359)를 소비한다. fail-soft **보수**: worktree_pool 부재·조회 예외는
+        changed(놓치기보다 도는 게 낫다 — 무변경 오판이 회귀 누락으로 이어지는 게 더 위험)."""
+        wp = self._worktree_pool or _load_worktree_pool()
+        if wp is None:
+            return True, "worktree_pool 미배선·보수적 변경 취급"
+        try:
+            cmp = wp.compare_slot_git(slot)
+        except Exception:  # noqa: BLE001 — fail-soft 보수: 판정 불가는 변경 취급(회귀 포함).
+            return True, "compare 예외·보수적 변경 취급"
+        if getattr(cmp, "unrecorded", False):
+            return True, "스냅 미기록·보수적 변경 취급"
+        head_match = getattr(wp, "HEAD_MATCH", "match")
+        if not getattr(cmp, "branch_match", False):
+            return True, "branch 변경"
+        if getattr(cmp, "head_relation", None) != head_match:
+            return True, f"head {getattr(cmp, 'head_relation', None)}(전진/재설정)"
+        try:
+            dirty = bool(wp.slot_git_status(slot).get("dirty", False))
+        except Exception:  # noqa: BLE001 — fail-soft 보수: dirty 조회 불가는 변경 취급.
+            return True, "dirty 조회 예외·보수적 변경 취급"
+        if dirty:
+            return True, "dirty(미커밋 변경)"
+        return False, "head match·clean"
+
+    def _record_task_slot_snapshots(self, task: str, dry_run: bool) -> None:
+        """task 보유 **전 슬롯**의 live git 을 `lease.git` 에 재스냅한다 — "집합 전체 두고 간다" (ADR-0068 퇴장·T-0393).
+
+        현행 1슬롯 한정(`_record_slot_snapshot` 단일 호출)을 폐지하고, task 가 보유한 leased 슬롯
+        전수(`_task_held_slots`·slots_for_task)를 루프로 재스냅한다. 각 슬롯은 T-0388 프리미티브
+        (`_record_slot_snapshot`)를 그대로 재사용(per-slot fail-soft·판정 재구현 없음). 보유 0개면
+        명시 skip. dry_run 은 슬롯별 예고만."""
+        slots = self._task_held_slots(task)
+        print("\n[재스냅] task 보유 슬롯 git 재스냅 (집합 전체 두고 간다·ADR-0068·T-0393)...")
+        if not slots:
+            print(f"  · task {task!r} 보유 슬롯 0개 — 재스냅 대상 없음(무해 skip).")
+            return
+        for slot in slots:
+            if dry_run:
+                print(f"  [dry-run] git 재스냅 예고: {slot} (실행 생략).")
+            else:
+                self._record_slot_snapshot(slot)
+
     def _release_task_pid(self, task: str) -> None:
         """task 정상-종료를 장부에 기록한다 — `pid=0`(미점유) 세팅 (T-0392·"여기 두고 간다"의 task 판).
 
@@ -1828,6 +1903,130 @@ class PmHandoff:
         )
         output = result.stdout + result.stderr
         return result.returncode, output
+
+    # ── task 퇴장: 변경 흔적 있는 보유 슬롯 각각에서 회귀 (ADR-0068 W2·T-0393·F6) ──────
+
+    def _run_regression_for_slot(self, slot: str) -> tuple[int, str]:
+        """지정 슬롯 worktree 에서 회귀를 1회 돌린다 — task 다중슬롯 회귀 (T-0393·F6 해소).
+
+        `self._worktree_slot` 을 그 슬롯으로 잠시 세팅해 `_default_run_pytest` 의 `_regression_cwd`
+        해소가 해당 worktree 를 cwd 로 보게 하고 원복한다(다른 downstream 이 `self._worktree_slot` 을
+        재사용하므로 scope 밖 오염 방지). 주입 seam(`run_pytest_fn`)도 그대로 소비해 hermetic
+        테스트와 정합(injected runner 는 세팅된 슬롯을 관찰 가능)."""
+        prev = self._worktree_slot
+        self._worktree_slot = slot
+        try:
+            return self._run_pytest_fn()
+        finally:
+            self._worktree_slot = prev
+
+    def _slot_worktree_missing(self, slot: str) -> bool:
+        """슬롯 worktree 디렉터리가 stale(장부엔 있으나 dir 부재)인지 — task 슬롯별 회귀 vacuous-pass 가드 (T-0393 R3).
+
+        `_regression_cwd(slot)` 는 stale 슬롯(장부 조인 통과·dir 부재)을 **soft 하게 REPO 로 폴백**한다
+        (ADR-0057 L1) — 슬롯 모드에선 무해하나, **task 슬롯별 회귀**에선 그 REPO 에서 pytest 가 돌아 그
+        슬롯이 green 처럼 보인다(vacuous-pass·엉뚱한 트리 green·T-0220 클래스). 그래서 이 경로에선 REPO
+        폴백을 금지하고 부재를 fail-loud(그 슬롯 red)로 올린다. 실재 판별은 worktree_pool `slot_path(slot).
+        exists()`(엔진 소유 축·`_regression_cwd` 의 `REPO/slot` 과 동형). 판별 불가(worktree_pool 부재·
+        구버전 pool·slot_path 부재·예외)는 **False**(=차단 안 함·fail-soft — 기존 `_regression_cwd` 해소에
+        위임)."""
+        wp = self._worktree_pool or _load_worktree_pool()
+        if wp is None:
+            return False
+        resolver = getattr(wp, "slot_path", None)
+        if resolver is None:
+            return False
+        try:
+            return not resolver(slot).exists()
+        except Exception:  # noqa: BLE001 — fail-soft: 판별 실패는 차단 안 함(기존 해소에 위임).
+            return False
+
+    def _classify_task_changed_slots(self, task: str) -> list[tuple[str, str]]:
+        """task 보유 슬롯을 변경/무변경 분류해 **변경-슬롯 [(slot, reason)] 리스트**를 돌려준다 (T-0393).
+
+        회귀([1/7])와 출하 변경 surface([1b])가 공유하는 '변경-슬롯 집합' 계산의 **단일 지점**. 회귀
+        실행 여부(--no-pytest)와 무관하게 이 열거는 수행한다 — 비용은 슬롯당 git 조회 몇 회(회귀와
+        무관·저렴)뿐이고, skip_pytest 여도 [1b] 가 REPO 폴백 단일 검사로 후퇴하지 않게 변경 집합을
+        확보해야 하기 때문이다(codex R2 must-fix). 판정(spike §2-2·§3c):
+          - 보유 0개 → 명시 skip(대여 안내)·빈 리스트.
+          - 변경 흔적(`_slot_has_changes`: lease 스냅 대비 head 전진/dirty·미기록=보수적 변경) 있는
+            슬롯만 집합에 넣고 — 무변경 슬롯은 신호 0(직전 green 불변)이라 skip+사유 출력.
+          - 변경 0개 → "변경 슬롯 없음" 명시(회귀·surface 대상 0)."""
+        slots = self._task_held_slots(task)
+        if not slots:
+            print(
+                f"  · task {task!r} 보유 슬롯 0개 — 대상 없음(skip). "
+                "`--repo/--slot` 명시 또는 `/pm-env alloc <repo> --task` 대여 후 재시도."
+            )
+            return []
+        changed: list[tuple[str, str]] = []
+        for slot in slots:
+            is_changed, reason = self._slot_has_changes(slot)
+            if is_changed:
+                changed.append((slot, reason))
+            else:
+                print(f"  · {slot} — 변경 흔적 없음({reason})·skip(직전 green 불변·신호 0).")
+        if not changed:
+            print(
+                f"  · task {task!r} 보유 {len(slots)}슬롯 전부 무변경 — 변경 슬롯 없음"
+                "(회귀·출하 surface 대상 0·신호 0·push 게이트=pre-push 훅 별도)."
+            )
+        return changed
+
+    def _run_task_regressions(
+        self, changed: list[tuple[str, str]], dry_run: bool
+    ) -> "list[str] | None":
+        """변경-슬롯 각각에서 회귀를 돌린다 (ADR-0068 퇴장 ⓑB·T-0393).
+
+        `changed` = `_classify_task_changed_slots` 결과([(slot, reason)]·변경 슬롯만). 반환: 회귀가
+        돈 **변경-슬롯 식별자 리스트**(green·비어있으면 회귀 실행 없음) 또는 **None**(한 슬롯이라도
+        red → 호출부가 핸드오프 차단). 변경 슬롯 전부 green 이어야 통과. push 게이트는 pre-push 훅
+        전체 회귀가 별도 재검증(이중 안전·무변경 슬롯 부담 제거)."""
+        ran: list[str] = []
+        for slot, reason in changed:
+            # stale 슬롯(장부엔 있으나 worktree dir 부재) = fail-loud(REPO 폴백 vacuous-pass 금지·
+            # T-0393 R3·T-0220 클래스). 그 슬롯을 red 로 차단하고 해소 커맨드를 안내한다.
+            if self._slot_worktree_missing(slot):
+                print(
+                    f"\n[중단] task 슬롯 {slot!r} 의 worktree 디렉터리 부재(stale — 장부엔 존재·"
+                    f"{REPO / slot}) — REPO 폴백 회귀는 vacuous-pass(엉뚱한 트리 green·T-0220)이므로 "
+                    "그 슬롯을 red 로 차단한다. `/pm-worktree prune-stale`(장부 정리) 또는 "
+                    "`worktree add <repo> --task <이름>`(재생성) 후 재시도하라. "
+                    "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
+                    file=sys.stderr,
+                )
+                return None
+            print(f"  ▷ {slot} 회귀 ({reason})...")
+            if dry_run:
+                print("    [dry-run] pytest tests/ -q 실행 중 (파일 편집만 생략)...")
+            returncode, output = self._run_regression_for_slot(slot)
+            print(output.rstrip())
+            if not is_pytest_green(output, returncode):
+                print(
+                    f"\n[중단] {slot} 회귀 red — 핸드오프 불가. "
+                    "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
+                    file=sys.stderr,
+                )
+                return None
+            summ = parse_pytest_summary(output)
+            print(f"  ✓ green: {slot} — {summ}")
+            ran.append(slot)
+        return ran
+
+    def _shipping_surface_for_slots(self, slots: list[str]) -> None:
+        """회귀가 돈 **변경-슬롯 각각**의 worktree 에서 출하 변경을 surface 한다 (T-0393·codex must-fix).
+
+        task 다중슬롯 회귀는 변경-슬롯 집합을 돌므로, 출하 변경 surface([1b])도 **같은 집합**을 슬롯별
+        로 돌려야 한다 — 단일 `_regression_cwd(None)` 자동해소가 엉뚱한 트리를 보거나 일부 변경-슬롯의
+        SHIPPING_GLOBS 변경을 놓치는 것을 막는다(집합 1급화 일관·회귀·재스냅과 같은 슬롯 목록 공유).
+        각 슬롯은 회귀와 동일하게 `_regression_cwd(slot)` 로 cwd 를 해소한다(stale 슬롯은 그쪽에서 REPO
+        폴백·동형). 0개(변경 슬롯 없음)면 미push 변경도 없으니 surface 대상 없음."""
+        if not slots:
+            print("  · task 변경 슬롯 0개 — 출하 변경 surface 대상 없음(미push 변경 없음).")
+            return
+        for slot in slots:
+            print(f"  ▷ {slot} 출하 변경:")
+            self._shipping_surface_step(_regression_cwd(slot))
 
     def _default_run_git(self, args: list[str]) -> tuple[int, str]:
         """git 명령을 실행해 (returncode, stdout+stderr) 반환."""
@@ -2008,10 +2207,31 @@ class PmHandoff:
         )
 
         # ── 1. 회귀 측정 ───────────────────────────────────────────────────────
+        # task 회귀 모드(ADR-0068 W2·T-0393·F6): `--task` 이고 명시 `--repo/--slot` 미동반이면 회귀
+        # cwd 를 task 작업공간으로 해소한다 — 변경 흔적(lease 스냅 대비 head 전진/dirty) 있는 **보유
+        # 슬롯 각각**에서 회귀(0개면 명시 skip). 명시 슬롯 동반(explicit_worktree_slot)이면 우선순위
+        # 불변으로 아래 기존 단일 cwd 경로를 탄다. slot/솔로 모드(task None)는 100% 불변.
+        task_regression = task is not None and explicit_worktree_slot is None
+        # task 변경-슬롯 집합 — [1b] 출하 변경 surface 가 같은 집합을 공유한다(codex must-fix). None =
+        # task 모드 미진입(slot/솔로 → 아래 단일 cwd surface). task 모드면 **회귀 skip(--no-pytest)
+        # 여도** 변경 슬롯을 열거해 [1b] 에 전달한다(R2 must-fix — 열거는 비용 미미한 git 조회뿐이라
+        # skip_pytest 여도 수행·[1b] REPO 폴백 단일 검사로의 후퇴 방지).
+        task_shipping_slots: list[str] | None = None
         print("\n[1/7] 회귀 측정...")
         if skip_pytest:
             print("  [--no-pytest] 회귀 측정 skip.")
             pytest_summary = "(skip)"
+            if task_regression:
+                # 회귀는 skip 하되 변경-슬롯 열거는 수행([1b] 출하 surface 가 같은 집합을 공유).
+                changed = self._classify_task_changed_slots(task)
+                task_shipping_slots = [slot for slot, _reason in changed]
+        elif task_regression:
+            changed = self._classify_task_changed_slots(task)
+            ran_slots = self._run_task_regressions(changed, dry_run)
+            if ran_slots is None:   # 변경 슬롯 중 하나라도 red — 핸드오프 차단.
+                return 1
+            task_shipping_slots = ran_slots
+            pytest_summary = "(task 슬롯별 회귀·위 참조)"
         else:
             if dry_run:
                 print("  [dry-run] pytest tests/ -q 실행 중 (파일 편집만 생략)...")
@@ -2031,9 +2251,14 @@ class PmHandoff:
         # 있으면 "릴리즈 전 라이브 필요" 1줄을 surface 한다 — **비차단**(rc 무영향·핸드오프
         # 지연 0). 라이브 LLM 검증은 릴리즈(① main 머지) 단일 지점(release wave)으로 모았다
         # (ADR-0039 D4). dry_run 은 git 분류도 건너뛴다(미리보기). worktree 는 회귀와 같은 cwd.
+        # task 회귀 모드(task_shipping_slots 비-None): 회귀가 돈 **변경-슬롯 각각**에서 surface —
+        # 단일 _regression_cwd(None) 자동해소가 엉뚱한 트리를 보거나 일부 슬롯의 출하 변경을 놓치는
+        # 것을 막는다(집합 1급화 일관·codex must-fix). slot/솔로/skip_pytest 는 기존 단일 cwd.
         print("\n[1b/7] 출하 변경 surface (비차단·릴리즈 라이브는 release wave)...")
         if dry_run:
             print("  [dry-run] 출하 변경 surface skip (미리보기).")
+        elif task_shipping_slots is not None:
+            self._shipping_surface_for_slots(task_shipping_slots)
         else:
             worktree = _regression_cwd(self._worktree_slot)
             self._shipping_surface_step(worktree)
@@ -2215,21 +2440,27 @@ class PmHandoff:
         print("  [ ] pm_state.md '남은 작업 전체 그림' 갱신")
         print("  [ ] git commit (Co-Authored-By: Claude 트레일러 포함)")
 
-        # ── 핸드오프 완료: bound 슬롯 git 재스냅 ("여기 두고 간다"·T-0388) ─────────────
-        # 부기(log·pm_state) 완료 후 bound 슬롯의 live git 을 lease.git 에 재기록한다 — 세션
-        # 중 브랜치/HEAD 변경(예: 릴리즈 v1.3.2→v1.3.3)이 차기 부트스트랩 0단계 record-vs-live
-        # 정합(compare_slot_git·㉒)을 `diverged` FAIL-LOUD 로 오탐시켜 정당한 자기 진행을
-        # 외부-개입 오경보로 차단하는 것을 막는다(PM 78 실측). base 미전달=기존 보존(arrival
-        # 동형)·판정 재구현 없이 T-0350 write 프리미티브만 호출. --done(release→idle·git 정리)
-        # 은 대상 아님 — idle 슬롯은 활성 git 기대가 없다(다음 alloc 이 arrival 재스냅). 슬롯
-        # 미해소(솔로)·dry_run 은 skip. worktree_pool 부재·장부 부재는 _record_slot_snapshot
-        # 내부에서 fail-soft(무해 skip).
-        if not done and self._worktree_slot is not None:
-            print("\n[재스냅] bound 슬롯 git 재스냅 (여기 두고 간다·T-0388)...")
-            if dry_run:
-                print(f"  [dry-run] git 재스냅 예고: {self._worktree_slot} (실행 생략).")
-            else:
-                self._record_slot_snapshot(self._worktree_slot)
+        # ── 핸드오프 완료: 보유 슬롯 git 재스냅 ("여기 두고 간다"·T-0388·ADR-0068 W2·T-0393) ────
+        # 부기(log·pm_state) 완료 후 슬롯의 live git 을 lease.git 에 재기록한다 — 세션 중 브랜치/HEAD
+        # 변경(예: 릴리즈 v1.3.2→v1.3.3)이 차기 부트스트랩 0단계 record-vs-live 정합(compare_slot_git·
+        # ㉒)을 `diverged` FAIL-LOUD 로 오탐시켜 정당한 자기 진행을 외부-개입 오경보로 차단하는 것을
+        # 막는다(PM 78 실측). base 미전달=기존 보존(arrival 동형)·판정 재구현 없이 T-0350 write
+        # 프리미티브만 호출. --done(release→idle·git 정리)은 대상 아님 — idle 슬롯은 활성 git 기대가
+        # 없다(다음 alloc 이 arrival 재스냅). dry_run 은 예고만. worktree_pool 부재·장부 부재는
+        # _record_slot_snapshot 내부에서 fail-soft(무해 skip).
+        #
+        # task 모드(ADR-0068 퇴장): 세션은 보유 슬롯 **집합**을 두고 나가므로 재스냅은 **보유 전
+        # 슬롯**(현행 1슬롯 한정 폐지·_record_task_slot_snapshots→slots_for_task 루프). slot/솔로 모드
+        # (task None)는 단일 bound 슬롯 재스냅으로 100% 불변.
+        if not done:
+            if task is not None:
+                self._record_task_slot_snapshots(task, dry_run)
+            elif self._worktree_slot is not None:
+                print("\n[재스냅] bound 슬롯 git 재스냅 (여기 두고 간다·T-0388)...")
+                if dry_run:
+                    print(f"  [dry-run] git 재스냅 예고: {self._worktree_slot} (실행 생략).")
+                else:
+                    self._record_slot_snapshot(self._worktree_slot)
 
         # ── task 모드: 정상-종료 task pid 기록 (T-0392·"두고 간다"의 task 판) ────────
         # task 장부 pid = dump 후 즉사하는 bootstrap subprocess pid(㉑·T-0353)라, 핸드오프가 종료를
