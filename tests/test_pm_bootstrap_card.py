@@ -59,6 +59,16 @@ def _hermetic_engine_anchor(bootstrap, monkeypatch):
     monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
 
 
+@pytest.fixture(autouse=True)
+def _no_codex_env(monkeypatch):
+    """codex 하네스 env 마커(`CODEX_THREAD_ID`/`CODEX_CI`)를 기본 제거 — 이 모듈 전 테스트를 ambient
+    codex 세션과 무관하게 결정론화한다(codex 절 부재가 기본·기존 카드 회귀 무변). codex 절 출현을
+    검증하는 테스트는 본문에서 명시 `monkeypatch.setenv` 로 opt-in 한다(그 setenv 가 이 fixture 의
+    delenv 뒤에 실행돼 우선)."""
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    monkeypatch.delenv("CODEX_CI", raising=False)
+
+
 @pytest.fixture(scope="module")
 def board_mod():
     return _load("board")
@@ -792,4 +802,102 @@ def test_card_facade_engines_are_skill_only(bootstrap):
     lines = card.splitlines()
     update_i = _line_index(card, "/pm-update")
     assert not lines[update_i + 1].strip().startswith("python3")
+
+
+# ── 12. codex 하네스 카드 절 — env 감지 (T-0405 · ADR-0069/0070 C-v2 · spike §3.5) ──
+# codex 전용 정적 진입 doc 이 없는 C-v2 구조에서, 부트스트랩 카드가 codex 실행모델/위임 지침의
+# 전달 채널이다. env 마커(`CODEX_THREAD_ID`/`CODEX_CI`) 감지 시에만 카드 끝에 codex 절이 붙고,
+# 미설정 시 절 부재=정상(다른 하네스 카드 무변·회귀 0). env 는 monkeypatch 로 양방향 제어한다.
+
+
+def test_is_codex_harness_predicate(bootstrap, monkeypatch):
+    """`_is_codex_harness()` = `CODEX_THREAD_ID` 또는 `CODEX_CI` 존재의 기계 판정(양 마커·부재)."""
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    monkeypatch.delenv("CODEX_CI", raising=False)
+    assert bootstrap._is_codex_harness() is False
+    monkeypatch.setenv("CODEX_THREAD_ID", "019f8003-d535-7a10-....")
+    assert bootstrap._is_codex_harness() is True
+    monkeypatch.delenv("CODEX_THREAD_ID")
+    monkeypatch.setenv("CODEX_CI", "1")
+    assert bootstrap._is_codex_harness() is True
+
+
+def test_card_codex_section_absent_without_env(bootstrap):
+    """env 마커 부재(autouse 제거)면 카드에 codex 절이 없다 — 다른 하네스 카드 무변(회귀 0)."""
+    card = _card(bootstrap, LEAN_IDENTITY)
+    assert "codex 하네스" not in card
+    assert ".codex/agents" not in card
+
+
+def test_card_codex_section_present_with_all_three_elements(bootstrap, monkeypatch):
+    """codex env 감지 시 카드 끝에 codex 절 + spike §3.5 3요소(위임 spawn·trust 2단계·방법론 소재)."""
+    monkeypatch.setenv("CODEX_THREAD_ID", "019f8003-d535-7a10-....")
+    card = _card(bootstrap, LEAN_IDENTITY)
+    assert "# codex 하네스" in card
+    # ① 위임 = 세션 내 spawn (.codex/agents 4축·`codex exec --agent` 부재).
+    assert ".codex/agents/{architect,developer,code-reviewer,researcher}" in card
+    assert "세션 내 spawn" in card
+    assert "codex exec --agent" in card
+    # ② trust 2단계 힌트(대화형 trust + `/hooks`·`-c` override 무효).
+    assert "trust 2단계" in card
+    assert "/hooks" in card
+    assert "trust_level=trusted" in card
+    # ③ 방법론 소재(공통 코어 AGENTS.md 자동 로드 + 이 카드 + `.agents/skills`·CLAUDE.md 미로드).
+    assert "AGENTS.md" in card and ".agents/skills" in card
+    assert "CLAUDE.md" in card and "미로드" in card
+
+
+@pytest.mark.parametrize("marker", ["CODEX_THREAD_ID", "CODEX_CI"])
+def test_card_codex_section_appears_for_each_marker(bootstrap, monkeypatch, marker):
+    """두 실측 마커 각각(단독)으로 codex 절이 출현한다(OR predicate·spike §D3)."""
+    monkeypatch.setenv(marker, "1")
+    assert "# codex 하네스" in _card(bootstrap, LEAN_IDENTITY)
+
+
+def test_card_codex_section_appended_leaves_body_unchanged(bootstrap, monkeypatch):
+    """codex 절은 카드 *끝에 append* 만 — 기존 본문 byte 무변(append-only·회귀 0)."""
+    body = _card(bootstrap, LEAN_IDENTITY)          # autouse 로 env 제거됨 → 절 부재
+    assert "codex 하네스" not in body
+    monkeypatch.setenv("CODEX_CI", "1")
+    full = _card(bootstrap, LEAN_IDENTITY)
+    assert full.startswith(body), "codex 절이 기존 카드 본문을 변경함(무변 위배)"
+    assert full[len(body):].lstrip("\n").startswith("# codex 하네스")
+
+
+@pytest.mark.parametrize("mode", ["slot", "solo", "task", "readonly"])
+def test_card_codex_section_appended_in_all_modes(bootstrap, monkeypatch, mode):
+    """codex 절은 모든 카드 모드(슬롯·솔로·task·readonly) 렌더 끝에 붙는다 — 카드=유일 전달 채널이라
+    어느 모드로 부팅해도 codex PM 이 실행모델/위임 지침을 받는다(정적 doc 폴백 없음·C-v2)."""
+    monkeypatch.setenv("CODEX_CI", "1")
+    inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
+    if mode == "slot":
+        card = inst._build_command_card_markdown(LEAN_IDENTITY)
+    elif mode == "solo":
+        card = inst._build_command_card_markdown(None)
+    elif mode == "task":
+        inst._task_name = "job1"
+        card = inst._build_command_card_markdown(LEAN_IDENTITY)
+    else:  # readonly
+        card = inst._build_command_card_markdown({**LEAN_IDENTITY, "role": "readonly"})
+    assert "# codex 하네스" in card, f"{mode} 모드 카드에 codex 절 누락"
+
+
+def test_safe_command_card_failsoft_covers_codex_detection(bootstrap, monkeypatch):
+    """codex 감지/절 렌더가 fail-soft 경로 *안*이다 — 감지가 터져도 `_safe_command_card`=None
+    (카드 절 생략·부트스트랩 무손상·ADR-0045). codex append 가 try/except 밖으로 새지 않음."""
+    inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
+
+    def _boom():
+        raise RuntimeError("codex detect boom")
+
+    monkeypatch.setattr(bootstrap, "_is_codex_harness", _boom)
+    assert inst._safe_command_card(LEAN_IDENTITY) is None
+
+
+def test_safe_command_card_success_includes_codex_section_under_codex(bootstrap, monkeypatch):
+    """codex 하네스에서 정상 렌더면 `_safe_command_card` 가 codex 절 담은 카드를 돌려준다(None 아님)."""
+    monkeypatch.setenv("CODEX_THREAD_ID", "019f8003-d535-7a10-....")
+    inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
+    card = inst._safe_command_card(LEAN_IDENTITY)
+    assert card is not None and "# codex 하네스" in card
 
