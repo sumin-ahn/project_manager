@@ -146,15 +146,19 @@ class FakeWorktreePool:
         # 최소 dict(base 미기록·behind None)로 합성해 git 요약 배선을 fail-soft 로 친다.
         self._slot_git = slot_git or {}
 
-    def create_slot(self, repo, *, base=None, test_cmd=None, readonly=False):
+    def create_slot(self, repo, *, base=None, test_cmd=None, readonly=False, owner_task=None):
         # base (T-0075) — areas 의 그 repo base 를 cmd_worktree_add 가 전달한다(슬롯 브랜치
         # 파생 base). 호출 인자에 base 를 함께 기록해 배선 검증. (4-tuple 유지 — 기존 assertion 무영향.)
         self.calls.append(("create_slot", repo, test_cmd, base))
         # readonly (⑬·T-0358) — --readonly 플래그 전달 배선을 별도 속성으로 기록(4-tuple 불변).
         self.last_readonly = readonly
+        # owner_task (ⓓB·ADR-0068) — --task 명의 생성 직결 배선을 별도 속성으로 기록(tuple 불변).
+        self.last_create_owner_task = owner_task
         role = "readonly" if readonly else "work"
+        # task-명의 생성이면 그 task session 으로 leased(생성분 직결·bound). 미지정=기본 세션.
+        session = owner_task if owner_task is not None else "s1"
         return FakeLease(slot=f"work/{repo}_1", repo=repo, test_cmd=None if readonly else test_cmd,
-                         role=role)
+                         role=role, session=session)
 
     def install_protected_hook(self, repo, protected):
         # 보호 브랜치 pre-push 훅 (재)설치 대역 (T-0076) — repo·protected 목록을 기록해
@@ -224,8 +228,13 @@ class FakeWorktreePool:
             return None
         return FakeLease(slot=slot, repo="r", state="idle")
 
-    def alloc(self, repo, *, session=None, branch=None, resume=None, git_runner=None):
-        self.calls.append(("alloc", repo, session))
+    def alloc(self, repo, *, session=None, owner_task=None, branch=None, resume=None, git_runner=None):
+        # task-명의 alloc(ADR-0068 I3)은 owner_task 로 온다 — 유효 세션(lease.session)은 task 이름.
+        # 기존 배선 assertion(`("alloc", repo, "job")`)이 유지되게 유효 세션을 기록하고, owner_task
+        # 원값은 별도 속성으로 남겨 I3 경로(멱등 폐기·bound)를 검증한다.
+        eff_session = owner_task if owner_task is not None else session
+        self.calls.append(("alloc", repo, eff_session))
+        self.last_alloc_owner_task = owner_task
         if self._alloc_raises is not None:
             raise self._alloc_raises(repo)
         if self._alloc_returns is not None:
@@ -237,6 +246,13 @@ class FakeWorktreePool:
         self.calls.append(("_validate_task_name", name, registered_repos))
         if self._validate_raises:
             raise FakeWorktreePool.InvalidTaskName(name, "테스트 거부")
+        # 예약패턴(`<repo>_<N>`·⑥) — registered_repos 가 전달됐을 때만 판별(실 엔진 계약 동형).
+        # board 미해소로 registered_repos=None 이면 이 검증이 완화되므로(T-0398 must-fix ① 회귀 대상),
+        # 예약명 거부 테스트가 registered 전달 배선을 실제로 태운다.
+        import re as _re
+        for repo in (registered_repos or ()):
+            if _re.match(rf"^{_re.escape(repo)}_\d+$", name):
+                raise FakeWorktreePool.InvalidTaskName(name, f"슬롯 예약패턴 {repo}_<N>")
 
     def find_task(self, name):
         self.calls.append(("find_task", name))
@@ -1537,7 +1553,7 @@ def test_worktree_add_create_failure_errors(pc, capsys):
     """create_slot 이 RuntimeError(예: worktree add 실패)면 rc 1 + 명시 에러."""
     wp = FakeWorktreePool()
 
-    def boom(repo, *, base=None, test_cmd=None, readonly=False):
+    def boom(repo, *, base=None, test_cmd=None, readonly=False, owner_task=None):
         raise RuntimeError("git worktree add failed")
     wp.create_slot = boom
     rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", test=None), worktree_pool=wp,
@@ -1560,7 +1576,7 @@ def test_worktree_add_bare_missing_caught_as_runtime_error(pc, capsys):
 
     wp = FakeWorktreePool()
 
-    def bare_missing(repo, *, base=None, test_cmd=None, readonly=False):
+    def bare_missing(repo, *, base=None, test_cmd=None, readonly=False, owner_task=None):
         raise wp_mod.BareRepoMissing(repo, TOOLS.parent / ".repos" / f"{repo}.git")
     wp.create_slot = bare_missing
     rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", test=None), worktree_pool=wp,
@@ -2656,6 +2672,186 @@ def test_main_routes_alloc_to_engine(pc, monkeypatch):
     rc = pc.main(["alloc", "svc", "--task", "job"])
     assert rc == 0
     assert ("alloc", "svc", "job") in wp.calls
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ADR-0068 W1 — task-명의 alloc 항상-신규(I3) · 집합 재열거(I1) · add --task(ⓓB) · T-0398
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_alloc_forwards_owner_task_for_always_new_lease(pc, capsys):
+    """cmd_alloc 이 `owner_task=task` 로 alloc 호출 — 항상 신규 대여(I3·멱등 폐기 경로 시그널)."""
+    wp = FakeWorktreePool(
+        alloc_returns=FakeLease(slot="work/svc_2", repo="svc", session="job", state="leased"))
+    rc = pc.cmd_alloc(
+        argparse.Namespace(repo="svc", task="job"), worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 0
+    assert wp.last_alloc_owner_task == "job"   # session= 대신 owner_task= 로 I3 경로 진입
+
+
+def test_alloc_reenumerates_held_slots(pc, capsys):
+    """alloc 성공 직후 task 보유 슬롯 집합을 재열거 surface(I1·ADR-0068)."""
+    leases = [
+        FakeLease(slot="work/svc_1", repo="svc", session="job", state="leased"),
+        FakeLease(slot="work/svc_2", repo="svc", session="job", state="leased"),
+    ]
+    wp = FakeWorktreePool(leases=leases, alloc_returns=leases[1],
+                          live_branches={"work/svc_1": "svc_1", "work/svc_2": "svc_2"})
+    rc = pc.cmd_alloc(
+        argparse.Namespace(repo="svc", task="job"), worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "보유 2" in out                                   # 집합 크기 재열거
+    assert "work/svc_1" in out and "work/svc_2" in out       # 두 슬롯 모두 행렬에
+    assert "branch=svc_2" in out                             # live branch(current_branch) 반영
+    assert ("slots_for_task", "job") in wp.calls
+
+
+def test_alloc_pool_exhausted_suggests_add_task(pc, capsys):
+    """풀 소진 거부 메시지가 `worktree add <repo> --task <이름>`(생성+대여 한 흐름)를 제시(ⓓB)."""
+    wp = FakeWorktreePool(alloc_raises=FakeWorktreePool.NeedsCreate)
+    rc = pc.cmd_alloc(
+        argparse.Namespace(repo="svc", task="job"), worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "worktree add svc --task job" in err
+    assert not wp.did("create_slot")   # 자동 생성 안 함(⑤ 물리층=사용자 승인)
+
+
+def test_worktree_add_task_creates_and_leases_and_reenumerates(pc, capsys):
+    """worktree add <repo> --task <이름> → create_slot(owner_task=task) 생성 직결 + 재열거(ⓓB·I1)."""
+    leases = [FakeLease(slot="work/svc_1", repo="svc", session="job", state="leased")]
+    wp = FakeWorktreePool(leases=leases, live_branches={"work/svc_1": "svc_1"})
+    rc = pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None, readonly=False, task="job"),
+        worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 0
+    assert wp.last_create_owner_task == "job"   # 생성 직후 그 슬롯 task 명의 대여(ⓓB)
+    out = capsys.readouterr().out
+    assert "task 대여" in out and "job" in out
+    assert ("slots_for_task", "job") in wp.calls   # 집합 재열거(I1)
+
+
+def test_worktree_add_task_and_readonly_mutually_exclusive(pc, capsys):
+    """--task 와 --readonly 는 상호배타 — 함께 주면 rc1·생성 안 함(무소유 vs task 명의 모순)."""
+    wp = FakeWorktreePool()
+    rc = pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None, readonly=True, task="job"),
+        worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 1
+    assert "함께 쓸 수 없다" in capsys.readouterr().err
+    assert not wp.did("create_slot")
+
+
+def test_worktree_add_task_validates_name(pc, capsys):
+    """add --task 도 불법/예약 task 명 → InvalidTaskName rc1·생성 안 함(alloc 과 동일 헬퍼·must-fix ②)."""
+    wp = FakeWorktreePool(validate_raises=True)
+    rc = pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None, readonly=False, task="../evil"),
+        worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 1
+    assert not wp.did("create_slot")
+
+
+def test_worktree_add_task_requires_prebound(pc, capsys):
+    """add --task 도 기바인딩 task 요구(F1→F2) — 미바인딩이면 rc1·생성 안 함."""
+    wp = FakeWorktreePool(task_record=None)   # find_task → None(미바인딩)
+    rc = pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None, readonly=False, task="job"),
+        worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 1
+    assert "pm-bootstrap" in capsys.readouterr().err
+    assert not wp.did("create_slot")
+
+
+def test_worktree_add_task_reserved_name_rejected_via_resolved_board(pc, capsys, monkeypatch):
+    """add --task 예약명(`<repo>_<N>`·⑥) 거부 — board 미주입(CLI 경로)이어도 해소해 registered 전달(must-fix ①).
+
+    구 버그: cmd_worktree_add 가 board=None 을 그대로 `_validate_prebound_task` 로 넘겨 registered_repos
+    가 None → 예약패턴 검증이 add 경로만 무력화됐다(alloc 은 board 해소). board 해소로 계약 통일.
+    """
+    wp = FakeWorktreePool()
+    board = FakeBoard(registered=("svc",))
+    # board 미주입(main 디스패치처럼) — _load_module 이 board 를 돌려주도록 monkeypatch.
+    monkeypatch.setattr(pc, "_load_module",
+                        lambda name, filename: board if name == "board" else None)
+    rc = pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None, readonly=False, task="svc_1"),
+        worktree_pool=wp   # board 미주입 — 내부 해소가 예약 검증을 활성화해야 거부된다
+    )
+    assert rc == 1
+    assert not wp.did("create_slot")   # 예약명 거부 → 슬롯 생성 안 함
+    # registered_repos 가 실제로 전달됐는지(None 완화 아님) 배선 확인.
+    val = [c for c in wp.calls if c[0] == "_validate_task_name"]
+    assert val and set(val[0][2]) == {"svc"}
+
+
+def test_worktree_add_task_forwards_registered_repos_when_injected(pc):
+    """board 주입 경로도 registered_repos 전달 — add 예약 검증 계약(alloc 동형·must-fix ①)."""
+    wp = FakeWorktreePool()
+    board = FakeBoard(registered=("svc", "acc"))
+    pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None, readonly=False, task="job"),
+        worktree_pool=wp, board=board
+    )
+    val = [c for c in wp.calls if c[0] == "_validate_task_name"]
+    assert val and set(val[0][2]) == {"svc", "acc"}
+
+
+def test_worktree_add_without_task_no_reenumerate(pc, capsys):
+    """--task 미지정 add(현행 경로)는 owner_task=None·재열거 없음(회귀 0)."""
+    wp = FakeWorktreePool()
+    rc = pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None), worktree_pool=wp, board=FakeBoard()
+    )
+    assert rc == 0
+    assert wp.last_create_owner_task is None
+    assert not wp.did("slots_for_task")
+
+
+def test_release_task_reenumerates_remaining(pc, capsys):
+    """release --task 성공 직후 남은 보유 슬롯 집합 재열거(I1·ADR-0068)."""
+    leases = [FakeLease(slot="work/svc_2", repo="svc", session="job", state="leased")]
+    wp = FakeWorktreePool(leases=leases, live_branches={"work/svc_2": "svc_2"})
+    rc = pc.cmd_release(
+        argparse.Namespace(slot="work/svc_1", task="job", force=False), worktree_pool=wp
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "work/svc_2" in out
+    assert ("slots_for_task", "job") in wp.calls
+
+
+def test_release_no_task_skips_reenumerate(pc, capsys):
+    """--task 없는 slot-only 반납(백스톱)은 대상 task 가 없어 재열거하지 않는다."""
+    wp = FakeWorktreePool()
+    rc = pc.cmd_release(
+        argparse.Namespace(slot="work/svc_1", force=False), worktree_pool=wp
+    )
+    assert rc == 0
+    assert not wp.did("slots_for_task")
+
+
+def test_task_end_reenumerates_empty_after_release(pc, capsys):
+    """task end 성공 직후 재열거 — 전부 반납이라 보유 0(없음) surface(I1·ADR-0068)."""
+    wp = FakeWorktreePool(
+        end_task_result=SimpleNamespace(name="job", released=["work/svc_1"], dirty=[],
+                                        refused=False, moved_to=None, moved_from=None))
+    board = FakeBoard(task_scan={"claimed": [], "prefix_open": []})
+    rc = pc.cmd_task_end(
+        argparse.Namespace(name="job"), worktree_pool=wp, board=board
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "없음" in out                            # slots_for_task("job")=[] → "(없음)"
+    assert ("slots_for_task", "job") in wp.calls
 
 
 # ════════════════════════════════════════════════════════════════════════

@@ -189,6 +189,16 @@ def _seed(wp, *leases):
         wp._write_ledger(list(leases))
 
 
+def _seed_tasks(wp, *names):
+    """장부의 `tasks` 컬렉션에 명명 task 레코드를 심는다 — reclaim/재부착 조인 제외 전제 구성.
+
+    `_write_ledger`(형제 `leases`)와 별개 컬렉션(`_write_tasks`·같은 파일·같은 락). `_seed` 로
+    leases 를 먼저 심은 뒤 이걸 호출하면 둘 다 보존된다(top-level round-trip). pid 는 판정 무관
+    (reclaim 조인은 `session ∈ tasks 이름집합` 만 본다)라 임의(1)."""
+    with wp._lease_lock():
+        wp._write_tasks([wp.Task(name=n, pid=1, started="t") for n in names])
+
+
 def _lease(wp, *, slot, repo, session="s1", pid=None, state="leased"):
     # branch 는 더는 Lease 권위 필드가 아니다(ADR-0013 amend T-0072 — git=진실·장부 저장
     # 폐지). 슬롯의 live 브랜치는 FakeGit(head=...) 으로 모델링한다(current_branch 조회).
@@ -382,6 +392,150 @@ def test_alloc_checkout_success_updates_ledger_sensitivity(wp):
     assert lease.session == "me"
     # checkout 이 슬롯 live HEAD 를 a2-new 로 전환(장부 저장 아님·ADR-0013 amend T-0072).
     assert wp.current_branch("work/A_1", git_runner=git) == "a2-new"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# task-명의 alloc = 항상 신규 대여 (ADR-0068 I3·④·T-0398)
+# owner_task 로 부르면 idempotent 1경로를 건너뛰어 같은 repo 복수 보유를 지원하고, task 소유
+# 슬롯(session ∈ tasks 장부)은 reclaim_stale/재부착에서 조인 제외해 즉사 CLI pid 로도 보호한다
+# (bound 마커가 아니라 tasks 장부 조인 — 구버전 bound-부재 lease 도 마이그레이션 0 으로 보호·R3).
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_task_alloc_always_new_lease_two_slots(wp):
+    """같은 task 가 같은 repo 를 2연속 alloc(owner_task) → 서로 다른 2슬롯 대여(멱등 폐기·I3).
+
+    idle 슬롯 2개를 심고 owner_task='job' 으로 두 번 alloc — 옛 idempotent 는 첫 슬롯을
+    다시 반환(silent aliasing)했으나 I3 는 최소 번호부터 신규 슬롯을 대여한다(복수 보유).
+    """
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"),
+          _lease(wp, slot="work/A_2", repo="A", session="", pid=0, state="idle"))
+    git = FakeGit()
+    first = wp.alloc("A", owner_task="job", git_runner=git)
+    second = wp.alloc("A", owner_task="job", git_runner=git)
+    assert {first.slot, second.slot} == {"work/A_1", "work/A_2"}   # 2개 서로 다른 슬롯
+    assert first.slot != second.slot                              # silent aliasing 아님
+    # 둘 다 task 명의 leased(session=task·⑥) — slots_for_task 가 둘 다 본다.
+    held = {l.slot for l in wp.slots_for_task("job")}
+    assert held == {"work/A_1", "work/A_2"}
+
+
+def test_task_alloc_lease_not_bound_protected_by_tasks_join(wp):
+    """task-명의 alloc lease 는 bound 가 아니다 — reclaim/재부착 보호는 tasks 장부 조인이 담당(R3).
+
+    bound 는 사람-bind 축 그대로. task 소유 슬롯의 회수 제외 근거 = `session ∈ tasks 장부`.
+    """
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"))
+    _seed_tasks(wp, "job")
+    git = FakeGit()
+    lease = wp.alloc("A", owner_task="job", git_runner=git)
+    assert lease.session == "job"
+    assert lease.bound is False                # bound 축 오염 안 함(사람-bind 전용)
+    assert wp.list_leases()[0].bound is False
+
+
+def test_task_alloc_old_bound_absent_lease_survives_other_alloc_reclaim(wp):
+    """**구버전 alloc 이 만든 bound-부재 task lease**(pid 즉사)도 타 alloc reclaim 이 회수 못 한다(R3 핵심).
+
+    실측 시나리오(PM 78·codex R3): tasks 장부엔 'job' 이 있고, job 이 예전에 대여한 slot 1 lease 는
+    `bound` 키가 없어 False 로 로드된다(구장부). pid 는 즉사 CLI pid(999999=죽음). 이후 *다른* 세션이
+    slot 2 를 alloc 하면 진입 reclaim_stale 이 slot 1 을 stale 오판해 회수하던 구멍 — bound 마커만으론
+    안 걸린다. tasks 장부 조인(session ∈ tasks)이 구·신 lease 를 모두 보호한다(마이그레이션 0).
+    """
+    _seed(wp,
+          # 구장부 task lease — bound 키 없음(=False 로드)·pid 죽음.
+          wp.Lease(slot="work/A_1", repo="A", session="job", pid=999999,
+                   started="t", state="leased", bound=False),
+          _lease(wp, slot="work/A_2", repo="A", session="", pid=0, state="idle"))
+    _seed_tasks(wp, "job")   # 'job' 이 명명 task 로 장부에 존재(소유 단일 진실)
+    git = FakeGit()  # clean
+    other = wp.alloc("A", session="other", git_runner=git)
+    assert other.slot == "work/A_2"                     # 신규 idle 대여(slot 1 회수 안 됨)
+    held = {l.slot for l in wp.slots_for_task("job")}
+    assert held == {"work/A_1"}                          # job 명의 유지(tasks 조인 보호)
+
+
+def test_reclaim_stale_recovers_non_task_dead_pid_unchanged(wp):
+    """sensitivity/현행 유지 — 비-task 세션(tasks 장부에 없는)의 pid-죽은 lease 는 그대로 회수된다.
+
+    조인 제외는 **task 소유 슬롯에만** 걸린다 — tasks 장부에 없는 세션(crash 한 슬롯-모드 세션 등)의
+    stale lease 는 현행처럼 회수(idle 화)해야 풀 가용성이 유지된다. 위 task 보호와 대조되는 negative.
+    """
+    _seed(wp,
+          wp.Lease(slot="work/A_1", repo="A", session="dead-session", pid=999999,
+                   started="t", state="leased", bound=False))
+    # tasks 장부 비움 — 'dead-session' 은 명명 task 가 아니다.
+    git = FakeGit()
+    reclaimed = wp.reclaim_stale(git_runner=git)
+    assert reclaimed == ["work/A_1"]                     # 비-task 구장부 lease 는 현행 회수 유지
+    assert wp.list_leases()[0].state == "idle"
+
+
+def test_task_alloc_ignores_branch_reattach_path(wp):
+    """owner_task + branch 가 함께 와도 재부착(2경로) 안 탄다 — 항상 신규 idle 대여(I3·codex must-fix ②).
+
+    타 세션(other)이 그 브랜치를 체크아웃 중인 leased 슬롯이 있어도 그 session/pid 를 덮지 않고
+    (탈취 차단) idle 슬롯을 신규 대여한다.
+    """
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", session="", pid=0, state="idle"))
+    git = FakeGit(head="a5")   # 모든 슬롯 live HEAD = a5(2경로 재부착 후보 조건 성립)
+    lease = wp.alloc("A", owner_task="job", branch="a5", git_runner=git)
+    assert lease.slot == "work/A_2"          # idle 신규 대여(slot 1 재부착 안 함)
+    assert lease.bound is False              # task-명의도 bound 축 오염 안 함(tasks 조인이 보호)
+    s1 = next(l for l in wp.list_leases() if l.slot == "work/A_1")
+    assert s1.session == "other" and s1.state == "leased"   # 타 lease 탈취 안 됨
+
+
+def test_slot_session_alloc_cannot_steal_task_slot_via_branch_reattach(wp):
+    """슬롯-세션 alloc(branch=X)이 그 브랜치를 체크아웃 중인 **task 소유 슬롯**을 재부착 탈취 못 함(④·R3).
+
+    reclaim 조인과 동형으로 재부착(2경로)도 `session ∈ tasks 장부` lease 를 제외한다 — bound 부재
+    구장부 task lease 도 보호. idle 이 없으면 NeedsCreate(정직한 소진).
+    """
+    _seed(wp,
+          # job 소유(bound 부재 구장부) lease 가 브랜치 a5 를 체크아웃 중·pid 살아있음(alive).
+          wp.Lease(slot="work/A_1", repo="A", session="job", pid=os.getpid(),
+                   started="t", state="leased", bound=False))
+    _seed_tasks(wp, "job")
+    git = FakeGit(head="a5")   # slot 1 live HEAD = a5(재부착 후보)
+    with pytest.raises(wp.NeedsCreate):
+        wp.alloc("A", session="other", branch="a5", git_runner=git)   # 슬롯-세션 alloc
+    s1 = wp.list_leases()[0]
+    assert s1.session == "job" and s1.state == "leased"   # 탈취 안 됨(tasks 조인 재부착 제외)
+
+
+def test_task_alloc_branch_no_idle_raises_needscreate(wp):
+    """owner_task + branch 인데 idle 없음 → 재부착으로 도피하지 않고 NeedsCreate(I3·codex must-fix ②).
+
+    구 버그: 2경로가 타 세션의 브랜치-매칭 leased 슬롯을 job 명의로 재부착(탈취)하며 신규처럼 반환.
+    수정 후엔 idle 이 없으면 풀 소진으로 정직하게 NeedsCreate(호출부 사용자 게이트).
+    """
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"))
+    git = FakeGit(head="a5")   # slot 1 live HEAD = a5(브랜치-매칭 재부착 후보)
+    with pytest.raises(wp.NeedsCreate):
+        wp.alloc("A", owner_task="job", branch="a5", git_runner=git)
+    # slot 1(other)은 그대로 — 탈취 안 됨.
+    s1 = wp.list_leases()[0]
+    assert s1.session == "other" and s1.state == "leased"
+
+
+def test_slot_session_alloc_idempotent_path_unchanged(wp):
+    """슬롯-세션 도착 alloc(owner_task 없음)은 idempotent 현행 유지 — I3 는 task 축만 바꾼다.
+
+    같은 session='me' 로 두 번 alloc → 같은 슬롯 반환(get-or-create-my-lease)·복수 안 생김.
+    task-명의(owner_task) 경로와 대조되는 불변 제약(slot-모드 100% 불변·ADR-0068).
+    """
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", session="", pid=0, state="idle"))
+    git = FakeGit()
+    first = wp.alloc("A", session="me", git_runner=git)
+    second = wp.alloc("A", session="me", git_runner=git)
+    assert first.slot == second.slot == "work/A_1"   # idempotent(신규 대여 안 함)
+    assert not first.bound                            # slot-세션 도착 alloc 은 bound 아님
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1026,6 +1180,36 @@ def test_create_slot_adds_worktree_and_submodule_init(wp):
     # `--force`: bare 에서 만든 fresh 슬롯의 worktree+submodule edge 강제 init(T-0067).
     assert git.did("submodule", "update", "--init", "--recursive", "--force")
     assert wp.list_leases()[0].slot == "work/A_1"
+
+
+def test_create_slot_owner_task_leases_under_task(wp):
+    """create_slot(owner_task) → 생성분을 그 task 명의로 leased(ⓓB·ADR-0068).
+
+    `worktree add <repo> --task <이름>` 경로 — 생성 직후 그 슬롯을 task 명의로 대여한다
+    (min-idle 재탐색 없이 생성분 직결). session=task(⑥). reclaim/재부착 보호는 tasks 장부
+    조인이 담당하고(bound 아님·R3), owner_task 는 기바인딩 task 라 항상 tasks 장부에 있다.
+    """
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit()
+    lease = wp.create_slot("A", base="develop", owner_task="job", git_runner=git)
+    assert lease.state == "leased"
+    assert lease.session == "job"     # task 명의(⑥)
+    assert lease.bound is False       # bound 축 오염 안 함(사람-bind 전용·tasks 조인이 보호)
+    # slots_for_task 가 생성분을 본다(생성+대여 한 흐름).
+    assert [l.slot for l in wp.slots_for_task("job")] == [lease.slot]
+
+
+def test_create_slot_owner_task_and_readonly_mutually_exclusive(wp):
+    """create_slot(owner_task, readonly) → 엔진 fail-loud(무소유 vs task 명의 모순·codex suggestion).
+
+    CLI 가드(cmd_worktree_add)만 믿지 않고 엔진 자체가 부작용(worktree add) 이전에 ValueError 로
+    막는다 — 타 호출부/미래 경로 방어. 장부에 아무 것도 안 남는다.
+    """
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit()
+    with pytest.raises(ValueError):
+        wp.create_slot("A", owner_task="job", readonly=True, git_runner=git)
+    assert wp.list_leases() == []   # 부작용 이전 raise(provisional 도 안 남김)
 
 
 def test_create_slot_picks_next_free_number(wp):

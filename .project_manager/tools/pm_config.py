@@ -29,9 +29,11 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - repo add  → board.areas_append(per-repo 레지스트리 줄·ADR-0014) + `git clone --bare`
                 로 `.repos/<name>.git`(worktree 풀 공유 .git 원·ADR-0011).
   - worktree add → worktree_pool.create_slot(새 슬롯 + `git submodule update --init`).
+                `--task <이름>` 면 owner_task 로 넘겨 생성 직후 그 슬롯 task 명의 대여(ⓓB·ADR-0068).
   - status|whoami → worktree_pool.list_leases() + 이 세션 식별(repo/슬롯/branch surface).
-  - alloc    → worktree_pool.alloc(repo, session=<task>) — idle 최소 번호 대여(⑤ 논리층·PM 자율).
-               풀 소진(NeedsCreate)이면 자동 생성 안 하고 `worktree add` 승인 요청(물리층=사용자).
+  - alloc    → worktree_pool.alloc(repo, owner_task=<task>) — 항상 신규 idle 최소 번호 대여(I3·멱등
+               폐기·같은 repo 복수 보유·⑤ 논리층·PM 자율). 풀 소진(NeedsCreate)이면 자동 생성 안 하고
+               `worktree add --task` 승인 요청(생성+대여 한 흐름·ⓓB·물리층=사용자).
   - release → worktree_pool.release(--task 면 owner_task 소유검사·F3·--force 면 force_release) — 수동 반납/강제만.
   - task prefix → board._validate_prefix(입력 sanity·소비 grammar 단일 진실) → worktree_pool.set_task_prefix
                 (장부 flock/스키마 단일 소유·`none`=해제·직접 JSON write 금지·F5·T-0357).
@@ -998,7 +1000,11 @@ def cmd_worktree_add(
     input_fn: Callable[[str], str] = input,
     is_tty: Callable[[], bool] | None = None,
 ) -> int:
-    """`worktree add <repo> [--test "<cmd>"]` — 새 슬롯 생성 + submodule init (ADR-0013).
+    """`worktree add <repo> [--test "<cmd>"] [--task <이름>] [--readonly]` — 새 슬롯 생성 + submodule init (ADR-0013).
+
+    **`--task <이름>` (ⓓB·ADR-0068)**: 생성 직후 그 슬롯을 task 명의로 대여한다(session=task·alloc I3
+    동형·reclaim/재부착 보호는 tasks 장부 조인·④). 풀 소진 시 alloc 이 안내하는 "생성+대여 한 흐름" — min-idle 재탐색의
+    오슬롯 리스크가 없다. task 명 검증 + 기바인딩(F1→F2)은 alloc 과 같은 헬퍼로. `--readonly` 와 상호배타.
 
     worktree_pool.create_slot(repo, base=) 를 호출한다 — `<repo>_<N>`(브랜치 무관 재사용
     컨테이너) 슬롯을 `git worktree add` 로 만들고 `git submodule update --init` 한다.
@@ -1054,8 +1060,30 @@ def cmd_worktree_add(
     # readonly 공유 슬롯(⑬·T-0358) — research 전용 read-only 기준면. detached HEAD·role="readonly"·
     # session/pid 없음. 생성 자체는 결정 ⑤ 그대로 사용자 승인 flow(디스크=코드 전체 사본).
     readonly = getattr(args, "readonly", False)
+
+    # --task <이름> (ⓓB·ADR-0068) — 새 슬롯을 만들고 **생성 직후 그 슬롯을** task 명의로 대여한다
+    # (풀 소진 시 alloc 이 안내하는 생성+대여 한 흐름·min-idle 재탐색 오슬롯 리스크 제거). readonly 와
+    # 상호배타(readonly=무소유 공유 자산). task 명 검증 + 기바인딩(F1→F2)은 alloc 과 동일 헬퍼로.
+    task = getattr(args, "task", None)
+    if task is not None:
+        if readonly:
+            print(
+                "[중단] `--readonly` 와 `--task` 는 함께 쓸 수 없다 — readonly 공유 슬롯은 무소유"
+                "(session/pid 없음·배타 대여 없음)라 task 명의 대여 대상이 아니다(⑬·T-0358).",
+                file=sys.stderr,
+            )
+            return 1
+        # board 모듈 해소 후 넘긴다(cmd_alloc 과 동일 계약) — `_validate_prebound_task` 가
+        # registered_repos 로 예약명(`<repo>_<N>`·⑥) 을 거부하려면 board 가 있어야 한다. board=None 을
+        # 그대로 넘기면 예약패턴 검증이 통째로 완화돼 add 경로만 검증 구멍이 난다(codex must-fix ①).
+        board_mod = board or _load_module("board", "board.py")
+        rc = _validate_prebound_task(wp, board_mod, task)
+        if rc:
+            return rc
+
     try:
-        lease = wp.create_slot(args.repo, base=base, test_cmd=test_cmd, readonly=readonly)
+        lease = wp.create_slot(args.repo, base=base, test_cmd=test_cmd, readonly=readonly,
+                               owner_task=task)
     except RuntimeError as exc:
         print(f"[중단] worktree 슬롯 생성 실패: {exc}", file=sys.stderr)
         return 1
@@ -1076,6 +1104,15 @@ def cmd_worktree_add(
             f"  갱신은 `/pm-worktree refresh {lease.repo}_{slot_num}` 로만(fetch→detach 이동·dirty=거부). "
             "set-base/rebase/dev/sync 는 거부된다."
         )
+    elif task is not None:
+        # task-명의 생성(ⓓB·ADR-0068) — 생성 직후 그 슬롯을 task 명의로 leased(별도 alloc 불요).
+        print(
+            f"✓ worktree 슬롯 생성 + task 대여: {lease.slot} (repo={lease.repo} · task={task!r}) "
+            f"→ {slot_path}{test_line}\n"
+            f"  생성 직후 이 슬롯을 task {task!r} 명의로 leased — 코드 작업은 이 슬롯 cwd 에서. "
+            "보드/wiki 는 multi-PM 공유 `.project_manager`.\n"
+            f"  반납: `pm-config release {lease.slot} --task {task}` (작업완료 시 idle 반납)."
+        )
     else:
         print(
             f"✓ worktree 슬롯 생성: {lease.slot} (repo={lease.repo}) → {slot_path}{test_line}\n"
@@ -1087,6 +1124,9 @@ def cmd_worktree_add(
     # update 후 기존 repo 도 다음 worktree add 에 훅을 얻는다(별도 명령 불요·회사 repo 무영향).
     if _install_protected_hook(args.repo, board=board, worktree_pool=wp):
         print(f"✓ 보호 브랜치 pre-push 훅 (재)설치: {args.repo} (T-0076).")
+    # task-명의 생성이면 집합 변경 직후 재열거(I1·ADR-0068) — 지금 보유한 슬롯 집합을 surface.
+    if task is not None:
+        _render_task_slots(wp, task)
     return 0
 
 
@@ -1549,7 +1589,87 @@ def cmd_release(
         return 1
     task_line = f" (task {owner_task!r} 소유검사 통과)" if owner_task else ""
     print(f"✓ 슬롯 {args.slot!r} 작업완료 반납(idle 화){task_line} — 풀에 재사용 컨테이너로 반환.")
+    # task-명의 반납이면 집합 변경 직후 재열거(I1·ADR-0068) — 남은 보유 슬롯 집합을 surface.
+    # slot-only 백스톱(owner_task=None)은 대상 task 가 없어 재열거 없음.
+    if owner_task:
+        _render_task_slots(wp, owner_task)
     return 0
+
+
+def _validate_prebound_task(wp, board_mod, task: str) -> int:
+    """task 명 검증(예약패턴·traversal) + 기바인딩(F1) 요구 — `alloc`/`worktree add --task` 공용.
+
+    task 이름이 lease session 으로 **기록**되는 write-capable 경로의 선검증(must-fix ②·⑥)이자,
+    정체성 *생성*은 F1(bootstrap) 단일 지점이라는 순서(F1→F2)를 한 곳에 강제한다. 통과면 0,
+    실패면 1(진단은 이 함수가 stderr 로 출력). registered_repos 는 예약패턴(`<repo>_<N>`·⑥)
+    판별 근거로 board 에서 fail-soft 해소(부재면 None → traversal 검증만·예약패턴만 완화).
+    """
+    registered = None
+    _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
+    if _reg_fn is not None:
+        try:
+            registered = _reg_fn()
+        except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴 검증만 완화·traversal 유지).
+            registered = None
+    try:
+        wp._validate_task_name(task, registered)
+    except wp.InvalidTaskName as exc:
+        print(
+            f"[중단] 부적합 task 명 {task!r} — {exc.reason}. `--task` 는 안전한 단일 이름이어야 "
+            "하고 슬롯 예약패턴(`<repo>_<N>`·⑥)은 쓸 수 없다.",
+            file=sys.stderr,
+        )
+        return 1
+    # 기바인딩 요구 — task 생성은 F1(bootstrap) 단일 지점. 미바인딩이면 안내 rc1.
+    if wp.find_task(task) is None:
+        print(
+            f"[중단] task {task!r} 이(가) 아직 없다 — alloc/add 는 기존 task 에 슬롯을 붙일 뿐 "
+            "정체성을 생성하지 않는다(F1→F2 순서). 먼저 `/pm-bootstrap --task "
+            f"{task}` 로 task 를 만든 뒤 다시 시도하라.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+def _slot_live_branch(wp, slot: str) -> str:
+    """슬롯 worktree 의 live 브랜치를 fail-soft 조회 (ADR-0013 amend T-0072·재열거 렌더용).
+
+    `current_branch(slot)`(git=진실·장부 저장 폐지)를 부른다 — 미해소/조회불가/엔진 부재는
+    표시 문자열로 흡수(재열거가 침묵/크래시 하지 않게).
+    """
+    fn = getattr(wp, "current_branch", None)
+    if not callable(fn):
+        return "(조회불가)"
+    try:
+        return fn(slot) or "(detached)"
+    except Exception:  # noqa: BLE001 — 조회 실패는 표시 흡수(재열거는 부작용 0·크래시 0).
+        return "(조회불가)"
+
+
+def _render_task_slots(wp, task_name: str, *, header: "str | None" = None) -> None:
+    """task 보유 슬롯 **집합**을 재열거해 surface 한다 (I1·ADR-0068).
+
+    집합을 바꾸는 연산(alloc·release·task end·`worktree add --task`) **직후** 결과 집합(슬롯·
+    repo·branch·state 행렬)을 출력한다 — 사용자/PM 이 매 연산 후 현재 보유 집합을 한눈에 본다
+    (묶음 처리 1급화). 부트스트랩 진입 열거(W3·I2)와 같은 렌더 문법을 공유하려는 공용 헬퍼다.
+    `slots_for_task`(session==task 명의 leased·장부 진실)에서 파생 — 신설 저장소 0·부작용 0.
+    """
+    slots_fn = getattr(wp, "slots_for_task", None)
+    if not callable(slots_fn):
+        return
+    try:
+        slots = list(slots_fn(task_name) or [])
+    except Exception:  # noqa: BLE001 — 재열거 조회 실패는 흡수(연산 자체는 이미 성공·크래시 0).
+        return
+    label = header or f"작업공간 (task {task_name!r} 보유 {len(slots)})"
+    if not slots:
+        print(f"{label}: (없음)")
+        return
+    print(f"{label}:")
+    for l in sorted(slots, key=lambda x: x.slot):
+        branch = _slot_live_branch(wp, l.slot)
+        print(f"  - {l.slot} · repo={l.repo} · branch={branch} · {l.state}")
 
 
 def cmd_alloc(
@@ -1558,22 +1678,25 @@ def cmd_alloc(
     worktree_pool=None,
     board=None,
 ) -> int:
-    """`alloc <repo> --task <이름>` — 기바인딩 task 명의로 idle 최소 번호 슬롯 대여 (F2·§F2b·⑤ 논리층).
+    """`alloc <repo> --task <이름>` — 기바인딩 task 명의로 idle 최소 번호 슬롯 대여 (F2·§F2b·⑤ 논리층·ADR-0068 I3).
 
-    worktree_pool.alloc(repo, session=<task>) 로 idle **최소 번호** 슬롯을 leased 로 전이한다 —
+    worktree_pool.alloc(repo, owner_task=<task>) 로 idle **최소 번호** 슬롯을 leased 로 전이한다 —
     session 축에 task 정체성을 실어(⑥ 직교) 이후 `release --task`/`task end` 소유검사가 매칭한다.
-    같은 task 가 이미 이 repo 슬롯을 보유하면 그걸 반환(idempotent·번호 안정). idle 슬롯이 없으면
-    NeedsCreate → **대여 실패 + 사용자 생성 요청**(자동 생성 금지·⑤). 새 슬롯은 디스크(코드 전체
+    **항상 신규 대여(I3·ADR-0068)**: 같은 task 가 이미 이 repo 슬롯을 보유해도 그걸 재반환하지 않고
+    (멱등 폐기·silent aliasing 소멸) 다른 idle 슬롯을 대여해 **같은 repo 복수 보유**(병렬 dev 격리
+    등)를 자연 지원한다. 대여한 lease 의 reclaim/재부착 보호는 **tasks 장부 조인**(session ∈ tasks
+    장부)이 담당한다 — 즉사 CLI pid 로도 회수되지 않는다(④·구·신 lease 통합). idle 슬롯이 없으면 NeedsCreate → **대여 실패 + 사용자 생성 요청**
+    (자동 생성 금지·⑤·`worktree add --task` 안내로 생성+대여 한 흐름). 새 슬롯은 디스크(코드 전체
     사본×슬롯)라 물리층이고 사용자 승인(`worktree add`)이 게이트다 — alloc/release=PM 자율(논리
     층)·create/remove=사용자 승인(물리층)의 2층 분리를 CLI 로 표면화한다(⑤).
 
     **명 검증 + 기바인딩 요구(must-fix ②)**: `--task` 이름이 lease session 으로 **기록**되므로 write
-    -capable 진입점이다 — 공유 엔진 validator(`_validate_task_name`·예약패턴 검증엔 등록 repo 전달)로
-    선검증해 traversal/절대경로/빈 이름/`<repo>_<N>` 예약(⑥ 기계판별 구멍)을 fail-loud rc1 한다. 나아가
-    **task 는 기바인딩이어야 한다**(reviewer suggestion): `find_task` 부재면 rc1 로 "먼저 `/pm-bootstrap
-    --task <이름>` 으로 task 를 만들라" 안내 — 정체성 *생성*은 F1(bootstrap) 단일 지점이고 alloc(F2)은
-    이미 존재하는 task 에 슬롯을 붙일 뿐이다(spike F1→F2 순서 정합·⑥ 검증 자연 상속). board 부재/헬퍼
-    부재는 registered_repos=None 으로 graceful(traversal 검증은 그대로·예약패턴만 완화).
+    -capable 진입점이다 — 공유 헬퍼 `_validate_prebound_task`(`worktree add --task` 와 동일 계약·엔진
+    validator `_validate_task_name` + `find_task` 를 묶음)로 선검증해 traversal/절대경로/빈 이름/
+    `<repo>_<N>` 예약(⑥ 기계판별 구멍)을 fail-loud rc1 하고, **task 는 기바인딩이어야 한다**(F1→F2)를
+    강제한다 — 미바인딩이면 "먼저 `/pm-bootstrap --task <이름>` 으로 task 를 만들라" 안내(정체성 *생성*은
+    F1[bootstrap] 단일 지점·alloc[F2]은 이미 존재하는 task 에 슬롯을 붙일 뿐). board 를 해소해 넘겨야
+    (registered_repos) 예약패턴 검증이 활성(부재면 traversal 만·예약패턴 완화·codex must-fix ①).
 
     worktree_pool/board 주입으로 hermetic 테스트(실 git alloc 없이 배선·분기 검증).
     """
@@ -1586,43 +1709,24 @@ def cmd_alloc(
         )
         return 1
 
-    # 명 검증(must-fix ②) — 공유 엔진 validator. registered_repos 는 예약패턴(`<repo>_<N>`·⑥) 거부용
-    # (board 에서 fail-soft 해소·부재면 None → traversal 검증만). InvalidTaskName → rc1(부작용 이전).
+    # 명 검증 + 기바인딩 요구(must-fix ②·⑥·F1→F2) — 공유 헬퍼(`worktree add --task` 와 동일 규율).
+    # InvalidTaskName/미바인딩 → rc1(부작용·alloc 이전·진단은 헬퍼가 출력).
     board_mod = board or _load_module("board", "board.py")
-    registered = None
-    _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
-    if _reg_fn is not None:
-        try:
-            registered = _reg_fn()
-        except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴 검증만 완화·traversal 유지).
-            registered = None
-    try:
-        wp._validate_task_name(args.task, registered)
-    except wp.InvalidTaskName as exc:
-        print(
-            f"[중단] 부적합 task 명 {args.task!r} — {exc.reason}. `--task` 는 안전한 단일 이름이어야 "
-            "하고 슬롯 예약패턴(`<repo>_<N>`·⑥)은 쓸 수 없다.",
-            file=sys.stderr,
-        )
-        return 1
-
-    # 기바인딩 요구(reviewer suggestion) — task 생성은 F1(bootstrap) 단일 지점. 미바인딩이면 안내 rc1.
-    if wp.find_task(args.task) is None:
-        print(
-            f"[중단] task {args.task!r} 이(가) 아직 없다 — alloc 은 기존 task 에 슬롯을 붙일 뿐 "
-            "정체성을 생성하지 않는다(F1→F2 순서). 먼저 `/pm-bootstrap --task "
-            f"{args.task}` 로 task 를 만든 뒤 다시 `alloc` 하라.",
-            file=sys.stderr,
-        )
-        return 1
+    rc = _validate_prebound_task(wp, board_mod, args.task)
+    if rc:
+        return rc
 
     try:
-        lease = wp.alloc(args.repo, session=args.task)
+        # owner_task = task-명의 alloc(ADR-0068 I3) — 항상 신규 idle 슬롯 대여(멱등 폐기·같은 repo
+        # 복수 보유). session=owner_task 로 기록되고, 그 슬롯의 reclaim/재부착 보호는 tasks 장부 조인이
+        # 담당한다(bound 아님·④·구·신 lease 통합).
+        lease = wp.alloc(args.repo, owner_task=args.task)
     except wp.NeedsCreate:
         print(
             f"[중단] repo {args.repo!r} 에 대여 가능한 idle 슬롯이 없다 — 풀 소진. 새 슬롯은 "
-            "디스크(코드 전체 사본×슬롯)라 자동 생성하지 않는다(⑤·물리층=사용자 승인). "
-            f"`pm-config worktree add {args.repo}` 승인 후 다시 `alloc` 하라.",
+            "디스크(코드 전체 사본×슬롯·clone 시간)라 자동 생성하지 않는다(⑤·물리층=사용자 승인). "
+            f"`pm-config worktree add {args.repo} --task {args.task}` 로 새 슬롯을 만들며 곧바로 "
+            "그 슬롯을 이 task 명의로 대여하라(생성+대여 한 흐름·ⓓB·오슬롯 없음).",
             file=sys.stderr,
         )
         return 1
@@ -1640,6 +1744,8 @@ def cmd_alloc(
         f"보드/wiki 는 multi-PM 공유 `.project_manager`.\n"
         f"  반납: `pm-config release {lease.slot} --task {args.task}` (작업완료 시 idle 반납)."
     )
+    # 집합 변경 직후 재열거(I1·ADR-0068) — task 가 지금 보유한 슬롯 집합을 surface.
+    _render_task_slots(wp, args.task)
     return 0
 
 
@@ -1754,6 +1860,8 @@ def cmd_task_end(
     print(
         f"✓ task {name!r} 종료 완료 — 이름 재사용 안전(아카이브 이동으로 옛 pm_state 오염 없음·②)."
     )
+    # 집합 변경(일괄 반납) 직후 재열거(I1·ADR-0068) — 종료 후 보유 슬롯 0(전부 idle 반납)을 확인.
+    _render_task_slots(wp, name)
     return 0
 
 
@@ -2395,6 +2503,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="research 전용 read-only 공유 슬롯 생성 (⑬·T-0358·detached HEAD·role=readonly·"
              "session/pid 없음·배타 대여 없음). 코드를 읽어 PM 홈 wiki 를 쓰는 읽기 기준면. "
              "갱신은 `/pm-worktree refresh` 로만·set-base/rebase/dev/sync 는 거부.",
+    )
+    p_wt_add.add_argument(
+        "--task", metavar="<이름>", default=None,
+        help="생성 직후 그 슬롯을 이 task 명의로 대여 (ⓓB·ADR-0068·풀 소진 시 생성+대여 한 흐름·"
+             "기바인딩 task 요구·`--readonly` 와 상호배타). 미지정=현행(생성만·세션 바인딩은 별도).",
     )
     p_wt_add.set_defaults(func=cmd_worktree_add)
     # worktree prune-stale — worktree 가 사라진 dangling 장부 엔트리 안전 정리 (T-0295).

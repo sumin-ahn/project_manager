@@ -112,9 +112,9 @@ class FakeWorktreePool:
         return {"slot": slot, "base": None, "branch": None, "head": None,
                 "behind": None, "behind_reason": "기준점 미기록 — `set-base` 로 지정"}
 
-    def create_slot(self, repo, *, base=None, test_cmd=None, readonly=False):
-        # base (T-0075) — cmd_worktree_add 가 areas 의 그 repo base 를 전달한다. 이 콘솔
-        # 테스트는 빌드명령 경로만 검증하므로 base/readonly 는 받기만 하고 기록 튜플엔 안 넣는다.
+    def create_slot(self, repo, *, base=None, test_cmd=None, readonly=False, owner_task=None):
+        # base (T-0075)·owner_task (ⓓB·ADR-0068) — cmd_worktree_add 가 전달한다. 이 콘솔
+        # 테스트는 빌드명령 경로만 검증하므로 base/readonly/owner_task 는 받기만 하고 기록 튜플엔 안 넣는다.
         self.calls.append(("create_slot", repo, test_cmd))
         return FakeLease(f"work/{repo}_1", repo, test_cmd=test_cmd)
 
