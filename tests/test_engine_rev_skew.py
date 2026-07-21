@@ -24,6 +24,18 @@ _OLD_IDENTITY_ARGS = "# 구형 identity_args (T-0397 스탬프 이전) — ENGIN
 # 구버전 릴리즈에서 온 stale identity_args — 스탬프는 있으나 rev 값이 다르다.
 _STALE_IDENTITY_ARGS = '# stale identity_args (구 릴리즈).\nENGINE_REV = "v1.3.4"\n'
 
+# 현재 엔진 rev — 리터럴 하드코딩 금지(v1.4.0 bump 실측: 첫 bump 이 v1.3.5 리터럴 단언 6건 노출).
+# bump 가 전 스탬프를 일괄 재작성하므로 단언은 로더의 실제 baked 값을 동적 참조한다(bump-내구).
+_CUR_REV = None
+
+
+def _cur_rev() -> str:
+    global _CUR_REV
+    if _CUR_REV is None:
+        _CUR_REV = _load(TOOLS, "engine_rev").ENGINE_REV
+    return _CUR_REV
+
+
 
 def _build_tools(tmp_path: Path, files: dict[str, str | None]) -> Path:
     """tmp 아래 `.project_manager/tools/` 를 만들고 파일을 채운다.
@@ -119,7 +131,7 @@ def test_new_pm_handoff_stale_identity_args_fails_loud(tmp_path):
     msg = str(exc.value)
     assert "identity_args.py" in msg
     assert "v1.3.4" in msg                    # stale 형제 rev
-    assert "v1.3.5" in msg                    # 엔진 rev
+    assert _cur_rev() in msg                    # 엔진 rev
 
 
 def test_normal_sync_no_effect(tmp_path):
@@ -130,9 +142,9 @@ def test_normal_sync_no_effect(tmp_path):
         "identity_args.py": None,
     })
     mod = _load(tools, "pm_handoff")           # no raise
-    assert mod.ENGINE_REV == "v1.3.5"
+    assert mod.ENGINE_REV == _cur_rev()
     assert mod.identity_args is not None       # 형제 로드 성공
-    assert mod.identity_args.ENGINE_REV == "v1.3.5"
+    assert mod.identity_args.ENGINE_REV == _cur_rev()
 
 
 def test_partial_copy_current_engine_rev_but_old_baked_sibling_detected(tmp_path):
@@ -151,7 +163,7 @@ def test_partial_copy_current_engine_rev_but_old_baked_sibling_detected(tmp_path
     msg = str(exc.value)
     assert "identity_args.py" in msg
     assert "v1.3.4" in msg                        # 구 형제 baked rev
-    assert "v1.3.5" in msg                        # 신 로더 baked rev
+    assert _cur_rev() in msg                        # 신 로더 baked rev
 
 
 def test_missing_engine_rev_is_benign_at_runtime(tmp_path):
@@ -163,7 +175,7 @@ def test_missing_engine_rev_is_benign_at_runtime(tmp_path):
         "identity_args.py": None,                 # engine_rev.py 는 일부러 뺌 — 그래도 정상 로드
     })
     mod = _load(tools, "pm_handoff")              # no raise (baked 리터럴 일치)
-    assert mod.ENGINE_REV == "v1.3.5"
+    assert mod.ENGINE_REV == _cur_rev()
     assert mod.identity_args is not None
 
 
@@ -190,7 +202,7 @@ def test_board_normal_sync_ok(tmp_path):
         "identity_args.py": None,
     })
     mod = _load(tools, "board")
-    assert mod.ENGINE_REV == "v1.3.5"
+    assert mod.ENGINE_REV == _cur_rev()
     assert mod.identity_args is not None
 
 
@@ -253,4 +265,4 @@ def test_pm_bootstrap_load_board_normal_returns_module(tmp_path):
     })
     pmb = _load(tools, "pm_bootstrap")
     board = pmb._load_board()
-    assert board is not None and board.ENGINE_REV == "v1.3.5"
+    assert board is not None and board.ENGINE_REV == _cur_rev()
