@@ -3556,8 +3556,9 @@ def _rebase_one(slot: str, *, onto: "str | None", owner: str,
                 git_runner: GitRunner | None = None) -> RebaseSlotResult:
     """슬롯 하나 rebase — 선-검사 → fetch → git rebase → 성공 시 장부 원자 갱신 (T-0359·§F10).
 
-    선-검사(스킵+loud·순서): readonly(공유 기준면·mutation 불가·⑬) → 소유(내 세션 leased 아님) →
-    dirty(clean 전제) → rebase 진행 중. 통과하면 `resolve_rebase_base` gate(미기록+onto 없음=거부·
+    선-검사(스킵+loud·순서): readonly(공유 기준면·mutation 불가·⑬) → 소유(`owner` 명의 leased
+    아님 — `owner` 는 세션 또는 task 명의·해소는 `rebase`·T-0416) → dirty(clean 전제) → rebase
+    진행 중. 통과하면 `resolve_rebase_base` gate(미기록+onto 없음=거부·
     onto=진행+기록·결정 ⑪) 로 대상 base 브랜치를 해소하고, `origin/<base>` 최신을 fetch 후 `git
     rebase` 한다. rc≠0(충돌 등) = **그 상태 그대로 두고 conflict**(엔진 임의 abort 금지). 성공 =
     `record_git_snapshot(base_branch, base_commit=새 base tip)` 로 base.commit·head·recorded_at 을
@@ -3571,6 +3572,9 @@ def _rebase_one(slot: str, *, onto: "str | None", owner: str,
         return skip("readonly")   # 공유 기준면 — mutation 불가(⑬·T-0358·refresh 로만 갱신).
     with _lease_lock():
         lease = next((l for l in _read_ledger() if l.slot == slot), None)
+    # 소유 판정 = leased lease.session == 내 명의(`owner`) — `release` F3(`target.session !=
+    # owner_task`)와 **같은 장부·같은 비교**다(T-0416). 명의가 세션이냐 task 냐는 `rebase` 가
+    # 해소하고(단일 지점), 여기 판정은 축과 무관하게 하나다.
     if lease is None or lease.state != "leased" or lease.session != owner:
         holder = lease.session if (lease is not None and lease.state == "leased") else ""
         return skip("not-owner" if not holder else f"not-owner:{holder}")
@@ -3633,16 +3637,25 @@ def _rebase_one(slot: str, *, onto: "str | None", owner: str,
 
 
 def rebase(slots: "list[str]", *, onto: "str | None" = None,
+           owner_task: "str | None" = None,
            git_runner: GitRunner | None = None) -> "list[RebaseSlotResult]":
     """슬롯 base 를 사용자 명시로 rebase — 단일/일괄·슬롯 독립·자동 rebase 없음 (⑩·T-0359·spike §F10).
 
     `slots` = 대상 슬롯 식별자 리스트(단일이면 1개·일괄이면 `slots_for_task` 결과). 각 슬롯을
     `_rebase_one` 로 **독립** 처리한다 — 한 슬롯의 충돌/스킵이 나머지를 막지 않는다(일괄 독립성·
-    spike §F10). 소유 판별 축 = 내 세션(`_default_session()` — env/local.conf 유입·`_resolve_current_
-    slot` 동형): 그 세션이 leased 로 보유하지 않은 슬롯은 `not-owner` 스킵(loud). `onto` 생략 =
-    기록된 base.branch 최신으로 rebase(미기록이면 거부·결정 ⑪). 반환 = 슬롯별 `RebaseSlotResult`
-    리스트(호출부가 성공/스킵/충돌 요약)."""
-    owner = _default_session()
+    spike §F10). `onto` 생략 = 기록된 base.branch 최신으로 rebase(미기록이면 거부·결정 ⑪). 반환 =
+    슬롯별 `RebaseSlotResult` 리스트(호출부가 성공/스킵/충돌 요약).
+
+    **소유 판별 축(T-0416)** = `owner_task`(명시 task 명의) > `_default_session()`(세션 명의):
+      - `owner_task` 주어짐(CLI `--task <이름>`·단일/일괄 공통) → **그 task 명의**가 '내 것'의
+        정의다. `release(owner_task=)` 의 F3 소유검사와 **동형**(같은 장부·같은 의미: 그 슬롯의
+        leased `lease.session` 이 그 명의인가) — 같은 소유를 두 도구가 다르게 판정하던 게 결함의
+        본질이었다(ADR-0068 이 task 를 1급 축으로 올렸는데 rebase 의 소유 축만 슬롯 세션에 머묾).
+      - 미지정 → 종전대로 세션 명의(`_default_session()` — env/local.conf 유입·`_resolve_current_
+        slot` 동형)로 판정(슬롯-세션 모드 거동 불변).
+    어느 축이든 **검사 자체는 그대로**다 — 그 명의가 leased 로 보유하지 않은 슬롯(다른 task·다른
+    슬롯 세션·미점유)은 여전히 `not-owner` 스킵(loud). 축 확장이지 검사 제거가 아니다."""
+    owner = owner_task or _default_session()
     return [_rebase_one(s, onto=onto, owner=owner, git_runner=git_runner) for s in slots]
 
 
@@ -4696,8 +4709,8 @@ def _cmd_status(args) -> int:
         print(f"[중단] 대상 슬롯 해소 실패 — {exc}", file=sys.stderr)
         return 1
     if not rows:
-        print("# 조회 대상 슬롯 없음 — 내 세션이 보유한 leased 슬롯이 없다 "
-              "(`--task <이름>` 또는 `<slot>` 으로 대상을 명시하라).")
+        print("# 조회 대상 슬롯 없음 — 내 세션 명의로 보유한 leased 슬롯이 없다 "
+              "(task 모드면 `--task <이름>`, 아니면 `<slot>` 으로 대상을 명시하라).")
         return 0
     for i, row in enumerate(rows):
         if i:
@@ -4706,14 +4719,37 @@ def _cmd_status(args) -> int:
     return 0
 
 
+def _is_registered_task(name: str) -> bool:
+    """`name` 이 tasks 장부에 등록된 task 인가 — 스킵 안내 전용 조회 (부작용 0·T-0416).
+
+    ⚠ **`_lease_lock` 밖에서만 호출**한다 — 내부의 `find_task` 가 락을 잡는데 `_lease_lock` 은
+    비재진입이라 락 보유 중 호출하면 데드락이다(현 호출부 = CLI 요약 루프·락 밖·내부 리뷰 지적).
+
+    not-owner 스킵의 보유자가 **task 명의**면 해소는 `--task <이름>`(소유 축을 밝히는 것)이다 —
+    사용자가 그걸 추측하지 않게 CLI 안내에 실값을 싣기 위한 판정. 장부 IO/파싱 실패는 False
+    (fail-soft — 안내 문구가 없을 뿐 스킵 자체는 그대로 loud). 안내용 조회가 CLI 를 죽이지
+    않는다(`pm_config.cmd_status` 의 task 축 fail-soft 와 동형)."""
+    try:
+        return find_task(name) is not None
+    except Exception:  # noqa: BLE001 — 안내 전용 조회·실패는 문구 생략(스킵 판정엔 무영향).
+        return False
+
+
 def _rebase_skip_reason(reason: "str | None") -> str:
-    """rebase 스킵 사유 코드 → 사람이 읽는 loud 설명 (CLI·T-0359)."""
+    """rebase 스킵 사유 코드 → 사람이 읽는 loud 설명 (CLI·T-0359·T-0416 task 안내)."""
     if reason and reason.startswith("not-owner:"):
         holder = reason.split(":", 1)[1]
-        return f"세션 {holder!r} 이(가) 보유 — 내 슬롯 아님(rebase 차단·소유검사)"
+        # 보유자 명의는 세션일 수도 task 일 수도 있다 — "세션" 으로 단정하면 task 모드에서
+        # 안내가 틀린 축을 가리킨다(codex 게이트 suggestion·T-0416).
+        msg = f"명의 {holder!r} 이(가) 보유 — 내 슬롯 아님(rebase 차단·소유검사)"
+        if _is_registered_task(holder):
+            # 보유자가 등록 task = 소유 축이 task 다(ADR-0068) — 해소 커맨드를 실값으로 안내.
+            msg += (f" · 이 슬롯이 내 task 명의면 `--task {holder}` 를 붙여 그 명의로 rebase 하라"
+                    " (release F3 와 동형 소유검사·T-0416)")
+        return msg
     return {
         "readonly": "readonly 공유 슬롯 — mutation 불가(refresh 로만 갱신·⑬)",
-        "not-owner": "내 세션 소유(leased) 슬롯이 아니다 — 남의/미점유 슬롯 rebase 차단",
+        "not-owner": "내 명의(세션/task) 소유(leased) 슬롯이 아니다 — 남의/미점유 슬롯 rebase 차단",
         "dirty": "미커밋 변경(dirty) — rebase 는 clean 전제(정리 후 재시도)",
         "in-progress": "이미 rebase 진행 중 — `git rebase --continue|--abort` 로 먼저 해소",
         "no-base": "기준점(base) 미기록 + --onto 없음 — `set-base` 지정 또는 `--onto <branch>`(추론 금지·⑪)",
@@ -4723,26 +4759,29 @@ def _rebase_skip_reason(reason: "str | None") -> str:
 
 
 def _cmd_rebase(args) -> int:
-    """`rebase <slot> [--onto <b>]` (단일) · `rebase --task <이름> [--onto <b>]` (일괄) CLI 핸들러 (⑩·T-0359·§F10).
+    """`rebase <slot> [--task <이름>] [--onto <b>]` (단일) · `rebase --task <이름> [--onto <b>]` (일괄)
+    CLI 핸들러 (⑩·T-0359·§F10·T-0416).
 
     슬롯 독립 처리 — 선-검사(소유/dirty/rebase 진행중) 스킵 + 충돌 그대로 fail-loud(엔진 abort 안
     함) + 성공 시 장부 원자 갱신. 끝에 성공/스킵/충돌 요약. 단일은 성공해야 rc 0(스킵/충돌=rc 1),
     일괄은 충돌이 있으면 rc 1(주의 필요·나머지는 독립 진행).
+
+    **`--task` 는 두 역할이고 위치인자와 배타가 아니다(T-0416)**: ① 대상 *선택*(위치인자 없으면
+    그 task 보유 전 슬롯 일괄) ② 소유 *명의*(`rebase(owner_task=)` — release F3 동형). 그래서
+    `rebase <slot> --task <이름>` = 그 task 명의로 **단일** 슬롯 rebase 다 — 종전엔 둘이 배타라
+    task 명의 슬롯을 단일 지정으로 rebase 할 방법이 아예 없었다. 위치인자만이면 종전대로 세션
+    명의로 판정한다(슬롯-세션 모드 불변).
 
     ⚠️ **선행조건(⑳)**: 활성 백그라운드 위임(dev) 중인 슬롯은 rebase 하지 마라 — 서브에이전트는
     하네스 안 프로세스라 엔진이 못 본다(기계 신호 부재·[[parallel-dev-shared-tree-clobber]] 변형).
     스킬/카드에 명문화·실행 전 사용자 확인."""
     task = args.task
     slot_arg = args.slot
-    if task and slot_arg:
-        print("[중단] rebase 는 `<slot>`(단일) 또는 `--task <이름>`(일괄) 중 하나만 받는다.",
-              file=sys.stderr)
-        return 1
     if not task and not slot_arg:
         print("[중단] rebase 대상을 지정하라 — `<slot>`(단일) 또는 `--task <이름>`(일괄).",
               file=sys.stderr)
         return 1
-    batch = bool(task)
+    batch = bool(task) and not slot_arg   # `--task` 단독일 때만 일괄(위치인자 동반 = 단일 지정).
     if batch:
         slots = [l.slot for l in slots_for_task(task)]
         if not slots:
@@ -4755,7 +4794,8 @@ def _cmd_rebase(args) -> int:
             print(f"[중단] {exc}", file=sys.stderr)
             return 1
 
-    results = rebase(slots, onto=args.onto)
+    # 소유 명의 = `--task` 주어지면 그 task(단일·일괄 공통·T-0416), 아니면 세션(`rebase` 내부 해소).
+    results = rebase(slots, onto=args.onto, owner_task=task)
     n_ok = n_skip = n_conflict = 0
     for r in results:
         if r.outcome == REBASE_REBASED:
@@ -4915,14 +4955,16 @@ def main(argv: "list[str] | None" = None) -> int:
     p_status.add_argument("--task", default=None,
                           help="그 task 보유 전 슬롯 일괄 조회(`<slot>` 과 배타).")
 
-    # rebase <slot> [--onto <b>] (단일) · rebase --task <이름> [--onto <b>] (일괄) — 위치인자/pool 관리.
+    # rebase <slot> [--task <이름>] [--onto <b>] (단일) · rebase --task <이름> [--onto <b>] (일괄)
+    # — 위치인자/pool 관리. `--task` 는 선택 축이자 **소유 명의** 축이라 위치인자와 배타가 아니다(T-0416).
     p_rebase = subparsers.add_parser(
         "rebase",
         help="슬롯 base 를 사용자 명시로 rebase(단일/일괄·선-검사·충돌 그대로+loud·장부 원자 갱신·⑩).")
     p_rebase.add_argument("slot", nargs="?", default=None,
-                          help="대상 슬롯(단일·`--task` 와 배타).")
+                          help="대상 슬롯(단일 지정·`--task` 와 함께 주면 그 task 명의로 이 슬롯만).")
     p_rebase.add_argument("--task", default=None,
-                          help="그 task 보유 전 슬롯 일괄 rebase(`<slot>` 과 배타).")
+                          help="task 명의(소유검사 축·release F3 동형·T-0416). `<slot>` 없이 주면 "
+                               "그 task 보유 전 슬롯 일괄 rebase.")
     p_rebase.add_argument("--onto", default=None,
                           help="rebase 기준 브랜치(생략 시 기록된 base.branch 최신·미기록이면 거부·⑪).")
 

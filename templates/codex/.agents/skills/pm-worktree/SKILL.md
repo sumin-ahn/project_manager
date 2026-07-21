@@ -42,8 +42,8 @@ main 으로 rebase 해" 라고 지시하면 PM 이 이 스킬을 부른다. 셋�
   dirty 를 `status` 로 본다(손-git 조합 불요). 단일(`<slot>`)·일괄(`--task <이름>`·무인자=내 task 전
   슬롯). 기준점 미기록이면 "base 대비 behind" 는 `-`(계산 불가).
 - **슬롯 base rebase** — 슬롯을 기록된 base(또는 `--onto <branch>`) 최신으로 rebase 한다("이 슬롯
-  main 최신으로 rebase 해"). 단일(`<slot>`)·일괄(`--task <이름>`·그 task 보유 전 슬롯). 자동 rebase
-  없음 — **원할 때만**(결정 ⑤ 정신).
+  main 최신으로 rebase 해"). 단일(`<slot>`)·일괄(`--task <이름>`·그 task 보유 전 슬롯)·**task 명의
+  단일**(`<slot> --task <이름>`). 자동 rebase 없음 — **원할 때만**(결정 ⑤ 정신).
 - **readonly 공유 슬롯 갱신** — research 전용 read-only 슬롯(⑬·`worktree add --readonly` 로 생성)을
   released 최신 tip 으로 `refresh` 한다("readonly 슬롯 최신으로 갱신해"). fetch → detached HEAD 이동.
   dirty(누군가 씀·신호)면 거부(조용히 reset 안 함).
@@ -60,7 +60,8 @@ main 으로 rebase 해" 라고 지시하면 PM 이 이 스킬을 부른다. 셋�
 해소하나, 미해소(0개)·모호(≥2)면 rc 1 로 명확히 실패한다(침묵 no-op 아님). `set-base`/`status`/
 `rebase`/`refresh`/`record`/`switch` 는 대상 슬롯을 **위치인자 `<slot>`** 으로 직접 지정한다(임의 슬롯 pool 관리 — 자기
 세션 슬롯이 아닐 수 있음). `status`/`rebase` 는 `--task <이름>` 으로 그 task 보유 전 슬롯을 일괄
-지칭한다. submodule 경로·슬롯은 형식/목록 검증을 거쳐 슬롯 경계 밖(절대경로·`..`)은 거부된다.
+지칭한다. **`rebase` 의 `--task` 는 소유 명의 축도 겸한다**(T-0416) — `rebase <slot> --task <이름>` 은
+그 task 명의로 **단일** 슬롯을 rebase 한다(위치인자와 배타 아님). submodule 경로·슬롯은 형식/목록 검증을 거쳐 슬롯 경계 밖(절대경로·`..`)은 거부된다.
 
 ## ⚠ rebase 선행조건 (⑳ — 활성 위임 중 금지)
 
@@ -119,12 +120,19 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   role(work/readonly)·base·branch·head·**base 대비 N behind**·submodule pin/drift(⚠=drift/
   uninitialized)·dirty 를 surface. "base 대비 N behind" 는 기준점이 있어야 계산된다 — 미기록이면
   `-`(계산 불가·자동 추론 금지).
-- `rebase`: `<slot>`(단일)·`--task <이름>`(그 task 보유 전 슬롯 일괄·`<slot>` 과 배타). `--onto
+- `rebase`: `<slot>`(단일)·`--task <이름>`(그 task 보유 전 슬롯 일괄)·**`<slot> --task <이름>`**(그 task
+  명의로 단일·T-0416). `--task` 는 **선택 축 + 소유 명의 축**이라 위치인자와 배타가 아니다 — task 명의
+  슬롯을 단일 지정으로 rebase 하려면 이 형태를 쓴다. `<slot>` 단독은 종전대로 세션 명의. `--onto
   <branch>` 생략 = 기록된 base.branch 최신으로 rebase(**미기록이면 거부** — `set-base` 또는 `--onto`
   로 기준 명시·추론 금지·결정 ⑪). **슬롯마다 독립 처리**(일괄에서 한 충돌이 나머지를 안 막음) + 끝에
   성공/스킵/충돌 요약:
-  - **선-검사 3종(스킵 + loud)**: 내 세션 소유(leased) 슬롯이 아님 / dirty(rebase 는 clean 전제) /
+  - **선-검사 3종(스킵 + loud)**: **내 명의(세션 또는 `--task` 로 준 task) leased 슬롯이 아님**
+    (T-0416 — 축 확장이지 검사 제거가 아니다·타 명의는 계속 loud 스킵이고 보유자가 등록 task 면
+    스킵 문구가 `--task <이름>` 해소를 실값으로 안내한다) / dirty(rebase 는 clean 전제) /
     rebase 진행 중. (readonly 공유 슬롯도 mutation 불가라 스킵.)
+  - ⚠ **명의는 호출자가 밝히는 것**(자칭) — `--task <남의 task>` 를 주면 통과한다. `release --task`
+    의 소유검사(F3)·세션 축(`PM_SESSION_NAME`)과 **같은 모델**이다. 이 가드는 **오조작 방지**이지
+    타 PM 을 막는 보안 경계가 아니다(내부 리뷰 지적·정직 서술).
   - **충돌** = **그 상태 그대로 두고 fail-loud** — 엔진이 임의 abort 하지 않는다(해소는 사용자:
     슬롯에서 `git rebase --continue` 충돌 해결 후 또는 `git rebase --abort` 취소). 장부 base **미갱신**
     (미완) → 다음 부트스트랩 0단계가 "rebase 진행 중" 으로 감지·안내한다.

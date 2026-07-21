@@ -7268,8 +7268,224 @@ def test_cli_rebase_batch_summary_rc0(wp, proj, monkeypatch, capsys):
     assert "요약" in capsys.readouterr().out
 
 
-def test_cli_rebase_slot_and_task_conflict_rc1(wp, capsys):
-    """CLI rebase — `<slot>` + `--task` 동시는 rc 1(배타)."""
-    rc = wp.main(["rebase", "work/A_1", "--task", "job"])
+# ════════════════════════════════════════════════════════════════════════
+# T-0416 — rebase 소유 축이 task 명의를 인정 (ADR-0068 1급 task · release F3 동형)
+# ════════════════════════════════════════════════════════════════════════
+# 결함: 리스 장부의 보유자가 바로 그 task 인데도 소유검사가 `_default_session()`(슬롯 세션 축)
+# 으로만 판정해 task 모드에서 rebase 가 **전면 스킵**됐다(PM 4차 실측). 축 확장이지 검사 제거가
+# 아니다 — 타 명의(다른 task·다른 슬롯 세션·미점유)는 여전히 not-owner 스킵 + loud.
+
+_TASK_OWNER = "mainjob"          # 리스 장부 보유자 = task 명의(lease.session == task 이름·⑥).
+_FOREIGN_SESSION = "host-99999"  # task 모드의 `_default_session()` 폴백(호스트-pid) 대역.
+
+
+def _task_mode(wp, monkeypatch):
+    """task 모드 재현 — `_default_session()` 이 task 명의와 무관한 값(host-pid 폴백)을 돌려준다.
+
+    실제로도 task 명의 lease 가 2개 이상이면 `_default_session` 은 모호(leased ≥2)라 host-pid 로
+    간다 — 그래서 세션 축만 보던 옛 소유검사는 자기 task 슬롯조차 '내 것' 으로 못 봤다."""
+    monkeypatch.setattr(wp, "_default_session", lambda: _FOREIGN_SESSION)
+
+
+def test_rebase_task_owner_single_slot_succeeds(wp, monkeypatch):
+    """(a) task 명의 슬롯 단일 rebase — `owner_task` 축으로 소유 통과 → 성공 + 장부 원자 갱신."""
+    _seed_rebase_lease(wp, session=_TASK_OWNER,
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    _task_mode(wp, monkeypatch)
+    git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
+                     head_sha=_REBASED_HEAD)
+    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == wp.REBASE_REBASED and r.base == "origin/main"
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    assert recorded["base"] == {"branch": "origin/main", "commit": _REBASED_BASE_TIP}
+
+
+def test_rebase_task_owner_batch_succeeds(wp, monkeypatch):
+    """(b) `--task` 일괄 — 그 task 보유 전 슬롯이 소유검사를 통과한다(전면 스킵 회귀 핀)."""
+    def _mk(slot):
+        return wp.Lease(slot=slot, repo="A", session=_TASK_OWNER, pid=os.getpid(),
+                        started="t", state="leased",
+                        git={"base": {"branch": "origin/main", "commit": _OLD_SHA},
+                             "branch": "feat", "head": _OLD_SHA, "submodules": [],
+                             "recorded_at": "t"})
+    _seed(wp, _mk("work/A_1"), _mk("work/A_2"))
+    _task_mode(wp, monkeypatch)
+    git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
+                     head_sha=_REBASED_HEAD)
+    results = wp.rebase(["work/A_1", "work/A_2"], owner_task=_TASK_OWNER, git_runner=git)
+    assert [r.outcome for r in results] == [wp.REBASE_REBASED, wp.REBASE_REBASED]
+
+
+def test_rebase_other_task_slot_still_skipped_loud(wp, monkeypatch):
+    """(c) 타 task 명의 슬롯은 여전히 not-owner 스킵 + rebase 미시도(검사 제거가 아니다)."""
+    _seed_rebase_lease(wp, session="other-task",
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    _task_mode(wp, monkeypatch)
+    git = _RebaseGit()
+    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "not-owner:other-task"
+    assert not git.did("rebase")
+
+
+def test_rebase_slot_session_owner_unchanged_without_task(wp, monkeypatch):
+    """(d) `owner_task` 미지정 = 종전 세션 축 그대로 — 슬롯-세션 명의 거동 불변."""
+    _seed_rebase_lease(wp, session="A_1",
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    monkeypatch.setattr(wp, "_default_session", lambda: "A_1")
+    git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
+                     head_sha=_REBASED_HEAD)
+    [r] = wp.rebase(["work/A_1"], git_runner=git)
+    assert r.outcome == wp.REBASE_REBASED
+
+
+def test_rebase_task_owner_does_not_fall_back_to_session(wp, monkeypatch):
+    """`owner_task` 주어지면 세션 축은 아예 조회하지 않는다 — 명의는 하나(release F3 동형)."""
+    def _boom():
+        raise AssertionError("owner_task 가 주어지면 _default_session 을 보지 않는다")
+
+    _seed_rebase_lease(wp, session=_TASK_OWNER,
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    monkeypatch.setattr(wp, "_default_session", _boom)
+    git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
+                     head_sha=_REBASED_HEAD)
+    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == wp.REBASE_REBASED
+
+
+# ── (e) 선-검사는 소유 통과 후에도 그대로 (readonly·dirty·rebase 진행중) ──────
+
+
+def test_rebase_task_owner_readonly_still_skipped(wp, monkeypatch):
+    """(e-1) readonly 공유 슬롯은 소유 축과 무관하게 mutation 불가(⑬·refresh 로만)."""
+    _seed_rebase_lease(wp, session="", role="readonly",
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    _task_mode(wp, monkeypatch)
+    git = _RebaseGit()
+    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "readonly"
+
+
+def test_rebase_task_owner_dirty_still_skipped(wp, monkeypatch):
+    """(e-2) 소유는 통과해도 dirty 면 스킵(rebase 는 clean 전제·미커밋 유실 방지)."""
+    _seed_rebase_lease(wp, session=_TASK_OWNER,
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    _task_mode(wp, monkeypatch)
+    git = _RebaseGit(dirty=True)
+    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "dirty"
+    assert not git.did("rebase")
+
+
+def test_rebase_task_owner_in_progress_still_skipped(wp, monkeypatch):
+    """(e-3) 소유는 통과해도 rebase 진행 중이면 스킵(사용자 continue/abort 먼저)."""
+    _seed_rebase_lease(wp, session=_TASK_OWNER,
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    _task_mode(wp, monkeypatch)
+    monkeypatch.setattr(wp, "_rebase_in_progress", lambda slot, **k: True)
+    git = _RebaseGit()
+    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "in-progress"
+    assert not git.did("rebase")
+
+
+# ── CLI — `<slot>` + `--task` 는 배타가 아니다(task 명의 단일 지정) ───────────
+
+
+def test_cli_rebase_slot_with_task_owner_rc0(wp, proj, monkeypatch, capsys):
+    """CLI `rebase <slot> --task <이름>` — task 명의 **단일** 지정 성공(rc 0·장부 갱신).
+
+    종전엔 위치인자와 `--task` 가 배타라 task 명의 슬롯을 단일 지정으로 rebase 할 방법이 아예
+    없었다(T-0416 실측 결함)."""
+    _seed_rebase_lease(wp, session=_TASK_OWNER,
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    _mk_slot_dir(wp, "work/A_1")
+    git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP}, head_sha=_REBASED_HEAD)
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    _task_mode(wp, monkeypatch)
+    rc = wp.main(["rebase", "work/A_1", "--task", _TASK_OWNER])
+    assert rc == 0
+    assert "성공" in capsys.readouterr().out
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    assert recorded["base"]["commit"] == _REBASED_BASE_TIP
+
+
+def test_cli_rebase_slot_with_task_only_targets_that_slot(wp, proj, monkeypatch, capsys):
+    """CLI `<slot> --task` = 단일(그 슬롯만) — task 보유 다른 슬롯은 손대지 않는다(선택 축)."""
+    def _mk(slot):
+        return wp.Lease(slot=slot, repo="A", session=_TASK_OWNER, pid=os.getpid(),
+                        started="t", state="leased",
+                        git={"base": {"branch": "origin/main", "commit": _OLD_SHA},
+                             "branch": "feat", "head": _OLD_SHA, "submodules": [],
+                             "recorded_at": "t"})
+    _seed(wp, _mk("work/A_1"), _mk("work/A_2"))
+    _mk_slot_dir(wp, "work/A_1")
+    _mk_slot_dir(wp, "work/A_2")
+    monkeypatch.setattr(wp, "_real_git_runner",
+                        lambda cwd: _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
+                                               head_sha=_REBASED_HEAD))
+    _task_mode(wp, monkeypatch)
+    rc = wp.main(["rebase", "work/A_1", "--task", _TASK_OWNER])
+    assert rc == 0
+    bases = {l.slot: l.git["base"]["commit"] for l in wp.list_leases()}
+    assert bases["work/A_1"] == _REBASED_BASE_TIP and bases["work/A_2"] == _OLD_SHA
+
+
+def test_cli_rebase_task_batch_in_task_mode_rc0(wp, proj, monkeypatch, capsys):
+    """CLI `rebase --task <이름>` 일괄 — task 모드(세션≠명의)에서도 전 슬롯 성공(전면 스킵 회귀 핀)."""
+    def _mk(slot):
+        return wp.Lease(slot=slot, repo="A", session=_TASK_OWNER, pid=os.getpid(),
+                        started="t", state="leased",
+                        git={"base": {"branch": "origin/main", "commit": _OLD_SHA},
+                             "branch": "feat", "head": _OLD_SHA, "submodules": [],
+                             "recorded_at": "t"})
+    _seed(wp, _mk("work/A_1"), _mk("work/A_2"))
+    _mk_slot_dir(wp, "work/A_1")
+    _mk_slot_dir(wp, "work/A_2")
+    monkeypatch.setattr(wp, "_real_git_runner",
+                        lambda cwd: _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
+                                               head_sha=_REBASED_HEAD))
+    _task_mode(wp, monkeypatch)
+    rc = wp.main(["rebase", "--task", _TASK_OWNER])
+    assert rc == 0
+    assert "스킵 0" in capsys.readouterr().out
+    bases = {l.slot: l.git["base"]["commit"] for l in wp.list_leases()}
+    assert bases == {"work/A_1": _REBASED_BASE_TIP, "work/A_2": _REBASED_BASE_TIP}
+
+
+def test_cli_rebase_slot_with_other_task_rc1_loud(wp, proj, monkeypatch, capsys):
+    """CLI `<slot> --task <내 task>` 인데 그 슬롯이 타 task 명의 → rc 1 + not-owner loud."""
+    _seed_rebase_lease(wp, session="other-task",
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    _mk_slot_dir(wp, "work/A_1")
+    git = _RebaseGit()
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    _task_mode(wp, monkeypatch)
+    rc = wp.main(["rebase", "work/A_1", "--task", _TASK_OWNER])
     assert rc == 1
-    assert "하나만" in capsys.readouterr().err
+    assert "내 슬롯 아님" in capsys.readouterr().err
+    assert not git.did("rebase")
+
+
+def test_cli_rebase_task_slot_without_task_flag_skips_with_remedy(wp, proj, monkeypatch, capsys):
+    """실측 재현 — `rebase <slot>`(명의 미지정)은 여전히 스킵이되, 해소 커맨드를 실값으로 안내한다.
+
+    보유자가 tasks 장부에 등록된 task 면 소유 축이 task 라는 뜻이므로 `--task <이름>` 을 안내한다
+    (감지=기계·해소=사용자 명시)."""
+    _seed_rebase_lease(wp, session=_TASK_OWNER,
+                       base={"branch": "origin/main", "commit": _OLD_SHA})
+    _seed_tasks(wp, _TASK_OWNER)
+    _mk_slot_dir(wp, "work/A_1")
+    git = _RebaseGit()
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    _task_mode(wp, monkeypatch)
+    rc = wp.main(["rebase", "work/A_1"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "내 슬롯 아님" in err and f"--task {_TASK_OWNER}" in err
+    assert not git.did("rebase")
+
+
+def test_rebase_skip_reason_no_task_hint_for_slot_session_holder(wp):
+    """보유자가 tasks 장부에 없으면(슬롯 세션 명의) `--task` 안내를 붙이지 않는다(오안내 방지)."""
+    msg = wp._rebase_skip_reason("not-owner:A_2")
+    assert "내 슬롯 아님" in msg and "--task" not in msg
