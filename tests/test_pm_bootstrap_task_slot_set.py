@@ -333,7 +333,7 @@ def test_creating_slot_blocks_with_worktree_status_cmd(bootstrap, tmp_path, caps
 
 
 def test_protected_branch_slot_blocks_with_switch_cmd(bootstrap, tmp_path, capsys):
-    """main-참조(보호브랜치 직접 checkout) = fault → 차단 + git switch 해소 커맨드."""
+    """main-참조(보호브랜치 직접 checkout) = fault → 차단 + switch 해소 커맨드(엔진-매개·T-0414)."""
     pool = _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",),
         branches={"work/A_1": "main"},               # 보호브랜치 직접 checkout
@@ -344,7 +344,10 @@ def test_protected_branch_slot_blocks_with_switch_cmd(bootstrap, tmp_path, capsy
     cap = capsys.readouterr()
     assert cap.out == ""
     assert "main-참조" in cap.err
-    assert "git -C work/A_1 switch -c mytask" in cap.err
+    # 엔진-매개 단일 커맨드(전환+장부 스냅 재기록 원자·T-0414) — raw git 안내는 해소 직후
+    # '기록↔live diverged' 2차 차단을 유발하므로 더는 싣지 않는다.
+    assert "worktree_pool.py switch work/A_1 mytask" in cap.err
+    assert "git -C work/A_1 switch -c" not in cap.err
 
 
 def test_all_faults_reported_at_once(bootstrap, tmp_path, capsys):

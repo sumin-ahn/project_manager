@@ -437,8 +437,10 @@ def test_reject_message_has_two_resolution_choices(bootstrap, tmp_path, capsys):
     err = capsys.readouterr().err
     # (a) readonly 슬롯 생성 실값 — repo 치환 포함.
     assert "worktree add X --readonly" in err
-    # (b) 작업 브랜치 전환 실값 — slot_id·session 치환 포함.
-    assert "git -C work/X_2 switch -c X_2" in err
+    # (b) 작업 브랜치 전환 실값 — slot_id·session 치환 포함. 엔진-매개 단일 커맨드(전환+스냅
+    #     재기록 원자·T-0414) — raw `git switch` 는 diverged 2차 차단을 부르므로 안내하지 않는다.
+    assert "worktree_pool.py switch work/X_2 X_2" in err
+    assert "git -C work/X_2 switch -c" not in err
 
 
 def test_non_main_reference_slot_passes(bootstrap, tmp_path, capsys):

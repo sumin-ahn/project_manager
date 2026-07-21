@@ -2966,7 +2966,7 @@ class PmBootstrap:
         reason = self._phase0_main_reference_reason(wp, repo, slot_id)
         if reason is None:
             return 0
-        remedy_branch = self._remedy_branch_name(wp, repo, slot_id, session)
+        remedy = self._remedy_switch_command(wp, repo, slot_id, session)
         print(
             f"[중단·0단계] 슬롯 {slot_id} 이(가) {reason} — main-참조 상태는 진입 거부입니다(T-0360). "
             f"이 슬롯에서 작업하면 커밋이 canonical/보호 브랜치에 얹혀 ① 오염으로 이어집니다(방어를 "
@@ -2974,8 +2974,9 @@ class PmBootstrap:
             f"  → 해소 (택1):\n"
             f"     (a) 코드 읽기 기준면이 필요하면 readonly 슬롯을 만드세요:\n"
             f"         {_CARD_TOOL_INVOKE}/pm_config.py worktree add {repo} --readonly\n"
-            f"     (b) 이 슬롯을 작업 브랜치로 전환하세요(main 직접 checkout 이탈):\n"
-            f"         git -C {slot_id} switch -c {remedy_branch}",
+            f"     (b) 이 슬롯을 작업 브랜치로 전환하세요(전환+장부 스냅 재기록 원자·T-0414 —\n"
+            f"         raw `git switch` 는 스냅을 안 남겨 곧바로 diverged 2차 차단을 부릅니다):\n"
+            f"         {remedy}",
             file=sys.stderr,
         )
         return 1
@@ -3026,17 +3027,27 @@ class PmBootstrap:
         tracked_branch = upstream.split("/", 1)[1]  # origin/main → main · origin/feature/x → feature/x
         return upstream if self._protected_warning(repo, tracked_branch) is not None else None
 
-    def _remedy_branch_name(self, wp, repo: str, slot_id: str, preferred: str) -> str:
+    def _remedy_branch_name(self, wp, repo: str, slot_id: str, preferred: str) -> str | None:
         """main-참조 해소 커맨드가 제시할 **안전한 신규 브랜치명** (T-0412·소비처 2곳 공용).
 
-        `git switch -c <name>` 이 실제로 실행 가능한 값만 돌려준다 — 세션/task 명을 그대로 보간하면
-        그 이름이 보호브랜치이거나 이미 존재하는 브랜치일 때 자기모순 안내가 된다(PM 4차 실측).
-        규칙(순서·`_REMEDY_BRANCH_PREFIX`·`_REMEDY_BRANCH_SUFFIX_LIMIT`):
-          1. `preferred` 가 보호목록(`board._repo_protected`·`_protected_warning` 축) 밖이고 그 슬롯에
-             **미존재** 브랜치면 그대로.
-          2. 아니면 `task/<preferred>`(보호목록·존재 재검사).
+        해소 커맨드가 실제로 실행 가능한 값만 돌려준다 — 세션/task 명을 그대로 보간하면 그 이름이
+        보호브랜치이거나 이미 존재하는 브랜치일 때 자기모순 안내가 된다(PM 4차 실측).
+        규칙(순서·`_REMEDY_BRANCH_PREFIX`·`_REMEDY_BRANCH_SUFFIX_LIMIT`) — 후보 필터 3종:
+          1. `preferred` 가 보호목록(`board._repo_protected`·`_protected_warning` 축) 밖이고,
+             **git 브랜치명으로 유효**(`_remedy_branch_ref_ok` — 실행 쪽 `switch` 와 같은 판정)하며,
+             그 슬롯에 **미존재** 브랜치면 그대로.
+          2. 아니면 `task/<preferred>`(세 검사 재적용).
           3. 그것도 충돌하면 `task/<preferred>-2`, `-3` … 첫 미충돌.
-        전 후보 충돌(상한 도달)이면 마지막 후보를 그대로 제시한다(fail-soft — 안내 자체는 나간다).
+        전 후보 탈락(상한 도달·전부 무효)이면 **None**(T-0414·T-0412 리뷰 이관분) — 옛 코드는 마지막
+        후보(정의상 충돌하는 이름)를 그대로 제시해 안내가 *다시* 실행 불가가 됐다. 이름을 억지로
+        짜내는 대신 호출부가 "브랜치명을 직접 지정하라" 분기로 안내한다(`_remedy_switch_command`).
+
+        ⚠ **ref-format 검사가 후보 생성에도 있어야 한다**(codex 게이트 must-fix·T-0414): task 명
+        검증(`identity_args.validate_task_name`)은 `fix:bug`·`fix~1`·`a.lock` 을 통과시키지만
+        `git check-ref-format --branch` 는 거부한다 — 제안 쪽에 이 검사가 없으면 remedy 가
+        `switch <slot> fix:bug` 를 안내하고 실행 쪽이 `invalid-ref` 로 튕겨 "실행 가능한 단일 remedy"
+        라는 이 티켓의 목표가 그 입력에서 깨진다(2차 차단 재발). 접두 후보도 같은 검사를 탄다
+        (`task/fix:bug` 도 여전히 무효).
         **판정만 한다** — 엔진이 브랜치를 만들지 않는다(0단계=판정·해소=사용자·ADR-0068 I2)."""
         prefixed = f"{_REMEDY_BRANCH_PREFIX}{preferred}"
         candidates = [preferred, prefixed]
@@ -3044,10 +3055,77 @@ class PmBootstrap:
         for cand in candidates:
             if self._protected_warning(repo, cand) is not None:
                 continue
+            if not self._remedy_branch_ref_ok(wp, slot_id, cand):
+                continue
             if self._slot_branch_exists(wp, slot_id, cand):
                 continue
             return cand
-        return candidates[-1]
+        return None
+
+    def _remedy_branch_ref_ok(self, wp, slot_id: str, branch: str) -> bool:
+        """후보가 **`switch` 가 받아들일** 브랜치명인가 — worktree_pool 판정 재사용 (T-0414·규칙 중복 0).
+
+        제안 쪽(여기)과 실행 쪽(`worktree_pool.switch`)의 수용 규칙이 갈리면 안내가 곧바로 실행 불가가
+        된다(codex 게이트 must-fix — 같은 검사의 절반 적용). 그래서 **판정을 다시 구현하지 않고**
+        worktree_pool 의 `_normalize_branch_name`(그 규칙의 단일 진실 — `git check-ref-format --branch`
+        + 빈/다중줄/공백 방어 + 고정점 확인)을 **슬롯 worktree 바인딩 러너**로 호출한다. 주입/동적로드된
+        풀 모듈을 쓰는 기존 seam(`_slot_branch_exists`·`_phase0_protected_upstream` 동형·직접 import 금지).
+
+        통과 조건은 `normalize(cand) == cand` — 정규화 결과가 원문과 다르면(revspec 확장·`@{-1}`)
+        제안 이름이 다른 브랜치로 해소되어 안내가 거짓말이 되므로 후보에서 배제한다.
+
+        판정기 부재(구 풀·mock)·경로 해소 실패·**git 호출 자체가 터진 경우**는 True(검사 생략·현행
+        동작 유지·fail-soft) — 후보 판정 실패가 0단계 안내를 막지 않는다(`_slot_branch_exists` 동형
+        규율). `_normalize_branch_name` 은 runner 예외를 자기 안에서 None(=거부)으로 흡수하므로,
+        "이름이 무효" 와 "git 이 못 돌았다" 를 가르기 위해 러너가 예외를 표시(`failed`)한다.
+        (rc≠0 로 조용히 실패하는 git 은 무효와 구분 불가 — 그 경우 후보가 소진돼 "브랜치명 직접
+        지정" 안내로 수렴한다. 여전히 실행 가능한 안내다.)"""
+        normalize = getattr(wp, "_normalize_branch_name", None)
+        if not callable(normalize):
+            return True    # 구 풀 — 검사 비활성(fail-soft·안내는 계속).
+        try:
+            slot_dir = str(wp.slot_path(slot_id))
+        except Exception:  # noqa: BLE001 — fail-soft: 경로 해소 실패는 검사 생략.
+            return True
+        failed: list[bool] = []
+
+        def runner(argv):
+            """슬롯 worktree 바인딩 git 러너 — DI `_run_git_fn` 에 `-C <slot_dir>` 를 붙인다."""
+            try:
+                return self._run_git_fn(["-C", slot_dir, *argv])
+            except Exception:
+                failed.append(True)   # git 호출 자체 실패 — 무효 판정과 구분(위 fail-soft).
+                raise
+
+        try:
+            ok = normalize(branch, git_runner=runner) == branch
+        except Exception:  # noqa: BLE001 — fail-soft: 판정기 예외는 검사 생략(안내 계속).
+            return True
+        return True if failed else ok
+
+    def _remedy_switch_command(self, wp, repo: str, slot_id: str, preferred: str) -> str:
+        """main-참조 해소 커맨드 문자열 — **엔진-매개 단일 커맨드** (T-0414·소비처 2곳 공용).
+
+        raw `git switch -c <b>` 는 브랜치는 바꾸지만 장부 스냅을 안 남겨서, 사용자가 안내대로
+        해소하면 **곧바로** 0단계 "기록↔live diverged" 2차 차단이 뜬다(PM 4차 실측·왕복 2회 강제).
+        엔진이 매개하는 전환은 전부 스냅을 재기록하는데 remedy 만 엔진 밖 raw git 이던 비대칭을
+        `worktree_pool.py switch`(전환+스냅 재기록 원자·T-0414)로 닫는다.
+
+        브랜치명은 `_remedy_branch_name`(T-0412)이 산출한다(규칙 중복 구현 0). 후보 소진(None)이면
+        이름을 제안하지 않고 **직접 지정**을 안내한다 — 상한 후보는 정의상 충돌하므로 그대로 실으면
+        실행 불가 안내를 재생산한다(T-0412 리뷰 이관분).
+
+        복합 문자열(`git … && python3 … record`)은 쓰지 않는다 — **PowerShell 5.x 가 `&&` 미지원**
+        (Windows 채택자에서 깨진다·실측)."""
+        branch = self._remedy_branch_name(wp, repo, slot_id, preferred)
+        cmd = f"{_CARD_TOOL_INVOKE}/worktree_pool.py switch {slot_id}"
+        if branch is None:
+            return (
+                f"{cmd} <새-브랜치명>  (제안 후보 소진 — `{preferred}`·`{_REMEDY_BRANCH_PREFIX}"
+                f"{preferred}`·`-2`…`-{_REMEDY_BRANCH_SUFFIX_LIMIT}` 가 모두 보호목록/기존 브랜치와 "
+                f"충돌하거나 git 브랜치명으로 부적합합니다. 브랜치명을 직접 지정하세요.)"
+            )
+        return f"{cmd} {branch}"
 
     def _slot_branch_exists(self, wp, slot_id: str, branch: str) -> bool:
         """그 슬롯 worktree 에 로컬 브랜치 `branch` 가 이미 있는가 (T-0412·remedy 후보 충돌 검사).
@@ -3384,11 +3462,10 @@ class PmBootstrap:
         # 3. main-참조(보호브랜치 직접/원격추적).
         reason = self._phase0_main_reference_reason(wp, repo, slot_id)
         if reason is not None:
-            remedy_branch = self._remedy_branch_name(wp, repo, slot_id, task)
             return (
                 "main-참조 (보호브랜치 직접 checkout / origin-추적)",
                 f"{reason} — 이 슬롯 커밋이 canonical/보호 브랜치로 새면 ① 오염(§F9).",
-                f"git -C {slot_id} switch -c {remedy_branch}",
+                self._remedy_switch_command(wp, repo, slot_id, task),
             )
         # 4. 기록↔live diverged.
         compare = getattr(wp, "compare_slot_git", None)

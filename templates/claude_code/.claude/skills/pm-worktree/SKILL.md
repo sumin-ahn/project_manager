@@ -1,6 +1,6 @@
 ---
 name: pm-worktree
-description: "worktree/submodule 운영중 관리 — submodule 을 dev 브랜치로 지정(pool selective resync 로부터 보호)·drift 난 detached submodule 을 pin 으로 수동 재동기·슬롯 기준점(base) 사용자 명시 기록(set-base)·슬롯 git 구성 조회(status·단일/일괄·submodule pin/drift·dirty)·슬롯 base rebase(단일/일괄·선-검사·충돌 그대로+loud·장부 원자 갱신·자동 rebase 없음)·readonly 공유 슬롯 갱신(refresh)·슬롯 lease git 스냅 명시 재동기(record — 0단계 diverged 정당 판단 시). backbone CLI .project_manager/tools/worktree_pool.py (dev/sync/set-base/status/rebase/refresh/record) thin wrapper. Triggers: 'submodule dev 지정', 'submodule 작업 중 선언', 'worktree submodule drift 재동기', 'worktree 브랜치 관리', '슬롯 기준점 지정', 'set-base', 'worktree status', '슬롯 rebase', 'worktree rebase', '슬롯 base 변경', 'readonly 슬롯 갱신', 'refresh', '슬롯 재동기', 'record', 'pm-worktree'."
+description: "worktree/submodule 운영중 관리 — submodule 을 dev 브랜치로 지정(pool selective resync 로부터 보호)·drift 난 detached submodule 을 pin 으로 수동 재동기·슬롯 기준점(base) 사용자 명시 기록(set-base)·슬롯 git 구성 조회(status·단일/일괄·submodule pin/drift·dirty)·슬롯 base rebase(단일/일괄·선-검사·충돌 그대로+loud·장부 원자 갱신·자동 rebase 없음)·readonly 공유 슬롯 갱신(refresh)·슬롯 lease git 스냅 명시 재동기(record — 0단계 diverged 정당 판단 시)·슬롯 브랜치 전환 + 스냅 재기록 원자(switch — 0단계 main-참조 해소). backbone CLI .project_manager/tools/worktree_pool.py (dev/sync/set-base/status/rebase/refresh/record/switch) thin wrapper. Triggers: 'submodule dev 지정', 'submodule 작업 중 선언', 'worktree submodule drift 재동기', 'worktree 브랜치 관리', '슬롯 기준점 지정', 'set-base', 'worktree status', '슬롯 rebase', 'worktree rebase', '슬롯 base 변경', 'readonly 슬롯 갱신', 'refresh', '슬롯 재동기', 'record', '슬롯 브랜치 전환', 'worktree switch', 'switch', 'main-참조 해소', 'pm-worktree'."
 audience: pm-internal
 ---
 
@@ -11,8 +11,8 @@ audience: pm-internal
 > 부트스트랩)로부터 보호하고, drift 난 detached(consume) submodule 을 pin 으로 **수동 재동기**하며,
 > 슬롯 **기준점(base)을 사용자 명시로 기록**(`set-base`)하고, 슬롯 git 구성을 **조회**(`status`·단일/
 > 일괄·submodule pin/drift·dirty)하며, 슬롯 base 를 **rebase**(단일/일괄·선-검사·충돌 그대로+loud·
-> 장부 원자 갱신)하고, readonly 공유 슬롯을 released 최신으로 **갱신**(`refresh`)하고, 슬롯 lease git 스냅을 **명시 재동기**(`record` — 부트스트랩 0단계 diverged 를 사용자가 정당 판단했을 때·T-0391)한다. backbone =
-> `.project_manager/tools/worktree_pool.py`(`dev`/`sync`/`set-base`/`status`/`rebase`/`refresh`/`record`). 비즈니스
+> 장부 원자 갱신)하고, readonly 공유 슬롯을 released 최신으로 **갱신**(`refresh`)하고, 슬롯 lease git 스냅을 **명시 재동기**(`record` — 부트스트랩 0단계 diverged 를 사용자가 정당 판단했을 때·T-0391)하며, 슬롯 브랜치를 **전환+스냅 재기록 원자**로 옮긴다(`switch` — 0단계 main-참조 해소·T-0414). backbone =
+> `.project_manager/tools/worktree_pool.py`(`dev`/`sync`/`set-base`/`status`/`rebase`/`refresh`/`record`/`switch`). 비즈니스
 > 로직 0 — 엔진 CLI 호출 thin wrapper (ADR-0049 명령어化 4요소·ADR-0051 live-HEAD 역할모델).
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
@@ -47,6 +47,10 @@ main 으로 rebase 해" 라고 지시하면 PM 이 이 스킬을 부른다. 셋�
 - **readonly 공유 슬롯 갱신** — research 전용 read-only 슬롯(⑬·`worktree add --readonly` 로 생성)을
   released 최신 tip 으로 `refresh` 한다("readonly 슬롯 최신으로 갱신해"). fetch → detached HEAD 이동.
   dirty(누군가 씀·신호)면 거부(조용히 reset 안 함).
+- **0단계 main-참조 해소** — 부트스트랩 0단계가 "슬롯이 보호 브랜치를 직접 checkout / 보호 브랜치
+  원격을 origin-추적" 이라며 진입을 거부하면(T-0360), 그 안내가 제시하는 `switch <slot> <branch>` 로
+  작업 브랜치로 빠져나온다("이 슬롯 작업 브랜치로 전환해"). 전환과 장부 스냅 재기록이 **한 호출에**
+  일어나 재진입이 diverged 로 다시 막히지 않는다(T-0414).
 
 ## 정체성 / 슬롯
 
@@ -54,7 +58,7 @@ main 으로 rebase 해" 라고 지시하면 PM 이 이 스킬을 부른다. 셋�
 낸다 — 정체성(에이전트 맥락)을 도구에 **명시 전달**해 오타깃을 막는다. `dev`/`sync` 는 `--repo <repo>
 --slot <N>` 을 명시한다(예: `--repo project_manager --slot 1`) — 생략하면 cwd·세션 leased 슬롯으로
 해소하나, 미해소(0개)·모호(≥2)면 rc 1 로 명확히 실패한다(침묵 no-op 아님). `set-base`/`status`/
-`rebase`/`refresh`/`record` 는 대상 슬롯을 **위치인자 `<slot>`** 으로 직접 지정한다(임의 슬롯 pool 관리 — 자기
+`rebase`/`refresh`/`record`/`switch` 는 대상 슬롯을 **위치인자 `<slot>`** 으로 직접 지정한다(임의 슬롯 pool 관리 — 자기
 세션 슬롯이 아닐 수 있음). `status`/`rebase` 는 `--task <이름>` 으로 그 task 보유 전 슬롯을 일괄
 지칭한다. submodule 경로·슬롯은 형식/목록 검증을 거쳐 슬롯 경계 밖(절대경로·`..`)은 거부된다.
 
@@ -90,6 +94,12 @@ python3 .project_manager/tools/worktree_pool.py rebase --task <이름> [--onto <
 
 # ⑥ readonly 공유 슬롯 갱신 (fetch → detached HEAD 이동 + submodule 재동기·dirty=거부+loud·⑬)
 python3 .project_manager/tools/worktree_pool.py refresh <slot> [--onto <branch>]
+
+# ⑦ 슬롯 도착 스냅(lease.git) 명시 재동기 (live 로 재기록·base 보존·0단계 diverged 정당 판단 시)
+python3 .project_manager/tools/worktree_pool.py record <slot>
+
+# ⑧ 슬롯 브랜치 전환 + 장부 스냅 재기록 (원자·base 보존·보호브랜치 거부·0단계 main-참조 해소)
+python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
 ```
 
 - `<submodule_path>` = 슬롯 worktree 상대 경로(= `git submodule status` 표기·예 `vendor/sub`).
@@ -128,6 +138,39 @@ python3 .project_manager/tools/worktree_pool.py refresh <slot> [--onto <branch>]
   보고 판단). 기준 미해소(추론 금지)·대상이 readonly 가 아니면 rc 1. **lease/mutation 거부**: readonly
   슬롯에 `set-base`/`rebase`/`dev`/`sync`·`release`/바인딩(`/pm-bootstrap --slot`)은 엔진이
   거부한다(문서 검증 기준면·무소유 공유 자산·갱신은 refresh 만·⑬·§F11).
+- `record`: `<slot>` 위치인자 — 슬롯 lease 의 **도착 스냅**(`lease.git` 의 branch·head·recorded_at)을
+  현재 live 상태로 **명시 재기록**한다(base 는 **보존** — 기준점은 `set-base`/`rebase` 로만 바뀐다).
+  부트스트랩 0단계가 "기록↔live diverged" 로 진입을 막았을 때, 그 차이가 **정당**(내가 의도한 브랜치
+  전환·릴리즈 진행 등)이라고 **사용자가 판단했을 때만** 쓰는 재동기 진입이다(감지=기계·해소=사용자·
+  엔진이 자동 재기록하지 않는다·T-0391). 장부에 없는 슬롯·스냅 불가(슬롯 경로 부재 등)는 rc 1 로
+  명시 실패한다(조용한 무변경 없음). 아직 **전환하기 전**이라면 `record` 가 아니라 아래 `switch` 를
+  써라 — 전환과 재기록을 한 번에 해서 diverged 자체가 안 생긴다.
+- `switch`: `<slot>` 위치인자 + `<branch>` — 슬롯 브랜치를 옮기고 **같은 호출 안에서** 장부 도착
+  스냅(branch·head·recorded_at)을 재기록한다(**원자**·base 는 보존·`record` 와 동형). 기존 브랜치면
+  `checkout --no-recurse-submodules <b>`·미존재면 **비파괴 생성** `-b <b>` 로 전환한다(브랜치 전환은 `sync`/
+  `alloc` 과 **같은 프리미티브**를 탄다 — `--no-recurse-submodules` + selective resync 로 on-branch(dev)
+  submodule 보호·detached 는 새 pin 재동기·dirty 는 skip+경고·ADR-0051 크럭스 A). **손-git 을 쓰지
+  마라** — raw `git switch` 는 그 submodule 보호도 건너뛰고 장부
+  스냅을 안 남겨 바로 다음 부트스트랩 0단계가 "기록↔live diverged" 로 막는다(0단계 main-참조 해소가
+  구조적으로 왕복 2회를 강제하던 문제·T-0414). 선-검사(하나라도 걸리면 **부작용 0**·rc 1 loud):
+  - **보호목록 브랜치로의 전환 거부** — 이 커맨드는 main-참조를 *벗어나는* 전환용이라 `main` 등으로
+    들어가는 전환은 목적과 정반대다(보호목록 = areas.md `protected`·T-0076).
+  - **보호브랜치 원격을 추적하는 기존 브랜치 거부** — 전환은 되지만 그 슬롯이 `origin/main` 을
+    origin-추적하는 상태라 다음 0단계가 **다시 main-참조로 막는다**(§F9 축 2). upstream 없는 새
+    작업 브랜치로 전환하라(`switch <slot> <새-브랜치명>`). 자기 feature 추적(`origin/a5`)은 정상 통과.
+  - **dirty**(전환이 미커밋 WIP 를 흔든다) · **rebase 진행 중**(먼저 continue/abort 로 해소) ·
+    **readonly 슬롯**(⑬ mutation 불가) · **장부 미등록 슬롯**(스냅 기록 대상 아님).
+  - **부적합 ref 명**(`git check-ref-format --branch` — 판정은 git 자신) · **D/F 충돌**(브랜치 `task`
+    가 있으면 `task/main` 은 `cannot lock ref` 로 실패 — 접두 부모 ref 를 미리 본다).
+  - **모호 인자 거부** — 새 브랜치를 만드는 자리에 **remote-tracking ref(`origin/main`)나 태그명**을
+    주면 거부한다. 그 이름은 detached HEAD 이동을 부르고 보호목록(`main`)과 문자열이 달라 검사를
+    우회한다 — **새 로컬 브랜치명**을 줘라(원격을 따라가려면 로컬 브랜치를 만든 뒤 `record` 로 스냅 정합).
+  브랜치 인자는 **git 이 해석할 실 브랜치명으로 정규화**된 뒤 검사·전환·기록에 일관 적용된다 —
+  revspec(`@{-1}`=이전 브랜치)은 실명으로 확장되므로, 그 실명이 보호목록이면 거부된다(원문
+  문자열로 비교해 `@{-1}` 이 `main` 으로 전환되던 우회 폐쇄). 원문과 다르게 해소되면 "입력
+  `@{-1}` → `main` 으로 해소됨" 을 loud 로 알린다(조용한 오전환 없음).
+  전환은 됐는데 스냅 재기록이 실패하면(장부 IO/권한/락 오류 포함) 성공 위장 없이 loud 하게 알리고
+  위 `record <slot>`(⑦)으로 스냅만 따로 맞추도록 안내한다 — 그대로 두면 다음 0단계가 diverged 로 막는다.
 
 ## 결정 (모델 · ADR-0051 · ADR-0060 · ADR-0061)
 
@@ -152,8 +195,9 @@ python3 .project_manager/tools/worktree_pool.py refresh <slot> [--onto <branch>]
 
 ## 잔여 PM 손
 
-- 스킬은 backbone 호출만 하는 얇은 래퍼 — `dev`/`sync`/`set-base`/`status`/`rebase`/`refresh` 의
-  stdout(무엇을 했는지·skip 사유·경고·조회 결과·rebase 요약)을 PM 이 읽고 사용자에게 보고한다.
+- 스킬은 backbone 호출만 하는 얇은 래퍼 — `dev`/`sync`/`set-base`/`status`/`rebase`/`refresh`/`record`/
+  `switch` 의 stdout(무엇을 했는지·skip 사유·경고·조회 결과·rebase 요약·재기록된 branch/head·전환
+  형태)을 PM 이 읽고 사용자에게 보고한다.
 - `dev` 지정 후 그 submodule 에서의 실제 작업(편집·커밋)은 PM/사용자가 한다.
 - 부트스트랩 0단계가 미기록 base 후보를 제시하면 사용자에게 전달·확인하고, 사용자가 고른 기준을
   `set-base` 로 기록한다(자동 채택 금지).
@@ -165,7 +209,8 @@ python3 .project_manager/tools/worktree_pool.py refresh <slot> [--onto <branch>]
 ## 참고
 
 - backbone: `.project_manager/tools/worktree_pool.py`(`dev`/`sync`/`_resync_submodules_selective`/
-  `set_base`/`slot_git_status`/`status`/`resolve_rebase_base`/`rebase`/`refresh`/`create_slot(readonly=)`).
+  `set_base`/`slot_git_status`/`status`/`resolve_rebase_base`/`rebase`/`refresh`/`create_slot(readonly=)`/
+  `record_git_snapshot`/`switch`).
 - ADR-0049(명령어化 4요소·청중 라벨) · ADR-0051(worktree/submodule lifecycle·live-HEAD) ·
   ADR-0013(git=진실·branch 비권위) · ADR-0060(슬롯 git 진실·기대 축·기준점 미기록=사용자 질의) ·
   ADR-0061(슬롯 git 조작 + readonly 공유 슬롯·⑬·T-0358·rebase/status=T-0359).

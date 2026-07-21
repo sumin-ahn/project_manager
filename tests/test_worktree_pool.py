@@ -4644,6 +4644,525 @@ def test_cmd_record_bad_slot_rejected(wp, capsys):
     assert "형식 오류" in capsys.readouterr().err
 
 
+# ── switch — 브랜치 전환 + 스냅 재기록 원자(0단계 main-참조 remedy·T-0414·§F9) ─────
+# 엔진-매개 전환은 전부 스냅을 재기록하는데 0단계 remedy 만 엔진 밖 raw git 이라, 안내대로
+# 해소하면 **곧바로** '기록↔live diverged' 2차 차단이 떴다(PM 4차 실측). switch 는 그 둘을 한
+# 호출에 담는다 — diverged 검사 자체는 무변경(raw git 은 여전히 FAIL-LOUD).
+
+
+class _SwitchGit(FakeGit):
+    """switch 경로 git 대역 — 로컬 ref 집합·`check-ref-format`·브랜치 전환을 모델한다 (T-0414).
+
+    `refs` = 이미 존재하는 로컬 브랜치(`show-ref --verify refs/heads/<b>` rc 0) · `bad_refs` =
+    `check-ref-format --branch` 가 거부하는 이름 · `checkout_rc` ≠ 0 = 전환 자체 실패(git-error).
+    성공 전환은 실 git 처럼 head 를 갱신하고 생성 전환이면 ref 집합에 편입한다(이후 스냅 조회가
+    새 브랜치를 본다). 그 밖의 argv 는 FakeGit 본체 모델(status/rev-parse/symbolic-ref…)로 위임.
+
+    **`expand` = revspec 확장 모델**(`{"@{-1}": "main"}`·실 git 실측): `check-ref-format --branch`
+    는 유효성 rc 만 주는 게 아니라 **정규화된 이름을 stdout 으로 뱉는다** — `@{-1}`(이전 브랜치)은
+    rc 0 + `main` 이다. 원문 기준으로 보호목록을 비교하면 이 확장이 검사를 통째로 우회한다
+    (codex 게이트 must-fix). `emit` 로 비정상 출력(빈 문자열 등)도 모델할 수 있다.
+
+    **전환은 기존 프리미티브 경로**(`_checkout_required` → `_checkout` + selective resync·T-0414
+    재배선)라 `checkout --no-recurse-submodules <b>`(미존재면 rc≠0) / `… -B <b>`(생성)를 실 git
+    처럼 모델한다. submodule 계열(`submodule status`·`-C <sub> …`)은 **기존 `_SubmoduleGit` 모델에
+    위임**한다(대역 로직 중복 0·`subs`={path:(role,dirty)}·호출 기록 리스트 공유). raw `git switch`
+    핸들러는 **사람이 손으로 전환하는 경로**(diverged 재현)용으로 남긴다 — 엔진은 안 쓴다."""
+
+    def __init__(self, *, refs=(), bad_refs=(), checkout_rc: int = 0, expand=None,
+                 emit=None, subs=None, remote_refs=(), tags=(), **kwargs):
+        super().__init__(**kwargs)
+        self.refs = set(refs)
+        self.remote_refs = set(remote_refs)  # `refs/remotes/<x>` 존재(예 "origin/main").
+        self.tags = set(tags)                # `refs/tags/<x>` 존재.
+        self.bad_refs = set(bad_refs)
+        self.checkout_rc = checkout_rc     # ≠0 이면 어떤 전환 형태든 실패(git-error 경로).
+        self.expand = dict(expand or {})   # 원문 → 정규화 실명(`@{-1}` → `main`).
+        self.emit = emit                   # None 아니면 check-ref-format stdout 을 이 값으로 고정.
+        self._sub = _SubmoduleGit(subs)    # submodule 판정/재동기 모델 재사용.
+        self._sub.calls = self.calls       # 호출 기록 공유(did/resynced 가 한 목록을 본다).
+
+    def __call__(self, argv: list) -> tuple[int, str]:
+        if argv[:3] == ["show-ref", "--verify", "--quiet"]:
+            self.calls.append(list(argv))
+            ref = argv[3]
+            for prefix, names in (("refs/heads/", self.refs),
+                                  ("refs/remotes/", self.remote_refs),
+                                  ("refs/tags/", self.tags)):
+                if ref.startswith(prefix):
+                    return (0, "") if ref[len(prefix):] in names else (1, "")
+            return 1, ""
+        if argv[:2] == ["check-ref-format", "--branch"]:
+            self.calls.append(list(argv))
+            if argv[2] in self.bad_refs:
+                return 1, "fatal: '%s' is not a valid branch name\n" % argv[2]
+            if self.emit is not None:
+                return 0, self.emit
+            return 0, self.expand.get(argv[2], argv[2]) + "\n"
+        if argv[:2] == ["checkout", "--no-recurse-submodules"]:
+            self.calls.append(list(argv))
+            if self.checkout_rc != 0:
+                return self.checkout_rc, "fatal: cannot checkout\n"
+            flag = argv[2] if argv[2] in ("-b", "-B") else None
+            name = argv[-1]
+            if flag == "-b" and name in self.refs:
+                # 비파괴 생성(`-b`)은 이미 있으면 실패(`-B` 의 create-or-reset 과 다른 지점).
+                return 128, f"fatal: a branch named '{name}' already exists\n"
+            if flag is None and name not in self.refs:
+                # plain checkout — 로컬 브랜치가 있어야 성공(DWIM/detached 는 대역 밖·엔진이 안 탄다).
+                return 1, f"error: pathspec '{name}' did not match any file(s) known to git\n"
+            self.head = name              # 실 git 처럼 HEAD 전환.
+            self.refs.add(name)           # 생성 전환이면 ref 가 생긴다.
+            return 0, ""
+        if argv[:1] == ["submodule"] or (argv[:1] == ["-C"] and len(argv) >= 3):
+            return self._sub(argv)        # submodule 계열은 기존 모델에 위임(공유 calls 에 기록됨).
+        if argv[:1] == ["switch"]:
+            self.calls.append(list(argv))
+            self.head = argv[-1]          # 사람이 손으로 raw 전환한 경우(엔진 경로 아님).
+            self.refs.add(argv[-1])
+            return 0, ""
+        return super().__call__(argv)
+
+    def resynced(self) -> list:
+        """selective 재동기된 sub 경로 목록(`_SubmoduleGit` 동형·공유 calls 기준)."""
+        return [c[-1] for c in self.calls
+                if c[:2] == ["submodule", "update"] and "--" in c]
+
+
+def _switch_lease(wp, *, branch="main", head=_OLD_SHA, base=None, **kwargs):
+    """switch 대상 슬롯 전제 — 기록 스냅(branch/head)이 실린 leased 엔트리."""
+    _seed_git_lease(wp, branch=branch, head=head,
+                    base=base if base is not None else {"branch": "origin/main", "commit": _OLD_SHA},
+                    **kwargs)
+
+
+def test_switch_creates_missing_branch_and_records_snapshot(wp):
+    """(a) 미존재 브랜치 → `switch -c` 생성 전환 + 장부 스냅이 새 브랜치/head 로 재기록(원자)."""
+    _switch_lease(wp)                                  # 기록 스냅 = main(=main-참조 fault 상태)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA)   # 로컬 ref 없음 → 생성 전환
+    result = wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert result.created is True and result.branch == "task/main"
+    assert git.did("checkout", "--no-recurse-submodules", "-b", "task/main")   # 비파괴 생성
+    recorded = wp.list_leases()[0].git
+    assert recorded["branch"] == "task/main"           # 장부 스냅이 같은 호출에서 따라왔다
+    assert recorded["head"] == _NEW_SHA
+    assert recorded["base"] == {"branch": "origin/main", "commit": _OLD_SHA}  # base 보존(record 동형)
+
+
+def test_switch_existing_branch_without_dash_c(wp):
+    """(b) 기존 브랜치는 `-c` 없이 전환한다(`switch -c` 는 이미 있는 이름에 실패)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["work-x"])
+    result = wp.switch("work/A_1", "work-x", protected=["main"], git_runner=git)
+    assert result.created is False
+    assert git.did("checkout", "--no-recurse-submodules", "work-x")
+    assert not git.did("checkout", "--no-recurse-submodules", "-b", "work-x")
+    assert wp.list_leases()[0].git["branch"] == "work-x"
+
+
+def test_switch_create_path_does_not_dwim_tracking_branch(wp):
+    """생성 의도(`exists=False`)면 plain checkout 폴백을 안 탄다 — `origin/<b>` DWIM 자동 tracking 회피.
+
+    `_checkout` 기본 경로는 "plain → 실패 시 `-B`" 인데, 로컬 브랜치가 없어도 `origin/<b>` 가 있으면
+    plain checkout 이 **성공**해 tracking 브랜치를 자동 생성한다(의도한 "새 작업 브랜치" 가 아니다).
+    `create_only=True` 로 비파괴 생성(`-b`)만 시도해야 한다(codex 게이트 must-fix)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA, remote_refs=["origin/task/main"])
+    result = wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert result.created is True
+    assert git.did("checkout", "--no-recurse-submodules", "-b", "task/main")
+    # plain checkout(=DWIM 창)·`-B`(create-or-reset) 어느 쪽도 안 쓴다.
+    assert not git.did("checkout", "--no-recurse-submodules", "task/main")
+    assert not git.did("checkout", "--no-recurse-submodules", "-B", "task/main")
+
+
+def test_switch_remote_tracking_ref_argument_refused(wp):
+    """인자가 remote-tracking ref(`origin/main`)면 거부 — detached 이동 + 보호목록 문자열 우회 창 폐쇄.
+
+    `origin/main` 은 보호목록 `main` 과 문자열이 달라 보호검사를 통과하고, 옛 plain-checkout 폴백에선
+    detached HEAD 로 빠졌다(실측 `## HEAD (브랜치 없음)`)."""
+    _switch_lease(wp, branch="feature-x")
+    git = _SwitchGit(head="feature-x", remote_refs=["origin/main"])
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "origin/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "ambiguous-ref"
+    assert "새 로컬 브랜치명" in str(ei.value)
+    assert not git.did("checkout")                              # 전환 없음
+    assert wp.list_leases()[0].git["branch"] == "feature-x"     # 장부 불변
+
+
+def test_switch_tag_name_argument_refused(wp):
+    """인자가 태그명이면 거부 — detached 이동 방지(로컬 브랜치가 아닌 ref 축·축 2 와 별개)."""
+    _switch_lease(wp, branch="feature-x")
+    git = _SwitchGit(head="feature-x", tags=["v1.4.0"])
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "v1.4.0", protected=["main"], git_runner=git)
+    assert ei.value.reason == "ambiguous-ref" and "태그" in str(ei.value)
+    assert not git.did("checkout")
+
+
+def test_checkout_create_only_is_non_destructive(wp):
+    """`_checkout(create_only=True)` = 비파괴 `-b` 단독 — 기존 브랜치를 리셋하지 않는다(T-0343 결론 계승).
+
+    `-B` 는 create-or-**reset** 이라 판정↔실행 경합/판정 오차에서 기존 브랜치 tip 을 잃는다
+    (T-0335/T-0343 데이터-유실 클래스). 이미 있으면 rc≠0 로 loud 실패가 안전한 결과다."""
+    git = _SwitchGit(head="main", refs=["exists"])
+    rc, _out = wp._checkout(wp.slot_path("work/A_1"), "exists", create_only=True, git_runner=git)
+    assert rc != 0                                      # 기존 브랜치 → 리셋 대신 실패
+    assert not git.did("checkout", "--no-recurse-submodules", "-B", "exists")
+    assert git.did("checkout", "--no-recurse-submodules", "-b", "exists")
+
+
+def test_checkout_default_path_unchanged(wp):
+    """`_checkout` 기본값(create_only=False) 동작 불변 — 기존 호출부(alloc 3분기) 회귀 0."""
+    git = _SwitchGit(head="old")
+    rc, _out = wp._checkout(wp.slot_path("work/A_1"), "brand-new", git_runner=git)
+    assert rc == 0
+    assert git.did("checkout", "--no-recurse-submodules", "brand-new")        # plain 먼저
+    assert git.did("checkout", "--no-recurse-submodules", "-B", "brand-new")  # 실패 시 -B 폴백
+    assert not git.did("checkout", "--no-recurse-submodules", "-b", "brand-new")
+
+
+def test_switch_protected_branch_refused(wp):
+    """(c) 보호목록 브랜치로의 전환은 거부 — 이 커맨드는 main-참조를 *벗어나는* 전환용."""
+    _switch_lease(wp, branch="feature-x")
+    git = _SwitchGit(head="feature-x")
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "main", protected=["main", "master"], git_runner=git)
+    assert ei.value.reason == "protected"
+    assert not git.did("checkout")                       # 부작용 0(전환 시도조차 안 함)
+    assert wp.list_leases()[0].git["branch"] == "feature-x"   # 장부 불변
+
+
+def test_switch_dirty_slot_refused(wp):
+    """(d-1) dirty 슬롯 거부 — 브랜치 전환이 미커밋 WIP 를 흔든다(rebase 선-검사 동형)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", dirty=True)
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "dirty"
+    assert not git.did("checkout")
+
+
+def test_switch_readonly_slot_refused(wp):
+    """(d-2) readonly 공유 슬롯은 mutation 거부(⑬·T-0358 동형 가드)."""
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", pid=0, started="t",
+                       state="leased", role="readonly"))
+    git = _SwitchGit(head=None)
+    with pytest.raises(wp.ReadonlySlotMutation):
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert not git.did("checkout")
+
+
+def test_switch_unregistered_slot_refused(wp):
+    """(d-3) 장부 미등록 슬롯 거부 — 스냅 기록 대상이 아니다(`record` 동형 메시지)."""
+    git = _SwitchGit(head="main")
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_9", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "unregistered"
+    assert "리스 장부에 없다" in str(ei.value)
+    assert not git.did("checkout")
+
+
+def test_switch_rebase_in_progress_refused(wp, monkeypatch):
+    """rebase 진행 중 슬롯 거부 — `_rebase_one` 선-검사와 **같은 프리미티브**(계약 우회 0)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main")
+    monkeypatch.setattr(wp, "_rebase_in_progress", lambda slot, **kw: True)
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "rebase-in-progress"
+    assert "rebase --abort" in str(ei.value)
+    assert not git.did("checkout")
+
+
+def test_switch_invalid_ref_name_refused(wp):
+    """(g) git ref 규칙 위반 이름(`fix^2`)은 거부 — 판정은 git 자신(`check-ref-format --branch`)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", bad_refs=["fix^2"])
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "fix^2", protected=["main"], git_runner=git)
+    assert ei.value.reason == "invalid-ref"
+    assert not git.did("checkout")
+
+
+def test_switch_directory_file_conflict_refused(wp):
+    """(h) D/F 충돌 — 브랜치 `task` 가 있으면 `task/main` 은 show-ref 상 미존재지만 생성 불가."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", refs=["task"])       # 접두 부모 ref 가 이미 브랜치
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "df-conflict"
+    assert "task" in str(ei.value)
+    assert not git.did("checkout")                     # `cannot lock ref` 를 만나기 전에 차단
+
+
+def test_switch_revspec_expanding_to_protected_is_refused(wp, capsys):
+    """revspec `@{-1}` 이 보호브랜치로 확장되면 거부 — 원문 문자열 비교 우회 폐쇄(codex must-fix).
+
+    실 git: `check-ref-format --branch '@{-1}'` → rc 0 + `main`, `git switch '@{-1}'` → main 전환.
+    원문 기준 비교면 `@{-1}` ∉ 보호목록이라 통과해 이 커맨드가 스스로 슬롯을 보호브랜치에 앉히고
+    장부까지 `main` 으로 기록한다(이 티켓이 막으려던 상태를 remedy 가 생성)."""
+    _switch_lease(wp, branch="feature-x")
+    git = _SwitchGit(head="feature-x", expand={"@{-1}": "main"})
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "@{-1}", protected=["main"], git_runner=git)
+    assert ei.value.reason == "protected"
+    assert "main" in str(ei.value)                      # 무엇으로 해소됐는지 실값 고지
+    assert not git.did("checkout")                        # 전환 없음
+    assert wp.list_leases()[0].git["branch"] == "feature-x"   # 장부 기록 없음
+    assert "해소됨" in capsys.readouterr().err          # 조용한 오전환 방지(loud 고지)
+
+
+def test_switch_records_expanded_branch_name(wp, capsys):
+    """비보호 revspec 은 정상 전환하되 **확장된 실명**으로 전환·기록한다(원문 `@{-1}` 아님)."""
+    _switch_lease(wp, branch="main")
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["feature"],
+                     expand={"@{-1}": "feature"})
+    result = wp.switch("work/A_1", "@{-1}", protected=["main"], git_runner=git)
+    assert result.branch == "feature" and result.requested == "@{-1}" and result.expanded
+    assert git.did("checkout", "--no-recurse-submodules", "feature")   # git 인자도 정규화 이름
+    # 원문은 정규화 조회(`check-ref-format`)에만 등장하고 **전환 인자로는 안 쓰인다**.
+    assert not any(call[:1] == ["checkout"] and "@{-1}" in call for call in git.calls)
+    assert wp.list_leases()[0].git["branch"] == "feature"   # 장부도 실명
+    assert "해소됨" in capsys.readouterr().err
+
+
+def test_switch_unnormalizable_ref_refused(wp):
+    """정규화 불가(빈/이상 출력)는 fail-closed 거부 — 안전검사 못 하는 이름을 통과시키지 않는다."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", emit="")              # rc 0 인데 출력이 빔(예상 밖 형태)
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "invalid-ref"
+    assert not git.did("checkout")
+
+
+def test_switch_git_error_is_loud(wp):
+    """`git switch` 자체 실패(rc≠0)는 loud — 장부는 옛 스냅 그대로(거짓 기록 금지)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", checkout_rc=1)
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "git-error"
+    assert wp.list_leases()[0].git["branch"] == "main"
+
+
+def test_switch_record_failure_is_loud(wp, monkeypatch):
+    """스냅 재기록 실패(전환만 성공)는 loud + `record` 안내 — 원자성 깨진 채 성공 보고 금지."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main")
+    monkeypatch.setattr(wp, "record_git_snapshot", lambda slot, **kw: None)  # 스냅 불가 모델
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "record-failed"
+    assert "record work/A_1" in str(ei.value)
+
+
+def test_switch_record_exception_converges_to_record_failed(wp, monkeypatch):
+    """장부 기록 **예외**(IO·권한·락)도 `record-failed` 로 수렴 — 원시 traceback 금지(내부 리뷰 must-fix).
+
+    라이브 재현: 장부 디렉터리 쓰기권한 제거 → `PermissionError: …worktree-leases.json.tmp` 가 그대로
+    올라오고 사용자는 `record <slot>` 안내를 못 봤다(문서가 코드보다 앞선 상태)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main")
+
+    def boom(slot, **kwargs):
+        raise PermissionError("worktree-leases.json.tmp")
+
+    monkeypatch.setattr(wp, "record_git_snapshot", boom)
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "record-failed"
+    assert "record work/A_1" in str(ei.value)          # 해소 커맨드 실값 안내
+    assert "worktree-leases.json.tmp" in str(ei.value)  # 원인도 실린다(진단 손실 0)
+
+
+def test_switch_record_no_change_with_same_branch_is_not_success(wp, monkeypatch):
+    """장부 branch 가 이미 target 과 같아도 **무변경 스냅**은 실패 — branch 만 보면 stale head 통과.
+
+    기록=`task/main`·live=`main`(diverged) 상태에서 `switch <slot> task/main` 을 하면, 스냅이
+    실패해도 기록 branch 는 target 과 일치해 옛 판정이 성공으로 통과했다(`_cmd_record` 의 before/
+    after 비교와 비대칭·내부 리뷰 should-fix)."""
+    _switch_lease(wp, branch="task/main", head=_OLD_SHA)
+    before = wp.list_leases()[0].git
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA)
+    # 스냅 불가 → `_apply_git_snapshot` 이 기존 git 을 보존(무변경)하는 상황 모델.
+    monkeypatch.setattr(wp, "record_git_snapshot",
+                        lambda slot, **kw: type("_L", (), {"git": before})())
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "record-failed"
+    assert "무변경" in str(ei.value)
+
+
+def test_switch_existing_branch_tracking_protected_remote_refused(wp):
+    """§F9 축 2 — 보호브랜치 원격을 origin-추적하는 기존 브랜치로의 전환 거부(다음 0단계 재차단 방지)."""
+    _switch_lease(wp, branch="main")
+
+    class _TrackingGit(_SwitchGit):
+        def __call__(self, argv):
+            if argv[:2] == ["rev-parse", "--abbrev-ref"] and argv[2].endswith("@{upstream}"):
+                self.calls.append(list(argv))
+                return (0, "origin/main\n") if argv[2].startswith("old-work") else (1, "fatal: no upstream\n")
+            return super().__call__(argv)
+
+    git = _TrackingGit(head="main", refs=["old-work"])
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "old-work", protected=["main"], git_runner=git)
+    assert ei.value.reason == "protected-upstream"
+    assert "origin/main" in str(ei.value)
+    assert not git.did("checkout")                        # 부작용 0(전환 없음)
+    assert wp.list_leases()[0].git["branch"] == "main"  # 장부 불변
+
+
+def test_switch_feature_tracking_branch_still_allowed(wp):
+    """축 2 오탐 0 — 자기 feature 브랜치 추적(`origin/a5`)은 정상 작업 슬롯이라 통과(sensitivity)."""
+    _switch_lease(wp, branch="main")
+
+    class _TrackingGit(_SwitchGit):
+        def __call__(self, argv):
+            if argv[:2] == ["rev-parse", "--abbrev-ref"] and argv[2].endswith("@{upstream}"):
+                self.calls.append(list(argv))
+                return 0, "origin/a5\n"
+            return super().__call__(argv)
+
+    git = _TrackingGit(head="main", head_sha=_NEW_SHA, refs=["a5"])
+    result = wp.switch("work/A_1", "a5", protected=["main"], git_runner=git)
+    assert result.branch == "a5" and result.created is False
+    assert wp.list_leases()[0].git["branch"] == "a5"
+
+
+def test_switch_record_failed_leaves_diverged_state_with_record_remedy(wp, monkeypatch):
+    """record-failed **잔여 전이** — 다음 0단계가 diverged 로 잡고 해소는 `record <slot>` 로 수렴.
+
+    이 티켓의 존재 이유가 remedy-유발 상태전이라, 그 잔여 전이(전환 성공 + 기록 실패)에도 탈출
+    경로가 실재하는지 못 박는다(내부 리뷰 지적). 0단계 diverged 의 해소 문구가 `worktree_pool.py
+    record <slot>` 인 것은 부트스트랩 쪽 테스트가 단언한다(`test_pm_bootstrap_task_slot_set.py`
+    ::test_diverged_slot_blocks_with_reason_and_record_cmd) — 여기선 그 판정 입력(compare)이 실제로
+    diverged 인지를 본다."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA)
+
+    def boom(slot, **kwargs):
+        raise OSError("장부 기록 실패(대역)")
+
+    monkeypatch.setattr(wp, "record_git_snapshot", boom)
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "record-failed"
+    # 전환은 일어났고(live=task/main) 장부는 옛 스냅(main) → 다음 0단계 입력이 diverged.
+    assert wp.current_branch("work/A_1", git_runner=git) == "task/main"
+    result = wp.compare_slot_git("work/A_1", git_runner=git)
+    assert result.fail_loud is True and result.branch_match is False
+
+
+def test_switch_preserves_on_branch_dev_submodule(wp):
+    """switch 는 **on-branch(dev) submodule 을 파괴하지 않는다** — ADR-0051 크럭스 A(codex must-fix).
+
+    전환을 raw git 으로 하면 ambient `submodule.recurse=true` 가 작업 중 submodule 을 detached pin
+    으로 낚아챈다. 기존 프리미티브 조합(`_checkout_required` = `_checkout --no-recurse-submodules`
+    + selective resync)을 타야 dev 가 보존된다."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA, subs={"libs/dev": ("branch", False)})
+    wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert git.did("checkout", "--no-recurse-submodules", "-b", "task/main")  # ambient recurse override
+    assert git.resynced() == [], "on-branch(dev) submodule 을 재동기하면 작업이 파괴된다"
+
+
+def test_switch_resyncs_detached_submodule_to_new_pin(wp):
+    """detached(consume) submodule 은 새 브랜치 pin 으로 재동기된다(전환 후 drift 방치 금지)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA, subs={"vendor/sub": ("detached", False)})
+    wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert git.resynced() == ["vendor/sub"]
+
+
+def test_switch_skips_dirty_submodule_with_warning(wp, capsys):
+    """dirty detached submodule 은 skip + 경고 — 재동기가 미커밋 작업을 날리지 않는다(fail-soft)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA, subs={"vendor/wip": ("detached", True)})
+    result = wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert result.branch == "task/main"          # resync 실패/skip 이 전환·기록을 되돌리지 않는다
+    assert git.resynced() == []
+    assert "vendor/wip" in capsys.readouterr().err
+    assert wp.list_leases()[0].git["branch"] == "task/main"
+
+
+def test_switch_records_snapshot_after_resync(wp):
+    """순서 계약 — 전환 → selective resync → 스냅 기록(장부 스냅이 resync 뒤 상태를 담는다)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA, subs={"vendor/sub": ("detached", False)})
+    wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    order = [i for i, c in enumerate(git.calls)
+             if c[:2] == ["submodule", "update"] or c == ["submodule", "status"]]
+    snap_at = max(i for i, c in enumerate(git.calls) if c == ["submodule", "status"])
+    assert order, "selective resync 가 안 돌았다"
+    # 스냅(`_snapshot_slot_git`)의 `submodule status` 가 재동기(update) 뒤에 온다.
+    assert snap_at > max(i for i, c in enumerate(git.calls) if c[:2] == ["submodule", "update"])
+
+
+def test_switch_then_phase0_compare_is_clean(wp):
+    """(e) 전환 직후 0단계 재진입 정합 — `compare_slot_git` 이 diverged 로 막지 않는다(2차 차단 폐쇄)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA)
+    wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    result = wp.compare_slot_git("work/A_1", git_runner=git)
+    assert result.fail_loud is False and result.ok is True
+    assert result.branch_match is True
+
+
+def test_raw_git_switch_still_diverges(wp):
+    """(f) raw git 전환(엔진 밖)은 **여전히** diverged FAIL-LOUD — 외부 개입 탐지력 손실 0."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA)
+    git(["switch", "-c", "task/main"])                 # 사람이 직접 — 장부 스냅 미갱신
+    result = wp.compare_slot_git("work/A_1", git_runner=git)
+    assert result.fail_loud is True
+    assert result.branch_match is False
+
+
+def test_resolve_protected_uses_board_then_defaults(wp, monkeypatch):
+    """보호목록은 board `_repo_protected`(areas 권위) — board/헬퍼 부재는 default 폴백(T-0076 동형)."""
+    board = type("_B", (), {"_repo_protected": staticmethod(lambda repo: ["trunk"])})()
+    assert wp._resolve_protected("A", board=board) == ["trunk"]
+    monkeypatch.setattr(wp, "_load_board", lambda: None)
+    assert wp._resolve_protected("A") == list(wp._DEFAULT_PROTECTED)
+
+
+def test_cmd_switch_success_reports_what_happened(wp, monkeypatch, capsys):
+    """switch CLI — 성공 시 전환 형태·재기록 head 를 surface(rc 0·무엇을 했는지 stdout)."""
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA)
+    monkeypatch.setattr(wp, "_resolve_protected", lambda repo, **kw: ["main"])
+    monkeypatch.setattr(wp, "_real_git_runner", lambda path: git)
+    (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
+    rc = wp.main(["switch", "A_1", "task/main"])       # 접두 생략도 _normalize_slot 이 work/ 붙임
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "task/main" in out and "스냅 재기록" in out
+    assert wp.list_leases()[0].git["branch"] == "task/main"
+
+
+def test_cmd_switch_refusal_is_rc1_loud(wp, monkeypatch, capsys):
+    """switch CLI — 선-검사 거부는 rc 1 + 사유(보호목록 브랜치로의 전환)."""
+    _switch_lease(wp, branch="feature-x")
+    git = _SwitchGit(head="feature-x")
+    monkeypatch.setattr(wp, "_resolve_protected", lambda repo, **kw: ["main"])
+    monkeypatch.setattr(wp, "_real_git_runner", lambda path: git)
+    (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
+    rc = wp.main(["switch", "A_1", "main"])
+    assert rc == 1
+    assert "보호 브랜치로 전환" in capsys.readouterr().err
+
+
+def test_cmd_switch_bad_slot_rejected(wp, capsys):
+    """switch CLI — traversal/부적격 슬롯 형식은 rc 1(슬롯 경계 보호·record 동형)."""
+    rc = wp.main(["switch", "../evil", "task/x"])
+    assert rc == 1
+    assert "형식 오류" in capsys.readouterr().err
+
+
 def test_alloc_records_arrival_git_snapshot(wp):
     """alloc(idle 리스 경로) 이 arrival git 스냅을 기록한다(부트스트랩 bind/alloc 시 스냅·interface)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"))

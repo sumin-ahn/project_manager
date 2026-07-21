@@ -21,6 +21,9 @@ repo별 git worktree 풀로 *코드*를 격리한다(병렬 브랜치·나중 gi
 장부 동시쓰기 보호 = **자체 파일락**(stdlib fcntl/msvcrt·둘 다 없으면 단일-머신 폴백).
 board.py 의 `board_lock` 과 *같은 패턴*이지만 **독립 구현**이다 — 병렬 작업 충돌 회피 +
 worktree 풀이 board 모듈에 의존하지 않게 하기 위함(import 금지·ADR-0013 touches 격리).
+(예외 — `switch` 의 보호목록 조회만 board 를 **동적 sibling 로드**한다: `_load_board`·
+`_resolve_protected`·T-0414. `identity_args`(T-0322) 와 동형의 단방향 로더로 top-level import
+는 여전히 없고, 로드 실패는 default 보호목록 폴백이다.)
 """
 
 from __future__ import annotations
@@ -3643,6 +3646,411 @@ def rebase(slots: "list[str]", *, onto: "str | None" = None,
     return [_rebase_one(s, onto=onto, owner=owner, git_runner=git_runner) for s in slots]
 
 
+# ── switch (브랜치 전환 + 장부 스냅 재기록 **원자**·0단계 main-참조 remedy·T-0414·§F9) ──
+# 엔진이 매개하는 브랜치/head 전환은 전부 자기가 스냅을 재기록한다(bind·create·rebase·refresh·
+# set-base·handoff) — 그런데 0단계 main-참조 fault 의 **remedy 만 엔진 밖 raw git**(`git switch -c`)
+# 이었다. 그래서 사용자가 안내대로 해소하면 장부 스냅은 옛 브랜치를 가리킨 채라 **곧바로 0단계
+# '기록↔live diverged' 2차 차단**이 떴다(PM 4차 실측: main-참조 차단 → git switch -c → diverged
+# 차단 → record → 겨우 진입·왕복 2회 강제). 이 커맨드는 전환과 스냅 재기록을 **한 호출**에 담아
+# 그 상태전이(remedy-유발 상태전이)를 구조적으로 없앤다.
+#   - diverged 검사 자체는 **무변경** — 사람이 raw `git switch` 를 직접 하면 여전히 FAIL-LOUD 로
+#     잡힌다(외부 개입 탐지력 손실 0). 엔진 경로만 스냅을 동반한다.
+#   - 보호목록 브랜치로의 전환은 **거부** — 이 커맨드의 목적(main-참조 해소)과 정반대다.
+
+# board.DEFAULT_PROTECTED 와 *동형* 폴백 (T-0076·pm_config._DEFAULT_PROTECTED 동형). board 부재/
+# 헬퍼 부재/파싱 실패로 areas 를 못 읽어도 보호는 안전 기본값이 있어야 한다(미해소여도 main 류 차단).
+_DEFAULT_PROTECTED = ("main", "master", "develop")
+
+
+def _load_board():
+    """board.py 를 형제 모듈로 동적 로드한다 — **보호목록 조회 전용** (T-0414·fail-soft None).
+
+    이 모듈은 board 를 import 하지 않는다(ADR-0013 isolation·모듈 docstring) — `_load_identity_args`
+    (T-0322)·`pm_config._load_module`·`pm_bootstrap._load_board` 와 동형의 sibling 동적 로더로,
+    단방향(board 는 worktree_pool 을 로드하지 않는다)이라 순환이 없다. `__file__` 앵커(REPO 전역이
+    아님) — 테스트가 경로 전역을 tmp 로 재배선해도 형제 파일 위치는 이 파일 옆으로 고정된다.
+
+    부재/로드 실패는 None(호출부 `_resolve_protected` 가 default 폴백) — 보호목록 조회는 *추가
+    권위*(areas override)이지 이 커맨드의 필수 전제가 아니다. 단 **형제 rev skew 는 fail-loud**
+    (T-0397·`_verify_engine_rev`)로 재-raise 한다(사본 skew 를 조용한 default 폴백으로 감추지 않음).
+    """
+    import importlib.util
+    path = Path(__file__).resolve().parent / "board.py"
+    if not path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("board", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as exc:  # noqa: BLE001 — 로드 실패는 default 폴백(단 skew 는 재-raise).
+        if getattr(exc, "_engine_rev_skew", False):
+            raise  # T-0397 — 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
+        return None
+    _verify_engine_rev(mod, "board.py")   # T-0397 — 사본 skew fail-loud (try 밖·pm_config 동형).
+    return mod
+
+
+def _resolve_protected(repo: str, *, board=None) -> "list[str]":
+    """그 repo 의 보호 브랜치 목록 (T-0076·`pm_config._resolve_repo_protected` 동형·T-0414).
+
+    areas.md `protected` 칼럼(`board._repo_protected`)이 권위이고, board/헬퍼 부재·파싱 실패만
+    `_DEFAULT_PROTECTED` 로 강등한다(크래시 0·보호 기본값 보장). `board` 주입 = 테스트 hermetic
+    seam(실 areas.md 를 읽지 않는다)."""
+    board_mod = board if board is not None else _load_board()
+    repo_protected = getattr(board_mod, "_repo_protected", None) if board_mod else None
+    if repo_protected is None:
+        return list(_DEFAULT_PROTECTED)
+    try:
+        return list(repo_protected(repo))
+    except Exception:  # noqa: BLE001 — areas 파싱 실패는 default 폴백(보호 기본값 보장).
+        return list(_DEFAULT_PROTECTED)
+
+
+def _normalize_branch_name(branch: str, *, git_runner: GitRunner) -> "str | None":
+    """`branch` 를 **git 이 실제로 해석할 브랜치명**으로 정규화한다 — `check-ref-format --branch` 출력 (T-0414).
+
+    task/세션 명이 그대로 브랜치명으로 흐르므로(`fix^2`·`a..b`·공백 등) **git 자신의 판정**으로
+    거른다(자체 정규식 재구현 금지·규칙 drift 0). 단 이 커맨드는 rc 만 쓰면 안 된다 — `--branch` 는
+    유효성 판정 + **revspec 확장**을 함께 한다(`@{-1}` → 이전 브랜치의 실명·rc 0·실측):
+
+        $ git check-ref-format --branch '@{-1}'   →  main   (rc 0)
+        $ git switch '@{-1}'                      →  실제로 main 으로 전환
+
+    rc 만 보고 **원문 문자열**로 보호목록을 비교하면 `@{-1}` ≠ `main` 이라 통과하고, 그 결과 이
+    커맨드가 스스로 슬롯을 보호 브랜치에 앉힌다(codex 게이트 must-fix — 이 티켓이 막으려던 상태를
+    remedy 가 만든다). 그래서 **출력(정규화된 이름)을 단일 기준**으로 삼고 이후 전 단계(보호목록
+    비교·존재 판정·D/F 검사·`git switch` 인자·장부 스냅 기록)에 일관 적용한다. 거부 목록(`@{` 금지)
+    방식은 다른 revspec 문법에서 같은 클래스가 재발하므로 채택하지 않는다(정규화가 클래스를 닫는다).
+
+    반환 = 정규화된 브랜치명. 아래는 전부 None(**fail-closed** 거부 — 정규화 불가 = 안전검사 불가라
+    통과시키지 않는다. 옛 `_branch_ref_name_ok` 의 "판정 불가는 통과" fail-soft 를 뒤집는다):
+      - rc≠0(ref 규칙 위반) · 호출/예외 실패.
+      - 출력이 비었거나 여러 줄·공백 포함(예상 밖 형태 방어).
+      - **고정점 아님** — 정규화 결과를 한 번 더 통과시켰을 때 자기 자신이 아니면 거부한다
+        (`--branch` rc 0 이 곧 안전은 아니라는 가정·2차 확장 여지 차단).
+
+    ⚠ **이 함수가 브랜치명 수용 규칙의 단일 진실**이다 — 0단계 remedy 의 *후보 생성* 쪽
+    (`pm_bootstrap._remedy_branch_ref_ok` → `_remedy_branch_name`)도 판정을 따로 구현하지 않고 이
+    함수를 호출한다(제안 쪽과 실행 쪽이 갈리면 안내가 곧바로 실행 불가·codex 게이트 must-fix)."""
+    def resolve(name: str) -> "str | None":
+        try:
+            rc, out = git_runner(["check-ref-format", "--branch", name])
+        except Exception:  # noqa: BLE001 — fail-closed: 판정 불가는 거부(안전검사 불가).
+            return None
+        if rc != 0:
+            return None
+        text = (out or "").strip()
+        if not text or len(text.splitlines()) != 1 or any(ch.isspace() for ch in text):
+            return None
+        return text
+
+    first = resolve(branch)
+    if first is None:
+        return None
+    return first if resolve(first) == first else None   # 고정점 확인(2차 확장 여지 차단).
+
+
+def _local_branch_exists(branch: str, *, git_runner: GitRunner) -> bool:
+    """슬롯 worktree 에 로컬 브랜치 `refs/heads/<branch>` 가 있는가 — 전환 형태(`-c` 유무) 판정 (T-0414).
+
+    `git show-ref --verify --quiet refs/heads/<branch>` rc 0 = 존재(→ `git switch <b>`), 아니면
+    미존재(→ `git switch -c <b>`). 호출/예외 실패는 미존재(fail-soft — `-c` 시도 실패는 git 이
+    loud 하게 surface)."""
+    try:
+        rc, _out = git_runner(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
+    except Exception:  # noqa: BLE001 — fail-soft: 판정 불가는 미존재(git 이 최종 판정).
+        return False
+    return rc == 0
+
+
+def _branch_protected_upstream(branch: str, protected: "list[str]", *,
+                               git_runner: GitRunner) -> "str | None":
+    """기존 브랜치 `branch` 의 `@{upstream}` 이 **보호 브랜치 원격**이면 그 upstream 명, 아니면 None (T-0414).
+
+    0단계 main-참조 판정의 **축 2**(`pm_bootstrap._phase0_protected_upstream`·§F9)와 같은 규칙이다:
+    upstream `<remote>/<branch>` 의 branch 부분(첫 `/` 이후·`feature/x` 도 보존)이 보호목록이면
+    main-참조. 자기 feature 브랜치 추적(`origin/a5`)은 정상 작업 슬롯이라 통과시킨다(오탐 0).
+
+    **기존 브랜치 전환 경로 전용** — `switch -c` 로 새로 파는 브랜치는 upstream 이 없다(실측). 이
+    검사가 없으면 `switch <slot> <origin/main 추적 브랜치>` 가 통과하고 **다음 0단계가 다시 main-참조로
+    막는다** = 이 티켓이 닫으려는 remedy-유발 상태전이의 다른 축(내부 리뷰 should-fix).
+
+    `git rev-parse --abbrev-ref <branch>@{upstream}`(`_upstream_status` 의 branch-지정 변형·rc 우선
+    판정 동형 — `_real_git_runner` 는 stdout+stderr 를 합쳐 주므로 미해소 시 out 이 비어있지 않다).
+    미해소(rc≠0·빈 이름)·`/` 없는 이름·호출 실패는 None(fail-soft — 판정 불가는 통과·오탐 0)."""
+    try:
+        rc, out = git_runner(["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"])
+    except Exception:  # noqa: BLE001 — fail-soft: 조회 실패는 판정 생략(오탐 0).
+        return None
+    name = (out or "").strip()
+    if rc != 0 or not name or "/" not in name:
+        return None
+    tracked = name.split("/", 1)[1]     # origin/main → main · origin/feature/x → feature/x
+    return name if tracked in protected else None
+
+
+def _non_branch_ref_kind(name: str, *, git_runner: GitRunner) -> "str | None":
+    """`name` 이 **로컬 브랜치가 아닌 ref**(remote-tracking·태그)로도 해소되는가 — 종류 or None (T-0414).
+
+    `switch` 의 *생성* 경로(로컬 브랜치 미존재)에서 인자가 `origin/main`·태그명이면 "새 작업 브랜치
+    이름" 으로 부적절하고, 옛 plain-checkout 폴백에선 **detached HEAD 이동**으로 빠졌다(실측:
+    `git checkout origin/main` → `## HEAD (브랜치 없음)`). 게다가 `origin/main` 은 보호목록 `main`
+    과 **문자열이 달라 보호검사를 통과**한다 — 그 창을 인자 단계에서 닫는다(codex 게이트 must-fix).
+
+    §F9 축 2(`_branch_protected_upstream`)와 **다른 축**이다: 축 2 는 *기존 로컬 브랜치의 upstream*
+    을 보고, 이건 *인자 자체가 로컬 브랜치가 아닌 것*을 가리키는 경우다(둘 다 필요).
+
+    `refs/remotes/<name>` → "remote-tracking" · `refs/tags/<name>` → "태그" · 둘 다 아니면 None.
+    호출 실패/예외는 None(fail-soft — 판정 불가는 통과·`-b` 생성이 최종 방어)."""
+    for ref_prefix, kind in (("refs/remotes/", "remote-tracking ref"), ("refs/tags/", "태그")):
+        try:
+            rc, _out = git_runner(["show-ref", "--verify", "--quiet", f"{ref_prefix}{name}"])
+        except Exception:  # noqa: BLE001 — fail-soft: 판정 불가는 통과.
+            continue
+        if rc == 0:
+            return kind
+    return None
+
+
+def _branch_df_conflict(branch: str, *, git_runner: GitRunner) -> "str | None":
+    """`refs/heads/<branch>` 생성이 **접두 부모 ref** 와 D/F 충돌하는가 — 충돌 ref 명 or None (T-0414).
+
+    브랜치 `task` 가 존재하면 `refs/heads/task/main` 은 `show-ref` 상 **미존재**(→ 생성 전환 경로)
+    지만 `git switch -c` 는 `cannot lock ref … 'refs/heads/task' exists` 로 실패한다(ref 는 파일
+    시스템 디렉토리/파일 구조라 같은 이름이 파일이면서 디렉토리일 수 없다). 그래서 선-검사에서
+    접두 부모(`a/b/c` → `a`, `a/b`)의 실재를 함께 본다(T-0412 리뷰 이관분).
+
+    ⚠️ 역방향(디렉토리가 이미 있는데 그 이름의 파일 ref 를 만드는 경우 — `task/main` 존재 시
+    `task` 생성)은 여기서 안 본다: 그 경우는 `git switch -c` 의 loud 실패(→ `git-error`)로 수렴하고
+    사유가 git 메시지에 그대로 실린다(선-검사 범위는 remedy 안내가 실제로 부딪히는 클래스에 한정)."""
+    parts = branch.split("/")
+    for i in range(1, len(parts)):
+        parent = "/".join(parts[:i])
+        if _local_branch_exists(parent, git_runner=git_runner):
+            return parent
+    return None
+
+
+class SwitchRefused(RuntimeError):
+    """`switch <slot> <branch>` 거부 — rc 1 + 사유 (T-0414·§F9).
+
+    ⚠ **부작용 범위는 사유마다 다르다**(내부 리뷰 should-fix — docstring 이 자기 사유와 모순이면
+    안 된다):
+      - **선-검사 사유**(unregistered·protected·protected-upstream·no-worktree·dirty·
+        rebase-in-progress·invalid-ref·ambiguous-ref·df-conflict) — 전환도 기록도 하지 않는다(부작용 0).
+      - **git-error** — `_checkout_required`(checkout+resync)를 *시도한 뒤* 실패(트리 상태는 git 이
+        남긴 그대로·장부 불변·`CheckoutFailed` 를 이 사유로 감싼다).
+      - **record-failed** — 전환은 **성공**했고 장부 스냅 재기록만 실패(원자성 파손 → 아래 안내).
+
+    `reason` ∈ {"unregistered", "protected", "protected-upstream", "no-worktree", "dirty",
+    "invalid-ref", "ambiguous-ref", "df-conflict", "git-error", "record-failed"}:
+      - **unregistered** — 장부에 없는 슬롯(스냅 기록 대상이 아니다·`record` 동형 메시지).
+      - **protected** — 대상 브랜치가 그 repo 보호목록(T-0076). 보호브랜치로 *들어가는* 전환은 이
+        커맨드의 목적(main-참조 해소)과 정반대다.
+      - **protected-upstream** — 대상(기존) 브랜치가 **보호브랜치 원격을 origin-추적**한다(§F9 축 2).
+        전환은 되지만 다음 0단계가 다시 main-참조로 막으므로 여기서 거부한다(remedy-유발 상태전이).
+      - **no-worktree** — 슬롯 worktree 경로 부재(실경로·runner 미주입).
+      - **dirty** — 미커밋 변경이 있다. 전환이 WIP 를 흔든다(rebase 선-검사 동형).
+      - **rebase-in-progress** — 그 슬롯에 rebase 가 진행 중(`.git/rebase-merge|rebase-apply`).
+        해소(continue/abort)가 먼저다 — 중간에 브랜치를 옮기면 진행 중 rebase 가 꼬인다
+        (`_rebase_one` 선-검사와 동형·같은 프리미티브 `_rebase_in_progress`).
+      - **invalid-ref** — git 브랜치명으로 부적합하거나 **정규화 불가**(`check-ref-format --branch`
+        rc≠0·빈/이상 출력·비고정점·호출 실패). 정규화가 안 되면 보호목록 등 안전검사를 그 이름
+        기준으로 할 수 없으므로 fail-closed 로 거부한다.
+      - **ambiguous-ref** — (생성 경로) 인자가 **로컬 브랜치가 아닌 ref**(remote-tracking·태그)를
+        가리킨다. `origin/main` 류는 새 작업 브랜치 이름으로 부적절하고, 보호목록(`main`)과 문자열이
+        달라 검사를 우회하는 창이었다(옛 plain-checkout 폴백에선 detached 이동).
+      - **df-conflict** — 접두 부모 ref 존재로 생성 불가(`refs/heads/task` 있는데 `task/main`).
+      - **git-error** — 브랜치 전환(`_checkout_required`) 자체가 실패.
+      - **record-failed** — 전환은 됐으나 장부 스냅 재기록이 실패했다(원자성 깨짐 → **loud**:
+        조용히 성공 보고하면 다음 0단계가 diverged 로 막힌다 → `record` 안내).
+    (`RuntimeError` — `RefreshRefused`/`RebaseBaseRequired` 동형·CLI 파사드가 rc 1 로 surface.)"""
+
+    def __init__(self, slot: str, reason: str, *, detail: str = ""):
+        self.slot = slot
+        self.reason = reason
+        tail = f" — {detail}" if detail else ""
+        msg = {
+            "unregistered": (f"슬롯 {slot!r} 이 리스 장부에 없다 — switch 는 등록된 슬롯에만 "
+                             f"(전환+스냅 재기록을) 수행한다"),
+            "protected": (f"슬롯 {slot!r} 을 보호 브랜치로 전환하는 것은 거부한다 — 이 커맨드는 "
+                          f"main-참조 상태를 *벗어나는* 전환용이다(보호목록=areas.md `protected`·T-0076)"),
+            "protected-upstream": (f"슬롯 {slot!r} 을 **보호브랜치 원격을 추적하는** 브랜치로 전환하는 것은 "
+                                   f"거부한다 — 전환은 되지만 다음 부트스트랩 0단계가 다시 main-참조"
+                                   f"(origin-추적·§F9 축 2)로 막는다. upstream 이 없는 새 작업 브랜치로 "
+                                   f"전환하라(`switch {slot} <새-브랜치명>`)"),
+            "no-worktree": f"슬롯 {slot!r} 의 worktree 경로가 없다 — 전환할 트리가 없다",
+            "dirty": (f"슬롯 {slot!r} 에 미커밋 변경이 있어 switch 를 거부한다 — 브랜치 전환이 WIP 를 "
+                      f"흔든다(커밋/stash 후 재시도)"),
+            "rebase-in-progress": (f"슬롯 {slot!r} 에 rebase 가 진행 중이라 switch 를 거부한다 — 먼저 "
+                                   f"슬롯에서 `git rebase --continue`(충돌 해결 후) 또는 "
+                                   f"`git rebase --abort`(취소)로 해소하라(rebase 선-검사 동형)"),
+            "invalid-ref": (f"슬롯 {slot!r} 에 지정한 브랜치명이 git ref 규칙에 어긋나거나 실 브랜치명으로 "
+                            f"정규화할 수 없다(`git check-ref-format --branch`) — 다른 이름을 지정하라"),
+            "ambiguous-ref": (f"슬롯 {slot!r} 에 지정한 이름이 로컬 브랜치가 아니라 다른 ref 를 가리킨다 "
+                              f"— 이 커맨드는 그 ref 로 detached 이동하지 않는다. **새 로컬 브랜치명**을 "
+                              f"지정하라(예 `switch {slot} task/<작업이름>`). 원격 브랜치를 따라가려면 "
+                              f"먼저 로컬 브랜치를 만들고(`git -C {slot} switch -c <이름> <원격ref>`) "
+                              f"`record {slot}` 로 스냅을 맞춰라"),
+            "df-conflict": (f"슬롯 {slot!r} 에 지정한 브랜치명이 기존 브랜치와 D/F 충돌한다 "
+                            f"(접두 부모 ref 가 이미 브랜치로 존재 → `switch -c` 가 `cannot lock ref` "
+                            f"로 실패) — 다른 이름을 지정하라"),
+            "git-error": f"슬롯 {slot!r} 브랜치 전환 중 git 오류",
+            "record-failed": (f"슬롯 {slot!r} 브랜치 전환은 됐으나 장부 스냅 재기록에 실패했다 — 이대로면 "
+                              f"다음 0단계가 '기록↔live diverged' 로 막는다. "
+                              f"`worktree_pool.py record {slot}` 로 스냅을 재기록하라"),
+        }.get(reason, f"슬롯 {slot!r} switch 거부({reason})")
+        super().__init__(msg + tail + " (T-0414·§F9).")
+
+
+class SwitchResult:
+    """`switch` 성공 결과 — 어느 브랜치로·생성 전환이었는지·재기록된 head (T-0414·CLI 보고 원료).
+
+    (dataclass 미사용 — Lease/RebaseSlotResult 등과 동일 이유: `spec_from_file_location` 로드 시
+    dataclass 의 forward-ref 해소가 깨진다.)"""
+
+    def __init__(self, slot: str, branch: str, *, created: bool, head: "str | None",
+                 requested: "str | None" = None):
+        self.slot = slot
+        self.branch = branch        # **정규화된** 실 브랜치명(검사·전환·장부 기록의 단일 기준).
+        self.created = created      # True = 미존재라 `switch -c` 로 생성 전환.
+        self.head = head            # 재기록된 장부 스냅의 head(sha).
+        self.requested = requested if requested is not None else branch  # 사용자 원문(revspec 가능).
+
+    @property
+    def expanded(self) -> bool:
+        """원문이 revspec 이라 다른 이름으로 해소됐는가(`@{-1}`→`main`) — 호출부 loud 보고용."""
+        return self.requested != self.branch
+
+    def __repr__(self) -> str:
+        return (f"SwitchResult(slot={self.slot!r}, branch={self.branch!r}, "
+                f"created={self.created!r}, head={self.head!r}, requested={self.requested!r})")
+
+
+def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
+           git_runner: GitRunner | None = None) -> SwitchResult:
+    """슬롯 브랜치를 전환하고 **같은 호출 안에서** 장부 스냅을 재기록한다 — 원자 (T-0414·§F9).
+
+    0단계 main-참조 fault 의 remedy 를 엔진-매개 단일 커맨드로 만든다. 순서(선-검사는 전부 부작용
+    0 — 하나라도 걸리면 전환/기록 어느 것도 하지 않는다):
+      1. **readonly 거부**(⑬·`_reject_readonly_mutation`) — 공유 기준면은 mutation 불가.
+      2. **장부 등록 확인** — 미등록이면 `SwitchRefused("unregistered")`(스냅 기록 대상 아님).
+      3. **worktree/runner 해소** — 실경로(runner 미주입)에서 슬롯 부재면 `no-worktree`.
+      4. **dirty 거부 + rebase 진행중 거부** — 전환이 WIP 를 흔든다·rebase 중 전환은 꼬인다
+         (`_rebase_one` 선-검사와 같은 프리미티브 `_is_dirty`/`_rebase_in_progress` 재사용).
+         ⚠ **소유(내 세션 leased) 검사는 없다** — `record`/`set-base`/`refresh` 와 같은 위치인자
+         pool 관리 표면이고, bind 경로 remedy 는 **바인딩 이전**에 실행되므로 소유를 요구하면
+         이 커맨드의 주 용처가 막힌다(rebase 의 not-owner 스킵은 task 일괄 표면 특성).
+      5. **브랜치명 정규화**(`_normalize_branch_name` — `check-ref-format --branch` 출력) —
+         부적합 이름 거부 + **revspec 확장 해소**(`@{-1}`→실명). 이후 **모든 단계가 이 정규화
+         이름 기준**이다(codex must-fix — 원문 기준이면 `@{-1}` 이 보호목록 비교를 우회해 이
+         커맨드가 스스로 슬롯을 보호브랜치에 앉힌다). 원문과 다르면 stderr 로 **loud 고지**
+         (조용히 다른 브랜치로 가지 않는다).
+      6. **보호목록 거부** — 정규화된 브랜치가 그 repo 보호목록이면 거부(§F9 목적과 정반대).
+         `protected` 주입 시 그 목록(테스트 hermetic), 아니면 `_resolve_protected(repo)`.
+      7. **존재 판정**(`refs/heads/<정규화>`) → **기존 브랜치면 `@{upstream}` 보호 추적 거부**
+         (§F9 축 2·`protected-upstream`) · **미존재(=생성 의도)면 모호 인자 거부**(remote-tracking·
+         태그로 해소되면 `ambiguous-ref` — 축 2 와 다른 축) + **D/F 충돌** 선-검사.
+      8. **전환** — 기존 프리미티브 `_checkout_required(slot, <정규화>)` **조합**(raw git 금지):
+         `_checkout`(`checkout --no-recurse-submodules <b>` → 실패 시 `-B <b>` 생성·ADR-0051 크럭스 A
+         ambient `submodule.recurse=true` override) + 성공 직후 `_resync_submodules_selective`
+         (detached=pin 재동기·**on-branch(dev)=skip**·dirty=skip+경고·fail-soft). alloc 의 브랜치
+         전환 3분기가 쓰는 그 경로다 — 새 프리미티브를 쓰면 이 submodule 보호가 통째로 빠진다
+         (codex 게이트 must-fix). 실패는 `CheckoutFailed` → `git-error`.
+      9. **스냅 재기록** — 전환·resync **후에** `record_git_snapshot(slot)`(base 미전달 = 기존 base **보존**·`record`
+         서브커맨드와 동형). 실패는 전부 `record-failed` 로 **loud** 수렴한다 — **예외**(장부 IO·
+         권한·락)까지 포함(내부 리뷰 must-fix: 옛 코드는 불일치 dict 반환만 잡아 가장 흔한 실패인
+         예외가 원시 traceback 으로 샜다) + 판정도 `_cmd_record` 와 **동형**(무변경·branch 불일치·
+         None 전부 실패). 원자성이 깨진 채 성공 보고하면 다음 0단계가 diverged 로 막는다.
+    반환 = `SwitchResult`(branch=**정규화 이름**·requested=원문·created·head). **diverged 검사는
+    무변경** — 사람이 raw `git switch` 를 직접 하면 여전히 FAIL-LOUD 로 잡힌다(탐지력 손실 0)."""
+    _reject_readonly_mutation(slot, "switch", git_runner=git_runner)
+    lease = read_lease(slot)
+    if lease is None:
+        raise SwitchRefused(slot, "unregistered")
+    repo = getattr(lease, "repo", None) or slot.rpartition("/")[2].rsplit("_", 1)[0]
+
+    runner = git_runner
+    if runner is None:
+        p = slot_path(slot)
+        if not p.exists():
+            raise SwitchRefused(slot, "no-worktree", detail=str(p))
+        runner = _real_git_runner(p)
+
+    if _is_dirty(slot_path(slot), git_runner=runner):
+        raise SwitchRefused(slot, "dirty")
+    if _rebase_in_progress(slot, git_runner=runner):
+        raise SwitchRefused(slot, "rebase-in-progress")   # `_rebase_one` 선-검사와 동형 프리미티브.
+
+    # 브랜치명 정규화 — **이 아래 전 단계의 단일 기준**(원문 아님·revspec 확장 해소·codex must-fix).
+    target = _normalize_branch_name(branch, git_runner=runner)
+    if target is None:
+        raise SwitchRefused(slot, "invalid-ref", detail=f"`{branch}`")
+    expansion = "" if target == branch else f"입력 `{branch}` → `{target}` 로 해소됨(revspec 확장)"
+    if expansion:
+        # 조용한 오전환 방지 — 사용자가 친 문자열과 실제 대상이 다르면 즉시 고지(거부 경로 포함).
+        print(f"[알림] 슬롯 {slot} switch: {expansion} — 보호목록 검사·전환·장부 기록은 전부 "
+              f"`{target}` 기준으로 진행한다 (T-0414).", file=sys.stderr)
+
+    protected_list = protected if protected is not None else _resolve_protected(repo)
+    if target in protected_list:
+        detail = f"`{target}`" + (f" ({expansion})" if expansion else "")
+        raise SwitchRefused(slot, "protected", detail=detail)
+
+    exists = _local_branch_exists(target, git_runner=runner)
+    if exists:
+        # 축 2(§F9) — 보호브랜치 원격을 추적하는 기존 브랜치로 가면 다음 0단계가 다시 main-참조로
+        # 막는다(remedy 가 다른 축의 fault 를 만든다). 새 브랜치(`-c`)는 upstream 이 없어 무관.
+        tracked = _branch_protected_upstream(target, protected_list, git_runner=runner)
+        if tracked is not None:
+            raise SwitchRefused(slot, "protected-upstream",
+                                detail=f"`{target}` → `{tracked}` 추적")
+    else:
+        # 생성 의도인데 인자가 remote-tracking ref·태그를 가리킨다 = "새 브랜치 이름" 으로 부적절
+        # (옛 plain-checkout 폴백에선 detached 이동 + 보호목록 문자열 우회 창이었다).
+        kind = _non_branch_ref_kind(target, git_runner=runner)
+        if kind is not None:
+            raise SwitchRefused(slot, "ambiguous-ref", detail=f"`{target}` = {kind}")
+        parent = _branch_df_conflict(target, git_runner=runner)
+        if parent is not None:
+            raise SwitchRefused(slot, "df-conflict",
+                                detail=f"`{target}` vs 기존 브랜치 `{parent}`")
+
+    # ── 전환 = 기존 프리미티브 조합(raw git 금지) ────────────────────────────
+    # `_checkout_required` = `_checkout`(--no-recurse-submodules·미존재면 `-B` 생성) +
+    # `_resync_submodules_selective`(on-branch dev 보호·detached 재동기·dirty skip+경고·fail-soft).
+    # ADR-0051 크럭스 A: ambient `submodule.recurse=true` 환경에서 raw 전환은 작업 중 submodule 을
+    # detached pin 으로 파괴한다 — 그 보호는 이 쌍에만 있다(alloc 전환 3분기와 동일 경로).
+    # `create_only=not exists` — 생성 의도면 **비파괴 `-b` 만**(plain 폴백 금지: DWIM 자동 tracking·
+    # detached 이동 회피 / `-B` 금지: 판정↔실행 경합에도 기존 브랜치 리셋 0·T-0343 결론 계승).
+    try:
+        _checkout_required(slot, target, create_only=not exists, git_runner=runner)
+    except CheckoutFailed as exc:
+        raise SwitchRefused(slot, "git-error",
+                            detail=f"브랜치 전환 실패: {str(exc.output).strip()[:200]}") from exc
+
+    # ── 스냅 재기록(원자 짝) — base 미전달 = 기존 base 보존(`record` 동형·arrival 규칙·결정 ⑨) ──
+    # 여기서부터는 **전환이 이미 일어난 뒤**다. 어떤 실패든 조용히 통과시키면 장부가 stale 인 채
+    # 성공 보고가 나가고, 사용자는 다음 0단계에서 diverged 차단을 만난다 → 전부 `record-failed`
+    # 로 수렴해 해소 커맨드(`record <slot>`)를 안내한다.
+    before_git = lease.git if isinstance(getattr(lease, "git", None), dict) else None
+    try:
+        updated = record_git_snapshot(slot, git_runner=git_runner)
+    except Exception as exc:  # noqa: BLE001 — must-fix: 장부 IO/권한/락 예외도 안내 채널로 수렴.
+        raise SwitchRefused(slot, "record-failed", detail=f"장부 기록 예외: {exc}") from exc
+    recorded = updated.git if (updated is not None and isinstance(updated.git, dict)) else None
+    # 판정은 `_cmd_record` 와 동형 — 무변경(스냅 불가로 기존 git 보존)도 실패로 본다. branch 만
+    # 보면 "기록=X·live=main diverged 에서 switch X" 처럼 **이미 X 로 기록된** 장부가 stale head 를
+    # 지닌 채 성공으로 통과한다(내부 리뷰 should-fix). 이미 그 브랜치·완전 동일 스냅이면 보수적
+    # loud(=record 동형·재실행 안내)로 기운다 — 조용한 stale 보다 낫다.
+    if recorded is None or recorded == before_git or recorded.get("branch") != target:
+        raise SwitchRefused(slot, "record-failed",
+                            detail=f"기록된 branch=`{(recorded or {}).get('branch')}`"
+                                   f"{'·무변경(스냅 불가)' if recorded is not None and recorded == before_git else ''}")
+    return SwitchResult(slot, target, created=not exists, head=recorded.get("head"),
+                        requested=branch)
+
+
 # ── 내부 헬퍼 ────────────────────────────────────────────────────────────────
 
 
@@ -3667,12 +4075,25 @@ def _rollback_worktree(repo: str, slot_path_: Path, *, git_runner: GitRunner | N
         pass
 
 
-def _checkout(slot_path_: Path, branch: str, *, git_runner: GitRunner | None = None) -> tuple[int, str]:
+def _checkout(slot_path_: Path, branch: str, *, create_only: bool = False,
+              git_runner: GitRunner | None = None) -> tuple[int, str]:
     """슬롯 worktree 에서 브랜치 체크아웃 (브랜치 변경 = 같은 슬롯 재체크아웃·ADR-0013).
 
     `git checkout --no-recurse-submodules <branch>`. 브랜치가 없으면 새로 만든다(`-B`) — 풀
     슬롯에 새 작업스트림을 붙이는 정상 경로. (같은 브랜치 동시 2-worktree checkout 은 git 이
     거부 — ADR-0013 §8-6.)
+
+    **`create_only=True` (T-0414·`switch` 생성 경로 전용·기본값은 현행 동작 불변)**: plain checkout
+    폴백 없이 **비파괴 생성**(`-b <branch>`)만 시도한다. 기본 경로의 "plain → 실패하면 `-B`" 는
+    *전환 의도*엔 맞지만 **생성 의도엔 위험**하다 — 로컬 브랜치가 없어도 plain checkout 이 성공해
+    버리는 두 경우(실측):
+      - `origin/<b>` 가 있으면 **DWIM 자동 tracking 브랜치 생성**(의도한 "새 작업 브랜치"가 아니다).
+      - 인자가 remote-tracking ref·태그를 가리키면 **detached HEAD** 로 이동(`git checkout
+        origin/main` → `## HEAD (브랜치 없음)`).
+    `-b`(create-or-fail) 는 `-B`(create-or-**reset**)와 달리 기존 브랜치를 리셋하지 않는다 —
+    존재 판정과 실행 사이의 경합/판정 오차에도 **데이터 유실 0**(T-0343 이 `worktree add -B` 의
+    보존-브랜치 리셋 유실을 닫은 것과 같은 결론·거기선 존재 선-판정으로 갈랐고 여기선 실행 자체를
+    비파괴로 고정해 한 단계 더 잠근다). 이미 있으면 rc≠0 로 **loud 실패**(조용한 리셋보다 낫다).
 
     **`--no-recurse-submodules` (ADR-0051 크럭스 A·codex 게이트)**: 사용자 환경(전역
     `~/.gitconfig` 또는 repo config)에 `submodule.recurse=true` 가 설정돼 있으면 plain
@@ -3683,6 +4104,8 @@ def _checkout(slot_path_: Path, branch: str, *, git_runner: GitRunner | None = N
     submodule 상태의 **유일 권위**가 된다(ADR-0051 "전역 recurse 대신 selective" 정신 정합).
     """
     runner = git_runner or _real_git_runner(slot_path_)
+    if create_only:
+        return runner(["checkout", "--no-recurse-submodules", "-b", branch])
     rc, out = runner(["checkout", "--no-recurse-submodules", branch])
     if rc != 0:
         rc, out = runner(["checkout", "--no-recurse-submodules", "-B", branch])
@@ -3839,7 +4262,8 @@ def _resync_submodules_selective(slot_path_: Path, *, git_runner: GitRunner | No
             )
 
 
-def _checkout_required(slot: str, branch: str, *, git_runner: GitRunner | None = None) -> None:
+def _checkout_required(slot: str, branch: str, *, create_only: bool = False,
+                       git_runner: GitRunner | None = None) -> None:
     """`_checkout` 을 부르고 실패(rc≠0)면 `CheckoutFailed` raise (ADR-0013).
 
     fail-soft 로 무시하면 호출부가 장부 branch/state 를 성공처럼 갱신해 장부↔실제 worktree
@@ -3850,8 +4274,12 @@ def _checkout_required(slot: str, branch: str, *, git_runner: GitRunner | None =
     skip+경고). *브랜치 전환* 경로(alloc 세 checkout 분기)에만 붙는다 — `create_slot` 최초 init
     은 이 함수를 안 타고 자체 `submodule update --init --recursive --force`(fresh=전부 detached)를
     유지한다. 재동기는 fail-soft(raise 안 함)라 checkout 성공을 되돌리지 않는다.
+
+    `create_only` 는 `_checkout` 으로 그대로 전달한다(T-0414 `switch` 생성 경로 — 비파괴 `-b` 만
+    시도·DWIM tracking/detached 회피). **기본값 False = 현행 동작 불변**(alloc 전환 3분기 무영향).
+    selective 재동기는 두 경로에서 동일하게 붙는다.
     """
-    rc, out = _checkout(slot_path(slot), branch, git_runner=git_runner)
+    rc, out = _checkout(slot_path(slot), branch, create_only=create_only, git_runner=git_runner)
     if rc != 0:
         raise CheckoutFailed(slot, branch, out)
     _resync_submodules_selective(slot_path(slot), git_runner=git_runner)
@@ -4400,6 +4828,32 @@ def _cmd_record(args) -> int:
     return 0
 
 
+def _cmd_switch(args) -> int:
+    """`switch <slot> <branch>` CLI 핸들러 — 브랜치 전환 + 스냅 재기록 원자 (T-0414·§F9).
+
+    0단계 main-참조 fault 의 remedy 진입점. 선-검사 거부(`SwitchRefused`)·readonly
+    (`ReadonlySlotMutation`)·슬롯 형식 오류는 rc 1 + 사유(loud). 성공 시 무엇을 했는지(전환 형태·
+    재기록 head)를 stdout 으로 surface 한다 — 이 한 커맨드로 0단계 재진입이 열린다(2차 diverged
+    차단 없음)."""
+    try:
+        slot = _normalize_slot(args.slot)
+    except SlotResolutionError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    try:
+        result = switch(slot, args.branch)
+    except (SwitchRefused, ReadonlySlotMutation) as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    kind = "비파괴 생성 전환(`-b`)" if result.created else "기존 브랜치 전환"
+    # 원문이 revspec 이라 다른 이름으로 해소됐으면 성공 보고에도 실값을 싣는다(조용한 오전환 방지).
+    asked = f" (입력 `{result.requested}` → 해소)" if result.expanded else ""
+    print(f"✓ 슬롯 {slot} → 브랜치 `{result.branch}`{asked} {kind} + 도착 스냅 재기록 "
+          f"(head=`{(result.head or '?')[:12]}`·base 보존·원자) — 0단계 재진입이 "
+          f"'기록↔live diverged' 로 막히지 않는다(T-0414).")
+    return 0
+
+
 def main(argv: "list[str] | None" = None) -> int:
     """argparse 진입점 — pm-worktree 스킬이 래핑할 `dev`/`sync`/`set-base`/`status` 커맨드 (ADR-0049
     파일럿 T-γ·T-0277·ADR-0057 결정 5·T-0318·T-0352).
@@ -4488,9 +4942,18 @@ def main(argv: "list[str] | None" = None) -> int:
         help="슬롯 도착 스냅(lease.git·branch/head)을 live 로 재기록(base 보존) — 0단계 diverged 정당 판단 시 명시 재동기.")
     p_record.add_argument("slot", help="대상 슬롯(`work/<repo>_<N>` 또는 접두 생략 `<repo>_<N>`).")
 
+    # switch <slot> <branch> — 브랜치 전환 + 장부 스냅 재기록을 **원자**로(T-0414·§F9·위치인자 <slot>).
+    # 0단계 main-참조 fault 의 해소 단일 커맨드 — raw `git switch` 는 스냅을 안 남겨 곧바로 2차
+    # 차단(기록↔live diverged)을 부른다(remedy-유발 상태전이). 보호목록 브랜치로의 전환은 거부.
+    p_switch = subparsers.add_parser(
+        "switch",
+        help="슬롯 브랜치 전환 + 도착 스냅 재기록(원자·base 보존·보호브랜치 거부) — 0단계 main-참조 해소 단일 커맨드.")
+    p_switch.add_argument("slot", help="대상 슬롯(`work/<repo>_<N>` 또는 접두 생략 `<repo>_<N>`).")
+    p_switch.add_argument("branch", help="전환할 브랜치(기존이면 그대로 전환·미존재면 생성 전환).")
+
     args = parser.parse_args(argv)
 
-    # set-base / status / rebase / refresh / record — 위치인자 <slot> 경로(identity 파싱 미진입·pool 관리·spike §F9/F10/F11·T-0391).
+    # set-base / status / rebase / refresh / record / switch — 위치인자 <slot> 경로(identity 파싱 미진입·pool 관리·spike §F9/F10/F11·T-0391·T-0414).
     if args.command == "set-base":
         return _cmd_set_base(args)
     if args.command == "status":
@@ -4501,6 +4964,8 @@ def main(argv: "list[str] | None" = None) -> int:
         return _cmd_refresh(args)
     if args.command == "record":
         return _cmd_record(args)
+    if args.command == "switch":
+        return _cmd_switch(args)
 
     try:
         identity = ia.parse_identity(args)
