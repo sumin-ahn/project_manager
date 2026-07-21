@@ -379,40 +379,65 @@ def test_fresh_adopter_settings_portable_and_hooks_wired(pm_import, tmp_path):
 # 결정적 — 최초 import 와 동일 in-process 경로로 구동한다(운영 진입 `pm_config add-harness` 는 별 subprocess
 # 라 stub 미상속·live 조회 위험 → 이 게이트의 hermetic 계약과 맞지 않는다).
 
-# 어댑터 네임스페이스 상한(추가 relpath ⊆ 이 집합). claude add 의 @render 제외(.claude/agents·skills)는
-# 추가 파일을 *줄일* 뿐이라 subset 단언엔 무영향 — 상한 predicate 로 충분하다.
+# 어댑터 네임스페이스 상한(추가 relpath ⊆ 이 집합). 값 shape = `(adapter_dirs: tuple, root_doc)` —
+# 엔진 `pm_import.ADD_HARNESS_ADAPTER` 와 동형(ADR-0070 D5·비준 2026-07-21). codex 는 어댑터
+# 네임스페이스가 **둘**(`.codex`+`.agents`)이라 dirs-튜플로 일반화하고 claude/opencode 는 단일-원소.
+# claude add 의 @render 제외(.claude/agents·skills)는 추가 파일을 *줄일* 뿐이라 subset 단언엔
+# 무영향 — 상한 predicate 로 충분하다.
 _ADD_HARNESS_NS_BOUND = {
-    "opencode": (".opencode", "AGENTS.md"),
-    "claude": (".claude", "CLAUDE.md"),
+    "opencode": ((".opencode",), "AGENTS.md"),
+    "claude": ((".claude",), "CLAUDE.md"),
+    "codex": ((".codex", ".agents"), "AGENTS.md"),
 }
 
 
+# 스냅샷 제외 트리 컴포넌트 — VCS/캐시 산출물 + pm_import 백업. `.pm_import_backups/` 는 add-harness 가
+# root doc(AGENTS.md) 충돌을 만나 backup+copy 할 때 생기는 **안전 아티팩트**다 (⚠ add-harness 경로는
+# main import 와 달리 ensure_backup_dir_gitignored 를 안 태워 git-ignore 미보장 — 엔진 위생 갭·별도 티켓 후보) —
+# opencode↔codex 는 공통 코어 AGENTS.md 가 byte-identical 이라, git-미커밋 fresh 채택자에선 git-safe
+# skip 이 아니라 backup+identical-rewrite 로 처리된다(라이브 클로버 아님·백업이 원본 보존·재기록은
+# 동일 바이트). 백업 아티팩트는 어댑터 네임스페이스도 실 트리도 아니라 스냅샷에서 뺀다 — *실* 파일
+# (AGENTS.md)의 바이트 불변은 아래 (3) 이 그대로 검증하므로 라이브-안전 판정력은 유지된다.
+_SNAPSHOT_EXCLUDE_PARTS = ("__pycache__", ".git", ".pm_import_backups")
+
+
 def _snapshot_tree(root: Path) -> dict[str, bytes]:
-    """트리의 모든 파일 relpath(posix) → 바이트 스냅샷 (__pycache__·.git 등 stale/VCS 산출물 제외)."""
+    """트리의 모든 파일 relpath(posix) → 바이트 스냅샷 (__pycache__·.git·백업 등 산출물 제외)."""
     snap: dict[str, bytes] = {}
     for p in root.rglob("*"):
         if not p.is_file():
             continue
         rel = p.relative_to(root)
-        if any(part in ("__pycache__", ".git") for part in rel.parts):
+        if any(part in _SNAPSHOT_EXCLUDE_PARTS for part in rel.parts):
             continue
         snap[rel.as_posix()] = p.read_bytes()
     return snap
 
 
 def _in_adapter_ns_bound(rel: str, added_harness: str) -> bool:
-    """rel(dst relpath)이 *추가되는 harness* 어댑터 네임스페이스 상한 안인가 (독립 참조 규칙)."""
-    adapter_dir, root_doc = _ADD_HARNESS_NS_BOUND[added_harness]
-    return rel == root_doc or rel.startswith(adapter_dir + "/")
+    """rel(dst relpath)이 *추가되는 harness* 어댑터 네임스페이스 상한 안인가 (독립 참조 규칙).
+
+    adapter_dirs 는 튜플(codex 는 `.codex`+`.agents` 둘) — 하나라도 매칭하면 네임스페이스 안이다.
+    """
+    adapter_dirs, root_doc = _ADD_HARNESS_NS_BOUND[added_harness]
+    return rel == root_doc or any(rel.startswith(d + "/") for d in adapter_dirs)
 
 
-@pytest.mark.parametrize("base,added", [("claude", "opencode"), ("opencode", "claude")])
+@pytest.mark.parametrize("base,added", [
+    ("claude", "opencode"), ("opencode", "claude"),   # 1차 실측 clobber + 대칭
+    ("claude", "codex"), ("codex", "claude"),          # codex ↔ claude (진입 doc 상이·신규 추가)
+    ("opencode", "codex"), ("codex", "opencode"),      # codex ↔ opencode (공통 코어 AGENTS.md 수렴 skip)
+])
 def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_path, base, added):
     """fresh import(base) → add-harness(added): 추가는 어댑터 네임스페이스뿐·기존 트리 바이트 불변.
 
     ADR-0048 라이브-안전 불변식의 e2e 층 — raw 재-import 5-file clobber 재발을 실 인스턴스 전체 트리
     diff 로 못박는다(단위 spot-check 보완). 1차 param(claude→opencode)이 실측 clobber 시나리오,
-    2차(opencode→claude)는 대칭 검증.
+    2차(opencode→claude)는 대칭 검증. codex(세 번째 하네스·ADR-0070)는 양방향 편입([[cross-cutting-
+    breaking-blast-radius]] — dual-namespace `.codex`+`.agents`·claude/opencode 공존 미가드 방지):
+    claude↔codex 는 진입 doc 이 상이(신규 추가)하고, opencode↔codex 는 공통 코어 `AGENTS.md` 가
+    byte-identical 이라 add-harness 가 그 root doc 을 git-safe skip(수렴)하는 게 정상 — 아래 sanity 가
+    "신규 추가 또는 byte-identical 무변" 둘 다 허용해 그 수렴을 함께 못박는다(D3 C-v2).
     """
     dest = tmp_path / f"adopter-{base}-add-{added}"
     rc = pm_import.main(
@@ -426,9 +451,9 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     assert any(r.startswith(".project_manager/wiki/") for r in before), \
         f"{base}: 스냅샷에 wiki dev-state 부재 (공허 테스트?)"
     assert ".project_manager/tools/board.py" in before, f"{base}: 스냅샷에 엔진 board.py 부재"
-    base_dir, base_doc = _ADD_HARNESS_NS_BOUND[base]
-    assert base_doc in before and any(r.startswith(base_dir + "/") for r in before), \
-        f"{base}: 스냅샷에 base 어댑터({base_dir}/**·{base_doc}) 부재"
+    base_dirs, base_doc = _ADD_HARNESS_NS_BOUND[base]
+    assert base_doc in before and any(r.startswith(d + "/") for d in base_dirs for r in before), \
+        f"{base}: 스냅샷에 base 어댑터({'/'.join(base_dirs)}/**·{base_doc}) 부재"
 
     # 라이브-안전 add-harness — render-only·hermetic(models seam = pm_import fixture stub). 소스는
     # 명시 REPO(=프레임워크 checkout·채택자의 `--from`/path upstream 과 동형). T-0282 이후 add-harness
@@ -451,9 +476,18 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     assert outside == [], (
         f"{base}→{added}: add-harness 가 어댑터 네임스페이스 밖 파일 추가(라이브-안전 위반): {outside}")
     # sanity — 어댑터가 실제로 추가됐다(스코프가 맞는 트리를 잡았다는 방증).
-    add_dir, add_doc = _ADD_HARNESS_NS_BOUND[added]
-    assert add_doc in added_rels, f"{base}→{added}: root doc {add_doc} 미추가"
-    assert any(r.startswith(add_dir + "/") for r in added_rels), f"{base}→{added}: {add_dir}/** 미추가"
+    add_dirs, add_doc = _ADD_HARNESS_NS_BOUND[added]
+    # root doc 은 둘 중 하나여야 한다: (a) 신규(추가되는 harness 의 진입 doc 이 base 에 없음) → added_rels
+    #   에 있어야 하고, (b) 이미 byte-identical 로 존재(opencode↔codex 공통 코어 AGENTS.md 수렴·D3 C-v2)
+    #   → add-harness 가 재추가하지 않음(git-safe skip 또는 backup+동일-재기록·_snapshot_tree 주석) → 따라서
+    #   추가(added_rels)가 아니라 *live 바이트 무변*으로 확인한다(위 (3) 도 재확인). 누락/실제변경은 red.
+    if add_doc in before:
+        assert before[add_doc] == after[add_doc], (
+            f"{base}→{added}: 공통 코어 root doc {add_doc} 이 변경됨(byte-parity 수렴 skip 이 아니라 덮어씀)")
+    else:
+        assert add_doc in added_rels, f"{base}→{added}: root doc {add_doc} 미추가"
+    assert any(r.startswith(d + "/") for d in add_dirs for r in added_rels), \
+        f"{base}→{added}: 어댑터 dir({'/'.join(add_dirs)}/**) 미추가"
 
     # (3) 기존 relpath 전부 바이트 불변 (wiki `.project_manager/**`·엔진·타 harness·root doc 0 변경).
     changed = sorted(r for r in before_rels & after_rels if before[r] != after[r])

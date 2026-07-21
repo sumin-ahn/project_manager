@@ -492,3 +492,104 @@ def test_live_claude_nudge_injection_reaches_model(tmp_path):
         "claude nudge 주입이 모델 컨텍스트에 도달하지 못함 (UserPromptSubmit additionalContext 미도달/미인용).\n"
         f"--- claude 출력(tail) ---\n{out[-2500:]}"
     )
+
+
+# ── codex fresh-adopter 기계 e2e (스캐폴드→lint→부트스트랩 카드→trust 안내·hermetic·T-0408) ────
+# codex(세 번째 하네스·ADR-0070) 신선 채택자 게이트의 *기계* 층: 템플릿 사본에서 import →
+# 스캐폴드 트리 단언 → board.py lint clean → import 된 pm_bootstrap 이 codex env 감지 시 카드
+# codex 절을 발화 → import 출력에 trust loud 2단계 안내. [[feature-ship-needs-fresh-adopter-gate]]
+# — diff-scoped 리뷰·source-parity 는 *출하 template* 이 import 파이프라인을 지나 실제로 작동하는지
+# (누락·미렌더·부트스트랩 미발화)를 못 본다. 라이브 LLM 0(hermetic·결정적·codex CLI 미실행)이라 매
+# 회귀 자동 포함 — codex 라이브 축(부트스트랩 실 LLM 구동)은 T-0407(별 파일·중복 실행 회피).
+# claude/opencode 동급 기계 게이트는 test_fresh_adopter_e2e.py 에 있고, codex 는 고유분이 커
+# (네임스페이스 둘 `.codex`+`.agents`·정적 진입 doc 없음[C-v2]·trust 2단계) 이 전용 시나리오로 못박는다.
+
+_CODEX_AGENT_TOMLS = ("architect", "code-reviewer", "developer", "researcher")
+# canonical PM-workflow 스킬 수 (`.agents/skills/*/SKILL.md`·ADR-0065 단일 소비·@source remap·D2).
+#   root `.claude/skills` 디렉토리 수와 동일해야 한다(전파 채널 = @source·codex 네임스페이스 remap).
+_CODEX_SKILL_COUNT = len(list((REPO / ".claude" / "skills").glob("*/SKILL.md")))
+
+# 부트스트랩 카드에 넘길 합성 정체성 (test_pm_bootstrap_card.LEAN_IDENTITY 동형·순수 함수 입력·I/O 0).
+#   슬롯 카드 경로(task/readonly 아님)로 렌더돼 끝에 codex 절이 append 된다.
+_CODEX_CARD_IDENTITY = {
+    "repo": "adopter", "session": "adopter_1", "slot": "work/adopter_1",
+    "slot_path": "/tmp/x/work/adopter_1", "branch": "main", "others": [], "protected_branch": None,
+}
+
+
+def _load_adopter_tool(dest: Path, name: str):
+    """채택자 트리에 *import 된* 엔진 도구를 모듈로 로드한다 (출하 사본이 실제로 동작하는지).
+
+    canonical(REPO) 이 아니라 dest(import 산출)의 사본을 로드해, import 파이프라인이 pm_bootstrap
+    을 온전히 전달했고 그 사본이 codex 절을 렌더함을 e2e 로 못박는다(source-parity 를 넘는 층).
+    고유 모듈명으로 로드하고 sys.modules 에 등록하지 않아 다른 테스트의 동명 로드와 격리된다.
+    """
+    spec = importlib.util.spec_from_file_location(
+        f"adopter_{name}", dest / ".project_manager" / "tools" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, monkeypatch, capsys):
+    """codex import → 스캐폴드 트리 → lint clean → 부트스트랩 카드 codex 절 + trust loud 안내 (hermetic).
+
+    codex 신선 채택자 게이트의 기계 e2e — 라이브 LLM 0. (1) 어댑터 스캐폴드가 전부 landing(위임 4축
+    TOML·스킬 remap·공통 코어 AGENTS.md·config/hooks·relay·루트 .gitignore) (2) adopter board.py
+    blocking lint clean (3) import 된 pm_bootstrap 이 codex env 감지 시 카드 codex 절 발화(정적 진입
+    doc 없는 C-v2 에서 카드가 유일 실행모델/위임 전달 채널) (4) import 출력에 trust loud 2단계 안내
+    (미승인 시 위임/훅 死·D5). codex CLI 미실행·결정적이라 매 회귀 자동 포함된다.
+    """
+    dest = _import_adopter(tmp_path, "codex")
+    import_out = capsys.readouterr().out
+
+    # (1) 스캐폴드 트리 — 어댑터 4축 TOML·스킬 remap·공통 코어 AGENTS.md·config/hooks·relay·루트 .gitignore.
+    agents_dir = dest / ".codex" / "agents"
+    for name in _CODEX_AGENT_TOMLS:
+        assert (agents_dir / f"{name}.toml").is_file(), f"codex 위임 축 미landing: {name}.toml"
+    # PM = 메인세션(D1) — opencode 의 pm.md(primary) 에 해당하는 pm.toml 부재가 결정(load-bearing 부재).
+    assert not (agents_dir / "pm.toml").exists(), "codex 는 PM=메인세션 — pm.toml 부재가 결정(D1)"
+    skills = list((dest / ".agents" / "skills").glob("*/SKILL.md"))
+    assert len(skills) == _CODEX_SKILL_COUNT, (
+        f"codex `.agents/skills` SKILL.md {len(skills)}개 (기대 {_CODEX_SKILL_COUNT}·canonical @source remap 전수)")
+    agents_md = dest / "AGENTS.md"
+    assert agents_md.is_file(), "codex 공통 코어 AGENTS.md 미landing"
+    assert "공통 코어" in agents_md.read_text(encoding="utf-8"), \
+        "AGENTS.md 가 harness-neutral 공통 코어(ADR-0069)가 아님"
+    for rel in (".codex/config.toml", ".codex/hooks.json", ".codex/pm_orch_codex.py"):
+        assert (dest / rel).is_file(), f"codex 어댑터 파일 미landing: {rel}"
+    # 루트 .gitignore 스캐폴드 파리티 (claude/opencode 는 출하·instance-owned·T-0402 관찰 편입).
+    assert (dest / ".gitignore").is_file(), (
+        "codex 채택자에 루트 .gitignore 스캐폴드 미landing (claude/opencode 는 출하·파리티 갭)")
+
+    # (2) 부팅 lint clean — 출하 wiki doc 에 dangling framework `[[ADR/T]]`·thin 누출 0(blocking `--gate`
+    #     exit 0). fresh adopter 는 seen-unset 관찰불가 advisory(never-block·option-a)라 blocking 은
+    #     `--gate` 로 확인한다(test_fresh_adopter_e2e 동형).
+    lint = subprocess.run(
+        [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"), "lint", "--gate"],
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PM_NONINTERACTIVE": "1"},
+    )
+    assert lint.returncode == 0, (
+        f"codex adopter blocking lint 비-clean(`--gate` exit {lint.returncode}) — 출하 doc dangling "
+        f"[[ADR/T]]·thin 누출?\n--- stdout ---\n{lint.stdout}\n--- stderr ---\n{lint.stderr}")
+
+    # (3) 부트스트랩 카드 codex 절 — import 된 채택자 pm_bootstrap 이 codex env 감지 시 실행모델/위임
+    #     지침을 카드로 발화한다(C-v2·정적 진입 doc 없음·카드=유일 전달 채널). env monkeypatch 로 감지를
+    #     켜고 순수 카드 헬퍼(I/O 0·bare `__new__` 인스턴스)를 렌더 — test_pm_bootstrap_card._card 동형.
+    bootstrap = _load_adopter_tool(dest, "pm_bootstrap")
+    monkeypatch.setenv("CODEX_THREAD_ID", "019f8003-d535-7a10-adopter")
+    inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
+    card = inst._build_command_card_markdown(_CODEX_CARD_IDENTITY)
+    assert "# codex 하네스" in card, \
+        "import 된 pm_bootstrap 카드에 codex 절 미출현 (env 감지/append 실패·전파 손상?)"
+    assert ".codex/agents/{architect,developer,code-reviewer,researcher}" in card, \
+        "codex 절에 위임 4축(세션 내 spawn) 미기재"
+    assert "codex exec --agent" in card, "codex 절에 `codex exec --agent` 부재 명시 누락(외부 프로세스 위임 없음)"
+    assert "trust 2단계" in card, "codex 절에 trust 2단계 힌트 미기재"
+
+    # (4) trust loud 안내 — import 출력에 2단계 trust 승인 loud 안내(미승인 시 위임 spawn·PreCompact 훅
+    #     死·D5). `-c` CLI override 는 안 먹어 대화형 승인이 유일 경로 — 안내가 눈에 띄어야(loud) 한다.
+    assert "trust" in import_out and "/hooks" in import_out, (
+        f"codex import 출력에 loud trust 2단계 안내 부재 (D5·_print_codex_trust_guidance):\n"
+        f"--- import 출력(tail) ---\n{import_out[-800:]}")
