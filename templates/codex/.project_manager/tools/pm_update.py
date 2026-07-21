@@ -393,8 +393,9 @@ def _load_pm_import():
 
     upstream_rev baseline 기록(매 sync·ADR-0032 D2)에 pm_import 의 URL 안전 git 호출
     (read_upstream_rev — argv-list·timeout·GIT_TERMINAL_PROMPT=0)과 local.conf set-or-replace
-    (record_upstream_rev)를 *재사용*한다 — pm_update 가 자체 git/conf-write 를 중복 구현하지
-    않게(엔진 stdlib-only 철학 안에서 검증된 안전 계약을 상속). 로드 실패는 호출부가 fail-soft
+    (`_set_conf_keys` — record_upstream_rev 와 동일 백엔드)를 *재사용*한다 — pm_update 가 자체
+    git/conf-write 를 중복 구현하지 않게(엔진 stdlib-only 철학 안에서 검증된 안전 계약을 상속).
+    로드 실패는 호출부가 fail-soft
     (baseline 기록은 best-effort·sync 자체를 깨지 않는다).
     """
     import_py = Path(__file__).resolve().parent / "pm_import.py"
@@ -687,27 +688,76 @@ def _run_changes(args) -> int:
     return 0
 
 
-def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
-    """매 sync 후 upstream baseline revision 을 dest local.conf 에 `upstream_rev=<commit>` 기록(T-0145).
+# 경로 upstream 에서 baseline 과 *함께* 기록하는 현재-관찰 키 (T-0413·board._DRIFT_SEEN_KEY 동명).
+_SEEN_REV_KEY = "upstream_seen_rev"
 
-    drift-lint(T-0141)의 baseline 입력 — "마지막 동기 이후 upstream 변경분" 의 기준점이다
-    (ADR-0032 D2). pm_import(import 시)와 여기(pm_update 매 sync) 둘 다 갱신해야 "마지막 동기
-    이후" 가 성립한다. source_root(upstream)가 로컬 git checkout 이면 그 HEAD commit 을 읽어
-    기록한다. git repo 아님·HEAD 해소 실패·pm_import 로드 실패는 **graceful 생략**(기록 안 함·
-    best-effort·sync 자체는 안 깬다). URL upstream(로컬 checkout 없음)은 baseline 을 못 읽어
-    생략 — 스킬층이 fetch 후 `upstream_seen_rev`(별개 키)를 기록한다(한 키 2역 금지).
 
-    pm_import 의 read_upstream_rev(URL 안전 git 호출)·record_upstream_rev(local.conf set-or-
-    replace·타 키 보존)를 재사용한다. 변경 시 True·생략/무변경 False.
+def _upstream_shape(pm_import, dest_root: Path) -> str:
+    """dest local.conf 의 `upstream=` 값 모양 — 'url' | 'path' (T-0413·네트워크 0).
+
+    seen-rev 동시 기록의 분기 입력이다. 미등록(`--from` 직접 지정·구 import)·분류 실패는
+    `_resolve_dest_source` 와 동일하게 **보수적으로 'path'** 취급한다(기존 동작·fail-soft).
+    """
+    stored = _read_local_conf(
+        dest_root / ".project_manager" / "local.conf").get("upstream", "").strip()
+    if not stored:
+        return "path"
+    try:
+        return pm_import.classify_upstream(stored)
+    except Exception:  # noqa: BLE001 — 분류 실패는 보수적으로 경로 취급(fail-soft).
+        return "path"
+
+
+def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict[str, str]]:
+    """매 sync 후 upstream rev 키들을 dest local.conf 에 **단일 write** 로 기록(T-0145·T-0413).
+
+    반환 `(변경 여부, 이번에 엔진이 기록한 {키: rev})` — 호출부가 *실제로 무엇을 썼는지* 를
+    보고 안내 문구를 정한다(결과 상태로 역추론 금지: URL 형상은 스킬층이 쓴 seen 이 이미
+    baseline 과 같아서 "엔진이 썼다"와 구분되지 않는다). 기록 생략 시 `(False, {})`.
+
+    기록 키:
+      - `upstream_rev`      (baseline·항상) — drift-lint(T-0141)의 "마지막 동기 이후" 기준점
+        (ADR-0032 D2). pm_import(import 시)와 여기(매 sync) 둘 다 갱신해야 그 의미가 성립한다.
+      - `upstream_seen_rev` (현재 관찰값·**경로 upstream 한정**·T-0413) — 경로 형상은 fetch 채널이
+        따로 없어 *동기 시점의 로컬 checkout rev 가 곧 관찰값*이다(pm-update 스킬 §2 '로컬 경로'
+        분기와 동일 규정). baseline 만 갱신하면 두 키가 영구히 어긋나 정상 흡수 직후에도 drift
+        거짓 경보가 상시 뜬다(PM 4차 실측). URL 형상은 **건드리지 않는다** — 스킬층이 fetch 후
+        관찰값을 기록한다(한 키 2역 금지·race/자기비교 회피·ADR-0032 D2).
+
+    두 키를 한 번의 `_set_conf_keys`+write 로 묶는다 — 중간 중단에도 baseline 만 앞선 반쪽
+    상태가 생기지 않는다(어긋난 두 키 = 거짓 drift 의 원인이었다). rev 읽기는 pm_import 의
+    read_upstream_rev(URL 안전 git 호출), 파일 갱신은 pm_import 의 `_set_conf_keys`(키 단위
+    set-or-replace·타 키/주석 보존·record_upstream_rev·pm_config upstream set 과 동일 백엔드)를
+    재사용한다. git repo 아님·HEAD 해소 실패·pm_import 로드 실패·local.conf 부재는 **graceful
+    생략**(best-effort — sync 자체는 안 깬다).
     """
     try:
         pm_import = _load_pm_import()
     except Exception:  # noqa: BLE001 — 로드 실패는 baseline best-effort: sync 를 안 깬다.
-        return False
+        return False, {}
     rev = pm_import.read_upstream_rev(source_root)
     if not rev:
-        return False  # git repo 아님·HEAD 해소 실패 — graceful 생략(URL upstream 포함).
-    return bool(pm_import.record_upstream_rev(dest_root, rev))
+        return False, {}  # git repo 아님·HEAD 해소 실패 — graceful 생략(URL upstream 포함).
+
+    updates = {"upstream_rev": rev}
+    if _upstream_shape(pm_import, dest_root) == "path":
+        updates[_SEEN_REV_KEY] = rev
+
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        print(f"경고: local.conf 없음 ({local_conf}) — upstream_rev 기록 건너뜀.", file=sys.stderr)
+        return False, {}
+    text = local_conf.read_text(encoding="utf-8")
+    new_text = pm_import._set_conf_keys(text, updates)
+    if new_text == text:
+        return False, updates  # 이미 같은 값(재실행) — 기록 대상은 동일·파일만 무변경.
+    local_conf.write_text(new_text, encoding="utf-8")
+    return True, updates
+
+
+def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
+    """`record_upstream_revs` 의 변경-여부 전용 wrapper (T-0145 시그니처 보존·기존 호출부/테스트)."""
+    return record_upstream_revs(dest_root, source_root)[0]
 
 
 def detect_manifest_skew(
@@ -1977,7 +2027,9 @@ def main(argv: list[str] | None = None) -> int:
         _print_entry_doc_migration_finding(result, dry_run=False)
 
     # upstream_rev baseline 갱신(T-0145·ADR-0032 D2) — 매 sync 마다 source(upstream) HEAD 를
-    # local.conf 에 박아 drift-lint(T-0141)의 "마지막 동기 이후" 기준점을 최신화한다. 단
+    # local.conf 에 박아 drift-lint(T-0141)의 "마지막 동기 이후" 기준점을 최신화한다. 경로
+    # upstream 이면 `upstream_seen_rev`(현재 관찰값)도 같은 rev 로 함께 기록한다(T-0413 —
+    # 경로는 동기 시점 checkout rev 가 곧 관찰값·두 키가 어긋난 채 남으면 상시 거짓 drift). 단
     # **manifest skew**(로컬 manifest 구형·신규 등재분 미도달·T-0395)면 갱신을 억제한다 —
     # baseline 을 최신으로 박으면 drift-lint 가 "최신"으로 침묵해 신규 엔진 파일 누락을 은폐한다
     # (회사 채택자 실측). skew 아님(정합·또는 upstream manifest 부재 fail-soft)이면 현행대로 갱신.
@@ -1986,14 +2038,20 @@ def main(argv: list[str] | None = None) -> int:
     # 모드는 effective_dest(templates/<name>)의 conf 에 기록(루트 오염 방지·maybe_prompt 와 동형).
     if skew_status == "skew":
         print(
-            f"→ manifest skew({len(skew_new)}건)로 upstream_rev baseline 갱신을 **억제**한다 "
-            "— drift-lint 가 계속 이 skew 를 울리게 둔다. 로컬 engine.manifest 를 reconcile 한 "
-            "뒤 다시 pm-update 하라(신규 등재분 자기치유는 T-0396)."
+            f"→ manifest skew({len(skew_new)}건)로 upstream_rev baseline(+경로 upstream 의 "
+            "upstream_seen_rev 관찰값) 갱신을 **억제**한다 — drift-lint 가 계속 이 skew 를 울리게 "
+            "둔다. 로컬 engine.manifest 를 reconcile 한 뒤 다시 pm-update 하라(신규 등재분 "
+            "자기치유는 T-0396)."
         )
-    elif record_upstream_rev_baseline(effective_dest, source_root):
-        rev = _read_local_conf(
-            effective_dest / ".project_manager" / "local.conf").get("upstream_rev", "")
-        print(f"✓ local.conf upstream_rev baseline 갱신 (drift-lint 기준점): {rev}")
+    else:
+        # 안내 문구는 **엔진이 실제로 기록한 키**(recorded)로 정한다 — 파일의 결과 상태로
+        # 역추론하면 URL 형상(스킬층이 쓴 seen 이 이미 baseline 과 같음)에서 "동시 기록" 이
+        # 거짓으로 뜬다(T-0413 리뷰 지적).
+        changed, recorded = record_upstream_revs(effective_dest, source_root)
+        if changed:
+            seen_note = " (+upstream_seen_rev 동시 기록)" if _SEEN_REV_KEY in recorded else ""
+            print("✓ local.conf upstream_rev baseline 갱신 (drift-lint 기준점): "
+                  f"{recorded['upstream_rev']}{seen_note}")
 
     maybe_prompt_external_review(effective_dest)
     return 0

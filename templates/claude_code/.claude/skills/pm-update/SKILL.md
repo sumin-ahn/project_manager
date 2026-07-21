@@ -51,7 +51,7 @@ URL(`https://`·`ssh://`·`file://`) 또는 로컬 경로. 값 *모양*으로 �
   ```bash
   git -C <path> pull          # 또는 "뒤처짐" 경고만 (공동개발 worktree 면 pull 생략 가능)
   ```
-  경로면 로컬 checkout rev 가 곧 seen — pm_update 가 동기 시 직접 읽어 baseline 기록.
+  경로면 로컬 checkout rev 가 곧 seen — pm_update 가 동기 시 직접 읽어 `upstream_rev`(baseline)와 `upstream_seen_rev`(관찰값)를 **함께** 기록한다(T-0413·스킬층 수기 기록 불요). 그래서 정상 흡수 직후엔 두 키가 같아져 drift advisory 가 뜨지 않는다 — 옛 방식(baseline 만 갱신)은 두 키가 영구히 어긋나 거짓 경보가 상시 떴다.
 
 ### 2.5 변경점 미리보기 (sync 전 · 무엇이 올지)
 sync 로 받을 변경을 미리 본다 — baseline(local.conf `upstream_rev`) ↔ cache/경로 HEAD 의
@@ -74,14 +74,14 @@ cp <cache-or-path>/templates/<harness>/.project_manager/engine.manifest .project
 ```bash
 ./pm-update.sh --from <cache-or-path>     # --from 생략 시 local.conf upstream= 자동(경로일 때만)
 ```
-manifest 경로만 byte-overwrite(@render path 는 operational 토큰 재치환). `pm_update` 가 이 sync 의 upstream rev 를 `upstream_rev`(baseline) 로 기록 → 이번 동기 후 baseline==seen(drift clear).
+manifest 경로만 byte-overwrite(@render path 는 operational 토큰 재치환). `pm_update` 가 이 sync 의 upstream rev 를 `upstream_rev`(baseline) 로 기록한다 — 경로 upstream 이면 `upstream_seen_rev` 도 같은 rev 로 함께(T-0413), URL 이면 §2 에서 스킬이 기록한 seen 이 그 값 → 이번 동기 후 baseline==seen(drift clear).
 > upstream 이 URL 인데 `--from` 을 생략하면 엔진이 명확한 에러로 멈춘다(엔진은 URL 복사 못 함) — 위 cache 경로를 `--from` 으로 준다.
 
 ### 5. drift 표면화
 ```bash
 python3 .project_manager/tools/board.py lint
 ```
-`adapter-drift` advisory 가 남아 있으면(facade·진입문서 등 manifest-제외 잔여가 upstream 이후 변경) PM 에게 보고 — 자동전파 대상 아님(B 전파=채택자 customization clobber·비파괴), 수기 검토 안내(never-block).
+`adapter-drift` advisory 가 남아 있으면(baseline↔관찰 rev **불일치** — facade·진입문서 등 manifest-제외 잔여가 낡았을 수 있음. lint 는 git 을 안 하므로 어느 rev 가 앞선지는 판정하지 않는다·T-0413) PM 에게 보고 — 자동전파 대상 아님(B 전파=채택자 customization clobber·비파괴), 수기 검토 안내(never-block). 실제 선후·변경분은 §2.5 `--changes` 로 본다.
 
 ## 결정
 - 엔진(`pm_update`) 무변경 — git freshness 는 이 스킬층(이식성·오프라인·도그푸딩 보존·ADR-0032 D5).
