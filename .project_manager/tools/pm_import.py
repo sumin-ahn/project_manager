@@ -2586,6 +2586,18 @@ def add_harness(
     render_managed_files(dest_root, subs, copied_relpaths)
     # 자유서술 placeholder 는 TODO 표시(비-LLM·main manual 흐름과 동일·ADR-0048 fill 불요).
     _run_manual_fill(dest_root, copied_relpaths)
+    # T-0411: main import(:3289)와 **대칭** — 이번 add 가 실제로 중앙 백업을 만들었으면
+    #   (backup_root 생성) .gitignore 가 `.pm_import_backups/` 를 무시하게 보장한다(채택자
+    #   git status 오염 방지). 같은 헬퍼 재사용(신규 로직 0)·발화 조건은 git repo(git_safe
+    #   판정 가능) + 백업 실생성 시에만 — 무백업 add 는 gitignore 무변(최소 변경). add-harness
+    #   는 항상 라이브 인스턴스라 main 의 is_new 분기는 없다(backup_root 도 상시 non-None).
+    if git_safe is not None and backup_root.exists():
+        gi_status = ensure_backup_dir_gitignored(dest_root, git_safe, copied_relpaths)
+        if gi_status in ("added", "created"):
+            print(f"✓ .gitignore 에 {BACKUP_DIR_NAME}/ 추가 (백업이 git status 오염 방지)")
+        elif gi_status == "unsafe-skip":
+            print(f"  ⚠️ .gitignore 가 미추적/변경 상태 — 비파괴 위해 자동 추가 생략. "
+                  f"수동으로 `{BACKUP_DIR_NAME}/` 한 줄을 추가하세요.")
     print(f"✓ add-harness 완료: {harness} 어댑터 {len(plan)} 파일 복사 · "
           f"{n_subst} 파일 토큰 치환 (스코프: {adapter_scope} + {root_doc})")
     # codex 는 laydown 만으로 활성화되지 않는다 — trusted project + hook trust 2단계 안내(ADR-0070 D5).

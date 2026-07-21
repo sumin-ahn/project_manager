@@ -19,6 +19,7 @@ URL upstream 은 이번 스코프 밖(엔진은 로컬 파일만 복사·git clo
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib.util
 from pathlib import Path
 
@@ -320,6 +321,116 @@ def test_add_harness_codex_apply_prints_trust_guidance(pm_import, tmp_path, caps
     assert (dest / "AGENTS.md").is_file()
     assert (dest / ".codex" / "agents").is_dir()
     assert (dest / ".agents" / "skills").is_dir()
+
+
+# ── add-harness 백업 → .gitignore 위생 (T-0411 · main import :3289 대칭) ────────
+# add_harness 가 중앙 백업(`.pm_import_backups/`)을 만들면 main import 와 **대칭**으로
+# ensure_backup_dir_gitignored 를 태워 채택자 git status 오염을 막는다. 백업 발생 유도:
+# opencode 호스트에 codex add → 공통 코어 AGENTS.md 가 충돌인데 *미커밋 fresh*(untracked·git-safe
+# 아님)면 byte-identical 이어도 중앙 백업된다(git-safe skip 은 '추적&미변경'만). 그때 `.gitignore`
+# 를 커밋(git-safe)해 두면 helper 가 패턴을 비파괴 append 한다. 전부 커밋하면 AGENTS.md 도
+# git-safe skip → 무백업 → 무편집(대칭의 반대 팔). 전부 git init+commit 이 필요 → @requires_git.
+
+
+def _git_commit_paths(dest: Path, *relpaths: str) -> None:
+    """dest git repo 에서 *지정 경로만* 커밋 — 그 파일만 '추적&미변경'(git-safe)이 되고 나머지는
+    미커밋 fresh(untracked)로 남는다(.gitignore=git-safe·AGENTS.md=fresh → 백업 발생 유도)."""
+    ident = ["-c", "user.email=t@t", "-c", "user.name=t"]
+    _sp_for_git.run(["git", "-C", str(dest), "add", *relpaths], check=True, capture_output=True)
+    _sp_for_git.run(["git", "-C", str(dest), *ident, "commit", "-m", "seed subset"],
+                    check=True, capture_output=True)
+
+
+def _git_ignores(dest: Path, relpath: str) -> bool:
+    """`git check-ignore <relpath>` rc==0 이면 무시됨(True)."""
+    r = _sp_for_git.run(["git", "-C", str(dest), "check-ignore", relpath],
+                        capture_output=True, text=True)
+    return r.returncode == 0
+
+
+@requires_git
+def test_add_harness_backup_gitignores_backup_dir(pm_import, tmp_path):
+    """① 백업 발생(opencode 호스트 + codex add·AGENTS.md 미커밋 fresh) → `.pm_import_backups/`
+    가 .gitignore 로 무시된다(main import :3289 대칭·채택자 git status 오염 폐쇄)."""
+    dest = _build_live_instance(pm_import, tmp_path / "oc_gi", "opencode")
+    _git_commit_paths(dest, ".gitignore")            # .gitignore=git-safe·AGENTS.md=fresh
+    _set_conf_upstream(dest, str(REPO))
+    today = datetime.date.today().isoformat()
+    pm_import.add_harness(dest, "codex", dry_run=False)
+    backup_root = dest / pm_import.BACKUP_DIR_NAME / today
+    # 전제: AGENTS.md 미커밋 fresh 라 실제로 중앙 백업됨(git-safe skip 아님).
+    assert (backup_root / "AGENTS.md").is_file(), "미커밋 fresh AGENTS.md 가 백업 안 됨(전제 붕괴)."
+    # 결과: 패턴 append + git 이 실제로 무시(파일 단언 + git check-ignore 이중).
+    assert f"{pm_import.BACKUP_DIR_NAME}/" in (dest / ".gitignore").read_text(encoding="utf-8")
+    assert _git_ignores(dest, f"{pm_import.BACKUP_DIR_NAME}/{today}/AGENTS.md"), \
+        "백업 디렉토리가 git 에 무시되지 않음 — add-harness 위생 미배선."
+
+
+@requires_git
+def test_add_harness_no_backup_leaves_gitignore_untouched(pm_import, tmp_path):
+    """② 백업 미발생(전부 커밋 → AGENTS.md git-safe skip) → .gitignore 무변(불필요 편집 없음)."""
+    dest = _build_live_instance(pm_import, tmp_path / "oc_nobk", "opencode")
+    _git_commit_all(dest)                            # AGENTS.md·.gitignore 전부 git-safe
+    _set_conf_upstream(dest, str(REPO))              # (local.conf 만 dirty·AGENTS.md 는 clean)
+    before = (dest / ".gitignore").read_text(encoding="utf-8")
+    assert f"{pm_import.BACKUP_DIR_NAME}/" not in before   # sanity: 원래 패턴 없음
+    today = datetime.date.today().isoformat()
+    pm_import.add_harness(dest, "codex", dry_run=False)
+    backup_root = dest / pm_import.BACKUP_DIR_NAME / today
+    assert not backup_root.exists(), "백업이 없어야 하는데 중앙 백업 디렉토리가 생성됨(전제 붕괴)."
+    assert (dest / ".gitignore").read_text(encoding="utf-8") == before, \
+        "무백업 add 가 .gitignore 를 편집함(최소 변경 위반)."
+
+
+@requires_git
+def test_add_harness_backup_gitignore_preserves_custom_appends_once(pm_import, tmp_path):
+    """③ 기존 .gitignore 커스텀 규칙 보존 + 패턴 1회 append(비파괴·append-only — helper 성질 상속)."""
+    dest = _build_live_instance(pm_import, tmp_path / "oc_custom", "opencode")
+    (dest / ".gitignore").write_text("my-secret-artifacts/\n", encoding="utf-8")   # 사용자 커스텀만
+    _git_commit_paths(dest, ".gitignore")            # 커스텀 .gitignore=git-safe·AGENTS.md=fresh
+    _set_conf_upstream(dest, str(REPO))
+    pm_import.add_harness(dest, "codex", dry_run=False)
+    text = (dest / ".gitignore").read_text(encoding="utf-8")
+    assert "my-secret-artifacts/" in text, "사용자 커스텀 규칙이 손실됨(비파괴 위반)."
+    assert text.count(f"{pm_import.BACKUP_DIR_NAME}/") == 1, \
+        "패턴이 정확히 1회 append 되지 않음(0=미배선·>1=중복 — append-only 위반)."
+    assert text.endswith(f"{pm_import.BACKUP_DIR_NAME}/\n"), "패턴이 말미에 append 되지 않음."
+
+
+@requires_git
+def test_add_harness_backup_gitignore_idempotent_when_present(pm_import, tmp_path):
+    """③(멱등) 이미 `.pm_import_backups/` 를 무시 중이면 백업 발생해도 중복 append 없음(present skip)."""
+    dest = _build_live_instance(pm_import, tmp_path / "oc_idem", "opencode")
+    (dest / ".gitignore").write_text(
+        f"keep/\n{pm_import.BACKUP_DIR_NAME}/\n", encoding="utf-8")   # 이미 무시 중
+    _git_commit_paths(dest, ".gitignore")
+    _set_conf_upstream(dest, str(REPO))
+    pm_import.add_harness(dest, "codex", dry_run=False)
+    text = (dest / ".gitignore").read_text(encoding="utf-8")
+    assert text.count(f"{pm_import.BACKUP_DIR_NAME}/") == 1, "이미 존재하는 패턴이 중복됨(멱등 위반)."
+    assert "keep/" in text, "기존 규칙이 손실됨(비파괴 위반)."
+
+
+def test_add_harness_backup_on_non_git_adopter_creates_no_gitignore(pm_import, tmp_path):
+    """비-git 채택자(git_safe None) + 백업 발생 → `.gitignore` **무생성**(무의미 아티팩트 오염 방지).
+
+    `git_safe is not None` short-circuit 이 load-bearing: 없으면 백업 발생 시 helper 가 호출되고,
+    add_harness 스코프는 `.gitignore` 를 복사 안 함(import_owned 항상 False)이라 helper 의 else-분기가
+    비-git 디렉토리에 `.gitignore` 를 *신규 생성*("created") → git 도 아닌 채택자에 잉여 파일 오염.
+    @requires_git 불요 — git 바이너리 유무와 무관하게 git_safe 는 None(비-git tmp·fail-soft)이라
+    이 비-git 코드경로가 항상 탄다(plain 디렉토리 시나리오)."""
+    dest = tmp_path / "nongit_inst"
+    dest.mkdir()
+    _write_local_conf(dest, project_name="NonGit", upstream=str(REPO))  # 소스 해소용
+    (dest / "AGENTS.md").write_text("existing host AGENTS\n", encoding="utf-8")  # 공통 코어 충돌 → 백업
+    today = datetime.date.today().isoformat()
+    pm_import.add_harness(dest, "codex", dry_run=False)             # source_root=None → upstream 해소
+    backup_root = dest / pm_import.BACKUP_DIR_NAME / today
+    # 전제: 비-git 이라 충돌(AGENTS.md)이 실제로 중앙 백업됨(git_safe None → 전부 백업).
+    assert (backup_root / "AGENTS.md").is_file(), "비-git 충돌이 백업되지 않음(전제 붕괴)."
+    # 결과: git 아닌 채택자엔 .gitignore 를 만들지 않는다(guard 미동작 시 helper 가 'created' 로 오염).
+    assert not (dest / ".gitignore").exists(), \
+        "비-git 채택자에 .gitignore 가 생성됨 — `git_safe is not None` 가드 미동작(오염)."
 
 
 # ── pm_config `--from` 노출 + source_root forward ─────────────────────────────
