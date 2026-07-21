@@ -7,6 +7,45 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-21
+
+**codex CLI(OpenAI Codex 0.144.x)가 세 번째 지원 하네스로 추가**(ADR-0070) — claude_code·opencode
+와 동급 풀 파리티(위임 4축·스킬·ctx 가드·relay·라이브/릴리즈 게이트). 동반해 **진입 doc 을
+"얇은 harness-neutral 공통 코어 + 하네스별 네이티브 채널"로 재편**(ADR-0069). 전 변경 이중게이트
+(내부 reviewer + codex 외부·실결함 10건 다라운드 수렴) + 라이브 실측(실 codex·gpt-5.5) 통과·회귀 4302.
+
+### codex 하네스 어댑터 (ADR-0070)
+- **`templates/codex/` 신설** — `pm-import.sh --new <dest> --harness codex` 로 채택, 기존 인스턴스엔
+  `pm-config add-harness codex` 로 비파괴 추가(공존 조합은 add-harness 채널로 통일). 어댑터 구성:
+  `.codex/agents/` 위임 4축 TOML(developer/architect/code-reviewer/researcher·`model` 생략=사용자
+  config 상속)·`.agents/skills/` canonical 스킬 15종 remap 사본·`.codex/config.toml`+`hooks.json`
+  (auto-compact 상향·PreCompact 핸드오프 tripwire·instance-owned)·relay driver `pm_orch_codex.py`.
+- **PM = 메인 세션** — codex 전용 정적 진입 doc 없음. 공통 코어 `AGENTS.md`(자동 로드) + 부트스트랩
+  커맨드 카드의 codex 절(env `CODEX_THREAD_ID`/`CODEX_CI` 기계 감지) + 스킬이 운영 지침을 전달.
+- **trust 2단계 필요(codex 플랫폼 제약)** — 첫 진입 시 ① 대화형 `codex` 로 프로젝트 trust 수락
+  ② `/hooks` 로 hook trust 승인. import/add-harness 가 loud 안내(`-c` CLI trust override 는 무효·실측).
+- `--fill auto` codex 지원(fill runner) + 미지원 하네스 silent 폴백을 fail-loud 로 전환.
+
+### 진입 doc 공통 코어 + 조건부 자동 마이그레이션 (ADR-0069)
+- **opencode `AGENTS.md` 재편** — 자족 매뉴얼(22.6KiB)→harness-neutral 공통 코어(codex 와
+  byte-parity). opencode-고유 실행모델·위임규약은 `.opencode/pm-instructions.md`(자동 로드·전파
+  채널 등재 — 방법론 갱신이 채택자에 도달)로 이관.
+- **기존 opencode 채택자는 pm_update 흡수 시 조건부 자동 전환** — 진입 doc/`opencode.jsonc` 가
+  출하 원본과 byte-일치(미수정)면 자동 전환+백업(`.pm_import_backups/`), 수정 흔적 있으면 무손 +
+  loud 안내·1회 마이그레이션 절차 제시. 재실행 멱등.
+- add-harness 경로 백업 디렉토리 gitignore 위생 배선(main import 와 대칭).
+
+### 라이브/릴리즈 게이트 codex 축
+- `PM_ORCH_LIVE=1` 에 codex 축(adr/ticket 발행 flow 실 LLM 검증) + relay live smoke. **릴리즈
+  livegate 수집 pin 16→17** — codex 라이브 green 없이는 release push 가 차단된다.
+- relay 신뢰성: codex usage wire 정규화·ctx stop **marker 계약 이원화**(pre-turn=재전송/post-turn=
+  무재전송 — 이미 실행된 turn 의 이중 실행 방지)·sandbox `workspace-write` 명시 핀·stdin 무기한
+  대기 방어.
+
+### 운영 규율
+- 병렬 wave 의 내부 리뷰 게이트용 **격리 스냅샷 절차**(staged-only worktree) 표준화 — 리뷰↔dev
+  편집 경합 클래스 폐쇄(pm-dev-delegate 스킬).
+
 ## [1.3.5] - 2026-07-20
 
 task 세션 표면의 **슬롯-집합 1급화**(ADR-0068) + 엔진 업데이트-채널 견고화. adopter#0 도그푸딩
