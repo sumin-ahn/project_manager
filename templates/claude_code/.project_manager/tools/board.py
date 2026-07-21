@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime
+import fnmatch
 import importlib.util
 import json
 import os
@@ -2050,6 +2051,138 @@ def _board_submodule_name() -> str | None:
     return None
 
 
+# ── areas.md union merge 배포 (T-0418·ADR-0072·ADR-0033 ①) ───────────────────
+# areas.md 의 동시 등록 안전(merge 시 **양쪽 행을 모두 보존**)은 git 내장 `merge=union` 드라이버에
+# 기댄다. 그 선언은 **areas.md 를 담은 git** 의 `.gitattributes` 에 있어야 유효하다:
+#   - inline(legacy) : areas.md = `<REPO>/.project_manager/areas.md` → 루트 `.gitattributes` 의
+#     `.project_manager/areas.md merge=union` 이 그대로 유효(engine.manifest 로 채택자에도 배포).
+#   - board 분리     : areas.md 는 board git(submodule) *안* 이라 루트 선언이 **다른 git** 이라 닿지
+#     않는다 — `git -C .project_manager/board check-attr merge -- areas.md` = unspecified(실측·PM 4차).
+#     그래서 board git 자체에 `.gitattributes` 를 둔다: 신규는 pm_import seed, 기존 board 는
+#     `_ensure_board_gitattributes` backfill. 두 형상 다 union 이 성립한다(루트 선언은 유지).
+# 판정은 전부 **파일 내용**으로 한다 — 런타임 `git check-attr` 호출을 늘리지 않는다(비용·이식성).
+_AREAS_UNION_DRIVER = "union"
+# 형상별 areas.md 경로 표기(그 git 의 `.gitattributes` 기준 상대). 선언 줄의 패턴을 이 표기들에
+# 맞춰본다 — 리터럴 일치 + 단순 glob(`_gitattributes_pattern_matches`).
+_BOARD_AREAS_ATTR_TARGETS: tuple[str, ...] = ("areas.md", "/areas.md")
+_INLINE_AREAS_ATTR_TARGETS: tuple[str, ...] = (
+    ".project_manager/areas.md", "/.project_manager/areas.md")
+_BOARD_GITATTRIBUTES_BLOCK = (
+    "# areas.md = 멀티-PM prefix 레지스트리 — 동시 등록(행 append)이 merge 에서 충돌하지 않도록\n"
+    "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다 (ADR-0014·ADR-0072·T-0418).\n"
+    "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
+    f"areas.md merge={_AREAS_UNION_DRIVER}\n"
+)
+
+
+def _gitattributes_pattern_matches(pattern: str, targets: tuple[str, ...]) -> bool:
+    """`.gitattributes` 선언 줄의 패턴이 areas.md 경로(targets)에 걸리는가.
+
+    리터럴 일치 + **단순 glob**(`fnmatch`) — `*.md`·`*`·`areas.*` 처럼 실제 `.gitattributes` 에
+    흔한 형태를 판정한다. 선행 `/`(그 `.gitattributes` 디렉토리 기준 앵커)는 양쪽에서 벗기고,
+    슬래시 없는 패턴은 git 처럼 **basename** 에도 맞춰본다(`areas.*` 가 하위 경로의 areas.md 에
+    걸리는 규칙). 판정 불가/불일치는 항상 False = *거짓 경보* 방향으로 기운다(advisory 1줄 +
+    중복 선언 append 는 무해하고, 거짓 정상은 union 보호 상실이라 훨씬 비싸다).
+    """
+    pat = pattern.lstrip("/")
+    for target in targets:
+        candidate = target.lstrip("/")
+        if candidate == pat:
+            return True
+        if fnmatch.fnmatchcase(candidate, pat):
+            return True
+        if "/" not in pat and fnmatch.fnmatchcase(candidate.rsplit("/", 1)[-1], pat):
+            return True
+    return False
+
+
+def _gitattributes_merge_attr(text: str, targets: tuple[str, ...]) -> str | None:
+    """`.gitattributes` 본문에서 areas.md 경로에 걸린 **마지막** merge 속성 값 (없으면 None).
+
+    git 은 뒤 줄이 앞 줄을 덮으므로(last-match-wins) 전 줄을 훑어 마지막 선언을 취한다 —
+    `areas.md merge=union` 뒤에 `areas.md -merge` 가 오면 union 은 취소된 것으로 읽는다.
+    빈 줄과 `#` 로 *시작하는* 주석 줄은 건너뛴다. `#` 은 줄 끝 주석이 **아니므로**(git 은
+    `areas.md merge=union # 설명` 을 잘못된 속성 이름으로 보고 줄 전체를 무시한다·실측)
+    필드에 `#` 이 섞인 줄은 git 과 동일하게 **무효** 취급한다 — 그렇지 않으면 실제로는
+    unspecified 인 파일을 "선언됨" 으로 읽어 union 상실이 조용히 굳는다(거짓 정상).
+
+    패턴 매칭은 **단순 glob 까지 처리**한다(`_gitattributes_pattern_matches`) — 리터럴 경로,
+    `*.md`·`*`·`areas.*` 형태가 대상이다. 그래서 union 선언 **뒤에 오는 glob unset**
+    (`areas.md merge=union` 다음 줄 `*.md -merge` → git 은 unset·실측)도 잡는다.
+
+    **남는 한계(git 패턴 규칙과 완전 일치를 주장하지 않는다)**: `**/areas.md` 같은 `**` 형태·
+    디렉토리 한정·이스케이프 등 복합 패턴은 판정하지 못한다. 어긋나는 방향은 둘인데 무게가
+    다르다 —
+      - 못 알아본 것이 *선언*(`**/areas.md merge=union`)이면 **거짓 경보**: advisory 1줄 +
+        backfill 이 리터럴 줄을 한 번 더 append 할 뿐이라 무해하다(안전 방향).
+      - 못 알아본 것이 *unset*(`**/areas.md -merge`)이면 **거짓 정상**이 남는다 — 이 잔여만
+        진짜 위험이지만, 완전 해소는 git 패턴 엔진 재구현 또는 금지된 런타임 `check-attr`
+        호출을 요구하므로 범위를 명시하고 둔다(채택자가 손으로 얹은 복합 unset 한정).
+    반환: `"union"`(우리 선언) · 다른 드라이버명 · `""`(unset/`-merge`) · None(선언 없음).
+    """
+    found: str | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if any("#" in field for field in fields):
+            continue  # git 이 줄 전체를 무시하는 형태 — 우리도 무효로 본다(거짓 정상 방지).
+        if not _gitattributes_pattern_matches(fields[0], targets):
+            continue
+        for attr in fields[1:]:
+            if attr.startswith("merge="):
+                found = attr[len("merge="):]
+            elif attr in ("merge", "-merge", "!merge"):
+                found = ""  # 드라이버 미지정 set / unset / unspecified — union 아님.
+    return found
+
+
+def _areas_union_declared(text: str, targets: tuple[str, ...]) -> bool:
+    """이 `.gitattributes` 본문이 areas.md 에 union merge 를 부여하는가 (내용 판정)."""
+    return _gitattributes_merge_attr(text, targets) == _AREAS_UNION_DRIVER
+
+
+def _ensure_board_gitattributes() -> bool:
+    """board git 의 `.gitattributes` 에 `areas.md merge=union` 을 **멱등 보강** (T-0418).
+
+    board 분리 형상에서 areas.md 는 board submodule 안에 살고 루트 선언이 닿지 않아 union 이
+    조용히 사라진다. 신규 board 는 `pm_import.setup_board_submodule` 의 seed 가 이 파일을
+    만들지만 **이미 만들어진 board 엔 seed 가 다시 돌지 않으므로**(② adopter#0 포함) board git
+    commit funnel(`_board_git_stage_and_commit`)에서 backfill 한다 — 보강분은 그 commit 에 함께
+    실려 pull/push 로 공유 remote·다른 clone 까지 전파된다.
+
+    **호출처는 그 funnel 하나뿐이다**(단일 채널). write 만 하고 commit 하지 않는 지점(예:
+    `cmd_init`)에서 부르면 board 가 dirty(`?? .gitattributes`)로 남아 claim STRICT 의 dirty
+    가드가 *엔진이 만든 파일*을 사용자 편집으로 오인해 claim 을 막는다. funnel 은
+    write→stage→commit 이 한 호출에 닫히고, claim 의 dirty 판정(prefetch)은 그보다 **앞**에서
+    끝나므로 이 backfill 이 claim 을 차단하지 않는다.
+
+    **비파괴**: 파일이 있으면 덮어쓰지 않고, union 선언이 *없을 때만* 블록을 append 한다(채택자
+    가 자기 규칙을 가진 경우 보존). 이미 선언돼 있으면 no-write(멱등). append 는 `_append_atomic`
+    (O_APPEND·ADR-0012) — 동시 writer 가 서로를 덮지 않는다.
+
+    fail-soft: board 미분리(legacy·솔로)·areas 가 이 git 밖·IO 실패면 아무 것도 하지 않고 False.
+    반환 True = 이번 호출이 보강했다.
+    """
+    root = board_root()
+    if not (root / ".git").exists() or areas_file().parent != root:
+        return False  # board 미분리(legacy·솔로) 또는 areas 가 이 git 밖 — no-op.
+    attrs = root / ".gitattributes"
+    try:
+        text = attrs.read_text(encoding="utf-8") if attrs.is_file() else ""
+        if _areas_union_declared(text, _BOARD_AREAS_ATTR_TARGETS):
+            return False
+        # 기존 내용 뒤에 빈 줄 하나를 띄우고 append (줄바꿈 없이 끝난 파일도 안전하게 이어붙임).
+        separator = "" if not text else ("\n" if text.endswith("\n") else "\n\n")
+        _append_atomic(attrs, separator + _BOARD_GITATTRIBUTES_BLOCK)
+    except (OSError, UnicodeError):
+        # IO 실패·비-UTF8 `.gitattributes` — 보강을 포기한다. 이 함수는 ticket mutation 의
+        # commit funnel 에서 불리므로 어떤 예외도 mutation 을 깨선 안 된다(advisory 가 표면화).
+        return False
+    return True
+
+
 # ── board git 즉시 sync (ADR-0033 ②·T-0163) ──────────────────────────────────
 # board(tickets+areas)가 별도 git(submodule·standalone)으로 분리된 형상에서, ticket
 # mutation 마다 board git 에 자동 commit + pull --rebase + push 한다. mutation 별 sync
@@ -2192,7 +2325,12 @@ def _board_git_stage_and_commit(message: str) -> bool:
     쓸어담을 수 있었다(T-0196 게이트가 생성 시점만 막고 후속 mutation 은 못 막던 leak). 이
     pathspec 이 그 leak 을 원천 차단한다 — 어떤 mutation(자기·무관 무엇이든)도 draft 를
     커밋하지 않는다. promote 는 draft 를 `open/` 으로 옮긴 *뒤* 이 함수를 부르므로 무영향.
+
+    stage *직전* 에 `areas.md merge=union` 배포를 멱등 보강한다(T-0418) — 모든 board git commit
+    이 이 함수를 지나므로, seed 가 다시 안 도는 **기존 board** 도 다음 mutation 에서 자연 backfill
+    되고 그 commit·push 로 공유 remote 까지 전파된다. 이미 선언돼 있으면 파일 IO 0(멱등 no-write).
     """
+    _ensure_board_gitattributes()
     _board_git(["add", "-A", "--", *_BOARD_GIT_DRAFT_PATHSPEC])
     r = _board_git(["commit", "-m", message])
     return r.returncode == 0
@@ -3322,10 +3460,19 @@ def cmd_claim(args: argparse.Namespace) -> int:
         # board submodule 에 uncommitted 변경(흔히 발행 직후 ticket 본문 Edit) — pull --rebase
         # 가 거부되지만 *네트워크는 정상*이다. offline 으로 오판하지 않고 commit 후 재시도를
         # 안내한다(자동 commit/stash 는 PM 편집 의도를 임의 처리해 위험·안내만·ADR-0033 ②).
+        # 안내 커맨드는 엔진과 **같은 draft 제외 pathspec**을 쓴다 — 맨 `add -A` 는 미충전
+        # draft(`tickets/.drafts/`·board git 엔 .gitignore 없음)까지 커밋해 T-0196/T-0198 이
+        # 원천 차단한 draft 유출을 사용자 손으로 재현시킨다.
+        # **작은따옴표**로 감싼다 — bash/zsh 대화형 셸은 *큰따옴표 안의* `!` 도 히스토리 전개해
+        # `event not found` 로 죽는다(작은따옴표만 이를 막는다). PowerShell/cmd 에서도 리터럴이라
+        # 무해. 이 문자열이 pathspec 을 사람에게 보이는 **유일한 지점**이다(다른 출력처 없음).
+        draft_safe_pathspec = " ".join(f"'{spec}'" for spec in _BOARD_GIT_DRAFT_PATHSPEC)
         print(
             f"board submodule 에 uncommitted 변경 — "
-            f"`git -C .project_manager/board add -A && git -C .project_manager/board commit` "
-            f"후 {args.id} claim 재시도 (offline 아님·네트워크 정상)",
+            f"`git -C .project_manager/board add -A -- {draft_safe_pathspec} && "
+            f"git -C .project_manager/board commit` "
+            f"후 {args.id} claim 재시도 (offline 아님·네트워크 정상). "
+            f"pathspec 은 미충전 draft 를 제외한다 — 맨 `add -A` 는 draft 까지 커밋한다(T-0198).",
             file=sys.stderr)
         return 1
     if orig_head is None:
@@ -3703,6 +3850,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     # board PM-commit 으로 오염되지 않게(누출 0). 솔로/미분리/git 부재면 no-op(fail-soft·무영향).
     if _configure_board_submodule():
         print("✓ board submodule ignore=all 설정 (코드 git 누출 0·ADR-0033 ①)")
+    # areas.md `merge=union` 배포(T-0418)는 여기서 하지 않는다 — init 은 board git 에 commit 하지
+    # 않으므로 파일만 쓰면 board 가 dirty(`?? .gitattributes`)로 남아 다음 `claim` 이 STRICT dirty
+    # 가드에 막힌다(엔진이 만든 파일을 사용자 편집으로 오인·clone→init→claim 온보딩 직격). 배포는
+    # `_board_git_stage_and_commit`(write→stage→commit 이 한 호출에 닫힘) **단일 채널**로 한다.
     prompt_external_review_optin()
     mode = f"multi-repo · {prefix}" if namespaced else "solo (N=1·M=1)"
     idfmt = f"T-{prefix}-NNN" if namespaced else "T-NNNN (legacy)"
@@ -6415,12 +6566,15 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #   - areas-duplicate-repo : areas.md 에 같은 repo 행이 2개 이상 (ADR-0072). first-match 리졸버
 #     4종이 첫 행에서 return 하므로 조용히 굳는 걸 보이게만 한다 — 자동 병합은 사람 판정 영역이고
 #     레지스트리 정리가 push 결함도 아니라 never-block(`areas_set_cell` 의 fail-loud 와 짝).
+#   - areas-merge-union : areas.md 를 담은 git 에 `merge=union` 이 선언되지 않음 (T-0418). 동시 등록
+#     안전(양쪽 행 보존)이 사라진 상태를 보이게만 한다 — 엔진이 backfill 하는 채널이 이미 있고
+#     (`_ensure_board_gitattributes`) 채택자가 자기 `.gitattributes` 를 가질 수 있어 never-block.
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
      "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
      "status-stale", "domain-stale",
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
-     "adr-author", "areas-duplicate-repo"})
+     "adr-author", "areas-duplicate-repo", "areas-merge-union"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -6987,6 +7141,47 @@ def lint_areas_duplicate_repo() -> list[tuple[str, str, str]]:
     ]
 
 
+def lint_areas_merge_union() -> list[tuple[str, str, str]]:
+    """areas.md 의 `merge=union` 이 **그 파일을 담은 git** 에 선언돼 있나 (T-0418·never-block).
+
+    union 이 빠지면 두 clone 의 동시 등록이 merge 에서 한쪽 행을 잃거나 충돌한다 — 레지스트리
+    설계가 기대는 보장이 조용히 사라지는 상태라 상시 가시화한다. 형상별로 *유효한* 선언 위치가
+    다르므로 그에 맞는 파일만 본다(`_BOARD_AREAS_ATTR_TARGETS` / `_INLINE_AREAS_ATTR_TARGETS`):
+      - board 분리 → `board_root()/.gitattributes` 의 `areas.md merge=union`
+      - inline     → 루트 `.gitattributes` 의 `.project_manager/areas.md merge=union`
+    판정은 **파일 내용**만 본다 — `git check-attr` 를 런타임에 부르지 않는다(비용·이식성).
+    그래서 사각이 둘 있다(둘 다 advisory 라 무해·완전 판정은 check-attr 이 필요): ① in-tree
+    `.gitattributes` 보다 우선하는 `.git/info/attributes`·`core.attributesFile` 은 보이지
+    않는다(거기서 union 을 줬어도 여기선 미배포로 읽힌다) · ② glob 패턴 한계는
+    `_gitattributes_merge_attr` docstring 참조.
+
+    kind=`areas-merge-union`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push 미차단).
+    areas.md 부재(솔로 미등록)·읽기 실패는 빈 결과.
+    """
+    af = areas_file()
+    if not af.exists():
+        return []
+    root = board_root()
+    separated = (root / ".git").exists() and af.parent == root
+    if separated:
+        attrs, targets = root / ".gitattributes", _BOARD_AREAS_ATTR_TARGETS
+        fix = (f"`{_rel_to_repo(attrs)}` 에 `areas.md merge=union` 을 추가하라 — 다음 board "
+               "mutation(claim/new/complete 등)이 자동 보강해 그 commit 으로 함께 push 한다.")
+    else:
+        attrs, targets = REPO / ".gitattributes", _INLINE_AREAS_ATTR_TARGETS
+        fix = (f"`{_rel_to_repo(attrs)}` 에 `.project_manager/areas.md merge=union` 을 "
+               "추가하라(inline 형상의 선언 위치).")
+    try:
+        text = attrs.read_text(encoding="utf-8") if attrs.is_file() else ""
+    except (OSError, UnicodeError):  # 읽기 실패·비-UTF8 은 무발화(advisory 가 lint 를 깨지 않는다).
+        return []
+    if _areas_union_declared(text, targets):
+        return []
+    return [(_rel_to_repo(af), "areas-merge-union",
+             f"areas.md 에 merge=union 이 유효하지 않다 — 동시 등록(다른 clone 의 행 append)이 "
+             f"merge 에서 충돌하거나 한쪽 행을 잃는다. {fix}")]
+
+
 def lint_tickets() -> list[tuple[str, str, str]]:
     """All lint issues — ticket dependency graph + body self-containment +
     idea status/directory agreement + status.md ✅ 완성 행 누적 권고(judgment-only·ADR-0023) +
@@ -7001,7 +7196,9 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     현재-진실 문서 freshness(architecture-stale·status-stale·domain-stale·verified_at sha 판정·
     ADR-0063·advisory·never-block) +
     areas-duplicate-repo(areas.md 중복 repo 행 → first-match 고착 가시화·ADR-0072·advisory·
-    never-block)."""
+    never-block) +
+    areas-merge-union(areas.md 를 담은 git 에 merge=union 미배포 → 동시 등록 안전 상실 가시화·
+    T-0418·advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
@@ -7009,7 +7206,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_architecture_freshness() + lint_status_freshness()
             + lint_domain_freshness() + lint_adapter_drift()
             + lint_render_leak() + lint_unmigrated_overlay()
-            + lint_areas_duplicate_repo())
+            + lint_areas_duplicate_repo() + lint_areas_merge_union())
 
 
 # ── board.md regeneration ──────────────────────────────────────────────

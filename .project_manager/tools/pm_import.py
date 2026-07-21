@@ -2669,6 +2669,18 @@ _BOARD_SETUP_GIT_TIMEOUT_SECONDS = 600  # remote clone/submodule add (네트워�
 _BOARD_AREAS_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base",
                         "protected", "area_owner")
 
+# board submodule 의 `.gitattributes` seed — areas.md 동시 등록 안전(양쪽 행 보존)의 배포처(T-0418).
+# board 는 **별도 git** 이라 superproject 루트 `.gitattributes` 의 `.project_manager/areas.md
+# merge=union` 선언이 닿지 않는다(`check-attr` = unspecified·실측). 신규 board 는 여기서 seed 하고,
+# 이미 만들어진 board 는 board.py `_ensure_board_gitattributes` 가 멱등 backfill 한다(seed 재실행 없음).
+# 내용은 board._BOARD_GITATTRIBUTES_BLOCK 을 미러한다 — drift 는 test 가 board 를 로드해 대조한다.
+_BOARD_GITATTRIBUTES_SCAFFOLD = (
+    "# areas.md = 멀티-PM prefix 레지스트리 — 동시 등록(행 append)이 merge 에서 충돌하지 않도록\n"
+    "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다 (ADR-0014·ADR-0072·T-0418).\n"
+    "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
+    "areas.md merge=union\n"
+)
+
 
 def _board_setup_git(argv: list[str], cwd: Path | None) -> tuple[int, str]:
     """board submodule 셋업용 git 실행 → (rc, stdout+stderr). fail-soft(예외→(1,msg)).
@@ -2739,8 +2751,9 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
 
     순서(부작용 원자성·부분 홈 최소화):
       1. remote 를 temp 로 clone. **비었으면**(신규 공유 board) 복사된 wiki/tickets 스캐폴드(치환
-         완료·open/claimed/blocked/done + _template + README) + canonical areas.md 를 seed →
-         commit → push. **내용 있으면**(2번째 유저 합류) skip(기존 board 재사용).
+         완료·open/claimed/blocked/done + _template + README) + canonical areas.md +
+         `.gitattributes`(areas.md merge=union·T-0418) 를 seed → commit → push. **내용 있으면**
+         (2번째 유저 합류) skip(기존 board 재사용 — `.gitattributes` 는 board.py 가 backfill).
          (빈 remote 를 *직접* `submodule add` 하면 git 이 checkout 할 커밋이 없어 rc128 로 거부한다 —
           실측. 그래서 add *전* 에 remote 를 non-empty 로 만들어 두 경로를 수렴시킨다.)
       2. `git submodule add <url> .project_manager/board` — remote 가 non-empty 라 checkout 성공.
@@ -2777,6 +2790,10 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
                 sd.mkdir(parents=True, exist_ok=True)
                 (sd / ".gitkeep").touch(exist_ok=True)  # 빈 status dir git 추적(합류 유저 checkout).
             (tmp_clone / "areas.md").write_text(_board_areas_scaffold(), encoding="utf-8")
+            # areas.md merge=union 은 **이 git**(board)에 선언돼야 유효하다 — 루트 선언은 다른
+            # git 이라 닿지 않는다(T-0418). 신규 clone 이라 기존 파일 없음(비파괴 판단 불요).
+            (tmp_clone / ".gitattributes").write_text(
+                _BOARD_GITATTRIBUTES_SCAFFOLD, encoding="utf-8")
             for step in (["add", "-A"],
                          ["commit", "-m", "board scaffold (pm-import --new --board-submodule)"],
                          ["push", "origin", "HEAD"]):

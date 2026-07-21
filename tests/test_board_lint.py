@@ -2054,6 +2054,10 @@ def test_gate_zero_on_areas_duplicate_repo_only(board, monkeypatch, tmp_path):
         "| svc | P | g | t | o | main | main | u |\n"
         "| svc | P | g | t | o | main | develop | u |\n",
         encoding="utf-8")
+    # inline 형상의 union 배포는 정상으로 둔다 — 이 tmp 홈에 루트 선언이 없으면
+    # `areas-merge-union`(T-0418) advisory 가 같이 잡혀 이 테스트의 kind 단언이 흐려진다.
+    (tmp_path / ".gitattributes").write_text(
+        ".project_manager/areas.md merge=union\n", encoding="utf-8")
     for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
                "lint_wikilinks", "lint_unstable_refs", "_run_lint_hooks"):
         monkeypatch.setattr(board, fn, lambda: [])
