@@ -65,7 +65,7 @@ def board(tmp_path, monkeypatch):
     # board-git 동기는 이 파일 범위 밖(별 git) — no-op 으로 고정하고 호출만 기록한다.
     mod._sync_calls = []
     monkeypatch.setattr(mod, "_board_git_sync_best_effort",
-                        lambda message: mod._sync_calls.append(message))
+                        lambda message, paths=None: mod._sync_calls.append((message, paths)))
     return mod
 
 
@@ -596,7 +596,13 @@ def test_protected_set_triggers_board_git_sync(pc, board, tmp_path):
     pc.cmd_repo_protected(_protected_args("service-a", "release"), board=board,
                           worktree_pool=FakePool(tmp_path / "hooks"),
                           repos_dir=tmp_path / ".repos")
-    assert board._sync_calls == ["repo protected"]
+    # ADR-0073/T-0419 — board 전체가 아니라 **areas.md 만** 이 mutation 의 산출물이다.
+    # paths 없이 부르면 남의 미커밋 편집까지 "repo protected" 커밋에 쓸려 들어간다.
+    assert len(board._sync_calls) == 1
+    message, paths = board._sync_calls[0]
+    assert message == "repo protected"
+    assert paths is not None, "경로 스코프 없이 board-git 동기를 부르면 누출 클래스가 재발한다"
+    assert list(paths) == [board.areas_file()]
 
 
 def test_protected_set_is_idempotent(pc, board, tmp_path):

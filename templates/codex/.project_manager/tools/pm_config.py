@@ -1502,10 +1502,18 @@ def cmd_repo_protected(
         retry=protected_retry_command(name, board=board_mod))
 
     # 4) board-git best-effort 동기 — 공유 정책 변경은 즉시 공유돼야 값-연결이 산다.
+    #    **경로 스코프 필수**(ADR-0073·T-0419): paths 없이 부르면 board 전체가 "repo protected"
+    #    커밋에 쓸려 들어가 *남의 미커밋 편집*까지 대신 커밋한다. claim 이 dirty 를 안 막게 된
+    #    지금은 board 가 상시 dirty 라 그 노출이 더 크다. areas.md 만 이 mutation 의 산출물이다.
+    #    (getattr 로 areas_file 을 받는 이유 = 구 엔진 board 사본과의 호환 — 없으면 종전 동작.)
     sync = getattr(board_mod, "_board_git_sync_best_effort", None)
+    areas_file = getattr(board_mod, "areas_file", None)
     if sync is not None:
         try:
-            sync("repo protected")
+            if areas_file is not None:
+                sync("repo protected", (areas_file(),))
+            else:
+                sync("repo protected")
         except Exception:  # noqa: BLE001 — best-effort: 동기 실패가 설정을 되돌리지 않는다.
             pass
 
