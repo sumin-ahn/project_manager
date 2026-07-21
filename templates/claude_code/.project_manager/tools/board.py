@@ -27,9 +27,9 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import yaml
 
@@ -2152,11 +2152,13 @@ def _ensure_board_gitattributes() -> bool:
     commit funnel(`_board_git_stage_and_commit`)에서 backfill 한다 — 보강분은 그 commit 에 함께
     실려 pull/push 로 공유 remote·다른 clone 까지 전파된다.
 
-    **호출처는 그 funnel 하나뿐이다**(단일 채널). write 만 하고 commit 하지 않는 지점(예:
-    `cmd_init`)에서 부르면 board 가 dirty(`?? .gitattributes`)로 남아 claim STRICT 의 dirty
-    가드가 *엔진이 만든 파일*을 사용자 편집으로 오인해 claim 을 막는다. funnel 은
-    write→stage→commit 이 한 호출에 닫히고, claim 의 dirty 판정(prefetch)은 그보다 **앞**에서
-    끝나므로 이 backfill 이 claim 을 차단하지 않는다.
+    **호출처는 그 funnel 하나뿐이다**(단일 채널) — write→stage→commit 이 한 호출에 닫혀야
+    엔진이 만든 파일이 board 에 미커밋으로 눌러앉지 않는다. write 만 하고 commit 하지 않는
+    지점(예: `cmd_init`)에서 부르면 `?? .gitattributes` 가 남는다. (T-0418 당시엔 그 잔존이
+    claim STRICT 의 dirty 가드에 걸려 claim 을 *막기까지* 했다 — ADR-0073 이 그 전면 차단을
+    걷어냈으므로 지금 남는 건 "엔진 산출물이 미커밋으로 떠돈다" 는 위생 문제다. 단일 채널
+    규칙은 그 이유로 유지된다.) 스코프 커밋의 pathspec 에 `.gitattributes` 를 포함하는 것도
+    같은 이유다 — 빠지면 이 backfill 이 영구 미커밋으로 남아 배포가 죽는다.
 
     **비파괴**: 파일이 있으면 덮어쓰지 않고, union 선언이 *없을 때만* 블록을 append 한다(채택자
     가 자기 규칙을 가진 경우 보존). 이미 선언돼 있으면 no-write(멱등). append 는 `_append_atomic`
@@ -2183,20 +2185,27 @@ def _ensure_board_gitattributes() -> bool:
     return True
 
 
-# ── board git 즉시 sync (ADR-0033 ②·T-0163) ──────────────────────────────────
+# ── board git 즉시 sync (ADR-0033 ②·T-0163 · 스코프화 ADR-0073·T-0419) ────────
 # board(tickets+areas)가 별도 git(submodule·standalone)으로 분리된 형상에서, ticket
-# mutation 마다 board git 에 자동 commit + pull --rebase + push 한다. mutation 별 sync
-# 강도가 다르다(spike §3.6·ADR-0033 ②):
+# mutation 마다 board git 에 자동 commit + (필요 시) pull --rebase + push 한다. mutation 별
+# sync 강도가 다르다(spike §3.6·ADR-0033 ②):
 #
-#   - **claim = STRICT(원자·조율 primitive)**: pull 로 remote 선점을 먼저 반영 → 이미
-#     남이 claim 했으면 작업 시작을 차단(race-lost·로컬 변경 0) → 로컬 claim commit →
-#     push 가 성공해야 *비로소* 소유 확정. non-FF/conflict/offline 면 로컬 claim 을
-#     rollback(티켓 open 복귀) + 명시 실패. best-effort 로 "내가 claim" 을 남기면 둘이
-#     같은 일 = 중복작업 방지가 깨지므로 claim 만 strict 다.
-#   - **new/complete/block/unclaim/unblock = best-effort local-first**: 로컬 commit 은
-#     항상 성공(로컬) → pull --rebase ; push 는 best-effort → 실패 시 stale 경고 + 무차단
-#     계속. active retry 루프는 두지 않는다 — 다음 mutation 의 pull-rebase+push 가 밀린
-#     commit 을 자연 catch-up 한다(spike §3.6 "retry" 의 해석).
+#   - **claim = STRICT(원자·조율 primitive)**: 선점 감지(읽기 전용 fetch + 원격 트리 직접
+#     조회)로 이미 남이 claim 했으면 작업 시작을 차단(race-lost·로컬 변경 0) → 로컬 claim
+#     commit → push 가 성공해야 *비로소* 소유 확정. non-FF/거부면 로컬 claim 을 rollback
+#     (티켓 open 복귀) + 명시 실패. best-effort 로 "내가 claim" 을 남기면 둘이 같은 일 =
+#     중복작업 방지가 깨지므로 claim 만 strict 다.
+#   - **new/promote/complete/block/unclaim/unblock = best-effort local-first**: 로컬 commit 은
+#     항상 성공(로컬) → (추적 변경이 없으면) pull --rebase ; push 는 best-effort → 실패 시
+#     stale 경고 + 무차단 계속. active retry 루프는 두지 않는다 — 다음 mutation 의
+#     pull-rebase+push 가 밀린 commit 을 자연 catch-up 한다(spike §3.6 "retry" 의 해석).
+#     이 catch-up 은 **pull 이 매번 fetch 를 포함**해야 성립한다 — 원격-추적 ref 를 읽는
+#     `behind` 로 pull 여부를 가르면 fetch 가 없어 ref 가 영구 stale → 영영 안 따라잡는다.
+#
+# **공통 불변식 = 스코프**(ADR-0073): 어떤 mutation 도 *자기가 만진 경로* 밖을 커밋하지 않고,
+# 롤백도 자기가 만든 것만 되돌린다. 공유 board 워킹트리엔 항상 남의 미커밋 작업이 있을 수
+# 있기 때문이다(claim 이 dirty 를 더는 막지 않으므로 더 그렇다). 조율 권위는 로컬 tree 의
+# clean 여부가 아니라 **원격 ref 의 FF push(CAS)** 다.
 #
 # **활성 게이트 = board 가 별도 git 일 때만**(`board_root()/.git` 존재). legacy(board 가
 # wiki/ 안·별도 git 아님)면 sync 는 전부 no-op(git 호출 0·현 동작 byte-identical) —
@@ -2208,19 +2217,37 @@ def _ensure_board_gitattributes() -> bool:
 # 둔다. 환경 이상(hang·offline DNS)에서 무한 대기를 막는 상한(엔진 subprocess 관례).
 _BOARD_GIT_TIMEOUT_SECONDS = 30
 
-# claim prefetch 반환 sentinel — board submodule 에 uncommitted 변경이 있어 pull --rebase
-# 가 "스테이징하지 않은 변경" 으로 거부되는 상태(offline 아님·네트워크 정상·T-0175). prefetch
-# 반환 4분(`""`=비활성 / 이 sentinel=dirty / None=offline·no-anchor / sha=anchor)에서 dirty 를
-# offline 과 *메시지로* 가르기 위한 고유 토큰 — 어떤 git SHA(40-hex)와도 충돌하지 않는다.
-_CLAIM_PREFETCH_DIRTY = "\0dirty"
+# claim 차단 사유 코드 (ADR-0073·T-0419) — prefetch 가 claim 을 막을 때의 *원인* 이다. 옛
+# sentinel 문자열(`\0dirty`·`\0detached`)을 대체한다: 사유가 넷(dirty/rebase 충돌/offline/
+# upstream 없음)으로 갈리고 진단에 behind·더러운 파일 목록이 함께 필요해, 반환을 구조체
+# (`_ClaimPrefetch`)로 바꾸면서 사유도 코드로 명시했다. 하나의 원인엔 하나의 안내만 나가야
+# 한다(오판·이중출력 0 — T-0175/T-0203 이 세운 규약을 계승).
+_CLAIM_BLOCK_DETACHED = "detached"          # board HEAD 가 브랜치를 안 가리킴 → checkout 안내
+_CLAIM_BLOCK_REBASE = "rebase"              # rebase 진행 중(충돌 미해소) → abort/continue 안내
+_CLAIM_BLOCK_RACE_LOST = "race-lost"        # 원격에서 이미 claimed/done/blocked → 중복작업 방지
+_CLAIM_BLOCK_DIRTY = "dirty"                # 원격 앞섬 + 미커밋 파일이 통합을 막음(offline 아님)
+_CLAIM_BLOCK_INTEGRATION = "integration"    # 네트워크 정상·미커밋 0 인데 통합 실패(원인 미상)
+_CLAIM_BLOCK_OFFLINE = "offline"            # fetch 도달 불가(네트워크·auth)
+_CLAIM_BLOCK_NO_UPSTREAM = "no-upstream"    # 추적 브랜치 미설정 → 조율할 원격이 없음
+_CLAIM_BLOCK_NO_ANCHOR = "no-anchor"        # HEAD 조회 불가 → rollback anchor 없이 진행 금지
 
-# claim prefetch 반환 sentinel — board submodule 이 detached HEAD 인 상태(네트워크 정상·dirty
-# 도 offline 도 아닌 제3의 상태·T-0203). detached 에선 `pull --rebase` 가 rc≠0 로 거부되는데,
-# 이를 offline(None) 으로 오판하지 않도록 dirty sentinel 선례대로 별도 토큰으로 가른다. dirty
-# 패턴 동형(`\0` 접두)이라 어떤 git SHA(40-hex)와도 충돌하지 않는다. best-effort sync 가
-# detached 에서 commit 을 skip 해(T-0204) board 가 dirty 로 남을 수 있으므로, prefetch 는 이
-# sentinel 을 dirty 보다 *먼저* 판정한다(detached 안내가 dirty 안내보다 우선·원인 정확).
-_CLAIM_PREFETCH_DETACHED = "\0detached"
+# 잔여 차단 진단에 나열할 더러운 파일 표본 상한 — 전부 쏟으면(수십 건) 안내가 묻히고, 0 이면
+# "무엇 때문에 막혔나" 를 사용자가 다시 찾아야 한다. 총계는 항상 함께 낸다.
+_BOARD_GIT_DIRTY_SAMPLE_MAX = 5
+
+# 진단에 인용할 git 출력 길이 상한 — 원인 미상 통합 실패에서 마지막 stderr 줄을 그대로 보여준다
+# (분류에는 안 쓴다·로케일 무관 — 사람이 읽을 단서로만).
+_BOARD_GIT_DETAIL_MAX = 200
+
+# 사유 코드 → **짧은 라벨**. "무엇 때문인지" 한 마디만 끼워 넣는 자리(롤백 후 stale 경고)용이다
+# — 사유별 *처방* 문장은 `_claim_block_message` 가 소유한다(claim 차단이라는 다른 맥락). 판정
+# 자체는 두 곳 모두 `_classify_pull_failure` 하나를 쓴다.
+_BOARD_GIT_BLOCK_LABELS: dict[str, str] = {
+    _CLAIM_BLOCK_REBASE: "rebase 진행 중·충돌 미해소",
+    _CLAIM_BLOCK_DIRTY: "미커밋 파일이 통합을 막음",
+    _CLAIM_BLOCK_OFFLINE: "원격 도달 불가",
+    _CLAIM_BLOCK_INTEGRATION: "원인 미상·네트워크는 정상",
+}
 
 # board-git pathspec — `tickets/.drafts/`(drafts_dir()) 를 `git add`/`git status` 에서 명시
 # 제외한다(T-0198). draft 는 STATUS_DIRS 순회 밖이라 이미 안 보이지만, 이 pathspec 은 방어적
@@ -2261,6 +2288,48 @@ def _board_git(args: list[str], *, check: bool = False,
         timeout=_BOARD_GIT_TIMEOUT_SECONDS if timeout is None else timeout, check=check)
 
 
+def _board_git_lock_file() -> Path:
+    """board-git mutation 직렬화 락 파일 — `<REPO>/.project_manager/.local/board-git.lock`.
+
+    `BOARD_LOCK` 처럼 import-time 상수로 굳히지 않고 **REPO 추종 lazy 해소**로 둔다(board_root()
+    선례) — hermetic 테스트는 `REPO` 를 monkeypatch 하므로 락 파일이 자동으로 tmp 로 따라간다.
+    별도 상수 seam 을 하나 더 두면 그걸 잊은 새 테스트가 실 루트에 락 파일을 쓴다.
+    """
+    return REPO / ".project_manager" / ".local" / "board-git.lock"
+
+
+@contextlib.contextmanager
+def board_git_lock() -> Iterator[None]:
+    """board-git mutation(commit→push→rollback) 전체를 직렬화하는 OS 파일락 (ADR-0073·T-0419).
+
+    `board_lock` 은 *파일* mutation 임계구역(load→rename)만 감싸고 git ops 는 그 밖에 있어서,
+    같은 clone 의 두 슬롯이 commit→push→rollback 을 인터리브할 수 있었다 — 남이 방금 만든
+    claim 커밋을 내 rollback 이 되돌리는 창(D3). 이 락이 그 트랜잭션을 통째로 직렬화한다.
+
+    **락 순서 = board_git_lock → board_lock (전역 고정)**. claim 은 이 락을 잡은 채 board_lock
+    을 잡으므로, 역순 획득이 어디에도 없어야 데드락이 없다: best-effort sync 6곳은 board_lock
+    을 이미 놓은 뒤 불리고, `_prefix_relabel` 도 board_lock **밖**에서 이 락을 먼저 잡는다.
+
+    board-git 비활성(legacy·솔로)이면 no-op — 락 파일조차 만들지 않는다(현 동작 무변경).
+    **재진입 금지**(flock 관례·board_lock 과 동일) — 이 구간 안에서 이 컨텍스트를 다시 잡는
+    헬퍼를 부르지 않는다. 프로세스가 죽으면 OS 가 자동 해제한다(stale-lock 없음).
+    """
+    if not _board_git_enabled():
+        yield
+        return
+    lock = _board_git_lock_file()
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        _flock_acquire(fd)
+        try:
+            yield
+        finally:
+            _flock_release(fd)
+    finally:
+        os.close(fd)  # close 만으로도 OS 가 락을 해제 (크래시 시 안전망)
+
+
 def _board_git_head() -> str | None:
     """board git 의 현재 HEAD SHA (없으면 None) — claim rollback 의 복귀 지점 기록용."""
     r = _board_git(["rev-parse", "HEAD"])
@@ -2297,12 +2366,14 @@ def _board_git_status_porcelain() -> str:
 
     `--porcelain` 은 번역되지 않는 안정 포맷이라(cp949·한글 git 메시지 무관) dirty 판정에
     robust 하다 — non-empty 면 staged/unstaged/untracked 변경이 있다는 뜻. rc≠0(이상)이나
-    예외는 빈 문자열로 fail-soft 처리해 호출부가 dirty 아님(=clean·pull 진행)으로 보게 한다
-    (dirty 선체크가 정상 claim 경로를 막지 않도록 보수적으로).
+    예외는 빈 문자열로 fail-soft 처리해 호출부가 dirty 아님(=clean)으로 보게 한다(보수적).
+
+    **dirty 판정의 단일 원천**이다 — 목록/추적여부 분해(`_board_git_dirty_entries`·
+    `_board_git_has_tracked_changes`)는 이 출력을 파싱만 한다. ADR-0073 이후 dirty 는 claim 을
+    막는 조건이 아니라 (a) 원격이 앞섰을 때 통합 가능성 판정과 (b) 잔여 차단 진단의 재료다.
 
     `_BOARD_GIT_DRAFT_PATHSPEC` 으로 `tickets/.drafts/`(미충전 draft·T-0198)를 제외한다 —
-    아니면 draft 가 untracked 로 남아 있는 동안 무관 claim 이 "board dirty" 로 오판돼 차단된다
-    (draft 는 board-git 관점에서 아예 존재하지 않는 것처럼 보여야 한다).
+    draft 는 board-git 관점에서 아예 존재하지 않는 것처럼 보여야 한다(진단 목록에도 안 나온다).
     """
     try:
         r = _board_git(["status", "--porcelain", "--", *_BOARD_GIT_DRAFT_PATHSPEC])
@@ -2311,29 +2382,297 @@ def _board_git_status_porcelain() -> str:
     return r.stdout if r.returncode == 0 else ""
 
 
-def _board_git_stage_and_commit(message: str) -> bool:
-    """board git 에 tickets/ + areas.md 변경을 stage 하고 commit 한다 (로컬·항상 시도).
+def _board_git_dirty_entries() -> tuple[tuple[str, str], ...]:
+    """board 의 미커밋 변경 목록 — `(상태코드, 경로)` 튜플 (draft 제외·판정 단일 지점).
 
-    누출 0: board git 엔 board 파일밖에 없으므로 `add -A` 가 설계(superproject)를 끌고
-    가지 않는다(ADR-0033 ①). nothing-to-commit(변경 없음)이면 commit 은 rc≠0 이지만 그건
-    정상(이미 동기)이라 호출부가 무시한다. 반환 True = 새 commit 생성, False = 변경 없음/
-    실패(둘 다 호출부에서 best-effort 로는 무차단).
-
-    `_BOARD_GIT_DRAFT_PATHSPEC` 으로 `tickets/.drafts/`(미충전 draft·T-0198)를 stage 에서
-    제외한다 — draft 는 STATUS_DIRS 순회 밖이라 이미 이 mutation 이 만든 변경 목록엔 안 잡히지만,
-    `add -A` 자체가 board_root 전체를 스캔하므로 무관한 draft 를 *이* mutation 의 commit 에
-    쓸어담을 수 있었다(T-0196 게이트가 생성 시점만 막고 후속 mutation 은 못 막던 leak). 이
-    pathspec 이 그 leak 을 원천 차단한다 — 어떤 mutation(자기·무관 무엇이든)도 draft 를
-    커밋하지 않는다. promote 는 draft 를 `open/` 으로 옮긴 *뒤* 이 함수를 부르므로 무영향.
-
-    stage *직전* 에 `areas.md merge=union` 배포를 멱등 보강한다(T-0418) — 모든 board git commit
-    이 이 함수를 지나므로, seed 가 다시 안 도는 **기존 board** 도 다음 mutation 에서 자연 backfill
-    되고 그 commit·push 로 공유 remote 까지 전파된다. 이미 선언돼 있으면 파일 IO 0(멱등 no-write).
+    dirty 의 **원천 판정은 `_board_git_status_porcelain()` 하나**다 — 이 함수는 그 출력을 파싱만
+    한다(두 벌 판정 금지). porcelain 포맷은 `XY <path>`(코드 2칸 + 공백 + 경로)이고 rename 은
+    `R  old -> new` 라 화살표 뒤(현재 경로)를 취한다. 공백/한글 경로는 git 이 따옴표로 감싸므로
+    양끝 `"` 만 벗긴다(진단 출력용이라 8진 이스케이프까지 복원하지 않는다).
     """
-    _ensure_board_gitattributes()
-    _board_git(["add", "-A", "--", *_BOARD_GIT_DRAFT_PATHSPEC])
-    r = _board_git(["commit", "-m", message])
-    return r.returncode == 0
+    entries: list[tuple[str, str]] = []
+    for line in _board_git_status_porcelain().splitlines():
+        if len(line) < 4:
+            continue
+        code, path = line[:2], line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        path = path.strip().strip('"')
+        if path:
+            entries.append((code, path))
+    return tuple(entries)
+
+
+def _dirty_has_tracked(entries: Sequence[tuple[str, str]]) -> bool:
+    """이 변경 목록에 **추적 파일** 변경이 있는가 (untracked-only 는 False·ADR-0073 D1).
+
+    `pull --rebase` 는 **untracked-only dirty 에선 rc=0 으로 성공**한다(architect 실측) — 통합을
+    막는 건 dirty 일반이 아니라 *추적* 변경뿐이다. 옛 prefetch 가 이 구분 없이 board 전체
+    porcelain 이 non-empty 면 차단해 과차단(D1)이 났다. **판정은 여기 한 곳뿐**이다 — 이미 목록을
+    들고 있는 호출부(prefetch 의 pull 실패 분류)는 이 함수를, 목록이 없는 호출부는 아래
+    `_board_git_has_tracked_changes()` 를 쓴다(같은 규칙·git 호출만 다름).
+    """
+    return any(code != "??" for code, _ in entries)
+
+
+def _board_git_has_tracked_changes() -> bool:
+    """board 워킹트리에 추적 파일 변경이 있는가 — 목록을 새로 떠서 `_dirty_has_tracked` 로 판정."""
+    return _dirty_has_tracked(_board_git_dirty_entries())
+
+
+def _board_git_rebase_in_progress() -> bool:
+    """board git 이 rebase 진행 중(충돌 미해소)인가 — `.git/rebase-merge`·`rebase-apply` 존재.
+
+    mid-rebase 는 detached 의 부분집합이지만 **처방이 다르다**(`rebase --abort/--continue` vs
+    `checkout <branch>`) — 옛 코드가 mid-rebase 에 checkout 을 안내하던 2단 오진(D5)을 막으려면
+    먼저 갈라야 한다. 그리고 이 선체크가 **어떤 board-git mutation 보다도 앞**이어야 한다:
+    mid-rebase 에서 `git commit -- <paths>` 는 rc=0 으로 **detached rebase HEAD 위에** 커밋을
+    만들어 버린다(architect 실측). fail-soft — 판정 예외는 False(현행 경로로 흘림).
+    """
+    for name in ("rebase-merge", "rebase-apply"):
+        try:
+            r = _board_git(["rev-parse", "--git-path", name])
+        except Exception:  # noqa: BLE001 — fail-soft: 판정 예외는 현행 경로(False).
+            return False
+        if r.returncode != 0:
+            continue
+        raw = r.stdout.strip()
+        # `--git-path` 는 -C(board_root) 기준 상대경로를 낸다 — 절대경로면 `/` 연산이 그대로 채택.
+        if raw and (board_root() / raw).exists():
+            return True
+    return False
+
+
+class _BoardGitUpstream(NamedTuple):
+    """board git 이 조율하는 원격 — remote 이름 · 로컬 브랜치 · 원격 브랜치 ref."""
+
+    remote: str        # 예: origin
+    branch: str        # 로컬 브랜치명
+    merge_ref: str     # 예: refs/heads/main (`ls-remote` 조회 키)
+
+    @property
+    def tracking(self) -> str:
+        """원격-추적 ref (`refs/remotes/<remote>/<branch>`) — ls-tree/rev-list 의 revision."""
+        short = self.merge_ref
+        if short.startswith("refs/heads/"):
+            short = short[len("refs/heads/"):]
+        return f"refs/remotes/{self.remote}/{short}"
+
+
+def _board_git_upstream() -> _BoardGitUpstream | None:
+    """현재 브랜치의 upstream 설정 (미설정·판정 불가면 None) — **네트워크 접촉 0**.
+
+    `branch.<b>.remote`/`branch.<b>.merge` 를 직접 읽는다. `@{upstream}` 해소는 원격-추적 ref 가
+    아직 없으면(첫 fetch 전) 실패해서 "upstream 미설정" 과 구별되지 않는데, 그 둘은 claim 진단의
+    서로 다른 사유다(설정 없음 ≠ offline·D5) — 그래서 설정값 자체를 본다.
+    """
+    try:
+        head = _board_git(["rev-parse", "--abbrev-ref", "HEAD"])
+        if head.returncode != 0:
+            return None
+        branch = head.stdout.strip()
+        if not branch or branch == "HEAD":  # detached — 선체크가 이미 걸렀다(방어적).
+            return None
+        remote = _board_git(["config", "--get", f"branch.{branch}.remote"])
+        merge = _board_git(["config", "--get", f"branch.{branch}.merge"])
+    except Exception:  # noqa: BLE001 — fail-soft: 판정 예외는 upstream 미상(None).
+        return None
+    if remote.returncode != 0 or merge.returncode != 0:
+        return None
+    remote_name, merge_ref = remote.stdout.strip(), merge.stdout.strip()
+    if not remote_name or not merge_ref:
+        return None
+    return _BoardGitUpstream(remote_name, branch, merge_ref)
+
+
+def _board_git_fetch(remote: str) -> bool:
+    """원격 상태를 추적 ref 로 당긴다 — **읽기 전용**(워킹트리·HEAD 미접촉). 성공 True.
+
+    선점 감지를 `pull --rebase` 대신 fetch+ls-tree 로 하는 근거가 이것이다 — dirty 든 behind 든
+    로컬 상태와 무관하게 원격을 볼 수 있고, 실패해도 로컬 변경이 0 이다(ADR-0073).
+    """
+    try:
+        return _board_git(["fetch", remote]).returncode == 0
+    except Exception:  # noqa: BLE001 — fail-soft: fetch 예외(timeout)는 도달 불가로 본다.
+        return False
+
+
+def _board_git_remote_ticket_status(tracking: str, ticket_id: str) -> str | None:
+    """원격 트리에서 그 티켓이 놓인 status 디렉토리 (없으면 None) — 읽기 전용 선점 감지.
+
+    `git ls-tree -r --name-only <tracking> -- tickets/` 로 **원격 스냅샷을 직접** 읽는다. 로컬
+    통합(pull) 성공에 의존하지 않으므로 dirty·behind 와 무관하게 판정된다 — 옛 판정(winner 를
+    로컬로 끌어와야 보임)보다 **등가 이상**이다(ADR-0073). `-z` 로 NUL 구분 raw 경로를 받는다
+    (한글 파일명이 core.quotepath 8진 이스케이프로 나와 매칭을 놓치는 것을 막는다).
+    """
+    try:
+        r = _board_git(["ls-tree", "-r", "-z", "--name-only", tracking, "--", "tickets/"])
+    except Exception:  # noqa: BLE001 — fail-soft: 조회 예외는 판정 불가(None·차단하지 않음).
+        return None
+    if r.returncode != 0:
+        return None
+    pattern = re.compile(
+        rf"^tickets/({'|'.join(STATUS_DIRS)})/{re.escape(ticket_id)}(-.*)?\.md$")
+    for entry in r.stdout.split("\0"):
+        m = pattern.match(entry.strip())
+        if m:
+            return m.group(1)
+    return None
+
+
+def _board_git_behind(tracking: str) -> int:
+    """원격이 로컬보다 앞선 커밋 수 (`HEAD..<tracking>`) — 판정 불가면 0.
+
+    0 폴백은 보수적 방향이다: behind 를 모르면 "원격이 안 앞섬" 으로 보고 **차단하지 않는다**
+    (소유 확정 권위는 어차피 push CAS 라, 여기서 막을 이유가 없다·ADR-0073).
+    """
+    try:
+        r = _board_git(["rev-list", "--count", f"HEAD..{tracking}"])
+    except Exception:  # noqa: BLE001 — fail-soft: 조회 예외는 0(차단하지 않음).
+        return 0
+    if r.returncode != 0:
+        return 0
+    try:
+        return int(r.stdout.strip())
+    except ValueError:
+        return 0
+
+
+def _board_git_remote_tip(upstream: _BoardGitUpstream) -> str | None:
+    """원격 브랜치 tip SHA (`git ls-remote`) — 네트워크 1왕복·로컬 ref 미의존.
+
+    `_board_git_remote_has_commit` 의 폴백 경로다(fetch 불가 시). tip 동일성만으로는 "내 커밋이
+    원격에 있는가" 를 절반만 답한다 — 그래서 기본 술어가 아니라 폴백이다.
+    """
+    try:
+        r = _board_git(["ls-remote", upstream.remote, upstream.merge_ref])
+    except Exception:  # noqa: BLE001 — fail-soft: 재확인 실패는 "미확정"(None) 으로 흘린다.
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return r.stdout.split()[0].strip()
+
+
+def _board_git_remote_has_commit(upstream: _BoardGitUpstream, commit: str) -> bool:
+    """원격 브랜치가 이 커밋을 **포함**하는가 — push 예외 후 성공 여부 재확인 (D6).
+
+    push 가 timeout 예외로 끝나도 원격엔 이미 반영됐을 수 있다. 그때 롤백하면 원격 claimed·
+    로컬 open 인 **고아 claim** 이 된다. 술어는 tip 동일성이 아니라 **조상 관계** 여야 한다
+    (reviewer): 내 push 가 수락된 직후 다른 clone 이 무관 커밋을 얹으면 tip 은 이미 내 커밋이
+    아니지만 소유는 확정된 상태다 — 동일성으로 보면 그 경우를 롤백해 고아를 다시 만든다.
+
+    `fetch`(읽기 전용) 후 `merge-base --is-ancestor` 로 판정하고, fetch 가 불가하면
+    `ls-remote` tip 동일성으로 **폴백**한다(정확도는 낮지만 "확정된 것을 롤백" 은 막는다).
+    판정 불가는 False = 롤백(거짓 소유보다 안전한 방향).
+    """
+    try:
+        if _board_git_fetch(upstream.remote):
+            r = _board_git(["merge-base", "--is-ancestor", commit, upstream.tracking])
+            return r.returncode == 0
+        return _board_git_remote_tip(upstream) == commit
+    except Exception:  # noqa: BLE001 — fail-soft: 재확인 실패는 미확정(False·롤백).
+        return False
+
+
+def _board_git_relpath(path: Path) -> str | None:
+    """절대 경로 → board git 루트 기준 상대 pathspec (board git 밖이면 None)."""
+    try:
+        return Path(path).resolve().relative_to(board_root().resolve()).as_posix()
+    except (ValueError, OSError):
+        return None
+
+
+def _board_git_scope_pathspec(paths: Sequence[Path], *,
+                              gitattributes: bool = False) -> tuple[str, ...]:
+    """이 mutation 이 만진 경로 → board git pathspec (**스코프 산출 단일 지점**·ADR-0073).
+
+    규칙 넷을 한 곳에서만 적용한다(경로별로 다시 판정하는 두 번째 구현을 만들지 않는다):
+      1. board_root() **밖** 경로는 제외 — board git 이 모르는 파일(예: 파생물 `wiki/board.md`).
+      2. `tickets/.drafts/` 는 제외 — 어떤 mutation 도 미충전 draft 를 커밋하지 않는다(T-0198).
+         promote 의 *옛* 경로가 실제로 draft 라 이 규칙이 매번 발동한다.
+      3. `gitattributes=True` 일 때만 `.gitattributes` 를 덧붙인다 — **이번 호출의 backfill 이
+         실제로 썼을 때**(`_ensure_board_gitattributes()` 반환 True)만 참이다. 무조건 붙이면
+         사용자가 편집 중인 `.gitattributes` 를 아무 티켓 mutation 이 대신 커밋해 이 티켓이
+         닫으려는 누출과 **동형** 이 된다(reviewer). 반대로 backfill 분을 빼면 그 파일이 영구
+         미커밋으로 남아 T-0418(areas union 배포)이 무력화되므로, "썼으면 싣는다" 가 정확한
+         조건이다. 파일 부재 시엔 붙이지 않는다(`add` rc=128 fatal 방지).
+      4. 중복 제거(순서 보존).
+    반환이 비면 커밋할 스코프가 없다는 뜻(호출부가 no-op 으로 처리).
+    """
+    rels: list[str] = []
+    for path in paths:
+        rel = _board_git_relpath(path)
+        if rel is None or rel in rels:
+            continue
+        if rel.startswith("tickets/.drafts/"):
+            continue
+        rels.append(rel)
+    if gitattributes:
+        attrs = _board_git_relpath(board_root() / ".gitattributes")
+        if attrs and attrs not in rels and (board_root() / ".gitattributes").is_file():
+            rels.append(attrs)
+    return tuple(rels)
+
+
+def _board_git_stageable(pathspec: Sequence[str]) -> tuple[str, ...]:
+    """`add`/`commit` 이 매치할 수 있는 경로만 남긴다 — pathspec 미매치 fatal 방지.
+
+    `git add -A -- <경로>` 는 index·worktree 어디에도 없는 경로를 주면 rc=128 fatal 로 죽고
+    **아무것도 stage 되지 않는다**(→ commit 실패 → claim 롤백). 로컬에서 만들어진 뒤 아직 한
+    번도 커밋되지 않은 티켓이 이동하면 *옛* 경로가 정확히 그 상태다(예: detached 구간에
+    best-effort commit 이 보류된 티켓). 존재(worktree) 또는 추적(index) 여부로 미리 걸러
+    funnel 이 fail-soft 하게 한다.
+    """
+    on_disk = {p for p in pathspec if (board_root() / p).exists()}
+    unknown = [p for p in pathspec if p not in on_disk]
+    tracked: set[str] = set()
+    if unknown:
+        try:
+            r = _board_git(["ls-files", "-z", "--", *unknown])
+            if r.returncode == 0:
+                tracked = {line for line in r.stdout.split("\0") if line}
+        except Exception:  # noqa: BLE001 — fail-soft: 조회 실패면 존재하는 경로만 남긴다.
+            tracked = set()
+    return tuple(p for p in pathspec if p in on_disk or p in tracked)
+
+
+def _board_git_stage_and_commit(message: str,
+                                paths: Sequence[Path] | None = None) -> bool:
+    """이 mutation 이 만진 **경로만** stage+commit 한다 (스코프 커밋·ADR-0073·T-0419).
+
+    `paths` = 그 mutation 이 만들거나 옮긴 파일들(절대 경로). `git add -A -- <경로>` +
+    `git commit -m … -- <경로>`(부분 커밋)로 닫아, 공유 board 워킹트리에 있는 **무관한 미커밋
+    작업**(다른 슬롯 WIP·남의 staged 편집)이 이 커밋에 실려 push 되는 것을 원천 차단한다(D2 —
+    claim 커밋에 타 슬롯 WIP 가 함께 push 된 것이 실증됐다). `add` 선행은 **필수**다:
+    `git commit --only -- <새 경로>` 단독은 그 경로가 untracked 라 `pathspec did not match` 로
+    실패한다(architect 실측).
+
+    `paths=None` = **relabel 백업 커밋 전용 레거시 스코프**(board 전체·draft 제외). prefix
+    rename/merge·reid(`_prefix_relabel`)는 ID 토큰 rewrite 가 board 안 임의 티켓 본문으로 번져
+    만진 경로 집합이 열려 있다 — 스코프화가 불가능한 유일한 채널이고, 그래서 그 커맨드는 백업
+    rev 안내와 짝을 이룬다. **그 외 호출부는 반드시 경로를 준다.**
+
+    새 커밋 생성 판정은 rc 가 아니라 **`HEAD != anchor`** 다 — 부분 커밋은 pathspec 이 아무것도
+    못 잡으면 rc 가 애매한데, claim 은 "커밋을 못 내면 거짓 소유"(ADR-0033)라 커밋 *사실* 을
+    확인해야 한다. 반환 True = 새 commit 생성.
+
+    stage 직전 `areas.md merge=union` 배포를 멱등 보강한다(T-0418). **이번 호출이 실제로
+    보강했을 때만** `.gitattributes` 를 pathspec 에 넣는다 — 무조건 넣으면 사용자가 편집 중인
+    `.gitattributes` 를 이 mutation 이 대신 커밋한다(이 티켓이 닫는 누출과 동형).
+    """
+    wrote_gitattributes = _ensure_board_gitattributes()
+    before = _board_git_head()
+    if paths is None:
+        _board_git(["add", "-A", "--", *_BOARD_GIT_DRAFT_PATHSPEC])
+        _board_git(["commit", "-m", message])
+    else:
+        pathspec = _board_git_stageable(
+            _board_git_scope_pathspec(paths, gitattributes=wrote_gitattributes))
+        if not pathspec:
+            return False  # 커밋할 스코프 없음(전부 board 밖·draft·미존재) — no-op.
+        _board_git(["add", "-A", "--", *pathspec])
+        _board_git(["commit", "-m", message, "--", *pathspec])
+    return _board_git_head() != before
 
 
 def _board_git_pull_rebase() -> subprocess.CompletedProcess:
@@ -2346,21 +2685,43 @@ def _board_git_push() -> subprocess.CompletedProcess:
     return _board_git(["push"])
 
 
-def _board_git_sync_best_effort(message: str) -> None:
-    """best-effort local-first sync (new/complete/block/unclaim/unblock·spike §3.6).
+def _board_git_sync_best_effort(message: str,
+                                paths: Sequence[Path] | None = None) -> None:
+    """best-effort local-first sync (new/complete/block/unclaim/unblock/promote·spike §3.6).
 
     board 가 별도 git 이 아니면 no-op(legacy·솔로). 별도 git 이면: 로컬 commit(항상
     시도·로컬은 성공) → pull --rebase ; push 를 best-effort 로. offline/auth/conflict 등
     어떤 실패도 **작업을 차단하지 않는다** — stale 경고만 stderr 로 내고 계속한다. active
     retry 루프는 없다 — 밀린 commit 은 다음 mutation 의 pull-rebase+push 가 catch-up 한다.
 
+    `paths` = 그 mutation 이 만진 경로 (ADR-0073). claim 뿐 아니라 **ticket mutation 6곳
+    (new/promote/complete/block/unclaim/unblock)도 함께** 스코프화해 출하한다 — claim 차단을
+    풀면 board 가 상시 dirty 가 되므로, best-effort 가 board 전체를 쓸어담는 채로 남으면 누출
+    노출이 오늘보다 커진다(사용자 결정).
+
+    `paths=None` = 레거시 board 전체 스코프(draft 제외). 티켓이 아닌 board 파일을 고치는 외부
+    호출부(`pm_config` 의 areas.md 보호목록 갱신)의 현행 동작을 보존하는 자리다 — ticket
+    mutation 은 **반드시 경로를 준다**(메타가드 `test_ticket_mutations_pass_scoped_paths` 가
+    board.py 호출부를 기계 검사한다·새 호출부가 잊으면 red).
+
     **단 detached HEAD 는 예외(T-0204)**: commit *전* HEAD 상태를 점검해 detached 면
     commit/pull/push 를 전부 skip 하고 loud 경고만 낸다. detached 위의 commit 은 orphan 으로
     쌓이고 catch-up 이 구조적으로 불가하므로(pull --rebase 계속 실패), 침묵 누적 대신 부기를
     보류하고 복귀를 안내한다(파일 mutation 은 이미 완료라 작업 무차단은 유지).
+
+    git ops 전체를 `board_git_lock` 으로 감싼다 — 같은 clone 의 다른 슬롯이 진행 중인 claim
+    트랜잭션(commit→push→rollback) 사이에 끼어들지 않게(ADR-0073·락 순서 board_git_lock →
+    board_lock: 이 함수는 board_lock 을 놓은 뒤 불린다).
     """
     if not _board_git_enabled():
         return
+    with board_git_lock():
+        _board_git_sync_best_effort_locked(message, paths)
+
+
+def _board_git_sync_best_effort_locked(message: str,
+                                       paths: Sequence[Path] | None = None) -> None:
+    """`_board_git_sync_best_effort` 의 본체 (board_git_lock 보유 전제·재진입 금지)."""
     # detached HEAD 가드 (T-0204): detached 에선 commit 이 orphan 으로 쌓이고 `pull --rebase`
     # 가 계속 실패해 "다음 mutation 이 catch-up" 약속이 *구조적으로* 성립하지 않는다(attached
     # 브랜치의 일시 offline/conflict 만 상정한 동작). commit/pull/push 를 모두 skip 하고 loud
@@ -2375,13 +2736,19 @@ def _board_git_sync_best_effort(message: str) -> None:
               file=sys.stderr)
         return
     try:
-        _board_git_stage_and_commit(message)
-        pull = _board_git_pull_rebase()
-        push = _board_git_push() if pull.returncode == 0 else None
+        _board_git_stage_and_commit(message, paths)
+        # 통합 시도 여부는 **추적 변경 유무**로 가른다 — `behind` 로 가르면 안 된다(reviewer
+        # must-fix): `_board_git_behind` 는 원격-추적 ref 를 읽으므로 **fetch 선행에서만 유효**한데
+        # 이 경로엔 fetch 가 없다 → ref 가 영구 stale → behind 항상 0 → pull 을 영영 안 타 push 가
+        # 계속 non-FF 로 밀린다("다음 mutation 이 catch-up" 약속이 구조적으로 깨진다·실측).
+        # `pull --rebase` 는 자체가 fetch 를 포함하므로 직행이 왕복 수도 옛 코드와 같거나 적다.
+        # 추적 dirty 면 pull 이 어차피 rc≠0 이라 건너뛰고 push 만 시도한다(FF 면 성공·아니면 경고).
+        pull = None if _board_git_has_tracked_changes() else _board_git_pull_rebase()
+        push = _board_git_push() if (pull is None or pull.returncode == 0) else None
     except Exception as exc:  # noqa: BLE001 — fail-soft: best-effort sync 는 절대 작업을 막지 않는다.
         print(f"  ⚠ board sync 보류(다음 mutation 이 catch-up): {exc}", file=sys.stderr)
         return
-    if pull.returncode != 0:
+    if pull is not None and pull.returncode != 0:
         print("  ⚠ board sync 보류 — pull --rebase 실패(offline/conflict). 로컬 commit 은 "
               "보존되며 다음 mutation 이 catch-up 한다.", file=sys.stderr)
     elif push is not None and push.returncode != 0:
@@ -2389,117 +2756,435 @@ def _board_git_sync_best_effort(message: str) -> None:
               "다음 mutation 이 catch-up 한다.", file=sys.stderr)
 
 
-def _board_git_claim_prefetch() -> str | None:
-    """claim STRICT 1단계: `pull --rebase` 로 remote 선점을 로컬에 먼저 반영한다.
+class _ClaimPrefetch(NamedTuple):
+    """claim 선점 감지 결과 (ADR-0073) — anchor · 차단 사유 · 진단 재료.
 
-    board 가 별도 git 이 아니면 no-op·`""`(sentinel: sync 비활성·검증 진행). 별도 git
-    이면 pull --rebase *전* board submodule 의 상태를 순서대로 선점검하고
-    (detached → dirty → pull), 그 다음 pull --rebase 를 시도한다:
-      - detached HEAD → `_CLAIM_PREFETCH_DETACHED` sentinel 반환 (T-0203). detached 에선
-        `pull --rebase` 가 rc≠0 로 거부되는데 이를 offline(None) 으로 오판하지 않도록 가른다
-        (네트워크는 정상). **dirty 보다 먼저** 판정한다 — best-effort sync 가 detached 에서
-        commit 을 skip 해(T-0204) board 가 dirty 로 남을 수 있는데, 그때 dirty 안내
-        ("commit 후 재시도") 는 오도이기 때문이다(detached 라 단순 commit 으론 복구 안 됨).
-        호출부가 브랜치 복귀(checkout)/cherry-pick 을 안내하고 claim 을 차단한다(anchor 없음).
-      - dirty(staged/unstaged/untracked 변경 있음) → `_CLAIM_PREFETCH_DIRTY` sentinel 반환.
-        `pull --rebase` 는 dirty tree 에서 "스테이징하지 않은 변경" 으로 거부되는데, 이를
-        offline 으로 오판하지 않도록 *먼저* 가른다(네트워크는 정상). 발행 직후 ticket 본문을
-        Edit 하면 흔히 발생한다 — 자동 commit/stash 는 PM 의 편집 의도를 임의 처리해 위험하므로
-        하지 않고, 호출부가 "commit 후 재시도" 를 안내하고 claim 을 차단한다.
-      - 성공 → board git HEAD SHA 반환(claim commit 의 rollback 복귀 지점·truthy anchor).
-      - 실패(offline·DNS·auth·rebase conflict) → None 반환. 호출부가 이를 **offline/도달
-        불가**로 보고 claim 을 명시 실패시킨다(best-effort 로 "내가 claim" 을 남기면 중복작업
-        — claim 은 조율 primitive 라 remote 도달 없이는 claim 불가).
-      - pull 은 성공했으나 HEAD SHA 를 못 구함(빈 board git — detached 는 위 선체크가 이미
-        걸러 정상적으론 여기 도달 안 함·fail-soft 판정실패 엣지만) → **None**.
-        enabled 인데 rollback anchor 가 없으면 push 실패 시 거짓 소유를 되돌릴 수 없으므로,
-        strict-claim 은 안전하게 *실패*해야 한다(로컬 변경 0·anchor 없는 진행 금지).
-    반환 의미 5분: `""` = sync 비활성(legacy·confirm early-return True) ·
-    `_CLAIM_PREFETCH_DETACHED` = board detached HEAD(checkout 안내·offline 아님·claim 차단) ·
-    `_CLAIM_PREFETCH_DIRTY` = board dirty(commit 안내·offline 아님·claim 차단) ·
-    `None` = enabled-but-unreachable/no-anchor(offline·claim 명시 실패) · `<sha>` = 유효
-    anchor(정상 진행). detached·dirty·offline 을 *메시지로* 가르는 게 핵심 — 각 케이스에 다른
-    원인의 메시지가 섞여 나오면 안 된다(오판·이중출력 0).
-    pull 이 winner 의 claim 을 끌어오면 working tree 에서 ticket 이 claimed/ 로 이동돼,
-    뒤따르는 `find_ticket`/status 검사가 자연히 race-lost 를 표면화한다(로컬 변경 0).
+    옛 sentinel 문자열 반환(5분)을 대체한다. 차단 사유가 넷으로 갈리고(dirty / rebase 충돌 /
+    offline / upstream 없음) 진단에 `behind` 와 더러운 파일 목록이 함께 필요해, 값 하나로는
+    표현이 안 된다 — 사유와 재료를 **한 구조체로 묶어** 호출부가 메시지를 한 곳에서 렌더한다.
+    """
+
+    anchor: str | None = None
+    """`<sha>` = 정상 진행(rollback 복귀 지점) · `""` = board-git 비활성(legacy) · None = 차단."""
+    block: str | None = None
+    """`_CLAIM_BLOCK_*` 사유 코드 (None = 진행 가능)."""
+    behind: int = 0
+    """원격이 로컬보다 앞선 커밋 수 — 잔여 차단 진단의 핵심 수치."""
+    dirty: tuple[tuple[str, str], ...] = ()
+    """차단 시점의 미커밋 변경 `(코드, 경로)` — 안내에 표본 + 총계로 낸다."""
+    detail: str = ""
+    """사유별 부가 정보 (race-lost 면 원격에서 그 티켓이 놓인 status 등)."""
+
+
+def _board_git_claim_prefetch(ticket_id: str) -> _ClaimPrefetch:
+    """claim STRICT 1단계: **읽기 전용** 선점 감지 + 필요할 때만 통합 (ADR-0073·T-0419).
+
+    board 가 별도 git 이 아니면 no-op(`anchor=""` — 검증만 진행·legacy 무변경). 별도 git 이면
+    순서가 곧 진단이다:
+
+      1. **detached / mid-rebase 선체크(1순위·양보 불가)** — mid-rebase 에서
+         `git commit -- <paths>` 는 rc=0 으로 **detached rebase HEAD 위에** 커밋을 만든다
+         (architect 실측). 그래서 어떤 git mutation 보다 앞이고, 둘을 갈라 처방을 정확히 한다
+         (rebase=abort/continue · detached=checkout·D5 2단 오진 폐쇄).
+      2. **upstream 해소** — 미설정이면 조율할 원격이 없다(offline 과 다른 사유·D5).
+      3. **fetch**(읽기 전용) — 실패면 offline. 워킹트리·HEAD 를 건드리지 않으므로 dirty 든
+         behind 든 무관하게 시도할 수 있고, 실패해도 로컬 변경이 0 이다.
+      4. **원격 트리 직접 조회로 race-lost 판정** — `ls-tree` 로 그 티켓이 원격에서 이미
+         claimed/done/blocked 인지 읽는다. **로컬 통합 성공에 의존하지 않는다** — 옛 판정
+         (winner 를 pull 로 끌어와야 보임)의 상위집합이다.
+      5. **behind 계산 → behind>0 일 때만 `pull --rebase`** — 원격이 안 앞섰으면 통합할 게
+         없으므로 dirty 여도 claim 을 막지 않는다(D1 과차단 폐쇄). 단일 clone 다중 슬롯은 같은
+         로컬 브랜치를 공유해 behind=0 이라 잔여 차단이 구조적으로 발생하지 않는다.
+         pull 실패의 사유 분류는 `_classify_pull_failure` 가 **구조 판정만으로** 한다
+         (rebase 충돌 / 미커밋 파일 / offline / 원인 미상 — git 메시지 문자열 비의존).
+      6. **anchor 확정** — HEAD 를 못 구하면 rollback 복귀 지점이 없다는 뜻이라 안전 실패한다
+         (anchor 없는 진행 금지·거짓 소유 방지).
+
+    조율 보장은 그대로다 — 소유 확정 권위는 여전히 **원격 ref FF push(CAS)** 이고, 이 단계는
+    "이미 남이 가져갔나" 를 싸게 먼저 확인해 중복작업을 막는 것뿐이다.
     """
     if not _board_git_enabled():
-        return ""  # sync 비활성 — pull 없이 검증만 진행(legacy·솔로).
-    # pull --rebase *전* detached HEAD 선체크 — detached 면 pull 이 rc≠0 로 거부되는데 이를
-    # offline 으로 오판하지 않도록 가른다(네트워크 정상·브랜치 복귀가 정답). **dirty 보다 먼저**
-    # 둔다: best-effort 가 detached 에서 commit 을 skip 해(T-0204) board 가 dirty 로 남을 수
-    # 있는데, 그때 dirty 안내("commit 후 재시도")는 오도라(detached 라 단순 commit 불가) detached
-    # 안내가 우선해야 원인 정확(순서: detached → dirty → pull·T-0204 상호작용).
+        return _ClaimPrefetch(anchor="")  # sync 비활성 — 검증만 진행(legacy·솔로).
+    # 1. detached / mid-rebase — 어떤 mutation 보다 먼저. rebase 를 detached 보다 먼저 가른다
+    #    (mid-rebase 는 detached 의 부분집합인데 처방이 다르다·checkout 안내는 오도).
+    if _board_git_rebase_in_progress():
+        return _ClaimPrefetch(block=_CLAIM_BLOCK_REBASE)
     if _board_git_head_detached():
-        return _CLAIM_PREFETCH_DETACHED
-    # pull --rebase *전* dirty 선체크 — dirty 면 pull 이 "스테이징하지 않은 변경" 으로 rc≠0 인데
-    # 이를 offline 으로 오판하지 않도록 먼저 가른다(네트워크 정상·commit 후 재시도가 정답).
-    if _board_git_status_porcelain().strip():
-        return _CLAIM_PREFETCH_DIRTY
+        return _ClaimPrefetch(block=_CLAIM_BLOCK_DETACHED)
+    # 2. upstream — 조율 대상 원격 자체가 없으면 offline 이 아니라 설정 문제다.
+    upstream = _board_git_upstream()
+    if upstream is None:
+        return _ClaimPrefetch(block=_CLAIM_BLOCK_NO_UPSTREAM)
+    # 3. fetch — 읽기 전용(로컬 변경 0). 실패 = 도달 불가.
+    if not _board_git_fetch(upstream.remote):
+        return _ClaimPrefetch(block=_CLAIM_BLOCK_OFFLINE)
+    # 4. 원격 선점 판정 — dirty·behind 무관(원격 트리를 직접 읽는다).
+    remote_status = _board_git_remote_ticket_status(upstream.tracking, ticket_id)
+    if remote_status in ("claimed", "done", "blocked"):
+        return _ClaimPrefetch(block=_CLAIM_BLOCK_RACE_LOST, detail=remote_status)
+    # 5. 원격이 앞섰을 때만 통합. 안 앞섰으면 무관 dirty 가 있어도 claim 은 진행한다.
+    behind = _board_git_behind(upstream.tracking)
+    if behind > 0:
+        try:
+            pull = _board_git_pull_rebase()
+        except Exception:  # noqa: BLE001 — fail-soft: pull 예외(timeout 등)는 offline 취급.
+            return _ClaimPrefetch(block=_CLAIM_BLOCK_OFFLINE, behind=behind,
+                                  dirty=_board_git_dirty_entries())
+        if pull.returncode != 0:
+            return _classify_pull_failure(upstream, pull, behind)
+    # 6. anchor — enabled 인데 HEAD 를 못 구하면 rollback 불가라 안전 실패(로컬 변경 0).
+    anchor = _board_git_head()
+    if not anchor:
+        return _ClaimPrefetch(block=_CLAIM_BLOCK_NO_ANCHOR)
+    return _ClaimPrefetch(anchor=anchor, behind=behind)
+
+
+def _classify_pull_failure(upstream: _BoardGitUpstream,
+                           pull: subprocess.CompletedProcess,
+                           behind: int) -> _ClaimPrefetch:
+    """`pull --rebase` 실패의 원인 분류 — **구조 판정만** 쓴다 (문자열 매칭 0·codex must-fix).
+
+    옛 분류는 "추적 변경이 있나" 만 보고 나머지를 전부 offline 으로 흘렸다. 그런데 git 은
+    **원격에서 새로 들어오는 파일과 같은 경로에 로컬 untracked 파일이 있으면** pull 을 거부한다
+    ("untracked working tree files would be overwritten") — 네트워크가 아니라 **로컬 파일 충돌**
+    인데 "offline · 도달 불가" 로 진단하고 네트워크를 확인하라는 틀린 안내를 냈다(D5 잔여).
+
+    판정 축을 git 메시지가 아니라 **관측 가능한 상태** 로 잡는다(로케일·git 버전 무관):
+      1. rebase 진행 중인가(`.git/rebase-merge`) → 충돌 → `--abort/--continue`.
+      2. **원격에 여전히 닿는가**(fetch 재시도·읽기 전용) → 안 닿으면 그때만 offline 이다.
+         이 프로브가 오분류 방향을 안전한 쪽으로 기울인다 — 진짜 offline 은 fetch 도 실패하므로
+         정확히 offline 이 되고, 네트워크가 살아 있는데 pull 만 실패한 경우는 **결코 offline 이라
+         부르지 않는다**(회색지대 = pull 순간만 끊겼다 살아난 경우인데, 그때 안내는 "정리 후
+         재시도" 라 재시도하면 성공한다).
+      3. 닿는데 미커밋 파일이 있다 → **dirty 로 흡수**한다. untracked 충돌과 추적 dirty 는 사용자
+         액션이 같기 때문이다 — *그 파일을 커밋하거나 치워라*(사용자에게 필요한 건 분류 개수가
+         아니라 할 일). 안내는 `??` 항목이 있으면 "옮기거나 지워라" 를 함께 낸다.
+      4. 닿고 미커밋도 없다 → 원인 미상. 이건 위 셋 중 어디에도 정직하게 못 넣으므로(액션이
+         "직접 돌려 원인을 보라" 로 다르다) 별도 사유로 두고 git 출력 마지막 줄을 함께 낸다.
+    """
+    dirty = _board_git_dirty_entries()
+    detail = ""
+    for line in reversed((pull.stderr or "").strip().splitlines()):
+        if line.strip():
+            detail = line.strip()[:_BOARD_GIT_DETAIL_MAX]
+            break
+    if _board_git_rebase_in_progress():
+        block = _CLAIM_BLOCK_REBASE
+    elif not _board_git_fetch(upstream.remote):
+        block = _CLAIM_BLOCK_OFFLINE
+    elif dirty:
+        block = _CLAIM_BLOCK_DIRTY
+    else:
+        block = _CLAIM_BLOCK_INTEGRATION
+    return _ClaimPrefetch(block=block, behind=behind, dirty=dirty, detail=detail)
+
+
+def _board_git_dirty_hint(dirty: Sequence[tuple[str, str]]) -> str:
+    """더러운 파일 표본 + 총계 + **경로 스코프** 커밋 안내 (진단 문구 단일 지점).
+
+    옛 안내(`add -A -- . ':!tickets/.drafts'`)는 폐기했다 — 공유 board 에서 그 커맨드는 **남의
+    미완성 편집을 내가 커밋**하게 만든다(T-0418 이 draft 유출로 같은 클래스를 이미 겪었다).
+    대신 실제로 막고 있는 파일을 이름으로 보여주고, 자기 것만 골라 커밋하도록 안내한다.
+    """
+    if not dirty:
+        return ""
+    sample = [path for _, path in dirty[:_BOARD_GIT_DIRTY_SAMPLE_MAX]]
+    listed = " ".join(f"'{path}'" for path in sample)
+    more = (f" (외 {len(dirty) - len(sample)}건)" if len(dirty) > len(sample) else "")
+    untracked = [path for code, path in dirty if code == "??"]
+    # 미추적(`??`)은 커밋 외에 **치우기**도 답이다 — 원격에서 같은 경로의 파일이 들어오면 git 이
+    # "untracked working tree files would be overwritten" 로 통합을 거부한다. 이 문장은 `??`
+    # 항목 유무로만 결정한다(git 메시지 문자열에 의존하지 않음·로케일 무관).
+    untracked_note = (
+        f" 미추적 {len(untracked)}건({', '.join(untracked[:_BOARD_GIT_DIRTY_SAMPLE_MAX])})은 "
+        f"커밋하거나 board 밖으로 옮겨라 — 원격에서 같은 경로가 들어오면 git 이 덮어쓰기를 "
+        f"거부한다." if untracked else "")
+    return (f"미커밋 {len(dirty)}건: {', '.join(sample)}{more}. "
+            f"**자기 변경만** 골라 커밋하라 — "
+            f"`git -C .project_manager/board add -- {listed} && "
+            f"git -C .project_manager/board commit`. "
+            f"(`add -A` 로 쓸어담지 마라 — 남의 미완성 편집까지 커밋된다.)"
+            f"{untracked_note}")
+
+
+def _claim_block_message(ticket_id: str, prefetch: _ClaimPrefetch) -> str:
+    """차단 사유 → 사용자 안내 1건 (**렌더 단일 지점**·오판/이중출력 0).
+
+    한 원인엔 한 안내만 나가야 한다는 규약(T-0175·T-0203)을 사유 코드 분기 한 곳으로 못박는다 —
+    호출부(`cmd_claim`)가 사유별로 문구를 다시 짜면 그 규약이 두 벌이 된다.
+    """
+    behind = prefetch.behind
+    if prefetch.block == _CLAIM_BLOCK_REBASE:
+        return (f"board submodule 이 rebase 진행 중(충돌 미해소) — {ticket_id} claim 불가. "
+                f"`git -C .project_manager/board rebase --abort` 로 되돌리거나, 충돌을 해소하고 "
+                f"`git -C .project_manager/board rebase --continue` 후 재시도 "
+                f"(offline 아님·네트워크 정상).")
+    if prefetch.block == _CLAIM_BLOCK_DETACHED:
+        return (f"board submodule 이 detached HEAD 상태 — {ticket_id} claim 불가(rollback anchor "
+                f"없음). `git -C .project_manager/board checkout <branch>`(예: main) 로 브랜치에 "
+                f"복귀 후 claim 재시도 (offline 아님·네트워크 정상). detached 에서 이미 쌓인 로컬 "
+                f"commit 이 있으면 복귀 후 `git -C .project_manager/board cherry-pick <sha>` 로 이식.")
+    if prefetch.block == _CLAIM_BLOCK_NO_UPSTREAM:
+        return (f"board submodule 에 추적 브랜치(upstream)가 없다 — {ticket_id} claim 불가. claim 은 "
+                f"원격 push 로 소유를 확정하므로 조율할 원격이 필요하다(offline 아님). "
+                f"`git -C .project_manager/board push -u origin <branch>` 로 upstream 을 설정하라.")
+    if prefetch.block == _CLAIM_BLOCK_RACE_LOST:
+        where = prefetch.detail or "claimed"
+        return (f"claim race lost on {ticket_id} — 원격 board 에서 이미 {where}/ 상태다"
+                f"(다른 세션이 먼저 잡았거나 이미 처리됨·로컬 변경 0). "
+                f"`board.py list --all` 로 현황을 확인하라.")
+    if prefetch.block == _CLAIM_BLOCK_DIRTY:
+        return (f"board 가 원격보다 {behind} 커밋 뒤졌는데 미커밋 파일이 통합(pull --rebase)을 "
+                f"막는다 — {ticket_id} claim 불가 (offline 아님·네트워크 정상: fetch 성공). "
+                f"{_board_git_dirty_hint(prefetch.dirty)}")
+    if prefetch.block == _CLAIM_BLOCK_INTEGRATION:
+        return (f"board 가 원격보다 {behind} 커밋 뒤졌는데 통합(pull --rebase)이 실패했다 — "
+                f"{ticket_id} claim 불가. **네트워크는 정상**(fetch 성공)이고 미커밋 파일도 없다 "
+                f"— 원인 미상이므로 `git -C .project_manager/board pull --rebase` 를 직접 돌려 "
+                f"출력을 확인하라." + (f" (git: {prefetch.detail})" if prefetch.detail else ""))
+    if prefetch.block == _CLAIM_BLOCK_NO_ANCHOR:
+        return (f"board git 의 HEAD 를 확인할 수 없다 — {ticket_id} claim 불가(rollback anchor "
+                f"없이는 거짓 소유를 되돌릴 수 없다). `git -C .project_manager/board status` 로 "
+                f"board git 상태를 확인하라.")
+    hint = _board_git_dirty_hint(prefetch.dirty) if prefetch.dirty else ""
+    return (f"offline — board 도달 불가, {ticket_id} claim 불가"
+            + (f" (원격이 {behind} 커밋 앞섬)" if behind else "")
+            + (f" {hint}" if hint else ""))
+
+
+class _ClaimFiles(NamedTuple):
+    """claim 이 만진 두 경로 + 이동 *전* 원본 바이트 — 스코프 커밋·역이동 복원의 입력."""
+
+    old: Path     # open/ 의 원래 경로 (롤백 복귀 지점)
+    new: Path     # claimed/ 로 옮겨진 경로
+    original: bytes  # 이동 전 파일 바이트(claimed_by/claimed_at 갱신 전)
+
+
+def _board_git_index_snapshot(paths: Sequence[Path]) -> dict[str, tuple[str, str]] | None:
+    """대상 경로들의 **index 항목** 을 그대로 캡처 — `{경로: (mode, blob sha)}` (ADR-0073 롤백 기준).
+
+    롤백이 "미커밋 작업을 상태·내용 그대로 보존" 하려면 무관 파일뿐 아니라 **claim 대상 파일
+    자신** 도 보존해야 한다. 옛 롤백은 복원 후 무조건 `add -A` 를 해서, claim 전에 unstaged
+    편집이었거나 untracked 였던 티켓을 **staged 로 바꿔** 놓았다(codex must-fix).
+
+    케이스 분기("unstaged 였으면 stage 하지 마라")로 막지 않는다 — `MM`(staged+unstaged 혼합)·
+    mode 변경 같은 조합에서 또 샌다. 대신 index 항목을 **그대로 떠서 그대로 되돌린다**: 상태
+    조합이 늘어도 로직은 안 는다. index 에 없는 경로(untracked)는 맵에서 빠지고, 그 사실 자체가
+    "index 에서 제거" 라는 복원 지시가 된다.
+
+    **캡처 실패는 None** — 파싱 불가·unmerged(stage≠0) 항목처럼 정확 복원을 보장할 수 없으면
+    조용히 다른 상태로 만들지 말고 호출부가 보수적 현행 동작(+loud 경고)으로 가게 한다.
+    """
+    pathspec = _board_git_scope_pathspec(paths)
+    if not pathspec:
+        return {}
     try:
-        pull = _board_git_pull_rebase()
-    except Exception:  # noqa: BLE001 — fail-soft: pull 예외(timeout 등)는 offline 취급.
+        r = _board_git(["ls-files", "--stage", "-z", "--", *pathspec])
+    except Exception:  # noqa: BLE001 — 캡처 실패는 None(보수적 폴백).
         return None
-    if pull.returncode != 0:
+    if r.returncode != 0:
         return None
-    # enabled 인데 HEAD 를 못 구하면 rollback anchor 부재 → None(거짓 소유 위험·안전 실패).
-    return _board_git_head() or None
+    snapshot: dict[str, tuple[str, str]] = {}
+    for entry in r.stdout.split("\0"):
+        if not entry:
+            continue
+        meta, tab, path = entry.partition("\t")
+        fields = meta.split()
+        if not tab or not path or len(fields) != 3:
+            return None                      # 예상 밖 포맷 — 정확 복원 보장 불가.
+        mode, blob, stage = fields
+        if stage != "0":
+            return None                      # unmerged 항목 — 3-way index 는 그대로 못 되돌린다.
+        snapshot[path] = (mode, blob)
+    return snapshot
 
 
-def _board_git_claim_rollback(orig_head: str) -> None:
-    """로컬 claim 을 통째로 되돌린다 — `reset --hard <orig_head>` + winner 상태 반영 (절대 throw 금지).
+def _board_git_restore_index(paths: Sequence[Path],
+                             snapshot: dict[str, tuple[str, str]]) -> bool:
+    """캡처한 index 상태로 되돌린다 (`update-index`) — 전부 성공해야 True.
 
-    `orig_head`(prefetch 가 기록한 pull 직후 SHA)로 hard-reset 해 claim commit 을 되돌리고
-    working tree 의 ticket 을 open/ 으로 복원한다(거짓 소유 0). 이어 `pull --rebase` 로 winner
-    의 claimed 상태를 로컬에 best-effort 반영한다. **어떤 git 호출이 throw(timeout·git 소실
-    등)해도 예외를 삼킨다** — confirm 이 ADR-0012 "loser 는 깨끗한 race-lost rc=1·never
-    traceback" 을 어기지 않도록(rollback 이 cmd_claim 까지 예외를 새지 않게). reset/pull 자체가
-    실패하면 복원이 불완전할 수 있으나, 그건 claim 을 *확정하지 않는다*(False 경로)는 사실과
-    독립이다 — confirm 은 여전히 False 를 내고, 다음 mutation/claim 의 prefetch pull-rebase 가
-    상태를 catch-up 한다.
+    항목이 있던 경로는 `--cacheinfo <mode>,<sha>,<path>` 로 **그 blob 그대로** 되꽂고(그래서
+    `MM` 처럼 index 와 워킹트리가 다른 상태도 정확히 복원된다), 없던 경로는 `--force-remove` 로
+    index 에서 뺀다(untracked 복원). 워킹트리 내용 복원은 `_board_git_restore_claim_files` 몫이라
+    둘을 합치면 `git status` 출력이 claim 직전과 같아진다.
+    """
+    ok = True
+    for rel in _board_git_scope_pathspec(paths):
+        entry = snapshot.get(rel)
+        if entry is not None:
+            mode, blob = entry
+            r = _board_git(["update-index", "--add", "--cacheinfo", f"{mode},{blob},{rel}"])
+        else:
+            r = _board_git(["update-index", "--force-remove", "--", rel])
+        ok = ok and r.returncode == 0
+    return ok
+
+
+def _board_git_restore_claim_files(files: _ClaimFiles) -> None:
+    """티켓 파일을 claim **직전** 상태로 되돌린다 — 역이동 + 원본 바이트 복원 (ADR-0073).
+
+    `reset --hard` 를 폐기한 자리다(D3) — hard reset 은 board 전체를 되감아 **무관한 미커밋
+    작업을 파괴**한다(실측). 되돌릴 대상은 이 claim 이 만진 두 경로뿐이므로 파일 수준에서
+    정확히 복원한다: `os.replace(new, old)`(ADR-0012 atomic-rename 모델과 동형 — 중복/소실 창
+    0) 후 원본 바이트를 다시 써 frontmatter 갱신까지 되돌린다.
+    """
+    files.old.parent.mkdir(parents=True, exist_ok=True)
+    if files.new.exists():
+        os.replace(files.new, files.old)
+    files.old.write_bytes(files.original)
+
+
+def _board_git_refresh_after_rollback() -> None:
+    """롤백 마무리 — winner 를 로컬에 반영하되, 못 하면 **조용히 넘어가지 않는다** (D4).
+
+    `pull --rebase` 는 추적 파일이 dirty 면 실패한다. 공유 워킹트리에서 그 dirty 는 *남의*
+    작업일 수 있으므로 stash/reset 으로 치우지 않는다(auto-stash 기각·ADR-0073) — 대신 로컬
+    board 뷰가 stale 이라는 사실을 loud 하게 알린다. 옛 코드는 이 실패를 suppress 해 winner
+    미반영 사실이 침묵으로 묻혔다.
+
+    **fetch 가 이 판정의 전제다**(reviewer must-fix): 롤백은 push 가 거부된 직후에 불리는데,
+    그 시점의 원격-추적 ref 는 *정의상* stale 이라(우리가 아직 winner 를 안 당겼다) fetch 없이
+    `behind` 를 읽으면 항상 0 → 두 분기(winner 반영·stale 경고) 모두 도달 불가가 된다.
+
+    **생략만이 아니라 실패도 loud** 다(codex must-fix): 사전 감지는 *추적* 변경만 보므로,
+    untracked 경로 충돌처럼 그 관문을 통과하고도 pull 이 rc≠0 인 갈래가 있다. rc 를 확인하고
+    사유는 `_classify_pull_failure`(claim prefetch 와 동일 판정기)로 붙여 안내한다.
     """
     with contextlib.suppress(Exception):
-        _board_git(["reset", "--hard", orig_head])
+        upstream = _board_git_upstream()
+        if upstream is None:
+            return
+        _board_git_fetch(upstream.remote)   # 추적 ref 갱신 — 아래 behind 판정의 전제.
+        behind = _board_git_behind(upstream.tracking)
+        if behind <= 0:
+            return
+        if _board_git_has_tracked_changes():
+            print(f"  ⚠ 로컬 board 뷰 stale — 원격이 {behind} 커밋 앞서지만 미커밋 변경이 있어 "
+                  f"pull --rebase 를 생략했다(남의 작업을 치우지 않는다). 정리 후 "
+                  f"`git -C .project_manager/board pull --rebase` 로 최신화하라.",
+                  file=sys.stderr)
+            return
+        pull = _board_git_pull_rebase()
+        if pull.returncode == 0:
+            return
+        # **실패도 생략과 똑같이 loud** 해야 약속이 반쪽이 아니다 — untracked 경로 충돌처럼
+        # 사전 감지(추적 변경 유무)를 통과하고도 rc≠0 인 갈래가 있다. 사유 판정은 claim prefetch
+        # 와 **같은 판정기**를 재사용한다(새 로직 0·두 벌 금지).
+        failure = _classify_pull_failure(upstream, pull, behind)
+        label = _BOARD_GIT_BLOCK_LABELS.get(failure.block or "", failure.block or "원인 미상")
+        hint = _board_git_dirty_hint(failure.dirty)
+        detail = f" (git: {failure.detail})" if failure.detail and not hint else ""
+        parts = [f"  ⚠ 로컬 board 뷰 stale — 원격이 {behind} 커밋 앞서는데 "
+                 f"pull --rebase 가 실패했다({label}){detail}."]
+        if hint:
+            parts.append(hint)
+        parts.append("해소 후 `git -C .project_manager/board pull --rebase` 로 최신화하라.")
+        print(" ".join(parts), file=sys.stderr)
+
+
+def _board_git_claim_rollback(anchor: str, files: _ClaimFiles,
+                              claim_commit: str | None = None,
+                              index_snapshot: dict[str, tuple[str, str]] | None = None) -> None:
+    """claim 을 **그 claim 이 만진 것만** 되돌린다 (절대 throw 금지·ADR-0073).
+
+    시점별로 하는 일이 다른데, 규칙은 하나다 — *내가 만든 것만* 되돌린다:
+      - **commit 실패(새 커밋 0)**: 이력 무조작(HEAD==anchor) + 파일 역이동·원본 복원 + index
+        스냅샷 복원.
+      - **push 실패(non-FF·거부)**: `HEAD == 내 claim 커밋` 일 때만 `reset --soft <anchor>`
+        (index 는 남기고 이력만 되감음) + 위와 동일. 그 사이 HEAD 가 다른 커밋이 됐다면
+        (직렬화 락이 막지만 방어) 이력을 **건드리지 않는다** — 남의 커밋을 되돌리지 않는다.
+      - **push 예외**: 호출부가 원격이 그 커밋을 포함하는지 먼저 재확인해 확정이면 이 함수를
+        아예 부르지 않는다(고아 claim 폐쇄·D6).
+      - **rebase 충돌**: prefetch 단계라 로컬 mutation 이 0 — 롤백 대상 자체가 없다.
+
+    `index_snapshot` = claim 직전 대상 경로들의 index 항목(`_board_git_index_snapshot`). 파일
+    내용뿐 아니라 **index 상태까지** 되돌려야 "미커밋 작업을 상태 그대로 보존" 이 claim 대상
+    파일 자신에도 성립한다 — 옛 코드는 무조건 `add -A` 라 unstaged/untracked 였던 티켓을
+    staged 로 바꿨다(codex must-fix).
+
+    **어떤 git/IO 호출이 throw 해도 예외를 삼킨다** — confirm 이 ADR-0012 "loser 는 깨끗한
+    race-lost rc=1·never traceback" 을 어기지 않도록. 복원이 불완전해도 claim 을 *확정하지
+    않는다*(False)는 사실과 독립이다.
+    """
     with contextlib.suppress(Exception):
-        _board_git_pull_rebase()  # winner 의 claimed 상태를 로컬에 반영(best-effort).
+        head = _board_git_head()
+        if claim_commit and head == claim_commit and head != anchor:
+            _board_git(["reset", "--soft", anchor])
+    with contextlib.suppress(Exception):
+        _board_git_restore_claim_files(files)
+    with contextlib.suppress(Exception):
+        _board_git_restore_claim_index((files.old, files.new), index_snapshot)
+    _board_git_refresh_after_rollback()
 
 
-def _board_git_claim_confirm(orig_head: str | None) -> bool:
-    """claim STRICT 3·4단계: 로컬 claim 을 commit 하고 push 가 성공해야 소유 확정.
+def _board_git_restore_claim_index(paths: Sequence[Path],
+                                   snapshot: dict[str, tuple[str, str]] | None) -> None:
+    """대상 두 경로의 index 를 **claim 직전 스냅샷**으로 되돌린다 (실패는 loud·조용한 변조 금지).
+
+    스냅샷이 없거나(캡처 실패) 복원이 실패하면 현행 동작(`add -A -- <두 경로>`)으로 폴백해
+    index 를 최소한 워킹트리와 일치시키되, **그 사실을 loud 하게 알린다** — claim 대상 파일이
+    staged 로 바뀔 수 있다는 뜻이라 사용자가 모르면 안 된다(조용히 다른 상태로 만들지 않는다).
+    """
+    if snapshot is not None and _board_git_restore_index(paths, snapshot):
+        return
+    print("  ⚠ board index 상태를 claim 직전으로 정확히 되돌리지 못했다 — 그 티켓 경로가 "
+          "staged 로 남을 수 있다(내용은 보존됨). `git -C .project_manager/board status` 로 "
+          "확인하고 필요하면 `git -C .project_manager/board reset -- <경로>` 로 unstage 하라.",
+          file=sys.stderr)
+    pathspec = _board_git_stageable(_board_git_scope_pathspec(paths))
+    if pathspec:
+        _board_git(["add", "-A", "--", *pathspec])
+
+
+def _board_git_claim_confirm(anchor: str | None, files: _ClaimFiles) -> bool:
+    """claim STRICT 3·4단계: 로컬 claim 을 **스코프 커밋** 하고 push 가 성공해야 소유 확정.
 
     board 가 별도 git 이 아니거나 prefetch 가 sync 를 비활성(`""`)으로 판단했으면 True
-    (sync 무관 — 로컬 atomic-rename 만으로 claim 확정·legacy 동작 무변경). 별도 git 이고
-    유효 anchor(`orig_head` = truthy SHA)면:
-      1. commit(tickets/ + areas.md) — 로컬 claim 박제. **commit 이 새 commit 을 못 내면
-         (identity 부재·hook·nothing-to-commit) push 가 "up-to-date" rc=0 을 내 remote 미전파
-         인데 확정될 수 있다(거짓 소유) → commit 실패는 즉시 rollback + False.** claim 경로는
-         항상 rename 변경이 있으므로 commit 은 반드시 새 commit 을 내야 정상이다.
-      2. push — 성공(rc=0)해야 *비로소* 소유 확정(True).
-      3. (commit 실패 ∨ push 실패 ∨ 예외) → `_board_git_claim_rollback` 후 False (거짓 소유 0).
-    **어떤 경로에서도 bool 만 반환**한다(rollback 은 절대 throw 안 함) — cmd_claim(try 없음)이
-    깨끗한 race-lost rc=1 을 내도록(ADR-0012·never traceback). False = 호출부가 race-lost /
-    offline 으로 명시 실패시킨다.
+    (로컬 atomic-rename 만으로 확정·legacy 무변경). 별도 git 이고 유효 anchor 면:
+      1. commit(**그 티켓 두 경로 + `.gitattributes`**) — 로컬 claim 박제. **새 commit 을 못
+         내면**(identity 부재·hook·nothing-to-commit) push 가 "up-to-date" rc=0 을 내 remote
+         미전파인데 확정될 수 있다(거짓 소유) → 즉시 rollback + False.
+      2. push — rc=0 이어야 *비로소* 소유 확정(원격 ref FF = CAS·조율 권위).
+      3. push 가 **예외**(timeout)면 원격이 그 커밋을 포함하는지 재확인한다 — 포함이면 원격엔
+         이미 반영된 것이므로 **롤백하지 않고 확정**한다(고아 claim 폐쇄·D6).
+      4. 그 외 실패는 `_board_git_claim_rollback` 후 False (거짓 소유 0).
+    **어떤 경로에서도 bool 만 반환**한다(rollback 은 절대 throw 안 함) — cmd_claim 이 깨끗한
+    race-lost rc=1 을 내도록(ADR-0012·never traceback).
 
-    `orig_head` 가 빈 문자열(`""`)이면 = sync 비활성(legacy)이라 early-return True. None 은
-    prefetch 가 이미 cmd_claim 에서 명시 실패로 걸러내므로(enabled-but-no-anchor·offline) 여기
-    도달하지 않지만, 방어적으로 함께 True 가 아닌 *비활성* 으로만 취급한다(아래 not orig_head).
+    **여기가 index 스냅샷 지점이다** — 이 함수 진입 시점의 index 는 아직 claim 이 손대기 전
+    상태다(그 앞의 파일 이동·frontmatter 갱신은 워킹트리만 건드린다). 롤백은 그 스냅샷으로
+    되돌려 claim 대상 파일의 staged/unstaged/untracked 상태까지 보존한다.
     """
-    if not _board_git_enabled() or not orig_head:
+    if not _board_git_enabled() or not anchor:
         return True  # sync 비활성(legacy·anchor 없음) — 로컬 rename 만으로 확정(무변경).
+    paths = (files.old, files.new)
+    index_snapshot = _board_git_index_snapshot(paths)
     try:
-        committed = _board_git_stage_and_commit("claim")
-        if not committed:
-            # commit 이 새 commit 을 못 냄 → push rc=0(up-to-date)이 거짓 확정을 낼 수 있다.
-            _board_git_claim_rollback(orig_head)
-            return False
+        committed = _board_git_stage_and_commit("claim", paths)
+    except Exception:  # noqa: BLE001 — fail-soft: 어떤 sync 예외도 거짓 확정을 만들지 않는다.
+        _board_git_claim_rollback(anchor, files, index_snapshot=index_snapshot)
+        return False
+    if not committed:
+        # commit 이 새 commit 을 못 냄 → push rc=0(up-to-date)이 거짓 확정을 낼 수 있다.
+        _board_git_claim_rollback(anchor, files, index_snapshot=index_snapshot)
+        return False
+    claim_commit = _board_git_head()
+    try:
         push = _board_git_push()
-        if push.returncode == 0:
+    except Exception:  # noqa: BLE001 — push 예외(timeout)는 *결과 미상* 이지 실패가 아니다(D6).
+        upstream = _board_git_upstream()
+        confirmed = bool(claim_commit) and upstream is not None and \
+            _board_git_remote_has_commit(upstream, claim_commit)
+        if confirmed:
+            print("  ⚠ board push 응답이 끊겼으나(timeout) 원격 브랜치가 이 claim 커밋을 이미 "
+                  "포함 — 소유 확정(롤백하지 않는다·고아 claim 방지).", file=sys.stderr)
             return True
-        _board_git_claim_rollback(orig_head)
+        _board_git_claim_rollback(anchor, files, claim_commit, index_snapshot)
         return False
-    except Exception:  # noqa: BLE001 — fail-soft: 어떤 sync 예외도 claim 을 거짓 확정시키지 않는다.
-        _board_git_claim_rollback(orig_head)
-        return False
+    if push.returncode == 0:
+        return True
+    _board_git_claim_rollback(anchor, files, claim_commit, index_snapshot)
+    return False
 
 
 def _active_slot_test_cmd(session: str | None = None) -> str | None:
@@ -3435,49 +4120,24 @@ def cmd_claim(args: argparse.Namespace) -> int:
     assignee = identity_tag(session_override=override,
                             user_override=getattr(args, "user", None))
 
-    # claim STRICT 1단계 (ADR-0033 ②·spike §3.6): board 가 별도 git 이면 먼저 pull --rebase
-    # 로 remote 선점을 로컬에 반영한다. pull 이 winner 의 claim 을 끌어오면 ticket 이
-    # claimed/ 로 이동돼 아래 status 검사가 race-lost 를 표면화한다(로컬 변경 0). pull 자체가
-    # 실패(offline/도달 불가)하면 claim 불가 — best-effort 로 claim 을 남기면 중복작업이라
-    # claim 만 strict offline-fail 한다. orig_head = pull 직후 SHA(claim commit rollback 지점·
-    # legacy/sync 비활성이면 ""). detached sentinel = board detached HEAD(checkout 안내·offline
-    # 아님·T-0203). dirty sentinel = board uncommitted(commit 안내·offline 아님·T-0175). None =
-    # offline. detached 를 dirty 보다 먼저 분기한다(원인 우선순위·prefetch 순서와 일치).
-    orig_head = _board_git_claim_prefetch()
-    if orig_head == _CLAIM_PREFETCH_DETACHED:
-        # board submodule 이 detached HEAD — pull --rebase 가 거부되지만 *네트워크는 정상*이다
-        # (offline 아님). detached 에선 claim 의 rollback anchor 를 확정할 수 없고 best-effort
-        # sync 가 orphan 을 쌓으므로(T-0204), offline 으로 오판하지 않고 브랜치 복귀를 안내하며
-        # claim 을 차단한다. 자동 checkout 은 PM 의 브랜치 의도를 침해해 위험하므로 안내만 한다.
-        print(
-            f"board submodule 이 detached HEAD 상태 — {args.id} claim 불가(rollback anchor 없음). "
-            f"`git -C .project_manager/board checkout <branch>`(예: main) 로 브랜치에 복귀 후 "
-            f"claim 재시도 (offline 아님·네트워크 정상). detached 에서 이미 쌓인 로컬 commit 이 "
-            f"있으면 복귀 후 `git -C .project_manager/board cherry-pick <sha>` 로 이식.",
-            file=sys.stderr)
+    # board-git 트랜잭션(prefetch → commit → push → rollback)을 통째로 직렬화한다 (ADR-0073) —
+    # 같은 clone 의 다른 슬롯이 그 사이에 끼어들어 서로의 커밋을 되돌리는 창을 없앤다. 락 순서는
+    # **board_git_lock → board_lock** 고정(아래 임계구역이 안쪽) — 역순 획득은 어디에도 없다.
+    with board_git_lock():
+        return _cmd_claim_locked(args, assignee)
+
+
+def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
+    """`cmd_claim` 본체 — board_git_lock 보유 전제 (재진입 금지)."""
+    # claim STRICT 1단계 (ADR-0033 ②·ADR-0073): 선점 감지는 **읽기 전용**(fetch + 원격 트리
+    # 직접 조회)이고, `pull --rebase` 는 원격이 앞섰을 때만 시도한다. 차단은 "원격이 앞섰고
+    # 통합 불가" 로만 남고, 사유(dirty/rebase 충돌/offline/upstream 없음)와 진단 재료(behind·
+    # 더러운 파일)를 구조체로 받아 **한 곳에서** 안내를 렌더한다(오판·이중출력 0).
+    prefetch = _board_git_claim_prefetch(args.id)
+    if prefetch.block is not None:
+        print(_claim_block_message(args.id, prefetch), file=sys.stderr)
         return 1
-    if orig_head == _CLAIM_PREFETCH_DIRTY:
-        # board submodule 에 uncommitted 변경(흔히 발행 직후 ticket 본문 Edit) — pull --rebase
-        # 가 거부되지만 *네트워크는 정상*이다. offline 으로 오판하지 않고 commit 후 재시도를
-        # 안내한다(자동 commit/stash 는 PM 편집 의도를 임의 처리해 위험·안내만·ADR-0033 ②).
-        # 안내 커맨드는 엔진과 **같은 draft 제외 pathspec**을 쓴다 — 맨 `add -A` 는 미충전
-        # draft(`tickets/.drafts/`·board git 엔 .gitignore 없음)까지 커밋해 T-0196/T-0198 이
-        # 원천 차단한 draft 유출을 사용자 손으로 재현시킨다.
-        # **작은따옴표**로 감싼다 — bash/zsh 대화형 셸은 *큰따옴표 안의* `!` 도 히스토리 전개해
-        # `event not found` 로 죽는다(작은따옴표만 이를 막는다). PowerShell/cmd 에서도 리터럴이라
-        # 무해. 이 문자열이 pathspec 을 사람에게 보이는 **유일한 지점**이다(다른 출력처 없음).
-        draft_safe_pathspec = " ".join(f"'{spec}'" for spec in _BOARD_GIT_DRAFT_PATHSPEC)
-        print(
-            f"board submodule 에 uncommitted 변경 — "
-            f"`git -C .project_manager/board add -A -- {draft_safe_pathspec} && "
-            f"git -C .project_manager/board commit` "
-            f"후 {args.id} claim 재시도 (offline 아님·네트워크 정상). "
-            f"pathspec 은 미충전 draft 를 제외한다 — 맨 `add -A` 는 draft 까지 커밋한다(T-0198).",
-            file=sys.stderr)
-        return 1
-    if orig_head is None:
-        print(f"offline — board 도달 불가, {args.id} claim 불가", file=sys.stderr)
-        return 1
+    orig_head = prefetch.anchor
 
     try:
         status, path = find_ticket(args.id)
@@ -3519,6 +4179,9 @@ def cmd_claim(args: argparse.Namespace) -> int:
                           file=sys.stderr)
                     return 1
 
+            # 롤백 복원 기준 = 이동 *전* 원본 바이트 (ADR-0073) — `reset --hard` 를 폐기했으므로
+            # frontmatter 갱신(claimed_by/claimed_at)을 되돌릴 원본을 우리가 들고 있어야 한다.
+            original_bytes = path.read_bytes()
             # board_lock (not the bare os.rename) is now the exclusive gate.
             new_path = move_ticket(path, "claimed")
     except FileNotFoundError:
@@ -3530,12 +4193,13 @@ def cmd_claim(args: argparse.Namespace) -> int:
     fm["claimed_at"] = now_utc()
     dump_ticket(new_path, fm, body)
 
-    # claim STRICT 3·4단계 (spike §3.6): 로컬 claim 을 commit 하고 push 가 성공해야 *비로소*
-    # 소유 확정. push 실패(non-FF/conflict/offline)면 로컬 claim 을 rollback(reset --hard
-    # orig_head → ticket open/ 복원·commit 되돌림)하고 race-lost 로 명시 실패한다 — 거짓
-    # 소유를 남기지 않는다. board 가 별도 git 이 아니면 confirm 은 True(로컬 rename 만으로
-    # 확정·legacy 무변경).
-    if not _board_git_claim_confirm(orig_head):
+    # claim STRICT 3·4단계 (spike §3.6·ADR-0073): 로컬 claim 을 **그 티켓 경로만** commit 하고
+    # push 가 성공해야 *비로소* 소유 확정. push 실패(non-FF/거부)면 `reset --soft <anchor>` +
+    # 티켓 파일 역이동·원본 복원으로 **이 claim 이 만진 것만** 되돌리고(공유 트리의 무관한
+    # 미커밋 작업은 불변) race-lost 로 명시 실패한다 — 거짓 소유를 남기지 않는다. board 가 별도
+    # git 이 아니면 confirm 은 True(로컬 rename 만으로 확정·legacy 무변경).
+    claim_files = _ClaimFiles(old=path, new=new_path, original=original_bytes)
+    if not _board_git_claim_confirm(orig_head, claim_files):
         print(f"claim race lost on {args.id} (board push 충돌·소유 미확정·롤백됨)",
               file=sys.stderr)
         refresh_board()
@@ -3601,7 +4265,9 @@ def cmd_complete(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body)
     print(f"completed {args.id}")
     refresh_board()
-    _board_git_sync_best_effort(f"complete {args.id}")
+    # 스코프 = 이 mutation 이 만진 두 경로만 (ADR-0073) — 공유 board 의 무관한 미커밋 작업이
+    # 이 커밋에 실려 push 되지 않는다. 이하 best-effort 5곳 동일.
+    _board_git_sync_best_effort(f"complete {args.id}", (path, new_path))
     return 0
 
 
@@ -3621,7 +4287,7 @@ def cmd_block(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body + note)
     print(f"blocked {args.id}: {args.reason}")
     refresh_board()
-    _board_git_sync_best_effort(f"block {args.id}")
+    _board_git_sync_best_effort(f"block {args.id}", (path, new_path))
     return 0
 
 
@@ -3642,7 +4308,7 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body)
     print(f"unclaimed {args.id}")
     refresh_board()
-    _board_git_sync_best_effort(f"unclaim {args.id}")
+    _board_git_sync_best_effort(f"unclaim {args.id}", (path, new_path))
     return 0
 
 
@@ -3662,7 +4328,7 @@ def cmd_unblock(args: argparse.Namespace) -> int:
     dump_ticket(new_path, fm, body)
     print(f"unblocked {args.id}")
     refresh_board()
-    _board_git_sync_best_effort(f"unblock {args.id}")
+    _board_git_sync_best_effort(f"unblock {args.id}", (path, new_path))
     return 0
 
 
@@ -4308,7 +4974,7 @@ def cmd_new(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 0
     refresh_board()
-    _board_git_sync_best_effort(f"new {tid}")
+    _board_git_sync_best_effort(f"new {tid}", (path,))
     return 0
 
 
@@ -4342,14 +5008,18 @@ def cmd_promote(args: argparse.Namespace) -> int:
             for tid, kind, detail in remaining:
                 print(f"  ✗ [{kind}] {detail}", file=sys.stderr)
             return 1
+    # 스코프(ADR-0073) = 이 promote 가 만진 경로. draft 쪽 옛 경로는 `_board_git_scope_pathspec`
+    # 이 걸러낸다(T-0198 — 어떤 mutation 도 draft 를 커밋하지 않는다).
+    touched: list[Path] = [path]
     if status == "draft":
         # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.
         fm["status"] = "open"
         new_path = tickets_dir() / "open" / path.name
         dump_ticket(path, fm, body)  # status 갱신을 먼저 디스크에 반영한 뒤 이동.
         os.rename(path, new_path)
+        touched.append(new_path)
         refresh_board()
-    _board_git_sync_best_effort(f"promote {args.id}")
+    _board_git_sync_best_effort(f"promote {args.id}", touched)
     print(f"promoted {args.id} (board-git 승격 완료)")
     return 0
 
@@ -5041,7 +5711,10 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
     # 전체 mutation 을 단일 board_lock 으로 직렬화 (동시 new/claim 과 상호배제·ADR-0012). 파일명
     # rename 계획은 락 보유 하에 fresh scan 으로 세운다(rewrite 와 같은 스냅샷). refresh 는 락-보유
     # 변형(`_refresh_board_locked`)을 직접 불러 board_lock 재진입(데드락)을 피한다.
-    with board_lock():
+    # 백업 commit 이 이 구간 안에 있으므로 **board_git_lock 을 board_lock 보다 먼저** 잡는다
+    # (ADR-0073 락 순서 고정 — 역순 획득이 하나라도 있으면 claim 과 데드락). board-git 비활성이면
+    # board_git_lock 은 no-op 이라 legacy 경로는 무변경.
+    with board_git_lock(), board_lock():
         # 맵 생성+collision 검사도 락 안 fresh snapshot 으로 — 검사↔적용 사이 cmd_new 창 봉합(R3).
         id_map, rc = build_map()
         if not id_map:

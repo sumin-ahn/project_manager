@@ -169,7 +169,8 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
     monkeypatch.setattr(board, "registered_prefixes", lambda: [])
     monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
     monkeypatch.setattr(board, "refresh_board", lambda: None)
-    monkeypatch.setattr(board, "_board_git_sync_best_effort", lambda msg: None)
+    monkeypatch.setattr(board, "_board_git_sync_best_effort",
+                        lambda msg, paths=None: None)   # 스코프 인자(ADR-0073)
     monkeypatch.setattr(board, "_next_id", lambda prefix: "PAY-0001")
     # 티켓 파일 실쓰기는 tmp 로 격리 (tickets_dir/template_file 은 REPO 파생이라 tmp).
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
@@ -199,7 +200,8 @@ def _stub_new_env(board, monkeypatch, *, tasks):
     monkeypatch.setattr(board, "registered_prefixes", lambda: [])
     monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
     monkeypatch.setattr(board, "refresh_board", lambda: None)
-    monkeypatch.setattr(board, "_board_git_sync_best_effort", lambda msg: None)
+    monkeypatch.setattr(board, "_board_git_sync_best_effort",
+                        lambda msg, paths=None: None)   # 스코프 인자(ADR-0073)
     monkeypatch.setattr(board, "_next_id", lambda prefix: f"{prefix or 'T'}-0001")
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"

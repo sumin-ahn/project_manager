@@ -32,6 +32,35 @@
   first-match 로 조용히 굳는 것을 상시 표면화한다(자동 병합 없음·사람 판정).
 
 ### Changed
+- **board 의 미커밋 변경이 더 이상 무관한 티켓의 claim 을 막지 않는다** (ADR-0073·T-0419) —
+  공유 board(별도 git) 형상에서 파일 하나가 uncommitted 라는 이유로 **모든** claim 이 전면
+  차단됐고, 안내는 `add -A`(= 남의 미완성 편집까지 대신 커밋)였다. 조율 권위는 로컬 워킹트리의
+  clean 여부가 아니라 **원격 ref 의 fast-forward push** 라는 원칙으로 재정렬했다:
+  - **선점 감지가 읽기 전용**이 됐다 — `fetch` + 원격 트리 직접 조회(`ls-tree`)로 그 티켓이
+    이미 claimed/done/blocked 인지 본다(로컬 변경 0·통합 성공에 의존하지 않음). claim 의
+    `pull --rebase` 는 **원격이 앞섰을 때만** 시도한다. 단일 clone 다중 슬롯은 같은 로컬
+    브랜치를 공유해 behind=0 이므로 잔여 차단이 구조적으로 발생하지 않는다.
+  - **커밋 스코프 = 그 mutation 이 만진 경로만** — claim 과 best-effort 6곳
+    (new/promote/complete/block/unclaim/unblock) 전부. 공유 워킹트리의 무관한 미커밋 작업이
+    board 커밋에 실려 push 되던 누출이 닫힌다(`.gitattributes` 는 **엔진이 이번에 보강한
+    경우에만** 함께 실린다 — 사용자가 편집 중인 그 파일을 대신 커밋하지 않는다).
+  - **롤백이 비파괴** — `reset --hard` 폐기. `reset --soft` + 그 티켓 파일 역이동·원본 복원 +
+    **index 스냅샷 복원**만 한다(무관한 미커밋 작업 불변). 스냅샷은 claim 직전 그 두 경로의
+    index 항목을 그대로 뜬 것이라, 대상 티켓이 unstaged/untracked/staged 어느 상태였든 롤백 후
+    `git status` 가 claim 직전과 **같다**(대상 파일만 staged 로 바뀌던 사각 폐쇄). push 가
+    timeout 으로 끝나면 원격
+    브랜치가 그 claim 커밋을 **포함하는지** 재확인해(fetch + 조상 판정) 이미 반영됐으면
+    롤백하지 않는다(원격 claimed·로컬 open 인 고아 claim 폐쇄). 롤백 뒤엔 winner 를 로컬에
+    반영하고, 미커밋 변경 때문에 못 당기면 "로컬 board 뷰 stale" 을 loud 하게 알린다.
+  - **잔여 차단은 사유가 정확하다** — `원격 앞섬 ∧ 통합 불가` 일 때만 막고, 사유를 갈라
+    (미커밋 파일 / rebase 충돌 / offline / upstream 미설정 / 원인 미상) `behind N` + **막고 있는
+    파일 목록**(최대 5건 + 총계) + 그 경로만 커밋하는 안내를 낸다. mid-rebase 는 `rebase
+    --abort/--continue` 를, detached 는 `checkout` 을 안내한다(옛 2단 오진 폐쇄). 분류는 git
+    메시지 문자열이 아니라 **관측 상태**로 한다(로케일·git 버전 무관) — 특히 원격에서 들어오는
+    파일과 같은 경로의 **미추적 파일**이 pull 을 막는 경우를 더 이상 offline 으로 오진하지
+    않고, 그 파일을 커밋하거나 옮기라고 안내한다.
+  - **board-git mutation 직렬화 락 신설** — 같은 clone 의 두 슬롯이 commit→push→rollback 을
+    인터리브하던 창을 닫는다. board-git 미분리(legacy·솔로) 채택자는 **100% 무변경**.
 - **보호 브랜치 훅 설치 실패가 이제 loud 하다** (T-0417) — `pm-config repo add`·`worktree add` 는
   훅 설치 결과(False)를 조용히 삼켜서, 훅이 안 걸렸는데 사용자는 걸린 줄 알았다(보호 가드 침묵
   무력화). 이제 실패 시 stderr 경고 + 재실행 커맨드가 나간다(성공 출력·종료코드는 불변 — 보호 훅은
