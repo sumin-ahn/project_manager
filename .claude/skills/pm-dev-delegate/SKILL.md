@@ -85,6 +85,9 @@ Agent 툴 호출:
     "T-NNNN 의 변경을 검토하라.
 
      변경 파일: <touches 인자 그대로 인용>.
+     작업 위치(병렬 wave 시 격리 스냅샷): <아래 §게이트 격리 스냅샷으로 만든 gate worktree
+     절대경로>. 그 격리 스냅샷에서만 읽고 검토하라 — **공유 트리(dev 라이브 편집 중) 및 그 안에서의
+     git 조작 금지**(checkout/stash/reset 등이 병렬 dev 의 WIP 를 덮는다). 솔로(비병렬)면 이 줄 생략.
 
      ⚠️ status.md / log/current.md 갱신은 orchestrator(PM) 담당 — 그 누락은 developer
      must-fix 아님.
@@ -102,6 +105,39 @@ Agent 툴 호출:
 > (ADR 본문 정합 필요 시 `--paths` 에 **코드 경로+ADR 함께 나열** — `--paths` 는
 > `--ticket` touches 를 *대체*함). 전제
 > `external_review_enabled=true`. 상세는 `pm_playbook.md` §"검토 루프".
+
+#### 게이트 격리 스냅샷 (병렬 wave · 내부 reviewer 전용)
+
+병렬 wave(dev 가 공유 트리를 **라이브 편집 중**)에서 **내부 reviewer** 를 위임할 땐, 위임 *전* PM
+이 리뷰 대상(= 미리 `git add` 한 **staged** 상태)을 격리 worktree 로 스냅샷한다 — 리뷰가 읽는 트리
+가 dev 편집·리뷰 자신의 git 조작(sensitivity `git checkout` 등)으로 흔들리지 않게 **절차 자체가
+경합 불가능**해진다(2회 실측: T-0389 리뷰 false-red · T-0402 리뷰 ↔ T-0409 dev 편집 실경합).
+
+`<scratch>` = **repo 트리 밖** 경로(예: OS 임시 디렉토리 `/tmp`, 또는 repo 상위 `..` — 최종 경로는
+`<scratch>/gate-<T>`).
+
+1. **생성** — staged(index)만 격리 스냅샷(unstaged 병렬 WIP 는 자동 제외). ⚠ **두 커맨드 모두
+   공유(메인) 트리 cwd 에서 실행 — gate 디렉토리로 `cd` 후 실행 금지**: `checkout-index` 는 cwd 가
+   해소하는 worktree 의 index 를 읽으므로, gate 안에서 돌리면 staged 가 빠진 HEAD-only 스냅샷이
+   조용히 만들어져 리뷰가 옛 코드를 통과시킨다(false-green).
+   ```bash
+   git worktree add --detach <scratch>/gate-<T>
+   git checkout-index -a -f --prefix=<scratch>/gate-<T>/
+   ```
+2. **주입** — reviewer 위임 프롬프트의 «작업 위치» 에 `<scratch>/gate-<T>` **절대경로**를 박아
+   넣는다(위 code-reviewer 프롬프트 참조). reviewer 는 그 격리 스냅샷에서만 읽고 검토하며, 그 안의
+   git 조작(checkout·stash 등)도 공유 트리에 닿지 않는다.
+3. **제거** — 리뷰 종료 후:
+   ```bash
+   git worktree remove --force <scratch>/gate-<T>
+   ```
+   (`--force` = 오버레이가 미커밋이라 스냅샷 worktree 가 dirty — 버려도 안전한 스냅샷이라 강제 제거.)
+
+- **대상 = 내부 reviewer 뿐.** codex `external_review` 는 **staged diff** 기반이라 이미 스냅샷-안정
+  → 격리 **대상 아님**(라이브 working tree 를 읽지 않는다).
+- **솔로(비병렬) 리뷰는 격리 선택** — 경합할 병렬 dev 가 없으면 종전대로 공유 트리에서 검토해도 된다.
+- 이 격리와 프롬프트의 *공유 트리 git 조작 금지* 완화는 **병행**한다(**이중 방어** — 절차가 경합을
+  구조적으로 막고, 프롬프트가 사고성 git 조작을 막는다).
 
 ## touches disjoint 안전성 cross-check (병렬 wave)
 
