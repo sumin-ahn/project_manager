@@ -171,7 +171,7 @@ def test_best_effort_noop_on_legacy_does_not_call_git(board, monkeypatch):
         raise AssertionError("legacy 에서 git 호출 발생 — sync 게이트 누출")
 
     monkeypatch.setattr(board, "_board_git", _boom)
-    board._board_git_sync_best_effort("noop")  # 예외 없이 통과해야 함(git 미호출).
+    board._board_git_sync_best_effort("noop", ())  # 예외 없이 통과해야 함(git 미호출).
     assert called["n"] == 0
 
 
@@ -233,14 +233,29 @@ def test_claim_strict_offline_fails_explicitly(board, tmp_path):
         "offline claim 실패인데 ticket 이 claimed/ 에 남음."
 
 
-@requires_git
-def test_claim_confirm_push_nonff_rolls_back_to_open(board, tmp_path):
-    """`_board_git_claim_confirm` push non-FF → reset --hard(open/ 복원) + False (rollback 직접 단언).
+def _claim_move(board_mod, board_dir: Path, tid: str = "T-0001"):
+    """claim 의 파일 mutation 만 모사 — open/ → claimed/ 이동 + `_ClaimFiles` 반환.
 
-    cmd_claim 통합 경로에선 winner 의 claim 이 prefetch pull 로 먼저 끌려와 find_ticket 단계에서
-    걸리는 경우가 많다 — 여기선 *push-conflict rollback 메커니즘 자체*를 격리 단언한다. orig_head
-    를 기록한 뒤(=open 상태) 로컬에서 ticket 을 claimed/ 로 옮기고, remote 를 미리 전진시켜 우리
-    push 가 non-FF 가 되게 한다. confirm 은 False 를 내고 ticket 을 open/ 으로 되돌려야 한다."""
+    `_board_git_claim_confirm` 을 격리 단언할 때 쓴다(cmd_claim 통합 경로 없이 commit/push/
+    rollback 메커니즘만 본다). 원본 바이트는 이동 *전* 에 읽어 둔다 — rollback 의 복원 기준이다
+    (ADR-0073: `reset --hard` 대신 역이동 + 원본 바이트 복원).
+    """
+    src = board_dir / "tickets" / "open" / f"{tid}-t.md"
+    dst = board_dir / "tickets" / "claimed" / f"{tid}-t.md"
+    original = src.read_bytes()
+    src.rename(dst)
+    return board_mod._ClaimFiles(old=src, new=dst, original=original)
+
+
+@requires_git
+def test_claim_confirm_push_nonff_rolls_back_scoped(board, tmp_path):
+    """`_board_git_claim_confirm` push non-FF → **스코프 롤백**(open/ 복원) + False (ADR-0073).
+
+    cmd_claim 통합 경로에선 winner 의 claim 이 먼저 보여 find_ticket 단계에서 걸리는 경우가
+    많다 — 여기선 *push-conflict rollback 메커니즘 자체*를 격리 단언한다. anchor 를 기록한 뒤
+    (=open 상태) 로컬에서 ticket 을 claimed/ 로 옮기고, remote 를 미리 전진시켜 우리 push 가
+    non-FF 가 되게 한다. confirm 은 False 를 내고 **그 티켓 두 경로만** 되돌려야 한다
+    (`reset --hard` 폐기 — 무관한 미커밋 작업 파괴 금지)."""
     bare = tmp_path / "bare-nonff"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
@@ -253,19 +268,19 @@ def test_claim_confirm_push_nonff_rolls_back_to_open(board, tmp_path):
     _git(["commit", "-qm", "remote advance"], other)
     _git(["push", "-q", "origin", "main"], other)
 
-    # orig_head = pull 없이 *현재* HEAD(open 상태) — confirm 의 rollback 복귀 지점.
-    orig_head = board._board_git_head()
-    # 로컬에서 claim 모사: ticket 을 claimed/ 로 이동(아직 commit 전 — confirm 이 commit+push 함).
-    src = board_dir / "tickets" / "open" / "T-0001-t.md"
-    src.rename(board_dir / "tickets" / "claimed" / "T-0001-t.md")
+    # anchor = pull 없이 *현재* HEAD(open 상태) — confirm 의 rollback 복귀 지점.
+    anchor = board._board_git_head()
+    files = _claim_move(board, board_dir)
 
-    ok = board._board_git_claim_confirm(orig_head)
+    ok = board._board_git_claim_confirm(anchor, files)
     assert ok is False, "remote 가 앞선(push non-FF) 상황인데 confirm 이 소유 확정함 — strict 위반."
     # rollback: ticket 이 open/ 으로 복원돼야 하고 claimed/ 엔 없어야 한다(거짓 소유 0).
     assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
         "push 충돌 rollback 후 ticket 이 open/ 으로 복원 안 됨."
     assert not list((board_dir / "tickets" / "claimed").glob("T-0001-*.md")), \
-        "push 충돌인데 ticket 이 claimed/ 에 남음 — rollback(reset --hard) 누락."
+        "push 충돌인데 ticket 이 claimed/ 에 남음 — rollback 누락."
+    assert board._board_git_head() == anchor, \
+        "롤백 후 HEAD 가 anchor 로 안 돌아옴 — reset --soft 누락(claim commit 잔존)."
 
 
 @requires_git
@@ -298,25 +313,23 @@ def test_claim_confirm_commit_fail_rolls_back_despite_push_ok(board, tmp_path, m
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    orig_head = board._board_git_head()
-    # 로컬 claim 모사: ticket 을 claimed/ 로 이동(confirm 이 add -A + commit 할 대상).
-    src = board_dir / "tickets" / "open" / "T-0001-t.md"
-    src.rename(board_dir / "tickets" / "claimed" / "T-0001-t.md")
+    anchor = board._board_git_head()
+    files = _claim_move(board, board_dir)
 
     # 실 실패 모드 충실 재현: `add -A` 는 정상 실행(move 가 index 에 stage)되지만 `commit` 만
-    # rc≠0 으로 실패시킨다 → `_board_git_stage_and_commit` 가 False 를 낸다. (stub 으로
-    # add 까지 건너뛰면 claimed/ 가 untracked 로 남아 reset --hard 가 못 지움 = 비현실적.)
+    # rc≠0 으로 실패시킨다 → 새 commit 이 안 생겨 `_board_git_stage_and_commit` 가 False 를 낸다
+    # (판정은 rc 가 아니라 HEAD 전진 여부·ADR-0073).
     real_git = board._board_git
 
-    def _commit_fails(args, *, check=False):
+    def _commit_fails(args, *, check=False, timeout=None):
         if args[:1] == ["commit"]:
             return subprocess.CompletedProcess(args, 1, "", "simulated commit failure")
-        return real_git(args, check=check)
+        return real_git(args, check=check, timeout=timeout)
 
     monkeypatch.setattr(board, "_board_git", _commit_fails)
     # push 는 정상이면 up-to-date rc=0 을 낸다 — commit 실패를 무시했다면 거짓 확정될 조건.
 
-    ok = board._board_git_claim_confirm(orig_head)
+    ok = board._board_git_claim_confirm(anchor, files)
     assert ok is False, "commit 실패인데 push rc=0 으로 거짓 확정함 — must-fix 회귀."
     assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
         "commit 실패 rollback 후 ticket 이 open/ 으로 복원 안 됨."
@@ -328,7 +341,7 @@ def test_claim_confirm_commit_fail_rolls_back_despite_push_ok(board, tmp_path, m
 def test_claim_confirm_rollback_reset_throw_never_traceback(board, tmp_path, monkeypatch):
     """rollback 의 reset 이 throw 해도 confirm 은 bool 만 반환(예외 미전파·never traceback·reviewer sug).
 
-    push non-FF 후 rollback 의 `reset --hard` 가 예외(timeout·git 소실)를 던지는 상황에서도,
+    push non-FF 후 rollback 의 `reset --soft` 가 예외(timeout·git 소실)를 던지는 상황에서도,
     `_board_git_claim_rollback` 가 `contextlib.suppress` 로 예외를 삼켜 confirm 이 깨끗한 False 를
     내야 한다(ADR-0012 loser=race-lost rc=1·never traceback). reset/push 호출만 throw 시키고
     commit 은 정상 통과시켜 push-실패 경로를 탄다."""
@@ -336,17 +349,16 @@ def test_claim_confirm_rollback_reset_throw_never_traceback(board, tmp_path, mon
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    orig_head = board._board_git_head()
-    src = board_dir / "tickets" / "open" / "T-0001-t.md"
-    src.rename(board_dir / "tickets" / "claimed" / "T-0001-t.md")
+    anchor = board._board_git_head()
+    files = _claim_move(board, board_dir)
 
     real_git = board._board_git
 
-    def _flaky_git(args, *, check=False):
+    def _flaky_git(args, *, check=False, timeout=None):
         # reset(rollback) 호출은 throw — rollback 이 이를 삼켜야 confirm 이 bool 만 낸다.
         if args[:1] == ["reset"]:
             raise RuntimeError("simulated reset failure (timeout/git 소실)")
-        return real_git(args, check=check)
+        return real_git(args, check=check, timeout=timeout)
 
     # commit 은 정상(새 commit 생성), push 는 non-FF 가 아니라도 rollback 경로를 강제하려고
     # push 도 실패시킨다(어떤 push 결과든 rollback 으로 가게) — 그 rollback 의 reset 이 throw.
@@ -355,14 +367,14 @@ def test_claim_confirm_rollback_reset_throw_never_traceback(board, tmp_path, mon
                         lambda: subprocess.CompletedProcess([], 1, "", "rejected (non-FF)"))
 
     # 예외가 confirm 을 빠져나오면 이 호출이 raise → 테스트 실패. bool 만 나와야 한다.
-    ok = board._board_git_claim_confirm(orig_head)
+    ok = board._board_git_claim_confirm(anchor, files)
     assert ok is False, "push 실패인데 confirm 이 확정함(또는 예외 전파)."
+    # reset 이 throw 해도 **파일 복원은 별도 suppress 구간**이라 티켓은 open/ 으로 돌아온다
+    # (거짓 소유 0 — 이력만 못 되감은 상태로 남고 다음 mutation 이 catch-up).
+    assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
+        "reset throw 인데 티켓 파일 복원까지 건너뜀 — 롤백 단계가 서로를 막고 있다."
 
     # 통합: cmd_claim 도 같은 조건에서 traceback 없이 rc=1 을 내야 한다(reset throw 잔존 monkeypatch).
-    # find_ticket 단계를 통과하도록 ticket 을 open/ 으로 되돌려 둔다(rollback 이 throw 라 복원 안 됨).
-    claimed = list((board_dir / "tickets" / "claimed").glob("T-0001-*.md"))
-    if claimed:
-        claimed[0].rename(board_dir / "tickets" / "open" / "T-0001-t.md")
     rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me"))
     assert rc == 1, "reset throw 경로에서 cmd_claim 이 race-lost rc=1 을 안 냄(traceback 위험)."
 
@@ -384,7 +396,8 @@ def test_claim_preserves_best_effort_backlog(board, tmp_path):
         _TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")
     moved = tmp_path / "bare-backlog-moved"
     bare.rename(moved)  # remote 일시 도달 불가.
-    board._board_git_sync_best_effort("new T-0002")  # 로컬 commit O·push 실패(무차단).
+    board._board_git_sync_best_effort(
+        "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))  # 로컬 commit O·push 실패(무차단).
     moved.rename(bare)  # remote 복구.
     backlog_head = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     assert _git(["log", "--oneline"], board_dir).stdout.count("\n") >= 2, \
@@ -405,16 +418,21 @@ def test_claim_preserves_best_effort_backlog(board, tmp_path):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# claim prefetch — board dirty(uncommitted) ↔ offline 구분 (T-0175)
+# claim prefetch — 읽기 전용 선점 감지 · 사유 4분 (T-0175 계승 → ADR-0073 재작성)
+#
+# ADR-0073 이전엔 board 전체가 dirty 이기만 하면 prefetch 가 즉시 차단했다(dirty sentinel).
+# 그게 결함이었다: 무관한 파일 하나(다른 슬롯의 미커밋 티켓·남의 areas 편집)로 **모든** claim
+# 이 전면 차단됐고, 안내는 `add -A`(= 남의 미완성 편집을 대신 커밋)였다. 아래 3건은 그
+# dirty-sentinel 계열 테스트의 후신이다 — 지켜야 할 성질(원인 정확·오판 0·로컬 변경 0)은
+# 그대로 두고, "차단" 을 "진행" 으로 뒤집는다. 잔여 차단은 `behind>0 ∧ 통합 불가` 뿐이다.
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
-def test_claim_prefetch_dirty_board_branches_not_offline(board, tmp_path):
-    """board submodule 에 uncommitted 변경 → prefetch 가 dirty sentinel(≠offline·≠anchor) 반환 (T-0175).
+def test_claim_prefetch_dirty_board_no_longer_blocks(board, tmp_path):
+    """board 에 uncommitted 변경이 있어도(원격 미선행) prefetch 는 **anchor 를 낸다** (ADR-0073).
 
-    발행 직후 ticket 본문 Edit 처럼 board 트리에 unstaged 변경이 있으면 `pull --rebase` 가
-    "스테이징하지 않은 변경" 으로 거부된다. 이를 offline(None) 으로 오판하지 않고 dirty sentinel
-    로 가른다 — 네트워크는 정상이다(실 board git fixture·remote 살아있음)."""
+    옛 동작: dirty sentinel → claim 차단(D1 과차단). 신 동작: 원격이 안 앞섰으면 통합할 게 없고
+    소유 확정 권위는 push CAS 라 로컬 dirty 는 claim 과 무관하다 — 진행한다."""
     bare = tmp_path / "bare-dirty"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
@@ -422,90 +440,84 @@ def test_claim_prefetch_dirty_board_branches_not_offline(board, tmp_path):
     tk = board_dir / "tickets" / "open" / "T-0001-t.md"
     tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    result = board._board_git_claim_prefetch()
-    assert result == board._CLAIM_PREFETCH_DIRTY, \
-        "dirty board 인데 prefetch 가 dirty sentinel 을 안 냄(offline/anchor 오판)."
-    assert result is not None, "dirty 가 offline(None) 으로 오판됨 — T-0175 회귀."
+    result = board._board_git_claim_prefetch("T-0001")
+    assert result.block is None, \
+        f"무관 dirty 인데 claim 이 차단됨(D1 과차단 재발): {result.block}"
+    assert result.anchor == _git(["rev-parse", "HEAD"], board_dir).stdout.strip(), \
+        "dirty 상태에서 anchor 가 현재 HEAD 가 아님."
 
 
 @requires_git
-def test_claim_dirty_board_prints_commit_guidance_not_offline(board, tmp_path, capsys):
-    """dirty board claim → 'offline 아님'·commit 안내 메시지·claim 차단(rc=1)·로컬 변경 0 (T-0175 통합).
+def test_claim_dirty_board_now_claims_and_leaves_dirty_untouched(board, tmp_path):
+    """dirty board 에서도 claim 이 성공하고 그 dirty 는 **커밋되지도 파괴되지도 않는다** (D1·D2·통합).
 
-    cmd_claim 이 dirty sentinel 을 offline 과 별도 분기해, 사용자가 'offline' 이 아니라 'commit 후
-    재시도' 안내를 본다(이중 출력·오판 0). ticket 은 open/ 그대로(prefetch 가 로컬 미변경)."""
+    옛 통합 테스트는 여기서 rc=1(차단) + 'commit 후 재시도' 안내를 단언했다. 그 동작이 사용자가
+    보고한 결함이다 — 다른 슬롯의 미커밋 티켓 하나가 무관한 claim 을 전면 차단했다."""
     bare = tmp_path / "bare-dirty2"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
-    tk = board_dir / "tickets" / "open" / "T-0001-t.md"
-    tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
+    other = board_dir / "tickets" / "open" / "T-0002-other.md"
+    other.write_text(_TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")  # 무관 untracked.
 
     rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me"))
-    assert rc == 1, "dirty board claim 이 차단 안 됨(prefetch 못 하는데 진행)."
-    err = capsys.readouterr().err
-    assert "uncommitted" in err and "offline 아님" in err, \
-        f"dirty 안내 메시지가 commit 안내·'offline 아님'을 안 담음: {err!r}"
-    assert "offline — board 도달 불가" not in err, \
-        f"dirty 케이스에 offline 메시지가 나옴(오판·이중출력): {err!r}"
-    # 로컬 변경 0: ticket 은 open/ 그대로, claimed/ 엔 없어야 한다(prefetch 가 안 건드림).
-    assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
-        "dirty claim 실패인데 ticket 이 open/ 에 없음 — prefetch 가 로컬을 변경함."
-    assert not list((board_dir / "tickets" / "claimed").glob("T-0001-*.md")), \
-        "dirty claim 실패인데 ticket 이 claimed/ 에 남음."
+    assert rc == 0, "무관 dirty 때문에 claim 이 막힘 — 사용자 보고 결함 재발."
+    assert other.exists(), "claim 이 무관한 미커밋 파일을 지움(파괴)."
+    remote_ls = _git(["ls-tree", "-r", "--name-only", "main"], bare).stdout
+    assert "tickets/claimed/T-0001-t.md" in remote_ls, "claim 이 원격에 안 실림."
+    assert "T-0002-other.md" not in remote_ls, \
+        "claim 커밋이 무관한 미커밋 파일을 함께 push 함 — D2 누출 재발."
 
 
 @requires_git
-def test_claim_prefetch_clean_pull_failure_is_offline(board, tmp_path, monkeypatch):
-    """clean tree + pull --rebase 실패(monkeypatch) → offline(None) (dirty 와 구분·T-0175 보존).
+def test_claim_prefetch_fetch_failure_is_offline(board, tmp_path, monkeypatch):
+    """fetch 실패 → offline 사유(진행 불가·다른 사유와 구분·T-0175 의미 계승).
 
-    dirty 선체크가 *clean* board 의 pull 실패(offline·conflict)를 dirty 로 오판하지 않는지 —
-    tree 는 clean 인데 pull 만 실패시켜 현행 offline 판정(None)이 유지됨을 단언한다."""
+    선점 감지가 fetch(읽기 전용)로 바뀌었으므로 도달 불가는 여기서 갈린다. dirty·rebase·
+    upstream-없음 과 **다른 코드**여야 안내가 섞이지 않는다."""
     bare = tmp_path / "bare-clean-off"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     _make_board_git(tmp_path, remote=bare)
-    # tree 는 clean(_make_board_git 가 commit 했으므로) — pull 만 실패시킨다.
-    monkeypatch.setattr(
-        board, "_board_git_pull_rebase",
-        lambda: subprocess.CompletedProcess([], 1, "", "could not resolve host (offline)"))
+    monkeypatch.setattr(board, "_board_git_fetch", lambda remote: False)
 
-    result = board._board_git_claim_prefetch()
-    assert result is None, "clean tree + pull 실패인데 offline(None) 이 아님 — dirty 선체크 오발."
+    result = board._board_git_claim_prefetch("T-0001")
+    assert result.block == board._CLAIM_BLOCK_OFFLINE, \
+        f"fetch 실패인데 offline 사유가 아님: {result.block}"
+    assert result.anchor is None, "차단인데 anchor 가 나옴(진행 위험)."
 
 
 @requires_git
 def test_claim_prefetch_clean_success_returns_anchor(board, tmp_path):
-    """clean tree + pull 성공 → board HEAD SHA anchor 반환(dirty/offline sentinel 아님·T-0175 보존)."""
+    """clean tree + 정상 원격 → board HEAD SHA anchor 반환(차단 사유 없음·T-0175 보존)."""
     bare = tmp_path / "bare-clean-ok"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    result = board._board_git_claim_prefetch()
+    result = board._board_git_claim_prefetch("T-0001")
     expected = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
-    assert result == expected, "clean+성공인데 board HEAD anchor 가 아님."
-    assert result not in (None, "", board._CLAIM_PREFETCH_DIRTY), \
-        "정상 anchor 가 sentinel(비활성/dirty/offline) 로 오염됨."
+    assert result.anchor == expected, "clean+성공인데 board HEAD anchor 가 아님."
+    assert result.block is None, f"정상인데 차단 사유가 붙음: {result.block}"
 
 
 @requires_git
-def test_dirty_precheck_removal_misclassifies_as_offline(board, tmp_path, monkeypatch):
-    """sensitivity: dirty 선체크를 무력화하면 dirty board 가 offline(None) 으로 오판됨(가드 실증·T-0175).
+def test_pull_is_skipped_when_not_behind(board, tmp_path, monkeypatch):
+    """sensitivity: behind==0 이면 `pull --rebase` 를 **아예 부르지 않는다** (ADR-0073 가드 실증).
 
-    `_board_git_status_porcelain` 을 항상-clean 으로 stub(=dirty 선체크 제거 효과)하면, dirty
-    board 의 pull --rebase 가 '스테이징하지 않은 변경' 으로 rc≠0 → 현행 offline 판정(None) 으로
-    떨어진다. 이 테스트가 통과한다 = 선체크가 *실제로* dirty↔offline 을 가르는 load-bearing 가드."""
+    이 조건 게이트가 D1 과차단 해소의 load-bearing 부분이다 — dirty tree 에서 pull 을 부르면
+    그 pull 이 실패하고(추적 변경) 옛 차단이 그대로 돌아온다. pull 을 throw 로 바꿔 두고 dirty
+    board 의 prefetch 가 **정상 anchor** 를 내면, pull 경로를 타지 않았다는 뜻이다."""
     bare = tmp_path / "bare-sens"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
     tk = board_dir / "tickets" / "open" / "T-0001-t.md"
     tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    # 선체크 제거 모사: porcelain 이 빈 문자열(=clean) 을 내게 한다.
-    monkeypatch.setattr(board, "_board_git_status_porcelain", lambda: "")
-    result = board._board_git_claim_prefetch()
-    assert result is None, (
-        "선체크 무력화 시 dirty board 가 offline(None) 으로 오판돼야 한다 "
-        "(pull --rebase 가 unstaged 로 rc≠0). 오판이 안 나면 dirty 가 다른 경로로 새는 것."
-    )
+    def _pull_must_not_run():
+        raise AssertionError("behind==0 인데 pull --rebase 를 호출함 — 조건 게이트 누출.")
+
+    monkeypatch.setattr(board, "_board_git_pull_rebase", _pull_must_not_run)
+    result = board._board_git_claim_prefetch("T-0001")
+    assert result.block is None and result.anchor, \
+        f"behind==0 + dirty 인데 진행하지 못함: {result}"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -528,7 +540,8 @@ def test_best_effort_push_failure_does_not_block(board, tmp_path, capsys):
 
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     # 예외 없이 리턴해야 한다(무차단).
-    board._board_git_sync_best_effort("new T-0002")
+    board._board_git_sync_best_effort(
+        "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))
     head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     assert head_after != head_before, "best-effort 가 로컬 commit 을 안 함 — local-first 위반."
     err = capsys.readouterr().err
@@ -622,20 +635,22 @@ def test_claim_prefetch_detached_branches_not_offline(board, tmp_path):
     board_dir = _make_board_git(tmp_path, remote=bare)
     _detach_head(board_dir)
 
-    result = board._board_git_claim_prefetch()
-    assert result == board._CLAIM_PREFETCH_DETACHED, \
-        "detached board 인데 prefetch 가 detached sentinel 을 안 냄(offline/dirty/anchor 오판)."
-    assert result is not None, "detached 가 offline(None) 으로 오판됨 — T-0203 회귀."
-    assert result != board._CLAIM_PREFETCH_DIRTY, "detached 가 dirty sentinel 로 오판됨."
+    result = board._board_git_claim_prefetch("T-0001")
+    assert result.block == board._CLAIM_BLOCK_DETACHED, \
+        "detached board 인데 prefetch 가 detached 사유를 안 냄(offline/dirty/anchor 오판)."
+    assert result.block != board._CLAIM_BLOCK_OFFLINE, \
+        "detached 가 offline 으로 오판됨 — T-0203 회귀."
+    assert result.block != board._CLAIM_BLOCK_DIRTY, "detached 가 dirty 로 오판됨."
 
 
 @requires_git
-def test_claim_prefetch_detached_precedes_dirty(board, tmp_path):
-    """dirty + detached 동시 → detached sentinel 우선(순서 detached→dirty→pull·T-0204 상호작용).
+def test_claim_prefetch_detached_precedes_everything(board, tmp_path):
+    """dirty + detached 동시 → detached 선체크가 **1순위**(어떤 git mutation 보다 앞·T-0204/ADR-0073).
 
-    best-effort 가 detached 에서 commit 을 skip 하면 board 가 dirty 로 남는다 — 그때 dirty
-    안내("commit 후 재시도")는 오도(detached 라 단순 commit 불가)이므로 detached 를 먼저 갈라야
-    원인 정확. dirty·detached 를 동시에 만들고 prefetch 가 detached 를 우선하는지 단언한다."""
+    best-effort 가 detached 에서 commit 을 skip 하면 board 가 dirty 로 남는다 — 그 상태에서
+    dirty 안내는 오도이고(detached 라 단순 commit 불가), 더 중요하게는 detached/mid-rebase 에서
+    `git commit -- <paths>` 가 rebase HEAD 위에 커밋을 만들어 버린다(architect 실측). 그래서 이
+    선체크는 순서상 양보 불가다."""
     bare = tmp_path / "bare-pdd"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
@@ -645,9 +660,9 @@ def test_claim_prefetch_detached_precedes_dirty(board, tmp_path):
     tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
     assert board._board_git_status_porcelain().strip(), "fixture 전제: board 가 dirty 여야 함."
 
-    result = board._board_git_claim_prefetch()
-    assert result == board._CLAIM_PREFETCH_DETACHED, \
-        "dirty+detached 동시인데 detached 가 우선 안 됨 — 순서(detached→dirty) 위반·오도 안내 위험."
+    result = board._board_git_claim_prefetch("T-0001")
+    assert result.block == board._CLAIM_BLOCK_DETACHED, \
+        "dirty+detached 동시인데 detached 가 우선 안 됨 — 선체크 순서 위반·오도 안내 위험."
 
 
 @requires_git
@@ -695,7 +710,8 @@ def test_best_effort_detached_skips_commit_no_orphan(board, tmp_path, capsys):
 
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     count_before = _git(["rev-list", "--count", "HEAD"], board_dir).stdout.strip()
-    board._board_git_sync_best_effort("new T-0002")  # 예외 없이 리턴(무차단).
+    board._board_git_sync_best_effort(
+        "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))  # 예외 없이 리턴(무차단).
     head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     count_after = _git(["rev-list", "--count", "HEAD"], board_dir).stdout.strip()
 
@@ -725,7 +741,8 @@ def test_best_effort_attached_still_commits(board, tmp_path):
         _TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")
 
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
-    board._board_git_sync_best_effort("new T-0002")
+    board._board_git_sync_best_effort(
+        "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))
     head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     assert head_after != head_before, \
         "attached 인데 best-effort 가 commit 을 안 함 — detached 가드가 정상 경로를 오차단."

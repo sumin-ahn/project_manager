@@ -348,7 +348,8 @@ def test_init_leaves_board_clean_and_claim_not_blocked(board, tmp_path, monkeypa
 
     porcelain = _git(["status", "--porcelain"], board_dir).stdout.strip()
     assert porcelain == "", f"init 이 board 를 dirty 로 남김: {porcelain!r}"
-    assert board._board_git_claim_prefetch() != board._CLAIM_PREFETCH_DIRTY
+    # prefetch 가 차단 없이 anchor 를 낸다(ADR-0073 — 옛 dirty sentinel 비교의 후신).
+    assert board._board_git_claim_prefetch("T-0001").block is None
 
     assert board.cmd_claim(argparse.Namespace(
         id="T-0001", repo="me", slot=1, user="me")) == 0
@@ -372,23 +373,31 @@ def test_backfill_commit_excludes_drafts(board, tmp_path):
         f"backfill commit 에 draft 유출: {tracked}"
 
 
-def test_dirty_claim_guidance_uses_draft_safe_pathspec(board, tmp_path, monkeypatch, capsys):
-    """dirty 안내가 시키는 커맨드가 draft 를 제외한다 — 맨 `add -A` 유도 금지(T-0198 재현 방지)."""
-    monkeypatch.setattr(board, "_board_git_claim_prefetch",
-                        lambda: board._CLAIM_PREFETCH_DIRTY)
+def test_dirty_claim_guidance_names_the_blocking_files(board, tmp_path, monkeypatch, capsys):
+    """잔여 dirty 차단 안내가 **막고 있는 파일을 지목**한다 — 일괄 `add -A` 유도 금지 (ADR-0073).
+
+    T-0418 시절 이 테스트는 "안내가 draft 제외 pathspec(`add -A -- . ':!tickets/.drafts'`)을
+    쓰는가" 를 지켰다. ADR-0073 이 그 안내 자체를 폐기했다 — 공유 board 에서 그 커맨드는 **남의
+    미완성 편집을 사용자가 대신 커밋**하게 만들기 때문이다(draft 유출과 같은 클래스). 지켜야 할
+    성질은 그대로 남는다: *일괄 쓸어담기로 유도하지 않는다*. 그래서 판정을 "무엇을 커밋하라고
+    하는가" 로 옮긴다 — 실제로 막고 있는 경로만 지목해야 한다.
+    """
+    blocked = board._ClaimPrefetch(
+        block=board._CLAIM_BLOCK_DIRTY, behind=2,
+        dirty=((" M", "tickets/open/T-0002-other.md"), ("??", "areas.md")))
+    monkeypatch.setattr(board, "_board_git_claim_prefetch", lambda tid: blocked)
 
     assert board.cmd_claim(argparse.Namespace(
         id="T-0001", repo="me", slot=1, user="me")) == 1
 
     err = capsys.readouterr().err
-    assert "uncommitted" in err and "offline 아님" in err   # 기존 안내 의미 보존.
-    assert ':!tickets/.drafts' in err, f"draft 제외 pathspec 미안내: {err!r}"
-    assert "add -A &&" not in err, f"맨 `add -A` 로 유도함: {err!r}"
-    # **작은따옴표**여야 한다 — bash/zsh 대화형 셸은 *큰따옴표 안의* `!` 도 히스토리 전개해
-    # `event not found` 로 죽는다. 안내가 그대로 붙여넣기로 동작해야 의미가 있다.
-    assert "':!tickets/.drafts'" in err, f"작은따옴표 인용 아님: {err!r}"
-    assert '":!tickets/.drafts"' not in err, f"큰따옴표 인용(히스토리 전개 위험): {err!r}"
-    assert "'.'" in err, f"`.` pathspec 도 같은 따옴표여야 한다: {err!r}"
+    assert "offline 아님" in err        # 원인 정확(네트워크 문제로 오판 금지) — 기존 의미 보존.
+    assert "2 커밋" in err, f"behind 수치 미노출: {err!r}"
+    assert "tickets/open/T-0002-other.md" in err and "areas.md" in err, \
+        f"막고 있는 파일을 지목하지 않음: {err!r}"
+    assert "add -A" in err and "쓸어담지 마라" in err, \
+        f"일괄 add -A 금지 경고가 없음: {err!r}"
+    assert "add -A --" not in err, f"맨 `add -A` 커맨드로 유도함: {err!r}"
 
 
 # ════════════════════════════════════════════════════════════════════════
