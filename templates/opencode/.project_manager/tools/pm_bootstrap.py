@@ -2789,6 +2789,13 @@ class PmBootstrap:
         # 1. 엔진 앵커 (무조건) — worktree 사본에서 부트스트랩하면 거부.
         if self._reject_worktree_copy_anchor():
             return 1
+        # 1b. 보호목록 sidecar drift-only reconcile (ADR-0072 트리거 ②) — *다른 clone/사용자*의
+        #     보호목록 변경을 세션 시작 시점(그 세션의 첫 커밋보다 앞)에 흡수한다. 판정만 하는
+        #     0단계의 유일한 예외적 *부작용*이지만, 파생 캐시를 단일 진실에 맞추는 것뿐이고
+        #     드리프트가 있을 때만 돈다(정합이면 subprocess 0). 전면 fail-soft — 실패해도 진입을
+        #     막지 않는다(보호 훅은 추가 가드이지 부트스트랩의 핵심 부작용이 아니다).
+        if repo is not None:
+            self._reconcile_protected_sidecar(repo)
         # 2~5 슬롯 검사 — lean(명시 슬롯)만. solo/alloc 은 슬롯이 없어 자연 no-op(결정 2).
         if repo is None or slot is None:
             return 0
@@ -3633,6 +3640,129 @@ class PmBootstrap:
         except Exception:  # noqa: BLE001 — fail-soft: 파싱 실패는 경고 생략(소프트).
             return None
         return branch if branch in protected else None
+
+    def _reconcile_protected_sidecar(self, repo: str) -> bool:
+        """훅 sidecar 가 areas.md 보호목록과 다를 때만 재설치한다 (ADR-0072 트리거 ②·T-0417).
+
+        훅이 실제로 읽는 건 areas.md 가 아니라 설치 시점에 복사된 sidecar
+        (`.local/repo-hooks/<repo>/protected`)다 — *다른 clone/사용자*가 목록을 바꾸면 이 clone 의
+        훅은 옛 값으로 계속 동작한다(silent). 세션 시작(그 세션의 첫 커밋보다 앞)에 그 드리프트를
+        흡수한다.
+
+        **비교 우선**: sidecar 를 읽어 resolve 된 목록과 같고 **훅이 배선돼 있으면** 아무것도 하지
+        않는다(subprocess 0 — 정합이 정상 상태이므로 매 부트스트랩이 git config 를 때리지 않는다).
+        다를 때만 `worktree_pool.install_protected_hook(repo, protected)` 를 부른다(훅 본문·sidecar·
+        bare `core.hooksPath` 멱등 재설치). 훅 *본문* 신버전 배포는 `pm_update` 축(ADR-0071) 소유라
+        여기선 드리프트만 본다.
+
+        **배선 축을 함께 본다(should-fix)**: `install_protected_hook` 은 sidecar 기록 뒤 bare
+        `core.hooksPath` 배선을 하는데, 뒤가 실패하면 **sidecar 는 최신인데 훅은 안 걸린** 상태가
+        된다. 내용만 비교하면 이 상태에서 영구 침묵한다(보호가 꺼진 채). 판정은 `pm_config.
+        protected_hook_wired`(읽기 전용·`_load_tool` DRY 소비 — 복붙 금지)를 쓰고, `None`("모름")은
+        드리프트로 치지 않는다(오탐 0).
+
+        보호목록 해소는 기존 `_protected_warning` 과 **같은 seam**(`board._repo_protected`·getattr
+        DI)을 쓴다. board/worktree_pool 부재·헬퍼 부재는 fail-soft False(진입 무영향·drift 판정 자체를
+        못 하므로 조용히 생략).
+
+        **fail-soft 는 조용하지 않다(must-fix)**: drift 를 *발견한 뒤* 재설치가 실패하면
+        (`install_protected_hook` 은 bare 부재·`core.hooksPath` 설정 실패 시 **예외 없이 False**),
+        sidecar 는 여전히 stale 인데 "정합화했습니다" 를 내면 이 티켓이 닫으려던 값-연결 끊김을
+        *정합하다고 거짓 보고*하는 것이 된다(사용자가 확인할 이유를 없앤다). 그래서 반환 False /
+        예외 둘 다 **실패 안내 + 재실행 커맨드**를 loud 하게 내고 False 를 돌려준다. 진입은 여전히
+        막지 않는다(보호 훅은 추가 가드).
+
+        True = 재설치를 실제로 수행하고 **성공**함.
+        """
+        board_mod = self._board or _load_board()
+        repo_protected = getattr(board_mod, "_repo_protected", None) if board_mod else None
+        if repo_protected is None:
+            return False
+        wp = self._worktree_pool or _load_worktree_pool()
+        install = getattr(wp, "install_protected_hook", None) if wp else None
+        hooks_dir = getattr(wp, "REPO_HOOKS_DIR", None) if wp else None
+        if install is None or hooks_dir is None:
+            return False
+        try:
+            protected = list(repo_protected(repo))
+            sidecar = Path(hooks_dir) / repo / "protected"
+            if not sidecar.is_file():
+                return False  # 훅 미설치 — 설치는 repo add/worktree add 축(여기선 drift 만).
+            current = [line.strip()
+                       for line in sidecar.read_text(encoding="utf-8").splitlines()
+                       if line.strip()]
+            content_ok = current == protected
+            # 배선 축 — sidecar 내용이 최신이어도 hooksPath 가 끊겼으면 훅은 발화하지 않는다.
+            # `False`(명확히 미배선)만 드리프트로 친다; `None`(모름)·헬퍼 부재는 현행 유지.
+            wired = self._protected_hook_wired(repo)
+            if content_ok and wired is not False:
+                return False  # 정합 — subprocess 0.
+        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 조용히 생략(오탐 0·drift 미확정).
+            return False
+        # 여기부터는 **drift 확정** — 성공/실패 어느 쪽도 조용히 넘기지 않는다. 원인 2종을
+        # 구별해 보고한다: 목록이 바뀌었나(내용 drift) / 훅이 안 걸려 있나(배선 끊김·부분성공).
+        cause = ("보호 브랜치 목록이 바뀌어" if not content_ok
+                 else "훅이 bare `core.hooksPath` 에 배선돼 있지 않아(목록은 최신)")
+        stale_state = (f"옛 목록({', '.join(current) or '(빈 목록)'})으로 동작"
+                       if not content_ok else "아예 발화하지 않아 보호가 꺼진 상태")
+        try:
+            installed = bool(install(repo, protected))
+        except Exception as exc:  # noqa: BLE001 — 실패해도 진입은 막지 않되 반드시 loud.
+            installed = False
+            reason = f"{exc.__class__.__name__}: {exc}"
+        else:
+            reason = ("install_protected_hook 이 실패를 보고 (bare 부재 또는 "
+                      "`core.hooksPath` 설정 실패)")
+        if not installed:
+            print(
+                f"[경고·0단계] {repo} {cause} 이 clone 의 훅을 **정합화하지 못했습니다** — "
+                f"{reason}. 훅은 아직 {stale_state} 이며, 현재 목록"
+                f"({', '.join(protected)})은 강제되지 않습니다(ADR-0072).\n"
+                f"  → 재실행:  {self._protected_retry_command(repo)}"
+                f"   (멱등·bare 부재면 `repo add {repo}` 먼저)",
+                file=sys.stderr,
+            )
+            return False
+        print(
+            f"[알림·0단계] {repo} {cause} 이 clone 의 훅을 정합화했습니다 — "
+            f"{', '.join(current) or '(빈 목록)'} → {', '.join(protected)} (ADR-0072).",
+            file=sys.stderr,
+        )
+        return True
+
+    def _protected_retry_command(self, repo: str) -> str:
+        """보호목록 재실행 안내 커맨드 — `pm_config.protected_retry_command` 소비 (T-0417).
+
+        안내가 실제 상태를 반영해야 한다(폴백이면 `default`·명시면 그 목록) — 그 분기를 여기서
+        재구현하면 두 벌이 된다(`_protected_hook_wired` 동형·`_load_tool` DRY). pm_config/헬퍼
+        부재면 **구체 값 없는** 안내로 떨어진다 — 상태를 모르는 채 목록을 추측해 안내하면 그걸
+        실행한 사용자가 출처를 바꾸게 되므로, 값을 지어내지 않고 조회부터 안내한다.
+        """
+        pm_config = _load_tool("pm_config")
+        retry_fn = getattr(pm_config, "protected_retry_command", None) if pm_config else None
+        if retry_fn is not None:
+            try:
+                return retry_fn(repo, board=self._board or _load_board())
+            except Exception:  # noqa: BLE001 — fail-soft: 아래 일반 안내로 강등.
+                pass
+        return (f"{_CARD_TOOL_INVOKE}/pm_config.py repo protected {repo}"
+                "   (현재 상태 확인 후 재설정)")
+
+    def _protected_hook_wired(self, repo: str) -> bool | None:
+        """bare `core.hooksPath` 배선 여부 — `pm_config.protected_hook_wired` 소비 (T-0417).
+
+        판정 로직을 재구현하지 않는다(`_load_tool` DRY 관용구 — 복붙 금지·ADR-0072 공용 헬퍼
+        원칙 동형). 주입된 worktree_pool 을 그대로 넘겨 hermetic 테스트에서도 같은 대역을 본다.
+        pm_config/헬퍼 부재·예외는 `None`("모름") — 호출부가 현행 동작(내용 비교만)으로 떨어진다.
+        """
+        pm_config = _load_tool("pm_config")
+        wired_fn = getattr(pm_config, "protected_hook_wired", None) if pm_config else None
+        if wired_fn is None:
+            return None
+        try:
+            return wired_fn(repo, worktree_pool=self._worktree_pool or _load_worktree_pool())
+        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 "모름"(오탐 0).
+            return None
 
     def _resolve_slot_base(self, repo: str) -> str | None:
         """그 repo 의 base 브랜치 — areas.md `base` 칼럼 (T-0341·명시 등록만·codex must-fix).

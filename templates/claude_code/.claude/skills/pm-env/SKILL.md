@@ -1,6 +1,6 @@
 ---
 name: pm-env
-description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo add · worktree add(→pm-bootstrap 바인딩 안내·--readonly 공유 슬롯) · slot status/release/remove · upstream show/switch(path↔URL). multi-PM 셋업·upstream 전환의 단일 진입. Triggers: 'pm-env', 'repo 추가', 'worktree 추가', 'readonly 슬롯', 'slot 상태', '슬롯 제거', 'upstream 전환', '환경 관리'."
+description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo add/list · repo protected(보호 브랜치 목록 조회/설정) · worktree add(→pm-bootstrap 바인딩 안내·--readonly 공유 슬롯) · slot status/release/remove · upstream show/switch(path↔URL). multi-PM 셋업·upstream 전환의 단일 진입. Triggers: 'pm-env', 'repo 추가', 'repo 목록', '보호 브랜치', 'protected 목록', 'worktree 추가', 'readonly 슬롯', 'slot 상태', '슬롯 제거', 'upstream 전환', '환경 관리'."
 audience: user-entrypoint
 ---
 
@@ -23,9 +23,31 @@ audience: user-entrypoint
 
 ### repo add — multi-PM repo 등록
 ```bash
-./pm-config.sh repo add <name> --git <url> --test "<cmd>"
+./pm-config.sh repo add <name> --git <url> --test "<cmd>" [--protected "main,develop"]
+./pm-config.sh repo list                        # 등록 repo 표(repo·prefix·base·protected·test_cmd·area_owner)
 ```
 `areas.md` 공유 레지스트리 등록 + per-repo 셋업. 이후 worktree 슬롯을 붙인다.
+- **`--protected`**(ADR-0072): 이 repo 의 보호 브랜치(쉼표분리). 생략하면 빈 칼럼 = 기본값
+  **main/master/develop** 폴백. 사후 변경은 아래 `repo protected`.
+
+### repo protected — 보호 브랜치 목록 조회/설정 (ADR-0072)
+
+PM 이 자율로 commit/push 하지 못하는 브랜치 목록이다(pre-push 훅·부트스트랩 0단계가 이걸 본다).
+`areas.md` `protected` 칼럼이 **단일 진실**이고 훅이 읽는 sidecar 는 파생 캐시다:
+```bash
+./pm-config.sh repo protected <repo>                  # 조회 — 실효값 + 출처 + 훅 sidecar 정합
+./pm-config.sh repo protected <repo> "main,release"   # 설정 — areas.md → 훅 sidecar 정합화
+./pm-config.sh repo protected <repo> default          # 칼럼 비움 = main/master/develop 기본값 복귀
+```
+- **조회 3줄**: 실효값 · **출처**(명시 / 기본값 폴백 / 미등록) · **훅 sidecar 정합**. 칼럼이 비어
+  기본값으로 도는 상태와, 다른 clone 이 값을 바꿔 이 clone 의 훅만 옛 목록인 상태(drift)를 각각
+  구별해 보여준다 — drift 면 `⚠ 옛 목록(...)` + 재실행 안내가 붙는다.
+- **설정 순서 고정**: areas.md 먼저, 그 다음 훅 sidecar(역순이면 훅이 비준되지 않은 목록을 강제).
+  변경은 board-git 로 즉시 공유된다. 다른 clone 은 `/pm-bootstrap` 이 세션 시작에 drift 만 흡수한다.
+- **"보호 없음" 은 지정할 수 없다** — 빈 문자열은 거부하고 `default`(기본값 복귀)로 안내한다.
+  브랜치 실재는 검증하지 않는다(아직 없는 `release` 를 미리 보호하는 게 정상 — bare 에 없으면 경고 1줄).
+- **중복 행 방어**: `areas.md` 에 같은 repo 행이 2개 이상이면 설정을 **거부**한다(어느 행이 이기는지
+  기계가 못 정함·부작용 0). `board.py lint` 의 `areas-duplicate-repo` 권고가 같은 상태를 상시 표면화한다.
 
 ### worktree add — 슬롯 생성 (→ bootstrap 바인딩 안내)
 ```bash

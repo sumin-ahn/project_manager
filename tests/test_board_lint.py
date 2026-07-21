@@ -2036,3 +2036,40 @@ def test_lint_tickets_includes_adapter_drift(board, monkeypatch):
         monkeypatch.setattr(board, fn, lambda: [])
     monkeypatch.setattr(board, "lint_adapter_drift", lambda: sentinel)
     assert sentinel[0] in board.lint_tickets()
+
+
+# ── areas-duplicate-repo (ADR-0072·T-0417·advisory·never-block) ───────────────
+
+def test_gate_zero_on_areas_duplicate_repo_only(board, monkeypatch, tmp_path):
+    """중복 repo 행만 있으면 `--gate` 종료코드 0 — 레지스트리 정리는 push 결함이 아니다.
+
+    실 areas.md(tmp) 를 중복 행으로 깔아 `lint_areas_duplicate_repo` 를 *실제로* 구동한다
+    (sentinel 주입 아님) — advisory 등재 누락이면 여기서 1 로 뒤집힌다.
+    """
+    _wire_repo(board, monkeypatch, tmp_path)
+    (tmp_path / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".project_manager" / "areas.md").write_text(
+        "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+        "| svc | P | g | t | o | main | main | u |\n"
+        "| svc | P | g | t | o | main | develop | u |\n",
+        encoding="utf-8")
+    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
+               "lint_wikilinks", "lint_unstable_refs", "_run_lint_hooks"):
+        monkeypatch.setattr(board, fn, lambda: [])
+    issues = board.lint_tickets()
+    assert [k for _n, k, _d in issues] == ["areas-duplicate-repo"]
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
+
+
+def test_lint_tickets_includes_areas_duplicate_repo(board, monkeypatch):
+    """lint_tickets 통합 — areas-duplicate-repo finding 이 전체 보고에 포함된다."""
+    sentinel = [("svc", "areas-duplicate-repo", "sentinel")]
+    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
+               "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
+               "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
+               "lint_render_leak", "lint_unmigrated_overlay", "lint_adapter_drift"):
+        monkeypatch.setattr(board, fn, lambda: [])
+    monkeypatch.setattr(board, "lint_areas_duplicate_repo", lambda: sentinel)
+    assert sentinel[0] in board.lint_tickets()

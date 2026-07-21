@@ -1025,6 +1025,288 @@ def test_regression_cwd_no_matching_slot_falls_back_to_repo(board, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# areas_set_cell — board_lock 하 비파괴 in-place 셀 변경 (T-0417·ADR-0072)
+# ════════════════════════════════════════════════════════════════════════
+
+# 구 헤더 5칸(per-repo·ADR-0014) — `protected` 칼럼 자체가 없다.
+_5COL_HEADER = (
+    "# Area Registry\n\n"
+    "> 주석 줄 (보존 대상)\n\n"
+    "| repo | prefix | git | test_cmd | owner |\n"
+    "|---|---|---|---|---|\n"
+    "| service-a | PAY | git@x:a.git | pytest -q | alice |\n"
+    "| service-b | ACC | git@x:b.git | go test ./... | bob |\n"
+)
+
+# 구 헤더 6칸(base·T-0075) — `protected` 없음.
+_6COL_HEADER = (
+    "| repo | prefix | git | test_cmd | owner | base |\n"
+    "|---|---|---|---|---|---|\n"
+    "| service-a | PAY | git@x:a.git | pytest -q | alice | develop |\n"
+)
+
+# 구 헤더 7칸(protected·T-0076) — `area_owner` 없음(범용 칼럼 경로 검증용).
+_7COL_HEADER = (
+    "| repo | prefix | git | test_cmd | owner | base | protected |\n"
+    "|---|---|---|---|---|---|---|\n"
+    "| service-a | PAY | git@x:a.git | pytest -q | alice | develop | main |\n"
+)
+
+
+def test_areas_set_cell_replaces_existing_value(board):
+    """기존 `protected` 값을 제자리 교체하고 (old, new) 를 돌려준다."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    assert board.areas_set_cell("service-a", "protected", "main,release") == (
+        "main", "main,release")
+    assert board._repo_protected("service-a") == ["main", "release"]
+    # 다른 행은 불변(첫 행만 바뀐다).
+    assert board._repo_protected("service-b") == list(board.DEFAULT_PROTECTED)
+
+
+def test_areas_set_cell_fills_empty_column(board):
+    """빈 `protected` 칼럼(기본값 폴백 중)을 명시값으로 채운다 — old 는 빈 문자열."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    assert board.areas_set_cell("service-b", "protected", "main,develop") == (
+        "", "main,develop")
+    assert board._repo_protected("service-b") == ["main", "develop"]
+
+
+def test_areas_set_cell_clearing_restores_default_fallback(board):
+    """빈 값으로 되돌리면 `_repo_protected` 가 DEFAULT_PROTECTED 폴백으로 복귀한다."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    board.areas_set_cell("service-a", "protected", "")
+    assert board._repo_protected("service-a") == list(board.DEFAULT_PROTECTED)
+
+
+def test_areas_set_cell_upgrades_5col_header_to_canonical(board):
+    """구 5칸 헤더는 첫 setter 호출에 canonical 8칼럼 헤더+구분선으로 업그레이드된다(비파괴)."""
+    board.AREAS_FILE.write_text(_5COL_HEADER, encoding="utf-8")
+    board.areas_set_cell("service-a", "protected", "main,release")
+    text = board.AREAS_FILE.read_text(encoding="utf-8")
+    assert board._areas_header_line() in text
+    assert board._areas_separator_line() in text
+    assert board._repo_protected("service-a") == ["main", "release"]
+    # 기존 칼럼·타 행·주석 보존.
+    row = board._areas_row_for_prefix("PAY")
+    assert row["git"] == "git@x:a.git" and row["test_cmd"] == "pytest -q"
+    assert "> 주석 줄 (보존 대상)" in text
+    assert board._repo_protected("service-b") == list(board.DEFAULT_PROTECTED)
+
+
+def test_areas_set_cell_upgrades_6col_header_to_canonical(board):
+    """구 6칸(base) 헤더도 canonical 8칼럼으로 업그레이드 — base 값 보존."""
+    board.AREAS_FILE.write_text(_6COL_HEADER, encoding="utf-8")
+    board.areas_set_cell("service-a", "protected", "main")
+    assert board._areas_header_line() in board.AREAS_FILE.read_text(encoding="utf-8")
+    assert board._repo_base("service-a") == "develop"
+    assert board._repo_protected("service-a") == ["main"]
+
+
+def test_areas_set_cell_upgrades_7col_header_for_missing_column(board):
+    """구 7칸(protected) 헤더에 `area_owner` 를 쓰면 canonical 8칼럼 업그레이드 — 범용 칼럼."""
+    board.AREAS_FILE.write_text(_7COL_HEADER, encoding="utf-8")
+    assert board.areas_set_cell("service-a", "area_owner", "alice") == ("", "alice")
+    assert board._areas_header_line() in board.AREAS_FILE.read_text(encoding="utf-8")
+    assert board._repo_area_owner("service-a") == "alice"
+    assert board._repo_protected("service-a") == ["main"]   # 기존 칼럼 불변
+
+
+def test_areas_set_cell_7col_header_no_upgrade_needed(board):
+    """헤더에 그 칼럼이 이미 있으면 헤더/구분선은 verbatim(불필요한 업그레이드 없음)."""
+    board.AREAS_FILE.write_text(_7COL_HEADER, encoding="utf-8")
+    board.areas_set_cell("service-a", "protected", "main,develop")
+    text = board.AREAS_FILE.read_text(encoding="utf-8")
+    assert "| repo | prefix | git | test_cmd | owner | base | protected |" in text
+    assert board._areas_header_line() not in text
+    assert board._repo_protected("service-a") == ["main", "develop"]
+
+
+def test_areas_set_cell_wider_row_uses_canonical_index(board):
+    """비-canonical 구 헤더(3칸) 아래 canonical 8칸 row 는 canonical 인덱스로 매핑한다.
+
+    T-0168 이 잡았던 칼럼 오매핑 클래스 — 헤더 폭으로 읽으면 엉뚱한 셀(`test_cmd` 등)을
+    protected 로 오인한다. 읽기(`_parse_areas`)와 **같은** 규칙(공용 헬퍼)이어야 한다.
+    """
+    board.AREAS_FILE.write_text(
+        "| prefix | area | owner |\n"
+        "|---|---|---|\n"
+        "| PAY | 결제 | alice |\n"
+        "| service-a | PAY | git@x:a.git | pytest -q | alice | develop | main | alice |\n",
+        encoding="utf-8")
+    assert board.areas_set_cell("service-a", "protected", "release") == (
+        "main", "release")
+    row = board._parse_areas()[1][1]
+    assert row["protected"] == "release"
+    assert row["test_cmd"] == "pytest -q"      # 오매핑 없음 — 이웃 셀 불변
+    assert row["area_owner"] == "alice"
+
+
+def test_areas_set_cell_preserves_crlf_comments_and_other_rows(board):
+    """CRLF 줄 종결자·주석·빈 줄·타 행을 verbatim 보존한다(비파괴)."""
+    original = (
+        "# Area Registry\r\n"
+        "\r\n"
+        "> 주석\r\n"
+        "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\r\n"
+        "|---|---|---|---|---|---|---|---|\r\n"
+        "| service-a | PAY | g | pytest -q | alice | develop | main | alice |\r\n"
+        "| service-b | ACC | g2 | go test | bob | main | main,develop | bob |\r\n"
+    )
+    with board.AREAS_FILE.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(original)
+    board.areas_set_cell("service-a", "protected", "main,release")
+    with board.AREAS_FILE.open("r", encoding="utf-8", newline="") as fh:
+        text = fh.read()
+    assert text.count("\r\n") == original.count("\r\n")
+    assert "> 주석\r\n" in text
+    assert "| service-b | ACC | g2 | go test | bob | main | main,develop | bob |\r\n" in text
+    assert "| service-a | PAY | g | pytest -q | alice | develop | main,release | alice |\r\n" in text
+
+
+def test_areas_set_cell_duplicate_rows_fail_loud_without_write(board):
+    """같은 repo 행이 2개면 `AreasDuplicateRepo` — 파일은 1바이트도 안 바뀐다(부작용 0)."""
+    original = (
+        "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+        "| service-a | PAY | g | pytest -q | alice | develop | main | alice |\n"
+        "| service-a | PAY | g | pytest -q | alice | develop | develop | alice |\n"
+    )
+    board.AREAS_FILE.write_text(original, encoding="utf-8")
+    with pytest.raises(board.AreasDuplicateRepo) as exc:
+        board.areas_set_cell("service-a", "protected", "release")
+    assert exc.value.count == 2
+    assert board.AREAS_FILE.read_text(encoding="utf-8") == original
+
+
+def test_areas_set_cell_unregistered_repo_fail_loud_without_write(board):
+    """미등록 repo 는 `AreasRepoNotFound` — 행을 만들어내지 않는다(등록은 append 소관)."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    with pytest.raises(board.AreasRepoNotFound):
+        board.areas_set_cell("nope", "protected", "main")
+    assert board.AREAS_FILE.read_text(encoding="utf-8") == _AREA_OWNER_SCHEMA
+
+
+def test_areas_set_cell_absent_registry_fail_loud(board):
+    """areas.md 부재(솔로)도 `AreasRepoNotFound` — 레지스트리를 새로 만들지 않는다."""
+    with pytest.raises(board.AreasRepoNotFound):
+        board.areas_set_cell("service-a", "protected", "main")
+    assert not board.AREAS_FILE.exists()
+
+
+def test_areas_set_cell_idempotent_same_value_does_not_write(board, monkeypatch):
+    """같은 값 재설정은 no-op — `os.replace`(atomic write)를 아예 부르지 않는다(멱등)."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    calls: list = []
+    real_replace = board.os.replace
+    monkeypatch.setattr(board.os, "replace",
+                        lambda src, dst: (calls.append((src, dst)), real_replace(src, dst))[1])
+    assert board.areas_set_cell("service-a", "protected", "main") == ("main", "main")
+    assert calls == []
+    assert board.AREAS_FILE.read_text(encoding="utf-8") == _AREA_OWNER_SCHEMA
+    # 대조군 — 실제 변경은 atomic write 를 탄다.
+    board.areas_set_cell("service-a", "protected", "release")
+    assert len(calls) == 1
+
+
+def test_areas_set_cell_write_is_atomic_and_leaves_no_temp(board):
+    """temp + `os.replace` 로 교체하고 `.tmp` 잔재를 남기지 않는다 (ADR-0012)."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    board.areas_set_cell("service-a", "protected", "release")
+    leftovers = list(board.AREAS_FILE.parent.glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_areas_set_cell_strips_value(board):
+    """값은 strip 해서 기록한다 — 범용 백엔드라 호출자 정규화를 가정하지 않는다."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    assert board.areas_set_cell("service-a", "protected", "  main,release  ") == (
+        "main", "main,release")
+    assert "| main,release |" in board.AREAS_FILE.read_text(encoding="utf-8")
+
+
+def test_areas_set_cell_removes_temp_on_write_failure(board, monkeypatch):
+    """쓰기 실패로 `os.replace` 에 못 가도 `.tmp` 잔재를 남기지 않는다(try/finally)."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(board.os, "replace", boom)
+    with pytest.raises(OSError):
+        board.areas_set_cell("service-a", "protected", "release")
+    assert list(board.AREAS_FILE.parent.glob("*.tmp")) == []
+    assert board.AREAS_FILE.read_text(encoding="utf-8") == _AREA_OWNER_SCHEMA
+
+
+def test_areas_set_cell_rejects_unknown_column(board):
+    """canonical 칼럼이 아니면 ValueError — 오타 칼럼으로 표를 넓히지 않는다."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    with pytest.raises(ValueError):
+        board.areas_set_cell("service-a", "protectedd", "main")
+
+
+def test_areas_set_cell_rejects_pipe_and_newline_in_value(board):
+    """`|`·개행 값은 ValueError — markdown 표 corruption 차단."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    for bad in ("main|develop", "main\ndevelop"):
+        with pytest.raises(ValueError):
+            board.areas_set_cell("service-a", "protected", bad)
+    assert board.AREAS_FILE.read_text(encoding="utf-8") == _AREA_OWNER_SCHEMA
+
+
+def test_areas_set_cell_holds_board_lock(board, monkeypatch):
+    """셀 변경 write 는 `board_lock()` 구간 안에서 일어난다 (areas_append 와 직렬화·ADR-0012)."""
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    events: list[str] = []
+    real_lock = board.board_lock
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def spy_lock():
+        events.append("lock")
+        with real_lock():
+            yield
+        events.append("unlock")
+
+    monkeypatch.setattr(board, "board_lock", spy_lock)
+    real_replace = board.os.replace
+    monkeypatch.setattr(board.os, "replace",
+                        lambda src, dst: (events.append("write"), real_replace(src, dst))[1])
+    board.areas_set_cell("service-a", "protected", "release")
+    assert events == ["lock", "write", "unlock"]
+
+
+# ── areas-duplicate-repo lint advisory (ADR-0072·never-block) ────────────────
+
+def test_lint_areas_duplicate_repo_reports_duplicates(board):
+    """중복 repo 행을 advisory 로 표면화한다(자동 병합 없음·사람 판정)."""
+    board.AREAS_FILE.write_text(
+        "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+        "| service-a | PAY | g | pytest -q | alice | develop | main | alice |\n"
+        "| service-a | PAY | g | pytest -q | alice | develop | develop | alice |\n"
+        "| service-b | ACC | g2 | go test | bob |  |  |  |\n",
+        encoding="utf-8")
+    issues = board.lint_areas_duplicate_repo()
+    assert [(name, kind) for name, kind, _detail in issues] == [
+        ("service-a", "areas-duplicate-repo")]
+    assert "2개" in issues[0][2]
+
+
+def test_lint_areas_duplicate_repo_clean_registry_is_silent(board):
+    """중복이 없으면 빈 결과 — areas.md 부재(솔로)도 빈 결과."""
+    assert board.lint_areas_duplicate_repo() == []
+    board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    assert board.lint_areas_duplicate_repo() == []
+
+
+def test_areas_duplicate_repo_is_advisory_never_blocks(board):
+    """kind 가 `_ADVISORY_LINT_KINDS` 등재 — `lint --gate` 종료코드에 기여하지 않는다."""
+    assert "areas-duplicate-repo" in board._ADVISORY_LINT_KINDS
+
+
+# ════════════════════════════════════════════════════════════════════════
 # hermetic 입증 — 실 루트 areas.md 무오염
 # ════════════════════════════════════════════════════════════════════════
 

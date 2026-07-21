@@ -7,6 +7,37 @@
 
 ## [Unreleased]
 
+### Added
+- **보호 브랜치 목록 설정 채널** (ADR-0072·T-0417) — 지금까지 `areas.md` 표를 손으로 고치는 것이
+  유일한 경로였고, 고쳐도 훅이 읽는 sidecar 는 stale 이라 사용자가 바꿨다고 믿는 값과 훅이 강제하는
+  값이 갈렸다(silent). 기계 설정·조회 + 값-연결 폐쇄:
+  - `pm-config repo add <name> --protected "main,develop"` — 등록 시점에 보호목록 지정
+    (종전 `protected=""` 하드코딩 제거).
+  - `pm-config repo protected <repo> [<목록>|default]` — 값 없으면 **조회**, 주면 **설정**
+    (`upstream show|set` family 동형). `default` = 칼럼 비움 = main/master/develop 폴백
+    ("보호 없음" 은 표현 불가 — 빈 문자열은 거부하고 `default` 로 안내).
+  - 조회는 **실효값 + 출처(명시/기본값 폴백/미등록) + 훅 sidecar 정합/drift** 3줄 — "빈 값이라
+    기본값으로 도는 중"·"이 clone 의 훅만 옛 목록" 을 각각 구별해 보여준다.
+  - 설정은 **areas.md → sidecar 순서 고정**(역순이면 비준되지 않은 목록을 훅이 강제) + board-git
+    best-effort 동기. 다른 clone 은 `/pm-bootstrap` 0단계가 **drift 일 때만** sidecar 를 재설치한다
+    (정합이면 subprocess 0·fail-soft).
+  - `pm-config repo list` — 등록 repo 표(repo·prefix·base·protected·test_cmd·area_owner). 빈
+    `protected` 는 "기본값" 을 명시해 "보호 없음" 오독을 막는다.
+- **`board.areas_set_cell(repo, column, value)`** (ADR-0072) — areas.md 를 "등록(행 추가)은
+  append-only, **기존 셀 변경은 `board_lock()` 하 비파괴 in-place 재기록**" 으로 재규정한 범용
+  백엔드. 줄 종결자(CRLF)·주석·타 행 보존, 구 헤더는 canonical 8칼럼으로 업그레이드, wider-row 는
+  canonical 인덱스로 매핑 — 인덱스 해소는 `_migrate_areas_text` 와 **공용 헬퍼**로 공유한다
+  (두 벌로 갈라지면 T-0168 칼럼 오매핑 재발). 대상 repo 행이 2개 이상이면 fail-loud(부작용 0).
+- **`board lint` `areas-duplicate-repo` 권고** (ADR-0072·advisory·never-block) — 중복 repo 행이
+  first-match 로 조용히 굳는 것을 상시 표면화한다(자동 병합 없음·사람 판정).
+
+### Changed
+- **보호 브랜치 훅 설치 실패가 이제 loud 하다** (T-0417) — `pm-config repo add`·`worktree add` 는
+  훅 설치 결과(False)를 조용히 삼켜서, 훅이 안 걸렸는데 사용자는 걸린 줄 알았다(보호 가드 침묵
+  무력화). 이제 실패 시 stderr 경고 + 재실행 커맨드가 나간다(성공 출력·종료코드는 불변 — 보호 훅은
+  추가 가드라 등록/슬롯 생성을 깨지 않는다). 같은 이유로 이미 등록된 repo 에 `--protected` 를 주면
+  "반영되지 않았다" 를 loud 하게 알리고 `repo protected` 로 안내한다.
+
 ## [1.4.0] - 2026-07-21
 
 **codex CLI(OpenAI Codex 0.144.x)가 세 번째 지원 하네스로 추가**(ADR-0070) — claude_code·opencode

@@ -822,6 +822,68 @@ def _areas_separator_line() -> str:
     return "|" + "|".join("---" for _ in _AREAS_COLUMNS) + "|"
 
 
+# ── areas.md 칼럼 인덱스 해소 (공용 헬퍼·ADR-0072) ───────────────────────────
+# `_parse_areas`(읽기)·`_migrate_areas_text`(area_owner backfill)·`areas_set_cell`(범용 셀 변경)
+# 세 경로가 **같은** 인덱스 규칙을 써야 한다. 두 벌로 갈라지면 T-0168 이 잡았던 칼럼 오매핑
+# (구 헤더 폭으로 읽다 `test_cmd` 를 area_owner 로 오인)이 재발한다 — 그래서 ① 행 dict 매핑
+# (`_areas_row_dict`) ② 헤더 인덱스 + 구-헤더 업그레이드 계획(`_areas_column_index`) ③ 데이터
+# 행의 wider-row 보정(`_areas_row_cell_index`) 을 여기 한 곳에 모은다.
+
+
+def _areas_row_dict(header_cells: list[str], cells: list[str]) -> dict[str, str]:
+    """데이터 행 셀 → `{칼럼명: 값}` (헤더 매핑 · wider row 는 canonical 순서).
+
+    셀 수가 헤더보다 **많으면**(더 넓은 신 스키마 row 를 더 좁은 구 헤더에 append 한 업그레이드
+    프로젝트) 헤더를 무시하고 `_AREAS_COLUMNS` 순서로 매핑한다(base/protected/area_owner 유실
+    차단·폭 초과는 `col{i}` 폴백). 그 외는 자기 헤더로 매핑(모자란 셀은 빈 문자열).
+    """
+    if len(cells) > len(header_cells):
+        return {
+            (_AREAS_COLUMNS[i] if i < len(_AREAS_COLUMNS) else f"col{i}"): cells[i]
+            for i in range(len(cells))
+        }
+    return {header_cells[i]: (cells[i] if i < len(cells) else "")
+            for i in range(len(header_cells))}
+
+
+def _areas_column_index(header_cells: list[str],
+                        column: str) -> tuple[int, str | None, int]:
+    """헤더에서 `column` 셀 인덱스를 해소한다 — 부재면 구-헤더 업그레이드 계획을 함께 낸다.
+
+    반환 `(idx, new_header_line, sep_cols)`:
+      - 헤더에 그 칼럼이 있으면 `(header_cells.index(column), None, 0)` — 업그레이드 없음(헤더
+        행 verbatim 보존).
+      - 없으면(구 헤더) **업그레이드**한다. 헤더가 canonical prefix(`_AREAS_COLUMNS` 앞 N개와
+        일치하는 per-repo 레지스트리 계열 5/6/7칼럼)면 canonical 8칼럼 헤더(`_areas_header_line`)
+        로 교체하고 idx=canonical 인덱스. 비호환 구 헤더(멀티-clone `prefix|area|owner`[3] 등 —
+        칼럼 의미가 canonical 과 어긋남)면 정렬을 깨지 않게 기존 칼럼 **뒤에 그 칼럼만 append**
+        하고 idx=len(header_cells). `sep_cols` = 업그레이드 후 구분선이 가질 칼럼 수.
+
+    `_migrate_areas_text`(area_owner backfill)와 `areas_set_cell`(범용 셀 변경)이 **공유**한다.
+    """
+    if column in header_cells:
+        return header_cells.index(column), None, 0
+    if tuple(header_cells) == _AREAS_COLUMNS[:len(header_cells)]:
+        return (_AREAS_COLUMNS.index(column), _areas_header_line(),
+                len(_AREAS_COLUMNS))
+    return (len(header_cells),
+            "| " + " | ".join(header_cells + [column]) + " |",
+            len(header_cells) + 1)
+
+
+def _areas_row_cell_index(header_cells: list[str], cells: list[str],
+                          header_idx: int, column: str) -> int:
+    """데이터 행에서 `column` 셀의 인덱스 — wider row 는 canonical 인덱스로 보정한다.
+
+    셀 수가 헤더보다 많은 행은 `_areas_row_dict`(=`_parse_areas`)가 헤더를 무시하고 canonical
+    순서로 매핑하므로, 쓰기측도 **정확히 같은** 인덱스를 잡아야 한다(T-0168 must-fix). 그 외는
+    `_areas_column_index` 가 준 헤더 인덱스 그대로.
+    """
+    if len(cells) > len(header_cells) and column in _AREAS_COLUMNS:
+        return _AREAS_COLUMNS.index(column)
+    return header_idx
+
+
 def _parse_areas() -> tuple[list[str], list[dict[str, str]]]:
     """areas.md 를 (header 칼럼명 리스트, 데이터 행 dict 리스트) 로 파싱한다.
 
@@ -850,18 +912,11 @@ def _parse_areas() -> tuple[list[str], list[dict[str, str]]]:
         if not header:
             header = [c.lower() for c in cells]
             continue
-        if len(cells) > len(header):
-            # 헤더보다 넓은 행 = 신(더 넓은) 스키마 canonical row 를 더 좁은 구 헤더에 append 한
-            # 업그레이드 케이스(T-0075 6칸·T-0076 7칸 row 를 5/3칸 헤더 아래). canonical 순서로
-            # 매핑해 base/protected 유실 차단. 폭 초과(>canonical)는 col{i} 폴백(방어).
-            row = {
-                (_AREAS_COLUMNS[i] if i < len(_AREAS_COLUMNS) else f"col{i}"): cells[i]
-                for i in range(len(cells))
-            }
-        else:
-            row = {header[i]: (cells[i] if i < len(cells) else "")
-                   for i in range(len(header))}
-        rows.append(row)
+        # 헤더보다 넓은 행 = 신(더 넓은) 스키마 canonical row 를 더 좁은 구 헤더에 append 한
+        # 업그레이드 케이스(T-0075 6칸·T-0076 7칸 row 를 5/3칸 헤더 아래) → canonical 순서로
+        # 매핑해 base/protected 유실 차단. 매핑 규칙은 `_areas_row_dict` 단일 진실(쓰기측
+        # `areas_set_cell`·`_migrate_areas_text` 와 공유·ADR-0072).
+        rows.append(_areas_row_dict(header, cells))
     return header, rows
 
 
@@ -1634,6 +1689,157 @@ def areas_append(prefix: str, area: str, owner: str,
             af,
             f"| {_repo} | {prefix} | {_git} | {_test} | {owner} | {_base} "
             f"| {_protected} | {_area_owner} |\n")
+
+
+# ── areas.md 셀 변경 (ADR-0072) ──────────────────────────────────────────────
+# "append-only" 는 **등록(행 추가)** 의 동시성 불변식이지 불변 파일 규약이 아니다 — *기존 셀
+# 변경* 은 `board_lock()` 하 비파괴 in-place 재기록으로 한다(`_migrate_areas_text` 의 선례와
+# 같은 관용구: 줄 종결자·주석·타 행 보존 + 구 헤더 canonical 업그레이드 + wider-row canonical
+# 인덱스). 중복 repo 행은 조용한 first-match 고착을 낳으므로 **fail-loud**(부작용 0)로 거부하고
+# `board lint` 의 `areas-duplicate-repo` advisory 가 가시화한다.
+
+
+class AreasRepoNotFound(Exception):
+    """areas.md 에 그 repo 행이 없다 — 셀 변경 대상 부재 (ADR-0072·부작용 0).
+
+    등록되지 않은 repo(또는 areas.md 부재)의 칼럼을 바꾸려 한 경우다. 등록은 `pm-config repo
+    add`(append) 소관이고 setter 는 *기존 셀만* 고친다 — 없는 행을 만들어내지 않는다.
+    """
+
+    def __init__(self, repo: str):
+        self.repo = repo
+        super().__init__(f"areas.md 에 repo {repo!r} 행이 없다")
+
+
+class AreasDuplicateRepo(Exception):
+    """areas.md 에 같은 repo 행이 2개 이상 — 셀 변경 fail-loud (ADR-0072·부작용 0).
+
+    first-match 리졸버(`_repo_protected`·`_repo_base`·`_areas_git_url`·`_repo_area_owner`)가
+    첫 행에서 return 하므로 어느 행을 고쳐야 하는지 기계가 정할 수 없다. 추측해서 한쪽만 고치면
+    사용자가 바꿨다고 믿는 값과 리졸버가 읽는 값이 갈린다 → **아무것도 쓰지 않고** 수동 정리를
+    안내한다(자동 병합 안 함·사람 판정). `count` = 중복 행 수(진단용).
+    """
+
+    def __init__(self, repo: str, count: int):
+        self.repo = repo
+        self.count = count
+        super().__init__(f"areas.md 에 repo {repo!r} 행이 {count}개 있다(중복)")
+
+
+def _areas_set_cell_text(text: str, repo: str, column: str,
+                         value: str) -> tuple[str, str]:
+    """areas.md 텍스트에서 `repo` 행의 `column` 셀을 `value` 로 바꾼 (새 텍스트, 옛 값) 반환.
+
+    순수 변환(IO 없음·`_migrate_areas_text` 동형 관용구):
+      - 줄 종결자(LF/CRLF)·주석·빈 줄·표 밖 텍스트·**다른 행**은 verbatim 보존.
+      - 헤더에 그 칼럼이 없으면(구 레지스트리) `_areas_column_index` 계획대로 헤더 + 헤더 직후
+        구분선 1개를 업그레이드한다(canonical 8칼럼 또는 기존 헤더 끝 append·비파괴).
+      - 행 매칭은 `_areas_row_dict`(= `_parse_areas` 와 같은 매핑)의 `repo` 값으로 한다 —
+        읽기측이 보는 행과 쓰기측이 고치는 행이 **항상 같다**.
+      - 대상 셀 인덱스는 `_areas_row_cell_index`(wider-row canonical 보정)로 잡는다.
+      - 셀이 모자라면 빈 칸으로 패딩해 인덱스를 확보한다(비파괴 append).
+
+    매칭 행이 0개면 `AreasRepoNotFound`, 2개 이상이면 `AreasDuplicateRepo` — **호출자가 쓰기
+    전에** 터지므로 부작용 0이다.
+    """
+    lines = text.splitlines(keepends=True)
+    header_cells: list[str] | None = None
+    col_idx: int | None = None
+    upgrade = False
+    sep_cols = 0
+    sep_replaced = False
+    matches = 0
+    old_value = ""
+    out: list[str] = []
+    for line in lines:
+        nl = ""
+        body = line
+        if line.endswith("\r\n"):
+            nl, body = "\r\n", line[:-2]
+        elif line.endswith("\n"):
+            nl, body = "\n", line[:-1]
+        cells = _split_areas_row(body)
+        if cells is None:
+            if upgrade and not sep_replaced and _AREAS_SEP_RE.match(body.strip()):
+                out.append("|" + "|".join("---" for _ in range(sep_cols)) + "|" + nl)
+                sep_replaced = True
+            else:
+                out.append(line)
+            continue
+        if header_cells is None:
+            header_cells = [c.lower() for c in cells]
+            col_idx, new_header, sep_cols = _areas_column_index(header_cells, column)
+            if new_header is None:
+                out.append(line)
+            else:
+                upgrade = True
+                out.append(new_header + nl)
+            continue
+        if _areas_row_dict(header_cells, cells).get("repo") != repo:
+            out.append(line)
+            continue
+        matches += 1
+        idx = _areas_row_cell_index(header_cells, cells, col_idx or 0, column)
+        if matches == 1:
+            old_value = cells[idx] if idx < len(cells) else ""
+        while len(cells) <= idx:
+            cells.append("")
+        cells[idx] = value
+        out.append("| " + " | ".join(cells) + " |" + nl)
+    if matches == 0:
+        raise AreasRepoNotFound(repo)
+    if matches > 1:
+        raise AreasDuplicateRepo(repo, matches)
+    return "".join(out), old_value
+
+
+def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
+    """areas.md 의 `repo` 행 `column` 셀을 `value` 로 in-place 교체한다 — (옛 값, 새 값) 반환.
+
+    `board_lock()` 하 read→transform→atomic write(temp + `os.replace`) 이다 — `areas_append`
+    (O_APPEND 등록)와 같은 락으로 직렬화해 동시 등록의 lost-update 를 막는다(ADR-0012·
+    `_migrate_areas_apply` 동형). 변환이 no-op(값 동일·`_areas_set_cell_text` 결과가 원문과
+    같음)이면 **쓰지 않는다**(멱등).
+
+    `column` 은 `_AREAS_COLUMNS` 의 칼럼명이어야 하고, `value` 는 표를 깨는 `|`·개행을 담을 수
+    없다(둘 다 `ValueError`). 대상 행 부재 → `AreasRepoNotFound`, 중복 행 → `AreasDuplicateRepo`
+    (둘 다 쓰기 이전·부작용 0).
+
+    `value` 는 **strip 해서** 기록한다 — 범용 백엔드라 호출자가 정규화했다고 가정할 수 없고,
+    `"  main , release  "` 를 verbatim 쓰면 셀 앞뒤 공백이 표에 남는다(`_parse_areas` 는 셀을
+    strip 해 읽으므로 읽기값은 같지만 파일이 지저분해진다). 반환 `(old, new)` 의 new 도 그 값이다.
+
+    **재진입 금지**(board_lock docstring) — board_lock 보유 중에는 부르지 않는다.
+    """
+    if column not in _AREAS_COLUMNS:
+        raise ValueError(
+            f"알 수 없는 areas.md 칼럼 {column!r} — 허용: {', '.join(_AREAS_COLUMNS)}")
+    if "|" in value or "\n" in value or "\r" in value:
+        raise ValueError(
+            f"areas.md 셀 값에 `|`/개행을 쓸 수 없다(표 corruption): {value!r}")
+    value = value.strip()
+    af = areas_file()
+    with board_lock():
+        # `newline=""`(universal-newline OFF) 로 읽고 쓴다 — CRLF 채택자(Windows)의 파일을
+        # 셀 하나 바꾸려다 LF 로 무단 정규화하지 않게(`rewrite_refs` 와 같은 관용구).
+        text = ""
+        if af.exists():
+            with af.open("r", encoding="utf-8", newline="") as fh:
+                text = fh.read()
+        new_text, old_value = _areas_set_cell_text(text, repo, column, value)
+        if new_text != text:
+            # atomic write — 같은 디렉토리 temp + os.replace(부분기록/crash 잔재 방지·ADR-0012).
+            # write 실패(디스크풀·권한)로 replace 에 못 가면 `.tmp` 가 남으므로 finally 로 청소한다
+            # (다음 실행이 stale temp 를 만나지 않게·잔재 0).
+            tmp = af.with_suffix(af.suffix + ".tmp")
+            try:
+                with tmp.open("w", encoding="utf-8", newline="") as fh:
+                    fh.write(new_text)
+                os.replace(str(tmp), str(af))
+            finally:
+                # 성공 시 os.replace 로 tmp 는 이미 사라졌다(missing_ok 로 no-op).
+                tmp.unlink(missing_ok=True)
+    return old_value, value
 
 
 # ── 보드 동시성 (ADR-0012) ────────────────────────────────────────────────
@@ -3535,6 +3741,10 @@ def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
     셀을 찾는다 — `_parse_areas` 가 wider row 를 헤더 무시하고 canonical 순서로 매핑하는 것과
     정확히 동형(must-fix). 그렇지 않으면 헤더 폭으로 읽다 index 3(`test_cmd`)을 area_owner 로
     오인해 backfill 을 놓친다.
+
+    인덱스 해소·구-헤더 업그레이드 계획·wider-row 보정은 **공용 헬퍼**(`_areas_column_index`·
+    `_areas_row_cell_index`)에 있고 `areas_set_cell`(범용 셀 변경)과 공유한다 — 두 벌로 갈라지면
+    T-0168 이 잡았던 칼럼 오매핑이 재발한다(ADR-0072).
     """
     lines = text.splitlines(keepends=True)
     header_cells: list[str] | None = None
@@ -3568,35 +3778,24 @@ def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
             continue
         if header_cells is None:
             header_cells = [c.lower() for c in cells]
-            if "area_owner" in header_cells:
-                ao_idx = header_cells.index("area_owner")
+            # 공용 헬퍼 — 칼럼이 있으면 그 인덱스(헤더 verbatim), 없으면 구-헤더 업그레이드
+            # 계획(canonical 8칼럼 교체 또는 기존 헤더 끝 append)을 함께 돌려준다.
+            ao_idx, new_header, sep_cols = _areas_column_index(header_cells, "area_owner")
+            if new_header is None:
                 out.append(line)  # 이미 신 스키마 헤더 — verbatim.
             else:
-                # 구 헤더(area_owner 칼럼 부재) → 업그레이드. canonical prefix(per-repo
-                # 레지스트리 계열·5/6/7칼럼이 `_AREAS_COLUMNS` 앞 N개와 일치)면 **canonical
-                # 8칼럼 헤더로 교체**(본문 요구·base/protected 미지정분도 표면화). 그 외
-                # 비호환 구 헤더(멀티-clone `prefix|area|owner`[3] 등 — 칼럼 의미가 canonical
-                # 과 어긋남)는 정렬을 깨지 않게 **기존 헤더 끝에 area_owner 칼럼만 append**한다.
                 upgrade = True
-                if tuple(header_cells) == _AREAS_COLUMNS[:len(header_cells)]:
-                    ao_idx = canonical_ao
-                    out.append(_areas_header_line() + nl)
-                    sep_cols = len(_AREAS_COLUMNS)
-                else:
-                    ao_idx = len(header_cells)  # 기존 칼럼 뒤에 append.
-                    out.append("| " + " | ".join(header_cells + ["area_owner"])
-                               + " |" + nl)
-                    sep_cols = len(header_cells) + 1
+                out.append(new_header + nl)
             continue
         # 헤더보다 넓은 row 는 `upgrade` 여부와 무관하게 canonical area_owner 인덱스(7)로
-        # 매핑한다 — `_parse_areas` 가 wider row(`len(cells) > len(header)`)를 헤더 무시하고
-        # `_AREAS_COLUMNS` 순서로 매핑하는 것과 정확히 동형이다(area_owner=index 7). 비-canonical
-        # 구 헤더(예 멀티-clone `prefix|area|owner`[3]) 아래에 canonical 8칼럼 row 가 append 된
+        # 매핑한다(`_areas_row_cell_index` 공용 보정) — `_parse_areas` 가 wider row 를 헤더
+        # 무시하고 `_AREAS_COLUMNS` 순서로 매핑하는 것과 정확히 동형이다. 비-canonical 구
+        # 헤더(예 멀티-clone `prefix|area|owner`[3]) 아래에 canonical 8칼럼 row 가 append 된
         # 케이스에서 `ao_idx`(=헤더 폭) 로 읽으면 index 3(`test_cmd`)을 area_owner 로 오인해
-        # backfill 못 한다 → wider row 면 무조건 canonical_ao 로 보정(must-fix·_parse_areas 정합).
-        idx = ao_idx if ao_idx is not None else canonical_ao
-        if len(cells) > len(header_cells):
-            idx = canonical_ao
+        # backfill 못 한다(must-fix·_parse_areas 정합).
+        idx = _areas_row_cell_index(
+            header_cells, cells,
+            ao_idx if ao_idx is not None else canonical_ao, "area_owner")
         prefix = cells[1] if len(cells) > 1 else "?"
         cur = cells[idx] if idx < len(cells) else ""
         if cur.strip():
@@ -6213,12 +6412,15 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     frontmatter `verified_at: <sha>` 이후 그 문서 매핑 경로에 커밋이 있으면 "재검증 필요"
 #     권고(ADR-0063·date 비교 대체). architect 재검증·PM 점검 대상이지 push 결함이 아니므로
 #     visibility 만·never-block(ADR-0022/0023 소유 불변·ADR-0015 "막지 않고 보이게").
+#   - areas-duplicate-repo : areas.md 에 같은 repo 행이 2개 이상 (ADR-0072). first-match 리졸버
+#     4종이 첫 행에서 return 하므로 조용히 굳는 걸 보이게만 한다 — 자동 병합은 사람 판정 영역이고
+#     레지스트리 정리가 push 결함도 아니라 never-block(`areas_set_cell` 의 fail-loud 와 짝).
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
      "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
      "status-stale", "domain-stale",
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
-     "adr-author"})
+     "adr-author", "areas-duplicate-repo"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -6754,6 +6956,37 @@ def lint_domain() -> list[tuple[str, str, str]]:
     return [(label, kind, detail) for kind, label, detail in findings]
 
 
+def lint_areas_duplicate_repo() -> list[tuple[str, str, str]]:
+    """areas.md 에 같은 repo 행이 2개 이상이면 advisory (ADR-0072·never-block).
+
+    first-match 리졸버(`_repo_protected`·`_repo_base`·`_areas_git_url`·`_repo_area_owner`)가
+    전부 첫 매칭 행에서 return 하므로 중복 행은 **조용히 first-match 로 굳는다** — 사용자가
+    보는 표와 엔진이 읽는 값이 갈린다. legacy inline 형상(`merge=union` 활성)에서 두 clone 이
+    같은 행을 각자 고치면 실제로 생길 수 있다. 자동 병합은 하지 않고(사람 판정) 존재만 보인다.
+    `areas_set_cell`(setter)의 fail-loud 와 짝 — 그쪽은 쓰기를 막고, 이쪽은 상시 가시화한다.
+
+    kind=`areas-duplicate-repo`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push
+    미차단). areas.md 부재/파싱 실패는 빈 결과(솔로 무영향).
+    """
+    try:
+        _header, rows = _parse_areas()
+    except Exception:  # noqa: BLE001 — areas 파싱 실패는 빈 결과(lint 를 깨지 않는다).
+        return []
+    counts: dict[str, int] = {}
+    for row in rows:
+        repo = row.get("repo")
+        if repo:
+            counts[repo] = counts.get(repo, 0) + 1
+    return [
+        (repo, "areas-duplicate-repo",
+         f"areas.md 에 repo 행이 {n}개 — first-match 로 조용히 굳는다(어느 행이 이기는지 "
+         f"merge 순서에 달림). 한 행만 남기고 수동 정리하라 "
+         f"({_rel_to_repo(areas_file())}). 정리 전엔 `pm-config repo protected {repo} …` "
+         "같은 셀 변경이 거부된다(ADR-0072).")
+        for repo, n in sorted(counts.items()) if n > 1
+    ]
+
+
 def lint_tickets() -> list[tuple[str, str, str]]:
     """All lint issues — ticket dependency graph + body self-containment +
     idea status/directory agreement + status.md ✅ 완성 행 누적 권고(judgment-only·ADR-0023) +
@@ -6766,14 +6999,17 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     un-migrated-overlay(어댑터 .md 리터럴 free-form 토큰 잔존·T-0132·§3.6·ADR-0031·advisory·never-block) +
     adr-author(ADR `author: <user>/<pm-slot>` provenance 권고·T-0165·ADR-0033 ③·advisory·never-block) +
     현재-진실 문서 freshness(architecture-stale·status-stale·domain-stale·verified_at sha 판정·
-    ADR-0063·advisory·never-block)."""
+    ADR-0063·advisory·never-block) +
+    areas-duplicate-repo(areas.md 중복 repo 행 → first-match 고착 가시화·ADR-0072·advisory·
+    never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
             + lint_domain() + lint_adr_lifecycle() + lint_adr_author()
             + lint_architecture_freshness() + lint_status_freshness()
             + lint_domain_freshness() + lint_adapter_drift()
-            + lint_render_leak() + lint_unmigrated_overlay())
+            + lint_render_leak() + lint_unmigrated_overlay()
+            + lint_areas_duplicate_repo())
 
 
 # ── board.md regeneration ──────────────────────────────────────────────
