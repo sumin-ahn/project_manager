@@ -32,7 +32,7 @@ from pathlib import Path
 
 # 엔진 사본 rev — 릴리즈 버전과 함께 bump 하는 단일 진실 값 (`--bump` 이 이 값 + STAMPED_MODULES
 # 리터럴을 일괄 재작성). 형식은 vX.Y.Z.
-ENGINE_REV = "v1.4.0"
+ENGINE_REV = "v1.4.1"
 
 # baked `ENGINE_REV` 리터럴을 지니는 엔진 모듈(= sibling skew 대조 대상). `--bump` 와 평시 가드
 # 테스트가 이 목록을 참조한다. pm_import 는 제외 — 자기 형제 canonical *source* 트리만 로드해
