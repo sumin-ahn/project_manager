@@ -4045,6 +4045,190 @@ def test_generated_hook_multi_ref_rejects_if_any_protected(wp):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# 보호 브랜치 pre-commit 가드 (T-0415·ADR-0071) — 설치(같은 배선) + 훅 직접 실행
+# ════════════════════════════════════════════════════════════════════════
+# pre-push 와 **같은 훅 디렉토리·같은 sidecar(`protected`)·같은 hooksPath 배선**을 탄다(신규
+# seam 0). 판정은 `git symbolic-ref --short HEAD` 이므로 훅 직접 실행도 *실 git 작업트리*
+# 안에서 돌려야 한다(`cwd` = 그 브랜치가 체크아웃된 repo) — 그래서 `_git_required`.
+
+
+def _run_commit_hook(hook_path: Path, cwd: Path, *, allow: bool = False) -> int:
+    """생성된 pre-commit 훅을 `sh` 로 직접 실행하고 종료코드를 반환한다 (T-0415).
+
+    pre-push 와 달리 stdin 계약이 없다 — 판정 입력은 **cwd 의 현재 브랜치**(git symbolic-ref)와
+    훅 옆 sidecar `protected` 뿐이다. `allow` 면 `PM_ALLOW_PROTECTED_COMMIT=1`(사용자 명시 OK
+    escape)을 환경에 둔다(아니면 부모 env 에서 제거해 오염 차단·`_run_hook` 동형).
+    """
+    env = dict(os.environ)
+    if allow:
+        env["PM_ALLOW_PROTECTED_COMMIT"] = "1"
+    else:
+        env.pop("PM_ALLOW_PROTECTED_COMMIT", None)
+    result = subprocess.run(
+        ["sh", str(hook_path)], cwd=str(cwd),
+        capture_output=True, text=True, env=env,
+    )
+    return result.returncode
+
+
+def test_install_protected_hook_writes_pre_commit_too(wp):
+    """install_protected_hook — pre-push 옆에 pre-commit 훅도 쓴다(0755·POSIX sh·T-0415).
+
+    엔진 업그레이드 자가치유가 성립하려면 *설치자*가 두 훅을 다 깔아야 한다 — 재설치 트리거
+    (repo add·worktree add·pm_update sync)는 이 함수 하나만 부르기 때문이다."""
+    _mk_bare_placeholder(wp, "A")
+    assert wp.install_protected_hook("A", ["main"], git_runner=FakeGit()) is True
+    commit_hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
+    assert commit_hook.exists(), "pre-commit 훅이 설치되지 않음(T-0415 미배포)"
+    assert commit_hook.read_text(encoding="utf-8").startswith("#!/bin/sh")
+    # 실행권한 없으면 git 이 훅을 조용히 건너뛴다(침묵 무력화) — pre-push 와 같은 0755.
+    assert commit_hook.stat().st_mode & 0o111, "pre-commit 훅에 실행권한 없음"
+    # sidecar 는 두 훅 공용(별도 목록 파일 신설 0).
+    assert (wp.REPO_HOOKS_DIR / "A" / "protected").read_text(
+        encoding="utf-8").splitlines() == ["main"]
+
+
+def test_install_protected_hook_bare_absent_writes_no_pre_commit(wp):
+    """bare 부재 → pre-commit 도 미생성(no-op·회사 repo 무영향 계약 동형·T-0415)."""
+    assert wp.install_protected_hook("A", ["main"], git_runner=FakeGit()) is False
+    assert not (wp.REPO_HOOKS_DIR / "A" / "pre-commit").exists()
+
+
+# ── 설치 산출물 명세 = 단일 진실 (T-0415·메타가드) ────────────────────────────
+# 설치와 정합 판정(pm_update)이 각자 목록을 들면 한쪽만 자라 조용히 갈라진다 — 실제로 그 클래스가
+# 연달아 났다(읽기 실패 축 누락 → 실행 비트 축 누락). 아래 가드는 "install 이 쓰는 것" 과
+# "명세가 말하는 것" 을 **실행/소스 양쪽에서** 묶어, 다음에 install 이 뭔가를 더 쓰면 명세를
+# 고칠 수밖에 없게 한다(그러면 판정은 명세를 읽으므로 자동으로 따라간다).
+
+
+def test_installed_files_match_artifact_spec(wp):
+    """**메타가드(실행)** — install 이 실제로 만든 파일 집합 == `protected_hook_artifacts` 명세.
+
+    install 이 명세 밖 파일을 하나 더 쓰면(또는 명세에 있는 걸 안 쓰면) 여기서 깨진다."""
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main", "release"], git_runner=FakeGit())
+    on_disk = {p.name for p in (wp.REPO_HOOKS_DIR / "A").iterdir()}
+    spec = {a.path.name for a in wp.protected_hook_artifacts("A", ["main", "release"])}
+    assert on_disk == spec, (
+        "install 산출물과 명세(protected_hook_artifacts)가 어긋난다 — 판정(pm_update)이 명세를 "
+        f"읽으므로 그 차이는 곧 미검사 축이다: 디스크={sorted(on_disk)} 명세={sorted(spec)}")
+
+
+def test_installed_artifact_contents_and_modes_match_spec(wp):
+    """**메타가드(실행)** — 각 산출물의 *내용*과 *실행권한*이 명세대로다(판정이 보는 그 값)."""
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    for artifact in wp.protected_hook_artifacts("A", ["main"]):
+        assert artifact.path.read_text(encoding="utf-8") == artifact.content, \
+            f"{artifact.path.name} 내용이 명세와 다름"
+        is_executable = bool(artifact.path.stat().st_mode & 0o111)
+        if artifact.executable:
+            assert is_executable, \
+                f"{artifact.path.name} 실행권한 없음 — git 이 훅을 조용히 건너뛴다"
+        # sidecar 는 실행권한을 *요구하지 않는다*(설치도 chmod 안 함) — 명세 flag 와 일치.
+
+
+def test_install_protected_hook_writes_only_through_artifact_spec():
+    """**메타가드(소스)** — install 의 write/chmod 는 전부 명세 순회 안에서만 일어난다.
+
+    실행 메타가드는 "결과 집합" 을 보고, 이건 "경로" 를 본다 — 누군가 명세를 우회해 파일을
+    직접 쓰면(다음 축 누락의 씨앗) 여기서 잡힌다."""
+    src = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
+    body = src.split("def install_protected_hook(", 1)[1].split("\ndef ", 1)[0]
+    writes = [line.strip() for line in body.splitlines()
+              if ".write_text(" in line or ".chmod(" in line]
+    assert writes == [
+        "artifact.path.write_text(artifact.content, encoding=\"utf-8\", newline=\"\\n\")",
+        "artifact.path.chmod(_PROTECTED_HOOK_EXECUTABLE_MODE)",
+    ], f"install 이 명세(protected_hook_artifacts) 밖에서 파일을 쓴다: {writes}"
+
+
+@_git_required
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_commit_hook_rejects_protected_branch(wp, tmp_path):
+    """생성 pre-commit 훅 직접 실행 — 현재 브랜치가 보호목록(main)이면 거부(rc≠0) (T-0415)."""
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main", "develop"], git_runner=FakeGit())
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
+    wc = _init_repo(tmp_path / "wc")          # `main` 체크아웃 상태
+    assert _run_commit_hook(hook, wc) != 0
+
+
+@_git_required
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_commit_hook_allows_feature_branch(wp, tmp_path):
+    """생성 pre-commit 훅 직접 실행 — 비보호 브랜치는 통과(rc 0) (T-0415·정상 작업 경로)."""
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main", "develop"], git_runner=FakeGit())
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
+    wc = _init_repo(tmp_path / "wc")
+    _git(wc, "checkout", "-q", "-b", "work/x")
+    assert _run_commit_hook(hook, wc) == 0
+
+
+@_git_required
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_commit_hook_allows_detached_head(wp, tmp_path):
+    """생성 pre-commit 훅 직접 실행 — detached HEAD 는 통과(rc 0) (T-0415·ADR-0071).
+
+    readonly 공유 슬롯 시맨틱 — 0단계 main-참조 판정(`_phase0_protected_reject`)의 readonly
+    carve-out 과 일치시킨다. detached 는 `git symbolic-ref` 가 rc≠0(브랜치 없음)이라, 보호
+    브랜치 sha 위에 서 있어도 브랜치 이름이 없으므로 판정 대상이 아니다."""
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
+    wc = _init_repo(tmp_path / "wc")
+    _git(wc, "checkout", "-q", "--detach", "HEAD")   # 보호 브랜치 sha 위 detached
+    assert _run_commit_hook(hook, wc) == 0
+
+
+@_git_required
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_commit_hook_pm_allow_passes_protected(wp, tmp_path):
+    """생성 pre-commit 훅 직접 실행 — `PM_ALLOW_PROTECTED_COMMIT=1` 이면 보호 브랜치도 통과 (T-0415).
+
+    `PM_ALLOW_PROTECTED_PUSH` 와 동형 시맨틱의 단일 escape — 사용자 명시 OK 용이고 PM 이 스스로
+    쓰지 않는다(pm_role §보호 브랜치 가드). commit 단계엔 검증할 라이브 게이트가 없어 2단
+    분리(PM_SKIP_LIVE_GATE 식)는 두지 않는다."""
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
+    wc = _init_repo(tmp_path / "wc")
+    assert _run_commit_hook(hook, wc, allow=True) == 0
+
+
+@_git_required
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_commit_hook_reads_sidecar_protected_list(wp, tmp_path):
+    """생성 pre-commit 훅 직접 실행 — 보호 판정은 sidecar(`protected`)를 읽는다 (generic 훅·T-0415).
+
+    같은 훅 본문이라도 sidecar 목록에 따라 거부/통과가 갈린다 → 훅이 목록을 하드코딩하지 않고
+    pre-push 와 **같은 sidecar** 를 읽음을 증명(`release` 만 보호면 main 커밋은 통과)."""
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["release"], git_runner=FakeGit())
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
+    wc = _init_repo(tmp_path / "wc")
+    assert _run_commit_hook(hook, wc) == 0            # main 은 목록에 없음 → 통과
+    _git(wc, "checkout", "-q", "-b", "release")
+    assert _run_commit_hook(hook, wc) != 0            # release 는 목록에 있음 → 거부
+
+
+@_git_required
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_commit_hook_sidecar_absent_passes(wp, tmp_path):
+    """생성 pre-commit 훅 직접 실행 — sidecar 부재면 통과 (pre-push 동형·보호목록 미해소).
+
+    훅은 generic 이라 목록 없이는 판정할 수 없다 — pre-push 의 `[ -f "$protected_file" ] ||
+    exit 0` 과 같은 규칙(우발 방지 가드이지 fail-closed 게이트가 아니다·ADR-0071)."""
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    (wp.REPO_HOOKS_DIR / "A" / "protected").unlink()
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
+    wc = _init_repo(tmp_path / "wc")
+    assert _run_commit_hook(hook, wc) == 0
+
+
+# ════════════════════════════════════════════════════════════════════════
 # 보호훅 hooksPath 발화 — 실 git push e2e (T-0096·T-0076 후속)
 # ════════════════════════════════════════════════════════════════════════
 # 위 단위테스트는 훅을 *직접 실행*(_run_hook)하거나 core.hooksPath set 을 *FakeGit 호출
@@ -4085,11 +4269,13 @@ def test_real_git_protected_push_blocked_via_hookspath(proj, tmp_path):
     assert Path(hooks_path) == Path(expected), \
         f"core.hooksPath wiring 안 됨: {hooks_path!r} != {expected!r}"
 
-    # 슬롯에 server remote 추가 + 새 커밋(ref 갱신 — 없으면 훅 미발화).
+    # 슬롯에 server remote 추가 + 새 커밋(ref 갱신 — 없으면 훅 미발화). 셋업 커밋이 보호
+    # main 위라 pre-commit 가드(T-0415)를 escape 로 통과시킨다 — 여기 검증 대상은 push 게이트.
     _git(slot_dir, "remote", "add", "server", str(server))
     (slot_dir / "change.txt").write_text("slot work on main\n", encoding="utf-8")
     _git(slot_dir, "add", "change.txt")
-    _git(slot_dir, "commit", "-q", "-m", "slot change on main")
+    _git(slot_dir, "commit", "-q", "-m", "slot change on main",
+         env={"PM_ALLOW_PROTECTED_COMMIT": "1"})
     slot_main = _git(slot_dir, "rev-parse", "main").stdout.strip()
     server_main_before = _git(server, "rev-parse", "main").stdout.strip()
 
@@ -4159,7 +4345,9 @@ def test_real_git_protected_push_pm_allow_with_skip_allowed(proj, tmp_path):
     _git(slot_dir, "remote", "add", "server", str(server))
     (slot_dir / "change.txt").write_text("skip work on main\n", encoding="utf-8")
     _git(slot_dir, "add", "change.txt")
-    _git(slot_dir, "commit", "-q", "-m", "skip change on main")
+    # 셋업 커밋이 보호 main 위 — pre-commit 가드(T-0415)는 escape 로 통과(검증 대상은 push).
+    _git(slot_dir, "commit", "-q", "-m", "skip change on main",
+         env={"PM_ALLOW_PROTECTED_COMMIT": "1"})
     slot_main = _git(slot_dir, "rev-parse", "main").stdout.strip()
 
     # PM_ALLOW + PM_SKIP — _git 헬퍼가 env 를 merge 한다(check=True·통과 기대).
@@ -4168,6 +4356,191 @@ def test_real_git_protected_push_pm_allow_with_skip_allowed(proj, tmp_path):
     # server bare 의 main 이 슬롯 main 으로 전진(승인+skip 이 차단을 풀었다).
     server_main = _git(server, "rev-parse", "main").stdout.strip()
     assert server_main == slot_main, "PM_ALLOW+PM_SKIP push 후 server main 이 전진 안 됨"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 보호 브랜치 commit 차단 — 실 git commit e2e (T-0415·ADR-0071)
+# ════════════════════════════════════════════════════════════════════════
+# 위 push e2e 의 commit 판(같은 hooksPath 배선·같은 sidecar). 여기서 못박는 것:
+#   ① 슬롯이 보호 브랜치면 `git commit` 이 실제로 차단되고 HEAD 가 안 움직인다
+#   ② 비보호 브랜치 커밋은 정상 통과   ③ `PM_ALLOW_PROTECTED_COMMIT=1` escape 통과
+#   ④ **비커버 실측 박제** — `--no-verify` 통과 · merge 커밋 미발화(= "release 에서 커밋 →
+#      main 으로 merge" 라는 pm_role 릴리즈 flow 가 escape 없이 통과한다).
+# 문서(ADR-0071·pm_role)가 코드보다 앞서지 않도록 ④ 를 *테스트로* 고정한다.
+
+
+def _commit(cwd: Path, message: str, *argv, allow: bool = False):
+    """슬롯에서 `git commit` 을 시도하고 CompletedProcess 를 반환한다 (차단 기대라 check=True 미사용).
+
+    rc 뿐 아니라 stderr 도 본다 — rc≠0 만 보면 *다른 이유*(빈 스테이지·identity 미설정)의
+    실패를 "훅이 막았다" 로 오독할 수 있다(false-green 의 거울상)."""
+    env = dict(os.environ)
+    env.update({
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+    })
+    if allow:
+        env["PM_ALLOW_PROTECTED_COMMIT"] = "1"
+    else:
+        env.pop("PM_ALLOW_PROTECTED_COMMIT", None)
+    return subprocess.run(
+        [_GIT, "-C", str(cwd), "commit", "-q", "-m", message, *argv],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+    )
+
+
+def _stage(slot_dir: Path, name: str, text: str) -> None:
+    """슬롯에 파일 하나를 쓰고 stage 한다 (커밋 시도의 전제)."""
+    (slot_dir / name).write_text(text, encoding="utf-8")
+    _git(slot_dir, "add", name)
+
+
+@_git_required
+def test_real_git_protected_commit_blocked_via_hookspath(proj, tmp_path):
+    """실 git e2e — 보호 브랜치(main) 슬롯에서 `git commit` 이 차단되고 HEAD 무변경 (T-0415).
+
+    v1.4.0 wave 11커밋이 전부 `main` 에서 이뤄진 실측(ADR-0071 Context)이 이 게이트의 근거다 —
+    진입 게이트(0단계)는 세션 시작만 보므로 세션 중 이탈은 이 훅만 본다."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_real_bare(wp, "A", tmp_path)
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main"]) is True
+
+    head_before = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
+    _stage(slot_dir, "change.txt", "work on main\n")
+    done = _commit(slot_dir, "on main")
+    assert done.returncode != 0, "보호 main 커밋이 pre-commit 훅에 안 막힘"
+    assert "[pm 보호 가드]" in done.stderr, \
+        f"차단 사유가 우리 훅이 아님(다른 실패를 오독): {done.stderr!r}"
+    assert _git(slot_dir, "rev-parse", "HEAD").stdout.strip() == head_before, \
+        "차단됐는데 HEAD 가 전진함(커밋이 실제로 만들어짐)"
+
+
+@_git_required
+def test_real_git_feature_commit_allowed_via_hookspath(proj, tmp_path):
+    """실 git e2e — 비보호 브랜치 커밋은 통과·HEAD 전진 (T-0415·정상 작업 경로 무영향)."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_real_bare(wp, "A", tmp_path)
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main"]) is True
+
+    _git(slot_dir, "checkout", "-q", "-b", "work/x")
+    head_before = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
+    _stage(slot_dir, "feat.txt", "feature work\n")
+    assert _commit(slot_dir, "on feature").returncode == 0, "비보호 브랜치 커밋이 막힘(오차단)"
+    assert _git(slot_dir, "rev-parse", "HEAD").stdout.strip() != head_before
+
+
+@_git_required
+def test_real_git_protected_commit_allowed_with_escape(proj, tmp_path):
+    """실 git e2e — `PM_ALLOW_PROTECTED_COMMIT=1` 이면 보호 main 커밋 통과 (T-0415 escape)."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_real_bare(wp, "A", tmp_path)
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main"]) is True
+
+    head_before = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
+    _stage(slot_dir, "change.txt", "approved work on main\n")
+    assert _commit(slot_dir, "approved", allow=True).returncode == 0, \
+        "escape 가 보호 커밋을 못 열음"
+    assert _git(slot_dir, "rev-parse", "HEAD").stdout.strip() != head_before
+
+
+@_git_required
+def test_real_git_protected_commit_no_verify_is_uncovered(proj, tmp_path):
+    """실 git e2e — `--no-verify` 는 훅 자체를 건너뛴다(비커버·ADR-0071 정직한 한계).
+
+    막아준다는 오해를 막기 위해 *실측을 박제*한다: 이건 우발 방지 가드지 적대적 통제가 아니다.
+    하드 백스톱은 pre-push(라이브 게이트 포함)가 유지한다."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_real_bare(wp, "A", tmp_path)
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main"]) is True
+
+    _stage(slot_dir, "change.txt", "bypass\n")
+    assert _commit(slot_dir, "no-verify", "--no-verify").returncode == 0, \
+        "--no-verify 가 차단됨 — ADR-0071 이 명시한 비커버 실측과 다름(문서/코드 불일치)"
+
+
+@_git_required
+def test_real_git_merge_into_protected_branch_not_gated(proj, tmp_path):
+    """실 git e2e — release 에서 커밋 → main 으로 merge 는 escape 없이 통과 (T-0415·pm_role 릴리즈 flow).
+
+    merge 커밋은 `pre-merge-commit` 소관이라 이 훅이 발화하지 않는다(비커버·설계상 이득).
+    pm_role §릴리즈 절차의 "릴리즈 커밋은 release 브랜치에서·main 은 merge" 가 실제로 막히지
+    않음을 못박는다 — 게이트는 push 단계(pre-push livegate)가 맡는다."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_real_bare(wp, "A", tmp_path)
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main"]) is True
+
+    # 릴리즈 커밋은 비보호 release 브랜치에서(훅 통과).
+    _git(slot_dir, "checkout", "-q", "-b", "release")
+    _stage(slot_dir, "release.txt", "release commit\n")
+    assert _commit(slot_dir, "release commit").returncode == 0
+    release_head = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
+
+    # main 으로 merge — pre-commit 미발화라 escape 없이 통과해야 한다.
+    _git(slot_dir, "checkout", "-q", "main")
+    rc = subprocess.run(
+        [_GIT, "-C", str(slot_dir), "merge", "--no-ff", "-q", "-m", "merge release", "release"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+    ).returncode
+    assert rc == 0, "main 으로의 merge 가 차단됨 — 정합 릴리즈 flow 가 escape 를 요구하게 됨"
+    # merge 결과가 실제로 main 에 담겼다(release 커밋이 조상).
+    assert _git(slot_dir, "merge-base", "--is-ancestor", release_head, "HEAD").returncode == 0
+
+
+@_git_required
+def test_real_git_sequencer_commands_are_uncovered(proj, tmp_path):
+    """실 git e2e — `revert`/`cherry-pick`(sequencer 클래스)은 보호 브랜치에서도 통과 (비커버 실측).
+
+    ADR-0071·pm_role·CHANGELOG 의 비커버 열거를 *클래스로* 못박는다 — 이 둘은 `pre-commit` 을
+    호출하지 않는다(실측). 문서가 코드보다 앞서지 않게 하는 가드이고, 동시에 "막아준다"는
+    오해도 막는다(하드 백스톱은 pre-push)."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_real_bare(wp, "A", tmp_path)
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    assert wp.install_protected_hook("A", ["main"]) is True
+
+    # 되돌릴/집어올 커밋을 비보호 브랜치에서 만들고 main 에 merge 로 올린다(셋업·훅 통과 경로).
+    _git(slot_dir, "checkout", "-q", "-b", "work/x")
+    _stage(slot_dir, "b.txt", "y\n")
+    assert _commit(slot_dir, "target commit").returncode == 0
+    target = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
+    _git(slot_dir, "checkout", "-q", "main")
+    _git(slot_dir, "merge", "--no-ff", "-q", "-m", "merge work/x", "work/x")
+
+    # main(보호) 위에서 revert — 통과(비커버).
+    assert _git(slot_dir, "revert", "--no-edit", target).returncode == 0
+
+    _git(slot_dir, "checkout", "-q", "-b", "work/y")
+    _stage(slot_dir, "c.txt", "z\n")
+    assert _commit(slot_dir, "pick me").returncode == 0
+    pick = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
+    _git(slot_dir, "checkout", "-q", "main")
+    # main(보호) 위에서 cherry-pick — 통과(비커버·같은 클래스).
+    assert _git(slot_dir, "cherry-pick", pick).returncode == 0
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -4228,10 +4601,14 @@ def _slot_commit_on(slot_dir: Path, branch: str, marker: str) -> str:
     """슬롯에서 새 커밋을 만들어 ref 를 전진시키고 그 sha 를 돌려준다 (pre-push 발화 전제).
 
     pre-push 훅은 *실제 ref 갱신* push 에만 발화한다 — 각 push 전 새 커밋으로 ref 를 전진시킨다.
+    `PM_ALLOW_PROTECTED_COMMIT=1` 은 이 **셋업 커밋**이 보호 브랜치(main) 위에서 만들어지기
+    때문이다(T-0415 pre-commit 가드가 같은 hooksPath 로 발화한다). 여기서 검증하는 건 *push*
+    단계 게이트이므로 셋업은 escape 로 통과시킨다 — pre-commit 가드 자체는 T-0415 e2e 가 본다.
     """
     (slot_dir / "change.txt").write_text(marker, encoding="utf-8")
     _git(slot_dir, "add", "change.txt")
-    _git(slot_dir, "commit", "-q", "-m", marker.strip() or "change")
+    _git(slot_dir, "commit", "-q", "-m", marker.strip() or "change",
+         env={"PM_ALLOW_PROTECTED_COMMIT": "1"})
     return _git(slot_dir, "rev-parse", branch).stdout.strip()
 
 

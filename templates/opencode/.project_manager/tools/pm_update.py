@@ -23,6 +23,8 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
   engine.manifest 의 각 경로를 <upstream>/<path> → <dest-root>/<path> 로 복사(overwrite).
   디렉토리는 재귀. manifest 에 없는 경로는 무시. --dry-run = 변경 예정만 출력(미적용).
   --target 지정 시 dest-root = REPO/templates/<target>/ (타깃 자신의 manifest 우선).
+  sync 적용 후에는 등록 repo 전수 **보호 훅 재설치**(T-0415) — 훅은 엔진 코드에서 생성되는
+  런타임 산출물이라 파일 복사만으론 새 훅이 배포되지 않는다(--target 은 비발화).
 
 결정:
   - merge 아니라 overwrite (엔진은 upstream 단일 진실). 커스터마이즈 가능 문서는 manifest 에서
@@ -1777,6 +1779,218 @@ def _print_entry_doc_migration_finding(result: dict, *, dry_run: bool = False) -
               f"{verb}(신형 정합·idempotent 복구).")
 
 
+# ── 보호 훅 전수 재설치 트리거 (T-0415·ADR-0071) ────────────────────────────────
+# 보호 훅(`.local/repo-hooks/<repo>/pre-push`·`pre-commit`)은 엔진 코드(worktree_pool 의 훅
+# 본문 상수)에서 *생성*되는 런타임 산출물이라, 엔진 파일이 갱신돼도 **재설치가 돌아야** 새 훅이
+# 디스크에 놓인다. 그런데 기존 설치 트리거는 `repo add`·`worktree add` 둘뿐이었다 — 즉 엔진
+# 업그레이드만 한 채택자는 새 훅(예: T-0415 pre-commit 가드)을 **영영 못 받는다**(값-연결이
+# 끊긴 채 green·[[robustness-value-connections-before-ship]]). 그래서 매 sync **실행마다** 등록
+# repo 전수 정합 확인 + drift 재설치를 신설한다.
+#
+# ⚠ **`changes` 유무로 게이트하지 않는다**(내부/외부 게이트 must-fix·격리 실측): 업그레이드
+# 경계에서 sync 를 *실행하는 주체는 dest 의 구 엔진*이다 — 이 기능을 배달하는 그 sync 자체는
+# 재설치 코드를 갖고 있지도 않다(RUN 1 미발화). 바로 다음 실행은 dest 가 신 엔진이지만
+# `changes == 0` 이라, "changes>0 에서만" 으로 좁히면 **다음에 우연히 엔진이 또 바뀔 때까지**
+# 훅이 안 깔린다(RUN 2 미발화). 그래서 옆의 `migrate_entry_doc` 와 **동형으로** changes 0 경로
+# 에서도 돈다. 노이즈는 트리거를 끄는 대신 **정합이면 조용**(아래 `_protected_hook_in_sync`
+# drift 판정)으로 낮춘다 — T-0417 sidecar reconcile 의 "비교 우선·정합이면 subprocess 0" 과
+# 같은 패턴이라 새 개념이 늘지 않는다. 이 판정은 훅 디렉토리가 통째로 지워진 clone 도 덮는다
+# (bootstrap reconcile 은 sidecar 파일이 없으면 즉시 return 이라 그 상태를 영구 침묵한다).
+#
+# 배선은 **기존 계약을 그대로 탄다**(신규 seam 0): dest 의 `pm_config._install_protected_hook_
+# reporting`(T-0417 이 통일한 설치+보고 단일 깔때기) → `_resolve_repo_protected`(areas 권위) →
+# `worktree_pool.install_protected_hook`(훅·sidecar·hooksPath). pm_update 는 목록 해소도 훅
+# 본문도 재구현하지 않는다.
+#
+# **dest 의 엔진**을 로드한다(source 아님) — sync 로 방금 갱신된 사본이 새 훅 본문을 들고 있고,
+# 등록 repo 레지스트리(areas.md)·훅 디렉토리도 dest(PM 홈) 소유다. `--target`(루트→templates
+# 엔진 export)은 비발화 — templates/<name> 은 PM 홈이 아니라 출하 스캐폴드라 등록 repo 가 없다
+# (selfheal/skew/진입 doc 마이그레이션과 같은 경계).
+def _load_dest_pm_config(dest_root: Path):
+    """dest(방금 동기된) `.project_manager/tools/pm_config.py` 를 로드 (T-0415·_load_pm_import 동형).
+
+    실행 중인 pm_update 프로세스는 **sync 이전** 코드를 메모리에 들고 있으므로, 재설치는 반드시
+    디스크의 *새* 사본을 로드해서 돌려야 신 훅 본문이 배포된다. 부재(구형 dest·엔진 미배치)면
+    None — 호출부가 fail-soft 로 보고한다. 로드 예외는 전파(호출부가 잡아 loud 보고)."""
+    pm_config_py = Path(dest_root) / ".project_manager" / "tools" / "pm_config.py"
+    if not pm_config_py.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("pm_config", pm_config_py)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _read_hook_artifact(path: Path) -> str | None:
+    """설치된 훅 산출물(훅 본문·sidecar) 1개를 읽는다 — 부재/읽기 실패는 **None** (T-0415).
+
+    `_protected_hook_in_sync` 의 유일한 읽기 창구다. 부재와 **읽기 실패**(non-UTF-8 로 깨진
+    본문·권한·IO 오류)를 *같은* None 으로 수렴시키는 게 요점 — 둘 다 "이 파일은 현 엔진 산출물이
+    아니다" 라는 같은 결론이고, 따라서 같은 해소(재설치)로 가야 한다. 예외를 밖으로 내면 호출부의
+    fail-soft 가 그걸 `unavailable`(=재설치 안 함)로 처리해 **깨진 훅이 영영 복구되지 않는다**."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None            # 부재·권한·IO — 재설치 대상.
+    except UnicodeDecodeError:
+        return None            # 깨진 본문(non-UTF-8) — 우리 산출물이 아니다 → 재설치 대상.
+
+
+# 실행 비트 축을 볼 수 있는 플랫폼인가 — POSIX 만. Windows 는 실행 비트 개념이 다르다(NTFS 에
+# mode 가 없고 `Path.chmod` 는 read-only 플래그만 만진다·`st_mode` 는 항상 0o666/0o444 계열).
+# 거기서 이 축을 보면 **매 sync 거짓 drift → 무한 재설치**가 된다. git-for-windows 는 훅을 sh 로
+# 돌리며 실행 비트를 요구하지도 않으므로 축 자체가 무의미하다. 테스트는 이 상수를 뒤집어
+# Windows 거동을 hermetic 하게 친다(플랫폼 분기 실행 불요).
+_EXEC_BIT_MEANINGFUL = os.name != "nt"
+
+
+def _hook_artifact_executable(path: Path) -> bool:
+    """산출물이 실행 가능한가 — 실행권한 축 (T-0415·Windows 는 축 비활성이라 항상 True).
+
+    **없으면 git 이 훅을 조용히 건너뛴다** — 본문만 비교하면 `chmod 0644` 된 훅이 `in_sync` 로
+    오판돼 보호가 침묵 비활성화된다. stat 실패(부재·권한)는 `False`(drift·재설치)."""
+    if not _EXEC_BIT_MEANINGFUL:
+        return True
+    try:
+        return bool(path.stat().st_mode & 0o111)
+    except OSError:
+        return False
+
+
+def _protected_hook_in_sync(repo: str, *, pm_config, worktree_pool, board) -> bool:
+    """이 repo 의 설치된 보호 훅이 **현재 엔진과 정합**인가 — drift 판정 (T-0415).
+
+    정합이면 재설치를 건너뛴다(매 sync 반복 출력 회피). "비교 우선·정합이면 조용" 은 T-0417
+    sidecar reconcile 과 같은 패턴이다.
+
+    **축을 열거하지 않고 유도한다** — 봐야 할 것은 정의상 "`install_protected_hook` 이 쓰는 것"
+    이므로, 그 함수와 **같은 명세**(`worktree_pool.protected_hook_artifacts`)를 읽어 산출물마다
+    ① 내용 ② 실행권한(필요한 것만)을 대조하고, 파일이 아닌 ③ bare `core.hooksPath` **배선**은
+    `pm_config.protected_hook_wired()`(T-0417 공용 헬퍼)로 본다. 판정이 자체 목록을 들면 설치가
+    자랄 때 조용히 갈라진다 — 실제로 그 클래스가 연달아 났다(읽기 실패 축·실행 비트 축).
+
+    **모르면 재설치 쪽으로 기운다**(fail-safe): 파일 부재·**읽기 실패**(깨진 본문·권한·IO)·
+    실행권한 상실·명세 부재(구 엔진 사본)·배선 판정 불가(`None`)는 전부 drift 로 수렴한다 —
+    재설치는 멱등이라 비용이 낮고, 반대 방향(조용히 stale 유지)은 보호가 꺼진 채 침묵하는
+    실패모드다.
+
+    **이 함수는 예외를 밖으로 내지 않는 게 계약**이다(전체 fail-safe False). 호출부의
+    `unavailable` 은 "dest 엔진/모듈을 못 불렀다"(=판정 자체가 불가능)를 위한 상태지 "파일이
+    깨졌다"가 아니다 — 후자를 unavailable 로 흘리면 재설치가 안 돌아 복구 경로가 사라진다."""
+    try:
+        artifacts_of = getattr(worktree_pool, "protected_hook_artifacts", None)
+        if artifacts_of is None:
+            return False       # 구 엔진 사본(명세 부재) — 판정 불가 → 재설치.
+        # 설치가 받는 것과 **같은 입력**(areas 실효 보호목록)으로 기대 산출물을 유도한다.
+        expected_list = list(pm_config._resolve_repo_protected(repo, board=board))
+        for artifact in artifacts_of(repo, expected_list):
+            if _read_hook_artifact(artifact.path) != artifact.content:
+                return False
+            if artifact.executable and not _hook_artifact_executable(artifact.path):
+                return False
+        # 배선 축 — `False`(hooksPath 가 우리 디렉토리를 안 가리킴)면 훅이 아예 발화하지 않는다.
+        # `None`(bare 부재·git 실패)은 판정 불가 → 재설치 시도(install 이 결과를 loud 보고).
+        return pm_config.protected_hook_wired(repo, worktree_pool=worktree_pool) is True
+    except Exception:  # noqa: BLE001 — 판정 실패는 drift(재설치)로 수렴·예외를 밖으로 내지 않는다.
+        return False
+
+
+def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
+    """등록 repo 전수 보호 훅 정합 확인 + drift 재설치 — 엔진 업그레이드 배포 트리거 (T-0415·ADR-0071).
+
+    **매 sync 실행마다** 돈다(changes 유무 무관 — 위 모듈 주석의 RUN1/RUN2 실측 참조).
+    `write=False`(dry-run)면 판정만 하고 아무것도 쓰지 않는다(migrate_entry_doc 의 write 플래그
+    동형). 반환 dict:
+      - `status` — "done" / "no_repos"(등록 repo 0) / "unavailable"(엔진/레지스트리 미해소)
+      - `targets` — 판정 대상 repo(= bare 미러 보유) · `in_sync` — 정합이라 건너뛴 repo(조용)
+      - `drifted` — 재설치가 필요한 repo(⊆ targets) · `failed` — 그중 설치 실패
+      - `no_bare` — 등록됐지만 `.repos/<repo>.git` 이 없어 게이트할 대상이 없는 repo
+      - `reason` — unavailable 사유(사람이 읽는 1줄)
+
+    **bare 부재는 실패가 아니다** — 게이트할 미러가 없으면 훅도 무의미하다(install 이 no-op
+    False). 매 sync 마다 경고를 울리는 대신 `no_bare` 로 분리해 요약 1줄로만 surface 한다
+    (침묵 아님·`_print_protected_hook_reinstall_finding`).
+
+    **fail-soft** — sync 는 이미 성공했다. 엔진 로드 실패(구형 dest·형제 rev skew)나 레지스트리
+    파싱 실패가 update rc 를 바꾸면 안 된다 → 예외를 "unavailable"+사유로 강등하고 호출부가
+    경고로 낸다(훅은 추가 가드·`_install_protected_hook` 의 fail-soft 계약과 동형).
+
+    ⚠ **"unavailable" 은 판정 자체가 불가능한 경우만**이다 — dest 엔진/레지스트리를 못 불러
+    *어느 repo 도* 손댈 수 없는 상태. **개별 repo 의 훅 파일이 깨진 것은 unavailable 이 아니라
+    drift** 다(`_protected_hook_in_sync` 가 읽기 실패를 False 로 수렴). 그 구분이 무너지면
+    "깨진 훅을 발견했는데 재설치는 안 하는" 경로가 생겨 복구 채널이 사라진다."""
+    result: dict = {"status": "unavailable", "targets": [], "in_sync": [],
+                    "drifted": [], "failed": [], "no_bare": [], "reason": None}
+    try:
+        pm_config = _load_dest_pm_config(dest_root)
+        if pm_config is None:
+            result["reason"] = (
+                f"{dest_root}/.project_manager/tools/pm_config.py 부재 — 로드 불가")
+            return result
+        board = pm_config._load_module("board", "board.py")
+        worktree_pool = pm_config._load_module("worktree_pool", "worktree_pool.py")
+        if board is None or worktree_pool is None:
+            missing = "board.py" if board is None else "worktree_pool.py"
+            result["reason"] = f"dest 엔진 {missing} 부재/로드 실패"
+            return result
+        repos = sorted(board.registered_repos())
+        if not repos:
+            result["status"] = "no_repos"
+            return result
+        for repo in repos:
+            # bare 미러가 있어야 `core.hooksPath` 를 걸 대상이 있다(install 과 같은 가드).
+            if not worktree_pool.bare_repo_path(repo).exists():
+                result["no_bare"].append(repo)
+                continue
+            result["targets"].append(repo)
+            if _protected_hook_in_sync(repo, pm_config=pm_config,
+                                       worktree_pool=worktree_pool, board=board):
+                result["in_sync"].append(repo)
+                continue
+            result["drifted"].append(repo)
+            if not write:
+                continue
+            ok = pm_config._install_protected_hook_reporting(
+                repo, board=board, worktree_pool=worktree_pool, action="(재)설치")
+            if not ok:
+                result["failed"].append(repo)
+        result["status"] = "done"
+        return result
+    except Exception as exc:  # noqa: BLE001 — 재설치 실패가 성공한 sync 를 무효화하면 안 됨.
+        result["status"] = "unavailable"
+        result["reason"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+
+def _print_protected_hook_reinstall_finding(result: dict, *, dry_run: bool = False) -> None:
+    """reinstall_protected_hooks 결과 요약 (T-0415·per-repo 성공/실패 줄은 pm_config 깔때기 소관).
+
+    **정합이면 완전히 조용**하다(`in_sync` 만 있는 매 sync 의 정상 경로) — 트리거를 끄지 않고
+    출력만 낮춘 게 이 함수다. 등록 repo 0(=`no_repos`)도 조용(걸 대상 없음). `unavailable` 은
+    훅이 갱신되지 않았다는 뜻이므로 stderr 경고 + 재설치 커맨드를 낸다(침묵 무력화 금지)."""
+    status = result.get("status")
+    if status == "no_repos":
+        return
+    if status == "unavailable":
+        print(
+            "[경고] 보호 브랜치 훅 정합 확인/재설치를 건너뛰었다 (T-0415) — "
+            f"{result.get('reason')}. 이 clone 의 훅은 **옛 엔진 본문**으로 남을 수 있다.\n"
+            "  → 재설치(멱등): pm-config repo add <repo>",
+            file=sys.stderr,
+        )
+        return
+    drifted = result.get("drifted") or []
+    if drifted and dry_run:
+        print(f"→ 보호 브랜치 훅 (재)설치 예정 (T-0415): {', '.join(drifted)} "
+              "(설치된 훅이 현 엔진과 불일치·적용 안 함)")
+    no_bare = result.get("no_bare") or []
+    if no_bare:
+        print(f"→ 보호 훅 대상 아님(bare `.repos/<repo>.git` 부재): {', '.join(no_bare)} "
+              "— 미러를 만들면(`pm-config repo add <repo>`) 훅이 걸린다.")
+
+
 def _set_console_codepage_utf8() -> None:
     # Windows 한정 — 콘솔 코드페이지를 UTF-8(65001)로 맞춘다. cp949(한국어) 콘솔에서
     # stdout reconfigure(utf-8)만으로는 콘솔이 UTF-8 바이트를 cp949 로 디코드해 한글이
@@ -1996,6 +2210,13 @@ def main(argv: list[str] | None = None) -> int:
     #    (무write)은 apply 가 없으므로 각 경로에서 직접 처리한다. 각 경로 migrate 1회(write flag 만 상이).
     do_migrate = not args.target
 
+    # ── 보호 훅 정합 확인 + drift 재설치 (T-0415·ADR-0071) — migrate 와 **같은 경계·같은
+    #    시퀀싱**(--target 비발화 · changes 0 경로에서도 write · dry-run 은 판정만). changes 로
+    #    게이트하면 이 기능을 배달하는 sync(구 엔진이 실행)도, 그 다음 실행(changes 0)도 발화
+    #    하지 않아 채택자가 가드를 못 받는다(격리 실측 RUN1/RUN2·모듈 주석). 반복 출력은
+    #    `_protected_hook_in_sync` 정합 판정이 흡수한다(정합이면 무출력).
+    do_reinstall = not args.target
+
     if not changes:
         print("최신 — 변경 없음.")
         _print_manifest_selfheal_finding(selfheal, dry_run=args.dry_run)
@@ -2005,6 +2226,12 @@ def main(argv: list[str] | None = None) -> int:
             result = migrate_entry_doc(
                 effective_dest, source_root, write=not args.dry_run)
             _print_entry_doc_migration_finding(result, dry_run=args.dry_run)
+        if do_reinstall:
+            # **업그레이드 배달 다음 실행이 여기로 온다**(dest 는 신 엔진·changes 0) — 훅이
+            # 실제로 깔리는 지점이므로 migrate 와 동형으로 write 한다(정합이면 무출력).
+            hooks = reinstall_protected_hooks(
+                effective_dest, write=not args.dry_run)
+            _print_protected_hook_reinstall_finding(hooks, dry_run=args.dry_run)
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
@@ -2013,6 +2240,9 @@ def main(argv: list[str] | None = None) -> int:
         if do_migrate:  # 판정만(write=False·무부작용).
             result = migrate_entry_doc(effective_dest, source_root, write=False)
             _print_entry_doc_migration_finding(result, dry_run=True)
+        if do_reinstall:  # 대상 해소만(write=False·무부작용).
+            hooks = reinstall_protected_hooks(effective_dest, write=False)
+            _print_protected_hook_reinstall_finding(hooks, dry_run=True)
         return 0
 
     apply(changes)  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지·R1).
@@ -2025,6 +2255,12 @@ def main(argv: list[str] | None = None) -> int:
         # 전환 write 는 apply(changes) 성공 이후 — 반쪽 상태 방지(R1).
         result = migrate_entry_doc(effective_dest, source_root, write=True)
         _print_entry_doc_migration_finding(result, dry_run=False)
+
+    if do_reinstall:
+        # apply 이후 — 방금 착지한 *새* 엔진 사본에서 훅 본문을 읽어 배포한다(T-0415). 단
+        # 이 경로만으로는 부족하다(배달 sync 는 구 엔진이 실행) — 위 changes 0 경로가 짝이다.
+        hooks = reinstall_protected_hooks(effective_dest, write=True)
+        _print_protected_hook_reinstall_finding(hooks, dry_run=False)
 
     # upstream_rev baseline 갱신(T-0145·ADR-0032 D2) — 매 sync 마다 source(upstream) HEAD 를
     # local.conf 에 박아 drift-lint(T-0141)의 "마지막 동기 이후" 기준점을 최신화한다. 경로

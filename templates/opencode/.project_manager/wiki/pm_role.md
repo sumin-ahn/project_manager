@@ -326,6 +326,16 @@ prefix 남발)를 정리할 때 —
   자율로 commit/push 하지 않는다.** feature 브랜치를 checkout 후 작업한다 (멀티-PM
   슬롯은 슬롯 브랜치 `<repo>_<N>` 가 base 에서 파생됨·T-0075).
 - **main 갱신 = 사용자에게 묻고 사용자가 처리** (PR/머지 권장). PM 이 발의하지 않는다.
+- pre-commit 훅(`.project_manager/.local/repo-hooks/<repo>/pre-commit`·T-0415·ADR-0071)이
+  보호 브랜치에서의 **commit 을 차단**한다 — **`PM_ALLOW_PROTECTED_COMMIT=1` override 를 PM 이
+  스스로 쓰지 않는다**(사용자 명시 OK 의 escape hatch 일 뿐·`PM_ALLOW_PROTECTED_PUSH` 와 동형).
+  detached HEAD(readonly 공유 슬롯)는 통과.
+  - **적용 범위 = 풀 슬롯 worktree**(`work/<repo>_<N>`) — 훅은 bare 미러(`.repos/<repo>.git`)의
+    `core.hooksPath` 를 타므로 그 미러를 공유하는 슬롯에서만 발화한다. **PM 홈 clone 자신은
+    `.git/hooks` 라 미배선**(가드 밖) — 거기선 규율이 여전히 사람 몫이다.
+  - **비커버**(정직한 한계): `git commit --no-verify` · merge 커밋(`pre-merge-commit` 소관·
+    미발화) · rebase/cherry-pick/revert(sequencer 클래스) — 우발 방지 가드이지 적대적 통제가
+    아니며 하드 백스톱은 아래 pre-push(라이브 게이트 포함)다.
 - pre-push 훅(`.project_manager/.local/repo-hooks/<repo>/pre-push`)이 보호 브랜치 push 를
   하드 차단한다 — **`PM_ALLOW_PROTECTED_PUSH=1` override 를 PM 이 스스로 쓰지 않는다**
   (사용자 명시 OK 의 escape hatch 일 뿐). override 로 열어도 훅은 **릴리즈 라이브 green
@@ -338,7 +348,10 @@ prefix 남발)를 정리할 때 —
 
 ### 릴리즈 절차 (순서 · ADR-0039)
 
-보호 브랜치(`main`)로 릴리즈를 낼 때 다음 순서를 지킨다:
+보호 브랜치(`main`)로 릴리즈를 낼 때 다음 순서를 지킨다. **릴리즈 커밋은 release 브랜치에서
+하고 `main` 은 merge 로 받는다** — 보호 브랜치 위에서 직접 커밋하지 않는다(pre-commit 가드·
+위 §보호 브랜치 가드). merge 커밋은 그 훅이 보지 않으므로 이 flow 는 escape 없이 통과하고,
+게이트는 push 단계의 pre-push(livegate)가 맡는다.
 
 1. **`board.py livegate record`** — 릴리즈 라이브 wave 를 실측해 green(수집 pin 충족)을 push
    대상 rev 에 기록한다 (손기록 없음·보호훅이 소비).

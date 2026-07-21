@@ -39,7 +39,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 
 # ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
@@ -1169,22 +1169,130 @@ exit 0
 """
 
 
+# ── 보호 브랜치 pre-commit 훅 (T-0415·ADR-0071·commit-time 강제) ──────────────
+# pre-push 훅과 **같은 배선**을 탄다 — 같은 훅 디렉토리(`.local/repo-hooks/<repo>/`)·같은
+# sidecar `protected`(줄당 1브랜치)·같은 bare `core.hooksPath`(신규 seam 0). 파일 하나가
+# 더 놓일 뿐이라 슬롯 worktree 는 재설치 즉시 이 훅을 탄다.
+#
+# 왜 pre-push 만으론 부족한가: pm_role §보호 브랜치 가드의 "보호 브랜치에 자율 commit 하지
+# 않는다" 는 강제 수단이 push 단계뿐이었고, 부트스트랩 0단계 main-참조 검사는 세션 *진입
+# 시점*만 본다 — 세션 중 보호 브랜치로 checkout 해서 커밋하는 것을 아무 기계도 안 봤다
+# (실측: v1.4.0 wave 11커밋이 전부 `main` 에서·ADR-0071 Context).
+#
+# 로직: sidecar 보호목록에 `git symbolic-ref --short HEAD`(= 현재 브랜치)가 있으면
+# `PM_ALLOW_PROTECTED_COMMIT=1` 이 아닌 한 거부(exit 1). **detached HEAD 는 통과** —
+# symbolic-ref 가 rc≠0 이라 브랜치가 없다(readonly 공유 슬롯 시맨틱·`_phase0_protected_reject`
+# 의 readonly carve-out 과 일치). 비보호 브랜치·sidecar 부재도 통과.
+#
+# **비커버(정직한 한계·ADR-0071)**: `git commit --no-verify`(실측 통과)·merge 커밋
+# (`pre-merge-commit` 소관·실측 미발화)·rebase/cherry-pick/revert(sequencer 클래스·실측 통과).
+# 이건 우발 방지 가드지 적대적 통제가 아니고, 하드 백스톱은 pre-push(라이브 게이트 포함)가
+# 그대로 맡는다. 또 훅은 bare `core.hooksPath` 를 공유하는 **풀 슬롯 worktree** 에만 걸린다
+# (PM 홈 clone 자신은 `.git/hooks` 라 가드 밖). merge 미발화는
+# 설계상 이득 — "release 브랜치에서 커밋 → main 으로 merge → push" 라는 정합 릴리즈 flow 가
+# escape 없이 통과한다(pm_role §릴리즈 절차).
+_PROTECTED_PRE_COMMIT_HOOK = """\
+#!/bin/sh
+# pm 보호 브랜치 pre-commit 가드 (T-0415·ADR-0071) — PM 이 보호 브랜치(main 등)에서 자율로
+# commit 하지 못하게 한다. install_protected_hook() 가 pre-push 훅과 같은 디렉토리에 설치하고,
+# 보호목록 = 같은 디렉토리의 sidecar `protected`(줄당 1브랜치·pre-push 와 공유).
+hook_dir=$(dirname "$0")
+protected_file="$hook_dir/protected"
+[ -f "$protected_file" ] || exit 0
+
+# 현재 브랜치. **detached HEAD 는 통과** — symbolic-ref 가 rc≠0(브랜치 없음)이고, readonly
+# 공유 슬롯 시맨틱(0단계 readonly carve-out)과 일치시킨다.
+branch=$(git symbolic-ref --short HEAD 2>/dev/null) || exit 0
+[ -n "$branch" ] || exit 0
+
+# 이 브랜치가 sidecar 보호목록에 있나? (pre-push 훅의 목록 순회와 같은 규칙)
+is_protected=0
+while IFS= read -r protected_branch; do
+    [ -n "$protected_branch" ] || continue
+    if [ "$branch" = "$protected_branch" ]; then
+        is_protected=1
+        break
+    fi
+done < "$protected_file"
+[ "$is_protected" = "1" ] || exit 0   # 비보호 브랜치(feature) → 통과.
+
+# 보호 브랜치 — 승인(PM_ALLOW_PROTECTED_COMMIT=1) 없으면 거부.
+if [ "$PM_ALLOW_PROTECTED_COMMIT" != "1" ]; then
+    echo "[pm 보호 가드] 보호 브랜치 '$branch' 에서의 commit 거부 (T-0415)." >&2
+    echo "  PM 은 보호 브랜치에 자율 commit/push 하지 않는다 — 작업 브랜치로 옮겨 커밋하라:" >&2
+    echo "    git switch -c <작업-브랜치>      # 새로 파거나" >&2
+    echo "    git switch <기존-작업-브랜치>    # 이미 있으면 그리로" >&2
+    echo "  릴리즈도 같다 — 릴리즈 커밋은 release 브랜치에서 하고 '$branch' 은 merge 로 받는다" >&2
+    echo "  (merge 커밋은 이 훅이 안 보므로 escape 불요)." >&2
+    echo "  사용자 명시 OK 면:" >&2
+    echo "    PM_ALLOW_PROTECTED_COMMIT=1 git commit ..." >&2
+    exit 1
+fi
+
+exit 0
+"""
+
+
+# ── 설치 산출물 명세 — install ↔ 정합 판정의 단일 진실 (T-0415) ────────────────
+# **`install_protected_hook` 이 *쓰는 것*이 곧 drift 축이다.** 설치와 판정(pm_update 의
+# `_protected_hook_in_sync`)이 각자 목록을 들고 있으면 한쪽만 자라 조용히 갈라진다 — 실제로 그
+# 클래스가 연달아 났다(읽기 실패 축 누락 → 다음 라운드 실행권한 축 누락). 그래서 산출물 전수를
+# 이 명세 하나가 소유하고, 설치는 이걸 **써서** 쓰고 판정은 이걸 **읽어서** 본다(축을 열거하지
+# 않고 유도). 새 산출물을 설치에 추가하려면 이 목록에 넣어야 하고(설치 루프가 순회한다), 그러면
+# 판정도 자동으로 따라간다.
+#
+# 실행권한: 훅 파일은 0755 여야 한다 — **없으면 git 이 훅을 조용히 건너뛴다**(보호 침묵 비활성).
+# sidecar(`protected`·`engine-root`)는 훅이 `read` 로만 읽는 데이터라 실행권한 요구가 없다
+# (설치도 chmod 하지 않는다) → `executable=False`. 나중에 설치가 chmod 를 붙이면 그 플래그만
+# True 로 바꾸면 판정이 따라온다.
+_PROTECTED_HOOK_EXECUTABLE_MODE = 0o755
+
+
+class ProtectedHookArtifact(NamedTuple):
+    """보호 훅 설치 산출물 1개 — 경로·기대 내용·실행권한 필요 여부."""
+
+    path: Path
+    content: str
+    executable: bool
+
+
+def protected_hook_artifacts(
+    repo: str, protected: list[str],
+) -> list[ProtectedHookArtifact]:
+    """`install_protected_hook` 이 쓰는 **파일 전수** + 각 파일의 기대 내용/실행권한 (T-0415).
+
+    설치·정합 판정 공용 단일 진실(위 주석). 반환 순서 = 설치 순서(`protected` sidecar 를 쓴 뒤
+    배선하는 T-0417 의 순서 보장은 install 이 이 목록 순회 *뒤에* config 를 부르는 것으로 유지).
+
+    ⚠ bare `core.hooksPath` **배선**은 파일이 아니라 git config 라 이 목록 밖이다 — 판정은
+    `pm_config.protected_hook_wired()`(T-0417 공용 헬퍼)로 그 축을 따로 본다."""
+    hook_dir = REPO_HOOKS_DIR / repo
+    return [
+        ProtectedHookArtifact(hook_dir / "pre-push", _PROTECTED_PRE_PUSH_HOOK, True),
+        ProtectedHookArtifact(hook_dir / "pre-commit", _PROTECTED_PRE_COMMIT_HOOK, True),
+        ProtectedHookArtifact(
+            hook_dir / "protected", "".join(f"{b}\n" for b in protected), False),
+        ProtectedHookArtifact(hook_dir / "engine-root", f"{REPO.resolve()}\n", False),
+    ]
+
+
 def install_protected_hook(
     repo: str,
     protected: list[str],
     *,
     git_runner: GitRunner | None = None,
 ) -> bool:
-    """보호 브랜치 pre-push 훅 + sidecar 를 (재)설치하고 bare `core.hooksPath` 를 wiring 한다 (T-0076).
+    """보호 브랜치 pre-push + pre-commit 훅 + sidecar 를 (재)설치하고 bare `core.hooksPath` 를 wiring 한다 (T-0076·T-0415).
 
-    **멱등·자가치유** — `pm-config repo add`·`worktree add` 가 매번 호출(이미 있으면 갱신).
-    세 가지를 한다:
+    **멱등·자가치유** — `pm-config repo add`·`worktree add`·`pm_update` sync 가 매번 호출(이미
+    있으면 갱신). 세 가지를 한다:
       1. 훅 디렉토리 `.project_manager/.local/repo-hooks/<repo>/` 생성(프레임워크 소유·gitignore).
-      2. `pre-push` 훅(generic·POSIX sh·LF) + sidecar 2종: `protected`(보호목록·줄당 1브랜치)와
-         `engine-root`(PM 홈 REPO 절대경로 1줄·T-0223 라이브 게이트 board.py 해소용). 목록/루트가
-         바뀌면 재설치가 sidecar 를 덮어 갱신한다(훅 본문은 불변).
+      2. `pre-push`(T-0076)·`pre-commit`(T-0415) 훅(generic·POSIX sh·LF) + sidecar 2종:
+         `protected`(보호목록·줄당 1브랜치·**두 훅 공용**)와 `engine-root`(PM 홈 REPO 절대경로
+         1줄·T-0223 라이브 게이트 board.py 해소용). 목록/루트가 바뀌면 재설치가 sidecar 를 덮어
+         갱신한다(훅 본문은 불변).
       3. bare(`.repos/<repo>.git`)의 `core.hooksPath` 를 그 디렉토리(절대경로)로 set
-         → 슬롯 push 가 이 훅에 게이트된다.
+         → 슬롯 push/commit 이 이 훅들에 게이트된다.
 
     **bare 부재 = no-op·False**(가드) — bare 가 없으면 게이트할 대상이 없다(repo add 가 아직
     clone 안 함·솔로(단일 repo)). 훅/sidecar 도 쓰지 않고 조용히 False(설치 안 함). bare 존재면 설치
@@ -1202,22 +1310,19 @@ def install_protected_hook(
     hook_dir = REPO_HOOKS_DIR / repo
     hook_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) pre-push 훅 (generic·POSIX sh·LF). 멱등 — 매 호출 덮어쓰기(엔진 update 자가치유).
-    hook = hook_dir / "pre-push"
-    hook.write_text(_PROTECTED_PRE_PUSH_HOOK, encoding="utf-8", newline="\n")
-    hook.chmod(0o755)
-
-    # 2) sidecar `protected` — 보호목록(줄당 1브랜치). 목록 변경 시 재설치가 갱신.
-    sidecar = hook_dir / "protected"
-    sidecar.write_text(
-        "".join(f"{b}\n" for b in protected), encoding="utf-8", newline="\n")
-
-    # 2.5) sidecar `engine-root` — PM 홈 REPO 절대경로 1줄 (T-0223 라이브 게이트 board.py 해소용).
-    # 설치자는 PM 홈 컨텍스트에서 도므로 REPO(=engine root)를 안다. 훅은 슬롯 worktree(회사/family
-    # checkout·PM 엔진 파일 없음)에서 발화하므로 self-locate 불가 — 이 sidecar 로 PM 홈 board.py 를
-    # 해소한다(livegate.json 도 PM 홈 .local 소유·기록 위치 정합). protected sidecar 와 동형·멱등.
-    (hook_dir / "engine-root").write_text(
-        f"{REPO.resolve()}\n", encoding="utf-8", newline="\n")
+    # 1~2) 훅·sidecar **전수** write(+실행권한). 멱등 — 매 호출 덮어쓰기(엔진 update 자가치유).
+    # 산출물 목록·내용·실행권한은 `protected_hook_artifacts` 단일 진실이다 — 여기서 개별 파일을
+    # 직접 쓰지 않는다(설치와 정합 판정이 갈라지는 클래스 폐쇄·위 명세 주석). 순회 순서 = 명세
+    # 순서(pre-push → pre-commit → protected → engine-root) 이고, 배선(3)은 그 뒤다.
+    #   - `pre-push`(T-0076)·`pre-commit`(T-0415): generic 훅 본문·POSIX sh·LF·0755.
+    #   - sidecar `protected`: 보호목록(줄당 1브랜치). 목록 변경 시 재설치가 갱신.
+    #   - sidecar `engine-root`: PM 홈 REPO 절대경로 1줄(T-0223 라이브 게이트 board.py 해소용).
+    #     설치자는 PM 홈 컨텍스트에서 도므로 REPO 를 안다 — 훅은 슬롯 worktree(회사/family
+    #     checkout·PM 엔진 파일 없음)에서 발화해 self-locate 가 불가하다.
+    for artifact in protected_hook_artifacts(repo, protected):
+        artifact.path.write_text(artifact.content, encoding="utf-8", newline="\n")
+        if artifact.executable:
+            artifact.path.chmod(_PROTECTED_HOOK_EXECUTABLE_MODE)
 
     # 3) bare core.hooksPath wiring (절대경로) — client-side·우리 미러 config 1줄.
     # **rc 검사(codex T-0076)**: config 실패면 훅이 실제로 wiring 안 됐는데 성공 보고하면 보호

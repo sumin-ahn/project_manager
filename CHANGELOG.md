@@ -32,6 +32,28 @@
   first-match 로 조용히 굳는 것을 상시 표면화한다(자동 병합 없음·사람 판정).
 
 ### Changed
+- **보호 브랜치에서의 `git commit` 이 차단된다** (ADR-0071·T-0415) — **동작 변경**: 지금까지
+  통과하던 커밋이 막힌다. 풀 슬롯(worktree)에서 보호 브랜치(`main`/`master`/`develop`·per-repo
+  override)를 체크아웃한 채 커밋하면 pre-commit 훅이 거부한다. 종전엔 "보호 브랜치에 자율
+  commit 하지 않는다" 가 문서 규율일 뿐이었고 강제 수단은 *push* 단계뿐이었다.
+  - escape 는 `PM_ALLOW_PROTECTED_COMMIT=1`(예: `PM_ALLOW_PROTECTED_COMMIT=1 git commit ...`) —
+    `PM_ALLOW_PROTECTED_PUSH` 와 동형 시맨틱. detached HEAD 는 통과한다.
+  - **비커버**(우발 방지 가드이지 적대적 통제가 아니다): `git commit --no-verify` · merge 커밋
+    (`pre-merge-commit` 소관) · rebase/cherry-pick/revert. 하드 백스톱은 pre-push 훅(라이브 게이트 포함).
+  - 릴리즈 flow 는 그대로다 — 릴리즈 커밋은 release 브랜치에서 하고 `main` 은 merge 로 받으면
+    escape 없이 통과한다.
+  - 훅은 우리 bare 미러(`.repos/<repo>.git`)의 `core.hooksPath` client-side 가드다 — **회사
+    repo 서버 ref·사용자 클론 무영향**(pre-push 훅과 같은 배선·sidecar 공용). 그 미러를 쓰지 않는
+    clone(예: PM 홈 자신)은 영향 없다.
+- **`pm-update` 가 매 실행마다 보호 훅 정합을 확인하고 어긋나면 다시 깐다** (T-0415) — 훅은 엔진
+  코드에서 생성되는 런타임 산출물이라 **파일 복사만으론 새 훅이 배포되지 않는다**(설치 트리거가
+  `repo add`·`worktree add` 뿐이라 엔진만 올린 인스턴스는 새 가드를 못 받았다). 이제 설치된 훅
+  본문·보호목록 sidecar·`core.hooksPath` 배선을 현 엔진과 대조해 **정합이면 조용히 넘어가고**
+  어긋나면 재설치한다(훅 디렉토리가 통째로 지워진 clone 도 자가치유). 실패는 loud 경고 + 재설치
+  커맨드(update 종료코드는 불변).
+  - **업그레이드 노트**: 이 버전을 흡수하는 그 `pm-update` 실행은 *갱신 전* 엔진이 수행하므로
+    훅이 아직 안 깔린다. **흡수 직후 `pm-update` 를 한 번 더 실행**하면(변경이 없어도 정합
+    확인이 돌아) pre-commit 가드가 배포된다. `pm-config repo add <repo>`(멱등)로도 즉시 깔린다.
 - **보호 브랜치 훅 설치 실패가 이제 loud 하다** (T-0417) — `pm-config repo add`·`worktree add` 는
   훅 설치 결과(False)를 조용히 삼켜서, 훅이 안 걸렸는데 사용자는 걸린 줄 알았다(보호 가드 침묵
   무력화). 이제 실패 시 stderr 경고 + 재실행 커맨드가 나간다(성공 출력·종료코드는 불변 — 보호 훅은

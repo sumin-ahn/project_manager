@@ -1112,7 +1112,8 @@ def test_install_reporting_funnel_success_and_failure(pc, monkeypatch, capsys):
     monkeypatch.setattr(pc, "_install_protected_hook", lambda repo, **_kw: True)
     assert pc._install_protected_hook_reporting("svc", action="설치") is True
     cap = capsys.readouterr()
-    assert "✓ 보호 브랜치 pre-push 훅 설치: svc" in cap.out and cap.err == ""
+    # 설치자는 두 훅(pre-push·T-0076 / pre-commit·T-0415)을 함께 깐다 — 성공 문구도 둘 다 밝힌다.
+    assert "✓ 보호 브랜치 pre-push + pre-commit 훅 설치: svc" in cap.out and cap.err == ""
 
     monkeypatch.setattr(pc, "_install_protected_hook", lambda repo, **_kw: False)
     assert pc._install_protected_hook_reporting(

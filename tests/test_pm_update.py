@@ -10,6 +10,7 @@ monkeypatch 해 실 REPO 를 건드리지 않고 local.conf upstream 해소를 �
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -2708,3 +2709,412 @@ def test_self_prop_self_update_preserves_root_flavor(pm_update, tmp_path, monkey
     after = root_manifest.read_text(encoding="utf-8")
     assert "FLAVOR: root" in after and "FLAVOR: claude" not in after and "FLAVOR: opencode" not in after
     assert after == before, "root self-update 가 root 매니페스트를 변경(self no-op 이어야)"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 보호 훅 전수 재설치 트리거 (T-0415·ADR-0071)
+# ════════════════════════════════════════════════════════════════════════
+# 보호 훅(`.local/repo-hooks/<repo>/pre-push`·`pre-commit`)은 엔진 코드에서 *생성*되는 런타임
+# 산출물이다 — 엔진 파일이 복사돼도 **재설치가 돌아야** 새 훅이 디스크에 놓인다. 설치 트리거가
+# `repo add`/`worktree add` 뿐이면 엔진 업그레이드만 한 채택자는 새 훅을 영영 못 받는다(값-연결
+# 단절). 아래는 그 연결을 assert 한다 — dest 엔진 실사본 + 실 bare 로 *진짜 파일*을 본다.
+
+_GIT = shutil.which("git")
+_git_required = pytest.mark.skipif(_GIT is None, reason="git 바이너리 없음")
+
+_AREAS_ONE_REPO = (
+    "# Area Registry\n\n"
+    "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+    "|---|---|---|---|---|---|---|---|\n"
+    "| svc | SVC | git@x:svc.git | pytest -q | me | main | main,release | me |\n"
+)
+
+
+def _make_pm_home(dest_root: Path, *, areas: str | None = _AREAS_ONE_REPO,
+                  bare_repos: tuple[str, ...] = ("svc",)) -> Path:
+    """dest 를 **PM 홈 형상**으로 만든다 — 실 엔진 tools 사본 + areas 레지스트리 + 실 bare 미러.
+
+    재설치는 dest 엔진(`pm_config`→`board`/`worktree_pool`)을 로드해 돌므로 tools 는 실 사본이어야
+    한다(형제 rev 스탬프도 함께 맞는다·T-0397). bare 는 `git init --bare` 실물 — `core.hooksPath`
+    설정이 rc0 이어야 설치가 성공(True)으로 보고된다."""
+    tools = dest_root / ".project_manager" / "tools"
+    tools.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(TOOLS, tools)
+    if areas is not None:
+        (dest_root / ".project_manager" / "areas.md").write_text(areas, encoding="utf-8")
+    for repo in bare_repos:
+        bare = dest_root / ".repos" / f"{repo}.git"
+        bare.mkdir(parents=True, exist_ok=True)
+        subprocess.run([_GIT, "init", "--bare", "-q", str(bare)], check=True,
+                       capture_output=True, text=True)
+    return dest_root
+
+
+def _hook_dir(dest_root: Path, repo: str) -> Path:
+    return dest_root / ".project_manager" / ".local" / "repo-hooks" / repo
+
+
+@_git_required
+def test_reinstall_protected_hooks_installs_both_hooks(pm_update, tmp_path, capsys):
+    """등록 repo 전수 재설치 — pre-push + **pre-commit** 훅과 sidecar 가 디스크에 놓인다 (T-0415).
+
+    이게 이 티켓의 값-연결이다: 엔진 업그레이드(파일 복사)만으론 훅이 안 바뀐다 — 재설치가
+    dest 의 *새* worktree_pool 훅 본문을 깔아야 채택자에게 도달한다."""
+    dest = _make_pm_home(tmp_path / "home")
+    result = pm_update.reinstall_protected_hooks(dest, write=True)
+
+    assert result["status"] == "done"
+    assert result["targets"] == ["svc"] and result["drifted"] == ["svc"]
+    assert result["in_sync"] == [] and result["failed"] == []
+    hooks = _hook_dir(dest, "svc")
+    assert (hooks / "pre-push").exists(), "pre-push 훅 미설치"
+    commit_hook = hooks / "pre-commit"
+    assert commit_hook.exists(), "pre-commit 훅이 sync 후 재설치로 배포되지 않음(T-0415 값-연결 단절)"
+    assert "PM_ALLOW_PROTECTED_COMMIT" in commit_hook.read_text(encoding="utf-8")
+    # 보호목록은 areas.md 권위(`main,release`)를 그대로 sidecar 로 — pm_update 가 목록을 재해소하지 않는다.
+    assert (hooks / "protected").read_text(encoding="utf-8").splitlines() == ["main", "release"]
+    # 설치 보고는 pm_config 깔때기를 탄다(성공 ✓ 1줄·조용하지 않다).
+    assert "✓ 보호 브랜치 pre-push + pre-commit 훅 (재)설치: svc" in capsys.readouterr().out
+
+
+@_git_required
+def test_reinstall_protected_hooks_dry_run_writes_nothing(pm_update, tmp_path):
+    """`write=False`(dry-run) — 판정만 하고 훅 파일은 쓰지 않는다 (무부작용)."""
+    dest = _make_pm_home(tmp_path / "home")
+    result = pm_update.reinstall_protected_hooks(dest, write=False)
+    assert result["status"] == "done" and result["drifted"] == ["svc"]
+    assert not _hook_dir(dest, "svc").exists(), "dry-run 이 훅을 실제로 설치했다"
+
+
+@_git_required
+def test_reinstall_protected_hooks_bare_absent_is_not_failure(pm_update, tmp_path, capsys):
+    """등록됐지만 bare 미러가 없는 repo 는 `no_bare` — 실패 경고가 아니라 요약 1줄 (T-0415).
+
+    게이트할 미러가 없으면 훅도 무의미하다(install 이 no-op). 매 sync 마다 실패 경고를 울리면
+    진짜 실패가 묻힌다 — 그렇다고 침묵하지도 않는다(요약 1줄로 surface)."""
+    dest = _make_pm_home(tmp_path / "home", bare_repos=())
+    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    assert result["status"] == "done"
+    assert result["targets"] == [] and result["drifted"] == []
+    assert result["failed"] == [] and result["no_bare"] == ["svc"]
+    pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
+    cap = capsys.readouterr()
+    assert "bare" in cap.out and "svc" in cap.out
+    assert cap.err == "", "bare 부재는 실패가 아니다(경고로 울리면 진짜 실패가 묻힌다)"
+
+
+@_git_required
+def test_reinstall_protected_hooks_no_registered_repos_is_quiet(pm_update, tmp_path, capsys):
+    """등록 repo 0(솔로·미등록) → `no_repos`·완전 무출력 (걸 대상 없음 = 정상)."""
+    dest = _make_pm_home(tmp_path / "home", areas=None, bare_repos=())
+    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    assert result["status"] == "no_repos"
+    pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
+    cap = capsys.readouterr()
+    assert cap.out == "" and cap.err == ""
+
+
+def test_reinstall_protected_hooks_engine_absent_is_fail_soft_loud(pm_update, tmp_path, capsys):
+    """dest 에 엔진이 없으면 `unavailable` + **stderr 경고**(침묵 무력화 금지·rc 무영향).
+
+    sync 는 이미 성공했으므로 예외를 던져 update 를 깨면 안 되지만, 훅이 옛 본문으로 남았다는
+    사실은 반드시 보여야 한다(재설치 커맨드 포함)."""
+    dest = tmp_path / "no-engine"
+    dest.mkdir()
+    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    assert result["status"] == "unavailable" and "pm_config.py" in result["reason"]
+    pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
+    cap = capsys.readouterr()
+    assert "[경고]" in cap.err and "repo add" in cap.err
+
+
+@_git_required
+def test_main_reinstalls_protected_hooks_after_apply(pm_update, tmp_path, monkeypatch, capsys):
+    """실 sync(main) — apply 후 등록 repo 전수 훅 재설치가 실제로 돈다 (T-0415 트리거 배선).
+
+    엔진 업그레이드 = `pm_update` sync 다. 그 경로에 재설치가 안 걸리면 새 훅은 우리 clone 에서만
+    돌고 채택자에겐 영영 안 간다(ADR-0071 재설치 트리거 신설 근거)."""
+    dest = _make_pm_home(tmp_path / "home")
+    source = tmp_path / "upstream"
+    _make_upstream(source)                       # sentinel 1개 = changes>0
+    _write_local_conf(dest, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    _stub_no_baseline_git(pm_update, monkeypatch)
+
+    rc = pm_update.main([])
+    assert rc == 0
+    assert (_hook_dir(dest, "svc") / "pre-commit").exists(), \
+        "sync 후 pre-commit 훅이 배포되지 않음 — 엔진 업그레이드가 훅에 도달 안 함"
+    assert "✓ 보호 브랜치 pre-push + pre-commit 훅 (재)설치: svc" in capsys.readouterr().out
+
+
+@_git_required
+def test_main_dry_run_previews_reinstall_without_installing(pm_update, tmp_path, monkeypatch, capsys):
+    """`--dry-run` — 재설치 *예정*만 알리고 훅은 쓰지 않는다 (dry-run 무write 계약)."""
+    dest = _make_pm_home(tmp_path / "home")
+    source = tmp_path / "upstream"
+    _make_upstream(source)
+    _write_local_conf(dest, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    rc = pm_update.main(["--dry-run"])
+    assert rc == 0
+    assert "보호 브랜치 훅 (재)설치 예정" in capsys.readouterr().out
+    assert not _hook_dir(dest, "svc").exists(), "dry-run 이 훅을 설치했다"
+
+
+@_git_required
+def test_main_target_mode_does_not_reinstall_hooks(pm_update, tmp_path, monkeypatch, capsys):
+    """`--target`(엔진 export)은 재설치 비발화 — templates/<name> 은 PM 홈이 아니다 (경계 일치).
+
+    selfheal/skew/진입 doc 마이그레이션과 같은 경계다. 여기서 재설치가 돌면 export 가 *루트 PM 홈*
+    의 훅을 건드리는 월권이 된다."""
+    framework = _make_pm_home(tmp_path / "framework")
+    _make_upstream(framework)                    # 루트 manifest + sentinel
+    target_root = framework / "templates" / "opencode" / ".project_manager"
+    target_root.mkdir(parents=True)
+    monkeypatch.setattr(pm_update, "REPO", framework)
+    _stub_no_baseline_git(pm_update, monkeypatch)
+
+    rc = pm_update.main(["--from", str(framework), "--target", "opencode"])
+    assert rc == 0
+    assert not _hook_dir(framework, "svc").exists(), \
+        "--target export 가 PM 홈 보호 훅을 (재)설치했다(경계 위반)"
+    assert "훅" not in capsys.readouterr().out
+
+
+# ── 트리거는 `changes` 로 게이트되지 않는다 (must-fix·RUN1/RUN2 실측) ──────────────
+# 업그레이드 경계에서 sync 를 *실행하는 주체는 dest 의 구 엔진*이다 — 이 기능을 배달하는 sync
+# 자체는 재설치 코드가 없다(RUN 1). 그 다음 실행은 dest 가 신 엔진이지만 엔진이 이미 최신이라
+# `changes == 0` 이다(RUN 2). "changes>0 에서만" 으로 좁히면 두 실행 다 미발화 → 채택자는 다음에
+# 우연히 엔진이 또 바뀔 때까지 가드를 못 받는다. 다른 채널도 없다(bootstrap reconcile 은 sidecar
+# 내용/배선만 보고 훅 *본문* 은 pm_update 축 소유·pre-commit 파일 부재는 영구 침묵).
+
+
+@_git_required
+def test_main_reinstalls_protected_hooks_when_no_changes(pm_update, tmp_path, monkeypatch, capsys):
+    """**RUN 2 재현** — 엔진이 이미 최신(`changes == 0`)이어도 훅이 깔린다 (T-0415 must-fix).
+
+    이게 업그레이드 배달의 실제 착지 지점이다: 배달 sync 는 구 엔진이 실행해 훅을 못 깔고,
+    바로 다음 실행이 여기로 온다. 옆의 진입 doc 마이그레이션(`do_migrate`)이 정확히 같은 이유로
+    이 경로에서 write 하는 것과 동형이다."""
+    dest = _make_pm_home(tmp_path / "home")
+    source = tmp_path / "upstream"
+    _make_upstream(source)
+    # dest 를 source 와 동일하게 만들어 changes 0 을 만든다(엔진 이미 최신).
+    _write_dest_manifest(dest, [SENTINEL_REL])
+    sentinel = dest / SENTINEL_REL
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text((source / SENTINEL_REL).read_text(encoding="utf-8"), encoding="utf-8")
+    _write_local_conf(dest, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    _stub_no_baseline_git(pm_update, monkeypatch)
+
+    rc = pm_update.main([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "최신 — 변경 없음." in out, f"changes 0 경로가 아님(테스트 전제 깨짐): {out!r}"
+    assert (_hook_dir(dest, "svc") / "pre-commit").exists(), \
+        "changes 0 이라 훅이 안 깔림 — 업그레이드 배달 다음 실행이 무발화(must-fix 재발)"
+    assert "✓ 보호 브랜치 pre-push + pre-commit 훅 (재)설치: svc" in out
+
+
+@_git_required
+def test_main_second_run_is_quiet_when_hooks_in_sync(pm_update, tmp_path, monkeypatch, capsys):
+    """정합이면 **완전히 조용** — 트리거는 계속 돌되 출력만 없다 (반복 노이즈 회피).
+
+    노이즈 해법으로 트리거를 끄면 안 되므로(그게 must-fix 였다), 대신 drift 판정이 흡수한다."""
+    dest = _make_pm_home(tmp_path / "home")
+    source = tmp_path / "upstream"
+    _make_upstream(source)
+    _write_local_conf(dest, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    _stub_no_baseline_git(pm_update, monkeypatch)
+
+    assert pm_update.main([]) == 0          # 1회차 — 설치(changes>0)
+    capsys.readouterr()
+    assert pm_update.main([]) == 0          # 2회차 — changes 0 + 훅 정합
+    cap = capsys.readouterr()
+    assert "훅" not in cap.out and cap.err == "", \
+        f"정합 상태인데 훅 관련 출력이 났다(매 sync 노이즈): {cap.out!r}"
+    assert (_hook_dir(dest, "svc") / "pre-commit").exists()
+
+
+@_git_required
+def test_reinstall_protected_hooks_skips_when_in_sync(pm_update, tmp_path, capsys):
+    """정합 판정 — 2회차는 `in_sync`(재설치·출력 0)."""
+    dest = _make_pm_home(tmp_path / "home")
+    assert pm_update.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"]
+    capsys.readouterr()
+    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    assert result["in_sync"] == ["svc"] and result["drifted"] == []
+    pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
+    cap = capsys.readouterr()
+    assert cap.out == "" and cap.err == ""
+
+
+@_git_required
+def test_reinstall_protected_hooks_heals_wiped_hook_dir(pm_update, tmp_path):
+    """훅 디렉토리가 통째로 지워진 clone 도 자가치유 (bootstrap reconcile 이 못 덮는 상태).
+
+    bootstrap 의 sidecar reconcile 은 sidecar 파일이 없으면 즉시 return 이라 이 상태를 영구
+    침묵한다 — pm_update 축이 유일한 복구 채널이다."""
+    dest = _make_pm_home(tmp_path / "home")
+    pm_update.reinstall_protected_hooks(dest, write=True)
+    shutil.rmtree(_hook_dir(dest, "svc"))
+    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    assert result["drifted"] == ["svc"] and result["failed"] == []
+    assert (_hook_dir(dest, "svc") / "pre-commit").exists()
+
+
+@_git_required
+def test_reinstall_protected_hooks_detects_stale_hook_body(pm_update, tmp_path):
+    """설치된 훅 **본문**이 현 엔진 상수와 다르면 drift — 신 훅 배포의 판정축 (T-0415).
+
+    구 엔진이 깐 pre-push 만 있고 pre-commit 이 없거나 본문이 낡은 상태가 정확히 업그레이드
+    경계의 모습이다."""
+    dest = _make_pm_home(tmp_path / "home")
+    pm_update.reinstall_protected_hooks(dest, write=True)
+    stale = _hook_dir(dest, "svc") / "pre-commit"
+    stale.write_text("#!/bin/sh\n# 구버전 훅\nexit 0\n", encoding="utf-8")
+    assert pm_update.reinstall_protected_hooks(dest, write=False)["drifted"] == ["svc"]
+    pm_update.reinstall_protected_hooks(dest, write=True)
+    assert "PM_ALLOW_PROTECTED_COMMIT" in stale.read_text(encoding="utf-8")
+
+
+@_git_required
+def test_reinstall_protected_hooks_detects_stale_sidecar(pm_update, tmp_path):
+    """sidecar 보호목록이 areas 실효값과 어긋나도 drift — 두 축(본문·목록) 모두 본다."""
+    dest = _make_pm_home(tmp_path / "home")
+    pm_update.reinstall_protected_hooks(dest, write=True)
+    sidecar = _hook_dir(dest, "svc") / "protected"
+    sidecar.write_text("mian\n", encoding="utf-8")       # 옛/오타 목록
+    assert pm_update.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"]
+    assert sidecar.read_text(encoding="utf-8").splitlines() == ["main", "release"]
+
+
+# ── 읽기 실패도 drift 로 수렴한다 — 4축 전부 (codex must-fix) ────────────────────
+# 판정 함수가 예외를 밖으로 내면 호출부의 fail-soft 가 그걸 `unavailable`(= 재설치 안 함)로
+# 처리해 **깨진 훅이 영영 복구되지 않는다**. `unavailable` 은 "dest 엔진/레지스트리를 못 불렀다"
+# (= 어느 repo 도 못 만진다)를 위한 상태지 "이 repo 의 파일이 깨졌다" 가 아니다. 한 축만 고치면
+# 나머지 축에서 같은 클래스가 남으므로 **네 산출물 각각**을 UTF-8 디코딩 불가 바이트로 깨서
+# 같은 방향(drifted → 재설치 → 복구)으로 수렴하는지 고정한다.
+
+_UNDECODABLE = b"\xff\xfe\x00\x80 broken hook\n"
+
+
+@_git_required
+@pytest.mark.parametrize("artifact", ["pre-commit", "pre-push", "protected", "engine-root"])
+def test_reinstall_protected_hooks_unreadable_artifact_is_drift_not_unavailable(
+        pm_update, tmp_path, artifact):
+    """훅 산출물이 **읽기 불가**(non-UTF-8)여도 `unavailable` 이 아니라 `drifted` → 재설치 복구."""
+    dest = _make_pm_home(tmp_path / "home")
+    pm_update.reinstall_protected_hooks(dest, write=True)
+    broken = _hook_dir(dest, "svc") / artifact
+    broken.write_bytes(_UNDECODABLE)
+
+    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    assert result["status"] == "done", \
+        f"{artifact} 읽기 실패가 unavailable 로 새 나감(복구 채널 소실): {result['reason']!r}"
+    assert result["drifted"] == ["svc"] and result["failed"] == []
+    # 실제로 복구됐다 — 깨진 바이트가 현 엔진 산출물로 덮였다.
+    assert broken.read_bytes() != _UNDECODABLE
+    assert pm_update.reinstall_protected_hooks(dest, write=False)["in_sync"] == ["svc"]
+
+
+# ── 실행 비트도 drift 축이다 + 축은 **명세에서 유도**한다 (codex must-fix 2R) ──────
+# 본문만 비교하면 `chmod 0644` 된 훅이 `in_sync` 로 오판돼 **보호가 침묵 비활성화**된다(git 이
+# 실행권한 없는 훅을 조용히 건너뛴다). 더 근본은 축 산정 방식 — 판정이 자체 목록을 들면 설치가
+# 자랄 때마다 축이 샌다(읽기 실패 → 실행 비트, 두 라운드 연속 같은 클래스). 그래서 판정은
+# `worktree_pool.protected_hook_artifacts`(설치와 **같은 명세**)를 읽고, 아래 테스트도 그 명세를
+# 순회해 축을 **유도**한다 — 명세에 산출물이 추가되면 이 테스트가 자동으로 그것까지 검사한다.
+
+
+def _dest_engine(pm_update, dest):
+    """dest 의 pm_config/board/worktree_pool 3종 (판정 함수가 받는 것과 같은 모듈)."""
+    pm_config = pm_update._load_dest_pm_config(dest)
+    return (pm_config,
+            pm_config._load_module("board", "board.py"),
+            pm_config._load_module("worktree_pool", "worktree_pool.py"))
+
+
+@_git_required
+def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
+    """**명세 순회** — 설치 산출물 *하나하나*에 대해 내용 훼손·실행권한 상실이 drift 로 잡힌다.
+
+    축을 손으로 열거하지 않는다: `protected_hook_artifacts` 가 말하는 산출물 전수를 돌며 각
+    축을 친다. install 이 새 산출물을 추가하면(명세에 추가해야 하므로) 이 테스트가 자동으로
+    그 산출물까지 검사한다 — "다음에 또 축이 샌다" 를 닫는 장치."""
+    dest = _make_pm_home(tmp_path / "home")
+    pm_update.reinstall_protected_hooks(dest, write=True)
+    _pc, _board, worktree_pool = _dest_engine(pm_update, dest)
+    spec = worktree_pool.protected_hook_artifacts("svc", ["main", "release"])
+    assert spec, "명세가 비었다(테스트 전제 깨짐)"
+
+    for artifact in spec:
+        name = artifact.path.name
+        # ① 내용 훼손 → drift → 재설치로 복구.
+        artifact.path.write_text("tampered\n", encoding="utf-8")
+        assert pm_update.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"], \
+            f"{name} 내용 훼손이 drift 로 안 잡힘(미검사 축)"
+        assert artifact.path.read_text(encoding="utf-8") == artifact.content
+        # ② 실행권한 상실 → drift → 0755 복구 (실행권한을 요구하는 산출물만).
+        if artifact.executable:
+            artifact.path.chmod(0o644)
+            assert pm_update.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"], \
+                f"{name} 실행권한 상실이 drift 로 안 잡힘 — git 이 훅을 조용히 건너뛴다"
+            assert artifact.path.stat().st_mode & 0o111, f"{name} 0755 복구 실패"
+        # ③ 전부 정합이면 조용(무한 재설치 회귀 방지).
+        assert pm_update.reinstall_protected_hooks(dest, write=True)["in_sync"] == ["svc"]
+
+
+@_git_required
+@pytest.mark.parametrize("hook_name", ["pre-commit", "pre-push"])
+def test_reinstall_protected_hooks_missing_exec_bit_is_drift(pm_update, tmp_path, hook_name):
+    """실행 비트만 빠진 훅(본문 동일·`chmod 0644`)도 drift → 재설치 후 0755 복구 (T-0415).
+
+    본문 동일이라 내용 축으로는 절대 안 잡히는 상태다 — 이게 "보호 훅 침묵 비활성화" 의 모습."""
+    dest = _make_pm_home(tmp_path / "home")
+    pm_update.reinstall_protected_hooks(dest, write=True)
+    hook = _hook_dir(dest, "svc") / hook_name
+    body_before = hook.read_text(encoding="utf-8")
+    hook.chmod(0o644)
+
+    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    assert result["status"] == "done" and result["drifted"] == ["svc"], \
+        f"{hook_name} 실행권한 상실이 in_sync 로 오판됨(보호 침묵 비활성)"
+    assert hook.stat().st_mode & 0o111, f"{hook_name} 실행권한이 재설치로 복구되지 않음"
+    assert hook.read_text(encoding="utf-8") == body_before   # 본문은 그대로(내용 축 무관)
+
+
+@_git_required
+def test_exec_bit_axis_disabled_on_windows(pm_update, tmp_path, monkeypatch):
+    """Windows 는 실행 비트 축 **비활성** — 거짓 drift 로 매 sync 재설치가 돌지 않는다.
+
+    NTFS 엔 POSIX mode 가 없고 `chmod` 는 read-only 플래그만 만진다(`st_mode & 0o111` 이 늘
+    거짓) — 그 축을 그대로 보면 Windows 채택자는 매 pm_update 마다 재설치+출력이 난다.
+    git-for-windows 는 훅을 sh 로 돌리며 실행 비트를 요구하지도 않아 축 자체가 무의미하다.
+    플랫폼 분기는 상수 하나(`_EXEC_BIT_MEANINGFUL`)라 hermetic 하게 뒤집어 친다."""
+    dest = _make_pm_home(tmp_path / "home")
+    pm_update.reinstall_protected_hooks(dest, write=True)
+    (_hook_dir(dest, "svc") / "pre-commit").chmod(0o644)
+
+    monkeypatch.setattr(pm_update, "_EXEC_BIT_MEANINGFUL", False)   # = Windows
+    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    assert result["in_sync"] == ["svc"] and result["drifted"] == [], \
+        "Windows 에서 실행 비트 축이 거짓 drift 를 냈다(매 sync 재설치)"
+
+
+@_git_required
+@pytest.mark.parametrize("artifact", ["pre-commit", "pre-push", "protected", "engine-root"])
+def test_protected_hook_in_sync_never_raises_on_unreadable(pm_update, tmp_path, artifact):
+    """판정 함수 자체의 계약 — 읽기 실패에 예외 대신 `False`(drift) (4축 동형)."""
+    dest = _make_pm_home(tmp_path / "home")
+    pm_update.reinstall_protected_hooks(dest, write=True)
+    (_hook_dir(dest, "svc") / artifact).write_bytes(_UNDECODABLE)
+
+    pm_config = pm_update._load_dest_pm_config(dest)
+    board = pm_config._load_module("board", "board.py")
+    worktree_pool = pm_config._load_module("worktree_pool", "worktree_pool.py")
+    assert pm_update._protected_hook_in_sync(
+        "svc", pm_config=pm_config, worktree_pool=worktree_pool, board=board) is False

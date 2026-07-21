@@ -461,7 +461,8 @@ def _resolve_repo_protected(repo: str, *, board=None) -> list[str]:
 
 
 def _install_protected_hook(repo: str, *, board=None, worktree_pool=None) -> bool:
-    """그 repo 의 보호 브랜치 pre-push 훅을 (재)설치한다 — repo add·worktree add 공용 (T-0076).
+    """그 repo 의 보호 브랜치 훅(pre-push·pre-commit)을 (재)설치한다 — repo add·worktree add·
+    `pm_update` sync 후 전수 재설치 공용 (T-0076·T-0415).
 
     보호목록을 `_resolve_repo_protected`(areas `protected`→default)로 해소해
     `worktree_pool.install_protected_hook(repo, protected)` 에 전달한다 — 훅+sidecar+bare
@@ -743,13 +744,13 @@ def _install_protected_hook_reporting(
     바꾸지 않는다 — 보호 훅은 추가 가드).
     """
     if _install_protected_hook(repo, board=board, worktree_pool=worktree_pool):
-        print(f"✓ 보호 브랜치 pre-push 훅 {action}: {repo} (T-0076).")
+        print(f"✓ 보호 브랜치 pre-push + pre-commit 훅 {action}: {repo} (T-0076·T-0415).")
         return True
     retry = retry or f"{_FACADE_PROG} repo add {repo}"
     print(
         f"[경고] 보호 브랜치 훅 sidecar 를 {action}하지 못했다: {repo} — bare "
         f"`.repos/{repo}.git` 부재이거나 `core.hooksPath` 설정 실패(구 엔진 포함). 이 clone 의 "
-        "pre-push 훅은 보호목록을 강제하지 않거나 옛 목록으로 동작할 수 있다.\n"
+        "pre-push·pre-commit 훅은 보호목록을 강제하지 않거나 옛 목록으로 동작할 수 있다.\n"
         f"  → 재실행(멱등): {retry}",
         file=sys.stderr,
     )
@@ -1389,7 +1390,7 @@ def _print_protected_status(
         # 내용은 최신인데 배선이 끊긴 부분성공 — sidecar 만 보면 `✓ 정합` 으로 보이는 그 상태.
         print(f"  훅 sidecar: {path} → {listed}  "
               "⚠ 훅 미배선 — 목록은 최신이나 bare `core.hooksPath` 가 이 디렉토리를 가리키지 "
-              "않아 pre-push 훅이 아예 발화하지 않는다(보호 꺼짐)")
+              "않아 pre-push·pre-commit 훅이 아예 발화하지 않는다(보호 꺼짐)")
         print(f"    → 재배선:  {retry}   (멱등·hooksPath 재설정)")
         return 0
     if wired is None:
