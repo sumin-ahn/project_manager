@@ -172,8 +172,27 @@ OPERATIONAL_TOKENS = (
     "{{DATE}}",
 )
 
-# 치환 대상 파일 확장자 (루트 README §3.2 sed 의 --include 와 동일).
-SUBSTITUTE_SUFFIXES = (".md", ".json", ".sh", ".py")
+# 치환 대상 판정은 **제외 사유 기반**이다 — 옛 확장자 allowlist(`(".md", ".json", ".sh", ".py")`)는
+# 폐기했다(T-0424). allowlist 는 "규칙이 적용될 지점을 사람이 열거" 하는 형상이라, 새 하니스가 새 파일
+# 형식을 들여오면 조용히 미커버로 남는다 — codex(세 번째 하니스)의 `.codex/agents/*.toml` 이 정확히
+# 그렇게 `{{PROJECT_NAME}}` 을 리터럴로 출하했다. 이제 판정은 뒤집혀 "제외 사유가 있는가" 만 본다
+# (`_should_substitute`) → `.yaml`·`.jsonc` 같은 네 번째 하니스의 새 형식도 자동 편입된다.
+#
+# 제외 사유는 **닫힌 집합**(프레임워크가 소유한 엔진 자산)이라 열거해도 안전하다 — 열거가 위험했던 건
+# *열린* 쪽(채택자/하니스가 계속 늘리는 파일 형식)을 열거했기 때문이다:
+#   ① 엔진 소스 `.project_manager/tools/**` (`_is_engine_source` — 주석의 토큰은 *설명*·verbatim)
+#   ② 엔진 메타데이터 `.project_manager/engine.manifest` (`_is_engine_metadata` — 아래)
+#   ③ manifest 파생 방법론 문서 제외집합 (`_dest_sed_exclude` — pm_role·pm_playbook)
+#   ④ 텍스트로 못 읽는 파일 — 각 치환 루프의 `read_text` UnicodeDecodeError 가 걸러낸다.
+
+# 엔진 메타데이터(치환 전면 제외·위 제외 사유 ②). engine.manifest 는 채택자에게 *개인화되어* 출하되는
+# 산출물이 아니라 엔진이 읽는 기계 설정이고, 그 주석은 placeholder 메커니즘을 *설명*하며 토큰을 담는다
+# (예 codex manifest 의 "`.codex/agents` 는 developer_instructions 에 {{PROJECT_NAME}} 토큰 보유 →
+# @render"). 치환하면 설명이 concrete 값으로 변질된다 — `.project_manager/tools/**` 주석과 같은 클래스
+# (_is_engine_source docstring 참조)이나, tools/ prefix 밖이라 별도 판정이 필요하다.
+ENGINE_METADATA_RELPATHS = frozenset({
+    ".project_manager/engine.manifest",
+})
 
 # operational placeholder 치환에서 *제외*하는 방법론 문서 (repo 기준 relpath) — engine.manifest 파생.
 # 하드코딩 목록(과거 pm_role.md·pm_playbook.md 리터럴 frozenset) 대신 manifest 의 `.project_manager/wiki/`
@@ -1031,16 +1050,40 @@ def _is_engine_source(rel: Path) -> bool:
     return p.startswith(".project_manager/tools/") or "/.project_manager/tools/" in p
 
 
-def _should_substitute(rel: Path, exclude_relpaths: frozenset) -> bool:
-    """이 파일이 operational placeholder 치환 대상인가.
+def _is_engine_metadata(rel: Path) -> bool:
+    """엔진 메타데이터(`.project_manager/engine.manifest`)인가 — 치환 제외 대상(T-0424).
 
-    exclude_relpaths = dest 인스턴스 manifest 파생 치환-제외 집합(`_dest_sed_exclude`) — 호출부가
-    치환 시점에 dest 기준으로 산출해 넘긴다(모듈-시점 상수 아님·codex must-fix·T-0329 재작업)."""
-    if rel.suffix not in SUBSTITUTE_SUFFIXES:
-        return False
+    _is_engine_source 와 같은 클래스(엔진 소유·토큰이 *설명*)이나 `.project_manager/tools/` prefix
+    밖이라 별도 판정이다. rel 은 dest-rel 또는 절대/소스 경로 둘 다 올 수 있어 `_is_engine_source`
+    와 같은 suffix 매칭으로 통일한다(경로 구분자 정규화)."""
+    p = rel.as_posix()
+    return any(p == m or p.endswith("/" + m) for m in ENGINE_METADATA_RELPATHS)
+
+
+def _should_substitute(rel: Path, exclude_relpaths: frozenset) -> bool:
+    """이 파일이 operational placeholder 치환 대상인가 — **제외 사유가 없으면 대상**(T-0424).
+
+    옛 판정은 확장자 allowlist(`SUBSTITUTE_SUFFIXES`) gate 였다: 열린 집합(하니스가 계속 늘리는
+    파일 형식)을 사람이 열거한 형상이라, codex 가 들여온 `.codex/agents/*.toml` 이 어느 채널도
+    못 타고 `{{PROJECT_NAME}}` 을 리터럴로 출하했다. 판정을 뒤집어 **닫힌 집합(엔진 소유 자산)의
+    제외 사유**만 본다 → 네 번째 하니스의 새 형식(`.yaml`·`.jsonc`)도 자동 편입된다.
+
+    제외 사유(모듈 상단 주석과 동기):
+      ① 방법론 문서 — exclude_relpaths = dest 인스턴스 manifest 파생 치환-제외 집합
+         (`_dest_sed_exclude`). 호출부가 치환 시점에 dest 기준으로 산출해 넘긴다(모듈-시점 상수
+         아님·codex must-fix·T-0329 재작업).
+      ② 엔진 소스(`.project_manager/tools/**`) — verbatim.
+      ③ 엔진 메타데이터(`engine.manifest`) — 주석이 토큰 메커니즘을 *설명*.
+      ④ 텍스트로 못 읽는 파일 — 이 판정이 아니라 호출부 `read_text` 의 UnicodeDecodeError 가
+         걸러낸다(파일 내용 없이는 판정 불가·현 구조 유지).
+
+    범위(어떤 파일이 이 판정에 오는가)는 넓히지 않는다 — 호출부는 전부 `copied_relpaths`
+    (이번 run 이 실제 복사한 파일)로 한정된다(`substitute_placeholders` docstring MF1 비파괴)."""
     if rel.as_posix() in exclude_relpaths:
         return False
     if _is_engine_source(rel):  # 엔진 소스(.py)는 verbatim — 주석의 토큰-문서는 placeholder 아님
+        return False
+    if _is_engine_metadata(rel):  # engine.manifest 주석의 토큰-문서도 placeholder 아님
         return False
     return True
 
@@ -1200,10 +1243,15 @@ def render_managed_files(
 ) -> int:
     """이번 run 이 복사한 @render path 파일을 render_adapter 산출물로 다시 쓴다. 변경 수 반환.
 
-    범위 = copied_relpaths(비파괴·substitute_placeholders 와 동일 보장). @render manifest path
-    하위 .md 만 대상. operational 은 이번 import 의 subs(이미 substitute 가 리터럴로 박았으므로
-    보통 no-op). free-form 은 pm_import 의 FILL 채널이 canonical home 에서 전담하므로 render-overlay
-    가 관여하지 않는다(ADR-0030·ADR-0031). 현 트리는 @render 0 → 무동작.
+    범위 = copied_relpaths(비파괴·substitute_placeholders 와 동일 보장). 대상 판정은 **@render
+    manifest 선언(`_is_render_managed`) 단독**이다 — 옛 `.md` 확장자 하드 필터는 제거했다(T-0424).
+    확장자 조건은 manifest 선언을 덮는 중복·모순 판정이었고, `.codex/agents @render`(TOML)처럼
+    선언은 맞는데 코드가 안 따라가는 형상을 만들었다. 텍스트로 못 읽는 파일은 아래 read_text 의
+    UnicodeDecodeError 가 걸러낸다(byte-copy 그대로 남음).
+
+    operational 은 이번 import 의 subs(이미 substitute 가 리터럴로 박았으므로 보통 no-op).
+    free-form 은 pm_import 의 FILL 채널이 canonical home 에서 전담하므로 render-overlay 가
+    관여하지 않는다(ADR-0030·ADR-0031).
 
     subs(중괄호 포함 token→value)를 pm_render 의 bare-key operational dict 로 변환해 넘긴다."""
     managed = _render_managed_relpaths(dest_root)
@@ -1219,7 +1267,7 @@ def render_managed_files(
     changed = 0
     for rel in sorted(copied_relpaths):
         rel_posix = rel.as_posix()
-        if not rel_posix.endswith(".md") or not _is_render_managed(rel_posix, managed):
+        if not _is_render_managed(rel_posix, managed):
             continue
         path = dest_root / rel
         if not path.is_file():
@@ -1591,7 +1639,8 @@ def _substitute_model_token(
     """{{OPENCODE_PRO_MODEL}} 을 복사 파일 전역에서 결정적 치환. 변경 파일 수 반환.
 
     substitute_placeholders 와 동일한 copied_relpaths 비파괴 범위·동일 _should_substitute
-    확장자 규칙. 이번 import 가 복사한 파일만 — 복사 안 한 사용자 파일은 절대 안 건드린다.
+    제외-판정(확장자 allowlist 는 T-0424 에서 폐기 — 새 파일 형식이 자동 편입된다).
+    이번 import 가 복사한 파일만 — 복사 안 한 사용자 파일은 절대 안 건드린다.
     대상 = `.opencode/agents/*.md` 의 `model:` 필드(T-0032 후 주 타깃)·AGENTS.md 잔존분.
     """
     changed = 0

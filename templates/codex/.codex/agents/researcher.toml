@@ -1,5 +1,5 @@
 # templates/codex/.codex/agents/researcher.toml — codex custom agent (in-session spawn 대상)
-# @render 대상(engine.manifest) — {{PROJECT_NAME}} 은 import/pm_update 가 채택자 값으로 치환.
+# @render 대상(engine.manifest) — 아래 PROJECT_NAME 토큰은 import/pm_update 가 채택자 값으로 치환.
 name = "researcher"
 description = "{{PROJECT_NAME}} read-only gather subagent. PM(메인세션)이 무거운 bounded 읽기/조사/추출(여러 파일·레퍼런스·로그를 훑어 사실·인용·목록을 뽑아 결론만 회수)을 in-session spawn 위임할 때. 코드/문서 수정 안 함(read-only). PM 의 synthesis(교차 통찰)를 대체하지 않는다 — 범위 내 fact-gathering 만."
 # model 생략 (D5) — 사용자 config 기본(gpt-5.5) 상속.

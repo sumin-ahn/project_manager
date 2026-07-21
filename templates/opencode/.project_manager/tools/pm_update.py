@@ -1039,6 +1039,21 @@ def _render_text(source_path: Path, dest_root: Path) -> str:
     return render_mod.render_adapter(text, operational=operational, empty_keys=empty_keys)
 
 
+def _is_text_source(source_path: Path) -> bool:
+    """source 가 UTF-8 텍스트로 읽히는가 — render 대상 판정의 유일한 형식 조건 (T-0424).
+
+    옛 `.md` 확장자 열거를 대체한다: 확장자는 열린 집합(하니스가 새 형식을 들여온다)이라 열거하면
+    새 형식이 조용히 미커버로 남는다(codex `.toml`). render 가 실제로 요구하는 건 "텍스트로 읽어
+    plain replace 할 수 있는가" 뿐이므로 그것만 본다 — 바이너리 리소스는 False → byte-copy.
+    IO 실패도 보수적으로 False(byte-copy·기존 동작).
+    """
+    try:
+        Path(source_path).read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return False
+    return True
+
+
 def _render_eq_dst(sp: Path, dst: Path, dest_root: Path) -> bool:
     """render path 의 '변경 없음' 정직 판정 — 렌더 산출물 == dst 현재 내용 (§3.3).
 
@@ -1102,9 +1117,12 @@ def plan(
             # 리매핑 후 경로로 둬 dry-run 출력이 실제 기록 위치를 정직히 보인다(_dest_root_for
             # 역산도 part 수 동일이라 정합).
             r = _dest_relpath_for(r, effective_dest)
-            # render 는 `.md` 한정 — @render 디렉토리 하위의 비-.md(이미지·json 등)는 byte-copy
-            # (pm_import.render_managed_files 가 이미 `.md` 한정·정렬과 동형). 산출물은 자족 .md.
-            file_render = render and Path(r).suffix == ".md"
+            # render 대상 판정 = @render manifest 선언 + **텍스트로 읽히는가** (T-0424).
+            # 옛 `.md` 확장자 하드 필터는 제거했다: 확장자 열거는 manifest 선언을 덮는 중복
+            # 판정이라, codex 가 들여온 `.codex/agents/*.toml`(@render 선언 O)이 byte-copy 로
+            # 새어 채택자 트리에 `{{PROJECT_NAME}}` 리터럴을 재전파했다(pm_import 와 동형 결함·
+            # 두 채널을 함께 닫는다). 텍스트 아님(바이너리 리소스)은 여전히 byte-copy 로 남는다.
+            file_render = render and _is_text_source(sp)
             dst = _RenderDst(effective_dest / r, file_render)
             if not dst.exists():
                 changes.append((r, sp, dst, "new"))

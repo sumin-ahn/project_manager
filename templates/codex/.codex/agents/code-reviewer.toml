@@ -1,5 +1,5 @@
 # templates/codex/.codex/agents/code-reviewer.toml — codex custom agent (in-session spawn 대상)
-# @render 대상(engine.manifest) — {{PROJECT_NAME}} 은 import/pm_update 가 채택자 값으로 치환.
+# @render 대상(engine.manifest) — 아래 PROJECT_NAME 토큰은 import/pm_update 가 채택자 값으로 치환.
 name = "code-reviewer"
 description = "{{PROJECT_NAME}} developer subagent 의 변경을 독립 검토하는 subagent. generate ≠ evaluate — 구현하지 않은 주체가 검토. DoD 충족/ADR·spec 정합/회귀/프로젝트 제약/테스트 품질 점검 → must-fix·suggestion·통과/반려. 코드를 수정하지 않는다(read-only)."
 # model 생략 (D5) — 사용자 config 기본(gpt-5.5) 상속.

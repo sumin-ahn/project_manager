@@ -1,5 +1,5 @@
 # templates/codex/.codex/agents/developer.toml — codex custom agent (in-session spawn 대상)
-# @render 대상(engine.manifest) — {{PROJECT_NAME}} 은 import/pm_update 가 채택자 값으로 치환.
+# @render 대상(engine.manifest) — 아래 PROJECT_NAME 토큰은 import/pm_update 가 채택자 값으로 치환.
 name = "developer"
 description = "{{PROJECT_NAME}} 단일 ticket 구현 subagent. PM(메인세션)이 코드 변경 ticket(T-NNNN)을 in-session spawn 위임할 때. ticket 본문 목표/인터페이스/DoD 대로 코드+테스트 작성. board.py 조작·status/log 갱신 금지(PM 담당)."
 # model 생략 (D5) — 사용자 config 기본(gpt-5.5) 상속. Pro 강제 불요·harness-특수 모델 분기 0

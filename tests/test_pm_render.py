@@ -473,33 +473,39 @@ def test_apply_render_writes_rendered_output(pm_update, tmp_path):
     assert "{{" not in written
 
 
-def test_render_dir_only_md_rendered_others_copied(pm_update, tmp_path):
-    """@render 디렉토리 하위는 `.md` 만 render — 비-.md(json 등)는 byte-copy(codex suggestion).
+def test_render_dir_text_files_rendered_binary_copied(pm_update, tmp_path):
+    """@render 디렉토리 하위는 **텍스트면 확장자 무관 render** · 바이너리는 byte-copy (T-0424).
 
-    토큰을 담은 비-.md 파일이 render 대상이 되면 (a) 비-md 를 자족 .md 로 오인하고 (b) 엄격
-    가드가 그 토큰을 leak 으로 터뜨릴 수 있다. .md 한정으로 비-.md 는 그대로 복사된다.
+    옛 규칙은 `.md` 한정이었다 — 확장자 열거라, codex 가 들여온 `.codex/agents/*.toml`(@render
+    선언 O)이 byte-copy 로 새어 채택자에게 `{{PROJECT_NAME}}` 리터럴을 전파했다. 이제 render
+    대상 판정은 manifest `@render` 선언 + "UTF-8 텍스트로 읽히는가"(`_is_text_source`)뿐이라
+    네 번째 하니스의 새 형식도 자동 편입된다. 텍스트로 못 읽는 리소스는 계속 byte-copy.
     """
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     md_rel = ".claude/agents/developer.md"
-    json_rel = ".claude/agents/config.json"
+    toml_rel = ".claude/agents/developer.toml"
+    bin_rel = ".claude/agents/icon.bin"
     (src / ".claude/agents").mkdir(parents=True)
     (src / md_rel).write_text("- {{PROJECT_NAME}}\nbody\n", encoding="utf-8")
-    # 비-.md 파일은 토큰처럼 보이는 텍스트를 담아도 render 안 됨(byte-copy·자족 .md 아님).
-    (src / json_rel).write_text('{"k": "{{PROJECT_NAME}}"}\n', encoding="utf-8")
+    # 새 하니스 형식(TOML): @render 선언 하위라면 확장자와 무관하게 렌더된다.
+    (src / toml_rel).write_text('description = "{{PROJECT_NAME}}"\n', encoding="utf-8")
+    # 바이너리(UTF-8 디코드 불가) — render 대상 아님(byte-copy·자족 산출물 아님).
+    (src / bin_rel).write_bytes(b"\xff\xfe\x00binary\x00")
     _seed_render_dest(dst, local_conf="project_name=acme\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     assert missing == []
     by_rel = {c[0]: c for c in changes}
-    # .md → render=True, .json → render=False(copy2).
+    # 텍스트(.md·.toml) → render=True, 바이너리 → render=False(copy2).
     assert getattr(by_rel[md_rel][2], "render", False) is True
-    assert getattr(by_rel[json_rel][2], "render", False) is False
+    assert getattr(by_rel[toml_rel][2], "render", False) is True
+    assert getattr(by_rel[bin_rel][2], "render", False) is False
     pm_update.apply(changes)
-    # .md 는 렌더 산출물, .json 은 byte-copy(토큰 그대로·자족 변환 안 함).
     assert (dst / md_rel).read_text(encoding="utf-8") == "- acme\nbody\n"
-    assert (dst / json_rel).read_text(encoding="utf-8") == '{"k": "{{PROJECT_NAME}}"}\n'
+    assert (dst / toml_rel).read_text(encoding="utf-8") == 'description = "acme"\n'
+    assert (dst / bin_rel).read_bytes() == b"\xff\xfe\x00binary\x00"
 
 
 def test_apply_non_render_byte_copies(pm_update, tmp_path):
