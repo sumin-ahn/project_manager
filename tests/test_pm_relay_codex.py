@@ -34,6 +34,9 @@ from pathlib import Path
 
 import pytest
 
+# codex 라이브 공용 헬퍼 (격리 CODEX_HOME + auth·conftest 소유·ADR-0070 T-0407·live smoke 절).
+from conftest import codex_auth_available, codex_live_env, drop_codex_auth, make_codex_home
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 CODEX_DRIVER = REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
@@ -656,35 +659,111 @@ def test_codex_driver_repo_root_finds_engine(driver_mod, tmp_path):
     assert driver_mod.repo_root(nested) == tmp_path.resolve()
 
 
-# ── live smoke (실 codex · 기본 skip · T-0407 이 본체 확장) ───────────────────
+# ── codex 고유 라이브 실측 (T-0407·codex-cli 0.144.6·gpt-5.5·격리 CODEX_HOME·spike §6 잔여 해소) ──
+# 아래 4건은 라이브(실 codex)로 실측한 결과를 박제한다(코드 주석=실측 로그·재현 커맨드는 보고 참조).
+# 라이브 게이트(relay smoke)의 자동 단언은 spawn→resume·usage 누적이고, 아래는 관측 결과 기록이다.
+#
+#   ① skills discovery — codex 는 adopter `.agents/skills/*/SKILL.md`(cwd→root 스캔·trusted project)를
+#      네이티브 발견한다. 실측: canonical 15 스킬 전부 열거(pm-adr·pm-ticket·pm-handoff·pm-review·…·
+#      spike-new). auto-trigger 는 description 매칭 implicit 발화가 기본이나(§6 위험), "나열만 하고
+#      호출 말라" 중립 프롬프트엔 발화 없이 열거만 함(발견≠강제발화). description-매칭 프롬프트의 과대
+#      발화 억제(per-skill allow_implicit_invocation)는 관찰 시 후속 티켓(§6·현 어댑터 기본 미설정).
+#   ② TUI env 마커 — codex shell tool env 에 `CODEX_THREAD_ID=<tid>`·`CODEX_CI=1`·
+#      `CODEX_SANDBOX_NETWORK_DISABLED` 실재(exec 경로·부트스트랩 카드 `_is_codex_harness` 판정 원천).
+#      실측: exec 에서 셸이 셋 모두 반환(tid=발급 thread_id·ci=1). **대화형 TUI 세션은 비대화 자동화
+#      불가**(입력 대기) — exec 경로로 재확인하되 TUI 마커 존치는 자동 커버 불가(한계 명시). 카드 감지는
+#      exec/relay 경로에서 확정 동작.
+#   ③ compaction off — `config.toml model_auto_compact_token_limit=900000`(D4 ②)는 trusted project 에서
+#      **오류 없이 로드**(unknown field/invalid config 없음·codex 0.144.6 수용). 완전-off 스위치는 여전히
+#      미확인(900k fill 실측은 비현실적 과금) — 900k 상향이 실효 상한이고 auto-compact 는 최후 backstop,
+#      손실은 PreCompact tripwire 가 loud 화(설계 D4 ② 성립).
+#   ④ hooks PreCompact 1>&2 셸-실행(T-0406 전제) — codex 는 hooks.json 의 문자열 command 를 **셸로
+#      해석**한다. 실측: `echo … 1> <file>` 셸 리다이렉션이 파일을 생성(content 정확) → 같은 리다이렉션
+#      클래스인 shipped `echo '…' 1>&2` 는 유효(stdout→stderr). **단 hook 은 trust 승인 후에만 발화** —
+#      무승인 exec 에선 hook 미발화, `--dangerously-bypass-hook-trust`(또는 `/hooks` 승인)에서 발화
+#      (D5 trust 2단계 안내 정합·T-0406 hooks.json 유효성 확인).
+
+# ── live smoke (실 codex · 기본 skip · PM_RELAY_LIVE on-demand + release tier · T-0407 본체) ────────
 
 PM_RELAY_LIVE = os.environ.get("PM_RELAY_LIVE") == "1"
+# release tier 게이트 — `livegate record`(release wave·PM_ORCH_LIVE_RELEASE=1)에서 이 smoke 가 돌아야
+# codex 라이브 green 이 릴리즈 pin(수집 N)에 편입된다(ADR-0070 D7). on-demand(PM_RELAY_LIVE)와 릴리즈
+# (PM_ORCH_LIVE_RELEASE) 둘 중 하나면 실행 — 릴리즈 wave 는 후자만 set 하므로 게이트에 합류시킨다.
+PM_ORCH_LIVE_RELEASE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 
 
+class _CodexHomeRunner:
+    """실 `subprocess.run` 을 격리 CODEX_HOME env 로 감싸고 각 turn 의 stdout 을 기록한다.
+
+    driver 는 turn subprocess 에 env 를 안 넘긴다(어댑터=부모 env 상속) — 라이브 테스트가 실 ~/.codex
+    를 오염시키지 않도록 여기서 격리 홈(auth 복사본)을 주입한다. 기록한 stdout 은 usage 2턴 대조
+    (input_tokens 누적 vs per-turn 실측)에 쓴다. driver 가 주는 stdin=DEVNULL 등 kwargs 는 그대로 전달."""
+
+    def __init__(self, home: Path):
+        self._home = home
+        self.stdouts: list[str] = []
+
+    def __call__(self, cmd, **kwargs):
+        kwargs["env"] = codex_live_env(self._home)
+        proc = subprocess.run(cmd, **kwargs)
+        self.stdouts.append(proc.stdout or "")
+        return proc
+
+
+@pytest.mark.release
 @pytest.mark.skipif(
-    not PM_RELAY_LIVE or not shutil.which("codex"),
-    reason="live smoke — PM_RELAY_LIVE=1 + codex CLI 필요(기본 skip·T-0407 이 본체 확장·CI green 불변).",
+    not (PM_RELAY_LIVE or PM_ORCH_LIVE_RELEASE) or not shutil.which("codex") or not codex_auth_available(),
+    reason="live smoke — (PM_RELAY_LIVE 또는 PM_ORCH_LIVE_RELEASE)=1 + codex CLI(gpt-5.5 과금·~/.codex/auth.json) 필요(기본 skip·CI green 불변).",
 )
 def test_live_codex_thread_marker_identity_smoke(orch, driver_mod, tmp_path):
-    """실 codex 1회 e2e 스켈레톤 (T-0407 확장 게이트) — spawn → resume 연속성 → marker 동일성.
+    """실 codex 1회 e2e (T-0407 본체) — spawn→resume 연속성·driver-파싱 tid==marker tid·usage 누적 실측.
 
-    ⚠ stdin close 필수(codex 무기한 대기 방어)는 driver 가 stdin=DEVNULL 로 박제한다. 라이브 검증
-    본체(연속성·resume·driver-파싱 tid == marker tid·과금 수집 N·릴리즈 편입)는 T-0407 몫 —
-    여기선 skipif 게이트 + 최소 spawn/resume/marker 골격만 둔다(기본 skip·CI green 불변)."""
-    driver = driver_mod.CodexCliDriver(
-        orch.parse_codex_json, mark_stop=orch.write_post_turn_marker, root=tmp_path,
-    )
-    observed = driver.spawn(
-        str(tmp_path), orch.new_session_id(),  # 엔진 uuid4 — driver 가 무시할 값.
-        "Remember this code word: MANGO77. Reply with exactly: STORED",
-    )
-    assert observed, "spawn 이 codex 출력에서 thread_id 를 파싱하지 못함"
-    reply = driver.relay_turn(
-        observed, "What was the code word? Reply with only the code word."
-    )
-    assert "MANGO77" in reply.upper(), f"resume 연속성 실패 — reply={reply!r}"
-    # driver-파싱 tid 로 쓴 marker 를 supervisor 가 stat 하는지(sid 예측 성립) 확인.
-    marker = orch._marker_path(tmp_path, observed)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("ctx-stop handoff triggered\n", encoding="utf-8")
-    assert orch.stop_marker_present(tmp_path, observed) is True
+    검증 축:
+      - **연속성**: spawn 에서 code word(MANGO77)를 심고 `exec resume <tid>` 로 물으면 같은 세션이
+        기억을 반환(resume 이 진짜 세션을 이어감·`-C`+resume 실효·티켓 명세 전제 라이브 확인).
+      - **tid==marker**: driver 가 codex 출력에서 파싱한 thread_id 로 marker 를 쓰면 supervisor 가 같은
+        sid 로 stat 성공(sid 예측 성립·엔진 회전 배선 전제).
+      - **usage 누적 실측**(watch-item): spawn·resume 2턴의 `turn.completed.usage.input_tokens` 를 대조 —
+        input 이 *누적* 컨텍스트를 반영(turn2 ⊃ turn1)함을 단언. 엔진 ctx 예산이 '누적 점유'를 가정하므로
+        per-turn 이면 환산이 필요한데, 실측상 누적이라 driver `_maybe_mark_ctx` 가정이 옳음을 못박는다.
+
+    ⚠ stdin close(codex 무기한 대기 방어)는 driver 가 stdin=DEVNULL 로 박제. 격리 CODEX_HOME(auth
+    복사·종료 시 삭제·runner 가 주입). 기본 skip(라이브 env 미설정·CI green 불변). **@release** — codex
+    라이브 green 을 릴리즈 pin(수집 N)에 편입한다(ADR-0070 D7·pin 16→17 커플드 sweep: board.py·
+    `test_release_wave._EXPECTED_RELEASE_TESTS`+`_RELEASE_TEST_FILES`·`test_worktree_pool._LIVEGATE_RELEASE_PIN`·
+    `test_board_livegate` 동시 갱신·templates 는 PM 통합 시 pm_update 전파). 이 smoke 가 skip/누락되면
+    수집<pin 으로 `livegate record` red — codex green 없이 v1.4.0 push 차단(티켓 목표)."""
+    home = make_codex_home(tmp_path)
+    runner = _CodexHomeRunner(home)
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+    try:
+        driver = driver_mod.CodexCliDriver(
+            orch.parse_codex_json, mark_stop=orch.write_post_turn_marker, root=tmp_path,
+            runner=runner,  # 격리 홈 주입 + stdout 기록.
+        )
+        # spawn — 엔진 uuid4 는 driver 가 무시(codex 발급 thread_id 가 권위).
+        observed = driver.spawn(
+            str(workdir), orch.new_session_id(),
+            "Remember this code word: MANGO77. Reply with exactly: STORED",
+        )
+        assert observed, "spawn 이 codex 출력에서 thread_id 를 파싱하지 못함(thread.started 부재?)"
+        # resume 연속성 — 같은 세션이 code word 를 기억(exec resume <tid> 실효).
+        reply = driver.relay_turn(
+            observed, "What was the code word? Reply with only the code word."
+        )
+        assert "MANGO77" in reply.upper(), f"resume 연속성 실패 — reply={reply!r}"
+        # driver-파싱 tid == marker tid: 그 tid 로 쓴 marker 를 supervisor 가 stat(sid 예측 성립).
+        assert orch.write_post_turn_marker(tmp_path, observed) is True
+        assert orch.stop_marker_present(tmp_path, observed) is True
+        # input_tokens 누적 vs per-turn 실측(watch-item·usage 2턴 대조·runner 기록 stdout).
+        _, _, usage1 = orch.parse_codex_json(runner.stdouts[0].splitlines())
+        _, _, usage2 = orch.parse_codex_json(runner.stdouts[1].splitlines())
+        assert usage1 and usage2, f"usage 파싱 실패 — usage1={usage1} usage2={usage2}"
+        # 실측(T-0407·codex 0.144.6): input 은 *누적* 컨텍스트(turn2 대화가 turn1 을 포함) → turn2 > turn1.
+        # 엔진 예산 판정의 '누적 점유' 가정이 옳음(per-turn 환산 불요·pm_orch_codex watch-item 해소).
+        assert usage2["input"] > usage1["input"], (
+            f"input_tokens 가 누적이 아님(per-turn?) — turn1={usage1['input']} turn2={usage2['input']}. "
+            "엔진 ctx 예산은 누적 점유 가정이라, per-turn 이면 driver 예산 판정에 누적 환산이 필요하다.")
+    finally:
+        drop_codex_auth(home)  # scratch 에 auth 잔류 방지(라이브 규율).

@@ -37,6 +37,8 @@ import pytest
 # 라이브 인프라 재사용(중복 금지·같은 tests/ import) — adopter import(hermetic·models 조회 차단)·
 # LLM env 격리(화이트리스트).
 from test_fresh_adopter_runtime_smoke import _import_adopter, _live_env
+# codex 라이브 공용 헬퍼 (격리 CODEX_HOME + auth + codex exec·conftest 소유·ADR-0070 T-0407).
+from conftest import codex_auth_available, drop_codex_auth, make_codex_home, run_codex_exec
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -45,8 +47,11 @@ TOOLS = REPO / ".project_manager" / "tools"
 PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
+# codex 축(D7): 기본 모델 = 로컬 config 상속(gpt-5.5·-m 생략)·명시 override 만 env.
+CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")  # None → codex 로컬 config 기본 상속.
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_CLAUDE_TIMEOUT", "600"))
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_TIMEOUT", "1800"))
+_CODEX_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_CODEX_TIMEOUT", "600"))
 
 # 검증 대상 스킬(① canonical·ADR-0065 단일 소비·command 사본 은퇴). PM 이 scratchpad 에서
 # `.claude/skills/pm-ticket/SKILL.md` 로 적용한다(T-0366). 미적용 시 스킬-의존 가드는 skip.
@@ -190,6 +195,29 @@ def test_pm_ticket_live_opencode(tmp_path):
         env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
     _assert_self_contained_ticket(dest, proc, "opencode")
+
+
+@_skill_present
+@pytest.mark.skipif(
+    not PM_ORCH_LIVE or not shutil.which("codex") or not codex_auth_available(),
+    reason="pm-ticket 라이브 — PM_ORCH_LIVE=1 + codex CLI(gpt-5.5 과금·~/.codex/auth.json) 필요. 기본 skip·on-demand.",
+)
+def test_pm_ticket_live_codex(tmp_path):
+    """실 codex(gpt-5.5)가 pm-ticket 스킬만 보고 자족적 티켓을 authoring·실 board 상태 단언(hard).
+
+    claude/opencode 와 같은 스킬-only 프롬프트([발행 → 5절 fill → promote]·진입문서 미제공). side-effect
+    (실 board 파일 상태·placeholder 0·주제 marker SIGTERM)로만 판정 — codex tool-call 비노출에 강건.
+    격리 CODEX_HOME(auth 복사·종료 시 삭제)·`codex exec … stdin=DEVNULL`(무기한 대기 방어·spike §D3)·
+    `-s workspace-write`(board.py 실행)·`-C dest`(cwd 핀·codex 는 opencode 와 달리 `-C` 로 루트 핀). 모델
+    기본 = 로컬 config 상속(gpt-5.5)·`PM_ORCH_LIVE_CODEX_MODEL` override. gpt-5.5 과금(승인 완료·D7)."""
+    dest = _import_adopter(tmp_path, "codex")
+    prompt = _authoring_prompt(_SKILL.read_text(encoding="utf-8"))
+    home = make_codex_home(tmp_path)
+    try:
+        proc = run_codex_exec(prompt, dest, home, model=CODEX_MODEL, timeout=_CODEX_TIMEOUT)
+    finally:
+        drop_codex_auth(home)  # scratch 에 auth 잔류 방지(라이브 규율).
+    _assert_self_contained_ticket(dest, proc, "codex")
 
 
 # ── always-run 가드 (라이브 없이·매 회귀 — setup-rot·마커 소실 백스톱) ──────────────────────────
