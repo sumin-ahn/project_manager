@@ -312,6 +312,223 @@ def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypa
     assert "upstream_rev" not in conf, "dry-run 인데 upstream_rev 가 기록됨(부작용 누출)"
 
 
+# ── T-0413: 경로 upstream 은 seen(관찰값)도 baseline 과 동시 기록 (거짓 drift 근절) ──
+# 경로 형상은 fetch 채널이 따로 없어 *동기 시점 checkout rev 가 곧 관찰값*이다. baseline 만
+# 갱신하면 두 키가 영구히 어긋나 정상 흡수 직후에도 adapter-drift 가 상시 뜬다(② 실측).
+# URL 형상은 스킬층이 fetch 후 seen 을 쓰므로 엔진이 건드리지 않는다(한 키 2역 금지·ADR-0032 D2).
+
+def test_record_upstream_rev_baseline_records_seen_for_path_upstream(
+        pm_update, tmp_path, monkeypatch):
+    """경로 upstream — baseline(upstream_rev)과 관찰값(upstream_seen_rev)이 같은 rev 로 동시 기록."""
+    dest = tmp_path / "dest"
+    _write_local_conf(dest, "session=pm\nupstream=/some/checkout\n")
+    source = tmp_path / "src"
+    source.mkdir()
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "pathrev1234")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    assert pm_update.record_upstream_rev_baseline(dest, source) is True
+    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    assert conf["upstream_rev"] == "pathrev1234"
+    assert conf["upstream_seen_rev"] == "pathrev1234", \
+        f"경로 upstream 인데 seen 미기록(두 키 어긋남 잔존): {conf!r}"
+    assert conf["upstream"] == "/some/checkout" and conf["session"] == "pm"  # 타 키 보존
+
+
+def test_record_upstream_rev_baseline_replaces_stale_seen_in_place(
+        pm_update, tmp_path, monkeypatch):
+    """이미 어긋난 채 남은 conf(baseline 신·seen 구)는 다음 sync 1회로 수렴한다(별도 backfill 불요).
+
+    ② adopter#0 실측 형상(upstream_rev=ddf6f484…·upstream_seen_rev=0ccc0251…=그 조상)의 재현 —
+    set-or-replace 라 그 줄만 제자리 교체되고 주석·타 키는 보존된다.
+    """
+    dest = tmp_path / "dest"
+    _write_local_conf(
+        dest,
+        "# per-clone\n"
+        "upstream=/w/project_manager_1\n"
+        "upstream_rev=ddf6f4842653\n"
+        "upstream_seen_rev=0ccc02513a7f\n"
+        "py=python3\n",
+    )
+    source = tmp_path / "src"
+    source.mkdir()
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "nextsyncrev9")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    assert pm_update.record_upstream_rev_baseline(dest, source) is True
+    text = (dest / ".project_manager" / "local.conf").read_text(encoding="utf-8")
+    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    assert conf["upstream_rev"] == conf["upstream_seen_rev"] == "nextsyncrev9", \
+        f"다음 sync 1회로 수렴 안 됨: {conf!r}"
+    assert "# per-clone" in text and conf["py"] == "python3"  # 주석·타 키 보존
+    assert text.count("upstream_seen_rev=") == 1, f"seen 키 중복 append: {text!r}"
+
+
+def test_record_upstream_rev_baseline_leaves_seen_for_url_upstream(
+        pm_update, tmp_path, monkeypatch):
+    """URL upstream(스킬이 cache clone 후 --from) — baseline 만 갱신, seen 은 스킬층 값 그대로.
+
+    URL 은 fetch 관찰과 sync 가 분리된 채널이라 엔진이 seen 을 쓰면 race/자기비교가 된다
+    (ADR-0032 D2·codex round-3 NEW-2). 엔진은 건드리지 않는다.
+    """
+    dest = tmp_path / "dest"
+    _write_local_conf(
+        dest,
+        "upstream=https://github.com/example/project_manager.git\n"
+        "upstream_seen_rev=skillfetchrev\n",
+    )
+    source = tmp_path / "cache"  # 스킬이 clone 한 로컬 cache checkout.
+    source.mkdir()
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "cacheheadrev")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    assert pm_update.record_upstream_rev_baseline(dest, source) is True
+    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    assert conf["upstream_rev"] == "cacheheadrev"
+    assert conf["upstream_seen_rev"] == "skillfetchrev", \
+        f"URL 형상인데 엔진이 seen 을 덮음(한 키 2역·스킬층 관찰 파괴): {conf!r}"
+
+
+def test_record_upstream_revs_reports_recorded_keys_per_shape(
+        pm_update, tmp_path, monkeypatch):
+    """반환 `(changed, recorded)` 의 recorded = *엔진이 실제로 기록한* 키 — 형상별로 다르다.
+
+    호출부(main)가 안내 문구를 결과 상태로 역추론하지 않게 하는 입력이다(상태 추론 금지):
+    URL 정상 흐름은 스킬이 쓴 seen 이 이미 baseline 과 같아 파일만 봐선 구분이 안 된다.
+    """
+    source = tmp_path / "src"
+    source.mkdir()
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shaperev777")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    path_dest = tmp_path / "path_dest"
+    _write_local_conf(path_dest, "upstream=/w/project_manager_1\n")
+    changed, recorded = pm_update.record_upstream_revs(path_dest, source)
+    assert changed is True
+    assert recorded == {"upstream_rev": "shaperev777", "upstream_seen_rev": "shaperev777"}
+
+    url_dest = tmp_path / "url_dest"
+    # URL 형상 + 스킬이 이미 기록한 seen == 이번 cache HEAD (파일 상태로는 구분 불가한 조건).
+    _write_local_conf(
+        url_dest,
+        "upstream=https://github.com/example/project_manager.git\n"
+        "upstream_seen_rev=shaperev777\n",
+    )
+    changed, recorded = pm_update.record_upstream_revs(url_dest, source)
+    assert changed is True
+    assert recorded == {"upstream_rev": "shaperev777"}, \
+        f"URL 형상인데 seen 을 기록했다고 보고: {recorded!r}"
+
+
+def test_record_upstream_revs_writes_both_keys_in_single_pass(
+        pm_update, tmp_path, monkeypatch):
+    """두 키는 **한 번의 set-or-replace + 한 번의 write** — baseline 만 앞선 반쪽 상태 불가.
+
+    중간 중단 시 두 키가 어긋난 채 남는 것이 바로 이 티켓이 없앤 거짓 drift 의 원인이므로,
+    분리 write 로 되돌아가면 실패한다(회귀 가드).
+    """
+    dest = tmp_path / "dest"
+    _write_local_conf(dest, "upstream=/w/project_manager_1\n")
+    source = tmp_path / "src"
+    source.mkdir()
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "onepassrev5")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    calls: list[dict] = []
+    real_set = pm_import._set_conf_keys
+    monkeypatch.setattr(
+        pm_import, "_set_conf_keys",
+        lambda text, updates: (calls.append(dict(updates)), real_set(text, updates))[1])
+
+    assert pm_update.record_upstream_revs(dest, source)[0] is True
+    assert calls == [{"upstream_rev": "onepassrev5", "upstream_seen_rev": "onepassrev5"}], \
+        f"두 키가 단일 write 로 묶이지 않음(반쪽 상태 위험): {calls!r}"
+
+
+def test_main_records_both_keys_on_path_sync(pm_update, tmp_path, monkeypatch, capsys):
+    """실 sync(경로 upstream) 후 두 키가 같아진다 — 흡수 직후 drift advisory 0 의 조건."""
+    fake_repo = tmp_path / "fake_repo"
+    stored = tmp_path / "stored_upstream"
+    _make_upstream(stored)
+    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "bothkeysrev1")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    assert pm_update.main([]) == 0
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert conf.get("upstream_rev") == conf.get("upstream_seen_rev") == "bothkeysrev1", \
+        f"경로 sync 후 두 키 불일치(거짓 drift 재발): {conf!r}"
+    assert "upstream_seen_rev 동시 기록" in capsys.readouterr().out
+
+
+def test_main_url_sync_does_not_claim_seen_was_recorded(pm_update, tmp_path, monkeypatch, capsys):
+    """URL 형상 실 sync — 엔진이 seen 을 안 썼으므로 "(+동시 기록)" 문구가 뜨면 안 된다.
+
+    URL 정상 흐름(스킬이 fetch 후 seen 기록 → `--from <cache>` sync)에서는 seen==cache HEAD 라
+    *결과 상태*로는 "엔진이 썼다"와 구분되지 않는다 — 문구는 실제 기록분으로만 정해야 한다.
+    """
+    fake_repo = tmp_path / "fake_repo"
+    cache = tmp_path / "cache"  # 스킬이 clone/fetch 한 로컬 cache checkout.
+    _make_upstream(cache)
+    _write_local_conf(
+        fake_repo,
+        "upstream=https://github.com/example/project_manager.git\n"
+        "upstream_seen_rev=cachehead77\n",  # 스킬이 fetch 후 기록한 관찰값.
+    )
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "cachehead77")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    assert pm_update.main(["--from", str(cache)]) == 0
+    out = capsys.readouterr().out
+    assert "baseline 갱신" in out, f"URL sync 인데 baseline 갱신 안내 부재: {out!r}"
+    assert "동시 기록" not in out, f"엔진이 안 쓴 seen 을 썼다고 주장(상태 역추론): {out!r}"
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert conf.get("upstream_seen_rev") == "cachehead77"  # 스킬층 관찰값 그대로.
+
+
+def test_main_skew_suppression_suppresses_seen_too(pm_update, tmp_path, monkeypatch, capsys):
+    """manifest skew 억제 경로 — baseline 뿐 아니라 seen 도 미갱신(동시성 유지).
+
+    baseline 만 멈추고 seen 이 앞서면 반대 방향 거짓 경보가 된다. 두 기록이 한 함수 안이라
+    억제도 함께 걸린다 — skew 판정을 결정적으로 주입해 그 배선을 검증한다.
+    """
+    fake_repo = tmp_path / "fake_repo"
+    stored = tmp_path / "stored_upstream"
+    _make_upstream(stored)
+    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    skew_stub = ".project_manager/tools/__pm_update_skew_stub__.py"  # 합성 신규 등재분.
+    monkeypatch.setattr(
+        pm_update, "detect_manifest_skew", lambda *a, **k: ("skew", [skew_stub]))
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    assert pm_update.main([]) == 0
+    out = capsys.readouterr().out
+    assert "manifest skew" in out and "억제" in out, f"skew 억제 안내 미출력: {out!r}"
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert "upstream_rev" not in conf, f"skew 인데 baseline 기록됨: {conf!r}"
+    assert "upstream_seen_rev" not in conf, \
+        f"skew 인데 seen 만 앞섬(반대 방향 거짓 경보): {conf!r}"
+
+
 # ── T-0395: manifest skew → baseline 갱신 억제 (false-최신 차단·drift 은폐 방지) ──
 
 NEW_ENGINE_REL = ".project_manager/tools/__pm_update_new_engine__.py"

@@ -1932,6 +1932,70 @@ def test_adapter_drift_blank_seen_treated_as_unrecorded(board, monkeypatch):
     assert "관찰불가" in findings[0][2]
 
 
+def test_adapter_drift_message_is_direction_neutral(board, monkeypatch):
+    # T-0413: lint 는 git 을 호출하지 않아(ADR-0032 D5·rev 문자열 비교뿐) 두 rev 의 선후를 모른다.
+    # 따라서 "upstream 이 baseline 이후 변경됨" 같은 방향 단정을 하면 안 된다 — 불일치 사실만 알린다.
+    _wire_conf(board, monkeypatch, {
+        "upstream": "/w/project_manager_1",
+        "upstream_rev": "aaaaaaaaaaaa1111",
+        "upstream_seen_rev": "bbbbbbbbbbbb2222",
+    })
+    findings = board.lint_adapter_drift()
+    assert len(findings) == 1
+    detail = findings[0][2]
+    assert "불일치" in detail
+    assert "이후 변경됨" not in detail, f"방향 단정 잔존(거짓 경보 원인): {detail!r}"
+    assert "aaaaaaaaaaaa" in detail and "bbbbbbbbbbbb" in detail
+
+
+def test_adapter_drift_neutral_when_seen_is_older_than_baseline(board, monkeypatch):
+    # ② adopter#0 실측(PM 4차): seen(0ccc0251…·v1.3.5)이 baseline(ddf6f484…·v1.4.0)의 *조상*.
+    # finding 개수·kind 는 불변(advisory 1)이되, 메시지가 "upstream 이 앞섰다"고 단정하면 거짓이다.
+    _wire_conf(board, monkeypatch, {
+        "upstream": "/w/project_manager_1",
+        "upstream_rev": "ddf6f4842653",
+        "upstream_seen_rev": "0ccc02513a7f",
+    })
+    findings = board.lint_adapter_drift()
+    assert len(findings) == 1 and findings[0][1] == "adapter-drift"
+    detail = findings[0][2]
+    assert "이후 변경됨" not in detail, f"조상 관찰값에 방향 단정(거짓 주장): {detail!r}"
+    assert "ddf6f4842653" in detail and "0ccc02513a7f" in detail
+
+
+def test_path_upstream_sync_converges_two_keys_to_drift_clean(board, monkeypatch, tmp_path):
+    """연결 검증(T-0413) — 경로 upstream sync 1회 후 lint 의 adapter-drift 가 실제로 0이 된다.
+
+    엔진 기록(pm_update.record_upstream_rev_baseline)과 판정(board.lint_adapter_drift)을 실
+    local.conf 파일로 이어 붙인다 — 두 쪽 단위테스트가 각자 green 이어도 배선이 끊기면 거짓
+    경보가 남으므로, 어긋난 conf(baseline 신·seen 구)가 sync 로 수렴함을 파일 왕복으로 본다.
+    """
+    pm_update = _load_module("pm_update", TOOLS / "pm_update.py")
+    dest = tmp_path / "adopter"
+    source = tmp_path / "upstream_checkout"
+    source.mkdir()
+    local_conf = dest / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True, exist_ok=True)
+    local_conf.write_text(
+        f"upstream={source}\n"
+        "upstream_rev=ddf6f4842653\n"
+        "upstream_seen_rev=0ccc02513a7f\n",  # 조상 — 흡수 직후에도 거짓 drift 를 내던 형상.
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
+
+    # 어긋난 채로는 advisory 1건(회귀 sensitivity — 이 테스트가 vacuous 하지 않음).
+    assert len(board.lint_adapter_drift()) == 1
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "converged9999")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    assert pm_update.record_upstream_rev_baseline(dest, source) is True
+
+    assert board.lint_adapter_drift() == [], \
+        f"경로 sync 후에도 drift advisory 잔존: {local_conf.read_text(encoding='utf-8')!r}"
+
+
 def test_adapter_drift_uses_two_distinct_keys(board, monkeypatch):
     # 한 키 2역 금지(race/자기비교 회피·codex round-3 NEW-2) — baseline 키와 seen 키가 분리돼야.
     assert board._DRIFT_BASELINE_KEY == "upstream_rev"

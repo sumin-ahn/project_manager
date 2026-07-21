@@ -6612,8 +6612,9 @@ def cmd_verified_at_backfill(args: argparse.Namespace) -> int:
 # adapter-drift baseline 의 두 local.conf 키 (T-0141·ADR-0032 Decision 2·codex round-3 NEW-2).
 # 한 키가 baseline 과 현재-관찰을 겸하면 race/자기비교라 *분리*한다:
 #   - upstream_rev      : baseline — 마지막 성공 sync 의 upstream revision (pm_import·pm_update 가 기록·T-0145).
-#   - upstream_seen_rev : 현재 관찰값 — pm-update 스킬이 upstream fetch 후 기록 (T-0142)·경로 upstream 은
-#                         로컬 checkout rev 직접. cache 부재 URL 은 이 키 부재 → graceful skip.
+#   - upstream_seen_rev : 현재 관찰값 — URL 은 pm-update 스킬이 fetch 후 기록(T-0142), 경로 upstream 은
+#                         pm_update 가 sync 시 baseline 과 *함께* 기록(동기 시점 checkout rev = 관찰값·
+#                         T-0413). cache 부재 URL 은 이 키 부재 → graceful skip.
 _DRIFT_BASELINE_KEY = "upstream_rev"
 _DRIFT_SEEN_KEY = "upstream_seen_rev"
 
@@ -6631,10 +6632,15 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     의 **2개 키**만 비교한다 —
 
       - `upstream_rev`      (baseline·마지막 성공 sync·pm_import/pm_update 가 기록)
-      - `upstream_seen_rev` (현재 관찰값·pm-update 스킬이 upstream fetch 후 기록·경로 upstream 은 로컬 rev)
+      - `upstream_seen_rev` (현재 관찰값·URL 은 pm-update 스킬이 fetch 후 기록·경로 upstream 은 pm_update 가
+        sync 시 baseline 과 함께 기록·T-0413)
 
-    둘 다 존재하고 **다르면** drift 1 finding(baseline 이후 upstream 이 앞섰다 = adapter-layer 가 낡았을 수
-    있음). 한 키 2역 금지(race/자기비교 회피·codex round-3 NEW-2).
+    둘 다 존재하고 **다르면** drift 1 finding(두 rev 불일치 = adapter-layer 가 낡았을 수 있음). 한 키 2역
+    금지(race/자기비교 회피·codex round-3 NEW-2). **메시지는 방향-중립**(T-0413) — lint 는 git 을 호출하지
+    않으므로(D5·rev 문자열 비교뿐) 두 rev 의 선후를 알 수 없다. 관찰값이 baseline 의 *조상*(구 흡수 잔재)인
+    경우까지 "upstream 이 baseline 이후 변경됨"이라 단정하면 거짓 경보다(PM 4차 ② 실측·정상 흡수 직후 상시
+    발화). 선후를 알려고 런타임 git ancestor 판정을 넣지 않고(D5 유지), 기록 시점 정합
+    (pm_update.record_upstream_rev_baseline 이 경로 upstream 에서 두 키 동시 기록)으로 원천 해소한다.
 
     scope(codex MUST-FIX 4·T-0305 Q3 결착): 대상 = manifest-제외 adapter-layer(settings.json·루트 doc·
     facade·진입문서·local.conf — adopter config·전파 채널 없음) / 제외 = instance-state(status·
@@ -6680,11 +6686,12 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     if baseline == seen:
         return findings
 
-    # 다름 = baseline(마지막 동기) 이후 upstream 이 앞섰다. adapter-layer(facade·진입문서·settings)가
-    # 낡았을 수 있으니 PM 에게 `pm-update` 안내 (전파 아님·never-block).
+    # 다름 = 두 rev 불일치. 어느 쪽이 앞선지는 알 수 없으므로(git 미호출·T-0413) **방향-중립**으로
+    # 알리고, adapter-layer(facade·진입문서·settings)가 낡았을 가능성만 PM 에게 안내한다
+    # (전파 아님·never-block). 실제 선후·변경분은 `pm-update --changes` 가 판정한다.
     findings.append((
         "adapter-layer", "adapter-drift",
-        f"upstream 이 baseline({baseline[:12]}) 이후 변경됨(현재 관찰 {seen[:12]}) — "
+        f"upstream baseline({baseline[:12]}) 과 관찰({seen[:12]}) 불일치 — "
         f"adapter-layer(facade·진입문서·settings) 가 낡았을 수 있음. "
         f"`pm-update` 로 동기 (instance-state·README·lite 는 채택자 소유·제외)"))
     return findings

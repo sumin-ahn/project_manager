@@ -318,11 +318,16 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
     assert observ_gate.returncode == 0, (
         f"{harness}: 관찰불가 advisory 가 `--gate` 차단(never-block 위배·exit {observ_gate.returncode})\n{observ_gate.stdout}")
 
-    # seen≠baseline 주입 → 실 drift 발화(관찰불가 아닌 "이후 변경됨" 변경-확인 메시지).
+    # seen≠baseline 주입 → 실 drift 발화(관찰불가 아닌 **방향-중립 불일치** 메시지·T-0413).
+    #   lint 는 git 을 안 하므로 두 rev 의 선후를 모른다 — "이후 변경됨" 단정은 관찰값이 baseline 의
+    #   조상일 때 거짓이라 폐기됐다(② 실측). 불일치 사실 + 양쪽 rev 만 알린다.
     conf.write_text(conf_txt + "upstream_seen_rev=ffff0000baselinedifferent\n", encoding="utf-8")
     fired = _board(dest, "lint")
     assert "adapter-drift" in fired.stdout, f"{harness}: 인위 drift 인데 adapter-drift 미발화\n{fired.stdout}"
-    assert "이후 변경됨" in fired.stdout, f"{harness}: 실 drift(이후 변경됨) 메시지 부재\n{fired.stdout}"
+    assert "불일치" in fired.stdout and "관찰불가" not in fired.stdout, \
+        f"{harness}: 실 drift(방향-중립 불일치) 메시지 부재\n{fired.stdout}"
+    assert "이후 변경됨" not in fired.stdout, \
+        f"{harness}: 방향 단정 메시지 잔존(거짓 경보 클래스)\n{fired.stdout}"
 
     # never-block — advisory 라 `--gate` 종료코드 0.
     gated = _board(dest, "lint", "--gate")
