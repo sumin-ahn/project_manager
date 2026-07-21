@@ -725,3 +725,136 @@ def test_task_resume_not_forced_to_task_first_branch(bootstrap):
     assert "## PM 3차 부트스트랩" in md
     assert "task 1차" not in md
     assert "신규 task — 복구할 인계 없음" not in md
+
+
+# ── T-0412: main-참조 해소 커맨드의 브랜치 도메인 검증 (`_remedy_branch_name`) ──────
+# 0단계 main-참조 fault 의 해소 커맨드가 세션/task 명을 브랜치명으로 그대로 보간해, 그 이름이
+# 보호브랜치이거나 이미 존재하는 브랜치면 **실행 불가능한 자기모순 안내**가 됐다(PM 4차 실측:
+# task `main` 진입 → `git -C work/project_manager_1 switch -c main`). 파생 지점(remedy 문자열)에서
+# 안전한 신규 브랜치명(`task/<preferred>`·`-2`…)으로 해소한다 — task 명 도메인은 안 넓힌다.
+
+
+class _RemedyBoard:
+    """board 대역 — `_repo_protected` 만 소비된다(`_protected_warning` 경유·DI 보존)."""
+
+    def __init__(self, protected=("main", "master", "develop")):
+        self._protected = list(protected)
+
+    def _repo_protected(self, repo):
+        return self._protected
+
+
+class _RemedyPool:
+    """worktree_pool 대역 — remedy 경로는 slot_path·current_branch·slot_status 만 읽는다."""
+
+    def __init__(self, slot_dir, *, branch="main"):
+        self._slot_dir = Path(slot_dir)
+        self._branch = branch
+
+    def slot_path(self, slot):
+        return self._slot_dir
+
+    def current_branch(self, slot, *, git_runner=None):
+        return self._branch
+
+    def slot_status(self, slot, *, git_runner=None):
+        return SimpleNamespace(upstream_ok=False, upstream=None)
+
+
+def _remedy_git(*existing_branches, raises=False):
+    """`show-ref --verify --quiet refs/heads/<b>` 를 모델하는 git 러너 대역 + 호출 기록.
+
+    `existing_branches` 에 든 브랜치만 rc 0(존재). `raises=True` 면 호출이 예외를 던져
+    fail-soft 경로(= 미존재 간주)를 구동한다."""
+    calls: list[list] = []
+
+    def runner(args):
+        calls.append(list(args))
+        if raises:
+            raise OSError("git 실행 실패(대역)")
+        if args[2:5] == ["show-ref", "--verify", "--quiet"]:
+            name = args[5][len("refs/heads/"):]
+            return (0, "") if name in existing_branches else (1, "")
+        return 0, ""
+
+    return runner, calls
+
+
+def _remedy_inst(bootstrap, *, git_fn, protected=("main", "master", "develop")):
+    return bootstrap.PmBootstrap(run_git_fn=git_fn, board=_RemedyBoard(protected))
+
+
+def test_remedy_branch_prefixes_protected_preferred(bootstrap, tmp_path):
+    """(a) preferred 가 보호브랜치(`main`)면 그대로 쓰지 않고 `task/main` 을 제안한다."""
+    git_fn, _calls = _remedy_git()          # 기존 브랜치 없음 — 보호목록만이 배제 사유.
+    inst = _remedy_inst(bootstrap, git_fn=git_fn)
+    pool = _RemedyPool(tmp_path)
+    assert inst._remedy_branch_name(pool, "X", "work/X_1", "main") == "task/main"
+
+
+def test_remedy_branch_suffixes_when_prefixed_exists(bootstrap, tmp_path):
+    """(b) `task/main` 까지 이미 존재하면 `task/main-2` 로 첫 미충돌을 고른다."""
+    git_fn, _calls = _remedy_git("task/main")
+    inst = _remedy_inst(bootstrap, git_fn=git_fn)
+    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "main") == "task/main-2"
+
+
+def test_remedy_branch_suffix_skips_existing_numbered(bootstrap, tmp_path):
+    """`task/main-2` 도 있으면 `task/main-3` — 첫 미충돌까지 계속 센다(비공허)."""
+    git_fn, _calls = _remedy_git("task/main", "task/main-2")
+    inst = _remedy_inst(bootstrap, git_fn=git_fn)
+    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "main") == "task/main-3"
+
+
+def test_remedy_branch_keeps_plain_preferred(bootstrap, tmp_path):
+    """(c) 평범한 task 명(`foo`)은 보호목록 밖 + 미존재 → 접두 없이 그대로 (오탐 0)."""
+    git_fn, calls = _remedy_git("main")
+    inst = _remedy_inst(bootstrap, git_fn=git_fn)
+    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "foo") == "foo"
+    # 존재 확인은 그 슬롯 worktree 에서 argv-list 로 (shell 미경유·`-C <slot_dir>`).
+    assert calls[0][:2] == ["-C", str(tmp_path)]
+    assert calls[0][2:] == ["show-ref", "--verify", "--quiet", "refs/heads/foo"]
+
+
+def test_remedy_branch_prefixes_existing_plain_name(bootstrap, tmp_path):
+    """보호목록 밖이라도 **이미 존재하는** 브랜치면 그대로 쓰지 않는다(`switch -c` 실패 방지)."""
+    git_fn, _calls = _remedy_git("foo")
+    inst = _remedy_inst(bootstrap, git_fn=git_fn)
+    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "foo") == "task/foo"
+
+
+def test_remedy_branch_fail_soft_on_git_error(bootstrap, tmp_path):
+    """(e) git 호출 실패는 fail-soft — 미존재로 간주하고 안내는 계속 나간다(크래시 0)."""
+    git_fn, _calls = _remedy_git(raises=True)
+    inst = _remedy_inst(bootstrap, git_fn=git_fn)
+    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "foo") == "foo"
+    # 보호브랜치 축은 git 무관이라 그대로 살아 있다(fail-soft ≠ 판정 포기).
+    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "main") == "task/main"
+
+
+def test_remedy_branch_task_fault_consumes_helper(bootstrap, tmp_path):
+    """task 모드 fault(`_task_slot_fault`)의 해소 커맨드가 헬퍼 결과를 싣는다 — task `main` 실측 케이스."""
+    slot_dir = tmp_path / "work" / "X_1"
+    slot_dir.mkdir(parents=True)
+    git_fn, _calls = _remedy_git()
+    inst = _remedy_inst(bootstrap, git_fn=git_fn)
+    pool = _RemedyPool(slot_dir, branch="main")
+    lease = SimpleNamespace(slot="work/X_1", repo="X", session="main", state="leased", role="work")
+    fault = inst._task_slot_fault(pool, lease, "main")
+    assert fault is not None
+    label, _reason, resolve = fault
+    assert "main-참조" in label
+    assert resolve == "git -C work/X_1 switch -c task/main"
+
+
+def test_remedy_branch_slot_mode_consumes_helper(bootstrap, tmp_path, capsys):
+    """(d) 슬롯 모드 `<repo>_<N>` 안내도 같은 헬퍼를 탄다 — 세션명 브랜치가 이미 있으면 접두형."""
+    git_fn, _calls = _remedy_git("X_2")     # 슬롯 세션명과 같은 브랜치가 이미 존재.
+    inst = _remedy_inst(bootstrap, git_fn=git_fn)
+    pool = _RemedyPool(tmp_path, branch="main")
+    lease = SimpleNamespace(slot="work/X_2", repo="X", session="", state="idle", role="work")
+    rc = inst._phase0_protected_reject(pool, "X", "work/X_2", "X_2", lease)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "git -C work/X_2 switch -c task/X_2" in err
+    assert "switch -c X_2" not in err        # 충돌하는 옛 안내가 남아 있지 않다.

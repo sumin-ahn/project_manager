@@ -180,6 +180,9 @@ def _make(bootstrap, tmp_path, *, board, worktree_pool=None, git_fn=None):
             return 0, "main\n"
         if args[:2] == ["log", "--oneline"]:
             return 0, "abc123 subj\n"
+        if "show-ref" in args:
+            # remedy 브랜치 후보 존재 검사(T-0412) — 이 대역 슬롯엔 브랜치가 없다(rc≠0).
+            return 1, ""
         return 0, ""
 
     return bootstrap.PmBootstrap(

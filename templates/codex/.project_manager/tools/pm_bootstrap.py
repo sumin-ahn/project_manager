@@ -1358,6 +1358,17 @@ def _format_slot_status_lines(status: dict | None) -> list[str]:
 # 가 해소되는 것만 후보로 보여주고, 사용자가 `set-base` 로 명시 지정한다(엔진=surface·사용자=결정).
 _UNRECORDED_BASE_CANDIDATE_BRANCHES = ("origin/main", "origin/master", "origin/develop")
 
+# main-참조 해소 커맨드가 제시할 **신규 브랜치명** 파생 규칙 (T-0412).
+# 세션/task 명을 브랜치명으로 그대로 보간하면 그 이름이 보호브랜치(`main`)이거나 이미 존재하는
+# 브랜치일 때 **실행 불가능한 자기모순 커맨드**가 된다(PM 4차 실측: task `main` 진입 시
+# `git -C work/project_manager_1 switch -c main` — 지금 체크아웃된 그 보호브랜치를 새로 만들라는 안내).
+# 접두는 `task/` 고정 — 슬롯 전용 브랜치 `<repo>_<N>`(worktree_pool 관례)과 네임스페이스가 겹치지
+# 않고, PM 4차가 실측 해소에 실제로 쓴 이름이다(`task/main`).
+_REMEDY_BRANCH_PREFIX = "task/"
+# `task/<preferred>` 까지 충돌하면 `-2`, `-3` … 로 첫 미충돌을 고른다. 상한은 안내 문자열 생성이
+# 무한 루프에 빠지지 않기 위한 방어(전부 충돌하면 마지막 후보를 그대로 제시·fail-soft).
+_REMEDY_BRANCH_SUFFIX_LIMIT = 20
+
 
 def _phase0_diverge_reason(result) -> str:
     """0단계 record-vs-live FAIL-LOUD 의 판정 근거 한 줄 (T-0391·surface-only).
@@ -2955,6 +2966,7 @@ class PmBootstrap:
         reason = self._phase0_main_reference_reason(wp, repo, slot_id)
         if reason is None:
             return 0
+        remedy_branch = self._remedy_branch_name(wp, repo, slot_id, session)
         print(
             f"[중단·0단계] 슬롯 {slot_id} 이(가) {reason} — main-참조 상태는 진입 거부입니다(T-0360). "
             f"이 슬롯에서 작업하면 커밋이 canonical/보호 브랜치에 얹혀 ① 오염으로 이어집니다(방어를 "
@@ -2963,7 +2975,7 @@ class PmBootstrap:
             f"     (a) 코드 읽기 기준면이 필요하면 readonly 슬롯을 만드세요:\n"
             f"         {_CARD_TOOL_INVOKE}/pm_config.py worktree add {repo} --readonly\n"
             f"     (b) 이 슬롯을 작업 브랜치로 전환하세요(main 직접 checkout 이탈):\n"
-            f"         git -C {slot_id} switch -c {session}",
+            f"         git -C {slot_id} switch -c {remedy_branch}",
             file=sys.stderr,
         )
         return 1
@@ -3013,6 +3025,48 @@ class PmBootstrap:
             return None
         tracked_branch = upstream.split("/", 1)[1]  # origin/main → main · origin/feature/x → feature/x
         return upstream if self._protected_warning(repo, tracked_branch) is not None else None
+
+    def _remedy_branch_name(self, wp, repo: str, slot_id: str, preferred: str) -> str:
+        """main-참조 해소 커맨드가 제시할 **안전한 신규 브랜치명** (T-0412·소비처 2곳 공용).
+
+        `git switch -c <name>` 이 실제로 실행 가능한 값만 돌려준다 — 세션/task 명을 그대로 보간하면
+        그 이름이 보호브랜치이거나 이미 존재하는 브랜치일 때 자기모순 안내가 된다(PM 4차 실측).
+        규칙(순서·`_REMEDY_BRANCH_PREFIX`·`_REMEDY_BRANCH_SUFFIX_LIMIT`):
+          1. `preferred` 가 보호목록(`board._repo_protected`·`_protected_warning` 축) 밖이고 그 슬롯에
+             **미존재** 브랜치면 그대로.
+          2. 아니면 `task/<preferred>`(보호목록·존재 재검사).
+          3. 그것도 충돌하면 `task/<preferred>-2`, `-3` … 첫 미충돌.
+        전 후보 충돌(상한 도달)이면 마지막 후보를 그대로 제시한다(fail-soft — 안내 자체는 나간다).
+        **판정만 한다** — 엔진이 브랜치를 만들지 않는다(0단계=판정·해소=사용자·ADR-0068 I2)."""
+        prefixed = f"{_REMEDY_BRANCH_PREFIX}{preferred}"
+        candidates = [preferred, prefixed]
+        candidates += [f"{prefixed}-{n}" for n in range(2, _REMEDY_BRANCH_SUFFIX_LIMIT + 1)]
+        for cand in candidates:
+            if self._protected_warning(repo, cand) is not None:
+                continue
+            if self._slot_branch_exists(wp, slot_id, cand):
+                continue
+            return cand
+        return candidates[-1]
+
+    def _slot_branch_exists(self, wp, slot_id: str, branch: str) -> bool:
+        """그 슬롯 worktree 에 로컬 브랜치 `branch` 가 이미 있는가 (T-0412·remedy 후보 충돌 검사).
+
+        `git -C <slot_dir> show-ref --verify --quiet refs/heads/<branch>`(argv-list·shell 미경유)를
+        DI 러너(`_run_git_fn`)로 돌린다 — rc 0 = 존재. 경로 해소 실패·git 호출 실패/예외는
+        **미존재로 간주**한다(fail-soft — 안내는 계속 나가야 하고, 후보 판정 실패로 진입 검증을
+        깨뜨리지 않는다)."""
+        try:
+            slot_dir = str(wp.slot_path(slot_id))
+        except Exception:  # noqa: BLE001 — fail-soft: 경로 해소 실패는 미존재(안내 계속).
+            return False
+        try:
+            rc, _out = self._run_git_fn(
+                ["-C", slot_dir, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"]
+            )
+        except Exception:  # noqa: BLE001 — fail-soft: git 호출 실패는 미존재(안내 계속).
+            return False
+        return rc == 0
 
     def _phase0_record_vs_live(self, wp, slot_id: str) -> int:
         """기록된 lease.git(기대) vs 슬롯 live 정합 — `compare_slot_git`(T-0350·㉒) 소비 (결정 ⑪·㉒).
@@ -3330,10 +3384,11 @@ class PmBootstrap:
         # 3. main-참조(보호브랜치 직접/원격추적).
         reason = self._phase0_main_reference_reason(wp, repo, slot_id)
         if reason is not None:
+            remedy_branch = self._remedy_branch_name(wp, repo, slot_id, task)
             return (
                 "main-참조 (보호브랜치 직접 checkout / origin-추적)",
                 f"{reason} — 이 슬롯 커밋이 canonical/보호 브랜치로 새면 ① 오염(§F9).",
-                f"git -C {slot_id} switch -c {task}",
+                f"git -C {slot_id} switch -c {remedy_branch}",
             )
         # 4. 기록↔live diverged.
         compare = getattr(wp, "compare_slot_git", None)
