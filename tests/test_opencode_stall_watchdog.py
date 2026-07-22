@@ -18,6 +18,7 @@ opencode `run` 이 스타트업 network fetch stall 에 빠지면 `--format json
 from __future__ import annotations
 
 import importlib.util
+import errno
 import json
 import os
 import shutil
@@ -415,6 +416,79 @@ def test_pm_import_claude_fill_skips_watchdog(monkeypatch):
 
 # ── ⑤ 결정적 픽스처 e2e (무응답 소켓 서버 + 실 opencode·skipif 부재) ─────────────
 
+def _loopback_socket_capability(socket_factory=socket.socket) -> tuple[bool, str | None]:
+    """AF_INET loopback bind 가능 여부만 probe한다(외부 송신 0).
+
+    일부 network-off sandbox 는 socket() 자체 또는 loopback bind 를 EPERM 으로 막는다.
+    그 환경에서는 실 socket E2E를 skip 하되, 아래의 hermetic watchdog 계약 검증은 계속 실행한다.
+    ``socket_factory`` seam 은 capability 허용/거부 분기를 소켓 없이 고정한다.
+    """
+    srv = None
+    try:
+        srv = socket_factory(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+    except OSError as exc:
+        if exc.errno in {errno.EPERM, errno.EACCES}:
+            return False, f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        if srv is not None:
+            srv.close()
+    return True, None
+
+
+def _require_loopback_socket_capability() -> None:
+    available, reason = _loopback_socket_capability()
+    if not available:
+        pytest.skip(
+            "loopback AF_INET capability unavailable "
+            f"({reason}); real opencode stall E2E skipped. "
+            "Run the integration test in an environment that permits loopback sockets."
+        )
+
+
+def test_loopback_socket_capability_probe_allows_bind_without_network():
+    """허용 분기: probe 는 loopback bind 뒤 close만 하며 외부 연결/송신을 하지 않는다."""
+    calls: list[object] = []
+
+    class FakeSocket:
+        def bind(self, address):
+            calls.append(address)
+
+        def listen(self, backlog):
+            calls.append(("listen", backlog))
+
+        def close(self):
+            calls.append("close")
+
+    available, reason = _loopback_socket_capability(lambda *_args: FakeSocket())
+    assert (available, reason) == (True, None)
+    assert calls == [("127.0.0.1", 0), ("listen", 1), "close"]
+
+
+def test_loopback_socket_capability_probe_reports_permission_denied():
+    """거부 분기: network-off EPERM 을 fail이 아닌 이유 있는 E2E skip 대상으로 식별한다."""
+    def denied_socket(*_args):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    available, reason = _loopback_socket_capability(denied_socket)
+    assert available is False
+    assert reason is not None
+    assert "PermissionError" in reason and "Operation not permitted" in reason
+
+
+def test_loopback_capability_requirement_skips_with_integration_guidance(monkeypatch):
+    """capability 부재 E2E는 명확한 사유와 권한 있는 실행 경로를 출력하고 skip 한다."""
+    monkeypatch.setitem(
+        globals(), "_loopback_socket_capability",
+        lambda: (False, "PermissionError: [Errno 1] Operation not permitted"),
+    )
+    with pytest.raises(pytest.skip.Exception, match="loopback AF_INET capability unavailable") as excinfo:
+        _require_loopback_socket_capability()
+    assert "Run the integration test" in str(excinfo.value)
+
+
 def _dead_server():
     """연결은 수락하되 응답을 절대 보내지 않는 소켓 서버 — opencode startup fetch stall 재현.
 
@@ -452,12 +526,14 @@ def _dead_server():
     shutil.which("opencode") is None,
     reason="결정적 stall e2e — 실 opencode 바이너리 필요(CI 상시 경로는 hermetic 단위테스트).",
 )
+@pytest.mark.integration
 def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
     """무응답 서버를 baseURL 로 물린 실 opencode 를 워치독이 kill+재시도+fail-loud 하는지 e2e.
 
     first-event timeout 을 env 로 5초로 낮춰(총 소요 짧게) 무한 hang 이 아니라 유한 재시도 후
     StallWatchdogError 로 끝나는지 실측. 실 subprocess·실 소켓·주입 없는 기본 popen/clock 경로."""
     engine = _load_engine()
+    _require_loopback_socket_capability()
     port, close = _dead_server()
     try:
         cfg = {
