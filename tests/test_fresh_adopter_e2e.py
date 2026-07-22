@@ -1,8 +1,8 @@
-"""Fresh-adopter e2e 게이트 — import → lint clean → ticket 라이프사이클 (양 harness · 기계층).
+"""Fresh-adopter e2e 게이트 — import → lint clean → ticket 라이프사이클 (파생 3-harness · 기계층).
 
 [[feature-ship-needs-fresh-adopter-gate]]: diff-scoped 리뷰·root 테스트는 *출하 template* 의
 dangling framework wikilink·placeholder 누락·작동 여부를 못 본다(drift-0=engine 만). 이 테스트는
-깨끗한 디렉토리에 양 harness 를 **실제 import** 해 (a) adopter 인스턴스 `board.py lint` 가 clean
+깨끗한 디렉토리에 파생 HARNESSES 전부를 **실제 import** 해 (a) adopter 인스턴스 `board.py lint` 가 clean
 (adopter 엔 ADR 이 없으니 출하 doc 에 framework `[[ADR-NNNN]]` 가 새면 *여기서* dangling 으로 터진다)
 · (b) ticket new→claim→complete 라이프사이클이 작동함을 못박는다. tests/ 평범 테스트라 매 회귀·매
 push(pre-push 훅)에 자동 포함된다.
@@ -22,7 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 
 import pytest
 from _settings_portability import portability_failures, referenced_hook_paths
@@ -30,16 +30,6 @@ from _harness_matrix import HARNESSES, entry_docs as _entry_docs
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
-
-# 알려진 스캐폴드-갭 하네스 — 출하 트리가 ticket 상태 디렉토리를 안 실어 lifecycle 이 크래시하는,
-# **이미 근본 티켓(T-0433)으로 추적 중**인 하네스만. 이 하네스는 lifecycle 을 **실제로 실행한 뒤**
-# 알려진 크래시 형상(아래 `_missing_status_dir_crash`)일 때만 xfail(자동-해제), 그 밖 하네스는
-# 상태-dir 소실을 **회귀로 간주해 hard fail**(마스킹 금지·MF-A). T-0433 랜딩 시 비운다.
-_KNOWN_SCAFFOLD_GAP_HARNESSES = {"codex"}
-
-# 알려진 스캐폴드-갭 크래시의 종료 코드 — uncaught traceback(=1). 형상 매칭의 일부이므로 상수로 둔다.
-_SCAFFOLD_GAP_CRASH_RETURNCODE = 1
-
 
 def _board_status_dirs() -> tuple[str, ...]:
     """엔진 `board.STATUS_DIRS`(open/claimed/blocked/done) 파생 — lifecycle 이 요구하는 ticket 상태
@@ -94,44 +84,6 @@ def _board(dest: Path, *args: str) -> subprocess.CompletedProcess:
         errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
     )
-
-
-def _stderr_mentions_path(stderr: str, path_str: str) -> bool:
-    """traceback stderr 가 이 경로를 언급하는가 — 백슬래시 이스케이프 **내성** 매칭 (순수 함수).
-
-    `OSError.__str__` 은 파일명을 `%r`(repr)로 찍는다 — 그래서 Windows traceback 에는 경로 구분자가
-    **이중** 백슬래시(`...\\\\tickets\\\\open\\\\T-0001.md`)로 나오고, `str(Path)`(단일 백슬래시)는
-    그 문자열의 substring 이 **될 수 없다**. 해제 없이 비교하면 Windows 에서 codex 의 알려진 갭이
-    xfail 이 아니라 real fail(false-red)로 뜬다(회사 머신이 Windows). raw·escaped 양쪽을 본다 —
-    POSIX 경로엔 백슬래시가 없어 해제는 no-op 이라 기존 동작이 그대로다.
-    """
-    return path_str in stderr or path_str in stderr.replace("\\\\", "\\")
-
-
-def _missing_status_dir_crash(
-    result: subprocess.CompletedProcess, tickets_root: Path
-) -> str | None:
-    """`board.py` 실패가 **알려진 스캐폴드-갭 크래시 형상**이면 그 상태-dir 이름을, 아니면 None.
-
-    실측 형상 (2026-07-22 · codex fresh import 재현):
-      - rc == 1 (uncaught traceback)
-      - stderr 에 `FileNotFoundError`
-      - 그 메시지가 가리키는 경로가 **실재하지 않는** ticket 상태 디렉토리
-        (`.../wiki/tickets/<status>/T-NNNN-*.md` — `dump_ticket` 의 `path.write_text`)
-    셋이 **전부** 맞을 때만 "알려진 갭" 이다. 형상이 다르면(다른 rc·다른 예외·실재하는 dir) 미지의
-    실패이므로 None 을 줘 호출부가 real fail 하게 한다 — MF-A(마스킹 금지)를 크래시 **형상** 축으로
-    확장한 것. 경로 조각은 `Path` 로 조립하고(리터럴 `"/tickets/"` 는 Windows 역슬래시에서 안 맞음)
-    문자열 비교는 `_stderr_mentions_path` 에 위임한다(이스케이프 내성·매칭 로직 사본 0).
-    """
-    if result.returncode != _SCAFFOLD_GAP_CRASH_RETURNCODE:
-        return None
-    if "FileNotFoundError" not in result.stderr:
-        return None
-    for status in _TICKET_STATUS_DIRS:
-        status_dir = tickets_root / status
-        if not status_dir.is_dir() and _stderr_mentions_path(result.stderr, str(status_dir)):
-            return status
-    return None
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
@@ -197,34 +149,16 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
             f"{harness} 진입문서 {doc.name} 에 framework wikilink {hits} — adopter 엔 해당 객체가 "
             f"없어 dangling. 출하 진입문서는 plain text 로 (ADR-NNNN).")
 
-    # (b) ticket 라이프사이클 — new → claim → complete 가 adopter 엔진에서 작동.
-    #     이 게이트를 codex 로 넓히자 드러난 **범위 밖 스캐폴드 갭**(근본 티켓 [[T-0433]]): 출하
-    #     `templates/codex/` 가 claude/opencode 와 달리 ticket 상태 디렉토리(open/claimed/done/blocked)를
-    #     안 실어 보내 `board.py new` 가 없는 `open/` 로 write 하다 크래시한다(위 import·lint·진입문서
-    #     내용검사는 codex 도 통과). 근본 수정은 `templates/codex` 파리티(상태 dir 출하) 또는 board.py
-    #     move/new 의 mkdir 하드닝 + pm_update 전파로, 둘 다 이 티켓 touches(tests/) 밖이다.
-    #     **사전 검사 없이 전 하네스가 lifecycle 을 실제로 실행한다** — 상태-dir 실존을 미리 보고
-    #     가르면, T-0433 을 board.py **지연-생성**(mkdir on write)으로 고쳤을 때 상태-dir 은 여전히
-    #     부재라 실행 전에 xfail 돼 자동-해제가 영영 안 온다. 실행해 보고 **알려진 크래시 형상**일
-    #     때만(그리고 알려진-갭 하네스일 때만) xfail 한다.
+    # (b) ticket 라이프사이클 — 파생 HARNESSES 전부가 new → claim → complete 를 green으로 완료한다.
+    #     T-0433 이후 모든 template은 STATUS_DIRS 스캐폴드를 출하하며, board.py는 상태-dir 부재도
+    #     mkdir-before-write로 자가 복구한다. 사전 분기 없이 실제 lifecycle을 실행해 두 계약을 함께 검증한다.
     tickets_root = dest / ".project_manager" / "wiki" / "tickets"
     lifecycle_dirs = [tickets_root / s for s in _TICKET_STATUS_DIRS]
 
     new = _board(dest, "new", "adopter smoke", "--touches", "README.md")
-    if new.returncode != 0:
-        crashed_on = _missing_status_dir_crash(new, tickets_root)
-        # 알려진-갭 하네스(codex) **and** 알려진 크래시 형상일 때만 xfail — 그 외 하네스의 상태-dir
-        #   소실은 스캐폴드 **회귀**라 "알려진 codex 갭" 으로 마스킹하지 않고, 형상이 다른 미지의
-        #   실패도 xfail 로 새지 않는다(둘 다 아래 `pytest.fail` 로 hard fail·MF-A·round3 승계).
-        if harness in _KNOWN_SCAFFOLD_GAP_HARNESSES and crashed_on:
-            pytest.xfail(
-                f"{harness} 어댑터 트리 파리티 갭 — ticket 상태 디렉토리 {crashed_on!r} 미출하로 "
-                f"`board.py new` 가 FileNotFoundError 크래시(범위 밖·templates/ 수정 필요·근본 티켓 "
-                "T-0433). 상태-dir 이 도착하면(출하든 지연-생성이든) 이 분기를 안 타고 아래 lifecycle "
-                "이 실제로 실행된다.")
-        pytest.fail(
-            f"{harness} `board.py new` 실패(rc={new.returncode}) — 알려진 스캐폴드-갭 크래시 형상이 "
-            f"아니거나 알려진-갭 하네스가 아니다(마스킹 금지).\n--- stderr ---\n{new.stderr}")
+    assert new.returncode == 0, (
+        f"{harness} `board.py new` 실패(rc={new.returncode}) — ticket 상태 스캐폴드 또는 "
+        f"mkdir-before-write 계약 회귀.\n--- stderr ---\n{new.stderr}")
 
     # bare list = 세션 기본 뷰(ADR-0067) — 솔로/무바인딩이면 user-단위 폴백이라 방금 내가 만든 open 이
     # 상세로 나온다. 타 세션분은 완전 비노출(접힘 카운트 "그 외 open N건" 줄은 ADR-0067 로 제거됨).
@@ -260,49 +194,45 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
         "(반쪽 파리티·T-0433). lifecycle 이 안 밟는 상태-dir 도 채택자는 즉시 쓴다(blocked 이행).")
 
 
-# ── 크래시 형상 매칭기 단위 가드 (플랫폼 무관 실행) ────────────────────────────────
-# 위 e2e 의 xfail 갈래는 **경로 문자열 매칭**에 달려 있는데, 그 매칭은 실행 플랫폼 형상에만 노출된다
-# (Linux CI 에선 POSIX 형상만 밟는다). `_stderr_mentions_path` 를 순수 함수로 뽑아 두 형상을 **현
-# 플랫폼과 무관하게** 못박는다 — 안 그러면 Windows 전용 회귀(escaped 백슬래시)가 Linux 회귀에서
-# 영영 안 보인다.
-
-@pytest.mark.parametrize(
-    "status_dir",
-    [
-        PurePosixPath("/tmp/adopter-codex/.project_manager/wiki/tickets/open"),
-        PureWindowsPath(r"C:\Users\proj\.project_manager\wiki\tickets\open"),
-    ],
-    ids=["posix", "windows"],
-)
-def test_stderr_mentions_path_matches_traceback_shape_on_both_platforms(status_dir):
-    """양 플랫폼 traceback 형상에서 부재 상태-dir 은 매칭, 다른 상태-dir 은 비매칭."""
-    missing_file = status_dir / "T-0001-adopter-smoke.md"
-    # OSError.__str__ 형상 그대로 — 파일명이 `%r`(repr) 로 박힌다.
-    stderr = (
-        "Traceback (most recent call last):\n"
-        f"FileNotFoundError: [Errno 2] No such file or directory: {str(missing_file)!r}\n"
-    )
-    assert _stderr_mentions_path(stderr, str(status_dir)), (
-        f"{type(status_dir).__name__} 형상 traceback 에서 부재 상태-dir 을 못 찾음:\n{stderr}")
-    other = status_dir.parent / "blocked"
-    assert not _stderr_mentions_path(stderr, str(other)), (
-        f"언급되지 않은 상태-dir {other} 이 매칭됐다 — 형상 매칭이 과대(다른 실패가 xfail 로 샌다)")
+@pytest.mark.parametrize("harness", HARNESSES)
+def test_harness_templates_ship_ticket_status_scaffold(pm_import, harness):
+    """파생 HARNESSES 축의 모든 template이 README와 상태-dir keep 파일을 출하한다."""
+    (template_dir,) = pm_import.HARNESS_TEMPLATE_DIRS[harness]
+    tickets = REPO / "templates" / template_dir / ".project_manager" / "wiki" / "tickets"
+    assert (tickets / "README.md").is_file(), f"{harness}: tickets/README.md 미출하"
+    missing = [status for status in _TICKET_STATUS_DIRS
+               if not (tickets / status / ".gitkeep").is_file()]
+    assert not missing, (
+        f"{harness}: ticket 상태 스캐폴드 .gitkeep 미출하: {missing} — 새 하네스는 HARNESSES "
+        "파생 축에 자동 편입되어 이 가드를 통과해야 한다")
 
 
-def test_stderr_mentions_path_survives_windows_repr_double_backslash():
-    """Windows 회귀 가드 — repr 이 이중 백슬래시로 찍어도 매칭(이스케이프 해제 없으면 false-red)."""
-    status_dir = PureWindowsPath(r"C:\Users\proj\.project_manager\wiki\tickets\open")
-    stderr = (
-        "FileNotFoundError: [Errno 2] No such file or directory: "
-        f"{str(status_dir / 'T-0001-adopter-smoke.md')!r}\n"
-    )
-    # 전제: traceback 은 이중 백슬래시라 **원본 경로 문자열은 substring 이 아니다**
-    #   (이 전제가 깨지면 아래 단언이 vacuous 하게 통과한다).
-    assert "\\\\" in stderr, f"전제 붕괴 — repr traceback 에 이중 백슬래시가 없다:\n{stderr}"
-    assert str(status_dir) not in stderr, "전제 붕괴 — 원본(단일 백슬래시)이 이미 substring 이다"
-    assert _stderr_mentions_path(stderr, str(status_dir)), (
-        "이중 백슬래시(OSError 의 %r) 해제 없이 비교 — Windows 에서 codex 알려진 갭이 xfail 대신 "
-        "real fail(false-red)로 뜬다")
+def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import, tmp_path):
+    """상태 dir가 없어도 new→block→unblock→claim→complete가 자가 복구한다.
+
+    Sensitivity: dump_ticket 또는 move_item의 mkdir-before-write를 되돌리면 이 fixture는
+    즉시 FileNotFoundError로 red가 된다.
+    """
+    dest = tmp_path / "adopter-missing-status-dirs"
+    rc = pm_import.main(
+        ["--new", str(dest), "--harness", "codex", "--name", "Adopter", "--fill", "manual"])
+    assert rc == 0
+    tickets = dest / ".project_manager" / "wiki" / "tickets"
+    for status in _TICKET_STATUS_DIRS:
+        (tickets / status).rename(tickets / f"removed-{status}")
+
+    new = _board(dest, "new", "repair smoke", "--touches", "README.md")
+    assert new.returncode == 0, new.stderr
+    tid = re.search(r"T-\d+", new.stdout).group(0)
+    block = _board(dest, "block", tid, "--reason", "repair fixture")
+    assert block.returncode == 0, block.stderr
+    unblock = _board(dest, "unblock", tid)
+    assert unblock.returncode == 0, unblock.stderr
+    claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
+    assert claim.returncode == 0, claim.stderr
+    done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested")
+    assert done.returncode == 0, done.stderr
+    assert all((tickets / status).is_dir() for status in _TICKET_STATUS_DIRS)
 
 
 # ── 멀티-유저 훅 경로 portability 가드 (T-0191 · v1.0.x 운영버그 #5) ──────────────

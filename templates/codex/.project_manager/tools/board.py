@@ -4251,6 +4251,10 @@ def load_ticket(path: Path) -> tuple[dict[str, Any], str]:
 
 
 def dump_ticket(path: Path, fm: dict[str, Any], body: str) -> None:
+    # A partial fresh-adopter scaffold must not turn a valid lifecycle write
+    # into FileNotFoundError.  The destination directory is part of the write
+    # contract, including `new`'s initial open/ ticket.
+    path.parent.mkdir(parents=True, exist_ok=True)
     fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
     path.write_text(f"---\n{fm_text}\n---\n{body}", encoding="utf-8")
 
@@ -4262,6 +4266,7 @@ def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
     동형 — tmp 에 전체를 쓰고 같은 디렉토리 안에서 atomic rename). backfill 처럼
     *기존* 티켓을 제자리 갱신할 때 쓴다 — 같은 status 디렉토리 안 rename 이라 원자적이다.
     """
+    path.parent.mkdir(parents=True, exist_ok=True)
     fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(f"---\n{fm_text}\n---\n{body}", encoding="utf-8")
@@ -4280,7 +4285,9 @@ def move_item(base_dir: Path, src: Path, dst_status: str) -> Path:
     owns) never race, so this primitive stays lock-free. Generic over tickets
     and ideas.
     """
-    dst = base_dir / dst_status / src.name
+    dst_dir = base_dir / dst_status
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    dst = dst_dir / src.name
     os.rename(src, dst)
     return dst
 
@@ -5278,9 +5285,8 @@ def cmd_promote(args: argparse.Namespace) -> int:
     if status == "draft":
         # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.
         fm["status"] = "open"
-        new_path = tickets_dir() / "open" / path.name
         dump_ticket(path, fm, body)  # status 갱신을 먼저 디스크에 반영한 뒤 이동.
-        os.rename(path, new_path)
+        new_path = move_ticket(path, "open")
         touched.append(new_path)
         refresh_board()
     _board_git_sync_best_effort(f"promote {args.id}", touched)
