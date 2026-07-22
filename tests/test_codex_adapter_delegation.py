@@ -17,18 +17,26 @@ absence·opencode 의 `pm.md` primary 에 해당하는 파일 부재).
   (g) developer_instructions 가 공통 코어 `AGENTS.md` 를 부트스트랩 진입으로 참조(D3 C-v2 — codex
       전용 정적 진입 doc 없음·방법론은 공통 코어 + TOML + 스킬로 전달).
 
-stdlib(tomllib·Python 3.11+) 만 사용. codex CLI 미실행. 파일 존재·파싱만 검사(hermetic).
+정적 계약은 stdlib(tomllib·Python 3.11+)로 검사하고, command policy는 설치된 codex CLI의
+`execpolicy check`로 실제 판정한다(CLI 부재 환경만 명시 skip).
 미러: `tests/test_opencode_adapter_delegation.py`.
 """
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 CODEX = REPO / "templates" / "codex"
 AGENTS_DIR = CODEX / ".codex" / "agents"
 AGENTS_MD = CODEX / "AGENTS.md"
+CONFIG = CODEX / ".codex" / "config.toml"
+COMMAND_RULES = CODEX / ".codex" / "rules" / "default.rules"
 
 AGENT_NAMES = ("architect", "code-reviewer", "developer", "researcher")
 REQUIRED_FIELDS = ("name", "description", "developer_instructions")
@@ -138,6 +146,65 @@ def test_sandbox_mode_present_and_role_correct():
             f"{name}.toml sandbox_mode 가 {SANDBOX_BY_AGENT[name]!r} 가 아님: "
             f"{data['sandbox_mode']!r} (역할별 쓰기/읽기 권한 불일치)"
         )
+
+
+def test_default_permissions_allow_routine_work_and_auto_review_escalations():
+    """일상 작업은 무질의, sandbox 밖 저위험 요청은 auto-review — Claude settings 대응."""
+    with open(CONFIG, "rb") as fh:
+        config = tomllib.load(fh)
+    assert config["sandbox_mode"] == "workspace-write"
+    assert config["approval_policy"] == "on-request"
+    assert config["approvals_reviewer"] == "auto_review"
+    assert config["sandbox_workspace_write"]["network_access"] is False
+
+
+def test_command_rules_allow_local_checkpoints_and_guard_dangerous_commands():
+    """명령 정책 파일에 핵심 allow/prompt/forbidden 경계가 선언돼 있다."""
+    rules = COMMAND_RULES.read_text(encoding="utf-8")
+    for safe_prefix in (
+        '["git", "add"]',
+        '["git", "commit"]',
+        '[["python", "python3", "py"], "-m", "pytest"]',
+    ):
+        assert safe_prefix in rules
+    assert 'pattern = ["git", "push"]' in rules
+    assert 'pattern = ["git", "reset"]' in rules
+    assert 'decision = "prompt"' in rules
+    for dangerous_prefix in ('["rm"]', '["git", "clean"]'):
+        assert dangerous_prefix in rules
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (("git", "add", "--", "README.md"), "allow"),
+        (("git", "commit", "-m", "checkpoint"), "allow"),
+        (("git", "fetch", "origin"), "allow"),
+        (("python3", "-m", "pytest", "tests/", "-q"), "allow"),
+        (("python3", ".project_manager/tools/board.py", "list"), "allow"),
+        (("git", "push", "origin", "task/main"), "prompt"),
+        (("git", "push", "origin", "main", "--force"), "prompt"),
+        (("git", "reset", "-q", "--hard"), "prompt"),
+        (("git", "reset", "--soft", "HEAD~1"), "prompt"),
+        (("rm", "-rf", "build"), "forbidden"),
+        (("git", "clean", "-df"), "forbidden"),
+        (("git", "clean", "--force"), "forbidden"),
+    ],
+)
+def test_command_policy_decisions(argv: tuple[str, ...], expected: str):
+    """실제 Codex execpolicy 해석기로 옵션 순서·축약형까지 판정한다."""
+    executable = shutil.which("codex")
+    if executable is None:
+        pytest.skip("codex CLI unavailable")
+    proc = subprocess.run(
+        [executable, "execpolicy", "check", "--rules", str(COMMAND_RULES), "--", *argv],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["decision"] == expected
 
 
 # ── (f) {{PROJECT_NAME}} 토큰 (pm_import/pm_update @render 치환 타깃) ─────────

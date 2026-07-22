@@ -4,6 +4,13 @@
 # 반입 가능 키(실측): model·sandbox/approval·features·hooks·model_auto_compact_token_limit.
 # machine-local 키(model_provider*·profile/profiles·notify·otel)는 로드 시 무시되므로 기재하지 않는다.
 
+# Claude settings.json 의 일상 작업 allowlist에 대응하는 Codex 기본 권한.
+# workspace 내부 파일 생성·편집·일반 명령은 바로 실행하고, sandbox 밖 요청은 자동 reviewer가
+# 위험도를 판정한다. 삭제·force push·hard reset 등은 .codex/rules/default.rules가 별도 차단한다.
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+
 # D4 ②(대화형 경로): auto-compact 임계를 크게 올려 사실상 off 를 지향한다. 완전 off 스위치는
 #   미확인(라이브 실측 항목) — off 불가여도 auto-compact 는 최후 backstop 이고, 임박 시점의 손실은
 #   아래 hooks.json 의 PreCompact tripwire 가 loud 하게 경고한다(조용한 compaction 방지).

@@ -86,7 +86,14 @@ def test_config_omits_machine_local_keys():
         "otel machine-local 키 존재(기재 금지)"
     )
     # 출하 템플릿은 리뷰된 반입가능 키만 — 화이트리스트(machine-local leak 전수 차단).
-    allowed = {"model_auto_compact_token_limit", "features", "sandbox_workspace_write"}
+    allowed = {
+        "model_auto_compact_token_limit",
+        "sandbox_mode",
+        "approval_policy",
+        "approvals_reviewer",
+        "features",
+        "sandbox_workspace_write",
+    }
     assert set(data) <= allowed, f"config.toml 에 예상 밖 top-level 키: {sorted(set(data) - allowed)}"
 
 

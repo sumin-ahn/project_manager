@@ -738,6 +738,7 @@ def test_codex_new_creates_tree_and_inits(pm_import, tmp_path):
     # codex 어댑터 (dual namespace: .codex agents/config/hooks + .agents skills).
     assert (dest / "AGENTS.md").is_file()
     assert (dest / ".codex" / "agents" / "developer.toml").is_file()
+    assert (dest / ".codex" / "rules" / "default.rules").is_file()
     assert (dest / ".agents" / "skills" / "pm-adr" / "SKILL.md").is_file()
     # 공통 코어 전략(D3 C-v2): codex 는 CLAUDE.md 를 두지 않는다.
     assert not (dest / "CLAUDE.md").exists()
