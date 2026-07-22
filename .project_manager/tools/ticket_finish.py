@@ -642,8 +642,17 @@ class StageScope(NamedTuple):
     error: str | None
 
 
+class RepoStagePlan(NamedTuple):
+    """한 git repo 에서 실행할 좁은 stage 계획 (두-git task-mode 용)."""
+    label: str
+    cwd: Path
+    scope: StageScope
+
+
 def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
-                run_git: Callable[[list[str]], tuple[int, str]]) -> StageScope:
+                run_git: Callable[[list[str]], tuple[int, str]], *,
+                repo: Path | None = None, include_touches: bool = True,
+                include_engine_outputs: bool = True) -> StageScope:
     """이 완료 부기가 stage 할 pathspec (REPO 상대·실제 `add` 가능한 **파일**) — ADR-0074.
 
     선언원 = 티켓 `touches` ∪ `engine_written_paths()`. **판정은 board.py 의 repo-중립
@@ -662,10 +671,15 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
     scope_fn = getattr(board, "git_scope_stage_pathspec", None) if board else None
     if scope_fn is None:
         return StageScope((), f"board 모듈을 로드하지 못했다 ({board_py})")
-    declared: list[Path] = [REPO / touch for touch in get_ticket_touches(board_py, ticket_id)]
-    declared.extend(engine_written_paths(board, ticket_id, log_file))
+    repo = Path(repo) if repo is not None else REPO
+    declared: list[Path] = []
+    if include_touches:
+        declared.extend(repo / touch for touch in get_ticket_touches(board_py, ticket_id))
+    if include_engine_outputs:
+        # PM-home 산출물은 ticket code worktree 가 아니라 이 도구의 설계 repo 에만 있다.
+        declared.extend(engine_written_paths(board, ticket_id, log_file))
     try:
-        return StageScope(tuple(scope_fn(REPO, declared, run_git=run_git)), None)
+        return StageScope(tuple(scope_fn(repo, declared, run_git=run_git)), None)
     except Exception as exc:  # noqa: BLE001 — 산출 실패도 조용히 넘기지 않는다(fail-loud).
         return StageScope((), f"스코프 산출 실패 ({exc.__class__.__name__}: {exc})")
 
@@ -800,10 +814,14 @@ class TicketFinisher:
         run_git_stdout_fn: Callable[[list[str]], tuple[int, str]] | None = None,
         stage_scope_fn: Callable[[str], StageScope] | None = None,
         status_entries_fn: Callable[[], tuple[tuple[str, str], ...]] | None = None,
+        run_git_at_fn: Callable[[Path, list[str]], tuple[int, str]] | None = None,
+        run_git_stdout_at_fn: Callable[[Path, list[str]], tuple[int, str]] | None = None,
+        status_entries_at_fn: Callable[[Path], tuple[tuple[str, str], ...]] | None = None,
         log_file: Path = LOG_FILE,
         board_py: Path = BOARD_PY,
         venv_python: str | Path = _default_python(),
         regression_cwd: str | Path | None = None,
+        task_workspace: str | Path | None = None,
     ) -> None:
         self._log_file = log_file
         self._board_py = board_py
@@ -814,6 +832,7 @@ class TicketFinisher:
         # 박제 대신 _default_run_pytest 가 런타임에 _regression_cwd() 로 self-host 슬롯을
         # 자동해소한다(T-0149 — pm_handoff `_regression_cwd` 재사용·솔로는 REPO 폴백 무변경).
         self._regression_cwd = str(regression_cwd) if regression_cwd else None
+        self._task_workspace = Path(task_workspace) if task_workspace else None
 
         # subprocess DI — 기본값은 실제 subprocess 호출
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
@@ -839,6 +858,11 @@ class TicketFinisher:
         # 상태 조회도 같은 seam 으로 둬, 테스트가 stage 판정과 보고를 따로 격리한다.
         self._stage_scope_fn = stage_scope_fn or self._default_stage_scope
         self._status_entries_fn = status_entries_fn or self._default_status_entries
+        self._run_git_at_fn = run_git_at_fn or self._default_run_git_at
+        # task worktree도 홈과 같은 규칙: 기계 판독(`ls-files -z`/`status --porcelain -z`)에는
+        # stdout만 쓴다. mutation seam은 stderr 진단을 계속 합쳐 호출자에게 보인다.
+        self._run_git_stdout_at_fn = run_git_stdout_at_fn or self._default_run_git_stdout_at
+        self._status_entries_at_fn = status_entries_at_fn or self._default_status_entries_at
         # (스코프 밖 staged, 미스테이지 잔여) 건수 — `[완료]` 줄 재고지용(loud 강화).
         self._dirty_summary: tuple[int, int] = (0, 0)
 
@@ -925,6 +949,24 @@ class TicketFinisher:
         )
         return result.returncode, result.stdout
 
+    @staticmethod
+    def _default_run_git_at(cwd: Path, args: list[str]) -> tuple[int, str]:
+        """명시 cwd git 실행 — task worktree 를 PM 홈과 절대 섞지 않는다."""
+        result = subprocess.run(
+            ["git"] + args, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", cwd=str(cwd),
+        )
+        return result.returncode, result.stdout + result.stderr
+
+    @staticmethod
+    def _default_run_git_stdout_at(cwd: Path, args: list[str]) -> tuple[int, str]:
+        """task worktree의 기계 파싱용 git 실행 — stderr 경고를 결과에 섞지 않는다."""
+        result = subprocess.run(
+            ["git"] + args, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", cwd=str(cwd),
+        )
+        return result.returncode, result.stdout
+
     def _default_board_count(self) -> int:
         """board.md 의 done 티켓 수를 반환한다 (board.py 를 import 해서).
 
@@ -951,6 +993,16 @@ class TicketFinisher:
         return stage_scope(ticket_id, self._board_py, self._log_file,
                            self._run_git_stdout_fn)
 
+    def _task_stage_scope(self, ticket_id: str) -> StageScope:
+        """task worktree 에는 ticket touches만 계획한다 (홈 산출물 유입 금지)."""
+        assert self._task_workspace is not None
+
+        def run_git(args: list[str]) -> tuple[int, str]:
+            return self._run_git_stdout_at_fn(self._task_workspace, args)
+
+        return stage_scope(ticket_id, self._board_py, self._log_file, run_git,
+                           repo=self._task_workspace, include_engine_outputs=False)
+
     def _default_status_entries(self) -> tuple[tuple[str, str], ...]:
         """워킹트리 상태 `((XY, 경로), …)` (loud 보고 입력·ADR-0074) — 실 해소.
 
@@ -958,6 +1010,28 @@ class TicketFinisher:
         보고를 멈추지 않는다 — `status_entries` 가 degraded 판독으로 이어간다.
         """
         return status_entries(self._run_git_stdout_fn, load_board_module(self._board_py))
+
+    def _default_status_entries_at(self, cwd: Path) -> tuple[tuple[str, str], ...]:
+        return status_entries(lambda args: self._run_git_stdout_at_fn(cwd, args),
+                              load_board_module(self._board_py))
+
+    def _stage_plans(self, ticket_id: str) -> tuple[RepoStagePlan, ...]:
+        """실제 stage 와 dry-run 이 공유하는 repo별 계획 단일 진실.
+
+        task-mode 는 PM 홈에 log/board 산출물, F6 worktree 에 code touches를 각각 둔다.
+        비-task 경로는 기존 단일 PM-home 계획을 그대로 쓴다.
+        """
+        if self._task_workspace is None:
+            return (RepoStagePlan("PM 홈", REPO, self._stage_scope_fn(ticket_id)),)
+        home_scope = stage_scope(
+            ticket_id, self._board_py, self._log_file, self._run_git_stdout_fn,
+            include_touches=False,
+        )
+        return (
+            RepoStagePlan("PM 홈 산출물", REPO, home_scope),
+            RepoStagePlan("task worktree touches", self._task_workspace,
+                          self._task_stage_scope(ticket_id)),
+        )
 
     # ── 메인 흐름 ────────────────────────────────────────────────────
 
@@ -1073,40 +1147,66 @@ class TicketFinisher:
         # stage 한다. 좁힘이 만드는 반대편 실패(under-stage)는 아래 잔여 dirty loud 보고로
         # 가시화한다(차단하지 않는다 — `touches` 는 사람이 적는 값이라 누락 가능).
         print("\n[4/5] git stage (선언 경로 스코프)...")
-        scope, scope_error = self._stage_scope_fn(ticket_id)
-        if scope_error:
-            # 판정기가 죽은 경우 — 조용한 no-op 금지(stage 0 이 '정상 완료'로 보인다).
-            print(f"\n  ⚠ stage 스코프를 산출하지 못했다 — {scope_error}. "
-                  "이번 실행은 **아무것도 stage 하지 않는다**. 아래 잔여 목록을 보고 "
-                  "PM 이 직접 `git add <경로>` 하라.", file=sys.stderr)
-        if dry_run:
-            preview = " ".join(scope) if scope else "(선언 경로 없음)"
-            print(f"  [dry-run] git add -A -- {preview} (실제 실행 생략)")
-        elif scope:
-            git_rc, git_out = self._run_git_fn(["add", "-A", "--", *scope])
-            if git_rc != 0:
-                print(
-                    f"\n[중단] git add 실패 (rc={git_rc}): {git_out.rstrip()}",
-                    file=sys.stderr,
-                )
-                return 1
-            print(f"  ✓ git add — 선언 경로 {len(scope)}개만 stage (commit 은 아직 안 했다):")
-            for rel in scope:
-                print(f"      {rel}")
-        elif not scope_error:
-            print("  (stage 할 선언 경로 없음 — `touches`·이 실행의 산출물 중 이 repo 에 있는 게 없다)")
-        if not dry_run:
-            self._report_dirty_after_stage(scope)
+        plans = self._stage_plans(ticket_id)
+        multi_repo = len(plans) > 1
+        for plan in plans:
+            scope, scope_error = plan.scope
+            if multi_repo:
+                print(f"  [{plan.label}] cwd={plan.cwd}")
+            if scope_error:
+                # 판정기가 죽은 경우 — 조용한 no-op 금지(stage 0 이 '정상 완료'로 보인다).
+                label = f"[{plan.label}] " if multi_repo else ""
+                print(f"\n  ⚠ {label}stage 스코프를 산출하지 못했다 — {scope_error}. "
+                      "이번 repo에서는 아무것도 stage 하지 않는다. 아래 잔여 목록을 보고 "
+                      "PM 이 직접 `git add <경로>` 하라.", file=sys.stderr)
+            if dry_run:
+                preview = " ".join(scope) if scope else "(선언 경로 없음)"
+                cwd = f"cwd={plan.cwd} " if multi_repo else ""
+                print(f"  [dry-run] {cwd}git add -A -- {preview} (실제 실행 생략)")
+            elif scope:
+                if plan.cwd == REPO:
+                    git_rc, git_out = self._run_git_fn(["add", "-A", "--", *scope])
+                else:
+                    git_rc, git_out = self._run_git_at_fn(plan.cwd, ["add", "-A", "--", *scope])
+                if git_rc != 0:
+                    print(
+                        f"\n[중단] {'[' + plan.label + '] ' if multi_repo else ''}git add 실패 (rc={git_rc}): {git_out.rstrip()}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                label = f"[{plan.label}] " if multi_repo else ""
+                print(f"  ✓ {label}git add — 선언 경로 {len(scope)}개만 stage (commit 은 아직 안 했다):")
+                for rel in scope:
+                    print(f"      {rel}")
+            elif not scope_error:
+                label = f"[{plan.label}] " if multi_repo else ""
+                print(f"  {label}stage 할 선언 경로 없음")
+            if not dry_run:
+                self._report_dirty_after_stage(scope, cwd=plan.cwd,
+                                               label=plan.label if multi_repo else "")
 
         # ── 5. 잔여 PM 작업 출력 ─────────────────────────────────────
         print("\n[5/5] PM 이 손으로 할 잔여 작업:")
         print("  ① log/current.md 서술 불릿 채우기 — <!-- PM: 무엇을·왜 서술 --> 를 실제 내용으로 교체")
         print("  ② status.md 모듈 행(상태 + 비고) — 변경된 모듈 행 판정을 architect/PM 이 직접 갱신 (테스트 수는 박제 안 함·ADR-0023)")
-        # 커밋 지시도 **경로 명시형** 이다 (ADR-0074) — bare `git commit` 은 index 에 있는 남의
-        # 변경을 함께 싣는다. 위 [4/5] 가 출력한 stage 경로를 그대로 `--` 뒤에 붙이면 된다.
-        print("  ③ git commit — **경로를 명시**하라: "
-              "`git commit -m \"<메시지>\" -- <위 [4/5] 가 stage 한 경로들>` "
-              "(메시지는 PM 이 작성 · Co-Authored-By: Claude 트레일러 포함)")
+        # 단일 repo 출력은 기존 커밋 안내 문구를 byte-compatible하게 보존한다. 두 repo 계획일 때만
+        # cwd별 안내로 확장해 PM 홈 성공이 task worktree 누락을 가리지 못하게 한다.
+        if not multi_repo:
+            print("  ③ git commit — **경로를 명시**하라: "
+                  "`git commit -m \"<메시지>\" -- <위 [4/5] 가 stage 한 경로들>` "
+                  "(메시지는 PM 이 작성 · Co-Authored-By: Claude 트레일러 포함)")
+        else:
+            print("  ③ git commit — **repo별 cwd와 경로를 명시**하라 "
+                  "(메시지는 PM 이 작성 · Co-Authored-By: Claude 트레일러 포함):")
+            for plan in plans:
+                scope, scope_error = plan.scope
+                if scope_error or not scope:
+                    reason = scope_error or "stage 할 선언 경로 없음"
+                    print(f"      [{plan.label}] cwd={plan.cwd}: commit 하지 말 것 ({reason})")
+                    continue
+                pathspec = " ".join(scope)
+                print(f"      [{plan.label}] cwd={plan.cwd}: "
+                      f"`git commit -m \"<메시지>\" -- {pathspec}`")
 
         # ── soft 알림: 영향받는 domain 페이지 (ADR-0018 #2·U2·비차단) ──────
         # 정보일 뿐 게이트가 아니다 — 완료 흐름·rc 를 막지 않는다(예외도 삼킨다).
@@ -1138,10 +1238,11 @@ class TicketFinisher:
         if hidden > 0:
             print(f"      … 외 {hidden}건")
 
-    def _dirty_split(self, scope: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def _dirty_split(self, scope: Sequence[str], *, cwd: Path = REPO) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """현재 상태를 (스코프 밖 staged, 미스테이지 잔여)로 가른다 — 조회 실패는 빈 목록."""
         try:
-            entries = self._status_entries_fn()
+            entries = (self._status_entries_fn() if cwd == REPO
+                       else self._status_entries_at_fn(cwd))
         except Exception:  # noqa: BLE001 — 보고는 완료를 막지 않는다.
             return (), ()
         return split_dirty(entries, scope)
@@ -1150,7 +1251,8 @@ class TicketFinisher:
     # 돼 있던 스코프 밖 변경은 stage 후에도 그대로 남고, 아래 사후 보고가 같은 목록을 낸다.
     # 별도 사전 보고는 같은 경고를 두 번 내면서 고유 판정이 없었다(teeth 0·reviewer 실측).
 
-    def _report_dirty_after_stage(self, scope: Sequence[str]) -> None:
+    def _report_dirty_after_stage(self, scope: Sequence[str], *, cwd: Path = REPO,
+                                  label: str = "") -> None:
         """stage 후 상태를 양방향으로 **눈에 띄게** 보고한다 (loud·비차단·ADR-0074).
 
         두 실패 방향을 함께 본다 — ① **미스테이지 잔여**(under-stage: 스코프가 못 덮은 변경 —
@@ -1159,19 +1261,21 @@ class TicketFinisher:
         바꾸지 않는 것이 요점이라, 어느 쪽도 침묵하지 않는다. 결과 건수는 `[완료]` 줄에서
         한 번 더 재고지한다(보고가 뒤 출력에 묻히지 않게).
         """
-        staged_out, unstaged = self._dirty_split(scope)
-        self._dirty_summary = (len(staged_out), len(unstaged))
+        staged_out, unstaged = self._dirty_split(scope, cwd=cwd)
+        old_staged, old_unstaged = self._dirty_summary
+        self._dirty_summary = (old_staged + len(staged_out), old_unstaged + len(unstaged))
+        prefix = f"[{label}] " if label else ""
         if not staged_out and not unstaged:
-            print("  ✓ 스코프 밖 잔여 변경 없음 (staged·미스테이지 모두)")
+            print(f"  ✓ {prefix}스코프 밖 잔여 변경 없음 (staged·미스테이지 모두)")
             return
         if unstaged:
             self._print_dirty_block(
-                f"\n  ⚠ 미스테이지 잔여 {len(unstaged)}건 — **이 커밋에 안 실린다**. 내 작업 "
+                f"\n  ⚠ {prefix}미스테이지 잔여 {len(unstaged)}건 — **이 커밋에 안 실린다**. 내 작업 "
                 "누락이면 ticket `touches` 를 보강해 다시 stage 하라(남의 WIP 면 그대로 둔다):",
                 unstaged)
         if staged_out:
             self._print_dirty_block(
-                f"\n  ⚠ 스코프 밖 staged {len(staged_out)}건 — 내 변경이 아닌데 **PM 커밋에 "
+                f"\n  ⚠ {prefix}스코프 밖 staged {len(staged_out)}건 — 내 변경이 아닌데 **PM 커밋에 "
                 "실린다**. 빼려면 `git restore --staged <경로>`:",
                 staged_out)
 
@@ -1271,10 +1375,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # 정체성 인자 *검증*(`--slot` 단독·`slot < 1` = ADR-0057 uniform fail-loud)은 `--no-pytest` 와
-    # 무관하게 **항상** 수행한다(pm_handoff 동형·codex 게이트 — 안 그러면 `--no-pytest --slot 4` 같은
-    # ADR-0057 위반 입력이 조용히 통과). 반면 두-git 다중슬롯 회귀 cwd 해소·모호 게이트는 **회귀를 실제로
-    # 돌 때만**(ADR-0027·pm_handoff 미러·T-0285) — `--no-pytest` 면 regression cwd 가 무의미하고, 모호
-    # 에러가 "--no-pytest 로 skip 하라"를 광고하며 정작 --no-pytest 준 사용자를 막는 self-contradiction 회피.
+    # 무관하게 **항상** 수행한다. task F6도 회귀 전용 값이 아니다: stage/status 계획의 cwd 단일
+    # 진실이므로 --no-pytest 에서도 반드시 해소한다. 반면 slot-mode 모호 게이트는 회귀를 실제로
+    # 돌 때만 적용한다(기존 --no-pytest escape hatch 보존).
     try:
         identity = identity_args.parse_identity(args)
     except ValueError as exc:
@@ -1304,17 +1407,19 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     regression_cwd: str | None = None
-    if not args.no_pytest and identity.task:
-        # task-mode(`--task`) 회귀 작업공간 F6 해소(spike §3b F6·⑦·T-0355) — task 가 보유한 슬롯
-        # 중 실행 위치를 특정하고 그 worktree 절대경로를 회귀 cwd 로 고정·surface 한다(cwd 비참여·
-        # T-0345 불변). 모호/미보유는 fail-loud. slot-mode(`--repo`/`--slot`) 는 아래 기존 경로.
+    task_workspace: Path | None = None
+    if identity.task:
+        # task-mode F6 해소는 regression·stage·잔여 보고가 공유한다. --no-pytest 는 측정만
+        # 생략할 뿐, 실제 code touches를 놓치게 해서는 안 된다.
         try:
             ws = identity_args.resolve_task_workspace(identity, LEASES_FILE)
         except identity_args.WorkspaceResolutionError as exc:
-            print(f"\n[중단] 회귀 작업공간 해소 — {exc}", file=sys.stderr)
+            print(f"\n[중단] 작업공간 해소 — {exc}", file=sys.stderr)
             return 1
         print(f"작업공간(task {identity.task}) → {REPO / ws.slot}")
-        regression_cwd = _regression_cwd(ws.slot)
+        task_workspace = REPO / ws.slot
+        if not args.no_pytest:
+            regression_cwd = _regression_cwd(ws.slot)
     elif not args.no_pytest:
         worktree_slot, ambiguity = _resolve_finish_slot(identity.repo, identity.slot)
         if ambiguity is not None:
@@ -1330,7 +1435,7 @@ def main(argv: list[str] | None = None) -> int:
         if worktree_slot:
             regression_cwd = _regression_cwd(worktree_slot)
 
-    finisher = TicketFinisher(regression_cwd=regression_cwd)
+    finisher = TicketFinisher(regression_cwd=regression_cwd, task_workspace=task_workspace)
     return finisher.run(
         ticket_id=args.ticket_id,
         section=args.section,

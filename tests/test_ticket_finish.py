@@ -1000,3 +1000,123 @@ def test_resolve_finish_slot_pm_handoff_absent_fail_soft(tf, monkeypatch):
     assert tf._resolve_finish_slot(None, None) == (None, None)
     assert tf._resolve_finish_slot("myrepo", 2) == ("work/myrepo_2", None)
     assert tf._resolve_finish_slot("myrepo", None) == (None, None)
+
+
+# ── task-mode two-git stage plan (T-0437) ───────────────────────────────────
+
+def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path, monkeypatch, capsys):
+    """F6 task worktree touches와 PM-home 산출물은 cwd/pathspec을 섞지 않고 각각 stage/status 한다."""
+    home = tmp_path / "pm-home"
+    worktree = home / "work" / "project_manager_1"
+    worktree.mkdir(parents=True)
+    (home / ".project_manager" / "wiki" / "log").mkdir(parents=True)
+    monkeypatch.setattr(tf, "REPO", home)
+    calls = []
+
+    def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
+                   include_touches=True, include_engine_outputs=True):
+        repo = Path(repo or home)
+        calls.append((repo, include_touches, include_engine_outputs))
+        if include_engine_outputs:
+            return tf.StageScope((".project_manager/wiki/log/current.md",), None)
+        return tf.StageScope(("tests/test_real_change.py",), None)
+
+    monkeypatch.setattr(tf, "stage_scope", fake_scope)
+    home_git, worktree_git, status_calls = [], [], []
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("--no-pytest must skip")),
+        run_board_fn=lambda args: (0, "board ok"),
+        run_git_fn=lambda args: (home_git.append(args) or (0, "")),
+        run_git_at_fn=lambda cwd, args: (worktree_git.append((cwd, args)) or (0, "")),
+        board_count_fn=lambda: 0,
+        ticket_title_fn=lambda ticket_id: "two git",
+        affected_domain_fn=lambda ticket_id: None,
+        status_entries_fn=lambda: (status_calls.append(("home", home)) or
+                                   (("M ", ".project_manager/wiki/log/current.md"),)),
+        status_entries_at_fn=lambda cwd: (status_calls.append(("task", cwd)) or
+                                          (("M ", "others.py"), (" M", "missed.py"))),
+        log_file=home / ".project_manager/wiki/log/current.md",
+        task_workspace=worktree,
+    )
+    assert finisher.run("T-0437", section=None, dry_run=False, skip_pytest=True) == 0
+    assert calls == [
+        (home, False, True),
+        (worktree, True, False),
+    ]
+    assert home_git == [["add", "-A", "--", ".project_manager/wiki/log/current.md"]]
+    assert worktree_git == [(worktree, ["add", "-A", "--", "tests/test_real_change.py"])]
+    assert status_calls == [("home", home), ("task", worktree)]
+    out = capsys.readouterr().out
+    assert f"[PM 홈 산출물] cwd={home}" in out
+    assert f"[task worktree touches] cwd={worktree}" in out
+    assert (f"[PM 홈 산출물] cwd={home}: "
+            '`git commit -m "<메시지>" -- .project_manager/wiki/log/current.md`') in out
+    assert (f"[task worktree touches] cwd={worktree}: "
+            '`git commit -m "<메시지>" -- tests/test_real_change.py`') in out
+    assert "⚠ [task worktree touches] 미스테이지 잔여 1건" in out
+    assert "⚠ [task worktree touches] 스코프 밖 staged 1건" in out
+    assert "[완료] T-0437 부기 완료. ⚠ 미스테이지 잔여 1건 · 스코프 밖 staged 1건" in out
+
+
+def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monkeypatch, capsys):
+    """dry-run도 actual과 같은 두 repo cwd/pathspec을 출력하고 git mutation은 하지 않는다."""
+    home = tmp_path / "pm-home"
+    worktree = home / "work" / "project_manager_1"
+    worktree.mkdir(parents=True)
+    monkeypatch.setattr(tf, "REPO", home)
+
+    def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
+                   include_touches=True, include_engine_outputs=True):
+        return tf.StageScope((("home.md",) if include_engine_outputs else ("code.py",)), None)
+
+    monkeypatch.setattr(tf, "stage_scope", fake_scope)
+    mutations = []
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (0, "1 passed in 0.1s"),
+        run_board_fn=lambda args: (0, ""),
+        run_git_fn=lambda args: (mutations.append(args) or (0, "")),
+        run_git_at_fn=lambda cwd, args: (mutations.append((cwd, args)) or (0, "")),
+        board_count_fn=lambda: 0, ticket_title_fn=lambda tid: "x",
+        affected_domain_fn=lambda tid: None, log_file=home / "log.md",
+        task_workspace=worktree,
+    )
+    assert finisher.run("T-0437", section=None, dry_run=True, skip_pytest=True) == 0
+    assert mutations == []
+    out = capsys.readouterr().out
+    assert f"cwd={home} git add -A -- home.md" in out
+    assert f"cwd={worktree} git add -A -- code.py" in out
+    assert f"[PM 홈 산출물] cwd={home}: `git commit -m \"<메시지>\" -- home.md`" in out
+    assert f"[task worktree touches] cwd={worktree}: `git commit -m \"<메시지>\" -- code.py`" in out
+
+
+def test_task_machine_parsers_use_stdout_only_not_mutation_stderr(tf, tmp_path, monkeypatch):
+    """task worktree의 ls-files/status 파서는 stderr warning이 섞인 mutation seam을 절대 쓰지 않는다."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    parser_calls = []
+
+    def mutation_runner(cwd, args):
+        raise AssertionError(f"machine parser가 stderr-합본 mutation seam을 사용함: {args}")
+
+    def stdout_runner(cwd, args):
+        parser_calls.append((cwd, args))
+        if args[0] == "status":
+            return 0, "?? tests/new.py\0"
+        return 0, "tests/new.py\0"
+
+    def fake_scope(ticket_id, board_py, log_file, run_git, **kwargs):
+        # stderr warning이 붙은 mutation output을 복원하면 이 runner가 아니라 mutation_runner가 호출돼 red.
+        assert run_git(["ls-files", "-z"]) == (0, "tests/new.py\0")
+        return tf.StageScope(("tests/new.py",), None)
+
+    monkeypatch.setattr(tf, "stage_scope", fake_scope)
+    monkeypatch.setattr(tf, "load_board_module", lambda board_py: None)
+    finisher = tf.TicketFinisher(
+        run_git_at_fn=mutation_runner,
+        run_git_stdout_at_fn=stdout_runner,
+        task_workspace=worktree,
+    )
+
+    assert finisher._task_stage_scope("T-0437") == tf.StageScope(("tests/new.py",), None)
+    assert finisher._default_status_entries_at(worktree) == (("??", "tests/new.py"),)
+    assert [args[0] for _, args in parser_calls] == ["ls-files", "status"]

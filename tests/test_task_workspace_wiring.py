@@ -253,8 +253,9 @@ def test_ticket_finish_task_resolves_regression_cwd(tf, monkeypatch, capsys):
     captured = {}
 
     class _FakeFinisher:
-        def __init__(self, regression_cwd=None):
+        def __init__(self, regression_cwd=None, task_workspace=None):
             captured["regression_cwd"] = regression_cwd
+            captured["task_workspace"] = task_workspace
 
         def run(self, **kwargs):
             captured["run"] = kwargs
@@ -264,6 +265,7 @@ def test_ticket_finish_task_resolves_regression_cwd(tf, monkeypatch, capsys):
     rc = tf.main(["T-0001", "--task", "job6"])
     assert rc == 0
     assert captured["regression_cwd"] == "CWD::work/A_1"   # F6 슬롯을 회귀 cwd 로 forward
+    assert captured["task_workspace"] == tf.REPO / "work" / "A_1"
     out = capsys.readouterr().out
     assert str(tf.REPO / "work" / "A_1") in out             # 절대경로 surface
 
@@ -280,6 +282,44 @@ def test_ticket_finish_task_ambiguous_fails_loud(tf, monkeypatch, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "작업공간 해소" in err
+
+
+def test_ticket_finish_task_no_pytest_still_resolves_workspace(tf, monkeypatch, capsys):
+    """--no-pytest 는 회귀만 생략: F6 worktree는 stage/status 계획을 위해 그대로 forward한다."""
+    _write_leases(tf.LEASES_FILE, [
+        {"slot": "work/A_3", "repo": "A", "session": "job8", "state": "leased"},
+    ])
+    captured = {}
+
+    class _FakeFinisher:
+        def __init__(self, regression_cwd=None, task_workspace=None):
+            captured["regression_cwd"] = regression_cwd
+            captured["task_workspace"] = task_workspace
+
+        def run(self, **kwargs):
+            captured["run"] = kwargs
+            return 0
+
+    monkeypatch.setattr(tf, "TicketFinisher", _FakeFinisher)
+    assert tf.main(["T-0001", "--task", "job8", "--no-pytest"]) == 0
+    assert captured["regression_cwd"] is None
+    assert captured["task_workspace"] == tf.REPO / "work" / "A_3"
+    assert captured["run"]["skip_pytest"] is True
+    assert str(tf.REPO / "work" / "A_3") in capsys.readouterr().out
+
+
+def test_ticket_finish_task_no_pytest_ambiguous_fails_before_finisher(tf, monkeypatch, capsys):
+    """task 보유 worktree가 모호하면 --no-pytest라도 stage 전에 fail-loud 한다."""
+    _write_leases(tf.LEASES_FILE, [
+        {"slot": "work/A_1", "repo": "A", "session": "job9", "state": "leased"},
+        {"slot": "work/A_2", "repo": "A", "session": "job9", "state": "leased"},
+    ])
+    called = {"finisher": False}
+    monkeypatch.setattr(tf, "TicketFinisher",
+                        lambda **kw: called.__setitem__("finisher", True))
+    assert tf.main(["T-0001", "--task", "job9", "--no-pytest"]) == 1
+    assert called["finisher"] is False
+    assert "작업공간 해소" in capsys.readouterr().err
 
 
 # ── MUST-FIX (T-0355 게이트): 정체성 깔때기 task 명 검증 — 영속 전 fail-loud ──────
