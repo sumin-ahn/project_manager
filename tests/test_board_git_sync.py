@@ -525,6 +525,117 @@ def test_pull_is_skipped_when_not_behind(board, tmp_path, monkeypatch):
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
+def test_best_effort_local_commit_failure_is_loud_and_scope_isolated(
+        board, tmp_path, monkeypatch, capsys):
+    """commit rc 실패는 uncommitted를 loud 출력하고, 다른 ticket WIP는 진단/commit에 안 넣는다.
+
+    ``_board_git_stage_and_commit``의 False를 다시 무시하면 pull/push의 "로컬 commit 보존"
+    경고만 남으므로 이 테스트가 red가 된다. T-0003은 이번 mutation 밖의 untracked WIP라
+    recovery 명령과 staged index 어느 쪽에도 들어가면 안 된다.
+    """
+    bare = tmp_path / "bare-local-fail"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    old = board_dir / "tickets" / "open" / "T-0001-t.md"
+    changed = board_dir / "tickets" / "claimed" / "T-0001-t.md"
+    unrelated = board_dir / "tickets" / "open" / "T-0003-t.md"
+    old.rename(changed)
+    unrelated.write_text(_TICKET_TEXT.format(tid="T-0003"), encoding="utf-8")
+    before = board._board_git_head()
+
+    real_git = board._board_git
+
+    def _commit_fails(args, *, check=False, timeout=None):
+        if args[:1] == ["commit"]:
+            return subprocess.CompletedProcess(args, 1, "", "simulated permission denied")
+        return real_git(args, check=check, timeout=timeout)
+
+    monkeypatch.setattr(board, "_board_git", _commit_fails)
+    sync_calls = []
+    monkeypatch.setattr(board, "_board_git_pull_rebase", lambda: sync_calls.append("pull"))
+    monkeypatch.setattr(board, "_board_git_push", lambda: sync_calls.append("push"))
+    board._board_git_sync_best_effort("block T-0001", (old, changed))
+
+    assert board._board_git_head() == before, "commit 실패인데 HEAD가 전진함."
+    staged = _git(["diff", "--cached", "--name-status"], board_dir).stdout
+    assert "tickets/open/T-0001-t.md" in staged
+    assert "tickets/claimed/T-0001-t.md" in staged
+    assert "tickets/open/T-0003-t.md" not in staged, \
+        "이번 mutation 밖 T-0003 WIP가 local commit 시도 scope에 섞임."
+    assert sync_calls == [], "local commit 실패 뒤 pull/push를 호출함."
+    err = capsys.readouterr().err
+    assert "local commit 실패" in err and "uncommitted" in err, err
+    assert "tickets/open/T-0001-t.md" in err, "move의 old 삭제 복구 경로가 빠짐."
+    assert "tickets/claimed/T-0001-t.md" in err, "move의 new 경로가 복구 경로에 없음."
+    assert ".gitattributes" in err, "실제 stage된 .gitattributes backfill이 복구 경로에서 빠짐."
+    assert "T-0003-t.md" not in err, "다른 ticket WIP를 복구 대상으로 노출함."
+    assert "로컬 commit 은 보존" not in err, "commit 실패를 push 실패처럼 false-success 보고함."
+    assert "git -C .project_manager/board add" in err and " commit -m " in err, err
+
+
+@requires_git
+def test_best_effort_commit_false_without_scoped_change_is_normal_noop(
+        board, tmp_path, capsys):
+    """scope에 변경이 없으면 False여도 local-commit-failed로 오진하지 않는다."""
+    bare = tmp_path / "bare-noop"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    # 같은 board 안의 다른 WIP가 있어도, scope 밖이면 이번 mutation의 commit 실패 증거가 아니다.
+    (board_dir / "tickets" / "open" / "T-0003-t.md").write_text(
+        _TICKET_TEXT.format(tid="T-0003"), encoding="utf-8")
+    outside = tmp_path / "outside-board.md"
+
+    board._board_git_sync_best_effort("noop", (outside,))
+
+    err = capsys.readouterr().err
+    assert "local commit 실패" not in err, err
+    assert "T-0003-t.md" not in err, err
+
+
+@requires_git
+def test_promote_reports_board_git_pending_when_local_commit_is_uncommitted(
+        board, tmp_path, monkeypatch, capsys):
+    """promote는 local commit 실패 뒤 `board-git 승격 완료`를 출력하면 안 된다."""
+    bare = tmp_path / "bare-promote-pending"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    draft = board_dir / "tickets" / ".drafts" / "T-0002-t.md"
+    draft.parent.mkdir()
+    draft.write_text(_TICKET_TEXT.format(tid="T-0002").replace("status: open", "status: draft"),
+                     encoding="utf-8")
+    monkeypatch.setattr(board, "_body_lint_issues", lambda *args, **kwargs: [])
+    monkeypatch.setattr(board, "_board_git_sync_best_effort", lambda *args, **kwargs: False)
+
+    assert board.cmd_promote(argparse.Namespace(id="T-0002")) == 0
+
+    out = capsys.readouterr().out
+    assert "board-git 승격 완료" not in out, out
+    assert "board-git 부기 보류: local-only/uncommitted" in out, out
+
+
+@requires_git
+def test_best_effort_pull_exception_after_local_commit_preserves_ready_state(
+        board, tmp_path, monkeypatch, capsys):
+    """local commit 뒤 pull 예외는 local-only 실패가 아니라 catch-up 보류다."""
+    bare = tmp_path / "bare-pull-exception"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    changed = board_dir / "tickets" / "open" / "T-0002-t.md"
+    changed.write_text(_TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")
+    before = board._board_git_head()
+
+    def _pull_timeout():
+        raise subprocess.TimeoutExpired(["git", "pull", "--rebase"], 5)
+
+    monkeypatch.setattr(board, "_board_git_pull_rebase", _pull_timeout)
+    ready = board._board_git_sync_best_effort("new T-0002", (changed,))
+
+    assert ready is True, "local commit 성공 뒤 pull 예외를 local-only 실패로 분류함."
+    assert board._board_git_head() != before, "pull 예외 전에 local commit이 생성되지 않음."
+    assert "로컬 commit 은 보존" in capsys.readouterr().err
+
+
+@requires_git
 def test_best_effort_push_failure_does_not_block(board, tmp_path, capsys):
     """best-effort sync 에서 push 가 실패해도 작업을 차단하지 않는다 — 로컬 commit 보존 + 경고만.
 

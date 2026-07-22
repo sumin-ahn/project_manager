@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -2939,6 +2940,64 @@ def _board_git_stage_and_commit(message: str,
     return _board_git_head() != before
 
 
+class _BoardGitUncommittedScope(NamedTuple):
+    """local commit 실패 진단에 필요한 실제 상태와 복구 pathspec."""
+    entries: tuple[tuple[str, str], ...] = ()
+    recovery_paths: tuple[str, ...] = ()
+
+
+def _board_git_uncommitted_scope(paths: Sequence[Path] | None) -> _BoardGitUncommittedScope:
+    """이번 mutation 경로에 남은 board-git 변경만 반환한다.
+
+    best-effort가 local commit을 못 만든 경우, board 전체 dirty를 진단에 쓰면 다른 ticket의
+    WIP를 이번 mutation 실패로 오인하고 그 경로까지 복구 대상으로 노출한다. 따라서 호출자가
+    선언한 경로만 porcelain -z로 조회한다. ``paths=None``인 레거시 외부 호출에는 소유 경계가
+    없으므로 false-success 판정을 하지 않는다.
+    """
+    if paths is None:
+        return _BoardGitUncommittedScope()
+    pathspec = _board_git_scope_pathspec(paths)
+    if not pathspec:
+        return _BoardGitUncommittedScope()
+    # `.gitattributes`는 이 호출이 `_ensure_board_gitattributes()`로 새로 만들면 실제 stage
+    # 대상이 된다. status에는 함께 넣되, staged 상태일 때만 recovery pathspec에도 보탠다.
+    status_paths = [*pathspec]
+    if ".gitattributes" not in status_paths:
+        status_paths.append(".gitattributes")
+    try:
+        result = _board_git([
+            "status", "--porcelain", "-z", "--untracked-files=all", "--", *status_paths,
+        ])
+    except Exception:  # noqa: BLE001 — 진단 실패가 best-effort mutation을 막으면 안 된다.
+        return _BoardGitUncommittedScope()
+    if result.returncode != 0:
+        return _BoardGitUncommittedScope()
+    entries = git_parse_porcelain_z(result.stdout)
+    recovery = list(pathspec)  # porcelain rename의 새 경로만으로 old 삭제를 잃지 않는다.
+    if any(path == ".gitattributes" and code[0] not in (" ", "?")
+           for code, path in entries):
+        recovery.append(".gitattributes")
+    return _BoardGitUncommittedScope(entries, tuple(recovery))
+
+
+def _warn_board_git_local_commit_failed(message: str,
+                                        scope: _BoardGitUncommittedScope,
+                                        exc: Exception | None = None) -> None:
+    """local commit 미생성의 복구 경로를, 이번 mutation 스코프만으로 loud 출력한다."""
+    shown = ", ".join(f"{code} {path}" for code, path in scope.entries[:5])
+    more = f" (+{len(scope.entries) - 5}건)" if len(scope.entries) > 5 else ""
+    quoted_paths = " ".join(shlex.quote(path) for path in scope.recovery_paths)
+    quoted_message = shlex.quote(message)
+    detail = f" ({exc})" if exc is not None else ""
+    print("  ⚠ board local commit 실패 — 이번 mutation 파일이 uncommitted 상태로 남았다. "
+          f"pull/push는 건너뛴다{detail}", file=sys.stderr)
+    print(f"    상태: {shown}{more}", file=sys.stderr)
+    print("    복구: `git -C .project_manager/board add -A -- "
+          f"{quoted_paths}`", file=sys.stderr)
+    print("          `git -C .project_manager/board commit -m "
+          f"{quoted_message} -- {quoted_paths}`", file=sys.stderr)
+
+
 def _board_git_pull_rebase() -> subprocess.CompletedProcess:
     """board git 을 remote 최신화 (`pull --rebase`) — 선점/원격 변경을 로컬에 반영."""
     return _board_git(["pull", "--rebase"])
@@ -2950,11 +3009,13 @@ def _board_git_push() -> subprocess.CompletedProcess:
 
 
 def _board_git_sync_best_effort(message: str,
-                                paths: Sequence[Path] | None = None) -> None:
+                                paths: Sequence[Path] | None = None) -> bool:
     """best-effort local-first sync (new/complete/block/unclaim/unblock/promote·spike §3.6).
 
-    board 가 별도 git 이 아니면 no-op(legacy·솔로). 별도 git 이면: 로컬 commit(항상
-    시도·로컬은 성공) → pull --rebase ; push 를 best-effort 로. offline/auth/conflict 등
+    board 가 별도 git 이 아니면 no-op(legacy·솔로). 별도 git 이면: 로컬 commit을 항상
+    시도하고, **새 commit 사실(HEAD 전진)**을 확인한 뒤 → pull --rebase ; push 를 best-effort 로.
+    local commit 실패가 mutation 파일을 uncommitted로 남기면 pull/push를 건너뛰고 False를 반환한다.
+    offline/auth/conflict 등
     어떤 실패도 **작업을 차단하지 않는다** — stale 경고만 stderr 로 내고 계속한다. active
     retry 루프는 없다 — 밀린 commit 은 다음 mutation 의 pull-rebase+push 가 catch-up 한다.
 
@@ -2978,13 +3039,13 @@ def _board_git_sync_best_effort(message: str,
     board_lock: 이 함수는 board_lock 을 놓은 뒤 불린다).
     """
     if not _board_git_enabled():
-        return
+        return True
     with board_git_lock():
-        _board_git_sync_best_effort_locked(message, paths)
+        return _board_git_sync_best_effort_locked(message, paths)
 
 
 def _board_git_sync_best_effort_locked(message: str,
-                                       paths: Sequence[Path] | None = None) -> None:
+                                       paths: Sequence[Path] | None = None) -> bool:
     """`_board_git_sync_best_effort` 의 본체 (board_git_lock 보유 전제·재진입 금지)."""
     # detached HEAD 가드 (T-0204): detached 에선 commit 이 orphan 으로 쌓이고 `pull --rebase`
     # 가 계속 실패해 "다음 mutation 이 catch-up" 약속이 *구조적으로* 성립하지 않는다(attached
@@ -2998,9 +3059,19 @@ def _board_git_sync_best_effort_locked(message: str,
               "복귀하면 다음 mutation 이 일괄 commit·catch-up 한다. detached 에서 이미 쌓인 로컬 "
               "commit 이 있으면 복귀 후 `git -C .project_manager/board cherry-pick <sha>` 로 이식.",
               file=sys.stderr)
-        return
+        return False
+    committed = False
     try:
-        _board_git_stage_and_commit(message, paths)
+        committed = _board_git_stage_and_commit(message, paths)
+        if not committed:
+            # False 자체는 scope가 없거나 변경이 이미 없는 정상 no-op일 수 있다. 하지만 이번
+            # mutation 경로가 아직 staged/unstaged/untracked면 HEAD 불변은 local commit 실패다.
+            # 이 상태에서 push가 rc=0(up-to-date)을 내도 파일은 remote에 없으므로, "보존·다음
+            # mutation catch-up"이라고 말하거나 pull/push를 계속하면 false-success가 된다.
+            uncommitted = _board_git_uncommitted_scope(paths)
+            if uncommitted.entries:
+                _warn_board_git_local_commit_failed(message, uncommitted)
+                return False
         # 통합 시도 여부는 **추적 변경 유무**로 가른다 — `behind` 로 가르면 안 된다(reviewer
         # must-fix): `_board_git_behind` 는 원격-추적 ref 를 읽으므로 **fetch 선행에서만 유효**한데
         # 이 경로엔 fetch 가 없다 → ref 가 영구 stale → behind 항상 0 → pull 을 영영 안 타 push 가
@@ -3010,14 +3081,28 @@ def _board_git_sync_best_effort_locked(message: str,
         pull = None if _board_git_has_tracked_changes() else _board_git_pull_rebase()
         push = _board_git_push() if (pull is None or pull.returncode == 0) else None
     except Exception as exc:  # noqa: BLE001 — fail-soft: best-effort sync 는 절대 작업을 막지 않는다.
+        uncommitted = _board_git_uncommitted_scope(paths)
+        if uncommitted.entries:
+            _warn_board_git_local_commit_failed(message, uncommitted, exc)
+            return False
+        if committed:
+            print("  ⚠ board sync 보류 — pull/push 예외. 로컬 commit 은 보존되며 다음 mutation 이 "
+                  "catch-up 한다.", file=sys.stderr)
+            return True
         print(f"  ⚠ board sync 보류(다음 mutation 이 catch-up): {exc}", file=sys.stderr)
-        return
+        return False
     if pull is not None and pull.returncode != 0:
         print("  ⚠ board sync 보류 — pull --rebase 실패(offline/conflict). 로컬 commit 은 "
               "보존되며 다음 mutation 이 catch-up 한다.", file=sys.stderr)
     elif push is not None and push.returncode != 0:
         print("  ⚠ board sync 보류 — push 실패(offline/auth/non-FF). 로컬 commit 은 보존되며 "
               "다음 mutation 이 catch-up 한다.", file=sys.stderr)
+    return True
+
+
+def _board_git_mutation_state_suffix(local_commit_ready: bool) -> str:
+    """best-effort caller의 성공 문구가 uncommitted 상태를 성공처럼 숨기지 않게 한다."""
+    return "" if local_commit_ready else " (board-git 부기 보류: local-only/uncommitted)"
 
 
 class _ClaimPrefetch(NamedTuple):
@@ -4534,11 +4619,11 @@ def cmd_complete(args: argparse.Namespace) -> int:
     fm["status"] = "done"
     fm["completed_at"] = now_utc()
     dump_ticket(new_path, fm, body)
-    print(f"completed {args.id}")
     refresh_board()
     # 스코프 = 이 mutation 이 만진 두 경로만 (ADR-0073) — 공유 board 의 무관한 미커밋 작업이
     # 이 커밋에 실려 push 되지 않는다. 이하 best-effort 5곳 동일.
-    _board_git_sync_best_effort(f"complete {args.id}", (path, new_path))
+    ready = _board_git_sync_best_effort(f"complete {args.id}", (path, new_path))
+    print(f"completed {args.id}{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -4556,9 +4641,9 @@ def cmd_block(args: argparse.Namespace) -> int:
     fm["status"] = "blocked"
     note = f"\n## Blocked\n{args.reason} — {datetime.date.today().isoformat()}\n"
     dump_ticket(new_path, fm, body + note)
-    print(f"blocked {args.id}: {args.reason}")
     refresh_board()
-    _board_git_sync_best_effort(f"block {args.id}", (path, new_path))
+    ready = _board_git_sync_best_effort(f"block {args.id}", (path, new_path))
+    print(f"blocked {args.id}: {args.reason}{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -4577,9 +4662,9 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
     fm["claimed_by"] = None
     fm["claimed_at"] = None
     dump_ticket(new_path, fm, body)
-    print(f"unclaimed {args.id}")
     refresh_board()
-    _board_git_sync_best_effort(f"unclaim {args.id}", (path, new_path))
+    ready = _board_git_sync_best_effort(f"unclaim {args.id}", (path, new_path))
+    print(f"unclaimed {args.id}{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -4597,9 +4682,9 @@ def cmd_unblock(args: argparse.Namespace) -> int:
     new_path = move_ticket(path, "open")
     fm["status"] = "open"
     dump_ticket(new_path, fm, body)
-    print(f"unblocked {args.id}")
     refresh_board()
-    _board_git_sync_best_effort(f"unblock {args.id}", (path, new_path))
+    ready = _board_git_sync_best_effort(f"unblock {args.id}", (path, new_path))
+    print(f"unblocked {args.id}{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -5245,7 +5330,9 @@ def cmd_new(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 0
     refresh_board()
-    _board_git_sync_best_effort(f"new {tid}", (path,))
+    ready = _board_git_sync_best_effort(f"new {tid}", (path,))
+    if not ready:
+        print("  ⚠ board-git 부기 보류: local-only/uncommitted", file=sys.stderr)
     return 0
 
 
@@ -5289,8 +5376,11 @@ def cmd_promote(args: argparse.Namespace) -> int:
         new_path = move_ticket(path, "open")
         touched.append(new_path)
         refresh_board()
-    _board_git_sync_best_effort(f"promote {args.id}", touched)
-    print(f"promoted {args.id} (board-git 승격 완료)")
+    ready = _board_git_sync_best_effort(f"promote {args.id}", touched)
+    if ready:
+        print(f"promoted {args.id} (board-git 승격 완료)")
+    else:
+        print(f"promoted {args.id} (board-git 부기 보류: local-only/uncommitted)")
     return 0
 
 
