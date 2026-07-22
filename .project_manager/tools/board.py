@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -1233,12 +1233,18 @@ def collect_rewrite_targets(root: str | Path) -> list[Path]:
     return list(dict.fromkeys(files))  # 순서보존 dedup (겹치는 서브트리 방어적 중복 제거)
 
 
-def rewrite_refs(root: str | Path, id_map: dict[str, str], *, dry_run: bool) -> dict[str, int]:
+def rewrite_refs(root: str | Path, id_map: dict[str, str], *, dry_run: bool,
+                 changed_paths: list[Path] | None = None) -> dict[str, int]:
     """대상 파일 전부에 토큰단위 rewrite 적용·규모 집계 반환 (rename/merge 공용 코어).
 
     반환 `{"ids": N, "refs": M, "files": K}` — N=id_map 중 *실제 참조된* old ID 수, M=총
     치환 refs, K=치환이 일어난 파일 수. `dry_run=True` 면 파일을 기록하지 않고 카운트만 낸다
     (`board.py prefix … --dry-run` 의 "N ID·M refs" preview 원천·T-0239 가 소비).
+
+    `changed_paths` 를 주면 **치환이 일어난 파일 경로**를 순서대로 append 한다(반환 dict 는
+    불변 — 기존 소비자 무영향). 호출부가 "이 mutation 이 실제로 만진 경로" 를 알아야 스코프
+    커밋(ADR-0074)이 가능한데, 그 집합은 여기서만 알 수 있다. dry_run 에서도 *바뀔* 파일을
+    담는다(preview 와 동일 집합).
     """
     referenced: set[str] = set()
     total_refs = 0
@@ -1262,6 +1268,8 @@ def rewrite_refs(root: str | Path, id_map: dict[str, str], *, dry_run: bool) -> 
         referenced.update(counts)
         total_refs += sum(counts.values())
         files_changed += 1
+        if changed_paths is not None:
+            changed_paths.append(path)
         if not dry_run:
             with path.open("w", encoding="utf-8", newline="") as fh:
                 fh.write(new_text)
@@ -2574,39 +2582,307 @@ def _board_git_remote_has_commit(upstream: _BoardGitUpstream, commit: str) -> bo
         return False
 
 
-def _board_git_relpath(path: Path) -> str | None:
-    """절대 경로 → board git 루트 기준 상대 pathspec (board git 밖이면 None)."""
+# ── repo-중립 스코프 프리미티브 (ADR-0074) ─────────────────────────────────
+# **공유 워킹트리 mutation 은 선언된 경로만 건드린다** — ADR-0073 이 board-git 에 한정해 세운
+# 스코프 원칙을 repo-중립으로 올린 것이다. 아래 함수들이 그 판정의 **단일 구현**이고,
+# `_board_git_*` 는 `board_root()` 를 물린 얇은 wrapper, 디자인 git(PM 홈·wiki)은
+# `ticket_finish` 가 `REPO` 를 물려 같은 함수를 부른다. 판정을 두 벌로 복제하지 않는다 —
+# 복제하면 다음 사람이 한쪽만 고쳐 반대쪽이 조용히 샌다(v1.4.1 실측).
+#
+# `run_git` 은 `(argv) -> (rc, stdout)` 러너 seam 이다 — 호출 repo 마다 git 실행 관용구가
+# 다르기 때문(board-git 은 `-C board_root()` 인 `_board_git`, ticket_finish 는 cwd=REPO 인
+# 주입형 `_run_git_fn`). 미지정이면 `-C repo` 기본 러너를 쓴다.
+
+GitRunner = Callable[[list[str]], tuple[int, str]]
+
+
+def _git_scope_run(repo: Path, args: list[str]) -> tuple[int, str]:
+    """`git -C <repo> …` 기본 러너 → (rc, stdout) — 엔진 subprocess 관례(UTF-8·timeout 고정)."""
+    r = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=_BOARD_GIT_TIMEOUT_SECONDS, check=False)
+    return r.returncode, r.stdout
+
+
+def git_scope_relpath(repo: Path, path: Path) -> str | None:
+    """절대 경로 → `<repo>` 루트 기준 상대 pathspec (그 repo 밖이면 None)."""
     try:
-        return Path(path).resolve().relative_to(board_root().resolve()).as_posix()
+        return Path(path).resolve().relative_to(Path(repo).resolve()).as_posix()
     except (ValueError, OSError):
         return None
 
 
-def _board_git_scope_pathspec(paths: Sequence[Path], *,
-                              gitattributes: bool = False) -> tuple[str, ...]:
-    """이 mutation 이 만진 경로 → board git pathspec (**스코프 산출 단일 지점**·ADR-0073).
+def git_scope_pathspec(repo: Path, paths: Sequence[Path], *,
+                       exclude_prefixes: Sequence[str] = ()) -> tuple[str, ...]:
+    """이 mutation 이 만진 경로 → `<repo>` pathspec (**스코프 산출 단일 지점**·ADR-0074).
 
-    규칙 넷을 한 곳에서만 적용한다(경로별로 다시 판정하는 두 번째 구현을 만들지 않는다):
-      1. board_root() **밖** 경로는 제외 — board git 이 모르는 파일(예: 파생물 `wiki/board.md`).
-      2. `tickets/.drafts/` 는 제외 — 어떤 mutation 도 미충전 draft 를 커밋하지 않는다(T-0198).
-         promote 의 *옛* 경로가 실제로 draft 라 이 규칙이 매번 발동한다.
-      3. `gitattributes=True` 일 때만 `.gitattributes` 를 덧붙인다 — **이번 호출의 backfill 이
-         실제로 썼을 때**(`_ensure_board_gitattributes()` 반환 True)만 참이다. 무조건 붙이면
-         사용자가 편집 중인 `.gitattributes` 를 아무 티켓 mutation 이 대신 커밋해 이 티켓이
-         닫으려는 누출과 **동형** 이 된다(reviewer). 반대로 backfill 분을 빼면 그 파일이 영구
-         미커밋으로 남아 T-0418(areas union 배포)이 무력화되므로, "썼으면 싣는다" 가 정확한
-         조건이다. 파일 부재 시엔 붙이지 않는다(`add` rc=128 fatal 방지).
-      4. 중복 제거(순서 보존).
-    반환이 비면 커밋할 스코프가 없다는 뜻(호출부가 no-op 으로 처리).
+    규칙 셋을 한 곳에서만 적용한다(경로별로 다시 판정하는 두 번째 구현을 만들지 않는다):
+      1. `repo` **밖** 경로는 제외 — 그 git 이 모르는 파일(예: 두-git 형상에서 코드 worktree
+         의 `touches`, board-git 기준의 파생물 `wiki/board.md`).
+      2. `exclude_prefixes` 로 시작하는 경로는 제외 — 호출부가 그 repo 고유의 금지 구역을
+         준다(board-git 의 `tickets/.drafts/` = 미충전 draft·T-0198).
+      3. 중복 제거(순서 보존).
+    반환이 비면 스코프가 없다는 뜻(호출부가 no-op 으로 처리).
     """
     rels: list[str] = []
     for path in paths:
-        rel = _board_git_relpath(path)
+        rel = git_scope_relpath(repo, path)
         if rel is None or rel in rels:
             continue
-        if rel.startswith("tickets/.drafts/"):
+        if any(rel.startswith(prefix) for prefix in exclude_prefixes):
             continue
         rels.append(rel)
+    return tuple(rels)
+
+
+def _git_scope_nested_git(repo: Path, rel: str) -> bool:
+    """`rel` 이 **중첩 git(서브모듈) 안쪽** 경로인가 — 상위 repo 의 `add` 를 fatal 로 죽이는 갈래.
+
+    `git add -A -- .project_manager/board/tickets/…` 는 그 경로가 서브모듈 *내부* 면
+    `fatal: Pathspec '…' is in submodule` 로 rc=128 이 되고 **pathspec 전체가 stage 되지
+    않는다**(board 분리 형상에서 `touches` 에 board 경로를 적으면 finish 가 통째로 중단됐다).
+    조상 디렉토리 중 `.git` 을 가진 것이 있으면(=별도 git) 그 아래는 상위 repo 의 pathspec 이
+    아니므로 미리 거른다. 경로 자신은 제외(repo 루트/대상 자체가 git 인 건 정상).
+    """
+    parent = Path(rel).parent
+    while parent != Path("."):
+        if (Path(repo) / parent / ".git").exists():
+            return True
+        parent = parent.parent
+    return False
+
+
+def _git_scope_is_directory(repo: Path, rel: str) -> bool:
+    """`rel` 이 디렉토리(또는 디렉토리 표기)인가 — 최종 관문의 판정.
+
+    worktree 실측(`is_dir()`)에 더해 **끝 슬래시 표기**(`newdir/`)도 디렉토리로 본다: git 의
+    porcelain 이 접어서 낸 untracked 디렉토리가 그 모양이라, 실측만 하면 이미 지워진 경로가
+    빠져나간다. 판정이 애매할 때는 *제외* 가 안전한 방향이다 — 빠지면 잔여 loud 보고에 뜨지만,
+    통과하면 남의 파일이 조용히 실린다.
+    """
+    return rel.endswith("/") or (Path(repo) / rel).is_dir()
+
+
+def _git_scope_ignored(repo: Path, pathspec: Sequence[str],
+                       run: GitRunner) -> set[str]:
+    """`.gitignore` 에 걸리는 경로들 (fail-soft — 판정 불가면 빈 집합).
+
+    **`git add` 는 명시 pathspec 이 ignored 면 rc=1 에러다.** 광역 `add -A` 가 ignored 를 조용히
+    건너뛰는 것과 다르고, `--ignore-errors` 로도 안 없어진다(reviewer 실측). 그래서 `touches` 에
+    gitignored 경로가 하나만 있어도 stage 가 통째로 죽고, 하필 그 순간 잔여 loud 보고까지 함께
+    사라진다(부기는 이미 절반 진행된 상태). 실형상 도달 가능 — 이 보드의 done 티켓 여러 건이
+    `touches: .project_manager/local.conf`(gitignored)를 선언한다.
+
+    판정은 `git check-ignore` 로 한다:
+      - 먼저 **전체를 한 번** 물어(`check-ignore -- <paths>`) rc=1(매치 0)이면 즉시 종료 —
+        평시 비용은 subprocess 1회다.
+      - 매치가 있을 때만 경로별 `-q` 로 어느 것인지 가른다(`-q` 는 경로 1개만 받고 `-z` 는
+        `--stdin` 전용이라, 인용/이스케이프 없는 **rc 판정** 만 쓴다 — 출력 파싱 0).
+    **추적 파일은 check-ignore 가 보고하지 않는다**(실측) — 이미 추적 중인 파일은 ignore 규칙과
+    무관하게 stage 되어야 하므로 이 동작이 정확히 맞다. rc=128(비-git·판정 불가)은 fail-soft.
+    """
+    if not pathspec:
+        return set()
+    try:
+        rc, _out = run(["check-ignore", "--", *pathspec])
+    except Exception:  # noqa: BLE001 — fail-soft: 판정 실패면 제외 0(현행 동작).
+        return set()
+    if rc != 0:            # 1 = 매치 0(정상) · 128 = 비-git/판정 불가 → 제외 0.
+        return set()
+    ignored: set[str] = set()
+    for path in pathspec:
+        try:
+            rc_one, _ = run(["check-ignore", "-q", "--", path])
+        except Exception:  # noqa: BLE001 — 개별 판정 실패는 그 경로만 통과(보수적).
+            continue
+        if rc_one == 0:
+            ignored.add(path)
+    return ignored
+
+
+def git_parse_porcelain_z(out: str) -> tuple[tuple[str, str], ...]:
+    """`git status --porcelain -z` 출력 → `((XY, 경로), …)` — **NUL 파싱 단일 지점**.
+
+    `-z` 가 **판정용으로 필수**다: `-z` 없이는 git 이 비-ASCII 경로를 8진 이스케이프 + 인용으로
+    낸다(`"\\353\\251\\200…"`). 그 문자열을 스코프 비교에 넣으면 *자기가 방금 stage 한 파일* 을
+    "스코프 밖" 으로 오판해 "빼라" 고 지시한다(reviewer 실측 — PM 홈에 실제로 한글 티켓/아이디어
+    경로가 있다). `core.quotepath=false` 도 공백 경로 인용(`"a b.md"`)이 남아 불충분하다.
+    `-z` 는 인용 자체를 하지 않으므로 원문 경로가 그대로 나온다.
+
+    rename/copy(`R`/`C`) 항목은 `<코드> <신규>\\0<원본>\\0` **2토큰**이라 원본 토큰을 소비하고
+    신규 경로를 취한다. 스코프 산출(디렉토리 전개)과 잔여 보고가 **이 함수 하나**를 공유한다.
+    """
+    tokens = out.split("\0")
+    entries: list[tuple[str, str]] = []
+    index = 0
+    while index < len(tokens):
+        entry = tokens[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        code, path = entry[:2], entry[3:]
+        if code[0] in ("R", "C"):
+            index += 1          # 원본 경로 토큰 소비 (신규 경로만 취한다)
+        if path:
+            entries.append((code, path))
+    return tuple(entries)
+
+
+def _git_scope_expand_dir(repo: Path, rel: str, run: GitRunner) -> list[str]:
+    """디렉토리 선언 → 그 아래 **변경된 파일** 경로들 (`status --porcelain -z -- <dir>`).
+
+    디렉토리가 **이미 삭제된** 경우도 같은 조회로 덮인다 — git 은 index 를 함께 보므로 삭제된
+    파일이 ` D <경로>` 로 나온다(실측). 그래서 "지워진 디렉토리 선언" 을 위한 두 번째 경로를
+    만들지 않는다.
+
+    디렉토리를 그대로 pathspec 에 넘기면 `git add -A -- <dir>` 가 그 아래 **남의 미완성
+    편집까지 통째로** stage 한다 — 좁힌 척하고 안 좁힌 상태다(ADR-0074 가 금지하는 것). 그래서
+    스코프에서 디렉토리는 **살아남지 못한다**: 여기서 변경 파일 목록으로 펼쳐, 호출부가
+    무엇이 실리는지 **파일 단위로 출력·검증**할 수 있게 한다(변경이 없으면 빈 목록 → 소멸).
+
+    `--untracked-files=all` 이 **load-bearing** 이다: 기본값(`normal`)은 새 untracked 디렉토리를
+    `?? newdir/` **한 항목으로 접어서** 낸다 — 그러면 전개 결과가 파일이 아니라 *디렉토리* 라
+    아래 필터를 그대로 통과해 `git add -A -- newdir/` 가 되고, 막으려던 뭉뚱그리기가 이 경로로
+    되살아난다(PM 실 git 재현). `all` 이면 `?? newdir/c.md` 로 파일까지 펼친다.
+
+    `-z` + NUL 파싱은 `git_parse_porcelain_z` 한 곳이 담당한다(비-ASCII/공백 경로 인용 문제·
+    rename 2토큰 처리를 두 벌로 만들지 않는다 — 잔여 보고도 같은 함수를 쓴다).
+    """
+    try:
+        rc, out = run(["status", "--porcelain", "-z", "--untracked-files=all", "--", rel])
+    except Exception:  # noqa: BLE001 — fail-soft: 조회 실패면 확장 0(디렉토리는 소멸).
+        return []
+    if rc != 0:
+        return []
+    return [path for _code, path in git_parse_porcelain_z(out)]
+
+
+def git_scope_stageable(repo: Path, pathspec: Sequence[str], *,
+                        run_git: GitRunner | None = None) -> tuple[str, ...]:
+    """`add`/`commit` 이 매치할 수 있는 **파일** 경로만 남긴다 — 미매치/서브모듈 fatal 방지 +
+    디렉토리 소멸(ADR-0074).
+
+    다섯 가지를 한 곳에서 처리한다(호출부가 다시 판정하지 않는다):
+      1. **디렉토리는 파일로 펼친다** — 변경 파일 목록으로(`_git_scope_expand_dir`). 디렉토리
+         stage 는 그 아래 남의 WIP 를 함께 싣는 누출 채널이라 구조적으로 막는다. **이미 삭제된
+         디렉토리도 전개한다**(선언한 삭제가 빠지면 안 된다 — 아래 루프 주석).
+      2. **중첩 git(서브모듈) 내부 경로 제거** — 상위 repo 의 `add` 가 rc=128 fatal 로 죽는다.
+      3. **미존재·미추적 경로 제거** — `git add -A -- <경로>` 는 index·worktree 어디에도 없는
+         경로를 주면 rc=128 fatal 로 죽고 **아무것도 stage 되지 않는다**(→ commit 실패 →
+         claim 롤백). 로컬에서 만들어진 뒤 한 번도 커밋되지 않은 티켓이 이동하면 *옛* 경로가
+         정확히 그 상태고(detached 구간의 보류 commit), 디자인 git 에선 `touches` 가 이 repo 에
+         없는 경로(두-git 형상의 코드 worktree 경로·오타)를 가리키는 경우가 그렇다. 추적 중인
+         *삭제* 경로는 남긴다(삭제도 커밋돼야 이동이 완성된다).
+      4. **gitignored 경로 제거**(`_git_scope_ignored`) — 명시 pathspec 이 ignored 면 `add` 가
+         **rc=1 에러**다(광역 `add -A` 와 다르다). 사람이 손으로 적는 `touches` 에 gitignored
+         경로가 섞여도 stage 가 통째로 죽으면 안 된다(3과 같은 fail-soft 클래스).
+      5. **최종 관문: 디렉토리는 하나도 반환하지 않는다** — 1의 전개가 *조용히 실패* 해도
+         불변식이 유지되게 마지막에 한 번 더 거른다. 실제로 그런 실패가 있었다: `status
+         --porcelain` 기본값(`untracked-files=normal`)이 새 untracked 디렉토리를 `?? newdir/`
+         한 항목으로 접어, 전개 결과가 디렉토리인 채 3의 `exists()` 를 통과했다(PM 실 git
+         재현). **불변식은 전개의 성공에 의존하면 안 된다.**
+    """
+    run = run_git or (lambda args: _git_scope_run(repo, args))
+    expanded: list[str] = []
+    for p in pathspec:
+        # 전개는 **디렉토리이거나 worktree 에 없는** 경로에 시도한다. 후자가 load-bearing 이다:
+        # 선언한 디렉토리가 *통째로 삭제* 되면 `is_dir()` 이 false 라 옛 게이트는 전개를 건너뛰고,
+        # 이어지는 추적 판정도 `ls-files -- src` 가 `src/a.py` 를 내놔 `src` 와 매칭되지 않아
+        # 경로가 통째로 탈락했다 — **선언한 삭제가 커밋에서 조용히 빠졌다**(reviewer 실측).
+        # 존재하는 *파일* 은 전개 결과가 자기 자신이라 시도할 이유가 없다(subprocess 절약).
+        candidate_path = Path(repo) / p
+        expand = candidate_path.is_dir() or not candidate_path.exists()
+        candidates = (_git_scope_expand_dir(repo, p, run) or [p]) if expand else [p]
+        for candidate in candidates:
+            if candidate and candidate not in expanded:
+                expanded.append(candidate)
+    expanded = [p for p in expanded if not _git_scope_nested_git(repo, p)]
+    on_disk = {p for p in expanded if (Path(repo) / p).exists()}
+    unknown = [p for p in expanded if p not in on_disk]
+    tracked: set[str] = set()
+    if unknown:
+        try:
+            rc, out = run(["ls-files", "-z", "--", *unknown])
+            if rc == 0:
+                tracked = {line for line in out.split("\0") if line}
+        except Exception:  # noqa: BLE001 — fail-soft: 조회 실패면 존재하는 경로만 남긴다.
+            tracked = set()
+    stageable = [p for p in expanded if p in on_disk or p in tracked]
+    ignored = _git_scope_ignored(repo, stageable, run)
+    return tuple(p for p in stageable
+                 if p not in ignored and not _git_scope_is_directory(repo, p))
+
+
+def git_scope_stage_pathspec(repo: Path, paths: Sequence[Path], *,
+                             exclude_prefixes: Sequence[str] = (),
+                             run_git: GitRunner | None = None) -> tuple[str, ...]:
+    """선언 경로 → 그 repo 에서 실제 stage 가능한 pathspec (스코프+동형 필터 단일 진입).
+
+    `git_scope_pathspec`(스코프) → `git_scope_stageable`(미존재/미추적 제거) 순서 고정 —
+    두 단계를 따로 부르는 호출부가 순서를 뒤바꾸거나 한쪽을 빼먹지 않게 한 진입점으로 묶는다.
+    """
+    return git_scope_stageable(
+        repo, git_scope_pathspec(repo, paths, exclude_prefixes=exclude_prefixes),
+        run_git=run_git)
+
+
+def git_scope_stage_and_commit(repo: Path, message: str, pathspec: Sequence[str], *,
+                               run_git: GitRunner | None = None) -> None:
+    """선언된 pathspec **만** stage+commit 한다 (`add -A --` + `commit -m … --` 쌍·ADR-0074).
+
+    `add` 선행은 **필수**다 — `git commit --only -- <새 경로>` 단독은 그 경로가 untracked 라
+    `pathspec did not match` 로 실패한다(architect 실측). 커밋이 실제로 생겼는지 판정(HEAD
+    전진)은 호출부 몫이다 — repo 마다 HEAD 조회 seam 이 다르다.
+    """
+    run = run_git or (lambda args: _git_scope_run(repo, args))
+    run(["add", "-A", "--", *pathspec])
+    run(["commit", "-m", message, "--", *pathspec])
+
+
+# 잔여 dirty 보고(under-stage loud·ADR-0074)는 **의도적으로 여기 없다** — `ticket_finish` 가
+# 자체 파서로 낸다. 보고 채널이 board 모듈 로드에 의존하면, 로드가 실패한 형상(예: 실행
+# 인터프리터에 PyYAML 부재·엔진 사본 손상)에서 stage 가 0인 채 "잔여 없음"이라는 **거짓 안심**이
+# 나온다(reviewer 실측). 보고는 어떤 경우에도 살아 있어야 하는 마지막 안전망이다.
+
+
+# board-git 고유 금지 구역 — `tickets/.drafts/`(미충전 draft·T-0198)는 어떤 mutation 도
+# 커밋하지 않는다. promote 의 *옛* 경로가 실제로 draft 라 이 규칙이 매번 발동한다.
+_BOARD_GIT_SCOPE_EXCLUDE: tuple[str, ...] = ("tickets/.drafts/",)
+
+
+def _board_git_rc_out(args: list[str]) -> tuple[int, str]:
+    """`_board_git` 를 스코프 프리미티브 러너 계약((rc, stdout))으로 어댑트한다.
+
+    모듈 속성 `_board_git` 를 **호출 시점에** 조회하므로 기존 테스트의 monkeypatch(가짜
+    board-git)가 그대로 프리미티브 안까지 적용된다.
+    """
+    r = _board_git(args)
+    return r.returncode, r.stdout
+
+
+def _board_git_relpath(path: Path) -> str | None:
+    """절대 경로 → board git 루트 기준 상대 pathspec (board git 밖이면 None)."""
+    return git_scope_relpath(board_root(), path)
+
+
+def _board_git_scope_pathspec(paths: Sequence[Path], *,
+                              gitattributes: bool = False) -> tuple[str, ...]:
+    """이 mutation 이 만진 경로 → board git pathspec (`git_scope_pathspec` 의 board 바인딩·ADR-0073).
+
+    스코프 규칙(repo 밖 제외·금지 구역 제외·중복 제거)은 repo-중립 프리미티브
+    `git_scope_pathspec` 이 단일 구현으로 갖고 있고, 여기선 board 고유분만 얹는다:
+      - `board_root()` 를 repo 로, `tickets/.drafts/`(`_BOARD_GIT_SCOPE_EXCLUDE`)를 금지 구역으로.
+      - `gitattributes=True` 일 때만 `.gitattributes` 를 덧붙인다 — **이번 호출의 backfill 이
+        실제로 썼을 때**(`_ensure_board_gitattributes()` 반환 True)만 참이다. 무조건 붙이면
+        사용자가 편집 중인 `.gitattributes` 를 아무 티켓 mutation 이 대신 커밋해 이 티켓이
+        닫으려는 누출과 **동형** 이 된다(reviewer). 반대로 backfill 분을 빼면 그 파일이 영구
+        미커밋으로 남아 T-0418(areas union 배포)이 무력화되므로, "썼으면 싣는다" 가 정확한
+        조건이다. 파일 부재 시엔 붙이지 않는다(`add` rc=128 fatal 방지).
+    반환이 비면 커밋할 스코프가 없다는 뜻(호출부가 no-op 으로 처리).
+    """
+    rels: list[str] = list(git_scope_pathspec(
+        board_root(), paths, exclude_prefixes=_BOARD_GIT_SCOPE_EXCLUDE))
     if gitattributes:
         attrs = _board_git_relpath(board_root() / ".gitattributes")
         if attrs and attrs not in rels and (board_root() / ".gitattributes").is_file():
@@ -2615,25 +2891,13 @@ def _board_git_scope_pathspec(paths: Sequence[Path], *,
 
 
 def _board_git_stageable(pathspec: Sequence[str]) -> tuple[str, ...]:
-    """`add`/`commit` 이 매치할 수 있는 경로만 남긴다 — pathspec 미매치 fatal 방지.
+    """`add`/`commit` 이 매치할 수 있는 경로만 남긴다 (`git_scope_stageable` 의 board 바인딩).
 
-    `git add -A -- <경로>` 는 index·worktree 어디에도 없는 경로를 주면 rc=128 fatal 로 죽고
-    **아무것도 stage 되지 않는다**(→ commit 실패 → claim 롤백). 로컬에서 만들어진 뒤 아직 한
-    번도 커밋되지 않은 티켓이 이동하면 *옛* 경로가 정확히 그 상태다(예: detached 구간에
-    best-effort commit 이 보류된 티켓). 존재(worktree) 또는 추적(index) 여부로 미리 걸러
-    funnel 이 fail-soft 하게 한다.
+    판정 본체(존재/추적 필터·fail-soft)는 repo-중립 프리미티브에 있다 — 여기선 board_root()
+    와 board-git 러너(`_board_git_rc_out`)를 물린다. 미매치 pathspec 이 `add` 를 rc=128 fatal
+    로 죽이는 것을 막는 필터라, 디자인 git 쪽 새 스코프도 같은 구현을 쓴다(ADR-0074).
     """
-    on_disk = {p for p in pathspec if (board_root() / p).exists()}
-    unknown = [p for p in pathspec if p not in on_disk]
-    tracked: set[str] = set()
-    if unknown:
-        try:
-            r = _board_git(["ls-files", "-z", "--", *unknown])
-            if r.returncode == 0:
-                tracked = {line for line in r.stdout.split("\0") if line}
-        except Exception:  # noqa: BLE001 — fail-soft: 조회 실패면 존재하는 경로만 남긴다.
-            tracked = set()
-    return tuple(p for p in pathspec if p in on_disk or p in tracked)
+    return git_scope_stageable(board_root(), pathspec, run_git=_board_git_rc_out)
 
 
 def _board_git_stage_and_commit(message: str,
@@ -2647,10 +2911,10 @@ def _board_git_stage_and_commit(message: str,
     `git commit --only -- <새 경로>` 단독은 그 경로가 untracked 라 `pathspec did not match` 로
     실패한다(architect 실측).
 
-    `paths=None` = **relabel 백업 커밋 전용 레거시 스코프**(board 전체·draft 제외). prefix
-    rename/merge·reid(`_prefix_relabel`)는 ID 토큰 rewrite 가 board 안 임의 티켓 본문으로 번져
-    만진 경로 집합이 열려 있다 — 스코프화가 불가능한 유일한 채널이고, 그래서 그 커맨드는 백업
-    rev 안내와 짝을 이룬다. **그 외 호출부는 반드시 경로를 준다.**
+    `paths=None` = **레거시 광역 스코프**(board 전체·draft 제외). 엔진 호출부는 더 이상 이
+    형태를 쓰지 않는다 — 마지막 소비자였던 `_prefix_relabel` 도 rewrite 가 실제로 쓴 파일 +
+    rename 경로로 스코프됐다(ADR-0074). 하위호환(외부 호출·테스트)으로만 남긴다.
+    **호출부는 반드시 경로를 준다.**
 
     새 커밋 생성 판정은 rc 가 아니라 **`HEAD != anchor`** 다 — 부분 커밋은 pathspec 이 아무것도
     못 잡으면 rc 가 애매한데, claim 은 "커밋을 못 내면 거짓 소유"(ADR-0033)라 커밋 *사실* 을
@@ -2670,8 +2934,8 @@ def _board_git_stage_and_commit(message: str,
             _board_git_scope_pathspec(paths, gitattributes=wrote_gitattributes))
         if not pathspec:
             return False  # 커밋할 스코프 없음(전부 board 밖·draft·미존재) — no-op.
-        _board_git(["add", "-A", "--", *pathspec])
-        _board_git(["commit", "-m", message, "--", *pathspec])
+        git_scope_stage_and_commit(board_root(), message, pathspec,
+                                   run_git=_board_git_rc_out)
     return _board_git_head() != before
 
 
@@ -5632,9 +5896,11 @@ def _apply_file_renames(renames: list[tuple[Path, Path]]) -> None:
 def _home_git_status_porcelain() -> str | None:
     """홈(superproject) git working tree 의 uncommitted 변경 (`status --porcelain`).
 
-    None = git 부재/repo 아님(가드 skip·솔로 안전) · `""` = clean · non-empty = dirty. prefix
-    rewrite 는 wiki/log(홈 git)를 건드리므로, 적용 전 홈 git 이 clean 이어야 사용자가 relabel
-    diff 를 리뷰·revert 할 수 있다(ADR-0042 §Consequences·spike §6). fail-soft: 예외는 None.
+    None = git 부재/repo 아님(보고 skip·솔로 안전) · `""` = clean · non-empty = dirty. prefix
+    rewrite 는 wiki/log(홈 git)를 건드리므로 relabel diff 가 남의 WIP 와 섞여 보일 수 있다 —
+    그래서 이 값을 **안내로** 낸다. 옛 동작(dirty 면 전면 abort)은 ADR-0074 로 폐기됐다:
+    남의 dirty 로 내 작업이 막히는 과차단이었고, mutation 자체가 만진 경로만 커밋하므로
+    격리는 스코프가 보장한다. fail-soft: 예외는 None.
     """
     if shutil.which("git") is None:
         return None
@@ -5658,9 +5924,9 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
     `op = f"{noun} {verb}".strip()`·verb 빈 문자열이면 noun 만). 기본값은 prefix 동사 하위호환.
 
     dry-run: 규모 preview("N ID·M refs·K 파일")만·쓰기 0(read-only 라 락 불요). 적용: 홈 git
-    clean 가드 → **단일 `board_lock()` 구간에서** 본문 토큰 rewrite(`rewrite_refs`) + slug 파일명
-    rename → board.md 재생성 → board-git 백업 commit(분리 형상)·legacy skip 안내. 티켓 물리삭제
-    없음.
+    dirty 안내(**차단 아님**·ADR-0074) → **단일 `board_lock()` 구간에서** 본문 토큰
+    rewrite(`rewrite_refs`) + slug 파일명 rename → board.md 재생성 → **만진 경로만** board-git
+    백업 commit(분리 형상)·legacy skip 안내. 티켓 물리삭제 없음.
 
     **락 직렬화(codex must-fix)**: rewrite→rename→refresh→board-git 백업 전체를 `cmd_new` 의 ID
     발행·`cmd_claim` 이 쓰는 그 board_lock 으로 감싼다(ADR-0012) — 동시 new/claim 과 직렬화해
@@ -5695,14 +5961,15 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
         print("[dry-run] 쓰기 0 — 적용하려면 --dry-run 없이 재실행.")
         return 0
 
-    # 홈 git clean 가드 — wiki/log rewrite 는 홈(superproject) git 에 떨어진다. dirty 면 relabel
-    # diff 가 무관 변경과 뒤섞여 리뷰·revert 불가하므로 abort(dry-run 으로 규모 먼저 확인 안내).
+    # 홈 git dirty 는 **차단하지 않고 보고**한다 (ADR-0074 — 과차단 폐기). 전면 abort 는 "공유
+    # 트리를 나 혼자 쓴다"는 가정에 서 있어, 멀티-PM 에서 *남의* WIP 하나로 내 relabel 이 막혔다
+    # (ADR-0073 이 board-git 에서 폐기한 D1 과 같은 클래스). 아래 mutation 은 자기가 만진 경로만
+    # 커밋하므로 남의 dirty 와 무관하고, 리뷰용 격리는 이 안내 + board-git 백업 rev 로 갈음한다.
     dirty = _home_git_status_porcelain()
     if dirty:
-        print("[중단] 홈 git 에 uncommitted 변경 — prefix rewrite 는 wiki/log 를 건드리므로 먼저 "
-              "commit/stash 로 홈 git 을 clean 하게 만들어 relabel diff 를 격리·revert 가능하게 하라. "
-              "규모는 `--dry-run` 으로 먼저 확인.", file=sys.stderr)
-        return 1
+        n_dirty = len([ln for ln in dirty.splitlines() if ln.strip()])
+        print(f"  ⓘ 홈 git 에 무관한 미커밋 변경 {n_dirty}건 — relabel 이 만진 파일과 뒤섞여 보이니 "
+              "리뷰 시 유의하라(차단하지 않는다·ADR-0074). 이 명령은 자기가 만진 경로만 커밋한다.")
 
     # board-git 백업 rev — 분리 형상에서 relabel *직전* HEAD(되돌아갈 지점). rewrite 뒤 새 commit
     # 이 relabel 을 board-git 에 기록하므로 이 rev 로 `reset --hard` 하면 원복된다.
@@ -5728,11 +5995,17 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
             print(f"[중단] rename 대상 경로가 이미 존재({sample}) — 덮어쓰기 방지 위해 적용 전 "
                   "abort(쓰기 0). 보드 상태 재확인 후 재시도.", file=sys.stderr)
             return 1
-        scale = rewrite_refs(root, id_map, dry_run=False)
+        # 이 relabel 이 실제로 만진 경로만 모아 스코프 커밋한다 (ADR-0074) — rewrite 가 쓴
+        # 파일 + rename 의 옛/새 경로. 옛 경로는 더 이상 존재하지 않지만 index 에는 있어
+        # `git_scope_stageable` 의 추적 판정이 살려낸다(삭제가 커밋에 실려야 rename 이 완성).
+        touched: list[Path] = []
+        scale = rewrite_refs(root, id_map, dry_run=False, changed_paths=touched)
         _apply_file_renames(renames)
+        for src, dst in renames:
+            touched.extend((src, dst))
         _refresh_board_locked()
         if _board_git_enabled():
-            _board_git_stage_and_commit(f"{op} {label}")
+            _board_git_stage_and_commit(f"{op} {label}", touched)
 
     if _board_git_enabled():
         if backup_rev:

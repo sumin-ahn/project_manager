@@ -8,7 +8,8 @@
   1. 회귀 실행 — pytest tests/ -q. red 면 즉시 중단.
   2. log/current.md 스켈레톤 append — 표준 형식 entry 골격.
   3. board.py complete 호출 — 회귀를 이미 통과했으므로 --tests-pass.
-  4. git add -A — 스테이징. commit 은 PM 이 한다.
+  4. git stage — **선언 경로만**(ticket `touches` ∪ wiki 산출물·ADR-0074) 스테이징 + 스코프
+     밖 잔여 dirty loud 보고. commit 은 PM 이 한다.
   5. 잔여 PM 수동 작업 출력.
 
 결정 (T-0064 / T-0103):
@@ -30,8 +31,9 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 # ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형·ADR-0033 ①) ──────────
 # 하드코딩 `parents[2]` 는 tools 가 `<root>/.project_manager/tools/` 정확히 2단 깊이에 있다고
@@ -534,6 +536,211 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
     return out
 
 
+# ── 디자인 git stage 스코프 (ADR-0074) ─────────────────────────────────────
+#
+# **공유 워킹트리 mutation 은 선언된 경로만 건드린다.** 이 도구의 stage 단계는 예전엔 PM 홈
+# 루트에서 `git add -A` 였다 — 멀티-PM 형상에서 다른 슬롯이 편집 중인 wiki 문서·무관 산출물을
+# 통째로 쓸어담아 PM 커밋이 서로 꼬였다(ADR-0074 Context·사용자 실사용 보고).
+#
+# 선언원은 둘, 그리고 **둘뿐**이다:
+#   ① 티켓 frontmatter `touches` — 사람이 적은 작업 범위 선언. 이미 있는 파서
+#      (`get_ticket_touches`)를 그대로 쓴다.
+#   ② **이 실행이 실제로 쓴 산출물** — `log/current.md`(:2단계) + board complete 가 옮긴 티켓
+#      파일(:3단계·legacy 형상 한정·아래 `engine_written_paths`).
+#
+# ②를 "엔진이 아는 wiki 산출물 디렉토리"(decisions/·domain/·ideas/…)로 넓히지 **않는다**:
+# 그건 `pm_adr`·`domain`·`board idea` 가 **다른 실행** 에서 만든 것이라 이 mutation 의 선언분이
+# 아니고, 디렉토리로 넘기는 순간 그 아래 **남의 미완성 편집까지 함께 stage** 되어 좁힌 척하고 안
+# 좁힌 상태가 된다(codex must-fix). 그것들이 커밋에서 빠지는 건 정상이고, 빠졌다는 사실은 아래
+# **잔여 loud 보고**가 알린다 — 그게 그 보고의 존재 이유다.
+#
+# gitignored 산출물(per-slot/per-task pm_state·leases·board.md·`.local/`)엔 별도 제외 로직을
+# 두지 않는다 — `.gitignore` 가 이미 거른다(제외 목록도 결국 열거다).
+
+
+def _load_tool_module(path: Path):
+    """같은 `tools/` 의 형제 모듈을 경로 로드한다 — 부재/실패 → None (`_load_domain_module` 동형).
+
+    sys.path 무오염(spec_from_file_location)·rev 스탬프 skew 는 fail-loud(T-0397). 로드 실패
+    자체는 None 으로 돌려 호출부가 **눈에 띄게** 처리하게 한다(조용한 skip 아님 — 아래
+    `stage_scope` 는 None 을 stage 불능으로 보고 loud 경고를 낸다).
+    """
+    import importlib.util
+
+    path = Path(path)
+    if not path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location(f"_tf_sibling_{path.stem}", path)
+    if spec is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+        _verify_engine_rev(mod, path.name)  # T-0397 불변식: stamped sibling 로드 지점은 verify
+    except Exception as exc:
+        if _is_engine_rev_skew(exc):
+            raise  # T-0397 — 사본 skew 는 fail-loud(삼키지 않는다).
+        return None
+    return mod
+
+
+def load_board_module(board_py: Path):
+    """board.py 를 로드하고 그 모듈의 `REPO` 를 **이 도구의 REPO 로 재-앵커** 해서 돌려준다.
+
+    board 모듈은 자기 파일 위치에서 REPO 를 해소하므로, `board_root()`/`tickets_dir()`/
+    `_board_git_enabled()` 같은 **함수** 판정이 이 도구가 보는 트리를 따라오게 하려면 재-앵커가
+    필요하다(실 형상에선 같은 값이라 항등, REPO 를 치환한 hermetic 테스트에선 tmp 를 따라온다).
+    모듈은 `spec_from_file_location` 으로 뜬 **이 호출 전용 사본**이라 전역 오염이 없다.
+    """
+    board = _load_tool_module(board_py)
+    if board is not None and getattr(board, "REPO", None) is not None:
+        board.REPO = REPO
+    return board
+
+
+def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
+    """**이 실행이 실제로 쓴** 산출물 경로 (선언원 ②·ADR-0074).
+
+      - `log/current.md` — 2단계가 스켈레톤을 append 한다(항상).
+      - 티켓 파일의 옛/새 경로 — 3단계 `board.py complete` 가 `claimed/`→`done/` 로 옮긴다.
+        **board-git 분리 형상에선 제외** 한다: 티켓이 서브모듈(`.project_manager/board/`) 안이라
+        상위 repo 의 `git add` 가 `fatal: … is in submodule`(rc=128)로 죽고, 그 이동은 board-git
+        이 자기 커밋으로 이미 기록한다. legacy(board 미분리·**출하 템플릿 기본 형상**)에선 그
+        이동이 홈 git 에 떨어지므로 반드시 실어야 한다 — 안 그러면 채택자가 매 finish 마다 손으로
+        `git add` 해야 한다(reviewer 실측).
+
+    옛 경로는 상태 디렉토리를 몰라도 된다 — 후보(모든 STATUS_DIRS/같은 파일명)를 넣어두면
+    실존/추적되지 않는 후보는 `git_scope_stageable` 이 거른다(추적 중인 *삭제* 경로만 남아
+    이동이 커밋으로 완성된다). board 미로드면 log 만.
+    """
+    paths: list[Path] = [Path(log_file)]
+    if board is None:
+        return paths
+    try:
+        if board._board_git_enabled():
+            return paths
+        _status, ticket_path = board.find_ticket(ticket_id)
+        paths.append(ticket_path)
+        paths.extend(board.tickets_dir() / status / ticket_path.name
+                     for status in board.STATUS_DIRS)
+    except Exception:  # noqa: BLE001 — 티켓 조회 실패(부재·손상)는 log 만으로 진행(잔여 보고가 알린다).
+        pass
+    return paths
+
+
+class StageScope(NamedTuple):
+    """stage 스코프 산출 결과 — `pathspec` + `error`(산출 불능 사유·None 이면 정상).
+
+    빈 `pathspec` 을 두 상태로 갈라 쓴다: **선언이 비었다**(error=None·정상)와 **판정기가
+    죽었다**(error=사유). 후자를 조용히 no-op 으로 흘리면 stage 0 인데 아무 말이 없어
+    "부기 끝" 으로 보인다(reviewer 실측 — board 모듈 로드 실패 형상).
+    """
+    pathspec: tuple[str, ...]
+    error: str | None
+
+
+def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
+                run_git: Callable[[list[str]], tuple[int, str]]) -> StageScope:
+    """이 완료 부기가 stage 할 pathspec (REPO 상대·실제 `add` 가능한 **파일**) — ADR-0074.
+
+    선언원 = 티켓 `touches` ∪ `engine_written_paths()`. **판정은 board.py 의 repo-중립
+    프리미티브 `git_scope_stage_pathspec` 한 벌을 재사용** 한다 — board-git 이 쓰는 바로 그
+    함수다(스코프 산출·디렉토리 전개·서브모듈/미존재/미추적 제거). 복제하면 다음 사람이 한쪽만
+    고친다.
+
+    그 필터가 load-bearing 이다: 두-git 형상에서 `touches` 는 코드 worktree 경로(PM 홈엔 없음)
+    를, board 분리 형상에선 서브모듈 내부 경로를 가리킬 수 있는데, 그대로 pathspec 에 넣으면
+    `git add` 가 **rc=128 fatal** 로 죽어 아무것도 stage 되지 않는다.
+
+    board 모듈을 못 띄우면 **fail-loud** — 빈 pathspec + error 사유를 돌려준다(호출부가 경고 +
+    잔여 전체 보고). 여기서 조용한 fail-soft 는 stage 0 을 정상처럼 보이게 해 위험하다.
+    """
+    board = load_board_module(board_py)
+    scope_fn = getattr(board, "git_scope_stage_pathspec", None) if board else None
+    if scope_fn is None:
+        return StageScope((), f"board 모듈을 로드하지 못했다 ({board_py})")
+    declared: list[Path] = [REPO / touch for touch in get_ticket_touches(board_py, ticket_id)]
+    declared.extend(engine_written_paths(board, ticket_id, log_file))
+    try:
+        return StageScope(tuple(scope_fn(REPO, declared, run_git=run_git)), None)
+    except Exception as exc:  # noqa: BLE001 — 산출 실패도 조용히 넘기지 않는다(fail-loud).
+        return StageScope((), f"스코프 산출 실패 ({exc.__class__.__name__}: {exc})")
+
+
+# ── 잔여 보고 (under-stage / 스코프 밖 staged) ──────────────────────────────
+#
+# 보고 채널은 **board 모듈 로드에 의존하지 않는다** — 로드가 실패한 형상에서 stage 0 인 채
+# "잔여 없음"이라는 **거짓 안심**이 나오면 안 된다(reviewer 실측). 그래서 board 가 있으면 그
+# NUL 파서(`git_parse_porcelain_z` — 스코프 전개와 **같은 함수**)를 쓰고, 없으면 줄 단위
+# degraded 판독으로 **보고만** 이어간다(그 경우 스코프도 비어 있어 전부 스코프 밖이 맞다).
+
+
+def scope_covers(pathspec: Sequence[str], path: str) -> bool:
+    """`path` 가 이번 stage 선언 스코프에 덮이는가 (정확 일치 또는 선언 디렉토리 아래)."""
+    return any(path == rel or path.startswith(rel.rstrip("/") + "/") for rel in pathspec)
+
+
+def status_entries(run_git: Callable[[list[str]], tuple[int, str]],
+                   board=None) -> tuple[tuple[str, str], ...]:
+    """현재 워킹트리 상태 `((XY, 경로), …)` — 조회 실패·비-git 은 `()`(비차단).
+
+    **`-z` + `--untracked-files=all` 이 둘 다 load-bearing** 이다:
+      - `-z` 없으면 git 이 비-ASCII/공백 경로를 인용 + 8진 이스케이프로 낸다. 그 문자열이
+        `scope_covers` 비교에 들어가 매칭에 실패하고, *방금 자기가 stage 한 파일* 을 "스코프
+        밖 — 빼라" 로 오보한다(reviewer 실측·PM 홈에 한글 경로 실재). 목록도 8진이라 복붙 불가다.
+      - `-uall` 없으면 새 untracked 디렉토리가 `?? wiki/raw/` 한 줄로 접혀 **무엇이 빠졌는지
+        안 보인다**(legacy 실 구동 실측). 접힌 정보를 주는 loud 채널은 loud 가 아니다.
+    NUL 파싱은 board 의 `git_parse_porcelain_z` 한 벌(디렉토리 전개와 공유)을 쓴다.
+
+    board 미로드(=판정기 사망) 시에도 **`-z` 로 조회** 하고 NUL 을 여기서 직접 자른다 — 공유
+    파서를 못 쓰는 갈래라고 8진 이스케이프 목록을 내면, 방금 닫은 증상(복붙 불가·경로 왜곡)이
+    이 갈래에만 남는다. rename/copy 의 **2토큰**(원본 경로)도 같이 소비한다 — 안 그러면 원본
+    토큰이 코드 없는 **가짜 잔여 항목**으로 보고에 뜬다.
+    """
+    parse_z = getattr(board, "git_parse_porcelain_z", None) if board is not None else None
+    try:
+        rc, out = run_git(["status", "--porcelain", "-z", "--untracked-files=all"])
+    except Exception:  # noqa: BLE001 — 보고는 완료 흐름을 막지 않는다.
+        return ()
+    if rc != 0:
+        return ()
+    if parse_z:
+        return parse_z(out)
+    tokens = out.split("\0")
+    entries: list[tuple[str, str]] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if len(token) < 4:
+            continue
+        code, path = token[:2], token[3:]
+        if code[0] in ("R", "C"):
+            index += 1          # 원본 경로 토큰 소비 (가짜 항목 방지·주 파서와 동형)
+        entries.append((code, path))
+    return tuple(entries)
+
+
+def split_dirty(entries: Sequence[tuple[str, str]],
+                pathspec: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """상태 목록 → (**스코프 밖 staged** 줄, **미스테이지 잔여** 줄) — 두 실패 방향을 함께 본다.
+
+      - 스코프 밖 staged (`X` 가 공백도 `?` 도 아님 ∧ 선언 스코프 밖) — 이 도구는 커밋하지
+        않고 PM 에게 넘기므로, 남이 미리 stage 해 둔 변경이 **PM 의 커밋에 그대로 실린다**.
+        `add` 를 좁히는 것만으로는 안 닫히고 `commit` 쪽으로 새는 갈래다(ADR-0074 "add 와
+        commit 양쪽").
+      - 미스테이지 잔여 (`Y` 가 공백 아님·`??` 포함) — 스코프가 못 덮은 변경(under-stage).
+    """
+    staged_out: list[str] = []
+    unstaged: list[str] = []
+    for code, path in entries:
+        if code[0] not in (" ", "?") and not scope_covers(pathspec, path):
+            staged_out.append(f"{code} {path}")
+        if code[1] != " ":
+            unstaged.append(f"{code} {path}")
+    return tuple(staged_out), tuple(unstaged)
+
+
 # ── 로그 스켈레톤 ───────────────────────────────────────────────────────
 
 # 회귀 baseline 은 *실측* new_total 1줄만 남긴다 (ADR-0008 lean baseline·ADR-0023 — 직전
@@ -587,6 +794,9 @@ class TicketFinisher:
         board_count_fn: Callable[[], int] | None = None,
         ticket_title_fn: Callable[[str], str] | None = None,
         affected_domain_fn: Callable[[str], list[tuple[str, bool | None]] | None] | None = None,
+        run_git_stdout_fn: Callable[[list[str]], tuple[int, str]] | None = None,
+        stage_scope_fn: Callable[[str], StageScope] | None = None,
+        status_entries_fn: Callable[[], tuple[tuple[str, str], ...]] | None = None,
         log_file: Path = LOG_FILE,
         board_py: Path = BOARD_PY,
         venv_python: str | Path = _default_python(),
@@ -614,6 +824,20 @@ class TicketFinisher:
         # domain soft 알림 DI (ADR-0018 #2) — 기본값은 실 domain.py import 구현.
         # None 반환 = domain 부재/로드 실패(조용히 skip). 막지 않음(soft).
         self._affected_domain_fn = affected_domain_fn or self._default_affected_domain
+
+        # git 파싱 전용 러너 — **stdout 만** 돌려준다. `_run_git_fn` 은 진단 메시지를 살리려고
+        # stdout+stderr 를 합치는데, 그 값을 `status --porcelain`·`ls-files -z` 파서에 먹이면
+        # git 경고 한 줄이 **가짜 잔여 항목**으로 둔갑한다(reviewer). 호출부가 git seam 을 이미
+        # 주입했으면(테스트) 그걸 그대로 써 hermetic 을 깨지 않는다.
+        self._run_git_stdout_fn = (run_git_stdout_fn or run_git_fn
+                                   or self._default_run_git_stdout)
+
+        # git stage 스코프 DI (ADR-0074) — 기본값은 `touches ∪ 이 실행이 쓴 산출물` 실 해소.
+        # 상태 조회도 같은 seam 으로 둬, 테스트가 stage 판정과 보고를 따로 격리한다.
+        self._stage_scope_fn = stage_scope_fn or self._default_stage_scope
+        self._status_entries_fn = status_entries_fn or self._default_status_entries
+        # (스코프 밖 staged, 미스테이지 잔여) 건수 — `[완료]` 줄 재고지용(loud 강화).
+        self._dirty_summary: tuple[int, int] = (0, 0)
 
     # ── 기본 subprocess 구현 (실제 실행) ─────────────────────────────
 
@@ -670,7 +894,7 @@ class TicketFinisher:
         return result.returncode, output
 
     def _default_run_git(self, args: list[str]) -> tuple[int, str]:
-        """git 명령을 실행해 (returncode, stdout+stderr) 반환."""
+        """git 명령을 실행해 (returncode, stdout+stderr) 반환 — 실패 진단 메시지 보존용."""
         result = subprocess.run(
             ["git"] + args,
             capture_output=True,
@@ -681,6 +905,22 @@ class TicketFinisher:
         )
         output = result.stdout + result.stderr
         return result.returncode, output
+
+    def _default_run_git_stdout(self, args: list[str]) -> tuple[int, str]:
+        """git 명령을 실행해 (returncode, **stdout 만**) 반환 — 기계 파싱용.
+
+        `status --porcelain`·`ls-files -z` 출력을 파싱하는 경로는 stderr 가 섞이면 안 된다:
+        git 경고(예: CRLF·advice) 한 줄이 그대로 '잔여 항목'·'추적 경로'로 둔갑한다.
+        """
+        result = subprocess.run(
+            ["git"] + args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(REPO),
+        )
+        return result.returncode, result.stdout
 
     def _default_board_count(self) -> int:
         """board.md 의 done 티켓 수를 반환한다 (board.py 를 import 해서).
@@ -702,6 +942,19 @@ class TicketFinisher:
         domain.py 부재/로드 실패 → None (조용히 skip). domain.pages_for_touches 재사용.
         """
         return affected_domain_titles(ticket_id, self._board_py)
+
+    def _default_stage_scope(self, ticket_id: str) -> StageScope:
+        """stage 할 선언 경로 pathspec (`touches ∪ 이 실행이 쓴 산출물`·ADR-0074) — 실 해소."""
+        return stage_scope(ticket_id, self._board_py, self._log_file,
+                           self._run_git_stdout_fn)
+
+    def _default_status_entries(self) -> tuple[tuple[str, str], ...]:
+        """워킹트리 상태 `((XY, 경로), …)` (loud 보고 입력·ADR-0074) — 실 해소.
+
+        board 를 넘기는 이유는 **NUL 파서 공유** 뿐이다(비-ASCII 경로 실경로화). 로드 실패는
+        보고를 멈추지 않는다 — `status_entries` 가 degraded 판독으로 이어간다.
+        """
+        return status_entries(self._run_git_stdout_fn, load_board_module(self._board_py))
 
     # ── 메인 흐름 ────────────────────────────────────────────────────
 
@@ -812,25 +1065,45 @@ class TicketFinisher:
                 return 1
             print(f"  ✓ board: {ticket_id} → done")
 
-        # ── 4. git add -A ─────────────────────────────────────────────
-        print("\n[4/5] git stage (git add -A)...")
+        # ── 4. git stage (선언 경로 스코프·ADR-0074) ────────────────────
+        # blanket `add -A` 가 아니다 — 이 티켓이 선언한 경로(`touches` ∪ wiki 산출물)만
+        # stage 한다. 좁힘이 만드는 반대편 실패(under-stage)는 아래 잔여 dirty loud 보고로
+        # 가시화한다(차단하지 않는다 — `touches` 는 사람이 적는 값이라 누락 가능).
+        print("\n[4/5] git stage (선언 경로 스코프)...")
+        scope, scope_error = self._stage_scope_fn(ticket_id)
+        if scope_error:
+            # 판정기가 죽은 경우 — 조용한 no-op 금지(stage 0 이 '정상 완료'로 보인다).
+            print(f"\n  ⚠ stage 스코프를 산출하지 못했다 — {scope_error}. "
+                  "이번 실행은 **아무것도 stage 하지 않는다**. 아래 잔여 목록을 보고 "
+                  "PM 이 직접 `git add <경로>` 하라.", file=sys.stderr)
         if dry_run:
-            print("  [dry-run] git add -A (실제 실행 생략)")
-        else:
-            git_rc, git_out = self._run_git_fn(["add", "-A"])
+            preview = " ".join(scope) if scope else "(선언 경로 없음)"
+            print(f"  [dry-run] git add -A -- {preview} (실제 실행 생략)")
+        elif scope:
+            git_rc, git_out = self._run_git_fn(["add", "-A", "--", *scope])
             if git_rc != 0:
                 print(
-                    f"\n[중단] git add -A 실패 (rc={git_rc}): {git_out.rstrip()}",
+                    f"\n[중단] git add 실패 (rc={git_rc}): {git_out.rstrip()}",
                     file=sys.stderr,
                 )
                 return 1
-            print("  ✓ git add -A 완료 (commit 은 아직 안 했다)")
+            print(f"  ✓ git add — 선언 경로 {len(scope)}개만 stage (commit 은 아직 안 했다):")
+            for rel in scope:
+                print(f"      {rel}")
+        elif not scope_error:
+            print("  (stage 할 선언 경로 없음 — `touches`·이 실행의 산출물 중 이 repo 에 있는 게 없다)")
+        if not dry_run:
+            self._report_dirty_after_stage(scope)
 
         # ── 5. 잔여 PM 작업 출력 ─────────────────────────────────────
         print("\n[5/5] PM 이 손으로 할 잔여 작업:")
         print("  ① log/current.md 서술 불릿 채우기 — <!-- PM: 무엇을·왜 서술 --> 를 실제 내용으로 교체")
         print("  ② status.md 모듈 행(상태 + 비고) — 변경된 모듈 행 판정을 architect/PM 이 직접 갱신 (테스트 수는 박제 안 함·ADR-0023)")
-        print("  ③ git commit — 메시지는 PM 이 작성 (Co-Authored-By: Claude 트레일러 포함)")
+        # 커밋 지시도 **경로 명시형** 이다 (ADR-0074) — bare `git commit` 은 index 에 있는 남의
+        # 변경을 함께 싣는다. 위 [4/5] 가 출력한 stage 경로를 그대로 `--` 뒤에 붙이면 된다.
+        print("  ③ git commit — **경로를 명시**하라: "
+              "`git commit -m \"<메시지>\" -- <위 [4/5] 가 stage 한 경로들>` "
+              "(메시지는 PM 이 작성 · Co-Authored-By: Claude 트레일러 포함)")
 
         # ── soft 알림: 영향받는 domain 페이지 (ADR-0018 #2·U2·비차단) ──────
         # 정보일 뿐 게이트가 아니다 — 완료 흐름·rc 를 막지 않는다(예외도 삼킨다).
@@ -840,9 +1113,64 @@ class TicketFinisher:
         if dry_run:
             print("\n[dry-run] 완료 — 실제 편집·board·git 는 실행하지 않았다.")
         else:
-            print(f"\n[완료] {ticket_id} 부기 완료.")
+            # 잔여 건수를 마지막 줄에 한 번 더 — [4/5] 보고가 이후 출력에 묻히지 않게(loud).
+            staged_out, unstaged = self._dirty_summary
+            tail = ""
+            if unstaged or staged_out:
+                tail = (f" ⚠ 미스테이지 잔여 {unstaged}건 · 스코프 밖 staged {staged_out}건 "
+                        "— 위 [4/5] 목록 확인.")
+            print(f"\n[완료] {ticket_id} 부기 완료.{tail}")
 
         return 0
+
+    # 잔여 보고 최대 줄 수 — 넘으면 "… 외 N건" 으로 접는다(수백 줄 홍수 방지).
+    _RESIDUAL_DIRTY_PREVIEW_LINES = 20
+
+    def _print_dirty_block(self, header: str, lines: Sequence[str]) -> None:
+        """보고 블록 1개 출력 (헤더 + 최대 N줄 + 접기) — 두 방향 보고가 같은 모양을 쓴다."""
+        print(header)
+        for line in lines[:self._RESIDUAL_DIRTY_PREVIEW_LINES]:
+            print(f"      {line}")
+        hidden = len(lines) - self._RESIDUAL_DIRTY_PREVIEW_LINES
+        if hidden > 0:
+            print(f"      … 외 {hidden}건")
+
+    def _dirty_split(self, scope: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """현재 상태를 (스코프 밖 staged, 미스테이지 잔여)로 가른다 — 조회 실패는 빈 목록."""
+        try:
+            entries = self._status_entries_fn()
+        except Exception:  # noqa: BLE001 — 보고는 완료를 막지 않는다.
+            return (), ()
+        return split_dirty(entries, scope)
+
+    # stage **전** 보고는 두지 않는다 — 이 도구의 `add` 는 스코프 경로만 올리므로 사전에 staged
+    # 돼 있던 스코프 밖 변경은 stage 후에도 그대로 남고, 아래 사후 보고가 같은 목록을 낸다.
+    # 별도 사전 보고는 같은 경고를 두 번 내면서 고유 판정이 없었다(teeth 0·reviewer 실측).
+
+    def _report_dirty_after_stage(self, scope: Sequence[str]) -> None:
+        """stage 후 상태를 양방향으로 **눈에 띄게** 보고한다 (loud·비차단·ADR-0074).
+
+        두 실패 방향을 함께 본다 — ① **미스테이지 잔여**(under-stage: 스코프가 못 덮은 변경 —
+        내 작업 누락이면 `touches` 를 보강해 다시 stage, 남의 WIP 면 그대로 둔다) ②
+        **스코프 밖 staged**(누출: PM 커밋에 실린다). 좁히기가 만드는 실패를 *조용한 유출* 과
+        바꾸지 않는 것이 요점이라, 어느 쪽도 침묵하지 않는다. 결과 건수는 `[완료]` 줄에서
+        한 번 더 재고지한다(보고가 뒤 출력에 묻히지 않게).
+        """
+        staged_out, unstaged = self._dirty_split(scope)
+        self._dirty_summary = (len(staged_out), len(unstaged))
+        if not staged_out and not unstaged:
+            print("  ✓ 스코프 밖 잔여 변경 없음 (staged·미스테이지 모두)")
+            return
+        if unstaged:
+            self._print_dirty_block(
+                f"\n  ⚠ 미스테이지 잔여 {len(unstaged)}건 — **이 커밋에 안 실린다**. 내 작업 "
+                "누락이면 ticket `touches` 를 보강해 다시 stage 하라(남의 WIP 면 그대로 둔다):",
+                unstaged)
+        if staged_out:
+            self._print_dirty_block(
+                f"\n  ⚠ 스코프 밖 staged {len(staged_out)}건 — 내 변경이 아닌데 **PM 커밋에 "
+                "실린다**. 빼려면 `git restore --staged <경로>`:",
+                staged_out)
 
     def _notify_affected_domain(self, ticket_id: str) -> None:
         """이 ticket 이 건드린 영역의 domain 페이지를 soft 알림으로 출력한다 (비차단).

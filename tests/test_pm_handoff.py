@@ -1434,6 +1434,29 @@ def _hermetic_handoff(hf, tmp_path, pool):
     )
 
 
+def test_run_prints_pathspec_commit_guidance(hf, tmp_path, capsys):
+    """[7/7] 커밋 안내가 **경로 명시형**으로 실제 출력된다 (ADR-0074·T-0425).
+
+    bare `git commit` 지시는 다른 슬롯이 index 에 올려둔 남의 변경까지 함께 싣는다 — 스킬 문서만
+    pathspec 형으로 고치고 PM 이 마지막에 읽는 이 화면을 두면 사람 손이 그대로 샌다.
+    **런타임 출력으로 묻는다** — 소스 문자열 assert 는 `print` 를 dead-code 로 만들어도 통과해
+    가드가 아니다(reviewer probe 실증).
+    """
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True,
+        worktree_slot="work/project_manager_1",
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "git commit" in out, "커밋 안내가 런타임에 아예 안 나온다"
+    guidance = next(line for line in out.splitlines()
+                    if "git commit" in line and "[ ]" in line)
+    assert "-- " in guidance, f"bare commit 안내(경로 미명시): {guidance!r}"
+    assert ".project_manager/wiki/log/current.md" in guidance, \
+        f"이 도구가 실제로 쓰는 산출물 경로가 안내에 없다: {guidance!r}"
+
+
 def test_run_records_slot_snapshot_after_bookkeeping(hf, tmp_path, capsys):
     """핸드오프가 부기 완료 후 bound 슬롯으로 record_git_snapshot 을 1회 호출한다 (base 미전달·arrival 보존)."""
     pool = _SnapPool()

@@ -2562,7 +2562,13 @@ class PmHandoff:
         print("  [ ] domain capture 검토 — `domain.py capture --tickets \"T-0001,T-0002\"`(이 세션 done ticket ID·콤마분리 또는 공백 나열) 출력 보고 ⚠/gap 페이지 갱신/신설(채록·ADR-0018 §7b·surface-only).")
         print("  [ ] pm_state.md '진행 중인 의사결정' 표 갱신")
         print("  [ ] pm_state.md '남은 작업 전체 그림' 갱신")
-        print("  [ ] git commit (Co-Authored-By: Claude 트레일러 포함)")
+        # 커밋 지시는 **경로 명시형** 이다 (ADR-0074 — 공유 워킹트리 mutation 은 선언된 경로만).
+        # bare `git commit` 은 다른 슬롯이 index 에 올려둔 남의 변경까지 함께 싣는다. 이 도구가
+        # 실제로 쓰는 산출물은 `log/current.md` 하나다(pm_state 는 gitignored 라 대상 밖) —
+        # PM 이 이번 세션에 손으로 고친 wiki 문서가 있으면 그 경로를 뒤에 덧붙인다.
+        print("  [ ] git commit — **경로를 명시**하라: "
+              "`git commit -m \"<메시지>\" -- .project_manager/wiki/log/current.md "
+              "<이번 세션에 고친 wiki 문서 경로들>` (Co-Authored-By: Claude 트레일러 포함)")
 
         # ── 핸드오프 완료: 보유 슬롯 git 재스냅 ("여기 두고 간다"·T-0388·ADR-0068 W2·T-0393) ────
         # 부기(log·pm_state) 완료 후 슬롯의 live git 을 lease.git 에 재기록한다 — 세션 중 브랜치/HEAD

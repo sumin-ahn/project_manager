@@ -483,16 +483,17 @@ def test_reid_second_identical_run_is_noop(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 홈 git clean 가드 (상속·_prefix_relabel)
+# 홈 git dirty = 안내(차단 아님·상속·_prefix_relabel·ADR-0074)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_reid_home_git_dirty_aborts(board, monkeypatch, capsys):
+def test_reid_home_git_dirty_does_not_abort(board, monkeypatch, capsys):
+    """남의 미커밋 변경이 있어도 reid 는 진행된다 — 과차단 폐기(ADR-0074·상속)."""
     _seed_ticket(board, "T-0036")
     monkeypatch.setattr(board, "_home_git_status_porcelain", lambda: " M wiki/x.md\n")
     rc = board.cmd_reid(_ns("T-0036", "T-0250"))
-    assert rc == 1
-    assert "홈 git" in capsys.readouterr().err
-    assert _ids_on_disk(board) == {"T-0036"}  # 무변경
+    assert rc == 0
+    assert "무관한 미커밋 변경" in capsys.readouterr().out
+    assert _ids_on_disk(board) == {"T-0250"}  # dirty 여도 적용됨
 
 
 def test_reid_home_git_dirty_does_not_block_dry_run(board, monkeypatch, capsys):
@@ -513,12 +514,16 @@ def test_reid_board_git_backup_commit_when_separated(board, monkeypatch, capsys)
     monkeypatch.setattr(board, "_board_git_head", lambda: "deadbeefcafe0000")
     monkeypatch.setattr(
         board, "_board_git_stage_and_commit",
-        lambda msg: calls["commit"].append(msg) or True)
-    _seed_ticket(board, "T-0036")
+        lambda msg, paths=None: calls["commit"].append((msg, paths)) or True)
+    ticket = _seed_ticket(board, "T-0036")
     rc = board.cmd_reid(_ns("T-0036", "T-0250"))
     assert rc == 0
     # noun="reid"·verb="" → op="reid" (double-space 없음).
-    assert calls["commit"] == ["reid T-0036 → T-0250"]
+    assert [msg for msg, _ in calls["commit"]] == ["reid T-0036 → T-0250"]
+    # 스코프 커밋(ADR-0074) — 옛/새 티켓 경로가 스코프에 들어간다(board 전체 아님).
+    scoped = {Path(p).name for p in calls["commit"][0][1]}
+    assert ticket.name in scoped
+    assert any(name.startswith("T-0250") for name in scoped)
     out = capsys.readouterr().out
     assert "백업 rev" in out and "deadbeefcafe" in out
 

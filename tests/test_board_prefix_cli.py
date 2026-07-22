@@ -601,16 +601,23 @@ def test_delete_none_rejected(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 홈 git clean 가드 — dirty 면 abort·무변경
+# 홈 git dirty = 안내(차단 아님) — 과차단 폐기 (ADR-0074)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_home_git_dirty_aborts_relabel(board, monkeypatch, capsys):
+def test_home_git_dirty_does_not_abort_relabel(board, monkeypatch, capsys):
+    """남의 미커밋 변경이 있어도 relabel 은 진행된다 — 전면 abort 폐기(ADR-0074 D1 동형).
+
+    옛 동작(dirty 면 rc=1 abort)은 "공유 트리를 나 혼자 쓴다"는 가정이라, 멀티-PM 에서 남의
+    WIP 하나로 내 prefix 작업이 막혔다. 이제 안내만 내고 진행하며, 커밋 스코프가 격리를 맡는다.
+    """
     _seed_ticket(board, "T-foo-001")
     monkeypatch.setattr(board, "_home_git_status_porcelain", lambda: " M wiki/x.md\n")
     rc = board.cmd_prefix_rename(_ns(src="foo", dst="bar", dry_run=False))
-    assert rc == 1
-    assert "홈 git" in capsys.readouterr().err
-    assert _ids_on_disk(board) == {"T-foo-001"}  # 무변경
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "무관한 미커밋 변경" in out          # loud 안내
+    assert "[중단]" not in out
+    assert _ids_on_disk(board) == {"T-bar-001"}  # dirty 여도 적용됨
 
 
 def test_home_git_dirty_does_not_block_dry_run(board, monkeypatch, capsys):
@@ -632,13 +639,17 @@ def test_board_git_backup_commit_when_separated(board, monkeypatch, capsys):
     monkeypatch.setattr(board, "_board_git_head", lambda: "deadbeefcafe0000")
     monkeypatch.setattr(
         board, "_board_git_stage_and_commit",
-        lambda msg: calls["commit"].append(msg) or True)
-    _seed_ticket(board, "T-foo-001")
+        lambda msg, paths=None: calls["commit"].append((msg, paths)) or True)
+    ticket = _seed_ticket(board, "T-foo-001")
 
     rc = board.cmd_prefix_rename(_ns(src="foo", dst="bar", dry_run=False))
     assert rc == 0
     # 분리 형상 → board-git 백업 commit 1회(relabel 메시지) + 백업 rev 안내.
-    assert calls["commit"] == ["prefix rename foo → bar"]
+    assert [msg for msg, _ in calls["commit"]] == ["prefix rename foo → bar"]
+    # 스코프 커밋(ADR-0074) — board 전체(None)가 아니라 만진 경로를 넘긴다.
+    scoped = {Path(p).name for p in calls["commit"][0][1]}
+    assert ticket.name in scoped                                   # 옛 경로(삭제분)
+    assert any(name.startswith("T-bar-001") for name in scoped)    # 새 경로
     out = capsys.readouterr().out
     assert "백업 rev" in out
     assert "deadbeefcafe" in out
