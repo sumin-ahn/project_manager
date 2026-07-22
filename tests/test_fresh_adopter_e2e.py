@@ -22,13 +22,36 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 from _settings_portability import portability_failures, referenced_hook_paths
+from _harness_matrix import HARNESSES, entry_docs as _entry_docs
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+
+# 알려진 스캐폴드-갭 하네스 — 출하 트리가 ticket 상태 디렉토리를 안 실어 lifecycle 이 크래시하는,
+# **이미 근본 티켓(T-0433)으로 추적 중**인 하네스만. 이 하네스는 lifecycle 을 **실제로 실행한 뒤**
+# 알려진 크래시 형상(아래 `_missing_status_dir_crash`)일 때만 xfail(자동-해제), 그 밖 하네스는
+# 상태-dir 소실을 **회귀로 간주해 hard fail**(마스킹 금지·MF-A). T-0433 랜딩 시 비운다.
+_KNOWN_SCAFFOLD_GAP_HARNESSES = {"codex"}
+
+# 알려진 스캐폴드-갭 크래시의 종료 코드 — uncaught traceback(=1). 형상 매칭의 일부이므로 상수로 둔다.
+_SCAFFOLD_GAP_CRASH_RETURNCODE = 1
+
+
+def _board_status_dirs() -> tuple[str, ...]:
+    """엔진 `board.STATUS_DIRS`(open/claimed/blocked/done) 파생 — lifecycle 이 요구하는 ticket 상태
+    디렉토리를 손-열거 4종 하드코딩하지 않는다(이 티켓 원칙). `blocked` 만 누락된 반쪽 T-0433 수정도
+    잡는다(3종만 검사하면 그 반쪽이 라이브 경로를 타고 green 이 됐다·round3 S)."""
+    spec = importlib.util.spec_from_file_location("_board_status_probe", TOOLS / "board.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return tuple(mod.STATUS_DIRS)
+
+
+_TICKET_STATUS_DIRS = _board_status_dirs()
 
 
 def _load_pm_import():
@@ -73,9 +96,47 @@ def _board(dest: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-@pytest.mark.parametrize("harness", ["claude", "opencode"])
+def _stderr_mentions_path(stderr: str, path_str: str) -> bool:
+    """traceback stderr 가 이 경로를 언급하는가 — 백슬래시 이스케이프 **내성** 매칭 (순수 함수).
+
+    `OSError.__str__` 은 파일명을 `%r`(repr)로 찍는다 — 그래서 Windows traceback 에는 경로 구분자가
+    **이중** 백슬래시(`...\\\\tickets\\\\open\\\\T-0001.md`)로 나오고, `str(Path)`(단일 백슬래시)는
+    그 문자열의 substring 이 **될 수 없다**. 해제 없이 비교하면 Windows 에서 codex 의 알려진 갭이
+    xfail 이 아니라 real fail(false-red)로 뜬다(회사 머신이 Windows). raw·escaped 양쪽을 본다 —
+    POSIX 경로엔 백슬래시가 없어 해제는 no-op 이라 기존 동작이 그대로다.
+    """
+    return path_str in stderr or path_str in stderr.replace("\\\\", "\\")
+
+
+def _missing_status_dir_crash(
+    result: subprocess.CompletedProcess, tickets_root: Path
+) -> str | None:
+    """`board.py` 실패가 **알려진 스캐폴드-갭 크래시 형상**이면 그 상태-dir 이름을, 아니면 None.
+
+    실측 형상 (2026-07-22 · codex fresh import 재현):
+      - rc == 1 (uncaught traceback)
+      - stderr 에 `FileNotFoundError`
+      - 그 메시지가 가리키는 경로가 **실재하지 않는** ticket 상태 디렉토리
+        (`.../wiki/tickets/<status>/T-NNNN-*.md` — `dump_ticket` 의 `path.write_text`)
+    셋이 **전부** 맞을 때만 "알려진 갭" 이다. 형상이 다르면(다른 rc·다른 예외·실재하는 dir) 미지의
+    실패이므로 None 을 줘 호출부가 real fail 하게 한다 — MF-A(마스킹 금지)를 크래시 **형상** 축으로
+    확장한 것. 경로 조각은 `Path` 로 조립하고(리터럴 `"/tickets/"` 는 Windows 역슬래시에서 안 맞음)
+    문자열 비교는 `_stderr_mentions_path` 에 위임한다(이스케이프 내성·매칭 로직 사본 0).
+    """
+    if result.returncode != _SCAFFOLD_GAP_CRASH_RETURNCODE:
+        return None
+    if "FileNotFoundError" not in result.stderr:
+        return None
+    for status in _TICKET_STATUS_DIRS:
+        status_dir = tickets_root / status
+        if not status_dir.is_dir() and _stderr_mentions_path(result.stderr, str(status_dir)):
+            return status
+    return None
+
+
+@pytest.mark.parametrize("harness", HARNESSES)
 def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path, harness):
-    """깨끗한 import → adopter lint clean → ticket new/claim/complete 작동 (harness 별)."""
+    """깨끗한 import → adopter lint clean → ticket new/claim/complete 작동 (전 하네스·codex 포함)."""
     dest = tmp_path / f"adopter-{harness}"
     rc = pm_import.main(
         ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
@@ -118,21 +179,52 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
 
     # (a') 루트 진입문서(CLAUDE.md/AGENTS.md·lite)는 `board.py lint` 스캔 *밖*이다 — 직접 스캔.
     #      adopter 엔 framework object 가 없으니 `[[ADR-/T-/idea-N]]` 가 있으면 곧 dangling.
-    entry_docs = {"claude": ["CLAUDE.md", "CLAUDE.lite.md"],
-                  "opencode": ["AGENTS.md", "AGENTS.lite.md"]}[harness]
+    # 진입문서 = 하네스 루트 doc + lite 변형(엔진 ADD_HARNESS_ADAPTER 에서 파생·손-열거 아님).
     framework_wikilink = re.compile(r"\[\[(?:ADR-\d|T-\d|idea-\d)")
-    for name in entry_docs:
-        doc = dest / name
-        if not doc.is_file():  # full 무게축은 .lite 미출하 — 자연 부재.
-            continue
+    root_doc, lite_doc = _entry_docs(harness)
+    # primary 루트 doc(HARNESS_ROOT_DOC)은 채택자 진입점 — **반드시 실재**(부재면 fail). 옛 loop 은
+    #   primary 부재까지 `is_file()` 로 조용히 skip 해, 루트 doc 미출하 회귀를 놓쳤다(MF1 companion).
+    primary = dest / root_doc
+    assert primary.is_file(), f"{harness} primary 진입문서 {root_doc} 미출하 (채택자 루트 doc 부재)"
+    docs_to_scan = [primary]
+    # lite 변형만 부재-skip 허용 — full 무게축(codex 포함)은 .lite 미출하가 정상.
+    lite = dest / lite_doc
+    if lite.is_file():
+        docs_to_scan.append(lite)
+    for doc in docs_to_scan:
         hits = framework_wikilink.findall(doc.read_text(encoding="utf-8"))
         assert not hits, (
-            f"{harness} 진입문서 {name} 에 framework wikilink {hits} — adopter 엔 해당 객체가 "
+            f"{harness} 진입문서 {doc.name} 에 framework wikilink {hits} — adopter 엔 해당 객체가 "
             f"없어 dangling. 출하 진입문서는 plain text 로 (ADR-NNNN).")
 
     # (b) ticket 라이프사이클 — new → claim → complete 가 adopter 엔진에서 작동.
+    #     이 게이트를 codex 로 넓히자 드러난 **범위 밖 스캐폴드 갭**(근본 티켓 [[T-0433]]): 출하
+    #     `templates/codex/` 가 claude/opencode 와 달리 ticket 상태 디렉토리(open/claimed/done/blocked)를
+    #     안 실어 보내 `board.py new` 가 없는 `open/` 로 write 하다 크래시한다(위 import·lint·진입문서
+    #     내용검사는 codex 도 통과). 근본 수정은 `templates/codex` 파리티(상태 dir 출하) 또는 board.py
+    #     move/new 의 mkdir 하드닝 + pm_update 전파로, 둘 다 이 티켓 touches(tests/) 밖이다.
+    #     **사전 검사 없이 전 하네스가 lifecycle 을 실제로 실행한다** — 상태-dir 실존을 미리 보고
+    #     가르면, T-0433 을 board.py **지연-생성**(mkdir on write)으로 고쳤을 때 상태-dir 은 여전히
+    #     부재라 실행 전에 xfail 돼 자동-해제가 영영 안 온다. 실행해 보고 **알려진 크래시 형상**일
+    #     때만(그리고 알려진-갭 하네스일 때만) xfail 한다.
+    tickets_root = dest / ".project_manager" / "wiki" / "tickets"
+    lifecycle_dirs = [tickets_root / s for s in _TICKET_STATUS_DIRS]
+
     new = _board(dest, "new", "adopter smoke", "--touches", "README.md")
-    assert new.returncode == 0, f"{harness} `board.py new` 실패: {new.stderr}"
+    if new.returncode != 0:
+        crashed_on = _missing_status_dir_crash(new, tickets_root)
+        # 알려진-갭 하네스(codex) **and** 알려진 크래시 형상일 때만 xfail — 그 외 하네스의 상태-dir
+        #   소실은 스캐폴드 **회귀**라 "알려진 codex 갭" 으로 마스킹하지 않고, 형상이 다른 미지의
+        #   실패도 xfail 로 새지 않는다(둘 다 아래 `pytest.fail` 로 hard fail·MF-A·round3 승계).
+        if harness in _KNOWN_SCAFFOLD_GAP_HARNESSES and crashed_on:
+            pytest.xfail(
+                f"{harness} 어댑터 트리 파리티 갭 — ticket 상태 디렉토리 {crashed_on!r} 미출하로 "
+                f"`board.py new` 가 FileNotFoundError 크래시(범위 밖·templates/ 수정 필요·근본 티켓 "
+                "T-0433). 상태-dir 이 도착하면(출하든 지연-생성이든) 이 분기를 안 타고 아래 lifecycle "
+                "이 실제로 실행된다.")
+        pytest.fail(
+            f"{harness} `board.py new` 실패(rc={new.returncode}) — 알려진 스캐폴드-갭 크래시 형상이 "
+            f"아니거나 알려진-갭 하네스가 아니다(마스킹 금지).\n--- stderr ---\n{new.stderr}")
 
     # bare list = 세션 기본 뷰(ADR-0067) — 솔로/무바인딩이면 user-단위 폴백이라 방금 내가 만든 open 이
     # 상세로 나온다. 타 세션분은 완전 비노출(접힘 카운트 "그 외 open N건" 줄은 ADR-0067 로 제거됨).
@@ -155,6 +247,62 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested"
     )
     assert done.returncode == 0, f"{harness} `board.py complete {tid}` 실패: {done.stderr}"
+
+    # (b') 스캐폴드 **완결성** hard assert — lifecycle 이 실제로 돈 *뒤*, 채택자 트리에 엔진
+    #      `STATUS_DIRS` 4종이 전부 실존하는지 본다(손-열거 아닌 파생·round4 S 승계). lifecycle 은
+    #      open/claimed/done 만 밟으므로 이 단언이 없으면 `blocked` 만 누락된 **반쪽 T-0433 수정**
+    #      (또는 board.py 지연-생성만 랜딩해 dir 이 스캐폴드로는 안 오는 경우)이 full green 으로
+    #      축복된다. T-0433 의 DoD 는 A+B+C 전부라, 반쪽 상태에서 red 인 게 정합이다.
+    missing_dirs = [d.name for d in lifecycle_dirs if not d.is_dir()]
+    assert not missing_dirs, (
+        f"{harness} ticket 상태-dir 불완전: {missing_dirs} 미실존 — lifecycle(open→claimed→done)은 "
+        f"통과했지만 출하 스캐폴드가 STATUS_DIRS {list(_TICKET_STATUS_DIRS)} 를 다 갖추지 못했다"
+        "(반쪽 파리티·T-0433). lifecycle 이 안 밟는 상태-dir 도 채택자는 즉시 쓴다(blocked 이행).")
+
+
+# ── 크래시 형상 매칭기 단위 가드 (플랫폼 무관 실행) ────────────────────────────────
+# 위 e2e 의 xfail 갈래는 **경로 문자열 매칭**에 달려 있는데, 그 매칭은 실행 플랫폼 형상에만 노출된다
+# (Linux CI 에선 POSIX 형상만 밟는다). `_stderr_mentions_path` 를 순수 함수로 뽑아 두 형상을 **현
+# 플랫폼과 무관하게** 못박는다 — 안 그러면 Windows 전용 회귀(escaped 백슬래시)가 Linux 회귀에서
+# 영영 안 보인다.
+
+@pytest.mark.parametrize(
+    "status_dir",
+    [
+        PurePosixPath("/tmp/adopter-codex/.project_manager/wiki/tickets/open"),
+        PureWindowsPath(r"C:\Users\proj\.project_manager\wiki\tickets\open"),
+    ],
+    ids=["posix", "windows"],
+)
+def test_stderr_mentions_path_matches_traceback_shape_on_both_platforms(status_dir):
+    """양 플랫폼 traceback 형상에서 부재 상태-dir 은 매칭, 다른 상태-dir 은 비매칭."""
+    missing_file = status_dir / "T-0001-adopter-smoke.md"
+    # OSError.__str__ 형상 그대로 — 파일명이 `%r`(repr) 로 박힌다.
+    stderr = (
+        "Traceback (most recent call last):\n"
+        f"FileNotFoundError: [Errno 2] No such file or directory: {str(missing_file)!r}\n"
+    )
+    assert _stderr_mentions_path(stderr, str(status_dir)), (
+        f"{type(status_dir).__name__} 형상 traceback 에서 부재 상태-dir 을 못 찾음:\n{stderr}")
+    other = status_dir.parent / "blocked"
+    assert not _stderr_mentions_path(stderr, str(other)), (
+        f"언급되지 않은 상태-dir {other} 이 매칭됐다 — 형상 매칭이 과대(다른 실패가 xfail 로 샌다)")
+
+
+def test_stderr_mentions_path_survives_windows_repr_double_backslash():
+    """Windows 회귀 가드 — repr 이 이중 백슬래시로 찍어도 매칭(이스케이프 해제 없으면 false-red)."""
+    status_dir = PureWindowsPath(r"C:\Users\proj\.project_manager\wiki\tickets\open")
+    stderr = (
+        "FileNotFoundError: [Errno 2] No such file or directory: "
+        f"{str(status_dir / 'T-0001-adopter-smoke.md')!r}\n"
+    )
+    # 전제: traceback 은 이중 백슬래시라 **원본 경로 문자열은 substring 이 아니다**
+    #   (이 전제가 깨지면 아래 단언이 vacuous 하게 통과한다).
+    assert "\\\\" in stderr, f"전제 붕괴 — repr traceback 에 이중 백슬래시가 없다:\n{stderr}"
+    assert str(status_dir) not in stderr, "전제 붕괴 — 원본(단일 백슬래시)이 이미 substring 이다"
+    assert _stderr_mentions_path(stderr, str(status_dir)), (
+        "이중 백슬래시(OSError 의 %r) 해제 없이 비교 — Windows 에서 codex 알려진 갭이 xfail 대신 "
+        "real fail(false-red)로 뜬다")
 
 
 # ── 멀티-유저 훅 경로 portability 가드 (T-0191 · v1.0.x 운영버그 #5) ──────────────
@@ -240,11 +388,18 @@ _OPERATIONAL_TOKENS = re.compile(r"\{\{(?:PY|PROJECT_NAME|PROJECT_TAGLINE|TEST_C
 # harness → (source 출하 스킬 트리, adopter 상대경로, 디렉토리형 여부[<name>/SKILL.md])
 # 양 하네스 모두 canonical `.claude/skills/<name>/SKILL.md` 를 소비한다(ADR-0065 단일 소비·opencode
 # `.opencode/command` 수기 사본 채널 은퇴·T-0364). opencode 출하 미러도 `.claude/skills` 디렉토리형.
+#   codex 는 canonical 스킬을 `.agents/skills/<name>/SKILL.md` 로 remap 소비한다(ADR-0054/0065·@source).
 _RENDER_SKILL_SRC = {
     "claude": (REPO / "templates" / "claude_code" / ".claude" / "skills", ".claude/skills", True),
     "opencode": (REPO / "templates" / "opencode" / ".claude" / "skills", ".claude/skills", True),
+    "codex": (REPO / "templates" / "codex" / ".agents" / "skills", ".agents/skills", True),
 }
-_NEW_SKILLS = {"claude": {"pm-update", "pm-env"}, "opencode": {"pm-update", "pm-env"}}
+_NEW_SKILLS = {h: {"pm-update", "pm-env"} for h in _RENDER_SKILL_SRC}
+
+# 하네스 축은 파생(HARNESSES)이되 스킬 소스 경로는 하네스별 config(트리 remap 이 달라 손으로 못 지움).
+#   신규 하네스가 _RENDER_SKILL_SRC 를 안 채우면 collection 이 loud 로 죽어 편입을 강제한다.
+assert set(HARNESSES) <= set(_RENDER_SKILL_SRC), (
+    f"신규 하네스가 _RENDER_SKILL_SRC 에 미등록: {set(HARNESSES) - set(_RENDER_SKILL_SRC)}")
 
 
 def _skill_names(root: Path, is_dir: bool) -> set[str]:
@@ -255,9 +410,9 @@ def _skill_names(root: Path, is_dir: bool) -> set[str]:
     return {p.name for p in root.glob("*.md")}
 
 
-@pytest.mark.parametrize("harness", ["claude", "opencode"])
+@pytest.mark.parametrize("harness", HARNESSES)
 def test_fresh_adopter_render_skills_materialize(pm_import, tmp_path, harness):
-    """fresh import 가 출하 @render 스킬/command 전부를 materialize + operational 토큰 해소 (양 harness).
+    """fresh import 가 출하 @render 스킬/command 전부를 materialize + operational 토큰 해소 (전 하네스).
 
     source 출하 트리의 모든 스킬이 adopter 에 도착하는지 전수 대조한다 — 어떤 출하 스킬이라도
     누락/미렌더되면 여기서 터진다(신규 추가 자동 커버). 신규 pm-update/pm-env 는 명시 backstop.
@@ -292,9 +447,9 @@ def test_fresh_adopter_render_skills_materialize(pm_import, tmp_path, harness):
 # 2키(upstream_rev baseline=import 기록 · upstream_seen_rev 주입)로 drift-lint 가 발화하고
 # `--gate` 는 never-block(exit 0) 임을 real-file 경로로 박는다.
 
-@pytest.mark.parametrize("harness", ["claude", "opencode"])
+@pytest.mark.parametrize("harness", HARNESSES)
 def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, harness):
-    """실 local.conf 2키로 adapter-drift advisory 발화 + never-block (양 harness·engine 중립)."""
+    """실 local.conf 2키로 adapter-drift advisory 발화 + never-block (전 하네스·engine 중립)."""
     dest = tmp_path / f"adopter-{harness}"
     rc = pm_import.main(
         ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]

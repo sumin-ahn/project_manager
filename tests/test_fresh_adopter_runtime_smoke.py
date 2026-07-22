@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -546,7 +547,19 @@ def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, m
     # (1) 스캐폴드 트리 — 어댑터 4축 TOML·스킬 remap·공통 코어 AGENTS.md·config/hooks·relay·루트 .gitignore.
     agents_dir = dest / ".codex" / "agents"
     for name in _CODEX_AGENT_TOMLS:
-        assert (agents_dir / f"{name}.toml").is_file(), f"codex 위임 축 미landing: {name}.toml"
+        toml = agents_dir / f"{name}.toml"
+        assert toml.is_file(), f"codex 위임 축 미landing: {name}.toml"
+        # (내용 단언·T-0429 ④) 존재(is_file)만 보면 v1.4.0 결함(`.codex/agents/*.toml` 에
+        #   `{{PROJECT_NAME}}` 리터럴 출하)을 놓친다 — "codex fresh-adopter 게이트" 라는 이름이
+        #   커버리지 착시를 만들었다. 채택자가 손에 쥔 .toml 을 **열어** operational 토큰이 실제
+        #   치환됐는지 본다: import 는 `--name Adopter` 라 프로젝트명이 박혀야 하고, 미해소 `{{...}}`
+        #   토큰 리터럴은 0 이어야 한다(존재만으로는 통과 못 하게 승격).
+        text = toml.read_text(encoding="utf-8")
+        assert "Adopter" in text, (
+            f"codex {name}.toml 에 프로젝트명 미치환 — {{PROJECT_NAME}} 미해소(내용 게이트 red)")
+        leaked = re.findall(r"\{\{[A-Z_]+\}\}", text)
+        assert not leaked, (
+            f"codex {name}.toml 에 미해소 토큰 {sorted(set(leaked))} 리터럴 출하 (v1.4.0 결함 형상)")
     # PM = 메인세션(D1) — opencode 의 pm.md(primary) 에 해당하는 pm.toml 부재가 결정(load-bearing 부재).
     assert not (agents_dir / "pm.toml").exists(), "codex 는 PM=메인세션 — pm.toml 부재가 결정(D1)"
     skills = list((dest / ".agents" / "skills").glob("*/SKILL.md"))

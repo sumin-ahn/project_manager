@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from _win_skip import _can_symlink
+from _harness_matrix import HARNESSES, HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -88,9 +89,15 @@ def _grep_token_files(root: Path, token: str, *, exclude_engine_docs: bool = Fal
             #   - pm_role.md·pm_playbook.md (방법론 문서·기존)
             #   - .project_manager/tools/* (엔진 소스 .py — 주석/docstring 이 토큰 메커니즘 설명·T-0133)
             #   - local.conf (board init 헤더 주석이 해소 키를 `{{PY}}·{{PROJECT_NAME}}` 로 설명)
+            #   - engine.manifest (엔진 메타데이터·verbatim copy — 주석이 토큰 메커니즘을 *설명*하며
+            #     토큰을 담는다. pm_import.ENGINE_METADATA_RELPATHS 가 치환에서 제외하는 그 파일이고,
+            #     codex flavor manifest 는 `.codex/agents … {{PROJECT_NAME}} 토큰 보유 → @render` 를
+            #     문서화해 {{PROJECT_NAME}}/{{PROJECT_TAGLINE}} 를 리터럴로 담는다·헬퍼 제외집합이
+            #     엔진 제외집합과 어긋나면 문서 토큰을 leak 으로 오탐한다).
             if (relp in ENGINE_DOCS_KEEP_LITERAL
                     or relp.startswith(".project_manager/tools/")
-                    or relp == ".project_manager/local.conf"):
+                    or relp == ".project_manager/local.conf"
+                    or relp == ".project_manager/engine.manifest"):
                 continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -132,15 +139,19 @@ def test_new_creates_tree_and_inits(pm_import, tmp_path):
     assert (dest / ".git").exists()
 
 
-def test_new_substitutes_operational_placeholders(pm_import, tmp_path):
-    """엔진 문서(pm_role·pm_playbook) 외에는 잔여 operational {{ 0."""
-    dest = tmp_path / "p"
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "P"])
+@pytest.mark.parametrize("harness", HARNESSES)
+def test_new_substitutes_operational_placeholders(pm_import, tmp_path, harness):
+    """엔진 문서 외에는 잔여 operational {{ 0 — 채택자 트리를 **확장자 무관 전수 스캔**(전 하네스·
+    codex 포함). 옛 형상은 claude(:135)/opencode(:2740) **손-복제** 두 벌이라 세 번째 하네스(codex)를
+    못 봤다 — `.codex/agents/*.toml` 이 `{{PROJECT_NAME}}` 리터럴로 출하돼도 어느 게이트도 안 잡았다.
+    파생 축(HARNESSES) 하나로 대체해 네 번째 하네스도 자동 편입시킨다(T-0429)."""
+    dest = tmp_path / f"adopter-{harness}"
+    rc = pm_import.main(["--new", str(dest), "--harness", harness, "--name", "P", "--fill", "manual"])
     assert rc == 0
 
     for token in OPERATIONAL_TOKENS:
         hits = _grep_token_files(dest, token, exclude_engine_docs=True)
-        assert hits == [], f"{token} 잔존(엔진 문서 제외): {hits}"
+        assert hits == [], f"{harness}: {token} 잔존(엔진 문서 제외): {hits}"
 
 
 def test_new_project_name_applied(pm_import, tmp_path):
@@ -737,20 +748,31 @@ def test_codex_new_creates_tree_and_inits(pm_import, tmp_path):
     assert (dest / ".git").exists()
 
 
-def test_codex_scaffold_no_opencode_model_token_leak(pm_import, tmp_path):
-    """codex 는 모델 해소 분기가 없다(D5·gpt-5.5 상속) — 어댑터에 {{OPENCODE_PRO_MODEL}} 잔존 0.
+def test_codex_scaffold_no_unresolved_token_leak(pm_import, tmp_path):
+    """codex 어댑터 트리(.codex/·.agents/·AGENTS.md)에 미해소 토큰 잔존 0 — **확장자 무관 전수
+    스캔**(`rglob("*")`·`.toml` 포함·트리·방식 모두 정답이었다).
 
-    opencode 의 OPENCODE_MODEL_TOKEN/resolve_opencode_model 류 분기를 codex 엔 추가하지 않았으므로,
-    codex 스캐폴드엔 그 토큰 자체가 없어야 한다(있으면 미해소 leak·harness-특수 분기 필요 신호)."""
+    검사 토큰을 opencode 모델 토큰 하나에서 **OPERATIONAL_TOKENS 전체**로 넓힌다(T-0429 ③): 옛
+    형상은 `{{OPENCODE_PRO_MODEL}}` 만 봐서, v1.4.0 codex 가 실제로 출하한 `.codex/agents/*.toml` 의
+    `{{PROJECT_NAME}}` 리터럴을 놓쳤다 — 이 한 줄(토큰 집합 확장)이면 그 원 결함이 red 였다.
+      - OPENCODE_MODEL_TOKEN: codex 는 모델 해소 분기가 없다(D5·gpt-5.5 상속) — 토큰 자체가
+        없어야 한다(있으면 harness-특수 분기 필요 신호·codex-고유 검사).
+      - OPERATIONAL_TOKENS: 전부 채택자 값으로 치환됐어야 한다(미치환 = onboarding 깨짐)."""
     dest = tmp_path / "cxproj_notoken"
     rc = pm_import.main(["--new", str(dest), "--harness", "codex", "--name", "NoModel"])
     assert rc == 0
-    # 어댑터 파일(.codex/·.agents/·AGENTS.md)에 opencode 모델 토큰 잔존 0.
+    check_tokens = (pm_import.OPENCODE_MODEL_TOKEN, *OPERATIONAL_TOKENS)
     for sub in (dest / ".codex", dest / ".agents", dest / "AGENTS.md"):
         paths = [sub] if sub.is_file() else sub.rglob("*")
         for p in paths:
-            if p.is_file():
-                assert pm_import.OPENCODE_MODEL_TOKEN not in p.read_text(encoding="utf-8"), p
+            if not p.is_file():
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue  # 바이너리·읽기불가 = 치환 대상 아님(제외 사유 ④)
+            leaked = [t for t in check_tokens if t in text]
+            assert not leaked, f"codex 어댑터 {p.relative_to(dest).as_posix()} 에 미해소 토큰 {leaked}"
 
 
 def test_codex_import_prints_trust_guidance(pm_import, tmp_path, capsys):
@@ -2737,20 +2759,9 @@ def test_claude_import_satisfies_bootstrap_contract(pm_import, tmp_path):
     _assert_bootstrap_contract(dest, "claude")
 
 
-def test_opencode_import_substitutes_operational_tokens(pm_import, tmp_path):
-    """opencode import 후 신규 스캐폴드의 operational {{토큰}} 잔존 0(엔진 문서 제외).
-
-    claude `test_new_substitutes_operational_placeholders` 의 opencode 대칭 — 새 스캐폴드
-    (status.md·log/current.md·README 등)의 `{{DATE}}`/`{{PROJECT_NAME}}`/`{{PY}}` 가 import 시
-    실제 치환되는지 자동 단언(dangling 토큰=onboarding 깨짐). 양 harness 동일 sed 경로지만
-    대칭 단언으로 사각을 닫는다(reviewer should-fix·T-0051).
-    """
-    dest = tmp_path / "oc_tokens"
-    rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "OcTokens"])
-    assert rc == 0
-    for token in OPERATIONAL_TOKENS:
-        hits = _grep_token_files(dest, token, exclude_engine_docs=True)
-        assert hits == [], f"{token} 잔존(엔진 문서 제외): {hits}"
+# (T-0429) 옛 `test_opencode_import_substitutes_operational_tokens`(opencode 손-복제 대칭)는
+#   위 파생-축 parametrize(`test_new_substitutes_operational_placeholders[opencode]`)에 흡수됐다 —
+#   "claude 로 쓰고 opencode 대칭 복제" 라는 손-복제 패턴 자체가 세 번째 하네스를 못 따라온 뿌리였다.
 
 
 # ── 드리프트 가드(핵심·자동 사각 해소): opencode 스캐폴드 집합 ⊇ claude 스캐폴드 ──────
@@ -3041,6 +3052,60 @@ def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_impo
     # 라이브 dev-state·엔진·기존 opencode 어댑터(root doc+agent)는 바이트 단위 불변(라이브-안전).
     for p, raw in before.items():
         assert p.read_bytes() == raw, f"add-harness 가 스코프 밖 파일을 변경했다: {p}"
+
+
+# 전 하네스쌍(base ≠ added) — 파생 축 HARNESSES 에서 유도(손-열거 아님·codex 포함 6쌍).
+_ADD_HARNESS_APPLY_PAIRS = [(b, a) for b in HARNESSES for a in HARNESSES if b != a]
+
+
+@pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)
+def test_add_harness_apply_zero_operational_token_leak(pm_import, tmp_path, base, added):
+    """add_harness apply 후 **추가된** 어댑터 네임스페이스에 미해소 operational 토큰 0 (전 하네스쌍·
+    codex 포함). 옛 apply 게이트(:2977/:3006)는 스캔 루트가 `dest/".opencode"`·`dest/".claude"`
+    **하드코딩**이라 codex 대응 함수 자체가 없었다 — codex 추가 시 `.codex/agents/*.toml`(sed 치환
+    대상·`.toml`)이 실제로 치환됐는지 아무도 안 봤다. 스캔 트리를 엔진 파생 HARNESS_ADAPTER_DIRS[added]
+    (ADD_HARNESS_ADAPTER 유도)로 잡아 네 번째 하네스도 자동 편입한다(T-0429).
+
+    dest 인스턴스 manifest 엔 added 하네스의 `@render` 항목이 없어(그건 최초 import 소관) render 는
+    no-op — 그래서 **sed 채널이 반드시 치환해야** 하고(T-0424 확장자 열거 → 제외-판정 역전으로 `.toml`
+    자동 편입), 이 게이트가 그 채널을 codex 까지 못박는다. **루트 doc(AGENTS.md/CLAUDE.md)도 스캔** —
+    ADD_HARNESS_ADAPTER 값이 (네임스페이스 dirs, 루트 doc) 쌍이고 add_harness 가 루트 doc 도 배포하므로
+    그 안 미치환이 네임스페이스-only 스캔을 통과하던 사각을 닫는다(MF2)."""
+    dest = _build_live_instance(pm_import, tmp_path / f"{base}_add_{added}", base)
+    pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
+    # Ground truth (add_harness plan 실측 + `_engine_render_relpaths` 코드 근거·MF-B): 추가 하네스의
+    #   **전** 어댑터 네임스페이스 dir 이 배포되고 각각 non-empty 다 — any-of(≥1) 아니라 **exact
+    #   집합**(전 dir 실존+non-empty)을 단언한다.
+    #     codex(dual .codex+.agents): .codex 7(agents .toml 4)·.agents 15(skills) **둘 다** 배포.
+    #     opencode(.opencode): 15(agents 5). claude(.claude): 8 — 단 `.claude/agents`·`.claude/skills`
+    #       는 **bare-@render** 엔진 리소스라 제외(target-owned 어댑터 파일만; @source·@target-owned 없는
+    #       @render = _engine_render_relpaths 제외집합).
+    #   codex `.codex/agents/*.toml`·`.agents/skills` 는 `@render **@source**` guest 어댑터라 제외집합에
+    #   **없어** add_harness 가 레이다운한다(리뷰어 우려 지점 — 코드+실측으로 배포 확정, 미배포 아님).
+    scan_roots = []
+    for nd in HARNESS_ADAPTER_DIRS[added]:
+        ns_root = dest / nd
+        assert ns_root.is_dir(), f"add {added}(base={base}): 어댑터 네임스페이스 {nd} 미배포"
+        ns_files = [p for p in ns_root.rglob("*") if p.is_file()]
+        assert ns_files, f"add {added}(base={base}): 네임스페이스 {nd} 배포됐으나 파일 0(vacuous 방지)"
+        scan_roots.append(ns_root)
+    # codex dual 네임스페이스 핵심 산출물 landing 명시 — 리뷰어 우려(“@render @source 경로가 제외돼
+    #   .codex/agents·.agents/skills 가 미배포될 수 있다”)를 exact landing 단언으로 반박·못박는다.
+    if added == "codex":
+        assert list((dest / ".codex" / "agents").glob("*.toml")), (
+            f"add codex(base={base}): `.codex/agents/*.toml` 미landing — @render @source guest 어댑터 배포 실패")
+        assert list((dest / ".agents" / "skills").glob("*/SKILL.md")), (
+            f"add codex(base={base}): `.agents/skills/*/SKILL.md` 미landing — skill remap 배포 실패")
+    # 스캔 = 배포된 전 네임스페이스 + 루트 doc(ADD_HARNESS_ADAPTER 쌍의 root doc·add_harness 도 배포).
+    for ns_root in scan_roots:
+        for token in OPERATIONAL_TOKENS:
+            hits = _grep_token_files(ns_root, token, exclude_engine_docs=True)
+            assert hits == [], (
+                f"add {added}(base={base}): {ns_root.name}/ 에 {token} 미치환 잔존: {hits}")
+    root_doc = dest / HARNESS_ROOT_DOC[added]
+    assert root_doc.is_file(), f"add {added}(base={base}): 루트 doc {root_doc.name} 부재(배포 실패?)"
+    leaked = [t for t in OPERATIONAL_TOKENS if t in root_doc.read_text(encoding="utf-8")]
+    assert not leaked, f"add {added}(base={base}): 루트 doc {root_doc.name} 에 미치환 {leaked}"
 
 
 def test_add_harness_apply_refresh_backs_up_and_stays_scoped(pm_import, tmp_path):
