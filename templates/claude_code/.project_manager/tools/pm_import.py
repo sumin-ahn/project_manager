@@ -162,6 +162,16 @@ ADD_HARNESS_ADAPTER = {
     "codex": ((".codex", ".agents"), "AGENTS.md"),
 }
 
+# add-harness가 절대 merge/clobber하지 않는 adopter-owned adapter 설정의 단일 정책 지점.
+# 값은 template-relative POSIX relpath다. 새 하네스가 사용자 권한·trust·machine-local 설정을
+# 추가하면 여기에 명시해 create-if-absent 정책을 함께 받는다. 엔진/어댑터 코드 전체를 보존하는
+# broad 예외가 아니라, 권한 경계인 개별 config 파일만 좁게 보호한다(ADR-0032).
+ADD_HARNESS_CREATE_IF_ABSENT = {
+    "claude": frozenset(),
+    "opencode": frozenset(),
+    "codex": frozenset({".codex/config.toml", ".codex/hooks.json"}),
+}
+
 # sed 치환 대상 operational placeholder (루트 README §4 표). 자유서술 3종은 여기 없음(보존).
 OPERATIONAL_TOKENS = (
     "{{PROJECT_NAME}}",
@@ -929,6 +939,8 @@ def plan_copy(
     weight: str = "full",
     *,
     git_safe: set | None = None,
+    skip_existing_relpaths: set[Path] | None = None,
+    include_relpath: Callable[[Path], bool] | None = None,
 ) -> list[CopyAction]:
     """어댑터 트리들 → dest 복사 액션. both 면 여러 트리 병합(relpath 유일하면 충돌 0).
 
@@ -953,10 +965,16 @@ def plan_copy(
     달라 — claude→CLAUDE.md, opencode→AGENTS.md — 충돌하지 않는다.)
     """
     seen: dict[Path, tuple[Path, str]] = {}  # relpath → (채택된 src, 채택 트리명)
+    skip_existing_relpaths = skip_existing_relpaths or set()
     actions: list[CopyAction] = []
     checked_ancestors: set[Path] = set()  # 검증 완료 조상 캐시(중복 검사 회피).
     for template_root in template_roots:
         for rel, src in _iter_source_files(template_root, weight):
+            # add_harness처럼 전체 template 중 일부 namespace만 배포할 때는, 범위 밖 파일의
+            # conflict/backup/ancestor safety 검증도 만들지 않는다. 최종 action 필터보다 앞에 둬
+            # 무관한 engine 파일이 backup root 검증을 발화시키지 않게 한다.
+            if include_relpath is not None and not include_relpath(rel):
+                continue
             if rel in seen:
                 prev_src, prev_tree = seen[rel]
                 if _same_bytes(prev_src, src):
@@ -971,6 +989,11 @@ def plan_copy(
                 continue
             seen[rel] = (src, template_root.name)
             dst = dest_root / rel
+            # caller가 create-if-absent로 선언한 기존 파일은 일반 backup/action/ancestor safety
+            # 계산 전에 action 자체를 만들지 않는다. instance-owned config는 backup이 있어도
+            # overwrite 권한이 생기지 않으며, 손상된 backup root가 그 보존 분기까지 막아서도 안 된다.
+            if rel in skip_existing_relpaths and (dst.exists() or dst.is_symlink()):
+                continue
             # MF(codex 5차): dst 조상(dest_root 하위)이 symlink·비-디렉토리 파일이면 거부 —
             #      링크 follow 로 프로젝트 밖 쓰기 / apply 중 mkdir 실패 부분복사 방지.
             _check_ancestor_safe(dest_root, dst, checked_ancestors)
@@ -2541,6 +2564,33 @@ def _in_adapter_namespace(
     return True
 
 
+def _existing_create_if_absent_relpaths(
+    template_root: Path, dest_root: Path, relpaths: frozenset[str],
+) -> tuple[set[Path], list[str]]:
+    """기존 instance-owned config의 copy 제외 집합과 loud 안내 대상을 계산한다.
+
+    이 helper는 add_harness가 ``plan_copy``를 호출하기 *전* 쓴다. 따라서 보호 파일은 일반
+    CopyAction/backup/ancestor validation 경로에 전혀 들어가지 않는다. src가 없는 정책 항목은
+    무시하지 않고 ValueError로 fail-loud — 선언과 template drift를 숨기지 않는다.
+    """
+    skip: set[Path] = set()
+    different: list[str] = []
+    for rel_str in sorted(relpaths):
+        rel = Path(rel_str)
+        src = template_root / rel
+        if not src.is_file():
+            raise ValueError(
+                f"add-harness create-if-absent 정책 경로가 template에 없습니다: {rel_str}"
+            )
+        dst = dest_root / rel
+        if not (dst.exists() or dst.is_symlink()):
+            continue
+        skip.add(rel)
+        if not _same_bytes(src, dst):
+            different.append(rel_str)
+    return skip, different
+
+
 def add_harness(
     dest_root: Path,
     harness: str,
@@ -2557,8 +2607,8 @@ def add_harness(
 
     구현: `plan_copy` 로 전체 어댑터 트리 plan 을 만든 뒤 어댑터 네임스페이스 predicate 로
     **구조적으로 좁힌다** — 반환·적용 plan 에는 네임스페이스 밖 relpath 가 0개다(Decision 5 불변식).
-    첫 add=신규 복사(무손실)·재실행=refresh(네임스페이스 안 로컬 커스터마이즈를 중앙 백업 후 덮음·
-    `--into` 백업 철학). fill(LLM) 불요 — operational 토큰 치환(substitute_placeholders)·opencode
+    첫 add=신규 복사(무손실)·재실행=refresh(엔진 관리 어댑터 파일은 중앙 백업 후 덮음·
+    instance-owned config는 create-if-absent 보존·`--into` 백업 철학). fill(LLM) 불요 — operational 토큰 치환(substitute_placeholders)·opencode
     모델 결정적 해소(resolve_opencode_model)·자유서술 TODO 표시(_run_manual_fill·비-LLM)만.
 
     dry_run=True 면 plan 만 산출·출력(파일시스템 미변경). 반환값 = 스코프 제한된 CopyAction plan.
@@ -2597,13 +2647,15 @@ def add_harness(
 
     # 전체 어댑터 트리 plan → 어댑터 네임스페이스로 구조적 제한(Decision 2·5). 네임스페이스 밖
     # (엔진·wiki·타 harness·설정·파사드)은 필터로 제거돼 반환·적용 plan 에 0개다(불변식).
-    full_actions = plan_copy(
-        [template_root], dest_root, backup_root, "full", git_safe=git_safe)
-    plan = [
-        a for a in full_actions
-        if _in_adapter_namespace(
-            a.dst.relative_to(dest_root), adapter_dirs, root_doc, render_managed)
-    ]
+    create_if_absent = ADD_HARNESS_CREATE_IF_ABSENT[harness]
+    skipped_existing, preserved_different = _existing_create_if_absent_relpaths(
+        template_root, dest_root, create_if_absent)
+    plan = plan_copy(
+        [template_root], dest_root, backup_root, "full", git_safe=git_safe,
+        skip_existing_relpaths=skipped_existing,
+        include_relpath=lambda rel: _in_adapter_namespace(
+            rel, adapter_dirs, root_doc, render_managed),
+    )
 
     n_new = sum(1 for a in plan if a.backup is None and not a._git_safe_skip)
     n_refresh = len(plan) - n_new
@@ -2613,6 +2665,9 @@ def add_harness(
           f"@render 엔진 리소스 제외)")
     for a in plan:
         print(a.describe())
+    for rel in preserved_different:
+        print(f"  ⚠️ instance-owned {rel}: 기존 값이 template과 다름 — byte 보존. "
+              "template 변경은 수동 반영하세요.")
     print(f"  → {len(plan)} 파일 ({n_new} 신규 · {n_refresh} refresh)")
 
     if dry_run:

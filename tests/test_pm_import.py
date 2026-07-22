@@ -2892,6 +2892,11 @@ def test_add_harness_exposed(pm_import):
     assert pm_import.ADD_HARNESS_ADAPTER["opencode"] == ((".opencode",), "AGENTS.md")
     assert pm_import.ADD_HARNESS_ADAPTER["claude"] == ((".claude",), "CLAUDE.md")
     assert pm_import.ADD_HARNESS_ADAPTER["codex"] == ((".codex", ".agents"), "AGENTS.md")
+    assert pm_import.ADD_HARNESS_CREATE_IF_ABSENT["codex"] == {
+        ".codex/config.toml", ".codex/hooks.json",
+    }
+    assert not pm_import.ADD_HARNESS_CREATE_IF_ABSENT["claude"]
+    assert not pm_import.ADD_HARNESS_CREATE_IF_ABSENT["opencode"]
     # shape 불변식: 모든 값 = (dirs:튜플[str], root_doc:str) — 소비처 iterate 전제.
     for harness, (dirs, root_doc) in pm_import.ADD_HARNESS_ADAPTER.items():
         assert isinstance(dirs, tuple) and dirs and all(isinstance(d, str) for d in dirs), harness
@@ -3131,6 +3136,103 @@ def test_add_harness_apply_refresh_backs_up_and_stays_scoped(pm_import, tmp_path
         "refresh 백업에 로컬 커스터마이즈 내용이 보존되지 않았다."
     # 스코프 밖 wiki 는 여전히 불변.
     assert wiki_role.read_bytes() == role_before, "refresh 가 wiki dev-state 를 건드렸다."
+
+
+@pytest.mark.parametrize("rel", (".codex/config.toml", ".codex/hooks.json"))
+def test_add_harness_codex_seeds_absent_instance_owned_config(pm_import, tmp_path, rel):
+    """첫 codex add 는 없는 adopter config/hook만 template seed 한다."""
+    dest = _build_live_instance(pm_import, tmp_path / f"codex_seed_{Path(rel).stem}", "claude")
+
+    plan = pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+
+    seeded = dest / rel
+    assert seeded.read_bytes() == (REPO / "templates" / "codex" / rel).read_bytes()
+    assert rel in _plan_relpaths(plan, dest)
+
+
+@pytest.mark.parametrize("rel", (".codex/config.toml", ".codex/hooks.json"))
+def test_add_harness_codex_refresh_quietly_preserves_identical_instance_config(
+    pm_import, tmp_path, capsys, rel,
+):
+    """동일한 adopter config/hook은 refresh copy·backup·안내 없이 quiet skip 한다."""
+    dest = _build_live_instance(pm_import, tmp_path / f"codex_same_{Path(rel).stem}", "claude")
+    existing = dest / rel
+    existing.parent.mkdir(parents=True, exist_ok=True)
+    existing.write_bytes((REPO / "templates" / "codex" / rel).read_bytes())
+    capsys.readouterr()
+
+    plan = pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+
+    assert existing.read_bytes() == (REPO / "templates" / "codex" / rel).read_bytes()
+    assert rel not in _plan_relpaths(plan, dest)
+    assert not list((dest / ".pm_import_backups").rglob(Path(rel).name))
+    assert "수동 반영" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("rel", (".codex/config.toml", ".codex/hooks.json"))
+def test_add_harness_codex_refresh_preserves_different_instance_config_loudly(
+    pm_import, tmp_path, capsys, rel,
+):
+    """다른 adopter config/hook은 byte 보존하고 수동 반영을 loud 안내한다.
+
+    같은 refresh에서 engine-managed agent는 계속 template로 전파돼, instance-owned 예외가
+    `.codex/**` 전체의 refresh 중단으로 넓어지지 않음을 함께 고정한다.
+    """
+    dest = _build_live_instance(pm_import, tmp_path / f"codex_diff_{Path(rel).stem}", "claude")
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    instance_file = dest / rel
+    local_bytes = b"# adopter-owned local policy\\n"
+    instance_file.write_bytes(local_bytes)
+    agent = dest / ".codex" / "agents" / "developer.toml"
+    agent.write_text("LOCAL AGENT CUSTOMIZATION\\n", encoding="utf-8")
+    capsys.readouterr()
+
+    plan = pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+
+    assert instance_file.read_bytes() == local_bytes
+    assert rel not in _plan_relpaths(plan, dest)
+    assert "LOCAL AGENT CUSTOMIZATION" not in agent.read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert rel in out and "수동 반영" in out
+
+
+@pytest.mark.parametrize("rel", (".codex/config.toml", ".codex/hooks.json"))
+def test_add_harness_codex_instance_config_bypasses_broken_backup_root(
+    pm_import, tmp_path, capsys, rel,
+):
+    """보호 파일은 backup action 전에 제외돼 broken backup root도 보존 분기를 막지 않는다."""
+    dest = _build_live_instance(pm_import, tmp_path / f"codex_backup_root_{Path(rel).stem}", "claude")
+    protected = dest / rel
+    protected.parent.mkdir(parents=True, exist_ok=True)
+    local_bytes = b"# adopter-owned local policy\n"
+    protected.write_bytes(local_bytes)
+    backup_root = dest / ".pm_import_backups"
+    backup_root.write_text("not a directory", encoding="utf-8")
+    capsys.readouterr()
+
+    plan = pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+
+    assert protected.read_bytes() == local_bytes
+    # CopyAction 자체가 0이므로 backup도 0 — backup root가 file이어도 apply가 도달한다.
+    protected_actions = [a for a in plan if a.dst == protected]
+    assert protected_actions == []
+    assert backup_root.read_text(encoding="utf-8") == "not a directory"
+    assert rel in capsys.readouterr().out
+
+
+def test_add_harness_codex_broken_backup_root_is_sensitive_to_protection_policy(
+    pm_import, tmp_path, monkeypatch,
+):
+    """보호 정책을 제거하면 일반 backup 안전 가드가 다시 red가 된다(non-vacuous seam)."""
+    dest = _build_live_instance(pm_import, tmp_path / "codex_backup_sensitive", "claude")
+    config = dest / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("adopter config", encoding="utf-8")
+    (dest / ".pm_import_backups").write_text("not a directory", encoding="utf-8")
+    monkeypatch.setitem(pm_import.ADD_HARNESS_CREATE_IF_ABSENT, "codex", frozenset())
+
+    with pytest.raises(pm_import.AncestorConflict, match=r"\.pm_import_backups"):
+        pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
 
 
 def test_add_harness_rejects_both_and_unknown(pm_import, tmp_path):
