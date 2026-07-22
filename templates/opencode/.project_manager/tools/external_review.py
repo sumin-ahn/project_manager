@@ -31,7 +31,8 @@
   - subprocess DI (run_fn 매개변수) — 테스트에서 mock 주입 가능.
   - 외부 호출은 코드를 수정하지 않는다 (read-only 인자 사용 권장).
   - 시크릿 denylist (.env·*secret*·*credential*·*.key·*token*·*.pem 등) 파일은 diff 에서
-    자동 제외하고 stderr 경고. local.conf `review_denylist_extra` 로 추가 가능.
+    자동 제외한다. 제외 사실은 판정에 반영 (T-0428) — --paths 명시 지정분 제외는 차단(exit 1),
+    --ticket/기본 암묵 수집분 제외는 종합 판정 라인에 병기. review_denylist_extra 로 추가 가능.
 """
 
 from __future__ import annotations
@@ -278,8 +279,13 @@ def _denylist_patterns(conf: dict[str, str]) -> tuple[str, ...]:
 # ── 시크릿 필터링 ────────────────────────────────────────────────────────
 
 
-def _is_secret_path(file_path: str, patterns: tuple[str, ...] = _SECRET_DENYLIST_PATTERNS) -> bool:
-    """파일 경로가 시크릿 denylist 패턴에 매칭되는지 확인한다."""
+def _matching_denylist_pattern(
+    file_path: str, patterns: tuple[str, ...] = _SECRET_DENYLIST_PATTERNS,
+) -> str | None:
+    """파일 경로가 매칭되는 첫 시크릿 denylist 패턴을 반환한다 (매칭 없으면 None).
+
+    `_is_secret_path` 의 매칭 로직 단일 소스 — bool 대신 '어느 패턴에 걸렸는지'(=왜 제외됐는지)를
+    돌려줘 제외 보고(차단 안내·판정 병기)에 근거를 실을 수 있게 한다(T-0428)."""
     normalized = file_path.strip()
     for prefix in ("a/", "b/"):
         if normalized.startswith(prefix):
@@ -288,12 +294,17 @@ def _is_secret_path(file_path: str, patterns: tuple[str, ...] = _SECRET_DENYLIST
     basename = Path(normalized).name
     for pattern in patterns:
         if fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(basename, pattern):
-            return True
+            return pattern
         if pattern.endswith("/*") or pattern.endswith("/"):
             dir_pattern = pattern.rstrip("*").rstrip("/")
             if normalized.startswith(dir_pattern + "/") or normalized == dir_pattern:
-                return True
-    return False
+                return pattern
+    return None
+
+
+def _is_secret_path(file_path: str, patterns: tuple[str, ...] = _SECRET_DENYLIST_PATTERNS) -> bool:
+    """파일 경로가 시크릿 denylist 패턴에 매칭되는지 확인한다 (`_matching_denylist_pattern` 위임)."""
+    return _matching_denylist_pattern(file_path, patterns) is not None
 
 
 def filter_secret_hunks(
@@ -329,6 +340,28 @@ def filter_secret_hunks(
     return "".join(output_blocks), excluded_files
 
 
+def _format_explicit_exclusion_block(excluded: list[str], patterns: tuple[str, ...]) -> str:
+    """`--paths` 명시 지정분이 denylist 로 제외됐을 때의 차단 안내 (T-0428).
+
+    사용자가 `--paths` 로 직접 지목한 경로가 시크릿 denylist 에 걸려 diff 에서 빠지면, 그 상태로
+    리뷰를 진행해 '통과'를 내면 게이트가 실제보다 넓게 검증한 것처럼 보인다(false-confidence). 빈-diff
+    가드(T-0326)보다 앞서 이 안내로 차단해 *denylist 가 원인*임을 정확히 알린다 — 단일 파일이 통째로
+    제외돼 diff 가 비면 빈-diff 안내는 '변경 없음'으로 오도한다. 어느 경로가 어느 패턴에 걸렸는지 병기.
+    우회는 새 플래그가 아니라 그 경로를 빼고 재실행(경로를 빼는 행위 자체가 '의도했다'는 표현)."""
+    lines = [
+        "오류: --paths 로 명시 지정한 경로가 시크릿 denylist 에 걸려 diff 에서 제외됐습니다 —",
+        "  검증 안 한 것을 검증한 것처럼 보이는 가짜 통과(false-confidence)를 막기 위해 중단합니다.",
+    ]
+    for path in excluded:
+        pattern = _matching_denylist_pattern(path, patterns)
+        lines.append(f"  · {path}  (denylist 패턴 '{pattern}' 매칭)")
+    lines.append(
+        "  우회는 새 플래그가 아니라 위 경로를 --paths 에서 빼고 재실행하세요 — 경로를 빼는 행위가")
+    lines.append(
+        "  '알고 있고 의도했다'는 표현이 됩니다. denylist 패턴은 시크릿 유출 방지를 위해 유지됩니다.")
+    return "\n".join(lines)
+
+
 # ── git diff 추출 ─────────────────────────────────────────────────────────
 
 
@@ -337,8 +370,13 @@ def extract_diff(
     paths: list[str],
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
     denylist: tuple[str, ...] = _SECRET_DENYLIST_PATTERNS,
-) -> str:
-    """git diff <base> -- <paths> 를 추출해 반환한다 (시크릿 denylist 자동 제외).
+) -> tuple[str, list[str]]:
+    """git diff <base> -- <paths> 를 추출한다. 반환: (필터링된 diff, 제외된 경로 목록).
+
+    시크릿 denylist 매칭 파일은 diff 에서 제외하고 그 경로 목록을 함께 돌려준다 — 제외 사실을
+    호출자(main)가 차단/판정 병기에 반영할 수 있게 한다(T-0428). 이전엔 stderr 경고만 내고 목록을
+    버려, 제외분이 조용히 빠진 채 '통과'가 나던 게이트 false-confidence 를 낳았다. 제외 메시징은
+    호출자(main)가 모드별(명시 --paths=차단 / 암묵 --ticket=병기)로 소유한다.
 
     base 가 'HEAD' 이면 스테이징+언스테이징 변경분(없으면 HEAD~1..HEAD)을 추출한다.
     run_fn — subprocess.run 대체 주입 (테스트용).
@@ -364,11 +402,9 @@ def extract_diff(
             raise RuntimeError(f"git diff 실패 (rc={result.returncode}): {result.stderr.strip()}")
         raw_diff = result.stdout
 
-    filtered_diff, excluded = filter_secret_hunks(raw_diff, denylist)
-    for excluded_path in excluded:
-        print(f"경고: 시크릿 denylist 경로 '{excluded_path}' 를 diff 에서 제외했습니다.",
-              file=sys.stderr)
-    return filtered_diff
+    # 제외 목록을 삼키지 않고 그대로 반환한다 — 호출자(main)가 모드별 제외 보고(차단/병기)를
+    # 소유한다(T-0428). stderr 경고도 main 으로 이관해 제외 메시징을 한곳에서 관장한다.
+    return filter_secret_hunks(raw_diff, denylist)
 
 
 # ── ticket touches 파싱 ───────────────────────────────────────────────────
@@ -627,10 +663,26 @@ def _format_verdict(ok: bool, verdict: dict | None) -> str:
     return "성공 → 판정 불명확 (PM 확인 필요)"
 
 
-def print_summary(result: dict, gate: str | None = None) -> None:
-    """결과 요약을 stdout 에 출력한다."""
+def _exclusion_suffix(excluded: list[str] | None) -> str:
+    """종합 판정 라인에 붙일 시크릿 제외 병기 접미사 (T-0428).
+
+    암묵 수집분(--ticket/기본)에서 diff 제외가 있었으면 건수·경로를 판정 라인에 남긴다 — stderr
+    경고는 로그를 안 읽으면 사라지지만 판정 라인은 PM 이 반드시 본다. 제외 0건이면 빈 문자열이라
+    출력은 종전과 완전 동일(기존 통과 경로 무변경)."""
+    if not excluded:
+        return ""
+    return f" (검토 제외 {len(excluded)}건 — {', '.join(excluded)})"
+
+
+def print_summary(result: dict, gate: str | None = None,
+                  excluded: list[str] | None = None) -> None:
+    """결과 요약을 stdout 에 출력한다.
+
+    excluded — 시크릿 denylist 로 diff 에서 제외된 암묵 수집분 경로. 비어있지 않으면 종합 판정
+    라인에 제외 건수·경로를 병기한다(T-0428·false-confidence 차단). 0건이면 종전과 동일 출력."""
     sep = "=" * 60
     name = result.get("reviewer", "reviewer")
+    suffix = _exclusion_suffix(excluded)
     print(sep)
     print(f"외부 코드리뷰 결과 요약 [{name}]")
     if gate:
@@ -641,14 +693,14 @@ def print_summary(result: dict, gate: str | None = None) -> None:
         print(f"  원문: {result['file']}")
     print()
     if result["failed"]:
-        print(f"종합 판정: {name} 실패")
+        print(f"종합 판정: {name} 실패{suffix}")
         print("FALLBACK_INTERNAL")  # 내부 code-reviewer 서브에이전트로 폴백 신호
     elif result["any_must_fix"]:
-        print("종합 판정: 비-통과 (must-fix 감지 — PM 검토 필요)")
+        print(f"종합 판정: 비-통과 (must-fix 감지 — PM 검토 필요){suffix}")
     elif result["all_pass"]:
-        print("종합 판정: 통과")
+        print(f"종합 판정: 통과{suffix}")
     else:
-        print("종합 판정: 판정 불명확 (PM 확인 필요)")
+        print(f"종합 판정: 판정 불명확 (PM 확인 필요){suffix}")
     print(sep)
 
 
@@ -781,12 +833,28 @@ def main(argv: list[str] | None = None) -> int:
     print(f"검토 경로: {paths}", file=sys.stderr)
     print(f"base: {args.base}", file=sys.stderr)
 
-    # diff 추출 (시크릿 denylist 자동 제외)
+    # diff 추출 (시크릿 denylist 자동 제외 — 제외 경로 목록도 반환)
+    denylist = _denylist_patterns(conf)
     try:
-        diff = extract_diff(args.base, paths, denylist=_denylist_patterns(conf))
+        diff, excluded = extract_diff(args.base, paths, denylist=denylist)
     except RuntimeError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
+
+    # 시크릿 denylist 제외 보고 (T-0428 — 게이트 false-confidence 차단). 제외된 경로가 판정에 전혀
+    # 안 남으면, 지정분이 조용히 빠진 채 '통과'가 나 게이트가 실제보다 넓게 검증한 것처럼 보인다.
+    # 명시(--paths)와 암묵(--ticket/기본) 지정을 구분한다: 명시 지정분이 제외되면 차단(exit 1)하고
+    # 어느 경로가 왜 빠졌는지 알린다 — 빈-diff 가드보다 앞서 두어, 단일 파일 전량 제외로 diff 가
+    # 비어도 '변경 없음'이 아니라 denylist 가 원인임을 정확히 알린다. 암묵 수집분은 차단하지 않고
+    # stderr 경고 + 종합 판정 라인 병기(아래 print_summary)로 남긴다. 제외 0건이면 no-op(종전 무변경).
+    if excluded:
+        if args.paths:  # 명시 지정 → 차단 (우회는 그 경로를 빼고 재실행·새 플래그 없음)
+            print(_format_explicit_exclusion_block(excluded, denylist), file=sys.stderr)
+            return 1
+        for path in excluded:  # 암묵 수집 → 비차단·stderr 경고 (판정 병기는 print_summary)
+            pattern = _matching_denylist_pattern(path, denylist)
+            print(f"경고: 시크릿 denylist 경로 '{path}' 를 diff 에서 제외했습니다 "
+                  f"(패턴 '{pattern}' 매칭).", file=sys.stderr)
 
     # 빈-diff fail-loud 가드 (diff 추출 직후·codex invoke 전·T-0326). 빈 diff(공백-only 포함)를
     # 리뷰하면 가짜 통과(false-green)가 나므로 어떤 형상·모드에서도 무조건 fail 한다 — 우회
@@ -822,7 +890,7 @@ def main(argv: list[str] | None = None) -> int:
         prompt=prompt, reviewer_cmd=reviewer_cmd,
         timeout=args.timeout, output_dir=output_dir,
     )
-    print_summary(result, gate=args.gate)
+    print_summary(result, gate=args.gate, excluded=excluded)
     return determine_exit_code(result)
 
 

@@ -148,7 +148,8 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
     반환: (exit_code, reviewer_called). 게이트가 codex 전송 전에 차단함을 격리한다."""
     monkeypatch.setattr(external, "REPO", anchor)
     monkeypatch.setattr(external, "local_config", lambda: conf)
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: "diff --git a/x b/x\n+y\n")
+    # extract_diff 는 (diff, 제외 경로 목록) 튜플 반환 (T-0428) — 제외 없음(빈 목록)으로 주입.
+    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: ("diff --git a/x b/x\n+y\n", []))
     called = {"reviewer": False}
 
     def _fake_run_review(*a, **k):

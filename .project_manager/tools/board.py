@@ -7157,13 +7157,21 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
     managed = _render_managed_relpaths()
     if not managed:
         return []  # @render path 0 → 검사 대상 0 (활성화 전 무발화).
+    # 텍스트 판정은 pm_update._is_text_source 를 **공유**한다 (T-0424·T-0427): render-leak 은
+    # `.md` 뿐 아니라 @render 산출물 하위 *모든 텍스트 파일*(.toml·.json·.yaml·확장자 없는 텍스트
+    # 등)의 미해소 토큰을 잡아야 한다 — `.md` 만 스캔하면 새 하니스 형식을 조용히 놓치는 클래스
+    # (codex `.codex/agents/*.toml`)가 이 blocking 백스톱을 통과한다. 확장자 열거·판정 사본을 새로
+    # 만들지 않고 render 채널(pm_update.plan)이 쓰는 그 함수에 위임한다(네 번째 판정 지점 방지).
+    # managed 가 비어있지 않으면 _render_managed_relpaths 안에서 pm_update 로드가 이미 성립했다 —
+    # 방어적 None 이면 아래 read 의 넓힌 except 가 바이너리를 흡수한다(graceful degrade).
+    pm_update = _load_pm_update_module()
     issues: list[tuple[str, str, str]] = []
     seen: set[str] = set()
     for managed_rel in sorted(managed):
         target = REPO / managed_rel
         files: list[Path] = []
         if target.is_dir():
-            files = sorted(p for p in target.rglob("*.md") if p.is_file())
+            files = sorted(p for p in target.rglob("*") if p.is_file())
         elif target.is_file():
             files = [target]
         for p in files:
@@ -7171,9 +7179,14 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
             if rel_posix in seen:
                 continue
             seen.add(rel_posix)
+            # 바이너리 리소스(폰트·이미지 등)는 스캔 대상 아님 — 텍스트 판정 공유(위 주석).
+            if pm_update is not None and not pm_update._is_text_source(p):
+                continue
             try:
+                # rglob("*") 로 넓히면 바이너리가 섞여 UnicodeDecodeError 로 죽을 수 있어
+                # OSError 와 함께 잡는다 (_is_text_source 통과 후 TOCTOU·pm_update None 폴백 안전판).
                 text = p.read_text(encoding="utf-8")
-            except OSError:
+            except (UnicodeDecodeError, OSError):
                 continue
             leaked = sorted(set(_RENDER_TOKEN_RE.findall(text)))
             if leaked:

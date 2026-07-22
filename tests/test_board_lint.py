@@ -1661,6 +1661,190 @@ def test_render_leak_fires_on_rendered_tree_with_localconf(board, monkeypatch, t
     ), f"산출물 트리(local.conf 존재)에서 미해소 토큰 leak 을 잡지 못함: {issues}"
 
 
+# ── render-leak 이 @render 하위 *모든 텍스트 파일*을 스캔 (T-0427·확장자 열거 세 번째 지점 마감) ──
+# 옛 구현은 `rglob("*.md")` 로만 순회해 .toml·.json·.yaml·확장자 없는 텍스트의 미해소 토큰을
+# 놓쳤다(codex `.codex/agents/*.toml` 이 정확히 이 갭을 통과) — blocking 백스톱이 조용히 반쪽.
+# 텍스트 판정은 pm_update._is_text_source 를 **공유**하고(세 번째 사본 신설 0), 바이너리는 크래시
+# 없이 건너뛴다(`except (UnicodeDecodeError, OSError)`). fixture 는 성공 입력만 고르지 않도록
+# 실 바이너리·비-ASCII 파일명/내용·빈 디렉토리·부재 경로를 직접 심는다.
+
+def _write_managed_file(root: Path, relpath: str, *, text: str | None = None,
+                        data: bytes | None = None) -> Path:
+    """@render path 하위에 임의 확장자/바이너리 파일을 쓴다 (T-0427 fixture)."""
+    p = root / relpath
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if data is not None:
+        p.write_bytes(data)
+    else:
+        p.write_text(text or "", encoding="utf-8")
+    return p
+
+
+def _rendered_tree(root: Path) -> None:
+    """`.claude/agents @render` 루트 manifest + local.conf(채택 인스턴스=산출물 트리)."""
+    _write_root_manifest(root, ".claude/agents @render\n")
+    (root / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+
+
+def test_render_leak_flags_token_in_non_md_toml(board, monkeypatch, tmp_path):
+    """sensitivity(핵심 DoD): @render 경로의 `.toml` 에 미해소 토큰 → render-leak 발화(blocking).
+
+    이 티켓의 목적 자체 — 옛 `rglob("*.md")` 는 `.toml` 을 스캔하지 않아 leak 을 통과시켰다.
+    """
+    fake_repo = tmp_path / "repo"
+    _rendered_tree(fake_repo)
+    leak = _write_managed_file(
+        fake_repo, ".claude/agents/config.toml",
+        text='name = "{{PROJECT_NAME}}"\n')
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    findings = board.lint_render_leak()
+    rel = str(leak.relative_to(fake_repo)).replace("\\", "/")
+    assert any(
+        name == rel and kind == "render-leak" and "{{PROJECT_NAME}}" in detail
+        for name, kind, detail in findings
+    ), f".toml 산출물의 미해소 토큰을 잡지 못함(rglob 미확장?): {findings}"
+
+
+def test_render_leak_flags_tokens_across_non_md_extensions(board, monkeypatch, tmp_path):
+    """.json·.yaml·확장자 없는 텍스트 각각의 미해소 토큰을 모두 잡는다 (확장자 무관 텍스트 판정)."""
+    fake_repo = tmp_path / "repo"
+    _rendered_tree(fake_repo)
+    _write_managed_file(fake_repo, ".claude/agents/data.json",
+                        text='{"name": "{{PROJECT_NAME}}"}\n')
+    _write_managed_file(fake_repo, ".claude/agents/conf.yaml",
+                        text="root: {{PROTECTED_PATHS}}\n")
+    _write_managed_file(fake_repo, ".claude/agents/nested/deep.toml",
+                        text="x = '{{TEST_CMD}}'\n")  # rglob 재귀
+    _write_managed_file(fake_repo, ".claude/agents/Makefile",
+                        text="run:\n\t{{PY}} run\n")  # 확장자 없는 텍스트
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    flagged = {name for name, kind, _ in board.lint_render_leak() if kind == "render-leak"}
+    for expected in (".claude/agents/data.json", ".claude/agents/conf.yaml",
+                     ".claude/agents/nested/deep.toml", ".claude/agents/Makefile"):
+        assert expected in flagged, (
+            f"{expected} 의 미해소 토큰을 못 잡음 — 확장자 열거로 회귀? flagged={flagged}")
+
+
+def test_render_leak_skips_real_binary_no_crash(board, monkeypatch, tmp_path):
+    """실 바이너리(무효 UTF-8)가 @render 하위에 섞여도 크래시 0·오탐 0, 인접 텍스트 leak 은 잡는다.
+
+    `\\x89PNG…` 는 유효 UTF-8 이 아니라 _is_text_source(공유 판정)가 False → 스캔 제외. 파일 안에
+    `{{PROJECT_NAME}}` 바이트가 있어도 finding 0 이어야 하고, 스캔 루프는 바이너리 다음 텍스트
+    파일까지 계속 돌아 leak 을 잡아야 한다(OSError 만 잡던 옛 코드는 UnicodeDecodeError 로 죽었다).
+    """
+    fake_repo = tmp_path / "repo"
+    _rendered_tree(fake_repo)
+    binary = _write_managed_file(
+        fake_repo, ".claude/agents/logo.png",
+        data=b"\x89PNG\r\n\x1a\n{{PROJECT_NAME}}\xff\xd8\xff\xe0binary")
+    _write_managed_file(fake_repo, ".claude/agents/real.md",
+                        text="# {{PROJECT_NAME}}\n")
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    findings = board.lint_render_leak()  # 크래시하면 여기서 예외
+    names = {name for name, kind, _ in findings if kind == "render-leak"}
+    bin_rel = str(binary.relative_to(fake_repo)).replace("\\", "/")
+    assert bin_rel not in names, f"바이너리를 텍스트로 오판해 스캔함: {findings}"
+    assert ".claude/agents/real.md" in names, (
+        f"바이너리 다음 텍스트 파일의 leak 을 놓침(루프 중단?): {findings}")
+
+
+def test_render_leak_binary_survives_when_text_judgment_lies(board, monkeypatch, tmp_path):
+    """넓힌 except 안전판: _is_text_source 가 바이너리를 True 로 오판해도 read 에서 크래시 0.
+
+    TOCTOU/폴백 방어(`except (UnicodeDecodeError, OSError)`) 를 직접 태운다 — 텍스트 판정을
+    통과한 뒤 read_text 가 UnicodeDecodeError 를 던져도(rglob("*") 로 바이너리가 스캔 대상에 든다)
+    OSError 만 잡던 옛 코드처럼 죽지 않는다. _is_text_source=True 강제가 유일한 도달 경로.
+    """
+    fake_repo = tmp_path / "repo"
+    _rendered_tree(fake_repo)
+    _write_managed_file(fake_repo, ".claude/agents/logo.png",
+                        data=b"\xff\xfe\x00\x01{{PROJECT_NAME}}\x80\x81")
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    real = board._load_pm_update_module()
+    lying = SimpleNamespace(read_manifest=real.read_manifest,
+                            _is_text_source=lambda p: True)  # 바이너리도 '텍스트'라 우김
+    monkeypatch.setattr(board, "_load_pm_update_module", lambda: lying)
+
+    board.lint_render_leak()  # 예외 없이 반환해야 함(넓힌 except 가 UnicodeDecodeError 흡수)
+
+
+def test_render_leak_delegates_text_judgment_to_pm_update(board, monkeypatch, tmp_path):
+    """판정 공유(DoD): 텍스트 판정을 pm_update._is_text_source 에 **위임**함을 박제(세 번째 사본 0).
+
+    render 채널이 쓰는 그 함수를 호출한다 — 스텁이 False 를 주면(그 파일 텍스트 아님) 스캔에서
+    빠져야 한다. board 가 확장자 재열거 등 자체 인라인 판정으로 회귀하면 스텁이 무시돼 red.
+    """
+    fake_repo = tmp_path / "repo"
+    _rendered_tree(fake_repo)
+    _write_managed_file(fake_repo, ".claude/agents/config.toml",
+                        text='name = "{{PROJECT_NAME}}"\n')
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    calls: list[str] = []
+
+    def _stub_is_text_source(p):
+        calls.append(str(p))
+        return False  # 전부 '텍스트 아님' 강제 → 스캔에서 빠져야
+
+    real = board._load_pm_update_module()
+    stub = SimpleNamespace(read_manifest=real.read_manifest,
+                           _is_text_source=_stub_is_text_source)
+    monkeypatch.setattr(board, "_load_pm_update_module", lambda: stub)
+
+    issues = board.lint_render_leak()
+    assert calls, "_is_text_source 미호출 — 판정이 공유되지 않고 인라인 사본일 가능성(세 번째 지점)"
+    assert issues == [], (
+        f"_is_text_source=False 인데 스캔됨 — 텍스트 판정 위임 안 됨: {issues}")
+
+
+def test_render_leak_non_ascii_filename_and_content(board, monkeypatch, tmp_path):
+    """비-ASCII 파일명·내용(UTF-8)의 미해소 토큰도 잡는다 (파일명/내용 인코딩 무관)."""
+    fake_repo = tmp_path / "repo"
+    _rendered_tree(fake_repo)
+    leak = _write_managed_file(
+        fake_repo, ".claude/agents/설정.toml",
+        text='설명 = "{{PROJECT_NAME}} 프로젝트 · 한글 본문"\n')
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    findings = board.lint_render_leak()
+    rel = str(leak.relative_to(fake_repo)).replace("\\", "/")
+    assert any(name == rel and kind == "render-leak" and "{{PROJECT_NAME}}" in detail
+               for name, kind, detail in findings), (
+        f"비-ASCII 파일명/내용의 leak 을 못 잡음: {findings}")
+
+
+def test_render_leak_empty_and_missing_render_paths_no_crash(board, monkeypatch, tmp_path):
+    """@render path 가 빈 디렉토리·부재 경로여도 크래시 0·finding 0 (성공-입력-only fixture 방지).
+
+    `.claude/agents` = 부재(is_dir·is_file 둘 다 False), `.opencode/agents` = 빈 디렉토리(파일 0).
+    """
+    fake_repo = tmp_path / "repo"
+    _write_root_manifest(fake_repo, ".claude/agents @render\n.opencode/agents @render\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+    (fake_repo / ".opencode" / "agents").mkdir(parents=True)  # 빈 디렉토리
+    # .claude/agents 는 만들지 않는다 → 부재 경로.
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert board.lint_render_leak() == [], "빈/부재 @render 경로에서 크래시 또는 오탐"
+
+
+def test_render_leak_clean_non_md_text_no_false_positive(board, monkeypatch, tmp_path):
+    """specificity: 토큰 없는 `.toml`(완전 렌더)은 finding 0 — 넓힌 스캔이 오탐을 내지 않는다."""
+    fake_repo = tmp_path / "repo"
+    _rendered_tree(fake_repo)
+    _write_managed_file(fake_repo, ".claude/agents/config.toml",
+                        text='name = "acme"\nroot = "core/**"\n')
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert board.lint_render_leak() == []
+
+
 def test_claude_adapter_manifest_is_render_not_target_owned(board):
     """루트 canonical manifest `.claude/agents`·`.claude/skills` 가 @render·**non**-@target-owned (T-0170 B).
 

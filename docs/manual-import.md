@@ -12,12 +12,19 @@ cd /path/to/new-project/
 # 1b) 의존성 설치 — fresh clone 은 이걸 먼저 깔아야 board.py·pytest 가 import 단계를 넘는다.
 python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest(테스트)
 
-# 2) placeholder 일괄 치환 (placeholders.md 표). pm_role.md·pm_playbook.md 는 제외 — 엔진(pm_update
-#    동기화 대상)이라 {{PROJECT_NAME}} 를 리터럴로 두고 local.conf 가 해소한다(치환하면
-#    다음 pm_update 때 되돌아간다). {{PY}}/{{TEST_CMD}} 는 엔진 문서·어댑터에서 폐기(T-0219 —
-#    문서 표기는 python3 관례·test 명령은 local.conf test_cmd= 노브)·진입 문서 등엔 잔존.
-grep -rl '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='*.py' | \
-  grep -vE 'wiki/pm_role\.md|wiki/pm_playbook\.md' | \
+# 2) placeholder 일괄 치환 (placeholders.md 표). 대상 = **제외 사유가 없는 모든 텍스트 파일**
+#    — pm_import 의 `_should_substitute` 와 동일한 제외-판정이다(확장자 열거 아님·T-0424). 확장자를
+#    나열하면(옛 `--include='*.md' '*.json' '*.sh' '*.py'`) 새 하니스가 들여온 형식(.toml·.yaml 등)이
+#    조용히 치환에서 빠진다 — codex 의 `.codex/agents/*.toml` 이 `{{PROJECT_NAME}}` 을 리터럴로 출하한
+#    실결함(T-0424). 제외 사유: ① 엔진 소스 `.project_manager/tools/**` ② 엔진 메타데이터
+#    `.project_manager/engine.manifest` (①② 는 주석의 토큰이 *설명*이라 verbatim) ③ 방법론 문서
+#    pm_role.md·pm_playbook.md (엔진 동기화 대상 — {{PROJECT_NAME}} 를 리터럴로 두고 local.conf 가
+#    해소, 치환하면 다음 pm_update 때 되돌아간다) ④ 바이너리 (`grep -I` 가 텍스트 아닌 파일을 건너뜀 —
+#    엔진 판정은 UTF-8 decode·`-I` 는 NUL 휴리스틱 근사).
+#    {{PY}}/{{TEST_CMD}} 는 엔진 문서·어댑터에서 폐기(T-0219 — 문서 표기는 python3 관례·test 명령은
+#    local.conf test_cmd= 노브)·진입 문서 등엔 잔존.
+grep -rlI '{{' . --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=node_modules | \
+  grep -vE '^\./\.project_manager/tools/|^\./\.project_manager/engine\.manifest$|^\./\.project_manager/wiki/pm_(role|playbook)\.md$' | \
   xargs sed -i \
     -e 's|{{PROJECT_NAME}}|My Project|g' \
     -e 's|{{PROJECT_TAGLINE}}|한 줄 프로젝트 설명|g' \
@@ -44,8 +51,11 @@ python3 .project_manager/tools/board.py list
 # 이후 프레임워크 개선 받기: ./pm-update.sh [--from <upstream-checkout>] [--dry-run]
 ```
 
-치환 후 남은 `{{...}}` 확인 (단, `pm_role.md` 의 `{{PROJECT_NAME}}` 는 **의도적으로 남는다** — local.conf 가 해소):
+치환 후 남은 `{{...}}` 확인 — 위 2)와 **문자 그대로 같은 파이프라인**(파일 단위 `-rlI` + 동일 제외
+egrep)을 건다. 엔진 소스·engine.manifest·pm_role/pm_playbook 의 토큰은 **의도적으로 남는다**(local.conf
+가 런타임 해소). 아래가 파일을 출력하면 미치환 — 상세 위치는 `grep -n '{{' <파일>` 로:
 
 ```bash
-grep -rn '{{' . --include='*.md' --include='*.json' --include='*.sh' --include='*.py'
+grep -rlI '{{' . --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=node_modules | \
+  grep -vE '^\./\.project_manager/tools/|^\./\.project_manager/engine\.manifest$|^\./\.project_manager/wiki/pm_(role|playbook)\.md$'
 ```

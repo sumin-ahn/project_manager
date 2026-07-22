@@ -93,7 +93,8 @@ def _run_main_with_diff(external, monkeypatch, diff: str):
 
     반환: (exit_code, reviewer_called). --paths 로 ticket 파싱을 건너뛰고 --force 로 활성화
     게이트를 우회한다 — 빈-diff 가드가 codex 호출 전에 유일하게 차단함을 격리한다."""
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: diff)
+    # extract_diff 는 (diff, 제외 경로 목록) 튜플 반환 (T-0428) — 제외 없음(빈 목록)으로 주입.
+    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, []))
     called = {"reviewer": False}
 
     def _fake_run_review(*args, **kwargs):
