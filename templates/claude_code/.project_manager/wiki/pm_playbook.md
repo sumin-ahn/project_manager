@@ -186,12 +186,38 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
      여부가 should-fix vs suggestion 의 기준.
 7. **ticket complete + 부기** — `/pm-wave-finish T-NNNN`
    (`ticket_finish.py` wrapper). 회귀 green 확인(red 면 중단·아무것도 안 건드림) →
-   log/current.md 스켈레톤 append → board complete (`--tests-pass`) → git stage (`git add -A`).
+   log/current.md 스켈레톤 append → board complete (`--tests-pass`) → git stage —
+   **그 ticket 이 선언한 경로만**(ADR-0074 "공유 워킹트리 mutation 은 선언된 경로만").
+   선언원 = frontmatter `touches` ∪ **이 실행이 실제로 쓴 산출물**, 즉 `log/current.md`
+   + legacy 형상(board 미분리·출하 기본)에서 옮긴 티켓 파일의 **옛/새 경로** 둘뿐이다.
+   ADR·domain 페이지·`architecture.md`·`status.md` 는 **다른 실행**의 산출이라 스코프
+   밖이다 — 디렉토리로 넓히면 남의 미완성 draft 까지 실려 좁힌 척만 하게 된다.
+   스테이지 후 잔여를 **두 방향으로 loud 보고**한다: `미스테이지 잔여`(내 누락이면
+   `touches` 보강 후 재stage·남의 WIP 면 그대로) · `스코프 밖 staged`(남이 올려둔 것 —
+   bare commit 이면 실린다·빼려면 `git restore --staged <경로>`).
    **status.md 는 더 이상 건드리지 않는다**(ADR-0023 — judgment-only · 테스트 수 박제 ✗).
-   **모듈 행 판정/비고·git commit 은 PM 손**.
+   **모듈 행 판정/비고·git commit 은 PM 손** (commit 도 pathspec 명시 — 아래 8).
 8. **PM 손 잔여** — log/current.md 서술 채우기 (스켈레톤 `<!-- PM: 무엇을·왜 -->` 를
    실제 내용으로) + status.md 모듈 행 판정/비고 (architect 유지·PM 점검 · 테스트 수는
-   박제 안 함·ADR-0022/0023) + git commit (Co-Authored-By: Claude 트레일러).
+   박제 안 함·ADR-0022/0023) + **git commit — pathspec 명시**. bare `git commit` 은
+   남이 stage 해 둔 무관한 변경까지 싣는다 (ADR-0074). `[4/5]` 가 출력한 stage 경로
+   목록이 곧 이 커밋의 pathspec 이다:
+   ```
+   git commit -m "T-NNNN — <title 요약>" -- \
+     <ticket touches 의 실경로들> \
+     .project_manager/wiki/log/current.md \
+     .project_manager/wiki/tickets/claimed/T-NNNN-<slug>.md \
+     .project_manager/wiki/tickets/done/T-NNNN-<slug>.md \
+     .project_manager/wiki/status.md      # 모듈 행을 손봤을 때만
+   ```
+   **티켓 파일 두 줄(claimed·done)은 legacy 형상에서 필수** — 옛/새 경로를 함께 줘야
+   `claimed→done` rename 이 커밋으로 완성된다. 빠뜨리면 티켓이 HEAD 에선 `claimed` 로
+   남고 그 rename 이 index 에 남아 다음 사람 커밋에 딸려간다(실측). board 분리
+   형상(ADR-0033)이면 board-git 이 기록하므로 두 줄이 없다. ADR·domain 페이지처럼
+   **새로 만든 파일**을 함께 실을 땐 `git add <경로>` 를 선행하라 — 미추적 경로를
+   pathspec 에 주면 `pathspec … did not match` 로 커밋 전체가 rc=1 로 죽는다.
+   (Co-Authored-By: Claude 트레일러). wave 단위 단일 commit 이면 각 ticket 의 위 목록을
+   **합집합으로 나열**한다 — pathspec 생략·`-A` 로 갈음하지 않는다.
 9. **wave 종결 entry log/current.md append** — 패턴: `## [YYYY-MM-DD] complete | PM
    N차 wave M 종결 — <ticket 목록>`. 본문 = (a) 누적 변경 / (b) 회귀 delta /
    (c) **wave 메타 학습** (다음 wave·다음 PM 세션이 학습으로 사용) / (d) 보드
@@ -227,7 +253,8 @@ PM 병목은 "PM 이 한 세션"이 아니라 한 PM 이 직렬로 떠안는 잡
 - **부기 자동화** — ticket 완료 부기(회귀 green → log/current.md 스켈레톤 → board complete
   → git stage)는 `.project_manager/tools/ticket_finish.py` / `/pm-wave-finish` skill 로 자동화
   (status.md 는 안 건드린다 — judgment-only·ADR-0023). PM 은 서술(왜·무엇)만 채운다. ⚠️ 단일 진실
-  파일을 편집하므로 status.md **모듈 행 판정/비고**·**git commit** 은 자동화하지 않는다 — PM 손.
+  파일을 편집하므로 status.md **모듈 행 판정/비고**·**git commit** 은 자동화하지 않는다 — PM 손
+  (그 commit 도 pathspec 명시 — `-- <touches> log/current.md [status.md]` · ADR-0074).
 - **세션 시작·종료 자동화** — `/pm-bootstrap` (세션 시작 dump), `/pm-handoff`
   (세션 종료 7단계). PM 의 첫 turn / 마지막 turn 잡일을 한 명령으로.
 - **dev→review 는 background 우선** — `Agent` 툴 `run_in_background: true` 로

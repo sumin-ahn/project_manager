@@ -48,7 +48,16 @@
 - `.project_manager/wiki/status.md` 의 해당 모듈 행 갱신
 - `.project_manager/wiki/log/current.md` 에 한 entry append
 - 회귀 테스트 `{{TEST_CMD}}` 통과 확인
-- **git commit** — 논리적 체크포인트(ticket 완료 등)에서 커밋. 커밋 메시지 말미에 `Co-Authored-By: Claude` 트레일러. 시크릿은 `.gitignore` 로 영구 제외.
+- **git commit** — 논리적 체크포인트(ticket 완료 등)에서 커밋하되, **커밋할 경로를 명시**한다:
+  ```bash
+  git add <이번에 새로 만든 파일 경로들>          # 미추적 경로는 add 선행 필수 (아래 주의)
+  git commit -m "T-NNNN — <요약>" -- \
+    <ticket touches 의 실경로들> \
+    .project_manager/wiki/status.md .project_manager/wiki/log/current.md \
+    .project_manager/wiki/tickets/claimed/T-NNNN-<slug>.md \
+    .project_manager/wiki/tickets/done/T-NNNN-<slug>.md
+  ```
+  pathspec 없는 bare commit 은 *남이 stage 해 둔* 무관한 변경까지 함께 싣는다(공유 워킹트리 mutation 은 선언된 경로만 · ADR-0074). ⚠️ **미추적(신규) 파일은 `git add` 를 먼저** 하라 — pathspec 에 바로 주면 `error: pathspec '…' did not match any file(s) known to git` 으로 커밋 전체가 rc=1 로 죽는다. ⚠️ 티켓 파일이 `claimed/`→`done/` 으로 옮겨졌으면 **옛/새 경로를 함께** 줘야 그 이동이 커밋에 실린다. 커밋 메시지 말미에 `Co-Authored-By: Claude` 트레일러. 시크릿은 `.gitignore` 로 영구 제외.
 
 > **참조 규약**: status·log·ticket·ADR 어디서든 ADR/ticket/idea 는 ID-wikilink(`[[ADR-NNNN]]`·`[[T-NNNN]]`·`[[idea-NNNN]]`)로만 — 생파일명·슬러그 금지(`board.py lint --gate` 강제). 규칙·이유·예시 단일 진실 = pm_playbook §참조 규약.
 

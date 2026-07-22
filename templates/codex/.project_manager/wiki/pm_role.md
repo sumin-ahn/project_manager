@@ -399,7 +399,7 @@ PM 손:
 - `pm_state.md` "진행 중인 의사결정" 표 갱신
 - `pm_state.md` "남은 작업 전체 그림" 갱신
 - status.md 정비 (lint 가 경고하면) — 안정화된 ✅ 모듈 행은 `status_done.md` 로 이동. status.md = judgment-only(ADR-0023): 테스트 *수*는 안 적음(pytest 실측·log history)·상태/비고는 architect 유지·PM 점검
-- git commit (Co-Authored-By: Claude 트레일러)
+- git commit — **pathspec 명시**(ADR-0074 "공유 워킹트리 mutation 은 선언된 경로만"). bare `git commit` 은 다른 PM 세션의 미완성 wiki 편집을 함께 싣는다. **이번 세션 산출을 전부, 그것만** 나열한다 — `log/current.md` **+ 위 domain capture 로 갱신/신설한 `wiki/domain/*.md` + 이번에 정비한 `status.md`·`status_done.md`**: `git commit -m "PM 세션(N차) 핸드오프 — …" -- .project_manager/wiki/log/current.md .project_manager/wiki/domain/<페이지>.md .project_manager/wiki/status.md`. CLI 가 스스로 쓰는 건 `log/current.md` 하나뿐이고 나머지는 PM 손 산출이라, 이 목록은 [6/7] `git status -s` dump 를 보고 직접 고른다(핸드오프엔 finish 같은 스코프 잔여 보고가 없다). **신설 파일은 `git add` 선행 필수** — 미추적 경로를 pathspec 에 주면 `pathspec … did not match` 로 커밋 전체가 rc=1 로 죽는다. `pm_state.md` 는 gitignored 라 대상 밖. (Co-Authored-By: Claude 트레일러)
 - 마지막 응답에 인계 프롬프트(트리거) 코드블록 출력 — 다음 세션은 `/pm-bootstrap` 실행(트리거 붙여넣기 or 직접). 인계 본문은 부트스트랩이 log entry 에서 dump 하므로 손-채움 불요(ADR-0035)
 
 ## 진행 중인 의사결정 · 남은 작업 전체 그림

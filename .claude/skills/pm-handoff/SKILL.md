@@ -7,7 +7,8 @@ audience: user-entrypoint
 # /pm-handoff — PM 세션 종료 핸드오프 자동화
 
 > {{PROJECT_NAME}} PM 세션의 핸드오프 7단계 (pm_role.md §"핸드오프 절차") 를
-> 한 trigger 로 처리한다. PM 손은 *log/current.md handoff entry 본문 서술 + git commit* 만 남는다
+> 한 trigger 로 처리한다. PM 손은 *log/current.md handoff entry 본문 서술 + 이번 세션 산출 경로를
+> pathspec 으로 명시한 git commit* 만 남는다
 > (인계 프롬프트는 트리거 축소 — 인계 본문은 다음 세션 부트스트랩이 log entry 에서 dump·ADR-0035).
 > backbone = `.project_manager/tools/pm_handoff.py`.
 
@@ -63,7 +64,20 @@ python3 .project_manager/tools/pm_handoff.py \
    - **정지 후 thread-tail 검토** — ctx-trigger 자동 채움분은 *초안*이다. 새 PM 이 슬롯을 검토·편집한다(민감 발화 노출 최소화·과/부족 추출 보정).
    - **FORBIDDEN (대량 재열거 금지 — source 가 답한다):** board done/open/claimed/blocked 카운트 (→ `board.py list`) · open ticket ID 목록 (→ `pm_bootstrap`) · commit 해시·push 상태 (→ `git log`/`git status`) · 직전 complete entry 산출물 재요약 (→ 인접 entry. "읽기 범위" 로 가리켜라). 재열거는 중복이고 중복은 stale 화로 거짓말한다. (회귀 1줄 baseline 은 예외 — 위 회귀/incident 라인에 유지.)
 2. **domain capture (채록) 검토** — `python3 .project_manager/tools/domain.py capture --tickets "T-0001,T-0002"`(이 세션 done ticket ID — 콤마분리 또는 공백 나열 `T-0001 T-0002`) 실행. 출력의 *영향 페이지*(`⚠ `=stale) 와 *coverage gap*(담당 페이지 없는 touched 경로)을 보고 관련 domain 페이지를 갱신하거나 신규 scaffold 한다. **surface-only** — 도구는 *무엇을 갱신/신설할지 띄울 뿐*, 본문 자동생성·`updated:` 자동스탬프는 안 한다(stale 탐지 거짓 방지·ADR-0018 §7b). 갱신할 것 없으면 생략.
-3. **git commit** — 핸드오프 commit message 형식: `PM 세션(N차) 핸드오프 — pm_state.md sliding window + log/current.md handoff entry + PM (N+1)차 인계`. trailer `Co-Authored-By: Claude`.
+3. **git commit — pathspec 필수** (ADR-0074) — 공유 PM 홈에선 bare `git commit` 이 다른 슬롯의 미완성 wiki 편집까지 싣는다. **이번 세션이 만든 것을 전부, 그리고 그것만** 나열한다:
+
+   ```bash
+   git add .project_manager/wiki/domain/<신설한 페이지>.md          # 신규 파일은 add 선행 필수
+   git commit -m "PM 세션(N차) 핸드오프 — pm_state.md sliding window + log/current.md handoff entry + PM (N+1)차 인계" -- \
+     .project_manager/wiki/log/current.md \
+     .project_manager/wiki/domain/<위 2단계에서 갱신/신설한 페이지>.md \
+     .project_manager/wiki/status.md .project_manager/wiki/status_done.md
+   ```
+
+   - **`log/current.md` 하나만 적으면 위 2단계 domain capture 산출을 잃는다.** 이 CLI 가 스스로 쓰는 파일은 `log/current.md` 뿐이지만, 잔여 손작업 1~2 단계는 domain 페이지·status 를 **네 손으로** 고치게 한다 — 그것도 이번 세션의 산출이다. 고치지 않은 줄은 지운다.
+   - **핸드오프엔 `/pm-wave-finish` 같은 스코프 잔여 보고가 없다.** 대신 [6/7] 의 `git status -s` dump 가 이번 세션 트리 변경의 전량이다 — 그 목록에서 *내 세션 산출*을 골라 pathspec 에 넣고, 남의 WIP 는 남긴다.
+   - **신규 파일은 `git add` 선행 필수** — 미추적 경로를 pathspec 에 주면 `error: pathspec '…' did not match any file(s) known to git` 으로 **커밋 전체가 rc=1 로 죽는다**(실측).
+   - `pm_state.md`(solo `wiki/pm_state.md` · per-slot/per-task `.local/…`)는 **gitignored** 라 커밋 대상이 아니다 — commit message 에만 남는다. trailer `Co-Authored-By: Claude`.
 4. **마지막 응답에 인계 프롬프트(트리거) 코드블록 출력** — 다음 세션은 `/pm-bootstrap` 실행(트리거 붙여넣기 or 직접). 인계 본문은 부트스트랩이 log entry 에서 자동 dump 하므로 손-채움 불요(ADR-0035).
 
 ## 결정

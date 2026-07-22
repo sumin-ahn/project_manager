@@ -69,7 +69,12 @@ PM 은 코드를 직접 안 짠다 — `claim → 위임(dev) → 검토(reviewe
 ```
 
 추가로: `status.md` 모듈 행 갱신 · `log/current.md` entry append · 회귀 `{{TEST_CMD}}` green 확인 ·
-**git commit**(논리적 체크포인트·메시지 말미 `Co-Authored-By: Claude` 트레일러). skill `/pm-wave-finish` 가 스칼라·skeleton·board·stage 를 자동화한다.
+**git commit** — 논리적 체크포인트·**커밋 경로 명시**
+`git commit -m "T-NNNN — <요약>" -- <ticket touches> .project_manager/wiki/status.md .project_manager/wiki/log/current.md .project_manager/wiki/tickets/claimed/T-NNNN-<slug>.md .project_manager/wiki/tickets/done/T-NNNN-<slug>.md`
+(bare commit 은 남이 stage 해 둔 것까지 싣는다 · ADR-0074 / 티켓 이동은 **옛·새 경로 둘 다** 줘야 실린다 /
+**신규 파일은 `git add` 선행** — 미추적 경로를 pathspec 에 주면 `pathspec … did not match` 로 rc=1)·
+메시지 말미 `Co-Authored-By: Claude` 트레일러.
+skill `/pm-wave-finish` 가 스칼라·skeleton·board·stage 를 자동화한다.
 
 ## 6. 자주 쓰는 명령
 

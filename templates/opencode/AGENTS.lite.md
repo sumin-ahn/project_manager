@@ -71,7 +71,11 @@
 {{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass
 ```
 
-추가: `status.md` 모듈 행 · `log/current.md` entry · 회귀 `{{TEST_CMD}}` green · git commit(`Co-Authored-By` 트레일러).
+추가: `status.md` 모듈 행 · `log/current.md` entry · 회귀 `{{TEST_CMD}}` green · git commit — **커밋 경로 명시**
+`git commit -m "T-NNNN — <요약>" -- <ticket touches> .project_manager/wiki/status.md .project_manager/wiki/log/current.md .project_manager/wiki/tickets/claimed/T-NNNN-<slug>.md .project_manager/wiki/tickets/done/T-NNNN-<slug>.md`
+(bare commit 은 남이 stage 해 둔 것까지 싣는다 · ADR-0074 / 티켓 이동은 **옛·새 경로 둘 다** 줘야 실린다 /
+**신규 파일은 `git add` 선행** — 미추적 경로를 pathspec 에 주면 `pathspec … did not match` 로 rc=1)·
+`Co-Authored-By` 트레일러.
 `.claude/skills/` 의 pm-* 스킬(슬래시 `/pm-…`·ADR-0065 단일 소비)이 스칼라·skeleton·stage 자동화.
 
 ## 6. 결정 권한 (요약)

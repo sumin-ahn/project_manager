@@ -8,7 +8,7 @@
   1. 회귀 실행 — pytest tests/ -q. red 면 즉시 중단.
   2. log/current.md 스켈레톤 append — 표준 형식 entry 골격.
   3. board.py complete 호출 — 회귀를 이미 통과했으므로 --tests-pass.
-  4. git stage — **선언 경로만**(ticket `touches` ∪ wiki 산출물·ADR-0074) 스테이징 + 스코프
+  4. git stage — **선언 경로만**(ticket `touches` ∪ *이 실행이 쓴* 산출물·ADR-0074) 스테이징 + 스코프
      밖 잔여 dirty loud 보고. commit 은 PM 이 한다.
   5. 잔여 PM 수동 작업 출력.
 
@@ -554,8 +554,11 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
 # 좁힌 상태가 된다(codex must-fix). 그것들이 커밋에서 빠지는 건 정상이고, 빠졌다는 사실은 아래
 # **잔여 loud 보고**가 알린다 — 그게 그 보고의 존재 이유다.
 #
-# gitignored 산출물(per-slot/per-task pm_state·leases·board.md·`.local/`)엔 별도 제외 로직을
-# 두지 않는다 — `.gitignore` 가 이미 거른다(제외 목록도 결국 열거다).
+# gitignored 산출물(per-slot/per-task pm_state·leases·board.md·`.local/`)은 **스코프 산출 단계에서
+# 명시적으로 걸러야 한다**(`board.git_scope_stageable` ④). `git add` 는 *명시 pathspec* 이 ignored 면
+# rc=1 에러이기 때문이다 — 조용히 건너뛰는 건 광역 `add -A` 일 때뿐이다. 즉 스코프화가 이 성질을
+# 반전시킨다(ADR-0074 사실오류 정정 절 참조). 안 걸르면 `touches` 에 gitignored 경로가 하나만 있어도
+# board complete 이후 stage 가 통째로 죽고 잔여 loud 보고까지 사라진다.
 
 
 def _load_tool_module(path: Path):
@@ -1066,7 +1069,7 @@ class TicketFinisher:
             print(f"  ✓ board: {ticket_id} → done")
 
         # ── 4. git stage (선언 경로 스코프·ADR-0074) ────────────────────
-        # blanket `add -A` 가 아니다 — 이 티켓이 선언한 경로(`touches` ∪ wiki 산출물)만
+        # blanket `add -A` 가 아니다 — 이 티켓이 선언한 경로(`touches` ∪ *이 실행이 쓴* 산출물)만
         # stage 한다. 좁힘이 만드는 반대편 실패(under-stage)는 아래 잔여 dirty loud 보고로
         # 가시화한다(차단하지 않는다 — `touches` 는 사람이 적는 값이라 누락 가능).
         print("\n[4/5] git stage (선언 경로 스코프)...")

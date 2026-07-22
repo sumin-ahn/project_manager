@@ -91,7 +91,24 @@ backbone 은 **파생 가능한 기계 부분만** 채운다(pm-handoff/ticket_f
    (`<개정 요약 — PM 서술>`)를 채운다(기계는 무엇이 바뀌었는지 모른다).
 3. **log decide 본문** — decide entry 의 `<!-- PM: ... -->` placeholder 에 결정 요약·발단·게이트·메타를
    서술한다.
-4. **git commit** — 발행/개정 산출(신규 ADR·대상 back-ref·README·log)을 **한 커밋**으로 묶는다
+4. **git commit — pathspec 필수**(ADR-0074) — 발행/개정 산출 4종(신규 ADR·개정 대상 back-ref·README·
+   log)을 **한 커밋**으로 묶되, 그 경로만 나열한다. 공유 PM 홈에서 bare `git commit` 은 다른 슬롯의
+   미완성 wiki 편집을 함께 싣는다:
+
+   ```bash
+   git add .project_manager/wiki/decisions/NNNN-<slug>.md   # 신규 ADR 은 untracked — add 선행 필수
+   git commit -m "ADR-NNNN — <title>" -- \
+     .project_manager/wiki/decisions/NNNN-<slug>.md \
+     .project_manager/wiki/decisions/MMMM-<개정 대상 slug>.md \
+     .project_manager/wiki/decisions/PPPP-<또 다른 개정 대상 slug>.md \
+     .project_manager/wiki/decisions/README.md \
+     .project_manager/wiki/log/current.md
+   ```
+
+   pathspec commit 은 미추적 경로를 잡지 못하므로(`error: pathspec '…' did not match any file(s)
+   known to git` · rc=1 로 커밋 전체가 죽는다) 신규 ADR 파일은 `git add` 를 선행한다.
+   `--amends`/`--supersedes` 는 **반복 지정 가능**하므로 back-ref 가 부기된 **대상 ADR 마다 한 줄**씩
+   적는다(위 `MMMM`·`PPPP`). 개정이 없으면 대상 ADR 행은 전부 생략한다.
    (재정의 후 기존 자산 갱신을 발행과 원자화·PM 19~21차 재발 방지 패턴). trailer `Co-Authored-By: Claude`.
 5. **정합 확인** — `python3 .project_manager/tools/board.py lint` 로 adr-lifecycle advisory 가 clean 인지
    확인(발행이 back-ref 를 채웠으므로 clean 이어야 정상). warning 이 stderr 로 나왔으면(대상 파일 부재·
