@@ -762,6 +762,29 @@ def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
     return record_upstream_revs(dest_root, source_root)[0]
 
 
+def converge_upstream_revs(
+    dest_root: Path, source_root: Path, skew_status: str, skew_new: list[str]
+) -> None:
+    """skew 안전장치를 보존하며 sync 뒤 revision 키를 수렴·안내한다 (T-0422)."""
+    if skew_status == "skew":
+        print(
+            f"→ manifest skew({len(skew_new)}건)로 upstream_rev baseline(+경로 upstream 의 "
+            "upstream_seen_rev 관찰값) 갱신을 **억제**한다 — drift-lint 가 계속 이 skew 를 울리게 "
+            "둔다. 로컬 engine.manifest 를 reconcile 한 뒤 다시 pm-update 하라(신규 등재분 "
+            "자기치유는 T-0396)."
+        )
+        return
+
+    # 안내 문구는 **엔진이 실제로 기록한 키**(recorded)로 정한다 — 파일의 결과 상태로
+    # 역추론하면 URL 형상(스킬층이 쓴 seen 이 이미 baseline 과 같음)에서 "동시 기록" 이
+    # 거짓으로 뜬다(T-0413 리뷰 지적).
+    changed, recorded = record_upstream_revs(dest_root, source_root)
+    if changed:
+        seen_note = " (+upstream_seen_rev 동시 기록)" if _SEEN_REV_KEY in recorded else ""
+        print("✓ local.conf upstream_rev baseline 갱신 (drift-lint 기준점): "
+              f"{recorded['upstream_rev']}{seen_note}")
+
+
 def detect_manifest_skew(
     local_manifest: list, source_root: Path, *, upstream_manifest: Path | None = None
 ) -> tuple[str, list[str]]:
@@ -2250,6 +2273,12 @@ def main(argv: list[str] | None = None) -> int:
             hooks = reinstall_protected_hooks(
                 effective_dest, write=not args.dry_run)
             _print_protected_hook_reinstall_finding(hooks, dry_run=args.dry_run)
+        # RUN2 수렴 지점: 엔진을 배달한 RUN1은 구 pm_update로 실행될 수 있으므로, 새 엔진의
+        # 변경 0 재실행에서도 경로 upstream의 baseline/seen 쌍을 확인한다. dry-run은 기존
+        # 계약대로 local.conf를 절대 쓰지 않는다. manifest skew면 has-changes 경로와 동형으로
+        # 두 키를 함께 억제해 반쪽 상태/거짓 drift를 만들지 않는다.
+        if not args.dry_run:
+            converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
@@ -2290,22 +2319,7 @@ def main(argv: list[str] | None = None) -> int:
     # source 가 로컬 git checkout 일 때만(URL upstream 은 로컬 checkout 없어 graceful 생략).
     # best-effort — 기록 실패가 동기화 자체를 무효화하지 않는다(파일은 이미 적용됨). --target
     # 모드는 effective_dest(templates/<name>)의 conf 에 기록(루트 오염 방지·maybe_prompt 와 동형).
-    if skew_status == "skew":
-        print(
-            f"→ manifest skew({len(skew_new)}건)로 upstream_rev baseline(+경로 upstream 의 "
-            "upstream_seen_rev 관찰값) 갱신을 **억제**한다 — drift-lint 가 계속 이 skew 를 울리게 "
-            "둔다. 로컬 engine.manifest 를 reconcile 한 뒤 다시 pm-update 하라(신규 등재분 "
-            "자기치유는 T-0396)."
-        )
-    else:
-        # 안내 문구는 **엔진이 실제로 기록한 키**(recorded)로 정한다 — 파일의 결과 상태로
-        # 역추론하면 URL 형상(스킬층이 쓴 seen 이 이미 baseline 과 같음)에서 "동시 기록" 이
-        # 거짓으로 뜬다(T-0413 리뷰 지적).
-        changed, recorded = record_upstream_revs(effective_dest, source_root)
-        if changed:
-            seen_note = " (+upstream_seen_rev 동시 기록)" if _SEEN_REV_KEY in recorded else ""
-            print("✓ local.conf upstream_rev baseline 갱신 (drift-lint 기준점): "
-                  f"{recorded['upstream_rev']}{seen_note}")
+    converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
 
     maybe_prompt_external_review(effective_dest)
     return 0

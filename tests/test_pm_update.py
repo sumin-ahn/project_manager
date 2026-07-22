@@ -474,6 +474,120 @@ def test_main_records_both_keys_on_path_sync(pm_update, tmp_path, monkeypatch, c
     assert "upstream_seen_rev 동시 기록" in capsys.readouterr().out
 
 
+def test_main_no_changes_converges_stale_path_seen_rev(pm_update, tmp_path, monkeypatch, capsys):
+    """RUN2(변경 0)도 경로 upstream의 stale seen 값을 baseline과 함께 수렴시킨다.
+
+    업그레이드 RUN1은 구 엔진으로 실행돼 새 기록 로직을 못 탈 수 있다. RUN2는 새 엔진이나
+    manifest 변경이 없으므로, 이 `not changes` 경로가 수렴 지점이어야 한다(T-0422).
+    """
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "stored_upstream"
+    _make_upstream(source)
+    sentinel = source / SENTINEL_REL
+    dest_sentinel = fake_repo / SENTINEL_REL
+    dest_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    dest_sentinel.write_text(sentinel.read_text(encoding="utf-8"), encoding="utf-8")
+    _write_local_conf(
+        fake_repo,
+        f"upstream={source}\n"
+        "upstream_rev=currentrev\n"
+        "upstream_seen_rev=staleobservedrev\n",
+    )
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "currentrev")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    assert pm_update.main([]) == 0
+    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    assert conf.get("upstream_rev") == conf.get("upstream_seen_rev") == "currentrev"
+    assert "baseline 갱신" in capsys.readouterr().out
+
+
+def test_main_no_changes_with_matching_path_revs_is_quiet(pm_update, tmp_path, monkeypatch, capsys):
+    """정합된 RUN2는 local.conf write·revision 안내를 만들지 않는다."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "stored_upstream"
+    _make_upstream(source)
+    sentinel = source / SENTINEL_REL
+    dest_sentinel = fake_repo / SENTINEL_REL
+    dest_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    dest_sentinel.write_text(sentinel.read_text(encoding="utf-8"), encoding="utf-8")
+    local_conf = _write_local_conf(
+        fake_repo,
+        f"upstream={source}\nupstream_rev=currentrev\nupstream_seen_rev=currentrev\n",
+    )
+    before = local_conf.read_text(encoding="utf-8")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "currentrev")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    real_write_text = Path.write_text
+    local_conf_writes: list[Path] = []
+
+    def spy_write_text(path, *args, **kwargs):
+        if path == local_conf:
+            local_conf_writes.append(path)
+        return real_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", spy_write_text)
+
+    assert pm_update.main([]) == 0
+    assert local_conf.read_text(encoding="utf-8") == before
+    assert local_conf_writes == [], "정합된 revision인데 local.conf write가 발생했다"
+    assert "local.conf upstream_rev baseline 갱신" not in capsys.readouterr().out
+
+
+def test_main_no_changes_dry_run_does_not_converge_path_revs(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """RUN2 dry-run은 stale 경로 키를 발견해도 local.conf를 쓰지 않는다."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "stored_upstream"
+    _make_upstream(source)
+    sentinel = source / SENTINEL_REL
+    dest_sentinel = fake_repo / SENTINEL_REL
+    dest_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    dest_sentinel.write_text(sentinel.read_text(encoding="utf-8"), encoding="utf-8")
+    local_conf = _write_local_conf(
+        fake_repo,
+        f"upstream={source}\nupstream_rev=currentrev\nupstream_seen_rev=staleobservedrev\n",
+    )
+    before = local_conf.read_text(encoding="utf-8")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "currentrev")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    assert pm_update.main(["--dry-run"]) == 0
+    assert local_conf.read_text(encoding="utf-8") == before
+    assert "local.conf upstream_rev baseline 갱신" not in capsys.readouterr().out
+
+
+def test_main_no_changes_skew_suppresses_both_path_revs(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """변경 0이라도 manifest skew면 baseline·seen 수렴을 함께 억제한다."""
+    fake_repo = tmp_path / "fake_repo"
+    source = tmp_path / "stored_upstream"
+    _make_upstream(source)
+    sentinel = source / SENTINEL_REL
+    dest_sentinel = fake_repo / SENTINEL_REL
+    dest_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    dest_sentinel.write_text(sentinel.read_text(encoding="utf-8"), encoding="utf-8")
+    local_conf = _write_local_conf(
+        fake_repo,
+        f"upstream={source}\nupstream_rev=currentrev\nupstream_seen_rev=staleobservedrev\n",
+    )
+    before = local_conf.read_text(encoding="utf-8")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    monkeypatch.setattr(pm_update, "detect_manifest_skew", lambda *a, **k: ("skew", ["new.py"]))
+
+    assert pm_update.main([]) == 0
+    assert local_conf.read_text(encoding="utf-8") == before
+    out = capsys.readouterr().out
+    assert "manifest skew" in out and "억제" in out
+
+
 def test_main_url_sync_does_not_claim_seen_was_recorded(pm_update, tmp_path, monkeypatch, capsys):
     """URL 형상 실 sync — 엔진이 seen 을 안 썼으므로 "(+동시 기록)" 문구가 뜨면 안 된다.
 
