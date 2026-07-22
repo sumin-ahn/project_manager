@@ -24,6 +24,7 @@ absence·opencode 의 `pm.md` primary 에 해당하는 파일 부재).
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tomllib
@@ -37,6 +38,7 @@ AGENTS_DIR = CODEX / ".codex" / "agents"
 AGENTS_MD = CODEX / "AGENTS.md"
 CONFIG = CODEX / ".codex" / "config.toml"
 COMMAND_RULES = CODEX / ".codex" / "rules" / "default.rules"
+PM_DEV_DELEGATE = CODEX / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
 
 AGENT_NAMES = ("architect", "code-reviewer", "developer", "researcher")
 REQUIRED_FIELDS = ("name", "description", "developer_instructions")
@@ -239,3 +241,112 @@ def test_developer_instructions_reference_common_core():
         assert "AGENTS.md" in di, (
             f"{name}.toml developer_instructions 가 공통 코어 AGENTS.md 를 참조하지 않음 (D3 C-v2)"
         )
+
+
+# ── (h) pm-dev-delegate native spawn 계약 (T-0435) ──────────────────────────
+
+_NATIVE_SPAWN_FIELDS = ("agent_type", "fork_turns", "task_name", "message")
+_CUSTOM_ROLES = ("developer", "code-reviewer")
+_FULL_HISTORY_CUSTOM_ROLE_REJECTION = (
+    "Full-history forked agents inherit the parent agent type; omit agent_type, or spawn without "
+    "a full-history fork."
+)
+
+
+def _native_spawn_is_accepted(call: dict[str, str]) -> bool:
+    """Codex custom-role spawn의 최소 schema 계약을 fixture 수준에서 판정한다.
+
+    실제 spawn은 test runner 밖 orchestrator API라 hermetic 테스트에서 호출하지 않는다. 대신 첫 실전의
+    거부 원인(full-history fork + custom role)을 정확히 모델링해 문서 예시와 stale fixture를 함께
+    검사한다. `fork_turns`는 self-contained 기본 `none` 또는 제한된 최근 맥락의 양의 정수만 허용한다.
+    """
+    if set(call) != set(_NATIVE_SPAWN_FIELDS):
+        return False
+    if call["agent_type"] not in _CUSTOM_ROLES:
+        return False
+    fork = call["fork_turns"]
+    return fork == "none" or (fork.isdecimal() and int(fork) > 0)
+
+
+def _documented_native_spawns(text: str) -> list[dict[str, str]]:
+    """SKILL.md의 Python형 spawn 예시에서 native 인자를 추출한다(문서 구조 drift fail-loud)."""
+    blocks = re.findall(r"spawn_agent\(\n(.*?)\n\)", text, flags=re.DOTALL)
+    calls = []
+    for block in blocks:
+        fields = dict(re.findall(r'^\s*(agent_type|fork_turns|task_name)="([^"]+)",?$', block, re.MULTILINE))
+        message = re.search(r'^\s*message="""', block, flags=re.MULTILINE)
+        if message:
+            fields["message"] = "present"
+        calls.append(fields)
+    return calls
+
+
+def test_pm_dev_delegate_documents_only_native_codex_spawn_fields():
+    """Codex 출하 스킬이 developer/reviewer native spawn 4필드를 정확히 안내한다.
+
+    `subagent_type`/`run_in_background`는 다른 harness의 필드라 Codex 실행 예시에 존재하면 첫 위임이
+    schema 단계에서 거부된다. spawn 자체가 비동기 thread를 반환한다는 운영 규칙도 문서화해야 한다.
+    """
+    text = PM_DEV_DELEGATE.read_text(encoding="utf-8")
+    calls = _documented_native_spawns(text)
+    assert len(calls) == 2, "developer/reviewer 각각 하나의 native spawn_agent 예시가 필요"
+    assert {call.get("agent_type") for call in calls} == set(_CUSTOM_ROLES)
+    assert all(_native_spawn_is_accepted(call) for call in calls)
+    for stale_field in ("subagent_type", "run_in_background"):
+        assert stale_field not in text, f"Codex pm-dev-delegate에 타 harness 필드 잔존: {stale_field}"
+    assert "비동기로 진행" in text, "spawn 반환 thread의 비동기 운영 규칙 누락"
+
+
+def test_pm_dev_delegate_custom_roles_never_use_full_history_fork():
+    """custom agent_type + fork_turns=all 조합은 첫 spawn 거부 재현 fixture로 red가 되어야 한다."""
+    text = PM_DEV_DELEGATE.read_text(encoding="utf-8")
+    calls = _documented_native_spawns(text)
+    assert all(call["fork_turns"] != "all" for call in calls)
+    assert 'custom `agent_type`과 full-history\n`fork_turns="all"`은 함께 쓸 수 없다' in text
+    assert "양의 정수" in text
+
+    stale_full_history = {
+        "call": {
+            "agent_type": "developer",
+            "fork_turns": "all",
+            "task_name": "orch_dev_t0435",
+            "message": "implement",
+        },
+        # PM 7차 첫 custom-role developer spawn의 native 거부 원문 — 요약하면 API contract의
+        # 중요한 원인(agent type 상속)이 사라져 stale all 조합 재발을 정확히 진단할 수 없다.
+        "error": _FULL_HISTORY_CUSTOM_ROLE_REJECTION,
+    }
+    stale_claude_fields = {
+        "subagent_type": "developer",
+        "run_in_background": "true",
+        "task_name": "orch_dev_t0435",
+        "message": "implement",
+    }
+    assert stale_full_history["error"] == (
+        "Full-history forked agents inherit the parent agent type; omit agent_type, or spawn without "
+        "a full-history fork."
+    )
+    assert not _native_spawn_is_accepted(stale_full_history["call"]), (
+        "sensitivity: custom role + full-history fork가 native spawn 가드에서 수락됨"
+    )
+    assert not _native_spawn_is_accepted(stale_claude_fields), (
+        "sensitivity: stale Claude fields가 native spawn 가드에서 수락됨"
+    )
+
+
+def test_pm_update_dry_run_preserves_codex_native_delegate_override():
+    """shared skill render 뒤에도 Codex file override가 update 대상으로 되돌아가지 않는다."""
+    result = subprocess.run(
+        [
+            "python3", str(REPO / ".project_manager" / "tools" / "pm_update.py"),
+            "--from", str(REPO), "--target", "codex", "--dry-run",
+        ],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    delegate_rel = ".agents/skills/pm-dev-delegate/SKILL.md"
+    assert not any(
+        delegate_rel in line and ("[update]" in line or "[new]" in line)
+        for line in result.stdout.splitlines()
+    ), result.stdout

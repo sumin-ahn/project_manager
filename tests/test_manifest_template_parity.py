@@ -61,6 +61,7 @@ CLAUDE_ONLY_PATHS = {
 # codex 트리(ADR-0070)의 정당한 manifest 차이(3-way·화이트리스트). claude_code 대비:
 #   codex 가 추가: .codex/agents(TOML 4축 custom agent·claude .claude/agents 대응) · .agents/skills
 #     (codex 네이티브 스킬 네임스페이스 — root `.claude/skills` 를 @source 로 remap·D2) ·
+#     pm-dev-delegate file override(Codex native spawn schema를 shared Claude source와 분리·T-0435) ·
 #     .codex/pm_orch_codex.py(relay 드라이버·engine-mirror·@source 전파·claude .claude/pm_orch_claude.py·
 #     opencode .opencode/pm_orch_opencode.py 대응·T-0404).
 #   codex 가 제외: CLAUDE_ONLY_PATHS 전부 **+ .claude/skills**. opencode 는 .claude/skills 를 claude 와
@@ -70,6 +71,7 @@ CLAUDE_ONLY_PATHS = {
 CODEX_ONLY_PATHS = {
     ".codex/agents",
     ".agents/skills",
+    ".agents/skills/pm-dev-delegate/SKILL.md",
     ".codex/pm_orch_codex.py",
 }
 CODEX_DROPPED_PATHS = CLAUDE_ONLY_PATHS | {".claude/skills"}

@@ -374,6 +374,24 @@ def _remap_to_dest(rel: str, source_rel: str, manifest_path: str) -> str:
     return rel
 
 
+def _manifest_owner_index(manifest: list, rel: str, dest_root: Path) -> int | None:
+    """``rel``을 공급할 가장 구체적인 manifest 항목의 index.
+
+    디렉터리 remap 위에 단일 파일 remap을 선언하면 더 긴 destination 경로가 override다. 이
+    우선순위가 없으면 상위 디렉터리와 파일 항목이 같은 destination을 각각 plan하고, plan 시점의
+    기존 파일만 비교한 뒤 apply 순서에 따라 override가 사라질 수 있다. 동일 경로 중복은 뒤 항목을
+    택해 manifest의 인접 override가 결정적이게 한다.
+    """
+    rel_norm = rel.replace("\\", "/").strip("/")
+    owners: list[tuple[int, int, int]] = []
+    for index, candidate in enumerate(manifest):
+        dest_rel = _dest_relpath_for(str(candidate), dest_root)
+        dest_norm = dest_rel.replace("\\", "/").strip("/")
+        if rel_norm == dest_norm or rel_norm.startswith(dest_norm + "/"):
+            owners.append((len(Path(dest_norm).parts), index, index))
+    return max(owners)[2] if owners else None
+
+
 def _load_pm_render():
     """pm_render 모듈을 같은 tools/ 디렉토리에서 직접 로드 (sys.path 오염 없이·stdlib seam).
 
@@ -1116,7 +1134,7 @@ def plan(
     effective_dest = dest_root if dest_root is not None else REPO
     changes: list[tuple] = []
     missing: list[str] = []
-    for entry in manifest:
+    for entry_index, entry in enumerate(manifest):
         rel = str(entry)
         # @source= 있으면 source_root 아래 canonical 소스 경로(source_rel)에서 읽고, dest 엔
         # manifest 경로(rel)로 기록한다(_remap_to_dest). 마커 부재면 source_rel == rel(오늘 동작).
@@ -1140,6 +1158,11 @@ def plan(
             # 리매핑 후 경로로 둬 dry-run 출력이 실제 기록 위치를 정직히 보인다(_dest_root_for
             # 역산도 part 수 동일이라 정합).
             r = _dest_relpath_for(r, effective_dest)
+            # 상위 directory remap과 더 구체적인 file/directory remap이 겹치면 가장 구체적인
+            # destination 선언만 공급한다. Codex처럼 공유 스킬 디렉터리 중 한 파일만 하네스
+            # native 형상으로 override할 때, 상위 shared source가 override를 다시 덮지 않게 한다.
+            if _manifest_owner_index(manifest, r, effective_dest) != entry_index:
+                continue
             # render 대상 판정 = @render manifest 선언 + **텍스트로 읽히는가** (T-0424).
             # 옛 `.md` 확장자 하드 필터는 제거했다: 확장자 열거는 manifest 선언을 덮는 중복
             # 판정이라, codex 가 들여온 `.codex/agents/*.toml`(@render 선언 O)이 byte-copy 로

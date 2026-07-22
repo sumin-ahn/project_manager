@@ -76,6 +76,9 @@
 #   `.claude/skills` bare @render(같은 파일명 네이티브 스캔)였고 codex 만 remap — 포맷 코어 호환(§1.2).
 #   @render 는 토큰-form(PROJECT_NAME 등)을 채택자 local.conf 값으로 치환(--target 은 copy2·토큰-form 보존).
 .agents/skills    @render @source=.claude/skills
+# pm-dev-delegate의 실행 encoding은 Codex native spawn_agent 전용이다. 상위 shared directory보다
+# 구체적인 file remap이 우선하며, 나머지 방법론 스킬은 계속 `.claude/skills` 단일 진실을 소비한다.
+.agents/skills/pm-dev-delegate/SKILL.md    @render @source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md
 
 # ── codex 어댑터 (@render + @source — framework-owned 전파·ADR-0054·claude `.claude/*`·opencode `.opencode/*` 대칭) ──
 # canonical 소스 = 프레임워크 루트의 templates/codex/.codex/*(루트=claude·.codex/ 부재). @source 마커가

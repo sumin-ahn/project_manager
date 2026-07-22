@@ -102,9 +102,10 @@ PM workflow 스킬(pm-bootstrap·pm-ticket·pm-dev-delegate·pm-review·pm-qa·p
 spike-new … 전체는 `.agents/skills/` 디렉토리)은 codex 가 `.agents/skills/*/SKILL.md`(project·cwd→root
 스캔)를 **네이티브 소비**한다 — `$<스킬명>` 멘션(예 `$pm-bootstrap`) 또는 description 매칭 auto-trigger.
 
-- **canonical `SKILL.md` 단일 소비**(ADR-0065) — canonical 소스는 root `.claude/skills`(claude/opencode
-  와 동일 단일 진실)이고 `@source` 가 codex 네임스페이스 `.agents/skills` 로 remap 한다(ADR-0054) —
-  방법론 갱신이 pm_update 로 채택자에 도달한다.
+- **canonical `SKILL.md` 단일 소비**(ADR-0065) — 방법론 소스는 root `.claude/skills`(claude/opencode
+  와 동일 단일 진실)이고 `@source` 가 codex 네임스페이스 `.agents/skills` 로 remap 한다(ADR-0054).
+  단, 실행 도구 schema가 다른 `pm-dev-delegate`만 Codex template의 file-level override가 단일 진실이며,
+  manifest의 구체 경로 우선순위로 shared directory 전파 뒤에도 보존된다.
 
 ## 주의 (codex 고유)
 

@@ -1,14 +1,14 @@
 ---
 name: pm-dev-delegate
-description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check + background 옵션. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
+description: "Codex native spawn_agent 기반 dev/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
 audience: pm-internal
 ---
 
-# /pm-dev-delegate T-NNNN [--role developer|code-reviewer] [--background] — orchestrator 위임
+# /pm-dev-delegate T-NNNN [--role developer|code-reviewer] — orchestrator 위임
 
-> {{PROJECT_NAME}} PM 의 orchestrator 위임 표준 프롬프트. Agent 툴 +
-> `subagent_type: developer|code-reviewer` + `run_in_background` 옵션. ticket
-> 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
+> {{PROJECT_NAME}} PM 의 Codex native `spawn_agent` 위임 표준 프롬프트. 역할은
+> `agent_type="developer|code-reviewer"`로 고르고, spawn 이 반환한 thread 는 비동기로 진행된다.
+> ticket 본문이 self-contained 의무를 충족하면 위임 프롬프트는 한 줄이다.
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
 > 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
@@ -53,12 +53,11 @@ python3 .project_manager/tools/board.py regression run --task <이름> [--repo <
 ### developer 위임
 
 ```
-Agent 툴 호출:
-  description: "T-NNNN implement"
-  subagent_type: developer
-  run_in_background: true (병렬 wave 시) | false (직렬·이 결과에 의존 시)
-  prompt:
-    "T-NNNN 을 구현하라.
+spawn_agent(
+  agent_type="developer",
+  fork_turns="none",
+  task_name="orch_dev_tnnnn",
+  message="""T-NNNN 을 구현하라.
 
      세션명: orch-dev-TNNNN (board.py 조작은 orchestrator(PM) 담당·dev 는 코드+테스트만).
      작업 위치(worktree 절대경로): <F6 해소 절대경로 — task-mode 시·슬롯/솔로는 생략>.
@@ -71,18 +70,23 @@ Agent 툴 호출:
      - 변경 파일 목록
      - 신규 테스트 수
      - 전체 회귀 결과 (A / B passed)
-     - DoD 각 항목별 충족 evidence 명시"
+     - DoD 각 항목별 충족 evidence 명시""",
+)
 ```
+
+`spawn_agent`는 즉시 thread를 반환하므로 병렬 wave는 필요한 developer를 연속 spawn하고, 결과 의존
+단계는 해당 thread의 완료 보고 뒤에 다음 spawn을 한다. custom `agent_type`과 full-history
+`fork_turns="all"`은 함께 쓸 수 없다. 역할별 self-contained 프롬프트가 단일 진실이므로 기본은
+`fork_turns="none"`; 꼭 필요한 최근 대화 맥락만 양의 정수(예: `fork_turns="3"`)로 제한한다.
 
 ### code-reviewer 위임
 
 ```
-Agent 툴 호출:
-  description: "T-NNNN review"
-  subagent_type: code-reviewer
-  run_in_background: true (병렬 reviewer 시) | false (단일 reviewer 시)
-  prompt:
-    "T-NNNN 의 변경을 검토하라.
+spawn_agent(
+  agent_type="code-reviewer",
+  fork_turns="none",
+  task_name="orch_review_tnnnn",
+  message="""T-NNNN 의 변경을 검토하라.
 
      변경 파일: <touches 인자 그대로 인용>.
      작업 위치(병렬 wave 시 격리 스냅샷): <아래 §게이트 격리 스냅샷으로 만든 gate worktree
@@ -97,7 +101,8 @@ Agent 툴 호출:
      - must-fix (수정 필수·프로젝트 고유 제약 위반·결함)
      - should-fix (권장·운영 영향 있음)
      - suggestion (개선 옵션·운영 영향 없음)
-     - 통과/반려 명시"
+     - 통과/반려 명시""",
+)
 ```
 
 > ⚙️ reviewer 위임과 **병행해 codex 외부 교차검증**을 돌린다 (표준 리뷰 게이트):

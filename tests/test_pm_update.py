@@ -1750,6 +1750,89 @@ def test_remap_to_dest_normalizes_windows_separators(pm_update):
     ) == ".opencode/agents/architect.md"
 
 
+def test_plan_specific_file_source_overrides_shared_directory_source(pm_update, tmp_path):
+    """pm-dev override는 쓰되 sibling shared skill(pm-qa)은 parent source에서 정상 update한다(T-0435)."""
+    source = tmp_path / "source"
+    dest = tmp_path / "dest"
+    shared = source / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+    shared_sibling = source / ".claude" / "skills" / "pm-qa" / "SKILL.md"
+    override = source / "templates" / "codex" / ".agents" / "skills" / \
+        "pm-dev-delegate" / "SKILL.md"
+    landed = dest / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
+    landed_sibling = dest / ".agents" / "skills" / "pm-qa" / "SKILL.md"
+    shared.parent.mkdir(parents=True)
+    shared_sibling.parent.mkdir(parents=True)
+    override.parent.mkdir(parents=True)
+    landed.parent.mkdir(parents=True)
+    landed_sibling.parent.mkdir(parents=True)
+    shared.write_text("claude fields\n", encoding="utf-8")
+    shared_sibling.write_text("shared pm-qa\n", encoding="utf-8")
+    override.write_text("codex spawn_agent\n", encoding="utf-8")
+    landed.write_text("stale\n", encoding="utf-8")
+    landed_sibling.write_text("stale sibling\n", encoding="utf-8")
+    entries = pm_update.read_manifest(_write_manifest(tmp_path, [
+        ".agents/skills @source=.claude/skills",
+        ".agents/skills/pm-dev-delegate/SKILL.md "
+        "@source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
+    ]))
+
+    changes, missing = pm_update.plan(source, entries, dest_root=dest)
+
+    assert missing == []
+    assert [(rel, src, kind) for rel, src, _dst, kind in changes] == [
+        (".agents/skills/pm-qa/SKILL.md", shared_sibling, "update"),
+        (".agents/skills/pm-dev-delegate/SKILL.md", override, "update")
+    ]
+
+
+def test_plan_missing_specific_override_never_falls_back_to_shared_skill(pm_update, tmp_path):
+    """override source 부재는 parent shared source가 있어도 missing으로 loud 처리한다(T-0435 sensitivity)."""
+    source = tmp_path / "source"
+    dest = tmp_path / "dest"
+    shared = source / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+    landed = dest / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
+    shared.parent.mkdir(parents=True)
+    landed.parent.mkdir(parents=True)
+    shared.write_text("claude-only fallback must not land\n", encoding="utf-8")
+    landed.write_text("stale codex native delegate\n", encoding="utf-8")
+    override_dest = ".agents/skills/pm-dev-delegate/SKILL.md"
+    entries = pm_update.read_manifest(_write_manifest(tmp_path, [
+        ".agents/skills @source=.claude/skills",
+        f"{override_dest} @source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
+    ]))
+
+    changes, missing = pm_update.plan(source, entries, dest_root=dest)
+
+    assert changes == [], "specific source 부재 때 Claude shared skill로 silent fallback 하면 안 됨"
+    assert missing == [override_dest]
+
+
+def test_plan_specific_override_is_idempotent_not_replaced_by_parent(pm_update, tmp_path):
+    """override와 이미 같은 destination은 상위 shared source 차이를 update로 오보하지 않는다."""
+    source = tmp_path / "source"
+    dest = tmp_path / "dest"
+    shared = source / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+    override = source / "templates" / "codex" / ".agents" / "skills" / \
+        "pm-dev-delegate" / "SKILL.md"
+    landed = dest / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
+    shared.parent.mkdir(parents=True)
+    override.parent.mkdir(parents=True)
+    landed.parent.mkdir(parents=True)
+    shared.write_text("claude fields\n", encoding="utf-8")
+    override.write_text("codex spawn_agent\n", encoding="utf-8")
+    landed.write_text("codex spawn_agent\n", encoding="utf-8")
+    entries = pm_update.read_manifest(_write_manifest(tmp_path, [
+        ".agents/skills @source=.claude/skills",
+        ".agents/skills/pm-dev-delegate/SKILL.md "
+        "@source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
+    ]))
+
+    changes, missing = pm_update.plan(source, entries, dest_root=dest)
+
+    assert missing == []
+    assert changes == []
+
+
 # ── T-0303 통합: @source 전파(self-update·--target no-op)·안전판·render 정합·claude 무영향 ──
 # opencode 채택자의 self-update 가 `.opencode/*` 를 templates/opencode canonical 소스서 전파하는지
 # (과거 @target-owned skip 으로 영영 stale 이던 치명 버그)·진짜 부재 시 rc2 안전판·--target self-copy
