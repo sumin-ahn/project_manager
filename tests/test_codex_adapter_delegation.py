@@ -171,6 +171,9 @@ def test_command_rules_allow_local_checkpoints_and_guard_dangerous_commands():
     ):
         assert safe_prefix in rules
     assert 'pattern = ["git", "push"]' in rules
+    assert 'decision = "allow"' in rules
+    for destructive in ("--force", "--force-with-lease", "--delete", "--mirror"):
+        assert destructive in rules
     assert 'pattern = ["git", "reset"]' in rules
     assert 'decision = "prompt"' in rules
     for dangerous_prefix in ('["rm"]', '["git", "clean"]'):
@@ -185,8 +188,15 @@ def test_command_rules_allow_local_checkpoints_and_guard_dangerous_commands():
         (("git", "fetch", "origin"), "allow"),
         (("python3", "-m", "pytest", "tests/", "-q"), "allow"),
         (("python3", ".project_manager/tools/board.py", "list"), "allow"),
-        (("git", "push", "origin", "task/main"), "prompt"),
+        (("git", "push", "origin", "task/main"), "allow"),
+        (("git", "push", "origin", "main"), "allow"),
+        (("git", "push", "--force", "origin", "main"), "prompt"),
+        (("git", "push", "-f", "origin", "task/main"), "prompt"),
+        (("git", "push", "--force-with-lease", "origin", "main"), "prompt"),
+        (("git", "push", "--delete", "origin", "old-branch"), "prompt"),
+        (("git", "push", "--mirror", "origin"), "prompt"),
         (("git", "push", "origin", "main", "--force"), "prompt"),
+        (("git", "push", "origin", "task/main", "--force-with-lease"), "prompt"),
         (("git", "reset", "-q", "--hard"), "prompt"),
         (("git", "reset", "--soft", "HEAD~1"), "prompt"),
         (("rm", "-rf", "build"), "forbidden"),

@@ -53,12 +53,49 @@ prefix_rule(
     match = ["python3 .project_manager/tools/board.py list", "python3 .project_manager/tools/ticket_finish.py T-0001"],
 )
 
-# 공개/원격 변경은 프로젝트 사용자 게이트를 유지한다.
+# 사용자가 normal push를 상시 승인했다. fast-forward 원격 게시는 무질의로 실행하고,
+# history rewrite·remote ref 삭제처럼 파괴적인 변형만 사용자 게이트를 유지한다.
 prefix_rule(
     pattern = ["git", "push"],
+    decision = "allow",
+    justification = "Normal git push is approved for routine publication; destructive variants have narrower prompt rules.",
+    match = ["git push", "git push origin task/main", "git push origin main"],
+)
+
+prefix_rule(
+    pattern = [
+        "git",
+        "push",
+        ["--force", "-f", "--force-with-lease", "--force-if-includes", "--delete", "--mirror"],
+    ],
     decision = "prompt",
-    justification = "Remote publication requires explicit user approval.",
-    match = ["git push", "git push origin task/main"],
+    justification = "History rewrites and remote ref deletion require explicit user approval.",
+    match = [
+        "git push --force origin main",
+        "git push -f origin task/main",
+        "git push --force-with-lease origin main",
+        "git push --delete origin old-branch",
+        "git push --mirror origin",
+    ],
+    not_match = ["git push origin main", "git push origin task/main"],
+)
+
+# Canonical agent 명령은 옵션을 remote 앞에 둔다. 사람이 흔히 쓰는 현재 보호 브랜치의
+# late-option 형태도 별도로 prompt 처리한다(prefix_rule은 argv 중간 wildcard가 없다).
+prefix_rule(
+    pattern = [
+        "git",
+        "push",
+        "origin",
+        ["main", "task/main"],
+        ["--force", "-f", "--force-with-lease", "--force-if-includes"],
+    ],
+    decision = "prompt",
+    justification = "Late force options on known publication branches still require explicit user approval.",
+    match = [
+        "git push origin main --force",
+        "git push origin task/main --force-with-lease",
+    ],
 )
 
 prefix_rule(
