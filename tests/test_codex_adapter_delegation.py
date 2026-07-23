@@ -123,14 +123,15 @@ def test_name_matches_filename():
 
 # ── (d) model 키 부재 (D5) ──────────────────────────────────────────────────
 
-def test_no_model_key():
-    """어느 agent TOML 에도 `model` 키가 없다 — 사용자 config 기본(gpt-5.5) 상속 (ADR-0070 D5).
+def test_no_model_override_keys():
+    """어느 agent TOML 에도 model/reasoning override 키가 없다 — 사용자 config 기본 상속 (ADR-0070 D5).
 
     opencode 의 `{{OPENCODE_PRO_MODEL}}` pin·`resolve_opencode_model` 분기가 codex 엔 불필요하다
     (harness-특수 모델 해소 분기 0). `model` 이 박히면 그 단순성 결정이 깨진 것."""
-    offenders = [name for name in AGENT_NAMES if "model" in _load(name)]
+    override_keys = {"model", "model_reasoning_effort"}
+    offenders = [name for name in AGENT_NAMES if override_keys & _load(name).keys()]
     assert not offenders, (
-        f"codex agent TOML 에 model 키 잔존(D5 위반·사용자 config 기본 상속 깨짐): {offenders}"
+        f"codex agent TOML 에 model/reasoning override 키 잔존(D5 위반·사용자 config 기본 상속 깨짐): {offenders}"
     )
 
 

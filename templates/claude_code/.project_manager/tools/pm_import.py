@@ -64,6 +64,7 @@ import importlib.util
 import json
 import os
 import re
+import tomllib
 import shlex
 import shutil
 import subprocess
@@ -169,7 +170,18 @@ ADD_HARNESS_ADAPTER = {
 ADD_HARNESS_CREATE_IF_ABSENT = {
     "claude": frozenset(),
     "opencode": frozenset(),
-    "codex": frozenset({".codex/config.toml", ".codex/hooks.json"}),
+    "codex": frozenset({"AGENTS.md", ".codex/config.toml", ".codex/hooks.json"}),
+}
+
+# 위 정적 경로와 같은 instance-owned 정책 섹션의 조건부 보호 규칙. Codex template은 model을
+# 생략해 사용자 기본값을 상속하지만, adopter가 agent별 model/reasoning을 명시하면 그 *파일 전체*가
+# override overlay다. 자동 TOML merge 대신 byte 보존한다. pattern/필드 추가는 이 선언만 고친다.
+ADD_HARNESS_PRESERVE_EXISTING_TOML_FIELDS = {
+    "claude": {},
+    "opencode": {},
+    "codex": {
+        ".codex/agents/*.toml": frozenset({"model", "model_reasoning_effort"}),
+    },
 }
 
 # sed 치환 대상 operational placeholder (루트 README §4 표). 자유서술 3종은 여기 없음(보존).
@@ -2565,7 +2577,10 @@ def _in_adapter_namespace(
 
 
 def _existing_create_if_absent_relpaths(
-    template_root: Path, dest_root: Path, relpaths: frozenset[str],
+    template_root: Path,
+    dest_root: Path,
+    relpaths: frozenset[str],
+    toml_override_fields: dict[str, frozenset[str]],
 ) -> tuple[set[Path], list[str]]:
     """기존 instance-owned config의 copy 제외 집합과 loud 안내 대상을 계산한다.
 
@@ -2588,6 +2603,27 @@ def _existing_create_if_absent_relpaths(
         skip.add(rel)
         if not _same_bytes(src, dst):
             different.append(rel_str)
+    for pattern, fields in sorted(toml_override_fields.items()):
+        for src in sorted(template_root.glob(pattern)):
+            rel = src.relative_to(template_root)
+            dst = dest_root / rel
+            if not (dst.exists() or dst.is_symlink()) or rel in skip:
+                continue
+            try:
+                text = dst.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue  # 읽을 수 없는 agent 파일은 engine-managed refresh의 기존 안전 경로를 탄다.
+            # TOML 문법으로 해석한 최상위 키만 본다. nested table·문자열·주석의 동일한
+            # 단어는 instance override가 아니며, quoted key도 정상적으로 보호한다.
+            try:
+                parsed = tomllib.loads(text)
+            except tomllib.TOMLDecodeError:
+                continue  # 깨진 TOML은 기존 engine-managed refresh 경로를 탄다.
+            if not any(field in parsed for field in fields):
+                continue
+            skip.add(rel)
+            if not _same_bytes(src, dst):
+                different.append(rel.as_posix())
     return skip, different
 
 
@@ -2649,7 +2685,9 @@ def add_harness(
     # (엔진·wiki·타 harness·설정·파사드)은 필터로 제거돼 반환·적용 plan 에 0개다(불변식).
     create_if_absent = ADD_HARNESS_CREATE_IF_ABSENT[harness]
     skipped_existing, preserved_different = _existing_create_if_absent_relpaths(
-        template_root, dest_root, create_if_absent)
+        template_root, dest_root, create_if_absent,
+        ADD_HARNESS_PRESERVE_EXISTING_TOML_FIELDS[harness],
+    )
     plan = plan_copy(
         [template_root], dest_root, backup_root, "full", git_safe=git_safe,
         skip_existing_relpaths=skipped_existing,

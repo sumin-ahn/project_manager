@@ -2893,7 +2893,10 @@ def test_add_harness_exposed(pm_import):
     assert pm_import.ADD_HARNESS_ADAPTER["claude"] == ((".claude",), "CLAUDE.md")
     assert pm_import.ADD_HARNESS_ADAPTER["codex"] == ((".codex", ".agents"), "AGENTS.md")
     assert pm_import.ADD_HARNESS_CREATE_IF_ABSENT["codex"] == {
-        ".codex/config.toml", ".codex/hooks.json",
+        "AGENTS.md", ".codex/config.toml", ".codex/hooks.json",
+    }
+    assert pm_import.ADD_HARNESS_PRESERVE_EXISTING_TOML_FIELDS["codex"] == {
+        ".codex/agents/*.toml": {"model", "model_reasoning_effort"},
     }
     assert not pm_import.ADD_HARNESS_CREATE_IF_ABSENT["claude"]
     assert not pm_import.ADD_HARNESS_CREATE_IF_ABSENT["opencode"]
@@ -3230,6 +3233,136 @@ def test_add_harness_codex_broken_backup_root_is_sensitive_to_protection_policy(
     config.write_text("adopter config", encoding="utf-8")
     (dest / ".pm_import_backups").write_text("not a directory", encoding="utf-8")
     monkeypatch.setitem(pm_import.ADD_HARNESS_CREATE_IF_ABSENT, "codex", frozenset())
+
+    with pytest.raises(pm_import.AncestorConflict, match=r"\.pm_import_backups"):
+        pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+
+
+def test_add_harness_codex_refresh_preserves_agents_md_and_model_overrides(pm_import, tmp_path, capsys):
+    """Codex root doc·명시 model override만 byte 보존하고 다른 agent는 refresh한다."""
+    dest = _build_live_instance(pm_import, tmp_path / "codex_model_overrides", "claude")
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    agents_md = dest / "AGENTS.md"
+    agents_md_bytes = b"# adopter-owned common core\n"
+    agents_md.write_bytes(agents_md_bytes)
+    developer = dest / ".codex" / "agents" / "developer.toml"
+    developer_bytes = developer.read_bytes() + b'\nmodel = "adopter/dev"\n'
+    developer.write_bytes(developer_bytes)
+    reviewer = dest / ".codex" / "agents" / "code-reviewer.toml"
+    reviewer_bytes = reviewer.read_bytes() + b'\nmodel_reasoning_effort = "high"\n'
+    reviewer.write_bytes(reviewer_bytes)
+    architect = dest / ".codex" / "agents" / "architect.toml"
+    architect_template_bytes = architect.read_bytes()
+    architect.write_text("LOCAL ENGINE-MANAGED EDIT\n", encoding="utf-8")
+    capsys.readouterr()
+
+    plan = pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+
+    assert agents_md.read_bytes() == agents_md_bytes
+    assert developer.read_bytes() == developer_bytes
+    assert reviewer.read_bytes() == reviewer_bytes
+    assert architect.read_bytes() == architect_template_bytes
+    protected = {"AGENTS.md", ".codex/agents/developer.toml", ".codex/agents/code-reviewer.toml"}
+    assert not (protected & set(_plan_relpaths(plan, dest)))
+    out = capsys.readouterr().out
+    assert all(rel in out for rel in protected)
+
+
+def test_add_harness_codex_agent_without_model_override_still_refreshes(pm_import, tmp_path):
+    """model/model_reasoning_effort 없는 agent는 user edit가 있어도 engine-managed refresh다."""
+    dest = _build_live_instance(pm_import, tmp_path / "codex_plain_agent", "claude")
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    researcher = dest / ".codex" / "agents" / "researcher.toml"
+    researcher_template_bytes = researcher.read_bytes()
+    researcher.write_text("LOCAL WITHOUT MODEL OVERRIDE\n", encoding="utf-8")
+
+    plan = pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+
+    assert researcher.read_bytes() == researcher_template_bytes
+    assert ".codex/agents/researcher.toml" in _plan_relpaths(plan, dest)
+
+
+@pytest.mark.parametrize(
+    "local_text, protected",
+    [
+        ('[metadata]\nmodel = "nested"\n', False),
+        ('developer_instructions = """\nmodel = "embedded"\n"""\n', False),
+        ('"model" = "adopter/quoted"\n', True),
+    ],
+)
+def test_add_harness_codex_model_protection_uses_toml_top_level_keys(
+    pm_import, tmp_path, local_text, protected,
+):
+    """model override 판정은 TOML 최상위 키만 보호하고 quoted key도 인식한다."""
+    dest = _build_live_instance(pm_import, tmp_path / "codex_toml_sensitivity", "claude")
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    developer = dest / ".codex" / "agents" / "developer.toml"
+    template_bytes = developer.read_bytes()
+    developer.write_text(local_text, encoding="utf-8")
+
+    plan = pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+
+    if protected:
+        assert developer.read_text(encoding="utf-8") == local_text
+        assert ".codex/agents/developer.toml" not in _plan_relpaths(plan, dest)
+    else:
+        assert developer.read_bytes() == template_bytes
+        assert ".codex/agents/developer.toml" in _plan_relpaths(plan, dest)
+
+
+def test_add_harness_codex_root_and_model_protection_bypass_broken_backup_root(
+    pm_import, tmp_path, capsys,
+):
+    """root doc·model override는 backup action 전 제외돼 broken backup root에도 보존된다."""
+    dest = _build_live_instance(pm_import, tmp_path / "codex_model_backup_root", "claude")
+    agents_md = dest / "AGENTS.md"
+    agents_md.write_text("LOCAL AGENTS\n", encoding="utf-8")
+    developer = dest / ".codex" / "agents" / "developer.toml"
+    developer.parent.mkdir(parents=True, exist_ok=True)
+    developer.write_text('name = "developer"\nmodel = "adopter/dev"\n', encoding="utf-8")
+    backup_root = dest / ".pm_import_backups"
+    backup_root.write_text("not a directory", encoding="utf-8")
+    capsys.readouterr()
+
+    plan = pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+
+    assert agents_md.read_text(encoding="utf-8") == "LOCAL AGENTS\n"
+    assert 'model = "adopter/dev"' in developer.read_text(encoding="utf-8")
+    assert not ({"AGENTS.md", ".codex/agents/developer.toml"} & set(_plan_relpaths(plan, dest)))
+    assert backup_root.read_text(encoding="utf-8") == "not a directory"
+    assert "AGENTS.md" in capsys.readouterr().out
+
+
+def test_add_harness_codex_seeds_absent_and_quietly_skips_identical_agents_md(
+    pm_import, tmp_path, capsys,
+):
+    """AGENTS.md 부재는 seed, template과 byte 동일한 기존 파일은 quiet skip이다."""
+    seeded_dest = _build_live_instance(pm_import, tmp_path / "codex_agents_seed", "claude")
+    seed_plan = pm_import.add_harness(seeded_dest, "codex", dry_run=False, source_root=REPO)
+    assert "AGENTS.md" in _plan_relpaths(seed_plan, seeded_dest)
+    assert "Live Inst" in (seeded_dest / "AGENTS.md").read_text(encoding="utf-8")
+
+    same_dest = _build_live_instance(pm_import, tmp_path / "codex_agents_same", "claude")
+    (same_dest / "AGENTS.md").write_bytes((REPO / "templates" / "codex" / "AGENTS.md").read_bytes())
+    capsys.readouterr()
+    same_plan = pm_import.add_harness(same_dest, "codex", dry_run=False, source_root=REPO)
+    assert "AGENTS.md" not in _plan_relpaths(same_plan, same_dest)
+    assert "instance-owned AGENTS.md" not in capsys.readouterr().out
+
+
+def test_add_harness_codex_model_protection_is_sensitive_to_policy(pm_import, tmp_path, monkeypatch):
+    """root/model 보호를 끄면 broken backup root의 일반 안전 가드가 다시 red다."""
+    dest = _build_live_instance(pm_import, tmp_path / "codex_model_policy_sensitive", "claude")
+    (dest / "AGENTS.md").write_text("LOCAL AGENTS\n", encoding="utf-8")
+    developer = dest / ".codex" / "agents" / "developer.toml"
+    developer.parent.mkdir(parents=True, exist_ok=True)
+    developer.write_text('name = "developer"\nmodel = "adopter/dev"\n', encoding="utf-8")
+    (dest / ".pm_import_backups").write_text("not a directory", encoding="utf-8")
+    monkeypatch.setitem(
+        pm_import.ADD_HARNESS_CREATE_IF_ABSENT, "codex",
+        frozenset({".codex/config.toml", ".codex/hooks.json"}),
+    )
+    monkeypatch.setitem(pm_import.ADD_HARNESS_PRESERVE_EXISTING_TOML_FIELDS, "codex", {})
 
     with pytest.raises(pm_import.AncestorConflict, match=r"\.pm_import_backups"):
         pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
