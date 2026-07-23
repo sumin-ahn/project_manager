@@ -3,7 +3,7 @@
 codex 어댑터의 2층 ctx 가드 중 **대화형 경로**를 여러 층위에서 단언한다 (relay 경로 기계 가드는
 `pm_orch_codex.py` usage 판정·T-0404 소관 — 여기 밖):
 
-  1. config.toml 정합 — `model_auto_compact_token_limit` 상향(D4 ②·사실상 off 지향)·
+  1. config.toml 정합 — `model_auto_compact_token_limit` 숫자 threshold(D4 ②·off 아님)·
        `[features]` multi_agent/hooks·`[sandbox_workspace_write]` network_access=false ·
        **machine-local 무시 키 부재**(trusted-repo 로드 규칙·spike §1.2).
   2. hooks.json 정합 — 실 codex 스키마(최상위 `hooks` 래퍼 → 이벤트 → matcher-group → 중첩
@@ -23,6 +23,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -42,7 +45,7 @@ def _load_hooks() -> dict:
     return json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
 
 
-# ── 1. config.toml: auto-compact 상향 + machine-local 금지 키 부재 ──────────────
+# ── 1. config.toml: 문서화된 auto-compact threshold + machine-local 금지 키 부재 ──
 
 def test_config_exists_and_parses():
     """config.toml 이 존재하고 valid TOML 로 파싱된다."""
@@ -50,8 +53,8 @@ def test_config_exists_and_parses():
     assert isinstance(_load_config(), dict)
 
 
-def test_config_raises_auto_compact_limit():
-    """model_auto_compact_token_limit 상향(D4 ② — 사실상 off 지향·spike §3.6 = 900000)."""
+def test_config_uses_documented_numeric_auto_compact_threshold_not_off_sentinel():
+    """config은 문서화된 숫자 threshold만 쓴다; 미검증 off sentinel을 발명하지 않는다."""
     data = _load_config()
     assert "model_auto_compact_token_limit" in data, "auto-compact 상향 키 없음"
     assert data["model_auto_compact_token_limit"] == 900000, (
@@ -97,7 +100,7 @@ def test_config_omits_machine_local_keys():
     assert set(data) <= allowed, f"config.toml 에 예상 밖 top-level 키: {sorted(set(data) - allowed)}"
 
 
-# ── 2. hooks.json: PreCompact loud tripwire (인라인 sh) ──────────────────────
+# ── 2. hooks.json: PreCompact JSON warning (manual/auto 구분) ────────────────
 
 def test_hooks_exists_and_parses_strict_json():
     """hooks.json 이 존재하고 strict JSON 으로 파싱된다(주석 없음 — codex 소비 규약·DoD)."""
@@ -123,14 +126,35 @@ def _precompact_command_entries() -> list[dict]:
     return entries
 
 
-def test_hooks_precompact_tripwire_present():
-    """PreCompact 에 loud tripwire command hook 이 실 codex 스키마로 배선됐다(D4 ② 조용한 compaction 방지).
+def _precompact_payloads_by_matcher() -> dict[str, tuple[dict, dict]]:
+    """각 matcher의 POSIX/Windows inline command가 내는 JSON payload를 파싱한다."""
+    groups = _load_hooks()["hooks"]["PreCompact"]
+    payloads = {}
+    for group in groups:
+        matcher = group["matcher"]
+        handler = group["hooks"][0]
+        posix = handler["command"]
+        windows = handler["commandWindows"]
+        posix_match = re.fullmatch(r"printf '%s\\n' '(\{.*\})'", posix)
+        assert posix_match, f"POSIX handler가 inline JSON printf 형태 아님: {posix!r}"
+        windows_match = re.fullmatch(r"Write-Output '(\{.*\})'", windows)
+        assert windows_match, f"Windows handler가 PowerShell-safe single-quoted JSON 형태 아님: {windows!r}"
+        windows_json = windows_match.group(1)
+        assert "'" not in windows_json, (
+            f"single-quoted PowerShell literal 안 payload에 apostrophe가 있어 quoting이 깨짐: {windows_json!r}"
+        )
+        payloads[matcher] = (json.loads(posix_match.group(1)), json.loads(windows_json))
+    return payloads
 
-    중첩 hooks[0].type=="command" 이고 command 는 argv 배열이 아니라 셸 command **문자열**이다.
-    tripwire 표지/핸드오프 안내/stderr 리다이렉트(1>&2) 문구를 단언한다. matcher 는 PreCompact 가
-    tool-scoped 아니라 생략. ⚠ 1>&2 의 실제 셸-실행 유효성(codex 가 command string 을 셸로 돌리는지)은
-    라이브 확인 항목(T-0407) — 여기선 정적 shape·문구만 단언한다.
+
+def test_hooks_precompact_warning_uses_manual_auto_matchers_and_json_stdout():
+    """PreCompact은 manual/auto를 구분하고 구조화 경고만 낸다.
+
+    기존 stderr echo는 구조화 `systemMessage` 계약이 아니었다. command는 common JSON output
+    fields를 사용하며, history 보존 실측 전에는 `continue:false`를 출하하지 않는다.
     """
+    groups = _load_hooks()["hooks"]["PreCompact"]
+    assert {group.get("matcher") for group in groups} == {"^auto$", "^manual$"}
     entries = _precompact_command_entries()
     cmd_entries = [e for e in entries if e.get("type") == "command"]
     assert cmd_entries, "type=='command' hook 엔트리 없음 (실 스키마의 'type' 태그 누락)"
@@ -142,24 +166,113 @@ def test_hooks_precompact_tripwire_present():
     joined = " ".join(e["command"] for e in cmd_entries)
     assert "[ctx-tripwire]" in joined, "tripwire 표지([ctx-tripwire]) 없음"
     assert "/pm-handoff" in joined, "핸드오프 안내(/pm-handoff) 없음 — 상태 박제 유도 불가"
-    assert "1>&2" in joined, "loud(stderr) 리다이렉트(1>&2) 없음"
+    assert "printf" in joined, "JSON stdout을 내는 printf command 없음"
+    assert '\"continue\":true' in joined, "명시적인 continue:true 경고 contract 없음"
+    assert '\"systemMessage\"' in joined, "UI/event stream 경고 systemMessage 없음"
+    assert '\"suppressOutput\":false' in joined, "common output suppressOutput contract 없음"
+    assert 'continue\":false' not in joined, "미검증 compaction 취소를 canonical hook에 출하하면 안 됨"
 
 
-def test_hooks_tripwire_is_inline_no_external_script():
-    """tripwire 는 인라인 command 문자열이다 — 별도 스크립트 파일 참조 금지(새 전파 surface 회피).
+def test_hooks_windows_commands_match_posix_structured_warning_contract():
+    """PowerShell-safe native Windows fallback도 각 handler의 JSON 경고 의미를 보존한다."""
+    payloads = _precompact_payloads_by_matcher()
+    assert set(payloads) == {"^auto$", "^manual$"}
+    for matcher, (posix, windows) in payloads.items():
+        assert posix == windows, f"{matcher} POSIX/Windows payload 의미 불일치"
+        assert posix == {
+            "continue": True,
+            "systemMessage": posix["systemMessage"],
+            "suppressOutput": False,
+        }
+        assert "[ctx-tripwire]" in posix["systemMessage"]
+        assert "/pm-handoff" in posix["systemMessage"]
 
-    실 codex 스키마의 command 는 셸 문자열(예: `echo ... 1>&2`) — .sh/.py 스크립트 실행이 아니라
-    인라인 echo 여야 한다. (그 문자열의 실제 셸-실행 유효성은 T-0407 라이브 확인 몫.)
-    """
+    assert "auto compaction" in payloads["^auto$"][0]["systemMessage"]
+    assert "manual compaction" in payloads["^manual$"][0]["systemMessage"]
+
+
+def test_hooks_warning_is_inline_no_external_script():
+    """경고는 인라인 JSON stdout command다 — 별도 스크립트 전파 surface를 만들지 않는다."""
     for e in _precompact_command_entries():
         assert e.get("type") == "command", f"command 타입 hook 아님: {e!r}"
         body = e.get("command", "")
         assert isinstance(body, str), f"command 가 문자열 아님 (실 스키마 위반): {body!r}"
-        # 별도 스크립트(.sh/.py 파일) 실행이 아니라 echo 인라인이어야 한다.
+        # 별도 스크립트(.sh/.py 파일) 실행이 아니라 printf 인라인이어야 한다.
         assert ".sh" not in body and ".py" not in body, (
             f"별도 스크립트 파일 참조 감지 (인라인 규약 위반): {body!r}"
         )
-        assert "echo" in body, f"loud echo tripwire 형태 아님: {body!r}"
+        assert "printf" in body, f"구조화 JSON printf 형태 아님: {body!r}"
+        windows = e.get("commandWindows", "")
+        assert isinstance(windows, str) and windows, f"Windows commandWindows 누락: {e!r}"
+        assert ".sh" not in windows and ".py" not in windows, (
+            f"Windows handler가 외부 스크립트를 참조함: {windows!r}"
+        )
+        assert windows.startswith("Write-Output '"), (
+            f"Windows handler가 PowerShell-safe Write-Output 형태 아님: {windows!r}"
+        )
+
+
+def test_hooks_windows_command_emits_parseable_json_when_powershell_available():
+    """PowerShell이 있는 host에서는 commandWindows를 실제 실행해 stdout JSON까지 확인한다."""
+    executable = shutil.which("pwsh") or shutil.which("powershell")
+    if executable is None:
+        return  # Linux CI 등 PowerShell 부재 환경은 위 static parser가 contract를 검증한다.
+
+    payloads = _precompact_payloads_by_matcher()
+    for group in _load_hooks()["hooks"]["PreCompact"]:
+        raw_command = group["hooks"][0]["commandWindows"]
+        windows_payload = payloads[group["matcher"]][1]
+        result = subprocess.run(
+            [executable, "-NoProfile", "-NonInteractive", "-Command", raw_command],
+            check=True, capture_output=True, text=True,
+        )
+        assert json.loads(result.stdout.strip()) == windows_payload
+
+
+def _rollout_summary(jsonl: str) -> tuple[int, set[str], bool]:
+    """저장 Codex JSONL의 event_msg payload만 읽어 compaction/hook 증거를 요약한다."""
+    records = []
+    for line in jsonl.splitlines():
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            # 이전 echo처럼 JSONL 밖으로 나온 텍스트도 output 부재 증거에서 놓치지 않는다.
+            continue
+    event_types = {
+        record.get("payload", {}).get("type")
+        for record in records
+        if record.get("type") == "event_msg" and isinstance(record.get("payload"), dict)
+    }
+    compacted = sum(
+        record.get("type") == "event_msg"
+        and record.get("payload", {}).get("type") == "context_compacted"
+        for record in records
+    )
+    return compacted, event_types & {"hook_started", "hook_completed"}, "[ctx-tripwire]" in jsonl
+
+
+def test_recorded_long_tui_rollout_fixture_proves_echo_only_tripwire_was_false_green():
+    """T-0442 sanitize fixture: 실제 event_msg JSONL shape에서 4회 compaction·hook 부재를 읽는다."""
+    rollout_jsonl = "\n".join([
+        '{"timestamp":"2026-07-22T10:50:53Z","type":"event_msg","payload":{"type":"context_compacted"}}',
+        '{"timestamp":"2026-07-22T11:00:00Z","type":"event_msg","payload":{"type":"agent_message","message":"continue work"}}',
+        '{"timestamp":"2026-07-22T13:49:35Z","type":"event_msg","payload":{"type":"context_compacted"}}',
+        '{"timestamp":"2026-07-22T14:44:33Z","type":"event_msg","payload":{"type":"context_compacted"}}',
+        '{"timestamp":"2026-07-23T04:49:50Z","type":"event_msg","payload":{"type":"context_compacted"}}',
+        '{"timestamp":"2026-07-23T04:50:00Z","type":"turn.completed","usage":{"input_tokens":42}}',
+    ])
+    compacted, hook_events, tripwire_output = _rollout_summary(rollout_jsonl)
+    assert compacted == 4
+    assert hook_events == set()
+    assert tripwire_output is False
+
+    # 감도: fixture에 hook event/output가 섞이면 같은 parser/filter가 부재 판정을 허용하지 않는다.
+    observed = rollout_jsonl + '\n{"type":"event_msg","payload":{"type":"hook_started"}}\n[ctx-tripwire]'
+    _, hook_events, tripwire_output = _rollout_summary(observed)
+    assert hook_events == {"hook_started"}
+    assert tripwire_output is True
 
 
 # ── 3. ctx_window_tokens_codex 예산 키: board.py init 스캐폴드 ────────────────

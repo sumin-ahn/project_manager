@@ -419,6 +419,14 @@ def test_codex_maybe_mark_ctx_writes_marker_over_budget(orch, driver_mod, tmp_pa
     assert orch.stop_marker_present(tmp_path, "tid_over") is True
 
 
+def test_relay_usage_stop_marker_is_the_only_shipped_long_session_mechanical_guard():
+    """direct TUI에는 안정적인 post-turn usage callback이 없으므로 장기 경로는 relay marker뿐이다."""
+    readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
+    assert "대화형 `codex`는 짧은 wave 전용" in readme
+    assert "장기 경로의 유일한 기계 가드" in readme
+    assert "turn.completed.usage" in readme
+
+
 def test_codex_maybe_mark_ctx_noop_under_budget(orch, driver_mod, tmp_path):
     """예산 정지점 미만이면 marker 안 씀(실 wire usage 경로)."""
     driver = driver_mod.CodexCliDriver(

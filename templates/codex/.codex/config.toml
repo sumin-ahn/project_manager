@@ -11,9 +11,8 @@ sandbox_mode = "workspace-write"
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 
-# D4 ②(대화형 경로): auto-compact 임계를 크게 올려 사실상 off 를 지향한다. 완전 off 스위치는
-#   미확인(라이브 실측 항목) — off 불가여도 auto-compact 는 최후 backstop 이고, 임박 시점의 손실은
-#   아래 hooks.json 의 PreCompact tripwire 가 loud 하게 경고한다(조용한 compaction 방지).
+# D4 ②(대화형 경로): 문서화된 숫자 threshold만 설정한다. 이 값은 auto-compaction을 끄지 않으며,
+#   off sentinel을 발명하지 않는다. hooks.json은 경고용일 뿐 history 보존 기계 가드가 아니다.
 model_auto_compact_token_limit = 900000
 
 [features]

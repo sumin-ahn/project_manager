@@ -1,11 +1,24 @@
 {
+  "description": "PreCompact warnings only: direct TUI compaction is not a long-running PM guard.",
   "hooks": {
     "PreCompact": [
       {
+        "matcher": "^auto$",
         "hooks": [
           {
             "type": "command",
-            "command": "echo '[ctx-tripwire] compaction 임박 — 지금 /pm-handoff 로 상태 박제하라(조용한 compaction=컨텍스트 손실·D4)' 1>&2"
+            "command": "printf '%s\\n' '{\"continue\":true,\"systemMessage\":\"[ctx-tripwire] auto compaction is about to replace history. Direct TUI is short-wave only; use /pm-handoff before the next long-running wave.\",\"suppressOutput\":false}'",
+            "commandWindows": "Write-Output '{\"continue\":true,\"systemMessage\":\"[ctx-tripwire] auto compaction is about to replace history. Direct TUI is short-wave only; use /pm-handoff before the next long-running wave.\",\"suppressOutput\":false}'"
+          }
+        ]
+      },
+      {
+        "matcher": "^manual$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s\\n' '{\"continue\":true,\"systemMessage\":\"[ctx-tripwire] manual compaction is lossy. Record /pm-handoff first if this state must survive.\",\"suppressOutput\":false}'",
+            "commandWindows": "Write-Output '{\"continue\":true,\"systemMessage\":\"[ctx-tripwire] manual compaction is lossy. Record /pm-handoff first if this state must survive.\",\"suppressOutput\":false}'"
           }
         ]
       }

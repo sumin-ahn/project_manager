@@ -31,8 +31,28 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
   - **부수 이득**: 방법론이 전부 pm_update 갱신 도달 채널(TOML @source·스킬·엔진 카드)에 실려 —
     instance-owned 진입 doc 의 drift 표면이 codex 엔 애초에 생기지 않는다.
 - **`.codex/config.toml`·`.codex/hooks.json`** (instance-owned·채택자 소유) — 대화형 ctx 가드
-  (`model_auto_compact_token_limit` 상향 + PreCompact loud tripwire). 트리에 실재하되 pm_update 미전파
+  (문서화된 `model_auto_compact_token_limit` + PreCompact 구조화 경고). 트리에 실재하되 pm_update 미전파
   (settings.json/opencode.jsonc 대칭·hook trust 재승인 churn 회피).
+
+## Context safety: direct TUI vs. relay
+
+**대화형 `codex`는 짧은 wave 전용이다. 장기 PM 세션은 relay를 사용한다.** `model_auto_compact_token_limit`
+은 auto-compaction을 유발하는 숫자 threshold일 뿐 off 스위치가 아니다. `hooks.json`은 `auto`와
+`manual` PreCompact를 구분해 JSON `systemMessage` 경고를 내지만, 검증되지 않은 `continue:false`를
+출하하지 않는다. 따라서 hook 경고가 보였다는 사실은 원문 history가 보존됐다는 증거가 아니다.
+각 경고 handler는 POSIX `command`와 native Windows PowerShell-safe `commandWindows`에서 같은 JSON을 stdout으로 낸다.
+
+- direct TUI: 중요한 상태는 threshold 전에 수동으로 `/pm-handoff`에 박제하고, compaction 뒤에는
+  원문 history가 유지됐다고 가정하지 않는다. hook trust가 없으면 경고도 실행되지 않는다.
+- relay: `codex exec --json`의 `turn.completed.usage`를 매 turn 파싱한다. 누적 usage가 예산의 STOP
+  경계에 닿으면 relay driver가 post-turn STOP marker를 남기고 Supervisor가 세션을 회전한다. 이것이
+  장기 경로의 유일한 기계 가드다.
+
+2026-07-22~23 장기 TUI rollout에서는 `context_compacted`가 네 번 기록됐고, 해당 event stream에
+`hook_started`/`hook_completed` 및 기존 echo tripwire 출력은 없었다. 따라서 이전 echo-only tripwire는
+false-green이었다. `continue:false`가 설치된 Codex release에서 compaction transaction을 취소하는지와
+direct TUI가 안정적인 post-turn usage callback을 제공하는지는 disposable trusted profile에서 history와
+event stream을 함께 확인하기 전까지 미검증이다.
 
 ## 채택 (pm_import — 정규 경로)
 
