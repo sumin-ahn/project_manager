@@ -1,5 +1,5 @@
 {
-  "description": "PreCompact warnings only: direct TUI compaction is not a long-running PM guard.",
+  "description": "PreCompact hard-stops manual and automatic compaction so PM state can be handed off first.",
   "hooks": {
     "PreCompact": [
       {
@@ -7,8 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '%s\\n' '{\"continue\":true,\"systemMessage\":\"[ctx-tripwire] auto compaction is about to replace history. Direct TUI is short-wave only; use /pm-handoff before the next long-running wave.\",\"suppressOutput\":false}'",
-            "commandWindows": "Write-Output '{\"continue\":true,\"systemMessage\":\"[ctx-tripwire] auto compaction is about to replace history. Direct TUI is short-wave only; use /pm-handoff before the next long-running wave.\",\"suppressOutput\":false}'"
+            "command": "printf '%s\\n' '{\"continue\":false,\"stopReason\":\"auto compaction blocked; run /pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Auto compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session.\",\"suppressOutput\":false}'",
+            "commandWindows": "Write-Output '{\"continue\":false,\"stopReason\":\"auto compaction blocked; run /pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Auto compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session.\",\"suppressOutput\":false}'"
           }
         ]
       },
@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '%s\\n' '{\"continue\":true,\"systemMessage\":\"[ctx-tripwire] manual compaction is lossy. Record /pm-handoff first if this state must survive.\",\"suppressOutput\":false}'",
-            "commandWindows": "Write-Output '{\"continue\":true,\"systemMessage\":\"[ctx-tripwire] manual compaction is lossy. Record /pm-handoff first if this state must survive.\",\"suppressOutput\":false}'"
+            "command": "printf '%s\\n' '{\"continue\":false,\"stopReason\":\"manual compaction blocked; run /pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Manual compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session.\",\"suppressOutput\":false}'",
+            "commandWindows": "Write-Output '{\"continue\":false,\"stopReason\":\"manual compaction blocked; run /pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Manual compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session.\",\"suppressOutput\":false}'"
           }
         ]
       }

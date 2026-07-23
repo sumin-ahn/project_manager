@@ -100,7 +100,7 @@ def test_config_omits_machine_local_keys():
     assert set(data) <= allowed, f"config.toml 에 예상 밖 top-level 키: {sorted(set(data) - allowed)}"
 
 
-# ── 2. hooks.json: PreCompact JSON warning (manual/auto 구분) ────────────────
+# ── 2. hooks.json: PreCompact JSON hard-stop (manual/auto 구분) ──────────────
 
 def test_hooks_exists_and_parses_strict_json():
     """hooks.json 이 존재하고 strict JSON 으로 파싱된다(주석 없음 — codex 소비 규약·DoD)."""
@@ -147,12 +147,8 @@ def _precompact_payloads_by_matcher() -> dict[str, tuple[dict, dict]]:
     return payloads
 
 
-def test_hooks_precompact_warning_uses_manual_auto_matchers_and_json_stdout():
-    """PreCompact은 manual/auto를 구분하고 구조화 경고만 낸다.
-
-    기존 stderr echo는 구조화 `systemMessage` 계약이 아니었다. command는 common JSON output
-    fields를 사용하며, history 보존 실측 전에는 `continue:false`를 출하하지 않는다.
-    """
+def test_hooks_precompact_hard_stop_uses_manual_auto_matchers_and_json_stdout():
+    """PreCompact은 live-confirmed common JSON contract로 manual/auto transaction을 중단한다."""
     groups = _load_hooks()["hooks"]["PreCompact"]
     assert {group.get("matcher") for group in groups} == {"^auto$", "^manual$"}
     entries = _precompact_command_entries()
@@ -167,10 +163,10 @@ def test_hooks_precompact_warning_uses_manual_auto_matchers_and_json_stdout():
     assert "[ctx-tripwire]" in joined, "tripwire 표지([ctx-tripwire]) 없음"
     assert "/pm-handoff" in joined, "핸드오프 안내(/pm-handoff) 없음 — 상태 박제 유도 불가"
     assert "printf" in joined, "JSON stdout을 내는 printf command 없음"
-    assert '\"continue\":true' in joined, "명시적인 continue:true 경고 contract 없음"
+    assert '\"continue\":false' in joined, "live-confirmed continue:false hard-stop contract 없음"
+    assert '\"stopReason\"' in joined, "matcher별 stopReason 없음"
     assert '\"systemMessage\"' in joined, "UI/event stream 경고 systemMessage 없음"
     assert '\"suppressOutput\":false' in joined, "common output suppressOutput contract 없음"
-    assert 'continue\":false' not in joined, "미검증 compaction 취소를 canonical hook에 출하하면 안 됨"
 
 
 def test_hooks_windows_commands_match_posix_structured_warning_contract():
@@ -179,16 +175,21 @@ def test_hooks_windows_commands_match_posix_structured_warning_contract():
     assert set(payloads) == {"^auto$", "^manual$"}
     for matcher, (posix, windows) in payloads.items():
         assert posix == windows, f"{matcher} POSIX/Windows payload 의미 불일치"
-        assert posix == {
-            "continue": True,
-            "systemMessage": posix["systemMessage"],
-            "suppressOutput": False,
-        }
+        assert posix["continue"] is False
+        assert posix["suppressOutput"] is False
         assert "[ctx-tripwire]" in posix["systemMessage"]
         assert "/pm-handoff" in posix["systemMessage"]
+        assert posix["stopReason"] == (
+            "auto compaction blocked; run /pm-handoff"
+            if matcher == "^auto$" else "manual compaction blocked; run /pm-handoff"
+        )
 
-    assert "auto compaction" in payloads["^auto$"][0]["systemMessage"]
-    assert "manual compaction" in payloads["^manual$"][0]["systemMessage"]
+    assert payloads["^auto$"][0]["systemMessage"] == (
+        "[ctx-tripwire] Auto compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session."
+    )
+    assert payloads["^manual$"][0]["systemMessage"] == (
+        "[ctx-tripwire] Manual compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session."
+    )
 
 
 def test_hooks_warning_is_inline_no_external_script():
@@ -273,6 +274,79 @@ def test_recorded_long_tui_rollout_fixture_proves_echo_only_tripwire_was_false_g
     _, hook_events, tripwire_output = _rollout_summary(observed)
     assert hook_events == {"hook_started"}
     assert tripwire_output is True
+
+
+LIVE_CANARY = "PROBE_AFTER_ABORT T0442_CANARY_7F3A"
+
+
+def _live_probe_segment_summary(jsonl: str) -> tuple[int, int, int, bool]:
+    """한 probe segment의 시작·interrupted abort·compaction·assistant canary만 읽는다.
+
+    실제 task_started payload에는 manual/auto trigger가 없으므로, trigger를 event에 발명하지 않는다.
+    어느 probe인지의 provenance는 호출자가 분리한 segment 이름으로만 보존한다.
+    """
+    records = [json.loads(line) for line in jsonl.splitlines() if line.strip()]
+    events = [
+        record["payload"] for record in records
+        if record.get("type") == "event_msg" and isinstance(record.get("payload"), dict)
+    ]
+    started = sum(event.get("type") == "task_started" for event in events)
+    aborted = sum(
+        event.get("type") == "turn_aborted" and event.get("reason") == "interrupted"
+        for event in events
+    )
+    compacted = sum(event.get("type") == "context_compacted" for event in events)
+    canary_recovered = any(
+        event.get("type") == "agent_message"
+        and (event.get("message") == LIVE_CANARY or event.get("content") == LIVE_CANARY)
+        for event in events
+    )
+    return started, aborted, compacted, canary_recovered
+
+
+def _live_probe_succeeds(segments: dict[str, str]) -> bool:
+    """manual/auto provenance segment 각각에 abort 증거가 있고 manual canary가 회수됐는지 판정한다."""
+    if set(segments) != {"manual", "auto"}:
+        return False
+    return (
+        _live_probe_segment_summary(segments["manual"]) == (1, 1, 0, True)
+        and _live_probe_segment_summary(segments["auto"]) == (1, 1, 0, False)
+    )
+
+
+def test_live_precompact_hard_stop_fixture_preserves_history_after_manual_and_auto_abort():
+    """live-confirmed branch: provenance가 분리된 manual/auto probe 모두 abort되고 compaction이 없다."""
+    manual_jsonl = "\n".join([
+        '{"type":"event_msg","payload":{"type":"task_started"}}',
+        '{"type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted","duration_ms":5}}',
+        '{"type":"event_msg","payload":{"type":"agent_message","message":"PROBE_AFTER_ABORT T0442_CANARY_7F3A"}}',
+    ])
+    auto_jsonl = "\n".join([
+        '{"type":"event_msg","payload":{"type":"task_started"}}',
+        '{"type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted","duration_ms":5}}',
+    ])
+    segments = {"manual": manual_jsonl, "auto": auto_jsonl}
+    assert _live_probe_segment_summary(manual_jsonl) == (1, 1, 0, True)
+    assert _live_probe_segment_summary(auto_jsonl) == (1, 1, 0, False)
+    assert _live_probe_succeeds(segments) is True
+
+    # 감도: auto provenance가 manual로 바뀌거나 누락되면 두 matcher의 독립 증거가 아니다.
+    assert _live_probe_succeeds({"manual": manual_jsonl, "manual_relabelled": auto_jsonl}) is False
+    assert _live_probe_succeeds({"manual": manual_jsonl}) is False
+
+    # canary는 user/input/metadata raw text가 아니라 assistant agent_message exact payload여야 한다.
+    for field in ("user_input", "metadata", "content"):
+        injected = manual_jsonl.replace(
+            '{"type":"event_msg","payload":{"type":"agent_message","message":"PROBE_AFTER_ABORT T0442_CANARY_7F3A"}}',
+            json.dumps({"type": "event_msg", "payload": {"type": field, "message": LIVE_CANARY}}),
+        )
+        assert _live_probe_segment_summary(injected) == (1, 1, 0, False)
+        assert _live_probe_succeeds({"manual": injected, "auto": auto_jsonl}) is False
+
+    # context_compacted 하나라도 생기면 hard-stop 성공 증거가 아니다.
+    compacted_auto = auto_jsonl + '\n{"type":"event_msg","payload":{"type":"context_compacted"}}'
+    assert _live_probe_segment_summary(compacted_auto) == (1, 1, 1, False)
+    assert _live_probe_succeeds({"manual": manual_jsonl, "auto": compacted_auto}) is False
 
 
 # ── 3. ctx_window_tokens_codex 예산 키: board.py init 스캐폴드 ────────────────

@@ -36,23 +36,23 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
 
 ## Context safety: direct TUI vs. relay
 
-**대화형 `codex`는 짧은 wave 전용이다. 장기 PM 세션은 relay를 사용한다.** `model_auto_compact_token_limit`
-은 auto-compaction을 유발하는 숫자 threshold일 뿐 off 스위치가 아니다. `hooks.json`은 `auto`와
-`manual` PreCompact를 구분해 JSON `systemMessage` 경고를 내지만, 검증되지 않은 `continue:false`를
-출하하지 않는다. 따라서 hook 경고가 보였다는 사실은 원문 history가 보존됐다는 증거가 아니다.
-각 경고 handler는 POSIX `command`와 native Windows PowerShell-safe `commandWindows`에서 같은 JSON을 stdout으로 낸다.
+`model_auto_compact_token_limit`은 auto-compaction을 유발하는 숫자 threshold일 뿐 off 스위치가 아니다.
+대신 `hooks.json`은 `auto`와 `manual` PreCompact를 구분해 JSON `continue:false`로 compaction
+transaction을 hard-stop하고 `/pm-handoff`를 요구한다. codex-cli 0.145.0의 trusted disposable probe에서
+두 matcher 모두 `PreCompact (stopped)`·matcher별 stopReason·`turn_aborted(reason=interrupted)`를 남겼고,
+`context_compacted`는 만들지 않았으며 abort 뒤 canary turn이 원문 연속성을 회수했다. 각 handler는 POSIX
+`command`와 native Windows PowerShell-safe `commandWindows`에서 같은 JSON을 stdout으로 낸다.
 
-- direct TUI: 중요한 상태는 threshold 전에 수동으로 `/pm-handoff`에 박제하고, compaction 뒤에는
-  원문 history가 유지됐다고 가정하지 않는다. hook trust가 없으면 경고도 실행되지 않는다.
+- direct TUI: PreCompact hard-stop은 **reactive 최후 방어선**이다. 중단되면 즉시 `/pm-handoff`에 상태를
+  박제한 뒤 fresh PM session으로 이어 간다. hook trust가 없으면 이 방어선도 실행되지 않는다.
 - relay: `codex exec --json`의 `turn.completed.usage`를 매 turn 파싱한다. 누적 usage가 예산의 STOP
   경계에 닿으면 relay driver가 post-turn STOP marker를 남기고 Supervisor가 세션을 회전한다. 이것이
-  장기 경로의 유일한 기계 가드다.
+  장기 경로의 **proactive** 기계 가드다.
 
 2026-07-22~23 장기 TUI rollout에서는 `context_compacted`가 네 번 기록됐고, 해당 event stream에
 `hook_started`/`hook_completed` 및 기존 echo tripwire 출력은 없었다. 따라서 이전 echo-only tripwire는
-false-green이었다. `continue:false`가 설치된 Codex release에서 compaction transaction을 취소하는지와
-direct TUI가 안정적인 post-turn usage callback을 제공하는지는 disposable trusted profile에서 history와
-event stream을 함께 확인하기 전까지 미검증이다.
+false-green이었다. direct TUI rollout의 token_count는 관측되지만 stable post-turn usage callback은 없으므로,
+장기 PM은 relay의 `turn.completed.usage` 가드를 사용한다.
 
 ## 채택 (pm_import — 정규 경로)
 
