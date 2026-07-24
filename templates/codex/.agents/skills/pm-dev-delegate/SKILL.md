@@ -48,6 +48,72 @@ python3 .project_manager/tools/board.py regression run --task <이름> [--repo <
 - task 가 슬롯을 2개↑ 보유해 모호하면 F6 이 **에러**(⑦·암묵 선택 금지) — `--repo`/`--slot` 로 특정 후 주입.
 - 슬롯 세션(비-task)·솔로(M=1)는 종전대로 — 이 주입은 task-mode 에서만.
 
+## cross-harness 위임 판정 (native 단락 · pm_delegate 채널 · ADR-0075)
+
+역할 노동을 위임하기 전, 대상이 **내(PM) 하네스 네이티브로 도는지**(native) **다른 하네스 CLI 로
+나가야 하는지**(cross)를 먼저 판정한다. 판정 1차 = 이 카드(PM)이고, `pm_delegate.py` 의 same-harness
+경고는 백스톱(never-block·spike §3.6). 매핑은 `local.conf` 의 `delegate.<role>[.<tier>]` 키가 소유한다.
+
+### 1. 매핑 조회 (dry-run — 미전송 미리보기)
+
+역할이 어느 하네스·모델로 해소되는지 먼저 확인한다 (실 스폰 없음·외부 송신 0·rc=0):
+
+```bash
+python3 .project_manager/tools/pm_delegate.py --dry-run \
+    --role <developer|researcher|architect|code-reviewer> \
+    --prompt-file <task 프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard]
+```
+
+- 출력 = 해소된 `(harness, model, reasoning)` + 합성 프롬프트 + argv 미리보기. **전송하지 않는다**.
+- dry-run 은 opt-in 게이트를 **우회**한다(항상 rc=0 미리보기) — opt-in OFF 판정(`rc=3`)은 실 실행에서만 난다(아래 §opt-in 게이트).
+- 매핑 미설정 역할은 `rc=1` fail-loud — `local.conf` 에 `delegate.<role>.harness/.model` 을 채운다(조용한 폴백 없음).
+- `--tier` 는 **developer 전용** (난제=`hard`·평시=`normal`). 티어 판정 기준 카드(T-0448)를 참조해 고른다.
+  비-개발 역할에 `--tier` 를 주면 usage error.
+
+### 2. native 단락 판정
+
+해소된 **target harness == 내(PM) 하네스**면 → **네이티브 위임**을 쓴다. codex PM 은 아래 §실행 패턴의
+`spawn_agent` 네이티브 위임을 그대로 쓴다(다른 하네스가 PM 일 때는 각자의 네이티브 서브에이전트 위임).
+pm_delegate 를 부르지 않는다 — 외부 송신 0·같은 프로세스 계열이라 더 저렴하다.
+
+해소된 **target harness != 내 하네스**(cross)면 → 아래 §3 pm_delegate 호출.
+
+### 3. cross 위임 실행 (pm_delegate.py)
+
+target 이 다른 하네스면 `--dry-run` 을 떼고 실행한다 (opt-in 필요·외부 송신 발생):
+
+```bash
+python3 .project_manager/tools/pm_delegate.py --role <역할> \
+    --prompt-file <프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard]
+```
+
+- `--prompt-file` — PM 이 만든 **self-contained task 프롬프트**를 담은 파일. 아래 §실행 패턴의 위임
+  프롬프트 본문(developer/code-reviewer)을 그대로 파일로 저장해 넘긴다. 경로는 해소된 `--cwd` 하위
+  또는 이 repo `.project_manager/` 하위만 허용(repo 경계 밖 = fail-loud·유출 차단).
+- `--cwd` — dev 가 구현할 **작업 worktree 절대경로**. F6 해소값(task-mode 는 위 §task-mode 주입 절
+  참조)을 실값으로 박는다. 모든 역할 필수(기본값 없음).
+- `--tier` — developer 난제/평시(위 §1). 다른 역할엔 주지 않는다.
+- **role preamble 은 엔진이 합성**한다 — 역할 정체성·금지사항(commit/push 등 git 비가역·board 조작·
+  어댑터 디렉토리 `.claude/.codex/.opencode` 수정 금지)은 `pm_delegate.py` 의 role preamble 이 프롬프트
+  앞에 자동 주입한다. 프롬프트 파일엔 **작업 내용만** 담고 금지 문구를 중복 서술하지 않는다.
+- **병렬 wave** = PM 이 자기 하네스의 백그라운드 실행으로 pm_delegate 호출 자체를 병렬화한다.
+  pm_delegate 는 동기·stateless — 병렬은 호출측 책임이다.
+- 결과: `rc=0` 성공(최종 reply = stdout·raw 는 파일 박제) / `rc=1` 실패(loud·raw 경로 stderr) /
+  `rc=3` opt-in OFF. reply 를 회수해 PM 이 검토·board 갱신을 담당한다(위임 대상은 board 조작 안 함).
+
+### opt-in 게이트 (외부 송신 · 기본 OFF)
+
+cross 위임은 코드/프롬프트·worktree 내용을 **외부 하네스로 전송**한다 → `delegate_enabled` opt-in 이
+꺼져 있으면(기본 OFF) pm_delegate 는 외부 하네스를 스폰하지 않고 `rc=3` 로 명시 거부한다. 켜기:
+
+```ini
+# local.conf (per-clone·git-ignored)
+delegate_enabled = true
+```
+
+`=true` 는 "worktree 내용·(정제된) 환경이 타깃 하네스로 나갈 수 있음"을 사용자가 수용하는 계약이다
+(과금·외부 송신·ADR-0004 상속). **native 단락(same-harness)은 이 게이트 밖** — 외부 송신이 없다.
+
 ## 실행 패턴
 
 ### developer 위임
@@ -175,9 +241,12 @@ attribute* 가능. PM 이 진짜 영역 확인 후 fix 분기 결정.
 - **background 우선** — 병렬 wave 효율 ↑. 단 검토 결과에 다음 ticket 의존 시 foreground.
 - **위임 프롬프트는 한 줄** — ticket 본문이 self-contained 의무 → 추가 컨텍스트 불필요. 길어지면 ticket 본문 보강.
 - **해소 절대경로 주입** — task-mode dev 위임은 F6 로 해소한 worktree 절대경로 실값을 프롬프트에 명시(짐작 제거·cwd 비참여·T-0355). ⑰ 카드 생성화(T-0362) 전이라 현 wave 는 프롬프트 명시 주입까지.
+- **native 단락 판정 = 이 카드** — target 하네스 == 내 하네스(codex)면 `spawn_agent` 네이티브 위임(외부 송신 0),
+  cross 면 `pm_delegate.py` 채널(외부 송신·opt-in 필요). `pm_delegate` same-harness 경고는 백스톱(never-block).
 
 ## 참고
 
 - `.project_manager/wiki/pm_role.md` — wave 패턴·dev/reviewer cycle·must-fix 분기 단일 진실
+- `.project_manager/tools/pm_delegate.py` — cross-harness 위임 채널 엔진(매핑 해소·argv·role preamble·opt-in 게이트·ADR-0075)
 - `.claude/agents/developer.md` — developer 서브에이전트 정의
 - `.claude/agents/code-reviewer.md` — code-reviewer 서브에이전트 정의

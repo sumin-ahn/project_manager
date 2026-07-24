@@ -1022,3 +1022,22 @@ def test_cmd_lint_subcommand_clean(pd, monkeypatch, capsys):
     rc = pd.main(["lint"])
     assert rc == 0
     assert "경고 없음" in capsys.readouterr().out
+
+
+# ── role preamble drift 가드(§4.3·T-0447): 엔진-shipped 최소본 4개 존재 + 금지 문구 포함 ──
+def test_role_preambles_cover_all_four_roles(pd):
+    """ROLE_PREAMBLES = 정확히 4역할(developer/researcher/architect/code-reviewer)·비-빈 텍스트."""
+    assert set(pd.ROLE_PREAMBLES) == {"developer", "researcher", "architect", "code-reviewer"}
+    for role, text in pd.ROLE_PREAMBLES.items():
+        assert text.strip(), f"{role} preamble 이 비어 있음"
+        assert role.split("-")[0] in text or "서브에이전트" in text  # 역할 정체성 서술
+
+
+def test_role_preambles_include_prohibition_phrases(pd):
+    """4 preamble 모두 금지 문구(commit/push·board 조작·어댑터 수정 금지)를 포함(drift 가드)."""
+    for role, text in pd.ROLE_PREAMBLES.items():
+        assert "commit" in text and "push" in text, f"{role}: git 비가역 금지 문구 누락"
+        assert "board" in text, f"{role}: board 조작 금지 문구 누락"
+        # 어댑터 디렉토리 수정 금지 — 3 하네스 디렉토리명 중 하나 이상 명시
+        assert any(d in text for d in (".claude", ".codex", ".opencode")), \
+            f"{role}: 어댑터 디렉토리 수정 금지 문구 누락"
