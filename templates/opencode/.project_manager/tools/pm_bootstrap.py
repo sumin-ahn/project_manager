@@ -240,7 +240,7 @@ def _dashboard_file() -> Path:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.4.1"
+ENGINE_REV = "v1.4.2"
 
 # _load_tool(generic)이 이름으로 로드하는 것 중 rev 스탬프를 지닌(계측된) 형제만 대조.
 # pm_log 등 미계측 도구는 제외(정상 사본에서도 ENGINE_REV 부재라 오탐). 계측 확대 시 추가.
