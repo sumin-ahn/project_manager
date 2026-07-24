@@ -51,6 +51,9 @@
 #   참조하는 문서의 잔여 모순 후보를 표면화(탐지 LLM DI·기본 dry / 판정 사람·advisory).
 #   pm_adr.py 발행 명령이 트리거로 호출(개정에만 발화).
 .project_manager/tools/contradiction_lint.py
+# pm_delegate: cross-harness 역할 위임 채널 (ADR-0075·기본 OFF·delegate_enabled opt-in). 신설 도구라
+#   등록 필수(미등록=전파 안 됨). local.conf delegate.* 매핑은 인스턴스 소유(manifest 밖)
+.project_manager/tools/pm_delegate.py
 
 # ── 방법론 문서 (엔진 · 프로젝트별 칸은 *.local.md / local.conf, manifest 밖) ──
 .project_manager/wiki/pm_role.md
