@@ -135,6 +135,7 @@ BOARD_LOCK = LOCAL_DIR / "board.lock"                       # OS file lock — b
 # 직접 read 한다(T-0066 슬롯 test_cmd 레이어·아래 _active_slot_test_cmd). areas.md 읽듯 데이터-결합만.
 LEASES_FILE = LOCAL_DIR / "worktree-leases.json"            # worktree 리스 장부 (ADR-0013·read-only here)
 DOMAIN_PY = REPO / ".project_manager" / "tools" / "domain.py"  # domain lint deep-import (순환 회피·아래 lint_domain)
+PM_DELEGATE_PY = REPO / ".project_manager" / "tools" / "pm_delegate.py"  # delegate lint deep-import (아래 lint_delegate)
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 # Ideas have a simpler lifecycle than tickets — no claim/complete middle
 # states, just `open → promoted|killed`.
@@ -351,6 +352,19 @@ def local_config() -> dict[str, str]:
         key, _, val = line.partition("=")
         conf[key.strip()] = val.strip()
     return conf
+
+
+def _ensure_trailing_newline(path: Path) -> None:
+    """파일 끝 개행 보장 — append 전 가드. 마지막 개행 없는 local.conf(`…upstream_rev=abc`)에 바로
+    append 하면 append 텍스트가 그 값에 이어붙어 기존 키가 손상된다(`abc# cross…`). 파일이 비어있지
+    않고 개행으로 끝나지 않으면 `"\\n"` 하나를 덧붙인다(부재/읽기 실패는 무해 no-op)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return
+    if text and not text.endswith("\n"):
+        with path.open("a", encoding="utf-8") as f:
+            f.write("\n")
 
 
 def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
@@ -3745,6 +3759,46 @@ CTX_STOP_PCT_DEFAULT = 20   # 잔여 ≤ 이 % → 정지·핸드오프 트리�
 CTX_WINDOW_TOKENS_DEFAULT = 200000
 
 
+# cross-harness 역할 위임(pm_delegate·ADR-0075) local.conf 시드 — init 이 쓰는 **주석 스키마**
+# 블록(전 4역할·3키 예시). 전부 독립 주석 라인이다(값 뒤 inline `#` 금지 — local.conf 파서는 값 안의
+# `#` 을 제거하지 않아 inline 주석이 값에 섞인다·§3.2). 각 예시 key 라인은 주석 해제 시 그대로 유효한
+# KEY=value 가 되도록 trailing 주석/화살표를 붙이지 않는다(설명은 별도 주석 라인). 기본 OFF 는
+# `delegate_enabled=false` 로 표기(부재=false 이나 false 가 기본임을 스키마로 명시). **실키 결정**은
+# TTY 면 init/pm_update 가 1회 물어 기록(prompt_delegate_optin)·비대화형이면 이 주석 기본 OFF 유지.
+# 모델 실값은 어댑터/과금 특수라 엔진 기본값 0(§7) — 아래는 주석 예시일 뿐 활성 key 가 아니다.
+_DELEGATE_SEED_MARKER = "cross-harness 역할 위임"  # 멱등 append 판정 마커(스키마 블록 존재 여부)
+_DELEGATE_CONF_SEED = (
+    "# ── cross-harness 역할 위임 (pm_delegate·ADR-0075·기본 OFF) ─────────────\n"
+    "# delegate_enabled 는 기본 OFF. false 가 기본값이며, TTY init/pm_update 는 1회 물어 이 실키를\n"
+    "# 기록한다(y=true). 비대화형(CI)은 아래 기본 OFF 주석을 유지한다. 켜기 = true(외부 송신·과금\n"
+    "# 수용 opt-in 계약·ADR-0004 상속 — 켜면 위임 프롬프트/코드가 외부 하네스로 전송된다):\n"
+    "# delegate_enabled=false\n"
+    "# 역할→(하네스·모델·reasoning) 매핑 — 4역할·3키 예시(독립 주석 라인만·값 뒤 inline # 금지):\n"
+    "# 평시(normal) developer:\n"
+    "# delegate.developer.harness=codex\n"
+    "# delegate.developer.model=gpt-5.6-terra\n"
+    "# delegate.developer.reasoning=medium\n"
+    "# 난제(hard) 티어 developer — 세트를 통째로 해소한다(normal 과 혼합 상속 금지):\n"
+    "# delegate.developer.hard.harness=codex\n"
+    "# delegate.developer.hard.model=gpt-5.6-sol\n"
+    "# delegate.developer.hard.reasoning=high\n"
+    "# researcher (순수 읽기·조사):\n"
+    "# delegate.researcher.harness=codex\n"
+    "# delegate.researcher.model=gpt-5.6-terra\n"
+    "# delegate.researcher.reasoning=medium\n"
+    "# architect (설계 초안·발행은 게이트):\n"
+    "# delegate.architect.harness=codex\n"
+    "# delegate.architect.model=gpt-5.6-sol\n"
+    "# delegate.architect.reasoning=high\n"
+    "# code-reviewer — generate≠evaluate 침식을 피하려면 dev 와 다른 모델 권장(하네스 무관 비교):\n"
+    "# delegate.code-reviewer.harness=codex\n"
+    "# delegate.code-reviewer.model=gpt-5.6-luna\n"
+    "# delegate.code-reviewer.reasoning=high\n"
+    "# (cross-harness 도 지원·권장 — 예 harness=claude·model=opus. 단 claude/opencode .reasoning 은\n"
+    "#  T-0449 실측 후 적용되며 그 전 지정 시 fail-loud·codex 는 low/medium/high/xhigh):\n"
+)
+
+
 def _ctx_pct(key: str, default: int) -> int:
     """local.conf 의 ctx 임계값을 정수로 읽는다. 없거나 비정수면 default."""
     raw = local_config().get(key)
@@ -4744,6 +4798,40 @@ def prompt_external_review_optin() -> None:
             print("  → 외부 리뷰 OFF (나중에 local.conf 에서 켤 수 있음).")
 
 
+def prompt_delegate_optin() -> None:
+    """cross-harness 위임(pm_delegate) opt-in 프롬프트 → local.conf 에 delegate_enabled **실키** 기록
+    (ADR-0075·ADR-0004 상속·external_review opt-in 동형).
+
+    위임 프롬프트/코드가 외부 하네스로 *전송*되고 그 하네스에 *과금*되므로 기본 OFF. **실키**
+    delegate_enabled(주석 예시가 아니라 local_config 가 파싱하는 활성 키)가 이미 있으면 결정됨 →
+    no-op. 비대화형(파이프·CI)이면 묻지 않고 기본 OFF 유지(주석 스키마 시드가 도입을 안내). TTY 면
+    1회 질문 — y=true·그 외/무입력=false 실키를 기록해 다음 init/update 때 다시 묻지 않는다(멱등).
+    주석 예시는 local_config 파싱에서 제외되므로 주석만 있고 실키가 없으면 '미결정' 으로 본다."""
+    if "delegate_enabled" in local_config():
+        return  # 실키로 이미 결정됨(주석 예시는 미포함 — 미결정 취급)
+    # 명시적 비대화 신호 우선(Windows DEVNULL isatty 함정 회피·external_review optin 동형).
+    if _is_noninteractive() or not sys.stdin.isatty():
+        print("  (비대화형 — cross-harness 위임 OFF 유지. 켜려면 local.conf delegate_enabled=true)")
+        return
+    print("\ncross-harness 위임(pm_delegate)을 켤까요? 켜면 위임 프롬프트/코드가 외부 하네스로 "
+          "*전송*되고 그 하네스에 *과금*됩니다 (역할 노동을 다른 하네스 CLI 로 위임·ADR-0075).")
+    try:
+        answer = input("  켜기 [y/N]: ").strip().lower()
+    except EOFError:
+        # stdin EOF(Ctrl-D) = 기본 거절 → false 실키를 **기록**(매번 재질문 방지·opt-in 결정 박제).
+        answer = ""
+    _ensure_trailing_newline(LOCAL_CONF)  # 개행 없는 conf 에 바로 append 시 기존 값 손상 방지
+    with LOCAL_CONF.open("a", encoding="utf-8") as f:
+        if answer in ("y", "yes"):
+            f.write("# cross-harness 위임 (ADR-0075) — ON.\ndelegate_enabled=true\n")
+            print("  ✓ cross-harness 위임 ON (delegate_enabled=true·외부 송신·과금 수용). "
+                  "역할 매핑은 local.conf delegate.<role>.* 주석 예시 참조.")
+        else:
+            f.write("# cross-harness 위임 (ADR-0075) — 기본 OFF. 켜려면 true 로.\n"
+                    "delegate_enabled=false\n")
+            print("  → cross-harness 위임 OFF (나중에 local.conf delegate_enabled=true 로 켤 수 있음).")
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """clone 당 1회 setup. --prefix 있으면 multi-repo 네임스페이스, 없으면 solo (N=1·M=1).
 
@@ -4822,7 +4910,8 @@ def cmd_init(args: argparse.Namespace) -> int:
                  "# 물리한도 개념 폐기·claude/opencode 독립). 미설정 시 위 generic 값이 분모.\n"
                  "# ctx_window_tokens_claude=500000\n"
                  "# ctx_window_tokens_opencode=200000\n"
-                 "# ctx_window_tokens_codex=200000\n")
+                 "# ctx_window_tokens_codex=200000\n"
+                 + _DELEGATE_CONF_SEED)
         LOCAL_CONF.write_text(conf, encoding="utf-8")
         surface_sess = sess
     else:
@@ -4857,6 +4946,13 @@ def cmd_init(args: argparse.Namespace) -> int:
         # 의 append 가 마지막 키에 그대로 붙어 기존 키를 변질시킨다(codex must-fix·병합 경로 회귀).
         if merged and not merged.endswith("\n"):
             merged += "\n"
+        # 기존 adopter 보완(T-0446): delegate 스키마 시드는 fresh 생성 branch 에만 있으므로
+        # this-change 이전 local.conf 를 가진 채택자는 재실행에도 스키마를 못 받는다. **스키마 블록
+        # 마커**가 없으면 시드를 파일 끝에 append 한다 — 기존 byte 는 위에서 보존(비파괴 병합). 마커로
+        # 판정하므로 실키 결정(delegate_enabled)과 독립이다(스키마 문서 = 별개 축). 이미 있으면 no-op
+        # → 재실행 멱등(fresh conf 는 이미 포함하므로 자연 no-op). 실키 opt-in 은 prompt_delegate_optin.
+        if _DELEGATE_SEED_MARKER not in merged:
+            merged += _DELEGATE_CONF_SEED
         LOCAL_CONF.write_text(merged, encoding="utf-8")
         surface_sess = existing.get("session") or sess
         if override:
@@ -4877,6 +4973,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # 가드에 막힌다(엔진이 만든 파일을 사용자 편집으로 오인·clone→init→claim 온보딩 직격). 배포는
     # `_board_git_stage_and_commit`(write→stage→commit 이 한 호출에 닫힘) **단일 채널**로 한다.
     prompt_external_review_optin()
+    prompt_delegate_optin()  # cross-harness 위임 opt-in(TTY 1회 질문·실키 기록·ADR-0075·T-0446)
     mode = f"multi-repo · {prefix}" if namespaced else "solo (N=1·M=1)"
     idfmt = f"T-{prefix}-NNN" if namespaced else "T-NNNN (legacy)"
     print(INIT_GUIDE.format(mode=mode, idfmt=idfmt))
@@ -7629,7 +7726,8 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
      "status-stale", "domain-stale",
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
-     "adr-author", "areas-duplicate-repo", "areas-merge-union"})
+     "adr-author", "areas-duplicate-repo", "areas-merge-union",
+     "delegate-same-model"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -8165,6 +8263,43 @@ def lint_domain() -> list[tuple[str, str, str]]:
     return [(label, kind, detail) for kind, label, detail in findings]
 
 
+def _load_pm_delegate_module():
+    """pm_delegate.py 를 경로 import 해 모듈로 반환한다 (부재/실패 시 None).
+
+    **순환 회피 deep-import seam** — pm_delegate 의 `lint_same_model` 은 순수 함수(board 를
+    import 하지 않는다)라 board 가 이 헬퍼로 지연 로드해 호출한다(`_load_pm_update_module` 동형·
+    verify 없음). pm_delegate.py 부재(구버전 clone)·로드 실패 → None (호출부 graceful skip)."""
+    if not PM_DELEGATE_PY.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("_delegate_lint", PM_DELEGATE_PY)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — 로드 실패는 None 으로 흡수(비차단·advisory).
+        return None
+
+
+def lint_delegate() -> list[tuple[str, str, str]]:
+    """delegate 동일-모델 dev/reviewer 경고를 board lint finding 으로 표면화 (advisory·never-block·§3.7).
+
+    pm_delegate.lint_same_model(conf) 의 `(label, detail)` 를 board 관례 `(label, kind, detail)` 로
+    감싼다. kind=`delegate-same-model`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드에 *절대*
+    기여하지 않는다·visibility>enforcement — 사용자가 동일-모델 조합을 선택할 자유 유지). pm_delegate.py
+    부재·로드 실패·설정 미매핑 → [] (delegate 미사용 프로젝트·솔로 무영향). 어떤 예외도 [] 로 흡수해
+    board lint 자체는 항상 정상 진행한다. board 의 local.conf(local_config)로 판정한다."""
+    mod = _load_pm_delegate_module()
+    if mod is None:
+        return []
+    try:
+        findings = mod.lint_same_model(local_config())
+    except Exception:  # noqa: BLE001 — 어떤 실패도 빈 결과로 흡수(board lint 정상 진행).
+        return []
+    return [(label, "delegate-same-model", detail) for label, detail in findings]
+
+
 def lint_areas_duplicate_repo() -> list[tuple[str, str, str]]:
     """areas.md 에 같은 repo 행이 2개 이상이면 advisory (ADR-0072·never-block).
 
@@ -8253,7 +8388,9 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     areas-duplicate-repo(areas.md 중복 repo 행 → first-match 고착 가시화·ADR-0072·advisory·
     never-block) +
     areas-merge-union(areas.md 를 담은 git 에 merge=union 미배포 → 동시 등록 안전 상실 가시화·
-    T-0418·advisory·never-block)."""
+    T-0418·advisory·never-block) +
+    delegate-same-model(delegate dev/reviewer 동일-모델 해소 → generate≠evaluate 침식 가시화·
+    ADR-0075·§3.7·advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
@@ -8261,7 +8398,8 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_architecture_freshness() + lint_status_freshness()
             + lint_domain_freshness() + lint_adapter_drift()
             + lint_render_leak() + lint_unmigrated_overlay()
-            + lint_areas_duplicate_repo() + lint_areas_merge_union())
+            + lint_areas_duplicate_repo() + lint_areas_merge_union()
+            + lint_delegate())
 
 
 # ── board.md regeneration ──────────────────────────────────────────────

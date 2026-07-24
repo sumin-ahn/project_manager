@@ -909,3 +909,116 @@ def test_opencode_prompt_tempfile_cleaned_up(pd, monkeypatch, tmp_path):
     assert seen["existed_during_run"] is True       # run 중엔 존재(--file 로 전달)
     assert not seen["prompt_file"].exists()          # run 후 삭제됨
     assert list(outdir.glob("pm_delegate_opencode_*.txt"))  # raw 결과는 보존
+
+
+# ══ ⑫ config lint — 동일-모델 dev/reviewer 경고 (§3.7·never-block·T-0446) ══════
+
+def _reviewer_conf(dev_model: str, reviewer_model: str, **extra) -> dict:
+    conf = {
+        "delegate.developer.harness": "codex", "delegate.developer.model": dev_model,
+        "delegate.code-reviewer.harness": "claude", "delegate.code-reviewer.model": reviewer_model,
+    }
+    conf.update(extra)
+    return conf
+
+
+def test_lint_same_model_warns(pd):
+    """dev 와 code-reviewer 모델 문자열 동일 → 경고 1건(하네스 무관 비교)."""
+    findings = pd.lint_same_model(_reviewer_conf("gpt-x", "gpt-x"))
+    assert len(findings) == 1
+    label, detail = findings[0]
+    assert "developer/code-reviewer" in label
+    assert "generate≠evaluate" in detail
+
+
+def test_lint_different_model_no_warn(pd):
+    """dev 와 reviewer 모델이 다르면 무경고."""
+    assert pd.lint_same_model(_reviewer_conf("gpt-x", "opus")) == []
+
+
+def test_lint_harness_agnostic_same_model(pd):
+    """같은 .model 문자열이면 하네스가 달라도 경고(harness:model 완전일치 폐기·§3.7)."""
+    conf = _reviewer_conf("shared-m", "shared-m")
+    conf["delegate.code-reviewer.harness"] = "opencode"  # dev=codex·reviewer=opencode·모델 동일
+    assert len(pd.lint_same_model(conf)) == 1
+
+
+def test_lint_alias_maps_same(pd):
+    """서로 다른 표기가 같은 alias 에 속하면 경고(alias 경유·정규화 테이블)."""
+    conf = _reviewer_conf("gpt-5.6-terra", "ollama/glm")
+    conf["delegate.model_alias.base"] = "gpt-5.6-terra, ollama/glm"
+    findings = pd.lint_same_model(conf)
+    assert len(findings) == 1
+    assert "alias 경유" in findings[0][1]
+
+
+def test_lint_alias_distinct_no_warn(pd):
+    """다른 alias(또는 미등록)면 경고 없음 — family 자동추론 없음(문자열+명시 매핑만)."""
+    conf = _reviewer_conf("gpt-5.6-terra", "opus")
+    conf["delegate.model_alias.a"] = "gpt-5.6-terra"
+    conf["delegate.model_alias.b"] = "opus"
+    assert pd.lint_same_model(conf) == []
+
+
+def test_lint_alias_multi_membership_warns(pd):
+    """한 모델이 여러 alias 에 속해도 공유 alias 를 놓치지 않는다(동치류 집합 교차·suggestion 3R).
+
+    dev 모델 M 이 alias a·b 둘에 속하고 reviewer 모델 N 은 b 에만 속한다 — 단일 대표 alias 덮어쓰기
+    방식이면 M→b 로 굳어 우연히 잡히거나(순서 의존) 놓칠 수 있으나, 집합 교차는 공유 b 로 확정 경고."""
+    conf = _reviewer_conf("model-M", "model-N")
+    conf["delegate.model_alias.a"] = "model-M, other-X"
+    conf["delegate.model_alias.b"] = "model-M, model-N"        # M·N 공유 alias b
+    findings = pd.lint_same_model(conf)
+    assert len(findings) == 1
+    assert "alias 경유" in findings[0][1]
+
+
+def test_lint_alias_multi_membership_disjoint_no_warn(pd):
+    """여러 alias 소속이라도 공유 alias 가 없으면 무경고(교차 없음)."""
+    conf = _reviewer_conf("model-M", "model-N")
+    conf["delegate.model_alias.a"] = "model-M, other-X"
+    conf["delegate.model_alias.b"] = "model-M, other-Y"        # M 은 a·b, N 은 어디에도 없음
+    conf["delegate.model_alias.c"] = "model-N"                 # N 은 c 단독 — M 과 공유 0
+    assert pd.lint_same_model(conf) == []
+
+
+def test_lint_unset_reviewer_skips(pd):
+    """code-reviewer 매핑 미설정 → skip(경고 대상 아님·조용히 넘어감·lint 는 강제 아님)."""
+    assert pd.lint_same_model({"delegate.developer.model": "gpt-x"}) == []
+
+
+def test_lint_unset_developer_skips(pd):
+    """developer 매핑 미설정 → skip(reviewer 만 있어도 비교 대상 없음)."""
+    assert pd.lint_same_model({"delegate.code-reviewer.model": "opus"}) == []
+
+
+def test_lint_hard_tier_same_as_reviewer_warns(pd):
+    """developer.hard 모델이 reviewer 와 같으면 hard 티어에 대한 경고(normal 과 별개 축)."""
+    conf = _reviewer_conf("normal-m", "hard-m")
+    conf["delegate.developer.hard.harness"] = "codex"
+    conf["delegate.developer.hard.model"] = "hard-m"
+    findings = pd.lint_same_model(conf)
+    assert len(findings) == 1
+    assert "developer.hard/code-reviewer" in findings[0][0]
+
+
+def test_lint_empty_conf_no_warn(pd):
+    """delegate 미설정(빈 conf) → 경고 없음·크래시 없음."""
+    assert pd.lint_same_model({}) == []
+
+
+def test_cmd_lint_subcommand_never_blocks(pd, monkeypatch, capsys):
+    """`pm_delegate.py lint` 는 동일-모델 경고가 있어도 rc=0(never-block·§3.7)."""
+    monkeypatch.setattr(pd, "local_config", lambda: _reviewer_conf("gpt-x", "gpt-x"))
+    rc = pd.main(["lint"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "generate≠evaluate" in err
+
+
+def test_cmd_lint_subcommand_clean(pd, monkeypatch, capsys):
+    """정합(모델 상이) 시 lint 는 stdout 안내 + rc=0."""
+    monkeypatch.setattr(pd, "local_config", lambda: _reviewer_conf("gpt-x", "opus"))
+    rc = pd.main(["lint"])
+    assert rc == 0
+    assert "경고 없음" in capsys.readouterr().out

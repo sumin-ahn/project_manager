@@ -198,6 +198,47 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
             print("  → 외부 리뷰 OFF (나중에 local.conf 로 켤 수 있음).")
 
 
+def maybe_prompt_delegate_optin(dest_root: Path) -> None:
+    """동기 후 cross-harness 위임(pm_delegate) opt-in — 아직 실키 미결정이면 (T-0446·ADR-0075·
+    ADR-0004 상속·maybe_prompt_external_review 동형).
+
+    delegate_enabled **실키**(주석 예시가 아니라 `_read_local_conf` 가 파싱하는 활성 키)가 이미
+    있으면 결정됨 → no-op. **TTY** 면 1회 질문 — y=true·그 외/무입력=false 실키를 대상 local.conf 에
+    기록한다(질문 응답 기록이 pm_update 의 **유일한 conf write 예외**·그 외 설정 write 는 board.py
+    init 단일 채널). **비-TTY(CI/스크립트)** 면 질문·write 없이 도입 advisory 1줄만 표면화(기본 OFF
+    유지). conf 부재(init 전)면 무발화. effective_dest 기준(--target 루트 오염 방지)."""
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.exists():
+        return  # init 전 — board.py init 이 시드/질문한다
+    if "delegate_enabled" in _read_local_conf(local_conf):
+        return  # 실키로 이미 결정됨(주석 예시는 _read_local_conf 파싱 제외 — 미결정 취급)
+    if _is_noninteractive() or not sys.stdin.isatty():
+        # 비-TTY — 질문·write 없이 도입 안내만(기본 OFF 유지·write 는 질문 응답 경로 한정).
+        print("[pm_update] pm_delegate cross-harness 위임 채널이 도입됐습니다(ADR-0075·기본 OFF) — "
+              "`board.py init` 재실행으로 local.conf 에 `delegate_*` 주석 시드/opt-in 질문을 받거나 "
+              "수동 참조하세요(켜면 프롬프트/코드가 외부 하네스로 전송·과금).")
+        return
+    print("\n[pm_update] cross-harness 위임(pm_delegate)을 켤까요? 켜면 위임 프롬프트/코드가 외부 "
+          "하네스로 *전송*되고 그 하네스에 *과금*됩니다 (ADR-0075).")
+    try:
+        answer = input("  켜기 [y/N]: ").strip().lower()
+    except EOFError:
+        # stdin EOF(Ctrl-D) = 기본 거절 → false 실키를 **기록**(매번 재질문 방지·opt-in 결정 박제).
+        answer = ""
+    # 개행 없는 conf(`…upstream_rev=abc`)에 바로 append 시 기존 값 손상 방지 — 필요 시 개행 선행.
+    existing = local_conf.read_text(encoding="utf-8")
+    with local_conf.open("a", encoding="utf-8") as f:
+        if existing and not existing.endswith("\n"):
+            f.write("\n")
+        if answer in ("y", "yes"):
+            f.write("# cross-harness 위임 (ADR-0075) — ON.\ndelegate_enabled=true\n")
+            print("  ✓ cross-harness 위임 ON (delegate_enabled=true·외부 송신·과금 수용).")
+        else:
+            f.write("# cross-harness 위임 (ADR-0075) — 기본 OFF. 켜려면 true 로.\n"
+                    "delegate_enabled=false\n")
+            print("  → cross-harness 위임 OFF (나중에 local.conf delegate_enabled=true 로 켤 수 있음).")
+
+
 def read_manifest(path: Path) -> list[ManifestEntry]:
     """manifest 파일 → ManifestEntry 리스트 ('#' 주석·빈 줄 제외·마커 파싱).
 
@@ -2302,6 +2343,7 @@ def main(argv: list[str] | None = None) -> int:
         # 두 키를 함께 억제해 반쪽 상태/거짓 drift를 만들지 않는다.
         if not args.dry_run:
             converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
+            maybe_prompt_delegate_optin(effective_dest)  # 변경 0 경로에서도 opt-in/안내(T-0446)
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
@@ -2345,6 +2387,7 @@ def main(argv: list[str] | None = None) -> int:
     converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
 
     maybe_prompt_external_review(effective_dest)
+    maybe_prompt_delegate_optin(effective_dest)  # 동기 후 delegate opt-in(TTY 질문·비TTY 안내·T-0446)
     return 0
 
 

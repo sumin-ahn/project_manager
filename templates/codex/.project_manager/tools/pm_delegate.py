@@ -624,6 +624,105 @@ def native_advisory(harness: str) -> str | None:
     return None
 
 
+# ── config lint (동일-모델 dev/reviewer 경고·§3.7·never-block) ────────────────
+
+# alias 정규화 테이블 키 접두 — `delegate.model_alias.<name> = m1, m2, …`(§3.7).
+_MODEL_ALIAS_PREFIX = "delegate.model_alias."
+
+
+def _lint_role_model(conf: dict[str, str], role: str, tier: str = "normal") -> str | None:
+    """lint 용 역할 모델 해소 — 설정 키만 읽고 **fail-loud 하지 않는다**(미설정=None·skip).
+
+    resolve_delegate 는 미설정 시 fail-loud 라 lint(설정 점검)엔 부적합하다 — lint 는 강제가
+    아니라 정합 권고이므로 미매핑 역할은 조용히 건너뛴다(경고 대상 아님·§3.7)."""
+    key = f"delegate.{role}" + (".hard" if tier == "hard" else "")
+    model = (conf.get(f"{key}.model") or "").strip()
+    return model or None
+
+
+def _lint_alias_sets(conf: dict[str, str]) -> dict[str, set[str]]:
+    """`delegate.model_alias.<name> = m1, m2, …` 를 (모델문자열 → 그 모델이 속한 alias명 **집합**)으로
+    뒤집는다.
+
+    서로 다른 표기(하네스별 이름·프로바이더 경로)의 같은 기반 모델을 alias 로 묶어 비교한다. 한 모델이
+    **여러 alias 에 속할 수 있으므로 집합으로 모은다**(마지막 alias 가 덮어써 경고를 놓치던 문제 폐쇄·
+    codex suggestion). 문자열 비교 + 명시 매핑 이상은 과설계 금지(family 자동추론·버전 파싱 없음·§3.7)."""
+    out: dict[str, set[str]] = {}
+    for key, value in conf.items():
+        if not key.startswith(_MODEL_ALIAS_PREFIX):
+            continue
+        alias = key[len(_MODEL_ALIAS_PREFIX):].strip()
+        if not alias:
+            continue
+        for member in re.split(r"[,\s]+", value or ""):
+            member = member.strip()
+            if member:
+                out.setdefault(member, set()).add(alias)
+    return out
+
+
+def _lint_models_match(a: str, b: str, alias_sets: dict[str, set[str]]) -> bool:
+    """두 모델 문자열이 같은 기반 모델인가 — 동일 문자열이거나 **alias 집합이 교차**하면 True(§3.7·
+    하네스 무관).
+
+    집합 교차라 한 모델이 여러 alias 에 속해도 공유 alias 를 놓치지 않는다(단일 대표 alias 덮어쓰기
+    회귀 폐쇄). 비교는 alias **멤버십**(모델→속한 alias명)이지 이름-값이 아니므로, 실제 모델명이 우연히
+    어떤 alias 명과 같은 문자열이어도 오인 매칭하지 않는다(collision-safe)."""
+    if a == b:
+        return True
+    sa = alias_sets.get(a)
+    sb = alias_sets.get(b)
+    return bool(sa and sb and (sa & sb))
+
+
+def lint_same_model(conf: dict[str, str]) -> list[tuple[str, str]]:
+    """dev(normal+hard)와 code-reviewer 해소 모델이 같으면 (label, detail) 경고 리스트 반환(§3.7).
+
+    **하네스 무관 모델 문자열 비교**(+선택적 alias 동치류 교차) — 같은 기반 모델을 서로 다른 하네스로
+    돌려도 generate≈evaluate 침식은 동일하므로 `harness:model` 완전일치가 아니라 `.model` 문자열
+    (또는 공유 alias)로 비교한다. 같으면 경고 1줄. **never-block** — lint 는 설정 점검이지 강제가
+    아니다. 미설정 역할(reviewer 또는 특정 dev tier)은 조용히 skip(경고 대상 아님). **순수 함수**
+    (I/O·board import 없음) — board lint 가 이 함수를 deep-import 로 호출해 advisory 로 표면화한다
+    (순환 import 방지 — pm_delegate 는 board 를 import 하지 않는다)."""
+    reviewer = _lint_role_model(conf, "code-reviewer")
+    if reviewer is None:
+        return []
+    alias_sets = _lint_alias_sets(conf)
+    findings: list[tuple[str, str]] = []
+    for tier, label in (("normal", "developer"), ("hard", "developer.hard")):
+        dev = _lint_role_model(conf, "developer", tier)
+        if dev is None:
+            continue
+        if _lint_models_match(dev, reviewer, alias_sets):
+            via = " (alias 경유)" if dev != reviewer else ""
+            findings.append((
+                f"delegate.{label}/code-reviewer",
+                f"delegate.{label}(model={dev}) 와 delegate.code-reviewer(model={reviewer}) 가 "
+                f"같은 모델로 해소됩니다{via} — generate≠evaluate 침식(같은 모델이 자기 산출을 "
+                "검토). dev/reviewer 를 서로 다른 모델로 두길 권장합니다(하네스 무관·never-block)."
+            ))
+    return findings
+
+
+def _cmd_lint(argv: list[str]) -> int:
+    """`pm_delegate.py lint` — 동일-모델 dev/reviewer 경고(§3.7·never-block·항상 rc=0).
+
+    설정 정합 점검일 뿐 강제가 아니다 — 경고가 있어도 rc=0(차단 금지). 경고는 stderr, 정합 시
+    안내는 stdout. board lint advisory 훅과 짝을 이루는 명시 진입점."""
+    parser = argparse.ArgumentParser(
+        prog="pm_delegate.py lint",
+        description="delegate 설정 정합 점검 — 동일-모델 dev/reviewer 경고(never-block).")
+    parser.parse_args(argv)  # 현재 플래그 0(미래 확장 여지·미지원 인자는 usage error).
+    conf = local_config()
+    findings = lint_same_model(conf)
+    if not findings:
+        print("delegate lint: 동일-모델 dev/reviewer 경고 없음(설정 정합).")
+        return 0
+    for _label, detail in findings:
+        print(f"경고: {detail}", file=sys.stderr)
+    return 0
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -709,6 +808,12 @@ def _reconfigure_streams() -> None:
 def main(argv: list[str] | None = None, run_fn: Callable | None = None,
          git_run_fn: Callable | None = None) -> int:
     _reconfigure_streams()
+    # `lint` 서브커맨드 — flat 위임 옵션(--role/--prompt-file/--cwd required)과 분리한 별도 경로.
+    # 위임과 인자 형상이 다르므로 build_arg_parser 앞에서 분기(subparsers 로 위임 required 를 흩지
+    # 않는다). never-block(§3.7·항상 rc=0).
+    resolved = list(sys.argv[1:] if argv is None else argv)
+    if resolved and resolved[0] == "lint":
+        return _cmd_lint(resolved[1:])
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     _validate_args(parser, args)
