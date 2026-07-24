@@ -180,16 +180,44 @@ def test_hooks_windows_commands_match_posix_structured_warning_contract():
         assert "[ctx-tripwire]" in posix["systemMessage"]
         assert "/pm-handoff" in posix["systemMessage"]
         assert posix["stopReason"] == (
-            "auto compaction blocked; run /pm-handoff"
+            "auto compaction blocked; follow the recovery guide"
             if matcher == "^auto$" else "manual compaction blocked; run /pm-handoff"
         )
 
     assert payloads["^auto$"][0]["systemMessage"] == (
-        "[ctx-tripwire] Auto compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session."
+        "[ctx-tripwire] Auto compaction was blocked. This thread is over the limit, so another model turn "
+        "may be blocked again.\nRecovery: 1) /status and copy the chat ID; 2) /quit; 3) run codex resume "
+        "--disable hooks <CHAT_ID>; 4) run /pm-handoff; 5) start a fresh normal session so hooks are enabled "
+        "again. This one-shot recovery allows compaction, so the handoff may use a lossy summary."
     )
     assert payloads["^manual$"][0]["systemMessage"] == (
-        "[ctx-tripwire] Manual compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session."
+        "[ctx-tripwire] Manual compaction was blocked. Run /pm-handoff now. If auto hard-stop repeats, run "
+        "/status and copy the chat ID, /quit, then codex resume --disable hooks <CHAT_ID>; run /pm-handoff "
+        "and start a fresh normal session afterward."
     )
+
+
+def test_auto_hard_stop_guide_orders_one_shot_recovery_without_persistent_hook_disable():
+    """auto 임계 초과 thread의 반복 abort를 실제로 풀 수 있는 순서와 손실 경고를 고정한다."""
+    auto = _precompact_payloads_by_matcher()["^auto$"][0]["systemMessage"]
+    steps = (
+        "/status",
+        "/quit",
+        "codex resume --disable hooks <CHAT_ID>",
+        "/pm-handoff",
+        "fresh normal session",
+    )
+    positions = [auto.index(step) for step in steps]
+    assert positions == sorted(positions), f"auto recovery 단계 순서가 실행 불가: {positions!r}"
+    assert "allows compaction" in auto
+    assert "lossy summary" in auto
+
+    readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
+    config = (REPO / "templates" / "codex" / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert " 해당 invocation만 hooks 없이 재개" in readme
+    assert "project config의 hooks를 영구 비활성화하지 않는다" in readme
+    assert "features.hooks=false" not in readme
+    assert "hooks = true" in config
 
 
 def test_hooks_warning_is_inline_no_external_script():

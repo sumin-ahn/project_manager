@@ -7,8 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '%s\\n' '{\"continue\":false,\"stopReason\":\"auto compaction blocked; run /pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Auto compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session.\",\"suppressOutput\":false}'",
-            "commandWindows": "Write-Output '{\"continue\":false,\"stopReason\":\"auto compaction blocked; run /pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Auto compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session.\",\"suppressOutput\":false}'"
+            "command": "printf '%s\\n' '{\"continue\":false,\"stopReason\":\"auto compaction blocked; follow the recovery guide\",\"systemMessage\":\"[ctx-tripwire] Auto compaction was blocked. This thread is over the limit, so another model turn may be blocked again.\\nRecovery: 1) /status and copy the chat ID; 2) /quit; 3) run codex resume --disable hooks <CHAT_ID>; 4) run /pm-handoff; 5) start a fresh normal session so hooks are enabled again. This one-shot recovery allows compaction, so the handoff may use a lossy summary.\",\"suppressOutput\":false}'",
+            "commandWindows": "Write-Output '{\"continue\":false,\"stopReason\":\"auto compaction blocked; follow the recovery guide\",\"systemMessage\":\"[ctx-tripwire] Auto compaction was blocked. This thread is over the limit, so another model turn may be blocked again.\\nRecovery: 1) /status and copy the chat ID; 2) /quit; 3) run codex resume --disable hooks <CHAT_ID>; 4) run /pm-handoff; 5) start a fresh normal session so hooks are enabled again. This one-shot recovery allows compaction, so the handoff may use a lossy summary.\",\"suppressOutput\":false}'"
           }
         ]
       },
@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '%s\\n' '{\"continue\":false,\"stopReason\":\"manual compaction blocked; run /pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Manual compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session.\",\"suppressOutput\":false}'",
-            "commandWindows": "Write-Output '{\"continue\":false,\"stopReason\":\"manual compaction blocked; run /pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Manual compaction was blocked. Run /pm-handoff now, then continue in a fresh PM session.\",\"suppressOutput\":false}'"
+            "command": "printf '%s\\n' '{\"continue\":false,\"stopReason\":\"manual compaction blocked; run /pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Manual compaction was blocked. Run /pm-handoff now. If auto hard-stop repeats, run /status and copy the chat ID, /quit, then codex resume --disable hooks <CHAT_ID>; run /pm-handoff and start a fresh normal session afterward.\",\"suppressOutput\":false}'",
+            "commandWindows": "Write-Output '{\"continue\":false,\"stopReason\":\"manual compaction blocked; run /pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Manual compaction was blocked. Run /pm-handoff now. If auto hard-stop repeats, run /status and copy the chat ID, /quit, then codex resume --disable hooks <CHAT_ID>; run /pm-handoff and start a fresh normal session afterward.\",\"suppressOutput\":false}'"
           }
         ]
       }

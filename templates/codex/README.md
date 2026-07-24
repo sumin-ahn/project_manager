@@ -43,8 +43,13 @@ transaction을 hard-stop하고 `/pm-handoff`를 요구한다. codex-cli 0.145.0�
 `context_compacted`는 만들지 않았으며 abort 뒤 canary turn이 원문 연속성을 회수했다. 각 handler는 POSIX
 `command`와 native Windows PowerShell-safe `commandWindows`에서 같은 JSON을 stdout으로 낸다.
 
-- direct TUI: PreCompact hard-stop은 **reactive 최후 방어선**이다. 중단되면 즉시 `/pm-handoff`에 상태를
-  박제한 뒤 fresh PM session으로 이어 간다. hook trust가 없으면 이 방어선도 실행되지 않는다.
+- direct TUI: PreCompact hard-stop은 **reactive 최후 방어선**이다. manual hard-stop이면 먼저 같은
+  thread에서 `/pm-handoff`를 실행한다. auto 임계 초과로 다음 model turn도 반복 차단되면 hard-stop
+  가이드대로 `/status`에서 chat ID를 확인하고 `/quit`한 뒤
+  `codex resume --disable hooks <CHAT_ID>`로 해당 invocation만 hooks 없이 재개해 `/pm-handoff`하고,
+  fresh normal session을 시작해 hooks를 다시 활성화한다. 이 break-glass는 compaction을 허용하므로
+  handoff가 lossy summary 기반일 수 있다. project config의 hooks를 영구 비활성화하지 않는다.
+  hook trust가 없으면 이 방어선도 실행되지 않는다.
 - relay: `codex exec --json`의 `turn.completed.usage`를 매 turn 파싱한다. 누적 usage가 예산의 STOP
   경계에 닿으면 relay driver가 post-turn STOP marker를 남기고 Supervisor가 세션을 회전한다. 이것이
   장기 경로의 **proactive** 기계 가드다.
