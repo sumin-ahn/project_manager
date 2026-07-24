@@ -71,19 +71,36 @@ DELEGATE_TIMEOUT_SECONDS = 1800
 # opt-in 게이트 키(기본 OFF·per-clone·ADR-0004 상속·§5.4).
 DELEGATE_ENABLED_KEY = "delegate_enabled"
 
-# reasoning 드라이버별 허용집합(§6). codex 는 0.145.0 xhigh 실측 수용. claude `--effort`·opencode
-# `--variant` 허용값은 **T-0449 라이브 실측 전 미확정** — 빈 집합이라 `.reasoning` 지정 시 fail-loud
-# (조용한 무시/강등 금지). T-0449 가 실 허용값을 여기 박제한다.
+# reasoning 드라이버별 허용집합(§6) — **T-0449 라이브 실측으로 박제**(codex-cli 0.145.0·claude 2.1.218·
+# opencode 1.18.4). 허용집합 밖 `.reasoning` 지정은 fail-loud(조용한 무시/강등 금지):
+#   · codex(`-c model_reasoning_effort`): low/medium/high/xhigh — 0.145.0 xhigh 실측 수용(exec 앞/뒤
+#     위치 무관 rc=0·T-0449).
+#   · claude(`--effort`): low/medium/high/xhigh/max — claude CLI 가 미지원값에 "Valid values: low,
+#     medium, high, xhigh, max" 경고를 뱉어 **CLI-authoritative 실측**(T-0449).
+#   · opencode(`--variant`): minimal/low/medium/high/max — opencode 는 `--variant` 를 **CLI 검증하지
+#     않고 provider 로 passthrough**(valid/invalid 모두 rc=0·미지원값은 provider 가 silent-ignore·
+#     reasoning:0·T-0449 실측). 그래서 이 집합은 opencode 의 문서화 ladder(help: "e.g. high, max,
+#     minimal")를 pm_delegate 의 **typo-guard** 로 인코딩한 것 — silent no-op(§3.2)을 전송 전에 차단한다.
+#     provider 별 실지원은 다를 수 있다(passthrough 특성).
 _REASONING_ALLOWED: dict[str, frozenset[str]] = {
     "codex": frozenset({"low", "medium", "high", "xhigh"}),
-    "claude": frozenset(),    # T-0449 실측 전 — 미확정(지정 시 fail-loud)
-    "opencode": frozenset(),  # T-0449 실측 전 — 미확정(지정 시 fail-loud)
+    "claude": frozenset({"low", "medium", "high", "xhigh", "max"}),      # T-0449 실측(CLI-authoritative)
+    "opencode": frozenset({"minimal", "low", "medium", "high", "max"}),  # T-0449 실측(문서 ladder·passthrough)
 }
 
 # reasoning 드라이버별 argv 플래그(§6) — 매핑만 보유(값 검증은 _REASONING_ALLOWED).
 #   codex `-c model_reasoning_effort=<r>` · claude `--effort <r>` · opencode `--variant <r>`.
 
 # codex sandbox 모드(§3.5·§5) — write=workspace-write·read=read-only.
+# **T-0449 실측(0.145.0)**:
+#   · read-only 는 worktree 밖 `/tmp` 쓰기까지 **차단**("Read-only file system") → pytest 는 tmp 캡처
+#     파일을 못 만들어 **아예 시작 불가**("No usable temporary directory found"). 즉 **codex 의
+#     code-reviewer(read axis→read-only)는 read-only 로는 pytest 를 못 돌린다**(§3.5 §주1 우려 실현) —
+#     테스트 실행이 필요한 리뷰는 workspace-write 상향이 필요(보장 수준=기계적→규율 하향). 이 매핑
+#     조정은 §3.5 보장-모델 결정이라 PM 판단으로 보류(researcher=순수읽기는 read-only 로 정상).
+#   · `-a never` 하 `git push` 는 **hang/승인-refusal 없이 즉시 실행**되어 git 레벨에서 실패한다
+#     (도달 불가 원격→rc=128·refspec 불일치→rc=1). 승인 deadlock(§5·§10 우려)은 없음 — 그래서 push
+#     방어선은 sandbox/approval 이 아니라 **role prompt(위임 역할은 push 안 함)**다(§5 설계대로).
 _CODEX_SANDBOX = {"write": "workspace-write", "read": "read-only"}
 # opencode 권한 agent(§3.3·D2) — write=build·read=plan.
 _OPENCODE_AGENT = {"write": "build", "read": "plan"}
@@ -105,8 +122,12 @@ _ENV_ALLOWLIST_BASE: tuple[str, ...] = (
     "PATH", "HOME", "LANG", "TERM", "USER", "LOGNAME", "TMPDIR",
 )
 _ENV_ALLOWLIST_PREFIXES: tuple[str, ...] = ("LC_",)
-# 하네스별 인증/구동 필수 env(§4.7 — 하네스-필수 마커만 명시 통과·T-0449 실측 조정). 실 API key 는
-# 각 하네스 config/auth 파일(격리 홈)로 흐르므로 여기엔 경로/토글 키 위주로 최소 둔다.
+# 하네스별 인증/구동 필수 env(§4.7 — 하네스-필수 마커만 명시 통과). 실 API key 는 각 하네스
+# config/auth 파일(HOME 앵커 격리 홈)로 흐르므로 여기엔 경로/토글 키 위주로 최소 둔다.
+# **T-0449 실측(3방향 완주 확인)**: 세 하네스 모두 **HOME 기반 파일 auth**(~/.codex·~/.claude·opencode
+# config)로 완주했다 — OPENAI/ANTHROPIC_API_KEY env 는 부재해도 무방(파일 auth 경로). load-bearing 키 =
+# base 의 HOME + opencode 의 OPENCODE_CONFIG_DIR(ollama provider config 위치). API-key 항목은 env-auth
+# adopter 용 보험이라 유지(존재 시만 통과·과잉 아님). 이 allowlist 로 충분(키 추가/축소 불요).
 _HARNESS_AUTH_ENV: dict[str, tuple[str, ...]] = {
     "codex": ("CODEX_HOME", "CODEX_SANDBOX_NETWORK_DISABLED", "OPENAI_API_KEY"),
     "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"),
@@ -273,8 +294,9 @@ def build_codex_argv(model: str, reasoning: str | None, role: str, cwd: str) -> 
     if model:
         argv += ["-m", model]
     if reasoning:
-        # T-0449 실측 필요: `-c`(--config) 도 `-a`/`-s` 와 같은 전역 옵션 클래스라 exec 뒤에서
-        # rc=2 일 수 있다(spike §3.3 표를 따름·reasoning 미지정 시 무영향). 필요 시 exec 앞으로.
+        # T-0449 실측(0.145.0): `-c model_reasoning_effort=<r>` 는 `-a`/`-s`(exec 뒤=rc=2)와 달리
+        # exec **앞/뒤 모두 rc=0 수용**된다(xhigh 로 전/후 위치 각 1회 실측). 그래서 exec 뒤 이 위치를
+        # 유지한다(옮길 필요 없음). reasoning 미지정 시 무영향.
         argv += ["-c", f"model_reasoning_effort={reasoning}"]
     return argv
 

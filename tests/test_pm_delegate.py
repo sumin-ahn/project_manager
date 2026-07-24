@@ -4,7 +4,7 @@
   ① 3 드라이버 argv 정확성(3하네스×4역할·codex 전역옵션 위치·cwd 핀·reasoning 드라이버 매핑·§3.3).
   ② config 해소 원자성(§3.2) — CLI 완전지정 미참조·부분 override 거부·hard fail-loud·미매핑 fail-loud·
      티어 세트 통째·비-개발 tier usage error.
-  ③ reasoning 드라이버별 허용집합(codex xhigh 수용·밖 fail-loud·claude/opencode 미확정 fail-loud·§6).
+  ③ reasoning 드라이버별 허용집합(codex xhigh·claude effort·opencode variant T-0449 실측값 수용·밖 fail-loud·§6).
   ④ opt-in 게이트 disabled = rc=3(§5.4).
   ⑤ prompt-file containment 거부(§3.1·§4.6).
   ⑥ env allowlist 정제(PM 세션 타 크리덴셜 미상속·§4.7).
@@ -230,12 +230,24 @@ def test_reasoning_codex_out_of_set_fail_loud(pd):
         pd._validate_reasoning("codex", "ultra")
 
 
-def test_reasoning_claude_undetermined_fail_loud(pd):
-    """claude/opencode reasoning 허용값 T-0449 실측 전 미확정 → 지정 시 fail-loud(조용한 무시 금지)."""
-    with pytest.raises(pd.DelegateError, match="미확정"):
-        pd._validate_reasoning("claude", "high")
-    with pytest.raises(pd.DelegateError, match="미확정"):
-        pd._validate_reasoning("opencode", "medium")
+def test_reasoning_claude_opencode_measured_sets(pd):
+    """claude/opencode reasoning 허용집합 = T-0449 라이브 실측값 — 안은 수용·밖은 fail-loud(§6).
+
+    claude `--effort` = {low,medium,high,xhigh,max}(CLI 경고 authoritative)·opencode `--variant` =
+    {minimal,low,medium,high,max}(문서 ladder·CLI passthrough typo-guard). 실측 전 '미확정 빈 집합'을
+    대체 — 허용값은 통과하고 집합 밖(오타)만 fail-loud 함을 못박는다."""
+    for r in ("low", "medium", "high", "xhigh", "max"):
+        assert pd._validate_reasoning("claude", r) == r
+    for r in ("minimal", "low", "medium", "high", "max"):
+        assert pd._validate_reasoning("opencode", r) == r
+    # 집합 밖 = fail-loud(조용한 무시/강등 금지).
+    with pytest.raises(pd.DelegateError, match="허용집합"):
+        pd._validate_reasoning("claude", "ultra")
+    with pytest.raises(pd.DelegateError, match="허용집합"):
+        pd._validate_reasoning("opencode", "bogus")
+    # claude 는 max 지원·codex 는 미지원(드라이버별 집합이 실제로 다름).
+    with pytest.raises(pd.DelegateError, match="허용집합"):
+        pd._validate_reasoning("codex", "max")
 
 
 def test_reasoning_none_omits_flag(pd):

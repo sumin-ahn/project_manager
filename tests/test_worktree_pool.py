@@ -38,7 +38,7 @@ SYNC_TIMEOUT = 60
 # 격리 원칙상 board.py 를 import 하지 않으므로(모듈 docstring) 값을 여기 둔다. 판정상 무관하다 —
 # `_livegate_check` 는 status==pass ∧ head==rev 만 보고 n 은 안 보기 때문(check 채널·green 판정 무관).
 # 값 자체는 board.LIVEGATE_RELEASE_PIN(=17·T-0278/T-0309/T-0349/T-0400/T-0397/T-0407) 과 schema 충실성 위해 맞춰 둔다(무관하나 혼란 방지).
-_LIVEGATE_RELEASE_PIN = 17
+_LIVEGATE_RELEASE_PIN = 18
 
 
 # ── 모듈 로드 + tmp 재배선 (부모·자식 공용) ─────────────────────────────────

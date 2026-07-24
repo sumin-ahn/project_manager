@@ -1158,6 +1158,7 @@ _RELEASE_TEST_FILES = (
     Path(__file__).parent / "test_task_cycle_e2e.py",
     Path(__file__).parent / "test_engine_rev_release.py",
     Path(__file__).parent / "test_pm_relay_codex.py",
+    Path(__file__).parent / "test_pm_delegate_live.py",
 )
 # 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
 # 6(이 파일: full/multirepo × claude/opencode + hard-stop + multiuser-composite opencode·T-0309)
@@ -1171,11 +1172,13 @@ _RELEASE_TEST_FILES = (
 #     기계·릴리즈마다 rev bump 를 강제·bump 누락을 릴리즈 게이트에서 red).
 # + 1(test_pm_relay_codex: codex relay 라이브 smoke·spawn→resume·tid==marker·usage 누적·ADR-0070 D7·
 #     T-0407 — codex 라이브 green 을 릴리즈 pin 에 편입·codex green 없이 v1.4.0 push 차단).
+# + 1(test_pm_delegate_live: pm_delegate cross 위임 codex smoke·ADR-0075·T-0449 — cross 위임
+#     green 없이 관련 릴리즈 push 차단).
 # ⚠ 커플드-pin: 이 값을 올리면 touches 밖의 전역 pin 도 함께 정합돼야 `livegate record`(수집
 #   N==pin)가 통과한다(orchestrator 가 갱신·test_command_card_usability.py 주석 참조):
 #   board.LIVEGATE_RELEASE_PIN · tests/test_board_livegate.py(하드코딩 fake/assert) ·
 #   tests/test_worktree_pool.py(_LIVEGATE_RELEASE_PIN 미러) · templates/*/board.py(pm_update 전파).
-_EXPECTED_RELEASE_TESTS = 17
+_EXPECTED_RELEASE_TESTS = 18
 
 
 def _pytest_marker_name(decorator) -> str | None:
