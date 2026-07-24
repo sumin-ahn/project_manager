@@ -7,6 +7,44 @@
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-07-24
+
+**Codex 어댑터 첫 실전 운영에서 드러난 결함을 닫는 패치.** Codex 를 PM/개발 하네스로 실제
+운영(도그푸딩)하며 발견된 권한·compaction·설정 보존 결함들과, 공유 board·엔진 갱신의 정직성
+결함을 수정한다. 관통 성질 — **어댑터가 채택자 소유 설정을 덮지 않고, 안전장치는 차단 후
+복구 경로까지 제공하며, 도구는 실패를 성공으로 위장하지 않는다.**
+
+### Added
+- **Codex 일상 작업 권한 정렬** — Claude `settings.json` 동급의 allow/deny 를 Codex
+  execpolicy 로 제공. 일상 명령·통상 `git push` 는 무질의 실행, 파괴적 push
+  (`--force`/`--delete`/`--mirror` 등)만 확인 질의로 분리.
+- **Codex TUI auto-compaction 차단** — 프레임워크는 compaction 이 아닌 handoff 지향.
+  PreCompact hook 이 auto-compaction 을 차단하고(내구 상태 보존), 차단이 반복되는 임계
+  상황에는 **one-shot 복구 절차**(chat ID 확인 → hook 비활성 resume → handoff → 새 세션)를
+  화면에 안내한다 — 영구 설정 약화 없이 빠져나오는 break-glass. footer 에 잔여 컨텍스트 표시.
+- **Codex ticket scaffold·board 상태 디렉토리 자가복구** — 부분 손상 형상에서 조용히 실패하던
+  경로를 자가복구로.
+
+### Fixed
+- **어댑터 refresh 가 채택자 소유 Codex 설정을 덮던 문제** — `add-harness`/재-import 가
+  `config.toml`·`hooks.json`·`AGENTS.md`·agent 별 model override(명시 `model`/
+  `model_reasoning_effort` 있는 TOML)를 보존한다(byte 보존·loud skip). native delegation
+  override 도 보존.
+- **board 가 local commit 실패를 "보존"으로 위장 보고하던 문제** — 실패를 정직하게 보고.
+- **ticket 완료 stage 가 잘못된 저장소에 고정되던 문제** — task 모드에서 실제 작업
+  worktree 기준으로 저장소별 stage.
+- **무변경 엔진 갱신에서 revision 키가 수렴하지 않던 문제** — `pm-update` 반복 실행 멱등.
+- **render-leak 백스톱의 확장자 열거 누락·어댑터 토큰 치환 오판** — 제외-판정 방식으로 역전해
+  신규 확장자에도 안전.
+- 네트워크 격리 환경에서 소켓 E2E 테스트가 EPERM 으로 깨지던 것을 capability 감지 skip 으로.
+
+### Changed
+- **PM 지시 문서의 git commit 을 경로 명시형으로** — bare `git commit` 이 공유 워킹트리에서
+  타 작업의 stage 를 함께 싣던 클래스를 절차·가드로 폐쇄(디자인 stage/commit 스코프화 포함).
+- **게이트 하네스 축을 파생으로 전환** — 하네스 목록을 단일 원천에서 파생해 신규 하네스 추가
+  시 게이트 누락을 방지.
+- README 를 발표 본편과 운영 레퍼런스로 분리·흐름 개편.
+
 ## [1.4.1] - 2026-07-21
 
 **프레임워크가 자기 자신을 운영하다 드러난 결함 9건을 닫는 패치.** 세션 진입(부트스트랩 0단계)이
