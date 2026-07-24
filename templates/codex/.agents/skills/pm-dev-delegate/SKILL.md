@@ -67,8 +67,31 @@ python3 .project_manager/tools/pm_delegate.py --dry-run \
 - 출력 = 해소된 `(harness, model, reasoning)` + 합성 프롬프트 + argv 미리보기. **전송하지 않는다**.
 - dry-run 은 opt-in 게이트를 **우회**한다(항상 rc=0 미리보기) — opt-in OFF 판정(`rc=3`)은 실 실행에서만 난다(아래 §opt-in 게이트).
 - 매핑 미설정 역할은 `rc=1` fail-loud — `local.conf` 에 `delegate.<role>.harness/.model` 을 채운다(조용한 폴백 없음).
-- `--tier` 는 **developer 전용** (난제=`hard`·평시=`normal`). 티어 판정 기준 카드(T-0448)를 참조해 고른다.
+- `--tier` 는 **developer 전용** (난제=`hard`·평시=`normal`). 아래 §티어 판정 기준으로 고른다.
   비-개발 역할에 `--tier` 를 주면 usage error.
+
+### 티어 판정 기준 (developer 전용 · 난제 상향 보수 규칙)
+
+`--tier` 는 developer 위임에서만 고른다. PM 자의 해석을 줄이려 판정 기준을 아래로 못박는다
+(mechanize 원칙) — 애매하면 **상향**한다(보수 기본값).
+
+- **hard(난제)** — 아래 중 하나라도 해당: 엔진 코어 로직·파서/문법 변경·비파괴(하위호환) 계약·
+  cross-module(여러 모듈 동시 변경)·보안 경계·**회귀 광범위**(넓은 blast-radius) 티켓.
+- **normal(평시)** — 단일 모듈에 갇힌 변경·docs·기계적 sweep(rename·표기 통일)·테스트 추가·
+  자명한 fix.
+- **경계 애매 = hard 상향** — 어느 쪽인지 확실치 않으면 normal 로 내리지 말고 hard 를 고른다
+  (난제를 약한 프로필로 돌리는 실패 비용 > 여유 프로필 비용).
+
+티어는 **`--tier hard`**(cross·pm_delegate) 또는 **native 경로의 hard 프로필**로 선택한다.
+codex native 단락에선 난제를 `agent_type="developer-hard"`(`.codex/agents/developer-hard.toml`)로
+spawn 한다(평시는 `agent_type="developer"`). 티어 매핑은 **하네스-중립** — 어느 하네스든 normal/hard
+두 프로필을 가진다(claude 형상 예: `delegate.developer.harness=claude`·`.model=sonnet` /
+`delegate.developer.hard.harness=claude`·`.model=opus`).
+
+- **hard 프로필 미설정 = fail-loud(폴백 없음)** — `delegate.developer.hard.*` 가 없으면
+  pm_delegate 는 `--tier hard` 를 normal 로 강등하지 않고 `rc=1` 로 거부한다(난제를 조용히 약한
+  프로필로 돌리면 의도 왜곡·spike §3.2). native 경로도 동일 — hard 프로필(codex
+  `developer-hard.toml`)이 없으면 명시 추가한다.
 
 ### 2. native 단락 판정
 

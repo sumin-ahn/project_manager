@@ -41,6 +41,10 @@ COMMAND_RULES = CODEX / ".codex" / "rules" / "default.rules"
 PM_DEV_DELEGATE = CODEX / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
 
 AGENT_NAMES = ("architect", "code-reviewer", "developer", "researcher")
+# developer 2티어(난제=hard) 프로필 — 4 역할 축이 아니라 developer 축의 티어 변주다(T-0448·spike §3.2).
+# 역할 축(AGENT_NAMES)은 model 상속(D5)이나 티어 프로필은 상위 프로필로 라우팅하는 게 존재 이유라
+# model/reasoning 을 명시 override 한다(아래 model-override 축 검사에서 정반대 계약).
+TIER_PROFILE_NAMES = ("developer-hard",)
 REQUIRED_FIELDS = ("name", "description", "developer_instructions")
 PROJECT_NAME_TOKEN = "{{PROJECT_NAME}}"
 
@@ -83,11 +87,15 @@ def test_no_pm_toml_load_bearing_absence():
     )
 
 
-def test_agent_dir_has_exactly_the_four_axes():
-    """`.codex/agents/` 에 정확히 4개 TOML(4축)만 있고 그 외 TOML 은 없다(pm.toml 등 유입 차단)."""
+def test_agent_dir_has_exactly_the_expected_toml_set():
+    """`.codex/agents/` 에 4 역할 축 + developer 티어 프로필만 있고 그 외 TOML 은 없다(pm.toml 등 유입 차단).
+
+    4 역할 축(AGENT_NAMES) + developer-hard 티어 프로필(TIER_PROFILE_NAMES·T-0448)이 예상 집합.
+    pm.toml(PM=메인세션·load-bearing absence) 등 스트레이 TOML 유입은 여전히 차단한다."""
+    expected = sorted(AGENT_NAMES + TIER_PROFILE_NAMES)
     tomls = sorted(p.stem for p in AGENTS_DIR.glob("*.toml"))
-    assert tomls == sorted(AGENT_NAMES), (
-        f".codex/agents TOML 집합이 4축과 불일치 — 예상 {sorted(AGENT_NAMES)}, 실제 {tomls}"
+    assert tomls == expected, (
+        f".codex/agents TOML 집합이 예상과 불일치 — 예상 {expected}, 실제 {tomls}"
     )
 
 
@@ -132,6 +140,41 @@ def test_no_model_override_keys():
     offenders = [name for name in AGENT_NAMES if override_keys & _load(name).keys()]
     assert not offenders, (
         f"codex agent TOML 에 model/reasoning override 키 잔존(D5 위반·사용자 config 기본 상속 깨짐): {offenders}"
+    )
+
+
+# ── developer 2티어(난제=hard) 프로필 계약 (T-0448·spike §3.2) ────────────────
+
+def test_developer_hard_tier_profile_valid_and_overrides_model():
+    """`developer-hard.toml` 티어 프로필이 실재·정합하고 상위 모델·추론을 명시 override 한다.
+
+    역할 축(AGENT_NAMES)은 D5 로 model 상속(위 test)이나, 티어 프로필은 hard 로 판정된 난제를 **더
+    강한 프로필로 라우팅**하는 게 존재 이유다 → model/reasoning override 가 필수(정반대 계약). 미설정
+    이면 native 난제 경로가 평시 프로필로 조용히 강등돼 티어 의도가 왜곡된다(spike §3.2 fail-loud)."""
+    path = _toml_path("developer-hard")
+    assert path.is_file(), f"developer-hard 티어 프로필 없음: {path}"
+    with open(path, "rb") as fh:
+        data = tomllib.load(fh)
+    # 포맷·필수 필드·name==stem (역할 축과 동일 계약)
+    for field in REQUIRED_FIELDS:
+        assert field in data and str(data[field]).strip(), f"developer-hard.toml 의 {field!r} 누락/빈값"
+    assert data["name"] == "developer-hard", f"name 이 파일 stem 과 불일치: {data['name']!r}"
+    # 쓰기 축(코드 편집) — developer 와 동일
+    assert data["sandbox_mode"] == "workspace-write", (
+        f"developer-hard sandbox_mode 가 workspace-write 아님: {data['sandbox_mode']!r}"
+    )
+    # 티어 프로필의 존재 이유 = 상위 프로필 명시 override (역할 축의 D5 상속과 정반대)
+    assert "model" in data and str(data["model"]).strip(), (
+        "developer-hard 에 model override 없음 — 티어 프로필은 상위 모델을 명시해야 한다(spike §3.2)"
+    )
+    assert "model_reasoning_effort" in data and str(data["model_reasoning_effort"]).strip(), (
+        "developer-hard 에 model_reasoning_effort override 없음 — 난제는 상향 추론이 필요하다"
+    )
+    # @render 치환 타깃 + 공통 코어 진입 (역할 축과 동일)
+    blob = data["description"] + "\n" + data["developer_instructions"]
+    assert PROJECT_NAME_TOKEN in blob, f"developer-hard 에 {PROJECT_NAME_TOKEN} 토큰 없음 — @render 치환 타깃 상실"
+    assert "AGENTS.md" in data["developer_instructions"], (
+        "developer-hard developer_instructions 가 공통 코어 AGENTS.md 를 참조하지 않음 (D3 C-v2)"
     )
 
 
