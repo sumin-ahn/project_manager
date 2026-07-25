@@ -24,6 +24,14 @@
   cross-harness 의존물(예: codex 호스트의 `.claude/skills`)도 정확히 따라온다.
 - **외부 리뷰 라운드 상한** — 게이트별 라운드 장부·기본 4회 한도. 초과분은 실행 전 차단되고
   사용자 승인(`--ack-rounds`) 후에만 재개된다(호출 전 예약이라 타임아웃으로 우회 불가).
+- **cross-harness 역할 위임 채널 (`pm_delegate`)** — PM 세션이 세션을 떠나지 않고 역할 노동
+  (developer·researcher·architect·code-reviewer)을 **다른 하네스 CLI** 로 위임한다. 호출측 하네스
+  조건 0(N×N 대칭) — claude·codex·opencode 세 드라이버를 지원하고, 역할→(하네스·모델·reasoning)
+  매핑을 설정에서 **티어 세트 통째로** 해소한다(평시/난제 2티어·부분 상속 없음·미설정은 조용한
+  폴백 대신 fail-loud). 역할축으로 권한을 강제하고(쓰기=developer·architect / 읽기=researcher·
+  code-reviewer), 엔진 코드 쓰기 위임이 잘못된 저장소를 향하면 차단하며, 프롬프트 시크릿 스캔과
+  하위 프로세스 환경변수 정제를 거친다. 결과는 최종 답변만 회수하고 원문은 별도 파일로 박제.
+  **기본 OFF** — 외부 송신·과금 수용 opt-in 을 설정에서 켜야 동작한다.
 
 ### Changed
 - **컨텍스트 가드 세션-스코프 분리** — hard-stop 은 메인 세션만(정제 handoff 강제), 서브에이전트는
