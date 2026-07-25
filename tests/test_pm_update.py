@@ -855,6 +855,100 @@ def test_resolve_manifest_selfheal_diverged_when_local_only_paths(pm_update, tmp
     assert result["removed"] == [NEW_ENGINE_REL]
 
 
+def test_resolve_manifest_selfheal_ignores_guest_block_and_heals(pm_update, tmp_path):
+    """add-harness guest 절(로컬-전용 `@target-owned`)이 있어도 **core 비교에서 제외**돼 upstream 신규
+    항목이 정상 자기치유(승격)된다 (T-0456 R14 MF-1). 옛엔 guest 경로가 removed 에 섞여 **영구 diverged**
+    → add-harness 인스턴스가 엔진 신규 등재를 영영 못 받았다(red-첫). guest 는 apply 가 재부착(대칭)."""
+    source = tmp_path / "src"
+    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])   # upstream 신규 등재.
+    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    # dest = 구형 core(SENTINEL) + guest 절(.codex/agents·로컬-전용).
+    _write_dest_manifest(tmp_path / "dest", [
+        SENTINEL_REL, begin, ".codex/agents    @render @target-owned", end])
+    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    assert result["status"] == "heal", f"guest 절이 core 비교를 오염(diverged): {result['status']}"
+    assert result["added"] == [NEW_ENGINE_REL]
+    assert ".codex/agents" not in result["removed"], result["removed"]
+
+
+def test_plan_engine_manifest_self_prop_no_churn_with_guest_block(pm_update, tmp_path):
+    """engine.manifest self-prop: dest 가 guest 절을 갖고 upstream 은 안 가져도 **core 가 같으면 plan
+    changes 에 안 뜬다** (guest 절 차감 semantic 비교·T-0456 R14 MF-2). raw filecmp 였으면 apply 가
+    절을 재부착하는 한 **매 sync 영구 update(churn)** 로 떴다(red-첫)."""
+    source, dest = tmp_path / "src", tmp_path / "dest"
+    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    core = "# manifest\n" + MANIFEST_SELF_REL + "\n"
+    (source / ".project_manager").mkdir(parents=True)
+    (source / ".project_manager" / "engine.manifest").write_text(core, encoding="utf-8")
+    # dest = core + guest 절(apply 재부착 형상).
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / "engine.manifest").write_text(
+        core.rstrip("\n") + "\n\n" + begin
+        + "\n.codex/agents    @render @target-owned\n" + end + "\n", encoding="utf-8")
+    manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]  # bare self-prop.
+    changes, _missing = pm_update.plan(source, manifest, dest_root=dest)
+    assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
+        f"guest 절 때문에 engine.manifest 가 영구 churn(update): {changes}"
+
+
+def test_plan_manifest_self_prop_no_churn_with_trailing_blank_upstream(pm_update, tmp_path):
+    """**trailing blank line 보유 upstream manifest** 에서도 engine.manifest self-prop 이 반복 update 를
+    안 만든다 (T-0456 R22 suggestion). `_strip_guest_manifest_block` 이 절 앞 빈 줄을 회수하며 upstream
+    트레일링 블랭크까지 지워 core 비교가 어긋나 churn 나던 것을 `rstrip("\\n")` 정규화로 닫는다."""
+    source, dest = tmp_path / "src", tmp_path / "dest"
+    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    core = "# m\n" + MANIFEST_SELF_REL + "\n\n"  # ← 트레일링 빈 줄.
+    (source / ".project_manager").mkdir(parents=True)
+    (source / ".project_manager" / "engine.manifest").write_text(core, encoding="utf-8")
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / "engine.manifest").write_text(
+        core + begin + "\n.codex/agents    @render @target-owned\n" + end + "\n",
+        encoding="utf-8")
+    manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]
+    changes, _missing = pm_update.plan(source, manifest, dest_root=dest)
+    assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
+        f"트레일링 블랭크 upstream 에서 engine.manifest churn(반복 update): {changes}"
+
+
+def test_copy_manifest_preserving_guest_prunes_promoted_paths(pm_update, tmp_path):
+    """소유권 전환: guest 경로가 upstream core 로 승격되면 재부착이 그 경로를 guest 절에서 **차감**해
+    **단일 등재**(upstream 소유)로 만든다 — 이중 등재 → 뒤쪽 @target-owned guest 가 owner 로 이겨
+    upstream 소스가 영구 skip 되던 것을 닫는다 (T-0456 R15 red-첫). 승격 안 된 guest 는 잔존."""
+    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    guest = (begin + "\n.codex/agents    @render @target-owned\n"
+             ".agents/skills    @render @target-owned\n" + end)
+    sp, dst = tmp_path / "up.manifest", tmp_path / "dest.manifest"
+    # upstream core 가 .codex/agents 를 소유하게 됨(@source·승격). .agents/skills 는 여전히 guest.
+    sp.write_text("# m\n.codex/agents    @render @source=templates/codex/.codex/agents\n",
+                  encoding="utf-8")
+    dst.write_text("# m\n\n" + guest + "\n", encoding="utf-8")  # old dest: core(no codex) + guest 절.
+    pm_update._copy_manifest_preserving_guest(sp, dst)
+    ents = pm_update.read_manifest(dst)
+    codex = [e for e in ents if str(e) == ".codex/agents"]
+    assert len(codex) == 1, f".codex/agents 이중 등재(전환 후 {len(codex)}개)"
+    assert codex[0].source_rel is not None and not codex[0].target_owned, \
+        ".codex/agents owner 가 upstream core(@source) 아님 — guest @target-owned 가 이겨 영구 skip"
+    block = pm_update._extract_guest_manifest_block(dst.read_text(encoding="utf-8"))
+    block_paths = {ln.split()[0] for ln in block.splitlines()
+                   if ln.strip() and not ln.strip().startswith("#")}
+    assert block_paths == {".agents/skills"}, f"guest 절 잔여가 예상과 다름: {block_paths}"
+
+
+def test_prune_guest_block_ancestor_and_full_promotion(pm_update):
+    """차감 판정 유닛: **상위 경로** 소유도 차감(core `.opencode` → guest `.opencode/agents`) + 전량
+    승격 시 절 제거(None) + 무관 core 는 절 그대로 (T-0456 R15 경로-포함 판정)."""
+    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    guest = begin + "\n.opencode/agents    @render @target-owned\n" + end
+    # core 가 상위 `.opencode` 소유 → guest `.opencode/agents` 차감 → 남는 guest 0 → 절 제거(None).
+    assert pm_update._prune_guest_block_owned_by_core(
+        guest, ".opencode    @render @source=x\n") is None
+    # core 무관 → 절 그대로(무차감).
+    assert pm_update._prune_guest_block_owned_by_core(
+        guest, ".claude/agents    @render\n") == guest
+    # guest_block None → None(무동작).
+    assert pm_update._prune_guest_block_owned_by_core(None, ".opencode\n") is None
+
+
 def test_resolve_manifest_selfheal_flavor_source_not_clobbered_by_root(pm_update, tmp_path):
     """codex MF 회귀: flavor 채택자(@source self-prop)는 root(bare)가 아니라 **flavor upstream** 과
     비교/승격한다 — root 승격으로 flavor manifest 의 `@source` self-prop 을 bare 로 클로버하지 않는다.

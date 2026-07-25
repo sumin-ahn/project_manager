@@ -16,8 +16,13 @@ claude Code 가 호출: UserPromptSubmit(prompt 처리 전 — 새 작업 진입
 
 nudge(ADR-0037) 는 그대로 — 모델-facing 비차단 안내를 UserPromptSubmit ``additionalContext`` 로 주입.
 
-claude 네이티브 auto-compact 는 어댑터 settings.json ``autoCompactEnabled:false`` 로 비활성(ADR-0038 D3·
-opencode ``compaction.auto:false`` 파리티) — hard-stop 이 단일 게이트.
+서브에이전트(sidechain) 면제 (T-0458·옵션 A): **메인 PM 세션만 hard-stop** — 서브에이전트는 통과시켜
+네이티브 auto-compact(settings.json ``autoCompactEnabled:true``)로 자체 정리하게 한다. 감지원은 훅 stdin
+``transcript_path`` JSONL 의 ``isSidechain`` 필드(``ctx_guard.transcript_is_sidechain`` — 서브에이전트
+transcript 는 전 엔트리 true·메인은 false·실측 확인). 감지 모호 시 메인 취급(보수적 — 면제는 확실할 때만).
+정지 순서(메인): 훅 hard-stop 임계(잔여 stop_pct → used ≈80%)가 네이티브 auto-compact 트리거(used ≈92%)
+보다 **먼저** 발화해 hard-stop(정제 handoff)이 선행하고, auto-compact 는 훅 미발화 엣지의 폴백이다(예산=물리
+window 가정·ADR-0041). 발단: 장기 dev 서브에이전트가 auto-compact 봉쇄로 API 벽에 죽던 클래스(T-0431).
 
 출력 스키마 (claude hooks):
   PreToolUse deny: {"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -244,6 +249,14 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
     새 작업 deny / UserPromptSubmit block(핸드오프 트리거 prompt 예외·T-0205).
     """
     transcript = stdin.get("transcript_path")
+    # 서브에이전트(sidechain) 면제 (T-0458·옵션 A) — 다른 모든 밴드 판정보다 **먼저**. 메인 PM
+    # 세션만 hard-stop 로 정제 handoff 를 강제하고, 서브에이전트는 무조건 통과(exit 0)시켜 네이티브
+    # auto-compact(settings autoCompactEnabled:true)로 자체 정리하게 한다 — 긴 dev 서브에이전트가
+    # hard-stop/compaction 봉쇄로 API 벽에 죽던 클래스 해소(발단: T-0431). 면제는 sidechain 이
+    # 확실할 때만 — transcript_is_sidechain 이 신호 부재/모호면 False(메인 취급·기존 동작 유지).
+    # nudge/nudge2/stop 어느 밴드든, marker 박제도 없이 통과(서브에이전트는 relay 회전 신호 주체 아님).
+    if isinstance(transcript, str) and transcript and ctx_guard.transcript_is_sidechain(transcript):
+        return 0, None
     # 분모 = 해소된 claude 예산(ADR-0041·per-harness) — statusLine 과 같은 예산.
     window = ctx_guard.resolve_budget(conf, "claude")
     thresholds = ctx_guard.ctx_thresholds(conf)

@@ -4,8 +4,9 @@
 동기화된다(pm_update 전파). 드리프트 시 채택 프로젝트가 옛/다른 동작을 받는다
 ([[verify-engine-template-propagation]]). v2 머지 전 codex 제안 — 핵심 어댑터 산출물의
 양 트리 parity 를 자동 검증한다:
-  - `settings.json`(ADR-0038 D3 비대칭): root=PreCompact breadcrumb(auto-compact ON) /
-    template=PreCompact 없음 + autoCompactEnabled:false(auto-compact OFF·hard-stop 단일 게이트).
+  - `settings.json`(PreCompact 비대칭): root=PreCompact breadcrumb / template=PreCompact 없음.
+    양쪽 auto-compact ON(template 은 T-0458 로 autoCompactEnabled:true — 메인은 훅 hard-stop 선행·
+    서브에이전트는 compaction 자체 정리). breadcrumb 은 net-less 도그푸딩 root 전용으로 유지.
   - `precompact_capture_hook.sh`: root 전용(template 엔 없음) — byte-identical 대상 아님.
   - `skills/pm-handoff/SKILL.md`·`skills/pm-dev-delegate/SKILL.md`: byte-identical.
   - `agents/*.md`: byte-identical(4파일).
@@ -61,15 +62,17 @@ def test_settings_present_both_trees():
         json.loads(path.read_text(encoding="utf-8"))  # 파싱 실패 시 raise
 
 
-def test_precompact_asymmetric_root_breadcrumb_template_autocompact_off():
-    """ADR-0038 D3 — precompact 는 이제 **원리적 비대칭**(압축 가능한 곳에만 breadcrumb).
+def test_precompact_asymmetric_root_breadcrumb_only_both_autocompact_on():
+    """PreCompact breadcrumb 는 **root(도그푸딩) 전용 비대칭** — 양 트리 auto-compact ON.
 
     - root(도그푸딩·ctx hard-stop 훅 부재·auto-compact **ON**): PreCompact breadcrumb 존재
       → `precompact_capture_hook.sh` 를 가리킴 (압축이 수동 핸드오프를 선점할 수 있는 유일한
       net-less tree 라 1줄 신호 보존).
-    - template(auto-compact **OFF**·hard-stop 단일 게이트): PreCompact **없음** +
-      `autoCompactEnabled:false` **단일 정본 토글** (env `DISABLE_AUTO_COMPACT` 중복 제거·T-0300·
-      claude-code-guide 확인·압축이 hard-stop 을 선점 못 하니 백스톱 불요). ctx-훅-템플릿-전용의 거울상 = precompact-root-전용.
+    - template(auto-compact **ON**·T-0458): `autoCompactEnabled:true` **단일 정본 토글**
+      (env `DISABLE_AUTO_COMPACT` 중복 제거·T-0300). 메인 세션은 ctx_stop_hook hard-stop 이
+      auto-compact 트리거보다 먼저 발화(정제 handoff 선행)하고 서브에이전트(sidechain)는 hard-stop
+      면제라 compaction 으로 자체 정리한다 — PreCompact breadcrumb 은 **template 엔 없음**(root 전용
+      net·template 은 훅 hard-stop 선행 + compaction 폴백이 수용된 설계·ADR-0038 D3 amend PM 몫).
     """
     root = json.loads((ROOT_CLAUDE / "settings.json").read_text(encoding="utf-8"))
     tmpl = json.loads((TEMPLATE_CLAUDE / "settings.json").read_text(encoding="utf-8"))
@@ -80,11 +83,13 @@ def test_precompact_asymmetric_root_breadcrumb_template_autocompact_off():
         f"root PreCompact 가 precompact 훅을 안 가리킴: {root_block}"
     )
     assert root.get("autoCompactEnabled") is not False, "root 는 auto-compact 유지여야 함"
-    # template: PreCompact 제거 + auto-compact 정본 단일 토글(env 중복 제거·T-0300).
+    # template: PreCompact breadcrumb 없음(root 전용) + auto-compact 정본 단일 토글 ON(T-0458).
     assert tmpl.get("hooks", {}).get("PreCompact") is None, (
-        "template settings.json 에 PreCompact 잔존 — auto-compact off 라 제거됐어야 함 (ADR-0038 D3)"
+        "template settings.json 에 PreCompact 잔존 — breadcrumb 은 net-less root 전용(template 엔 없음)"
     )
-    assert tmpl.get("autoCompactEnabled") is False, "template autoCompactEnabled:false 누락"
+    assert tmpl.get("autoCompactEnabled") is True, (
+        "template autoCompactEnabled:true 누락 — 서브에이전트 compaction 허용(T-0458·발단 T-0431)"
+    )
     assert "DISABLE_AUTO_COMPACT" not in tmpl.get("env", {}), (
         "template 에 중복 auto-compact 토글 env.DISABLE_AUTO_COMPACT 잔존 — 정본은 top-level "
         "autoCompactEnabled 하나(T-0300 dedup·claude-code-guide 확인)"

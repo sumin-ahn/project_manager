@@ -43,11 +43,16 @@ def test_ship_template_has_critical_env():
 
 
 def test_ship_template_autocompact_canonical_toggle_only():
-    """auto-compact 는 정본 top-level `autoCompactEnabled` 단일 — env 중복 토글 제거(T-0300 dedup)."""
+    """auto-compact 는 정본 top-level `autoCompactEnabled` 단일 — env 중복 토글 제거(T-0300 dedup).
+
+    값은 **true**(T-0458 — 서브에이전트 compaction 허용·메인은 훅 hard-stop 이 선행하고
+    auto-compact 는 폴백). 이 가드는 (1) 정본 토글의 존재/타입과 (2) env 중복 토글 부재(단일 정본)를
+    못박는다 — 재직렬화가 정본 토글을 드롭하거나 env 중복을 되살리면 fail-loud.
+    """
     conf = _load(_SHIP_TEMPLATE)
-    assert conf.get("autoCompactEnabled") is False, (
-        "출하 template 에 정본 토글 `autoCompactEnabled: false` 부재/변경 — auto-compact 재활성 "
-        "위험(ADR-0038 hard-stop 단일 게이트 전제)."
+    assert conf.get("autoCompactEnabled") is True, (
+        "출하 template 에 정본 토글 `autoCompactEnabled: true` 부재/변경 — 서브에이전트 compaction "
+        "봉쇄로 장기 dev 서브에이전트가 API 벽에 죽던 클래스 재발 위험(T-0458·발단 T-0431)."
     )
     env = conf.get("env", {})
     assert "DISABLE_AUTO_COMPACT" not in env, (

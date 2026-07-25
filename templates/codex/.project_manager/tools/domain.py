@@ -221,23 +221,200 @@ def _real_git_runner(cwd: Path) -> GitRunner:
     return runner
 
 
-def covers_to_pathspec(glob: str) -> str | None:
-    """covers 글롭을 git pathspec(리터럴 prefix)으로 변환한다 — **보수적 over-approx**.
+def _escape_glob_literals(g: str) -> str:
+    """git `:(glob)` wildmatch 특수문자 중 **우리 covers 시맨틱이 와일드카드로 안 쓰는** 것을
+    백슬래시 이스케이프한다 — `*`/`**` 만 와일드카드로 보존한다 (codex R7).
 
-    git 은 우리 글롭 시맨틱(`**`)을 모르므로 **첫 와일드카드(`*`) 전 리터럴 prefix** 만
-    취해 git log pathspec 으로 쓴다. 디렉토리 전체를 가리켜 *과경고 < 미경고* 쪽이다
-    (디렉토리 안 다른 파일 커밋도 stale 신호 — "검토해" 라 안전·docstring 명기).
-      - `src/analysis/**` → `src/analysis`
-      - `src/*.py`        → `src`
-      - `a/b.py`          → `a/b.py`(와일드카드 없음 = 글롭 전체가 리터럴)
-    **첫 와일드카드 전 prefix 가 비면(글롭이 `**`·`*…` 로 시작) None** — pathspec 으로 못
-    좁혀 그 글롭은 skip(빈 pathspec=repo 전체라 무의미·page_stale 이 건너뛴다).
+    우리 covers 매처는 `*`(세그먼트 내)·`**`(재귀)만 와일드카드로 보고 `?`·`[`·`]` 는 리터럴로
+    본다. 그런데 git `:(glob)` 은 `?`(임의 1자)·`[...]`(문자클래스)도 와일드카드라, 리터럴
+    특수문자가 든 covers 경로가 다른 파일에 오매칭(거짓 stale)되거나 실제 변경을 놓친다(false-green).
+    `?`·`[`·`]` 와 백슬래시(이스케이프 문자 자체)를 백슬래시로 이스케이프해 리터럴로 만든다 —
+    백슬래시를 **먼저** 처리해 중복 이스케이프를 피한다. `*` 는 손대지 않는다(우리 와일드카드).
+    git 이 이스케이프된 `?`/`[`/`]` 를 리터럴로 처리함은 실측 확인."""
+    g = g.replace("\\", "\\\\")   # 백슬래시 자체 먼저(뒤에 추가할 이스케이프와 중복 회피)
+    for ch in "?[]":
+        g = g.replace(ch, "\\" + ch)
+    return g
+
+
+def _is_supported_covers_glob(g: str) -> bool:
+    """`g`(비-공백 stripped 글롭)가 **우리 matcher 와 git `:(glob)` 이 동일 의미인** 형태인가 (codex R8).
+
+    엣지별 추격 대신 **지원 문법을 명시 검증**하고, 두 방언에서 의미가 증명된 형태만 변환한다.
+    지원(실 git property 테스트로 동일성 증명·`tests/test_domain_freshness.py`):
+      - 와일드카드 없는 **정확 경로**(파일 지목 — git 에서 dir 이면 하위 subtree 매칭돼 우리 exact
+        매치보다 넓다·freshness 는 over-warn 이라 안전; 실사용=파일).
+      - 단일 `*`(세그먼트 내 `[^/]*`) — `dir/*`·`dir/*.ext`·중간 `*` 어디든.
+      - leading `**/`·middle `/**/` 경계 `**`, **리터럴-prefix** trailing `/**`(`src/**`·`src/nested/**`).
+    **미지원**(→ 호출부 unmappable advisory·오번역 안 함): **비-경계 `**`**(`**.py`·`src/**.py`·`a**b`
+    — git 은 `**` 를 세그먼트 못 넘게 처리해 중첩 파일을 **miss=false-green**), `***` 이상,
+    **repo-밖/절대 경로**(선행 `/`·`..` 세그먼트·Windows 드라이브 `X:`·codex R10 MF-2),
+    **wildcard-prefix + trailing `/**`**(`*/**`·`a*b/**`·`src/*/**`·`*/literal/**` — 우리 matcher 의
+    trailing `/**`=parent-포함(`(?:/.*)?`)이 prefix-레벨/루트 파일(`.gitignore`)까지 매칭하나 git
+    `:(glob)…/**` 는 슬래시 필수라 제외 → **git miss=false-green**·codex R20). 우리 실사용(② 전 페이지 =
+    정확 경로 + 리터럴-prefix `/**`)은 전부 지원 집합 안(② 무회귀·실 git property 테스트로 재확정)."""
+    # repo-밖/절대 경로 선분류 (순수 문자열·git 호출 불요·codex R10 MF-2).
+    if g.startswith("/"):
+        return False  # 절대 경로(POSIX)
+    if re.match(r"[A-Za-z]:", g):
+        return False  # Windows 드라이브(`C:/`·`C:\`)
+    if ".." in re.split(r"[\\/]", g):
+        return False  # `..` 세그먼트 = repo 밖 탈출
+    # trailing `/**` 는 prefix 가 전부 리터럴일 때만 두 방언 동등 — prefix 에 와일드카드가 있으면
+    # 우리 parent-포함 매칭(prefix-레벨/루트 파일)이 git `…/**`(슬래시 필수)와 갈린다(codex R20).
+    if g.endswith("/**") and "*" in g[:-3]:
+        return False
+    i, n = 0, len(g)
+    while i < n:
+        if g[i] != "*":
+            i += 1
+            continue
+        j = i
+        while j < n and g[j] == "*":
+            j += 1
+        run = j - i
+        if run == 1:
+            i = j  # 단일 `*` — 세그먼트 내(`[^/]*`)·두 방언 동등.
+        elif run == 2:
+            # `**` — 양쪽이 `/`(또는 문자열 경계)일 때만 두 방언 동등(경계 `**`).
+            left_boundary = (i == 0) or (g[i - 1] == "/")
+            right_boundary = (j == n) or (g[j] == "/")
+            if not (left_boundary and right_boundary):
+                return False  # 비-경계 `**` — git 이 세그먼트 못 넘어 miss(false-green).
+            i = j
+        else:
+            return False  # `***` 이상 — 미지원.
+    return True
+
+
+def covers_glob_pathspec(glob) -> str | None:
+    """covers 글롭을 git **`:(glob)` magic pathspec** 으로 직접 변환한다 (codex R6·손실 접두사 폐기).
+
+    `git diff`(HEAD 트리)/`git log` 에 `:(glob)<원본 글롭>` 을 넘겨 git 이 `*`(세그먼트 내·`/` 안 넘음)·
+    경계 `**`(슬래시 횡단)을 **네이티브로** 처리하게 한다 — 접두사 추출의 **손실**(접두사-없는 글롭
+    통째 skip·`src/*.py`→`src/` 과확장)을 없앤다.
+    `*` 외 git glob 특수문자(`?`·`[`·`]`·백슬래시)는 `_escape_glob_literals` 로 이스케이프해 리터럴
+    보존(codex R7). **지원 문법만 변환**한다(codex R8·`_is_supported_covers_glob`) — 빈/공백 또는 두
+    방언 의미가 다른 형태(비-경계 `**` 등)는 오번역 대신 `None`(호출부가 unmappable advisory).
+    sha-축(`covers_pathspecs`)과 date-축(`page_stale`/`lint_domain`) 이 **공유**하는 단일 판정 기계다
+    (T-0459 — date-축도 종전 손실 접두사에서 이 원본-글롭 판정으로 통일)."""
+    g = str(glob or "").strip()
+    if not g or not _is_supported_covers_glob(g):
+        return None
+    return f":(glob){_escape_glob_literals(g)}"
+
+
+# object-format 별 git 빈 트리 OID (git 정의 상수). `diff <빈-트리> HEAD` = HEAD 트리 전체를
+# 추가로 보여 준다 — HEAD **커밋 트리**를 `:(glob)` pathspec 으로 질의하는 수단(codex R9·`git ls-tree`
+# 는 pathspec magic 미지원). SHA-1 만 하드코딩하면 SHA-256 repo 서 안 맞아 diff rc≠0 → 전축 silent
+# skip(codex R10 MF-1) — `rev-parse --show-object-format` 로 알고 감지 후 맞는 OID 를 쓴다(cross-platform·
+# runner 경유·`/dev/null` 미의존이라 Windows 무회귀·`git hash-object -t tree /dev/null` 동치).
+_EMPTY_TREE_OID_BY_FORMAT = {
+    "sha1": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "sha256": "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
+}
+
+
+def _empty_tree_oid(runner: GitRunner) -> str | None:
+    """이 repo 의 object-format 에 맞는 빈 트리 OID (SHA-1/SHA-256 중립·codex R10 MF-1).
+
+    `git rev-parse --show-object-format` 로 알고 감지 → 상수 조회. 미지 포맷·감지 실패(rc≠0·
+    ancient git·예외) → None(호출부가 fail-soft skip). repo-constant 라 covers_pathspecs 가 1회 산출."""
+    try:
+        rc, out = runner(["rev-parse", "--show-object-format"])
+    except Exception:  # noqa: BLE001 — fail-soft.
+        return None
+    if rc != 0:
+        return None
+    return _EMPTY_TREE_OID_BY_FORMAT.get(out.strip())
+
+
+def _pathspec_observable(runner: GitRunner, pathspec: str, verified_at: str,
+                         empty_tree: str | None) -> bool | None:
+    """`pathspec`(git `:(glob)` magic 등) 이 `verified_at` **기준으로** 관찰 가능한가 (codex R2/R4-β/R9).
+
+    - `True`  = **HEAD 트리**(커밋됨)에 있음 **또는** pin 이후 델타 있음(`<verified_at>..HEAD` 비지
+      않음 — pin 이후 삭제/rename 도 관찰 가능한 델타). 미추적 present 는 곧 pin 이후 델타라 기존
+      `<sha>..HEAD` stale 검사가 자연히 stale 로 잡는다.
+    - `False` = HEAD 트리에 없음 + pin 이후 델타 0 = **pin 시점부터 이 저장소가 못 봄**. never-tracked
+      (② 의 `templates/**` 류·이력 0) 이든 pin *이전* 삭제/외부 이전이든 forward-관찰가능성 0 →
+      동일하게 판정 불가(unverifiable·호출부 advisory).
+    - `None`  = git 오류(rc≠0·non-repo·예외)·`empty_tree` 산출 실패 — 분류 불가(거짓 분류 없이 skip).
+
+    **판정 축을 커밋 이력과 일관되게 HEAD 트리 기준으로 한다**(codex R9): 종전 `git ls-files` 는
+    **index(staged)** 를 포함해 — 새 경로를 stage 만 해도 present 인데 `<sha>..HEAD` 는 비어 순간
+    false-green 이었다. `git diff --name-only <빈-트리> HEAD -- <pathspec>`(HEAD 커밋 트리를 `:(glob)`
+    그대로 질의)로 바꿔 **staged-추가는 present 아님**(HEAD 미포함)·**staged-삭제는 present 유지**
+    (HEAD 트리엔 있음)로 커밋-기준 일관. 빈 트리 OID(`empty_tree`)는 object-format 중립(codex R10 MF-1).
+
+    **경계를 verified_at 에 맞춘다**(codex R4-β): round-2 의 전-이력 기준은 pin *이전* 삭제 경로를
+    present 로 오판해 조용한 clean 이 됐다 — 이제 pin 이후 델타 0 → 부재. `verified_at` 은 호출부
+    (sha 해소·선조 검증 통과분)가 넘기는 유효 anchor 라 range 가 성립한다. HEAD 트리에 있으면 pin
+    델타 확인을 생략한다(short-circuit)."""
+    if empty_tree is None:
+        return None  # 빈 트리 OID 산출 실패 — fail-soft skip(codex R10 MF-1).
+    try:
+        rc, out = runner(["diff", "--name-only", empty_tree, "HEAD", "--", pathspec])
+    except Exception:  # noqa: BLE001 — 주입 runner raise 도 분류 불가(skip·fail-soft).
+        return None
+    if rc != 0:
+        return None  # git 부재/non-repo/env 오류 — 분류 불가(거짓 분류 회피).
+    if out.strip():
+        return True  # HEAD 트리(커밋)에 있음 — index/staged 무관.
+    # HEAD 트리에 없음 — pin 이후 델타(삭제/rename 포함) 확인. pin 이전부터 부재면 델타 0 → absent.
+    try:
+        rc, out = runner(["log", "-1", "--oneline", f"{verified_at}..HEAD", "--", pathspec])
+    except Exception:  # noqa: BLE001 — fail-soft.
+        return None
+    if rc != 0:
+        return None  # env 오류·range 불가 — 분류 불가.
+    return bool(out.strip())
+
+
+def covers_pathspecs(covers, *, repo: Path | None = None,
+                     git_runner: GitRunner | None = None,
+                     verified_at: str) -> tuple[list[str], list[str], list[str]]:
+    """covers 글롭을 **`:(glob)` magic pathspec 으로 직접** verified_at 기준 관찰가능성 분할한다 (T-0421).
+
+    Returns `(present, absent, unmappable)` — 전부 **원본 글롭 문자열**(호출부 표면화·재변환용):
+      - `present`    = 현재 tracked **또는** pin(`verified_at`) 이후 델타 있음 → freshness 판정 가능.
+      - `absent`     = 미추적 + pin 이후 델타 0 = pin 시점부터 관찰 불가 → 판정 불가(호출부 advisory).
+      - `unmappable` = **지원 안 하는 covers 문법**(비-경계 `**` 등 두 방언 의미가 다른 형태·codex R8)
+        → 오번역 대신 **조용히 skip 안 하고** advisory(관찰불가를 정직 보고). 빈/공백 글롭은 패턴이
+        아니라 제외(코드-무관·unmappable 아님).
+
+    부재 경로는 `git log <sha>..HEAD -- <pathspec>` 가 **"델타 없음"(빈 출력)과 구분 못 해**
+    조용히 green 이 되는 사각이다 — 두-git 형상(ADR-0027)에서 `templates/**` 는 ①(제품
+    worktree) 소유라 ②(PM 홈)엔 그 이력이 0 이라 그 페이지는 아무리 낡아도 영원히 green 이었다.
+    **판정 기준은 git 관찰가능성·경계는 verified_at·매핑은 손실 없는 `:(glob)`**이다(codex MF3/R2/R4/R6):
+      - untracked 생성물(예 `board.md`)·never-tracked(`templates/**`)·pin *이전* 삭제 경로는 pin
+        이후 델타 0 → **부재**(조용한 clean/green 회피).
+      - HEAD 트리(커밋)에 있으면(`git diff <빈-트리> HEAD`·index/staged 무관·R9), verified_at *이후*
+        삭제/rename 된 경로는 `<sha>..HEAD` 델타로 **존재**. **`covers_glob_pathspec` 로 원본 글롭을
+        직접 넘겨**(접두사 손실 폐기·R6·지원 문법만·R8) `**/x.py`·`src/*.py` 도 정확 판정.
+
+    **fail-soft**: git 부재·non-repo·rc≠0·예외인 pathspec 은 분류 불가라 어느 쪽에도 안 넣는다
+    (거짓 분류 회피 — unmappable 과 구분: git 오류는 skip, 형식상 매핑불가는 unmappable). `verified_at`
+    = pin(호출부가 anchor 유효성 검증 후 전달·range 양끝). `git_runner` 미지정 시 `_real_git_runner(repo)`.
     """
-    star = glob.find("*")
-    prefix = glob if star == -1 else glob[:star]
-    # 첫 와일드카드 전까지 자른 prefix 의 trailing 슬래시 제거(`src/analysis/` → `src/analysis`).
-    prefix = prefix.rstrip("/")
-    return prefix or None
+    repo = repo or REPO
+    runner = git_runner or _real_git_runner(repo)
+    empty_tree = _empty_tree_oid(runner)   # object-format 중립 빈 트리 OID·1회 산출(codex R10 MF-1)
+    present: list[str] = []
+    absent: list[str] = []
+    unmappable: list[str] = []
+    for glob in covers:
+        if not str(glob).strip():
+            continue  # 빈/공백 = 패턴 아님 → 제외(코드-무관·unmappable 아님·codex R8).
+        spec = covers_glob_pathspec(glob)
+        if spec is None:
+            unmappable.append(glob)  # 지원 안 하는 형태(비-경계 `**`·repo 밖/절대 경로 등) — advisory(R8/R10).
+            continue
+        observable = _pathspec_observable(runner, spec, verified_at, empty_tree)
+        if observable is None:
+            continue  # git 오류·빈 트리 OID 산출 실패 — 거짓 분류 없이 skip(fail-soft).
+        (present if observable else absent).append(glob)  # 원본 글롭 보고
+    return present, absent, unmappable
 
 
 def _parse_updated_date(updated) -> datetime.date | None:
@@ -281,14 +458,18 @@ def page_stale(page: dict, *, git_runner: GitRunner | None = None) -> bool | Non
     **`None` = 판정불가(fail-soft·unknown)**. None 이 되는 경우:
       - covers 가 비었다(코드-무관 개념 — 평가 대상 없음).
       - `updated` 파싱 실패(부재·깨짐).
-      - covers 글롭들이 전부 빈 pathspec(글롭이 `**`/`*…` 로 시작 — 좁힐 prefix 없음).
+      - covers 글롭이 전부 pathspec 매핑 불가(빈/공백 또는 미지원 문법 — 비-경계 `**`·절대
+        경로 등·`covers_glob_pathspec` 이 None) — 좁힐 대상 없음.
       - git 호출 실패(rc≠0·git 부재/에러) 또는 빈 출력(미추적·커밋 0).
     crash 0 — git 없는 환경(솔로/CI)도 무탈히 unknown.
 
-    **보수적 pathspec**(covers_to_pathspec): 글롭의 리터럴 prefix(디렉토리)로 over-approx
-    해 *과경고 < 미경고* 쪽이다(stale 을 덜 놓침). covers 의 여러 글롭은 하나의 `git log
-    -1 -- <pathspec…>` 로 합쳐 *그 중 가장 최근* 커밋 날짜를 본다(어느 covers 코드든 바뀌면
-    stale). git 은 주입 `git_runner`(DI seam·테스트 hermetic) 또는 실 subprocess(미주입).
+    **원본-글롭 pathspec**(`covers_glob_pathspec`·`:(glob)` magic — sha-축과 동일 판정 기계
+    재사용·T-0459): git 이 `*`(세그먼트 내)·경계 `**`(슬래시 횡단)을 네이티브로 매칭한다 —
+    접두사 손실(단일 `*` 가 디렉토리로 과확장·접두사-없는 글롭 통째 skip)을 없앤다. 미지원/빈
+    글롭은 skip(date-축은 advisory visibility·간이 신호라 unmappable 세분화 없이 fail-soft 흡수).
+    covers 의 여러 글롭은 하나의 `git log -1 -- <pathspec…>` 로 합쳐 *그 중 가장 최근* 커밋
+    날짜를 본다(어느 covers 코드든 바뀌면 stale). git 은 주입 `git_runner`(DI seam·테스트
+    hermetic) 또는 실 subprocess(미주입).
     """
     covers = page.get("covers") or []
     if not covers:
@@ -298,7 +479,7 @@ def page_stale(page: dict, *, git_runner: GitRunner | None = None) -> bool | Non
     if updated_date is None:
         return None
 
-    pathspecs = [ps for ps in (covers_to_pathspec(g) for g in covers) if ps]
+    pathspecs = [ps for ps in (covers_glob_pathspec(g) for g in covers) if ps]
     if not pathspecs:
         return None
 

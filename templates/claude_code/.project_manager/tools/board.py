@@ -7267,6 +7267,20 @@ def _render_managed_relpaths() -> set[str]:
     """
     if not (REPO / ".project_manager" / "local.conf").is_file():
         return set()  # 토큰-form 소스 트리(local.conf 부재·① canonical) — render 산출물 아님.
+    return _manifest_render_relpaths()
+
+
+def _manifest_render_relpaths() -> set[str]:
+    """engine.manifest 의 `@render` dest 경로 집합 (repo 기준 relpath·POSIX·local.conf 게이트 무관).
+
+    순수 manifest 파생 — render-leak(`_render_managed_relpaths` 가 트리성격 게이트 후 호출)과
+    un-migrated-overlay(`_collect_overlay_adapter_files` 가 게이트 없이 어댑터 본문 스코프로 호출)의
+    **공유 소스**다. 두 소비처가 같은 출하 인벤토리(engine.manifest `@render` = 프레임워크가 렌더-
+    관리하는 어댑터 본문 트리)에서 스코프를 파생하므로, 새 하네스·새 어댑터 항목이 manifest 에
+    등재되면 양쪽에 자동 편입된다(손-열거 0). config·hooks·엔진 코드·`node_modules` 등 런타임/설정
+    파일은 `@render` 가 아니라 `@source`(byte-copy)/미등재라 이 집합에 애초에 안 든다 — 스코프가
+    구조적으로 어댑터 본문으로 좁혀진다. pm_update.read_manifest 재사용(`_load_pm_update_module`
+    seam). manifest 부재·로드 실패는 빈 set(검사 대상 0·무발화)."""
     pm_update = _load_pm_update_module()
     if pm_update is None:
         return set()
@@ -7403,22 +7417,29 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
 # (로컬 `_UNMIGRATED_FREEFORM_KEYS`·ADR-0031 디커플)만 본다 — operational 토큰(`{{PROJECT_NAME}}`
 # 등)은 import sed/local.conf 채널이라 별개. graceful: 어댑터 파일/디렉토리 부재 시 finding 0.
 
-# 어댑터 스캐폴드 .md 글롭 — 채택자 tree 에 출하되는 harness 어댑터 본문 (존재하는 것만).
-#   claude   : `.claude/agents/*.md`·`.claude/skills/**/SKILL.md`
-#   opencode : `.opencode/agents/*.md`·`.opencode/command/*.md`(출하 은퇴 ADR-0065·legacy-compat —
-#              은퇴 전 채택자 트리 잔존 파일 스캔 유지·_SCAFFOLD_PATH_PREFIXES 주석 참조)
-# 각 경로는 harness 별 존재 여부가 다르므로(claude 채택자엔 `.opencode` 부재·역도) 있을 때만 스캔.
+# 어댑터 스캔 축은 **손-열거하지 않고 출하 인벤토리에서 파생**한다 (T-0431·[[T-0429]] 대칭).
+#   ① 스코프 축 = engine.manifest 의 `@render` dest 경로 (`_manifest_render_relpaths` — render-leak
+#      과 공유하는 출하 인벤토리): `.claude/agents`·`.claude/skills`·`.opencode/agents`·`.codex/
+#      agents`·`.agents/skills`(codex dual·[[ADR-0070]]) 등 *프레임워크가 렌더-관리하는 어댑터 본문*
+#      트리. 옛 하드코딩(`.claude`/`.opencode` 두 하네스 × `*.md`)은 세 번째 하네스(codex)의 `.codex/
+#      agents/*.toml` 을 구조적으로 못 봤다 — manifest 파생이라 새 `@render` 항목이 자동 편입된다.
+#      **런타임/설정 파일 제외가 구조적**: `.opencode/node_modules`(플러그인 deps)·adopter-owned
+#      `.codex/config.toml`·`.codex/hooks.json`·`.claude/settings.json`·엔진 코드는 `@render` 가 아닌
+#      `@source`(byte-copy)/미등재라 스코프에 애초에 안 든다 — 무관 파일 이중 read·토큰 오탐 봉쇄.
+#      스코프 = 인스턴스 `@render`(engine.manifest) **∪ 은퇴 채널**(`_RETIRED_OVERLAY_GLOBS` — 현행
+#      manifest 엔 없지만 구 채택자 잔존분·codex R3). **add-harness guest 어댑터도 인스턴스 manifest 에
+#      `@render` 로 등재**(add_harness·[[T-0456]])되므로 이 인스턴스-manifest 파생이 guest 를 자연 커버
+#      한다(templates/ 불요) — codex R12: 옛 flavor-manifest 보강(`_all_harness_body_relpaths`)은 출하
+#      인스턴스에 templates/ 가 없어 항상 ∅였다(false-green). manifest 등재로 대체·판정원 단일화(제거).
+#   ② 파일 필터 축 = 텍스트 판정 (`pm_update._is_text_source`·[[T-0424]]/[[T-0427]] seam
+#      `_load_pm_update_module` 재사용): 옛 확장자 열거(`*.md`·`SKILL.md`)는 codex `.toml` 같은
+#      새 형식을 놓쳤다. 확장자 대신 "텍스트로 읽히는가"만 본다 — render-leak(blocking)이 이미 쓰는
+#      그 판정을 공유(네 번째 판정 지점 방지).
 # root 문서(CLAUDE.md·AGENTS.md 등)는 *제외* (T-0133): 채택자가 통째로 손편집하는 instance-owned
-# scaffold 라 free-form 의 canonical home 이다(manifest 제외). 거기의 raw free-form 토큰은
-# "미마이그레이션"이 아니라 "채택자가 아직 안 채움"이라 이 lint 의 오분류 대상이 아니다.
-_OVERLAY_ADAPTER_GLOBS: tuple[tuple[str, str], ...] = (
-    (".claude/agents", "*.md"),
-    (".claude/skills", "SKILL.md"),
-    (".opencode/agents", "*.md"),
-    (".opencode/command", "*.md"),
-)
+# scaffold 라 `@render` 가 아니다(free-form 의 canonical home) — manifest 미등재라 스코프 밖. 거기의
+# raw 토큰은 "미마이그레이션"이 아니라 "채택자가 아직 안 채움"이라 이 lint 의 오분류 대상이 아니다.
 
-# free-form 3종 토큰 — un-migrated-overlay lint 가 어댑터 .md 에서 스캔하는 리터럴 토큰 집합.
+# free-form 3종 토큰 — un-migrated-overlay lint 가 어댑터 본문에서 스캔하는 리터럴 토큰 집합.
 # pm_render 의 free-form value-fill 기계(FREEFORM_KEYS·overlay)는 ADR-0031 로 제거됐으므로,
 # 이 lint 는 그 심볼에 의존하지 않고 자체 로컬 튜플로 검출 대상을 정의한다(디커플·단일 책임).
 # pm_import.FREE_FORM_TOKENS(FILL 채널·canonical home 전담)와 동일 집합을 bare key 로 본다.
@@ -7428,33 +7449,79 @@ _UNMIGRATED_FREEFORM_KEYS: tuple[str, ...] = (
     "USER_GATE_ITEMS",
 )
 
+# 은퇴 어댑터 채널 (닫힌 역사적 집합) — manifest `@render` 파생 스코프의 **보완**.
+# @render 파생은 *현행* manifest 만 본다. `.opencode/command` 는 [[ADR-0065]] 로 출하 은퇴해 현행
+# manifest 에 미등재지만, pm_update 는 채택자의 기존 파일을 **삭제하지 않는다**(이 프로젝트는 채택자
+# 파일 삭제를 자동화하지 않는다 — 삭제는 사용자 위임·[[deletion-delegate-to-user]]). 그래서 구 채택자
+# 트리엔 `.opencode/command/*.md` 가 잔존할 수 있고, 그 안의 un-migrated free-form 토큰이 @render-only
+# 스코프에선 조용히 누락된다(T-0431 이전 글롭엔 있던 커버리지·codex R3).
+#
+# ⚠️ 이 목록의 손-열거는 [[T-0424]]/[[T-0427]]/[[T-0429]] 가 닫은 **decay 클래스가 아니다**: 그 클래스는
+# "새 값(새 하네스·새 확장자)을 열거가 못 따라온다" 였는데, 은퇴 채널은 정의상 **닫힌 과거 집합**이라
+# 새 하네스 축과 무관하게 **늘어나지 않는다**. 새 채널은 manifest(파생)로, 은퇴 채널만 여기로 — 둘은
+# 직교한다. glob 형태는 은퇴 당시 형상 그대로 박제(`.opencode/command/*.md`·비재귀·직속 `.md`).
+_RETIRED_OVERLAY_GLOBS: tuple[tuple[str, str], ...] = (
+    (".opencode/command", "*.md"),
+)
+
 
 def _collect_overlay_adapter_files() -> list[Path]:
-    """un-migrated 검사 대상 어댑터 .md — harness 스캐폴드 디렉토리만 (존재하는 것만).
+    """un-migrated 검사 대상 어댑터 본문 — engine.manifest `@render` 경로 ∪ 은퇴 채널 하위 텍스트 파일.
 
-    `.claude/skills` 는 `**/SKILL.md`(rglob), 그 외 디렉토리는 직속 `*.md`(glob)로 모은다.
-    root 문서(CLAUDE.md·AGENTS.md 등)는 제외 — instance-owned scaffold 라 render-overlay
-    관리 대상이 아니다(T-0133). dedupe 는 호출부가 path 로 처리. `.is_dir()` 가드로 부재
-    harness/솔로 tree 는 조용히 건너뛴다(graceful·finding 0)."""
-    files: list[Path] = []
-    for rel, pattern in _OVERLAY_ADAPTER_GLOBS:
+    **스코프·파일필터 두 축을 출하 인벤토리에서 파생**한다(손-열거 아님·T-0431):
+      - 스코프 축 = `_manifest_render_relpaths`(**인스턴스 engine.manifest** `@render` dest 경로·
+        render-leak 공유) **∪ `_RETIRED_OVERLAY_GLOBS`**(은퇴 채널·닫힌 과거 집합·구 채택자 잔존분·
+        codex R3). manifest 항목이 디렉토리면 rglob, 파일이면 그 파일(render-leak 의 dir/file 처리
+        동형); 은퇴 채널은 은퇴 당시 glob(`.opencode/command/*.md`·직속). **add-harness guest 어댑터도
+        인스턴스 manifest 에 `@render` 로 등재**(add_harness·[[T-0456]])되므로 이 host-manifest 파생이
+        guest 를 자연 커버한다 — templates/ 불요(옛 flavor-manifest 보강 `_all_harness_body_relpaths`
+        는 인스턴스에 templates/ 가 없어 무력이라 제거·판정원 단일화). 런타임/설정(`node_modules`·
+        `config.toml`·`settings.json`·lib·plugins·엔진 코드)은 `@render` 도 은퇴 채널도 아니라 스코프에
+        애초에 안 든다 — 네임스페이스-전체 rglob 의 무관 파일 read·오탐 봉쇄.
+      - 파일 필터 축 = `pm_update._is_text_source`(확장자 열거 대신 텍스트 판정) — codex `.codex/
+        agents/*.toml` 같은 새 형식도 편입. 로드 실패 시 필터 생략 → 호출부 read 의 넓힌 except 가
+        바이너리를 흡수(graceful degrade·render-leak 동형).
+    root 문서(CLAUDE.md·AGENTS.md)는 `@render`·은퇴 채널 모두 미등재(instance-owned scaffold)라 스코프
+    밖(T-0133 제외 보존). manifest 부재·스코프 0(솔로/신규)이면 finding 0."""
+    pm_update = _load_pm_update_module()
+    candidates: list[Path] = []
+    # ① 인스턴스 engine.manifest @render (host 어댑터 + add-harness 가 등재한 guest·[[T-0456]]·
+    #    render-leak 공유·손-열거 0) — @render 파생이라 런타임/설정 제외 불변식 유지.
+    for managed_rel in sorted(_manifest_render_relpaths()):
+        target = REPO / managed_rel
+        if target.is_dir():
+            candidates.extend(sorted(p for p in target.rglob("*") if p.is_file()))
+        elif target.is_file():
+            candidates.append(target)
+    # ② 은퇴 채널 = 닫힌 과거 집합 (manifest 미등재·구 채택자 잔존 가능·직교·안 늘어남)
+    for rel, pattern in _RETIRED_OVERLAY_GLOBS:
         d = REPO / rel
-        if not d.is_dir():
+        if d.is_dir():
+            candidates.extend(sorted(p for p in d.glob(pattern) if p.is_file()))
+    # 텍스트 필터 + dedupe (두 스코프 잠재 중복·재열거 방지·바이너리는 텍스트 판정 공유로 제외)
+    files: list[Path] = []
+    seen: set[Path] = set()
+    for p in candidates:
+        if p in seen:
             continue
-        files.extend(d.rglob(pattern) if pattern == "SKILL.md" else d.glob(pattern))
+        seen.add(p)
+        if pm_update is not None and not pm_update._is_text_source(p):
+            continue
+        files.append(p)
     return files
 
 
 def lint_unmigrated_overlay() -> list[tuple[str, str, str]]:
-    """어댑터 .md 에 리터럴 free-form 토큰이 잔존하면 un-migrated 신호 (kind=`un-migrated-overlay`).
+    """어댑터 본문에 리터럴 free-form 토큰이 잔존하면 un-migrated 신호 (kind=`un-migrated-overlay`).
 
     `_ADVISORY_LINT_KINDS` 등재 → `lint --gate` 미차단(advisory·§3.6 "push-block 아님"). 마이그레이션
     누락은 채택자 운영 ritual 신호이지 출하 결함이 아니므로 visibility 만 제공한다.
 
     검사 (정적·shipped tree 스캔):
-      - 어댑터 .md(`_collect_overlay_adapter_files`)에 리터럴 free-form 토큰
+      - 어댑터 본문(`_collect_overlay_adapter_files` — engine.manifest `@render` 경로 하위 텍스트
+        파일·확장자 무관·codex `.toml` 포함)에 리터럴 free-form 토큰
         (`{{PROJECT_CONSTRAINTS}}`/`{{PROTECTED_PATHS}}`/`{{USER_GATE_ITEMS}}`)이 잔존 → 파일·토큰별
-        finding 1건. 마이그레이션 후엔 어댑터 .md 가 free-form-free(ADR-0030·토큰 0)다.
+        finding 1건. 마이그레이션 후엔 어댑터 본문이 free-form-free(ADR-0030·토큰 0)다.
 
     디커플 (ADR-0031): render-overlay free-form value-fill 기계(`FREEFORM_KEYS`·overlay.local.yaml)
     는 제거됐으므로 이 lint 는 그 심볼에 의존하지 않고 자체 로컬 튜플(`_UNMIGRATED_FREEFORM_KEYS`)
@@ -7479,8 +7546,10 @@ def lint_unmigrated_overlay() -> list[tuple[str, str, str]]:
             continue
         seen.add(rel_posix)
         try:
+            # 텍스트 판정(_is_text_source) 통과 후에도 pm_update None 폴백 시 바이너리가 새거나
+            # TOCTOU 로 디코드가 깨질 수 있어 UnicodeDecodeError 를 함께 흡수(render-leak 동형).
             text = p.read_text(encoding="utf-8")
-        except OSError:
+        except (UnicodeDecodeError, OSError):
             continue
         # 코드 span/fence 예시 토큰은 실 placeholder 가 아니므로 제거 후 스캔(오탐 0).
         leaked = sorted(set(token_re.findall(_strip_code(text))))
@@ -7724,7 +7793,8 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice",
      "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
-     "status-stale", "domain-stale",
+     "status-stale", "domain-stale", "domain-unverifiable",
+     "architecture-unverifiable", "status-unverifiable",
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
      "adr-author", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model"})
@@ -7853,7 +7923,7 @@ def lint_adr_author() -> list[tuple[str, str, str]]:
 
 # architecture.md·status.md 의 verified_at 매핑 경로 = 엔진 코드 트리. 이 문서들이 판정
 # 대상으로 삼는 코드다. 디렉토리 전체를 pathspec 으로 잡아 over-approx(과경고 < 미경고·
-# domain covers_to_pathspec 동형) — 그 트리 어느 파일이 sha 이후 커밋돼도 "재검증해" 신호.
+# 리터럴 디렉토리 prefix) — 그 트리 어느 파일이 sha 이후 커밋돼도 "재검증해" 신호.
 _CURRENT_TRUTH_ENGINE_PATHS: tuple[str, ...] = (".project_manager/tools",)
 
 
@@ -7895,13 +7965,168 @@ def _git_commits_between(sha: str, pathspecs: list[str], *,
     return bool(out.strip())
 
 
+# 고정 16진 commit sha 형식 — abbrev 7자+ ~ full 40(SHA-1)/64(SHA-256). `HEAD`·브랜치·태그
+# 처럼 **움직이는 ref** 를 freshness anchor 로 오인하지 않기 위한 게이트(codex MF2). 이들은
+# rev-parse 를 통과(rc0)하지만 `<ref>..HEAD` 가 (거의) 항상 비어 영구 false-green 이다.
+_HEX_SHA_RE = re.compile(r"[0-9a-fA-F]{7,64}")
+
+
+def _is_hex_sha(value: str) -> bool:
+    """`value` 가 고정 16진 commit sha 형식인가 (freshness anchor 자격·`_sha_anchor_status`/
+    `_canonical_commit_oid` 공유 형식 규칙·사본 금지). `HEAD`·브랜치명·태그·너무 짧은 값은 False —
+    움직이는 ref 는 안정적 검증 기준이 못 된다(codex MF2)."""
+    return bool(_HEX_SHA_RE.fullmatch((value or "").strip()))
+
+
+# freshness anchor 판정 verdict (T-0421/T-0454/codex R1-R4). 사유 문구까지 한 곳에서 구분한다.
+_ANCHOR_OK = "ok"                      # 고정 hex·해소·HEAD 선조 → 유효 backward anchor.
+_ANCHOR_NON_SHA = "non-sha"            # 형식 아님(HEAD/브랜치/태그·움직이는 ref·MF2).
+_ANCHOR_UNRESOLVED = "unresolved"      # hex 이나 이 저장소 commit 아님(rev-parse rc1·타-git SHA·MF1).
+_ANCHOR_NON_ANCESTOR = "non-ancestor"  # 해소되나 HEAD 선조 아님(merge-base rc1·descendant/딴 브랜치·R4-α).
+_ANCHOR_AMBIGUOUS = "ambiguous"        # 축약 sha 가 다중 매칭(repo 성장) — pin 속성·unverifiable(codex R22).
+_ANCHOR_UNKNOWN = "unknown"            # 환경적 판정불가(git 부재·rc≥2 fatal) → silent skip.
+
+# ambiguous 축약 sha 의 rev-parse stderr 신호 (실 git 실측·git 2.43: "error: short object ID <p> is
+# ambiguous"). `--quiet` 는 이 stderr 를 억제하므로(실측) 진단은 non-quiet 재질의로 본다. 소문자
+# 부분일치(버전 문구 변동 여유). codex R22.
+_AMBIGUOUS_STDERR_SIGNALS: tuple[str, ...] = ("ambiguous", "short object id")
+
+
+def _git_run(argv: list[str], *, runner=None) -> tuple[int, str] | None:
+    """git 명령의 `(rc, stdout)` 반환·git 부재/예외 → None. runner seam(hermetic 테스트)·미주입
+    시 실 subprocess(`git -C REPO`). rev-parse 해소 OID(prefix 검증용)가 필요한 곳이 쓴다."""
+    if runner is None:
+        if shutil.which("git") is None:
+            return None
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(REPO), *argv],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 — 타임아웃/바이너리 이상은 None(환경적).
+            return None
+        return r.returncode, r.stdout or ""
+    try:
+        rc, out = runner(argv)
+    except Exception:  # noqa: BLE001 — 주입 runner raise 도 None.
+        return None
+    return rc, out
+
+
+def _git_rc(argv: list[str], *, runner=None) -> int | None:
+    """git 명령의 rc 만 반환(stdout 무시)·git 부재/예외 → None (`_git_run` 얇은 래퍼·사본 0)."""
+    res = _git_run(argv, runner=runner)
+    return res[0] if res is not None else None
+
+
+def _rev_parse_ambiguous(sha: str, *, runner=None) -> bool:
+    """축약 `sha` 가 다중 매칭(모호)한가 — **non-quiet** rev-parse stderr 신호로 판정 (codex R22).
+
+    `git rev-parse --verify --quiet <sha>^{commit}` 는 모호 시 stderr 를 **억제**(실측·rc1) 하므로,
+    실패 경로에서 `--quiet` 없이 재질의해 stderr 의 `_AMBIGUOUS_STDERR_SIGNALS`(소문자 부분일치)를
+    본다. 모호는 환경 오류가 아니라 **pin 의 속성**이라 호출부가 `_ANCHOR_AMBIGUOUS`(unverifiable)로
+    표면화한다. git 부재/예외 → False(모호로 단정 안 함·rc 기반 분류로 폴백).
+
+    `runner` 대역: `(rc, stdout)` 또는 `(rc, stdout, stderr)` — 3-tuple 이면 stderr 를 본다(hermetic
+    테스트가 모호 stderr 를 주입)."""
+    argv = ["rev-parse", "--verify", f"{sha}^{{commit}}"]   # non-quiet — stderr 억제 안 함
+    if runner is None:
+        if shutil.which("git") is None:
+            return False
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(REPO), *argv], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 — 진단 실패는 False(rc 기반 분류 유지).
+            return False
+        stderr = r.stderr or ""
+    else:
+        try:
+            result = runner(argv)
+        except Exception:  # noqa: BLE001
+            return False
+        stderr = result[2] if len(result) >= 3 else ""   # 2-tuple 대역 → stderr 없음.
+    low = stderr.lower()
+    return any(sig in low for sig in _AMBIGUOUS_STDERR_SIGNALS)
+
+
+def _sha_anchor_status(sha: str, *, runner=None) -> tuple[str, str | None]:
+    """`sha` 가 유효한 **backward freshness anchor** 인가 — `(verdict, full_oid)`.
+
+    유효 anchor(`_ANCHOR_OK`) = (1) 고정 hex 형식 + (2) **고정 SHA 로** 유일 commit 해소(ref 아님) +
+    (3) **HEAD 의 선조**. 셋 다여야 `<oid>..HEAD` range 가 "pin 이후 변경"을 정직히 센다. OK 면
+    `full_oid` = rev-parse 로 얻은 **canonical full OID**(gitrevisions 유일 해소·codex R16) — 호출부는
+    이후 모든 git 명령(merge-base·`<oid>..HEAD` range·domain pin-이후 질의)을 **이 full OID 로** 돌려
+    원 입력 문자열 재해석(ref/모호 축약 여지)을 없앤다. 비-OK verdict 는 `full_oid=None`. 실패 모드:
+      - `_ANCHOR_NON_SHA`      : 형식 아님(`HEAD`/브랜치/태그·MF2) **또는** hex 이나 hex-이름 ref 로
+        해소됨(`deadbeef` 라는 branch/tag — 해소 OID 가 입력을 prefix 로 안 가짐·codex R5).
+      - `_ANCHOR_UNRESOLVED`   : hex 이나 이 저장소 commit 아님(rev-parse rc1·타-git SHA·MF1).
+      - `_ANCHOR_NON_ANCESTOR` : 해소되나 HEAD 선조 아님(`merge-base --is-ancestor` rc1·codex R4-α).
+      - `_ANCHOR_AMBIGUOUS`    : 축약 sha 가 다중 매칭(repo 성장·`_rev_parse_ambiguous` stderr 신호·
+        codex R22). 모호는 환경이 아니라 pin 속성 → unverifiable(full OID 로 재핀 안내).
+    환경적 판정불가 → `_ANCHOR_UNKNOWN`(silent skip): 빈 sha·git 부재·rev-parse/merge-base **rc≥2**
+    (rc128 non-repo·safe.directory·권한 등 fatal). 환경 오류를 unverifiable 로 오인하지 않는다(MF1).
+    `_canonical_commit_oid`(backfill 쓰기 검증)는 verdict==OK 면 full_oid 반환(read/write 대칭).
+    `runner` = 테스트 hermetic seam(argv→(rc, stdout[, stderr]))·미주입 시 실 subprocess(`git -C REPO`)."""
+    sha = (sha or "").strip()
+    if not sha:
+        return (_ANCHOR_UNKNOWN, None)
+    if not _is_hex_sha(sha):
+        return (_ANCHOR_NON_SHA, None)  # 움직이는 ref — rev-parse 시도 안 함.
+    res = _git_run(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"], runner=runner)
+    if res is None:
+        return (_ANCHOR_UNKNOWN, None)
+    rc, resolved = res
+    if rc != 0:
+        # 실패 — `--quiet` 가 모호 stderr 를 억제하므로 non-quiet 재질의로 모호성 먼저 판정(codex R22).
+        # 모호(축약 다중 매칭)는 환경이 아니라 pin 속성 → unverifiable. 그 외 rc1=미해소·rc≥2=env.
+        if _rev_parse_ambiguous(sha, runner=runner):
+            return (_ANCHOR_AMBIGUOUS, None)
+        if rc == 1:
+            return (_ANCHOR_UNRESOLVED, None)  # 순수 미해소(repo 정상·sha 부재·타-git SHA).
+        return (_ANCHOR_UNKNOWN, None)  # rc≥2 fatal(non-repo·safe.directory 등) — 환경적.
+    full_oid = resolved.strip()
+    # 해소 OID 가 입력 sha 를 실제 prefix 로 가져야 **고정 SHA** — 아니면 hex-이름 ref (codex R5).
+    if not full_oid.lower().startswith(sha.lower()):
+        return (_ANCHOR_NON_SHA, None)
+    # 이후 하류 명령은 **canonical full OID** 를 쓴다(원 입력 재해석 제거·codex R16).
+    rc = _git_rc(["merge-base", "--is-ancestor", full_oid, "HEAD"], runner=runner)
+    if rc is None:
+        return (_ANCHOR_UNKNOWN, None)
+    if rc == 0:
+        return (_ANCHOR_OK, full_oid)
+    if rc == 1:
+        return (_ANCHOR_NON_ANCESTOR, None)
+    return (_ANCHOR_UNKNOWN, None)  # rc≥2 fatal — 환경적.
+
+
+def _unverifiable_sha_reason(status: str, sha: str) -> str:
+    """anchor verdict → advisory 사유 문구 (`_verified_at_finding`·`lint_domain_freshness` 공유·DRY).
+
+    `_ANCHOR_OK`/`_ANCHOR_UNKNOWN` 은 unverifiable 이 아니라 호출부가 이 함수를 안 부른다."""
+    if status == _ANCHOR_NON_SHA:
+        return f"verified_at({sha}) 이 고정 sha 아님(HEAD/브랜치/태그?)"
+    if status == _ANCHOR_NON_ANCESTOR:
+        return f"verified_at({sha[:12]}) 이 HEAD 선조 아님(딴 브랜치/앞선 checkout?)"
+    if status == _ANCHOR_AMBIGUOUS:
+        return f"verified_at({sha}) 축약 sha 가 모호(repo 성장으로 다중 매칭) — full OID 로 재핀"
+    return f"verified_at({sha[:12]}) 이 이 저장소 commit 으로 해소 안 됨(타 git SHA?)"  # UNRESOLVED
+
+
 def _verified_at_finding(doc_file: Path, pathspecs, label: str, kind: str, *,
                          runner=None) -> list[tuple[str, str, str]]:
-    """문서 `verified_at` sha 이후 `pathspecs` 에 커밋 있으면 finding 1개·아니면 [].
+    """문서 `verified_at` sha 판정 → 유효 anchor 면 stale/`kind`·아니면 unverifiable advisory.
 
-    fail-soft: 문서 부재·frontmatter 없음/깨짐·`verified_at` 부재 → [](명시 skip — solo/
-    신규 clone·아직 verified_at 미부여 문서 무영향·false-green 아님). 판정불가(None)도 [].
-    stale(True)일 때만 `(label, kind, detail)` 1개."""
+    fail-soft: 문서 부재·frontmatter 없음/깨짐·`verified_at` 부재·환경적 판정불가(`_ANCHOR_UNKNOWN`)
+    → [](명시 skip — solo/신규 clone·아직 verified_at 미부여 문서 무영향·false-green 아님).
+
+    **anchor 판정**(T-0454·T-0421 domain 동형·codex R4): `verified_at` 이 유효 backward anchor
+    (고정 hex + 해소 + HEAD 선조·`_sha_anchor_status`)가 아니면 종전엔 `_git_commits_between` 이
+    rc≠0/빈 range 를 조용한 green 으로 흡수했다. 이제 `{kind 접두}-unverifiable` advisory 로
+    표면화한다 — 형식 아님(움직이는 ref·MF2)/미해소(타-git SHA·MF1)/HEAD 선조 아님(descendant·
+    딴 브랜치·R4-α)를 사유 구분(never-block·억지 판정 금지·T-0305 동형). anchor OK 일 때만
+    `<sha>..HEAD` stale 검사 → `(label, kind, detail)` 1개. (매핑 경로 `_CURRENT_TRUTH_ENGINE_PATHS`
+    는 ①·② 양쪽 실재라 경로-관찰가능성 축은 여기 무해 — 그 축은 domain 전용·T-0421.)"""
     if not doc_file.exists():
         return []
     try:
@@ -7911,7 +8136,16 @@ def _verified_at_finding(doc_file: Path, pathspecs, label: str, kind: str, *,
     sha = str((fm or {}).get("verified_at") or "").strip()
     if not sha:
         return []
-    if _git_commits_between(sha, list(pathspecs), runner=runner) is not True:
+    status, full_oid = _sha_anchor_status(sha, runner=runner)
+    if status == _ANCHOR_UNKNOWN:
+        return []  # git 부재 등 환경적 판정불가 — 종전 fail-soft silent skip 유지.
+    if status != _ANCHOR_OK:
+        # 형식 아님/미해소/비-선조 — stale kind 와 대칭 "{x}-stale" → "{x}-unverifiable".
+        return [(label, kind.replace("-stale", "-unverifiable"),
+                 _unverifiable_sha_reason(status, sha)
+                 + " — freshness 검증 불가·architect 재검증 필요")]
+    # canonical full OID 로 stale 검사 (원 입력 재해석 제거·codex R16). 표시는 원 sha(사용자 친화).
+    if _git_commits_between(full_oid, list(pathspecs), runner=runner) is not True:
         return []
     return [(label, kind,
              f"verified_at({sha[:12]}) 이후 매핑 경로에 커밋 있음 — architect 재검증 필요")]
@@ -7923,8 +8157,10 @@ def lint_architecture_freshness(*, runner=None) -> list[tuple[str, str, str]]:
     architecture.md frontmatter `verified_at: <sha>` *이후* 엔진 코드 트리
     (`_CURRENT_TRUTH_ENGINE_PATHS`)에 커밋이 있으면 "architect 재검증 필요" 권고를 낸다 —
     검증 기준 sha 이후 코드가 바뀌었다는 이진 기계 판정(date "최신이겠지" 해석 구멍 대체·
-    결정 ⑭). kind=`architecture-stale`(`_ADVISORY_LINT_KINDS` 등재·`--gate` 비기여).
-    fail-soft: 문서 부재·frontmatter 없음·verified_at 부재·git 불가 → [](명시 skip)."""
+    결정 ⑭). kind=`architecture-stale`. verified_at 이 유효 anchor 아니면(타-git SHA·비-선조·
+    움직이는 ref) `architecture-unverifiable` advisory(T-0454·codex R4·조용한 green 근절). 둘 다
+    `_ADVISORY_LINT_KINDS` 등재·`--gate` 비기여. fail-soft: 문서 부재·frontmatter 없음·
+    verified_at 부재·git 불가 → [](명시 skip)."""
     return _verified_at_finding(
         ARCHITECTURE_FILE, _CURRENT_TRUTH_ENGINE_PATHS,
         "architecture.md", "architecture-stale", runner=runner)
@@ -7936,7 +8172,8 @@ def lint_status_freshness(*, runner=None) -> list[tuple[str, str, str]]:
     status.md frontmatter `verified_at: <sha>` *이후* 엔진 코드 트리에 커밋이 있으면
     "모듈 진행 상태 재검증 필요" 권고. lint_architecture_freshness 와 동일 규칙·매핑 경로
     (status.md 는 엔진 모듈 진행 상태를 기록·ADR-0023 judgment-only 소유 불변).
-    kind=`status-stale`(advisory). fail-soft: 부재/verified_at 부재/git 불가 → []."""
+    kind=`status-stale`·verified_at 이 유효 anchor 아니면 `status-unverifiable`(advisory·T-0454·R4).
+    fail-soft: 부재/verified_at 부재/git 불가 → []."""
     return _verified_at_finding(
         STATUS_FILE, _CURRENT_TRUTH_ENGINE_PATHS,
         "status.md", "status-stale", runner=runner)
@@ -7947,10 +8184,26 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
 
     각 domain 페이지(`covers:` 보유)의 frontmatter `verified_at: <sha>` *이후* 그 페이지
     covers 경로에 커밋이 있으면 `domain-stale` 권고. **경로 매핑은 domain.py 재사용**(신설 0):
-    페이지 covers 글롭 → `domain.covers_to_pathspec`(affected/page_stale 가 쓰는 그 매핑)로
-    git pathspec 을 만든다 — 별도 매핑 저장소를 두지 않는다(ADR-0063 Decision 2·ADR-0018).
-    fail-soft: domain.py 부재/로드 실패·페이지 없음·verified_at 부재·covers 빈·git 불가 →
-    [](명시 skip). `updated` date 기반 `lint_domain` stale 과는 별개 축(이건 sha 기준)."""
+    페이지 covers 글롭 → `domain.covers_pathspecs`(**HEAD 커밋 트리 기준 존재/부재 분할** —
+    `git diff <빈-트리> HEAD`·index/staged 무관)로 git pathspec 을 만든다 — 별도 매핑 저장소를
+    두지 않는다(ADR-0063 Decision 2·ADR-0018). 커밋-기준 관찰가능성이라 untracked/staged-only
+    생성물은 부재로, sparse checkout tracked 는 존재로 정직히 분류한다(codex MF3/R9·
+    `Path.exists`·index 오판 회피).
+
+    **관찰불가 사각을 `domain-unverifiable` advisory 로 표면화한다**(T-0421·거짓 green 근절·
+    판정을 억지로 만들지 않고 *검증 불가*임을 정직히 알림·T-0305 동형·codex R1-R4):
+      - **anchor 판정 선행**(`_sha_anchor_status`): `verified_at` 이 유효 anchor(고정 hex+해소+
+        HEAD 선조)가 아니면 형식 아님/미해소(타-git SHA)/비-선조(descendant·딴 브랜치) 사유로
+        advisory — `<sha>..HEAD` range 자체가 성립 안 하니 covers 관찰가능성 판정은 하지 않는다.
+      - **covers 관찰가능성**(anchor OK 일 때·`covers_pathspecs`·pin 경계): 미추적 + pin 이후
+        델타 0 (never-tracked=`templates/**` ① 소유·또는 pin *이전* 삭제) → `absent` → advisory.
+        현재 tracked·pin 이후 삭제/rename → `present` → `<sha>..HEAD` stale 검사로.
+    advisory 는 never-block(`_ADVISORY_LINT_KINDS`)이라 `--gate` 종료코드에 기여하지 않는다 —
+    ① worktree 경로를 참조해 억지 판정하지 않고 판정 불가를 정직히 알리는 선에서 멈춘다.
+
+    fail-soft: domain.py 부재/로드 실패·페이지 없음·verified_at 부재·covers 빈·git 불가(sha
+    해소 None) → [](명시 skip·solo/신규 clone 무영향). `updated` date 기반 `lint_domain`
+    stale 과는 별개 축(이건 sha 기준)."""
     domain = _load_domain_module()
     if domain is None:
         return []
@@ -7959,20 +8212,49 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
     except Exception:  # noqa: BLE001 — 스캔 실패는 [] 로 흡수(board lint 정상 진행).
         return []
     findings: list[tuple[str, str, str]] = []
+    _UNVERIFIABLE_PREFIX = ("이 저장소에서 freshness 검증 불가(① 소유 페이지일 수 있음·소유 "
+                            "repo 에서 재검증) — ")
     for page in pages:
         sha = str(page.get("verified_at") or "").strip()
         if not sha:
             continue  # verified_at 미부여 페이지 — 명시 skip(false-green 아님).
         covers = page.get("covers") or []
-        pathspecs = [ps for ps in (domain.covers_to_pathspec(g) for g in covers) if ps]
-        if not pathspecs:
-            continue  # 코드-무관 개념(covers 빈)·좁힐 prefix 없는 글롭 → skip.
-        if _git_commits_between(sha, pathspecs, runner=runner) is not True:
+        # covers 가 전부 빈/공백(코드-무관 개념)이면 sha 판정 없이 skip — git 무접촉. 비-공백 패턴은
+        # 하나라도 있으면 판정한다(미지원 형태는 아래 covers_pathspecs 가 unmappable advisory 로·codex R8;
+        # `covers_glob_pathspec` 로 게이트하면 미지원-only 페이지가 조용히 skip 돼 false-green).
+        if not any(str(g).strip() for g in covers):
             continue
         label = page.get("title") or domain.page_slug(page)
-        findings.append((
-            label, "domain-stale",
-            f"verified_at({sha[:12]}) 이후 covers 경로에 커밋 있음 — 페이지 재검증 필요"))
+        status, full_oid = _sha_anchor_status(sha, runner=runner)
+        if status == _ANCHOR_UNKNOWN:
+            continue  # git 부재 등 환경적 판정불가 — 종전 fail-soft silent skip 유지.
+        if status != _ANCHOR_OK:
+            # sha 자체가 유효 anchor 아님 — `<oid>..HEAD` range 불가라 covers 관찰가능성 판정을
+            # 하지 않는다(전제: 미해소 페이지는 pathspec 판정에 안 온다·codex R4). 사유만 advisory.
+            findings.append((label, "domain-unverifiable",
+                             _UNVERIFIABLE_PREFIX + _unverifiable_sha_reason(status, sha)))
+            continue
+        # status OK — **canonical full OID** 를 pin 으로 관찰가능성/stale 판정(원 입력 재해석 제거·
+        # codex R16·R4-β pin 경계·R6 :(glob)). covers_pathspecs 의 `<pin>..HEAD` 도 full OID 경유.
+        present, absent, unmappable = domain.covers_pathspecs(
+            covers, repo=REPO, git_runner=runner, verified_at=full_oid)
+        reasons: list[str] = []
+        if absent:
+            reasons.append(
+                f"covers 경로가 pin 이후 관찰 불가({', '.join(absent)}·① 소유이거나 pin 이전 삭제)")
+        if unmappable:
+            # 미지원 문법(비-경계 **)·repo 밖/절대 경로 등 두 방언 동일성 미보장 → 오번역 대신 표면화.
+            reasons.append(
+                f"covers 패턴 미지원(형태·repo 밖·절대 경로): {', '.join(unmappable)}")  # codex R8/R10
+        if reasons:
+            findings.append((label, "domain-unverifiable",
+                             _UNVERIFIABLE_PREFIX + " · ".join(reasons)))
+        # present 글롭을 :(glob) magic pathspec 으로 넘겨 full OID 기준 stale 검사(접두사 손실 없이·R6).
+        present_specs = [domain.covers_glob_pathspec(g) for g in present]
+        if present_specs and _git_commits_between(full_oid, present_specs, runner=runner) is True:
+            findings.append((
+                label, "domain-stale",
+                f"verified_at({sha[:12]}) 이후 covers 경로에 커밋 있음 — 페이지 재검증 필요"))
     return findings
 
 
@@ -7998,10 +8280,12 @@ def _repo_head_sha() -> str | None:
 
 
 def _insert_verified_at(text: str, sha: str) -> str | None:
-    """frontmatter 닫는 `---` 바로 앞에 `verified_at: <sha>` 한 줄 삽입 (최소 변경).
+    """frontmatter 닫는 `---` 바로 앞에 `verified_at: "<sha>"` 한 줄 삽입 (최소 변경).
 
     hand-authored 현재-진실 문서 frontmatter 를 **전체 재-dump 없이**(키 순서·date 정규화
-    clobber 회피) 한 줄만 넣는다. 반환 = 삽입된 새 텍스트, None = 대상 아님:
+    clobber 회피) 한 줄만 넣는다. **값은 따옴표 친 문자열**로 쓴다(codex R19) — `0123456` 같은
+    전부-숫자(특히 leading-zero=octal) OID 를 unquoted 로 쓰면 YAML 이 정수 파싱해 재-lint 서
+    깨지기 때문(YAML string 강제). 반환 = 삽입된 새 텍스트, None = 대상 아님:
       - frontmatter 블록(`---` 시작 + 닫는 `---`)이 없음.
       - `verified_at:` 이 이미 있음(멱등·재실행 안전).
     """
@@ -8016,7 +8300,7 @@ def _insert_verified_at(text: str, sha: str) -> str | None:
     # 닫는 --- 앞 라인이 개행으로 끝나지 않으면 보정(파일 끝 무개행 방어).
     if lines[close - 1] and not lines[close - 1].endswith("\n"):
         lines[close - 1] += "\n"
-    lines.insert(close, f"verified_at: {sha}\n")
+    lines.insert(close, f'verified_at: "{sha}"\n')
     return "".join(lines)
 
 
@@ -8038,22 +8322,16 @@ def _verified_at_backfill_targets() -> list[Path]:
     return targets
 
 
-def _is_commit_sha(sha: str) -> bool:
-    """`sha` 가 REPO 의 실존 commit 인가 (`git rev-parse --verify <sha>^{commit}`·codex must-fix).
+def _canonical_commit_oid(sha: str) -> str | None:
+    """`sha` 가 유효한 backward anchor 면 그 **canonical full OID** 를, 아니면 None (backfill 쓰기).
 
-    backfill 쓰기 지점 검증용 — 오타/비존재 sha 가 문서에 영속되면 `_git_commits_between` 의
-    fail-soft(rc≠0→None)에 흡수돼 그 문서의 freshness 판정이 **영구 조용 skip**(false-green) 된다.
-    검증 불가(git 부재·timeout)도 False — 기록은 확실할 때만 한다."""
-    if shutil.which("git") is None:
-        return False
-    try:
-        r = subprocess.run(
-            ["git", "-C", str(REPO), "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=_BOARD_GIT_TIMEOUT_SECONDS)
-    except Exception:  # noqa: BLE001 — 검증 불가는 False(기록 거부 쪽으로).
-        return False
-    return r.returncode == 0
+    backfill 이 **검증에서 얻은 full OID 를 그대로 기록**하게 하는 helper(codex R16/R19) — 입력 축약/
+    ref 문자열을 기록하면 (a) 하류 소비자가 다시 해석(canonical 위반) (b) `0123456` 같은 전부-숫자
+    축약은 YAML unquoted 정수 파싱돼 재-lint 서 깨진다. `_sha_anchor_status` 재사용(read/write 대칭·
+    사본 0): 고정 hex + 고정 SHA 해소(hex-이름 ref 아님·MF2/R5) + HEAD 선조(R4-α)면 `(OK, full_oid)` →
+    full_oid 반환·아니면 None. 검증 불가(git 부재·rc≥2 → UNKNOWN)도 None — 기록은 확실할 때만 한다."""
+    verdict, full_oid = _sha_anchor_status(sha)
+    return full_oid if verdict == _ANCHOR_OK else None
 
 
 def backfill_verified_at(sha: str, *, dry_run: bool = False) -> list[tuple[Path, str]]:
@@ -8086,14 +8364,17 @@ def cmd_verified_at_backfill(args: argparse.Namespace) -> int:
     sha = (args.sha or "").strip()
     if sha:
         # 명시 --sha 는 기록 전 commit 실존 검증(codex must-fix) — 오타 sha 가 영속되면
-        # freshness 판정이 영구 조용 skip(false-green) 되므로 abort 가 정답.
-        if not _is_commit_sha(sha):
+        # freshness 판정이 영구 조용 skip(false-green) 되므로 abort 가 정답. 검증에서 얻은
+        # **canonical full OID 를 기록**한다(입력 축약/재해석 제거·codex R16/R19).
+        canonical = _canonical_commit_oid(sha)
+        if canonical is None:
             print(f"verified-at-backfill: --sha {sha} 가 이 repo 의 commit 으로 검증되지 않는다 "
                   "— 기록 중단(비존재 sha 는 freshness 판정 영구 skip·false-green).",
                   file=sys.stderr)
             return 1
+        sha = canonical
     else:
-        sha = _repo_head_sha() or ""
+        sha = _repo_head_sha() or ""   # HEAD 는 이미 full OID(canonical).
         if not sha:
             print("verified-at-backfill: --sha 미지정·HEAD 조회 실패 — 기준 sha 미정.",
                   file=sys.stderr)

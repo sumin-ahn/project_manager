@@ -474,8 +474,12 @@ flowchart LR
 ```
 
 `pm-update` 는 manifest 에 등록된 엔진 파일과 host 하네스 어댑터만 갱신한다. 프로젝트의 board,
-wiki, ticket, log 같은 인스턴스 상태는 덮어쓰지 않는다. 나중에 붙인 guest 하네스는 host manifest
-범위 밖이므로, 그 어댑터 갱신은 `add-harness <harness>` 를 다시 실행해 받는다.
+wiki, ticket, log 같은 인스턴스 상태는 덮어쓰지 않는다. 나중에 `add-harness` 로 붙인 guest 하네스
+어댑터도 인스턴스 `engine.manifest` 의 전용 구획(마커로 감싼 `@render` 목록)에 등재돼 render·lint
+관리를 받는다 — opencode 를 codex 프로젝트에 붙일 때 opencode 가 소비하는 `.claude/skills` 처럼
+어댑터 네임스페이스 밖 의존물도 그 구획에 함께 등재된다. `pm-update` 는 이 구획을 보존(코어를
+덮어쓴 뒤 재부착)하되 guest 어댑터 파일은 `@target-owned` 로 표시돼 update-plan 에서 제외하므로,
+그 파일 갱신은 `add-harness <harness>` 를 다시 실행해 받는다(refresh 채널).
 
 엔진 버전 관리는 별도 `engine.version` 파일이 아니라 git 으로 한다. 릴리즈는 git tag 와
 CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 upstream rev baseline 으로 "어디까지 받았는지"를

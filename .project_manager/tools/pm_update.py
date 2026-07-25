@@ -1002,13 +1002,23 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
         return {"status": "upstream_missing", "added": [], "removed": [],
                 "manifest": None, "upstream_manifest": upstream_manifest}
     local_text = dest_manifest.read_text(encoding="utf-8")
-    if local_text == upstream_text:
+    # add-harness guest 절(로컬-전용 `@target-owned` guest)은 **core 비교에서 제외**한다(T-0456 MF-1):
+    #   섞으면 항상 removed 비어있지 않아 영구 diverged → upstream 신규 항목 자기치유(승격) 불능. 절은
+    #   apply 가 재부착하므로(대칭·`_copy_manifest_preserving_guest`) 승격돼도 잔존한다. 판정 사본 없이
+    #   R13 추출 헬퍼를 재사용해 in_sync 판정도 core 로(strip==upstream), 경로 집합도 core 로 좁힌다.
+    guest_block = _extract_guest_manifest_block(local_text)
+    guest_paths = {
+        ln.split()[0] for ln in guest_block.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")} if guest_block else set()
+    if _strip_guest_manifest_block(local_text) == upstream_text:
         return {"status": "in_sync", "added": [], "removed": [],
                 "manifest": None, "upstream_manifest": upstream_manifest}
+    core_local_entries = [
+        e for e in local_entries if str(e).replace("\\", "/") not in guest_paths]
     # 경로 + 마커(@render/@target-owned/@source) 동시 비교 — 경로 집합만 보면 flavor manifest 의
     #   @source self-prop 을 root bare 로 덮는 클로버를 못 잡는다(codex MF). 공통 경로의 마커가
     #   하나라도 갈리면(로컬 커스텀 편집·잘못된 flavor 대조) 승격하지 않는다.
-    local_markers = {str(e): _manifest_marker_key(e) for e in local_entries}
+    local_markers = {str(e): _manifest_marker_key(e) for e in core_local_entries}
     upstream_markers = {str(e): _manifest_marker_key(e) for e in upstream_entries}
     added = sorted(set(upstream_markers) - set(local_markers))
     removed = sorted(set(local_markers) - set(upstream_markers))
@@ -1218,9 +1228,146 @@ def plan(
                 # 렌더한 결과가 dst 와 다를 때만 update(정직 판정·§3.3).
                 if not _render_eq_dst(sp, dst, effective_dest):
                     changes.append((r, sp, dst, "update"))
+            elif str(r).replace("\\", "/") == _MANIFEST_SELF_REL:
+                # engine.manifest self-prop: dest 는 apply 가 재부착한 add-harness guest 절을 갖고
+                # upstream(sp)은 안 갖는다 — raw filecmp 면 매 sync '영원한 update'(churn·T-0456 MF-2).
+                # guest 절을 차감한 **core 비교**로 판정한다(동일 추출 헬퍼·판정 사본 없음). 절 부재
+                # (비-add-harness)면 strip 이 no-op → 기존 byte 비교와 동일. **trailing blank 정규화**
+                # (`rstrip("\n")`·R22 suggestion): strip 이 절 앞 빈 줄을 회수하며 upstream 의 트레일링
+                # 블랭크까지 지워, 트레일링 블랭크 보유 upstream 에서 반복 update(churn)가 나던 것을 닫는다.
+                try:
+                    dst_core = _strip_guest_manifest_block(Path(dst).read_text(encoding="utf-8"))
+                    if dst_core.rstrip("\n") != Path(sp).read_text(encoding="utf-8").rstrip("\n"):
+                        changes.append((r, sp, dst, "update"))
+                except (OSError, UnicodeDecodeError):
+                    if not filecmp.cmp(sp, dst, shallow=False):
+                        changes.append((r, sp, dst, "update"))
             elif not filecmp.cmp(sp, dst, shallow=False):
                 changes.append((r, sp, dst, "update"))
     return changes, missing
+
+
+# ── add-harness guest @render 절 (engine.manifest self-prop 보존·T-0456 MF-1) ──────────────
+# engine.manifest 는 self-prop `@source` 라 apply 가 upstream 사본으로 통째 덮어쓴다(guest 는 로컬-전용
+# → selfheal 'diverged' 도 *파일* overwrite 는 못 막는다·plan 에 self-prop change 가 실린다·실측). 그래서
+# add_harness 가 등재한 guest `@render` 가 1회 update 만에 사라져 렌더/overlay 스캔 커버리지가 끊기던 것을
+# (codex R13 MF-1) 이 마커 구획으로 닫는다: apply 가 engine.manifest 를 덮기 **전** dest 의 guest 절을
+# 추출 → 덮은 **뒤** 재부착한다. 마커는 read_manifest 가 '#' 주석으로 무시하고, 절 안의 라인은
+# `@render @target-owned` 유효 항목이라 파서/스캔/렌더가 그대로 소비한다(판정원 단일 = engine.manifest
+# 최종 뷰 하나). 절의 *값* 은 pm_import.add_harness 가 쓴다(같은 리터럴 공유·아래 두 상수).
+_GUEST_MANIFEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>"
+_GUEST_MANIFEST_END = "# <<< pm add-harness guest @render (local) <<<"
+
+
+def _extract_guest_manifest_block(text: str) -> str | None:
+    """engine.manifest 텍스트의 add-harness guest 절(마커 경계 포함)을 반환 — 없으면 None."""
+    lines = text.splitlines()
+    begin = end = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s == _GUEST_MANIFEST_BEGIN:
+            begin = i
+        elif s == _GUEST_MANIFEST_END and begin is not None:
+            end = i
+            break
+    if begin is None or end is None or end < begin:
+        return None
+    return "\n".join(lines[begin:end + 1])
+
+
+def _strip_guest_manifest_block(text: str) -> str:
+    """engine.manifest 텍스트에서 guest 절(마커 포함 + 선행 빈 줄)을 제거 — 마커 부재면 원문 그대로."""
+    lines = text.splitlines()
+    begin = end = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s == _GUEST_MANIFEST_BEGIN:
+            begin = i
+        elif s == _GUEST_MANIFEST_END and begin is not None:
+            end = i
+            break
+    if begin is None or end is None or end < begin:
+        return text
+    lo = begin
+    while lo > 0 and lines[lo - 1].strip() == "":  # 절 앞 빈 줄 구분자까지 회수(누적 방지)
+        lo -= 1
+    kept = "\n".join(lines[:lo] + lines[end + 1:])
+    return kept + "\n" if kept and not kept.endswith("\n") else kept
+
+
+def _reattach_guest_block(new_text: str, guest_block: str | None) -> str:
+    """upstream 사본(new_text) 뒤에 guest 절(guest_block)을 재부착 — block 없으면 new_text 그대로."""
+    if not guest_block:
+        return new_text
+    sep = "" if new_text.endswith("\n") or not new_text else "\n"
+    return new_text + sep + "\n" + guest_block + "\n"
+
+
+def _core_manifest_paths(text: str) -> set[str]:
+    """manifest 텍스트의 core 경로 집합 (guest 절·마커·주석·빈 줄 제외·마커 떼고 path 만)."""
+    out: set[str] = set()
+    for ln in _strip_guest_manifest_block(text).splitlines():
+        s = ln.strip()
+        if s and not s.startswith("#"):
+            out.add(s.split()[0].replace("\\", "/"))
+    return out
+
+
+def _path_owned_by(path: str, owner_paths) -> bool:
+    """path 가 owner_paths 중 하나에 소유되는가 — **동일**(`path==c`) OR **상위**(`path` 가 `c/` 하위).
+
+    add-harness 등재 차감(pm_import `_guest_render_to_add`)과 update 재부착 차감
+    (`_prune_guest_block_owned_by_core`)이 **공유**하는 소유권 판정(경로-포함·T-0456 R15/R16·판정
+    사본 금지) — core 가 `.opencode`(상위)를 가지면 `.opencode/agents` 도 소유로 본다."""
+    p = path.replace("\\", "/")
+    return any(
+        p == c or p.startswith(c.rstrip("/") + "/")
+        for c in (str(o).replace("\\", "/") for o in owner_paths))
+
+
+def _prune_guest_block_owned_by_core(guest_block: str | None, core_text: str) -> str | None:
+    """upstream core 가 소유하게 된 경로(**동일 OR 상위**)를 guest 절에서 차감 (T-0456 R15 소유권 전환).
+
+    guest 경로가 추후 upstream core manifest 로 승격되면 apply 재부착이 기존 `@target-owned` guest 를
+    그대로 붙여 **같은 경로가 core+guest 이중 등재** → 뒤쪽 guest 가 owner 로 이겨 upstream 소스가 영구
+    skip 된다. 재부착 전 core 소유 경로를 `_path_owned_by`(경로-포함·add-측과 공유)로 차감해 닫는다.
+    남는 guest 라인 0 이면 None(절 제거)."""
+    if not guest_block:
+        return None
+    core_paths = _core_manifest_paths(core_text)
+    kept: list[str] = []
+    guest_count = 0
+    for ln in guest_block.splitlines():
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            kept.append(ln)  # 마커/빈 줄 보존.
+            continue
+        if _path_owned_by(s.split()[0], core_paths):
+            continue  # core 가 소유(동일/상위) — 차감.
+        kept.append(ln)
+        guest_count += 1
+    if guest_count == 0:
+        return None  # 전량 승격 — 절 제거.
+    return "\n".join(kept)
+
+
+def _copy_manifest_preserving_guest(sp: Path, dst: Path) -> None:
+    """engine.manifest 를 upstream(sp)으로 덮되 dest 의 add-harness guest 절을 재부착 (T-0456 MF-1).
+
+    재부착 전 **upstream core 가 소유하게 된 경로를 guest 절에서 차감**한다(R15 소유권 전환·이중 등재
+    방지). guest 절이 없거나(비-add-harness) 전량 승격되면 순수 copy2 와 동일(무영향)."""
+    guest_block = None
+    try:
+        if dst.is_file():
+            guest_block = _extract_guest_manifest_block(dst.read_text(encoding="utf-8"))
+    except OSError:
+        guest_block = None
+    new_text = Path(sp).read_text(encoding="utf-8")
+    guest_block = _prune_guest_block_owned_by_core(guest_block, new_text)
+    if not guest_block:
+        shutil.copy2(sp, dst)  # 비-add-harness 또는 전량 승격 — copy2(바이트/메타 무변경).
+        return
+    dst.write_text(_reattach_guest_block(new_text, guest_block), encoding="utf-8")
 
 
 def apply(changes: list[tuple]) -> None:
@@ -1228,6 +1375,8 @@ def apply(changes: list[tuple]) -> None:
 
     dst 가 `_RenderDst`(render 플래그 운반·plan 산출)면 그 플래그로 분기한다. 평문 Path dst
     (레거시 직접 호출)는 render 비대상 → copy2(후방호환·현 pm_update 동작 불변).
+
+    engine.manifest self-prop overwrite 는 add-harness guest 절을 재부착한다(T-0456 MF-1·위 헬퍼).
     """
     render_mod = None  # render path 가 있을 때만 lazy-load.
     for _r, sp, dst, _kind in changes:
@@ -1241,6 +1390,9 @@ def apply(changes: list[tuple]) -> None:
             rendered = render_mod.render_adapter(
                 text, operational=operational, empty_keys=empty_keys)
             Path(dst).write_text(rendered, encoding="utf-8")
+        elif str(_r).replace("\\", "/") == _MANIFEST_SELF_REL:
+            # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(T-0456 MF-1).
+            _copy_manifest_preserving_guest(Path(sp), Path(dst))
         else:
             shutil.copy2(sp, dst)
 
@@ -2223,6 +2375,30 @@ def main(argv: list[str] | None = None) -> int:
         selfheal = resolve_manifest_selfheal(effective_dest, source_root)
         if selfheal["manifest"] is not None:
             manifest = selfheal["manifest"]
+
+    # add-harness guest 절 항목은 **update plan 에서 제외** — guest = add-harness refresh 전용 채널·
+    # update 불가침 (T-0456 R22 MF-1). `@target-owned` skip 은 *source-부재* 때만 발동해, 프레임워크
+    # root 에 source 가 실재하는 claude-guest(`.claude/agents`·`.claude/skills`)는 self-update plan 이
+    # 그냥 갱신해 채택자의 guest 로컬 수정을 덮었다. guest 절은 apply 가 재부착(MF-1 R14)하므로 파일엔
+    # 남고, plan 에서만 뺀다. 마커/절 추출은 pm_update 재사용(사본 0·guest 정의 = 마커 구획).
+    dest_manifest_file = Path(effective_dest) / ".project_manager" / "engine.manifest"
+    if dest_manifest_file.is_file():
+        gblock = _extract_guest_manifest_block(
+            dest_manifest_file.read_text(encoding="utf-8"))
+        if gblock:
+            gpaths = {
+                ln.split()[0] for ln in gblock.splitlines()
+                if ln.strip() and not ln.strip().startswith("#")}
+            # **승격분 제외** (T-0456 R23 MF-1·R22 필터 과적용 교정): guest 경로가 upstream core 로
+            # 승격되면(selfheal 이 그 경로를 담은 upstream 을 계획 기준으로 올림) 이제 core 라 **1차
+            # sync 에서 갱신돼야** 한다 — dest guest 절에 있어도 **upstream core 에 실재하면 필터 밖**
+            # (안 그러면 첫 실행이 그 파일을 안 갱신·2회 필요). upstream core = selfheal 이 해소한 flavor
+            # manifest 경로(사본 0·같은 대조 기준). --target 은 selfheal 미실행이나 guest 절도 없어 무해.
+            up_mani = selfheal.get("upstream_manifest")
+            if up_mani is not None and Path(up_mani).is_file():
+                gpaths -= {
+                    str(e).replace("\\", "/") for e in read_manifest(Path(up_mani))}
+            manifest = [e for e in manifest if str(e).replace("\\", "/") not in gpaths]
 
     # --target(루트→templates/<name>) 은 render 를 끈다 — 템플릿은 토큰-form 소스라 copy2 로
     # 토큰을 보존해야 한다(렌더 시 local.conf 부재 → operational leak·_assert_no_leak crash).

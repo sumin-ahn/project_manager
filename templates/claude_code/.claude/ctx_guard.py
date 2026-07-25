@@ -243,6 +243,39 @@ def context_used_pct_from_transcript(transcript_path, window_tokens: int) -> int
     return _clamp_pct(tokens / float(window_tokens) * 100)
 
 
+# ── 서브에이전트(sidechain) 감지 (T-0458 — 메인 세션만 hard-stop) ─────────────
+
+def transcript_is_sidechain(transcript_path) -> bool:
+    """transcript JSONL 이 서브에이전트(sidechain) 세션의 것인가 (T-0458).
+
+    claude 는 서브에이전트(Task) 대화를 ``<parent>/subagents/agent-*.jsonl`` 에 기록하고 그 엔트리를
+    ``isSidechain: true`` 로 표시한다 — 메인 세션 transcript ``<session>.jsonl`` 은 전 엔트리
+    ``isSidechain: false`` (실측 확인: 서브에이전트 파일은 전 엔트리 true·메인은 전 엔트리 false 로
+    깨끗이 분리). 훅은 stdin ``transcript_path`` 가 가리키는 이 파일을 읽어 세션 성격을 판정한다.
+
+    파일 끝(최신)에서부터 첫 ``isSidechain`` boolean 을 찾아 반환한다. 파일 없음·읽기 실패·신호 부재·
+    파싱 불가는 모두 **False**(메인 취급) — 면제는 sidechain 이 *확실할 때만*(보수적 fail-safe·감지
+    모호 시 기존 hard-stop 동작 유지). 에이전트 종류는 보지 않는다(isSidechain 단일 기준 — 미래
+    에이전트 자동 커버·ticket §결정).
+    """
+    path = Path(transcript_path)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (FileNotFoundError, OSError):
+        return False
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(entry, dict) and isinstance(entry.get("isSidechain"), bool):
+            return entry["isSidechain"]
+    return False
+
+
 # ── 임계 판정 (statusLine·훅 공유) ──────────────────────────────────────────
 
 def remaining_pct(used_pct: int) -> int:

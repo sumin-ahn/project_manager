@@ -50,14 +50,20 @@ def stop_hook():
 
 # ── transcript JSONL fixture 헬퍼 ──────────────────────────────────────────
 
-def _write_transcript(tmp_path: Path, messages) -> Path:
-    """messages = [(role, usage_dict|None), ...] → JSONL 파일 경로."""
+def _write_transcript(tmp_path: Path, messages, *, sidechain=None) -> Path:
+    """messages = [(role, usage_dict|None), ...] → JSONL 파일 경로.
+
+    sidechain=None(기본·back-compat) → isSidechain 필드 없음. True/False 면 각 엔트리 top-level 에
+    isSidechain 을 심는다 (실 transcript 구조 미러 — 서브에이전트 파일은 전 엔트리 true·메인은 false).
+    """
     path = tmp_path / "transcript.jsonl"
     lines = []
     for role, usage in messages:
         entry = {"type": role, "message": {"role": role}}
         if usage is not None:
             entry["message"]["usage"] = usage
+        if sidechain is not None:
+            entry["isSidechain"] = sidechain
         lines.append(json.dumps(entry))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -976,4 +982,156 @@ def test_nudge2_margin_mirrors_opencode(guard):
     assert m, "opencode ctx-guard-core.cjs 에 NUDGE2_MARGIN_PCT 상수 없음"
     assert int(m.group(1)) == guard.CTX_NUDGE2_MARGIN_PCT, (
         f"2단 마진 미러 불일치: claude={guard.CTX_NUDGE2_MARGIN_PCT} opencode={m.group(1)}"
+    )
+
+
+# ── 8. 서브에이전트(sidechain) 감지 + 면제 (T-0458 — 메인 세션만 hard-stop) ──────
+# claude 는 서브에이전트(Task) 대화를 <parent>/subagents/agent-*.jsonl 에 전 엔트리 isSidechain:true
+# 로 기록하고, 메인 세션 <session>.jsonl 은 전 엔트리 false (실측 확인). 훅은 transcript_path 로 이
+# 필드를 읽어 서브에이전트면 면제(통과·auto-compact 로 자체 정리)·메인이면 기존 hard-stop. 감지
+# 불능/모호(신호 부재·읽기 실패·비-boolean)는 **메인 취급**(보수적 — 면제는 확실할 때만).
+
+def test_transcript_is_sidechain_true(guard, tmp_path):
+    path = _write_transcript(
+        tmp_path, [("user", None), ("assistant", {"input_tokens": 190_000})], sidechain=True)
+    assert guard.transcript_is_sidechain(path) is True
+
+
+def test_transcript_is_sidechain_false(guard, tmp_path):
+    path = _write_transcript(
+        tmp_path, [("user", None), ("assistant", {"input_tokens": 190_000})], sidechain=False)
+    assert guard.transcript_is_sidechain(path) is False
+
+
+def test_transcript_is_sidechain_no_field_is_false(guard, tmp_path):
+    # isSidechain 필드 부재(신호 없음) → False(메인 취급·보수적). 기존 transcript 픽스처가 이 형태.
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
+    assert guard.transcript_is_sidechain(path) is False
+
+
+def test_transcript_is_sidechain_missing_file_is_false(guard, tmp_path):
+    assert guard.transcript_is_sidechain(tmp_path / "nope.jsonl") is False
+
+
+def test_transcript_is_sidechain_malformed_lines_skipped(guard, tmp_path):
+    # 깨진 줄은 건너뛰고 유효 엔트리의 isSidechain 을 읽는다 (transcript 꼬리 부분 파손 견고성).
+    path = tmp_path / "t.jsonl"
+    path.write_text(
+        "not json\n"
+        + json.dumps({"type": "user", "isSidechain": True, "message": {}}) + "\n"
+        + "{broken\n",
+        encoding="utf-8",
+    )
+    assert guard.transcript_is_sidechain(path) is True
+
+
+def test_transcript_is_sidechain_skips_trailing_fieldless_entries(guard, tmp_path):
+    # 파일 끝에서부터 첫 isSidechain boolean 을 찾는다 — isSidechain 없는 후행 엔트리(system·
+    # file-history-snapshot 등·실 transcript 에 섞임)는 건너뛰고 최근 boolean 을 쓴다.
+    path = tmp_path / "t.jsonl"
+    path.write_text(
+        json.dumps({"type": "user", "isSidechain": True, "message": {}}) + "\n"
+        + json.dumps({"type": "system", "content": "no isSidechain"}) + "\n"
+        + json.dumps({"type": "file-history-snapshot"}) + "\n",
+        encoding="utf-8",
+    )
+    assert guard.transcript_is_sidechain(path) is True
+
+
+def test_transcript_is_sidechain_non_bool_ignored(guard, tmp_path):
+    # isSidechain 이 boolean 이 아니면(문자열 "true" 등) 신호로 안 쓴다 → 유효 boolean 없으면 False
+    # (보수적 — 모호하면 메인 취급).
+    path = tmp_path / "t.jsonl"
+    path.write_text(
+        json.dumps({"type": "user", "isSidechain": "true", "message": {}}) + "\n",
+        encoding="utf-8",
+    )
+    assert guard.transcript_is_sidechain(path) is False
+
+
+def test_hook_sidechain_exempt_at_stop_band_pretooluse(guard, stop_hook, tmp_path):
+    # 서브에이전트(isSidechain:true) + stop 밴드(used 95) + 새 작업 도구 → 면제(통과·None).
+    # 메인이면 deny 됐을 상황(cf. test_hook_evaluate_stop_denies_and_triggers)이 통과된다.
+    path = _write_transcript(
+        tmp_path, [("assistant", {"input_tokens": 190_000})], sidechain=True)
+    stdin = {
+        "transcript_path": str(path),
+        "session_id": "sess-sub",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "python3 build.py"},  # 새 작업 도구여도 면제.
+    }
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert rc == 0 and output is None
+    # 면제라 STOP marker(.done)도 안 박힌다 (서브에이전트는 relay 회전 신호 주체 아님).
+    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-sub.done").exists()
+
+
+def test_hook_sidechain_exempt_at_stop_band_userpromptsubmit(stop_hook, tmp_path):
+    # 서브에이전트 + UserPromptSubmit stop 밴드(핸드오프 아닌 prompt) → block 대신 통과(None).
+    path = _write_transcript(
+        tmp_path, [("assistant", {"input_tokens": 190_000})], sidechain=True)
+    stdin = {
+        "transcript_path": str(path),
+        "session_id": "sess-sub-ups",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "다음 파일 고쳐줘",  # 새 작업 prompt 여도 면제.
+    }
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert rc == 0 and output is None
+
+
+def test_hook_sidechain_exempt_at_nudge_band(stop_hook, tmp_path):
+    # nudge 밴드(used 75)에서도 서브에이전트는 주입 없이 통과 (면제는 밴드 무관·nudge 도 안 함).
+    path = _write_transcript(
+        tmp_path, [("assistant", {"input_tokens": 150_000})], sidechain=True)
+    stdin = {
+        "transcript_path": str(path),
+        "session_id": "sess-sub-nudge",
+        "hook_event_name": "UserPromptSubmit",
+    }
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert rc == 0 and output is None
+    ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    assert not (ctx / "sess-sub-nudge.nudge").exists()
+
+
+def test_hook_main_session_still_stops(guard, stop_hook, tmp_path):
+    # 회귀 대칭(핵심): isSidechain:false(메인) + stop 밴드 → 기존대로 deny + STOP marker 박제.
+    # 면제 로직이 메인 세션을 과-통과시키지 않음을 못박는다.
+    path = _write_transcript(
+        tmp_path, [("assistant", {"input_tokens": 190_000})], sidechain=False)
+    stdin = {
+        "transcript_path": str(path),
+        "session_id": "sess-main",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},  # 새 작업 도구.
+    }
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-main.done").exists()
+
+
+def test_hook_no_sidechain_field_treated_as_main(stop_hook, tmp_path):
+    # isSidechain 필드 자체가 없는 transcript(신호 없음) → 메인 취급(보수적) → 기존 hard-stop.
+    # (isSidechain 없는 기존 stop 테스트들이 계속 deny 를 단언하는 무변경 회귀도 이걸 보증.)
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
+    stdin = {
+        "transcript_path": str(path),
+        "session_id": "sess-nofield",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+    }
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_settings_auto_compact_enabled_true():
+    # T-0458: 서브에이전트 compaction 허용 위해 auto-compact 재활성(false→true). 메인은 훅
+    # hard-stop 이 auto-compact 트리거보다 먼저 발화(정제 handoff 선행)하고 compaction 은 폴백.
+    data = json.loads((CLAUDE / "settings.json").read_text(encoding="utf-8"))
+    assert data.get("autoCompactEnabled") is True, (
+        "settings.json autoCompactEnabled 가 true 가 아님 — 서브에이전트 compaction 봉쇄 재발 위험(T-0458)"
     )

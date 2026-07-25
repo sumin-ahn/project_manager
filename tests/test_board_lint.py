@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1286,19 +1287,73 @@ def test_adr_author_graceful_no_decisions(board, monkeypatch, tmp_path):
 # `verified_at: <sha>` *이후* 매핑 경로에 커밋이 있으면 `*-stale` finding 을 낸다(date 비교
 # 대체·ADR-0063). git 은 주입 runner(argv→(rc, stdout)) 로 hermetic 하게 대역한다.
 
+def _oid_for(argv):
+    """rev-parse `<sha>^{commit}` argv 에서 sha 를 뽑아 full-length OID(입력 prefix)로 만든다.
+
+    codex R5: `_sha_anchor_status` 가 해소 OID 의 입력-prefix 여부로 고정 SHA↔hex-이름 ref 를
+    가르므로, 진짜 SHA 해소를 재현하려면 OID 가 입력을 prefix 로 가져야 한다."""
+    return argv[-1].split("^")[0].ljust(40, "0") + "\n"
+
+
 def _stale_git(argv):
-    """`git log <sha>..HEAD -- …` 에 커밋이 *있는* 것처럼 (0, 비지 않은 출력)."""
+    """sha 해소(rev-parse rc0·OID=입력 prefix)·covers tracked·매핑 경로 커밋 있음(stale).
+
+    존재/해소/stale 을 동시에 재현한다(arch/status 는 diff/log 미사용). rev-parse 는 입력-prefix
+    OID(진짜 SHA·R5), merge-base 는 rc0(선조), 그 외(diff·log)는 비지 않은 출력."""
+    if argv and argv[0] == "rev-parse":
+        if "--show-object-format" in argv:
+            return (0, "sha1\n")   # 빈 트리 OID 산출용(codex R10)
+        return (0, _oid_for(argv))
     return (0, "abc1234 some commit\n")
 
 
 def _clean_git(argv):
-    """sha 이후 매핑 경로 커밋 *없음* — (0, 빈 출력)."""
+    """sha 해소(rev-parse rc0·OID=입력 prefix)·covers HEAD 트리 presence·매핑 경로 커밋 없음(clean).
+
+    domain covers 존재 판정이 HEAD-tree 기준(codex R9·`git diff <empty> HEAD`)이라 `diff` 는
+    present 로, merge-base 는 rc0(선조·default 빈 출력), log 만 빈 출력(델타 없음=clean) — arch/status
+    는 diff/log 미사용(엔진 경로 트리 pathspec 은 `_git_commits_between` 만·log)."""
+    if argv and argv[0] == "rev-parse":
+        if "--show-object-format" in argv:
+            return (0, "sha1\n")   # 빈 트리 OID 산출용(codex R10)
+        return (0, _oid_for(argv))
+    if argv and argv[0] == "diff":
+        return (0, "tracked/file\n")
     return (0, "")
 
 
 def _unknown_sha_git(argv):
-    """미지 sha(rc≠0·`bad revision`) — 판정불가 → skip."""
-    return (1, "fatal: bad revision\n")
+    """미지/타-git sha — rev-parse rc==1(순수 미해소) → unverifiable advisory (T-0454)."""
+    return (1, "")
+
+
+def _env_error_git(argv):
+    """환경 오류(non-repo·safe.directory·권한) — rev-parse rc==128 fatal → None(silent skip·MF1).
+
+    순수 미해소(rc1)와 달리 환경 오류는 "타-git SHA" advisory 로 오인하면 안 된다(거짓 신호)."""
+    return (128, "fatal: not a git repository")
+
+
+def _descendant_sha_git(argv):
+    """해소되나 HEAD 선조 아님 — rev-parse rc0(OID=입력 prefix)·`merge-base --is-ancestor` rc1 (R4-α).
+
+    object store 공유 형상에서 descendant/딴 브랜치 sha 는 (고정 SHA 로) rev-parse 통과하나 선조
+    아님 → `<sha>..HEAD` 가 비어 영구 false-clean 이던 것을 non-ancestor unverifiable 로 잡는다."""
+    if argv and argv[0] == "merge-base":
+        return (1, "")            # --is-ancestor 실패 = 선조 아님
+    if argv and argv[0] == "rev-parse":
+        return (0, _oid_for(argv))  # 고정 SHA 로 해소(입력 prefix·R5)
+    return (0, "")
+
+
+def _hex_named_ref_git(argv):
+    """hex 로 명명된 branch/tag — rev-parse 해소(rc0)하나 OID 가 입력과 무관(ref 로 해소·codex R5).
+
+    형식 게이트(`_is_hex_sha`)·rev-parse 를 다 통과해도 해소 OID 가 입력 prefix 가 아니라 non-sha
+    (움직이는 ref) 로 잡힌다 — hex-이름 ref 를 고정 SHA 로 오인하던 false-green 을 막는다."""
+    if argv and argv[0] == "rev-parse":
+        return (0, "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b\n")   # 입력과 무관한 OID
+    return (0, "")
 
 
 def _write_verified_doc(path, *, verified_at=None, extra="type: architecture"):
@@ -1352,14 +1407,64 @@ def test_architecture_freshness_skip_when_no_frontmatter(board, arch_file):
     assert board.lint_architecture_freshness(runner=_stale_git) == []
 
 
-def test_architecture_freshness_skip_when_sha_unknown(board, arch_file):
-    # verified_at 있으나 git 이 미지 sha(rc≠0) → 판정불가 skip(fail-soft).
+def test_architecture_freshness_flags_unverifiable_when_sha_unknown(board, arch_file):
+    # 미지/타-git sha(rev-parse rc==1·순수 미해소) → 종전 silent skip 대신 unverifiable advisory
+    # (T-0454). 서로 다른 git 의 SHA 를 range 양끝으로 결합하지 않고 판정 불가를 정직히 표면화.
     _write_verified_doc(arch_file, verified_at="deadbeef")
-    assert board.lint_architecture_freshness(runner=_unknown_sha_git) == []
+    findings = board.lint_architecture_freshness(runner=_unknown_sha_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "architecture.md"
+    assert kind == "architecture-unverifiable"
+    assert "deadbeef" in detail and "해소 안 됨" in detail
+
+
+def test_architecture_freshness_env_error_is_silent_skip(board, arch_file):
+    # codex MF1: rev-parse rc==128(non-repo·권한 등 fatal)=환경 오류 → None → silent skip.
+    # 순수 미해소(rc1)와 달리 advisory 로 오인하지 않는다(거짓 신호 방지).
+    _write_verified_doc(arch_file, verified_at="deadbeef")
+    assert board.lint_architecture_freshness(runner=_env_error_git) == []
+
+
+def test_architecture_freshness_moving_ref_is_unverifiable(board, arch_file):
+    # codex MF2: verified_at 이 HEAD/브랜치 등 움직이는 ref → 형식 게이트로 unverifiable
+    # ("고정 sha 아님"). HEAD 는 rev-parse rc0 이라도 `HEAD..HEAD` 가 항상 비어 false-green.
+    _write_verified_doc(arch_file, verified_at="HEAD")
+    findings = board.lint_architecture_freshness(runner=_stale_git)  # runner 무관(게이트 선차단)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "architecture.md"
+    assert kind == "architecture-unverifiable"
+    assert "고정 sha 아님" in detail
+
+
+def test_architecture_freshness_non_ancestor_sha_is_unverifiable(board, arch_file):
+    # codex R4-α: verified_at 이 해소되나 HEAD 선조 아님(descendant/딴 브랜치) → unverifiable
+    # ("HEAD 선조 아님"). object store 공유 형상서 `<sha>..HEAD` 가 비어 영구 false-clean 이던 축.
+    _write_verified_doc(arch_file, verified_at="beef0042")
+    findings = board.lint_architecture_freshness(runner=_descendant_sha_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "architecture.md"
+    assert kind == "architecture-unverifiable"
+    assert "선조 아님" in detail
+
+
+def test_architecture_freshness_hex_named_ref_is_unverifiable(board, arch_file):
+    # codex R5: verified_at="deadbeef" 가 hex-이름 branch/tag 라 rev-parse 해소(rc0)하나 OID 가
+    # 입력 prefix 아님 → 형식 게이트 통과했어도 non-sha unverifiable("고정 sha 아님").
+    _write_verified_doc(arch_file, verified_at="deadbeef")
+    findings = board.lint_architecture_freshness(runner=_hex_named_ref_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "architecture.md"
+    assert kind == "architecture-unverifiable"
+    assert "고정 sha 아님" in detail
 
 
 def test_architecture_freshness_in_advisory_kinds(board):
     assert "architecture-stale" in board._ADVISORY_LINT_KINDS
+    assert "architecture-unverifiable" in board._ADVISORY_LINT_KINDS   # T-0454·never-block
 
 
 # ── status.md freshness (동일 규칙·status-stale) ──────────────────────────────
@@ -1391,8 +1496,83 @@ def test_status_freshness_skip_when_verified_at_absent(board, status_file):
     assert board.lint_status_freshness(runner=_stale_git) == []
 
 
+def test_status_freshness_flags_unverifiable_when_sha_unknown(board, status_file):
+    # status.md 도 동일 축 — 타-git sha 미해소(rc1) → status-unverifiable advisory (T-0454).
+    _write_verified_doc(status_file, verified_at="beefcafe", extra="type: status")
+    findings = board.lint_status_freshness(runner=_unknown_sha_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "status.md"
+    assert kind == "status-unverifiable"
+    assert "beefcafe" in detail and "해소 안 됨" in detail
+
+
+def test_status_freshness_moving_ref_is_unverifiable(board, status_file):
+    # codex MF2: status.md verified_at 이 브랜치명 → 형식 게이트로 status-unverifiable("고정 sha 아님").
+    _write_verified_doc(status_file, verified_at="main", extra="type: status")
+    findings = board.lint_status_freshness(runner=_stale_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "status.md"
+    assert kind == "status-unverifiable"
+    assert "고정 sha 아님" in detail
+
+
+def test_status_freshness_env_error_is_silent_skip(board, status_file):
+    # codex MF1: rc128 환경 오류 → None → silent skip(advisory 아님).
+    _write_verified_doc(status_file, verified_at="beefcafe", extra="type: status")
+    assert board.lint_status_freshness(runner=_env_error_git) == []
+
+
+def test_status_freshness_non_ancestor_sha_is_unverifiable(board, status_file):
+    # codex R4-α: 해소되나 HEAD 선조 아님 → status-unverifiable("HEAD 선조 아님").
+    _write_verified_doc(status_file, verified_at="beef0042", extra="type: status")
+    findings = board.lint_status_freshness(runner=_descendant_sha_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "status.md"
+    assert kind == "status-unverifiable"
+    assert "선조 아님" in detail
+
+
+def test_status_freshness_hex_named_ref_is_unverifiable(board, status_file):
+    # codex R5: hex-이름 ref 로 해소되는 verified_at → status-unverifiable("고정 sha 아님").
+    _write_verified_doc(status_file, verified_at="deadbeef", extra="type: status")
+    findings = board.lint_status_freshness(runner=_hex_named_ref_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert label == "status.md"
+    assert kind == "status-unverifiable"
+    assert "고정 sha 아님" in detail
+
+
 def test_status_freshness_in_advisory_kinds(board):
     assert "status-stale" in board._ADVISORY_LINT_KINDS
+    assert "status-unverifiable" in board._ADVISORY_LINT_KINDS   # T-0454·never-block
+
+
+def test_gate_zero_on_unverifiable_only(board, monkeypatch, tmp_path):
+    """-unverifiable finding 만 있으면 --gate 종료코드 0 — 파생 kind 의 never-block 을
+    gate 경로로 직접 잠근다(T-0454 reviewer suggestion). `*_in_advisory_kinds` 는 리터럴
+    멤버십만 봐서, 파생(`kind.replace("-stale","-unverifiable")`)이 미등재 kind 를 내면
+    못 잡는다 — 실 finding 을 gate 로 흘려 그 갭을 덮는다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
+    monkeypatch.setattr(board, "lint_bodies", lambda: [])
+    monkeypatch.setattr(board, "lint_ideas", lambda: [])
+    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
+    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
+    monkeypatch.setattr(board, "lint_status", lambda: [
+        ("architecture.md", "architecture-unverifiable", "verified_at 해소 안 됨(타 git SHA?)"),
+        ("status.md", "status-unverifiable", "verified_at 해소 안 됨(타 git SHA?)"),
+        ("codex-adapter.md", "domain-unverifiable", "covers 부재 + sha 미해소"),
+    ])
+    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
+    # 파생→등재 불변식 — 현 호출부(architecture/status-stale)의 replace 파생 산출이 전부 등재.
+    for stale_kind in ("architecture-stale", "status-stale"):
+        derived = stale_kind.replace("-stale", "-unverifiable")
+        assert derived in board._ADVISORY_LINT_KINDS, derived
 
 
 # ── domain 페이지 freshness (covers→pathspec 재사용·domain-stale) ─────────────
@@ -1512,9 +1692,9 @@ def test_lint_tickets_includes_freshness_lints(board, monkeypatch):
 def test_insert_verified_at_inserts_before_closing_fence(board):
     text = "---\ntitle: Doc\ntype: architecture\n---\n\n# Doc\n"
     out = board._insert_verified_at(text, "abc123")
-    assert "verified_at: abc123\n" in out
+    assert 'verified_at: "abc123"\n' in out   # 따옴표 친 문자열(codex R19)
     # 닫는 --- 앞·본문 보존.
-    assert out.index("verified_at: abc123") < out.index("---\n\n# Doc")
+    assert out.index('verified_at: "abc123"') < out.index("---\n\n# Doc")
     assert out.endswith("# Doc\n")
 
 
@@ -1538,8 +1718,8 @@ def test_backfill_verified_at_fills_targets(board, monkeypatch, tmp_path):
     results = board.backfill_verified_at("sha9999")
     states = {p.name: state for p, state in results}
     assert states == {"architecture.md": "added", "status.md": "added"}
-    assert "verified_at: sha9999" in arch.read_text(encoding="utf-8")
-    assert "verified_at: sha9999" in status.read_text(encoding="utf-8")
+    assert 'verified_at: "sha9999"' in arch.read_text(encoding="utf-8")     # quoted·R19
+    assert 'verified_at: "sha9999"' in status.read_text(encoding="utf-8")
 
 
 def test_backfill_verified_at_dry_run_writes_nothing(board, monkeypatch, tmp_path):
@@ -1572,7 +1752,7 @@ def test_cmd_backfill_rejects_unverifiable_explicit_sha(board, monkeypatch, tmp_
     monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
     monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "nope-status.md")
     monkeypatch.setattr(board, "_load_domain_module", lambda: None)
-    monkeypatch.setattr(board, "_is_commit_sha", lambda sha: False)
+    monkeypatch.setattr(board, "_canonical_commit_oid", lambda sha: None)   # 검증 실패
     rc = board.cmd_verified_at_backfill(SimpleNamespace(sha="deadbeef", dry_run=False))
     err = capsys.readouterr().err
     assert rc == 1
@@ -1580,18 +1760,26 @@ def test_cmd_backfill_rejects_unverifiable_explicit_sha(board, monkeypatch, tmp_
     assert "verified_at" not in arch.read_text(encoding="utf-8")  # abort — 미기록
 
 
-def test_cmd_backfill_accepts_verified_explicit_sha(board, monkeypatch, tmp_path, capsys):
-    """검증 통과한 명시 --sha 는 기록 진행 (거부 게이트의 대조군 — 과차단 아님)."""
+def test_cmd_backfill_records_canonical_full_oid_quoted(board, monkeypatch, tmp_path, capsys):
+    """검증 통과 시 **입력 축약이 아니라 canonical full OID 를 따옴표 쳐 기록**한다 (codex R16/R19).
+
+    red-첫: 전부-숫자(octal) full OID 를 unquoted 로 쓰면 YAML 정수 파싱돼 재-lint 서 깨진다."""
     arch = tmp_path / "architecture.md"
     _write_verified_doc(arch, verified_at=None)
     monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
     monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "nope-status.md")
     monkeypatch.setattr(board, "_load_domain_module", lambda: None)
-    monkeypatch.setattr(board, "_is_commit_sha", lambda sha: True)
-    rc = board.cmd_verified_at_backfill(SimpleNamespace(sha="goodsha1", dry_run=False))
+    full_oid = "01234567" * 5   # 40자 전부-숫자(leading 0=octal) canonical OID
+    monkeypatch.setattr(board, "_canonical_commit_oid", lambda sha: full_oid)
+    rc = board.cmd_verified_at_backfill(SimpleNamespace(sha="0123456", dry_run=False))
     capsys.readouterr()
     assert rc == 0
-    assert "verified_at: goodsha1" in arch.read_text(encoding="utf-8")
+    text = arch.read_text(encoding="utf-8")
+    assert f'verified_at: "{full_oid}"' in text          # 입력 "0123456" 아닌 full OID·quoted
+    assert "0123456\n" not in text                        # 입력 축약 그대로 기록 안 함
+    # 재-파싱(load_ticket=YAML)에서 정수화 없이 문자열 보존 → 재-lint 정상.
+    fm, _ = board.load_ticket(arch)
+    assert fm["verified_at"] == full_oid                  # int 아님·leading zero 보존
 
 
 # ── render-leak 트리 성격 게이트 (local.conf 부재=소스 트리 무발화 · T-0170·ADR-0028) ──
@@ -1880,11 +2068,34 @@ def test_claude_adapter_manifest_is_render_not_target_owned(board):
 # (오탐 0). 어댑터 부재 tree finding 0(graceful). overlay 파일 부재 조건은 ADR-0031 로 제거됐다
 # — free-form value-fill 기계(overlay.local.yaml)가 없어졌으므로 리터럴 토큰 잔존만으로 advisory.
 
+def _register_render_dir(root: Path, render_dir: str) -> None:
+    """tmp 어댑터 트리의 engine.manifest 에 `<render_dir>    @render` 를 멱등 등록 (T-0431).
+
+    un-migrated 스캔은 engine.manifest `@render` dest 경로에서 스코프를 파생하므로(런타임/설정 파일
+    제외), 테스트도 실 채택자 형상처럼 manifest 를 갖춰야 한다."""
+    manifest = root / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    lines = manifest.read_text(encoding="utf-8").splitlines() if manifest.is_file() else []
+    already = any(
+        ln.split()[:1] == [render_dir]
+        for ln in lines if ln.strip() and not ln.lstrip().startswith("#"))
+    if not already:
+        lines.append(f"{render_dir}    @render")
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _adapter_doc(root: Path, relpath: str, text: str) -> Path:
-    """root 아래 어댑터 스캐폴드 .md 를 만든다 (예: .claude/agents/developer.md)."""
+    """root 아래 어댑터 스캐폴드 본문을 만들고 그 `@render` 어댑터-본문 dir 를 manifest 에 등록한다.
+
+    예: `.claude/agents/developer.md` → 파일 생성 + `.claude/agents @render` 등재. 어댑터-본문 dir =
+    relpath 앞 2세그먼트(`.claude/agents`·`.codex/agents`·`.agents/skills` 등). root 문서(1세그먼트·
+    CLAUDE.md/AGENTS.md)는 `@render` 아님(instance-owned·T-0133)이라 미등재 → 스캔 스코프 밖."""
     p = root / relpath
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
+    parts = relpath.replace("\\", "/").split("/")
+    if len(parts) >= 2:  # 어댑터-본문 dir 만 등록 (root 문서=1세그먼트는 @render 아님).
+        _register_render_dir(root, "/".join(parts[:2]))
     return p
 
 
@@ -2009,6 +2220,186 @@ def test_unmigrated_skill_nested_scanned(board, monkeypatch, tmp_path):
     issues = board.lint_unmigrated_overlay()
     assert any(name == ".claude/skills/pm-dev-delegate/SKILL.md"
                for name, _k, _d in issues), issues
+
+
+# ── 두 축 파생 — codex(세 번째 하네스) 편입 (T-0431·[[T-0429]] 엔진 대칭) ─────────
+# 옛 `_OVERLAY_ADAPTER_GLOBS`(`.claude`/`.opencode` × `*.md`/SKILL.md)는 harness 축·확장자 축이
+# 둘 다 손-열거라 codex `.codex/agents/*.toml` 을 구조적으로 못 봤다. 디렉토리 축은
+# pm_import.ADD_HARNESS_ADAPTER 에서, 파일 필터 축은 pm_update._is_text_source 로 파생해 역전한다.
+
+def test_unmigrated_codex_toml_agent_scanned(board, monkeypatch, tmp_path):
+    """codex 형상: `.codex/agents/*.toml` 의 리터럴 free-form 토큰이 잡힌다 (T-0431 핵심 DoD).
+
+    수정 전(손-열거)엔 `.codex` 하네스 축도, `.toml` 확장자 축도 스캔 밖이라 미검출이었다 — 두 축
+    파생 후 편입. `.toml` 은 markdown 코드 마커가 없어 `_strip_code` 통과 후 토큰이 매칭된다."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _adapter_doc(tmp_path, ".codex/agents/developer.toml",
+                 'developer_instructions = "## 제약: {{PROJECT_CONSTRAINTS}}"\n')
+    issues = board.lint_unmigrated_overlay()
+    assert any(name == ".codex/agents/developer.toml"
+               and kind == "un-migrated-overlay"
+               and "{{PROJECT_CONSTRAINTS}}" in detail
+               for name, kind, detail in issues), issues
+
+
+def test_unmigrated_codex_dual_namespace_agents_skill_scanned(board, monkeypatch, tmp_path):
+    """codex dual-namespace: `.agents/skills/**/SKILL.md`(ADR-0070 D5 ①)도 스캔된다 —
+    ADD_HARNESS_ADAPTER["codex"] 의 두 번째 adapter dir(`.agents`)이 파생 축에 편입되기 때문."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _adapter_doc(tmp_path, ".agents/skills/pm-x/SKILL.md",
+                 "## 보호 영역\n\n{{PROTECTED_PATHS}}\n")
+    issues = board.lint_unmigrated_overlay()
+    assert any(name == ".agents/skills/pm-x/SKILL.md"
+               for name, _k, _d in issues), issues
+
+
+def test_overlay_scope_is_manifest_render_derived(board, monkeypatch, tmp_path):
+    """스코프가 engine.manifest `@render` 파생임을 직접 단언 — render-leak 과 공유하는
+    `_manifest_render_relpaths` 단일 소스(신규 독립 사본 0·T-0431 DoD). 같은 파일 형식이라도
+    manifest 미등재 형제 dir 는 스캔되지 않는다(스코프가 manifest 로만 열림)."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _adapter_doc(tmp_path, ".claude/agents/developer.md", "{{PROJECT_CONSTRAINTS}}\n")  # @render 등재
+    unlisted = tmp_path / ".claude" / "unlisted" / "x.md"  # 미등재 형제 dir
+    unlisted.parent.mkdir(parents=True, exist_ok=True)
+    unlisted.write_text("{{PROTECTED_PATHS}}\n", encoding="utf-8")
+    managed = board._manifest_render_relpaths()
+    assert ".claude/agents" in managed and ".claude/unlisted" not in managed, managed
+    scanned = {board._rel_to_repo(p).replace("\\", "/")
+               for p in board._collect_overlay_adapter_files()}
+    assert ".claude/agents/developer.md" in scanned, scanned
+    assert ".claude/unlisted/x.md" not in scanned, scanned
+
+
+def test_overlay_scope_excludes_runtime_and_config_files(board, monkeypatch, tmp_path):
+    """스캔 스코프가 `@render`(어댑터 본문)로 조여져 런타임/설정 파일은 제외된다 (T-0431 codex MF·
+    codex suggestion 회귀 박제).
+
+    옛 네임스페이스-전체 rglob 은 `.opencode/node_modules`(플러그인 deps)·adopter-owned
+    `.codex/config.toml`·`.claude/settings.json` 까지 읽어 대량 이중 read + 무관 파일 토큰 오탐
+    리스크였다. 이들 비-`@render` 경로에 리터럴 토큰을 심어도 스캔·finding 0 이어야 한다."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    # @render 어댑터 본문 (스캔 O) — _adapter_doc 가 manifest 에 .opencode/agents 등록.
+    _adapter_doc(tmp_path, ".opencode/agents/architect.md",
+                 "## 제약\n\n{{PROJECT_CONSTRAINTS}}\n")
+    # 비-@render 런타임/설정 (스캔 X·manifest 미등재) — 토큰을 심어도 미검사.
+    for rel, body in (
+        (".opencode/node_modules/pkg/readme.md", "{{PROTECTED_PATHS}}\n"),
+        (".codex/config.toml", "model = '{{USER_GATE_ITEMS}}'\n"),
+        (".codex/hooks.json", '{"x": "{{PROTECTED_PATHS}}"}\n'),
+        (".claude/settings.json", '{"y": "{{PROJECT_CONSTRAINTS}}"}\n'),
+    ):
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(body, encoding="utf-8")
+
+    scanned = {board._rel_to_repo(p).replace("\\", "/")
+               for p in board._collect_overlay_adapter_files()}
+    assert ".opencode/agents/architect.md" in scanned, scanned
+    assert not any("node_modules" in s for s in scanned), scanned
+    assert ".codex/config.toml" not in scanned and ".codex/hooks.json" not in scanned, scanned
+    assert ".claude/settings.json" not in scanned, scanned
+
+    finds = board.lint_unmigrated_overlay()
+    assert any(n == ".opencode/agents/architect.md" for n, _k, _d in finds), finds
+    assert not any(("node_modules" in n or n in (
+        ".codex/config.toml", ".codex/hooks.json", ".claude/settings.json"))
+        for n, _k, _d in finds), finds
+
+
+def test_unmigrated_retired_opencode_command_still_scanned(board, monkeypatch, tmp_path):
+    """은퇴 채널(ADR-0065·`.opencode/command`) 잔존 파일의 un-migrated 토큰이 여전히 잡힌다
+    (T-0431 codex R3 MF). 이 채널은 현행 manifest 에 미등재(은퇴)지만 pm_update 가 채택자 파일을
+    삭제하지 않아 구 채택자 트리에 잔존할 수 있다 — @render 파생 스코프의 보완(`_RETIRED_OVERLAY_GLOBS`).
+
+    manifest 를 만들지 않고 파일만 심어, 은퇴 글롭이 **manifest 와 독립**으로 커버함을 단언한다
+    (@render-only 스코프였다면 미검출·red-첫-재현의 durable 박제)."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    p = tmp_path / ".opencode" / "command" / "foo.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("## 보호 영역\n\n{{PROTECTED_PATHS}}\n", encoding="utf-8")
+    # manifest 미생성 = @render 스코프 0 — 그래도 은퇴 채널이 잡아야 한다.
+    assert board._manifest_render_relpaths() == set(), "@render 미등재 상태여야(은퇴 채널 독립 검증)."
+    assert (".opencode/command", "*.md") in board._RETIRED_OVERLAY_GLOBS
+    issues = board.lint_unmigrated_overlay()
+    assert any(name == ".opencode/command/foo.md"
+               and kind == "un-migrated-overlay"
+               and "{{PROTECTED_PATHS}}" in detail
+               for name, kind, detail in issues), issues
+
+
+def test_adopter_shape_guest_scanned_via_dest_manifest(tmp_path):
+    """adopter 형상(templates/ 없음)에서 guest 어댑터가 dest engine.manifest `@render` 등재로 스캔된다
+    (T-0456·codex R12).
+
+    codex R12 비판: 기존 guest 테스트가 worktree board.py + REPO monkeypatch 라 `__file__` 기준
+    templates/ 가 worktree 것이라 인스턴스 형상(templates/ 부재)을 **가렸다**(옛 flavor-manifest 보강이
+    거기선 항상 ∅인데 테스트는 green). 여기선 **templates/ 없는 tools/ 사본으로 board.py 를 로드**해
+    실 인스턴스를 재현한다 — guest 커버는 오직 dest manifest 등재(add_harness·T-0456)로만 성립한다.
+
+    red-첫: dest manifest 에 guest `@render` 미등재면 미검출 → 등재(add_harness 가 하는 것) 후 검출."""
+    inst = tmp_path / "adopter"
+    (inst / ".project_manager").mkdir(parents=True)
+    shutil.copytree(TOOLS, inst / ".project_manager" / "tools")
+    assert not (inst / "templates").exists()  # adopter 형상 = templates/ 부재
+    # host=claude 만 등재 + guest opencode 어댑터(add-harness 레이다운) + free-form 토큰 잔존
+    manifest = inst / ".project_manager" / "engine.manifest"
+    manifest.write_text(".claude/agents    @render\n", encoding="utf-8")
+    guest = inst / ".opencode" / "agents" / "architect.md"
+    guest.parent.mkdir(parents=True)
+    guest.write_text("## 보호\n\n{{PROTECTED_PATHS}}\n", encoding="utf-8")
+
+    board_inst = _load_module("board_adopter_shape", inst / ".project_manager" / "tools" / "board.py")
+    assert board_inst.REPO == inst.resolve()  # __file__ 기준 자동 해소 (REPO monkeypatch 아님)
+    assert not hasattr(board_inst, "_all_harness_body_relpaths")  # templates/ 보강 제거됨(판정원 단일)
+    # red: dest manifest 에 guest @render 미등재 → 미검출 (인스턴스엔 templates/ 도 없음)
+    assert not any(n == ".opencode/agents/architect.md"
+                   for n, _k, _d in board_inst.lint_unmigrated_overlay())
+    # green: add_harness 가 등재하는 것과 동형으로 dest manifest 에 guest @render 추가 → 검출
+    manifest.write_text(
+        ".claude/agents    @render\n"
+        ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n",
+        encoding="utf-8")
+    issues = board_inst.lint_unmigrated_overlay()
+    assert any(n == ".opencode/agents/architect.md"
+               and "{{PROTECTED_PATHS}}" in d
+               for n, _k, d in issues), issues
+
+
+def test_unmigrated_codex_missed_under_old_hardcoded_collection(board, monkeypatch, tmp_path):
+    """sensitivity — 옛 손-열거 collection(harness `.claude`/`.opencode` + 확장자 `*.md`/SKILL.md)을
+    복원하면 codex `.toml`·`.agents` 가 다시 구조적으로 미검출(red). 두 축 파생이 load-bearing 임을
+    증명하고 red-첫-재현을 durable 로 박제한다 (T-0431 DoD)."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _adapter_doc(tmp_path, ".codex/agents/developer.toml",
+                 'x = "{{PROJECT_CONSTRAINTS}}"\n')
+    _adapter_doc(tmp_path, ".agents/skills/pm-x/SKILL.md", "{{PROTECTED_PATHS}}\n")
+    _adapter_doc(tmp_path, ".claude/agents/developer.md", "{{USER_GATE_ITEMS}}\n")
+
+    # (a) 현행 파생 → codex 두 네임스페이스 모두 잡힌다(대조군: claude .md 도).
+    finds = board.lint_unmigrated_overlay()
+    assert any(n == ".codex/agents/developer.toml" for n, _k, _d in finds), finds
+    assert any(n == ".agents/skills/pm-x/SKILL.md" for n, _k, _d in finds), finds
+
+    # (b) 옛 손-열거 collection 복원 → codex 미검출, claude .md 만 남는다(red).
+    _old_globs = (
+        (".claude/agents", "*.md"), (".claude/skills", "SKILL.md"),
+        (".opencode/agents", "*.md"), (".opencode/command", "*.md"),
+    )
+
+    def _old_collect():
+        out: list[Path] = []
+        for rel, pat in _old_globs:
+            d = board.REPO / rel
+            if not d.is_dir():
+                continue
+            out.extend(d.rglob(pat) if pat == "SKILL.md" else d.glob(pat))
+        return out
+
+    monkeypatch.setattr(board, "_collect_overlay_adapter_files", _old_collect)
+    reverted = board.lint_unmigrated_overlay()
+    assert not any(n == ".codex/agents/developer.toml" for n, _k, _d in reverted), reverted
+    assert not any(n == ".agents/skills/pm-x/SKILL.md" for n, _k, _d in reverted), reverted
+    assert any(n == ".claude/agents/developer.md" for n, _k, _d in reverted), reverted
 
 
 def test_lint_tickets_includes_unmigrated_overlay(board, monkeypatch):

@@ -260,6 +260,11 @@ attribute* 가능. PM 이 진짜 영역 확인 후 fix 분기 결정.
 - **해소 절대경로 주입** — task-mode dev 위임은 F6 로 해소한 worktree 절대경로 실값을 프롬프트에 명시(짐작 제거·cwd 비참여·T-0355). ⑰ 카드 생성화(T-0362) 전이라 현 wave 는 프롬프트 명시 주입까지.
 - **native 단락 판정 = 이 카드** — target 하네스 == 내 하네스면 네이티브 위임(외부 송신 0), cross 면
   `pm_delegate.py` 채널(외부 송신·opt-in 필요). `pm_delegate` same-harness 경고는 백스톱(never-block).
+- **장기 resume 대신 fresh 재투입** — 같은 dev 에이전트를 다라운드 수정 루프로 계속 resume 하면
+  transcript 누적으로 컨텍스트 한도에 죽는다(PM 10차 실측: 14회 resume → "Prompt is too long").
+  라운드가 이어지면(대략 5~6회 resume↑) **새 에이전트를 자족 프롬프트로 재투입**한다 — ticket 본문
+  self-containment(컨텍스트 방화벽)가 이를 보장하고, 산출물은 워킹트리에 있으니 유실 0. 프롬프트에
+  현 코드 상태(신설 심볼·미커밋 변경 존재)를 요약해 넘긴다.
 
 ## 참고
 

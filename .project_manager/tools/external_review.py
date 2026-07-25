@@ -22,6 +22,9 @@
     (= 내부 code-reviewer 서브에이전트로 폴백하라는 신호)
   - must-fix 감지 → exit 1
   - 통과 → exit 0
+  - 라운드 상한 초과(--gate 별) → exit 4 (실행 전 거부·전용 rc·T-0457). 같은 게이트로 승인 없이
+    limit 회(local.conf external_review_round_limit·기본 4) 실 전송하면 이후 실행을 기계 차단하고
+    "사용자 보고·대기" loud 안내를 낸다 — 사용자 승인 후 `--ack-rounds` 로 +limit 재개.
 
 설계 (ADR-0004):
   - 어댑터 seam: 외부 도구를 `reviewer_cmd`(local.conf) 뒤로 격리 → codex 외 교체 가능.
@@ -33,21 +36,28 @@
   - 시크릿 denylist (.env·*secret*·*credential*·*.key·*token*·*.pem 등) 파일은 diff 에서
     자동 제외한다. 제외 사실은 판정에 반영 (T-0428) — --paths 명시 지정분 제외는 차단(exit 1),
     --ticket/기본 암묵 수집분 제외는 종합 판정 라인에 병기. review_denylist_extra 로 추가 가능.
+  - 라운드 상한 기계 차단 (T-0457): 외부 리뷰(과금·전송)가 무한 반복되지 않게 `--gate <T-NNNN>`
+    별 라운드 장부(`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 전송을
+    count 하고, 승인 없이 limit(기본 4)회를 넘기면 실행 *전에* 거부(exit 4)한다. PM 자의 판단을
+    기계 판정으로 대체 — 사용자 승인 후 `--ack-rounds` 로만 재개한다([[mechanize-dont-instruct-llm]]).
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import fnmatch
+import json
 import os
 import re
 import shlex
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 # ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형·ADR-0033 ①) ──────────
 # 하드코딩 `parents[2]` 는 tools 가 `<root>/.project_manager/tools/` 정확히 2단 깊이에 있다고
@@ -162,6 +172,15 @@ DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 # 외부 호출 타임아웃 (초)
 EXTERNAL_TIMEOUT_SECONDS = 180
 
+# 라운드 상한 (T-0457) — 같은 --gate 로 승인 없이 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
+# 기본 4 는 사용자 전역 규율(외부 리뷰 ">3~4 라운드면 수렴 판단")의 기계화. local.conf
+# external_review_round_limit 로 조정 가능.
+DEFAULT_ROUND_LIMIT = 4
+
+# 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분·T-0457).
+# 실행 전 거부라 리뷰어는 호출되지 않는다(외부 전송·과금 없음).
+EXIT_ROUND_LIMIT_EXCEEDED = 4
+
 # 시크릿 denylist — 이 패턴에 매칭되는 파일은 diff 에서 강제 제외하고 stderr 에 경고.
 # 보수적으로 유지: 오탐 허용 (누락 금지). 프로젝트 고유 경로는 local.conf review_denylist_extra 로.
 _SECRET_DENYLIST_PATTERNS: tuple[str, ...] = (
@@ -239,6 +258,20 @@ _PM_HOME_ANCHOR_GUIDANCE = (
     "  (현재 앵커: {anchor})"
 )
 
+# 라운드 상한 초과 fail-loud 안내 (T-0457 — codex 게이트 무한 라운드 기계 차단). 같은 게이트로
+# 승인 없이 limit 회를 넘겨 실 전송이 시도되면 diff 추출·리뷰어 호출 전에 이 안내로 차단한다
+# (과금·외부 전송 게이트라 초과분은 기계가 멈춘다·자의 우회 불가). 유일한 재개 경로는 사용자
+# 승인 후 `--ack-rounds` — 환경 문제 우회 플래그가 아니다.
+_ROUND_LIMIT_GUIDANCE = (
+    "오류: 외부 리뷰 라운드 상한 초과 — 게이트 {gate} 에서 승인 없이 {unacked}회 실 전송했습니다\n"
+    "  (상한 {limit}). 외부 전송·과금 게이트라 초과분은 기계가 멈춥니다 — 자의 우회 불가.\n"
+    "  · 지금까지의 리뷰 라운드 수렴 상황을 **사용자에게 보고하고 대기**하세요.\n"
+    "  · 사용자 승인을 받은 뒤에만 `--ack-rounds` 로 재개하세요 (승인분 +{limit}라운드):\n"
+    "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-rounds [기존 옵션]\n"
+    "  · 상한 자체 조정은 local.conf `external_review_round_limit` (기본 4).\n"
+    "  (장부: .project_manager/.local/review_rounds.json · count={count} acked_through={acked})"
+)
+
 
 # ── 설정 ──────────────────────────────────────────────────────────────────
 
@@ -274,6 +307,150 @@ def _denylist_patterns(conf: dict[str, str]) -> tuple[str, ...]:
     extra = conf.get("review_denylist_extra", "").strip()
     extras = tuple(p for p in re.split(r"[,\s]+", extra) if p) if extra else ()
     return _SECRET_DENYLIST_PATTERNS + extras
+
+
+def _round_limit(conf: dict[str, str]) -> int:
+    """라운드 상한 (local.conf external_review_round_limit·기본 `DEFAULT_ROUND_LIMIT`·T-0457).
+
+    비정수·음수는 기본값으로 fail-soft — 장부/노브 값이 깨졌다고 게이트를 벽돌로 만들지 않는다
+    (음수 상한은 첫 라운드부터 무조건 차단이라 무의미)."""
+    raw = conf.get("external_review_round_limit", "").strip()
+    if not raw:
+        return DEFAULT_ROUND_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_ROUND_LIMIT
+    return value if value >= 0 else DEFAULT_ROUND_LIMIT
+
+
+# ── 라운드 상한 장부 (T-0457 — codex 게이트 무한 라운드 기계 차단) ─────────────
+# 외부 리뷰는 과금·전송 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한 게이트
+# 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다([[mechanize-dont-instruct-llm]]):
+# `--gate <T-NNNN>` 별로 실 전송 횟수(count)와 사용자 승인 수위(acked_through)를 per-clone·git-ignored
+# 장부에 기록하고, 승인 없이 limit 을 넘기면 실행 전에 거부한다. 장부는 세션/클론 로컬 현상이라
+# `.project_manager/.local/`(regression/livegate sidecar 와 동위·board 상태 아님)에 둔다. 경로는
+# 호출 시점 REPO(module-level·monkeypatch 가능)에서 파생해 hermetic 테스트가 tmp 로 격리할 수 있게
+# 한다(_tickets_dir 동형). 손상 장부는 빈 장부로 fail-soft(회귀해소·regression flag 동형).
+
+
+def _round_ledger_path() -> Path:
+    """라운드 장부 경로 — `<REPO>/.project_manager/.local/review_rounds.json` (호출 시점 REPO 파생)."""
+    return REPO / ".project_manager" / ".local" / "review_rounds.json"
+
+
+def _load_round_ledger() -> dict:
+    """라운드 장부(gate→{count, acked_through})를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
+    try:
+        data = json.loads(_round_ledger_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_round_ledger(ledger: dict) -> None:
+    """라운드 장부를 원자적으로 기록한다 (unique tmp + os.replace·부분기록/crash 잔재 방지).
+
+    tmp 이름에 pid+uuid 를 실어 동시 실행 간 고정 `.tmp` 충돌(카운트 유실·write 예외)을 없앤다
+    (T-0457 MF-B). os.replace 는 원자 rename — 독자는 옛 파일 또는 새 파일만 본다(부분기록 없음).
+    확인·예약·저장의 원자성은 호출자가 `_round_ledger_lock()` 임계 구역으로 보장한다."""
+    path = _round_ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp), str(path))
+    finally:
+        with contextlib.suppress(OSError):
+            if tmp.exists():
+                tmp.unlink()  # replace 성공 시 no-op·실패 시 잔재 제거
+
+
+def _round_ledger_lock_path() -> Path:
+    """라운드 장부 배타락 파일 — `<REPO>/.project_manager/.local/review_rounds.lock` (호출 시점 REPO)."""
+    return REPO / ".project_manager" / ".local" / "review_rounds.lock"
+
+
+def _flock_acquire(fd: int) -> None:
+    """OS 배타락 획득 (블로킹). POSIX=fcntl.flock·Windows=msvcrt.locking·둘 다 없으면 무락 폴백.
+
+    stdlib 만 사용한다(외부 filelock 의존 금지·board.py `_flock_acquire` 동형·self-contained 복제).
+    임포트 안 되는 희귀 환경은 단일-머신 전제로 무락 진행(락 파일 자체는 존재)."""
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return
+    except ImportError:
+        pass
+    try:
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        return
+    except (ImportError, OSError):
+        pass  # best-effort — 락 프리미티브 없음/실패 시 무락 진행
+
+
+def _flock_release(fd: int) -> None:
+    """OS 배타락 해제 (close 가 자동 해제하지만 명시적으로 풀어 둔다·board.py 동형)."""
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return
+    except ImportError:
+        pass
+    try:
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+    except (ImportError, OSError):
+        pass
+
+
+@contextlib.contextmanager
+def _round_ledger_lock() -> Iterator[None]:
+    """라운드 장부 read-modify-write 를 직렬화하는 OS 파일락 (T-0457 MF-B).
+
+    확인(상한 대조)→예약(count+1)→저장을 하나의 임계 구역으로 묶어, 동시 실행 2개가 같은 잔여
+    슬롯을 통과해 상한을 우회하는 것을 막는다. 프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock
+    없음). **재진입 금지**(flock 관례·board_lock 동형) — 예약과 환불은 *각자 독립* 락 구간이다
+    (중첩 아님). 락 프리미티브 미지원 환경은 무락 폴백(board.py 와 동일·인터페이스 불변)."""
+    lock_path = _round_ledger_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        _flock_acquire(fd)
+        try:
+            yield
+        finally:
+            _flock_release(fd)
+    finally:
+        os.close(fd)  # close 만으로도 OS 가 락 해제 (크래시 안전망)
+
+
+def _as_int(value: object) -> int:
+    """장부 필드를 int 로 강제 (손상/누락 → 0·fail-soft)."""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def _gate_entry(ledger: dict, gate: str) -> dict:
+    """게이트의 장부 항목을 정규화된 {count, acked_through} 로 반환하고 ledger 에 심는다.
+
+    항목이 없거나 손상(비-dict·비정수 필드)이면 0/0 으로 정규화해 저장한다 — 반환 dict 를 그 자리에서
+    수정한 뒤 `_save_round_ledger(ledger)` 하면 깨끗한 값이 기록된다(read→normalize→mutate→write)."""
+    entry = ledger.get(gate)
+    if not isinstance(entry, dict):
+        entry = {}
+    normalized = {
+        "count": _as_int(entry.get("count")),
+        "acked_through": _as_int(entry.get("acked_through")),
+    }
+    ledger[gate] = normalized
+    return normalized
 
 
 # ── 시크릿 필터링 ────────────────────────────────────────────────────────
@@ -506,30 +683,53 @@ def build_prompt(
 # ── 외부 리뷰어 실행 ──────────────────────────────────────────────────────
 
 
-def run_reviewer(
+def _run_reviewer_ex(
     prompt: str,
-    reviewer_cmd: str = DEFAULT_REVIEWER_CMD,
-    timeout: int = EXTERNAL_TIMEOUT_SECONDS,
-    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
-) -> tuple[bool, str]:
-    """reviewer_cmd 를 stdin(=프롬프트)으로 실행한다. 반환: (성공 여부, 출력 텍스트)."""
+    reviewer_cmd: str,
+    timeout: int,
+    run_fn: Callable[..., subprocess.CompletedProcess] | None,
+) -> tuple[bool, str, bool]:
+    """run_reviewer 본체 + 외부 프로세스 스폰 여부(started) 신호 (T-0457 MF-A).
+
+    반환: (성공 여부, 출력 텍스트, started). started=False = 외부 프로세스가 *확실히 시작되지
+    않음*(전송 0·과금 0) — 빈 reviewer_cmd·실행 파일 부재(FileNotFoundError). started=True =
+    스폰됨(프롬프트가 전송·과금됐을 수 있음) — 정상 종료(비-0 rc 포함)·타임아웃·기타 실행 오류.
+    타임아웃/기타는 시작 여부가 불확실하거나 이미 전송됐으므로 보수적으로 started=True — 라운드
+    환불은 started=False 일 때만 해(반복 타임아웃으로 상한을 무한 우회하지 못하게). 확실히 전송
+    전인 경우만 환불한다."""
     _run = run_fn or subprocess.run
     argv = shlex.split(reviewer_cmd)
     if not argv:
-        return False, "[reviewer_cmd 가 비어 있음 — local.conf 확인]"
+        return False, "[reviewer_cmd 가 비어 있음 — local.conf 확인]", False
     try:
         result = _run(argv, input=prompt, capture_output=True, text=True,
                       encoding="utf-8", errors="replace", timeout=timeout)
         output = result.stdout or ""
         if result.stderr:
             output += f"\n[stderr]\n{result.stderr}"
-        return result.returncode == 0, output
+        return result.returncode == 0, output, True
     except subprocess.TimeoutExpired:
-        return False, f"[리뷰어 타임아웃 — {timeout}초 초과]"
+        # 프로세스가 시작돼 실행 중 타임아웃 — 프롬프트가 이미 전송·과금됐을 수 있다 → started=True.
+        return False, f"[리뷰어 타임아웃 — {timeout}초 초과]", True
     except FileNotFoundError:
-        return False, f"[리뷰어 명령 '{argv[0]}' 를 찾을 수 없음 — 설치 또는 PATH 확인]"
+        # 실행 파일 자체가 없어 exec 실패 — 아무것도 전송되지 않았다 → started=False (환불 대상).
+        return False, f"[리뷰어 명령 '{argv[0]}' 를 찾을 수 없음 — 설치 또는 PATH 확인]", False
     except Exception as exc:  # noqa: BLE001
-        return False, f"[리뷰어 실행 오류: {exc}]"
+        # 시작 여부 불확실 — 보수적으로 started=True (상한 우회 방지 > 과잉 카운트).
+        return False, f"[리뷰어 실행 오류: {exc}]", True
+
+
+def run_reviewer(
+    prompt: str,
+    reviewer_cmd: str = DEFAULT_REVIEWER_CMD,
+    timeout: int = EXTERNAL_TIMEOUT_SECONDS,
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+) -> tuple[bool, str]:
+    """reviewer_cmd 를 stdin(=프롬프트)으로 실행한다. 반환: (성공 여부, 출력 텍스트).
+
+    2-튜플 공개 facade — 스폰 여부(started)까지 필요한 내부 호출은 `_run_reviewer_ex` 를 쓴다."""
+    ok, output, _started = _run_reviewer_ex(prompt, reviewer_cmd, timeout, run_fn)
+    return ok, output
 
 
 def reviewer_name(reviewer_cmd: str) -> str:
@@ -628,10 +828,12 @@ def run_review(
 ) -> dict:
     """외부 리뷰어를 실행하고 결과를 수합한다.
 
-    반환 dict: reviewer / ok / output / verdict / file / failed / any_must_fix / all_pass.
+    반환 dict: reviewer / ok / output / verdict / file / failed / started / any_must_fix / all_pass.
+    `started` (T-0457 MF-A) = 외부 프로세스가 스폰됐는가(전송·과금 가능성) — 라운드 카운트 환불
+    판정에 쓴다(False = 확실히 전송 전 실패 → 예약 환불).
     """
     name = reviewer_name(reviewer_cmd)
-    ok, output = run_reviewer(prompt, reviewer_cmd, timeout, run_fn)
+    ok, output, started = _run_reviewer_ex(prompt, reviewer_cmd, timeout, run_fn)
     verdict = parse_verdict(output)
     out_file: Path | None = None
     if ok or output:
@@ -643,6 +845,7 @@ def run_review(
         "verdict": verdict,
         "file": out_file,
         "failed": not ok,
+        "started": started,
         "any_must_fix": ok and verdict["has_must_fix"],
         "all_pass": ok and verdict["has_pass"] and not verdict["has_must_fix"],
     }
@@ -751,7 +954,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="ticket ID — touches 로 검토 경로 결정")
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
-                        help="게이트 ticket 표식 (로깅용)")
+                        help="게이트 ticket 표식 (로깅 + 라운드 상한 장부 키·T-0457)")
+    parser.add_argument("--ack-rounds", action="store_true",
+                        help="라운드 상한 승인 재개 — 현 count 를 acked_through 로 기록 후 +limit "
+                             "재개 (--gate 필수·사용자 승인 후에만·T-0457)")
     parser.add_argument("--dry-run", action="store_true",
                         help="diff·프롬프트만 출력, 외부 호출/전송 안 함 (비활성이어도 허용·빈 diff 면 exit 1)")
     parser.add_argument("--force", action="store_true",
@@ -884,6 +1090,44 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0  # no-op — 실패 아님
 
+    # ── 라운드 상한 게이트: 호출 전 예약 (T-0457 — 실 외부 전송 확정 지점) ──────────
+    # 여기까지 왔으면 dry-run·빈-diff·비활성 no-op 을 모두 통과해 *실 외부 전송*이 일어난다 —
+    # 그것들은 전송이 없어 라운드가 아니므로(카운트 제외) 이 앞의 조기 return 뒤에 게이트를 둔다.
+    # `--gate` 지정 시에만 per-gate 장부를 대조한다("--gate 미지정 실행은 상한 대상 밖").
+    #
+    # MF-A(예약-후-환불): count 를 *호출 전에* +1 예약한다 — 타임아웃·비정상 종료도 프롬프트가 이미
+    # 전송·과금됐을 수 있는데 성공시에만 세면 반복 타임아웃으로 상한을 무한 우회한다. 외부 프로세스가
+    # 확실히 시작되지 않은 경우(스폰 실패·started=False)만 아래에서 환불한다. MF-B(원자성): 확인→예약
+    # →저장을 `_round_ledger_lock()` 한 임계 구역으로 묶어 동시 실행이 같은 잔여 슬롯을 통과 못 하게 한다.
+    # --ack-rounds 는 acked_through 를 현 count 로 올려(엔진은 기록만·승인 판단은 사용자/카드) +limit
+    # 창을 열고 그 호출도 실 전송이므로 함께 예약한다. 초과면 리뷰어 호출 전에 거부(전용 rc·과금 없음).
+    reserved_gate: str | None = None
+    if args.gate:
+        limit = _round_limit(conf)
+        with _round_ledger_lock():
+            ledger = _load_round_ledger()
+            entry = _gate_entry(ledger, args.gate)
+            count, acked = entry["count"], entry["acked_through"]
+            if args.ack_rounds:
+                entry["acked_through"] = count      # 승인 수위 상향 (+limit 창)
+                entry["count"] = count + 1          # 이 호출도 실 전송 → 예약
+                _save_round_ledger(ledger)
+                reserved_gate = args.gate
+                print(f"라운드 상한 승인 재개: 게이트 {args.gate} — acked_through={count} "
+                      f"(+{limit}라운드).", file=sys.stderr)
+            elif count - acked >= limit:
+                print(_ROUND_LIMIT_GUIDANCE.format(
+                    gate=args.gate, unacked=count - acked, limit=limit,
+                    count=count, acked=acked), file=sys.stderr)
+                return EXIT_ROUND_LIMIT_EXCEEDED    # 예약 없음 (전송 전 거부)
+            else:
+                entry["count"] = count + 1          # 호출 전 라운드 예약
+                _save_round_ledger(ledger)
+                reserved_gate = args.gate
+    elif args.ack_rounds:
+        print("경고: --ack-rounds 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
+              file=sys.stderr)
+
     reviewer_cmd = _reviewer_cmd(conf)
     print(f"외부 리뷰어 실행 중: {reviewer_cmd}", file=sys.stderr)
     result = run_review(
@@ -891,6 +1135,18 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout, output_dir=output_dir,
     )
     print_summary(result, gate=args.gate, excluded=excluded)
+
+    # 예약 환불 (T-0457 MF-A) — 외부 프로세스가 *확실히 시작되지 않은* 경우(started=False·스폰 실패·
+    # 전송 0)만 되돌린다. 타임아웃·비정상 종료(started=True)는 프롬프트가 이미 전송·과금됐을 수 있어
+    # 유지한다(반복 타임아웃 상한 우회 차단). 예약과 같은 lock 아래 재-load→감소→저장(원자·MF-B).
+    if reserved_gate is not None and not result.get("started", True):
+        with _round_ledger_lock():
+            ledger = _load_round_ledger()
+            entry = _gate_entry(ledger, reserved_gate)
+            if entry["count"] > 0:
+                entry["count"] -= 1
+            _save_round_ledger(ledger)
+
     return determine_exit_code(result)
 
 

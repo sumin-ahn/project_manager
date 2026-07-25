@@ -26,7 +26,13 @@ from pathlib import Path
 
 import pytest
 from _settings_portability import portability_failures, referenced_hook_paths
-from _harness_matrix import HARNESSES, entry_docs as _entry_docs
+from _harness_matrix import (
+    HARNESSES,
+    HARNESS_ADAPTER_DIRS,
+    HARNESS_ROOT_DOC,
+    _PM_IMPORT,
+    entry_docs as _entry_docs,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -282,7 +288,22 @@ def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
 # `../opencode/README.md` 상대링크)라 adopter 트리에선 dangling. adopter 로 복사되면 안 된다.
 # 하위 `.project_manager/wiki/*/README.md`(wiki 구조 안내)는 adopter-facing 이라 유지.
 
-@pytest.mark.parametrize("harness", ["claude", "opencode", "both"])
+# 축 = 유효 `--harness` 인자 전체(단일 하네스 + 콤보 키) — README 미출하 불변식은 import 모드와
+# 무관하게 성립하므로(top README 는 어느 하네스로도 출하 금지) 전 인자를 태운다. 손-열거
+# `["claude","opencode","both"]` 는 codex(ADR-0070)를 못 따라온 decay 였다 — codex 도
+# templates/codex/README.md 를 가지므로 **비-공허 정당 대상**(실측: top README 미출하·wiki README
+# 유지·dangling 0). 단일 축 = 파생 HARNESSES(codex 자동 편입), 콤보 축 = HARNESS_TEMPLATE_DIRS 의
+# len>1 키(derive_harnesses 여집합·T-0453 _ADD_HARNESS_PAIRS 순열/조합 파생 선례). 재열거 금지.
+def _combo_harness_args(harness_template_dirs) -> tuple[str, ...]:
+    """콤보 `--harness` 키(어댑터 트리 2개+·예 'both'=claude_code+opencode) — derive_harnesses 가
+    단일 축에서 걸러낸 여집합. 새 콤보 키가 자동 편입된다(손-열거 아님·T-0455)."""
+    return tuple(sorted(k for k, dirs in harness_template_dirs.items() if len(dirs) > 1))
+
+
+_README_HARNESS_ARGS = (*HARNESSES, *_combo_harness_args(_PM_IMPORT.HARNESS_TEMPLATE_DIRS))
+
+
+@pytest.mark.parametrize("harness", _README_HARNESS_ARGS)
 def test_fresh_adopter_excludes_framework_internal_readme(pm_import, tmp_path, harness):
     """import 후 최상위 README.md 미출하 · 하위 wiki README 유지 · dangling 프레임워크 링크 0."""
     dest = tmp_path / f"adopter-readme-{harness}"
@@ -305,6 +326,22 @@ def test_fresh_adopter_excludes_framework_internal_readme(pm_import, tmp_path, h
         text = md.read_text(encoding="utf-8")
         assert "../opencode/README.md" not in text and "../claude_code/README.md" not in text, (
             f"{harness}: {md.relative_to(dest)} 에 프레임워크-상대 dangling 링크 잔존")
+
+
+def test_readme_axis_is_derived_covers_all_import_args():
+    """README 미출하 테스트 축이 유효 `--harness` 인자 전체(단일+콤보)를 파생 커버함을 못박는다 —
+    손-열거였으면 codex·신규 콤보를 놓친다(T-0455·[[cross-cutting-breaking-blast-radius]]).
+
+    codex 는 정당 대상(templates/codex/README.md 존재하나 top README 미출하·wiki README 유지·
+    dangling 0·실측). 파생이라 새 단일 하네스/콤보 키가 자동 편입된다(T-0434 가짜-하네스 패턴).
+    """
+    # 단일(HARNESSES) + 콤보(len>1 파생) = 유효 --harness 인자 전체(HARNESS_TEMPLATE_DIRS 키).
+    assert set(_README_HARNESS_ARGS) == set(_PM_IMPORT.HARNESS_TEMPLATE_DIRS)
+    assert {"claude", "codex", "opencode", "both"} <= set(_README_HARNESS_ARGS)
+    # 가짜 4번째 단일 하네스 + 가짜 콤보 → 콤보 파생이 새 콤보만 자동 편입(단일은 HARNESSES 축).
+    fake_map = {**_PM_IMPORT.HARNESS_TEMPLATE_DIRS,
+                "fourth": ("fourth_tmpl",), "trio": ("claude_code", "opencode", "fourth_tmpl")}
+    assert _combo_harness_args(fake_map) == ("both", "trio")
 
 
 # ── 출하 @render 스킬/command materialize 가드 (T-0142/T-0143 — 신규 스킬 회귀) ──────
@@ -470,15 +507,18 @@ def test_fresh_adopter_settings_portable_and_hooks_wired(pm_import, tmp_path):
 # 라 stub 미상속·live 조회 위험 → 이 게이트의 hermetic 계약과 맞지 않는다).
 
 # 어댑터 네임스페이스 상한(추가 relpath ⊆ 이 집합). 값 shape = `(adapter_dirs: tuple, root_doc)` —
-# 엔진 `pm_import.ADD_HARNESS_ADAPTER` 와 동형(ADR-0070 D5·비준 2026-07-21). codex 는 어댑터
-# 네임스페이스가 **둘**(`.codex`+`.agents`)이라 dirs-튜플로 일반화하고 claude/opencode 는 단일-원소.
-# claude add 의 @render 제외(.claude/agents·skills)는 추가 파일을 *줄일* 뿐이라 subset 단언엔
-# 무영향 — 상한 predicate 로 충분하다.
-_ADD_HARNESS_NS_BOUND = {
-    "opencode": ((".opencode",), "AGENTS.md"),
-    "claude": ((".claude",), "CLAUDE.md"),
-    "codex": ((".codex", ".agents"), "AGENTS.md"),
-}
+# 엔진 `pm_import.ADD_HARNESS_ADAPTER` 와 동형(ADR-0070 D5·비준 2026-07-21)이되 **파생**(손-복제
+# 아님·T-0453·아래 _derive_ns_bound). codex 는 어댑터 네임스페이스가 **둘**(`.codex`+`.agents`)이라
+# dirs-튜플로 일반화하고 claude/opencode 는 단일-원소. claude add 의 @render 제외(.claude/agents·
+# skills)는 추가 파일을 *줄일* 뿐이라 subset 단언엔 무영향 — 상한 predicate 로 충분하다.
+def _derive_ns_bound(adapter_dirs, root_doc):
+    """T-0429 파생 API(`HARNESS_ADAPTER_DIRS`·`HARNESS_ROOT_DOC`)를 per-harness `(adapter_dirs,
+    root_doc)` 상한으로 재조합 — 엔진 ADD_HARNESS_ADAPTER 와 동형이되 손-복제가 아니라 파생이라
+    새 하네스가 자동 편입된다(손-복제였으면 4번째서 KeyError·T-0453)."""
+    return {h: (adapter_dirs[h], root_doc[h]) for h in adapter_dirs}
+
+
+_ADD_HARNESS_NS_BOUND = _derive_ns_bound(HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC)
 
 
 # 스냅샷 제외 트리 컴포넌트 — VCS/캐시 산출물 + pm_import 백업. `.pm_import_backups/` 는 add-harness 가
@@ -513,11 +553,21 @@ def _in_adapter_ns_bound(rel: str, added_harness: str) -> bool:
     return rel == root_doc or any(rel.startswith(d + "/") for d in adapter_dirs)
 
 
-@pytest.mark.parametrize("base,added", [
-    ("claude", "opencode"), ("opencode", "claude"),   # 1차 실측 clobber + 대칭
-    ("claude", "codex"), ("codex", "claude"),          # codex ↔ claude (진입 doc 상이·신규 추가)
-    ("opencode", "codex"), ("codex", "opencode"),      # codex ↔ opencode (공통 코어 AGENTS.md 수렴 skip)
-])
+def _add_harness_order_pairs(harnesses) -> list[tuple[str, str]]:
+    """base ≠ added 전 순서쌍(N×(N−1)) — add-harness 라이브-안전 e2e 축.
+
+    파생 축 HARNESSES(T-0429)의 순열 — 손-열거 6쌍을 대체한다(T-0434). 하네스 3종이면 6쌍
+    (claude↔opencode = 1차 실측 clobber + 대칭 · claude↔codex = 진입 doc 상이·신규 추가 ·
+    opencode↔codex = 공통 코어 AGENTS.md byte-수렴 skip), 4종이면 12쌍으로 **자동** 확장된다.
+    test_pm_import.py `_ADD_HARNESS_APPLY_PAIRS` 와 동일 idiom(같은 파생원·의미 축).
+    """
+    return [(base, added) for base in harnesses for added in harnesses if base != added]
+
+
+_ADD_HARNESS_PAIRS = _add_harness_order_pairs(HARNESSES)
+
+
+@pytest.mark.parametrize("base,added", _ADD_HARNESS_PAIRS)
 def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_path, base, added):
     """fresh import(base) → add-harness(added): 추가는 어댑터 네임스페이스뿐·기존 트리 바이트 불변.
 
@@ -561,10 +611,20 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     # (1) 삭제 0 — 기존 파일이 사라지면 안 된다.
     assert not removed_rels, f"{base}→{added}: add-harness 가 기존 파일 삭제: {sorted(removed_rels)}"
 
-    # (2) 추가된 relpath ⊆ 추가 harness 어댑터 네임스페이스뿐 (그 밖은 한 개도 안 샌다).
-    outside = sorted(r for r in added_rels if not _in_adapter_ns_bound(r, added))
+    # (2) 추가된 relpath ⊆ (추가 harness 어댑터 네임스페이스 ∪ flavor `@render` 선언·cross-ns 의존물)
+    #   — 그 밖(flavor 미선언)은 한 개도 안 샌다([[T-0456]] R25). opencode flavor 의 `.claude/skills`
+    #   (ADR-0065 네이티브 소비·`.opencode` 밖)는 codex host(미소유)에 반드시 복사되므로(R18→R25 반전)
+    #   namespace 상한만으론 오탐 — flavor 선언 경로를 상한에 포함한다. claude host + opencode 는
+    #   `.claude/skills` 가 host-소유(before 에 이미 존재)라 added_rels 밖이고, flavor 미선언 stray 는
+    #   여전히 red 라 clobber 탐지력은 유지된다.
+    cross_ns_allowed = pm_import._flavor_render_relpaths(
+        REPO / "templates" / pm_import.HARNESS_TEMPLATE_DIRS[added][0])
+    outside = sorted(
+        r for r in added_rels
+        if not _in_adapter_ns_bound(r, added)
+        and not any(r == p or r.startswith(p + "/") for p in cross_ns_allowed))
     assert outside == [], (
-        f"{base}→{added}: add-harness 가 어댑터 네임스페이스 밖 파일 추가(라이브-안전 위반): {outside}")
+        f"{base}→{added}: add-harness 가 네임스페이스·flavor @render 밖 파일 추가(라이브-안전 위반): {outside}")
     # sanity — 어댑터가 실제로 추가됐다(스코프가 맞는 트리를 잡았다는 방증).
     add_dirs, add_doc = _ADD_HARNESS_NS_BOUND[added]
     # root doc 은 둘 중 하나여야 한다: (a) 신규(추가되는 harness 의 진입 doc 이 base 에 없음) → added_rels
@@ -579,10 +639,68 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     assert any(r.startswith(d + "/") for d in add_dirs for r in added_rels), \
         f"{base}→{added}: 어댑터 dir({'/'.join(add_dirs)}/**) 미추가"
 
-    # (3) 기존 relpath 전부 바이트 불변 (wiki `.project_manager/**`·엔진·타 harness·root doc 0 변경).
-    changed = sorted(r for r in before_rels & after_rels if before[r] != after[r])
+    # (3) 기존 relpath 바이트 불변 (wiki `.project_manager/**`·엔진·타 harness·root doc 0 변경) —
+    #   단 **`engine.manifest` 는 예외**([[T-0456]]): add-harness 가 자기가 레이다운한 guest 어댑터의
+    #   `@render` 를 인스턴스 manifest 에 **append-only 등재**한다(dev-state metadata·네임스페이스 밖이나
+    #   T-0456 이 sanction — manifest-파생 overlay 스캔·render 가 guest 를 커버하게 하는 근본 배선).
+    #   그 한 파일만 예외로 빼고 나머지 clobber 0 을 유지하며, manifest 변경은 append-only(기존 내용
+    #   보존)만 허용한다(guest 라인 없는 added=claude 는 무변도 정상).
+    _MANIFEST_REL = ".project_manager/engine.manifest"
+    changed = sorted(r for r in before_rels & after_rels
+                     if before[r] != after[r] and r != _MANIFEST_REL)
     assert changed == [], (
-        f"{base}→{added}: add-harness 가 기존 파일을 변경(byte diff≠0·5-file clobber 재발): {changed}")
+        f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest 외·byte diff≠0·clobber 재발): {changed}")
+    if _MANIFEST_REL in before and before[_MANIFEST_REL] != after[_MANIFEST_REL]:
+        mf_before = before[_MANIFEST_REL].decode("utf-8")
+        mf_after = after[_MANIFEST_REL].decode("utf-8")
+        assert mf_after.startswith(mf_before), (
+            f"{base}→{added}: engine.manifest 변경이 append-only 아님(기존 내용 훼손·T-0456 위반)")
+
+
+def test_add_harness_pairs_are_derived_permutation():
+    """add-harness e2e 쌍이 파생 축 HARNESSES 순열(N×(N−1))임을 못박는다 — 손-열거 6쌍 아님(T-0434).
+
+    실축(HARNESSES=3종)은 6쌍이되, 가짜 4번째 하네스 축이면 12쌍으로 자동 확장·4번째가 base·added
+    양방향으로 편입된다(T-0429 가짜-하네스 패턴 재사용). production `_add_harness_order_pairs` 를
+    그대로 태워 constant 와 test 가 어긋나지 않는다.
+    """
+    assert _ADD_HARNESS_PAIRS == _add_harness_order_pairs(HARNESSES)
+    assert len(_ADD_HARNESS_PAIRS) == len(HARNESSES) * (len(HARNESSES) - 1)
+    assert all(base != added for base, added in _ADD_HARNESS_PAIRS)  # 자기쌍 없음
+    # 가짜 4번째 하네스 → N×(N−1) 자동 확장·양방향 편입.
+    fake = (*HARNESSES, "fourth")
+    got = _add_harness_order_pairs(fake)
+    assert len(got) == len(fake) * (len(fake) - 1)
+    assert ("fourth", HARNESSES[0]) in got and (HARNESSES[0], "fourth") in got
+
+
+def test_add_harness_ns_bound_is_derived_and_covers_pair_axis():
+    """어댑터 네임스페이스 상한이 파생이고 add-harness 쌍 축 전 하네스를 커버함을 못박는다 —
+    손-복제였으면 4번째서 KeyError(T-0453 이 마감한 커플링·[[cross-cutting-breaking-blast-radius]]).
+
+    (a) 파생 값이 T-0429 파생원과 일치(shape·값 보존·엔진 ADD_HARNESS_ADAPTER 동형) · (b)
+    `_ADD_HARNESS_PAIRS` 의 모든 하네스가 상한에 존재(KeyError 0) · (c) 가짜 4번째 하네스가
+    파생원에 추가되면 상한도 자동 편입(T-0434 가짜-하네스 검증 패턴 재사용).
+    """
+    # (a) 값 보존 — 파생이 엔진 상수와 동형.
+    for h in HARNESSES:
+        adapter_dirs, root_doc = _ADD_HARNESS_NS_BOUND[h]
+        assert adapter_dirs == HARNESS_ADAPTER_DIRS[h]
+        assert root_doc == HARNESS_ROOT_DOC[h]
+    # (b) 쌍 축 전 하네스가 상한에 존재 — add-harness 파라미터가 KeyError 없이 돈다.
+    #     ⚠ load-bearing 은 이 (b)다 — (a)는 파생값을 같은 파생원과 비교라 값-tautological.
+    #     실 decay(신규 하네스가 상한에 안 옴)는 (b)가 red 로 잡는다(리뷰어 sensitivity 실측).
+    pair_harnesses = {h for pair in _ADD_HARNESS_PAIRS for h in pair}
+    assert pair_harnesses <= set(_ADD_HARNESS_NS_BOUND), (
+        f"쌍 축 하네스가 네임스페이스 상한에 없음(KeyError 위험): "
+        f"{pair_harnesses - set(_ADD_HARNESS_NS_BOUND)}")
+    # (c) 가짜 4번째 하네스 → 파생원에 있으면 상한도 자동 편입(손-복제였으면 수동 추가 필요).
+    #     adapter_dirs 값 = dir 명 튜플(HARNESS_ADAPTER_DIRS[h] shape) — 예 (".fourth",).
+    fake_dirs = {**HARNESS_ADAPTER_DIRS, "fourth": (".fourth",)}
+    fake_docs = {**HARNESS_ROOT_DOC, "fourth": "AGENTS.md"}
+    fake_bound = _derive_ns_bound(fake_dirs, fake_docs)
+    assert fake_bound["fourth"] == ((".fourth",), "AGENTS.md")
+    assert set(HARNESSES) < set(fake_bound)
 
 
 # ── T-0308: fresh opencode 채택자 drift-0 e2e (pm_import↔pm_update 전파 게이트·B-freshadopter) ──

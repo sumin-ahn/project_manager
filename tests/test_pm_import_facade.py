@@ -24,12 +24,26 @@ import pytest
 
 from pathlib import Path
 
+from _harness_matrix import HARNESSES as _HARNESS_IDS, _PM_IMPORT
+
 REPO = Path(__file__).resolve().parents[1]
 SH = REPO / "pm-import.sh"
 CMD = REPO / "pm-import.cmd"
 
-# update 파사드 — templates 양쪽 루트(채택자 루트로 배포·T-0054).
-HARNESSES = ("claude_code", "opencode")
+
+def _facade_axis(harness_ids, harness_template_dirs) -> tuple[str, ...]:
+    """update 파사드 byte-drift 축 = 하네스 정체성 → 템플릿-dir 명(`templates/<dir>`).
+
+    파생원 = `_harness_matrix.HARNESSES`(하네스 정체성·T-0429) + 엔진 `HARNESS_TEMPLATE_DIRS`
+    (하네스 → 어댑터 트리 dir 명). 이 축의 원소는 **템플릿-dir 명**(claude_code)이지 하네스 정체성
+    (claude)이 아니다 — 의미 축을 안 섞는다(T-0434 결정·T-0429 대조표 '별개' 판정 유지). 새 단일-
+    어댑터 하네스가 추가되면 이 축(및 아래 UPDATE_SH/CMD·드리프트 가드)에 자동 편입된다.
+    """
+    return tuple(harness_template_dirs[h][0] for h in harness_ids)
+
+
+# update 파사드 — templates 각 하네스 루트(채택자 루트로 배포·T-0054). 축은 파생(손-열거 아님·T-0434).
+HARNESSES = _facade_axis(_HARNESS_IDS, _PM_IMPORT.HARNESS_TEMPLATE_DIRS)
 UPDATE_SH = {h: REPO / "templates" / h / "pm-update.sh" for h in HARNESSES}
 UPDATE_CMD = {h: REPO / "templates" / h / "pm-update.cmd" for h in HARNESSES}
 
@@ -223,10 +237,11 @@ def test_update_sh_forwards_verbatim_with_exec(harness: str) -> None:
 
 
 def test_update_sh_drift_guard_identical() -> None:
-    """양 템플릿 pm-update.sh 는 byte 동일(harness-무관 thin forwarder)."""
+    """모든 템플릿 pm-update.sh 는 byte 동일(harness-무관 thin forwarder·파생 축 전체·T-0434)."""
     bodies = {h: UPDATE_SH[h].read_text(encoding="utf-8") for h in HARNESSES}
-    assert bodies["claude_code"] == bodies["opencode"], \
-        "claude_code / opencode pm-update.sh 드리프트"
+    ref = HARNESSES[0]
+    drift = sorted(h for h in HARNESSES if bodies[h] != bodies[ref])
+    assert not drift, f"pm-update.sh 드리프트({ref} 기준 불일치): {drift}"
 
 
 # --- .cmd 정적 단언 + 드리프트 가드 (Linux 러너 실행 불가) ---
@@ -249,21 +264,43 @@ def test_update_cmd_exists_and_has_forward_tokens(harness: str) -> None:
 
 
 def test_update_cmd_drift_guard_identical() -> None:
-    """양 템플릿 pm-update.cmd 는 byte 동일."""
+    """모든 템플릿 pm-update.cmd 는 byte 동일(파생 축 전체·T-0434)."""
     bodies = {h: UPDATE_CMD[h].read_text(encoding="utf-8") for h in HARNESSES}
-    assert bodies["claude_code"] == bodies["opencode"], \
-        "claude_code / opencode pm-update.cmd 드리프트"
+    ref = HARNESSES[0]
+    drift = sorted(h for h in HARNESSES if bodies[h] != bodies[ref])
+    assert not drift, f"pm-update.cmd 드리프트({ref} 기준 불일치): {drift}"
+
+
+def test_facade_axis_auto_includes_new_harness() -> None:
+    """파사드 byte-drift 축이 파생 하네스 정체성 → 템플릿-dir 매핑임을 못박는다(손-열거 아님·T-0434).
+
+    실축(HARNESSES)은 파생 하네스 전부의 템플릿-dir 명, 가짜 4번째 하네스(상수 + templates dir
+    등록)는 **자동 편입**된다(T-0429 `derive_harnesses` 가짜-하네스 패턴 재사용). 네 번째 하네스가
+    파사드 게이트(UPDATE_SH/CMD·드리프트·forward 토큰)에 손 편집 0 으로 흐르는 게 티켓 핵심.
+    """
+    # 실축 = 파생 하네스 정체성을 템플릿-dir 로 매핑한 것과 동일.
+    assert HARNESSES == _facade_axis(_HARNESS_IDS, _PM_IMPORT.HARNESS_TEMPLATE_DIRS)
+    # 가짜 4번째 하네스(상수 + templates dir) → 축에 자동 편입(dir 명 매핑 경유).
+    fake_ids = (*_HARNESS_IDS, "fourth")
+    fake_map = {**_PM_IMPORT.HARNESS_TEMPLATE_DIRS, "fourth": ("fourth_tmpl",)}
+    got = _facade_axis(fake_ids, fake_map)
+    assert got[-1] == "fourth_tmpl", got
+    assert set(HARNESSES) < set(got), got
 
 
 # --- import 복사: 채택자 루트로 pm-update.sh 배포 (hermetic) ---
 
-@pytest.mark.parametrize("harness", ["claude", "opencode"])
+@pytest.mark.parametrize("harness", _HARNESS_IDS)
 def test_update_facade_deployed_to_adopter_root(harness: str, tmp_path: Path,
                                                 monkeypatch) -> None:
     """pm_import --new <dest> --harness <h> 후 채택자 루트에 pm-update.* 가 복사된다.
 
-    파사드는 templates/<harness>/ 루트 파일 → plan_copy 가 AGENTS.md 처럼 채택자 루트로
-    복사한다. opencode 경로의 라이브 `opencode models` 호출은 _real_models_runner 고정으로 차단.
+    축 = 파생 하네스 정체성(`_HARNESS_IDS`·claude/codex/opencode·T-0453) — 파사드 dir 명 축이
+    아니라 `--harness` **정체성** 축이다(의미 축 안 섞음). 파사드 배포는 하네스-무관(전 하네스가
+    templates/<h>/ 루트 파일 → 채택자 루트로 복사)이라 codex 도 정당 편입 — 손-열거
+    `["claude","opencode"]` 는 codex(ADR-0070) 를 못 따라온 decay 였다. plan_copy 가 AGENTS.md
+    처럼 채택자 루트로 복사한다. opencode 경로의 라이브 `opencode models` 호출은
+    _real_models_runner 고정으로 차단(codex/claude 는 그 seam 미호출·무영향).
     """
     pm_import = _load_pm_import()
     # opencode models CLI 라이브 호출 차단(설치 환경서도 hermetic).

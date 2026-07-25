@@ -101,9 +101,9 @@ def add_identity_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--task", metavar="이름", default=None,
         help="task 이름 — 작업 단위 정체성 축(T-0353·spike §3b F0). 슬롯 축과 직교(단독/`--repo "
-             "--slot` 공존 가능). 포맷 자유(prefix 아님)·유일성=사람 안. `<등록 repo>_<N>` 예약 "
-             "패턴은 거부(⑥·슬롯 세션명 충돌 방지·`is_reserved_task_name`). **현재 소비=pm_bootstrap "
-             "뿐** — 전 도구 해소 체인 확산은 T-0355 예정(그때까지 타 도구는 수용하나 무시).",
+             "--slot` 공존 가능)하며 정체성 해소 체인 전반이 소비한다. 포맷 자유(prefix 아님)·"
+             "유일성=사람 안. `<등록 repo>_<N>` 예약 패턴은 거부(⑥·슬롯 세션명 충돌 방지·"
+             "`is_reserved_task_name`).",
     )
 
 

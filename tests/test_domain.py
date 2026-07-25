@@ -650,33 +650,6 @@ def test_main_list_renders_pages(dm, tmp_path, monkeypatch, capsys):
     assert "2026-06-19" in out
 
 
-# ── covers_to_pathspec (글롭 → git pathspec·보수적 prefix) ───────────────────
-
-
-def test_covers_to_pathspec_double_star_dir(dm):
-    assert dm.covers_to_pathspec("src/analysis/**") == "src/analysis"
-
-
-def test_covers_to_pathspec_single_star_segment(dm):
-    assert dm.covers_to_pathspec("src/*.py") == "src"
-
-
-def test_covers_to_pathspec_literal_no_wildcard(dm):
-    # 와일드카드 없음 = 글롭 전체가 리터럴 pathspec.
-    assert dm.covers_to_pathspec("a/b.py") == "a/b.py"
-
-
-def test_covers_to_pathspec_trailing_slash_stripped(dm):
-    # 첫 와일드카드 전 prefix 의 trailing 슬래시 제거.
-    assert dm.covers_to_pathspec("src/core/*") == "src/core"
-
-
-def test_covers_to_pathspec_empty_prefix_returns_none(dm):
-    # 글롭이 와일드카드로 시작 = 좁힐 prefix 없음 → None(skip).
-    assert dm.covers_to_pathspec("**/x.py") is None
-    assert dm.covers_to_pathspec("*.py") is None
-
-
 # ── page_stale (git 기반·git_runner 주입·fail-soft None) ──────────────────────
 # 주입 git_runner 는 `(argv) -> (rc, out)` — argv 는 `["log","-1","--format=%cI","--",ps…]`.
 
@@ -752,9 +725,10 @@ def test_page_stale_broken_updated_returns_none(dm):
         assert dm.page_stale(page, git_runner=_fixed_git("2026-06-20T00:00:00Z\n")) is None
 
 
-def test_page_stale_all_pathspecs_empty_returns_none(dm):
-    # 모든 covers 글롭이 와일드카드로 시작(빈 pathspec) → None(좁힐 prefix 없음).
-    page = {"path": Path("/d/p.md"), "covers": ["**/x.py", "*.md"],
+def test_page_stale_all_unmappable_covers_returns_none(dm):
+    # 모든 covers 글롭이 미지원 문법(비-경계 `**`) → covers_glob_pathspec None → 매핑 가능
+    # pathspec 0 → fail-soft None(date-축은 unmappable 을 조용히 흡수·간이 신호).
+    page = {"path": Path("/d/p.md"), "covers": ["src/**.py", "a**b"],
             "updated": "2026-06-19"}
     assert dm.page_stale(page, git_runner=_fixed_git("2026-06-20T00:00:00Z\n")) is None
 
@@ -769,7 +743,8 @@ def test_page_stale_runner_raises_returns_none(dm):
 
 
 def test_page_stale_passes_pathspecs_to_git(dm):
-    # covers 의 여러 글롭이 prefix pathspec 으로 변환돼 단일 git log 에 합쳐 전달된다.
+    # covers 의 여러 글롭이 원본-글롭 :(glob) magic pathspec 으로 변환돼 단일 git log 에 합쳐
+    # 전달된다(손실 접두사 아님 — sha-축과 동일 판정 기계 covers_glob_pathspec).
     captured = {}
 
     def runner(argv):
@@ -781,7 +756,38 @@ def test_page_stale_passes_pathspecs_to_git(dm):
     dm.page_stale(page, git_runner=runner)
     argv = captured["argv"]
     assert argv[:4] == ["log", "-1", "--format=%cI", "--"]
-    assert argv[4:] == ["src/analysis", "tools/exact.py"]
+    assert argv[4:] == [":(glob)src/analysis/**", ":(glob)tools/exact.py"]
+
+
+# ── 글롭 fidelity (T-0459 · date-축도 원본-글롭 판정·red-첫) ────────────────────
+# 종전 손실 접두사(covers_to_pathspec)가 date-축에서 (a) 단일 `*` 를 디렉토리로 과확장,
+# (b) 접두사-없는 글롭을 통째 skip(false-green) 하던 것을 sha-축과 동일한 covers_glob_pathspec
+# (`:(glob)` magic)로 통일해 교정한다. 두 테스트 모두 종전 covers_to_pathspec 동작에선 red.
+
+
+def test_page_stale_prefixless_glob_is_judged_not_skipped(dm):
+    # (b) `**/x.py` 접두사-없는 글롭 — 종전 covers_to_pathspec 은 None(통째 skip)이라 pathspec
+    #     0 → page_stale None(조용한 green). 이제 :(glob)**/x.py 로 직접 판정 → 최신 커밋이면
+    #     stale True. (red-첫: 종전 동작에선 None)
+    page = {"path": Path("/d/p.md"), "covers": ["**/x.py"], "updated": "2026-06-19"}
+    assert dm.page_stale(page, git_runner=_fixed_git("2026-06-20T10:00:00+09:00\n")) is True
+
+
+def test_page_stale_single_star_passes_original_glob_not_prefix(dm):
+    # (a) `src/*.py` — 종전엔 접두사 `src` 로 과확장(디렉토리 내 무관 파일 커밋도 stale 오판).
+    #     이제 원본 글롭을 :(glob) 로 넘겨 git 이 세그먼트 매칭하게 한다(무관 src/nested/x.txt 배제).
+    #     넘어간 pathspec 을 포착해 손실 접두사가 아님을 확인. (red-첫: 종전엔 "src")
+    captured = {}
+
+    def runner(argv):
+        captured["argv"] = argv
+        return 0, "2026-06-18T00:00:00Z\n"
+
+    page = {"path": Path("/d/p.md"), "covers": ["src/*.py"], "updated": "2026-06-19"}
+    dm.page_stale(page, git_runner=runner)
+    specs = captured["argv"][4:]
+    assert specs == [":(glob)src/*.py"]                 # 원본 글롭이 magic 으로 전달
+    assert "src" not in specs and "src/" not in specs   # 손실 접두사 아님
 
 
 # ── domain list ⚠ 표시 (stale 마커) ──────────────────────────────────────────

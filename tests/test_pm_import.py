@@ -11,6 +11,7 @@ import importlib.util
 import io
 import os
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,14 @@ def _load_pm_import():
 @pytest.fixture(scope="module")
 def pm_import():
     return _load_pm_import()
+
+
+@pytest.fixture(scope="module")
+def pm_update():
+    spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 @pytest.fixture(autouse=True)
@@ -2877,12 +2886,14 @@ def _plan_relpaths(plan, dest: Path) -> list[str]:
 
 
 def _rel_in_namespace(rel: str, added_harness: str) -> bool:
-    """rel 이 *추가되는 harness* 의 어댑터 네임스페이스 안인가(참조 규칙·구현과 독립)."""
-    adapter_dir, root_doc, render_excl = _ADD_HARNESS_NS[added_harness]
-    in_ns = rel == root_doc or rel.startswith(adapter_dir + "/")
-    if not in_ns:
-        return False
-    return not any(rel.startswith(x) for x in render_excl)
+    """rel 이 *추가되는 harness* 의 어댑터 **구조적** 네임스페이스(adapter dir + root doc) 안인가.
+
+    R17(T-0456): 복사 제외는 flavor-native 가 아니라 **host 실소유** 기준이라(claude-as-guest)
+    `.claude/agents` 도 non-claude host 엔 복사된다 — 네임스페이스 *멤버십*(불변식 대상)은 render_excl
+    차감과 무관하다(구조적 네임스페이스 = adapter dir + root doc). render_excl 은 copy-포함 판정이지
+    멤버십 아님(옛 판정은 둘을 혼동했다)."""
+    adapter_dir, root_doc, _render_excl = _ADD_HARNESS_NS[added_harness]
+    return rel == root_doc or rel == adapter_dir or rel.startswith(adapter_dir + "/")
 
 
 def test_add_harness_exposed(pm_import):
@@ -2968,25 +2979,27 @@ def test_add_harness_live_safe_excludes_wiki_engine_facades(
     assert other_doc not in rels, f"plan 에 타 harness root doc({other_doc}) 포함."
 
 
-def test_add_harness_claude_excludes_render_engine_resources(pm_import, tmp_path):
-    """claude add 는 @render 엔진 리소스(`.claude/agents`·`.claude/skills`)를 제외한다(대칭 정확성).
+def test_add_harness_claude_guest_copies_agents_excludes_host_owned_skills(pm_import, tmp_path):
+    """claude-as-guest on opencode host — **host 실소유 경로만 제외** (T-0456 R17·N×N 역방향 MF).
 
-    ADR-0048 Decision 2·§6 Q3: opencode 는 @render 없어 `.opencode/**` 단순이나, claude add 는
-    `.claude/agents`·`.claude/skills`(엔진 소유·pm_update 소관)를 오적재하면 안 된다. 반면 target-owned
-    어댑터 파일(`.claude/settings.json` 등)과 `CLAUDE.md` 는 포함해야 한다.
+    opencode host 는 `.claude/skills`(ADR-0065 native 소비)를 이미 소유 → 제외한다. 그러나
+    `.claude/agents` 는 opencode host 가 소유하지 않으므로 **복사한다** — 옛 flavor-native 판정은 claude
+    flavor 관점이라 `.claude/agents`·`.claude/skills` 를 전부 native 로 오차감해 claude-as-guest 를
+    놓쳤다(등재 0 → pm_update 영구 관리 불능·MF). `CLAUDE.md`·`.claude/settings.json` 도 포함.
     """
     dest = _build_live_instance(pm_import, tmp_path / "oc_inst", "opencode")
     plan = pm_import.add_harness(dest, "claude", dry_run=True, source_root=REPO)
     rels = _plan_relpaths(plan, dest)
-    # @render 엔진 리소스는 제외.
-    assert not [r for r in rels if r.startswith(".claude/agents/")], \
-        f"claude add plan 에 @render `.claude/agents/**` 오적재: {[r for r in rels if r.startswith('.claude/agents/')]}"
+    # host(opencode)가 소유한 `.claude/skills`(ADR-0065)는 제외.
     assert not [r for r in rels if r.startswith(".claude/skills/")], \
-        f"claude add plan 에 @render `.claude/skills/**` 오적재: {[r for r in rels if r.startswith('.claude/skills/')]}"
+        f"opencode host 소유 `.claude/skills/**` 오적재: {[r for r in rels if r.startswith('.claude/skills/')]}"
+    # host 미소유 `.claude/agents` 는 **복사**(claude-as-guest·MF 수정·옛엔 native 로 오차감).
+    assert [r for r in rels if r.startswith(".claude/agents/")], \
+        "claude-as-guest 의 `.claude/agents/**` 미복사(R17 MF 미해소)"
     # target-owned 어댑터 파일 + root doc 은 포함(스코프가 claude 어댑터를 실제로 잡았다는 sanity).
     assert "CLAUDE.md" in rels
     assert ".claude/settings.json" in rels
-    # 전부 claude 네임스페이스 안(불변식 재확인).
+    # 전부 claude 구조적 네임스페이스 안(불변식 재확인).
     assert all(_rel_in_namespace(r, "claude") for r in rels), rels
 
 
@@ -3019,11 +3032,12 @@ def test_add_harness_apply_opencode_creates_adapter_and_preserves_devstate(pm_im
 
 
 def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_import, tmp_path):
-    """apply(claude→opencode 인스턴스·반대 방향): `.claude/**`(agents 제외)+`CLAUDE.md`
+    """apply(claude→opencode 인스턴스·반대 방향): `.claude/**`(host 미소유분)+`CLAUDE.md`
     신규·기존 opencode 어댑터/wiki/엔진 불변. (DoD "양 harness apply" 문자 충족.)
 
-    ADR-0065(단일 소비) 이후 opencode 인스턴스는 이미 `.claude/skills`(canonical 스킬)를 갖는다 —
-    claude add-harness 는 그 공유 스킬을 재적재/변경하지 않는다(byte-불변 preserve 로 확인).
+    R17(T-0456·N×N 역방향): opencode host 가 소유하지 않는 `.claude/agents` 는 **복사된다**(claude-as-
+    guest·옛 flavor-native 오차감 수정). 단 ADR-0065 로 opencode 가 이미 소유한 `.claude/skills` 는
+    claude add-harness 가 재적재/변경하지 않는다(host 실소유 차감·byte-불변 preserve 로 확인).
     """
     dest = _build_live_instance(pm_import, tmp_path / "opencode_apply", "opencode")
     # 라이브 dev-state·엔진·타(기존) harness 파일의 apply 전 바이트 스냅샷.
@@ -3046,10 +3060,10 @@ def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_impo
     # claude 어댑터 파일이 실제로 생성됐다(root doc + target-owned 어댑터 파일).
     assert (dest / "CLAUDE.md").is_file()
     assert (dest / ".claude" / "settings.json").is_file()
-    # @render 엔진 리소스 `.claude/agents` 는 add-harness 가 깔지 않는다(pm_update 소관). `.claude/skills`
-    #   는 opencode 단일 소비로 이미 존재하되 add-harness 가 재적재/변경하지 않는다(아래 byte-불변 loop).
-    assert not (dest / ".claude" / "agents").exists(), \
-        "claude add-harness 가 @render 엔진 리소스 .claude/agents 를 오적재."
+    # claude-as-guest: opencode host 미소유 `.claude/agents` 는 **복사된다**(R17·옛엔 native 로 오차감).
+    #   `.claude/skills` 는 opencode 소유(ADR-0065)라 add-harness 가 재적재/변경하지 않는다(아래 byte-불변).
+    assert (dest / ".claude" / "agents").is_dir() and any((dest / ".claude" / "agents").glob("*.md")), \
+        "claude-as-guest 의 `.claude/agents` 미복사(R17 MF 미해소·pm_update 영구 관리 불능)."
     # operational 토큰이 치환됐다(claude 어댑터 산출물에 raw 토큰 잔존 0).
     assert _grep_token_files(dest / ".claude", "{{PROJECT_NAME}}", exclude_engine_docs=True) == [], \
         "apply 후 .claude 에 {{PROJECT_NAME}} 미치환 잔존."
@@ -3065,6 +3079,37 @@ def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_impo
 
 # 전 하네스쌍(base ≠ added) — 파생 축 HARNESSES 에서 유도(손-열거 아님·codex 포함 6쌍).
 _ADD_HARNESS_APPLY_PAIRS = [(b, a) for b in HARNESSES for a in HARNESSES if b != a]
+
+
+@pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)
+def test_add_harness_guest_registration_within_namespace_or_flavor_render(
+        pm_import, pm_update, tmp_path, base, added):
+    """**등재 ⊆ namespace ∪ (flavor-선언 cross-ns 중 host-미소유)** 불변식 (T-0456 R25·전 N×(N−1) 순서쌍).
+
+    **R18 지시가 R25 에서 기능 요건으로 반전**: R18 은 "flavor 가 무관 공유 경로도 `@render` 로 들 수
+    있으니 등재를 복사 namespace 로 막자"였으나(옛 이름 `..._subset_of_added_namespace`), opencode 의
+    `.claude/skills @render`(ADR-0065 네이티브 소비)는 `.opencode` namespace 밖이면서도 opencode 어댑터가
+    반드시 소비하는 **cross-ns 의존물**이라 codex host(미소유)엔 복사·등재해야 한다(namespace cap 이 이걸
+    놓쳐 PM 스킬 파손 = R25 MF). 새 경계 = **flavor `@render` 선언 자체** — 등재 경로는 (a) 추가 하네스
+    namespace 안이거나 (b) `added` flavor 가 `@render` 로 선언한 경로다(그 밖 = flavor 미선언 유입 0).
+    host 실소유 차감(R17)은 그 위에 얹혀 더 좁힐 뿐(claude host + opencode 는 `.claude/skills` host-소유라
+    미등재 — codex↔claude host 대조는 `test_add_harness_opencode_guest_cross_ns_skills_by_host`)."""
+    dest = _build_live_instance(pm_import, tmp_path / f"{base}_add_{added}", base)
+    pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
+    reg = _guest_block_paths(pm_update, dest / ".project_manager" / "engine.manifest")
+    adapter_dirs = HARNESS_ADAPTER_DIRS[added]
+    flavor_render = pm_import._flavor_render_relpaths(
+        REPO / "templates" / pm_import.HARNESS_TEMPLATE_DIRS[added][0])
+
+    def _in_scope(r: str) -> bool:
+        return (any(r == d or r.startswith(d + "/") for d in adapter_dirs)
+                or any(r == fr or r.startswith(fr + "/") for fr in flavor_render))
+    outside = sorted(r for r in reg if not _in_scope(r))
+    assert outside == [], (
+        f"{base}->{added}: guest 등재가 namespace ∪ flavor-@render 밖(flavor 미선언 유입): {outside}")
+    # 등재는 모두 flavor `@render` 선언 = 복사 스코프의 부분집합(등재⊆복사 재확인·비-@render 유입 0).
+    assert reg <= flavor_render, \
+        f"{base}->{added}: 등재에 flavor 미선언 경로 포함(등재⊄flavor @render): {sorted(reg - flavor_render)}"
 
 
 @pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)
@@ -3139,6 +3184,496 @@ def test_add_harness_apply_refresh_backs_up_and_stays_scoped(pm_import, tmp_path
         "refresh 백업에 로컬 커스터마이즈 내용이 보존되지 않았다."
     # 스코프 밖 wiki 는 여전히 불변.
     assert wiki_role.read_bytes() == role_before, "refresh 가 wiki dev-state 를 건드렸다."
+
+
+# ── guest @render 인스턴스 manifest 등재 (T-0456·:2726 no-op 해소) ──────────────
+
+def test_add_harness_registers_guest_render_in_dest_manifest(pm_import, tmp_path):
+    """add_harness(opencode→claude host) 가 guest `@render` 를 dest engine.manifest 에 **멱등 등재**
+    (T-0456·pm_import:2726 no-op 해소). 등재로 render_managed_files·manifest-파생 overlay 스캔([[T-0431]])
+    이 guest 를 커버한다. before=미등재 → after=등재 · 재실행 중복 0."""
+    dest = _build_live_instance(pm_import, tmp_path / "guest_reg", "claude")
+    manifest = dest / ".project_manager" / "engine.manifest"
+    assert ".opencode/agents" not in manifest.read_text(encoding="utf-8")  # before: guest 미등재
+
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    managed = pm_import._render_managed_relpaths(dest)
+    assert ".opencode/agents" in managed, "guest @render 미등재(render_managed 미포함)"
+    assert ".opencode/pm-instructions.md" in managed
+    # guest 는 host 인스턴스 소유 → @target-owned (pm_update 재렌더 skip·T-0456 MF-2).
+    assert ".opencode/agents    @render @target-owned" in manifest.read_text(encoding="utf-8")
+    # 멱등: 재실행(refresh)이 중복 등재 안 함(guest 라인·마커 절 각 1).
+    begin = pm_import._load_pm_update()._GUEST_MANIFEST_BEGIN
+    text1 = manifest.read_text(encoding="utf-8")
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    text2 = manifest.read_text(encoding="utf-8")
+    assert text2.count(".opencode/agents    @render") == 1, "guest @render 라인 중복(멱등 위반)"
+    assert text1.count(begin) == text2.count(begin) == 1, "guest 절(마커) 중복"
+
+
+def test_add_harness_codex_registers_dual_namespace_guest_render(pm_import, tmp_path):
+    """codex dual-namespace guest(`.codex/agents`·`.agents/skills`·ADR-0070) 둘 다 dest manifest 에
+    `@render` 등재 (T-0456). **native 엔진 `.claude/skills`(host 소유)는 새로 등재하지 않는다** —
+    before/after @render 델타로 native 경계를 조인다(reviewer suggestion·guest 파생이 host 를 삼키면 red)."""
+    dest = _build_live_instance(pm_import, tmp_path / "codex_reg", "claude")
+    before = pm_import._render_managed_relpaths(dest)
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    after = pm_import._render_managed_relpaths(dest)
+    assert ".codex/agents" in after and ".agents/skills" in after, sorted(after)
+    # native `.claude/skills`(host @render)는 add-harness 델타에 **새로** 들어오지 않는다(host 소유).
+    delta = after - before
+    assert ".claude/skills" not in delta, f"codex 등재가 native .claude/skills 를 새로 추가: {sorted(delta)}"
+    assert all(d.startswith(".codex/") or d.startswith(".agents/") for d in delta), \
+        f"codex guest 델타가 codex 네임스페이스 밖을 포함: {sorted(delta)}"
+
+
+@pytest.mark.parametrize("host,expect_registered", [("codex", True), ("claude", False)])
+def test_add_harness_opencode_guest_cross_ns_skills_by_host(
+        pm_import, pm_update, tmp_path, host, expect_registered):
+    """opencode-as-guest 의 **cross-ns `.claude/skills`**(ADR-0065 네이티브 소비·`.opencode` 밖) 처리는
+    host 실소유에 달렸다 (T-0456 R25 MF — codex R18 지시가 기능 요건으로 반전·red-첫).
+
+    opencode flavor 는 `.claude/skills @render` 를 선언하지만 이는 `.opencode` namespace 밖이다. 옛
+    namespace cap(R18)은 이 cross-ns 의존물을 복사·등재에서 빼, **codex host**(`.claude/skills` 미소유·
+    `.agents/skills` 로 remap)에 opencode 를 추가하면 PM 스킬 채널이 통째로 파손됐다(기능 회귀). 수정
+    전엔 codex host 에서 `.claude/skills/**` 미복사(SKILL.md 0)·guest 미등재였다.
+      - codex host: `.claude/skills/**` 복사(SKILL.md 실재)·guest 절 등재·render_managed·토큰 치환·멱등.
+      - claude host(대조군): `.claude/skills` host 소유(claude core `@render`)라 guest 미등재 —
+        namespace cap 제거가 host-소유 경로까지 삼키지 않음을 못박는다(R17 차감 유지)."""
+    dest = _build_live_instance(pm_import, tmp_path / f"{host}_add_oc", host)
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    mani = dest / ".project_manager" / "engine.manifest"
+    block = _guest_block_paths(pm_update, mani)
+    assert (".claude/skills" in block) is expect_registered, (
+        f"host={host}: `.claude/skills` guest 등재={'.claude/skills' in block} (기대 {expect_registered})")
+    if not expect_registered:
+        return  # claude host 대조군 — host 소유 차감 유지(등재 X)면 충분.
+    # codex host — cross-ns 스킬이 실제로 복사·렌더·관리되는지 전수 확인.
+    skills_dir = dest / ".claude" / "skills"
+    skill_files = list(skills_dir.rglob("SKILL.md"))
+    assert skill_files, "codex host: cross-ns `.claude/skills/**` 미복사(SKILL.md 0·R25 MF 미해소)"
+    assert ".claude/skills" in pm_import._render_managed_relpaths(dest), \
+        "codex host: cross-ns `.claude/skills` render_managed 미커버(등재 실패)"
+    leaked = _grep_token_files(skills_dir, "{{PROJECT_NAME}}")
+    assert leaked == [], f"codex host: cross-ns 스킬 미렌더 토큰 잔존(복사만·렌더 누락): {leaked}"
+    # guest = host 소유(add-harness 레이다운)라 @target-owned(pm_update 재렌더/재전파 skip).
+    assert ".claude/skills    @render @target-owned" in mani.read_text(encoding="utf-8")
+    # 멱등: refresh 재실행이 manifest 를 안 바꾼다(cross-ns 항목이 매번 changed 로 churn 안 함·_this_ns R25).
+    before = mani.read_text(encoding="utf-8")
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    assert mani.read_text(encoding="utf-8") == before, \
+        "codex host: cross-ns 등재 멱등 위반(refresh 마다 manifest churn·_this_ns cross-ns 누락)"
+
+
+def test_add_harness_two_guests_share_single_header(pm_import, tmp_path):
+    """같은 host 에 guest 2종 순차 add(opencode→codex)면 **단일 guest 절**(마커 하나) 아래 두 하네스
+    라인이 모인다 (reviewer suggestion·durable 박제·T-0456 MF-1 병합)."""
+    dest = _build_live_instance(pm_import, tmp_path / "two_guest", "claude")
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    manifest = dest / ".project_manager" / "engine.manifest"
+    pu = pm_import._load_pm_update()
+    text = manifest.read_text(encoding="utf-8")
+    assert text.count(pu._GUEST_MANIFEST_BEGIN) == 1, "guest 절이 하나가 아님(단일 헤더 위반)"
+    block = pu._extract_guest_manifest_block(text)
+    block_paths = {ln.split()[0] for ln in block.splitlines()
+                   if ln.strip() and not ln.strip().startswith("#")}
+    assert {".opencode/agents", ".codex/agents", ".agents/skills"} <= block_paths, block_paths
+
+
+def test_add_harness_dry_run_preview_subtracts_existing(pm_import, tmp_path, capsys):
+    """add-harness `--dry-run` preview 가 **dest 기존 등록분을 차감**해 실제 병합과 같은 diff 를 보인다
+    (T-0456 R14 suggestion·`_guest_render_to_add` 공유). fresh=신규 등재분 표시, 이미 등재=0건(무표시)."""
+    dest = _build_live_instance(pm_import, tmp_path / "preview", "claude")
+    pm_import.add_harness(dest, "codex", dry_run=True, source_root=REPO)  # fresh dry-run
+    fresh = capsys.readouterr().out
+    assert "guest @render 등재 예정" in fresh and ".codex/agents" in fresh, fresh
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)  # 실제 등재
+    capsys.readouterr()
+    pm_import.add_harness(dest, "codex", dry_run=True, source_root=REPO)  # refresh dry-run
+    refresh = capsys.readouterr().out
+    assert "등재 예정" not in refresh, f"기등록분 차감 안 됨(preview churn): {refresh}"
+
+
+def test_add_harness_subtracts_core_owned_ancestor_paths(pm_import, pm_update, tmp_path):
+    """add-측 대칭(T-0456 R16): core 가 이미 **상위** 경로(`.opencode` 네임스페이스)를 `@render` 로
+    소유하면 add-harness 가 `.opencode/agents` 를 guest 등재하지 않는다(경로-포함 차감) — 안 그러면 더
+    구체적인 guest `@target-owned` 가 core 를 가려 업데이트 중단(red-첫). R15 재부착 차감과 같은
+    `_path_owned_by` 헬퍼 공유. 옛 정확-일치 차감은 상위 소유를 못 봐 guest 를 등재했다."""
+    dest = _build_live_instance(pm_import, tmp_path / "core_owns", "claude")
+    manifest = dest / ".project_manager" / "engine.manifest"
+    # core 가 상위 `.opencode`(네임스페이스 전체)를 이미 @render 로 소유(선승격 시뮬).
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").rstrip()
+        + "\n.opencode    @render @source=templates/opencode/.opencode\n", encoding="utf-8")
+    # 유닛: guest 등재 차감 — `.opencode/*` 는 전부 core(`.opencode`) 소유라 added 0(정확-일치였으면 미차감).
+    guest = [".opencode/agents    @render @target-owned",
+             ".opencode/pm-instructions.md    @render @target-owned"]
+    sync = pm_import._guest_render_sync_plan(dest, guest, (".opencode",))
+    assert sync["added"] == [] and sync["removed"] == [], f"core 상위 소유 경로 차감 안 됨(R16): {sync}"
+    # 롤아웃: add_harness → `.opencode` guest 미등재 + 이중 등재 0(core owner 보존).
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    block = pm_update._extract_guest_manifest_block(manifest.read_text(encoding="utf-8"))
+    block_paths = {ln.split()[0] for ln in (block.splitlines() if block else [])
+                   if ln.strip() and not ln.strip().startswith("#")}
+    assert not any(p.startswith(".opencode") for p in block_paths), \
+        f"core 가 `.opencode` 소유인데 guest `.opencode/*` 등재됨(shadow·이중 등재): {block_paths}"
+    ents = [str(e) for e in pm_update.read_manifest(manifest)]
+    assert ents.count(".opencode/agents") <= 1, "add-harness 가 `.opencode/agents` 이중 등재"
+
+
+def _guest_block_paths(pm_update, manifest_path) -> set:
+    block = pm_update._extract_guest_manifest_block(manifest_path.read_text(encoding="utf-8"))
+    return {ln.split()[0] for ln in (block.splitlines() if block else [])
+            if ln.strip() and not ln.strip().startswith("#")}
+
+
+def test_add_harness_claude_as_guest_registered_on_nonclaude_hosts(pm_import, pm_update, tmp_path):
+    """N×N 역방향(T-0456 R17 MF): claude-as-guest 가 non-claude host 에 dest manifest 등재된다.
+
+    옛 flavor-native 차감은 claude 의 bare `@render` `.claude/*` 를 전부 native 로 봐 등재 0 이었다
+    (pm_update 영구 관리 불능). **대조군**: opencode host 는 `.claude/skills`(ADR-0065 native 소비)를
+    이미 소유 → guest 등재 안 함(정확히 그것만)·`.claude/agents` 만 등재. codex host 는 `.agents/skills`
+    를 소유(`.claude/skills` 미소유) → `.claude/agents`·`.claude/skills` 둘 다 guest 등재."""
+    # opencode host — .claude/agents 등재 O · .claude/skills 등재 X(host 소유).
+    oc = _build_live_instance(pm_import, tmp_path / "oc", "opencode")
+    pm_import.add_harness(oc, "claude", dry_run=False, source_root=REPO)
+    oc_mani = oc / ".project_manager" / "engine.manifest"
+    oc_render = {str(e) for e in pm_update.read_manifest(oc_mani) if getattr(e, "render", False)}
+    assert ".claude/agents" in oc_render, "opencode host 에 claude-as-guest `.claude/agents` 미등재(R17 MF)"
+    oc_block = _guest_block_paths(pm_update, oc_mani)
+    assert ".claude/agents" in oc_block, oc_block
+    assert ".claude/skills" not in oc_block, f"host 소유 `.claude/skills` 를 guest 로 오등재: {oc_block}"
+    # .claude/agents 이중 등재 0 (guest 만·core 미소유).
+    assert [str(e) for e in pm_update.read_manifest(oc_mani)].count(".claude/agents") == 1
+
+    # codex host — .claude/skills 미소유(.agents/skills 소유) → .claude/skills 도 guest 등재.
+    cx = _build_live_instance(pm_import, tmp_path / "cx", "codex")
+    pm_import.add_harness(cx, "claude", dry_run=False, source_root=REPO)
+    cx_block = _guest_block_paths(pm_update, cx / ".project_manager" / "engine.manifest")
+    assert {".claude/agents", ".claude/skills"} <= cx_block, \
+        f"codex host(.claude/skills 미소유)에 claude guest 미등재: {cx_block}"
+
+
+def test_add_harness_claude_guest_survives_pm_update_roundtrip(pm_import, pm_update, tmp_path, monkeypatch):
+    """claude-as-guest 가 opencode host self-update 라운드트립을 잔존(절 보존)·무churn·@render 유지
+    (T-0456 R17 + R14/R15 대칭)."""
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    oc = _build_live_instance(pm_import, tmp_path / "oc_rt", "opencode")
+    pm_import.add_harness(oc, "claude", dry_run=False, source_root=REPO)
+    mani = oc / ".project_manager" / "engine.manifest"
+    assert ".claude/agents" in _guest_block_paths(pm_update, mani)
+
+    monkeypatch.setattr(pm_update, "REPO", oc)
+    assert pm_update.main(["--from", str(REPO)]) == 0, "opencode host self-update rc≠0"
+    # 절 잔존 + @render 유지(render/scan 커버).
+    assert ".claude/agents" in _guest_block_paths(pm_update, mani), "pm_update 가 claude guest 절 제거(R17 미해소)"
+    assert ".claude/agents" in {str(e) for e in pm_update.read_manifest(mani) if getattr(e, "render", False)}
+    # 2차 sync 무churn — engine.manifest 가 plan changes 에 없음.
+    manifest = pm_update.read_manifest(pm_update.resolve_manifest_for_dest(oc, REPO))
+    sh = pm_update.resolve_manifest_selfheal(oc, REPO)
+    if sh["manifest"] is not None:
+        manifest = sh["manifest"]
+    changes, _m = pm_update.plan(REPO, manifest, dest_root=oc)
+    assert not any(str(r).replace("\\", "/") == ".project_manager/engine.manifest"
+                   for r, _s, _d, _k in changes), "claude guest 절로 engine.manifest 영구 churn"
+
+
+def test_guest_render_manifest_lines_emits_all_flavor_render(pm_import, tmp_path):
+    """`_guest_render_manifest_lines` 는 flavor manifest 의 `@render` **선언 전부**를 후보로 방출한다
+    (T-0456 R25·옛 namespace cap R18 **제거**).
+
+    **R18 지시가 R25 에서 기능 요건으로 반전**: R18(R19)은 등재 후보를 복사 namespace 로 제한해
+    cross-ns 경로(`.other @render`)를 뺐으나, opencode 의 `.claude/skills @render`(ADR-0065·`.opencode`
+    밖 네이티브 소비)가 그 cap 에 걸려 codex host 에서 PM 스킬이 파손됨을 R25 가 포착했다 — **flavor
+    `@render` 선언 자체가 경계**다(flavor 는 자기 footprint 만 선언). 이제 namespace-레벨(`.fourth`)·
+    하위(`.fourth/agents`)·cross-ns(`.other`) `@render` 를 **모두** 후보로 내고(host 실소유 차감은
+    downstream `_guest_render_sync_plan`), 비-@render(bare copy)는 제외한다. 시그니처도 단순화 —
+    adapter_dirs 인자 제거(경계가 namespace 가 아니라 flavor 선언). 가짜 4번째 하네스 fixture(T-0429)."""
+    tmpl = tmp_path / "templates" / "fourth"
+    mani = tmpl / ".project_manager" / "engine.manifest"
+    mani.parent.mkdir(parents=True)
+    # namespace-레벨 @render + 하위 @render + cross-ns @render + 비-@render(bare copy).
+    mani.write_text(
+        ".fourth    @render\n"
+        ".fourth/agents    @render\n"
+        ".other    @render\n"
+        ".fourth/plain.txt\n",
+        encoding="utf-8")
+    lines = pm_import._guest_render_manifest_lines(tmpl)
+    paths = {ln.split()[0] for ln in lines}
+    # 모든 @render 선언이 후보 — namespace-레벨·하위·cross-ns 전부(cap 제거). 비-@render 는 제외.
+    assert paths == {".fourth", ".fourth/agents", ".other"}, paths
+    # cross-ns(`.other`)도 방출(R25 — 옛 namespace cap 이면 빠졌다·이게 `.claude/skills` 파손 클래스).
+    assert ".other    @render @target-owned" in lines
+    # 각 후보는 `@render @target-owned` 마커(guest=host 소유·pm_update 재렌더 skip).
+    assert all(ln.endswith("@render @target-owned") for ln in lines), lines
+
+
+def test_add_harness_refresh_syncs_removes_stale_guest(
+        pm_import, pm_update, tmp_path, monkeypatch, capsys):
+    """refresh 가 upstream flavor 에서 **폐기된 guest 라인을 제거**한다 (T-0456 R20 MF·add-only→sync).
+
+    옛 refresh 는 추가만 해서, upstream 에서 삭제/`@render` 해제된 경로가 pm_update 보존으로 영구
+    render/lint 관리로 남았다. red-첫: guest 절에 폐기 라인(현행 flavor 없음) 심고 refresh → 제거·현행
+    잔존·**타 하네스 절 불변**·dry-run preview '제거 예정' 표시·roundtrip(pm_update) 정상."""
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    dest = _build_live_instance(pm_import, tmp_path / "refresh_sync", "claude")
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)  # 타 하네스 guest.
+    mani = dest / ".project_manager" / "engine.manifest"
+    # 폐기 라인 주입 (opencode namespace·현행 flavor 에 없음).
+    end = pm_update._GUEST_MANIFEST_END
+    stale = ".opencode/obsolete    @render @target-owned"
+    mani.write_text(mani.read_text(encoding="utf-8").replace(end, stale + "\n" + end),
+                    encoding="utf-8")
+    assert ".opencode/obsolete" in _guest_block_paths(pm_update, mani)  # 사전조건.
+    capsys.readouterr()
+
+    # dry-run preview 에 '제거 예정' 표시.
+    pm_import.add_harness(dest, "opencode", dry_run=True, source_root=REPO)
+    out = capsys.readouterr().out
+    assert "제거 예정" in out and ".opencode/obsolete" in out, out
+
+    # refresh opencode → stale 제거·현행 잔존·codex 불변.
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    after = _guest_block_paths(pm_update, mani)
+    assert ".opencode/obsolete" not in after, f"폐기 guest 미제거(add-only 잔재·R20): {sorted(after)}"
+    assert ".opencode/agents" in after, "현행 opencode guest 유실"
+    assert {".codex/agents", ".agents/skills"} <= after, f"타 하네스 codex guest 변경(sync 오염): {sorted(after)}"
+
+    # roundtrip: pm_update 후 절 잔존·stale 재출현 없음.
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    assert pm_update.main(["--from", str(REPO)]) == 0
+    assert ".opencode/obsolete" not in _guest_block_paths(pm_update, mani)
+    assert pm_update._extract_guest_manifest_block(mani.read_text(encoding="utf-8")) is not None
+
+
+def test_add_harness_refresh_corrects_stale_marker(pm_import, pm_update, tmp_path, monkeypatch):
+    """refresh 가 같은 경로의 **마커 교정**을 감지·적용한다 (T-0456 R21 MF).
+
+    경로 집합만 비교하면 `.opencode/agents @render` → 목표 `@render @target-owned` 교정이 added=[]·
+    removed=[]·changed=False 로 스킵돼 pm_update 가 non-target-owned 누락으로 rc=2 실패할 수 있다.
+    red-첫: 구 마커(@target-owned 제거) 심고 refresh → 목표 마커로 교체·changed 감지·pm_update rc0."""
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    dest = _build_live_instance(pm_import, tmp_path / "marker_fix", "claude")
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    mani = dest / ".project_manager" / "engine.manifest"
+    # 마커 손상: `.opencode/agents` 에서 @target-owned 제거(구 마커·경로 동일).
+    mani.write_text(mani.read_text(encoding="utf-8").replace(
+        ".opencode/agents    @render @target-owned", ".opencode/agents    @render"),
+        encoding="utf-8")
+    gl = pm_import._guest_render_manifest_lines(REPO / "templates" / "opencode")
+    plan = pm_import._guest_render_sync_plan(dest, gl, (".opencode",))
+    assert plan["changed"] and not plan["added"] and not plan["removed"], \
+        f"마커 교정 미감지(경로 집합만 비교·R21): {plan}"
+
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)  # refresh → 교정.
+    block = pm_update._extract_guest_manifest_block(mani.read_text(encoding="utf-8"))
+    ags = [ln.strip() for ln in block.splitlines()
+           if ln.strip() and not ln.strip().startswith("#") and ln.split()[0] == ".opencode/agents"]
+    assert ags and all("@target-owned" in ln for ln in ags), f"마커 미교정: {ags}"
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    assert pm_update.main(["--from", str(REPO)]) == 0, \
+        "마커 교정 후 pm_update rc≠0(non-target-owned 누락?)"
+
+
+def test_add_harness_guest_registration_warns_when_no_manifest(pm_import, tmp_path, capsys):
+    """manifest 부재 dest 에서 guest 등재 생략 시 **명시 경고**(복사됐으나 render/lint 관리 밖·R21
+    suggestion) — 조용한 생략 금지."""
+    d = tmp_path / "nomani"
+    (d / ".opencode" / "agents").mkdir(parents=True)
+    res = pm_import._append_guest_render_to_manifest(
+        d, [".opencode/agents    @render @target-owned"], (".opencode",))
+    assert res == {"added": [], "removed": []}
+    assert "render/lint 관리 밖" in capsys.readouterr().err
+
+
+def test_pm_update_preserves_claude_guest_local_edit(
+        pm_import, pm_update, tmp_path, monkeypatch):
+    """claude-as-guest 의 채택자 로컬 수정이 self-update 후 **보존**된다 (T-0456 R22 MF-1).
+
+    `@target-owned` skip 은 *source-부재* 때만이라, 프레임워크 root 에 source 실재하는 claude-guest
+    (`.claude/agents`)는 옛 self-update plan 이 그냥 갱신해 로컬 수정을 덮었다. guest 절 항목을 plan 에서
+    제외해 닫는다(update 불가침·refresh 가 유일 guest 채널). red-첫: 로컬 수정 → self-update → 보존."""
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    dest = _build_live_instance(pm_import, tmp_path / "guest_edit", "opencode")
+    pm_import.add_harness(dest, "claude", dry_run=False, source_root=REPO)
+    agent = dest / ".claude" / "agents" / "developer.md"
+    assert agent.is_file(), "claude-as-guest `.claude/agents/developer.md` 미복사"
+    agent.write_text("LOCAL ADOPTER GUEST EDIT\n", encoding="utf-8")  # 채택자 로컬 수정.
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    assert pm_update.main(["--from", str(REPO)]) == 0
+    assert agent.read_text(encoding="utf-8") == "LOCAL ADOPTER GUEST EDIT\n", \
+        "self-update 가 claude guest 로컬 수정을 덮음(R22 MF-1 미해소·update 불가침 위반)"
+
+
+def test_add_harness_renders_preexisting_token_form_guest_file(pm_import, tmp_path):
+    """add_harness 가 **사전 배치된 token-form guest 파일**(copy plan 에서 byte-identical 로 skip)도
+    렌더한다 (T-0456 R22 MF-3). 미포함이면 미치환(토큰 잔존)으로 남았다."""
+    dest = _build_live_instance(pm_import, tmp_path / "preexist", "claude")
+    # template source 와 byte-identical 한 token-form 파일 사전 배치 → copy plan 이 skip.
+    src = REPO / "templates" / "opencode" / ".opencode" / "agents" / "architect.md"
+    pre = dest / ".opencode" / "agents" / "architect.md"
+    pre.parent.mkdir(parents=True)
+    shutil.copy2(src, pre)
+    assert "{{PROJECT_NAME}}" in pre.read_text(encoding="utf-8")  # token-form 사전조건.
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    assert "{{PROJECT_NAME}}" not in pre.read_text(encoding="utf-8"), \
+        "사전 배치 guest 파일 미렌더(토큰 잔존·R22 MF-3)"
+
+
+def test_add_harness_render_scope_excludes_other_guest_adopter_files(pm_import, tmp_path):
+    """add-harness 렌더 범위가 **이번 하네스 byte-identical 미복사 파일**로 한정 (T-0456 R23 MF-2).
+
+    R22 의 `_existing_files_under(현재 guest 절 전체)`는 타 하네스 guest·adopter 커스텀 파일(내용 상이·
+    copied)까지 무백업 치환·렌더 대상으로 삼았다. red-첫: 타 하네스(codex) guest 를 adopter 가 커스텀한 뒤
+    opencode add → 그 커스텀 파일이 **불변**(과확장 봉쇄)."""
+    dest = _build_live_instance(pm_import, tmp_path / "noover", "claude")
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)  # codex guest 먼저.
+    cust = dest / ".codex" / "agents" / "developer.toml"
+    cust.write_text("ADOPTER CUSTOM has {{PROJECT_NAME}} token\n", encoding="utf-8")  # 내용 상이.
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)  # opencode add.
+    assert cust.read_text(encoding="utf-8") == "ADOPTER CUSTOM has {{PROJECT_NAME}} token\n", \
+        "opencode add 가 타 하네스(codex) adopter 커스텀 파일을 과확장 치환(R23 MF-2 미해소)"
+
+
+def test_byte_identical_skipped_rejects_unsafe_paths(pm_import, tmp_path):
+    """`_is_safe_dest_path` 가 `..` 탈출·symlink(조상 포함) 경로를 거부한다 (T-0456 R23 MF-3·repo 밖
+    순회/치환 방지). `_byte_identical_skipped` 는 그 위에서 조작 경로를 skip 한다."""
+    dest = tmp_path / "inst"
+    dest.mkdir()
+    assert pm_import._is_safe_dest_path(dest, Path(".opencode/agents/x.md"))
+    assert not pm_import._is_safe_dest_path(dest, Path("../etc/passwd"))
+    # symlink 조상 → 거부(링크 follow 로 repo 밖 쓰기 방지).
+    (dest / ".opencode").symlink_to(tmp_path / "outside")
+    assert not pm_import._is_safe_dest_path(dest, Path(".opencode/agents/x.md"))
+
+
+def test_add_harness_rejects_symlink_manifest_before_copy(pm_import, tmp_path):
+    """add-harness 가 engine.manifest 가 **repo-밖 지향 symlink** 면 **복사 시작 전 거부**한다
+    (T-0456 R24). symlink 를 따라 write 하면 repo 밖 파일을 덮으므로 fail-loud·부분 적용 0·외부 파일 불변.
+
+    red-첫: manifest 를 외부 파일 지향 symlink 로 바꾼 fixture → add-harness RuntimeError·`.opencode` 미생성
+    ·외부 파일 무변."""
+    dest = _build_live_instance(pm_import, tmp_path / "symmani", "claude")
+    ext = tmp_path / "OUTSIDE_SECRET.txt"
+    ext.write_text("ORIGINAL EXTERNAL\n", encoding="utf-8")
+    mani = dest / ".project_manager" / "engine.manifest"
+    mani.unlink()
+    mani.symlink_to(ext)  # manifest → repo-밖 파일.
+    with pytest.raises(RuntimeError, match="안전"):
+        pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    assert ext.read_text(encoding="utf-8") == "ORIGINAL EXTERNAL\n", "외부 파일이 덮여짐(R24 미해소)"
+    assert not (dest / ".opencode").exists(), "복사 시작됨(부분 적용·복사 전 거부 위반)"
+
+
+def test_append_guest_render_rejects_symlink_manifest(pm_import, tmp_path):
+    """`_append_guest_render_to_manifest` 백스톱: symlink manifest 직접 write 거부 (T-0456 R24·TOCTOU/
+    직접 호출). 외부 파일 불변."""
+    dest = tmp_path / "inst"
+    (dest / ".project_manager").mkdir(parents=True)
+    ext = tmp_path / "outside.manifest"
+    ext.write_text("EXTERNAL\n", encoding="utf-8")
+    (dest / ".project_manager" / "engine.manifest").symlink_to(ext)
+    with pytest.raises(RuntimeError, match="안전"):
+        pm_import._append_guest_render_to_manifest(
+            dest, [".opencode/agents    @render @target-owned"], (".opencode",))
+    assert ext.read_text(encoding="utf-8") == "EXTERNAL\n"
+
+
+def test_pm_update_updates_promoted_guest_path_in_single_run(
+        pm_import, pm_update, tmp_path, monkeypatch):
+    """guest 경로가 upstream core 로 승격되면 **1차 pm_update 에서 갱신**된다 (T-0456 R23 MF-1).
+
+    R22 guest 필터가 승격분까지 plan 에서 제거해 첫 실행이 안 갱신(2회 필요)하던 것을, **upstream core
+    실재분은 필터 밖**으로 빼 닫는다. red-첫: 승격 + 소스 sentinel 변경 → 1차 self-update 에서 dest 도달."""
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    fw = tmp_path / "fw"
+    fw.mkdir()
+    for sub in (".project_manager", "templates", ".claude"):
+        shutil.copytree(REPO / sub, fw / sub)
+    shutil.copy2(REPO / ".gitattributes", fw / ".gitattributes")
+    dest = tmp_path / "inst"
+    assert pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "X",
+                           "--from", str(fw)]) == 0
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=fw)  # codex guest 절.
+    # 승격: opencode flavor(upstream) core 에 `.codex/agents` 추가 + 소스 sentinel.
+    fm = fw / "templates" / "opencode" / ".project_manager" / "engine.manifest"
+    fm.write_text(fm.read_text(encoding="utf-8")
+                  + "\n.codex/agents    @render @source=templates/codex/.codex/agents\n",
+                  encoding="utf-8")
+    csrc = fw / "templates" / "codex" / ".codex" / "agents" / "developer.toml"
+    csrc.write_text(csrc.read_text(encoding="utf-8") + "\n# PROMOTED_SENTINEL_T0456\n",
+                    encoding="utf-8")
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    assert pm_update.main(["--from", str(fw)]) == 0
+    assert "PROMOTED_SENTINEL_T0456" in (
+        dest / ".codex" / "agents" / "developer.toml").read_text(encoding="utf-8"), \
+        "승격분이 1차 self-update 에서 미갱신(R23 MF-1·guest 필터 과적용)"
+
+
+def test_add_harness_guest_render_survives_pm_update(pm_import, pm_update, tmp_path, monkeypatch):
+    """MF-1 roundtrip: add_harness → pm_update self-update 후에도 guest 절이 잔존하고 manifest-파생
+    render/scan 이 계속 guest 를 본다 (engine.manifest self-prop overwrite 보존·T-0456). **MF-2**:
+    사용자 model override 도 재렌더 clobber 없이 잔존(@target-owned → pm_update 재렌더 skip)."""
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    dest = _build_live_instance(pm_import, tmp_path / "roundtrip", "claude")
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    manifest = dest / ".project_manager" / "engine.manifest"
+    pu = pm_import._load_pm_update()
+    # 사용자 model override 심기 (codex guest agent·ADD_HARNESS_PRESERVE_EXISTING_TOML_FIELDS 대상).
+    agent = dest / ".codex" / "agents" / "developer.toml"
+    agent.write_text(agent.read_text(encoding="utf-8").rstrip() + '\nmodel = "USER/OVERRIDE"\n',
+                     encoding="utf-8")
+    assert pu._extract_guest_manifest_block(manifest.read_text(encoding="utf-8")) is not None
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    assert pm_update.main(["--from", str(REPO)]) == 0, "self-update rc≠0"
+
+    # MF-1: guest 절 잔존 + @render 여전히 파싱(render/scan 커버 유지).
+    after = manifest.read_text(encoding="utf-8")
+    assert pu._extract_guest_manifest_block(after) is not None, "pm_update 가 guest 절을 지웠다(MF-1 미해소)"
+    render_paths = {str(e) for e in pu.read_manifest(manifest) if getattr(e, "render", False)}
+    assert {".codex/agents", ".agents/skills"} <= render_paths, sorted(render_paths)
+    # MF-2: 사용자 override 잔존(재렌더 clobber 없음).
+    assert "USER/OVERRIDE" in agent.read_text(encoding="utf-8"), \
+        "pm_update 재렌더가 사용자 model override 를 덮었다(MF-2 미해소)"
+
+
+def test_render_managed_files_covers_guest_when_registered(pm_import, tmp_path):
+    """render_managed_files 가 dest manifest 에 등재된 guest `@render` 를 **실제 렌더**한다 (T-0456·
+    :2726 no-op 해소·실측). 미등재면 no-op(0 변경·옛 동작), 등재면 토큰→값 렌더(≥1). add_harness 가
+    이 등재를 하므로 guest 도 렌더된다."""
+    dest = tmp_path / "inst"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / "local.conf").write_text("project_name=X\n", encoding="utf-8")
+    guest = dest / ".opencode" / "agents" / "x.md"
+    guest.parent.mkdir(parents=True)
+    guest.write_text("model: {{PROJECT_NAME}}\n", encoding="utf-8")
+    copied = {Path(".opencode/agents/x.md")}
+    subs = {"{{PROJECT_NAME}}": "Rendered"}
+
+    # red: guest 미등재 manifest → render no-op(0·:2726 옛 동작), 토큰 미치환 잔존.
+    manifest = dest / ".project_manager" / "engine.manifest"
+    manifest.write_text(".claude/agents    @render\n", encoding="utf-8")
+    assert pm_import.render_managed_files(dest, subs, copied) == 0
+    assert "{{PROJECT_NAME}}" in guest.read_text(encoding="utf-8")
+
+    # green: guest @render 등재 → 실제 렌더(변경 ≥1·토큰→값).
+    manifest.write_text(".claude/agents    @render\n.opencode/agents    @render\n", encoding="utf-8")
+    assert pm_import.render_managed_files(dest, subs, copied) >= 1, \
+        "guest 등재 후에도 render_managed_files 가 guest 를 렌더 안 함(no-op 미해소)."
+    rendered = guest.read_text(encoding="utf-8")
+    assert "Rendered" in rendered and "{{PROJECT_NAME}}" not in rendered
 
 
 @pytest.mark.parametrize("rel", (".codex/config.toml", ".codex/hooks.json"))
