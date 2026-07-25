@@ -1,8 +1,12 @@
 """pm_bootstrap 순수 파서 8종 직접 단위테스트 (T-0026).
 
 지금까지 이 파서들은 `_collect_git()`/`_build_markdown()` 경유 *간접* 으로만 닿았다.
-여기서는 8종 전부를 입력 문자열 → 기대 출력으로 **직접** 호출한다 (부작용 0·실 git/도구
-비의존). 각 함수: happy-path + 최소 1 edge(빈 문자열·malformed·한글/로캘).
+여기서는 8종 전부를 입력 문자열 → 기대 출력으로 **직접** 호출한다 (부작용 0). 각 함수:
+happy-path + 최소 1 edge(빈 문자열·malformed·한글/로캘).
+
+예외 하나 — `parse_lint_result` 의 출력-계약 테스트는 **실 `board.py lint` 를 subprocess 로
+실행**한다(읽기 전용·board 미변경). 손으로 쓴 문자열만 쓰면 board 쪽 출력 형식이 바뀌어도
+파서 테스트가 통과해버려, 정작 프로덕션에서 카운트가 어긋나는 클래스를 못 잡는다(T-0465).
 
 도구는 패키지가 아니므로 importlib 동적 로드 — test_pm_bootstrap_tz / _failsoft 의
 `_load_module` 관용구를 그대로 재사용한다.
@@ -10,7 +14,9 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -159,9 +165,13 @@ def test_parse_lint_result_clean():
 
 
 def test_parse_lint_result_warnings():
-    """경고 줄(✓ 로 시작 안 하는 비-빈 줄)을 세어 'N warnings' 반환."""
+    """issue 형식(`[kind]`) 줄만 세어 'N warnings' 반환."""
     mod = _load_module()
-    out = "T-0001: depends_on 누락\nT-0002: thin ticket\nT-0003: wikilink 깨짐\n"
+    out = (
+        "  [missing-depends] T-0001: depends_on 누락\n"
+        "  [thin-ticket] T-0002: thin ticket\n"
+        "  [dangling-wikilink] T-0003: wikilink 깨짐\n"
+    )
     assert mod.parse_lint_result(out) == "3 warnings"
 
 
@@ -187,6 +197,27 @@ def test_parse_lint_result_gate_header_excluded():
     assert mod.parse_lint_result(out) == "3 warnings"
 
 
+def test_parse_lint_result_clean_marker_is_line_anchored():
+    """clean 판정은 줄 단위 양성 매칭 — 앵커 줄의 저장소 경로가 마커 문자열을 포함해도 오판 없음.
+
+    T-0465 가 read 출력 첫 줄에 **임의의 사용자 경로**를 주입하면서, 그 전까지 board 생성
+    텍스트만 보던 substring 검사가 unsound 해졌다(경로에 `no lint issues` 가 섞이면 실 이슈가
+    있어도 clean). codex 게이트 지적.
+    """
+    mod = _load_module()
+    poisoned = (
+        "repo 앵커: /home/user/no lint issues/repo (worktree)\n"
+        "\u26a0\ufe0f  3 lint issue(s):\n"
+        "  [render-leak] a.md: x\n"
+        "  [render-leak] b.md: y\n"
+        "  [render-leak] c.md: z\n"
+    )
+    assert mod.parse_lint_result(poisoned) == "3 warnings"
+    # 진짜 clean 은 앵커 줄이 있든 없든 clean.
+    assert mod.parse_lint_result("repo 앵커: /home/u/repo (PM 홈)\n\u2713 no lint issues\n") == "clean"
+    assert mod.parse_lint_result("\u2713 no lint issues\n") == "clean"
+
+
 def test_parse_lint_result_gate_advisory_only():
     """advisory-only 게이트 출력(차단 0) — 헤더 제외하고 advisory 2 줄만 세어 '2 warnings'."""
     mod = _load_module()
@@ -196,6 +227,41 @@ def test_parse_lint_result_gate_advisory_only():
         "    [status-done-accum] T-0002: status drift\n"
     )
     assert mod.parse_lint_result(out) == "2 warnings"
+
+
+@pytest.mark.parametrize("lint_argv", [["lint"], ["lint", "--gate"]])
+def test_parse_lint_result_matches_actual_board_lint_output(lint_argv):
+    """실제 `board.py lint` 합성 출력의 자체 요약 N과 파서 결과가 일치한다.
+
+    T-0465 앵커 같은 새 표시 줄은 lint issue 형식이 아니므로 세지 않아야 한다.
+    손으로 쓴 문자열만 쓰면 이 출력-계약 drift를 놓치므로 실제 CLI를 실행한다.
+
+    **두 모드 다 돈다** — 프로덕션 호출부(`pm_bootstrap._collect_board`)는 `--gate` 를 쓰는데
+    무-gate 만 실측하면 gate 쪽 issue 줄 형식(`  ✗ [kind]`)이 drift 할 때 *과소* 카운트로
+    조용히 뒤집힌다(무-gate 는 `  [kind]` 로 형식이 다르다).
+    """
+    mod = _load_module()
+    # encoding 명시 필수 — 자식은 UTF-8 을 내보내는데 text=True 만 주면 로캘 코덱으로 디코딩해
+    # CP949 콘솔(Windows)에서 한글 lint 메시지가 UnicodeDecodeError 를 낸다(엔진 관례와 동일).
+    result = subprocess.run(
+        [sys.executable, str(BOARD_PY), *lint_argv], cwd=REPO,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    output = result.stdout + result.stderr  # pm_bootstrap._default_run_board 와 같은 합성 방식
+    summary = re.search(r"⚠️\s+(\d+) lint issue\(s\)", output)
+    # tautology 방지 — summary 도 clean 마커도 없으면 CLI 가 죽었거나 출력 형식이 바뀐 것이다.
+    # 그걸 "clean 기대"로 흘려보내면 이 테스트가 조용히 무의미해진다(codex 게이트 지적).
+    # clean 마커도 줄 단위로 본다 — substring 이면 저장소 경로에 그 문구가 있을 때 CLI 가
+    # 앵커만 찍고 실패해도 이 단언이 통과해 false-green 이 된다(codex 게이트 지적).
+    has_clean_marker = any(
+        re.match(r"^\s*✓\s*no lint issues\s*$", line) for line in output.splitlines()
+    )
+    assert summary is not None or has_clean_marker, (
+        f"board.py {' '.join(lint_argv)} 출력에 요약도 clean 마커도 없다 — "
+        f"rc={result.returncode} 출력={output[:400]!r}"
+    )
+    expected = "clean" if summary is None else f"{summary.group(1)} warnings"
+    assert mod.parse_lint_result(output) == expected
 
 
 # ── parse_pytest_counts ─────────────────────────────────────────────────────

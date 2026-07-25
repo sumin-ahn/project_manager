@@ -677,17 +677,20 @@ def parse_lint_result(lint_output: str) -> str:
     경고가 있으면 해당 줄 수를 "N warnings" 형식으로 반환.
 
     `--gate` 출력은 헤더 `⚠️  N lint issue(s) (M blocking 차단):` 다음에 각 issue
-    줄(`✗`/공백 마크 + `[kind] …`)이 온다. 헤더 줄은 issue 가 아니므로 카운트에서
-    제외한다 — 그러지 않으면 off-by-one 으로 1 더 세어진다(T-0038).
+    줄(`✗`/공백 마크 + `[kind] …`)이 온다. issue 줄만 **양성 매칭**한다. 헤더를
+    제외 목록으로 관리하면 새 표시 헤더가 추가될 때마다 같은 off-by-one이 재발한다
+    (T-0038).
     """
-    if "no lint issues" in lint_output:
+    # clean 마커도 **줄 단위 양성 매칭**이다 — substring 검사면 앵커 줄에 실린 저장소 경로가
+    # 우연히 이 문자열을 포함할 때 실 이슈가 있어도 clean 으로 오판한다(T-0465 가 앵커 줄로
+    # 임의의 사용자 경로를 파싱 대상에 처음 주입했다 — 그 전엔 board 생성 텍스트뿐이라 안전했다).
+    if any(re.match(r"^\s*✓\s*no lint issues\s*$", line) for line in lint_output.splitlines()):
         return "clean"
-    # issue 라인 수를 세어 반환 — 요약 헤더("lint issue(s)" 줄)·clean 마크(✓)는 제외.
+    # issue 라인 수만 양성 매칭한다. 일반 lint는 "  [kind] ...", gate lint는
+    # "  ✗ [kind] ..." 이다. 앵커/요약 등 표시 헤더는 어느 쪽도 아니므로 무영향.
     warning_lines = [
         line for line in lint_output.splitlines()
-        if line.strip()
-        and not line.startswith("✓")
-        and "lint issue(s)" not in line
+        if re.match(r"^(?:\s*✗\s*\[[^\]]+\]|\s+\[[^\]]+\])", line)
     ]
     count = len(warning_lines)
     if count == 0:

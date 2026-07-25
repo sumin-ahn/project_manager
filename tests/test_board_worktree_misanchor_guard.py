@@ -18,6 +18,7 @@ import argparse
 import importlib.util
 import os
 import subprocess
+import sys
 import types
 from pathlib import Path
 
@@ -52,8 +53,11 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
     }
+    # encoding 명시 — text=True 만 주면 로캘 코덱으로 디코딩해 CP949 콘솔(Windows)에서
+    # 비-ASCII 경로/메시지가 UnicodeDecodeError 를 낼 수 있다(엔진 subprocess 관례와 동일).
     return subprocess.run(["git", *args], cwd=str(cwd), env=env,
-                          capture_output=True, text=True, check=True)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", check=True)
 
 
 def _make_real_board(pm_dir: Path, *, split: bool = True) -> Path:
@@ -228,6 +232,70 @@ def test_is_linked_worktree_real_pm_home_false(pm_home_worktree):
     b = _load_board()
     pm_home, _worktree = pm_home_worktree
     assert b._is_linked_worktree(pm_home) is False
+
+
+# ── T-0465 read anchor display ───────────────────────────────────────────
+
+def _read_argv(subcommand: str) -> list[str]:
+    """각 read leaf의 최소 실행 argv. 새 read leaf는 이 표가 아니라 parametrize에 먼저 잡힌다."""
+    argv = subcommand.split()
+    if subcommand == "show":
+        argv.append("T-0100")
+    return argv
+
+
+@pytest.mark.parametrize("subcommand", sorted(_load_board()._READ_SUBCOMMANDS))
+def test_every_read_subcommand_surfaces_real_worktree_anchor(
+        pm_home_worktree, monkeypatch, capsys, subcommand):
+    """REPO가 정하는 실제 등록 worktree 앵커를 모든 read dispatch가 첫 줄에 표시한다.
+
+    cwd를 바꾸지 않는다. 이 검증 축은 cwd가 아니라 dispatch의 `_READ_SUBCOMMANDS` 전수와
+    실제 git worktree 판정이다.
+    """
+    b = _load_board()
+    _pm_home, worktree = pm_home_worktree
+    _isolate_board_module(b, monkeypatch, worktree)
+
+    b.main(_read_argv(subcommand))
+    first_line = capsys.readouterr().out.splitlines()[0]
+    assert first_line == f"repo 앵커: {worktree} (worktree)"
+
+
+def test_read_anchor_labels_only_real_board_owner_as_pm_home(
+        pm_home_worktree, monkeypatch, capsys):
+    """실 board 소유 PM 홈은 PM 홈, 일반 clone처럼 증거 없는 앵커는 비단언으로 표시한다."""
+    b = _load_board()
+    pm_home, _worktree = pm_home_worktree
+    _isolate_board_module(b, monkeypatch, pm_home)
+    assert b.main(["list"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == f"repo 앵커: {pm_home} (PM 홈)"
+
+    plain_clone = pm_home.parent / "plain-clone"
+    plain_clone.mkdir()
+    _git(["init", "-q", "-b", "main"], plain_clone)
+    _isolate_board_module(b, monkeypatch, plain_clone)
+    assert b.main(["list"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == f"repo 앵커: {plain_clone} (역할 미상)"
+
+
+@pytest.mark.parametrize("subcommand", sorted(_load_board()._MUTATION_SUBCOMMANDS))
+def test_mutation_dispatch_never_prints_read_anchor(monkeypatch, subcommand):
+    """모든 mutation leaf는 display-only read 앵커를 타지 않는다(rc/차단 경로 불변)."""
+    b = _load_board()
+    parts = subcommand.split()
+    args = argparse.Namespace(
+        cmd=parts[0],
+        idea_cmd=parts[1] if parts[0] == "idea" else None,
+        prefix_cmd=parts[1] if parts[0] == "prefix" else None,
+        fn=lambda _args: 0,
+    )
+    monkeypatch.setattr(b, "build_parser", lambda: types.SimpleNamespace(parse_args=lambda _argv: args))
+    monkeypatch.setattr(b, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(
+        b, "_print_read_anchor",
+        lambda: pytest.fail(f"mutation {subcommand!r} printed a read anchor"),
+    )
+    assert b.main([]) == 0
 
 
 # ── _pm_home_worktree_misanchor (3중 conjunction·runner 주입) ──────────────
@@ -542,3 +610,38 @@ def test_pm_home_cwd_new_proceeds_past_guard(tmp_path, monkeypatch, capsys):
     assert "worktree(코드 전용) 트리에서 실행" not in (out.err + out.out)
     open_dir = pm_home / ".project_manager" / "board" / "tickets" / "open"
     assert len(list(open_dir.glob("T-*.md"))) == 1
+
+
+def test_read_anchor_is_first_line_even_when_stderr_present(tmp_path):
+    """앵커는 **실제 파이프 형상**에서도 첫 줄이다 — stdout 버퍼링 회귀 가드 (T-0465·codex 게이트).
+
+    in-process `capsys` 테스트는 stdout 버퍼링을 거치지 않아 이 클래스를 구조적으로 못 본다:
+    stdout 은 파이프/리다이렉션에서 블록 버퍼링되는데 stderr 는 unbuffered 라, `print(...)` 에
+    `flush=True` 가 없으면 stderr 가 앵커보다 먼저 흘러나온다(실측: `show T-9999 2>&1 | head` 가
+    not-found 를 선행 출력). 그래서 이 테스트만 **subprocess + stderr 병합**으로 순서를 고정한다.
+    """
+    # 존재할 수 없는 ID 를 쓴다 — 실재하는 ID 를 쓰면 stderr 가 안 나와 이 테스트가 조용히
+    # 무의미해진다(codex 게이트 지적). 아래에서 rc≠0 과 stderr 비어있지 않음을 함께 단언해,
+    # 전제가 깨지면 통과가 아니라 loud 실패가 되게 한다.
+    missing_id = "T-0000-DOES-NOT-EXIST"
+    result = subprocess.run(
+        [sys.executable, str(BOARD_PY), "show", missing_id],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False, stdin=subprocess.DEVNULL,
+    )
+    assert result.returncode != 0, "전제 붕괴 — 없는 ID 조회가 성공했다(테스트 무의미)"
+    assert result.stderr.strip(), "전제 붕괴 — stderr 가 비어 순서 검증이 무의미하다"
+    # 실제 병합 순서를 보려면 stdout·stderr 가 **한 파이프**로 들어와야 한다. `shell=True` +
+    # `2>&1` 대신 `stderr=STDOUT` 을 쓴다 — 셸 무의존이라 Windows 에서도 같고 인자 인용 문제도 없다.
+    # `encoding` 명시 필수: 자식은 UTF-8 을 내보내는데 text=True 만 주면 로캘 코덱으로 디코딩해
+    # CP949 콘솔에서 한글 앵커가 UnicodeDecodeError 를 낸다(엔진 subprocess 관례와 동일).
+    merged = subprocess.run(
+        [sys.executable, str(BOARD_PY), "show", missing_id],
+        cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+        check=False, stdin=subprocess.DEVNULL,
+    ).stdout
+    assert result.stdout.splitlines()[0].startswith("repo 앵커: ")
+    assert merged.splitlines()[0].startswith("repo 앵커: "), (
+        f"stderr 가 앵커보다 먼저 나왔다(버퍼링 회귀) — 첫 줄: {merged.splitlines()[0]!r}"
+    )

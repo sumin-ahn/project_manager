@@ -204,6 +204,29 @@ def _resolved_subcommand(args: argparse.Namespace) -> str:
     return cmd
 
 
+def _print_read_anchor() -> None:
+    """읽기 조회가 실제로 측정하는 repo 앵커와 역할을 stdout 첫 줄에 표시한다.
+
+    앵커는 도구가 이미 사용하는 ``REPO`` 그대로다. 역할은 mutation misanchor
+    가드가 등록 worktree라고 확인한 경우만 ``worktree``로, 실 board 소유가 확인된
+    경우만 ``PM 홈``으로 표기한다. 어느 양성 증거도 없으면 역할을 단언하지 않는다.
+    조회는 다른 앵커를 보는 것 자체가 정당하므로 이 함수는 안내만 하고 rc/실행
+    경로를 바꾸지 않는다.
+    """
+    anchor = REPO
+    if _pm_home_worktree_misanchor(anchor) is not None:
+        role = "worktree"
+    elif _has_real_board(anchor / ".project_manager"):
+        role = "PM 홈"
+    else:
+        role = "역할 미상"
+    # flush 필수 — stdout 은 파이프/리다이렉션에서 블록 버퍼링되는데 stderr 는 unbuffered 라,
+    # flush 없이는 `board.py <read> 2>&1 | …` 에서 stderr 가 앵커보다 먼저 나와 "첫 줄" 계약이
+    # 깨진다(실측: `show T-9999 2>&1 | head` 에서 not-found 가 선행). in-process capsys 테스트는
+    # 버퍼링을 거치지 않아 이 클래스를 구조적으로 못 본다 — subprocess 순서 테스트가 짝이다.
+    print(f"repo 앵커: {anchor} ({role})", flush=True)
+
+
 def _git_rev_parse(anchor: Path, *args: str, runner: Any = subprocess.run) -> str | None:
     """`git -C <anchor> rev-parse <args>` 결과(strip)를 반환. git 아님/오류/빈 값이면 None
     (fail-soft — 솔로/standalone·비-git 트리 무영향). `runner` 는 hermetic 테스트 주입 seam."""
@@ -9058,6 +9081,8 @@ def main(argv: list[str] | None = None) -> int:
     subcommand = _resolved_subcommand(args)
     if subcommand in _MUTATION_SUBCOMMANDS and _guard_worktree_misanchor(f"board.py {subcommand}"):
         return 1
+    if subcommand in _READ_SUBCOMMANDS:
+        _print_read_anchor()
     return args.fn(args)
 
 
