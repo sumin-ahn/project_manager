@@ -7,6 +7,36 @@
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-07-25
+
+**문서-신선도 판정의 거짓 green 을 근절하고, dual-harness 채택 채널과 장기 세션 안정성을
+강화한 패치.** 관통 성질 — **판정할 수 없는 것은 조용히 통과시키지 않고 정직하게 알리며,
+안전장치·리뷰 게이트는 자의 판단이 아니라 기계 한도로 멈춘다.**
+
+### Added
+- **문서 신선도 관찰불가 표면화** — 현재-진실 문서(architecture/status/domain)의 `verified_at`
+  판정이 "판정 불가"를 구분해 advisory 로 알린다: 저장소에 없는 covers 경로, 다른 git 의 SHA,
+  움직이는 ref(브랜치/태그·16진 이름 포함), 모호한 축약 SHA, 비-선조 커밋 — 전부 이전엔 조용한
+  green 이던 클래스. anchor 는 canonical full OID 로 유일 해소해 기록·소비한다.
+- **guest 어댑터 인스턴스 manifest 등재** — `add-harness` 가 설치한 guest 어댑터(dual-harness)를
+  인스턴스 `engine.manifest` 마커 구획에 등재해, 채택자 형상에서도 렌더·잔존-토큰 검사가 guest 를
+  커버한다. 업데이트는 guest 를 덮지 않고(구획 보존·plan 제외), 재실행(refresh)이 동기 채널.
+  cross-harness 의존물(예: codex 호스트의 `.claude/skills`)도 정확히 따라온다.
+- **외부 리뷰 라운드 상한** — 게이트별 라운드 장부·기본 4회 한도. 초과분은 실행 전 차단되고
+  사용자 승인(`--ack-rounds`) 후에만 재개된다(호출 전 예약이라 타임아웃으로 우회 불가).
+
+### Changed
+- **컨텍스트 가드 세션-스코프 분리** — hard-stop 은 메인 세션만(정제 handoff 강제), 서브에이전트는
+  compaction 을 허용해 장기 위임 작업이 컨텍스트 한도로 죽지 않는다(auto-compact 재활성).
+- **covers 글롭 판정을 원본 글롭으로** — 신선도·stale 판정이 손실 접두사 대신 원본 글롭
+  (`:(glob)`·지원 문법 검증)을 git 에 직접 전달한다. 미지원 형태는 오번역 대신 advisory.
+- **잔존-토큰(overlay)·테스트 게이트의 하네스 축 파생 전환** — 손-열거를 manifest/레지스트리
+  파생으로 교체해 새 하네스가 자동 편입된다(닫힌 은퇴 채널은 명시 보존).
+
+### Fixed
+- 엔진 자기서술 stale 3건(pm_import docstring·`--task` help·주석 경로) 정정.
+- add-harness/manifest 경로 안전(containment·symlink 거부)·TOML 사용자 override 보존 강화.
+
 ## [1.4.2] - 2026-07-24
 
 **Codex 어댑터 첫 실전 운영에서 드러난 결함을 닫는 패치.** Codex 를 PM/개발 하네스로 실제
