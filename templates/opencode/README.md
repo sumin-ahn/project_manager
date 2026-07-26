@@ -90,11 +90,14 @@ pm_import 가 이를 **추측 없이 `opencode models` 결정적 조회**로 해
 
 ## 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 
-루트에서 이 타깃으로 엔진을 동기화하는 방법은 두 가지다 (엔진 경로만 덮어씀 — 어댑터 보존).
+루트에서 이 타깃으로 엔진을 동기화하는 방법은 두 가지다 (엔진 경로만 덮어씀 — 어댑터 보존). 전체
+엔진 변경은 이 타깃만 손으로 골라 실행하지 말고, 루트에서 `--all-targets`로 `templates/` 아래의
+**존재하는 모든 타깃**에 전파한다. 아래 `--target opencode`는 이 타깃만 의도적으로 재동기화할 때 쓴다.
 
-**루트에서 직접 (`--target` 플래그):**
+**루트에서 전체 전파, 또는 이 타깃만 의도적으로 갱신 (`--target`):**
 ```bash
 # 루트 repo 에서
+python3 .project_manager/tools/pm_update.py --from . --all-targets --dry-run
 python3 .project_manager/tools/pm_update.py --from . --target opencode --dry-run
 python3 .project_manager/tools/pm_update.py --from . --target opencode
 ```

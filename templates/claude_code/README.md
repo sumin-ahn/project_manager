@@ -39,10 +39,13 @@ longhand·placeholder 표는 루트 [`docs/manual-import.md`](../../docs/manual-
 
 ## 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 
-엔진 경로만 덮어쓴다 — 어댑터·CLAUDE.md·README 는 보존(manifest 밖).
+엔진 경로만 덮어쓴다 — 어댑터·CLAUDE.md·README 는 보존(manifest 밖). 전체 엔진 변경은 이 타깃만
+손으로 골라 실행하지 말고, 루트에서 `--all-targets`로 `templates/` 아래의 **존재하는 모든 타깃**에
+전파한다. 아래 `--target claude_code`는 이 타깃만 의도적으로 재동기화할 때 쓴다.
 
 ```bash
-# 루트에서 직접 (--target 플래그)
+# 루트에서 전체 전파, 또는 이 타깃만 의도적으로 갱신 (--target)
+python3 .project_manager/tools/pm_update.py --from . --all-targets --dry-run
 python3 .project_manager/tools/pm_update.py --from . --target claude_code --dry-run
 
 # 타깃 내부에서 (self-location)

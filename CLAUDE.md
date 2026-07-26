@@ -5,7 +5,8 @@
 > 어댑터(`templates/`) + `tests/`. 도그푸딩 **PM 운영**(board·wiki·ADR·roadmap·dev-state)은 별도 ② repo
 > `project_manager_dev` 가 **adopter#0** 로 수행하며, 이 worktree 가 ② 의 working checkout
 > `work/project_manager_1` 이다(ADR-0027). **엔진은 여기서 고치고 `tests/` 로 검증한다**
-> ("고치는 곳 = 테스트하는 곳"). (채택자용 출하 템플릿은 `templates/claude_code/`·`templates/opencode/` —
+> ("고치는 곳 = 테스트하는 곳"). (채택자용 출하 템플릿은 `templates/` 직계 하위의 **모든 타깃** — 현재
+> `templates/claude_code/`·`templates/codex/`·`templates/opencode/` —
 > 그쪽 CLAUDE.md/AGENTS.md 는 출하 스캐폴드이고, 이 문서는 *엔진 개발자(=PM 세션)* 용이다.)
 
 ## 새 세션 부트스트랩
@@ -29,6 +30,7 @@
   wiki/                # 방법론 (pm_role.md·pm_playbook.md·_template·domain/)  ← dev-state(architecture·ADR·roadmap·board)는 ② 소유
 templates/
   claude_code/         # 출하 Claude Code 템플릿 (엔진 사본 + .claude 어댑터 + CLAUDE.md)
+  codex/               # 출하 Codex 템플릿 (엔진 사본 + .codex/.agents 어댑터 + AGENTS.md)
   opencode/            # 출하 opencode 템플릿 (엔진 사본 + .opencode 어댑터 + AGENTS.md)
 tests/                 # 엔진 단위테스트 (pytest)
 ```
@@ -39,9 +41,11 @@ tests/                 # 엔진 단위테스트 (pytest)
   `pm_*.py`·`external_review.py` 등 엔진 코드 + `wiki/` 방법론·`_template` 의 **canonical 단일 진실 = 이 repo**.
   "고치는 곳 = 테스트하는 곳" — 여기서 고치고 `tests/` 로 검증한다.
 - **`templates/*/` 의 엔진을 직접 고치지 마라.** 거긴 이 제품 repo(① worktree)에서 동기화된 사본이다 —
-  엔진 변경 후 `pm_update.py --target <name>` 으로 각 타깃 `templates/<target>/` 에 내보낸다(제품 repo→템플릿).
+  엔진 변경 후 `pm_update.py --all-targets` 로 `templates/` 아래에 **존재하는 모든 타깃**에 내보낸다
+  (제품 repo→템플릿). 단일 타깃만 의도적으로 갱신할 때만 `--target <name>` 을 쓴다.
 - **타깃별로 다른 건 어댑터층뿐** — claude=`.claude/`(agents·skills)+`CLAUDE.md` /
-  opencode=`.opencode/`(agents·command)+`AGENTS.md`. 엔진은 공유.
+  codex=`.codex/`+`.agents/skills`+`AGENTS.md` / opencode=`.opencode/`(agents·command)+`AGENTS.md`.
+  엔진은 공유.
 - **설계 산출(ADR·roadmap·spike)은 ② PM 홈 `.project_manager/wiki/`**(decisions/·raw/spikes/·roadmap)에
   둔다 — 이 제품 repo 의 wiki 는 엔진 방법론(pm_role·pm_playbook·_template·domain)만. `/spike-new` 로 설계
   spike 박제는 ② 에서.
@@ -71,8 +75,9 @@ python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest(�
 python3 -m pytest tests/ -q                               # 엔진 테스트 (Windows: py -3.12 -m pytest ...)
 python3 .project_manager/tools/board.py list              # 보드
 python3 .project_manager/tools/board.py lint              # 의존성·thin·wikilink 검사
-# 엔진 변경을 타깃에 내보내기 (이 제품 repo → templates/<target>):
-#   python3 .project_manager/tools/pm_update.py --target opencode --dry-run   (claude_code 도 --target 으로 지정)
+# 엔진 변경을 존재하는 모든 타깃에 내보내기 (이 제품 repo → templates/*):
+#   python3 .project_manager/tools/pm_update.py --from . --all-targets --dry-run
+# 단일 타깃만 의도적으로 갱신할 때: --target <name>
 # 외부 프로젝트로 import (루트 파사드 — deep 경로·인터프리터 캡슐화·cwd 무관):
 #   <manager>/pm-import.sh --new <dest> --harness opencode   (Windows: pm-import.cmd)
 #   — pm_import.py 로 인자 verbatim forward. --from 은 자동으로 manager 루트로 해소(생략 가능).

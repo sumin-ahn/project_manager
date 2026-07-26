@@ -16,6 +16,9 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
     python3 .project_manager/tools/pm_update.py --from <upstream-checkout> --target <name> [--dry-run]
     # 예: --target opencode  →  templates/opencode/ 에 동기화
 
+    # 루트(upstream)에서 존재하는 모든 templates 타깃으로 동기화:
+    python3 .project_manager/tools/pm_update.py --from <upstream-checkout> --all-targets [--dry-run]
+
     # 받은 baseline ↔ upstream HEAD 변경점만 read-only 확인 (실 sync 안 함·T-0146):
     python3 .project_manager/tools/pm_update.py --changes [--from <checkout>] [--count-only] [--log]
 
@@ -1466,6 +1469,21 @@ def resolve_target_root(target_name: str) -> Path:
     return target_root
 
 
+def discover_target_names() -> list[str]:
+    """`templates/` 직계 디렉토리의 타깃 이름을 정렬해 반환한다.
+
+    타깃 추가 시 CLI의 고정 목록을 갱신하지 않도록 `resolve_target_root`와 같은
+    디렉토리-발견 규칙을 사용한다. `--all-targets`의 대상은 이 함수의 반환값이다.
+    """
+    templates_dir = _templates_dir()
+    if not templates_dir.is_dir():
+        return []
+    # 숨김 디렉토리(.git 류)는 타깃이 아니다 — 비-숨김 직계 디렉토리는 전부 타깃으로 간주한다
+    # (templates/ 는 관례상 타깃 전용·문서 열거 ↔ 디렉토리 집합 일치는 enumeration 가드가 강제).
+    return sorted(path.name for path in templates_dir.iterdir()
+                  if path.is_dir() and not path.name.startswith("."))
+
+
 def resolve_manifest_for_dest(dest_root: Path, source_root: Path) -> Path:
     """dest_root 의 engine.manifest 우선, 없으면 source_root 의 것."""
     dest_manifest = dest_root / ".project_manager" / "engine.manifest"
@@ -2294,13 +2312,22 @@ def main(argv: list[str] | None = None) -> int:
                     help="upstream 프레임워크 checkout 경로 "
                          "(생략 시 local.conf 의 upstream= 사용)")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument(
+    target_group = ap.add_mutually_exclusive_group()
+    target_group.add_argument(
         "--target",
         metavar="NAME",
         help=(
             "루트에서 templates/<NAME>/ 타깃으로 동기화. "
             "REPO/templates/<NAME>/ 디렉토리가 존재하면 유효. "
             "생략 시 self-location(스크립트 위치 기준 dest) 사용."
+        ),
+    )
+    target_group.add_argument(
+        "--all-targets",
+        action="store_true",
+        help=(
+            "루트에서 templates/ 직계 하위의 존재하는 모든 타깃으로 동기화. "
+            "새 타깃도 디렉토리만 있으면 자동 포함한다. --target 및 --changes 와 함께 쓸 수 없다."
         ),
     )
     # ── read-only 변경점 확인 (T-0146·실 sync 안 함·ADR-0032 D5) ──────────────
@@ -2327,6 +2354,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── --count-only/--log 는 --changes 전용 (codex suggestion 2·CLI 오사용 차단) ──
     #    --changes 없이 주면 일반 sync 가 돌면서 두 옵션이 조용히 무시된다 → 명확 에러로 멈춘다.
+    #    --all-targets 분기보다 **앞**이어야 한다 — 뒤면 자식 argv 에 안 실리는 두 옵션이 조용히
+    #    무시된 채 실 동기화가 돈다(T-0469 codex 게이트 must-fix·오사용 검증이 모든 모드에 선행).
     if (args.count_only or args.log) and not args.changes:
         misused = []
         if args.count_only:
@@ -2339,6 +2368,27 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # 전체 export 는 타깃 집합을 디렉토리에서 매번 발견한다. 단일 타깃 실행을 재사용해
+    # manifest/안전 가드/출력의 의미를 갈라놓지 않는다. 한 타깃의 실패는 즉시 반환한다.
+    if args.all_targets:
+        if args.changes:
+            print("오류: --all-targets 는 실 동기화 옵션이며 --changes 와 함께 쓸 수 없다.", file=sys.stderr)
+            return 1
+        target_names = discover_target_names()
+        if not target_names:
+            print("오류: templates/ 아래에 동기화할 타깃 디렉토리가 없다.", file=sys.stderr)
+            return 1
+        for target_name in target_names:
+            child_argv = ["--target", target_name]
+            if args.source:
+                child_argv = ["--from", args.source, *child_argv]
+            if args.dry_run:
+                child_argv.append("--dry-run")
+            rc = main(child_argv)
+            if rc:
+                return rc
+        return 0
 
     # ── read-only 변경점 확인 (T-0146) — main 초입 early-return(실 sync 안 함·ADR-0032 D5).
     #    dest/source 해소는 _run_changes 안에서 sync 와 동일 경로(_resolve_dest_source)로 탄다.

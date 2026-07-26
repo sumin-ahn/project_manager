@@ -1,6 +1,6 @@
 # ADOPT.md — 이 프레임워크를 채택하기 (fresh 세션 온보딩 가이드)
 
-> 당신(target-harness LLM 세션·claude 또는 opencode)이 **이 프레임워크(project_manager)를 다른 프로젝트에
+> 당신(target-harness LLM 세션·claude·opencode 또는 codex)이 **이 프레임워크(project_manager)를 다른 프로젝트에
 > 채택**하도록 안내한다. 사용자는 보통 **이 manager 의 경로(또는 git URL) 하나만** 준다 — 나머지는 이
 > 가이드와 `pm-import.sh --help` 를 읽고 당신이 자율 수행한다.
 
@@ -15,9 +15,10 @@
 
 ## 자율 판단 3가지
 
-1. **harness — 권장 `both`** (CLI default 은 `claude`·README 권장 정합) — 어댑터 둘 다 설치·엔진은 공유라 비용 미미.
-   사용자가 단일 하니스를 명시했거나 대상 환경에 한쪽만 쓰는 게 확실하면 그것만
-   (`--harness claude` | `opencode`). (자명하므로 사용자에게 묻지 않는다.)
+1. **harness — 권장 `both`** (CLI default 은 `claude`·README 권장 정합) — claude+opencode 어댑터 둘 다
+   설치·엔진은 공유라 비용 미미. 사용자가 단일 하니스를 명시했거나 대상 환경에 한쪽만 쓰는 게 확실하면
+   그것만 (`--harness claude` | `opencode` | `codex`). `both` 는 claude+opencode 조합 키 — codex 를
+   기존 채택본에 *추가* 공존시키는 건 add-harness 채널이다. (자명하므로 사용자에게 묻지 않는다.)
 2. **`--new` vs `--into`** — 맥락으로 고른다:
    - **`--new <dest>`** : 코드 없는 **PM 홈**을 새로 만든다(빈 디렉토리 + `git init`). 표준 채택(ADR-0026).
      "프로젝트 PM 을 새로 시작" / "PM 홈 만들어" 류.
