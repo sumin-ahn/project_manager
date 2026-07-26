@@ -12,15 +12,24 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from _win_skip import _can_symlink
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOARD_PY = TOOLS / "board.py"
+
+# symlink 생성 불가 환경(권한 없는 Windows 등)에서 symlink 의존 테스트를 skip (test_pm_import 동형).
+requires_symlink = pytest.mark.skipif(
+    not _can_symlink(),
+    reason="Windows: symlink requires Developer Mode/admin",
+)
 
 
 def _load_module(name: str, path: Path):
@@ -1847,6 +1856,499 @@ def test_render_leak_fires_on_rendered_tree_with_localconf(board, monkeypatch, t
         name == rel and kind == "render-leak" and "{{PROJECT_NAME}}" in detail
         for name, kind, detail in issues
     ), f"산출물 트리(local.conf 존재)에서 미해소 토큰 leak 을 잡지 못함: {issues}"
+
+
+# ── 출하 템플릿 mirror 면제 (도그푸딩 worktree 보완 · T-0463) ──────────────────
+# local.conf 트리 게이트는 도그푸딩 worktree(adopter#0·local.conf 보유)를 못 가른다. 그 트리의
+# 토큰-form 출하 원본은 `templates/<harness>/` 사본과 byte-identical 인지로 파일 단위 판정한다
+# (`_template_mirror_state`). 후보는 손-열거가 아니라 세 겹 파생 —
+# `pm_update.discover_target_names()`(이름) + `resolve_target_root`(symlink 탈출 거부) +
+# 그 템플릿 manifest 의 `@render` 선언 범위(성격·범위). 무관 `templates/<이름>/` 우연 일치·
+# 빈 manifest 흉내·`templates/alias -> ..` 자기참조 면제를 전부 봉쇄한다.
+
+def _write_shipping_template(root: Path, harness: str, rel_posix: str, text: str,
+                             manifest_body: str | None = ".claude/agents    @render\n") -> Path:
+    """tmp REPO 의 `templates/<harness>/<rel_posix>` 사본을 쓴다.
+
+    `manifest_body` 가 None 이 아니면 `templates/<harness>/.project_manager/engine.manifest` 를
+    그 내용으로 만들어 **출하 템플릿 성격 + @render 범위**를 부여한다
+    (`_shipping_template_render_scopes` 의 성격·범위 게이트). None 이면 디렉토리 이름만 같은
+    무관 트리(엔진 사본 없음)를 시뮬한다. `@render` 없는 manifest 본문을 주면 "manifest 는 있지만
+    그 경로를 렌더-관리한다고 선언하지 않은" 트리가 된다.
+    """
+    harness_root = root / "templates" / harness
+    if manifest_body is not None:
+        manifest = harness_root / ".project_manager" / "engine.manifest"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(manifest_body, encoding="utf-8")
+    p = harness_root / rel_posix
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_render_leak_skips_only_byte_identical_template_source(board, monkeypatch, tmp_path):
+    """공개 루트의 token-form mirror만 면제하고, 달라진 산출물 leak은 계속 잡는다.
+
+    local.conf는 도그푸딩 canonical root에도 있으므로 단독 성격 표지가 될 수 없다. manifest
+    @render의 상대경로가 출하 템플릿 트리에 byte-identical로 존재할 때만 출하 원본으로 판정한다.
+    템플릿 사본이 있어도 산출물이 한 바이트 달라지면(실 leak) 면제하면 안 된다.
+    """
+    fake_repo = tmp_path / "canonical_root"
+    _write_root_manifest(fake_repo, ".claude/agents @render\n")
+    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=project_manager\n", encoding="utf-8")
+    _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md",
+                             adapter.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert board.lint_render_leak() == [], "byte-identical 출하 템플릿 원본은 leak이 아니다."
+
+    adapter.write_text("# {{PROJECT_NAME}} architect\nrender가 누락된 변경\n", encoding="utf-8")
+    findings = board.lint_render_leak()
+    assert any(kind == "render-leak" and name.endswith("architect.md")
+               for name, kind, _ in findings), (
+        "templates/* 원본이 존재해도 달라진 실제 render leak은 반드시 검출해야 한다."
+    )
+
+
+def test_render_leak_template_mirror_requires_shipping_tree_manifest(board, monkeypatch, tmp_path):
+    """면제는 *출하 템플릿 트리*에서만 — 무관 `templates/<이름>/` 우연 일치는 leak 그대로.
+
+    sensitivity(ⓐ): 채택자가 `templates/emails/` 같은 무관 트리에 우연히 같은 상대경로·같은 바이트
+    파일을 두면(엔진 사본=engine.manifest 없음) 면제가 오발생하면 안 된다 — 디렉토리 이름 + byte
+    동일성만으로 키잉하던 1차 구현의 결함(합성 채택자 실증).
+    specificity(ⓑ): 같은 트리에 `@render` 선언 manifest 를 놓아 출하 템플릿 성격이 서면
+    (=`--all-targets` 가 타깃으로 발견하는 그 트리) 같은 바이트가 면제된다. 두 단언의 차이는
+    manifest 하나뿐.
+    """
+    fake_repo = tmp_path / "adopter_root"
+    _write_root_manifest(fake_repo, ".claude/agents @render\n")
+    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+    body = adapter.read_text(encoding="utf-8")
+    _write_shipping_template(fake_repo, "emails", ".claude/agents/architect.md", body,
+                             manifest_body=None)
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert board._shipping_template_render_scopes() == [], (
+        "engine.manifest 없는 무관 templates/<이름>/ 이 출하 템플릿으로 인정됐다."
+    )
+    findings = board.lint_render_leak()
+    assert any(name == ".claude/agents/architect.md" and kind == "render-leak"
+               for name, kind, _ in findings), (
+        f"무관 templates/ 트리의 byte 일치로 면제가 오발생 — 실 leak 을 놓쳤다: {findings}"
+    )
+
+    # ⓑ 같은 바이트 그대로, @render 선언 manifest 만 추가 → 출하 템플릿 트리로 인정 → 면제.
+    manifest = fake_repo / "templates" / "emails" / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(".claude/agents    @render\n", encoding="utf-8")
+    assert board._shipping_template_render_scopes() == [
+        ((fake_repo / "templates" / "emails").resolve(), {".claude/agents"})
+    ]
+    assert board.lint_render_leak() == [], (
+        "@render 를 선언한 정당 출하 템플릿 트리의 byte-identical 원본은 면제돼야 한다."
+    )
+
+
+def test_render_leak_template_mirror_requires_render_declaration(board, monkeypatch, tmp_path):
+    """manifest 가 *있어도* 그 경로를 `@render` 로 선언하지 않았으면 면제 없음 (codex R2 must-fix).
+
+    sensitivity(ⓐ): 엔진 사본 흉내(빈/무관 manifest)만으로 면제가 나면, 같은 바이트 파일 하나로
+    실 leak 을 통째로 가릴 수 있다. 면제 근거는 "그 템플릿이 이 경로를 렌더-관리한다고 선언했다"
+    여야 한다.
+    specificity(ⓑ): 같은 트리·같은 바이트에 `@render` 선언만 추가하면 면제된다 — 두 단언의 차이는
+    manifest 의 `@render` 한 줄뿐.
+    """
+    fake_repo = tmp_path / "unrelated_manifest_root"
+    _write_root_manifest(fake_repo, ".claude/agents @render\n")
+    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+    # manifest 는 있으나 @render 선언 0(무관 경로만) — 성격 흉내.
+    _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md",
+                             adapter.read_text(encoding="utf-8"),
+                             manifest_body="# 주석\n.project_manager/tools/board.py\n")
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert board._shipping_template_render_scopes() == [], (
+        "@render 선언이 없는 manifest 인데 면제 후보로 인정됐다."
+    )
+    findings = board.lint_render_leak()
+    assert any(name == ".claude/agents/architect.md" and kind == "render-leak"
+               for name, kind, _ in findings), (
+        f"@render 미선언 템플릿의 byte 일치로 면제가 오발생 — 실 leak 을 놓쳤다: {findings}"
+    )
+
+    # 다른 경로만 @render 인 manifest 도 마찬가지(범위 밖).
+    manifest = fake_repo / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
+    manifest.write_text(".opencode/agents    @render\n", encoding="utf-8")
+    assert not board._is_token_form_template_mirror(adapter, ".claude/agents/architect.md"), (
+        "@render 범위 밖 경로인데 면제가 났다."
+    )
+
+    # ⓑ 그 경로를 @render 로 선언 → 면제.
+    manifest.write_text(".claude/agents    @render\n", encoding="utf-8")
+    assert board.lint_render_leak() == [], (
+        "@render 로 선언된 경로의 byte-identical 출하 원본은 면제돼야 한다."
+    )
+
+
+@requires_symlink
+def test_render_leak_template_mirror_rejects_symlink_escape(board, monkeypatch, tmp_path):
+    """`templates/<alias> -> ..` 자기참조 symlink 는 면제 후보가 아니다 (codex R2 must-fix).
+
+    링크를 허용하면 candidate 가 루트 산출물 *자기 자신*으로 해소돼 byte-identical 이 자명
+    성립한다 — 한 줄 symlink 로 render-leak 백스톱 전체가 무력화된다. 후보 트리는
+    `pm_update.resolve_target_root`(resolve 후 parent 가 `templates/` 실경로) 로 걸러낸다.
+    """
+    fake_repo = tmp_path / "symlink_root"
+    _write_root_manifest(fake_repo, ".claude/agents @render\n")
+    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+    templates = fake_repo / "templates"
+    templates.mkdir(parents=True, exist_ok=True)
+    # templates/alias -> 루트 자신(= .claude/agents/architect.md 가 그대로 비쳐 보인다).
+    os.symlink(fake_repo, templates / "alias", target_is_directory=True)
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert (templates / "alias" / ".claude" / "agents" / "architect.md").read_bytes() \
+        == adapter.read_bytes(), "전제 확인: 링크 경유로 루트 파일이 그대로 보인다(자명 일치)."
+    assert board._shipping_template_render_scopes() == [], (
+        "templates/ 밖으로 탈출하는 symlink 트리가 면제 후보로 인정됐다."
+    )
+    findings = board.lint_render_leak()
+    assert any(name == ".claude/agents/architect.md" and kind == "render-leak"
+               for name, kind, _ in findings), (
+        f"symlink 자기참조로 면제가 자명 성립 — 실 leak 을 놓쳤다: {findings}"
+    )
+
+
+@requires_symlink
+def test_template_mirror_rejects_symlinked_candidate_file(board, monkeypatch, tmp_path):
+    """정당 템플릿 트리 안이라도 **후보 파일**이 링크로 트리를 벗어나면 면제하지 않는다.
+
+    트리 루트 containment 만 보면 `templates/claude_code/.claude/agents/architect.md ->
+    ../../../../.claude/agents/architect.md` 같은 파일-단위 자기참조가 남는다(같은 자명 일치).
+    루트 산출물 *자기 자신*으로 해소되는 링크는 비교가 무의미하므로 판정 비참여(ABSENT)다 —
+    drift 로 세면 "전파하라"는 잘못된 지시를 낳는다.
+    """
+    fake_repo = tmp_path / "linked_file_root"
+    _write_root_manifest(fake_repo, ".claude/agents @render\n")
+    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+    _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md", "placeholder\n")
+    linked = (fake_repo / "templates" / "claude_code" / ".claude" / "agents" / "architect.md")
+    linked.unlink()
+    os.symlink(adapter, linked)
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert linked.read_bytes() == adapter.read_bytes(), "전제 확인: 링크가 루트 파일을 가리킨다."
+    assert board._template_mirror_state(adapter, ".claude/agents/architect.md") \
+        == board._TEMPLATE_MIRROR_ABSENT, "루트 자기참조 링크는 판정 비참여여야 한다."
+    assert not board._is_token_form_template_mirror(adapter, ".claude/agents/architect.md"), (
+        "템플릿 트리를 벗어나는 링크 후보로 면제가 성립했다."
+    )
+    assert any(name == ".claude/agents/architect.md" and kind == "render-leak"
+               for name, kind, _ in board.lint_render_leak())
+
+
+@requires_symlink
+def test_template_mirror_offtree_symlink_counts_as_drift(board, monkeypatch, tmp_path):
+    """자기참조가 아닌 **트리 밖 링크**는 비참여가 아니라 drift 로 집계한다(내부 리뷰 should-fix).
+
+    조용히 빠지면 "그 타깃엔 사본이 있다"는 착각이 남는다 — 링크 너머가 무엇이든 그 타깃의 전파
+    상태는 확인된 바 없으므로 미전파와 같이 취급(면제 없음·전파 힌트 finding)한다.
+    """
+    fake_repo = tmp_path / "offtree_link_root"
+    _write_root_manifest(fake_repo, ".claude/agents @render\n")
+    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+    outside = tmp_path / "outside" / "architect.md"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("# {{PROJECT_NAME}} architect\n", encoding="utf-8")  # 내용은 같지만 트리 밖.
+    _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md", "placeholder\n")
+    linked = (fake_repo / "templates" / "claude_code" / ".claude" / "agents" / "architect.md")
+    linked.unlink()
+    os.symlink(outside, linked)
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    state, drifted = board._template_mirror_report(adapter, ".claude/agents/architect.md")
+    assert (state, drifted) == (board._TEMPLATE_MIRROR_DIFFERS, ["claude_code"]), (
+        f"트리 밖 링크가 drift 로 집계되지 않았다: {(state, drifted)}"
+    )
+    detail = next(d for name, kind, d in board.lint_render_leak()
+                  if name == ".claude/agents/architect.md" and kind == "render-leak")
+    assert "claude_code" in detail and "pm_update --all-targets" in detail
+
+
+def test_template_mirror_skips_source_remapped_render_entries(board, monkeypatch, tmp_path):
+    """`@source=` remap 항목은 면제 판정 범위 밖 (내부 리뷰 should-fix).
+
+    후보 조립(`template_root / rel_posix`)이 "사본은 dest 와 같은 상대경로"를 전제하는데 source-remap
+    (ADR-0054·`ManifestEntry.source_rel`)은 그 전제를 깬다 — 전제가 안 서는 항목은 면제하지 않는다
+    (오면제 대신 leak 보고·보수). 실재 예: codex `.agents/skills @render @source=.claude/skills`.
+    """
+    fake_repo = tmp_path / "remap_root"
+    _write_root_manifest(fake_repo, ".claude/agents @render\n")
+    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+    _write_shipping_template(
+        fake_repo, "claude_code", ".claude/agents/architect.md",
+        adapter.read_text(encoding="utf-8"),
+        manifest_body=".claude/agents    @render @source=templates/claude_code/.claude/agents\n")
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert board._shipping_template_render_scopes() == [], (
+        "@source remap 항목이 면제 범위에 편입됐다 — 경로 전제가 깨진 항목이다."
+    )
+    assert any(name == ".claude/agents/architect.md" and kind == "render-leak"
+               for name, kind, _ in board.lint_render_leak())
+
+    # remap 마커를 떼면(경로 전제 성립) 정상 면제 — 차이는 `@source=` 하나뿐.
+    (fake_repo / "templates" / "claude_code" / ".project_manager" / "engine.manifest").write_text(
+        ".claude/agents    @render\n", encoding="utf-8")
+    assert board.lint_render_leak() == []
+
+
+def test_template_mirror_multi_target_partial_drift_is_not_exempt(board, monkeypatch, tmp_path):
+    """여러 타깃이 같은 경로를 @render 로 선언하면 **전수 집계** — 하나만 drift 해도 면제 없음.
+
+    실재 형상: `.claude/skills` 는 claude_code 와 opencode 양쪽 manifest 의 @render 범위다. first-match
+    조기 반환이면 한 타깃만 갱신해도 면제가 나 나머지의 `--all-targets` 미전파가 숨는다(codex R3
+    must-fix). sensitivity: 한쪽 identical + 한쪽 differs → DIFFERS 우선(전파 힌트 finding·blocking).
+    specificity: 양쪽 identical → 면제.
+    """
+    fake_repo = tmp_path / "multi_target_root"
+    _write_root_manifest(fake_repo, ".claude/skills @render\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+    skill = fake_repo / ".claude" / "skills" / "pm-adr" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# {{PROJECT_NAME}} adr\n루트 갱신\n", encoding="utf-8")
+    rel = ".claude/skills/pm-adr/SKILL.md"
+    # claude_code 만 전파됨(identical), opencode 는 구버전 잔존(differs).
+    _write_shipping_template(fake_repo, "claude_code", rel, skill.read_text(encoding="utf-8"),
+                             manifest_body=".claude/skills    @render\n")
+    stale = _write_shipping_template(fake_repo, "opencode", rel, "# {{PROJECT_NAME}} adr\n",
+                                     manifest_body=".claude/skills    @render\n")
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert len(board._shipping_template_render_scopes()) == 2, "전제: 두 타깃 모두 후보여야 한다."
+    assert board._template_mirror_report(skill, rel) == (board._TEMPLATE_MIRROR_DIFFERS,
+                                                         ["opencode"]), (
+        "한 타깃이 identical 이라고 조기 반환 — 다른 타깃의 미전파 drift 가 숨었다."
+    )
+    detail = next(d for name, kind, d in board.lint_render_leak()
+                  if name == rel and kind == "render-leak")
+    assert "pm_update --all-targets" in detail, (
+        f"부분 전파 상태인데 전파 누락 힌트가 없다: {detail}"
+    )
+    # 어긋난 타깃만 지목한다 — 전파된 쪽(claude_code)은 문구에 안 나온다(오지목 방지).
+    assert "opencode" in detail and "claude_code" not in detail, (
+        f"drift 타깃 지목이 부정확하다: {detail}"
+    )
+
+    # 남은 타깃까지 전파 → 전 후보 identical → 면제.
+    stale.write_text(skill.read_text(encoding="utf-8"), encoding="utf-8")
+    assert board._template_mirror_state(skill, rel) == board._TEMPLATE_MIRROR_IDENTICAL
+    assert board.lint_render_leak() == [], (
+        "전 타깃이 byte-identical 인데 면제되지 않았다."
+    )
+
+
+def test_template_mirror_missing_copy_in_scope_is_drift(board, monkeypatch, tmp_path):
+    """선언 범위 안인데 타깃 **사본이 없으면** 면제 아님 — 신규 파일 미전파 (codex R4 must-fix).
+
+    한 타깃만 전파된 신규 어댑터: claude_code 는 identical, opencode 는 같은 경로를 @render 로
+    선언했는데 파일이 없다. "없으니 비참여"로 넘기면 남은 후보가 전부 identical 이라 면제가 나고
+    `--all-targets` 누락이 숨는다. 부재는 drift 로 집계해야 한다(전파 힌트 finding·blocking).
+    전파 후엔 면제로 돌아온다(specificity).
+    """
+    fake_repo = tmp_path / "missing_copy_root"
+    _write_root_manifest(fake_repo, ".claude/skills @render\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+    skill = fake_repo / ".claude" / "skills" / "pm-new" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# {{PROJECT_NAME}} 신규 skill\n", encoding="utf-8")
+    rel = ".claude/skills/pm-new/SKILL.md"
+    body = skill.read_text(encoding="utf-8")
+    _write_shipping_template(fake_repo, "claude_code", rel, body,
+                             manifest_body=".claude/skills    @render\n")
+    # opencode 는 `.claude/skills` 를 @render 로 선언하되 신규 파일 사본이 없다(다른 파일만 보유).
+    _write_shipping_template(fake_repo, "opencode", ".claude/skills/pm-old/SKILL.md", body,
+                             manifest_body=".claude/skills    @render\n")
+    assert not (fake_repo / "templates" / "opencode" / rel).exists(), "전제: 한 타깃엔 사본이 없다."
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert board._template_mirror_report(skill, rel) == (board._TEMPLATE_MIRROR_DIFFERS,
+                                                         ["opencode"]), (
+        "선언 범위 안 사본 부재가 비참여 처리돼 면제가 났다 — 신규 파일 미전파가 숨는다."
+    )
+    detail = next(d for name, kind, d in board.lint_render_leak()
+                  if name == rel and kind == "render-leak")
+    assert "pm_update --all-targets" in detail, f"미전파 힌트가 없다: {detail}"
+    assert "opencode" in detail, f"사본이 없는 타깃을 지목하지 않았다: {detail}"
+
+    # 남은 타깃까지 전파 → 전 후보 identical → 면제.
+    dest = fake_repo / "templates" / "opencode" / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(body, encoding="utf-8")
+    assert board._template_mirror_state(skill, rel) == board._TEMPLATE_MIRROR_IDENTICAL
+    assert board.lint_render_leak() == [], "전 타깃 전파 후에도 면제되지 않았다."
+
+
+def test_template_mirror_no_exemption_without_pm_update_seam(board, monkeypatch, tmp_path):
+    """pm_update 로드 실패 → 면제 없음(보수 방향·면제는 특권이지 기본값이 아니다).
+
+    판정원(`discover_target_names`·`resolve_target_root`·`read_manifest`)이 없으면 후보 0 →
+    byte-identical 사본이 있어도 mirror 로 인정하지 않는다. lint 경유가 아니라 술어를 직접
+    단언한다 — 로드 실패는 `lint_render_leak` 을 조기 반환(검사 대상 0)시켜 lint 단언이 자명
+    통과가 되기 때문(non-vacuous 유지).
+    """
+    fake_repo = tmp_path / "seam_root"
+    _write_root_manifest(fake_repo, ".claude/agents @render\n")
+    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
+    _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md",
+                             adapter.read_text(encoding="utf-8"))
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    assert board._is_token_form_template_mirror(adapter, ".claude/agents/architect.md"), (
+        "정상 seam 에서는 byte-identical 출하 원본이 mirror 로 인정돼야 한다(대조군)."
+    )
+
+    monkeypatch.setattr(board, "_load_pm_update_module", lambda: None)
+    assert board._shipping_template_render_scopes() == []
+    assert not board._is_token_form_template_mirror(adapter, ".claude/agents/architect.md"), (
+        "pm_update 로드 실패인데 면제가 났다 — 판정원 부재 시엔 면제하지 않아야 한다."
+    )
+
+
+def test_render_leak_differing_mirror_message_hints_propagation(board, monkeypatch, tmp_path):
+    """전파-대상(적용 후보 있음)인데 drift 면 finding 에 전파 누락 힌트를 붙인다.
+
+    현행 문구("overlay/local.conf 채널 누락")만으론 `pm_update --all-targets` 미전파 케이스를
+    채널 오진단으로 몰고 간다. 반대로 **적용 후보 자체가 없는** 일반 채택 인스턴스(출하 템플릿
+    트리 없음)에선 그 힌트가 없어야 한다 — 거긴 진짜로 overlay/local.conf 채널 문제다.
+    """
+    fake_repo = tmp_path / "drifted_root"
+    _write_root_manifest(fake_repo, ".claude/agents @render\n")
+    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n루트만 수정\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=acme\n", encoding="utf-8")
+    _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md",
+                             "# {{PROJECT_NAME}} architect\n")
+    monkeypatch.setattr(board, "REPO", fake_repo)
+
+    detail = next(d for name, kind, d in board.lint_render_leak()
+                  if name == ".claude/agents/architect.md" and kind == "render-leak")
+    assert "pm_update --all-targets" in detail, (
+        f"템플릿 사본과 내용 불일치인데 전파 누락 힌트가 없다: {detail}"
+    )
+
+    # 출하 템플릿 트리 자체가 없는 일반 채택 인스턴스 → 적용 후보 0(ABSENT): 채널 문구만.
+    # (사본만 지우는 건 이제 "선언 범위 안 부재"=미전파 drift 라 힌트가 정상이다 — codex R4.)
+    shutil.rmtree(fake_repo / "templates")
+    plain = next(d for name, kind, d in board.lint_render_leak()
+                 if name == ".claude/agents/architect.md" and kind == "render-leak")
+    assert "pm_update --all-targets" not in plain, (
+        f"출하 템플릿 트리가 없는데 전파 누락 힌트가 붙었다(오진단 유도): {plain}"
+    )
+
+
+# T-0463 재발 가드 대상 — 공개 루트의 token-form 어댑터 12파일(agents 4 + skills 8).
+# 이 열거는 `tests/test_claude_adapter_parity.py::IDENTICAL_RELPATHS`(root↔templates byte-identical
+# 8파일)와 같은 불변식의 *부분 중복*이다: 저쪽은 전파 드리프트 0, 이쪽은 그 동일성이 render-leak
+# 면제의 근거라는 축. 한쪽을 고치면 다른 쪽도 같이 본다.
+_T0463_TOKEN_FORM_MIRRORS = (
+    ".claude/agents/architect.md",
+    ".claude/agents/code-reviewer.md",
+    ".claude/agents/developer.md",
+    ".claude/agents/researcher.md",
+    ".claude/skills/pm-adr/SKILL.md",
+    ".claude/skills/pm-bootstrap/SKILL.md",
+    ".claude/skills/pm-dev-delegate/SKILL.md",
+    ".claude/skills/pm-handoff/SKILL.md",
+    ".claude/skills/pm-ticket/SKILL.md",
+    ".claude/skills/pm-wave-claim/SKILL.md",
+    ".claude/skills/pm-wave-finish/SKILL.md",
+    ".claude/skills/pm-worktree/SKILL.md",
+)
+
+
+def test_render_leak_public_claude_token_form_mirrors_are_clean(board, monkeypatch, tmp_path):
+    """T-0463 재발 가드 — 공개 루트의 12개 token-form 어댑터는 render-leak 0 (hermetic).
+
+    lint 단언을 실 REPO 에서 돌리면 local.conf 가 없는 CI/fresh clone 에서 `lint_render_leak()`
+    이 조기 반환(검사 대상 0)해 **자명 통과**한다(변이 주입해도 green). 그래서 실 파일 바이트를
+    tmp 사본 트리(local.conf + 루트 manifest + 출하 템플릿 사본)로 옮겨 hermetic 하게 돌린다 —
+    어느 환경에서도 lint 가 실제로 이 12파일을 스캔한다. 실 트리에 대해서는 (a) 12파일이 실재하고
+    (b) templates 사본과 byte-identical 이며 (c) 토큰을 실제로 담고 있음을 별도로 단언한다.
+    """
+    real_repo = board.REPO
+    fake_repo = tmp_path / "adopter0_worktree"
+    _write_root_manifest(fake_repo, ".claude/agents    @render\n.claude/skills    @render\n")
+    (fake_repo / ".project_manager" / "local.conf").write_text(
+        "project_name=project_manager\npy=python3\n", encoding="utf-8")
+    template_manifest = (fake_repo / "templates" / "claude_code"
+                         / ".project_manager" / "engine.manifest")
+    template_manifest.parent.mkdir(parents=True, exist_ok=True)
+    template_manifest.write_text(".claude/agents    @render\n.claude/skills    @render\n",
+                                 encoding="utf-8")
+
+    token_bearing = 0
+    for rel in _T0463_TOKEN_FORM_MIRRORS:
+        root_file = real_repo / rel
+        template_file = real_repo / "templates" / "claude_code" / rel
+        assert root_file.is_file(), f"공개 루트 어댑터 없음: {rel}"
+        assert template_file.is_file(), f"출하 템플릿 사본 없음: templates/claude_code/{rel}"
+        payload = root_file.read_bytes()
+        assert payload == template_file.read_bytes(), (
+            f"{rel} 이 root↔templates byte-identical 아님 — 전파 드리프트 "
+            "(면제 근거가 무너진다·pm_update --all-targets 필요)"
+        )
+        if board._RENDER_TOKEN_RE.search(root_file.read_text(encoding="utf-8")):
+            token_bearing += 1
+        for dest_root in (fake_repo, fake_repo / "templates" / "claude_code"):
+            dest = dest_root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(payload)
+    assert token_bearing, (
+        "12파일 중 미해소 토큰을 가진 게 하나도 없다 — 이 가드가 자명 통과 상태다."
+    )
+
+    monkeypatch.setattr(board, "REPO", fake_repo)
+    assert board._render_managed_relpaths(), "tmp 트리에서 검사 대상이 0 — 가드가 자명 통과한다."
+    assert [issue for issue in board.lint_render_leak()
+            if issue[0] in _T0463_TOKEN_FORM_MIRRORS] == [], (
+        "T-0463 의 token-form 출하 원본 12파일에서 render-leak 이 재발했다."
+    )
+
+    # 변이 실증: 루트 사본만 바꾸면(=전파 안 된 실 leak) 같은 lint 가 잡는다 → 위 green 은 자명하지 않다.
+    mutated = fake_repo / _T0463_TOKEN_FORM_MIRRORS[0]
+    mutated.write_text(mutated.read_text(encoding="utf-8") + "\n{{PROJECT_NAME}} 미전파 수정\n",
+                       encoding="utf-8")
+    assert any(name == _T0463_TOKEN_FORM_MIRRORS[0] and kind == "render-leak"
+               for name, kind, _ in board.lint_render_leak()), (
+        "루트 사본이 템플릿과 달라졌는데 leak 을 못 잡았다 — 면제가 과잉이다."
+    )
 
 
 # ── render-leak 이 @render 하위 *모든 텍스트 파일*을 스캔 (T-0427·확장자 열거 세 번째 지점 마감) ──

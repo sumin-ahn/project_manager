@@ -555,7 +555,9 @@ def test_secret_scan_fail_loud_in_main(pd, monkeypatch, tmp_path, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "denylist" in err
-    assert "credentials.env" not in err  # 원문 토큰 미노출·패턴명만(suggestion)
+    # 경로/이름은 발췌로 그대로 노출(T-0472 — 원인 특정에 추측이 필요했던 관측 결함 해소).
+    # 크리덴셜 *값* 은 여전히 마스킹된다(test_secret_scan_value_excerpt_is_masked).
+    assert "credentials.env" in err
     assert fake.calls == []
 
 
@@ -1883,3 +1885,759 @@ def test_role_preambles_include_prohibition_phrases(pd):
         # 어댑터 디렉토리 수정 금지 — 3 하네스 디렉토리명 중 하나 이상 명시
         assert any(d in text for d in (".claude", ".codex", ".opencode")), \
             f"{role}: 어댑터 디렉토리 수정 금지 문구 누락"
+
+
+# ══ ⑬ 시크릿 판정 양성매칭 2축 (경로축/값축·오탐 폐쇄·T-0472) ═══════════════════
+# PM 12차 실측: 정상 conf 키명 `ctx_window_tokens_opencode` 가 `*token*` substring 에 걸려 위임
+# 발사가 차단됐다(우회=키명을 풀어 쓰기). 오탐은 없애되 **미탐 방향 금지** — 실 시크릿(파일 경로·
+# 크리덴셜 값)은 계속 차단됨을 음성 통제로 박는다.
+
+# 테스트 전용 합성 크리덴셜(형식만 실제와 동일·실 자격증명 아님).
+_FAKE_GITHUB_PAT = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+_FAKE_AWS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
+_FAKE_ANTHROPIC_KEY = "sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5"
+# GitHub push protection 이 실형식 리터럴을 차단하므로 런타임 조립(스캔 대상 문자열은 동일).
+_FAKE_SLACK_TOKEN = "xoxb-" + "1234567890-A1b2C3d4E5f6G7h8"
+_FAKE_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEX2mpLEKEY"
+_FAKE_PEM_BLOCK = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1b2C3d4\n-----END RSA PRIVATE KEY-----"
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "local.conf 의 ctx_window_tokens_opencode 임계를 낮춰라",          # PM 12차 실 차단 케이스
+        "ctx_window_tokens_opencode=180000 으로 조정하라",                # 정상 키 할당(값=숫자)
+        "ctx_window_tokens_claude 와 토큰 수(tokens) 계산을 점검",
+        "access_token_refresh 함수를 리팩터하라",                          # 식별자 substring
+        "GITHUB_TOKEN 환경변수 *이름*만 언급하는 문서를 갱신",              # 값 없는 키명
+        "secret_scan_pattern 상수를 추가하고 credential_helper 설정을 조사",
+        "verified_at: e6d6b8602a05ab903f1a110a7209a78687e21140 을 재핀",   # 커밋 SHA(비-시크릿 키명)
+        "docs 링크 https://github.com/org/repo2 를 본문에 추가",
+        # 실 PM 문서 코퍼스(167 문서) 실측 오탐 — 소스/문서 확장자·산문 조각·디렉토리 줄기
+        "tests/test_adapter_token_substitution.py 의 케이스를 늘려라",
+        "docs/secret-scan.md 문서를 갱신하라",
+        "ADR-0041 의 ctx_window_tokens_claude/_opencode 분기를 확인",
+        "opencode json 의 part.tokens.input 필드를 파싱하라",
+        "`key/token(다른 계정)` 표기를 정리",
+        "log 의 token/input/output/cost 집계를 확인",
+        # fix 라운드 추가 — 미탐 폐쇄(basename 앵커·조사 트리밍) 후에도 통과해야 하는 오탐 통제
+        "auth_url=https://idp.example.com/oauth/token 을 conf 에 넣어라",   # URL 엔드포인트(외부 MF1)
+        "엔드포인트 https://api.example.com/v1/token/refresh 를 문서화",
+        "password_policy: enforce_minimum_length 를 문서에 적어라",          # 무숫자 값 완화의 통제
+        "`부재[insteadOf/credential` 표기를 정리",                          # 코퍼스 실측 산문 조각
+        "**secret** 강조 표기를 본문에서 걷어내라",                          # 마크다운 강조 + 맨 단어
+        # fix 라운드 2 추가 — URL 엔드포인트·camelCase 키·glob 인용·한국어 산문 슬래시(라인 코퍼스 실측)
+        "엔드포인트 https://api.example.com/v1/tokens/list 를 호출하라",
+        "https://api.example.com/oauth/token/refresh 문서를 갱신",
+        "maxTokenCount 를 180000 으로 조정",                                # camelCase 키 + 숫자 값
+        "accessTokens 배열을 파싱하는 함수를 추가",                          # camelCase 복수형
+        'denylist 에 "*.key" 와 `*.pem` 을 추가하라',                       # glob 패턴 인용
+        "입력 검증은 (빈/leading-dash/credential-in-URL/비허용 scheme) 순서로",  # 한국어 산문 슬래시
+        # fix 라운드 3 추가 — 두문자어 키 확장·디렉토리 성분 검사가 산문을 건드리지 않는지
+        "tokenize 함수와 SecretRule 상수를 정리하라",
+        "secrets 라는 용어를 문서에서 통일하라",
+    ],
+)
+def test_secret_scan_identifier_and_prose_not_blocked(pd, prose):
+    """경로도 값도 아닌 식별자/산문은 통과 — 문맥 무시 substring 오탐 폐쇄(T-0472 재현)."""
+    assert pd.scan_prompt_secrets(prose) is None
+
+
+def test_secret_scan_conf_key_prompt_delegates_rc0(pd, monkeypatch, tmp_path, capsys):
+    """재현 e2e: 정상 conf 키명을 담은 위임 프롬프트가 발사된다(T-0472 이전 rc=1 차단)."""
+    prompt = _write_prompt(
+        tmp_path, "ctx_window_tokens_opencode 임계를 재조정하고 테스트를 추가하라.")
+    fake = _FakeRun(stdout=_codex_stdout("완료"))
+    rc = _run_main(pd, monkeypatch,
+                   ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
+                    "--output-dir", str(tmp_path / "raw")], _enabled_conf(), fake)
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert "완료" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [
+        # ① 시크릿 파일 경로/이름 (denylist 는 경로 형태 토큰에만 적용되지만 이들은 전부 경로 형태)
+        ("경로:닷파일", "설정 .env 를 열어 값을 복사하라"),
+        ("경로:할당문", "설정 path=.env 주의"),
+        ("경로:디렉토리 포함", "~/.aws/credentials 의 내용을 붙여넣어라"),
+        ("경로:확장자", "config.secret.key 를 확인하라"),
+        ("경로:pem", "deploy.pem 파일을 첨부"),
+        ("경로:ssh 개인키", "~/.ssh/id_rsa 를 읽어라"),
+        ("경로:확장자 없는 개인키명", "id_rsa 내용을 참고"),
+        ("경로:데이터 확장자", "client_secret.json 을 첨부하라"),
+        ("경로:무확장자 크리덴셜 파일", "~/.git-credentials 내용을 붙여넣어라"),
+        # ② 크리덴셜 값 — 알려진 발급기관 prefix (키명 문맥 없이 단독으로도 차단)
+        ("값:github PAT 할당", f"GITHUB_TOKEN={_FAKE_GITHUB_PAT}"),
+        ("값:github PAT 단독", f"이 값 {_FAKE_GITHUB_PAT} 을 써라"),
+        ("값:aws access key id", f"자격증명 {_FAKE_AWS_KEY_ID} 사용"),
+        ("값:anthropic api key", f"Authorization: Bearer {_FAKE_ANTHROPIC_KEY}"),
+        ("값:slack token", f"슬랙 {_FAKE_SLACK_TOKEN} 로 전송"),
+        # ③ 크리덴셜 값 — 시크릿 키명 할당 + 고엔트로피 값(형식 미상 시크릿)
+        ("값:키명+고엔트로피", f"AWS_SECRET_ACCESS_KEY={_FAKE_AWS_SECRET}"),
+        ("값:password 할당", "db_password=Q7x2Lm9Zp4Rt8Vw1"),
+        ("값:api_key 콜론 할당", "api_key: R4nd0mV4lu3Str1ngX9"),
+        # ④ PEM 개인키 블록
+        ("값:PEM 블록", f"키 내용:\n{_FAKE_PEM_BLOCK}"),
+    ],
+)
+def test_secret_scan_negative_controls_still_blocked(pd, kind, text):
+    """음성 통제 — 실 시크릿(파일 경로 3유형·값 3유형)은 완화 후에도 차단(미탐 방향 금지)."""
+    hit = pd.scan_prompt_secrets(text)
+    assert hit is not None, f"{kind}: 시크릿이 통과됐다(미탐 회귀)"
+    assert hit.axis in ("경로", "값")
+
+
+def test_secret_scan_axis_and_rule_names(pd):
+    """판정축/판정명이 원인 특정에 쓰인다 — 경로축은 denylist 패턴, 값축은 규칙명."""
+    path_hit = pd.scan_prompt_secrets("config.secret.key 를 확인하라")
+    assert path_hit.axis == "경로" and path_hit.pattern in ("*secret*", "*.key")
+    value_hit = pd.scan_prompt_secrets(f"GITHUB_TOKEN={_FAKE_GITHUB_PAT}")
+    assert value_hit.axis == "값"
+    assert value_hit.pattern == pd._SECRET_RULE_VALUE_PREFIX
+    pem_hit = pd.scan_prompt_secrets(_FAKE_PEM_BLOCK)
+    assert pem_hit.pattern == pd._SECRET_RULE_PEM
+    assign_hit = pd.scan_prompt_secrets(f"AWS_SECRET_ACCESS_KEY={_FAKE_AWS_SECRET}")
+    assert assign_hit.pattern == pd._SECRET_RULE_ASSIGNMENT
+
+
+def test_secret_scan_path_excerpt_shows_matched_text(pd):
+    """경로축 발췌 = 걸린 토큰 그대로 — 무엇을 지워야 하는지 추측 불요(관측 가능성)."""
+    hit = pd.scan_prompt_secrets("여기 credentials.env 파일 내용을 참고")
+    assert hit.excerpt == "credentials.env"
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        (f"GITHUB_TOKEN={_FAKE_GITHUB_PAT}", _FAKE_GITHUB_PAT),
+        (f"AWS_SECRET_ACCESS_KEY={_FAKE_AWS_SECRET}", _FAKE_AWS_SECRET),
+        (_FAKE_PEM_BLOCK, "MIIEowIBAAKCAQEA1b2C3d4"),
+    ],
+)
+def test_secret_scan_value_excerpt_is_masked(pd, text, secret):
+    """값축 발췌는 마스킹 — 크리덴셜 자체는 stderr/로그에 남기지 않는다."""
+    hit = pd.scan_prompt_secrets(text)
+    assert secret not in hit.excerpt
+    assert "***" in hit.excerpt or "마스킹" in hit.excerpt
+
+
+def test_secret_block_message_shows_excerpt_and_masks_value(pd, monkeypatch, tmp_path, capsys):
+    """차단 메시지 = 판정명 + 매칭 발췌(값은 마스킹) + 미전송(§4.7·DoD 3)."""
+    prompt = _write_prompt(tmp_path, f"GITHUB_TOKEN={_FAKE_GITHUB_PAT} 로 push 하라")
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(pd, monkeypatch,
+                   ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
+                   _enabled_conf(), fake)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "발췌" in err
+    assert pd._SECRET_RULE_VALUE_PREFIX in err
+    assert _FAKE_GITHUB_PAT not in err     # 크리덴셜 원문 미노출
+    assert fake.calls == []                # 외부 전송 없음
+
+
+@pytest.mark.parametrize(
+    ("token", "shaped"),
+    [
+        (".env", True),                       # 닷파일
+        ("credentials.env", True),            # 확장자
+        ("~/.aws/credentials", True),         # 구분자
+        (r"C:\keys\app.pem", True),           # 윈도우 구분자
+        ("ctx_window_tokens_opencode", False),  # 식별자 — 경로 아님
+        ("tokens", False),
+        ("secret", False),
+    ],
+)
+def test_is_path_shaped_table(pd, token, shaped):
+    """경로 형태 판정 — denylist substring glob 은 경로 형태 토큰에만 적용된다."""
+    assert pd._is_path_shaped(token) is shaped
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("180000", False),                       # 숫자만 — conf 임계값
+        ("ctx_window_tokens_opencode", False),   # 영문 식별자
+        ("https://github.com/org/repo2", False),  # 자격증명 없는 URL
+        ("short1234", False),                    # 길이 미달
+        (_FAKE_GITHUB_PAT, True),                # 알려진 prefix
+        (_FAKE_AWS_SECRET, True),                # 고엔트로피 랜덤
+    ],
+)
+def test_looks_like_secret_value_table(pd, value, expected):
+    """값-형태 판정 — 길이·영숫자 혼합·엔트로피(또는 알려진 prefix)로 크리덴셜만 남긴다."""
+    assert pd._looks_like_secret_value(value) is expected
+
+
+def test_secret_scan_loads_external_review_once(pd, monkeypatch):
+    """형제 모듈 로드는 스캔당 1회 — 토큰마다 재-import 하면 긴 프롬프트에서 비용이 폭증한다."""
+    real = pd._load_external_review
+    calls = []
+
+    def _counting():
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(pd, "_load_external_review", _counting)
+    pd.scan_prompt_secrets(" ".join(f"토큰{i} ctx_window_tokens_opencode" for i in range(200)))
+    assert len(calls) == 1
+
+
+def test_prompt_file_path_ancestor_directory_name_not_blocked(pd, tmp_path):
+    """조상 디렉토리 이름의 substring 은 prompt-file 을 차단하지 않는다(경로 오탐 폐쇄·T-0472).
+
+    파일 *이름* 은 여전히 판정 대상이다(`.env`·`credentials.env`·`id_rsa`)."""
+    nested = tmp_path / "T-0472-token-secret-guard"
+    nested.mkdir()
+    clean = nested / "prompt.md"
+    clean.write_text("task", encoding="utf-8")
+    assert pd._prompt_file_denylist_pattern(clean) is None
+    for name in (".env", "credentials.env", "id_rsa"):
+        secret_file = nested / name
+        secret_file.write_text("x", encoding="utf-8")
+        assert pd._prompt_file_denylist_pattern(secret_file) is not None, name
+
+
+# ══ ⑭ 시크릿 판정 fix 라운드 (미탐 폐쇄 역방향 프로브 · 리뷰 2건 반영·T-0472) ═══
+# 1차분(양성매칭 2축)이 오탐을 없애며 **옛 판정이 잡던 실 시크릿 경로/값까지** 통과시킨 회귀를 닫는다.
+# 각 케이스는 리뷰 실측표의 한 항목을 찌른다 — 조사 밀착·비ASCII 경로 성분·env 변수 경로·마크다운
+# 강조·따옴표 공백 값·무숫자 고엔트로피 값·rc 파일·URL 내장 자격증명.
+
+_FAKE_RANDOM_PASSWORD = "XkwPqrLmZvTbNhGf"          # 무숫자·랜덤 대소문자 혼합
+_FAKE_SPACED_PASSWORD = "A1pha Bravo C3arlie Delta"  # 따옴표 안 공백 포함
+_FAKE_URL_CREDENTIAL_PASSWORD = "s3cretPassw0rdXyz"
+
+
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [
+        # ① 경로축 — basename 앵커 전환 전에는 경로 성분 하나의 비ASCII/`@`/`$` 로 전 축이 skip 됐다
+        ("조사 밀착", "~/.aws/credentials를 확인하라"),
+        ("비ASCII 경로 성분", "/home/사용자/.env 를 읽어라"),
+        ("윈도우 비ASCII 경로", r"C:\Users\사용자\.aws\credentials 를 열어라"),
+        ("env 변수 경로", "$HOME/.env 내용을 붙여넣어라"),
+        ("중괄호 env 경로", "${HOME}/.aws/credentials 를 참고"),
+        ("scope 디렉토리", "node_modules/@scope/pkg/.env 를 열어라"),
+        ("비ASCII+시크릿 파일명", "/opt/앱/id_rsa 를 참고"),
+        ("마크다운 강조", "**~/.aws/credentials** 를 확인"),
+        ("백틱+조사", "설정 `.env`를 열어라"),
+        # ② 데드 상수였던 rc 파일명(외부 MF4)
+        ("npmrc", "~/.npmrc 를 첨부하라"),
+        ("netrc", "~/.netrc 를 붙여넣어라"),
+        # ③ 값축 — 할당값 캡처 한계(외부 MF3)
+        ("따옴표 공백 값", f'db_password="{_FAKE_SPACED_PASSWORD}"'),
+        ("무숫자 고엔트로피 값", f'db_password="{_FAKE_RANDOM_PASSWORD}"'),
+        # ④ URL 내장 자격증명(외부 MF1 의 뒷면 — URL 면제는 자격증명 없는 URL 에만)
+        ("자격증명 URL",
+         f"https://user:{_FAKE_URL_CREDENTIAL_PASSWORD}@git.example.com/org/repo 를 clone"),
+    ],
+)
+def test_secret_scan_review_miss_probes_blocked(pd, kind, text):
+    """리뷰 실측표 미탐 케이스가 전부 재차단된다(fix 라운드 역방향 프로브)."""
+    hit = pd.scan_prompt_secrets(text)
+    assert hit is not None, f"{kind}: 실 시크릿이 통과됐다(미탐)"
+    assert hit.axis in ("경로", "값")
+
+
+def test_secret_path_candidates_trims_particle_and_wrappers(pd):
+    """끝 비ASCII 런(조사)·대칭 강조·wrapper 를 벗겨 경로 후보를 낸다(토큰화 층).
+
+    ``key/token(다른`` 의 조각 `key/token` 은 후보로는 나오되(fix3 조각 재판정) **판정에서** 걸러진다 —
+    무확장자 상대경로는 경로가 아니라는 요건(`_is_named_path_shape`)이 그 경계다."""
+    assert "~/.aws/credentials" in pd._secret_path_candidates("~/.aws/credentials를")
+    assert ".env" in pd._secret_path_candidates("`.env`를")
+    assert "~/.aws/credentials" in pd._secret_path_candidates("**~/.aws/credentials**")
+    assert pd.scan_prompt_secrets("log 의 key/token(다른 계정) 집계") is None
+
+
+@pytest.mark.parametrize(
+    ("token", "matched"),
+    [
+        ("/home/사용자/.env", True),            # 비ASCII 디렉토리 — basename 은 깨끗
+        ("${HOME}/.aws/credentials", True),    # env 변수 전개 형태
+        ("node_modules/@scope/pkg/.env", True),
+        ("/opt/앱/id_rsa", True),
+        ("부재[insteadOf/credential", False),   # 산문 마커 — 실 코퍼스 오탐
+        ("`json`→token/input", False),
+        ("ctx_window_tokens_opencode", False),  # 경로 형태 아님
+    ],
+)
+def test_matching_secret_path_pattern_basename_anchor(pd, token, matched):
+    """경로 판정은 basename 앵커 + 산문 마커 배제 — 토큰 전문 strict 는 실 경로를 통째로 skip 했다."""
+    er = pd._load_external_review()
+    pattern = pd._matching_secret_path_pattern(
+        token, er._SECRET_DENYLIST_PATTERNS, er._matching_denylist_pattern)
+    assert (pattern is not None) is matched
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('db_password="A1pha Bravo C3arlie Delta"', "A1pha Bravo C3arlie Delta"),
+        ("db_password='A1pha Bravo C3arlie Delta'", "A1pha Bravo C3arlie Delta"),
+        ("db_password=`A1pha Bravo C3arlie Delta`", "A1pha Bravo C3arlie Delta"),
+        ("db_password=Q7x2Lm9Zp4Rt8Vw1", "Q7x2Lm9Zp4Rt8Vw1"),   # 따옴표 없는 값은 공백까지
+    ],
+)
+def test_assignment_value_captures_quoted_span(pd, text, expected):
+    """따옴표로 감싼 값은 닫는 따옴표까지 캡처 — 공백에서 끊겨 길이 미달로 미탐이던 갭(외부 MF3)."""
+    match = pd._ASSIGNMENT_RE.search(text)
+    assert pd._assignment_value(match) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (_FAKE_RANDOM_PASSWORD, True),        # 무숫자 랜덤 대소문자 혼합 — 완화로 열린 케이스
+        (_FAKE_SPACED_PASSWORD, True),        # 공백 포함(숫자 있음)
+        ("enforce_minimum_length", False),    # 무숫자 식별자 — 단어 구분자
+        ("MINIMUMLENGTHPOLICY", False),       # 단일 케이스(대문자만)
+        ("Thisisaverylongnote", False),       # 산문형 값 — 교대 밀도 미달
+        ("<YOUR_API_KEY_HERE>", False),       # 자리표시자
+    ],
+)
+def test_digitless_value_relaxation_table(pd, value, expected):
+    """무숫자 값 완화는 '단어 구분자 부재 + 대소문자 혼합 + 교대 밀도'로 조인다(엔트로피 단독 아님)."""
+    assert pd._looks_like_secret_value(value) is expected
+
+
+def test_digitless_relaxation_documented_overlap(pd):
+    """완화의 잔여 겹침 — 다중 hump CamelCase 값은 랜덤과 못 갈라 차단 쪽에 남는다(실측 표기).
+
+    발화 조건이 '좌변이 시크릿 키명' 이라 실 코퍼스에는 0건이다(§4.7 한계 표기와 같은 사실)."""
+    assert pd._looks_like_secret_value("ValueFormatKnownPrefix") is True
+    assert pd.scan_prompt_secrets("secret_rule: ValueFormatKnownPrefix") is not None
+    # 시크릿 키명 문맥이 아니면 값축은 발화하지 않는다(완화가 산문 전체로 번지지 않음)
+    assert pd.scan_prompt_secrets("rule_name: ValueFormatKnownPrefix") is None
+
+
+def test_url_endpoint_not_path_axis_but_credentials_url_blocked(pd):
+    """자격증명 없는 URL 은 경로축 비대상(외부 MF1) · userinfo 를 담은 URL 은 값축 차단."""
+    assert pd.scan_prompt_secrets("auth_url=https://idp.example.com/oauth/token") is None
+    hit = pd.scan_prompt_secrets(
+        f"https://user:{_FAKE_URL_CREDENTIAL_PASSWORD}@git.example.com/org/repo")
+    assert hit is not None
+    assert hit.pattern == pd._SECRET_RULE_URL_CREDENTIALS
+    assert hit.axis == "값"
+    assert _FAKE_URL_CREDENTIAL_PASSWORD not in hit.excerpt   # password 는 마스킹
+    assert "git.example.com" in hit.excerpt                   # 위치(호스트)는 남는다
+
+
+def test_path_axis_excerpt_masks_value_shaped_token(pd):
+    """경로축이라도 발췌 토큰이 값-형태면 마스킹한다(값축 원칙과 일관·내부 SF2)."""
+    secret_named_key = "Xk9Qm4Rt8Lp2Vb7Zw1Nc5.key"
+    hit = pd.scan_prompt_secrets(f"키 파일 {secret_named_key} 를 첨부")
+    assert hit is not None and hit.axis == "경로"
+    assert secret_named_key not in hit.excerpt
+    assert "마스킹" in hit.excerpt
+    # 값-형태가 아닌 경로/파일명은 그대로 보여야 고칠 수 있다(관측 가능성)
+    assert pd.scan_prompt_secrets("여기 credentials.env 참고").excerpt == "credentials.env"
+
+
+@pytest.mark.parametrize(
+    "name", ["secrets.py", "token.sh", "app_credentials.log", "id_rsa", ".npmrc"],
+)
+def test_prompt_file_gate_ignores_data_extension_condition(pd, tmp_path, name):
+    """④ prompt-file 게이트는 확장자 조건 없이 이름 앵커만 적용한다(내부 SF1).
+
+    파일 *내용이 통째로 전송*되는 지점이라 "소스/문서 확장자는 시크릿 아님"(③ 합성 프롬프트 스캔의
+    완화 전제)이 성립하지 않는다 — 같은 이름이라도 ③ 에서는 통과한다."""
+    secret_file = tmp_path / name
+    secret_file.write_text("x", encoding="utf-8")
+    assert pd._prompt_file_denylist_pattern(secret_file) is not None
+
+
+def test_prompt_scan_still_allows_source_file_mentions(pd):
+    """③ 합성 프롬프트 스캔의 완화는 유지 — 소스/문서 파일 *언급* 은 시크릿이 아니다."""
+    for mention in ("tests/test_secrets.py 를 고쳐라", "scripts/token.sh 를 읽어라"):
+        assert pd.scan_prompt_secrets(mention) is None
+
+
+def test_name_anchored_patterns_cached(pd):
+    """이름 앵커 패턴 tuple 은 캐시 재사용 — 토큰마다 재생성하면 긴 프롬프트에서 비용이 쌓인다."""
+    pd._name_anchored_patterns.cache_clear()
+    prompt = " ".join(f"토큰{i} ctx_window_tokens_opencode docs/note{i}.md" for i in range(50))
+    pd.scan_prompt_secrets(prompt)
+    info = pd._name_anchored_patterns.cache_info()
+    assert info.hits >= 1 and info.currsize == 1
+
+
+# ══ ⑮ 시크릿 판정 fix 라운드 2 (URL 안 크리덴셜·확장자·키 표기·문서 프롬프트명·T-0472) ══
+# 재검(내부 + codex R2)이 잡은 회귀/갭: ① URL 면제가 값축까지 껐고(URL 안 PAT·query token 통과)
+# ② 확장자 8자 상한이 `.properties` 를 못 봤고 ③ JSON 따옴표 키·camelCase 키를 못 읽었고
+# ④ 프롬프트 문서명(`T-0472-token-guard.md`)을 이 티켓이 없애려던 오탐 클래스 그대로 막았다.
+
+_FAKE_URL_PAT_CLONE = f"https://{_FAKE_GITHUB_PAT}@github.com/org/repo.git"
+
+
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [
+        ("URL userinfo 단독 PAT", f"git clone {_FAKE_URL_PAT_CLONE}"),
+        ("URL query token", f"curl https://api.example.com/v1/me?access_token={_FAKE_GITHUB_PAT}"),
+        ("URL query AWS key", f"curl https://api.example.com/v1/x?key={_FAKE_AWS_KEY_ID}"),
+        ("URL 경로 slack token",
+         f"webhook https://hooks.slack.com/services/{_FAKE_SLACK_TOKEN} 로 보내라"),
+        ("URL user:pass",
+         f"https://user:{_FAKE_URL_CREDENTIAL_PASSWORD}@git.example.com/org/repo 를 clone"),
+    ],
+)
+def test_secret_scan_credentials_inside_url_blocked(pd, kind, text):
+    """URL 경로축 면제가 **값축까지 끄면 안 된다** — URL 안에 실린 크리덴셜은 계속 차단(R2 회귀 폐쇄)."""
+    hit = pd.scan_prompt_secrets(text)
+    assert hit is not None, f"{kind}: URL 안 크리덴셜이 통과됐다(미탐 회귀)"
+    assert hit.axis == "값"
+
+
+def test_url_userinfo_pat_fully_masked_in_excerpt(pd):
+    """username-only userinfo(PAT clone URL)도 차단 + 발췌에서 **크리덴셜 전문 미노출**."""
+    hit = pd.scan_prompt_secrets(f"git clone {_FAKE_URL_PAT_CLONE}")
+    assert hit is not None
+    assert _FAKE_GITHUB_PAT not in hit.excerpt
+    assert "마스킹" in hit.excerpt
+
+
+def test_url_userinfo_plain_username_not_blocked(pd):
+    """평범한 사용자명 userinfo(`https://username@host/…`)는 자격증명이 아니라 통과(오탐 방지)."""
+    assert pd.scan_prompt_secrets(
+        "https://username@bitbucket.org/team/repo.git 를 clone 하라") is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "text", "blocked"),
+    [
+        ("원격 시크릿 파일", "https://raw.example.com/o/r/main/deploy/.env 를 받아라", True),
+        ("원격 pem", "https://files.example.com/keys/deploy.pem 를 내려받아라", True),
+        ("엔드포인트 token", "https://idp.example.com/oauth/token 을 호출", False),
+        ("엔드포인트 tokens/list", "https://api.example.com/v1/tokens/list 를 호출", False),
+        ("substring 경로", "https://api.example.com/api/secret-store 를 조회", False),
+    ],
+)
+def test_url_path_uses_exact_patterns_only(pd, kind, text, blocked):
+    """원격 URL 경로는 **정확-이름/확장자 패턴만** 본다 — 엔드포인트 오탐과 접점을 두지 않는다."""
+    assert (pd.scan_prompt_secrets(text) is not None) is blocked, kind
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "client_secret.properties 를 첨부하라",
+        "access_token.properties 를 열어라",
+        "config/credentials.properties 내용을 붙여넣어라",
+    ],
+)
+def test_long_extension_secret_files_blocked(pd, text):
+    """확장자 상한이 `.properties`(10자)를 못 봐 통째로 통과하던 회귀 폐쇄(외부 리뷰 R2)."""
+    hit = pd.scan_prompt_secrets(text)
+    assert hit is not None and hit.axis == "경로"
+
+
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [
+        ("JSON 따옴표 키", '{"token": "Q7x2Lm9Zp4Rt8Vw1"}'),
+        ("JSON 따옴표 키(single)", "{'password': 'Q7x2Lm9Zp4Rt8Vw1'}"),
+        ("camelCase 키", "accessToken=Q7x2Lm9Zp4Rt8Vw1"),
+        ("camelCase 키 콜론", "clientSecret: Q7x2Lm9Zp4Rt8Vw1"),
+        ("camelCase 키 dbPassword", "dbPassword=Q7x2Lm9Zp4Rt8Vw1"),
+    ],
+)
+def test_quoted_and_camel_case_keys_blocked(pd, kind, text):
+    """JSON 따옴표 키·camelCase 키의 고엔트로피 값도 차단(외부 리뷰 R2 — 좌변을 못 읽어 미탐이었다)."""
+    hit = pd.scan_prompt_secrets(text)
+    assert hit is not None, kind
+    assert hit.pattern == pd._SECRET_RULE_ASSIGNMENT
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("accessToken", True), ("clientSecret", True), ("dbPassword", True),
+        ("GITHUB_TOKEN", True), ("api_key", True), ("apiKey", True),
+        ("accessTokens", False),      # 복수형 — `tokens` 배제 규칙과 동형
+        ("ctx_window_tokens_opencode", False),
+        ("maxTokenCount", True),      # hump 뒤가 대문자 — 키명으로는 잡되 값 판정이 최종 필터
+        ("tokenizerName", False),     # 소문자 이어짐 — 크리덴셜 키 아님
+    ],
+)
+def test_secret_key_name_table(pd, key, expected):
+    """좌변 키명 판정 — 성분 경계 + camelCase hump. 소문자가 이어지는 합성어는 제외."""
+    assert pd._is_secret_key_name(key) is expected
+
+
+def test_markdown_link_path_blocked(pd):
+    """마크다운 링크 `[label](path)` 의 경로도 판정 대상 — `](` 경계에서만 좁게 분리(R2)."""
+    hit = pd.scan_prompt_secrets("[설정](~/.aws/credentials) 을 참고")
+    assert hit is not None and hit.axis == "경로"
+    # 경계 한계: 링크가 아닌 산문 대괄호는 여전히 분리하지 않는다(오탐 재발 방지)
+    assert pd.scan_prompt_secrets("`부재[insteadOf/credential` 표기") is None
+
+
+@pytest.mark.parametrize(
+    ("name", "blocked"),
+    [
+        ("T-0472-token-guard.md", False),      # 티켓 주제어를 담은 정상 프롬프트명(PM 12차 실사용)
+        ("secret-scan-review.markdown", False),
+        ("credential-flow.rst", False),
+        ("secrets.py", True), ("token.sh", True), ("app_credentials.log", True),
+        ("id_rsa", True), (".npmrc", True), (".env", True), ("credentials.env", True),
+    ],
+)
+def test_prompt_file_doc_extension_exemption(pd, tmp_path, name, blocked):
+    """④ 게이트: 문서 확장자는 이름-substring 패턴 면제(내용은 ⑧ 값축이 재스캔) · 그 외는 차단 유지."""
+    prompt_file = tmp_path / name
+    prompt_file.write_text("작업 지시", encoding="utf-8")
+    assert (pd._prompt_file_denylist_pattern(prompt_file) is not None) is blocked, name
+
+
+def test_prompt_file_doc_exemption_still_scans_content(pd, monkeypatch, tmp_path, capsys):
+    """문서 확장자 면제는 *이름* 뿐 — 내용에 실 크리덴셜이 있으면 합성 프롬프트 스캔이 잡는다."""
+    prompt = tmp_path / "T-0472-token-guard.md"
+    prompt.write_text(f"이 값을 써라: {_FAKE_GITHUB_PAT}", encoding="utf-8")
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(pd, monkeypatch,
+                   ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
+                   _enabled_conf(), fake)
+    assert rc == 1
+    assert _FAKE_GITHUB_PAT not in capsys.readouterr().err
+    assert fake.calls == []
+
+
+def test_glob_pattern_quotes_not_treated_as_path(pd):
+    """denylist glob 인용(`"*.key"`·`*.pem`)은 경로가 아니다 — 대칭 강조만 벗긴다(라인 코퍼스 실측)."""
+    assert pd.scan_prompt_secrets('denylist 에 "*.key" 를 추가하라') is None
+    assert pd.scan_prompt_secrets("`*.pem` 패턴을 문서화") is None
+    assert pd.scan_prompt_secrets("`.env.*` 패턴 설명을 보강") is None
+    # 대칭 강조는 계속 벗겨진다(미탐 폐쇄 유지)
+    assert pd.scan_prompt_secrets("**~/.aws/credentials** 를 확인") is not None
+
+
+def test_prose_slash_fragment_with_korean_root_not_blocked(pd):
+    """첫 성분이 비ASCII 인 슬래시 조각은 경로가 아니다(라인 코퍼스 실측 오탐)."""
+    assert pd.scan_prompt_secrets("(빈/leading-dash/credential-in-URL/비허용 scheme) 순서") is None
+    # 중간 성분의 비ASCII 는 여전히 실 경로로 인정(미탐 폐쇄 유지)
+    assert pd.scan_prompt_secrets("/home/사용자/.env 를 읽어라") is not None
+
+
+# ══ ⑯ 시크릿 판정 fix 라운드 3 (디렉토리 성분·wrapper 안 경로·URL 정규화·두문자어 키·T-0472) ══
+# codex R3 + 내부 재검이 잡은 잔여 우회: ① 디렉토리가 말해주는 시크릿(`/run/secrets/db_password`)
+# ② wrapper 안 경로(`파일(~/.aws/credentials)을`) ③ URL 경로 대소문자/쿼리값 ④ 두문자어 camelCase 키.
+# 각 조임은 **기계 분리 가능한 좁은 판정**만 쓴다 — 의도 분류가 필요한 경계는 주석/한계 표기로 박제.
+
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [
+        ("절대 경로 시크릿 디렉토리", "/run/secrets/db_password 를 읽어라"),
+        ("상대 경로 시크릿 디렉토리", "secrets/config.json 을 첨부하라"),
+        ("홈 .aws 디렉토리", "~/.aws/config 도 같이 보내라"),
+        ("중첩 credentials 디렉토리", "/opt/app/credentials/service.json 을 열어라"),
+        ("디렉토리 자체 언급", "/etc/secrets/ 아래 파일을 전부 붙여넣어라"),
+    ],
+)
+def test_secret_directory_segment_blocked(pd, kind, text):
+    """디렉토리 성분이 시크릿을 말해주면 파일 이름과 무관하게 차단(외부 리뷰 R3)."""
+    hit = pd.scan_prompt_secrets(text)
+    assert hit is not None, kind
+    assert hit.axis == "경로"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "secrets 라는 단어를 문서에서 통일하라",          # 맨 단어 — 디렉토리 성분 아님
+        "test_secret_scan0/prompt.md 형상을 재현",       # substring — 정확 세그먼트 아님
+        "docs/secretsmanager/overview.md 를 갱신",       # 성분이 정확히 `secrets` 가 아님
+        "my-secret-artifacts/ 규칙을 유지",              # substring
+    ],
+)
+def test_secret_directory_segment_is_exact_match_only(pd, text):
+    """정확-세그먼트 매칭 — substring 디렉토리(pytest tmp `…test_secret_scan0/`)는 안 걸린다(fix1 오탐)."""
+    assert pd.scan_prompt_secrets(text) is None
+
+
+def test_prompt_file_secret_directory_blocked_but_pytest_tmp_shape_not(pd, tmp_path):
+    """④ 게이트: `secrets/` 아래 프롬프트는 차단 · pytest tmp 형상(`…test_secret_scan0/`)은 통과.
+
+    fix1 이 없앤 조상-디렉토리 substring 오탐이 디렉토리 성분 검사로 되살아나지 않는지 못 박는다."""
+    secret_dir = tmp_path / "secrets"
+    secret_dir.mkdir()
+    inside = secret_dir / "prompt.md"
+    inside.write_text("작업 지시", encoding="utf-8")
+    assert pd._prompt_file_denylist_pattern(inside) == pd._SECRET_RULE_DIRECTORY
+
+    pytest_shape = tmp_path / "test_secret_scan0"
+    pytest_shape.mkdir()
+    clean = pytest_shape / "prompt.md"
+    clean.write_text("작업 지시", encoding="utf-8")
+    assert pd._prompt_file_denylist_pattern(clean) is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [
+        ("괄호 안 홈 경로", "파일(~/.aws/credentials)을 참고"),
+        ("괄호 안 절대 경로", "설정(/home/user/.env)을 열어라"),
+        ("대괄호 안 경로", "[설정 파일: /etc/app/.env] 을 확인"),
+        ("마크다운 링크", "[설정](~/.ssh/id_rsa) 을 참고"),
+    ],
+)
+def test_wrapper_wrapped_paths_blocked(pd, kind, text):
+    """wrapper(괄호·대괄호) 안 경로도 조각 재판정으로 잡는다 — 마커에서 토큰을 버리던 우회 폐쇄(R3)."""
+    hit = pd.scan_prompt_secrets(text)
+    assert hit is not None, kind
+    assert hit.axis == "경로"
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "`부재[insteadOf/credential` 표기(다른 계정)를 정리",
+        "log 의 key/token(다른 계정) 집계를 확인",
+        "opencode json 의 part.tokens.input(파싱) 확인",
+    ],
+)
+def test_fragment_rejudgement_keeps_prose_controls(pd, prose):
+    """조각 재판정이 옛 산문 오탐을 되살리지 않는다 — 무확장자 상대경로 요건이 경계."""
+    assert pd.scan_prompt_secrets(prose) is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "text", "blocked"),
+    [
+        ("URL 경로 대문자", "https://files.example.com/DEPLOY.PEM 를 받아라", True),
+        ("URL 쿼리 파일값", "https://host.example.com/download?file=.env 를 받아라", True),
+        ("URL 쿼리 pem", "https://host.example.com/get?path=deploy.PEM 를 받아라", True),
+        ("URL 쿼리 엔드포인트 파라미터", "https://api.example.com/v1/list?page=token&limit=20", False),
+        ("URL 경로 엔드포인트", "https://idp.example.com/oauth/token 을 호출", False),
+    ],
+)
+def test_url_path_normalization(pd, kind, text, blocked):
+    """URL 경로/쿼리값도 일반 경로와 같은 정규화(소문자) — 정확-이름/확장자 원칙은 불변(R3)."""
+    assert (pd.scan_prompt_secrets(text) is not None) is blocked, kind
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("XSRFToken", True), ("APIToken", True), ("AWSSecret", True), ("JWTSecret", True),
+        ("accessTokens", False), ("tokenizerName", False), ("tokenize", False),
+        ("SecretRule", False),                 # 앞 경계 없음(문장 첫 단어형)
+        ("ctx_window_tokens_opencode", False),
+    ],
+)
+def test_secret_key_name_acronym_boundary(pd, key, expected):
+    """두문자어 접두 camelCase(`XSRFToken`)까지 좌변으로 인정 — 복수/소문자 이어짐은 그대로 제외."""
+    assert pd._is_secret_key_name(key) is expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "XSRFToken=Q7x2Lm9Zp4Rt8Vw1",
+        "APIToken: Q7x2Lm9Zp4Rt8Vw1",
+        "AWSSecret=Q7x2Lm9Zp4Rt8Vw1",
+        '{"JWTSecret": "Q7x2Lm9Zp4Rt8Vw1"}',
+    ],
+)
+def test_acronym_camel_case_assignment_blocked(pd, text):
+    """두문자어 키 + 고엔트로피 값 할당은 차단(내부 리뷰 R3 실측 4형)."""
+    hit = pd.scan_prompt_secrets(text)
+    assert hit is not None and hit.pattern == pd._SECRET_RULE_ASSIGNMENT
+
+
+def test_url_userinfo_username_only_high_entropy_blocked(pd):
+    """username-only userinfo 분기의 load-bearing 형태 — 발급기관 prefix 가 **없는** 고엔트로피 값.
+
+    prefix 형(`ghp_…`)은 값축이 먼저 잡으므로 이 분기의 고유 커버리지는 이 케이스뿐이다(내부 리뷰 R3)."""
+    opaque = "XkwPqrLmZvTbNhGf1"
+    hit = pd.scan_prompt_secrets(f"https://{opaque}@git.internal/team/repo.git 를 clone")
+    assert hit is not None
+    assert hit.pattern == pd._SECRET_RULE_URL_CREDENTIALS
+    assert opaque not in hit.excerpt and "마스킹" in hit.excerpt
+    # 음성쌍 — 평범한 사용자명은 자격증명이 아니다
+    assert pd.scan_prompt_secrets("https://username@bitbucket.org/team/repo.git") is None
+
+
+def test_url_excerpt_masks_query_and_fragment_values(pd):
+    """URL 발췌는 userinfo 뿐 아니라 **쿼리/fragment 의 자격증명성 값**도 마스킹한다(외부 리뷰 R4).
+
+    파라미터 *이름* 과 경로형 값(`?file=.env`)은 남겨 위치 특정은 유지한다."""
+    query_secret, fragment_secret = "Q7x2Lm9Zp4Rt8Vw1", "XkwPqrLmZvTbNhGf1"
+    hit = pd.scan_prompt_secrets(
+        f"https://user:pass@host.example.com/?access_token={query_secret}")
+    assert query_secret not in hit.excerpt and "access_token=" in hit.excerpt
+    hit = pd.scan_prompt_secrets(
+        f"https://user:pass@host.example.com/page#{fragment_secret}")
+    assert fragment_secret not in hit.excerpt
+    hit = pd.scan_prompt_secrets("https://user:pass@host.example.com/download?file=.env")
+    assert "file=.env" in hit.excerpt   # 경로형 값은 그대로 — 무엇을 지울지 보여야 한다
+
+
+@pytest.mark.parametrize(
+    ("kind", "text", "blocked"),
+    [
+        ("경로 없는 URL 쿼리", "https://files.example?file=.env 를 받아라", True),
+        ("경로 없는 URL fragment", "https://files.example#deploy.pem 를 받아라", True),
+        ("경로 없는 URL 엔드포인트", "https://api.example?page=token&limit=20 을 호출", False),
+    ],
+)
+def test_url_without_path_still_checks_query(pd, kind, text, blocked):
+    """authority 뒤 경로가 없어도 쿼리/fragment 를 검사한다 — 조기 반환 우회 폐쇄(외부 리뷰 R4)."""
+    assert (pd.scan_prompt_secrets(text) is not None) is blocked, kind
+
+
+@pytest.mark.parametrize(
+    "name", [".ENV", "DEPLOY.PEM", "Credentials.env", "ID_RSA", ".NPMRC"],
+)
+def test_prompt_file_name_case_insensitive(pd, tmp_path, name):
+    """④ 게이트도 대소문자 무관 — `.ENV`·`DEPLOY.PEM` 이 내용 읽기 전에 통과하던 우회 폐쇄(R4)."""
+    prompt_file = tmp_path / name
+    prompt_file.write_text("x", encoding="utf-8")
+    assert pd._prompt_file_denylist_pattern(prompt_file) is not None, name
+
+
+def test_prompt_file_uppercase_doc_extension_still_exempt(pd, tmp_path):
+    """소문자 정규화가 문서 확장자 면제를 깨지 않는다(`T-0472-TOKEN-GUARD.MD` 통과)."""
+    prompt_file = tmp_path / "T-0472-TOKEN-GUARD.MD"
+    prompt_file.write_text("작업 지시", encoding="utf-8")
+    assert pd._prompt_file_denylist_pattern(prompt_file) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"토큰({_FAKE_GITHUB_PAT})을 쓴다",
+        f"키[{_FAKE_GITHUB_PAT}]를 넣어",
+    ],
+)
+def test_value_axis_splits_on_brackets(pd, text):
+    """값축 토큰화도 괄호/대괄호를 경계로 본다 — 한국어 관용 표기의 값축 비대칭 폐쇄(내부 리뷰 R4)."""
+    hit = pd.scan_prompt_secrets(text)
+    assert hit is not None and hit.pattern == pd._SECRET_RULE_VALUE_PREFIX
+    assert _FAKE_GITHUB_PAT not in hit.excerpt
+
+
+@pytest.mark.parametrize("text", ["deploy/id_rsa 를 참고", "keys/id_ed25519 를 첨부"])
+def test_exact_secret_filename_exempt_from_anchor_requirement(pd, text):
+    """정확 시크릿 파일명은 앵커 없는 상대경로여도 차단 — 이름 자체가 비모호(내부 리뷰 R4)."""
+    hit = pd.scan_prompt_secrets(text)
+    assert hit is not None and hit.axis == "경로"
+
+
+def test_extensionless_substring_relative_path_is_documented_gap(pd):
+    """잔여 창 박제(§4.7 한계 ④): 앵커·확장자 없는 substring 이름 상대경로는 미차단.
+
+    `etc/credentials` 는 산문 조각(`key/token`)과 형태가 같아 기계적으로 못 가른다 — 앵커가 붙으면
+    (`/etc/credentials`) 차단된다."""
+    assert pd.scan_prompt_secrets("etc/credentials 를 참고") is None
+    assert pd.scan_prompt_secrets("/etc/credentials 를 참고") is not None
+
+
+def test_relative_path_with_non_ascii_root_is_documented_boundary(pd):
+    """경계 박제: 상대경로 **첫 성분**이 비ASCII 면 경로축 비대상(§4.7 한계 ④)."""
+    assert pd.scan_prompt_secrets("문서/설정/.env 를 열어라") is None
+    # 앵커가 붙으면(절대·홈) 비ASCII 성분이 있어도 판정 대상
+    assert pd.scan_prompt_secrets("/문서/설정/.env 를 열어라") is not None

@@ -35,6 +35,8 @@ ROOT_CLAUDE = REPO / ".claude"
 TEMPLATE_CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 
 # 양 트리에서 byte-identical 이어야 하는 어댑터 산출물 (의도된 차이 없음).
+# 상호 참조: `tests/test_board_lint.py::_T0463_TOKEN_FORM_MIRRORS`(12파일·`.claude/` prefix 포함)가
+# 같은 불변식의 상위집합 — 거긴 이 동일성이 render-leak 면제의 근거라는 축이다. 한쪽 수정 시 같이 본다.
 IDENTICAL_RELPATHS = [
     "skills/pm-handoff/SKILL.md",
     "skills/pm-dev-delegate/SKILL.md",

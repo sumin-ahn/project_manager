@@ -520,7 +520,45 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
     # touches 가 비면 매칭 0 확정 — load_pages 스캔(깨진 페이지 warning 포함) 자체를 건너뛴다.
     if not touches:
         return []
+
+    # 접두 없는 기존 ticket은 normalizer 로드 자체를 건너뛴다. 부분 동기 adopter에
+    # repo_coordinates.py가 없어도 기존 repo-relative soft 알림은 그대로 살아야 한다.
+    prefixed = [path for path in touches if _has_worktree_touch_prefix(path)]
     try:
+        coords = _load_repo_coordinates() if prefixed else None
+    except RuntimeError as exc:
+        print(f"ticket_finish: repo 좌표 normalizer skew — {exc}", file=sys.stderr)
+        return None
+    if prefixed and coords is None:
+        for path in prefixed:
+            print(
+                f"ticket_finish: touch {path!r} 좌표 정규화 경고 — repo 좌표 normalizer "
+                f"로드 실패 ({TOOLS_DIR / 'repo_coordinates.py'}); 이 경로는 제외",
+                file=sys.stderr,
+            )
+        touches = [path for path in touches if not _has_worktree_touch_prefix(path)]
+    elif coords is not None:
+        error_type = getattr(coords, "RepoCoordinateError", RuntimeError)
+        normalized: list[str] = []
+        for path in touches:
+            if not _has_worktree_touch_prefix(path):
+                normalized.append(path)
+                continue
+            try:
+                normalized.append(coords.normalize_repo_path(path, pm_root=REPO))
+            except error_type as exc:
+                print(
+                    f"ticket_finish: touch {path!r} 좌표 정규화 경고 — {exc}; "
+                    "이 경로는 제외",
+                    file=sys.stderr,
+                )
+        touches = normalized
+    if not touches:
+        return []
+
+    try:
+        # 완료 알림도 domain affected와 같은 touches∩covers 계열이다. task stage와 별개로
+        # audit에서 잡힌 보조 소비이므로 같은 normalizer를 거쳐 recall 0 재발을 막는다.
         pages = domain.pages_for_touches(touches, domain.load_pages())
     except Exception:
         return None
@@ -623,6 +661,38 @@ def load_board_module(board_py: Path):
     return board
 
 
+def _load_repo_coordinates():
+    """공용 repo 좌표 normalizer를 경로 로드한다. 부재/손상은 stage_scope가 loud error로 바꾼다."""
+    import importlib.util
+
+    path = TOOLS_DIR / "repo_coordinates.py"
+    if not path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("_tf_repo_coordinates", path)
+    if spec is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+        _verify_engine_rev(mod, "repo_coordinates.py")
+    except Exception as exc:  # noqa: BLE001 — 호출부가 stage 불능 사유로 표면화.
+        if _is_engine_rev_skew(exc):
+            raise
+        return None
+    return mod
+
+
+_WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
+
+
+def _has_worktree_touch_prefix(path: str) -> bool:
+    """접두 없는 채택자에서 coordinate sibling 로드를 피하기 위한 경량 판정."""
+    norm = path.replace(os.sep, "/").replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return _WORKTREE_TOUCH_PREFIX.match(norm) is not None
+
+
 def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
     """**이 실행이 실제로 쓴** 산출물 경로 (선언원 ②·ADR-0074).
 
@@ -674,7 +744,8 @@ class RepoStagePlan(NamedTuple):
 def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
                 run_git: Callable[[list[str]], tuple[int, str]], *,
                 repo: Path | None = None, include_touches: bool = True,
-                include_engine_outputs: bool = True) -> StageScope:
+                include_engine_outputs: bool = True,
+                touches_workspace: Path | None = None) -> StageScope:
     """이 완료 부기가 stage 할 pathspec (REPO 상대·실제 `add` 가능한 **파일**) — ADR-0074.
 
     선언원 = 티켓 `touches` ∪ `engine_written_paths()`. **판정은 board.py 의 repo-중립
@@ -696,7 +767,27 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
     repo = Path(repo) if repo is not None else REPO
     declared: list[Path] = []
     if include_touches:
-        declared.extend(repo / touch for touch in get_ticket_touches(board_py, ticket_id))
+        touches = get_ticket_touches(board_py, ticket_id)
+        if touches_workspace is not None and any(
+                _has_worktree_touch_prefix(path) for path in touches):
+            try:
+                coords = _load_repo_coordinates()
+            except RuntimeError as exc:
+                return StageScope((), f"repo 좌표 normalizer skew ({exc})")
+            if coords is None:
+                return StageScope(
+                    (),
+                    f"repo 좌표 normalizer를 로드하지 못했다 ({TOOLS_DIR / 'repo_coordinates.py'})",
+                )
+            try:
+                touches = coords.normalize_repo_paths(
+                    touches,
+                    pm_root=REPO,
+                    workspace=touches_workspace,
+                )
+            except getattr(coords, "RepoCoordinateError", RuntimeError) as exc:
+                return StageScope((), f"touches 좌표 정규화 실패 ({exc})")
+        declared.extend(repo / touch for touch in touches)
     if include_engine_outputs:
         # PM-home 산출물은 ticket code worktree 가 아니라 이 도구의 설계 repo 에만 있다.
         declared.extend(engine_written_paths(board, ticket_id, log_file))
@@ -1023,7 +1114,8 @@ class TicketFinisher:
             return self._run_git_stdout_at_fn(self._task_workspace, args)
 
         return stage_scope(ticket_id, self._board_py, self._log_file, run_git,
-                           repo=self._task_workspace, include_engine_outputs=False)
+                           repo=self._task_workspace, include_engine_outputs=False,
+                           touches_workspace=self._task_workspace)
 
     def _default_status_entries(self) -> tuple[tuple[str, str], ...]:
         """워킹트리 상태 `((XY, 경로), …)` (loud 보고 입력·ADR-0074) — 실 해소.

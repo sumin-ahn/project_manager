@@ -4,6 +4,9 @@ type: concept            # concept | guide | research
 covers:                  # 담당 코드 (글롭). 코드-무관 개념이면 이 줄 비움.
   - path/to/**
 repo: self               # verified_at/covers 소유 시계: self | upstream(local.conf 의 로컬 경로)
+                         # ⚠ upstream 은 freshness 판정 + domain 소환(affected/capture 의 worktree
+                         # touches 매칭·T-0473)이 모두 local.conf `upstream=` 해소에 걸린다 —
+                         # 미설정/URL/경로 이동이면 covers 가 맞아도 소환 제외(경고 동반).
 derived: false           # 사람 author. (코드서 자동생성이면 true·손대지 마)
 updated: {{DATE}}
 ---

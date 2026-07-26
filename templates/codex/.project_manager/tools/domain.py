@@ -73,6 +73,13 @@ _GIT_LOG_FORMAT = "--format=%cI"
 
 GIT_TIMEOUT_SECONDS = 120
 
+# normalized touch checkout ↔ 페이지 소유 checkout 정체성 캐시(T-0473 R5).
+# domain affected/capture는 touch×page 카테시안에 가까운 반복 매칭을 하므로 checkout별
+# `rev-parse --git-common-dir` 결과(실패 포함)를 한 번만 구하고, 경로쌍 최종 판정도 재사용한다.
+# 프로세스 수명이 곧 CLI 한 번의 배치 수명이라 별도 invalidation은 불필요하다.
+_REPOSITORY_IDENTITY_CACHE: dict[Path, tuple[Path | None, str | None]] = {}
+_REPOSITORY_MATCH_CACHE: dict[tuple[Path, Path], tuple[bool | None, str | None]] = {}
+
 
 # ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
@@ -83,7 +90,7 @@ GIT_TIMEOUT_SECONDS = 120
 ENGINE_REV = "v1.4.3"
 
 # rev 스탬프를 지닌(=T-0397 계측된) 형제 파일만 대조 대상. 계측 확대 시 여기 추가.
-_STAMPED_SIBLINGS = frozenset({"board.py"})
+_STAMPED_SIBLINGS = frozenset({"board.py", "repo_coordinates.py"})
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -136,6 +143,58 @@ def _load_board():
     return _load_module("board", "board.py")
 
 
+def _load_repo_coordinates():
+    """공용 repo 좌표 normalizer를 로드한다. 부재/손상은 호출부가 fail-loud 한다."""
+    return _load_module("repo_coordinates", "repo_coordinates.py")
+
+
+_WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
+
+
+def _has_worktree_touch_prefix(path: str) -> bool:
+    """normalizer를 로드하지 않고도 접두 사용 여부만 표기 변형에 견고하게 판정한다."""
+    norm = path.replace(os.sep, "/").replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return _WORKTREE_TOUCH_PREFIX.match(norm) is not None
+
+
+def _normalize_ticket_touches(touches: list[str]) -> list[str]:
+    """ticket PM-home 좌표를 경로별 advisory 경고와 함께 정규화한다.
+
+    접두가 하나도 없으면 모듈을 아예 로드하지 않아 부분 동기 adopter의 기존 repo-relative
+    동작을 보존한다. 조회 표면은 한 경로 오류가 배치를 죽이지 않는다. 오류 경로는 loud
+    경고 후 제외하고 나머지를 계속 처리한다(검증 없이 strip하거나 원문을 하류에 넘기지 않음).
+    """
+    if not any(_has_worktree_touch_prefix(path) for path in touches):
+        return touches
+    coords = _load_repo_coordinates()
+    if coords is None:
+        for path in touches:
+            if _has_worktree_touch_prefix(path):
+                print(
+                    f"domain: touch {path!r} 좌표 정규화 경고 — repo 좌표 normalizer "
+                    f"로드 실패 ({TOOLS_DIR / 'repo_coordinates.py'}); 이 경로는 제외",
+                    file=sys.stderr,
+                )
+        return [path for path in touches if not _has_worktree_touch_prefix(path)]
+
+    error_type = getattr(coords, "RepoCoordinateError", RuntimeError)
+    normalized: list[str] = []
+    for path in touches:
+        if not _has_worktree_touch_prefix(path):
+            normalized.append(path)
+            continue
+        try:
+            normalized.append(coords.normalize_repo_path(path, pm_root=REPO))
+        except error_type as exc:
+            print(
+                f"domain: touch {path!r} 좌표 정규화 경고 — {exc}; 이 경로는 제외",
+                file=sys.stderr,
+            )
+    return normalized
+
+
 # ── covers 글롭 매칭 (작은 glob→regex·stdlib) ────────────────────────────────
 
 
@@ -186,6 +245,29 @@ def _path_matches_covers(path: str, covers: list[str]) -> bool:
     return any(_glob_to_regex(glob).match(path) for glob in covers)
 
 
+def _path_or_directory_matches_covers(path: str, covers: list[str]) -> bool:
+    """파일 exact/glob 또는 디렉토리 touch 아래 covers를 advisory 매치한다.
+
+    tickets의 지배적 실형태는 ``.project_manager/tools``·``tests`` 같은 디렉토리
+    선언이다. covers 원문이 ``<touch>/`` 아래에서 시작하면 그 하위 파일/글롭을 담당하는
+    페이지로 소환한다. affected/capture는 soft 표면이라 확장자 없는 파일을 디렉토리로
+    과대 해석할 가능성보다 recall 0 방지가 우선이다.
+    """
+    if _path_matches_covers(path, covers):
+        return True
+    directory = path.rstrip("/")
+    if not directory:
+        return False
+    prefix = directory + "/"
+    for glob in covers:
+        normalized_glob = glob.replace(os.sep, "/").replace("\\", "/")
+        while normalized_glob.startswith("./"):
+            normalized_glob = normalized_glob[2:]
+        if normalized_glob.startswith(prefix):
+            return True
+    return False
+
+
 # ── staleness (git 기반·covers→pathspec·fail-soft) ───────────────────────────
 # 페이지 `covers` 코드가 페이지 `updated` *후* git 커밋된 적 있으면 stale = "페이지 지식이
 # 코드보다 뒤처졌을 수 있다"(ADR-0018 Q3). enforcement 아닌 visibility — ⚠ 표시·lint
@@ -223,12 +305,16 @@ def _real_git_runner(cwd: Path) -> GitRunner:
     return runner
 
 
-def _page_owner_git_runner(page: dict) -> GitRunner | None:
-    """페이지 `repo:`를 소유 checkout runner로 해소한다(date freshness 축·T-0470).
+def _page_owner_repo(page: dict) -> tuple[Path | None, str | None]:
+    """페이지 ``repo:`` 채널을 소유 checkout 실경로로 해소한다(T-0470/T-0473).
 
     board의 `_freshness_owner_repo`가 `self`/`upstream` 해소의 단일 진실이다. 미지원/빈 repo,
-    upstream 미설정·URL·이동 등은 runner를 만들지 않아 `page_stale`이 unknown(None)으로
-    떨어진다. 구 board(리졸버 부재)와 board 로드 불가는 기존 self 시계로 자연 퇴화한다.
+    upstream 미설정·URL·이동 등은 ``(None, reason)``으로 보존한다. 구 board(리졸버 부재)와
+    board 로드 불가는 키 부재/명시 self만 기존 self checkout으로 자연 퇴화한다.
+
+    freshness runner와 normalized touch 매칭이 이 seam을 공유한다. 후자는 반환 checkout과
+    ``NormalizedRepoPath.workspace``의 git common-dir 정체성을 대조해 멀티-repo 동명
+    상대경로 오매칭을 막되, 같은 repo의 다른 linked-worktree 슬롯은 허용한다.
     """
     board = _load_board()
     resolver = getattr(board, "_freshness_owner_repo", None) if board is not None else None
@@ -237,16 +323,110 @@ def _page_owner_git_runner(page: dict) -> GitRunner | None:
         # legacy self checkout으로 퇴화하고 그 밖의 값은 unknown(None).
         owner = page.get("repo", "self")
         if not isinstance(owner, str) or owner.strip() != "self":
-            return None
-        return _real_git_runner(REPO)
+            return (None, "페이지 repo 소유 checkout resolver 부재")
+        try:
+            return (REPO.resolve(), None)
+        except (OSError, RuntimeError) as exc:
+            return (None, f"self 소유 checkout 해소 실패: {exc}")
     try:
         owner = page["repo"] if "repo" in page else "self"
-        owner_repo, _owner_error = resolver(owner)
-    except Exception:  # noqa: BLE001 — owner 해소 실패는 stale unknown.
-        return None
+        owner_repo, owner_error = resolver(owner)
+    except Exception as exc:  # noqa: BLE001 — owner 해소 실패는 stale unknown.
+        return (None, f"페이지 repo 소유 checkout 해소 예외: {exc}")
+    if owner_repo is None:
+        return (None, owner_error or "페이지 repo 소유 checkout 미해소")
+    try:
+        return (Path(owner_repo).resolve(), None)
+    except (OSError, RuntimeError) as exc:
+        return (None, f"페이지 repo 소유 checkout 실경로 해소 실패: {exc}")
+
+
+def _page_owner_git_runner(page: dict) -> GitRunner | None:
+    """페이지 `repo:`를 소유 checkout runner로 해소한다(date freshness 축·T-0470)."""
+    owner_repo, _owner_error = _page_owner_repo(page)
     if owner_repo is None:
         return None
     return _real_git_runner(owner_repo)
+
+
+def _repository_identity(checkout: Path) -> tuple[Path | None, str | None]:
+    """checkout의 저장소 정체성인 해소된 git common-dir를 반환한다(T-0473 R5).
+
+    linked worktree 슬롯들은 checkout 절대경로가 달라도 `--git-common-dir`를 공유한다.
+    반대로 별개 저장소는 같은 상대경로 파일을 가져도 common-dir가 다르다. git 실패·빈 출력·
+    비-git 디렉토리는 정체성을 추측하지 않고 `(None, reason)`으로 보수적으로 제외한다.
+    성공과 실패를 모두 checkout 실경로별 캐시해 page×touch 반복 subprocess를 막는다.
+    """
+    try:
+        resolved = Path(checkout).resolve()
+    except (OSError, RuntimeError) as exc:
+        return (None, f"checkout 실경로 해소 실패: {exc}")
+    cached = _REPOSITORY_IDENTITY_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+
+    try:
+        rc, out = _real_git_runner(resolved)(["rev-parse", "--git-common-dir"])
+    except Exception as exc:  # noqa: BLE001 — 주입 runner 예외도 fail-closed.
+        result = (None, f"git common-dir 호출 예외: {exc}")
+        _REPOSITORY_IDENTITY_CACHE[resolved] = result
+        return result
+    common_dir_text = out.strip()
+    if rc != 0 or not common_dir_text or "\n" in common_dir_text:
+        reason = (
+            f"git common-dir 해소 실패(rc={rc})"
+            if rc != 0 else "git common-dir 출력이 비었거나 잘못됨"
+        )
+        result = (None, reason)
+        _REPOSITORY_IDENTITY_CACHE[resolved] = result
+        return result
+
+    try:
+        common_dir = Path(common_dir_text)
+        if not common_dir.is_absolute():
+            common_dir = resolved / common_dir
+        common_dir = common_dir.resolve()
+    except (OSError, RuntimeError) as exc:
+        result = (None, f"git common-dir 실경로 해소 실패: {exc}")
+        _REPOSITORY_IDENTITY_CACHE[resolved] = result
+        return result
+    if not common_dir.is_dir():
+        result = (None, f"git common-dir 디렉토리 부재: {common_dir}")
+        _REPOSITORY_IDENTITY_CACHE[resolved] = result
+        return result
+
+    result = (common_dir, None)
+    _REPOSITORY_IDENTITY_CACHE[resolved] = result
+    return result
+
+
+def _same_repository_checkouts(
+        touch_checkout: Path, page_checkout: Path) -> tuple[bool | None, str | None]:
+    """두 checkout이 같은 git common-dir를 쓰는지 경로쌍 캐시로 판정한다.
+
+    `True`/`False`는 각각 동일/별개 저장소, `None`은 어느 한쪽 git 정체성 미해소다.
+    """
+    try:
+        touch_resolved = Path(touch_checkout).resolve()
+        page_resolved = Path(page_checkout).resolve()
+    except (OSError, RuntimeError) as exc:
+        return (None, f"checkout 실경로 해소 실패: {exc}")
+    key = (touch_resolved, page_resolved)
+    cached = _REPOSITORY_MATCH_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    touch_identity, touch_error = _repository_identity(touch_resolved)
+    if touch_identity is None:
+        result = (None, f"touch 저장소 정체성 미해소: {touch_error}")
+    else:
+        page_identity, page_error = _repository_identity(page_resolved)
+        if page_identity is None:
+            result = (None, f"페이지 저장소 정체성 미해소: {page_error}")
+        else:
+            result = (touch_identity == page_identity, None)
+    _REPOSITORY_MATCH_CACHE[key] = result
+    return result
 
 
 def _escape_glob_literals(g: str) -> str:
@@ -659,24 +839,99 @@ def load_pages(domain_dir: Path = DOMAIN_DIR, *, strict: bool = False) -> list[d
     return pages
 
 
-def pages_for_path(path: str, pages: list[dict]) -> list[dict]:
+def pages_for_path(
+        path: str, pages: list[dict], *, warn_owner_mismatch: bool = True) -> list[dict]:
     """주어진 repo-relative 코드 경로를 covers 글롭으로 담는 페이지들을 돌려준다.
 
     경로 구분자를 POSIX(`/`)로 정규화해 매칭한다(Windows 백슬래시 무관). os.sep 뿐
     아니라 백슬래시도 직접 치환해 POSIX 실행 중 들어온 Windows 경로도 정규화한다. 빈
-    covers 페이지(코드-무관 개념)는 어떤 경로도 매치하지 않는다.
+    covers 페이지(코드-무관 개념)는 어떤 경로도 매치하지 않는다. normalized touch는
+    owner 채널뿐 아니라 검증된 workspace의 **저장소 정체성**도 소비한다. 페이지 ``repo:``
+    채널을 ``board._freshness_owner_repo``로 해소한 checkout과 workspace가 같은 git
+    common-dir를 공유할 때만 매치한다. 소유 checkout/정체성 미해소·별개 저장소와 self 채널
+    탈락은 advisory를 낸다.
     """
+    owner = getattr(path, "owner", None)
+    touch_repo = getattr(path, "repo", None)
+    touch_workspace = getattr(path, "workspace", None)
     norm = path.replace(os.sep, "/").replace("\\", "/")
-    return [page for page in pages if _path_matches_covers(norm, page["covers"])]
+    while norm.startswith("./"):
+        norm = norm[2:]
+    covers_matches = [
+        page for page in pages
+        if _path_or_directory_matches_covers(norm, page["covers"])
+    ]
+    matches: list[dict] = []
+    unresolved: list[str] = []
+    mismatched: list[tuple[Path, Path]] = []
+    for page in covers_matches:
+        if owner is None:
+            matches.append(page)
+            continue
+        if page.get("repo", "self") != owner:
+            continue
+        # Owned path인데 검증 workspace가 없으면 repo 귀속을 증명할 수 없다. 문자열 채널만으로
+        # 채택하면 멀티-repo의 같은 상대경로가 다시 오매칭되므로 보수적으로 제외한다.
+        if touch_workspace is None:
+            unresolved.append("touch workspace 메타데이터 없음")
+            continue
+        page_repo, owner_error = _page_owner_repo(page)
+        if page_repo is None:
+            unresolved.append(owner_error or "페이지 repo 소유 checkout 미해소")
+            continue
+        try:
+            workspace = Path(touch_workspace).resolve()
+        except (OSError, RuntimeError) as exc:
+            unresolved.append(f"touch workspace 실경로 해소 실패: {exc}")
+            continue
+        same_repository, identity_error = _same_repository_checkouts(
+            workspace, page_repo)
+        if same_repository is None:
+            unresolved.append(identity_error or "저장소 정체성 미해소")
+            continue
+        if not same_repository:
+            mismatched.append((workspace, page_repo))
+            continue
+        matches.append(page)
+    if (
+            warn_owner_mismatch
+            and owner == "upstream"
+            and not matches
+            and any(page.get("repo", "self") == "self" for page in covers_matches)):
+        print(
+            f"domain: touch {str(path)!r} covers 는 일치하나 repo 채널이 self — repin 검토",
+            file=sys.stderr,
+        )
+    if warn_owner_mismatch and unresolved:
+        reasons = "; ".join(dict.fromkeys(unresolved))
+        print(
+            f"domain: touch {str(path)!r} repo({touch_repo!r}) covers 는 일치하나 "
+            f"소유 checkout 미해소 — 매칭 제외 ({reasons})",
+            file=sys.stderr,
+        )
+    if warn_owner_mismatch and mismatched:
+        workspace, page_repo = mismatched[0]
+        print(
+            f"domain: touch {str(path)!r} repo({touch_repo!r}) workspace={workspace}와 "
+            f"페이지 소유 checkout={page_repo}의 저장소 정체성이 다름 — 타 repo 매칭 제외",
+            file=sys.stderr,
+        )
+    return matches
 
 
-def uncovered_paths(touches: list[str] | None, pages: list[dict] | None = None) -> list[str]:
+def uncovered_paths(
+        touches: list[str] | None,
+        pages: list[dict] | None = None,
+        *,
+        warn_owner_mismatch: bool = True,
+) -> list[str]:
     """touch 경로 중 *어느 페이지 covers 글롭에도 안 잡힌* 것들을 돌려준다 (coverage gap·ADR-0018 §7b).
 
     capture(채록)의 gap 검출 — touched 코드인데 담당 domain 페이지가 없는 경로 = 후보
     신규 페이지. 각 touch 에 `pages_for_path`(매칭 로직 재사용·DRY)를 적용해 매칭 0 인 것만
-    남긴다. **발견 순서 보존·dedup**(같은 경로가 touches 에 중복돼도 한 번만). 비-문자열
-    touch·빈/공백 경로는 방어적으로 건너뛴다(`pages_for_touches` 동형). 빈/None touches → [].
+    남긴다. **발견 순서 보존·dedup 키=(owner, repo, 경로)**라 같은 repo 좌표 중복만 접고,
+    문자열 값이 같은 self/upstream·서로 다른 repo gap은 각각 보존한다. 비-문자열 touch·
+    빈/공백 경로는 방어적으로 건너뛴다(`pages_for_touches` 동형). 빈/None touches → [].
 
     `pages` 미주입 시 `load_pages()`(실 domain/ 스캔·부재 시 []). domain/ 가 비면 *모든*
     touch 가 uncovered (담당 페이지 0) — solo·신규 clone 무영향(capture 가 gap 절을 띄움).
@@ -686,18 +941,28 @@ def uncovered_paths(touches: list[str] | None, pages: list[dict] | None = None) 
     if pages is None:
         # cmd_*·pages_for_touches 동형 — 호출 시점의 모듈 전역 DOMAIN_DIR 을 읽는다.
         pages = load_pages(DOMAIN_DIR)
-    seen: set[str] = set()
+    seen: set[tuple[object, object, str]] = set()
     out: list[str] = []
     for touch in touches:
         if not isinstance(touch, str):
             continue
-        norm = touch.strip()
+        stripped = touch.strip()
+        # NormalizedRepoPath는 str subclass에 owner/repo 메타데이터를 단다. 이미 trim된
+        # 좌표에서 touch.strip()을 호출하면 plain str로 강등되어 repo 귀속이 유실되므로
+        # 값이 그대로면 원 객체를 보존한다. raw whitespace 입력만 plain trimmed str로 바꾼다.
+        norm = touch if stripped == touch else stripped
         if not norm:
             continue
-        if norm in seen:
+        key = (
+            getattr(norm, "owner", None),
+            getattr(norm, "repo", None),
+            str(norm),
+        )
+        if key in seen:
             continue
-        seen.add(norm)
-        if not pages_for_path(norm, pages):
+        seen.add(key)
+        if not pages_for_path(
+                norm, pages, warn_owner_mismatch=warn_owner_mismatch):
             out.append(norm)
     return out
 
@@ -728,7 +993,10 @@ def pages_for_touches(touches: list[str] | None, pages: list[dict] | None = None
     for touch in touches:
         if not isinstance(touch, str):
             continue
-        norm = touch.strip()
+        stripped = touch.strip()
+        # uncovered_paths와 pages_for_touches가 같은 좌표/owner를 pages_for_path에 넘겨야
+        # coverage gap도 타 repo 페이지로 거짓 은닉되지 않는다.
+        norm = touch if stripped == touch else stripped
         if not norm:
             continue
         for page in pages_for_path(norm, pages):
@@ -906,6 +1174,16 @@ def cmd_affected(args: argparse.Namespace) -> int:
     """ticket touches(또는 --touches) ∩ domain covers 로 영향받는 페이지를 출력한다."""
     if args.ticket:
         touches = _touches_from_ticket(args.ticket)
+        try:
+            # --ticket touches만 PM-home 좌표 계약을 가진다. 사용자가 직접 넘긴 --touches는
+            # 이미 이 CLI의 repo 상대 입력 계약이므로 변환하지 않는다.
+            touches = _normalize_ticket_touches(touches)
+        except RuntimeError as exc:
+            print(
+                f"domain: ticket {args.ticket} touches 좌표 정규화 실패 — {exc}",
+                file=sys.stderr,
+            )
+            return 1
     else:
         # --touches a,b,c — 콤마분리·공백 trim·빈 토큰 제거.
         touches = [t.strip() for t in args.touches.split(",") if t.strip()]
@@ -949,7 +1227,10 @@ def cmd_capture(args: argparse.Namespace) -> int:
       1. **영향 페이지** — touches ∩ covers 매칭(`pages_for_touches`) + `⚠ ` stale 마커(T-0082).
       2. **coverage gap** — 어느 페이지 covers 에도 안 잡힌 touch 경로(`uncovered_paths`)
          = 후보 신규 페이지. 비면 절 생략.
-    둘 다 없으면 `(채록할 domain 변화 없음)`. **read-only·항상 exit 0**(advisory·작업 무차단).
+    둘 다 없으면 `(채록할 domain 변화 없음)`. 정상 좌표에서는 **read-only·exit 0**
+    (advisory·작업 무차단). ticket의 worktree 접두가 lease/경로 안전성 검증에 실패하면 해당
+    touch를 stderr 경고 후 제외하고 나머지를 계속 조회한다(exit 0). 쓰기 표면의 stage는 같은
+    좌표 오류를 빈 스코프로 흘리지 않고 명시 오류로 차단한다(fail-loud).
     """
     if args.tickets:
         # --tickets 는 nargs='+' — 공백 나열(T-a T-b)·콤마분리("T-a,T-b") 둘 다 수용한다
@@ -958,13 +1239,23 @@ def cmd_capture(args: argparse.Namespace) -> int:
         # 위임 — 콤마-단일-문자열 호환을 그대로 보존한다(join 후 split 이 양형식을 흡수). ticket
         # ID 는 공백을 안 담으므로 space-split 이 무모호(경로를 받는 --touches 는 콤마 유지·비대칭).
         touches = _touches_from_tickets(",".join(args.tickets))
+        try:
+            touches = _normalize_ticket_touches(touches)
+        except RuntimeError as exc:
+            print(
+                f"domain: tickets touches 좌표 정규화 실패 — {exc}",
+                file=sys.stderr,
+            )
+            return 1
     else:
         # --touches a,b,c — affected 동형(콤마분리·공백 trim·빈 토큰 제거).
         touches = [t.strip() for t in args.touches.split(",") if t.strip()]
 
     pages = load_pages(DOMAIN_DIR)
     affected = pages_for_touches(touches, pages)
-    gaps = uncovered_paths(touches, pages)
+    # pages_for_touches가 owner-mismatch advisory를 이미 냈다. gap 계산은 같은 touch를 다시
+    # 보므로 여기서는 중복 경고만 끄고 owner 필터/coverage 판정은 그대로 쓴다.
+    gaps = uncovered_paths(touches, pages, warn_owner_mismatch=False)
 
     if not affected and not gaps:
         print("(채록할 domain 변화 없음)")

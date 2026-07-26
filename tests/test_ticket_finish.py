@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -427,6 +428,120 @@ def test_affected_domain_titles_uses_pages_for_touches(tf, tmp_path, monkeypatch
     monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
     monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
     assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == [("영향페이지", False)]
+
+
+def test_affected_domain_titles_normalizes_pm_home_worktree_touch(
+        tf, tmp_path, monkeypatch):
+    """handoff 완료 뒤 idle slot도 지속 소유 매핑으로 정규화해 soft 알림 recall을 보존한다."""
+    slot = "work/project_manager_1"
+    (tmp_path / slot).mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
+        '"session":"","state":"idle"}]}',
+        encoding="utf-8",
+    )
+    seen = []
+
+    class _FakeDomain:
+        @staticmethod
+        def load_pages():
+            return []
+
+        @staticmethod
+        def pages_for_touches(touches, pages):
+            seen.extend(touches)
+            return [{"title": "완료 좌표 페이지"}]
+
+        @staticmethod
+        def _real_git_runner(repo):
+            return lambda argv: (0, "")
+
+        @staticmethod
+        def page_stale(page, *, git_runner=None):
+            return False
+
+    monkeypatch.setattr(tf, "REPO", tmp_path)
+    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    monkeypatch.setattr(
+        tf,
+        "get_ticket_touches",
+        lambda bp, tid: [f"{slot}/src/x.py"],
+    )
+
+    assert tf.affected_domain_titles("T-0473", tf.BOARD_PY) == [
+        ("완료 좌표 페이지", False),
+    ]
+    assert seen == ["src/x.py"]
+
+
+def test_affected_domain_titles_bad_coordinate_warns_per_path_and_continues(
+        tf, tmp_path, monkeypatch, capsys):
+    """read-only soft 알림은 한 경로의 귀속 오류 때문에 유효한 나머지를 버리지 않는다."""
+    registered = "work/project_manager_1"
+    (tmp_path / registered).mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
+        '"session":"","state":"idle"}]}',
+        encoding="utf-8",
+    )
+    seen = []
+
+    class _FakeDomain:
+        @staticmethod
+        def load_pages():
+            return []
+
+        @staticmethod
+        def pages_for_touches(touches, pages):
+            seen.extend(touches)
+            return [{"title": "남은 페이지"}] if "src/valid.py" in touches else []
+
+        @staticmethod
+        def _real_git_runner(repo):
+            return lambda argv: (0, "")
+
+        @staticmethod
+        def page_stale(page, *, git_runner=None):
+            return False
+
+    monkeypatch.setattr(tf, "REPO", tmp_path)
+    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    monkeypatch.setattr(
+        tf, "get_ticket_touches",
+        lambda bp, tid: ["work/project_manager_2/src/bad.py", "src/valid.py"],
+    )
+
+    assert tf.affected_domain_titles("T-0473", tf.BOARD_PY) == [
+        ("남은 페이지", False),
+    ]
+    assert seen == ["src/valid.py"]
+    err = capsys.readouterr().err
+    assert "좌표 정규화 경고" in err and "slot 불일치" in err
+
+
+def test_affected_domain_titles_nonprefixed_touches_skip_coordinate_loader(
+        tf, monkeypatch):
+    """접두 없는 soft 조회는 부분 동기 adopter에서 normalizer를 요구하지 않는다."""
+    class _FakeDomain:
+        @staticmethod
+        def load_pages():
+            return []
+
+        @staticmethod
+        def pages_for_touches(touches, pages):
+            return []
+
+    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
+    monkeypatch.setattr(
+        tf, "_load_repo_coordinates",
+        lambda: (_ for _ in ()).throw(AssertionError("normalizer를 로드하면 안 됨")),
+    )
+    assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == []
 
 
 def test_affected_domain_titles_empty_touches_skips_load_pages(tf, monkeypatch):
@@ -1127,7 +1242,8 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
     calls = []
 
     def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
-                   include_touches=True, include_engine_outputs=True):
+                   include_touches=True, include_engine_outputs=True,
+                   touches_workspace=None):
         repo = Path(repo or home)
         calls.append((repo, include_touches, include_engine_outputs))
         if include_engine_outputs:
@@ -1179,7 +1295,8 @@ def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monk
     monkeypatch.setattr(tf, "REPO", home)
 
     def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
-                   include_touches=True, include_engine_outputs=True):
+                   include_touches=True, include_engine_outputs=True,
+                   touches_workspace=None):
         return tf.StageScope((("home.md",) if include_engine_outputs else ("code.py",)), None)
 
     monkeypatch.setattr(tf, "stage_scope", fake_scope)
@@ -1233,3 +1350,195 @@ def test_task_machine_parsers_use_stdout_only_not_mutation_stderr(tf, tmp_path, 
     assert finisher._task_stage_scope("T-0437") == tf.StageScope(("tests/new.py",), None)
     assert finisher._default_status_entries_at(worktree) == (("??", "tests/new.py"),)
     assert [args[0] for _, args in parser_calls] == ["ls-files", "status"]
+
+
+def _write_coordinate_stage_board(tmp_path, touches: list[str]) -> Path:
+    """touches와 file-only stage primitive를 제공하는 hermetic board 모듈."""
+    path = tmp_path / "board_coordinate_stage.py"
+    path.write_text(
+        f"ENGINE_REV = {_real_engine_rev()!r}\n"
+        "def find_ticket(ticket_id):\n"
+        "    return ('open', 'ticket')\n"
+        "def load_ticket(path):\n"
+        f"    return ({{'touches': {touches!r}}}, 'body')\n"
+        "def git_scope_stage_pathspec(repo, declared, run_git=None):\n"
+        "    return [p.relative_to(repo).as_posix() for p in declared if p.is_file()]\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_task_stage_scope_normalizes_pm_home_touch_and_stages_real_file(
+        tf, tmp_path, monkeypatch):
+    """task stage가 PM-home 접두를 제거해 worktree 안의 선언 파일을 실 pathspec으로 산출한다."""
+    home = tmp_path / "pm-home"
+    workspace = home / "work" / "project_manager_1"
+    changed = workspace / "src" / "change.py"
+    changed.parent.mkdir(parents=True)
+    changed.write_text("changed\n", encoding="utf-8")
+    board_py = _write_coordinate_stage_board(
+        tmp_path,
+        ["work/project_manager_1/src/change.py"],
+    )
+    monkeypatch.setattr(tf, "REPO", home)
+    finisher = tf.TicketFinisher(
+        board_py=board_py,
+        task_workspace=workspace,
+        run_git_stdout_at_fn=lambda cwd, args: (0, ""),
+    )
+
+    assert finisher._task_stage_scope("T-0473") == tf.StageScope(("src/change.py",), None)
+
+
+def test_task_stage_scope_worktree_slot_mismatch_fails_loud(
+        tf, tmp_path, monkeypatch):
+    """다른 slot 접두를 task workspace에 조용히 귀속하지 않고 stage error로 표면화한다."""
+    home = tmp_path / "pm-home"
+    workspace = home / "work" / "project_manager_1"
+    workspace.mkdir(parents=True)
+    board_py = _write_coordinate_stage_board(
+        tmp_path,
+        ["work/project_manager_2/src/change.py"],
+    )
+    monkeypatch.setattr(tf, "REPO", home)
+    finisher = tf.TicketFinisher(
+        board_py=board_py,
+        task_workspace=workspace,
+        run_git_stdout_at_fn=lambda cwd, args: (0, ""),
+    )
+
+    scope = finisher._task_stage_scope("T-0473")
+    assert scope.pathspec == ()
+    assert "좌표 정규화 실패" in scope.error
+    assert "slot 불일치" in scope.error
+
+
+@pytest.mark.parametrize(
+    "touch",
+    [
+        r"work\project_manager_1\src\change.py",
+        "./work/project_manager_1/src/change.py",
+    ],
+)
+def test_task_stage_scope_normalizes_coordinate_notation_variants(
+        tf, tmp_path, monkeypatch, touch):
+    """stage 표면도 separator/leading-dot 표기를 같은 실 파일 좌표로 모은다."""
+    home = tmp_path / "pm-home"
+    workspace = home / "work" / "project_manager_1"
+    changed = workspace / "src" / "change.py"
+    changed.parent.mkdir(parents=True)
+    changed.write_text("changed\n", encoding="utf-8")
+    board_py = _write_coordinate_stage_board(tmp_path, [touch])
+    monkeypatch.setattr(tf, "REPO", home)
+    finisher = tf.TicketFinisher(
+        board_py=board_py,
+        task_workspace=workspace,
+        run_git_stdout_at_fn=lambda cwd, args: (0, ""),
+    )
+    assert finisher._task_stage_scope("T-0473") == tf.StageScope(("src/change.py",), None)
+
+
+def test_task_stage_scope_rejects_traversal_fails_loud(
+        tf, tmp_path, monkeypatch):
+    home = tmp_path / "pm-home"
+    workspace = home / "work" / "project_manager_1"
+    workspace.mkdir(parents=True)
+    board_py = _write_coordinate_stage_board(
+        tmp_path, ["work/project_manager_1/../../outside.py"])
+    monkeypatch.setattr(tf, "REPO", home)
+    finisher = tf.TicketFinisher(
+        board_py=board_py,
+        task_workspace=workspace,
+        run_git_stdout_at_fn=lambda cwd, args: (0, ""),
+    )
+    scope = finisher._task_stage_scope("T-0473")
+    assert scope.pathspec == ()
+    assert "traversal" in scope.error
+
+
+@pytest.mark.parametrize(
+    ("touch", "message"),
+    [
+        ("work/project_manager_1/.", "slot 전체"),
+        ("work/project_manager_1//abs", "절대경로"),
+    ],
+)
+def test_task_stage_scope_rejects_root_or_absolute_before_real_git_stage(
+        tf, tmp_path, monkeypatch, touch, message):
+    """위험 상대부는 실제 git repo의 stage pathspec에 들어가기 전에 fail-loud 한다."""
+    home = tmp_path / "pm-home"
+    workspace = home / "work" / "project_manager_1"
+    workspace.mkdir(parents=True)
+    (workspace / "root-change.py").write_text("untracked\n", encoding="utf-8")
+
+    def git(args):
+        result = subprocess.run(
+            ["git", "-C", str(workspace), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return result.returncode, result.stdout
+
+    assert git(["init", "-q"])[0] == 0
+    monkeypatch.setattr(tf, "REPO", home)
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda *args: [touch])
+
+    scope = tf.stage_scope(
+        "T-0473",
+        tf.BOARD_PY,
+        home / "log.md",
+        git,
+        repo=workspace,
+        include_engine_outputs=False,
+        touches_workspace=workspace,
+    )
+    assert scope.pathspec == ()
+    assert scope.error is not None
+    assert "좌표 정규화 실패" in scope.error
+    assert message in scope.error
+
+    # 생산 경로와 같은 add 형식을 실행해도 거부 scope는 argv를 만들지 않으며 index는 비어 있다.
+    if scope.pathspec:
+        assert git(["add", "-A", "--", *scope.pathspec])[0] == 0
+    rc, staged = git(["diff", "--cached", "--name-only"])
+    assert rc == 0
+    assert staged == ""
+
+
+def test_task_stage_scope_old_coordinate_copy_has_guarded_exception_type(
+        tf, tmp_path, monkeypatch):
+    """구 사본의 RepoCoordinateError 속성 부재가 AttributeError traceback으로 새지 않는다."""
+    home = tmp_path / "pm-home"
+    workspace = home / "work" / "project_manager_1"
+    workspace.mkdir(parents=True)
+    board_py = _write_coordinate_stage_board(
+        tmp_path, ["work/project_manager_1/src/change.py"])
+
+    class _OldCoordinates:
+        @staticmethod
+        def normalize_repo_paths(*args, **kwargs):
+            raise RuntimeError("구 좌표 사본")
+
+    monkeypatch.setattr(tf, "REPO", home)
+    monkeypatch.setattr(tf, "_load_repo_coordinates", lambda: _OldCoordinates())
+    scope = tf.stage_scope(
+        "T-0473", board_py, home / "log.md", lambda args: (0, ""),
+        repo=workspace, touches_workspace=workspace,
+    )
+    assert scope.pathspec == ()
+    assert "구 좌표 사본" in scope.error
+
+
+def test_coordinate_loader_old_sibling_reports_explicit_skew(
+        tf, tmp_path, monkeypatch):
+    """stamp/예외 타입이 없는 구 sibling도 AttributeError가 아닌 엔진 skew로 식별한다."""
+    (tmp_path / "repo_coordinates.py").write_text(
+        "def normalize_repo_paths(paths, **kwargs):\n"
+        "    raise ValueError('old copy')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tf, "TOOLS_DIR", tmp_path)
+    with pytest.raises(RuntimeError, match="버전 불일치"):
+        tf._load_repo_coordinates()

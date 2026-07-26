@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import functools
 import importlib.util
+import math
 import os
 import re
 import subprocess
@@ -35,7 +37,7 @@ import sys
 import time
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Callable
+from typing import Callable, NamedTuple
 
 
 # ── REPO 앵커 (external_review 동형·상향 탐색·hermetic 테스트 monkeypatch seam) ────────
@@ -330,40 +332,650 @@ def build_opencode_argv(
 
 
 # ── 시크릿 통제 (§4.7) ──────────────────────────────────────────────────────
+#
+# 프롬프트 스캔은 **파일 경로/이름 + 시크릿 값**만 겨냥한다(T-0472 — 문맥 무시 substring 판정 폐기).
+# external_review 의 denylist(`*token*`·`*secret*` …)는 원래 *파일 경로* 필터라, 그 substring glob 을
+# 산문·식별자에 그대로 대면 정상 conf 키(`ctx_window_tokens_opencode`)·변수명·"토큰 수" 서술이 전부
+# 걸린다(PM 12차 실측 — 위임 발사가 차단됐고 우회는 키명을 풀어 쓰는 것뿐이었다). 그래서 판정을
+# **양성매칭 2축**으로 바꾼다(T-0465 파서 양성매칭 전환 동형):
+#   ⓐ 경로축 — 토큰이 *경로 형태*(구분자·확장자·닷파일) 또는 알려진 시크릿 파일명일 때만 denylist 적용
+#             (그것도 **파일 이름 앵커** + 이름-substring 패턴은 시크릿 데이터 확장자일 때만).
+#   ⓑ 값축   — 알려진 시크릿 값 prefix(ghp_·AKIA…)·PEM 개인키 블록·URL 내장 자격증명·시크릿 키명
+#             할당의 고엔트로피 값.
+# **미탐 방향 금지**(T-0466 동형): 실 시크릿(파일 경로·값)은 ⓐⓑ 로 계속 차단된다. 완화되는 건 ①
+# "경로도 값도 아닌 식별자/산문"과 ② 이름-substring 패턴만 걸린 **소스/문서 파일**
+# (`tests/test_adapter_token_substitution.py`)이다 — ②는 파일 *언급*일 뿐이라 ③ 합성 프롬프트
+# 스캔에서만 완화하고, 파일 내용이 통째로 전송되는 ④ prompt-file 게이트
+# (`_prompt_file_denylist_pattern`)에는 적용하지 않는다(확장자 무관 이름 앵커·내부 리뷰 SF1 —
+# 단 프롬프트 문서 확장자 `.md`/`.markdown`/`.rst` 는 면제, 내용은 ③ 이 다시 훑는다).
+# ⓐⓑ 의 조임/완화 폭은 실 코퍼스(PM 문서 167 + 제품 문서 181 + 엔진/테스트 소스 = 512 파일·15만 줄)
+# **라인 단위** 와 통제 케이스로 **양방향 실측**해 확정했다 — 오탐(`part.tokens.input`·
+# ``key/token(다른`` 류 산문 조각·`auth_url=https://…/oauth/token`·glob 인용 `"*.key"`·한국어 산문
+# 슬래시 조각) 0 유지 + 미탐(조사 밀착 `~/.aws/credentials를`·비ASCII 경로 성분 `/path/to/사용자/.env`·
+# URL 안 크리덴셜·`.properties`·JSON/camelCase 키) 폐쇄. **경로축 면제가 값축을 끄지 않는다**는 게
+# URL 처리의 불변식이다(리뷰 R2 — 면제는 엔드포인트 오탐용이지 크리덴셜 눈감기가 아니다).
+
+# ⓐ 경로 형태 판정 — 구분자 포함 / 확장자 보유 / 닷파일. 확장자 길이 상한은 **실 확장자 집합에
+# 맞춘다**: 8자 상한은 `.properties`(10자)를 확장자로 못 봐 `client_secret.properties`·
+# `access_token.properties` 가 통째로 통과했다(외부 리뷰 R2·구 denylist 는 차단하던 것).
+_PATH_SEPARATOR_RE = re.compile(r"[/\\]")
+_MAX_FILE_EXTENSION_CHARS = 12  # `properties`(10) + 여유 · 산문 조각을 확장자로 오인하지 않는 선
+_FILE_EXTENSION_RE = re.compile(rf"\.[A-Za-z0-9]{{1,{_MAX_FILE_EXTENSION_CHARS}}}$")
+_DOTFILE_RE = re.compile(r"^\.[A-Za-z0-9][A-Za-z0-9._-]*$")
+# 경로로 볼 수 있는 문자만으로 이뤄진 **파일 이름**인가 — 한글·백틱·괄호·화살표가 섞인 산문 조각
+# (``key/token(다른``·`` `json`→token/input/output/cost ``)의 이름 성분은 파일 이름이 아니다(실 코퍼스
+# 오탐 다수). 판정 대상이 토큰 전문이 아니라 **basename** 인 이유(T-0472 fix·리뷰 실측): 전문에 대면
+# 경로 성분 하나만 비ASCII/`@`/`$`/`{}` 여도 전 축이 skip 돼 옛 판정이 잡던 실 시크릿 경로가 통과했다
+# (`/path/to/사용자/.env`·`node_modules/@scope/pkg/.env`·`${HOME}/.aws/credentials`·미탐 회귀).
+_STRICT_PATH_NAME_RE = re.compile(r"^[A-Za-z0-9_~.-]+$")
+# 토큰 **안** 에 남은 산문/마크다운 마커 — 이름은 깨끗해도 앞 성분이 문장 조각이면 경로가 아니다
+# (실 코퍼스 오탐 `부재[insteadOf/credential` — basename `credential` 만 보면 시크릿처럼 보인다).
+# 비ASCII(한국어 디렉토리)·`$`·`{}`·`@` 는 실 경로에 나오므로 마커에 넣지 않는다
+# (`/path/to/사용자/.env`·`${HOME}/.aws/credentials`·`node_modules/@scope/pkg/.env`).
+_PROSE_MARKER_RE = re.compile(r"""[`"'()\[\]<>,;!?*|]""")
+# 토큰 양끝에서 벗기는 문장 부호/마크다운 wrapper. `*` 는 **여기 넣지 않는다** — 끝의 `*` 를 무조건
+# 벗기면 glob 패턴 인용(`"*.key"`·`*.pem`·denylist 를 논하는 프롬프트)이 `.key`·`.pem` 경로로 둔갑해
+# 차단된다(라인 단위 코퍼스 실측 오탐). 강조는 대칭형일 때만 `_MARKDOWN_EMPHASIS_RE` 로 벗긴다.
+_CANDIDATE_STRIP_CHARS = "\"'`()[]{}<>,;!? "
+# 마크다운 강조 대칭 wrapper — `**~/.aws/credentials**` 처럼 **앞뒤 모두** `*` 일 때만 안쪽을 취한다.
+_MARKDOWN_EMPHASIS_RE = re.compile(r"^\*+(?P<inner>[^*]+)\*+$")
+# 토큰 끝의 비ASCII 런 = 한국어 조사 밀착(`~/.aws/credentials를`·`/opt/앱/id_rsa를`). 경로 이름은
+# ASCII denylist 로만 판정하므로 조사를 떼야 옛 판정이 잡던 경로가 계속 잡힌다(미탐 폐쇄).
+_TRAILING_NON_ASCII_RE = re.compile(r"[^\x00-\x7F]+$")
+# 조사를 뗀 뒤 드러나는 **닫는** wrapper 만 추가로 벗긴다(`` `.env`를 `` → `.env`). **여는** 괄호는
+# 남긴다 — 끝 구두점을 전부 벗기면 ``key/token(다른`` 이 `key/token` 이 돼 산문 오탐이 재발한다
+# (1차분 실 코퍼스 실측 근거).
+_CLOSING_WRAPPER_CHARS = "\"'`)]}>"
+# 경로 토큰의 **첫 성분**은 ASCII 경로 이름이어야 한다(절대경로면 비어 있음) — 중간 성분의 비ASCII 는
+# 허용하되(`/path/to/사용자/.env`) 한국어 산문이 슬래시로 이어진 조각
+# (``빈/leading-dash/credential-in-URL/비허용`` — 라인 단위 코퍼스 실측 오탐)은 경로로 보지 않는다.
+# `$`·`{}`·`@` 는 실 경로 관용형(`${HOME}/…`·`node_modules/@scope/…`)이라 허용한다.
+_PATH_ROOT_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_~.${}@-]*$")
+# 후보 조각 경계 — 괄호/대괄호(마크다운 링크 `[label](path)`·산문 삽입구 `파일(~/.aws/credentials)을`)
+# 에서 조각을 나눠 **각 조각을 따로 판정**한다(리뷰 R3). 마커를 만나면 토큰을 통째로 버리던 방식은
+# wrapper 안 경로를 통째로 놓쳤다. 조각 분리가 옛 산문 오탐(``key/token(다른``)을 되살리지 않는 건
+# `_ANCHORED_PATH_RE`(무확장자 상대경로 배제) 덕이다 — 둘은 한 쌍으로 봐야 한다.
+_CANDIDATE_FRAGMENT_RE = re.compile(r"[()\[\]]+")
+# 경로로 인정할 **앵커** — 절대(`/`·`\`)·홈(`~`)·상대 명시(`./`·`../`)·env 전개(`$`·`${}`)·닷파일.
+# 무확장자 상대경로(``key/token``·``char/token``)는 산문 조각과 기계적으로 못 가르므로 앵커나 확장자
+# (또는 닷파일 basename) 중 하나는 있어야 경로축을 태운다(라인 코퍼스 실측 — 이 요건이 없으면 조각
+# 분리가 산문 오탐을 되살린다).
+_ANCHORED_PATH_RE = re.compile(r"^(?:[/\\~$]|\.{1,2}[/\\])")
+
+# 경로 형태(확장자)가 없어도 그 자체로 시크릿 파일인 이름 — external_review denylist 는 확장자/
+# substring 위주라 이 계열(ssh 개인키·rc 파일)을 안 담는다. 프롬프트 스캔 전용 보강(미탐 폐쇄).
+# `.npmrc`/`.netrc` 는 정확 파일명으로 여기 둔다 — `_SECRET_DATA_EXTENSIONS` 의 동명 확장자만으로는
+# denylist 패턴이 하나도 안 걸려 도달 불가였다(외부 리뷰 MF4·데드 상수).
+_SECRET_FILENAME_PATTERNS: tuple[str, ...] = (
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    "*.ppk", "*.jks", "*.keystore", "*.p8",
+    ".npmrc", ".netrc",
+)
+
+# 경로 *성분* 이 이 이름과 **정확히** 같으면 그 아래 파일은 이름과 무관하게 시크릿으로 본다 —
+# `/run/secrets/db_password`·`secrets/config.json` 은 basename 만 봐서는 안 걸렸다(외부 리뷰 R3).
+# **정확-세그먼트 매칭이지 substring 이 아니다**: pytest tmp 디렉토리(`…/test_secret_scan0/prompt.md`)의
+# "secret" 은 성분 *안* 의 substring 이라 걸리지 않는다(fix1 이 없앤 ④ 조상-디렉토리 오탐 재발 금지).
+_SECRET_DIRECTORY_NAMES: frozenset[str] = frozenset({
+    "secrets", "credentials", ".aws", ".ssh", ".gnupg", ".password-store",
+})
+
+# 이름-substring 패턴(`*token*`·`*secret*`·`*credential*`)으로 시크릿 파일을 지목할 때의 확장자 조건 —
+# 시크릿이 실제로 담기는 데이터/설정 확장자이거나 **무확장자**(`~/.aws/credentials`·`.git-credentials`)
+# 일 때만 인정한다. 소스/문서 확장자(`test_adapter_token_substitution.py`·`secret-scan.md`)는 *주제가*
+# 시크릿일 뿐 시크릿 파일이 아니다 — 개발 프롬프트의 최대 오탐원이었다.
+# ④ prompt-file 게이트에서 이름-substring 패턴을 면제하는 프롬프트 문서 확장자 — 위임 프롬프트는
+# 원래 마크다운 문서고, 티켓 주제어(`token`·`secret`)가 파일명에 들어가는 게 정상이다(리뷰 R2).
+_PROMPT_DOC_EXTENSIONS: frozenset[str] = frozenset({"md", "markdown", "rst"})
+_SECRET_DATA_EXTENSIONS: frozenset[str] = frozenset({
+    "env", "json", "yaml", "yml", "ini", "conf", "cfg", "toml", "properties",
+    "txt", "xml", "csv", "tsv", "pem", "key", "p12", "pfx", "jks", "keystore",
+    "pickle", "pkl", "enc", "gpg", "asc", "netrc", "npmrc", "creds", "secret",
+})
+
+# ⓑ 값축 — 알려진 크리덴셜 값 prefix(발급기관 형식). 토큰 단독으로도 발화한다(키명 불요).
+_SECRET_VALUE_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"gh[pousr]_[A-Za-z0-9]{16,}"           # GitHub PAT/OAuth/user/server/refresh
+    r"|github_pat_[A-Za-z0-9_]{20,}"        # GitHub fine-grained PAT
+    r"|glpat-[A-Za-z0-9_-]{16,}"            # GitLab PAT
+    r"|sk-(?:ant-)?[A-Za-z0-9_-]{16,}"      # OpenAI/Anthropic 류 API key
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"        # Slack
+    r"|(?:AKIA|ASIA)[A-Z0-9]{16}"           # AWS access key id
+    r"|AIza[A-Za-z0-9_-]{20,}"              # Google API key
+    r"|ya29\.[A-Za-z0-9_-]{20,}"            # Google OAuth access token
+    r"|npm_[A-Za-z0-9]{20,}"                # npm token
+    r"|dop_v1_[A-Za-z0-9]{32,}"             # DigitalOcean
+    r")$"
+)
+_PEM_PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
+
+# 할당 좌변이 시크릿 키명인가 — **성분 경계**로 판정한다(substring 아님). `GITHUB_TOKEN` 은 걸리고
+# `ctx_window_tokens_opencode`("tokens" — 경계 뒤가 s)는 안 걸린다. 광범위한 `auth` 단독은 제외
+# (auth_url·authors 오탐) — `auth_token`·`authorization`·`bearer` 처럼 크리덴셜 확정형만.
+_SECRET_KEY_WORDS = (
+    r"token|secret|credential|password|passwd|passphrase"
+    r"|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key"
+    r"|auth[_-]?token|authorization|bearer"
+)
+_SECRET_KEY_NAME_RE = re.compile(
+    rf"(?:^|[^A-Za-z0-9])(?:{_SECRET_KEY_WORDS})(?:[^A-Za-z0-9]|$)",
+    re.IGNORECASE,
+)
+# camelCase 키(`accessToken`·`dbPassword`·`clientSecret`·`XSRFToken`) — 위 성분 경계는 `_`/`-` 만 보므로
+# hump 경계를 못 읽어 통째로 미탐이었다(외부 리뷰 R2). **대소문자 민감**으로 따로 둔다: IGNORECASE 를
+# hump 규칙에 섞으면 뒤 경계 `(?![a-z])` 가 소문자에도 걸려 `ctx_window_tokens_opencode`(=T-0472 원인
+# 오탐)가 되살아난다. 앞 경계에 대문자를 포함하는 건 두문자어 접두(`XSRFToken`·`APIToken`·`AWSSecret`·
+# `JWTSecret`)를 잡기 위함이고(내부 리뷰 R3 실측), 뒤에 소문자가 이어지는 복수/합성형(`accessTokens`·
+# `tokenizerName`)은 제외한다 — `tokens` 배제와 같은 규칙.
+_SECRET_KEY_CAMEL_RE = re.compile(
+    r"(?<=[A-Za-z0-9])(?:Token|Secret|Credential|Password|Passwd|Passphrase"
+    r"|Authorization|Bearer)(?![a-z])"
+)
+# `KEY=value` / `KEY: value`(공백 허용) 할당 추출 — 값축 문맥 판정의 입력. 좌변은 JSON/YAML 의
+# **따옴표 키**(`"token": "…"`)도 받는다(외부 리뷰 R2 — 따옴표 때문에 키를 못 읽어 통째로 미탐이었다).
+# **따옴표로 감싼 값은 닫는 따옴표까지** 통째로 잡는다(공백 포함) — 옛 정규식은 값을 공백에서 끊어
+# `db_password="A1pha Bravo C3arlie Delta"` 가 `A1pha`(길이 미달)로 잘려 미탐이었다(외부 리뷰 MF3).
+_ASSIGNMENT_RE = re.compile(
+    r"""["'`]?(?P<key>[A-Za-z][A-Za-z0-9_.\-]{2,})["'`]?\s*[:=]\s*"""
+    r"""(?:"(?P<dquoted>[^"\n]+)"|'(?P<squoted>[^'\n]+)'|`(?P<bquoted>[^`\n]+)`"""
+    r"|(?P<bare>[^\s\"'`,;)\]}]+))"
+)
+_ASSIGNMENT_VALUE_GROUPS: tuple[str, ...] = ("dquoted", "squoted", "bquoted", "bare")
+_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+# 텍스트 *안* 의 URL(할당 우변 포함) — 경로축 비대상 판정용. `auth_url=https://idp.example.com/oauth/
+# token` 은 `:` 분리 후 남는 조각의 basename(`token`·무확장자)이 `*token*` 에 걸려 오탐이었다(외부
+# 리뷰 MF1) — URL 여부를 **분리 전 원문**에서 보고 **경로축에서만** 뺀다(값축은 원문 그대로 본다).
+_URL_IN_TEXT_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S*")
+# URL userinfo(`https://user:pass@host/…`·`https://ghp_…@github.com/o/r.git`) — 전송 텍스트에 크리덴셜이
+# 실려 있으므로 경로축 면제 대상이 아니라 값축 **차단** 대상이다. `user:pass` 콜론형만 보면 실전에서
+# 가장 흔한 **username-only PAT** 형을 놓친다(외부 리뷰 R2).
+_URL_USERINFO_RE = re.compile(r"://(?P<userinfo>[^/\s@]+)@")
+# URL authority(호스트[:포트]) — 경로/쿼리 판정에서 잘라낸다. 경로가 없어도(`https://host?file=.env`)
+# 쿼리는 검사해야 하므로 `/` 유무로 조기 반환하지 않는다(외부 리뷰 R4).
+_URL_AUTHORITY_RE = re.compile(r"^[^/?#]*")
+# URL 쿼리/fragment 파라미터 — 값 마스킹(발췌)과 값 후보 추출(경로축)에 공유한다.
+_URL_PARAMETER_RE = re.compile(
+    r"(?P<lead>[?&;#])(?P<key>[^=&;#?]*)(?P<equals>=?)(?P<value>[^&;#?]*)")
+# 값축 전용 세분 토큰화 — URL 안(userinfo·경로 세그먼트·쿼리 파라미터)에 실린 크리덴셜을 꺼낸다.
+# 경로축 토큰화(`[=:]` 분리)로는 `https://…/?access_token=ghp_…` 의 값이 통째 조각에 묻힌다.
+# 괄호/대괄호도 경계다 — 경로축에만 조각 분리를 넣으면 한국어 관용 표기(`토큰(ghp_…)을`·`키[ghp_…]를`)
+# 에서 값축만 못 잡는 비대칭이 생긴다(내부 리뷰 R4). 발급기관 prefix 판정이라 세분화는 오탐을 안 낳는다.
+_VALUE_CANDIDATE_SPLIT_RE = re.compile(r"[=:/\\?&@#|()\[\]]+")
+
+# 값이 크리덴셜 형태인지의 문턱 — 짧은 값(`180000`)·자연어 식별자(`ctx_window_tokens_opencode`)를
+# 배제하고 랜덤 시크릿만 남긴다. 엔트로피는 bits/char(Shannon). 임계 3.0 근거: 16자 랜덤
+# 영숫자(≈4.0)·발급기관 토큰(≈4.5)은 넉넉히 넘고, 사람이 쓴 영문 식별자/한국어 산문 조각(≈2.5~3.5)
+# 중 *구성 조건까지 통과한 것* 만 남기는 하한 — 즉 엔트로피는 단독 판정이 아니라 구성 조건
+# (`_has_secret_value_charset`)과 AND 로 걸린다.
+_MIN_SECRET_VALUE_LENGTH = 16
+_MIN_SECRET_VALUE_ENTROPY = 3.0
+# 무숫자 값 완화(외부 리뷰 MF3)의 조임 — 단어 구분자 부재 + 대소문자 혼합 + 문자 클래스 **교대 밀도**.
+# 엔트로피는 여기서 무력하다(랜덤 `XkwPqrLmZvTbNhGf`·CamelCase `ValueFormatKnownPrefix` 둘 다 4.0).
+# 임계 0.3 근거(실측): 랜덤 무숫자 비밀번호 2000 샘플 중 97%가 ≥0.3(중앙값 0.5)이고, 대문자 하나로
+# 시작하는 산문형 값(`Thisisaverylongnote` ≈0.05)은 배제된다. **완전 분리는 아니다** — 다중 hump
+# CamelCase 식별자(≈0.33)는 랜덤 하위 꼬리와 겹쳐 차단 쪽(오탐 방향)에 남는다. 이 완화가 발화하려면
+# 좌변이 시크릿 키명이어야 하고, 그런 할당은 실 코퍼스(PM 문서 167 + 제품 문서 181 + 엔진/테스트
+# 소스)에 0건이라 오탐 재발 없음을 실측으로 확인했다.
+_WORD_SEPARATOR_RE = re.compile(r"[\s_\-./\\]")
+_MIN_CHAR_CLASS_ALTERNATION_RATIO = 0.3
+
+# 차단 메시지 발췌 — 값은 앞 4자만 남기고 마스킹(로그에 크리덴셜 미잔존), 길이 상한은 발췌 가독성.
+_EXCERPT_MAX_CHARS = 80
+_VALUE_MASK_HEAD_CHARS = 4
+_SECRET_RULE_VALUE_PREFIX = "값-형태:알려진 시크릿 prefix"
+_SECRET_RULE_PEM = "값-형태:PEM 개인키 블록"
+_SECRET_RULE_ASSIGNMENT = "값-형태:시크릿 키명 할당(고엔트로피 값)"
+_SECRET_RULE_URL_CREDENTIALS = "값-형태:URL 내장 자격증명"
+_SECRET_RULE_DIRECTORY = "경로:시크릿 디렉토리 성분"
+_SECRET_AXIS_PATH = "경로"
+_SECRET_AXIS_VALUE = "값"
+
+
+class PromptSecretHit(NamedTuple):
+    """프롬프트 시크릿 스캔 매칭 — 발췌(값은 마스킹됨)·걸린 판정 이름·판정축(`경로`/`값`).
+
+    발췌를 담는 이유(T-0472): 옛 반환은 패턴명만 노출해 *프롬프트의 어느 텍스트가* 걸렸는지 추측이
+    필요했다(관측 가능성 결함). 경로/파일명은 그대로 보여야 고칠 수 있고, 크리덴셜 값은
+    `_mask_secret_value` 로 마스킹해 stderr/로그에 남기지 않는다."""
+
+    excerpt: str
+    pattern: str
+    axis: str
+
 
 def _secret_path_candidates(raw: str) -> list[str]:
-    """외부 전송 텍스트 토큰에서 경로 후보를 추출한다(denylist 스캔용·강화 토큰화).
+    """외부 전송 텍스트 토큰에서 경로/값 후보를 추출한다(시크릿 스캔용·강화 토큰화).
 
     공백-토큰 하나를 (a) `=`/`:` 할당문 분리(예 `path=.env`·`key:secret.pem`) → 조각별로, (b) 양끝
-    구두점 트리밍(마침표는 leading `.env` 보존 위해 trailing 만·`foo.pem.`→`foo.pem`·`.env.`→`.env`)
-    후 후보로 낸다. 각 후보는 원문 + 소문자 정규화 2형을 담아 대소문자 표기(`.ENV`)도 잡는다."""
+    구두점/마크다운 강조 트리밍(마침표는 leading `.env` 보존 위해 trailing 만·`foo.pem.`→`foo.pem`·
+    `**~/.aws/credentials**`→`~/.aws/credentials`), (c) 끝 비ASCII 런 제거(한국어 조사 밀착
+    `~/.aws/credentials를`→`~/.aws/credentials`) 후 후보로 낸다. 각 후보는 원문 + 소문자 정규화 2형을
+    담아 대소문자 표기(`.ENV`)도 잡는다(원문형을 먼저 담아 대소문자 민감한 값 prefix(`AKIA…`) 판정이
+    살아있다). 괄호/대괄호(`[설정](~/.aws/credentials)`·`파일(~/.aws/credentials)을`)는 조각으로 나눠
+    **각각 재판정**한다(리뷰 R3) — 옛 방식은 마커가 보이면 토큰을 통째로 버려 wrapper 안 경로를 놓쳤다.
+    조각 분리로 산문 오탐(``key/token(다른``)이 되살아나지 않는 건 무확장자 상대경로를 배제하는
+    `_ANCHORED_PATH_RE` 요건 덕이다(`_matching_secret_path_pattern` 참조·둘은 한 쌍)."""
     candidates: list[str] = []
-    for piece in re.split(r"[=:]", raw):
-        token = piece.strip().strip("\"'`()[]{}<>,;!? ").rstrip(".")
-        if not token:
-            continue
-        candidates.append(token)
-        lowered = token.lower()
-        if lowered != token:
-            candidates.append(lowered)
+    for chunk in _CANDIDATE_FRAGMENT_RE.split(raw):
+        for piece in re.split(r"[=:]", chunk):
+            token = _trim_candidate(piece)
+            if not token:
+                continue
+            candidates.append(token)
+            lowered = token.lower()
+            if lowered != token:
+                candidates.append(lowered)
     return candidates
 
 
-def scan_prompt_secrets(prompt: str) -> tuple[str, str] | None:
-    """합성 프롬프트에서 시크릿 denylist 패턴에 매칭되는 토큰을 찾는다(전송 전 차단·§4.7).
+def _trim_candidate(piece: str) -> str:
+    """후보 조각의 양끝 트리밍(구두점 → 끝 조사 → 조사 뒤 드러난 닫는 wrapper → 대칭 강조) 단일 소스."""
+    token = piece.strip().strip(_CANDIDATE_STRIP_CHARS).rstrip(".")
+    token = _TRAILING_NON_ASCII_RE.sub("", token)
+    token = token.rstrip(_CLOSING_WRAPPER_CHARS).rstrip(".")
+    emphasis = _MARKDOWN_EMPHASIS_RE.match(token)
+    if emphasis is not None:
+        token = emphasis.group("inner").strip(_CANDIDATE_STRIP_CHARS).rstrip(".")
+    return token
 
-    external_review `_matching_denylist_pattern`(fnmatch 기반·`.env`·`*secret*`·`*.key` 등)을 재사용해
-    프롬프트 텍스트를 스캔한다. 외부 전송 전 통제선이므로 토큰화를 강화한다(codex must-fix): `=`/`:`
-    할당문 분리·양끝 구두점 트리밍·소문자 정규화 후 경로 후보를 추출해 패턴 매칭 — `.env`.·`path=.env`·
-    `foo.pem.` 같은 표기를 놓치지 않는다. 반환: 매칭 시 (토큰, 패턴), 없으면 None. **한계 정직 표기**
-    (§4.7): denylist 는 전송 텍스트 필터일 뿐 위임 프로세스의 cwd 파일 직접 읽기·env 상속은 못 막는다."""
+
+def _secret_value_candidates(raw: str) -> list[str]:
+    """값축(알려진 prefix) 전용 후보 — URL 구분자까지 세분 분리한다(경로축 토큰화보다 잘게).
+
+    `https://ghp_…@github.com/o/r.git`·`…?access_token=ghp_…`·`…/services/xoxb-…` 처럼 URL 안에 실린
+    크리덴셜을 꺼내려면 `/`·`?`·`&`·`@` 까지 경계로 봐야 한다. 값축 판정은 발급기관 prefix 정규식이라
+    세분화가 오탐을 늘리지 않는다(반대로 경로축은 세분하면 경로가 조각나 못 쓴다)."""
+    candidates: list[str] = []
+    for piece in _VALUE_CANDIDATE_SPLIT_RE.split(raw):
+        token = _trim_candidate(piece)
+        if token:
+            candidates.append(token)
+    return candidates
+
+
+def _is_path_shaped(token: str) -> bool:
+    """토큰이 파일 경로/이름 형태인가 — denylist substring glob(`*token*`)은 여기에만 적용한다.
+
+    경로 구분자 포함(`~/.aws/credentials`)·확장자 보유(`credentials.env`·`foo.pem`)·닷파일(`.env`)
+    중 하나면 경로 형태로 본다. `ctx_window_tokens_opencode` 같은 식별자·산문 단어는 셋 다 아니라
+    통과한다(T-0472 오탐 근본)."""
+    if _PATH_SEPARATOR_RE.search(token):
+        return True
+    if _DOTFILE_RE.match(token):
+        return True
+    return bool(_FILE_EXTENSION_RE.search(token))
+
+
+def _is_name_substring_pattern(pattern: str) -> bool:
+    """`*token*` 처럼 *이름 어디든* 걸리는 substring 패턴인가(`*.key` 확장자·`.env` 정확명과 구분)."""
+    return pattern.startswith("*") and pattern.endswith("*") and not pattern.startswith("*.")
+
+
+def _has_secret_data_extension(name: str) -> bool:
+    """파일명이 시크릿을 담는 확장자(또는 무확장자)인가 — 이름-substring 판정의 동반 조건."""
+    match = _FILE_EXTENSION_RE.search(name)
+    if match is None:
+        return True  # 무확장자(`credentials`·`.git-credentials`)는 시크릿 파일 관용형
+    return match.group(0)[1:].lower() in _SECRET_DATA_EXTENSIONS
+
+
+_NAME_PATTERN_CACHE_SIZE = 8  # denylist 종류는 기본 + conf 확장(`review_denylist_extra`) 몇 개뿐
+
+
+@functools.lru_cache(maxsize=_NAME_PATTERN_CACHE_SIZE)
+def _name_anchored_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    """이름 앵커로 판정할 denylist 패턴(디렉토리 형태 제외) — 토큰마다 재생성하지 않도록 캐시한다.
+
+    입력 tuple 은 호출부가 로드한 denylist(기본 + conf `review_denylist_extra`)라 종류가 몇 개뿐이다."""
+    return tuple(p for p in patterns if "/" not in p)
+
+
+@functools.lru_cache(maxsize=_NAME_PATTERN_CACHE_SIZE)
+def _exact_name_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    """정확-이름/확장자 패턴만(`.env`·`*.pem`·`*.key` + 알려진 시크릿 파일명) — 이름-substring 제외.
+
+    원격 URL 경로 판정(`_url_path_secret_pattern`)처럼 substring 패턴을 대면 엔드포인트 오탐이 나는
+    자리에서 쓴다."""
+    return _SECRET_FILENAME_PATTERNS + tuple(
+        p for p in _name_anchored_patterns(patterns) if not _is_name_substring_pattern(p))
+
+
+def _matching_secret_name_pattern(
+    name: str, patterns: tuple[str, ...], match: Callable, require_data_ext: bool = True,
+) -> str | None:
+    """파일 *이름* 이 시크릿 파일 판정에 걸리는 첫 패턴(없으면 None).
+
+    ① 알려진 시크릿 파일명(`id_rsa`·`.npmrc` 류)은 즉시 매칭. ② denylist 패턴 매칭 — 단 이름-substring
+    패턴(`*token*`)은 `require_data_ext` 일 때 시크릿 데이터 확장자(또는 무확장자)까지 요구한다.
+    디렉토리 형태 패턴(`secrets/` 류)은 이름이 아니라 전체 경로로 판정해야 하므로 여기서 제외한다
+    (호출부가 별도 처리).
+
+    `require_data_ext` 를 나누는 이유(내부 리뷰 SF1): 합성 프롬프트 스캔은 파일 *언급* 이라
+    `test_adapter_token_substitution.py` 같은 소스/문서를 시크릿으로 보면 오탐이지만, prompt-file
+    게이트는 그 파일 **내용이 통째로 전송**되는 지점이라 확장자로 무해를 전제할 수 없다(`secrets.py`·
+    `token.sh`·`app_credentials.log`)."""
+    pattern = match(name, _SECRET_FILENAME_PATTERNS)
+    if pattern is not None:
+        return pattern
+    pattern = match(name, _name_anchored_patterns(patterns))
+    if pattern is None:
+        return None
+    if require_data_ext and _is_name_substring_pattern(pattern) \
+            and not _has_secret_data_extension(name):
+        return None
+    return pattern
+
+
+def _matching_secret_path_pattern(
+    token: str, patterns: tuple[str, ...], match_fn: Callable | None = None,
+) -> str | None:
+    """토큰이 시크릿 *파일 경로/이름* 판정에 걸리는 첫 패턴(없으면 None·ⓐ 경로축).
+
+    조임(T-0472): (1) 토큰에 산문/마크다운 마커가 없고 **첫 성분**이 ASCII 경로 이름인가(산문 조각
+    배제) → (2) **디렉토리 성분**이 알려진 시크릿 디렉토리면 즉시 발화(`/run/secrets/db_password` —
+    이름엔 단서가 없다·정확 세그먼트 매칭) → (3) **파일 이름**(basename)이 경로 문자만으로 됐고 무확장자
+    상대경로가 아닌가 → (4) 파일 이름 앵커로 denylist 판정
+    (`tests/test_adapter_token_substitution.py` 의 디렉토리/줄기 오탐 배제). (1)의 문자 판정을 토큰
+    전문이 아니라 basename+마커로 나눈 이유는 `_STRICT_PATH_NAME_RE`·`_PROSE_MARKER_RE` 주석 참조 —
+    전문 strict 판정은 경로 성분 하나의 비ASCII/`@`/`$` 로 전 축을 skip 시켜 실 시크릿 경로를 통과시켰다.
+    `match_fn` 은 호출부가 로드해둔 matcher 주입 — 토큰마다 형제 모듈을 재-import 하지 않는다."""
+    match = match_fn or _load_external_review()._matching_denylist_pattern
+    if _PROSE_MARKER_RE.search(token):
+        return None
+    normalized = token.replace("\\", "/")
+    if not _PATH_ROOT_COMPONENT_RE.match(normalized.split("/", 1)[0]):
+        return None
+    if _secret_directory_segment(normalized) is not None:
+        return _SECRET_RULE_DIRECTORY
+    name = PurePosixPath(normalized).name
+    if not _STRICT_PATH_NAME_RE.match(name):
+        return None
+    pattern = _matching_secret_name_pattern(name, patterns, match)
+    if pattern is None:
+        return None
+    # 정확 시크릿 파일명(`deploy/id_rsa`·`keys/id_ed25519`)은 이름 자체가 비모호하므로 앵커/경로 형태
+    # 요건을 면제한다(내부 리뷰 R4 — 앵커 요건이 fix2 까지 잡던 이 형태를 막고 있었다).
+    if pattern not in _SECRET_FILENAME_PATTERNS:
+        if not _is_named_path_shape(normalized, name):
+            return None
+        if not _is_path_shaped(token):
+            return None
+    return pattern
+
+
+def _secret_directory_segment(normalized: str) -> str | None:
+    """경로 *성분* 중 알려진 시크릿 디렉토리 이름(정확 일치)을 돌려준다(없으면 None).
+
+    `/run/secrets/db_password`·`secrets/config.json` 처럼 **파일 이름엔 단서가 없고 디렉토리가 말해주는**
+    시크릿을 잡는다(외부 리뷰 R3). 마지막 성분(=파일 이름)은 제외한다 — 산문의 맨 단어 `secrets` 까지
+    경로로 보면 오탐이다. 매칭은 **정확 세그먼트**라 `…/test_secret_scan0/` 같은 substring 은 안 걸린다."""
+    segments = normalized.split("/")
+    for segment in segments[:-1]:
+        if segment.lower() in _SECRET_DIRECTORY_NAMES:
+            return segment
+    return None
+
+
+def _is_named_path_shape(normalized: str, name: str) -> bool:
+    """이름 기반 denylist 판정을 태워도 되는 경로 형태인가 — 무확장자 **상대** 경로는 제외.
+
+    `key/token`·`char/token` 같은 조각은 확장자도 앵커도 없어 산문과 기계적으로 못 가른다(라인 코퍼스
+    실측 오탐). 앵커(`/`·`~`·`$`·`./`)나 확장자/닷파일이 하나라도 있으면 경로로 인정한다 —
+    `~/.aws/credentials`·`/path/to/사용자/.env`·`docs/secret-scan.md` 는 그대로 통과한다."""
+    if not _PATH_SEPARATOR_RE.search(normalized):
+        return True   # 단일 이름(`credentials.env`·`id_rsa`)은 이름 판정이 전담
+    if _ANCHORED_PATH_RE.match(normalized):
+        return True
+    return _DOTFILE_RE.match(name) is not None or _FILE_EXTENSION_RE.search(name) is not None
+
+
+def _shannon_entropy(text: str) -> float:
+    """문자 분포 Shannon 엔트로피(bits/char) — 랜덤 크리덴셜과 사람이 쓴 식별자를 가른다."""
+    if not text:
+        return 0.0
+    counts: dict[str, int] = {}
+    for char in text:
+        counts[char] = counts.get(char, 0) + 1
+    total = len(text)
+    return -sum((n / total) * math.log2(n / total) for n in counts.values())
+
+
+def _is_known_secret_value(value: str) -> bool:
+    """값이 알려진 크리덴셜 형식인가(`ghp_…`·`AKIA…`·`sk-…`) — 키명 문맥 없이도 확정 시크릿."""
+    return _SECRET_VALUE_PREFIX_RE.match(value) is not None
+
+
+def _char_class(char: str) -> str:
+    """문자 클래스(소문자/대문자/숫자/기타) — 랜덤 문자열의 클래스 교대 밀도 계산용."""
+    if char.islower():
+        return "lower"
+    if char.isupper():
+        return "upper"
+    if char.isdigit():
+        return "digit"
+    return "other"
+
+
+def _char_class_alternation_ratio(value: str) -> float:
+    """인접 문자쌍 중 클래스가 바뀌는 비율 — 랜덤 시크릿은 높고(중앙 ≈0.5) 산문형 값은 낮다(≈0.05)."""
+    if len(value) < 2:
+        return 0.0
+    changes = sum(1 for prev, cur in zip(value, value[1:])
+                  if _char_class(prev) != _char_class(cur))
+    return changes / (len(value) - 1)
+
+
+def _has_secret_value_charset(value: str) -> bool:
+    """값의 문자 구성이 크리덴셜형인가 — ① 영문+숫자 혼합, 또는 ② 무숫자 랜덤 대소문자 혼합.
+
+    ① 의 digit 요건은 영문 식별자/산문 오탐(`ctx_window_tokens_opencode`·`enforce_minimum_length`)을
+    걸러온 실측 근거가 있어 유지한다. ② 는 그 요건이 무숫자 랜덤 비밀번호(`XkwPqrLmZvTbNhGf`)를
+    통과시키던 갭(외부 리뷰 MF3)만 닫는 좁은 완화 — 단어 구분자·단일 케이스·산문형 값을 배제하는
+    조임은 `_MIN_CHAR_CLASS_ALTERNATION_RATIO` 주석(임계 근거·잔여 겹침) 참조."""
+    if any(c.isalpha() for c in value) and any(c.isdigit() for c in value):
+        return True
+    if _WORD_SEPARATOR_RE.search(value):
+        return False
+    if not (any(c.islower() for c in value) and any(c.isupper() for c in value)):
+        return False
+    return _char_class_alternation_ratio(value) >= _MIN_CHAR_CLASS_ALTERNATION_RATIO
+
+
+def _looks_like_secret_value(value: str) -> bool:
+    """값이 크리덴셜 형태인가 — 알려진 prefix, 또는 (충분 길이 + 크리덴셜형 문자 구성 + 고엔트로피).
+
+    자격증명 없는 URL(문서 링크·엔드포인트)은 제외한다. 숫자만(`180000`)·영문 식별자만
+    (`ctx_window_tokens_opencode`)은 문자 구성 조건에서 걸러진다."""
+    if _is_known_secret_value(value):
+        return True
+    if _URL_SCHEME_RE.match(value) and "@" not in value:
+        return False
+    if len(value) < _MIN_SECRET_VALUE_LENGTH:
+        return False
+    if not _has_secret_value_charset(value):
+        return False
+    return _shannon_entropy(value) >= _MIN_SECRET_VALUE_ENTROPY
+
+
+def _assignment_value(match: re.Match) -> str:
+    """할당 매칭에서 값 문자열 — 따옴표로 감싼 값은 닫는 따옴표까지(공백 포함) 통째로."""
+    for group in _ASSIGNMENT_VALUE_GROUPS:
+        value = match.group(group)
+        if value:
+            return value
+    return ""
+
+
+def _is_secret_key_name(key: str) -> bool:
+    """할당 좌변이 시크릿 키명인가 — 성분 경계(`GITHUB_TOKEN`) 또는 camelCase hump(`accessToken`)."""
+    return (_SECRET_KEY_NAME_RE.search(key) is not None
+            or _SECRET_KEY_CAMEL_RE.search(key) is not None)
+
+
+def _is_credential_userinfo(userinfo: str) -> bool:
+    """URL userinfo 가 자격증명인가 — `user:pass` 형태이거나, username 단독이라도 값-형태.
+
+    username 단독형(`https://ghp_…@github.com/o/r.git`)이 실전 PAT clone URL 의 기본형이다. 반대로
+    평범한 사용자명(`https://username@bitbucket.org/…`)은 값-형태가 아니라 통과한다(오탐 방지)."""
+    if ":" in userinfo:
+        return True
+    return _looks_like_secret_value(userinfo)
+
+
+def _mask_userinfo(userinfo: str) -> str:
+    """URL userinfo 마스킹 — password 는 항상, username 도 값-형태(PAT 등)면 마스킹한다.
+
+    username-only PAT 을 안 가리면 차단 메시지에 크리덴셜 전문이 그대로 남는다(외부 리뷰 R2)."""
+    user, separator, password = userinfo.partition(":")
+    masked_user = _mask_secret_value(user) if _looks_like_secret_value(user) else user
+    if not separator:
+        return masked_user
+    return f"{masked_user}:{_mask_secret_value(password)}"
+
+
+def _url_credentials_excerpt(url: str) -> str:
+    """URL 내장 자격증명 발췌 — userinfo **와 쿼리/fragment 의 자격증명성 값**을 마스킹한다.
+
+    호스트/경로/파라미터 *이름* 은 남겨 위치를 특정하되 값은 남기지 않는다. userinfo 만 가리면
+    `https://user:pass@host/?access_token=…` 의 토큰 원문이 차단 메시지에 그대로 남는다(외부 리뷰 R4)."""
+    masked = _URL_USERINFO_RE.sub(lambda m: f"://{_mask_userinfo(m.group('userinfo'))}@", url)
+    return _truncate_excerpt(_mask_url_parameter_values(masked))
+
+
+def _mask_url_parameter_values(url: str) -> str:
+    """URL 쿼리/fragment 에서 자격증명성 값만 마스킹한다(`?file=.env` 같은 경로 값은 그대로 노출)."""
+    def _replace(match: re.Match) -> str:
+        lead, key, equals, value = (match.group("lead"), match.group("key"),
+                                    match.group("equals"), match.group("value"))
+        if not equals:   # `#XkwPqr…` 처럼 값만 있는 fragment/세그먼트
+            return f"{lead}{_mask_secret_value(key)}" if _looks_like_secret_value(key) else match.group(0)
+        if value and (_looks_like_secret_value(value) or _is_secret_key_name(key)):
+            return f"{lead}{key}={_mask_secret_value(value)}"
+        return match.group(0)
+
+    return _URL_PARAMETER_RE.sub(_replace, url)
+
+
+def _url_path_secret_pattern(
+    url: str, patterns: tuple[str, ...], match: Callable,
+) -> str | None:
+    """원격 URL 이 시크릿 *파일* 을 가리키는가 — **정확-이름/확장자 패턴만** 적용(없으면 None).
+
+    `https://raw.example.com/o/r/main/deploy/.env` 처럼 URL 경로 끝이 시크릿 파일이면 그 URL 을 넘기는
+    것 자체가 시크릿 유출 경로다. 이름-substring 패턴(`*token*`)은 여기 **쓰지 않는다** — 그게 URL
+    엔드포인트 오탐(`/oauth/token`·`/tokens/list`·외부 리뷰 MF1)의 원인이라 접점을 두지 않는다.
+
+    판정 대상은 (a) 경로 basename 과 (b) **쿼리/fragment 파라미터 값**(`?file=.env`·외부 리뷰 R3)이며,
+    일반 경로축과 같은 **소문자 정규화**를 거친다(`/DEPLOY.PEM`). 정확-이름/확장자 패턴만 쓰므로
+    `?page=token` 같은 엔드포인트 파라미터는 영향받지 않는다. authority 뒤에 경로가 없어도
+    (`https://files.example?file=.env`) 쿼리는 검사한다 — 경로 부재로 조기 반환하면 우회였다(R4)."""
+    remainder = _URL_AUTHORITY_RE.sub("", url.split("://", 1)[1], count=1)
+    path, separator, query_and_fragment = remainder.partition("?")
+    if not separator:
+        path, _, query_and_fragment = remainder.partition("#")
+    names = [PurePosixPath(_trim_candidate(path.split("#")[0])).name]
+    for parameter in re.split(r"[&;#]", query_and_fragment):
+        key, equals, value = parameter.partition("=")
+        names.append(PurePosixPath(_trim_candidate(value if equals else key)).name)
+    exact_patterns = _exact_name_patterns(patterns)
+    for name in names:
+        if not name or not _STRICT_PATH_NAME_RE.match(name):
+            continue
+        pattern = match(name.lower(), exact_patterns)
+        if pattern is not None:
+            return pattern
+    return None
+
+
+def _mask_secret_value(value: str) -> str:
+    """크리덴셜 값을 앞 몇 자만 남기고 마스킹 — 발췌로 위치는 특정하되 값은 로그에 남기지 않는다."""
+    return f"{value[:_VALUE_MASK_HEAD_CHARS]}***(값 마스킹·{len(value)}자)"
+
+
+def _truncate_excerpt(text: str) -> str:
+    """발췌 길이 상한(메시지 가독성) — 넘치면 말줄임."""
+    if len(text) <= _EXCERPT_MAX_CHARS:
+        return text
+    return text[:_EXCERPT_MAX_CHARS] + "…"
+
+
+def scan_prompt_secrets(prompt: str) -> PromptSecretHit | None:
+    """합성 프롬프트에서 시크릿(파일 경로/이름 · 크리덴셜 값)을 찾는다(전송 전 차단·§4.7).
+
+    양성매칭 2축(T-0472): ⓐ **경로축** — `=`/`:` 분리·구두점 트리밍·조사 제거·소문자 정규화로 토큰
+    후보를 낸 뒤 *경로 형태* 후보에만 external_review denylist(`.env`·`*secret*`·`*.key` …)를 적용 +
+    알려진 시크릿 파일명(`id_rsa`·`.npmrc`) 매칭 + 원격 URL 경로는 정확-이름/확장자 패턴만.
+    ⓑ **값축** — PEM 개인키 블록·알려진 값 prefix(`ghp_…`·URL 안까지)·URL userinfo 자격증명·시크릿
+    키명(성분 경계 + camelCase hump) 할당의 고엔트로피 값. 반환: 매칭 시 `PromptSecretHit`(발췌·
+    판정명·축), 없으면 None.
+
+    **한계 정직 표기**(§4.7): ① 이 스캔은 전송 텍스트 필터일 뿐 위임 프로세스의 cwd 파일 직접 읽기·env
+    상속은 못 막는다. ② 값축은 *형식이 있는* 크리덴셜만 겨냥한다 — 불투명 Bearer 토큰(`Bearer
+    9f3a…`·발급기관 prefix 없음)·Basic base64(`Basic dXNlcjpwYXNz`)·사전 단어 조합/저엔트로피
+    비밀번호(`correct horse battery staple`)는 산문과 기계적으로 못 가르므로 **의도적으로** 통과시킨다
+    (오탐 방향으로 보수적 — 이 게이트의 오탐은 위임 자체를 막는다). 반대편 잔여 겹침도 있다 — 시크릿
+    키명에 할당된 CamelCase 영단어 값은 랜덤 비밀번호와 못 갈라 차단 쪽에 남는다(실 코퍼스 0건).
+    ③ URL 은 경로축에서 **정확-이름/확장자 패턴만** 본다(`…/deploy/.env` 차단·`/oauth/token` 통과) —
+    이름-substring 패턴이 가리키는 원격 경로(`https://host/api/secret-store`)는 안 걸린다.
+    ④ **상대경로의 첫 성분이 비ASCII 면 경로축 비대상**이다(`문서/설정/.env` 통과·`/path/to/사용자/.env` 는
+    차단) — 한국어 산문이 슬래시로 이어진 조각과 기계적으로 못 갈라 앵커 쪽으로 보수화한 경계다.
+    같은 이유로 **앵커도 확장자도 없는 상대경로의 substring 이름**(`etc/credentials`)은 안 걸린다 —
+    산문 조각(`key/token`)과 형태가 같다. 정확 시크릿 파일명(`deploy/id_rsa`)은 이름이 비모호해 면제다.
+    ⑤ ④ prompt-file 게이트의 문서 확장자 면제는 이름만으로 "시크릿을 다루는 문서 vs 시크릿이 담긴
+    문서"를 못 가르는 수렴 불가 지점이라 **면제 유지**로 종결했다(위협모델·근거는
+    `_prompt_file_denylist_pattern` 참조 — 내용은 이 스캔이 다시 훑고, 시크릿 디렉토리 아래 문서는 잡힌다)."""
     er = _load_external_review()
     patterns = er._SECRET_DENYLIST_PATTERNS
+    pem = _PEM_PRIVATE_KEY_RE.search(prompt)
+    if pem is not None:
+        return PromptSecretHit(
+            f"{pem.group(0)} …(본문 마스킹)", _SECRET_RULE_PEM, _SECRET_AXIS_VALUE,
+        )
     for raw in prompt.split():
-        for token in _secret_path_candidates(raw):
-            pattern = er._matching_denylist_pattern(token, patterns)
+        # ⓑ 값축(알려진 prefix)은 **URL 제거 전 원문**에서 본다(외부 리뷰 R2 must-fix) — URL 면제는
+        # 경로축 오탐(`/oauth/token`)을 없애려는 것이지, URL 안에 실린 크리덴셜
+        # (`https://ghp_…@github.com/o/r.git`·`?access_token=ghp_…`·`/services/xoxb-…`)까지 눈감으라는
+        # 게 아니다. 값축을 먼저, 원문에 대고 돌려 그 회귀를 막는다.
+        for token in _secret_value_candidates(raw):
+            if _is_known_secret_value(token):
+                return PromptSecretHit(
+                    _mask_secret_value(token), _SECRET_RULE_VALUE_PREFIX, _SECRET_AXIS_VALUE,
+                )
+        scannable = raw
+        # URL 스캔은 scheme 구분자가 있는 토큰에만(긴 프롬프트에서 토큰마다 정규식 돌리지 않도록).
+        for url in _URL_IN_TEXT_RE.finditer(raw) if "://" in raw else ():
+            userinfo = _URL_USERINFO_RE.search(url.group(0))
+            if userinfo is not None and _is_credential_userinfo(userinfo.group("userinfo")):
+                return PromptSecretHit(
+                    _url_credentials_excerpt(url.group(0)),
+                    _SECRET_RULE_URL_CREDENTIALS, _SECRET_AXIS_VALUE,
+                )
+            pattern = _url_path_secret_pattern(
+                url.group(0), patterns, er._matching_denylist_pattern)
             if pattern is not None:
-                return token, pattern
+                return PromptSecretHit(
+                    _truncate_excerpt(url.group(0)), pattern, _SECRET_AXIS_PATH,
+                )
+            # 자격증명·시크릿 파일이 아닌 URL(엔드포인트·문서 링크)만 경로축 비대상 — `:` 분리 뒤 남는
+            # URL 경로의 basename(`/oauth/token`·무확장자)이 `*token*` 에 걸리던 오탐(외부 MF1) 폐쇄.
+            scannable = scannable.replace(url.group(0), " ")
+        for token in _secret_path_candidates(scannable):
+            pattern = _matching_secret_path_pattern(
+                token, patterns, er._matching_denylist_pattern)
+            if pattern is not None:
+                # 경로축이라도 발췌 토큰이 값-형태면 마스킹한다(값축 원칙과 일관·내부 리뷰 SF2) —
+                # `*secret*` 류 패턴은 크리덴셜 *값* 에도 걸릴 수 있다.
+                excerpt = (_mask_secret_value(token) if _looks_like_secret_value(token)
+                           else _truncate_excerpt(token))
+                return PromptSecretHit(excerpt, pattern, _SECRET_AXIS_PATH)
+    for match in _ASSIGNMENT_RE.finditer(prompt):
+        key, value = match.group("key"), _assignment_value(match)
+        if _is_secret_key_name(key) and _looks_like_secret_value(value):
+            return PromptSecretHit(
+                f"{_truncate_excerpt(key)}={_mask_secret_value(value)}",
+                _SECRET_RULE_ASSIGNMENT, _SECRET_AXIS_VALUE,
+            )
     return None
 
 
@@ -428,6 +1040,28 @@ def _cwd_in_git_repo(cwd: Path, run_fn: Callable | None = None) -> bool:
     return getattr(result, "returncode", 1) == 0 and bool((result.stdout or "").strip())
 
 
+def _prompt_file_name_pattern(
+    name: str, patterns: tuple[str, ...], match: Callable,
+) -> str | None:
+    """prompt-file **이름** 판정(④ 게이트 전용) — 확장자 조건 없이, 단 프롬프트 문서 확장자는 예외.
+
+    이름-substring 패턴(`*token*`)이 걸린 `.md`/`.markdown`/`.rst` 는 통과시킨다(`T-0472-token-guard.md`
+    — 티켓 주제어를 담은 정상 프롬프트 파일명이 이 게이트의 최대 오탐원). 정확 이름/확장자 패턴
+    (`.env`·`*.pem`·`id_rsa`)은 문서 확장자여도 차단이다."""
+    pattern = _matching_secret_name_pattern(name, patterns, match, require_data_ext=False)
+    if pattern is None:
+        return None
+    if _is_name_substring_pattern(pattern) and _has_prompt_doc_extension(name):
+        return None
+    return pattern
+
+
+def _has_prompt_doc_extension(name: str) -> bool:
+    """파일명이 프롬프트 문서 확장자인가(`.md`·`.markdown`·`.rst`)."""
+    match = _FILE_EXTENSION_RE.search(name)
+    return match is not None and match.group(0)[1:].lower() in _PROMPT_DOC_EXTENSIONS
+
+
 def _prompt_file_denylist_pattern(prompt_file: Path) -> str | None:
     """prompt-file 이 시크릿 denylist 패턴에 걸리는가 — **원본 경로 + resolve() 해소 경로 양쪽** 검사
     (내용 읽기 전 차단·§4.7 b·symlink 우회 폐쇄).
@@ -435,18 +1069,53 @@ def _prompt_file_denylist_pattern(prompt_file: Path) -> str | None:
     `prompt.md → <cwd>/.env` 같은 symlink 는 원본 이름(prompt.md)이 clean 이라 통과하나 resolve() 해소
     경로(.env)는 denylist 에 걸린다 — 양쪽을 검사해 symlink 를 통한 secret 읽기를 차단한다(codex must-fix).
     external_review `_matching_denylist_pattern`(fnmatch·`.env`·`*credential*`·`*.key`) 재사용. 걸린
-    패턴명 반환(원문 토큰 미노출)."""
+    패턴명 반환(원문 토큰 미노출).
+
+    판정 대상은 **파일 이름**이다(T-0472·`_matching_secret_name_pattern` 공유) — 옛 전체 경로 fnmatch 는
+    *조상 디렉토리* 이름의 substring 까지 삼켜(`/tmp/…/test_secret_scan0/prompt.md`) 정상 프롬프트를
+    읽기도 전에 차단했다(합성 프롬프트 스캔과 같은 문맥 무시 substring 오탐 가족·기존 테스트가 이 조기
+    차단으로 false-green 이었다). 디렉토리 형태 패턴(`secrets/` 류)만 전체 경로로 판정한다.
+
+    단 이름 판정은 **확장자 조건 없이**(`require_data_ext=False`) 적용한다(내부 리뷰 SF1) — 여기는 파일
+    *언급* 이 아니라 **내용이 통째로 전송**되는 지점이라 "소스/문서 확장자는 시크릿이 아니다"라는 ③
+    합성 프롬프트 스캔의 전제가 성립하지 않는다(`secrets.py`·`token.sh`·`app_credentials.log` 차단
+    유지). **예외는 프롬프트 문서 확장자**(`_PROMPT_DOC_EXTENSIONS`)뿐이다 — 이름-substring 패턴만
+    걸린 `T-0472-token-guard.md`(PM 12차 실사용 프롬프트 이름)까지 막으면 이 티켓이 없애려던 오탐
+    클래스를 ④에서 재생산한다(외부 리뷰 R2). 문서는 막지 않되 **내용은 ⑧ 값축 스캔이 다시 훑는다**
+    (실 크리덴셜이 들었으면 거기서 걸린다). 정확 이름/확장자 패턴(`.env`·`*.pem`·`id_rsa`·`.npmrc`)은
+    문서 확장자여도 그대로 차단된다.
+
+    **면제의 잔여 한계(수용·PM 판정 R3)**: 이름만으로는 "시크릿을 *다루는* 문서"(`T-0472-token-guard.md`)와
+    "시크릿이 *담긴* 문서"(`prod-secrets.md`)를 못 가른다 — 어느 쪽으로 정해도 반대편 리뷰가 반려하는
+    수렴 불가 지점이라 **면제 유지**로 종결했다. 근거는 위협모델이다: ④ 는 PM 이 *실수로* 시크릿 파일을
+    넘기는 걸 막는 방어심층이지 적대적 PM 을 막는 층이 아니고(위임 프로세스는 어차피 cwd 를 직접 읽는다·
+    §4.7 ①), 문서 안의 실 크리덴셜은 ⑧ 값축이 다시 잡는다. 단 **디렉토리 성분 검사는 문서에도 적용**되어
+    `secrets/`·`credentials/`·`.aws/` 아래 파일은 확장자와 무관하게 차단된다(아래 `_secret_directory_segment`)."""
     er = _load_external_review()
     patterns = er._SECRET_DENYLIST_PATTERNS
-    candidates = [str(prompt_file)]
+    # 기본 denylist 엔 `/` 패턴이 없다 — 이 분기는 conf 확장(`review_denylist_extra` 에 `secrets/` 류를
+    # 넣은 채택자)에서만 도달한다. 기본 형상에서 dead 로 보이는 건 그 때문(관측 메모).
+    dir_patterns = tuple(p for p in patterns if "/" in p)
+    candidates = [prompt_file]
     try:
-        candidates.append(str(prompt_file.resolve()))
+        candidates.append(prompt_file.resolve())
     except OSError:
         pass
     for cand in candidates:
-        pattern = er._matching_denylist_pattern(cand, patterns)
+        # 이름은 **소문자 정규화** 후 판정한다 — `.ENV`·`DEPLOY.PEM`·`Credentials.env` 가 내용을 읽기도
+        # 전에 통과하던 대소문자 우회 폐쇄(외부 리뷰 R4·합성 프롬프트 경로축과 같은 정규화).
+        pattern = _prompt_file_name_pattern(
+            cand.name.lower(), patterns, er._matching_denylist_pattern)
         if pattern is not None:
             return pattern
+        # 시크릿 디렉토리 성분(정확 일치)은 이름/확장자와 무관하게 차단 — `<cwd>/secrets/prompt.md`
+        # (외부 리뷰 R3). substring 이 아니라 성분 단위라 pytest tmp `…/test_secret_scan0/` 는 무영향.
+        if _secret_directory_segment(str(cand).replace("\\", "/")) is not None:
+            return _SECRET_RULE_DIRECTORY
+        if dir_patterns:
+            pattern = er._matching_denylist_pattern(str(cand), dir_patterns)
+            if pattern is not None:
+                return pattern
     return None
 
 
@@ -1360,13 +2029,14 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         print("=== [dry-run] 외부 호출 생략 ===")
         return 0
 
-    # ⑧ 시크릿 denylist 스캔 (합성 프롬프트·전송 전 차단·패턴명만 노출·§4.7)
+    # ⑧ 시크릿 denylist 스캔 (합성 프롬프트·전송 전 차단·매칭 발췌 표시·값 마스킹·§4.7·T-0472)
     secret = scan_prompt_secrets(prompt)
     if secret is not None:
-        _token, pattern = secret
         print(
-            "오류: 합성 프롬프트가 시크릿 denylist 패턴에 매칭됩니다 — 전송 전 차단합니다(§4.7).\n"
-            f"  · 패턴 '{pattern}' 매칭. secret 파일 경로/이름을 프롬프트에서 제거하세요.",
+            "오류: 합성 프롬프트가 시크릿 denylist 판정에 걸렸습니다 — 전송 전 차단합니다(§4.7).\n"
+            f"  · {secret.axis}축 판정 '{secret.pattern}' 매칭\n"
+            f"  · 발췌: {secret.excerpt}   (크리덴셜 값은 마스킹·경로/이름은 그대로 표시)\n"
+            "  해당 텍스트를 프롬프트에서 제거하세요. 정상 식별자(conf 키 등)가 걸렸다면 판정 버그입니다.",
             file=sys.stderr,
         )
         return 1

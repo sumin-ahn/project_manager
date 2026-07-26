@@ -17,6 +17,7 @@ board.load_ticket 을 재사용하므로(중복 파서 없음) frontmatter 의�
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,47 @@ def _write_page(domain_dir: Path, name: str, *, frontmatter: str, body: str = "\
     path = domain_dir / name
     path.write_text(f"---\n{frontmatter}\n---\n{body}", encoding="utf-8")
     return path
+
+
+def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """tmp fixture 안에서만 git 형상을 만드는 checked runner."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _init_git_repo(path: Path) -> Path:
+    path.mkdir(parents=True)
+    _git("init", "-q", cwd=path)
+    return path
+
+
+def _linked_worktree_pair(root: Path) -> tuple[Path, Path]:
+    """같은 bare common-dir를 공유하는 실제 linked-worktree 슬롯 둘."""
+    seed = root / "seed"
+    seed.mkdir()
+    _git("init", "-q", "-b", "main", cwd=seed)
+    _git("config", "user.email", "domain-test@example.invalid", cwd=seed)
+    _git("config", "user.name", "Domain Test", cwd=seed)
+    (seed / "tracked.txt").write_text("seed\n", encoding="utf-8")
+    _git("add", "tracked.txt", cwd=seed)
+    _git("commit", "-q", "-m", "seed", cwd=seed)
+
+    bare = root / "shared.git"
+    _git("clone", "-q", "--bare", str(seed), str(bare))
+    slot_a = root / "work" / "repo_1"
+    slot_b = root / "work" / "repo_2"
+    slot_a.parent.mkdir()
+    _git("--git-dir", str(bare), "worktree", "add", "-q", str(slot_a), "main")
+    _git(
+        "--git-dir", str(bare), "worktree", "add", "-q", "--detach",
+        str(slot_b), "main",
+    )
+    return slot_a, slot_b
 
 
 # ── parse_page ───────────────────────────────────────────────────────────────
@@ -449,6 +491,209 @@ def test_pages_for_touches_dir_touch_matches_trailing_double_star(dm, tmp_path):
     assert _titles(dm.pages_for_touches(["src/analysis"], pages)) == ["a"]
 
 
+def test_pages_for_touches_directory_prefix_matches_exact_file_cover(dm, tmp_path):
+    """실 board형 디렉토리 touch가 그 아래 exact 파일 cover 페이지를 소환한다."""
+    _write_page(
+        tmp_path, "domain.md",
+        frontmatter=(
+            "title: domain-layer\n"
+            "type: concept\n"
+            "covers:\n"
+            "  - .project_manager/tools/domain.py"
+        ),
+    )
+    pages = dm.load_pages(domain_dir=tmp_path)
+    touch = ".project_manager/tools"
+    assert _titles(dm.pages_for_touches([touch], pages)) == ["domain-layer"]
+    assert dm.uncovered_paths([touch], pages) == []
+
+
+def test_pages_for_path_preserved_owner_filters_same_relative_path(
+        dm, tmp_path, monkeypatch):
+    """동일 상대경로여도 normalized owner와 다른 repo 페이지는 소환하지 않는다."""
+    workspace = tmp_path / "work/project_manager_1"
+    workspace.mkdir(parents=True)
+    path_type = type(
+        "OwnedPath",
+        (str,),
+        {
+            "owner": "upstream",
+            "repo": "project_manager",
+            "workspace": workspace,
+        },
+    )
+    touch = path_type("src/shared.py")
+    pages = [
+        {"path": Path("self.md"), "title": "self", "repo": "self",
+         "covers": ["src/shared.py"]},
+        {"path": Path("upstream.md"), "title": "upstream", "repo": "upstream",
+         "covers": ["src/shared.py"]},
+    ]
+    monkeypatch.setattr(
+        dm, "_page_owner_repo", lambda page: (workspace.resolve(), None))
+    monkeypatch.setattr(
+        dm,
+        "_same_repository_checkouts",
+        lambda left, right: (Path(left).resolve() == Path(right).resolve(), None),
+    )
+    assert _titles(dm.pages_for_path(touch, pages)) == ["upstream"]
+    assert _titles(dm.pages_for_touches([touch], pages)) == ["upstream"]
+    # self 페이지만 있으면 upstream touch의 gap을 타 repo page로 숨기지 않는다.
+    assert dm.uncovered_paths([touch], pages[:1]) == [touch]
+
+
+def test_same_bare_linked_worktree_slots_match_repository_identity(
+        dm, tmp_path, monkeypatch):
+    """슬롯 A touch와 같은 bare의 슬롯 B page checkout은 같은 저장소로 매칭한다."""
+    slot_a, slot_b = _linked_worktree_pair(tmp_path)
+    path_type = type(
+        "OwnedPath",
+        (str,),
+        {
+            "owner": "upstream",
+            "repo": "repo",
+            "workspace": slot_a,
+        },
+    )
+    touch = path_type("src/shared.py")
+    pages = [{
+        "path": Path("engine.md"),
+        "title": "same-repository",
+        "repo": "upstream",
+        "covers": ["src/shared.py"],
+    }]
+    monkeypatch.setattr(dm, "_page_owner_repo", lambda page: (slot_b, None))
+
+    dm._REPOSITORY_IDENTITY_CACHE.clear()
+    dm._REPOSITORY_MATCH_CACHE.clear()
+    real_factory = dm._real_git_runner
+    common_dir_calls: list[Path] = []
+
+    def counting_factory(cwd):
+        runner = real_factory(cwd)
+
+        def counting_runner(argv):
+            if argv == ["rev-parse", "--git-common-dir"]:
+                common_dir_calls.append(Path(cwd).resolve())
+            return runner(argv)
+
+        return counting_runner
+
+    monkeypatch.setattr(dm, "_real_git_runner", counting_factory)
+    assert _titles(dm.pages_for_path(touch, pages)) == ["same-repository"]
+    assert _titles(dm.pages_for_touches([touch, touch], pages)) == [
+        "same-repository",
+    ]
+    assert dm.uncovered_paths([touch], pages) == []
+    assert common_dir_calls == [slot_a.resolve(), slot_b.resolve()]
+
+
+def test_multi_repo_same_relative_touch_matches_only_page_owner_checkout(
+        dm, tmp_path, monkeypatch, capsys):
+    """별개 git 저장소의 같은 상대경로는 common-dir가 달라 계속 제외한다."""
+    slots = {
+        "repo_a": "work/repo_a_1",
+        "repo_b": "work/repo_b_1",
+    }
+    for slot in slots.values():
+        _init_git_repo(tmp_path / slot)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":['
+        '{"slot":"work/repo_a_1","repo":"repo_a","state":"leased"},'
+        '{"slot":"work/repo_b_1","repo":"repo_b","state":"leased"}'
+        ']}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    touches = dm._normalize_ticket_touches([
+        "work/repo_a_1/.project_manager/tools/board.py",
+        "work/repo_b_1/.project_manager/tools/board.py",
+    ])
+    pages = [{
+        "path": Path("engine.md"),
+        "title": "repo-a-engine",
+        "repo": "upstream",
+        "covers": [".project_manager/tools/board.py"],
+    }]
+    owner_checkout = (tmp_path / slots["repo_a"]).resolve()
+    monkeypatch.setattr(
+        dm, "_page_owner_repo", lambda page: (owner_checkout, None))
+
+    assert _titles(dm.pages_for_path(touches[0], pages)) == ["repo-a-engine"]
+    assert dm.pages_for_path(touches[1], pages) == []
+    assert dm.uncovered_paths(touches, pages, warn_owner_mismatch=False) == [
+        touches[1],
+    ]
+    err = capsys.readouterr().err
+    assert "repo('repo_b')" in err
+    assert "타 repo 매칭 제외" in err
+
+
+def test_normalized_touch_unresolved_page_owner_repo_does_not_match(
+        dm, tmp_path, monkeypatch, capsys):
+    """페이지 채널의 checkout을 해소 못 하면 문자열 upstream 일치만으로 채택하지 않는다."""
+    workspace = tmp_path / "work/repo_a_1"
+    workspace.mkdir(parents=True)
+    path_type = type(
+        "OwnedPath",
+        (str,),
+        {
+            "owner": "upstream",
+            "repo": "repo_a",
+            "workspace": workspace,
+        },
+    )
+    page = {
+        "path": Path("engine.md"),
+        "title": "engine",
+        "repo": "upstream",
+        "covers": ["src/shared.py"],
+    }
+    monkeypatch.setattr(
+        dm,
+        "_page_owner_repo",
+        lambda _page: (None, "local.conf upstream 미설정"),
+    )
+
+    assert dm.pages_for_path(path_type("src/shared.py"), [page]) == []
+    err = capsys.readouterr().err
+    assert "소유 checkout 미해소 — 매칭 제외" in err
+    assert "local.conf upstream 미설정" in err
+
+
+def test_normalized_touch_non_git_checkout_warns_and_does_not_match(
+        dm, tmp_path, monkeypatch, capsys):
+    """git 정체성을 증명할 수 없는 checkout은 경로가 같아도 보수적으로 제외한다."""
+    workspace = tmp_path / "work/repo_a_1"
+    workspace.mkdir(parents=True)
+    path_type = type(
+        "OwnedPath",
+        (str,),
+        {
+            "owner": "upstream",
+            "repo": "repo_a",
+            "workspace": workspace,
+        },
+    )
+    page = {
+        "path": Path("engine.md"),
+        "title": "engine",
+        "repo": "upstream",
+        "covers": ["src/shared.py"],
+    }
+    monkeypatch.setattr(dm, "_page_owner_repo", lambda _page: (workspace, None))
+    dm._REPOSITORY_IDENTITY_CACHE.clear()
+    dm._REPOSITORY_MATCH_CACHE.clear()
+
+    assert dm.pages_for_path(path_type("src/shared.py"), [page]) == []
+    err = capsys.readouterr().err
+    assert "저장소 정체성 미해소" in err
+    assert "git common-dir 해소 실패" in err
+    assert "매칭 제외" in err
+
+
 def test_pages_for_touches_loads_pages_when_not_injected(dm, tmp_path, monkeypatch):
     # pages 미주입 → load_pages() 호출 (모듈 전역 DOMAIN_DIR 을 tmp 로 재바인딩).
     _write_page(
@@ -537,6 +782,176 @@ def test_affected_ticket_reads_touches_via_board(dm, tmp_path, monkeypatch, caps
     rc = dm.main(["affected", "--ticket", "T-9999"])
     assert rc == 0
     assert "티켓영향" in capsys.readouterr().out
+
+
+def test_affected_ticket_normalizes_pm_home_worktree_touch(dm, tmp_path, monkeypatch, capsys):
+    """PM-home 좌표 touches도 active lease 검증 후 repo-relative covers를 실제 소환한다."""
+    slot = "work/project_manager_1"
+    (tmp_path / slot).mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
+        '"session":"","state":"idle"}]}',
+        encoding="utf-8",
+    )
+    domain_dir = tmp_path / "domain"
+    _write_page(
+        domain_dir,
+        "coordinates.md",
+        frontmatter=(
+            "title: 좌표계 페이지\n"
+            "type: concept\n"
+            "repo: upstream\n"
+            "covers:\n"
+            "  - src/analysis/**"
+        ),
+    )
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(
+        dm,
+        "_page_owner_repo",
+        lambda page: ((tmp_path / slot).resolve(), None),
+    )
+    monkeypatch.setattr(
+        dm, "_same_repository_checkouts", lambda left, right: (True, None))
+    monkeypatch.setattr(
+        dm,
+        "_touches_from_ticket",
+        lambda tid: [f"{slot}/src/analysis/x.py"],
+    )
+
+    assert dm.main(["affected", "--ticket", "T-0473"]) == 0
+    assert "좌표계 페이지" in capsys.readouterr().out
+
+
+def test_affected_ticket_directory_touch_summons_exact_cover(
+        dm, tmp_path, monkeypatch, capsys):
+    """실 board 형식 work/<repo>_<N>/.project_manager/tools → exact cover recall 회귀."""
+    slot = "work/project_manager_1"
+    (tmp_path / slot).mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
+        '"session":"","state":"idle"}]}',
+        encoding="utf-8",
+    )
+    domain_dir = tmp_path / "domain"
+    _write_page(
+        domain_dir,
+        "domain.md",
+        frontmatter=(
+            "title: 도메인 레이어\n"
+            "type: concept\n"
+            "repo: upstream\n"
+            "covers:\n"
+            "  - .project_manager/tools/domain.py"
+        ),
+    )
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(
+        dm,
+        "_page_owner_repo",
+        lambda page: ((tmp_path / slot).resolve(), None),
+    )
+    monkeypatch.setattr(
+        dm, "_same_repository_checkouts", lambda left, right: (True, None))
+    monkeypatch.setattr(
+        dm, "_touches_from_ticket",
+        lambda tid: [f"{slot}/.project_manager/tools"],
+    )
+
+    assert dm.main(["affected", "--ticket", "T-0473"]) == 0
+    assert "도메인 레이어" in capsys.readouterr().out
+
+
+def test_affected_ticket_worktree_slot_mismatch_warns_and_continues(
+        dm, tmp_path, monkeypatch, capsys):
+    """read-only 조회는 오류 경로를 loud 경고하고 유효한 나머지 touch를 계속 처리한다."""
+    registered = "work/project_manager_1"
+    (tmp_path / registered).mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
+        '"session":"T-0473","state":"leased"}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    domain_dir = tmp_path / "domain"
+    _write_page(
+        domain_dir, "valid.md",
+        frontmatter="title: 유효 페이지\ntype: concept\ncovers:\n  - src/valid.py",
+    )
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(dm, "_touches_from_ticket",
+                        lambda tid: [
+                            "work/project_manager_2/src/x.py",
+                            "src/valid.py",
+                        ])
+
+    assert dm.main(["affected", "--ticket", "T-0473"]) == 0
+    captured = capsys.readouterr()
+    assert "유효 페이지" in captured.out
+    err = captured.err
+    assert "좌표 정규화 경고" in err
+    assert "slot 불일치" in err
+
+
+@pytest.mark.parametrize(
+    ("touch", "message"),
+    [
+        ("work/project_manager_1/.", "slot 전체"),
+        ("work/project_manager_1//abs", "절대경로"),
+    ],
+)
+def test_ticket_touch_unsafe_relative_warns_and_is_excluded_from_query(
+        dm, tmp_path, monkeypatch, capsys, touch, message):
+    """조회 표면은 위험 상대부를 원문으로 넘기지 않고 경고 후 제외한다."""
+    slot = "work/project_manager_1"
+    (tmp_path / slot).mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
+        '"session":"T-0473","state":"leased"}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+
+    assert dm._normalize_ticket_touches([touch]) == []
+    err = capsys.readouterr().err
+    assert "좌표 정규화 경고" in err
+    assert "이 경로는 제외" in err
+    assert message in err
+
+
+def test_ticket_touches_without_worktree_prefix_skip_coordinate_loader(
+        dm, monkeypatch):
+    """접두 없는 adopter는 repo_coordinates sibling이 없어도 기존 동작을 보존한다."""
+    monkeypatch.setattr(
+        dm, "_load_repo_coordinates",
+        lambda: (_ for _ in ()).throw(AssertionError("normalizer를 로드하면 안 됨")),
+    )
+    assert dm._normalize_ticket_touches(["src/a.py", "tests"]) == [
+        "src/a.py", "tests",
+    ]
+
+
+def test_coordinate_loader_old_sibling_fails_with_explicit_skew_not_attribute_error(
+        dm, tmp_path, monkeypatch):
+    """RepoCoordinateError도 stamp도 없는 구 사본은 소비 전에 명시 skew로 차단된다."""
+    (tmp_path / "repo_coordinates.py").write_text(
+        "def normalize_repo_path(path, **kwargs):\n"
+        "    raise ValueError('old copy')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dm, "TOOLS_DIR", tmp_path)
+    with pytest.raises(RuntimeError, match="버전 불일치"):
+        dm._load_repo_coordinates()
 
 
 def test_affected_ticket_no_touches_prints_none(dm, tmp_path, monkeypatch, capsys):
@@ -1160,6 +1575,29 @@ def test_uncovered_paths_dedups(dm, gap_pages):
     assert dm.uncovered_paths(["src/core/y.py", "src/core/y.py"], gap_pages) == ["src/core/y.py"]
 
 
+def test_uncovered_paths_dedup_preserves_same_path_across_owner_and_repo(dm):
+    """문자열 값이 같아도 self/upstream·서로 다른 repo의 gap을 각각 보존한다."""
+    self_type = type("SelfPath", (str,), {"owner": "self", "repo": "pm_home"})
+    upstream_a_type = type(
+        "UpstreamAPath", (str,), {"owner": "upstream", "repo": "repo_a"})
+    upstream_b_type = type(
+        "UpstreamBPath", (str,), {"owner": "upstream", "repo": "repo_b"})
+    touches = [
+        self_type("src/shared.py"),
+        upstream_a_type("src/shared.py"),
+        upstream_b_type("src/shared.py"),
+    ]
+
+    gaps = dm.uncovered_paths(touches, [])
+
+    assert len(gaps) == 3
+    assert [(gap.owner, gap.repo, str(gap)) for gap in gaps] == [
+        ("self", "pm_home", "src/shared.py"),
+        ("upstream", "repo_a", "src/shared.py"),
+        ("upstream", "repo_b", "src/shared.py"),
+    ]
+
+
 def test_uncovered_paths_empty_returns_empty(dm, gap_pages):
     assert dm.uncovered_paths([], gap_pages) == []
     assert dm.uncovered_paths(None, gap_pages) == []
@@ -1292,6 +1730,117 @@ def test_capture_tickets_aggregates_touches(dm, tmp_path, monkeypatch, capsys):
     assert "A페이지" in out and "B페이지" in out
     # T-2 의 미매칭 touch 는 gap.
     assert "src/gap/z.py" in out
+
+
+def test_capture_tickets_normalizes_pm_home_worktree_touches(
+        dm, tmp_path, monkeypatch, capsys):
+    """capture --tickets도 affected와 같은 공용 좌표 seam을 거쳐 coverage를 찾는다."""
+    slot = "work/project_manager_1"
+    (tmp_path / slot).mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
+        '"session":"T-0473","state":"leased"}]}',
+        encoding="utf-8",
+    )
+    domain_dir = tmp_path / "domain"
+    _write_page(
+        domain_dir,
+        "capture-coordinates.md",
+        frontmatter=(
+            "title: Capture 좌표\n"
+            "type: concept\n"
+            "repo: upstream\n"
+            "covers:\n"
+            "  - src/x.py"
+        ),
+    )
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(
+        dm,
+        "_page_owner_repo",
+        lambda page: ((tmp_path / slot).resolve(), None),
+    )
+    monkeypatch.setattr(
+        dm, "_same_repository_checkouts", lambda left, right: (True, None))
+    monkeypatch.setattr(
+        dm,
+        "_touches_from_tickets",
+        lambda tids: [f"{slot}/src/x.py"],
+    )
+
+    assert dm.main(["capture", "--tickets", "T-0473"]) == 0
+    assert "Capture 좌표" in capsys.readouterr().out
+
+
+def test_capture_upstream_touch_matching_self_page_warns_repin_once(
+        dm, tmp_path, monkeypatch, capsys):
+    """covers는 맞지만 기본 self 채널 페이지뿐이면 gap과 함께 repin advisory 한 줄을 낸다."""
+    slot = "work/project_manager_1"
+    (tmp_path / slot).mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
+        '"session":"T-0473","state":"leased"}]}',
+        encoding="utf-8",
+    )
+    domain_dir = tmp_path / "domain"
+    _write_page(
+        domain_dir,
+        "default-self.md",
+        frontmatter=(
+            "title: 기본 self 페이지\n"
+            "type: concept\n"
+            "covers:\n"
+            "  - src/x.py"
+        ),
+    )
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(
+        dm, "_touches_from_tickets", lambda tids: [f"{slot}/src/x.py"])
+
+    assert dm.main(["capture", "--tickets", "T-0473"]) == 0
+    captured = capsys.readouterr()
+    assert "coverage gap" in captured.out
+    assert "src/x.py" in captured.out
+    advisories = [
+        line for line in captured.err.splitlines()
+        if "covers 는 일치하나 repo 채널이 self — repin 검토" in line
+    ]
+    assert len(advisories) == 1
+
+
+def test_capture_tickets_bad_coordinate_warns_and_keeps_valid_paths(
+        dm, tmp_path, monkeypatch, capsys):
+    """capture 배치도 오류 touch 하나를 경고하되 유효한 나머지 영향/gap 계산을 계속한다."""
+    registered = "work/project_manager_1"
+    (tmp_path / registered).mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
+        '"session":"","state":"idle"}]}',
+        encoding="utf-8",
+    )
+    domain_dir = tmp_path / "domain"
+    _write_page(
+        domain_dir, "valid.md",
+        frontmatter="title: Capture 생존\ntype: concept\ncovers:\n  - src/valid.py",
+    )
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(
+        dm, "_touches_from_tickets",
+        lambda tids: ["work/project_manager_2/src/bad.py", "src/valid.py"],
+    )
+    assert dm.main(["capture", "--tickets", "T-1", "T-2"]) == 0
+    captured = capsys.readouterr()
+    assert "Capture 생존" in captured.out
+    assert "좌표 정규화 경고" in captured.err
 
 
 def test_capture_tickets_dedups_aggregated_touches(dm, tmp_path, monkeypatch):

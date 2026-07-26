@@ -48,6 +48,7 @@ STAMPED_MODULES = (
     "domain.py",
     "contradiction_lint.py",
     "pm_adr.py",
+    "repo_coordinates.py",
 )
 
 _REV_RE = re.compile(r"^v\d+\.\d+\.\d+$")
