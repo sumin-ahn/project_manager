@@ -54,6 +54,9 @@ const LOCAL_CONF_REL = path.join(".project_manager", "local.conf");
 // marker 규약을 공유해 같은 Supervisor 코드가 둘 다 구동한다(엔진 무변경·ADR-0009 핵심 불변식).
 const MARKER_REL = path.join(".project_manager", ".local", "ctx-stop");
 const MARKER_CONTENT = "ctx-stop handoff triggered\n";
+// 세션 parentID 역조회는 ctx guard 의 보조 입력이다. SDK가 응답하지 않아 이벤트 처리가 멈추지
+// 않도록 짧게 제한하고, 실패는 반드시 비-자식(=가드 적용)으로 처리한다.
+const SESSION_LOOKUP_TIMEOUT_MS = 1000;
 
 // ── 순수 함수: 세션 id sanitize (claude ctx_stop_hook._session_id 규칙 JS 재현) ──
 // 파일명 안전 문자([A-Za-z0-9]·`-`·`_`)만 남기고 64자로 잘라 marker 파일명을 짓는다.
@@ -290,16 +293,27 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   if (process.env.CTX_GUARD_LOAD_PROBE) {
     process.stderr.write("[ctx-guard] plugin factory loaded (CTX_GUARD_LOAD_PROBE)\n");
   }
-  // 세션당 1회 가드 (멱등성). nudge2(T-0328)는 1단 발화 여부와 독립(1단 창을 건너뛴 세션도 발화).
-  const fired = { nudge: false, nudge2: false, stop: false };
-  // graceful nudge 모델-주입 대기 텍스트 (ADR-0037). event(message.updated)서 nudge 감지 시
-  // 세팅 → 다음 모델 호출의 experimental.chat.system.transform 이 1회 소비(push 후 null).
-  let pendingNudgeText = null;
   let cachedThresholds = null;
   let cachedConf = null;
-  // 현재 세션 id — event hook 의 info.sessionID 로 캡처(PluginInput 엔 sid 없음·실측). STOP
-  // marker 파일명을 짓는 데 쓴다(relay 가 그 marker 를 stat 해 회전 트리거).
-  let currentSessionID = null;
+  // 모든 가드 상태는 hook 인스턴스 전역이 아니라 sessionID 별로 분리한다. OpenCode 는 event,
+  // permission.ask, tool.execute.before, system.transform 각각의 input 에 sessionID 를 싣는다.
+  // childLookup Promise 자체도 같은 레코드에 캐시해 조회 pending 중 교차 이벤트가 와도 SID가 섞이지
+  // 않으며, 실패/timeout 결과(false)도 해당 세션에 고정된다.
+  const sessionStates = new Map();
+
+  function sessionState(sessionID) {
+    if (typeof sessionID !== "string" || !sessionID.trim()) return null;
+    let state = sessionStates.get(sessionID);
+    if (!state) {
+      state = {
+        fired: { nudge: false, nudge2: false, stop: false },
+        pendingNudgeText: null,
+        childLookup: null,
+      };
+      sessionStates.set(sessionID, state);
+    }
+    return state;
+  }
 
   const root = findEngineRoot(directory || worktree || process.cwd());
 
@@ -324,6 +338,40 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     if (cachedThresholds) return cachedThresholds;
     cachedThresholds = resolveThresholds(loadConf());
     return cachedThresholds;
+  }
+
+  // OpenCode SDK 표면: client.session.get({ path: { id: sessionID } }) -> { data: Session }.
+  // Session.parentID가 있으면 native task가 만든 자식 세션이다. 이때만 Claude의 sub-session
+  // 등가 정책처럼 nudge/STOP/deny를 모두 생략한다. 역조회 불확실성은 절대 면제 사유가 아니다.
+  function isChildSession(sessionID) {
+    const state = sessionState(sessionID);
+    if (!state) return Promise.resolve(false);
+    if (state.childLookup) return state.childLookup;
+
+    const lookup = (async () => {
+      try {
+        if (!client || !client.session || typeof client.session.get !== "function") return false;
+        let timeoutID;
+        const timeout = new Promise((resolve) => {
+          timeoutID = setTimeout(() => resolve(null), SESSION_LOOKUP_TIMEOUT_MS);
+        });
+        let result;
+        try {
+          result = await Promise.race([
+            client.session.get({ path: { id: sessionID } }),
+            timeout,
+          ]);
+        } finally {
+          clearTimeout(timeoutID);
+        }
+        const session = result && result.data;
+        return Boolean(session && typeof session.parentID === "string" && session.parentID.trim());
+      } catch {
+        return false;
+      }
+    })();
+    state.childLookup = lookup;
+    return lookup;
   }
 
   // 넛지: 1회 toast(없으면 무음 — fail-soft).
@@ -369,9 +417,9 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   // (경로 `<root>/.project_manager/.local/ctx-stop/<sanitize(sid)>.done`·내용 동일)로 써서
   // 같은 Supervisor 코드가 양 하니스를 구동한다(엔진 무변경). fail-soft — marker 실패해도
   // 정지(deny)는 유지. sid 미상이면 skip + stderr 경고(침묵 금지·silent-fail 방어).
-  function writeStopMarker() {
+  function writeStopMarker(sessionID) {
     if (!root) return;
-    if (typeof currentSessionID !== "string" || !currentSessionID.trim()) {
+    if (typeof sessionID !== "string" || !sessionID.trim()) {
       process.stderr.write(
         "[ctx-guard] sessionID 미상 — STOP marker skip (relay 회전 트리거 누락 가능).\n",
       );
@@ -381,7 +429,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       const dir = path.join(root, MARKER_REL);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(
-        path.join(dir, `${sanitizeSessionId(currentSessionID)}.done`),
+        path.join(dir, `${sanitizeSessionId(sessionID)}.done`),
         MARKER_CONTENT,
         "utf-8",
       );
@@ -396,33 +444,37 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       if (!event || event.type !== "message.updated") return;
       const info = event.properties && event.properties.info;
       if (!info) return;
-      // sessionID 캡처 — STOP marker 파일명용(PluginInput 엔 sid 없음·실측). 어떤 메시지든
-      // info.sessionID 가 실리면 보관(role 무관·marker 는 정지 시점에 이 값으로 쓴다).
-      if (typeof info.sessionID === "string" && info.sessionID) {
-        currentSessionID = info.sessionID;
-      }
       if (info.role !== "assistant" || !info.tokens) return;
+      // await 전 로컬 const 로 캡처한다. parentID 역조회 중 다른 세션 event 가 끼어도 marker/state
+      // 대상은 이 message.updated 의 SID로 고정된다.
+      const sessionID = info.sessionID;
+
+      // Native task 자식은 독립 컨텍스트로 구동되므로 PM 메인 세션 전용 ctx 가드를 적용하지
+      // 않는다. lookup 실패/timeout/parentID 부재는 false라 아래 기존 hard-stop 경로로 진행한다.
+      if (await isChildSession(sessionID)) return;
+      const session = sessionState(sessionID);
+      if (!session) return;
 
       const used = accumulateTokens(info.tokens);
       const limit = resolveBudget(loadConf(), "opencode"); // ctx 예산 (물리한도 폐기·ADR-0041).
       const t = thresholds();
       const state = computeCtxState(used, limit, t);
 
-      if (state.level === "stop" && !fired.stop) {
-        fired.stop = true;
-        writeStopMarker(); // STOP marker 직접 박제 (ADR-0038 D2·무조건·relay 회전 신호·no --trigger).
-      } else if (state.level === "nudge2" && !fired.nudge2) {
+      if (state.level === "stop" && !session.fired.stop) {
+        session.fired.stop = true;
+        writeStopMarker(sessionID); // 이 event SID marker 직접 박제(ADR-0038 D2·relay 신호).
+      } else if (state.level === "nudge2" && !session.fired.nudge2) {
         // 2단(strong·stop 직전·T-0328) — 1단 발화 여부와 독립(1단 창을 건너뛴 세션도 발화).
-        fired.nudge2 = true;
-        await notifyNudge2(state, t); // 2단 강한 toast (사람 UI·1회).
+        session.fired.nudge2 = true;
         // 2단 모델-주입 안내 대기 (ADR-0037·T-0328) — 1단과 동일 채널(system.transform 1회 소비).
-        pendingNudgeText = buildNudge2Guidance(state, t);
-      } else if (state.level === "nudge" && !fired.nudge) {
-        fired.nudge = true;
-        await notifyNudge(state, t); // 넛지 toast (사람 UI·1회).
+        session.pendingNudgeText = buildNudge2Guidance(state, t);
+        await notifyNudge2(state, t); // 2단 강한 toast (사람 UI·1회).
+      } else if (state.level === "nudge" && !session.fired.nudge) {
+        session.fired.nudge = true;
         // 모델-주입 안내 대기 (ADR-0037) — 다음 모델 호출의 system.transform 이 소비. toast(사람)
         // 와 별개로 모델이 실제로 받아 스스로 /pm-handoff 하게 한다(claude UserPromptSubmit 등가).
-        pendingNudgeText = buildNudgeGuidance(state, t);
+        session.pendingNudgeText = buildNudgeGuidance(state, t);
+        await notifyNudge(state, t); // 넛지 toast (사람 UI·1회).
       }
     },
 
@@ -432,11 +484,14 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     // messageID 필수)보다 string push 가 안전·정확. ⚠️ experimental namespace — opencode 가 이 surface
     // 를 바꾸면 *조용히* 주입이 멈출 수 있다(hard-stop 은 무관·안전). 호환성 게이트 = T-0183 Tier2
     // 라이브 smoke(버전 회귀 포착)·codex 권고 반영. 변동 시 안정 chat.message 전환 검토.
-    // 멱등: pendingNudgeText 를 1회 소비(push 후 null). hard-stop·deny 와 무관(안내만).
-    "experimental.chat.system.transform": async (_input, output) => {
-      if (pendingNudgeText && output && Array.isArray(output.system)) {
-        output.system.push(pendingNudgeText);
-        pendingNudgeText = null;
+    // 멱등: 해당 SID의 pendingNudgeText 만 1회 소비(push 후 null). 자식 세션은 주입도 면제한다.
+    "experimental.chat.system.transform": async (input, output) => {
+      const sessionID = input && input.sessionID;
+      if (await isChildSession(sessionID)) return;
+      const session = sessionState(sessionID);
+      if (session && session.pendingNudgeText && output && Array.isArray(output.system)) {
+        output.system.push(session.pendingNudgeText);
+        session.pendingNudgeText = null;
       }
     },
 
@@ -445,14 +500,20 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     // 핸드오프/불명은 통과시킨다(fail-open — 핸드오프를 절대 오차단하지 않는다). 실제 authoritative
     // gate 는 아래 tool.execute.before(clean schema).
     "permission.ask": async (input, output) => {
-      if (fired.stop && isNewWorkPermission(input)) {
+      const sessionID = input && input.sessionID;
+      if (await isChildSession(sessionID)) return;
+      const session = sessionState(sessionID);
+      if (session && session.fired.stop && isNewWorkPermission(input)) {
         output.status = "deny";
       }
     },
 
     // ── authoritative 하드 정지 gate: 정지 후 새 작업 도구 실행만 차단 (핸드오프 도구는 통과) ────
     "tool.execute.before": async (input, output) => {
-      if (fired.stop && !isHandoffTool(input, output)) {
+      const sessionID = input && input.sessionID;
+      if (await isChildSession(sessionID)) return;
+      const session = sessionState(sessionID);
+      if (session && session.fired.stop && !isHandoffTool(input, output)) {
         throw new Error(
           "[ctx-guard] 컨텍스트 정지 임계 도달 — 새 작업 중단. 진행 중인 rich /pm-handoff " +
             "(핸드오프 도구)는 통과한다 — 핸드오프를 완료하고 이 세션을 종료한 뒤 새 세션에서 이어받아라.",
@@ -483,6 +544,7 @@ module.exports = {
   isHandoffTarget,
   isHandoffTool,
   isNewWorkPermission,
+  SESSION_LOOKUP_TIMEOUT_MS,
   NUDGE_PCT_DEFAULT,
   STOP_PCT_DEFAULT,
   NUDGE2_MARGIN_PCT,

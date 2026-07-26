@@ -74,6 +74,15 @@ def _shim_src() -> str:
     return PLUGIN_FILE.read_text(encoding="utf-8")
 
 
+def _make_ctx_guard_project(tmp_path: Path) -> Path:
+    """findEngineRoot가 인식할 최소 project를 pytest tmp_path 아래에 만든다(소스 트리 무오염)."""
+    root = tmp_path / "ctx-guard-project"
+    tools = root / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "pm_handoff.py").write_text("# ctx-guard test probe\n", encoding="utf-8")
+    return root
+
+
 # ── 1. config 정합: compaction.auto false ──────────────────────────────────
 
 def test_config_exists_and_parses():
@@ -215,11 +224,262 @@ def test_plugin_uses_resolve_budget_not_model_limit():
 def test_plugin_has_idempotency_guard():
     """넛지·정지·트리거는 세션당 1회만 — 멱등 가드(중복 handoff 방지·codex 인계)."""
     src = _plugin_src()
-    # fired 상태 객체로 1회 가드 (nudge/stop 각 1회).
-    assert re.search(r"fired", src), "멱등 상태 플래그(fired) 없음"
+    # sessionID keyed 상태 안의 fired 객체로 세션별 1회 가드 (nudge/stop 각 1회).
+    assert re.search(r"sessionStates\s*=\s*new Map", src), "세션별 상태 Map 없음"
     assert "fired.stop" in src and "fired.nudge" in src, (
         "정지/넛지 1회 가드(fired.stop/fired.nudge) 없음"
     )
+
+
+def test_plugin_exempts_native_subsessions_and_caches_lookup_outcomes(tmp_path):
+    """native task 자식(parentID)는 ctx 발화를 건너뛰고, 역조회 불확실성은 메인으로 폴백한다.
+
+    PluginInput.client의 실제 SDK 표면은 `session.get({path:{id}}) -> {data: Session}`다.
+    node mock으로 (1) parentID 자식 전 훅 면제, (2) SDK 실패/never-resolve 시 비면제,
+    (3) 성공·실패·timeout 모두 같은 SID에서 lookup 한 번으로 고정되는 Promise 캐시를 검증한다.
+    """
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — sub-session SDK mock 단위 skip (정적 검증만 적용)")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+assert.strictEqual(typeof m.CtxGuardPlugin, "function", "missing CtxGuardPlugin");
+const projectRoot = __PROJECT_ROOT__;
+
+const stopEvent = (sessionID) => ({
+  event: { type: "message.updated", properties: { info: {
+    sessionID, role: "assistant", tokens: { input: 160000 }
+  } } }
+});
+const denied = async (hooks, sessionID) => {
+  const output = {};
+  await hooks["permission.ask"]({sessionID, pattern:"ls *"}, output);
+  return output.status;
+};
+
+(async () => {
+  const childID = "ses_child_cache";
+  let childCalls = 0;
+  const childHooks = await m.CtxGuardPlugin({client:{session:{get: async (opts) => {
+    childCalls++;
+    assert.deepStrictEqual(opts, {path:{id:childID}}, "SDK session.get 호출 형식");
+    return {data:{id:childID, parentID:"ses_parent_cache"}};
+  }}}, directory:projectRoot});
+  await childHooks.event(stopEvent(childID));
+  await childHooks.event(stopEvent(childID));
+  assert.strictEqual(await denied(childHooks, childID), undefined, "child permission must bypass");
+  await childHooks["tool.execute.before"](
+    {sessionID:childID, tool:"bash"}, {args:{command:"ls -la"}}
+  );
+  const childSystem = {system:[]};
+  await childHooks["experimental.chat.system.transform"]({sessionID:childID}, childSystem);
+  assert.deepStrictEqual(childSystem.system, [], "child injection must bypass");
+  assert.strictEqual(childCalls, 1, "same session lookup must be cached");
+
+  const failureID = "ses_lookup_failure";
+  let failureCalls = 0;
+  const failureHooks = await m.CtxGuardPlugin({client:{session:{get: async () => {
+    failureCalls++;
+    throw new Error("SDK unavailable");
+  }}}, directory:projectRoot});
+  await failureHooks.event(stopEvent(failureID));
+  assert.strictEqual(await denied(failureHooks, failureID), "deny", "lookup failure must not exempt");
+  await assert.rejects(
+    failureHooks["tool.execute.before"](
+      {sessionID:failureID, tool:"bash"}, {args:{command:"ls -la"}}
+    ),
+    /컨텍스트 정지 임계/,
+  );
+  assert.strictEqual(failureCalls, 1, "failed lookup result must stay cached");
+
+  const timeoutID = "ses_lookup_timeout";
+  let timeoutCalls = 0;
+  const timeoutHooks = await m.CtxGuardPlugin({client:{session:{get: async () => {
+    timeoutCalls++;
+    return new Promise(() => {});
+  }}}, directory:projectRoot});
+  const started = Date.now();
+  await timeoutHooks.event(stopEvent(timeoutID));
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 3000, `never-resolving lookup did not time out: ${elapsed}ms`);
+  assert.strictEqual(await denied(timeoutHooks, timeoutID), "deny", "timeout must not exempt");
+  assert.strictEqual(timeoutCalls, 1, "timeout result must stay cached");
+
+  console.log("JS_SUBSESSION_GUARD_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
+    out = _run_node_check(script)
+    assert "JS_SUBSESSION_GUARD_OK" in out, f"sub-session SDK mock 단위 실패. out={out!r}"
+
+
+def test_plugin_separates_main_child_guards_and_markers_in_one_hook_instance(tmp_path):
+    """메인 stop 뒤에도 같은 hooks 인스턴스의 자식 permission/tool은 통과하고 marker도 생기지 않는다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — 교차 세션 guard 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+const projectRoot = __PROJECT_ROOT__;
+const mainID = "ses_main_cross";
+const childID = "ses_child_cross";
+const marker = (sid) => path.join(
+  projectRoot, ".project_manager", ".local", "ctx-stop", `${sid}.done`
+);
+const stopEvent = (sessionID) => ({
+  event: {type:"message.updated", properties:{info:{
+    sessionID, role:"assistant", tokens:{input:160000}
+  }}}
+});
+
+(async () => {
+  const calls = new Map();
+  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => {
+    calls.set(id, (calls.get(id) || 0) + 1);
+    return {data:{id, ...(id === childID ? {parentID:mainID} : {})}};
+  }}}, directory:projectRoot});
+
+  await hooks.event(stopEvent(mainID));
+  assert.ok(fs.existsSync(marker(mainID)), "main stop marker missing");
+
+  const childPermission = {};
+  await hooks["permission.ask"]({sessionID:childID, pattern:"ls *"}, childPermission);
+  assert.strictEqual(childPermission.status, undefined, "child permission inherited main stop");
+  await hooks["tool.execute.before"](
+    {sessionID:childID, tool:"bash"}, {args:{command:"ls -la"}}
+  );
+  assert.ok(!fs.existsSync(marker(childID)), "child marker must not be created");
+
+  const mainPermission = {};
+  await hooks["permission.ask"]({sessionID:mainID, pattern:"ls *"}, mainPermission);
+  assert.strictEqual(mainPermission.status, "deny", "main stop must still deny");
+  await assert.rejects(
+    hooks["tool.execute.before"](
+      {sessionID:mainID, tool:"bash"}, {args:{command:"ls -la"}}
+    ),
+    /컨텍스트 정지 임계/,
+  );
+  assert.strictEqual(calls.get(mainID), 1, "main lookup cache miss");
+  assert.strictEqual(calls.get(childID), 1, "child lookup cache miss across hooks");
+  console.log("JS_SESSION_GUARDS_ISOLATED_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
+    out = _run_node_check(script)
+    assert "JS_SESSION_GUARDS_ISOLATED_OK" in out, f"교차 세션 guard 실패. out={out!r}"
+
+
+def test_plugin_captures_marker_sid_across_concurrent_lookup(tmp_path):
+    """메인 parentID 조회 pending 중 자식 event가 끼어도 메인 marker SID를 클로저로 유지한다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — marker SID 경합 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+const projectRoot = __PROJECT_ROOT__;
+const mainID = "ses_main_race";
+const childID = "ses_child_race";
+let resolveMain;
+const mainLookup = new Promise((resolve) => { resolveMain = resolve; });
+const marker = (sid) => path.join(
+  projectRoot, ".project_manager", ".local", "ctx-stop", `${sid}.done`
+);
+const stopEvent = (sessionID) => ({
+  event: {type:"message.updated", properties:{info:{
+    sessionID, role:"assistant", tokens:{input:160000}
+  }}}
+});
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => {
+    if (id === mainID) return mainLookup;
+    return {data:{id:childID, parentID:mainID}};
+  }}}, directory:projectRoot});
+
+  const pendingMainEvent = hooks.event(stopEvent(mainID));
+  await hooks.event(stopEvent(childID));
+  resolveMain({data:{id:mainID}});
+  await pendingMainEvent;
+
+  assert.ok(fs.existsSync(marker(mainID)), "pending main lookup wrote no main marker");
+  assert.ok(!fs.existsSync(marker(childID)), "main stop was mislabeled with child SID");
+  console.log("JS_MARKER_SID_RACE_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
+    out = _run_node_check(script)
+    assert "JS_MARKER_SID_RACE_OK" in out, f"marker SID 경합 실패. out={out!r}"
+
+
+def test_plugin_keeps_pending_nudge_per_session_and_exempts_child_injection(tmp_path):
+    """메인 nudge는 자식 system.transform이 소비하지 않고 해당 메인 호출에만 1회 전달된다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — nudge 교차 전달 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const projectRoot = __PROJECT_ROOT__;
+const mainID = "ses_main_nudge";
+const childID = "ses_child_nudge";
+const nudgeEvent = (sessionID) => ({
+  event: {type:"message.updated", properties:{info:{
+    sessionID, role:"assistant", tokens:{input:145000}
+  }}}
+});
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({
+    client:{
+      session:{get: async ({path:{id}}) => ({
+        data:{id, ...(id === childID ? {parentID:mainID} : {})}
+      })},
+      tui:{showToast: async () => {}},
+    },
+    directory:projectRoot,
+  });
+
+  await hooks.event(nudgeEvent(mainID));
+  const childOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:childID}, childOutput);
+  assert.deepStrictEqual(childOutput.system, [], "child consumed main pending nudge");
+
+  const mainOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:mainID}, mainOutput);
+  assert.strictEqual(mainOutput.system.length, 1, "main did not receive its pending nudge");
+  assert.ok(mainOutput.system[0].includes("[ctx-nudge]"), "wrong main nudge payload");
+
+  const mainAgain = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:mainID}, mainAgain);
+  assert.deepStrictEqual(mainAgain.system, [], "main nudge was not consumed exactly once");
+
+  await hooks.event(nudgeEvent(childID));
+  const childAgain = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:childID}, childAgain);
+  assert.deepStrictEqual(childAgain.system, [], "child event created an exempt nudge");
+  console.log("JS_NUDGE_SESSION_ISOLATED_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
+    out = _run_node_check(script)
+    assert "JS_NUDGE_SESSION_ISOLATED_OK" in out, f"nudge 세션 격리 실패. out={out!r}"
 
 
 def test_plugin_emits_nudge():
@@ -255,10 +515,14 @@ def test_plugin_writes_stop_marker_path():
 
 
 def test_plugin_marker_uses_session_id_from_event():
-    """marker 파일명용 sid 를 event hook 의 info.sessionID 로 캡처한다(PluginInput 엔 sid 없음·실측)."""
+    """marker SID는 event 로컬 캡처값을 인자로 전달하며 전역 currentSessionID를 쓰지 않는다."""
     src = _plugin_src()
     assert "info.sessionID" in src, "event hook 의 info.sessionID 캡처 없음"
     assert "sanitizeSessionId" in src, "marker 파일명 sanitize 호출 없음"
+    assert "currentSessionID" not in src, "전역 currentSessionID 경합 경로가 남아 있음"
+    assert re.search(r"writeStopMarker\s*\(\s*sessionID\s*\)", src), (
+        "marker writer가 해당 event sessionID를 인자로 받지 않음"
+    )
 
 
 def test_plugin_marker_fail_soft_and_sid_guard():
@@ -286,12 +550,12 @@ def test_plugin_marker_written_unconditionally_on_stop():
     assert not re.search(r"spawnSync\s*\(", src), (
         "pm_handoff --trigger spawnSync() 호출 재도입 (ADR-0038 D4 위반·marker 로만 신호)"
     )
-    # fired.stop = true 세팅 직후 writeStopMarker() 무조건 호출 (co-located).
+    # fired.stop = true 세팅 직후 writeStopMarker(sessionID) 무조건 호출 (co-located).
     idx_fired = src.find("fired.stop = true")
-    idx_call = src.find("writeStopMarker()", idx_fired)
+    idx_call = src.find("writeStopMarker(sessionID)", idx_fired)
     assert idx_fired != -1, "정지 분기(fired.stop = true) 없음"
     assert idx_call != -1 and idx_call > idx_fired, (
-        "writeStopMarker() 가 정지 분기(fired.stop = true) 직후에 무조건 호출되지 않음"
+        "writeStopMarker(sessionID)가 정지 분기(fired.stop = true) 직후에 무조건 호출되지 않음"
     )
 
 
@@ -390,13 +654,16 @@ _NODE = shutil.which("node")
 
 def _run_node_check(script: str) -> str:
     # cwd = core lib 디렉토리 → 스크립트의 `require("./ctx-guard-core.cjs")` 가 해소된다.
-    return subprocess.run(
+    proc = subprocess.run(
         [_NODE, "-e", script],
         cwd=str(CORE_DIR),
         capture_output=True,
         text=True,
         timeout=30,
-    ).stdout
+    )
+    if proc.returncode:
+        return (proc.stdout or "") + (proc.stderr or "")
+    return proc.stdout
 
 
 def test_plugin_pure_logic_node_selfcheck():
