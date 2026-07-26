@@ -232,8 +232,9 @@ def _git_rev_parse(anchor: Path, *args: str, runner: Any = subprocess.run) -> st
     (fail-soft — 솔로/standalone·비-git 트리 무영향). `runner` 는 hermetic 테스트 주입 seam."""
     try:
         r = runner(["git", "-C", str(anchor), "rev-parse", *args],
-                   capture_output=True, text=True, check=False)
-    except Exception:
+                   capture_output=True, text=True, encoding="utf-8",
+                   errors="replace", check=False)
+    except (OSError, subprocess.SubprocessError):
         return None
     if getattr(r, "returncode", 1) != 0:
         return None
