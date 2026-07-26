@@ -3845,6 +3845,13 @@ _DELEGATE_CONF_SEED = (
     "# delegate.code-reviewer.reasoning=high\n"
     "# (cross-harness 도 지원·권장 — 예 harness=claude·model=opus. 단 claude/opencode .reasoning 은\n"
     "#  T-0449 실측 후 적용되며 그 전 지정 시 fail-loud·codex 는 low/medium/high/xhigh):\n"
+    "# loud 폴백(선택·엔진 기본값 없음) — 주 하네스가 **인프라 실패**(스폰 실패·타임아웃·한도/인증)일\n"
+    "# 때만 1회 대체 실행한다. 정상 완료 판정(반려·must-fix)은 폴백 대상이 아니고, 미설정이면 기존\n"
+    "# fail-loud 그대로다. 역할/티어별 완전 세트로 쓴다(예 developer → claude/opus):\n"
+    "# delegate.developer.fallback.harness=claude\n"
+    "# delegate.developer.fallback.model=opus\n"
+    "# delegate.developer.hard.fallback.harness=claude\n"
+    "# delegate.developer.hard.fallback.model=opus\n"
 )
 
 

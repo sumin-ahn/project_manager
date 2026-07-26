@@ -17,6 +17,12 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
   · 시크릿 통제  — 합성 프롬프트 denylist 스캔 + subprocess env allowlist 정제 + prompt-file
                   containment(§4.7).
   · 결과 수집    — 최종 reply 텍스트만 stdout·raw+메타는 O_EXCL·0600·PID/UUID 파일 박제(§3.4).
+  · loud 폴백    — 역할/티어별 명시 fallback tuple 이 있을 때만 인프라 실패를 양성 분류해 1회 실행하고
+                  실행 provenance 를 reply/raw 에 남김(미설정·비-인프라 실패는 기존 fail-loud).
+                  **시간 예산**: 폴백은 primary 와 별개로 turn timeout 을 새로 쓴다 — 최악 소요는
+                  primary·폴백 **각 하네스 예산의 합**이다(codex/claude=timeout · opencode 는
+                  첫-이벤트 워치독 재시도분이 더 붙는다·_harness_timeout_budget). 호출부(스킬·CI)의
+                  대기 예산은 --dry-run 이 찍는 실수치로 잡아라.
   · opt-in 게이트 — `delegate_enabled`(기본 OFF) 비활성 시 rc=3 + stderr 안내(§5.4·false-green 차단).
 
 설정 시드/lint(T-0446)·어댑터 배선(T-0447)·라이브 실측(T-0449)은 별도 티켓. 이 티켓은 라이브 CLI 를
@@ -54,6 +60,8 @@ def _find_repo_root() -> Path:
 
 REPO = _find_repo_root()
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"
+# ticket frontmatter(touches) 조회용 board 진입점 — 범위 밖 변경 판정 입력(T-0462).
+BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 
 
 # ── 도메인 상수 ────────────────────────────────────────────────────────────
@@ -68,7 +76,24 @@ READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 
 # 위임 turn 기본 타임아웃(초) — dev 는 reasoning+다중 편집으로 길다(codex driver TURN_TIMEOUT 600 보다
 # 큼·§5.3). `--timeout`·local.conf `delegate_timeout` 로 override.
+# 폴백이 발동하면 primary 소진 후 1회 더 실행한다 — 실행 1회의 최악 소요는 하네스마다 달라서
+# _harness_timeout_budget 이 계산한다(2차 폴백 없음 — 상한은 두 시도 예산의 합으로 닫힌다).
 DELEGATE_TIMEOUT_SECONDS = 1800
+
+# 인프라 실패 클래스 라벨(loud 메시지·raw provenance 에 그대로 실리는 안정 문자열).
+FAILURE_CLASS_LAUNCH = "스폰 실패/바이너리 부재"
+FAILURE_CLASS_TIMEOUT = "타임아웃"
+FAILURE_CLASS_STALL = "첫-이벤트 stall(재시도 소진)"
+FAILURE_CLASS_QUOTA = "한도/레이트리밋"
+FAILURE_CLASS_AUTH = "인증 실패"
+
+# RunResult 의 **명시 실패 신호** 키(rc 값 추론 금지·codex must-fix). 엔진(_default_run_fn·
+# _execute_attempt)만 세팅한다 — 하네스가 우연히 같은 rc 를 내도 분류되지 않는다.
+RUN_RESULT_LAUNCH_FAILED = "launch_failed"   # 바이너리 부재/PATH/exec 권한 — 프로세스가 뜨지 못함
+RUN_RESULT_STALLED = "stalled"               # opencode 첫-이벤트 stall(유한 재시도 소진·pm_relay)
+
+# opencode 첫-이벤트 stall 을 stderr 에 찍는 엔진 마커(단일 출처) — 분류기의 백스톱 신호로도 쓴다.
+OPENCODE_STALL_MARKER = "[opencode 첫-이벤트 stall:"
 
 # opt-in 게이트 키(기본 OFF·per-clone·ADR-0004 상속·§5.4).
 DELEGATE_ENABLED_KEY = "delegate_enabled"
@@ -185,6 +210,16 @@ def _load_relay():
     return module
 
 
+def _load_delegate_scope():
+    """엔진 delegate_scope 를 importlib 로 직접 로드 — 위임 전·후 worktree 상태 비교 판정을
+    재사용(T-0462·형제 `.project_manager/tools/`·_load_relay 동형)."""
+    path = Path(__file__).resolve().parent / "delegate_scope.py"
+    spec = importlib.util.spec_from_file_location("delegate_scope", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 # ── 설정 ──────────────────────────────────────────────────────────────────
 
 def local_config() -> dict[str, str]:
@@ -268,6 +303,36 @@ def resolve_delegate(
         )
     harness = _validate_harness(harness)
     reasoning = _validate_reasoning(harness, reasoning)
+    return harness, model, reasoning
+
+
+def resolve_fallback(
+    conf: dict[str, str],
+    role: str,
+    tier: str,
+) -> tuple[str, str, str | None] | None:
+    """명시된 1단 폴백 tuple 을 해소한다.
+
+    기존 역할 매핑과 동형인
+    `delegate.<role>[.hard].fallback.{harness,model,reasoning}` 세트를 통째로 읽는다. 세 키가 모두
+    없으면 폴백 미설정(None)이고, 하나라도 있으면 harness/model 완전 세트를 요구한다. hard 는 normal
+    폴백을 상속하지 않는다 — 티어 혼합 상속은 주 매핑과 똑같이 금지한다. 엔진 기본 폴백은 없으며,
+    미설정은 기존 fail-loud 를 보존한다(ADR-0070 D5).
+    """
+    key = f"delegate.{role}" + (".hard" if tier == "hard" else "") + ".fallback"
+    harness = (conf.get(f"{key}.harness") or "").strip()
+    model = (conf.get(f"{key}.model") or "").strip()
+    reasoning_raw = conf.get(f"{key}.reasoning")
+    configured = bool(harness or model or (reasoning_raw and reasoning_raw.strip()))
+    if not configured:
+        return None
+    if not harness or not model:
+        raise DelegateError(
+            f"폴백 매핑 불완전({key}.harness/.model) — 폴백은 원자 tuple 로 명시해야 한다. "
+            "부분 설정/조용한 기본값은 허용하지 않는다."
+        )
+    harness = _validate_harness(harness)
+    reasoning = _validate_reasoning(harness, reasoning_raw)
     return harness, model, reasoning
 
 
@@ -1594,12 +1659,21 @@ def _gettempdir() -> str:
 
 
 def _format_meta(argv: list[str], rc: int, harness: str, model: str,
-                 elapsed: float, stdout: str, stderr: str) -> str:
-    """raw 박제 본문 — 메타(argv·rc·모델·소요) 헤더 + 원문."""
+                 elapsed: float, stdout: str, stderr: str, *,
+                 attempt: str = "primary", primary_raw: str | None = None) -> str:
+    """raw 박제 본문 — 메타(argv·rc·모델·소요) 헤더 + 원문.
+
+    폴백 attempt 는 `# primary_raw:` 로 앞선 primary raw 경로를 적어 **raw 파일 하나만 봐도** 감사
+    체인(왜 이 하네스로 갔는가)이 닫히게 한다."""
     header = [
         "# pm_delegate raw 출력 (감사)",
         f"# harness: {harness}",
         f"# model: {model}",
+        f"# attempt: {attempt}",
+    ]
+    if primary_raw:
+        header.append(f"# primary_raw: {primary_raw}")
+    header += [
         f"# argv: {' '.join(argv)}",
         f"# rc: {rc}",
         f"# elapsed_sec: {elapsed:.1f}",
@@ -1639,6 +1713,136 @@ def extract_reply(harness: str, stdout: str) -> str | None:
 
 RunResult = dict  # {"returncode": int, "stdout": str, "stderr": str, "timed_out": bool}
 
+# 폴백 발동용 실패 분류 — **양성 패턴만** 열거한다. 정상 판정(반려/must-fix)이나 임의 rc≠0를
+# "인프라"로 추론하지 않는다. Codex CLI 관측/공식 upstream 표기:
+#   · 한도: `rate_limit_reached` / `rate_limit_exceeded`, "Rate limit reached …",
+#           "You've hit your usage limit.", `insufficient_quota` (HTTP 429 계열).
+#   · 인증: `unexpected status 401 Unauthorized`, `invalid_api_key`, "not logged in" /
+#           "please run codex login", OAuth `invalid_state`.
+# **커버리지 경계(§help 에도 명시)**: 위 표기는 전부 **codex CLI 축의 실근거**다. claude
+# ("Credit balance is too low" 류)·opencode(provider passthrough 오류) 고유 표기는 실측/문서 근거를
+# 확보하기 전까지 **추가하지 않는다** — 추측 패턴은 오분류(=부당 폴백·요청 밖 하네스로 유료 재송신)
+# 위험만 키운다. 미커버 표기는 미분류로 남아 기존 fail-loud 를 탄다(보수 방향·후속 실측 티켓).
+# 스폰 실패/타임아웃/stall 은 패턴이 아니라 **엔진이 세팅한 명시 신호**(RUN_RESULT_* 키)로만 잡는다.
+# 오분류 시 보수 방향은 None(폴백 안 함·기존 fail-loud)이다.
+_INFRA_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\brate_limit_(?:reached|exceeded)\b", re.IGNORECASE),
+    re.compile(r"\brate limit (?:has been )?(?:reached|exceeded)\b", re.IGNORECASE),
+    re.compile(r"\byou(?:'ve| have) hit your usage limit\b", re.IGNORECASE),
+    re.compile(r"\busage limit (?:has been )?reached\b", re.IGNORECASE),
+    re.compile(r"\binsufficient_quota\b", re.IGNORECASE),
+    re.compile(r"\b429\b[^\n]{0,120}\btoo many requests\b", re.IGNORECASE),
+    re.compile(r"\btoo many requests\b[^\n]{0,120}\b429\b", re.IGNORECASE),
+)
+_INFRA_AUTH_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:unexpected status\s+)?401 unauthorized\b", re.IGNORECASE),
+    re.compile(r"\binvalid_api_key\b", re.IGNORECASE),
+    re.compile(r"\bnot logged in\b", re.IGNORECASE),
+    re.compile(r"\blogin required\b", re.IGNORECASE),
+    re.compile(r"\bplease run [`'\"]?codex login\b", re.IGNORECASE),
+    re.compile(
+        r"(?:\bauthentication\b[^\n]{0,80}\binvalid_state\b"
+        r"|\binvalid_state\b[^\n]{0,80}\bauthentication\b)",
+        re.IGNORECASE,
+    ),
+)
+
+
+# reply/프롬프트 본문을 실어 나르는 이벤트 필드 — error 이벤트 안에 있어도 스캔에서 제외한다
+# (claude 는 실패 turn 의 최종 텍스트를 `result` 에, codex agent_message 는 `text` 에 싣는다).
+_REPLY_TEXT_KEYS: frozenset[str] = frozenset({"result", "text", "content", "reply"})
+
+
+def _is_error_event(event: dict) -> bool:
+    """JSONL 이벤트가 하네스의 **진단(error) 이벤트**인지 — reply/echo 이벤트와 구분."""
+    if event.get("is_error") is True:
+        return True
+    if event.get("error"):
+        return True
+    for key in ("type", "subtype"):
+        value = event.get(key)
+        if isinstance(value, str) and "error" in value.lower():
+            return True
+    item = event.get("item")
+    if isinstance(item, dict):
+        item_type = item.get("type")
+        if isinstance(item_type, str) and "error" in item_type.lower():
+            return True
+    return False
+
+
+def _diagnostic_strings(node, key: str | None = None) -> list[str]:
+    """이벤트에서 진단 문자열만 수집(reply 본문 필드는 버림)."""
+    if isinstance(node, str):
+        return [] if key in _REPLY_TEXT_KEYS else [node]
+    if isinstance(node, dict):
+        collected: list[str] = []
+        for child_key, child in node.items():
+            collected.extend(_diagnostic_strings(child, child_key))
+        return collected
+    if isinstance(node, list):
+        collected = []
+        for child in node:
+            collected.extend(_diagnostic_strings(child, key))
+        return collected
+    return []
+
+
+def _failure_scan_text(result: RunResult) -> str:
+    """한도/인증 패턴 스캔 대상 — stderr 전문 + stdout 의 **error 이벤트 진단 필드만**.
+
+    stdout 전문을 스캔하면 **에이전트 reply·프롬프트 에코가 한도 문구를 인용하기만 해도** 폴백이
+    발동한다(실측 재현 2건: codex `agent_message` 본문·user 프롬프트 에코 — 이 규칙 자체를 리뷰
+    위임하면 자기참조로 재현된다). 하네스 stdout 은 JSONL 이벤트 스트림이고 진단은 error 이벤트에만
+    담기므로, 스캔을 그 이벤트의 비-reply 필드로 좁혀 에코 유입을 원천 차단한다. 비-JSON/비-dict
+    라인은 무시한다(pm_relay 3파서와 동일 robust 정책).
+    """
+    import json  # 지연 import — 분류 경로에서만 쓴다(pm_relay 파서 대칭).
+
+    parts: list[str] = [result.get("stderr", "") or ""]
+    for raw in (result.get("stdout", "") or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(event, dict) and _is_error_event(event):
+            parts.extend(_diagnostic_strings(event))
+    return "\n".join(parts)
+
+
+def classify_infrastructure_failure(result: RunResult) -> str | None:
+    """하네스 결과를 폴백 가능한 인프라 실패 클래스로 보수 분류한다.
+
+    반환값은 loud 메시지/감사 provenance 에 쓰는 안정 문자열이다. 분류 근거는 둘뿐이다 —
+    ① 엔진이 세팅한 명시 신호(launch 실패·timeout·opencode 첫-이벤트 stall), ② 실패 결과(rc≠0)의
+    한도/인증 **양성 패턴**(스캔 범위는 _failure_scan_text — reply 에코 제외). rc=0 정상 완료는 출력
+    내용과 무관하게 분류하지 않으며(반려/must-fix 판정은 PM 몫), 알려지지 않은 rc≠0 도 None 으로
+    남겨 기존 fail-loud 를 유지한다.
+
+    **rc=0 검사가 맨 앞**이다 — "정상 완료는 절대 폴백 안 함"은 문서 계약이므로 신호 세팅에 버그가
+    나도(rc=0 인데 신호가 붙는 조합) 계약이 먼저 이긴다(codex suggestion·방어적 보장). 실제 엔진은
+    성공 turn 에 신호를 붙이지 않는다(timeout=rc1·launch=rc127·stall=rc1).
+    """
+    rc = result.get("returncode", 1)
+    if rc == 0:
+        return None
+    if result.get(RUN_RESULT_LAUNCH_FAILED):
+        return FAILURE_CLASS_LAUNCH
+    if bool(result.get("timed_out", False)):
+        return FAILURE_CLASS_TIMEOUT
+    # stall 은 엔진 신호가 1순위, stderr 마커는 백스톱(둘 다 엔진이 직접 찍는다 — 오분류 위험 0).
+    if result.get(RUN_RESULT_STALLED) or OPENCODE_STALL_MARKER in (result.get("stderr", "") or ""):
+        return FAILURE_CLASS_STALL
+    output = _failure_scan_text(result)
+    if any(pattern.search(output) for pattern in _INFRA_QUOTA_PATTERNS):
+        return FAILURE_CLASS_QUOTA
+    if any(pattern.search(output) for pattern in _INFRA_AUTH_PATTERNS):
+        return FAILURE_CLASS_AUTH
+    return None
+
 
 def _default_run_fn(
     argv: list[str], *, stdin_text: str | None, cwd: str, env: dict[str, str],
@@ -1650,65 +1854,275 @@ def _default_run_fn(
     opencode 는 첫-이벤트 워치독 경유(startup stall 유한 재시도·pm_relay 재사용·프롬프트는 --file 이라
     stdin 불요). codex/claude 는 stdin 으로 프롬프트 주입.
 
-    **launch 오류 정규화**(codex must-fix): 하네스 바이너리 미설치/실행 불가(FileNotFoundError·OSError)는
-    traceback 으로 전파하지 않고 RunResult(rc≠0·진단 stderr)로 감싼다 — 3드라이버 공통(external_review.
-    run_reviewer 의 FileNotFoundError fail-soft 계약 동형). 이로써 main 의 rc=1+진단+raw 실패 계약을
-    우회하는 traceback 을 원천 차단한다."""
-    relay = _load_relay()
-    try:
-        if harness == "opencode":
-            try:
-                completed = relay.run_with_first_event_watchdog(
-                    argv,
-                    first_event_timeout=relay.first_event_timeout_default(),
-                    overall_timeout=timeout,
-                    retries=relay.stall_retries_default(),
-                    cwd=str(cwd),
-                    env=env,
-                )
-                return {
-                    "returncode": completed.returncode,
-                    "stdout": completed.stdout or "",
-                    "stderr": completed.stderr or "",
-                    "timed_out": False,
-                }
-            except relay.StallWatchdogError as exc:
-                return {"returncode": 1, "stdout": "", "stderr": f"[opencode 첫-이벤트 stall: {exc}]",
-                        "timed_out": False}
-            except subprocess.TimeoutExpired:
-                # 워치독이 프로세스그룹째 kill 후 TimeoutExpired 전파(§5.3·kill 은 워치독 소관).
-                return {"returncode": 1, "stdout": "", "stderr": f"[opencode timeout {timeout}s]",
-                        "timed_out": True}
+    **launch 오류 정규화**(codex must-fix): 하네스 바이너리 미설치/실행 불가(FileNotFoundError·
+    PermissionError 등 **스폰 단계** 오류)는 traceback 으로 전파하지 않고 RunResult(rc≠0·진단 stderr)로
+    감싼다 — 3드라이버 공통(external_review.run_reviewer 의 FileNotFoundError fail-soft 계약 동형).
 
-        # codex / claude — stdin 주입 + 프로세스그룹 kill
-        popen_kwargs: dict = dict(
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=str(cwd), env=env, text=True, encoding="utf-8", errors="replace",
-        )
-        if os.name == "posix":
-            popen_kwargs["start_new_session"] = True
-        elif os.name == "nt":  # pragma: no cover — POSIX 회귀 환경
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        proc = subprocess.Popen(argv, **popen_kwargs)
+    **스폰 단계 한정**(codex R2): 프롬프트를 이미 보낸 뒤의 I/O 오류(communicate 중 EPIPE 등)를 launch
+    실패로 표시하면 폴백이 발동해 **같은 프롬프트가 외부로 중복 전송**된다. 그래서 launch 신호는
+    스폰 지점 예외에만 붙이고, 실행-중 OSError 는 미분류 실패(rc=1)로 남겨 기존 fail-loud 를 태운다."""
+    relay = _load_relay()
+    if harness == "opencode":
+        # 워치독이 내부에서 스폰한다 — 바이너리/권한 계열(_LAUNCH_STAGE_ERRORS)만 launch 로 보고
+        # 나머지 OSError 는 실행-중으로 간주한다(전송 후 중복 송신 금지).
         try:
-            stdout, stderr = proc.communicate(input=stdin_text, timeout=timeout)
-            return {"returncode": proc.returncode, "stdout": stdout or "", "stderr": stderr or "",
-                    "timed_out": False}
+            completed = relay.run_with_first_event_watchdog(
+                argv,
+                first_event_timeout=relay.first_event_timeout_default(),
+                overall_timeout=timeout,
+                retries=relay.stall_retries_default(),
+                cwd=str(cwd),
+                env=env,
+            )
+            return {
+                "returncode": completed.returncode,
+                "stdout": completed.stdout or "",
+                "stderr": completed.stderr or "",
+                "timed_out": False,
+            }
+        except relay.StallWatchdogError as exc:
+            # 첫-이벤트 stall(유한 재시도 소진) = 인프라 실패다 — rc=1/timed_out=False 로만
+            # 정규화하면 분류가 누락돼 폴백이 불발한다. 명시 신호로 실어 보낸다.
+            return {"returncode": 1, "stdout": "",
+                    "stderr": f"{OPENCODE_STALL_MARKER} {exc}]",
+                    "timed_out": False, RUN_RESULT_STALLED: True}
         except subprocess.TimeoutExpired:
-            relay._kill_process_group(proc)  # 그룹째 종료(자식 잔존 방지·§5.3)
+            # 워치독이 프로세스그룹째 kill 후 TimeoutExpired 전파(§5.3·kill 은 워치독 소관).
+            return {"returncode": 1, "stdout": "", "stderr": f"[opencode timeout {timeout}s]",
+                    "timed_out": True}
+        except _LAUNCH_STAGE_ERRORS as exc:
+            return _launch_failure_result(harness, exc)
+        except OSError as exc:
+            return _midrun_failure_result(harness, exc)
+
+    # codex / claude — stdin 주입 + 프로세스그룹 kill
+    popen_kwargs: dict = dict(
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cwd=str(cwd), env=env, text=True, encoding="utf-8", errors="replace",
+    )
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    elif os.name == "nt":  # pragma: no cover — POSIX 회귀 환경
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        proc = subprocess.Popen(argv, **popen_kwargs)   # ← 스폰 지점(여기서만 launch 신호)
+    except OSError as exc:
+        return _launch_failure_result(harness, exc)
+    try:
+        stdout, stderr = proc.communicate(input=stdin_text, timeout=timeout)
+        return {"returncode": proc.returncode, "stdout": stdout or "", "stderr": stderr or "",
+                "timed_out": False}
+    except subprocess.TimeoutExpired:
+        relay._kill_process_group(proc)  # 그룹째 종료(자식 잔존 방지·§5.3)
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001 — 이미 kill 됨·수확 실패는 무시
+            stdout, stderr = "", ""
+        return {"returncode": 1, "stdout": stdout or "", "stderr": stderr or "", "timed_out": True}
+    except OSError as exc:
+        # 프롬프트 전송 후 I/O 오류 — 폴백 대상 아님(중복 외부 전송 차단·fail-loud).
+        relay._kill_process_group(proc)
+        return _midrun_failure_result(harness, exc)
+
+
+# 스폰 단계로 확신할 수 있는 예외들(바이너리 부재·실행 권한·경로 형상). 그 밖의 OSError 는 실행 중
+# 발생했을 수 있으므로 launch 로 표시하지 않는다.
+_LAUNCH_STAGE_ERRORS = (FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError)
+
+
+def _launch_failure_result(harness: str, exc: BaseException) -> RunResult:
+    """스폰 실패를 명시 신호 + 진단이 붙은 RunResult 로 정규화한다(단일 출처)."""
+    return {
+        "returncode": 127,
+        "stdout": "",
+        "stderr": f"하네스 {harness} 실행 불가: {exc} — 설치/PATH 확인",
+        "timed_out": False,
+        RUN_RESULT_LAUNCH_FAILED: True,
+    }
+
+
+def _midrun_failure_result(harness: str, exc: BaseException) -> RunResult:
+    """전송 후 실행-중 I/O 오류 — **분류 신호 없이** 실패로 남긴다(폴백 금지·중복 송신 차단)."""
+    return {
+        "returncode": 1,
+        "stdout": "",
+        "stderr": (f"하네스 {harness} 실행 중 I/O 오류: {exc} — 프롬프트가 이미 전송됐을 수 있어 "
+                   "자동 폴백하지 않습니다(중복 외부 전송 차단). 결과를 확인하고 수동 재시도하세요."),
+        "timed_out": False,
+    }
+
+
+class DelegateAttempt(NamedTuple):
+    """단일 하네스 실행과 감사 raw 결과(폴백 재귀 없이 primary/fallback 각 1회)."""
+
+    harness: str
+    model: str
+    argv: list[str]
+    result: RunResult
+    raw_path: Path
+
+
+def _build_target_argv(
+    harness: str,
+    model: str,
+    reasoning: str | None,
+    role: str,
+    cwd: Path,
+    prompt_file: Path,
+) -> list[str]:
+    if harness == "codex":
+        return build_codex_argv(model, reasoning, role, str(cwd))
+    if harness == "claude":
+        return build_claude_argv(model, reasoning, role)
+    return build_opencode_argv(model, reasoning, role, str(cwd), str(prompt_file))
+
+
+def _execute_attempt(
+    *,
+    harness: str,
+    model: str,
+    reasoning: str | None,
+    role: str,
+    cwd: Path,
+    prompt: str,
+    timeout: int,
+    output_dir: Path | None,
+    run_fn: Callable,
+    attempt: str,
+    primary_raw: str | None = None,
+) -> DelegateAttempt:
+    """하네스 1회를 실행하고 raw를 박제한다.
+
+    폴백도 같은 드라이버/권한축/env allowlist/timeout 계약을 탄다(그래서 폴백이 발동한 실행의 최악
+    소요는 두 시도의 하네스별 예산 합이다·_harness_timeout_budget). opencode의 합성 prompt-file은
+    attempt마다 만들고 즉시 정리한다. DI run_fn이 예외를 직접 raise해도 _default_run_fn과 **같은
+    분류 신호**로 정규화한다 — 스폰 단계 예외(_LAUNCH_STAGE_ERRORS)만 RUN_RESULT_LAUNCH_FAILED 이고,
+    그 밖의 OSError는 전송 후일 수 있어 미분류 실패로 남긴다(폴백 금지·중복 외부 전송 차단).
+    """
+    env = build_env(harness)
+    stdin_text: str | None = None
+    prompt_path: Path | None = None
+    if harness == "opencode":
+        prompt_path = save_raw_output("opencode_prompt", prompt, output_dir)
+        argv = _build_target_argv(harness, model, reasoning, role, cwd, prompt_path)
+    else:
+        # prompt_file 인자는 opencode에서만 소비된다.
+        argv = _build_target_argv(harness, model, reasoning, role, cwd, Path())
+        stdin_text = prompt
+
+    started = time.monotonic()
+    try:
+        try:
+            result = run_fn(
+                argv, stdin_text=stdin_text, cwd=str(cwd), env=env,
+                timeout=timeout, harness=harness,
+            )
+        except _LAUNCH_STAGE_ERRORS as exc:
+            result = _launch_failure_result(harness, exc)
+        except OSError as exc:
+            result = _midrun_failure_result(harness, exc)
+    finally:
+        elapsed = time.monotonic() - started
+        if prompt_path is not None:
             try:
-                stdout, stderr = proc.communicate(timeout=5)
-            except Exception:  # noqa: BLE001 — 이미 kill 됨·수확 실패는 무시
-                stdout, stderr = "", ""
-            return {"returncode": 1, "stdout": stdout or "", "stderr": stderr or "", "timed_out": True}
-    except (FileNotFoundError, OSError) as exc:
-        # launch 실패(바이너리 부재·PATH·실행 권한 등) — 3드라이버 공통 정규화(traceback 금지).
-        return {
-            "returncode": 127,
-            "stdout": "",
-            "stderr": f"하네스 {harness} 실행 불가: {exc} — 설치/PATH 확인",
-            "timed_out": False,
-        }
+                prompt_path.unlink()
+            except OSError:
+                pass
+
+    rc = result.get("returncode", 1)
+    stdout = result.get("stdout", "")
+    stderr = result.get("stderr", "")
+    raw_path = save_raw_output(
+        harness,
+        _format_meta(
+            argv, rc, harness, model, elapsed, stdout, stderr, attempt=attempt,
+            primary_raw=primary_raw,
+        ),
+        output_dir,
+    )
+    return DelegateAttempt(harness, model, argv, result, raw_path)
+
+
+# ── 위임 범위 밖 변경 감지 훅 (T-0462·delegate_scope 판정 재사용·never-block) ──────
+
+class ScopeAudit(NamedTuple):
+    """위임 **전체 단위**(primary + 폴백 attempt 포함) 범위 판정 입력."""
+
+    scope: object                 # delegate_scope 모듈
+    touches: tuple[str, ...]      # ticket frontmatter touches(미지정 = 허용 0)
+    before: object                # delegate_scope.WorktreeState
+    workspace: Path               # git toplevel(=--cwd 가 하위 디렉토리여도 판정 기준은 루트)
+
+
+def _warn_dropped_touch(item: str, reason: str) -> None:
+    """정규화 못 한 touches 항목을 loud 하게 알린다(드롭 = 그만큼 허용 범위가 좁아진다)."""
+    print(
+        f"경고: touches 항목 '{item}' 을 이 workspace 좌표로 해소하지 못해 범위 판정에서 뺍니다"
+        f"({reason}).",
+        file=sys.stderr,
+    )
+
+
+def begin_scope_audit(ticket: str | None, cwd: Path) -> ScopeAudit | None:
+    """위임 실행 **직전** worktree 상태를 캡처한다(T-0462).
+
+    호출 시점은 전송-전 게이트(opt-in·매핑·containment·denylist·재앵커·dry-run)를 **모두 통과한
+    뒤**다 — 아무것도 실행하지 않은 경로에서 판정을 켜면 무의미한 git 호출·오탐만 는다.
+    캡처/정규화 기준은 `--cwd` 가 아니라 **git toplevel** 이다 — repo 하위 디렉토리를 --cwd 로 주면
+    슬롯 루트와 좌표가 어긋나 판정이 통째로 꺼진다. `--ticket` 이 없으면 touches=() 라 허용 경로가
+    0이다(delegate_scope 계약 — 변경이 있으면 전부 경고). 판정 **준비** 실패(toplevel 해소·board
+    로드·ticket 부재·git status 실패)는 위임을 막지 않는다 — loud 1줄 후 None(판정 생략)."""
+    try:
+        scope = _load_delegate_scope()
+        workspace = scope.resolve_workspace_root(cwd)
+        touches = scope.ticket_touches(BOARD_PY, ticket, pm_root=REPO) if ticket else ()
+        before = scope.capture_worktree_state(workspace)
+        # 해시 대상이 있는데 지문을 하나도 못 구했으면 이미 dirty 한 파일의 재수정을 못 잡는다 —
+        # 강등된 채로 조용히 통과시키지 않는다(축소된 감지력을 PM 이 알아야 한다).
+        degraded = scope.content_signal_missing(before, workspace)
+    except Exception as exc:  # noqa: BLE001 — 판정 준비 실패는 비차단(traceback 대신 진단 1줄).
+        print(f"경고: 위임 범위 판정 준비 실패({exc}) — 비차단 진행.", file=sys.stderr)
+        return None
+    if degraded:
+        print(
+            "경고: 내용 해시 보강 신호 없음 — 이미 dirty 한 파일의 재수정은 감지 불가"
+            "(상태코드/mode 신호로만 판정).",
+            file=sys.stderr,
+        )
+    return ScopeAudit(scope, touches, before, workspace)
+
+
+def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
+    """위임 **회수 시점**(모든 attempt 종료 후 1회)의 범위 밖 변경을 loud 경고한다(차단 아님).
+
+    반환값/rc 를 바꾸지 않는다 — 격리/복원/수용 판정은 PM 몫이다(T-0462). 판정 자체가 실패해도
+    위임 결과를 바꾸지 않는다(비차단 보험). 쓰기 허용 역할집합은 이 모듈의 WRITE_ROLES 를 주입해
+    단일 출처로 쓴다(감지기 기본값과의 드리프트는 테스트가 막는다). raw 박제는 기본 /tmp 라 판정에
+    안 잡히지만, `--output-dir` 를 repo 안으로 주면 그 산출물도 '위임이 만든 변경'으로 잡힌다(의도)."""
+    if audit is None:
+        return
+    try:
+        after = audit.scope.capture_worktree_state(audit.workspace)
+        if audit.scope.head_moved(audit.before, after):
+            # 커밋 자체가 역할 계약 위반 신호다(위임 역할은 commit/push 금지) — 범위 안이든 밖이든
+            # 별도로 알린다. 커밋된 경로는 아래 판정 입력에 합산된다(worktree 는 clean 이라 무증거).
+            print(
+                "경고: 위임 중 커밋이 발생했습니다(위임 역할은 commit 금지) — "
+                f"HEAD {audit.before.head or '(없음)'} → {after.head or '(없음)'}. "
+                "커밋된 변경도 범위 판정에 합산합니다.",
+                file=sys.stderr,
+            )
+        paths = audit.scope.out_of_scope_changes(
+            audit.before, after,
+            touches=audit.touches, role=role, pm_root=REPO, workspace=audit.workspace,
+            write_roles=WRITE_ROLES, on_drop=_warn_dropped_touch,
+        )
+        warning = audit.scope.format_warning(paths)
+    except Exception as exc:  # noqa: BLE001 — 판정 실패도 위임 결과를 바꾸지 않는다.
+        print(f"경고: 위임 범위 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
+        return
+    if warning:
+        print(warning, file=sys.stderr)
 
 
 # ── native 단락 advisory (§3.6·never-block 백스톱) ────────────────────────────
@@ -1836,6 +2250,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py",
         description="cross-harness 역할 위임 채널 (ADR-0075·기본 OFF·delegate_enabled opt-in)",
+        epilog=(
+            "local.conf loud 폴백 예시(엔진 기본값 아님):\n"
+            "  delegate.developer.fallback.harness=claude\n"
+            "  delegate.developer.fallback.model=opus\n"
+            "hard 티어는 delegate.developer.hard.fallback.* 처럼 별도 완전 세트를 설정합니다.\n"
+            "폴백은 인프라 실패(스폰 실패·타임아웃·opencode 첫-이벤트 stall·한도/인증)에만 1회 —\n"
+            "정상 완료 판정(반려·must-fix)은 대상이 아니고, --harness/--model 완전지정 실행이나\n"
+            "폴백이 primary 와 같은 하네스/모델이면 loud 로 건너뜁니다. 폴백이 발동하면 최악 소요는\n"
+            "primary·폴백 각 하네스 예산의 합입니다 — codex/claude 는 timeout, opencode 는 첫-이벤트\n"
+            "워치독 재시도분(retries×창)이 더 붙습니다. --dry-run 이 실수치를 표시합니다(2차 폴백 없음).\n"
+            "실패 분류 커버리지: 한도/인증 패턴은 현재 **codex CLI 축 실근거**만 담습니다 —\n"
+            "claude/opencode 고유 표기(Credit balance 류)는 후속 실측 전까지 미포함이며, 미분류는\n"
+            "폴백 없이 기존 fail-loud 로 처리됩니다."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--role", required=True, choices=ROLE_CHOICES,
@@ -1856,6 +2284,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help=f"위임 turn 타임아웃(초·기본 {DELEGATE_TIMEOUT_SECONDS})")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
                         help="raw 출력 박제 디렉토리(기본 /tmp)")
+    parser.add_argument("--ticket", default=None, metavar="T-NNNN",
+                        help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
+                             "(생략 시 허용 경로 0·차단 아님)")
     parser.add_argument("--dry-run", action="store_true",
                         help="합성 프롬프트 요약 + argv 만 출력·미실행(비활성이어도 허용)")
     return parser
@@ -1903,6 +2334,26 @@ def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str]) -> int:
     return val
 
 
+def _harness_timeout_budget(harness: str, timeout: int) -> int:
+    """하네스 **1회 실행**의 최악 소요 예산(초).
+
+    codex/claude 는 turn timeout 그대로다. opencode 만 다르다 — 첫-이벤트 워치독
+    (pm_relay.run_with_first_event_watchdog)이 **시도마다** overall 예산을 새로 잡으므로 단일 실행이
+    timeout 을 넘을 수 있다. 다만 stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로
+    (`now >= first_deadline` 분기) 예산은 `timeout + retries×min(첫-이벤트 창, timeout)` 이다
+    (기본 1800 + 2×90 = 1980s). relay 노브(env PM_OC_STALL_RETRIES·PM_OC_FIRST_EVENT_TIMEOUT)를 못
+    읽으면 보수적으로 timeout 을 그대로 쓴다."""
+    if harness != "opencode":
+        return timeout
+    try:
+        relay = _load_relay()
+        retries = max(0, int(relay.stall_retries_default()))
+        first_event_window = float(relay.first_event_timeout_default())
+    except (OSError, ValueError, TypeError, AttributeError, ImportError):
+        return timeout
+    return int(timeout + retries * min(first_event_window, timeout))
+
+
 def _reconfigure_streams() -> None:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -1946,9 +2397,28 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     try:
         harness, model, reasoning = resolve_delegate(
             conf, args.role, tier, args.harness, args.model, args.reasoning)
+        fallback = resolve_fallback(conf, args.role, tier)
     except DelegateError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
+
+    # 폴백 **비발동** 판정(loud skip·설정은 그대로 두고 이번 실행만 끈다). 설정 자체는 위에서 해소해
+    # 불완전 폴백 설정을 fail-loud 로 잡되(설정 정합은 override 와 무관), 아래 사유면 이번 실행에선
+    # 쓰지 않는다 — "설정돼 있는데 안 썼다"를 정확히 말할 수 있어야 loud skip 이 성립한다:
+    #   ① CLI 완전지정(--harness AND --model) = 설정 미참조 원자 override(resolve_delegate 불변) —
+    #      일회성 명시 실행이 요청 밖 하네스로 넘어가면 그 불변이 깨진다.
+    #   ② 폴백 tuple 의 하네스/모델이 primary 와 동일 — 한도 소진된 같은 채널을 유료로 재타격할 뿐이다
+    #      (reasoning 만 다른 경우도 같은 계정/모델 한도라 skip 한다).
+    fallback_skip: str | None = None
+    if fallback is not None:
+        if args.harness and args.model:
+            fallback_skip = ("CLI 완전지정(--harness/--model)은 설정 미참조 원자 override — "
+                             "설정 폴백을 쓰지 않는다")
+            fallback = None
+        elif (fallback[0], fallback[1]) == (harness, model):
+            fallback_skip = (f"폴백 tuple 이 primary 와 동일({harness}/{model}) — "
+                             "한도 소진된 같은 채널 재타격 금지")
+            fallback = None
 
     # ③ cwd = git 저장소 루트/하위 검증 (광범위 홈 디렉토리 등 거부·경계 보강)
     if not _cwd_in_git_repo(cwd, git_run_fn):
@@ -2008,18 +2478,41 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
 
     # 드라이버 argv 준비 (dry-run·실행 공용). opencode 는 실행 시 합성 프롬프트를 임시 파일로 --file
     # 전달하므로, dry-run argv 는 사용자 prompt-file 경로로 표시(실행 시 합성 파일로 대체).
-    if harness == "codex":
-        argv_display = build_codex_argv(model, reasoning, args.role, str(cwd))
-    elif harness == "claude":
-        argv_display = build_claude_argv(model, reasoning, args.role)
-    else:  # opencode
-        argv_display = build_opencode_argv(model, reasoning, args.role, str(cwd), str(prompt_file))
+    argv_display = _build_target_argv(
+        harness, model, reasoning, args.role, cwd, prompt_file,
+    )
+
+    # 타임아웃은 dry-run 미리보기(폴백 시간 예산 표시)와 실행이 같은 값을 쓴다.
+    timeout = _resolve_timeout(args, conf)
 
     # ⑦ dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
     if args.dry_run:
         print("=== [dry-run] pm_delegate 미리보기 (미실행) ===")
         print(f"role: {args.role} · tier: {tier} · 권한축: {_perm_axis(args.role)}")
         print(f"해소: harness={harness} model={model} reasoning={reasoning}")
+        if fallback_skip is not None:
+            print(f"폴백: 비발동 — {fallback_skip}")
+        elif fallback is None:
+            print("폴백: 미설정 (인프라 실패 시 기존 fail-loud)")
+        else:
+            fallback_harness, fallback_model, fallback_reasoning = fallback
+            primary_budget = _harness_timeout_budget(harness, timeout)
+            fallback_budget = _harness_timeout_budget(fallback_harness, timeout)
+            note = (" · opencode 는 첫-이벤트 워치독 재시도분 포함"
+                    if "opencode" in (harness, fallback_harness) else "")
+            print(
+                "폴백: "
+                f"harness={fallback_harness} model={fallback_model} "
+                f"reasoning={fallback_reasoning} (인프라 실패에만 1회)"
+            )
+            print(
+                f"폴백 시간 예산: 최악 primary {primary_budget}s + 폴백 {fallback_budget}s = "
+                f"{primary_budget + fallback_budget}s (2차 폴백 없음{note})"
+            )
+            # 본체 타임아웃 예산만 — 프로세스 kill/wait·출력 회수 등 정리 오버헤드(수초~수십초)는
+            # 하네스/플랫폼 의존이라 산입하지 않는다(codex R3). 외부 감시자가 이 수치를 하드
+            # 데드라인으로 쓰면 완료 직전 종료될 수 있어 표기로 경고한다.
+            print("  (본체 예산만 — kill/정리 오버헤드 수초~수십초 별도 · 외부 하드 데드라인으로 쓰지 말 것)")
         print(f"cwd: {cwd}")
         print(f"argv: {' '.join(argv_display)}")
         if harness == "opencode":
@@ -2047,60 +2540,164 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     if advisory is not None:
         print(advisory, file=sys.stderr)
 
-    # ⑩ env allowlist 정제 + 실행 (§4.7·§3.3)
-    env = build_env(harness)
-    timeout = _resolve_timeout(args, conf)
+    # ⑩ env allowlist 정제 + 실행 (§4.7·§3.3). 인프라 실패일 때만 명시 폴백을 같은 드라이버 계약으로
+    # 1회 실행한다(최악 소요 = 두 시도의 하네스별 예산 합·2차 폴백 없음). 보안/재앵커 게이트는 이
+    # 지점보다 앞이라 폴백 대상이 될 수 없다.
     output_dir = Path(args.output_dir) if args.output_dir else None
     _run = run_fn or _default_run_fn
 
-    # opencode 는 합성 프롬프트를 임시 파일로 박제해 --file 전달(§3.3), codex/claude 는 stdin.
-    stdin_text: str | None = None
-    prompt_path: Path | None = None
+    # ⑩-a 범위 판정 캡처 (T-0462) — **위임 전체 단위**로 1회. 폴백 attempt 도 같은 위임의 일부라
+    # attempt 마다 재캡처하지 않는다(PM 이 회수 시점에 "이 위임이 범위 밖을 만졌나"를 본다). 아래
+    # 실행·회수 블록의 모든 종료 경로(성공·폴백·fail-loud·예외)에서 finally 가 정확히 1회 보고한다.
+    scope_audit = begin_scope_audit(args.ticket, cwd)
     try:
-        if harness == "opencode":
-            prompt_path = save_raw_output("opencode_prompt", prompt, output_dir)
-            argv = build_opencode_argv(model, reasoning, args.role, str(cwd), str(prompt_path))
-        else:
-            argv = argv_display
-            stdin_text = prompt
+        return _execute_and_collect(
+            args=args, harness=harness, model=model, reasoning=reasoning,
+            fallback=fallback, fallback_skip=fallback_skip, cwd=cwd, prompt=prompt,
+            timeout=timeout, output_dir=output_dir, run_fn=_run,
+        )
+    finally:
+        report_scope_audit(scope_audit, args.role)
+
+
+def _execute_and_collect(
+    *,
+    args: argparse.Namespace,
+    harness: str,
+    model: str,
+    reasoning: str | None,
+    fallback: tuple[str, str, str | None] | None,
+    fallback_skip: str | None,
+    cwd: Path,
+    prompt: str,
+    timeout: int,
+    output_dir: Path | None,
+    run_fn: Callable,
+) -> int:
+    """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다(§3.4·§5.3).
+
+    main 에서 분리한 이유는 위임 범위 판정(T-0462)이 **모든 종료 경로에서 정확히 1회** 돌아야 하기
+    때문이다 — 호출부의 try/finally 가 그 경계다."""
+    try:
+        primary = _execute_attempt(
+            harness=harness,
+            model=model,
+            reasoning=reasoning,
+            role=args.role,
+            cwd=cwd,
+            prompt=prompt,
+            timeout=timeout,
+            output_dir=output_dir,
+            run_fn=run_fn,
+            attempt="primary",
+        )
     except OSError as exc:
-        print(f"오류: 합성 프롬프트 임시 파일 박제 실패: {exc}", file=sys.stderr)
+        print(f"오류: 위임 실행 준비/raw 박제 실패: {exc}", file=sys.stderr)
         return 1
 
-    # 합성 프롬프트 임시 파일은 run 후 finally 에서 삭제한다(suggestion — raw 결과만 보존·프롬프트
-    # 내용이 tmp 에 잔존하지 않게). raw 출력 박제는 아래에서 별도 파일로 남긴다.
-    started = time.monotonic()
-    try:
-        result = _run(argv, stdin_text=stdin_text, cwd=str(cwd), env=env,
-                      timeout=timeout, harness=harness)
-    finally:
-        elapsed = time.monotonic() - started
-        if prompt_path is not None:
-            try:
-                prompt_path.unlink()
-            except OSError:
-                pass
-
-    # ⑪ 결과 수집 — raw 박제 + reply 추출 (§3.4). raw 저장·reply 추출의 OSError/UnicodeError·파싱
-    # 예외도 rc=1 진단으로 정규화(traceback 금지·suggestion).
+    # ⑪ 실패 분류 → 선택적 loud 폴백. rc=0 reply(반려/must-fix 포함)는 분류 함수가 절대 폴백시키지
+    # 않는다. 알려지지 않은 rc≠0도 기존 fail-loud로 남는다(오분류 보수 방향).
+    result = primary.result
+    raw_path = primary.raw_path
     rc = result.get("returncode", 1)
     stdout = result.get("stdout", "")
-    stderr = result.get("stderr", "")
     timed_out = result.get("timed_out", False)
-    try:
-        raw_path = save_raw_output(
-            harness, _format_meta(argv, rc, harness, model, elapsed, stdout, stderr), output_dir)
-    except OSError as exc:
-        print(f"오류: raw 출력 박제 실패: {exc}", file=sys.stderr)
-        return 1
+    failure_class = classify_infrastructure_failure(result)
 
-    try:
-        reply = extract_reply(harness, stdout) if stdout else None
-    except (ValueError, UnicodeError, DelegateError) as exc:
-        print(f"오류: reply 추출 실패: {exc}. raw: {raw_path}", file=sys.stderr)
-        return 1
+    if failure_class is not None and fallback is None and fallback_skip is not None:
+        # 설정은 있으나 이번 실행에선 폴백을 끈다 — 조용히 지나가지 않는다(loud skip·ADR-0070 D5).
+        print(
+            f"폴백 비발동: 인프라 실패({failure_class})이지만 {fallback_skip}. "
+            "기존 fail-loud 로 진행한다.",
+            file=sys.stderr,
+        )
 
-    # timeout·rc≠0·빈 reply·파싱 실패 → fail-loud(rc=1 + stderr + raw 경로·§3.4)
+    if failure_class is not None and fallback is not None:
+        fallback_harness, fallback_model, fallback_reasoning = fallback
+        loud = (
+            f"폴백: {harness}→{fallback_harness}({fallback_model}) — "
+            f"사유: {failure_class}"
+        )
+        print(loud, file=sys.stderr)
+        print(
+            f"외부 하네스 {fallback_harness}(model={fallback_model}) 로 폴백 프롬프트 전송 중 "
+            "(과금·외부 송신·1단 폴백).",
+            file=sys.stderr,
+        )
+        advisory = native_advisory(fallback_harness)
+        if advisory is not None:
+            print(advisory, file=sys.stderr)
+        try:
+            fallback_attempt = _execute_attempt(
+                harness=fallback_harness,
+                model=fallback_model,
+                reasoning=fallback_reasoning,
+                role=args.role,
+                cwd=cwd,
+                prompt=prompt,
+                timeout=timeout,
+                output_dir=output_dir,
+                run_fn=run_fn,
+                attempt=f"fallback-from-{harness}:{failure_class}",
+                primary_raw=str(raw_path),
+            )
+        except OSError as exc:
+            print(
+                f"오류: 폴백 실행 준비/raw 박제 실패: {exc}. primary raw: {raw_path}",
+                file=sys.stderr,
+            )
+            return 1
+
+        fallback_result = fallback_attempt.result
+        fallback_rc = fallback_result.get("returncode", 1)
+        fallback_stdout = fallback_result.get("stdout", "")
+        if fallback_result.get("timed_out", False):
+            print(
+                f"오류: 폴백 위임 turn 타임아웃({timeout}s) — 2차 폴백 없음. "
+                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
+                file=sys.stderr,
+            )
+            return 1
+        if fallback_rc != 0:
+            print(
+                f"오류: 폴백 하네스 실패(rc={fallback_rc}) — 2차 폴백 없음. "
+                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            fallback_reply = (
+                extract_reply(fallback_harness, fallback_stdout) if fallback_stdout else None
+            )
+        except (ValueError, UnicodeError, DelegateError) as exc:
+            print(
+                f"오류: 폴백 reply 추출 실패: {exc}. "
+                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
+                file=sys.stderr,
+            )
+            return 1
+        if not fallback_reply or not fallback_reply.strip():
+            print(
+                "오류: 폴백 위임 reply 미추출(빈 출력·파싱 실패) — 2차 폴백 없음. "
+                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
+                file=sys.stderr,
+            )
+            return 1
+
+        # stdout 결과에 provenance를 넣어 PM 회수 reply 자체가 폴백 사실을 보존한다.
+        print(
+            "[pm-delegate] 실행 provenance: "
+            f"fallback={fallback_harness}(model={fallback_model}) · "
+            f"primary={harness}(model={model}) · 사유={failure_class}"
+        )
+        print(fallback_reply)
+        print(
+            f"[pm-delegate] primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
+            file=sys.stderr,
+        )
+        return 0
+
+    # 미설정 또는 비-인프라 실패 → 현행 fail-loud(rc=1 + stderr + raw 경로·§3.4).
     if timed_out:
         print(f"오류: 위임 turn 타임아웃({timeout}s) — 프로세스그룹 종료. raw: {raw_path}",
               file=sys.stderr)
@@ -2108,6 +2705,12 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     if rc != 0:
         print(f"오류: 위임 하네스 실패(rc={rc}). raw: {raw_path}\n"
               "  네이티브/다른 하네스로 재시도를 검토하세요.", file=sys.stderr)
+        return 1
+
+    try:
+        reply = extract_reply(harness, stdout) if stdout else None
+    except (ValueError, UnicodeError, DelegateError) as exc:
+        print(f"오류: reply 추출 실패: {exc}. raw: {raw_path}", file=sys.stderr)
         return 1
     if not reply or not reply.strip():
         print(f"오류: 위임 reply 미추출(빈 출력·파싱 실패). raw: {raw_path}", file=sys.stderr)

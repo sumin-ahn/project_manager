@@ -67,7 +67,7 @@ python3 .project_manager/tools/pm_delegate.py --dry-run \
 
 - 출력 = 해소된 `(harness, model, reasoning)` + 합성 프롬프트 + argv 미리보기. **전송하지 않는다**.
 - dry-run 은 opt-in 게이트를 **우회**한다(항상 rc=0 미리보기) — opt-in OFF 판정(`rc=3`)은 실 실행에서만 난다(아래 §opt-in 게이트).
-- 매핑 미설정 역할은 `rc=1` fail-loud — `local.conf` 에 `delegate.<role>.harness/.model` 을 채운다(조용한 폴백 없음).
+- 매핑 미설정 역할은 `rc=1` fail-loud — `local.conf` 에 `delegate.<role>.harness/.model` 을 채운다(조용한 폴백 없음 — 단 **명시 설정된 loud 폴백**은 별도: `delegate.<role>[.<tier>].fallback.harness/.model[/.reasoning]` 이 있으면 **인프라 실패**[스폰 실패·한도·타임아웃·stall]에 한해 1단 폴백이 발동하고 사유가 stderr 에 표기된다·판정 반려/denylist 차단은 비발동·T-0474·운용 권장 조합=claude/opus).
 - `--tier` 는 **developer 전용** (난제=`hard`·평시=`normal`). 아래 §티어 판정 기준으로 고른다.
   비-개발 역할에 `--tier` 를 주면 usage error.
 
@@ -107,7 +107,7 @@ target 이 다른 하네스면 `--dry-run` 을 떼고 실행한다 (opt-in 필�
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py --role <역할> \
-    --prompt-file <프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard]
+    --prompt-file <프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard] [--ticket T-NNNN]
 ```
 
 - `--prompt-file` — PM 이 만든 **self-contained task 프롬프트**를 담은 파일. 아래 §실행 패턴의 위임
@@ -121,8 +121,9 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
   앞에 자동 주입한다. 프롬프트 파일엔 **작업 내용만** 담고 금지 문구를 중복 서술하지 않는다.
 - **병렬 wave** = PM 이 자기 하네스의 백그라운드 실행(claude Bash `run_in_background` 등)으로
   pm_delegate 호출 자체를 병렬화한다. pm_delegate 는 동기·stateless — 병렬은 호출측 책임이다.
-- 결과: `rc=0` 성공(최종 reply = stdout·raw 는 파일 박제) / `rc=1` 실패(loud·raw 경로 stderr) /
+- 결과: `rc=0` 성공(stdout 첫 줄 = 실행 provenance[폴백 발동 시 어느 하네스로 돌았는지 포함]·이후 최종 reply·raw 는 파일 박제) / `rc=1` 실패(loud·raw 경로 stderr) /
   `rc=3` opt-in OFF. reply 를 회수해 PM 이 검토·board 갱신을 담당한다(위임 대상은 board 조작 안 함).
+- **위임 회수 시 범위-밖 변경 감지**(T-0462): `--ticket T-NNNN` 을 주면 그 티켓 `touches` 를 허용 집합으로 위임 전/후 워크스페이스를 기계 비교해 범위 밖 신규/변경/커밋을 stderr 경고 블록으로 표면화한다(차단 아님·rc 불변). 생략 시 허용 0(어떤 변경이든 경고) — **dev 위임엔 `--ticket` 명시가 표준**이다.
 
 ### opt-in 게이트 (외부 송신 · 기본 OFF)
 
