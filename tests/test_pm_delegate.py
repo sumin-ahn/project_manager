@@ -483,6 +483,23 @@ def _fake_pm_home(tmp_path: Path) -> tuple[Path, Path]:
     return home, home / "work" / "wt1"
 
 
+def _run_pm_home_prompt(pd, monkeypatch, tmp_path: Path, text: str):
+    """PM 홈 재앵커 게이트를 mock 하네스까지 통과시켜 rc와 호출 기록을 반환한다."""
+    home, wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(text, encoding="utf-8")
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt),
+         "--cwd", str(home), "--output-dir", str(tmp_path / "raw")],
+        _enabled_conf(),
+        fake,
+    )
+    return rc, fake, wt
+
+
 def test_write_target_reanchor_engine_code(pd, tmp_path):
     """write 역할 + 엔진 코드(.project_manager/tools/) 타깃 + PM 홈 cwd → 재앵커 대상 반환(§4.6)."""
     home, wt = _fake_pm_home(tmp_path)
@@ -882,6 +899,819 @@ def test_targets_engine_code_path_normalization(pd):
     assert pd._prompt_targets_engine_code("수정 .project_manager/./tools/x.py") is True    # ./ 우회
     assert pd._prompt_targets_engine_code("wiki/roadmap.md 를 갱신하라") is False          # PM-doc(통과)
     assert pd._prompt_targets_engine_code(".project_manager/wiki/x.md 초안") is False      # tools 아님
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "show T-0466",
+        "show T-pay-001",
+        "list --all",
+        "list --task X",
+        "list --status open --tag phase-1 --repo app --slot 2",
+        "lint",
+        "lint --gate",
+    ],
+)
+def test_targets_engine_code_ignores_read_only_board_cli(pd, call):
+    """A: show/list/lint의 read-only 인자 변형은 엔진 코드 수정 타깃이 아니다."""
+    prompt = (
+        "wiki/roadmap.md 를 갱신하라\n"
+        f"python3 .project_manager/tools/board.py {call}"
+    )
+    assert pd._prompt_targets_engine_code(prompt) is False
+
+
+@pytest.mark.parametrize(
+    "template, skill_rel",
+    [
+        ("codex", ".agents/skills/pm-dev-delegate/SKILL.md"),
+        ("claude_code", ".claude/skills/pm-dev-delegate/SKILL.md"),
+        ("opencode", ".claude/skills/pm-dev-delegate/SKILL.md"),
+    ],
+)
+def test_shipped_skill_show_idiom_with_natural_language_tail_rc0(
+        pd, monkeypatch, tmp_path, capsys, template, skill_rel):
+    """세 출하 템플릿의 표준 show 관용구는 false-block 없이 rc=0이다."""
+    skill = REPO / "templates" / template / skill_rel
+    # 행 번호 핀 금지 — 인접 편집(T-0471 sweep)으로 줄이 밀리면 무관 실패가 난다.
+    # 관용구 내용으로 실 출하 줄을 찾는다(부재 자체가 곧 회귀 신호).
+    marker = "board.py show T-NNNN 로 확인"
+    matches = [ln.strip() for ln in skill.read_text(encoding="utf-8").splitlines()
+               if marker in ln]
+    assert matches, f"{skill} 에 표준 show 관용구가 없다"
+    shipped_line = matches[0]
+    rc, fake, _wt = _run_pm_home_prompt(
+        pd, monkeypatch, tmp_path, shipped_line,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+def test_show_natural_language_tail_with_write_instruction_rc1(
+        pd, monkeypatch, tmp_path, capsys):
+    """같은 줄 tail이 파일 write를 지시하면 read-only 명령 면제를 취소해 rc=1."""
+    rc, fake, wt = _run_pm_home_prompt(
+        pd,
+        monkeypatch,
+        tmp_path,
+        "ticket 본문은 python3 .project_manager/tools/board.py "
+        "show T-NNNN 로 확인 후 이 파일을 수정",
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "재앵커" in err and str(wt) in err
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "이 명령의 prefix 규칙을 문서화하라",
+        "이 명령의 touches 필드를 문서화하라",
+        "미수정 상태로 보고하라",
+        "미수정 보고",
+    ],
+)
+def test_read_only_quote_write_verb_substrings_do_not_false_block_rc0(
+        pd, monkeypatch, tmp_path, capsys, prose):
+    """ASCII 부분 문자열과 한국어 부정접두 상태어는 write 동사로 오인하지 않아 rc=0."""
+    rc, fake, _wt = _run_pm_home_prompt(
+        pd,
+        monkeypatch,
+        tmp_path,
+        "python3 .project_manager/tools/board.py list --all\n" + prose,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+def test_read_only_quote_real_file_write_still_rc1(
+        pd, monkeypatch, tmp_path, capsys):
+    """경계 보강 뒤에도 실제 파일 수정 지시는 계속 재앵커되어 rc=1."""
+    rc, fake, wt = _run_pm_home_prompt(
+        pd,
+        monkeypatch,
+        tmp_path,
+        "python3 .project_manager/tools/board.py list --all\n"
+        "이 파일을 수정하라",
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "재앵커" in err and str(wt) in err
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "python .project_manager/tools/board.py show T-0466",
+        "py -3.12 .project_manager/tools/board.py show T-0466",
+        "python3 .project_manager/tools/board.py show <T-NNNN>",
+    ],
+)
+def test_read_only_launcher_and_placeholder_forms_rc0(
+        pd, monkeypatch, tmp_path, capsys, call):
+    """python/Windows py 버전 런처와 문서용 show placeholder를 read-only 호출로 인정."""
+    rc, fake, _wt = _run_pm_home_prompt(
+        pd, monkeypatch, tmp_path, call,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "list --user alice",
+        "idea list",
+        "prefix list",
+        "regression check",
+        "livegate check",
+    ],
+)
+def test_additional_read_only_board_operations_rc0(
+        pd, monkeypatch, tmp_path, capsys, call):
+    """실제 비파괴 board 조회/sidecar check 다섯 형태를 화이트리스트한다."""
+    rc, fake, _wt = _run_pm_home_prompt(
+        pd,
+        monkeypatch,
+        tmp_path,
+        f"python3 .project_manager/tools/board.py {call}",
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "`.project_manager/tools` 는 건드리지 마라",
+        "수정 금지: .project_manager/tools/pm_delegate.py",
+        ".project_manager/tools/board.py 에는 손대지 마라",
+    ],
+)
+def test_targets_engine_code_ignores_negative_context(pd, prompt):
+    """B: 경로와 같은 문장/절의 명시적 금지 문맥은 write 타깃이 아니다."""
+    assert pd._prompt_targets_engine_code(prompt) is False
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        ".project_manager/tools/board.py 를 수정하라",
+        ".project_manager/tools/board.py 를 고쳐라",
+        ".project_manager/tools 를 고쳐라",
+        ".project_manager/./tools/pm_delegate.py 구현을 변경하라",
+    ],
+)
+def test_targets_engine_code_still_blocks_real_writes(pd, prompt):
+    """음성 통제: 실제 엔진 write 지시 3종은 계속 재앵커 대상이다."""
+    assert pd._prompt_targets_engine_code(prompt) is True
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "show T-0466 출력 형식을 바꿔라",
+        "lint 를 고쳐라",
+        "이 스크립트를 고쳐라",
+        "이 파일을 건드려라",
+        "이 파일을 지워라",
+        "이 파일을 손봐라",
+    ],
+)
+def test_read_only_board_reference_with_korean_conjugated_write_rc1(
+        pd, monkeypatch, tmp_path, capsys, instruction):
+    """활용형 write 지시는 board.py 조회 문맥에서도 재앵커되어 rc=1이다."""
+    rc, fake, wt = _run_pm_home_prompt(
+        pd, monkeypatch, tmp_path,
+        "python3 .project_manager/tools/board.py " + instruction,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "재앵커" in err and str(wt) in err
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "show T-0466",
+        "list --all",
+        "list --task X",
+        "lint --gate",
+    ],
+)
+def test_read_only_board_cli_pm_doc_delegation_passes_main(
+        pd, monkeypatch, tmp_path, capsys, call):
+    """재현: architect + PM 홈 + board.py show/list/lint 인용 PM-doc 위임은 rc=0이다."""
+    home, _wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(
+        "wiki/roadmap.md 를 갱신하라\n"
+        f"python3 .project_manager/tools/board.py {call}",
+        encoding="utf-8",
+    )
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "architect", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--output-dir", str(tmp_path / "raw")],
+        _enabled_conf(**{
+            "delegate.architect.harness": "codex",
+            "delegate.architect.model": "gpt-x",
+        }),
+        fake,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+def test_negative_context_pm_doc_delegation_passes_main(
+        pd, monkeypatch, tmp_path, capsys):
+    """architect + PM 홈 + 엔진 경로 금지 문맥 PM-doc 위임도 rc=0으로 실행된다."""
+    home, _wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(
+        "wiki/roadmap.md 를 갱신하라\n"
+        "`.project_manager/tools` 는 건드리지 마라",
+        encoding="utf-8",
+    )
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "architect", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--output-dir", str(tmp_path / "raw")],
+        _enabled_conf(**{
+            "delegate.architect.harness": "codex",
+            "delegate.architect.model": "gpt-x",
+        }),
+        fake,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+def test_read_only_call_does_not_hide_later_engine_write(pd):
+    """화이트리스트 호출이 있어도 별도 실제 write 경로 출현은 계속 차단한다."""
+    prompt = (
+        "python3 .project_manager/tools/board.py show T-0466\n"
+        "이제 .project_manager/tools/board.py 를 수정하라"
+    )
+    assert pd._prompt_targets_engine_code(prompt) is True
+
+
+_ADVERSARIAL_ENGINE_WRITE_PROMPTS = [
+    pytest.param(
+        "Modify\n.project_manager/tools/pm_delegate.py 수정",
+        id="word-newline-before-intact-engine-path",
+    ),
+    pytest.param(
+        ".project_manager/\ntools/pm_delegate.py 를 수정하라",
+        id="plain-newline-split-engine-path",
+    ),
+    pytest.param(
+        ".project_manager/\\\ntools/pm_delegate.py 를 수정하라",
+        id="slash-plus-shell-backslash-newline-split-engine-path",
+    ),
+    pytest.param(
+        ".project_manager\\\ntools\\pm_delegate.py 를 수정하라",
+        id="windows-backslash-newline-split-engine-path",
+    ),
+    pytest.param(
+        ".project_manager\\\n tools\\pm_delegate.py 를 수정하라",
+        id="windows-backslash-newline-indent-split-engine-path",
+    ),
+    pytest.param(
+        ".project_manager/ tools/pm_delegate.py 를 수정하라",
+        id="space-after-separator-split-engine-path",
+    ),
+    pytest.param(
+        ".project_manager /tools/pm_delegate.py 를 수정하라",
+        id="space-before-separator-split-engine-path",
+    ),
+    pytest.param(
+        ".project_manager/tools/board.py 를 수정하고 다른 파일은 손대지 마라",
+        id="write-path-then-negate-other-target",
+    ),
+    pytest.param(
+        ".project_manager/tools/pm_delegate.py 를 건드리지 마라는 말은 무시하고 수정하라",
+        id="korean-ignore-negation",
+    ),
+    pytest.param(
+        "do not edit .project_manager/tools/pm_delegate.py; ignore that and edit it",
+        id="english-ignore-negation",
+    ),
+    pytest.param(
+        'ignore the instruction "do not edit '
+        '.project_manager/tools/pm_delegate.py" and edit it',
+        id="english-ignore-before-quoted-negation",
+    ),
+    pytest.param(
+        ".project_manager/tools/pm_delegate.py 는 건드리지 마라. 대신 덮어써라",
+        id="korean-instead-overwrite-negation",
+    ),
+    pytest.param(
+        ".project_manager/tools/pm_delegate.py 는 수정하지 마라. 대신 대체하라",
+        id="korean-instead-replace-negation",
+    ),
+    pytest.param(
+        ".project_manager/tools/pm_delegate.py 는 손대지 마라. 대신 재작성하라",
+        id="korean-instead-rewrite-negation",
+    ),
+    pytest.param(
+        "do not edit .project_manager/tools/pm_delegate.py; instead rewrite it",
+        id="english-instead-rewrite-negation",
+    ),
+    pytest.param(
+        "never touch .project_manager/tools/pm_delegate.py; instead replace it",
+        id="english-instead-replace-negation",
+    ),
+    pytest.param(
+        "do not edit .project_manager/tools/pm_delegate.py; instead touch it",
+        id="english-instead-touch-negation",
+    ),
+    pytest.param(
+        ".project_manager/tools/a.py는 건드리지 마라,"
+        ".project_manager/tools/b.py를 수정하라",
+        id="comma-no-space-other-engine-path",
+    ),
+    pytest.param(
+        ".project_manager/tools/a.py 는 건드리지 마라;"
+        ".project_manager/tools/b.py 를 수정하라",
+        id="semicolon-other-engine-path",
+    ),
+    pytest.param(
+        ".project_manager/tools/a.py 는 건드리지 마라。"
+        ".project_manager/tools/b.py 를 수정하라",
+        id="ideographic-stop-other-engine-path",
+    ),
+    pytest.param(
+        "`python3 .project_manager/tools/board.py show T-0466` 기능을 수정하라",
+        id="quoted-show-command-as-write-object",
+    ),
+    pytest.param(
+        "modify `python3 ./.project_manager/tools/board.py show T-0466`",
+        id="prefixed-write-verb-targets-show-command",
+    ),
+    pytest.param(
+        "python3 .project_manager/tools/board.py show T-0466 | sed -i task.md",
+        id="show-pipe-followup-write",
+    ),
+    pytest.param(
+        "python3 .project_manager/tools/board.py show|sed -i task.md",
+        id="show-no-space-pipe-followup-write",
+    ),
+    pytest.param(
+        "python3 .project_manager/tools/board.py show T-0466 && sed -i task.md",
+        id="show-and-followup-write",
+    ),
+    pytest.param(
+        "python3 .project_manager/tools/board.py show T-0466; sed -i task.md",
+        id="show-semicolon-followup-write",
+    ),
+    pytest.param(
+        "python3 .project_manager/tools/board.py list T-0466",
+        id="invalid-list-positional-argument",
+    ),
+    pytest.param(
+        "python3 .project_manager/tools/board.py lint T-0466",
+        id="invalid-lint-positional-argument",
+    ),
+]
+
+
+@pytest.mark.parametrize("prompt", _ADVERSARIAL_ENGINE_WRITE_PROMPTS)
+def test_adversarial_contexts_are_not_exempted(pd, prompt):
+    """금지 절 전파·show span 주변 write·shell 후속 명령 우회는 모두 보수적으로 차단한다."""
+    assert pd._prompt_targets_engine_code(prompt) is True
+
+
+def test_normal_multiple_path_listing_does_not_form_engine_path(pd):
+    """독립된 정상 경로 나열의 공백/개행은 합치지 않아 `.project_manager/tools`로 오탐하지 않는다."""
+    prompt = (
+        "검토 경로:\n"
+        "- .project_manager/wiki/roadmap.md\n"
+        "- tools/pm_delegate.py\n"
+        "- tests/test_pm_delegate.py"
+    )
+    assert pd._prompt_targets_engine_code(prompt) is False
+
+
+@pytest.mark.parametrize("separator", ["⁄", "∕", "⧸", "／", "╱", "⟋"])
+def test_unicode_confusable_separator_is_noncanonical_and_harmless(pd, separator):
+    """유니코드 slash 동형문자 6종은 실제 경로 구분자가 아니므로 비매칭 동작을 박제한다."""
+    assert pd._prompt_targets_engine_code(
+        f".project_manager{separator}tools/pm_delegate.py 를 수정하라"
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "wiki/roadmap.md 를 갱신하라\n"
+        "`python3 ./.project_manager/tools/board.py show T-0466`",
+        "wiki/roadmap.md 를 갱신하라\n"
+        '"python3 .project_manager/tools/board.py show T-0466"',
+        "wiki/roadmap.md 를 갱신하라\n"
+        "```sh\npython3 .project_manager/tools/board.py show T-0466\n```",
+        "wiki/roadmap.md 를 갱신하라\n"
+        "```sh\npython3 .project_manager/\ntools/board.py show T-0466\n```",
+        "wiki/roadmap.md 를 갱신하라\n"
+        "`python3 .project_manager/ tools/board.py show T-0466`",
+        "wiki/roadmap.md 를 수정하되 "
+        "`.project_manager/tools/board.py`는 건드리지 마라",
+        "wiki/roadmap.md 를 수정하라; "
+        "do not edit ./.project_manager/tools/pm_delegate.py",
+        "wiki/roadmap.md 를 수정하라; "
+        "should not edit ./.project_manager/tools/pm_delegate.py",
+        "wiki/roadmap.md 를 수정하라。"
+        "수정 금지: `./.project_manager/tools/pm_delegate.py`",
+    ],
+)
+def test_only_two_narrow_exemption_forms_remain_valid(pd, prompt):
+    """인용/백틱/./·fence 변형도 순수 read-only 호출 또는 직접 결합 금지만 통과한다."""
+    assert pd._prompt_targets_engine_code(prompt) is False
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        ".project_manager/tools/pm_delegate.py 는 건드리지 마라. "
+        "대신 wiki/roadmap.md 를 수정하라",
+        "do not edit .project_manager/tools/pm_delegate.py; "
+        "instead edit wiki/roadmap.md",
+    ],
+)
+def test_negative_engine_path_redirected_to_non_engine_path_is_exempt(pd, prompt):
+    """대신/instead의 명시 대상이 비-엔진 경로면 엔진 금지는 유지되어 false-block하지 않는다."""
+    assert pd._prompt_targets_engine_code(prompt) is False
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        ".project_manager/tools/pm_delegate.py 는 건드리지 마라. "
+        "lint 경고는 무시하고 wiki/roadmap.md 를 수정하라",
+        "Do not edit .project_manager/tools/pm_delegate.py. "
+        "Ignore the lint warnings and update wiki/roadmap.md",
+        ".project_manager/tools/pm_delegate.py 는 수정하지 마라. "
+        "설정 override 규칙을 wiki 에 수정 반영하라",
+        ".project_manager/tools/pm_delegate.py 는 수정하지 마라. "
+        "대신 그 대안으로 wiki 문서를 수정하라",
+    ],
+)
+def test_ignore_override_redirected_to_non_engine_path_rc0(
+        pd, monkeypatch, tmp_path, capsys, instruction):
+    """ignore/override도 명시 비-엔진 write 대상과 결합하면 엔진 금지를 유지해 rc=0."""
+    rc, fake, _wt = _run_pm_home_prompt(
+        pd, monkeypatch, tmp_path, instruction,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        ".project_manager/tools/pm_delegate.py 는 건드리지 마라. "
+        "대신 .project_manager/tools/pm_delegate.py 를 수정하라",
+        ".project_manager/tools/pm_delegate.py 는 건드리지 마라. 대신 그것을 수정하라",
+        "do not edit .project_manager/tools/pm_delegate.py; instead edit it",
+    ],
+)
+def test_negative_engine_path_same_or_pronoun_redirect_still_blocks(pd, prompt):
+    """같은 엔진 경로 또는 무경로 대명사 redirect는 금지 취소이므로 계속 write로 판정한다."""
+    assert pd._prompt_targets_engine_code(prompt) is True
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        ".project_manager/tools/pm_delegate.py 는 건드리지 마라. "
+        "대신 wiki/roadmap.md 를 수정하라",
+        "do not edit .project_manager/tools/pm_delegate.py; "
+        "instead edit wiki/roadmap.md",
+    ],
+)
+def test_non_engine_redirect_passes_main(
+        pd, monkeypatch, tmp_path, capsys, instruction):
+    """통합: 명시 비-엔진 redirect는 PM 홈에서도 재앵커하지 않고 하네스를 실행해 rc=0이다."""
+    home, _wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(instruction, encoding="utf-8")
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--output-dir", str(tmp_path / "raw")],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+def test_pronoun_redirect_does_not_capture_path_from_next_sentence(
+        pd, monkeypatch, tmp_path, capsys):
+    """instead 절의 대명사 redirect가 다음 문장 비-엔진 경로에 오귀속되지 않아 rc=1이다."""
+    home, wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(
+        "do not edit .project_manager/tools/pm_delegate.py; instead edit it. "
+        "See wiki/roadmap.md.",
+        encoding="utf-8",
+    )
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home)],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "재앵커" in err and str(wt) in err
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        ".project_manager/tools/pm_delegate.py 는 건드리지 마라. "
+        "대신 .project_manager/tools/pm_delegate.py 를 수정하라",
+        ".project_manager/tools/pm_delegate.py 는 건드리지 마라. 대신 그것을 수정하라",
+        "do not edit .project_manager/tools/pm_delegate.py; instead edit it",
+    ],
+)
+def test_same_or_pronoun_redirect_fails_main(
+        pd, monkeypatch, tmp_path, capsys, instruction):
+    """통합: 동일 경로·무경로 대명사 redirect는 재앵커 fail-loud(rc=1)한다."""
+    home, wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(instruction, encoding="utf-8")
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home)],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "재앵커" in err and str(wt) in err
+    assert fake.calls == []
+
+
+def test_show_quote_followed_by_general_task_instructions_passes_main(
+        pd, monkeypatch, tmp_path, capsys):
+    """show 본문 참조 뒤 일반 지시는 정당 관용구로 rc=0 — 대명사 의미 추론 과잉 조임을 막는다."""
+    home, _wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(
+        "python3 .project_manager/tools/board.py show T-0466\n"
+        "위 티켓 본문이 단일 진실이다.\n"
+        "본문대로 구현하고 테스트하라.",
+        encoding="utf-8",
+    )
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--output-dir", str(tmp_path / "raw")],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "```sh\npython3 .project_manager/tools/board.py show T-0466\n```\n"
+        "위 명령의 기능을 수정하라",
+        "아래 명령의 기능을 수정하라:\n```sh\n"
+        "python3 .project_manager/tools/board.py show T-0466\n```",
+        "`python3 .project_manager/tools/board.py show T-0466`\n"
+        "이 명령의 기능을 설명하고 wiki/roadmap.md 를 수정하라.",
+        "- `python3 .project_manager/tools/board.py show T-0466`\n"
+        "- 위 명령을 참고해 wiki/roadmap.md 를 수정하라.",
+        "python3 .project_manager/tools/board.py show T-0466\n"
+        "이를 근거로 wiki/roadmap.md 를 수정하라.",
+    ],
+)
+def test_general_command_reference_with_non_engine_write_rc0(
+        pd, monkeypatch, tmp_path, capsys, instruction):
+    """일반 명령/기능/대명사 참조는 파일 지시어가 아니므로 read-only 면제를 취소하지 않는다."""
+    rc, fake, _wt = _run_pm_home_prompt(
+        pd, monkeypatch, tmp_path, instruction,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+def test_prior_pm_doc_sentence_does_not_target_later_show_quote(
+        pd, monkeypatch, tmp_path, capsys):
+    """완결된 PM-doc write 문장은 뒤 show 인용의 파일 참조 지시로 전파되지 않아 rc=0이다."""
+    home, _wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(
+        "wiki/roadmap.md 를 수정하라.\n"
+        "다음 명령으로 티켓을 확인하라.\n"
+        "python3 .project_manager/tools/board.py show T-0466",
+        encoding="utf-8",
+    )
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--output-dir", str(tmp_path / "raw")],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "위 스크립트를 수정하라.",
+        "이 파일을 편집하라.",
+        "Modify the script above.",
+        "Edit that file.",
+    ],
+)
+def test_show_quote_followed_by_file_reference_write_fails_main(
+        pd, monkeypatch, tmp_path, capsys, instruction):
+    """show 인용을 지시어+파일명사로 write 대상으로 삼으면 한/영 모두 rc=1이다."""
+    home, wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(
+        "python3 .project_manager/tools/board.py show T-0466\n"
+        + instruction,
+        encoding="utf-8",
+    )
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home)],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "재앵커" in err and str(wt) in err
+    assert fake.calls == []
+
+
+def test_patch_show_quote_file_reference_fails_main(
+        pd, monkeypatch, tmp_path, capsys):
+    """추가된 patch 동사도 show 인용 스크립트 write 지시를 rc=1로 차단한다."""
+    home, wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(
+        "python3 .project_manager/tools/board.py show T-0466\n"
+        "Patch the script above.",
+        encoding="utf-8",
+    )
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home)],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "재앵커" in err and str(wt) in err
+    assert fake.calls == []
+
+
+def test_ignore_in_prior_sentence_does_not_override_engine_path_prohibition(
+        pd, monkeypatch, tmp_path, capsys):
+    """이전 지시의 ignore는 뒤 엔진 경로 금지를 폐기하지 않으므로 정상 위임 rc=0이다."""
+    home, _wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(
+        "이전 wiki 지시는 무시하라. "
+        ".project_manager/tools/pm_delegate.py 는 건드리지 마라",
+        encoding="utf-8",
+    )
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--output-dir", str(tmp_path / "raw")],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+def test_write_target_docstring_lists_residual_threat_shapes(pd):
+    """판정 함수가 의도적으로 남긴 위협모델 경계 3형태를 docstring에 명시한다."""
+    doc = pd._prompt_targets_engine_code.__doc__ or ""
+    for phrase in ("자기모순 shape", "separator 없이", "유니코드 동형"):
+        assert phrase in doc
+
+
+def test_wrapped_show_quote_passes_main(
+        pd, monkeypatch, tmp_path, capsys):
+    """경로 내부 줄바꿈을 접어도 정당한 board show 인용은 원문 span으로 판정해 rc=0이다."""
+    home, _wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(
+        "wiki/roadmap.md 를 갱신하라\n"
+        "python3 .project_manager/\ntools/board.py show T-0466",
+        encoding="utf-8",
+    )
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--output-dir", str(tmp_path / "raw")],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 0
+    assert len(fake.calls) == 1
+    assert capsys.readouterr().out.strip() == "DONE"
+
+
+@pytest.mark.parametrize("instruction", _ADVERSARIAL_ENGINE_WRITE_PROMPTS)
+def test_adversarial_engine_writes_fail_loud_in_main(
+        pd, monkeypatch, tmp_path, capsys, instruction):
+    """양 게이트 실증: 모든 적대 프롬프트가 codex 실행 전에 rc=1로 재앵커된다."""
+    home, wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(instruction, encoding="utf-8")
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home)],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "재앵커" in err and str(wt) in err
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        ".project_manager/tools/board.py 를 수정하라",
+        ".project_manager/tools 를 고쳐라",
+        ".project_manager/./tools/pm_delegate.py 구현을 변경하라",
+    ],
+)
+def test_real_engine_writes_still_fail_loud_in_main(
+        pd, monkeypatch, tmp_path, capsys, instruction):
+    """음성 통제 통합: 실제 엔진 write 지시 3종은 main 에서 모두 rc=1이다."""
+    home, wt = _fake_pm_home(tmp_path)
+    prompt = home / ".project_manager" / "task.md"
+    prompt.write_text(instruction, encoding="utf-8")
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home)],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "재앵커" in err and str(wt) in err
+    assert fake.calls == []
 
 
 def test_reanchor_normalized_variants_in_main(pd, monkeypatch, tmp_path, capsys):
