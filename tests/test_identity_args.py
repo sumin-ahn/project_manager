@@ -360,13 +360,16 @@ def test_f6_none_unique_holding_auto_resolves(ia, tmp_path):
 
 
 def test_f6_none_ambiguous_holding_raises(ia, tmp_path):
-    """행(c) 모호(⑦): task 가 통틀어 2개↑ 보유 → 에러(첫번째 암묵 선택 금지)."""
+    """행(c) 모호(⑦): 암묵 선택 없이 잉여 슬롯 pm_config release를 안내한다."""
     leases = tmp_path / "worktree-leases.json"
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "job2", "state": "leased"},
         {"slot": "work/B_1", "repo": "B", "session": "job2", "state": "leased"},
     ])
-    with pytest.raises(ia.WorkspaceResolutionError, match=r"모호"):
+    with pytest.raises(
+        ia.WorkspaceResolutionError,
+        match=r"pm_config\.py release <slot> --task job2",
+    ):
         _tw(ia, ["--task", "job2"], leases)
 
 

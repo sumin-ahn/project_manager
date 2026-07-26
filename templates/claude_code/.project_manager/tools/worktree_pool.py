@@ -78,7 +78,6 @@ TASKS_DIR = LOCAL_DIR / "tasks"                                # task 서술 공
 WORK_DIR = REPO / "work"                                        # worktree 풀 루트 (multi-PM 루트 gitignore)
 REPOS_DIR = REPO / ".repos"                                     # worktree 의 공유 .git 원 (bare·ADR-0011 §31)
 REPO_HOOKS_DIR = LOCAL_DIR / "repo-hooks"                       # per-repo pre-push 보호훅(프레임워크 소유·gitignore·T-0076)
-
 # git subprocess 타임아웃 (초) — captured 러너(_real_git_runner)의 subprocess timeout + worktree
 # add console-visible 러너(_real_git_runner_interactive)의 상한. **타임아웃의 실패모드 = 정상 op 도
 # 죽임(false-kill·T-0292)** — 대형 repo 의 worktree add(로컬 bare→full checkout·느린 디스크/VPN/
@@ -792,6 +791,21 @@ def _read_ledger_raw() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _read_ledger_raw_strict() -> dict:
+    """장부 최상위 dict를 읽되 **부재만** 빈 dict로 본다. **_lease_lock 보유 전제**.
+
+    bootstrap/handoff처럼 ``0슬롯``과 ``장부를 읽을 수 없음``을 구분해야 하는 안전 게이트용
+    파서다. JSON 손상·읽기 오류는 원 예외를 전파하고, JSON 최상위가 dict가 아니면
+    ``ValueError``를 낸다. 기존 ``_read_ledger_raw``과 그 fail-soft 소비자는 그대로 둔다.
+    """
+    if not LEASES_FILE.exists():
+        return {}
+    data = json.loads(LEASES_FILE.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("worktree lease 장부 최상위 값이 object가 아님")
+    return data
+
+
 def _write_ledger_raw(data: dict) -> None:
     """최상위 dict 를 atomic replace 로 쓴다 (tmp→os.replace·부분쓰기 방지). **_lease_lock 보유 전제**."""
     LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -809,6 +823,19 @@ def _read_ledger() -> list[Lease]:
     return [Lease.from_dict(d) for d in rows]
 
 
+def _read_ledger_strict() -> list[Lease]:
+    """리스 컬렉션 strict 조회 — 손상/읽기 오류/잘못된 컬렉션·행을 예외로 전파한다."""
+    rows = _read_ledger_raw_strict().get("leases", [])
+    if not isinstance(rows, list):
+        raise ValueError("worktree lease 장부의 'leases' 값이 list가 아님")
+    leases: list[Lease] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"worktree lease 장부의 leases[{index}] 값이 object가 아님")
+        leases.append(Lease.from_dict(row))
+    return leases
+
+
 def _write_ledger(leases: list[Lease]) -> None:
     """`leases` 컬렉션만 교체해 장부를 atomic replace 로 쓴다. **_lease_lock 보유 전제**.
 
@@ -817,7 +844,9 @@ def _write_ledger(leases: list[Lease]) -> None:
     `{"leases": [...]}` 통짜 쓰기는 형제 컬렉션을 조용히 드롭했다(silent drop). read-modify-write
     가 같은 `_lease_lock` 안에서 직렬화되므로 read↔write 사이 파일 변동은 없다.
     """
-    data = _read_ledger_raw()
+    # write-capable 최종 경계도 strict 원본을 재확인한다. 호출부가 실수로 fail-soft read 결과를
+    # 넘기거나 read 이후 장부가 손상돼도 빈 dict로 축약해 형제 컬렉션을 덮어쓰지 않는다.
+    data = _read_ledger_raw_strict()
     data["leases"] = [l.to_dict() for l in leases]
     _write_ledger_raw(data)
 
@@ -1395,7 +1424,7 @@ def reclaim_stale(*, git_runner: GitRunner | None = None) -> list[str]:
     """
     reclaimed: list[str] = []
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
         # task 소유 슬롯 회수 제외 근거 (ADR-0068 ④·codex R3) — **task 소유의 단일 진실 = tasks 장부**.
         # `session` 이 명명 task 이름과 일치하는 leased 슬롯은 pid(즉사 CLI/bootstrap subprocess)가
         # 죽어도 회수하지 않는다(반납은 명시 `release --task`/`task end` 만). bound 마커와 별개의
@@ -1403,7 +1432,7 @@ def reclaim_stale(*, git_runner: GitRunner | None = None) -> list[str]:
         # 라 마커만으론 안 걸리는데, tasks 장부 조인은 마이그레이션 0 으로 구·신 lease 를 모두 보호한다.
         # (런타임 fallback 누적이 아니라 "task 소유=tasks 장부" 라는 단일 진실을 reclaim 이 읽는 것 —
         # [[prefer-data-migration-over-fallback]] 정합: 데이터 진실을 원천에서 읽지 별도 축 누적 안 함.)
-        task_names = {t.name for t in _read_tasks()}
+        task_names = {t.name for t in _read_tasks_strict()}
         changed = False
         for lease in leases:
             if lease.state != "leased":
@@ -1504,6 +1533,102 @@ def task_dir(name: str) -> Path:
     return TASKS_DIR / name
 
 
+def task_pm_state_file(name: str) -> Path:
+    """task 연속성 단일 앵커 `.local/tasks/<name>/pm_state.md` 경로."""
+    return task_dir(name) / "pm_state.md"
+
+
+def _task_pm_state_template_file() -> Path:
+    """task state seed 원천 — 호출 시점 REPO를 따라 hermetic 재배선과 실제 실행을 함께 지원."""
+    return REPO / ".project_manager" / "wiki" / "pm_state.template.md"
+
+
+def _render_initial_task_pm_state(template_text: str, date_str: str) -> str:
+    """공용 pm_state template을 task 첫 세션용 state로 렌더한다.
+
+    공용 template의 예시 `1차`는 완료된 세션 기록이 아니다. task 생성 시 그대로 복사하면 첫
+    bootstrap이 2차로 오인하므로, 세션 entry·이전 차 포인터를 비우고 명시 marker를 둔다.
+    `pm_handoff.update_session_window`가 첫 핸드오프 때 이 marker를 실제 1차 entry로 교체한다.
+    """
+    rendered = template_text.replace("{{DATE}}", date_str)
+    rendered = rendered.replace(
+        "`pm_state.template.md` 에서 `pm-init` 이 생성.",
+        "`pm_state.template.md` 에서 task 생성/재개 시 자동 생성.",
+        1,
+    )
+    anchor = "## 세션 식별 (현재까지 사용된 이름)"
+    start = rendered.find(anchor)
+    if start < 0:
+        raise ValueError(f"pm_state template에 세션 식별 앵커가 없다: {anchor}")
+    next_header = re.search(r"^##(?!#) ", rendered[start + len(anchor):], re.MULTILINE)
+    end = (
+        len(rendered)
+        if next_header is None
+        else start + len(anchor) + next_header.start()
+    )
+    section = rendered[start:end]
+    first_entry = re.search(r"^  - \*\*\d+차\*\*.*(?:\n|$)", section, re.MULTILINE)
+    if first_entry is not None:
+        section = (
+            section[:first_entry.start()]
+            + TASK_PM_STATE_EMPTY_MARKER
+            + "\n"
+            + section[first_entry.end():]
+        )
+    else:
+        session_list = "최근 N 차 (sliding window, 기본 3 차):"
+        marker_at = section.find(session_list)
+        if marker_at < 0:
+            raise ValueError(f"pm_state template에 세션 목록 앵커가 없다: {session_list}")
+        insert_at = marker_at + len(session_list)
+        section = (
+            section[:insert_at]
+            + "\n"
+            + TASK_PM_STATE_EMPTY_MARKER
+            + section[insert_at:]
+        )
+    section = re.sub(
+        r"^  - \*\*\d+차\*\*.*(?:\n|$)",
+        "",
+        section,
+        flags=re.MULTILINE,
+    )
+    section = re.sub(
+        r"^  - 이전 차 .*?(?:\n|$)",
+        "",
+        section,
+        flags=re.MULTILINE,
+    )
+    return rendered[:start] + section + rendered[end:]
+
+
+def ensure_task_pm_state(name: str) -> Path:
+    """task pm_state를 즉시 보장한다 — 신규 생성·구 task 재개 모두 같은 불변식.
+
+    task는 슬롯 0개여도 독립 정체성이므로 state 생성은 slot alloc/bind나 첫 handoff까지 미루지
+    않는다. 이미 있으면 byte 불변 no-op. 없으면 tracked template을 task 첫 세션 형태로 렌더해
+    원자 교체한다. template 부재/손상은 task 장부만 생기는 반쪽 상태를 허용하지 않고 fail-loud.
+    """
+    _validate_task_name(name)
+    target = task_pm_state_file(name)
+    if target.exists():
+        return target
+    template = _task_pm_state_template_file()
+    if not template.exists():
+        raise FileNotFoundError(
+            f"task pm_state template 부재: {template} — task state를 만들 수 없다"
+        )
+    rendered = _render_initial_task_pm_state(
+        template.read_text(encoding="utf-8"),
+        datetime.date.today().isoformat(),
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(rendered, encoding="utf-8")
+    os.replace(str(tmp), str(target))
+    return target
+
+
 def _read_tasks() -> list[Task]:
     """장부의 `tasks` 컬렉션을 읽는다. 부재/손상 → 빈 리스트(fail-soft). **_lease_lock 보유 전제**."""
     rows = _read_ledger_raw().get("tasks", [])
@@ -1512,10 +1637,25 @@ def _read_tasks() -> list[Task]:
     return [Task.from_dict(d) for d in rows if isinstance(d, dict) and d.get("name")]
 
 
+def _read_tasks_strict() -> list[Task]:
+    """task 컬렉션 strict 조회 — 장부 손상/읽기 오류/잘못된 행을 예외로 전파한다."""
+    rows = _read_ledger_raw_strict().get("tasks", [])
+    if not isinstance(rows, list):
+        raise ValueError("worktree lease 장부의 'tasks' 값이 list가 아님")
+    tasks: list[Task] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or not row.get("name"):
+            raise ValueError(f"worktree lease 장부의 tasks[{index}] 값이 유효한 task object가 아님")
+        tasks.append(Task.from_dict(row))
+    return tasks
+
+
 def _write_tasks(tasks: list[Task]) -> None:
     """`tasks` 컬렉션만 교체해 장부를 atomic replace 로 쓴다 — 형제 `leases`·미지 키 보존(top-level
     round-trip). **_lease_lock 보유 전제**."""
-    data = _read_ledger_raw()
+    # `_write_ledger`와 같은 최종 방어: 손상 원본을 빈 dict로 축약한 뒤 tasks만 쓰는
+    # destructive rewrite를 허용하지 않는다.
+    data = _read_ledger_raw_strict()
     data["tasks"] = [t.to_dict() for t in tasks]
     _write_ledger_raw(data)
 
@@ -1532,6 +1672,15 @@ def find_task(name: str) -> "Task | None":
         for t in _read_tasks():
             if t.name == name:
                 return t
+    return None
+
+
+def find_task_strict(name: str) -> "Task | None":
+    """이름으로 task를 strict 조회한다 — 장부 손상/읽기 오류는 예외로 전파한다."""
+    with _lease_lock():
+        for task in _read_tasks_strict():
+            if task.name == name:
+                return task
     return None
 
 
@@ -1562,23 +1711,27 @@ def bind_task(name: str, *, pid: "int | None" = None,
     미기록 질의와 동형). 차단 아님(crash 재개가 다수 케이스).
 
     `_pid_alive` 는 `reclaim_stale` 과 같은 생존 primitive(동형·신설 0). prefix 는 여기서 안 만진다
-    — 생성 시 None·재개 시 기존 값 유지(변경 = `task prefix`·T-0357). `.local/tasks/<name>/` 는
-    mkdir(exist_ok) — 기계 상태는 장부·서술만 여기(⑨).
+    — 생성 시 None·재개 시 기존 값 유지(변경 = `task prefix`·T-0357). 신규/재개 모두
+    `ensure_task_pm_state`로 `.local/tasks/<name>/pm_state.md`를 즉시 보장한다. task state는
+    slot 유무와 무관한 연속성 앵커이며 첫 handoff까지 생성을 미루지 않는다.
     """
     _validate_task_name(name, registered_repos)   # mkdir·장부 write 이전 fail-loud(부작용 0).
     pid = os.getpid() if pid is None else pid
     with _lease_lock():
-        tasks = _read_tasks()
+        tasks = _read_tasks_strict()
         existing = next((t for t in tasks if t.name == name), None)
         if existing is None:
             task = Task(name=name, prefix=None, pid=pid, started=_now_utc())
+            ensure_task_pm_state(name)
             tasks.append(task)
             _write_tasks(tasks)
-            task_dir(name).mkdir(parents=True, exist_ok=True)
             return task, "created", None
         # 동시 세션 거부 — 기록 pid 가 살아있고 내가 아니면(다른 창) 거부(㉑·위 경계 참조).
         if existing.pid and existing.pid != pid and _pid_alive(existing.pid):
             raise TaskActiveElsewhere(name, existing.pid)
+        # 구 엔진에서 만들어져 task 디렉토리만 있고 state가 없는 레코드도 재개 시 즉시 backfill.
+        # state 보장 실패 시 pid/장부를 갱신하지 않아 반쪽 resume을 만들지 않는다.
+        ensure_task_pm_state(name)
         # 진입 분류(pid 를 내 것으로 갱신):
         #   - same pid(내 재개) 또는 **미점유(pid 0/None=정상 인계·핸드오프가 두고 감·T-0392)**
         #     → resumed(경고 없음·clean). 정상 종료 후 재개는 dead-pid 회수가 아니라 clean resume 이다.
@@ -1591,7 +1744,6 @@ def bind_task(name: str, *, pid: "int | None" = None,
             action, reclaimed_from = "reclaimed", existing.pid  # 죽은 이전 pid(>0=loud notice·crash)
         existing.pid = pid
         _write_tasks(tasks)
-        task_dir(name).mkdir(parents=True, exist_ok=True)
         return existing, action, reclaimed_from
 
 
@@ -1615,7 +1767,7 @@ def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
     단일 진실(`board._validate_prefix`)로 선검증한다 — 여기선 저장만(board.py new 가 신뢰·T-0355)."""
     _validate_task_name(name)   # 장부 write 이전 fail-loud(부작용 0·must-fix).
     with _lease_lock():
-        tasks = _read_tasks()
+        tasks = _read_tasks_strict()
         target = next((t for t in tasks if t.name == name), None)
         if target is None:
             return None
@@ -1648,7 +1800,7 @@ def release_task_pid(name: str) -> "Task | None":
     종료엔 path-safety 만 필요·session 은 이미 장부에 있음)."""
     _validate_task_name(name)   # 장부 write 이전 fail-loud(부작용 0·must-fix).
     with _lease_lock():
-        tasks = _read_tasks()
+        tasks = _read_tasks_strict()
         target = next((t for t in tasks if t.name == name), None)
         if target is None:
             return None
@@ -1671,6 +1823,42 @@ def slots_for_task(name: str) -> list[Lease]:
     """
     with _lease_lock():
         return [l for l in _read_ledger() if l.state == "leased" and l.session == name]
+
+
+def slots_for_task_strict(name: str) -> list[Lease]:
+    """``slots_for_task``의 안전 게이트용 strict 변형.
+
+    실제 빈 장부/보유 0개는 ``[]``이지만 JSON 손상·읽기 오류·스키마 손상은 예외로 전파한다.
+    일반 조회 소비자는 기존 fail-soft ``slots_for_task``를 계속 사용한다.
+    """
+    with _lease_lock():
+        leases = [
+            lease
+            for lease in _read_ledger_strict()
+            if lease.state == "leased" and lease.session == name
+        ]
+    # 이 값은 bootstrap에서 cwd로 직접 이어져 git/pytest를 실행한다. 장부 유입도 caller 입력과
+    # 같은 canonical 경계를 통과시켜 절대경로/traversal/repo 불일치가 REPO 밖 cwd가 되는 것을 막는다.
+    for lease in leases:
+        slot = lease.slot
+        repo = lease.repo
+        if not isinstance(slot, str) or _SLOT_ID_RE.fullmatch(slot) is None:
+            raise ValueError(
+                f"task {name!r} 보유 슬롯 식별자 {slot!r} 형식 오류 — "
+                "`work/<repo>_<N>` 상대 형식만 허용한다"
+            )
+        slot_repo, separator, slot_number = slot[len("work/"):].rpartition("_")
+        if (
+            not isinstance(repo, str)
+            or not separator
+            or not slot_number.isdigit()
+            or slot_repo != repo
+        ):
+            raise ValueError(
+                f"task {name!r} 보유 슬롯 {slot!r}의 repo {repo!r}가 "
+                "슬롯 식별자의 repo와 일치하지 않음"
+            )
+    return leases
 
 
 class EndTaskResult:
@@ -1739,7 +1927,10 @@ def end_task(name: str, *, git_runner: GitRunner | None = None) -> EndTaskResult
     """
     _validate_task_name(name)   # 장부 write·shutil.move 이전 fail-loud(부작용 0·must-fix ②)
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
+        # task 컬렉션도 어떤 lease/fs 변경보다 먼저 strict로 스냅샷한다. 뒤늦게 손상을 발견하면
+        # 슬롯은 이미 idle로 썼는데 task 레코드는 남는 반쪽 end가 되므로 선검증이 필수다.
+        tasks = _read_tasks_strict()
         owned = [l for l in leases if l.state == "leased" and l.session == name]
 
         # 1) dirty 검사 — 하나라도 dirty 면 거부(부작용 0·장부 미변경).
@@ -1765,8 +1956,7 @@ def end_task(name: str, *, git_runner: GitRunner | None = None) -> EndTaskResult
             _write_ledger(leases)
 
         # 2b) 장부의 task 레코드 제거(같은 락·형제 leases 는 위에서 이미 반영됨).
-        tasks = [t for t in _read_tasks() if t.name != name]
-        _write_tasks(tasks)
+        _write_tasks([task for task in tasks if task.name != name])
 
     # 2c) 서술 폴더 이동(락 밖·fs op) — 부재면 이동 없음(장부만 정리된 task·graceful).
     src = task_dir(name)
@@ -1818,11 +2008,11 @@ def alloc(
     reclaim_stale(git_runner=git_runner)
 
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
         # task 소유 슬롯 집합 (ADR-0068 ④·codex R3) — session ∈ tasks 장부인 leased 슬롯은 branch/
         # resume 재부착 대상에서도 제외한다(reclaim_stale 과 동형·task 소유 단일 진실=tasks 장부).
         # 슬롯-세션 alloc(owner_task=None)이 branch 매칭으로 타 task 소유 슬롯을 탈취하는 것을 막는다.
-        task_names = {t.name for t in _read_tasks()}
+        task_names = {t.name for t in _read_tasks_strict()}
 
         # 1) idempotent — 이 세션의 기존 leased 슬롯 (같은 repo). **task-명의 alloc 은 이 경로를
         #    건너뛴다**(ADR-0068 I3·항상 신규 대여) — 멱등이 기존 슬롯을 신규처럼 반환하는 silent
@@ -1940,7 +2130,7 @@ def release(
     worktree 폴더 자체는 유지(다음 리스가 재사용·remove 는 force_release/수동).
     """
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
         target = next((l for l in leases if l.slot == slot), None)
         if target is None:
             raise KeyError(f"no lease for slot {slot!r}")
@@ -1978,7 +2168,7 @@ def force_release(slot: str, *, git_runner: GitRunner | None = None) -> Lease | 
     없으면 None 반환(이미 정리됨·무해). `pm-config release --force` 백스톱의 엔진 진입점.
     """
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
         target = next((l for l in leases if l.slot == slot), None)
         if target is None:
             return None
@@ -2049,7 +2239,7 @@ def remove_slot(
     `git_runner` 주입으로 실 git 없이 배선 검증(DI seam).
     """
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
         target = next((l for l in leases if l.slot == slot), None)
         # ① 리스/장부 확인 — 엔트리 없으면 무해 종료(orphan 은 git worktree remove·prune-stale).
         if target is None:
@@ -2228,7 +2418,7 @@ def create_slot(
         raise BareRepoMissing(repo, bare, broken=True)
 
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
         # 슬롯번호 = **ledger ∪ 실 git worktree** 병합 (T-0295·audit #4). ledger 만 보면 orphan
         # (worktree add 성공 후 lease 기록 전 죽어 disk 엔 있으나 ledger 엔 없는 슬롯·audit #2)
         # 번호를 재사용해 `git worktree add` "already exists" 암호 에러가 난다. git worktree 실측을
@@ -2540,7 +2730,7 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
     갱신/생성된 Lease 를 반환한다.
     """
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
         target = next((l for l in leases if l.slot == slot), None)
         # readonly 공유 슬롯은 바인딩(점유) 대상이 아니다 (⑬·T-0358·should-fix) — bind 는 *점유*고
         # 0단계 carve-out(F6)은 *조회 지칭*만 허용한다(의미 불일치). readonly 를 무조건 leased 로 덮으면
@@ -2755,7 +2945,7 @@ def prune_stale_leases() -> list[str]:
     """
     pruned: list[str] = []
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
         kept = [l for l in leases if slot_path(l.slot).exists()]
         pruned = [l.slot for l in leases if not slot_path(l.slot).exists()]
         if pruned:
@@ -2878,7 +3068,7 @@ def set_test_cmd(slot: str, cmd: str | None) -> Lease:
     Lease 를 반환한다. `cmd=None` 이면 바인딩 해제(repo areas/local.conf 로 폴백·현행).
     """
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
         target = next((l for l in leases if l.slot == slot), None)
         if target is None:
             raise KeyError(f"no lease for slot {slot!r}")
@@ -3000,7 +3190,7 @@ def record_git_snapshot(slot: str, *, base_branch: "str | None" = None,
     slot HEAD). `_lease_lock`+`_write_ledger`(atomic) — alloc/release 와 동일한 read-modify-write
     직렬화. 장부에 슬롯이 없으면 None(무해). 갱신된 Lease 반환."""
     with _lease_lock():
-        leases = _read_ledger()
+        leases = _read_ledger_strict()
         target = next((l for l in leases if l.slot == slot), None)
         if target is None:
             return None
@@ -3020,6 +3210,20 @@ def read_lease(slot: str) -> "Lease | None":
     with _lease_lock():
         leases = _read_ledger()
         return next((l for l in leases if l.slot == slot), None)
+
+
+def read_lease_strict(slot: str) -> "Lease | None":
+    """mutation 안전 게이트용 단일 lease strict 조회 — 손상/읽기 오류를 예외로 전파한다."""
+    with _lease_lock():
+        leases = _read_ledger_strict()
+        return next((lease for lease in leases if lease.slot == slot), None)
+
+
+def lease_owned_by_task_strict(slot: str, task: str) -> bool:
+    """슬롯이 현재도 ``task``의 leased 소유인지 락 안에서 strict 확인한다."""
+    with _lease_lock():
+        lease = next((item for item in _read_ledger_strict() if item.slot == slot), None)
+        return lease is not None and lease.state == "leased" and lease.session == task
 
 
 def _is_ancestor(git_runner: GitRunner, ancestor: str, descendant: str) -> bool:
@@ -3207,10 +3411,12 @@ def _reject_readonly_mutation(slot: str, op: str, *, git_runner: GitRunner | Non
     """슬롯이 readonly(⑬)면 `ReadonlySlotMutation` raise — set-base/rebase/dev/sync 진입 가드 (T-0358).
 
     엔진 경로 한정 거부(결정 ④). 판별 축은 canonical `lease.role`(0단계 carve-out·F6 예외와 동일 축).
-    git_runner 는 시그니처 정합용(현 판별은 장부만 읽어 미사용). **`_lease_lock` 을 취득한다**(자체
-    `_slot_role`) — 이미 락을 쥔 호출부(release/bind_slot)는 이 헬퍼 대신 보유 중인 `lease.role` 을
-    직접 검사한다(non-reentrant flock 재취득 = 데드락)."""
-    if _slot_role(slot) == _LEASE_ROLE_READONLY:
+    git_runner 는 시그니처 정합용(현 판별은 장부만 읽어 미사용). mutation 선행 판정이므로
+    `read_lease_strict`를 써 손상 장부를 기본 work role로 축약한 뒤 Git 변경을 시작하지 않는다.
+    이미 락을 쥔 호출부(release/bind_slot)는 이 헬퍼 대신 보유 중인 `lease.role` 을 직접 검사한다
+    (non-reentrant flock 재취득 = 데드락)."""
+    lease = read_lease_strict(slot)
+    if lease is not None and lease.role == _LEASE_ROLE_READONLY:
         raise ReadonlySlotMutation(slot, op)
 
 
@@ -3282,12 +3488,15 @@ def refresh(slot: str, *, onto: "str | None" = None,
          옛값 잔존 불일치 방지). refresh 는 base 가 정당하게 바뀌는 유일 지점(⑨ "rebase 로만" 의 readonly 예외).
     반환 = detach 이동한 기준 ref(본체 CLI 가 보고). `git_runner` 주입 시 그 runner(테스트 hermetic·
     미주입이면 슬롯 worktree 바인딩 실 runner)."""
-    if _slot_role(slot) != _LEASE_ROLE_READONLY:
+    lease = read_lease_strict(slot)
+    if lease is None or lease.role != _LEASE_ROLE_READONLY:
         raise RefreshRefused(slot, "not-readonly")
     # 기준 해소 — onto 명시 > 기록된 base.branch (추론 금지).
     base_branch = onto
     if base_branch is None:
-        recorded = _read_recorded_base(slot)
+        recorded = lease.git.get("base") if isinstance(lease.git, dict) else None
+        if not isinstance(recorded, dict):
+            recorded = None
         if recorded and recorded.get("branch"):
             base_branch = recorded["branch"]
     if not base_branch:
@@ -3673,10 +3882,9 @@ def _rebase_one(slot: str, *, onto: "str | None", owner: str,
         return RebaseSlotResult(slot, REBASE_SKIPPED, reason=reason, base=base)
 
     # ── 선-검사 (스킵 + loud·독립) ─────────────────────────────────────────
-    if _slot_role(slot) == _LEASE_ROLE_READONLY:
+    lease = read_lease_strict(slot)
+    if lease is not None and lease.role == _LEASE_ROLE_READONLY:
         return skip("readonly")   # 공유 기준면 — mutation 불가(⑬·T-0358·refresh 로만 갱신).
-    with _lease_lock():
-        lease = next((l for l in _read_ledger() if l.slot == slot), None)
     # 소유 판정 = leased lease.session == 내 명의(`owner`) — `release` F3(`target.session !=
     # owner_task`)와 **같은 장부·같은 비교**다(T-0416). 명의가 세션이냐 task 냐는 `rebase` 가
     # 해소하고(단일 지점), 여기 판정은 축과 무관하게 하나다.
@@ -4083,7 +4291,7 @@ def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
     반환 = `SwitchResult`(branch=**정규화 이름**·requested=원문·created·head). **diverged 검사는
     무변경** — 사람이 raw `git switch` 를 직접 하면 여전히 FAIL-LOUD 로 잡힌다(탐지력 손실 0)."""
     _reject_readonly_mutation(slot, "switch", git_runner=git_runner)
-    lease = read_lease(slot)
+    lease = read_lease_strict(slot)
     if lease is None:
         raise SwitchRefused(slot, "unregistered")
     repo = getattr(lease, "repo", None) or slot.rpartition("/")[2].rsplit("_", 1)[0]
@@ -4647,8 +4855,9 @@ def _resolve_current_slot(slot_arg: str | None) -> str:
       3. 세션(`_default_session`·env/local.conf 유입)이 보유한 leased 슬롯 — 정확히 1개면 그것.
 
     3에서 매칭 leased 슬롯이 0개(무바인딩)이거나 ≥2(모호)면 `SlotResolutionError` raise — CLI
-    main 이 rc 1 + `--repo/--slot` 안내로 surface 한다(침묵 오타깃 금지). `list_leases`(flock
-    read)·`_default_session`(board.session_name 동형)을 재사용한다(기존 관례). (인자 전무 시
+    main 이 rc 1 + `--repo/--slot` 안내로 surface 한다(침묵 오타깃 금지). 이 해소는 dev/sync
+    mutation의 대상 선택이므로 장부를 strict로 읽고, `_default_session`(board.session_name 동형)을
+    재사용한다(기존 관례). (인자 전무 시
     이 no-flag 체인은 ADR-0040 불변 — ADR-0057 은 명시 인자 표면만 바꾼다.)
 
     **형식 검증(must-fix 2·T-0277)**: `slot_arg` 명시는 `_normalize_slot` 이, 그 외 유입도 반환
@@ -4663,7 +4872,12 @@ def _resolve_current_slot(slot_arg: str | None) -> str:
     if cwd_slot:
         return _normalize_slot(cwd_slot)  # cwd 유입도 최종 형식 검증(단일 불변식).
     sess = _default_session()
-    mine = [l for l in list_leases() if l.state == "leased" and l.session == sess]
+    with _lease_lock():
+        mine = [
+            lease
+            for lease in _read_ledger_strict()
+            if lease.state == "leased" and lease.session == sess
+        ]
     if len(mine) == 1:
         return _normalize_slot(mine[0].slot)  # 장부 유입도 최종 형식 검증(단일 불변식).
     if not mine:
@@ -4695,6 +4909,11 @@ def _load_identity_args():
     spec.loader.exec_module(mod)
     _verify_engine_rev(mod, "identity_args.py")  # T-0397 — 사본 skew fail-loud
     return mod
+
+
+# state 생성과 handoff 갱신이 같은 marker를 쓰도록 literal은 identity_args 한 곳만 소유한다.
+# 앞서 정의된 함수들은 이 전역을 호출 시점에 조회하므로 module import 계약은 그대로다.
+TASK_PM_STATE_EMPTY_MARKER = _load_identity_args().TASK_PM_STATE_EMPTY_MARKER
 
 
 def _resolve_actor_slot_for_repo(repo: str) -> str:
@@ -4888,7 +5107,15 @@ def _cmd_rebase(args) -> int:
         return 1
     batch = bool(task) and not slot_arg   # `--task` 단독일 때만 일괄(위치인자 동반 = 단일 지정).
     if batch:
-        slots = [l.slot for l in slots_for_task(task)]
+        try:
+            slots = [lease.slot for lease in slots_for_task_strict(task)]
+        except Exception as exc:  # noqa: BLE001 — mutation 대상 해소 실패는 0개 성공이 아님.
+            print(
+                f"[중단] task {task!r} 보유 슬롯 장부 조회 실패 — {exc}. "
+                "rebase 대상을 0개로 간주하지 않는다.",
+                file=sys.stderr,
+            )
+            return 1
         if not slots:
             print(f"# task {task!r} 이(가) 보유한 leased 슬롯이 없다 — rebase 대상 0.")
             return 0
@@ -4955,7 +5182,7 @@ def _cmd_record(args) -> int:
     except SlotResolutionError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
-    before = read_lease(slot)
+    before = read_lease_strict(slot)
     before_git = before.git if (before is not None and isinstance(before.git, dict)) else None
     lease = record_git_snapshot(slot)
     if lease is None:

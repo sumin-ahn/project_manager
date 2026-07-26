@@ -39,8 +39,13 @@ PM 세션이 시작되면 다음을 순서대로 수행한다. **Read tool 로 �
 1. **이 문서(AGENTS.md·공통 코어)** — 이미 로드됨. 엔진 호출(인코딩) 규약(§1) 파악. 하네스-고유
    실행 모델·위임 규약은 각 하네스의 네이티브 채널이 별도로 전달한다(공통 코어와 함께 로드).
 2. **PM 운영 매뉴얼** — `.project_manager/wiki/pm_role.md` (정적 운영 매뉴얼: 책임·결정 권한·핸드오프).
-3. **PM 동적 상태** — per-slot `.project_manager/.local/slots/<repo>_<N>/pm_state.md`(예 `slots/project_manager_1/` · `<repo>_<N>` = worktree `work/<repo>_<N>` 의 basename) (세션 window·진행 중 의사결정·남은 작업 · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033).
-   *없으면* 채택 setup 미완 — `board.py init` 이 template 에서 생성한다.
+3. **PM 동적 상태** — task 모드는 `.project_manager/.local/tasks/<task>/pm_state.md`가 연속성의
+   단일 앵커다. slot 모드는 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`
+   (`<repo>_<N>` = worktree `work/<repo>_<N>` basename), 솔로는 `wiki/pm_state.md` legacy
+   폴백(T-0166/ADR-0033). 모두 세션 window·진행 중 의사결정·남은 작업을 담는 git-ignored 상태다.
+   신규 task는 `/pm-bootstrap --task <이름>` 진입 즉시 이 파일을 만들므로 호출 전에는 없어도
+   정상이다. 기존 task의 파일이 빠졌어도 같은 진입에서 복구한다. slot/solo state가 없으면 채택
+   setup 미완 — `board.py init` 이 template 에서 생성한다.
 4. **현재-진실 + 진행 상태** — `.project_manager/wiki/architecture.md`(**현재-아키텍처 단일 진실**·① live / ② target · ADR-0022 · 부트스트랩 1순위·충돌 시 기준) → `.project_manager/wiki/status.md`(모듈 진행상태·비고). ADR(`decisions/`)은 *왜*의 히스토리(현재 구속력 없음).
 5. **보드 조회** — 지금 잡을 수 있는 ticket 확인:
    ```bash
@@ -57,6 +62,12 @@ PM 세션이 시작되면 다음을 순서대로 수행한다. **Read tool 로 �
 
 ### 세션 식별
 
+- **task 일반 사용자 경로** — 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는
+  `/pm-handoff --task <이름>`만 쓴다. 신규 task는 작업공간 0개로 시작해 PM이 후속 대여하고,
+  **task 진입 시점에** pm_state를 즉시 만든다. 슬롯 대여는 그 뒤의 별도 작업이다. 기존 task는
+  보유 슬롯 집합과 task pm_state를 자동 수령한다. Python backbone도
+  `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름>`만 사용하며 task와
+  repo/slot의 혼합 진입은 엔진이 거부한다.
 - **PM 세션명 canonical = `<repo>_<N>`** (multi-PM 정체성 — `<repo>`=프로젝트 repo·`<N>`=PM 슬롯
   번호 · ADR-0043). board.py 조작 시 `--repo <repo> --slot <N>` 인자로 전달한다(ADR-0057 — 구 세션 플래그 대체):
   ```bash
@@ -147,6 +158,8 @@ ticket 을 닫을 때:
 
 # 핸드오프 (세션 종료)
 {{PY}} .project_manager/tools/pm_handoff.py --dry-run
+# task 사용자 경로
+{{PY}} .project_manager/tools/pm_handoff.py --task <이름>
 
 # 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 {{PY}} .project_manager/tools/pm_update.py --from <upstream> --dry-run

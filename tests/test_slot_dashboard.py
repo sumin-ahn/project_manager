@@ -381,6 +381,23 @@ def test_collect_dashboard_others_only_own_returns_none(tmp_path, monkeypatch):
     assert inst._collect_dashboard_others() is None
 
 
+def test_collect_dashboard_others_task_mode_excludes_own_task(tmp_path, monkeypatch):
+    """task dashboard 키는 task 이름이므로 자기 task를 '다른 활성 PM'으로 다시 표시하지 않는다."""
+    hf = _load("pm_handoff")
+    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
+    _write_dashboard(
+        tmp_path, hf,
+        ("mytask", 3, "mineTaskWave"),
+        ("other-task", 2, "otherTaskWave"),
+    )
+    inst = bs.PmBootstrap()
+    inst._task_name = "mytask"
+    result = inst._collect_dashboard_others()
+    assert result is not None and result["mode"] == "dashboard"
+    assert [o["session"] for o in result["others"]] == ["other-task"]
+    assert "mineTaskWave" not in result["others"][0]["body"]
+
+
 def test_collect_dashboard_others_lease_fallback(tmp_path, monkeypatch):
     """대시보드 부재 → lease 장부 폴백(자기 제외 leased 슬롯)."""
     bs = _make_bs(tmp_path, monkeypatch)
@@ -397,6 +414,24 @@ def test_collect_dashboard_others_lease_fallback(tmp_path, monkeypatch):
     result = inst._collect_dashboard_others()
     assert result["mode"] == "lease"
     assert [o["session"] for o in result["others"]] == ["finance_2"]
+
+
+def test_collect_dashboard_others_task_lease_fallback_excludes_own_task(tmp_path, monkeypatch):
+    """대시보드 부재 lease 폴백도 task 이름을 자기 키로 제외한다."""
+    bs = _make_bs(tmp_path, monkeypatch)
+    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    leases.parent.mkdir(parents=True, exist_ok=True)
+    leases.write_text(
+        '{"leases":['
+        '{"slot":"work/project_manager_1","repo":"project_manager","session":"mytask","state":"leased"},'
+        '{"slot":"work/finance_2","repo":"finance","session":"other-task","state":"leased"}]}',
+        encoding="utf-8",
+    )
+    inst = bs.PmBootstrap()
+    inst._task_name = "mytask"
+    result = inst._collect_dashboard_others()
+    assert result["mode"] == "lease"
+    assert [o["session"] for o in result["others"]] == ["other-task"]
 
 
 def test_collect_dashboard_others_solo_none(tmp_path, monkeypatch):

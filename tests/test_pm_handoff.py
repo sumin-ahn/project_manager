@@ -39,6 +39,16 @@ def hf():
     return _load_module()
 
 
+class _RegisteredTaskPool:
+    """task membership만 양성으로 답하는 최소 handoff 테스트 seam."""
+
+    def find_task(self, name):
+        return type("_T", (), {"name": name})()
+
+    def slots_for_task(self, name):
+        return []
+
+
 # ── pm_state.md 세션 식별 절 fixture (실 형식 — 앵커·entry·포인터 유지) ────────
 #
 # 실 pm_state.md 의 "## 세션 식별 (현재까지 사용된 이름)" 절 형식을 그대로 모사:
@@ -155,12 +165,80 @@ def test_update_session_window_missing_anchor_raises(hf):
 
 
 def test_update_session_window_no_existing_entry_raises(hf):
-    """앵커는 있으나 기존 pm 세션 entry 가 0개면 ValueError."""
+    """marker 없는 임의 state에서 기존 entry가 0개면 종전처럼 ValueError."""
     doc = _state(pointer=_POINTER_1_3)  # entry 없음, 포인터만.
     with pytest.raises(ValueError):
         hf.update_session_window(
             doc, session_num=7, date_str="2026-06-15", wave_summary="x"
         )
+
+
+def test_update_session_window_initializes_new_task_marker(hf):
+    """task 생성 state의 0-session marker는 첫 handoff 때 실제 1차 entry로 교체된다."""
+    doc = _state().replace(
+        "최근 N 차 (sliding window, 기본 3 차):\n",
+        "최근 N 차 (sliding window, 기본 3 차):\n"
+        f"{hf.TASK_PM_STATE_EMPTY_MARKER}\n",
+    )
+    out = hf.update_session_window(
+        doc, session_num=1, date_str="2026-07-23", wave_summary="첫 task 세션"
+    )
+    assert hf.TASK_PM_STATE_EMPTY_MARKER not in out
+    assert "**1차** (2026-07-23 · 첫 task 세션)" in out
+
+
+def test_update_session_window_fills_three_before_evicting_oldest(hf):
+    """task 1→2→3차는 세 entry가 공존하고 4차에서만 1차를 제거한다."""
+    state = _state().replace(
+        "최근 N 차 (sliding window, 기본 3 차):\n",
+        "최근 N 차 (sliding window, 기본 3 차):\n"
+        f"{hf.TASK_PM_STATE_EMPTY_MARKER}\n",
+    )
+    observed: list[list[int]] = []
+    for session_num in range(1, 5):
+        state = hf.update_session_window(
+            state,
+            session_num=session_num,
+            date_str=f"2026-07-2{session_num}",
+            wave_summary=f"wave-{session_num}",
+        )
+        section, _, _ = hf._extract_session_section(state)
+        observed.append([
+            int(match.group(1).replace("차", ""))
+            for match in hf._find_pm_session_entries(section)
+        ])
+
+    assert observed == [[1], [1, 2], [1, 2, 3], [2, 3, 4]]
+
+
+def test_update_session_window_legacy_solo_pointer_is_not_left_in_window(hf):
+    """legacy 1차+`이전 차 1차~1차` 템플릿에 2차를 더하면 포인터가 현재 창과 겹치지 않는다.
+
+    이 템플릿은 1차가 window entry 이면서 이전 차 포인터에도 동시에 남아 있었다. eviction
+    전에는 이전 차가 없으므로 stale 포인터를 지우고, 4차 eviction 뒤의 종전 포인터 생성은
+    그대로 유지한다.
+    """
+    legacy = _state(
+        _entry(1),
+        pointer="  - 이전 차 (PM 1차~1차) = `log/current.md` handoff entry 단일 진실.\n",
+    )
+    second = hf.update_session_window(
+        legacy, session_num=2, date_str="2026-07-24", wave_summary="2차 handoff"
+    )
+    section, _, _ = hf._extract_session_section(second)
+    assert [m.group(1) for m in hf._find_pm_session_entries(section)] == ["1차", "2차"]
+    assert "이전 차 (PM" not in section
+
+    # B: 3차 충전과 4차 eviction의 기존 sliding-window 동작은 그대로다.
+    third = hf.update_session_window(
+        second, session_num=3, date_str="2026-07-25", wave_summary="3차 handoff"
+    )
+    fourth = hf.update_session_window(
+        third, session_num=4, date_str="2026-07-26", wave_summary="4차 handoff"
+    )
+    section, _, _ = hf._extract_session_section(fourth)
+    assert [m.group(1) for m in hf._find_pm_session_entries(section)] == ["2차", "3차", "4차"]
+    assert "이전 차 (PM 1차~1차)" in section
 
 
 def test_update_session_window_preserves_outside_section(hf):
@@ -518,7 +596,7 @@ def test_build_handoff_prompt_output_solo_unchanged_by_task_feature(hf):
     assert "--task" not in out
 
 
-def test_run_task_mode_emits_task_trigger(hf, tmp_path, capsys):
+def test_run_task_mode_emits_task_trigger(hf, tmp_path, capsys, monkeypatch):
     """run(task=...) 이 [5/7] 에 task-only 트리거를 emit 한다 (T-0394·호출부 배선).
 
     명시 pm_state 주입(hermetic) 없이 --task 를 run 에 주면 build_handoff_prompt_output 에
@@ -527,12 +605,20 @@ def test_run_task_mode_emits_task_trigger(hf, tmp_path, capsys):
     playbook = tmp_path / "pm_playbook.md"
     playbook.write_text(_TRIGGER_PLAYBOOK, encoding="utf-8")
     log_file = tmp_path / "current.md"
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    task_state = hf._task_pm_state_file("mytask")
+    task_state.parent.mkdir(parents=True, exist_ok=True)
+    task_state.write_text(
+        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3),
+        encoding="utf-8",
+    )
 
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_playbook_file=playbook,
+        worktree_pool=_RegisteredTaskPool(),
         # pm_state_file 미주입 — task 모드가 per-task pm_state 경로를 자체 해소(task_mode=True).
     )
     rc = handoff.run(
@@ -631,6 +717,7 @@ def test_run_task_mode_explicit_pm_state_emits_task_trigger(hf, tmp_path, capsys
         log_file=log_file,
         pm_playbook_file=playbook,
         pm_state_file=pm_state,  # 명시 주입 → _pm_state_file_explicit True (task_mode False)
+        worktree_pool=_RegisteredTaskPool(),
     )
     rc = handoff.run(
         session_num=78,
@@ -1232,18 +1319,78 @@ def test_done_repo_slot_reaches_release(hf, tmp_path, captured_run, monkeypatch)
 
 # ── task 모드 귀속 (F7·T-0356) — pm_state task 경로·dashboard 키·log 태그·lease 유지 ──────
 #
-# 세션 종료(핸드오프)의 연속성 앵커를 slot→task 로 이동한다. `--task <name>` 이 pm_state 를
-# `.local/tasks/<name>/` 에 기록(첫 핸드오프가 template seed)·dashboard 자기 섹션 `## <name>`·
+# 세션 종료(핸드오프)의 연속성 앵커를 slot→task 로 이동한다. task 생성 시 이미 만들어진
+# `.local/tasks/<name>/pm_state.md`에 기록·dashboard 자기 섹션 `## <name>`·
 # log 헤더 태그 `(task:<name>)`. lease 는 유지(세션 종료 ≠ task 종료·F4). log 태그는 서술형 괄호·
 # 슬롯 태그와 구분되게 sentinel `task:` 로 박는다.
 
 
-def test_main_task_forwarded_to_run(hf, captured_run):
-    """main() 이 `--task <name>` 을 run(task=...) 로 forward 한다 (ingress 배선·T-0356)."""
-    assert hf.main(
-        ["--session-seq", "7", "--wave-summary", "x", "--no-pytest", "--task", "mytask"]
-    ) == 0
+def test_main_task_forwarded_to_run_without_session_override(hf, captured_run):
+    """main()은 task만 forward하고 차수는 run()의 state 추론에 맡긴다."""
+    assert hf.main(["--wave-summary", "x", "--no-pytest", "--task", "mytask"]) == 0
     assert captured_run["task"] == "mytask"
+    assert captured_run["session_num"] is None
+    assert captured_run["wave_summary"] == "x"  # 명시 콘텐츠는 정당하므로 task에서도 유지.
+
+
+def test_main_task_rejects_explicit_session_seq_usage_error(hf, captured_run, capsys):
+    """task CLI의 명시 차수는 state 추론 우회가 되므로 usage error로 거부한다(MF-a)."""
+    with pytest.raises(SystemExit) as exc:
+        hf.main(["--task", "mytask", "--session-seq", "999"])
+    assert exc.value.code == 2
+    assert "--session-seq를 지정할 수 없다" in capsys.readouterr().err
+    assert captured_run == {}
+
+
+def test_main_task_only_infers_session_and_default_summary(
+    hf, tmp_path, captured_run, monkeypatch
+):
+    """`pm_handoff.py --task mytask`만으로 task state에서 차수와 기본 요약을 해소한다."""
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    state = hf._task_pm_state_file("mytask")
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(
+        "## 세션 식별 (현재까지 사용된 이름)\n"
+        f"{hf.TASK_PM_STATE_EMPTY_MARKER}\n",
+        encoding="utf-8",
+    )
+
+    assert hf.main(["--task", "mytask"]) == 0
+    assert captured_run["task"] == "mytask"
+    assert captured_run["worktree_slot"] is None
+    assert captured_run["session_num"] is None
+    assert captured_run["wave_summary"] == "task mytask 세션 핸드오프"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--task", "mytask", "--repo", "A"],
+        ["--task", "mytask", "--repo", "A", "--slot", "2"],
+        ["--task", "mytask", "--slot", "2"],
+        ["--task", "mytask", "--branch", "feature"],
+        ["--task", "mytask", "--done"],
+    ],
+)
+def test_main_task_rejects_slot_identity_mixing(hf, captured_run, argv):
+    """task handoff CLI는 repo/slot/branch/done 혼합을 run 전에 거부한다."""
+    with pytest.raises(SystemExit) as exc:
+        hf.main(argv)
+    assert exc.value.code == 2
+    assert captured_run == {}
+
+
+def test_main_task_slot_only_surfaces_task_contract_before_repo_hint(
+    hf, captured_run, capsys
+):
+    """task+bare slot은 `--repo 필수`가 아니라 ADR-0078 task 혼합 거부를 먼저 안내한다(SF)."""
+    with pytest.raises(SystemExit) as exc:
+        hf.main(["--task", "mytask", "--slot", "2"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--task 는 단독 정체성" in err
+    assert "--slot 은 --repo 필수" not in err
+    assert captured_run == {}
 
 
 @pytest.mark.parametrize("bad", [
@@ -1259,7 +1406,7 @@ def test_main_task_traversal_rejected(hf, captured_run, bad):
     validator 로 닫아 도메인 협소화를 자동 상속한다. 거부 시 run 미도달(captured 비어 있음)."""
     with pytest.raises(SystemExit):
         hf.main(
-            ["--session-seq", "7", "--wave-summary", "x", "--no-pytest", "--task", bad]
+            ["--wave-summary", "x", "--no-pytest", "--task", bad]
         )
     assert captured_run == {}
 
@@ -1277,13 +1424,12 @@ def test_main_task_reserved_slot_name_rejected(hf, captured_run, monkeypatch):
     monkeypatch.setattr(hf, "_load_board", lambda: _FakeBoard())
     with pytest.raises(SystemExit):
         hf.main(
-            ["--session-seq", "7", "--wave-summary", "x", "--no-pytest",
-             "--task", "project_manager_1"]
+            ["--wave-summary", "x", "--no-pytest", "--task", "project_manager_1"]
         )
     assert captured_run == {}
     # 미등록 repo 형태(자유 포맷)는 통과 — run 도달(예약 판별이 실 슬롯과만 충돌 방지·오탐 0).
     assert hf.main(
-        ["--session-seq", "7", "--wave-summary", "x", "--no-pytest", "--task", "sikdan_2"]
+        ["--wave-summary", "x", "--no-pytest", "--task", "sikdan_2"]
     ) == 0
     assert captured_run["task"] == "sikdan_2"
 
@@ -1308,9 +1454,10 @@ def test_run_task_writes_task_tag_and_dashboard_key(hf, tmp_path, capsys):
         log_file=log_file,
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
+        worktree_pool=_RegisteredTaskPool(),
     )
     rc = handoff.run(
-        session_num=7, wave_summary="요약", dry_run=True, skip_pytest=False, task="mytask"
+        session_num=999, wave_summary="요약", dry_run=True, skip_pytest=False, task="mytask"
     )
     assert rc == 0
     out = capsys.readouterr().out
@@ -1323,20 +1470,95 @@ def test_run_task_writes_task_tag_and_dashboard_key(hf, tmp_path, capsys):
     assert "## task:mytask" not in out
 
 
-def test_run_task_seeds_and_records_pm_state(hf, tmp_path, capsys, monkeypatch):
-    """첫 task 핸드오프 — 부재 pm_state 를 template 에서 seed 후 `.local/tasks/<name>/` 에 기록.
-
-    실 경로 해소(명시 주입 없음·REPO monkeypatch)로 F7 앵커 이동을 못박는다: task pm_state 가
-    task 서술 공간에 생성되고(첫 핸드오프·T-0353 surface 약속) 세션 window 가 이 차수를 담는다.
-    dashboard 자기 섹션 `## <name>`·log 태그 `(task:<name>)`. lease 는 건드리지 않는다(done=False —
-    worktree_pool release 미호출·세션 종료 ≠ task 종료·F4)."""
-    monkeypatch.setattr(hf, "REPO", tmp_path)
-    # tracked pm_state template(seed 원천) — board.py init 과 동일 skeleton(세션 식별 앵커 보유).
-    template = tmp_path / ".project_manager" / "wiki" / "pm_state.template.md"
-    template.parent.mkdir(parents=True, exist_ok=True)
-    template.write_text(
-        _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
+def test_run_task_recovers_from_log_only_interrupt_and_ignores_session_num_999(
+    hf, tmp_path
+):
+    """log append 후 state write 전 중단 재시도는 log 최고차+1을 세 영속 표면에 고정한다."""
+    pm_state = tmp_path / "pm_state.md"
+    pm_state.write_text(_state(_entry(1), _entry(2)), encoding="utf-8")
+    log_file = tmp_path / "current.md"
+    log_file.write_text(
+        hf.build_handoff_log_skeleton(
+            session_num=3,
+            date="2026-07-24",
+            session="task:mytask",
+        ),
+        encoding="utf-8",
     )
+    dashboard_file = tmp_path / "dashboard.md"
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook,
+        pm_state_file=pm_state,
+        dashboard_file=dashboard_file,
+        worktree_pool=_RegisteredTaskPool(),
+    )
+
+    rc = handoff.run(
+        session_num=999,
+        wave_summary="중단 복구",
+        dry_run=False,
+        skip_pytest=True,
+        task="mytask",
+    )
+
+    assert rc == 0
+    log_text = log_file.read_text(encoding="utf-8")
+    state_text = pm_state.read_text(encoding="utf-8")
+    dashboard_text = dashboard_file.read_text(encoding="utf-8")
+    assert log_text.count("PM 3차 (task:mytask)") == 1
+    assert "PM 4차 (task:mytask)" in log_text
+    assert "**4차**" in state_text
+    assert "- 차수: PM 4차" in dashboard_text
+    assert "PM 999차" not in log_text + state_text + dashboard_text
+
+
+def test_run_unregistered_task_fails_without_side_effects(
+    hf, tmp_path, monkeypatch, capsys
+):
+    """handoff는 bootstrap이 만들지 않은 task를 거부하고 state/log/dashboard를 만들지 않는다."""
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    log_file = tmp_path / "current.md"
+    dashboard_file = tmp_path / "dashboard.md"
+    pytest_calls: list[bool] = []
+
+    class _MissingTaskPool:
+        @staticmethod
+        def find_task(name):
+            return None
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (pytest_calls.append(True) or (0, "1 passed\n")),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=tmp_path / "unused-playbook.md",
+        dashboard_file=dashboard_file,
+        worktree_pool=_MissingTaskPool(),
+    )
+
+    rc = handoff.run(
+        session_num=999,
+        wave_summary="오타",
+        dry_run=False,
+        skip_pytest=False,
+        task="not-registered",
+    )
+
+    assert rc != 0
+    assert pytest_calls == []
+    assert not log_file.exists()
+    assert not dashboard_file.exists()
+    assert not (tmp_path / ".project_manager" / ".local" / "tasks" / "not-registered").exists()
+    assert "미등록 task" in capsys.readouterr().err
+
+
+def test_run_task_records_precreated_pm_state(hf, tmp_path, capsys, monkeypatch):
+    """첫 task handoff는 task 생성 시 이미 존재하는 pm_state marker를 1차 기록으로 갱신한다."""
+    monkeypatch.setattr(hf, "REPO", tmp_path)
     playbook = tmp_path / "pm_playbook.md"
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
     log_file = tmp_path / "current.md"
@@ -1344,13 +1566,27 @@ def test_run_task_seeds_and_records_pm_state(hf, tmp_path, capsys, monkeypatch):
 
     # lease 유지 증거 — release 가 불리면 fail 하는 sentinel worktree_pool(done=False 라 미호출 기대).
     class _NoReleasePool:
+        def find_task(self, name):
+            return type("_T", (), {"name": name})()
+
+        def slots_for_task(self, name):
+            return []
+
         def release(self, *a, **k):  # noqa: ANN002 ANN003
             raise AssertionError("task 세션 종료가 lease 를 release 하면 안 된다(F7·세션종료≠task종료)")
 
     task_pm_state = (
         tmp_path / ".project_manager" / ".local" / "tasks" / "mytask" / "pm_state.md"
     )
-    assert not task_pm_state.exists()  # 첫 핸드오프 전엔 부재.
+    task_pm_state.parent.mkdir(parents=True, exist_ok=True)
+    task_pm_state.write_text(
+        _state().replace(
+            "최근 N 차 (sliding window, 기본 3 차):\n",
+            "최근 N 차 (sliding window, 기본 3 차):\n"
+            f"{hf.TASK_PM_STATE_EMPTY_MARKER}\n",
+        ),
+        encoding="utf-8",
+    )
 
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
@@ -1361,17 +1597,18 @@ def test_run_task_seeds_and_records_pm_state(hf, tmp_path, capsys, monkeypatch):
         worktree_pool=_NoReleasePool(),
     )
     rc = handoff.run(
-        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+        session_num=1, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
     )
     assert rc == 0
-    # task pm_state 가 task 서술 공간에 생성·기록(sliding window 가 7차 반영).
+    # task pm_state marker가 첫 실제 세션 entry로 전환.
     assert task_pm_state.exists()
     state_text = task_pm_state.read_text(encoding="utf-8")
-    assert "7차" in state_text
+    assert "1차" in state_text
+    assert hf.TASK_PM_STATE_EMPTY_MARKER not in state_text
     # dashboard 자기 섹션 `## mytask`.
     assert "## mytask" in dashboard_file.read_text(encoding="utf-8")
     # log 헤더 태그 = sentinel `(task:mytask)`.
-    assert "PM 7차 (task:mytask)" in log_file.read_text(encoding="utf-8")
+    assert "PM 1차 (task:mytask)" in log_file.read_text(encoding="utf-8")
 
 
 # ── 핸드오프 완료 git 재스냅 ("여기 두고 간다"·T-0388) ─────────────────────────────
@@ -1400,6 +1637,9 @@ class _SnapPool:
 
     def read_lease(self, slot):
         return type("_L", (), {"git": self._before_git})()
+
+    def find_task(self, name):
+        return type("_T", (), {"name": name})()
 
     def record_git_snapshot(self, slot, **kwargs):
         self.snap_calls.append((slot, kwargs))
@@ -1666,16 +1906,19 @@ class _TaskPidPool(_SnapPool):
             return None
         return type("_T", (), {"name": name, "pid": 0})()
 
+    def slots_for_task(self, name):
+        return []
+
 
 def _task_mode_handoff(hf, tmp_path, monkeypatch, pool):
     """task_mode(=명시 pm_state 미주입·--task) 진입 hermetic PmHandoff (T-0392).
 
-    task_mode = task not None AND pm_state 미명시 → REPO monkeypatch + template seed 로 실 앵커
-    해소를 태우되 mock worktree_pool 로 release_task_pid 배선만 격리 검증한다(task-only=슬롯 미해소)."""
+    task_mode = task not None AND pm_state 미명시 → REPO monkeypatch + task 생성 시 이미 만들어진
+    state로 실 앵커 해소를 태우되 mock pool로 release_task_pid 배선만 격리한다."""
     monkeypatch.setattr(hf, "REPO", tmp_path)
-    template = tmp_path / ".project_manager" / "wiki" / "pm_state.template.md"
-    template.parent.mkdir(parents=True, exist_ok=True)
-    template.write_text(
+    state = hf._task_pm_state_file("mytask")
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(
         _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
     )
     playbook = tmp_path / "pm_playbook.md"
@@ -1790,6 +2033,9 @@ class _TaskSetPool(_SnapPool):
     def slots_for_task(self, name):
         return [type("_L", (), {"slot": s})() for s in self._task_slots]
 
+    def lease_owned_by_task_strict(self, slot, task):
+        return slot in self._task_slots and task == "mytask"
+
     def compare_slot_git(self, slot):
         st = self._states.get(slot, {})
         return type("_C", (), {
@@ -1836,6 +2082,49 @@ def _recording_pytest(handoff_box, result=(0, "1 passed in 0.01s\n")):
         return result
 
     return _run, cwds
+
+
+def test_task_state_ensure_failure_leaves_log_and_dashboard_untouched(
+    hf, tmp_path, monkeypatch, capsys
+):
+    """회귀 통과 후 task state backfill 실패 시 첫 외부 write 전에 중단한다(MF-b).
+
+    기존 log/dashboard bytes를 sentinel로 두고 ensure 실패를 주입해 재시도 중복 원인을 막는다.
+    """
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    log_file = tmp_path / "current.md"
+    dashboard_file = tmp_path / "dashboard.md"
+    log_file.write_text("LOG-SENTINEL\n", encoding="utf-8")
+    dashboard_file.write_text("DASH-SENTINEL\n", encoding="utf-8")
+    playbook = tmp_path / "pm_playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+
+    class _FailEnsurePool(_TaskSetPool):
+        def ensure_task_pm_state(self, name):
+            raise OSError("injected ensure failure")
+
+    pool = _FailEnsurePool([])
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file,
+        pm_playbook_file=playbook,
+        dashboard_file=dashboard_file,
+        worktree_pool=pool,
+    )
+
+    rc = handoff.run(
+        session_num=999,
+        wave_summary="요약",
+        dry_run=False,
+        skip_pytest=True,
+        task="mytask",
+    )
+
+    assert rc == 1
+    assert log_file.read_text(encoding="utf-8") == "LOG-SENTINEL\n"
+    assert dashboard_file.read_text(encoding="utf-8") == "DASH-SENTINEL\n"
+    assert "task pm_state 생성 실패" in capsys.readouterr().err
 
 
 def test_task_regression_runs_in_held_workspace(hf, tmp_path, capsys):
@@ -1951,7 +2240,77 @@ def test_task_regression_zero_held_slots_skips(hf, tmp_path, capsys):
     )
     assert rc == 0
     assert cwds == []
-    assert "보유 슬롯 0개" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "보유 슬롯 0개" in out
+    assert "/pm-env alloc <repo> --task <이름>" in out
+    assert "`--repo/--slot` 명시" not in out
+
+
+def test_task_slots_resolution_exception_fails_before_persistent_records(hf, tmp_path, capsys):
+    """slots_for_task 예외는 실제 0슬롯이 아니다 — rc1이고 log/dashboard/state/snapshot 기록은 0."""
+
+    class BrokenTaskSetPool(_TaskSetPool):
+        def slots_for_task(self, name):
+            raise OSError("ledger unreadable")
+
+    pool = BrokenTaskSetPool([])
+    handoff = _task_reg_handoff(
+        hf,
+        tmp_path,
+        pool,
+        lambda: (_ for _ in ()).throw(AssertionError("해소 실패 뒤 pytest 호출 금지")),
+    )
+    state_before = handoff._pm_state_file.read_text(encoding="utf-8")
+    assert handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    ) == 1
+    captured = capsys.readouterr()
+    assert "보유 슬롯 장부 해소 실패" in captured.err
+    assert "실제 0슬롯으로 간주하지 않습니다" in captured.err
+    assert not handoff._log_file.exists()
+    assert not handoff._dashboard_file.exists()
+    assert handoff._pm_state_file.read_text(encoding="utf-8") == state_before
+    assert pool.snap_calls == []
+
+
+def test_corrupt_real_ledger_blocks_handoff_without_records(hf, tmp_path, capsys):
+    """실 strict 파서가 손상 JSON을 task 미등록/0슬롯으로 낮추지 않고 모든 기록 전에 막는다."""
+    # worktree_pool은 tmp 장부에 재배선할 독립 모듈로 직접 동적 로드한다.
+    spec = importlib.util.spec_from_file_location(
+        "wp_handoff_corrupt_real", TOOLS / "worktree_pool.py"
+    )
+    wp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(wp)
+    local = tmp_path / "real-local"
+    ledger = local / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text('{"tasks": [', encoding="utf-8")
+    for name, value in {
+        "LEASES_FILE": ledger,
+        "LEASES_LOCK": local / "worktree-leases.lock",
+        "TASKS_DIR": local / "tasks",
+        "WORK_DIR": tmp_path / "real-work",
+    }.items():
+        setattr(wp, name, value)
+    before_ledger = ledger.read_bytes()
+    handoff = _task_reg_handoff(
+        hf,
+        tmp_path,
+        wp,
+        lambda: (_ for _ in ()).throw(AssertionError("손상 장부 뒤 pytest 호출 금지")),
+    )
+    before_state = handoff._pm_state_file.read_text(encoding="utf-8")
+
+    assert handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+    ) == 1
+
+    captured = capsys.readouterr()
+    assert "task 장부 membership 조회 실패" in captured.err
+    assert ledger.read_bytes() == before_ledger
+    assert not handoff._log_file.exists()
+    assert not handoff._dashboard_file.exists()
+    assert handoff._pm_state_file.read_text(encoding="utf-8") == before_state
 
 
 def test_task_regression_stale_slot_fails_loud_not_repo_green(hf, tmp_path, capsys):
@@ -1979,11 +2338,10 @@ def test_task_regression_stale_slot_fails_loud_not_repo_green(hf, tmp_path, caps
     assert "vacuous-pass" in err
 
 
-def test_task_regression_explicit_slot_priority_unchanged(hf, tmp_path, capsys):
-    """명시 --repo/--slot 동반 시 우선순위 불변 — task 다중슬롯 경로 안 타고 그 슬롯 단일 회귀(T-0393)."""
+def test_task_handoff_run_rejects_explicit_slot(hf, tmp_path, capsys):
+    """run() 직접 호출도 task+slot 혼합을 부작용 전에 거부한다."""
     box = [None]
     pytest_fn, cwds = _recording_pytest(box)
-    # 명시 슬롯이 있으면 task 회귀 모드 진입 안 함 → slots_for_task 를 회귀 판정에 안 씀(2슬롯 무시).
     pool = _TaskSetPool(["work/a_1", "work/b_1"],
                         states={"work/a_1": {"dirty": True}, "work/b_1": {"dirty": True}})
     handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
@@ -1992,12 +2350,11 @@ def test_task_regression_explicit_slot_priority_unchanged(hf, tmp_path, capsys):
         session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False,
         task="mytask", worktree_slot="work/project_manager_1",
     )
-    assert rc == 0
-    # 명시 슬롯 단일 cwd 로 1회 — task 다중슬롯 루프(▷) 미진입.
-    assert cwds == ["work/project_manager_1"]
-    out = capsys.readouterr().out
-    assert "▷" not in out
-    assert "✓ green: 1 passed" in out
+    assert rc == 1
+    assert cwds == []
+    captured = capsys.readouterr()
+    assert "`--task <이름>` 정체성만 받는다" in captured.err
+    assert captured.out == ""
 
 
 def test_task_shipping_surface_per_changed_slot(hf, tmp_path, capsys, monkeypatch):
@@ -2122,6 +2479,23 @@ def test_task_resnap_records_all_held_slots(hf, tmp_path, capsys):
     assert "[재스냅] task 보유 슬롯" in capsys.readouterr().out
 
 
+def test_task_resnap_rechecks_owner_before_snapshot(hf, tmp_path, capsys):
+    """초기 held-slot 스냅 뒤 realloc되면 새 소유자 lease.git을 덮지 않고 loud rc1이다."""
+    class ReallocatedPool(_TaskSetPool):
+        def lease_owned_by_task_strict(self, slot, task):
+            return False
+
+    pool = ReallocatedPool(["work/a_1"])
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, "1 passed\n"))
+    assert handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+    ) == 1
+    assert pool.snap_calls == []
+    err = capsys.readouterr().err
+    assert "소유권 재검증" in err
+    assert "새 소유자의 lease.git" in err
+
+
 def test_task_resnap_zero_held_slots_skips(hf, tmp_path, capsys):
     """task 보유 0개 — 재스냅 대상 없음 명시 skip(무해·T-0393)."""
     pool = _TaskSetPool([])
@@ -2223,6 +2597,7 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
     ]
     with wp._lease_lock():
         wp._write_ledger(leases)
+        wp._write_tasks([wp.Task("mytask", pid=os.getpid(), started="t")])
     wp.record_git_snapshot("work/a_1", base_branch="main")
     wp.record_git_snapshot("work/b_1", base_branch="main")
     a_head = ga("rev-parse", "HEAD").stdout.strip()   # a_1 은 이후 불변.

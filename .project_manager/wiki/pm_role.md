@@ -20,10 +20,12 @@ type: handoff
 **꼭 읽는 것 (이 3 으로 세션이 선다):**
 ```
 1) CLAUDE.md                          ← 프로젝트 규칙·형상
-2) per-slot pm_state                  ← 내 동적 상태(세션 window·남은작업)
-   `.project_manager/.local/slots/<repo>_<N>/pm_state.md`(예 `.../slots/project_manager_1/`)
-   · `<repo>_<N>` = 내 worktree(`work/<repo>_<N>`)의 basename(`work/` 뗀 것) · git-ignored ·
-   솔로는 `wiki/pm_state.md` legacy 폴백(T-0166·ADR-0033)
+2) 현재 정체성의 pm_state           ← 내 동적 상태(세션 window·남은작업)
+   · task: `.project_manager/.local/tasks/<task>/pm_state.md` (세션보다 오래 사는 연속성 앵커)
+     신규 task는 `/pm-bootstrap --task <이름>` 진입 즉시 생성되므로 호출 전에는 없어도 정상
+   · slot: `.project_manager/.local/slots/<repo>_<N>/pm_state.md`
+     (`<repo>_<N>` = worktree `work/<repo>_<N>` basename) · git-ignored
+   · solo: `wiki/pm_state.md` legacy 폴백(T-0166·ADR-0033)
 3) /pm-bootstrap dump (CLI 한 번) — 아래를 한꺼번에 surface:
    · 커맨드 카드 — 이 세션이 쓸 전 커맨드를 정체성 채워 dump(커맨드 표기 단일 진실·ADR-0045)
    · 차수 · 직전 handoff entry 본문 · 남은작업(self-sufficient·ADR-0035)
@@ -31,11 +33,22 @@ type: handoff
 ```
 기계 측정 dump 는 `/pm-bootstrap` skill (backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
 
+**task 사용자 계약:** 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는
+`/pm-handoff --task <이름>`만 쓴다. Python backbone도 각각
+`pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름>`이 task 진입의 전부다.
+신규 task는 작업공간 0개여도 task pm_state를 즉시 만들고, 기존 task는 보유 슬롯 집합과
+task pm_state를 자동 수령한다. task와 repo/slot의 혼합 진입은 엔진이 거부한다. 작업공간
+대여·편입은 task-aware pm-env/worktree 명령의 책임이다. 단, alloc/release와 rebase 소유검사처럼
+repo/slot이 **대상 자원**, task가 **소유 명의**인 자원 연산은 이 혼합 금지와 다른 계약이라 유지한다.
+
 **필요할 때만 참조 (필독 아님·평시 미유입):** architecture · status · decisions · roadmap · 전체
 보드 · 타 슬롯 log 는 부트스트랩에 통째 로드하지 않는다 — 그 지식이 *실제로 필요할 때만* 아래
 §"찾아가는 법" 표대로 연다.
 
 **공유 vs 슬롯 소유 (multi-PM 관리 규칙·ADR-0047):**
+- **task 소유 = task 모드 1차 운영면:** 진행/남은작업 = per-task `pm_state.md` · 연속성 =
+  `(task:<이름>)` handoff entry · 작업공간 = task 보유 슬롯 집합. task-only 부트스트랩은 전역
+  auto-slot을 쓰지 않는다.
 - **슬롯 소유 = 자기 공간(1차 운영면):** 내 티켓 = `board.py list --mine` · 진행/남은작업 =
   per-slot `pm_state.md` · 연속성 = 자기 슬롯 태그 handoff entry(ADR-0044). **자기 공간만 잘 관리**한다.
 - **공유 = 가볍게:** 타 PM 작업은 부트스트랩 **대시보드 slot 1줄**로만 받는다(상세 열람 X) ·
@@ -383,6 +396,10 @@ CLI 가 *이미 dump* 했으니 PM 은 **요약·판단**만 — 손-추출 아�
 
 `/pm-handoff` skill (backbone `pm_handoff.py`) 가 자동 처리 + PM 손 잔여 작업
 명시. dry-run 권장 (`--dry-run`).
+
+task 세션은 일반 사용자 경로 `/pm-handoff --task <이름>`만 쓴다. backbone도
+`pm_handoff.py --task <이름>` 하나로 task pm_state의 차수·기본 요약·보유 작업공간 집합을
+해소하며, 다음 세션 트리거도 `/pm-bootstrap --task <이름>`으로 고정된다.
 
 자동 처리:
 1. **회귀 측정** — 프로젝트 test_cmd(local.conf·board regression 해소). red 면 즉시 중단·핸드오프 불가.

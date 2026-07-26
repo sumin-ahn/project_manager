@@ -22,7 +22,13 @@ skill 호출 *전* PM 세션은 이미 다음을 읽어야 한다 (pm_role.md §
 
 1. `CLAUDE.md`
 2. `.project_manager/wiki/pm_role.md` (정적 운영 매뉴얼)
-3. per-slot pm_state — `.project_manager/.local/slots/<repo>_<N>/pm_state.md` (예 `.../slots/project_manager_1/` · `<repo>_<N>` = 내 worktree `work/<repo>_<N>` 의 basename · 동적 상태 · 세션 window / 남은 작업 · git-ignored · 솔로는 `wiki/pm_state.md` legacy 폴백 · T-0166/ADR-0033). **부트스트랩이 bound slot 의 이 파일에서 차수·남은작업을 자동 surface** 하니 손-read 는 보충일 뿐.
+3. 현재 정체성의 pm_state — **task 모드**는 `.project_manager/.local/tasks/<task>/pm_state.md`
+   가 세션보다 오래 사는 연속성의 단일 앵커다. **slot 모드**는
+   `.project_manager/.local/slots/<repo>_<N>/pm_state.md`(`<repo>_<N>` = worktree
+   `work/<repo>_<N>` basename), 솔로는 `wiki/pm_state.md` legacy 폴백(T-0166/ADR-0033).
+   신규 task는 호출 전 파일이 없는 것이 정상이며, backbone이 task를 장부에 생성하는 즉시
+   pm_state도 함께 만든 뒤 같은 실행에서 읽는다. 사용자가 미리 만들거나 slot을 먼저 줄 필요가 없다.
+   **부트스트랩이 현재 정체성의 파일에서 차수·남은작업을 자동 surface** 하니 손-read 는 보충일 뿐.
 4. `.project_manager/wiki/status.md`
 5. board 상태 — `python3 .project_manager/tools/board.py list` (board.md 는 파생 대시보드 · git-untracked — skill 이 자동 측정)
 6. log/current.md 마지막 handoff entry — **부트스트랩이 본문 전체를 자동 dump** 한다(self-sufficient·ADR-0035). 직접 `python3 .project_manager/tools/pm_log.py tail` 은 baseline 재확인·더 넓은 범위 인용 시에만.
@@ -31,9 +37,13 @@ skill 은 *기계 측정* 만 자동화한다. 컨텍스트 인지·결정은 PM
 
 ## 실행
 
-```bash
-python3 .project_manager/tools/pm_bootstrap.py
+사용자 진입은 skill 하나다:
+
+```text
+/pm-bootstrap
 ```
+
+backbone `.project_manager/tools/pm_bootstrap.py` 호출은 skill 내부에서 수행한다.
 
 **multi-PM 모드 (멀티-PM·lean·T-0074)** — 사용자가 `/pm-bootstrap <repo> --slot <N>` 처럼 repo·슬롯을
 주면, 그 인자를 그대로 엔진에 forward 한다:
@@ -47,17 +57,29 @@ python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
 `--repo <repo> --slot <N>` 을 명시**한다(정체성=대화 맥락·도구엔 명시 전달). 슬롯은 미리
 `pm-config worktree add <repo>` 로 만들어 둔다. (솔로/무인자면 위 무-인자 dump 그대로.)
 
-**task 모드 (작업 단위 정체성·T-0353)** — 사용자가 `/pm-bootstrap --task <이름>` 처럼 task 를 주면
-그 인자를 그대로 엔진에 forward 한다. task 는 슬롯 축과 **직교**한 작업스트림 정체성이다(슬롯 0개로도
-시작 가능·auto-task 는 없다):
+**task 모드 (일반 사용자 경로·작업 단위 정체성·T-0353)** — 사용자는 다음 한 줄로 신규 task를
+시작하거나 기존 task를 재개한다(auto-task 없음):
 
-```bash
-python3 .project_manager/tools/pm_bootstrap.py --task <이름>
-python3 .project_manager/tools/pm_bootstrap.py --task <이름> --repo <repo> --slot <N>
+```text
+/pm-bootstrap --task <이름>
 ```
 
-- 장부에 없던 이름 → **신규 task 생성**(작업공간 0개로 시작·F2 alloc 은 후속). 있으면 → **resume**
-  (prefix 상태·서술 pm_state 포인터 surface).
+- backbone Python도 같은 task-only 계약이다:
+
+  ```bash
+  python3 .project_manager/tools/pm_bootstrap.py --task <이름>
+  ```
+
+- 장부에 없던 이름 → **신규 task 생성**. 작업공간 0개로 시작해도
+  `.project_manager/.local/tasks/<이름>/pm_state.md`를 즉시 만든다.
+- 기존 이름 → **resume**(보유 슬롯 집합 자동 수령·prefix 상태·task pm_state
+  자동 복원). 구 엔진에서 state 없이 남은 task도 resume 시 즉시 backfill한다.
+- task 진입은 **항상 `--task` 단독**이다. 사용자와 skill 모두 repo/slot을 지정하지 않으며,
+  엔진도 `--task + --repo/--slot/--branch/--resume` 혼합을 거부한다. 작업공간 대여·편입은
+  bootstrap이 아니라 `/pm-env alloc <repo> --task <이름>` 또는 task-aware worktree add가 맡는다.
+- task-only 수집은 전역 auto-slot을 쓰지 않는다. 보유 0개면 PM 홈만, 1개면 그 작업공간,
+  다중이면 보유 슬롯 전부를 freshness/opt-in 회귀 범위로 삼고 Git 대표 cwd는 정렬 첫 슬롯으로
+  명시 surface 한다.
 - 출력의 *task identity surface* 는 정체성 + **prefix 상태(기본=없음)** 를 보인다 — PM 이 사용자와
   확인한다(prefix 변경 명령은 후속 `task prefix`).
 - 같은 task 를 **다른 창에서 이미 열고 있으면**(살아있는 세션) 거부한다("다른 창에서 열려 있음") —
@@ -79,8 +101,10 @@ CLI 가 markdown 표 dump:
 - **board**: `done / open / claimed / blocked` — 전부 **내 세션 스코프**(ADR-0067: open=내 세션이 생성한 스트림·claim=내 세션). 타 세션분(open/claim)은 기본 dump 에 안 나온다 — 공유 풀 전체·타 PM 현황은 명시 조회 `board.py list --all`(전체)·`--mine`(내 전 세션) 로만. **board 숫자는 스냅샷 — 옵션 제시 전 `board.py list --mine` 으로 claim 주체를 교차 확인**(부분 push/오프라인 창).
 - **회귀**: default 는 `(skip — handoff entry 참조 · --with-pytest 로 재측정)`.
   `--with-pytest` 명시 시 `N / N passed`. red 면 즉시 baseline fix 필요 (wave 시작 차단).
-- **git**: 브랜치 + 최근 5 commit + working tree clean 여부. dirty 면 직전 핸드오프 commit 누락 확인.
-- **차수**: 머리에 `## PM N차 부트스트랩` — bound slot pm_state 세션식별 절에서 자동 추론(미해소면 placeholder).
+- **git**: 브랜치 + 최근 5 commit + working tree clean 여부. task-only면 task 소유 작업공간만
+  수집하며 다중 슬롯의 대표 cwd와 전수 freshness 범위를 함께 표시한다.
+- **차수**: 머리에 `## PM N차 부트스트랩` — task 모드는 task pm_state, slot 모드는 bound slot
+  pm_state의 세션식별 절에서 자동 추론(미해소면 placeholder).
 - **log/current.md 마지막 entry**: 제목(date·type·title) + **본문 전체** `<details>` dump. type=`handoff` 면 직전 PM 종료 정합 · `complete` 면 wave 진행 중일 수 있음.
 - **pm_state 남은작업**: "남은 작업/사용자발의" 절을 surface.
 

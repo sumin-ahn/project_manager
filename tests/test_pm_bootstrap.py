@@ -659,6 +659,47 @@ def test_task_free_name_reaches_run(bootstrap, monkeypatch):
     assert captured.get("task") == "payments-refactor"
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--task", "job1", "--repo", "A"],
+        ["--task", "job1", "--repo", "A", "--slot", "2"],
+        ["--task", "job1", "--slot", "2"],
+        ["--task", "job1", "--branch", "feature"],
+        ["--task", "job1", "--resume", "feature"],
+    ],
+)
+def test_task_cli_rejects_slot_identity_mixing_before_run(bootstrap, monkeypatch, argv):
+    """Python CLI의 task 진입점도 repo/slot/branch/resume 없이 `--task` 하나만 허용한다."""
+    monkeypatch.setattr(
+        bootstrap.PmBootstrap,
+        "run",
+        lambda self, **kw: (_ for _ in ()).throw(
+            AssertionError("혼합 identity가 run에 도달하면 안 된다")
+        ),
+    )
+    with pytest.raises(SystemExit) as exc:
+        bootstrap.main(argv)
+    assert exc.value.code == 2
+
+
+def test_task_slot_only_surfaces_task_contract_before_repo_hint(
+    bootstrap, monkeypatch, capsys
+):
+    """task+bare slot은 slot-mode `--repo` 처방보다 task 독립 정체성 계약을 먼저 표면화한다(SF)."""
+    monkeypatch.setattr(
+        bootstrap.PmBootstrap,
+        "run",
+        lambda self, **kw: (_ for _ in ()).throw(AssertionError("run 도달 금지")),
+    )
+    with pytest.raises(SystemExit) as exc:
+        bootstrap.main(["--task", "job1", "--slot", "2"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--task 는 단독 정체성" in err
+    assert "--slot 은 --repo 필수" not in err
+
+
 def test_task_alone_does_not_trigger_slot_auto_resolve(bootstrap, monkeypatch):
     """`--task` 단독은 슬롯 자동해소를 태우지 않는다(⑥·task=슬롯 0개 시작 가능·T-0353)."""
     monkeypatch.setattr(bootstrap, "_registered_repos", lambda *a, **k: [])
@@ -673,36 +714,33 @@ def test_task_alone_does_not_trigger_slot_auto_resolve(bootstrap, monkeypatch):
     assert captured.get("task") == "job1" and captured.get("repo") is None
 
 
-# ── T-0391 ①: task 첫세션 사유 명시 (placeholder/스크램블 대신) ─────────────────
-# 신규 task 첫 부트스트랩(pm_state·자기 task handoff 둘 다 부재 → handoff_ctx=None)이 슬롯 차수
-# placeholder(`PM <?>차`)+"(log/current.md 없음 또는 entry 파싱 실패)"로 나 오류처럼 읽혔다(PM 78).
-# `_build_markdown` 단위(test_slot_dashboard 동형)로 task 첫세션 분기의 세 표면을 직접 구동한다.
+# ── task 신규 state의 완료 세션 0개 marker surface ───────────────────────────
+# 신규 task도 bind 시 pm_state가 존재한다. 완료 세션이 아직 없는 marker는 1차로 추론되어야 하며,
+# pm_state 부재 전용 특례나 slot 상태 폴백 없이 task state 자체가 연속성 앵커가 된다.
 
 _T0391_BOARD = {"counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
                 "open_tickets": [], "lint": "clean"}
 _T0391_GIT = {"branch": "main", "commits": [], "working_tree": "clean"}
 
 
-def test_task_first_session_labels_task_1cha_not_placeholder(bootstrap):
-    """task 첫세션(handoff_ctx None + _task_name 세팅) → 헤더 `task 1차` · `PM <?>차` placeholder 부재."""
+def test_task_empty_session_marker_labels_pm_1cha_not_placeholder(bootstrap):
+    """task 생성 시 state marker → 헤더 `PM 1차` · placeholder 부재."""
     inst = bootstrap.PmBootstrap(run_git_fn=lambda a: (0, ""))
     inst._task_name = "payments-refactor"
-    md = inst._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, "ts", None, None)
-    assert "## task 1차 부트스트랩" in md
+    inst._pm_state_file = Path("/tmp/task-state")
+    handoff_ctx = {
+        "session_num": 1,
+        "session_stale": False,
+        "state_session_num": 1,
+        "remaining_work": "## 남은 작업 / 사용자 발의\n\n- 아직 없음",
+        "state_path": str(inst._pm_state_file),
+        "fresh_slot": False,
+    }
+    md = inst._build_markdown(
+        _T0391_BOARD, None, _T0391_GIT, None, "ts", handoff_ctx, None
+    )
+    assert "## PM 1차 부트스트랩" in md
     assert "PM <?>차" not in md
-
-
-def test_task_first_session_log_and_state_notice_not_scramble(bootstrap):
-    """task 첫세션 → log/pm_state 섹션이 "없음/파싱 실패"·"직접 확인" 스크램블 대신 신규 task 사유 명시."""
-    inst = bootstrap.PmBootstrap(run_git_fn=lambda a: (0, ""))
-    inst._task_name = "payments-refactor"
-    md = inst._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, "ts", None, None)
-    # log 섹션 — 신규 task 사유 명시(스크램블 유발 표현 부재).
-    assert "신규 task — 복구할 인계 없음" in md
-    assert "log/current.md 없음 또는 entry 파싱 실패" not in md
-    # pm_state 섹션 — 신규 task 사유 명시("직접 확인" 스크램블 부재).
-    assert "신규 task — pm_state 없음" in md
-    assert "직접 확인" not in md
 
 
 def test_non_task_first_session_keeps_placeholder(bootstrap):

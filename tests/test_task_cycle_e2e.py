@@ -196,6 +196,9 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     """
     proj = tmp_path / "proj"
     (proj / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
+    template_dst = proj / ".project_manager" / "wiki" / "pm_state.template.md"
+    template_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md", template_dst)
     (proj / "work").mkdir(parents=True, exist_ok=True)
     (proj / ".repos").mkdir(parents=True, exist_ok=True)
 
@@ -212,8 +215,11 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     out1 = capsys.readouterr().out
     assert "작업공간: (없음)" in out1, "0슬롯 진입인데 '(없음)' 열거 없음(I2)"
     assert "신규 task" in out1, "신규 task 정체성 surface 없음(F1)"
-    # 부트스트랩이 task 정체성을 생성했다(tasks 장부·created).
+    # 부트스트랩이 task 정체성과 state를 함께 생성했다(tasks 장부·created·slot 0개와 무관).
     assert any(t.name == task for t in wp.list_tasks()), "① 부트스트랩이 task 를 생성하지 않았다"
+    task_state = wp.task_pm_state_file(task)
+    assert task_state.exists(), "① task 생성 시 pm_state 즉시 생성 계약 위반"
+    assert wp.TASK_PM_STATE_EMPTY_MARKER in task_state.read_text(encoding="utf-8")
 
     # ── ② worktree add --task(생성+편입) + alloc(추가 대여·I3) ───────────────────
     # add --task = create_slot(owner_task): 새 슬롯 생성 + 그 슬롯을 task 명의 대여(ⓓB).
@@ -250,11 +256,6 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     playbook.write_text(_TRIGGER_PLAYBOOK, encoding="utf-8")
     log_file = tmp_path / "hf_current.md"
     dashboard_file = tmp_path / "dashboard.md"
-    # task pm_state seed 가 template 을 verbatim 복사할 수 있게 tmp 트리에 template 을 둔다(F7).
-    template_dst = proj / ".project_manager" / "wiki" / "pm_state.template.md"
-    template_dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md", template_dst)
-
     handoff = None
     regressed_slots: list[str] = []
 

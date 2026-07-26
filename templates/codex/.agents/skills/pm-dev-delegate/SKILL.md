@@ -40,12 +40,13 @@ python3 .project_manager/tools/domain.py affected --ticket T-NNNN
 task-mode(v1.3.0 — 한 task 가 worktree 를 0개 이상 빌려 도는 모델) 위임에선 dev 가 **어느 worktree 에서** 구현할지를 PM 이 **F6 로 해소한 절대경로**로 위임 프롬프트에 명시 주입한다 (dev/git 이 짐작하지 않게 — cwd 는 해소에 비참여·T-0345). 해소값은 실행-위치 필요 도구가 그대로 surface 한다:
 
 ```bash
-python3 .project_manager/tools/board.py regression run --task <이름> [--repo <X> [--slot <N>]]
+python3 .project_manager/tools/board.py regression run --task <이름>
 # 출력: "regression: 작업공간(task <이름>) → <worktree 절대경로>"
 ```
 
 - 그 `<worktree 절대경로>`를 developer 위임 프롬프트의 **작업 위치**로 박아 넣는다(짐작 제거).
-- task 가 슬롯을 2개↑ 보유해 모호하면 F6 이 **에러**(⑦·암묵 선택 금지) — `--repo`/`--slot` 로 특정 후 주입.
+- task 가 슬롯을 2개↑ 보유해 모호하면 F6 이 **에러**(⑦·암묵 선택 금지) — 쓰지 않는 잉여 슬롯을
+  `python3 .project_manager/tools/pm_config.py release <slot> --task <이름>`으로 반납한 뒤 다시 해소한다.
 - 슬롯 세션(비-task)·솔로(M=1)는 종전대로 — 이 주입은 task-mode 에서만.
 
 ## cross-harness 위임 판정 (native 단락 · pm_delegate 채널 · ADR-0075)

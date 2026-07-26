@@ -76,6 +76,12 @@ def proj(tmp_path):
     """tmp 프로젝트 루트 — .project_manager/.local + work/ + .repos/ 골격."""
     p = tmp_path / "proj"
     (p / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
+    wiki = p / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        REPO / ".project_manager" / "wiki" / "pm_state.template.md",
+        wiki / "pm_state.template.md",
+    )
     (p / "work").mkdir(parents=True, exist_ok=True)
     (p / ".repos").mkdir(parents=True, exist_ok=True)
     return p
@@ -4985,7 +4991,7 @@ def test_cmd_record_success_reports_updated_snapshot(wp, monkeypatch, capsys):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
     before = type("_L", (), {"git": {"branch": "old", "head": "aaaaaaaa"}})()
     after = type("_L", (), {"git": {"branch": "v1.3.3", "head": "bbbbbbbbbbbb"}})()
-    monkeypatch.setattr(wp, "read_lease", lambda slot: before)
+    monkeypatch.setattr(wp, "read_lease_strict", lambda slot: before)
     monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: after)
     rc = wp.main(["record", "A_1"])   # 접두 생략도 _normalize_slot 이 work/ 붙임.
     assert rc == 0
@@ -4996,7 +5002,7 @@ def test_cmd_record_success_reports_updated_snapshot(wp, monkeypatch, capsys):
 def test_cmd_record_ledger_missing_slot_fails(wp, monkeypatch, capsys):
     """record CLI — 장부 미등록(record None)이면 rc 1 명시 실패(silent 무변경 방지)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
-    monkeypatch.setattr(wp, "read_lease", lambda slot: None)
+    monkeypatch.setattr(wp, "read_lease_strict", lambda slot: None)
     monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: None)
     rc = wp.main(["record", "A_1"])
     assert rc == 1
@@ -5007,7 +5013,7 @@ def test_cmd_record_no_change_fails_loud(wp, monkeypatch, capsys):
     """record CLI — 스냅 불가로 before==after(무변경)면 rc 1(성공 위장 금지·기존 git 보존 인지)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
     same = {"branch": "v1.3.3", "head": "bbbbbbbb"}
-    monkeypatch.setattr(wp, "read_lease", lambda slot: type("_L", (), {"git": same})())
+    monkeypatch.setattr(wp, "read_lease_strict", lambda slot: type("_L", (), {"git": same})())
     monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: type("_L", (), {"git": same})())
     rc = wp.main(["record", "A_1"])
     assert rc == 1
@@ -6245,16 +6251,41 @@ def test_write_tasks_preserves_sibling_leases_collection(wp):
 
 
 def test_bind_task_creates_new_record_with_zero_workspaces(wp):
-    """`--task` 신규 — 장부에 없던 task 를 생성(prefix=None·pid=내 pid·슬롯 0개 시작 가능·⑥)."""
+    """`--task` 신규 — 슬롯 0개여도 task 장부와 pm_state를 함께 즉시 생성한다."""
     record, action, reclaimed_from = wp.bind_task("newjob")
     assert action == "created" and reclaimed_from is None
     assert record.name == "newjob" and record.prefix is None
     assert record.pid == os.getpid()
-    # 장부에 영속 + 서술 디렉토리 신설.
+    # 장부에 영속 + task 연속성 state 즉시 생성(첫 handoff까지 지연 금지).
     assert wp.find_task("newjob").name == "newjob"
     assert wp.task_dir("newjob").exists()
+    state = wp.task_pm_state_file("newjob")
+    assert state.exists()
+    state_text = state.read_text(encoding="utf-8")
+    assert (
+        wp.TASK_PM_STATE_EMPTY_MARKER
+        == wp._load_identity_args().TASK_PM_STATE_EMPTY_MARKER
+    )
+    assert wp.TASK_PM_STATE_EMPTY_MARKER in state_text
+    assert "{{DATE}}" not in state_text
+    assert "task 생성/재개 시 자동 생성" in state_text
     # 슬롯 리스는 0개(task 는 슬롯과 직교·⑥).
     assert wp.list_leases() == []
+
+
+def test_bind_task_rejects_corrupt_tasks_collection_without_rewrite(wp):
+    """task mutation은 fail-soft 빈 목록으로 축약하지 않고 손상 원본을 byte 그대로 보존한다."""
+    payload = '{"leases":[],"tasks":"broken"}\n'
+    wp.LEASES_FILE.write_text(payload, encoding="utf-8")
+
+    # 조회/진단 API는 가용성 계약상 fail-soft지만, 같은 상태에서 mutation은 strict여야 한다.
+    assert wp.list_tasks() == []
+    assert wp.list_leases() == []
+    with pytest.raises(ValueError, match="'tasks'.*list"):
+        wp.bind_task("newjob")
+
+    assert wp.LEASES_FILE.read_text(encoding="utf-8") == payload
+    assert not wp.task_dir("newjob").exists()
 
 
 def test_bind_task_resume_same_pid(wp):
@@ -6263,6 +6294,20 @@ def test_bind_task_resume_same_pid(wp):
     record, action, reclaimed_from = wp.bind_task("job1")  # 같은 프로세스 재호출
     assert action == "resumed" and reclaimed_from is None
     assert record.pid == os.getpid()
+
+
+def test_bind_task_resume_backfills_missing_task_state(wp):
+    """구 엔진 task가 디렉토리만 남긴 경우에도 resume이 pm_state를 즉시 복구한다."""
+    with wp._lease_lock():
+        wp._write_tasks([wp.Task(name="job1", pid=0, started="t")])
+    wp.task_dir("job1").mkdir(parents=True, exist_ok=True)
+    assert not wp.task_pm_state_file("job1").exists()
+
+    record, action, reclaimed_from = wp.bind_task("job1")
+
+    assert action == "resumed" and reclaimed_from is None
+    assert record.pid == os.getpid()
+    assert wp.task_pm_state_file("job1").exists()
 
 
 def test_bind_task_reclaims_dead_pid_reports_prior_pid(wp):
@@ -6605,6 +6650,37 @@ def test_slots_for_task_returns_only_leased_owned(wp):
           _lease(wp, slot="work/B_1", repo="B", session="other", state="leased"))
     slots = sorted(l.slot for l in wp.slots_for_task("job"))
     assert slots == ["work/A_1"]
+
+
+@pytest.mark.parametrize(
+    ("slot", "repo"),
+    [
+        ("../escape", "A"),
+        ("/tmp/A_1", "A"),
+        ("work/A_1", "B"),
+    ],
+    ids=["traversal", "absolute", "repo-mismatch"],
+)
+def test_slots_for_task_strict_rejects_noncanonical_slot(wp, slot, repo):
+    """strict task 슬롯 조회는 cwd 소비 전에 상대 canonical 형식과 repo 일치를 강제한다."""
+    ledger = {
+        "leases": [
+            {
+                "slot": slot,
+                "repo": repo,
+                "session": "job",
+                "pid": 7,
+                "started": "t",
+                "state": "leased",
+                "test_cmd": None,
+            }
+        ],
+        "tasks": [{"name": "job", "prefix": None, "pid": 0, "started": "t"}],
+    }
+    wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="슬롯"):
+        wp.slots_for_task_strict("job")
 
 
 def test_bind_slot_task_name_immediately_resolves_via_slots_for_task(wp):
@@ -7009,9 +7085,9 @@ def test_reclaim_bound_guard_sensitivity(wp, monkeypatch):
     _seed(wp, wp.Lease(slot="work/A_2", repo="A", session="A_2", pid=999999,
                        started="t", state="leased", bound=True))
 
-    # 가드 무력화: reclaim 루프가 참조하는 bound 를 강제 False 로. _read_ledger 를 감싸
+    # 가드 무력화: reclaim 루프가 참조하는 bound 를 강제 False 로. mutation용 strict read를 감싸
     # bound 를 지운 리스를 돌려준다(가드가 없는 것과 동치 = PM 78 결함 재현).
-    real_read = wp._read_ledger
+    real_read = wp._read_ledger_strict
 
     def stripped_read():
         leases = real_read()
@@ -7019,7 +7095,7 @@ def test_reclaim_bound_guard_sensitivity(wp, monkeypatch):
             l.bound = False
         return leases
 
-    monkeypatch.setattr(wp, "_read_ledger", stripped_read)
+    monkeypatch.setattr(wp, "_read_ledger_strict", stripped_read)
     assert wp.reclaim_stale(git_runner=git) == ["work/A_2"], "bound 가드 무력화 시 죽은-pid 슬롯 회수(결함 재현)"
 
 
@@ -7643,6 +7719,18 @@ def test_cli_rebase_batch_summary_rc0(wp, proj, monkeypatch, capsys):
     rc = wp.main(["rebase", "--task", "job"])
     assert rc == 0
     assert "요약" in capsys.readouterr().out
+
+
+def test_cli_rebase_task_corrupt_ledger_fails_instead_of_zero_targets(wp, capsys):
+    """mutation 대상 집합 해소는 손상 장부를 0슬롯 성공으로 축약하지 않고 원본 보존·rc1 한다."""
+    payload = '{"leases":"broken","tasks":[]}\n'
+    wp.LEASES_FILE.write_text(payload, encoding="utf-8")
+
+    rc = wp.main(["rebase", "--task", "job"])
+
+    assert rc == 1
+    assert "보유 슬롯 장부 조회 실패" in capsys.readouterr().err
+    assert wp.LEASES_FILE.read_text(encoding="utf-8") == payload
 
 
 # ════════════════════════════════════════════════════════════════════════

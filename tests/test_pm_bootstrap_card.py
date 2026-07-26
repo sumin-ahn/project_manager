@@ -882,6 +882,18 @@ def test_card_codex_section_appended_in_all_modes(bootstrap, monkeypatch, mode):
     assert "# codex 하네스" in card, f"{mode} 모드 카드에 codex 절 누락"
 
 
+def test_task_card_execution_commands_use_task_only_identity(bootstrap):
+    """task 카드의 regression/ticket_finish 실행-위치 명령에 repo/slot 병기가 재유입되지 않는다(E-c)."""
+    inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
+    inst._task_name = "job1"
+    card = inst._build_command_card_markdown(LEAN_IDENTITY)
+    for needle in ("board.py regression run", "ticket_finish.py <T-NNNN>"):
+        line = next(line for line in card.splitlines() if needle in line)
+        assert "--task job1" in line
+        assert "--repo" not in line
+        assert "--slot" not in line
+
+
 def test_safe_command_card_failsoft_covers_codex_detection(bootstrap, monkeypatch):
     """codex 감지/절 렌더가 fail-soft 경로 *안*이다 — 감지가 터져도 `_safe_command_card`=None
     (카드 절 생략·부트스트랩 무손상·ADR-0045). codex append 가 try/except 밖으로 새지 않음."""
@@ -900,4 +912,3 @@ def test_safe_command_card_success_includes_codex_section_under_codex(bootstrap,
     inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
     card = inst._safe_command_card(LEAN_IDENTITY)
     assert card is not None and "# codex 하네스" in card
-

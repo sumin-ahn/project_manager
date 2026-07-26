@@ -41,6 +41,10 @@ from pathlib import Path
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
 ENGINE_REV = "v1.4.3"
 
+# task pm_state 신규 세션 window의 단일 empty marker. state 생성(worktree_pool)과
+# handoff 갱신(pm_handoff)이 같은 literal을 소비해야 하므로 공용 경계 모듈이 소유한다.
+TASK_PM_STATE_EMPTY_MARKER = "  - (아직 완료된 task 세션 없음)"
+
 
 class Identity:
     """`parse_identity` 의 discriminated 결과 — caller 는 `kind` 로 분기한다(PM 67 리뷰 A).
@@ -100,10 +104,10 @@ def add_identity_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--task", metavar="이름", default=None,
-        help="task 이름 — 작업 단위 정체성 축(T-0353·spike §3b F0). 슬롯 축과 직교(단독/`--repo "
-             "--slot` 공존 가능)하며 정체성 해소 체인 전반이 소비한다. 포맷 자유(prefix 아님)·"
-             "유일성=사람 안. `<등록 repo>_<N>` 예약 패턴은 거부(⑥·슬롯 세션명 충돌 방지·"
-             "`is_reserved_task_name`).",
+        help="task 이름 — 작업 단위 정체성 축(T-0353·spike §3b F0)이며 정체성 해소 체인 "
+             "전반이 소비한다. 포맷 자유(prefix 아님)·`<등록 repo>_<N>` 예약 패턴은 거부. "
+             "repo/slot과의 조합 허용 여부는 소비 도구 계약을 따른다. pm_bootstrap/"
+             "pm_handoff에서는 task 단독만 허용하고 보유 슬롯 집합을 자동 해소한다.",
     )
 
 
@@ -457,5 +461,6 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
     slots = ", ".join(sorted(r.get("slot") or "" for r in held))
     raise WorkspaceResolutionError(
         f"task {task!r} 이(가) {len(held)}개 작업공간({slots})을 보유 — 통틀어 모호하다(⑦). "
-        f"`--repo <X> [--slot <N>]` 으로 작업공간을 명시하라."
+        "암묵 선택하지 않는다. 쓰지 않는 잉여 슬롯을 "
+        f"`pm_config.py release <slot> --task {task}`로 반납한 뒤 다시 실행하라."
     )

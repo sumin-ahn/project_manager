@@ -598,6 +598,24 @@ def identity_tag(session_override: str | None = None,
     return f"{user}/{pm}" if user else pm
 
 
+def _reject_task_slot_identity_mix(args: argparse.Namespace) -> None:
+    """task 소비 연산에서 `--task`와 `--repo/--slot` 혼합을 부작용 전에 거부한다(ADR-0078).
+
+    task는 귀속/실행 위치 모두 보유 집합을 자동 해소하는 독립 축이다. repo/slot을 함께 받으면
+    task 조용 우선이나 특정 슬롯 선택으로 의미가 갈렸던 과거 경로를 없애고 fail-loud 한다.
+    `--slot` 단독 혼합도 parse_identity의 slot-mode 처방보다 이 계약이 먼저 surface 된다.
+    자원 연산(alloc/release·rebase 소유검사)은 이 깔때기를 소비하지 않아 불변이다.
+    """
+    if getattr(args, "task", None) is not None and (
+        getattr(args, "repo", None) is not None
+        or getattr(args, "slot", None) is not None
+    ):
+        sys.exit(
+            "[중단] --task 는 독립 정체성이다 — --repo/--slot 과 함께 쓸 수 없다 "
+            "(ADR-0078; task 보유 작업공간은 장부에서 자동 해소)."
+        )
+
+
 def _actor_session_override(args: argparse.Namespace, *, soft: bool = False) -> str | None:
     """`--repo`/`--slot`(ADR-0057)에서 actor 연산(claim·init·migrate-identity·regression·
     livegate record·reid)의 세션 override 문자열을 해소한다 — 구 `args.session` 을 대체하는
@@ -622,14 +640,14 @@ def _actor_session_override(args: argparse.Namespace, *, soft: bool = False) -> 
     `--slot` 단독(`--repo` 없음)·`--slot < 1` 은 `parse_identity` 가 `ValueError` 로 거부한다 —
     여기서 잡아 board.py 관례(`[중단]` 접두)로 fail-loud 한다.
     """
+    _reject_task_slot_identity_mix(args)
     try:
         identity = identity_args.parse_identity(args)
     except ValueError as e:
         sys.exit(f"[중단] {e}")
     if identity.task:
         # task-mode 귀속(F0 1단·F5b·spike §3b) — claimed_by/created_by 는 `<user>/<task>`. 작업공간
-        # (F6 2단·실행 위치)이 아니라 **정체성 축**이라 여기서 task 이름을 그대로 세션 override 로
-        # 돌린다(`--repo --slot` 공존 시에도 task 가 귀속을 이김·⑥ 예약으로 slot 세션과 기계 판별).
+        # (F6 2단·실행 위치)이 아니라 **정체성 축**이라 task 이름을 그대로 세션 override 로 돌린다.
         #
         # **깔때기 1회 검증(must-fix·T-0355 게이트)**: 이 분기를 claim/new/migrate/reid 가 지나고, F6
         # 실행-위치 도구(regression/livegate/ticket_finish)는 `_resolve_task_workspace_cwd` 가 F6 이전
@@ -695,6 +713,12 @@ def _resolve_task_workspace_cwd(args: argparse.Namespace) -> tuple[str, str | No
     """
     if not getattr(args, "task", None):
         return None
+    if getattr(args, "cwd", None) is not None:
+        sys.exit(
+            "[중단] --task 모드에서는 --cwd를 명시할 수 없다 — task 작업공간은 장부에서 "
+            "자동 해소하며 외부 경로 override를 허용하지 않는다 (ADR-0078)."
+        )
+    _reject_task_slot_identity_mix(args)
     try:
         identity = identity_args.parse_identity(args)
     except ValueError as e:
@@ -4544,6 +4568,7 @@ def _slugify(text: str, max_len: int = 40) -> str:
 # ── commands ───────────────────────────────────────────────────────────
 
 def cmd_claim(args: argparse.Namespace) -> int:
+    _reject_task_slot_identity_mix(args)
     # claim = 귀속 쓰기(spike §1 row a·최악 클래스 silent 오귀속) — 세션 미해소면 fail-loud
     # (ADR-0040 D1·required=True). 명시 --repo/--slot(ADR-0057) > env > 단일-lease 유도 >
     # (solo) local.conf.
@@ -4867,6 +4892,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     namespaced(--prefix): areas.md 레지스트리 등록 + prefix(→ T-PREFIX-NNN·multi-repo 가드 활성).
     solo (N=1·M=1): areas.md 안 만듦 → 가드 off → legacy T-NNNN (오버헤드 0).
     """
+    _reject_task_slot_identity_mix(args)
     prefix = args.prefix
     # 명시 --prefix sanity (ADR-0042·예약어 `none`·형식 [a-z0-9_]+) — 위반이면 areas 등록·
     # local.conf write 어떤 부작용보다 앞에서 부작용 0 으로 거부(cmd_init 첫 문장 뒤).
@@ -5285,6 +5311,7 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
         주장하지 않는다.
     board.md 재생성은 데드락 방지를 위해 (areas) 락 밖에서 1회 한다.
     """
+    _reject_task_slot_identity_mix(args)
     user = user_name(getattr(args, "user", None))
     if not user:
         print("[중단] user 식별자 미해소 — `--user <id>` 를 주거나 local.conf user= / "
@@ -5327,6 +5354,7 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
 
 
 def cmd_new(args: argparse.Namespace) -> int:
+    _reject_task_slot_identity_mix(args)
     # 명시 --prefix sanity (ADR-0042·예약어 `none`·형식 [a-z0-9_]+) — 위반이면 ID 스캔·파일
     # 발행 전에 부작용 0 으로 즉시 거부. 유도/count-based 로 해소된 legacy prefix 는 검증하지
     # 않는다(기존 발행분 존중) — 사용자가 *명시*한 override 만 입력측 sanity 대상이다.
@@ -6435,6 +6463,7 @@ def cmd_reid(args: argparse.Namespace) -> int:
     디렉토리+.drafts 에 이미 존재하면 abort). 번호 자동발급 카운터는 `_next_id` 가 max 기반이라 어느
     번호로 옮겨도 무충돌이다 — 다음 발급이 최대치를 자연히 이으므로 별도 조정 없이 확인만 한다(결정).
     """
+    _reject_task_slot_identity_mix(args)
     old_id, new_id = args.old_id, args.new_id
     dry_run = bool(getattr(args, "dry_run", False))
 
@@ -8888,7 +8917,7 @@ def build_parser() -> argparse.ArgumentParser:
                    "설정 prefix(기본 없음)·created_by 는 <user>/<task>. 슬롯 세션 예약 패턴 <repo>_<N> 금지(⑥).")
     # `--repo`/`--slot`(ADR-0057·ADR-0067) — 생성-세션 기록. claim 과 동일 identity 해소 경로
     # (`_actor_session_override`)를 재사용해 created_by = `<user>/<repo>_<N>` 로 박는다(세션 기본
-    # 뷰 스트림 판정 입력). `--task` 공존 시 task 가 귀속을 이김(⑥ 예약·기계 판별). 미명시 시 현행
+    # 뷰 스트림 판정 입력). `--task`와 공존은 ADR-0078에 따라 fail-loud. 미명시 시 현행
     # (user-only / 유도 세션) 유지. `add_identity_args` 는 `--task` 를 이미 위에서 등록해 미사용.
     p.add_argument("--repo", metavar="이름", default=None,
                    help="repo 이름 — 생성-세션 정체성(ADR-0057). `--slot` 과 함께면 created_by = "

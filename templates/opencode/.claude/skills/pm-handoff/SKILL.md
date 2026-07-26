@@ -26,13 +26,32 @@ audience: user-entrypoint
 
 ## 실행
 
+task 세션의 일반 사용자 종료 경로는 bootstrap과 같은 task 이름 한 개뿐이다:
+
+```text
+/pm-handoff --task <이름>
+```
+
+backbone Python도 같은 task-only 계약이다:
+
+```bash
+python3 .project_manager/tools/pm_handoff.py --task <이름>
+```
+
+엔진이 task pm_state에서 차수를 추론하고 기본 wave 요약과 task 보유 작업공간 집합을 해소한다.
+사용자는 repo/slot·session-seq를 지정하지 않는다. 엔진도 task와 repo/slot/branch/done의 혼합을
+거부한다. 다음 세션에 출력되는 트리거도 `/pm-bootstrap --task <이름>` 하나다.
+
+slot/솔로 모드에서 skill이 내부적으로 조립하는 backbone 호출은 다음 형태다:
+
 ```bash
 python3 .project_manager/tools/pm_handoff.py \
   --session-seq <N> \
   --wave-summary "<wave 1~3 한 줄 요약>"
 ```
 
-> `--session-seq` 은 **숫자만**(`19`) 준다 — CLI 가 "차" 를 붙여 `PM 19차` 로 포맷한다.
+> 아래 `--session-seq` 설명은 slot/솔로 호환 경로에만 해당한다. 숫자만(`19`) 주면 CLI 가
+> "차"를 붙여 `PM 19차`로 포맷한다.
 > `19차` 를 줘도 CLI 가 후행 "차" 를 정규화(idempotent·T-0100)해 이중부착(`19차차`)을 막는다.
 > 차수는 `--session-seq` 로만 준다(구형 차수 별칭은 ADR-0057 로 제거). multi-PM 이면 세션 정체성은
 > canonical `--repo <repo> --slot <N>` 으로 준다(구형 세션·worktree-슬롯 별칭은 ADR-0057 로 제거).
@@ -40,7 +59,12 @@ python3 .project_manager/tools/pm_handoff.py \
 옵션:
 - `--dry-run` — log/current.md / pm_state.md 변경 미적용·stdout 미리보기만.
 - `--no-pytest` — 회귀 측정 skip (직전 wave 종결 commit 의 숫자 신뢰 시·**비권장**).
-- `--task <이름>` — task 모드(F7·T-0356): 세션 종료의 연속성 앵커를 slot→task 로 이동한다. pm_state 를 `.local/tasks/<이름>/` 에 기록(첫 핸드오프가 template 에서 생성)·dashboard 자기 섹션 `## <이름>`·log 헤더 태그 `(task:<이름>)`. lease 는 유지(세션 종료 ≠ task 종료). `--repo/--slot` 과 직교 — 함께 주면 슬롯은 cwd/회전 단서로만 쓰인다. 이름은 **공백·괄호·path 문자 없는 단일 토큰**(슬롯 예약 `<repo>_<N>` 불가) — 하류 CLI 인자 경계·log 태그 delimiter 파손 방지.
+- `--task <이름>` — task 모드의 **정상 사용자 경로**(F7·T-0356): 세션 종료의 연속성
+  앵커를 slot→task로 이동한다. task 생성 시 이미 만들어진
+  `.local/tasks/<이름>/pm_state.md`에 기록·dashboard 자기 섹션 `## <이름>`·log 헤더 태그
+  `(task:<이름>)`.
+  lease는 유지한다(세션 종료 ≠ task 종료). 이름은 **공백·괄호·path 문자 없는 단일 토큰**
+  (슬롯 예약 `<repo>_<N>` 불가) — 하류 CLI 인자 경계·log 태그 delimiter 파손 방지.
 
 ## CLI 자동 처리 단계
 

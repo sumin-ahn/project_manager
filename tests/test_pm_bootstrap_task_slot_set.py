@@ -139,6 +139,11 @@ class _TaskPool:
     def bind_task(self, name, *, pid=None, registered_repos=None):
         self.bind_task_calls.append({"name": name, "registered_repos": registered_repos})
         self.task_dir(name).mkdir(parents=True, exist_ok=True)
+        (self.task_dir(name) / "pm_state.md").write_text(
+            "## 세션 식별 (현재까지 사용된 이름)\n"
+            "  - (아직 완료된 task 세션 없음)\n",
+            encoding="utf-8",
+        )
         return (_TaskRecord(name), "created", None)
 
     def task_dir(self, name):
@@ -152,6 +157,13 @@ class _TaskPool:
             repo = s.rpartition("/")[2].rsplit("_", 1)[0]
             out.append(_Lease(s, repo, name, state=self._states.get(s, "leased")))
         return out
+
+    def lease_owned_by_task_strict(self, slot, task):
+        return (
+            slot in self._task_slots
+            and self._states.get(slot, "leased") == "leased"
+            and task == self._task_name
+        )
 
     # 슬롯 조회
     def slot_path(self, slot):
@@ -192,7 +204,7 @@ class _TaskPool:
         return _Lease(f"work/{repo}_1", repo, self._task_name)
 
 
-def _make(bootstrap, tmp_path, pool, *, board=None):
+def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=None, git_fn=None):
     """격리 PmBootstrap — board/git/log/areas/pm_state hermetic stub + pool 주입."""
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
@@ -217,9 +229,9 @@ def _make(bootstrap, tmp_path, pool, *, board=None):
         return 0, ""
 
     return bootstrap.PmBootstrap(
-        run_board_fn=fake_board,
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
-        run_git_fn=fake_git,
+        run_board_fn=board_fn or fake_board,
+        run_pytest_fn=pytest_fn or (lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨"))),
+        run_git_fn=git_fn or fake_git,
         log_file=log_file,
         areas_file=areas_file,
         worktree_pool=pool,
@@ -243,6 +255,92 @@ def test_zero_slots_shows_none_and_enters(bootstrap, tmp_path, capsys):
     assert "전수 검증" not in out                    # 열거 행렬 헤더 없음
 
 
+def test_task_board_lens_excludes_other_task_claim(bootstrap, tmp_path, capsys):
+    """task bootstrap의 두 board 조회는 현재 task 렌즈라 타 task claim이 dump에 섞이지 않는다."""
+    calls: list[list[str]] = []
+
+    def board_fn(args):
+        calls.append(list(args))
+        if args[:1] == ["lint"]:
+            return 0, "✓ no lint issues\n"
+        if args == ["list", "--task", "mytask"]:
+            return 0, "  [claimed] T-0471  own task claim  pm  tag\n"
+        if args == ["list", "--status", "done", "--task", "mytask"]:
+            return 0, ""
+        if "--mine" in args:
+            return 0, "  [claimed] T-9999  other task claim  pm  tag\n"
+        raise AssertionError(f"예상하지 못한 board 호출: {args}")
+
+    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=())
+    inst = _make(bootstrap, tmp_path, pool, board_fn=board_fn)
+    assert inst.run(task="mytask") == 0
+    out = capsys.readouterr().out
+
+    assert [c for c in calls if c[:1] == ["list"]] == [
+        ["list", "--task", "mytask"],
+        ["list", "--status", "done", "--task", "mytask"],
+    ]
+    assert "T-9999" not in out
+    assert "claimed: 1 (task mytask)" in out
+
+
+def test_task_slot_resolution_exception_blocks_bootstrap_dump(bootstrap, tmp_path, capsys):
+    """slots_for_task 예외는 0슬롯 진입이 아니라 rc1·부분 dump 없는 fail-loud다."""
+
+    class BrokenPool(_TaskPool):
+        def slots_for_task(self, name):
+            raise OSError("ledger unreadable")
+
+    board_calls: list[list[str]] = []
+
+    def board_fn(args):
+        board_calls.append(list(args))
+        return 0, ""
+
+    pool = BrokenPool(slot_root=tmp_path / "wt", task_slots=())
+    inst = _make(bootstrap, tmp_path, pool, board_fn=board_fn)
+    assert inst.run(task="mytask") == 1
+    captured = capsys.readouterr()
+    assert "보유 슬롯 장부 조회 실패" in captured.err
+    assert "실제 0슬롯으로 간주하지 않고" in captured.err
+    assert "PM bootstrap dump" not in captured.out
+    assert board_calls == []
+    assert pool.bind_task_calls == [], "슬롯 장부 해소 실패 뒤 task 장부/state write가 일어났다"
+
+
+def test_corrupt_real_ledger_blocks_bootstrap_without_rewrite(bootstrap, tmp_path, capsys):
+    """실 strict 파서가 손상 JSON을 0슬롯으로 오인하지 않고 rc1·장부 무재작성으로 막는다."""
+    wp = _load("worktree_pool")
+    local = tmp_path / "real-local"
+    ledger = local / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text('{"leases": [', encoding="utf-8")
+    for name, value in {
+        "LEASES_FILE": ledger,
+        "LEASES_LOCK": local / "worktree-leases.lock",
+        "TASKS_DIR": local / "tasks",
+        "WORK_DIR": tmp_path / "real-work",
+    }.items():
+        setattr(wp, name, value)
+    before = ledger.read_bytes()
+    board_calls: list[list[str]] = []
+    inst = _make(
+        bootstrap,
+        tmp_path,
+        wp,
+        board_fn=lambda args: board_calls.append(list(args)) or (0, ""),
+    )
+
+    assert inst.run(task="mytask") == 1
+
+    captured = capsys.readouterr()
+    assert "보유 슬롯 장부 조회 실패" in captured.err
+    assert "실제 0슬롯으로 간주하지 않고" in captured.err
+    assert ledger.read_bytes() == before
+    assert board_calls == []
+    assert "PM bootstrap dump" not in captured.out
+
+
 def test_single_slot_enumerated_as_matrix(bootstrap, tmp_path, capsys):
     """1개 보유 = 행렬 1행(slot·repo·branch·head·기록↔live·dirty) surface + 진입."""
     pool = _TaskPool(
@@ -257,6 +355,7 @@ def test_single_slot_enumerated_as_matrix(bootstrap, tmp_path, capsys):
     assert "작업공간 (task 'mytask' 보유 1 — 전수 검증):" in out
     assert "work/A_1 · repo=A · branch=a5 · head=abcdef123456 · 기록↔live ✓ · dirty" in out
     assert "F2 alloc" not in out                     # generic 안내는 0개일 때만(억제)
+    assert pool.slots_for_task_calls == ["mytask"], "검증 lease 스냅샷 대신 surface가 장부를 재조회했다"
 
 
 def test_multiple_slots_all_enumerated(bootstrap, tmp_path, capsys):
@@ -274,6 +373,269 @@ def test_multiple_slots_all_enumerated(bootstrap, tmp_path, capsys):
     assert "work/A_1 · repo=A · branch=a5" in out
     assert "work/B_2 · repo=B · branch=b3" in out
     assert "clean" in out                            # dirty 미지정 → clean
+
+
+# ── 1b. task-only cwd 해소 — 전역 auto-slot 유입 금지 ─────────────────────────
+
+
+def test_task_zero_slots_cwd_stops_at_pm_home(bootstrap, tmp_path, monkeypatch):
+    """0개 = PM 홈. 다른 task의 전역 auto-slot을 절대 소비하지 않는다."""
+    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=())
+    inst = _make(bootstrap, tmp_path, pool)
+    inst._task_name = "mytask"
+    inst._task_workspace_slots = ()
+    monkeypatch.setattr(
+        bootstrap,
+        "_auto_slot",
+        lambda: (_ for _ in ()).throw(AssertionError("task-only가 전역 auto-slot을 호출함")),
+    )
+    assert inst._worktree_cwd() == str(bootstrap.REPO)
+
+
+def test_task_only_first_turn_uses_current_task_pm_state_path(
+    bootstrap, tmp_path, monkeypatch, capsys
+):
+    """task-only 첫-turn은 전역 auto-slot이 가리키는 타 task 슬롯 대신 현재 task state를 안내한다."""
+    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=())
+    inst = _make(bootstrap, tmp_path, pool)
+    monkeypatch.setattr(bootstrap, "_auto_slot", lambda *_args: ("other_task_repo", 9))
+
+    assert inst.run(task="mytask") == 0
+    first_turn = capsys.readouterr().out.split("### 권장 첫 turn", 1)[1]
+    task_state = str(pool.task_dir("mytask") / "pm_state.md")
+
+    assert task_state in first_turn
+    assert ".project_manager/.local/slots/other_task_repo_9/pm_state.md" not in first_turn
+
+
+def test_task_single_slot_becomes_git_cwd_before_collection(
+    bootstrap, tmp_path, capsys
+):
+    """1개 = 그 task 슬롯이 top Git cwd. `_auto_slot`/타 task 슬롯 유입 없음."""
+    pool = _TaskPool(
+        slot_root=tmp_path / "wt",
+        task_slots=("work/A_1",),
+        branches={"work/A_1": "a5"},
+    )
+    inst = _make(bootstrap, tmp_path, pool)
+    git_cwds = []
+
+    def capture_git(args):
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            git_cwds.append(inst._worktree_cwd(inst._bound_slot))
+            return 0, "a5\n"
+        if args[:2] == ["log", "--oneline"]:
+            return 0, "abc123 subj\n"
+        return 0, ""
+
+    inst._run_git_fn = capture_git
+    assert inst.run(task="mytask") == 0
+    capsys.readouterr()
+    assert inst._task_workspace_slots == ("work/A_1",)
+    assert git_cwds == [str(bootstrap.REPO / "work/A_1")]
+
+
+def test_task_multiple_slots_use_deterministic_git_and_all_freshness(
+    bootstrap, tmp_path, capsys
+):
+    """N개 = 정렬 첫 task 슬롯이 대표 Git cwd, freshness는 task 슬롯 전수."""
+    pool = _TaskPool(
+        slot_root=tmp_path / "wt",
+        task_slots=("work/B_2", "work/A_1"),
+        branches={"work/A_1": "a5", "work/B_2": "b3"},
+    )
+    inst = _make(bootstrap, tmp_path, pool)
+    git_cwds = []
+    fetched_dirs = []
+
+    def capture_git(args):
+        if len(args) >= 4 and args[0] == "-C" and args[2:4] == ["fetch", "origin"]:
+            fetched_dirs.append(args[1])
+            return 0, ""
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            git_cwds.append(inst._worktree_cwd(inst._bound_slot))
+            return 0, "a5\n"
+        if args[:2] == ["log", "--oneline"]:
+            return 0, "abc123 subj\n"
+        return 0, ""
+
+    inst._run_git_fn = capture_git
+    assert inst.run(task="mytask") == 0
+    out = capsys.readouterr().out
+    assert inst._task_workspace_slots == ("work/A_1", "work/B_2")
+    assert git_cwds == [str(bootstrap.REPO / "work/A_1")]
+    assert str(bootstrap.REPO / "work/A_1") in fetched_dirs
+    assert str(bootstrap.REPO / "work/B_2") in fetched_dirs
+    assert "task Git 대표 cwd: `work/A_1`" in out
+    assert "freshness/회귀는 전수" in out
+
+
+def test_task_multiple_slots_with_pytest_runs_all_owned_workspaces(
+    bootstrap, tmp_path, capsys
+):
+    """--with-pytest = task 보유 슬롯 전수 회귀. 합산 결과와 scope를 surface한다."""
+    pool = _TaskPool(
+        slot_root=tmp_path / "wt",
+        task_slots=("work/B_2", "work/A_1"),
+        branches={"work/A_1": "a5", "work/B_2": "b3"},
+    )
+    inst = _make(bootstrap, tmp_path, pool)
+    pytest_cwds = []
+
+    def capture_pytest():
+        pytest_cwds.append(inst._worktree_cwd(inst._bound_slot))
+        return 0, "1 passed in 0.01s\n"
+
+    inst._run_pytest_fn = capture_pytest
+    assert inst.run(task="mytask", with_pytest=True) == 0
+    out = capsys.readouterr().out
+    assert pytest_cwds == [
+        str(bootstrap.REPO / "work/A_1"),
+        str(bootstrap.REPO / "work/B_2"),
+    ]
+    assert "회귀: 2 / 2 통과 (task 작업공간 2개 전수)" in out
+
+
+@pytest.mark.parametrize(
+    "failed_result",
+    [
+        (1, "5 passed in 0.01s\n"),
+        (0, "1 failed, 4 passed in 0.01s\n"),
+    ],
+    ids=["nonzero-rc", "failed-count"],
+)
+def test_task_pytest_failure_in_any_slot_blocks_immediately(
+    bootstrap, tmp_path, capsys, failed_result
+):
+    """task 전수 회귀는 슬롯 하나의 rc/실패 건수만 비정상이면 합산 dump 전에 즉시 차단한다."""
+    pool = _TaskPool(
+        slot_root=tmp_path / "wt",
+        task_slots=("work/A_1", "work/B_2", "work/C_3"),
+        branches={"work/A_1": "a5", "work/B_2": "b3", "work/C_3": "c2"},
+    )
+    inst = _make(bootstrap, tmp_path, pool)
+    pytest_cwds = []
+    outcomes = iter([(0, "5 passed in 0.01s\n"), failed_result])
+
+    def capture_pytest():
+        pytest_cwds.append(inst._worktree_cwd(inst._bound_slot))
+        return next(outcomes)
+
+    inst._run_pytest_fn = capture_pytest
+    with pytest.raises(SystemExit) as exc:
+        inst.run(task="mytask", with_pytest=True)
+
+    assert exc.value.code == 1
+    assert pytest_cwds == [
+        str(bootstrap.REPO / "work/A_1"),
+        str(bootstrap.REPO / "work/B_2"),
+    ], "실패 뒤 다음 슬롯까지 실행해 합산했다"
+    captured = capsys.readouterr()
+    assert "pytest 회귀 실패 (slot=work/B_2)" in captured.err
+    assert "PM bootstrap dump" not in captured.out
+
+
+def test_task_multiple_slots_json_surfaces_representative_and_full_pytest_scope(
+    bootstrap, tmp_path, capsys
+):
+    """JSON도 대표 Git cwd와 전수 pytest scope를 구분해 기계 소비자가 오해하지 않는다."""
+    pool = _TaskPool(
+        slot_root=tmp_path / "wt",
+        task_slots=("work/B_2", "work/A_1"),
+        branches={"work/A_1": "a5", "work/B_2": "b3"},
+    )
+    inst = _make(bootstrap, tmp_path, pool)
+    inst._run_pytest_fn = lambda: (0, "1 passed in 0.01s\n")
+
+    assert inst.run(task="mytask", with_pytest=True, output_json=True) == 0
+    data = _json.loads(capsys.readouterr().out)
+
+    assert data["git"]["task_cwd_slot"] == "work/A_1"
+    assert data["git"]["task_workspace_count"] == 2
+    assert data["pytest"] == {
+        "passed": 2,
+        "total": 2,
+        "scopes": ["work/A_1", "work/B_2"],
+    }
+    assert data["board"]["counts_scope"] == "task mytask"
+    assert data["board"]["counts_task"] == {
+        "done": data["board"]["done"],
+        "open": data["board"]["open"],
+        "claimed": data["board"]["claimed"],
+        "blocked": data["board"]["blocked"],
+    }
+    assert "counts_mine" not in data["board"]
+
+
+def test_task_zero_slots_with_pytest_fails_without_fallback(
+    bootstrap, tmp_path, capsys
+):
+    """0개 + --with-pytest = 대상 없음 fail-loud. PM 홈/다른 task에서 vacuous 실행하지 않는다."""
+    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=())
+    inst = _make(bootstrap, tmp_path, pool)
+    with pytest.raises(SystemExit) as exc:
+        inst.run(task="mytask", with_pytest=True)
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "보유 작업공간이 0개" in err
+    assert "전역 auto-slot으로 대체하지 않습니다" in err
+
+
+def test_task_pytest_rechecks_owner_before_execution(bootstrap, tmp_path, capsys):
+    """초기 슬롯 스냅 뒤 realloc되면 pytest를 새 소유자 worktree에서 실행하지 않고 loud 중단한다."""
+    slot = "work/A_1"
+    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=(slot,), branches={slot: "a5"})
+    calls = []
+
+    def pytest_fn():
+        calls.append("pytest")
+        return 0, "1 passed\n"
+
+    inst = _make(bootstrap, tmp_path, pool, pytest_fn=pytest_fn)
+    # freshness가 끝난 뒤(초기 스냅과 pytest 실행 사이) ownership 변경을 주입한다.
+    original_collect = inst._collect_freshness
+
+    def reallocate_after_freshness():
+        result = original_collect()
+        pool._task_name = "new-owner"
+        return result
+
+    inst._collect_freshness = reallocate_after_freshness
+    with pytest.raises(SystemExit) as exc:
+        inst.run(task="mytask", with_pytest=True)
+    assert exc.value.code == 1
+    assert calls == []
+    assert "소유권 재검증" in capsys.readouterr().err
+
+
+def test_task_pull_rechecks_owner_before_mutation(bootstrap, tmp_path, capsys):
+    """fetch 뒤 release/realloc되어도 pull은 새 소유자 슬롯에서 실행하지 않고 loud 중단한다."""
+    slot = "work/A_1"
+    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=(slot,), branches={slot: "a5"})
+    calls = []
+
+    def git_fn(args):
+        calls.append(args)
+        if args[-2:] == ["fetch", "origin"] and any(slot in arg for arg in args):
+            pool._task_name = "new-owner"  # probe와 pull 실행 사이의 release/realloc 주입.
+            return 0, ""
+        if args[-2:] == ["symbolic-ref", "HEAD"]:
+            return 0, "refs/heads/a5\n"
+        if args[-2:] == ["status", "-s"]:
+            return 0, ""
+        if "rev-list" in args:
+            return 0, "0 1\n"
+        return 0, ""
+
+    inst = _make(bootstrap, tmp_path, pool, git_fn=git_fn)
+    with pytest.raises(SystemExit) as exc:
+        inst.run(task="mytask")
+    assert exc.value.code == 1
+    assert not any(
+        args[-2:] == ["pull", "--ff-only"] and any(slot in arg for arg in args)
+        for args in calls
+    )
+    assert "소유권 재검증" in capsys.readouterr().err
 
 
 # ── 2. 진입 검증 — fault = 차단(부분 dump 금지·일괄 표시) ─────────────────────
@@ -397,46 +759,7 @@ def test_unrecorded_slot_passes_and_marks(bootstrap, tmp_path, capsys):
     assert "기록↔live 미기록" in capsys.readouterr().out
 
 
-# ── 4. --repo/--slot 편입(T-0390) 합류 ───────────────────────────────────────
-
-
-def test_incorporated_slot_joins_enumeration(bootstrap, tmp_path, capsys):
-    """`--task X --repo Y --slot N` 편입 슬롯은 bind 뒤 같은 열거 행렬에 합류(편입 표기)."""
-    pool = _TaskPool(
-        slot_root=tmp_path / "wt", task_name="mytask", task_slots=(),  # 사전 보유 0
-        present_slots=("work/A_2",),                 # 편입 대상 슬롯 실재(phase0 통과)
-        branches={"work/A_2": "a5"}, heads={"work/A_2": "1234abcd5678"},
-    )
-    inst = _make(bootstrap, tmp_path, pool, board=_FakeBoard(protected=[]))
-    rc = inst.run(task="mytask", repo="A", slot=2)
-    assert rc == 0
-    out = capsys.readouterr().out
-    # 편입 슬롯이 매트릭스 행으로 합류하고 편입 표기가 붙는다.
-    assert "보유 1 — 전수 검증" in out
-    assert "work/A_2 · repo=A · branch=a5" in out
-    assert "이 부트스트랩 편입(T-0390)" in out
-    # 슬롯은 task 명의로 bind 됐다.
-    assert pool.bind_calls == [{"slot": "work/A_2", "repo": "A", "session": "mytask"}]
-
-
-def test_incorporated_slot_json_slot_set(bootstrap, tmp_path, capsys):
-    """--json — task.slot_set 에 편입 슬롯이 행 dict 로 실린다."""
-    pool = _TaskPool(
-        slot_root=tmp_path / "wt", task_name="mytask", task_slots=(),
-        present_slots=("work/A_2",),
-        branches={"work/A_2": "a5"}, heads={"work/A_2": "1234abcd5678"},
-    )
-    inst = _make(bootstrap, tmp_path, pool, board=_FakeBoard(protected=[]))
-    inst.run(task="mytask", repo="A", slot=2, output_json=True)
-    data = _json.loads(capsys.readouterr().out)
-    rows = data["task"]["slot_set"]
-    assert [r["slot"] for r in rows] == ["work/A_2"]
-    assert rows[0]["repo"] == "A" and rows[0]["branch"] == "a5"
-    assert rows[0]["head"] == "1234abcd5678"
-    assert rows[0]["record_live"] == "ok"
-
-
-# ── 5. slot-모드 / 솔로 불변 (gate 미진입) ───────────────────────────────────
+# ── 4. slot-모드 / 솔로 불변 (gate 미진입) ───────────────────────────────────
 
 
 def test_slot_mode_does_not_run_task_gate(bootstrap, tmp_path, capsys):

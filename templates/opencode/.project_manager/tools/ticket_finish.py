@@ -1374,6 +1374,14 @@ def main(argv: list[str] | None = None) -> int:
     if _guard_worktree_misanchor():
         return 1
 
+    # task 실행-위치 핀은 독립 축이다(ADR-0078). 혼합을 parse_identity의 bare-slot 오류보다
+    # 먼저 거부해 `--repo`를 추가하라는 잘못된 해결책을 안내하지 않는다.
+    if args.task is not None and (args.repo is not None or args.slot is not None):
+        parser.error(
+            "--task 는 독립 정체성이다 — --repo/--slot 과 함께 쓸 수 없다 "
+            "(task 보유 작업공간은 장부에서 자동 해소)."
+        )
+
     # 정체성 인자 *검증*(`--slot` 단독·`slot < 1` = ADR-0057 uniform fail-loud)은 `--no-pytest` 와
     # 무관하게 **항상** 수행한다. task F6도 회귀 전용 값이 아니다: stage/status 계획의 cwd 단일
     # 진실이므로 --no-pytest 에서도 반드시 해소한다. 반면 slot-mode 모호 게이트는 회귀를 실제로

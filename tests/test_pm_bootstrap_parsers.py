@@ -1021,19 +1021,26 @@ def test_run_markdown_board_counts_labeled_mine(tmp_path, capsys):
 
 
 def test_run_json_board_counts_include_mine_alias(tmp_path, capsys):
-    """--json `board` 에 하위호환 top-level 카운트 + 명시 `counts_mine` 별칭이 함께 있다."""
+    """solo JSON은 기존 mine 별칭을 보존하고 task-only 키를 방출하지 않는다."""
     import json as _json
     mod = _load_module()
     inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
-    assert inst.run(output_json=True) == 0
+    inst._run_pytest_fn = lambda: (0, "1 passed in 0.01s\n")
+    assert inst.run(output_json=True, with_pytest=True) == 0
     data = _json.loads(capsys.readouterr().out)
     board = data["board"]
+    assert board["counts_scope"] == "mine"
     assert board["counts_mine"] == {
         "done": board["done"],
         "open": board["open"],
         "claimed": board["claimed"],
         "blocked": board["blocked"],
     }
+    assert "counts_task" not in board
+    assert data["pytest"] == {"passed": 1, "total": 1}
+    assert "scopes" not in data["pytest"]
+    assert "task_cwd_slot" not in data["git"]
+    assert "task_workspace_count" not in data["git"]
 
 
 # ── run() 통합: board submodule freshness surface (T-0195) ───────────────────

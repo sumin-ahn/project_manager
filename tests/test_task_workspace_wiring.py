@@ -98,18 +98,43 @@ def test_regression_run_task_ambiguous_holding_fails_loud(board, monkeypatch):
         board.cmd_regression(_reg_args(task="job2"))
 
 
-def test_regression_run_task_cwd_not_participate(board, monkeypatch, capsys):
-    """cwd 비참여(T-0345) — chdir 을 바꿔도 --repo 명시가 해소를 지배(cwd 가 끌어당기지 않음)."""
+def test_regression_run_rejects_task_repo_mix_before_subprocess(board, monkeypatch):
+    """regression run은 task+repo 실행-위치 핀을 ADR-0078에 따라 fail-loud 거부한다."""
     _write_leases(board.LEASES_FILE, [
         {"slot": "work/A_1", "repo": "A", "session": "job3", "state": "leased"},
         {"slot": "work/B_1", "repo": "B", "session": "job3", "state": "leased"},
     ])
-    monkeypatch.chdir(board._proj)
-    monkeypatch.setattr(board.subprocess, "run", _FakeRun(0, "1 passed"))
-    board.cmd_regression(_reg_args(task="job3", repo="A"))
-    out = capsys.readouterr().out
-    assert str(board.REPO / "work" / "A_1") in out
-    assert "work/B_1" not in out
+    fake = _FakeRun(0, "1 passed")
+    monkeypatch.setattr(board.subprocess, "run", fake)
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_regression(_reg_args(task="job3", repo="A"))
+    assert "ADR-0078" in str(exc.value)
+    assert fake.calls == []
+
+
+def test_regression_run_rejects_task_cwd_before_subprocess(board, monkeypatch, tmp_path):
+    """task 작업공간 표시와 타 경로 실행을 섞는 명시 --cwd 우회를 ADR-0078로 거부한다."""
+    fake = _FakeRun(0, "1 passed")
+    monkeypatch.setattr(board.subprocess, "run", fake)
+
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_regression(_reg_args(task="job3", cwd=str(tmp_path / "outside")))
+
+    assert "ADR-0078" in str(exc.value)
+    assert "--cwd" in str(exc.value)
+    assert fake.calls == []
+
+
+def test_regression_run_non_task_cwd_remains_override(board, monkeypatch, tmp_path):
+    """비-task regression run의 명시 --cwd는 기존처럼 그대로 subprocess에 전달된다."""
+    target = tmp_path / "readonly"
+    target.mkdir()
+    fake = _FakeRun(0, "1 passed")
+    monkeypatch.setattr(board.subprocess, "run", fake)
+
+    assert board.cmd_regression(_reg_args(cwd=str(target), cmd="pytest -q")) == 0
+
+    assert fake.calls[0]["kwargs"]["cwd"] == str(target)
 
 
 def _lg_args(task=None, repo=None, slot=None, cwd=None):
@@ -132,6 +157,48 @@ def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
     assert f"작업공간(task job4) → {expected_cwd}" in out
 
 
+def test_livegate_record_rejects_task_slot_mix_before_subprocess(board, monkeypatch):
+    """livegate record의 task+slot 혼합은 bare-slot repo 힌트보다 ADR-0078을 먼저 표면화한다."""
+    fake = _FakeRun(0, "14 passed, 800 deselected in 3s")
+    monkeypatch.setattr(board.subprocess, "run", fake)
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_livegate(_lg_args(task="job4", slot=2))
+    assert "ADR-0078" in str(exc.value)
+    assert "--slot 은 --repo 필수" not in str(exc.value)
+    assert fake.calls == []
+
+
+def test_livegate_record_rejects_task_cwd_before_subprocess(board, monkeypatch, tmp_path):
+    """task livegate가 task surface를 내면서 타 경로에 green을 기록하는 --cwd 우회를 거부한다."""
+    fake = _FakeRun(0, "18 passed")
+    monkeypatch.setattr(board.subprocess, "run", fake)
+
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_livegate(_lg_args(task="job4", cwd=str(tmp_path / "outside")))
+
+    assert "ADR-0078" in str(exc.value)
+    assert "--cwd" in str(exc.value)
+    assert fake.calls == []
+    assert not board.LIVEGATE_FLAG.exists()
+
+
+def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_path):
+    """비-task livegate record의 명시 --cwd는 기존처럼 실행·기록 기준 경로로 유지된다."""
+    target = tmp_path / "readonly"
+    target.mkdir()
+    fake = _FakeRun(0, f"{board.LIVEGATE_RELEASE_PIN} passed in 1s")
+    monkeypatch.setattr(board.subprocess, "run", fake)
+    monkeypatch.setattr(
+        board,
+        "_resolve_livegate_flag",
+        lambda cwd: (board.LIVEGATE_FLAG, board._LG_SOLO),
+    )
+
+    assert board.cmd_livegate(_lg_args(cwd=str(target))) == 0
+
+    assert fake.calls[-1]["kwargs"]["cwd"] == str(target)
+
+
 # ── _actor_session_override — task-mode 귀속(F5b·claimed_by=<user>/<task>) ─────
 
 
@@ -139,9 +206,45 @@ def test_actor_session_override_task_mode_returns_task(board):
     """task 지정 시 귀속 세션 override = task 이름(F5b) — claim/new created_by 가 <user>/<task>."""
     ns = argparse.Namespace(repo=None, slot=None, task="myjob")
     assert board._actor_session_override(ns) == "myjob"
-    # --repo --slot 공존해도 task 가 귀속을 이긴다(⑥ 예약으로 slot 세션과 기계 판별).
+    # provenance 연산은 task+repo/slot 혼합을 조용히 task 우선하지 않고 거부한다(ADR-0078).
     ns2 = argparse.Namespace(repo="A", slot=1, task="myjob")
-    assert board._actor_session_override(ns2) == "myjob"
+    with pytest.raises(SystemExit) as exc:
+        board._actor_session_override(ns2)
+    assert "ADR-0078" in str(exc.value)
+
+
+@pytest.mark.parametrize("command", ["claim", "new", "init", "migrate-identity", "reid"])
+def test_board_provenance_commands_reject_task_repo_mix_at_ingress(
+    board, monkeypatch, command
+):
+    """actor provenance 소비 5종이 본체 부작용 전에 동일 ADR-0078 깔때기를 탄다(E-a)."""
+    args = {
+        "claim": argparse.Namespace(id="T-0001", repo="A", slot=1, task="job", user=None),
+        "new": argparse.Namespace(
+            title="X", touches=None, depends=None, tag=None, estimate="small",
+            prefix=None, user=None, repo="A", slot=1, task="job",
+        ),
+        "init": argparse.Namespace(
+            prefix=None, area=None, owner=None, user=None, repo="A", slot=1, task="job",
+        ),
+        "migrate-identity": argparse.Namespace(
+            dry_run=True, user="u", scope="all", repo="A", slot=1, task="job",
+        ),
+        "reid": argparse.Namespace(
+            old_id="T-0001", new_id="T-0002", dry_run=True,
+            repo="A", slot=1, task="job",
+        ),
+    }[command]
+    fn = {
+        "claim": board.cmd_claim,
+        "new": board.cmd_new,
+        "init": board.cmd_init,
+        "migrate-identity": board.cmd_migrate_identity,
+        "reid": board.cmd_reid,
+    }[command]
+    with pytest.raises(SystemExit) as exc:
+        fn(args)
+    assert "ADR-0078" in str(exc.value)
 
 
 # ── board.py new — task 설정 prefix(F5) + created_by=<user>/<task> ────────────
@@ -320,6 +423,30 @@ def test_ticket_finish_task_no_pytest_ambiguous_fails_before_finisher(tf, monkey
     assert tf.main(["T-0001", "--task", "job9", "--no-pytest"]) == 1
     assert called["finisher"] is False
     assert "작업공간 해소" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--repo", "A"], ["--repo", "A", "--slot", "1"], ["--slot", "1"]],
+)
+def test_ticket_finish_rejects_task_workspace_pin_mix_before_finisher(
+    tf, monkeypatch, capsys, extra
+):
+    """ticket_finish task+repo/slot 혼합은 usage error이며 finisher 부작용에 도달하지 않는다(E-b)."""
+    called = {"finisher": False}
+    monkeypatch.setattr(
+        tf,
+        "TicketFinisher",
+        lambda **kw: called.__setitem__("finisher", True),
+    )
+    with pytest.raises(SystemExit) as exc:
+        tf.main(["T-0001", "--task", "job10", *extra])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--task 는 독립 정체성" in err
+    if extra == ["--slot", "1"]:
+        assert "--slot 은 --repo 필수" not in err
+    assert called["finisher"] is False
 
 
 # ── MUST-FIX (T-0355 게이트): 정체성 깔때기 task 명 검증 — 영속 전 fail-loud ──────
