@@ -58,6 +58,66 @@ def test_round_limit_garbage_and_negative_fall_back(external):
     assert external._round_limit({"external_review_round_limit": "-3"}) == 4
 
 
+# ── 순수 헬퍼: 외부 리뷰 timeout 해소 (T-0467) ───────────────────────────────
+
+
+def test_timeout_cli_override_beats_local_conf(external):
+    """명시 CLI 양수값은 local.conf 설정보다 우선한다."""
+    args = external.argparse.Namespace(timeout=37)
+    assert external._resolve_timeout(args, {"external_review_timeout": "71"}) == 37
+
+
+def test_timeout_uses_local_conf_when_cli_unspecified(external):
+    """CLI 미지정(None) 시 clone별 external_review_timeout 을 사용한다."""
+    args = external.argparse.Namespace(timeout=None)
+    assert external._resolve_timeout(args, {"external_review_timeout": "71"}) == 71
+
+
+def test_timeout_uses_default_when_not_configured(external):
+    """CLI/conf 모두 없으면 유한 기본 timeout 을 쓴다."""
+    args = external.argparse.Namespace(timeout=None)
+    assert external._resolve_timeout(args, {}) == external.EXTERNAL_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-1"])
+def test_timeout_invalid_conf_warns_and_falls_back(external, capsys, raw):
+    """비정수/0/음수 conf 는 경고 뒤 기본값으로 fail-soft 한다."""
+    args = external.argparse.Namespace(timeout=None)
+    assert external._resolve_timeout(args, {"external_review_timeout": raw}) == \
+        external.EXTERNAL_TIMEOUT_SECONDS
+    warning = capsys.readouterr().err
+    assert "external_review_timeout" in warning
+    assert "기본" in warning
+
+
+def test_timeout_default_floor_pins_measurement_basis(external):
+    """기본값 하한 — 실측(평상 153~294s·T-0467) 기반 상향이 180 회귀로 되돌지 않게 고정."""
+    assert external.EXTERNAL_TIMEOUT_SECONDS >= 600
+
+
+def test_timeout_cli_nonpositive_usage_error(external, capsys):
+    """CLI `--timeout` 0/음수는 usage error(rc=2) — pm_delegate 선례 파리티(T-0467)."""
+    for raw in ("0", "-5"):
+        with pytest.raises(SystemExit) as exc:
+            external.main(["--timeout", raw, "--dry-run"])
+        assert exc.value.code == 2
+        assert "--timeout" in capsys.readouterr().err
+
+
+def test_print_summary_failure_shows_reason_line(external, capsys):
+    """실패 요약의 판정 라인에 실패 사유 1줄(타임아웃 안내 포함)이 병기된다 (T-0467)."""
+    external.print_summary({
+        "reviewer": "codex", "ok": False, "failed": True, "any_must_fix": False,
+        "all_pass": False, "verdict": None, "file": None,
+        "output": "[리뷰어 타임아웃 — 900초 초과] 재시도: `--timeout <초>` 또는 "
+                  "local.conf `external_review_timeout=<초>` (양의 정수).\n[stderr]\nx",
+    })
+    out = capsys.readouterr().out
+    assert "사유: [리뷰어 타임아웃" in out
+    assert "--timeout" in out
+    assert "FALLBACK_INTERNAL" in out
+
+
 # ── 순수 헬퍼: 장부 (_round_ledger_path / load / save / _gate_entry) ─────────
 
 
@@ -126,6 +186,8 @@ def test_started_true_on_timeout(external):
         raise subprocess.TimeoutExpired(cmd="codex", timeout=5)
     ok, out, started = external._run_reviewer_ex("p", "codex", 5, _raise)
     assert ok is False and started is True and "타임아웃" in out
+    assert "--timeout <초>" in out
+    assert "external_review_timeout=<초>" in out
 
 
 def test_started_false_on_spawn_failures(external):

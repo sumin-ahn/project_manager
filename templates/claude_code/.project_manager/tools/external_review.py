@@ -20,6 +20,7 @@
 종료 코드/신호:
   - 리뷰어 실패(인증/한도/네트워크/타임아웃) → exit 1 + stdout 에 FALLBACK_INTERNAL
     (= 내부 code-reviewer 서브에이전트로 폴백하라는 신호)
+    타임아웃 상한: 기본 900s · local.conf `external_review_timeout` · 일회성 `--timeout` (T-0467)
   - must-fix 감지 → exit 1
   - 통과 → exit 0
   - 라운드 상한 초과(--gate 별) → exit 4 (실행 전 거부·전용 rc·T-0457). 같은 게이트로 승인 없이
@@ -169,8 +170,11 @@ def _pm_home_reanchor(anchor: Path) -> Path | None:
 # 외부 리뷰어 기본 명령 (local.conf reviewer_cmd 로 교체 가능)
 DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 
-# 외부 호출 타임아웃 (초)
-EXTERNAL_TIMEOUT_SECONDS = 180
+# 외부 호출 타임아웃 (초). 실 게이트 실측(T-0467·2026-07-26 세션 게이트 5건+대형 1건):
+# 평범한 diff 153~294초·13파일 대형 227초 — 구 기본 180초는 평상 대역 *안*이라 상시 타임아웃
+# 구조였다. 900 = 평상 최대(294s)의 ~3배 여유. 여전히 유한 상한이며 clone별 조정은
+# local.conf `external_review_timeout`, 일회성 조정은 `--timeout`으로 한다.
+EXTERNAL_TIMEOUT_SECONDS = 900
 
 # 라운드 상한 (T-0457) — 같은 --gate 로 승인 없이 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
 # 기본 4 는 사용자 전역 규율(외부 리뷰 ">3~4 라운드면 수렴 판단")의 기계화. local.conf
@@ -296,6 +300,31 @@ def _is_enabled(conf: dict[str, str]) -> bool:
 
 def _reviewer_cmd(conf: dict[str, str]) -> str:
     return conf.get("reviewer_cmd", "").strip() or DEFAULT_REVIEWER_CMD
+
+
+def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str]) -> int:
+    """외부 리뷰 timeout 을 `--timeout` > local.conf > 기본 순서로 해소한다.
+
+    CLI 양수값은 argparse 검증을 통과한 명시 override다. local.conf 는 사용자 설정이므로
+    깨진 값(비정수/0/음수)은 실행을 막지 않고 stderr 경고와 함께 기본값으로 fail-soft 한다.
+    pm_delegate._resolve_timeout 과 같은 계약이다.
+    """
+    if args.timeout is not None:
+        return args.timeout
+    raw = (conf.get("external_review_timeout") or "").strip()
+    if not raw:
+        return EXTERNAL_TIMEOUT_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"경고: local.conf external_review_timeout={raw!r} 비정수 — 기본 "
+              f"{EXTERNAL_TIMEOUT_SECONDS}s 사용.", file=sys.stderr)
+        return EXTERNAL_TIMEOUT_SECONDS
+    if value <= 0:
+        print(f"경고: local.conf external_review_timeout={value} ≤0 — 기본 "
+              f"{EXTERNAL_TIMEOUT_SECONDS}s 사용.", file=sys.stderr)
+        return EXTERNAL_TIMEOUT_SECONDS
+    return value
 
 
 def _configured_paths(conf: dict[str, str]) -> list[str]:
@@ -710,7 +739,11 @@ def _run_reviewer_ex(
         return result.returncode == 0, output, True
     except subprocess.TimeoutExpired:
         # 프로세스가 시작돼 실행 중 타임아웃 — 프롬프트가 이미 전송·과금됐을 수 있다 → started=True.
-        return False, f"[리뷰어 타임아웃 — {timeout}초 초과]", True
+        return False, (
+            f"[리뷰어 타임아웃 — {timeout}초 초과] "
+            "재시도: `--timeout <초>` 또는 local.conf "
+            "`external_review_timeout=<초>` (양의 정수)."
+        ), True
     except FileNotFoundError:
         # 실행 파일 자체가 없어 exec 실패 — 아무것도 전송되지 않았다 → started=False (환불 대상).
         return False, f"[리뷰어 명령 '{argv[0]}' 를 찾을 수 없음 — 설치 또는 PATH 확인]", False
@@ -896,6 +929,11 @@ def print_summary(result: dict, gate: str | None = None,
         print(f"  원문: {result['file']}")
     print()
     if result["failed"]:
+        # 실패 사유 1줄을 판정 라인에 병기 — 타임아웃 안내(`--timeout`/conf 키) 같은 실패
+        # 본문이 원문 파일에만 남으면 PM 이 못 본다(T-0428 원칙: 판정 라인은 반드시 읽힌다·T-0467).
+        head = str(result.get("output") or "").strip().splitlines()
+        if head:
+            print(f"  사유: {head[0][:200]}")
         print(f"종합 판정: {name} 실패{suffix}")
         print("FALLBACK_INTERNAL")  # 내부 code-reviewer 서브에이전트로 폴백 신호
     elif result["any_must_fix"]:
@@ -964,8 +1002,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="external_review_enabled=false 여도 1회 강제 실행 (외부 전송 발생)")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
                         help="리뷰 원문 저장 디렉토리 (기본: /tmp)")
-    parser.add_argument("--timeout", type=int, default=EXTERNAL_TIMEOUT_SECONDS,
-                        metavar="SEC", help=f"외부 호출 타임아웃(초) (기본: {EXTERNAL_TIMEOUT_SECONDS})")
+    parser.add_argument("--timeout", type=int, default=None,
+                        metavar="SEC", help=f"외부 호출 타임아웃(초) (기본: {EXTERNAL_TIMEOUT_SECONDS}; "
+                        "local.conf external_review_timeout 로 조정 가능)")
     parser.add_argument("--adr", nargs="+", default=None, metavar="ADR-NNNN",
                         help="관련 ADR 목록 (프롬프트에 포함)")
     return parser
@@ -1002,7 +1041,10 @@ def main(argv: list[str] | None = None) -> int:
                 pass
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    if args.timeout is not None and args.timeout <= 0:
+        parser.error("--timeout 은 양의 정수여야 합니다 (0/음수 금지).")
     conf = local_config()
+    timeout = _resolve_timeout(args, conf)
 
     output_dir: Path | None = None
     if args.output_dir:
@@ -1132,7 +1174,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"외부 리뷰어 실행 중: {reviewer_cmd}", file=sys.stderr)
     result = run_review(
         prompt=prompt, reviewer_cmd=reviewer_cmd,
-        timeout=args.timeout, output_dir=output_dir,
+        timeout=timeout, output_dir=output_dir,
     )
     print_summary(result, gate=args.gate, excluded=excluded)
 
