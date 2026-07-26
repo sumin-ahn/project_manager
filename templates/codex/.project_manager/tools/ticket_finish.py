@@ -504,8 +504,12 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
     domain.py 부재·로드 실패 → None (호출부가 조용히 skip — 솔로/신규 clone 무영향).
     touches 부재·영향 0 → [](빈 알림). domain.pages_for_touches 재사용(중복 매칭 0).
 
-    **git_runner 1회 생성해 공유** — 영향 페이지마다 새로 만들지 않고 한 runner 를
-    page_stale 에 넘긴다(reviewer suggestion·subprocess 셋업 중복 회피). page_stale 은
+    **소유 repo별 git_runner 1회 생성해 공유** — 페이지 `repo:`를 board의 단일 owner
+    resolver로 해소하고 checkout마다 runner를 캐시해 page_stale에 넘긴다(T-0470).
+    owner를 해소하지 못하면 domain의 sentinel을 넘겨 기본 owner runner fallback을 막고
+    stale 판정을 skip한다.
+    구 board(리졸버 부재)는 키 부재/명시 self만 기존 REPO runner로 퇴화하고,
+    upstream/null/미지원 owner는 unverifiable(None)로 남긴다. page_stale 은
     그 자체로 fail-soft(예외/git 부재→None)지만, stale 산출 단계 전체를 한 번 더 try 로
     감싸 어떤 예외도 무표시(None)로 흡수한다 — 비차단·graceful 동작 불변.
     """
@@ -520,16 +524,34 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
         pages = domain.pages_for_touches(touches, domain.load_pages())
     except Exception:
         return None
-    # git_runner 를 한 번만 만든다(REPO 컨텍스트) — 페이지마다 subprocess 셋업 반복 방지.
-    # 생성 자체가 실패하면 stale 은 전부 unknown(None) 으로 두고 계속(비차단).
-    try:
-        git_runner = domain._real_git_runner(REPO)
-    except Exception:  # noqa: BLE001 — runner 생성 실패는 stale unknown 으로 흡수.
-        git_runner = None
+    board = load_board_module(board_py)
+    resolver = getattr(board, "_freshness_owner_repo", None) if board is not None else None
+    runners: dict[Path, object] = {}
+    unresolved_runner = getattr(domain, "_UNRESOLVED_GIT_RUNNER", None)
+
+    def runner_for_page(page):
+        try:
+            if resolver is None:
+                owner = page.get("repo", "self")
+                if not isinstance(owner, str) or owner.strip() != "self":
+                    return None
+                owner_repo = REPO
+            else:
+                owner = page["repo"] if "repo" in page else "self"
+                owner_repo, _owner_error = resolver(owner)
+                if owner_repo is None:
+                    return unresolved_runner
+            owner_repo = Path(owner_repo)
+            if owner_repo not in runners:
+                runners[owner_repo] = domain._real_git_runner(owner_repo)
+            return runners[owner_repo]
+        except Exception:  # noqa: BLE001 — owner/runner 해소 실패는 stale unknown.
+            return None
+
     out: list[tuple[str, bool | None]] = []
     for page in pages:
         try:
-            stale = domain.page_stale(page, git_runner=git_runner)
+            stale = domain.page_stale(page, git_runner=runner_for_page(page))
         except Exception:  # noqa: BLE001 — stale 못 구하면 무표시(None)·비차단.
             stale = None
         out.append((page["title"], stale))

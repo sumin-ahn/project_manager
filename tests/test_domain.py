@@ -808,6 +808,33 @@ def test_list_marks_stale_page_with_warning(dm, tmp_path, monkeypatch, capsys):
     assert "낡은페이지" in out
 
 
+def test_list_stale_marker_uses_page_owner_runner(dm, tmp_path, monkeypatch, capsys):
+    """list 마커의 page_stale 기본 경로도 repo:upstream 소유 시계를 해소한다."""
+    _write_page(
+        tmp_path, "p.md",
+        frontmatter=(
+            "title: 원본소유\n"
+            "type: concept\n"
+            "repo: upstream\n"
+            "covers:\n"
+            "  - src/x/**\n"
+            "updated: 2026-06-19"
+        ),
+    )
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    seen = []
+
+    def owner_runner(page):
+        seen.append(page["repo"])
+        return _fixed_git("2026-06-18T00:00:00Z\n")  # owner 기준 fresh
+
+    monkeypatch.setattr(dm, "_page_owner_git_runner", owner_runner)
+    assert dm.main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert "원본소유" in out and "⚠" not in out
+    assert seen == ["upstream"]
+
+
 def test_list_fresh_and_unknown_have_no_warning(dm, tmp_path, monkeypatch, capsys):
     # False(fresh)·None(unknown) 은 ⚠ 무표시.
     _write_page(
@@ -1063,6 +1090,25 @@ def test_lint_unknown_stale_is_not_finding(dm, tmp_path, monkeypatch):
     pages = dm.load_pages(domain_dir=tmp_path)
     findings = dm.lint_pages(pages)
     assert not any(k == "stale" for k, _p, _d in findings)
+
+
+def test_lint_factory_unresolved_owner_does_not_fall_back_to_default_runner(
+        dm, tmp_path, monkeypatch):
+    """factory의 None은 owner 미해소 sentinel로 보존되어 기본 owner runner를 재시도하지 않는다."""
+    _write_page(
+        tmp_path, "p.md",
+        frontmatter=(
+            "title: 미해소\ntype: concept\nrepo: upstream\n"
+            "covers:\n  - src/x/**\nupdated: 2026-06-19"
+        ),
+    )
+    pages = dm.load_pages(domain_dir=tmp_path)
+    monkeypatch.setattr(
+        dm, "_page_owner_git_runner",
+        lambda _page: _fixed_git("2026-06-20T00:00:00Z\n"),
+    )
+    findings = dm.lint_pages(pages, git_runner_factory=lambda _page: None)
+    assert not any(kind == "stale" for kind, _label, _detail in findings)
 
 
 def test_lint_empty_domain_is_clean(dm, tmp_path, monkeypatch, capsys):
@@ -1330,6 +1376,7 @@ def test_capture_draft_writes_scaffold_with_draft_status(dm, tmp_path):
     text = path.read_text(encoding="utf-8")
     assert 'title: "Factor Beta Pipeline"' in text
     assert "status: draft" in text          # index 제외 진실
+    assert "repo: self" in text             # 소유 시계 명시(_template과 정합).
     assert "derived: false" in text         # 사람 author
     assert "updated: 2026-06-27" in text
     assert "covers: [src/analysis/**]" in text

@@ -526,6 +526,119 @@ def test_affected_domain_titles_shares_single_git_runner(tf, tmp_path, monkeypat
     assert calls["runners_seen"] == [sentinel, sentinel, sentinel]  # 같은 runner 공유
 
 
+def test_affected_domain_titles_uses_each_page_owner_runner(tf, tmp_path, monkeypatch):
+    """완료 soft-step의 date freshness도 페이지별 owner checkout runner를 쓴다."""
+    owner = tmp_path / "owner"
+    self_repo = tmp_path / "self"
+    seen_repos = []
+    seen_runners = []
+
+    class _FakeBoard:
+        @staticmethod
+        def _freshness_owner_repo(repo):
+            return ((owner if repo == "upstream" else self_repo), None)
+
+    class _FakeDomain:
+        @staticmethod
+        def load_pages():
+            return []
+
+        @staticmethod
+        def pages_for_touches(touches, pages):
+            return [
+                {"title": "외부", "repo": "upstream"},
+                {"title": "내부", "repo": "self"},
+            ]
+
+        @staticmethod
+        def _real_git_runner(repo):
+            runner = object()
+            seen_repos.append(Path(repo))
+            return runner
+
+        @staticmethod
+        def page_stale(page, *, git_runner=None):
+            seen_runners.append(git_runner)
+            return False
+
+    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    monkeypatch.setattr(tf, "load_board_module", lambda _path: _FakeBoard())
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
+    result = tf.affected_domain_titles("T-0001", tf.BOARD_PY)
+    assert result == [("외부", False), ("내부", False)]
+    assert seen_repos == [owner, self_repo]
+    assert seen_runners[0] is not seen_runners[1]
+
+
+def test_affected_domain_titles_unresolved_owner_skips_stale_soft_warning(
+        tf, tmp_path, monkeypatch, capsys):
+    """미해소 owner는 sentinel으로 stale fallback을 막아 soft 경고도 내지 않는다."""
+    sentinel = object()
+
+    class _FakeBoard:
+        @staticmethod
+        def _freshness_owner_repo(_repo):
+            return None, "owner checkout unavailable"
+
+    class _FakeDomain:
+        _UNRESOLVED_GIT_RUNNER = sentinel
+
+        @staticmethod
+        def load_pages():
+            return []
+
+        @staticmethod
+        def pages_for_touches(touches, pages):
+            return [{"title": "미해소 외부", "repo": "upstream"}]
+
+        @staticmethod
+        def page_stale(page, *, git_runner=None):
+            # None이면 domain.page_stale이 기본 runner로 fallback해 stale 오판하는 재현 조건.
+            return None if git_runner is sentinel else True
+
+    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    monkeypatch.setattr(tf, "load_board_module", lambda _path: _FakeBoard())
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
+    affected = tf.affected_domain_titles("T-0001", tf.BOARD_PY)
+
+    assert affected == [("미해소 외부", None)]
+    _make_finisher(tf, tmp_path, affected=affected)._notify_affected_domain("T-0001")
+    assert "⚠ 미해소 외부" not in capsys.readouterr().out
+
+
+def test_affected_domain_titles_legacy_board_does_not_absorb_upstream(
+        tf, monkeypatch):
+    """resolver 없는 legacy board에서도 `repo: upstream`을 REPO/self runner로 흡수하지 않는다."""
+    seen = []
+
+    class _LegacyBoard:
+        pass
+
+    class _FakeDomain:
+        @staticmethod
+        def load_pages():
+            return []
+
+        @staticmethod
+        def pages_for_touches(touches, pages):
+            return [{"title": "외부", "repo": "upstream"}]
+
+        @staticmethod
+        def _real_git_runner(repo):
+            raise AssertionError(f"upstream을 legacy self runner로 흡수함: {repo}")
+
+        @staticmethod
+        def page_stale(page, *, git_runner=None):
+            seen.append(git_runner)
+            return None
+
+    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    monkeypatch.setattr(tf, "load_board_module", lambda _path: _LegacyBoard())
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
+    assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == [("외부", None)]
+    assert seen == [None]
+
+
 # ── self-host 회귀 cwd 런타임 해소 (T-0149 — ② 홈서 worktree 회귀) ─────────────
 #
 # 분리된 PM 홈(②·ADR-0027)엔 tests/ 가 없으므로, ② 홈 cwd 에서 ticket_finish 를 돌리면

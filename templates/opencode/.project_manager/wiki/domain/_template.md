@@ -3,6 +3,7 @@ title: <한 가지 — 모듈 / 개념 / 작업방법>
 type: concept            # concept | guide | research
 covers:                  # 담당 코드 (글롭). 코드-무관 개념이면 이 줄 비움.
   - path/to/**
+repo: self               # verified_at/covers 소유 시계: self | upstream(local.conf 의 로컬 경로)
 derived: false           # 사람 author. (코드서 자동생성이면 true·손대지 마)
 updated: {{DATE}}
 ---

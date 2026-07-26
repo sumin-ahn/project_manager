@@ -27,6 +27,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -169,12 +170,12 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # mutation subcommand — dispatch 게이트가 이 집합에만 worktree 오실행 가드를 적용한다.
 # (idea/prefix 서브그룹은 `<group> <sub>` 점표기.) reid=ID 재부여·promote-scope=wiki family_scope
 # retag·refresh=파생 board.md 재생성(worktree refresh 는 정당 사용 없음·stray dashboard 방지)·
-# verified-at-backfill=PM 홈 현재-진실 문서(architecture/status/domain) frontmatter 쓰기(ADR-0063·
+# verified-at-backfill/repin=PM 홈 현재-진실 문서(architecture/status/domain) frontmatter 쓰기(ADR-0063·
 # worktree 엔 그 문서가 없어 no-op 이나 PM 홈 실행이 설계 의도라 오실행 가드).
 _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "new", "promote", "claim", "complete", "block", "unclaim", "unblock",
     "init", "migrate-identity", "promote-scope", "reid", "refresh",
-    "verified-at-backfill",
+    "verified-at-backfill", "verified-at-repin",
     "idea new", "idea promote", "idea kill",
     "prefix rename", "prefix strip", "prefix merge", "prefix delete",
 })
@@ -4421,20 +4422,28 @@ def find_idea(iid: str) -> tuple[str, Path]:
     return find_item(IDEAS_DIR, IDEA_STATUS_DIRS, iid, "idea")
 
 
-def load_ticket(path: Path) -> tuple[dict[str, Any], str]:
-    """Return (frontmatter dict, body string)."""
-    text = path.read_text(encoding="utf-8")
+def _parse_ticket_text(text: str, source: Path | str) -> tuple[dict[str, Any], str]:
+    """`load_ticket`의 실제 frontmatter 문법으로 문자열을 파싱한다.
+
+    파일 I/O와 파서를 분리해, 쓰기 전 변환 결과도 런타임 소비자와 완전히 같은 문법으로
+    검증할 수 있게 한다. `source`는 오류 메시지의 파일 식별자일 뿐 파싱에는 관여하지 않는다.
+    """
     if not text.startswith("---\n"):
-        raise ValueError(f"missing frontmatter: {path}")
+        raise ValueError(f"missing frontmatter: {source}")
     # Split on the FIRST closing '---' after the opener
     after_open = text[4:]
     end = after_open.find("\n---\n")
     if end == -1:
-        raise ValueError(f"unterminated frontmatter: {path}")
+        raise ValueError(f"unterminated frontmatter: {source}")
     fm_text = after_open[:end]
     body = after_open[end + 5:]
     fm = yaml.safe_load(fm_text) or {}
     return fm, body
+
+
+def load_ticket(path: Path) -> tuple[dict[str, Any], str]:
+    """Return (frontmatter dict, body string)."""
+    return _parse_ticket_text(path.read_text(encoding="utf-8"), path)
 
 
 def dump_ticket(path: Path, fm: dict[str, Any], body: str) -> None:
@@ -7981,7 +7990,7 @@ _CURRENT_TRUTH_ENGINE_PATHS: tuple[str, ...] = (".project_manager/tools",)
 
 
 def _git_commits_between(sha: str, pathspecs: list[str], *,
-                         runner=None) -> bool | None:
+                         runner=None, repo: Path | None = None) -> bool | None:
     """`<sha>..HEAD` 에 `pathspecs` 경로 커밋이 있으면 True·없으면 False·판정불가 None.
 
     verified_at 판정의 핵심 — `git log --oneline <sha>..HEAD -- <pathspecs>` 출력이 비지
@@ -7990,7 +7999,7 @@ def _git_commits_between(sha: str, pathspecs: list[str], *,
       - git 바이너리 부재·미지 sha(rc≠0·`bad revision`)·타임아웃/예외 → None (skip).
     None 은 "판정불가(unknown)"라 호출부가 finding 을 내지 않는다(현행 freshness fail-soft
     성격·솔로/신규 clone 무탈). `runner` 는 테스트 hermetic seam(argv→(rc, stdout))·미주입
-    시 실 subprocess(`git -C REPO`)를 쓴다."""
+    시 실 subprocess(`git -C repo`)를 쓴다. `repo` 부재는 REPO(기존 호출·solo 자연 퇴화)."""
     sha = (sha or "").strip()
     pathspecs = [p for p in pathspecs if p]
     if not sha or not pathspecs:
@@ -7998,11 +8007,12 @@ def _git_commits_between(sha: str, pathspecs: list[str], *,
     if runner is None:
         if shutil.which("git") is None:
             return None
+        repo = Path(repo) if repo is not None else REPO
 
         def runner(argv: list[str]) -> tuple[int, str]:
             try:
                 r = subprocess.run(
-                    ["git", "-C", str(REPO), *argv],
+                    ["git", "-C", str(repo), *argv],
                     capture_output=True, text=True, encoding="utf-8",
                     errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
                 return r.returncode, r.stdout or ""
@@ -8045,15 +8055,17 @@ _ANCHOR_UNKNOWN = "unknown"            # 환경적 판정불가(git 부재·rc�
 _AMBIGUOUS_STDERR_SIGNALS: tuple[str, ...] = ("ambiguous", "short object id")
 
 
-def _git_run(argv: list[str], *, runner=None) -> tuple[int, str] | None:
+def _git_run(argv: list[str], *, runner=None,
+             repo: Path | None = None) -> tuple[int, str] | None:
     """git 명령의 `(rc, stdout)` 반환·git 부재/예외 → None. runner seam(hermetic 테스트)·미주입
-    시 실 subprocess(`git -C REPO`). rev-parse 해소 OID(prefix 검증용)가 필요한 곳이 쓴다."""
+    시 실 subprocess(`git -C repo`; 부재=REPO). rev-parse 해소 OID(prefix 검증용)가 필요한 곳이 쓴다."""
     if runner is None:
         if shutil.which("git") is None:
             return None
+        repo = Path(repo) if repo is not None else REPO
         try:
             r = subprocess.run(
-                ["git", "-C", str(REPO), *argv],
+                ["git", "-C", str(repo), *argv],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 — 타임아웃/바이너리 이상은 None(환경적).
@@ -8066,13 +8078,14 @@ def _git_run(argv: list[str], *, runner=None) -> tuple[int, str] | None:
     return rc, out
 
 
-def _git_rc(argv: list[str], *, runner=None) -> int | None:
+def _git_rc(argv: list[str], *, runner=None, repo: Path | None = None) -> int | None:
     """git 명령의 rc 만 반환(stdout 무시)·git 부재/예외 → None (`_git_run` 얇은 래퍼·사본 0)."""
-    res = _git_run(argv, runner=runner)
+    res = _git_run(argv, runner=runner, repo=repo)
     return res[0] if res is not None else None
 
 
-def _rev_parse_ambiguous(sha: str, *, runner=None) -> bool:
+def _rev_parse_ambiguous(sha: str, *, runner=None,
+                         repo: Path | None = None) -> bool:
     """축약 `sha` 가 다중 매칭(모호)한가 — **non-quiet** rev-parse stderr 신호로 판정 (codex R22).
 
     `git rev-parse --verify --quiet <sha>^{commit}` 는 모호 시 stderr 를 **억제**(실측·rc1) 하므로,
@@ -8086,9 +8099,10 @@ def _rev_parse_ambiguous(sha: str, *, runner=None) -> bool:
     if runner is None:
         if shutil.which("git") is None:
             return False
+        repo = Path(repo) if repo is not None else REPO
         try:
             r = subprocess.run(
-                ["git", "-C", str(REPO), *argv], capture_output=True, text=True,
+                ["git", "-C", str(repo), *argv], capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 — 진단 실패는 False(rc 기반 분류 유지).
             return False
@@ -8103,7 +8117,8 @@ def _rev_parse_ambiguous(sha: str, *, runner=None) -> bool:
     return any(sig in low for sig in _AMBIGUOUS_STDERR_SIGNALS)
 
 
-def _sha_anchor_status(sha: str, *, runner=None) -> tuple[str, str | None]:
+def _sha_anchor_status(sha: str, *, runner=None,
+                       repo: Path | None = None) -> tuple[str, str | None]:
     """`sha` 가 유효한 **backward freshness anchor** 인가 — `(verdict, full_oid)`.
 
     유효 anchor(`_ANCHOR_OK`) = (1) 고정 hex 형식 + (2) **고정 SHA 로** 유일 commit 해소(ref 아님) +
@@ -8120,20 +8135,22 @@ def _sha_anchor_status(sha: str, *, runner=None) -> tuple[str, str | None]:
     환경적 판정불가 → `_ANCHOR_UNKNOWN`(silent skip): 빈 sha·git 부재·rev-parse/merge-base **rc≥2**
     (rc128 non-repo·safe.directory·권한 등 fatal). 환경 오류를 unverifiable 로 오인하지 않는다(MF1).
     `_canonical_commit_oid`(backfill 쓰기 검증)는 verdict==OK 면 full_oid 반환(read/write 대칭).
-    `runner` = 테스트 hermetic seam(argv→(rc, stdout[, stderr]))·미주입 시 실 subprocess(`git -C REPO`)."""
+    `runner` = 테스트 hermetic seam(argv→(rc, stdout[, stderr]))·미주입 시 실 subprocess
+    (`git -C repo`; 부재=REPO)."""
     sha = (sha or "").strip()
     if not sha:
         return (_ANCHOR_UNKNOWN, None)
     if not _is_hex_sha(sha):
         return (_ANCHOR_NON_SHA, None)  # 움직이는 ref — rev-parse 시도 안 함.
-    res = _git_run(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"], runner=runner)
+    res = _git_run(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+                   runner=runner, repo=repo)
     if res is None:
         return (_ANCHOR_UNKNOWN, None)
     rc, resolved = res
     if rc != 0:
         # 실패 — `--quiet` 가 모호 stderr 를 억제하므로 non-quiet 재질의로 모호성 먼저 판정(codex R22).
         # 모호(축약 다중 매칭)는 환경이 아니라 pin 속성 → unverifiable. 그 외 rc1=미해소·rc≥2=env.
-        if _rev_parse_ambiguous(sha, runner=runner):
+        if _rev_parse_ambiguous(sha, runner=runner, repo=repo):
             return (_ANCHOR_AMBIGUOUS, None)
         if rc == 1:
             return (_ANCHOR_UNRESOLVED, None)  # 순수 미해소(repo 정상·sha 부재·타-git SHA).
@@ -8143,7 +8160,8 @@ def _sha_anchor_status(sha: str, *, runner=None) -> tuple[str, str | None]:
     if not full_oid.lower().startswith(sha.lower()):
         return (_ANCHOR_NON_SHA, None)
     # 이후 하류 명령은 **canonical full OID** 를 쓴다(원 입력 재해석 제거·codex R16).
-    rc = _git_rc(["merge-base", "--is-ancestor", full_oid, "HEAD"], runner=runner)
+    rc = _git_rc(["merge-base", "--is-ancestor", full_oid, "HEAD"],
+                 runner=runner, repo=repo)
     if rc is None:
         return (_ANCHOR_UNKNOWN, None)
     if rc == 0:
@@ -8164,6 +8182,66 @@ def _unverifiable_sha_reason(status: str, sha: str) -> str:
     if status == _ANCHOR_AMBIGUOUS:
         return f"verified_at({sha}) 축약 sha 가 모호(repo 성장으로 다중 매칭) — full OID 로 재핀"
     return f"verified_at({sha[:12]}) 이 이 저장소 commit 으로 해소 안 됨(타 git SHA?)"  # UNRESOLVED
+
+
+_FRESHNESS_REPO_SELF = "self"
+_FRESHNESS_REPO_UPSTREAM = "upstream"
+_SCP_STYLE_UPSTREAM_RE = re.compile(
+    r"^[^/\\:]+@[^/\\:]+:.+$|^[A-Za-z][A-Za-z0-9_.-]*:.+$")
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
+    """현재-진실 문서의 `repo:` 채널을 소유 git checkout 으로 해소한다(T-0470).
+
+    단일 규칙:
+      - `self` → REPO. 키 부재는 파서/호출부가 `self`를 넘겨 solo로 자연 퇴화한다.
+      - `upstream` → `local.conf upstream=` **경로형** checkout. 상대경로는 REPO 기준.
+
+    URL upstream 은 lint 가 fetch/clone 하지 않는다는 기존 네트워크-0 경계를 지켜 미해소로
+    남긴다. 경로 부재/이동·실 git checkout 검증 실패도 `(None, reason)` — 호출부가
+    `*-unverifiable` advisory 로 표면화해 green 으로 흡수하지 않는다. 알 수 없는 `repo:`
+    값(명시 null/빈 문자열·false·0·컨테이너 포함)도 동일하다.
+    """
+    if owner is None:
+        return (None, "repo(null) 미지원 — 키 부재 또는 self/upstream 이어야 함")
+    elif not isinstance(owner, str):
+        return (None, f"repo({owner!r}) 미지원 — self 또는 upstream 이어야 함")
+    else:
+        value = owner.strip()
+    if value == _FRESHNESS_REPO_SELF:
+        return (REPO, None)
+    if value != _FRESHNESS_REPO_UPSTREAM:
+        shown = value if value else "<empty>"
+        return (None, f"repo({shown}) 미지원 — self 또는 upstream 이어야 함")
+    try:
+        upstream = (local_config().get("upstream") or "").strip()
+    except (OSError, UnicodeError, RuntimeError):
+        return (None, "local.conf 읽기 실패로 upstream 소유 repo 미해소")
+    if not upstream:
+        return (None, "local.conf upstream 미설정으로 소유 repo 미해소")
+    try:
+        # pm_import.classify_upstream 과 같은 self-describing 경계의 필요한 부분만 유지한다.
+        # board→pm_import 의존은 역방향이라 만들지 않는다.
+        is_windows_path = bool(_WINDOWS_DRIVE_PATH_RE.match(upstream))
+        is_url = (not is_windows_path and
+                  ("://" in upstream or bool(_SCP_STYLE_UPSTREAM_RE.match(upstream))))
+        if is_url:
+            return (None, "local.conf upstream 이 URL이라 로컬 소유 repo 미해소")
+        candidate = Path(upstream).expanduser()
+        if not candidate.is_absolute():
+            candidate = REPO / candidate
+        candidate = candidate.resolve()
+    except (OSError, RuntimeError):
+        return (None, f"upstream 경로 해소 실패({upstream})")
+    if not candidate.is_dir():
+        return (None, f"upstream 경로 부재/이동({candidate})")
+    if not (candidate / ".git").exists():
+        return (None, f"upstream 경로가 git checkout 아님({candidate})")
+    checkout = _git_run(["rev-parse", "--is-inside-work-tree"], repo=candidate)
+    if checkout is None or checkout[0] != 0 or checkout[1].strip().lower() != "true":
+        return (None, f"upstream 경로 git checkout 검증 실패({candidate})")
+    return (candidate, None)
 
 
 def _verified_at_finding(doc_file: Path, pathspecs, label: str, kind: str, *,
@@ -8189,7 +8267,12 @@ def _verified_at_finding(doc_file: Path, pathspecs, label: str, kind: str, *,
     sha = str((fm or {}).get("verified_at") or "").strip()
     if not sha:
         return []
-    status, full_oid = _sha_anchor_status(sha, runner=runner)
+    owner = fm["repo"] if "repo" in fm else _FRESHNESS_REPO_SELF
+    owner_repo, owner_error = _freshness_owner_repo(owner)
+    if owner_repo is None:
+        return [(label, kind.replace("-stale", "-unverifiable"),
+                 f"소유 repo freshness 검증 불가 — {owner_error} · architect 재검증 필요")]
+    status, full_oid = _sha_anchor_status(sha, runner=runner, repo=owner_repo)
     if status == _ANCHOR_UNKNOWN:
         return []  # git 부재 등 환경적 판정불가 — 종전 fail-soft silent skip 유지.
     if status != _ANCHOR_OK:
@@ -8198,7 +8281,8 @@ def _verified_at_finding(doc_file: Path, pathspecs, label: str, kind: str, *,
                  _unverifiable_sha_reason(status, sha)
                  + " — freshness 검증 불가·architect 재검증 필요")]
     # canonical full OID 로 stale 검사 (원 입력 재해석 제거·codex R16). 표시는 원 sha(사용자 친화).
-    if _git_commits_between(full_oid, list(pathspecs), runner=runner) is not True:
+    if _git_commits_between(
+            full_oid, list(pathspecs), runner=runner, repo=owner_repo) is not True:
         return []
     return [(label, kind,
              f"verified_at({sha[:12]}) 이후 매핑 경로에 커밋 있음 — architect 재검증 필요")]
@@ -8251,8 +8335,12 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
       - **covers 관찰가능성**(anchor OK 일 때·`covers_pathspecs`·pin 경계): 미추적 + pin 이후
         델타 0 (never-tracked=`templates/**` ① 소유·또는 pin *이전* 삭제) → `absent` → advisory.
         현재 tracked·pin 이후 삭제/rename → `present` → `<sha>..HEAD` stale 검사로.
-    advisory 는 never-block(`_ADVISORY_LINT_KINDS`)이라 `--gate` 종료코드에 기여하지 않는다 —
-    ① worktree 경로를 참조해 억지 판정하지 않고 판정 불가를 정직히 알리는 선에서 멈춘다.
+    **소유 저장소 시계**(T-0470): 페이지 `repo:`가 `self`(부재 기본)면 REPO, `upstream`이면
+    `local.conf upstream=`의 경로형 checkout 에서 anchor·covers·delta를 모두 판정한다. 문서 위치는
+    REPO에 그대로 두고 git 조회만 소유 repo로 바꾼다. upstream 미설정/URL/이동은
+    `domain-unverifiable` advisory 이며 green 으로 흡수하지 않는다.
+
+    advisory 는 never-block(`_ADVISORY_LINT_KINDS`)이라 `--gate` 종료코드에 기여하지 않는다.
 
     fail-soft: domain.py 부재/로드 실패·페이지 없음·verified_at 부재·covers 빈·git 불가(sha
     해소 None) → [](명시 skip·solo/신규 clone 무영향). `updated` date 기반 `lint_domain`
@@ -8278,7 +8366,13 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
         if not any(str(g).strip() for g in covers):
             continue
         label = page.get("title") or domain.page_slug(page)
-        status, full_oid = _sha_anchor_status(sha, runner=runner)
+        owner_repo, owner_error = _freshness_owner_repo(page.get("repo"))
+        if owner_repo is None:
+            findings.append((
+                label, "domain-unverifiable",
+                _UNVERIFIABLE_PREFIX + f"소유 repo 미해소({owner_error})"))
+            continue
+        status, full_oid = _sha_anchor_status(sha, runner=runner, repo=owner_repo)
         if status == _ANCHOR_UNKNOWN:
             continue  # git 부재 등 환경적 판정불가 — 종전 fail-soft silent skip 유지.
         if status != _ANCHOR_OK:
@@ -8290,7 +8384,7 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
         # status OK — **canonical full OID** 를 pin 으로 관찰가능성/stale 판정(원 입력 재해석 제거·
         # codex R16·R4-β pin 경계·R6 :(glob)). covers_pathspecs 의 `<pin>..HEAD` 도 full OID 경유.
         present, absent, unmappable = domain.covers_pathspecs(
-            covers, repo=REPO, git_runner=runner, verified_at=full_oid)
+            covers, repo=owner_repo, git_runner=runner, verified_at=full_oid)
         reasons: list[str] = []
         if absent:
             reasons.append(
@@ -8304,7 +8398,8 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
                              _UNVERIFIABLE_PREFIX + " · ".join(reasons)))
         # present 글롭을 :(glob) magic pathspec 으로 넘겨 full OID 기준 stale 검사(접두사 손실 없이·R6).
         present_specs = [domain.covers_glob_pathspec(g) for g in present]
-        if present_specs and _git_commits_between(full_oid, present_specs, runner=runner) is True:
+        if present_specs and _git_commits_between(
+                full_oid, present_specs, runner=runner, repo=owner_repo) is True:
             findings.append((
                 label, "domain-stale",
                 f"verified_at({sha[:12]}) 이후 covers 경로에 커밋 있음 — 페이지 재검증 필요"))
@@ -8316,13 +8411,14 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
 # sha 를 채운다. 런타임 fallback 누적([[prefer-data-migration-over-fallback]]) 대신 한 번의
 # 마이그레이션 — 이후 lint 는 verified_at 이 항상 있다고 전제(부재는 fail-soft skip 유지).
 
-def _repo_head_sha() -> str | None:
-    """REPO(`git -C REPO`)의 현재 HEAD sha (조회 불가 → None·fail-soft)."""
+def _repo_head_sha(repo: Path | None = None) -> str | None:
+    """`repo`(부재=REPO)의 현재 HEAD sha (조회 불가 → None·fail-soft)."""
     if shutil.which("git") is None:
         return None
+    repo = Path(repo) if repo is not None else REPO
     try:
         r = subprocess.run(
-            ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_BOARD_GIT_TIMEOUT_SECONDS)
     except Exception:  # noqa: BLE001 — 타임아웃/바이너리 이상은 None(fail-soft).
@@ -8330,6 +8426,9 @@ def _repo_head_sha() -> str | None:
     if r.returncode != 0:
         return None
     return (r.stdout or "").strip() or None
+
+
+_FRONTMATTER_FENCE_RE = re.compile(r"^---\s*$")
 
 
 def _insert_verified_at(text: str, sha: str) -> str | None:
@@ -8345,7 +8444,8 @@ def _insert_verified_at(text: str, sha: str) -> str | None:
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
         return None
-    close = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    close = next((i for i in range(1, len(lines))
+                  if _FRONTMATTER_FENCE_RE.match(lines[i])), None)
     if close is None:
         return None
     if any(re.match(r"\s*verified_at\s*:", ln) for ln in lines[1:close]):
@@ -8357,25 +8457,35 @@ def _insert_verified_at(text: str, sha: str) -> str | None:
     return "".join(lines)
 
 
-def _verified_at_backfill_targets() -> list[Path]:
-    """backfill 대상 문서 경로 — architecture.md·status.md + covers 보유 domain 페이지."""
+def _verified_at_backfill_targets(*, strict_domain: bool = False) -> list[Path]:
+    """backfill/repin 대상 — architecture.md·status.md + covers 보유 domain 페이지.
+
+    `strict_domain=True`는 repin의 validate-all-first 열거 모드다. frontmatter로 시작한 domain
+    문서 하나라도 읽기/파싱 실패하면 예외를 전파해, 깨진 문서를 대상에서 조용히 제외한 채
+    나머지만 쓰는 부분 성공을 금지한다. 일반 backfill은 기존 graceful skip을 유지한다.
+    """
     targets: list[Path] = []
     if ARCHITECTURE_FILE.exists():
         targets.append(ARCHITECTURE_FILE)
     if STATUS_FILE.exists():
         targets.append(STATUS_FILE)
     domain = _load_domain_module()
+    if strict_domain and domain is None and DOMAIN_PY.exists():
+        raise RuntimeError(f"{DOMAIN_PY}: domain.py 로드 실패")
     if domain is not None:
         try:
-            for page in domain.load_pages(domain.DOMAIN_DIR):
+            pages = (domain.load_pages(domain.DOMAIN_DIR, strict=True)
+                     if strict_domain else domain.load_pages(domain.DOMAIN_DIR))
+            for page in pages:
                 if page.get("covers"):
                     targets.append(Path(page["path"]))
-        except Exception:  # noqa: BLE001 — domain 스캔 실패는 arch/status 만 backfill.
-            pass
+        except Exception:  # noqa: BLE001 — strict repin은 열거 오류를 전체 중단으로 전파.
+            if strict_domain:
+                raise
     return targets
 
 
-def _canonical_commit_oid(sha: str) -> str | None:
+def _canonical_commit_oid(sha: str, *, repo: Path | None = None) -> str | None:
     """`sha` 가 유효한 backward anchor 면 그 **canonical full OID** 를, 아니면 None (backfill 쓰기).
 
     backfill 이 **검증에서 얻은 full OID 를 그대로 기록**하게 하는 helper(codex R16/R19) — 입력 축약/
@@ -8383,7 +8493,7 @@ def _canonical_commit_oid(sha: str) -> str | None:
     축약은 YAML unquoted 정수 파싱돼 재-lint 서 깨진다. `_sha_anchor_status` 재사용(read/write 대칭·
     사본 0): 고정 hex + 고정 SHA 해소(hex-이름 ref 아님·MF2/R5) + HEAD 선조(R4-α)면 `(OK, full_oid)` →
     full_oid 반환·아니면 None. 검증 불가(git 부재·rc≥2 → UNKNOWN)도 None — 기록은 확실할 때만 한다."""
-    verdict, full_oid = _sha_anchor_status(sha)
+    verdict, full_oid = _sha_anchor_status(sha, repo=repo)
     return full_oid if verdict == _ANCHOR_OK else None
 
 
@@ -8449,6 +8559,248 @@ def cmd_verified_at_backfill(args: argparse.Namespace) -> int:
         else:
             print(f"{prefix}skip({state}) → {shown}")
     print(f"{prefix}{added}개 문서에 verified_at 삽입 (기준 sha {sha[:12]}).")
+    return 0
+
+
+def _replace_freshness_pin(text: str, sha: str, owner: str) -> str | None:
+    """frontmatter 의 `verified_at`·`repo`를 한 소유 시계로 insert-or-replace한다(T-0470).
+
+    전체 YAML 재-dump 없이 두 scalar 줄만 바꿔 hand-authored 순서/날짜/본문을 보존한다.
+    frontmatter가 없거나 닫히지 않으면 None. 같은 값이면 원문을 그대로 반환(호출부가 same 구분).
+    """
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return None
+    close = next((i for i in range(1, len(lines))
+                  if _FRONTMATTER_FENCE_RE.match(lines[i])), None)
+    if close is None:
+        return None
+    wanted = {"repo": owner, "verified_at": f'"{sha}"'}
+    seen: set[str] = set()
+    for i in range(1, close):
+        # 컬럼 0 키만 freshness scalar 로 취급한다. 들여쓴 동명 키는 중첩 mapping 또는
+        # block scalar 본문일 수 있으므로 건드리지 않고, 최상위 키가 없으면 아래에서 새로 넣는다.
+        match = re.match(
+            r"""^(?P<quote>["']?)(?P<key>repo|verified_at)(?P=quote)\s*:.*?(\r?\n)?$""",
+            lines[i],
+        )
+        if not match:
+            continue
+        key, newline = match.group("key"), match.group(3) or ""
+        lines[i] = f"{key}: {wanted[key]}{newline}"
+        seen.add(key)
+    missing = [key for key in ("repo", "verified_at") if key not in seen]
+    if missing:
+        if close > 0 and lines[close - 1] and not lines[close - 1].endswith(("\n", "\r")):
+            lines[close - 1] += "\n"
+        for key in missing:
+            lines.insert(close, f"{key}: {wanted[key]}\n")
+            close += 1
+    return "".join(lines)
+
+
+def _frontmatter_mapping(text: str) -> dict:
+    """문서 frontmatter를 실제 YAML로 파싱해 mapping을 반환한다(repin 검증 전용).
+
+    문자열 치환 성공과 YAML 안전은 별개다. 특히 `repo: >` 뒤 continuation 줄은 첫 줄만
+    바꾸면 YAML이 깨지거나 `upstream <옛값>`으로 의미가 합쳐질 수 있다. 원본과 변환 결과
+    모두 이 함수로 `yaml.safe_load`하고 mapping이 아니어도 안전 교체 불가로 본다.
+    """
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("frontmatter 시작 구분자 없음")
+    close = next((i for i in range(1, len(lines))
+                  if _FRONTMATTER_FENCE_RE.match(lines[i])), None)
+    if close is None:
+        raise ValueError("frontmatter 종료 구분자 없음")
+    parsed = yaml.safe_load("".join(lines[1:close]))
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ValueError(f"frontmatter가 mapping 아님({type(parsed).__name__})")
+    return parsed
+
+
+def _freshness_replacement_error(
+        original: str, replaced: str, sha: str, owner: str) -> str | None:
+    """repin 변환 전후 YAML 의미와 실소비 파서 정합을 검증한다.
+
+    `_frontmatter_mapping`은 의미 보존 검사용이라 공백 fence/EOF fence도 읽지만, 실제 freshness
+    소비자는 `load_ticket`의 엄격한 fence 문법을 쓴다. 최종 결과는 그 파서의 문자열 진입점으로
+    다시 읽어, repin 성공 뒤 lint가 문서를 조용히 skip하는 false-green을 쓰기 전에 차단한다.
+    """
+    try:
+        before = _frontmatter_mapping(original)
+    except (ValueError, yaml.YAMLError) as exc:
+        return f"원본 YAML 파싱 실패:{exc}"
+    try:
+        after = _frontmatter_mapping(replaced)
+    except (ValueError, yaml.YAMLError) as exc:
+        return f"변환 YAML 파싱 실패:{exc}"
+    try:
+        consumed, _body = _parse_ticket_text(replaced, "<repin 변환 결과>")
+    except (ValueError, yaml.YAMLError) as exc:
+        return f"변환 결과 실소비 파서 파싱 실패:{exc}"
+    if not isinstance(consumed, dict):
+        return f"변환 결과 실소비 frontmatter가 mapping 아님({type(consumed).__name__})"
+    if after.get("repo") != owner or after.get("verified_at") != sha:
+        return (
+            "다중행/복합 freshness 값 안전 교체 불가"
+            f"(변환값 repo={after.get('repo')!r}, verified_at={after.get('verified_at')!r})"
+        )
+    before_other = {key: value for key, value in before.items()
+                    if key not in {"repo", "verified_at"}}
+    after_other = {key: value for key, value in after.items()
+                   if key not in {"repo", "verified_at"}}
+    if after_other != before_other:
+        return "freshness 외 frontmatter 의미 변경 감지"
+    return None
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """같은 디렉토리의 임시 파일을 완전히 flush한 뒤 `os.replace`로 원자 교체한다.
+
+    임시 파일 쓰기/flush/fsync 또는 replace가 실패하면 임시 파일만 정리하고 원본은 건드리지
+    않는다. 기존 파일 mode도 임시 파일에 복제해 교체가 권한을 바꾸지 않게 한다.
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        os.chmod(tmp_path, path.stat().st_mode & 0o7777)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            fd = -1  # fd 소유권은 handle로 이전됐다.
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+
+def repin_verified_at(sha: str, owner: str, *,
+                      dry_run: bool = False) -> list[tuple[Path, str]]:
+    """architecture/status + covers domain 페이지를 validate-all-first 후 일괄 재핀한다.
+
+    1단계에서 전 대상을 읽고 frontmatter 변환 가능 여부를 검증한다. 하나라도 읽기/frontmatter
+    오류면 **어느 파일도 쓰지 않고** `error:*` + `not-written:validation-failed` 상태를 돌려준다.
+    전부 유효할 때만 2단계 원자 교체를 시작한다. 쓰기 오류는 앞서 교체된 파일은 `updated`,
+    원본이 보존된 실패 파일은 `error:write`, 뒤 대상은 `not-written:write-failed`로 명시해
+    호출부가 실제 변경 범위를 정확히 보고할 수 있게 한다. dry-run은 검증까지만 하고 변경
+    예정 대상을 `updated`로 표시한다.
+    """
+    prepared: list[tuple[Path, str, str | None]] = []
+    try:
+        targets = _verified_at_backfill_targets(strict_domain=True)
+    except Exception as exc:  # noqa: BLE001 — 대상 열거 실패도 validate-all-first 중단.
+        error_path = Path(getattr(exc, "path", DOMAIN_PY.parent.parent / "wiki" / "domain"))
+        return [(error_path, f"error:enumeration:{exc}")]
+    for path in targets:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            prepared.append((path, f"error:read:{exc}", None))
+            continue
+        new_text = _replace_freshness_pin(text, sha, owner)
+        if new_text is None:
+            prepared.append((path, "error:no-frontmatter", None))
+            continue
+        replacement_error = _freshness_replacement_error(text, new_text, sha, owner)
+        if replacement_error is not None:
+            prepared.append((path, f"error:yaml:{replacement_error}", None))
+            continue
+        if new_text == text:
+            prepared.append((path, "same", None))
+            continue
+        prepared.append((path, "ready", new_text))
+
+    if any(state.startswith("error:") for _path, state, _text in prepared):
+        return [
+            (path, "not-written:validation-failed" if state == "ready" else state)
+            for path, state, _text in prepared
+        ]
+
+    if dry_run:
+        return [(path, "updated" if state == "ready" else state)
+                for path, state, _text in prepared]
+
+    results: list[tuple[Path, str]] = []
+    for index, (path, state, new_text) in enumerate(prepared):
+        if state == "same":
+            results.append((path, state))
+            continue
+        try:
+            _atomic_write_text(path, new_text)
+        except (OSError, UnicodeError) as exc:
+            results.append((path, f"error:write:{exc}"))
+            results.extend(
+                (later_path, "not-written:write-failed" if later_state == "ready" else later_state)
+                for later_path, later_state, _later_text in prepared[index + 1:]
+            )
+            break
+        results.append((path, "updated"))
+    return results
+
+
+def cmd_verified_at_repin(args: argparse.Namespace) -> int:
+    """`verified-at-repin` — 현재-진실 문서를 validate-all-first로 소유 repo full OID에 재핀한다."""
+    owner = args.repo
+    owner_repo, owner_error = _freshness_owner_repo(owner)
+    if owner_repo is None:
+        print(f"verified-at-repin: 소유 repo 미해소 — {owner_error}", file=sys.stderr)
+        return 1
+    requested = (args.sha or "").strip()
+    if requested:
+        sha = _canonical_commit_oid(requested, repo=owner_repo)
+        if sha is None:
+            print(f"verified-at-repin: --sha {requested} 가 {owner} repo의 HEAD 선조 commit으로 "
+                  "검증되지 않는다 — 기록 중단.", file=sys.stderr)
+            return 1
+    else:
+        sha = _repo_head_sha(owner_repo)
+        if not sha:
+            print(f"verified-at-repin: {owner} repo HEAD 조회 실패 — 기준 sha 미정.",
+                  file=sys.stderr)
+            return 1
+    results = repin_verified_at(sha, owner, dry_run=args.dry_run)
+    if not results:
+        print("verified-at-repin: 대상 문서 없음 (architecture.md·status.md·covers domain 부재).")
+        return 0
+    prefix = "[dry-run] " if args.dry_run else ""
+    updated = 0
+    shown_by_path: dict[Path, str] = {}
+    for path, state in results:
+        try:
+            shown = path.relative_to(REPO).as_posix()
+        except ValueError:
+            shown = str(path)
+        shown_by_path[path] = shown
+        if state == "updated":
+            updated += 1
+        stream = sys.stderr if state.startswith("error:") else sys.stdout
+        print(f"{prefix}{state}: {shown} → repo={owner}, verified_at={sha}", file=stream)
+    validation_errors = [(path, state) for path, state in results
+                         if state.startswith(("error:read:", "error:no-frontmatter",
+                                              "error:yaml:", "error:enumeration:"))]
+    if validation_errors:
+        details = ", ".join(f"{shown_by_path[path]}({state})" for path, state in validation_errors)
+        print("verified-at-repin: 전 대상 검증 실패 — 무변경·재핀 중단: " + details,
+              file=sys.stderr)
+        return 1
+    write_errors = [(path, state) for path, state in results if state.startswith("error:write:")]
+    if write_errors:
+        changed = [shown_by_path[path] for path, state in results if state == "updated"]
+        changed_text = ", ".join(changed) if changed else "(없음)"
+        failed_text = ", ".join(shown_by_path[path] for path, _state in write_errors)
+        print(f"verified-at-repin: 쓰기 실패({failed_text}) — 이미 변경된 파일: {changed_text}",
+              file=sys.stderr)
+        return 1
+    print(f"{prefix}{updated}개 문서 재핀 (소유 repo={owner}, anchor={sha}).")
     return 0
 
 
@@ -8574,9 +8926,9 @@ def lint_domain() -> list[tuple[str, str, str]]:
     프로젝트 무영향). domain.py 가 이미 graceful 이므로 얇게 위임하되, 어떤 예외도 [] 로
     흡수해 board lint 자체는 항상 정상 진행한다.
 
-    git_runner 는 board 의 REPO 컨텍스트로 1회 생성해 domain.lint_pages 에 주입한다
-    (per-page git 호출·테스트 hermetic seam). 생성 실패 시 stale 판정은 unknown 으로 떨어져
-    finding 에서 빠진다(비차단).
+    date freshness도 페이지별 `repo:` 소유 시계로 판정한다(T-0470). owner checkout별 runner를
+    캐시해 같은 repo 페이지끼리 공유하고, 소유 repo 미해소/runner 생성 실패는 그 페이지 stale을
+    unknown으로 둔다(sha freshness 축은 별도 `domain-unverifiable` advisory로 표면화).
     """
     domain = _load_domain_module()
     if domain is None:
@@ -8586,11 +8938,18 @@ def lint_domain() -> list[tuple[str, str, str]]:
         # monkeypatch(테스트)·재바인딩을 못 본다(domain.cmd_lint 동형). 호출 시점의
         # 모듈 전역 DOMAIN_DIR 을 읽게 한다.
         pages = domain.load_pages(domain.DOMAIN_DIR)
-        try:
-            git_runner = domain._real_git_runner(REPO)
-        except Exception:  # noqa: BLE001 — runner 생성 실패는 stale unknown 으로 흡수.
-            git_runner = None
-        findings = domain.lint_pages(pages, git_runner=git_runner)
+        runners: dict[Path, object] = {}
+
+        def git_runner_factory(page):
+            owner_repo, _owner_error = _freshness_owner_repo(page.get("repo"))
+            if owner_repo is None:
+                return None
+            owner_repo = Path(owner_repo)
+            if owner_repo not in runners:
+                runners[owner_repo] = domain._real_git_runner(owner_repo)
+            return runners[owner_repo]
+
+        findings = domain.lint_pages(pages, git_runner_factory=git_runner_factory)
     except Exception:  # noqa: BLE001 — 어떤 실패도 빈 결과로 흡수(board lint 정상 진행).
         return []
     # domain (kind, label, detail) → board (label, kind, detail) 재배열.
@@ -8995,6 +9354,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sha", help="기준 커밋 sha (미지정 시 REPO HEAD — released 지점 권장)")
     p.add_argument("--dry-run", action="store_true", help="쓰기 0·무엇이 바뀔지만 표시")
     p.set_defaults(fn=cmd_verified_at_backfill)
+
+    p = sub.add_parser(
+        "verified-at-repin",
+        help="현재-진실 문서의 repo+verified_at을 소유 저장소 full OID로 일괄 전환 (T-0470)")
+    p.add_argument("--repo", choices=[_FRESHNESS_REPO_SELF, _FRESHNESS_REPO_UPSTREAM],
+                   required=True,
+                   help="freshness 소유 시계 — self 또는 local.conf의 경로형 upstream")
+    p.add_argument("--sha", help="소유 repo 기준 커밋 sha (미지정 시 그 repo HEAD)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="쓰기 0·페이지→repo/full-anchor 매핑 미리보기")
+    p.set_defaults(fn=cmd_verified_at_repin)
 
     p = sub.add_parser("promote-scope",
                        help="family wiki scope retag — `repoA → shared` (ADR-0015)")

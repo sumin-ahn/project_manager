@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -140,7 +141,7 @@ def _fs_git(*, tracked=(), post_pin=()):
 # ── domain 페이지 fixture 와이어링 ────────────────────────────────────────────
 
 def _domain_page(domain_dir: Path, name: str, *, covers, verified_at=None,
-                 title="페이지") -> Path:
+                 title="페이지", repo=None) -> Path:
     domain_dir.mkdir(parents=True, exist_ok=True)
     fm = [f"title: {title}", "type: concept"]
     if covers:
@@ -150,6 +151,8 @@ def _domain_page(domain_dir: Path, name: str, *, covers, verified_at=None,
         fm.extend(f'  - "{c}"' for c in covers)
     if verified_at is not None:
         fm.append(f"verified_at: {verified_at}")
+    if repo is not None:
+        fm.append(f"repo: {repo}")
     path = domain_dir / name
     path.write_text("---\n" + "\n".join(fm) + "\n---\n\nbody\n", encoding="utf-8")
     return path
@@ -158,6 +161,7 @@ def _domain_page(domain_dir: Path, name: str, *, covers, verified_at=None,
 def _wire(board, domain, monkeypatch, repo: Path):
     domain_dir = repo / "domain"
     monkeypatch.setattr(board, "REPO", repo)
+    monkeypatch.setattr(board, "LOCAL_CONF", repo / ".project_manager" / "local.conf")
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
     return domain_dir
@@ -455,6 +459,623 @@ def _commit(root: Path, msg: str) -> str:
     subprocess.run(["git", "-C", str(root), "commit", "-qm", msg], check=True)
     return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
                           capture_output=True, text=True).stdout.strip()
+
+
+def test_two_repo_owner_change_closes_unsynced_copy_window(
+        board, domain, monkeypatch, tmp_path):
+    """2-repo 재현: 원본 변경·PM import 사본 미동기여도 세 freshness 축이 원본 시계로 stale.
+
+    PM 홈은 owner initial commit을 clone해 두 저장소가 같은 pin을 공유한다. 이후 PM 홈에는
+    문서만 commit하고 import 사본은 그대로, owner에서만 tools 경로를 바꾼다. 종전 REPO 시계
+    질의가 clean임을 음성 대조한 뒤 새 owner 시계의 domain/architecture/status 발화를 확인한다.
+    """
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    _init_repo(owner)
+    engine = owner / ".project_manager" / "tools" / "engine.py"
+    engine.parent.mkdir(parents=True)
+    engine.write_text("VERSION = 1\n", encoding="utf-8")
+    pin = _commit(owner, "owner initial")
+
+    pm_home = tmp_path / "pm-home"
+    subprocess.run(["git", "clone", "-q", str(owner), str(pm_home)], check=True)
+    subprocess.run(["git", "-C", str(pm_home), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(pm_home), "config", "user.name", "t"], check=True)
+    wiki = pm_home / ".project_manager" / "wiki"
+    domain_dir = wiki / "domain"
+    _domain_page(domain_dir, "engine.md", covers=[".project_manager/tools/**"],
+                 verified_at=pin, title="엔진", repo="upstream")
+    for name, doc_type in (("architecture.md", "architecture"), ("status.md", "status")):
+        (wiki / name).write_text(
+            "---\n"
+            f"title: {name}\ntype: {doc_type}\nrepo: upstream\nverified_at: {pin}\n"
+            "---\n\nbody\n", encoding="utf-8")
+    local_conf = pm_home / ".project_manager" / "local.conf"
+    local_conf.write_text(f"upstream={owner}\n", encoding="utf-8")
+    _commit(pm_home, "PM docs only")
+
+    # Canonical owner만 변경. PM import copy는 VERSION=1 그대로다.
+    engine.write_text("VERSION = 2\n", encoding="utf-8")
+    _commit(owner, "owner engine change")
+    assert (pm_home / ".project_manager" / "tools" / "engine.py").read_text() == "VERSION = 1\n"
+
+    monkeypatch.setattr(board, "REPO", pm_home)
+    monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", wiki / "architecture.md")
+    monkeypatch.setattr(board, "STATUS_FILE", wiki / "status.md")
+    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
+
+    # 종전 PM-home 시계는 import 사본 경로 변경이 없어 clean이었다(조용한 오답 창의 대조군).
+    assert board._git_commits_between(
+        pin, [".project_manager/tools"], repo=pm_home) is False
+    assert [kind for _label, kind, _detail in board.lint_domain_freshness()] == [
+        "domain-stale"]
+    assert [kind for _label, kind, _detail in board.lint_architecture_freshness()] == [
+        "architecture-stale"]
+    assert [kind for _label, kind, _detail in board.lint_status_freshness()] == [
+        "status-stale"]
+
+
+def test_upstream_owner_unresolved_stays_advisory(
+        board, domain, monkeypatch, tmp_path):
+    domain_dir = _wire(board, domain, monkeypatch, tmp_path)
+    _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at="cafe0001",
+                 title="외부소유", repo="upstream")
+    # local.conf/upstream 부재 — runner를 호출해 self로 green 흡수하면 안 된다.
+    findings = board.lint_domain_freshness(runner=_raising_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert (label, kind) == ("외부소유", "domain-unverifiable")
+    assert "upstream 미설정" in detail and "소유 repo" in detail
+
+
+def test_explicit_null_owner_is_unverifiable_not_self(
+        board, domain, monkeypatch, tmp_path):
+    """`repo: null`은 키 부재가 아니다 — self 시계로 흡수하지 않고 advisory."""
+    domain_dir = _wire(board, domain, monkeypatch, tmp_path)
+    domain_dir.mkdir(parents=True)
+    page = domain_dir / "null-owner.md"
+    page.write_text(
+        "---\ntitle: null소유\ntype: concept\ncovers: [src/**]\n"
+        "verified_at: cafe0001\nrepo: null\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    findings = board.lint_domain_freshness(runner=_raising_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert (label, kind) == ("null소유", "domain-unverifiable")
+    assert "repo(null) 미지원" in detail
+
+
+@pytest.mark.parametrize("repo_literal", ['""', "false", "0", "[]", "unsupported"])
+def test_unsupported_repo_values_including_falsy_stay_advisory(
+        board, domain, monkeypatch, tmp_path, repo_literal):
+    domain_dir = _wire(board, domain, monkeypatch, tmp_path)
+    _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at="cafe0001",
+                 title="잘못된소유", repo=repo_literal)
+    # false/0/[]를 `owner or "self"`로 흡수하면 runner가 호출돼 조용한 green이 된다.
+    findings = board.lint_domain_freshness(runner=_raising_git)
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert (label, kind) == ("잘못된소유", "domain-unverifiable")
+    assert "repo(" in detail and "미지원" in detail
+
+
+def test_date_freshness_lint_uses_owner_repo_runner(
+        board, domain, monkeypatch, tmp_path):
+    """updated/date 축도 upstream runner를 써 self의 false stale/green을 모두 배제한다."""
+    self_repo = tmp_path / "self"
+    owner_repo = tmp_path / "owner"
+    self_repo.mkdir()
+    owner_repo.mkdir()
+    domain_dir = self_repo / "domain"
+    _domain_page(domain_dir, "p.md", covers=["src/**"], title="소유페이지",
+                 repo="upstream")
+    # helper의 기본 updated가 없으므로 date 축 대상이 되도록 명시 교체한다.
+    page_path = domain_dir / "p.md"
+    page_path.write_text(
+        page_path.read_text(encoding="utf-8").replace(
+            "type: concept\n", "type: concept\nupdated: 2026-06-19\n"),
+        encoding="utf-8")
+    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
+    monkeypatch.setattr(
+        board, "_freshness_owner_repo",
+        lambda owner: (owner_repo, None) if owner == "upstream" else (self_repo, None))
+
+    dates = {
+        self_repo: "2026-06-20T00:00:00Z\n",   # 잘못된 self 시계면 false stale
+        owner_repo: "2026-06-18T00:00:00Z\n",  # 실제 owner 시계는 fresh
+    }
+    seen: list[Path] = []
+
+    def runner_for(repo):
+        seen.append(Path(repo))
+        return lambda _argv: (0, dates[Path(repo)])
+
+    monkeypatch.setattr(domain, "_real_git_runner", runner_for)
+    assert not any(kind == "stale" for _label, kind, _detail in board.lint_domain())
+    assert seen == [owner_repo]
+
+    dates[self_repo] = "2026-06-18T00:00:00Z\n"   # 잘못된 self 시계면 false green
+    dates[owner_repo] = "2026-06-20T00:00:00Z\n"  # 실제 owner 시계는 stale
+    seen.clear()
+    assert [kind for _label, kind, _detail in board.lint_domain()] == ["stale"]
+    assert seen == [owner_repo]
+
+
+@pytest.mark.parametrize(
+    ("case", "detail_fragment"),
+    [
+        ("url", "URL"),
+        ("moved", "부재/이동"),
+        ("non_git", "git checkout 아님"),
+        ("damaged_git_marker", "git checkout 검증 실패"),
+    ],
+)
+def test_unusable_upstream_paths_stay_advisory(
+        board, domain, monkeypatch, tmp_path, case, detail_fragment):
+    domain_dir = _wire(board, domain, monkeypatch, tmp_path)
+    _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at="cafe0001",
+                 title="외부소유", repo="upstream")
+    local_conf = tmp_path / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True)
+    candidate = tmp_path / "owner"
+    if case == "url":
+        upstream = "https://example.invalid/owner.git"
+    elif case == "moved":
+        upstream = str(candidate)  # 존재하지 않음 = 이동/삭제된 checkout.
+    else:
+        candidate.mkdir()
+        if case == "damaged_git_marker":
+            (candidate / ".git").mkdir()  # 표식만 있고 rev-parse는 실패하는 손상 경로.
+        upstream = str(candidate)
+    local_conf.write_text(f"upstream={upstream}\n", encoding="utf-8")
+
+    findings = board.lint_domain_freshness(runner=_raising_git)
+    assert len(findings) == 1
+    _label, kind, detail = findings[0]
+    assert kind == "domain-unverifiable"
+    assert detail_fragment in detail
+
+
+def test_unexpandable_upstream_user_stays_advisory(
+        board, domain, monkeypatch, tmp_path):
+    domain_dir = _wire(board, domain, monkeypatch, tmp_path)
+    _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at="cafe0001",
+                 title="외부소유", repo="upstream")
+    local_conf = tmp_path / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True)
+    local_conf.write_text(
+        "upstream=~codex_user_that_must_not_exist_0470/owner\n", encoding="utf-8")
+
+    findings = board.lint_domain_freshness(runner=_raising_git)
+    assert len(findings) == 1
+    _label, kind, detail = findings[0]
+    assert kind == "domain-unverifiable"
+    assert "경로 해소 실패" in detail
+
+
+def test_solo_self_owner_naturally_uses_same_repo(
+        board, domain, monkeypatch, tmp_path):
+    _init_repo(tmp_path)
+    src = tmp_path / "src" / "engine.py"
+    src.parent.mkdir()
+    src.write_text("v1\n", encoding="utf-8")
+    pin = _commit(tmp_path, "initial")
+    domain_dir = _wire(board, domain, monkeypatch, tmp_path)
+    _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at=pin, title="solo")
+    _commit(tmp_path, "docs")
+    src.write_text("v2\n", encoding="utf-8")
+    _commit(tmp_path, "engine change")
+    findings = board.lint_domain_freshness()
+    assert [kind for _label, kind, _detail in findings] == ["domain-stale"]
+
+
+def test_repin_migration_replaces_owner_and_anchor_for_all_current_truth_docs(
+        board, domain, monkeypatch, tmp_path):
+    wiki = tmp_path / ".project_manager" / "wiki"
+    domain_dir = wiki / "domain"
+    domain_dir.mkdir(parents=True)
+    for name, doc_type in (("architecture.md", "architecture"), ("status.md", "status")):
+        (wiki / name).write_text(
+            f"---\ntitle: {name}\ntype: {doc_type}\nverified_at: \"deadbeef\"\n---\n",
+            encoding="utf-8")
+    page = _domain_page(domain_dir, "p.md", covers=["src/**"],
+                        verified_at="deadbeef", title="page")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", wiki / "architecture.md")
+    monkeypatch.setattr(board, "STATUS_FILE", wiki / "status.md")
+    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
+    full = "cafe0001" + "0" * 32
+    results = board.repin_verified_at(full, "upstream")
+    assert [state for _path, state in results] == ["updated", "updated", "updated"]
+    for path in (wiki / "architecture.md", wiki / "status.md", page):
+        text = path.read_text(encoding="utf-8")
+        assert "repo: upstream" in text
+        assert f'verified_at: "{full}"' in text
+        assert "deadbeef" not in text
+
+
+def test_repin_only_replaces_or_inserts_column_zero_keys(board):
+    old = (
+        "---\n"
+        "title: fixture\n"
+        "metadata:\n"
+        "  repo: nested-owner\n"
+        "  verified_at: nested-pin\n"
+        "notes: |\n"
+        "  repo: prose-owner\n"
+        "  verified_at: prose-pin\n"
+        "---\n"
+        "\nbody\n"
+    )
+    full = "cafe0001" + "0" * 32
+    replaced = board._replace_freshness_pin(old, full, "upstream")
+    assert replaced is not None
+    # 중첩 mapping/block scalar 내용은 byte-for-byte 보존되고, 최상위 두 키가 별도로 삽입된다.
+    assert "  repo: nested-owner\n  verified_at: nested-pin\n" in replaced
+    assert "  repo: prose-owner\n  verified_at: prose-pin\n" in replaced
+    assert replaced.count("\nrepo: upstream\n") == 1
+    assert replaced.count(f'\nverified_at: "{full}"\n') == 1
+
+
+def test_repin_indented_fence_in_block_scalar_preserves_content(
+        board, monkeypatch, tmp_path):
+    """들여쓴 `---`는 block scalar 본문이며 frontmatter 종료로 오인하지 않는다."""
+    path = tmp_path / "block.md"
+    original = (
+        "---\n"
+        "title: fixture\n"
+        "notes: |\n"
+        "  first line\n"
+        "  ---\n"
+        "  repo: prose-owner\n"
+        "repo: self\n"
+        "verified_at: deadbeef\n"
+        "---\n"
+        "\nbody\n"
+    )
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(
+        board, "_verified_at_backfill_targets", lambda **_kwargs: [path])
+
+    full = "cafe0001" + "0" * 32
+    assert board.repin_verified_at(full, "upstream") == [(path, "updated")]
+    replaced = path.read_text(encoding="utf-8")
+    assert "notes: |\n  first line\n  ---\n  repo: prose-owner\n" in replaced
+    assert board._frontmatter_mapping(replaced)["notes"] == (
+        "first line\n---\nrepo: prose-owner\n")
+
+
+def test_repin_quoted_freshness_keys_do_not_create_duplicates(board):
+    original = (
+        "---\n"
+        "title: quoted\n"
+        "'repo': self\n"
+        '"verified_at": deadbeef\n'
+        "---\n"
+    )
+    full = "cafe0001" + "0" * 32
+    replaced = board._replace_freshness_pin(original, full, "upstream")
+    assert replaced is not None
+    key_lines = replaced.splitlines()
+    assert sum(bool(re.match(r"""^(?:repo|["']repo["'])\s*:""", line))
+               for line in key_lines) == 1
+    assert sum(bool(re.match(r"""^(?:verified_at|["']verified_at["'])\s*:""", line))
+               for line in key_lines) == 1
+    assert board._frontmatter_mapping(replaced)["repo"] == "upstream"
+    assert board._frontmatter_mapping(replaced)["verified_at"] == full
+
+
+def test_repin_multiline_yaml_value_aborts_all_without_damage(
+        board, monkeypatch, tmp_path):
+    """다중행 scalar 첫 줄만 바꾸는 변환은 YAML 의미 검증에서 거부하고 전 파일 무변경."""
+    good = tmp_path / "good.md"
+    multiline = tmp_path / "multiline.md"
+    good_original = "---\ntitle: good\nrepo: self\nverified_at: deadbeef\n---\n"
+    multiline_original = (
+        "---\ntitle: folded\nrepo: >\n  upstream\n"
+        "verified_at: deadbeef\n---\n\nbody\n"
+    )
+    good.write_text(good_original, encoding="utf-8")
+    multiline.write_text(multiline_original, encoding="utf-8")
+    monkeypatch.setattr(
+        board, "_verified_at_backfill_targets",
+        lambda **_kwargs: [good, multiline],
+    )
+
+    full = "cafe0001" + "0" * 32
+    results = board.repin_verified_at(full, "upstream")
+    states = {path: state for path, state in results}
+    assert states[good] == "not-written:validation-failed"
+    assert states[multiline].startswith("error:yaml:")
+    assert "안전 교체 불가" in states[multiline]
+    assert good.read_text(encoding="utf-8") == good_original
+    assert multiline.read_text(encoding="utf-8") == multiline_original
+
+
+@pytest.mark.parametrize(
+    ("name", "invalid_original"),
+    [
+        (
+            "closing-fence-without-newline.md",
+            "---\ntitle: invalid\nrepo: self\nverified_at: deadbeef\n---",
+        ),
+        (
+            "closing-fence-with-spaces.md",
+            "---\ntitle: invalid\nrepo: self\nverified_at: deadbeef\n---   \n\nbody\n",
+        ),
+    ],
+)
+def test_repin_aborts_all_when_result_is_unreadable_by_consumer_parser(
+        board, monkeypatch, tmp_path, name, invalid_original):
+    """repin 자체 YAML 검증만 통과해도 load_ticket 문법이 못 읽으면 전 파일 사전 차단."""
+    good = tmp_path / "good.md"
+    invalid = tmp_path / name
+    good_original = "---\ntitle: good\nrepo: self\nverified_at: deadbeef\n---\n"
+    good.write_text(good_original, encoding="utf-8")
+    invalid.write_text(invalid_original, encoding="utf-8")
+    monkeypatch.setattr(
+        board, "_verified_at_backfill_targets",
+        lambda **_kwargs: [good, invalid],
+    )
+
+    with pytest.raises(ValueError):
+        board.load_ticket(invalid)
+    full = "cafe0001" + "0" * 32
+    results = dict(board.repin_verified_at(full, "upstream"))
+
+    assert results[good] == "not-written:validation-failed"
+    assert results[invalid].startswith("error:yaml:")
+    assert "실소비 파서 파싱 실패" in results[invalid]
+    assert good.read_text(encoding="utf-8") == good_original
+    assert invalid.read_text(encoding="utf-8") == invalid_original
+
+
+def test_repin_cli_dry_run_writes_nothing(
+        board, monkeypatch, tmp_path):
+    _init_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("v1\n", encoding="utf-8")
+    pin = _commit(tmp_path, "initial")
+    wiki = tmp_path / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    architecture = wiki / "architecture.md"
+    original = "---\ntitle: architecture\ntype: architecture\nverified_at: deadbeef\n---\n"
+    architecture.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", architecture)
+    monkeypatch.setattr(board, "STATUS_FILE", wiki / "missing-status.md")
+    monkeypatch.setattr(board, "DOMAIN_PY", tmp_path / "missing-domain.py")
+    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+
+    rc = board.main([
+        "verified-at-repin", "--repo", "self", "--sha", pin, "--dry-run"])
+    assert rc == 0
+    assert architecture.read_text(encoding="utf-8") == original
+
+
+def test_repin_cli_invalid_sha_fails_loud_without_writing(
+        board, monkeypatch, tmp_path, capsys):
+    _init_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("v1\n", encoding="utf-8")
+    _commit(tmp_path, "initial")
+    wiki = tmp_path / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    architecture = wiki / "architecture.md"
+    original = "---\ntitle: architecture\ntype: architecture\nverified_at: deadbeef\n---\n"
+    architecture.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", architecture)
+    monkeypatch.setattr(board, "STATUS_FILE", wiki / "missing-status.md")
+    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+
+    rc = board.main([
+        "verified-at-repin", "--repo", "self", "--sha", "definitely-not-a-sha"])
+    assert rc == 1
+    assert "검증되지 않는다" in capsys.readouterr().err
+    assert architecture.read_text(encoding="utf-8") == original
+
+
+def test_repin_validation_failure_is_nonzero_and_changes_nothing(
+        board, monkeypatch, tmp_path, capsys):
+    """한 대상 frontmatter 오류면 valid 앞 대상도 쓰지 않는 validate-all-first 계약."""
+    _init_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("v1\n", encoding="utf-8")
+    pin = _commit(tmp_path, "initial")
+    good = tmp_path / "good.md"
+    broken = tmp_path / "broken.md"
+    good_original = "---\ntitle: good\nverified_at: deadbeef\n---\n"
+    broken_original = "frontmatter 없음\n"
+    good.write_text(good_original, encoding="utf-8")
+    broken.write_text(broken_original, encoding="utf-8")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "_verified_at_backfill_targets",
+                        lambda **_kwargs: [good, broken])
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+
+    rc = board.main(["verified-at-repin", "--repo", "self", "--sha", pin])
+    assert rc != 0
+    assert good.read_text(encoding="utf-8") == good_original
+    assert broken.read_text(encoding="utf-8") == broken_original
+    err = capsys.readouterr().err
+    assert "전 대상 검증 실패" in err and "무변경" in err
+
+
+def test_atomic_write_text_flush_failure_preserves_original_bytes_and_cleans_temp(
+        board, monkeypatch, tmp_path):
+    """임시 파일 flush 실패는 대상 원본 byte와 디렉토리에 어떤 흔적도 남기지 않는다."""
+    path = tmp_path / "page.md"
+    original = b"---\r\ntitle: original\r\n---\r\n"
+    path.write_bytes(original)
+
+    def fail_flush(_fd):
+        raise OSError("injected flush failure")
+
+    monkeypatch.setattr(board.os, "fsync", fail_flush)
+    with pytest.raises(OSError, match="injected flush failure"):
+        board._atomic_write_text(path, "---\ntitle: replacement\n---\n")
+
+    assert path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_repin_write_failure_reports_changed_prefix_and_stops(
+        board, monkeypatch, tmp_path):
+    """두 번째 임시 파일 flush 실패 시 원본 보존 + 앞 변경/뒤 미변경 보고가 정확하다."""
+    paths = [tmp_path / name for name in ("a.md", "b.md", "c.md")]
+    original = "---\ntitle: page\nverified_at: deadbeef\n---\n"
+    for path in paths:
+        path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(board, "_verified_at_backfill_targets",
+                        lambda **_kwargs: paths)
+    real_fsync = board.os.fsync
+    fsync_calls = 0
+
+    def fail_second(_fd):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            raise OSError("injected write failure")
+        return real_fsync(_fd)
+
+    monkeypatch.setattr(board.os, "fsync", fail_second)
+    full = "cafe0001" + "0" * 32
+    results = board.repin_verified_at(full, "self")
+    assert [state.split(":", 2)[0] for _path, state in results] == [
+        "updated", "error", "not-written"]
+    assert f'verified_at: "{full}"' in paths[0].read_text(encoding="utf-8")
+    assert paths[1].read_bytes() == original.encode()
+    assert paths[2].read_bytes() == original.encode()
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_repin_cli_write_failure_is_nonzero_and_names_changed_files(
+        board, monkeypatch, tmp_path, capsys):
+    """쓰기 실패 CLI는 rc≠0과 실제 교체된 prefix만 명시한다(실패 파일 원본 보존)."""
+    paths = [tmp_path / name for name in ("a.md", "b.md", "c.md")]
+    original = "---\ntitle: page\nverified_at: deadbeef\n---\n"
+    for path in paths:
+        path.write_text(original, encoding="utf-8")
+    full = "cafe0001" + "0" * 32
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "_repo_head_sha", lambda _repo=None: full)
+    monkeypatch.setattr(board, "_verified_at_backfill_targets",
+                        lambda **_kwargs: paths)
+    real_fsync = board.os.fsync
+    fsync_calls = 0
+
+    def fail_second(_fd):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            raise OSError("injected write failure")
+        return real_fsync(_fd)
+
+    monkeypatch.setattr(board.os, "fsync", fail_second)
+    rc = board.cmd_verified_at_repin(
+        SimpleNamespace(repo="self", sha=None, dry_run=False))
+    assert rc != 0
+    captured = capsys.readouterr()
+    assert "쓰기 실패" in captured.err
+    assert "이미 변경된 파일: a.md" in captured.err
+    assert "b.md" in captured.err
+    assert "이미 변경된 파일: a.md, b.md" not in captured.err
+    assert "not-written:write-failed: c.md" in captured.out
+    assert paths[1].read_bytes() == original.encode()
+
+
+def test_repin_cli_unexpandable_upstream_user_fails_before_writing(
+        board, monkeypatch, tmp_path, capsys):
+    """`~없는사용자` upstream은 CLI에서 명시 실패하고 대상 파일을 건드리지 않는다."""
+    wiki = tmp_path / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    architecture = wiki / "architecture.md"
+    original = "---\ntitle: architecture\nverified_at: deadbeef\n---\n"
+    architecture.write_text(original, encoding="utf-8")
+    local_conf = tmp_path / ".project_manager" / "local.conf"
+    local_conf.write_text(
+        "upstream=~codex_user_that_must_not_exist_0470/owner\n", encoding="utf-8")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", architecture)
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+
+    rc = board.main(["verified-at-repin", "--repo", "upstream"])
+    assert rc != 0
+    assert architecture.read_text(encoding="utf-8") == original
+    assert "경로 해소 실패" in capsys.readouterr().err
+
+
+def test_repin_domain_parse_error_aborts_enumeration_and_changes_nothing(
+        board, domain, monkeypatch, tmp_path, capsys):
+    """대상 domain 문서 파싱 실패도 rc!=0·전 파일 무변경인 열거 검증 실패다."""
+    _init_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("v1\n", encoding="utf-8")
+    pin = _commit(tmp_path, "initial")
+    wiki = tmp_path / ".project_manager" / "wiki"
+    domain_dir = wiki / "domain"
+    domain_dir.mkdir(parents=True)
+    architecture = wiki / "architecture.md"
+    original = "---\ntitle: architecture\nrepo: self\nverified_at: deadbeef\n---\n"
+    architecture.write_text(original, encoding="utf-8")
+    broken = domain_dir / "broken.md"
+    broken_original = "---\ntitle: [invalid\n---\n"
+    broken.write_text(broken_original, encoding="utf-8")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", architecture)
+    monkeypatch.setattr(board, "STATUS_FILE", wiki / "missing-status.md")
+    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+
+    rc = board.main(["verified-at-repin", "--repo", "self", "--sha", pin])
+    assert rc != 0
+    assert architecture.read_text(encoding="utf-8") == original
+    assert broken.read_text(encoding="utf-8") == broken_original
+    err = capsys.readouterr().err
+    assert "error:enumeration:" in err
+    assert "broken.md" in err
+    assert "전 대상 검증 실패" in err and "무변경" in err
+
+
+def test_repin_domain_load_failure_aborts_enumeration_and_changes_nothing(
+        board, monkeypatch, tmp_path, capsys):
+    """실재 domain.py 로드 실패는 strict 열거 오류이며 architecture도 쓰지 않는다."""
+    _init_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("v1\n", encoding="utf-8")
+    pin = _commit(tmp_path, "initial")
+    wiki = tmp_path / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    architecture = wiki / "architecture.md"
+    original = "---\ntitle: architecture\nrepo: self\nverified_at: deadbeef\n---\n"
+    architecture.write_text(original, encoding="utf-8")
+    domain_py = tmp_path / ".project_manager" / "tools" / "domain.py"
+    domain_py.parent.mkdir(parents=True)
+    domain_py.write_text("raise RuntimeError('injected load failure')\n", encoding="utf-8")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", architecture)
+    monkeypatch.setattr(board, "STATUS_FILE", wiki / "missing-status.md")
+    monkeypatch.setattr(board, "DOMAIN_PY", domain_py)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+
+    rc = board.main(["verified-at-repin", "--repo", "self", "--sha", pin])
+    assert rc != 0
+    assert architecture.read_text(encoding="utf-8") == original
+    err = capsys.readouterr().err
+    assert "error:enumeration:" in err
+    assert "domain.py 로드 실패" in err
+    assert "전 대상 검증 실패" in err and "무변경" in err
 
 
 def _ls(root: Path, spec: str) -> str:

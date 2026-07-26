@@ -65,6 +65,8 @@ SOURCE_TODO_PLACEHOLDER = "<!-- TODO PM: 출처 -->"
 
 # git CLI argv → (returncode, stdout). DI seam 타입(worktree_pool.GitRunner 선례).
 GitRunner = Callable[[list], "tuple[int, str]"]
+GitRunnerFactory = Callable[[dict], "GitRunner | None"]
+_UNRESOLVED_GIT_RUNNER = object()
 
 # git log 커밋 날짜 포맷(ISO 8601·`%cI` = strict ISO·`2026-06-19T07:59:00+09:00`).
 _GIT_LOG_FORMAT = "--format=%cI"
@@ -219,6 +221,32 @@ def _real_git_runner(cwd: Path) -> GitRunner:
             return 1, str(exc)
 
     return runner
+
+
+def _page_owner_git_runner(page: dict) -> GitRunner | None:
+    """페이지 `repo:`를 소유 checkout runner로 해소한다(date freshness 축·T-0470).
+
+    board의 `_freshness_owner_repo`가 `self`/`upstream` 해소의 단일 진실이다. 미지원/빈 repo,
+    upstream 미설정·URL·이동 등은 runner를 만들지 않아 `page_stale`이 unknown(None)으로
+    떨어진다. 구 board(리졸버 부재)와 board 로드 불가는 기존 self 시계로 자연 퇴화한다.
+    """
+    board = _load_board()
+    resolver = getattr(board, "_freshness_owner_repo", None) if board is not None else None
+    if resolver is None:
+        # 구 board/로드 불가에서도 `upstream`을 self로 흡수하지 않는다. 키 부재/명시 self만
+        # legacy self checkout으로 퇴화하고 그 밖의 값은 unknown(None).
+        owner = page.get("repo", "self")
+        if not isinstance(owner, str) or owner.strip() != "self":
+            return None
+        return _real_git_runner(REPO)
+    try:
+        owner = page["repo"] if "repo" in page else "self"
+        owner_repo, _owner_error = resolver(owner)
+    except Exception:  # noqa: BLE001 — owner 해소 실패는 stale unknown.
+        return None
+    if owner_repo is None:
+        return None
+    return _real_git_runner(owner_repo)
 
 
 def _escape_glob_literals(g: str) -> str:
@@ -451,7 +479,8 @@ def _parse_commit_date(out: str) -> datetime.date | None:
         return None
 
 
-def page_stale(page: dict, *, git_runner: GitRunner | None = None) -> bool | None:
+def page_stale(page: dict, *,
+               git_runner: GitRunner | object | None = None) -> bool | None:
     """페이지 covers 코드가 페이지 `updated` *후* git 커밋된 적 있으면 stale (ADR-0018 #3).
 
     `True` = stale(최신 covers 커밋 날짜 > updated)·`False` = fresh(커밋이 updated 이하)·
@@ -483,7 +512,11 @@ def page_stale(page: dict, *, git_runner: GitRunner | None = None) -> bool | Non
     if not pathspecs:
         return None
 
-    runner = git_runner or _real_git_runner(REPO)
+    if git_runner is _UNRESOLVED_GIT_RUNNER:
+        return None
+    runner = git_runner or _page_owner_git_runner(page)
+    if runner is None:
+        return None
     try:
         rc, out = runner(["log", "-1", _GIT_LOG_FORMAT, "--", *pathspecs])
     except Exception:  # noqa: BLE001 — fail-soft: 주입 runner raise 도 unknown(None).
@@ -500,15 +533,26 @@ def page_stale(page: dict, *, git_runner: GitRunner | None = None) -> bool | Non
 # ── 페이지 파싱 · 스캔 ────────────────────────────────────────────────────────
 
 
+class DomainPageEnumerationError(RuntimeError):
+    """strict 페이지 열거 중 특정 문서를 읽거나 파싱하지 못한 오류."""
+
+    def __init__(self, path: Path, cause: Exception):
+        self.path = Path(path)
+        super().__init__(f"{self.path}: {cause}")
+
+
 def parse_page(path: Path) -> dict:
     """한 domain 페이지를 파싱한다.
 
     Returns: {path, title, type, covers: list[str], derived: bool, updated, status,
-    verified_at}.
+    verified_at, repo}.
     frontmatter 파싱은 board.load_ticket 재사용(임의 frontmatter md 파서·DRY).
     covers 부재 → []·derived 부재 → False·status 부재 → None(정식 취급·draft 아님).
     `verified_at` 은 이 페이지 지식이 대조한 검증 기준 커밋 sha(ADR-0063·board.py freshness
     lint 가 "그 sha 이후 covers 경로 커밋 있나"로 판정) — 부재/비-문자열 → None(freshness skip).
+    `repo` 는 그 sha/covers 를 판정할 **소유 저장소 시계**(`self` | `upstream`) — 키 부재만
+    `self` 로 자연 퇴화한다. 명시 빈 문자열/false/0/컨테이너는 그대로 보존해 board.py가
+    `domain-unverifiable`로 표면화한다(T-0470).
     board 미로드/frontmatter 깨짐은 호출부가 처리하도록 예외를 그대로 전파한다(load_pages
     가 graceful skip). `status` 는 capture-draft 가 쓴 `draft` 진실 — load_pages 가 이로
     미승인 초안을 index 에서 제외한다(suffix 가 아닌 frontmatter status 가 필터 기준).
@@ -534,6 +578,12 @@ def parse_page(path: Path) -> dict:
     # all-digit sha 를 int 로 파싱해도 board 쪽 str() 처리와 대칭이게 str 정규화(codex suggestion).
     verified_at = fm.get("verified_at")
     verified_at = str(verified_at).strip() or None if verified_at is not None else None
+    if "repo" not in fm:
+        owner_repo = "self"
+    else:
+        owner_repo = fm.get("repo")
+        if isinstance(owner_repo, str):
+            owner_repo = owner_repo.strip()  # 명시 `repo: ""`는 "" 유지(self 흡수 금지).
     return {
         "path": path,
         "title": fm.get("title") or "",
@@ -543,10 +593,11 @@ def parse_page(path: Path) -> dict:
         "updated": fm.get("updated"),
         "status": status,
         "verified_at": verified_at,
+        "repo": owner_repo,
     }
 
 
-def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
+def load_pages(domain_dir: Path = DOMAIN_DIR, *, strict: bool = False) -> list[dict]:
     """domain/ 의 `*.md` 를 **재귀**(rglob) 스캔해 파싱된 페이지 리스트를 돌려준다.
 
     domain wikitree 를 하위 폴더로 조직해도 그 안의 페이지가 잡히도록 `rglob` 로 재귀
@@ -558,6 +609,10 @@ def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
     스캔 종료 시 skip 이 1개 이상이면 stderr 에 디렉토리별 개수 요약 딱 1줄만 남긴다(파일
     전체 목록 X — LLM 컨텍스트 낭비 원인). 반면 `---` 로 시작하는데 parse 가 깨지는(malformed)
     파일은 진짜 페이지 오류 신호라 기존 개별 경고를 유지한다(crash 0).
+
+    `strict=True`는 쓰기 명령의 validate-all-first 대상 열거용이다. frontmatter로 시작한
+    문서의 읽기/파싱 실패를 `DomainPageEnumerationError(path, cause)`로 즉시 전파한다.
+    기본값 False는 조회/lint의 기존 graceful skip·경고 동작을 그대로 보존한다.
 
     **draft 제외(T-0167)**: frontmatter `status == "draft"` 페이지는 미승인 초안
     (capture-draft scaffold)이라 index 에서 뺀다 — affected/lint/recall/capture 가
@@ -579,7 +634,9 @@ def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
         # 전체가 크래시해 crash-0 보장이 깨진다(T-0245 reviewer must-fix 실측).
         try:
             has_delimiter = path.read_text(encoding="utf-8").lstrip().startswith("---")
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            if strict:
+                raise DomainPageEnumerationError(path, exc) from exc
             has_delimiter = True
         if not has_delimiter:
             key = path.parent.relative_to(domain_dir).as_posix()  # flat → "."
@@ -587,7 +644,9 @@ def load_pages(domain_dir: Path = DOMAIN_DIR) -> list[dict]:
             continue
         try:
             page = parse_page(path)
-        except Exception as exc:  # noqa: BLE001 — 깨진 페이지는 skip(경고만·crash 금지).
+        except Exception as exc:  # noqa: BLE001 — 기본 조회는 깨진 페이지 skip·strict는 전파.
+            if strict:
+                raise DomainPageEnumerationError(path, exc) from exc
             print(f"domain: {path.name} 파싱 skip — {exc}", file=sys.stderr)
             continue
         if page["status"] == DRAFT_STATUS:
@@ -722,6 +781,7 @@ def _wikilink_targets(body: str) -> set[str]:
 
 
 def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
+               git_runner_factory: GitRunnerFactory | None = None,
                oversized_lines: int = OVERSIZED_LINES) -> list[tuple[str, str, str]]:
     """domain 페이지 스캔 → finding 리스트 `(kind, page, detail)` (advisory·비차단).
 
@@ -735,6 +795,8 @@ def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
 
     finding 은 page 표시명(title 우선·없으면 슬러그)으로 라벨한다. clean(빈 리스트)이면
     호출부가 "✓ domain freshness 양호" 를 찍는다. git 은 page_stale 의 DI seam 으로 위임.
+    `git_runner_factory`가 있으면 페이지마다 소유 repo runner를 고르고, 없으면 기존 단일
+    `git_runner`(테스트/구 호출 호환) 또는 page_stale의 owner 해소를 쓴다.
     """
     findings: list[tuple[str, str, str]] = []
 
@@ -762,7 +824,9 @@ def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
         label = page["title"] or slug
 
         # stale — page_stale==True 만(unknown=None 은 finding 아님).
-        if page_stale(page, git_runner=git_runner) is True:
+        page_runner = (git_runner_factory(page) or _UNRESOLVED_GIT_RUNNER
+                       if git_runner_factory is not None else git_runner)
+        if page_stale(page, git_runner=page_runner) is True:
             findings.append(("stale", label, f"covers 코드가 updated({page['updated']}) 후 커밋됨"))
 
         # orphan — 슬러그/title 어느 표기로도 인링크 0.
@@ -1031,6 +1095,7 @@ def _draft_frontmatter(title: str, ptype: str, covers: list[str],
         f"title: {_yaml_quote(title)}\n"
         f"type: {ptype}\n"
         f"covers: {covers_yaml}\n"
+        f"repo: self\n"
         f"derived: false\n"
         f"status: {DRAFT_STATUS}\n"
         f"updated: {today}\n"

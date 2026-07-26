@@ -405,6 +405,7 @@ _MUTATION_ARGVS = [
     ["reid", "T-0100", "T-0101"],
     ["refresh"],
     ["verified-at-backfill"],
+    ["verified-at-repin", "--repo", "self"],
     ["idea", "new", "아이디어"],
     ["idea", "promote", "0001"],
     ["idea", "kill", "0001"],
