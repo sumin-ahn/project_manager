@@ -421,6 +421,10 @@ def test_every_main_entrypoint_calls_common_console_helper():
     entrypoints = {}
     for path in TOOLS.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if path.name == "python_floor.py":
+            # 실제 엔진보다 먼저 구 Python(2.7 포함)에서 실행되는 ASCII-only bootstrap probe.
+            # console_encoding.py 자체는 3.11 엔진이므로 이 probe가 먼저 하한을 판정해야 한다.
+            continue
         if _has_main_guard(tree):
             entrypoints[path.name] = tree
 

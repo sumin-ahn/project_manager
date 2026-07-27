@@ -91,6 +91,13 @@ def board():
     return _load("board")
 
 
+@pytest.fixture(autouse=True)
+def _clear_detect_py_cache(board):
+    board._detect_py.cache_clear()
+    yield
+    board._detect_py.cache_clear()
+
+
 def test_detect_py_prefers_python3(monkeypatch, board):
     """python3 가 PATH 에 있으면 bare 명령 'python3' 채택 (which 절대경로 아님·리눅스 현행 보존).
 

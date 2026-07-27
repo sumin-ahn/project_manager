@@ -64,7 +64,6 @@ import importlib.util
 import json
 import os
 import re
-import tomllib
 import shlex
 import shutil
 import subprocess
@@ -72,6 +71,42 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
+
+
+def _load_min_python() -> tuple[int, int] | None:
+    """engine_rev.py 의 하한을 읽되 불완전/구형 사본이면 확인을 건너뛴다."""
+    try:
+        path = Path(__file__).resolve().with_name("engine_rev.py")
+        spec = importlib.util.spec_from_file_location("_engine_rev_python_floor", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return tuple(mod.MIN_PYTHON)
+    except Exception:
+        # 부분/구형 사본에서 새 선행검사가 import 자체를 깨지 않게 한다. 정상 배포에서는
+        # engine_rev.MIN_PYTHON을 읽고 아래 명시 오류를 유지한다(board._detect_py 동형 fail-soft).
+        return None
+
+
+def _require_python(version_info=None) -> None:
+    """tomllib import 전에 현재 인터프리터 하한을 명시적으로 검증한다."""
+    current = sys.version_info if version_info is None else version_info
+    minimum = _load_min_python()
+    if minimum is None:
+        return
+    if tuple(current[:2]) < minimum:
+        major, minor = minimum
+        raise SystemExit(
+            f"Python {major}.{minor}+ 필요 · 현재 {current[0]}.{current[1]}"
+        )
+
+
+# 반드시 tomllib 보다 먼저 실행한다. 이 파일은 Python 3.10 문법으로 전체 parse 가능하며
+# future annotations 덕분에 아래 list[...] / X | None 표기도 체크 전 평가되지 않는다.
+_require_python()
+
+import tomllib
 
 REPO = Path(__file__).resolve().parents[2]
 

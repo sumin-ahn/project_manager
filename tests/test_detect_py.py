@@ -3,7 +3,7 @@
 `_detect_py()` 가 한국어 Windows 류 환경에서 *실제로 작동하는* 인터프리터를 고르는지
 검증한다: Windows 는 `python` 1순위(직접 인터프리터라 스크립트 shebang 무시 — `py`
 런처는 `py board.py` 에서 shebang 을 읽어 엉뚱한 버전으로 디스패치), 각 후보는
-`shutil.which` 존재 + `--version` 실행검증을 모두 통과해야 채택(죽은 shim 회피),
+`shutil.which` 존재 + 실제 script 디스패치 하한검증을 모두 통과해야 채택(죽은 shim 회피),
 POSIX 는 현행 `python3` 보존.
 
 board.py 는 패키지가 아니므로 importlib 로 경로 로드하고(test_portability 와 동일),
@@ -31,6 +31,13 @@ def _load(name: str):
 @pytest.fixture(scope="module")
 def board():
     return _load("board")
+
+
+@pytest.fixture(autouse=True)
+def _clear_detect_py_cache(board):
+    board._detect_py.cache_clear()
+    yield
+    board._detect_py.cache_clear()
 
 
 def _patch(monkeypatch, board, *, name: str, present: set[str], runs: set[str]):

@@ -22,6 +22,8 @@
 #   ENGINE_REV 를 이 값과 대조해 사본 skew(신 도구+구 형제)를 로드 시점 fail-loud 로 표출.
 #   신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례). 릴리즈 bump 유일 지점.
 .project_manager/tools/engine_rev.py
+# python_floor: 실제 `py <script>` shebang 디스패치와 동형인 Python 3.11 하한 probe.
+.project_manager/tools/python_floor.py
 # console_encoding: 전 CLI 공용 Windows codepage 65001 + UTF-8 스트림 부트스트랩(T-0481).
 #   신규 __main__ 진입점도 정적 전수 가드가 이 helper 호출을 강제한다.
 .project_manager/tools/console_encoding.py

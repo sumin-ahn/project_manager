@@ -14,8 +14,10 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
                   강제하되 보장 수준을 정직 표기(§3.5).
   · 쓰기-타깃 axis — 엔진 코드(`.project_manager/tools/`) write 위임이 PM 홈 cwd 면 canonical
                   worktree 재앵커 fail-loud(§4.6·external_review `_pm_home_reanchor` 재사용).
-  · 시크릿 통제  — 합성 프롬프트 denylist 스캔 + subprocess env allowlist 정제 + prompt-file
-                  containment(§4.7).
+  · 시크릿 통제  — 합성 프롬프트 denylist 스캔 + 전 탐지를 본 사람의 건별 CLI ack + subprocess env
+                  allowlist 정제 + prompt-file containment(§4.7). ack digest는 해소된 primary
+                  harness:model과 합성 전문에 결속한다. 단, ack 통과 뒤 primary 인프라 실패로 명시
+                  설정된 loud 폴백이 발동하면 타 하네스 수신자가 추가될 수 있다.
   · 결과 수집    — 최종 reply 텍스트만 stdout·raw+메타는 O_EXCL·0600·PID/UUID 파일 박제(§3.4).
   · loud 폴백    — 역할/티어별 명시 fallback tuple 이 있을 때만 인프라 실패를 양성 분류해 1회 실행하고
                   실행 provenance 를 reply/raw 에 남김(미설정·비-인프라 실패는 기존 fail-loud).
@@ -32,18 +34,22 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime
 import functools
+import hashlib
+import hmac
 import importlib.util
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Callable, NamedTuple
+from typing import Callable, Iterator, NamedTuple
 
 
 # ── REPO 앵커 (external_review 동형·상향 탐색·hermetic 테스트 monkeypatch seam) ────────
@@ -97,6 +103,15 @@ OPENCODE_STALL_MARKER = "[opencode 첫-이벤트 stall:"
 
 # opt-in 게이트 키(기본 OFF·per-clone·ADR-0004 상속·§5.4).
 DELEGATE_ENABLED_KEY = "delegate_enabled"
+
+# 합성 프롬프트 전문에 묶는 건별 시크릿 스캔 승인 토큰(T-0476). SHA-256 전체 계산 뒤 앞 96bit만
+# 표시한다 — 사람이 재실행 커맨드로 옮길 만큼 짧지만, 이 값은 인증 secret이 아니라 "방금 검토한
+# 프롬프트와 현재 프롬프트가 같은가"를 묶는 변경 감지 토큰이다. conf 키는 의도적으로 두지 않는다.
+SECRET_SCAN_ACK_HEX_LENGTH = 24
+# 사람 검토용 stderr/dry-run 목록은 이 수까지만 표시한다. 승인 뒤 raw 감사에는 중복 제거된 전 hit를
+# 한 줄씩 모두 남겨, 대량 탐지가 터미널과 단일 메타 헤더를 비대하게 만들지 않으면서도 감사 완결성을
+# 보존한다.
+SECRET_SCAN_HIT_DISPLAY_LIMIT = 20
 
 # reasoning 드라이버별 허용집합(§6) — **T-0449 라이브 실측으로 박제**(codex-cli 0.145.0·claude 2.1.218·
 # opencode 1.18.4). 허용집합 밖 `.reasoning` 지정은 fail-loud(조용한 무시/강등 금지):
@@ -965,8 +980,86 @@ def _truncate_excerpt(text: str) -> str:
     return text[:_EXCERPT_MAX_CHARS] + "…"
 
 
+def _iter_prompt_secret_hits(prompt: str) -> Iterator[PromptSecretHit]:
+    """합성 프롬프트 시크릿 판정을 기존 우선순서대로 yield한다.
+
+    `scan_prompt_secrets()`의 첫-hit 판정 계약은 이 iterator의 첫 원소로 유지한다. 사람 승인 차단
+    경로만 끝까지 소비해 모든 탐지를 표시한다(T-0476). 즉 패턴·축·마스킹 로직은 바꾸지 않고,
+    조기 반환만 exhaustive 수집 가능한 yield로 푼다.
+    """
+    er = _load_external_review()
+    patterns = er._SECRET_DENYLIST_PATTERNS
+    for pem in _PEM_PRIVATE_KEY_RE.finditer(prompt):
+        yield PromptSecretHit(
+            f"{pem.group(0)} …(본문 마스킹)", _SECRET_RULE_PEM, _SECRET_AXIS_VALUE,
+        )
+    for raw in prompt.split():
+        # ⓑ 값축(알려진 prefix)은 **URL 제거 전 원문**에서 본다(외부 리뷰 R2 must-fix) — URL 면제는
+        # 경로축 오탐(`/oauth/token`)을 없애려는 것이지, URL 안에 실린 크리덴셜
+        # (`https://ghp_…@github.com/o/r.git`·`?access_token=ghp_…`·`/services/xoxb-…`)까지 눈감으라는
+        # 게 아니다. 값축을 먼저, 원문에 대고 돌려 그 회귀를 막는다.
+        for token in _secret_value_candidates(raw):
+            if _is_known_secret_value(token):
+                yield PromptSecretHit(
+                    _mask_secret_value(token), _SECRET_RULE_VALUE_PREFIX, _SECRET_AXIS_VALUE,
+                )
+        scannable = raw
+        # URL 스캔은 scheme 구분자가 있는 토큰에만(긴 프롬프트에서 토큰마다 정규식 돌리지 않도록).
+        for url in _URL_IN_TEXT_RE.finditer(raw) if "://" in raw else ():
+            userinfo = _URL_USERINFO_RE.search(url.group(0))
+            if userinfo is not None and _is_credential_userinfo(userinfo.group("userinfo")):
+                yield PromptSecretHit(
+                    _url_credentials_excerpt(url.group(0)),
+                    _SECRET_RULE_URL_CREDENTIALS, _SECRET_AXIS_VALUE,
+                )
+            pattern = _url_path_secret_pattern(
+                url.group(0), patterns, er._matching_denylist_pattern)
+            if pattern is not None:
+                yield PromptSecretHit(
+                    # 경로축 판정이어도 발췌는 같은 URL 표시층을 탄다. 원문 URL을 그대로 내보내면
+                    # userinfo password와 query/fragment 자격증명이 값축 발췌에서는 가려져도 이
+                    # 경로축 발췌를 통해 stderr/raw에 다시 노출된다(T-0476 fix2).
+                    _url_credentials_excerpt(url.group(0)), pattern, _SECRET_AXIS_PATH,
+                )
+            # 자격증명·시크릿 파일이 아닌 URL(엔드포인트·문서 링크)만 경로축 비대상 — `:` 분리 뒤 남는
+            # URL 경로의 basename(`/oauth/token`·무확장자)이 `*token*` 에 걸리던 오탐(외부 MF1) 폐쇄.
+            scannable = scannable.replace(url.group(0), " ")
+        for token in _secret_path_candidates(scannable):
+            pattern = _matching_secret_path_pattern(
+                token, patterns, er._matching_denylist_pattern)
+            if pattern is not None:
+                # 경로축이라도 발췌 토큰이 값-형태면 마스킹한다(값축 원칙과 일관·내부 리뷰 SF2) —
+                # `*secret*` 류 패턴은 크리덴셜 *값* 에도 걸릴 수 있다.
+                excerpt = (_mask_secret_value(token) if _looks_like_secret_value(token)
+                           else _truncate_excerpt(token))
+                yield PromptSecretHit(excerpt, pattern, _SECRET_AXIS_PATH)
+    for match in _ASSIGNMENT_RE.finditer(prompt):
+        key, value = match.group("key"), _assignment_value(match)
+        if _is_secret_key_name(key) and _looks_like_secret_value(value):
+            yield PromptSecretHit(
+                f"{_truncate_excerpt(key)}={_mask_secret_value(value)}",
+                _SECRET_RULE_ASSIGNMENT, _SECRET_AXIS_VALUE,
+            )
+
+
+def scan_prompt_secret_hits(prompt: str) -> tuple[PromptSecretHit, ...]:
+    """합성 프롬프트의 고유 시크릿 판정을 기존 판정 순서로 수집한다(승인 차단 경로 전용).
+
+    한 텍스트가 토큰화/할당 스캔 양쪽에서 같은 판정을 내도 사람에게 같은 승인 항목을 반복시키지
+    않도록 `(axis, pattern, excerpt)` 완전 동일 hit만 제거한다. 서로 다른 축/판정은 보존한다."""
+    unique: list[PromptSecretHit] = []
+    seen: set[tuple[str, str, str]] = set()
+    for hit in _iter_prompt_secret_hits(prompt):
+        key = (hit.axis, hit.pattern, hit.excerpt)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(hit)
+    return tuple(unique)
+
+
 def scan_prompt_secrets(prompt: str) -> PromptSecretHit | None:
-    """합성 프롬프트에서 시크릿(파일 경로/이름 · 크리덴셜 값)을 찾는다(전송 전 차단·§4.7).
+    """합성 프롬프트에서 첫 시크릿(파일 경로/이름 · 크리덴셜 값)을 찾는다(전송 전 차단·§4.7).
 
     양성매칭 2축(T-0472): ⓐ **경로축** — `=`/`:` 분리·구두점 트리밍·조사 제거·소문자 정규화로 토큰
     후보를 낸 뒤 *경로 형태* 후보에만 external_review denylist(`.env`·`*secret*`·`*.key` …)를 적용 +
@@ -990,58 +1083,86 @@ def scan_prompt_secrets(prompt: str) -> PromptSecretHit | None:
     ⑤ ④ prompt-file 게이트의 문서 확장자 면제는 이름만으로 "시크릿을 다루는 문서 vs 시크릿이 담긴
     문서"를 못 가르는 수렴 불가 지점이라 **면제 유지**로 종결했다(위협모델·근거는
     `_prompt_file_denylist_pattern` 참조 — 내용은 이 스캔이 다시 훑고, 시크릿 디렉토리 아래 문서는 잡힌다)."""
-    er = _load_external_review()
-    patterns = er._SECRET_DENYLIST_PATTERNS
-    pem = _PEM_PRIVATE_KEY_RE.search(prompt)
-    if pem is not None:
-        return PromptSecretHit(
-            f"{pem.group(0)} …(본문 마스킹)", _SECRET_RULE_PEM, _SECRET_AXIS_VALUE,
-        )
-    for raw in prompt.split():
-        # ⓑ 값축(알려진 prefix)은 **URL 제거 전 원문**에서 본다(외부 리뷰 R2 must-fix) — URL 면제는
-        # 경로축 오탐(`/oauth/token`)을 없애려는 것이지, URL 안에 실린 크리덴셜
-        # (`https://ghp_…@github.com/o/r.git`·`?access_token=ghp_…`·`/services/xoxb-…`)까지 눈감으라는
-        # 게 아니다. 값축을 먼저, 원문에 대고 돌려 그 회귀를 막는다.
-        for token in _secret_value_candidates(raw):
-            if _is_known_secret_value(token):
-                return PromptSecretHit(
-                    _mask_secret_value(token), _SECRET_RULE_VALUE_PREFIX, _SECRET_AXIS_VALUE,
-                )
-        scannable = raw
-        # URL 스캔은 scheme 구분자가 있는 토큰에만(긴 프롬프트에서 토큰마다 정규식 돌리지 않도록).
-        for url in _URL_IN_TEXT_RE.finditer(raw) if "://" in raw else ():
-            userinfo = _URL_USERINFO_RE.search(url.group(0))
-            if userinfo is not None and _is_credential_userinfo(userinfo.group("userinfo")):
-                return PromptSecretHit(
-                    _url_credentials_excerpt(url.group(0)),
-                    _SECRET_RULE_URL_CREDENTIALS, _SECRET_AXIS_VALUE,
-                )
-            pattern = _url_path_secret_pattern(
-                url.group(0), patterns, er._matching_denylist_pattern)
-            if pattern is not None:
-                return PromptSecretHit(
-                    _truncate_excerpt(url.group(0)), pattern, _SECRET_AXIS_PATH,
-                )
-            # 자격증명·시크릿 파일이 아닌 URL(엔드포인트·문서 링크)만 경로축 비대상 — `:` 분리 뒤 남는
-            # URL 경로의 basename(`/oauth/token`·무확장자)이 `*token*` 에 걸리던 오탐(외부 MF1) 폐쇄.
-            scannable = scannable.replace(url.group(0), " ")
-        for token in _secret_path_candidates(scannable):
-            pattern = _matching_secret_path_pattern(
-                token, patterns, er._matching_denylist_pattern)
-            if pattern is not None:
-                # 경로축이라도 발췌 토큰이 값-형태면 마스킹한다(값축 원칙과 일관·내부 리뷰 SF2) —
-                # `*secret*` 류 패턴은 크리덴셜 *값* 에도 걸릴 수 있다.
-                excerpt = (_mask_secret_value(token) if _looks_like_secret_value(token)
-                           else _truncate_excerpt(token))
-                return PromptSecretHit(excerpt, pattern, _SECRET_AXIS_PATH)
-    for match in _ASSIGNMENT_RE.finditer(prompt):
-        key, value = match.group("key"), _assignment_value(match)
-        if _is_secret_key_name(key) and _looks_like_secret_value(value):
-            return PromptSecretHit(
-                f"{_truncate_excerpt(key)}={_mask_secret_value(value)}",
-                _SECRET_RULE_ASSIGNMENT, _SECRET_AXIS_VALUE,
-            )
-    return None
+    return next(_iter_prompt_secret_hits(prompt), None)
+
+
+def secret_scan_prompt_digest(prompt: str, harness: str, model: str) -> str:
+    """합성 프롬프트 **전문 + 해소된 primary 수신자**의 짧은 승인 digest(T-0476).
+
+    발췌만 해시하면 같은 문제 문자열이 든 다른 프롬프트에 승인을 재사용할 수 있으므로 role preamble과
+    prompt-file 본문을 합친 UTF-8 바이트 전체에 `harness:model`을 함께 결속한다. 도메인 구분자와
+    NUL 필드 구분으로 접합 모호성을 없앤다. 출력은 CLI 전사용 96bit hex다.
+
+    이 결속은 primary 수신자를 바꾸는 ack 재사용을 막는다. ack 통과 후 명시 설정된 loud 인프라 폴백이
+    발동해 타 하네스로 갈 수 있는 잔여 창은 수용한다(모듈 docstring의 시크릿 통제 한계)."""
+    material = b"\0".join((
+        b"pm_delegate.secret-scan-ack.v2",
+        harness.encode("utf-8"),
+        model.encode("utf-8"),
+        prompt.encode("utf-8"),
+    ))
+    return hashlib.sha256(material).hexdigest()[:SECRET_SCAN_ACK_HEX_LENGTH]
+
+
+def _format_secret_scan_hits(hits: tuple[PromptSecretHit, ...]) -> str:
+    """사람 검토용 탐지 목록 — 값 발췌는 판정 단계에서 이미 마스킹됐다."""
+    lines: list[str] = []
+    displayed = hits[:SECRET_SCAN_HIT_DISPLAY_LIMIT]
+    for index, hit in enumerate(displayed, start=1):
+        lines += [
+            f"  · 탐지 {index}/{len(hits)}: {hit.axis}축 판정 '{hit.pattern}' 매칭",
+            f"    발췌: {hit.excerpt}   (크리덴셜 값은 마스킹·식별 가능한 경로/이름은 표시)",
+        ]
+    remaining = len(hits) - len(displayed)
+    if remaining:
+        lines.append(f"  · … {remaining}건 더 · 전체는 raw 감사줄에서 확인")
+    return "\n".join(lines)
+
+
+def _windows_retry_command(command: list[str]) -> str:
+    """cmd.exe/PowerShell 어느 쪽에서도 메타문자 재해석 없는 Windows 재실행 줄을 만든다.
+
+    argv를 PowerShell 단일따옴표 리터럴로 만든 뒤 UTF-16LE `-EncodedCommand`로 감싼다. 복사용 줄은
+    인코딩본을 유지하고, 사람이 실제 승인 대상을 확인할 수 있도록 바로 아래에 디코드된 줄도 표시한다."""
+    script = "& " + " ".join(
+        "'" + token.replace("'", "''") + "'" for token in command
+    )
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    encoded_command = (
+        f"powershell.exe -NoProfile -NonInteractive -EncodedCommand {encoded}"
+    )
+    return (
+        f"{encoded_command}\n"
+        f"    PowerShell 디코드(검토용·복사는 위 인코딩본): {script}"
+    )
+
+
+def _running_on_windows() -> bool:
+    return os.name == "nt"
+
+
+def _secret_scan_retry_command(argv: list[str], digest: str) -> str:
+    """기존 ack를 제거하고 현재 digest 하나만 붙인 안전한 재실행 커맨드 표시를 만든다."""
+    cleaned: list[str] = []
+    skip_value = False
+    for token in argv:
+        if skip_value:
+            skip_value = False
+            continue
+        if token == "--secret-scan-ack":
+            skip_value = True
+            continue
+        if token.startswith("--secret-scan-ack="):
+            continue
+        cleaned.append(token)
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        *cleaned,
+        "--secret-scan-ack",
+        digest,
+    ]
+    return _windows_retry_command(command) if _running_on_windows() else shlex.join(command)
 
 
 def build_env(harness: str) -> dict[str, str]:
@@ -1660,7 +1781,10 @@ def _gettempdir() -> str:
 
 def _format_meta(argv: list[str], rc: int, harness: str, model: str,
                  elapsed: float, stdout: str, stderr: str, *,
-                 attempt: str = "primary", primary_raw: str | None = None) -> str:
+                 attempt: str = "primary", primary_raw: str | None = None,
+                 secret_scan_ack_digest: str | None = None,
+                 secret_scan_ack_hits: tuple[PromptSecretHit, ...] = (),
+                 secret_scan_ack_primary_recipient: str | None = None) -> str:
     """raw 박제 본문 — 메타(argv·rc·모델·소요) 헤더 + 원문.
 
     폴백 attempt 는 `# primary_raw:` 로 앞선 primary raw 경로를 적어 **raw 파일 하나만 봐도** 감사
@@ -1673,6 +1797,22 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
     ]
     if primary_raw:
         header.append(f"# primary_raw: {primary_raw}")
+    if secret_scan_ack_digest:
+        header.append(
+            f"# secret_scan_ack: explicit override · digest={secret_scan_ack_digest}"
+            f" · 전 탐지={len(secret_scan_ack_hits)}"
+        )
+        if attempt != "primary" and secret_scan_ack_primary_recipient is not None:
+            header.append(
+                "# secret_scan_ack_binding: "
+                f"결속=primary <{secret_scan_ack_primary_recipient}> "
+                "· 이 attempt 는 폴백(재승인 없음)"
+            )
+        header.extend(
+            f"# secret_scan_ack_hit: {index}/{len(secret_scan_ack_hits)} "
+            f"· {hit.axis}축 판정 '{hit.pattern}' · 발췌 <{hit.excerpt}>"
+            for index, hit in enumerate(secret_scan_ack_hits, start=1)
+        )
     header += [
         f"# argv: {' '.join(argv)}",
         f"# rc: {rc}",
@@ -1990,6 +2130,9 @@ def _execute_attempt(
     run_fn: Callable,
     attempt: str,
     primary_raw: str | None = None,
+    secret_scan_ack_digest: str | None = None,
+    secret_scan_ack_hits: tuple[PromptSecretHit, ...] = (),
+    secret_scan_ack_primary_recipient: str | None = None,
 ) -> DelegateAttempt:
     """하네스 1회를 실행하고 raw를 박제한다.
 
@@ -2036,7 +2179,9 @@ def _execute_attempt(
         harness,
         _format_meta(
             argv, rc, harness, model, elapsed, stdout, stderr, attempt=attempt,
-            primary_raw=primary_raw,
+            primary_raw=primary_raw, secret_scan_ack_digest=secret_scan_ack_digest,
+            secret_scan_ack_hits=secret_scan_ack_hits,
+            secret_scan_ack_primary_recipient=secret_scan_ack_primary_recipient,
         ),
         output_dir,
     )
@@ -2287,13 +2432,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
                              "(생략 시 허용 경로 0·차단 아님)")
+    parser.add_argument("--secret-scan-ack", default=None, metavar="DIGEST",
+                        help="이번 합성 프롬프트의 §4.7 차단을 사람이 발췌 확인 후 건별 승인"
+                             "(digest는 합성 프롬프트 전문 + 해소된 primary 수신자 harness:model에 결속"
+                             "·차단 출력 digest와 정확히 일치할 때만 유효·CLI 전용)")
     parser.add_argument("--dry-run", action="store_true",
                         help="합성 프롬프트 요약 + argv 만 출력·미실행(비활성이어도 허용)")
     return parser
 
 
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    """CLI 검증 — usage error(rc=2). 원자 tuple·tier 역할 제한·cwd 절대경로/비-루트·timeout 양수."""
+    """CLI 검증 — usage error(rc=2). 원자 tuple·tier 역할·cwd·timeout·ack 형식."""
     cwd_path = Path(args.cwd)
     if not cwd_path.is_absolute():
         parser.error("--cwd 는 절대경로여야 한다(모든 역할 필수·기본값 없음).")
@@ -2308,6 +2457,9 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--reasoning 은 --harness/--model 동반 시만 허용된다(§3.1).")
     if args.timeout is not None and args.timeout <= 0:
         parser.error("--timeout 은 양의 정수여야 한다(0/음수 금지).")
+    if (args.secret_scan_ack is not None
+            and re.fullmatch(r"[0-9a-f]{24}", args.secret_scan_ack) is None):
+        parser.error("--secret-scan-ack 승인 토큰은 24자리 소문자 hex여야 한다.")
 
 
 def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str]) -> int:
@@ -2369,7 +2521,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     if resolved and resolved[0] == "lint":
         return _cmd_lint(resolved[1:])
     parser = build_arg_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(resolved)
     _validate_args(parser, args)
 
     conf = local_config()
@@ -2481,6 +2633,13 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # 타임아웃은 dry-run 미리보기(폴백 시간 예산 표시)와 실행이 같은 값을 쓴다.
     timeout = _resolve_timeout(args, conf)
 
+    # 시크릿 판정은 dry-run과 실행이 같은 exhaustive 결과를 쓴다. 기존 첫-hit API/판정 순서는
+    # `scan_prompt_secrets()`에 그대로 남고, 사람 승인 경로만 모든 hit를 끝까지 수집한다.
+    secret_hits = scan_prompt_secret_hits(prompt)
+    prompt_digest = (
+        secret_scan_prompt_digest(prompt, harness, model) if secret_hits else None
+    )
+
     # ⑦ dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
     if args.dry_run:
         print("=== [dry-run] pm_delegate 미리보기 (미실행) ===")
@@ -2513,22 +2672,58 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         print(f"argv: {' '.join(argv_display)}")
         if harness == "opencode":
             print("  (opencode: 실행 시 role preamble 합성 프롬프트를 임시 파일로 --file 전달)")
+        if secret_hits:
+            print(f"시크릿 스캔: 탐지 {len(secret_hits)}건 — 실 실행은 전송 전 차단")
+            print(_format_secret_scan_hits(secret_hits))
+            print(f"승인 digest 미리보기: {prompt_digest}")
+        else:
+            print("시크릿 스캔: 통과 (탐지 0건)")
         print("--- 합성 프롬프트 ---")
         print(prompt)
         print("=== [dry-run] 외부 호출 생략 ===")
         return 0
 
     # ⑧ 시크릿 denylist 스캔 (합성 프롬프트·전송 전 차단·매칭 발췌 표시·값 마스킹·§4.7·T-0472)
-    secret = scan_prompt_secrets(prompt)
-    if secret is not None:
-        print(
-            "오류: 합성 프롬프트가 시크릿 denylist 판정에 걸렸습니다 — 전송 전 차단합니다(§4.7).\n"
-            f"  · {secret.axis}축 판정 '{secret.pattern}' 매칭\n"
-            f"  · 발췌: {secret.excerpt}   (크리덴셜 값은 마스킹·경로/이름은 그대로 표시)\n"
-            "  해당 텍스트를 프롬프트에서 제거하세요. 정상 식별자(conf 키 등)가 걸렸다면 판정 버그입니다.",
-            file=sys.stderr,
+    secret_scan_ack_digest: str | None = None
+    secret_scan_ack_hits: tuple[PromptSecretHit, ...] = ()
+    if secret_hits:
+        if prompt_digest is None:
+            print(
+                "오류: 시크릿 탐지는 있었지만 승인 digest를 생성하지 못했습니다 — 전송 전 차단합니다.",
+                file=sys.stderr,
+            )
+            return 1
+        ack_matches = (
+            args.secret_scan_ack is not None
+            and hmac.compare_digest(args.secret_scan_ack, prompt_digest)
         )
-        return 1
+        if ack_matches:
+            secret_scan_ack_digest = prompt_digest
+            secret_scan_ack_hits = secret_hits
+            print(
+                "시크릿 스캔 차단을 명시 승인으로 통과 — "
+                f"발췌 <{secret_hits[0].excerpt}> · digest <{prompt_digest}> "
+                f"· 전 탐지 {len(secret_hits)}건 확인\n"
+                f"{_format_secret_scan_hits(secret_hits)}",
+                file=sys.stderr,
+            )
+        else:
+            mismatch = (
+                "  · 승인 digest 불일치 — 프롬프트 또는 해소된 수신자 "
+                "(harness:model)가 바뀜 · 발췌 재확인\n"
+                if args.secret_scan_ack is not None else ""
+            )
+            print(
+                "오류: 합성 프롬프트가 시크릿 denylist 판정에 걸렸습니다 — 전송 전 차단합니다(§4.7).\n"
+                f"  · 전 탐지 {len(secret_hits)}건 — 아래 전체를 확인한 뒤에만 승인하세요.\n"
+                f"{_format_secret_scan_hits(secret_hits)}\n"
+                "  해당 텍스트를 프롬프트에서 제거하세요. 정상 식별자(conf 키 등)가 걸렸다면 판정 버그입니다.\n"
+                f"{mismatch}"
+                f"  · 승인 토큰: {prompt_digest}\n"
+                f"  · 재실행: {_secret_scan_retry_command(resolved, prompt_digest)}",
+                file=sys.stderr,
+            )
+            return 1
 
     # ⑨ 비용/송신 경고 + native advisory (§5.4·§3.6)
     print(f"외부 하네스 {harness}(model={model}) 로 프롬프트 전송 중 (과금·외부 송신).", file=sys.stderr)
@@ -2551,6 +2746,8 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             args=args, harness=harness, model=model, reasoning=reasoning,
             fallback=fallback, fallback_skip=fallback_skip, cwd=cwd, prompt=prompt,
             timeout=timeout, output_dir=output_dir, run_fn=_run,
+            secret_scan_ack_digest=secret_scan_ack_digest,
+            secret_scan_ack_hits=secret_scan_ack_hits,
         )
     finally:
         report_scope_audit(scope_audit, args.role)
@@ -2569,6 +2766,8 @@ def _execute_and_collect(
     timeout: int,
     output_dir: Path | None,
     run_fn: Callable,
+    secret_scan_ack_digest: str | None,
+    secret_scan_ack_hits: tuple[PromptSecretHit, ...],
 ) -> int:
     """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다(§3.4·§5.3).
 
@@ -2586,6 +2785,9 @@ def _execute_and_collect(
             output_dir=output_dir,
             run_fn=run_fn,
             attempt="primary",
+            secret_scan_ack_digest=secret_scan_ack_digest,
+            secret_scan_ack_hits=secret_scan_ack_hits,
+            secret_scan_ack_primary_recipient=f"{harness}:{model}",
         )
     except OSError as exc:
         print(f"오류: 위임 실행 준비/raw 박제 실패: {exc}", file=sys.stderr)
@@ -2636,6 +2838,9 @@ def _execute_and_collect(
                 run_fn=run_fn,
                 attempt=f"fallback-from-{harness}:{failure_class}",
                 primary_raw=str(raw_path),
+                secret_scan_ack_digest=secret_scan_ack_digest,
+                secret_scan_ack_hits=secret_scan_ack_hits,
+                secret_scan_ack_primary_recipient=f"{harness}:{model}",
             )
         except OSError as exc:
             print(
@@ -2686,6 +2891,11 @@ def _execute_and_collect(
             f"fallback={fallback_harness}(model={fallback_model}) · "
             f"primary={harness}(model={model}) · 사유={failure_class}"
         )
+        if secret_scan_ack_digest is not None:
+            print(
+                "[pm-delegate] 실행 provenance: 시크릿 스캔 명시 승인 통과 · "
+                f"digest={secret_scan_ack_digest}"
+            )
         print(fallback_reply)
         print(
             f"[pm-delegate] primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
@@ -2712,6 +2922,11 @@ def _execute_and_collect(
         print(f"오류: 위임 reply 미추출(빈 출력·파싱 실패). raw: {raw_path}", file=sys.stderr)
         return 1
 
+    if secret_scan_ack_digest is not None:
+        print(
+            "[pm-delegate] 실행 provenance: 시크릿 스캔 명시 승인 통과 · "
+            f"digest={secret_scan_ack_digest}"
+        )
     print(reply)
     print(f"[pm-delegate] raw: {raw_path}", file=sys.stderr)
     return 0

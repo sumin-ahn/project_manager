@@ -4571,7 +4571,8 @@ def _install_engine(engine_root: Path) -> None:
 
     슬롯 worktree(family/회사 checkout)엔 엔진 파일이 없다(회사 repo 무영향) — board.py 는 PM 홈에만
     존재하고 훅은 sidecar `engine-root`(=이 engine_root)로 그걸 찾는다. board.py 와 CLI 공용
-    `console_encoding.py`를 복사하면 `livegate check` 가 standalone 동작(yaml=런타임 의존·테스트 env 보유). board.py
+    `console_encoding.py`와 실제 script 디스패치 하한 probe인 `python_floor.py`를 복사하면
+    `livegate check` 가 standalone 동작(yaml=런타임 의존·테스트 env 보유). board.py
     REPO=Path(__file__).parents[2]=engine_root → livegate.json 을 engine_root/.project_manager/.local 에서 읽는다.
 
     `identity_args.py`(ADR-0057·T-0322)도 함께 심는다 — board.py 가 같은 tools/ 디렉토리에서
@@ -4586,6 +4587,7 @@ def _install_engine(engine_root: Path) -> None:
     shutil.copy(str(TOOLS / "board.py"), str(tools / "board.py"))
     shutil.copy(str(TOOLS / "identity_args.py"), str(tools / "identity_args.py"))
     shutil.copy(str(TOOLS / "console_encoding.py"), str(tools / "console_encoding.py"))
+    shutil.copy(str(TOOLS / "python_floor.py"), str(tools / "python_floor.py"))
 
 
 def _write_livegate(engine_root: Path, *, head: str, status: str = "pass",

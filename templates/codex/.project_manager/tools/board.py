@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import datetime
 import fnmatch
+import functools
 import importlib.util
 import json
 import os
@@ -3755,21 +3756,84 @@ def _regression_cwd(override: str | None = None, session: str | None = None) -> 
     return str(REPO)
 
 
+def _minimum_python() -> tuple[int, int]:
+    """engine_rev.py 에 선언된 엔진 Python 하한을 경로 기반으로 읽는다.
+
+    board.py 는 패키지 import 와 직접 실행 양쪽을 지원하므로 평범한 sibling import 대신
+    기존 엔진 로더 관례대로 파일 위치를 앵커로 삼는다. 탐지 때만 지연 로드해 board 의
+    다른 명령과 최소 격리 테스트에는 새 선행 의존을 만들지 않는다.
+    """
+    # os.name 은 _detect_py Windows 분기 테스트/실행에서 바뀔 수 있으므로, 그 값에 따라
+    # WindowsPath/PosixPath 구현을 고르는 pathlib 대신 import 시 고정된 os.path 를 쓴다.
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine_rev.py")
+    spec = importlib.util.spec_from_file_location("_engine_rev_python_floor", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return tuple(mod.MIN_PYTHON)
+
+
+def _python_floor_probe_path() -> str:
+    """엔진 진입점과 같은 shebang을 가진 2.7-파싱 안전 하한 probe 경로."""
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "python_floor.py"
+    )
+
+
 def _interp_runs(cmd: str) -> bool:
-    """후보 인터프리터가 *실제로* 실행되는지 `--version` rc 로 검증한다.
+    """후보 인터프리터가 실행되고 엔진 Python 하한을 충족하는지 검증한다.
 
     존재하지만 죽은 shim (Windows 의 비기능 `python3` WindowsApps 별칭 등) 을
-    걸러내기 위함 — `shutil.which` 의 존재 확인만으론 부족하다. 짧은 timeout·
-    예외 전부 흡수해 탐지가 절대 실패하지 않게 한다(fail-soft).
+    `--version` rc 로 먼저 거른 뒤, 엔진과 같은 shebang의 2.7-파싱 안전 probe를
+    ``cmd <probe.py>``로 실행한다. 특히 Windows ``py``의 ``-c`` 기본 버전과 실제
+    스크립트 shebang 디스패치가 갈리는 창을 닫는다. 단, 부분/수동 복사본에 probe가
+    없으면 ``-c`` 인라인 검사로 degrade해 하한 자체는 계속 강제한다(T-0397 사본
+    시나리오). 짧은 timeout·예외 전부 흡수해 탐지가 절대 실패하지 않게 한다(fail-soft).
     """
     try:
         r = subprocess.run([cmd, "--version"], capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=5)
+        if r.returncode != 0:
+            return False
+        probe = _python_floor_probe_path()
+        if os.path.isfile(probe):
+            argv = [cmd, probe]
+        else:
+            major, minor = _minimum_python()
+            argv = [
+                cmd,
+                "-c",
+                "import sys; sys.exit(0 if sys.version_info >= "
+                f"({major}, {minor}) else 1)",
+            ]
+        r = subprocess.run(
+            argv,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+        )
         return r.returncode == 0
     except Exception:
         return False
 
 
+def _interp_version_label(cmd: str) -> str | None:
+    """실 스크립트 디스패치 버전을 loud 진단용 ``cmd=X.Y`` 형태로 읽는다."""
+    try:
+        probe = _python_floor_probe_path()
+        # probe가 없는 부분 사본은 _interp_runs와 같은 -c 디스패치에서 버전을 읽는다.
+        argv = [cmd, probe] if os.path.isfile(probe) else [
+            cmd, "-c", "import sys; print('Python %d.%d' % sys.version_info[:2])",
+        ]
+        r = subprocess.run(argv, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=5)
+        output = f"{r.stdout}\n{r.stderr}"
+        match = re.search(r"\bPython\s+(\d+)\.(\d+)", output)
+        if match:
+            return f"{cmd}={match.group(1)}.{match.group(2)}"
+    except Exception:
+        pass
+    return None
+
+
+@functools.lru_cache(maxsize=1)
 def _detect_py() -> str:
     """init 의 local.conf py= 기본값으로 쓸 bare 인터프리터 명령을 탐지한다.
 
@@ -3783,14 +3847,38 @@ def _detect_py() -> str:
 
     후보 순서: Windows = (python, py, python3), POSIX = (python3, python). 각 후보는
     `shutil.which` 존재 **및** `_interp_runs` 실행검증을 모두 통과해야 채택된다 —
-    존재하지만 죽은 shim 을 건너뛴다. 아무 것도 통과 못 하면 `"python3"` 리터럴 폴백
-    (리눅스 현행 동치). **bare 명령**을 반환한다(which 의 절대경로가 아니라) —
+    존재하지만 죽은 shim·Python 하한 미달을 건너뛴다. 아무 것도 통과 못 하면 loud 진단을
+    stderr 에 한 줄 남기고 `"python3"` 리터럴로 폴백한다(기존 fail-soft 계약 유지).
+    **bare 명령**을 반환한다(which 의 절대경로가 아니라) —
     subprocess 가 PATH 해석하고, CLAUDE.md `{{PY}}` 표시에도 가독하다.
+    탐지는 후보마다 subprocess를 최대 세 번 실행하므로 프로세스 수명 동안 결과를 캐시한다.
     """
     candidates = ("python", "py", "python3") if os.name == "nt" else ("python3", "python")
+    probe_missing = not os.path.isfile(_python_floor_probe_path())
+    found: list[str] = []
     for cand in candidates:
-        if shutil.which(cand) and _interp_runs(cand):
+        if not shutil.which(cand):
+            continue
+        if _interp_runs(cand):
             return cand
+        label = _interp_version_label(cand)
+        if label:
+            found.append(label)
+    discovered = ", ".join(found) if found else "없음"
+    try:
+        major, minor = _minimum_python()
+        if probe_missing:
+            message = (
+                f"Python 하한 probe 부재 — 인라인 검사상 {major}.{minor}+ 필요, "
+                f"발견: {discovered}"
+            )
+        else:
+            message = f"Python {major}.{minor}+ 필요, 발견: {discovered}"
+    except Exception:
+        # 불완전/구형 사본에서 engine_rev 자체를 못 읽어도 탐지는 절대 크래시하지 않는다.
+        # 정상 배포에서는 단일 진실의 정확한 하한을 위 분기로 표시한다.
+        message = f"Python 지원 하한 확인 불가(engine_rev.py), 발견: {discovered}"
+    print(message, file=sys.stderr)
     return "python3"
 
 

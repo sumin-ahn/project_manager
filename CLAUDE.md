@@ -54,6 +54,8 @@ tests/                 # 엔진 단위테스트 (pytest)
 
 ## 의존성 설치
 
+엔진의 Python 지원 하한은 **3.11**이다(`tomllib` 표준 라이브러리가 지배 제약).
+
 ```bash
 python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest(테스트)
 ```

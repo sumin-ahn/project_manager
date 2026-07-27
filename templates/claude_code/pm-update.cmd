@@ -12,13 +12,14 @@ rem          See .\pm-update.cmd --help for how to register it.)
 setlocal
 
 rem Interpreter preference python -> py -> python3 (matches _detect_py Windows order).
-rem python <script> ignores shebang and is consistent, py is the launcher fallback, python3 is last resort.
-set "PY=python"
-where python >nul 2>nul && goto :run
-where py >nul 2>nul && (set "PY=py" & goto :run)
-where python3 >nul 2>nul && (set "PY=python3" & goto :run)
+rem Each candidate must run the same-shebang probe and satisfy Python 3.11+.
+set "PY="
+where python >nul 2>nul && python --version >nul 2>nul && python "%~dp0.project_manager\tools\python_floor.py" >nul 2>nul && (set "PY=python" & goto :run)
+where py >nul 2>nul && py --version >nul 2>nul && py "%~dp0.project_manager\tools\python_floor.py" >nul 2>nul && (set "PY=py" & goto :run)
+where python3 >nul 2>nul && python3 --version >nul 2>nul && python3 "%~dp0.project_manager\tools\python_floor.py" >nul 2>nul && (set "PY=python3" & goto :run)
 
 :run
+if not defined PY set "PY=python"
 rem Forward args verbatim + propagate rc.
 "%PY%" "%~dp0.project_manager\tools\pm_update.py" %*
 exit /b %ERRORLEVEL%

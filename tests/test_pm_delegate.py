@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import json as _json
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -2574,6 +2575,56 @@ def test_url_excerpt_masks_query_and_fragment_values(pd):
     assert fragment_secret not in hit.excerpt
     hit = pd.scan_prompt_secrets("https://user:pass@host.example.com/download?file=.env")
     assert "file=.env" in hit.excerpt   # 경로형 값은 그대로 — 무엇을 지울지 보여야 한다
+
+
+def test_compound_url_masks_credentials_in_value_and_path_audit_excerpts(
+        pd, monkeypatch, tmp_path, capsys):
+    """userinfo 자격증명 + 시크릿 파일 경로가 한 URL에 있어도 두 축 모두 같은 마스킹 표시층을 탄다."""
+    query_secret = "Q7x2Lm9Zp4Rt8Vw1"
+    compound_url = (
+        f"https://user:{_FAKE_URL_CREDENTIAL_PASSWORD}@host.example.com/.env"
+        f"?access_token={query_secret}"
+    )
+    hits = pd.scan_prompt_secret_hits(compound_url)
+    value_hits = [hit for hit in hits if hit.axis == "값"]
+    path_hits = [hit for hit in hits if hit.axis == "경로"]
+
+    assert any(hit.pattern == pd._SECRET_RULE_URL_CREDENTIALS for hit in value_hits)
+    assert path_hits
+    for hit in (*value_hits, *path_hits):
+        assert _FAKE_URL_CREDENTIAL_PASSWORD not in hit.excerpt
+        assert query_secret not in hit.excerpt
+    assert all("마스킹" in hit.excerpt for hit in (*value_hits, *path_hits))
+
+    prompt = _write_prompt(tmp_path, f"다음 주소를 점검하라: {compound_url}")
+    outdir = tmp_path / "raw"
+    argv = [
+        "--role", "developer", "--prompt-file", str(prompt),
+        "--cwd", str(tmp_path), "--output-dir", str(outdir),
+    ]
+    fake = _FakeRun(stdout=_codex_stdout())
+
+    assert _run_main(pd, monkeypatch, argv, _enabled_conf(), fake) == 1
+    blocked = capsys.readouterr().err
+    digest_match = re.search(r"승인 토큰: ([0-9a-f]{24})", blocked)
+    assert digest_match is not None
+    assert "값축 판정" in blocked and "경로축 판정" in blocked
+    assert _FAKE_URL_CREDENTIAL_PASSWORD not in blocked
+    assert query_secret not in blocked
+
+    assert _run_main(
+        pd, monkeypatch,
+        [*argv, "--secret-scan-ack", digest_match.group(1)],
+        _enabled_conf(), fake,
+    ) == 0
+    approved = capsys.readouterr()
+    raw = next(outdir.glob("pm_delegate_codex_*.txt")).read_text(encoding="utf-8")
+    assert _FAKE_URL_CREDENTIAL_PASSWORD not in approved.err
+    assert query_secret not in approved.err
+    assert _FAKE_URL_CREDENTIAL_PASSWORD not in raw
+    assert query_secret not in raw
+    assert "# secret_scan_ack_hit:" in raw
+    assert "값축 판정" in raw and "경로축 판정" in raw
 
 
 @pytest.mark.parametrize(

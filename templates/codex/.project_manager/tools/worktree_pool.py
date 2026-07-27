@@ -1118,6 +1118,8 @@ engine_root_file="$hook_dir/engine-root"
 # exit·변수 누적이 훅 전체에 반영된다(서브셸 아님).
 board=""
 py=""
+python_floor=""
+found_versions=""
 resolved=0
 while read -r _local_ref local_sha remote_ref _remote_sha; do
     case "$remote_ref" in
@@ -1153,23 +1155,45 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
     # family checkout)엔 PM 엔진 파일이 없으므로(T-0076 회사 repo 무영향), 설치자가 훅 옆에 쓴 sidecar
     # `engine-root`(PM 홈 REPO 절대경로 1줄)에서 board.py 를 해소한다. livegate.json 도 그 PM 홈 .local
     # 소유라 기록 위치와 정합. 인터프리터는 실행검증 폴백(python3->python->py·T-0209·WindowsApps 가짜
-    # shim 회피). sidecar 부재/경로 무효/인터프리터 부재 = fail-closed 거부(무력화 방지·ADR-0039 D3).
+    # shim 회피) + Python 3.11 하한 검증(engine_rev.MIN_PYTHON 미러·테스트 skew 가드).
+    # sidecar 부재/경로 무효/인터프리터 부재 = fail-closed 거부(무력화 방지·ADR-0039 D3).
     if [ "$resolved" != "1" ]; then
         engine_root=""
         [ -f "$engine_root_file" ] && IFS= read -r engine_root < "$engine_root_file"
         if [ -n "$engine_root" ] && [ -f "$engine_root/.project_manager/tools/board.py" ]; then
             board="$engine_root/.project_manager/tools/board.py"
         fi
+        if [ -n "$engine_root" ] && [ -f "$engine_root/.project_manager/tools/python_floor.py" ]; then
+            python_floor="$engine_root/.project_manager/tools/python_floor.py"
+        fi
         for _cand in python3 python py; do
-            if command -v "$_cand" >/dev/null 2>&1 && "$_cand" --version >/dev/null 2>&1; then
-                py="$_cand"
-                break
+            if command -v "$_cand" >/dev/null 2>&1 &&
+                    "$_cand" --version >/dev/null 2>&1 &&
+                    [ -n "$python_floor" ]; then
+                probe_output=$("$_cand" "$python_floor" 2>&1)
+                probe_rc=$?
+                case "$probe_output" in
+                    Python*) probe_version=${probe_output#Python } ;;
+                    *) probe_version="확인 실패" ;;
+                esac
+                [ -z "$found_versions" ] || found_versions="$found_versions, "
+                found_versions="${found_versions}${_cand}=${probe_version}"
+                if [ "$probe_rc" -eq 0 ]; then
+                    py="$_cand"
+                    break
+                fi
             fi
         done
         if [ -z "$board" ] || [ -z "$py" ]; then
             echo "[pm 라이브 게이트] 게이트 검증 실행 불가 — fail-closed 거부 (T-0223)." >&2
-            echo "  보호 브랜치 push 는 라이브 게이트 green 을 요구하는데 PM 엔진 board.py 를 못 찾았다" >&2
-            echo "  (engine-root sidecar='${engine_root}', py='${py}'). 게이트를 못 돌리면 무력화 방지로 거부한다." >&2
+            if [ -z "$board" ]; then
+                echo "  PM 엔진 board.py 를 못 찾았다 (engine-root sidecar='${engine_root}')." >&2
+            elif [ -z "$python_floor" ]; then
+                echo "  Python 하한 probe를 못 찾았다 (engine-root sidecar='${engine_root}')." >&2
+            else
+                echo "  Python 3.11+ 필요, 발견: ${found_versions:-없음}." >&2
+            fi
+            echo "  보호 브랜치 push 는 라이브 게이트 green 을 요구한다. 게이트를 못 돌리면 무력화 방지로 거부한다." >&2
             echo "  라이브-무관 변경(docs 등)·긴급 hotfix 면 우회:" >&2
             echo "    PM_SKIP_LIVE_GATE=1 PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
             exit 1

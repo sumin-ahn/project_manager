@@ -34,6 +34,13 @@ def board():
     return _load("board")
 
 
+@pytest.fixture(autouse=True)
+def _clear_detect_py_cache(board):
+    board._detect_py.cache_clear()
+    yield
+    board._detect_py.cache_clear()
+
+
 # ── C1: load_ticket / dump_ticket round-trip (em-dash + 이모지) ──────────────
 
 def test_dump_load_round_trip_em_dash_and_emoji(board, tmp_path):
