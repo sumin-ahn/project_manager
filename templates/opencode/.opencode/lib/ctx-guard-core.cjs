@@ -12,9 +12,10 @@
 //     1) 넛지(이른 경고·1회 toast + 모델-주입 안내·ADR-0037) → "티켓 마무리·큰 거 새로 시작 마라"
 //     2) 하드 정지(ADR-0038 D2) → 새 작업 도구만 차단(tool.execute.before)·진행 중 핸드오프 도구는
 //        예외 통과·STOP marker 직접 박제(relay 회전 신호·no pm_handoff --trigger).
-//   하고, lossy 컴팩션은 opencode.jsonc `compaction.auto:false` 로 차단(우리 정지가 먼저 오게).
+//   한다. 자동 컴팩션은 전역 기본(켜짐)으로 두되, PM 세션에선 이 정지가 컴팩션 발화점보다 훨씬
+//   먼저 와서(출하 형상 실측) lossy 요약 대신 정제 핸드오프가 선행한다 — 근거는 opencode.jsonc 주석.
 //
-// 모델 (T-0012, 2D): 넛지(이른) → 하드 정지(필수) → 새 세션. compaction 회피.
+// 모델 (T-0012, 2D): 넛지(이른) → 하드 정지(필수) → 새 세션. 컴팩션보다 정지가 선행.
 //
 // 임계값(엔진 T-0013·T-0207 상향): local.conf `ctx_nudge_pct`/`ctx_stop_pct`(기본 30/20) = "잔여 컨텍스트 %".
 //   잔여% = (1 - used/limit) * 100.  잔여 ≤ nudge_pct → 넛지,  잔여 ≤ stop_pct → 정지.
@@ -342,7 +343,8 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
 
   // OpenCode SDK 표면: client.session.get({ path: { id: sessionID } }) -> { data: Session }.
   // Session.parentID가 있으면 native task가 만든 자식 세션이다. 이때만 Claude의 sub-session
-  // 등가 정책처럼 nudge/STOP/deny를 모두 생략한다. 역조회 불확실성은 절대 면제 사유가 아니다.
+  // 등가 정책처럼 nudge/STOP/deny를 모두 생략하고, 생존은 전역 자동 컴팩션에 맡긴다. 역조회
+  // 불확실성은 절대 면제 사유가 아니다.
   function isChildSession(sessionID) {
     const state = sessionState(sessionID);
     if (!state) return Promise.resolve(false);

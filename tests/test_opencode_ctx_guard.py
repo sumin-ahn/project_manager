@@ -2,10 +2,11 @@
 
 opencode plugin(`.opencode/plugins/ctx-guard.js`)이 컨텍스트 토큰을 추적해 임계 도달 시
 하드 정지(새 작업 도구만 차단·진행 중 핸드오프 도구는 예외 통과)하고 STOP marker 를 직접
-박제(relay 회전 신호·no pm_handoff --trigger·ADR-0038 D2/D4)하며, lossy 자동 컴팩션을
-차단(`compaction.auto:false`)하는 것을 여러 층위에서 단언한다:
+박제(relay 회전 신호·no pm_handoff --trigger)하며, PM 가드보다 뒤에서 자식 세션을 보존하는
+자동 컴팩션의 기본 동작을 유지하는 것을 여러 층위에서 단언한다:
 
-  1. config 정합  — opencode.jsonc 에 `compaction.auto:false` (T-0012 L1).
+  1. config 정합  — opencode.jsonc 가 `compaction.auto:false`를 재도입하지 않고, 모델 limit 의
+       output < context 제약을 만족한다.
   2. plugin 정합  — plugin 파일 존재 + 필수 호출/구조 정적 검증:
        event 토큰추적 · permission.ask deny(새 작업만) · tool.execute.before throw(allow-list) ·
        임계값(ctx_*_pct / local.conf) 참조 · 멱등 가드 · STOP marker 직접 박제.
@@ -83,7 +84,7 @@ def _make_ctx_guard_project(tmp_path: Path) -> Path:
     return root
 
 
-# ── 1. config 정합: compaction.auto false ──────────────────────────────────
+# ── 1. config 정합: 기본 compaction + 모델 limit 제약 ───────────────────────
 
 def test_config_exists_and_parses():
     """opencode.jsonc 가 존재하고 jsonc 로 파싱된다."""
@@ -92,13 +93,49 @@ def test_config_exists_and_parses():
     assert isinstance(data, dict)
 
 
-def test_config_disables_auto_compaction():
-    """compaction.auto 가 false — lossy 자동 컴팩션 차단(우리 정지가 먼저 오게)."""
+def test_config_does_not_disable_auto_compaction():
+    """전역 자동 컴팩션은 기본값(켜짐)을 유지한다 — 전역 off 재유입 차단.
+
+    컴팩션을 전역으로 끄면 native task 자식 세션이 ctx-guard 면제(nudge/STOP/deny 생략)와 겹쳐
+    **컴팩션도 정지도 없는** 상태가 된다 — 위임 서브에이전트가 컨텍스트 초과로 죽는 클래스.
+    PM 세션은 정지가 컴팩션 발화점보다 먼저 와서 정제 핸드오프가 여전히 선행한다(라이브 실측).
+    (jsonc 주석은 파서가 제거하므로 주석 안 문자열은 이 가드를 통과시키지 못한다.)
+    """
     data = _load_config()
-    assert "compaction" in data, "opencode.jsonc 에 compaction 블록 없음"
-    assert data["compaction"].get("auto") is False, (
-        f"compaction.auto 가 false 가 아님: {data['compaction'].get('auto')!r}"
+    compaction = data.get("compaction") or {}
+    assert compaction.get("auto") in (None, True), (
+        "compaction.auto 는 미지정(기본 켜짐) 또는 true 여야 한다 — false·문자열·null 은 자식 "
+        "세션을 컴팩션·ctx-guard 둘 다 없는 무보호로 만든다"
     )
+
+
+def test_config_model_limits_keep_output_below_context():
+    """명시한 모든 모델 limit 은 output < context — 컴팩션 무한 루프 형상 차단.
+
+    자동 컴팩션 트리거가 "입력 > context - output" 이라 output ≥ context 면 조건이 항상 참이 되어
+    세션이 실제 작업 대신 요약만 반복한다(라이브 실측). 값 가드 + 그 근거 주석의 존재를 함께 본다.
+    """
+    data = _load_config()
+    checked_limits = 0
+    for provider_name, provider in data.get("provider", {}).items():
+        for model_name, model in provider.get("models", {}).items():
+            limit = model.get("limit")
+            if limit is None:
+                continue
+            checked_limits += 1
+            context, output = limit.get("context"), limit.get("output")
+            assert isinstance(context, int) and isinstance(output, int), (
+                f"{provider_name}/{model_name}: limit.context·limit.output 은 정수여야 함 "
+                f"(found: {limit})"
+            )
+            assert output < context, (
+                f"{provider_name}/{model_name}: limit.output({output}) 이 "
+                f"limit.context({context}) 이상 — 컴팩션이 매 턴 발화해 요약만 반복함"
+            )
+    assert checked_limits, "출하 모델에 검증할 limit 설정이 없음"
+    # 왜(주석) 정적 확인 — 채택자가 자기 모델 엔트리를 더할 때 이 제약을 읽게 한다.
+    raw = PROJECT_CONFIG.read_text(encoding="utf-8")
+    assert "context - output" in raw, "limit 주석에 컴팩션 트리거 제약(무한 루프) 경고 없음"
 
 
 def test_config_keeps_existing_permission_guard():

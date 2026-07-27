@@ -248,9 +248,10 @@ def test_config_declares_output_limit():
 
 
 def test_config_keeps_existing_blocks():
-    """safe-write config 추가가 기존 compaction/tool_output/permission 가드를 안 깬다 (회귀)."""
+    """safe-write config 추가가 기존 tool_output/permission 가드를 안 깬다 (회귀).
+
+    (자동 컴팩션 형상 불변은 test_opencode_ctx_guard 가 소유 — 여기선 중복하지 않는다.)"""
     data = _load_config()
-    assert data.get("compaction", {}).get("auto") is False, "compaction.auto=false 회귀 (T-0014)"
     assert data.get("permission", {}).get("bash", {}).get("rm *") == "deny", (
         "bash rm 가드 손실 (T-0011 회귀)"
     )
