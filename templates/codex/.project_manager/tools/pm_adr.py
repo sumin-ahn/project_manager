@@ -810,6 +810,13 @@ def cmd_new(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _console_spec = importlib.util.spec_from_file_location(
+        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    )
+    _console_encoding = importlib.util.module_from_spec(_console_spec)
+    _console_spec.loader.exec_module(_console_encoding)
+    _verify_engine_rev(_console_encoding, "console_encoding.py")
+    _console_encoding.configure_console_utf8()
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "new":

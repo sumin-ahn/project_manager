@@ -3300,35 +3300,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _set_console_codepage_utf8() -> None:
-    # Windows 한정 — 콘솔 코드페이지를 UTF-8(65001)로 맞춘다. cp949(한국어) 콘솔에서
-    # stdout reconfigure(utf-8)만으로는 콘솔이 UTF-8 바이트를 cp949 로 디코드해 한글이
-    # mojibake 되므로, 콘솔 입출력 codepage 자체를 65001 로 설정해 정합시킨다 (T-0068).
-    # best-effort: 콘솔 핸들 없음·권한·예외 시 조용히 통과(reconfigure 와 동형 try/except).
-    # idempotent — 이미 UTF-8 콘솔엔 65001 재설정이 무해. POSIX 는 진입하지 않는다.
-    if os.name != "nt":
-        return
-    try:
-        import ctypes
-
-        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
-        ctypes.windll.kernel32.SetConsoleCP(65001)
-    except Exception:
-        pass
-
-
 def main(argv: list[str] | None = None) -> int:
-    # 콘솔/파이프 출력을 UTF-8 로 재설정 — cp949 콘솔이나 리다이렉트된 stdout 에서
-    # 이모지·em-dash(—) print 가 UnicodeEncodeError 로 죽는 것을 막는다 (T-0017).
-    # 먼저 Windows 콘솔 codepage 를 UTF-8 로 맞춘 뒤(T-0068) 스트림을 reconfigure 한다.
-    # reconfigure 미지원 스트림(테스트 캡처 등)은 hasattr 가드로 건너뛴다.
-    _set_console_codepage_utf8()
-    for _stream in (sys.stdout, sys.stderr):
-        if hasattr(_stream, "reconfigure"):
-            try:
-                _stream.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+    _console_spec = importlib.util.spec_from_file_location(
+        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    )
+    _console_encoding = importlib.util.module_from_spec(_console_spec)
+    _console_spec.loader.exec_module(_console_encoding)
+    _verify_engine_rev(_console_encoding, "console_encoding.py")
+    _console_encoding.configure_console_utf8()
 
     raw = list(sys.argv[1:] if argv is None else argv)
 

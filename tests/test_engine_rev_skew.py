@@ -59,6 +59,14 @@ def _load(tools_dir: Path, name: str):
     return mod
 
 
+def _stale_source(name: str) -> str:
+    """canonical stamped 모듈의 baked rev만 stale 값으로 바꾼 사본."""
+    text = (TOOLS / f"{name}.py").read_text(encoding="utf-8")
+    current = f'ENGINE_REV = "{_cur_rev()}"'
+    assert text.count(current) == 1
+    return text.replace(current, 'ENGINE_REV = "v0.0.0-stale"', 1)
+
+
 # ── engine_rev.check() 단위 (baked rev 비교기·기전의 축) ─────────────────────
 
 
@@ -164,6 +172,28 @@ def test_partial_copy_current_engine_rev_but_old_baked_sibling_detected(tmp_path
     assert "identity_args.py" in msg
     assert "v1.3.4" in msg                        # 구 형제 baked rev
     assert _cur_rev() in msg                        # 신 로더 baked rev
+
+
+def test_stale_console_encoding_fails_loud_via_loader_verify(tmp_path):
+    """신 CLI + stale console_encoding은 기존 로더 verify로 marked RuntimeError와 복구 안내를 낸다."""
+    tools = _build_tools(tmp_path, {
+        "pm_handoff.py": None,
+        "identity_args.py": None,
+        "console_encoding.py": _stale_source("console_encoding"),
+    })
+    mod = _load(tools, "pm_handoff")
+
+    with pytest.raises(RuntimeError) as exc:
+        mod.main([])
+
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    msg = str(exc.value)
+    assert "pm_handoff.py" in msg                 # 로더명
+    assert "console_encoding.py" in msg           # stale 형제명
+    assert "v0.0.0-stale" in msg
+    assert _cur_rev() in msg
+    assert "pm-update" in msg
+    assert "전체를 재동기" in msg
 
 
 def test_missing_engine_rev_is_benign_at_runtime(tmp_path):

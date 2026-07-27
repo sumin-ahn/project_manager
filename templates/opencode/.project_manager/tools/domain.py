@@ -1580,20 +1580,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _reconfigure_console() -> None:
-    # 콘솔/파이프 출력을 UTF-8 로 재설정 — cp949 콘솔이나 리다이렉트된 stdout 에서
-    # em-dash(·)·한글 print 가 UnicodeEncodeError 로 죽는 것을 막는다(board.py 동형).
-    # reconfigure 미지원 스트림(테스트 캡처 등)은 hasattr 가드로 건너뛴다.
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            try:
-                stream.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
-
-
 def main(argv: list[str] | None = None) -> int:
-    _reconfigure_console()
+    _console_spec = importlib.util.spec_from_file_location(
+        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    )
+    _console_encoding = importlib.util.module_from_spec(_console_spec)
+    _console_spec.loader.exec_module(_console_encoding)
+    _verify_engine_rev(_console_encoding, "console_encoding.py")
+    _console_encoding.configure_console_utf8()
     args = build_parser().parse_args(argv)
     return args.fn(args)
 

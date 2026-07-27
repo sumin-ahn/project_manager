@@ -34,6 +34,7 @@ import datetime
 import json
 import os
 import re
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -5253,6 +5254,13 @@ def main(argv: "list[str] | None" = None) -> int:
       - `kind="none"`(인자 전무) → 기존 no-flag 체인(`_resolve_current_slot(None)`·cwd→세션
         leased·ADR-0040 불변).
     """
+    _console_spec = importlib.util.spec_from_file_location(
+        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    )
+    _console_encoding = importlib.util.module_from_spec(_console_spec)
+    _console_spec.loader.exec_module(_console_encoding)
+    _verify_engine_rev(_console_encoding, "console_encoding.py")
+    _console_encoding.configure_console_utf8()
     ia = _load_identity_args()
     parser = argparse.ArgumentParser(
         prog="worktree_pool.py",

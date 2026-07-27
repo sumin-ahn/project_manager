@@ -19,6 +19,9 @@
 #   ENGINE_REV 를 이 값과 대조해 사본 skew(신 도구+구 형제)를 로드 시점 fail-loud 로 표출.
 #   신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례). 릴리즈 bump 유일 지점.
 .project_manager/tools/engine_rev.py
+# console_encoding: 전 CLI 공용 Windows codepage 65001 + UTF-8 스트림 부트스트랩(T-0481).
+#   신규 __main__ 진입점도 정적 전수 가드가 이 helper 호출을 강제한다.
+.project_manager/tools/console_encoding.py
 # domain: v2 도메인 지식 레이어 엔진 (ADR-0018·covers 파서·touches∩covers·staleness·freshness lint·capture). domain/ 페이지는 인스턴스 소유(manifest 밖)
 .project_manager/tools/domain.py
 .project_manager/tools/pm_bootstrap.py

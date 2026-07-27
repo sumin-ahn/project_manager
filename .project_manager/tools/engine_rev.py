@@ -25,6 +25,7 @@ CHANGELOG 최신 릴리스 절과 일치하는지 본다.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import re
 import sys
 from pathlib import Path
@@ -49,6 +50,7 @@ STAMPED_MODULES = (
     "contradiction_lint.py",
     "pm_adr.py",
     "repo_coordinates.py",
+    "console_encoding.py",
 )
 
 _REV_RE = re.compile(r"^v\d+\.\d+\.\d+$")
@@ -112,6 +114,13 @@ def bump(new_rev: str, *, dry_run: bool = False) -> list[str]:
 
 
 def main(argv=None) -> int:
+    _console_spec = importlib.util.spec_from_file_location(
+        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    )
+    _console_encoding = importlib.util.module_from_spec(_console_spec)
+    _console_spec.loader.exec_module(_console_encoding)
+    # 복구 도구는 skew 검증 금지: 중단된 bump(engine_rev만 신 rev)를 재실행해 나머지를 복구해야 한다.
+    _console_encoding.configure_console_utf8()
     ap = argparse.ArgumentParser(
         description="엔진 rev 스탬프 bump — 전 stamped 모듈의 baked 리터럴을 기계 일괄 재작성 (T-0397).",
     )

@@ -19,6 +19,7 @@ shutil.which 패치로 강제한다(ambient PYTHONUTF8 가 버그를 가리지 �
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import os
 import subprocess
@@ -71,6 +72,11 @@ def board():
 @pytest.fixture(scope="module")
 def pm_config():
     return _load("pm_config", TOOLS)
+
+
+@pytest.fixture(scope="module")
+def console_encoding():
+    return _load("console_encoding", TOOLS)
 
 
 class _Recorder:
@@ -317,47 +323,30 @@ def _install_fake_ctypes(monkeypatch):
     return kernel32
 
 
-def test_board_codepage_set_on_windows(board, monkeypatch):
+def test_common_codepage_set_on_windows(console_encoding, monkeypatch):
     """os.name=='nt' 에서 _set_console_codepage_utf8 가 65001 두 codepage 를 설정."""
-    monkeypatch.setattr(board.os, "name", "nt")
+    monkeypatch.setattr(console_encoding.os, "name", "nt")
     kernel32 = _install_fake_ctypes(monkeypatch)
-    board._set_console_codepage_utf8()
+    console_encoding._set_console_codepage_utf8()
     assert kernel32.output_cp_calls == [65001], "SetConsoleOutputCP(65001) 누락/오인자"
     assert kernel32.input_cp_calls == [65001], "SetConsoleCP(65001) 누락/오인자"
 
 
-def test_board_codepage_noop_on_posix(board, monkeypatch):
+def test_common_codepage_noop_on_posix(console_encoding, monkeypatch):
     """os.name!='nt'(POSIX) 에서는 분기에 진입하지 않아 SetConsole*CP 미호출."""
-    monkeypatch.setattr(board.os, "name", "posix")
+    monkeypatch.setattr(console_encoding.os, "name", "posix")
     kernel32 = _install_fake_ctypes(monkeypatch)
-    board._set_console_codepage_utf8()
+    console_encoding._set_console_codepage_utf8()
     assert kernel32.output_cp_calls == [], "POSIX 에서 SetConsoleOutputCP 가 호출됨"
     assert kernel32.input_cp_calls == [], "POSIX 에서 SetConsoleCP 가 호출됨"
 
 
-def test_pm_config_codepage_set_on_windows(pm_config, monkeypatch):
-    """pm_config 도 동일 인라인 정의 — nt 에서 65001 설정(도구 간 정합)."""
-    monkeypatch.setattr(pm_config.os, "name", "nt")
-    kernel32 = _install_fake_ctypes(monkeypatch)
-    pm_config._set_console_codepage_utf8()
-    assert kernel32.output_cp_calls == [65001]
-    assert kernel32.input_cp_calls == [65001]
-
-
-def test_pm_config_codepage_noop_on_posix(pm_config, monkeypatch):
-    monkeypatch.setattr(pm_config.os, "name", "posix")
-    kernel32 = _install_fake_ctypes(monkeypatch)
-    pm_config._set_console_codepage_utf8()
-    assert kernel32.output_cp_calls == []
-    assert kernel32.input_cp_calls == []
-
-
-def test_codepage_best_effort_swallows_exception(board, monkeypatch):
+def test_codepage_best_effort_swallows_exception(console_encoding, monkeypatch):
     """ctypes 호출이 예외(콘솔 핸들 없음 등)를 던져도 조용히 통과(best-effort)."""
     import sys
     import types
 
-    monkeypatch.setattr(board.os, "name", "nt")
+    monkeypatch.setattr(console_encoding.os, "name", "nt")
 
     class _Boom:
         def SetConsoleOutputCP(self, cp):  # noqa: N802
@@ -370,22 +359,146 @@ def test_codepage_best_effort_swallows_exception(board, monkeypatch):
     fake.windll = types.SimpleNamespace(kernel32=_Boom())
     monkeypatch.setitem(sys.modules, "ctypes", fake)
     # 예외가 새어나오면 이 호출이 raise — pytest 가 실패로 잡는다.
-    board._set_console_codepage_utf8()
+    console_encoding._set_console_codepage_utf8()
 
 
-# 9개 엔진 도구 모두 동일 인라인 정의를 보유(ADR isolation — 공유 모듈 없음).
-_CODEPAGE_TOOLS = [
-    "board", "pm_bootstrap", "pm_handoff", "pm_log", "ticket_finish",
-    "pm_update", "pm_import", "pm_config", "external_review",
-]
+def test_common_stream_reconfigure_is_guarded_and_best_effort(console_encoding, monkeypatch):
+    """지원 스트림은 utf-8/replace로 바꾸고, 미지원·실패 스트림은 CLI를 막지 않는다."""
+    class _Records:
+        def __init__(self):
+            self.calls = []
+
+        def reconfigure(self, **kwargs):
+            self.calls.append(kwargs)
+
+    class _Raises:
+        def reconfigure(self, **kwargs):
+            raise OSError("capture stream refuses reconfigure")
+
+    stdout = _Records()
+    monkeypatch.setattr(console_encoding.sys, "stdout", stdout)
+    monkeypatch.setattr(console_encoding.sys, "stderr", _Raises())
+    monkeypatch.setattr(console_encoding.os, "name", "posix")
+    console_encoding.configure_console_utf8()
+    assert stdout.calls == [{"encoding": "utf-8", "errors": "replace"}]
+
+    # hasattr 가드: reconfigure 자체가 없는 스트림도 그대로 통과한다.
+    monkeypatch.setattr(console_encoding.sys, "stdout", object())
+    console_encoding.configure_console_utf8()
 
 
-@pytest.mark.parametrize("tool_name", _CODEPAGE_TOOLS)
-def test_every_tool_defines_codepage_helper(tool_name):
-    """9개 도구 각자 _set_console_codepage_utf8 를 인라인 정의(전파 누락 가드)."""
-    mod = _load(tool_name, TOOLS)
-    assert hasattr(mod, "_set_console_codepage_utf8"), (
-        f"{tool_name} 에 _set_console_codepage_utf8 정의 누락"
+def _has_main_guard(tree: ast.AST) -> bool:
+    """AST에 ``if __name__ == "__main__"`` 진입 가드가 있는지."""
+    return any(
+        isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Name)
+        and node.test.left.id == "__name__"
+        and any(
+            isinstance(comparator, ast.Constant) and comparator.value == "__main__"
+            for comparator in node.test.comparators
+        )
+        for node in ast.walk(tree)
+    )
+
+
+def test_console_codepage_helper_has_single_definition():
+    """codepage 제어 구현은 공용 모듈 한 곳뿐이다(복붙 재도입 차단)."""
+    definitions = []
+    for path in TOOLS.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_set_console_codepage_utf8"
+            for node in ast.walk(tree)
+        ):
+            definitions.append(path.name)
+    assert definitions == ["console_encoding.py"]
+
+
+def test_every_main_entrypoint_calls_common_console_helper():
+    """tools/*.py의 현재·미래 ``__main__`` 전수가 main 최상위 선행부에서 공용 helper를 호출한다."""
+    entrypoints = {}
+    for path in TOOLS.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if _has_main_guard(tree):
+            entrypoints[path.name] = tree
+
+    assert entrypoints, "__main__ 진입점 스캔 결과가 비었다(공허 가드)"
+    missing = []
+    for filename, tree in sorted(entrypoints.items()):
+        main_defs = [
+            node for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main"
+        ]
+        if len(main_defs) != 1:
+            missing.append(f"{filename}: top-level main 정의 {len(main_defs)}개")
+            continue
+        main_tree = main_defs[0]
+
+        def direct_call(stmt):
+            if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
+                return stmt.value
+            if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+                return stmt.value
+            return None
+
+        def call_name(call):
+            if isinstance(call.func, ast.Name):
+                return call.func.id
+            if isinstance(call.func, ast.Attribute):
+                return call.func.attr
+            return None
+
+        helper_indexes = [
+            index
+            for index, stmt in enumerate(main_tree.body)
+            if isinstance(stmt, ast.Expr)
+            and (call := direct_call(stmt)) is not None
+            and call_name(call) == "configure_console_utf8"
+        ]
+        if len(helper_indexes) != 1:
+            missing.append(f"{filename}: main 최상위 helper 호출 {len(helper_indexes)}개")
+            continue
+
+        helper_index = helper_indexes[0]
+        leading = main_tree.body[:helper_index]
+        if (
+            leading
+            and isinstance(leading[0], ast.Expr)
+            and isinstance(leading[0].value, ast.Constant)
+            and isinstance(leading[0].value.value, str)
+        ):
+            leading = leading[1:]  # 함수 docstring은 출력/dispatch가 아닌 메타데이터
+        allowed_loader_calls = {
+            "spec_from_file_location",
+            "module_from_spec",
+            "exec_module",
+            "_verify_engine_rev",
+        }
+        unexpected = []
+        for stmt in leading:
+            call = direct_call(stmt)
+            name = call_name(call) if call is not None else type(stmt).__name__
+            if name not in allowed_loader_calls:
+                unexpected.append(name)
+        loads_common_file = any(
+            isinstance(node, ast.Constant) and node.value == "console_encoding.py"
+            for stmt in main_tree.body[:helper_index + 1]
+            for node in ast.walk(stmt)
+        )
+        if unexpected or not loads_common_file:
+            missing.append(
+                f"{filename}: helper 전 비-로더 statement={unexpected}, "
+                f"console_encoding 로드={loads_common_file}"
+            )
+
+    assert not missing, (
+        "__main__ 보유 도구의 main() 최상위 선행 console helper 관용구 위반: "
+        f"{missing}; 스캔 전수={sorted(entrypoints)}. 각 main() 첫 동작에 "
+        "`spec_from_file_location(... console_encoding.py) → module_from_spec → exec_module "
+        "→ (stamped면 _verify_engine_rev) → _console_encoding.configure_console_utf8()`를 "
+        "parser/print/dispatch보다 먼저 넣어라."
     )
 
 

@@ -418,6 +418,13 @@ def _parse_ids(tokens: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _console_spec = importlib.util.spec_from_file_location(
+        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    )
+    _console_encoding = importlib.util.module_from_spec(_console_spec)
+    _console_spec.loader.exec_module(_console_encoding)
+    _verify_engine_rev(_console_encoding, "console_encoding.py")
+    _console_encoding.configure_console_utf8()
     args = build_parser().parse_args(argv)
     targets = _parse_ids(args.amends) + _parse_ids(args.supersedes)
     if not targets:

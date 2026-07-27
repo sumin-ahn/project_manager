@@ -21,11 +21,13 @@ board.py 는 import 하지 않는다(touches 격리·병렬충돌 회피·자체
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import multiprocessing as mp
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -4568,21 +4570,22 @@ def _install_engine(engine_root: Path) -> None:
     """PM 홈(engine_root=wp.REPO)에 실 board.py 를 심는다 — 훅이 sidecar 로 해소하는 엔진 (T-0223 codex r2).
 
     슬롯 worktree(family/회사 checkout)엔 엔진 파일이 없다(회사 repo 무영향) — board.py 는 PM 홈에만
-    존재하고 훅은 sidecar `engine-root`(=이 engine_root)로 그걸 찾는다. board.py 는 단일 파일이라
-    그것만 복사하면 `livegate check` 가 standalone 동작(yaml=런타임 의존·테스트 env 보유). board.py
+    존재하고 훅은 sidecar `engine-root`(=이 engine_root)로 그걸 찾는다. board.py 와 CLI 공용
+    `console_encoding.py`를 복사하면 `livegate check` 가 standalone 동작(yaml=런타임 의존·테스트 env 보유). board.py
     REPO=Path(__file__).parents[2]=engine_root → livegate.json 을 engine_root/.project_manager/.local 에서 읽는다.
 
     `identity_args.py`(ADR-0057·T-0322)도 함께 심는다 — board.py 가 같은 tools/ 디렉토리에서
     경로-앵커 로드(`_load_identity_args`)하는 **load-bearing sibling**이라, 빠지면 이 최소-격리
     엔진(board.py 단일 파일)이 import 시점에 fail-loud 로 죽는다(전 서브에 정체성 파싱 필수).
 
-    (T-0397 rev 스탬프는 board·identity_args 소스에 baked 리터럴이라 둘 다 실 복사본이면 서로
-    일치한다 — engine_rev.py 는 런타임 verify 가 읽지 않으므로 이 최소 격리 엔진엔 불요.)
+    (T-0397 rev 스탬프는 board·identity_args·console_encoding 소스에 baked 리터럴이라 실 복사본이면
+    서로 일치한다 — engine_rev.py 는 런타임 verify 가 읽지 않으므로 이 최소 격리 엔진엔 불요.)
     """
     tools = engine_root / ".project_manager" / "tools"
     tools.mkdir(parents=True, exist_ok=True)
     shutil.copy(str(TOOLS / "board.py"), str(tools / "board.py"))
     shutil.copy(str(TOOLS / "identity_args.py"), str(tools / "identity_args.py"))
+    shutil.copy(str(TOOLS / "console_encoding.py"), str(tools / "console_encoding.py"))
 
 
 def _write_livegate(engine_root: Path, *, head: str, status: str = "pass",
@@ -4997,6 +5000,27 @@ def test_cmd_record_success_reports_updated_snapshot(wp, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "도착 스냅 재기록" in out and "v1.3.3" in out
+
+
+def test_cmd_record_cp949_stdout_does_not_crash_on_checkmark(wp, monkeypatch):
+    """T-0481: cp949 strict stdout에서도 ``✓`` 성공 출력이 UTF-8 재배선되어 크래시하지 않는다."""
+    before = type("_L", (), {"git": {"branch": "old", "head": "aaaaaaaa"}})()
+    after = type("_L", (), {"git": {"branch": "v1.4.4", "head": "bbbbbbbbbbbb"}})()
+    monkeypatch.setattr(wp, "read_lease_strict", lambda slot: before)
+    monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: after)
+
+    raw = io.BytesIO()
+    cp949_stdout = io.TextIOWrapper(raw, encoding="cp949", errors="strict")
+    monkeypatch.setattr(sys, "stdout", cp949_stdout)
+
+    rc = wp.main(["record", "work/A_1"])
+    cp949_stdout.flush()
+
+    assert rc == 0
+    assert cp949_stdout.encoding.lower().replace("-", "") == "utf8"
+    assert cp949_stdout.errors == "replace"
+    assert "✓ 슬롯 work/A_1" in raw.getvalue().decode("utf-8")
+    cp949_stdout.detach()
 
 
 def test_cmd_record_ledger_missing_slot_fails(wp, monkeypatch, capsys):

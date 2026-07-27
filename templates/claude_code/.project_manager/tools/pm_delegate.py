@@ -2354,18 +2354,14 @@ def _harness_timeout_budget(harness: str, timeout: int) -> int:
     return int(timeout + retries * min(first_event_window, timeout))
 
 
-def _reconfigure_streams() -> None:
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            try:
-                stream.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
-                pass
-
-
 def main(argv: list[str] | None = None, run_fn: Callable | None = None,
          git_run_fn: Callable | None = None) -> int:
-    _reconfigure_streams()
+    _console_spec = importlib.util.spec_from_file_location(
+        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    )
+    _console_encoding = importlib.util.module_from_spec(_console_spec)
+    _console_spec.loader.exec_module(_console_encoding)
+    _console_encoding.configure_console_utf8()
     # `lint` 서브커맨드 — flat 위임 옵션(--role/--prompt-file/--cwd required)과 분리한 별도 경로.
     # 위임과 인자 형상이 다르므로 build_arg_parser 앞에서 분기(subparsers 로 위임 required 를 흩지
     # 않는다). never-block(§3.7·항상 rc=0).

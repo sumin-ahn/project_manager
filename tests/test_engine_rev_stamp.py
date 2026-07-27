@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 from pathlib import Path
 
 import pytest
@@ -20,8 +21,8 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 
-def _load_engine_rev():
-    spec = importlib.util.spec_from_file_location("engine_rev", TOOLS / "engine_rev.py")
+def _load_engine_rev(tools: Path = TOOLS):
+    spec = importlib.util.spec_from_file_location("engine_rev", tools / "engine_rev.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -65,6 +66,40 @@ def test_bump_is_idempotent_and_covers_all_files():
     assert set(would_change) == {"engine_rev.py", *er.STAMPED_MODULES}
     # dry-run 이라 실제 파일은 그대로 (부작용 0).
     assert er.read_literal(TOOLS / "board.py") == er.ENGINE_REV
+
+
+def test_bump_recovers_after_engine_rev_was_rewritten_first(tmp_path):
+    """중단된 bump(engine_rev=신 rev·console_encoding=구 rev)도 재실행하면 전 파일 정합을 복구한다."""
+    current = _load_engine_rev()
+    major, minor, patch = map(int, current.ENGINE_REV.removeprefix("v").split("."))
+    new_rev = f"v{major}.{minor}.{patch + 1}"
+
+    tools = tmp_path / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    for filename in ("engine_rev.py", *current.STAMPED_MODULES):
+        shutil.copy2(TOOLS / filename, tools / filename)
+
+    # bump()의 실제 쓰기 순서상 첫 파일만 반영되고 프로세스가 중단된 순간을 재현한다.
+    engine_path = tools / "engine_rev.py"
+    old_literal = f'ENGINE_REV = "{current.ENGINE_REV}"'
+    text = engine_path.read_text(encoding="utf-8")
+    assert text.count(old_literal) == 1
+    engine_path.write_text(text.replace(old_literal, f'ENGINE_REV = "{new_rev}"', 1),
+                           encoding="utf-8")
+
+    interrupted = _load_engine_rev(tools)
+    assert interrupted.ENGINE_REV == new_rev
+    assert interrupted.read_literal(tools / "console_encoding.py") == current.ENGINE_REV
+
+    # engine_rev.main()은 복구 경로이므로 stale console helper를 verify하지 않고 bump까지 도달한다.
+    assert interrupted.main(["--bump", new_rev]) == 0
+    assert {
+        filename: interrupted.read_literal(tools / filename)
+        for filename in ("engine_rev.py", *interrupted.STAMPED_MODULES)
+    } == {
+        filename: new_rev
+        for filename in ("engine_rev.py", *interrupted.STAMPED_MODULES)
+    }
 
 
 def test_bump_rejects_bad_format():
