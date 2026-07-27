@@ -115,21 +115,19 @@ def _resolve_leaf(leaf_options: dict[tuple, set], tokens: list[str]) -> tuple:
 
 # ── 카드 CLI 줄 추출 ─────────────────────────────────────────────────────────
 
-_CARD_PREFIX = "python3 .project_manager/tools/"
-
-
-def _card_cli_commands(card: str) -> list[tuple[str, list[str]]]:
-    """카드에서 `python3 .project_manager/tools/<tool> …` 줄만 (tool, arg-tokens) 로 추출.
+def _card_cli_commands(card: str, bootstrap) -> list[tuple[str, list[str]]]:
+    """카드에서 설정으로 해소된 도구 접두의 줄만 (tool, arg-tokens) 로 추출.
 
     engine 강등 줄(2-스페이스 들여쓰기)·주석(`# …`)을 벗겨 CLI 인자만. skill(`/pm-…`) 줄·평문
-    note(`↳ …`)는 python3 로 시작 안 해 제외(파서-검증 대상은 backbone python3 줄뿐).
+    note(`↳ …`)는 도구 접두로 시작하지 않아 제외한다.
     """
+    card_prefix = bootstrap._resolve_card_tool_invoke() + "/"
     out: list[tuple[str, list[str]]] = []
     for raw in card.splitlines():
         s = raw.strip()
-        if not s.startswith(_CARD_PREFIX):
+        if not s.startswith(card_prefix):
             continue
-        rest = s[len(_CARD_PREFIX):]
+        rest = s[len(card_prefix):]
         rest = rest.split("  #", 1)[0].rstrip()
         parts = rest.split()
         if not parts:
@@ -152,6 +150,77 @@ def _render_mode_card(bootstrap, mode: str) -> str:
         return inst._build_command_card_markdown(
             {"role": "readonly", "slot": "work/project_manager_3"})
     raise AssertionError(mode)
+
+
+def _render_all_mode_cards(bootstrap) -> str:
+    """세 모드 카드의 도구 표기를 한 번에 검사할 수 있도록 합친다."""
+    return "\n".join(
+        _render_mode_card(bootstrap, mode) for mode in ("slot", "task", "readonly")
+    )
+
+
+def _tool_reference_lines(card: str) -> list[str]:
+    """실행 줄과 찾아가기 포인터를 포함한 모든 Python 도구 참조 줄."""
+    return [
+        line for line in card.splitlines()
+        if ".project_manager/tools/" in line
+    ]
+
+
+# ── 0. per-clone 인터프리터 표기 ─────────────────────────────────────────────
+
+def test_card_uses_local_interpreter_for_every_tool_reference(tmp_path, monkeypatch):
+    """`py=python` 형상은 모든 모드의 도구 참조를 같은 `python` 접두로 렌더한다."""
+    bootstrap = _load(_TREES["root"], "pm_bootstrap")
+    conf_dir = tmp_path / ".project_manager"
+    conf_dir.mkdir()
+    (conf_dir / "local.conf").write_text(
+        "session=demo\npy=python\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
+
+    cards = _render_all_mode_cards(bootstrap)
+    references = _tool_reference_lines(cards)
+    assert references, "카드의 Python 도구 참조가 비어 표기 검사가 공허함"
+    assert all("python .project_manager/tools/" in line for line in references)
+    assert "python3 .project_manager/tools/" not in cards
+
+
+@pytest.mark.parametrize("conf_text", [None, "session=demo\n", "py=\n"])
+def test_card_interpreter_missing_or_empty_keeps_python3(
+    tmp_path, monkeypatch, conf_text
+):
+    """설정·키가 없거나 값이 비면 모든 모드가 기존 `python3` 표기를 유지한다."""
+    bootstrap = _load(_TREES["root"], "pm_bootstrap")
+    if conf_text is not None:
+        conf_dir = tmp_path / ".project_manager"
+        conf_dir.mkdir()
+        (conf_dir / "local.conf").write_text(conf_text, encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
+
+    cards = _render_all_mode_cards(bootstrap)
+    references = _tool_reference_lines(cards)
+    assert references, "카드의 Python 도구 참조가 비어 폴백 검사가 공허함"
+    assert all("python3 .project_manager/tools/" in line for line in references)
+
+
+def test_card_interpreter_read_failure_keeps_python3(tmp_path, monkeypatch):
+    """설정 읽기가 실패해도 카드 렌더를 깨뜨리지 않고 기존 접두로 폴백한다."""
+    bootstrap = _load(_TREES["root"], "pm_bootstrap")
+    conf_dir = tmp_path / ".project_manager"
+    conf_dir.mkdir()
+    conf_path = conf_dir / "local.conf"
+    conf_path.write_text("py=python\n", encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
+    original_read_text = Path.read_text
+
+    def fail_for_local_conf(path, *args, **kwargs):
+        if path == conf_path:
+            raise OSError("unreadable")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_for_local_conf)
+    assert bootstrap._resolve_card_tool_invoke() == bootstrap._CARD_TOOL_INVOKE
 
 
 # ── 1. 정의서 → 파서 (카드 토큰이 실 CLI 에 있나·양방향 forward) ────────────────
@@ -235,7 +304,10 @@ def test_card_render_matches_definition(tree, mode):
 
     # 카드 측 (tool, base-render) 집합 — 정체성 실값만 벗기고 나머지 인자 문자열 정확 대조.
     card = _render_mode_card(bootstrap, mode)
-    rendered = {(tool, _strip_identity(tokens)) for tool, tokens in _card_cli_commands(card)}
+    rendered = {
+        (tool, _strip_identity(tokens))
+        for tool, tokens in _card_cli_commands(card, bootstrap)
+    }
 
     missing = declared - rendered  # 정의서엔 있으나 카드 미렌더/변형.
     extra = rendered - declared    # 카드엔 있으나 정의서 밖(지어낸/변형 커맨드).
@@ -262,7 +334,7 @@ def test_card_rendered_flags_exist_in_parser(tree, mode):
     leaves = _leaves_by_tool(tools_dir)
     card = _render_mode_card(bootstrap, mode)
 
-    for tool, tokens in _card_cli_commands(card):
+    for tool, tokens in _card_cli_commands(card, bootstrap):
         if tool not in leaves:
             continue
         leaf = _resolve_leaf(leaves[tool], tokens)
@@ -334,7 +406,10 @@ def test_render_granularity_detects_same_leaf_variant_removal():
     """
     bootstrap = _load(_TREES["root"], "pm_bootstrap")
     card = _render_mode_card(bootstrap, "slot")
-    rendered = {(tool, _strip_identity(tokens)) for tool, tokens in _card_cli_commands(card)}
+    rendered = {
+        (tool, _strip_identity(tokens))
+        for tool, tokens in _card_cli_commands(card, bootstrap)
+    }
     declared = {(rec.tool, rec.render) for rec in bootstrap._CARD_MODE_CLI["slot"]}
     assert declared == rendered  # baseline green.
     # `list --mine` 줄을 제거한 카드는 leaf `list`(전체 보드)가 남아도 render 대조가 red.

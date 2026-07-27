@@ -48,9 +48,12 @@ _PY3_CMD = re.compile(r"python3\s")
 # Windows 런처 표기 — `py -3`(예 `py -3.12`). "cd X && cmd" 의 'cmd'(dot 없음)와 무관.
 _PY_LAUNCHER = re.compile(r"\bpy -3")
 # `./<name>.sh` 루트 파사드 호출.
-_SH_FACADE = re.compile(r"\./[\w.-]+\.sh\b")
-# `.cmd` Windows 등가(예 `.\pm-update.cmd`). literal dot 요구 → 산문의 "cmd" 오탐 없음.
-_CMD_FACADE = re.compile(r"\.cmd\b")
+_SH_FACADE = re.compile(r"\./(?P<name>[\w.-]+)\.sh\b")
+# 표준 Windows 노트는 하나의 연속 blockquote 안에서 PowerShell 5.x의 `&&` 비호환을 경고한다.
+_WINDOWS_NOTE_BLOCK = re.compile(r"(?m)(?:^>[^\n]*(?:\n|$))+")
+_POWERSHELL_AND_WARNING = re.compile(
+    r"PowerShell\s+5\.x[^\n]*&&[^\n]*(?:미지원|ParseError)"
+)
 
 # 이 ticket 이 감사·통일한 직접-python 스킬(claude 9) — 가드 non-vacuous 앵커.
 _DIRECT_PYTHON_CLAUDE = [
@@ -64,43 +67,83 @@ _DIRECT_PYTHON_CLAUDE = [
     ".claude/skills/pm-worktree/SKILL.md",
     ".claude/skills/spike-new/SKILL.md",
 ]
-# 파사드 스킬(claude 2) — `.sh` 예시 + `.cmd` 병기.
+# 파사드 스킬 — `.sh` 예시 + 같은 실명의 `.cmd` 병기.
 _FACADE_CLAUDE = [
     ".claude/skills/pm-env/SKILL.md",
     ".claude/skills/pm-update/SKILL.md",
+    ".claude/skills/pm-release/SKILL.md",
 ]
 
 
-# ── (1) python3 참조 ↔ py 런처 병기 (파리티) ──────────────────────────────────
+def _note_blocks(text: str) -> list[str]:
+    """연속 blockquote 노트만 반환해 흩어진 마커의 우연한 조합을 배제한다."""
+    return _WINDOWS_NOTE_BLOCK.findall(text)
+
+
+def _has_python_windows_note(text: str) -> bool:
+    """한 노트 블록이 python3·py 런처·PowerShell 경고를 모두 갖는지."""
+    return any(
+        _PY3_CMD.search(block)
+        and _PY_LAUNCHER.search(block)
+        and _POWERSHELL_AND_WARNING.search(block)
+        for block in _note_blocks(text)
+    )
+
+
+def _facade_windows_note_pairs(text: str) -> list[str]:
+    """한 표준 노트 안에서 basename이 같은 `.sh`↔`.cmd` 쌍을 반환한다."""
+    pairs: list[str] = []
+    for block in _note_blocks(text):
+        if not _POWERSHELL_AND_WARNING.search(block):
+            continue
+        for name in sorted(set(_SH_FACADE.findall(block))):
+            sh_name = f"./{name}.sh"
+            cmd_name = ".\\" + name + ".cmd"
+            if cmd_name in block:
+                pairs.append(f"{sh_name} ↔ {cmd_name}")
+    return pairs
+
+
+# ── (1) python3 참조 ↔ 표준 Windows 노트 블록 ────────────────────────────────
 
 @pytest.mark.parametrize("path", _CANONICAL_FILES, ids=_IDS)
 def test_python3_reference_has_windows_py_launcher(path: Path):
-    """스킬/커맨드가 `python3 …` 를 보이면 Windows 런처 `py`(`py -3.x`)도 병기한다.
+    """`python3` 참조 스킬은 py 런처와 PowerShell 경고를 한 표준 노트에 둔다.
 
-    literal `python3` 만 있으면 Windows 세션 LLM 이 그대로 실행 → shim 실패 → fallback
-    토큰 낭비. per-skill 표준 Windows 노트 블록이 이를 막는다 (T-0288).
+    마커가 문서 곳곳에 흩어져 있어도 통과시키지 않아 실제 실행 지점에서 노트를 놓치는
+    형해화를 막는다.
     """
     text = path.read_text(encoding="utf-8")
     if _PY3_CMD.search(text):
-        assert _PY_LAUNCHER.search(text), (
-            f"{path.relative_to(REPO).as_posix()} — `python3` 참조가 있는데 Windows 런처 "
-            f"`py`(예 `py -3.12`) 표기가 없다. 상단 표준 Windows 노트 블록을 삽입하라 (T-0288)."
+        assert _has_python_windows_note(text), (
+            f"{path.relative_to(REPO).as_posix()} — `python3` 참조가 있는데 한 blockquote 안에 "
+            "Windows `py -3.x` 런처와 PowerShell 5.x `&&` 비호환 경고를 갖춘 표준 노트가 없다."
         )
 
 
-# ── (2) .sh 파사드 참조 ↔ .cmd 병기 (파리티) ──────────────────────────────────
+# ── (2) .sh 파사드 참조 ↔ 실명 .cmd + PowerShell 경고 ────────────────────────
 
 @pytest.mark.parametrize("path", _CANONICAL_FILES, ids=_IDS)
 def test_sh_facade_reference_has_windows_cmd(path: Path):
-    r"""스킬/커맨드가 `./…​.sh` 파사드를 보이면 Windows `.cmd` 등가도 병기한다.
+    r"""각 `./<name>.sh`는 같은 노트에서 `.\<name>.cmd`와 PowerShell 경고를 병기한다.
 
-    `./…​.sh` 는 bash 전용 — PowerShell/cmd 세션엔 `.\<name>.cmd` 가 짝이다 (T-0288).
+    무관한 `.cmd` 한 줄만 있어도 통과하던 느슨한 마커 검사를 닫고 실명 대응을 강제한다.
     """
     text = path.read_text(encoding="utf-8")
     if _SH_FACADE.search(text):
-        assert _CMD_FACADE.search(text), (
-            f"{path.relative_to(REPO).as_posix()} — `./…​.sh` 파사드 참조가 있는데 Windows "
-            f"`.cmd` 등가 표기가 없다 (T-0288)."
+        pairs = _facade_windows_note_pairs(text)
+        assert pairs, (
+            f"{path.relative_to(REPO).as_posix()} — 한 blockquote 안에 basename이 같은 "
+            "`.sh`↔`.cmd` 등가와 PowerShell 5.x `&&` 경고를 갖춘 표준 노트가 없다."
+        )
+        # 참조된 .sh 실명 전수가 노트에서 짝지어져야 한다 — 한 쌍만 있으면 green 이던
+        # 부분 커버(예: pm-update.sh 병기·pm-config.sh 누락)를 닫는다.
+        referenced = set(_SH_FACADE.findall(text))
+        paired = {p.split("./", 1)[1].split(".sh", 1)[0] for p in pairs}
+        missing = sorted(referenced - paired)
+        assert not missing, (
+            f"{path.relative_to(REPO).as_posix()} — 문서가 참조하는 `.sh` 파사드 중 표준 노트에서 "
+            f"`.cmd` 짝을 못 얻은 실명: {missing} (노트에 `.\\<name>.cmd` 병기 필요)."
         )
 
 
@@ -115,23 +158,25 @@ def test_scan_set_non_empty():
 
 @pytest.mark.parametrize("rel", _DIRECT_PYTHON_CLAUDE)
 def test_direct_python_claude_skill_carries_both_markers(rel: str):
-    """감사 대상 직접-python claude 스킬 9개가 `python3` + `py -3` 을 **둘 다** 담는다.
+    """직접-python 스킬 9개가 표준 Windows 노트 블록을 실제로 담는다.
 
-    파리티 가드(1)가 vacuous(python3 부재로 skip)로 통과하는 걸 막는 앵커 —
-    이 9개는 실제로 python3 를 쓰고, 따라서 py 런처 노트를 반드시 가져야 한다 (T-0288 DoD).
+    파리티 가드가 python3 부재로 건너뛰는 공허 통과를 막는 고정 앵커다.
     """
     path = REPO / rel
     assert path.is_file(), f"{rel} 부재"
     text = path.read_text(encoding="utf-8")
     assert _PY3_CMD.search(text), f"{rel} — 직접-python 스킬인데 `python3` 참조 없음(감사 전제 붕괴)"
-    assert _PY_LAUNCHER.search(text), f"{rel} — Windows 런처 `py`(py -3.x) 노트 누락 (T-0288)"
+    assert _has_python_windows_note(text), (
+        f"{rel} — `py -3.x` 런처 + PowerShell 5.x `&&` 경고 표준 노트 누락"
+    )
 
 
 @pytest.mark.parametrize("rel", _FACADE_CLAUDE)
 def test_facade_claude_skill_carries_cmd(rel: str):
-    """파사드 스킬(pm-env·pm-update)이 `.cmd` Windows 등가를 담는다 (T-0288 DoD)."""
+    """파사드 스킬이 실명 `.cmd` 등가와 PowerShell 경고를 담는다."""
     path = REPO / rel
     assert path.is_file(), f"{rel} 부재"
-    assert _CMD_FACADE.search(path.read_text(encoding="utf-8")), (
-        f"{rel} — `.cmd` Windows 등가 표기 누락 (T-0288)"
-    )
+    text = path.read_text(encoding="utf-8")
+    assert _SH_FACADE.search(text), f"{rel} — `.sh` 파사드 참조 없음(감사 전제 붕괴)"
+    pairs = _facade_windows_note_pairs(text)
+    assert pairs, f"{rel} — 실명 `.sh`↔`.cmd` + PowerShell 경고 표준 노트 누락"

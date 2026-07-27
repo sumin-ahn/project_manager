@@ -83,11 +83,38 @@ LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 # ref 를 읽는 이유·T-0377 계보·worktree_pool._SYMREF_BRANCH_PREFIX 와 동일 규칙).
 _SYMREF_BRANCH_PREFIX = "refs/heads/"
 
-# 커맨드 카드 (ADR-0045) — 도구 호출 접두. 카드는 이 세션이 쓸 전 커맨드를 정체성 채운
-# 완성형으로 dump 한다("--help 자체를 안 가게"·사용자 지시). `python3` 은 머신-불변 doc 표면
-# 관례(T-0219·Windows 는 `py`·CLAUDE.md 노트). 경로는 multi-PM 공유 루트 기준 상대(도그푸딩
-# 관례와 정합·PM 이 공유 루트에서 board/wiki 조작).
+# 도구 호출 접두 리터럴. `python3` 는 머신-불변 doc 표면 관례(POSIX 에서 항상 유효)라 폴백으로
+# 안전하다. **커맨드 카드 렌더만** per-clone 설정의 검증 완료 인터프리터(`py=`)로 이 접두를
+# 대체하고(설정 부재·빈 값이면 이 리터럴 폴백), 카드 밖 안내/에러 문구의 소비처들은 아직 이
+# 리터럴 고정이다 — "이건 어디서나 폴백"으로 읽지 말 것(카드 밖 확장은 별도 판단).
+# 경로는 multi-PM 공유 루트 기준 상대라 PM 이 공유 루트에서 board/wiki 를 조작한다.
 _CARD_TOOL_INVOKE = "python3 .project_manager/tools"
+
+
+def _resolve_card_tool_invoke(repo: Path | None = None) -> str:
+    """커맨드 카드 도구 접두를 per-clone `local.conf`의 `py=` 값으로 완성한다.
+
+    설정 파일 부재·읽기 실패·키 부재·빈 값은 기존 리터럴로 조용히 폴백한다. 인터프리터의
+    실행 가능 여부와 지원 버전은 설정을 기록하는 초기화 단계가 검증하므로 여기서는 선택을
+    반복하지 않고 표기만 일치시킨다.
+    """
+    conf_path = (repo if repo is not None else REPO) / ".project_manager" / "local.conf"
+    try:
+        lines = conf_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return _CARD_TOOL_INVOKE
+
+    interpreter = ""
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip() == "py":
+            interpreter = value.strip()
+    if not interpreter:
+        return _CARD_TOOL_INVOKE
+    return f"{interpreter} .project_manager/tools"
 
 
 # ── 커맨드 카드 공용 정의서 (파서-생성화·T-0362·⑰·§F12) ─────────────────────────
@@ -4296,7 +4323,7 @@ class PmBootstrap:
         wave 운영(claim·regression·finish·qa·dev 위임·handoff·엔진 갱신)은 **스킬(`/pm-…`) 진입을
         primary** 로 올리고 감싸는 backbone 은 강등한다(ADR-0052 Decision 2 — boundary=래핑 스킬
         유무). 강등 줄은 pm_role skill 카탈로그의 "감싸는 내부 엔진" 열과 정확히 일치시킨다(카드=
-        pm_role 표기·ADR-0045). **엔진이 CLI(`python3 tools/*.py` — board.py/ticket_finish.py/
+        pm_role 표기·ADR-0045). **엔진이 Python CLI(`tools/*.py` — board.py/ticket_finish.py/
         pm_handoff.py)일 때만** "직접 금지" 강등 줄로 그리고, 엔진이 Agent 툴(`/pm-dev-delegate`)·
         facade 셸(`/pm-update`=pm-update.sh)이면 python3 줄을 지어내지 않고 skill-only + 평문 note
         로 둔다. external_review 는 래핑 스킬 없는 별도 codex 게이트라 강등이 아니라 직접-CLI 예외
@@ -4304,6 +4331,7 @@ class PmBootstrap:
         줄은 정체성 보간·⚠ 인접·argparse 정합 가드를 위해 남긴다. 규칙·why 는 재설명하지 않고
         (ADR-0045 비중복) 카드 상단 1줄 pointer 로 pm_role 규율 절을 가리킨다.
         """
+        tool_invoke = _resolve_card_tool_invoke()
         session = identity.get("session") if identity else None
         repo_name = identity.get("repo") if identity else None
         # 슬롯 **번호**는 슬롯 식별자(`identity["slot"]`=`work/<repo>_<N>`)의 *마지막* `_` 로 분리한다
@@ -4316,20 +4344,20 @@ class PmBootstrap:
         sess = f" --repo {repo_name} --slot {slot_num}" if session and repo_name and slot_num else ""
 
         def cmd(rec: _CardCmd, comment: str = "", suffix: str = "", prefix: str = "") -> str:
-            """공용 정의서 record → `python3 .project_manager/tools/<tool> <prefix><render><suffix>` 한 줄.
+            """공용 정의서 record → 해소된 인터프리터로 도구를 호출하는 한 줄.
 
             커맨드 토큰(도구·서브커맨드·플래그)은 `rec`(공용 정의서·T-0362) 단일 진실에서 온다 —
             손 문자열 하드코딩 제거. `suffix`/`prefix` = 정체성(`--repo/--slot`·task 명) 등 caller 가
             실값 보간하는 꼬리/머리(ADR-0057 "정체성은 실값·사용자 입력만 placeholder"; pm_handoff 는
             정체성이 앞에 오므로 `prefix`).
             """
-            line = f"{_CARD_TOOL_INVOKE}/{rec.tool} {prefix}{rec.render}{suffix}".rstrip()
+            line = f"{tool_invoke}/{rec.tool} {prefix}{rec.render}{suffix}".rstrip()
             return f"{line}  # {comment}" if comment else line
 
         def skill(invocation: str, comment: str = "") -> str:
             """`/pm-…` 스킬 진입 줄(wave 운영 primary·ADR-0052).
 
-            `python3` 로 시작하지 않으므로 카드↔CLI argparse 정합 가드·정체성 `--repo/--slot`
+            해소된 도구 접두로 시작하지 않으므로 카드↔CLI argparse 정합 가드·정체성 `--repo/--slot`
             검사(불변식 3)의 대상이 아니다 — backbone 은 아래 `engine()` 줄로 종속화한다.
             """
             return f"{invocation}  # {comment}" if comment else invocation
@@ -4338,7 +4366,7 @@ class PmBootstrap:
                    suffix: str = "", prefix: str = "") -> str:
             """스킬에 종속된 backbone 줄 — 2-스페이스 들여쓰기 + '직접 금지' 주석(강등 표기).
 
-            `python3 …` 로 시작해(들여쓰기는 strip 됨) 정체성 `--repo/--slot` 보간·카드↔CLI
+            해소된 도구 접두로 시작해(들여쓰기는 strip 됨) 정체성 `--repo/--slot` 보간·카드↔CLI
             argparse 정합 가드의 대상으로 남는다(불변식 1·3 무손상). 스킬 줄(`/pm-…`)만 그
             가드 밖이다.
             """
@@ -4350,9 +4378,13 @@ class PmBootstrap:
         task_name = getattr(self, "_task_name", None)
         role = (identity.get("role") if identity else None)
         if task_name:
-            return self._task_command_card_lines(task_name, cmd, skill, engine) + self._codex_card_section()
+            return self._task_command_card_lines(
+                task_name, tool_invoke, cmd, skill, engine
+            ) + self._codex_card_section()
         if role == "readonly":
-            return self._readonly_command_card_lines(identity, cmd, skill) + self._codex_card_section()
+            return self._readonly_command_card_lines(
+                identity, tool_invoke, cmd, skill
+            ) + self._codex_card_section()
 
         lines: list[str] = []
         lines.append("### 이 세션 커맨드 카드 (정체성 채움·--help 불요·단일 진실·ADR-0045)")
@@ -4513,7 +4545,7 @@ class PmBootstrap:
         self_tag = f"`({session})`" if session else "`(솔로/slot-1=무태그)`"
         lines.append("# 찾아가기 (부트스트랩에 없는 것 — 평시 안 읽음·필요할 때만)")
         lines.append(
-            f"- 내 티켓 상세: `{_CARD_TOOL_INVOKE}/board.py show T-NNNN`"
+            f"- 내 티켓 상세: `{tool_invoke}/board.py show T-NNNN`"
         )
         lines.append(
             f"- 내 과거 세션: `wiki/log/current.md` 에서 자기 슬롯 태그 {self_tag} 검색(핸드오프 entry)"
@@ -4525,11 +4557,11 @@ class PmBootstrap:
         return "\n".join(lines) + self._codex_card_section()
 
     @staticmethod
-    def _card_navigation_lines(self_tag: str) -> list[str]:
+    def _card_navigation_lines(self_tag: str, tool_invoke: str) -> list[str]:
         """찾아가기 포인터 절 (모드 공용·부트스트랩 dump 에 없는 것 — 평시 안 읽음·필요할 때만)."""
         return [
             "# 찾아가기 (부트스트랩에 없는 것 — 평시 안 읽음·필요할 때만)",
-            f"- 내 티켓 상세: `{_CARD_TOOL_INVOKE}/board.py show T-NNNN`",
+            f"- 내 티켓 상세: `{tool_invoke}/board.py show T-NNNN`",
             f"- 내 과거 세션: `wiki/log/current.md` 에서 자기 태그 {self_tag} 검색(핸드오프 entry)",
             "- 타 PM 현황: 부트스트랩 대시보드(상세는 그 슬롯 태그 log entry)",
             "- 현재-아키텍처: `wiki/architecture.md`(충돌 시 단일 진실)",
@@ -4548,7 +4580,9 @@ class PmBootstrap:
         """
         return f"\n\n{_CODEX_CARD_SECTION}" if _is_codex_harness() else ""
 
-    def _task_command_card_lines(self, task_name: str, cmd, skill, engine) -> str:
+    def _task_command_card_lines(
+        self, task_name: str, tool_invoke: str, cmd, skill, engine
+    ) -> str:
         """task 모드 커맨드 카드 (T-0362·§F12·F1~F7·⑥) — task 세션이 쓸 task-스코프 커맨드만 dump.
 
         task 세션의 진입 정체성 앵커는 task 명 하나(`--task <name>`)다(log/pm_state 귀속·
@@ -4640,10 +4674,12 @@ class PmBootstrap:
         lines.append(cmd(_C_PM_LOG_TAIL))
         lines.append("")
 
-        lines.extend(self._card_navigation_lines(f"`(task:{task_name})`"))
+        lines.extend(self._card_navigation_lines(f"`(task:{task_name})`", tool_invoke))
         return "\n".join(lines)
 
-    def _readonly_command_card_lines(self, identity: dict | None, cmd, skill) -> str:
+    def _readonly_command_card_lines(
+        self, identity: dict | None, tool_invoke: str, cmd, skill
+    ) -> str:
         """readonly 공유 슬롯(⑬·T-0358·role=readonly) 커맨드 카드 (T-0362·§F12) — 조회/갱신만 dump.
 
         readonly 는 무소유 공유 자산(session/pid 없음·배타 대여 없음·detached HEAD)이라 board
@@ -4683,7 +4719,7 @@ class PmBootstrap:
         lines.append("  ↳ 엔진=worktree_pool.py refresh (backbone·직접 CLI 아님).")
         lines.append("")
 
-        lines.extend(self._card_navigation_lines("`(readonly 공유 슬롯)`"))
+        lines.extend(self._card_navigation_lines("`(readonly 공유 슬롯)`", tool_invoke))
         return "\n".join(lines)
 
     def _build_identity_markdown(self, identity: dict) -> str:
