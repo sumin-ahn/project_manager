@@ -114,7 +114,7 @@ def _build_excerpt(file_lines: list[str], ref_idxs: list[int]) -> str:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.4.4"
+ENGINE_REV = "v1.4.5"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):

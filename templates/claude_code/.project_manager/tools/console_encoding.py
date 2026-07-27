@@ -12,7 +12,7 @@ import sys
 
 
 # T-0397 baked stamp — 여러 CLI가 공유하는 엔진 의존성이므로 부분 전파 skew 가드에 편입한다.
-ENGINE_REV = "v1.4.4"
+ENGINE_REV = "v1.4.5"
 
 
 def _set_console_codepage_utf8() -> None:

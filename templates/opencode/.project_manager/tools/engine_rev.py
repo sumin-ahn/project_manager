@@ -33,7 +33,7 @@ from pathlib import Path
 
 # 엔진 사본 rev — 릴리즈 버전과 함께 bump 하는 단일 진실 값 (`--bump` 이 이 값 + STAMPED_MODULES
 # 리터럴을 일괄 재작성). 형식은 vX.Y.Z.
-ENGINE_REV = "v1.4.4"
+ENGINE_REV = "v1.4.5"
 
 # 엔진 런타임 Python 하한의 단일 진실. pm_import 가 stdlib `tomllib` 를 직접 사용하므로
 # Python 3.11 이 지배 제약이다(PEP 585 표기 자체의 3.9 하한보다 높음). board 탐지와
