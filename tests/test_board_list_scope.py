@@ -171,17 +171,15 @@ def test_repo_slot_filter_includes_my_claim_in_that_slot(board, capsys):
     assert ids == ["T-0001"]
 
 
-def test_repo_slot_view_claim_axis_is_session_label_user_agnostic(board, capsys):
-    """**ADR-0067 (codex R2)**: `--repo X --slot N` 세션 뷰의 claim 축 = session 라벨(user 무관·open
-    생성-세션과 대칭). 같은 슬롯의 타 user claim(`bob/myproject_3`)도 세션이 일치하면 보인다.
-
-    user 필터(내 것만)는 `--mine` 렌즈 몫이다 — 세션 뷰와 축이 다름을 대비로 못박는다."""
+def test_repo_slot_view_claim_axis_requires_user_and_session(board, capsys):
+    """`--repo X --slot N` 세션 뷰도 user ∧ session 복합축이다. 같은 슬롯 라벨의
+    타 user claim은 제외한다."""
     _write_conf(board, user="alice")
     _seed(board, "T-0001", "claimed", claimed_by="alice/myproject_3")   # 내 세션 claim
-    _seed(board, "T-0002", "claimed", claimed_by="bob/myproject_3")     # 타 user·같은 세션 → 보임(라벨)
+    _seed(board, "T-0002", "claimed", claimed_by="bob/myproject_3")     # 타 user·같은 세션 → 제외
     ids = _list_ids(board, capsys, repo="myproject", slot=3)
-    assert set(ids) == {"T-0001", "T-0002"}
-    # 대비: --mine(user 축)은 alice 것만 — bob claim 은 user 불일치로 제외(축이 다름).
+    assert ids == ["T-0001"]
+    # `--mine`도 같은 user 귀속을 보존한다.
     mine = _list_ids(board, capsys, mine=True)
     assert set(mine) == {"T-0001"}
 

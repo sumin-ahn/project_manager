@@ -2119,22 +2119,19 @@ def test_userfirst_slot_view_session_stream_and_legacy_claim(board, capsys):
     assert ids == {"T-0002"}                          # 세션 생성 open 0 + 내 슬롯 legacy claim
 
 
-def test_userfirst_slot_view_session_label_shows_all_same_session_claims(board, capsys):
-    """**ADR-0067 (codex R2)**: `--repo repo --slot 1` 세션 뷰의 claim 축 = **session 라벨**(user 무관·
-    open 생성-세션과 대칭). 세션 repo_1 의 claim 은 형태 불문 모두 보인다 — user-qualified(alice·bob)·
-    user 미해소 발행 legacy 슬롯-only(`repo_1`).
+def test_userfirst_slot_view_requires_user_and_session(board, capsys):
+    """`--repo repo --slot 1` 세션 뷰는 user ∧ session 복합축이다.
 
-    옛 동작(user-first): my_user 미해소 시 user-qualified 는 귀속 불가로·legacy 는 multi_user ambiguous
-    로 제외했다. R2 는 세션 뷰 축을 session 라벨로 통일 — user 필터(내 것만)는 `--mine` 렌즈 몫이다.
-    (ADR-0057 leak 가드[bare `--slot N` cross-repo]는 `--slot` 단독 fail-loud + 완전 세션 exact 로 승계.)
+    alice의 같은 세션 claim만 보이고 bob의 동명 세션 claim과 multi-user에서 모호한 legacy
+    슬롯-only claim은 strict-exclude한다.
     """
+    _write_conf(board, "user=alice\n")
     _seed_full(board, "T-0001", "claimed", claimed_by="alice/repo_1")   # user-qualified·세션 repo_1
-    _seed_full(board, "T-0002", "claimed", claimed_by="bob/repo_1")     # 타 user·같은 세션 → 보임(라벨)
-    _seed_full(board, "T-0003", "claimed", claimed_by="repo_1")         # legacy 슬롯-only·같은 세션 → 보임
+    _seed_full(board, "T-0002", "claimed", claimed_by="bob/repo_1")     # 타 user·같은 세션 → 제외
+    _seed_full(board, "T-0003", "claimed", claimed_by="repo_1")         # legacy·multi-user → strict 제외
     _seed_full(board, "T-0004", "claimed", claimed_by="alice/repo_2")   # 타 세션(repo_2) → 제외
     ids = set(_mine_ids(board, capsys, repo="repo", slot=1))
-    assert ids == {"T-0001", "T-0002", "T-0003"}        # 세션 repo_1 라벨 일치 → 전부(user 무관)
-    assert "T-0004" not in ids                          # 타 세션 → 제외(session 라벨 불일치)
+    assert ids == {"T-0001"}
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -2197,9 +2194,9 @@ def test_cmd_list_loud_warn_on_strict_exclude(board, capsys):
 def test_cmd_list_loud_warn_on_identity_unresolved(board, capsys):
     """다중사용자 + 정체성 미해소(my_user None) → loud-warn. stdout(no tickets) 무오염.
 
-    `--mine`(user-단위 렌즈·ADR-0067 세션 뷰 아님)에서 areas 부재로 소유자 유도 실패(None) + 티켓
+    `--mine` user-단위 렌즈에서 areas 부재로 소유자 유도 실패(None) + 티켓
     created_by 2명(다중사용자) → 모든 open 이 strict-exclude. 미해소 정체성을 remedy 와 함께 경고.
-    (`--repo/--slot` 세션 뷰는 생성-세션 스트림이라 strict-exclude 경고 대상이 아니다·ADR-0067.)"""
+    세션 뷰도 같은 종류의 실 드롭을 별도 predicate 재평가로 경고한다."""
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
     rc = board.cmd_list(_list_args(mine=True))
@@ -2252,6 +2249,46 @@ def test_cmd_list_all_no_warn(board, capsys):
     cap = capsys.readouterr()
     assert _WARN_MARK not in cap.err
     assert set(_ids_from(cap.out)) == {"T-0001", "T-0002"}   # 전체(필터 없음)
+
+
+def test_default_view_warns_when_legacy_created_by_mimics_a_user(board, capsys):
+    """legacy 세션-only created_by 때문에 다중사용자로 오판해 숨긴 open을 경고한다."""
+    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _seed_full(board, "T-0001", "open", created_by="alpha_1")
+    # 비활성 티켓의 실제 user와 legacy 세션 토큰이 서로 다른 user처럼 집계된다.
+    _seed_full(board, "T-0002", "done", created_by="alice/other_1")
+
+    rc = board.cmd_list(_list_args())
+    assert rc == 0
+    cap = capsys.readouterr()
+    assert cap.out.strip() == "(no tickets)"
+    assert _WARN_MARK in cap.err
+    assert _REMEDY_MIGRATE_EXACT in cap.err
+
+    rc = board.cmd_list(_list_args(all=True))
+    assert rc == 0
+    assert _ids_from(capsys.readouterr().out) == ["T-0001"]
+
+
+def test_default_view_warns_when_solo_git_email_changed(board, capsys):
+    """한 사용자의 과거·현재 email 스탬프가 공존해 현재 세션 open을 숨기면 경고한다."""
+    _write_conf(board, "user=new@example.com\nsession=alpha_1\n")
+    _seed_full(
+        board, "T-0001", "open", created_by="old@example.com/alpha_1")
+    # 상태 기본값에서는 접히지만 distinct-user 판정에는 참여하는 현재 email 스탬프.
+    _seed_full(
+        board, "T-0002", "done", created_by="new@example.com/alpha_1")
+
+    rc = board.cmd_list(_list_args())
+    assert rc == 0
+    cap = capsys.readouterr()
+    assert cap.out.strip() == "(no tickets)"
+    assert _WARN_MARK in cap.err
+    assert "email" in cap.err
+
+    rc = board.cmd_list(_list_args(all=True))
+    assert rc == 0
+    assert _ids_from(capsys.readouterr().out) == ["T-0001"]
 
 
 # ── T-0382: solo email-변경 오판 재현 + strict-exclude 경보 remedy 기계화 (D18 L2 폐쇄) ──

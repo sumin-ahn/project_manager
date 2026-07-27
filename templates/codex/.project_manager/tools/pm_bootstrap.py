@@ -1365,6 +1365,15 @@ _REMEDY_BRANCH_PREFIX = "task/"
 _REMEDY_BRANCH_SUFFIX_LIMIT = 20
 
 
+class _ResolvedSlotBase(NamedTuple):
+    """시대차 기준 브랜치와 실제 비교 ref·출처·fetch 필요 여부."""
+
+    branch: str
+    target: str
+    source: str
+    needs_fetch: bool
+
+
 def _phase0_diverge_reason(result) -> str:
     """0단계 record-vs-live FAIL-LOUD 의 판정 근거 한 줄 (T-0391·surface-only).
 
@@ -1398,17 +1407,19 @@ def _format_slot_era_warning(info: dict | None) -> str | None:
     if not info:
         return None
     base = info.get("base")
+    source = info.get("source") or "repo-default"
     if info.get("undetermined"):
         return (
-            f"- ⚠ **슬롯 시대차 판정불가** — base `{base}` 최신 fetch 실패(offline) · "
+            f"- ⚠ **슬롯 시대차 판정불가** — base `{base}` [{source}] 최신 fetch 실패(offline) · "
             "슬롯 HEAD 가 stale 스냅샷일 수 있음 (온라인 시 재부트스트랩 권장)"
         )
     behind = info.get("behind") or 0
     if behind <= 0:
         return None
+    target = info.get("target") or f"origin/{base}"
     return (
-        f"- ⚠ **슬롯 시대차** — HEAD 가 base `{base}` 대비 **behind {behind} 커밋** — "
-        f"옛-시대 코드로 작업할 위험 (`git -C <슬롯> rebase origin/{base}` 또는 최신 base 재분기 검토)"
+        f"- ⚠ **슬롯 시대차** — HEAD 가 base `{base}` [{source}] 대비 **behind {behind} 커밋** — "
+        f"옛-시대 코드로 작업할 위험 (`git -C <슬롯> rebase {target}` 또는 최신 base 재분기 검토)"
     )
 
 
@@ -4056,16 +4067,50 @@ class PmBootstrap:
         except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 "모름"(오탐 0).
             return None
 
-    def _resolve_slot_base(self, repo: str) -> str | None:
-        """그 repo 의 base 브랜치 — areas.md `base` 칼럼 (T-0341·명시 등록만·codex must-fix).
+    def _resolve_slot_base(self, repo: str) -> _ResolvedSlotBase | None:
+        """바운드 슬롯의 시대차 base — lease 기록 우선, areas repo 기본 폴백.
 
-        슬롯 시대차(behind base) 비교 대상. board 직접 import 금지(touches 격리·`_protected_warning`
-        동형) — 주입/동적로드된 board 의 `_repo_base`(areas.md `base` 칼럼)를 getattr 로 쓴다.
-        **명시 등록된 base 만** 신뢰한다 — 미등록/areas 부재/`base` 칼럼 부재면 None(시대차 진짜
-        생략·오탐 0). `_repo_protected` 는 폴백에 쓰지 않는다: 그 헬퍼는 미등록 repo 에도
-        default(`main`)를 돌려줘 "미해소=생략" 을 잘못된 origin/main 판정으로 바꾼다(codex must-fix).
-        board 부재/헬퍼 부재/파싱 실패도 None(fail-soft).
+        1층은 `worktree_pool.read_lease_strict(self._bound_slot)` 로 현재 lease 를 읽고
+        `lease.git.base.branch`의 현재 tip을 비교 target으로 사용한다. JSON을 여기서 다시 파싱하지
+        않는다. 모든 기록 경로가 자동 저장하는 `base.commit`은 rebase 계약의 breadcrumb일 뿐
+        시대차 비교에는 참여하지 않는다. `origin/`으로 시작하는 기록만 기존 freshness fetch
+        증명을 요구한다. 로컬 브랜치는 `origin/`을 자동 부가하지 않고 기록 ref를 그대로 비교하므로,
+        그 로컬 ref가 갱신되지 않은 환경에서는 실제 원격 전진을 놓치는 false-negative 한계가 있다.
+
+        2층은 슬롯/`git.base` 미기록 또는 구버전 worktree_pool(strict helper 부재)일 때만 기존
+        board `_repo_base(repo)`(areas.md `base` 칼럼)로 폴백한다. strict 장부 조회 예외나
+        `git.base` 스키마 이상은 areas 값으로 숨기지 않고 None으로 강등한다(시대차 soft 진단).
+        `_repo_protected` default는 여전히 base 폴백에 쓰지 않는다.
         """
+        wp = self._worktree_pool or _load_worktree_pool()
+        read_lease = getattr(wp, "read_lease_strict", None) if wp is not None else None
+        if self._bound_slot and callable(read_lease):
+            try:
+                lease = read_lease(self._bound_slot)
+            except Exception:  # noqa: BLE001 — strict 장부 실패를 repo default로 오인하지 않음.
+                return None
+            if lease is not None:
+                git = getattr(lease, "git", None)
+                if git is not None and not isinstance(git, dict):
+                    return None
+                recorded = git.get("base") if isinstance(git, dict) else None
+                if recorded is not None and not isinstance(recorded, dict):
+                    return None
+                if isinstance(recorded, dict):
+                    branch = recorded.get("branch")
+                    commit = recorded.get("commit")
+                    if not isinstance(branch, str) or not branch.strip():
+                        return None
+                    if commit is not None and not isinstance(commit, str):
+                        return None
+                    branch = branch.strip()
+                    return _ResolvedSlotBase(
+                        branch,
+                        target=branch,
+                        source="slot-record",
+                        needs_fetch=branch.startswith("origin/"),
+                    )
+
         board_mod = self._board or _load_board()
         if not board_mod:
             return None
@@ -4076,7 +4121,15 @@ class PmBootstrap:
             base = repo_base(repo)
         except Exception:  # noqa: BLE001 — fail-soft: 시대차는 소프트(실패=판정 생략).
             return None
-        return base or None
+        if not isinstance(base, str) or not base.strip():
+            return None
+        base = base.strip()
+        return _ResolvedSlotBase(
+            base,
+            target=f"origin/{base}",
+            source="repo-default",
+            needs_fetch=True,
+        )
 
     def _slot_scope_fetched(self, freshness: list[dict] | None) -> bool | None:
         """freshness 목록에서 현재 슬롯 cwd scope 의 `fetched` 상태 (T-0341 시대차 판정용).
@@ -4099,37 +4152,52 @@ class PmBootstrap:
         return None
 
     def _slot_era_info(self, repo: str, freshness: list[dict] | None) -> dict | None:
-        """슬롯 HEAD 가 base(main) 대비 behind N 커밋인지 판정한다 (T-0341·PM 69 stale-read).
+        """슬롯 HEAD 가 해소된 base branch의 현재 tip보다 behind N 커밋인지 판정한다.
 
-        *기존 freshness fetch*(T-0217·슬롯 cwd scope)로 갱신된 `origin/<base>` 를 재사용해
-        `git rev-list --count HEAD..origin/<base>` 로 behind 를 센다 — **신규 fetch 안 함**
-        (§결정). **fetch 성공을 증명한 경우에만** behind 를 계산한다(stale ref 오신뢰 금지). 반환:
+        areas repo 기본은 기존 freshness fetch로 갱신된 `origin/<base>`를, 슬롯 기록은
+        `git.base.branch` ref 자체를 사용한다. `git.base.commit`은 기록 여부와 무관하게 비교에
+        참여하지 않는다. remote-tracking ref만 fetch 성공을 요구하고 local ref는 네트워크와
+        무관하게 비교한다. 로컬 ref가 stale하면 원격 전진을 놓칠 수 있다. **신규 fetch 안 함**. 반환:
           - None — base 미해소(areas 미등록) · freshness scope 매칭 실패(fetch 미증명·codex
             suggestion) · online 인데 rev-list 실패(조용히 생략).
           - {"base": <br>, "undetermined": True} — 슬롯 cwd scope fetch 실패(offline)라
             origin/<base> 가 stale → 판정불가(fail-soft).
           - {"base": <br>, "behind": N} — behind 확정(fetch 증명·N==0 이면 최신·경고 무발화).
+        슬롯 기록을 쓴 반환에는 관측용 `source="slot-record"`와 실제 `target`도 포함한다. areas
+        폴백 반환 형상은 T-0341의 기존 JSON 계약을 유지하고 formatter가 `repo-default`로 표기한다.
         """
-        base = self._resolve_slot_base(repo)
-        if not base:
+        resolved = self._resolve_slot_base(repo)
+        if not resolved:
             return None
-        fetched = self._slot_scope_fetched(freshness)
-        if fetched is False:
-            # offline — origin/<base> 가 stale 스냅샷이라 behind 실측 불가(§결정 offline fail-soft).
-            return {"base": base, "undetermined": True}
-        if fetched is not True:
-            # freshness scope 매칭 실패(None) — fetch 성공을 *증명 못 함*. stale origin/<base>
-            # 위에서 behind 를 계산하면 오신뢰(false behind/최신)라 계산 안 하고 생략(codex suggestion).
-            return None
+        base = resolved.branch
+        source = resolved.source
+        target = resolved.target
+        if resolved.needs_fetch:
+            fetched = self._slot_scope_fetched(freshness)
+            if fetched is False:
+                # offline — remote-tracking target이 stale 스냅샷이라 behind 실측 불가.
+                result = {"base": base, "undetermined": True}
+                if source != "repo-default":
+                    result.update({"source": source, "target": target})
+                return result
+            if fetched is not True:
+                # freshness scope 매칭 실패(None) — fetch 성공을 증명 못 한 remote ref는 생략.
+                return None
         d = self._worktree_cwd(self._bound_slot)
-        rc, out = self._run_git_fn(["-C", d, "rev-list", "--count", f"HEAD..origin/{base}"])
+        try:
+            rc, out = self._run_git_fn(["-C", d, "rev-list", "--count", f"HEAD..{target}"])
+        except Exception:  # noqa: BLE001 — 시대차는 소프트 진단(실행 실패=조용히 생략).
+            return None
         if rc != 0:
             return None
         try:
             behind = int((out or "").strip())
         except (ValueError, TypeError):
             return None
-        return {"base": base, "behind": behind}
+        result = {"base": base, "behind": behind}
+        if source != "repo-default":
+            result.update({"source": source, "target": target})
+        return result
 
     def _build_slot_identity_markdown(self, identity: dict) -> str:
         """lean identity + 상태점검 markdown — 세션명·라이브 브랜치·`--repo/--slot` 안내·다른 PM 현황.
@@ -4319,9 +4387,8 @@ class PmBootstrap:
         lines.append("")
 
         # 내 작업 보기 (read-only 조회·직접 — 래핑 스킬 없음·ADR-0047 자기 공간 우선).
-        # 두 렌즈의 스코프 구분(ADR-0067) — --mine=user 축(내 것 전 슬롯) / --repo/--slot=세션 뷰
-        # (그 세션 스트림 = 그 세션 생성 open + 그 세션 claim·session 라벨 축). "내 슬롯 작업"은
-        # --repo/--slot 이 정확한 커맨드다(ADR-0057 신 표기).
+        # 두 렌즈의 스코프 구분 — --mine=user 축(내 것 전 슬롯) / --repo/--slot=user∧session 복합축.
+        # 소유 미해소 fallback은 board 판정에 위임하며, "내 슬롯 작업"은 --repo/--slot 조회가 맡는다.
         lines.append("# 내 작업 보기 (read-only 조회·직접 — ADR-0047 자기 공간 우선)")
         lines.append(cmd(
             _C_BOARD_LIST_MINE,

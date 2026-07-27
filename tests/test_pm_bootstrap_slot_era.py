@@ -101,6 +101,10 @@ class _EraPool:
         # 0단계 실재 검사(T-0351) 통과용 idle 시드(회귀 0·idle=점유 아님).
         return [_idle_lease(self._slot)]
 
+    def read_lease_strict(self, slot):
+        # 기록 base가 없는 lease는 areas 기본으로 폴백한다. 실제 장부와 lock은 읽지 않는다.
+        return SimpleNamespace(slot=slot, repo="A", git=None)
+
     def current_branch(self, slot, *, git_runner=None):
         return self._branch
 
@@ -248,8 +252,11 @@ def test_format_slot_era_warning_none_input(bootstrap):
 
 def test_resolve_slot_base_uses_registered_base(bootstrap):
     """areas.md `base` 칼럼(명시 등록)을 base 로 쓴다."""
-    inst = bootstrap.PmBootstrap(board=_EraBoard(base="develop", protected=["main"]))
-    assert inst._resolve_slot_base("A") == "develop"
+    inst = bootstrap.PmBootstrap(
+        board=_EraBoard(base="develop", protected=["main"]),
+        worktree_pool=_EraPool(),
+    )
+    assert inst._resolve_slot_base("A").branch == "develop"
 
 
 def test_resolve_slot_base_ignores_protected_default(bootstrap):
@@ -258,19 +265,25 @@ def test_resolve_slot_base_ignores_protected_default(bootstrap):
     비공허: `_repo_protected` 는 미등록 repo 에도 default('main')를 돌려주므로, 그걸 base 폴백에
     쓰면 "미해소=생략" 이 잘못된 origin/main 판정으로 바뀐다(오탐). base 미등록은 진짜 생략(None).
     """
-    inst = bootstrap.PmBootstrap(board=_EraBoard(base=None, protected=["main", "develop"]))
+    inst = bootstrap.PmBootstrap(
+        board=_EraBoard(base=None, protected=["main", "develop"]),
+        worktree_pool=_EraPool(),
+    )
     assert inst._resolve_slot_base("A") is None
 
 
 def test_resolve_slot_base_none_when_base_empty(bootstrap):
     """base 칼럼 빈 값 → None(시대차 판정 생략)."""
-    inst = bootstrap.PmBootstrap(board=_EraBoard(base="", protected=["main"]))
+    inst = bootstrap.PmBootstrap(
+        board=_EraBoard(base="", protected=["main"]),
+        worktree_pool=_EraPool(),
+    )
     assert inst._resolve_slot_base("A") is None
 
 
 def test_resolve_slot_base_none_when_board_lacks_helpers(bootstrap):
     """헬퍼 없는 board 대역 → getattr None → None(fail-soft·crash 0)."""
-    inst = bootstrap.PmBootstrap(board=object())
+    inst = bootstrap.PmBootstrap(board=object(), worktree_pool=_EraPool())
     assert inst._resolve_slot_base("A") is None
 
 
@@ -310,7 +323,11 @@ def _era_info_inst(bootstrap, *, board, rev_list_ret):
             return rev_list_ret
         return (0, "")
 
-    inst = bootstrap.PmBootstrap(board=board, run_git_fn=git_fn)
+    inst = bootstrap.PmBootstrap(
+        board=board,
+        run_git_fn=git_fn,
+        worktree_pool=_EraPool(),
+    )
     inst._bound_slot = "work/A_1"
     inst._worktree_cwd = lambda slot=None: "/slot/A_1"  # 고정(rev-list -C 대상)
     inst._era_calls = calls
@@ -542,7 +559,10 @@ def _build_origin_with_main(tmp_path, *, commits):
 
 def _era_inst_at(bootstrap, slot_dir, *, base="main"):
     """실 슬롯 경로 slot_dir 을 가리키는 PmBootstrap(실 git 러너·시대차 계산 대상)."""
-    inst = bootstrap.PmBootstrap(board=_EraBoard(base=base))  # 기본 실 git 러너
+    inst = bootstrap.PmBootstrap(
+        board=_EraBoard(base=base),
+        worktree_pool=_EraPool(),
+    )  # 기본 실 git 러너
     inst._bound_slot = "work/A_1"
     inst._worktree_cwd = lambda slot=None: str(slot_dir)
     return inst

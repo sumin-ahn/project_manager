@@ -1395,13 +1395,13 @@ def _area_owner_in_use() -> bool:
 
 
 def _distinct_area_owners() -> int:
-    """areas.md 의 non-empty `area_owner` 칼럼에서 해소되는 *distinct user* 수 (T-0312·codex R3).
+    """areas.md 의 non-empty `area_owner` 칼럼에서 해소되는 *distinct user* 수.
 
     `_area_owner_in_use`(채워졌나 bool)와 달리 **다중성**을 센다 — `multi_user` 신호의 두 번째
     축이다. `_distinct_ticket_users`(티켓 귀속만 셈)는 다중-owner 보드라도 claim 이 전부 legacy
     슬롯-only(user 토큰 0)면 ≤1 로 떨어져 그 보드를 solo 로 오판한다(→ legacy 슬롯-only 포함 경로가
-    발동해 `--slot N` 이 타 area 의 legacy `<repo>_N` 을 suffix 매칭으로 끌어오는 누출·ADR-0056
-    위반). areas 에 area_owner 가 2명 이상이면 티켓 user 토큰이 비어도 multi-user 보드다 — 그
+    발동해 `--slot N` 이 타 area 의 legacy `<repo>_N` 을 suffix 매칭으로 끌어오는 누출).
+    areas 에 area_owner 가 2명 이상이면 티켓 user 토큰이 비어도 multi-user 보드다 — 그
     다중성을 여기서 세어 `multi_user = distinct ticket-user >1 OR distinct area_owner >1` 로 solo
     정의를 완결한다. areas.md 부재/전부 빈 값이면 0(솔로 신호 보존·회귀 0).
     """
@@ -1447,24 +1447,24 @@ def _created_by_user(created_by: str | None) -> str | None:
 
 
 def _created_by_session(created_by: str | None) -> str | None:
-    """`created_by`(`<user>/<session>`·`<user>`·슬롯-only)에서 *session* 토큰 추출 (ADR-0067).
+    """`created_by`(`<user>/<session>`·`<user>`·슬롯-only)에서 *session* 토큰 추출.
 
     session = `created_by` 의 `/` 뒤 마지막 토큰(`<repo>_<N>` 슬롯 세션 또는 task 이름). 세션 기본
-    뷰(무인자 `list`·명시 세션 뷰·ADR-0067)의 "내 스트림 open" 판정에 쓴다 — 현 세션(`session_name`)과
-    이 값이 일치하는 open 이 내 스트림이다. ADR-0066 의 task-prefix 판정을 대체한다(prefix 는 ID
-    라벨일 뿐 스트림 판정 아님).
+    뷰(무인자 `list`·명시 세션 뷰)의 "내 스트림 open" 판정에 쓴다 — 현 세션(`session_name`)과
+    이 값이 일치하는 open 이 내 스트림이다. 이전 task-prefix 판정을 대체한다(prefix 는 ID 라벨일
+    뿐 스트림 판정 아님).
 
     **`/` 없는 값의 모호성**: `identity_tag` 는 (a) 세션 미바인딩 발행 시 순수 **user**(user 해소·슬롯
     부재)·(b) **user 미해소** 발행 시 순수 **session**(슬롯/task-only)을 둘 다 slash 없이 낸다 — 두
-    경우가 겹친다. ⑥ 슬롯 세션 예약 패턴(`<repo>_<N>`·task 명은 이 패턴 금지)으로 기계 판별한다:
+    경우가 겹친다. 슬롯 세션 예약 패턴(`<repo>_<N>`·task 명은 이 패턴 금지)으로 기계 판별한다:
     slash 없는 값이 그 패턴에 부합하면(`_repo_from_session` non-None) **session 토큰**으로 취급해
-    user-미해소로 슬롯-발행한 open 이 자기 세션 뷰에서 소실되는 것(codex must-fix)을 막는다. 부합 안
-    하면(순수 user·`<repo>_<N>` 아닌 task-only) None — 세션 미상이라 어느 세션 스트림에도 안 든다
+    user-미해소로 슬롯-발행한 open 이 자기 세션 뷰에서 소실되는 것을 막는다. 부합하지 않으면
+    (순수 user·`<repo>_<N>` 아닌 task-only) None — 세션 미상이라 어느 세션 스트림에도 안 든다
     ([[prefer-data-migration-over-fallback]]로 backfill 대상).
 
     `_created_by_user`(user 토큰)와의 대칭이 깨지는 지점: 저쪽은 slash 없는 값을 전부 *user* 로
     보지만, 이쪽은 slot-session 패턴에 부합하면 *session* 으로 본다 — user 식별자가 우연히
-    `<repo>_<N>` 형태면 양쪽이 겹쳐 오분류할 수 있으나, 그건 ⑥ 예약 체계가 이미 수용하는 동일
+    `<repo>_<N>` 형태면 양쪽이 겹쳐 오분류할 수 있으나, 그건 예약 체계가 이미 수용하는 동일
     클래스의 모호성(슬롯 세션 이름공간 예약)이다.
     """
     if created_by is None:
@@ -1474,7 +1474,7 @@ def _created_by_session(created_by: str | None) -> str | None:
         return None
     if "/" in cb:
         return cb.rsplit("/", 1)[-1] or None
-    # slash 없음 — user-only(세션 미바인딩)와 slot-only(user 미해소)가 겹치는 모호 값. ⑥ 슬롯 세션
+    # slash 없음 — user-only(세션 미바인딩)와 slot-only(user 미해소)가 겹치는 모호 값. 슬롯 세션
     # 예약 패턴(`<repo>_<N>`)에 부합하면 session 토큰으로 판별(user-미해소 슬롯 발행 open 소실 방지).
     return cb if _repo_from_session(cb) is not None else None
 
@@ -1606,8 +1606,8 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
       - **legacy 슬롯-only**(`cb_user is None`·user 토큰 없음): **진짜 solo(distinct user ≤1·
         `not multi_user`)에서만** `_slot_matches`(내 슬롯)로 포함한다. 게이트가 `my_user is None` 이
         아니라 `not multi_user` 인 건 `user_name()` 이 git email 폴백으로 solo 도 my_user 를 해소할
-        수 있어(흔함) — my_user proxy 면 그 solo 의 자기 슬롯 legacy claim 을 잘못 숨긴다(codex R2
-        회귀). multi_user 면 legacy 는 ambiguous → strict-exclude(migrate-identity backfill).
+        수 있어(흔함) — my_user proxy 면 그 solo 의 자기 슬롯 legacy claim 을 잘못 숨긴다.
+        multi_user 면 legacy 는 ambiguous → strict-exclude(migrate-identity backfill).
     (a) 내 소유 open — status==open 한정. `owner = _ticket_owner(fm, area_owner_in_use)`
         (area_owner ?? created_by.user):
       - my_user·owner 둘 다 해소 → strict `owner == my_user`(유출 0·유일 포함 규칙).
@@ -1630,8 +1630,8 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
             # legacy 슬롯-only claim(user 토큰 없음) — **진짜 solo(distinct user ≤1·not multi_user)**
             # 에서만 slot 매칭으로 포함. 게이트가 `my_user is None` 이 아니라 `not multi_user` 인 건
             # `user_name()` 이 git email 폴백으로 solo 도 my_user 를 해소할 수 있어(흔함) my_user
-            # proxy 면 그 solo 의 자기 슬롯 legacy claim 을 잘못 숨기기 때문(codex R2 회귀). multi_user
-            # 면 legacy 는 ambiguous → strict-exclude(migrate-identity backfill).
+            # proxy 면 그 solo 의 자기 슬롯 legacy claim 을 잘못 숨기기 때문이다. multi_user 면
+            # legacy 는 ambiguous → strict-exclude(migrate-identity backfill).
             return True
     # (a) 내 소유의 open.
     if status == "open":
@@ -1647,16 +1647,21 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
 def _in_default_view(status: str, fm: dict, my_user: str | None,
                      my_session: str | None, area_owner_in_use: bool,
                      multi_user: bool) -> bool:
-    """세션 기본 뷰(무인자 `list`·명시 세션 뷰·ADR-0067) 멤버십 — **내 세션 스트림만**.
+    """세션 기본 뷰(무인자 `list`·명시 세션 뷰) 멤버십 — **내 user ∧ session 스트림**.
 
-    ADR-0067(ADR-0066 amend): 세션의 기본 화면은 그 세션이 **생성한 open + 그 세션 claim** 만
-    출력한다 — 타 세션분은 카운트 줄 포함 완전 비노출(전체는 명시 `--all`). 판정:
-      - **바인딩 세션**(`my_session` 해소): 축이 **session 라벨로 통일**(user 무관·open 과 claim 대칭).
-        open 은 `created_by` 세션(`_created_by_session`)이, claim(비-open)은 `claimed_by` 세션 토큰
-        (`_slot_matches` exact·마지막 `/` 뒤·legacy 슬롯-only 수용)이 현 세션과 일치할 때만. **user
-        축(내 것 iff cb_user==my_user)은 `--mine`/strict-exclude 몫**이지 세션 스트림 뷰의 축이 아니다 —
-        user 미해소(git email 부재)의 자기 세션 claim(`alice/alpha_1`)이나 타 user 표기의 같은 세션
-        claim(`bob/alpha_1`)도 세션이 일치하면 보인다(codex R2 must-fix·open 판정과 uniform).
+    세션의 기본 화면은 그 세션이 **생성한 open + 그 세션 claim** 만 출력한다 — 단,
+    user-qualified 귀속은 **현재 user 도 일치**해야 한다. 동명 task(`alice/main` 대 `bob/main`)와
+    슬롯 재대여 뒤 이전 보유자 티켓이 같은 session 라벨만으로 섞이지 않게 open/claim 양쪽을
+    user ∧ session 복합축으로 판정한다(전체는 명시 `--all`).
+
+      - **바인딩 세션**(`my_session` 해소): 먼저 open 은 `_created_by_session`, claim(비-open)은
+        `_slot_matches` exact 로 session 을 맞춘다. user-qualified 값은 각각 `_created_by_user` /
+        `_claimed_by_user` 로 user 를 해소해 `my_user` 와도 strict 일치해야 한다.
+      - **user 미해소 또는 legacy user 토큰 부재**: 다중사용자(`multi_user`)면 모호한 귀속을
+        strict-exclude하고, solo 면 session-only 로 degrade한다. claim 분기는 의도적으로
+        `_ticket_is_mine` 보다 관대하다. solo에서 `my_user` 만 미해소된 user-qualified claim은
+        기본 뷰에 보이지만 `--mine`에서는 제외된다. 조회 정체성을 잠시 못 구했다는 이유로 자기
+        세션 티켓을 숨기지 않기 위한 보호이며, 다중사용자에서는 이 완화를 허용하지 않는다.
       - **무바인딩/솔로**(`my_session` None): user-단위 폴백 = `--mine`(내 소유 open + 내 claim·
         전 슬롯). solo=subset·특례 아님 — N=1 이면 user 스트림=세션 스트림이라 등가([[solo-is-
         subset-of-multipm]]). `_ticket_is_mine`(slot_scoped=False)를 그대로 상속한다.
@@ -1667,14 +1672,26 @@ def _in_default_view(status: str, fm: dict, my_user: str | None,
         return _ticket_is_mine(status, fm, my_user, "", area_owner_in_use,
                                multi_user, slot_mode="exact", slot_scoped=False)
     if status == "open":
-        # 스트림 = 생성 세션(ADR-0067) — 소유·multi_user 무관(created_by 세션이 라벨). backfill 로
-        # 세션 부재 legacy 는 원천 정합([[prefer-data-migration-over-fallback]]).
-        return _created_by_session(fm.get("created_by")) == my_session
-    # 비-open(claimed/blocked/done) — claim 세션 == 현 세션(session 라벨 축·user 무관·open 과 대칭).
-    # `claimed_by` 의 session 토큰(`_slot_matches` exact·마지막 `/` 뒤·slash 없는 legacy 슬롯-only 수용)
-    # 이 현 세션과 일치하면 상세. cmd_claim 은 세션 필수(required=True)라 claimed_by 는 항상 세션 토큰을
-    # 갖는다(user-only 모호 없음). user 필터는 --mine/strict-exclude 몫(ADR-0067 uniform·codex R2).
-    return _slot_matches(fm.get("claimed_by") or "", my_session, mode="exact")
+        created_by = str(fm.get("created_by") or "").strip()
+        if _created_by_session(created_by) != my_session:
+            return False
+        # 바인딩 세션 스트림은 생성자 축으로 판정한다. area_owner 는 backlog 소유 축이라
+        # 의도적으로 참여시키지 않는다.
+        # `_created_by_user` 는 slash 없는 migrate backfill 값을 user 로도 해석하므로, `/` 유무는
+        # user-qualified 형상인지(legacy session-only인지)만 가른다. 토큰 파싱은 기존 헬퍼가 맡는다.
+        created_user = _created_by_user(created_by) if "/" in created_by else None
+        if my_user is not None and created_user is not None:
+            return created_user == my_user
+        return not multi_user
+    # 비-open(claimed/blocked/done) — claim session AND user. `_claimed_by_user` 가 None 인
+    # legacy 슬롯-only와 my_user 미해소는 multi-user strict-exclude / solo session-only degrade.
+    claimed_by = fm.get("claimed_by") or ""
+    if not _slot_matches(claimed_by, my_session, mode="exact"):
+        return False
+    claimed_user = _claimed_by_user(claimed_by)
+    if my_user is not None and claimed_user is not None:
+        return claimed_user == my_user
+    return not multi_user
 
 
 def registered_prefixes() -> set[str]:
@@ -5863,14 +5880,14 @@ def cmd_list(args: argparse.Namespace) -> int:
     # (미마이그레이션 채택자·솔로) area_owner_in_use=False → 소유는 created_by.user 2차 폴백으로
     # 해소한다(`_ticket_owner`).
     #
-    # 다중사용자 판정(`multi_user`·solo 정의 완결·codex R3): **티켓 user 토큰이든 area_owner 든
+    # 다중사용자 판정(`multi_user`·solo 정의 완결): **티켓 user 토큰이든 area_owner 든
     # 둘 중 하나라도 distinct ≥2 면 multi-user**. `_distinct_ticket_users`(티켓 귀속만 셈) 단독이면
     # 다중-owner 보드라도 claim 이 전부 legacy 슬롯-only(user 토큰 0)일 때 ≤1 로 떨어져 solo 로
     # 오판 → legacy 슬롯-only 포함 경로가 발동해 (당시) bare `--slot N`(repo 불문 cross-repo
-    # suffix 매칭 — ADR-0057 로 제거됨)이 타 area 의 legacy `<repo>_N` 을 끌어오는 누출이 났다
-    # (ADR-0056 위반). `_distinct_area_owners`(areas 소유 다중성)를 OR 로 더해 그 클래스를 닫는다.
+    # suffix 매칭은 제거됨)이 타 area 의 legacy `<repo>_N` 을 끌어오는 누출이 났다.
+    # `_distinct_area_owners`(areas 소유 다중성)를 OR 로 더해 그 클래스를 닫는다.
     # solo(둘 다 ≤1)면 미해소 open all-open degrade + legacy 슬롯-only 포함 보존, 다중이면
-    # strict-exclude(ADR-0053·ADR-0056).
+    # strict-exclude한다.
     area_owner_in_use = (mine or default_view) and _area_owner_in_use()
     multi_user = (mine or default_view) and (
         _distinct_ticket_users() > 1 or _distinct_area_owners() > 1)
@@ -5884,9 +5901,8 @@ def cmd_list(args: argparse.Namespace) -> int:
     else:
         allowed_statuses = _LIST_ACTIVE_STATUSES
     rows: list[tuple[str, dict]] = []
-    # 세션격리 strict-exclude 신호(ADR-0053 #4·anti-degrade): 다중사용자 보드에서 소유 미해소
-    # open 을 이 뷰에서 조용히 드롭했는지 잡는다 — 아래 loud-warn(빈 spam 금지)의 실-드롭 트리거.
-    # solo(multi_user False)면 항상 False 라 재평가 자체를 안 함(오버헤드/오탐 0·회귀 0).
+    # 세션격리 strict-exclude 신호: 다중사용자 판정 때문에 귀속 미해소/불일치 티켓을 이 뷰에서
+    # 조용히 드롭했는지 잡는다. solo면 재평가 자체를 생략해 오버헤드와 오탐을 피한다.
     strict_exclude_fired = False
     for status in STATUS_DIRS:
         if status not in allowed_statuses:
@@ -5896,11 +5912,23 @@ def cmd_list(args: argparse.Namespace) -> int:
             if args.tag and args.tag not in _tag_values(fm):
                 continue
             if session_view:
-                # 세션 뷰(ADR-0067·무인자 기본 또는 `--repo X --slot N`) — 그 세션 스트림(생성 open +
+                # 세션 뷰(무인자 기본 또는 `--repo X --slot N`) — 그 세션 스트림(생성 open +
                 # 그 세션 claim)만. 타 세션분은 카운트 줄 포함 완전 비노출(전체는 `--all`).
-                if _in_default_view(status, fm, my_user, my_slot,
-                                    area_owner_in_use, multi_user):
+                in_view = _in_default_view(
+                    status, fm, my_user, my_slot, area_owner_in_use, multi_user)
+                if in_view:
                     rows.append((status, fm))
+                elif multi_user and not strict_exclude_fired:
+                    # 같은 predicate 를 solo로 재평가해 다중사용자 strict-exclude 때문에 숨긴
+                    # 티켓인지 판정한다. 해소된 사용자 값이 과거 스탬프와 어긋난 경우도 같은
+                    # 세션 후보인지 확인하도록 조회 user만 미해소 상태로 완화한다. 세션 축은
+                    # 그대로이므로 타 세션의 정상 제외는 경고 신호가 되지 않는다.
+                    strict_exclude_fired = (
+                        _in_default_view(
+                            status, fm, my_user, my_slot, area_owner_in_use, False)
+                        or _in_default_view(
+                            status, fm, None, my_slot, area_owner_in_use, False)
+                    )
                 continue
             if mine and not _ticket_is_mine(status, fm, my_user, my_slot,
                                             area_owner_in_use, multi_user,
@@ -5909,8 +5937,8 @@ def cmd_list(args: argparse.Namespace) -> int:
                 # 이 제외가 *strict-exclude* 였는지 판정: 같은 predicate 를 multi_user=False 로
                 # 재평가해 solo(all-open degrade)라면 포함됐을 open 이면 = 다중사용자라서 드롭한
                 # 것(`_ticket_is_mine` 미해소 분기). 판정을 복제하지 않고 단일 predicate 를 재사용
-                # (ADR-0053 #6 point-patch 금지)해 실 드롭만 신호로 잡는다. 이미 발동했으면 재평가
-                # 생략(short-circuit). 소유 해소된 타 사용자 티켓 제외는 solo 에서도 제외라 무신호.
+                # 해 실 드롭만 신호로 잡는다. 이미 발동했으면 재평가를 생략한다. 소유 해소된 타
+                # 사용자 티켓 제외는 solo 에서도 제외라 무신호다.
                 if multi_user and not strict_exclude_fired and _ticket_is_mine(
                         status, fm, my_user, my_slot,
                         area_owner_in_use, False, slot_mode=slot_mode,
@@ -5918,16 +5946,13 @@ def cmd_list(args: argparse.Namespace) -> int:
                     strict_exclude_fired = True
                 continue
             rows.append((status, fm))
-    # anti-degrade loud-warn(ADR-0053 #4·fail-loud): 다중사용자 격리가 조용히 티켓을 드롭했거나
-    # (strict_exclude_fired) 정체성이 미해소(my_user None)면 목록 출력 *전* stderr 1줄 경고 —
-    # silent degrade 근절. **stderr 라 stdout 목록 포맷 무오염**(회귀 파서·pm_bootstrap counts
-    # 무영향). solo(distinct user ≤1 → multi_user False)는 무경고(회귀 0·빈 warn spam 금지).
-    # session_view(`--repo X --slot N`·ADR-0067)는 `_ticket_is_mine` 경로를 안 타(생성-세션 스트림·
-    # 소유 무관)므로 strict-exclude 경고 대상 아님 — `not session_view` 로 배제(spurious warn 방지).
-    if mine and not session_view and multi_user and (strict_exclude_fired or my_user is None):
+    # anti-degrade loud-warn: 다중사용자 격리가 조용히 티켓을 드롭했거나 정체성이 미해소면 목록
+    # 출력 전에 stderr로 한 줄 경고한다. stdout 목록 포맷은 그대로이며 solo는 경고하지 않는다.
+    if (mine or session_view) and multi_user and (
+            strict_exclude_fired or my_user is None):
         print(
-            "⚠ 세션격리(strict-exclude): 다중사용자 보드에서 소유 미해소 open 을 이 뷰에서 "
-            "제외했다(타 사용자·미귀속 티켓). solo 인데 email(git config user.email)을 바꿨다면 "
+            "⚠ 세션격리(strict-exclude): 다중사용자 보드에서 귀속이 미해소되거나 현재 사용자와 "
+            "어긋난 티켓을 이 뷰에서 제외했다. solo 인데 email(git config user.email)을 바꿨다면 "
             "옛 티켓 귀속(old→new)이 어긋나 2인으로 오판된 것 — created_by/claimed_by 를 backfill "
             "로 정합: `python3 .project_manager/tools/board.py migrate-identity --dry-run` "
             "(단일-세션 op·다른 세션 claim 중 실행 금지). 진짜 다중사용자면 정체성 설정 "
@@ -9478,12 +9503,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "querying identity=현재 사용자(local.conf user= > git email). 타 사용자는 "
                         "안 나온다. solo(user 미상)는 전체 open + 내 슬롯 claim 으로 graceful degrade. "
                         "`--repo`/`--slot` 과 상호 배타(뷰 스코프는 하나만·cmd_list 런타임 검사).")
-    # `--repo`/`--slot`(ADR-0057 canonical) — 조회 전용 **세션 뷰**(ADR-0067·`--repo X --slot N`
-    # kind="slot"): 그 세션 스트림(그 세션 생성 open + 그 세션 claim·session 라벨 축·user 무관)만
-    # 비춘다 — 무인자 기본 뷰와 동일 의미론(`_in_default_view`). `--repo X` 단독(repo-scope)은 기존
-    # `_ticket_is_mine` 렌즈. actor `--repo`/`--slot`(claim 등 귀속 쓰기)과 플래그명은 같으나 여기선
-    # 아무것도 안 바꾸는 뷰일 뿐이다(ADR-0057 §갈림 A — 구 `--session` 뷰 렌즈/bare `--slot` 을
-    # 흡수). 전체 보드(타 사용자 포함)는 `list --all`(ADR-0067·무인자 기본은 세션 스트림 뷰).
+    # `--repo`/`--slot` 조회 전용 세션 뷰(`--repo X --slot N`, kind="slot")는 현재 사용자와
+    # 세션이 모두 일치하는 생성 open + claim만 비춘다. 무인자 기본 뷰와 같은 의미론이며,
+    # `--repo X` 단독은 기존 user 단위 렌즈다. actor 명령과 플래그명은 같지만 여기서는
+    # 아무것도 바꾸지 않는다. 전체 보드(타 사용자 포함)는 `list --all`로 본다.
     p.add_argument("--all", action="store_true",
                    help="전체 보드 (ADR-0067): 무인자 기본 뷰(내 세션 스트림만 = 생성 open + 내 claim)를 "
                         "끄고 모든 세션·타 사용자 티켓을 상세로 보인다(경합 가시·타 PM 열람). 뷰 스코프라 "

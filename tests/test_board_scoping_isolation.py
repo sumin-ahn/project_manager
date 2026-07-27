@@ -621,10 +621,10 @@ def test_new_repo_slot_derives_prefix_multi_repo(board, capsys):
 
 
 def test_claim_repo_slot_querying_user_unresolved_visible_in_own_session_view(board, capsys):
-    """**codex R2 must-fix**: user-qualified claim(`alice/alpha_1`)이 있는데 **조회 user 가 미해소**(git
+    """user-qualified claim(`alice/alpha_1`)이 있는데 **조회 user 가 미해소**(git
     email 부재)면, 옛 세션 뷰(user-first `_ticket_is_mine` 재사용)는 my_user None 이라 자기 세션 claim
-    을 숨겼다(cb_user!=None·my_user None → user 분기 실패·legacy 분기도 미발동). R2 는 세션 뷰 claim
-    축을 session 라벨로 통일 — 조회 user 미해소여도 세션(alpha_1)이 일치하면 보인다(open 판정과 uniform).
+    을 숨겼다(cb_user!=None·my_user None → user 분기 실패·legacy 분기도 미발동). 세션 뷰 claim
+    축은 session 라벨로 통일해 조회 user 미해소여도 세션(alpha_1)이 일치하면 보인다.
     """
     tid = _new(board, capsys, prefix="al", session="alpha_1", user="alice", title="wip")
     _claim(board, capsys, tid, session="alpha_1", user="alice")
@@ -636,17 +636,20 @@ def test_claim_repo_slot_querying_user_unresolved_visible_in_own_session_view(bo
     assert tid in ids, f"조회 user 미해소인데 자기 세션 claim 이 세션 뷰에서 소실(R2 must-fix 미해소): {ids}"
 
 
-def test_slot_view_claim_session_label_user_agnostic_real_create(board, capsys):
-    """**codex R2 companion**: 세션 토큰 동일·user 상이 claim 이 세션 뷰에 보인다(session=라벨·open
-    ownership-agnostic 과 대칭). bob 이 alpha_1 세션으로 claim 한 것이 alpha_1 세션 뷰에 나온다."""
-    # alice·bob 둘 다 alpha_1 세션으로 실 claim (동명 세션·user 상이) — session 라벨 축 검증.
+def test_slot_view_claim_same_session_isolated_by_user_real_create(board, capsys):
+    """실 create/claim 경로에서도 동명 세션의 타 user claim은 기본 뷰에서 제외된다.
+
+    바로 위 user 미해소 solo 가시성은 유지하되, user 해소 시에는 user ∧ session을
+    strict 적용한다."""
+    # alice·bob 둘 다 alpha_1 세션으로 실 claim (동명 세션·user 상이).
     a = _new(board, capsys, prefix="al", session="alpha_1", user="alice", title="alice wip")
     _claim(board, capsys, a, session="alpha_1", user="alice")
     b = _new(board, capsys, prefix="al", session="alpha_1", user="bob", title="bob wip")
     _claim(board, capsys, b, session="alpha_1", user="bob")
     _write_conf(board, user="alice", session="alpha_1")
     ids = set(_view(board, capsys, session="alpha_1"))
-    assert {a, b} <= ids, f"타 user(bob)의 같은 세션(alpha_1) claim 이 세션 뷰에 안 보임(라벨 축 위반): {ids}"
+    assert a in ids
+    assert b not in ids, f"타 user(bob)의 동명 세션(alpha_1) claim 누출: {ids}"
 
 
 # ════════════════════════════════════════════════════════════════════════
