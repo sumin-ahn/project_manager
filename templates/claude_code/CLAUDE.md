@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> Claude Code 세션이 시작될 때 자동 로드되는 진입점. **새 세션이라면 먼저 이걸 읽고 → `board.py list` 로 보드를 확인하라.**
+> Claude Code 세션 시작 시 자동 로드되는 진입점. **새 세션이면 먼저 읽고 → `board.py list` 로 보드를 확인하라.**
 
 ## 프로젝트 한 줄
 
@@ -9,33 +9,33 @@
 
 ## 새 세션 부트스트랩 (3 단계)
 
-1. **상황 파악** — 다음을 순서대로 본다:
-   - 보드 — `{{PY}} .project_manager/tools/board.py list` (지금 무슨 ticket 잡을 수 있나). `board.md` 는 이걸 렌더한 파생 대시보드라 git 에 없을 수 있다 — 파일로 보려면 `board.py refresh`.
-   - [`.project_manager/wiki/architecture.md`](.project_manager/wiki/architecture.md) — **현재-아키텍처 단일 진실**(① live / ② target · ADR-0022). 부트스트랩 1순위·충돌 시 이게 기준.
-   - [`.project_manager/wiki/status.md`](.project_manager/wiki/status.md) — 어디까지 됐나? (모듈 진행상태·비고)
-   - [`.project_manager/wiki/domain/`](.project_manager/wiki/domain/) — architecture 의 *세부* 지식 (concept · `covers:` 코드 링크 · freshness · ADR-0018)
-   결정 *근거(왜·히스토리)*는 [`.project_manager/wiki/decisions/`](.project_manager/wiki/decisions/) — ADR 은 현재 구속력 없음(현재-기준 = architecture.md · ADR-0022).
-2. **세션 이름 정하기** — **PM 세션명 canonical = `<repo>_<N>`** (multi-PM 정체성 — `<repo>`=프로젝트 repo·`<N>`=PM 슬롯 번호·ADR-0043). 전달은 아래 3단계 `claim` 의 `--repo <repo> --slot <N>` 인자로 한다(ADR-0057 — 구 세션 플래그 대체) — 환경 무관하게 동작하며 VSCode extension 등 `export` 가 불가능한 환경에서도 OK. `--repo` 를 명시해야 board 가 repo prefix 를 유도한다. **솔로(M=1)** 는 `--repo/--slot` 을 생략해도 된다 — 아래 식별 우선순위 체인이 해소한다. (CLI 환경이면 `export PM_SESSION_NAME=<repo>_<N>` 도 가능.) board.py 세션 식별 우선순위(ADR-0040): `--repo`/`--slot` 인자 > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` = deprecated alias·여전히 인식) > **활성 슬롯 lease 가 정확히 1개면 그 세션**(단일-lease 유도) > (lease 장부 부재·leased 0 = 솔로) `local.conf session=` (legacy 폴백) > 미해소(귀속 쓰기[claim 등]는 fail-loud — `--repo <repo> --slot <N>` 명시 요구). **leased ≥2(모호)면 `local.conf session=` 층을 건너뛴다** — per-clone 저장값으로 남의 세션에 silent 오귀속하던 클래스를 차단(Windows 4슬롯 홈 리포트).
-3. **Ticket 잡기** — 외부 의존이 없고, 다른 세션이 이미 claim 하지 않은 것을 고른다:
+1. **상황 파악** — 순서대로 본다:
+   - 보드 — `{{PY}} .project_manager/tools/board.py list`. `board.md` 는 파생 대시보드라 git 에 없을 수 있다. 파일로 보려면 `board.py refresh`.
+   - [`.project_manager/wiki/architecture.md`](.project_manager/wiki/architecture.md) — **현재-아키텍처 단일 진실**(① live / ② target). 부트스트랩 1순위이며 충돌 시 기준.
+   - [`.project_manager/wiki/status.md`](.project_manager/wiki/status.md) — 모듈 진행상태·비고.
+   - [`.project_manager/wiki/domain/`](.project_manager/wiki/domain/) — architecture 세부 지식(concept · `covers:` 코드 링크 · freshness).
+   결정 근거·히스토리는 [`.project_manager/wiki/decisions/`](.project_manager/wiki/decisions/). ADR 은 현재 구속력 없음(현재 기준은 architecture.md).
+2. **세션 이름 정하기** — **PM 세션명 canonical = `<repo>_<N>`**(`<repo>`=프로젝트 repo, `<N>`=PM 슬롯 번호). 아래 `claim` 의 `--repo <repo> --slot <N>` 으로 전달하며 `--repo` 가 board 의 repo prefix 를 유도한다. **솔로(M=1)** 는 `--repo/--slot` 생략 가능. CLI 에서는 `export PM_SESSION_NAME=<repo>_<N>` 도 가능. 식별 우선순위: `--repo`/`--slot` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` deprecated alias도 인식) > **활성 슬롯 lease 가 정확히 1개면 그 세션**(단일-lease 유도) > (lease 장부 부재·leased 0인 솔로) `local.conf session=` legacy 폴백 > 미해소. 미해소 시 귀속 쓰기(claim 등)는 fail-loud하며 `--repo <repo> --slot <N>` 을 요구한다. **leased ≥2면 `local.conf session=` 층을 건너뛴다.**
+3. **Ticket 잡기** — 외부 의존이 없고 다른 세션이 claim 하지 않은 것을 고른다:
    ```bash
    {{PY}} .project_manager/tools/board.py list --status open
    {{PY}} .project_manager/tools/board.py show T-NNNN
    {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1 · 솔로(M=1)면 생략 가능
    ```
-   ticket 본문에 **목표 / 인터페이스 / 완료 조건 / 참고 링크** 가 들어 있다. 그것만 보고 작업이 가능해야 한다 — 부족하면 본문 자체를 보강하라.
+   ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크** 만으로 작업 가능해야 한다. 부족하면 본문부터 보강한다.
 
 ## 멀티-PM clone (동시 다중 PM 프로젝트)
 
-여러 사람이 각자 clone 해 영역을 나눠 PM 하는 프로젝트라면 **clone 당 1회** 등록:
+여러 clone 에서 영역을 나눠 PM 하면 **clone 당 1회**:
 
 ```bash
 {{PY}} .project_manager/tools/board.py init --prefix pay --area "결제" --owner alice
 ```
 
 - `areas.md`(공유 레지스트리) prefix 등록 + `local.conf`(per-clone·git-ignored) 생성 + `pm_state.md` 로컬 생성.
-- 이후 `board.py new` 는 `T-pay-NNN` 으로 발행 (영역별 네임스페이스 → 동시 발행 ID 충돌 없음).
+- 이후 `board.py new` 는 영역별 네임스페이스 `T-pay-NNN` 으로 발행한다.
 - **3계층:** 엔진(upstream) / 공유상태(main: board·status·log·ADR) / per-clone 로컬(pm_state·local.conf).
-- **솔로(개인/toy):** `board.py init` (prefix 없이) → 솔로 setup(pm_state·pre-push 회귀 훅·legacy `T-NNNN`, areas.md 안 만듦). 안 해도 `board.py new` 는 동작(graceful).
+- **솔로:** `board.py init`(prefix 없이) → pm_state·pre-push 회귀 훅·legacy `T-NNNN` setup, areas.md 미생성. init 없이도 `board.py new` 는 동작한다.
 
 ## 작업이 끝나면
 
@@ -44,11 +44,11 @@
 {{PY}} .project_manager/tools/board.py block T-NNNN --reason "..."
 ```
 
-추가로:
-- `.project_manager/wiki/status.md` 의 해당 모듈 행 갱신
-- `.project_manager/wiki/log/current.md` 에 한 entry append
+추가 작업:
+- `.project_manager/wiki/status.md` 해당 모듈 행 갱신
+- `.project_manager/wiki/log/current.md` 에 entry append
 - 회귀 테스트 `{{TEST_CMD}}` 통과 확인
-- **git commit** — 논리적 체크포인트(ticket 완료 등)에서 커밋하되, **커밋할 경로를 명시**한다:
+- **git commit** — 논리적 체크포인트에서 **커밋 경로를 명시**:
   ```bash
   git add <이번에 새로 만든 파일 경로들>          # 미추적 경로는 add 선행 필수 (아래 주의)
   git commit -m "T-NNNN — <요약>" -- \
@@ -57,17 +57,17 @@
     .project_manager/wiki/tickets/claimed/T-NNNN-<slug>.md \
     .project_manager/wiki/tickets/done/T-NNNN-<slug>.md
   ```
-  pathspec 없는 bare commit 은 *남이 stage 해 둔* 무관한 변경까지 함께 싣는다(공유 워킹트리 mutation 은 선언된 경로만 · ADR-0074). ⚠️ **미추적(신규) 파일은 `git add` 를 먼저** 하라 — pathspec 에 바로 주면 `error: pathspec '…' did not match any file(s) known to git` 으로 커밋 전체가 rc=1 로 죽는다. ⚠️ 티켓 파일이 `claimed/`→`done/` 으로 옮겨졌으면 **옛/새 경로를 함께** 줘야 그 이동이 커밋에 실린다. 커밋 메시지 말미에 `Co-Authored-By: Claude` 트레일러. 시크릿은 `.gitignore` 로 영구 제외.
+  pathspec 없는 bare commit 은 남이 stage 한 무관한 변경도 싣는다. ⚠️ **미추적(신규) 파일은 `git add` 선행** — pathspec 에 바로 주면 `error: pathspec '…' did not match any file(s) known to git` 으로 전체 commit 이 rc=1. ⚠️ ticket 이 `claimed/`→`done/` 으로 이동했으면 **옛/새 경로를 함께** 줘야 이동이 커밋된다. 메시지 말미에 `Co-Authored-By: Claude` 트레일러. 시크릿은 `.gitignore` 로 영구 제외.
 
-> **참조 규약**: status·log·ticket·ADR 어디서든 ADR/ticket/idea 는 ID-wikilink(`[[ADR-NNNN]]`·`[[T-NNNN]]`·`[[idea-NNNN]]`)로만 — 생파일명·슬러그 금지(`board.py lint --gate` 강제). 규칙·이유·예시 단일 진실 = pm_playbook §참조 규약.
+> **참조 규약**: status·log·ticket·ADR 의 ADR/ticket/idea 참조는 ID-wikilink(`[[ADR-NNNN]]`·`[[T-NNNN]]`·`[[idea-NNNN]]`)만 사용. 생파일명·슬러그 금지(`board.py lint --gate` 강제). 단일 진실은 pm_playbook §참조 규약.
 
 ## 작업 원칙 (반드시)
 
 - **작은 단위 분할 → 단계별 테스트 검증.** 한 모듈 = 한 ticket = 한 단계.
 - **테스트 없이는 구현이 끝난 게 아니다.** 회귀 통과가 완료 조건.
-- **최소 변경.** ticket 이 요구한 것만. 무관한 코드 리포맷·기능 추가 금지.
-- **약어보다 명시적 풀네임** — 의미를 정확히 담는 이름.
-- **`.project_manager/` 는 숨김 디렉토리** — `ls -a` 또는 절대 경로로 접근. `.git`·`.claude` 와 같은 "프로젝트 인프라" 관례.
+- **최소 변경.** ticket 요구만 수행하고 무관한 리포맷·기능 추가 금지.
+- **약어보다 명시적 풀네임**을 사용한다.
+- **`.project_manager/` 는 숨김 디렉토리** — `ls -a` 또는 절대 경로로 접근.
 
 ### 프로젝트 고유 제약 (절대 위반 금지)
 
@@ -81,17 +81,9 @@
 
 ## Windows / 인코딩 (CP949 캐비엇)
 
-- 엔진 wiki·ticket 은 UTF-8 (한글 포함). 인코딩은 **엔진이 코드로 처리**한다 — 파일 IO 는
-  `encoding="utf-8"` 명시(T-0017), 콘솔 출력은 `sys.stdout/stderr.reconfigure(encoding="utf-8")`(PM 7차).
-  따라서 **Windows/CP949·PowerShell 서도 env prefix 없이** board·log 한글 깨짐 0 으로 동작한다(회사 실측).
-  외부 파이프·서드파티 도구·구버전 콘솔에서 드물게 필요하면 **각 셸 문법으로** 붙인다 —
-  PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`. (bash 전용 규약이 아니다 — opencode 어댑터도
-  prefix 강제를 폐기하고 엔진 코드-레벨 인코딩에 맡긴다. T-0031·ADR-0006 D4 supersede.)
-- **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 금지, 도구의 workdir
-  파라미터나 명령 분리로 실행한다. 루트 facade 는 Windows 에선 `.\pm-config.cmd`·`.\pm-update.cmd`
-  (bash 불요) — `./pm-*.sh` 는 bash 용.
-- 인터프리터: `{{PY}}` 는 `board.py init` 이 PATH 탐지로 채운다(Windows=`python`·POSIX=`python3`). venv 면
-  PM workflow 도구가 `venv/Scripts/python.exe`(Windows)·`venv/bin/python`(POSIX)을 자동 선택, 없으면 현재 인터프리터로 폴백.
+- 엔진 wiki·ticket 은 UTF-8. 파일 IO 는 `encoding="utf-8"`, 콘솔은 `sys.stdout/stderr.reconfigure(encoding="utf-8")` 로 처리하므로 **Windows/CP949·PowerShell 에서도 env prefix 없이** board·log 한글이 동작한다. 외부 파이프·서드파티 도구·구버전 콘솔에서 필요하면 셸별로 PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1` 을 붙인다.
+- **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError) — `cd X && cmd` 금지. 도구 workdir 파라미터나 명령 분리로 실행한다. Windows 루트 facade 는 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요), `./pm-*.sh` 는 bash 용.
+- `{{PY}}` 는 `board.py init` 이 PATH 탐지로 채운다(Windows=`python`·POSIX=`python3`). venv 이면 PM workflow 도구가 `venv/Scripts/python.exe`(Windows)·`venv/bin/python`(POSIX)을 자동 선택하고, 없으면 현재 인터프리터로 폴백한다.
 
 ## 자주 쓰는 명령
 
@@ -124,24 +116,21 @@
 {{PY}} .project_manager/tools/domain.py lint                       # freshness — stale 페이지 검사
 ```
 
-> **ctx 예산 (핸드오프 임계 분모 · ADR-0041):** ctx 정지/넛지 %의 100% 기준은 `.project_manager/local.conf`
-> 의 `ctx_window_tokens_<harness>`(예 `ctx_window_tokens_claude=500000`) > generic `ctx_window_tokens` >
-> 200000 순으로 해소된다. 하네스별 키가 우선 — 한 repo 를 claude·opencode 로 동시 운용하면 각자 예산을
-> 독립 설정한다 (미설정 시 기본 200000).
+> **ctx 예산:** ctx 정지/넛지 %의 100% 기준은 `.project_manager/local.conf` 의 `ctx_window_tokens_<harness>`(예 `ctx_window_tokens_claude=500000`) > generic `ctx_window_tokens` > 200000 순. 한 repo 를 여러 harness 로 동시 운용하면 각각 설정한다.
 
 ## 핵심 디렉토리
 
 | 경로 | 의미 |
 |---|---|
-| `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py · pm_log.py (숨김 디렉토리 — `ls -a`) |
-| `.project_manager/wiki/` | 비-코드 산출물 (작업 / 결정 / 사양 / 상태 / domain 지식 레이어 / pm_role·pm_state·pm_playbook / log/ / raw 스냅샷) |
+| `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py · pm_log.py (숨김 — `ls -a`) |
+| `.project_manager/wiki/` | 비-코드 산출물(작업·결정·사양·상태·domain·pm_role·pm_state·pm_playbook·log·raw) |
 | `.claude/agents/` | researcher · architect(Opus) · developer · code-reviewer 서브에이전트 정의 |
-| `.claude/skills/` | PM workflow slash command skill (목록·역할·backbone → pm_role.md §"skill 카탈로그") |
+| `.claude/skills/` | PM workflow slash command skill(단일 진실: pm_role.md §skill 카탈로그) |
 <!-- TODO: 프로젝트의 실제 코드 디렉토리 행을 여기 추가한다. -->
 
 ## 막혔을 때
 
-- 의존 ticket 이 아직 done 아니거나, 외부 키 없어 진행 불가 → `board.py block --reason "..."`.
-- 잘못 claim 했다 → `board.py unclaim`.
-- ticket 본문이 부족하다 → 먼저 본문 보강하고 계속.
-- 모르는 결정이 필요하다 → ADR 작성 후 진행 ([`.project_manager/wiki/decisions/README.md`](.project_manager/wiki/decisions/README.md) 의 작성 절차).
+- 의존 ticket 미완 또는 외부 키 없음 → `board.py block --reason "..."`.
+- 잘못 claim → `board.py unclaim`.
+- ticket 본문 부족 → 본문부터 보강.
+- 모르는 결정 필요 → [`.project_manager/wiki/decisions/README.md`](.project_manager/wiki/decisions/README.md) 절차로 ADR 작성 후 진행.

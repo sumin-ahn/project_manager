@@ -6,52 +6,58 @@ audience: pm-internal
 
 # /pm-qa — 통합 검증 게이트
 
-> wave 경계(종료 직전·시작 baseline)에서 손작업 검증 명령 4~5개를 **한 trigger** 로 묶어
-> 단일 PM report 를 낸다. **foreground 합성 게이트** — 결과를 보고 wave 진행/중단을 즉시 판단.
+wave 종료 직전·시작 baseline 또는 사용자 `"qa·회귀 확인·통합 검증"` 요청 시 회귀+lint+git을 foreground로 합쳐 즉시 진행/중단을 판단한다.
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
 > 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
 > **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
 > 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
 
-## 인접 스킬과 구분 (혼동 금지)
-- **pm-qa (이 스킬)** = *foreground* 합성 게이트. wave 경계에서 회귀+lint+git 을 한 번에 묶어 report·즉시 판단.
-- [[pm-regression]] = *백그라운드* 회귀 pre-warm(비동기·알림). 기다리지 않는 dev 루프용.
-- [[pm-wave-finish]] = ticket 완료 부기(ticket_finish·board complete). 단일 ticket 종료.
-- [[pm-bootstrap]] = 세션 *시작* 시 board/git/회귀 측정.
+## 인접 스킬
 
-## 사용 시점
-- **wave 종료 직전** — `pm-wave-finish` 호출 전 baseline 확인.
-- **wave 시작 baseline** — *baseline fix → wave 시작* 패턴(red baseline 위에 wave 쌓지 않기).
-- 사용자 명시 *"qa·회귀 확인·통합 검증"* 시.
+- **pm-qa**: foreground 합성 게이트. wave 경계에서 회귀+lint+git report 후 즉시 판단.
+- [[pm-regression]]: background 회귀 pre-warm(비동기·알림), 기다리지 않는 dev loop.
+- [[pm-wave-finish]]: `ticket_finish`·board complete로 단일 ticket 종료.
+- [[pm-bootstrap]]: 세션 시작의 board/git/회귀 측정.
+
+wave 시작은 **baseline fix → wave 시작** 순서이며 red baseline 위에 wave를 쌓지 않는다. wave 종료 직전에는 `pm-wave-finish` 전에 실행한다.
 
 ## 실행 순서
 
 ### 1. 회귀 측정 (foreground)
+
 ```bash
 # 프로젝트 test 명령은 board regression 이 해소·기록한다 (local.conf test_cmd= · rc0 만 pass)
 python3 .project_manager/tools/board.py regression run
 ```
-성공 = `N passed in T.Ts`. red → 즉시 PM 에게 보고 + **후속 단계 중단 검토**(red 위에 wave 종료/시작 진행 차단).
+
+성공은 `N passed in T.Ts`. red면 즉시 PM에게 보고하고 후속 wave 종료/시작을 중단한다.
 
 ### 2. board.py lint (foreground)
+
 ```bash
 python3 .project_manager/tools/board.py lint
 ```
-성공 = clean(또는 advisory만). 차단성 warning(의존성 모순·placeholder 잔존·dangling wikilink) 있으면 PM 보고.
+
+성공은 clean(또는 advisory만). 차단성 warning(의존성 모순·placeholder 잔존·dangling wikilink)은 PM에게 보고한다.
 
 ### 3. git status / 최근 commit (foreground · 1번과 병렬 가능)
+
 ```bash
 git status -s
 git log --oneline -5
 ```
-working tree clean 여부·변경 파일 수·최근 commit 정합(핸드오프 commit 누락 확인).
+
+working tree clean 여부·변경 파일 수·최근 commit 정합(핸드오프 commit 누락)을 확인한다.
 
 ### 4. (선택) 프로젝트 evidence summary
-운영 데이터(cron 로그·paper-run audit 등)가 있는 프로젝트는 인스턴스 overlay 로 최근 cycle 요약을 덧붙인다
-(없으면 skip — noise 회피). 구체 경로는 인스턴스 소유.
 
-### 5. PM report (호출자가 markdown 합산 출력)
+운영 데이터(cron 로그·paper-run audit 등)가 있으면 인스턴스 overlay로 최근 cycle 요약을 덧붙인다. 없으면 noise를 피하려 skip하며 구체 경로는 인스턴스 소유다.
+
+### 5. PM report
+
+호출자가 다음 markdown을 합산 출력한다.
+
 ```
 ## PM 통합 검증 report (YYYY-MM-DD HH:MM)
 - 회귀: N / N 통과 (또는 K failed — <첫 fail 1줄>)
@@ -66,12 +72,10 @@ working tree clean 여부·변경 파일 수·최근 commit 정합(핸드오프 
 - working tree dirty → wave 종결 commit 누락·재확인.
 ```
 
-## 결정
-- **fail-soft 가 아니다** — red 시 즉시 보고 + 후속 단계 중단(회귀 red 인데 wave 종료 진행 차단).
-- **병렬 가능 단계 명시** — 1번(회귀)과 3번(git)은 독립 → multiple Bash 병렬 호출 가능.
-- **thin** — 비즈니스 로직 0(기존 `board.py`/회귀/git 호출 합성). 진짜 차단 검증은 push 게이트(pre-push 훅)가 보증.
-- **evidence 단계는 선택·인스턴스 소유** — 운영 데이터 유무는 프로젝트마다 다름.
+## 불변
 
-## 참고
-- [[pm-regression]] · [[pm-wave-finish]] · [[pm-bootstrap]] — 인접 스킬(위 구분)
-- backbone CLI: `python3 .project_manager/tools/board.py {lint,regression}`
+- fail-soft가 아니다. red는 즉시 보고하고 후속 단계를 중단한다.
+- 1번 회귀와 3번 git은 독립이므로 multiple Bash 병렬 호출할 수 있다.
+- 비즈니스 로직 없는 thin 합성이며 실제 차단 검증은 push gate(pre-push hook)가 보증한다.
+- evidence는 선택·인스턴스 소유다.
+- 참고: [[pm-regression]] · [[pm-wave-finish]] · [[pm-bootstrap]]; backbone CLI `python3 .project_manager/tools/board.py {lint,regression}`.

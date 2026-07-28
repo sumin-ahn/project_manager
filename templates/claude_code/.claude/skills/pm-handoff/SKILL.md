@@ -6,11 +6,7 @@ audience: user-entrypoint
 
 # /pm-handoff — PM 세션 종료 핸드오프 자동화
 
-> {{PROJECT_NAME}} PM 세션의 핸드오프 7단계 (pm_role.md §"핸드오프 절차") 를
-> 한 trigger 로 처리한다. PM 손은 *log/current.md handoff entry 본문 서술 + 이번 세션 산출 경로를
-> pathspec 으로 명시한 git commit* 만 남는다
-> (인계 프롬프트는 트리거 축소 — 인계 본문은 다음 세션 부트스트랩이 log entry 에서 dump).
-> backbone = `.project_manager/tools/pm_handoff.py`.
+{{PROJECT_NAME}} PM 세션의 핸드오프 7단계를 한 trigger 로 처리한다. PM 손작업은 *log/current.md handoff entry 본문 서술 + 이번 세션 산출 경로를 pathspec 으로 명시한 git commit*이다. 인계 본문은 다음 세션 부트스트랩이 log entry 에서 dump한다. backbone = `.project_manager/tools/pm_handoff.py`.
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
 > 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
@@ -19,30 +15,27 @@ audience: user-entrypoint
 
 ## 사용 시점
 
-다음 중 하나면 호출:
 - 사용자 명시 종료 신호 (*"세션 종료"·"인계해"*)
 - PM 컨텍스트 < 10% 신호 (자기 보고)
 - wave 마지막 commit 후 자연 종료 시점
 
 ## 실행
 
-task 세션의 일반 사용자 종료 경로는 bootstrap과 같은 task 이름 한 개뿐이다:
+task 세션의 일반 사용자 종료 경로:
 
 ```text
 /pm-handoff --task <이름>
 ```
 
-backbone Python도 같은 task-only 계약이다:
+backbone Python도 같은 task-only 계약:
 
 ```bash
 python3 .project_manager/tools/pm_handoff.py --task <이름>
 ```
 
-엔진이 task pm_state에서 차수를 추론하고 기본 wave 요약과 task 보유 작업공간 집합을 해소한다.
-사용자는 repo/slot·session-seq를 지정하지 않는다. 엔진도 task와 repo/slot/branch/done의 혼합을
-거부한다. 다음 세션에 출력되는 트리거도 `/pm-bootstrap --task <이름>` 하나다.
+엔진이 task pm_state에서 차수를 추론하고 기본 wave 요약과 task 보유 작업공간 집합을 해소한다. 사용자에게 repo/slot·session-seq를 받지 않으며, task와 repo/slot/branch/done의 혼합을 거부한다. 다음 세션 트리거는 `/pm-bootstrap --task <이름>` 하나다.
 
-slot/솔로 모드에서 skill이 내부적으로 조립하는 backbone 호출은 다음 형태다:
+slot/솔로 모드에서 skill 내부 backbone 호출:
 
 ```bash
 python3 .project_manager/tools/pm_handoff.py \
@@ -59,12 +52,7 @@ python3 .project_manager/tools/pm_handoff.py \
 옵션:
 - `--dry-run` — log/current.md / pm_state.md 변경 미적용·stdout 미리보기만.
 - `--no-pytest` — 회귀 측정 skip (직전 wave 종결 commit 의 숫자 신뢰 시·**비권장**).
-- `--task <이름>` — task 모드의 **정상 사용자 경로**: 세션 종료의 연속성
-  앵커를 slot→task로 이동한다. task 생성 시 이미 만들어진
-  `.local/tasks/<이름>/pm_state.md`에 기록·dashboard 자기 섹션 `## <이름>`·log 헤더 태그
-  `(task:<이름>)`.
-  lease는 유지한다(세션 종료 ≠ task 종료). 이름은 **공백·괄호·path 문자 없는 단일 토큰**
-  (슬롯 예약 `<repo>_<N>` 불가) — 하류 CLI 인자 경계·log 태그 delimiter 파손 방지.
+- `--task <이름>` — task 모드의 **정상 사용자 경로**. 세션 종료 연속성 앵커를 slot→task로 이동하며, task 생성 시 만들어진 `.local/tasks/<이름>/pm_state.md`에 기록·dashboard 자기 섹션 `## <이름>`·log 헤더 태그 `(task:<이름>)`. lease는 유지한다(세션 종료 ≠ task 종료). 이름은 **공백·괄호·path 문자 없는 단일 토큰**(슬롯 예약 `<repo>_<N>` 불가)이다.
 
 ## CLI 자동 처리 단계
 
@@ -78,17 +66,17 @@ python3 .project_manager/tools/pm_handoff.py \
 
 ## 잔여 PM 손작업 (CLI 후)
 
-1. **log/current.md handoff entry 본문 서술 (lean 스키마)** — skeleton 의 `<...>` placeholder 를 채움. handoff 는 *파생 가능한 상태를 source 에 미룬다(point, don't copy)* — 떠나는 세션만이 싸게 줄 수 있는 비파생 salient 레이어 3섹션만:
+1. **log/current.md handoff entry 본문 서술 (lean 스키마)** — skeleton 의 `<...>` placeholder 를 채운다. 파생 가능한 상태는 source 에 미루고 다음 비파생 salient 레이어만 쓴다.
    - **읽기 범위** — 이 entry + 인용할 과거 entry/ADR 의 *포인터* (라인수·전체Read 아님).
    - **메타 학습** — ticket 상태에서 도출 불가한 교훈만. 없으면 "없음".
-   - **다음 intent** — 두 줄로 세분:
+   - **다음 intent**:
      - **대화 thread-tail** — 정지 직전 사용자 발화. ctx-trigger 경로는 어댑터 훅이 transcript 에서 자동 추출(초안). 대화형은 PM 손.
      - **pending user intent** — 다음 우선순위 + 사용자 결정 대기. PM 손.
-   - **회귀/incident** — 회귀 "N passed / 상태" **1줄(green 도 — baseline)** + 비-자명 incident. 회귀는 1줄 load-bearing 이라 항상 적는다(pm_bootstrap default skip 의 "handoff 참조" 안내와 정합).
+   - **회귀/incident** — 회귀 "N passed / 상태" **1줄(green 도 — baseline)** + 비-자명 incident. 회귀는 항상 적는다.
    - **정지 후 thread-tail 검토** — ctx-trigger 자동 채움분은 *초안*이다. 새 PM 이 슬롯을 검토·편집한다(민감 발화 노출 최소화·과/부족 추출 보정).
-   - **FORBIDDEN (대량 재열거 금지 — source 가 답한다):** board done/open/claimed/blocked 카운트 (→ `board.py list`) · open ticket ID 목록 (→ `pm_bootstrap`) · commit 해시·push 상태 (→ `git log`/`git status`) · 직전 complete entry 산출물 재요약 (→ 인접 entry. "읽기 범위" 로 가리켜라). 재열거는 중복이고 중복은 stale 화로 거짓말한다. (회귀 1줄 baseline 은 예외 — 위 회귀/incident 라인에 유지.)
+   - **FORBIDDEN (대량 재열거 금지 — source 가 답한다):** board done/open/claimed/blocked 카운트 (→ `board.py list`) · open ticket ID 목록 (→ `pm_bootstrap`) · commit 해시·push 상태 (→ `git log`/`git status`) · 직전 complete entry 산출물 재요약 (→ 인접 entry. "읽기 범위" 로 가리켜라). 회귀 1줄 baseline 은 예외다.
 2. **domain capture (채록) 검토** — `python3 .project_manager/tools/domain.py capture --tickets "T-0001,T-0002"`(이 세션 done ticket ID — 콤마분리 또는 공백 나열 `T-0001 T-0002`) 실행. 출력의 *영향 페이지*(`⚠ `=stale) 와 *coverage gap*(담당 페이지 없는 touched 경로)을 보고 관련 domain 페이지를 갱신하거나 신규 scaffold 한다. **surface-only** — 도구는 *무엇을 갱신/신설할지 띄울 뿐*, 본문 자동생성·`updated:` 자동스탬프는 안 한다(stale 탐지 거짓 방지). 갱신할 것 없으면 생략.
-3. **git commit — pathspec 필수**  — 공유 PM 홈에선 bare `git commit` 이 다른 슬롯의 미완성 wiki 편집까지 싣는다. **이번 세션이 만든 것을 전부, 그리고 그것만** 나열한다:
+3. **git commit — pathspec 필수** — 공유 PM 홈에서 bare `git commit` 은 다른 슬롯 WIP도 싣는다. **이번 세션이 만든 것을 전부, 그리고 그것만** 나열한다:
 
    ```bash
    git add .project_manager/wiki/domain/<신설한 페이지>.md          # 신규 파일은 add 선행 필수
@@ -98,18 +86,10 @@ python3 .project_manager/tools/pm_handoff.py \
      .project_manager/wiki/status.md .project_manager/wiki/status_done.md
    ```
 
-   - **`log/current.md` 하나만 적으면 위 2단계 domain capture 산출을 잃는다.** 이 CLI 가 스스로 쓰는 파일은 `log/current.md` 뿐이지만, 잔여 손작업 1~2 단계는 domain 페이지·status 를 **네 손으로** 고치게 한다 — 그것도 이번 세션의 산출이다. 고치지 않은 줄은 지운다.
-   - **핸드오프엔 `/pm-wave-finish` 같은 스코프 잔여 보고가 없다.** 대신 [6/7] 의 `git status -s` dump 가 이번 세션 트리 변경의 전량이다 — 그 목록에서 *내 세션 산출*을 골라 pathspec 에 넣고, 남의 WIP 는 남긴다.
+   - **`log/current.md` 하나만 적으면 위 2단계 domain capture 산출을 잃는다.** 이 CLI 가 스스로 쓰는 파일은 `log/current.md` 뿐이지만 잔여 손작업 1~2 단계에서 고친 domain 페이지·status 도 이번 세션 산출이다. 고치지 않은 줄은 지운다.
+   - 핸드오프엔 `/pm-wave-finish` 같은 스코프 잔여 보고가 없다. [6/7] `git status -s` dump에서 *내 세션 산출*을 골라 pathspec 에 넣고 남의 WIP 는 남긴다.
    - **신규 파일은 `git add` 선행 필수** — 미추적 경로를 pathspec 에 주면 `error: pathspec '…' did not match any file(s) known to git` 으로 **커밋 전체가 rc=1 로 죽는다**(실측).
-   - `pm_state.md`(solo `wiki/pm_state.md` · per-slot/per-task `.local/…`)는 **gitignored** 라 커밋 대상이 아니다 — commit message 에만 남는다. trailer `Co-Authored-By: Claude`.
+   - `pm_state.md`(solo `wiki/pm_state.md` · per-slot/per-task `.local/…`)는 **gitignored** 라 커밋 대상이 아니다. commit message 에만 남긴다. trailer `Co-Authored-By: Claude`.
 4. **마지막 응답에 인계 프롬프트(트리거) 코드블록 출력** — 다음 세션은 `/pm-bootstrap` 실행(트리거 붙여넣기 or 직접). 인계 본문은 부트스트랩이 log entry 에서 자동 dump 하므로 손-채움 불요.
 
-## 결정
-
-- **fail-soft 가 아니다** — 회귀 red 시 즉시 중단. 핸드오프 후 신규 PM 이 broken state 로 시작 회피.
-- **sliding window 정리는 자동** — 표 편집 race 회피 위해 CLI 가 직렬 처리.
-
-## 참고
-
-- `.project_manager/tools/pm_handoff.py` — backbone CLI
-- `.project_manager/wiki/pm_role.md` — 핸드오프 절차 7단계 단일 진실
+참고: `.project_manager/tools/pm_handoff.py`(backbone CLI), `.project_manager/wiki/pm_role.md`(핸드오프 절차 7단계 단일 진실).

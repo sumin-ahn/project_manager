@@ -1,31 +1,31 @@
 {
   "version": 1,
-  "count": 405,
+  "count": 348,
   "surface_counts": {
-    "markdown": 197,
+    "markdown": 140,
     "python-non-prose": 16,
     "python-prose": 192
   },
   "entries": [
     {
       "path": ".claude/skills/pm-adr/SKILL.md",
-      "line": 64,
+      "line": 45,
       "kind": "work_item",
       "match": "ADR-0061",
       "surface": "markdown",
-      "hash": "f5561d2b6660d06922dd197ec094ab4126d2145c0219488883a8c57afd3bea07"
+      "hash": "12d8c16e1213a2909e98674f879fa2692769a1e3a54e31394259adff1f3b80b7"
     },
     {
       "path": ".claude/skills/pm-adr/SKILL.md",
-      "line": 64,
+      "line": 45,
       "kind": "work_item",
       "match": "ADR-0062",
       "surface": "markdown",
-      "hash": "f5561d2b6660d06922dd197ec094ab4126d2145c0219488883a8c57afd3bea07"
+      "hash": "12d8c16e1213a2909e98674f879fa2692769a1e3a54e31394259adff1f3b80b7"
     },
     {
       "path": ".claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -33,7 +33,7 @@
     },
     {
       "path": ".claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -41,7 +41,7 @@
     },
     {
       "path": ".claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -49,7 +49,7 @@
     },
     {
       "path": ".claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -537,23 +537,23 @@
     },
     {
       "path": "templates/claude_code/.claude/skills/pm-adr/SKILL.md",
-      "line": 64,
+      "line": 45,
       "kind": "work_item",
       "match": "ADR-0061",
       "surface": "markdown",
-      "hash": "f5561d2b6660d06922dd197ec094ab4126d2145c0219488883a8c57afd3bea07"
+      "hash": "12d8c16e1213a2909e98674f879fa2692769a1e3a54e31394259adff1f3b80b7"
     },
     {
       "path": "templates/claude_code/.claude/skills/pm-adr/SKILL.md",
-      "line": 64,
+      "line": 45,
       "kind": "work_item",
       "match": "ADR-0062",
       "surface": "markdown",
-      "hash": "f5561d2b6660d06922dd197ec094ab4126d2145c0219488883a8c57afd3bea07"
+      "hash": "12d8c16e1213a2909e98674f879fa2692769a1e3a54e31394259adff1f3b80b7"
     },
     {
       "path": "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -561,7 +561,7 @@
     },
     {
       "path": "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -569,7 +569,7 @@
     },
     {
       "path": "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -577,7 +577,7 @@
     },
     {
       "path": "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -1129,135 +1129,15 @@
     },
     {
       "path": "templates/claude_code/CLAUDE.lite.md",
-      "line": 17,
-      "kind": "work_item",
-      "match": "ADR-0022",
-      "surface": "markdown",
-      "hash": "0e3958493b1d0c1e4453ceba129437d9c99590c134a4985266870632ef38db37"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.lite.md",
-      "line": 18,
-      "kind": "work_item",
-      "match": "T-0166",
-      "surface": "markdown",
-      "hash": "adf4a8da946e442b4683b275125e16b843c7f11fb4d2393aa2b6ebee33c2ac3f"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.lite.md",
-      "line": 21,
-      "kind": "work_item",
-      "match": "ADR-0043",
-      "surface": "markdown",
-      "hash": "b82e61fab456cb6a74ec7e9a9ba5ed4b0296252d02387b90272552c6a360ca1a"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.lite.md",
-      "line": 21,
-      "kind": "work_item",
-      "match": "ADR-0057",
-      "surface": "markdown",
-      "hash": "b82e61fab456cb6a74ec7e9a9ba5ed4b0296252d02387b90272552c6a360ca1a"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.lite.md",
-      "line": 41,
+      "line": 38,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
       "hash": "e4fc5797e01410543b9d214a2af20db4be8bff28d66134557ab1b028da571e03"
     },
     {
-      "path": "templates/claude_code/CLAUDE.lite.md",
-      "line": 74,
-      "kind": "work_item",
-      "match": "ADR-0074",
-      "surface": "markdown",
-      "hash": "5e445813d5df33c96f75ec709f05aec16029ae1e848fc0bb2dd85506ed383a6b"
-    },
-    {
       "path": "templates/claude_code/CLAUDE.md",
-      "line": 14,
-      "kind": "work_item",
-      "match": "ADR-0022",
-      "surface": "markdown",
-      "hash": "3cc15fddde89fdcc4a26647eae66a99afea3c4da838329b9a679d74c6bca7b51"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 16,
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "markdown",
-      "hash": "6ac5a3f71f3a4160f60597660ecd4d257af04f20632fcbb2d2cb8cf0eade6c84"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 17,
-      "kind": "work_item",
-      "match": "ADR-0022",
-      "surface": "markdown",
-      "hash": "1e2335ef27c21ace270aad7edc676eb5a826201f4bd8b93f7d306243de9aea16"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 18,
-      "kind": "work_item",
-      "match": "ADR-0040",
-      "surface": "markdown",
-      "hash": "1ccfcb292997170d8aca43420b22a3b22933fcfe480f855c795cc47b9f5ebcc0"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 18,
-      "kind": "work_item",
-      "match": "ADR-0043",
-      "surface": "markdown",
-      "hash": "1ccfcb292997170d8aca43420b22a3b22933fcfe480f855c795cc47b9f5ebcc0"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 18,
-      "kind": "work_item",
-      "match": "ADR-0057",
-      "surface": "markdown",
-      "hash": "1ccfcb292997170d8aca43420b22a3b22933fcfe480f855c795cc47b9f5ebcc0"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 60,
-      "kind": "work_item",
-      "match": "ADR-0074",
-      "surface": "markdown",
-      "hash": "6e8466172c768ba600fe160b09329c2b6ffe8221595ade03d69d8dcffbf50949"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 85,
-      "kind": "work_item",
-      "match": "T-0017",
-      "surface": "markdown",
-      "hash": "16bae353625fc9c6274c9b2817c4406da01006a30cc901c1b8cd9c29c25c2f64"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 89,
-      "kind": "work_item",
-      "match": "ADR-0006",
-      "surface": "markdown",
-      "hash": "553ccba742f968f08884e4ab60e604235115db0cc144f92841dffcfb9d31ead5"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 89,
-      "kind": "work_item",
-      "match": "T-0031",
-      "surface": "markdown",
-      "hash": "553ccba742f968f08884e4ab60e604235115db0cc144f92841dffcfb9d31ead5"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 99,
+      "line": 91,
       "kind": "work_item",
       "match": "ADR-0023",
       "surface": "markdown",
@@ -1265,19 +1145,11 @@
     },
     {
       "path": "templates/claude_code/CLAUDE.md",
-      "line": 120,
+      "line": 112,
       "kind": "work_item",
       "match": "ADR-0018",
       "surface": "markdown",
       "hash": "2177588c4173da24245a5cde65cdb0aef81bb84ceac3bee7e4f6270fd440d960"
-    },
-    {
-      "path": "templates/claude_code/CLAUDE.md",
-      "line": 127,
-      "kind": "work_item",
-      "match": "ADR-0041",
-      "surface": "markdown",
-      "hash": "b460f7bcf2d8079b196f72e9426fd92f8675abb096c63641b27387c646c154e4"
     },
     {
       "path": "templates/claude_code/README.md",
@@ -1297,19 +1169,19 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-adr/SKILL.md",
-      "line": 64,
+      "line": 45,
       "kind": "work_item",
       "match": "ADR-0061",
       "surface": "markdown",
-      "hash": "f5561d2b6660d06922dd197ec094ab4126d2145c0219488883a8c57afd3bea07"
+      "hash": "12d8c16e1213a2909e98674f879fa2692769a1e3a54e31394259adff1f3b80b7"
     },
     {
       "path": "templates/codex/.agents/skills/pm-adr/SKILL.md",
-      "line": 64,
+      "line": 45,
       "kind": "work_item",
       "match": "ADR-0062",
       "surface": "markdown",
-      "hash": "f5561d2b6660d06922dd197ec094ab4126d2145c0219488883a8c57afd3bea07"
+      "hash": "12d8c16e1213a2909e98674f879fa2692769a1e3a54e31394259adff1f3b80b7"
     },
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
@@ -1433,7 +1305,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -1441,7 +1313,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -1449,7 +1321,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -1457,7 +1329,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -1881,127 +1753,7 @@
     },
     {
       "path": "templates/codex/AGENTS.md",
-      "line": 9,
-      "kind": "work_item",
-      "match": "ADR-0006",
-      "surface": "markdown",
-      "hash": "0f0063a9f1d8fca68279434b784ad305df2375892f5e17965af0f7cf5d7476c8"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 9,
-      "kind": "work_item",
-      "match": "ADR-0069",
-      "surface": "markdown",
-      "hash": "0f0063a9f1d8fca68279434b784ad305df2375892f5e17965af0f7cf5d7476c8"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 45,
-      "kind": "work_item",
-      "match": "ADR-0033",
-      "surface": "markdown",
-      "hash": "ca658caba8abbe7f9f6fcca4340e6a25670d587f5f0273cc48a8af3adbc8c96a"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 45,
-      "kind": "work_item",
-      "match": "T-0166",
-      "surface": "markdown",
-      "hash": "ca658caba8abbe7f9f6fcca4340e6a25670d587f5f0273cc48a8af3adbc8c96a"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 49,
-      "kind": "work_item",
-      "match": "ADR-0022",
-      "surface": "markdown",
-      "hash": "dba0bf06e0d41989a708f8ccc4c5575d96fd09fc2eaa6900d02b29f94e2d70a5"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 60,
-      "kind": "work_item",
-      "match": "ADR-0035",
-      "surface": "markdown",
-      "hash": "13d6ad9eec281333a4cf74da1d5d912db6d8ce56e8235315955a04927090ddd5"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 72,
-      "kind": "work_item",
-      "match": "ADR-0043",
-      "surface": "markdown",
-      "hash": "a8411a96400d67d5c0a9a57907ee2121e0480daec58d3df7e28a8957e4b08c1f"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 72,
-      "kind": "work_item",
-      "match": "ADR-0057",
-      "surface": "markdown",
-      "hash": "a8411a96400d67d5c0a9a57907ee2121e0480daec58d3df7e28a8957e4b08c1f"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 78,
-      "kind": "work_item",
-      "match": "ADR-0040",
-      "surface": "markdown",
-      "hash": "8d2d1988540bd622b0f948e9572b99620c19e0b2307525ddff0a8ebbe535b46a"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 110,
-      "kind": "work_item",
-      "match": "ADR-0074",
-      "surface": "markdown",
-      "hash": "a022669a79a957952d3d6fe0e70f1d34cc6680afd3d8e5925d0b8e8ea331d50f"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 171,
-      "kind": "work_item",
-      "match": "ADR-0041",
-      "surface": "markdown",
-      "hash": "b460f7bcf2d8079b196f72e9426fd92f8675abb096c63641b27387c646c154e4"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 181,
-      "kind": "work_item",
-      "match": "ADR-0065",
-      "surface": "markdown",
-      "hash": "2ccd49da6eef3b64a9cf661071bfcb5986fab01e91610055bec71d8b3a074834"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 196,
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "markdown",
-      "hash": "e4beef85a908436b52e039b1fd4bf5d9c9d60d2841c289d2da215f499cef5c28"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 197,
-      "kind": "work_item",
-      "match": "ADR-0022",
-      "surface": "markdown",
-      "hash": "e0db66353a1b8f5691d33a2f790e2a13c94ebd835be245f7ba6984ea8e80b9ed"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 199,
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "markdown",
-      "hash": "a39fd657cc1662af40420dc5b6b5b3a5233a40bc859d0275a4f12ae26c1b723a"
-    },
-    {
-      "path": "templates/codex/AGENTS.md",
-      "line": 225,
+      "line": 180,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "markdown",
@@ -2009,7 +1761,7 @@
     },
     {
       "path": "templates/codex/AGENTS.md",
-      "line": 225,
+      "line": 180,
       "kind": "work_item",
       "match": "ADR-0069",
       "surface": "markdown",
@@ -2113,23 +1865,23 @@
     },
     {
       "path": "templates/opencode/.claude/skills/pm-adr/SKILL.md",
-      "line": 64,
+      "line": 45,
       "kind": "work_item",
       "match": "ADR-0061",
       "surface": "markdown",
-      "hash": "f5561d2b6660d06922dd197ec094ab4126d2145c0219488883a8c57afd3bea07"
+      "hash": "12d8c16e1213a2909e98674f879fa2692769a1e3a54e31394259adff1f3b80b7"
     },
     {
       "path": "templates/opencode/.claude/skills/pm-adr/SKILL.md",
-      "line": 64,
+      "line": 45,
       "kind": "work_item",
       "match": "ADR-0062",
       "surface": "markdown",
-      "hash": "f5561d2b6660d06922dd197ec094ab4126d2145c0219488883a8c57afd3bea07"
+      "hash": "12d8c16e1213a2909e98674f879fa2692769a1e3a54e31394259adff1f3b80b7"
     },
     {
       "path": "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -2137,7 +1889,7 @@
     },
     {
       "path": "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -2145,7 +1897,7 @@
     },
     {
       "path": "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -2153,7 +1905,7 @@
     },
     {
       "path": "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
-      "line": 90,
+      "line": 78,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -2905,63 +2657,7 @@
     },
     {
       "path": "templates/opencode/AGENTS.lite.md",
-      "line": 4,
-      "kind": "work_item",
-      "match": "ADR-0065",
-      "surface": "markdown",
-      "hash": "d5431b5fb07704a9a6e57f74cc1ecbf1867e98566f907d51529320b1fd210595"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 8,
-      "kind": "work_item",
-      "match": "ADR-0006",
-      "surface": "markdown",
-      "hash": "1b593f52dd5bc7d3b1380f56dd9d0449338c1b2327ea4a221e8eff8c8ba3afc5"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 30,
-      "kind": "work_item",
-      "match": "ADR-0022",
-      "surface": "markdown",
-      "hash": "53cea120199152aff724201e352cac8a1d5d6c49872ccd2d902057ded5efc62c"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 32,
-      "kind": "work_item",
-      "match": "ADR-0035",
-      "surface": "markdown",
-      "hash": "c37cdcf3aa59cc8a329b5b7d744c7c355fb3afaf68e37dff16d05cdc5ab90c6a"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 32,
-      "kind": "work_item",
-      "match": "T-0166",
-      "surface": "markdown",
-      "hash": "c37cdcf3aa59cc8a329b5b7d744c7c355fb3afaf68e37dff16d05cdc5ab90c6a"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 34,
-      "kind": "work_item",
-      "match": "ADR-0043",
-      "surface": "markdown",
-      "hash": "12ef380050d501b4829bfe035826ae65868f2346ffbef344a1da5da5cc930e78"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 34,
-      "kind": "work_item",
-      "match": "ADR-0057",
-      "surface": "markdown",
-      "hash": "12ef380050d501b4829bfe035826ae65868f2346ffbef344a1da5da5cc930e78"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 61,
+      "line": 53,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -2969,167 +2665,15 @@
     },
     {
       "path": "templates/opencode/AGENTS.lite.md",
-      "line": 76,
-      "kind": "work_item",
-      "match": "ADR-0074",
-      "surface": "markdown",
-      "hash": "5e445813d5df33c96f75ec709f05aec16029ae1e848fc0bb2dd85506ed383a6b"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 79,
-      "kind": "work_item",
-      "match": "ADR-0065",
-      "surface": "markdown",
-      "hash": "b359c8a284cde74350660b4c599a47804bf982a00312e2f6999cffc1ed82bac8"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 105,
-      "kind": "work_item",
-      "match": "ADR-0065",
-      "surface": "markdown",
-      "hash": "f00c8677dc4041b406a4a61a44a86aff8df0224ff208e9a0a60d5103efd699f1"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 113,
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "markdown",
-      "hash": "42813c03fd4a1d0c165b9bf713305b69dfa5eedfa6e300408636da1032af22ea"
-    },
-    {
-      "path": "templates/opencode/AGENTS.lite.md",
-      "line": 122,
+      "line": 108,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "markdown",
-      "hash": "e7a6686e6e3d8d7763a1ac9fc3ac2f794141692f51d318e4df0de2c98a05fc00"
+      "hash": "0a58bd2a2e5f1dedf8e191c2c6b8bf1b73c16e2246f11c9cd1aa0e4f41872d88"
     },
     {
       "path": "templates/opencode/AGENTS.md",
-      "line": 9,
-      "kind": "work_item",
-      "match": "ADR-0006",
-      "surface": "markdown",
-      "hash": "0f0063a9f1d8fca68279434b784ad305df2375892f5e17965af0f7cf5d7476c8"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 9,
-      "kind": "work_item",
-      "match": "ADR-0069",
-      "surface": "markdown",
-      "hash": "0f0063a9f1d8fca68279434b784ad305df2375892f5e17965af0f7cf5d7476c8"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 45,
-      "kind": "work_item",
-      "match": "ADR-0033",
-      "surface": "markdown",
-      "hash": "ca658caba8abbe7f9f6fcca4340e6a25670d587f5f0273cc48a8af3adbc8c96a"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 45,
-      "kind": "work_item",
-      "match": "T-0166",
-      "surface": "markdown",
-      "hash": "ca658caba8abbe7f9f6fcca4340e6a25670d587f5f0273cc48a8af3adbc8c96a"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 49,
-      "kind": "work_item",
-      "match": "ADR-0022",
-      "surface": "markdown",
-      "hash": "dba0bf06e0d41989a708f8ccc4c5575d96fd09fc2eaa6900d02b29f94e2d70a5"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 60,
-      "kind": "work_item",
-      "match": "ADR-0035",
-      "surface": "markdown",
-      "hash": "13d6ad9eec281333a4cf74da1d5d912db6d8ce56e8235315955a04927090ddd5"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 72,
-      "kind": "work_item",
-      "match": "ADR-0043",
-      "surface": "markdown",
-      "hash": "a8411a96400d67d5c0a9a57907ee2121e0480daec58d3df7e28a8957e4b08c1f"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 72,
-      "kind": "work_item",
-      "match": "ADR-0057",
-      "surface": "markdown",
-      "hash": "a8411a96400d67d5c0a9a57907ee2121e0480daec58d3df7e28a8957e4b08c1f"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 78,
-      "kind": "work_item",
-      "match": "ADR-0040",
-      "surface": "markdown",
-      "hash": "8d2d1988540bd622b0f948e9572b99620c19e0b2307525ddff0a8ebbe535b46a"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 110,
-      "kind": "work_item",
-      "match": "ADR-0074",
-      "surface": "markdown",
-      "hash": "a022669a79a957952d3d6fe0e70f1d34cc6680afd3d8e5925d0b8e8ea331d50f"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 171,
-      "kind": "work_item",
-      "match": "ADR-0041",
-      "surface": "markdown",
-      "hash": "b460f7bcf2d8079b196f72e9426fd92f8675abb096c63641b27387c646c154e4"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 181,
-      "kind": "work_item",
-      "match": "ADR-0065",
-      "surface": "markdown",
-      "hash": "2ccd49da6eef3b64a9cf661071bfcb5986fab01e91610055bec71d8b3a074834"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 196,
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "markdown",
-      "hash": "e4beef85a908436b52e039b1fd4bf5d9c9d60d2841c289d2da215f499cef5c28"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 197,
-      "kind": "work_item",
-      "match": "ADR-0022",
-      "surface": "markdown",
-      "hash": "e0db66353a1b8f5691d33a2f790e2a13c94ebd835be245f7ba6984ea8e80b9ed"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 199,
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "markdown",
-      "hash": "a39fd657cc1662af40420dc5b6b5b3a5233a40bc859d0275a4f12ae26c1b723a"
-    },
-    {
-      "path": "templates/opencode/AGENTS.md",
-      "line": 225,
+      "line": 180,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "markdown",
@@ -3137,7 +2681,7 @@
     },
     {
       "path": "templates/opencode/AGENTS.md",
-      "line": 225,
+      "line": 180,
       "kind": "work_item",
       "match": "ADR-0069",
       "surface": "markdown",

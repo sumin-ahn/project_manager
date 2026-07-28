@@ -6,39 +6,34 @@ audience: pm-internal
 
 # /pm-update — 엔진 갱신 (facade-기반 PM front door)
 
-> 채택자가 upstream 프레임워크 엔진 변경을 흡수한다. raw `pm_update.py` 대신 이 스킬을 invoke —
-> facade(`./pm-update.sh`) backbone 위에 **upstream freshness 자동분기 · manifest reconcile · drift 표면화**를
-> 얹는다. 엔진(`pm_update`)은 파일-복사만(git 무지) — git freshness 는 이 스킬층이 담당.
+upstream 엔진 변경을 raw `pm_update.py`가 아닌 facade(`./pm-update.sh`)로 흡수한다. git freshness는 이 스킬층, 파일 복사는 엔진(`pm_update`)이 담당한다.
 
-> **Windows 진입**: `./pm-update.sh` 는 bash 용 — PowerShell/cmd 에선 **`.\pm-update.cmd`**(동일 인자·
-> 아래 `./pm-config.sh` 참조도 동형 **`.\pm-config.cmd`**).
-> 아래 `python3 …` 커맨드(예 `board.py lint`)는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
-> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
-> PowerShell 5.x 는 `&&` 체이닝 미지원(ParseError) — `cd X && …` 대신 **도구의 workdir 파라미터**나
-> 명령 분리로 실행한다.
+> **Windows 진입**: `./pm-update.sh` 는 bash 용 — PowerShell/cmd 에선 **`.\pm-update.cmd`**(동일 인자·아래 `./pm-config.sh` 참조도 동형 **`.\pm-config.cmd`**).
+> 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
+> PowerShell 5.x 는 `&&` 체이닝 미지원(ParseError) — `cd X && …` 대신 **도구의 workdir 파라미터**나 명령 분리로 실행한다.
 
-## 인접 스킬과 구분
-- **pm-update (이 스킬)** = 엔진 + host 어댑터 *갱신*(upstream→채택자).
-- [[pm-env]] = 환경 관리(repo/worktree/slot · upstream show/switch). upstream *값* 전환은 거기서.
-- [[pm-bootstrap]] = 세션 시작 상태점검(갱신 아님).
-- **dual-harness guest 어댑터**(claude 인스턴스에 `add-harness` 로 얹은 `.opencode/*` 등)는 host manifest
-  밖이라 이 pm-update 범위 밖 — `pm_update` 가 안 건드린다. 갱신은 `add-harness <harness>` 재실행으로
-  받는다(refresh·기존 인스턴스 위 live-safe).
+## 범위
 
-## 사용 시점
-- upstream(프레임워크)에 새 엔진 변경이 났을 때 · 주기적 freshness 점검.
-- `board.py lint` 가 `adapter-drift` advisory 를 냈을 때(= upstream 이 baseline 이후 앞섬).
+- **pm-update** = 엔진 + host 어댑터 갱신(upstream→채택자).
+- upstream 값 전환은 [[pm-env]], 세션 시작 상태점검은 [[pm-bootstrap]].
+- host manifest 밖의 **dual-harness guest 어댑터**(`add-harness`로 얹은 `.opencode/*` 등)는 갱신하지 않는다. `add-harness <harness>`를 재실행한다(refresh·기존 인스턴스 위 live-safe).
+
+사용 시점: upstream 변경/주기적 freshness 점검 또는 `board.py lint`의 `adapter-drift` advisory 발생 시.
 
 ## 실행 절차
 
 ### 1. upstream 값 확인
+
 ```bash
 ./pm-config.sh upstream show
 ```
-URL(`https://`·`ssh://`·`file://`) 또는 로컬 경로. 값 *모양*으로 아래 분기(self-describing).
 
-### 2. upstream freshness (값 모양 자동분기)
-- **URL** (릴리스 추적·신규 채택자 기본) — 엔진은 URL 에서 직접 복사 못 한다(파일-복사). cache clone/fetch 로 로컬 체크아웃을 만들고 그걸 `--from` 으로 준다:
+URL(`https://`·`ssh://`·`file://`) 또는 로컬 경로 모양으로 분기한다.
+
+### 2. upstream freshness
+
+- **URL**: 엔진은 URL에서 직접 복사하지 못하므로 cache clone/fetch 후 `--from`에 로컬 checkout을 준다.
+
   ```bash
   # 안전 git env — 엔진 pm_import.py 의 _UPSTREAM_GIT_CONFIG_KV(6키)와 동일해야 한다(엔진 변경 시 동기).
   # redirect off + protocol allowlist(https/ssh/file 만·file 포함=valid URL form) + credential 미경유.
@@ -47,49 +42,54 @@ URL(`https://`·`ssh://`·`file://`) 또는 로컬 경로. 값 *모양*으로 �
   $GIT -C <cache> fetch --all       # 이후
   SEEN=$($GIT -C <cache> rev-parse HEAD)
   ```
-  fetch 후 cache HEAD(`$SEEN`)를 채택자 `local.conf` 에 **`upstream_seen_rev=<rev>`** 로 기록 — set-or-replace 규율(그 줄만 교체·없으면 append·기존 키·주석 보존, `pm_config upstream set` 백엔드와 동형). drift-lint 입력이고 baseline `upstream_rev` 와 **별개 키**(한 키 2역 금지). 이후 `--from <cache>`.
-- **로컬 경로** (엔진 공동개발·도그푸딩):
+
+  fetch 후 `$SEEN`을 채택자 `local.conf`의 **`upstream_seen_rev=<rev>`**로 기록한다. set-or-replace(그 줄만 교체, 없으면 append, 기존 키·주석 보존; `pm_config upstream set` 백엔드와 동형)한다. 이는 drift-lint 입력이며 baseline `upstream_rev`와 **별개 키**다. 이후 `--from <cache>`.
+  URL clone/fetch의 redirect·host allowlist·submodule guard는 위 `$GIT` env로 이 스킬이 강제한다.
+
+- **로컬 경로**:
+
   ```bash
   git -C <path> pull          # 또는 "뒤처짐" 경고만 (공동개발 worktree 면 pull 생략 가능)
   ```
-  경로면 로컬 checkout rev 가 곧 seen — pm_update 가 동기 시 직접 읽어 `upstream_rev`(baseline)와 `upstream_seen_rev`(관찰값)를 **함께** 기록한다. 그래서 정상 흡수 직후엔 두 키가 같아져 drift advisory 가 뜨지 않는다.
 
-### 2.5 변경점 미리보기 (sync 전 · 무엇이 올지)
-sync 로 받을 변경을 미리 본다 — baseline(local.conf `upstream_rev`) ↔ cache/경로 HEAD 의
-commit 수 + 받을 엔진파일. 엔진 read-only(`git log`/`diff`·fetch 0).
+  로컬 checkout rev가 seen이다. pm_update가 동기 시 `upstream_rev`(baseline)와 `upstream_seen_rev`(관찰값)를 함께 기록하므로 정상 흡수 직후 두 키가 같다.
+
+### 2.5 변경점 미리보기 (sync 전)
+
+baseline(local.conf `upstream_rev`)과 cache/경로 HEAD 사이 commit 수 및 받을 엔진파일을 read-only(`git log`/`diff`, fetch 0)로 본다.
+
 ```bash
 ./pm-update.sh --changes --from <cache-or-path>   # commit 수 + 엔진 영향(받는 것)/그 외 분리
 ```
-- **변경 0(최신)** — 받을 게 없으니 생략(이번 동기 불요).
-- **변경 > 0** — "엔진 영향(이번 동기가 받는 것)" 목록을 PM 에게 보고한 뒤 reconcile → sync 진행.
-- baseline 미기록(첫 동기·구 import)이면 "다음 sync 후 추적" 안내가 정상 — 그대로 진행.
 
-### 3. manifest reconcile (pm_update *전* · PM-주도 · 사용자 개입 0)
-upstream 의 **harness-correct** manifest 를 채택자로 먼저 맞춘다 — 새 엔진 항목(예 pm_import.py)이 *기존* 채택자에 도달하려면 채택자 manifest 가 그 항목을 먼저 알아야 한다(pm_update 는 dest manifest 우선).
+- **변경 0(최신)**: 동기 생략.
+- **변경 > 0**: "엔진 영향(이번 동기가 받는 것)" 목록을 PM에게 보고한 뒤 reconcile → sync.
+- baseline 미기록(첫 동기·구 import): "다음 sync 후 추적" 안내가 정상이며 그대로 진행.
+
+### 3. manifest reconcile (pm_update 전·PM 주도·사용자 개입 0)
+
+채택자 manifest를 upstream의 **harness-correct** manifest로 먼저 맞춘다. 새 항목이 기존 채택자에 도달하려면 dest manifest가 먼저 알아야 한다.
+
 ```bash
 cp <cache-or-path>/templates/<harness>/.project_manager/engine.manifest .project_manager/engine.manifest
 ```
-⚠️ **루트 manifest 가 아니라 `templates/<harness>/` manifest**(`<harness>`=이 채택자의 claude_code | opencode) — 루트는 claude-scoped 라 opencode 채택자에 clobber.
 
-### 4. 엔진 갱신 (facade)
+⚠️ **루트 manifest가 아니라 `templates/<harness>/` manifest**(`<harness>`=이 채택자의 claude_code | opencode)를 쓴다. 루트는 claude-scoped라 opencode 채택자를 clobber한다.
+
+### 4. 엔진 갱신
+
 ```bash
 ./pm-update.sh --from <cache-or-path>     # --from 생략 시 local.conf upstream= 자동(경로일 때만)
 ```
-manifest 경로만 byte-overwrite(@render path 는 operational 토큰 재치환). `pm_update` 가 이 sync 의 upstream rev 를 `upstream_rev`(baseline) 로 기록한다 — 경로 upstream 이면 `upstream_seen_rev` 도 같은 rev 로 함께, URL 이면 스킬이 기록한 seen 이 그 값 → 이번 동기 후 baseline==seen(drift clear).
-> upstream 이 URL 인데 `--from` 을 생략하면 엔진이 명확한 에러로 멈춘다(엔진은 URL 복사 못 함) — 위 cache 경로를 `--from` 으로 준다.
+
+manifest 경로만 byte-overwrite하며 `@render` path는 operational 토큰을 재치환한다. pm_update가 sync rev를 `upstream_rev`로 기록한다. 경로 upstream이면 `upstream_seen_rev`도 같은 rev로 기록하고, URL이면 2단계에서 기록한 seen과 같아져 drift가 clear된다.
+
+⚠️ URL upstream에서 `--from`을 생략하면 엔진이 에러로 멈춘다. cache 경로를 `--from`으로 준다.
 
 ### 5. drift 표면화
+
 ```bash
 python3 .project_manager/tools/board.py lint
 ```
-`adapter-drift` advisory 가 남아 있으면(baseline↔관찰 rev **불일치** — facade·진입문서 등 manifest-제외 잔여가 낡았을 수 있음. lint 는 git 을 안 하므로 어느 rev 가 앞선지는 판정하지 않는다) PM 에게 보고 — 자동전파 대상 아님(B 전파=채택자 customization clobber·비파괴), 수기 검토 안내(never-block). 실제 선후·변경분은 `--changes` 로 본다.
 
-## 결정
-- 엔진(`pm_update`) — git freshness 는 이 스킬층(이식성·오프라인·도그푸딩 보존).
-- facade(`./pm-update.sh`) backbone — self-locating·cwd-robust. 기존 `pm-*` 스킬 thin-wrapper 패턴 동형.
-- manifest reconcile = harness-correct(self-list 아님)·PM-주도(사용자 개입 0·codex round-2).
-- URL clone/fetch 의 redirect/host-allowlist/submodule 가드는 이 스킬이 강제(위 `$GIT` env) — 엔진 도달성 호출 밖 표면.
-
-## 참고
-- backbone facade `pm-update.sh`→`pm_update.py`.
-- [[pm-env]](upstream 전환) · drift-lint = `board.py lint` adapter-drift.
+`adapter-drift` advisory가 남으면 PM에게 보고하고 수기 검토를 안내한다(never-block). 이는 baseline↔관찰 rev 불일치로 manifest 제외 facade·진입문서 등이 낡았을 수 있음을 뜻한다. lint는 git을 하지 않아 어느 rev가 앞섰는지 판정하지 않는다. 자동전파는 customization을 clobber할 수 있어 금지하며, 실제 선후·변경분은 `--changes`로 본다.

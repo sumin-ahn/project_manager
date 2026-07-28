@@ -6,159 +6,154 @@ audience: user-entrypoint
 
 # /pm-env — PM 환경 관리 (pm-config facade)
 
-> PM 환경 셋업·조회를 한 스킬로 — `./pm-config.sh` facade backbone 위에 repo/worktree/slot/upstream 분기.
-> multi-PM 토폴로지(여러 repo·worktree 슬롯)와 upstream 값 전환의 단일 진입. thin — `pm-config` 가 CLI 계약
-> 단일 진실(서브커맨드 추가돼도 이 스킬 변경 불필요).
+`./pm-config.sh`가 repo/worktree/slot/upstream 환경 셋업·조회의 CLI 계약이다.
 
 > **Windows 진입**: `./pm-config.sh` 는 bash 용 — PowerShell/cmd 에선 **`.\pm-config.cmd`**(동일 인자·
 > pm_import 가 루트로 복사). PowerShell 5.x 는 `&&` 체이닝 미지원(ParseError) — `cd X && …` 대신
 > **도구의 workdir 파라미터**나 명령 분리로 실행한다.
 
-## 인접 스킬과 구분
-- **pm-env (이 스킬)** = 환경 *셋업/조회*(repo·worktree·slot·upstream 값).
-- [[pm-update]] = 환경이 가리키는 upstream 으로 엔진 *갱신*. upstream 값을 여기서 전환 → pm-update 가 적용.
-- [[pm-bootstrap]] = 세션 *시작* 시 슬롯 바인딩·상태점검.
+## 인접 스킬
 
-## 분기 (trigger·인자로)
+- **pm-env**: repo·worktree·slot·upstream 값 셋업/조회.
+- [[pm-update]]: 현재 upstream으로 엔진 갱신. 여기서 값을 바꾸면 pm-update가 적용한다.
+- [[pm-bootstrap]]: 세션 시작 시 슬롯 바인딩·상태점검.
 
-### repo add — multi-PM repo 등록
+## repo add
+
 ```bash
 ./pm-config.sh repo add <name> --git <url> --test "<cmd>" [--protected "main,develop"]
 ./pm-config.sh repo list                        # 등록 repo 표(repo·prefix·base·protected·test_cmd·area_owner)
 ```
-`areas.md` 공유 레지스트리 등록 + per-repo 셋업. 이후 worktree 슬롯을 붙인다.
-- **`--protected`**: 이 repo 의 보호 브랜치(쉼표분리). 생략하면 빈 칼럼 = 기본값
-  **main/master/develop** 폴백. 사후 변경은 아래 `repo protected`.
 
-### repo protected — 보호 브랜치 목록 조회/설정
+`areas.md` 공유 레지스트리와 per-repo 셋업을 등록한 뒤 worktree 슬롯을 붙인다. `--protected`는 쉼표분리
+보호 브랜치이며, 생략한 빈 칼럼은 **main/master/develop**으로 폴백한다. 사후 변경은 `repo protected`.
 
-PM 이 자율로 commit/push 하지 못하는 브랜치 목록이다(pre-push 훅·부트스트랩 0단계가 이걸 본다).
-`areas.md` `protected` 칼럼이 **단일 진실**이고 훅이 읽는 sidecar 는 파생 캐시다:
+## repo protected
+
+PM이 자율 commit/push할 수 없는 브랜치 목록. `areas.md`의 `protected` 칼럼이 단일 진실이고 훅
+sidecar는 파생 캐시다.
+
 ```bash
 ./pm-config.sh repo protected <repo>                  # 조회 — 실효값 + 출처 + 훅 sidecar 정합
 ./pm-config.sh repo protected <repo> "main,release"   # 설정 — areas.md → 훅 sidecar 정합화
 ./pm-config.sh repo protected <repo> default          # 칼럼 비움 = main/master/develop 기본값 복귀
 ```
-- **조회 3줄**: 실효값 · **출처**(명시 / 기본값 폴백 / 미등록) · **훅 sidecar 정합**. 칼럼이 비어
-  기본값으로 도는 상태와, 다른 clone 이 값을 바꿔 이 clone 의 훅만 옛 목록인 상태(drift)를 각각
-  구별해 보여준다 — drift 면 `⚠ 옛 목록(...)` + 재실행 안내가 붙는다.
-- **설정 순서 고정**: areas.md 먼저, 그 다음 훅 sidecar(역순이면 훅이 비준되지 않은 목록을 강제).
-  변경은 board-git 로 즉시 공유된다. 다른 clone 은 `/pm-bootstrap` 이 세션 시작에 drift 만 흡수한다.
-- **"보호 없음" 은 지정할 수 없다** — 빈 문자열은 거부하고 `default`(기본값 복귀)로 안내한다.
-  브랜치 실재는 검증하지 않는다(아직 없는 `release` 를 미리 보호하는 게 정상 — bare 에 없으면 경고 1줄).
-- **중복 행 방어**: `areas.md` 에 같은 repo 행이 2개 이상이면 설정을 **거부**한다(어느 행이 이기는지
-  기계가 못 정함·부작용 0). `board.py lint` 의 `areas-duplicate-repo` 권고가 같은 상태를 상시 표면화한다.
 
-### worktree add — 슬롯 생성 (→ bootstrap 바인딩 안내)
+- 조회는 실효값·출처(명시/기본값 폴백/미등록)·훅 sidecar 정합의 3줄이다. 기본값 상태와 다른 clone 변경으로
+  이 clone 훅만 낡은 drift를 구별하며, drift면 `⚠ 옛 목록(...)`과 재실행 안내가 붙는다.
+- 설정은 **areas.md 먼저, 훅 sidecar 다음** 순서 고정. 변경은 board-git로 즉시 공유되고, 다른 clone은
+  `/pm-bootstrap` 세션 시작 시 drift만 흡수한다.
+- **"보호 없음"은 지정 불가**: 빈 문자열은 거부되고 `default`로 안내한다. 브랜치 실재는 검증하지
+  않는다. 아직 없는 `release`의 선보호도 정상이지만 bare에 없으면 경고 1줄.
+- `areas.md`에 같은 repo 행이 2개 이상이면 설정을 **부작용 없이 거부**한다. `board.py lint`도
+  `areas-duplicate-repo`를 권고한다.
+
+## worktree add
+
 ```bash
 ./pm-config.sh worktree add <repo>              # 작업 슬롯(배타 대여·세션 바인딩)
 ./pm-config.sh worktree add <repo> --readonly   # readonly 공유 슬롯(research 기준면)
 ```
-추가 후 PM 에게 안내: **"이제 `/pm-bootstrap <repo> --slot N` 으로 이 슬롯에 바인딩하세요"**
-— `pm_bootstrap` 의 multi-PM identity surface와 연결(정체성=세션 맥락).
-- **`--readonly`**: research 전용 **read-only 공유 슬롯** — 코드를 *읽어* PM 홈 wiki
-  (domain·architecture·status)를 쓰는 읽기 기준면이다. detached HEAD(released base·git 이 같은 브랜치
-  두 worktree 를 못 물림)·role=readonly·**session/pid 없음·배타 대여 없음**(공유가 정상). 무소유 공유
-  자산이라 **바인딩(`/pm-bootstrap --slot`)·release 도 거부**되고, 갱신은 [[pm-worktree]] `refresh` 로만
-  (set-base/rebase/dev/sync 도 거부). 제거는 `worktree remove --force`.
 
-### slot status / release / remove
+추가 후 **"이제 `/pm-bootstrap <repo> --slot N` 으로 이 슬롯에 바인딩하세요"**라고 안내한다.
+
+`--readonly`는 코드 읽기와 PM 홈 wiki(domain·architecture·status) 작성용 공유 기준면이다. detached
+HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소유 공유 자산이므로
+**바인딩(`/pm-bootstrap --slot`)·release를 거부**하고, 갱신은 [[pm-worktree]] `refresh`만 허용한다
+(set-base/rebase/dev/sync 거부). 제거는 `worktree remove --force`.
+
+## slot status / release / remove
+
 ```bash
 ./pm-config.sh status | whoami        # 2축 cockpit — task 상황 + slot 풀·슬롯당 git 요약
 ./pm-config.sh release <slot> [--force]        # 작업완료 반납(idle 화·재사용) / --force=강제 백스톱
 ./pm-config.sh worktree remove <slot> [--force] # 슬롯 통째 제거(원자·번호 재사용)
 ```
-- **status 2축 cockpit**: 다슬롯 관리 부담을 두 축으로 한눈에 —
-  **task 상황** = 사람이 명명한 task 별 {보유 작업공간(`work/<repo>_<N>`)·prefix}(slot-모드 세션 제외).
-  **slot 풀** = 슬롯별 {state·보유 task·role(work/readonly)} + **슬롯당 git 요약**
-  `<branch>@<head> (base: <b>@<sha> · N behind)`. behind 는 base 기록(`set-base`)이 있을 때만
-  세고, 미기록이면 `-` + 이유(자동 추론 금지). readonly 슬롯은 branch `(detached)`·base 만 의미.
-- **release vs remove**: `release` = idle 화(슬롯 폴더 유지·풀 재사용). `remove` = **통째 제거** —
-  `git worktree remove` + 슬롯 전용 브랜치(`<repo>_<N>`) 정리(머지 완료 시 삭제·미머지 보존·공유 브랜치 스킵)
-  + 장부 엔트리 삭제. 장부까지 지워 `add` 가 **빈 번호를 재사용**한다(수동 remove → dangling 장부 →
-  번호 skip footgun 종결). dirty/활성 리스는 거부(`--force` 로만·dirty 는 stash 보존).
-- **제거 3분법**: 등록 슬롯 통째=`worktree remove <slot>` / dangling 장부(worktree 부재)=`worktree
-  prune-stale`(안전) / orphan worktree(장부 미등록)=사용자 `git worktree remove`. **사용자 명시 호출
-  전제** — PM 이 자율로 슬롯을 제거하지 않는다(삭제-위임 원칙).
-- **캐비앗**: 미머지 전용 브랜치는 보존되며(작업 유실 방지) 같은 번호 슬롯 재생성은 브랜치 잔존을
-  선-검출해 명확한 진단(`SlotBranchExists`)으로 멈춘다 — 보존 브랜치 정리(머지/삭제) 후
-  재시도하거나, 그 작업을 재개하려면 **수동 checkout**(`git worktree add <슬롯경로> <브랜치>`·리셋
-  없음)으로.
-  `--force` 로 활성(사용 중) 슬롯을 강제 회수하면 '⚠ 강제 회수' 경고가 stderr 로 뜨고, dirty 를
-  stash 보존하면 '복구: git stash list/pop (공유 refs/stash)' 안내가 나온다.
 
-### alloc / release --task / task end — task 단위 자원 대여
+- status의 **task 상황**은 task별 보유 작업공간(`work/<repo>_<N>`)·prefix(slot-모드 세션 제외), **slot
+  풀**은 슬롯별 state·보유 task·role(work/readonly)와 `<branch>@<head> (base: <b>@<sha> · N behind)`
+  요약이다. behind는 base 기록(`set-base`)이 있을 때만 계산하며, 미기록이면 `-`와 이유를 표시하고 자동
+  추론하지 않는다. readonly는 branch `(detached)`와 base만 의미한다.
+- `release`는 폴더를 유지해 idle로 재사용한다. `remove`는 `git worktree remove`, 슬롯 전용 브랜치
+  (`<repo>_<N>`) 정리(머지 완료 시 삭제·미머지 보존·공유 브랜치 스킵), 장부 엔트리 삭제를 수행해 빈
+  번호를 재사용한다. dirty/활성 리스는 거부하며 `--force`만 허용하고 dirty는 stash 보존한다.
+- 제거 구분: 등록 슬롯=`worktree remove <slot>` / worktree 없는 dangling 장부=`worktree
+  prune-stale` / 장부 없는 orphan worktree=사용자 `git worktree remove`. **사용자 명시 호출 전제**이며
+  PM은 자율 제거하지 않는다.
+- 미머지 전용 브랜치는 보존한다. 같은 번호 재생성은 `SlotBranchExists`로 중단되므로 브랜치를 머지/삭제
+  후 재시도한다. 작업 재개는 **수동 checkout**(`git worktree add <슬롯경로> <브랜치>`·리셋 없음).
+- 활성 슬롯을 `--force` 회수하면 stderr에 `⚠ 강제 회수`; dirty를 stash 보존하면
+  `복구: git stash list/pop (공유 refs/stash)` 안내가 나온다.
 
-task = 슬롯과 **직교**하는 작업스트림 정체성. task 명의로 슬롯을 대여/반납하고 task 를 종료한다:
+## alloc / release --task / task end
+
+task는 슬롯과 직교하는 작업스트림 정체성이다.
+
 ```bash
 ./pm-config.sh alloc <repo> --task <이름>          # idle 최소 번호 슬롯을 task 명의로 대여
 ./pm-config.sh release <slot> --task <이름>        # task 소유검사 후 반납(내 task 슬롯만)
 ./pm-config.sh task end <이름>                     # task 종료 — 소진 게이트 + 일괄 반납 + 아카이브
 ```
-- **alloc**(PM 자율·논리층): idle **최소 번호** 슬롯을 `--task` 명의(lease session)로 leased 전이.
-  풀에 idle 슬롯이 없으면 **자동 생성하지 않고**(디스크=코드 전체 사본×슬롯) `worktree add <repo>`
-  **승인 요청**으로 멈춘다 — create/remove(물리층)=사용자 승인, alloc/release(논리층)=PM 자율(2층 분리).
-  (readonly 공유 슬롯은 배타 대여 없음·alloc/release 대상 아님.)
-- **release --task**: 그 슬롯이 내 task 명의(session)가 아니면 거부(다른 task 슬롯 보호). dirty 거부는
-  현행 유지(`--force`=stash 보존 강제·소유검사 우회 백스톱). clean=idle 반납(폴더 유지·풀 재사용).
-- **task end**: 이 task 명의로 **claimed 인 티켓**이 남아있으면 목록 + 거부(소진 게이트) — 해소는
-  `board complete`(완료) 또는 `board unclaim`(claimed→open)로 **사용자 판단**(task end 가 자동 실행 안 함).
-  보유 작업공간 **dirty** 면 목록 + 거부. 전부 clean 이면 보유 슬롯 일괄 idle 반납(worktree **삭제
-  안 함**) + 장부 task 레코드 제거 + 서술 폴더를 `.local/tasks/_ended/<이름>-<날짜>/` 로 **이동**(삭제
-  아님·이름 재사용 시 옛 pm_state 오염 방지). task 지정 prefix 의 open 티켓은 **정보 표시만**(차단 안 함).
 
-### task prefix — task 의 ticket prefix 지정/변경/해제 (중간 변경 자유)
+- `alloc`은 idle 최소 번호 슬롯을 task 명의(lease session)로 leased 전이한다. idle이 없으면 자동
+  생성하지 않고 `worktree add <repo>` 승인 요청으로 멈춘다. create/remove(물리층)는 사용자 승인,
+  alloc/release(논리층)는 PM 자율. readonly는 대상이 아니다.
+- `release --task`는 슬롯 session이 해당 task 명의가 아니면 거부한다. dirty도 거부하며,
+  `--force`는 stash 보존 강제·소유검사 우회 백스톱이다. clean이면 폴더를 유지한 채 idle 반납한다.
+- `task end`는 해당 task 명의의 claimed 티켓이 남으면 목록을 내고 거부한다. 사용자가 `board complete`
+  또는 `board unclaim`(claimed→open)을 판단하며 자동 실행하지 않는다. 보유 작업공간 dirty도 목록과 함께
+  거부한다. 모두 clean이면 슬롯을 삭제하지 않고 일괄 idle 반납, 장부 task 레코드 제거, 서술 폴더를
+  `.local/tasks/_ended/<이름>-<날짜>/`로 이동한다. task prefix의 open 티켓은 정보만 표시하고 차단하지 않는다.
 
-task 의 ticket prefix 를 opt-in 으로 지정/변경/해제한다 — prefix 는 task 와 **완전 독립·분류 라벨이지
-경계 아님**(claim 강제 없음):
+## task prefix
+
+prefix는 task와 독립인 opt-in 분류 라벨이며 claim 경계가 아니다. 진행 중 지정·변경·해제할 수 있다.
+
 ```bash
 ./pm-config.sh task prefix <이름> <p>       # task <이름> 의 board prefix 를 <p> 로 지정/변경
 ./pm-config.sh task prefix <이름> none      # 해제(무prefix·T-NNNN 로 발행)
 ```
-- **중간 변경 자유** — task 진행 중 언제든 지정/변경/해제(task 종속으로 못 바꾸는 설계 금지). 기본은
-  **없음**(opt-in).
-- **포맷**: `[a-z0-9_]` 형식(그 외 rc1·소문자 권장). `none` 은 해제 리터럴(무prefix). task
-  미존재면 rc1(생성은 `/pm-bootstrap --task` 단일 지점).
-- **`board.py new` 3단 해소**: 명시 `--prefix` > task 지정 prefix > 기본 없음. task 에 prefix 를 지정하면
-  그 task 명의(`--task <이름>`) 발행이 자동으로 그 prefix 를 단다(명시 `--prefix` 가 이김·1회 오버라이드).
-- prefix 는 **분류 라벨이지 경계가 아니다** — claim 에 prefix 강제 없음. 티켓 카테고리 *관리*(list/rename/
-  merge)는 별개 표면 `board.py prefix`(현행 불변).
 
-### upstream show / switch (path ↔ URL)
+- 포맷은 `[a-z0-9_]`; 그 외 rc1, 소문자 권장. `none`은 해제 리터럴. task 미존재면 rc1이며 생성은
+  `/pm-bootstrap --task`에서만 한다.
+- `board.py new` 해소 순서: 명시 `--prefix` > task 지정 prefix > 기본 없음. task 명의
+  (`--task <이름>`) 발행에 지정 prefix가 자동 적용되고 명시값이 1회 우선한다.
+- prefix 카테고리 list/rename/merge는 별도 `board.py prefix`.
+
+## upstream show / switch
+
 ```bash
 ./pm-config.sh upstream show
 ./pm-config.sh upstream set <url|path>
 ```
-`set` 은 검증 후 `local.conf upstream=` atomic 재기록(타 키 보존·fail-closed): URL→`git ls-remote` 도달성 · 경로→존재+checkout. 값 self-describing(https/ssh/file→URL · 그 외→경로)이라 **전환 후 [[pm-update]] 가 자동 적응**(URL→cache clone · 경로→pull).
 
-### worktree add timeout 노브 — 하네스 false-kill 방지
+`set`은 검증 후 `local.conf upstream=`을 타 키 보존·fail-closed로 atomic 재기록한다. URL은
+`git ls-remote` 도달성, 경로는 존재+checkout을 검증한다. https/ssh/file은 URL, 나머지는 경로로
+판별하며 [[pm-update]]가 URL이면 cache clone, 경로면 pull한다.
 
-대형 repo `worktree add`(로컬 bare→full checkout·느린 디스크/VPN/Windows)가 *진행 중인데도* 짧은
-고정 타임아웃에 죽는(false-kill) 걸 막는 3-layer 노브. 기본 **30분**·튜닝 가능:
+## worktree add timeout 노브
 
-- **엔진** `PM_GIT_TIMEOUT`(초·`none`/`0`/`unlimited`=무제한·기본 1800) — worktree add console-visible
-  러너. `export PM_GIT_TIMEOUT=none` 으로 초대형 repo 무제한(진행 콘솔 가시·hang 은 Ctrl-C).
-- **claude 하네스** `BASH_DEFAULT_TIMEOUT_MS`·`BASH_MAX_TIMEOUT_MS`(ms·기본 1800000=30분) —
-  `.claude/settings.json` `env` 블록에 출하 기본. 값 변경 시 세션 재시작(env 는 시작 시 read).
-- **opencode 하네스** `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS`(ms) — opencode 는 config 파일로
-  못 실어(`.env` 자동로드 없음·실측) **shell export** 로: `export OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=1800000`
-  (shell 프로파일/direnv `.envrc`). `EXPERIMENTAL` = 버전 의존이니 회사 버전서 라이브 확인.
+대형 repo의 진행 중 checkout false-kill 방지용 3-layer 노브. 기본 30분.
 
-넘으면 엔진 트립 메시지가 "터미널 직접 실행(`PM_GIT_TIMEOUT=none`)"을 안내한다. 값을 바꾸려면 위 3
-표면(엔진 env·claude settings.json·opencode shell export)을 각각 조정.
+- **엔진** `PM_GIT_TIMEOUT`(초·`none`/`0`/`unlimited`=무제한·기본 1800). console-visible runner이며
+  `export PM_GIT_TIMEOUT=none`은 무제한; hang은 Ctrl-C.
+- **claude 하네스** `BASH_DEFAULT_TIMEOUT_MS`·`BASH_MAX_TIMEOUT_MS`(ms·기본 1800000=30분).
+  `.claude/settings.json` `env` 블록의 출하 기본이며 변경 후 세션을 재시작한다.
+- **opencode 하네스** `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS`(ms). config나 `.env` 자동로드가
+  없으므로 shell export:
+  `export OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=1800000`
+  (shell 프로파일/direnv `.envrc`). `EXPERIMENTAL`은 회사 버전에서 라이브 확인한다.
 
-### opencode stall 워치독 노브 — 무한 hang 방지
+초과 시 엔진은 `터미널 직접 실행(PM_GIT_TIMEOUT=none)`을 안내한다. 변경 시 엔진 env·claude
+settings.json·opencode shell export를 각각 조정한다.
 
-opencode `run` 스타트업 fetch stall(간헐 brownout·자체 회복 없음)을 호출층 첫-이벤트
-워치독이 kill+재시도로 닫는다. 노브(env·초):
-- `PM_OC_FIRST_EVENT_TIMEOUT`(기본 90) — 첫 json 이벤트까지 무소식 허용 시간.
-- `PM_OC_STALL_RETRIES`(기본 2) — 소진 시 fail-loud. 각 재시도는 stderr 1줄 loud.
-적용 표면: relay driver·pm_import `--fill auto`·release 라이브 테스트 (provider/원인 무관).
+## opencode stall 워치독
 
-## 결정
-- **단일 스킬**(trigger/인자 분기·사용자 확정) — `pm-config` 대화형 콘솔과 동형 진입.
-- thin — 비즈니스 로직 0. upstream 전환 백엔드(검증·atomic·디커플)는 엔진(`pm_config upstream`).
+opencode `run` 스타트업 fetch가 첫 이벤트 없이 stall하면 호출층이 kill+재시도한다.
 
-## 참고
-- 설계: backbone facade `pm-config.sh`→`pm_config.py`.
-- [[pm-update]](전환한 upstream 으로 갱신) · [[pm-bootstrap]](worktree add 후 슬롯 바인딩) · [[pm-worktree]](readonly 슬롯 refresh).
+- `PM_OC_FIRST_EVENT_TIMEOUT`(기본 90초): 첫 json 이벤트까지 허용 시간.
+- `PM_OC_STALL_RETRIES`(기본 2): 소진 시 fail-loud, 각 재시도는 stderr 1줄.
+
+relay driver·pm_import `--fill auto`·release 라이브 테스트에 provider/원인 무관하게 적용된다.
+
+backbone: `./pm-config.sh` → `pm_config.py`.

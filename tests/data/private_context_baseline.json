@@ -1,18 +1,18 @@
 {
   "version": 1,
-  "count": 604,
+  "count": 578,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
         "kind": "session_stamp",
-        "hash": "d636c5d3e0224ba07b1fadc15ca5c97111c16cb42d8accbf556dc758dc3efe81",
+        "hash": "9c3ee395e22fbe22ca4cecd6d785fe98c3a4061e56f022d5697f8f71799e7038",
         "count": 1
       }
     ],
     ".claude/skills/pm-dev-delegate/SKILL.md": [
       {
         "kind": "session_stamp",
-        "hash": "c9014125fb202bd77daafe236a583f79ec83a592f6e48aa7f7831e5b7cae06a7",
+        "hash": "4ec29f256d50a263c9c2f4a68a59d0b5e45613b9011f70ecf34f89bd88be6d9b",
         "count": 1
       }
     ],
@@ -500,29 +500,14 @@
     ".project_manager/wiki/log/dashboard.md": [
       {
         "kind": "session_stamp",
-        "hash": "169efb8f1de42b1cce9d4935272d00a02f0682b288053b113adcd727ceb0da04",
+        "hash": "af91b4112b01723456a51955e2b9bab74b917cb78e8680be445ce53a16441f15",
         "count": 2
       }
     ],
     ".project_manager/wiki/pm_role.md": [
       {
         "kind": "session_stamp",
-        "hash": "c369b87af662695f1a36de92aadfdd2b9a635d5d635834b4a4cd52e40900ec1c",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "c9db57645aa0bb92639e9591636aceb78177ebbef0cffa0bf043c98f95fbc996",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "d2cff6c3474e20c034bc62e63555b6d5b04a17cf56d97e522b12bcdc88201e20",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "f6e39254b394c36ab76c98ee23513e85d617cebc309e97d86dd57aaae0d26934",
+        "hash": "e83e478247eb479b6641b0d48116f00cd919f502fb92a8efb305dfe307951af3",
         "count": 1
       }
     ],
@@ -619,14 +604,14 @@
     "templates/claude_code/.claude/agents/code-reviewer.md": [
       {
         "kind": "session_stamp",
-        "hash": "d636c5d3e0224ba07b1fadc15ca5c97111c16cb42d8accbf556dc758dc3efe81",
+        "hash": "9c3ee395e22fbe22ca4cecd6d785fe98c3a4061e56f022d5697f8f71799e7038",
         "count": 1
       }
     ],
     "templates/claude_code/.claude/skills/pm-dev-delegate/SKILL.md": [
       {
         "kind": "session_stamp",
-        "hash": "c9014125fb202bd77daafe236a583f79ec83a592f6e48aa7f7831e5b7cae06a7",
+        "hash": "4ec29f256d50a263c9c2f4a68a59d0b5e45613b9011f70ecf34f89bd88be6d9b",
         "count": 1
       }
     ],
@@ -1146,22 +1131,7 @@
     "templates/claude_code/.project_manager/wiki/pm_role.md": [
       {
         "kind": "session_stamp",
-        "hash": "c369b87af662695f1a36de92aadfdd2b9a635d5d635834b4a4cd52e40900ec1c",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "c9db57645aa0bb92639e9591636aceb78177ebbef0cffa0bf043c98f95fbc996",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "d2cff6c3474e20c034bc62e63555b6d5b04a17cf56d97e522b12bcdc88201e20",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "f6e39254b394c36ab76c98ee23513e85d617cebc309e97d86dd57aaae0d26934",
+        "hash": "e83e478247eb479b6641b0d48116f00cd919f502fb92a8efb305dfe307951af3",
         "count": 1
       }
     ],
@@ -1189,30 +1159,15 @@
     "templates/claude_code/CLAUDE.lite.md": [
       {
         "kind": "circled_marker",
-        "hash": "41945d85809e6276971a277bd17fc56efc971b15f6b136ecf1b5381d812cc319",
+        "hash": "9a2ea2e42e50b58d524202266e8b0a289fcc0ffa09c8306f528f87e93156d862",
         "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "63b6dcdf393509df90213b0b0f29c615f4ad3b201c5cc8e5f53a4155a9179ec6",
-        "count": 1
       }
     ],
     "templates/claude_code/CLAUDE.md": [
       {
         "kind": "circled_marker",
-        "hash": "c975ebda52e8f2558bdea346fcccc1a098e2013f470b25b0318f6a2e07221fdd",
+        "hash": "b6366efb21723605fcd2e25ffe1e19c68e673b22fba93ccf75fdd71e69b609f5",
         "count": 2
-      },
-      {
-        "kind": "decision_label",
-        "hash": "3cdf97d2c0c69fa8d25605e4efef5c3bb5b1efb37bf0b83dd8e6030be7b871eb",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "536789679db4d9024948813dd8ed9cd123bd94f5ee4ff1fab0dba4f1d47f5d7e",
-        "count": 1
       }
     ],
     "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md": [
@@ -1766,22 +1721,7 @@
     "templates/codex/.project_manager/wiki/pm_role.md": [
       {
         "kind": "session_stamp",
-        "hash": "c369b87af662695f1a36de92aadfdd2b9a635d5d635834b4a4cd52e40900ec1c",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "c9db57645aa0bb92639e9591636aceb78177ebbef0cffa0bf043c98f95fbc996",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "d2cff6c3474e20c034bc62e63555b6d5b04a17cf56d97e522b12bcdc88201e20",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "f6e39254b394c36ab76c98ee23513e85d617cebc309e97d86dd57aaae0d26934",
+        "hash": "e83e478247eb479b6641b0d48116f00cd919f502fb92a8efb305dfe307951af3",
         "count": 1
       }
     ],
@@ -1802,18 +1742,8 @@
     "templates/codex/AGENTS.md": [
       {
         "kind": "circled_marker",
-        "hash": "4bf038aa4c27435866b56c40a9e8df37247246a76480754ad00865d2bd072846",
+        "hash": "15947661a40d3f44191b67802770744c2371e8375f2808e62507052c88d2f998",
         "count": 2
-      },
-      {
-        "kind": "decision_label",
-        "hash": "ee882d5fd959050d26c674066e8a8678d8fc2c42d8ced5e6456806b24db61046",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "e0fb067b14da37bf2a3a2f501b62dfb6dff78884f3bc7fbe9059c47d1b1bdf3f",
-        "count": 1
       }
     ],
     "templates/codex/README.md": [
@@ -1851,7 +1781,7 @@
     "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md": [
       {
         "kind": "session_stamp",
-        "hash": "c9014125fb202bd77daafe236a583f79ec83a592f6e48aa7f7831e5b7cae06a7",
+        "hash": "4ec29f256d50a263c9c2f4a68a59d0b5e45613b9011f70ecf34f89bd88be6d9b",
         "count": 1
       }
     ],
@@ -2645,22 +2575,7 @@
     "templates/opencode/.project_manager/wiki/pm_role.md": [
       {
         "kind": "session_stamp",
-        "hash": "c369b87af662695f1a36de92aadfdd2b9a635d5d635834b4a4cd52e40900ec1c",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "c9db57645aa0bb92639e9591636aceb78177ebbef0cffa0bf043c98f95fbc996",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "d2cff6c3474e20c034bc62e63555b6d5b04a17cf56d97e522b12bcdc88201e20",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "f6e39254b394c36ab76c98ee23513e85d617cebc309e97d86dd57aaae0d26934",
+        "hash": "e83e478247eb479b6641b0d48116f00cd919f502fb92a8efb305dfe307951af3",
         "count": 1
       }
     ],
@@ -2688,55 +2603,30 @@
     "templates/opencode/AGENTS.lite.md": [
       {
         "kind": "circled_marker",
-        "hash": "7e9688838862685b83878110279c9544ec87ad7c4f5ac1ffc353fad59ec63b7c",
-        "count": 2
-      },
-      {
-        "kind": "decision_label",
-        "hash": "b5d1b9b14a7070f1734927e0b26d487a00c5ed5a80d8b4a671fd3ff982878f7e",
+        "hash": "5bf795cb1e83220bb9308dba8458fe2638acf162820ca61297ca67b597b70883",
         "count": 2
       },
       {
         "kind": "session_stamp",
-        "hash": "2ad85f27ec1d3f7b004f6276274d3f168f422e30b056960b2b5d88b5570ea71f",
+        "hash": "0f8c91993612e7684ddbaf8c8f0b9956126db5666970c124988a57296311b68e",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "76cfdcb892083b00e77884b57e1e001e4ffeefb782f7a21dd9940a23522b85e4",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "bc60a56a456b21a2e4b37a7ffb9333cb3ecaadaa2a46901f178d7f0306657d9a",
+        "hash": "dfca67d8140a9c692b859333d4602558a99c1d299d652be5aacbf53d690319bd",
         "count": 1
       },
       {
         "kind": "session_stamp",
         "hash": "f94574db2e9deaf3ce112cb3f67326744709457f547716a5a8f9ce13c8a9d292",
         "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "fb3f3b58c680e2201996798c7d93e0e1909a02b1feb4f43f2b8a30e04dd64f50",
-        "count": 1
       }
     ],
     "templates/opencode/AGENTS.md": [
       {
         "kind": "circled_marker",
-        "hash": "4bf038aa4c27435866b56c40a9e8df37247246a76480754ad00865d2bd072846",
+        "hash": "15947661a40d3f44191b67802770744c2371e8375f2808e62507052c88d2f998",
         "count": 2
-      },
-      {
-        "kind": "decision_label",
-        "hash": "ee882d5fd959050d26c674066e8a8678d8fc2c42d8ced5e6456806b24db61046",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "e0fb067b14da37bf2a3a2f501b62dfb6dff78884f3bc7fbe9059c47d1b1bdf3f",
-        "count": 1
       }
     ],
     "templates/opencode/README.md": [
