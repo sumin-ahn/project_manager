@@ -67,6 +67,13 @@ def _stale_source(name: str) -> str:
     return text.replace(current, 'ENGINE_REV = "v0.0.0-stale"', 1)
 
 
+def _marked_skew(message: str = "nested engine rev skew") -> RuntimeError:
+    """fail-soft 소비 지점의 marker 재전파를 독립 검증하는 예외 대역."""
+    err = RuntimeError(message)
+    err._engine_rev_skew = True
+    return err
+
+
 # ── engine_rev.check() 단위 (baked rev 비교기·기전의 축) ─────────────────────
 
 
@@ -296,3 +303,283 @@ def test_pm_bootstrap_load_board_normal_returns_module(tmp_path):
     pmb = _load(tools, "pm_bootstrap")
     board = pmb._load_board()
     assert board is not None and board.ENGINE_REV == _cur_rev()
+
+
+# ── 위임 채널 로더 skew ──────────────────────────────────────────────────
+
+
+def test_pm_delegate_stale_delegate_scope_fails_loud(tmp_path):
+    """신 pm_delegate → stale delegate_scope 부분 동기는 속성 접근 전 명시 skew로 실패한다."""
+    tools = _build_tools(tmp_path, {
+        "pm_delegate.py": None,
+        "delegate_scope.py": _stale_source("delegate_scope"),
+    })
+    delegate = _load(tools, "pm_delegate")
+
+    with pytest.raises(RuntimeError) as exc:
+        delegate._load_delegate_scope()
+
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    msg = str(exc.value)
+    assert "pm_delegate.py" in msg
+    assert "delegate_scope.py" in msg
+    assert "v0.0.0-stale" in msg
+    assert _cur_rev() in msg
+
+
+def test_pm_delegate_delegate_scope_normal_sync_ok(tmp_path):
+    """동기된 pm_delegate → delegate_scope 로드는 기존처럼 정상 모듈을 반환한다."""
+    tools = _build_tools(tmp_path, {
+        "pm_delegate.py": None,
+        "delegate_scope.py": None,
+    })
+    delegate = _load(tools, "pm_delegate")
+
+    scope = delegate._load_delegate_scope()
+    assert scope.ENGINE_REV == delegate.ENGINE_REV == _cur_rev()
+
+
+def test_pm_delegate_stale_console_encoding_fails_loud(tmp_path):
+    """pm_delegate CLI 진입부도 stamped console_encoding 부분 동기를 실행 전에 차단한다."""
+    tools = _build_tools(tmp_path, {
+        "pm_delegate.py": None,
+        "console_encoding.py": _stale_source("console_encoding"),
+    })
+    delegate = _load(tools, "pm_delegate")
+
+    with pytest.raises(RuntimeError) as exc:
+        delegate.main([])
+
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    assert "pm_delegate.py" in str(exc.value)
+    assert "console_encoding.py" in str(exc.value)
+
+
+def test_delegate_scope_stale_repo_coordinates_fails_loud(tmp_path):
+    """신 delegate_scope → stale repo_coordinates는 normalize 호출 전 명시 skew로 실패한다."""
+    tools = _build_tools(tmp_path, {
+        "delegate_scope.py": None,
+        "repo_coordinates.py": _stale_source("repo_coordinates"),
+    })
+    scope = _load(tools, "delegate_scope")
+
+    with pytest.raises(RuntimeError) as exc:
+        scope._load_repo_coordinates(tools)
+
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    msg = str(exc.value)
+    assert "delegate_scope.py" in msg
+    assert "repo_coordinates.py" in msg
+    assert "v0.0.0-stale" in msg
+
+
+def test_delegate_scope_stale_board_fails_loud_before_attribute_access(tmp_path):
+    """신 delegate_scope → stale board는 find_ticket 속성 접근보다 먼저 skew로 실패한다."""
+    tools = _build_tools(tmp_path, {
+        "delegate_scope.py": None,
+        "board.py": 'ENGINE_REV = "v0.0.0-stale"\n',
+    })
+    scope = _load(tools, "delegate_scope")
+
+    with pytest.raises(RuntimeError) as exc:
+        scope.ticket_touches(tools / "board.py", "T-0001", pm_root=tmp_path)
+
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    msg = str(exc.value)
+    assert "delegate_scope.py" in msg
+    assert "board.py" in msg
+    assert "AttributeError" not in msg
+
+
+def test_delegate_scope_unregistered_stale_board_name_fails_loud(tmp_path):
+    """등록 밖 이름도 검증해 typo/rename이 stale board를 cryptic 계약 오류로 강등하지 못한다."""
+    tools = _build_tools(tmp_path, {
+        "delegate_scope.py": None,
+        "board_engine.py": 'ENGINE_REV = "v0.0.0-stale"\n',
+    })
+    scope = _load(tools, "delegate_scope")
+
+    with pytest.raises(RuntimeError) as exc:
+        scope.ticket_touches(tools / "board_engine.py", "T-0001", pm_root=tmp_path)
+
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    assert not isinstance(exc.value, scope.DelegateScopeError)
+    msg = str(exc.value)
+    assert "board_engine.py" in msg
+    assert "AttributeError" not in msg
+
+
+def test_board_pm_delegate_loader_stale_sibling_fails_loud(tmp_path):
+    """board의 fail-soft pm_delegate 로더도 직접 revision skew만은 None으로 삼키지 않는다."""
+    tools = _build_tools(tmp_path, {
+        "board.py": None,
+        "identity_args.py": None,
+        "pm_delegate.py": _stale_source("pm_delegate"),
+    })
+    board = _load(tools, "board")
+
+    with pytest.raises(RuntimeError) as exc:
+        board._load_pm_delegate_module()
+
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    msg = str(exc.value)
+    assert "board.py" in msg
+    assert "pm_delegate.py" in msg
+    assert "v0.0.0-stale" in msg
+
+
+def test_board_pm_delegate_loader_reraises_nested_skew(tmp_path):
+    """pm_delegate exec 중 발생한 marker도 board 로더의 except가 None으로 흡수하지 않는다."""
+    nested = (
+        "err = RuntimeError('pm_delegate nested skew')\n"
+        "err._engine_rev_skew = True\n"
+        "raise err\n"
+    )
+    tools = _build_tools(tmp_path, {
+        "board.py": None,
+        "identity_args.py": None,
+        "pm_delegate.py": nested,
+    })
+    board = _load(tools, "board")
+
+    with pytest.raises(RuntimeError, match="pm_delegate nested skew") as exc:
+        board._load_pm_delegate_module()
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+
+
+def test_board_lint_delegate_reraises_marked_skew(tmp_path, monkeypatch):
+    """lint_delegate 자체의 fail-soft catch도 소비 중 발생한 marked skew를 []로 강등하지 않는다."""
+    tools = _build_tools(tmp_path, {
+        "board.py": None,
+        "identity_args.py": None,
+    })
+    board = _load(tools, "board")
+
+    class SkewingDelegate:
+        @staticmethod
+        def lint_same_model(_conf):
+            raise _marked_skew("lint consumer skew")
+
+    monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: SkewingDelegate)
+    with pytest.raises(RuntimeError, match="lint consumer skew") as exc:
+        board.lint_delegate()
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+
+
+def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch):
+    """stale pm_delegate가 있어도 비소비 read/mutation 경로인 list·claim은 정상 dispatch된다."""
+    tools = _build_tools(tmp_path, {
+        "board.py": None,
+        "identity_args.py": None,
+        "console_encoding.py": None,
+        "pm_delegate.py": _stale_source("pm_delegate"),
+    })
+    board = _load(tools, "board")
+
+    assert board.main(["list"]) == 0
+    claimed = []
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _command: False)
+    monkeypatch.setattr(board, "cmd_claim", lambda args: claimed.append(args.id) or 0)
+
+    assert board.main(["claim", "T-0001"]) == 0
+    assert claimed == ["T-0001"]
+
+
+def test_pm_delegate_begin_scope_audit_reraises_skew(tmp_path):
+    """범위 판정 준비의 fail-soft catch가 stale delegate_scope를 경고+None으로 흡수하지 않는다."""
+    tools = _build_tools(tmp_path, {
+        "pm_delegate.py": None,
+        "delegate_scope.py": _stale_source("delegate_scope"),
+    })
+    delegate = _load(tools, "pm_delegate")
+
+    with pytest.raises(RuntimeError) as exc:
+        delegate.begin_scope_audit(None, tmp_path)
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    assert "delegate_scope.py" in str(exc.value)
+
+
+def test_pm_delegate_report_scope_audit_reraises_skew(tmp_path):
+    """회수 판정의 fail-soft catch도 marked skew를 경고+return으로 흡수하지 않는다."""
+    tools = _build_tools(tmp_path, {"pm_delegate.py": None})
+    delegate = _load(tools, "pm_delegate")
+
+    class SkewingScope:
+        @staticmethod
+        def capture_worktree_state(_workspace):
+            raise _marked_skew("report consumer skew")
+
+    audit = delegate.ScopeAudit(SkewingScope(), (), object(), tmp_path)
+    with pytest.raises(RuntimeError, match="report consumer skew") as exc:
+        delegate.report_scope_audit(audit, "developer")
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+
+
+def test_pm_delegate_verify_does_not_skip_unregistered_filename(tmp_path):
+    """등록집합 밖 filename도 revision 검증을 건너뛰지 않아 typo가 skew를 숨기지 못한다."""
+    tools = _build_tools(tmp_path, {"pm_delegate.py": None})
+    delegate = _load(tools, "pm_delegate")
+
+    class StaleSibling:
+        ENGINE_REV = "v0.0.0-stale"
+
+    with pytest.raises(RuntimeError) as exc:
+        delegate._verify_engine_rev(StaleSibling, "renamed_or_typo.py")
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    assert "renamed_or_typo.py" in str(exc.value)
+
+
+def test_delegate_scope_ticket_touches_reraises_board_nested_identity_skew(tmp_path):
+    """fresh board→stale identity_args 실 경로의 marker를 DelegateScopeError로 소실하지 않는다."""
+    tools = _build_tools(tmp_path, {
+        "delegate_scope.py": None,
+        "board.py": None,
+        "identity_args.py": _stale_source("identity_args"),
+    })
+    scope = _load(tools, "delegate_scope")
+
+    with pytest.raises(RuntimeError) as exc:
+        scope.ticket_touches(tools / "board.py", "T-0001", pm_root=tmp_path)
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    assert not isinstance(exc.value, scope.DelegateScopeError)
+    assert "identity_args.py" in str(exc.value)
+
+
+def test_delegate_scope_repo_coordinates_loader_reraises_nested_skew(tmp_path):
+    """repo_coordinates exec 중 발생한 marker도 DelegateScopeError로 감싸지 않는다."""
+    nested = (
+        "err = RuntimeError('repo coordinate nested skew')\n"
+        "err._engine_rev_skew = True\n"
+        "raise err\n"
+    )
+    tools = _build_tools(tmp_path, {
+        "delegate_scope.py": None,
+        "repo_coordinates.py": nested,
+    })
+    scope = _load(tools, "delegate_scope")
+
+    with pytest.raises(RuntimeError, match="repo coordinate nested skew") as exc:
+        scope._load_repo_coordinates(tools)
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    assert not isinstance(exc.value, scope.DelegateScopeError)
+
+
+def test_delegate_scope_ticket_operation_reraises_nested_skew(tmp_path):
+    """board 조회 호출 중 marker도 두 번째 catch에서 DelegateScopeError로 감싸지 않는다."""
+    nested_board = (
+        f'ENGINE_REV = "{_cur_rev()}"\n'
+        "def find_ticket(_ticket_id):\n"
+        "    err = RuntimeError('ticket operation nested skew')\n"
+        "    err._engine_rev_skew = True\n"
+        "    raise err\n"
+    )
+    tools = _build_tools(tmp_path, {
+        "delegate_scope.py": None,
+        "board.py": nested_board,
+    })
+    scope = _load(tools, "delegate_scope")
+
+    with pytest.raises(RuntimeError, match="ticket operation nested skew") as exc:
+        scope.ticket_touches(tools / "board.py", "T-0001", pm_root=tmp_path)
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    assert not isinstance(exc.value, scope.DelegateScopeError)

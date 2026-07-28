@@ -30,6 +30,7 @@ prose 는 verbatim 배치(요약/구조화 금지)·**git 무조작**(add/commit
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import importlib.util
 import os
@@ -37,6 +38,7 @@ import re
 import shutil
 import subprocess
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable
 
@@ -51,6 +53,10 @@ _NON_PAGE_FILES = frozenset({"README.md", "_template.md"})
 
 # domain lint oversized 임계 — 본문 라인수가 이 값을 넘으면 advisory finding(상수·비차단).
 OVERSIZED_LINES = 200
+
+# capture에서 디렉토리 touch 하나가 표시하는 gap 상한. 전체 gap API는 자르지 않고,
+# CLI 기본 출력만 접는다(`capture --all-gaps`로 전체 표시).
+DIRECTORY_GAP_DISPLAY_LIMIT = 15
 
 # capture-draft scaffold 기본값 — frontmatter status 진실(draft 제외 기준)·type 기본.
 DRAFT_STATUS = "draft"
@@ -75,10 +81,28 @@ GIT_TIMEOUT_SECONDS = 120
 
 # normalized touch checkout ↔ 페이지 소유 checkout 정체성 캐시.
 # domain affected/capture는 touch×page 카테시안에 가까운 반복 매칭을 하므로 checkout별
-# `rev-parse --git-common-dir` 결과(실패 포함)를 한 번만 구하고, 경로쌍 최종 판정도 재사용한다.
-# 프로세스 수명이 곧 CLI 한 번의 배치 수명이라 별도 invalidation은 불필요하다.
+# `rev-parse --git-common-dir` 성공 결과와 경로쌍 성공 판정은 프로세스 안에서 재사용한다.
+# 실패는 현재 공개 조회 배치에서만 재사용한다. 같은 touch를 affected/gap 두 절에서 재판정하는
+# capture는 한 배치로 묶어 모순을 막되, 배치 종료 뒤 다음 명시 조회는 transient 실패를 재시도한다.
+# ContextVar로 라이브러리 동시 소비자의 배치 캐시가 서로 섞이지 않게 한다.
 _REPOSITORY_IDENTITY_CACHE: dict[Path, tuple[Path | None, str | None]] = {}
 _REPOSITORY_MATCH_CACHE: dict[tuple[Path, Path], tuple[bool | None, str | None]] = {}
+_REPOSITORY_FAILURE_CACHE: ContextVar[
+    dict[Path, tuple[Path | None, str | None]] | None
+] = ContextVar("_REPOSITORY_FAILURE_CACHE", default=None)
+
+
+@contextlib.contextmanager
+def _repository_query_batch():
+    """저장소 정체성 실패를 한 공개 조회 호출 동안만 일관되게 보존한다."""
+    if _REPOSITORY_FAILURE_CACHE.get() is not None:
+        yield
+        return
+    token = _REPOSITORY_FAILURE_CACHE.set({})
+    try:
+        yield
+    finally:
+        _REPOSITORY_FAILURE_CACHE.reset(token)
 
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -355,31 +379,36 @@ def _repository_identity(checkout: Path) -> tuple[Path | None, str | None]:
     linked worktree 슬롯들은 checkout 절대경로가 달라도 `--git-common-dir`를 공유한다.
     반대로 별개 저장소는 같은 상대경로 파일을 가져도 common-dir가 다르다. git 실패·빈 출력·
     비-git 디렉토리는 정체성을 추측하지 않고 `(None, reason)`으로 보수적으로 제외한다.
-    성공과 실패를 모두 checkout 실경로별 캐시해 page×touch 반복 subprocess를 막는다.
+    성공은 checkout 실경로별 프로세스 캐시, 실패는 `_repository_query_batch`의 호출 단위
+    캐시에 두어 같은 조회 안의 판정을 고정하면서 다음 명시 조회에서는 재시도한다.
     """
     try:
         resolved = Path(checkout).resolve()
     except (OSError, RuntimeError) as exc:
         return (None, f"checkout 실경로 해소 실패: {exc}")
-    cached = _REPOSITORY_IDENTITY_CACHE.get(resolved)
-    if cached is not None:
-        return cached
+    failure_cache = _REPOSITORY_FAILURE_CACHE.get()
+    if failure_cache is not None and resolved in failure_cache:
+        return failure_cache[resolved]
+    if resolved in _REPOSITORY_IDENTITY_CACHE:
+        return _REPOSITORY_IDENTITY_CACHE[resolved]
+
+    def failure(reason: str) -> tuple[Path | None, str | None]:
+        result = (None, reason)
+        if failure_cache is not None:
+            failure_cache[resolved] = result
+        return result
 
     try:
         rc, out = _real_git_runner(resolved)(["rev-parse", "--git-common-dir"])
     except Exception as exc:  # noqa: BLE001 — 주입 runner 예외도 fail-closed.
-        result = (None, f"git common-dir 호출 예외: {exc}")
-        _REPOSITORY_IDENTITY_CACHE[resolved] = result
-        return result
+        return failure(f"git common-dir 호출 예외: {exc}")
     common_dir_text = out.strip()
     if rc != 0 or not common_dir_text or "\n" in common_dir_text:
         reason = (
             f"git common-dir 해소 실패(rc={rc})"
             if rc != 0 else "git common-dir 출력이 비었거나 잘못됨"
         )
-        result = (None, reason)
-        _REPOSITORY_IDENTITY_CACHE[resolved] = result
-        return result
+        return failure(reason)
 
     try:
         common_dir = Path(common_dir_text)
@@ -387,13 +416,9 @@ def _repository_identity(checkout: Path) -> tuple[Path | None, str | None]:
             common_dir = resolved / common_dir
         common_dir = common_dir.resolve()
     except (OSError, RuntimeError) as exc:
-        result = (None, f"git common-dir 실경로 해소 실패: {exc}")
-        _REPOSITORY_IDENTITY_CACHE[resolved] = result
-        return result
+        return failure(f"git common-dir 실경로 해소 실패: {exc}")
     if not common_dir.is_dir():
-        result = (None, f"git common-dir 디렉토리 부재: {common_dir}")
-        _REPOSITORY_IDENTITY_CACHE[resolved] = result
-        return result
+        return failure(f"git common-dir 디렉토리 부재: {common_dir}")
 
     result = (common_dir, None)
     _REPOSITORY_IDENTITY_CACHE[resolved] = result
@@ -412,9 +437,8 @@ def _same_repository_checkouts(
     except (OSError, RuntimeError) as exc:
         return (None, f"checkout 실경로 해소 실패: {exc}")
     key = (touch_resolved, page_resolved)
-    cached = _REPOSITORY_MATCH_CACHE.get(key)
-    if cached is not None:
-        return cached
+    if key in _REPOSITORY_MATCH_CACHE:
+        return _REPOSITORY_MATCH_CACHE[key]
 
     touch_identity, touch_error = _repository_identity(touch_resolved)
     if touch_identity is None:
@@ -425,7 +449,8 @@ def _same_repository_checkouts(
             result = (None, f"페이지 저장소 정체성 미해소: {page_error}")
         else:
             result = (touch_identity == page_identity, None)
-    _REPOSITORY_MATCH_CACHE[key] = result
+    if result[0] is not None:
+        _REPOSITORY_MATCH_CACHE[key] = result
     return result
 
 
@@ -839,6 +864,7 @@ def load_pages(domain_dir: Path = DOMAIN_DIR, *, strict: bool = False) -> list[d
     return pages
 
 
+@_repository_query_batch()
 def pages_for_path(
         path: str, pages: list[dict], *, warn_owner_mismatch: bool = True) -> list[dict]:
     """주어진 repo-relative 코드 경로를 covers 글롭으로 담는 페이지들을 돌려준다.
@@ -919,30 +945,153 @@ def pages_for_path(
     return matches
 
 
-def uncovered_paths(
+class _CoordinatePath(str):
+    """알 수 없는 normalized path 타입의 재구성 실패 때 좌표를 보존하는 내부 경로."""
+
+    def __new__(
+            cls,
+            value: str,
+            *,
+            owner: object,
+            repo: object,
+            workspace: object,
+    ) -> "_CoordinatePath":
+        obj = super().__new__(cls, value)
+        obj.owner = owner
+        obj.repo = repo
+        obj.workspace = workspace
+        return obj
+
+
+def _touch_with_relative_path(touch: str, relative: str) -> str:
+    """디렉토리 touch의 파일 경로에 normalized repo 좌표 메타데이터를 이어 붙인다."""
+    owner = getattr(touch, "owner", None)
+    repo = getattr(touch, "repo", None)
+    workspace = getattr(touch, "workspace", None)
+    if owner is None and repo is None and workspace is None:
+        return relative
+    try:
+        return type(touch)(
+            relative,
+            owner=owner,
+            repo=repo,
+            workspace=workspace,
+        )
+    except Exception:  # noqa: BLE001 — 알 수 없는 str subclass도 좌표를 잃지 않고 fail-soft.
+        return _CoordinatePath(
+            relative,
+            owner=owner,
+            repo=repo,
+            workspace=workspace,
+        )
+
+
+def _directory_touch_location(touch: str) -> tuple[Path, Path, str] | None:
+    """실재하며 checkout 안에 있는 디렉토리 touch의 (checkout, directory, norm)."""
+    workspace = getattr(touch, "workspace", None)
+    checkout = Path(workspace) if workspace is not None else REPO
+    norm = str(touch).replace(os.sep, "/").replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    norm = norm.rstrip("/")
+    if not norm:
+        return None
+
+    try:
+        checkout = checkout.resolve()
+        directory = (checkout / norm).resolve()
+        directory.relative_to(checkout)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not directory.is_dir():
+        return None
+    return checkout, directory, norm
+
+
+def _files_for_directory_touch(touch: str) -> list[str]:
+    """실재 디렉토리 touch를 그 checkout 아래 파일 좌표들로 전개한다.
+
+    git checkout이면 tracked + untracked(non-ignored)를 사용해 ``__pycache__`` 같은 ignore
+    산출물이 gap에 섞이지 않게 한다. git이 반환한 파일형 엔트리는 dangling/directory symlink와
+    gitlink도 포함해 그대로 신뢰한다. git을 쓸 수 없는 solo 디렉토리만 실제 일반 파일을 찾는
+    파일시스템 순회로 fallback한다. 파일/미해소/checkout 밖 경로는 원 touch 하나를 그대로
+    보존한다. 실재하지만 비었거나 모든 파일이 gitignored인 디렉토리는 빈 목록으로 전개돼
+    gap에서 사라진다.
+    """
+    location = _directory_touch_location(touch)
+    if location is None:
+        return [touch]
+    checkout, directory, norm = location
+
+    relative_files: list[str] = []
+    try:
+        rc, out = _real_git_runner(checkout)([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            f":(literal){norm}",
+        ])
+    except Exception:  # noqa: BLE001 — git 부재/주입 runner 실패는 filesystem fallback.
+        rc, out = 1, ""
+    if rc == 0:
+        for candidate_text in out.split("\0"):
+            if not candidate_text:
+                continue
+            # ls-files가 이미 ignore와 pathspec을 적용한 git 파일형 엔트리의 진실이다.
+            # working-tree is_file() 재검사는 symlink와 mode 160000 gitlink를 거짓 탈락시킨다.
+            relative_files.append(Path(candidate_text).as_posix())
+    else:
+        try:
+            relative_files = [
+                path.relative_to(checkout).as_posix()
+                for path in directory.rglob("*")
+                if path.is_file()
+                and not any(
+                    part in {".git", "__pycache__", ".pytest_cache"}
+                    for part in path.relative_to(directory).parts
+                )
+            ]
+        except OSError:
+            return [touch]
+
+    expanded: list[str] = []
+    reconstruction_failures = 0
+    for relative in sorted(dict.fromkeys(relative_files)):
+        candidate = _touch_with_relative_path(touch, relative)
+        if type(candidate) is _CoordinatePath and type(touch) is not _CoordinatePath:
+            reconstruction_failures += 1
+        expanded.append(candidate)
+    if reconstruction_failures:
+        print(
+            f"domain: directory touch {str(touch)!r}의 {reconstruction_failures}개 "
+            "파일 좌표 재구성 실패 — 내부 좌표 타입으로 파일별 보존",
+            file=sys.stderr,
+        )
+    return expanded
+
+
+@_repository_query_batch()
+def _uncovered_path_groups(
         touches: list[str] | None,
         pages: list[dict] | None = None,
         *,
         warn_owner_mismatch: bool = True,
-) -> list[str]:
-    """touch 경로 중 *어느 페이지 covers 글롭에도 안 잡힌* 것들을 돌려준다.
+) -> list[tuple[str, list[str]]]:
+    """touch별 ``(원 touch, uncovered 파일들)``을 돌려준다.
 
-    capture(채록)의 gap 검출 — touched 코드인데 담당 domain 페이지가 없는 경로 = 후보
-    신규 페이지. 각 touch 에 `pages_for_path`(매칭 로직 재사용·DRY)를 적용해 매칭 0 인 것만
-    남긴다. **발견 순서 보존·dedup 키=(owner, repo, 경로)**라 같은 repo 좌표 중복만 접고,
-    문자열 값이 같은 self/upstream·서로 다른 repo gap은 각각 보존한다. 비-문자열 touch·
-    빈/공백 경로는 방어적으로 건너뛴다(`pages_for_touches` 동형). 빈/None touches → [].
-
-    `pages` 미주입 시 `load_pages()`(실 domain/ 스캔·부재 시 []). domain/ 가 비면 *모든*
-    touch 가 uncovered (담당 페이지 0) — solo·신규 clone 무영향(capture 가 gap 절을 띄움).
+    전체 입력에서 gap 좌표를 dedup하되 원 touch별 그룹을 보존한다. ``cmd_capture``는
+    파일이 여러 개인 디렉토리 전개 그룹만 표시 상한으로 접고, 공개 ``uncovered_paths``
+    API는 그룹들을 다시 평탄화해 기존처럼 전체 목록을 반환한다.
     """
     if not touches:
         return []
     if pages is None:
-        # cmd_*·pages_for_touches 동형 — 호출 시점의 모듈 전역 DOMAIN_DIR 을 읽는다.
         pages = load_pages(DOMAIN_DIR)
     seen: set[tuple[object, object, str]] = set()
-    out: list[str] = []
+    groups: list[tuple[str, list[str]]] = []
     for touch in touches:
         if not isinstance(touch, str):
             continue
@@ -953,20 +1102,55 @@ def uncovered_paths(
         norm = touch if stripped == touch else stripped
         if not norm:
             continue
-        key = (
-            getattr(norm, "owner", None),
-            getattr(norm, "repo", None),
-            str(norm),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        if not pages_for_path(
-                norm, pages, warn_owner_mismatch=warn_owner_mismatch):
-            out.append(norm)
-    return out
+        group: list[str] = []
+        for candidate in _files_for_directory_touch(norm):
+            key = (
+                getattr(candidate, "owner", None),
+                getattr(candidate, "repo", None),
+                str(candidate),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            if not pages_for_path(
+                    candidate, pages, warn_owner_mismatch=warn_owner_mismatch):
+                group.append(candidate)
+        groups.append((norm, group))
+    return groups
 
 
+@_repository_query_batch()
+def uncovered_paths(
+        touches: list[str] | None,
+        pages: list[dict] | None = None,
+        *,
+        warn_owner_mismatch: bool = True,
+) -> list[str]:
+    """touch 경로 중 *어느 페이지 covers 글롭에도 안 잡힌* 파일 전체를 돌려준다.
+
+    capture(채록)의 gap 검출 — touched 코드인데 담당 domain 페이지가 없는 경로 = 후보
+    신규 페이지. 실재 디렉토리 touch는 checkout의 파일 단위로 전개한 뒤 각 파일에
+    `pages_for_path`를 적용해 매칭 0 인 것만 남긴다. 이 전개는 gap 검출 전용이며
+    `pages_for_path`/`pages_for_touches`의 디렉토리 소환 recall은 바꾸지 않는다.
+    **발견 순서 보존·dedup 키=(owner, repo, 경로)**라 같은 repo 좌표 중복만 접고, 문자열
+    값이 같은 self/upstream·서로 다른 repo gap은 각각 보존한다. 비-문자열 touch·빈/공백
+    경로는 방어적으로 건너뛴다(`pages_for_touches` 동형). 빈/None touches → [].
+
+    반환값은 출력 상한과 무관한 **전체 목록**이다. 기본 ``capture`` 출력만 디렉토리 touch별
+    상한을 적용하며 ``capture --all-gaps``는 이 전체 목록과 같은 정보를 표시한다.
+
+    `pages` 미주입 시 `load_pages()`(실 domain/ 스캔·부재 시 []). domain/ 가 비면 *모든*
+    touch 가 uncovered (담당 페이지 0) — solo·신규 clone 무영향(capture 가 gap 절을 띄움).
+    """
+    groups = _uncovered_path_groups(
+        touches,
+        pages,
+        warn_owner_mismatch=warn_owner_mismatch,
+    )
+    return [path for _touch, paths in groups for path in paths]
+
+
+@_repository_query_batch()
 def pages_for_touches(touches: list[str] | None, pages: list[dict] | None = None) -> list[dict]:
     """ticket `touches`(파일/디렉토리 경로 목록)에 영향받는 domain 페이지들을 돌려준다.
 
@@ -1219,6 +1403,7 @@ def _touches_from_tickets(tickets_csv: str) -> list[str]:
     return out
 
 
+@_repository_query_batch()
 def cmd_capture(args: argparse.Namespace) -> int:
     """세션이 건드린 코드의 담당 domain 페이지를 "갱신 검토" 대상으로 띄운다.
 
@@ -1255,9 +1440,40 @@ def cmd_capture(args: argparse.Namespace) -> int:
     affected = pages_for_touches(touches, pages)
     # pages_for_touches가 owner-mismatch advisory를 이미 냈다. gap 계산은 같은 touch를 다시
     # 보므로 여기서는 중복 경고만 끄고 owner 필터/coverage 판정은 그대로 쓴다.
-    gaps = uncovered_paths(touches, pages, warn_owner_mismatch=False)
+    gap_groups = _uncovered_path_groups(
+        touches, pages, warn_owner_mismatch=False)
+    gaps = [
+        path
+        for _touch, group_paths in gap_groups
+        for path in group_paths
+    ]
 
     if not affected and not gaps:
+        judgment_targets: list[str] = []
+        expanded_file_count = 0
+        expanded_directory_touch = False
+        for touch in touches:
+            if not isinstance(touch, str) or not touch.strip():
+                continue
+            norm = touch if touch.strip() == touch else touch.strip()
+            is_directory_touch = _directory_touch_location(norm) is not None
+            expanded = _files_for_directory_touch(norm)
+            judgment_targets.extend(expanded)
+            if is_directory_touch:
+                expanded_directory_touch = True
+                expanded_file_count += len(expanded)
+        if touches and judgment_targets:
+            expansion = (
+                f", 전개된 파일 {expanded_file_count}개"
+                if expanded_directory_touch
+                else ""
+            )
+            print(
+                f"domain: capture 판정 불일치 의심 — touch {len(touches)}개"
+                f"{expansion}, 판정 대상 {len(judgment_targets)}개인데 "
+                "affected·coverage gap 모두 0개"
+            )
+            return 0
         print("(채록할 domain 변화 없음)")
         return 0
 
@@ -1269,8 +1485,21 @@ def cmd_capture(args: argparse.Namespace) -> int:
             print(f"  {marker}{page['title']}  ·  {covers}")
     if gaps:
         print("coverage gap (후보 신규 페이지 — 담당 covers 없음):")
-        for path in gaps:
-            print(f"  {path}")
+        for touch, group_paths in gap_groups:
+            visible = group_paths
+            if (
+                    not getattr(args, "all_gaps", False)
+                    and len(group_paths) > DIRECTORY_GAP_DISPLAY_LIMIT):
+                # 비-디렉토리 touch는 전개 결과가 최대 한 경로라 이 길이 조건에 못 들어온다.
+                visible = group_paths[:DIRECTORY_GAP_DISPLAY_LIMIT]
+            for path in visible:
+                print(f"  {path}")
+            hidden = len(group_paths) - len(visible)
+            if hidden:
+                print(
+                    f"  … 외 {hidden}개 (총 {len(group_paths)}개)"
+                    f" — 디렉토리 {touch}"
+                )
     return 0
 
 
@@ -1542,6 +1771,10 @@ def build_parser() -> argparse.ArgumentParser:
     cap_target.add_argument(
         "--touches", metavar="a,b,c",
         help="콤마분리 경로 목록으로 채록 대상을 띄운다 (--tickets 대안).",
+    )
+    p_capture.add_argument(
+        "--all-gaps", action="store_true",
+        help="디렉토리 touch의 coverage gap도 접지 않고 전체 표시한다.",
     )
     p_capture.set_defaults(fn=cmd_capture)
 

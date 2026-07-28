@@ -52,6 +52,32 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, NamedTuple
 
 
+# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
+# baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
+# 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다.
+# 릴리즈 bump 는 `engine_rev.py --bump vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄
+# 재작성한다(사람 N곳 편집 0).
+ENGINE_REV = "v1.5.0"
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제의 baked ENGINE_REV 를 이 사본과 대조한다(skew만 fail-loud)."""
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True
+        raise err
+
+
+def _is_engine_rev_skew(exc) -> bool:
+    """예외가 rev-스탬프 skew 유래인지(fail-soft 소비 지점의 재-raise 식별)."""
+    return getattr(exc, "_engine_rev_skew", False)
+
+
 # ── REPO 앵커 (external_review 동형·상향 탐색·hermetic 테스트 monkeypatch seam) ────────
 # 하드코딩 parents[2] 대신 `.project_manager` 를 품은 첫 조상을 REPO 로 삼는다(채택자/worktree 등
 # 다른 깊이여도 견고). module-level 상수라 테스트가 monkeypatch 할 수 있다.
@@ -226,12 +252,12 @@ def _load_relay():
 
 
 def _load_delegate_scope():
-    """엔진 delegate_scope 를 importlib 로 직접 로드 — 위임 전·후 worktree 상태 비교 판정을
-    재사용(형제 `.project_manager/tools/`·_load_relay 동형)."""
+    """엔진 delegate_scope 를 직접 로드해 위임 전·후 worktree 상태 비교 판정을 재사용한다."""
     path = Path(__file__).resolve().parent / "delegate_scope.py"
     spec = importlib.util.spec_from_file_location("delegate_scope", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    _verify_engine_rev(module, path.name)
     return module
 
 
@@ -2216,7 +2242,8 @@ def begin_scope_audit(ticket: str | None, cwd: Path) -> ScopeAudit | None:
     캡처/정규화 기준은 `--cwd` 가 아니라 **git toplevel** 이다 — repo 하위 디렉토리를 --cwd 로 주면
     슬롯 루트와 좌표가 어긋나 판정이 통째로 꺼진다. `--ticket` 이 없으면 touches=() 라 허용 경로가
     0이다(delegate_scope 계약 — 변경이 있으면 전부 경고). 판정 **준비** 실패(toplevel 해소·board
-    로드·ticket 부재·git status 실패)는 위임을 막지 않는다 — loud 1줄 후 None(판정 생략)."""
+    로드·ticket 부재·git status 실패)는 위임을 막지 않는다 — loud 1줄 후 None(판정 생략).
+    단, 엔진 사본 skew는 부분 동기를 숨기지 않도록 재-raise 한다."""
     try:
         scope = _load_delegate_scope()
         workspace = scope.resolve_workspace_root(cwd)
@@ -2225,7 +2252,9 @@ def begin_scope_audit(ticket: str | None, cwd: Path) -> ScopeAudit | None:
         # 해시 대상이 있는데 지문을 하나도 못 구했으면 이미 dirty 한 파일의 재수정을 못 잡는다 —
         # 강등된 채로 조용히 통과시키지 않는다(축소된 감지력을 PM 이 알아야 한다).
         degraded = scope.content_signal_missing(before, workspace)
-    except Exception as exc:  # noqa: BLE001 — 판정 준비 실패는 비차단(traceback 대신 진단 1줄).
+    except Exception as exc:  # noqa: BLE001 — 일반 준비 실패만 비차단, 엔진 skew는 fail-loud.
+        if _is_engine_rev_skew(exc):
+            raise
         print(f"경고: 위임 범위 판정 준비 실패({exc}) — 비차단 진행.", file=sys.stderr)
         return None
     if degraded:
@@ -2243,7 +2272,8 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
     반환값/rc 를 바꾸지 않는다 — 격리/복원/수용 판정은 PM 몫이다. 판정 자체가 실패해도
     위임 결과를 바꾸지 않는다(비차단 보험). 쓰기 허용 역할집합은 이 모듈의 WRITE_ROLES 를 주입해
     단일 출처로 쓴다(감지기 기본값과의 드리프트는 테스트가 막는다). raw 박제는 기본 /tmp 라 판정에
-    안 잡히지만, `--output-dir` 를 repo 안으로 주면 그 산출물도 '위임이 만든 변경'으로 잡힌다(의도)."""
+    안 잡히지만, `--output-dir` 를 repo 안으로 주면 그 산출물도 '위임이 만든 변경'으로 잡힌다(의도).
+    일반 판정 실패는 비차단하되 엔진 사본 skew만은 재-raise 한다."""
     if audit is None:
         return
     try:
@@ -2263,7 +2293,9 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
             write_roles=WRITE_ROLES, on_drop=_warn_dropped_touch,
         )
         warning = audit.scope.format_warning(paths)
-    except Exception as exc:  # noqa: BLE001 — 판정 실패도 위임 결과를 바꾸지 않는다.
+    except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 비차단, 엔진 skew는 fail-loud.
+        if _is_engine_rev_skew(exc):
+            raise
         print(f"경고: 위임 범위 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
         return
     if warning:
@@ -2513,6 +2545,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     )
     _console_encoding = importlib.util.module_from_spec(_console_spec)
     _console_spec.loader.exec_module(_console_encoding)
+    _verify_engine_rev(_console_encoding, "console_encoding.py")
     _console_encoding.configure_console_utf8()
     # `lint` 서브커맨드 — flat 위임 옵션(--role/--prompt-file/--cwd required)과 분리한 별도 경로.
     # 위임과 인자 형상이 다르므로 build_arg_parser 앞에서 분기(subparsers 로 위임 required 를 흩지

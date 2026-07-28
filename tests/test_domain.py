@@ -491,8 +491,12 @@ def test_pages_for_touches_dir_touch_matches_trailing_double_star(dm, tmp_path):
     assert _titles(dm.pages_for_touches(["src/analysis"], pages)) == ["a"]
 
 
-def test_pages_for_touches_directory_prefix_matches_exact_file_cover(dm, tmp_path):
+def test_pages_for_touches_directory_prefix_matches_exact_file_cover(
+        dm, tmp_path, monkeypatch):
     """실 board형 디렉토리 touch가 그 아래 exact 파일 cover 페이지를 소환한다."""
+    tools_dir = tmp_path / ".project_manager" / "tools"
+    tools_dir.mkdir(parents=True)
+    (tools_dir / "domain.py").write_text("# covered\n", encoding="utf-8")
     _write_page(
         tmp_path, "domain.md",
         frontmatter=(
@@ -504,6 +508,7 @@ def test_pages_for_touches_directory_prefix_matches_exact_file_cover(dm, tmp_pat
     )
     pages = dm.load_pages(domain_dir=tmp_path)
     touch = ".project_manager/tools"
+    monkeypatch.setattr(dm, "REPO", tmp_path)
     assert _titles(dm.pages_for_touches([touch], pages)) == ["domain-layer"]
     assert dm.uncovered_paths([touch], pages) == []
 
@@ -692,6 +697,120 @@ def test_normalized_touch_non_git_checkout_warns_and_does_not_match(
     assert "저장소 정체성 미해소" in err
     assert "git common-dir 해소 실패" in err
     assert "매칭 제외" in err
+
+
+def test_repository_identity_failure_retries_and_then_matches(
+        dm, tmp_path, monkeypatch, capsys):
+    """일시 git 실패는 두 캐시 어디에도 고착되지 않고 다음 pages_for_path에서 성공한다."""
+    checkout = tmp_path / "checkout"
+    common_dir = tmp_path / "common.git"
+    checkout.mkdir()
+    common_dir.mkdir()
+
+    class OwnedPath(str):
+        def __new__(cls, value):
+            obj = super().__new__(cls, value)
+            obj.owner = "upstream"
+            obj.repo = "repo"
+            obj.workspace = checkout
+            return obj
+
+    page = {
+        "path": Path("engine.md"),
+        "title": "engine",
+        "repo": "upstream",
+        "covers": ["src/shared.py"],
+    }
+    calls = 0
+
+    def transient_factory(_cwd):
+        def runner(argv):
+            nonlocal calls
+            assert argv == ["rev-parse", "--git-common-dir"]
+            calls += 1
+            if calls == 1:
+                return 1, ""
+            return 0, str(common_dir)
+
+        return runner
+
+    monkeypatch.setattr(dm, "_page_owner_repo", lambda _page: (checkout, None))
+    monkeypatch.setattr(dm, "_real_git_runner", transient_factory)
+    dm._REPOSITORY_IDENTITY_CACHE.clear()
+    dm._REPOSITORY_MATCH_CACHE.clear()
+    touch = OwnedPath("src/shared.py")
+
+    assert dm.pages_for_path(touch, [page]) == []
+    assert "저장소 정체성 미해소" in capsys.readouterr().err
+    assert dm._REPOSITORY_IDENTITY_CACHE == {}
+    assert dm._REPOSITORY_MATCH_CACHE == {}
+
+    assert _titles(dm.pages_for_path(touch, [page])) == ["engine"]
+    assert capsys.readouterr().err == ""
+    assert calls == 2
+    assert dm._REPOSITORY_IDENTITY_CACHE == {
+        checkout.resolve(): (common_dir.resolve(), None),
+    }
+    assert dm._REPOSITORY_MATCH_CACHE == {
+        (checkout.resolve(), checkout.resolve()): (True, None),
+    }
+
+
+def test_capture_repository_identity_failure_is_consistent_then_next_query_retries(
+        dm, tmp_path, monkeypatch, capsys):
+    """capture 두 절은 같은 실패를 보고, 종료 뒤 명시 조회는 git 정체성을 재시도한다."""
+    checkout = tmp_path / "checkout"
+    common_dir = tmp_path / "common.git"
+    checkout.mkdir()
+    common_dir.mkdir()
+
+    class OwnedPath(str):
+        def __new__(cls, value):
+            obj = super().__new__(cls, value)
+            obj.owner = "upstream"
+            obj.repo = "repo"
+            obj.workspace = checkout
+            return obj
+
+    touch = OwnedPath("src/shared.py")
+    page = {
+        "path": Path("engine.md"),
+        "title": "engine",
+        "repo": "upstream",
+        "covers": ["src/shared.py"],
+    }
+    calls = 0
+
+    def transient_factory(_cwd):
+        def runner(argv):
+            nonlocal calls
+            assert argv == ["rev-parse", "--git-common-dir"]
+            calls += 1
+            if calls == 1:
+                return 1, ""
+            return 0, str(common_dir)
+
+        return runner
+
+    monkeypatch.setattr(dm, "_touches_from_tickets", lambda _tids: [touch])
+    monkeypatch.setattr(dm, "_normalize_ticket_touches", lambda touches: touches)
+    monkeypatch.setattr(dm, "load_pages", lambda _domain_dir=None: [page])
+    monkeypatch.setattr(dm, "_page_owner_repo", lambda _page: (checkout, None))
+    monkeypatch.setattr(dm, "_real_git_runner", transient_factory)
+    dm._REPOSITORY_IDENTITY_CACHE.clear()
+    dm._REPOSITORY_MATCH_CACHE.clear()
+
+    assert dm.main(["capture", "--tickets", "transient-failure"]) == 0
+    captured = capsys.readouterr()
+    assert "coverage gap" in captured.out
+    assert "src/shared.py" in captured.out
+    assert "(채록할 domain 변화 없음)" not in captured.out
+    assert "저장소 정체성 미해소" in captured.err
+    assert calls == 1
+
+    assert _titles(dm.pages_for_touches([touch], [page])) == ["engine"]
+    assert capsys.readouterr().err == ""
+    assert calls == 2
 
 
 def test_pages_for_touches_loads_pages_when_not_injected(dm, tmp_path, monkeypatch):
@@ -1625,6 +1744,217 @@ def test_uncovered_paths_loads_pages_when_not_injected(dm, tmp_path, monkeypatch
     assert dm.uncovered_paths(["src/x/y.py", "other/z.py"]) == ["other/z.py"]
 
 
+def test_uncovered_paths_expands_directory_without_changing_recall(
+        dm, tmp_path, monkeypatch):
+    """디렉토리는 gap에서만 파일별 전개되고 affected 소환은 기존 prefix recall을 유지한다."""
+    src = tmp_path / "src"
+    (src / "nested").mkdir(parents=True)
+    (src / "covered.py").write_text("# covered\n", encoding="utf-8")
+    (src / "nested" / "new.py").write_text("# gap\n", encoding="utf-8")
+    pages = [{
+        "path": Path("owner.md"),
+        "title": "owner",
+        "covers": ["src/covered.py"],
+    }]
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+
+    assert _titles(dm.pages_for_path("src", pages)) == ["owner"]
+    assert _titles(dm.pages_for_touches(["src"], pages)) == ["owner"]
+    assert dm.uncovered_paths(["src"], pages) == ["src/nested/new.py"]
+
+
+def test_directory_touch_git_path_collects_tracked_and_nonignored_untracked(
+        dm, tmp_path, monkeypatch):
+    """실 git 경로는 tracked+untracked를 NUL 분해하고 gitignored 산출물은 제외한다."""
+    repo = _init_git_repo(tmp_path / "repo")
+    src = repo / "src"
+    src.mkdir()
+    (repo / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+    (src / "tracked.py").write_text("# tracked\n", encoding="utf-8")
+    (src / "untracked\npart.py").write_text("# untracked\n", encoding="utf-8")
+    (src / "ignored.tmp").write_text("ignored\n", encoding="utf-8")
+    _git("add", "src/tracked.py", cwd=repo)
+    real_factory = dm._real_git_runner
+    calls = []
+
+    def recording_factory(cwd):
+        runner = real_factory(cwd)
+
+        def runner_with_record(argv):
+            calls.append((Path(cwd), argv))
+            return runner(argv)
+
+        return runner_with_record
+
+    monkeypatch.setattr(dm, "REPO", repo)
+    monkeypatch.setattr(dm, "_real_git_runner", recording_factory)
+
+    assert dm._files_for_directory_touch("src") == [
+        "src/tracked.py",
+        "src/untracked\npart.py",
+    ]
+    assert calls == [(
+        repo.resolve(),
+        [
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            ":(literal)src",
+        ],
+    )]
+
+
+def test_directory_touch_git_special_entries_remain_coverage_gaps(
+        dm, tmp_path, monkeypatch):
+    """git의 dangling symlink와 gitlink만 있는 디렉토리도 빈 gap으로 사라지지 않는다."""
+    repo = _init_git_repo(tmp_path / "repo")
+    entries = repo / "entries"
+    entries.mkdir()
+    (entries / "dangling").symlink_to("missing-target")
+    (repo / "target-directory").mkdir()
+    (entries / "directory-link").symlink_to(
+        "../target-directory", target_is_directory=True)
+
+    gitlink = _init_git_repo(entries / "submodule")
+    _git("config", "user.email", "domain-test@example.invalid", cwd=gitlink)
+    _git("config", "user.name", "Domain Test", cwd=gitlink)
+    (gitlink / "tracked.txt").write_text("gitlink\n", encoding="utf-8")
+    _git("add", "tracked.txt", cwd=gitlink)
+    _git("commit", "-q", "-m", "gitlink seed", cwd=gitlink)
+    _git(
+        "add",
+        "entries/dangling",
+        "entries/directory-link",
+        "entries/submodule",
+        cwd=repo,
+    )
+    assert _git("ls-files", "--stage", "entries/dangling", cwd=repo).stdout.startswith(
+        "120000 "
+    )
+    assert _git(
+        "ls-files", "--stage", "entries/directory-link", cwd=repo
+    ).stdout.startswith("120000 ")
+    assert _git("ls-files", "--stage", "entries/submodule", cwd=repo).stdout.startswith(
+        "160000 "
+    )
+    monkeypatch.setattr(dm, "REPO", repo)
+
+    assert dm.uncovered_paths(["entries"], []) == [
+        "entries/dangling",
+        "entries/directory-link",
+        "entries/submodule",
+    ]
+
+
+def test_directory_touch_git_pathspec_treats_glob_magic_as_literal(
+        dm, tmp_path, monkeypatch):
+    """글롭 문자가 든 디렉토리 touch는 다른 pathspec 매치가 아닌 리터럴 subtree만 전개한다."""
+    repo = _init_git_repo(tmp_path / "repo")
+    literal_dir = repo / "pkg*"
+    decoy_dir = repo / "pkga"
+    literal_dir.mkdir()
+    decoy_dir.mkdir()
+    (literal_dir / "literal.py").write_text("# literal\n", encoding="utf-8")
+    (decoy_dir / "decoy.py").write_text("# glob decoy\n", encoding="utf-8")
+    _git("add", "pkg*/literal.py", "pkga/decoy.py", cwd=repo)
+    monkeypatch.setattr(dm, "REPO", repo)
+
+    assert dm._files_for_directory_touch("pkg*") == [
+        "pkg*/literal.py",
+    ]
+
+
+def test_uncovered_directory_files_preserve_normalized_repo_metadata(
+        dm, tmp_path, monkeypatch):
+    """파일 전개 뒤에도 owner/repo/workspace가 남아 타 채널 page가 gap을 숨기지 않는다."""
+    workspace = tmp_path / "work" / "repo_1"
+    src = workspace / "src"
+    src.mkdir(parents=True)
+    (src / "covered.py").write_text("# covered\n", encoding="utf-8")
+    (src / "gap.py").write_text("# gap\n", encoding="utf-8")
+
+    class OwnedPath(str):
+        def __new__(
+                cls, value, *, owner="upstream", repo="repo", workspace=workspace):
+            obj = super().__new__(cls, value)
+            obj.owner = owner
+            obj.repo = repo
+            obj.workspace = Path(workspace)
+            return obj
+
+    pages = [
+        {
+            "path": Path("upstream.md"),
+            "title": "upstream",
+            "repo": "upstream",
+            "covers": ["src/covered.py"],
+        },
+        {
+            "path": Path("self.md"),
+            "title": "self",
+            "repo": "self",
+            "covers": ["src/gap.py"],
+        },
+    ]
+    monkeypatch.setattr(dm, "_page_owner_repo", lambda _page: (workspace, None))
+    monkeypatch.setattr(
+        dm, "_same_repository_checkouts", lambda _left, _right: (True, None))
+
+    gaps = dm.uncovered_paths(
+        [OwnedPath("src")], pages, warn_owner_mismatch=False)
+
+    assert len(gaps) == 1
+    assert str(gaps[0]) == "src/gap.py"
+    assert (gaps[0].owner, gaps[0].repo, gaps[0].workspace) == (
+        "upstream", "repo", workspace,
+    )
+
+
+def test_uncovered_directory_reconstruction_failure_preserves_each_file_coordinate(
+        dm, tmp_path, monkeypatch, capsys):
+    """좌표 재구성 실패도 covered 형제와 무관하게 나머지 파일을 개별 gap으로 보존한다."""
+    workspace = tmp_path / "work" / "repo_1"
+    src = workspace / "src"
+    src.mkdir(parents=True)
+    (src / "covered.py").write_text("# covered\n", encoding="utf-8")
+    (src / "gap_a.py").write_text("# gap a\n", encoding="utf-8")
+    (src / "gap_b.py").write_text("# gap b\n", encoding="utf-8")
+
+    class LegacyOwnedPath(str):
+        owner = "upstream"
+        repo = "repo"
+
+    LegacyOwnedPath.workspace = workspace
+    touch = LegacyOwnedPath("src")
+    pages = [{
+        "path": Path("upstream.md"),
+        "title": "upstream",
+        "repo": "upstream",
+        "covers": ["src/covered.py"],
+    }]
+    monkeypatch.setattr(
+        dm, "_real_git_runner", lambda _cwd: lambda _argv: (1, "not git"))
+    monkeypatch.setattr(dm, "_page_owner_repo", lambda _page: (workspace, None))
+    monkeypatch.setattr(
+        dm, "_same_repository_checkouts", lambda _left, _right: (True, None))
+
+    gaps = dm.uncovered_paths([touch], pages, warn_owner_mismatch=False)
+
+    assert [str(gap) for gap in gaps] == ["src/gap_a.py", "src/gap_b.py"]
+    assert all(type(gap) is dm._CoordinatePath for gap in gaps)
+    assert {
+        (gap.owner, gap.repo, gap.workspace)
+        for gap in gaps
+    } == {("upstream", "repo", workspace)}
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert "3개 파일 좌표 재구성 실패" in err
+    assert "파일별 보존" in err
+
+
 # ── capture CLI (채록 surface·영향 페이지+⚠+coverage gap·read-only exit0·T-0084) ─
 
 
@@ -1647,6 +1977,107 @@ def test_capture_touches_renders_affected_and_gap(dm, tmp_path, monkeypatch, cap
     assert "src/core/new.py" in out
     # covered 경로는 gap 으로 나오지 않는다.
     assert "src/analysis/x.py" not in out.split("coverage gap")[1]
+
+
+def test_capture_directory_touch_renders_each_uncovered_file(
+        dm, tmp_path, monkeypatch, capsys):
+    """capture의 기존 gap 절이 디렉토리 자체 대신 담당 없는 하위 파일을 개별 표기한다."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "covered.py").write_text("# covered\n", encoding="utf-8")
+    (src / "new.py").write_text("# uncovered\n", encoding="utf-8")
+    domain_dir = tmp_path / "domain"
+    _write_page(
+        domain_dir,
+        "a.md",
+        frontmatter="title: 담당페이지\ntype: concept\ncovers:\n  - src/covered.py",
+    )
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+
+    assert dm.main(["capture", "--touches", "src"]) == 0
+    out = capsys.readouterr().out
+    assert "영향 페이지" in out
+    assert "담당페이지" in out
+    gap_section = out.split("coverage gap", 1)[1]
+    assert "src/new.py" in gap_section
+    assert "src/covered.py" not in gap_section
+    assert "\n  - src\n" not in gap_section
+
+
+def test_capture_directory_touch_folds_gaps_at_limit_with_exact_summary(
+        dm, tmp_path, monkeypatch, capsys):
+    """디렉토리 gap은 상위 K개 뒤에 정확한 숨김/전체 개수와 원 디렉토리를 표시한다."""
+    src = tmp_path / "src"
+    src.mkdir()
+    total = dm.DIRECTORY_GAP_DISPLAY_LIMIT + 3
+    for index in range(total):
+        (src / f"gap_{index:02}.py").write_text("# gap\n", encoding="utf-8")
+    domain_dir = tmp_path / "domain"
+    domain_dir.mkdir()
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+
+    assert dm.main(["capture", "--touches", "src"]) == 0
+    gap_lines = capsys.readouterr().out.splitlines()[1:]
+
+    assert len(gap_lines) == dm.DIRECTORY_GAP_DISPLAY_LIMIT + 1
+    assert gap_lines[:dm.DIRECTORY_GAP_DISPLAY_LIMIT] == [
+        f"  src/gap_{index:02}.py"
+        for index in range(dm.DIRECTORY_GAP_DISPLAY_LIMIT)
+    ]
+    assert gap_lines[-1] == f"  … 외 3개 (총 {total}개) — 디렉토리 src"
+
+
+def test_capture_all_gaps_shows_complete_directory_expansion(
+        dm, tmp_path, monkeypatch, capsys):
+    """--all-gaps는 디렉토리 표시 상한을 해제해 전체 gap을 복원한다."""
+    src = tmp_path / "src"
+    src.mkdir()
+    total = dm.DIRECTORY_GAP_DISPLAY_LIMIT + 2
+    for index in range(total):
+        (src / f"gap_{index:02}.py").write_text("# gap\n", encoding="utf-8")
+    domain_dir = tmp_path / "domain"
+    domain_dir.mkdir()
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+
+    assert dm.main(["capture", "--touches", "src", "--all-gaps"]) == 0
+    gap_lines = capsys.readouterr().out.splitlines()[1:]
+
+    assert gap_lines == [
+        f"  src/gap_{index:02}.py"
+        for index in range(total)
+    ]
+    assert not any("… 외" in line for line in gap_lines)
+
+
+def test_capture_folds_only_large_directory_group_and_keeps_file_touches(
+        dm, tmp_path, monkeypatch, capsys):
+    """혼합 입력에서 큰 디렉토리 그룹만 접고 독립 파일 touch는 전량 표시한다."""
+    bulk = tmp_path / "bulk"
+    bulk.mkdir()
+    total = dm.DIRECTORY_GAP_DISPLAY_LIMIT + 3
+    for index in range(total):
+        (bulk / f"gap_{index:02}.py").write_text("# gap\n", encoding="utf-8")
+    domain_dir = tmp_path / "domain"
+    domain_dir.mkdir()
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+    file_touches = ["loose/one.py", "loose/two.py", "loose/three.py"]
+    touches = ["bulk", *file_touches]
+
+    assert dm.main(["capture", "--touches", ",".join(touches)]) == 0
+    gap_lines = capsys.readouterr().out.splitlines()[1:]
+
+    assert gap_lines == [
+        *[
+            f"  bulk/gap_{index:02}.py"
+            for index in range(dm.DIRECTORY_GAP_DISPLAY_LIMIT)
+        ],
+        f"  … 외 3개 (총 {total}개) — 디렉토리 bulk",
+        *[f"  {touch}" for touch in file_touches],
+    ]
 
 
 def test_capture_stale_page_marked(dm, tmp_path, monkeypatch, capsys):
@@ -1675,7 +2106,69 @@ def test_capture_no_change_prints_none_message(dm, tmp_path, monkeypatch, capsys
     # 빈 토큰만 → touches 비어 → 영향 0·gap 0.
     rc = dm.main(["capture", "--touches", "  ,  "])
     assert rc == 0
-    assert "(채록할 domain 변화 없음)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert out == "(채록할 domain 변화 없음)\n"
+    assert "판정 불일치 의심" not in out
+
+
+def test_capture_guard_exposes_directory_leading_wildcard_inconsistency(
+        dm, tmp_path, monkeypatch, capsys):
+    """파일 gap 판정만 선두 wildcard cover를 찾으면 silent no-change 대신 모순을 띄운다."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "README.md").write_text("# readme\n", encoding="utf-8")
+    domain_dir = tmp_path / "domain"
+    _write_page(
+        domain_dir,
+        "readme.md",
+        frontmatter="title: README 담당\ntype: concept\ncovers:\n  - '**/README.md'",
+    )
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+
+    assert dm.main(["capture", "--touches", "src"]) == 0
+    out = capsys.readouterr().out
+
+    assert "capture 판정 불일치 의심" in out
+    assert "touch 1개" in out
+    assert "전개된 파일 1개" in out
+    assert "(채록할 domain 변화 없음)" not in out
+
+
+def test_capture_empty_directory_keeps_no_change_message(
+        dm, tmp_path, monkeypatch, capsys):
+    """빈 디렉토리 touch는 판정 대상 파일 0개라 정상 no-change다."""
+    (tmp_path / "empty").mkdir()
+    domain_dir = tmp_path / "domain"
+    domain_dir.mkdir()
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+
+    assert dm.main(["capture", "--touches", "empty"]) == 0
+    out = capsys.readouterr().out
+
+    assert out == "(채록할 domain 변화 없음)\n"
+    assert "판정 불일치 의심" not in out
+
+
+def test_capture_all_ignored_directory_keeps_no_change_message(
+        dm, tmp_path, monkeypatch, capsys):
+    """전부 ignored인 디렉토리 touch도 전개 결과 0개라 정상 no-change다."""
+    repo = _init_git_repo(tmp_path / "repo")
+    (repo / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    ignored = repo / "ignored"
+    ignored.mkdir()
+    (ignored / "only.tmp").write_text("ignored\n", encoding="utf-8")
+    domain_dir = tmp_path / "domain"
+    domain_dir.mkdir()
+    monkeypatch.setattr(dm, "REPO", repo)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+
+    assert dm.main(["capture", "--touches", "ignored"]) == 0
+    out = capsys.readouterr().out
+
+    assert out == "(채록할 domain 변화 없음)\n"
+    assert "판정 불일치 의심" not in out
 
 
 def test_capture_gap_only_omits_affected_section(dm, tmp_path, monkeypatch, capsys):

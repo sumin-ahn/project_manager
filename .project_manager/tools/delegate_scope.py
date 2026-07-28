@@ -33,6 +33,37 @@ HASH_BATCH_SIZE = 100
 # 존재/상태코드로 이미 표면화되고, 그걸 읽는 비용이 판정의 최악 I/O 를 지배한다.
 HASH_MAX_FILE_BYTES = 5 * 1024 * 1024
 
+# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
+# baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
+# 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다.
+# 릴리즈 bump 는 `engine_rev.py --bump vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄
+# 재작성한다(사람 N곳 편집 0).
+ENGINE_REV = "v1.5.0"
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제의 baked ENGINE_REV 를 이 사본과 대조한다(skew만 fail-loud)."""
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True
+        raise err
+
+
+def _is_engine_rev_skew(exc) -> bool:
+    """예외가 rev-스탬프 skew 유래인지(fail-soft 로더의 재-raise 식별)."""
+    return getattr(exc, "_engine_rev_skew", False)
+
+
+def _ticket_touches_error(ticket_id: str, exc: Exception) -> DelegateScopeError:
+    """ticket 조회의 로드/호출 실패를 같은 계약 오류 형상으로 감싼다."""
+    return DelegateScopeError(f"ticket touches 읽기 실패({ticket_id}): {exc}")
+
+
 # ticket id 에 허용하지 않는 문자 — glob 메타/경로 구분자(board 조회가 glob 이라 다른 ticket 을
 # 오선택할 수 있다·정확 일치만 받는다).
 _TICKET_ID_UNSAFE = re.compile(r"[*?\[\]/\\]")
@@ -346,7 +377,10 @@ def _load_repo_coordinates(tools_dir: Path):
     try:
         spec.loader.exec_module(module)
     except Exception as exc:  # noqa: BLE001 — 좌표 판정 불능은 조용히 허용하면 안 된다.
+        if _is_engine_rev_skew(exc):
+            raise
         raise DelegateScopeError(f"repo 좌표 normalizer 로드 실패: {path}: {exc}") from exc
+    _verify_engine_rev(module, path.name)
     return module
 
 
@@ -377,12 +411,20 @@ def ticket_touches(
     board = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(board)
+    except Exception as exc:  # noqa: BLE001 — 중첩 skew는 보존, 그 밖의 로드 실패는 계약 오류로 변환.
+        if _is_engine_rev_skew(exc):
+            raise
+        raise _ticket_touches_error(ticket_id, exc) from exc
+    _verify_engine_rev(board, path.name)
+    try:
         if hasattr(board, "REPO"):
             board.REPO = Path(pm_root)
         _status, ticket_path = board.find_ticket(ticket_id)
         frontmatter, _body = board.load_ticket(ticket_path)
     except Exception as exc:  # noqa: BLE001 — 잘못된 ticket 입력을 허용 0으로 오인하지 않는다.
-        raise DelegateScopeError(f"ticket touches 읽기 실패({ticket_id}): {exc}") from exc
+        if _is_engine_rev_skew(exc):
+            raise
+        raise _ticket_touches_error(ticket_id, exc) from exc
 
     found_id = str(frontmatter.get("id") or "").strip()
     if found_id != ticket_id:

@@ -56,6 +56,8 @@ STAMPED_MODULES = (
     "pm_adr.py",
     "repo_coordinates.py",
     "console_encoding.py",
+    "pm_delegate.py",
+    "delegate_scope.py",
 )
 
 _REV_RE = re.compile(r"^v\d+\.\d+\.\d+$")

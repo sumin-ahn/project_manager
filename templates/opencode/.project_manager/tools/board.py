@@ -9252,7 +9252,8 @@ def _load_pm_delegate_module():
 
     **순환 회피 deep-import seam** — pm_delegate 의 `lint_same_model` 은 순수 함수(board 를
     import 하지 않는다)라 board 가 이 헬퍼로 지연 로드해 호출한다(`_load_pm_update_module` 동형·
-    verify 없음). pm_delegate.py 부재(구버전 clone)·로드 실패 → None (호출부 graceful skip)."""
+    stamped sibling 검증 포함). pm_delegate.py 부재(구버전 clone)·일반 로드 실패 → None (호출부
+    graceful skip), 사본 skew 만은 재-raise 해 부분 동기를 숨기지 않는다."""
     if not PM_DELEGATE_PY.exists():
         return None
     try:
@@ -9261,9 +9262,12 @@ def _load_pm_delegate_module():
             return None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
-    except Exception:  # noqa: BLE001 — 로드 실패는 None 으로 흡수(비차단·advisory).
+    except Exception as exc:  # noqa: BLE001 — 일반 로드 실패만 None, 중첩 skew는 fail-loud.
+        if _is_engine_rev_skew(exc):
+            raise
         return None
+    _verify_engine_rev(mod, "pm_delegate.py")
+    return mod
 
 
 def lint_delegate() -> list[tuple[str, str, str]]:
@@ -9272,14 +9276,17 @@ def lint_delegate() -> list[tuple[str, str, str]]:
     pm_delegate.lint_same_model(conf) 의 `(label, detail)` 를 board 관례 `(label, kind, detail)` 로
     감싼다. kind=`delegate-same-model`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드에 *절대*
     기여하지 않는다·visibility>enforcement — 사용자가 동일-모델 조합을 선택할 자유 유지). pm_delegate.py
-    부재·로드 실패·설정 미매핑 → [] (delegate 미사용 프로젝트·솔로 무영향). 어떤 예외도 [] 로 흡수해
-    board lint 자체는 항상 정상 진행한다. board 의 local.conf(local_config)로 판정한다."""
-    mod = _load_pm_delegate_module()
-    if mod is None:
-        return []
+    부재·일반 로드 실패·설정 미매핑 → [] (delegate 미사용 프로젝트·솔로 무영향). 사본 skew 는
+    로더와 이 소비 지점 양쪽에서 재-raise 하고, 그 밖의 예외만 [] 로 흡수한다. board 의
+    local.conf(local_config)로 판정한다."""
     try:
+        mod = _load_pm_delegate_module()
+        if mod is None:
+            return []
         findings = mod.lint_same_model(local_config())
-    except Exception:  # noqa: BLE001 — 어떤 실패도 빈 결과로 흡수(board lint 정상 진행).
+    except Exception as exc:  # noqa: BLE001 — 일반 실패만 빈 결과, skew는 fail-loud.
+        if _is_engine_rev_skew(exc):
+            raise
         return []
     return [(label, "delegate-same-model", detail) for label, detail in findings]
 

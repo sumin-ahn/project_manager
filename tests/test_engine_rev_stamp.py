@@ -102,6 +102,34 @@ def test_bump_recovers_after_engine_rev_was_rewritten_first(tmp_path):
     }
 
 
+def test_bump_round_trip_rewrites_delegate_modules(tmp_path):
+    """--bump 신 rev→원 rev 왕복이 위임 모듈 2개의 baked 리터럴도 함께 재작성한다."""
+    current = _load_engine_rev()
+    major, minor, patch = map(int, current.ENGINE_REV.removeprefix("v").split("."))
+    next_rev = f"v{major}.{minor}.{patch + 1}"
+    delegate_modules = ("pm_delegate.py", "delegate_scope.py")
+    assert set(delegate_modules) <= set(current.STAMPED_MODULES)
+
+    tools = tmp_path / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    for filename in ("engine_rev.py", *current.STAMPED_MODULES):
+        shutil.copy2(TOOLS / filename, tools / filename)
+
+    isolated = _load_engine_rev(tools)
+    assert isolated.main(["--bump", next_rev]) == 0
+    assert {
+        filename: isolated.read_literal(tools / filename)
+        for filename in delegate_modules
+    } == dict.fromkeys(delegate_modules, next_rev)
+
+    bumped = _load_engine_rev(tools)
+    assert bumped.main(["--bump", current.ENGINE_REV]) == 0
+    assert {
+        filename: bumped.read_literal(tools / filename)
+        for filename in delegate_modules
+    } == dict.fromkeys(delegate_modules, current.ENGINE_REV)
+
+
 def test_bump_rejects_bad_format():
     """bump 은 vX.Y.Z 형식만 수용 (오형식 → SystemExit·fail-loud)."""
     er = _load_engine_rev()
