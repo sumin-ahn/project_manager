@@ -940,12 +940,12 @@ def test_finish_prints_pathspec_commit_guidance_at_runtime(tf, tmp_path, monkeyp
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
     out = capsys.readouterr().out
-    assert "③ git commit" in out, "커밋 안내가 런타임에 아예 안 나온다"
-    guidance = next(line for line in out.splitlines() if "③ git commit" in line)
+    assert "git commit — " in out, "커밋 안내가 런타임에 아예 안 나온다"
+    guidance = next(line for line in out.splitlines() if "git commit — " in line)
     assert "-- " in guidance, f"bare commit 안내(경로 미명시): {guidance!r}"
     assert "경로를 명시" in guidance
     assert guidance == (
-        '  ③ git commit — **경로를 명시**하라: '
+        '  git commit — **경로를 명시**하라: '
         '`git commit -m "<메시지>" -- <위 [4/5] 가 stage 한 경로들>` '
         '(메시지는 PM 이 작성 · Co-Authored-By: Claude 트레일러 포함)'
     )

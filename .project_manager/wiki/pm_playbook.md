@@ -11,7 +11,7 @@ type: reference
 > **활동별 상세 레퍼런스**. 부트스트랩 시 통째로 읽지 않는다 — 해당 활동(위임 / wave 운영 /
 > ticket 발행·분할 / 핸드오프)을 실제로 할 때 그 절만 Read 한다.
 >
-> ⚙️ **엔진** (`pm_update` 자동 갱신). `python3` 표기는 관례(Windows 는 `py` 런처·T-0219) · `{{DATE}}` 는 런타임 값으로 이해(리터럴 유지).
+> ⚙️ **엔진** (`pm_update` 자동 갱신). `python3` 표기는 관례(Windows 는 `py` 런처) · `{{DATE}}` 는 런타임 값으로 이해(리터럴 유지).
 
 ## 메타 정책 (코드/spec/ADR 어디에도 안 적힌 운영 약속)
 
@@ -38,7 +38,7 @@ type: reference
 
 ### 참조 규칙 (파일명-무관 — 모든 LLM PM)
 - ADR·ticket·idea 참조는 **항상 ID-wikilink**: `[[ADR-NNNN]]` · `[[T-NNNN]]`(`[[T-PFX-NNN]]`) · `[[idea-NNNN]]`.
-- **생파일명·슬러그·markdown 경로 링크 금지** — ✅ `[[ADR-0006]]` / ❌ `[adr](decisions/0006-opencode-adapter.md)` ·
+- **생파일명·슬러그·markdown 경로 링크 금지** — ❌ `[adr](decisions/0006-opencode-adapter.md)` ·
   ❌ `[[0006-opencode-adapter]]`. 엔진이 **번호로 resolve**(슬러그 무관)하므로 슬러그 정확성은
   애초에 불필요하고, lint 가 검증하는 것도 ID-wikilink 다. (LLM 이 파일명을 환각해 부정확하게 적던
   문제의 구조적 방어 — 슬러그가 틀려도 ID 는 항상 맞는다.)
@@ -49,10 +49,10 @@ type: reference
   코드 영역·`<…>` 를 자연히 건너뛰어 *예시 링크가 게이트를 막지 않는다*.
 
 ### status.md 정비 (부트스트랩 컨텍스트 경계)
-- status.md 는 **judgment-only**(ADR-0023): **활성**(🟡/⬜/🔒) 모듈 *판정*(상태·비고) + 외부 의존성만.
+- status.md 는 **judgment-only**: **활성**(🟡/⬜/🔒) 모듈 *판정*(상태·비고) + 외부 의존성만.
   **테스트 수는 박제하지 않는다** — `board.py regression`(pytest) 실측이 단일 진실·history 는 log/current.md.
 - ✅ 완성·안정 모듈 행은 `status_done.md` 로 옮긴다 (부트스트랩 컨텍스트 경계).
-- 모듈 상태/비고 content-truth 는 **architect 가 유지·PM 점검**(ADR-0022/0023). incident/wave 서술은
+- 모듈 상태/비고 content-truth 는 **architect 가 유지·PM 점검**. incident/wave 서술은
   status 에 붙이지 않는다 — log/current.md entry 로.
 - `board.py lint` 가 ✅ 누적(`status-done-accum`·>30행)을 warn 한다 (차단 아님 — `status_done.md` archive 권고).
 
@@ -69,7 +69,7 @@ ticket 본문이 self-contained 의무를 지므로 위임 프롬프트는 bespo
 
 > **harness 노트:** 아래 위임 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준이다.
 > **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — 도구·어휘·subagent 정의는
-> `.opencode/pm-instructions.md` §2(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/`
+> `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/`
 > 를 본다. 위임 *원칙·절차*(축 분리·touches disjoint·single-source 프롬프트·산출 비준은
 > PM)는 양 harness 동일 — 아래 본문은 그 원칙을 claude 어휘로 보일 뿐이다.
 
@@ -111,9 +111,9 @@ git 도입 후 code-reviewer 는 `git diff` 로 변경 범위·내용을 직접 
 
 리뷰는 내부 서브에이전트 단독으로 끝내지 않는다 — **codex external_review 를
 병행**한다. 근거: 내부 code-reviewer(generate≠evaluate)에 **외부 모델 다양성**을
-더해 내부 맹점을 보완한다. (T-0001 실증 — 내부 reviewer 가 놓친 dest 뒤섞임
+더해 내부 맹점을 보완한다. (실증 — 내부 reviewer 가 놓친 dest 뒤섞임
 버그·path traversal 보안결함을 codex 가 포착, 전부 valid.) 전제:
-`external_review_enabled=true` (local.conf·ADR-0004 opt-in — 비활성이면 `--dry-run`
+`external_review_enabled=true` (local.conf opt-in — 비활성이면 `--dry-run`
 미리보기·`--force` 1회 강제).
 
 - **코드 리뷰** = 내부 code-reviewer + codex 외부 교차.
@@ -131,7 +131,7 @@ git 도입 후 code-reviewer 는 `git diff` 로 변경 범위·내용을 직접 
   ADR 을 함께 개정할 때 — **`--paths` 에 코드 경로(ticket touches)와 ADR/문서
   경로를 함께 나열**한다. ⚠️ `--paths` 는 `--ticket` touches 를 *대체*하므로
   코드 경로를 빠뜨리면 코드 diff 가 리뷰에서 누락된다 — 또는 코드(`--ticket`)·
-  설계(`--paths`)를 **별도 실행**한다 (T-0001 4차 교훈).
+  설계(`--paths`)를 **별도 실행**한다.
 - 판정: codex 가 must-fix 감지 시 exit 1 (반려). 외부 호출 실패(인증/한도/
   네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL` (내부 reviewer 폴백 신호).
 
@@ -149,7 +149,7 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 막히면 block --reason 으로 PM 세션에.
 ```
 
-세션 정체성은 슬롯이면 `claim` 의 **`--repo <repo> --slot <N>` 인자**로, 커스텀 세션명이면 `$PM_SESSION_NAME` 환경변수로 준다(ADR-0057 로 free-form 세션 플래그는 제거).
+세션 정체성은 슬롯이면 `claim` 의 **`--repo <repo> --slot <N>` 인자**로, 커스텀 세션명이면 `$PM_SESSION_NAME` 환경변수로 준다.
 
 ## Wave 패턴
 
@@ -187,7 +187,7 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 7. **ticket complete + 부기** — `/pm-wave-finish T-NNNN`
    (`ticket_finish.py` wrapper). 회귀 green 확인(red 면 중단·아무것도 안 건드림) →
    log/current.md 스켈레톤 append → board complete (`--tests-pass`) → git stage —
-   **그 ticket 이 선언한 경로만**(ADR-0074 "공유 워킹트리 mutation 은 선언된 경로만").
+   **그 ticket 이 선언한 경로만**.
    선언원 = frontmatter `touches` ∪ **이 실행이 실제로 쓴 산출물**, 즉 `log/current.md`
    + legacy 형상(board 미분리·출하 기본)에서 옮긴 티켓 파일의 **옛/새 경로** 둘뿐이다.
    ADR·domain 페이지·`architecture.md`·`status.md` 는 **다른 실행**의 산출이라 스코프
@@ -195,12 +195,12 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
    스테이지 후 잔여를 **두 방향으로 loud 보고**한다: `미스테이지 잔여`(내 누락이면
    `touches` 보강 후 재stage·남의 WIP 면 그대로) · `스코프 밖 staged`(남이 올려둔 것 —
    bare commit 이면 실린다·빼려면 `git restore --staged <경로>`).
-   **status.md 는 더 이상 건드리지 않는다**(ADR-0023 — judgment-only · 테스트 수 박제 ✗).
+   **status.md 는 건드리지 않는다**(judgment-only · 테스트 수 박제 ✗).
    **모듈 행 판정/비고·git commit 은 PM 손** (commit 도 pathspec 명시 — 아래 8).
 8. **PM 손 잔여** — log/current.md 서술 채우기 (스켈레톤 `<!-- PM: 무엇을·왜 -->` 를
    실제 내용으로) + status.md 모듈 행 판정/비고 (architect 유지·PM 점검 · 테스트 수는
-   박제 안 함·ADR-0022/0023) + **git commit — pathspec 명시**. bare `git commit` 은
-   남이 stage 해 둔 무관한 변경까지 싣는다 (ADR-0074). `[4/5]` 가 출력한 stage 경로
+   박제 안 함) + **git commit — pathspec 명시**. bare `git commit` 은
+   남이 stage 해 둔 무관한 변경까지 싣는다. `[4/5]` 가 출력한 stage 경로
    목록이 곧 이 커밋의 pathspec 이다:
    ```
    git commit -m "T-NNNN — <title 요약>" -- \
@@ -213,7 +213,7 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
    **티켓 파일 두 줄(claimed·done)은 legacy 형상에서 필수** — 옛/새 경로를 함께 줘야
    `claimed→done` rename 이 커밋으로 완성된다. 빠뜨리면 티켓이 HEAD 에선 `claimed` 로
    남고 그 rename 이 index 에 남아 다음 사람 커밋에 딸려간다(실측). board 분리
-   형상(ADR-0033)이면 board-git 이 기록하므로 두 줄이 없다. ADR·domain 페이지처럼
+   형상이면 board-git 이 기록하므로 두 줄이 없다. ADR·domain 페이지처럼
    **새로 만든 파일**을 함께 실을 땐 `git add <경로>` 를 선행하라 — 미추적 경로를
    pathspec 에 주면 `pathspec … did not match` 로 커밋 전체가 rc=1 로 죽는다.
    (Co-Authored-By: Claude 트레일러). wave 단위 단일 commit 이면 각 ticket 의 위 목록을
@@ -252,9 +252,9 @@ PM 병목은 "PM 이 한 세션"이 아니라 한 PM 이 직렬로 떠안는 잡
 
 - **부기 자동화** — ticket 완료 부기(회귀 green → log/current.md 스켈레톤 → board complete
   → git stage)는 `.project_manager/tools/ticket_finish.py` / `/pm-wave-finish` skill 로 자동화
-  (status.md 는 안 건드린다 — judgment-only·ADR-0023). PM 은 서술(왜·무엇)만 채운다. ⚠️ 단일 진실
+  (status.md 는 안 건드린다 — judgment-only). PM 은 서술(왜·무엇)만 채운다. ⚠️ 단일 진실
   파일을 편집하므로 status.md **모듈 행 판정/비고**·**git commit** 은 자동화하지 않는다 — PM 손
-  (그 commit 도 pathspec 명시 — `-- <touches> log/current.md [status.md]` · ADR-0074).
+  (그 commit 도 pathspec 명시 — `-- <touches> log/current.md [status.md]`).
 - **세션 시작·종료 자동화** — `/pm-bootstrap` (세션 시작 dump), `/pm-handoff`
   (세션 종료 7단계). PM 의 첫 turn / 마지막 turn 잡일을 한 명령으로.
 - **dev→review 는 background 우선** — `Agent` 툴 `run_in_background: true` 로
@@ -289,7 +289,7 @@ PM 병목은 "PM 이 한 세션"이 아니라 한 PM 이 직렬로 떠안는 잡
   근거: 부트스트랩·도구 결함 1 turn fix 의 ROI 가 wave 의 marginal dev 위임
   보다 크다 — 다음 세션도 같은 비용을 그대로 물려받기 때문.
 
-## handoff 철학 (lean handoff · ADR-0008)
+## handoff 철학 (lean handoff)
 
 읽기 lean(위 §"PM 은 적게 읽는다")의 *쓰기* 짝. handoff entry 는 **파생 가능한 상태를
 source 에 미룬다(defer-to-source)** — board/git/log/ADR 가 라이브로(또는 인접 entry 로)
@@ -307,13 +307,13 @@ append-only `log/current.md` 라 시간이 갈수록 커진다. → 떠나는 �
   사본이 아니다. salience 는 board/log 에서 자동으로 안 나온다. (`pm_role.md` "full Read
   금지·라인수 아님" 과 정합 — 들어오는 세션이 포인터를 `pm_log.py tail`/targeted Read 로 따른다.)
 - **(b) 메타 학습** — ticket 상태에서 도출 불가한 교훈만(산문). 드롭 시 영구 손실·같은 실수 재발.
-- **(c) 다음 intent** — 두 줄로 세분(ADR-0008 재검토 트리거·T-0047). 대화에만 존재:
+- **(c) 다음 intent** — 두 줄로 세분. 대화에만 존재:
   - **대화 thread-tail** — 정지 직전 사용자 발화. ctx-trigger 경로는 어댑터 훅이 transcript 에서 추출해 자동 채운다(자동은 *초안* — 정지 후 PM 이 슬롯을 검토·편집한다. 민감 발화 노출 최소화). 대화형 경로는 PM 손.
   - **pending user intent** — 다음 우선순위 + 사용자 결정 대기. PM 손.
 
 **FORBIDDEN (본문 재열거 금지 — 전부 source 가 답한다):**
 
-- ❌ board done/open/claimed/blocked **카운트** (→ `board.py list`[무인자=내 스트림·전체는 `--all`·ADR-0066]·`/pm-bootstrap` 라이브).
+- ❌ board done/open/claimed/blocked **카운트** (→ `board.py list`[무인자=내 스트림·전체는 `--all`]·`/pm-bootstrap` 라이브).
 - ❌ **open ticket ID 목록** (→ `pm_bootstrap` 가 라이브로 출력).
 - ❌ **commit 해시·push 상태** (→ `git log`/`git status`).
 - ❌ **직전 complete entry 산출물 재요약** (→ 인접 entry. "읽기 범위" 로 가리켜라).
@@ -321,7 +321,7 @@ append-only `log/current.md` 라 시간이 갈수록 커진다. → 떠나는 �
 (금지는 *대량* 재열거에 한정 — board 상태·ticket 목록·commit·산문 재요약. board/git 은 즉시
 파생이라 가리키면 된다.)
 
-**회귀 숫자 규칙 (ADR-0008 Decision 5 · codex 2차 게이트 정합):** 회귀는 **1줄 baseline**
+**회귀 숫자 규칙:** 회귀는 **1줄 baseline**
 ("N passed / 상태")이라 **green 도 항상 회귀/incident 라인에 적는다.** pm_bootstrap default 는
 pytest skip 이고 "회귀: handoff entry 참조" 로 안내하므로, handoff 가 그 1줄을 들고 있어야
 다음 세션이 기본 부트스트랩만으로 baseline 을 안다(생략하면 baseline 유실). 회귀 숫자만은
@@ -334,7 +334,7 @@ upstream(프레임워크 reference)의 엔진 개선을 이 인스턴스로 당�
 
 1. upstream 체크아웃 확보 (reference repo 를 어딘가 clone/pull · v1 은 로컬 경로만).
 2. `python3 .project_manager/tools/pm_update.py --from <upstream> --dry-run` → 바뀔 엔진 파일 검토.
-3. `--dry-run` 빼고 적용. 엔진 freshness 는 `local.conf` 의 `upstream_rev`↔`upstream_seen_rev`(git rev-baseline)로 추적된다(ADR-0036).
+3. `--dry-run` 빼고 적용. 엔진 freshness 는 `local.conf` 의 `upstream_rev`↔`upstream_seen_rev`(git rev-baseline)로 추적된다.
 4. 엔진이 바뀌었으니 회귀 검증 — `python3 .project_manager/tools/board.py regression run`.
 5. 엔진 변경 커밋 + push (공유 — 팀원은 `git pull` 로 받음).
 
@@ -346,9 +346,9 @@ upstream(프레임워크 reference)의 엔진 개선을 이 인스턴스로 당�
 핸드오프 절차 #5 에서 `/pm-handoff` 가 자동 출력 — **새 PM 세션의 첫 메시지로 이 커맨드만 복사·붙여넣는다**
 (당신=조종사가 붙여넣고, 그 세션이 PM 이 된다 · 역할·인계는 CLAUDE.md·`/pm-bootstrap` 이 자동 로드/dump).
 
-> **커맨드로 축소 (T-0180·T-0193·ADR-0035):** 인계 본문(읽기 범위·메타 학습·다음 intent·
+> **커맨드로 축소:** 인계 본문(읽기 범위·메타 학습·다음 intent·
 > 회귀/incident)은 log handoff entry 가 단일 진실이고 **`/pm-bootstrap` 이 그 본문을 자동 dump**
-> 한다(T-0179). 그래서 이 프롬프트는 *손-채움 인계 블록·역할문구·사족을 전부 폐기*하고 `/pm-bootstrap`
+> 한다. 그래서 이 프롬프트는 *손-채움 인계 블록·역할문구·사족을 전부 폐기*하고 `/pm-bootstrap`
 > 커맨드만 남긴다 — 역할·위임 framing 은 pm_role·CLAUDE.md 가 auto-load (인계 중복 제거).
 
 ```

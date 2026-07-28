@@ -4,7 +4,7 @@
 > (`.project_manager/tools/`) + 방법론(`wiki/pm_role.md`·`pm_playbook.md`·`_template`·`domain/`) +
 > 어댑터(`templates/`) + `tests/`. 도그푸딩 **PM 운영**(board·wiki·ADR·roadmap·dev-state)은 별도 ② repo
 > `project_manager_dev` 가 **adopter#0** 로 수행하며, 이 worktree 가 ② 의 working checkout
-> `work/project_manager_1` 이다(ADR-0027). **엔진은 여기서 고치고 `tests/` 로 검증한다**
+> `work/project_manager_1` 이다. **엔진은 여기서 고치고 `tests/` 로 검증한다**
 > ("고치는 곳 = 테스트하는 곳"). (채택자용 출하 템플릿은 `templates/` 직계 하위의 **모든 타깃** — 현재
 > `templates/claude_code/`·`templates/codex/`·`templates/opencode/` —
 > 그쪽 CLAUDE.md/AGENTS.md 는 출하 스캐폴드이고, 이 문서는 *엔진 개발자(=PM 세션)* 용이다.)
@@ -22,7 +22,7 @@
    architecture 기준)·`decisions/`(ADR — 상한·목록은 색인 `decisions/README.md`)·`roadmap.md` 를 본다. 이 worktree 단독 작업은 엔진
    구조·`tests/`·`templates/` 로 한정한다.
 
-## 구조 (ADR-0027 · ADR-0005 amended)
+## 구조
 
 ```
 .project_manager/

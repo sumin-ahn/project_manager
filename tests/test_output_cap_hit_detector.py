@@ -137,14 +137,14 @@ def test_env_knob_drives_detector_default(engine, monkeypatch):
 # ── ④ 경고 문구에 파일-전달 규약(T-0337) 안내 포함 ──────────────────────────────
 
 def test_warning_message_carries_file_delivery_convention(engine):
-    """cap_hit_warning_message 는 T-0337 파일-전달 규약을 안내한다(경고 문구 요구·ticket §결정).
+    """cap_hit_warning_message 는 파일-전달 규약을 안내한다.
 
-    얕은 단일 문자열 1개가 아니라 규약 키워드 클래스(파일·경로·safe_write·절단 + 근거 T-0334/T-0337)를
-    검증 — 규약 요지가 실려야 우회 재시도로 이어진다.
+    얕은 단일 문자열 1개가 아니라 규약 키워드 클래스(파일·절대경로·safe_write·절단·요약)를
+    검증해 규약 요지가 실려야 우회 재시도로 이어지게 한다.
     """
     _, reason = engine.detect_output_cap_hit("가" * (engine.CAP_HIT_CHAR_THRESHOLD + 10))
     msg = engine.cap_hit_warning_message(reason)
-    for keyword in ("T-0337", "T-0334", "파일", "경로", "safe_write", "절단", "요약"):
+    for keyword in ("파일-전달 규약", "파일", "절대경로", "safe_write", "절단", "요약"):
         assert keyword in msg, f"경고 문구에 규약 키워드 {keyword!r} 누락"
     assert reason in msg           # 진단(char 수·cap 맥락)도 실린다.
     assert msg.startswith("[pm-orch]")  # loud prefix(다른 driver 진단과 결 일치).
@@ -185,14 +185,14 @@ def test_run_loop_warns_on_near_cap_reply(engine, tmp_path):
     out = io.StringIO()
     rc = sup.run_loop("/cwd", io.StringIO("hi\n"), out, cap_hit_log=logs.append)
     assert rc == 0
-    # advisory 정확히 1회 · 하니스-중립 문구 + 규약(T-0337) 안내 실림.
+    # advisory 정확히 1회 · 하니스-중립 문구 + 파일-전달 규약 안내 실림.
     assert len(logs) == 1
     assert "출력 상한" in logs[0] and "opencode 하니스라면" in logs[0]
-    assert "T-0337" in logs[0] and "safe_write" in logs[0]
+    assert "파일-전달 규약" in logs[0] and "safe_write" in logs[0]
     # never-block — 전체(잘렸을 수 있는) 응답은 그대로 out_stream(PM 채널)에 전달된다.
     assert big in out.getvalue()
     # stdout(PM 대화 채널)은 경고로 오염되지 않는다 — 경고는 별도 sink 로만.
-    assert "T-0337" not in out.getvalue()
+    assert "파일-전달 규약" not in out.getvalue()
 
 
 def test_run_loop_no_warn_on_normal_reply(engine, tmp_path):
@@ -215,8 +215,8 @@ def test_run_loop_default_cap_hit_log_is_stderr(engine, tmp_path, capsys):
     out = io.StringIO()
     sup.run_loop("/cwd", io.StringIO("hi\n"), out)  # cap_hit_log 미주입 → 기본 stderr.
     captured = capsys.readouterr()
-    assert "출력 상한" in captured.err and "T-0337" in captured.err
-    assert "T-0337" not in out.getvalue()           # 주입 out_stream 은 무오염.
+    assert "출력 상한" in captured.err and "파일-전달 규약" in captured.err
+    assert "파일-전달 규약" not in out.getvalue()   # 주입 out_stream 은 무오염.
 
 
 def test_run_loop_cap_hit_never_blocks_rotation(engine, tmp_path):

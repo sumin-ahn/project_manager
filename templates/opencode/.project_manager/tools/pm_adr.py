@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ADR 발행/개정 명령어化 backbone — 흩어진 손 단계(채번·frontmatter·lifecycle back-ref·
-README 색인·log decide entry)를 한 명령으로 원자화한다 (ADR-0049 4요소·ADR-0021 lifecycle).
+README 색인·log decide entry)를 한 명령으로 원자화한다.
 
 사용:
     python3 .project_manager/tools/pm_adr.py new \\
@@ -14,7 +14,7 @@ README 색인·log decide entry)를 한 명령으로 원자화한다 (ADR-0049 4
   1. 채번 — decisions/ 스캔·다음 NNNN.
   2. 신규 ADR 파일 scaffold — `decisions/NNNN-slug.md`(frontmatter + 본문 골격).
   3. lifecycle back-ref 부기 — `--amends`/`--supersedes` 대상 ADR frontmatter 에 status(amended/
-     superseded) + amended_by/superseded_by 부기(발행 시점 충족·사후 lint 아님·ADR-0021).
+     superseded) + amended_by/superseded_by 부기(발행 시점 충족·사후 lint 아님).
   4. README 색인 — Accepted 표에 신규 행 추가 + amends/supersedes 대상 행 Accepted→Amended/
      Superseded 표 이동(또는 이미 이동됐으면 back-ref cell 에 append).
   5. log/current.md decide entry skeleton append.
@@ -48,7 +48,7 @@ DECISIONS_DIR = REPO / ".project_manager" / "wiki" / "decisions"
 README_FILE = DECISIONS_DIR / "README.md"
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 
-# 개정 동사 → (대상 status, back-ref 필드) 매핑 (ADR-0021·lint_adr_lifecycle 와 동형).
+# 개정 동사 → (대상 status, back-ref 필드) 매핑 (lint_adr_lifecycle 와 동형).
 # `refines`(추가·대상 불변)는 back-ref 대상이 아니다 — related 링크만 남기고 대상 미개정.
 _LIFECYCLE_VERBS: dict[str, tuple[str, str]] = {
     "amends": ("amended", "amended_by"),
@@ -82,14 +82,14 @@ def parse_adr_num(token: str) -> int:
 
 # slug 는 `NNNN-<slug>.md` 파일명 컴포넌트가 된다 — 무검증 값이 파일명 경계로 새면 path 주입/
 # traversal(디렉토리 밖 쓰기·`..`) 위험이라 CLI 입력 단계에서 부작용 이전 거부한다(identity_args.
-# validate_task_name·T-0355 파일명 안전 validator 클래스 동형). 허용 = 영문 소문자로 시작·이어서
+# validate_task_name 파일명 안전 validator 클래스). 허용 = 영문 소문자로 시작·이어서
 # 소문자/숫자/하이픈/언더스코어(slug 관례·파일명·URL 안전). 한글/공백/`:`/대문자/dot 는 slug 밖(제목은
 # --title 에 자유·slug 는 협소).
 _VALID_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 def validate_slug(slug: str) -> None:
-    """ADR slug(파일명 컴포넌트) 검증 — 위반 시 ValueError(fail-loud·T-0355 validator 클래스 동형).
+    """ADR slug(파일명 컴포넌트) 검증 — 위반 시 ValueError(fail-loud·validator 클래스 동형).
 
     path separator(`/`·`\\`)·`..`·공백·선행 `.`·대문자·dot·특수문자를 거부한다(파일 주입/traversal
     방지). `_VALID_SLUG_RE`(영문 소문자 시작·소문자/숫자/하이픈/언더스코어)가 그 도메인을 협소화한다 —
@@ -454,7 +454,7 @@ _DECIDE_LOG_TEMPLATE = """\
 
 
 def build_decide_log_entry(number: int, title: str, date: str) -> str:
-    """log/current.md 에 append 할 decide entry skeleton (ADR-0021 절차 6·placeholder 본문)."""
+    """log/current.md 에 append 할 decide entry skeleton (placeholder 본문)."""
     return _DECIDE_LOG_TEMPLATE.format(date=date, adr_id=adr_id(number), title=title)
 
 
@@ -555,7 +555,7 @@ class AdrIssuer:
     def apply(self, plan: dict) -> None:
         """계획을 파일에 쓴다 — **신규 ADR 파일을 맨 먼저**, 이어 대상 back-ref·README·log 순차 적용.
 
-        full staged-write(전 파일 tmp→원자 rename)는 과설계로 보류한다(codex suggestion② 부분 수용) —
+        full staged-write(전 파일 tmp→원자 rename)는 과설계로 보류한다 —
         ADR 발행은 단일-PM·저빈도 수동 작업이라 다중 파일 트랜잭션이 과하다. 대신 **부분 실패 시 어느
         단계까지 됐는지(수행/미수행) 명시**해 사람이 복구하게 한다. 신규 ADR 파일을 **가장 먼저** 써서
         최악의 부분 실패에서도 결정 본문 자체는 디스크에 보존되게 한다(주 산출물 우선)."""
@@ -594,8 +594,8 @@ class AdrIssuer:
         self._log_file.write_text(existing + "\n" + plan["log_entry"], encoding="utf-8")
 
 
-# ── contradiction lint 트리거 (ADR-0064·T-0369) ───────────────────────────────
-# 결정을 개정(amends/supersedes)하는 바로 이 명령이 ADR-0064 모순 lint 의 배선점이다 — 재정의 순간
+# ── contradiction lint 트리거 ───────────────────────────────
+# 결정을 개정(amends/supersedes)하는 바로 이 명령이 모순 lint 의 배선점이다 — 재정의 순간
 # (인지 시점)에 옛 결정을 참조하는 문서의 잔여 모순을 표면화한다. **개정에만** 발화한다(신규 plain 발행·
 # refines 는 참조 스코프가 없거나 대상 불변이라 잔여 모순을 안 만든다). 탐지=LLM(기본 dry·미호출)·판정=
 # 사람(advisory·차단 아님) — 이 트리거는 어떤 경우에도 발행을 막지 않는다(fail-soft·감싸 호출).
@@ -603,7 +603,7 @@ class AdrIssuer:
 CONTRADICTION_LINT_PY = Path(__file__).resolve().parent / "contradiction_lint.py"
 
 
-# ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
+# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
 # 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
@@ -613,7 +613,7 @@ ENGINE_REV = "v1.4.5"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (T-0397·fail-loud·skew→명시 에러).
+    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (fail-loud·skew→명시 에러).
 
     불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
     지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
@@ -625,12 +625,12 @@ def _verify_engine_rev(sibling_module, sibling_filename):
             f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
             f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
         )
-        err._engine_rev_skew = True  # T-0397 — fail-soft 로더가 재-raise 식별
+        err._engine_rev_skew = True  # fail-soft 로더가 재-raise 식별
         raise err
 
 
 def _is_engine_rev_skew(exc) -> bool:
-    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (T-0397·fail-soft 재-raise 식별)."""
+    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (fail-soft 재-raise 식별)."""
     return getattr(exc, "_engine_rev_skew", False)
 
 
@@ -644,16 +644,16 @@ def _load_contradiction_lint():
         spec.loader.exec_module(mod)
     except Exception as exc:
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — contradiction_lint 사본 skew 는 fail-loud(삼키지 않는다).
+            raise  # contradiction_lint 사본 skew 는 fail-loud(삼키지 않는다).
         return None
-    _verify_engine_rev(mod, "contradiction_lint.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
+    _verify_engine_rev(mod, "contradiction_lint.py")  # 불변식: stamped sibling 로드 지점은 verify
     return mod
 
 
 def emit_contradiction_advisory(
     *, new_number: int, title: str, adr_text: str, amends: list[int], supersedes: list[int],
 ) -> None:
-    """개정(amends/supersedes) 시 모순 lint advisory 를 stderr 로 표면화한다(ADR-0064·인지 시점).
+    """개정(amends/supersedes) 시 모순 lint advisory 를 stderr 로 표면화한다(인지 시점).
 
     개정 대상이 없으면 no-op. contradiction_lint 미로드/오류는 조용히 무시(fail-soft — 부가
     advisory 가 발행을 막지 않는다). LLM 은 호출하지 않는다(dry·비용 0) — 스코프+안내만 표면화한다."""
@@ -676,21 +676,21 @@ def emit_contradiction_advisory(
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def _resolve_default_author() -> "str | None":
-    """`--author` 생략 시 board `identity_tag()` sibling 재사용 — `<user>/<pm-slot>` 해소 (T-0376).
+    """`--author` 생략 시 board `identity_tag()` sibling 재사용 — `<user>/<pm-slot>` 해소.
 
     board.py 의 기존 identity 해소 체인(local.conf user → git config user.email·세션 토큰)을
-    그대로 쓴다(자체 로직 신설 0·[[ADR-0033]] provenance 형식 일치). 로드/해소 실패는 None
+    그대로 쓴다(자체 로직 신설 0). 로드/해소 실패는 None
     (fail-soft — 호출부가 현행 빈 값 경로 유지·발행을 못 깨게)."""
     try:
         board_path = Path(__file__).resolve().parent / "board.py"
         spec = importlib.util.spec_from_file_location("_pm_adr_board_identity", board_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "board.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
+        _verify_engine_rev(mod, "board.py")  # 불변식: stamped sibling 로드 지점은 verify
         return mod.identity_tag()
     except Exception as exc:  # noqa: BLE001 — identity 해소 실패는 advisory 경로로(발행 무영향).
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — board 사본 skew 는 fail-loud(삼키지 않는다).
+            raise  # board 사본 skew 는 fail-loud(삼키지 않는다).
         return None
 
 
@@ -726,7 +726,7 @@ def build_parser() -> argparse.ArgumentParser:
     new.add_argument("--slug", required=True, help="파일명 slug(영문·hyphen) — NNNN-<slug>.md")
     new.add_argument("--scope", default="internal-process",
                      choices=["internal-process", "mission"], help="결정 scope (기본 internal-process)")
-    new.add_argument("--author", default="", help="provenance `<user>/<pm-slot>` (ADR-0033 ③)")
+    new.add_argument("--author", default="", help="provenance `<user>/<pm-slot>`")
     new.add_argument("--status", default="accepted",
                      choices=["proposed", "accepted"], help="발행 status (기본 accepted)")
     new.add_argument("--amends", action="append", default=[], metavar="ADR-NNNN",
@@ -745,14 +745,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_new(args: argparse.Namespace) -> int:
     # slug 는 파일명이 되므로 부작용(채번·파일 쓰기) 이전에 CLI 입력 단계에서 거부한다(fail-loud·
-    # 파일 주입/traversal 방지·T-0355 validator 클래스 동형).
+    # 파일 주입/traversal 방지·validator 클래스 동형).
     try:
         validate_slug(args.slug)
     except ValueError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 2
 
-    # 개정대상 ID 도 부작용 이전 입구에서 rc 2 한 줄 오류로 거부한다(T-0376 — 옛엔 parse_adr_num
+    # 개정대상 ID 도 부작용 이전 입구에서 rc 2 한 줄 오류로 거부한다
     # ValueError 가 traceback 으로 노출·slug 게이트와 동형 패턴).
     try:
         amends = _parse_id_list(args.amends)
@@ -764,7 +764,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     related = _parse_str_list(args.related)
     tags = _parse_str_list(args.tags)
 
-    # --author 생략 시 기존 identity 해소 체인 재사용(T-0376·board.identity_tag —
+    # --author 생략 시 기존 identity 해소 체인 재사용(board.identity_tag —
     # local.conf user → git config user.email → 세션 토큰). 명시 인자 우선·해소 불가(None)면
     # 현행(빈 값 → lint_adr_author advisory) 유지 — 새 해소 로직 신설 0.
     author = args.author or _resolve_default_author() or ""
@@ -797,7 +797,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     for w in plan["warnings"]:
         print(f"  ⚠ {w}", file=sys.stderr)
 
-    # 모순 lint 트리거 (ADR-0064·T-0369) — 개정(amends/supersedes)에만 발화. dry-run/apply 공통으로
+    # 모순 lint 트리거 — 개정(amends/supersedes)에만 발화. dry-run/apply 공통으로
     # 인지 시점(재정의 명령)에 잔여 모순 스코프를 표면화한다(advisory·fail-soft·차단 아님).
     emit_contradiction_advisory(
         new_number=number, title=args.title, adr_text=plan["adr_text"],

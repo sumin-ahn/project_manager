@@ -251,7 +251,7 @@ def test_zero_slots_shows_none_and_enters(bootstrap, tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "작업공간: (없음)" in out
-    assert "F2 alloc(T-0354)에서 연결" in out       # generic 안내는 0개일 때만
+    assert "신규 task 는 슬롯 0개로 시작 가능" in out  # generic 안내는 0개일 때만
     assert "전수 검증" not in out                    # 열거 행렬 헤더 없음
 
 

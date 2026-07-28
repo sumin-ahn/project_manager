@@ -8,9 +8,9 @@ ADR-0022/0023 현재-진실 모델로 옮겼으나 이 README 는 옛 모델(테
 
   (1) 3-copy byte-동일 — 한 copy 만 고치고 다른 걸 놓치는 *이 클래스* 재발 방지.
   (2) 현재-진실 모델 단언 — README 가
-        (a) architecture.md 를 "현재-아키텍처 단일 진실"/"① live"/부트스트랩 맥락으로 서술,
-        (b) `domain/` 디렉토리를 언급 (ADR-0018),
-        (c) status 서술에 "테스트 합계표"/"테스트 수는 여기" 류 stale 문구가 없음 (ADR-0023).
+        (a) architecture.md 를 "현재-아키텍처 단일 진실"/live·target 축/부트스트랩 맥락으로 서술,
+        (b) `domain/` 디렉토리를 언급,
+        (c) status 서술에 "테스트 합계표"/"테스트 수는 여기" 류 stale 문구가 없음.
 
 권위 기준 = `pm_role.md` §부트스트랩·§"현재-진실 vs 히스토리" (이미 정합). stdlib only.
 """
@@ -57,31 +57,35 @@ def test_readme_three_copies_byte_identical():
 
 
 def test_readme_architecture_is_current_truth():
-    """README 가 architecture.md 를 현재-아키텍처 단일 진실·① live·부트스트랩 맥락으로 서술."""
+    """README 가 architecture.md 를 현재-아키텍처 단일 진실·live 축·부트스트랩 맥락으로 서술."""
     text = _read_canonical()
     assert "현재-아키텍처 단일 진실" in text, (
-        "wiki/README.md 가 architecture.md 를 '현재-아키텍처 단일 진실'로 서술하지 않는다 "
-        "(ADR-0022)."
+        "wiki/README.md 가 architecture.md 를 '현재-아키텍처 단일 진실'로 서술하지 않는다."
     )
-    assert "① live" in text, (
-        "wiki/README.md 가 architecture 의 '① live' (코드 실측) 축을 서술하지 않는다 (ADR-0022)."
+    assert "live" in text and "target" in text, (
+        "wiki/README.md 가 architecture 의 live(코드 실측)/target(확정·미구현) 두 축을 서술하지 "
+        "않는다."
     )
     assert "부트스트랩 #1" in text, (
-        "wiki/README.md 가 architecture.md 를 부트스트랩 #1 로 서술하지 않는다 (ADR-0022)."
+        "wiki/README.md 가 architecture.md 를 부트스트랩 #1 로 서술하지 않는다."
     )
 
 
-# ── (2b) domain/ 디렉토리 언급 (ADR-0018) ────────────────────────────────────
+# ── (2b) domain/ 디렉토리 언급 ───────────────────────────────────────────────
 
 
 def test_readme_mentions_domain_directory():
-    """README 가 domain/ 디렉토리(살아있는 프로젝트 지식)를 언급 (ADR-0018)."""
+    """README 가 domain/ 디렉토리(살아있는 프로젝트 지식)와 그 성격을 언급.
+
+    출하 문서는 채택자가 조회할 수 없는 사설 결정 번호를 담지 않는다 — 근거 번호 대신
+    *무엇인지*(살아있는 지식 축)가 서술돼 있는지를 본다.
+    """
     text = _read_canonical()
     assert "domain/" in text, (
-        "wiki/README.md 가 domain/ 디렉토리를 언급하지 않는다 (ADR-0018 wiki 3축)."
+        "wiki/README.md 가 domain/ 디렉토리를 언급하지 않는다 (wiki 3축)."
     )
-    assert "ADR-0018" in text, (
-        "wiki/README.md 의 domain/ 설명이 근거 ADR-0018 을 명시하지 않는다."
+    assert "살아있는" in text, (
+        "wiki/README.md 의 domain/ 설명이 '살아있는 프로젝트 지식' 성격을 밝히지 않는다."
     )
 
 

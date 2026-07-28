@@ -1,0 +1,2760 @@
+{
+  "version": 1,
+  "count": 604,
+  "paths": {
+    ".claude/agents/code-reviewer.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "d636c5d3e0224ba07b1fadc15ca5c97111c16cb42d8accbf556dc758dc3efe81",
+        "count": 1
+      }
+    ],
+    ".claude/skills/pm-dev-delegate/SKILL.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "c9014125fb202bd77daafe236a583f79ec83a592f6e48aa7f7831e5b7cae06a7",
+        "count": 1
+      }
+    ],
+    ".claude/skills/pm-handoff/SKILL.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "024e86f17246d31adf8706691920c6cc55b06669cfd6cd5d062e20285cf95cb3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f16dbbd40bac1a0ebd4ed37d28da4775427cd2a13341a3d738dd1aeb7bb0dc6d",
+        "count": 2
+      }
+    ],
+    ".project_manager/tools/board.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "0f2ba8ddf6a1b194cd6e0ccd100161a1a3ec2788d27a33c5336d41cd33b25c0a",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "2d051a57367fd0845511d7ab7db79e26e265c242d00a5589ed81025361c06dcd",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "30539fb9a8623ac17d7b9449cc6e6347b099109b5cdd8cf8fba9d7d8420377c4",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "a8a1550d19c9dfceb654bd5fe4314e1afa63de57fb00b3a0fba838c4b3b46cba",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "eda5e62470ddc3012af07a1d2501dd192fa473deb08135a224f1bb079eb7fe38",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4e92ba1f7f2c9eb760fc262bb73a378a6c606a3bd4fde5867c1c311b7bdb9ae0",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "008d5e16318b84caa812a9bd91f4cea8e497267abff874bfa0b95ecc94c54792",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "3a199ce4c57d94f841fdad0b00b51ff664c52c21ed5d966303f5c14b76c6679a",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "54796c90724834bf53faa53ea644699e581801796de7f3dee9f33b65d2dd5789",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a86a7edc7da65e4c8732c6667d440b954f0d8c62f8fcbfca5872ea47f19fd459",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bbd8897c765b74afcfd38596b7c9a21e7aee5b317ba9ff8ebc2c87f0bf6ff4db",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/domain.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "104da500f517b12e0ccce91fac4d1a0287cdc1e9d9e580fe0058c8210c346629",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "3db069b77ea51f46f32b8af8c47f3c98cecb5285a004538b12f04b0469afc7be",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
+        "count": 3
+      },
+      {
+        "kind": "decision_label",
+        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/external_review.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "e34f67d59d24394073e8cb105c9d9e8b7fc43e9abedbe273e178eec61fceb0a3",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/identity_args.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "378927c4bbd165d3eb813fc709199f34ba1fa44741c0758256538219e8abfb73",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/pm_adr.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/pm_bootstrap.py": [
+      {
+        "kind": "decision_label",
+        "hash": "101ee42f23141f5a14ecddcf2e640f9726a94ad9b5ffa80fb14b3ce56070cdc6",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "54c35a57681d5b0bfdd5fcab489f78572f03254714351d8ab16cab3e17ac9023",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "405a4973bbbcfa9b48dd011f791fb0e20058d02dc1eec5849ea6fa87dda2e05b",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6e8275dfae14b1d91819a9503368de6e221bc714be7b3859a896227edb0ebdf3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "956973367cd56ada582f325ae938b94a18c20d9b212e04d9da20c2b4be7e6124",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "975c22dafa2b21135202ffe72affa12141ff1355449e7e6a09e0a6765aa51b8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "aa384ac9e17e088b171f26e4d5d99de005bf197e423babe076386fc5778e7312",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bce89b522cadb993ab74753b15481fd8b92adc6d04659542fb27426eb8cdf997",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d062b0a10863d7fc0e4c71edcea9986dbb2b8d39bbf363b84b9a38ae2142bca5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d3cb76ae01c40da187d42f34b2d0a0523019cc8754d526033d94eaf8d37b2ba8",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f2db079bda3b3ed5671d7f46c64ea0650a6134ab5b6d5a7f8ddb11c50cadf984",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f5cd11408f0e48c46f82d12029ee9d2b7b6b1ba02dfe9c36e0797a76b714b2db",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/pm_delegate.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "5b6d0bcc537536ff9536e7fbb264402bc2c4367417553f07f4e3f88625a9ecf7",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6cdfd4b5a3236193bf0905444401ed43b45b0aaf4f7ee9a1d4bb855bd322eddb",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/pm_handoff.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "2c12342fbc9f3cf1218a9e688359f1ab3e2478dd899a640a57b7bafe79dc8d53",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f5a3fdd60398ebb31e38d19f0676cbe4488801fce13cac3dd6c48c8dc11664f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0dac62604b3f8dc68b916b0f3a23e30328642b64d5b6565319f52144de9e6e2e",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6625c4538dce08f532878768db3aa9f1434a9a1079cfab5f0e627c60e6e2838d",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/pm_import.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "35e30c39321bbe9c97cc15796be7495ece5c0e66272c5ea72f71f180790645ae",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "791401bd88205518662407d318de31bbaa77a4cc37820755699e8f174081d750",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "894adb1808d0ce6ed58d272de893a5f00f5f42aedc11a02b009290df71fa9b57",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "a0c560dd4117f95228b95f51aaeef5bae19d386e657f574424b1a2bb106545b2",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "c4a10064dac3e9164eefe3261837f14f8d34379b30a1be8b652772855cb4422f",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "c532c2bde78bc5439b17dcd3238502f82442268a470891296654f6c0354b4300",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "dac8f42eacfd411659be7fcd9290037f6a476d1990466bec8d6d108ac6bb8ee7",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "e63fa1811ae37db5e49f933358c61bf7a94c09fc8f7f8782d8ece8d166e01c3a",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
+        "count": 2
+      }
+    ],
+    ".project_manager/tools/pm_update.py": [
+      {
+        "kind": "decision_label",
+        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "afdfcc43470a9fb396241e15b1aa9f90e6c797eab1d6ee20501203f1613ca1d4",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/ticket_finish.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "6422a58c88ecd72ab5c2c5b18279991431afe360f2e37a58b7af29ba49de6231",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "9364a65fabf2bada72c9de6ba2d0b050129fa15ea92d68e01c4f99b6700e7fd6",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/worktree_pool.py": [
+      {
+        "kind": "decision_label",
+        "hash": "6c726ab00dbe69eea6bc07ff47c577bb065440977c526c81d8580618d2f50644",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "b91df5de85cc658c4f2b91066d790dfe962a6c73af6ca98e388a0891c7e7b1c0",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "860c9064bc112b68fd558571666563b2ec2badf2ddd24fe842b03dd91f9547b5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
+        "count": 1
+      }
+    ],
+    ".project_manager/wiki/log/dashboard.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "169efb8f1de42b1cce9d4935272d00a02f0682b288053b113adcd727ceb0da04",
+        "count": 2
+      }
+    ],
+    ".project_manager/wiki/pm_role.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "c369b87af662695f1a36de92aadfdd2b9a635d5d635834b4a4cd52e40900ec1c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "c9db57645aa0bb92639e9591636aceb78177ebbef0cffa0bf043c98f95fbc996",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d2cff6c3474e20c034bc62e63555b6d5b04a17cf56d97e522b12bcdc88201e20",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f6e39254b394c36ab76c98ee23513e85d617cebc309e97d86dd57aaae0d26934",
+        "count": 1
+      }
+    ],
+    ".project_manager/wiki/pm_state.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "bdeb5e74740f3c9d3e3532e8d9fa13d6945433c3cbc656e03b7889986dcfa1e1",
+        "count": 1
+      }
+    ],
+    ".project_manager/wiki/pm_state.template.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "bdeb5e74740f3c9d3e3532e8d9fa13d6945433c3cbc656e03b7889986dcfa1e1",
+        "count": 1
+      }
+    ],
+    ".project_manager/wiki/raw/README.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "57e02cdf3f3801d163201cee8e87a3d9ffba536548328540ec25583dce8ac107",
+        "count": 1
+      }
+    ],
+    ".project_manager/wiki/raw/spikes/_template.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "86925bb9abcf6de0d194b8f6ff14eec2925eb2855bffc8db9729cb8568161b7a",
+        "count": 1
+      }
+    ],
+    "CLAUDE.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "0f45f350b9eaec4e84f4b5fa1176dd7372ac8a4fee9d2b6f0d885724dbb29bed",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "12d823bfd6c588a5cb0da3a81db2659dc31582c066c028f4b6a5d3bfc95f559d",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "15288cfc49b486e01cc7c102a2b78e4173b66fcb8759f0bf42512e35124b9da5",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "15f916327c2ab828dfe878fb37faf1b9eac9d11e4343bc1cfdd37e6eae2ff96e",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "367dd245109298a9e5b6275f1ad264648de78edc1665c8c2a18347a5225af528",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "4b4e0e88988591741cce13e9bcae6be9a5926f8d43f80281168973c50c47ebaf",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "8117826a8fa55377fa2fb6c477adedcac3c2b5e4f543ff864697bc5eaa6d41b7",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "82b4d19a2a3afc802aaa0dcb8be344d5021d2a458fe3c5c2538303cd9debdbb4",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "9f8100a9b6e9cb3188112c65d578214a12d8f26e2f2f433e7812db6f2e1a60bd",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "a6e8980e7782093de4cfca7a131be6aed0e85274f5523cf0ca1f2dc44a748977",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "cca0ec8a3e7ba2dfa46fa029fc8ffb51d4db90341654296d70f9f2a4a7f0fd69",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "f4bd69d4a5cce90fe7dae9193b730bb35419aa581f7c97da2795a174fef028dd",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.claude/agents/code-reviewer.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "d636c5d3e0224ba07b1fadc15ca5c97111c16cb42d8accbf556dc758dc3efe81",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.claude/skills/pm-dev-delegate/SKILL.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "c9014125fb202bd77daafe236a583f79ec83a592f6e48aa7f7831e5b7cae06a7",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.claude/skills/pm-handoff/SKILL.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "024e86f17246d31adf8706691920c6cc55b06669cfd6cd5d062e20285cf95cb3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f16dbbd40bac1a0ebd4ed37d28da4775427cd2a13341a3d738dd1aeb7bb0dc6d",
+        "count": 2
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/board.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "0f2ba8ddf6a1b194cd6e0ccd100161a1a3ec2788d27a33c5336d41cd33b25c0a",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "2d051a57367fd0845511d7ab7db79e26e265c242d00a5589ed81025361c06dcd",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "30539fb9a8623ac17d7b9449cc6e6347b099109b5cdd8cf8fba9d7d8420377c4",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "a8a1550d19c9dfceb654bd5fe4314e1afa63de57fb00b3a0fba838c4b3b46cba",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "eda5e62470ddc3012af07a1d2501dd192fa473deb08135a224f1bb079eb7fe38",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4e92ba1f7f2c9eb760fc262bb73a378a6c606a3bd4fde5867c1c311b7bdb9ae0",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "008d5e16318b84caa812a9bd91f4cea8e497267abff874bfa0b95ecc94c54792",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "3a199ce4c57d94f841fdad0b00b51ff664c52c21ed5d966303f5c14b76c6679a",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "54796c90724834bf53faa53ea644699e581801796de7f3dee9f33b65d2dd5789",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a86a7edc7da65e4c8732c6667d440b954f0d8c62f8fcbfca5872ea47f19fd459",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bbd8897c765b74afcfd38596b7c9a21e7aee5b317ba9ff8ebc2c87f0bf6ff4db",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/domain.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "104da500f517b12e0ccce91fac4d1a0287cdc1e9d9e580fe0058c8210c346629",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "3db069b77ea51f46f32b8af8c47f3c98cecb5285a004538b12f04b0469afc7be",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
+        "count": 3
+      },
+      {
+        "kind": "decision_label",
+        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/external_review.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "e34f67d59d24394073e8cb105c9d9e8b7fc43e9abedbe273e178eec61fceb0a3",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/identity_args.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "378927c4bbd165d3eb813fc709199f34ba1fa44741c0758256538219e8abfb73",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_adr.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_bootstrap.py": [
+      {
+        "kind": "decision_label",
+        "hash": "101ee42f23141f5a14ecddcf2e640f9726a94ad9b5ffa80fb14b3ce56070cdc6",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "54c35a57681d5b0bfdd5fcab489f78572f03254714351d8ab16cab3e17ac9023",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "405a4973bbbcfa9b48dd011f791fb0e20058d02dc1eec5849ea6fa87dda2e05b",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6e8275dfae14b1d91819a9503368de6e221bc714be7b3859a896227edb0ebdf3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "956973367cd56ada582f325ae938b94a18c20d9b212e04d9da20c2b4be7e6124",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "975c22dafa2b21135202ffe72affa12141ff1355449e7e6a09e0a6765aa51b8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "aa384ac9e17e088b171f26e4d5d99de005bf197e423babe076386fc5778e7312",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bce89b522cadb993ab74753b15481fd8b92adc6d04659542fb27426eb8cdf997",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d062b0a10863d7fc0e4c71edcea9986dbb2b8d39bbf363b84b9a38ae2142bca5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d3cb76ae01c40da187d42f34b2d0a0523019cc8754d526033d94eaf8d37b2ba8",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f2db079bda3b3ed5671d7f46c64ea0650a6134ab5b6d5a7f8ddb11c50cadf984",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f5cd11408f0e48c46f82d12029ee9d2b7b6b1ba02dfe9c36e0797a76b714b2db",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_delegate.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "5b6d0bcc537536ff9536e7fbb264402bc2c4367417553f07f4e3f88625a9ecf7",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6cdfd4b5a3236193bf0905444401ed43b45b0aaf4f7ee9a1d4bb855bd322eddb",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_handoff.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "2c12342fbc9f3cf1218a9e688359f1ab3e2478dd899a640a57b7bafe79dc8d53",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f5a3fdd60398ebb31e38d19f0676cbe4488801fce13cac3dd6c48c8dc11664f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0dac62604b3f8dc68b916b0f3a23e30328642b64d5b6565319f52144de9e6e2e",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6625c4538dce08f532878768db3aa9f1434a9a1079cfab5f0e627c60e6e2838d",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_import.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "35e30c39321bbe9c97cc15796be7495ece5c0e66272c5ea72f71f180790645ae",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "791401bd88205518662407d318de31bbaa77a4cc37820755699e8f174081d750",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "894adb1808d0ce6ed58d272de893a5f00f5f42aedc11a02b009290df71fa9b57",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "a0c560dd4117f95228b95f51aaeef5bae19d386e657f574424b1a2bb106545b2",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "c4a10064dac3e9164eefe3261837f14f8d34379b30a1be8b652772855cb4422f",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "c532c2bde78bc5439b17dcd3238502f82442268a470891296654f6c0354b4300",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "dac8f42eacfd411659be7fcd9290037f6a476d1990466bec8d6d108ac6bb8ee7",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "e63fa1811ae37db5e49f933358c61bf7a94c09fc8f7f8782d8ece8d166e01c3a",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
+        "count": 2
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_update.py": [
+      {
+        "kind": "decision_label",
+        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "afdfcc43470a9fb396241e15b1aa9f90e6c797eab1d6ee20501203f1613ca1d4",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/ticket_finish.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "6422a58c88ecd72ab5c2c5b18279991431afe360f2e37a58b7af29ba49de6231",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "9364a65fabf2bada72c9de6ba2d0b050129fa15ea92d68e01c4f99b6700e7fd6",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/worktree_pool.py": [
+      {
+        "kind": "decision_label",
+        "hash": "6c726ab00dbe69eea6bc07ff47c577bb065440977c526c81d8580618d2f50644",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "b91df5de85cc658c4f2b91066d790dfe962a6c73af6ca98e388a0891c7e7b1c0",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "860c9064bc112b68fd558571666563b2ec2badf2ddd24fe842b03dd91f9547b5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/wiki/architecture.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "43dd21dcb159f547508186ffb977d150340d8fb1f92a10edd8599a8cdf27a3ec",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "9bdf9dfd8789d307bcf30691b8c024b5873070111d96565a20be088ab1ba7b57",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "bca42d45555134e4db420bc5f0efc4beb477aadb48d2ada96afb60559f867533",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "d5d93d4ae171f9f5bf03fd0cf73ff0700d99798da691c9746b238468444f5308",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "daeb749a8ab60236a1b531e7b6d027e1fe60ace7955d0ccd1288e7648ba14a51",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "ec6ed70bbae949ed1034dabc677978e7c9826881641169a1e1f63f6b80a0ce1f",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/wiki/pm_role.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "c369b87af662695f1a36de92aadfdd2b9a635d5d635834b4a4cd52e40900ec1c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "c9db57645aa0bb92639e9591636aceb78177ebbef0cffa0bf043c98f95fbc996",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d2cff6c3474e20c034bc62e63555b6d5b04a17cf56d97e522b12bcdc88201e20",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f6e39254b394c36ab76c98ee23513e85d617cebc309e97d86dd57aaae0d26934",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/wiki/pm_state.template.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "bdeb5e74740f3c9d3e3532e8d9fa13d6945433c3cbc656e03b7889986dcfa1e1",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/wiki/raw/README.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "57e02cdf3f3801d163201cee8e87a3d9ffba536548328540ec25583dce8ac107",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/wiki/raw/spikes/_template.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "86925bb9abcf6de0d194b8f6ff14eec2925eb2855bffc8db9729cb8568161b7a",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/CLAUDE.lite.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "41945d85809e6276971a277bd17fc56efc971b15f6b136ecf1b5381d812cc319",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "63b6dcdf393509df90213b0b0f29c615f4ad3b201c5cc8e5f53a4155a9179ec6",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/CLAUDE.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "c975ebda52e8f2558bdea346fcccc1a098e2013f470b25b0318f6a2e07221fdd",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "3cdf97d2c0c69fa8d25605e4efef5c3bb5b1efb37bf0b83dd8e6030be7b871eb",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "536789679db4d9024948813dd8ed9cd123bd94f5ee4ff1fab0dba4f1d47f5d7e",
+        "count": 1
+      }
+    ],
+    "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "6976ba3313c52c40da64c46a5d94da94f6984115fc481266cddc58f5f5674190",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "86161879a1fd9f6a6984123e87bb74899686ccda8e1f51b2578622e45025baa3",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "d4fe6b3e64a561d8d3f9c5d866729155c36c59c0e2a17d49a4e9bfe32e2c120f",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "e7e328994702722c0d9ba94db3f9cdba24896adeb3be2414e90619582f03e2d5",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "f7f7b890d32cf6a171733c964536e5bfe15595f266e1dd1c17bcbdd4b1636f74",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "09be4ef0459710fcfaa4aec7cab8a8ed5477ee2f132b676da903bcdbf08d096e",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "12ce6bc47a5d9be25de6105c1f0a6d2fb807a1d0ab9244b3f46b9ff538c89de2",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "2f33f2c0a4ed94da06764faa3166cf5db7859223f9280607df5fba6f85fa4b54",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "9ccfd45507d65ac560d59deb2972918b6f1478a2086af2aa16a1ae68d480301b",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "ce138464172455776a53b84932ad7ed00b945ffb75e06ac29908dc67181f0fb6",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "e6e7889389956b7d9f2d9680b2ac64dba8eaef2637eee6eb63ad4dcffb64c953",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "fead15d20dc313036e18079b38a22862865238251269ac1a2808ea2d73842732",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "c9014125fb202bd77daafe236a583f79ec83a592f6e48aa7f7831e5b7cae06a7",
+        "count": 1
+      }
+    ],
+    "templates/codex/.agents/skills/pm-handoff/SKILL.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "024e86f17246d31adf8706691920c6cc55b06669cfd6cd5d062e20285cf95cb3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f16dbbd40bac1a0ebd4ed37d28da4775427cd2a13341a3d738dd1aeb7bb0dc6d",
+        "count": 2
+      }
+    ],
+    "templates/codex/.project_manager/tools/board.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "0f2ba8ddf6a1b194cd6e0ccd100161a1a3ec2788d27a33c5336d41cd33b25c0a",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "2d051a57367fd0845511d7ab7db79e26e265c242d00a5589ed81025361c06dcd",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "30539fb9a8623ac17d7b9449cc6e6347b099109b5cdd8cf8fba9d7d8420377c4",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "a8a1550d19c9dfceb654bd5fe4314e1afa63de57fb00b3a0fba838c4b3b46cba",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "eda5e62470ddc3012af07a1d2501dd192fa473deb08135a224f1bb079eb7fe38",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4e92ba1f7f2c9eb760fc262bb73a378a6c606a3bd4fde5867c1c311b7bdb9ae0",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "008d5e16318b84caa812a9bd91f4cea8e497267abff874bfa0b95ecc94c54792",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "3a199ce4c57d94f841fdad0b00b51ff664c52c21ed5d966303f5c14b76c6679a",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "54796c90724834bf53faa53ea644699e581801796de7f3dee9f33b65d2dd5789",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a86a7edc7da65e4c8732c6667d440b954f0d8c62f8fcbfca5872ea47f19fd459",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bbd8897c765b74afcfd38596b7c9a21e7aee5b317ba9ff8ebc2c87f0bf6ff4db",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/domain.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "104da500f517b12e0ccce91fac4d1a0287cdc1e9d9e580fe0058c8210c346629",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "3db069b77ea51f46f32b8af8c47f3c98cecb5285a004538b12f04b0469afc7be",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
+        "count": 3
+      },
+      {
+        "kind": "decision_label",
+        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/external_review.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "e34f67d59d24394073e8cb105c9d9e8b7fc43e9abedbe273e178eec61fceb0a3",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/identity_args.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "378927c4bbd165d3eb813fc709199f34ba1fa44741c0758256538219e8abfb73",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_adr.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_bootstrap.py": [
+      {
+        "kind": "decision_label",
+        "hash": "101ee42f23141f5a14ecddcf2e640f9726a94ad9b5ffa80fb14b3ce56070cdc6",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "54c35a57681d5b0bfdd5fcab489f78572f03254714351d8ab16cab3e17ac9023",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "405a4973bbbcfa9b48dd011f791fb0e20058d02dc1eec5849ea6fa87dda2e05b",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6e8275dfae14b1d91819a9503368de6e221bc714be7b3859a896227edb0ebdf3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "956973367cd56ada582f325ae938b94a18c20d9b212e04d9da20c2b4be7e6124",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "975c22dafa2b21135202ffe72affa12141ff1355449e7e6a09e0a6765aa51b8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "aa384ac9e17e088b171f26e4d5d99de005bf197e423babe076386fc5778e7312",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bce89b522cadb993ab74753b15481fd8b92adc6d04659542fb27426eb8cdf997",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d062b0a10863d7fc0e4c71edcea9986dbb2b8d39bbf363b84b9a38ae2142bca5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d3cb76ae01c40da187d42f34b2d0a0523019cc8754d526033d94eaf8d37b2ba8",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f2db079bda3b3ed5671d7f46c64ea0650a6134ab5b6d5a7f8ddb11c50cadf984",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f5cd11408f0e48c46f82d12029ee9d2b7b6b1ba02dfe9c36e0797a76b714b2db",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_delegate.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "5b6d0bcc537536ff9536e7fbb264402bc2c4367417553f07f4e3f88625a9ecf7",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6cdfd4b5a3236193bf0905444401ed43b45b0aaf4f7ee9a1d4bb855bd322eddb",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_handoff.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "2c12342fbc9f3cf1218a9e688359f1ab3e2478dd899a640a57b7bafe79dc8d53",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f5a3fdd60398ebb31e38d19f0676cbe4488801fce13cac3dd6c48c8dc11664f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0dac62604b3f8dc68b916b0f3a23e30328642b64d5b6565319f52144de9e6e2e",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6625c4538dce08f532878768db3aa9f1434a9a1079cfab5f0e627c60e6e2838d",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_import.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "35e30c39321bbe9c97cc15796be7495ece5c0e66272c5ea72f71f180790645ae",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "791401bd88205518662407d318de31bbaa77a4cc37820755699e8f174081d750",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "894adb1808d0ce6ed58d272de893a5f00f5f42aedc11a02b009290df71fa9b57",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "a0c560dd4117f95228b95f51aaeef5bae19d386e657f574424b1a2bb106545b2",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "c4a10064dac3e9164eefe3261837f14f8d34379b30a1be8b652772855cb4422f",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "c532c2bde78bc5439b17dcd3238502f82442268a470891296654f6c0354b4300",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "dac8f42eacfd411659be7fcd9290037f6a476d1990466bec8d6d108ac6bb8ee7",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "e63fa1811ae37db5e49f933358c61bf7a94c09fc8f7f8782d8ece8d166e01c3a",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
+        "count": 2
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_update.py": [
+      {
+        "kind": "decision_label",
+        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "afdfcc43470a9fb396241e15b1aa9f90e6c797eab1d6ee20501203f1613ca1d4",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/ticket_finish.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "6422a58c88ecd72ab5c2c5b18279991431afe360f2e37a58b7af29ba49de6231",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "9364a65fabf2bada72c9de6ba2d0b050129fa15ea92d68e01c4f99b6700e7fd6",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/worktree_pool.py": [
+      {
+        "kind": "decision_label",
+        "hash": "6c726ab00dbe69eea6bc07ff47c577bb065440977c526c81d8580618d2f50644",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "b91df5de85cc658c4f2b91066d790dfe962a6c73af6ca98e388a0891c7e7b1c0",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "860c9064bc112b68fd558571666563b2ec2badf2ddd24fe842b03dd91f9547b5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/wiki/pm_role.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "c369b87af662695f1a36de92aadfdd2b9a635d5d635834b4a4cd52e40900ec1c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "c9db57645aa0bb92639e9591636aceb78177ebbef0cffa0bf043c98f95fbc996",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d2cff6c3474e20c034bc62e63555b6d5b04a17cf56d97e522b12bcdc88201e20",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f6e39254b394c36ab76c98ee23513e85d617cebc309e97d86dd57aaae0d26934",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/wiki/pm_state.template.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "bdeb5e74740f3c9d3e3532e8d9fa13d6945433c3cbc656e03b7889986dcfa1e1",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/wiki/raw/spikes/_template.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "86925bb9abcf6de0d194b8f6ff14eec2925eb2855bffc8db9729cb8568161b7a",
+        "count": 1
+      }
+    ],
+    "templates/codex/AGENTS.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "4bf038aa4c27435866b56c40a9e8df37247246a76480754ad00865d2bd072846",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "ee882d5fd959050d26c674066e8a8678d8fc2c42d8ced5e6456806b24db61046",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "e0fb067b14da37bf2a3a2f501b62dfb6dff78884f3bc7fbe9059c47d1b1bdf3f",
+        "count": 1
+      }
+    ],
+    "templates/codex/README.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "c7954b0c1495a72a7db3d11072e7cb500f9643f72ca63fdb1ad05745fbd7edcb",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "07808432bf8238ea04055a49e4eec3c4ddd0ee77fa9bf33fab8a07708783c836",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "43f5316f18ab2bfdfec669713a3237209b860cc2871a62df46e2c6668c2d68f9",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "ca656c0f1bc5f666d685b2294aff4080b6d1cd39d505fc0c61cc59042f2ddea5",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "ef9c41499c424fec90ef8028f0e1500115682b25f9bf103ecfc86c2f6b76b178",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "56d432979c2df09eb0bc1b177f839c3ec110abc434d566356b54009c4c28d104",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "c9014125fb202bd77daafe236a583f79ec83a592f6e48aa7f7831e5b7cae06a7",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.claude/skills/pm-handoff/SKILL.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "024e86f17246d31adf8706691920c6cc55b06669cfd6cd5d062e20285cf95cb3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f16dbbd40bac1a0ebd4ed37d28da4775427cd2a13341a3d738dd1aeb7bb0dc6d",
+        "count": 2
+      }
+    ],
+    "templates/opencode/.opencode/agents/architect.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "578f80dd0e5da28d7233a1824103b8658ced31b9d46f5c07a415b08f5db3030e",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4edd738d913ced8d5dc27e20746e51f1e5a7b2bba039e1efef17637cc765e0f1",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f1ce3fe2a156912d6bc2f473fc2e3e4a317c36fed7f4a0138577ee3c1163bbd4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "2c68601134396a8602b3f70c66dbb57c16d4e759fbcfd9ecd25a529735fdcc59",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5efc663a1bc5790ed7675387a3dcbe79fde70cf506163768621f7490e0f9bd95",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bee2b6446b42bc7749bc08f9659e2df1020d218e968cd21af07221868f2d9c13",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "eb3b6b1cd6782e2bbcbea79da829d093db050729d3671095ef9b9ab0bdd4750e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f7017ba63a8b3f36833fdd4326a2af6af4edb1dff796c299028a955c2c3a3db8",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.opencode/agents/code-reviewer.md": [
+      {
+        "kind": "decision_label",
+        "hash": "4edd738d913ced8d5dc27e20746e51f1e5a7b2bba039e1efef17637cc765e0f1",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "6ea0c6cced8aa407b66379bfe45c9b6bb7cbe2ad75a969f8fc5dab08941faa82",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "2c68601134396a8602b3f70c66dbb57c16d4e759fbcfd9ecd25a529735fdcc59",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5e832401d0cd1c76deafaf4074c0765acb8c5de4c399a4735eb1f02485b2d292",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6b97e57673aa40347022114e6f34fd29cd6037bc3fba89aacc8210b4d00a4f7f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9bad24cadea980861bbe1b6d9c38ac0a691d7a6f9d4de2de8b653a5562e27398",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bbc316cf41d447e1557194112cf4137fb1b3d28c60dcaaccf81fdb4a1ca86715",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "eb3b6b1cd6782e2bbcbea79da829d093db050729d3671095ef9b9ab0bdd4750e",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.opencode/agents/developer.md": [
+      {
+        "kind": "decision_label",
+        "hash": "8662c95431c4fff90468ba7d6b7497b0382878dc930c54c3a81da206de5b0aac",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f1ce3fe2a156912d6bc2f473fc2e3e4a317c36fed7f4a0138577ee3c1163bbd4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6b73b8c09ce5357d46533b2d61cec85d18ee16e65a3654d95d1cf1e1e312daae",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "73731e4f54b17eba20ce41b9e84b572fb69e8a9689a255833a05010863ab7e58",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8ace67c77cb341e058879b6c1b99cce6add8fcab57e2b65b6ca9cc9aa6a4cf8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bee2b6446b42bc7749bc08f9659e2df1020d218e968cd21af07221868f2d9c13",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f7017ba63a8b3f36833fdd4326a2af6af4edb1dff796c299028a955c2c3a3db8",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.opencode/agents/researcher.md": [
+      {
+        "kind": "decision_label",
+        "hash": "8662c95431c4fff90468ba7d6b7497b0382878dc930c54c3a81da206de5b0aac",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f1ce3fe2a156912d6bc2f473fc2e3e4a317c36fed7f4a0138577ee3c1163bbd4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6b97e57673aa40347022114e6f34fd29cd6037bc3fba89aacc8210b4d00a4f7f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "73731e4f54b17eba20ce41b9e84b572fb69e8a9689a255833a05010863ab7e58",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bee2b6446b42bc7749bc08f9659e2df1020d218e968cd21af07221868f2d9c13",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "cbc0220bc133de35c4b95df3abeed12b3a3a72ad9bb4d24dc8249468e47c4ad9",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "eb3b6b1cd6782e2bbcbea79da829d093db050729d3671095ef9b9ab0bdd4750e",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.opencode/node_modules/@ai-sdk/provider/CHANGELOG.md": [
+      {
+        "kind": "decision_label",
+        "hash": "a3a9ba2b1ef886e5e4a92ea7692ef00b020c6e68071208ab6415b8646239409b",
+        "count": 2
+      }
+    ],
+    "templates/opencode/.opencode/node_modules/msgpackr-extract/README.md": [
+      {
+        "kind": "decision_label",
+        "hash": "1308cca67d13c0fb2574035028d47d39249e3fc752bf72327783db6e5418521c",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.opencode/node_modules/msgpackr/README.md": [
+      {
+        "kind": "decision_label",
+        "hash": "29f1464faf33b6b9cc95faf9fb0b53c2651b19fd37be3c4d163e78a5a70bbdab",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "6777e170f504f3d3983dd45d39ee40fd894632af9091afa73f6ec183d37054d9",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "b6140562cdfa2d6e19c8d20c7728ed71de00d5e4dd19e1a991d47b757a094690",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.opencode/node_modules/msgpackr/benchmark.md": [
+      {
+        "kind": "decision_label",
+        "hash": "41285e9ab4d10627b1d328350bb8d4207ad7b39c547ce01b655b08fdafdea143",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.opencode/node_modules/pure-rand/README.md": [
+      {
+        "kind": "decision_label",
+        "hash": "069644004245d54603136f878e452acc0f82f7f619c890a6794d12257f43feba",
+        "count": 3
+      },
+      {
+        "kind": "decision_label",
+        "hash": "30f0d44761330c88ef7e2f72b8650e322271065563e6af83926ebbe391a3e8e1",
+        "count": 2
+      }
+    ],
+    "templates/opencode/.opencode/node_modules/toml/README.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "0ea4287f79103afcb3eaf8b46fc1c7cd86584fdb9973d661f62b7ad34dd1afd8",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5a1f54adc17e28ee1a8ed8e7bcca6a8b8240c0119767b37d7e732f7dad9c89c4",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9e0009e463c02ba346f02263464af911674015ddb334dc78fa4d82021bc66bdd",
+        "count": 2
+      }
+    ],
+    "templates/opencode/.opencode/node_modules/uuid/README.md": [
+      {
+        "kind": "decision_label",
+        "hash": "ce1d4c9caba3ab26c6f5b237cf50b962ba2f712ad1c5341463e96bb9e503deed",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "c91ccc2eaf545ae9ca9d920519b3e1ea0d5e1191814cbc87aa3bab44f00eab9a",
+        "count": 2
+      }
+    ],
+    "templates/opencode/.opencode/pm-instructions.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "0ffed779a1c38ffda989068844de3d468571ec4ebd06a6d6365f4ce0aa31a9da",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "171ed574ad364ad582909455b8b22f379adf1e1ef99b7b434aa3aa3afc81d751",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "47316b6aaf9a25ce6a20e4d8e9b77c441c689c1d39abfc7b3060d96400984eed",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "4db5ba8f97028199f463d3c3e97218c6d1bbc0234507eec24dbde53274b89932",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "b1bb3f71ba257679754e54b1bd9d7cc1e27d5db96ef2a1b4a6768a26511041a1",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "c8e967003e2e44ac412dd3814469e0b0768ceab9d467908415cc96198a30da0a",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d66d831e7efd96d51a17e9f0d9687c0b171f056631aa5c3b6010070805f7a0e5",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/board.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "0f2ba8ddf6a1b194cd6e0ccd100161a1a3ec2788d27a33c5336d41cd33b25c0a",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "2d051a57367fd0845511d7ab7db79e26e265c242d00a5589ed81025361c06dcd",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "30539fb9a8623ac17d7b9449cc6e6347b099109b5cdd8cf8fba9d7d8420377c4",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "a8a1550d19c9dfceb654bd5fe4314e1afa63de57fb00b3a0fba838c4b3b46cba",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "eda5e62470ddc3012af07a1d2501dd192fa473deb08135a224f1bb079eb7fe38",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4e92ba1f7f2c9eb760fc262bb73a378a6c606a3bd4fde5867c1c311b7bdb9ae0",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "008d5e16318b84caa812a9bd91f4cea8e497267abff874bfa0b95ecc94c54792",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "3a199ce4c57d94f841fdad0b00b51ff664c52c21ed5d966303f5c14b76c6679a",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "54796c90724834bf53faa53ea644699e581801796de7f3dee9f33b65d2dd5789",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a86a7edc7da65e4c8732c6667d440b954f0d8c62f8fcbfca5872ea47f19fd459",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bbd8897c765b74afcfd38596b7c9a21e7aee5b317ba9ff8ebc2c87f0bf6ff4db",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/domain.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "104da500f517b12e0ccce91fac4d1a0287cdc1e9d9e580fe0058c8210c346629",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "3db069b77ea51f46f32b8af8c47f3c98cecb5285a004538b12f04b0469afc7be",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
+        "count": 3
+      },
+      {
+        "kind": "decision_label",
+        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/external_review.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "e34f67d59d24394073e8cb105c9d9e8b7fc43e9abedbe273e178eec61fceb0a3",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/identity_args.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "378927c4bbd165d3eb813fc709199f34ba1fa44741c0758256538219e8abfb73",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_adr.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_bootstrap.py": [
+      {
+        "kind": "decision_label",
+        "hash": "101ee42f23141f5a14ecddcf2e640f9726a94ad9b5ffa80fb14b3ce56070cdc6",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "54c35a57681d5b0bfdd5fcab489f78572f03254714351d8ab16cab3e17ac9023",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "405a4973bbbcfa9b48dd011f791fb0e20058d02dc1eec5849ea6fa87dda2e05b",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6e8275dfae14b1d91819a9503368de6e221bc714be7b3859a896227edb0ebdf3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "956973367cd56ada582f325ae938b94a18c20d9b212e04d9da20c2b4be7e6124",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "975c22dafa2b21135202ffe72affa12141ff1355449e7e6a09e0a6765aa51b8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "aa384ac9e17e088b171f26e4d5d99de005bf197e423babe076386fc5778e7312",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bce89b522cadb993ab74753b15481fd8b92adc6d04659542fb27426eb8cdf997",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d062b0a10863d7fc0e4c71edcea9986dbb2b8d39bbf363b84b9a38ae2142bca5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d3cb76ae01c40da187d42f34b2d0a0523019cc8754d526033d94eaf8d37b2ba8",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f2db079bda3b3ed5671d7f46c64ea0650a6134ab5b6d5a7f8ddb11c50cadf984",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f5cd11408f0e48c46f82d12029ee9d2b7b6b1ba02dfe9c36e0797a76b714b2db",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_delegate.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "5b6d0bcc537536ff9536e7fbb264402bc2c4367417553f07f4e3f88625a9ecf7",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6cdfd4b5a3236193bf0905444401ed43b45b0aaf4f7ee9a1d4bb855bd322eddb",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_handoff.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "2c12342fbc9f3cf1218a9e688359f1ab3e2478dd899a640a57b7bafe79dc8d53",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "f5a3fdd60398ebb31e38d19f0676cbe4488801fce13cac3dd6c48c8dc11664f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0dac62604b3f8dc68b916b0f3a23e30328642b64d5b6565319f52144de9e6e2e",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6625c4538dce08f532878768db3aa9f1434a9a1079cfab5f0e627c60e6e2838d",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_import.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "35e30c39321bbe9c97cc15796be7495ece5c0e66272c5ea72f71f180790645ae",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "791401bd88205518662407d318de31bbaa77a4cc37820755699e8f174081d750",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "894adb1808d0ce6ed58d272de893a5f00f5f42aedc11a02b009290df71fa9b57",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "a0c560dd4117f95228b95f51aaeef5bae19d386e657f574424b1a2bb106545b2",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "c4a10064dac3e9164eefe3261837f14f8d34379b30a1be8b652772855cb4422f",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "c532c2bde78bc5439b17dcd3238502f82442268a470891296654f6c0354b4300",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "dac8f42eacfd411659be7fcd9290037f6a476d1990466bec8d6d108ac6bb8ee7",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "e63fa1811ae37db5e49f933358c61bf7a94c09fc8f7f8782d8ece8d166e01c3a",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
+        "count": 2
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_update.py": [
+      {
+        "kind": "decision_label",
+        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "afdfcc43470a9fb396241e15b1aa9f90e6c797eab1d6ee20501203f1613ca1d4",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/ticket_finish.py": [
+      {
+        "kind": "circled_marker",
+        "hash": "6422a58c88ecd72ab5c2c5b18279991431afe360f2e37a58b7af29ba49de6231",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "9364a65fabf2bada72c9de6ba2d0b050129fa15ea92d68e01c4f99b6700e7fd6",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/worktree_pool.py": [
+      {
+        "kind": "decision_label",
+        "hash": "6c726ab00dbe69eea6bc07ff47c577bb065440977c526c81d8580618d2f50644",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
+        "hash": "b91df5de85cc658c4f2b91066d790dfe962a6c73af6ca98e388a0891c7e7b1c0",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "860c9064bc112b68fd558571666563b2ec2badf2ddd24fe842b03dd91f9547b5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/wiki/architecture.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "43dd21dcb159f547508186ffb977d150340d8fb1f92a10edd8599a8cdf27a3ec",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "9bdf9dfd8789d307bcf30691b8c024b5873070111d96565a20be088ab1ba7b57",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "bca42d45555134e4db420bc5f0efc4beb477aadb48d2ada96afb60559f867533",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "d5d93d4ae171f9f5bf03fd0cf73ff0700d99798da691c9746b238468444f5308",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "daeb749a8ab60236a1b531e7b6d027e1fe60ace7955d0ccd1288e7648ba14a51",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "ec6ed70bbae949ed1034dabc677978e7c9826881641169a1e1f63f6b80a0ce1f",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/wiki/pm_role.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "c369b87af662695f1a36de92aadfdd2b9a635d5d635834b4a4cd52e40900ec1c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "c9db57645aa0bb92639e9591636aceb78177ebbef0cffa0bf043c98f95fbc996",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d2cff6c3474e20c034bc62e63555b6d5b04a17cf56d97e522b12bcdc88201e20",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f6e39254b394c36ab76c98ee23513e85d617cebc309e97d86dd57aaae0d26934",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/wiki/pm_state.template.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "bdeb5e74740f3c9d3e3532e8d9fa13d6945433c3cbc656e03b7889986dcfa1e1",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/wiki/raw/README.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "57e02cdf3f3801d163201cee8e87a3d9ffba536548328540ec25583dce8ac107",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/wiki/raw/spikes/_template.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "86925bb9abcf6de0d194b8f6ff14eec2925eb2855bffc8db9729cb8568161b7a",
+        "count": 1
+      }
+    ],
+    "templates/opencode/AGENTS.lite.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "7e9688838862685b83878110279c9544ec87ad7c4f5ac1ffc353fad59ec63b7c",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "b5d1b9b14a7070f1734927e0b26d487a00c5ed5a80d8b4a671fd3ff982878f7e",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "2ad85f27ec1d3f7b004f6276274d3f168f422e30b056960b2b5d88b5570ea71f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "76cfdcb892083b00e77884b57e1e001e4ffeefb782f7a21dd9940a23522b85e4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "bc60a56a456b21a2e4b37a7ffb9333cb3ecaadaa2a46901f178d7f0306657d9a",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f94574db2e9deaf3ce112cb3f67326744709457f547716a5a8f9ce13c8a9d292",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "fb3f3b58c680e2201996798c7d93e0e1909a02b1feb4f43f2b8a30e04dd64f50",
+        "count": 1
+      }
+    ],
+    "templates/opencode/AGENTS.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "4bf038aa4c27435866b56c40a9e8df37247246a76480754ad00865d2bd072846",
+        "count": 2
+      },
+      {
+        "kind": "decision_label",
+        "hash": "ee882d5fd959050d26c674066e8a8678d8fc2c42d8ced5e6456806b24db61046",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "e0fb067b14da37bf2a3a2f501b62dfb6dff78884f3bc7fbe9059c47d1b1bdf3f",
+        "count": 1
+      }
+    ],
+    "templates/opencode/README.md": [
+      {
+        "kind": "decision_label",
+        "hash": "f59d827406510a1ebdf7ea35d8a353d5f58bde96ecf3a25215c01635f93f77f9",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "81899d35ee091d9fcbab677502e5906ac3528dee28c8014bd162ad4203f4cd59",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9d9a17a35e1435b21307859d4dbc1b0ab65675b140770f14bdc44d2225517a30",
+        "count": 1
+      }
+    ]
+  }
+}

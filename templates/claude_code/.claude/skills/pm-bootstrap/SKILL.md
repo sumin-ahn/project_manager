@@ -8,7 +8,7 @@ audience: user-entrypoint
 
 > {{PROJECT_NAME}} PM 세션의 *기계 측정 + 인계 컨텍스트* 를 한 trigger 로 dump 한다 — board·git·회귀에
 > 더해 **차수(`PM N차`) announce · log 마지막 handoff entry 본문 전체 · pm_state 남은작업/사용자발의 절**을
-> 자동 surface 한다(self-sufficient·ADR-0035). PM 손은 *그 dump 를 요약·판단 / 옵션 제시 / 결정 요청* 만.
+> 자동 surface 한다(self-sufficient). PM 손은 *그 dump 를 요약·판단 / 옵션 제시 / 결정 요청* 만.
 > backbone = `.project_manager/tools/pm_bootstrap.py`.
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
@@ -25,13 +25,13 @@ skill 호출 *전* PM 세션은 이미 다음을 읽어야 한다 (pm_role.md §
 3. 현재 정체성의 pm_state — **task 모드**는 `.project_manager/.local/tasks/<task>/pm_state.md`
    가 세션보다 오래 사는 연속성의 단일 앵커다. **slot 모드**는
    `.project_manager/.local/slots/<repo>_<N>/pm_state.md`(`<repo>_<N>` = worktree
-   `work/<repo>_<N>` basename), 솔로는 `wiki/pm_state.md` legacy 폴백(T-0166/ADR-0033).
+   `work/<repo>_<N>` basename), 솔로는 `wiki/pm_state.md` legacy 폴백.
    신규 task는 호출 전 파일이 없는 것이 정상이며, backbone이 task를 장부에 생성하는 즉시
    pm_state도 함께 만든 뒤 같은 실행에서 읽는다. 사용자가 미리 만들거나 slot을 먼저 줄 필요가 없다.
    **부트스트랩이 현재 정체성의 파일에서 차수·남은작업을 자동 surface** 하니 손-read 는 보충일 뿐.
 4. `.project_manager/wiki/status.md`
 5. board 상태 — `python3 .project_manager/tools/board.py list` (board.md 는 파생 대시보드 · git-untracked — skill 이 자동 측정)
-6. log/current.md 마지막 handoff entry — **부트스트랩이 본문 전체를 자동 dump** 한다(self-sufficient·ADR-0035). 직접 `python3 .project_manager/tools/pm_log.py tail` 은 baseline 재확인·더 넓은 범위 인용 시에만.
+6. log/current.md 마지막 handoff entry — **부트스트랩이 본문 전체를 자동 dump** 한다(self-sufficient). 직접 `python3 .project_manager/tools/pm_log.py tail` 은 baseline 재확인·더 넓은 범위 인용 시에만.
 
 skill 은 *기계 측정* 만 자동화한다. 컨텍스트 인지·결정은 PM 의 몫.
 
@@ -45,7 +45,7 @@ skill 은 *기계 측정* 만 자동화한다. 컨텍스트 인지·결정은 PM
 
 backbone `.project_manager/tools/pm_bootstrap.py` 호출은 skill 내부에서 수행한다.
 
-**multi-PM 모드 (멀티-PM·lean·T-0074)** — 사용자가 `/pm-bootstrap <repo> --slot <N>` 처럼 repo·슬롯을
+**multi-PM 모드 (멀티-PM·lean)** — 사용자가 `/pm-bootstrap <repo> --slot <N>` 처럼 repo·슬롯을
 주면, 그 인자를 그대로 엔진에 forward 한다:
 
 ```bash
@@ -57,7 +57,7 @@ python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
 `--repo <repo> --slot <N>` 을 명시**한다(정체성=대화 맥락·도구엔 명시 전달). 슬롯은 미리
 `pm-config worktree add <repo>` 로 만들어 둔다. (솔로/무인자면 위 무-인자 dump 그대로.)
 
-**task 모드 (일반 사용자 경로·작업 단위 정체성·T-0353)** — 사용자는 다음 한 줄로 신규 task를
+**task 모드 (일반 사용자 경로·작업 단위 정체성)** — 사용자는 다음 한 줄로 신규 task를
 시작하거나 기존 task를 재개한다(auto-task 없음):
 
 ```text
@@ -98,7 +98,7 @@ python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
 
 CLI 가 markdown 표 dump:
 
-- **board**: `done / open / claimed / blocked` — 전부 **내 세션 스코프**(ADR-0067: open=내 세션이 생성한 스트림·claim=내 세션). 타 세션분(open/claim)은 기본 dump 에 안 나온다 — 공유 풀 전체·타 PM 현황은 명시 조회 `board.py list --all`(전체)·`--mine`(내 전 세션) 로만. **board 숫자는 스냅샷 — 옵션 제시 전 `board.py list --mine` 으로 claim 주체를 교차 확인**(부분 push/오프라인 창).
+- **board**: `done / open / claimed / blocked` — 전부 **내 세션 스코프**(open=내 세션이 생성한 스트림·claim=내 세션). 타 세션분(open/claim)은 기본 dump 에 안 나온다 — 공유 풀 전체·타 PM 현황은 명시 조회 `board.py list --all`(전체)·`--mine`(내 전 세션) 로만. **board 숫자는 스냅샷 — 옵션 제시 전 `board.py list --mine` 으로 claim 주체를 교차 확인**(부분 push/오프라인 창).
 - **회귀**: default 는 `(skip — handoff entry 참조 · --with-pytest 로 재측정)`.
   `--with-pytest` 명시 시 `N / N passed`. red 면 즉시 baseline fix 필요 (wave 시작 차단).
 - **git**: 브랜치 + 최근 5 commit + working tree clean 여부. task-only면 task 소유 작업공간만

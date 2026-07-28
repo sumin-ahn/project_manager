@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""domain 레이어 — 페이지 covers 파서 + 코드↔페이지 인덱스 (ADR-0018 · Phase 1 #1).
+"""domain 레이어 — 페이지 covers 파서 + 코드↔페이지 인덱스 (Phase 1 #1).
 
 `domain/` 의 각 페이지 frontmatter `covers:`(담당 코드 글롭)를 파싱해 *페이지 ↔ 코드*
 인덱스를 만든다. 이게 이후 touches∩covers 매칭(#2)·staleness(#3)·소환(Phase 2)의 토대다.
@@ -8,12 +8,12 @@
 (`pages_for_touches`·#2)·staleness(`page_stale`·#3)·freshness lint(`lint_pages`)·
 CLI(`list`/`affected`/`capture`/`capture-draft`/`lint`). capture(채록·`uncovered_paths`
 gap·Phase 3)는 surface-only — 담당 페이지·coverage gap 을 *띄울* 뿐 본문 자동 생성/스탬프는
-안 한다(자동 `updated:` 는 stale 탐지를 거짓으로 만듦·ADR-0018 결정). capture-draft(T-0167·
+안 한다(자동 `updated:` 는 stale 탐지를 거짓으로 만듦). capture-draft(
 Phase 2)는 researcher 조사 prose 를 domain 초안(`status: draft`)으로 *scaffold* 한다 —
 prose 는 verbatim 배치(요약/구조화 금지)·**git 무조작**(add/commit 0)·promote(draft→정식)는
 사람 손. 범위 밖(후속): derive(코드서 자동 채록·`derived:true`·Phase 5)·contradiction(LLM).
 
-설계 (ADR-0018):
+설계:
   - **frontmatter 파싱은 board.load_ticket 재사용** — 이름은 ticket 이나 임의 frontmatter md
     파서다(board.py:714). 중복 파서 정의 금지(DRY·codex reuse 강조). board 는 같은 tools/
     에서 `_load_module`(spec_from_file_location) 로 로드한다 — 패키지 설치 없이 동작하는
@@ -73,7 +73,7 @@ _GIT_LOG_FORMAT = "--format=%cI"
 
 GIT_TIMEOUT_SECONDS = 120
 
-# normalized touch checkout ↔ 페이지 소유 checkout 정체성 캐시(T-0473 R5).
+# normalized touch checkout ↔ 페이지 소유 checkout 정체성 캐시.
 # domain affected/capture는 touch×page 카테시안에 가까운 반복 매칭을 하므로 checkout별
 # `rev-parse --git-common-dir` 결과(실패 포함)를 한 번만 구하고, 경로쌍 최종 판정도 재사용한다.
 # 프로세스 수명이 곧 CLI 한 번의 배치 수명이라 별도 invalidation은 불필요하다.
@@ -81,7 +81,7 @@ _REPOSITORY_IDENTITY_CACHE: dict[Path, tuple[Path | None, str | None]] = {}
 _REPOSITORY_MATCH_CACHE: dict[tuple[Path, Path], tuple[bool | None, str | None]] = {}
 
 
-# ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
+# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
 # 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
@@ -89,12 +89,12 @@ _REPOSITORY_MATCH_CACHE: dict[tuple[Path, Path], tuple[bool | None, str | None]]
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
 ENGINE_REV = "v1.4.5"
 
-# rev 스탬프를 지닌(=T-0397 계측된) 형제 파일만 대조 대상. 계측 확대 시 여기 추가.
+# rev 스탬프를 지닌 형제 파일만 대조 대상. 계측 확대 시 여기 추가.
 _STAMPED_SIBLINGS = frozenset({"board.py", "repo_coordinates.py"})
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (T-0397·fail-loud·skew→명시 에러).
+    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (fail-loud·skew→명시 에러).
 
     불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
     지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
@@ -106,12 +106,12 @@ def _verify_engine_rev(sibling_module, sibling_filename):
             f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
             f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
         )
-        err._engine_rev_skew = True  # T-0397 — fail-soft 로더가 재-raise 식별
+        err._engine_rev_skew = True  # fail-soft 로더가 재-raise 식별
         raise err
 
 
 def _is_engine_rev_skew(exc) -> bool:
-    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (T-0397·fail-soft 로더 재-raise 식별)."""
+    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (fail-soft 로더 재-raise 식별)."""
     return getattr(exc, "_engine_rev_skew", False)
 
 
@@ -131,9 +131,9 @@ def _load_module(name: str, filename: str):
         spec.loader.exec_module(mod)
     except Exception as exc:  # noqa: BLE001 — 로드 실패는 호출부가 명시 에러로 보고.
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — 사본 skew 는 fail-loud(삼키지 않는다).
+            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return None
-    if filename in _STAMPED_SIBLINGS:  # T-0397 불변식: stamped sibling 로드 지점은 verify
+    if filename in _STAMPED_SIBLINGS:  # 불변식: stamped sibling 로드 지점은 verify
         _verify_engine_rev(mod, filename)
     return mod
 
@@ -270,7 +270,7 @@ def _path_or_directory_matches_covers(path: str, covers: list[str]) -> bool:
 
 # ── staleness (git 기반·covers→pathspec·fail-soft) ───────────────────────────
 # 페이지 `covers` 코드가 페이지 `updated` *후* git 커밋된 적 있으면 stale = "페이지 지식이
-# 코드보다 뒤처졌을 수 있다"(ADR-0018 Q3). enforcement 아닌 visibility — ⚠ 표시·lint
+# 코드보다 뒤처졌을 수 있다". enforcement 아닌 visibility — ⚠ 표시·lint
 # advisory 만(막지 않음). 판정불가는 전부 None(fail-soft·"unknown") — git 부재(솔로/CI)·
 # 에러·covers 빈·updated 파싱 실패에 crash 0.
 
@@ -306,7 +306,7 @@ def _real_git_runner(cwd: Path) -> GitRunner:
 
 
 def _page_owner_repo(page: dict) -> tuple[Path | None, str | None]:
-    """페이지 ``repo:`` 채널을 소유 checkout 실경로로 해소한다(T-0470/T-0473).
+    """페이지 ``repo:`` 채널을 소유 checkout 실경로로 해소한다.
 
     board의 `_freshness_owner_repo`가 `self`/`upstream` 해소의 단일 진실이다. 미지원/빈 repo,
     upstream 미설정·URL·이동 등은 ``(None, reason)``으로 보존한다. 구 board(리졸버 부재)와
@@ -342,7 +342,7 @@ def _page_owner_repo(page: dict) -> tuple[Path | None, str | None]:
 
 
 def _page_owner_git_runner(page: dict) -> GitRunner | None:
-    """페이지 `repo:`를 소유 checkout runner로 해소한다(date freshness 축·T-0470)."""
+    """페이지 `repo:`를 소유 checkout runner로 해소한다(date freshness 축)."""
     owner_repo, _owner_error = _page_owner_repo(page)
     if owner_repo is None:
         return None
@@ -350,7 +350,7 @@ def _page_owner_git_runner(page: dict) -> GitRunner | None:
 
 
 def _repository_identity(checkout: Path) -> tuple[Path | None, str | None]:
-    """checkout의 저장소 정체성인 해소된 git common-dir를 반환한다(T-0473 R5).
+    """checkout의 저장소 정체성인 해소된 git common-dir를 반환한다.
 
     linked worktree 슬롯들은 checkout 절대경로가 달라도 `--git-common-dir`를 공유한다.
     반대로 별개 저장소는 같은 상대경로 파일을 가져도 common-dir가 다르다. git 실패·빈 출력·
@@ -431,7 +431,7 @@ def _same_repository_checkouts(
 
 def _escape_glob_literals(g: str) -> str:
     """git `:(glob)` wildmatch 특수문자 중 **우리 covers 시맨틱이 와일드카드로 안 쓰는** 것을
-    백슬래시 이스케이프한다 — `*`/`**` 만 와일드카드로 보존한다 (codex R7).
+    백슬래시 이스케이프한다 — `*`/`**` 만 와일드카드로 보존한다.
 
     우리 covers 매처는 `*`(세그먼트 내)·`**`(재귀)만 와일드카드로 보고 `?`·`[`·`]` 는 리터럴로
     본다. 그런데 git `:(glob)` 은 `?`(임의 1자)·`[...]`(문자클래스)도 와일드카드라, 리터럴
@@ -446,7 +446,7 @@ def _escape_glob_literals(g: str) -> str:
 
 
 def _is_supported_covers_glob(g: str) -> bool:
-    """`g`(비-공백 stripped 글롭)가 **우리 matcher 와 git `:(glob)` 이 동일 의미인** 형태인가 (codex R8).
+    """`g`(비-공백 stripped 글롭)가 **우리 matcher 와 git `:(glob)` 이 동일 의미인** 형태인가.
 
     엣지별 추격 대신 **지원 문법을 명시 검증**하고, 두 방언에서 의미가 증명된 형태만 변환한다.
     지원(실 git property 테스트로 동일성 증명·`tests/test_domain_freshness.py`):
@@ -456,12 +456,12 @@ def _is_supported_covers_glob(g: str) -> bool:
       - leading `**/`·middle `/**/` 경계 `**`, **리터럴-prefix** trailing `/**`(`src/**`·`src/nested/**`).
     **미지원**(→ 호출부 unmappable advisory·오번역 안 함): **비-경계 `**`**(`**.py`·`src/**.py`·`a**b`
     — git 은 `**` 를 세그먼트 못 넘게 처리해 중첩 파일을 **miss=false-green**), `***` 이상,
-    **repo-밖/절대 경로**(선행 `/`·`..` 세그먼트·Windows 드라이브 `X:`·codex R10 MF-2),
+    **repo-밖/절대 경로**(선행 `/`·`..` 세그먼트·Windows 드라이브 `X:`),
     **wildcard-prefix + trailing `/**`**(`*/**`·`a*b/**`·`src/*/**`·`*/literal/**` — 우리 matcher 의
     trailing `/**`=parent-포함(`(?:/.*)?`)이 prefix-레벨/루트 파일(`.gitignore`)까지 매칭하나 git
-    `:(glob)…/**` 는 슬래시 필수라 제외 → **git miss=false-green**·codex R20). 우리 실사용(② 전 페이지 =
-    정확 경로 + 리터럴-prefix `/**`)은 전부 지원 집합 안(② 무회귀·실 git property 테스트로 재확정)."""
-    # repo-밖/절대 경로 선분류 (순수 문자열·git 호출 불요·codex R10 MF-2).
+    `:(glob)…/**` 는 슬래시 필수라 제외 → **git miss=false-green**). 우리 실사용(전 페이지 =
+    정확 경로 + 리터럴-prefix `/**`)은 전부 지원 집합 안(실 git property 테스트)."""
+    # repo-밖/절대 경로 선분류 (순수 문자열·git 호출 불요).
     if g.startswith("/"):
         return False  # 절대 경로(POSIX)
     if re.match(r"[A-Za-z]:", g):
@@ -469,7 +469,7 @@ def _is_supported_covers_glob(g: str) -> bool:
     if ".." in re.split(r"[\\/]", g):
         return False  # `..` 세그먼트 = repo 밖 탈출
     # trailing `/**` 는 prefix 가 전부 리터럴일 때만 두 방언 동등 — prefix 에 와일드카드가 있으면
-    # 우리 parent-포함 매칭(prefix-레벨/루트 파일)이 git `…/**`(슬래시 필수)와 갈린다(codex R20).
+    # 우리 parent-포함 매칭(prefix-레벨/루트 파일)이 git `…/**`(슬래시 필수)와 갈린다.
     if g.endswith("/**") and "*" in g[:-3]:
         return False
     i, n = 0, len(g)
@@ -496,16 +496,16 @@ def _is_supported_covers_glob(g: str) -> bool:
 
 
 def covers_glob_pathspec(glob) -> str | None:
-    """covers 글롭을 git **`:(glob)` magic pathspec** 으로 직접 변환한다 (codex R6·손실 접두사 폐기).
+    """covers 글롭을 git **`:(glob)` magic pathspec** 으로 직접 변환한다 (손실 접두사 폐기).
 
     `git diff`(HEAD 트리)/`git log` 에 `:(glob)<원본 글롭>` 을 넘겨 git 이 `*`(세그먼트 내·`/` 안 넘음)·
     경계 `**`(슬래시 횡단)을 **네이티브로** 처리하게 한다 — 접두사 추출의 **손실**(접두사-없는 글롭
     통째 skip·`src/*.py`→`src/` 과확장)을 없앤다.
     `*` 외 git glob 특수문자(`?`·`[`·`]`·백슬래시)는 `_escape_glob_literals` 로 이스케이프해 리터럴
-    보존(codex R7). **지원 문법만 변환**한다(codex R8·`_is_supported_covers_glob`) — 빈/공백 또는 두
+    보존. **지원 문법만 변환**한다(`_is_supported_covers_glob`) — 빈/공백 또는 두
     방언 의미가 다른 형태(비-경계 `**` 등)는 오번역 대신 `None`(호출부가 unmappable advisory).
     sha-축(`covers_pathspecs`)과 date-축(`page_stale`/`lint_domain`) 이 **공유**하는 단일 판정 기계다
-    (T-0459 — date-축도 종전 손실 접두사에서 이 원본-글롭 판정으로 통일)."""
+    (date-축도 종전 손실 접두사에서 이 원본-글롭 판정으로 통일)."""
     g = str(glob or "").strip()
     if not g or not _is_supported_covers_glob(g):
         return None
@@ -513,9 +513,9 @@ def covers_glob_pathspec(glob) -> str | None:
 
 
 # object-format 별 git 빈 트리 OID (git 정의 상수). `diff <빈-트리> HEAD` = HEAD 트리 전체를
-# 추가로 보여 준다 — HEAD **커밋 트리**를 `:(glob)` pathspec 으로 질의하는 수단(codex R9·`git ls-tree`
+# 추가로 보여 준다 — HEAD **커밋 트리**를 `:(glob)` pathspec 으로 질의하는 수단(`git ls-tree`
 # 는 pathspec magic 미지원). SHA-1 만 하드코딩하면 SHA-256 repo 서 안 맞아 diff rc≠0 → 전축 silent
-# skip(codex R10 MF-1) — `rev-parse --show-object-format` 로 알고 감지 후 맞는 OID 를 쓴다(cross-platform·
+# skip — `rev-parse --show-object-format` 로 알고 감지 후 맞는 OID 를 쓴다(cross-platform·
 # runner 경유·`/dev/null` 미의존이라 Windows 무회귀·`git hash-object -t tree /dev/null` 동치).
 _EMPTY_TREE_OID_BY_FORMAT = {
     "sha1": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
@@ -524,7 +524,7 @@ _EMPTY_TREE_OID_BY_FORMAT = {
 
 
 def _empty_tree_oid(runner: GitRunner) -> str | None:
-    """이 repo 의 object-format 에 맞는 빈 트리 OID (SHA-1/SHA-256 중립·codex R10 MF-1).
+    """이 repo 의 object-format 에 맞는 빈 트리 OID (SHA-1/SHA-256 중립).
 
     `git rev-parse --show-object-format` 로 알고 감지 → 상수 조회. 미지 포맷·감지 실패(rc≠0·
     ancient git·예외) → None(호출부가 fail-soft skip). repo-constant 라 covers_pathspecs 가 1회 산출."""
@@ -539,28 +539,28 @@ def _empty_tree_oid(runner: GitRunner) -> str | None:
 
 def _pathspec_observable(runner: GitRunner, pathspec: str, verified_at: str,
                          empty_tree: str | None) -> bool | None:
-    """`pathspec`(git `:(glob)` magic 등) 이 `verified_at` **기준으로** 관찰 가능한가 (codex R2/R4-β/R9).
+    """`pathspec`(git `:(glob)` magic 등) 이 `verified_at` **기준으로** 관찰 가능한가.
 
     - `True`  = **HEAD 트리**(커밋됨)에 있음 **또는** pin 이후 델타 있음(`<verified_at>..HEAD` 비지
       않음 — pin 이후 삭제/rename 도 관찰 가능한 델타). 미추적 present 는 곧 pin 이후 델타라 기존
       `<sha>..HEAD` stale 검사가 자연히 stale 로 잡는다.
     - `False` = HEAD 트리에 없음 + pin 이후 델타 0 = **pin 시점부터 이 저장소가 못 봄**. never-tracked
-      (② 의 `templates/**` 류·이력 0) 이든 pin *이전* 삭제/외부 이전이든 forward-관찰가능성 0 →
+      (`templates/**` 류·이력 0) 이든 pin *이전* 삭제/외부 이전이든 forward-관찰가능성 0 →
       동일하게 판정 불가(unverifiable·호출부 advisory).
     - `None`  = git 오류(rc≠0·non-repo·예외)·`empty_tree` 산출 실패 — 분류 불가(거짓 분류 없이 skip).
 
-    **판정 축을 커밋 이력과 일관되게 HEAD 트리 기준으로 한다**(codex R9): 종전 `git ls-files` 는
+    **판정 축을 커밋 이력과 일관되게 HEAD 트리 기준으로 한다**
     **index(staged)** 를 포함해 — 새 경로를 stage 만 해도 present 인데 `<sha>..HEAD` 는 비어 순간
     false-green 이었다. `git diff --name-only <빈-트리> HEAD -- <pathspec>`(HEAD 커밋 트리를 `:(glob)`
     그대로 질의)로 바꿔 **staged-추가는 present 아님**(HEAD 미포함)·**staged-삭제는 present 유지**
-    (HEAD 트리엔 있음)로 커밋-기준 일관. 빈 트리 OID(`empty_tree`)는 object-format 중립(codex R10 MF-1).
+    (HEAD 트리엔 있음)로 커밋-기준 일관. 빈 트리 OID(`empty_tree`)는 object-format 중립.
 
-    **경계를 verified_at 에 맞춘다**(codex R4-β): round-2 의 전-이력 기준은 pin *이전* 삭제 경로를
+    **경계를 verified_at 에 맞춘다**: pin *이전* 삭제 경로를
     present 로 오판해 조용한 clean 이 됐다 — 이제 pin 이후 델타 0 → 부재. `verified_at` 은 호출부
     (sha 해소·선조 검증 통과분)가 넘기는 유효 anchor 라 range 가 성립한다. HEAD 트리에 있으면 pin
     델타 확인을 생략한다(short-circuit)."""
     if empty_tree is None:
-        return None  # 빈 트리 OID 산출 실패 — fail-soft skip(codex R10 MF-1).
+        return None  # 빈 트리 OID 산출 실패 — fail-soft skip.
     try:
         rc, out = runner(["diff", "--name-only", empty_tree, "HEAD", "--", pathspec])
     except Exception:  # noqa: BLE001 — 주입 runner raise 도 분류 불가(skip·fail-soft).
@@ -582,24 +582,24 @@ def _pathspec_observable(runner: GitRunner, pathspec: str, verified_at: str,
 def covers_pathspecs(covers, *, repo: Path | None = None,
                      git_runner: GitRunner | None = None,
                      verified_at: str) -> tuple[list[str], list[str], list[str]]:
-    """covers 글롭을 **`:(glob)` magic pathspec 으로 직접** verified_at 기준 관찰가능성 분할한다 (T-0421).
+    """covers 글롭을 **`:(glob)` magic pathspec 으로 직접** verified_at 기준 관찰가능성 분할한다.
 
     Returns `(present, absent, unmappable)` — 전부 **원본 글롭 문자열**(호출부 표면화·재변환용):
       - `present`    = 현재 tracked **또는** pin(`verified_at`) 이후 델타 있음 → freshness 판정 가능.
       - `absent`     = 미추적 + pin 이후 델타 0 = pin 시점부터 관찰 불가 → 판정 불가(호출부 advisory).
-      - `unmappable` = **지원 안 하는 covers 문법**(비-경계 `**` 등 두 방언 의미가 다른 형태·codex R8)
+      - `unmappable` = **지원 안 하는 covers 문법**(비-경계 `**` 등 두 방언 의미가 다른 형태)
         → 오번역 대신 **조용히 skip 안 하고** advisory(관찰불가를 정직 보고). 빈/공백 글롭은 패턴이
         아니라 제외(코드-무관·unmappable 아님).
 
     부재 경로는 `git log <sha>..HEAD -- <pathspec>` 가 **"델타 없음"(빈 출력)과 구분 못 해**
-    조용히 green 이 되는 사각이다 — 두-git 형상(ADR-0027)에서 `templates/**` 는 ①(제품
+    조용히 green 이 되는 사각이다 — 두-git 형상에서 `templates/**` 는 ①(제품
     worktree) 소유라 ②(PM 홈)엔 그 이력이 0 이라 그 페이지는 아무리 낡아도 영원히 green 이었다.
     **판정 기준은 git 관찰가능성·경계는 verified_at·매핑은 손실 없는 `:(glob)`**이다(codex MF3/R2/R4/R6):
       - untracked 생성물(예 `board.md`)·never-tracked(`templates/**`)·pin *이전* 삭제 경로는 pin
         이후 델타 0 → **부재**(조용한 clean/green 회피).
-      - HEAD 트리(커밋)에 있으면(`git diff <빈-트리> HEAD`·index/staged 무관·R9), verified_at *이후*
+      - HEAD 트리(커밋)에 있으면(`git diff <빈-트리> HEAD`·index/staged 무관), verified_at *이후*
         삭제/rename 된 경로는 `<sha>..HEAD` 델타로 **존재**. **`covers_glob_pathspec` 로 원본 글롭을
-        직접 넘겨**(접두사 손실 폐기·R6·지원 문법만·R8) `**/x.py`·`src/*.py` 도 정확 판정.
+        직접 넘겨**(접두사 손실 폐기·지원 문법만) `**/x.py`·`src/*.py` 도 정확 판정.
 
     **fail-soft**: git 부재·non-repo·rc≠0·예외인 pathspec 은 분류 불가라 어느 쪽에도 안 넣는다
     (거짓 분류 회피 — unmappable 과 구분: git 오류는 skip, 형식상 매핑불가는 unmappable). `verified_at`
@@ -607,16 +607,16 @@ def covers_pathspecs(covers, *, repo: Path | None = None,
     """
     repo = repo or REPO
     runner = git_runner or _real_git_runner(repo)
-    empty_tree = _empty_tree_oid(runner)   # object-format 중립 빈 트리 OID·1회 산출(codex R10 MF-1)
+    empty_tree = _empty_tree_oid(runner)   # object-format 중립 빈 트리 OID·1회 산출
     present: list[str] = []
     absent: list[str] = []
     unmappable: list[str] = []
     for glob in covers:
         if not str(glob).strip():
-            continue  # 빈/공백 = 패턴 아님 → 제외(코드-무관·unmappable 아님·codex R8).
+            continue  # 빈/공백 = 패턴 아님 → 제외(코드-무관·unmappable 아님).
         spec = covers_glob_pathspec(glob)
         if spec is None:
-            unmappable.append(glob)  # 지원 안 하는 형태(비-경계 `**`·repo 밖/절대 경로 등) — advisory(R8/R10).
+            unmappable.append(glob)  # 지원 안 하는 형태(비-경계 `**`·repo 밖/절대 경로 등) — advisory.
             continue
         observable = _pathspec_observable(runner, spec, verified_at, empty_tree)
         if observable is None:
@@ -661,7 +661,7 @@ def _parse_commit_date(out: str) -> datetime.date | None:
 
 def page_stale(page: dict, *,
                git_runner: GitRunner | object | None = None) -> bool | None:
-    """페이지 covers 코드가 페이지 `updated` *후* git 커밋된 적 있으면 stale (ADR-0018 #3).
+    """페이지 covers 코드가 페이지 `updated` *후* git 커밋된 적 있으면 stale.
 
     `True` = stale(최신 covers 커밋 날짜 > updated)·`False` = fresh(커밋이 updated 이하)·
     **`None` = 판정불가(fail-soft·unknown)**. None 이 되는 경우:
@@ -673,7 +673,7 @@ def page_stale(page: dict, *,
     crash 0 — git 없는 환경(솔로/CI)도 무탈히 unknown.
 
     **원본-글롭 pathspec**(`covers_glob_pathspec`·`:(glob)` magic — sha-축과 동일 판정 기계
-    재사용·T-0459): git 이 `*`(세그먼트 내)·경계 `**`(슬래시 횡단)을 네이티브로 매칭한다 —
+    재사용): git 이 `*`(세그먼트 내)·경계 `**`(슬래시 횡단)을 네이티브로 매칭한다 —
     접두사 손실(단일 `*` 가 디렉토리로 과확장·접두사-없는 글롭 통째 skip)을 없앤다. 미지원/빈
     글롭은 skip(date-축은 advisory visibility·간이 신호라 unmappable 세분화 없이 fail-soft 흡수).
     covers 의 여러 글롭은 하나의 `git log -1 -- <pathspec…>` 로 합쳐 *그 중 가장 최근* 커밋
@@ -728,11 +728,11 @@ def parse_page(path: Path) -> dict:
     verified_at, repo}.
     frontmatter 파싱은 board.load_ticket 재사용(임의 frontmatter md 파서·DRY).
     covers 부재 → []·derived 부재 → False·status 부재 → None(정식 취급·draft 아님).
-    `verified_at` 은 이 페이지 지식이 대조한 검증 기준 커밋 sha(ADR-0063·board.py freshness
+    `verified_at` 은 이 페이지 지식이 대조한 검증 기준 커밋 sha(board.py freshness
     lint 가 "그 sha 이후 covers 경로 커밋 있나"로 판정) — 부재/비-문자열 → None(freshness skip).
     `repo` 는 그 sha/covers 를 판정할 **소유 저장소 시계**(`self` | `upstream`) — 키 부재만
     `self` 로 자연 퇴화한다. 명시 빈 문자열/false/0/컨테이너는 그대로 보존해 board.py가
-    `domain-unverifiable`로 표면화한다(T-0470).
+    `domain-unverifiable`로 표면화한다.
     board 미로드/frontmatter 깨짐은 호출부가 처리하도록 예외를 그대로 전파한다(load_pages
     가 graceful skip). `status` 는 capture-draft 가 쓴 `draft` 진실 — load_pages 가 이로
     미승인 초안을 index 에서 제외한다(suffix 가 아닌 frontmatter status 가 필터 기준).
@@ -754,7 +754,7 @@ def parse_page(path: Path) -> dict:
     # status — 문자열만 취한다(부재·비-문자열 → None = 정식 페이지·draft 제외 대상 아님).
     status = fm.get("status")
     status = status if isinstance(status, str) else None
-    # verified_at — 검증 기준 sha(부재/빈값 → None = freshness lint skip·ADR-0063). YAML 이 짧은
+    # verified_at — 검증 기준 sha(부재/빈값 → None = freshness lint skip). YAML 이 짧은
     # all-digit sha 를 int 로 파싱해도 board 쪽 str() 처리와 대칭이게 str 정규화(codex suggestion).
     verified_at = fm.get("verified_at")
     verified_at = str(verified_at).strip() or None if verified_at is not None else None
@@ -781,10 +781,10 @@ def load_pages(domain_dir: Path = DOMAIN_DIR, *, strict: bool = False) -> list[d
     """domain/ 의 `*.md` 를 **재귀**(rglob) 스캔해 파싱된 페이지 리스트를 돌려준다.
 
     domain wikitree 를 하위 폴더로 조직해도 그 안의 페이지가 잡히도록 `rglob` 로 재귀
-    스캔한다(T-0126·회사 실사용). README.md·_template.md 는 (어느 깊이든) `name` 으로 제외.
+    스캔한다(회사 실사용). README.md·_template.md 는 (어느 깊이든) `name` 으로 제외.
     디렉토리 부재 → [](solo·신규 clone 무영향). 평면 domain/ 은 하위폴더가 없어 결과 불변(additive).
 
-    **frontmatter-less 조용한 skip(T-0245)**: `---` 구분자로 시작하지 않는 `.md`(tmp·메모 등
+    **frontmatter-less 조용한 skip**: `---` 구분자로 시작하지 않는 `.md`(tmp·메모 등
     다수)는 "페이지 아님" — 개별 경고 없이 조용히 skip 하고 디렉토리별 카운터에만 누적한다.
     스캔 종료 시 skip 이 1개 이상이면 stderr 에 디렉토리별 개수 요약 딱 1줄만 남긴다(파일
     전체 목록 X — LLM 컨텍스트 낭비 원인). 반면 `---` 로 시작하는데 parse 가 깨지는(malformed)
@@ -794,7 +794,7 @@ def load_pages(domain_dir: Path = DOMAIN_DIR, *, strict: bool = False) -> list[d
     문서의 읽기/파싱 실패를 `DomainPageEnumerationError(path, cause)`로 즉시 전파한다.
     기본값 False는 조회/lint의 기존 graceful skip·경고 동작을 그대로 보존한다.
 
-    **draft 제외(T-0167)**: frontmatter `status == "draft"` 페이지는 미승인 초안
+    **draft 제외**: frontmatter `status == "draft"` 페이지는 미승인 초안
     (capture-draft scaffold)이라 index 에서 뺀다 — affected/lint/recall/capture 가
     승인 안 된 지식을 보지 않게. 필터 기준은 frontmatter status 이지 `.draft.md` 파일명이
     아니다(promote = status:draft 제거 1개로 비로소 정식 = 포함). status 부재/기타 → 포함.
@@ -803,15 +803,15 @@ def load_pages(domain_dir: Path = DOMAIN_DIR, *, strict: bool = False) -> list[d
     if not domain_dir.is_dir():
         return []
     pages: list[dict] = []
-    non_page_counts: dict[str, int] = {}  # frontmatter-less skip 카운트(디렉토리별·T-0245).
+    non_page_counts: dict[str, int] = {}  # frontmatter-less skip 카운트(디렉토리별).
     for path in sorted(domain_dir.rglob("*.md")):
         if path.name in _NON_PAGE_FILES:
             continue
         # frontmatter 구분자(`---` 시작)가 아예 없는 파일 = 페이지 아님(tmp·메모 등). 개별
-        # 경고 없이 조용히 skip 하고 디렉토리별 카운터에만 누적(스캔 종료 시 요약 1줄·T-0245).
+        # 경고 없이 조용히 skip 하고 디렉토리별 카운터에만 누적(스캔 종료 시 요약 1줄).
         # 읽기 실패는 판정 불가 → parse_page 로 넘겨 malformed 경고에 맡긴다. UnicodeDecodeError
         # (non-UTF-8 tmp — cp949·바이너리)는 OSError 가 아니라 별도 포획 — 안 잡으면 load_pages
-        # 전체가 크래시해 crash-0 보장이 깨진다(T-0245 reviewer must-fix 실측).
+        # 전체가 크래시해 crash-0 보장이 깨진다.
         try:
             has_delimiter = path.read_text(encoding="utf-8").lstrip().startswith("---")
         except (OSError, UnicodeDecodeError) as exc:
@@ -925,7 +925,7 @@ def uncovered_paths(
         *,
         warn_owner_mismatch: bool = True,
 ) -> list[str]:
-    """touch 경로 중 *어느 페이지 covers 글롭에도 안 잡힌* 것들을 돌려준다 (coverage gap·ADR-0018 §7b).
+    """touch 경로 중 *어느 페이지 covers 글롭에도 안 잡힌* 것들을 돌려준다.
 
     capture(채록)의 gap 검출 — touched 코드인데 담당 domain 페이지가 없는 경로 = 후보
     신규 페이지. 각 touch 에 `pages_for_path`(매칭 로직 재사용·DRY)를 적용해 매칭 0 인 것만
@@ -1008,9 +1008,9 @@ def pages_for_touches(touches: list[str] | None, pages: list[dict] | None = None
     return out
 
 
-# ── freshness lint (advisory·exit 0·비차단·ADR-0018 #3) ──────────────────────
+# ── freshness lint (advisory·exit 0·비차단) ──────────────────────
 # 페이지를 스캔해 advisory finding 을 낸다(stale/orphan/oversized). **막지 않는다** —
-# 전부 exit 0(visibility·Q3). unknown(stale==None)은 finding 아님.
+# 전부 exit 0(visibility). unknown(stale==None)은 finding 아님.
 
 # domain 페이지 본문의 wikilink `[[슬러그]]`(별칭 `[[슬러그|텍스트]]` 의 슬러그 부분만).
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)")
@@ -1058,7 +1058,7 @@ def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
       - **orphan** — 다른 domain 페이지에서 이 페이지로의 `[[슬러그]]` 인링크 0(고립). 슬러그
         (파일 stem)와 title 둘 다 인링크로 인정(표기 흔들림 흡수). **자기참조 제외**(자기 body
         의 자기링크는 안 침)·README/_template 은 애초에 load_pages 가 뺀다. **페이지 ≥2 일 때만
-        평가** — 1개뿐이면 peer 가 없어 자연 고립이라 skip(T-0097).
+        평가** — 1개뿐이면 peer 가 없어 자연 고립이라 skip.
       - **oversized** — body 라인수 > `oversized_lines`(기본 OVERSIZED_LINES=200).
 
     finding 은 page 표시명(title 우선·없으면 슬러그)으로 라벨한다. clean(빈 리스트)이면
@@ -1100,7 +1100,7 @@ def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
         # orphan — 슬러그/title 어느 표기로도 인링크 0.
         # 단 페이지가 1개뿐이면 orphan 판정 skip — 인링크할 *peer 가 존재하지 않아* 자연
         # 고립이고(첫 페이지는 항상 orphan), 매 lint 마다 의미 없는 advisory 가 떠 "clean"
-        # 시그널을 흐린다. orphan 은 peer(≥2 페이지)가 있을 때만 의미 있다 (T-0097·T-0094 reviewer 권고).
+        # 시그널을 흐린다. orphan 은 peer(≥2 페이지)가 있을 때만 의미 있다.
         title_key = (page["title"] or "").strip().lower()
         keys = {slug.lower()}
         if title_key:
@@ -1123,7 +1123,7 @@ def _stale_marker(page: dict, *, git_runner: GitRunner | None = None) -> str:
     """페이지 줄 앞 stale 마커 — stale(True)=`⚠ `·None(unknown)/False=무표시(공백 정렬).
 
     list/affected 가 공유한다(DRY). page_stale==True 만 ⚠ — unknown(git 부재 등)은 조용히
-    무표시(노이즈 방지·ADR-0018 Q3). 마커 폭(2칸)을 비-stale 줄에도 채워 줄을 정렬한다.
+    무표시(노이즈 방지). 마커 폭(2칸)을 비-stale 줄에도 채워 줄을 정렬한다.
     """
     return "⚠ " if page_stale(page, git_runner=git_runner) is True else "  "
 
@@ -1220,11 +1220,11 @@ def _touches_from_tickets(tickets_csv: str) -> list[str]:
 
 
 def cmd_capture(args: argparse.Namespace) -> int:
-    """세션이 건드린 코드의 담당 domain 페이지를 "갱신 검토" 대상으로 띄운다 (채록·ADR-0018 §7b).
+    """세션이 건드린 코드의 담당 domain 페이지를 "갱신 검토" 대상으로 띄운다.
 
-    recall(T-0083)의 쓰기 측 짝 — *무엇을 갱신/신설할지* 띄울 뿐 본문을 자동 생성/스탬프하지
+    recall의 쓰기 측 짝 — *무엇을 갱신/신설할지* 띄울 뿐 본문을 자동 생성/스탬프하지
     않는다(surface-only·자동 `updated:` 금지 → stale 탐지 거짓 방지·결정 절). 두 절 출력:
-      1. **영향 페이지** — touches ∩ covers 매칭(`pages_for_touches`) + `⚠ ` stale 마커(T-0082).
+      1. **영향 페이지** — touches ∩ covers 매칭(`pages_for_touches`) + `⚠ ` stale 마커.
       2. **coverage gap** — 어느 페이지 covers 에도 안 잡힌 touch 경로(`uncovered_paths`)
          = 후보 신규 페이지. 비면 절 생략.
     둘 다 없으면 `(채록할 domain 변화 없음)`. 정상 좌표에서는 **read-only·exit 0**
@@ -1235,7 +1235,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
     if args.tickets:
         # --tickets 는 nargs='+' — 공백 나열(T-a T-b)·콤마분리("T-a,T-b") 둘 다 수용한다
         # (CLI 관용·"mechanize don't instruct"·자연스러운 나열이 usage 에러로 실패하던 클래스
-        # 소멸·T-0346). 토큰 리스트를 콤마로 합쳐 기존 콤마-split 집계(_touches_from_tickets)에
+        # 소멸). 토큰 리스트를 콤마로 합쳐 기존 콤마-split 집계(_touches_from_tickets)에
         # 위임 — 콤마-단일-문자열 호환을 그대로 보존한다(join 후 split 이 양형식을 흡수). ticket
         # ID 는 공백을 안 담으므로 space-split 이 무모호(경로를 받는 --touches 는 콤마 유지·비대칭).
         touches = _touches_from_tickets(",".join(args.tickets))
@@ -1274,7 +1274,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── capture-draft (researcher 조사 prose → domain 초안 scaffold·git 무조작·T-0167) ──
+# ── capture-draft (researcher 조사 prose → domain 초안 scaffold·git 무조작) ──
 # researcher 의 *조사 prose*(read-only gather 산출)를 domain draft 페이지로 scaffold 한다.
 # **기계는 scaffold + verbatim prose 배치까지만** — type/covers 정련·의미 판단은 PM/LLM·
 # promote(draft→정식)는 사람 손. no-auto-commit 3중: (1) frontmatter `status: draft` 가
@@ -1324,7 +1324,7 @@ def _demote_prose_headings(prose: str) -> str:
 
     capture-draft 는 prose 를 `## 조사 결과` 절 *아래* verbatim 배치하는데, prose 가 자체
     `## ` 헤딩을 가지면 그게 페이지 절(`## 한 줄`·`## gotcha`)과 같은 레벨 형제로 떠 구조가
-    어긋난다(PM 40 dogfood). `## `(정확히 H2)만 `### ` 로 강등해 scaffold 절 하위로 일관 배치.
+    어긋난다. `## `(정확히 H2)만 `### ` 로 강등해 scaffold 절 하위로 일관 배치.
 
     코드펜스(```·~~~) 안의 `## ` 는 마크다운 헤딩이 아니라 코드/주석이므로 제외한다 — 펜스
     토글을 추적해 펜스 밖 라인만 강등. CommonMark 정합상 닫는 펜스는 *여는 펜스와 같은 문자*
@@ -1354,7 +1354,7 @@ def _demote_prose_headings(prose: str) -> str:
 def _normalize_source_label(source: str | None) -> str:
     """`--source` 입력을 frontmatter `source:` 에 박을 provenance 라벨로 정규화한다.
 
-    절대경로/일시경로 박제를 막는다(promote 후 dangling·PM 40 dogfood). 규칙:
+    절대경로/일시경로 박제를 막는다(promote 후 dangling). 규칙:
       - stdin(`-`)·미지정(None) → placeholder(자유서술·PM 손).
       - repo 내 파일경로 → **repo 상대경로**(절대경로 아님).
       - repo 밖 경로(일시 `/tmp/...` 포함) → placeholder(절대경로 박제 금지).
@@ -1442,7 +1442,7 @@ def write_draft_page(title: str, *, ptype: str = DEFAULT_DRAFT_TYPE,
     today = today or datetime.date.today().isoformat()
     prose = _read_source(source)
     # source: 라벨 정규화 — repo 내 → 상대경로·stdin/미지정/repo밖(tmp 포함) → placeholder
-    # (절대경로/일시경로 박제 금지·promote 후 dangling 방지·PM 40 dogfood).
+    # (절대경로/일시경로 박제 금지·promote 후 dangling 방지).
     source_label = _normalize_source_label(source)
 
     domain_dir = Path(domain_dir)
@@ -1489,7 +1489,7 @@ def cmd_lint(args: argparse.Namespace) -> int:
     """domain freshness lint — stale/orphan/oversized finding 출력 (advisory·항상 exit 0).
 
     finding 1줄 = `kind · page · detail`. clean 이면 "✓ domain freshness 양호". *비차단* —
-    어느 경우도 rc 0(visibility·ADR-0018 Q3·작업/완료 막지 않음).
+    어느 경우도 rc 0(visibility·작업/완료 막지 않음).
     """
     pages = load_pages(DOMAIN_DIR)
     # OVERSIZED_LINES 를 호출 시점에 읽어 명시 전달 — lint_pages 의 기본 인자는 정의
@@ -1507,7 +1507,7 @@ def build_parser() -> argparse.ArgumentParser:
     """domain CLI 파서 (board.py 의 argparse subparsers 패턴)."""
     parser = argparse.ArgumentParser(
         prog="domain",
-        description="domain 페이지 covers 인덱스 (ADR-0018).",
+        description="domain 페이지 covers 인덱스.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

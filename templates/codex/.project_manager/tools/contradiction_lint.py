@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""모순 lint (ADR-0064) — "결정을 바꾼 순간의 잔여" 탐지.
+"""모순 lint — "결정을 바꾼 순간의 잔여" 탐지.
 
 결정을 개정(amends/supersedes)하면 옛 결정을 전제로 쓰인 다른 서술(타 ADR·wiki·spike·프롬프트)이
-새 결정과 **모순된 채 남는다**. 기계 lint 전 구간이 clean 인데도 이 잔여는 안 잡힌다(PM 72 3회 자기실증).
+새 결정과 **모순된 채 남는다**. 기계 lint 전 구간이 clean 인데도 이 잔여는 안 잡힌다.
 병목은 *가드 부재*가 아니라 **인지 시점** — 재정의를 하는 바로 그 순간에 점검해야 놓치지 않는다. 이 lint 는
 그 순간(ADR 발행/개정 명령·pm_adr.py)에 배선돼 발화한다.
 
-역할 분업 (ADR-0064):
+역할 분업:
   - **탐지 = LLM** — prose 의미 모순은 정규식으로 못 잡는다(LLM 필요). 단 호출은 **DI seam + 기본 dry
     (미호출)** — 기본은 스코프를 기계로 수집하고 LLM 프롬프트를 산출물로 표면화한다(비용 없음·hermetic).
     실 LLM 배선이 필요하면 `run_fn` 을 주입한다(external_review DI 동형).
-  - **판정 = 사람** — 실제 모순인지 판정·해소는 사람(generate≠evaluate·ADR-0022). **차단 아님**(advisory·
+  - **판정 = 사람** — 실제 모순인지 판정·해소는 사람(generate≠evaluate). **차단 아님**(advisory·
     후보 표면화까지가 lint 역할).
 
-대상 스코프 (ADR-0064):
+대상 스코프:
   - 개정된 결정(`target_ids`)을 `[[ADR-NNNN]]` **wikilink 로 참조하는 문서**(back-ref 범위). 전-코퍼스
     무차별이 아니다. wikilink 문법·파일 수집은 board.py 의 것을 재사용한다(자체 regex/매핑 신설 0).
 
@@ -54,7 +54,7 @@ BOARD_PY = Path(__file__).resolve().parent / "board.py"
 
 # board `_WIKILINK_RE` 와 동일 문법(자체 regex 금지·재사용 실패 시 폴백용 동일 복제). name 만 캡처.
 _FALLBACK_WIKILINK_RE = re.compile(r"\[\[([A-Za-z0-9_\s.\-]+?)(?:\|[^\]]+)?\]\]")
-# ADR wikilink name 정규화 — `ADR-0061`·`ADR-61` 모두 정수로.
+# ADR wikilink name 정규화.
 _ADR_NAME_RE = re.compile(r"ADR-(\d+)$")
 
 
@@ -108,7 +108,7 @@ def _build_excerpt(file_lines: list[str], ref_idxs: list[int]) -> str:
     return "\n".join(out)
 
 
-# ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
+# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
 # 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
@@ -118,7 +118,7 @@ ENGINE_REV = "v1.4.5"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (T-0397·fail-loud·skew→명시 에러).
+    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (fail-loud·skew→명시 에러).
 
     불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
     지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
@@ -130,12 +130,12 @@ def _verify_engine_rev(sibling_module, sibling_filename):
             f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
             f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
         )
-        err._engine_rev_skew = True  # T-0397 — fail-soft 로더가 재-raise 식별
+        err._engine_rev_skew = True  # fail-soft 로더가 재-raise 식별
         raise err
 
 
 def _is_engine_rev_skew(exc) -> bool:
-    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (T-0397·fail-soft 재-raise 식별)."""
+    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (fail-soft 재-raise 식별)."""
     return getattr(exc, "_engine_rev_skew", False)
 
 
@@ -151,9 +151,9 @@ def _load_board():
         spec.loader.exec_module(mod)
     except Exception as exc:
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — board 사본 skew 는 fail-loud(삼키지 않는다).
+            raise  # board 사본 skew 는 fail-loud(삼키지 않는다).
         return None
-    _verify_engine_rev(mod, "board.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
+    _verify_engine_rev(mod, "board.py")  # stamped sibling 로드 지점은 verify
     return mod
 
 
@@ -353,9 +353,9 @@ def format_advisory(new_adr_id: str, target_ids: Iterable[str], result: LintResu
     """모순 lint 결과를 사람이 읽는 advisory 블록으로 렌더한다(차단 아님·판정=사람)."""
     tids = ", ".join(str(t) for t in target_ids)
     if not result.scope:
-        return (f"[모순 lint·ADR-0064] {new_adr_id} 개정 대상({tids})을 참조하는 문서가 없음 "
+        return (f"[모순 lint] {new_adr_id} 개정 대상({tids})을 참조하는 문서가 없음 "
                 "— 잔여 모순 스코프 없음.")
-    header = (f"[모순 lint·ADR-0064] {new_adr_id} 가 개정한 결정({tids})을 참조하는 문서 "
+    header = (f"[모순 lint] {new_adr_id} 가 개정한 결정({tids})을 참조하는 문서 "
               f"{len(result.scope)}개 — 새 결정과 모순되는 잔여 서술이 있는지 대조하라(판정=사람·차단 아님):")
     lines = [header]
     for hit in result.scope:
@@ -393,7 +393,7 @@ def _load_adr(decisions_dir: Path, num: int) -> tuple[str, str]:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="contradiction_lint.py",
-        description="모순 lint (ADR-0064) — 개정된 결정을 참조하는 문서의 잔여 모순 후보 표면화(advisory).",
+        description="모순 lint — 개정된 결정을 참조하는 문서의 잔여 모순 후보 표면화(advisory).",
     )
     p.add_argument("--new-adr", required=True, metavar="ADR-NNNN",
                    help="방금 발행/개정한 새 결정 id (decisions/ 에서 title·본문 로드)")

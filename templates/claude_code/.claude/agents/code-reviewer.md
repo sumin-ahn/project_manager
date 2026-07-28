@@ -40,7 +40,7 @@ ticket 참고 섹션의 ADR(`decisions/`)/spec(`specs/`) 과 어긋나지 않는
   - (보호 영역: `.project_manager/wiki/pm_role.local.md` §보호 영역)
 - 과잉 엔지니어링·요청 안 한 기능이 없는가.
 
-### 7. wiki DoD · domain freshness (ADR-0018)
+### 7. wiki DoD · domain freshness
 - touch 한 코드를 담당하는 `domain/` 페이지(covers 매칭)가 있으면, 변경으로 상한 내용이 갱신됐는가 (touch∩covers·soft — *누락이 곧 must-fix 는 아니나* should-fix/상기로 띄운다).
 - `python3 .project_manager/tools/domain.py lint` advisory finding(stale/orphan/oversized)이 이번 변경으로 새로 생겼는가 — 생겼으면 보고에 표면화 (작업 무차단·visibility).
 

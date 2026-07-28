@@ -8,14 +8,14 @@
   1. 회귀 실행 — pytest tests/ -q. red 면 즉시 중단.
   2. log/current.md 스켈레톤 append — 표준 형식 entry 골격.
   3. board.py complete 호출 — 회귀를 이미 통과했으므로 --tests-pass.
-  4. git stage — **선언 경로만**(ticket `touches` ∪ *이 실행이 쓴* 산출물·ADR-0074) 스테이징 + 스코프
+  4. git stage — **선언 경로만**(ticket `touches` ∪ *이 실행이 쓴* 산출물) 스테이징 + 스코프
      밖 잔여 dirty loud 보고. commit 은 PM 이 한다.
   5. 잔여 PM 수동 작업 출력.
 
-결정 (T-0064 / T-0103):
+결정:
   - subprocess DI: pytest/git/board.py subprocess 는 주입 가능한 함수로 감싼다.
   - red 면 중단: log/current.md / board / git 어떤 것도 건드리지 않는다.
-  - status.md 는 더 이상 건드리지 않는다 (ADR-0023 a안 — status.md = judgment-only).
+  - status.md 는 더 이상 건드리지 않는다 (status.md = judgment-only).
     테스트 수·합계·소계·회귀 실측은 derivable(pytest/board.py regression 실측·log history)이라
     status.md 에 손으로 박제하지 않는다. 이 도구는 status.md 미접촉.
   - 모듈 행·서술·commit 은 자동화하지 않는다 (v1 축소판 — §배경).
@@ -36,9 +36,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-# ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형·ADR-0033 ①) ──────────
+# ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형) ──────────
 # 하드코딩 `parents[2]` 는 tools 가 `<root>/.project_manager/tools/` 정확히 2단 깊이에 있다고
-# 가정한다 — 채택자 형상(PM 홈/worktree 구조 상이·다른 깊이)에선 어긋난다(finance_dev 제보 D2).
+# 가정한다 — 채택자 형상(다른 깊이)에선 어긋난다().
 # external_review 와 *동형*(각 파일 self-contained·공유 import 미도입)으로 상향 탐색해 견고화한다:
 # `.project_manager` 마커를 품은 첫(최근접) 조상을 REPO 로, 못 찾으면 현행 `parents[2]` 폴백(회귀 0).
 
@@ -60,20 +60,20 @@ REPO = _find_repo_root()
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
-LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"  # 리스 장부 (ADR-0013·F6 task 해소 read-only·T-0355)
-TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵커 (회귀 cwd 해소·T-0149)
-# areas.md 경로는 상수로 굳히지 않는다(T-0162 A6) — board/ 분리(ADR-0033 ①) 시 board/ 안으로
+LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"  # 리스 장부 (task 해소 read-only)
+TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵커 (회귀 cwd 해소)
+# areas.md 경로는 상수로 굳히지 않는다 — board/ 분리 시 board/ 안으로
 # 옮겨가므로, `_resolve_per_repo_test_cmd` 가 board 모듈의 `areas_file()`(board_root 추종)에 위임.
 
-# ── identity_args sibling 로드 (ADR-0057·T-0322 공용 정체성 모듈) ──────────────
+# ── identity_args sibling 로드 ──────────────
 # `--repo`/`--slot` 파싱을 공용 모듈 identity_args 에서 가져온다. 스크립트-위치 앵커
 # (`Path(__file__).resolve().parent`=tools/)에서 `spec_from_file_location` 으로 동적 로드해
 # sys.path 를 오염시키지 않는다 (board.py `_load_identity_args`·pm_handoff 와 동형). 스크립트
 # 직접 실행(sys.path[0]=tools/)이든 테스트 로드(spec_from_file_location·패키지 아님이라 sys.path
 # 미충전)든 어느 쪽이든 `Path(__file__).resolve().parent` 가 정확히 tools/ 라 동일하게 동작한다
-# (T-0322 결정·pm_handoff 동일 관용구).
+# (pm_handoff 동일 관용구).
 
-# ── 엔진 사본 rev 스탬프 (T-0397·형제 사본 skew fail-loud) ──────────────────────
+# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
 # 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
@@ -83,7 +83,7 @@ ENGINE_REV = "v1.4.5"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (T-0397·fail-loud·skew→명시 에러).
+    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (fail-loud·skew→명시 에러).
 
     불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
     지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
@@ -95,12 +95,12 @@ def _verify_engine_rev(sibling_module, sibling_filename):
             f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
             f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
         )
-        err._engine_rev_skew = True  # T-0397 — fail-soft 로더가 재-raise 식별
+        err._engine_rev_skew = True  # fail-soft 로더가 재-raise 식별
         raise err
 
 
 def _is_engine_rev_skew(exc) -> bool:
-    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (T-0397).
+    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지.
 
     fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
     판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
@@ -118,17 +118,17 @@ def _load_identity_args():
     spec = importlib.util.spec_from_file_location("identity_args", ia_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    _verify_engine_rev(mod, "identity_args.py")  # T-0397 — 사본 skew fail-loud
+    _verify_engine_rev(mod, "identity_args.py")  # 사본 skew fail-loud
     return mod
 
 
 identity_args = _load_identity_args()
 
 
-# ── 회귀 cwd 자동해소 (self-host·T-0149 — pm_handoff `_regression_cwd` 재사용·DRY) ────
-# 분리된 PM 홈(②·ADR-0027)엔 `tests/` 가 없으므로, ② 홈 cwd 에서 ticket_finish 를 돌리면
-# 회귀가 활성 worktree 슬롯(①·tests/ 보유)에서 돌아야 한다. pm_handoff 가 이미 이 판정을
-# 모듈-레벨 `_regression_cwd(worktree_slot, areas_file, leases_file)` 로 해결했고(T-0124·
+# ── 회귀 cwd 자동해소 (pm_handoff `_regression_cwd` 재사용·DRY) ────
+# 분리된 PM 홈엔 `tests/` 가 없으므로, 홈 cwd 에서 ticket_finish 를 돌리면
+# 회귀가 활성 worktree 슬롯(tests/ 보유)에서 돌아야 한다. pm_handoff 가 이미 이 판정을
+# 모듈-레벨 `_regression_cwd(worktree_slot, areas_file, leases_file)` 로 해결했고(
 # pm_bootstrap `_auto_slot` 동적로드 재사용·self-host 해소 검증됨), board.py·pm_bootstrap 과
 # *같은 위치*에 산다 — 복붙 대신 동적 로드해 그 함수를 그대로 위임한다(`_auto_slot` 복제 0).
 
@@ -151,14 +151,14 @@ def _load_pm_handoff():
         spec.loader.exec_module(mod)
     except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — pm_handoff 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
+            raise  # pm_handoff 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
         return None
-    _verify_engine_rev(mod, "pm_handoff.py")  # T-0397 — 로드 성공 후 skew 는 fail-loud(try 밖)
+    _verify_engine_rev(mod, "pm_handoff.py")  # 로드 성공 후 skew 는 fail-loud(try 밖)
     return mod
 
 
 def _regression_cwd(worktree_slot: str | None = None) -> str:
-    """회귀를 실행할 작업 디렉토리를 해소한다 (T-0149 — pm_handoff `_regression_cwd` 위임).
+    """회귀를 실행할 작업 디렉토리를 해소한다 (pm_handoff `_regression_cwd` 위임).
 
     해소 순서(pm_handoff 와 동형):
       - `worktree_slot`(multi-PM 명시) 가 있으면 `REPO / worktree_slot`,
@@ -179,14 +179,14 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
     return str(REPO)
 
 
-# ── --repo/--slot 슬롯 disambiguation (다중슬롯 finish·ADR-0027·pm_handoff 미러·T-0285·ADR-0057) ──
-# ADR-0027 다중슬롯 형상(PM 홈 ② + worktree 슬롯 여럿)에선 `_regression_cwd(None)` 의
-# `_auto_slot` 자동해소가 모호(슬롯 2+)해져 ② 홈으로 폴백하고, ②엔 `tests/` 가 없어 회귀가
-# red("no tests ran")→finish 가 *조용히* 차단된다(라이브 발견·PM 59차). pm_handoff 는 이미
-# `--repo`/`--slot`(ADR-0057)로 슬롯을 disambiguate 하는데 ticket_finish 엔 그 수단이 없던 게
-# 근본이다. pm_handoff `_resolve_explicit_identity_slot`(명시 identity → M3 조인검증 해소)·
+# ── --repo/--slot 슬롯 disambiguation (다중슬롯 finish·pm_handoff 미러) ──
+# 다중슬롯 형상에선 `_regression_cwd(None)` 의
+# `_auto_slot` 자동해소가 모호(슬롯 2+)해져 홈으로 폴백하고, `tests/` 가 없어 회귀가
+# red("no tests ran")→finish 가 *조용히* 차단된다. pm_handoff 는 이미
+# `--repo`/`--slot`로 슬롯을 disambiguate 하는데 ticket_finish 엔 그 수단이 없던 게
+# 근본이다. pm_handoff `_resolve_explicit_identity_slot`(명시 identity → 조인검증 해소)·
 # `_resolve_session_worktree_slot`(session-entry 슬롯 해소·default-1/단독/idle-필터·진짜 모호면
-# fail-loud·T-0178)을 동적 로드해 재사용한다(DRY·해소 로직 복제 0). ticket_finish 는 이미
+# fail-loud)을 동적 로드해 재사용한다(DRY·해소 로직 복제 0). ticket_finish 는 이미
 # pm_handoff 동적 로드 seam 보유.
 
 def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None, str | None]:
@@ -194,16 +194,16 @@ def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None
 
     pm_handoff 를 동적 로드해 재사용한다(DRY). 반환:
       - `(work/<repo>_<N>, None)` — `--repo`(+`--slot`) 명시 → pm_handoff
-        `_resolve_explicit_identity_slot` 로 **M3**(세션↔repo 조인 검증) 통과 후 결정론적 해소.
+        `_resolve_explicit_identity_slot` 로 (세션↔repo 조인 검증) 통과 후 결정론적 해소.
       - `(work/<repo>_<N>, None)` — `--repo`/`--slot` 둘 다 부재인데 default-1/단독/idle-필터로
-        자동해소됨(no-flag 기본·ADR-0040 불변).
+        자동해소됨(no-flag 기본 불변).
       - `(None, None)` — solo/미해소(멀티-PM 미셋업) → 호출부 REPO 런타임 폴백(현행 100% 보존).
       - `(None, error_msg)` — **진짜 모호**(멀티-PM under-specified·repo≥2·slot1 부재 비단독) 또는
-        **M3**(명시 repo/slot 이 리스 장부와 조인 불일치) → 호출부 fail-loud.
+        (명시 repo/slot 이 리스 장부와 조인 불일치) → 호출부 fail-loud.
 
     `repo`/`slot` 둘 다 `None`(kind='none')이면 기존 no-flag 자동해소로 위임 — pm_handoff
     부재/로드 실패는 fail-soft `(None, None)`(현행 REPO 폴백·솔로 무변경). `repo`/`slot` 명시인데
-    pm_handoff 부재면 M3 검증(리스 조인)을 할 수 없으므로 단순 조립만 해 신뢰한다(현행 폴백 패턴).
+    pm_handoff 부재면 검증(리스 조인)을 할 수 없으므로 단순 조립만 해 신뢰한다(현행 폴백 패턴).
     """
     hp = _load_pm_handoff()
     if repo is None and slot is None:
@@ -214,7 +214,7 @@ def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None
         except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 현행 폴백(모호 아님).
             return None, None
     if hp is None:
-        # pm_handoff 부재 — M3(리스 조인) 검증 불가하니 단순 조립만(현행 폴백 패턴·솔로 무변경).
+        # pm_handoff 부재 — (리스 조인) 검증 불가하니 단순 조립만.
         if slot is not None:
             return f"work/{repo}_{slot}", None
         return None, None
@@ -250,11 +250,11 @@ def local_config() -> dict[str, str]:
     return conf
 
 
-# ── 회귀 명령 해소 (per-repo·ADR-0014) ──────────────────────────────────
+# ── 회귀 명령 해소 (per-repo) ──────────────────────────────────
 #
 # multi-PM(multi-PM) 모델에선 활성 repo 가 비-Python(Go 등)일 수 있어 `pytest tests/ -q`
 # 가 틀린다 — 회귀는 **활성 repo 의 per-repo test_cmd**(areas.md 레지스트리)를 써야
-# 한다(ADR-0014). board.py 의 `_test_cmd` 가 그 우선순위(override > areas.md 활성 prefix
+# 한다. board.py 의 `_test_cmd` 가 그 우선순위(override > areas.md 활성 prefix
 # 행 > local.conf > 기본)의 단일 진실이므로 import 해 재사용한다.
 #
 # **솔로/프레임워크 자기 회귀(=현행 `pytest tests/ -q` venv 실행)는 반드시 보존**한다:
@@ -275,17 +275,17 @@ def _load_board_module():
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "board.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
+        _verify_engine_rev(mod, "board.py")  # stamped sibling 로드 지점은 verify
     except Exception as exc:
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — 사본 skew 는 fail-loud(삼키지 않는다).
+            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return None
     return mod
 
 
-# ── PM-홈 worktree 오실행 가드 (T-0345·쓰기-경로 전용) ─────────────────────────
-# ticket_finish 를 PM 홈(②)의 등록 worktree cwd 에서 오실행하면 REPO 가 worktree 로 착지해
-# stray `wiki/log/current.md` append(+ board.py complete 오실행)를 낸다(PM 71 실측). board.py
+# ── PM-홈 worktree 오실행 가드 (쓰기-경로 전용) ─────────────────────────
+# ticket_finish 를 PM 홈의 등록 worktree cwd 에서 오실행하면 REPO 가 worktree 로 착지해
+# stray `wiki/log/current.md` append(+ board.py complete 오실행)를 낸다. board.py
 # 와 *동일 detector*(`_pm_home_worktree_misanchor`·단일 진실)를 deep-import seam 으로 재사용해
 # main() 진입에서 fail-loud 한다 — 부기 어떤 단계(회귀/log append/complete/stage)도 착지 전에
 # 중단한다. detector 로드 실패/미해소는 fail-soft(현행 동작·오탐 0).
@@ -310,7 +310,7 @@ def _guard_worktree_misanchor() -> bool:
         return False
     print(
         "[중단] `ticket_finish` 를 worktree(코드 전용) 트리에서 실행했습니다 — 완료 부기(log·"
-        "board·git)는 PM 홈이 소유합니다(ADR-0027). 이대로면 이 worktree 에 stray log/티켓을 "
+        "board·git)는 PM 홈이 소유합니다. 이대로면 이 worktree 에 stray log/티켓을 "
         "잘못 만듭니다.\n"
         f"  → PM 홈에서 실행하세요:  cd {pm_home}\n"
         f"  (현재 앵커: {REPO})",
@@ -327,7 +327,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
     때만 그 문자열을 반환한다. 그 외(솔로·미등록·빈 값·import 실패)는 None(현행 보존).
 
     areas.md 존재 가드는 board 의 `areas_file()`(board_root 추종)로 위임한다 — board/ 분리
-    (ADR-0033 ①) 시 areas.md 가 board/ 안(submodule)으로 옮겨가므로 legacy 위치(wiki 밖
+    시 areas.md 가 board/ 안(submodule)으로 옮겨가므로 legacy 위치(wiki 밖
     `.project_manager/areas.md`)를 보면 stale 이다. board 로드 후 그 함수를 부른다(`id_prefix`
     해소와 동일 루트).
     """
@@ -404,14 +404,14 @@ def count_board_done(board_py: Path) -> int:
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "board.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
-        # board_root() 추종 — board/ 분리(ADR-0033 ①) 시 ticket 이 board/tickets 로 빠지므로
+        _verify_engine_rev(mod, "board.py")  # stamped sibling 로드 지점은 verify
+        # board_root() 추종 — board/ 분리시 ticket 이 board/tickets 로 빠지므로
         # legacy 별칭 상수(mod.TICKETS_DIR)가 아니라 함수를 부른다(분리 후 stale wiki/ 안 봄).
         done_dir = mod.tickets_dir() / "done"
         return len(list(done_dir.glob("T-*.md")))
     except Exception as exc:
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — 사본 skew 는 fail-loud(삼키지 않는다).
+            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return -1
 
 
@@ -427,13 +427,13 @@ def get_ticket_title(board_py: Path, ticket_id: str) -> str:
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "board.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
+        _verify_engine_rev(mod, "board.py")  # stamped sibling 로드 지점은 verify
         _status, path = mod.find_ticket(ticket_id)
         fm, _body = mod.load_ticket(path)
         return fm.get("title") or ""
     except Exception as exc:
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — 사본 skew 는 fail-loud(삼키지 않는다).
+            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return ""
 
 
@@ -450,12 +450,12 @@ def get_ticket_touches(board_py: Path, ticket_id: str) -> list[str]:
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "board.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
+        _verify_engine_rev(mod, "board.py")  # stamped sibling 로드 지점은 verify
         _status, path = mod.find_ticket(ticket_id)
         fm, _body = mod.load_ticket(path)
     except Exception as exc:
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — 사본 skew 는 fail-loud(삼키지 않는다).
+            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return []
     touches = fm.get("touches")
     if isinstance(touches, str):
@@ -466,7 +466,7 @@ def get_ticket_touches(board_py: Path, ticket_id: str) -> list[str]:
     return []
 
 
-# ── domain 연동 (soft 알림·ADR-0018 #2) ──────────────────────────────────
+# ── domain 연동 (soft 알림) ──────────────────────────────────
 #
 # 순환 없음: domain→board / ticket_finish→board,domain / board 는 둘 다 import 안 함.
 # domain.py 부재(솔로/신규 clone·구버전)·로드 실패 → None (호출부가 graceful skip).
@@ -489,10 +489,10 @@ def _load_domain_module():
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "domain.py")  # T-0397 불변식: stamped sibling 로드 지점은 verify
+        _verify_engine_rev(mod, "domain.py")  # stamped sibling 로드 지점은 verify
     except Exception as exc:
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — domain 사본 skew 는 fail-loud(삼키지 않는다).
+            raise  # domain 사본 skew 는 fail-loud(삼키지 않는다).
         return None
     return mod
 
@@ -501,12 +501,12 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
     """ticket touches ∩ domain covers 로 영향받는 페이지 (title, stale) 목록을 돌려준다.
 
     각 원소 = `(title, stale)` — stale 은 `domain.page_stale`(True=낡음·False=fresh·
-    None=판정불가/unknown). soft step 이 stale True 줄 앞에 ⚠ 를 단다(visibility·ADR-0018 #3).
+    None=판정불가/unknown). soft step 이 stale True 줄 앞에 ⚠ 를 단다(visibility).
     domain.py 부재·로드 실패 → None (호출부가 조용히 skip — 솔로/신규 clone 무영향).
     touches 부재·영향 0 → [](빈 알림). domain.pages_for_touches 재사용(중복 매칭 0).
 
     **소유 repo별 git_runner 1회 생성해 공유** — 페이지 `repo:`를 board의 단일 owner
-    resolver로 해소하고 checkout마다 runner를 캐시해 page_stale에 넘긴다(T-0470).
+    resolver로 해소하고 checkout마다 runner를 캐시해 page_stale에 넘긴다.
     owner를 해소하지 못하면 domain의 sentinel을 넘겨 기본 owner runner fallback을 막고
     stale 판정을 skip한다.
     구 board(리졸버 부재)는 키 부재/명시 self만 기존 REPO runner로 퇴화하고,
@@ -559,7 +559,7 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
 
     try:
         # 완료 알림도 domain affected와 같은 touches∩covers 계열이다. task stage와 별개로
-        # audit에서 잡힌 보조 소비이므로 같은 normalizer를 거쳐 recall 0 재발을 막는다.
+        # 같은 normalizer를 거쳐
         pages = domain.pages_for_touches(touches, domain.load_pages())
     except Exception:
         return None
@@ -597,35 +597,35 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
     return out
 
 
-# ── 디자인 git stage 스코프 (ADR-0074) ─────────────────────────────────────
+# ── 디자인 git stage 스코프 ─────────────────────────────────────
 #
-# **공유 워킹트리 mutation 은 선언된 경로만 건드린다.** 이 도구의 stage 단계는 예전엔 PM 홈
+# **공유 워킹트리 mutation 은 선언된 경로만 건드린다.**
 # 루트에서 `git add -A` 였다 — 멀티-PM 형상에서 다른 슬롯이 편집 중인 wiki 문서·무관 산출물을
-# 통째로 쓸어담아 PM 커밋이 서로 꼬였다(ADR-0074 Context·사용자 실사용 보고).
+# 통째로 쓸어담아 PM 커밋이 서로 꼬였다(Context·사용자 실사용 보고).
 #
 # 선언원은 둘, 그리고 **둘뿐**이다:
-#   ① 티켓 frontmatter `touches` — 사람이 적은 작업 범위 선언. 이미 있는 파서
+#   티켓 frontmatter `touches` — 사람이 적은 작업 범위 선언. 이미 있는 파서
 #      (`get_ticket_touches`)를 그대로 쓴다.
-#   ② **이 실행이 실제로 쓴 산출물** — `log/current.md`(:2단계) + board complete 가 옮긴 티켓
+#   **이 실행이 실제로 쓴 산출물** — `log/current.md`(:2단계) + board complete 가 옮긴 티켓
 #      파일(:3단계·legacy 형상 한정·아래 `engine_written_paths`).
 #
-# ②를 "엔진이 아는 wiki 산출물 디렉토리"(decisions/·domain/·ideas/…)로 넓히지 **않는다**:
+# 를 "엔진이 아는 wiki 산출물 디렉토리"(decisions/·domain/·ideas/…)로 넓히지 **않는다**:
 # 그건 `pm_adr`·`domain`·`board idea` 가 **다른 실행** 에서 만든 것이라 이 mutation 의 선언분이
 # 아니고, 디렉토리로 넘기는 순간 그 아래 **남의 미완성 편집까지 함께 stage** 되어 좁힌 척하고 안
 # 좁힌 상태가 된다(codex must-fix). 그것들이 커밋에서 빠지는 건 정상이고, 빠졌다는 사실은 아래
 # **잔여 loud 보고**가 알린다 — 그게 그 보고의 존재 이유다.
 #
 # gitignored 산출물(per-slot/per-task pm_state·leases·board.md·`.local/`)은 **스코프 산출 단계에서
-# 명시적으로 걸러야 한다**(`board.git_scope_stageable` ④). `git add` 는 *명시 pathspec* 이 ignored 면
+# 명시적으로 걸러야 한다**(`board.git_scope_stageable`). `git add` 는 *명시 pathspec* 이 ignored 면
 # rc=1 에러이기 때문이다 — 조용히 건너뛰는 건 광역 `add -A` 일 때뿐이다. 즉 스코프화가 이 성질을
-# 반전시킨다(ADR-0074 사실오류 정정 절 참조). 안 걸르면 `touches` 에 gitignored 경로가 하나만 있어도
+# 반전시킨다. 안 걸르면 `touches` 에 gitignored 경로가 하나만 있어도
 # board complete 이후 stage 가 통째로 죽고 잔여 loud 보고까지 사라진다.
 
 
 def _load_tool_module(path: Path):
     """같은 `tools/` 의 형제 모듈을 경로 로드한다 — 부재/실패 → None (`_load_domain_module` 동형).
 
-    sys.path 무오염(spec_from_file_location)·rev 스탬프 skew 는 fail-loud(T-0397). 로드 실패
+    sys.path 무오염(spec_from_file_location)·rev 스탬프 skew 는 fail-loud. 로드 실패
     자체는 None 으로 돌려 호출부가 **눈에 띄게** 처리하게 한다(조용한 skip 아님 — 아래
     `stage_scope` 는 None 을 stage 불능으로 보고 loud 경고를 낸다).
     """
@@ -640,10 +640,10 @@ def _load_tool_module(path: Path):
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, path.name)  # T-0397 불변식: stamped sibling 로드 지점은 verify
+        _verify_engine_rev(mod, path.name)  # stamped sibling 로드 지점은 verify
     except Exception as exc:
         if _is_engine_rev_skew(exc):
-            raise  # T-0397 — 사본 skew 는 fail-loud(삼키지 않는다).
+            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return None
     return mod
 
@@ -695,7 +695,7 @@ def _has_worktree_touch_prefix(path: str) -> bool:
 
 
 def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
-    """**이 실행이 실제로 쓴** 산출물 경로 (선언원 ②·ADR-0074).
+    """**이 실행이 실제로 쓴** 산출물 경로.
 
       - `log/current.md` — 2단계가 스켈레톤을 append 한다(항상).
       - 티켓 파일의 옛/새 경로 — 3단계 `board.py complete` 가 `claimed/`→`done/` 로 옮긴다.
@@ -747,7 +747,7 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
                 repo: Path | None = None, include_touches: bool = True,
                 include_engine_outputs: bool = True,
                 touches_workspace: Path | None = None) -> StageScope:
-    """이 완료 부기가 stage 할 pathspec (REPO 상대·실제 `add` 가능한 **파일**) — ADR-0074.
+    """이 완료 부기가 stage 할 pathspec (REPO 상대·실제 `add` 가능한 **파일**).
 
     선언원 = 티켓 `touches` ∪ `engine_written_paths()`. **판정은 board.py 의 repo-중립
     프리미티브 `git_scope_stage_pathspec` 한 벌을 재사용** 한다 — board-git 이 쓰는 바로 그
@@ -858,7 +858,7 @@ def split_dirty(entries: Sequence[tuple[str, str]],
 
       - 스코프 밖 staged (`X` 가 공백도 `?` 도 아님 ∧ 선언 스코프 밖) — 이 도구는 커밋하지
         않고 PM 에게 넘기므로, 남이 미리 stage 해 둔 변경이 **PM 의 커밋에 그대로 실린다**.
-        `add` 를 좁히는 것만으로는 안 닫히고 `commit` 쪽으로 새는 갈래다(ADR-0074 "add 와
+        `add` 를 좁히는 것만으로는 안 닫히고 `commit` 쪽으로 새는 갈래다("add 와
         commit 양쪽").
       - 미스테이지 잔여 (`Y` 가 공백 아님·`??` 포함) — 스코프가 못 덮은 변경(under-stage).
     """
@@ -874,7 +874,7 @@ def split_dirty(entries: Sequence[tuple[str, str]],
 
 # ── 로그 스켈레톤 ───────────────────────────────────────────────────────
 
-# 회귀 baseline 은 *실측* new_total 1줄만 남긴다 (ADR-0008 lean baseline·ADR-0023 — 직전
+# 회귀 baseline 은 *실측* new_total 1줄만 남긴다
 # 합계는 status.md 에 박제하지 않으므로 delta 는 PM 이 서술로 채운다·history 단일 진실=log).
 LOG_SKELETON_TEMPLATE = """\
 ## [{date}] {entry_type} | {ticket_id} — {title}
@@ -940,11 +940,11 @@ class TicketFinisher:
         self._log_file = log_file
         self._board_py = board_py
         self._venv_python = venv_python
-        # 회귀 cwd seam (ADR-0014·T-0149) — 분리된 PM 홈(②)엔 tests/ 가 없으므로 회귀는 활성
-        # worktree 슬롯(①·tests/)에서 돌아야 한다. **즉시 고정하지 않는다** — `regression_cwd`
+        # 회귀 cwd seam — 분리된 PM 홈엔 tests/ 가 없으므로 회귀는 활성
+        # worktree 슬롯(tests/)에서 돌아야 한다. **즉시 고정하지 않는다** — `regression_cwd`
         # 명시 주입은 그대로 보존(테스트/명시 override)하되, 미지정이면 `__init__` 시점의 REPO
         # 박제 대신 _default_run_pytest 가 런타임에 _regression_cwd() 로 self-host 슬롯을
-        # 자동해소한다(T-0149 — pm_handoff `_regression_cwd` 재사용·솔로는 REPO 폴백 무변경).
+        # 자동해소한다(pm_handoff `_regression_cwd` 재사용·솔로는 REPO 폴백 무변경).
         self._regression_cwd = str(regression_cwd) if regression_cwd else None
         self._task_workspace = Path(task_workspace) if task_workspace else None
 
@@ -957,7 +957,7 @@ class TicketFinisher:
         self._board_count_fn = board_count_fn or self._default_board_count
         self._ticket_title_fn = ticket_title_fn or self._default_ticket_title
 
-        # domain soft 알림 DI (ADR-0018 #2) — 기본값은 실 domain.py import 구현.
+        # domain soft 알림 DI — 기본값은 실 domain.py import 구현.
         # None 반환 = domain 부재/로드 실패(조용히 skip). 막지 않음(soft).
         self._affected_domain_fn = affected_domain_fn or self._default_affected_domain
 
@@ -968,7 +968,7 @@ class TicketFinisher:
         self._run_git_stdout_fn = (run_git_stdout_fn or run_git_fn
                                    or self._default_run_git_stdout)
 
-        # git stage 스코프 DI (ADR-0074) — 기본값은 `touches ∪ 이 실행이 쓴 산출물` 실 해소.
+        # git stage 스코프 DI — 기본값은 `touches ∪ 이 실행이 쓴 산출물` 실 해소.
         # 상태 조회도 같은 seam 으로 둬, 테스트가 stage 판정과 보고를 따로 격리한다.
         self._stage_scope_fn = stage_scope_fn or self._default_stage_scope
         self._status_entries_fn = status_entries_fn or self._default_status_entries
@@ -985,14 +985,14 @@ class TicketFinisher:
     def _default_run_pytest(self) -> tuple[int, str]:
         """회귀를 실행해 (returncode, stdout+stderr) 반환.
 
-        명령 해소(ADR-0014 per-repo):
+        명령 해소:
           - **multi-PM 모드** — 활성 repo 의 per-repo test_cmd(areas.md)가 있으면 그 문자열을
             shell 로 실행(board.py 회귀와 동형·비-Python repo 수용).
           - **솔로/프레임워크 자기 회귀** — per-repo cmd 가 없으면 현행 그대로
             `[venv_python, -m, pytest, tests/, -q]` venv argv(도그푸딩 불변·하위호환).
 
-        cwd 는 런타임 해소(T-0149) — 명시 주입(`regression_cwd` 인자)이 있으면 그 경로,
-        없으면 `_regression_cwd()` 가 self-host 단일 슬롯을 자동해소(② 홈 cwd 에서도 활성
+        cwd 는 런타임 해소— 명시 주입(`regression_cwd` 인자)이 있으면 그 경로,
+        없으면 `_regression_cwd()` 가 self-host 단일 슬롯을 자동해소(홈 cwd 에서도 활성
         worktree 의 tests/ 에서 돌게). 솔로/모호/부재는 REPO 폴백(현행 보존·additive).
         """
         cwd = self._regression_cwd if self._regression_cwd is not None else _regression_cwd()
@@ -1103,7 +1103,7 @@ class TicketFinisher:
         return affected_domain_titles(ticket_id, self._board_py)
 
     def _default_stage_scope(self, ticket_id: str) -> StageScope:
-        """stage 할 선언 경로 pathspec (`touches ∪ 이 실행이 쓴 산출물`·ADR-0074) — 실 해소."""
+        """stage 할 선언 경로 pathspec (`touches ∪ 이 실행이 쓴 산출물`) — 실 해소."""
         return stage_scope(ticket_id, self._board_py, self._log_file,
                            self._run_git_stdout_fn)
 
@@ -1119,7 +1119,7 @@ class TicketFinisher:
                            touches_workspace=self._task_workspace)
 
     def _default_status_entries(self) -> tuple[tuple[str, str], ...]:
-        """워킹트리 상태 `((XY, 경로), …)` (loud 보고 입력·ADR-0074) — 실 해소.
+        """워킹트리 상태 `((XY, 경로), …)` (loud 보고 입력) — 실 해소.
 
         board 를 넘기는 이유는 **NUL 파서 공유** 뿐이다(비-ASCII 경로 실경로화). 로드 실패는
         보고를 멈추지 않는다 — `status_entries` 가 degraded 판독으로 이어간다.
@@ -1133,7 +1133,7 @@ class TicketFinisher:
     def _stage_plans(self, ticket_id: str) -> tuple[RepoStagePlan, ...]:
         """실제 stage 와 dry-run 이 공유하는 repo별 계획 단일 진실.
 
-        task-mode 는 PM 홈에 log/board 산출물, F6 worktree 에 code touches를 각각 둔다.
+        task-mode 는 PM 홈에 log/board 산출물, worktree 에 code touches를 각각 둔다.
         비-task 경로는 기존 단일 PM-home 계획을 그대로 쓴다.
         """
         if self._task_workspace is None:
@@ -1162,13 +1162,13 @@ class TicketFinisher:
         반환: 0=성공, 1=실패 (중단).
 
         `section` 은 후방호환용으로 받기만 하고 무시한다 — status.md 합계표 섹션 행은
-        ADR-0023(a안) 으로 제거됐다(judgment-only·테스트 수는 박제 안 함).
+        제거됐다(judgment-only·테스트 수는 박제 안 함).
 
-        `skip_pytest`(--no-pytest·T-0285) 는 [1/5] 회귀 단계를 건너뛴다 — 측정은 PM 이 /pm-qa
+        `skip_pytest`(--no-pytest) 는 [1/5] 회귀 단계를 건너뛴다 — 측정은 PM 이 /pm-qa
         등으로 별도. board complete 는 `--tests-pass` 를 유지한다(pm_handoff `--no-pytest` 동형·
         회귀 red 아님·skip 로 진행). 다중슬롯 형상에서 회귀 cwd 를 정할 수 없을 때 우회 수단.
         """
-        del section  # ADR-0023 — status 합계표 제거로 더 이상 쓰지 않음(후방호환 수용만).
+        del section  # status 합계표 제거로 더 이상 쓰지 않음(후방호환 수용만).
         print(
             f"[ticket_finish] {ticket_id} 완료 부기 시작 "
             f"(dry_run={dry_run}, skip_pytest={skip_pytest})"
@@ -1211,7 +1211,7 @@ class TicketFinisher:
             new_total, deselected = parsed
             print(f"\n  ✓ green: passed={new_total}, deselected={deselected}")
 
-        # status.md 는 더 이상 갱신하지 않는다 (ADR-0023 a안 — judgment-only).
+        # status.md 는 더 이상 갱신하지 않는다.
         # 테스트 수는 위 pytest 실측이 단일 진실·history 는 아래 log skeleton 으로 남는다.
 
         # ── 2. log/current.md 스켈레톤 append ────────────────────────────────
@@ -1257,7 +1257,7 @@ class TicketFinisher:
                 return 1
             print(f"  ✓ board: {ticket_id} → done")
 
-        # ── 4. git stage (선언 경로 스코프·ADR-0074) ────────────────────
+        # ── 4. git stage (선언 경로 스코프) ────────────────────
         # blanket `add -A` 가 아니다 — 이 티켓이 선언한 경로(`touches` ∪ *이 실행이 쓴* 산출물)만
         # stage 한다. 좁힘이 만드는 반대편 실패(under-stage)는 아래 잔여 dirty loud 보고로
         # 가시화한다(차단하지 않는다 — `touches` 는 사람이 적는 값이라 누락 가능).
@@ -1302,16 +1302,16 @@ class TicketFinisher:
 
         # ── 5. 잔여 PM 작업 출력 ─────────────────────────────────────
         print("\n[5/5] PM 이 손으로 할 잔여 작업:")
-        print("  ① log/current.md 서술 불릿 채우기 — <!-- PM: 무엇을·왜 서술 --> 를 실제 내용으로 교체")
-        print("  ② status.md 모듈 행(상태 + 비고) — 변경된 모듈 행 판정을 architect/PM 이 직접 갱신 (테스트 수는 박제 안 함·ADR-0023)")
+        print("  log/current.md 서술 불릿 채우기 — <!-- PM: 무엇을·왜 서술 --> 를 실제 내용으로 교체")
+        print("  status.md 모듈 행(상태 + 비고) — 변경된 모듈 행 판정을 architect/PM 이 직접 갱신 (테스트 수는 박제 안 함)")
         # 단일 repo 출력은 기존 커밋 안내 문구를 byte-compatible하게 보존한다. 두 repo 계획일 때만
         # cwd별 안내로 확장해 PM 홈 성공이 task worktree 누락을 가리지 못하게 한다.
         if not multi_repo:
-            print("  ③ git commit — **경로를 명시**하라: "
+            print("  git commit — **경로를 명시**하라: "
                   "`git commit -m \"<메시지>\" -- <위 [4/5] 가 stage 한 경로들>` "
                   "(메시지는 PM 이 작성 · Co-Authored-By: Claude 트레일러 포함)")
         else:
-            print("  ③ git commit — **repo별 cwd와 경로를 명시**하라 "
+            print("  git commit — **repo별 cwd와 경로를 명시**하라 "
                   "(메시지는 PM 이 작성 · Co-Authored-By: Claude 트레일러 포함):")
             for plan in plans:
                 scope, scope_error = plan.scope
@@ -1323,7 +1323,7 @@ class TicketFinisher:
                 print(f"      [{plan.label}] cwd={plan.cwd}: "
                       f"`git commit -m \"<메시지>\" -- {pathspec}`")
 
-        # ── soft 알림: 영향받는 domain 페이지 (ADR-0018 #2·U2·비차단) ──────
+        # ── soft 알림: 영향받는 domain 페이지 (비차단) ──────
         # 정보일 뿐 게이트가 아니다 — 완료 흐름·rc 를 막지 않는다(예외도 삼킨다).
         # domain.py 부재(솔로/신규 clone) → None → 조용히 skip(무영향).
         self._notify_affected_domain(ticket_id)
@@ -1368,7 +1368,7 @@ class TicketFinisher:
 
     def _report_dirty_after_stage(self, scope: Sequence[str], *, cwd: Path = REPO,
                                   label: str = "") -> None:
-        """stage 후 상태를 양방향으로 **눈에 띄게** 보고한다 (loud·비차단·ADR-0074).
+        """stage 후 상태를 양방향으로 **눈에 띄게** 보고한다 (loud·비차단).
 
         두 실패 방향을 함께 본다 — ① **미스테이지 잔여**(under-stage: 스코프가 못 덮은 변경 —
         내 작업 누락이면 `touches` 를 보강해 다시 stage, 남의 WIP 면 그대로 둔다) ②
@@ -1397,7 +1397,7 @@ class TicketFinisher:
     def _notify_affected_domain(self, ticket_id: str) -> None:
         """이 ticket 이 건드린 영역의 domain 페이지를 soft 알림으로 출력한다 (비차단).
 
-        영향 페이지가 stale(covers 코드가 page updated 후 커밋·ADR-0018 #3)이면 그 줄 앞에
+        영향 페이지가 stale(covers 코드가 page updated 후 커밋)이면 그 줄 앞에
         `⚠` 를 단다 — fresh(False)/unknown(None)은 무표시. 도그푸딩/multi-PM 어디서든 완료를
         절대 막지 않는다 — domain 부재·예외는 조용히 삼키고(crash 0), 영향 0 이면 한 줄
         안내만 낸다. dry-run/실행 동일(정보 출력만). stale 못 구해도(예외/unknown) 비차단.
@@ -1430,7 +1430,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="섹션명",
         default=None,
         help=(
-            "(deprecated·no-op) status.md 합계표 섹션 행은 ADR-0023 으로 제거됐다 — "
+            "(deprecated·no-op) status.md 합계표 섹션 행은 제거됐다 — "
             "받기만 하고 무시한다(후방호환). status.md = judgment-only."
         ),
     )
@@ -1439,10 +1439,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="편집·board·git 없이 무엇을 바꿀지만 출력한다.",
     )
-    # ── 두-git 다중슬롯 seam (ADR-0027·pm_handoff 미러·T-0285·ADR-0057) ──────────
-    # 분리된 PM 홈(②) + worktree 슬롯 여럿 형상에서 회귀를 어느 worktree(tests/ 보유)에서
+    # ── 두-git 다중슬롯 seam (pm_handoff 미러) ──────────
+    # 분리된 PM 홈 + worktree 슬롯 여럿 형상에서 회귀를 어느 worktree(tests/ 보유)에서
     # 돌릴지 disambiguate 한다 — pm_handoff `--repo`/`--slot`/`--no-pytest` 와 동형(canonical
-    # 분해형·ADR-0057). `--repo` 단독은 활성(leased) 슬롯 1개면 자동해소·0/≥2 는 fail-loud(M3).
+    # 분해형). `--repo` 단독은 활성(leased) 슬롯 1개면 자동해소·0/≥2 는 fail-loud.
     identity_args.add_identity_args(parser)
     parser.add_argument(
         "--no-pytest",
@@ -1463,12 +1463,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # PM-홈 worktree 오실행 가드(T-0345) — 부기 어떤 부작용(회귀/log append/complete/stage)도
+    # PM-홈 worktree 오실행 가드— 부기 어떤 부작용(회귀/log append/complete/stage)도
     # 나기 *전에* fail-loud. 읽기 경로 없음(ticket_finish 는 전부 쓰기 부기)이라 진입에서 한 번.
     if _guard_worktree_misanchor():
         return 1
 
-    # task 실행-위치 핀은 독립 축이다(ADR-0078). 혼합을 parse_identity의 bare-slot 오류보다
+    # task 실행-위치 핀은 독립 축이다. 혼합을 parse_identity의 bare-slot 오류보다
     # 먼저 거부해 `--repo`를 추가하라는 잘못된 해결책을 안내하지 않는다.
     if args.task is not None and (args.repo is not None or args.slot is not None):
         parser.error(
@@ -1476,7 +1476,7 @@ def main(argv: list[str] | None = None) -> int:
             "(task 보유 작업공간은 장부에서 자동 해소)."
         )
 
-    # 정체성 인자 *검증*(`--slot` 단독·`slot < 1` = ADR-0057 uniform fail-loud)은 `--no-pytest` 와
+    # 정체성 인자 *검증*(`--slot` 단독·`slot < 1` = uniform fail-loud)은 `--no-pytest` 와
     # 무관하게 **항상** 수행한다. task F6도 회귀 전용 값이 아니다: stage/status 계획의 cwd 단일
     # 진실이므로 --no-pytest 에서도 반드시 해소한다. 반면 slot-mode 모호 게이트는 회귀를 실제로
     # 돌 때만 적용한다(기존 --no-pytest escape hatch 보존).
@@ -1485,11 +1485,11 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    # task 명 검증(must-fix·T-0355 게이트) — board 정체성 깔때기와 **동일 공유 validator**
+    # task 명 검증(must-fix 게이트) — board 정체성 깔때기와 **동일 공유 validator**
     # (`identity_args.validate_task_name`·worktree_pool 엔진 validator 와 동형·로직 중복 0)를 소비해,
-    # F6 실행-위치 해소 이전 불법 task 명(traversal/공백/`<repo>_<N>` 예약)을 fail-loud 한다. `--slot`
+    # 실행-위치 해소 이전 불법 task 명(traversal/공백/`<repo>_<N>` 예약)을 fail-loud 한다. `--slot`
     # 검증과 동형으로 `--no-pytest` 무관 **항상** 수행(회귀 skip 여도 정체성 검증은 우회 안 됨). 예약패턴
-    # (⑥) 판정용 registered_repos 는 board 모듈에서 fail-soft 해소(부재/실패 시 char/traversal 검증만).
+    # 판정용 registered_repos 는 board 모듈에서 fail-soft 해소(부재/실패 시 char/traversal 검증만).
     if identity.task:
         registered = None
         _bmod = _load_board_module()
@@ -1503,7 +1503,7 @@ def main(argv: list[str] | None = None) -> int:
         except identity_args.InvalidTaskName as exc:
             print(
                 f"\n[중단] 부적합 task 명 {identity.task!r} — {exc.reason} "
-                "(`--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴 `<repo>_<N>`(⑥)은 쓸 수 없다).",
+                "(`--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴 `<repo>_<N>`은 쓸 수 없다).",
                 file=sys.stderr,
             )
             return 1
@@ -1511,7 +1511,7 @@ def main(argv: list[str] | None = None) -> int:
     regression_cwd: str | None = None
     task_workspace: Path | None = None
     if identity.task:
-        # task-mode F6 해소는 regression·stage·잔여 보고가 공유한다. --no-pytest 는 측정만
+        # task-mode 해소는 regression·stage·잔여 보고가 공유한다. --no-pytest 는 측정만
         # 생략할 뿐, 실제 code touches를 놓치게 해서는 안 된다.
         try:
             ws = identity_args.resolve_task_workspace(identity, LEASES_FILE)

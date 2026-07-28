@@ -25,7 +25,7 @@ audience: pm-internal
 
 ## domain 소환 (recall — dev 위임 *전*)
 
-위임 *전* ticket 의 covers 매칭 domain 페이지를 띄워 dev 에게 함께 넘긴다 (읽기 맥락 — dev 가 도메인 지식 없이 구현하는 걸 막음·ADR-0018 §7b):
+위임 *전* ticket 의 covers 매칭 domain 페이지를 띄워 dev 에게 함께 넘긴다 (읽기 맥락 — dev 가 도메인 지식 없이 구현하는 걸 막음):
 
 ```bash
 python3 .project_manager/tools/domain.py affected --ticket T-NNNN
@@ -33,11 +33,11 @@ python3 .project_manager/tools/domain.py affected --ticket T-NNNN
 
 - 출력 = ticket touches ∩ 페이지 `covers` 매칭 페이지. 줄 앞 `⚠ ` = **stale**(담당 코드가 페이지 갱신 후 커밋됨).
 - `(영향 domain 페이지 없음)` → 소환할 것 없음·생략.
-- 매칭된 페이지 경로를 아래 developer 위임 프롬프트에 인용/전달한다. **⚠ stale 페이지는 "맹신 말 것"** 경고를 동반 — 담당 코드 변경 후 미갱신이라 정보가 상했을 수 있다(enforcement 아닌 visibility·Q3).
+- 매칭된 페이지 경로를 아래 developer 위임 프롬프트에 인용/전달한다. **⚠ stale 페이지는 "맹신 말 것"** 경고를 동반 — 담당 코드 변경 후 미갱신이라 정보가 상했을 수 있다(enforcement 아닌 visibility).
 
-## task-mode 작업 위치 주입 (F6 해소 절대경로 · T-0355)
+## task-mode 작업 위치 주입 (해소 절대경로)
 
-task-mode(v1.3.0 — 한 task 가 worktree 를 0개 이상 빌려 도는 모델) 위임에선 dev 가 **어느 worktree 에서** 구현할지를 PM 이 **F6 로 해소한 절대경로**로 위임 프롬프트에 명시 주입한다 (dev/git 이 짐작하지 않게 — cwd 는 해소에 비참여·T-0345). 해소값은 실행-위치 필요 도구가 그대로 surface 한다:
+task-mode(v1.3.0 — 한 task 가 worktree 를 0개 이상 빌려 도는 모델) 위임에선 dev 가 **어느 worktree 에서** 구현할지를 PM 이 **로 해소한 절대경로**로 위임 프롬프트에 명시 주입한다 (dev/git 이 짐작하지 않게 — cwd 는 해소에 비참여). 해소값은 실행-위치 필요 도구가 그대로 surface 한다:
 
 ```bash
 python3 .project_manager/tools/board.py regression run --task <이름>
@@ -45,15 +45,15 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 ```
 
 - 그 `<worktree 절대경로>`를 developer 위임 프롬프트의 **작업 위치**로 박아 넣는다(짐작 제거).
-- task 가 슬롯을 2개↑ 보유해 모호하면 F6 이 **에러**(⑦·암묵 선택 금지) — 쓰지 않는 잉여 슬롯을
+- task 가 슬롯을 2개↑ 보유해 모호하면 이 **에러**(암묵 선택 금지) — 쓰지 않는 잉여 슬롯을
   `python3 .project_manager/tools/pm_config.py release <slot> --task <이름>`으로 반납한 뒤 다시 해소한다.
 - 슬롯 세션(비-task)·솔로(M=1)는 종전대로 — 이 주입은 task-mode 에서만.
 
-## cross-harness 위임 판정 (native 단락 · pm_delegate 채널 · ADR-0075)
+## cross-harness 위임 판정 (native 단락 · pm_delegate 채널)
 
 역할 노동을 위임하기 전, 대상이 **내(PM) 하네스 네이티브로 도는지**(native) **다른 하네스 CLI 로
 나가야 하는지**(cross)를 먼저 판정한다. 판정 1차 = 이 카드(PM)이고, `pm_delegate.py` 의 same-harness
-경고는 백스톱(never-block·spike §3.6). 매핑은 `local.conf` 의 `delegate.<role>[.<tier>]` 키가 소유한다.
+경고는 백스톱(never-block). 매핑은 `local.conf` 의 `delegate.<role>[.<tier>]` 키가 소유한다.
 
 ### 1. 매핑 조회 (dry-run — 미전송 미리보기)
 
@@ -67,7 +67,7 @@ python3 .project_manager/tools/pm_delegate.py --dry-run \
 
 - 출력 = 해소된 `(harness, model, reasoning)` + 합성 프롬프트 + argv 미리보기. **전송하지 않는다**.
 - dry-run 은 opt-in 게이트를 **우회**한다(항상 rc=0 미리보기) — opt-in OFF 판정(`rc=3`)은 실 실행에서만 난다(아래 §opt-in 게이트).
-- 매핑 미설정 역할은 `rc=1` fail-loud — `local.conf` 에 `delegate.<role>.harness/.model` 을 채운다(조용한 폴백 없음 — 단 **명시 설정된 loud 폴백**은 별도: `delegate.<role>[.<tier>].fallback.harness/.model[/.reasoning]` 이 있으면 **인프라 실패**[스폰 실패·한도·타임아웃·stall]에 한해 1단 폴백이 발동하고 사유가 stderr 에 표기된다·판정 반려/denylist 차단은 비발동·T-0474·운용 권장 조합=claude/opus).
+- 매핑 미설정 역할은 `rc=1` fail-loud — `local.conf` 에 `delegate.<role>.harness/.model` 을 채운다(조용한 폴백 없음 — 단 **명시 설정된 loud 폴백**은 별도: `delegate.<role>[.<tier>].fallback.harness/.model[/.reasoning]` 이 있으면 **인프라 실패**[스폰 실패·한도·타임아웃·stall]에 한해 1단 폴백이 발동하고 사유가 stderr 에 표기된다·판정 반려/denylist 차단은 비발동·운용 권장 조합=claude/opus).
 - `--tier` 는 **developer 전용** (난제=`hard`·평시=`normal`). 아래 §티어 판정 기준으로 고른다.
   비-개발 역할에 `--tier` 를 주면 usage error.
 
@@ -90,7 +90,7 @@ python3 .project_manager/tools/pm_delegate.py --dry-run \
 
 - **hard 프로필 미설정 = fail-loud(폴백 없음)** — `delegate.developer.hard.*` 가 없으면
   pm_delegate 는 `--tier hard` 를 normal 로 강등하지 않고 `rc=1` 로 거부한다(난제를 조용히 약한
-  프로필로 돌리면 의도 왜곡·spike §3.2). native 경로도 동일 — hard 프로필(예 codex
+  프로필로 돌리면 의도 왜곡). native 경로도 동일 — hard 프로필(예 codex
   `developer-hard.toml`)이 없으면 명시 추가한다.
 
 ### 2. native 단락 판정
@@ -99,7 +99,7 @@ python3 .project_manager/tools/pm_delegate.py --dry-run \
 claude=Agent 툴 `subagent_type` / codex=`spawn_agent` / opencode=subagent). pm_delegate 를 부르지
 않는다 — 외부 송신 0·같은 프로세스 계열이라 더 저렴하다.
 
-해소된 **target harness != 내 하네스**(cross)면 → 아래 §3 pm_delegate 호출.
+해소된 **target harness != 내 하네스**(cross)면 → pm_delegate 호출.
 
 ### 3. cross 위임 실행 (pm_delegate.py)
 
@@ -113,9 +113,9 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - `--prompt-file` — PM 이 만든 **self-contained task 프롬프트**를 담은 파일. 아래 §실행 패턴의 위임
   프롬프트 본문(developer/code-reviewer)을 그대로 파일로 저장해 넘긴다. 경로는 해소된 `--cwd` 하위
   또는 이 repo `.project_manager/` 하위만 허용(repo 경계 밖 = fail-loud·유출 차단).
-- `--cwd` — dev 가 구현할 **작업 worktree 절대경로**. F6 해소값(task-mode 는 위 §task-mode 주입 절
+- `--cwd` — dev 가 구현할 **작업 worktree 절대경로**. 해소값(task-mode 는 
   참조)을 실값으로 박는다. 모든 역할 필수(기본값 없음).
-- `--tier` — developer 난제/평시(위 §1). 다른 역할엔 주지 않는다.
+- `--tier` — developer 난제/평시. 다른 역할엔 주지 않는다.
 - **role preamble 은 엔진이 합성**한다 — 역할 정체성·금지사항(commit/push 등 git 비가역·board 조작·
   어댑터 디렉토리 `.claude/.codex/.opencode` 수정 금지)은 `pm_delegate.py` 의 role preamble 이 프롬프트
   앞에 자동 주입한다. 프롬프트 파일엔 **작업 내용만** 담고 금지 문구를 중복 서술하지 않는다.
@@ -123,12 +123,12 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
   pm_delegate 호출 자체를 병렬화한다. pm_delegate 는 동기·stateless — 병렬은 호출측 책임이다.
 - 결과: `rc=0` 성공(stdout 첫 줄 = 실행 provenance[폴백 발동 시 어느 하네스로 돌았는지 포함]·이후 최종 reply·raw 는 파일 박제) / `rc=1` 실패(loud·raw 경로 stderr) /
   `rc=3` opt-in OFF. reply 를 회수해 PM 이 검토·board 갱신을 담당한다(위임 대상은 board 조작 안 함).
-- **위임 회수 시 범위-밖 변경 감지**(T-0462): `--ticket T-NNNN` 을 주면 그 티켓 `touches` 를 허용 집합으로 위임 전/후 워크스페이스를 기계 비교해 범위 밖 신규/변경/커밋을 stderr 경고 블록으로 표면화한다(차단 아님·rc 불변). 생략 시 허용 0(어떤 변경이든 경고) — **dev 위임엔 `--ticket` 명시가 표준**이다.
-- **시크릿 스캔 차단 시 `--secret-scan-ack <digest>` 사용 규율**(T-0476): §4.7 이 합성 프롬프트를
+- **위임 회수 시 범위-밖 변경 감지**: `--ticket T-NNNN` 을 주면 그 티켓 `touches` 를 허용 집합으로 위임 전/후 워크스페이스를 기계 비교해 범위 밖 신규/변경/커밋을 stderr 경고 블록으로 표면화한다(차단 아님·rc 불변). 생략 시 허용 0(어떤 변경이든 경고) — **dev 위임엔 `--ticket` 명시가 표준**이다.
+- **시크릿 스캔 차단 시 `--secret-scan-ack <digest>` 사용 규율**: 이 합성 프롬프트를
   차단하면 **전 탐지 목록(발췌·판정·축) + 승인 토큰 + 재실행 커맨드**가 출력된다. **PM(LLM)이 반사적으로
-  재실행하지 마라** — 그러면 게이트가 사실상 무력화된다. 규율: ① 전 탐지 발췌를 읽고 *시크릿을 논하는
-  텍스트*(오탐)인지 *실 크리덴셜*(정탐)인지 판단 ② 조금이라도 모호하면 발췌를 **사용자에게 제시하고
-  승인받은 뒤에만** ack ③ 정탐이면 ack 금지 — 프롬프트에서 해당 내용을 제거하고 재작성. 승인은 그
+  재실행하지 마라** — 그러면 게이트가 사실상 무력화된다. 규율: 전 탐지 발췌를 읽고 *시크릿을 논하는
+  텍스트*(오탐)인지 *실 크리덴셜*(정탐)인지 판단 조금이라도 모호하면 발췌를 **사용자에게 제시하고
+  승인받은 뒤에만** ack 정탐이면 ack 금지 — 프롬프트에서 해당 내용을 제거하고 재작성. 승인은 그
   프롬프트 전문+해소 수신자(harness:model)에 결속된 건별 1회다(1자 변경·수신자 변경 = 재승인).
 
 ### opt-in 게이트 (외부 송신 · 기본 OFF)
@@ -142,7 +142,7 @@ delegate_enabled = true
 ```
 
 `=true` 는 "worktree 내용·(정제된) 환경이 타깃 하네스로 나갈 수 있음"을 사용자가 수용하는 계약이다
-(과금·외부 송신·ADR-0004 상속). **native 단락(same-harness)은 이 게이트 밖** — 외부 송신이 없다.
+(과금·외부 송신). **native 단락(same-harness)은 이 게이트 밖** — 외부 송신이 없다.
 
 ## 실행 패턴
 
@@ -157,7 +157,7 @@ Agent 툴 호출:
     "T-NNNN 을 구현하라.
 
      세션명: orch-dev-TNNNN (board.py 조작은 orchestrator(PM) 담당·dev 는 코드+테스트만).
-     작업 위치(worktree 절대경로): <F6 해소 절대경로 — task-mode 시·슬롯/솔로는 생략>.
+     작업 위치(worktree 절대경로): <해소 절대경로 — task-mode 시·슬롯/솔로는 생략>.
 
      ticket 본문은 python3 .project_manager/tools/board.py show T-NNNN 로 확인.
      본문이 self-contained — 목표/인터페이스/결정/DoD/참고 절 대로 구현.
@@ -187,7 +187,7 @@ Agent 툴 호출:
 
      ⚠️ status.md / log/current.md 갱신은 orchestrator(PM) 담당 — 그 누락은 developer
      must-fix 아님.
-     소환된 domain 페이지가 있으면 그 wiki DoD(touch∩covers 갱신·T-0081 soft step) 반영 여부도 점검.
+     소환된 domain 페이지가 있으면 그 wiki DoD(touch∩covers 갱신 soft step) 반영 여부도 점검.
 
      완료 시 보고:
      - must-fix (수정 필수·프로젝트 고유 제약 위반·결함)
@@ -207,7 +207,7 @@ Agent 툴 호출:
 병렬 wave(dev 가 공유 트리를 **라이브 편집 중**)에서 **내부 reviewer** 를 위임할 땐, 위임 *전* PM
 이 리뷰 대상(= 미리 `git add` 한 **staged** 상태)을 격리 worktree 로 스냅샷한다 — 리뷰가 읽는 트리
 가 dev 편집·리뷰 자신의 git 조작(sensitivity `git checkout` 등)으로 흔들리지 않게 **절차 자체가
-경합 불가능**해진다(2회 실측: T-0389 리뷰 false-red · T-0402 리뷰 ↔ T-0409 dev 편집 실경합).
+경합 불가능**해진다.
 
 `<scratch>` = **repo 트리 밖** 경로(예: OS 임시 디렉토리 `/tmp`, 또는 repo 상위 `..` — 최종 경로는
 `<scratch>/gate-<T>`).
@@ -265,11 +265,11 @@ attribute* 가능. PM 이 진짜 영역 확인 후 fix 분기 결정.
 - **dev 자기 보고 표준 형식 강제** — 위임 프롬프트에 *DoD 각 항목별 충족 evidence* 명시 요구.
 - **background 우선** — 병렬 wave 효율 ↑. 단 검토 결과에 다음 ticket 의존 시 foreground.
 - **위임 프롬프트는 한 줄** — ticket 본문이 self-contained 의무 → 추가 컨텍스트 불필요. 길어지면 ticket 본문 보강.
-- **해소 절대경로 주입** — task-mode dev 위임은 F6 로 해소한 worktree 절대경로 실값을 프롬프트에 명시(짐작 제거·cwd 비참여·T-0355). ⑰ 카드 생성화(T-0362) 전이라 현 wave 는 프롬프트 명시 주입까지.
+- **해소 절대경로 주입** — task-mode dev 위임은 로 해소한 worktree 절대경로 실값을 프롬프트에 명시(짐작 제거·cwd 비참여).
 - **native 단락 판정 = 이 카드** — target 하네스 == 내 하네스면 네이티브 위임(외부 송신 0), cross 면
   `pm_delegate.py` 채널(외부 송신·opt-in 필요). `pm_delegate` same-harness 경고는 백스톱(never-block).
 - **장기 resume 대신 fresh 재투입** — 같은 dev 에이전트를 다라운드 수정 루프로 계속 resume 하면
-  transcript 누적으로 컨텍스트 한도에 죽는다(PM 10차 실측: 14회 resume → "Prompt is too long").
+  transcript 누적으로 컨텍스트 한도에 죽는다(14회 resume → "Prompt is too long").
   라운드가 이어지면(대략 5~6회 resume↑) **새 에이전트를 자족 프롬프트로 재투입**한다 — ticket 본문
   self-containment(컨텍스트 방화벽)가 이를 보장하고, 산출물은 워킹트리에 있으니 유실 0. 프롬프트에
   현 코드 상태(신설 심볼·미커밋 변경 존재)를 요약해 넘긴다.
@@ -277,6 +277,6 @@ attribute* 가능. PM 이 진짜 영역 확인 후 fix 분기 결정.
 ## 참고
 
 - `.project_manager/wiki/pm_role.md` — wave 패턴·dev/reviewer cycle·must-fix 분기 단일 진실
-- `.project_manager/tools/pm_delegate.py` — cross-harness 위임 채널 엔진(매핑 해소·argv·role preamble·opt-in 게이트·ADR-0075)
+- `.project_manager/tools/pm_delegate.py` — cross-harness 위임 채널 엔진(매핑 해소·argv·role preamble·opt-in 게이트)
 - `.claude/agents/developer.md` — developer 서브에이전트 정의
 - `.claude/agents/code-reviewer.md` — code-reviewer 서브에이전트 정의

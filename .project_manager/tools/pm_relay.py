@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""PM relay — 상태 없는 thin supervisor 세션 자동-회전 (ADR-0009 · 엔진 core).
+"""PM relay — 상태 없는 thin supervisor 세션 자동-회전 (엔진 core).
 
 세션당 200K 한계를 *이음매 없이* 회전해 **연속 PM 운영**을 주는 바깥 루프. supervisor 는
 LLM 이 아니라 dumb pipe 인 코드 프로세스다 — user↔PM 메시지를 그냥 지나보내고 컨텍스트를
-누적하지 않는다(stateless). 연속성은 **file**(board=작업상태 + ADR-0008 handoff entry)이
+누적하지 않는다(stateless). 연속성은 **file**(board=작업상태)이
 담당하고 supervisor 는 무기억으로 회전만 한다.
 
 루프 (run_loop):
@@ -42,10 +42,10 @@ MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 def build_bootstrap_prompt(task: str | None = None) -> str:
     """재진입 부트스트랩 프롬프트를 빌드한다 — task 명시 시 `/pm-bootstrap --task <name>` 로 주입.
 
-    **relay task 전달 = (b) 명시 전달**(sealed·PM 73·T-0356·F7): supervisor 가 받은 task 정체성을
+    **relay task 전달 = () 명시 전달**(): supervisor 가 받은 task 정체성을
     재진입 프롬프트에 실값으로 박아, 컨텍스트 한계로 회전된 새 PM 세션이 같은 task 를 재바인딩
-    (resume)하게 한다. cwd/env 추론(a)은 기각(F6 "cwd 는 해소에 참여하지 않는다"·결정론 ⓐ "cwd/env
-    추론 금지"와 모순·ADR-0057 불변) — 정체성은 per-call 명시 전달이다. task 슬롯 0개 엣지에서도 (b)만
+    (resume)하게 한다. cwd/env 추론()은 기각("cwd 는 해소에 참여하지 않는다"·"cwd/env
+    추론 금지"와 모순) — 정체성은 per-call 명시 전달이다. task 슬롯 0개 엣지에서도 (b)만
     동작한다. task 없으면(슬롯/솔로) bare `/pm-bootstrap`(현행·byte-동일)."""
     cmd = f"/pm-bootstrap --task {task}" if task else "/pm-bootstrap"
     return (
@@ -112,7 +112,7 @@ def clear_marker(root: Path, session_id: str) -> bool:
         return False
 
 
-# ── marker payload 계약 (T-0404·codex R2 — 두 정지 의미론 구분) ────────────────
+# ── marker payload 계약 (두 정지 의미론 구분) ────────────────
 # marker 파일 존재 = "이 세션 회전하라" 신호(Supervisor 가 stat). 단 *언제* 박제됐냐로 의미가 갈린다:
 #   • pre-turn(기본·opencode/claude ctx_stop_hook): 입력을 *처리하기 전* PreToolUse hard-stop 으로
 #     박제 → 그 turn 입력은 **차단**됐다 → Supervisor 는 회전 후 그 입력을 **재전송**(in-flight 보존).
@@ -259,14 +259,14 @@ def parse_codex_json(lines) -> tuple[str | None, str | None, dict | None]:
     claude `parse_stream_json`·opencode `parse_opencode_json` 과 **대칭** 위치의 codex 어댑터용
     순수 헬퍼 — codex 는 thread_id 를 사전지정 못 하고 `thread.started` 이벤트로 발급하므로
     (opencode sid 동형) 출력 파싱으로 획득한다. usage 는 codex driver 의 driver-side 기계 ctx
-    가드(ADR-0070 D4 ①·relay 경로엔 opencode plugin 같은 marker 채널이 없어 driver 가 예산을
+    가드(relay 경로엔 opencode plugin 같은 marker 채널이 없어 driver 가 예산을
     직접 판정)의 원천이라 claude/opencode 파서와 달리 3번째 값으로 usage 를 함께 낸다.
 
     - thread_id: `thread.started` 이벤트의 `thread_id`(첫 등장값 = resume 권위 id). 없으면 None
       (driver 가 치명 처리 — resume 불가).
     - reply: `item.*` 이벤트의 agent_message(`item.type == "agent_message"`) `text` — 최종
       (마지막 비어있지-않은) 값. item.started→completed 스트리밍 시 completed 가 최종 전체
-      텍스트로 덮어쓴다. reasoning 등 다른 item 은 제외. 없으면 None. (실측 wire shape 은 T-0407
+      텍스트로 덮어쓴다. reasoning 등 다른 item 은 제외. 없으면 None.
       라이브 smoke 가 확정 — item 의 텍스트 필드가 다르면 여기 한 지점만 조정.)
     - usage: `turn.completed` 이벤트의 `usage`(마지막 등장값)를 wire(`*_tokens`)→contract
       (`{input,cached_input,output,reasoning_output}`)로 `_codex_usage_contract` 가 정규화한 값.
@@ -307,20 +307,20 @@ def parse_codex_json(lines) -> tuple[str | None, str | None, dict | None]:
     return thread_id, reply, usage
 
 
-# ── opencode 첫-이벤트 stall 워치독 (T-0336 · 하니스-무관 순수 헬퍼·parse_opencode_json 동거) ──
+# ── opencode 첫-이벤트 stall 워치독 (하니스-무관 순수 헬퍼·parse_opencode_json 동거) ──
 # opencode `run` 이 스타트업 network fetch stall 에 빠지면 `--format json` stdout 이벤트가 0바이트로
-# **영원히** 멈춘다(PM 70 라이브 실측·정상 run 은 첫 이벤트 ~0.2–2초·헝 run 은 240초+ 창 지나도 자체
+# **영원히** 멈춘다(정상 run 은 첫 이벤트 ~0.2–2초·헝 run 은 240초+ 창 지나도 자체
 # 회복 없음·upstream #13841 진단 일치). 호출층에서 이를 닫는다: 첫 stdout 이벤트가 N초 내 안 오면
 # 프로세스 그룹째 kill → 재시도(M회) → 소진 시 fail-loud. provider/원인 무관(내부 어느 fetch 가
 # 멈추든 동작). mid-turn(정상 긴 생성) 침묵은 이번 범위 밖 — overall_timeout(호출부의 기존 hard
 # 가드·예: pm_orch_opencode.TURN_TIMEOUT_SEC=600)이 그대로 백스톱. provider 노브(headerTimeout 등)는
-# stall 이 provider 스트림 fetch *밖*에서 발생해 무효 실측(PM 70) — 워치독이 클래스를 커버한다.
+# stall 이 provider 스트림 fetch *밖*에서 발생해 무효 실측() — 워치독이 클래스를 커버한다.
 
 # env 노브 (worktree_pool 의 PM_GIT_TIMEOUT 네이밍 결). 세 표면(opencode driver·pm_import fill·
 # release 라이브 헬퍼)이 아래 두 해소기로 이 기본값을 공유한다. 값을 바꾸려면 export 후 재실행.
 FIRST_EVENT_TIMEOUT_ENV = "PM_OC_FIRST_EVENT_TIMEOUT"   # 첫-이벤트 대기 상한(초).
 STALL_RETRIES_ENV = "PM_OC_STALL_RETRIES"               # stall 시 재시도 횟수.
-# 기본 90초 = 느린 cloud 시작 대비 보수적(정상 첫 이벤트 ~0.2–2초·PM 70). 재시도 기본 2회.
+# 기본 90초 = 느린 cloud 시작 대비 보수적(정상 첫 이벤트 ~0.2–2초). 재시도 기본 2회.
 DEFAULT_FIRST_EVENT_TIMEOUT_SEC = 90.0
 DEFAULT_STALL_RETRIES = 2
 # 워치독 폴 간격·kill 후 grace(자식 잔존 방지·짧게). 매직넘버 회피 상수.
@@ -502,7 +502,7 @@ def run_with_first_event_watchdog(
     log=None,
     poll_interval: float = _WATCHDOG_POLL_INTERVAL_SEC,
 ):
-    """argv 를 첫-이벤트 워치독으로 실행 — startup stall 을 유한 재시도로 닫는다 (T-0336).
+    """argv 를 첫-이벤트 워치독으로 실행 — startup stall 을 유한 재시도로 닫는다.
 
     각 시도: 프로세스 시작 → stdout 첫 이벤트를 first_event_timeout 초 내 관측하는지 감시.
       - 관측(또는 첫 이벤트 없이 빠른 종료) → 완료까지 드레인(overall_timeout 백스톱) 후
@@ -563,21 +563,21 @@ def run_with_first_event_watchdog(
 
     raise StallWatchdogError(
         f"opencode 첫-이벤트 stall 이 {attempts}회 연속 발생({last_reason}) — 재시도 소진. "
-        "startup network fetch stall 의심(PM 70·upstream #13841)."
+        "startup network fetch stall 의심(upstream #13841)."
     )
 
 
-# ── opencode 출력 cap-hit(32k 절단) detector (T-0339 · 하니스-무관 순수 헬퍼) ──────────────────
+# ── opencode 출력 cap-hit(32k 절단) detector (하니스-무관 순수 헬퍼) ──────────────────
 # opencode 는 outbound 응답이 출력 cap(32000 토큰·`opencode.jsonc` 실효 = min(limit.output,32000))을
-# 넘으면 응답을 **조용히 절단** 하고 finish 를 "stop" 으로 위장한다(T-0334 라이브 확증) — 수신자(PM)는
-# 절단을 감지하지 못한다. T-0337 파일-전달 규약이 우회책이나, *절단이 실제로 일어났는지* 알 장치가
+# 넘으면 응답을 **조용히 절단** 하고 finish 를 "stop" 으로 위장한다 — 수신자(PM)는
+# 절단을 감지하지 못한다. 파일-전달 규약이 우회책이나, *절단이 실제로 일어났는지* 알 장치가
 # 없으면 우회 실패가 조용히 지나간다. 이 detector 가 출력 소비 지점(Supervisor.run_loop)에서 응답이
 # cap 근방인지 보고 loud advisory 를 낸다. **advisory·never-block** — 경고+로그만·파이프라인 무중단
 # (오탐이 relay 를 죽이면 안 됨). claude 는 범위 밖: claude 는 truncation 을 stop_reason=max_tokens 로
-# *네이티브 노출* 하므로 silent 절단 클래스가 아니다(T-0334 는 opencode 한정 실측) — run_loop 배선은
+# *네이티브 노출* 하므로 silent 절단 클래스가 아니다 — run_loop 배선은
 # 하니스-무관 크기 advisory 라 claude 응답도 지나가나 임계가 정상 응답보다 한참 위라 무영향.
 
-CAP_TOKENS = 32000                   # opencode 실효 출력 cap(T-0334·opencode.jsonc limit.output).
+CAP_TOKENS = 32000                   # opencode 실효 출력 cap(opencode.jsonc limit.output).
 # 정확 토크나이저는 쓰지 않는다(무거운 의존·하니스-무관 유지·ticket §결정). char 수를 보수적 token
 # 근사로 환산한다: char↔token 비는 내용마다 다르나(영어/코드 ≈3.5–4·한글 ≈1.5–2.5 char/token), 순수
 # 한글은 실 토크나이저에서 그보다 dense(<1.5)일 수 있어 32000~43200자 절단을 놓칠 위험이 있다. 그
@@ -601,7 +601,7 @@ def cap_hit_char_threshold_default() -> int:
 
 def detect_output_cap_hit(text, *, char_threshold: int | None = None,
                           cap_tokens: int = CAP_TOKENS) -> tuple[bool, str]:
-    """outbound 응답이 opencode 출력 cap(≈32k 토큰) 근방인지 감지 — silent 절단 의심 (T-0339).
+    """outbound 응답이 opencode 출력 cap(≈32k 토큰) 근방인지 감지 — silent 절단 의심.
 
     반환 (hit, reason). hit=True 면 응답이 cap-hit 임계(char) 이상이라 절단 의심 → 호출부가 loud
     advisory 를 낸다(never-block). hit=False 면 reason="". 정확 token 수는 근사(보수적 상한) —
@@ -624,7 +624,7 @@ def detect_output_cap_hit(text, *, char_threshold: int | None = None,
 
 
 def cap_hit_warning_message(reason: str) -> str:
-    """cap-hit loud advisory 1줄 — T-0337 파일-전달 규약 안내 포함(경고 문구 요구·ticket §결정).
+    """cap-hit loud advisory 1줄.
 
     run_loop 배선은 하니스-무관이라 claude 대형 응답에도 발화할 수 있다 — opencode 한정으로 단정하지
     않고 **조건부**('opencode 하니스라면')로 문구를 중립화해 오해 소지를 없앤다(claude 는 truncation 을
@@ -633,7 +633,7 @@ def cap_hit_warning_message(reason: str) -> str:
     return (
         f"[pm-orch] ⚠ 출력 상한(32k tok) 근방: {reason}. **opencode 하니스라면** 이 응답이 silent "
         "절단됐을 가능성이 있다 — opencode 는 32k 출력 토큰에서 응답을 조용히 자르고 finish 를 'stop' "
-        "으로 위장한다(T-0334·수신자 감지 불가). 잘렸다면 파일-전달 규약(T-0337)으로 재시도하라: 대형 "
+        "으로 위장한다(수신자 감지 불가). 잘렸다면 파일-전달 규약으로 재시도하라: 대형 "
         "산출물은 파일로 쓰고(opencode 는 safe_write 8KB 청크·write 는 16KB 초과 거부), 응답엔 절대경로 "
         "+ 핵심 요약 ≤10줄만 반환."
     )
@@ -653,7 +653,7 @@ def _marker_path(root: Path, session_id: str) -> Path:
 
 
 class Supervisor:
-    """상태 없는 thin supervisor (ADR-0009).
+    """상태 없는 thin supervisor.
 
     **stateless 불변식**: 인스턴스 상태는 *주입된 협력자*(driver)와 *고정 config*(root·
     marker_dir)뿐 — 대화/작업 상태 필드는 0. user↔PM 메시지는 누적하지 않고 지나보낸다
@@ -667,7 +667,7 @@ class Supervisor:
         # max_consecutive_respawns 는 *config* 상수(불변 임계)지 작업/대화 상태가 아니다.
         self.driver = driver
         self.root = Path(root)
-        # task 정체성(F7·T-0356·(b) 명시 전달)은 재진입 프롬프트에 baked-in 되어 `self.bootstrap` 에
+        # task 정체성(() 명시 전달)은 재진입 프롬프트에 baked-in 되어 `self.bootstrap` 에
         # 흡수된다 — 별도 인스턴스 필드로 retain 하지 않는다(stateless 불변식 유지·respawn 은 같은
         # bootstrap 을 재사용해 task 를 자동 forward). bootstrap 명시 override(테스트/커스텀)가 우선,
         # 없으면 task 로 빌드(task None 이면 현행 bare BOOTSTRAP_PROMPT 와 byte-동일).
@@ -687,7 +687,7 @@ class Supervisor:
         - in_stream: 사용자 입력 라인 소스(stdin·테스트는 StringIO).
         - out_stream: PM reply 출력 sink(stdout·테스트는 StringIO).
         - cap_hit_log: cap-hit(32k 절단 의심) loud advisory sink(기본 stderr·테스트는 list.append).
-          출력 소비 지점에서 응답이 cap 근방이면 경고만 낸다(never-block·stdout 무오염·T-0339).
+          출력 소비 지점에서 응답이 cap 근방이면 경고만 낸다(never-block·stdout 무오염).
         - 반환 = exit code(0=정상 종료 EOF/quit · GUARD_TRIPPED_RC=연속 respawn 가드 발동).
 
         직전 입력 재전송: STOP 을 유발한(차단된) turn 의 사용자 입력을 `pending` 지역 변수에
@@ -706,7 +706,7 @@ class Supervisor:
         consecutive_respawns = 0    # 같은 입력 재전송이 연속 STOP 한 횟수(지역·병적 케이스 감지).
 
         while True:
-            # 불변식(T-0404·codex R3): **marker 를 지닌 세션엔 추가 입력을 relay 하지 않는다.**
+            # 불변식(): **marker 를 지닌 세션엔 추가 입력을 relay 하지 않는다.**
             # spawn/respawn 의 bootstrap turn 이 예산을 넘겨 post-turn marker 를 남겼으면(codex driver)
             # 첫 입력 처리 *전* 여기서 회전한다 — 안 그러면 과예산 세션에 입력 1회가 추가 실행된다
             # (지연 회전). bootstrap 은 이미 실행됐으니 재전송 없음(항상 post-turn·이 창은 입력 relay
@@ -747,7 +747,7 @@ class Supervisor:
                 out_stream.write(reply + "\n")
                 out_stream.flush()
                 # 출력 소비 지점 — 응답이 출력 상한(32k tok) 근방이면 silent 절단 의심 loud advisory
-                # (never-block·stdout 은 이미 위에서 그대로 전달·경고는 별도 sink·T-0339). advisory 는
+                # (never-block·stdout 은 이미 위에서 그대로 전달·경고는 별도 sink). advisory 는
                 # relay 를 절대 못 죽인다 — detect/message/sink write 전 경로를 try/except 로 감싼다
                 # (병적 sink·근사 예외가 파이프라인을 중단시키면 안 됨·never-block 을 코드로 못박음).
                 try:
@@ -760,7 +760,7 @@ class Supervisor:
             # 매 turn 직후 1회 stat — marker 있으면 떠나는 세션은 hook 이 이미 차단됨
             # (harvest 안 함) → 회전. 이 turn 의 입력은 차단됐을 수 있으니 새 PM 에 재전송.
             if self.stop_marker_present(session_id):
-                # marker 계약 두 의미론(T-0404·codex R2): post-turn(codex driver)은 turn *실행 후*
+                # marker 계약 두 의미론(): post-turn(codex driver)은 turn *실행 후*
                 # 박제라 그 입력은 이미 실행·응답됨 → **재전송 금지**(재전송하면 이중 실행·중복
                 # 부작용). pre-turn(기본·opencode/claude hook)은 입력 *처리 전* 차단이라 재전송으로
                 # in-flight 의도를 보존한다(기존 동작 불변 — payload 에 sentinel 없어 post_turn=False).

@@ -24,7 +24,7 @@
 - **수정하면 인용이 깨진다** — ADR·log entry·ticket 본문이 raw 의 특정 절을
   인용한다. 후속 사실은 *새 파일* 에 적어 인용 사슬을 보존한다.
 
-## 예외 — spike 는 *seal* 시점에 immutable 이 바인딩된다 (ADR-0010)
+## 예외 — spike 는 *seal* 시점에 immutable 이 바인딩된다
 
 위 근거는 **태어날 때 봉인된**(born-sealed) 산출 — `plans/`·`evaluations/`·
 `benchmarks/` — 에 정확히 들어맞는다. 이들은 *측정·작성이 끝난 한 시점*의 스냅샷이다.
@@ -33,7 +33,7 @@
 
 - `status: draft` — 편집 가능·**세션 경계 무관**. 핸드오프해도 다음 세션이 *같은 파일*을
   이어 쓴다 (새 날짜 파일이 아니다). 설계가 여러 턴에 걸쳐 누적되는 동안의 정상 상태.
-- `status: sealed (<date>)` — immutable·인용 가능. 설계 절 전부 합의 + §4·§5 완비 +
+- `status: sealed (<date>)` — immutable·인용 가능. 설계 절 전부 합의
   **사용자 사인오프** 시에만 봉인한다(혼자 봉인 금지). 봉인된 순간부터 위의 두 근거(시간
   스냅샷·인용 사슬)가 그대로 적용된다.
 - **안전 기본값**: frontmatter `status:` 가 `draft` 로 시작하지 *않으면*(또는 없으면)
@@ -53,14 +53,14 @@
 ## 어디서 무엇을 인용하는가
 
 - ADR / spec / pm_role 등 *current* 문서는 raw 를 **참고로 인용**할 수 있다 —
-  "plan_v3 §4 의 trade-off 가 본 결정의 출발점" 같은 식.
+  "trade-off 가 본 결정의 출발점" 같은 식.
 - *current 정의는 current 문서가 단일 진실* — raw 는 출처·증거이지 정의가 아니다.
 
 ## 규칙 요약
 
 - ✅ 새 파일 추가
 - ✅ 다른 문서에서 link 인용
-- ✅ **`spikes/` 예외**: `status: draft` 동안은 *같은 파일* 편집·세션무관 resume 가능 — `sealed (<date>)` 부터 immutable (ADR-0010)
+- ✅ **`spikes/` 예외**: `status: draft` 동안은 *같은 파일* 편집·세션무관 resume 가능 — `sealed (<date>)` 부터 immutable
 - ❌ 기존 파일 수정 (오타 수정도 — 사람 손이 닿으면 같은 시간 스냅샷이 아니게 된다). *non-draft 는 일체 immutable — 안전 기본값.*
 - ❌ 기존 파일 삭제
 

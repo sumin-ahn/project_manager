@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI 콘솔 출력을 UTF-8로 정합하는 공용 부트스트랩 (T-0481).
+"""CLI 콘솔 출력을 UTF-8로 정합하는 공용 부트스트랩.
 
 Windows 콘솔 codepage와 Python 텍스트 스트림을 함께 맞춘다. 모든 단계는 best-effort라
 콘솔 핸들이 없거나 테스트 캡처 스트림이 ``reconfigure``를 지원하지 않아도 CLI 본동작을
@@ -11,7 +11,7 @@ import os
 import sys
 
 
-# T-0397 baked stamp — 여러 CLI가 공유하는 엔진 의존성이므로 부분 전파 skew 가드에 편입한다.
+# 여러 CLI가 공유하는 엔진 의존성이므로 부분 전파 skew 가드에 편입한다.
 ENGINE_REV = "v1.4.5"
 
 

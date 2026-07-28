@@ -1,33 +1,33 @@
 #!/usr/bin/env python3
-"""외부 코드리뷰 래퍼 — 외부 리뷰어 어댑터 CLI (ADR-0004).
+"""외부 코드리뷰 래퍼 — 외부 리뷰어 어댑터 CLI.
 
 사용:
     python3 .project_manager/tools/external_review.py [옵션]
 
 동작:
-  ① git diff <base> -- <paths> 추출 (시크릿 denylist 경로 자동 제외)
-  ② (프로젝트 맥락 헤더 +) diff 결합 → 표준 프롬프트 생성
-  ③ 외부 리뷰어 실행 (reviewer_cmd, stdin 으로 프롬프트 주입, read-only 권장)
-  ④ 출력에서 판정(통과/반려)·must-fix 파싱
-  ⑤ 결과 요약 stdout + 원문 파일 저장 (/tmp 또는 --output-dir)
+  git diff <base> -- <paths> 추출 (시크릿 denylist 경로 자동 제외)
+  (프로젝트 맥락 헤더 +) diff 결합 → 표준 프롬프트 생성
+  외부 리뷰어 실행 (reviewer_cmd, stdin 으로 프롬프트 주입, read-only 권장)
+  출력에서 판정(통과/반려)·must-fix 파싱
+  결과 요약 stdout + 원문 파일 저장 (/tmp 또는 --output-dir)
 
-기본 비활성 (ADR-0004):
+기본 비활성:
   - 코드 diff 가 *외부로 전송*되므로 기본 OFF. local.conf `external_review_enabled=true`
     또는 `board.py init` / `pm_update` 시 opt-in 으로 켠다. 비활성 시 actual 호출은
     no-op(exit 0)이고 `--dry-run` 은 항상 허용(로컬 미리보기·미전송), `--force` 로 1회 강제.
-    단 빈/공백 diff 는 dry-run·비활성 포함 무조건 exit 1 (false-green 원천 차단·T-0326).
+    단 빈/공백 diff 는 dry-run·비활성 포함 무조건 exit 1 (false-green 원천 차단).
 
 종료 코드/신호:
   - 리뷰어 실패(인증/한도/네트워크/타임아웃) → exit 1 + stdout 에 FALLBACK_INTERNAL
     (= 내부 code-reviewer 서브에이전트로 폴백하라는 신호)
-    타임아웃 상한: 기본 900s · local.conf `external_review_timeout` · 일회성 `--timeout` (T-0467)
+    타임아웃 상한: 기본 900s · local.conf `external_review_timeout` · 일회성 `--timeout`
   - must-fix 감지 → exit 1
   - 통과 → exit 0
-  - 라운드 상한 초과(--gate 별) → exit 4 (실행 전 거부·전용 rc·T-0457). 같은 게이트로 승인 없이
+  - 라운드 상한 초과(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 승인 없이
     limit 회(local.conf external_review_round_limit·기본 4) 실 전송하면 이후 실행을 기계 차단하고
     "사용자 보고·대기" loud 안내를 낸다 — 사용자 승인 후 `--ack-rounds` 로 +limit 재개.
 
-설계 (ADR-0004):
+설계:
   - 어댑터 seam: 외부 도구를 `reviewer_cmd`(local.conf) 뒤로 격리 → codex 외 교체 가능.
     기본 `codex exec --sandbox read-only --skip-git-repo-check` (stdin 으로 프롬프트).
   - 도메인 외부화: 프로젝트 맥락은 `.project_manager/review_context.local.md`(인스턴스 소유)
@@ -35,9 +35,9 @@
   - subprocess DI (run_fn 매개변수) — 테스트에서 mock 주입 가능.
   - 외부 호출은 코드를 수정하지 않는다 (read-only 인자 사용 권장).
   - 시크릿 denylist (.env·*secret*·*credential*·*.key·*token*·*.pem 등) 파일은 diff 에서
-    자동 제외한다. 제외 사실은 판정에 반영 (T-0428) — --paths 명시 지정분 제외는 차단(exit 1),
+    자동 제외한다. 제외 사실은 판정에 반영 — --paths 명시 지정분 제외는 차단(exit 1),
     --ticket/기본 암묵 수집분 제외는 종합 판정 라인에 병기. review_denylist_extra 로 추가 가능.
-  - 라운드 상한 기계 차단 (T-0457): 외부 리뷰(과금·전송)가 무한 반복되지 않게 `--gate <T-NNNN>`
+  - 라운드 상한 기계 차단: 외부 리뷰(과금·전송)가 무한 반복되지 않게 `--gate <T-NNNN>`
     별 라운드 장부(`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 전송을
     count 하고, 승인 없이 limit(기본 4)회를 넘기면 실행 *전에* 거부(exit 4)한다. PM 자의 판단을
     기계 판정으로 대체 — 사용자 승인 후 `--ack-rounds` 로만 재개한다([[mechanize-dont-instruct-llm]]).
@@ -61,9 +61,9 @@ import uuid
 from pathlib import Path
 from typing import Callable, Iterator
 
-# ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형·ADR-0033 ①) ──────────
+# ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형) ──────────
 # 하드코딩 `parents[2]` 는 tools 가 `<root>/.project_manager/tools/` 정확히 2단 깊이에 있다고
-# 가정한다 — 채택자 형상(PM 홈/worktree 구조 상이·다른 깊이)에선 어긋난다(finance_dev 제보 D2).
+# 가정한다 — 채택자 형상(PM 홈/worktree 구조 상이·다른 깊이)에선 어긋난다.
 # 스크립트 위치에서 부모 체인을 상향 탐색해 `.project_manager` 를 품은 첫(최근접) 조상을 REPO 로
 # 삼아 견고화한다 — board.py `board_root()` 의 "존재할 때만 갈리고 없으면 현 위치 100% 폴백"
 # 패턴과 동형(additive·회귀 0). REPO 는 module-level 상수로 유지해 hermetic 테스트가 monkeypatch
@@ -90,8 +90,8 @@ REVIEW_CONTEXT_FILE = REPO / ".project_manager" / "review_context.local.md"  # �
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 
 
-# ── board root 추종 (board/ 분리·ADR-0033 ①·T-0162 A6) ───────────────────────
-# board(tickets)는 `.project_manager/board/`(submodule)로 분리될 수 있다(ADR-0033 ①). 그러면
+# ── board root 추종 (board/ 분리) ───────────────────────
+# board(tickets)는 `.project_manager/board/`(submodule)로 분리될 수 있다. 그러면
 # ticket touches 해소(`parse_ticket_touches`)가 wiki/ legacy 위치를 보면 *stale*(ticket 미발견
 # → 빈 touches)이다. external_review 는 board.py 를 import 하지 않으므로(YAML frontmatter 직접
 # 파싱), board.py 의 graceful 탐지를 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면
@@ -111,11 +111,11 @@ def _tickets_dir() -> Path:
 DEFAULT_PATHS: list[str] = ["src/", "tests/", "scripts/", ".project_manager/tools/"]
 
 
-# ── PM 홈 앵커 재지정 감지 (T-0367·adopter#0 false-green 게이트) ────────────────
-# adopter#0(ADR-0027)에서 external_review 의 import 사본은 PM 홈(②)에 있어 REPO 가 PM 홈으로
-# 해소된다 — 실 코드 변경은 canonical worktree(①)에 있으므로 `git diff` 가 비어 codex 가 "변경
-# 없음"을 통과로 판정하는 false-green 이 난다([[adopter0-gates-use-worktree-canonical]]·PM 65).
-# board.py `_pm_home_worktree_misanchor`(T-0345)의 *역방향*: 거긴 worktree 에서 실행된 board 조작을
+# ── PM 홈 앵커 재지정 감지 (adopter#0 false-green 게이트) ────────────────
+# external_review 의 import 사본은 PM 홈에 있어 REPO 가 PM 홈으로
+# 해소된다 — 실 코드 변경은 canonical worktree에 있으므로 `git diff` 가 비어 codex 가 "변경
+# 없음"을 통과로 판정하는 false-green 이 난다.
+# board.py `_pm_home_worktree_misanchor`의 *역방향*: 거긴 worktree 에서 실행된 board 조작을
 # 잡고, 여긴 PM 홈에서 실행된 외부 리뷰를 잡아 worktree 로 재지정한다. 순수 filesystem 판정(subprocess
 # 불요)이라 hermetic — REPO 를 module-level 로 두어 테스트가 monkeypatch 하고, 헬퍼는 anchor/conf 를
 # 명시 인자로 받아 DI seam 이 된다(board `_has_real_board` 를 import 없이 동형 복제·각 파일 self-contained).
@@ -123,7 +123,7 @@ DEFAULT_PATHS: list[str] = ["src/", "tests/", "scripts/", ".project_manager/tool
 def _owns_real_board(pm_dir: Path) -> bool:
     """`.project_manager` 디렉토리(`pm_dir`)가 실 티켓(`T-*.md`)을 가진 board 를 소유하는가.
 
-    board/ 분리(ADR-0033 ①)면 `board/tickets`, legacy 면 `wiki/tickets` 상태 디렉토리에 실 티켓이
+    board/ 분리면 `board/tickets`, legacy 면 `wiki/tickets` 상태 디렉토리에 실 티켓이
     하나라도 있으면 True. 빈 scaffold(README/_template 만 — worktree 출하 형상)는 False (worktree
     자신을 PM 홈으로 오인해 가드 오탐 내지 않게·board.py `_has_real_board` 동형)."""
     for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
@@ -144,9 +144,9 @@ def _canonical_worktree(anchor: Path) -> Path | None:
     None(무관 형상·재지정 대상 없음).
 
     local.conf `upstream` 은 재지정 대상 결정에 **쓰지 않는다** — upstream 은 URL 이거나 무관한
-    로컬 checkout(`pm_import --from <로컬>` 정규 채택자·T-0053 자동 기록)일 수 있어, 실 board 를
+    로컬 checkout(`pm_import --from <로컬>`)일 수 있어, 실 board 를
     소유한 정규 채택자에서 stale/무관 checkout 으로 오안내하며 정상 리뷰를 hard-block 한다(빈-diff
-    백스톱도 실 diff 가 non-empty 면 무력). `work/` 슬롯 스캔만으로 adopter#0(ADR-0027) 재지정을
+    백스톱도 실 diff 가 non-empty 면 무력). `work/` 슬롯 스캔만으로 adopter#0재지정을
     완전 커버하고, upstream 분기는 잉여+오탐만 더한다 — 제거가 동등 커버리지·최소·오탐 0(codex/reviewer
     이중 게이트 수렴 must-fix)."""
     work_dir = anchor / "work"
@@ -160,7 +160,7 @@ def _canonical_worktree(anchor: Path) -> Path | None:
 def _pm_home_reanchor(anchor: Path) -> Path | None:
     """`anchor`(REPO=도구 자기-앵커)가 adopter#0 PM 홈이면 재지정 대상 worktree 를, 아니면 None.
 
-    2중 conjunction (오탐 0 지향·fail-soft): (1) anchor 가 실 board 소유(PM 홈) — worktree(①·코드
+    2중 conjunction (오탐 0 지향·fail-soft): (1) anchor 가 실 board 소유(PM 홈) — worktree(코드
     전용·board 미소유)에서 실행하면 여기서 탈락해 None(정상·재지정 불요), (2) anchor 아래 canonical
     코드 worktree(`work/<name>`) 존재. 솔로/일반 채택자(로컬 upstream 포함)는 (1) 또는 (2) 미충족으로
     None(무영향)."""
@@ -171,18 +171,18 @@ def _pm_home_reanchor(anchor: Path) -> Path | None:
 # 외부 리뷰어 기본 명령 (local.conf reviewer_cmd 로 교체 가능)
 DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 
-# 외부 호출 타임아웃 (초). 실 게이트 실측(T-0467·2026-07-26 세션 게이트 5건+대형 1건):
+# 외부 호출 타임아웃 (초).
 # 평범한 diff 153~294초·13파일 대형 227초 — 구 기본 180초는 평상 대역 *안*이라 상시 타임아웃
 # 구조였다. 900 = 평상 최대(294s)의 ~3배 여유. 여전히 유한 상한이며 clone별 조정은
 # local.conf `external_review_timeout`, 일회성 조정은 `--timeout`으로 한다.
 EXTERNAL_TIMEOUT_SECONDS = 900
 
-# 라운드 상한 (T-0457) — 같은 --gate 로 승인 없이 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
+# 라운드 상한 — 같은 --gate 로 승인 없이 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
 # 기본 4 는 사용자 전역 규율(외부 리뷰 ">3~4 라운드면 수렴 판단")의 기계화. local.conf
 # external_review_round_limit 로 조정 가능.
 DEFAULT_ROUND_LIMIT = 4
 
-# 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분·T-0457).
+# 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분).
 # 실행 전 거부라 리뷰어는 호출되지 않는다(외부 전송·과금 없음).
 EXIT_ROUND_LIMIT_EXCEEDED = 4
 
@@ -238,7 +238,7 @@ _OUTPUT_FORMAT_BLOCK = """\
 
 """
 
-# 빈-diff fail-loud 안내 (T-0326 — adopter#0 false-green 원천 차단).
+# 빈-diff fail-loud 안내.
 # 검토 경로에 tracked 변경이 없어 diff 가 비면 codex 는 "변경 없음"을 통과로 판정해 가짜
 # 통과(false-green)를 낸다. codex 호출 전에 이 메시지로 fail-loud 한다 (우회 플래그 없음).
 _EMPTY_DIFF_GUIDANCE = (
@@ -250,7 +250,7 @@ _EMPTY_DIFF_GUIDANCE = (
     "  · 신규 파일만 변경했다면 먼저 `git add` 후 재실행하세요 (diff 는 tracked 변경만 봅니다)."
 )
 
-# PM 홈 앵커 재지정 안내 (T-0367 — adopter#0 false-green 게이트 승격). 위 빈-diff 안내(:166)를
+# PM 홈 앵커 재지정 안내. 위 빈-diff 안내(:166)를
 # *능동 게이트*로 승격한다: REPO 앵커가 adopter#0 PM 홈(import 사본)을 가리키면, 빈 diff 로 실패할
 # 때까지 기다리지 않고 diff 추출 전에 canonical 코드 worktree 재지정을 안내하며 fail-loud 한다.
 _PM_HOME_ANCHOR_GUIDANCE = (
@@ -263,7 +263,7 @@ _PM_HOME_ANCHOR_GUIDANCE = (
     "  (현재 앵커: {anchor})"
 )
 
-# 라운드 상한 초과 fail-loud 안내 (T-0457 — codex 게이트 무한 라운드 기계 차단). 같은 게이트로
+# 라운드 상한 초과 fail-loud 안내. 같은 게이트로
 # 승인 없이 limit 회를 넘겨 실 전송이 시도되면 diff 추출·리뷰어 호출 전에 이 안내로 차단한다
 # (과금·외부 전송 게이트라 초과분은 기계가 멈춘다·자의 우회 불가). 유일한 재개 경로는 사용자
 # 승인 후 `--ack-rounds` — 환경 문제 우회 플래그가 아니다.
@@ -340,7 +340,7 @@ def _denylist_patterns(conf: dict[str, str]) -> tuple[str, ...]:
 
 
 def _round_limit(conf: dict[str, str]) -> int:
-    """라운드 상한 (local.conf external_review_round_limit·기본 `DEFAULT_ROUND_LIMIT`·T-0457).
+    """라운드 상한 (local.conf external_review_round_limit·기본 `DEFAULT_ROUND_LIMIT`).
 
     비정수·음수는 기본값으로 fail-soft — 장부/노브 값이 깨졌다고 게이트를 벽돌로 만들지 않는다
     (음수 상한은 첫 라운드부터 무조건 차단이라 무의미)."""
@@ -354,7 +354,7 @@ def _round_limit(conf: dict[str, str]) -> int:
     return value if value >= 0 else DEFAULT_ROUND_LIMIT
 
 
-# ── 라운드 상한 장부 (T-0457 — codex 게이트 무한 라운드 기계 차단) ─────────────
+# ── 라운드 상한 장부 ─────────────
 # 외부 리뷰는 과금·전송 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한 게이트
 # 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다([[mechanize-dont-instruct-llm]]):
 # `--gate <T-NNNN>` 별로 실 전송 횟수(count)와 사용자 승인 수위(acked_through)를 per-clone·git-ignored
@@ -382,7 +382,7 @@ def _save_round_ledger(ledger: dict) -> None:
     """라운드 장부를 원자적으로 기록한다 (unique tmp + os.replace·부분기록/crash 잔재 방지).
 
     tmp 이름에 pid+uuid 를 실어 동시 실행 간 고정 `.tmp` 충돌(카운트 유실·write 예외)을 없앤다
-    (T-0457 MF-B). os.replace 는 원자 rename — 독자는 옛 파일 또는 새 파일만 본다(부분기록 없음).
+    os.replace 는 원자 rename — 독자는 옛 파일 또는 새 파일만 본다(부분기록 없음).
     확인·예약·저장의 원자성은 호출자가 `_round_ledger_lock()` 임계 구역으로 보장한다."""
     path = _round_ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -440,7 +440,7 @@ def _flock_release(fd: int) -> None:
 
 @contextlib.contextmanager
 def _round_ledger_lock() -> Iterator[None]:
-    """라운드 장부 read-modify-write 를 직렬화하는 OS 파일락 (T-0457 MF-B).
+    """라운드 장부 read-modify-write 를 직렬화하는 OS 파일락.
 
     확인(상한 대조)→예약(count+1)→저장을 하나의 임계 구역으로 묶어, 동시 실행 2개가 같은 잔여
     슬롯을 통과해 상한을 우회하는 것을 막는다. 프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock
@@ -492,7 +492,7 @@ def _matching_denylist_pattern(
     """파일 경로가 매칭되는 첫 시크릿 denylist 패턴을 반환한다 (매칭 없으면 None).
 
     `_is_secret_path` 의 매칭 로직 단일 소스 — bool 대신 '어느 패턴에 걸렸는지'(=왜 제외됐는지)를
-    돌려줘 제외 보고(차단 안내·판정 병기)에 근거를 실을 수 있게 한다(T-0428)."""
+    돌려줘 제외 보고(차단 안내·판정 병기)에 근거를 실을 수 있게 한다."""
     normalized = file_path.strip()
     for prefix in ("a/", "b/"):
         if normalized.startswith(prefix):
@@ -548,11 +548,11 @@ def filter_secret_hunks(
 
 
 def _format_explicit_exclusion_block(excluded: list[str], patterns: tuple[str, ...]) -> str:
-    """`--paths` 명시 지정분이 denylist 로 제외됐을 때의 차단 안내 (T-0428).
+    """`--paths` 명시 지정분이 denylist 로 제외됐을 때의 차단 안내.
 
     사용자가 `--paths` 로 직접 지목한 경로가 시크릿 denylist 에 걸려 diff 에서 빠지면, 그 상태로
     리뷰를 진행해 '통과'를 내면 게이트가 실제보다 넓게 검증한 것처럼 보인다(false-confidence). 빈-diff
-    가드(T-0326)보다 앞서 이 안내로 차단해 *denylist 가 원인*임을 정확히 알린다 — 단일 파일이 통째로
+    가드보다 앞서 이 안내로 차단해 *denylist 가 원인*임을 정확히 알린다 — 단일 파일이 통째로
     제외돼 diff 가 비면 빈-diff 안내는 '변경 없음'으로 오도한다. 어느 경로가 어느 패턴에 걸렸는지 병기.
     우회는 새 플래그가 아니라 그 경로를 빼고 재실행(경로를 빼는 행위 자체가 '의도했다'는 표현)."""
     lines = [
@@ -581,7 +581,7 @@ def extract_diff(
     """git diff <base> -- <paths> 를 추출한다. 반환: (필터링된 diff, 제외된 경로 목록).
 
     시크릿 denylist 매칭 파일은 diff 에서 제외하고 그 경로 목록을 함께 돌려준다 — 제외 사실을
-    호출자(main)가 차단/판정 병기에 반영할 수 있게 한다(T-0428). 이전엔 stderr 경고만 내고 목록을
+    호출자(main)가 차단/판정 병기에 반영할 수 있게 한다.
     버려, 제외분이 조용히 빠진 채 '통과'가 나던 게이트 false-confidence 를 낳았다. 제외 메시징은
     호출자(main)가 모드별(명시 --paths=차단 / 암묵 --ticket=병기)로 소유한다.
 
@@ -610,7 +610,7 @@ def extract_diff(
         raw_diff = result.stdout
 
     # 제외 목록을 삼키지 않고 그대로 반환한다 — 호출자(main)가 모드별 제외 보고(차단/병기)를
-    # 소유한다(T-0428). stderr 경고도 main 으로 이관해 제외 메시징을 한곳에서 관장한다.
+    # 소유한다. stderr 경고도 main 으로 이관해 제외 메시징을 한곳에서 관장한다.
     return filter_secret_hunks(raw_diff, denylist)
 
 
@@ -622,8 +622,8 @@ def parse_ticket_touches(ticket_id: str) -> list[str]:
 
     YAML frontmatter 직접 파싱 (board.py 를 import 하지 않음). 못 찾으면 빈 목록.
 
-    ticket 디렉토리는 `_tickets_dir()`(board_root 추종·T-0162 A6)로 *호출 시점* 해소한다 —
-    board/ 분리(ADR-0033 ①) 후 wiki/ legacy 위치(stale·ticket 미발견)를 안 보게.
+    ticket 디렉토리는 `_tickets_dir()`로 *호출 시점* 해소한다 —
+    board/ 분리 후 wiki/ legacy 위치(stale·ticket 미발견)를 안 보게.
     """
     tickets_dir = _tickets_dir()
     for status_dir in STATUS_DIRS:
@@ -719,7 +719,7 @@ def _run_reviewer_ex(
     timeout: int,
     run_fn: Callable[..., subprocess.CompletedProcess] | None,
 ) -> tuple[bool, str, bool]:
-    """run_reviewer 본체 + 외부 프로세스 스폰 여부(started) 신호 (T-0457 MF-A).
+    """run_reviewer 본체 + 외부 프로세스 스폰 여부(started) 신호.
 
     반환: (성공 여부, 출력 텍스트, started). started=False = 외부 프로세스가 *확실히 시작되지
     않음*(전송 0·과금 0) — 빈 reviewer_cmd·실행 파일 부재(FileNotFoundError). started=True =
@@ -863,7 +863,7 @@ def run_review(
     """외부 리뷰어를 실행하고 결과를 수합한다.
 
     반환 dict: reviewer / ok / output / verdict / file / failed / started / any_must_fix / all_pass.
-    `started` (T-0457 MF-A) = 외부 프로세스가 스폰됐는가(전송·과금 가능성) — 라운드 카운트 환불
+    `started` = 외부 프로세스가 스폰됐는가(전송·과금 가능성) — 라운드 카운트 환불
     판정에 쓴다(False = 확실히 전송 전 실패 → 예약 환불).
     """
     name = reviewer_name(reviewer_cmd)
@@ -901,7 +901,7 @@ def _format_verdict(ok: bool, verdict: dict | None) -> str:
 
 
 def _exclusion_suffix(excluded: list[str] | None) -> str:
-    """종합 판정 라인에 붙일 시크릿 제외 병기 접미사 (T-0428).
+    """종합 판정 라인에 붙일 시크릿 제외 병기 접미사.
 
     암묵 수집분(--ticket/기본)에서 diff 제외가 있었으면 건수·경로를 판정 라인에 남긴다 — stderr
     경고는 로그를 안 읽으면 사라지지만 판정 라인은 PM 이 반드시 본다. 제외 0건이면 빈 문자열이라
@@ -916,7 +916,7 @@ def print_summary(result: dict, gate: str | None = None,
     """결과 요약을 stdout 에 출력한다.
 
     excluded — 시크릿 denylist 로 diff 에서 제외된 암묵 수집분 경로. 비어있지 않으면 종합 판정
-    라인에 제외 건수·경로를 병기한다(T-0428·false-confidence 차단). 0건이면 종전과 동일 출력."""
+    라인에 제외 건수·경로를 병기한다(false-confidence 차단). 0건이면 종전과 동일 출력."""
     sep = "=" * 60
     name = result.get("reviewer", "reviewer")
     suffix = _exclusion_suffix(excluded)
@@ -931,7 +931,7 @@ def print_summary(result: dict, gate: str | None = None,
     print()
     if result["failed"]:
         # 실패 사유 1줄을 판정 라인에 병기 — 타임아웃 안내(`--timeout`/conf 키) 같은 실패
-        # 본문이 원문 파일에만 남으면 PM 이 못 본다(T-0428 원칙: 판정 라인은 반드시 읽힌다·T-0467).
+        # 본문이 원문 파일에만 남으면 PM 이 못 본다(판정 라인은 반드시 읽힌다).
         head = str(result.get("output") or "").strip().splitlines()
         if head:
             print(f"  사유: {head[0][:200]}")
@@ -963,7 +963,7 @@ def determine_exit_code(result: dict) -> int:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="외부 코드리뷰 래퍼 — 외부 리뷰어 어댑터 CLI (ADR-0004, 기본 OFF)",
+        description="외부 코드리뷰 래퍼 — 외부 리뷰어 어댑터 CLI (기본 OFF)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 예시:
@@ -993,10 +993,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="ticket ID — touches 로 검토 경로 결정")
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
-                        help="게이트 ticket 표식 (로깅 + 라운드 상한 장부 키·T-0457)")
+                        help="게이트 ticket 표식 (로깅 + 라운드 상한 장부 키)")
     parser.add_argument("--ack-rounds", action="store_true",
                         help="라운드 상한 승인 재개 — 현 count 를 acked_through 로 기록 후 +limit "
-                             "재개 (--gate 필수·사용자 승인 후에만·T-0457)")
+                             "재개 (--gate 필수·사용자 승인 후에만)")
     parser.add_argument("--dry-run", action="store_true",
                         help="diff·프롬프트만 출력, 외부 호출/전송 안 함 (비활성이어도 허용·빈 diff 면 exit 1)")
     parser.add_argument("--force", action="store_true",
@@ -1030,7 +1030,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # PM 홈 앵커 재지정 가드 (T-0367 — adopter#0 false-green 게이트 승격). REPO 앵커가 adopter#0
+    # PM 홈 앵커 재지정 가드. REPO 앵커가 adopter#0
     # PM 홈(실 board 소유 + canonical 코드 worktree 보유)을 가리키고 `--paths` 로 명시 override 하지
     # 않았다면, import 사본을 리뷰해 빈 diff false-green 이 나기 전에 fail-loud 로 차단하고 canonical
     # worktree 재지정을 안내한다(빈-diff 안내 :166 을 능동 게이트로 승격). diff 추출·dry-run·비활성
@@ -1068,7 +1068,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
 
-    # 시크릿 denylist 제외 보고 (T-0428 — 게이트 false-confidence 차단). 제외된 경로가 판정에 전혀
+    # 시크릿 denylist 제외 보고. 제외된 경로가 판정에 전혀
     # 안 남으면, 지정분이 조용히 빠진 채 '통과'가 나 게이트가 실제보다 넓게 검증한 것처럼 보인다.
     # 명시(--paths)와 암묵(--ticket/기본) 지정을 구분한다: 명시 지정분이 제외되면 차단(exit 1)하고
     # 어느 경로가 왜 빠졌는지 알린다 — 빈-diff 가드보다 앞서 두어, 단일 파일 전량 제외로 diff 가
@@ -1083,7 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"경고: 시크릿 denylist 경로 '{path}' 를 diff 에서 제외했습니다 "
                   f"(패턴 '{pattern}' 매칭).", file=sys.stderr)
 
-    # 빈-diff fail-loud 가드 (diff 추출 직후·codex invoke 전·T-0326). 빈 diff(공백-only 포함)를
+    # 빈-diff fail-loud 가드 (diff 추출 직후·codex invoke 전). 빈 diff(공백-only 포함)를
     # 리뷰하면 가짜 통과(false-green)가 나므로 어떤 형상·모드에서도 무조건 fail 한다 — 우회
     # 플래그 없음. 기존 오류 규약(비-0 = 1)과 정합. dry-run/비활성 no-op 보다 앞서므로 잘못된
     # 형상(worktree 아닌 곳에서 실행 등)은 codex 전송 없이 미리보기 단계에서도 드러난다.
@@ -1099,7 +1099,7 @@ def main(argv: list[str] | None = None) -> int:
         print("=== [dry-run] 외부 호출 생략 ===")
         return 0
 
-    # 활성화 게이트 (ADR-0004 — 외부 전송이므로 기본 OFF)
+    # 활성화 게이트 (외부 전송이므로 기본 OFF)
     if not _is_enabled(conf) and not args.force:
         print(
             "외부 리뷰 비활성 — 코드 diff 외부 전송이 꺼져 있습니다 "
@@ -1111,7 +1111,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0  # no-op — 실패 아님
 
-    # ── 라운드 상한 게이트: 호출 전 예약 (T-0457 — 실 외부 전송 확정 지점) ──────────
+    # ── 라운드 상한 게이트: 호출 전 예약 ──────────
     # 여기까지 왔으면 dry-run·빈-diff·비활성 no-op 을 모두 통과해 *실 외부 전송*이 일어난다 —
     # 그것들은 전송이 없어 라운드가 아니므로(카운트 제외) 이 앞의 조기 return 뒤에 게이트를 둔다.
     # `--gate` 지정 시에만 per-gate 장부를 대조한다("--gate 미지정 실행은 상한 대상 밖").
@@ -1157,7 +1157,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print_summary(result, gate=args.gate, excluded=excluded)
 
-    # 예약 환불 (T-0457 MF-A) — 외부 프로세스가 *확실히 시작되지 않은* 경우(started=False·스폰 실패·
+    # 예약 환불 — 외부 프로세스가 *확실히 시작되지 않은* 경우(started=False·스폰 실패·
     # 전송 0)만 되돌린다. 타임아웃·비정상 종료(started=True)는 프롬프트가 이미 전송·과금됐을 수 있어
     # 유지한다(반복 타임아웃 상한 우회 차단). 예약과 같은 lock 아래 재-load→감소→저장(원자·MF-B).
     if reserved_gate is not None and not result.get("started", True):

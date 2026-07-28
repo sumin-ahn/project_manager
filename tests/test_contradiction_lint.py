@@ -329,7 +329,7 @@ def test_pm_adr_amends_triggers_advisory(adr, wiki, tmp_path, monkeypatch, capsy
                    "--amends", "ADR-0061", "--dry-run"])
     assert rc == 0
     err = capsys.readouterr().err
-    assert "모순 lint·ADR-0064" in err
+    assert "[모순 lint]" in err
     assert "wiki/ref.md" in err
     assert "판정=사람" in err
 

@@ -29,7 +29,7 @@ audience: pm-internal
 
 ### 1. 회귀 측정 (foreground)
 ```bash
-# 프로젝트 test 명령은 board regression 이 해소·기록한다 (local.conf test_cmd= · rc0 만 pass·T-0220)
+# 프로젝트 test 명령은 board regression 이 해소·기록한다 (local.conf test_cmd= · rc0 만 pass)
 python3 .project_manager/tools/board.py regression run
 ```
 성공 = `N passed in T.Ts`. red → 즉시 PM 에게 보고 + **후속 단계 중단 검토**(red 위에 wave 종료/시작 진행 차단).

@@ -1196,19 +1196,19 @@ def test_resolve_explicit_identity_slot_repo_alone_ambiguous(hf, tmp_path):
     assert err is not None and "--slot" in err
 
 
-# --- `_regression_cwd` L1(라이더) — 명시 슬롯 stale → REPO 폴백 경계 ---
+# --- `_regression_cwd` — 명시 슬롯 stale → REPO 폴백 경계 ---
 
 def test_regression_cwd_explicit_slot_stale_falls_back_to_repo(hf, tmp_path, capsys):
-    # L1 — 명시 worktree_slot 이 리스 조인(M3)은 통과했더라도 디스크에 실제 디렉토리가 없으면
+    # 명시 worktree_slot 이 장부 해소는 통과했더라도 디스크에 실제 디렉토리가 없으면
     # (장부-파일시스템 out-of-sync) FileNotFoundError 로 죽는 대신 REPO 로 soft 폴백·경고 1줄.
     result = hf._regression_cwd("work/foo_2", repo_root=tmp_path)
     assert result == str(tmp_path)
     err = capsys.readouterr().err
-    assert "work/foo_2" in err and "L1" in err
+    assert "work/foo_2" in err and "REPO 로 폴백" in err
 
 
 def test_regression_cwd_explicit_slot_existing_dir_not_stale(hf, tmp_path):
-    # L1 경계 반대편 — 디렉토리가 실제 존재하면 그대로(stale 아님·폴백 미발동).
+    # 경계 반대편 — 디렉토리가 실제 존재하면 그대로(stale 아님·폴백 미발동).
     (tmp_path / "work" / "foo_2").mkdir(parents=True)
     result = hf._regression_cwd("work/foo_2", repo_root=tmp_path)
     assert result == str(tmp_path / "work" / "foo_2")

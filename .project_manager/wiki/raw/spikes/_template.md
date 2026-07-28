@@ -6,11 +6,11 @@
             예) cp _template.md web-auth-redesign-2026-06-03.md
   2) 이 주석 블록은 지우고, frontmatter·섹션을 채운다. 빈 섹션은 삭제 가능.
   3) spike 는 sealed 후 IMMUTABLE — `status: draft` 동안은 편집/세션무관 resume 가능(같은 파일 이어쓰기),
-     합의+사용자 사인오프 시 sealed (<date>). sealed 후 개정은 새 날짜 파일로(vN 누적). (ADR-0010 · raw/README.md)
+     합의+사용자 사인오프 시 sealed (<date>). sealed 후 개정은 새 날짜 파일로(vN 누적).
   4) 병렬 OK: 파일명이 고유하면 여러 세션이 동시에 떨궈도 충돌 0.
      같은 날 같은 주제가 겹치면 파일명 끝에 -<세션명> 을 붙여 분리.
   5) 이 문서는 "결정"하지 않는다 — 근거 있는 권고 + 초안(ADR/ticket)까지.
-     채택·발행·비준은 PM 이 §7 에서 한다.
+     채택·발행·비준은 PM 이 한다.
 -->
 ---
 title: <한 줄 제목 — 무엇을 설계하는가>
@@ -18,7 +18,7 @@ created: <YYYY-MM-DD>
 type: spike
 status: draft                       # 합의·사인오프 시: sealed (<YYYY-MM-DD>)
 session: <세션/에이전트 식별자>      # 예: orch-arch-<주제> · 직접 세션이면 그 이름
-related: []                         # 연결할 ADR/ticket/spec/다른 spike. 예: [ADR-0025, T-0204, specs/api.md §10]
+related: []                         # 연결할 ADR/ticket/spec/다른 spike. 예: [specs/api.md §10]
 tags: [design-spike]
 ---
 
@@ -67,5 +67,5 @@ tags: [design-spike]
 
 <!-- 설계 세션(사용자 + Claude)이 합의에 이르면 채우는 절: 합의 날짜 + 사용자 결정 +
      발행한 ADR/ticket 번호 역링크(발행 자체는 스킬 밖). 동시에 위 frontmatter status 를
-     sealed (<date>) 로(설계 절 전부 합의 + §4·§5 완비 + 사용자 사인오프 시에만), related 에
-     발행물 번호를 추가한다. 사인오프 전엔 draft 로 둔다 — 혼자 봉인 금지. (ADR-0010) -->
+     sealed (<date>) 로(설계 절 전부 합의 + 사용자 사인오프 시에만), related 에
+     발행물 번호를 추가한다. 사인오프 전엔 draft 로 둔다 — 혼자 봉인 금지. -->

@@ -351,7 +351,6 @@ def test_run_surfaces_shipping_change_nonblocking(hf, tmp_path, capsys):
     assert "미검증 출하 변경" in out
     assert "1파일" in out            # tests/ 는 비-출하 제외 → 1파일.
     assert "release wave" in out
-    assert "ADR-0039" in out
 
 
 def test_run_surfaces_ambiguous_nonblocking(hf, tmp_path, capsys):
@@ -362,7 +361,6 @@ def test_run_surfaces_ambiguous_nonblocking(hf, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "분류 불명" in out
     assert "release wave" in out
-    assert "ADR-0039" in out
 
 
 def test_run_reports_no_shipping_change(hf, tmp_path, capsys):

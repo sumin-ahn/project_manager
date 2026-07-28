@@ -1,33 +1,33 @@
 #!/usr/bin/env python3
-"""pm_delegate — cross-harness 역할 위임 채널 (ADR-0075 · sealed spike cross-harness-delegate).
+"""pm_delegate — cross-harness 역할 위임 채널 (sealed spike cross-harness-delegate).
 
 PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 역할 노동
 (developer/researcher/architect/code-reviewer)을 **다른 하네스 CLI subprocess** 로 위임하는
 순수 CLI. N×N 대칭 — 호출측 하네스 조건 0 (external_review 와 동형 seam).
 
-이 도구는 **엔진 코어**만 담는다 (설계 spike §3~§6):
+이 도구는 **엔진 코어**만 담는다:
   · config 해소  — `delegate.<role>[.<tier>].harness/.model/.reasoning` 3키를 **원자 tuple**
                   `(harness, model, reasoning)` 로 해소(티어 세트 통째·혼합 상속/부분 override 금지).
   · 3 드라이버   — codex(`-a never -s <mode> exec --json`·stdin)·claude(`-p --tools`·stdin)·
-                  opencode(`run --file --agent --dir`). reasoning 은 드라이버별 플래그(§6).
+                  opencode(`run --file --agent --dir`). reasoning 은 드라이버별 플래그.
   · 권한 매핑    — 역할축(write=developer/architect·read=researcher/code-reviewer)을 argv/sandbox 로
-                  강제하되 보장 수준을 정직 표기(§3.5).
+                  강제하되 보장 수준을 정직 표기.
   · 쓰기-타깃 axis — 엔진 코드(`.project_manager/tools/`) write 위임이 PM 홈 cwd 면 canonical
-                  worktree 재앵커 fail-loud(§4.6·external_review `_pm_home_reanchor` 재사용).
+                  worktree 재앵커 fail-loud(external_review `_pm_home_reanchor` 재사용).
   · 시크릿 통제  — 합성 프롬프트 denylist 스캔 + 전 탐지를 본 사람의 건별 CLI ack + subprocess env
-                  allowlist 정제 + prompt-file containment(§4.7). ack digest는 해소된 primary
+                  allowlist 정제 + prompt-file containment. ack digest는 해소된 primary
                   harness:model과 합성 전문에 결속한다. 단, ack 통과 뒤 primary 인프라 실패로 명시
                   설정된 loud 폴백이 발동하면 타 하네스 수신자가 추가될 수 있다.
-  · 결과 수집    — 최종 reply 텍스트만 stdout·raw+메타는 O_EXCL·0600·PID/UUID 파일 박제(§3.4).
+  · 결과 수집    — 최종 reply 텍스트만 stdout·raw+메타는 O_EXCL·0600·PID/UUID 파일 박제.
   · loud 폴백    — 역할/티어별 명시 fallback tuple 이 있을 때만 인프라 실패를 양성 분류해 1회 실행하고
                   실행 provenance 를 reply/raw 에 남김(미설정·비-인프라 실패는 기존 fail-loud).
                   **시간 예산**: 폴백은 primary 와 별개로 turn timeout 을 새로 쓴다 — 최악 소요는
                   primary·폴백 **각 하네스 예산의 합**이다(codex/claude=timeout · opencode 는
                   첫-이벤트 워치독 재시도분이 더 붙는다·_harness_timeout_budget). 호출부(스킬·CI)의
                   대기 예산은 --dry-run 이 찍는 실수치로 잡아라.
-  · opt-in 게이트 — `delegate_enabled`(기본 OFF) 비활성 시 rc=3 + stderr 안내(§5.4·false-green 차단).
+  · opt-in 게이트 — `delegate_enabled`(기본 OFF) 비활성 시 rc=3 + stderr 안내(false-green 차단).
 
-설정 시드/lint(T-0446)·어댑터 배선(T-0447)·라이브 실측(T-0449)은 별도 티켓. 이 티켓은 라이브 CLI 를
+설정 시드/lint·어댑터 배선·라이브 실측은 별도 티켓. 이 티켓은 라이브 CLI 를
 호출하지 않는다 — 단위 테스트는 전부 mock(run_fn DI).
 """
 
@@ -66,7 +66,7 @@ def _find_repo_root() -> Path:
 
 REPO = _find_repo_root()
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"
-# ticket frontmatter(touches) 조회용 board 진입점 — 범위 밖 변경 판정 입력(T-0462).
+# ticket frontmatter(touches) 조회용 board 진입점 — 범위 밖 변경 판정 입력.
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 
 
@@ -76,12 +76,12 @@ HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
 ROLE_CHOICES: tuple[str, ...] = ("developer", "researcher", "architect", "code-reviewer")
 TIER_CHOICES: tuple[str, ...] = ("normal", "hard")
 
-# 권한 역할축(§3.5) — write=저장소 파일 쓰기·read=저장소 read-only(+reviewer 는 테스트 실행).
+# 권한 역할축 — write=저장소 파일 쓰기·read=저장소 read-only(+reviewer 는 테스트 실행).
 WRITE_ROLES: frozenset[str] = frozenset({"developer", "architect"})
 READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 
 # 위임 turn 기본 타임아웃(초) — dev 는 reasoning+다중 편집으로 길다(codex driver TURN_TIMEOUT 600 보다
-# 큼·§5.3). `--timeout`·local.conf `delegate_timeout` 로 override.
+# 큼). `--timeout`·local.conf `delegate_timeout` 로 override.
 # 폴백이 발동하면 primary 소진 후 1회 더 실행한다 — 실행 1회의 최악 소요는 하네스마다 달라서
 # _harness_timeout_budget 이 계산한다(2차 폴백 없음 — 상한은 두 시도 예산의 합으로 닫힌다).
 DELEGATE_TIMEOUT_SECONDS = 1800
@@ -101,10 +101,10 @@ RUN_RESULT_STALLED = "stalled"               # opencode 첫-이벤트 stall(유�
 # opencode 첫-이벤트 stall 을 stderr 에 찍는 엔진 마커(단일 출처) — 분류기의 백스톱 신호로도 쓴다.
 OPENCODE_STALL_MARKER = "[opencode 첫-이벤트 stall:"
 
-# opt-in 게이트 키(기본 OFF·per-clone·ADR-0004 상속·§5.4).
+# opt-in 게이트 키(기본 OFF·per-clone).
 DELEGATE_ENABLED_KEY = "delegate_enabled"
 
-# 합성 프롬프트 전문에 묶는 건별 시크릿 스캔 승인 토큰(T-0476). SHA-256 전체 계산 뒤 앞 96bit만
+# 합성 프롬프트 전문에 묶는 건별 시크릿 스캔 승인 토큰. SHA-256 전체 계산 뒤 앞 96bit만
 # 표시한다 — 사람이 재실행 커맨드로 옮길 만큼 짧지만, 이 값은 인증 secret이 아니라 "방금 검토한
 # 프롬프트와 현재 프롬프트가 같은가"를 묶는 변경 감지 토큰이다. conf 키는 의도적으로 두지 않는다.
 SECRET_SCAN_ACK_HEX_LENGTH = 24
@@ -113,60 +113,60 @@ SECRET_SCAN_ACK_HEX_LENGTH = 24
 # 보존한다.
 SECRET_SCAN_HIT_DISPLAY_LIMIT = 20
 
-# reasoning 드라이버별 허용집합(§6) — **T-0449 라이브 실측으로 박제**(codex-cli 0.145.0·claude 2.1.218·
+# reasoning 드라이버별 허용집합 — (codex-cli 0.145.0·claude 2.1.218·
 # opencode 1.18.4). 허용집합 밖 `.reasoning` 지정은 fail-loud(조용한 무시/강등 금지):
 #   · codex(`-c model_reasoning_effort`): low/medium/high/xhigh — 0.145.0 xhigh 실측 수용(exec 앞/뒤
-#     위치 무관 rc=0·T-0449).
+#     위치 무관 rc=0).
 #   · claude(`--effort`): low/medium/high/xhigh/max — claude CLI 가 미지원값에 "Valid values: low,
-#     medium, high, xhigh, max" 경고를 뱉어 **CLI-authoritative 실측**(T-0449).
+#     medium, high, xhigh, max" 경고를 뱉어 **CLI-authoritative 실측**.
 #   · opencode(`--variant`): minimal/low/medium/high/max — opencode 는 `--variant` 를 **CLI 검증하지
 #     않고 provider 로 passthrough**(valid/invalid 모두 rc=0·미지원값은 provider 가 silent-ignore·
-#     reasoning:0·T-0449 실측). 그래서 이 집합은 opencode 의 문서화 ladder(help: "e.g. high, max,
-#     minimal")를 pm_delegate 의 **typo-guard** 로 인코딩한 것 — silent no-op(§3.2)을 전송 전에 차단한다.
+#     reasoning:0). 그래서 이 집합은 opencode 의 문서화 ladder(help: "e.g. high, max,
+#     minimal")를 pm_delegate 의 **typo-guard** 로 인코딩한 것 — silent no-op을 전송 전에 차단한다.
 #     provider 별 실지원은 다를 수 있다(passthrough 특성).
 _REASONING_ALLOWED: dict[str, frozenset[str]] = {
     "codex": frozenset({"low", "medium", "high", "xhigh"}),
-    "claude": frozenset({"low", "medium", "high", "xhigh", "max"}),      # T-0449 실측(CLI-authoritative)
-    "opencode": frozenset({"minimal", "low", "medium", "high", "max"}),  # T-0449 실측(문서 ladder·passthrough)
+    "claude": frozenset({"low", "medium", "high", "xhigh", "max"}),      
+    "opencode": frozenset({"minimal", "low", "medium", "high", "max"}),  
 }
 
-# reasoning 드라이버별 argv 플래그(§6) — 매핑만 보유(값 검증은 _REASONING_ALLOWED).
+# reasoning 드라이버별 argv 플래그 — 매핑만 보유(값 검증은 _REASONING_ALLOWED).
 #   codex `-c model_reasoning_effort=<r>` · claude `--effort <r>` · opencode `--variant <r>`.
 
-# codex sandbox 모드(§3.5·§5) — write=workspace-write·read=read-only.
-# **T-0449 실측(0.145.0)**:
+# codex sandbox 모드 — write=workspace-write·read=read-only.
+# **실측(0.145.0)**:
 #   · read-only 는 worktree 밖 `/tmp` 쓰기까지 **차단**("Read-only file system") → pytest 는 tmp 캡처
 #     파일을 못 만들어 **아예 시작 불가**("No usable temporary directory found"). 즉 **codex 의
-#     code-reviewer(read axis→read-only)는 read-only 로는 pytest 를 못 돌린다**(§3.5 §주1 우려 실현) —
+#     code-reviewer(read axis→read-only)는 read-only 로는 pytest 를 못 돌린다** —
 #     테스트 실행이 필요한 리뷰는 workspace-write 상향이 필요(보장 수준=기계적→규율 하향). 이 매핑
-#     조정은 §3.5 보장-모델 결정이라 PM 판단으로 보류(researcher=순수읽기는 read-only 로 정상).
+#     조정은 보류(researcher=순수읽기는 read-only 로 정상).
 #   · `-a never` 하 `git push` 는 **hang/승인-refusal 없이 즉시 실행**되어 git 레벨에서 실패한다
-#     (도달 불가 원격→rc=128·refspec 불일치→rc=1). 승인 deadlock(§5·§10 우려)은 없음 — 그래서 push
-#     방어선은 sandbox/approval 이 아니라 **role prompt(위임 역할은 push 안 함)**다(§5 설계대로).
+#     (도달 불가 원격→rc=128·refspec 불일치→rc=1). 승인 deadlock은 없음 — 그래서 push
+#     방어선은 sandbox/approval 이 아니라 **role prompt(위임 역할은 push 안 함)**다.
 _CODEX_SANDBOX = {"write": "workspace-write", "read": "read-only"}
-# opencode 권한 agent(§3.3·D2) — write=build·read=plan.
+# opencode 권한 agent — write=build·read=plan.
 _OPENCODE_AGENT = {"write": "build", "read": "plan"}
 # opencode `run` 은 첨부 `--file` 이 있어도 **비어있지 않은 positional message 를 요구**한다(실측·codex
 # must-fix — message 부재 시 rc=1). 실 지시는 `--file` 프롬프트에 있으므로 고정 안내 message 를 positional
 # 로 준다(프롬프트 파일을 가리키는 얇은 지시).
 _OPENCODE_ATTACHED_MSG = "첨부된 프롬프트 파일(--file)의 지시를 그대로 수행하라."
 
-# claude 가용 도구셋(§3.5·§5) — `--tools`(가용성 제한, `--allowedTools` 아님·R2 교정). 역할축:
+# claude 가용 도구셋 — `--tools`(가용성 제한, `--allowedTools` 아님). 역할축:
 #   write(developer/architect) = 편집 도구 포함 · researcher = 순수읽기(Bash 제외·기계적) ·
 #   code-reviewer = 읽기+Bash(pytest·Write/Edit 제외·규율 수준). 콤마-구분 단일 인자로 전달.
 _CLAUDE_TOOLS_WRITE = "Read,Glob,Grep,Bash,Write,Edit"
 _CLAUDE_TOOLS_RESEARCHER = "Read,Glob,Grep"
 _CLAUDE_TOOLS_REVIEWER = "Read,Glob,Grep,Bash"
 
-# subprocess env allowlist(§4.7) — PM 세션 환경을 통째 상속시키지 않고 최소 키만 전달(타 크리덴셜
-# 미상속). base + LC_* 접두 + 하네스별 인증 키. **T-0449 실측으로 조정** 가능하게 상수로 둔다.
+# subprocess env allowlist — PM 세션 환경을 통째 상속시키지 않고 최소 키만 전달(타 크리덴셜
+# 미상속). base + LC_* 접두 + 하네스별 인증 키. 가능하게 상수로 둔다.
 _ENV_ALLOWLIST_BASE: tuple[str, ...] = (
     "PATH", "HOME", "LANG", "TERM", "USER", "LOGNAME", "TMPDIR",
 )
 _ENV_ALLOWLIST_PREFIXES: tuple[str, ...] = ("LC_",)
-# 하네스별 인증/구동 필수 env(§4.7 — 하네스-필수 마커만 명시 통과). 실 API key 는 각 하네스
+# 하네스별 인증/구동 필수 env(하네스-필수 마커만 명시 통과). 실 API key 는 각 하네스
 # config/auth 파일(HOME 앵커 격리 홈)로 흐르므로 여기엔 경로/토글 키 위주로 최소 둔다.
-# **T-0449 실측(3방향 완주 확인)**: 세 하네스 모두 **HOME 기반 파일 auth**(~/.codex·~/.claude·opencode
+# 세 하네스 모두 **HOME 기반 파일 auth**(~/.codex·~/.claude·opencode
 # config)로 완주했다 — OPENAI/ANTHROPIC_API_KEY env 는 부재해도 무방(파일 auth 경로). load-bearing 키 =
 # base 의 HOME + opencode 의 OPENCODE_CONFIG_DIR(ollama provider config 위치). API-key 항목은 env-auth
 # adopter 용 보험이라 유지(존재 시만 통과·과잉 아님). 이 allowlist 로 충분(키 추가/축소 불요).
@@ -176,8 +176,8 @@ _HARNESS_AUTH_ENV: dict[str, tuple[str, ...]] = {
     "opencode": ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"),
 }
 
-# role preamble(§4.3·§9) — 최소 4개(정체성 1줄 + 금지사항 + 결과 보고). identity 는 codex `exec`
-# `--agent` 부재로 prompt 합성해야 하므로 엔진이 harness-중립 최소본을 소유한다. T-0447 이 카드/문구를
+# role preamble — 최소 4개(정체성 1줄 + 금지사항 + 결과 보고). identity 는 codex `exec`
+# `--agent` 부재로 prompt 합성해야 하므로 엔진이 harness-중립 최소본을 소유한다. 이 카드/문구를
 # 다듬는다(이 티켓은 얇은 계약만·과설계 금지). 합성 = preamble + "\n\n" + prompt-file 내용.
 _PROHIBITION = (
     "금지: commit/push/force/reset/rm 등 git 비가역 조작·board 조작·어댑터 디렉토리"
@@ -217,7 +217,7 @@ def _load_external_review():
 
 def _load_relay():
     """엔진 pm_relay 를 importlib 로 직접 로드 — 3-하네스 파서(parse_stream_json·parse_codex_json·
-    parse_opencode_json)·첫-이벤트 워치독·프로세스그룹 kill 을 재사용(T-0336 deep-import seam 동형)."""
+    parse_opencode_json)·첫-이벤트 워치독·프로세스그룹 kill 을 재사용."""
     path = Path(__file__).resolve().parent / "pm_relay.py"
     spec = importlib.util.spec_from_file_location("pm_relay", path)
     module = importlib.util.module_from_spec(spec)
@@ -227,7 +227,7 @@ def _load_relay():
 
 def _load_delegate_scope():
     """엔진 delegate_scope 를 importlib 로 직접 로드 — 위임 전·후 worktree 상태 비교 판정을
-    재사용(T-0462·형제 `.project_manager/tools/`·_load_relay 동형)."""
+    재사용(형제 `.project_manager/tools/`·_load_relay 동형)."""
     path = Path(__file__).resolve().parent / "delegate_scope.py"
     spec = importlib.util.spec_from_file_location("delegate_scope", path)
     module = importlib.util.module_from_spec(spec)
@@ -241,7 +241,7 @@ def local_config() -> dict[str, str]:
     """per-clone local.conf 를 KEY=value 로 읽는다(external_review.local_config 재사용).
 
     독립 주석 라인(`#` 시작)만 처리하고 값 안의 `#` 은 제거하지 않는다 — `delegate.*` 값은 inline
-    주석 금지(독립 주석 라인만·§3.2). REPO 를 호출 시점 읽어 테스트 monkeypatch 를 추종한다."""
+    주석 금지(독립 주석 라인만). REPO 를 호출 시점 읽어 테스트 monkeypatch 를 추종한다."""
     er = _load_external_review()
     er.REPO = REPO
     er.LOCAL_CONF = REPO / ".project_manager" / "local.conf"
@@ -252,29 +252,29 @@ def _is_enabled(conf: dict[str, str]) -> bool:
     return conf.get(DELEGATE_ENABLED_KEY, "false").strip().lower() in ("true", "1", "yes", "on")
 
 
-# ── config 해소 (원자 tuple·§3.2) ────────────────────────────────────────────
+# ── config 해소 (원자 tuple) ────────────────────────────────────────────
 
 def _validate_harness(harness: str) -> str:
     if harness not in HARNESS_CHOICES:
         raise DelegateError(
             f"미지원 harness {harness!r} — 지원: {', '.join(HARNESS_CHOICES)}. "
-            "조용한 폴백 금지(명시 등록 요구·ADR-0070 D5)."
+            "조용한 폴백 금지(명시 등록 요구)."
         )
     return harness
 
 
 def _validate_reasoning(harness: str, reasoning: str | None) -> str | None:
-    """reasoning 값을 드라이버별 허용집합으로 검증(§6). 미지정=None(플래그 생략). 허용집합 밖이거나
-    capability 미확정(claude/opencode·T-0449 전)이면 fail-loud — 조용한 무시/자동 강등 금지."""
+    """reasoning 값을 드라이버별 허용집합으로 검증. 미지정=None(플래그 생략). 허용집합 밖이거나
+    capability 미확정이면 fail-loud — 조용한 무시/자동 강등 금지."""
     if reasoning is None or not reasoning.strip():
         return None
     reasoning = reasoning.strip()
     allowed = _REASONING_ALLOWED.get(harness, frozenset())
     if reasoning not in allowed:
-        known = ", ".join(sorted(allowed)) if allowed else "(미확정·T-0449 라이브 실측 전)"
+        known = ", ".join(sorted(allowed)) if allowed else "(미확정 라이브 실측 전)"
         raise DelegateError(
             f"reasoning {reasoning!r} 은 {harness} 드라이버 허용집합 {known} 밖 — "
-            "조용한 무시/강등 금지·명시 설정을 요구한다(§6)."
+            "조용한 무시/강등 금지·명시 설정을 요구한다."
         )
     return reasoning
 
@@ -287,7 +287,7 @@ def resolve_delegate(
     cli_model: str | None,
     cli_reasoning: str | None,
 ) -> tuple[str, str, str | None]:
-    """(harness, model, reasoning) 원자 tuple 을 해소한다(§3.2 단일 알고리즘).
+    """(harness, model, reasoning) 원자 tuple 을 해소한다(단일 알고리즘).
 
     CLI 완전지정(--harness AND --model)이면 설정 미참조(원자 override). 아니면 티어 키 세트를 통째로
     읽는다(`delegate.<role>[.<tier>].{harness,model,reasoning}` — 혼합 상속 금지). harness/model 부재면
@@ -310,10 +310,10 @@ def resolve_delegate(
         if tier == "hard":
             raise DelegateError(
                 f"hard 프로필 미설정({key}.harness/.model) — normal 강등 금지·명시 설정을 요구한다"
-                "(§3.2). local.conf 에 hard 티어 세트를 통째로 설정하라."
+                ". local.conf 에 hard 티어 세트를 통째로 설정하라."
             )
         raise DelegateError(
-            f"역할 매핑 미설정({key}.harness/.model) — 조용한 폴백 금지(ADR-0070 D5·§3.2). "
+            f"역할 매핑 미설정({key}.harness/.model) — 조용한 폴백 금지. "
             "local.conf 에 delegate.<role>.harness/.model 을 설정하라."
         )
     harness = _validate_harness(harness)
@@ -332,7 +332,7 @@ def resolve_fallback(
     `delegate.<role>[.hard].fallback.{harness,model,reasoning}` 세트를 통째로 읽는다. 세 키가 모두
     없으면 폴백 미설정(None)이고, 하나라도 있으면 harness/model 완전 세트를 요구한다. hard 는 normal
     폴백을 상속하지 않는다 — 티어 혼합 상속은 주 매핑과 똑같이 금지한다. 엔진 기본 폴백은 없으며,
-    미설정은 기존 fail-loud 를 보존한다(ADR-0070 D5).
+    미설정은 기존 fail-loud 를 보존한다.
     """
     key = f"delegate.{role}" + (".hard" if tier == "hard" else "") + ".fallback"
     harness = (conf.get(f"{key}.harness") or "").strip()
@@ -351,7 +351,7 @@ def resolve_fallback(
     return harness, model, reasoning
 
 
-# ── 3 드라이버 argv 빌더 (§3.3·pm_import._build_runner_argv 확장형) ─────────────────
+# ── 3 드라이버 argv 빌더 (pm_import._build_runner_argv 확장형) ─────────────────
 
 def _perm_axis(role: str) -> str:
     """역할 → 권한축('write' | 'read')."""
@@ -367,7 +367,7 @@ def _claude_tools(role: str) -> str:
 
 
 def build_codex_argv(model: str, reasoning: str | None, role: str, cwd: str) -> list[str]:
-    """codex argv(§3.3·§5). `-a never -s <mode>` 는 exec **앞** 전역 옵션(exec 뒤는 rc=2·0.145.0 실측).
+    """codex argv. `-a never -s <mode>` 는 exec **앞** 전역 옵션(exec 뒤는 rc=2).
 
     프롬프트는 stdin 주입(external_review 동형·argv positional 아님). cwd 는 `-C` 로 핀."""
     mode = _CODEX_SANDBOX[_perm_axis(role)]
@@ -376,7 +376,7 @@ def build_codex_argv(model: str, reasoning: str | None, role: str, cwd: str) -> 
     if model:
         argv += ["-m", model]
     if reasoning:
-        # T-0449 실측(0.145.0): `-c model_reasoning_effort=<r>` 는 `-a`/`-s`(exec 뒤=rc=2)와 달리
+        # `-c model_reasoning_effort=<r>` 는 `-a`/`-s`(exec 뒤=rc=2)와 달리
         # exec **앞/뒤 모두 rc=0 수용**된다(xhigh 로 전/후 위치 각 1회 실측). 그래서 exec 뒤 이 위치를
         # 유지한다(옮길 필요 없음). reasoning 미지정 시 무영향.
         argv += ["-c", f"model_reasoning_effort={reasoning}"]
@@ -384,7 +384,7 @@ def build_codex_argv(model: str, reasoning: str | None, role: str, cwd: str) -> 
 
 
 def build_claude_argv(model: str, reasoning: str | None, role: str) -> list[str]:
-    """claude argv(§3.3·§3.5·§5). 프롬프트 stdin 주입·cwd 존중(플래그 불요). `--tools` 로 역할별 가용
+    """claude argv. 프롬프트 stdin 주입·cwd 존중(플래그 불요). `--tools` 로 역할별 가용
     도구 제한, write 역할은 `--permission-mode acceptEdits` 로 무프롬프트 완주."""
     argv = ["claude", "-p", "--output-format", "json", "--model", model,
             "--tools", _claude_tools(role)]
@@ -398,7 +398,7 @@ def build_claude_argv(model: str, reasoning: str | None, role: str) -> list[str]
 def build_opencode_argv(
     model: str, reasoning: str | None, role: str, cwd: str, prompt_file: str,
 ) -> list[str]:
-    """opencode argv(§3.3·D2). 프롬프트는 `--file`(실존 인터페이스·길이/ps 노출 회피)·cwd 는 `--dir`
+    """opencode argv. 프롬프트는 `--file`(실존 인터페이스·길이/ps 노출 회피)·cwd 는 `--dir`
     로 핀(opencode 는 subprocess cwd 무시). `--agent build|plan` 으로 권한 강제."""
     agent = _OPENCODE_AGENT[_perm_axis(role)]
     # message positional 필수(비어있으면 rc=1·실측) — `run` 뒤에 고정 안내 message 를 둔다.
@@ -411,40 +411,40 @@ def build_opencode_argv(
     return argv
 
 
-# ── 시크릿 통제 (§4.7) ──────────────────────────────────────────────────────
+# ── 시크릿 통제  ──────────────────────────────────────────────────────
 #
-# 프롬프트 스캔은 **파일 경로/이름 + 시크릿 값**만 겨냥한다(T-0472 — 문맥 무시 substring 판정 폐기).
+# 프롬프트 스캔은 **파일 경로/이름 + 시크릿 값**만 겨냥한다.
 # external_review 의 denylist(`*token*`·`*secret*` …)는 원래 *파일 경로* 필터라, 그 substring glob 을
 # 산문·식별자에 그대로 대면 정상 conf 키(`ctx_window_tokens_opencode`)·변수명·"토큰 수" 서술이 전부
-# 걸린다(PM 12차 실측 — 위임 발사가 차단됐고 우회는 키명을 풀어 쓰는 것뿐이었다). 그래서 판정을
-# **양성매칭 2축**으로 바꾼다(T-0465 파서 양성매칭 전환 동형):
+# 걸린다. 그래서 판정을
+# **양성매칭 2축**으로 바꾼다(파서 양성매칭 전환 동형):
 #   ⓐ 경로축 — 토큰이 *경로 형태*(구분자·확장자·닷파일) 또는 알려진 시크릿 파일명일 때만 denylist 적용
 #             (그것도 **파일 이름 앵커** + 이름-substring 패턴은 시크릿 데이터 확장자일 때만).
 #   ⓑ 값축   — 알려진 시크릿 값 prefix(ghp_·AKIA…)·PEM 개인키 블록·URL 내장 자격증명·시크릿 키명
 #             할당의 고엔트로피 값.
-# **미탐 방향 금지**(T-0466 동형): 실 시크릿(파일 경로·값)은 ⓐⓑ 로 계속 차단된다. 완화되는 건 ①
-# "경로도 값도 아닌 식별자/산문"과 ② 이름-substring 패턴만 걸린 **소스/문서 파일**
-# (`tests/test_adapter_token_substitution.py`)이다 — ②는 파일 *언급*일 뿐이라 ③ 합성 프롬프트
-# 스캔에서만 완화하고, 파일 내용이 통째로 전송되는 ④ prompt-file 게이트
+# **미탐 방향 금지**: 실 시크릿(파일 경로·값)은 ⓐⓑ 로 계속 차단된다. 완화되는 건 
+# "경로도 값도 아닌 식별자/산문"과 이름-substring 패턴만 걸린 **소스/문서 파일**
+# (`tests/test_adapter_token_substitution.py`)이다 — 파일 *언급*일 뿐이라 합성 프롬프트
+# 스캔에서만 완화하고, 파일 내용이 통째로 전송되는 prompt-file 게이트
 # (`_prompt_file_denylist_pattern`)에는 적용하지 않는다(확장자 무관 이름 앵커·내부 리뷰 SF1 —
-# 단 프롬프트 문서 확장자 `.md`/`.markdown`/`.rst` 는 면제, 내용은 ③ 이 다시 훑는다).
+# 단 프롬프트 문서 확장자 `.md`/`.markdown`/`.rst` 는 면제, 내용은 다시 훑는다).
 # ⓐⓑ 의 조임/완화 폭은 실 코퍼스(PM 문서 167 + 제품 문서 181 + 엔진/테스트 소스 = 512 파일·15만 줄)
 # **라인 단위** 와 통제 케이스로 **양방향 실측**해 확정했다 — 오탐(`part.tokens.input`·
 # ``key/token(다른`` 류 산문 조각·`auth_url=https://…/oauth/token`·glob 인용 `"*.key"`·한국어 산문
 # 슬래시 조각) 0 유지 + 미탐(조사 밀착 `~/.aws/credentials를`·비ASCII 경로 성분 `/path/to/사용자/.env`·
 # URL 안 크리덴셜·`.properties`·JSON/camelCase 키) 폐쇄. **경로축 면제가 값축을 끄지 않는다**는 게
-# URL 처리의 불변식이다(리뷰 R2 — 면제는 엔드포인트 오탐용이지 크리덴셜 눈감기가 아니다).
+# URL 처리의 불변식이다(면제는 엔드포인트 오탐용이지 크리덴셜 눈감기가 아니다).
 
 # ⓐ 경로 형태 판정 — 구분자 포함 / 확장자 보유 / 닷파일. 확장자 길이 상한은 **실 확장자 집합에
 # 맞춘다**: 8자 상한은 `.properties`(10자)를 확장자로 못 봐 `client_secret.properties`·
-# `access_token.properties` 가 통째로 통과했다(외부 리뷰 R2·구 denylist 는 차단하던 것).
+# `access_token.properties` 가 통째로 통과했다.
 _PATH_SEPARATOR_RE = re.compile(r"[/\\]")
 _MAX_FILE_EXTENSION_CHARS = 12  # `properties`(10) + 여유 · 산문 조각을 확장자로 오인하지 않는 선
 _FILE_EXTENSION_RE = re.compile(rf"\.[A-Za-z0-9]{{1,{_MAX_FILE_EXTENSION_CHARS}}}$")
 _DOTFILE_RE = re.compile(r"^\.[A-Za-z0-9][A-Za-z0-9._-]*$")
 # 경로로 볼 수 있는 문자만으로 이뤄진 **파일 이름**인가 — 한글·백틱·괄호·화살표가 섞인 산문 조각
 # (``key/token(다른``·`` `json`→token/input/output/cost ``)의 이름 성분은 파일 이름이 아니다(실 코퍼스
-# 오탐 다수). 판정 대상이 토큰 전문이 아니라 **basename** 인 이유(T-0472 fix·리뷰 실측): 전문에 대면
+# 오탐 다수). 판정 대상이 토큰 전문이 아니라 **basename** 인 이유: 전문에 대면
 # 경로 성분 하나만 비ASCII/`@`/`$`/`{}` 여도 전 축이 skip 돼 옛 판정이 잡던 실 시크릿 경로가 통과했다
 # (`/path/to/사용자/.env`·`node_modules/@scope/pkg/.env`·`${HOME}/.aws/credentials`·미탐 회귀).
 _STRICT_PATH_NAME_RE = re.compile(r"^[A-Za-z0-9_~.-]+$")
@@ -472,7 +472,7 @@ _CLOSING_WRAPPER_CHARS = "\"'`)]}>"
 # `$`·`{}`·`@` 는 실 경로 관용형(`${HOME}/…`·`node_modules/@scope/…`)이라 허용한다.
 _PATH_ROOT_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_~.${}@-]*$")
 # 후보 조각 경계 — 괄호/대괄호(마크다운 링크 `[label](path)`·산문 삽입구 `파일(~/.aws/credentials)을`)
-# 에서 조각을 나눠 **각 조각을 따로 판정**한다(리뷰 R3). 마커를 만나면 토큰을 통째로 버리던 방식은
+# 에서 조각을 나눠 **각 조각을 따로 판정**한다
 # wrapper 안 경로를 통째로 놓쳤다. 조각 분리가 옛 산문 오탐(``key/token(다른``)을 되살리지 않는 건
 # `_ANCHORED_PATH_RE`(무확장자 상대경로 배제) 덕이다 — 둘은 한 쌍으로 봐야 한다.
 _CANDIDATE_FRAGMENT_RE = re.compile(r"[()\[\]]+")
@@ -493,9 +493,9 @@ _SECRET_FILENAME_PATTERNS: tuple[str, ...] = (
 )
 
 # 경로 *성분* 이 이 이름과 **정확히** 같으면 그 아래 파일은 이름과 무관하게 시크릿으로 본다 —
-# `/run/secrets/db_password`·`secrets/config.json` 은 basename 만 봐서는 안 걸렸다(외부 리뷰 R3).
+# `/run/secrets/db_password`·`secrets/config.json` 은 basename 만 봐서는 안 걸렸다.
 # **정확-세그먼트 매칭이지 substring 이 아니다**: pytest tmp 디렉토리(`…/test_secret_scan0/prompt.md`)의
-# "secret" 은 성분 *안* 의 substring 이라 걸리지 않는다(fix1 이 없앤 ④ 조상-디렉토리 오탐 재발 금지).
+# "secret" 은 성분 *안* 의 substring 이라 걸리지 않는다.
 _SECRET_DIRECTORY_NAMES: frozenset[str] = frozenset({
     "secrets", "credentials", ".aws", ".ssh", ".gnupg", ".password-store",
 })
@@ -504,8 +504,8 @@ _SECRET_DIRECTORY_NAMES: frozenset[str] = frozenset({
 # 시크릿이 실제로 담기는 데이터/설정 확장자이거나 **무확장자**(`~/.aws/credentials`·`.git-credentials`)
 # 일 때만 인정한다. 소스/문서 확장자(`test_adapter_token_substitution.py`·`secret-scan.md`)는 *주제가*
 # 시크릿일 뿐 시크릿 파일이 아니다 — 개발 프롬프트의 최대 오탐원이었다.
-# ④ prompt-file 게이트에서 이름-substring 패턴을 면제하는 프롬프트 문서 확장자 — 위임 프롬프트는
-# 원래 마크다운 문서고, 티켓 주제어(`token`·`secret`)가 파일명에 들어가는 게 정상이다(리뷰 R2).
+# prompt-file 게이트에서 이름-substring 패턴을 면제하는 프롬프트 문서 확장자 — 위임 프롬프트는
+# 원래 마크다운 문서고, 티켓 주제어(`token`·`secret`)가 파일명에 들어가는 게 정상이다.
 _PROMPT_DOC_EXTENSIONS: frozenset[str] = frozenset({"md", "markdown", "rst"})
 _SECRET_DATA_EXTENSIONS: frozenset[str] = frozenset({
     "env", "json", "yaml", "yml", "ini", "conf", "cfg", "toml", "properties",
@@ -543,17 +543,17 @@ _SECRET_KEY_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 # camelCase 키(`accessToken`·`dbPassword`·`clientSecret`·`XSRFToken`) — 위 성분 경계는 `_`/`-` 만 보므로
-# hump 경계를 못 읽어 통째로 미탐이었다(외부 리뷰 R2). **대소문자 민감**으로 따로 둔다: IGNORECASE 를
-# hump 규칙에 섞으면 뒤 경계 `(?![a-z])` 가 소문자에도 걸려 `ctx_window_tokens_opencode`(=T-0472 원인
+# **대소문자 민감**으로 따로 둔다: IGNORECASE 를
+# hump 규칙에 섞으면 뒤 경계 `(?![a-z])` 가 소문자에도 걸려 `ctx_window_tokens_opencode`
 # 오탐)가 되살아난다. 앞 경계에 대문자를 포함하는 건 두문자어 접두(`XSRFToken`·`APIToken`·`AWSSecret`·
-# `JWTSecret`)를 잡기 위함이고(내부 리뷰 R3 실측), 뒤에 소문자가 이어지는 복수/합성형(`accessTokens`·
+# `JWTSecret`)를 잡기 위함이고, 뒤에 소문자가 이어지는 복수/합성형(`accessTokens`·
 # `tokenizerName`)은 제외한다 — `tokens` 배제와 같은 규칙.
 _SECRET_KEY_CAMEL_RE = re.compile(
     r"(?<=[A-Za-z0-9])(?:Token|Secret|Credential|Password|Passwd|Passphrase"
     r"|Authorization|Bearer)(?![a-z])"
 )
 # `KEY=value` / `KEY: value`(공백 허용) 할당 추출 — 값축 문맥 판정의 입력. 좌변은 JSON/YAML 의
-# **따옴표 키**(`"token": "…"`)도 받는다(외부 리뷰 R2 — 따옴표 때문에 키를 못 읽어 통째로 미탐이었다).
+# **따옴표 키**(`"token": "…"`)도 받는다.
 # **따옴표로 감싼 값은 닫는 따옴표까지** 통째로 잡는다(공백 포함) — 옛 정규식은 값을 공백에서 끊어
 # `db_password="A1pha Bravo C3arlie Delta"` 가 `A1pha`(길이 미달)로 잘려 미탐이었다(외부 리뷰 MF3).
 _ASSIGNMENT_RE = re.compile(
@@ -569,10 +569,10 @@ _URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _URL_IN_TEXT_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S*")
 # URL userinfo(`https://user:pass@host/…`·`https://ghp_…@github.com/o/r.git`) — 전송 텍스트에 크리덴셜이
 # 실려 있으므로 경로축 면제 대상이 아니라 값축 **차단** 대상이다. `user:pass` 콜론형만 보면 실전에서
-# 가장 흔한 **username-only PAT** 형을 놓친다(외부 리뷰 R2).
+# 가장 흔한 **username-only PAT** 형을 놓친다.
 _URL_USERINFO_RE = re.compile(r"://(?P<userinfo>[^/\s@]+)@")
 # URL authority(호스트[:포트]) — 경로/쿼리 판정에서 잘라낸다. 경로가 없어도(`https://host?file=.env`)
-# 쿼리는 검사해야 하므로 `/` 유무로 조기 반환하지 않는다(외부 리뷰 R4).
+# 쿼리는 검사해야 하므로 `/` 유무로 조기 반환하지 않는다.
 _URL_AUTHORITY_RE = re.compile(r"^[^/?#]*")
 # URL 쿼리/fragment 파라미터 — 값 마스킹(발췌)과 값 후보 추출(경로축)에 공유한다.
 _URL_PARAMETER_RE = re.compile(
@@ -580,7 +580,7 @@ _URL_PARAMETER_RE = re.compile(
 # 값축 전용 세분 토큰화 — URL 안(userinfo·경로 세그먼트·쿼리 파라미터)에 실린 크리덴셜을 꺼낸다.
 # 경로축 토큰화(`[=:]` 분리)로는 `https://…/?access_token=ghp_…` 의 값이 통째 조각에 묻힌다.
 # 괄호/대괄호도 경계다 — 경로축에만 조각 분리를 넣으면 한국어 관용 표기(`토큰(ghp_…)을`·`키[ghp_…]를`)
-# 에서 값축만 못 잡는 비대칭이 생긴다(내부 리뷰 R4). 발급기관 prefix 판정이라 세분화는 오탐을 안 낳는다.
+# 에서 값축만 못 잡는 비대칭이 생긴다. 발급기관 prefix 판정이라 세분화는 오탐을 안 낳는다.
 _VALUE_CANDIDATE_SPLIT_RE = re.compile(r"[=:/\\?&@#|()\[\]]+")
 
 # 값이 크리덴셜 형태인지의 문턱 — 짧은 값(`180000`)·자연어 식별자(`ctx_window_tokens_opencode`)를
@@ -615,7 +615,7 @@ _SECRET_AXIS_VALUE = "값"
 class PromptSecretHit(NamedTuple):
     """프롬프트 시크릿 스캔 매칭 — 발췌(값은 마스킹됨)·걸린 판정 이름·판정축(`경로`/`값`).
 
-    발췌를 담는 이유(T-0472): 옛 반환은 패턴명만 노출해 *프롬프트의 어느 텍스트가* 걸렸는지 추측이
+    발췌를 담는 이유: 옛 반환은 패턴명만 노출해 *프롬프트의 어느 텍스트가* 걸렸는지 추측이
     필요했다(관측 가능성 결함). 경로/파일명은 그대로 보여야 고칠 수 있고, 크리덴셜 값은
     `_mask_secret_value` 로 마스킹해 stderr/로그에 남기지 않는다."""
 
@@ -633,7 +633,7 @@ def _secret_path_candidates(raw: str) -> list[str]:
     `~/.aws/credentials를`→`~/.aws/credentials`) 후 후보로 낸다. 각 후보는 원문 + 소문자 정규화 2형을
     담아 대소문자 표기(`.ENV`)도 잡는다(원문형을 먼저 담아 대소문자 민감한 값 prefix(`AKIA…`) 판정이
     살아있다). 괄호/대괄호(`[설정](~/.aws/credentials)`·`파일(~/.aws/credentials)을`)는 조각으로 나눠
-    **각각 재판정**한다(리뷰 R3) — 옛 방식은 마커가 보이면 토큰을 통째로 버려 wrapper 안 경로를 놓쳤다.
+    **각각 재판정**한다.
     조각 분리로 산문 오탐(``key/token(다른``)이 되살아나지 않는 건 무확장자 상대경로를 배제하는
     `_ANCHORED_PATH_RE` 요건 덕이다(`_matching_secret_path_pattern` 참조·둘은 한 쌍)."""
     candidates: list[str] = []
@@ -679,7 +679,7 @@ def _is_path_shaped(token: str) -> bool:
 
     경로 구분자 포함(`~/.aws/credentials`)·확장자 보유(`credentials.env`·`foo.pem`)·닷파일(`.env`)
     중 하나면 경로 형태로 본다. `ctx_window_tokens_opencode` 같은 식별자·산문 단어는 셋 다 아니라
-    통과한다(T-0472 오탐 근본)."""
+    통과한다."""
     if _PATH_SEPARATOR_RE.search(token):
         return True
     if _DOTFILE_RE.match(token):
@@ -726,7 +726,7 @@ def _matching_secret_name_pattern(
 ) -> str | None:
     """파일 *이름* 이 시크릿 파일 판정에 걸리는 첫 패턴(없으면 None).
 
-    ① 알려진 시크릿 파일명(`id_rsa`·`.npmrc` 류)은 즉시 매칭. ② denylist 패턴 매칭 — 단 이름-substring
+    알려진 시크릿 파일명(`id_rsa`·`.npmrc` 류)은 즉시 매칭. denylist 패턴 매칭 — 단 이름-substring
     패턴(`*token*`)은 `require_data_ext` 일 때 시크릿 데이터 확장자(또는 무확장자)까지 요구한다.
     디렉토리 형태 패턴(`secrets/` 류)은 이름이 아니라 전체 경로로 판정해야 하므로 여기서 제외한다
     (호출부가 별도 처리).
@@ -752,7 +752,7 @@ def _matching_secret_path_pattern(
 ) -> str | None:
     """토큰이 시크릿 *파일 경로/이름* 판정에 걸리는 첫 패턴(없으면 None·ⓐ 경로축).
 
-    조임(T-0472): (1) 토큰에 산문/마크다운 마커가 없고 **첫 성분**이 ASCII 경로 이름인가(산문 조각
+    조임: (1) 토큰에 산문/마크다운 마커가 없고 **첫 성분**이 ASCII 경로 이름인가(산문 조각
     배제) → (2) **디렉토리 성분**이 알려진 시크릿 디렉토리면 즉시 발화(`/run/secrets/db_password` —
     이름엔 단서가 없다·정확 세그먼트 매칭) → (3) **파일 이름**(basename)이 경로 문자만으로 됐고 무확장자
     상대경로가 아닌가 → (4) 파일 이름 앵커로 denylist 판정
@@ -775,7 +775,7 @@ def _matching_secret_path_pattern(
     if pattern is None:
         return None
     # 정확 시크릿 파일명(`deploy/id_rsa`·`keys/id_ed25519`)은 이름 자체가 비모호하므로 앵커/경로 형태
-    # 요건을 면제한다(내부 리뷰 R4 — 앵커 요건이 fix2 까지 잡던 이 형태를 막고 있었다).
+    # 요건을 면제한다.
     if pattern not in _SECRET_FILENAME_PATTERNS:
         if not _is_named_path_shape(normalized, name):
             return None
@@ -788,7 +788,7 @@ def _secret_directory_segment(normalized: str) -> str | None:
     """경로 *성분* 중 알려진 시크릿 디렉토리 이름(정확 일치)을 돌려준다(없으면 None).
 
     `/run/secrets/db_password`·`secrets/config.json` 처럼 **파일 이름엔 단서가 없고 디렉토리가 말해주는**
-    시크릿을 잡는다(외부 리뷰 R3). 마지막 성분(=파일 이름)은 제외한다 — 산문의 맨 단어 `secrets` 까지
+    시크릿을 잡는다. 마지막 성분(=파일 이름)은 제외한다 — 산문의 맨 단어 `secrets` 까지
     경로로 보면 오탐이다. 매칭은 **정확 세그먼트**라 `…/test_secret_scan0/` 같은 substring 은 안 걸린다."""
     segments = normalized.split("/")
     for segment in segments[:-1]:
@@ -847,10 +847,10 @@ def _char_class_alternation_ratio(value: str) -> float:
 
 
 def _has_secret_value_charset(value: str) -> bool:
-    """값의 문자 구성이 크리덴셜형인가 — ① 영문+숫자 혼합, 또는 ② 무숫자 랜덤 대소문자 혼합.
+    """값의 문자 구성이 크리덴셜형인가 — 영문+숫자 혼합, 또는 무숫자 랜덤 대소문자 혼합.
 
-    ① 의 digit 요건은 영문 식별자/산문 오탐(`ctx_window_tokens_opencode`·`enforce_minimum_length`)을
-    걸러온 실측 근거가 있어 유지한다. ② 는 그 요건이 무숫자 랜덤 비밀번호(`XkwPqrLmZvTbNhGf`)를
+    의 digit 요건은 영문 식별자/산문 오탐(`ctx_window_tokens_opencode`·`enforce_minimum_length`)을
+    는 그 요건이 무숫자 랜덤 비밀번호(`XkwPqrLmZvTbNhGf`)를
     통과시키던 갭(외부 리뷰 MF3)만 닫는 좁은 완화 — 단어 구분자·단일 케이스·산문형 값을 배제하는
     조임은 `_MIN_CHAR_CLASS_ALTERNATION_RATIO` 주석(임계 근거·잔여 겹침) 참조."""
     if any(c.isalpha() for c in value) and any(c.isdigit() for c in value):
@@ -906,7 +906,7 @@ def _is_credential_userinfo(userinfo: str) -> bool:
 def _mask_userinfo(userinfo: str) -> str:
     """URL userinfo 마스킹 — password 는 항상, username 도 값-형태(PAT 등)면 마스킹한다.
 
-    username-only PAT 을 안 가리면 차단 메시지에 크리덴셜 전문이 그대로 남는다(외부 리뷰 R2)."""
+    username-only PAT 을 안 가리면 차단 메시지에 크리덴셜 전문이 그대로 남는다."""
     user, separator, password = userinfo.partition(":")
     masked_user = _mask_secret_value(user) if _looks_like_secret_value(user) else user
     if not separator:
@@ -918,7 +918,7 @@ def _url_credentials_excerpt(url: str) -> str:
     """URL 내장 자격증명 발췌 — userinfo **와 쿼리/fragment 의 자격증명성 값**을 마스킹한다.
 
     호스트/경로/파라미터 *이름* 은 남겨 위치를 특정하되 값은 남기지 않는다. userinfo 만 가리면
-    `https://user:pass@host/?access_token=…` 의 토큰 원문이 차단 메시지에 그대로 남는다(외부 리뷰 R4)."""
+    `https://user:pass@host/?access_token=…` 의 토큰 원문이 차단 메시지에 그대로 남는다."""
     masked = _URL_USERINFO_RE.sub(lambda m: f"://{_mask_userinfo(m.group('userinfo'))}@", url)
     return _truncate_excerpt(_mask_url_parameter_values(masked))
 
@@ -946,10 +946,10 @@ def _url_path_secret_pattern(
     것 자체가 시크릿 유출 경로다. 이름-substring 패턴(`*token*`)은 여기 **쓰지 않는다** — 그게 URL
     엔드포인트 오탐(`/oauth/token`·`/tokens/list`·외부 리뷰 MF1)의 원인이라 접점을 두지 않는다.
 
-    판정 대상은 (a) 경로 basename 과 (b) **쿼리/fragment 파라미터 값**(`?file=.env`·외부 리뷰 R3)이며,
+    판정 대상은 (a) 경로 basename 과 (b) **쿼리/fragment 파라미터 값**(`?file=.env`)이며,
     일반 경로축과 같은 **소문자 정규화**를 거친다(`/DEPLOY.PEM`). 정확-이름/확장자 패턴만 쓰므로
     `?page=token` 같은 엔드포인트 파라미터는 영향받지 않는다. authority 뒤에 경로가 없어도
-    (`https://files.example?file=.env`) 쿼리는 검사한다 — 경로 부재로 조기 반환하면 우회였다(R4)."""
+    (`https://files.example?file=.env`) 쿼리는 검사한다 — 경로 부재로 조기 반환하면 우회였다."""
     remainder = _URL_AUTHORITY_RE.sub("", url.split("://", 1)[1], count=1)
     path, separator, query_and_fragment = remainder.partition("?")
     if not separator:
@@ -984,7 +984,7 @@ def _iter_prompt_secret_hits(prompt: str) -> Iterator[PromptSecretHit]:
     """합성 프롬프트 시크릿 판정을 기존 우선순서대로 yield한다.
 
     `scan_prompt_secrets()`의 첫-hit 판정 계약은 이 iterator의 첫 원소로 유지한다. 사람 승인 차단
-    경로만 끝까지 소비해 모든 탐지를 표시한다(T-0476). 즉 패턴·축·마스킹 로직은 바꾸지 않고,
+    경로만 끝까지 소비해 모든 탐지를 표시한다. 즉 패턴·축·마스킹 로직은 바꾸지 않고,
     조기 반환만 exhaustive 수집 가능한 yield로 푼다.
     """
     er = _load_external_review()
@@ -994,7 +994,7 @@ def _iter_prompt_secret_hits(prompt: str) -> Iterator[PromptSecretHit]:
             f"{pem.group(0)} …(본문 마스킹)", _SECRET_RULE_PEM, _SECRET_AXIS_VALUE,
         )
     for raw in prompt.split():
-        # ⓑ 값축(알려진 prefix)은 **URL 제거 전 원문**에서 본다(외부 리뷰 R2 must-fix) — URL 면제는
+        # ⓑ 값축(알려진 prefix)은 **URL 제거 전 원문**에서 본다 — URL 면제는
         # 경로축 오탐(`/oauth/token`)을 없애려는 것이지, URL 안에 실린 크리덴셜
         # (`https://ghp_…@github.com/o/r.git`·`?access_token=ghp_…`·`/services/xoxb-…`)까지 눈감으라는
         # 게 아니다. 값축을 먼저, 원문에 대고 돌려 그 회귀를 막는다.
@@ -1018,7 +1018,7 @@ def _iter_prompt_secret_hits(prompt: str) -> Iterator[PromptSecretHit]:
                 yield PromptSecretHit(
                     # 경로축 판정이어도 발췌는 같은 URL 표시층을 탄다. 원문 URL을 그대로 내보내면
                     # userinfo password와 query/fragment 자격증명이 값축 발췌에서는 가려져도 이
-                    # 경로축 발췌를 통해 stderr/raw에 다시 노출된다(T-0476 fix2).
+                    # 경로축 발췌를 통해 stderr/raw에 다시 노출된다().
                     _url_credentials_excerpt(url.group(0)), pattern, _SECRET_AXIS_PATH,
                 )
             # 자격증명·시크릿 파일이 아닌 URL(엔드포인트·문서 링크)만 경로축 비대상 — `:` 분리 뒤 남는
@@ -1059,35 +1059,35 @@ def scan_prompt_secret_hits(prompt: str) -> tuple[PromptSecretHit, ...]:
 
 
 def scan_prompt_secrets(prompt: str) -> PromptSecretHit | None:
-    """합성 프롬프트에서 첫 시크릿(파일 경로/이름 · 크리덴셜 값)을 찾는다(전송 전 차단·§4.7).
+    """합성 프롬프트에서 첫 시크릿(파일 경로/이름 · 크리덴셜 값)을 찾는다(전송 전 차단).
 
-    양성매칭 2축(T-0472): ⓐ **경로축** — `=`/`:` 분리·구두점 트리밍·조사 제거·소문자 정규화로 토큰
+    양성매칭 2축: ⓐ **경로축** — `=`/`:` 분리·구두점 트리밍·조사 제거·소문자 정규화로 토큰
     후보를 낸 뒤 *경로 형태* 후보에만 external_review denylist(`.env`·`*secret*`·`*.key` …)를 적용 +
     알려진 시크릿 파일명(`id_rsa`·`.npmrc`) 매칭 + 원격 URL 경로는 정확-이름/확장자 패턴만.
     ⓑ **값축** — PEM 개인키 블록·알려진 값 prefix(`ghp_…`·URL 안까지)·URL userinfo 자격증명·시크릿
     키명(성분 경계 + camelCase hump) 할당의 고엔트로피 값. 반환: 매칭 시 `PromptSecretHit`(발췌·
     판정명·축), 없으면 None.
 
-    **한계 정직 표기**(§4.7): ① 이 스캔은 전송 텍스트 필터일 뿐 위임 프로세스의 cwd 파일 직접 읽기·env
-    상속은 못 막는다. ② 값축은 *형식이 있는* 크리덴셜만 겨냥한다 — 불투명 Bearer 토큰(`Bearer
+    **한계 정직 표기**: 이 스캔은 전송 텍스트 필터일 뿐 위임 프로세스의 cwd 파일 직접 읽기·env
+    상속은 못 막는다. 값축은 *형식이 있는* 크리덴셜만 겨냥한다 — 불투명 Bearer 토큰(`Bearer
     9f3a…`·발급기관 prefix 없음)·Basic base64(`Basic dXNlcjpwYXNz`)·사전 단어 조합/저엔트로피
     비밀번호(`correct horse battery staple`)는 산문과 기계적으로 못 가르므로 **의도적으로** 통과시킨다
     (오탐 방향으로 보수적 — 이 게이트의 오탐은 위임 자체를 막는다). 반대편 잔여 겹침도 있다 — 시크릿
     키명에 할당된 CamelCase 영단어 값은 랜덤 비밀번호와 못 갈라 차단 쪽에 남는다(실 코퍼스 0건).
-    ③ URL 은 경로축에서 **정확-이름/확장자 패턴만** 본다(`…/deploy/.env` 차단·`/oauth/token` 통과) —
+    URL 은 경로축에서 **정확-이름/확장자 패턴만** 본다(`…/deploy/.env` 차단·`/oauth/token` 통과) —
     이름-substring 패턴이 가리키는 원격 경로(`https://host/api/secret-store`)는 안 걸린다.
-    ④ **상대경로의 첫 성분이 비ASCII 면 경로축 비대상**이다(`문서/설정/.env` 통과·`/path/to/사용자/.env` 는
+    **상대경로의 첫 성분이 비ASCII 면 경로축 비대상**이다(`문서/설정/.env` 통과·`/path/to/사용자/.env` 는
     차단) — 한국어 산문이 슬래시로 이어진 조각과 기계적으로 못 갈라 앵커 쪽으로 보수화한 경계다.
     같은 이유로 **앵커도 확장자도 없는 상대경로의 substring 이름**(`etc/credentials`)은 안 걸린다 —
     산문 조각(`key/token`)과 형태가 같다. 정확 시크릿 파일명(`deploy/id_rsa`)은 이름이 비모호해 면제다.
-    ⑤ ④ prompt-file 게이트의 문서 확장자 면제는 이름만으로 "시크릿을 다루는 문서 vs 시크릿이 담긴
+    prompt-file 게이트의 문서 확장자 면제는 이름만으로 "시크릿을 다루는 문서 vs 시크릿이 담긴
     문서"를 못 가르는 수렴 불가 지점이라 **면제 유지**로 종결했다(위협모델·근거는
     `_prompt_file_denylist_pattern` 참조 — 내용은 이 스캔이 다시 훑고, 시크릿 디렉토리 아래 문서는 잡힌다)."""
     return next(_iter_prompt_secret_hits(prompt), None)
 
 
 def secret_scan_prompt_digest(prompt: str, harness: str, model: str) -> str:
-    """합성 프롬프트 **전문 + 해소된 primary 수신자**의 짧은 승인 digest(T-0476).
+    """합성 프롬프트 **전문 + 해소된 primary 수신자**의 짧은 승인 digest.
 
     발췌만 해시하면 같은 문제 문자열이 든 다른 프롬프트에 승인을 재사용할 수 있으므로 role preamble과
     prompt-file 본문을 합친 UTF-8 바이트 전체에 `harness:model`을 함께 결속한다. 도메인 구분자와
@@ -1166,10 +1166,10 @@ def _secret_scan_retry_command(argv: list[str], digest: str) -> str:
 
 
 def build_env(harness: str) -> dict[str, str]:
-    """subprocess env 를 allowlist 로 정제한다(§4.7) — PM 세션 환경 통째 상속 금지(타 크리덴셜 미상속).
+    """subprocess env 를 allowlist 로 정제한다 — PM 세션 환경 통째 상속 금지(타 크리덴셜 미상속).
 
     base 키 + LC_* 접두 + 하네스별 인증 키만 전달한다. 존재하는 키만 담아 새 env dict 를 구성한다
-    (os.environ 미상속). 목록은 상수(_ENV_ALLOWLIST_*·_HARNESS_AUTH_ENV)로 T-0449 실측 조정 가능."""
+    (os.environ 미상속). 목록은 상수(_ENV_ALLOWLIST_*·_HARNESS_AUTH_ENV)로 조정 가능."""
     src = os.environ
     out: dict[str, str] = {}
     for key in _ENV_ALLOWLIST_BASE:
@@ -1186,10 +1186,10 @@ def build_env(harness: str) -> dict[str, str]:
 
 def _prompt_file_contained(prompt_file: Path, cwd: Path) -> bool:
     """prompt-file 이 (a) 해소된 cwd(realpath) 하위 또는 (b) 이 repo PM 홈(REPO/.project_manager)
-    하위인가(§3.1·§4.6·containment).
+    하위인가(containment).
 
     realpath 로 해소(심볼릭·`..` 이탈 차단·resolve 가 symlink 를 실경로로 편다)한 뒤 **두 신뢰 루트에
-    대해서만** relative_to 판정한다. 옛 '경로 성분 `.project_manager` 매칭'은 **폐기** — 임의 외부
+    대해서만** relative_to 판정한다. '경로 성분 `.project_manager` 매칭'
     `.project_manager/` 경로(예 `/outside/.project_manager/secret.txt`)를 cwd 와 무관하게 통과시키던
     우회였다(codex must-fix). 루트 cwd(`/`)는 _validate_args 가 usage error 로 앞서 거른다(cwd=`/`
     가 전 파일시스템을 (a) 로 열어버리는 우회 차단)."""
@@ -1229,9 +1229,9 @@ def _cwd_in_git_repo(cwd: Path, run_fn: Callable | None = None) -> bool:
 def _prompt_file_name_pattern(
     name: str, patterns: tuple[str, ...], match: Callable,
 ) -> str | None:
-    """prompt-file **이름** 판정(④ 게이트 전용) — 확장자 조건 없이, 단 프롬프트 문서 확장자는 예외.
+    """prompt-file **이름** 판정(게이트 전용) — 확장자 조건 없이, 단 프롬프트 문서 확장자는 예외.
 
-    이름-substring 패턴(`*token*`)이 걸린 `.md`/`.markdown`/`.rst` 는 통과시킨다(`T-0472-token-guard.md`
+    이름-substring 패턴(`*token*`)이 걸린 `.md`/`.markdown`/`.rst` 는 통과시킨다(`token-guard.md`
     — 티켓 주제어를 담은 정상 프롬프트 파일명이 이 게이트의 최대 오탐원). 정확 이름/확장자 패턴
     (`.env`·`*.pem`·`id_rsa`)은 문서 확장자여도 차단이다."""
     pattern = _matching_secret_name_pattern(name, patterns, match, require_data_ext=False)
@@ -1250,32 +1250,32 @@ def _has_prompt_doc_extension(name: str) -> bool:
 
 def _prompt_file_denylist_pattern(prompt_file: Path) -> str | None:
     """prompt-file 이 시크릿 denylist 패턴에 걸리는가 — **원본 경로 + resolve() 해소 경로 양쪽** 검사
-    (내용 읽기 전 차단·§4.7 b·symlink 우회 폐쇄).
+    (내용 읽기 전 차단·symlink 우회 폐쇄).
 
     `prompt.md → <cwd>/.env` 같은 symlink 는 원본 이름(prompt.md)이 clean 이라 통과하나 resolve() 해소
     경로(.env)는 denylist 에 걸린다 — 양쪽을 검사해 symlink 를 통한 secret 읽기를 차단한다(codex must-fix).
     external_review `_matching_denylist_pattern`(fnmatch·`.env`·`*credential*`·`*.key`) 재사용. 걸린
     패턴명 반환(원문 토큰 미노출).
 
-    판정 대상은 **파일 이름**이다(T-0472·`_matching_secret_name_pattern` 공유) — 옛 전체 경로 fnmatch 는
+    판정 대상은 **파일 이름**이다(`_matching_secret_name_pattern` 공유) — 옛 전체 경로 fnmatch 는
     *조상 디렉토리* 이름의 substring 까지 삼켜(`/tmp/…/test_secret_scan0/prompt.md`) 정상 프롬프트를
     읽기도 전에 차단했다(합성 프롬프트 스캔과 같은 문맥 무시 substring 오탐 가족·기존 테스트가 이 조기
     차단으로 false-green 이었다). 디렉토리 형태 패턴(`secrets/` 류)만 전체 경로로 판정한다.
 
     단 이름 판정은 **확장자 조건 없이**(`require_data_ext=False`) 적용한다(내부 리뷰 SF1) — 여기는 파일
-    *언급* 이 아니라 **내용이 통째로 전송**되는 지점이라 "소스/문서 확장자는 시크릿이 아니다"라는 ③
+    *언급* 이 아니라 **내용이 통째로 전송**되는 지점이라 "소스/문서 확장자는 시크릿이 아니다"라는
     합성 프롬프트 스캔의 전제가 성립하지 않는다(`secrets.py`·`token.sh`·`app_credentials.log` 차단
     유지). **예외는 프롬프트 문서 확장자**(`_PROMPT_DOC_EXTENSIONS`)뿐이다 — 이름-substring 패턴만
-    걸린 `T-0472-token-guard.md`(PM 12차 실사용 프롬프트 이름)까지 막으면 이 티켓이 없애려던 오탐
-    클래스를 ④에서 재생산한다(외부 리뷰 R2). 문서는 막지 않되 **내용은 ⑧ 값축 스캔이 다시 훑는다**
+    걸린 `T-0472-token-guard.md`까지 막으면 오탐
+    클래스를 재생산한다. 문서는 막지 않되 **내용은 값축 스캔이 다시 훑는다**
     (실 크리덴셜이 들었으면 거기서 걸린다). 정확 이름/확장자 패턴(`.env`·`*.pem`·`id_rsa`·`.npmrc`)은
     문서 확장자여도 그대로 차단된다.
 
-    **면제의 잔여 한계(수용·PM 판정 R3)**: 이름만으로는 "시크릿을 *다루는* 문서"(`T-0472-token-guard.md`)와
+    **면제의 잔여 한계(수용)**: 이름만으로는 "시크릿을 *다루는* 문서"(`token-guard.md`)와
     "시크릿이 *담긴* 문서"(`prod-secrets.md`)를 못 가른다 — 어느 쪽으로 정해도 반대편 리뷰가 반려하는
-    수렴 불가 지점이라 **면제 유지**로 종결했다. 근거는 위협모델이다: ④ 는 PM 이 *실수로* 시크릿 파일을
+    근거는 위협모델이다: PM 이 *실수로* 시크릿 파일을
     넘기는 걸 막는 방어심층이지 적대적 PM 을 막는 층이 아니고(위임 프로세스는 어차피 cwd 를 직접 읽는다·
-    §4.7 ①), 문서 안의 실 크리덴셜은 ⑧ 값축이 다시 잡는다. 단 **디렉토리 성분 검사는 문서에도 적용**되어
+    ), 문서 안의 실 크리덴셜은 값축이 다시 잡는다. 단 **디렉토리 성분 검사는 문서에도 적용**되어
     `secrets/`·`credentials/`·`.aws/` 아래 파일은 확장자와 무관하게 차단된다(아래 `_secret_directory_segment`)."""
     er = _load_external_review()
     patterns = er._SECRET_DENYLIST_PATTERNS
@@ -1289,13 +1289,13 @@ def _prompt_file_denylist_pattern(prompt_file: Path) -> str | None:
         pass
     for cand in candidates:
         # 이름은 **소문자 정규화** 후 판정한다 — `.ENV`·`DEPLOY.PEM`·`Credentials.env` 가 내용을 읽기도
-        # 전에 통과하던 대소문자 우회 폐쇄(외부 리뷰 R4·합성 프롬프트 경로축과 같은 정규화).
+        # 합성 프롬프트 경로축과 같은 정규화.
         pattern = _prompt_file_name_pattern(
             cand.name.lower(), patterns, er._matching_denylist_pattern)
         if pattern is not None:
             return pattern
         # 시크릿 디렉토리 성분(정확 일치)은 이름/확장자와 무관하게 차단 — `<cwd>/secrets/prompt.md`
-        # (외부 리뷰 R3). substring 이 아니라 성분 단위라 pytest tmp `…/test_secret_scan0/` 는 무영향.
+        # substring 이 아니라 성분 단위라 pytest tmp `…/test_secret_scan0/` 는 무영향.
         if _secret_directory_segment(str(cand).replace("\\", "/")) is not None:
             return _SECRET_RULE_DIRECTORY
         if dir_patterns:
@@ -1305,7 +1305,7 @@ def _prompt_file_denylist_pattern(prompt_file: Path) -> str | None:
     return None
 
 
-# ── 쓰기-타깃 axis 재앵커 (§4.6) ─────────────────────────────────────────────
+# ── 쓰기-타깃 axis 재앵커  ─────────────────────────────────────────────
 
 _ENGINE_PATH_CANDIDATE_RE = re.compile(
     r"[A-Za-z0-9._/\\-]*\.project_manager[A-Za-z0-9._/\\-]*"
@@ -1713,7 +1713,7 @@ def _path_has_direct_negative_write_context(
 
 
 def _prompt_targets_engine_code(prompt: str) -> bool:
-    """위임 프롬프트가 엔진 코드 경로(`.project_manager/tools/`)를 write 대상으로 하는가(§4.6).
+    """위임 프롬프트가 엔진 코드 경로(`.project_manager/tools/`)를 write 대상으로 하는가.
 
     정확 문자열 매칭이 아니라 **경로를 정규화해 성분 시퀀스**로 판정한다(codex must-fix) — 각 토큰을
     PurePosixPath 로 정규화(`.`/중복 슬래시 접힘)하고 긴 경로의 공백·개행/``\\\n`` 연속을 먼저
@@ -1727,7 +1727,7 @@ def _prompt_targets_engine_code(prompt: str) -> bool:
     (정당 관용구와 텍스트만으로 구분 불가). 명시 경로 재등장은 계속 차단한다. 잔여 경계는
     (1) 같은 엔진 경로에 금지와 write를 함께 붙인 자기모순 shape, (2) 경로 separator 없이
     `.project_manager``와 ``tools``를 개행 분할한 shape, (3) ASCII slash 대신 유니코드 동형
-    slash를 쓴 shape다. 이 잔여 신형/적대 표현은 role preamble 금지와 T-0462의 사후 범위-밖
+    slash를 쓴 shape다. 이 잔여 신형/적대 표현은 role preamble 금지
     변경 감지가 닫는다.
     write 역할 + PM 홈 cwd 조합에서만 재앵커 게이트로 쓰인다(PM-doc/wiki write 는 PM 홈 정당)."""
     for start, end, parts in _engine_path_occurrences(prompt):
@@ -1742,7 +1742,7 @@ def _prompt_targets_engine_code(prompt: str) -> bool:
 
 
 def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | None:
-    """write 역할이 PM 홈 cwd 에서 엔진 코드(import 사본)를 write 타깃하면 재앵커 대상 worktree 반환(§4.6).
+    """write 역할이 PM 홈 cwd 에서 엔진 코드(import 사본)를 write 타깃하면 재앵커 대상 worktree 반환.
 
     재앵커는 cwd 자체가 아니라 **쓰기-타깃 axis** 로 판정 — PM-doc(wiki/ADR/spike) 작업은 PM 홈 cwd
     정당. 판정 = external_review `_pm_home_reanchor`(실 board 소유 + `work/*` canonical 보유·파일 존재
@@ -1755,12 +1755,12 @@ def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | Non
     return er._pm_home_reanchor(cwd)
 
 
-# ── 결과 박제 (§3.4·O_EXCL·0600·PID/UUID) ─────────────────────────────────────
+# ── 결과 박제 (O_EXCL·0600·PID/UUID) ─────────────────────────────────────
 
 def save_raw_output(
     harness: str, content: str, output_dir: Path | None = None,
 ) -> Path:
-    """raw 하네스 출력 + 메타를 파일로 박제한다 — O_EXCL·mode 0600·PID/UUID 원자 파일명(§3.4).
+    """raw 하네스 출력 + 메타를 파일로 박제한다 — O_EXCL·mode 0600·PID/UUID 원자 파일명.
 
     external_review.save_output 형이나 보안 요구(원자 생성·0600 권한)를 더한다 — 감사용·충돌/권한
     유출 회귀 가드. 반환: 박제 파일 경로."""
@@ -1828,10 +1828,10 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
     return "\n".join(header)
 
 
-# ── reply 추출 (§3.4·pm_relay 3파서 재사용) ────────────────────────────────────
+# ── reply 추출 (pm_relay 3파서 재사용) ────────────────────────────────────
 
 def extract_reply(harness: str, stdout: str) -> str | None:
-    """하네스 stdout 에서 최종 reply 텍스트를 추출한다(§3.4·pm_relay 파서 재사용).
+    """하네스 stdout 에서 최종 reply 텍스트를 추출한다(pm_relay 파서 재사용).
 
     claude=parse_stream_json(session_id, result) → result · codex=parse_codex_json → reply ·
     opencode=parse_opencode_json → reply. reply 미추출(파싱 실패·빈 출력)은 None(호출자 fail-loud)."""
@@ -1849,7 +1849,7 @@ def extract_reply(harness: str, stdout: str) -> str | None:
     raise DelegateError(f"미지원 harness {harness!r} — reply 추출 불가.")
 
 
-# ── 실행 seam (run_fn DI·§3.3·§5.3) ──────────────────────────────────────────
+# ── 실행 seam (run_fn DI) ──────────────────────────────────────────
 
 RunResult = dict  # {"returncode": int, "stdout": str, "stderr": str, "timed_out": bool}
 
@@ -1957,7 +1957,7 @@ def classify_infrastructure_failure(result: RunResult) -> str | None:
     """하네스 결과를 폴백 가능한 인프라 실패 클래스로 보수 분류한다.
 
     반환값은 loud 메시지/감사 provenance 에 쓰는 안정 문자열이다. 분류 근거는 둘뿐이다 —
-    ① 엔진이 세팅한 명시 신호(launch 실패·timeout·opencode 첫-이벤트 stall), ② 실패 결과(rc≠0)의
+    엔진이 세팅한 명시 신호(launch 실패·timeout·opencode 첫-이벤트 stall), 실패 결과(rc≠0)의
     한도/인증 **양성 패턴**(스캔 범위는 _failure_scan_text — reply 에코 제외). rc=0 정상 완료는 출력
     내용과 무관하게 분류하지 않으며(반려/must-fix 판정은 PM 몫), 알려지지 않은 rc≠0 도 None 으로
     남겨 기존 fail-loud 를 유지한다.
@@ -1989,7 +1989,7 @@ def _default_run_fn(
     timeout: int, harness: str,
 ) -> RunResult:
     """실 subprocess 실행(테스트는 이 seam 을 mock). timeout 시 **프로세스그룹 종료**(3드라이버 공통·
-    start_new_session + killpg·자식[모델 fetch·pytest 등] 잔존 방지·§5.3).
+    start_new_session + killpg·자식[모델 fetch·pytest 등] 잔존 방지).
 
     opencode 는 첫-이벤트 워치독 경유(startup stall 유한 재시도·pm_relay 재사용·프롬프트는 --file 이라
     stdin 불요). codex/claude 는 stdin 으로 프롬프트 주입.
@@ -1998,7 +1998,7 @@ def _default_run_fn(
     PermissionError 등 **스폰 단계** 오류)는 traceback 으로 전파하지 않고 RunResult(rc≠0·진단 stderr)로
     감싼다 — 3드라이버 공통(external_review.run_reviewer 의 FileNotFoundError fail-soft 계약 동형).
 
-    **스폰 단계 한정**(codex R2): 프롬프트를 이미 보낸 뒤의 I/O 오류(communicate 중 EPIPE 등)를 launch
+    **스폰 단계 한정**: 프롬프트를 이미 보낸 뒤의 I/O 오류(communicate 중 EPIPE 등)를 launch
     실패로 표시하면 폴백이 발동해 **같은 프롬프트가 외부로 중복 전송**된다. 그래서 launch 신호는
     스폰 지점 예외에만 붙이고, 실행-중 OSError 는 미분류 실패(rc=1)로 남겨 기존 fail-loud 를 태운다."""
     relay = _load_relay()
@@ -2027,7 +2027,7 @@ def _default_run_fn(
                     "stderr": f"{OPENCODE_STALL_MARKER} {exc}]",
                     "timed_out": False, RUN_RESULT_STALLED: True}
         except subprocess.TimeoutExpired:
-            # 워치독이 프로세스그룹째 kill 후 TimeoutExpired 전파(§5.3·kill 은 워치독 소관).
+            # 워치독이 프로세스그룹째 kill 후 TimeoutExpired 전파(kill 은 워치독 소관).
             return {"returncode": 1, "stdout": "", "stderr": f"[opencode timeout {timeout}s]",
                     "timed_out": True}
         except _LAUNCH_STAGE_ERRORS as exc:
@@ -2053,7 +2053,7 @@ def _default_run_fn(
         return {"returncode": proc.returncode, "stdout": stdout or "", "stderr": stderr or "",
                 "timed_out": False}
     except subprocess.TimeoutExpired:
-        relay._kill_process_group(proc)  # 그룹째 종료(자식 잔존 방지·§5.3)
+        relay._kill_process_group(proc)  # 그룹째 종료(자식 잔존 방지)
         try:
             stdout, stderr = proc.communicate(timeout=5)
         except Exception:  # noqa: BLE001 — 이미 kill 됨·수확 실패는 무시
@@ -2188,7 +2188,7 @@ def _execute_attempt(
     return DelegateAttempt(harness, model, argv, result, raw_path)
 
 
-# ── 위임 범위 밖 변경 감지 훅 (T-0462·delegate_scope 판정 재사용·never-block) ──────
+# ── 위임 범위 밖 변경 감지 훅 (delegate_scope 판정 재사용·never-block) ──────
 
 class ScopeAudit(NamedTuple):
     """위임 **전체 단위**(primary + 폴백 attempt 포함) 범위 판정 입력."""
@@ -2209,7 +2209,7 @@ def _warn_dropped_touch(item: str, reason: str) -> None:
 
 
 def begin_scope_audit(ticket: str | None, cwd: Path) -> ScopeAudit | None:
-    """위임 실행 **직전** worktree 상태를 캡처한다(T-0462).
+    """위임 실행 **직전** worktree 상태를 캡처한다.
 
     호출 시점은 전송-전 게이트(opt-in·매핑·containment·denylist·재앵커·dry-run)를 **모두 통과한
     뒤**다 — 아무것도 실행하지 않은 경로에서 판정을 켜면 무의미한 git 호출·오탐만 는다.
@@ -2240,7 +2240,7 @@ def begin_scope_audit(ticket: str | None, cwd: Path) -> ScopeAudit | None:
 def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
     """위임 **회수 시점**(모든 attempt 종료 후 1회)의 범위 밖 변경을 loud 경고한다(차단 아님).
 
-    반환값/rc 를 바꾸지 않는다 — 격리/복원/수용 판정은 PM 몫이다(T-0462). 판정 자체가 실패해도
+    반환값/rc 를 바꾸지 않는다 — 격리/복원/수용 판정은 PM 몫이다. 판정 자체가 실패해도
     위임 결과를 바꾸지 않는다(비차단 보험). 쓰기 허용 역할집합은 이 모듈의 WRITE_ROLES 를 주입해
     단일 출처로 쓴다(감지기 기본값과의 드리프트는 테스트가 막는다). raw 박제는 기본 /tmp 라 판정에
     안 잡히지만, `--output-dir` 를 repo 안으로 주면 그 산출물도 '위임이 만든 변경'으로 잡힌다(의도)."""
@@ -2270,13 +2270,13 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
         print(warning, file=sys.stderr)
 
 
-# ── native 단락 advisory (§3.6·never-block 백스톱) ────────────────────────────
+# ── native 단락 advisory (never-block 백스톱) ────────────────────────────
 
 def native_advisory(harness: str) -> str | None:
-    """target 하네스 == PM 하네스면 "네이티브가 더 저렴" advisory 1줄(§3.6·never-block).
+    """target 하네스 == PM 하네스면 "네이티브가 더 저렴" advisory 1줄(never-block).
 
     PM 하네스 env 마커(codex CODEX_THREAD_ID·claude/opencode 마커)를 감지해 same-harness 위임이면
-    경고 문자열을 반환한다(호출부가 stderr 로 냄). 1차 판정은 어댑터 스킬 카드(§3.6)·이건 백스톱."""
+    경고 문자열을 반환한다(호출부가 stderr 로 냄). 1차 판정은 어댑터 스킬 카드·이건 백스톱."""
     pm_harness = None
     if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI"):
         pm_harness = "codex"
@@ -2286,13 +2286,13 @@ def native_advisory(harness: str) -> str | None:
         pm_harness = "claude"
     if pm_harness == harness:
         return (f"[pm-delegate] target 하네스({harness}) == PM 하네스 — 네이티브 위임이 더 저렴하다"
-                "(subprocess 스폰 불요). 어댑터 스킬 카드의 native 단락을 우선하라(§3.6·advisory).")
+                "(subprocess 스폰 불요). 어댑터 스킬 카드의 native 단락을 우선하라(advisory).")
     return None
 
 
-# ── config lint (동일-모델 dev/reviewer 경고·§3.7·never-block) ────────────────
+# ── config lint (동일-모델 dev/reviewer 경고·never-block) ────────────────
 
-# alias 정규화 테이블 키 접두 — `delegate.model_alias.<name> = m1, m2, …`(§3.7).
+# alias 정규화 테이블 키 접두 — `delegate.model_alias.<name> = m1, m2, …`.
 _MODEL_ALIAS_PREFIX = "delegate.model_alias."
 
 
@@ -2300,7 +2300,7 @@ def _lint_role_model(conf: dict[str, str], role: str, tier: str = "normal") -> s
     """lint 용 역할 모델 해소 — 설정 키만 읽고 **fail-loud 하지 않는다**(미설정=None·skip).
 
     resolve_delegate 는 미설정 시 fail-loud 라 lint(설정 점검)엔 부적합하다 — lint 는 강제가
-    아니라 정합 권고이므로 미매핑 역할은 조용히 건너뛴다(경고 대상 아님·§3.7)."""
+    아니라 정합 권고이므로 미매핑 역할은 조용히 건너뛴다(경고 대상 아님)."""
     key = f"delegate.{role}" + (".hard" if tier == "hard" else "")
     model = (conf.get(f"{key}.model") or "").strip()
     return model or None
@@ -2312,7 +2312,7 @@ def _lint_alias_sets(conf: dict[str, str]) -> dict[str, set[str]]:
 
     서로 다른 표기(하네스별 이름·프로바이더 경로)의 같은 기반 모델을 alias 로 묶어 비교한다. 한 모델이
     **여러 alias 에 속할 수 있으므로 집합으로 모은다**(마지막 alias 가 덮어써 경고를 놓치던 문제 폐쇄·
-    codex suggestion). 문자열 비교 + 명시 매핑 이상은 과설계 금지(family 자동추론·버전 파싱 없음·§3.7)."""
+    codex suggestion). 문자열 비교 + 명시 매핑 이상은 과설계 금지(family 자동추론·버전 파싱 없음)."""
     out: dict[str, set[str]] = {}
     for key, value in conf.items():
         if not key.startswith(_MODEL_ALIAS_PREFIX):
@@ -2328,7 +2328,7 @@ def _lint_alias_sets(conf: dict[str, str]) -> dict[str, set[str]]:
 
 
 def _lint_models_match(a: str, b: str, alias_sets: dict[str, set[str]]) -> bool:
-    """두 모델 문자열이 같은 기반 모델인가 — 동일 문자열이거나 **alias 집합이 교차**하면 True(§3.7·
+    """두 모델 문자열이 같은 기반 모델인가 — 동일 문자열이거나 **alias 집합이 교차**하면 True(
     하네스 무관).
 
     집합 교차라 한 모델이 여러 alias 에 속해도 공유 alias 를 놓치지 않는다(단일 대표 alias 덮어쓰기
@@ -2342,7 +2342,7 @@ def _lint_models_match(a: str, b: str, alias_sets: dict[str, set[str]]) -> bool:
 
 
 def lint_same_model(conf: dict[str, str]) -> list[tuple[str, str]]:
-    """dev(normal+hard)와 code-reviewer 해소 모델이 같으면 (label, detail) 경고 리스트 반환(§3.7).
+    """dev(normal+hard)와 code-reviewer 해소 모델이 같으면 (label, detail) 경고 리스트 반환.
 
     **하네스 무관 모델 문자열 비교**(+선택적 alias 동치류 교차) — 같은 기반 모델을 서로 다른 하네스로
     돌려도 generate≈evaluate 침식은 동일하므로 `harness:model` 완전일치가 아니라 `.model` 문자열
@@ -2371,7 +2371,7 @@ def lint_same_model(conf: dict[str, str]) -> list[tuple[str, str]]:
 
 
 def _cmd_lint(argv: list[str]) -> int:
-    """`pm_delegate.py lint` — 동일-모델 dev/reviewer 경고(§3.7·never-block·항상 rc=0).
+    """`pm_delegate.py lint` — 동일-모델 dev/reviewer 경고(never-block·항상 rc=0).
 
     설정 정합 점검일 뿐 강제가 아니다 — 경고가 있어도 rc=0(차단 금지). 경고는 stderr, 정합 시
     안내는 stdout. board lint advisory 훅과 짝을 이루는 명시 진입점."""
@@ -2394,7 +2394,7 @@ def _cmd_lint(argv: list[str]) -> int:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py",
-        description="cross-harness 역할 위임 채널 (ADR-0075·기본 OFF·delegate_enabled opt-in)",
+        description="cross-harness 역할 위임 채널 (기본 OFF·delegate_enabled opt-in)",
         epilog=(
             "local.conf loud 폴백 예시(엔진 기본값 아님):\n"
             "  delegate.developer.fallback.harness=claude\n"
@@ -2424,7 +2424,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=None, metavar="PROFILE",
                         help="CLI override(--harness 동반 필수)")
     parser.add_argument("--reasoning", default=None, metavar="VAL",
-                        help="reasoning override(--harness/--model 동반 시만·드라이버별 허용값·§6)")
+                        help="reasoning override(--harness/--model 동반 시만·드라이버별 허용값)")
     parser.add_argument("--timeout", type=int, default=None, metavar="SEC",
                         help=f"위임 turn 타임아웃(초·기본 {DELEGATE_TIMEOUT_SECONDS})")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
@@ -2433,7 +2433,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
                              "(생략 시 허용 경로 0·차단 아님)")
     parser.add_argument("--secret-scan-ack", default=None, metavar="DIGEST",
-                        help="이번 합성 프롬프트의 §4.7 차단을 사람이 발췌 확인 후 건별 승인"
+                        help="이번 합성 프롬프트의 차단을 사람이 발췌 확인 후 건별 승인"
                              "(digest는 합성 프롬프트 전문 + 해소된 primary 수신자 harness:model에 결속"
                              "·차단 출력 digest와 정확히 일치할 때만 유효·CLI 전용)")
     parser.add_argument("--dry-run", action="store_true",
@@ -2454,7 +2454,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     if bool(args.harness) != bool(args.model):
         parser.error("--harness 와 --model 은 동반 필수(부분 override 금지·원자 tuple).")
     if args.reasoning is not None and not (args.harness and args.model):
-        parser.error("--reasoning 은 --harness/--model 동반 시만 허용된다(§3.1).")
+        parser.error("--reasoning 은 --harness/--model 동반 시만 허용된다.")
     if args.timeout is not None and args.timeout <= 0:
         parser.error("--timeout 은 양의 정수여야 한다(0/음수 금지).")
     if (args.secret_scan_ack is not None
@@ -2516,7 +2516,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     _console_encoding.configure_console_utf8()
     # `lint` 서브커맨드 — flat 위임 옵션(--role/--prompt-file/--cwd required)과 분리한 별도 경로.
     # 위임과 인자 형상이 다르므로 build_arg_parser 앞에서 분기(subparsers 로 위임 required 를 흩지
-    # 않는다). never-block(§3.7·항상 rc=0).
+    # 않는다). never-block(항상 rc=0).
     resolved = list(sys.argv[1:] if argv is None else argv)
     if resolved and resolved[0] == "lint":
         return _cmd_lint(resolved[1:])
@@ -2528,7 +2528,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     tier = args.tier if (args.role == "developer" and args.tier) else "normal"
     cwd = Path(args.cwd)
 
-    # ① opt-in 게이트 (비-dry-run·기본 OFF·disabled = rc=3·§5.4). **매핑 해소보다 앞** — 기본 OFF +
+    # opt-in 게이트 (비-dry-run·기본 OFF·disabled = rc=3). **매핑 해소보다 앞** — 기본 OFF +
     # 매핑 없는 새 설치는 "매핑 미설정"(rc=1)이 아니라 disabled(rc=3)로 응답해야 한다(codex must-fix).
     # dry-run 은 항상 미리보기 허용(미전송)이라 이 게이트를 통과시킨다.
     if not args.dry_run and not _is_enabled(conf):
@@ -2541,7 +2541,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         )
         return 3  # 명시적 비성공(rc=0 no-op 금지·빈 stdout 성공 오인 차단)
 
-    # ② config 해소 (원자 tuple·fail-loud rc=1)
+    # config 해소 (원자 tuple·fail-loud rc=1)
     try:
         harness, model, reasoning = resolve_delegate(
             conf, args.role, tier, args.harness, args.model, args.reasoning)
@@ -2553,9 +2553,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # 폴백 **비발동** 판정(loud skip·설정은 그대로 두고 이번 실행만 끈다). 설정 자체는 위에서 해소해
     # 불완전 폴백 설정을 fail-loud 로 잡되(설정 정합은 override 와 무관), 아래 사유면 이번 실행에선
     # 쓰지 않는다 — "설정돼 있는데 안 썼다"를 정확히 말할 수 있어야 loud skip 이 성립한다:
-    #   ① CLI 완전지정(--harness AND --model) = 설정 미참조 원자 override(resolve_delegate 불변) —
+    #   CLI 완전지정(--harness AND --model) = 설정 미참조 원자 override(resolve_delegate 불변) —
     #      일회성 명시 실행이 요청 밖 하네스로 넘어가면 그 불변이 깨진다.
-    #   ② 폴백 tuple 의 하네스/모델이 primary 와 동일 — 한도 소진된 같은 채널을 유료로 재타격할 뿐이다
+    #   폴백 tuple 의 하네스/모델이 primary 와 동일 — 한도 소진된 같은 채널을 유료로 재타격할 뿐이다
     #      (reasoning 만 다른 경우도 같은 계정/모델 한도라 skip 한다).
     fallback_skip: str | None = None
     if fallback is not None:
@@ -2568,7 +2568,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                              "한도 소진된 같은 채널 재타격 금지")
             fallback = None
 
-    # ③ cwd = git 저장소 루트/하위 검증 (광범위 홈 디렉토리 등 거부·경계 보강)
+    # cwd = git 저장소 루트/하위 검증 (광범위 홈 디렉토리 등 거부·경계 보강)
     if not _cwd_in_git_repo(cwd, git_run_fn):
         print(
             f"오류: --cwd 는 git 저장소 루트이거나 그 하위여야 합니다: {cwd}\n"
@@ -2577,7 +2577,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         )
         return 1
 
-    # ④ prompt-file 존재 + 경로 자체 denylist(내용 읽기 전) + containment (repo 경계 안·유출 차단)
+    # prompt-file 존재 + 경로 자체 denylist(내용 읽기 전) + containment (repo 경계 안·유출 차단)
     prompt_file = Path(args.prompt_file)
     if not prompt_file.is_file():
         print(f"오류: --prompt-file 이 없음: {prompt_file}", file=sys.stderr)
@@ -2585,7 +2585,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     path_pattern = _prompt_file_denylist_pattern(prompt_file)
     if path_pattern is not None:
         print(
-            "오류: --prompt-file 경로/이름이 시크릿 denylist 패턴에 걸립니다 — 내용 읽기 전 차단합니다(§4.7).\n"
+            "오류: --prompt-file 경로/이름이 시크릿 denylist 패턴에 걸립니다 — 내용 읽기 전 차단합니다.\n"
             f"  · 패턴 '{path_pattern}' 매칭. secret 파일을 프롬프트 소스로 넘기지 마세요.",
             file=sys.stderr,
         )
@@ -2593,7 +2593,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     if not _prompt_file_contained(prompt_file, cwd):
         print(
             f"오류: --prompt-file 이 repo 경계 밖입니다: {prompt_file}\n"
-            "  해소된 --cwd 하위 또는 이 repo PM 홈(.project_manager/) 하위만 허용됩니다(유출 경로 차단·§4.6).",
+            "  해소된 --cwd 하위 또는 이 repo PM 홈(.project_manager/) 하위만 허용됩니다(유출 경로 차단).",
             file=sys.stderr,
         )
         return 1
@@ -2608,15 +2608,15 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         print(f"오류: --prompt-file 읽기 실패: {exc}", file=sys.stderr)
         return 1
 
-    # ⑤ 프롬프트 합성 (role preamble + task·§4.3)
+    # 프롬프트 합성 (role preamble + task)
     prompt = ROLE_PREAMBLES[args.role] + "\n\n" + task_text
 
-    # ⑥ 쓰기-타깃 axis 재앵커 게이트 (엔진 코드 write + PM 홈 cwd·§4.6·dry-run 전 = 미리보기서 노출)
+    # 쓰기-타깃 axis 재앵커 게이트 (엔진 코드 write + PM 홈 cwd·dry-run 전 = 미리보기서 노출)
     reanchor = check_write_target_reanchor(args.role, cwd, prompt)
     if reanchor is not None:
         print(
             "오류: 엔진 코드(.project_manager/tools/) write 위임을 adopter#0 PM 홈 cwd 에서 실행했습니다 —\n"
-            "  import 사본을 수정하면 canonical worktree 와 갈려 stale·false-green 이 납니다(§4.6).\n"
+            "  import 사본을 수정하면 canonical worktree 와 갈려 stale·false-green 이 납니다.\n"
             f"  · canonical worktree 로 재앵커하세요:  --cwd {reanchor}\n"
             "  · PM-doc(wiki/ADR/spike) 작업이면 PM 홈 cwd 가 정당합니다 — 그 경우 프롬프트가 엔진 코드\n"
             "    경로를 write 타깃으로 지목하지 않게 하세요.",
@@ -2640,7 +2640,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         secret_scan_prompt_digest(prompt, harness, model) if secret_hits else None
     )
 
-    # ⑦ dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
+    # dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
     if args.dry_run:
         print("=== [dry-run] pm_delegate 미리보기 (미실행) ===")
         print(f"role: {args.role} · tier: {tier} · 권한축: {_perm_axis(args.role)}")
@@ -2665,7 +2665,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 f"{primary_budget + fallback_budget}s (2차 폴백 없음{note})"
             )
             # 본체 타임아웃 예산만 — 프로세스 kill/wait·출력 회수 등 정리 오버헤드(수초~수십초)는
-            # 하네스/플랫폼 의존이라 산입하지 않는다(codex R3). 외부 감시자가 이 수치를 하드
+            # 하네스/플랫폼 의존이라 산입하지 않는다. 외부 감시자가 이 수치를 하드
             # 데드라인으로 쓰면 완료 직전 종료될 수 있어 표기로 경고한다.
             print("  (본체 예산만 — kill/정리 오버헤드 수초~수십초 별도 · 외부 하드 데드라인으로 쓰지 말 것)")
         print(f"cwd: {cwd}")
@@ -2683,7 +2683,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         print("=== [dry-run] 외부 호출 생략 ===")
         return 0
 
-    # ⑧ 시크릿 denylist 스캔 (합성 프롬프트·전송 전 차단·매칭 발췌 표시·값 마스킹·§4.7·T-0472)
+    # 시크릿 denylist 스캔 (합성 프롬프트·전송 전 차단·매칭 발췌 표시·값 마스킹)
     secret_scan_ack_digest: str | None = None
     secret_scan_ack_hits: tuple[PromptSecretHit, ...] = ()
     if secret_hits:
@@ -2714,7 +2714,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 if args.secret_scan_ack is not None else ""
             )
             print(
-                "오류: 합성 프롬프트가 시크릿 denylist 판정에 걸렸습니다 — 전송 전 차단합니다(§4.7).\n"
+                "오류: 합성 프롬프트가 시크릿 denylist 판정에 걸렸습니다 — 전송 전 차단합니다.\n"
                 f"  · 전 탐지 {len(secret_hits)}건 — 아래 전체를 확인한 뒤에만 승인하세요.\n"
                 f"{_format_secret_scan_hits(secret_hits)}\n"
                 "  해당 텍스트를 프롬프트에서 제거하세요. 정상 식별자(conf 키 등)가 걸렸다면 판정 버그입니다.\n"
@@ -2725,19 +2725,19 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             )
             return 1
 
-    # ⑨ 비용/송신 경고 + native advisory (§5.4·§3.6)
+    # 비용/송신 경고 + native advisory
     print(f"외부 하네스 {harness}(model={model}) 로 프롬프트 전송 중 (과금·외부 송신).", file=sys.stderr)
     advisory = native_advisory(harness)
     if advisory is not None:
         print(advisory, file=sys.stderr)
 
-    # ⑩ env allowlist 정제 + 실행 (§4.7·§3.3). 인프라 실패일 때만 명시 폴백을 같은 드라이버 계약으로
+    # env allowlist 정제 + 실행. 인프라 실패일 때만 명시 폴백을 같은 드라이버 계약으로
     # 1회 실행한다(최악 소요 = 두 시도의 하네스별 예산 합·2차 폴백 없음). 보안/재앵커 게이트는 이
     # 지점보다 앞이라 폴백 대상이 될 수 없다.
     output_dir = Path(args.output_dir) if args.output_dir else None
     _run = run_fn or _default_run_fn
 
-    # ⑩-a 범위 판정 캡처 (T-0462) — **위임 전체 단위**로 1회. 폴백 attempt 도 같은 위임의 일부라
+    # 범위 판정 캡처 — **위임 전체 단위**로 1회. 폴백 attempt 도 같은 위임의 일부라
     # attempt 마다 재캡처하지 않는다(PM 이 회수 시점에 "이 위임이 범위 밖을 만졌나"를 본다). 아래
     # 실행·회수 블록의 모든 종료 경로(성공·폴백·fail-loud·예외)에서 finally 가 정확히 1회 보고한다.
     scope_audit = begin_scope_audit(args.ticket, cwd)
@@ -2769,9 +2769,9 @@ def _execute_and_collect(
     secret_scan_ack_digest: str | None,
     secret_scan_ack_hits: tuple[PromptSecretHit, ...],
 ) -> int:
-    """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다(§3.4·§5.3).
+    """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다.
 
-    main 에서 분리한 이유는 위임 범위 판정(T-0462)이 **모든 종료 경로에서 정확히 1회** 돌아야 하기
+    main 에서 분리한 이유는 위임 범위 판정이 **모든 종료 경로에서 정확히 1회** 돌아야 하기
     때문이다 — 호출부의 try/finally 가 그 경계다."""
     try:
         primary = _execute_attempt(
@@ -2793,7 +2793,7 @@ def _execute_and_collect(
         print(f"오류: 위임 실행 준비/raw 박제 실패: {exc}", file=sys.stderr)
         return 1
 
-    # ⑪ 실패 분류 → 선택적 loud 폴백. rc=0 reply(반려/must-fix 포함)는 분류 함수가 절대 폴백시키지
+    # 실패 분류 → 선택적 loud 폴백. rc=0 reply(반려/must-fix 포함)는 분류 함수가 절대 폴백시키지
     # 않는다. 알려지지 않은 rc≠0도 기존 fail-loud로 남는다(오분류 보수 방향).
     result = primary.result
     raw_path = primary.raw_path
@@ -2803,7 +2803,7 @@ def _execute_and_collect(
     failure_class = classify_infrastructure_failure(result)
 
     if failure_class is not None and fallback is None and fallback_skip is not None:
-        # 설정은 있으나 이번 실행에선 폴백을 끈다 — 조용히 지나가지 않는다(loud skip·ADR-0070 D5).
+        # 설정은 있으나 이번 실행에선 폴백을 끈다 — 조용히 지나가지 않는다(loud skip).
         print(
             f"폴백 비발동: 인프라 실패({failure_class})이지만 {fallback_skip}. "
             "기존 fail-loud 로 진행한다.",
@@ -2903,7 +2903,7 @@ def _execute_and_collect(
         )
         return 0
 
-    # 미설정 또는 비-인프라 실패 → 현행 fail-loud(rc=1 + stderr + raw 경로·§3.4).
+    # 미설정 또는 비-인프라 실패 → 현행 fail-loud(rc=1 + stderr + raw 경로).
     if timed_out:
         print(f"오류: 위임 turn 타임아웃({timeout}s) — 프로세스그룹 종료. raw: {raw_path}",
               file=sys.stderr)

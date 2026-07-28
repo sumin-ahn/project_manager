@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""엔진 사본 rev 스탬프 — 사본 skew fail-loud 의 단일 진실 값 + bump CLI (T-0397).
+"""엔진 사본 rev 스탬프 — 사본 skew fail-loud 의 단일 진실 값 + bump CLI.
 
 엔진 도구들은 형제 모듈(`identity_args`·`worktree_pool`·`board`·`pm_handoff` …)을
 `spec_from_file_location` 으로 동적 로드한다. 사본 skew(신 도구 + 구 형제 — 부분/수동
 복사, 중단된 배포)가 생기면 신 도구가 구 형제의 *부재 속성*에 접근해 임의 지점의
-AttributeError 로 폭발한다(회사 실측 2026-07-20: `pm_handoff:identity.task`).
+AttributeError 로 폭발한다.
 
-**설계(codex R2 재설계)**: 각 stamped 엔진 모듈은 자기 소스 코드 안에 `ENGINE_REV = "vX.Y.Z"`
+각 stamped 엔진 모듈은 자기 소스 코드 안에 `ENGINE_REV = "vX.Y.Z"`
 **baked 리터럴**을 지닌다 — 이 파일을 *런타임에 읽지 않는다*. sibling 로더는 로드한 형제의
 baked 리터럴을 자신의 baked 리터럴과 대조한다. 부분/수동 복사로 신 로더 + 구 형제가 섞이면
 각자 새/옛 리터럴을 지녀 mismatch 로 검출된다 — 런타임 공유-읽기(모두 이 파일을 읽음)였다면
@@ -64,7 +64,7 @@ _LITERAL_RE = re.compile(r'^ENGINE_REV = "([^"]*)"', re.MULTILINE)
 
 
 class EngineRevSkew(RuntimeError):
-    """엔진 사본 skew — 신 도구가 구/불일치 baked rev 의 형제 모듈을 로드 (T-0397·fail-loud).
+    """엔진 사본 skew — 신 도구가 구/불일치 baked rev 의 형제 모듈을 로드 (fail-loud).
 
     `_engine_rev_skew` 마커 — fail-soft sibling 로더의 `except Exception` 이 이 예외(및 동형
     마커를 단 RuntimeError)를 **재-raise** 로 식별한다. 각 stamped 모듈은 self-contained 라
@@ -127,7 +127,7 @@ def main(argv=None) -> int:
     # 복구 도구는 skew 검증 금지: 중단된 bump(engine_rev만 신 rev)를 재실행해 나머지를 복구해야 한다.
     _console_encoding.configure_console_utf8()
     ap = argparse.ArgumentParser(
-        description="엔진 rev 스탬프 bump — 전 stamped 모듈의 baked 리터럴을 기계 일괄 재작성 (T-0397).",
+        description="엔진 rev 스탬프 bump — 전 stamped 모듈의 baked 리터럴을 기계 일괄 재작성.",
     )
     ap.add_argument("--bump", metavar="vX.Y.Z", required=True,
                     help="새 엔진 rev (engine_rev.py + 전 STAMPED_MODULES 리터럴 갱신).")

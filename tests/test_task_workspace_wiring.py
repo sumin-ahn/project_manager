@@ -99,7 +99,7 @@ def test_regression_run_task_ambiguous_holding_fails_loud(board, monkeypatch):
 
 
 def test_regression_run_rejects_task_repo_mix_before_subprocess(board, monkeypatch):
-    """regression run은 task+repo 실행-위치 핀을 ADR-0078에 따라 fail-loud 거부한다."""
+    """regression run은 독립 task 정체성과 repo 실행 위치의 혼합을 fail-loud 거부한다."""
     _write_leases(board.LEASES_FILE, [
         {"slot": "work/A_1", "repo": "A", "session": "job3", "state": "leased"},
         {"slot": "work/B_1", "repo": "B", "session": "job3", "state": "leased"},
@@ -108,19 +108,22 @@ def test_regression_run_rejects_task_repo_mix_before_subprocess(board, monkeypat
     monkeypatch.setattr(board.subprocess, "run", fake)
     with pytest.raises(SystemExit) as exc:
         board.cmd_regression(_reg_args(task="job3", repo="A"))
-    assert "ADR-0078" in str(exc.value)
+    assert (
+        "--repo/--slot 과 함께 쓸 수 없다" in str(exc.value)
+        and "장부에서 자동 해소" in str(exc.value)
+    )
     assert fake.calls == []
 
 
 def test_regression_run_rejects_task_cwd_before_subprocess(board, monkeypatch, tmp_path):
-    """task 작업공간 표시와 타 경로 실행을 섞는 명시 --cwd 우회를 ADR-0078로 거부한다."""
+    """task 작업공간 표시와 타 경로 실행을 섞는 명시 --cwd 우회를 거부한다."""
     fake = _FakeRun(0, "1 passed")
     monkeypatch.setattr(board.subprocess, "run", fake)
 
     with pytest.raises(SystemExit) as exc:
         board.cmd_regression(_reg_args(task="job3", cwd=str(tmp_path / "outside")))
 
-    assert "ADR-0078" in str(exc.value)
+    assert "외부 경로 override를 허용하지 않는다" in str(exc.value)
     assert "--cwd" in str(exc.value)
     assert fake.calls == []
 
@@ -158,12 +161,12 @@ def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
 
 
 def test_livegate_record_rejects_task_slot_mix_before_subprocess(board, monkeypatch):
-    """livegate record의 task+slot 혼합은 bare-slot repo 힌트보다 ADR-0078을 먼저 표면화한다."""
+    """livegate record의 task+slot 혼합은 bare-slot repo 힌트보다 혼합 금지를 먼저 표면화한다."""
     fake = _FakeRun(0, "14 passed, 800 deselected in 3s")
     monkeypatch.setattr(board.subprocess, "run", fake)
     with pytest.raises(SystemExit) as exc:
         board.cmd_livegate(_lg_args(task="job4", slot=2))
-    assert "ADR-0078" in str(exc.value)
+    assert "--task 는 독립 정체성" in str(exc.value)
     assert "--slot 은 --repo 필수" not in str(exc.value)
     assert fake.calls == []
 
@@ -176,7 +179,7 @@ def test_livegate_record_rejects_task_cwd_before_subprocess(board, monkeypatch, 
     with pytest.raises(SystemExit) as exc:
         board.cmd_livegate(_lg_args(task="job4", cwd=str(tmp_path / "outside")))
 
-    assert "ADR-0078" in str(exc.value)
+    assert "외부 경로 override를 허용하지 않는다" in str(exc.value)
     assert "--cwd" in str(exc.value)
     assert fake.calls == []
     assert not board.LIVEGATE_FLAG.exists()
@@ -203,21 +206,21 @@ def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_p
 
 
 def test_actor_session_override_task_mode_returns_task(board):
-    """task 지정 시 귀속 세션 override = task 이름(F5b) — claim/new created_by 가 <user>/<task>."""
+    """task 지정 시 귀속 세션 override = task 이름 — claim/new created_by 가 <user>/<task>."""
     ns = argparse.Namespace(repo=None, slot=None, task="myjob")
     assert board._actor_session_override(ns) == "myjob"
-    # provenance 연산은 task+repo/slot 혼합을 조용히 task 우선하지 않고 거부한다(ADR-0078).
+    # provenance 연산은 task+repo/slot 혼합을 조용히 task 우선하지 않고 거부한다.
     ns2 = argparse.Namespace(repo="A", slot=1, task="myjob")
     with pytest.raises(SystemExit) as exc:
         board._actor_session_override(ns2)
-    assert "ADR-0078" in str(exc.value)
+    assert "--repo/--slot 과 함께 쓸 수 없다" in str(exc.value)
 
 
 @pytest.mark.parametrize("command", ["claim", "new", "init", "migrate-identity", "reid"])
 def test_board_provenance_commands_reject_task_repo_mix_at_ingress(
     board, monkeypatch, command
 ):
-    """actor provenance 소비 5종이 본체 부작용 전에 동일 ADR-0078 깔때기를 탄다(E-a)."""
+    """actor provenance 소비 5종이 본체 부작용 전에 동일 혼합 금지 검증을 탄다."""
     args = {
         "claim": argparse.Namespace(id="T-0001", repo="A", slot=1, task="job", user=None),
         "new": argparse.Namespace(
@@ -244,7 +247,7 @@ def test_board_provenance_commands_reject_task_repo_mix_at_ingress(
     }[command]
     with pytest.raises(SystemExit) as exc:
         fn(args)
-    assert "ADR-0078" in str(exc.value)
+    assert "--repo/--slot 과 함께 쓸 수 없다" in str(exc.value)
 
 
 # ── board.py new — task 설정 prefix(F5) + created_by=<user>/<task> ────────────

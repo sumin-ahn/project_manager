@@ -83,7 +83,7 @@ tickets/
 
 ## 세션 식별
 
-`claim` 시 `--repo <repo> --slot <N>` 로 명시 (harness-무관·1순위 권장·ADR-0057). 없으면 board.py 식별 우선순위(ADR-0040):
+`claim` 시 `--repo <repo> --slot <N>` 로 명시 (harness-무관·1순위 권장). 없으면 board.py 식별 우선순위:
 1. `--repo`/`--slot` 인자 (슬롯 정체성 `<repo>_<N>`)
 2. `$PM_SESSION_NAME` 환경변수 (구 `$CLAUDE_SESSION_NAME` = deprecated alias·여전히 인식)
 3. 활성 슬롯 lease 가 정확히 1개면 그 세션 (단일-lease 유도)

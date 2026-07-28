@@ -9,7 +9,7 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
 사용:
     # 인스턴스/타깃 내부에서 실행 (self-location):
     python3 .project_manager/tools/pm_update.py --from <upstream-checkout> [--dry-run]
-    # --from 생략 시 dest local.conf 의 upstream= 을 기본으로 쓴다(pm_import 가 자동 기록·T-0053):
+    # --from 생략 시 dest local.conf 의 upstream= 을 기본으로 쓴다(pm_import 가 자동 기록):
     python3 .project_manager/tools/pm_update.py [--dry-run]
 
     # 루트(upstream)에서 특정 templates 타깃으로 동기화:
@@ -19,14 +19,14 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
     # 루트(upstream)에서 존재하는 모든 templates 타깃으로 동기화:
     python3 .project_manager/tools/pm_update.py --from <upstream-checkout> --all-targets [--dry-run]
 
-    # 받은 baseline ↔ upstream HEAD 변경점만 read-only 확인 (실 sync 안 함·T-0146):
+    # 받은 baseline ↔ upstream HEAD 변경점만 read-only 확인 (실 sync 안 함):
     python3 .project_manager/tools/pm_update.py --changes [--from <checkout>] [--count-only] [--log]
 
 동작:
   engine.manifest 의 각 경로를 <upstream>/<path> → <dest-root>/<path> 로 복사(overwrite).
   디렉토리는 재귀. manifest 에 없는 경로는 무시. --dry-run = 변경 예정만 출력(미적용).
   --target 지정 시 dest-root = REPO/templates/<target>/ (타깃 자신의 manifest 우선).
-  sync 적용 후에는 등록 repo 전수 **보호 훅 재설치**(T-0415) — 훅은 엔진 코드에서 생성되는
+  sync 적용 후에는 등록 repo 전수 **보호 훅 재설치**— 훅은 엔진 코드에서 생성되는
   런타임 산출물이라 파일 복사만으론 새 훅이 배포되지 않는다(--target 은 비발화).
 
 결정:
@@ -54,14 +54,14 @@ REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / ".project_manager" / "engine.manifest"
 DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 
-# manifest 의 render 태그 (T-0131·§3.3) — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
+# manifest 의 render 태그 () — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
 RENDER_TAG = "@render"
-# manifest 의 target-owned 태그 (T-0137) — path 행 끝 `  @target-owned` 면 그 경로는 타깃 자신만
+# manifest 의 target-owned 태그 — path 행 끝 `  @target-owned` 면 그 경로는 타깃 자신만
 # 보유하는 어댑터다(엔진 upstream/루트에 source 부재가 정상). source-부재 skip 의 *명시* 판별자.
 # `@render` 와 독립 — `.claude/agents @render`(루트 upstream 에 존재해야 하는 엔진 리소스)는
 # render=True 이지만 target_owned=False 라, 잘못된 --from 에서 빠지면 skip 이 아니라 rc2 가 된다.
 TARGET_OWNED_TAG = "@target-owned"
-# manifest 의 source-remap 태그 (T-0303·ADR-0054) — path 행 끝 `  @source=<relpath>` 면 그 경로는
+# manifest 의 source-remap 태그 — path 행 끝 `  @source=<relpath>` 면 그 경로는
 # source_root 아래 canonical 소스(`<source_root>/<relpath>`)에서 읽되 dest 에는 manifest 경로로
 # 기록한다(_remap_to_dest). opencode 어댑터(`.opencode/*`)가 프레임워크 루트의
 # `templates/opencode/.opencode/*` 에 살지만 채택자 dest 엔 `.opencode/*` 로 전파돼야 하는 비대칭을
@@ -78,12 +78,12 @@ class ManifestEntry(str):
 
     추가 속성:
     - `render`(bool): path 행 끝에 `@render` 태그가 있으면 True(byte-copy 대신 render_adapter
-      로 채운다·§3.3). 미주석=False → 오늘과 정확히 동일(순수 copy2·후방호환).
+      로 채운다). 미주석=False → 오늘과 정확히 동일(순수 copy2·후방호환).
     - `target_owned`(bool): path 행 끝에 `@target-owned` 태그가 있으면 True — 타깃 자신만 보유
       하는 어댑터라 엔진 upstream 에 source-부재가 정상(전파 대상 아님). source-부재 skip 의
-      명시 판별자(T-0137). `@render` 와 독립이며, 두 마커는 한 행에 같이 올 수 있다(순서 무관).
+      명시 판별자. `@render` 와 독립이며, 두 마커는 한 행에 같이 올 수 있다(순서 무관).
     - `source_rel`(str|None): path 행 끝에 `@source=<relpath>` 태그가 있으면 그 canonical 소스
-      상대경로(T-0303·ADR-0054) — source_root 아래 그 경로에서 읽되 dest 엔 manifest 경로(=`str(self)`)
+      상대경로— source_root 아래 그 경로에서 읽되 dest 엔 manifest 경로(=`str(self)`)
       로 기록한다(_source_root_rel·_remap_to_dest). 미주석=None → source 읽기 경로 = manifest 경로
       (오늘 동작·후방호환). @render 와 공존 가능(토큰-form 소스 읽어 렌더).
 
@@ -155,7 +155,7 @@ def _templates_dir() -> Path:
 
 
 def _is_noninteractive() -> bool:
-    """`PM_NONINTERACTIVE` env 가 truthy 면 True — 비대화 결정 신호 (T-0071).
+    """`PM_NONINTERACTIVE` env 가 truthy 면 True — 비대화 결정 신호.
 
     Windows DEVNULL stdin 의 `isatty()` 가 신뢰불가한 cross-OS 함정을 회피. truthy 판정은
     `"1"`/`"true"`/`"yes"`/`"on"`(대소문자 무관) — board._is_noninteractive 와 동일 동작
@@ -167,7 +167,7 @@ def _is_noninteractive() -> bool:
 
 
 def maybe_prompt_external_review(dest_root: Path) -> None:
-    """업데이트 후 외부 코드리뷰 opt-in (ADR-0004) — 아직 미설정이면 1회 묻는다.
+    """업데이트 후 외부 코드리뷰 opt-in — 아직 미설정이면 1회 묻는다.
 
     코드 diff 외부 *전송*이라 기본 OFF. 이미 결정됐거나 비대화형이면 안전쪽으로 건너뛴다.
 
@@ -180,7 +180,7 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     text = local_conf.read_text(encoding="utf-8")
     if "external_review_enabled" in text:
         return  # 이미 결정됨
-    # 명시적 비대화 신호 우선 (T-0071): Windows DEVNULL isatty() 신뢰불가 함정 회피.
+    # 명시적 비대화 신호 우선: Windows DEVNULL isatty() 신뢰불가 함정 회피.
     # PM_NONINTERACTIVE truthy 면 묻지 않고 안전쪽 skip. isatty 는 보조 폴백(env 없을 때).
     if _is_noninteractive() or not sys.stdin.isatty():
         return
@@ -192,18 +192,18 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
         answer = ""
     with local_conf.open("a", encoding="utf-8") as f:
         if answer in ("y", "yes"):
-            f.write("# 외부 코드리뷰 (ADR-0004)\n"
+            f.write("# 외부 코드리뷰\n"
                     "external_review_enabled=true\n"
                     f"reviewer_cmd={DEFAULT_REVIEWER_CMD}\n")
             print("  ✓ 외부 리뷰 ON (reviewer_cmd 기본 codex)")
         else:
-            f.write("# 외부 코드리뷰 (ADR-0004) — 기본 OFF.\nexternal_review_enabled=false\n")
+            f.write("# 외부 코드리뷰 — 기본 OFF.\nexternal_review_enabled=false\n")
             print("  → 외부 리뷰 OFF (나중에 local.conf 로 켤 수 있음).")
 
 
 def maybe_prompt_delegate_optin(dest_root: Path) -> None:
-    """동기 후 cross-harness 위임(pm_delegate) opt-in — 아직 실키 미결정이면 (T-0446·ADR-0075·
-    ADR-0004 상속·maybe_prompt_external_review 동형).
+    """동기 후 cross-harness 위임(pm_delegate) opt-in — 아직 실키 미결정이면 (
+    maybe_prompt_external_review 동형).
 
     delegate_enabled **실키**(주석 예시가 아니라 `_read_local_conf` 가 파싱하는 활성 키)가 이미
     있으면 결정됨 → no-op. **TTY** 면 1회 질문 — y=true·그 외/무입력=false 실키를 대상 local.conf 에
@@ -217,12 +217,12 @@ def maybe_prompt_delegate_optin(dest_root: Path) -> None:
         return  # 실키로 이미 결정됨(주석 예시는 _read_local_conf 파싱 제외 — 미결정 취급)
     if _is_noninteractive() or not sys.stdin.isatty():
         # 비-TTY — 질문·write 없이 도입 안내만(기본 OFF 유지·write 는 질문 응답 경로 한정).
-        print("[pm_update] pm_delegate cross-harness 위임 채널이 도입됐습니다(ADR-0075·기본 OFF) — "
+        print("[pm_update] pm_delegate cross-harness 위임 채널이 도입됐습니다(기본 OFF) — "
               "`board.py init` 재실행으로 local.conf 에 `delegate_*` 주석 시드/opt-in 질문을 받거나 "
               "수동 참조하세요(켜면 프롬프트/코드가 외부 하네스로 전송·과금).")
         return
     print("\n[pm_update] cross-harness 위임(pm_delegate)을 켤까요? 켜면 위임 프롬프트/코드가 외부 "
-          "하네스로 *전송*되고 그 하네스에 *과금*됩니다 (ADR-0075).")
+          "하네스로 *전송*되고 그 하네스에 *과금*됩니다.")
     try:
         answer = input("  켜기 [y/N]: ").strip().lower()
     except EOFError:
@@ -234,10 +234,10 @@ def maybe_prompt_delegate_optin(dest_root: Path) -> None:
         if existing and not existing.endswith("\n"):
             f.write("\n")
         if answer in ("y", "yes"):
-            f.write("# cross-harness 위임 (ADR-0075) — ON.\ndelegate_enabled=true\n")
+            f.write("# cross-harness 위임 — ON.\ndelegate_enabled=true\n")
             print("  ✓ cross-harness 위임 ON (delegate_enabled=true·외부 송신·과금 수용).")
         else:
-            f.write("# cross-harness 위임 (ADR-0075) — 기본 OFF. 켜려면 true 로.\n"
+            f.write("# cross-harness 위임 — 기본 OFF. 켜려면 true 로.\n"
                     "delegate_enabled=false\n")
             print("  → cross-harness 위임 OFF (나중에 local.conf delegate_enabled=true 로 켤 수 있음).")
 
@@ -249,10 +249,10 @@ def read_manifest(path: Path) -> list[ManifestEntry]:
     `.source_rel` 속성이 그 path 의 마커 여부/값을 운반한다. path 행 끝의 마커(`@render`·
     `@target-owned`·`@source=<path>`)는 복수·순서 무관으로 인식해 전부 떼어내고 순수 경로만
     ManifestEntry 값으로 남긴다.
-      - `@render`(T-0131)         → render=True (byte-copy 대신 render_adapter·§3.3)
-      - `@target-owned`(T-0137)   → target_owned=True (엔진 upstream source-부재가 정상·skip 판별)
-      - `@source=<path>`(T-0303)  → source_rel=<path> (source_root 아래 canonical 소스에서 읽고
-                                     dest 엔 manifest 경로로 기록·source-remap·ADR-0054)
+      - `@render`→ render=True (byte-copy 대신 render_adapter)
+      - `@target-owned`→ target_owned=True (엔진 upstream source-부재가 정상·skip 판별)
+      - `@source=<path>`→ source_rel=<path> (source_root 아래 canonical 소스에서 읽고
+                                     dest 엔 manifest 경로로 기록·source-remap)
     예: `.opencode/agents  @render @source=templates/opencode/.opencode/agents`
         → path=`.opencode/agents`, render=True, source_rel=`templates/opencode/.opencode/agents`.
     미주석=render/target_owned False·source_rel None → 오늘과 동일(순수 copy2·전파 대상·후방호환).
@@ -296,14 +296,14 @@ def _entry_render_flag(entry) -> bool:
 def _entry_target_owned_flag(entry) -> bool:
     """manifest 항목의 target_owned 플래그 — ManifestEntry 면 `.target_owned`, 평문 str 면 False.
 
-    source-부재 skip 판별자(T-0137). 평문 str 항목(레거시 호출)은 target-owned 가 아니므로
+    source-부재 skip 판별자. 평문 str 항목(레거시 호출)은 target-owned 가 아니므로
     source-부재 시 엔진 누락으로 보고 rc2(후방호환·is_owned skip 은 명시 마커 한정).
     """
     return bool(getattr(entry, "target_owned", False))
 
 
 def _read_local_conf(path: Path) -> dict[str, str]:
-    """local.conf → key=value dict (T-0053). board.local_config 파싱 규칙 미러.
+    """local.conf → key=value dict. board.local_config 파싱 규칙 미러.
 
     `KEY=value` 줄만 채택. `#` 주석·빈 줄·`=` 없는 줄은 무시. 미존재 → {}. stdlib only —
     board 를 import 하지 않는다(pm_update 는 stdlib-only·결합 회피). 같은 키 중복 시 마지막 값.
@@ -326,7 +326,7 @@ def _iter_files(root: Path, rel: str):
     relpath 는 **항상 posix(슬래시) 정규화**한다(`as_posix()`) — 모듈 전체의 슬래시 관례
     (`_path_under_manifest`·`_dest_relpath_for` 는 `.replace("\\","/")` 로 슬래시 전제)과 통일.
     `str(Path.relative_to)` 는 OS-네이티브 구분자라 Windows 에선 역슬래시(`.claude\\agents\\x.md`)
-    를 산출해 plan change 튜플 key 가 소비자/테스트(슬래시)와 어긋났다(pm_render 4건 red·T-0212).
+    를 산출해 plan change 튜플 key 가 소비자/테스트(슬래시)와 어긋났다(pm_render 4건 red).
     POSIX 에선 `str(p.relative_to(root)) == p.relative_to(root).as_posix()` 라 동작 무변경.
     """
     src = root / rel
@@ -339,12 +339,12 @@ def _iter_files(root: Path, rel: str):
     # missing → 아무것도 yield 안 함 (호출부가 missing 으로 보고)
 
 
-# ── board-분리 인지 dest 리매핑 (T-0169·ADR-0033 ①) ───────────────────────────
-# manifest 는 ticket 본문 템플릿을 `wiki/tickets/_template.md` 로 들고 있다(① canonical·
+# ── board-분리 인지 dest 리매핑 ───────────────────────────
+# manifest 는 ticket 본문 템플릿을 `wiki/tickets/_template.md` 로 들고 있다(canonical·
 # legacy adopter 의 실 위치). 그러나 board(tickets+areas)가 `.project_manager/board/`
-# (submodule)로 분리된 adopter(ADR-0033 ①·board.py board_root)에선 `_template.md` 가
+# (submodule)로 분리된 adopter(board.py board_root)에선 `_template.md` 가
 # `board/tickets/_template.md` 에 산다(board_root() 추종·B 마이그레이션이 거기로 옮김).
-# manifest 항목은 ①↔② 동일·legacy-correct 로 두고(자체 drift 회피), *동기 시 dest 경로만*
+# manifest 항목은 legacy-correct 로 두고(자체 drift 회피), *동기 시 dest 경로만*
 # board_root 로 해소한다 — board-분리 dest 면 board/tickets/_template.md 로, legacy dest 면
 # 종전 wiki/tickets/_template.md 로(무변경). 이로써 board-분리 adopter 의 매 sync 가
 # wiki/tickets/_template.md 를 부활시키지 않는다(drift-0·실 발생 버그 reconcile).
@@ -368,7 +368,7 @@ def _is_board_separated(dest_root: Path) -> bool:
 
 
 def _dest_relpath_for(rel: str, dest_root: Path) -> str:
-    """manifest source relpath → dest 기록 relpath (board-분리 인지 리매핑·T-0169).
+    """manifest source relpath → dest 기록 relpath (board-분리 인지 리매핑).
 
     `wiki/tickets/_template.md` 항목은 board-분리 dest 에서 `board/tickets/_template.md` 로
     리매핑한다(board_root() 추종) — source 는 upstream 의 wiki/ 에서 그대로 읽되 dest 만 옮긴다.
@@ -381,7 +381,7 @@ def _dest_relpath_for(rel: str, dest_root: Path) -> str:
     return rel
 
 
-# ── @source source-remap (T-0303·ADR-0054·_dest_relpath_for dest-remap 의 대칭 source 쌍) ──
+# ── @source source-remap (_dest_relpath_for dest-remap 의 대칭 source 쌍) ──
 # manifest 항목이 `@source=<relpath>` 를 달면 source_root 아래 그 canonical 경로에서 읽되(source_rel),
 # dest 엔 manifest 경로(str(entry))로 기록한다. opencode 어댑터(`.opencode/agents`·`command`)는
 # 채택자 dest 엔 `.opencode/*` 로 살지만 프레임워크 루트의 canonical 소스는 `templates/opencode/
@@ -390,7 +390,7 @@ def _source_root_rel(entry) -> str:
     """manifest 항목의 source-root 상대 *읽기* 경로 — @source= 있으면 source_rel, 없으면 str(entry).
 
     기본(마커 부재·source_rel None)은 dest relpath 를 그대로 source-root 상대 읽기 경로로 쓴다
-    (오늘 동작·후방호환). `@source=<path>`(ADR-0054)가 있으면 source_root 아래 그 canonical 경로에서
+    (오늘 동작·후방호환). `@source=<path>`가 있으면 source_root 아래 그 canonical 경로에서
     읽는다 — dest 기록 경로는 manifest 경로 유지(_remap_to_dest 가 치환). 평문 str 항목(레거시 호출)은
     source_rel 속성 부재 → str(entry)(getattr 폴백).
     """
@@ -398,7 +398,7 @@ def _source_root_rel(entry) -> str:
 
 
 def _remap_to_dest(rel: str, source_rel: str, manifest_path: str) -> str:
-    """source-root relpath → manifest(dest) 기록 relpath (@source source-remap·T-0303·ADR-0054).
+    """source-root relpath → manifest(dest) 기록 relpath (@source source-remap).
 
     _iter_files 가 source_rel(canonical 소스) 아래에서 yield 한 relpath 의 source_rel prefix 를
     manifest_path(dest)로 치환한다 — `_dest_relpath_for`(dest-remap)의 대칭 source 쌍. source_rel ==
@@ -453,9 +453,9 @@ def _load_pm_render():
 
 
 def _load_pm_import():
-    """pm_import 모듈을 같은 tools/ 에서 직접 로드 (T-0145·_load_pm_render 패턴 동형).
+    """pm_import 모듈을 같은 tools/ 에서 직접 로드 (_load_pm_render 패턴 동형).
 
-    upstream_rev baseline 기록(매 sync·ADR-0032 D2)에 pm_import 의 URL 안전 git 호출
+    upstream_rev baseline 기록(매 sync)에 pm_import 의 URL 안전 git 호출
     (read_upstream_rev — argv-list·timeout·GIT_TERMINAL_PROMPT=0)과 local.conf set-or-replace
     (`_set_conf_keys` — record_upstream_rev 와 동일 백엔드)를 *재사용*한다 — pm_update 가 자체
     git/conf-write 를 중복 구현하지 않게(엔진 stdlib-only 철학 안에서 검증된 안전 계약을 상속).
@@ -471,7 +471,7 @@ def _load_pm_import():
     return mod
 
 
-# ── upstream baseline↔HEAD 변경점 요약 (T-0146·read-only·ADR-0032 D5) ─────────
+# ── upstream baseline↔HEAD 변경점 요약 (read-only) ─────────
 # git `name-status` 코드(첫 글자) → 표시용. R(rename)·C(copy)는 첫 글자만 본다(접두).
 _NAME_STATUS_LABELS = {"M": "M", "A": "A", "D": "D", "R": "R", "C": "C", "T": "T"}
 
@@ -502,11 +502,11 @@ def summarize_upstream_changes(
     *,
     git_runner=None,
 ) -> dict:
-    """upstream 로컬 checkout 의 baseline..HEAD 변경점을 read-only 로 요약한다 (T-0146·D5).
+    """upstream 로컬 checkout 의 baseline..HEAD 변경점을 read-only 로 요약한다 ().
 
     채택자가 받은 baseline(`upstream_rev`) ↔ 그 이후 upstream HEAD 에 쌓인 변경을 *이미 로컬에
     있는* checkout 에서 `git log`/`diff --name-status` 로 집계한다 — **fetch/clone 안 함**
-    (ADR-0032 D5·네트워크 0). git 안전 계약(argv-list·timeout·GIT_TERMINAL_PROMPT=0·config
+    (네트워크 0). git 안전 계약(argv-list·timeout·GIT_TERMINAL_PROMPT=0·config
     격리)은 pm_import._real_upstream_git_runner 를 재사용한다(git_runner 미주입 시). 테스트는
     git_runner 를 주입해 라이브 git 0 으로 결정론을 얻는다(DI seam).
 
@@ -597,8 +597,8 @@ def summarize_upstream_changes(
 def _resolve_dest_source(args) -> tuple:
     """args(--target·--from) → (rc, dest_root, source_root). rc≠0 이면 메시지는 이미 출력됨.
 
-    dest/source 해소(T-0053)는 sync(main)와 read-only --changes(T-0146)가 공유한다 — 둘 다
-    같은 우선순위(①명시 --from ②local.conf upstream= ③에러)·URL 게이트(ADR-0032 D5)·stale
+    dest/source 해소는 sync(main)와 read-only --changes가 공유한다 — 둘 다
+    같은 우선순위(명시 --from local.conf upstream= 에러)·URL 게이트·stale
     가드를 거쳐야 일관적이다. 추출로 두 진입이 같은 코드 경로를 탄다(중복 0). 성공 시 rc=0 +
     (dest_root[None=self-loc], source_root[디렉토리 검증 통과]). 실패 시 rc≠0(메시지 stderr 출력)
     + (None, None).
@@ -615,7 +615,7 @@ def _resolve_dest_source(args) -> tuple:
 
     effective_dest = dest_root if dest_root is not None else REPO
 
-    # ── upstream(source) 해소 (T-0053) — 순서: ①명시 --from ②local.conf upstream= ③에러.
+    # ── upstream(source) 해소 — 순서: 명시 --from local.conf upstream= 에러.
     #    침묵 폴백 없음. stale(부재/비-디렉토리) 경로는 자동 진행하지 않고 명확한 에러로 멈춘다.
     if args.source:
         source_root = Path(args.source).resolve()
@@ -630,7 +630,7 @@ def _resolve_dest_source(args) -> tuple:
                 file=sys.stderr,
             )
             return 1, None, None
-        # MF1(codex·D5 경계): upstream= 이 URL(릴리스 추적 기본값·ADR-0032 D4)이면 엔진은
+        # upstream= 이 URL(릴리스 추적 기본값)이면 엔진은
         #   로컬 파일만 복사하므로 `Path(url).resolve()` 했다간 "디렉터리 없음" 류로 침묵 실패한다.
         #   URL 은 디렉토리로 해소하지 말고 *명확·actionable* 에러로 멈춘다 — git freshness 는
         #   스킬층(pm-update: URL→cache clone)이거나 `--from <로컬 checkout>` 명시가 답이다.
@@ -641,7 +641,7 @@ def _resolve_dest_source(args) -> tuple:
         if kind == "url":
             print(
                 f"오류: upstream 이 URL 이다 ({stored}) — 엔진(pm_update)은 로컬 파일만 복사한다 "
-                "(git clone/fetch 안 함·ADR-0032 D5). `pm-update` 스킬(URL→cache clone 후 sync)을 "
+                "(git clone/fetch 안 함). `pm-update` 스킬(URL→cache clone 후 sync)을 "
                 "쓰거나, `--from <로컬 checkout>` 으로 로컬 경로를 명시하라.",
                 file=sys.stderr,
             )
@@ -664,10 +664,10 @@ def _resolve_dest_source(args) -> tuple:
 
 
 def _run_changes(args) -> int:
-    """`--changes` read-only 분기 — baseline..HEAD 변경점 요약 출력(실 sync 안 함·T-0146·D5).
+    """`--changes` read-only 분기 — baseline..HEAD 변경점 요약 출력(실 sync 안 함).
 
     dest/source 해소는 sync 와 공유(_resolve_dest_source) — URL upstream 은 거기서 명확 에러로
-    멈춘다(엔진은 git clone/fetch 안 함·ADR-0032 D5). baseline(`upstream_rev`)은 *dest* local.conf
+    멈춘다(엔진은 git clone/fetch 안 함). baseline(`upstream_rev`)은 *dest* local.conf
     에서 읽는다(매 sync 시 pm_update 가 기록한 마지막 동기 기준점). 전부 fail-soft·exit 0(graceful
     안내) — baseline 미기록·HEAD==baseline·baseline 도달불가 각각 메시지로 surface 한다.
     """
@@ -752,12 +752,12 @@ def _run_changes(args) -> int:
     return 0
 
 
-# 경로 upstream 에서 baseline 과 *함께* 기록하는 현재-관찰 키 (T-0413·board._DRIFT_SEEN_KEY 동명).
+# 경로 upstream 에서 baseline 과 *함께* 기록하는 현재-관찰 키 (board._DRIFT_SEEN_KEY 동명).
 _SEEN_REV_KEY = "upstream_seen_rev"
 
 
 def _upstream_shape(pm_import, dest_root: Path) -> str:
-    """dest local.conf 의 `upstream=` 값 모양 — 'url' | 'path' (T-0413·네트워크 0).
+    """dest local.conf 의 `upstream=` 값 모양 — 'url' | 'path' (네트워크 0).
 
     seen-rev 동시 기록의 분기 입력이다. 미등록(`--from` 직접 지정·구 import)·분류 실패는
     `_resolve_dest_source` 와 동일하게 **보수적으로 'path'** 취급한다(기존 동작·fail-soft).
@@ -773,20 +773,20 @@ def _upstream_shape(pm_import, dest_root: Path) -> str:
 
 
 def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict[str, str]]:
-    """매 sync 후 upstream rev 키들을 dest local.conf 에 **단일 write** 로 기록(T-0145·T-0413).
+    """매 sync 후 upstream rev 키들을 dest local.conf 에 **단일 write** 로 기록.
 
     반환 `(변경 여부, 이번에 엔진이 기록한 {키: rev})` — 호출부가 *실제로 무엇을 썼는지* 를
     보고 안내 문구를 정한다(결과 상태로 역추론 금지: URL 형상은 스킬층이 쓴 seen 이 이미
     baseline 과 같아서 "엔진이 썼다"와 구분되지 않는다). 기록 생략 시 `(False, {})`.
 
     기록 키:
-      - `upstream_rev`      (baseline·항상) — drift-lint(T-0141)의 "마지막 동기 이후" 기준점
-        (ADR-0032 D2). pm_import(import 시)와 여기(매 sync) 둘 다 갱신해야 그 의미가 성립한다.
-      - `upstream_seen_rev` (현재 관찰값·**경로 upstream 한정**·T-0413) — 경로 형상은 fetch 채널이
-        따로 없어 *동기 시점의 로컬 checkout rev 가 곧 관찰값*이다(pm-update 스킬 §2 '로컬 경로'
+      - `upstream_rev`      (baseline·항상) — drift-lint의 "마지막 동기 이후" 기준점
+        pm_import(import 시)와 여기(매 sync) 둘 다 갱신해야 그 의미가 성립한다.
+      - `upstream_seen_rev` (현재 관찰값·**경로 upstream 한정**) — 경로 형상은 fetch 채널이
+        따로 없어 *동기 시점의 로컬 checkout rev 가 곧 관찰값*이다('로컬 경로'
         분기와 동일 규정). baseline 만 갱신하면 두 키가 영구히 어긋나 정상 흡수 직후에도 drift
-        거짓 경보가 상시 뜬다(PM 4차 실측). URL 형상은 **건드리지 않는다** — 스킬층이 fetch 후
-        관찰값을 기록한다(한 키 2역 금지·race/자기비교 회피·ADR-0032 D2).
+        거짓 경보가 상시 뜬다(실측). URL 형상은 **건드리지 않는다** — 스킬층이 fetch 후
+        관찰값을 기록한다(한 키 2역 금지·race/자기비교 회피).
 
     두 키를 한 번의 `_set_conf_keys`+write 로 묶는다 — 중간 중단에도 baseline 만 앞선 반쪽
     상태가 생기지 않는다(어긋난 두 키 = 거짓 drift 의 원인이었다). rev 읽기는 pm_import 의
@@ -820,26 +820,26 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
 
 
 def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
-    """`record_upstream_revs` 의 변경-여부 전용 wrapper (T-0145 시그니처 보존·기존 호출부/테스트)."""
+    """`record_upstream_revs` 의 변경-여부 전용 wrapper (시그니처 보존·기존 호출부/테스트)."""
     return record_upstream_revs(dest_root, source_root)[0]
 
 
 def converge_upstream_revs(
     dest_root: Path, source_root: Path, skew_status: str, skew_new: list[str]
 ) -> None:
-    """skew 안전장치를 보존하며 sync 뒤 revision 키를 수렴·안내한다 (T-0422)."""
+    """skew 안전장치를 보존하며 sync 뒤 revision 키를 수렴·안내한다."""
     if skew_status == "skew":
         print(
             f"→ manifest skew({len(skew_new)}건)로 upstream_rev baseline(+경로 upstream 의 "
             "upstream_seen_rev 관찰값) 갱신을 **억제**한다 — drift-lint 가 계속 이 skew 를 울리게 "
             "둔다. 로컬 engine.manifest 를 reconcile 한 뒤 다시 pm-update 하라(신규 등재분 "
-            "자기치유는 T-0396)."
+            ")."
         )
         return
 
     # 안내 문구는 **엔진이 실제로 기록한 키**(recorded)로 정한다 — 파일의 결과 상태로
     # 역추론하면 URL 형상(스킬층이 쓴 seen 이 이미 baseline 과 같음)에서 "동시 기록" 이
-    # 거짓으로 뜬다(T-0413 리뷰 지적).
+    # 거짓으로 뜬다.
     changed, recorded = record_upstream_revs(dest_root, source_root)
     if changed:
         seen_note = " (+upstream_seen_rev 동시 기록)" if _SEEN_REV_KEY in recorded else ""
@@ -850,19 +850,19 @@ def converge_upstream_revs(
 def detect_manifest_skew(
     local_manifest: list, source_root: Path, *, upstream_manifest: Path | None = None
 ) -> tuple[str, list[str]]:
-    """upstream engine.manifest ↔ 로컬(sync 에 쓰인) manifest 대조 — 신규 등재분 탐지(T-0395).
+    """upstream engine.manifest ↔ 로컬(sync 에 쓰인) manifest 대조 — 신규 등재분 탐지.
 
     로컬 manifest 가 구형이면 `pm_update` 는 로컬 등재분만 복사해 upstream 이 새로 등재한 엔진
     경로(신규 등재분)가 도달하지 않는데, upstream_rev baseline 은 무조건 최신으로 갱신돼
-    drift-lint 가 "최신"으로 침묵한다(회사 채택자 실측 2026-07-20: 구형 identity_args 잔존 →
+    drift-lint 가 "최신"으로 침묵한다(구형 identity_args 잔존 →
     pm_handoff AttributeError). 이 함수는 그 skew 를 **탐지만** 한다 — baseline 억제/경고는
-    호출부(main)가, 신규 등재분 실제 도달(자기치유)은 [[T-0396]] 이 맡는다(분리: 탐지는 무해).
+    호출부(main)가, 신규 등재분 실제 도달(자기치유)은 이 맡는다(분리: 탐지는 무해).
 
     `local_manifest` 는 실 sync 가 쓴 manifest(resolve_manifest_for_dest 산출 — dest 우선·없으면
     source). 대조 upstream manifest 는 `upstream_manifest` 인자(있으면)를, 없으면 source_root 의
-    root engine.manifest 를 읽는다. **flavor-correct 통일**(codex R3·T-0396): [[T-0396]] selfheal 이
+    root engine.manifest 를 읽는다. **flavor-correct 통일**selfheal 이
     채택자 self-prop `@source` 를 따라 flavor upstream manifest 를 해소하므로, main 은 *그 동일 경로*를
-    이 인자로 넘겨 두 기전(T-0395 탐지 / T-0396 승격)의 대조 기준을 flavor 로 정합시킨다 — 안 그러면
+    이 인자로 넘겨 두 기전(탐지 / 승격)의 대조 기준을 flavor 로 정합시킨다 — 안 그러면
     flavor 채택자가 치유 후에도 root-only 경로(`.claude/agents` 등)를 skew 오탐해 baseline 이 억제된다.
     인자 미주입(직접 호출·레거시)은 root 폴백(후방호환). 두 집합의 순수 경로(마커 제외·ManifestEntry
     가 이미 떼어냄·str(e))를 비교해 upstream 에만 있는 경로를 신규 등재분으로 본다 — 로컬에서 제거된
@@ -887,7 +887,7 @@ def detect_manifest_skew(
 def _print_manifest_skew_finding(
     status: str, new_entries: list[str], *, dry_run: bool = False
 ) -> None:
-    """detect_manifest_skew 결과를 사람이 읽을 형태로 출력(T-0395·loud 경고).
+    """detect_manifest_skew 결과를 사람이 읽을 형태로 출력(loud 경고).
 
     - 'skew'            : loud 경고 + 신규 등재 경로 목록(reconcile 필요 surface).
     - 'upstream_missing': fail-soft 경고 1줄(구 upstream·부재 — 대조 생략·현행 유지).
@@ -912,7 +912,7 @@ def _print_manifest_skew_finding(
         print("manifest 정합 — upstream 신규 등재분 0(baseline 갱신 진행 예정).")
 
 
-# manifest self-prop 엔트리(채택자 engine.manifest 가 자기 자신을 전파 대상으로 등재한 행·T-0305)의
+# manifest self-prop 엔트리(채택자 engine.manifest 가 자기 자신을 전파 대상으로 등재한 행)의
 # path — flavor-correct upstream 해소(resolve_manifest_selfheal)와 root 폴백의 단일 기준.
 _MANIFEST_SELF_REL = ".project_manager/engine.manifest"
 
@@ -932,7 +932,7 @@ def _manifest_marker_key(entry) -> tuple:
 
 def _selfprop_upstream_rel(local_entries: list) -> str:
     """채택자 로컬 manifest 의 self-prop 엔트리(`.project_manager/engine.manifest`)를 따라 flavor-correct
-    upstream manifest 의 source-root 상대 *읽기* 경로를 낸다(T-0396·codex MF).
+    upstream manifest 의 source-root 상대 *읽기* 경로를 낸다(codex MF).
 
     claude_code/opencode 채택자의 self-prop 는 `@source=templates/<harness>/.project_manager/
     engine.manifest` 라, 그 @source(=_source_root_rel)가 같은 flavor upstream manifest 를 가리킨다.
@@ -946,18 +946,18 @@ def _selfprop_upstream_rel(local_entries: list) -> str:
 
 
 def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
-    """self-update manifest 자기치유 (T-0396·2-pass 단일 실행) — upstream engine.manifest 를
+    """self-update manifest 자기치유 (2-pass 단일 실행) — upstream engine.manifest 를
     이번 sync 의 **계획 기준 manifest 로 승격**해 신규 등재분을 한 번의 실행으로 도달시킨다.
 
     채택자가 bare `pm-update`/CLI 로 흡수할 때, 로컬 engine.manifest 가 구형이면
     resolve_manifest_for_dest 가 그 구형 로컬 manifest 를 집어 plan 이 신규 등재 경로(upstream 이
-    새로 등재한 엔진 파일)를 아예 안 실었다 — 다음 sync 전까진 영영 미도달(회사 실측 2026-07-20:
+    새로 등재한 엔진 파일)를 아예 안 실었다 — 다음 sync 전까진 영영 미도달(
     구 manifest·pm_handoff identity_args 미등재 → AttributeError·손 manifest 교체로만 복구). 이
-    함수는 upstream manifest 를 plan 기준으로 승격한다. manifest 자신도 self-prop 엔트리(T-0305·
+    함수는 upstream manifest 를 plan 기준으로 승격한다. manifest 자신도 self-prop 엔트리(
     upstream 항상 등재)라 같은 plan 안에서 로컬 manifest 파일이 upstream 판으로 apply 된다 —
     별도 write 없이 정상 순서(missing-check 후·실 apply 시·dry-run 무부작용)에서 갱신된다.
 
-    **flavor-correct upstream 해소** (codex MF·T-0305 `@source` self-prop): 비교/승격 대상 upstream
+    **flavor-correct upstream 해소** (`@source` self-prop): 비교/승격 대상 upstream
     manifest 는 root(`source_root/.project_manager/engine.manifest`·claude-scoped·bare)가 아니라 채택자
     self-prop 엔트리의 `@source` 를 따라간 *같은 flavor* manifest 다. claude_code/opencode 채택자의
     self-prop 는 `.project_manager/engine.manifest @source=templates/<harness>/.project_manager/
@@ -966,9 +966,9 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
     을 읽어 flavor↔flavor 로 비교하면 마커가 정합하고 신규 등재분만 승격된다. self-prop 부재/bare 는
     root 로 폴백(현행).
 
-    T-0142("manifest 진화=스킬 reconcile·self-list 아님")의 통제-상실 우려(채택자 로컬 manifest
+    ("manifest 진화=스킬 reconcile·self-list 아님")의 통제-상실 우려(채택자 로컬 manifest
     커스텀 제외)는 **전체 교체 + diff loud 표시**로 대체한다(자동 병합 안 함·호출부가 표시).
-    flavor upstream manifest 부재/읽기 실패면 fail-soft(로컬 유지·plan 무변경) — [[T-0395]] 의
+    flavor upstream manifest 부재/읽기 실패면 fail-soft(로컬 유지·plan 무변경)
     baseline 억제가 그 잔여 경로 안전망이다. --target(엔진 export)은 호출하지 않는다(타깃
     manifest 가 루트와 의도적으로 다름·skew 검출과 동일 경계).
 
@@ -976,14 +976,14 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
       - status  : 'upstream_missing'(flavor upstream 부재·fail-soft) | 'no_local'(로컬 manifest 부재·
                   이미 source manifest 기준) | 'in_sync'(로컬==upstream 또는 경로 동일·무변경) |
                   'diverged'(로컬-전용 경로 또는 공통 경로 마커/@source divergence=커스텀 편집·승격
-                  안 함·[[T-0395]] 안전망) | 'heal'(로컬 ⊂ upstream·마커 정합·신규 등재 존재·승격)
+                  안 함·안전망) | 'heal'(로컬 ⊂ upstream·마커 정합·신규 등재 존재·승격)
       - added   : flavor upstream 에만 있는 순수 경로(신규/재-등재·정렬) — 'heal' 이면 이번 sync 로 도달
       - removed : 로컬 manifest 에만 있던 순수 경로('diverged' 판정 근거·정렬)
       - manifest: plan 이 쓸 ManifestEntry 리스트 — 'heal' 이면 flavor upstream_entries, 그 외 None
                   (None 이면 호출부가 resolve_manifest_for_dest 산출 로컬 manifest 를 그대로 쓴다).
       - upstream_manifest: 대조에 쓴 flavor-correct upstream engine.manifest **Path** — 호출부(main)가
                   이 경로를 detect_manifest_skew 에 그대로 넘겨 두 기전의 대조 기준을 flavor 로 정합시킨다
-                  (codex R3). 로컬 manifest 부재('no_local')는 self-prop 이 없어 root 폴백 경로.
+                  (). 로컬 manifest 부재('no_local')는 self-prop 이 없어 root 폴백 경로.
     """
     dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"
     root_manifest = Path(source_root) / ".project_manager" / "engine.manifest"
@@ -1005,10 +1005,10 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
         return {"status": "upstream_missing", "added": [], "removed": [],
                 "manifest": None, "upstream_manifest": upstream_manifest}
     local_text = dest_manifest.read_text(encoding="utf-8")
-    # add-harness guest 절(로컬-전용 `@target-owned` guest)은 **core 비교에서 제외**한다(T-0456 MF-1):
+    # add-harness guest 절(로컬-전용 `@target-owned` guest)은 **core 비교에서 제외**한다:
     #   섞으면 항상 removed 비어있지 않아 영구 diverged → upstream 신규 항목 자기치유(승격) 불능. 절은
     #   apply 가 재부착하므로(대칭·`_copy_manifest_preserving_guest`) 승격돼도 잔존한다. 판정 사본 없이
-    #   R13 추출 헬퍼를 재사용해 in_sync 판정도 core 로(strip==upstream), 경로 집합도 core 로 좁힌다.
+    #   추출 헬퍼를 재사용해 in_sync 판정도 core 로(strip==upstream), 경로 집합도 core 로 좁힌다.
     guest_block = _extract_guest_manifest_block(local_text)
     guest_paths = {
         ln.split()[0] for ln in guest_block.splitlines()
@@ -1032,7 +1032,7 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
     if removed or marker_divergent:
         # 로컬-전용 경로 또는 공통 경로 마커 divergence = 로컬이 flavor upstream 의 단순 부분집합이
         #   아니다(채택자 커스텀 편집·마커 손질). 전체 교체하면 그 커스텀/구조를 클로버하므로 승격하지
-        #   않고 현행 로컬 manifest 를 유지한다. upstream 신규 등재분은 [[T-0395]] skew 대조가
+        #   않고 현행 로컬 manifest 를 유지한다. upstream 신규 등재분은 skew 대조가
         #   surface 한다(안전망). "항목 제외" 커스텀(로컬⊂upstream·마커 정합)은 아래 heal 로 전체 교체.
         return {"status": "diverged", "added": added, "removed": removed,
                 "manifest": None, "upstream_manifest": upstream_manifest}
@@ -1048,14 +1048,14 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
 
 
 def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -> None:
-    """resolve_manifest_selfheal 결과를 사람이 읽을 형태로 출력(T-0396·loud diff).
+    """resolve_manifest_selfheal 결과를 사람이 읽을 형태로 출력(loud diff).
 
     - 'heal'            : loud — upstream manifest 를 계획 기준으로 승격(전체 교체·자동 병합 없음).
                           upstream 이 새로/재-등재한 경로(+·이번 sync 로 도달)를 표시한다. 로컬 ⊂
                           upstream 이 승격 조건이라 로컬-전용 제거분은 없다(있으면 'diverged').
-    - 'upstream_missing': 무출력 — [[T-0395]] skew 대조가 이어서 fail-soft note 를 낸다(중복 회피).
+    - 'upstream_missing': 무출력 — skew 대조가 이어서 fail-soft note 를 낸다(중복 회피).
     - 'diverged'/'in_sync'/'no_local'/'skipped': 무출력 — 'diverged'(로컬-전용 경로=다른 하네스/커스텀)는
-                          승격 안 하고 [[T-0395]] skew 대조에 맡긴다(중복 회피).
+                          승격 안 하고 skew 대조에 맡긴다(중복 회피).
 
     승격 자체는 호출부(main)가 plan manifest 를 교체해 수행 — 이 함수는 출력만.
     """
@@ -1065,7 +1065,7 @@ def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -
     verb = "자기치유 예정" if dry_run else "자기치유"
     print(
         f"→ engine.manifest {verb} — upstream manifest 를 계획 기준으로 승격 "
-        f"(전체 교체·자동 병합 없음·T-0396): 신규 등재 +{len(added)}"
+        f"(전체 교체·자동 병합 없음): 신규 등재 +{len(added)}"
     )
     for path in added:
         print(f"    + {path}  (upstream 신규/재-등재 — 이번 sync 로 도달)")
@@ -1082,11 +1082,11 @@ _LOCAL_CONF_TO_OPERATIONAL = {
     "py": "PY",
     "test_cmd": "TEST_CMD",
     "date": "DATE",
-    # opencode 어댑터 전용 — pm_import 가 import 시 local.conf 에 기록(T-0033·모델 해소 시만).
-    # self-update 의 @source 재렌더(ADR-0054)가 `.opencode/agents` 를 렌더할 때 이 매핑으로
+    # opencode 어댑터 전용 — pm_import 가 import 시 local.conf 에 기록(모델 해소 시만).
+    # self-update 의 @source 재렌더가 `.opencode/agents` 를 렌더할 때 이 매핑으로
     # local.conf 재유도. **미해소**(opencode 없이 import 한 채택자·local.conf 에 opencode_pro_model
     # 부재)면 render_adapter 가 leak 으로 rc-fail 하지 않고 intentional-TODO 로 graceful 중화한다
-    # (pm_render.neutralize_model_todo·T-0310·import 대칭) — 한 토큰 미해소가 엔진/타 어댑터 update
+    # (pm_render.neutralize_model_todo·import 대칭) — 한 토큰 미해소가 엔진/타 어댑터 update
     # 전체를 막지 않는다(부분-graceful). claude tree 엔 토큰 부재 → no-op.
     "opencode_pro_model": "OPENCODE_PRO_MODEL",
 }
@@ -1098,11 +1098,11 @@ def _operational_from_local_conf(dest_root: Path) -> tuple[dict[str, str], list[
     local.conf 키(lowercase) → operational token key(uppercase). board.py init 이 안 쓴 키는
     포함하지 않는다(빈값 강제 안 함). 출하 어댑터의 operational 토큰은 import sed 로 이미
     리터럴이라 render 시점엔 보통 부재 — 이 매핑은 재렌더가 그 토큰을 만났을 때 local.conf
-    단일 진실로 재유도하기 위한 것(§3.2).
+    단일 진실로 재유도하기 위한 것().
 
-    **값이 빈 문자열인 키도 dict 에서 제외**한다(부재와 동일 취급·T-0218) — 빈값을 그대로
+    **값이 빈 문자열인 키도 dict 에서 제외**한다(부재와 동일 취급) — 빈값을 그대로
     넘기면 렌더가 토큰을 빈 문자열로 silent 치환해(예: `project_name=` 빈값 → description 이
-    " 프로젝트"·PM 49차 Windows ② clone 실오염) 탐지 신호가 사라진다. 제외하면 토큰이 잔존해
+    " 프로젝트") 탐지 신호가 사라진다. 제외하면 토큰이 잔존해
     render 의 _assert_no_leak 가 leak 으로 잡는다(silent-empty = leak 클래스). 제외된 빈값
     token-key 목록을 함께 반환해 render_adapter 가 leak 힌트("값을 채우라")에 싣게 한다.
 
@@ -1125,7 +1125,7 @@ def _render_text(source_path: Path, dest_root: Path) -> str:
     """source 템플릿을 채택자 local.conf(operational)로 렌더한 텍스트.
 
     local.conf 의 operational 값을 plain replace 로 채운다(free-form 은 pm_import FILL 채널이
-    canonical home 에서 전담·ADR-0030·ADR-0031). 결과는 자족(잔여 `{{...}}` 0·assertion).
+    canonical home 에서 전담). 결과는 자족(잔여 `{{...}}` 0·assertion).
     호출부(apply/plan)가 dst 와 비교/기록한다.
     """
     render_mod = _load_pm_render()
@@ -1135,7 +1135,7 @@ def _render_text(source_path: Path, dest_root: Path) -> str:
 
 
 def _is_text_source(source_path: Path) -> bool:
-    """source 가 UTF-8 텍스트로 읽히는가 — render 대상 판정의 유일한 형식 조건 (T-0424).
+    """source 가 UTF-8 텍스트로 읽히는가 — render 대상 판정의 유일한 형식 조건.
 
     옛 `.md` 확장자 열거를 대체한다: 확장자는 열린 집합(하니스가 새 형식을 들여온다)이라 열거하면
     새 형식이 조용히 미커버로 남는다(codex `.toml`). render 가 실제로 요구하는 건 "텍스트로 읽어
@@ -1150,7 +1150,7 @@ def _is_text_source(source_path: Path) -> bool:
 
 
 def _render_eq_dst(sp: Path, dst: Path, dest_root: Path) -> bool:
-    """render path 의 '변경 없음' 정직 판정 — 렌더 산출물 == dst 현재 내용 (§3.3).
+    """render path 의 '변경 없음' 정직 판정 — 렌더 산출물 == dst 현재 내용 ().
 
     filecmp.cmp(템플릿, dst) 는 render path 에 *틀림*(템플릿은 렌더 산출물과 byte-equal 일 수
     없어 항상 update 오보). 대신 source 를 dest 의 local.conf(operational)로 렌더해 dst 와 비교한다.
@@ -1178,7 +1178,7 @@ def plan(
     manifest 항목이 `ManifestEntry`(render 플래그 운반·read_manifest 산출)면 그 path 의 render
     여부를 dst(`_RenderDst` 래퍼)에 실어 apply 가 byte-copy vs render 를 분기하게 한다. 평문
     str 항목(레거시 호출)은 render=False(후방호환·순수 copy2). render path 의 변경검출은
-    filecmp 대신 rendered-output 비교(`_render_eq_dst`) — 템플릿≠산출물 오보 회피(§3.3).
+    filecmp 대신 rendered-output 비교(`_render_eq_dst`) — 템플릿≠산출물 오보 회피().
 
     render_enabled=False 면 manifest @render 태그를 *무시*하고 전부 copy2(토큰-form 보존).
     `--target`(루트→templates/<name> 동기) 경로 전용 — 템플릿은 토큰-form 소스라 절대 렌더
@@ -1204,10 +1204,10 @@ def plan(
             continue
         for r, sp in _iter_files(source_root, source_rel):
             # @source source-remap: yield relpath 의 source_rel prefix 를 manifest 경로로 치환
-            # (T-0303·_remap_to_dest). 마커 부재면 무변경(source_rel == rel).
+            # (_remap_to_dest). 마커 부재면 무변경(source_rel == rel).
             r = _remap_to_dest(r, source_rel, rel)
             # board-분리 dest 면 `wiki/tickets/_template.md` 를 `board/tickets/_template.md` 로
-            # 리매핑한다(T-0169·board_root() 추종) — source 는 upstream wiki/ 에서 그대로 읽되
+            # 리매핑한다(board_root() 추종) — source 는 upstream wiki/ 에서 그대로 읽되
             # dest 경로만 옮긴다. legacy dest·그 외 항목은 입력 그대로(무변경). 표시 relpath(r)도
             # 리매핑 후 경로로 둬 dry-run 출력이 실제 기록 위치를 정직히 보인다(_dest_root_for
             # 역산도 part 수 동일이라 정합).
@@ -1217,7 +1217,7 @@ def plan(
             # native 형상으로 override할 때, 상위 shared source가 override를 다시 덮지 않게 한다.
             if _manifest_owner_index(manifest, r, effective_dest) != entry_index:
                 continue
-            # render 대상 판정 = @render manifest 선언 + **텍스트로 읽히는가** (T-0424).
+            # render 대상 판정 = @render manifest 선언 + **텍스트로 읽히는가**.
             # 옛 `.md` 확장자 하드 필터는 제거했다: 확장자 열거는 manifest 선언을 덮는 중복
             # 판정이라, codex 가 들여온 `.codex/agents/*.toml`(@render 선언 O)이 byte-copy 로
             # 새어 채택자 트리에 `{{PROJECT_NAME}}` 리터럴을 재전파했다(pm_import 와 동형 결함·
@@ -1228,15 +1228,15 @@ def plan(
                 changes.append((r, sp, dst, "new"))
             elif file_render:
                 # render path: 템플릿이 산출물과 byte-equal 일 수 없으므로 filecmp 는 항상 오보.
-                # 렌더한 결과가 dst 와 다를 때만 update(정직 판정·§3.3).
+                # 렌더한 결과가 dst 와 다를 때만 update(정직 판정).
                 if not _render_eq_dst(sp, dst, effective_dest):
                     changes.append((r, sp, dst, "update"))
             elif str(r).replace("\\", "/") == _MANIFEST_SELF_REL:
                 # engine.manifest self-prop: dest 는 apply 가 재부착한 add-harness guest 절을 갖고
-                # upstream(sp)은 안 갖는다 — raw filecmp 면 매 sync '영원한 update'(churn·T-0456 MF-2).
+                # upstream(sp)은 안 갖는다 — raw filecmp 면 매 sync '영원한 update'(churn).
                 # guest 절을 차감한 **core 비교**로 판정한다(동일 추출 헬퍼·판정 사본 없음). 절 부재
                 # (비-add-harness)면 strip 이 no-op → 기존 byte 비교와 동일. **trailing blank 정규화**
-                # (`rstrip("\n")`·R22 suggestion): strip 이 절 앞 빈 줄을 회수하며 upstream 의 트레일링
+                # (`rstrip("\n")`): strip 이 절 앞 빈 줄을 회수하며 upstream 의 트레일링
                 # 블랭크까지 지워, 트레일링 블랭크 보유 upstream 에서 반복 update(churn)가 나던 것을 닫는다.
                 try:
                     dst_core = _strip_guest_manifest_block(Path(dst).read_text(encoding="utf-8"))
@@ -1250,15 +1250,15 @@ def plan(
     return changes, missing
 
 
-# ── add-harness guest @render 절 (engine.manifest self-prop 보존·T-0456 MF-1) ──────────────
+# ── add-harness guest @render 절 (engine.manifest self-prop 보존) ──────────────
 # engine.manifest 는 self-prop `@source` 라 apply 가 upstream 사본으로 통째 덮어쓴다(guest 는 로컬-전용
 # → selfheal 'diverged' 도 *파일* overwrite 는 못 막는다·plan 에 self-prop change 가 실린다·실측). 그래서
 # add_harness 가 등재한 guest `@render` 가 1회 update 만에 사라져 렌더/overlay 스캔 커버리지가 끊기던 것을
-# (codex R13 MF-1) 이 마커 구획으로 닫는다: apply 가 engine.manifest 를 덮기 **전** dest 의 guest 절을
+# () 이 마커 구획으로 닫는다: apply 가 engine.manifest 를 덮기 **전** dest 의 guest 절을
 # 추출 → 덮은 **뒤** 재부착한다. 마커는 read_manifest 가 '#' 주석으로 무시하고, 절 안의 라인은
 # `@render @target-owned` 유효 항목이라 파서/스캔/렌더가 그대로 소비한다(판정원 단일 = engine.manifest
 # 최종 뷰 하나). 절의 *값* 은 pm_import.add_harness 가 쓴다(같은 리터럴 공유·아래 두 상수).
-_GUEST_MANIFEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>"
+_GUEST_MANIFEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>"
 _GUEST_MANIFEST_END = "# <<< pm add-harness guest @render (local) <<<"
 
 
@@ -1320,7 +1320,7 @@ def _path_owned_by(path: str, owner_paths) -> bool:
     """path 가 owner_paths 중 하나에 소유되는가 — **동일**(`path==c`) OR **상위**(`path` 가 `c/` 하위).
 
     add-harness 등재 차감(pm_import `_guest_render_to_add`)과 update 재부착 차감
-    (`_prune_guest_block_owned_by_core`)이 **공유**하는 소유권 판정(경로-포함·T-0456 R15/R16·판정
+    (`_prune_guest_block_owned_by_core`)이 **공유**하는 소유권 판정(경로-포함·판정
     사본 금지) — core 가 `.opencode`(상위)를 가지면 `.opencode/agents` 도 소유로 본다."""
     p = path.replace("\\", "/")
     return any(
@@ -1329,7 +1329,7 @@ def _path_owned_by(path: str, owner_paths) -> bool:
 
 
 def _prune_guest_block_owned_by_core(guest_block: str | None, core_text: str) -> str | None:
-    """upstream core 가 소유하게 된 경로(**동일 OR 상위**)를 guest 절에서 차감 (T-0456 R15 소유권 전환).
+    """upstream core 가 소유하게 된 경로(**동일 OR 상위**)를 guest 절에서 차감.
 
     guest 경로가 추후 upstream core manifest 로 승격되면 apply 재부착이 기존 `@target-owned` guest 를
     그대로 붙여 **같은 경로가 core+guest 이중 등재** → 뒤쪽 guest 가 owner 로 이겨 upstream 소스가 영구
@@ -1355,9 +1355,9 @@ def _prune_guest_block_owned_by_core(guest_block: str | None, core_text: str) ->
 
 
 def _copy_manifest_preserving_guest(sp: Path, dst: Path) -> None:
-    """engine.manifest 를 upstream(sp)으로 덮되 dest 의 add-harness guest 절을 재부착 (T-0456 MF-1).
+    """engine.manifest 를 upstream(sp)으로 덮되 dest 의 add-harness guest 절을 재부착.
 
-    재부착 전 **upstream core 가 소유하게 된 경로를 guest 절에서 차감**한다(R15 소유권 전환·이중 등재
+    재부착 전 **upstream core 가 소유하게 된 경로를 guest 절에서 차감**한다(소유권 전환·이중 등재
     방지). guest 절이 없거나(비-add-harness) 전량 승격되면 순수 copy2 와 동일(무영향)."""
     guest_block = None
     try:
@@ -1379,7 +1379,7 @@ def apply(changes: list[tuple]) -> None:
     dst 가 `_RenderDst`(render 플래그 운반·plan 산출)면 그 플래그로 분기한다. 평문 Path dst
     (레거시 직접 호출)는 render 비대상 → copy2(후방호환·현 pm_update 동작 불변).
 
-    engine.manifest self-prop overwrite 는 add-harness guest 절을 재부착한다(T-0456 MF-1·위 헬퍼).
+    engine.manifest self-prop overwrite 는 add-harness guest 절을 재부착한다(위 헬퍼).
     """
     render_mod = None  # render path 가 있을 때만 lazy-load.
     for _r, sp, dst, _kind in changes:
@@ -1394,7 +1394,7 @@ def apply(changes: list[tuple]) -> None:
                 text, operational=operational, empty_keys=empty_keys)
             Path(dst).write_text(rendered, encoding="utf-8")
         elif str(_r).replace("\\", "/") == _MANIFEST_SELF_REL:
-            # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(T-0456 MF-1).
+            # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존.
             _copy_manifest_preserving_guest(Path(sp), Path(dst))
         else:
             shutil.copy2(sp, dst)
@@ -1423,7 +1423,7 @@ def resolve_target_root(target_name: str) -> Path:
 
     따라서 --from 이 REPO 외의 upstream 이어도 dest 는 항상 이 REPO 를 가리킨다.
 
-    타깃 유효성은 REPO/templates/<name>/ 디렉토리 존재로 판단한다 (ADR-0006).
+    타깃 유효성은 REPO/templates/<name>/ 디렉토리 존재로 판단한다.
     새 타깃 추가가 이 파일 수정을 강제하지 않는다.
 
     보안: target_name 은 단일 path segment 이어야 한다.
@@ -1495,7 +1495,7 @@ def resolve_manifest_for_dest(dest_root: Path, source_root: Path) -> Path:
     raise FileNotFoundError("engine.manifest 없음 (dest·source 둘 다).")
 
 
-# ── 진입 doc 세대 마이그레이션 (T-0409·ADR-0069) ────────────────────────────────
+# ── 진입 doc 세대 마이그레이션 ────────────────────────────────
 # 기존 채택자의 구형 진입 doc(자족 매뉴얼형 opencode `AGENTS.md`·~22KiB)을 신형(harness-neutral
 # 공통 코어 + `.opencode/pm-instructions.md` + `opencode.jsonc` `instructions` 배열)으로 수렴시킨다
 # — 2세대 영구 공존 차단(사용자 발의 "신형 전환 선택제=관리 분기"). self-update 흡수 경로 한정이며
@@ -1519,7 +1519,7 @@ _ENTRY_DOC_MANUAL_TODO_MARKER = " <!-- TODO: 손으로 채우세요 -->"
 # clean-match 실패 시 "구형이나 수정됨(→loud) vs 신형/무관(→no-op)" 을 가르는 기계 신호.
 _ENTRY_DOC_OLD_GEN_MARKER = "# AGENTS.md — opencode PM 어댑터"
 
-# opencode.jsonc `instructions` 배열에 idempotent 추가할 신형 지침 경로(ADR-0069·T-0401·@source 전파).
+# opencode.jsonc `instructions` 배열에 idempotent 추가할 신형 지침 경로(@source 전파).
 _ENTRY_DOC_PM_INSTRUCTIONS_REL = ".opencode/pm-instructions.md"
 
 # 중앙 백업 디렉토리 — pm_import 백업 채널 재사용(BACKUP_DIR_NAME 미러·relpath 미러링). 자동 전환
@@ -1759,7 +1759,7 @@ def _render_new_entry_doc(
 
 
 # quoted-string 원소 추출 (escape-aware) — 등록-확인을 substring 이 아니라 *정확 원소* 대조로
-# (codex R2·내부 reviewer 수렴): `.opencode/pm-instructions.md.bak` 같은 suffix 나 문자열-내
+# (): `.opencode/pm-instructions.md.bak` 같은 suffix 나 문자열-내
 # 부분일치를 "이미 등록"으로 오인하지 않게 한다.
 _JSONC_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 # 최상위(depth==1) `"instructions"` 키 + 배열 여는 `[` — brace-depth 스캐너가 이 위치에서 match.
@@ -1846,7 +1846,7 @@ def _scan_array_end(masked: str, body_start: int) -> int:
 def _find_toplevel_instructions(masked: str) -> tuple[int | None, int | None, int | None]:
     """주석-마스킹된 jsonc 에서 **최상위(depth==1)** `"instructions"` 배열을 brace-depth 추적으로 찾는다.
 
-    중첩 객체(agent/provider 블록 등)의 `"instructions"` 는 무시한다(codex R2) — opencode 가 읽는
+    중첩 객체(agent/provider 블록 등)의 `"instructions"` 는 무시한다() — opencode 가 읽는
     진입 지침 배열은 최상위 키 하나다. 문자열 리터럴 내 brace/bracket 은 세지 않는다(문자열 상태 추적).
 
     반환 (body_start, body_end, root_end):
@@ -1899,7 +1899,7 @@ def _ensure_jsonc_instructions(jsonc_text: str) -> tuple[str, bool]:
     JSONC(주석)라 json.load 불가 — 주석을 **오프셋 보존 마스킹**한 사본 위에서 **brace-depth 추적**
     으로 위치를 구하고 원본에 같은 오프셋으로 write 한다(비파괴·주석·타 키·provider 보존).
 
-    **최상위(depth==1) 한정** (codex R2): 중첩 객체(agent/provider)의 `"instructions"` 가 파일에서
+    **최상위(depth==1) 한정** (): 중첩 객체(agent/provider)의 `"instructions"` 가 파일에서
     먼저 나와도 그 중첩 배열에 삽입하지 않는다 — opencode 가 로드하는 진입 지침은 최상위 키다.
     등록-확인은 **quoted-string 원소 정확 대조**(substring 오인 방지·주석-아웃/`.bak` suffix)."""
     rel = _ENTRY_DOC_PM_INSTRUCTIONS_REL
@@ -1932,7 +1932,7 @@ def _entry_doc_backup(dest_root: Path, rel: str, backup_root: Path) -> None:
 
 
 def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -> dict:
-    """진입 doc 세대 마이그레이션 (T-0409·ADR-0069) — self-update 흡수 경로 한정(호출부가 --target 게이트).
+    """진입 doc 세대 마이그레이션 — self-update 흡수 경로 한정(호출부가 --target 게이트).
 
     구형 미수정 opencode `AGENTS.md`(세대 fingerprint clean-match) → 신형 공통 코어로 자동 교체
     (+백업·`opencode.jsonc` instructions 배열 idempotent 추가). 커스텀 흔적(FILL·손편집) → 무손·
@@ -2023,7 +2023,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
 
 
 def _print_entry_doc_migration_finding(result: dict, *, dry_run: bool = False) -> None:
-    """migrate_entry_doc 결과를 사람이 읽을 형태로 출력(T-0409·loud 안내).
+    """migrate_entry_doc 결과를 사람이 읽을 형태로 출력(loud 안내).
 
     'migrated'/'loud_manual'/'recovered' 만 출력 — 'noop'·'not_opencode'·'no_agents'·
     'no_new_template' 는 조용(정상/무관·노이즈 회피). 전환/복구 자체는 migrate_entry_doc 이 수행."""
@@ -2032,7 +2032,7 @@ def _print_entry_doc_migration_finding(result: dict, *, dry_run: bool = False) -
         verb = "전환 예정" if dry_run else "전환"
         gen = result.get("matched_generation")
         tail = " + opencode.jsonc instructions 배열 추가" if result.get("jsonc_updated") else ""
-        print(f"→ 진입 doc 세대 마이그레이션 {verb} (ADR-0069) — 구형 미수정 opencode AGENTS.md "
+        print(f"→ 진입 doc 세대 마이그레이션 {verb} — 구형 미수정 opencode AGENTS.md "
               f"(세대 #{gen})를 신형 공통 코어로 교체{tail}.")
         if dry_run:
             print("    (원본은 .pm_import_backups/<DATE>/ 에 백업 예정·적용 안 함)")
@@ -2041,11 +2041,11 @@ def _print_entry_doc_migration_finding(result: dict, *, dry_run: bool = False) -
             print(f"    백업: {result['backup_rel']}/ (원본 {src})")
     elif status == "loud_manual":
         print("⚠️  진입 doc 세대 마이그레이션 — 구형 opencode AGENTS.md 를 감지했으나 커스텀 흔적"
-              "(FILL·손편집)이 있어 자동 전환하지 않는다(무손·ADR-0069).")
+              "(FILL·손편집)이 있어 자동 전환하지 않는다(무손).")
         print("    신형(공통 코어 + .opencode/pm-instructions.md + opencode.jsonc instructions)으로 "
               "수동 병합하려면:")
         print("      1) templates/opencode/AGENTS.md(신형 공통 코어)로 AGENTS.md 를 교체하고 "
-              "커스텀(프로젝트 고유 제약 등)을 §6 프로젝트 고유 제약으로 옮긴다.")
+              "커스텀(프로젝트 고유 제약 등)을 프로젝트 고유 제약으로 옮긴다.")
         print("      2) opencode.jsonc 최상위에 "
               '`"instructions": [".opencode/pm-instructions.md"]` 를 추가한다(기존 배열이면 경로 append).')
     elif status == "recovered":
@@ -2054,11 +2054,11 @@ def _print_entry_doc_migration_finding(result: dict, *, dry_run: bool = False) -
               f"{verb}(신형 정합·idempotent 복구).")
 
 
-# ── 보호 훅 전수 재설치 트리거 (T-0415·ADR-0071) ────────────────────────────────
+# ── 보호 훅 전수 재설치 트리거 ────────────────────────────────
 # 보호 훅(`.local/repo-hooks/<repo>/pre-push`·`pre-commit`)은 엔진 코드(worktree_pool 의 훅
 # 본문 상수)에서 *생성*되는 런타임 산출물이라, 엔진 파일이 갱신돼도 **재설치가 돌아야** 새 훅이
 # 디스크에 놓인다. 그런데 기존 설치 트리거는 `repo add`·`worktree add` 둘뿐이었다 — 즉 엔진
-# 업그레이드만 한 채택자는 새 훅(예: T-0415 pre-commit 가드)을 **영영 못 받는다**(값-연결이
+# 업그레이드만 한 채택자는 새 훅(예: pre-commit 가드)을 **영영 못 받는다**(값-연결이
 # 끊긴 채 green·[[robustness-value-connections-before-ship]]). 그래서 매 sync **실행마다** 등록
 # repo 전수 정합 확인 + drift 재설치를 신설한다.
 #
@@ -2068,12 +2068,12 @@ def _print_entry_doc_migration_finding(result: dict, *, dry_run: bool = False) -
 # `changes == 0` 이라, "changes>0 에서만" 으로 좁히면 **다음에 우연히 엔진이 또 바뀔 때까지**
 # 훅이 안 깔린다(RUN 2 미발화). 그래서 옆의 `migrate_entry_doc` 와 **동형으로** changes 0 경로
 # 에서도 돈다. 노이즈는 트리거를 끄는 대신 **정합이면 조용**(아래 `_protected_hook_in_sync`
-# drift 판정)으로 낮춘다 — T-0417 sidecar reconcile 의 "비교 우선·정합이면 subprocess 0" 과
+# drift 판정)으로 낮춘다 — sidecar reconcile 의 "비교 우선·정합이면 subprocess 0" 과
 # 같은 패턴이라 새 개념이 늘지 않는다. 이 판정은 훅 디렉토리가 통째로 지워진 clone 도 덮는다
 # (bootstrap reconcile 은 sidecar 파일이 없으면 즉시 return 이라 그 상태를 영구 침묵한다).
 #
 # 배선은 **기존 계약을 그대로 탄다**(신규 seam 0): dest 의 `pm_config._install_protected_hook_
-# reporting`(T-0417 이 통일한 설치+보고 단일 깔때기) → `_resolve_repo_protected`(areas 권위) →
+# reporting` → `_resolve_repo_protected`(areas 권위) →
 # `worktree_pool.install_protected_hook`(훅·sidecar·hooksPath). pm_update 는 목록 해소도 훅
 # 본문도 재구현하지 않는다.
 #
@@ -2082,7 +2082,7 @@ def _print_entry_doc_migration_finding(result: dict, *, dry_run: bool = False) -
 # 엔진 export)은 비발화 — templates/<name> 은 PM 홈이 아니라 출하 스캐폴드라 등록 repo 가 없다
 # (selfheal/skew/진입 doc 마이그레이션과 같은 경계).
 def _load_dest_pm_config(dest_root: Path):
-    """dest(방금 동기된) `.project_manager/tools/pm_config.py` 를 로드 (T-0415·_load_pm_import 동형).
+    """dest(방금 동기된) `.project_manager/tools/pm_config.py` 를 로드 (_load_pm_import 동형).
 
     실행 중인 pm_update 프로세스는 **sync 이전** 코드를 메모리에 들고 있으므로, 재설치는 반드시
     디스크의 *새* 사본을 로드해서 돌려야 신 훅 본문이 배포된다. 부재(구형 dest·엔진 미배치)면
@@ -2099,7 +2099,7 @@ def _load_dest_pm_config(dest_root: Path):
 
 
 def _read_hook_artifact(path: Path) -> str | None:
-    """설치된 훅 산출물(훅 본문·sidecar) 1개를 읽는다 — 부재/읽기 실패는 **None** (T-0415).
+    """설치된 훅 산출물(훅 본문·sidecar) 1개를 읽는다 — 부재/읽기 실패는 **None**.
 
     `_protected_hook_in_sync` 의 유일한 읽기 창구다. 부재와 **읽기 실패**(non-UTF-8 로 깨진
     본문·권한·IO 오류)를 *같은* None 으로 수렴시키는 게 요점 — 둘 다 "이 파일은 현 엔진 산출물이
@@ -2122,7 +2122,7 @@ _EXEC_BIT_MEANINGFUL = os.name != "nt"
 
 
 def _hook_artifact_executable(path: Path) -> bool:
-    """산출물이 실행 가능한가 — 실행권한 축 (T-0415·Windows 는 축 비활성이라 항상 True).
+    """산출물이 실행 가능한가 — 실행권한 축 (Windows 는 축 비활성이라 항상 True).
 
     **없으면 git 이 훅을 조용히 건너뛴다** — 본문만 비교하면 `chmod 0644` 된 훅이 `in_sync` 로
     오판돼 보호가 침묵 비활성화된다. stat 실패(부재·권한)는 `False`(drift·재설치)."""
@@ -2135,15 +2135,15 @@ def _hook_artifact_executable(path: Path) -> bool:
 
 
 def _protected_hook_in_sync(repo: str, *, pm_config, worktree_pool, board) -> bool:
-    """이 repo 의 설치된 보호 훅이 **현재 엔진과 정합**인가 — drift 판정 (T-0415).
+    """이 repo 의 설치된 보호 훅이 **현재 엔진과 정합**인가 — drift 판정.
 
-    정합이면 재설치를 건너뛴다(매 sync 반복 출력 회피). "비교 우선·정합이면 조용" 은 T-0417
+    정합이면 재설치를 건너뛴다(매 sync 반복 출력 회피). "비교 우선·정합이면 조용" 은
     sidecar reconcile 과 같은 패턴이다.
 
     **축을 열거하지 않고 유도한다** — 봐야 할 것은 정의상 "`install_protected_hook` 이 쓰는 것"
     이므로, 그 함수와 **같은 명세**(`worktree_pool.protected_hook_artifacts`)를 읽어 산출물마다
-    ① 내용 ② 실행권한(필요한 것만)을 대조하고, 파일이 아닌 ③ bare `core.hooksPath` **배선**은
-    `pm_config.protected_hook_wired()`(T-0417 공용 헬퍼)로 본다. 판정이 자체 목록을 들면 설치가
+    내용 실행권한(필요한 것만)을 대조하고, 파일이 아닌 bare `core.hooksPath` **배선**은
+    `pm_config.protected_hook_wired()`로 본다. 판정이 자체 목록을 들면 설치가
     자랄 때 조용히 갈라진다 — 실제로 그 클래스가 연달아 났다(읽기 실패 축·실행 비트 축).
 
     **모르면 재설치 쪽으로 기운다**(fail-safe): 파일 부재·**읽기 실패**(깨진 본문·권한·IO)·
@@ -2173,7 +2173,7 @@ def _protected_hook_in_sync(repo: str, *, pm_config, worktree_pool, board) -> bo
 
 
 def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
-    """등록 repo 전수 보호 훅 정합 확인 + drift 재설치 — 엔진 업그레이드 배포 트리거 (T-0415·ADR-0071).
+    """등록 repo 전수 보호 훅 정합 확인 + drift 재설치 — 엔진 업그레이드 배포 트리거.
 
     **매 sync 실행마다** 돈다(changes 유무 무관 — 위 모듈 주석의 RUN1/RUN2 실측 참조).
     `write=False`(dry-run)면 판정만 하고 아무것도 쓰지 않는다(migrate_entry_doc 의 write 플래그
@@ -2240,7 +2240,7 @@ def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
 
 
 def _print_protected_hook_reinstall_finding(result: dict, *, dry_run: bool = False) -> None:
-    """reinstall_protected_hooks 결과 요약 (T-0415·per-repo 성공/실패 줄은 pm_config 깔때기 소관).
+    """reinstall_protected_hooks 결과 요약 (per-repo 성공/실패 줄은 pm_config 깔때기 소관).
 
     **정합이면 완전히 조용**하다(`in_sync` 만 있는 매 sync 의 정상 경로) — 트리거를 끄지 않고
     출력만 낮춘 게 이 함수다. 등록 repo 0(=`no_repos`)도 조용(걸 대상 없음). `unavailable` 은
@@ -2250,7 +2250,7 @@ def _print_protected_hook_reinstall_finding(result: dict, *, dry_run: bool = Fal
         return
     if status == "unavailable":
         print(
-            "[경고] 보호 브랜치 훅 정합 확인/재설치를 건너뛰었다 (T-0415) — "
+            "[경고] 보호 브랜치 훅 정합 확인/재설치를 건너뛰었다 — "
             f"{result.get('reason')}. 이 clone 의 훅은 **옛 엔진 본문**으로 남을 수 있다.\n"
             "  → 재설치(멱등): pm-config repo add <repo>",
             file=sys.stderr,
@@ -2258,7 +2258,7 @@ def _print_protected_hook_reinstall_finding(result: dict, *, dry_run: bool = Fal
         return
     drifted = result.get("drifted") or []
     if drifted and dry_run:
-        print(f"→ 보호 브랜치 훅 (재)설치 예정 (T-0415): {', '.join(drifted)} "
+        print(f"→ 보호 브랜치 훅 (재)설치 예정: {', '.join(drifted)} "
               "(설치된 훅이 현 엔진과 불일치·적용 안 함)")
     no_bare = result.get("no_bare") or []
     if no_bare:
@@ -2281,7 +2281,7 @@ def main(argv: list[str] | None = None) -> int:
             "--from 생략 시 <dest>/.project_manager/local.conf 의 `upstream=` 값을 기본으로 쓴다 "
             "(pm_import 가 한 번 import 하면 자동 기록·--from 명시로 override 가능). "
             "단 upstream= 이 **URL**(릴리스 추적 기본)이면 엔진은 로컬 파일만 복사하므로 "
-            "(git clone/fetch 안 함·ADR-0032 D5) 자동 진행하지 않고 명확한 에러로 멈춘다 — "
+            "(git clone/fetch 안 함) 자동 진행하지 않고 명확한 에러로 멈춘다 — "
             "`pm-update` 스킬(URL→cache clone)을 쓰거나 `--from <로컬 checkout>` 을 명시하라. "
             "upstream 미등록이거나 그 경로가 부재/디렉토리 아님이어도 명확한 에러로 멈춘다(침묵 폴백 없음)."
         ),
@@ -2308,7 +2308,7 @@ def main(argv: list[str] | None = None) -> int:
             "새 타깃도 디렉토리만 있으면 자동 포함한다. --target 및 --changes 와 함께 쓸 수 없다."
         ),
     )
-    # ── read-only 변경점 확인 (T-0146·실 sync 안 함·ADR-0032 D5) ──────────────
+    # ── read-only 변경점 확인 (실 sync 안 함) ──────────────
     ap.add_argument(
         "--changes",
         action="store_true",
@@ -2333,7 +2333,7 @@ def main(argv: list[str] | None = None) -> int:
     # ── --count-only/--log 는 --changes 전용 (codex suggestion 2·CLI 오사용 차단) ──
     #    --changes 없이 주면 일반 sync 가 돌면서 두 옵션이 조용히 무시된다 → 명확 에러로 멈춘다.
     #    --all-targets 분기보다 **앞**이어야 한다 — 뒤면 자식 argv 에 안 실리는 두 옵션이 조용히
-    #    무시된 채 실 동기화가 돈다(T-0469 codex 게이트 must-fix·오사용 검증이 모든 모드에 선행).
+    #    무시된 채 실 동기화가 돈다(오사용 검증이 모든 모드에 선행).
     if (args.count_only or args.log) and not args.changes:
         misused = []
         if args.count_only:
@@ -2368,12 +2368,12 @@ def main(argv: list[str] | None = None) -> int:
                 return rc
         return 0
 
-    # ── read-only 변경점 확인 (T-0146) — main 초입 early-return(실 sync 안 함·ADR-0032 D5).
+    # ── read-only 변경점 확인 — main 초입 early-return(실 sync 안 함).
     #    dest/source 해소는 _run_changes 안에서 sync 와 동일 경로(_resolve_dest_source)로 탄다.
     if args.changes:
         return _run_changes(args)
 
-    # dest/source 해소(T-0053·--target·--from·URL 게이트·stale 가드)는 --changes 와 공유한다.
+    # dest/source 해소(--target·--from·URL 게이트·stale 가드)는 --changes 와 공유한다.
     rc, dest_root, source_root = _resolve_dest_source(args)
     if rc != 0:
         return rc
@@ -2388,11 +2388,11 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest = read_manifest(manifest_path)
 
-    # ── manifest 자기치유 (T-0396·self-update 2-pass) — upstream engine.manifest 를 이번 sync 의
+    # ── manifest 자기치유 (self-update 2-pass) — upstream engine.manifest 를 이번 sync 의
     #    계획 기준으로 승격해, 로컬 manifest 가 구형이어도 신규 등재분이 한 번의 실행으로 plan→apply
     #    에 실린다(회사 실측: bare CLI 흡수가 신규 등재분 미도달). manifest 자신도 self-prop 엔트리
-    #    (T-0305)라 같은 plan 안에서 로컬 파일이 upstream 판으로 갱신된다(별도 write 불요). upstream
-    #    manifest 부재/읽기 실패는 fail-soft(로컬 유지) — [[T-0395]] baseline 억제가 그 잔여 경로
+    #라 같은 plan 안에서 로컬 파일이 upstream 판으로 갱신된다(별도 write 불요). upstream
+    #    manifest 부재/읽기 실패는 fail-soft(로컬 유지) — baseline 억제가 그 잔여 경로
     #    안전망. --target(엔진 export)은 타깃 manifest 가 루트와 의도적으로 달라 승격하지 않는다
     #    (현행·아래 skew 검출과 동일 경계). 승격 후 skew 는 정의상 0(manifest==upstream).
     selfheal: dict = {
@@ -2405,9 +2405,9 @@ def main(argv: list[str] | None = None) -> int:
             manifest = selfheal["manifest"]
 
     # add-harness guest 절 항목은 **update plan 에서 제외** — guest = add-harness refresh 전용 채널·
-    # update 불가침 (T-0456 R22 MF-1). `@target-owned` skip 은 *source-부재* 때만 발동해, 프레임워크
+    # update 불가침. `@target-owned` skip 은 *source-부재* 때만 발동해, 프레임워크
     # root 에 source 가 실재하는 claude-guest(`.claude/agents`·`.claude/skills`)는 self-update plan 이
-    # 그냥 갱신해 채택자의 guest 로컬 수정을 덮었다. guest 절은 apply 가 재부착(MF-1 R14)하므로 파일엔
+    # 그냥 갱신해 채택자의 guest 로컬 수정을 덮었다. guest 절은 apply 가 재부착()하므로 파일엔
     # 남고, plan 에서만 뺀다. 마커/절 추출은 pm_update 재사용(사본 0·guest 정의 = 마커 구획).
     dest_manifest_file = Path(effective_dest) / ".project_manager" / "engine.manifest"
     if dest_manifest_file.is_file():
@@ -2417,7 +2417,7 @@ def main(argv: list[str] | None = None) -> int:
             gpaths = {
                 ln.split()[0] for ln in gblock.splitlines()
                 if ln.strip() and not ln.strip().startswith("#")}
-            # **승격분 제외** (T-0456 R23 MF-1·R22 필터 과적용 교정): guest 경로가 upstream core 로
+            # **승격분 제외**: guest 경로가 upstream core 로
             # 승격되면(selfheal 이 그 경로를 담은 upstream 을 계획 기준으로 올림) 이제 core 라 **1차
             # sync 에서 갱신돼야** 한다 — dest guest 절에 있어도 **upstream core 에 실재하면 필터 밖**
             # (안 그러면 첫 실행이 그 파일을 안 갱신·2회 필요). upstream core = selfheal 이 해소한 flavor
@@ -2437,17 +2437,17 @@ def main(argv: list[str] | None = None) -> int:
 
     for r, _sp, _dst, kind in changes:
         # render path 는 byte-copy 가 아니라 재렌더 산출물 — PM 이 구분하게 [render] 로 표기
-        # ([update] = byte-copy·§3.3 dry-run 표기). new 든 update 든 render 면 [render].
+        # ([update] = byte-copy· dry-run 표기). new 든 update 든 render 면 [render].
         label = "render" if getattr(_dst, "render", False) else kind
         print(f"  [{label}] {r}")
 
-    # ── source 부재 항목 처리 (T-0137·D17 · @target-owned skip · 양 모드 공통) ──
+    # ── source 부재 항목 처리 (@target-owned skip · 양 모드 공통) ──
     # manifest 의 일부는 *target-owned 어댑터* 일 수 있다 — 엔진 upstream(루트)엔 source 가
     # 없고 타깃 자신만 보유하는 경로(예: opencode `.opencode/*`). 그런 항목은 upstream→dest
     # 전파 대상이 *아니므로* rc2 로 전체를 막는 대신 graceful skip + 안내 로그로 surface 한다
     # (침묵 skip 금지).
     #
-    # skip 은 **`@target-owned` 항목 한정**이다(명시 마커·T-0137). 옛 구현은 `@render` 를
+    # skip 은 **`@target-owned` 항목 한정**이다(명시 마커). 옛 구현은 `@render` 를
     # 판별자로 썼으나 그건 틀렸다(codex 포착): `.claude/agents @render`·`.claude/skills @render`
     # 처럼 *루트 upstream 에 존재해야 하는 엔진 리소스*도 @render 라, 잘못된 --from/upstream 에서
     # 빠지면 rc2 대신 skip 으로 숨겨 엔진 누락을 은폐했다. `@target-owned` 는 @render 와 독립인
@@ -2482,7 +2482,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
 
-    # ── manifest skew 탐지 (T-0395) — upstream engine.manifest 와 로컬(sync 에 쓰인) manifest
+    # ── manifest skew 탐지 — upstream engine.manifest 와 로컬(sync 에 쓰인) manifest
     #    를 대조해 "로컬에 없는 upstream 신규 등재 경로"(신규 엔진 파일)를 찾는다. 로컬 manifest
     #    가 구형이면 신규 경로가 이번 sync 로 도달하지 않으므로, 아래 baseline 갱신을 억제해
     #    drift-lint 가 계속 skew 를 울리게 한다(false-최신 차단). --dry-run 도 동일 대조 결과 표시.
@@ -2492,10 +2492,10 @@ def main(argv: list[str] | None = None) -> int:
     #    비대칭·@target-owned 등) 대조하면 대량 오탐 + baseline 억제가 된다. --target 은 검출/억제
     #    를 비발화하고 현행 거동(무조건 baseline 갱신)을 유지한다(codex must-fix).
     #
-    #    **flavor-correct 대조 기준 통일** (codex R3): skew 대조 upstream manifest 는 selfheal 이
+    #    **flavor-correct 대조 기준 통일** (): skew 대조 upstream manifest 는 selfheal 이
     #    해소한 *동일* flavor-correct 경로(`selfheal["upstream_manifest"]`)를 넘긴다 — 안 그러면
     #    flavor 채택자(@source self-prop)가 치유 후에도 root-only 경로(`.claude/agents` 등)를 skew
-    #    오탐해 baseline 이 억제된다(T-0396 승격 기준 == T-0395 탐지 기준). 승격되면 manifest==flavor
+    #    오탐해 baseline 이 억제된다(승격 기준 == 탐지 기준). 승격되면 manifest==flavor
     #    upstream 이라 skew 는 정의상 0.
     skew_status, skew_new = (
         ("skipped", [])
@@ -2505,12 +2505,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    # ── 진입 doc 세대 마이그레이션 (T-0409·ADR-0069) — self-update 흡수 경로 한정 ──
+    # ── 진입 doc 세대 마이그레이션 — self-update 흡수 경로 한정 ──
     #    --target(엔진 export)은 비발화(skew/selfheal 동일 경계). 구형 미수정 opencode AGENTS.md
     #    를 신형 공통 코어로 자동 전환(+백업·jsonc idempotent), 수정 흔적 있으면 무손·loud 안내.
     #    AGENTS.md·opencode.jsonc 는 instance-owned(manifest 밖)이라 changes 유무와 독립.
     #
-    #    ⚠ 시퀀싱 (codex R1·비파괴 보장): 실제 전환 write 는 **apply(changes) 성공 이후**에만 한다.
+    #    ⚠ 시퀀싱 (비파괴 보장): 실제 전환 write 는 **apply(changes) 성공 이후**에만 한다.
     #    apply 가 render/IO 로 중단되면 신규 등재분(예 `.opencode/pm-instructions.md`)이 lay down
     #    되지 않는데, 그 전에 AGENTS.md 를 신형(위임 공백 공통 코어)으로 갈고 jsonc 가 미-laydown
     #    파일을 참조하면 채택자가 반쪽 상태(위임 방법론 공백)에 갇힌다 — 구형은 인라인 자족이라
@@ -2519,7 +2519,7 @@ def main(argv: list[str] | None = None) -> int:
     #    (무write)은 apply 가 없으므로 각 경로에서 직접 처리한다. 각 경로 migrate 1회(write flag 만 상이).
     do_migrate = not args.target
 
-    # ── 보호 훅 정합 확인 + drift 재설치 (T-0415·ADR-0071) — migrate 와 **같은 경계·같은
+    # ── 보호 훅 정합 확인 + drift 재설치 — migrate 와 **같은 경계·같은
     #    시퀀싱**(--target 비발화 · changes 0 경로에서도 write · dry-run 은 판정만). changes 로
     #    게이트하면 이 기능을 배달하는 sync(구 엔진이 실행)도, 그 다음 실행(changes 0)도 발화
     #    하지 않아 채택자가 가드를 못 받는다(격리 실측 RUN1/RUN2·모듈 주석). 반복 출력은
@@ -2547,7 +2547,7 @@ def main(argv: list[str] | None = None) -> int:
         # 두 키를 함께 억제해 반쪽 상태/거짓 drift를 만들지 않는다.
         if not args.dry_run:
             converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
-            maybe_prompt_delegate_optin(effective_dest)  # 변경 0 경로에서도 opt-in/안내(T-0446)
+            maybe_prompt_delegate_optin(effective_dest)  # 변경 0 경로에서도 opt-in/안내
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
@@ -2561,28 +2561,28 @@ def main(argv: list[str] | None = None) -> int:
             _print_protected_hook_reinstall_finding(hooks, dry_run=True)
         return 0
 
-    apply(changes)  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지·R1).
+    apply(changes)  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).
     msg = f"✓ {len(changes)} 파일 동기화"
     print(msg)
 
     _print_manifest_selfheal_finding(selfheal, dry_run=False)
     _print_manifest_skew_finding(skew_status, skew_new, dry_run=False)
     if do_migrate:
-        # 전환 write 는 apply(changes) 성공 이후 — 반쪽 상태 방지(R1).
+        # 전환 write 는 apply(changes) 성공 이후 — 반쪽 상태 방지().
         result = migrate_entry_doc(effective_dest, source_root, write=True)
         _print_entry_doc_migration_finding(result, dry_run=False)
 
     if do_reinstall:
-        # apply 이후 — 방금 착지한 *새* 엔진 사본에서 훅 본문을 읽어 배포한다(T-0415). 단
+        # apply 이후 — 방금 착지한 *새* 엔진 사본에서 훅 본문을 읽어 배포한다. 단
         # 이 경로만으로는 부족하다(배달 sync 는 구 엔진이 실행) — 위 changes 0 경로가 짝이다.
         hooks = reinstall_protected_hooks(effective_dest, write=True)
         _print_protected_hook_reinstall_finding(hooks, dry_run=False)
 
-    # upstream_rev baseline 갱신(T-0145·ADR-0032 D2) — 매 sync 마다 source(upstream) HEAD 를
-    # local.conf 에 박아 drift-lint(T-0141)의 "마지막 동기 이후" 기준점을 최신화한다. 경로
-    # upstream 이면 `upstream_seen_rev`(현재 관찰값)도 같은 rev 로 함께 기록한다(T-0413 —
+    # upstream_rev baseline 갱신 — 매 sync 마다 source(upstream) HEAD 를
+    # local.conf 에 박아 drift-lint의 "마지막 동기 이후" 기준점을 최신화한다. 경로
+    # upstream 이면 `upstream_seen_rev`(현재 관찰값)도 같은 rev 로 함께 기록한다(
     # 경로는 동기 시점 checkout rev 가 곧 관찰값·두 키가 어긋난 채 남으면 상시 거짓 drift). 단
-    # **manifest skew**(로컬 manifest 구형·신규 등재분 미도달·T-0395)면 갱신을 억제한다 —
+    # **manifest skew**(로컬 manifest 구형·신규 등재분 미도달)면 갱신을 억제한다 —
     # baseline 을 최신으로 박으면 drift-lint 가 "최신"으로 침묵해 신규 엔진 파일 누락을 은폐한다
     # (회사 채택자 실측). skew 아님(정합·또는 upstream manifest 부재 fail-soft)이면 현행대로 갱신.
     # source 가 로컬 git checkout 일 때만(URL upstream 은 로컬 checkout 없어 graceful 생략).
@@ -2591,7 +2591,7 @@ def main(argv: list[str] | None = None) -> int:
     converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
 
     maybe_prompt_external_review(effective_dest)
-    maybe_prompt_delegate_optin(effective_dest)  # 동기 후 delegate opt-in(TTY 질문·비TTY 안내·T-0446)
+    maybe_prompt_delegate_optin(effective_dest)  # 동기 후 delegate opt-in(TTY 질문·비TTY 안내)
     return 0
 
 

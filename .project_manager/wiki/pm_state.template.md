@@ -25,7 +25,7 @@ type: handoff-state
 최근 N 차 (sliding window, 기본 3 차):
 <!-- /pm-handoff 가 자동 갱신 — 형식: "  - **N차** (YYYY-MM-DD · <wave_summary>): ..." -->
   - **1차** ({{DATE}} · 부트스트랩): 초기 PM 세션.
-  - 이전 차 (PM 1차~1차) = `log/current.md` handoff entry 단일 진실.
+  - 이전 차 = `log/current.md` handoff entry 단일 진실.
 
 ## 진행 중인 의사결정
 

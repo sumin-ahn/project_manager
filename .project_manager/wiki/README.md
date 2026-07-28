@@ -13,7 +13,7 @@
 |---|---|
 | **PM 세션이라면** (보드 운영 / 분할 / 위임) | [`pm_role.md`](pm_role.md) (정적 매뉴얼) + [`pm_state.md`](pm_state.md) (동적 상태) |
 | **지금 무슨 ticket 잡을까?** (구현 세션) | `board.py list` (라이브) · `board.md` 는 파생 대시보드(git-untracked) + [`tickets/README.md`](tickets/README.md) (워크플로) |
-| 현재 아키텍처는? (부트스트랩 #1) | [`architecture.md`](architecture.md) (현재-아키텍처 단일 진실 · ① live / ② target) |
+| 현재 아키텍처는? (부트스트랩 #1) | [`architecture.md`](architecture.md) (현재-아키텍처 단일 진실 · live / target) |
 | 지금 어디까지 됐는가? (활성 모듈 판정·비고) | [`status.md`](status.md) (활성) + [`status_done.md`](status_done.md) (완성 모듈) |
 | 프로젝트 도메인 지식 (무엇·어떻게) | [`domain/`](domain/) (살아있는 concept·guide·research) |
 | 사양 (포맷·한도·인터페이스) 단일 진실 | [`specs/`](specs/) |
@@ -30,7 +30,7 @@
 ```
 .project_manager/wiki/
 ├── README.md         # ← 이 파일. 길찾기 + 디렉토리 의미 단일 정의처
-├── architecture.md   # 현재-아키텍처 단일 진실 (① live=코드 실측 / ② target=확정·미구현 · 부트스트랩 #1)
+├── architecture.md   # 현재-아키텍처 단일 진실 (live=코드 실측 / target=확정·미구현 · 부트스트랩 #1)
 ├── status.md         # 진행 판정 — 활성 모듈 상태·비고 (judgment-only · 테스트 수는 박제 안 함)
 ├── status_done.md    # 완성·안정 모듈 상세 아카이브 (status.md 에서 분리 — 부트스트랩 비로드)
 ├── board.md          # ticket 현황 대시보드 (.project_manager/tools/board.py 자동 생성 — 수동 편집 금지)
@@ -49,16 +49,16 @@
 
 | 디렉토리 / 파일 | 의미 |
 |---|---|
-| `architecture.md` | **현재-아키텍처 단일 진실** (부트스트랩 #1 · ADR-0022). 구조·모듈 의존성 + 구현 상태를 *담는다*: ① live = 코드 실측 / ② target = 확정·미구현. 옛 ADR 과 충돌하면 **이게 기준**. content-truth 는 architect 가 유지·PM 점검 |
-| `status.md` | **활성 모듈 *판정*(상태·비고)의 단일 진실** (judgment-only · ADR-0023). **테스트 수는 박제하지 않는다** — `board.py regression`(pytest) 실측이 단일 진실, history 는 `log/`. 모듈 상태/비고는 architect 가 유지·PM 점검 |
+| `architecture.md` | **현재-아키텍처 단일 진실** (부트스트랩 #1). 구조·모듈 의존성 + 구현 상태를 *담는다*: live = 코드 실측 / target = 확정·미구현. content-truth 는 architect 가 유지·PM 점검 |
+| `status.md` | **활성 모듈 *판정*(상태·비고)의 단일 진실** (judgment-only). **테스트 수는 박제하지 않는다** — `board.py regression`(pytest) 실측이 단일 진실, history 는 `log/`. 모듈 상태/비고는 architect 가 유지·PM 점검 |
 | `status_done.md` | ✅ **완성·안정** 모듈 상세 아카이브. status.md 가 비대해지지 않게 분리 — 부트스트랩에 로드 안 됨. 모듈이 안정되면 행을 여기로 이동. `board.py lint` 가 ✅ 누적(`status-done-accum`)을 권고 |
 | `board.md` | ticket 발행 현황. `.project_manager/tools/board.py` 가 자동 생성 — 수동 편집 금지 |
 | `pm_role.md` / `pm_state.md` / `pm_playbook.md` | PM 세션 인계 3분할 — **정적 핵심**(role·매 부트스트랩 로드) / **동적 상태**(state·세션 window 등, `/pm-handoff` 자동 갱신) / **활동 레퍼런스**(playbook·위임·Wave·메타정책·인계 템플릿, 해당 활동 시 lazy Read). `pm_handoff.py` 가 인계 템플릿을 playbook 에서 추출 |
-| `domain/` | **살아있는 프로젝트 지식** (ADR-0018) — *현재 무엇·어떻게*. `concept`(무엇·왜 이 모양) / `guide`(절차) / `research`(누적 조사). `covers:` 글롭으로 코드에 링크 — 코드가 바뀌면 freshness 점검. (대비: `decisions/` = *왜 결정했나*·동결) |
+| `domain/` | **살아있는 프로젝트 지식**  — *현재 무엇·어떻게*. `concept`(무엇·왜 이 모양) / `guide`(절차) / `research`(누적 조사). `covers:` 글롭으로 코드에 링크 — 코드가 바뀌면 freshness 점검. (대비: `decisions/` = *왜 결정했나*·동결) |
 | `log/` | 작업 일지. `current.md` = 활성(append-only), `archive/NNNN-*.md` = 봉인. `pm_log.py archive` 로 잘라 보관. 읽기는 의미 단위(마지막 handoff entry) |
 | `tickets/` | 한 작업 = 한 ticket. `board.py` 가 `open/claimed/blocked/done/` 디렉토리로 관리 |
 | `specs/` | 자주 변하는 사양(포맷·한도·endpoint)의 단일 진실. 설계 문서 본문에 두지 않고 추출 |
-| `decisions/` | ADR — "왜 이렇게 결정했나"의 **히스토리·근거** (`NNNN-slug.md` + `README.md` 색인). **현재 구속력 없음** — 현재-기준은 `architecture.md` (ADR-0022) |
+| `decisions/` | **현재 구속력 없음** — 현재-기준은 `architecture.md`  |
 | `ideas/` | pre-ADR 후보. 익히는 중인 아이디어. `board.py idea` 명령군이 관리 |
 | `raw/` | immutable 시간 스냅샷 — plan_vN, 모델 평가, 벤치마크 등. **절대 수정 금지**, 새 사실은 새 파일 ([`raw/README.md`](raw/README.md) 참조) |
 

@@ -48,7 +48,7 @@ ticket 의 목표·DoD 를 정확히 파싱. `touches` 에 명시된 파일이 �
 - 검증은 **오직 프로젝트 test 명령**(local.conf `test_cmd=` — 이하 test_cmd) — 전체 회귀가 통과해야 한다. 실패는 완료 전에 고친다.
 - **프로덕션 진입점·파이프라인을 라이브로 실행하지 않는다.** 실제 외부 부작용(네트워크 송신·실 DB 쓰기·메시지 발신 등)을 내는 진입점을 직접 돌리거나 "스모크 테스트" 명목으로 호출하지 않는다 — 되돌릴 수 없다. 동작 검증은 mock 으로 격리된 자동 테스트가 전부다. 라이브 통합 검증이 꼭 필요하다고 판단되면, 직접 하지 말고 그 필요성을 보고에 적어 orchestrator 에 맡긴다.
 
-### 4.5 domain 페이지 갱신 (ADR-0018)
+### 4.5 domain 페이지 갱신
 touch 한 코드를 담당하는 `domain/` 페이지(`covers:` 글롭 매칭)가 있으면 — orchestrator 가 소환(recall)해 넘겨주거나 `python3 .project_manager/tools/domain.py affected --ticket <T-NNNN>` 로 확인 — **이번 변경으로 상한(stale) 내용을 갱신**한다 (touch∩covers·soft DoD). surface-only 원칙: *실제로 바뀐 지식*만 고치고, 빈 box-tick·내용 없는 `updated:` 스탬프는 하지 않는다. 담당 페이지가 없거나 변화가 지식에 안 닿으면 생략.
 
 ### 5. 보고
@@ -81,7 +81,7 @@ orchestrator 가 code-reviewer 로 넘길 수 있게 변경 위치를 명확히 
 
 **하지 말아야 한다 (MUST NOT):**
 - `touches` 범위 밖 파일 수정
-- **프로덕션 진입점·파이프라인을 라이브로 실행** — 외부 비가역 부작용을 낸다. 검증은 mock 격리된 자동 테스트뿐 (위 §4 참조).
+- **프로덕션 진입점·파이프라인을 라이브로 실행** — 외부 비가역 부작용을 낸다. 검증은 mock 격리된 자동 테스트뿐.
 - **보호 영역 수정** — `.project_manager/wiki/pm_role.local.md` §보호 영역 의 경로 (수정 금지·코드 author + ADR 필요)
 - `.project_manager/tools/board.py` claim/complete 호출 — orchestrator 담당
 - `.project_manager/wiki/status.md` / `.project_manager/wiki/log/current.md` 갱신 — orchestrator 담당

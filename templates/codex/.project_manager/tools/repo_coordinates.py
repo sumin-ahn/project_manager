@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PM-home ticket 경로를 소유 repo 상대 좌표로 정규화한다 (T-0473).
+"""PM-home ticket 경로를 소유 repo 상대 좌표로 정규화한다.
 
 Ticket ``touches`` 는 PM 홈 기준이라 ``work/<repo>_<N>/path`` 형태일 수 있다. 코드
 소비자는 소유 worktree 안에서 ``path`` 를 써야 하므로, 검증된 슬롯 접두만 제거한다.
@@ -16,14 +16,14 @@ Ticket ``touches`` 는 PM 홈 기준이라 ``work/<repo>_<N>/path`` 형태일 �
 다르면 조용히 strip하지 않고 ``RepoCoordinateError`` 를 낸다. 잘못된 stage 귀속이 recall
 누락보다 위험하므로 fail-loud가 이 모듈의 핵심 불변식이다.
 
-좌표계 surface grep 감사 메모 (T-0473, 2026-07-26):
+좌표계 surface grep 감사 메모:
 ``rg -n 'def (_ticket_touches|_scope_args)|pages_for_touches\\(|get_ticket_touches\\(|repo / touch|\
 paths = touches|_freshness_owner_repo|--ticket|--paths' .project_manager/tools/{board.py,domain.py,\
 ticket_finish.py,external_review.py}`` 로 ticket 경로 생산·소비와 scoped regression 지점을 함께
 확인했다. 정확 좌표가 필요한 활성 소비는 domain의 affected/capture·ticket_finish의 완료
 domain 알림/task stage이며 모두 이 normalizer를 지난다. board scoped regression은
 ``_ticket_touches``→``_scope_args``에서 ``Path(t).stem``만 써 좌표 무관, freshness는
-T-0470의 owner-repo clock을 쓴다. external_review는 **canonical worktree에서 ``--ticket``은
+owner-repo clock을 쓴다. external_review는 **canonical worktree에서 ``--ticket``은
 접두 경로→빈 diff 차단·엔진 티켓 codex 게이트는 ``--paths`` 필수**다.
 """
 
@@ -39,7 +39,7 @@ _WORKTREE_PREFIX = re.compile(
     r"^(?P<slot>work/(?P<repo>[^/]+)_(?P<number>\d+))(?:/(?P<relative>.*))?$"
 )
 
-# T-0397 baked stamp. 소비처는 이 값을 자기 rev와 대조해 부분 동기된 구 사본을
+# baked stamp. 소비처는 이 값을 자기 rev와 대조해 부분 동기된 구 사본을
 # RepoCoordinateError 속성 접근 전에 명시적인 sibling-skew 오류로 막는다.
 ENGINE_REV = "v1.4.5"
 

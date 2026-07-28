@@ -4,7 +4,7 @@ description: "비차단 백그라운드 회귀 — full 테스트를 run_in_back
 audience: pm-internal
 ---
 
-# /pm-regression — 비차단 백그라운드 회귀 (D5=B)
+# /pm-regression — 비차단 백그라운드 회귀
 
 > 회귀를 PM 이 기다리지 않게 한다. **full 회귀는 백그라운드로 pre-warm** 하고, push 시점엔 보통
 > 이미 green. **dev 작업 중엔 ticket 스코프**로 빠른 피드백. (모델: 동시 다중 PM ADR §회귀)

@@ -1,13 +1,13 @@
 ---
 name: pm-review
-description: "codex 외부 교차검증 게이트 실행 규율 명령어化 — worktree cwd 앵커 + stage 선행(git add) + --paths/--ticket 경로 핀. backbone = external_review.py(ADR-0004 opt-in). adopter#0 PM 홈 앵커면 external_review 가 빈 diff false-green 을 loud 차단·worktree 재지정 안내. 외부 전송은 과금·load-bearing 게이트에만(사소 docs 는 self/내부 리뷰). Triggers: 'codex 게이트', '외부 교차검증', 'external review 돌려', 'pm-review'."
+description: "codex 외부 교차검증 게이트 실행 규율 명령어化 — worktree cwd 앵커 + stage 선행(git add) + --paths/--ticket 경로 핀. backbone = external_review.py(opt-in). adopter#0 PM 홈 앵커면 external_review 가 빈 diff false-green 을 loud 차단·worktree 재지정 안내. 외부 전송은 과금·load-bearing 게이트에만(사소 docs 는 self/내부 리뷰). Triggers: 'codex 게이트', '외부 교차검증', 'external review 돌려', 'pm-review'."
 audience: pm-internal
 ---
 
 # /pm-review — codex 외부 교차검증 게이트 (실행 규율 명령어化)
 
-> PM 이 세션마다 손으로 재조립하던 **codex 외부 교차검증 게이트 실행 규율**을 ADR-0049 4요소로
-> codify 한다. 비즈니스 로직 0 — 기존 backbone `external_review.py`(ADR-0004 opt-in) 를 얇게
+> PM 이 세션마다 손으로 재조립하던 **codex 외부 교차검증 게이트 실행 규율**을 4요소로
+> 비즈니스 로직 0 — backbone `external_review.py`(opt-in) 를 얇게
 > 감싼다. 규율 셋(worktree cwd 앵커·stage 선행·`--paths` 경로 핀)을 한 trigger 로 고정해 손 재조립을
 > 폐지한다. backbone = `.project_manager/tools/external_review.py`.
 
@@ -19,16 +19,16 @@ audience: pm-internal
 ## 청중 (audience)
 
 **pm-internal** — PM 에이전트가 이중 게이트(dev→reviewer + codex)의 **외부 게이트**를 태울 때 invoke.
-셋업(user-entrypoint)의 확장이 아니라 **운영중-관리** 스킬이다(ADR-0049).
+셋업(user-entrypoint)의 확장이 아니라 **운영중-관리** 스킬이다.
 
 ## 사용 시점 (trigger)
 
 - dev→reviewer(내부 게이트) 통과분이 **실질 코드·설계**(엔진/알고리즘·비파괴 동작·파서·보안·ADR/설계)면
   codex 외부 교차검증을 태운다(codex-cross-review).
-- **사소한 docs/prose/자명한 편집엔 돌리지 않는다** — 과금·느림. self/내부 리뷰로 끝낸다(ADR-0004).
+- **사소한 docs/prose/자명한 편집엔 돌리지 않는다** — 과금·느림. self/내부 리뷰로 끝낸다.
 - codex 라운드가 길어지면(>3~4) 수렴 판단 — 근거 있으면 수락/override(외부 리뷰어도 항상 옳지 않다).
 
-## 라운드 상한 (기계 게이트 · T-0457)
+## 라운드 상한 (기계 게이트)
 
 수렴 판단은 PM 자의에 맡기지 않는다 — engine 이 `--gate <T-NNNN>` 별 라운드 장부를 세고
 **한도(기본 4·local.conf `external_review_round_limit`) 초과분을 실행 전 거부**한다(rc=4·호출 전
@@ -48,8 +48,8 @@ audience: pm-internal
 
 ### (a) worktree cwd 앵커 — canonical 사본에서 실행
 
-실 코드 변경이 있는 worktree cwd 의 canonical `external_review.py` 로 실행한다. adopter#0(ADR-0027)
-형상에선 PM 홈(②)의 import 사본이 stale 이라 REPO 앵커가 PM 홈을 가리키면 diff 가 비어 **false-green**
+실 코드 변경이 있는 worktree cwd 의 canonical `external_review.py` 로 실행한다. adopter#0
+형상에선 PM 홈의 import 사본이 stale 이라 REPO 앵커가 PM 홈을 가리키면 diff 가 비어 **false-green**
 이 난다.
 
 ```bash
@@ -58,7 +58,7 @@ cd <worktree-canonical-경로>     # 예 work/project_manager_1
 ```
 
 - external_review 는 PM 홈 앵커 + `--paths` 미지정을 **loud 차단**하고 worktree 재지정 경로를 안내한다
-  (T-0367 게이트 승격). 그 안내가 뜨면 `cd <worktree>` 후 재실행한다.
+  그 안내가 뜨면 `cd <worktree>` 후 재실행한다.
 
 ### (b) stage 선행 — 신규 파일 `git add`
 
@@ -84,12 +84,12 @@ python3 .project_manager/tools/external_review.py --base main --paths src/ tests
 - `--gate T-NNNN` — 게이트 ticket 표식(로깅용). `--adr ADR-NNNN …` — 관련 ADR 을 프롬프트에 포함.
 - 미리보기(외부 전송 없음): `--dry-run`. 비활성 상태 1회 강제: `--force`.
 
-## 외부 전송 opt-in (ADR-0004)
+## 외부 전송 opt-in
 
 - 코드 diff 가 *외부로 전송*되므로 기본 OFF. local.conf `external_review_enabled=true` 로 opt-in.
   꺼져 있으면 actual 호출은 no-op(exit 0)이고 `--dry-run` 은 항상 허용(로컬 미리보기·미전송).
 - 리뷰어 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL`(내부 code-reviewer 폴백 신호).
-- **빈 diff 는 무조건 exit 1**(false-green 원천 차단·T-0326) — 우회 플래그 없음. 안내대로 worktree
+- **빈 diff 는 무조건 exit 1**(false-green 원천 차단) — 우회 플래그 없음. 안내대로 worktree
   cwd + `--paths` / `git add` 후 재실행한다.
 
 ## 결과 판정
@@ -101,15 +101,15 @@ python3 .project_manager/tools/external_review.py --base main --paths src/ tests
 ## 결정
 
 - **외부 리뷰는 과금·load-bearing 게이트에만** — 라이브 실호출 대신 규율 경로(cwd·stage·paths)를 고정하고,
-  사소 docs 는 self/내부 리뷰(ADR-0004·codex-cross-review).
+  사소 docs 는 self/내부 리뷰.
 - **worktree cwd + `--paths` 규율을 스킬로 codify** — 손 재조립 폐지·false-green/stale 원천 차단
-  (adopter0-gates-use-worktree-canonical). external_review 의 PM 홈 앵커 게이트(T-0367)가 백스톱.
+  external_review 의 PM 홈 앵커 게이트가 백스톱.
 - **청중 = pm-internal**.
 
 ## 참고
 
-- backbone: `.project_manager/tools/external_review.py`(ADR-0004 — 외부 리뷰어 어댑터·opt-in).
+- backbone: `.project_manager/tools/external_review.py`(외부 리뷰어 어댑터·opt-in).
 - 도메인 단일진실: dual-gate-review(이중 게이트 dev→reviewer+codex).
-- ADR: ADR-0049(명령어化 4요소·청중) · ADR-0004(external_review opt-in) · ADR-0065(스킬 단일 소비).
+- ADR: (명령어化 4요소·청중) · (external_review opt-in) · (스킬 단일 소비).
 - 관성/전례: adopter0-gates-use-worktree-canonical(빈 diff false-green·stale pin) ·
   stage-before-external-review(untracked git add) · codex-cross-review(load-bearing 게이트에만).

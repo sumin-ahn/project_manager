@@ -341,15 +341,17 @@ def test_idea_id_arg_keeps_plain_metavar():
         assert "T-NNNN" not in usage, f"idea {verb} 에 ticket metavar 오적용: {usage!r}"
 
 
-def test_list_repo_slot_uses_canonical_adr0057_wording():
-    """`list --repo`/`--slot` help 는 canonical ADR-0057 wording — 구 '뷰 렌즈 ↔ actor 별개'
-    문구(ADR-0043 §4)는 폐기됐다: 인자 표면이 전 서브 동형이라 그 구분 자체가 사라졌다."""
+def test_list_repo_slot_help_describes_canonical_scope():
+    """`list --repo`/`--slot` help 는 repo·slot 해소 범위를 직접 설명한다."""
     list_parser = _subparser(_fresh_parser(), "list")
     dests = {action.dest: action for action in list_parser._actions}
-    assert "session" not in dests, "list 에 구 --session action 잔존 (ADR-0057 grep 잔여 0 위반)"
+    assert "session" not in dests, "list 에 구 --session action 잔존"
     assert "repo" in dests, "list --repo action 이 없다"
     assert "slot" in dests, "list --slot action 이 없다"
-    assert "ADR-0057" in dests["repo"].help
+    assert (
+        "단독이면 repo-scope" in dests["repo"].help
+        and "--slot 과 함께면 슬롯 정체성" in dests["repo"].help
+    )
 
 
 def test_new_prefix_help_frames_as_category_not_namespace():
