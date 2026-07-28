@@ -87,7 +87,7 @@ _REPOSITORY_MATCH_CACHE: dict[tuple[Path, Path], tuple[bool | None, str | None]]
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.4.5"
+ENGINE_REV = "v1.5.0"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. 계측 확대 시 여기 추가.
 _STAMPED_SIBLINGS = frozenset({"board.py", "repo_coordinates.py"})
