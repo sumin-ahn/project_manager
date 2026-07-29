@@ -2772,6 +2772,8 @@ def test_resolve_fallback_role_tier_atomic_and_no_default(pd):
         ({"returncode": 1, "stdout": "", "stderr": "", "timed_out": True}, "타임아웃"),
         ({"returncode": 127, "stdout": "", "stderr": "실행 불가", "timed_out": False,
           "launch_failed": True}, "스폰 실패/바이너리 부재"),
+        ({"returncode": 1, "stdout": "PARTIAL", "stderr": "정리 실패", "timed_out": False,
+          "cleanup_failed": True}, None),
         ({"returncode": 1, "stdout": "", "stderr": "rate_limit_exceeded", "timed_out": False},
          "한도/레이트리밋"),
         ({"returncode": 1, "stdout": "", "stderr": "You've hit your usage limit.",
@@ -2955,8 +2957,8 @@ def test_stall_triggers_configured_fallback(pd, monkeypatch, tmp_path, capsys):
     assert f"사유: {pd.FAILURE_CLASS_STALL}" in captured.err
 
 
-def test_cleanup_failure_triggers_configured_fallback(pd, monkeypatch, tmp_path, capsys):
-    """정리 실패 명시 신호도 raw 박제 뒤 인프라 분류되어 설정 폴백을 발동한다."""
+def test_cleanup_failure_forbids_configured_fallback(pd, monkeypatch, tmp_path, capsys):
+    """정리 실패는 raw 박제 뒤 잔존 프로세스 위험을 loud로 말하고 설정 폴백을 금지한다."""
     conf = _fallback_conf()
     fake = _SequenceRun(
         {"returncode": 1, "stdout": "PARTIAL", "stderr": "cleanup failed",
@@ -2972,9 +2974,11 @@ def test_cleanup_failure_triggers_configured_fallback(pd, monkeypatch, tmp_path,
         conf, fake,
     )
     captured = capsys.readouterr()
-    assert rc == 0
-    assert [call["harness"] for call in fake.calls] == ["codex", "claude"]
-    assert f"사유: {pd.FAILURE_CLASS_CLEANUP}" in captured.err
+    assert rc == 1
+    assert [call["harness"] for call in fake.calls] == ["codex"]
+    assert "자동 폴백을 실행하지 않습니다" in captured.err
+    assert "아직 살아 있을 수 있어" in captured.err
+    assert "폴백:" not in captured.err
     primary_raw = sorted((tmp_path / "raw").glob("pm_delegate_codex_*"))[0]
     assert "PARTIAL" in primary_raw.read_text(encoding="utf-8")
 
@@ -3226,17 +3230,17 @@ def test_harness_timeout_budget_counts_opencode_retry_windows(pd, monkeypatch):
     """opencode 워치독은 **시도마다** overall 을 새로 잡는다 — 1회 실행 예산이 timeout 이 아니다.
 
     stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로(pm_relay 의 first_deadline
-    분기) 예산 = timeout + retries×min(창, timeout)."""
+    분기) 실행 예산 = timeout + retries×min(창, timeout), 정리는 각 시도마다 10초다."""
     monkeypatch.setattr(pd, "_load_relay", lambda: _FakeStallKnobs(retries=2,
                                                                    first_event_timeout=90.0))
-    assert pd._harness_timeout_budget("codex", 600) == 600      # 재시도 없음
-    assert pd._harness_timeout_budget("claude", 600) == 600
-    assert pd._harness_timeout_budget("opencode", 600) == 780   # 600 + 2×90
+    assert pd._harness_timeout_budget("codex", 600) == 610      # 단일 시도 정리 10초
+    assert pd._harness_timeout_budget("claude", 600) == 610
+    assert pd._harness_timeout_budget("opencode", 600) == 810   # 600 + 2×90 + 3×10
     # timeout 이 첫-이벤트 창보다 짧으면 창이 timeout 으로 클램프된다(워치독 overall_deadline 분기).
-    assert pd._harness_timeout_budget("opencode", 30) == 90     # 30 + 2×30
-    # relay 노브를 못 읽으면 보수적으로 timeout(과대 예고 금지).
+    assert pd._harness_timeout_budget("opencode", 30) == 120    # 30 + 2×30 + 3×10
+    # relay/프로필을 못 읽으면 기본 최대 2회가 wall 전부를 쓰는 안전 상한으로 낮게 예고하지 않는다.
     monkeypatch.setattr(pd, "_load_relay", lambda: (_ for _ in ()).throw(OSError("no relay")))
-    assert pd._harness_timeout_budget("opencode", 600) == 600
+    assert pd._harness_timeout_budget("opencode", 600) == 1830
 
 
 def test_max_declared_execution_path_budget_counts_both_attempts(pd, monkeypatch):
@@ -3244,27 +3248,27 @@ def test_max_declared_execution_path_budget_counts_both_attempts(pd, monkeypatch
     monkeypatch.setattr(pd, "_load_relay", lambda: _FakeStallKnobs(
         retries=2, first_event_timeout=90.0))
     # _FakeStallKnobs 는 HARNESS_PROFILES 를 _RelayStub 에서 실 relay 로 위임한다.
-    assert pd.max_declared_execution_path_budget() == 2 * (14400 + 2 * 90)
+    assert pd.max_declared_execution_path_budget() == 2 * (14400 + 2 * 90 + 3 * 10)
 
 
 def test_runtime_harness_cap_advisory_is_loud_for_existing_adopter(pd, monkeypatch):
     """engine.manifest 밖 기존 adapter 설정이 낮으면 실행 시 조용히 무력화되지 않는다."""
-    monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 18180)
+    monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 18220)
     warning = pd.harness_cap_advisory({
         "CLAUDECODE": "1",
         "BASH_MAX_TIMEOUT_MS": "1800000",
     })
     assert warning is not None
     assert "1800s <" in warning and "부분 산출물 보존 전에" in warning
-    assert "18200000ms" in warning
+    assert "18230000ms" in warning
     assert pd.harness_cap_advisory({
         "CLAUDECODE": "1",
-        "BASH_MAX_TIMEOUT_MS": "18200000",
+        "BASH_MAX_TIMEOUT_MS": "18230000",
     }) is None
 
 
 def test_runtime_opencode_cap_missing_is_loud(pd, monkeypatch):
-    monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 18180)
+    monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 18220)
     warning = pd.harness_cap_advisory({"OPENCODE": "1"})
     assert warning is not None
     assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS 미해소" in warning
@@ -3281,7 +3285,7 @@ def test_dry_run_shows_fallback_time_budget(pd, monkeypatch, tmp_path, capsys):
     )
     out = capsys.readouterr().out
     assert rc == 0
-    assert "폴백 시간 예산: 최악 primary 600s + 폴백 600s = 1200s" in out
+    assert "폴백 시간 예산: 최악 primary 610s + 폴백 610s = 1220s" in out
 
 
 def test_dry_run_budget_reflects_opencode_watchdog_retries(pd, monkeypatch, tmp_path, capsys):
@@ -3299,7 +3303,7 @@ def test_dry_run_budget_reflects_opencode_watchdog_retries(pd, monkeypatch, tmp_
     )
     out = capsys.readouterr().out
     assert rc == 0
-    assert "폴백 시간 예산: 최악 primary 780s + 폴백 600s = 1380s" in out
+    assert "폴백 시간 예산: 최악 primary 810s + 폴백 610s = 1420s" in out
     assert "opencode 는 첫-이벤트 워치독 재시도분 포함" in out
 
 

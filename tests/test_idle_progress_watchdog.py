@@ -467,9 +467,9 @@ def test_process_group_cleanup_failure_is_loud_even_after_parent_exit(relay, mon
 
 
 @pytest.mark.skipif(os.name != "posix", reason="분리 session 손자·killpg 경계 실증은 POSIX 전용")
-def test_cleanup_failure_preserves_partial_raw_and_is_infrastructure(
-        relay, pd, monkeypatch, tmp_path):
-    """killpg 밖 손자가 파이프를 쥐어 drain 실패해도 부분 출력 raw와 폴백 분류가 남는다."""
+def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
+        relay, pd, monkeypatch, tmp_path, capsys):
+    """분리 session 손자가 drain을 막으면 raw 보존+fail-loud, 설정 폴백은 **전송 0회**다."""
     pid_file = tmp_path / "detached-grandchild.pid"
     parent_code = (
         "import pathlib, subprocess, sys, time\n"
@@ -483,7 +483,12 @@ def test_cleanup_failure_preserves_partial_raw_and_is_infrastructure(
     # pm_delegate는 자기 loader로 별도 relay module을 만들므로 같은 grace를 쓰도록 주입한다.
     monkeypatch.setattr(pd, "_load_relay", lambda: relay)
 
+    calls = []
+
     def run_detached(_argv, **kwargs):
+        calls.append(kwargs["harness"])
+        if len(calls) > 1:
+            return {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False}
         return pd._default_run_fn(
             [sys.executable, "-c", parent_code, str(pid_file)],
             stdin_text=None,
@@ -494,16 +499,25 @@ def test_cleanup_failure_preserves_partial_raw_and_is_infrastructure(
         )
 
     try:
-        attempt = pd._execute_attempt(
-            harness="codex", model="test-model", reasoning=None, role="developer",
-            cwd=tmp_path, prompt="test", timeout=1, output_dir=tmp_path,
-            run_fn=run_detached, attempt="primary",
+        rc = pd._execute_and_collect(
+            args=pd.argparse.Namespace(role="developer"),
+            harness="codex", model="test-model", reasoning=None,
+            fallback=("claude", "fallback-model", None), fallback_skip=None,
+            cwd=tmp_path, prompt="test", timeout=1, fallback_timeout=1,
+            output_dir=tmp_path, run_fn=run_detached,
+            secret_scan_ack_digest=None, secret_scan_ack_hits=(),
         )
-        assert attempt.result[pd.RUN_RESULT_CLEANUP_FAILED] is True
-        assert pd.classify_infrastructure_failure(attempt.result) == pd.FAILURE_CLASS_CLEANUP
-        raw = attempt.raw_path.read_text(encoding="utf-8")
+        assert rc == 1
+        assert calls == ["codex"], "정리 실패 뒤 fallback 프롬프트가 중복 전송됐다"
+        raw_path = sorted(tmp_path.glob("pm_delegate_codex_*"))[0]
+        raw = raw_path.read_text(encoding="utf-8")
         assert "PARTIAL-BEFORE-CLEANUP" in raw
         assert "프로세스 정리 실패" in raw
+        assert "잔존 프로세스 가능성" in raw
+        err = capsys.readouterr().err
+        assert "자동 폴백을 실행하지 않습니다" in err
+        assert "아직 살아 있을 수 있어" in err
+        assert "폴백:" not in err
     finally:
         if pid_file.exists():
             child_pid = int(pid_file.read_text(encoding="ascii"))
@@ -686,6 +700,16 @@ def test_wall_clock_backstop_closes_even_while_progressing(relay):
     assert excinfo.value.output, "벽시계 kill 도 부분 산출물을 보존해야 한다"
     assert proc.kill_count == 1
     assert len(logs) == 1 and "벽시계 백스톱" in logs[0]
+
+
+def test_silence_audit_clamps_reader_clock_race_to_zero(relay):
+    """`now` 뒤 reader가 최신 시각을 쓰는 경합은 음수 감사값이 아니라 0초다."""
+    class _ReaderWonRace:
+        @staticmethod
+        def last_event_at():
+            return 10.25
+
+    assert relay._silence_seconds(_ReaderWonRace(), now=10.0, start=1.0) == 0.0
 
 
 def test_first_event_stall_behaviour_unchanged_with_idle(relay):
@@ -1381,9 +1405,27 @@ def test_external_review_default_runner_uses_shared_relay_seam(external, monkeyp
     assert len(fake.calls) == 1
     call = fake.calls[0]
     assert call["idle_timeout"] == 900.0          # 평문 축도 같은 선언 테이블을 탄다
-    assert call["first_event_timeout"] is None    # 첫 stdout 이 종료 직전 → startup 창 금지
+    assert call["first_event_timeout"] is None    # codex profile=False → 기존 동작 불변
+    assert call["retries"] == 0
     assert call["overall_timeout"] == 1700.0      # 벽시계는 백스톱
     assert call["input_text"] == "prompt"         # 프롬프트 stdin 주입
+
+
+def test_external_review_opencode_profile_enables_startup_retry(
+        external, monkeypatch):
+    """리뷰 축도 opencode 프로필의 startup watchdog/재시도를 소비한다."""
+    fake = _RecordingRelay(
+        completed=subprocess.CompletedProcess(["opencode"], 0, "판정: 통과", ""))
+    monkeypatch.setattr(external, "_load_relay", lambda: fake)
+    ok, _output, started = external._run_reviewer_ex(
+        "prompt", "opencode run --format json", 14400, None
+    )
+    assert (ok, started) == (True, True)
+    assert len(fake.calls) == 1
+    call = fake.calls[0]
+    assert call["first_event_timeout"] == 90.0
+    assert call["retries"] == 2
+    assert call["overall_timeout"] == 14400.0
 
 
 def _forbidden_subprocess_run(*a, **k):
@@ -1450,6 +1492,8 @@ def test_external_review_cleanup_failure_saves_partial_output(
     assert result["file"] is not None
     raw = result["file"].read_text(encoding="utf-8")
     assert "프로세스 정리 실패" in raw
+    assert "잔존 프로세스 가능성" in raw
+    assert "자동 재시도/폴백 금지" in raw
     assert "HALF REVIEW BEFORE CLEANUP" in raw
     assert "cleanup diagnostic" in raw
 
@@ -1486,6 +1530,18 @@ def test_external_review_follows_reviewer_harness_profile(external, relay):
     # 이 모듈은 자체 타임아웃 상수를 두지 않는다(값이 두 군데면 규칙이 둘).
     source = (TOOLS / "external_review.py").read_text(encoding="utf-8")
     assert "EXTERNAL_TIMEOUT_SECONDS" not in source
+
+
+@pytest.mark.parametrize("command", ["codex.exe exec", "CODEX.EXE exec", "codex.cmd exec"])
+def test_windows_codex_names_share_progress_and_time_profile(
+        external, relay, command):
+    """Windows 표기도 진행신호·시간값 모두 동일한 정규화 키(codex)를 쓴다."""
+    profile = external.reviewer_profile(command, {})
+    assert external.reviewer_name(command) == "codex"
+    assert profile.progress_signal == relay.PROGRESS_SIGNAL_PLAINTEXT
+    assert profile.idle_timeout == relay.HARNESS_PROFILES["codex"].idle_timeout
+    assert profile.wall_timeout == relay.HARNESS_PROFILES["codex"].wall_timeout
+    assert profile.wall_timeout != relay.REVIEWER_FALLBACK_PROFILE.wall_timeout
 
 
 def test_reviewer_idle_timeout_uses_resolved_profile_signal(external, relay, monkeypatch):
@@ -1615,7 +1671,11 @@ def test_external_review_runtime_harness_cap_advisory(external):
         "BASH_DEFAULT_TIMEOUT_MS": "1800000",
         "BASH_MAX_TIMEOUT_MS": "29300000",
     }
-    assert external.harness_cap_advisory(shipped, execution_budget=3600) is None
+    codex_budget = external._reviewer_execution_budget("codex exec", 3600)
+    assert codex_budget == 3610  # wall + 부모 wait 5s + pipe drain 5s
+    assert external.harness_cap_advisory(
+        shipped, execution_budget=codex_budget
+    ) is None
 
     warning = external.harness_cap_advisory(
         {
@@ -1623,10 +1683,10 @@ def test_external_review_runtime_harness_cap_advisory(external):
             "BASH_DEFAULT_TIMEOUT_MS": "1800000",
             "BASH_MAX_TIMEOUT_MS": "3600000",
         },
-        execution_budget=3600,
+        execution_budget=codex_budget,
     )
     assert warning is not None
-    assert "3600s" in warning and "3605s" in warning
+    assert "3600s" in warning and "3620s" in warning
     assert "BASH_MAX_TIMEOUT_MS" in warning
     assert external.harness_cap_advisory(
         {
@@ -1634,8 +1694,21 @@ def test_external_review_runtime_harness_cap_advisory(external):
             "BASH_DEFAULT_TIMEOUT_MS": "1800000",
             "BASH_MAX_TIMEOUT_MS": "29300000",
         },
-        execution_budget=3600,
+        execution_budget=codex_budget,
     ) is None
+
+
+def test_both_surfaces_share_retry_cleanup_budget_formula(external, pd, relay):
+    """외부리뷰·위임이 startup 재시도마다 wait+drain 10초를 같은 공용 식으로 센다."""
+    expected = 14400 + 2 * 90 + 3 * 10
+    assert relay.watchdog_execution_budget(
+        14400, first_event_timeout=90, retries=2
+    ) == expected
+    assert pd._harness_timeout_budget("opencode", 14400) == expected
+    assert external._reviewer_execution_budget(
+        "opencode run --format json", 14400
+    ) == expected
+    assert relay.harness_cap_required_budget(expected) == expected + 10
 
 
 # ── DoD: 두 표면이 **같은 판정 코드** 를 탄다 (복붙 구현 0) ──────────────────────────

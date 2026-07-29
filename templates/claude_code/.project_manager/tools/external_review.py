@@ -349,6 +349,23 @@ def _reviewer_cmd(conf: dict[str, str]) -> str:
     return conf.get("reviewer_cmd", "").strip() or DEFAULT_REVIEWER_CMD
 
 
+def _normalized_reviewer_key(argv: list[str]) -> str:
+    """리뷰어 실행파일을 공유 프로필 키로 정규화한다.
+
+    Windows 실행파일 접미사/대소문자/경로 구분자를 여기서 한 번만 처리한다. 진행신호 계약과 시간
+    프로필이 이 키를 함께 써야 `codex.exe`의 진행은 codex로 보면서 시간만 미지 GPU 축으로 잡는
+    비대칭이 생기지 않는다.
+    """
+    if not argv:
+        return "reviewer"
+    executable = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if executable.endswith(suffix):
+            executable = executable[:-len(suffix)]
+            break
+    return re.sub(r"[^a-z0-9_.-]", "_", executable) or "reviewer"
+
+
 def _reviewer_progress_signal(
     reviewer_cmd: str, conf: dict[str, str], relay
 ) -> str:
@@ -374,11 +391,7 @@ def _reviewer_progress_signal(
     if not argv:
         return relay.PROGRESS_SIGNAL_NONE
 
-    executable = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    for suffix in (".exe", ".cmd", ".bat"):
-        if executable.endswith(suffix):
-            executable = executable[:-len(suffix)]
-            break
+    executable = _normalized_reviewer_key(argv)
     contract = _REVIEWER_PROGRESS_CONTRACTS.get(executable)
     if contract is None:
         return relay.PROGRESS_SIGNAL_NONE
@@ -868,20 +881,43 @@ def _reviewer_idle_timeout(reviewer_cmd: str, idle_timeout: float | None) -> flo
     return relay.idle_timeout_for_signal(profile.progress_signal, resolved)
 
 
+def _reviewer_watchdog_settings(reviewer_cmd: str):
+    """해소된 리뷰어 프로필의 startup 선언을 공용 워치독 인자로 변환한다."""
+    relay = _load_relay()
+    profile = reviewer_profile(reviewer_cmd)
+    first_event_timeout = (
+        relay.first_event_timeout_default() if profile.startup_watchdog else None
+    )
+    retries = relay.stall_retries_default() if profile.startup_watchdog else 0
+    return relay, first_event_timeout, retries
+
+
+def _reviewer_execution_budget(reviewer_cmd: str, timeout: int) -> int:
+    """리뷰 1회의 실행+재시도별 실제 최악 정리 예산(위임 축과 같은 공용 식)."""
+    relay, first_event_timeout, retries = _reviewer_watchdog_settings(reviewer_cmd)
+    return int(relay.watchdog_execution_budget(
+        timeout,
+        first_event_timeout=first_event_timeout,
+        retries=retries,
+    ))
+
+
 def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
                            **_ignored) -> subprocess.CompletedProcess:
     """기본 리뷰어 러너 — pm_relay 공용 워치독 경유(무진행 주 판정 + 벽시계 백스톱).
 
     `subprocess.run(..., timeout=)` 을 대체한다. 그 단일 호출은 증분 관측이 아예 없어서 (a) 정상
     진행을 벽시계로 죽이고 (b) `TimeoutExpired.stdout` 에 실려 온 부분 산출물을 아무도 안 읽어
-    통째로 버렸다(kill 된 리뷰의 raw 가 헤더 138바이트뿐이던 실측). 첫-이벤트 창은 **끄고**(None) 들어간다 — 이 축의 첫 stdout 은
-    종료 직전에야 오므로 startup 창을 켜면 정상 리뷰가 전부 죽는다."""
-    relay = _load_relay()
+    통째로 버렸다(kill 된 리뷰의 raw 가 헤더 138바이트뿐이던 실측). startup 창/재시도는 리뷰어
+    이름 특례가 아니라 **해소된 공유 프로필 선언**을 따른다. 따라서 기본 codex(False)는 종전처럼
+    꺼져 있고, 알려진 startup stall 축인 opencode(True)만 유한 재시도를 얻는다."""
+    reviewer_cmd = shlex.join(argv)
+    relay, first_event_timeout, retries = _reviewer_watchdog_settings(reviewer_cmd)
     return relay.run_with_first_event_watchdog(
         argv,
-        first_event_timeout=None,
+        first_event_timeout=first_event_timeout,
         overall_timeout=float(timeout),
-        retries=0,
+        retries=retries,
         idle_timeout=idle_timeout,
         input_text=input,
     )  # text 는 워치독 기본(True·utf-8/replace 고정) — 인코딩은 _WatchedPopen 이 소유.
@@ -908,20 +944,20 @@ def harness_cap_advisory(
         return None
     harness, cap_key = declaration
     relay = _load_relay()
-    required = int(execution_budget + relay._KILL_GRACE_SEC)
+    required = int(relay.harness_cap_required_budget(execution_budget))
     raw = env.get(cap_key)
     try:
         cap_seconds = int(raw) / 1000.0
     except (TypeError, ValueError, OverflowError):
         return (
             f"[external-review] 경고: {harness} 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
-            f"리뷰 벽시계+정리 {required}s 이상을 Bash tool timeout으로 명시하세요."
+            f"리뷰 실행+재시도별 정리+박제 여유 {required}s 이상을 Bash tool timeout으로 명시하세요."
         )
     if cap_seconds < required:
         return (
             f"[external-review] 경고: {harness} 호출층 최대상한 "
             f"{cap_key}={cap_seconds:g}s < "
-            f"리뷰 벽시계+정리 {required}s — 엔진 진단/부분 산출물 보존 전에 하네스가 kill할 수 "
+            f"리뷰 실행+재시도별 정리+박제 여유 {required}s — 엔진 진단/부분 산출물 보존 전에 하네스가 kill할 수 "
             "있습니다. Bash tool 호출에 장시간 timeout을 명시하세요."
         )
     return None
@@ -1054,7 +1090,10 @@ def _run_reviewer_ex(
         # _load_relay는 호출마다 독립 module 객체를 만들 수 있어 클래스 identity 대신 sentinel의
         # 구조화 속성을 본다. 일반 RuntimeError를 정리 실패로 오인하지 않는다.
         if getattr(exc, "process_cleanup_failed", False) is True:
-            output = f"[리뷰어 프로세스 정리 실패: {exc} — 인프라 실패, 부분 산출물 보존]"
+            output = (
+                f"[리뷰어 프로세스 정리 실패: {exc} — 잔존 프로세스 가능성 때문에 자동 재시도/"
+                "폴백 금지, 사람 확인 필요. 부분 산출물 보존]"
+            )
             if getattr(exc, "output", ""):
                 output += f"\n{exc.output}"
             if getattr(exc, "stderr", ""):
@@ -1079,10 +1118,9 @@ def run_reviewer(
 
 
 def reviewer_name(reviewer_cmd: str) -> str:
-    """reviewer_cmd 의 첫 토큰을 리뷰어 라벨로 (파일명/요약용)."""
+    """reviewer_cmd 의 공유 정규화 키(시간 프로필·진행신호·파일명/요약 공통)."""
     argv = shlex.split(reviewer_cmd)
-    name = argv[0] if argv else "reviewer"
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", Path(name).name) or "reviewer"
+    return _normalized_reviewer_key(argv)
 
 
 # ── 결과 파싱 ─────────────────────────────────────────────────────────────
@@ -1346,7 +1384,9 @@ def main(argv: list[str] | None = None) -> int:
     reviewer_cmd = _reviewer_cmd(conf)
     timeout = _resolve_timeout(args, conf, reviewer_cmd)
     idle_timeout = _resolve_idle_timeout(args, conf, reviewer_cmd)
-    cap_warning = harness_cap_advisory(execution_budget=timeout)
+    cap_warning = harness_cap_advisory(
+        execution_budget=_reviewer_execution_budget(reviewer_cmd, timeout)
+    )
     if cap_warning is not None:
         print(cap_warning, file=sys.stderr)
 

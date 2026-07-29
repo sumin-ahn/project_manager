@@ -130,9 +130,10 @@ def test_declared_wall_backstops_stay_under_harness_bash_cap():
     delegate = _load_tool("pm_delegate")
     margin = delegate._HARNESS_CAP_MARGIN_SEC
     worst = delegate.max_declared_execution_path_budget()
-    # codex→opencode 직접 반려 시나리오(3600 + [14400+2×90])도 별도 잠금.
+    assert worst == 29220  # opencode 2시도: 2×(14400 + 2×90 + 3×10 정리)
+    # codex→opencode 직접 반려 시나리오: 각 timeout/retry 뒤 wait+drain 10초를 시도마다 산입.
     assert delegate._harness_timeout_budget("codex", 3600) + \
-        delegate._harness_timeout_budget("opencode", 14400) == 18180
+        delegate._harness_timeout_budget("opencode", 14400) == 18220
     for surface, cap in (
             ("claude settings", _harness_bash_cap_sec()),
             ("opencode instructions", _opencode_bash_cap_sec())):
@@ -274,14 +275,15 @@ def test_harness_bash_cap_covers_local_gpu_delegation():
 
 
 def test_harness_bash_cap_margin_is_positive():
-    """여유가 실측 단계 예산에서 파생되고 출하 상한의 실제 공간 안에 넉넉히 들어간다."""
+    """정리는 실행식에 직접 들고, 공용 보조 여유가 출하 상한의 실제 공간 안에 들어간다."""
     delegate = _load_tool("pm_delegate")
-    measured = (
-        delegate._HARNESS_CAP_KILL_GRACE_BUDGET_SEC
-        + delegate._HARNESS_CAP_MEASURED_AUX_BUDGET_SEC
-    )
-    # 17s 실측/명시 상한 합을 다음 10초 경계로 올린 값. 임의 상수로 되돌리면 red.
-    assert delegate._HARNESS_CAP_MARGIN_SEC == ((measured + 9) // 10) * 10 == 20
+    relay = _load_tool("pm_relay")
+    # 부모 wait 5초 + pipe drain 5초는 margin이 아니라 매 시도 실행 예산에 직접 든다.
+    assert relay.process_cleanup_budget_per_attempt() == 10
+    assert delegate._HARNESS_CAP_KILL_GRACE_BUDGET_SEC == 10
+    measured = delegate._HARNESS_CAP_MEASURED_AUX_BUDGET_SEC
+    assert delegate._HARNESS_CAP_MARGIN_SEC == relay.HARNESS_CAP_MARGIN_SEC
+    assert delegate._HARNESS_CAP_MARGIN_SEC == ((measured + 9) // 10) * 10 == 10
     actual_slack = _harness_bash_cap_sec() - delegate.max_declared_execution_path_budget()
     assert actual_slack >= 2 * delegate._HARNESS_CAP_MARGIN_SEC, (
         f"출하 상한 실여유 {actual_slack:g}s가 측정 기반 margin "

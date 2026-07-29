@@ -328,6 +328,48 @@ DEFAULT_STALL_RETRIES = 2
 # 워치독 폴 간격·kill 후 grace(자식 잔존 방지·짧게). 매직넘버 회피 상수.
 _WATCHDOG_POLL_INTERVAL_SEC = 0.1
 _KILL_GRACE_SEC = 5.0
+# timeout/stall 정리는 부모 종료 대기와 파이프 EOF drain이 **연속**으로 각각 grace를 다 쓸 수 있다.
+# 하네스 상한 계산이 한 단계만 세면 부분 산출물 수확 전에 호출층이 먼저 프로세스를 죽일 수 있다.
+_PROCESS_CLEANUP_GRACE_PHASES = 2
+
+# 정리 뒤 분류·raw 박제·범위 감사에 남기는 공용 여유. 두 소비 표면(pm_delegate/external_review)이
+# 같은 `harness_cap_required_budget`을 써야 상한 계산 규칙이 갈리지 않는다. 실측 보조 단계 합 7초를
+# 플랫폼 편차를 위해 다음 10초 경계로 올린 값이다.
+HARNESS_CAP_MEASURED_AUX_BUDGET_SEC = 7
+HARNESS_CAP_MARGIN_SEC = (
+    (HARNESS_CAP_MEASURED_AUX_BUDGET_SEC + 9) // 10
+) * 10
+
+
+def process_cleanup_budget_per_attempt() -> float:
+    """timeout/stall 1회 정리의 최악 예산 — 부모 wait + pipe drain의 연속 grace."""
+    return _PROCESS_CLEANUP_GRACE_PHASES * _KILL_GRACE_SEC
+
+
+def watchdog_execution_budget(
+    overall_timeout: float,
+    *,
+    first_event_timeout: float | None,
+    retries: int,
+) -> float:
+    """공용 워치독 한 번의 최악 실행+정리 예산.
+
+    startup 재시도가 있으면 실패한 각 시도가 `min(first-event 창, wall)`까지 실행된 뒤 정리되고,
+    마지막 시도도 wall 백스톱 뒤 정리될 수 있다. 따라서 정리는 정확히 `retries + 1`회 산입한다.
+    startup 창이 꺼진 축은 전달된 retries를 무시해 기존 단일 시도 계약을 보존한다.
+    """
+    retry_count = max(0, int(retries)) if first_event_timeout is not None else 0
+    retry_runtime = (
+        retry_count * min(float(first_event_timeout), float(overall_timeout))
+        if first_event_timeout is not None else 0.0
+    )
+    cleanup = (retry_count + 1) * process_cleanup_budget_per_attempt()
+    return float(overall_timeout) + retry_runtime + cleanup
+
+
+def harness_cap_required_budget(execution_budget: float) -> float:
+    """엔진 실행+정리 뒤 진단/박제까지 마치기 위한 호출층 최소 상한."""
+    return float(execution_budget) + HARNESS_CAP_MARGIN_SEC
 
 
 class StallWatchdogError(RuntimeError):
@@ -937,7 +979,9 @@ def _silence_seconds(proc, now: float, start: float) -> float | None:
     if not callable(getter):
         return None
     last = getter()
-    return now - (start if last is None else last)
+    # reader가 `now` 취득 직후 더 최신 chunk 시각을 기록할 수 있다. 그 경합은 진행이 미래에서
+    # 왔다는 뜻이 아니라 관측 순서 차이이므로 감사값/판정 입력을 0 아래로 내리지 않는다.
+    return max(0.0, now - (start if last is None else last))
 
 
 def _drain_with_idle_judgment(proc, *, argv, start: float, idle_timeout: float,

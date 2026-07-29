@@ -122,15 +122,14 @@ READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 # 단언한다. 여유가 0이면 엔진이 자기 타임아웃을 분류(인프라 실패 → 폴백)하기 전에 하네스가 먼저
 # 죽여 진단이 통째로 사라진다(원인 불명 kill 8회의 한 축).
 #
-# 이 트리에서 `pytest ... --durations=30`으로 실제 종료 경로를 재었다:
-# 실 프로세스 kill+부분수확 1.05s, git scope audit 0.03s, fallback raw 체인 0.02s, 나머지
-# 분류·prompt 합성·secret scan은 각 0.01s 미만. 측정치만 그대로 쓰면 플랫폼 차를 못 담으므로,
-# kill은 pm_relay의 명시 grace 5s × primary/fallback 2회 = 10s로 잡고 나머지 7단계는 관측
-# 최댓값(0.03s)을 초 단위로 올린 1s씩 = 7s로 고정한다. 합 17s를 다음 10초 경계로 올린 20s가
-# 근거 있는 여유다. 출하 상한 29300s와 본체 최악 29160s 사이 실여유 140s가 이 값을 7배 담는다.
-_HARNESS_CAP_KILL_GRACE_BUDGET_SEC = 10
+# 이 트리에서 `pytest ... --durations=30`으로 실제 종료 경로를 재었다: git scope audit 0.03s,
+# fallback raw 체인 0.02s, 나머지 분류·prompt 합성·secret scan은 각 0.01s 미만. 이 보조 7단계는
+# 관측 최댓값을 초 단위로 올려 7s, 플랫폼 편차를 위해 다음 10초 경계로 올린다. 프로세스 정리는
+# 이 margin에 뭉뚱그리지 않는다 — pm_relay 공용 식이 부모 wait 5s + pipe drain 5s를 **시도마다**
+# 실행 예산에 직접 산입한다(startup 재시도 포함).
+_HARNESS_CAP_KILL_GRACE_BUDGET_SEC = 10  # 호환/감사용: 정리 1회의 연속 wait+drain 최악값.
 _HARNESS_CAP_MEASURED_AUX_BUDGET_SEC = 7
-_HARNESS_CAP_MARGIN_SEC = 20
+_HARNESS_CAP_MARGIN_SEC = 10
 
 # 인프라 실패 클래스 라벨(loud 메시지·raw provenance 에 그대로 실리는 안정 문자열).
 FAILURE_CLASS_LAUNCH = "스폰 실패/바이너리 부재"
@@ -144,7 +143,7 @@ FAILURE_CLASS_AUTH = "인증 실패"
 # _execute_attempt)만 세팅한다 — 하네스가 우연히 같은 rc 를 내도 분류되지 않는다.
 RUN_RESULT_LAUNCH_FAILED = "launch_failed"   # 바이너리 부재/PATH/exec 권한 — 프로세스가 뜨지 못함
 RUN_RESULT_STALLED = "stalled"               # opencode 첫-이벤트 stall(유한 재시도 소진·pm_relay)
-RUN_RESULT_CLEANUP_FAILED = "cleanup_failed" # kill/drain 실패 — 부분 산출물 보존 + 인프라 폴백
+RUN_RESULT_CLEANUP_FAILED = "cleanup_failed" # kill/drain 실패 — 부분 산출물 보존 + 자동 폴백 금지
 # 관측 침묵 초(마지막 진행 이벤트 이후) — 실패 신호가 아니라 **감사 관측치**다. 감사 헤더에 실려
 # 다음 kill 의 원인(하네스 상한 vs 무진행 vs 기타)을 사후 확정 가능하게 한다.
 RUN_RESULT_SILENCE_SEC = "silence_sec"
@@ -2092,8 +2091,6 @@ def classify_infrastructure_failure(result: RunResult) -> str | None:
         return None
     if result.get(RUN_RESULT_LAUNCH_FAILED):
         return FAILURE_CLASS_LAUNCH
-    if result.get(RUN_RESULT_CLEANUP_FAILED):
-        return FAILURE_CLASS_CLEANUP
     if bool(result.get("timed_out", False)):
         return FAILURE_CLASS_TIMEOUT
     # stall 은 엔진 신호가 1순위, stderr 마커는 백스톱(둘 다 엔진이 직접 찍는다 — 오분류 위험 0).
@@ -2285,12 +2282,13 @@ def _midrun_failure_result(harness: str, exc: BaseException) -> RunResult:
 
 
 def _cleanup_failure_result(harness: str, exc: BaseException) -> RunResult:
-    """kill/drain 실패를 부분 산출물과 명시 인프라 신호가 붙은 결과로 정규화한다."""
+    """kill/drain 실패를 부분 산출물과 **폴백 비대상** 명시 신호가 붙은 결과로 정규화한다."""
     return {
         "returncode": 1,
         "stdout": getattr(exc, "output", "") or "",
         "stderr": (
-            f"[{harness} 프로세스 정리 실패 — 인프라 실패: {exc}] "
+            f"[{harness} 프로세스 정리 실패: {exc} — 잔존 프로세스 가능성 때문에 자동 폴백 금지, "
+            "사람 확인 필요] "
             f"{getattr(exc, 'stderr', '') or ''}"
         ).rstrip(),
         "timed_out": False,
@@ -2704,24 +2702,32 @@ def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str], harness: st
 
 
 def _harness_timeout_budget(harness: str, timeout: int) -> int:
-    """하네스 **1회 실행**의 최악 소요 예산(초).
+    """하네스 **1회 실행+정리**의 최악 소요 예산(초).
 
     첫-이벤트 워치독을 **선언한 축**(프로필 startup_watchdog=True·현재 opencode)만 다르다 —
     워치독이 **시도마다** overall 예산을 새로 잡으므로 단일 실행이 timeout 을 넘을 수 있다.
     다만 stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로(`now >= first_deadline`
-    분기) 예산은 `timeout + retries×min(첫-이벤트 창, timeout)` 이다(opencode 기본 14400 + 2×90).
-    나머지 축은 재시도 0이라 turn timeout 그대로다. relay 노브(env PM_OC_STALL_RETRIES·
-    PM_OC_FIRST_EVENT_TIMEOUT)를 못 읽으면 보수적으로 timeout 을 그대로 쓴다.
+    분기), 실행 본체는 `timeout + retries×min(첫-이벤트 창, timeout)` 이다. 여기에 부모 wait 5초와
+    pipe drain 5초의 연속 정리를 **모든 시도(retries+1)** 에 더한다. 나머지 축도 timeout 뒤 정리
+    1회를 같은 공용 식으로 센다. relay 노브(env PM_OC_STALL_RETRIES·PM_OC_FIRST_EVENT_TIMEOUT)를
+    못 읽으면 재시도 0인 공용 식으로 계산한다.
     (무진행 판정은 벽시계 *안쪽* 에서만 앞당겨 끝내므로 이 상한을 늘리지 않는다.)"""
     try:
-        if not harness_profile(harness).startup_watchdog:
-            return timeout
         relay = _load_relay()
-        retries = max(0, int(relay.stall_retries_default()))
-        first_event_window = float(relay.first_event_timeout_default())
+        startup_watchdog = harness_profile(harness).startup_watchdog
+        retries = max(0, int(relay.stall_retries_default())) if startup_watchdog else 0
+        first_event_window = (
+            float(relay.first_event_timeout_default()) if startup_watchdog else None
+        )
     except (OSError, ValueError, TypeError, AttributeError, ImportError):
-        return timeout  # 선언/노브를 못 읽으면 보수적으로 turn timeout(과대 예고 금지).
-    return int(timeout + retries * min(first_event_window, timeout))
+        # 프로필/노브를 못 읽는 진단 경로에서도 호출층 상한을 낮게 예고하지 않는다. 공유 기본의
+        # 현재 최대 재시도(2회)가 각자 wall 전부를 쓸 수 있다고 잡고 정리 3회를 더하는 안전 상한.
+        return int(timeout * 3 + 3 * _HARNESS_CAP_KILL_GRACE_BUDGET_SEC)
+    return int(relay.watchdog_execution_budget(
+        timeout,
+        first_event_timeout=first_event_window,
+        retries=retries,
+    ))
 
 
 def max_declared_execution_path_budget() -> int:
@@ -2764,10 +2770,11 @@ def harness_cap_advisory(env: dict[str, str] | None = None,
     pm_harness, cap_key = _pm_harness_and_cap_env(env)
     if pm_harness is None or cap_key is None:
         return None
+    relay = _load_relay()
     required = max_declared_execution_path_budget()
     if execution_budget is not None:
         required = max(required, execution_budget)
-    required += _HARNESS_CAP_MARGIN_SEC
+    required = int(relay.harness_cap_required_budget(required))
     raw = env.get(cap_key)
     if raw is None:
         return (
@@ -2975,10 +2982,10 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 f"폴백 시간 예산: 최악 primary {primary_budget}s + 폴백 {fallback_budget}s = "
                 f"{primary_budget + fallback_budget}s (2차 폴백 없음{note})"
             )
-            # 본체 타임아웃 예산만 — 프로세스 kill/wait·출력 회수 등 정리 오버헤드(수초~수십초)는
-            # 하네스/플랫폼 의존이라 산입하지 않는다. 외부 감시자가 이 수치를 하드
-            # 데드라인으로 쓰면 완료 직전 종료될 수 있어 표기로 경고한다.
-            print("  (본체 예산만 — kill/정리 오버헤드 수초~수십초 별도 · 외부 하드 데드라인으로 쓰지 말 것)")
+            print(
+                "  (실행+정리 예산 — 부모 wait/pipe drain을 startup 재시도마다 산입; "
+                f"진단·raw 박제 여유 {_HARNESS_CAP_MARGIN_SEC}s는 호출층 상한에 별도)"
+            )
         print(f"cwd: {cwd}")
         print(f"argv: {' '.join(argv_display)}")
         _budget_note, transport_note = _dry_run_harness_annotations(harness)
@@ -3230,6 +3237,13 @@ def _execute_and_collect(
         actual_timeout = _timeout_result_summary(result, fallback_timeout=timeout)
         print(f"오류: 위임 turn 타임아웃({actual_timeout}) — 프로세스그룹 종료. raw: {raw_path}",
               file=sys.stderr)
+        return 1
+    if result.get(RUN_RESULT_CLEANUP_FAILED):
+        print(
+            "오류: 위임 프로세스 정리 실패 — primary가 아직 살아 있을 수 있어 자동 폴백을 "
+            f"실행하지 않습니다(중복 실행·과금·worktree 동시 편집 차단). 사람 확인 필요. raw: {raw_path}",
+            file=sys.stderr,
+        )
         return 1
     if rc != 0:
         print(f"오류: 위임 하네스 실패(rc={rc}). raw: {raw_path}\n"
