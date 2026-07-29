@@ -201,9 +201,10 @@ _HARNESS_SESSION_MARKERS: dict[str, tuple[str, ...]] = {
 
 # Bash 명시호출 최대상한 env 선언은 리뷰 진단의 고유 책임이다. 양쪽 카드가 timeout을 명시하므로
 # DEFAULT가 아니라 MAX가 실제 제약이다. Codex는 repo가 읽을 공개 Bash 상한 env가 없다.
-_REVIEW_HARNESS_CAP_ENV = {
-    "opencode": "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
+_REVIEW_HARNESS_CAP_ENV: dict[str, str | None] = {
+    "codex": None,
     "claude": "BASH_MAX_TIMEOUT_MS",
+    "opencode": "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
 }
 
 # 알려진 reviewer CLI의 **실행 파일 + 옵션 계약**. 함수 밖 선언이라 새 CLI/형식 추가가 판정 코드
@@ -939,34 +940,39 @@ def harness_cap_advisory(
     않으며 Codex처럼 공개 상한 env가 없는 표면은 판정하지 않는다.
     """
     env = os.environ if env is None else env
-    matches = [
-        harness for harness, markers in _HARNESS_SESSION_MARKERS.items()
+    matched_caps = tuple(
+        (harness, _REVIEW_HARNESS_CAP_ENV.get(harness))
+        for harness, markers in _HARNESS_SESSION_MARKERS.items()
         if any(env.get(marker) for marker in markers)
-    ]
-    if len(matches) != 1:
-        return None
-    harness = matches[0]
-    cap_key = _REVIEW_HARNESS_CAP_ENV.get(harness)
-    if cap_key is None:
+    )
+    matched_caps = tuple(
+        (harness, cap_key)
+        for harness, cap_key in matched_caps
+        if cap_key is not None
+    )
+    if not matched_caps:
         return None
     relay = _load_relay()
     required = int(relay.harness_cap_required_budget(execution_budget))
-    raw = env.get(cap_key)
-    try:
-        cap_seconds = int(raw) / 1000.0
-    except (TypeError, ValueError, OverflowError):
-        return (
-            f"[external-review] 경고: {harness} 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
-            f"리뷰 실행+재시도별 정리+박제 여유 {required}s 이상을 Bash tool timeout으로 명시하세요."
-        )
-    if cap_seconds < required:
-        return (
-            f"[external-review] 경고: {harness} 호출층 최대상한 "
-            f"{cap_key}={cap_seconds:g}s < "
-            f"리뷰 실행+재시도별 정리+박제 여유 {required}s — 엔진 진단/부분 산출물 보존 전에 하네스가 kill할 수 "
-            "있습니다. Bash tool 호출에 장시간 timeout을 명시하세요."
-        )
-    return None
+    warnings = []
+    for harness, cap_key in matched_caps:
+        raw = env.get(cap_key)
+        try:
+            cap_seconds = int(raw) / 1000.0
+        except (TypeError, ValueError, OverflowError):
+            warnings.append(
+                f"[external-review] 경고: {harness} 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
+                f"리뷰 실행+재시도별 정리+박제 여유 {required}s 이상을 Bash tool timeout으로 명시하세요."
+            )
+            continue
+        if cap_seconds < required:
+            warnings.append(
+                f"[external-review] 경고: {harness} 호출층 최대상한 "
+                f"{cap_key}={cap_seconds:g}s < "
+                f"리뷰 실행+재시도별 정리+박제 여유 {required}s — 엔진 진단/부분 산출물 보존 전에 하네스가 kill할 수 "
+                "있습니다. Bash tool 호출에 장시간 timeout을 명시하세요."
+            )
+    return "\n".join(warnings) or None
 
 
 def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:

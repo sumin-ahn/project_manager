@@ -8,9 +8,15 @@ from pathlib import Path
 
 import pytest
 
+from _win_skip import _can_symlink
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+requires_symlink = pytest.mark.skipif(
+    not _can_symlink(),
+    reason="Windows: symlink requires Developer Mode/admin",
+)
 
 
 def _load(name: str, filename: str):
@@ -96,6 +102,19 @@ def test_tracked_only_real_git_excludes_untracked_and_ignored(repo_files, tmp_pa
     assert [path.as_posix() for path in got] == ["ship/tracked.txt"]
 
 
+def test_tracked_only_empty_is_loud_when_disk_subtree_is_nonempty(repo_files, tmp_path):
+    repo = _repo(tmp_path)
+    ship = repo / "ship"
+    ship.mkdir()
+    (ship / "untracked.txt").write_text("local\n", encoding="utf-8")
+
+    with pytest.warns(repo_files.RepoFilesEmptyWarning, match="빈 결과.*비어 있지 않음"):
+        got = repo_files.list_repo_owned_files(
+            repo, "ship", mode=repo_files.TRACKED_ONLY)
+
+    assert got == []
+
+
 def test_owned_real_git_includes_nonignored_untracked_only(repo_files, tmp_path):
     repo = _repo(tmp_path)
     scan = repo / "scan"
@@ -152,6 +171,64 @@ def test_pm_update_directory_shipping_uses_tracked_only(repo_files, tmp_path):
     assert got == ["engine/tracked.py"]
 
 
+def test_pm_update_skips_deleted_tracked_entry_loudly(tmp_path):
+    pm_update = _load("pm_update_deleted_tracked_test", "pm_update.py")
+    repo = _repo(tmp_path)
+    ship = repo / "ship"
+    ship.mkdir()
+    deleted = ship / "deleted.txt"
+    deleted.write_text("tracked\n", encoding="utf-8")
+    _git(repo, "add", "ship/deleted.txt")
+    deleted.unlink()
+
+    with pytest.warns(
+        pm_update.SkippedRepoShippingEntryWarning,
+        match="working tree에서 삭제됨.*ship/deleted.txt",
+    ):
+        got = list(pm_update._iter_files(repo, "ship"))
+
+    assert got == []
+
+
+@requires_symlink
+def test_pm_update_skips_tracked_directory_symlink_loudly(tmp_path):
+    pm_update = _load("pm_update_directory_symlink_test", "pm_update.py")
+    repo = _repo(tmp_path)
+    ship = repo / "ship"
+    outside = tmp_path / "outside"
+    ship.mkdir()
+    outside.mkdir()
+    (outside / "payload.txt").write_text("outside\n", encoding="utf-8")
+    (ship / "directory-link").symlink_to(outside, target_is_directory=True)
+    _git(repo, "add", "ship/directory-link")
+
+    with pytest.warns(
+        pm_update.SkippedRepoShippingEntryWarning,
+        match=r"symlink.*ship/directory-link",
+    ):
+        got = list(pm_update._iter_files(repo, "ship"))
+
+    assert got == []
+
+
+def test_pm_update_reports_untracked_exclusion_count(tmp_path, capsys):
+    pm_update = _load("pm_update_untracked_signal_test", "pm_update.py")
+    repo = _repo(tmp_path)
+    ship = repo / "ship"
+    ship.mkdir()
+    (ship / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    (ship / "untracked.txt").write_text("local\n", encoding="utf-8")
+    _git(repo, "add", "ship/tracked.txt")
+
+    got = list(pm_update._iter_files(repo, "ship"))
+
+    assert [rel for rel, _path in got] == ["ship/tracked.txt"]
+    assert (
+        "pm-update: untracked 1건 제외 — git add 후 전파됨"
+        in capsys.readouterr().err
+    )
+
+
 def test_pm_import_dest_fallback_uses_owned_mode(repo_files, tmp_path):
     pm_import = _load("pm_import_repo_files_test", "pm_import.py")
     repo = _repo(tmp_path)
@@ -166,14 +243,50 @@ def test_pm_import_dest_fallback_uses_owned_mode(repo_files, tmp_path):
     assert got == {Path(".gitignore"), Path("tracked.md"), Path("new.md")}
 
 
-def test_pm_import_non_git_dest_fallback_warning_is_visible(repo_files, tmp_path):
+def test_pm_import_non_git_dest_fallback_warning_is_visible(tmp_path):
     pm_import = _load("pm_import_repo_files_nongit_test", "pm_import.py")
+    repo_files = pm_import._load_repo_owned_files()
     dest = tmp_path / "adopter"
     dest.mkdir()
     (dest / "copied.md").write_text("copied\n", encoding="utf-8")
 
-    with pytest.warns(RuntimeWarning, match="filesystem 전수 순회에 강등"):
+    with pytest.warns(
+        repo_files.RepoFilesFallbackWarning,
+        match="filesystem 전수 순회에 강등",
+    ):
         assert pm_import._resolve_fill_scope(dest, None) == {Path("copied.md")}
+
+
+@requires_symlink
+def test_pm_import_dest_walk_excludes_directory_symlink(repo_files, tmp_path):
+    pm_import = _load("pm_import_repo_files_symlink_test", "pm_import.py")
+    repo = _repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "payload.md").write_text("outside\n", encoding="utf-8")
+    (repo / "kept.md").write_text("kept\n", encoding="utf-8")
+    (repo / "directory-link").symlink_to(outside, target_is_directory=True)
+    _git(repo, "add", "kept.md", "directory-link")
+
+    assert pm_import._resolve_fill_scope(repo, None) == {Path("kept.md")}
+
+
+def test_repo_owned_loader_cache_preserves_warning_class_identity():
+    pm_update = _load("pm_update_repo_files_identity_test", "pm_update.py")
+    pm_import = _load("pm_import_repo_files_identity_test", "pm_import.py")
+    domain = _load("domain_repo_files_identity_test", "domain.py")
+
+    update_first = pm_update._load_repo_owned_files()
+    update_second = pm_update._load_repo_owned_files()
+    import_module = pm_import._load_repo_owned_files()
+    domain_module = domain._load_repo_owned_files()
+
+    assert update_first is update_second is import_module is domain_module
+    assert (
+        update_first.RepoFilesFallbackWarning
+        is import_module.RepoFilesFallbackWarning
+        is domain_module.RepoFilesFallbackWarning
+    )
 
 
 def test_pm_import_normal_copied_scope_never_enters_dest_walk(tmp_path, monkeypatch):

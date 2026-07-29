@@ -174,11 +174,27 @@ def _load_repo_coordinates():
 
 def _load_repo_owned_files():
     """공용 repo 소유 파일 열거 seam을 로드한다. 부재/손상은 호출부가 fail-loud 한다."""
-    module = _load_module("repo_owned_files", "repo_owned_files.py")
-    if module is None:
+    path = TOOLS_DIR / "repo_owned_files.py"
+    if not path.exists():
         raise RuntimeError(
             "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
         )
+    module_name = f"_project_manager_repo_owned_files:{path.resolve()}"
+    module = sys.modules.get(module_name)
+    if module is not None:
+        return module
+    try:
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("module spec/loader 부재")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        sys.modules.pop(module_name, None)
+        raise RuntimeError(
+            "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
+        ) from exc
     return module
 
 
@@ -1035,21 +1051,19 @@ def _files_for_directory_touch(touch: str) -> list[str]:
 
     repo_files = _load_repo_owned_files()
     try:
-        relative_files = [
-            path.as_posix()
-            for path in repo_files.list_repo_owned_files(
-                checkout,
-                norm,
-                mode=repo_files.OWNED,
-                git_runner=_real_git_runner(checkout),
-            )
-        ]
+        relative_files = repo_files.list_repo_owned_files(
+            checkout,
+            norm,
+            mode=repo_files.OWNED,
+            git_runner=_real_git_runner(checkout),
+        )
     except OSError:
         return [touch]
 
     expanded: list[str] = []
     reconstruction_failures = 0
-    for relative in sorted(dict.fromkeys(relative_files)):
+    for relative_path in relative_files:
+        relative = relative_path.as_posix()
         candidate = _touch_with_relative_path(touch, relative)
         if type(candidate) is _CoordinatePath and type(touch) is not _CoordinatePath:
             reconstruction_failures += 1

@@ -3274,25 +3274,48 @@ def test_runtime_opencode_cap_missing_is_loud(pd, monkeypatch):
     assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS 미해소" in warning
 
 
+def test_runtime_harness_cap_table_matches_session_markers(pd):
+    """상한 표는 모든 세션 감지 축을 빠짐없이 명시한다."""
+    assert set(pd._DELEGATE_HARNESS_CAP_ENV) == set(pd._HARNESS_SESSION_MARKERS)
+
+
 @pytest.mark.parametrize("key", ("OPENCODE_CONFIG", "CLAUDE_CONFIG_DIR",
                                   "OPENCODE_CONFIG_DIR"))
 def test_runtime_harness_cap_ignores_config_and_unmeasured_keys(pd, key):
     """설정 경로와 세션 근거 없는 키는 PM 하네스 및 상한 선언을 선택하지 않는다."""
-    assert pd._pm_harness_and_cap_env({key: "configured"}) == (None, None)
+    assert pd._pm_harness_and_cap_env({key: "configured"}) == ()
 
 
-def test_runtime_harness_cap_multiple_session_markers_are_ambiguous(pd):
-    """둘 이상의 실측 세션이 겹치면 선언 순서로 상한을 고르지 않는다."""
+def test_runtime_harness_cap_warns_for_all_nested_session_axes(pd, monkeypatch):
+    """둘 이상의 실측 세션이 겹치면 각 공개 상한을 모두 검사한다."""
+    monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 10)
     env = {"OPENCODE": "child", "CLAUDECODE": "parent"}
-    assert pd._pm_harness_and_cap_env(env) == (None, None)
-    assert pd.harness_cap_advisory(env) is None
+    assert pd._pm_harness_and_cap_env(env) == (
+        ("claude", "BASH_MAX_TIMEOUT_MS"),
+        ("opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
+    )
+    warning = pd.harness_cap_advisory(env)
+    assert warning is not None
+    assert warning.count("[pm-delegate] 경고:") == 2
+    assert "BASH_MAX_TIMEOUT_MS" in warning
+    assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS" in warning
 
 
 def test_runtime_harness_cap_accepts_secondary_opencode_session_marker(pd):
     """OpenCode가 세션에 주입하는 보조 마커도 공용 표를 통해 상한 선언을 선택한다."""
     assert pd._pm_harness_and_cap_env({"OPENCODE_PID": "123"}) == (
-        "opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
+        ("opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
     )
+
+
+def test_runtime_harness_cap_unknown_marker_is_never_blocking(pd, monkeypatch):
+    """상한 표보다 세션 마커가 먼저 늘어나도 조회 실패로 위임을 막지 않는다."""
+    markers = {**pd._HARNESS_SESSION_MARKERS, "gemini": ("GEMINI_SESSION",)}
+    monkeypatch.setattr(pd, "_HARNESS_SESSION_MARKERS", markers)
+    env = {"GEMINI_SESSION": "session"}
+
+    assert pd._pm_harness_and_cap_env(env) == (("gemini", None),)
+    assert pd.harness_cap_advisory(env) is None
 
 
 def test_dry_run_shows_fallback_time_budget(pd, monkeypatch, tmp_path, capsys):
@@ -3906,3 +3929,11 @@ def test_native_advisory_multiple_harness_markers_are_ambiguous(pd, monkeypatch)
 
     assert pd.native_advisory("codex") is None
     assert pd.native_advisory("claude") is None
+
+
+def test_native_advisory_rejects_values_outside_public_domain(pd, monkeypatch):
+    """공개 하네스 도메인 밖 값과 미지정 값은 native 안내 대상이 아니다."""
+    _clear_native_advisory_env(monkeypatch)
+
+    assert pd.native_advisory("gemini") is None
+    assert pd.native_advisory(None) is None

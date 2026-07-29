@@ -63,6 +63,23 @@ def _write_dest_manifest(dest_root: Path, entries: list[str]) -> Path:
     return manifest
 
 
+def _init_tracked_fixture_repo(root: Path) -> None:
+    """directory-manifest fixture를 실제 tracked checkout으로 만들어 fallback 경고를 막는다."""
+    root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "-C", str(root), "init", "-q"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "add", "-A"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
 def _make_upstream_manifest(root: Path, entries: list[str]) -> None:
     """source(upstream) 트리 — 등재 경로별 sentinel 파일 + 그를 담은 engine.manifest.
 
@@ -1869,6 +1886,7 @@ def test_plan_specific_file_source_overrides_shared_directory_source(pm_update, 
         ".agents/skills/pm-dev-delegate/SKILL.md "
         "@source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
     ]))
+    _init_tracked_fixture_repo(source)
 
     changes, missing = pm_update.plan(source, entries, dest_root=dest)
 
@@ -1894,6 +1912,7 @@ def test_plan_missing_specific_override_never_falls_back_to_shared_skill(pm_upda
         ".agents/skills @source=.claude/skills",
         f"{override_dest} @source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
     ]))
+    _init_tracked_fixture_repo(source)
 
     changes, missing = pm_update.plan(source, entries, dest_root=dest)
 
@@ -1920,6 +1939,7 @@ def test_plan_specific_override_is_idempotent_not_replaced_by_parent(pm_update, 
         ".agents/skills/pm-dev-delegate/SKILL.md "
         "@source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
     ]))
+    _init_tracked_fixture_repo(source)
 
     changes, missing = pm_update.plan(source, entries, dest_root=dest)
 
@@ -1960,6 +1980,7 @@ def test_self_update_propagates_opencode_adapters_from_templates_source(
         encoding="utf-8",
     )
     _write_local_conf(fake_repo, f"upstream={stored}\nexternal_review_enabled=false\n")
+    _init_tracked_fixture_repo(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main([])  # 실 sync(apply)
@@ -2026,6 +2047,7 @@ def test_target_opencode_source_channel_self_copy_noop(pm_update, tmp_path, monk
         encoding="utf-8",
     )
     _write_local_conf(oc_dir, f"upstream={fake_repo}\nexternal_review_enabled=false\n")
+    _init_tracked_fixture_repo(fake_repo)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--target", "opencode", "--dry-run"])
@@ -2054,6 +2076,7 @@ def test_claude_render_only_entry_unaffected_by_source_channel(
     dest_manifest.parent.mkdir(parents=True, exist_ok=True)
     dest_manifest.write_text(".claude/agents  @render\n", encoding="utf-8")
     _write_local_conf(fake_repo, f"upstream={stored}\nexternal_review_enabled=false\n")
+    _init_tracked_fixture_repo(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main([])
@@ -2088,6 +2111,7 @@ def test_render_with_source_marker_renders_operational_tokens(
     _write_local_conf(
         fake_repo,
         f"upstream={stored}\nproject_name=AcmePay\nexternal_review_enabled=false\n")
+    _init_tracked_fixture_repo(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main([])

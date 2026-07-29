@@ -41,6 +41,110 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*.md'",
     ): WalkException("T-0500이 private-context 판정 인벤토리를 공용 seam으로 전환할 때 제거", 3),
+    (
+        "tests/test_pm_render.py",
+        "test_adapter_surfaces_no_machine_variant_tokens",
+        "rglob",
+        "'*.md'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "REPO의 canonical/template 어댑터 표면 6곳을 스캔"),
+    (
+        "tests/test_adapter_session_identity.py",
+        "_scanned_files",
+        "rglob",
+        "'*.md'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "_SCANNED_DIRS 아래 REPO 문서를 스캔"),
+    (
+        "tests/test_adapter_free_form_free.py",
+        "test_render_scoped_dir_present_and_nonempty",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "REPO template render-scoped 디렉토리의 실 파일 존재를 전수 판정"),
+    (
+        "tests/test_adapter_free_form_free.py",
+        "_render_scoped_text_files",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "REPO template render-scoped 파일의 토큰 인벤토리를 구성"),
+    (
+        "tests/test_template_ignore_files_tracked.py",
+        "_ondisk_ignore_relpaths",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "REPO/templates 디스크 ignore 파일과 git tracked 목록을 대조"),
+    (
+        "tests/test_manifest_template_parity.py",
+        "_expand_manifest_files",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "REPO와 template manifest 디렉토리를 파일 단위로 전개"),
+    (
+        "tests/test_flag_unification_parity.py",
+        "_scan_paths_for_old_flags",
+        "rglob",
+        "'*.md'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "REPO의 선언된 문서 디렉토리에서 폐기 flag를 전수 검사"),
+    (
+        "tests/test_settings_hygiene.py",
+        "_long_engine_command_markdown",
+        "rglob",
+        "'*.md'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "기본 인자 _REPO 아래 PM-facing Markdown을 내용으로 선별"),
+    (
+        "tests/test_pm_handoff_shipping.py",
+        "_expand_manifest_shipping_paths",
+        "os.walk",
+        "abs_p",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "REPO engine.manifest 디렉토리를 출하 파일로 전개"),
+    (
+        "tests/test_opencode_command_skill_pairing.py",
+        "_skill_files",
+        "rglob",
+        "'SKILL.md'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "REPO canonical과 opencode template 스킬 미러를 대조"),
+    (
+        "tests/test_opencode_adapter_v2_docs.py",
+        "test_no_shipped_opencode_doc_points_to_removed_agents_anchors",
+        "rglob",
+        "'*.md'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "REPO의 출하 opencode template 문서를 전수 검사"),
+    (
+        "tests/test_skill_command_existence.py",
+        "_iter_md_files",
+        "rglob",
+        "'*.md'",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "_SCAN_DIRS가 가리키는 REPO 문서 인벤토리를 구성"),
+    (
+        "tests/test_terminology.py",
+        "_canonical_source_files",
+        "glob.glob(recursive=True)",
+        "str(REPO / g)",
+    ): WalkException(
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "REPO 방법론 template 재귀 glob에서 폐기 용어 검사 파일을 구성"),
 }
 
 
@@ -83,44 +187,121 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException("engine.manifest @render가 선언한 adapter overlay 경로만 검사"),
+    (
+        "tests/test_repo_tree_walk_guard.py",
+        "_walk_calls",
+        "rglob",
+        "'*.py'",
+    ): WalkException("정적 가드가 guarded 하위 디렉토리의 Python 파일 자체를 재귀 발견"),
+    (
+        "tests/test_entry_doc_migration.py",
+        "test_scenario_unmodified_auto_migrate",
+        "rglob",
+        "'AGENTS.md'",
+    ): WalkException("tmp_path adopter에서 migrate가 생성한 중앙 백업 fixture만 검증"),
+    (
+        "tests/test_fresh_adopter_e2e.py",
+        "test_fresh_adopter_excludes_framework_internal_readme",
+        "rglob",
+        "'*.md'",
+    ): WalkException("tmp_path에 fresh import한 adopter fixture의 dangling 문서 링크만 검증"),
+    (
+        "tests/test_fresh_adopter_e2e.py",
+        "_snapshot_tree",
+        "rglob",
+        "'*'",
+    ): WalkException("tmp_path에 생성한 adopter fixture의 add-harness 전후 바이트 스냅샷"),
+    (
+        "tests/test_board_lint.py",
+        "_old_collect",
+        "rglob",
+        "pat",
+    ): WalkException("tmp_path 합성 adapter fixture에서 의도적으로 복원한 옛 수집기의 sensitivity 대조"),
+    (
+        "tests/test_pm_import.py",
+        "_grep_token_files",
+        "rglob",
+        "'*'",
+    ): WalkException("tmp_path import/add-harness 산출 fixture의 토큰 잔존만 검사"),
+    (
+        "tests/test_pm_import.py",
+        "_opencode_dest_with_token",
+        "rglob",
+        "'*'",
+    ): WalkException("tmp_path에 import한 opencode fixture를 토큰 치환 전 상태로 되돌리는 테스트 준비"),
+    (
+        "tests/test_pm_import.py",
+        "_copied_relpaths_of",
+        "rglob",
+        "'*'",
+    ): WalkException("tmp_path import fixture 전체를 함수 단위 copied_relpaths 입력으로 모델링"),
+    (
+        "tests/test_pm_import.py",
+        "test_add_harness_apply_claude_creates_adapter_and_preserves_devstate",
+        "rglob",
+        "'SKILL.md'",
+    ): WalkException("tmp_path live-instance fixture의 add-harness 전 스킬 바이트 스냅샷"),
+    (
+        "tests/test_pm_import.py",
+        "test_non_git_target_all_central_backup_no_siblings",
+        "rglob",
+        "'*.backup.*'",
+    ): WalkException("tmp_path non-git adopter fixture에 분산 형제 백업이 생기지 않았음을 검증"),
+    (
+        "tests/test_pm_import.py",
+        "test_add_harness_apply_refresh_backs_up_and_stays_scoped",
+        "rglob",
+        "'agents/pm.md'",
+    ): WalkException("tmp_path refresh fixture가 만든 중앙 backup 산출물만 검증"),
+    (
+        "tests/test_pm_import.py",
+        "test_add_harness_opencode_guest_cross_ns_skills_by_host",
+        "rglob",
+        "'SKILL.md'",
+    ): WalkException("tmp_path host fixture에 add-harness가 landing한 cross-namespace 스킬을 검증"),
+    (
+        "tests/test_pm_import.py",
+        "test_codex_scaffold_no_unresolved_token_leak",
+        "rglob",
+        "'*'",
+    ): WalkException("tmp_path에 fresh import한 codex scaffold fixture의 토큰 leak만 검증"),
+    (
+        "tests/test_pm_import.py",
+        "_lite_md_files",
+        "rglob",
+        "'*.lite.md'",
+    ): WalkException("tmp_path import fixture에 배치 후 남은 lite 변종이 없는지 검증"),
+    (
+        "tests/test_pm_import.py",
+        "test_import_excludes_pycache",
+        "rglob",
+        "'__pycache__'",
+    ): WalkException("tmp_path import fixture에서 제외돼야 할 cache 디렉토리 산출만 검증"),
+    (
+        "tests/test_pm_import.py",
+        "test_import_excludes_pycache",
+        "rglob",
+        "'*.pyc'",
+    ): WalkException("tmp_path import fixture에서 제외돼야 할 bytecode 산출만 검증"),
+    (
+        "tests/test_pm_import.py",
+        "test_add_harness_codex_refresh_quietly_preserves_identical_instance_config",
+        "rglob",
+        "Path(rel).name",
+    ): WalkException("tmp_path refresh fixture가 불필요한 config backup을 만들지 않았음을 검증"),
+    (
+        "tests/test_pm_import.py",
+        "test_add_harness_apply_zero_operational_token_leak",
+        "rglob",
+        "'*'",
+    ): WalkException("tmp_path add-harness fixture의 각 landing namespace가 nonempty인지 검증"),
+    (
+        "tests/test_adapter_token_substitution.py",
+        "_token_leaks",
+        "rglob",
+        "'*'",
+    ): WalkException("tmp_path에 fresh import한 adapter fixture의 치환 결과만 검사"),
 }
-
-_FIXTURE_WALK_KEYS: tuple[WalkKey, ...] = (
-    ("tests/test_pm_render.py", "test_adapter_surfaces_no_machine_variant_tokens", "rglob", "'*.md'"),
-    ("tests/test_entry_doc_migration.py", "test_scenario_unmodified_auto_migrate", "rglob", "'AGENTS.md'"),
-    ("tests/test_fresh_adopter_e2e.py", "test_fresh_adopter_excludes_framework_internal_readme", "rglob", "'*.md'"),
-    ("tests/test_fresh_adopter_e2e.py", "_snapshot_tree", "rglob", "'*'"),
-    ("tests/test_adapter_session_identity.py", "_scanned_files", "rglob", "'*.md'"),
-    ("tests/test_board_lint.py", "_old_collect", "rglob", "pat"),
-    ("tests/test_pm_import.py", "_grep_token_files", "rglob", "'*'"),
-    ("tests/test_pm_import.py", "_opencode_dest_with_token", "rglob", "'*'"),
-    ("tests/test_pm_import.py", "_copied_relpaths_of", "rglob", "'*'"),
-    ("tests/test_pm_import.py", "test_add_harness_apply_claude_creates_adapter_and_preserves_devstate", "rglob", "'SKILL.md'"),
-    ("tests/test_pm_import.py", "test_non_git_target_all_central_backup_no_siblings", "rglob", "'*.backup.*'"),
-    ("tests/test_pm_import.py", "test_add_harness_apply_refresh_backs_up_and_stays_scoped", "rglob", "'agents/pm.md'"),
-    ("tests/test_pm_import.py", "test_add_harness_opencode_guest_cross_ns_skills_by_host", "rglob", "'SKILL.md'"),
-    ("tests/test_pm_import.py", "test_codex_scaffold_no_unresolved_token_leak", "rglob", "'*'"),
-    ("tests/test_pm_import.py", "_lite_md_files", "rglob", "'*.lite.md'"),
-    ("tests/test_pm_import.py", "test_import_excludes_pycache", "rglob", "'__pycache__'"),
-    ("tests/test_pm_import.py", "test_import_excludes_pycache", "rglob", "'*.pyc'"),
-    ("tests/test_pm_import.py", "test_add_harness_codex_refresh_quietly_preserves_identical_instance_config", "rglob", "Path(rel).name"),
-    ("tests/test_pm_import.py", "test_add_harness_apply_zero_operational_token_leak", "rglob", "'*'"),
-    ("tests/test_adapter_free_form_free.py", "test_render_scoped_dir_present_and_nonempty", "rglob", "'*'"),
-    ("tests/test_adapter_free_form_free.py", "_render_scoped_text_files", "rglob", "'*'"),
-    ("tests/test_template_ignore_files_tracked.py", "_ondisk_ignore_relpaths", "rglob", "'*'"),
-    ("tests/test_manifest_template_parity.py", "_expand_manifest_files", "rglob", "'*'"),
-    ("tests/test_flag_unification_parity.py", "_scan_paths_for_old_flags", "rglob", "'*.md'"),
-    ("tests/test_settings_hygiene.py", "_long_engine_command_markdown", "rglob", "'*.md'"),
-    ("tests/test_pm_handoff_shipping.py", "_expand_manifest_shipping_paths", "os.walk", "abs_p"),
-    ("tests/test_opencode_command_skill_pairing.py", "_skill_files", "rglob", "'SKILL.md'"),
-    ("tests/test_adapter_token_substitution.py", "_token_leaks", "rglob", "'*'"),
-    ("tests/test_opencode_adapter_v2_docs.py", "test_no_shipped_opencode_doc_points_to_removed_agents_anchors", "rglob", "'*.md'"),
-    ("tests/test_skill_command_existence.py", "_iter_md_files", "rglob", "'*.md'"),
-)
-for _key in _FIXTURE_WALK_KEYS:
-    REVIEWED_NON_INVENTORY_EXCEPTIONS[_key] = WalkException(
-        "격리된 생성 fixture/선언 경로의 결과를 검증하는 테스트 보조 순회"
-    )
 
 ALL_EXCEPTIONS = {**MIGRATION_EXCEPTIONS, **REVIEWED_NON_INVENTORY_EXCEPTIONS}
 
@@ -130,6 +311,31 @@ class _WalkVisitor(ast.NodeVisitor):
         self.relative = relative
         self.functions: list[str] = []
         self.calls: list[WalkKey] = []
+        self.os_modules: set[str] = {"os"}
+        self.ast_modules: set[str] = {"ast"}
+        self.glob_modules: set[str] = {"glob"}
+        self.os_walk_functions: set[str] = set()
+        self.glob_functions: set[str] = set()
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            local = alias.asname or alias.name
+            if alias.name == "os":
+                self.os_modules.add(local)
+            elif alias.name == "ast":
+                self.ast_modules.add(local)
+            elif alias.name == "glob":
+                self.glob_modules.add(local)
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            local = alias.asname or alias.name
+            if node.module == "os" and alias.name == "walk":
+                self.os_walk_functions.add(local)
+            elif node.module == "glob" and alias.name == "glob":
+                self.glob_functions.add(local)
+        self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self.functions.append(node.name)
@@ -146,14 +352,51 @@ class _WalkVisitor(ast.NodeVisitor):
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "walk"
             and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "os"
+            and node.func.value.id in self.os_modules
         ):
             kind = "os.walk"
+        elif (
+            isinstance(node.func, ast.Name)
+            and node.func.id in self.os_walk_functions
+        ):
+            kind = "os.walk"
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "walk"
+            and not (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in self.ast_modules
+            )
+        ):
+            kind = "Path.walk"
+        elif self._is_recursive_glob_call(node):
+            kind = "glob.glob(recursive=True)"
         if kind is not None:
             argument = ast.unparse(node.args[0]) if node.args else ""
             function = self.functions[-1] if self.functions else "<module>"
             self.calls.append((self.relative, function, kind, argument))
         self.generic_visit(node)
+
+    def _is_recursive_glob_call(self, node: ast.Call) -> bool:
+        if isinstance(node.func, ast.Attribute):
+            is_glob = (
+                node.func.attr == "glob"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in self.glob_modules
+            )
+        else:
+            is_glob = (
+                isinstance(node.func, ast.Name)
+                and node.func.id in self.glob_functions
+            )
+        if not is_glob:
+            return False
+        return any(
+            keyword.arg == "recursive"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in node.keywords
+        )
 
 
 def _walk_calls(repo_root: Path) -> list[WalkKey]:
@@ -162,7 +405,7 @@ def _walk_calls(repo_root: Path) -> list[WalkKey]:
         directory = repo_root / relative_dir
         if not directory.is_dir():
             continue
-        for path in sorted(directory.glob("*.py")):
+        for path in sorted(directory.rglob("*.py")):
             visitor = _WalkVisitor(path.relative_to(repo_root).as_posix())
             visitor.visit(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
             calls.extend(visitor.calls)
@@ -201,6 +444,27 @@ def test_repo_tree_walks_have_reviewed_nonempty_exceptions_only():
     [
         ("future_tool.py", "def collect(root):\n    return root.rglob('*')\n", "rglob"),
         ("future_script.py", "import os\ndef collect(root):\n    return os.walk(root)\n", "os.walk"),
+        (
+            "future_os_alias.py",
+            "import os as operating\ndef collect(root):\n    return operating.walk(root)\n",
+            "os.walk",
+        ),
+        (
+            "future_from_os.py",
+            "from os import walk as tree_walk\ndef collect(root):\n    return tree_walk(root)\n",
+            "os.walk",
+        ),
+        (
+            "future_path_walk.py",
+            "from pathlib import Path\ndef collect(root):\n    return Path(root).walk()\n",
+            "Path.walk",
+        ),
+        (
+            "future_recursive_glob.py",
+            "import glob\ndef collect(root):\n"
+            "    return glob.glob(str(root / '**' / '*.md'), recursive=True)\n",
+            "glob.glob(recursive=True)",
+        ),
         ("test_future_inventory.py", "def collect(root):\n    return root.rglob('*.md')\n", "rglob"),
     ],
 )
@@ -218,6 +482,24 @@ def test_guard_sensitivity_rejects_new_walk_in_any_guarded_class(
     unauthorized, _stale, _blank = _audit(tmp_path, exceptions={})
 
     assert any(key[2] == kind and key[0].endswith(filename) for key in unauthorized)
+
+
+def test_guard_recursively_scans_nested_python_files(tmp_path):
+    target = tmp_path / "tests" / "data" / "nested" / "inventory.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "def collect(root):\n    return root.rglob('*.md')\n",
+        encoding="utf-8",
+    )
+
+    unauthorized, _stale, _blank = _audit(tmp_path, exceptions={})
+
+    assert (
+        "tests/data/nested/inventory.py",
+        "collect",
+        "rglob",
+        "'*.md'",
+    ) in unauthorized
 
 
 def test_guard_rejects_blank_exception_reason(tmp_path):

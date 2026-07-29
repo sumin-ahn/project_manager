@@ -37,6 +37,10 @@ class RepoFilesFallbackWarning(RuntimeWarning):
     """git 열거 보장이 사라져 filesystem 전수 순회로 강등됐다는 loud 신호."""
 
 
+class RepoFilesEmptyWarning(RuntimeWarning):
+    """tracked-only가 비어 실제 비어 있지 않은 subtree를 누락할 수 있다는 loud 신호."""
+
+
 def _real_git_runner(cwd: Path) -> GitRunner:
     """``git -C <cwd>`` argv runner. 실패는 rc!=0으로 돌려 폴백 경로에 맡긴다."""
     git_binary = shutil.which("git")
@@ -67,7 +71,7 @@ def list_repo_owned_files(
     mode: RepoFileMode,
     git_runner: GitRunner | None = None,
 ) -> list[Path]:
-    """``checkout`` 기준 ``subtree`` 아래 repo 소유 파일 엔트리를 POSIX 상대경로로 반환한다.
+    """``checkout`` 기준 ``subtree`` 아래 repo 소유 파일 엔트리를 상대 ``Path``로 반환한다.
 
     git 성공 결과는 working-tree 상태로 재검사하지 않는다. ``ls-files``가 이미 ignore와
     pathspec을 적용한 git 파일형 엔트리의 진실이며, ``is_file()`` 재검사는 symlink와 mode
@@ -104,6 +108,20 @@ def list_repo_owned_files(
             # ls-files가 이미 ignore와 pathspec을 적용한 git 파일형 엔트리의 진실이다.
             # working-tree is_file() 재검사는 symlink와 mode 160000 gitlink를 거짓 탈락시킨다.
             relative_files.append(Path(candidate_text))
+        directory = checkout_path / norm
+        if mode == TRACKED_ONLY and not relative_files and directory.is_dir():
+            try:
+                disk_nonempty = next(directory.iterdir(), None) is not None
+            except OSError:
+                disk_nonempty = False
+            if disk_nonempty:
+                warnings.warn(
+                    "repo-owned tracked_only 열거가 빈 결과지만 디스크 subtree는 비어 있지 않음 "
+                    f"(checkout={checkout_path}, subtree={norm!r}); git add/ignore 상태와 "
+                    "checkout 루트 정합을 확인하라",
+                    RepoFilesEmptyWarning,
+                    stacklevel=2,
+                )
     else:
         warnings.warn(
             "repo-owned 파일 열거가 git ls-files 실패로 filesystem 전수 순회에 강등됨 "

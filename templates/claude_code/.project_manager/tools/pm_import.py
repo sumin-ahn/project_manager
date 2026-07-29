@@ -2170,13 +2170,22 @@ def _live_harness_allowed(mode: str) -> bool:
 def _load_repo_owned_files():
     """공용 repo 소유 파일 열거 seam을 script-relative로 로드한다."""
     path = Path(__file__).resolve().with_name("repo_owned_files.py")
-    spec = importlib.util.spec_from_file_location("_pm_import_repo_owned_files", path)
+    module_name = f"_project_manager_repo_owned_files:{path}"
+    cached = sys.modules.get(module_name)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(
             "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
         )
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 
@@ -2199,6 +2208,11 @@ def _resolve_fill_scope(dest_root: Path, copied_relpaths: set[Path] | None) -> s
     for rel in repo_files.list_repo_owned_files(
             dest_root, ".", mode=repo_files.OWNED):
         if any(part in COPY_EXCLUDE_DIR_NAMES for part in rel.parts):
+            continue
+        # dest fallback은 텍스트 읽기/수정 소비처다. seam의 gap domain은 symlink/gitlink를
+        # 보존하지만 여기서는 링크 추종(특히 repo 밖)과 디렉토리/gitlink·삭제 엔트리를 제외한다.
+        path = dest_root / rel
+        if path.is_symlink() or not path.is_file():
             continue
         scope.add(rel)
     return scope

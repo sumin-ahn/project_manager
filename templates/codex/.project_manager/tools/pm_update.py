@@ -46,7 +46,9 @@ import importlib.util
 import os
 import re
 import shutil
+import stat
 import sys
+import warnings
 import zlib
 from pathlib import Path
 
@@ -409,14 +411,113 @@ def _read_local_conf(path: Path) -> dict[str, str]:
 def _load_repo_owned_files():
     """공용 repo 소유 파일 열거 seam을 script-relative로 로드한다."""
     path = Path(__file__).resolve().with_name("repo_owned_files.py")
-    spec = importlib.util.spec_from_file_location("_pm_update_repo_owned_files", path)
+    module_name = f"_project_manager_repo_owned_files:{path}"
+    cached = sys.modules.get(module_name)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(
             "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
         )
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
     return module
+
+
+class SkippedRepoShippingEntryWarning(RuntimeWarning):
+    """pm-update가 byte-copy할 수 없는 tracked 엔트리를 명시적으로 제외했다는 신호."""
+
+
+def _shipping_inventory(repo_files, root: Path, rel: str) -> list[Path]:
+    """tracked 출하 목록과 미추적 제외 신호를 만든다.
+
+    ``pm-update`` 출하는 manifest 디렉토리의 byte-copy 채널이다. 따라서 공용 seam의 넓은
+    domain(gap 검출에 필요한 symlink/gitlink 포함)은 유지하되, 이 소비처에서만 실제 일반
+    파일로 좁힌다. git checkout일 때 OWNED와의 차집합은 ignore되지 않은 미추적 파일 수이며,
+    한 줄로 알려 ``git add`` 뒤에만 출하된다는 계약을 숨기지 않는다.
+    """
+    runner = repo_files._real_git_runner(root)
+    rc, top = runner(["rev-parse", "--show-toplevel"])
+    try:
+        git_root_matches = (
+            rc == 0
+            and Path(top.strip()).resolve() == root.resolve()
+        )
+    except (OSError, RuntimeError):
+        git_root_matches = False
+
+    tracked = repo_files.list_repo_owned_files(
+        root,
+        rel,
+        mode=repo_files.TRACKED_ONLY,
+        git_runner=(
+            runner
+            if git_root_matches
+            else lambda _argv: (1, "checkout이 git top-level이 아니거나 non-git")
+        ),
+    )
+    if git_root_matches:
+        owned = repo_files.list_repo_owned_files(
+            root, rel, mode=repo_files.OWNED, git_runner=runner)
+        untracked_count = len(set(owned) - set(tracked))
+        if untracked_count:
+            print(
+                f"pm-update: untracked {untracked_count}건 제외 — git add 후 전파됨 "
+                f"(subtree={rel})",
+                file=sys.stderr,
+            )
+    return tracked
+
+
+def _shippable_tracked_entries(
+    root: Path,
+    entries: list[Path],
+) -> list[tuple[Path, Path]]:
+    """tracked 엔트리를 안전한 byte-copy source로 좁히고 제외 이유를 loud하게 합친다."""
+    accepted: list[tuple[Path, Path]] = []
+    skipped: dict[str, list[str]] = {
+        "working tree에서 삭제됨": [],
+        "symlink(링크 의미를 byte-copy 출하하지 않음)": [],
+        "디렉토리/gitlink(파일 byte-copy 대상 아님)": [],
+        "일반 파일이 아닌 엔트리": [],
+    }
+    for relative in entries:
+        source = root / relative
+        try:
+            mode = source.lstat().st_mode
+        except FileNotFoundError:
+            skipped["working tree에서 삭제됨"].append(relative.as_posix())
+            continue
+        except OSError as exc:
+            skipped["일반 파일이 아닌 엔트리"].append(
+                f"{relative.as_posix()} ({exc})")
+            continue
+        if stat.S_ISREG(mode):
+            accepted.append((relative, source))
+        elif stat.S_ISLNK(mode):
+            skipped["symlink(링크 의미를 byte-copy 출하하지 않음)"].append(
+                relative.as_posix())
+        elif stat.S_ISDIR(mode):
+            skipped["디렉토리/gitlink(파일 byte-copy 대상 아님)"].append(
+                relative.as_posix())
+        else:
+            skipped["일반 파일이 아닌 엔트리"].append(relative.as_posix())
+
+    for reason, paths in skipped.items():
+        if paths:
+            warnings.warn(
+                f"pm-update 출하 tracked 엔트리 {len(paths)}건 제외 — {reason}: "
+                + ", ".join(paths),
+                SkippedRepoShippingEntryWarning,
+                stacklevel=2,
+            )
+    return accepted
 
 
 def _iter_files(root: Path, rel: str):
@@ -429,11 +530,17 @@ def _iter_files(root: Path, rel: str):
     POSIX 에선 `str(p.relative_to(root)) == p.relative_to(root).as_posix()` 라 동작 무변경.
     """
     src = root / rel
-    if src.is_dir():
+    if src.is_symlink():
+        warnings.warn(
+            f"pm-update 출하 manifest 엔트리 제외 — symlink 의미를 byte-copy 출하하지 않음: {rel}",
+            SkippedRepoShippingEntryWarning,
+            stacklevel=2,
+        )
+    elif src.is_dir():
         repo_files = _load_repo_owned_files()
-        for relative in repo_files.list_repo_owned_files(
-                root, rel, mode=repo_files.TRACKED_ONLY):
-            yield relative.as_posix(), root / relative
+        tracked = _shipping_inventory(repo_files, root, rel)
+        for relative, source in _shippable_tracked_entries(root, tracked):
+            yield relative.as_posix(), source
     elif src.is_file():
         yield str(rel), src
     # missing → 아무것도 yield 안 함 (호출부가 missing 으로 보고)

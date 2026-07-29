@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -392,6 +393,12 @@ def test_iter_files_yields_posix_rel_keys(pm_update, tmp_path):
     nested.mkdir(parents=True)
     (nested / "developer.md").write_text("x\n", encoding="utf-8")
     (nested / "reviewer.md").write_text("y\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(root), "init", "-q"],
+        capture_output=True, text=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "add", "-A"],
+        capture_output=True, text=True, check=True)
     rels = [r for r, _sp in pm_update._iter_files(root, ".claude/agents")]
     assert rels == [".claude/agents/developer.md", ".claude/agents/reviewer.md"]
     assert all("\\" not in r for r in rels)

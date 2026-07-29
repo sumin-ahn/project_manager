@@ -47,6 +47,9 @@ def test_harness_session_marker_table_matches_delegate_source(external):
     """독립 CLI의 복제 선언은 위임 엔진의 감지 단일 출처와 정확히 같아야 한다."""
     delegate = _load("pm_delegate")
     assert external._HARNESS_SESSION_MARKERS == delegate._HARNESS_SESSION_MARKERS
+    assert set(external._REVIEW_HARNESS_CAP_ENV) == set(external._HARNESS_SESSION_MARKERS)
+    assert set(delegate._DELEGATE_HARNESS_CAP_ENV) == set(delegate._HARNESS_SESSION_MARKERS)
+    assert external._REVIEW_HARNESS_CAP_ENV == delegate._DELEGATE_HARNESS_CAP_ENV
 
 
 @pytest.mark.parametrize("key", ("OPENCODE_CONFIG", "CLAUDE_CONFIG_DIR",
@@ -58,12 +61,39 @@ def test_harness_cap_advisory_ignores_config_and_unmeasured_keys(external, key):
     ) is None
 
 
-def test_harness_cap_advisory_multiple_session_markers_are_ambiguous(external):
-    """중첩 세션은 선언 순서로 한 하네스를 택하지 않고 침묵한다."""
-    assert external.harness_cap_advisory(
+def test_harness_cap_advisory_warns_for_all_nested_session_axes(external, monkeypatch):
+    """중첩 세션의 공개 호출층 상한을 모두 검사해 경고를 합친다."""
+    class Relay:
+        @staticmethod
+        def harness_cap_required_budget(execution_budget):
+            return execution_budget
+
+    monkeypatch.setattr(external, "_load_relay", lambda: Relay())
+    warning = external.harness_cap_advisory(
         {"OPENCODE": "child", "CLAUDECODE": "parent"},
         execution_budget=10,
-    ) is None
+    )
+    assert warning is not None
+    assert warning.count("[external-review] 경고:") == 2
+    assert "BASH_MAX_TIMEOUT_MS" in warning
+    assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS" in warning
+
+
+def test_harness_cap_advisory_keeps_claude_axis_with_opencode_config(
+        external, monkeypatch):
+    """OpenCode 설정 경로가 섞여도 Claude 세션의 호출층 상한을 진단한다."""
+    class Relay:
+        @staticmethod
+        def harness_cap_required_budget(execution_budget):
+            return execution_budget
+
+    monkeypatch.setattr(external, "_load_relay", lambda: Relay())
+    warning = external.harness_cap_advisory(
+        {"CLAUDECODE": "session", "OPENCODE_CONFIG_DIR": "/config/opencode"},
+        execution_budget=10,
+    )
+    assert warning is not None
+    assert "claude" in warning and "BASH_MAX_TIMEOUT_MS" in warning
 
 
 def test_harness_cap_advisory_accepts_secondary_opencode_session_marker(
