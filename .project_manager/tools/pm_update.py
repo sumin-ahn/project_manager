@@ -345,9 +345,14 @@ def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
         for entry in current:
             key = str(entry).replace("\\", "/")
             if key in seen:
+                first_markers = _manifest_marker_key(seen[key])
+                next_markers = _manifest_marker_key(entry)
                 if (
-                    key != _MANIFEST_SELF_REL
-                    and _manifest_marker_key(seen[key]) != _manifest_marker_key(entry)
+                    first_markers != next_markers
+                    and not (
+                        key == _MANIFEST_SELF_REL
+                        and first_markers[:2] == next_markers[:2]
+                    )
                 ):
                     conflicts.append(key)
                 continue
@@ -1169,6 +1174,10 @@ def _print_manifest_skew_finding(
         )
         for path in new_entries:
             print(f"    + {path}")
+        print(
+            "    참고: legacy 보존 모드에서는 대조 기준이 표준판이라 .claude/* 같은 무관 flavor "
+            "경로가 포함될 수 있다."
+        )
     elif status == "upstream_missing":
         print(
             "note: upstream engine.manifest 를 읽을 수 없어(구 upstream·부재) manifest 정합 "
@@ -1211,12 +1220,100 @@ def _selfprop_upstream_rel(local_entries: list) -> str:
     return _MANIFEST_SELF_REL
 
 
+def _print_frozen_flavor_warning(
+    flavor: str,
+    observed: list[str],
+    evidence_paths: list[str],
+    *,
+    declared_manifest: bool,
+) -> None:
+    """자동 승격할 수 없는 타 flavor 일부 관측을 동일 migration 절차로 안내한다."""
+    cli_flavor = "claude" if flavor == "claude_code" else flavor
+    if declared_manifest:
+        lead = (
+            "⚠️ frozen 다중-harness 의심 — @source 선택 선언이 있는 manifest와 "
+            f"선언되지 않은 타 flavor({flavor}) 관리 경로 일부가 함께 관측됐다 "
+        )
+    else:
+        lead = (
+            "⚠️ frozen 다중-harness 의심 — @source 선언이 없는 legacy manifest와 "
+            f"타 flavor({flavor}) 관리 경로 일부가 함께 관측됐다 "
+        )
+    print(
+        lead
+        + f"({len(observed)}/{len(evidence_paths)}: {', '.join(observed)}). "
+        "이 상태는 frozen both 설치의 일부 누락 또는 사용자 stray 파일일 수 있어 "
+        "해당 flavor는 자동 자기치유하지 않는다.\n"
+        f"    `add-harness {cli_flavor}`는 guest @render만 등록하므로 완전 마이그레이션이 아니다.\n"
+        "    완전 마이그레이션(frozen Claude+opencode both):\n"
+        "      <manager>/pm-import.sh --into <project> --harness both --dry-run\n"
+        "      <manager>/pm-import.sh --into <project> --harness both\n"
+        "      cd <project> && ./pm-update.sh\n"
+        "    재-import가 커스터마이즈된 CLAUDE.md/AGENTS.md를 템플릿 판으로 덮을 수 있으니, "
+        "진입 문서 커스텀은 .pm_import_backups/<날짜>/ 백업에서 재병합하라.\n"
+        "    해당 파일이 stray라면 이 경고를 무시해도 된다.",
+        file=sys.stderr,
+    )
+
+
+def _frozen_flavor_evidence(
+    entries: list,
+    other_candidate_paths: set[str],
+    local_core_paths: set[str],
+    guest_paths: set[str],
+) -> list[str] | None:
+    """다른 모든 후보에는 없는 배타적 flavor 경로의 frozen evidence를 계산한다.
+
+    guest 절이 flavor 고유 경로 하나라도 소유하면 그 flavor 전체가 add-harness refresh 채널이다.
+    선언/legacy 선택 분기가 같은 ``None`` skip 신호를 소비해 guest 경로 밖의 같은-flavor 파일이
+    남아 있어도 frozen 경고나 자동 승격 근거로 다시 쓰지 않게 한다.
+    """
+    unique_paths = [
+        str(entry).replace("\\", "/")
+        for entry in entries
+        if str(entry).replace("\\", "/") not in other_candidate_paths
+    ]
+    if any(_path_owned_by(rel, guest_paths) for rel in unique_paths):
+        return None
+    return [rel for rel in unique_paths if rel not in local_core_paths]
+
+
+def _print_legacy_nonmatch_warning(
+    local_core_paths: set[str],
+    observed_by_flavor: list[tuple[str, list[str], int]],
+) -> None:
+    """exact-match가 아닌 legacy 형상을 무변경 유지하며 완전 재-import 절차를 loud하게 낸다."""
+    if observed_by_flavor:
+        shapes = "; ".join(
+            f"{flavor} {len(observed)}/{evidence_count}"
+            + (f" ({', '.join(observed)})" if observed else "")
+            for flavor, observed, evidence_count in observed_by_flavor
+        )
+    else:
+        shapes = "배타적 flavor 경로 관측 0"
+    print(
+        "⚠️ frozen 다중-harness 의심 — @source 선언이 없는 legacy engine.manifest의 "
+        "core 경로 집합이 현행 flavor 후보 중 정확히 하나와 완전 일치하지 않는다. "
+        f"관측 형상: 로컬 core {len(local_core_paths)}행; {shapes}.\n"
+        "    로컬 manifest는 그대로 사용한다(자동 flavor 승격·행 제거·치유 0).\n"
+        "    `add-harness`는 guest @render만 등록하므로 완전 마이그레이션이 아니다.\n"
+        "    완전 마이그레이션(frozen Claude+opencode both):\n"
+        "      <manager>/pm-import.sh --into <project> --harness both --dry-run\n"
+        "      <manager>/pm-import.sh --into <project> --harness both\n"
+        "      cd <project> && ./pm-update.sh\n"
+        "    재-import가 커스터마이즈된 CLAUDE.md/AGENTS.md를 템플릿 판으로 덮을 수 있으니, "
+        "진입 문서 커스텀은 .pm_import_backups/<날짜>/ 백업에서 재병합하라.\n"
+        "    관측 파일이나 manifest 행이 사용자 stray/커스텀이면 이 경고를 무시해도 된다.",
+        file=sys.stderr,
+    )
+
+
 def _selected_upstream_manifests(
     effective_dest: Path,
     source_root: Path,
     local_entries: list,
     local_text: str,
-) -> list[Path]:
+) -> tuple[list[Path], bool]:
     """채택자에 실제 설치된 flavor들의 upstream manifest를 선택 순서대로 해소한다.
 
     설치 manifest의 ``@source=templates/<flavor>/...`` 선언이 있으면 그 flavor 집합만 신뢰한다.
@@ -1224,15 +1321,15 @@ def _selected_upstream_manifests(
     존재-휴리스틱을 전혀 타지 않는다. 선언 순서는 manifest 행의 최초 출현 순서이고, 첫 flavor
     우선 + 후속 선언 순서라는 합집합 우선순위를 그대로 보존한다.
 
-    ``@source`` flavor 선언이 전혀 없는 구 manifest만 legacy 폴백 대상이다. 이때도 후순위 flavor의
-    고유 관리 경로가 **모두** dest에 존재할 때만 과거 다중-tree 설치로 판정한다. 일부만 존재하면
-    frozen/stray를 구분할 수 없으므로 자동 승격 없이 명시 마이그레이션 진단만 낸다. 따라서 stray
-    파일 하나로 adapter 전체를 승격하지 않으면서, 실제 frozen 다중-tree 설치는 자기치유한다.
-    후보는 ``templates/*/.project_manager/engine.manifest``라는 좁은 관리 glob으로 일반화한다.
+    ``@source`` flavor 선언이 전혀 없는 구 manifest는 로컬 core 경로 집합이 **정확히 한 후보와
+    완전 일치**할 때만 그 후보를 primary로 고른다. 부분집합, 존재 경로, 은퇴 행 추정, 최소
+    초과집합/tiebreak는 사용하지 않는다. 완전 일치가 아니면 로컬 manifest를 그대로 계획에
+    사용하고, frozen/stray를 구분할 수 없다는 진단과 검증된 완전 재-import 절차만 낸다.
 
-    선언이 하나라도 있으면 존재-휴리스틱은 비발화한다. 선언된 후순위 manifest가 부재해도 선택
-    목록에서 버리지 않아 호출부가 로컬 union을 유지하며 경고하고, 해소 불가 선언은 primary만
-    유지한 채 경고한다.
+    선언이 하나라도 있으면 존재-휴리스틱에 의한 자동 선택은 비발화한다. 선언되지 않은 flavor의
+    관리-고유 경로 일부가 보이면 같은 frozen/stray 마이그레이션 경고만 내고 자동 승격하지 않는다.
+    선언된 후순위 manifest가 부재해도 선택 목록에서 버리지 않아 호출부가 로컬 union을 유지하며
+    경고하고, 해소 불가 선언은 primary만 유지한 채 경고한다.
 
     add-harness guest 절은 별도 refresh 채널이므로 core 합집합으로 승격하지 않는다. guest가 소유한
     경로만 존재해 후보가 된 flavor는 제외해 기존 add-harness 불가침 계약을 유지한다.
@@ -1252,6 +1349,11 @@ def _selected_upstream_manifests(
         for ln in guest_block.splitlines()
         if ln.strip() and not ln.strip().startswith("#")
     } if guest_block else set()
+    local_core_paths = {
+        str(entry).replace("\\", "/")
+        for entry in local_entries
+        if not _path_owned_by(str(entry).replace("\\", "/"), guest_paths)
+    }
 
     primary_flavor = next(
         (flavor for flavor, candidate in candidate_by_flavor.items() if candidate == primary),
@@ -1291,12 +1393,28 @@ def _selected_upstream_manifests(
             f"사용하지 않는다: {unresolved}. 선언된 primary manifest만 유지한다.",
             file=sys.stderr,
         )
-        return [primary]
+        return [primary], False
+    candidate_entries: dict[Path, list] = {}
+    for candidate in candidates:
+        try:
+            candidate_entries[candidate] = read_manifest(candidate)
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(
+                f"note: legacy flavor 후보 manifest를 읽을 수 없어 제외한다(fail-soft): "
+                f"{candidate} ({exc})",
+                file=sys.stderr,
+            )
+    candidate_paths = {
+        candidate: {
+            str(entry).replace("\\", "/") for entry in entries
+        }
+        for candidate, entries in candidate_entries.items()
+    }
     if declared_flavors:
         # root manifest의 flavor @source는 선택 provenance가 아니라 canonical remap이다. self-prop가
         # template flavor를 가리키는 설치 manifest에서만 선언 집합을 선택 집합으로 해석한다.
         if primary_flavor is None:
-            return [primary]
+            return [primary], False
         ordered_flavors = [primary_flavor, *(
             flavor for flavor in declared_flavors if flavor != primary_flavor
         )]
@@ -1313,102 +1431,102 @@ def _selected_upstream_manifests(
                     "누락 source가 있으면 apply 전에 중단된다.",
                     file=sys.stderr,
                 )
-        return selected_declared
+        declared_set = set(ordered_flavors)
+        for candidate, entries in candidate_entries.items():
+            flavor = candidate.parents[1].name
+            if flavor in declared_set:
+                continue
+            other_paths = set().union(*(
+                paths for other, paths in candidate_paths.items()
+                if other != candidate
+            ))
+            evidence_paths = _frozen_flavor_evidence(
+                entries, other_paths, local_core_paths, guest_paths)
+            if evidence_paths is None:
+                continue
+            observed = [
+                rel for rel in evidence_paths
+                if (Path(effective_dest) / rel).exists()
+            ]
+            if observed:
+                _print_frozen_flavor_warning(
+                    flavor,
+                    observed,
+                    evidence_paths,
+                    declared_manifest=True,
+                )
+        return selected_declared, False
 
-    selected: list[Path] = []
     if not candidates:
-        return [primary]
-    candidate_entries: dict[Path, list] = {}
-    for candidate in candidates:
-        try:
-            candidate_entries[candidate] = read_manifest(candidate)
-        except (OSError, UnicodeError, ValueError) as exc:
-            print(
-                f"note: legacy flavor 후보 manifest를 읽을 수 없어 제외한다(fail-soft): "
-                f"{candidate} ({exc})",
-                file=sys.stderr,
-            )
+        return [primary], False
     if not candidate_entries:
-        return [primary]
-    common_paths = set.intersection(*(
-        {str(entry).replace("\\", "/") for entry in entries}
-        for entries in candidate_entries.values()
-    ))
-    local_core_paths = {
-        str(entry).replace("\\", "/")
-        for entry in local_entries
-        if not _path_owned_by(str(entry).replace("\\", "/"), guest_paths)
-    }
+        return [primary], False
 
-    # legacy self-prop는 bare라 primary 경로를 직접 가리키지 않는다. 설치 manifest와 경로가 가장
-    # 가까운 flavor를 먼저 두어 glob 사전순이 합집합 충돌 우선순위를 바꾸지 않게 한다.
-    ordered_candidates = sorted(
-        candidate_entries,
-        key=lambda candidate: (
-            {str(e).replace("\\", "/") for e in candidate_entries[candidate]}
-            != local_core_paths,
-            -len(
-                local_core_paths
-                & {str(e).replace("\\", "/") for e in candidate_entries[candidate]}
-            ),
-            candidate.as_posix(),
-        ),
-    )
+    exact_matches = [
+        candidate for candidate, paths in candidate_paths.items()
+        if paths == local_core_paths
+    ]
     legacy_primary = (
-        next((
-            candidate for candidate in ordered_candidates
-            if {
-                str(entry).replace("\\", "/")
-                for entry in candidate_entries[candidate]
-            } == local_core_paths
-        ), None)
+        exact_matches[0]
+        if (
+            len(exact_matches) == 1
+            and Path(effective_dest).resolve() != source_root.resolve()
+        )
         # framework checkout의 root manifest가 우연히 template과 같은 경로 집합이어도 root가 primary다.
         # template provenance 복원은 source와 분리된 legacy adopter에서만 필요하다.
-        if Path(effective_dest).resolve() != source_root.resolve()
         else None
     )
-    for candidate in ordered_candidates:
-        unique_paths = [
-            str(entry).replace("\\", "/")
-            for entry in candidate_entries[candidate]
-            if str(entry).replace("\\", "/") not in common_paths
-        ]
-        # guest 절에 이 flavor의 고유 선언이 하나라도 있으면 add-harness로 설치된 flavor다.
-        # 같은 flavor의 비-@render hook 파일도 dest에 존재할 수 있으므로 개별 경로 차감만으로는
-        # native multi-tree import와 구별되지 않는다 — flavor 전체를 guest 채널에 남긴다.
-        if any(_path_owned_by(rel, guest_paths) for rel in unique_paths):
+    if legacy_primary is not None:
+        for candidate, entries in candidate_entries.items():
+            if candidate == legacy_primary:
+                continue
+            other_paths = set().union(*(
+                paths for other, paths in candidate_paths.items()
+                if other != candidate
+            ))
+            evidence_paths = _frozen_flavor_evidence(
+                entries, other_paths, local_core_paths, guest_paths)
+            if evidence_paths is None:
+                continue
+            observed = [
+                rel for rel in evidence_paths
+                if (Path(effective_dest) / rel).exists()
+            ]
+            if observed:
+                _print_frozen_flavor_warning(
+                    candidate.parents[1].name,
+                    observed,
+                    evidence_paths,
+                    declared_manifest=False,
+                )
+        return [legacy_primary], False
+
+    if Path(effective_dest).resolve() == source_root.resolve():
+        return [primary], False
+
+    observed_by_flavor: list[tuple[str, list[str], int]] = []
+    for candidate, entries in candidate_entries.items():
+        other_paths = set().union(*(
+            paths for other, paths in candidate_paths.items()
+            if other != candidate
+        ))
+        evidence_paths = _frozen_flavor_evidence(
+            entries,
+            other_paths,
+            local_core_paths,
+            guest_paths,
+        )
+        if evidence_paths is None:
             continue
-        unmanaged_unique = [
-            rel for rel in unique_paths
-            if not _path_owned_by(rel, guest_paths)
-        ]
         observed = [
-            rel for rel in unmanaged_unique
-            if rel not in local_core_paths
-            and (Path(effective_dest) / rel).exists()
+            rel for rel in evidence_paths
+            if (Path(effective_dest) / rel).exists()
         ]
-        if candidate == legacy_primary or (
-            unmanaged_unique and all(
-                (Path(effective_dest) / rel).exists() for rel in unmanaged_unique
-            )
-        ):
-            selected.append(candidate)
-        elif observed:
-            flavor = candidate.parents[1].name
-            cli_flavor = "claude" if flavor == "claude_code" else flavor
-            print(
-                "⚠️ frozen 다중-harness 의심 — @source 선언이 없는 legacy manifest와 "
-                f"타 flavor({flavor}) 관리 경로 일부가 함께 관측됐다 "
-                f"({len(observed)}/{len(unmanaged_unique)}: {', '.join(observed)}). "
-                "이 상태는 frozen both 설치의 일부 누락 또는 사용자 stray 파일일 수 있어 "
-                "해당 flavor는 자동 자기치유하지 않는다.\n"
-                f"    명시 마이그레이션: ./pm-config.sh add-harness {cli_flavor}\n"
-                "    한계: add-harness guest 등재는 @render 경로만 다루며 "
-                "lib/plugins 등 비-render 경로는 자동 보호·해동 범위 밖이다.\n"
-                "    해당 파일이 stray라면 이 경고를 무시해도 된다.",
-                file=sys.stderr,
-            )
-    return selected or [primary]
+        if observed:
+            observed_by_flavor.append((
+                candidate.parents[1].name, observed, len(evidence_paths)))
+    _print_legacy_nonmatch_warning(local_core_paths, observed_by_flavor)
+    return [primary], True
 
 
 def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
@@ -1442,7 +1560,8 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
       - status  : 'upstream_missing'(flavor upstream 부재·fail-soft) | 'no_local'(로컬 manifest 부재·
                   이미 source manifest 기준) | 'in_sync'(로컬==upstream 또는 경로/선언 동일·무변경) |
                   'diverged'(로컬-전용 경로 또는 공통 경로 마커/@source divergence=커스텀 편집·승격
-                  안 함·안전망) | 'heal'(로컬 ⊂ upstream 또는 @source 전무 legacy·승격)
+                  안 함·안전망) | 'legacy_preserved'(후보 exact-match 없음·로컬 manifest 불가침) |
+                  'heal'(upstream 신규 등재 또는 exact-match legacy provenance 승격)
       - added   : flavor upstream 에만 있는 순수 경로(신규/재-등재·정렬) — 'heal' 이면 이번 sync 로 도달
       - removed : 로컬 manifest 에만 있던 순수 경로('diverged' 판정 근거·정렬)
       - manifest: plan 이 쓸 ManifestEntry 리스트 — 'heal' 이면 flavor upstream_entries, 그 외 None
@@ -1468,9 +1587,20 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
     upstream_manifest = Path(source_root) / _selfprop_upstream_rel(local_entries)
     upstream_manifests: list[Path] = [upstream_manifest]
     try:
-        upstream_manifests = _selected_upstream_manifests(
+        upstream_manifests, legacy_preserved = _selected_upstream_manifests(
             effective_dest, source_root, local_entries, local_text)
         upstream_manifest = upstream_manifests[0]
+        if legacy_preserved:
+            return {
+                "status": "legacy_preserved",
+                "added": [],
+                "removed": [],
+                "manifest": None,
+                "upstream_manifest": upstream_manifest,
+                "upstream_manifests": upstream_manifests,
+                "manifest_text": None,
+                "merge_conflicts": [],
+            }
         merged_upstream = merge_manifest_sources(upstream_manifests)
         upstream_text = merged_upstream["text"]
         upstream_entries = merged_upstream["entries"]
@@ -1495,7 +1625,9 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
                 "manifest_text": upstream_text,
                 "merge_conflicts": merged_upstream["conflicts"]}
     core_local_entries = [
-        e for e in local_entries if str(e).replace("\\", "/") not in guest_paths]
+        e for e in local_entries
+        if str(e).replace("\\", "/") not in guest_paths
+    ]
     # 경로 + 마커(@render/@target-owned/@source) 동시 비교 — 경로 집합만 보면 flavor manifest 의
     #   @source self-prop 을 root bare 로 덮는 클로버를 못 잡는다(codex MF). 다만 @source 자체가
     #   전혀 없던 legacy manifest는 source provenance 추가가 바로 치유 목적이므로 source_rel 차이만
@@ -2968,11 +3100,21 @@ def _main(argv: list[str] | None = None) -> int:
         "upstream_manifests": [], "manifest_text": None,
         "merge_conflicts": [],
     }
+    skew_manifest = None
     if not args.target:
         selfheal = resolve_manifest_selfheal(effective_dest, source_root)
         _print_manifest_merge_conflicts(selfheal)
         if selfheal["manifest"] is not None:
             manifest = selfheal["manifest"]
+        elif selfheal["status"] == "legacy_preserved":
+            # exact-match가 아닌 legacy는 로컬 manifest 자체도 불가침이다. bare self-prop를 plan에
+            # 남기면 source root manifest가 파일을 통째로 덮어 커스텀 행을 제거하므로, 이번 plan에서
+            # self-prop만 제외한다. 나머지 로컬 엔트리는 그대로 갱신하고 skew 대조에는 원문 전체를 쓴다.
+            skew_manifest = manifest
+            manifest = [
+                entry for entry in manifest
+                if str(entry).replace("\\", "/") != _MANIFEST_SELF_REL
+            ]
 
     # add-harness guest 절 항목은 **update plan 에서 제외** — guest = add-harness refresh 전용 채널·
     # update 불가침. `@target-owned` skip 은 *source-부재* 때만 발동해, 프레임워크
@@ -3079,7 +3221,7 @@ def _main(argv: list[str] | None = None) -> int:
         ("skipped", [])
         if args.target
         else detect_manifest_skew(
-            manifest,
+            skew_manifest if skew_manifest is not None else manifest,
             source_root,
             upstream_manifest=selfheal["upstream_manifest"],
             upstream_manifests=selfheal.get("upstream_manifests"),
@@ -3187,12 +3329,10 @@ def main(argv: list[str] | None = None) -> int:
     _console_encoding = importlib.util.module_from_spec(_console_spec)
     _console_spec.loader.exec_module(_console_encoding)
     _console_encoding.configure_console_utf8()
+    repo_files = _load_repo_owned_files()
     try:
         return _main(argv)
-    except Exception as exc:
-        repo_files = _load_repo_owned_files()
-        if not isinstance(exc, repo_files.RepoFilesGitError):
-            raise
+    except repo_files.RepoFilesGitError as exc:
         print(
             "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "
             f"{exc}; 해당 checkout 경로와 git index 상태를 확인·복구한 뒤 다시 실행하라.",

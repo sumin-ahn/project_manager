@@ -230,6 +230,7 @@ _ENV_ALLOWLIST_PREFIXES: tuple[str, ...] = ("LC_",)
 # config)로 완주했다 — OPENAI/ANTHROPIC_API_KEY env 는 부재해도 무방(파일 auth 경로). load-bearing 키 =
 # base 의 HOME + opencode 의 OPENCODE_CONFIG_DIR(ollama provider config 위치). API-key 항목은 env-auth
 # adopter 용 보험이라 유지(존재 시만 통과·과잉 아님). 이 allowlist 로 충분(키 추가/축소 불요).
+# 인증/설정 전달 allowlist이며 세션 감지 마커가 아니다 — 감지는 `_HARNESS_SESSION_MARKERS`가 소유한다.
 _HARNESS_AUTH_ENV: dict[str, tuple[str, ...]] = {
     "codex": ("CODEX_HOME", "CODEX_SANDBOX_NETWORK_DISABLED", "OPENAI_API_KEY"),
     "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"),
@@ -2497,18 +2498,59 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
 
 # ── native 단락 advisory (never-block 백스톱) ────────────────────────────
 
-def native_advisory(harness: str) -> str | None:
+# 라이브 실측(2026년 7월 29일): Codex 세션에서 ``python3 -c``로 CODEX/CLAUDE/OPENCODE
+# 이름만 dump했다 — CODEX_THREAD_ID=<set>, CODEX_CI=<set>,
+# CODEX_SANDBOX_NETWORK_DISABLED=<set>. 세션 판정 근거는 앞의 두 키다.
+# Claude Code는 이전 실측(2026년 7월 28일)에서 CLAUDECODE=<set>,
+# CLAUDE_CODE_SESSION_ID/ENTRYPOINT/EXECPATH/CHILD_SESSION=<set>였고, 판정 근거는
+# CLAUDECODE다.
+#
+# 라이브 실측(2026년 7월 29일): Claude 부모 셸과 그 셸에서
+# ``opencode run -m ollama/glm-5.2:cloud``로 띄운 OpenCode 세션 안의 env를 diff했다.
+# 부모에는 AI_AGENT/CLAUDECODE/CLAUDE_CODE_CHILD_SESSION/CLAUDE_CODE_ENTRYPOINT/
+# CLAUDE_CODE_EXECPATH/CLAUDE_CODE_SESSION_ID/CLAUDE_EFFORT/CLAUDE_PID 및
+# OPENCODE_CONFIG_DIR/ORCA_OPENCODE_CONFIG_DIR가 이미 있었고, OpenCode 세션은 이를 상속한
+# 뒤 OPENCODE=<set>, OPENCODE_PID=<set>만 추가했다. 따라서 OPENCODE(보조로
+# OPENCODE_PID)는 런타임 주입 세션 마커다. 반대로 OPENCODE_CONFIG_DIR는 세션 없는 부모에도
+# 있으므로 설정 경로로 확정했고, OPENCODE_CONFIG는 양쪽 어디에도 없어 판정에서 제외한다.
+_HARNESS_SESSION_MARKERS: dict[str, tuple[str, ...]] = {
+    "codex": ("CODEX_THREAD_ID", "CODEX_CI"),
+    "claude": ("CLAUDECODE",),
+    "opencode": ("OPENCODE", "OPENCODE_PID"),
+}
+
+# 런타임 Bash 상한 env 선언. 키 집합은 세션 마커 표와 같고, 공개 조회 표면이 없는 축은 None이다.
+_DELEGATE_HARNESS_CAP_ENV: dict[str, str | None] = {
+    "codex": None,
+    "claude": "BASH_MAX_TIMEOUT_MS",
+    "opencode": "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
+}
+
+
+def _session_harnesses(env: dict[str, str]) -> tuple[str, ...]:
+    """실측 세션 마커와 일치하는 하네스를 모두 반환한다."""
+    return tuple(
+        name for name, keys in _HARNESS_SESSION_MARKERS.items()
+        if any(env.get(key) for key in keys)
+    )
+
+
+def _session_harness(env: dict[str, str]) -> str | None:
+    """실측 세션 마커가 정확히 한 하네스와 일치할 때만 그 하네스를 반환한다."""
+    matches = _session_harnesses(env)
+    return matches[0] if len(matches) == 1 else None
+
+
+def native_advisory(harness: str | None) -> str | None:
     """target 하네스 == PM 하네스면 "네이티브가 더 저렴" advisory 1줄(never-block).
 
-    PM 하네스 env 마커(codex CODEX_THREAD_ID·claude/opencode 마커)를 감지해 same-harness 위임이면
+    PM 하네스 env 마커(codex CODEX_THREAD_ID·claude CLAUDECODE·opencode OPENCODE)를 감지해
+    same-harness 위임이면
     경고 문자열을 반환한다(호출부가 stderr 로 냄). 1차 판정은 어댑터 스킬 카드·이건 백스톱."""
-    pm_harness = None
-    if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI"):
-        pm_harness = "codex"
-    elif os.environ.get("OPENCODE") or os.environ.get("OPENCODE_CONFIG"):
-        pm_harness = "opencode"
-    elif os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CONFIG_DIR"):
-        pm_harness = "claude"
+    # 직접 호출 seam 에도 공개 하네스 도메인을 적용한다. 이 진단은 하네스 이름별 표현을 소유한다.
+    if harness not in HARNESS_CHOICES:
+        return None
+    pm_harness = _session_harness(os.environ)
     if pm_harness == harness:
         return (f"[pm-delegate] target 하네스({harness}) == PM 하네스 — 네이티브 위임이 더 저렴하다"
                 "(subprocess 스폰 불요). 어댑터 스킬 카드의 native 단락을 우선하라(advisory).")
@@ -2745,16 +2787,15 @@ def max_declared_execution_path_budget() -> int:
     return max(primary + fallback for primary in budgets for fallback in budgets)
 
 
-def _pm_harness_and_cap_env(env: dict[str, str] | None = None) -> tuple[str | None, str | None]:
-    """현재 PM 하네스와 그 Bash 상한 env 키를 해소한다(정적 전파 불가 채택자 진단용)."""
+def _pm_harness_and_cap_env(
+    env: dict[str, str] | None = None,
+) -> tuple[tuple[str, str | None], ...]:
+    """현재 PM 하네스 전축과 각 Bash 상한 env 키를 해소한다."""
     env = os.environ if env is None else env
-    if env.get("OPENCODE") or env.get("OPENCODE_CONFIG"):
-        return "opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"
-    if env.get("CLAUDECODE") or env.get("CLAUDE_CONFIG_DIR"):
-        return "claude", "BASH_MAX_TIMEOUT_MS"
-    if env.get("CODEX_THREAD_ID") or env.get("CODEX_CI"):
-        return "codex", None  # Codex bash 상한은 이 repo가 해소할 공개 env 표면이 없다.
-    return None, None
+    return tuple(
+        (pm_harness, _DELEGATE_HARNESS_CAP_ENV.get(pm_harness))
+        for pm_harness in _session_harnesses(env)
+    )
 
 
 def harness_cap_advisory(env: dict[str, str] | None = None,
@@ -2767,34 +2808,42 @@ def harness_cap_advisory(env: dict[str, str] | None = None,
     않고 설정 표면을 명시한다(advisory·실행은 차단하지 않음).
     """
     env = os.environ if env is None else env
-    pm_harness, cap_key = _pm_harness_and_cap_env(env)
-    if pm_harness is None or cap_key is None:
+    matched_caps = tuple(
+        (pm_harness, cap_key)
+        for pm_harness, cap_key in _pm_harness_and_cap_env(env)
+        if cap_key is not None
+    )
+    if not matched_caps:
         return None
     relay = _load_relay()
     required = max_declared_execution_path_budget()
     if execution_budget is not None:
         required = max(required, execution_budget)
     required = int(relay.harness_cap_required_budget(required))
-    raw = env.get(cap_key)
-    if raw is None:
-        return (
-            f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_key} 미해소 — "
-            f"엔진 최악 실행 경로+정리 여유 {required}s 이상으로 설정해야 하네스 선행 kill을 막습니다."
-        )
-    try:
-        cap_sec = int(raw) / 1000.0
-    except (TypeError, ValueError, OverflowError):
-        return (
-            f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_key}={raw!r} 해석 불가 — "
-            f"유한한 정수 ms로 {required}s 이상 설정하세요."
-        )
-    if not math.isfinite(cap_sec) or cap_sec < required:
-        return (
-            f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_sec:g}s < "
-            f"엔진 최악 실행 경로+정리 여유 {required}s — 엔진 무진행 진단/부분 산출물 보존 전에 "
-            f"하네스가 kill할 수 있습니다. {cap_key}를 최소 {required * 1000}ms로 상향하세요."
-        )
-    return None
+    warnings = []
+    for pm_harness, cap_key in matched_caps:
+        raw = env.get(cap_key)
+        if raw is None:
+            warnings.append(
+                f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_key} 미해소 — "
+                f"엔진 최악 실행 경로+정리 여유 {required}s 이상으로 설정해야 하네스 선행 kill을 막습니다."
+            )
+            continue
+        try:
+            cap_sec = int(raw) / 1000.0
+        except (TypeError, ValueError, OverflowError):
+            warnings.append(
+                f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_key}={raw!r} 해석 불가 — "
+                f"유한한 정수 ms로 {required}s 이상 설정하세요."
+            )
+            continue
+        if not math.isfinite(cap_sec) or cap_sec < required:
+            warnings.append(
+                f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_sec:g}s < "
+                f"엔진 최악 실행 경로+정리 여유 {required}s — 엔진 무진행 진단/부분 산출물 보존 전에 "
+                f"하네스가 kill할 수 있습니다. {cap_key}를 최소 {required * 1000}ms로 상향하세요."
+            )
+    return "\n".join(warnings) or None
 
 
 def _dry_run_harness_annotations(

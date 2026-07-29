@@ -25,7 +25,7 @@ from typing import Callable, Literal, NamedTuple
 TRACKED_ONLY = "tracked_only"
 OWNED = "owned"
 RepoFileMode = Literal["tracked_only", "owned"]
-GitRunner = Callable[[list], "tuple[int, str]"]
+GitRunner = Callable[[list[str]], "tuple[int, str]"]
 
 _MODE_GIT_ARGS: dict[RepoFileMode, tuple[str, ...]] = {
     TRACKED_ONLY: ("--stage", "--cached"),
@@ -60,13 +60,21 @@ class RepoOwnedEntry(NamedTuple):
 
 
 def _real_git_runner(cwd: Path) -> GitRunner:
-    """``git -C <cwd>`` argv runner. 실패는 rc!=0으로 돌려 호출 mode 계약에 맡긴다."""
+    """``git -C <cwd>`` argv runner.
+
+    성공은 stdout만, 실패는 진단 문자열을 반환한다. rc 127은 git 실행 파일 부재를 뜻하는
+    seam 예약값이며, 그 밖의 실패는 실제 git rc를 보존한다. 주입 runner도 이 규약과
+    ``rev-parse --git-dir``의 rc 128=비-repo 경계를 따라야 한다.
+    """
     git_binary = shutil.which("git")
 
-    def runner(argv: list) -> tuple[int, str]:
+    def runner(argv: list[str]) -> tuple[int, str]:
         if git_binary is None:
             return _GIT_BINARY_MISSING_RC, "git 바이너리를 찾을 수 없음 (PATH)."
         try:
+            env = os.environ.copy()
+            env["LC_ALL"] = "C"
+            env["LANGUAGE"] = ""
             result = subprocess.run(
                 [git_binary, "-C", str(cwd), *argv],
                 capture_output=True,
@@ -74,12 +82,16 @@ def _real_git_runner(cwd: Path) -> GitRunner:
                 encoding="utf-8",
                 errors="replace",
                 timeout=GIT_TIMEOUT_SECONDS,
+                env=env,
             )
             # stdout만 열거 데이터다. stderr는 성공 시 trace/advice가 섞일 수 있으므로
             # rc=0 결과에 절대 합치지 않고 실패 진단에만 사용한다.
             if result.returncode == 0:
                 return 0, result.stdout or ""
             return result.returncode, result.stderr or result.stdout or ""
+        except FileNotFoundError as exc:
+            # shutil.which 이후 바이너리가 사라지는 exec 경쟁도 git 부재와 같은 축이다.
+            return _GIT_BINARY_MISSING_RC, str(exc)
         except Exception as exc:  # noqa: BLE001 — 호출 실패도 상위 mode 계약이 처리.
             return 1, str(exc)
 
@@ -124,11 +136,13 @@ def _parse_staged_entries(out: str) -> list[RepoOwnedEntry]:
     return list(entries_by_path.values())
 
 
-def _is_no_repository_failure(rc: int, detail: str) -> bool:
-    """추적정보 자체가 없는 환경만 filesystem fallback 대상으로 분류한다."""
-    return rc == _GIT_BINARY_MISSING_RC or (
-        rc == 128 and "not a git repository" in detail.lower()
-    )
+def _probe_no_repository(runner: GitRunner) -> bool:
+    """git 진단 문구가 아니라 저장소 구조 프로브 rc로 비-repo를 판정한다."""
+    try:
+        rc, _git_dir = runner(["rev-parse", "--git-dir"])
+    except Exception:
+        return False
+    return rc == 128
 
 
 def list_repo_owned_entries(
@@ -146,10 +160,12 @@ def list_repo_owned_entries(
     git 파일형 엔트리의 진실이며, ``is_file()`` 재검사는 symlink와 mode 160000 gitlink를
     거짓 탈락시킨다.
 
-    git 바이너리 부재 또는 ``not a git repository``(rc 128)는 추적정보 자체가 없는
-    비-git 배포 사본이므로 양 mode 모두 filesystem 폴백한다. 폴백은 추적/ignore 의미를
-    보장할 수 없어 경고가 계약의 일부다. TRACKED_ONLY의 그 밖의 실패는 추적정보가 있는
-    상태에서 누출하지 않도록 loud 실패한다.
+    git 바이너리 부재(rc 127) 또는 실패 뒤 ``rev-parse --git-dir``가 rc 128인 경우는
+    추적정보 자체가 없는 비-git 배포 사본이므로 양 mode 모두 filesystem 폴백한다.
+    주입 ``git_runner``도 rc 127=git 부재, 구조 프로브 rc 128=비-repo 규약을 지켜야 한다.
+    프로브 rc 0은 원 실패 진단 문구와 무관하게 저장소가 있는 것으로 판정한다. 폴백은
+    추적/ignore 의미를 보장할 수 없어 경고가 계약의 일부다. TRACKED_ONLY의 그 밖의 실패는
+    추적정보가 있는 상태에서 누출하지 않도록 loud 실패한다.
     """
     try:
         mode_args = _MODE_GIT_ARGS[mode]
@@ -201,7 +217,7 @@ def list_repo_owned_entries(
                     RepoFilesEmptyWarning,
                     stacklevel=2,
                 )
-    elif _is_no_repository_failure(rc, out):
+    elif rc == _GIT_BINARY_MISSING_RC or _probe_no_repository(runner):
         fallback_rc = rc
     elif mode == TRACKED_ONLY:
         detail = out.strip()

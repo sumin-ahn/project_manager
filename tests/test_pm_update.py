@@ -186,6 +186,31 @@ def test_cli_classified_git_failure_is_one_line_without_raw_traceback(
     assert "Traceback" not in err
 
 
+def test_cli_classification_does_not_reload_repo_files_during_exception(
+        pm_update, monkeypatch, capsys):
+    repo_files = pm_update._load_repo_owned_files()
+    calls = 0
+
+    def load_once():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise RuntimeError("예외 처리 중 repo-owned 로더 재호출")
+        return repo_files
+
+    def fail_main(_argv):
+        raise repo_files.RepoFilesGitError("원 git 열거 오류")
+
+    monkeypatch.setattr(pm_update, "_load_repo_owned_files", load_once)
+    monkeypatch.setattr(pm_update, "_main", fail_main)
+
+    assert pm_update.main([]) == 1
+    assert calls == 1
+    err = capsys.readouterr().err
+    assert "원 git 열거 오류" in err
+    assert "예외 처리 중" not in err
+
+
 # ── ② --from 생략 → local.conf upstream 사용 (plan 도달) ─────────────────────
 
 def test_omitted_from_uses_local_conf_upstream(pm_update, tmp_path, monkeypatch, capsys):
@@ -1095,6 +1120,46 @@ def test_selected_manifest_order_is_primary_then_declared_flavors_without_selfpr
     assert "선언 순서상 첫 flavor" not in err
 
 
+def test_manifest_merge_conflict_warning_surfaces_real_marker_conflict(
+        pm_update, tmp_path, capsys):
+    """실 중복 경로의 마커 충돌은 첫 flavor 우선 정책과 함께 stderr에 반드시 발화한다."""
+    first = tmp_path / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = tmp_path / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(".shared/x    @render\n", encoding="utf-8")
+    second.write_text(".shared/x\n", encoding="utf-8")
+
+    merged = pm_update.merge_manifest_sources([first, second])
+    assert merged["conflicts"] == [".shared/x"]
+
+    pm_update._print_manifest_merge_conflicts({"merge_conflicts": merged["conflicts"]})
+    err = capsys.readouterr().err
+    assert "선언 순서상 첫 flavor" in err
+    assert ".shared/x" in err
+
+
+def test_manifest_merge_selfprop_ignores_only_source_difference(pm_update, tmp_path):
+    """self-prop은 @source 차이만 정상 소음이고 render/target-owned 차이는 실제 충돌이다."""
+    first = tmp_path / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = tmp_path / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(
+        f"{MANIFEST_SELF_REL}    @render "
+        "@source=templates/first/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/second/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+
+    merged = pm_update.merge_manifest_sources([first, second])
+    assert merged["conflicts"] == [MANIFEST_SELF_REL]
+
+
 def test_declared_second_flavor_missing_manifest_is_preserved_and_warned(
         pm_update, tmp_path, capsys):
     """선언된 후순위 flavor manifest 부재를 조용히 drop하지 않고 선택 목록+로컬 union으로 보존한다."""
@@ -1132,6 +1197,125 @@ def test_declared_second_flavor_missing_manifest_is_preserved_and_warned(
     err = capsys.readouterr().err
     assert "후순위 flavor의 upstream manifest가 없다" in err
     assert "선언을 버리지 않고 로컬 union을 유지" in err
+
+
+def test_declared_manifest_warns_on_undeclared_flavor_tree_without_promoting(
+        pm_update, tmp_path, capsys):
+    """선언 manifest도 타 flavor 관리-고유 경로를 보면 frozen 의심을 알리되 자동 선택하지 않는다."""
+    source = tmp_path / "source"
+    first = source / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = source / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(
+        ".first/a    @source=templates/first/.first/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/first/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        ".second/a    @source=templates/second/.second/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/second/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    dest = tmp_path / "dest"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / "engine.manifest").write_text(
+        first.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (dest / ".second").mkdir()
+    (dest / ".second" / "a").write_text("frozen\n", encoding="utf-8")
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["status"] == "in_sync"
+    assert result["upstream_manifests"] == [first]
+    assert second not in result["upstream_manifests"]
+    err = capsys.readouterr().err
+    assert "frozen 다중-harness 의심" in err
+    assert "@source 선택 선언이 있는 manifest" in err
+    assert "선언되지 않은 타 flavor(second)" in err
+    assert "(1/1: .second/a)" in err
+    assert "`add-harness second`는 guest @render만 등록" in err
+    assert "<manager>/pm-import.sh --into <project> --harness both --dry-run" in err
+    assert "cd <project> && ./pm-update.sh" in err
+
+
+def test_declared_manifest_skips_entire_guest_flavor_frozen_evidence(
+        pm_update, tmp_path, capsys):
+    """선언 분기도 guest 고유 경로 하나를 보면 그 flavor 전체를 frozen evidence에서 제외한다."""
+    source = tmp_path / "source"
+    first = source / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = source / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(
+        ".first/a    @source=templates/first/.first/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/first/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        ".second/render    @render @source=templates/second/.second/render\n"
+        ".second/hook    @source=templates/second/.second/hook\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/second/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    dest = tmp_path / "dest"
+    manifest = _write_dest_manifest(dest, [])
+    manifest.write_text(
+        first.read_text(encoding="utf-8")
+        + "\n"
+        + pm_update._GUEST_MANIFEST_BEGIN
+        + "\n.second/render    @render @target-owned\n"
+        + pm_update._GUEST_MANIFEST_END
+        + "\n",
+        encoding="utf-8",
+    )
+    (dest / ".second").mkdir()
+    (dest / ".second" / "render").write_text("guest\n", encoding="utf-8")
+    (dest / ".second" / "hook").write_text("guest hook\n", encoding="utf-8")
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["upstream_manifests"] == [first]
+    err = capsys.readouterr().err
+    assert "frozen 다중-harness 의심" not in err
+    assert "./pm-config.sh add-harness second" not in err
+
+
+def test_declared_single_flavor_without_other_tree_has_no_frozen_warning(
+        pm_update, tmp_path, capsys):
+    """순정 단일-flavor 선언 채택자는 자기 flavor만 선택하며 frozen 경고가 없다."""
+    source = tmp_path / "source"
+    first = source / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = source / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(
+        ".first/a    @source=templates/first/.first/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/first/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        ".second/a    @source=templates/second/.second/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/second/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    dest = tmp_path / "dest"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / "engine.manifest").write_text(
+        first.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["upstream_manifests"] == [first]
+    assert "frozen 다중-harness 의심" not in capsys.readouterr().err
 
 
 def test_unresolvable_source_declaration_disables_legacy_presence_fallback(
@@ -1211,6 +1395,163 @@ def test_legacy_candidate_manifest_non_utf8_is_fail_soft(
     err = capsys.readouterr().err
     assert "후보 manifest를 읽을 수 없어 제외한다(fail-soft)" in err
     assert str(broken) in err
+
+
+def test_legacy_exact_path_set_must_match_exactly_one_candidate(
+        pm_update, tmp_path, capsys):
+    """동일 경로 집합 후보가 둘이면 flavor 정보가 0이므로 tiebreak 없이 로컬 manifest를 보존한다."""
+    source = tmp_path / "source"
+    root = source / ".project_manager" / "engine.manifest"
+    root.parent.mkdir(parents=True)
+    root.write_text(f"{MANIFEST_SELF_REL}\n", encoding="utf-8")
+    for flavor in ("first", "second"):
+        candidate = (
+            source / "templates" / flavor / ".project_manager" / "engine.manifest")
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text(
+            ".shared/a\n"
+            f"{MANIFEST_SELF_REL}    "
+            f"@source=templates/{flavor}/.project_manager/engine.manifest\n",
+            encoding="utf-8",
+        )
+    dest = tmp_path / "dest"
+    manifest = _write_dest_manifest(dest, [".shared/a", MANIFEST_SELF_REL])
+    before = manifest.read_bytes()
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["status"] == "legacy_preserved"
+    assert result["manifest"] is None
+    assert manifest.read_bytes() == before
+    err = capsys.readouterr().err
+    assert "정확히 하나와 완전 일치하지 않는다" in err
+    assert "자동 flavor 승격·행 제거·치유 0" in err
+
+
+def test_legacy_opencode_proper_subset_does_not_promote_or_rewrite_manifest(
+        pm_update, tmp_path):
+    """@source 없는 opencode legacy의 한 줄 누락은 exact-match가 아니므로 불가침이다."""
+    source = REPO
+    upstream = source / "templates" / "opencode" / ".project_manager" / "engine.manifest"
+    local_lines = [
+        (line.split(" @source=", 1)[0] if " @source=" in line else line)
+        for line in upstream.read_text(encoding="utf-8").splitlines()
+        if not line.startswith(".opencode/.gitignore")
+    ]
+    dest = tmp_path / "legacy-opencode"
+    manifest = dest / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("\n".join(local_lines) + "\n", encoding="utf-8")
+    before = manifest.read_bytes()
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["status"] == "legacy_preserved"
+    assert result["manifest"] is None
+    assert result["added"] == []
+    assert result["removed"] == []
+    assert result["upstream_manifests"] == [
+        source / ".project_manager" / "engine.manifest"
+    ]
+    assert manifest.read_bytes() == before
+
+
+def test_frozen_evidence_requires_candidate_exclusive_path(pm_update):
+    """둘 이상 후보가 공유하는 `.claude/skills`류 경로는 어느 flavor의 evidence도 아니다."""
+    entries = [
+        pm_update.ManifestEntry(".claude/skills"),
+        pm_update.ManifestEntry(".first/unique"),
+    ]
+
+    evidence = pm_update._frozen_flavor_evidence(
+        entries,
+        {".claude/skills", ".second/unique"},
+        set(),
+        set(),
+    )
+
+    assert evidence == [".first/unique"]
+
+
+def test_legacy_nonmatch_keeps_manifest_and_updates_declared_local_rows(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """커스텀/다중-tree legacy는 rc=1 중단·승격·행 제거 없이 로컬 선언대로 계속 갱신한다."""
+    source = tmp_path / "source"
+    root_manifest = source / ".project_manager" / "engine.manifest"
+    first = source / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = source / "templates" / "second" / ".project_manager" / "engine.manifest"
+    root_manifest.parent.mkdir(parents=True)
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    root_manifest.write_text(".project_manager/tools/root.py\n", encoding="utf-8")
+    first.write_text(
+        ".first/a    @source=templates/first/.first/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/first/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        ".second/a    @source=templates/second/.second/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/second/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    (source / ".project_manager" / "tools").mkdir()
+    (source / ".project_manager" / "tools" / "root.py").write_text(
+        "# root\n", encoding="utf-8")
+    for rel in (".custom/x", ".first/a", ".second/a"):
+        path = source / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"upstream {rel}\n", encoding="utf-8")
+    _track_source_tree(source)
+
+    dest = tmp_path / "dest"
+    _write_dest_manifest(
+        dest, [".custom/x", ".first/a", ".second/a", MANIFEST_SELF_REL])
+    for rel in (".custom/x", ".first/a", ".second/a"):
+        path = dest / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("local\n", encoding="utf-8")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    manifest_path = dest / ".project_manager" / "engine.manifest"
+    before_manifest = manifest_path.read_bytes()
+    rc = pm_update.main(["--from", str(source)])
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "정확히 하나와 완전 일치하지 않는다" in captured.err
+    assert "자동 flavor 승격·행 제거·치유 0" in captured.err
+    assert "완전 마이그레이션" in captured.err
+    assert "엔진 경로" not in captured.err
+    assert "source 에 없음" not in captured.err
+    assert manifest_path.read_bytes() == before_manifest
+    assert ".custom/x" in manifest_path.read_text(encoding="utf-8")
+    for rel in (".custom/x", ".first/a", ".second/a"):
+        assert (dest / rel).read_text(encoding="utf-8") == f"upstream {rel}\n"
+
+
+def test_empty_legacy_manifest_does_not_promote_arbitrary_flavor(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """빈 manifest는 exact-match가 아니므로 임의 승격 없이 정상 갱신 경로와 loud 진단을 유지한다."""
+    dest = tmp_path / "empty-manifest-opencode-adopter"
+    _write_dest_manifest(dest, [])
+    (dest / ".opencode" / "agents").mkdir(parents=True)
+    (dest / ".opencode" / "agents" / "developer.md").write_text(
+        "installed opencode adapter\n", encoding="utf-8")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    assert pm_update.main(["--from", str(REPO), "--dry-run"]) == 0
+    captured = capsys.readouterr()
+    err = captured.err
+    assert "정확히 하나와 완전 일치하지 않는다" in err
+    assert "로컬 core 0행" in err
+    assert "자동 flavor 승격·행 제거·치유 0" in err
+    assert "엔진 경로" not in err
+    assert "[new] .claude/agents" not in captured.out, \
+        "빈 manifest가 claude_code로 승격돼 .claude 설치 계획을 만들었다"
 
 
 def test_guest_promotion_subtracts_only_the_manifest_actually_promoted(

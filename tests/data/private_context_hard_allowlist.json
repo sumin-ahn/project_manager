@@ -337,7 +337,7 @@
     },
     {
       "path": ".project_manager/tools/domain.py",
-      "line": 1206,
+      "line": 1210,
       "kind": "work_item",
       "match": "ADR-0018",
       "surface": "python-prose",
@@ -345,7 +345,7 @@
     },
     {
       "path": ".project_manager/tools/domain.py",
-      "line": 1206,
+      "line": 1210,
       "kind": "work_item",
       "match": "T-0080",
       "surface": "python-prose",
@@ -353,7 +353,7 @@
     },
     {
       "path": ".project_manager/tools/external_review.py",
-      "line": 1326,
+      "line": 1338,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -441,7 +441,7 @@
     },
     {
       "path": ".project_manager/tools/pm_delegate.py",
-      "line": 1373,
+      "line": 1374,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -881,7 +881,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/domain.py",
-      "line": 1206,
+      "line": 1210,
       "kind": "work_item",
       "match": "ADR-0018",
       "surface": "python-prose",
@@ -889,7 +889,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/domain.py",
-      "line": 1206,
+      "line": 1210,
       "kind": "work_item",
       "match": "T-0080",
       "surface": "python-prose",
@@ -897,7 +897,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/external_review.py",
-      "line": 1326,
+      "line": 1338,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -985,7 +985,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
-      "line": 1373,
+      "line": 1374,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -1617,7 +1617,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/domain.py",
-      "line": 1206,
+      "line": 1210,
       "kind": "work_item",
       "match": "ADR-0018",
       "surface": "python-prose",
@@ -1625,7 +1625,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/domain.py",
-      "line": 1206,
+      "line": 1210,
       "kind": "work_item",
       "match": "T-0080",
       "surface": "python-prose",
@@ -1633,7 +1633,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/external_review.py",
-      "line": 1326,
+      "line": 1338,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -1721,7 +1721,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/pm_delegate.py",
-      "line": 1373,
+      "line": 1374,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -2409,7 +2409,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/domain.py",
-      "line": 1206,
+      "line": 1210,
       "kind": "work_item",
       "match": "ADR-0018",
       "surface": "python-prose",
@@ -2417,7 +2417,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/domain.py",
-      "line": 1206,
+      "line": 1210,
       "kind": "work_item",
       "match": "T-0080",
       "surface": "python-prose",
@@ -2425,7 +2425,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/external_review.py",
-      "line": 1326,
+      "line": 1338,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -2513,7 +2513,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
-      "line": 1373,
+      "line": 1374,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",

@@ -488,6 +488,31 @@ CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 upstream rev baseline 
 추적한다. 그래서 갱신 전에는 `pm-update --dry-run` 으로 받을 변경을 보고, 갱신 후에는 test/lint 로
 현재 프로젝트에서 실제 동작을 확인한다.
 
+#### frozen 다중 하네스 진단과 마이그레이션
+
+예전 `both` 채택본에서 한쪽 어댑터가 manifest 선언 밖에 남으면 그 트리는 `pm-update` 갱신을 받지
+못한 채 오래된 상태로 동결될 수 있다. 채택자 루트에서 `./pm-update.sh --dry-run`
+(`pm_update --dry-run`)을 실행해 `frozen 다중-harness 의심` 경고와 관측 형상을 확인한다. legacy
+manifest는 core 경로 집합이 정확히 한 현행 flavor와 완전 일치할 때만 자동 승격한다. 그 밖의
+형상은 flavor 승격·행 제거·치유 없이 로컬 manifest 그대로 갱신하며, 사용자 stray/커스텀 행이면
+경고를 무시할 수 있다.
+
+`add-harness`는 guest `@render`만 등록하므로 완전 마이그레이션이 아니다. frozen
+Claude+opencode `both`를 완전히 전환하려면 아래 순서를 그대로 실행한다. `--into`는 충돌 파일을
+`.pm_import_backups/`에 백업하고 현재 `both` manifest 합집합을 설치한다.
+
+```bash
+<manager>/pm-import.sh --into <project> --harness both --dry-run
+<manager>/pm-import.sh --into <project> --harness both
+cd <project> && ./pm-update.sh
+```
+
+재-import는 커스터마이즈된 `CLAUDE.md`/`AGENTS.md`를 템플릿 판으로 덮을 수 있다. 원본은
+`.pm_import_backups/<날짜>/`에 백업되므로, 진입 문서 커스텀은 그 백업에서 재병합한다.
+
+이 절차 뒤 manifest에는 두 flavor의 `@source` provenance가 들어가므로, 이후 `pm-update`는
+`@render`뿐 아니라 `lib`/`plugins`를 포함한 두 flavor 전체를 갱신한다.
+
 외부 코드리뷰는 기본적으로 꺼져 있다. 켜면 코드 diff 가 외부로 전송되므로 프로젝트가 직접
 opt-in 을 결정한다.
 

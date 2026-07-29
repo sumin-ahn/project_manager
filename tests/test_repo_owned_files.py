@@ -142,27 +142,41 @@ def test_git_entries_are_nul_split_without_worktree_is_file_recheck(repo_files, 
     assert not any((tmp_path / path).exists() for path in got)
 
 
-def test_successful_git_enumeration_never_treats_stderr_as_path_data(
-        repo_files, tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("mode", "stdout", "expected"),
+    [
+        ("owned", "ship/real.txt\0", [Path("ship/real.txt")]),
+        (
+            "tracked_only",
+            "100644 1111111111111111111111111111111111111111 0"
+            "\tship/real.txt\0",
+            [Path("ship/real.txt")],
+        ),
+    ],
+)
+def test_successful_git_enumeration_uses_stdout_paths_and_isolates_stderr(
+        repo_files, tmp_path, monkeypatch, mode, stdout, expected):
+    calls = []
     monkeypatch.setattr(repo_files.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(
-        repo_files.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(
             args=["git"],
             returncode=0,
-            stdout="",
-            stderr="trace: built-in: git ls-files\n",
-        ),
-    )
+            stdout=stdout,
+            stderr="trace: built-in: git ls-files ship/trace-noise.txt\n",
+        )
+    monkeypatch.setattr(repo_files.subprocess, "run", fake_run)
 
     got = repo_files.list_repo_owned_files(
         tmp_path,
-        "empty",
-        mode=repo_files.OWNED,
+        "ship",
+        mode=getattr(repo_files, mode.upper()),
     )
 
-    assert got == []
+    assert got == expected
+    assert calls[0][1]["env"]["LC_ALL"] == "C"
+    assert calls[0][1]["env"]["LANGUAGE"] == ""
 
 
 def test_tracked_only_real_git_excludes_untracked_and_ignored(repo_files, tmp_path):
@@ -246,11 +260,19 @@ def test_tracked_only_rc129_is_loud_without_filesystem_shipping(
         )
 
 
-def test_tracked_only_rc128_not_a_repository_warns_and_falls_back(
+def test_tracked_only_localized_non_repository_uses_structural_probe_and_falls_back(
         repo_files, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "copied.txt").write_text("copied\n", encoding="utf-8")
+
+    calls = []
+
+    def localized_runner(argv):
+        calls.append(argv)
+        if argv == ["rev-parse", "--git-dir"]:
+            return 128, "fatal: 깃 저장소가 아닙니다"
+        return 128, "fatal: 깃 저장소가 아닙니다"
 
     with pytest.warns(
         repo_files.RepoFilesFallbackWarning,
@@ -260,26 +282,33 @@ def test_tracked_only_rc128_not_a_repository_warns_and_falls_back(
             tmp_path,
             "src",
             mode=repo_files.TRACKED_ONLY,
-            git_runner=lambda _argv: (
-                128,
-                "fatal: not a git repository (or any parent directories): .git",
-            ),
+            git_runner=localized_runner,
         )
 
     assert got == [Path("src/copied.txt")]
+    assert calls[-1] == ["rev-parse", "--git-dir"]
 
 
 def test_tracked_only_rc128_corrupt_index_remains_loud(repo_files, tmp_path):
+    calls = []
+
+    def corrupt_index_runner(argv):
+        calls.append(argv)
+        if argv == ["rev-parse", "--git-dir"]:
+            return 0, ".git\n"
+        return 128, "fatal: .git/index: index file smaller than expected"
+
     with pytest.raises(
         repo_files.RepoFilesGitError,
-        match=r"tracked_only.*rc=128.*corrupt",
+        match=r"tracked_only.*rc=128.*index file smaller than expected",
     ):
         repo_files.list_repo_owned_files(
             tmp_path,
             "src",
             mode=repo_files.TRACKED_ONLY,
-            git_runner=lambda _argv: (128, "fatal: index file corrupt"),
+            git_runner=corrupt_index_runner,
         )
+    assert calls[-1] == ["rev-parse", "--git-dir"]
 
 
 def test_tracked_only_missing_git_warns_and_falls_back(
@@ -297,6 +326,21 @@ def test_tracked_only_missing_git_warns_and_falls_back(
         )
 
     assert got == [Path("src/copied.txt")]
+
+
+def test_git_exec_file_not_found_race_maps_to_missing_binary_rc(
+        repo_files, tmp_path, monkeypatch):
+    monkeypatch.setattr(repo_files.shutil, "which", lambda _name: "/vanished/git")
+
+    def vanished_binary(*_args, **_kwargs):
+        raise FileNotFoundError("git disappeared after which")
+
+    monkeypatch.setattr(repo_files.subprocess, "run", vanished_binary)
+
+    rc, detail = repo_files._real_git_runner(tmp_path)(["status"])
+
+    assert rc == 127
+    assert "git disappeared after which" in detail
 
 
 def test_unknown_mode_is_rejected_before_enumeration(repo_files, tmp_path):
