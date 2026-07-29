@@ -1290,6 +1290,32 @@ def test_both_install_manifest_is_selected_tree_union(pm_import, pm_update, tmp_
     } <= opencode_files
 
 
+def test_both_missing_second_manifest_fails_before_any_copy(
+        pm_import, tmp_path, capsys):
+    """both의 후순위 manifest 부재는 apply 전에 loud 실패하고 부분 설치를 남기지 않는다."""
+    source = tmp_path / "source"
+    claude = source / "templates" / "claude_code"
+    opencode = source / "templates" / "opencode"
+    (claude / ".project_manager").mkdir(parents=True)
+    opencode.mkdir(parents=True)
+    (claude / ".project_manager" / "engine.manifest").write_text(
+        ".project_manager/engine.manifest\n", encoding="utf-8")
+    (claude / "CLAUDE.md").write_text("would copy\n", encoding="utf-8")
+    (opencode / "AGENTS.md").write_text("would also copy\n", encoding="utf-8")
+    # opencode/.project_manager/engine.manifest는 의도적으로 부재.
+    dest = tmp_path / "partial-install-must-not-exist"
+
+    rc = pm_import.main([
+        "--new", str(dest), "--from", str(source), "--harness", "both",
+        "--name", "No Partial",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "manifest 합집합" in captured.err and "복사 전에 중단" in captured.err
+    assert not dest.exists(), "후순위 manifest 부재인데 복사/git init 등 부분 설치가 남음"
+
+
 def test_both_install_then_update_repairs_stale_opencode_in_one_run(
         pm_import, pm_update, tmp_path, monkeypatch):
     """both 신규 설치 후 opencode adapter가 낡아져도 pm_update 1회로 복구된다."""
@@ -1309,24 +1335,54 @@ def test_both_install_then_update_repairs_stale_opencode_in_one_run(
         "both 설치의 opencode adapter가 pm_update 1회로 복구되지 않음"
 
 
+def test_claude_only_stray_opencode_file_never_promotes_adapter(
+        pm_import, pm_update, tmp_path, monkeypatch, capsys):
+    """claude-only + 사용자 stray 1개는 opencode 합집합 승격/plan/overwrite가 전부 0이다."""
+    dest = tmp_path / "claude-with-user-opencode"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "claude", "--name", "Claude Only",
+    ]) == 0
+    capsys.readouterr()
+    stray = dest / ".opencode" / "agents" / "developer.md"
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    user_bytes = b"# user-owned stray; must survive\n"
+    stray.write_bytes(user_bytes)
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    assert pm_update.main(["--from", str(REPO), "--dry-run"]) == 0
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "설치된 다중 하네스" not in combined
+    assert ".opencode/" not in combined, \
+        f"claude-only의 stray 한 파일이 opencode 관리 plan을 발화함: {combined!r}"
+    assert stray.read_bytes() == user_bytes
+
+
 def test_legacy_claude_manifest_both_adopter_selfheals_opencode_in_one_run(
         pm_import, pm_update, tmp_path, monkeypatch, capsys):
-    """기존 frozen 형상(양 adapter + claude-only manifest)을 감지해 합집합 승격·복구한다."""
+    """선언 없는 frozen both를 1회 복구하고 신규 both manifest와 byte 수렴·2회차 멱등한다."""
     dest = tmp_path / "legacy-both"
     assert pm_import.main([
         "--new", str(dest), "--harness", "both", "--name", "Legacy Both",
     ]) == 0
     capsys.readouterr()
 
-    # 수정 이전 설치 실측 형상: adapter는 둘 다 있지만 manifest는 claude flavor 한 벌뿐.
+    # 구 설치 형상: adapter는 둘 다 있지만 manifest에는 선택-tree @source provenance가 없다.
     dest_manifest = dest / ".project_manager" / "engine.manifest"
     claude_manifest = (
         REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest")
-    dest_manifest.write_bytes(claude_manifest.read_bytes())
+    legacy_text = re.sub(r"\s+@source=\S+", "", claude_manifest.read_text(encoding="utf-8"))
+    dest_manifest.write_text(legacy_text, encoding="utf-8")
     victim_rel = Path(".opencode/lib/safe-write-core.cjs")
     victim = dest / victim_rel
     expected = (REPO / "templates" / "opencode" / victim_rel).read_bytes()
     victim.write_text("// frozen old core\n", encoding="utf-8")
+    expected_manifest = pm_update.merge_manifest_sources([
+        REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest",
+        REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest",
+    ])["text"].encode("utf-8")
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
@@ -1342,9 +1398,20 @@ def test_legacy_claude_manifest_both_adopter_selfheals_opencode_in_one_run(
     assert opencode_paths <= healed_paths
     assert victim.read_bytes() == expected, \
         "기존 frozen adapter가 manifest 자기치유와 같은 pm_update 1회에 복구되지 않음"
+    assert dest_manifest.read_bytes() == expected_manifest, \
+        "legacy heal manifest가 신규 both 설치 manifest와 byte-identical 수렴하지 않음"
     out = capsys.readouterr().out
     assert "frozen adapter" in out and "선택 flavor 합집합" in out, \
         f"채택자 frozen 진단이 loud하게 표면화되지 않음: {out!r}"
+    assert "그동안 pm_update 갱신이 정지" in out and "어댑터 트리를 제거" in out
+
+    # 2회차는 manifest/adapter 모두 최신: 재치유 경고 없이 완전 멱등.
+    capsys.readouterr()
+    assert pm_update.main(["--from", str(REPO)]) == 0
+    second = capsys.readouterr()
+    assert "최신 — 변경 없음" in second.out
+    assert "frozen adapter" not in second.out
+    assert dest_manifest.read_bytes() == expected_manifest
 
 
 def test_both_identical_relpath_silent(pm_import, tmp_path, capsys):

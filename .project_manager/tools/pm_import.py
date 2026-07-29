@@ -1093,23 +1093,30 @@ def _same_bytes(a: Path, b: Path) -> bool:
         return False
 
 
-def _install_selected_manifest_union(template_roots: list[Path], dest_root: Path) -> int:
-    """설치 engine.manifest를 선택된 template tree manifest들의 합집합으로 쓴다.
+def _prepare_selected_manifest_union(template_roots: list[Path]) -> dict | None:
+    """선택 template tree의 manifest 합집합을 읽기 전용으로 사전 검증한다.
 
     ``plan_copy``와 동일한 ``template_roots`` 순서를 단일 선택 트리로 소비한다. 경로/하네스별
     예외는 없고 각 트리의 manifest 선언을 합치므로, 향후 임의 조합도 같은 집합 의미를 그대로
-    재사용할 수 있다. 단일 트리는 기존 복사본을 byte-identical 유지한다.
+    재사용할 수 있다. 복사 apply 전에 호출해 후순위 manifest 부재/파싱·병합 실패가 부분 설치를
+    남기지 않게 한다. 단일 트리는 합집합 write가 불필요하므로 None을 반환한다.
     """
     manifest_paths = [
         root / ".project_manager" / "engine.manifest"
         for root in template_roots
     ]
     if len(manifest_paths) < 2:
-        return 0
+        return None
     pu = _load_pm_update()
     if pu is None:
         raise RuntimeError("pm_update.py를 로드할 수 없어 선택 manifest 합집합을 만들 수 없습니다.")
-    merged = pu.merge_manifest_sources(manifest_paths)
+    return pu.merge_manifest_sources(manifest_paths)
+
+
+def _install_selected_manifest_union(merged: dict | None, dest_root: Path) -> int:
+    """사전 검증된 선택 manifest 합집합을 설치한다(여기서는 source를 다시 읽지 않는다)."""
+    if merged is None:
+        return 0
     target = Path(dest_root) / ".project_manager" / "engine.manifest"
     target.write_text(merged["text"], encoding="utf-8")
     return len(merged["entries"])
@@ -3598,6 +3605,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # 다중 tree import의 manifest 합집합은 **어떤 복사보다 먼저** 읽고 병합 가능성을 검증한다.
+    # 후순위 manifest 부재/병합 실패를 복사 뒤 발견하면 --new/--into 모두 부분 설치가 남는다.
+    try:
+        prepared_manifest_union = _prepare_selected_manifest_union(template_roots)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(
+            "오류: 선택된 어댑터 manifest 합집합을 만들 수 없어 복사 전에 중단합니다 — "
+            f"{exc}",
+            file=sys.stderr,
+        )
+        return 1
+
     # --into 백업을 중앙 디렉토리 `<dest>/.pm_import_backups/<DATE>/` 로 모은다.
     #   --new 는 빈 디렉토리 보장이라 백업 없음(backup_root=None). git_safe = '추적&미변경'
     #   relpath 집합(또는 None=비-git·판정불가). git 호출 실패는 None→전부 백업(보수적 폴백).
@@ -3705,7 +3724,8 @@ def main(argv: list[str] | None = None) -> int:
     for a in actions:
         a.run()
 
-    merged_manifest_entries = _install_selected_manifest_union(template_roots, dest_root)
+    merged_manifest_entries = _install_selected_manifest_union(
+        prepared_manifest_union, dest_root)
     if merged_manifest_entries:
         print(
             f"✓ engine.manifest 선택 트리 합집합 설치 "

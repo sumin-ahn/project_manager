@@ -710,6 +710,54 @@ def test_detect_manifest_skew_upstream_missing_fail_soft(pm_update, tmp_path):
     assert status == "upstream_missing" and new_entries == []
 
 
+def test_detect_manifest_skew_uses_all_selected_upstream_manifests(
+        pm_update, tmp_path):
+    """diverged 로컬에서도 후순위 flavor 신규 경로를 skew로 잡아 in_sync 오판을 막는다."""
+    source = tmp_path / "source"
+    first = source / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = source / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first_self = (
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/first/.project_manager/engine.manifest"
+    )
+    second_old = ".second/old    @source=templates/second/.second/old"
+    second_new = ".second/new    @source=templates/second/.second/new"
+    first.write_text(f"{SENTINEL_REL}\n{first_self}\n", encoding="utf-8")
+    second.write_text(
+        f"{second_old}\n{MANIFEST_SELF_REL}    "
+        "@source=templates/second/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    local_text = pm_update.merge_manifest_sources([first, second])["text"]
+    dest = tmp_path / "dest"
+    dest_manifest = _write_dest_manifest(dest, [])
+    dest_manifest.write_text(
+        local_text.rstrip("\n") + "\n.custom/local-only\n", encoding="utf-8")
+
+    # 후순위 flavor가 진화했지만 로컬-only 경로 때문에 selfheal 전체 교체는 금지된다.
+    second.write_text(
+        f"{second_old}\n{second_new}\n{MANIFEST_SELF_REL}    "
+        "@source=templates/second/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    selfheal = pm_update.resolve_manifest_selfheal(dest, source)
+    assert selfheal["status"] == "diverged"
+    assert [p.parents[1].name for p in selfheal["upstream_manifests"]] == [
+        "first", "second",
+    ]
+
+    local_entries = pm_update.read_manifest(dest_manifest)
+    status, new_entries = pm_update.detect_manifest_skew(
+        local_entries,
+        source,
+        upstream_manifests=selfheal["upstream_manifests"],
+    )
+    assert status == "skew", "후순위 flavor 신규 경로를 첫 manifest만 보고 in_sync로 오판"
+    assert new_entries == [".second/new"]
+
+
 def test_main_selfheal_supersedes_skew_suppression(pm_update, tmp_path, monkeypatch, capsys):
     """T-0395 amend(T-0396): 구형 로컬 manifest + 읽기 가능한 upstream 이면 baseline 억제가 아니라
     **자기치유** — upstream 승격으로 skew 가 정의상 0 이 되어, skew/억제 메시지 없이 baseline 이
@@ -991,6 +1039,49 @@ def test_resolve_manifest_selfheal_flavor_source_not_clobbered_by_root(pm_update
     selfprop = [e for e in result["manifest"] if str(e) == MANIFEST_SELF_REL]
     assert selfprop and selfprop[0].source_rel == flavor_rel, \
         "승격 manifest 의 self-prop 이 flavor @source 를 보존 안 함(root bare 로 클로버)"
+
+
+def test_selected_manifest_order_is_primary_then_declared_flavors(
+        pm_update, tmp_path, capsys):
+    """opencode-primary 합집합의 선택 순서를 opencode, claude_code로 결정성 고정한다."""
+    opencode = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
+    claude = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
+    merged = pm_update.merge_manifest_sources([opencode, claude])
+    dest = tmp_path / "dest"
+    manifest = _write_dest_manifest(dest, [])
+    manifest.write_text(merged["text"], encoding="utf-8")
+
+    result = pm_update.resolve_manifest_selfheal(dest, REPO)
+
+    assert [path.parents[1].name for path in result["upstream_manifests"]] == [
+        "opencode", "claude_code",
+    ]
+    pm_update._print_manifest_merge_conflicts(result)
+    err = capsys.readouterr().err
+    assert ".project_manager/engine.manifest" in err
+    assert "선언 순서상 첫 flavor" in err
+
+
+def test_pm_home_root_manifest_ignores_three_full_stray_adapter_trees(
+        pm_update, tmp_path):
+    """PM 홈 root 선언 + opencode/codex/skills 실재에도 3-flavor 합집합 승격은 0이다."""
+    dest = tmp_path / "pm-home"
+    (dest / ".project_manager").mkdir(parents=True)
+    shutil.copy2(
+        REPO / ".project_manager" / "engine.manifest",
+        dest / ".project_manager" / "engine.manifest",
+    )
+    shutil.copytree(REPO / "templates" / "opencode" / ".opencode", dest / ".opencode")
+    shutil.copytree(REPO / "templates" / "codex" / ".codex", dest / ".codex")
+    shutil.copytree(REPO / "templates" / "codex" / ".agents", dest / ".agents")
+
+    result = pm_update.resolve_manifest_selfheal(dest, REPO)
+
+    assert result["status"] == "in_sync"
+    assert result["upstream_manifests"] == [
+        REPO / ".project_manager" / "engine.manifest",
+    ], "root PM 홈의 stray adapter tree가 선택 flavor로 무단 승격됨"
+    assert result.get("multi_flavor_recovery") is not True
 
 
 def test_resolve_manifest_selfheal_diverged_on_marker_edit(pm_update, tmp_path):
