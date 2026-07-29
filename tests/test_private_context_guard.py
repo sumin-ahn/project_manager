@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -51,6 +52,27 @@ def _load_prose_scanner():
 
 
 PROSE_SCANNER = _load_prose_scanner()
+
+
+def test_repo_owned_files_exec_failure_removes_partial_cache_and_allows_retry(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / ".project_manager/tools/repo_owned_files.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("raise RuntimeError('exec boom')\n", encoding="utf-8")
+    monkeypatch.setattr(PROSE_SCANNER, "REPO", tmp_path)
+    module_name = f"_private_context_repo_owned_files:{target.resolve()}"
+    sys.modules.pop(module_name, None)
+
+    with pytest.raises(RuntimeError, match="exec boom"):
+        PROSE_SCANNER._load_repo_owned_files()
+
+    assert module_name not in sys.modules
+
+    target.write_text("RETRY_MARKER = 'loaded'\n", encoding="utf-8")
+    loaded = PROSE_SCANNER._load_repo_owned_files()
+
+    assert loaded.RETRY_MARKER == "loaded"
 
 
 @dataclass(frozen=True)
@@ -177,23 +199,9 @@ def _markdown_occurrences(
 
 
 def _shipping_paths(root: Path) -> tuple[list[Path], list[Path]]:
-    python_paths = set((root / ".project_manager/tools").glob("*.py"))
-    markdown_paths = set((root / ".project_manager/wiki").rglob("*.md"))
-    markdown_paths.update((root / ".claude").rglob("*.md"))
-    entry_doc = root / "CLAUDE.md"
-    if entry_doc.is_file():
-        markdown_paths.add(entry_doc)
-
-    templates = root / "templates"
-    if templates.is_dir():
-        for template in templates.iterdir():
-            if not template.is_dir():
-                continue
-            python_paths.update(
-                (template / ".project_manager/tools").glob("*.py")
-            )
-            markdown_paths.update(template.rglob("*.md"))
-    return sorted(python_paths), sorted(markdown_paths)
+    # 테스트와 재생성 스크립트가 같은 공용 OWNED 열거·표면 분류를 사용해야
+    # 한쪽에서만 ignored 파생 파일을 baseline에 다시 넣는 판정 어긋남이 없다.
+    return PROSE_SCANNER.shipping_paths(root)
 
 
 @lru_cache(maxsize=None)
@@ -323,6 +331,112 @@ def test_shipping_inventory_covers_primary_and_template_surfaces():
         assert any(path.startswith(prefix) for path in relative_python)
         assert any(path.startswith(prefix) for path in relative_markdown)
     assert path_names
+
+
+def _git(root: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_shipping_inventory_uses_owned_scope_and_is_deterministic(tmp_path):
+    _git(tmp_path, "init", "-q")
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text(
+        "\n".join(
+            (
+                ".project_manager/wiki/log/dashboard.md",
+                "templates/opencode/.opencode/node_modules/",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    tracked = tmp_path / ".project_manager/wiki/pm_role.md"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text("tracked\n", encoding="utf-8")
+    template = (
+        tmp_path
+        / "templates"
+        / "opencode"
+        / ".project_manager"
+        / "tools"
+        / "board.py"
+    )
+    template.parent.mkdir(parents=True)
+    template.write_text('"""tracked"""\n', encoding="utf-8")
+    _git(
+        tmp_path,
+        "add",
+        ".gitignore",
+        str(tracked.relative_to(tmp_path)),
+        str(template.relative_to(tmp_path)),
+    )
+
+    untracked = tmp_path / ".claude/agents/local.md"
+    untracked.parent.mkdir(parents=True)
+    untracked.write_text("owned untracked\n", encoding="utf-8")
+    dashboard = tmp_path / ".project_manager/wiki/log/dashboard.md"
+    dashboard.parent.mkdir(parents=True)
+    dashboard.write_text("PM 99\n", encoding="utf-8")
+    dependency = (
+        tmp_path
+        / "templates"
+        / "opencode"
+        / ".opencode"
+        / "node_modules"
+        / "package"
+        / "README.md"
+    )
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text("D1\n", encoding="utf-8")
+
+    first = _shipping_paths(tmp_path)
+    second = _shipping_paths(tmp_path)
+    python_paths = set(first[0])
+    markdown_paths = set(first[1])
+    assert first == second
+    assert template in python_paths
+    assert tracked in markdown_paths
+    assert untracked in markdown_paths
+    assert dashboard not in markdown_paths
+    assert dependency not in markdown_paths
+
+    # 민감도: 두 파일은 디스크에 실제로 존재하므로 옛 rglob 범위로 되돌리면
+    # 위의 ``not in markdown_paths`` 두 단언이 즉시 red가 된다.
+    assert dashboard.is_file()
+    assert dependency.is_file()
+
+
+def test_shipping_inventory_git_missing_archive_falls_back_loudly(
+    tmp_path, monkeypatch
+):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / ".gitignore").write_text(
+        ".project_manager/wiki/log/\n", encoding="utf-8"
+    )
+    doc = tmp_path / ".project_manager/wiki/pm_role.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text("archive\n", encoding="utf-8")
+    ignored_derived = tmp_path / ".project_manager/wiki/log/generated.md"
+    ignored_derived.parent.mkdir(parents=True)
+    ignored_derived.write_text("derived\n", encoding="utf-8")
+    _git(tmp_path, "add", ".gitignore", str(doc.relative_to(tmp_path)))
+    repo_files = PROSE_SCANNER._load_repo_owned_files()
+
+    _, owned_markdown = _shipping_paths(tmp_path)
+    monkeypatch.setattr(repo_files.shutil, "which", lambda _name: None)
+
+    with pytest.warns(repo_files.RepoFilesFallbackWarning, match=r"rc=127"):
+        _, fallback_markdown = _shipping_paths(tmp_path)
+
+    assert set(owned_markdown) <= set(fallback_markdown)
+    assert doc in fallback_markdown
+    assert ignored_derived not in owned_markdown
+    assert ignored_derived in fallback_markdown
 
 
 def test_hard_private_context_matches_reviewed_allowlist():

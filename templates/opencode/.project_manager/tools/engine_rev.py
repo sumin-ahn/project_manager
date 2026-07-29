@@ -41,8 +41,9 @@ ENGINE_REV = "v1.5.0"
 MIN_PYTHON = (3, 11)
 
 # baked `ENGINE_REV` 리터럴을 지니는 엔진 모듈(= sibling skew 대조 대상). `--bump` 와 평시 가드
-# 테스트가 이 목록을 참조한다. pm_import 는 제외 — 자기 형제 canonical *source* 트리만 로드해
-# skew 가 구조적으로 불가능(pm_import._detected_py 주석 참조).
+# 테스트가 이 목록을 참조한다. 목록의 완결성은 deep-import AST 가드가 실측한 target 집합에서
+# 파생해 단언한다. 따라서 새 형제 로드가 생기면 이 목록을 사람이 기억해 갱신하지 않아도 회귀가
+# red가 된다.
 STAMPED_MODULES = (
     "board.py",
     "pm_handoff.py",
@@ -58,7 +59,35 @@ STAMPED_MODULES = (
     "console_encoding.py",
     "pm_delegate.py",
     "delegate_scope.py",
+    "pm_relay.py",
+    "external_review.py",
+    "pm_render.py",
+    "pm_import.py",
+    "pm_log.py",
+    "repo_owned_files.py",
 )
+
+# deep-import target/loader인데 의도적으로 baked stamp 또는 경계 검증에서 제외하는 복구 채널.
+# AST 가드는 이 코드 소유 목록 외의 예외를 허용하지 않으며, 사유가 빈 문자열이어도 red다.
+#
+# engine_rev.py는 baked rev의 단일 진실 자체라 STAMPED_MODULES(그 값을 복제하는 대상)에 들어갈 수
+# 없다. 또한 중단된 --bump를 재실행해야 하므로 main의 console helper 검증도 금지한다.
+# pm_update.py는 부분 동기/skew를 실제로 해소하는 복구 채널이라 그 파일 자체가 로더인 경계와
+# 다른 모듈이 pm_update.py를 target으로 로드하는 경계 모두 검증하지 않는다. 어느 방향에서든
+# 복구 도구가 skew로 자기잠김되면 복구 경로가 닫힌다.
+EXEMPT_FROM_STAMP = {
+    "engine_rev.py": "baked rev 단일 진실 및 중단된 --bump 복구 채널",
+    "pm_update.py": "self-update 복구 채널(자신이 로드하는 형제와 자신을 target으로 로드하는 경계 모두)",
+}
+
+# 호출자/채택자 경로를 받는 loader도 verifier 보유를 AST 가드가 단언한다. 이 예외 축은
+# ``EXEMPT_FROM_STAMP``의 엔진 모듈/복구채널 축과 별개인 *adopter/dest 경로* 축이다. 따라서
+# dest 사본의 리터럴 파일명이 우연히 stamped 형제와 같아도, 여기에 호출 지점과 사유를 등록하면
+# canonical sibling 검증을 잘못 강요하지 않는다. 현재는 인스턴스 lint hook만 해당하며, 예외는
+# 코드 소유·빈 사유 금지라 새 미검증 loader가 자동으로 섞이지 않는다.
+EXEMPT_UNVERIFIED_DEEP_IMPORTS = {
+    ("board.py", "_run_lint_hooks"): "채택자 소유 .project_manager/hooks/lint_*.py 확장점",
+}
 
 _REV_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 # 모듈-레벨 baked 리터럴 (줄 시작·문자열 리터럴). `--bump`/가드 스캔이 공유하는 단일 패턴.
@@ -94,6 +123,37 @@ def check(sibling_rev, expected_rev, *, sibling_filename: str, loader_filename: 
             f"또는 구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ "
             f"전체를 재동기하라."
         )
+
+
+def load_repo_owned_files(path: Path, *, verifier=None, allow_unverified: bool = False):
+    """세 소비자가 공유하는 ``repo_owned_files.py`` 캐시/로드 단일 seam.
+
+    동일한 path-key 캐시는 검증 면제 복구 채널(pm_update)도 채울 수 있다. 따라서 캐시를 만든
+    주체를 신뢰하지 않고 *매 소비 시점* 전달된 ``verifier``를 실행한다. 면제 채널만
+    ``allow_unverified=True``를 명시할 수 있으며, 그 캐시는 이후 stamped 소비자가 다시 검증한다.
+    exec/검증 실패 시 오염된 공용 캐시를 제거하고 원 예외를 그대로 보존한다.
+    """
+    path = Path(path).resolve()
+    if verifier is None and not allow_unverified:
+        raise ValueError("repo_owned_files loader는 verifier 또는 명시적 복구채널 면제가 필요하다")
+    module_name = f"_project_manager_repo_owned_files:{path}"
+    module = sys.modules.get(module_name)
+    try:
+        if module is None:
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(
+                    "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
+                )
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+        if verifier is not None:
+            verifier(module, path.name)
+        return module
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
 
 
 def bump(new_rev: str, *, dry_run: bool = False) -> list[str]:

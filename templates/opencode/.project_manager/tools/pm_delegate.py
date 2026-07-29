@@ -273,6 +273,7 @@ def _load_external_review():
     spec = importlib.util.spec_from_file_location("external_review", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    _verify_engine_rev(module, path.name)
     return module
 
 
@@ -283,6 +284,7 @@ def _load_relay():
     spec = importlib.util.spec_from_file_location("pm_relay", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    _verify_engine_rev(module, path.name)
     return module
 
 

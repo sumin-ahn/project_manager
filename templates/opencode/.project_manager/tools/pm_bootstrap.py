@@ -274,9 +274,9 @@ def _dashboard_file() -> Path:
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
 ENGINE_REV = "v1.5.0"
 
-# _load_tool(generic)이 이름으로 로드하는 것 중 rev 스탬프를 지닌(계측된) 형제만 대조.
-# pm_log 등 미계측 도구는 제외(정상 사본에서도 ENGINE_REV 부재라 오탐). 계측 확대 시 추가.
-_STAMPED_SIBLINGS = frozenset({"pm_handoff.py", "pm_bootstrap.py"})
+# _load_tool(generic)이 이름으로 로드하는 stamped 형제. deep-import AST 가드는 클래스 메서드와
+# 중첩 함수까지 포함해 실제 호출 target을 측정하고, 그 집합이 이 리터럴에 포함되는지 단언한다.
+_STAMPED_SIBLINGS = frozenset({"pm_handoff.py", "pm_bootstrap.py", "pm_config.py", "pm_log.py"})
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -3485,7 +3485,9 @@ class PmBootstrap:
             wp = self._worktree_pool or _load_worktree_pool()
             if wp is not None:
                 wp.release(slot, require_clean=False)
-        except Exception:  # noqa: BLE001 — best-effort: cleanup 실패가 원 abort 를 가리지 않는다.
+        except Exception as exc:  # noqa: BLE001 — 일반 cleanup 실패만 원 abort 를 가리지 않는다.
+            if _is_engine_rev_skew(exc):
+                raise
             pass
 
     def _bind_task_or_reject(self, task: str) -> dict | None:
@@ -4073,7 +4075,9 @@ class PmBootstrap:
         if retry_fn is not None:
             try:
                 return retry_fn(repo, board=self._board or _load_board())
-            except Exception:  # noqa: BLE001 — fail-soft: 아래 일반 안내로 강등.
+            except Exception as exc:  # noqa: BLE001 — 일반 실패만 아래 일반 안내로 강등.
+                if _is_engine_rev_skew(exc):
+                    raise
                 pass
         return (f"{_CARD_TOOL_INVOKE}/pm_config.py repo protected {repo}"
                 "   (현재 상태 확인 후 재설정)")
@@ -4091,7 +4095,9 @@ class PmBootstrap:
             return None
         try:
             return wired_fn(repo, worktree_pool=self._worktree_pool or _load_worktree_pool())
-        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 "모름"(오탐 0).
+        except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 "모름"(오탐 0).
+            if _is_engine_rev_skew(exc):
+                raise
             return None
 
     def _resolve_slot_base(self, repo: str) -> _ResolvedSlotBase | None:

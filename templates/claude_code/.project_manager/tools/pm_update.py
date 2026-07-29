@@ -422,25 +422,51 @@ def _read_local_conf(path: Path) -> dict[str, str]:
 
 
 def _load_repo_owned_files():
-    """공용 repo 소유 파일 열거 seam을 script-relative로 로드한다."""
+    """공용 seam을 복구채널 면제로 로드한다(구형/부재 helper면 인라인 폴백).
+
+    이 도구는 부분/중단 배포를 고치는 복구 채널이므로 새 ``engine_rev`` seam 자체에 의존해
+    자기잠김되면 안 된다. 폴백도 공용 seam과 같은 path-key 캐시를 써서, 이후 stamped 소비자가
+    그 캐시를 다시 검증하는 성질은 그대로 보존한다.
+    """
     path = Path(__file__).resolve().with_name("repo_owned_files.py").resolve()
-    module_name = f"_project_manager_repo_owned_files:{path}"
-    cached = sys.modules.get(module_name)
-    if cached is not None:
-        return cached
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(
-            "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
-        )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
+
+    def load_direct():
+        module_name = f"_project_manager_repo_owned_files:{path}"
+        cached = sys.modules.get(module_name)
+        if cached is not None:
+            return cached
+        direct_spec = importlib.util.spec_from_file_location(module_name, path)
+        if direct_spec is None or direct_spec.loader is None:
+            raise RuntimeError(
+                "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
+            )
+        module = importlib.util.module_from_spec(direct_spec)
+        sys.modules[module_name] = module
+        try:
+            direct_spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
+        return module
+
+    helper_path = Path(__file__).resolve().with_name("engine_rev.py")
     try:
-        spec.loader.exec_module(module)
+        spec = importlib.util.spec_from_file_location(
+            "_pm_update_repo_owned_loader", helper_path
+        )
+        if spec is None or spec.loader is None:
+            return load_direct()
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        loader = getattr(helper, "load_repo_owned_files", None)
+        if loader is None:
+            return load_direct()
+        return loader(path, allow_unverified=True)
+    # pm-update는 중단된 배포를 고치는 복구 채널이다. helper의 import·API 협상 어느
+    # 단계든 실패하면(손상된 소스의 SyntaxError·구형 시그니처 TypeError 포함) 직접
+    # 로드로 계속해야 자기잠김이 없다. BaseException은 종료/인터럽트 의미를 보존한다.
     except Exception:
-        sys.modules.pop(module_name, None)
-        raise
-    return module
+        return load_direct()
 
 
 class SkippedRepoShippingEntryWarning(RuntimeWarning):

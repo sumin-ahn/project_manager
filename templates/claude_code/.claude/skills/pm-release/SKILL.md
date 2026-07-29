@@ -48,8 +48,11 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record -
 
    ```bash
    # 사용자 승인 필요 — 스킬은 이 명령을 대신 돌리지 않는다(보호훅 + livegate 이중 안전).
-   PM_ALLOW_PROTECTED_PUSH=1 git push origin main
+   PM_ALLOW_PROTECTED_PUSH=1 git push origin HEAD:main
    ```
+
+   refspec을 `HEAD:main`으로 명시한다. 릴리즈/task 브랜치에 체크아웃한 상태에서 `git push origin main`은
+   지금 커밋이 아니라 **낡은 로컬 `main`을 민다** — 첫 main push가 그 이유로 거부된 실사건이 있다.
 
 2. **annotated tag** `vX.Y.Z`를 push하며 refspec을 명시한다:
    `git tag -a vX.Y.Z -m ... && git push origin refs/tags/vX.Y.Z:refs/tags/vX.Y.Z`

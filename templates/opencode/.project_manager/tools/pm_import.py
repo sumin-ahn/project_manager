@@ -72,6 +72,29 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
+# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
+# Python 하한 probe보다 먼저 평가되므로 3.10에서도 파싱 가능한 문법만 쓴다.
+ENGINE_REV = "v1.5.0"
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            "엔진 사본 버전 불일치 — 로더 %s(rev=%r)가 형제 %s(rev=%r)를 로드했다 "
+            "(사본 skew: 부분/수동 복사 또는 구형 사본). `pm-update`(또는 pm_update.py)로 "
+            ".project_manager/tools/ 전체를 재동기하라."
+            % (Path(__file__).name, ENGINE_REV, sibling_filename, got)
+        )
+        err._engine_rev_skew = True
+        raise err
+
+
+def _is_engine_rev_skew(exc):
+    """fail-soft 소비 지점에서 rev skew만 재-raise하기 위한 구조화 판정."""
+    return getattr(exc, "_engine_rev_skew", False)
+
 
 def _load_min_python() -> tuple[int, int] | None:
     """engine_rev.py 의 하한을 읽되 불완전/구형 사본이면 확인을 건너뛴다."""
@@ -395,9 +418,8 @@ def _detected_py() -> str:
     있으므로 spec_from_file_location 으로 직접 로드 — sys.path 오염 없이 호출 가능.
     어떤 이유로든 로드/호출이 실패하면 "python3" 폴백(리눅스 현행 동치).
     """
-    # rev-스탬프 대조 예외(의도): 이 board.py 는 pm_import 자신의 형제(=import 하는
-    # canonical 프레임워크 소스 트리)라 pm_import 와 항상 같은 사본이다 — skew 가 구조적으로
-    # 불가능(채택자 dest 가 아니라 source 를 읽는다). 그래서 여기선 verify 를 걸지 않는다.
+    # 같은 canonical tools 디렉토리의 board.py라도 부분/수동 복사로 rev가 어긋날 수 있으므로
+    # 로드 직후 verify한다. 일반 로드 실패는 폴백하되 marked skew만 아래에서 재-raise한다.
     board_py = Path(__file__).resolve().parent / "board.py"
     try:
         spec = importlib.util.spec_from_file_location("_board_for_detect_py", board_py)
@@ -405,8 +427,11 @@ def _detected_py() -> str:
             return _DEFAULT_PY_FALLBACK
         board_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(board_mod)
+        _verify_engine_rev(board_mod, board_py.name)
         return board_mod._detect_py()
-    except Exception:  # noqa: BLE001 — 탐지 실패는 폴백, import 를 깨지 않는다.
+    except Exception as exc:  # noqa: BLE001 — 탐지 실패는 폴백, skew만 fail-loud.
+        if _is_engine_rev_skew(exc):
+            raise
         return _DEFAULT_PY_FALLBACK
 
 
@@ -1267,8 +1292,11 @@ def _load_pm_render_module():
             return None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        _verify_engine_rev(mod, render_py.name)
         return mod
-    except Exception:  # noqa: BLE001 — 로드 실패는 render 단계 skip(무동작).
+    except Exception as exc:  # noqa: BLE001 — 일반 로드 실패만 render 단계 skip(무동작).
+        if _is_engine_rev_skew(exc):
+            raise
         return None
 
 
@@ -2008,6 +2036,7 @@ def _load_watchdog():
     spec = importlib.util.spec_from_file_location("pm_relay", engine_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    _verify_engine_rev(module, engine_path.name)
     return module
 
 
@@ -2175,25 +2204,26 @@ def _live_harness_allowed(mode: str) -> bool:
 
 
 def _load_repo_owned_files():
-    """공용 repo 소유 파일 열거 seam을 script-relative로 로드한다."""
-    path = Path(__file__).resolve().with_name("repo_owned_files.py").resolve()
-    module_name = f"_project_manager_repo_owned_files:{path}"
-    cached = sys.modules.get(module_name)
-    if cached is not None:
-        return cached
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
+    """공용 repo 소유 파일 열거 seam을 검증 소비자로 로드한다."""
+    try:
+        helper_path = Path(__file__).resolve().with_name("engine_rev.py")
+        spec = importlib.util.spec_from_file_location(
+            "_pm_import_repo_owned_loader", helper_path
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("공용 loader module spec/loader 부재")
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        return helper.load_repo_owned_files(
+            Path(__file__).resolve().with_name("repo_owned_files.py"),
+            verifier=_verify_engine_rev,
+        )
+    except Exception as exc:
+        if _is_engine_rev_skew(exc):
+            raise
         raise RuntimeError(
             "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
-        )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(module_name, None)
-        raise
-    return module
+        ) from exc
 
 
 def _resolve_fill_scope(dest_root: Path, copied_relpaths: set[Path] | None) -> set[Path]:
@@ -3475,6 +3505,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     _console_encoding = importlib.util.module_from_spec(_console_spec)
     _console_spec.loader.exec_module(_console_encoding)
+    _verify_engine_rev(_console_encoding, "console_encoding.py")
     _console_encoding.configure_console_utf8()
     ap = argparse.ArgumentParser(
         prog="pm_import.py",

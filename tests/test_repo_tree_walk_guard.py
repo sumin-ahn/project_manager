@@ -30,18 +30,6 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException("T-0499가 template 출하 열거를 tracked_only seam으로 전환할 때 제거"),
     (
-        "scripts/strip_private_refs.py",
-        "_write_inventory",
-        "rglob",
-        "'*.md'",
-    ): WalkException("T-0500이 private-ref 스캔 인벤토리를 공용 seam으로 전환할 때 제거", 2),
-    (
-        "tests/test_private_context_guard.py",
-        "_shipping_paths",
-        "rglob",
-        "'*.md'",
-    ): WalkException("T-0500이 private-context 판정 인벤토리를 공용 seam으로 전환할 때 제거", 3),
-    (
         "tests/test_pm_render.py",
         "test_adapter_surfaces_no_machine_variant_tokens",
         "rglob",

@@ -37,6 +37,23 @@ import importlib.util
 import sys
 from pathlib import Path
 
+# ── 엔진 사본 rev 스탬프 (pm_bootstrap deep-import target) ────────────────
+ENGINE_REV = "v1.5.0"
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True
+        raise err
+
+
 REPO = Path(__file__).resolve().parents[2]
 WIKI_DIR = REPO / ".project_manager" / "wiki"
 LOG_DIR = WIKI_DIR / "log"
@@ -263,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     _console_encoding = importlib.util.module_from_spec(_console_spec)
     _console_spec.loader.exec_module(_console_encoding)
+    _verify_engine_rev(_console_encoding, "console_encoding.py")
     _console_encoding.configure_console_utf8()
     args = build_parser().parse_args(argv)
     return args.fn(args)

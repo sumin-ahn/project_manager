@@ -87,5 +87,5 @@ python3 .project_manager/tools/board.py lint              # 의존성·thin·wik
 
 ## 후속 (roadmap 단일 진실)
 
-opencode 어댑터 잔여 폴리시 · 다운스트림 인스턴스 Phase B · 엔진 테스트 확충.
-자세한 건 ② PM 홈 `.project_manager/wiki/roadmap.md`.
+후속 작업의 단일 진실은 PM 홈(`project_manager_dev`)의 `.project_manager/wiki/roadmap.md` 다 —
+**여기에 목록을 복제하지 않는다**(복제본은 반드시 drift 한다).

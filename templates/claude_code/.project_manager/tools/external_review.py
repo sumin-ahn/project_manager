@@ -67,6 +67,29 @@ import uuid
 from pathlib import Path
 from typing import Callable, Iterator
 
+# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
+# baked 리터럴 — engine_rev.py --bump가 전 stamped 모듈과 함께 재작성한다.
+ENGINE_REV = "v1.5.0"
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True
+        raise err
+
+
+def _is_engine_rev_skew(exc) -> bool:
+    """fail-soft 소비 지점에서 rev skew만 재-raise하기 위한 구조화 판정."""
+    return getattr(exc, "_engine_rev_skew", False)
+
+
 # ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형) ──────────
 # 하드코딩 `parents[2]` 는 tools 가 `<root>/.project_manager/tools/` 정확히 2단 깊이에 있다고
 # 가정한다 — 채택자 형상(PM 홈/worktree 구조 상이·다른 깊이)에선 어긋난다.
@@ -872,6 +895,7 @@ def _load_relay():
     spec = importlib.util.spec_from_file_location("pm_relay", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    _verify_engine_rev(module, path.name)
     return module
 
 
@@ -1101,6 +1125,8 @@ def _run_reviewer_ex(
     except Exception as exc:  # noqa: BLE001
         # _load_relay는 호출마다 독립 module 객체를 만들 수 있어 클래스 identity 대신 sentinel의
         # 구조화 속성을 본다. 일반 RuntimeError를 정리 실패로 오인하지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
         if getattr(exc, "process_cleanup_failed", False) is True:
             output = (
                 f"[리뷰어 프로세스 정리 실패: {exc} — 잔존 프로세스 가능성 때문에 자동 재시도/"
@@ -1387,6 +1413,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     _console_encoding = importlib.util.module_from_spec(_console_spec)
     _console_spec.loader.exec_module(_console_encoding)
+    _verify_engine_rev(_console_encoding, "console_encoding.py")
     _console_encoding.configure_console_utf8()
     parser = build_arg_parser()
     args = parser.parse_args(argv)

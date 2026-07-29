@@ -92,9 +92,11 @@ GitRunner = Callable[[list], "tuple[int, str]"]
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
 ENGINE_REV = "v1.5.0"
 
-# rev 스탬프를 지닌 형제 파일만 대조 대상 — pm_update/pm_import 등 미계측
-# 모듈은 ENGINE_REV 가 없어(정상 사본에서도) 오탐이 나므로 제외한다. 계측 확대 시 여기 추가.
-_STAMPED_SIBLINGS = frozenset({"identity_args.py", "board.py", "worktree_pool.py"})
+# rev 스탬프를 지닌 형제 파일만 대조 대상. pm_update는 복구 채널이라 의도적으로 제외한다.
+# deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
+_STAMPED_SIBLINGS = frozenset({
+    "identity_args.py", "board.py", "worktree_pool.py", "pm_import.py",
+})
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):

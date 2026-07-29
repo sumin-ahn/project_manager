@@ -8171,7 +8171,7 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     안전(양쪽 행 보존)이 사라진 상태를 보이게만 한다 — 엔진이 backfill 하는 채널이 이미 있고
 #     (`_ensure_board_gitattributes`) 채택자가 자기 `.gitattributes` 를 가질 수 있어 never-block.
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
-    {"status-done-accum", "unstable-ref-advice", "scope-advice",
+    {"status-done-accum", "unstable-ref-advice", "scope-advice", "coverage",
      "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
      "status-stale", "domain-stale", "domain-unverifiable",
      "architecture-unverifiable", "status-unverifiable",

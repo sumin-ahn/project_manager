@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import io
 import json
 import random
@@ -95,6 +96,96 @@ class FileResult:
 
 class SelfSufficiencyError(ValueError):
     """Raised when a rewrite introduces a mechanically detectable prose defect."""
+
+
+def _load_repo_owned_files():
+    """공용 repo 소유 파일 열거 seam을 canonical checkout에서 로드한다."""
+    path = REPO / ".project_manager" / "tools" / "repo_owned_files.py"
+    module_name = f"_private_context_repo_owned_files:{path.resolve()}"
+    cached = sys.modules.get(module_name)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(
+            "repo_owned_files.py를 로드할 수 없음 — canonical 도구 사본을 확인하라"
+        )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except FileNotFoundError as error:
+        sys.modules.pop(module_name, None)
+        raise RuntimeError(
+            "repo_owned_files.py가 없어 canonical 도구 사본을 확인하라"
+        ) from error
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+def repo_owned_paths(root: Path) -> list[Path]:
+    """현재 tree에 존재하는 repo-owned 파일을 공용 ``OWNED`` 규칙으로 반환한다.
+
+    추적 파일과 미추적·비-ignore 파일만 포함한다. git 없는 소스 아카이브에서는 공용
+    seam이 loud warning과 함께 filesystem 폴백한다.
+    """
+    repo_files = _load_repo_owned_files()
+    root = root.resolve()
+    return [
+        path
+        for relative in repo_files.list_repo_owned_files(
+            root, Path("."), mode=repo_files.OWNED
+        )
+        if (path := root / relative).is_file()
+    ]
+
+
+def shipping_paths(root: Path) -> tuple[list[Path], list[Path]]:
+    """private-context 출하 표면을 repo-owned 열거 결과에서 분류한다.
+
+    ``dashboard.md``와 ``pm_state.md`` 같은 per-clone 파생 파일은 경로별 예외가
+    아니라 git ignore/소유 판정으로 빠진다. 따라서 앞으로 다른 파생 파일이 생겨도
+    같은 규칙이 적용되고, 비-ignore 신규 출하 파일은 계속 검사한다.
+    """
+    python_paths: set[Path] = set()
+    markdown_paths: set[Path] = set()
+    for path in repo_owned_paths(root):
+        relative = path.relative_to(root.resolve())
+        parts = relative.parts
+        if relative == Path("CLAUDE.md"):
+            markdown_paths.add(path)
+            continue
+        if (
+            path.suffix == ".py"
+            and relative.parent == Path(".project_manager", "tools")
+        ):
+            python_paths.add(path)
+            continue
+        if (
+            path.suffix == ".md"
+            and len(parts) >= 3
+            and parts[0] == ".project_manager"
+            and parts[1] == "wiki"
+        ):
+            markdown_paths.add(path)
+            continue
+        if path.suffix == ".md" and parts and parts[0] == ".claude":
+            markdown_paths.add(path)
+            continue
+        if len(parts) < 3 or parts[0] != "templates":
+            continue
+        if path.suffix == ".md":
+            markdown_paths.add(path)
+        elif (
+            path.suffix == ".py"
+            and len(parts) == 5
+            and parts[2] == ".project_manager"
+            and parts[3] == "tools"
+        ):
+            python_paths.add(path)
+    return sorted(python_paths), sorted(markdown_paths)
 
 
 def _line_offsets(text: str) -> list[int]:
@@ -704,8 +795,8 @@ def _inventory_tests(paths: Iterable[Path], root: Path) -> dict[str, object]:
 
 
 def _write_inventory(root: Path, output: Path) -> dict[str, object]:
-    markdown_paths = sorted((root / ".project_manager/wiki").rglob("*.md"))
-    markdown_paths += sorted((root / ".claude").rglob("*.md"))
+    _, markdown_paths = shipping_paths(root)
+    # v1.5.0보다 넓은 출하 표면(CLAUDE.md·templates 포함)을 보고용으로 집계한다.
     tests = sorted((root / "tests").glob("*.py"))
     report = {
         "p2_shipping_markdown": _inventory_markdown(markdown_paths, root),
@@ -721,7 +812,9 @@ def run(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     report_dir = args.report_dir.resolve()
     report_dir.mkdir(parents=True, exist_ok=True)
-    paths = sorted((root / ".project_manager/tools").glob("*.py"))
+    python_paths, _ = shipping_paths(root)
+    canonical_tools = root / ".project_manager" / "tools"
+    paths = [path for path in python_paths if path.parent == canonical_tools]
     try:
         results = [
             process_python(

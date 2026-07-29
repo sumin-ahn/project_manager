@@ -6,7 +6,7 @@
 
 범위: 파서(`parse_page`)·스캔(`load_pages`)·매칭(`pages_for_path`)·touches∩covers
 (`pages_for_touches`·#2)·staleness(`page_stale`·#3)·freshness lint(`lint_pages`)·
-CLI(`list`/`affected`/`capture`/`capture-draft`/`lint`). capture(채록·`uncovered_paths`
+CLI(`list`/`affected`/`capture`/`capture-draft`/`coverage`/`lint`). capture(채록·`uncovered_paths`
 gap·Phase 3)는 surface-only — 담당 페이지·coverage gap 을 *띄울* 뿐 본문 자동 생성/스탬프는
 안 한다(자동 `updated:` 는 stale 탐지를 거짓으로 만듦). capture-draft(
 Phase 2)는 researcher 조사 prose 를 domain 초안(`status: draft`)으로 *scaffold* 한다 —
@@ -47,9 +47,25 @@ from typing import Callable
 REPO = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO / ".project_manager" / "tools"
 DOMAIN_DIR = REPO / ".project_manager" / "wiki" / "domain"
+ENGINE_MANIFEST = REPO / ".project_manager" / "engine.manifest"
 
 # load_pages 가 스킵하는 비-페이지 파일(인덱스 README·복사용 템플릿).
 _NON_PAGE_FILES = frozenset({"README.md", "_template.md"})
+
+# README 는 derivable 수치를 복제하지 않고 이 커맨드 중 하나를 가리킨다. Windows 1순위
+# 런처를 canonical 로 두고 POSIX/venv 표기도 허용한다(확장 상수는 coverage helper 옆).
+COVERAGE_COMMAND = "py -3.12 .project_manager/tools/domain.py coverage"
+COVERAGE_COMMAND_ALTERNATES = ("python3 .project_manager/tools/domain.py coverage",
+                               "python .project_manager/tools/domain.py coverage")
+COVERAGE_CLAIM_RE = re.compile(
+    r"<!--\s*domain-coverage-claim:\s*(complete|incomplete)\s*-->",
+    re.IGNORECASE,
+)
+
+# 출하 도구 중 domain 개념으로 채록할 필요가 없는 예외. key=repo 상대 경로, value=사유.
+# 빈 사유·manifest 밖 경로·이미 covers 된(stale) 등재는 coverage lint finding 이다.
+# "면제 0"은 이 상수를 설명하는 선언이 아니라 coverage 집계 출력의 len(valid exemptions)이다.
+DOMAIN_COVERAGE_EXEMPTIONS: dict[str, str] = {}
 
 # domain lint oversized 임계 — 본문 라인수가 이 값을 넘으면 advisory finding(상수·비차단).
 OVERSIZED_LINES = 200
@@ -113,8 +129,8 @@ def _repository_query_batch():
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
 ENGINE_REV = "v1.5.0"
 
-# rev 스탬프를 지닌 형제 파일만 대조 대상. 계측 확대 시 여기 추가.
-_STAMPED_SIBLINGS = frozenset({"board.py", "repo_coordinates.py"})
+# rev 스탬프를 지닌 형제 파일만 대조 대상. AST deep-import 가드가 실제 target과 정합을 단언한다.
+_STAMPED_SIBLINGS = frozenset({"board.py", "repo_coordinates.py", "repo_owned_files.py"})
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -173,29 +189,32 @@ def _load_repo_coordinates():
 
 
 def _load_repo_owned_files():
-    """공용 repo 소유 파일 열거 seam을 로드한다. 부재/손상은 호출부가 fail-loud 한다."""
+    """공용 repo 소유 파일 열거 seam을 검증 소비자로 로드한다."""
     path = (TOOLS_DIR / "repo_owned_files.py").resolve()
     if not path.exists():
         raise RuntimeError(
             "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
         )
-    module_name = f"_project_manager_repo_owned_files:{path}"
-    module = sys.modules.get(module_name)
-    if module is not None:
-        return module
     try:
-        spec = importlib.util.spec_from_file_location(module_name, path)
+        helper_path = Path(__file__).resolve().with_name("engine_rev.py")
+        spec = importlib.util.spec_from_file_location(
+            "_domain_repo_owned_loader", helper_path
+        )
         if spec is None or spec.loader is None:
-            raise RuntimeError("module spec/loader 부재")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+            raise RuntimeError("공용 loader module spec/loader 부재")
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        # pm_update 면제 캐시도 이 소비 시점 verifier를 반드시 통과해야 한다.
+        return helper.load_repo_owned_files(
+            Path(__file__).resolve().with_name("repo_owned_files.py"),
+            verifier=_verify_engine_rev,
+        )
     except Exception as exc:
-        sys.modules.pop(module_name, None)
+        if _is_engine_rev_skew(exc):
+            raise
         raise RuntimeError(
             "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
         ) from exc
-    return module
 
 
 _WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
@@ -1196,9 +1215,208 @@ def pages_for_touches(touches: list[str] | None, pages: list[dict] | None = None
     return out
 
 
+# ── 출하 엔진 domain coverage (capture gap 판정 재사용) ───────────────────────
+
+
+def engine_tool_paths(manifest_path: Path = ENGINE_MANIFEST) -> list[str]:
+    """``engine.manifest``가 출하한다고 선언한 ``tools/*.py`` repo 상대 경로.
+
+    커버리지 분모는 디렉토리에 우연히 존재하는 파일이 아니라 업데이트로 채택자에게 **출하되는
+    엔진**이다. 그 단일 진실이 ``engine.manifest``라 manifest 등재분을 택한다. 경로 비교는
+    ``Path.parts``/``parent``로 하며 문자열 구분자나 대소문자 정규화를 가정하지 않는다.
+    반환 문자열만 기존 covers/capture 좌표계(repo 상대 POSIX)에 맞춘다.
+    """
+    return _engine_tool_paths_from_manifest(Path(manifest_path))
+
+
+def _coverage_skip_reason(domain_dir: Path, pages: list[dict]) -> str | None:
+    """채택자 wiki의 세 가지 page-0 형상을 구분해 조용하지 않은 skip 사유를 돌려준다."""
+    domain_dir = Path(domain_dir)
+    if not domain_dir.is_dir():
+        return f"{domain_dir} 디렉토리 없음"
+    if pages:
+        return None
+    try:
+        entries = list(domain_dir.iterdir())
+    except OSError as exc:
+        return f"domain/ 열거 실패 ({exc})"
+    if not entries:
+        return "정식 domain 페이지 0장 (domain/ 디렉토리 비어 있음)"
+    if all(p.is_file() and p.name in _NON_PAGE_FILES for p in entries) and any(
+            p.name == "_template.md" for p in entries):
+        return "정식 domain 페이지 0장 (_template.md만 존재)"
+    return "정식 domain 페이지 0장 (파싱 실패·초안·비페이지 제외 후)"
+
+
+def coverage_report(
+        pages: list[dict],
+        *,
+        domain_dir: Path = DOMAIN_DIR,
+        manifest_path: Path = ENGINE_MANIFEST,
+        exemptions: dict[str, str] | None = None,
+) -> dict:
+    """출하 도구 coverage 집계 결과.
+
+    raw gap 판정은 새로 구현하지 않고 ``capture --all-gaps``의 단일 진실
+    ``uncovered_paths``를 그대로 소비한다. 면제는 raw gap과 manifest 분모 양쪽에 속하고
+    비어 있지 않은 사유를 가져야만 유효하다. 유효하지 않은 등재는 숨김에 쓰지 않는다.
+    """
+    domain_dir = Path(domain_dir)
+    skip_reason = _coverage_skip_reason(domain_dir, pages)
+    if skip_reason is not None:
+        return _coverage_unavailable_report(domain_dir, skip_reason)
+
+    source_error = _coverage_source_report(domain_dir, Path(manifest_path), pages)
+    if source_error is not None:
+        return source_error
+
+    try:
+        tools = engine_tool_paths(Path(manifest_path))
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        return {
+            "status": "error",
+            "reason": f"engine.manifest 읽기 실패: {exc}",
+            "tools": [],
+            "covered": [],
+            "exemptions": {},
+            "gaps": [],
+            "exemption_errors": [],
+        }
+    if not tools:
+        return _coverage_empty_denominator_report()
+
+    raw_gaps = list(uncovered_paths(
+        tools,
+        pages,
+        warn_owner_mismatch=False,
+    ))
+    raw_gap_set = {str(path) for path in raw_gaps}
+    tool_set = set(tools)
+    declared = DOMAIN_COVERAGE_EXEMPTIONS if exemptions is None else exemptions
+    valid_exemptions: dict[str, str] = {}
+    exemption_errors: list[str] = []
+    for raw_path, raw_reason in declared.items():
+        path = Path(str(raw_path)).as_posix()
+        reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
+        if path not in tool_set:
+            exemption_errors.append(f"{path}: engine.manifest 출하 도구가 아님")
+        elif not reason:
+            exemption_errors.append(f"{path}: 면제 사유가 비어 있음")
+        elif path not in raw_gap_set:
+            exemption_errors.append(f"{path}: 이미 covers 됨 (stale 면제)")
+        else:
+            valid_exemptions[path] = reason
+
+    gaps = [path for path in raw_gaps if str(path) not in valid_exemptions]
+    covered = [path for path in tools if path not in raw_gap_set]
+    status = "complete" if not gaps and not exemption_errors else "incomplete"
+    return {
+        "status": status,
+        "reason": None,
+        "tools": tools,
+        "covered": covered,
+        "exemptions": valid_exemptions,
+        "gaps": gaps,
+        "exemption_errors": exemption_errors,
+    }
+
+
+def coverage_findings(
+        pages: list[dict],
+        *,
+        domain_dir: Path = DOMAIN_DIR,
+        manifest_path: Path = ENGINE_MANIFEST,
+        exemptions: dict[str, str] | None = None,
+) -> list[tuple[str, str, str]]:
+    """README qualitative claim ↔ 기계 집계 대조 finding (kind=coverage·advisory).
+
+    README는 derivable 숫자를 적지 않고 ``COVERAGE_COMMAND``와 qualitative marker
+    ``domain-coverage-claim: complete|incomplete``를 각각 정확히 하나 둔다. 미주장 page-0
+    채택자는 stderr 사유와 함께 skip하되, claim 활성 트리의 모든 unavailable/skip 경로는
+    finding으로 닫는다.
+    """
+    domain_dir = Path(domain_dir)
+    report = coverage_report(
+        pages,
+        domain_dir=domain_dir,
+        manifest_path=manifest_path,
+        exemptions=exemptions,
+    )
+    if report["status"] == "skipped":
+        body, _readme_error = _coverage_readme_text(domain_dir)
+        if body is not None and COVERAGE_CLAIM_INTENT_RE.search(body):
+            return [(
+                "coverage", "domain coverage",
+                f"claim 활성인데 coverage 집계 불가 — {report['reason']}",
+            )]
+        print(f"domain: coverage 검사 skip — {report['reason']}", file=sys.stderr)
+        return []
+    if report["status"] == "error":
+        return [("coverage", "domain coverage", report["reason"])]
+
+    findings: list[tuple[str, str, str]] = []
+    for detail in report["exemption_errors"]:
+        findings.append(("coverage", "면제 등재", detail))
+    for path in report["gaps"]:
+        findings.append((
+            "coverage",
+            Path(str(path)).name,
+            f"{path}: 담당 covers 또는 유효한 사유 면제 없음",
+        ))
+
+    body, readme_error = _coverage_readme_text(domain_dir)
+    if body is None and readme_error == "README.md 없음":
+        findings.append(("coverage", "README.md", "커버리지 README 없음"))
+        return findings
+    if body is None:
+        findings.append(("coverage", "README.md", readme_error or "읽기 실패"))
+        return findings
+
+    command_refs = tuple(
+        f"`{command}`"
+        for command in (COVERAGE_COMMAND, *COVERAGE_COMMAND_ALTERNATES)
+    )
+    command_counts = tuple(body.count(ref) for ref in command_refs)
+    if not any(command_counts) or any(count > 1 for count in command_counts):
+        findings.append((
+            "coverage",
+            "README.md",
+            "허용 집계 커맨드를 inline-code로 하나 이상 가리키되 같은 표기를 반복하지 말 것: "
+            + " 또는 ".join(command_refs),
+        ))
+
+    # 유효값만 세면 ``complete`` 1개에 오타 marker를 덧붙여도 통과한다. claim을
+    # 쓰려 한 모든 흔적을 먼저 세고, 그 단 하나가 유효값일 때만 주장으로 채택한다.
+    claim_intents = COVERAGE_CLAIM_INTENT_RE.findall(body)
+    claims = COVERAGE_CLAIM_RE.findall(body)
+    if len(claim_intents) != 1 or len(claims) != 1:
+        findings.append((
+            "coverage",
+            "README.md",
+            "claim marker를 정확히 1개 둬야 함: "
+            "<!-- domain-coverage-claim: complete|incomplete -->",
+        ))
+    else:
+        claimed = claims[0].lower()
+        actual = report["status"]
+        if claimed != actual:
+            findings.append((
+                "coverage",
+                "README.md",
+                f"claim={claimed}, 실측={actual} — coverage 커맨드 결과와 불일치",
+            ))
+
+    numeric_finding = _numeric_coverage_prose_finding(body)
+    if numeric_finding is not None:
+        findings.append(numeric_finding)
+    return findings
+
+
 # ── freshness lint (advisory·exit 0·비차단) ──────────────────────
 # 페이지를 스캔해 advisory finding 을 낸다(stale/orphan/oversized). **막지 않는다** —
 # 전부 exit 0(visibility). unknown(stale==None)은 finding 아님.
+# coverage는 아래 freshness 순회와 결과 형식만 공유하며, README marker가 opt-in한 같은
+# 채택자 트리에서만 별도 집계한다.
 
 # domain 페이지 본문의 wikilink `[[슬러그]]`(별칭 `[[슬러그|텍스트]]` 의 슬러그 부분만).
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)")
@@ -1212,6 +1430,221 @@ def page_slug(page: dict) -> str:
     식별자(파일명)로 잡는다(아래 inlink 집합도 stem·title 둘 다 인정해 표기 흔들림 흡수).
     """
     return Path(page["path"]).stem
+
+
+# 값 오타도 "claim 의도"로 보아 lint를 켠다. marker 자체가 전혀 없는 README만 opt-out이다.
+COVERAGE_CLAIM_INTENT_RE = re.compile(
+    r"<!--\s*domain-coverage-claim\s*:",
+    re.IGNORECASE,
+)
+
+# README의 사람이 읽는 산문에 파생 수치를 다시 복제하는 좁은 패턴만 막는다. 일반 숫자·날짜나
+# "도구 수는 커맨드로 확인" 같은 정성 문장은 허용하고, 원 결함 형태인 엔진 도구 개수·면제 0·
+# coverage 문맥의 합계 등식만 잡아 오탐 범위를 한정한다. 표(`| 면제 | 0 |`)는 셀 구조 해석,
+# 한글 수사(`열일곱`)는 형태소/수사 정규화가 필요하고 문장 분할은 문맥 추론이 필요하므로 이
+# 좁은 regex lint의 의도적 경계다.
+NUMERIC_COVERAGE_CLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"엔진\s+(?:\d+\s*(?:개\s*)?도구|도구\s*\d+\s*개)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"면제(?:\s*\([^)\n]{1,24}\)|\s+[A-Za-z가-힣][A-Za-z가-힣_-]{0,23})?"
+        r"\s*[는은]?\s*[=:]?\s*0(?!\d|\.\d|\s*(?:원|%))(?:\s*(?:개|건))?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?<!\d)\d+\s*=\s*\d+\s+(?:concept|guide|research)"
+        r"(?:\s*/\s*(?:concept|guide|research))*"
+        r"\s*\+\s*\d+\s+(?:concept|guide|research)(?![A-Za-z])",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:엔진|도구|면제|gap|갭|coverage|커버리지)"
+        r"[^.!?\n]{0,80}(?<!\d)\d+\s*=\s*\d+\s*\+\s*\d+(?!\d)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?<!\d)\d+\s*=\s*\d+\s*\+\s*\d+(?!\d)"
+        r"[^.!?\n]{0,80}(?:엔진|도구|면제|gap|갭|coverage|커버리지)",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _load_manifest_reader():
+    """형제 ``pm_update.read_manifest``를 canonical manifest parser로 로드한다."""
+    pm_update = _load_module("_domain_pm_update_manifest", "pm_update.py")
+    reader = getattr(pm_update, "read_manifest", None)
+    if not callable(reader):
+        raise RuntimeError(
+            "pm_update.read_manifest를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
+        )
+    return reader
+
+
+def _engine_tool_paths_from_manifest(manifest_path: Path) -> list[str]:
+    """파일·디렉토리 manifest 엔트리를 tools/ 직계 Python 도구 분모로 전개한다."""
+    tools_parent = Path(".project_manager") / "tools"
+    repo_root = manifest_path.parent.parent
+    paths: list[str] = []
+    seen: set[Path] = set()
+
+    def add_tool(rel: Path) -> None:
+        # 분모는 tools/ 바로 아래 Python CLI만이다. 디렉토리 엔트리는 재귀 출하되더라도
+        # nested helper를 독립 엔진 도구로 세지 않는다.
+        if rel.parent != tools_parent or rel.suffix != ".py" or rel in seen:
+            return
+        seen.add(rel)
+        paths.append(rel.as_posix())
+
+    # 주석·빈 줄·@render/@target-owned/@source 문법은 여기서 재구현하지 않는다. 출하/update와
+    # 같은 canonical parser를 소비해야 manifest 문법 진화가 coverage 분모에도 함께 반영된다.
+    for entry in _load_manifest_reader()(manifest_path):
+        rel = Path(str(entry))
+        if rel.is_absolute() or ".." in rel.parts:
+            continue
+        source = repo_root / rel
+        if source.is_dir():
+            # 분모 정의가 tools/ 직계 Python CLI라 재귀 tree-walk 없이 직계만 열거한다.
+            for child in sorted(source.iterdir()):
+                if child.is_file():
+                    add_tool(child.relative_to(repo_root))
+        else:
+            add_tool(rel)
+    return paths
+
+
+def _markdown_without_fenced_code(body: str) -> str:
+    """Markdown fenced code block을 제거해 예시 marker/커맨드를 실제 claim과 분리한다."""
+    visible: list[str] = []
+    fence: str | None = None
+    for line in body.splitlines(keepends=True):
+        match = re.match(r"^[ \t]{0,3}(`{3,}|~{3,})", line)
+        if match:
+            token = match.group(1)
+            if fence is None:
+                fence = token[0]
+            elif token[0] == fence:
+                fence = None
+            continue
+        if fence is None:
+            visible.append(line)
+    return "".join(visible)
+
+
+def _coverage_readme_text(domain_dir: Path) -> tuple[str | None, str | None]:
+    """README를 읽어 `(fence 제외 본문, 오류)`로 반환한다."""
+    readme = Path(domain_dir) / "README.md"
+    try:
+        return _markdown_without_fenced_code(readme.read_text(encoding="utf-8")), None
+    except FileNotFoundError:
+        return None, "README.md 없음"
+    except (OSError, UnicodeError) as exc:
+        return None, f"README.md 읽기 실패: {exc}"
+
+
+def _coverage_source_skip_reason(
+        domain_dir: Path,
+        manifest_path: Path,
+        pages: list[dict],
+) -> str | None:
+    """pages·domain README·manifest가 한 채택자 트리에 속하는지 검증한다."""
+    try:
+        domain_resolved = Path(domain_dir).resolve(strict=False)
+        manifest_resolved = Path(manifest_path).resolve(strict=False)
+        expected_manifest = (
+            domain_resolved.parent.parent / "engine.manifest"
+        ).resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        return f"coverage 트리 경로 해소 실패 ({exc})"
+    if manifest_resolved != expected_manifest:
+        return (
+            "pages/domain/engine.manifest 트리 불일치 "
+            f"(domain={domain_resolved}, manifest={manifest_resolved})"
+        )
+    for page in pages:
+        try:
+            Path(page["path"]).resolve(strict=False).relative_to(domain_resolved)
+        except (KeyError, TypeError, ValueError, OSError, RuntimeError):
+            return f"pages 출처가 domain 트리와 불일치: {page.get('path', '<path 없음>')}"
+    return None
+
+
+def _coverage_source_report(
+        domain_dir: Path,
+        manifest_path: Path,
+        pages: list[dict],
+) -> dict | None:
+    """트리 불일치를 claim-aware unavailable report로 바꾼다."""
+    reason = _coverage_source_skip_reason(domain_dir, manifest_path, pages)
+    if reason is None:
+        return None
+    return _coverage_unavailable_report(domain_dir, reason)
+
+
+def _coverage_unavailable_report(domain_dir: Path, reason: str) -> dict:
+    """집계 불가를 미주장 트리 skip/claim 활성 트리 error로 분기한다.
+
+    coverage의 모든 빈 입력·출처 불일치 경로가 이 단일 생성기를 지나므로, README가 claim
+    의도를 가진 순간 ``skipped``가 주장을 공짜로 충족시키지 못한다. coverage_findings도
+    예상 밖의 신규 skipped report를 독립적으로 방어한다.
+    """
+    body, _readme_error = _coverage_readme_text(Path(domain_dir))
+    claimed = bool(body is not None and COVERAGE_CLAIM_INTENT_RE.search(body))
+    return {
+        "status": "error" if claimed else "skipped",
+        "reason": (
+            f"claim 활성인데 coverage 집계 불가 — {reason}"
+            if claimed else reason
+        ),
+        "tools": [],
+        "covered": [],
+        "exemptions": {},
+        "gaps": [],
+        "exemption_errors": [],
+    }
+
+
+def _coverage_empty_denominator_report() -> dict:
+    """공허한 참을 막는 분모 0 error report."""
+    return {
+        "status": "error",
+        "reason": (
+            "engine.manifest의 출하 Python 도구 분모가 0 — "
+            "manifest가 비었거나 tools 엔트리를 해석할 수 없음"
+        ),
+        "tools": [],
+        "covered": [],
+        "exemptions": {},
+        "gaps": [],
+        "exemption_errors": [],
+    }
+
+
+def _numeric_coverage_prose_finding(body: str) -> tuple[str, str, str] | None:
+    """사람이 읽는 README 산문의 하드코딩 coverage 수치 finding."""
+    prose = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+    if not any(pattern.search(prose) for pattern in NUMERIC_COVERAGE_CLAIM_PATTERNS):
+        return None
+    return (
+        "coverage",
+        "README.md",
+        "수치형 coverage 산문 금지 — 도구·면제·gap 수는 집계 커맨드 결과를 가리킬 것",
+    )
+
+
+def _has_engine_coverage_context(body: str) -> bool:
+    """marker 없는 README가 엔진 coverage 문맥인지 좁게 식별한다."""
+    prose = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+    return bool(
+        re.search(r"\b엔진\b", prose, re.IGNORECASE)
+        and re.search(
+            r"(?:도구|면제|gap|갭|coverage|커버리지)",
+            prose,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _page_body(page: dict) -> str:
@@ -1238,16 +1671,24 @@ def _wikilink_targets(body: str) -> set[str]:
 
 def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
                git_runner_factory: GitRunnerFactory | None = None,
-               oversized_lines: int = OVERSIZED_LINES) -> list[tuple[str, str, str]]:
+               oversized_lines: int = OVERSIZED_LINES,
+               include_coverage: bool | None = None,
+               domain_dir: Path | None = None,
+               manifest_path: Path | None = None) -> list[tuple[str, str, str]]:
     """domain 페이지 스캔 → finding 리스트 `(kind, page, detail)` (advisory·비차단).
 
-    kind ∈ {`stale`, `orphan`, `oversized`}:
+    kind ∈ {`stale`, `orphan`, `oversized`, `coverage`}:
       - **stale** — `page_stale==True`(covers 코드가 updated 후 커밋). unknown(None)은 제외.
       - **orphan** — 다른 domain 페이지에서 이 페이지로의 `[[슬러그]]` 인링크 0(고립). 슬러그
         (파일 stem)와 title 둘 다 인링크로 인정(표기 흔들림 흡수). **자기참조 제외**(자기 body
         의 자기링크는 안 침)·README/_template 은 애초에 load_pages 가 뺀다. **페이지 ≥2 일 때만
         평가** — 1개뿐이면 peer 가 없어 자연 고립이라 skip.
       - **oversized** — body 라인수 > `oversized_lines`(기본 OVERSIZED_LINES=200).
+      - **coverage** — claim marker 의도가 있거나 엔진 coverage 문맥인 README의 수치형
+        coverage 산문을 검사한다. 출하 도구 gap·면제·README claim 대조는 같은 트리 README가
+        claim marker 의도를 실제로 가질 때만 opt-in한다. marker 없는 채택자의 일반 도메인
+        산문은 수치 lint와 vendored 엔진 분모 대조 모두에서 제외한다. 명시
+        ``include_coverage=True``도 pages/domain/manifest 트리 일치 검증은 유지한다.
 
     finding 은 page 표시명(title 우선·없으면 슬러그)으로 라벨한다. clean(빈 리스트)이면
     호출부가 "✓ domain freshness 양호" 를 찍는다. git 은 page_stale 의 DI seam 으로 위임.
@@ -1301,6 +1742,42 @@ def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
         if line_count > oversized_lines:
             findings.append(("oversized", label, f"본문 {line_count}줄 > {oversized_lines}"))
 
+    coverage_domain_dir = Path(DOMAIN_DIR if domain_dir is None else domain_dir)
+    coverage_manifest = Path(
+        ENGINE_MANIFEST if manifest_path is None else manifest_path
+    )
+    # marker 삭제/예시 fence 이동으로 거짓 엔진 수치 주장을 숨길 수 없도록 엔진 문맥을 독립
+    # 신호로 유지한다. 반면 marker 없는 채택자의 일반 "면제/커버리지" 산문은 오탐하지 않는다.
+    readme_body, _readme_error = _coverage_readme_text(coverage_domain_dir)
+    numeric_finding = (
+        _numeric_coverage_prose_finding(readme_body)
+        if readme_body is not None else None
+    )
+    claim_intent = bool(
+        readme_body and COVERAGE_CLAIM_INTENT_RE.search(readme_body)
+    )
+    if include_coverage is None:
+        # marker 부재는 명시 opt-out이다. 값 오타/중복은 intent regex가 켜서 finding으로
+        # 표면화하고, fenced 예시 marker는 제거된 본문이라 opt-in으로 오인하지 않는다.
+        include_coverage = claim_intent
+    numeric_in_scope = bool(
+        claim_intent
+        or include_coverage is True
+        or (readme_body and _has_engine_coverage_context(readme_body))
+    )
+    if numeric_finding is not None and numeric_in_scope:
+        findings.append(numeric_finding)
+    if include_coverage:
+        coverage_results = coverage_findings(
+            pages,
+            domain_dir=coverage_domain_dir,
+            manifest_path=coverage_manifest,
+            exemptions=DOMAIN_COVERAGE_EXEMPTIONS,
+        )
+        findings.extend(
+            finding for finding in coverage_results
+            if finding != numeric_finding
+        )
     return findings
 
 
@@ -1718,10 +2195,49 @@ def cmd_capture_draft(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_lint(args: argparse.Namespace) -> int:
-    """domain freshness lint — stale/orphan/oversized finding 출력 (advisory·항상 exit 0).
+def cmd_coverage(_args: argparse.Namespace) -> int:
+    """출하 엔진 도구의 domain coverage를 기계 집계해 출력한다(advisory·항상 exit 0)."""
+    pages = load_pages(DOMAIN_DIR)
+    report = coverage_report(
+        pages,
+        domain_dir=DOMAIN_DIR,
+        manifest_path=ENGINE_MANIFEST,
+        exemptions=DOMAIN_COVERAGE_EXEMPTIONS,
+    )
+    if report["status"] in {"skipped", "error"}:
+        print(f"domain coverage: {report['status']} — {report['reason']}")
+        return 0
 
-    finding 1줄 = `kind · page · detail`. clean 이면 "✓ domain freshness 양호". *비차단* —
+    print("domain coverage (denominator: engine.manifest shipped Python tools)")
+    readme_body, _readme_error = _coverage_readme_text(DOMAIN_DIR)
+    if not (
+        readme_body and COVERAGE_CLAIM_INTENT_RE.search(readme_body)
+    ):
+        print("  claim: none (이 트리는 coverage 미주장; 아래 집계는 진단 전용)")
+    print(f"  tools: {len(report['tools'])}")
+    print(f"  covered: {len(report['covered'])}")
+    print(f"  exempt: {len(report['exemptions'])}")
+    print(f"  gaps: {len(report['gaps'])}")
+    print(f"  status: {report['status']}")
+    if report["exemptions"]:
+        print("  exemptions:")
+        for path, reason in report["exemptions"].items():
+            print(f"    {path} — {reason}")
+    if report["gaps"]:
+        print("  coverage gaps:")
+        for path in report["gaps"]:
+            print(f"    {path}")
+    if report["exemption_errors"]:
+        print("  invalid exemptions:")
+        for detail in report["exemption_errors"]:
+            print(f"    {detail}")
+    return 0
+
+
+def cmd_lint(args: argparse.Namespace) -> int:
+    """domain lint — freshness+coverage finding 출력 (advisory·항상 exit 0).
+
+    finding 1줄 = `kind · page · detail`. clean 이면 freshness·coverage 경계를 함께 알린다. *비차단* —
     어느 경우도 rc 0(visibility·작업/완료 막지 않음).
     """
     pages = load_pages(DOMAIN_DIR)
@@ -1729,7 +2245,7 @@ def cmd_lint(args: argparse.Namespace) -> int:
     # 시점에 굳어 monkeypatch(테스트)·재바인딩을 못 본다(cmd_list 의 DOMAIN_DIR 동형).
     findings = lint_pages(pages, oversized_lines=OVERSIZED_LINES)
     if not findings:
-        print("✓ domain freshness 양호")
+        print("✓ domain freshness 양호 (coverage 포함·미주장 시 검사 제외)")
         return 0
     for kind, page, detail in findings:
         print(f"  {kind}  ·  {page}  ·  {detail}")
@@ -1808,9 +2324,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_draft.set_defaults(fn=cmd_capture_draft)
 
+    p_coverage = sub.add_parser(
+        "coverage",
+        help="engine.manifest 출하 도구의 domain covers·면제·gap 기계 집계 (read-only·exit 0)",
+    )
+    p_coverage.set_defaults(fn=cmd_coverage)
+
     p_lint = sub.add_parser(
         "lint",
-        help="domain freshness lint — stale/orphan/oversized finding (advisory·exit 0)",
+        help="domain lint — freshness+coverage finding (advisory·exit 0)",
     )
     p_lint.set_defaults(fn=cmd_lint)
 

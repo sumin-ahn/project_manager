@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 578,
+  "count": 554,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -497,24 +497,10 @@
         "count": 1
       }
     ],
-    ".project_manager/wiki/log/dashboard.md": [
-      {
-        "kind": "session_stamp",
-        "hash": "af91b4112b01723456a51955e2b9bab74b917cb78e8680be445ce53a16441f15",
-        "count": 2
-      }
-    ],
     ".project_manager/wiki/pm_role.md": [
       {
         "kind": "session_stamp",
         "hash": "e83e478247eb479b6641b0d48116f00cd919f502fb92a8efb305dfe307951af3",
-        "count": 1
-      }
-    ],
-    ".project_manager/wiki/pm_state.md": [
-      {
-        "kind": "session_stamp",
-        "hash": "bdeb5e74740f3c9d3e3532e8d9fa13d6945433c3cbc656e03b7889986dcfa1e1",
         "count": 1
       }
     ],
@@ -588,11 +574,6 @@
       {
         "kind": "circled_marker",
         "hash": "a6e8980e7782093de4cfca7a131be6aed0e85274f5523cf0ca1f2dc44a748977",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "cca0ec8a3e7ba2dfa46fa029fc8ffb51d4db90341654296d70f9f2a4a7f0fd69",
         "count": 1
       },
       {
@@ -1953,85 +1934,6 @@
         "kind": "session_stamp",
         "hash": "eb3b6b1cd6782e2bbcbea79da829d093db050729d3671095ef9b9ab0bdd4750e",
         "count": 1
-      }
-    ],
-    "templates/opencode/.opencode/node_modules/@ai-sdk/provider/CHANGELOG.md": [
-      {
-        "kind": "decision_label",
-        "hash": "a3a9ba2b1ef886e5e4a92ea7692ef00b020c6e68071208ab6415b8646239409b",
-        "count": 2
-      }
-    ],
-    "templates/opencode/.opencode/node_modules/msgpackr-extract/README.md": [
-      {
-        "kind": "decision_label",
-        "hash": "1308cca67d13c0fb2574035028d47d39249e3fc752bf72327783db6e5418521c",
-        "count": 1
-      }
-    ],
-    "templates/opencode/.opencode/node_modules/msgpackr/README.md": [
-      {
-        "kind": "decision_label",
-        "hash": "29f1464faf33b6b9cc95faf9fb0b53c2651b19fd37be3c4d163e78a5a70bbdab",
-        "count": 1
-      },
-      {
-        "kind": "decision_label",
-        "hash": "6777e170f504f3d3983dd45d39ee40fd894632af9091afa73f6ec183d37054d9",
-        "count": 1
-      },
-      {
-        "kind": "decision_label",
-        "hash": "b6140562cdfa2d6e19c8d20c7728ed71de00d5e4dd19e1a991d47b757a094690",
-        "count": 1
-      }
-    ],
-    "templates/opencode/.opencode/node_modules/msgpackr/benchmark.md": [
-      {
-        "kind": "decision_label",
-        "hash": "41285e9ab4d10627b1d328350bb8d4207ad7b39c547ce01b655b08fdafdea143",
-        "count": 1
-      }
-    ],
-    "templates/opencode/.opencode/node_modules/pure-rand/README.md": [
-      {
-        "kind": "decision_label",
-        "hash": "069644004245d54603136f878e452acc0f82f7f619c890a6794d12257f43feba",
-        "count": 3
-      },
-      {
-        "kind": "decision_label",
-        "hash": "30f0d44761330c88ef7e2f72b8650e322271065563e6af83926ebbe391a3e8e1",
-        "count": 2
-      }
-    ],
-    "templates/opencode/.opencode/node_modules/toml/README.md": [
-      {
-        "kind": "session_stamp",
-        "hash": "0ea4287f79103afcb3eaf8b46fc1c7cd86584fdb9973d661f62b7ad34dd1afd8",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "5a1f54adc17e28ee1a8ed8e7bcca6a8b8240c0119767b37d7e732f7dad9c89c4",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "9e0009e463c02ba346f02263464af911674015ddb334dc78fa4d82021bc66bdd",
-        "count": 2
-      }
-    ],
-    "templates/opencode/.opencode/node_modules/uuid/README.md": [
-      {
-        "kind": "decision_label",
-        "hash": "ce1d4c9caba3ab26c6f5b237cf50b962ba2f712ad1c5341463e96bb9e503deed",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "c91ccc2eaf545ae9ca9d920519b3e1ea0d5e1191814cbc87aa3bab44f00eab9a",
-        "count": 2
       }
     ],
     "templates/opencode/.opencode/pm-instructions.md": [
