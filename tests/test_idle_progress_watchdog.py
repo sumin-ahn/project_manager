@@ -207,10 +207,6 @@ _HARNESS_LITERAL_EXEMPTIONS = {
         "세 전용 argv 빌더 중 하나를 고르는 전달 어댑터",
     ("pm_delegate", "_prepare_attempt_transport"):
         "opencode만 요구하는 prompt-file wire transport 전용 어댑터(timeout 비소유)",
-    ("pm_delegate", "native_advisory"):
-        "PM 하네스와 대상 하네스가 같은지 알리는 비차단 진단 전용",
-    ("pm_delegate", "_pm_harness_and_cap_env"):
-        "PM 런타임 마커를 공개 Bash 상한 env 키로 매핑하는 정당한 소유자",
     ("pm_delegate", "_dry_run_harness_annotations"):
         "dry-run 표시 문구만 만드는 표현 어댑터(timeout 비소유)",
 }

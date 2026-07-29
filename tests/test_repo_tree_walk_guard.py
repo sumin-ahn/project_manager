@@ -1,4 +1,4 @@
-"""repo-owned 열거 seam 우회(`rglob`/`os.walk`) 재발 방지 정적 가드."""
+"""repo-owned 열거 seam을 우회하는 재귀 tree-walk 등가 API 재발 방지 정적 가드."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*.md'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "REPO의 canonical/template 어댑터 표면 6곳을 스캔"),
     (
         "tests/test_adapter_session_identity.py",
@@ -55,7 +55,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*.md'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "_SCANNED_DIRS 아래 REPO 문서를 스캔"),
     (
         "tests/test_adapter_free_form_free.py",
@@ -63,7 +63,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "REPO template render-scoped 디렉토리의 실 파일 존재를 전수 판정"),
     (
         "tests/test_adapter_free_form_free.py",
@@ -71,7 +71,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "REPO template render-scoped 파일의 토큰 인벤토리를 구성"),
     (
         "tests/test_template_ignore_files_tracked.py",
@@ -79,7 +79,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "REPO/templates 디스크 ignore 파일과 git tracked 목록을 대조"),
     (
         "tests/test_manifest_template_parity.py",
@@ -87,7 +87,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "REPO와 template manifest 디렉토리를 파일 단위로 전개"),
     (
         "tests/test_flag_unification_parity.py",
@@ -95,7 +95,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*.md'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "REPO의 선언된 문서 디렉토리에서 폐기 flag를 전수 검사"),
     (
         "tests/test_settings_hygiene.py",
@@ -103,7 +103,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*.md'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "기본 인자 _REPO 아래 PM-facing Markdown을 내용으로 선별"),
     (
         "tests/test_pm_handoff_shipping.py",
@@ -111,7 +111,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "os.walk",
         "abs_p",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "REPO engine.manifest 디렉토리를 출하 파일로 전개"),
     (
         "tests/test_opencode_command_skill_pairing.py",
@@ -119,7 +119,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'SKILL.md'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "REPO canonical과 opencode template 스킬 미러를 대조"),
     (
         "tests/test_opencode_adapter_v2_docs.py",
@@ -127,7 +127,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*.md'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "REPO의 출하 opencode template 문서를 전수 검사"),
     (
         "tests/test_skill_command_existence.py",
@@ -135,7 +135,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*.md'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "_SCAN_DIRS가 가리키는 REPO 문서 인벤토리를 구성"),
     (
         "tests/test_terminology.py",
@@ -143,7 +143,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "glob.glob(recursive=True)",
         "str(REPO / g)",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(귀속은 PM): "
+        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
         "REPO 방법론 template 재귀 glob에서 폐기 용어 검사 파일을 구성"),
 }
 
@@ -153,7 +153,7 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
 REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
     (
         ".project_manager/tools/repo_owned_files.py",
-        "list_repo_owned_files",
+        "list_repo_owned_entries",
         "rglob",
         "'*'",
     ): WalkException("canonical seam의 loud filesystem fallback 구현"),
@@ -315,7 +315,9 @@ class _WalkVisitor(ast.NodeVisitor):
         self.ast_modules: set[str] = {"ast"}
         self.glob_modules: set[str] = {"glob"}
         self.os_walk_functions: set[str] = set()
+        self.os_fwalk_functions: set[str] = set()
         self.glob_functions: set[str] = set()
+        self.iglob_functions: set[str] = set()
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -333,8 +335,12 @@ class _WalkVisitor(ast.NodeVisitor):
             local = alias.asname or alias.name
             if node.module == "os" and alias.name == "walk":
                 self.os_walk_functions.add(local)
+            elif node.module == "os" and alias.name == "fwalk":
+                self.os_fwalk_functions.add(local)
             elif node.module == "glob" and alias.name == "glob":
                 self.glob_functions.add(local)
+            elif node.module == "glob" and alias.name == "iglob":
+                self.iglob_functions.add(local)
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -362,6 +368,18 @@ class _WalkVisitor(ast.NodeVisitor):
             kind = "os.walk"
         elif (
             isinstance(node.func, ast.Attribute)
+            and node.func.attr == "fwalk"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in self.os_modules
+        ):
+            kind = "os.fwalk"
+        elif (
+            isinstance(node.func, ast.Name)
+            and node.func.id in self.os_fwalk_functions
+        ):
+            kind = "os.fwalk"
+        elif (
+            isinstance(node.func, ast.Attribute)
             and node.func.attr == "walk"
             and not (
                 isinstance(node.func.value, ast.Name)
@@ -369,34 +387,53 @@ class _WalkVisitor(ast.NodeVisitor):
             )
         ):
             kind = "Path.walk"
-        elif self._is_recursive_glob_call(node):
-            kind = "glob.glob(recursive=True)"
+        elif recursive_glob_kind := self._recursive_glob_kind(node):
+            kind = recursive_glob_kind
+        elif self._is_recursive_path_glob_call(node):
+            kind = "Path.glob(recursive pattern)"
         if kind is not None:
             argument = ast.unparse(node.args[0]) if node.args else ""
             function = self.functions[-1] if self.functions else "<module>"
             self.calls.append((self.relative, function, kind, argument))
         self.generic_visit(node)
 
-    def _is_recursive_glob_call(self, node: ast.Call) -> bool:
+    def _recursive_glob_kind(self, node: ast.Call) -> str | None:
         if isinstance(node.func, ast.Attribute):
-            is_glob = (
-                node.func.attr == "glob"
-                and isinstance(node.func.value, ast.Name)
+            if not (
+                isinstance(node.func.value, ast.Name)
                 and node.func.value.id in self.glob_modules
-            )
+                and node.func.attr in {"glob", "iglob"}
+            ):
+                return None
+            function_name = node.func.attr
         else:
-            is_glob = (
-                isinstance(node.func, ast.Name)
-                and node.func.id in self.glob_functions
-            )
-        if not is_glob:
-            return False
-        return any(
+            if not isinstance(node.func, ast.Name):
+                return None
+            if node.func.id in self.glob_functions:
+                function_name = "glob"
+            elif node.func.id in self.iglob_functions:
+                function_name = "iglob"
+            else:
+                return None
+        recursive = any(
             keyword.arg == "recursive"
             and isinstance(keyword.value, ast.Constant)
             and keyword.value.value is True
             for keyword in node.keywords
         )
+        return f"glob.{function_name}(recursive=True)" if recursive else None
+
+    def _is_recursive_path_glob_call(self, node: ast.Call) -> bool:
+        if not (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "glob"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            return False
+        pattern_parts = node.args[0].value.replace("\\", "/").split("/")
+        return "**" in pattern_parts
 
 
 def _walk_calls(repo_root: Path) -> list[WalkKey]:
@@ -430,7 +467,7 @@ def test_repo_tree_walks_have_reviewed_nonempty_exceptions_only():
     unauthorized, stale, blank = _audit(REPO)
     assert not blank, f"repo tree walk 예외 사유가 비어 있음: {blank}"
     assert not unauthorized, (
-        "repo-owned 열거 seam을 우회한 신규 rglob/os.walk 호출: "
+        "repo-owned 열거 seam을 우회한 신규 재귀 tree-walk 호출: "
         f"{list(unauthorized.elements())}"
     )
     assert not stale, (
@@ -464,6 +501,22 @@ def test_repo_tree_walks_have_reviewed_nonempty_exceptions_only():
             "import glob\ndef collect(root):\n"
             "    return glob.glob(str(root / '**' / '*.md'), recursive=True)\n",
             "glob.glob(recursive=True)",
+        ),
+        (
+            "future_recursive_iglob.py",
+            "import glob\ndef collect(root):\n"
+            "    return glob.iglob(str(root / '**' / '*.md'), recursive=True)\n",
+            "glob.iglob(recursive=True)",
+        ),
+        (
+            "future_path_glob.py",
+            "def collect(root):\n    return root.glob('**/*')\n",
+            "Path.glob(recursive pattern)",
+        ),
+        (
+            "future_fwalk.py",
+            "import os\ndef collect(root):\n    return os.fwalk(root)\n",
+            "os.fwalk",
         ),
         ("test_future_inventory.py", "def collect(root):\n    return root.rglob('*.md')\n", "rglob"),
     ],

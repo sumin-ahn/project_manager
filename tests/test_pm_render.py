@@ -348,6 +348,22 @@ def _write_manifest(root: Path, lines: list[str]) -> Path:
     return m
 
 
+def _track_source_tree(root: Path) -> None:
+    """directory manifest 합성 source를 실제 tracked checkout으로 만든다."""
+    subprocess.run(
+        ["git", "-C", str(root), "init", "-q"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "add", "-A"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
 def test_read_manifest_render_flag_parsed(pm_update, tmp_path):
     """`  @render` 태그 → 그 항목 .render=True, 순수 경로만 값으로 남는다."""
     m = _write_manifest(tmp_path, [
@@ -434,6 +450,7 @@ def test_plan_render_path_compares_rendered_output(pm_update, tmp_path):
 
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
+    _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     assert missing == []
     # 템플릿("- {{PROJECT_NAME}}\nbody\n") != dst, 그러나 *렌더 산출물* == dst → 변경 없음.
@@ -454,6 +471,7 @@ def test_plan_render_path_update_when_output_differs(pm_update, tmp_path):
 
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
+    _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     target = [c for c in changes if c[0] == rel]
     assert len(target) == 1
@@ -472,6 +490,7 @@ def test_apply_render_writes_rendered_output(pm_update, tmp_path):
     _seed_render_dest(dst, local_conf="project_name=acme\nproject_root=/r\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
+    _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     pm_update.apply(changes)
     written = (dst / rel).read_text(encoding="utf-8")
@@ -502,6 +521,7 @@ def test_render_dir_text_files_rendered_binary_copied(pm_update, tmp_path):
     _seed_render_dest(dst, local_conf="project_name=acme\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
+    _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     assert missing == []
     by_rel = {c[0]: c for c in changes}
@@ -624,6 +644,7 @@ def test_plan_render_disabled_forces_copy_for_render_manifest(pm_update, tmp_pat
     # dst(=템플릿 타깃)엔 local.conf 없음 — 렌더 시 leak 날 환경.
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
+    _track_source_tree(src)
 
     # render_enabled=False → @render 무시·copy2. leak/crash 없이 new 변경 1건.
     changes, missing = pm_update.plan(
@@ -649,6 +670,7 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
     _seed_render_dest(dst, local_conf="project_name=acme\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
+    _track_source_tree(src)
 
     # 기본 render_enabled=True → render path (dst 가 산출물과 다르므로 render 변경).
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
@@ -683,6 +705,7 @@ def test_opencode_pro_model_render_resolved_from_local_conf(pm_update, tmp_path)
     _seed_render_dest(dst, local_conf="opencode_pro_model=anthropic/claude-opus-4\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".opencode/agents @render"]))
+    _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     assert missing == []
     pm_update.apply(changes)
@@ -708,6 +731,7 @@ def test_opencode_pro_model_unresolved_self_update_graceful(pm_update, tmp_path)
     _seed_render_dest(dst, local_conf="project_name=acme\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".opencode/agents @render"]))
+    _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     assert missing == []
     # apply 가 crash 하지 않고 중화 산출을 기록(leak 0).
@@ -737,6 +761,7 @@ def test_self_update_partial_graceful_engine_still_updates(pm_update, tmp_path):
         ".opencode/agents @render",
         ".project_manager/tools/board.py",
     ]))
+    _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     assert missing == []
     pm_update.apply(changes)  # 한 토큰 미해소로 전체가 막히지 않음(crash 0).
@@ -807,6 +832,7 @@ def test_apply_render_empty_local_conf_raises(pm_update, tmp_path):
     _seed_render_dest(dst, local_conf="project_name=\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
+    _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst)
     assert missing == []
     with pytest.raises(RuntimeError) as exc:  # RenderLeakError (격리 로드·base 로 잡음)

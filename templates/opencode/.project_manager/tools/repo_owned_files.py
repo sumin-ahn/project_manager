@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import warnings
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Literal, NamedTuple
 
 
 TRACKED_ONLY = "tracked_only"
@@ -39,6 +39,17 @@ class RepoFilesFallbackWarning(RuntimeWarning):
 
 class RepoFilesEmptyWarning(RuntimeWarning):
     """tracked-only가 비어 실제 비어 있지 않은 subtree를 누락할 수 있다는 loud 신호."""
+
+
+class RepoOwnedEntry(NamedTuple):
+    """repo 열거 엔트리와 git index mode.
+
+    ``index_mode``는 git tracked 결과에서만 채워진다. OWNED의 untracked 엔트리와
+    filesystem fallback 엔트리는 ``None``이다.
+    """
+
+    path: Path
+    index_mode: str | None
 
 
 def _real_git_runner(cwd: Path) -> GitRunner:
@@ -64,18 +75,19 @@ def _real_git_runner(cwd: Path) -> GitRunner:
     return runner
 
 
-def list_repo_owned_files(
+def list_repo_owned_entries(
     checkout: Path | str,
     subtree: Path | str,
     *,
     mode: RepoFileMode,
     git_runner: GitRunner | None = None,
-) -> list[Path]:
-    """``checkout`` 기준 ``subtree`` 아래 repo 소유 파일 엔트리를 상대 ``Path``로 반환한다.
+) -> list[RepoOwnedEntry]:
+    """``checkout`` 기준 ``subtree`` 아래 repo 소유 엔트리와 index mode를 반환한다.
 
-    git 성공 결과는 working-tree 상태로 재검사하지 않는다. ``ls-files``가 이미 ignore와
-    pathspec을 적용한 git 파일형 엔트리의 진실이며, ``is_file()`` 재검사는 symlink와 mode
-    160000 gitlink를 거짓 탈락시킨다.
+    TRACKED_ONLY는 ``ls-files --format``으로 mode를 함께 보존한다. git 성공 결과는
+    working-tree 상태로 재검사하지 않는다. ``ls-files``가 이미 ignore와 pathspec을 적용한
+    git 파일형 엔트리의 진실이며, ``is_file()`` 재검사는 symlink와 mode 160000 gitlink를
+    거짓 탈락시킨다.
 
     git 실패 시에는 기존 domain 구현과 같은 파일시스템 폴백을 사용한다. 폴백은 추적/ignore
     의미를 보장할 수 없어 경고가 계약의 일부다.
@@ -89,10 +101,16 @@ def list_repo_owned_files(
     checkout_path = Path(checkout)
     norm = str(subtree).replace(os.sep, "/").replace("\\", "/").rstrip("/") or "."
     runner = git_runner if git_runner is not None else _real_git_runner(checkout_path)
+    format_args = (
+        ["--format=%(objectmode)%x09%(path)"]
+        if mode == TRACKED_ONLY
+        else []
+    )
     try:
         rc, out = runner([
             "ls-files",
             "-z",
+            *format_args,
             *mode_args,
             "--",
             f":(literal){norm}",
@@ -100,16 +118,25 @@ def list_repo_owned_files(
     except Exception as exc:  # noqa: BLE001 — 주입 runner 실패도 filesystem fallback.
         rc, out = 1, str(exc)
 
-    relative_files: list[Path] = []
+    entries: list[RepoOwnedEntry] = []
     if rc == 0:
         for candidate_text in out.split("\0"):
             if not candidate_text:
                 continue
             # ls-files가 이미 ignore와 pathspec을 적용한 git 파일형 엔트리의 진실이다.
             # working-tree is_file() 재검사는 symlink와 mode 160000 gitlink를 거짓 탈락시킨다.
-            relative_files.append(Path(candidate_text))
+            if mode == TRACKED_ONLY:
+                index_mode, separator, candidate_text = candidate_text.partition("\t")
+                if separator != "\t" or not index_mode:
+                    raise RuntimeError(
+                        "git ls-files index mode 출력이 손상됨: "
+                        f"{candidate_text!r}"
+                    )
+            else:
+                index_mode = None
+            entries.append(RepoOwnedEntry(Path(candidate_text), index_mode))
         directory = checkout_path / norm
-        if mode == TRACKED_ONLY and not relative_files and directory.is_dir():
+        if mode == TRACKED_ONLY and not entries and directory.is_dir():
             try:
                 disk_nonempty = next(directory.iterdir(), None) is not None
             except OSError:
@@ -131,8 +158,8 @@ def list_repo_owned_files(
             stacklevel=2,
         )
         directory = checkout_path / norm
-        relative_files = [
-            path.relative_to(checkout_path)
+        entries = [
+            RepoOwnedEntry(path.relative_to(checkout_path), None)
             for path in directory.rglob("*")
             if path.is_file()
             and not any(
@@ -141,4 +168,56 @@ def list_repo_owned_files(
             )
         ]
 
-    return sorted(dict.fromkeys(relative_files), key=lambda path: path.as_posix())
+    return sorted(
+        dict.fromkeys(entries),
+        key=lambda entry: entry.path.as_posix(),
+    )
+
+
+def list_repo_owned_files(
+    checkout: Path | str,
+    subtree: Path | str,
+    *,
+    mode: RepoFileMode,
+    git_runner: GitRunner | None = None,
+) -> list[Path]:
+    """호환 API: repo 소유 엔트리에서 상대 ``Path`` 목록만 반환한다."""
+    return [
+        entry.path
+        for entry in list_repo_owned_entries(
+            checkout,
+            subtree,
+            mode=mode,
+            git_runner=git_runner,
+        )
+    ]
+
+
+def tracked_index_mode(
+    checkout: Path | str,
+    path: Path | str,
+    *,
+    git_runner: GitRunner | None = None,
+) -> str | None:
+    """단일 경로의 git index mode를 반환한다; 미추적/non-git이면 ``None``."""
+    checkout_path = Path(checkout)
+    norm = str(path).replace(os.sep, "/").replace("\\", "/").rstrip("/") or "."
+    runner = git_runner if git_runner is not None else _real_git_runner(checkout_path)
+    try:
+        rc, out = runner([
+            "ls-files",
+            "-z",
+            "--format=%(objectmode)%x09%(path)",
+            "--cached",
+            "--",
+            f":(literal){norm}",
+        ])
+    except Exception:  # noqa: BLE001 — 조회 불능은 non-git/untracked와 같은 None.
+        return None
+    if rc != 0 or not out:
+        return None
+    record = out.split("\0", 1)[0]
+    index_mode, separator, _candidate = record.partition("\t")
+    if separator != "\t" or not index_mode:
+        raise RuntimeError(f"git ls-files index mode 출력이 손상됨: {record!r}")
+    return index_mode

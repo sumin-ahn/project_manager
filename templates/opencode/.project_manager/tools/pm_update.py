@@ -411,7 +411,7 @@ def _read_local_conf(path: Path) -> dict[str, str]:
 
 def _load_repo_owned_files():
     """공용 repo 소유 파일 열거 seam을 script-relative로 로드한다."""
-    path = Path(__file__).resolve().with_name("repo_owned_files.py")
+    path = Path(__file__).resolve().with_name("repo_owned_files.py").resolve()
     module_name = f"_project_manager_repo_owned_files:{path}"
     cached = sys.modules.get(module_name)
     if cached is not None:
@@ -435,38 +435,30 @@ class SkippedRepoShippingEntryWarning(RuntimeWarning):
     """pm-update가 byte-copy할 수 없는 tracked 엔트리를 명시적으로 제외했다는 신호."""
 
 
-def _shipping_inventory(repo_files, root: Path, rel: str) -> list[Path]:
+def _shipping_inventory(repo_files, root: Path, rel: str) -> list:
     """tracked 출하 목록과 미추적 제외 신호를 만든다.
 
     ``pm-update`` 출하는 manifest 디렉토리의 byte-copy 채널이다. 따라서 공용 seam의 넓은
     domain(gap 검출에 필요한 symlink/gitlink 포함)은 유지하되, 이 소비처에서만 실제 일반
-    파일로 좁힌다. git checkout일 때 OWNED와의 차집합은 ignore되지 않은 미추적 파일 수이며,
-    한 줄로 알려 ``git add`` 뒤에만 출하된다는 계약을 숨기지 않는다.
+    파일로 좁힌다. git checkout일 때 OWNED와의 차집합 중 같은 일반 파일 판정을 통과한
+    미추적 파일 수만 한 줄로 알려 ``git add`` 뒤에만 출하된다는 계약을 숨기지 않는다.
     """
     runner = repo_files._real_git_runner(root)
-    rc, top = runner(["rev-parse", "--show-toplevel"])
-    try:
-        git_root_matches = (
-            rc == 0
-            and Path(top.strip()).resolve() == root.resolve()
-        )
-    except (OSError, RuntimeError):
-        git_root_matches = False
-
-    tracked = repo_files.list_repo_owned_files(
+    tracked = repo_files.list_repo_owned_entries(
         root,
         rel,
         mode=repo_files.TRACKED_ONLY,
-        git_runner=(
-            runner
-            if git_root_matches
-            else lambda _argv: (1, "checkout이 git top-level이 아니거나 non-git")
-        ),
+        git_runner=runner,
     )
-    if git_root_matches:
+    rc, inside = runner(["rev-parse", "--is-inside-work-tree"])
+    if rc == 0 and inside.strip() == "true":
         owned = repo_files.list_repo_owned_files(
             root, rel, mode=repo_files.OWNED, git_runner=runner)
-        untracked_count = len(set(owned) - set(tracked))
+        tracked_paths = {entry.path for entry in tracked}
+        untracked_count = sum(
+            _is_shippable_regular_file(root, relative, index_mode=None)
+            for relative in set(owned) - tracked_paths
+        )
         if untracked_count:
             print(
                 f"pm-update: untracked {untracked_count}건 제외 — git add 후 전파됨 "
@@ -478,7 +470,7 @@ def _shipping_inventory(repo_files, root: Path, rel: str) -> list[Path]:
 
 def _shippable_tracked_entries(
     root: Path,
-    entries: list[Path],
+    entries: list,
 ) -> list[tuple[Path, Path]]:
     """tracked 엔트리를 안전한 byte-copy source로 좁히고 제외 이유를 loud하게 합친다."""
     accepted: list[tuple[Path, Path]] = []
@@ -488,8 +480,22 @@ def _shippable_tracked_entries(
         "디렉토리/gitlink(파일 byte-copy 대상 아님)": [],
         "일반 파일이 아닌 엔트리": [],
     }
-    for relative in entries:
+    for entry in entries:
+        relative = getattr(entry, "path", entry)
+        index_mode = getattr(entry, "index_mode", None)
         source = root / relative
+        if index_mode == "120000":
+            skipped["symlink(링크 의미를 byte-copy 출하하지 않음)"].append(
+                relative.as_posix())
+            continue
+        if index_mode == "160000":
+            skipped["디렉토리/gitlink(파일 byte-copy 대상 아님)"].append(
+                relative.as_posix())
+            continue
+        if index_mode is not None and index_mode not in {"100644", "100755"}:
+            skipped["일반 파일이 아닌 엔트리"].append(
+                f"{relative.as_posix()} (git index mode {index_mode})")
+            continue
         try:
             mode = source.lstat().st_mode
         except FileNotFoundError:
@@ -521,9 +527,25 @@ def _shippable_tracked_entries(
     return accepted
 
 
+def _is_shippable_regular_file(
+    root: Path,
+    relative: Path,
+    *,
+    index_mode: str | None,
+) -> bool:
+    """출하 가능한 일반 파일인가 — index mode와 working-tree lstat의 공통 판정."""
+    if index_mode is not None and index_mode not in {"100644", "100755"}:
+        return False
+    try:
+        return stat.S_ISREG((root / relative).lstat().st_mode)
+    except OSError:
+        return False
+
+
 def _iter_files(root: Path, rel: str):
     """manifest 엔트리(파일/디렉토리) → (repo 기준 relpath, src 절대경로) 들.
 
+    디렉토리는 repo-owned seam으로 협착하고 symlink/gitlink 등 제외를 loud하게 표면화한다.
     relpath 는 **항상 posix(슬래시) 정규화**한다(`as_posix()`) — 모듈 전체의 슬래시 관례
     (`_path_under_manifest`·`_dest_relpath_for` 는 `.replace("\\","/")` 로 슬래시 전제)과 통일.
     `str(Path.relative_to)` 는 OS-네이티브 구분자라 Windows 에선 역슬래시(`.claude\\agents\\x.md`)
@@ -543,7 +565,12 @@ def _iter_files(root: Path, rel: str):
         for relative, source in _shippable_tracked_entries(root, tracked):
             yield relative.as_posix(), source
     elif src.is_file():
-        yield str(rel), src
+        repo_files = _load_repo_owned_files()
+        relative = Path(rel)
+        index_mode = repo_files.tracked_index_mode(root, relative)
+        entry = repo_files.RepoOwnedEntry(relative, index_mode)
+        for accepted_relative, source in _shippable_tracked_entries(root, [entry]):
+            yield accepted_relative.as_posix(), source
     # missing → 아무것도 yield 안 함 (호출부가 missing 으로 보고)
 
 

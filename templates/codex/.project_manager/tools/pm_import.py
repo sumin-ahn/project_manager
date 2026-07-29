@@ -2176,7 +2176,7 @@ def _live_harness_allowed(mode: str) -> bool:
 
 def _load_repo_owned_files():
     """공용 repo 소유 파일 열거 seam을 script-relative로 로드한다."""
-    path = Path(__file__).resolve().with_name("repo_owned_files.py")
+    path = Path(__file__).resolve().with_name("repo_owned_files.py").resolve()
     module_name = f"_project_manager_repo_owned_files:{path}"
     cached = sys.modules.get(module_name)
     if cached is not None:

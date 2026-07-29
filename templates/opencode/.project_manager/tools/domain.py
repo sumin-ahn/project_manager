@@ -174,12 +174,12 @@ def _load_repo_coordinates():
 
 def _load_repo_owned_files():
     """공용 repo 소유 파일 열거 seam을 로드한다. 부재/손상은 호출부가 fail-loud 한다."""
-    path = TOOLS_DIR / "repo_owned_files.py"
+    path = (TOOLS_DIR / "repo_owned_files.py").resolve()
     if not path.exists():
         raise RuntimeError(
             "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
         )
-    module_name = f"_project_manager_repo_owned_files:{path.resolve()}"
+    module_name = f"_project_manager_repo_owned_files:{path}"
     module = sys.modules.get(module_name)
     if module is not None:
         return module

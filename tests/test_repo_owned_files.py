@@ -60,7 +60,14 @@ def test_modes_declare_exact_git_argv_and_literal_pathspec(repo_files, tmp_path)
         tmp_path, "pkg*[x]", mode=repo_files.OWNED, git_runner=runner)
 
     assert calls == [
-        ["ls-files", "-z", "--cached", "--", ":(literal)pkg*[x]"],
+        [
+            "ls-files",
+            "-z",
+            "--format=%(objectmode)%x09%(path)",
+            "--cached",
+            "--",
+            ":(literal)pkg*[x]",
+        ],
         [
             "ls-files", "-z", "--cached", "--others", "--exclude-standard",
             "--", ":(literal)pkg*[x]",
@@ -171,6 +178,42 @@ def test_pm_update_directory_shipping_uses_tracked_only(repo_files, tmp_path):
     assert got == ["engine/tracked.py"]
 
 
+def test_pm_update_nested_checkout_keeps_git_ignore_guarantee(tmp_path):
+    pm_update = _load("pm_update_nested_checkout_test", "pm_update.py")
+    outer = _repo(tmp_path)
+    framework = outer / "vendor" / "framework"
+    engine = framework / "engine"
+    engine.mkdir(parents=True)
+    (outer / ".gitignore").write_text(
+        "vendor/framework/engine/machine.local\n",
+        encoding="utf-8",
+    )
+    (engine / "tracked.py").write_text("tracked\n", encoding="utf-8")
+    (engine / "machine.local").write_text("machine\n", encoding="utf-8")
+    _git(outer, "add", ".gitignore", "vendor/framework/engine/tracked.py")
+
+    got = [rel for rel, _path in pm_update._iter_files(framework, "engine")]
+
+    assert got == ["engine/tracked.py"]
+
+
+def test_pm_update_non_git_directory_fallback_is_loud(tmp_path):
+    pm_update = _load("pm_update_nongit_fallback_test", "pm_update.py")
+    repo_files = pm_update._load_repo_owned_files()
+    source = tmp_path / "source"
+    ship = source / "ship"
+    ship.mkdir(parents=True)
+    (ship / "fallback.txt").write_text("fallback\n", encoding="utf-8")
+
+    with pytest.warns(
+        repo_files.RepoFilesFallbackWarning,
+        match="filesystem 전수 순회에 강등",
+    ):
+        got = list(pm_update._iter_files(source, "ship"))
+
+    assert [rel for rel, _path in got] == ["ship/fallback.txt"]
+
+
 def test_pm_update_skips_deleted_tracked_entry_loudly(tmp_path):
     pm_update = _load("pm_update_deleted_tracked_test", "pm_update.py")
     repo = _repo(tmp_path)
@@ -184,6 +227,41 @@ def test_pm_update_skips_deleted_tracked_entry_loudly(tmp_path):
     with pytest.warns(
         pm_update.SkippedRepoShippingEntryWarning,
         match="working tree에서 삭제됨.*ship/deleted.txt",
+    ):
+        got = list(pm_update._iter_files(repo, "ship"))
+
+    assert got == []
+
+
+@pytest.mark.parametrize(
+    ("index_mode", "warning_fragment"),
+    [
+        ("120000", "symlink"),
+        ("160000", "gitlink"),
+    ],
+)
+def test_pm_update_skips_nonregular_index_mode_without_symlink_permission(
+        tmp_path, index_mode, warning_fragment):
+    pm_update = _load(f"pm_update_index_mode_{index_mode}_test", "pm_update.py")
+    repo = _repo(tmp_path)
+    ship = repo / "ship"
+    ship.mkdir()
+    materialized = ship / f"mode-{index_mode}"
+    materialized.write_text("materialized as a regular file\n", encoding="utf-8")
+    blob_oid = _git(repo, "hash-object", "-w", materialized.relative_to(repo).as_posix())
+    _git(
+        repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"{index_mode},{blob_oid.stdout.strip()},{materialized.relative_to(repo).as_posix()}",
+    )
+    assert materialized.is_file()
+    assert not materialized.is_symlink()
+
+    with pytest.warns(
+        pm_update.SkippedRepoShippingEntryWarning,
+        match=warning_fragment,
     ):
         got = list(pm_update._iter_files(repo, "ship"))
 
@@ -211,6 +289,24 @@ def test_pm_update_skips_tracked_directory_symlink_loudly(tmp_path):
     assert got == []
 
 
+@requires_symlink
+def test_pm_update_skips_manifest_entry_that_is_itself_symlink(tmp_path):
+    pm_update = _load("pm_update_manifest_symlink_test", "pm_update.py")
+    repo = _repo(tmp_path)
+    target = repo / "target.txt"
+    target.write_text("payload\n", encoding="utf-8")
+    manifest_entry = repo / "manifest-link.txt"
+    manifest_entry.symlink_to(target)
+
+    with pytest.warns(
+        pm_update.SkippedRepoShippingEntryWarning,
+        match=r"manifest 엔트리 제외.*manifest-link.txt",
+    ):
+        got = list(pm_update._iter_files(repo, "manifest-link.txt"))
+
+    assert got == []
+
+
 def test_pm_update_reports_untracked_exclusion_count(tmp_path, capsys):
     pm_update = _load("pm_update_untracked_signal_test", "pm_update.py")
     repo = _repo(tmp_path)
@@ -218,6 +314,28 @@ def test_pm_update_reports_untracked_exclusion_count(tmp_path, capsys):
     ship.mkdir()
     (ship / "tracked.txt").write_text("tracked\n", encoding="utf-8")
     (ship / "untracked.txt").write_text("local\n", encoding="utf-8")
+    _git(repo, "add", "ship/tracked.txt")
+
+    got = list(pm_update._iter_files(repo, "ship"))
+
+    assert [rel for rel, _path in got] == ["ship/tracked.txt"]
+    assert (
+        "pm-update: untracked 1건 제외 — git add 후 전파됨"
+        in capsys.readouterr().err
+    )
+
+
+@requires_symlink
+def test_pm_update_untracked_count_excludes_unshippable_symlink(tmp_path, capsys):
+    pm_update = _load("pm_update_untracked_symlink_count_test", "pm_update.py")
+    repo = _repo(tmp_path)
+    ship = repo / "ship"
+    outside = tmp_path / "outside.txt"
+    ship.mkdir()
+    outside.write_text("outside\n", encoding="utf-8")
+    (ship / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    (ship / "regular.txt").write_text("regular\n", encoding="utf-8")
+    (ship / "untracked-link").symlink_to(outside)
     _git(repo, "add", "ship/tracked.txt")
 
     got = list(pm_update._iter_files(repo, "ship"))
