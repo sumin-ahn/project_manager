@@ -472,6 +472,19 @@ def _shipping_inventory(repo_files, root: Path, rel: str) -> list:
                 f"(subtree={rel})",
                 file=sys.stderr,
             )
+        if not tracked and (root / rel).is_file():
+            ignored_rc, _ignored_detail = runner([
+                "check-ignore",
+                "--quiet",
+                "--",
+                rel,
+            ])
+            if ignored_rc == 0:
+                print(
+                    "pm-update: manifest 선언 단일 파일이 source에서 gitignore되어 "
+                    f"출하되지 않음: {rel} — ignore 규칙을 제거하고 git add 하라",
+                    file=sys.stderr,
+                )
     return tracked
 
 
@@ -2826,13 +2839,7 @@ def _print_protected_hook_reinstall_finding(result: dict, *, dry_run: bool = Fal
               "— 미러를 만들면(`pm-config repo add <repo>`) 훅이 걸린다.")
 
 
-def main(argv: list[str] | None = None) -> int:
-    _console_spec = importlib.util.spec_from_file_location(
-        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
-    )
-    _console_encoding = importlib.util.module_from_spec(_console_spec)
-    _console_spec.loader.exec_module(_console_encoding)
-    _console_encoding.configure_console_utf8()
+def _main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="pm_update.py",
         description=__doc__,
@@ -3167,6 +3174,31 @@ def main(argv: list[str] | None = None) -> int:
     maybe_prompt_external_review(effective_dest)
     maybe_prompt_delegate_optin(effective_dest)  # 동기 후 delegate opt-in(TTY 질문·비TTY 안내)
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 경계: repo 출하 seam의 분류 오류만 짧은 실행 오류로 바꾼다.
+
+    apply/render/IO 등 다른 예외는 프로그래밍·시퀀싱 오류이므로 기존처럼 호출자에게 전파한다.
+    """
+    _console_spec = importlib.util.spec_from_file_location(
+        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    )
+    _console_encoding = importlib.util.module_from_spec(_console_spec)
+    _console_spec.loader.exec_module(_console_encoding)
+    _console_encoding.configure_console_utf8()
+    try:
+        return _main(argv)
+    except Exception as exc:
+        repo_files = _load_repo_owned_files()
+        if not isinstance(exc, repo_files.RepoFilesGitError):
+            raise
+        print(
+            "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "
+            f"{exc}; 해당 checkout 경로와 git index 상태를 확인·복구한 뒤 다시 실행하라.",
+            file=sys.stderr,
+        )
+        return 1
 
 
 if __name__ == "__main__":

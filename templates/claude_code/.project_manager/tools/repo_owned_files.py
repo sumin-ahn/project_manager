@@ -6,9 +6,10 @@
 * ``tracked_only``: 추적분만. adopter에게 전파하는 출하 경로용.
 * ``owned``: 추적분 + 미추적·비무시 파일. gap/검사 경로용.
 
-OWNED 열거에서 git을 쓸 수 없거나 ``ls-files``가 실패하면 파일시스템 순회로 폴백한다.
-이때는 ignore와 추적 여부 보장이 사라지므로 ``RepoFilesFallbackWarning``을 반드시
-표면화한다. TRACKED_ONLY는 출하 보장을 잃은 폴백을 허용하지 않고 실패한다.
+git 바이너리가 없거나 checkout이 저장소가 아니면 파일시스템 순회로 폴백한다. 이때는
+ignore와 추적 여부 보장이 사라지므로 ``RepoFilesFallbackWarning``을 반드시 표면화한다.
+그 밖의 TRACKED_ONLY 실패(구 git의 옵션 미지원·손상 index·unmerged)는 추적정보가 있는데
+폴백해 누출하지 않도록 loud 실패한다.
 """
 
 from __future__ import annotations
@@ -32,14 +33,19 @@ _MODE_GIT_ARGS: dict[RepoFileMode, tuple[str, ...]] = {
 }
 _FALLBACK_EXCLUDE_NAMES = frozenset({".git", "__pycache__", ".pytest_cache"})
 GIT_TIMEOUT_SECONDS = 120
+_GIT_BINARY_MISSING_RC = 127
 
 
 class RepoFilesFallbackWarning(RuntimeWarning):
-    """OWNED git 열거 보장이 사라져 filesystem 전수 순회로 강등됐다는 loud 신호."""
+    """git 추적/ignore 보장이 사라져 filesystem 전수 순회로 강등됐다는 loud 신호."""
 
 
 class RepoFilesEmptyWarning(RuntimeWarning):
     """tracked-only가 비어 실제 비어 있지 않은 subtree를 누락할 수 있다는 loud 신호."""
+
+
+class RepoFilesGitError(RuntimeError):
+    """추적정보가 있는 checkout에서 git 열거 보장을 지키지 못해 출하를 중단한 오류."""
 
 
 class RepoOwnedEntry(NamedTuple):
@@ -59,7 +65,7 @@ def _real_git_runner(cwd: Path) -> GitRunner:
 
     def runner(argv: list) -> tuple[int, str]:
         if git_binary is None:
-            return 1, "git 바이너리를 찾을 수 없음 (PATH)."
+            return _GIT_BINARY_MISSING_RC, "git 바이너리를 찾을 수 없음 (PATH)."
         try:
             result = subprocess.run(
                 [git_binary, "-C", str(cwd), *argv],
@@ -69,7 +75,11 @@ def _real_git_runner(cwd: Path) -> GitRunner:
                 errors="replace",
                 timeout=GIT_TIMEOUT_SECONDS,
             )
-            return result.returncode, result.stdout or result.stderr or ""
+            # stdout만 열거 데이터다. stderr는 성공 시 trace/advice가 섞일 수 있으므로
+            # rc=0 결과에 절대 합치지 않고 실패 진단에만 사용한다.
+            if result.returncode == 0:
+                return 0, result.stdout or ""
+            return result.returncode, result.stderr or result.stdout or ""
         except Exception as exc:  # noqa: BLE001 — 호출 실패도 상위 mode 계약이 처리.
             return 1, str(exc)
 
@@ -91,7 +101,7 @@ def _parse_staged_entries(out: str) -> list[RepoOwnedEntry]:
         meta, separator, candidate_text = record.partition("\t")
         fields = meta.split()
         if separator != "\t" or not candidate_text or len(fields) != 3:
-            raise RuntimeError(f"git ls-files --stage 출력이 손상됨: {record!r}")
+            raise RepoFilesGitError(f"git ls-files --stage 출력이 손상됨: {record!r}")
         index_mode, _object_id, stage = fields
         candidate = Path(candidate_text)
         if stage != "0":
@@ -99,7 +109,7 @@ def _parse_staged_entries(out: str) -> list[RepoOwnedEntry]:
             continue
         prior = entries_by_path.get(candidate)
         if prior is not None and prior.index_mode != index_mode:
-            raise RuntimeError(
+            raise RepoFilesGitError(
                 "git ls-files --stage stage-0 mode가 중복·불일치함: "
                 f"{candidate_text!r} ({prior.index_mode}, {index_mode})"
             )
@@ -107,11 +117,18 @@ def _parse_staged_entries(out: str) -> list[RepoOwnedEntry]:
 
     if unmerged_paths:
         paths = ", ".join(path.as_posix() for path in sorted(unmerged_paths))
-        raise RuntimeError(
+        raise RepoFilesGitError(
             "git index에 unmerged 경로가 있어 tracked-only 출하를 중단함: "
             + paths
         )
     return list(entries_by_path.values())
+
+
+def _is_no_repository_failure(rc: int, detail: str) -> bool:
+    """추적정보 자체가 없는 환경만 filesystem fallback 대상으로 분류한다."""
+    return rc == _GIT_BINARY_MISSING_RC or (
+        rc == 128 and "not a git repository" in detail.lower()
+    )
 
 
 def list_repo_owned_entries(
@@ -129,9 +146,10 @@ def list_repo_owned_entries(
     git 파일형 엔트리의 진실이며, ``is_file()`` 재검사는 symlink와 mode 160000 gitlink를
     거짓 탈락시킨다.
 
-    OWNED의 git 실패 시에는 기존 domain 구현과 같은 파일시스템 폴백을 사용한다. 폴백은
-    추적/ignore 의미를 보장할 수 없어 경고가 계약의 일부다. TRACKED_ONLY는 출하 보장을
-    잃는 폴백 대신 loud 실패한다.
+    git 바이너리 부재 또는 ``not a git repository``(rc 128)는 추적정보 자체가 없는
+    비-git 배포 사본이므로 양 mode 모두 filesystem 폴백한다. 폴백은 추적/ignore 의미를
+    보장할 수 없어 경고가 계약의 일부다. TRACKED_ONLY의 그 밖의 실패는 추적정보가 있는
+    상태에서 누출하지 않도록 loud 실패한다.
     """
     try:
         mode_args = _MODE_GIT_ARGS[mode]
@@ -152,13 +170,14 @@ def list_repo_owned_entries(
         ])
     except Exception as exc:  # noqa: BLE001 — mode 계약에 따라 loud 실패/폴백.
         if mode == TRACKED_ONLY:
-            raise RuntimeError(
+            raise RepoFilesGitError(
                 "repo-owned tracked_only git ls-files 호출 실패 "
                 f"(checkout={checkout_path}, subtree={norm!r})"
             ) from exc
         rc, out = 1, str(exc)
 
     entries: list[RepoOwnedEntry] = []
+    fallback_rc: int | None = None
     if rc == 0:
         if mode == TRACKED_ONLY:
             entries = _parse_staged_entries(out)
@@ -182,31 +201,44 @@ def list_repo_owned_entries(
                     RepoFilesEmptyWarning,
                     stacklevel=2,
                 )
+    elif _is_no_repository_failure(rc, out):
+        fallback_rc = rc
     elif mode == TRACKED_ONLY:
         detail = out.strip()
         suffix = f": {detail}" if detail else ""
-        raise RuntimeError(
+        raise RepoFilesGitError(
             "repo-owned tracked_only git ls-files 실패 "
             f"(checkout={checkout_path}, subtree={norm!r}, rc={rc}){suffix}"
         )
     else:
+        fallback_rc = rc
+
+    if fallback_rc is not None:
+        reason = (
+            "git 저장소/바이너리 부재"
+            if fallback_rc in {_GIT_BINARY_MISSING_RC, 128}
+            else "git ls-files 실패"
+        )
         warnings.warn(
-            "repo-owned 파일 열거가 git ls-files 실패로 filesystem 전수 순회에 강등됨 "
-            f"(checkout={checkout_path}, subtree={norm!r}, mode={mode}, rc={rc}); "
+            f"repo-owned 파일 열거가 {reason}로 filesystem 전수 순회에 강등됨 "
+            f"(checkout={checkout_path}, subtree={norm!r}, mode={mode}, rc={fallback_rc}); "
             "추적/ignore 보장을 적용할 수 없음",
             RepoFilesFallbackWarning,
             stacklevel=2,
         )
         directory = checkout_path / norm
-        entries = [
-            RepoOwnedEntry(path.relative_to(checkout_path), None)
-            for path in directory.rglob("*")
-            if path.is_file()
-            and not any(
-                part in _FALLBACK_EXCLUDE_NAMES
-                for part in path.relative_to(directory).parts
-            )
-        ]
+        if directory.is_file():
+            entries = [RepoOwnedEntry(Path(norm), None)]
+        else:
+            entries = [
+                RepoOwnedEntry(path.relative_to(checkout_path), None)
+                for path in directory.rglob("*")
+                if path.is_file()
+                and not any(
+                    part in _FALLBACK_EXCLUDE_NAMES
+                    for part in path.relative_to(directory).parts
+                )
+            ]
 
     return sorted(
         dict.fromkeys(entries),
@@ -231,32 +263,3 @@ def list_repo_owned_files(
             git_runner=git_runner,
         )
     ]
-
-
-def tracked_index_mode(
-    checkout: Path | str,
-    path: Path | str,
-    *,
-    git_runner: GitRunner | None = None,
-) -> str | None:
-    """단일 경로의 git index mode를 반환한다.
-
-    성공한 조회의 미추적 경로는 ``None``이다. git 호출 실패와 unmerged index는 tracked-only
-    보장을 잃지 않도록 loud 실패한다.
-    """
-    checkout_path = Path(checkout)
-    norm = str(path).replace(os.sep, "/").replace("\\", "/").rstrip("/") or "."
-    entries = list_repo_owned_entries(
-        checkout_path,
-        norm,
-        mode=TRACKED_ONLY,
-        git_runner=git_runner,
-    )
-    if not entries:
-        return None
-    if len(entries) != 1 or entries[0].path.as_posix() != norm:
-        paths = ", ".join(entry.path.as_posix() for entry in entries)
-        raise RuntimeError(
-            f"단일 tracked index mode 조회가 복수/불일치 경로를 반환함 ({norm!r}): {paths}"
-        )
-    return entries[0].index_mode

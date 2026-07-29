@@ -567,8 +567,11 @@ def test_sequencing_apply_failure_leaves_old_gen(pm_update, old_gen_text, tmp_pa
     migrate_writes = []
     real_migrate = pm_update.migrate_entry_doc
 
+    class ExpectedApplyFailure(RuntimeError):
+        pass
+
     def boom_apply(changes):
-        raise RuntimeError("apply failed (render/IO)")
+        raise ExpectedApplyFailure("apply failed (render/IO)")
 
     def spy_migrate(*a, **k):
         migrate_writes.append(k.get("write"))
@@ -577,7 +580,7 @@ def test_sequencing_apply_failure_leaves_old_gen(pm_update, old_gen_text, tmp_pa
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setattr(pm_update, "apply", boom_apply)
     monkeypatch.setattr(pm_update, "migrate_entry_doc", spy_migrate)
-    with pytest.raises(RuntimeError, match="apply failed"):
+    with pytest.raises(ExpectedApplyFailure, match="apply failed"):
         pm_update.main(["--from", str(src)])
     # 전환 write(write=True) 미발화 — apply 뒤라 도달 못 함.
     assert True not in migrate_writes, "apply 실패 후 migrate(write=True) 가 발화됐다(반쪽 상태 위험)."

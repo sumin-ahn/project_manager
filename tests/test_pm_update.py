@@ -160,6 +160,32 @@ def test_explicit_from_takes_priority_over_local_conf(pm_update, tmp_path, monke
     assert stored_rel not in out, "local.conf 의 stored upstream 이 명시 --from 을 덮었다(우선순위 역전)"
 
 
+def test_cli_classified_git_failure_is_one_line_without_raw_traceback(
+        pm_update, tmp_path, monkeypatch, capsys):
+    fake_repo = tmp_path / "fake_repo"
+    (fake_repo / "templates" / "tgt").mkdir(parents=True)
+    source = tmp_path / "source"
+    _make_upstream(source)
+    repo_files = pm_update._load_repo_owned_files()
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    monkeypatch.setattr(
+        repo_files,
+        "_real_git_runner",
+        lambda _root: lambda _argv: (129, "error: unknown option `stage'"),
+    )
+
+    rc = pm_update.main(["--from", str(source), "--target", "tgt"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert len(err.splitlines()) == 1
+    assert "source 출하 파일의 git 추적정보" in err
+    assert str(source) in err
+    assert "rc=129" in err
+    assert "git index 상태를 확인·복구" in err
+    assert "Traceback" not in err
+
+
 # ── ② --from 생략 → local.conf upstream 사용 (plan 도달) ─────────────────────
 
 def test_omitted_from_uses_local_conf_upstream(pm_update, tmp_path, monkeypatch, capsys):
