@@ -46,6 +46,7 @@ def _make_upstream(root: Path, rel: str = SENTINEL_REL) -> None:
     sentinel.write_text("# upstream sentinel\n", encoding="utf-8")
     manifest = root / ".project_manager" / "engine.manifest"
     manifest.write_text(rel + "\n", encoding="utf-8")
+    _track_source_tree(root)
 
 
 def _write_local_conf(dest_root: Path, text: str) -> Path:
@@ -63,17 +64,18 @@ def _write_dest_manifest(dest_root: Path, entries: list[str]) -> Path:
     return manifest
 
 
-def _init_tracked_fixture_repo(root: Path) -> None:
+def _track_source_tree(root: Path) -> None:
     """directory-manifest fixture를 실제 tracked checkout으로 만들어 fallback 경고를 막는다."""
     root.mkdir(parents=True, exist_ok=True)
+    if not (root / ".git").is_dir():
+        subprocess.run(
+            ["git", "-C", str(root), "init", "-q"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
     subprocess.run(
-        ["git", "-C", str(root), "init", "-q"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(root), "add", "-A"],
+        ["git", "-C", str(root), "add", "-f", "-A"],
         capture_output=True,
         text=True,
         check=True,
@@ -93,6 +95,7 @@ def _make_upstream_manifest(root: Path, entries: list[str]) -> None:
     manifest = root / ".project_manager" / "engine.manifest"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text("\n".join(entries) + "\n", encoding="utf-8")
+    _track_source_tree(root)
 
 
 # ── _read_local_conf 파싱 단위 (board.local_config 규칙 미러) ────────────────
@@ -815,6 +818,7 @@ def test_main_records_baseline_when_upstream_manifest_absent(pm_update, tmp_path
     sentinel = source / SENTINEL_REL
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text("# upstream sentinel\n", encoding="utf-8")
+    _track_source_tree(source)
     _write_dest_manifest(fake_repo, [SENTINEL_REL])
     _write_local_conf(fake_repo, f"upstream={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -945,6 +949,7 @@ def test_plan_engine_manifest_self_prop_no_churn_with_guest_block(pm_update, tmp
     core = "# manifest\n" + MANIFEST_SELF_REL + "\n"
     (source / ".project_manager").mkdir(parents=True)
     (source / ".project_manager" / "engine.manifest").write_text(core, encoding="utf-8")
+    _track_source_tree(source)
     # dest = core + guest 절(apply 재부착 형상).
     (dest / ".project_manager").mkdir(parents=True)
     (dest / ".project_manager" / "engine.manifest").write_text(
@@ -965,6 +970,7 @@ def test_plan_manifest_self_prop_no_churn_with_trailing_blank_upstream(pm_update
     core = "# m\n" + MANIFEST_SELF_REL + "\n\n"  # ← 트레일링 빈 줄.
     (source / ".project_manager").mkdir(parents=True)
     (source / ".project_manager" / "engine.manifest").write_text(core, encoding="utf-8")
+    _track_source_tree(source)
     (dest / ".project_manager").mkdir(parents=True)
     (dest / ".project_manager" / "engine.manifest").write_text(
         core + begin + "\n.codex/agents    @render @target-owned\n" + end + "\n",
@@ -1029,6 +1035,7 @@ def test_resolve_manifest_selfheal_flavor_source_not_clobbered_by_root(pm_update
     (source / "templates" / "claude_code" / ".project_manager").mkdir(parents=True, exist_ok=True)
     (source / flavor_rel).write_text(
         "\n".join([SENTINEL_REL, NEW_ENGINE_REL, flavor_self]) + "\n", encoding="utf-8")
+    _track_source_tree(source)
     # 채택자(dest) manifest — flavor self-prop(@source)·구형(NEW_ENGINE_REL 미등재).
     _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL, flavor_self])
 
@@ -1394,6 +1401,7 @@ def test_main_flavor_selfheal_skew_uses_flavor_manifest_no_false_suppress(
     (source / flavor_rel).parent.mkdir(parents=True, exist_ok=True)
     (source / flavor_rel).write_text(
         "\n".join([SENTINEL_REL, NEW_ENGINE_REL, flavor_self]) + "\n", encoding="utf-8")
+    _track_source_tree(source)
     # 채택자 manifest = flavor(@source self-prop)·구형(NEW_ENGINE_REL 미등재).
     _write_dest_manifest(fake_repo, [SENTINEL_REL, flavor_self])
     _write_local_conf(fake_repo, f"upstream={source}\n")
@@ -1550,6 +1558,7 @@ def test_target_mode_skips_target_owned_source_absent_with_log(pm_update, tmp_pa
     # 실 어댑터는 @render @target-owned 함께지만 skip 판별은 @target-owned 단독으로도 성립.
     manifest.write_text(
         SENTINEL_REL + "\n" + absent_rel + "  @render @target-owned\n", encoding="utf-8")
+    _track_source_tree(stored)
     _write_local_conf(target_dir, f"upstream={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -1585,6 +1594,7 @@ def test_target_mode_non_target_owned_source_absent_errors(pm_update, tmp_path, 
     engine_absent = ".project_manager/tools/foo.py"
     manifest = stored / ".project_manager" / "engine.manifest"
     manifest.write_text(SENTINEL_REL + "\n" + engine_absent + "\n", encoding="utf-8")
+    _track_source_tree(stored)
     _write_local_conf(target_dir, f"upstream={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -1615,6 +1625,7 @@ def test_target_mode_render_only_source_absent_errors(pm_update, tmp_path, monke
     manifest = stored / ".project_manager" / "engine.manifest"
     manifest.write_text(
         SENTINEL_REL + "\n" + render_only_absent + "  @render\n", encoding="utf-8")
+    _track_source_tree(stored)
     _write_local_conf(target_dir, f"upstream={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -1914,6 +1925,7 @@ def test_domain_template_planned_as_managed(pm_update, tmp_path):
     dst_tpl.parent.mkdir(parents=True)
     src_tpl.write_text("# domain template — upstream 개선판\n", encoding="utf-8")
     dst_tpl.write_text("# domain template — 구버전\n", encoding="utf-8")
+    _track_source_tree(src)
 
     # manifest 에 domain/_template.md 만 둔 최소 plan — 동기 대상 인식만 검증.
     changes, missing = pm_update.plan(src, [DOMAIN_TEMPLATE_REL], dest_root=dst)
@@ -2127,7 +2139,7 @@ def test_plan_specific_file_source_overrides_shared_directory_source(pm_update, 
         ".agents/skills/pm-dev-delegate/SKILL.md "
         "@source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
     ]))
-    _init_tracked_fixture_repo(source)
+    _track_source_tree(source)
 
     changes, missing = pm_update.plan(source, entries, dest_root=dest)
 
@@ -2153,7 +2165,7 @@ def test_plan_missing_specific_override_never_falls_back_to_shared_skill(pm_upda
         ".agents/skills @source=.claude/skills",
         f"{override_dest} @source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
     ]))
-    _init_tracked_fixture_repo(source)
+    _track_source_tree(source)
 
     changes, missing = pm_update.plan(source, entries, dest_root=dest)
 
@@ -2180,7 +2192,7 @@ def test_plan_specific_override_is_idempotent_not_replaced_by_parent(pm_update, 
         ".agents/skills/pm-dev-delegate/SKILL.md "
         "@source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
     ]))
-    _init_tracked_fixture_repo(source)
+    _track_source_tree(source)
 
     changes, missing = pm_update.plan(source, entries, dest_root=dest)
 
@@ -2221,7 +2233,7 @@ def test_self_update_propagates_opencode_adapters_from_templates_source(
         encoding="utf-8",
     )
     _write_local_conf(fake_repo, f"upstream={stored}\nexternal_review_enabled=false\n")
-    _init_tracked_fixture_repo(stored)
+    _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main([])  # 실 sync(apply)
@@ -2288,7 +2300,7 @@ def test_target_opencode_source_channel_self_copy_noop(pm_update, tmp_path, monk
         encoding="utf-8",
     )
     _write_local_conf(oc_dir, f"upstream={fake_repo}\nexternal_review_enabled=false\n")
-    _init_tracked_fixture_repo(fake_repo)
+    _track_source_tree(fake_repo)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--target", "opencode", "--dry-run"])
@@ -2317,7 +2329,7 @@ def test_claude_render_only_entry_unaffected_by_source_channel(
     dest_manifest.parent.mkdir(parents=True, exist_ok=True)
     dest_manifest.write_text(".claude/agents  @render\n", encoding="utf-8")
     _write_local_conf(fake_repo, f"upstream={stored}\nexternal_review_enabled=false\n")
-    _init_tracked_fixture_repo(stored)
+    _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main([])
@@ -2352,7 +2364,7 @@ def test_render_with_source_marker_renders_operational_tokens(
     _write_local_conf(
         fake_repo,
         f"upstream={stored}\nproject_name=AcmePay\nexternal_review_enabled=false\n")
-    _init_tracked_fixture_repo(stored)
+    _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main([])
@@ -2923,6 +2935,7 @@ def _make_template_upstream(root: Path) -> None:
     tmpl.write_text("# ticket 본문 템플릿 (upstream)\n", encoding="utf-8")
     (root / ".project_manager" / "engine.manifest").write_text(
         _TEMPLATE_REL + "\n", encoding="utf-8")
+    _track_source_tree(root)
 
 
 # ── 단위: _is_board_separated 실측 판별 (board.py board_root 동형) ────────────
@@ -3122,6 +3135,7 @@ def test_self_update_propagates_engine_safety_hook_via_source_remap(pm_update, t
     src = upstream / src_rel
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text("#!/bin/sh\n# NEW hard-stop safety fix\nexit 0\n", encoding="utf-8")
+    _track_source_tree(upstream)
 
     # 채택자의 frozen 사본 = OLD (엔진 fix 이전·import 시점 동결).
     frozen = adopter / dst_rel
@@ -3156,6 +3170,7 @@ def test_self_update_root_sourced_hook_propagates(pm_update, tmp_path):
     src = upstream / rel
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text("#!/bin/sh\n# NEW regression gate\nexit 0\n", encoding="utf-8")
+    _track_source_tree(upstream)
     frozen = adopter / rel
     frozen.parent.mkdir(parents=True, exist_ok=True)
     frozen.write_text("#!/bin/sh\n# OLD gate\nexit 0\n", encoding="utf-8")
@@ -3212,6 +3227,7 @@ def _make_flavor_manifest_repo(root: Path) -> None:
     for path, text in specs.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+    _track_source_tree(root)
 
 
 def _stub_no_baseline_git(pm_update, monkeypatch) -> None:

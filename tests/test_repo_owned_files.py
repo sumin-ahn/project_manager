@@ -63,7 +63,7 @@ def test_modes_declare_exact_git_argv_and_literal_pathspec(repo_files, tmp_path)
         [
             "ls-files",
             "-z",
-            "--format=%(objectmode)%x09%(path)",
+            "--stage",
             "--cached",
             "--",
             ":(literal)pkg*[x]",
@@ -73,6 +73,63 @@ def test_modes_declare_exact_git_argv_and_literal_pathspec(repo_files, tmp_path)
             "--", ":(literal)pkg*[x]",
         ],
     ]
+
+
+def test_tracked_only_and_single_mode_work_with_pre_238_git_runner(
+        repo_files, tmp_path):
+    """구 git shim: 신형 출력 옵션은 rc 129지만 오래된 --stage 호출은 tracked 결과를 보존한다."""
+    ship = tmp_path / "ship"
+    ship.mkdir()
+    (ship / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    (ship / "machine.local").write_text("machine\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    unsupported_option = "--" + "format"
+
+    def pre_238_runner(argv):
+        calls.append(argv)
+        if any(arg.startswith(unsupported_option) for arg in argv):
+            return 129, "error: unknown option `format'"
+        return (
+            0,
+            "100644 1111111111111111111111111111111111111111 0\t"
+            "ship/tracked.txt\0",
+        )
+
+    entries = repo_files.list_repo_owned_entries(
+        tmp_path,
+        "ship",
+        mode=repo_files.TRACKED_ONLY,
+        git_runner=pre_238_runner,
+    )
+    index_mode = repo_files.tracked_index_mode(
+        tmp_path,
+        "ship/tracked.txt",
+        git_runner=pre_238_runner,
+    )
+
+    assert entries == [
+        repo_files.RepoOwnedEntry(Path("ship/tracked.txt"), "100644")
+    ]
+    assert index_mode == "100644"
+    assert all("--stage" in call for call in calls)
+    assert not any(
+        arg.startswith(unsupported_option)
+        for call in calls
+        for arg in call
+    )
+    assert Path("ship/machine.local") not in {entry.path for entry in entries}
+
+
+def test_damaged_stage_record_diagnostic_preserves_whole_record(repo_files, tmp_path):
+    damaged = "100644 deadbeef\tship/broken.txt"
+
+    with pytest.raises(RuntimeError, match=r"100644 deadbeef.*ship/broken.txt"):
+        repo_files.list_repo_owned_entries(
+            tmp_path,
+            "ship",
+            mode=repo_files.TRACKED_ONLY,
+            git_runner=lambda _argv: (0, damaged + "\0"),
+        )
 
 
 def test_git_entries_are_nul_split_without_worktree_is_file_recheck(repo_files, tmp_path):
@@ -140,7 +197,7 @@ def test_owned_real_git_includes_nonignored_untracked_only(repo_files, tmp_path)
     ]
 
 
-def test_git_failure_filesystem_fallback_is_loud_and_excludes_derivatives(
+def test_owned_git_failure_filesystem_fallback_is_loud_and_excludes_derivatives(
         repo_files, tmp_path):
     src = tmp_path / "src"
     (src / "pkg").mkdir(parents=True)
@@ -152,11 +209,35 @@ def test_git_failure_filesystem_fallback_is_loud_and_excludes_derivatives(
         got = repo_files.list_repo_owned_files(
             tmp_path,
             "src",
-            mode=repo_files.TRACKED_ONLY,
+            mode=repo_files.OWNED,
             git_runner=lambda _argv: (1, "not a repository"),
         )
 
     assert [path.as_posix() for path in got] == ["src/pkg/kept.py"]
+
+
+def test_tracked_only_git_failure_is_loud_without_filesystem_shipping(
+        repo_files, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "machine.local").write_text("machine\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=r"tracked_only.*rc=129"):
+        repo_files.list_repo_owned_entries(
+            tmp_path,
+            "src",
+            mode=repo_files.TRACKED_ONLY,
+            git_runner=lambda _argv: (129, "unknown option"),
+        )
+
+
+def test_single_mode_git_failure_is_not_misreported_as_untracked(repo_files, tmp_path):
+    with pytest.raises(RuntimeError, match=r"tracked_only.*rc=129"):
+        repo_files.tracked_index_mode(
+            tmp_path,
+            "src/materialized-link",
+            git_runner=lambda _argv: (129, "unknown option"),
+        )
 
 
 def test_unknown_mode_is_rejected_before_enumeration(repo_files, tmp_path):
@@ -205,13 +286,8 @@ def test_pm_update_non_git_directory_fallback_is_loud(tmp_path):
     ship.mkdir(parents=True)
     (ship / "fallback.txt").write_text("fallback\n", encoding="utf-8")
 
-    with pytest.warns(
-        repo_files.RepoFilesFallbackWarning,
-        match="filesystem 전수 순회에 강등",
-    ):
-        got = list(pm_update._iter_files(source, "ship"))
-
-    assert [rel for rel, _path in got] == ["ship/fallback.txt"]
+    with pytest.raises(RuntimeError, match="tracked_only"):
+        list(pm_update._iter_files(source, "ship"))
 
 
 def test_pm_update_skips_deleted_tracked_entry_loudly(tmp_path):
@@ -266,6 +342,59 @@ def test_pm_update_skips_nonregular_index_mode_without_symlink_permission(
         got = list(pm_update._iter_files(repo, "ship"))
 
     assert got == []
+
+
+@pytest.mark.parametrize("index_mode", ["120000", "160000"])
+def test_tracked_only_seam_preserves_special_index_modes(
+        repo_files, tmp_path, index_mode):
+    record = (
+        f"{index_mode} 1111111111111111111111111111111111111111 0"
+        f"\tship/mode-{index_mode}\0"
+    )
+
+    got = repo_files.list_repo_owned_entries(
+        tmp_path,
+        "ship",
+        mode=repo_files.TRACKED_ONLY,
+        git_runner=lambda _argv: (0, record),
+    )
+
+    assert got == [
+        repo_files.RepoOwnedEntry(Path(f"ship/mode-{index_mode}"), index_mode)
+    ]
+
+
+def test_unmerged_index_path_stops_shipping_loudly(repo_files, tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "config", "user.name", "Repo Files Test")
+    _git(repo, "config", "user.email", "repo-files@example.invalid")
+    ship = repo / "ship"
+    ship.mkdir()
+    conflicted = ship / "f.txt"
+    conflicted.write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "ship/f.txt")
+    _git(repo, "commit", "-qm", "base")
+    _git(repo, "checkout", "-qb", "other")
+    conflicted.write_text("other\n", encoding="utf-8")
+    _git(repo, "commit", "-qam", "other")
+    _git(repo, "checkout", "-q", "-")
+    conflicted.write_text("main\n", encoding="utf-8")
+    _git(repo, "commit", "-qam", "main")
+    merge = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "other"],
+        capture_output=True,
+        text=True,
+    )
+    assert merge.returncode != 0
+
+    with pytest.raises(RuntimeError, match=r"unmerged.*ship/f\.txt"):
+        repo_files.list_repo_owned_entries(
+            repo,
+            "ship",
+            mode=repo_files.TRACKED_ONLY,
+        )
+    with pytest.raises(RuntimeError, match=r"unmerged.*ship/f\.txt"):
+        repo_files.tracked_index_mode(repo, "ship/f.txt")
 
 
 @requires_symlink
@@ -323,6 +452,46 @@ def test_pm_update_reports_untracked_exclusion_count(tmp_path, capsys):
         "pm-update: untracked 1건 제외 — git add 후 전파됨"
         in capsys.readouterr().err
     )
+
+
+def test_pm_update_untracked_single_file_manifest_entry_is_not_shipped(
+        tmp_path, capsys):
+    pm_update = _load("pm_update_untracked_single_file_test", "pm_update.py")
+    repo = _repo(tmp_path)
+    ship = repo / "ship"
+    ship.mkdir()
+    (ship / "single.txt").write_text("machine\n", encoding="utf-8")
+
+    got = list(pm_update._iter_files(repo, "ship/single.txt"))
+
+    assert got == []
+    assert (
+        "pm-update: untracked 1건 제외 — git add 후 전파됨"
+        in capsys.readouterr().err
+    )
+
+
+def test_pm_update_ignored_single_file_manifest_entry_is_not_shipped(tmp_path):
+    pm_update = _load("pm_update_ignored_single_file_test", "pm_update.py")
+    repo = _repo(tmp_path)
+    ship = repo / "ship"
+    ship.mkdir()
+    (repo / ".gitignore").write_text("ship/machine.local\n", encoding="utf-8")
+    (ship / "machine.local").write_text("machine\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+
+    assert list(pm_update._iter_files(repo, "ship/machine.local")) == []
+
+
+def test_shippable_entries_reject_bare_path_instead_of_lstat_only_fallback(tmp_path):
+    pm_update = _load("pm_update_typed_entries_test", "pm_update.py")
+    relative = Path("ship/file.txt")
+    source = tmp_path / relative
+    source.parent.mkdir()
+    source.write_text("payload\n", encoding="utf-8")
+
+    with pytest.raises(AttributeError):
+        pm_update._shippable_tracked_entries(tmp_path, [relative])
 
 
 @requires_symlink

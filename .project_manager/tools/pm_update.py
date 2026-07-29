@@ -51,6 +51,10 @@ import sys
 import warnings
 import zlib
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from repo_owned_files import RepoOwnedEntry
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / ".project_manager" / "engine.manifest"
@@ -470,7 +474,7 @@ def _shipping_inventory(repo_files, root: Path, rel: str) -> list:
 
 def _shippable_tracked_entries(
     root: Path,
-    entries: list,
+    entries: list["RepoOwnedEntry"],
 ) -> list[tuple[Path, Path]]:
     """tracked 엔트리를 안전한 byte-copy source로 좁히고 제외 이유를 loud하게 합친다."""
     accepted: list[tuple[Path, Path]] = []
@@ -481,8 +485,8 @@ def _shippable_tracked_entries(
         "일반 파일이 아닌 엔트리": [],
     }
     for entry in entries:
-        relative = getattr(entry, "path", entry)
-        index_mode = getattr(entry, "index_mode", None)
+        relative = entry.path
+        index_mode = entry.index_mode
         source = root / relative
         if index_mode == "120000":
             skipped["symlink(링크 의미를 byte-copy 출하하지 않음)"].append(
@@ -566,10 +570,8 @@ def _iter_files(root: Path, rel: str):
             yield relative.as_posix(), source
     elif src.is_file():
         repo_files = _load_repo_owned_files()
-        relative = Path(rel)
-        index_mode = repo_files.tracked_index_mode(root, relative)
-        entry = repo_files.RepoOwnedEntry(relative, index_mode)
-        for accepted_relative, source in _shippable_tracked_entries(root, [entry]):
+        tracked = _shipping_inventory(repo_files, root, rel)
+        for accepted_relative, source in _shippable_tracked_entries(root, tracked):
             yield accepted_relative.as_posix(), source
     # missing → 아무것도 yield 안 함 (호출부가 missing 으로 보고)
 

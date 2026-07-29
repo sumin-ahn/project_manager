@@ -6,8 +6,9 @@
 * ``tracked_only``: 추적분만. adopter에게 전파하는 출하 경로용.
 * ``owned``: 추적분 + 미추적·비무시 파일. gap/검사 경로용.
 
-git을 쓸 수 없거나 ``ls-files``가 실패하면 파일시스템 순회로 폴백한다. 이때는 ignore와
-추적 여부 보장이 사라지므로 ``RepoFilesFallbackWarning``을 반드시 표면화한다.
+OWNED 열거에서 git을 쓸 수 없거나 ``ls-files``가 실패하면 파일시스템 순회로 폴백한다.
+이때는 ignore와 추적 여부 보장이 사라지므로 ``RepoFilesFallbackWarning``을 반드시
+표면화한다. TRACKED_ONLY는 출하 보장을 잃은 폴백을 허용하지 않고 실패한다.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ RepoFileMode = Literal["tracked_only", "owned"]
 GitRunner = Callable[[list], "tuple[int, str]"]
 
 _MODE_GIT_ARGS: dict[RepoFileMode, tuple[str, ...]] = {
-    TRACKED_ONLY: ("--cached",),
+    TRACKED_ONLY: ("--stage", "--cached"),
     OWNED: ("--cached", "--others", "--exclude-standard"),
 }
 _FALLBACK_EXCLUDE_NAMES = frozenset({".git", "__pycache__", ".pytest_cache"})
@@ -34,7 +35,7 @@ GIT_TIMEOUT_SECONDS = 120
 
 
 class RepoFilesFallbackWarning(RuntimeWarning):
-    """git 열거 보장이 사라져 filesystem 전수 순회로 강등됐다는 loud 신호."""
+    """OWNED git 열거 보장이 사라져 filesystem 전수 순회로 강등됐다는 loud 신호."""
 
 
 class RepoFilesEmptyWarning(RuntimeWarning):
@@ -44,8 +45,8 @@ class RepoFilesEmptyWarning(RuntimeWarning):
 class RepoOwnedEntry(NamedTuple):
     """repo 열거 엔트리와 git index mode.
 
-    ``index_mode``는 git tracked 결과에서만 채워진다. OWNED의 untracked 엔트리와
-    filesystem fallback 엔트리는 ``None``이다.
+    ``index_mode``는 TRACKED_ONLY 결과에서만 채워진다. OWNED 엔트리와 filesystem
+    fallback 엔트리는 ``None``이다.
     """
 
     path: Path
@@ -53,7 +54,7 @@ class RepoOwnedEntry(NamedTuple):
 
 
 def _real_git_runner(cwd: Path) -> GitRunner:
-    """``git -C <cwd>`` argv runner. 실패는 rc!=0으로 돌려 폴백 경로에 맡긴다."""
+    """``git -C <cwd>`` argv runner. 실패는 rc!=0으로 돌려 호출 mode 계약에 맡긴다."""
     git_binary = shutil.which("git")
 
     def runner(argv: list) -> tuple[int, str]:
@@ -68,11 +69,49 @@ def _real_git_runner(cwd: Path) -> GitRunner:
                 errors="replace",
                 timeout=GIT_TIMEOUT_SECONDS,
             )
-            return result.returncode, result.stdout or ""
-        except Exception as exc:  # noqa: BLE001 — 호출 실패도 loud filesystem fallback 대상.
+            return result.returncode, result.stdout or result.stderr or ""
+        except Exception as exc:  # noqa: BLE001 — 호출 실패도 상위 mode 계약이 처리.
             return 1, str(exc)
 
     return runner
+
+
+def _parse_staged_entries(out: str) -> list[RepoOwnedEntry]:
+    """``ls-files -z --stage`` 출력을 stage-0 tracked 엔트리로 파싱한다.
+
+    unmerged 경로는 stage 1~3 레코드가 여러 개일 수 있다. 일부 stage만 골라 출하하면
+    충돌 중인 내용을 임의 선택하게 되므로, 하나라도 발견되면 경로를 명시해 전체 조회를
+    실패시킨다.
+    """
+    entries_by_path: dict[Path, RepoOwnedEntry] = {}
+    unmerged_paths: set[Path] = set()
+    for record in out.split("\0"):
+        if not record:
+            continue
+        meta, separator, candidate_text = record.partition("\t")
+        fields = meta.split()
+        if separator != "\t" or not candidate_text or len(fields) != 3:
+            raise RuntimeError(f"git ls-files --stage 출력이 손상됨: {record!r}")
+        index_mode, _object_id, stage = fields
+        candidate = Path(candidate_text)
+        if stage != "0":
+            unmerged_paths.add(candidate)
+            continue
+        prior = entries_by_path.get(candidate)
+        if prior is not None and prior.index_mode != index_mode:
+            raise RuntimeError(
+                "git ls-files --stage stage-0 mode가 중복·불일치함: "
+                f"{candidate_text!r} ({prior.index_mode}, {index_mode})"
+            )
+        entries_by_path[candidate] = RepoOwnedEntry(candidate, index_mode)
+
+    if unmerged_paths:
+        paths = ", ".join(path.as_posix() for path in sorted(unmerged_paths))
+        raise RuntimeError(
+            "git index에 unmerged 경로가 있어 tracked-only 출하를 중단함: "
+            + paths
+        )
+    return list(entries_by_path.values())
 
 
 def list_repo_owned_entries(
@@ -84,13 +123,15 @@ def list_repo_owned_entries(
 ) -> list[RepoOwnedEntry]:
     """``checkout`` 기준 ``subtree`` 아래 repo 소유 엔트리와 index mode를 반환한다.
 
-    TRACKED_ONLY는 ``ls-files --format``으로 mode를 함께 보존한다. git 성공 결과는
+    TRACKED_ONLY는 오래된 git도 지원하는 ``ls-files --stage --cached``로 mode와 stage를
+    함께 보존한다. stage 0만 반환하며 unmerged 경로는 경로를 명시해 실패한다. git 성공 결과는
     working-tree 상태로 재검사하지 않는다. ``ls-files``가 이미 ignore와 pathspec을 적용한
     git 파일형 엔트리의 진실이며, ``is_file()`` 재검사는 symlink와 mode 160000 gitlink를
     거짓 탈락시킨다.
 
-    git 실패 시에는 기존 domain 구현과 같은 파일시스템 폴백을 사용한다. 폴백은 추적/ignore
-    의미를 보장할 수 없어 경고가 계약의 일부다.
+    OWNED의 git 실패 시에는 기존 domain 구현과 같은 파일시스템 폴백을 사용한다. 폴백은
+    추적/ignore 의미를 보장할 수 없어 경고가 계약의 일부다. TRACKED_ONLY는 출하 보장을
+    잃는 폴백 대신 loud 실패한다.
     """
     try:
         mode_args = _MODE_GIT_ARGS[mode]
@@ -101,40 +142,32 @@ def list_repo_owned_entries(
     checkout_path = Path(checkout)
     norm = str(subtree).replace(os.sep, "/").replace("\\", "/").rstrip("/") or "."
     runner = git_runner if git_runner is not None else _real_git_runner(checkout_path)
-    format_args = (
-        ["--format=%(objectmode)%x09%(path)"]
-        if mode == TRACKED_ONLY
-        else []
-    )
     try:
         rc, out = runner([
             "ls-files",
             "-z",
-            *format_args,
             *mode_args,
             "--",
             f":(literal){norm}",
         ])
-    except Exception as exc:  # noqa: BLE001 — 주입 runner 실패도 filesystem fallback.
+    except Exception as exc:  # noqa: BLE001 — mode 계약에 따라 loud 실패/폴백.
+        if mode == TRACKED_ONLY:
+            raise RuntimeError(
+                "repo-owned tracked_only git ls-files 호출 실패 "
+                f"(checkout={checkout_path}, subtree={norm!r})"
+            ) from exc
         rc, out = 1, str(exc)
 
     entries: list[RepoOwnedEntry] = []
     if rc == 0:
-        for candidate_text in out.split("\0"):
-            if not candidate_text:
-                continue
-            # ls-files가 이미 ignore와 pathspec을 적용한 git 파일형 엔트리의 진실이다.
-            # working-tree is_file() 재검사는 symlink와 mode 160000 gitlink를 거짓 탈락시킨다.
-            if mode == TRACKED_ONLY:
-                index_mode, separator, candidate_text = candidate_text.partition("\t")
-                if separator != "\t" or not index_mode:
-                    raise RuntimeError(
-                        "git ls-files index mode 출력이 손상됨: "
-                        f"{candidate_text!r}"
-                    )
-            else:
-                index_mode = None
-            entries.append(RepoOwnedEntry(Path(candidate_text), index_mode))
+        if mode == TRACKED_ONLY:
+            entries = _parse_staged_entries(out)
+        else:
+            entries = [
+                RepoOwnedEntry(Path(candidate_text), None)
+                for candidate_text in out.split("\0")
+                if candidate_text
+            ]
         directory = checkout_path / norm
         if mode == TRACKED_ONLY and not entries and directory.is_dir():
             try:
@@ -149,6 +182,13 @@ def list_repo_owned_entries(
                     RepoFilesEmptyWarning,
                     stacklevel=2,
                 )
+    elif mode == TRACKED_ONLY:
+        detail = out.strip()
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(
+            "repo-owned tracked_only git ls-files 실패 "
+            f"(checkout={checkout_path}, subtree={norm!r}, rc={rc}){suffix}"
+        )
     else:
         warnings.warn(
             "repo-owned 파일 열거가 git ls-files 실패로 filesystem 전수 순회에 강등됨 "
@@ -199,25 +239,24 @@ def tracked_index_mode(
     *,
     git_runner: GitRunner | None = None,
 ) -> str | None:
-    """단일 경로의 git index mode를 반환한다; 미추적/non-git이면 ``None``."""
+    """단일 경로의 git index mode를 반환한다.
+
+    성공한 조회의 미추적 경로는 ``None``이다. git 호출 실패와 unmerged index는 tracked-only
+    보장을 잃지 않도록 loud 실패한다.
+    """
     checkout_path = Path(checkout)
     norm = str(path).replace(os.sep, "/").replace("\\", "/").rstrip("/") or "."
-    runner = git_runner if git_runner is not None else _real_git_runner(checkout_path)
-    try:
-        rc, out = runner([
-            "ls-files",
-            "-z",
-            "--format=%(objectmode)%x09%(path)",
-            "--cached",
-            "--",
-            f":(literal){norm}",
-        ])
-    except Exception:  # noqa: BLE001 — 조회 불능은 non-git/untracked와 같은 None.
+    entries = list_repo_owned_entries(
+        checkout_path,
+        norm,
+        mode=TRACKED_ONLY,
+        git_runner=git_runner,
+    )
+    if not entries:
         return None
-    if rc != 0 or not out:
-        return None
-    record = out.split("\0", 1)[0]
-    index_mode, separator, _candidate = record.partition("\t")
-    if separator != "\t" or not index_mode:
-        raise RuntimeError(f"git ls-files index mode 출력이 손상됨: {record!r}")
-    return index_mode
+    if len(entries) != 1 or entries[0].path.as_posix() != norm:
+        paths = ", ".join(entry.path.as_posix() for entry in entries)
+        raise RuntimeError(
+            f"단일 tracked index mode 조회가 복수/불일치 경로를 반환함 ({norm!r}): {paths}"
+        )
+    return entries[0].index_mode
