@@ -1335,29 +1335,96 @@ def test_both_install_then_update_repairs_stale_opencode_in_one_run(
         "both 설치의 opencode adapter가 pm_update 1회로 복구되지 않음"
 
 
-def test_claude_only_stray_opencode_file_never_promotes_adapter(
-        pm_import, pm_update, tmp_path, monkeypatch, capsys):
-    """claude-only + 사용자 stray 1개는 opencode 합집합 승격/plan/overwrite가 전부 0이다."""
-    dest = tmp_path / "claude-with-user-opencode"
+@pytest.mark.parametrize(
+    ("base_harness", "stray_flavor", "stray_rel"),
+    [
+        ("claude", "opencode", ".opencode/agents/developer.md"),
+        ("opencode", "claude_code", ".claude/agents/developer.md"),
+        ("claude", "codex", ".codex/agents/developer-hard.toml"),
+    ],
+)
+def test_legacy_single_harness_partial_stray_never_promotes_adapter(
+        pm_import, pm_update, tmp_path, monkeypatch, capsys,
+        base_harness, stray_flavor, stray_rel):
+    """legacy 단일 flavor + 타 flavor stray 1개는 loud 진단만 하고 승격/overwrite하지 않는다.
+
+    `all(...)`을 `any(...)`로 바꾸는 mutant는 upstream_manifests에 stray flavor를 넣고 실제 sync가
+    사용자 바이트를 덮으므로 이 matrix에서 red가 된다.
+    """
+    dest = tmp_path / f"{base_harness}-with-user-{stray_flavor}"
     assert pm_import.main([
-        "--new", str(dest), "--harness", "claude", "--name", "Claude Only",
+        "--new", str(dest), "--harness", base_harness, "--name", "Legacy Single",
     ]) == 0
     capsys.readouterr()
-    stray = dest / ".opencode" / "agents" / "developer.md"
+
+    # 실제 legacy 형상: 선택 provenance가 전무한 구 manifest.
+    dest_manifest = dest / ".project_manager" / "engine.manifest"
+    legacy_text = re.sub(
+        r"\s+@source=\S+", "", dest_manifest.read_text(encoding="utf-8")
+    )
+    dest_manifest.write_text(legacy_text, encoding="utf-8")
+
+    stray = dest / stray_rel
     stray.parent.mkdir(parents=True, exist_ok=True)
     user_bytes = b"# user-owned stray; must survive\n"
     stray.write_bytes(user_bytes)
 
+    selected = pm_update.resolve_manifest_selfheal(dest, REPO)
+    selected_flavors = {
+        path.parents[1].name
+        for path in selected["upstream_manifests"]
+        if len(path.parents) >= 2 and path.parents[2].name == "templates"
+    }
+    assert stray_flavor not in selected_flavors, \
+        "부분 존재 flavor가 upstream_manifests에 무단 편입됨(all→any mutant)"
+    assert not selected.get("multi_flavor_recovery"), \
+        "부분 존재인데 multi_flavor_recovery가 발화함"
+    capsys.readouterr()
+
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
-    assert pm_update.main(["--from", str(REPO), "--dry-run"]) == 0
+    assert pm_update.main(["--from", str(REPO)]) == 0
 
     captured = capsys.readouterr()
     combined = captured.out + captured.err
     assert "설치된 다중 하네스" not in combined
-    assert ".opencode/" not in combined, \
-        f"claude-only의 stray 한 파일이 opencode 관리 plan을 발화함: {combined!r}"
+    assert "@source 선언이 없는 legacy manifest" in combined
+    assert f"타 flavor({stray_flavor}) 관리 경로 일부" in combined
+    assert "frozen both 설치의 일부 누락 또는 사용자 stray" in combined
+    cli_flavor = "claude" if stray_flavor == "claude_code" else stray_flavor
+    assert f"./pm-config.sh add-harness {cli_flavor}" in combined
+    assert "stray라면 이 경고를 무시해도 된다" in combined
     assert stray.read_bytes() == user_bytes
+
+
+def test_legacy_opencode_manifest_provenance_upgrade_avoids_bare_source_rc2(
+        pm_import, pm_update, tmp_path, monkeypatch, capsys):
+    """경로가 같아도 @source 전무 opencode manifest를 승격해 bare `.opencode/*` rc=2를 막는다."""
+    dest = tmp_path / "legacy-opencode-provenance"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "opencode", "--name", "Legacy OpenCode",
+    ]) == 0
+    capsys.readouterr()
+    manifest = dest / ".project_manager" / "engine.manifest"
+    manifest.write_text(
+        re.sub(r"\s+@source=\S+", "", manifest.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
+    preview = pm_update.resolve_manifest_selfheal(dest, REPO)
+    assert preview["status"] == "heal"
+    assert preview["added"] == []
+    assert preview["provenance_upgrade"] is True
+    capsys.readouterr()
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    assert pm_update.main(["--from", str(REPO)]) == 0
+
+    out = capsys.readouterr().out
+    assert "@source provenance 선언을 upstream 형식으로 승격" in out
+    entries = pm_update.read_manifest(manifest)
+    opencode_entries = [e for e in entries if str(e).startswith(".opencode/")]
+    assert opencode_entries and all(entry.source_rel for entry in opencode_entries)
 
 
 def test_legacy_claude_manifest_both_adopter_selfheals_opencode_in_one_run(
@@ -1404,6 +1471,8 @@ def test_legacy_claude_manifest_both_adopter_selfheals_opencode_in_one_run(
     assert "frozen adapter" in out and "선택 flavor 합집합" in out, \
         f"채택자 frozen 진단이 loud하게 표면화되지 않음: {out!r}"
     assert "그동안 pm_update 갱신이 정지" in out and "어댑터 트리를 제거" in out
+    assert "@source 선언도 정리" not in out, \
+        "선언 전무 legacy heal 경고가 존재하지 않는 @source 정리를 요구함"
 
     # 2회차는 manifest/adapter 모두 최신: 재치유 경고 없이 완전 멱등.
     capsys.readouterr()
@@ -1412,6 +1481,29 @@ def test_legacy_claude_manifest_both_adopter_selfheals_opencode_in_one_run(
     assert "최신 — 변경 없음" in second.out
     assert "frozen adapter" not in second.out
     assert dest_manifest.read_bytes() == expected_manifest
+
+
+def test_legacy_frozen_both_keeps_opencode_primary_ahead_of_glob_order(
+        pm_import, pm_update, tmp_path, capsys):
+    """legacy opencode-primary both는 사전순 claude_code가 아니라 로컬 primary를 합집합 선두에 둔다."""
+    dest = tmp_path / "legacy-opencode-primary-both"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "both", "--name", "Legacy Primary Order",
+    ]) == 0
+    capsys.readouterr()
+    opencode_manifest = (
+        REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
+    )
+    (dest / ".project_manager" / "engine.manifest").write_text(
+        re.sub(r"\s+@source=\S+", "", opencode_manifest.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
+
+    result = pm_update.resolve_manifest_selfheal(dest, REPO)
+
+    assert [path.parents[1].name for path in result["upstream_manifests"]] == [
+        "opencode", "claude_code",
+    ], "legacy primary가 glob 사전순에 밀려 합집합 우선순위가 뒤집힘"
 
 
 def test_both_identical_relpath_silent(pm_import, tmp_path, capsys):

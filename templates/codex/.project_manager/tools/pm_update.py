@@ -1207,9 +1207,14 @@ def _selected_upstream_manifests(
     우선 + 후속 선언 순서라는 합집합 우선순위를 그대로 보존한다.
 
     ``@source`` flavor 선언이 전혀 없는 구 manifest만 legacy 폴백 대상이다. 이때도 후순위 flavor의
-    고유 관리 경로가 **모두** dest에 존재할 때만 과거 다중-tree 설치로 판정한다. 따라서 stray
+    고유 관리 경로가 **모두** dest에 존재할 때만 과거 다중-tree 설치로 판정한다. 일부만 존재하면
+    frozen/stray를 구분할 수 없으므로 자동 승격 없이 명시 마이그레이션 진단만 낸다. 따라서 stray
     파일 하나로 adapter 전체를 승격하지 않으면서, 실제 frozen 다중-tree 설치는 자기치유한다.
     후보는 ``templates/*/.project_manager/engine.manifest``라는 좁은 관리 glob으로 일반화한다.
+
+    선언이 하나라도 있으면 존재-휴리스틱은 비발화한다. 선언된 후순위 manifest가 부재해도 선택
+    목록에서 버리지 않아 호출부가 로컬 union을 유지하며 경고하고, 해소 불가 선언은 primary만
+    유지한 채 경고한다.
 
     add-harness guest 절은 별도 refresh 채널이므로 core 합집합으로 승격하지 않는다. guest가 소유한
     경로만 존재해 후보가 된 flavor는 제외해 기존 add-harness 불가침 계약을 유지한다.
@@ -1234,18 +1239,39 @@ def _selected_upstream_manifests(
         (flavor for flavor, candidate in candidate_by_flavor.items() if candidate == primary),
         None,
     )
+    source_declarations = [
+        getattr(entry, "source_rel", None)
+        for entry in local_entries
+        if not _path_owned_by(str(entry).replace("\\", "/"), guest_paths)
+        and getattr(entry, "source_rel", None)
+    ]
     declared_flavors: list[str] = []
-    for entry in local_entries:
-        if _path_owned_by(str(entry).replace("\\", "/"), guest_paths):
-            continue
-        source_rel = getattr(entry, "source_rel", None)
-        if not source_rel:
-            continue
+    unresolved_declarations: list[str] = []
+    for source_rel in source_declarations:
         parts = Path(source_rel.replace("\\", "/")).parts
-        if len(parts) >= 3 and parts[0] == "templates":
+        if (
+            len(parts) >= 3
+            and parts[0] == "templates"
+            and parts[1] not in {"", ".", ".."}
+            and (source_root / "templates" / parts[1]).is_dir()
+        ):
             flavor = parts[1]
-            if flavor in candidate_by_flavor and flavor not in declared_flavors:
+            if flavor not in declared_flavors:
                 declared_flavors.append(flavor)
+        elif not (
+            # flavor 선택과 무관한 bare source remap은 source가 실제 해소될 때만 유효하다.
+            not source_rel.replace("\\", "/").startswith("templates/")
+            and (source_root / source_rel).exists()
+        ):
+            unresolved_declarations.append(source_rel)
+    if source_declarations and (unresolved_declarations or not declared_flavors):
+        unresolved = ", ".join(unresolved_declarations or source_declarations)
+        print(
+            "경고: engine.manifest에 해소할 수 없는 @source 선언이 있어 legacy 존재-휴리스틱을 "
+            f"사용하지 않는다: {unresolved}. 선언된 primary manifest만 유지한다.",
+            file=sys.stderr,
+        )
+        return [primary]
     if declared_flavors:
         # root manifest의 flavor @source는 선택 provenance가 아니라 canonical remap이다. self-prop가
         # template flavor를 가리키는 설치 manifest에서만 선언 집합을 선택 집합으로 해석한다.
@@ -1254,19 +1280,61 @@ def _selected_upstream_manifests(
         ordered_flavors = [primary_flavor, *(
             flavor for flavor in declared_flavors if flavor != primary_flavor
         )]
-        return [candidate_by_flavor[flavor] for flavor in ordered_flavors]
+        selected_declared: list[Path] = []
+        for flavor in ordered_flavors:
+            candidate = (
+                source_root / "templates" / flavor / ".project_manager" / "engine.manifest"
+            )
+            selected_declared.append(candidate)
+            if not candidate.is_file():
+                print(
+                    "경고: engine.manifest가 선언한 후순위 flavor의 upstream manifest가 없다 — "
+                    f"선언을 버리지 않고 로컬 union을 유지한다: {flavor} ({candidate}). "
+                    "누락 source가 있으면 apply 전에 중단된다.",
+                    file=sys.stderr,
+                )
+        return selected_declared
 
     selected: list[Path] = []
     if not candidates:
         return [primary]
-    candidate_entries = {
-        candidate: read_manifest(candidate) for candidate in candidates
-    }
+    candidate_entries: dict[Path, list] = {}
+    for candidate in candidates:
+        try:
+            candidate_entries[candidate] = read_manifest(candidate)
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(
+                f"note: legacy flavor 후보 manifest를 읽을 수 없어 제외한다(fail-soft): "
+                f"{candidate} ({exc})",
+                file=sys.stderr,
+            )
+    if not candidate_entries:
+        return [primary]
     common_paths = set.intersection(*(
         {str(entry).replace("\\", "/") for entry in entries}
         for entries in candidate_entries.values()
     ))
-    for candidate in candidates:
+    local_core_paths = {
+        str(entry).replace("\\", "/")
+        for entry in local_entries
+        if not _path_owned_by(str(entry).replace("\\", "/"), guest_paths)
+    }
+
+    # legacy self-prop는 bare라 primary 경로를 직접 가리키지 않는다. 설치 manifest와 경로가 가장
+    # 가까운 flavor를 먼저 두어 glob 사전순이 합집합 충돌 우선순위를 바꾸지 않게 한다.
+    ordered_candidates = sorted(
+        candidate_entries,
+        key=lambda candidate: (
+            {str(e).replace("\\", "/") for e in candidate_entries[candidate]}
+            != local_core_paths,
+            -len(
+                local_core_paths
+                & {str(e).replace("\\", "/") for e in candidate_entries[candidate]}
+            ),
+            candidate.as_posix(),
+        ),
+    )
+    for candidate in ordered_candidates:
         unique_paths = [
             str(entry).replace("\\", "/")
             for entry in candidate_entries[candidate]
@@ -1281,9 +1349,26 @@ def _selected_upstream_manifests(
             rel for rel in unique_paths
             if not _path_owned_by(rel, guest_paths)
         ]
+        observed = [
+            rel for rel in unmanaged_unique
+            if (Path(effective_dest) / rel).exists()
+        ]
         if unmanaged_unique and all(
                 (Path(effective_dest) / rel).exists() for rel in unmanaged_unique):
             selected.append(candidate)
+        elif observed:
+            flavor = candidate.parents[1].name
+            cli_flavor = "claude" if flavor == "claude_code" else flavor
+            print(
+                "⚠️ frozen 다중-harness 의심 — @source 선언이 없는 legacy manifest와 "
+                f"타 flavor({flavor}) 관리 경로 일부가 함께 관측됐다 "
+                f"({len(observed)}/{len(unmanaged_unique)}: {', '.join(observed)}). "
+                "이 상태는 frozen both 설치의 일부 누락 또는 사용자 stray 파일일 수 있어 "
+                "해당 flavor는 자동 자기치유하지 않는다.\n"
+                f"    명시 마이그레이션: ./pm-config.sh add-harness {cli_flavor}\n"
+                "    해당 파일이 stray라면 이 경고를 무시해도 된다.",
+                file=sys.stderr,
+            )
     return selected or [primary]
 
 
@@ -1316,9 +1401,9 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
 
     반환 dict:
       - status  : 'upstream_missing'(flavor upstream 부재·fail-soft) | 'no_local'(로컬 manifest 부재·
-                  이미 source manifest 기준) | 'in_sync'(로컬==upstream 또는 경로 동일·무변경) |
+                  이미 source manifest 기준) | 'in_sync'(로컬==upstream 또는 경로/선언 동일·무변경) |
                   'diverged'(로컬-전용 경로 또는 공통 경로 마커/@source divergence=커스텀 편집·승격
-                  안 함·안전망) | 'heal'(로컬 ⊂ upstream·마커 정합·신규 등재 존재·승격)
+                  안 함·안전망) | 'heal'(로컬 ⊂ upstream 또는 @source 전무 legacy·승격)
       - added   : flavor upstream 에만 있는 순수 경로(신규/재-등재·정렬) — 'heal' 이면 이번 sync 로 도달
       - removed : 로컬 manifest 에만 있던 순수 경로('diverged' 판정 근거·정렬)
       - manifest: plan 이 쓸 ManifestEntry 리스트 — 'heal' 이면 flavor upstream_entries, 그 외 None
@@ -1342,6 +1427,7 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
     # 설치된 flavor들의 upstream manifest 합집합. 첫 항목은 self-prop가 지정한 기존 flavor이고,
     # 추가 항목은 실제 dest의 고유 관리 경로로 일반화해 발견한다(`both` 경로 손-끼워넣기 없음).
     upstream_manifest = Path(source_root) / _selfprop_upstream_rel(local_entries)
+    upstream_manifests: list[Path] = [upstream_manifest]
     try:
         upstream_manifests = _selected_upstream_manifests(
             effective_dest, source_root, local_entries, local_text)
@@ -1349,11 +1435,11 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
         merged_upstream = merge_manifest_sources(upstream_manifests)
         upstream_text = merged_upstream["text"]
         upstream_entries = merged_upstream["entries"]
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, UnicodeError, ValueError):
         # flavor upstream 읽기 실패 — skew 대조도 같은 경로를 넘겨 upstream_missing 으로 정합(fail-soft).
         return {"status": "upstream_missing", "added": [], "removed": [],
                 "manifest": None, "upstream_manifest": upstream_manifest,
-                "upstream_manifests": [upstream_manifest], "manifest_text": None,
+                "upstream_manifests": upstream_manifests, "manifest_text": None,
                 "merge_conflicts": []}
     # add-harness guest 절(로컬-전용 `@target-owned` guest)은 **core 비교에서 제외**한다:
     #   섞으면 항상 removed 비어있지 않아 영구 diverged → upstream 신규 항목 자기치유(승격) 불능. 절은
@@ -1383,6 +1469,10 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
     legacy_without_source_provenance = not any(
         getattr(entry, "source_rel", None) for entry in core_local_entries
     )
+    provenance_divergent = sorted(
+        p for p in (set(local_markers) & set(upstream_markers))
+        if local_markers[p][2] != upstream_markers[p][2]
+    )
     marker_divergent = sorted(
         p for p in (set(local_markers) & set(upstream_markers))
         if (
@@ -1401,7 +1491,9 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
                 "upstream_manifests": upstream_manifests,
                 "manifest_text": upstream_text,
                 "merge_conflicts": merged_upstream["conflicts"]}
-    if not added:
+    if not added and not (
+        legacy_without_source_provenance and provenance_divergent
+    ):
         # 경로/마커 동일(주석만 차이) — 도달할 신규 등재 경로 0. manifest 자신도 self-prop 엔트리라
         #   plan 이 파일은 갱신한다(승격 불요). in_sync 로 취급(baseline 갱신 진행).
         return {"status": "in_sync", "added": [], "removed": [],
@@ -1409,14 +1501,20 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
                 "upstream_manifests": upstream_manifests,
                 "manifest_text": upstream_text,
                 "merge_conflicts": merged_upstream["conflicts"]}
-    # 로컬 ⊂ upstream(removed 0·마커 정합·added>0) — 구형/항목-제외 형상. flavor upstream 을 계획
-    #   기준으로 승격해 신규(또는 재-등재) 경로를 한 번의 sync 로 도달시킨다(전체 교체·자동 병합 없음).
+    # 로컬 ⊂ upstream(removed 0·마커 정합·added>0), 또는 경로는 같지만 @source가 전무한 legacy
+    # manifest — flavor upstream 을 계획 기준으로 승격해 신규 경로와 source provenance를 같은
+    # sync에서 도달시킨다. provenance-only 승격은 bare opencode 경로를 source root에서 찾는 rc=2도
+    # 막는다.
     return {"status": "heal", "added": added, "removed": [],
             "manifest": upstream_entries, "upstream_manifest": upstream_manifest,
             "upstream_manifests": upstream_manifests,
             "manifest_text": upstream_text,
             "merge_conflicts": merged_upstream["conflicts"],
-            "multi_flavor_recovery": len(upstream_manifests) > 1}
+            "multi_flavor_recovery": len(upstream_manifests) > 1,
+            "provenance_upgrade": bool(
+                legacy_without_source_provenance and provenance_divergent
+            ),
+            "legacy_manifest": legacy_without_source_provenance}
 
 
 def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -> None:
@@ -1445,9 +1543,19 @@ def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -
             "⚠️ 설치된 다중 하네스의 manifest 누락(frozen adapter) 감지 — 이 adapter 경로들은 "
             "설치 manifest 밖이라 그동안 pm_update 갱신이 정지돼 있었다. "
             f"선택 flavor 합집합으로 {verb}: {', '.join(flavors)}. "
-            "복구를 원치 않으면 해당 어댑터 트리를 제거하고 engine.manifest의 그 flavor "
-            "@source 선언도 정리하라."
+            "복구를 원치 않으면 해당 어댑터 트리를 제거하라."
+            + (
+                " engine.manifest의 그 flavor @source 선언도 정리하라."
+                if not selfheal.get("legacy_manifest")
+                else ""
+            )
         )
+    if selfheal.get("provenance_upgrade") and not added:
+        print(
+            f"→ engine.manifest {verb} — 관리 경로는 같지만 @source provenance 선언을 "
+            "upstream 형식으로 승격한다."
+        )
+        return
     print(
         f"→ engine.manifest {verb} — upstream manifest 를 계획 기준으로 승격 "
         f"(선택 flavor 합집합·선언 순서 우선): 신규 등재 +{len(added)}"
@@ -1466,6 +1574,26 @@ def _print_manifest_merge_conflicts(selfheal: dict) -> None:
         f"우선함 ({len(conflicts)}건): {', '.join(conflicts)}",
         file=sys.stderr,
     )
+
+
+def _selected_upstream_core_paths(selfheal: dict) -> set[str]:
+    """selfheal이 선택한 모든 upstream manifest의 core 경로 합집합.
+
+    guest→core 소유권 승격 차감은 첫 flavor만 보면 후순위 flavor 경로를 첫 실행에서 다시 guest로
+    필터링한다. 선언 manifest 하나가 부재/손상된 fail-soft 상태에서는 빈 집합을 반환해 로컬 guest를
+    섣불리 승격하지 않는다.
+    """
+    manifests = [
+        Path(path) for path in selfheal.get("upstream_manifests", []) if path is not None
+    ]
+    if not manifests:
+        upstream_manifest = selfheal.get("upstream_manifest")
+        manifests = [Path(upstream_manifest)] if upstream_manifest is not None else []
+    try:
+        entries = merge_manifest_sources(manifests)["entries"] if manifests else []
+    except (FileNotFoundError, OSError, UnicodeError, ValueError):
+        return set()
+    return {str(entry).replace("\\", "/") for entry in entries}
 
 
 # local.conf key(lowercase) → operational token key(uppercase·pm_render). board.py init 은
@@ -2839,10 +2967,9 @@ def main(argv: list[str] | None = None) -> int:
             # sync 에서 갱신돼야** 한다 — dest guest 절에 있어도 **upstream core 에 실재하면 필터 밖**
             # (안 그러면 첫 실행이 그 파일을 안 갱신·2회 필요). upstream core = selfheal 이 해소한 flavor
             # manifest 경로(사본 0·같은 대조 기준). --target 은 selfheal 미실행이나 guest 절도 없어 무해.
-            up_mani = selfheal.get("upstream_manifest")
-            if up_mani is not None and Path(up_mani).is_file():
-                gpaths -= {
-                    str(e).replace("\\", "/") for e in read_manifest(Path(up_mani))}
+            upstream_core_paths = _selected_upstream_core_paths(selfheal)
+            if upstream_core_paths:
+                gpaths -= upstream_core_paths
             manifest = [e for e in manifest if str(e).replace("\\", "/") not in gpaths]
 
     # --target(루트→templates/<name>) 은 render 를 끈다 — 템플릿은 토큰-form 소스라 copy2 로

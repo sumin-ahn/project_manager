@@ -1062,6 +1062,156 @@ def test_selected_manifest_order_is_primary_then_declared_flavors(
     assert "선언 순서상 첫 flavor" in err
 
 
+def test_declared_second_flavor_missing_manifest_is_preserved_and_warned(
+        pm_update, tmp_path, capsys):
+    """선언된 후순위 flavor manifest 부재를 조용히 drop하지 않고 선택 목록+로컬 union으로 보존한다."""
+    source = tmp_path / "source"
+    first = source / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = source / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(
+        ".first/a    @source=templates/first/.first/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/first/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        ".second/a    @source=templates/second/.second/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/second/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    dest = tmp_path / "dest"
+    manifest = _write_dest_manifest(dest, [])
+    manifest.write_text(
+        pm_update.merge_manifest_sources([first, second])["text"], encoding="utf-8"
+    )
+    second.unlink()
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["status"] == "upstream_missing"
+    assert result["upstream_manifests"] == [first, second], \
+        "부재한 후순위 선언이 candidate 필터에서 조용히 drop됨"
+    assert ".second/a" in manifest.read_text(encoding="utf-8"), \
+        "upstream 해소 실패가 로컬 union을 변경함"
+    err = capsys.readouterr().err
+    assert "후순위 flavor의 upstream manifest가 없다" in err
+    assert "선언을 버리지 않고 로컬 union을 유지" in err
+
+
+def test_unresolvable_source_declaration_disables_legacy_presence_fallback(
+        pm_update, tmp_path, capsys):
+    """해소 불가 @source가 하나라도 있으면 타 flavor tree 실재에도 [primary]만 유지하고 경고한다."""
+    source = tmp_path / "source"
+    first = source / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = source / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(
+        ".first/a    @source=templates/first/.first/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/first/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        ".second/a    @source=templates/second/.second/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/second/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    dest = tmp_path / "dest"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".second").mkdir()
+    (dest / ".second" / "a").write_text("stray\n", encoding="utf-8")
+    (dest / ".project_manager" / "engine.manifest").write_text(
+        first.read_text(encoding="utf-8")
+        + ".mystery/a    @source=templates/no_such/.mystery/a\n",
+        encoding="utf-8",
+    )
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["upstream_manifests"] == [first]
+    assert second not in result["upstream_manifests"]
+    err = capsys.readouterr().err
+    assert "해소할 수 없는 @source 선언" in err
+    assert "legacy 존재-휴리스틱을 사용하지 않는다" in err
+    assert "primary manifest만 유지" in err
+
+
+def test_legacy_candidate_manifest_non_utf8_is_fail_soft(
+        pm_update, tmp_path, capsys):
+    """legacy 후보 하나가 비-UTF8이어도 traceback 없이 그 후보만 제외하고 primary를 해소한다."""
+    source = tmp_path / "source"
+    primary = source / "templates" / "primary" / ".project_manager" / "engine.manifest"
+    other = source / "templates" / "other" / ".project_manager" / "engine.manifest"
+    broken = source / "templates" / "broken" / ".project_manager" / "engine.manifest"
+    for path in (primary, other, broken):
+        path.parent.mkdir(parents=True)
+    primary.write_text(
+        ".primary/a    @source=templates/primary/.primary/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/primary/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    other.write_text(
+        ".other/a    @source=templates/other/.other/a\n"
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/other/.project_manager/engine.manifest\n",
+        encoding="utf-8",
+    )
+    broken.write_bytes(b"\xff\xfe\xfa")
+    dest = tmp_path / "dest"
+    (dest / ".primary").mkdir(parents=True)
+    (dest / ".primary" / "a").write_text("installed\n", encoding="utf-8")
+    _write_dest_manifest(dest, [".primary/a", MANIFEST_SELF_REL])
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["status"] == "heal"
+    assert result["upstream_manifests"] == [primary]
+    err = capsys.readouterr().err
+    assert "후보 manifest를 읽을 수 없어 제외한다(fail-soft)" in err
+    assert str(broken) in err
+
+
+def test_guest_promotion_subtracts_union_of_selected_upstream_manifests(
+        pm_update, tmp_path):
+    """guest 승격 차감은 첫 manifest가 아니라 선택된 후순위 flavor까지 합친 core를 본다."""
+    first = tmp_path / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = tmp_path / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(".first/a\n", encoding="utf-8")
+    second.write_text(".second/promoted\n", encoding="utf-8")
+
+    paths = pm_update._selected_upstream_core_paths({
+        "upstream_manifest": first,
+        "upstream_manifests": [first, second],
+    })
+
+    assert paths == {".first/a", ".second/promoted"}
+
+
+def test_template_manifests_only_declare_their_own_flavor(pm_update):
+    """templates/<f> manifest의 template @source flavor는 언제나 자기 자신뿐이다."""
+    manifests = sorted(REPO.glob("templates/*/.project_manager/engine.manifest"))
+    assert manifests
+    for manifest in manifests:
+        flavor = manifest.parents[1].name
+        declared = {
+            Path(entry.source_rel.replace("\\", "/")).parts[1]
+            for entry in pm_update.read_manifest(manifest)
+            if entry.source_rel
+            and len(Path(entry.source_rel.replace("\\", "/")).parts) >= 3
+            and Path(entry.source_rel.replace("\\", "/")).parts[0] == "templates"
+        }
+        assert declared == {flavor}, \
+            f"{manifest}: 자기 flavor 외 @source 선언 발견: {sorted(declared)}"
+
+
 def test_pm_home_root_manifest_ignores_three_full_stray_adapter_trees(
         pm_update, tmp_path):
     """PM 홈 root 선언 + opencode/codex/skills 실재에도 3-flavor 합집합 승격은 0이다."""
