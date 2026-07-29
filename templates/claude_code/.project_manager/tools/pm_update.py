@@ -345,7 +345,10 @@ def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
         for entry in current:
             key = str(entry).replace("\\", "/")
             if key in seen:
-                if _manifest_marker_key(seen[key]) != _manifest_marker_key(entry):
+                if (
+                    key != _MANIFEST_SELF_REL
+                    and _manifest_marker_key(seen[key]) != _manifest_marker_key(entry)
+                ):
                     conflicts.append(key)
                 continue
             seen[key] = entry
@@ -1267,7 +1270,9 @@ def _selected_upstream_manifests(
         ):
             unresolved_declarations.append(source_rel)
     if source_declarations and (unresolved_declarations or not declared_flavors):
-        unresolved = ", ".join(unresolved_declarations or source_declarations)
+        unresolved = ", ".join(dict.fromkeys(
+            unresolved_declarations or source_declarations
+        ))
         print(
             "경고: engine.manifest에 해소할 수 없는 @source 선언이 있어 legacy 존재-휴리스틱을 "
             f"사용하지 않는다: {unresolved}. 선언된 primary manifest만 유지한다.",
@@ -1336,6 +1341,19 @@ def _selected_upstream_manifests(
             candidate.as_posix(),
         ),
     )
+    legacy_primary = (
+        next((
+            candidate for candidate in ordered_candidates
+            if {
+                str(entry).replace("\\", "/")
+                for entry in candidate_entries[candidate]
+            } == local_core_paths
+        ), None)
+        # framework checkout의 root manifest가 우연히 template과 같은 경로 집합이어도 root가 primary다.
+        # template provenance 복원은 source와 분리된 legacy adopter에서만 필요하다.
+        if Path(effective_dest).resolve() != source_root.resolve()
+        else None
+    )
     for candidate in ordered_candidates:
         unique_paths = [
             str(entry).replace("\\", "/")
@@ -1353,10 +1371,14 @@ def _selected_upstream_manifests(
         ]
         observed = [
             rel for rel in unmanaged_unique
-            if (Path(effective_dest) / rel).exists()
+            if rel not in local_core_paths
+            and (Path(effective_dest) / rel).exists()
         ]
-        if unmanaged_unique and all(
-                (Path(effective_dest) / rel).exists() for rel in unmanaged_unique):
+        if candidate == legacy_primary or (
+            unmanaged_unique and all(
+                (Path(effective_dest) / rel).exists() for rel in unmanaged_unique
+            )
+        ):
             selected.append(candidate)
         elif observed:
             flavor = candidate.parents[1].name
@@ -1368,6 +1390,8 @@ def _selected_upstream_manifests(
                 "이 상태는 frozen both 설치의 일부 누락 또는 사용자 stray 파일일 수 있어 "
                 "해당 flavor는 자동 자기치유하지 않는다.\n"
                 f"    명시 마이그레이션: ./pm-config.sh add-harness {cli_flavor}\n"
+                "    한계: add-harness guest 등재는 @render 경로만 다루며 "
+                "lib/plugins 등 비-render 경로는 자동 보호·해동 범위 밖이다.\n"
                 "    해당 파일이 stray라면 이 경고를 무시해도 된다.",
                 file=sys.stderr,
             )
@@ -1579,22 +1603,14 @@ def _print_manifest_merge_conflicts(selfheal: dict) -> None:
 
 
 def _selected_upstream_core_paths(selfheal: dict) -> set[str]:
-    """selfheal이 선택한 모든 upstream manifest의 core 경로 합집합.
+    """이번 실행에서 실제 승격된 selfheal manifest의 core 경로 집합.
 
-    guest→core 소유권 승격 차감은 첫 flavor만 보면 후순위 flavor 경로를 첫 실행에서 다시 guest로
-    필터링한다. 선언 manifest 하나가 부재/손상된 fail-soft 상태에서는 빈 집합을 반환해 로컬 guest를
-    섣불리 승격하지 않는다.
+    ``selfheal["manifest"]``는 heal 판정에서만 채워진 선택 flavor 합집합이다. 후보 upstream
+    manifest를 직접 다시 읽으면 diverged/in_sync처럼 승격하지 않은 실행에서도 guest 보호를
+    해제한다. 실제 plan 기준으로 승격된 엔트리만 반환해 후순위 flavor의 1-run 승격은 유지하면서
+    미승격 상태의 guest는 계속 보호한다.
     """
-    manifests = [
-        Path(path) for path in selfheal.get("upstream_manifests", []) if path is not None
-    ]
-    if not manifests:
-        upstream_manifest = selfheal.get("upstream_manifest")
-        manifests = [Path(upstream_manifest)] if upstream_manifest is not None else []
-    try:
-        entries = merge_manifest_sources(manifests)["entries"] if manifests else []
-    except (FileNotFoundError, OSError, UnicodeError, ValueError):
-        return set()
+    entries = selfheal.get("manifest") or []
     return {str(entry).replace("\\", "/") for entry in entries}
 
 

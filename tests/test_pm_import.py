@@ -12,6 +12,7 @@ import io
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,12 @@ from _harness_matrix import HARNESSES, HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+
+
+def _track_source_tree(root: Path) -> None:
+    """pm-update tracked-only 출하 fixture를 임시 checkout으로 만든다."""
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-f", "-A"], check=True)
 
 # symlink 생성 불가 환경(권한 없는 Windows 등)에서 symlink 의존 테스트를 skip.
 requires_symlink = pytest.mark.skipif(
@@ -1336,6 +1343,35 @@ def test_both_install_then_update_repairs_stale_opencode_in_one_run(
 
 
 @pytest.mark.parametrize(
+    "base_harness",
+    ["claude", "opencode"],
+)
+def test_legacy_single_harness_without_stray_has_no_cross_flavor_warning(
+        pm_import, pm_update, tmp_path, monkeypatch, capsys, base_harness):
+    """순정 legacy 단일-harness는 자기 core 경로를 타 flavor evidence로 세지 않아 조용히 sync한다."""
+    dest = tmp_path / f"legacy-clean-{base_harness}"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", base_harness, "--name", "Legacy Clean",
+    ]) == 0
+    capsys.readouterr()
+    manifest = dest / ".project_manager" / "engine.manifest"
+    manifest.write_text(
+        re.sub(r"\s+@source=\S+", "", manifest.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    assert pm_update.main(["--from", str(REPO)]) == 0
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "frozen 다중-harness 의심" not in combined
+    assert "타 flavor(" not in combined
+    assert "./pm-config.sh add-harness" not in combined
+
+
+@pytest.mark.parametrize(
     ("base_harness", "stray_flavor", "stray_rel"),
     [
         ("claude", "opencode", ".opencode/agents/developer.md"),
@@ -1393,6 +1429,12 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     assert "frozen both 설치의 일부 누락 또는 사용자 stray" in combined
     cli_flavor = "claude" if stray_flavor == "claude_code" else stray_flavor
     assert f"./pm-config.sh add-harness {cli_flavor}" in combined
+    observed_rel = "/".join(Path(stray_rel).parts[:2])
+    assert re.search(
+        rf"\(1/\d+: {re.escape(observed_rel)}\)", combined
+    ), f"진단에 관측 형상(n/m: 경로)이 없음: {combined!r}"
+    assert "guest 등재는 @render 경로만" in combined
+    assert "lib/plugins 등 비-render 경로는 자동 보호·해동 범위 밖" in combined
     assert "stray라면 이 경고를 무시해도 된다" in combined
     assert stray.read_bytes() == user_bytes
 
@@ -1422,6 +1464,41 @@ def test_legacy_opencode_manifest_provenance_upgrade_avoids_bare_source_rc2(
 
     out = capsys.readouterr().out
     assert "@source provenance 선언을 upstream 형식으로 승격" in out
+    entries = pm_update.read_manifest(manifest)
+    opencode_entries = [e for e in entries if str(e).startswith(".opencode/")]
+    assert opencode_entries and all(entry.source_rel for entry in opencode_entries)
+
+
+def test_legacy_opencode_primary_with_missing_file_heals_in_one_run(
+        pm_import, pm_update, tmp_path, monkeypatch, capsys):
+    """legacy primary는 실제 파일 하나가 없어도 manifest 일치로 선택돼 provenance와 파일을 함께 복구한다."""
+    dest = tmp_path / "legacy-opencode-missing"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "opencode", "--name", "Legacy Missing",
+    ]) == 0
+    capsys.readouterr()
+    manifest = dest / ".project_manager" / "engine.manifest"
+    manifest.write_text(
+        re.sub(r"\s+@source=\S+", "", manifest.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
+    victim_rel = Path(".opencode/plugins/safe-write.js")
+    victim = dest / victim_rel
+    expected = (REPO / "templates" / "opencode" / victim_rel).read_bytes()
+    victim.unlink()
+
+    preview = pm_update.resolve_manifest_selfheal(dest, REPO)
+    assert preview["status"] == "heal"
+    assert preview["provenance_upgrade"] is True
+    assert preview["upstream_manifests"][0].parents[1].name == "opencode", \
+        "누락 파일 때문에 legacy primary가 root manifest로 폴백함"
+    capsys.readouterr()
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    assert pm_update.main(["--from", str(REPO)]) == 0
+
+    assert victim.read_bytes() == expected, "누락된 primary 관리 파일이 같은 sync에서 복구되지 않음"
     entries = pm_update.read_manifest(manifest)
     opencode_entries = [e for e in entries if str(e).startswith(".opencode/")]
     assert opencode_entries and all(entry.source_rel for entry in opencode_entries)
@@ -3848,22 +3925,22 @@ def test_append_guest_render_rejects_symlink_manifest(pm_import, tmp_path):
 
 def test_pm_update_updates_promoted_guest_path_in_single_run(
         pm_import, pm_update, tmp_path, monkeypatch):
-    """guest 경로가 upstream core 로 승격되면 **1차 pm_update 에서 갱신**된다 (T-0456 R23 MF-1).
+    """guest 경로가 **후순위 flavor** upstream core로 승격돼도 1차 pm_update에서 갱신된다.
 
-    R22 guest 필터가 승격분까지 plan 에서 제거해 첫 실행이 안 갱신(2회 필요)하던 것을, **upstream core
-    실재분은 필터 밖**으로 빼 닫는다. red-첫: 승격 + 소스 sentinel 변경 → 1차 self-update 에서 dest 도달."""
+    guest 필터가 승격분까지 plan에서 제거해 첫 실행이 안 갱신(2회 필요)하던 것을, 실제 승격된
+    선택 flavor 합집합 전체로 차감한다. primary만 보는 구현은 opencode 후순위의 승격분을 놓친다."""
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     fw = tmp_path / "fw"
     fw.mkdir()
-    for sub in (".project_manager", "templates", ".claude"):
+    for sub in (".project_manager", "templates", ".claude", ".github"):
         shutil.copytree(REPO / sub, fw / sub)
     shutil.copy2(REPO / ".gitattributes", fw / ".gitattributes")
     dest = tmp_path / "inst"
-    assert pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "X",
+    assert pm_import.main(["--new", str(dest), "--harness", "both", "--name", "X",
                            "--from", str(fw)]) == 0
     pm_import.add_harness(dest, "codex", dry_run=False, source_root=fw)  # codex guest 절.
-    # 승격: opencode flavor(upstream) core 에 `.codex/agents` 추가 + 소스 sentinel.
+    # 승격: 선택 순서상 후순위인 opencode flavor core에 `.codex/agents` 추가 + 소스 sentinel.
     fm = fw / "templates" / "opencode" / ".project_manager" / "engine.manifest"
     fm.write_text(fm.read_text(encoding="utf-8")
                   + "\n.codex/agents    @render @source=templates/codex/.codex/agents\n",
@@ -3871,12 +3948,64 @@ def test_pm_update_updates_promoted_guest_path_in_single_run(
     csrc = fw / "templates" / "codex" / ".codex" / "agents" / "developer.toml"
     csrc.write_text(csrc.read_text(encoding="utf-8") + "\n# PROMOTED_SENTINEL_T0456\n",
                     encoding="utf-8")
+    _track_source_tree(fw)
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     assert pm_update.main(["--from", str(fw)]) == 0
     assert "PROMOTED_SENTINEL_T0456" in (
         dest / ".codex" / "agents" / "developer.toml").read_text(encoding="utf-8"), \
         "승격분이 1차 self-update 에서 미갱신(R23 MF-1·guest 필터 과적용)"
+
+
+def test_pm_update_diverged_selfheal_preserves_guest_owned_file(
+        pm_import, pm_update, tmp_path, monkeypatch, capsys):
+    """diverged로 승격이 거부되면 후순위 upstream과 겹쳐도 @target-owned guest 파일을 덮지 않는다."""
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    fw = tmp_path / "fw-diverged"
+    fw.mkdir()
+    for sub in (".project_manager", "templates", ".claude", ".github"):
+        shutil.copytree(REPO / sub, fw / sub)
+    shutil.copy2(REPO / ".gitattributes", fw / ".gitattributes")
+    # local-only core 선언이 missing(rc=2)이 되지 않도록 source에는 두되 선택 manifest에는 등재하지 않는다.
+    custom_source = fw / ".local" / "custom-core"
+    custom_source.parent.mkdir(parents=True)
+    custom_source.write_text("custom core\n", encoding="utf-8")
+    _track_source_tree(fw)
+
+    dest = tmp_path / "diverged-inst"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "both", "--name", "Diverged Guest",
+        "--from", str(fw),
+    ]) == 0
+    capsys.readouterr()
+    manifest = dest / ".project_manager" / "engine.manifest"
+    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").rstrip()
+        + "\n.local/custom-core\n\n"
+        + begin + "\n.claude/skills    @render @target-owned\n" + end + "\n",
+        encoding="utf-8",
+    )
+    local_custom = dest / ".local" / "custom-core"
+    local_custom.parent.mkdir(parents=True, exist_ok=True)
+    local_custom.write_text("custom core\n", encoding="utf-8")
+    guest_file = dest / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+    user_bytes = b"# USER GUEST OVERRIDE\n"
+    guest_file.write_bytes(user_bytes)
+
+    preview = pm_update.resolve_manifest_selfheal(dest, fw)
+    assert preview["status"] == "diverged"
+    assert ".local/custom-core" in preview["removed"]
+    assert preview["manifest"] is None
+    capsys.readouterr()
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    assert pm_update.main(["--from", str(fw)]) == 0
+
+    assert guest_file.read_bytes() == user_bytes, \
+        "diverged인데 후순위 upstream 경로를 차감해 guest 사용자 파일을 덮음"
 
 
 def test_add_harness_guest_render_survives_pm_update(pm_import, pm_update, tmp_path, monkeypatch):

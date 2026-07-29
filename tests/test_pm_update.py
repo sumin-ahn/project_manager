@@ -1048,9 +1048,9 @@ def test_resolve_manifest_selfheal_flavor_source_not_clobbered_by_root(pm_update
         "승격 manifest 의 self-prop 이 flavor @source 를 보존 안 함(root bare 로 클로버)"
 
 
-def test_selected_manifest_order_is_primary_then_declared_flavors(
+def test_selected_manifest_order_is_primary_then_declared_flavors_without_selfprop_noise(
         pm_update, tmp_path, capsys):
-    """opencode-primary 합집합의 선택 순서를 opencode, claude_code로 결정성 고정한다."""
+    """opencode-primary 합집합 순서는 고정하되 구조상 정상인 self-prop 충돌은 경고하지 않는다."""
     opencode = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
     claude = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
     merged = pm_update.merge_manifest_sources([opencode, claude])
@@ -1065,8 +1065,8 @@ def test_selected_manifest_order_is_primary_then_declared_flavors(
     ]
     pm_update._print_manifest_merge_conflicts(result)
     err = capsys.readouterr().err
-    assert ".project_manager/engine.manifest" in err
-    assert "선언 순서상 첫 flavor" in err
+    assert ".project_manager/engine.manifest" not in err
+    assert "선언 순서상 첫 flavor" not in err
 
 
 def test_declared_second_flavor_missing_manifest_is_preserved_and_warned(
@@ -1134,7 +1134,8 @@ def test_unresolvable_source_declaration_disables_legacy_presence_fallback(
     (dest / ".second" / "a").write_text("stray\n", encoding="utf-8")
     (dest / ".project_manager" / "engine.manifest").write_text(
         first.read_text(encoding="utf-8")
-        + ".mystery/a    @source=templates/no_such/.mystery/a\n",
+        + ".mystery/a    @source=templates/no_such/.mystery/a\n"
+        + ".mystery/b    @source=templates/no_such/.mystery/a\n",
         encoding="utf-8",
     )
 
@@ -1146,6 +1147,8 @@ def test_unresolvable_source_declaration_disables_legacy_presence_fallback(
     assert "해소할 수 없는 @source 선언" in err
     assert "legacy 존재-휴리스틱을 사용하지 않는다" in err
     assert "primary manifest만 유지" in err
+    assert err.count("templates/no_such/.mystery/a") == 1, \
+        f"같은 unresolved 선언이 경고에 중복 출력됨: {err!r}"
 
 
 def test_legacy_candidate_manifest_non_utf8_is_fail_soft(
@@ -1184,9 +1187,9 @@ def test_legacy_candidate_manifest_non_utf8_is_fail_soft(
     assert str(broken) in err
 
 
-def test_guest_promotion_subtracts_union_of_selected_upstream_manifests(
+def test_guest_promotion_subtracts_only_the_manifest_actually_promoted(
         pm_update, tmp_path):
-    """guest 승격 차감은 첫 manifest가 아니라 선택된 후순위 flavor까지 합친 core를 본다."""
+    """guest 차감은 heal에서 실제 plan으로 승격된 후순위 합집합만 보고 미승격 상태는 비운다."""
     first = tmp_path / "templates" / "first" / ".project_manager" / "engine.manifest"
     second = tmp_path / "templates" / "second" / ".project_manager" / "engine.manifest"
     first.parent.mkdir(parents=True)
@@ -1194,12 +1197,20 @@ def test_guest_promotion_subtracts_union_of_selected_upstream_manifests(
     first.write_text(".first/a\n", encoding="utf-8")
     second.write_text(".second/promoted\n", encoding="utf-8")
 
+    promoted = pm_update.merge_manifest_sources([first, second])["entries"]
     paths = pm_update._selected_upstream_core_paths({
         "upstream_manifest": first,
         "upstream_manifests": [first, second],
+        "manifest": promoted,
     })
 
     assert paths == {".first/a", ".second/promoted"}
+    assert pm_update._selected_upstream_core_paths({
+        "status": "diverged",
+        "upstream_manifest": first,
+        "upstream_manifests": [first, second],
+        "manifest": None,
+    }) == set()
 
 
 def test_template_manifests_only_declare_their_own_flavor(pm_update):
