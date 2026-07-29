@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -73,26 +75,31 @@ def test_timeout_uses_local_conf_when_cli_unspecified(external):
     assert external._resolve_timeout(args, {"external_review_timeout": "71"}) == 71
 
 
+def _declared_wall(external) -> int:
+    """리뷰어 기본 커맨드(codex 축)의 선언 벽시계 백스톱 — 별도 상수가 아니라 프로필에서 온다."""
+    return int(external.reviewer_profile(external.DEFAULT_REVIEWER_CMD, {}).wall_timeout)
+
+
 def test_timeout_uses_default_when_not_configured(external):
-    """CLI/conf 모두 없으면 유한 기본 timeout 을 쓴다."""
+    """CLI/conf 모두 없으면 리뷰어 하네스 프로필의 유한 백스톱을 쓴다(T-0489 — 상수 폐지)."""
     args = external.argparse.Namespace(timeout=None)
-    assert external._resolve_timeout(args, {}) == external.EXTERNAL_TIMEOUT_SECONDS
+    assert external._resolve_timeout(args, {}) == _declared_wall(external)
 
 
 @pytest.mark.parametrize("raw", ["abc", "0", "-1"])
 def test_timeout_invalid_conf_warns_and_falls_back(external, capsys, raw):
-    """비정수/0/음수 conf 는 경고 뒤 기본값으로 fail-soft 한다."""
+    """비수치/0/음수 conf 는 경고 뒤 선언 기본값으로 fail-soft 한다."""
     args = external.argparse.Namespace(timeout=None)
     assert external._resolve_timeout(args, {"external_review_timeout": raw}) == \
-        external.EXTERNAL_TIMEOUT_SECONDS
+        _declared_wall(external)
     warning = capsys.readouterr().err
     assert "external_review_timeout" in warning
     assert "기본" in warning
 
 
 def test_timeout_default_floor_pins_measurement_basis(external):
-    """기본값 하한 — 실측(평상 153~294s·T-0467) 기반 상향이 180 회귀로 되돌지 않게 고정."""
-    assert external.EXTERNAL_TIMEOUT_SECONDS >= 600
+    """기본값 하한 — 실측(평상 153~294s) 기반 상향이 180 회귀로 되돌지 않게 고정."""
+    assert _declared_wall(external) >= 600
 
 
 def test_timeout_cli_nonpositive_usage_error(external, capsys):
@@ -207,6 +214,49 @@ def test_started_true_on_generic_error_conservative(external):
         raise RuntimeError("weird")
     ok, _o, started = external._run_reviewer_ex("p", "codex", 5, _boom)
     assert (ok, started) == (False, True)
+
+
+def test_strict_legacy_runner_does_not_receive_idle_timeout(external):
+    """엄격한 기존 subprocess.run 호환 seam 에 새 키를 밀어 넣지 않는다."""
+    seen = {}
+
+    def strict(argv, *, input, capture_output, text, encoding, errors, timeout):
+        seen.update(locals())
+        return _completed(0)
+
+    ok, _out, started = external._run_reviewer_ex("p", "codex", 5, strict)
+    assert (ok, started) == (True, True)
+    assert "idle_timeout" not in seen
+
+
+def test_real_subprocess_run_remains_a_valid_injected_runner(external):
+    """대표 strict 기존 러너 subprocess.run 을 실제로 태워 호출 전 TypeError 회귀를 막는다."""
+    ok, _out, started = external._run_reviewer_ex(
+        "prompt", f"{sys.executable} -c pass", 5, subprocess.run)
+    assert (ok, started) == (True, True)
+
+
+def test_explicit_idle_runner_receives_new_keyword(external):
+    seen = {}
+
+    def idle_aware(argv, *, input, capture_output, text, encoding, errors, timeout,
+                   idle_timeout):
+        seen["idle_timeout"] = idle_timeout
+        return _completed(0)
+
+    ok, _out, _started = external._run_reviewer_ex("p", "codex", 5, idle_aware, 37)
+    assert ok is True and seen["idle_timeout"] == 37
+
+
+def test_runner_seam_skew_is_loud_and_distinct(external):
+    """호출 전 seam skew 는 일반 리뷰어 실행 오류/라운드 소비로 silent degrade 하지 않는다."""
+    def incompatible(argv, *, required_new_contract):
+        raise AssertionError("bind 전에 호출되면 안 됨")
+
+    ok, out, started = external._run_reviewer_ex("p", "codex", 5, incompatible)
+    assert (ok, started) == (False, False)
+    assert "runner seam 계약 오류" in out
+    assert "리뷰어 실행 오류" not in out
 
 
 def test_run_reviewer_remains_two_tuple_facade(external):

@@ -84,6 +84,8 @@ T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 
 내부 code-reviewer 와 **codex external_review 를 병행**한다. 전제: `external_review_enabled=true` (local.conf opt-in — 비활성이면 `--dry-run` 미리보기·`--force` 1회 강제).
 
+Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `timeout: 29300000`(ms)을 반드시 명시한다. 엔진 CLI `--timeout`은 리뷰어 벽시계이고 Bash 호출층 timeout을 대신하지 않는다.
+
 - **코드 리뷰** = 내부 code-reviewer + codex 외부 교차.
   ```
   python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN

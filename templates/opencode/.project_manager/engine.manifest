@@ -117,6 +117,14 @@
 .opencode/lib       @source=templates/opencode/.opencode/lib
 .opencode/plugins   @source=templates/opencode/.opencode/plugins
 .opencode/pm_orch_opencode.py    @source=templates/opencode/.opencode/pm_orch_opencode.py
+# .gitignore: `.opencode/` 로컬 산출물(node_modules·package.json·package-lock.json·bun.lock) 무시 규칙
+#   (T-0492). 원본은 opencode 가 생성하지만(`Config.ensureGitignore`·파일 부재 시에만) 그 원본은 자기
+#   자신(`.gitignore`)까지 무시해 어느 clone 에서도 `git status` 에 안 떠 영영 미추적으로 남는다 — 그래서
+#   이 repo 에서도 출하되지 않았다. 프레임워크판(자기-은닉 줄 제거)을 소유·전파한다: 미등재면 기존
+#   채택자에게 영영 도달하지 않는다(pm_import 트리 복사는 신규 채택자만 커버). 비-.md·치환 토큰 0 이라
+#   byte-copy(@render 불요)·canonical=templates/opencode 라 @source remap 필수(lib/plugins 동형).
+#   opencode 는 파일이 있으면 덮어쓰지 않으므로 전파판이 런타임에 유지된다.
+.opencode/.gitignore    @source=templates/opencode/.opencode/.gitignore
 # ── manifest 자기전파 (B-selfprop·T-0305·OQ-B1) ──────────────────
 # 매니페스트 자신을 전파해야 위 hook/driver 신 엔트리가 기존 opencode 채택자에 도달한다 — 안 그러면
 #   채택자는 import 시점 frozen manifest 를 유지해 신 엔트리를 영영 못 배운다(frozen 근절의 전제).

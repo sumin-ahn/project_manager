@@ -137,11 +137,13 @@ prefix는 task와 독립인 opt-in 분류 라벨이며 claim 경계가 아니다
 
 - **엔진** `PM_GIT_TIMEOUT`(초·`none`/`0`/`unlimited`=무제한·기본 1800). console-visible runner이며
   `export PM_GIT_TIMEOUT=none`은 무제한; hang은 Ctrl-C.
-- **claude 하네스** `BASH_DEFAULT_TIMEOUT_MS`·`BASH_MAX_TIMEOUT_MS`(ms·기본 1800000=30분).
-  `.claude/settings.json` `env` 블록의 출하 기본이며 변경 후 세션을 재시작한다.
+- **claude 하네스** `BASH_DEFAULT_TIMEOUT_MS`(ms·출하 기본 1800000=30분)는 timeout 미지정 일반
+  명령용, `BASH_MAX_TIMEOUT_MS`(ms·출하 기본 29300000=8시간 8분 20초)는 명시 timeout 상한이다.
+  `.claude/settings.json` `env` 블록의 출하 기본이며 변경 후 세션을 재시작한다. cross 위임처럼
+  장시간 예산이 필요한 호출은 Bash 툴에 MAX 이하 timeout을 명시한다.
 - **opencode 하네스** `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS`(ms). config나 `.env` 자동로드가
   없으므로 shell export:
-  `export OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=1800000`
+  `export OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=29300000`
   (shell 프로파일/direnv `.envrc`). `EXPERIMENTAL`은 회사 버전에서 라이브 확인한다.
 
 초과 시 엔진은 `터미널 직접 실행(PM_GIT_TIMEOUT=none)`을 안내한다. 변경 시 엔진 env·claude

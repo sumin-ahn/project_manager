@@ -84,6 +84,10 @@ cross는 **`--tier hard`**, native는 hard 프로필(codex `developer-hard` agen
 
 target이 다른 하네스면 `--dry-run`을 떼고 실행한다(opt-in 필요·외부 송신):
 
+**Claude PM은 아래 실 실행 커맨드를 Bash 툴로 호출할 때 `timeout: 29300000`(ms)을 반드시
+명시한다.** 이는 CLI `--timeout`(위임 turn 벽시계)이 아니라 호출층 Bash 툴 파라미터다.
+`BASH_DEFAULT_TIMEOUT_MS=1800000`은 일반 무-파라미터 명령용이라 cross 위임에 의존하지 않는다.
+
 ```bash
 python3 .project_manager/tools/pm_delegate.py --role <역할> \
     --prompt-file <프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard] [--ticket T-NNNN]

@@ -51,6 +51,10 @@ OPENCODE_ONLY_PATHS = {
     #   (실행 모델·위임 규약). @render @source 전파 등록이라 claude_code 엔 없는 opencode-only 경로.
     ".opencode/pm-instructions.md",
     ".opencode/lib", ".opencode/plugins", ".opencode/pm_orch_opencode.py",
+    # .gitignore (T-0492): `.opencode/` 로컬 산출물(node_modules·package.json·lock) 무시 규칙.
+    #   opencode 가 생성하는 원본은 자기 자신까지 무시해 영영 미추적으로 남는다 → 프레임워크가
+    #   자기-은닉 줄을 뺀 판을 소유·@source 전파한다. claude 엔 없는 opencode-only 경로.
+    ".opencode/.gitignore",
 }
 CLAUDE_ONLY_PATHS = {
     ".claude/agents", ".github/workflows/regression.yml",

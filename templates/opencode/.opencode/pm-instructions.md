@@ -37,7 +37,7 @@
   배열로 세션 시작 시 로드된다.
 - **bash 툴 timeout (worktree add false-kill 방지·T-0293)**: 대형 repo `worktree add`(full checkout·느린
   디스크/VPN)가 opencode bash 툴 기본 120초에 죽으면, opencode 실행 쉘에 **`export OPENCODE_EXPERIMENTAL_
-  BASH_DEFAULT_TIMEOUT_MS=1800000`**(30분)을 상속시킨다 — opencode 는 config 파일로 못 실어(`.env` 미로드·
+  BASH_DEFAULT_TIMEOUT_MS=29300000`**(8시간 8분 20초)을 상속시킨다 — opencode 는 config 파일로 못 실어(`.env` 미로드·
   실측) shell export/`.envrc`(direnv) 필요. `EXPERIMENTAL` = 버전 의존(회사 버전서 라이브 확인). 엔진
   타임아웃은 `PM_GIT_TIMEOUT`(초·`none`=무제한). 상세는 `/pm-env` 스킬 §timeout 노브.
 

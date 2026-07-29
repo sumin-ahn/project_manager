@@ -114,7 +114,9 @@ def test_codex_argv_reasoning_flag(pd):
 def test_claude_argv_tools_by_role(pd):
     """claude `--tools` 역할별 도구셋(§3.5): write=편집포함·researcher=Bash 제외·reviewer=Bash 포함."""
     dev = pd.build_claude_argv("opus", None, "developer")
-    assert dev[:6] == ["claude", "-p", "--output-format", "json", "--model", "opus"]
+    # 출력 형식 = stream-json(+CLI 강제 `--verbose`) — 진행 신호 축 승격(T-0489 ④).
+    assert dev[:7] == ["claude", "-p", "--output-format", "stream-json", "--verbose",
+                       "--model", "opus"]
     dev_tools = dev[dev.index("--tools") + 1]
     assert "Write" in dev_tools and "Edit" in dev_tools and "Bash" in dev_tools
     assert "--permission-mode" in dev and dev[dev.index("--permission-mode") + 1] == "acceptEdits"
@@ -631,13 +633,39 @@ def test_cwd_root_usage_error(pd, monkeypatch, tmp_path):
 
 # ══ must-fix 2: launch 오류 정규화 (_default_run_fn·traceback 금지) ═══════════
 
-class _FakeRelayWatchdog:
-    """opencode 경로용 fake relay — run_with_first_event_watchdog 이 주입 예외를 raise."""
+_REAL_RELAY = None
+
+
+def _relay_module():
+    """실 pm_relay 모듈(1회 로드 캐시) — 대역이 선언 테이블/해소기를 **실제 엔진 것**으로 쓴다."""
+    global _REAL_RELAY
+    if _REAL_RELAY is None:
+        _REAL_RELAY = _load("pm_relay", TOOLS / "pm_relay.py")
+    return _REAL_RELAY
+
+
+class _RelayStub:
+    """실 pm_relay 위임 대역 — 필요한 지점만 덮어쓴다.
+
+    프로필 테이블·시간 예산 해소는 실제 엔진 것을 쓴다: 대역이 값 규칙을 자체 구현하면 "하네스별
+    값이 실제로 갈리는가"를 검증하는 테스트가 거짓이 된다."""
+
+    def __getattr__(self, name):
+        return getattr(_relay_module(), name)
+
+
+class _FakeRelayWatchdog(_RelayStub):
+    """run_with_first_event_watchdog 이 주입 예외를 raise 하는 대역(3드라이버 공통 경로).
+
+    codex/claude 도 워치독 경유가 됐으므로 이 대역이 3드라이버 전부를 커버한다. 호출 인자(kwargs)를
+    기록해 드라이버 선언(첫-이벤트 창·재시도·무진행 상한)이 실제로 전달되는지 단언할 수 있게 한다."""
 
     StallWatchdogError = type("StallWatchdogError", (RuntimeError,), {})
 
-    def __init__(self, exc):
+    def __init__(self, exc=None, completed=None):
         self._exc = exc
+        self._completed = completed
+        self.calls: list[dict] = []
 
     def first_event_timeout_default(self):
         return 1.0
@@ -645,47 +673,24 @@ class _FakeRelayWatchdog:
     def stall_retries_default(self):
         return 0
 
-    def run_with_first_event_watchdog(self, *a, **k):
-        raise self._exc
+    def run_with_first_event_watchdog(self, argv, **kw):
+        self.calls.append({"argv": argv, **kw})
+        if self._exc is not None:
+            raise self._exc
+        return self._completed
 
 
-@pytest.mark.parametrize("harness", ["codex", "claude"])
-def test_default_run_fn_launch_error_codex_claude(pd, monkeypatch, harness):
-    """codex/claude 바이너리 미설치(FileNotFoundError) → rc≠0·진단(traceback 아님)."""
-    def _boom(argv, **kw):
-        raise FileNotFoundError(2, "No such file or directory", argv[0])
-    monkeypatch.setattr(pd.subprocess, "Popen", _boom)
-    monkeypatch.setattr(pd, "_load_relay", lambda: object())
+@pytest.mark.parametrize("harness", ["codex", "claude", "opencode"])
+def test_default_run_fn_launch_error_all_drivers(pd, monkeypatch, harness):
+    """3드라이버 전부 바이너리 미설치(워치독 스폰 FileNotFoundError) → rc≠0·진단(traceback 아님)."""
+    monkeypatch.setattr(pd, "_load_relay",
+                        lambda: _FakeRelayWatchdog(FileNotFoundError(2, "nope", "bin")))
     res = pd._default_run_fn(["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
     assert res["returncode"] != 0 and res["timed_out"] is False
     assert "실행 불가" in res["stderr"]
 
 
-def test_default_run_fn_launch_error_opencode(pd, monkeypatch):
-    """opencode 바이너리 미설치(워치독 Popen FileNotFoundError) → rc≠0·진단."""
-    monkeypatch.setattr(pd, "_load_relay",
-                        lambda: _FakeRelayWatchdog(FileNotFoundError(2, "nope", "opencode")))
-    res = pd._default_run_fn(["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
-                             timeout=1, harness="opencode")
-    assert res["returncode"] != 0 and "실행 불가" in res["stderr"]
-
-
-# ══ must-fix 3: timeout 프로세스그룹 kill 검증 (3드라이버·§5.3) ════════════════
-
-class _FakeTimeoutProc:
-    """communicate 가 첫 호출 TimeoutExpired·kill 후(2번째)엔 빈 출력 반환(수확)."""
-
-    def __init__(self):
-        self.pid = 4321
-        self._calls = 0
-        self.returncode = -9
-
-    def communicate(self, input=None, timeout=None):
-        self._calls += 1
-        if self._calls == 1:
-            raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
-        return ("", "")
-
+# ══ must-fix 3: timeout 정규화 (3드라이버 공통 워치독 경로·§5.3 · T-0489 ③) ══════
 
 class _SpyRelayKill:
     def __init__(self):
@@ -695,33 +700,17 @@ class _SpyRelayKill:
         self.kill_calls.append(proc)
 
 
-@pytest.mark.parametrize("harness", ["codex", "claude"])
-def test_default_run_fn_timeout_killpg_codex_claude(pd, monkeypatch, harness):
-    """codex/claude timeout → _kill_process_group 호출(그룹째 종료)·start_new_session 분리·§5.3."""
-    made = {}
+@pytest.mark.parametrize("harness", ["codex", "claude", "opencode"])
+def test_default_run_fn_timeout_all_drivers(pd, monkeypatch, harness):
+    """3드라이버 timeout(워치독이 그룹째 kill 후 TimeoutExpired 전파) → timed_out=True·§5.3.
 
-    def _fake_popen(argv, **kw):
-        made["proc"] = _FakeTimeoutProc()
-        made["kwargs"] = kw
-        return made["proc"]
-
-    spy = _SpyRelayKill()
-    monkeypatch.setattr(pd.subprocess, "Popen", _fake_popen)
-    monkeypatch.setattr(pd, "_load_relay", lambda: spy)
+    프로세스그룹 kill 자체는 이제 워치독 소관이다(pm_relay 실-Popen 테스트가 잔존 0을 단언) —
+    여기서는 위임층의 정규화(분류 가능한 timed_out 신호)만 본다."""
+    monkeypatch.setattr(pd, "_load_relay",
+                        lambda: _FakeRelayWatchdog(subprocess.TimeoutExpired(cmd="x", timeout=1)))
     res = pd._default_run_fn(["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
     assert res["timed_out"] is True and res["returncode"] != 0
-    assert spy.kill_calls and spy.kill_calls[0] is made["proc"]
-    if os.name == "posix":
-        assert made["kwargs"].get("start_new_session") is True  # 프로세스그룹 분리(kill 대상)
-
-
-def test_default_run_fn_timeout_opencode(pd, monkeypatch):
-    """opencode timeout(워치독이 그룹째 kill 후 TimeoutExpired 전파) → timed_out=True·§5.3."""
-    monkeypatch.setattr(pd, "_load_relay",
-                        lambda: _FakeRelayWatchdog(subprocess.TimeoutExpired(cmd="oc", timeout=1)))
-    res = pd._default_run_fn(["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
-                             timeout=1, harness="opencode")
-    assert res["timed_out"] is True and res["returncode"] != 0
+    assert pd.classify_infrastructure_failure(res) == pd.FAILURE_CLASS_TIMEOUT
 
 
 # ══ must-fix 3(보완): 3하네스×4역할 argv 매트릭스 전수(12·권한축) ════════════
@@ -761,13 +750,17 @@ def test_timeout_nonpositive_usage_error(pd, monkeypatch, tmp_path):
 
 
 def test_conf_delegate_timeout_failsoft(pd):
-    """conf delegate_timeout 비정수/≤0 은 traceback 대신 기본으로 fail-soft·유효값은 채택."""
+    """conf delegate_timeout 비수치/≤0 은 traceback 대신 **하네스 프로필 선언값**으로 fail-soft."""
     ns = type("NS", (), {"timeout": None})()
-    assert pd._resolve_timeout(ns, {"delegate_timeout": "abc"}) == pd.DELEGATE_TIMEOUT_SECONDS
-    assert pd._resolve_timeout(ns, {"delegate_timeout": "-5"}) == pd.DELEGATE_TIMEOUT_SECONDS
-    assert pd._resolve_timeout(ns, {"delegate_timeout": "600"}) == 600
+    declared = int(_relay_module().HARNESS_PROFILES["codex"].wall_timeout)
+    assert pd._resolve_timeout(ns, {"delegate_timeout": "abc"}, "codex") == declared
+    assert pd._resolve_timeout(ns, {"delegate_timeout": "-5"}, "codex") == declared
+    assert pd._resolve_timeout(ns, {"delegate_timeout": "600"}, "codex") == 600
+    # 하네스별 키가 표면-flat legacy 키를 이긴다(더 구체적인 선언).
+    assert pd._resolve_timeout(
+        ns, {"delegate_timeout": "600", "harness.codex.wall_timeout": "900"}, "codex") == 900
     ns2 = type("NS", (), {"timeout": 42})()
-    assert pd._resolve_timeout(ns2, {}) == 42
+    assert pd._resolve_timeout(ns2, {}, "codex") == 42   # CLI 가 가장 강함
 
 
 # ══ R2 must-fix 1: opencode positional message 필수 ══════════════════════════
@@ -2724,6 +2717,35 @@ class _SequenceRun:
         return result
 
 
+def test_fallback_uses_its_own_harness_budget(pd, monkeypatch, tmp_path):
+    """폴백이 **자기 축의 시간 예산**으로 실행된다 — 축이 다르면 값도 달라야 한다.
+
+    시간 예산이 하네스별로 갈린 뒤(클라우드 vs 로컬 GPU) primary 값을 폴백에 그대로 쓰면,
+    클라우드→로컬 GPU 폴백에서 3시간짜리 로컬 작업이 클라우드 예산에 잘린다."""
+    relay = _relay_module()
+    conf = _enabled_conf(**{
+        "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x",
+        "delegate.developer.fallback.harness": "opencode",
+        "delegate.developer.fallback.model": "prov/m",
+    })
+    fake = _SequenceRun(
+        {"returncode": 1, "stdout": "", "stderr": "", "timed_out": True},   # primary 인프라 실패
+        {"returncode": 0, "stdout": _opencode_stdout("fallback ok"), "stderr": "",
+         "timed_out": False},
+    )
+    prompt = _write_prompt(tmp_path)
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
+         "--output-dir", str(tmp_path)],
+        conf, run_fn=fake)
+    assert rc == 0
+    assert [c["harness"] for c in fake.calls] == ["codex", "opencode"]
+    assert fake.calls[0]["timeout"] == int(relay.HARNESS_PROFILES["codex"].wall_timeout)
+    assert fake.calls[1]["timeout"] == int(relay.HARNESS_PROFILES["opencode"].wall_timeout)
+    assert fake.calls[1]["timeout"] > fake.calls[0]["timeout"]
+
+
 def test_resolve_fallback_role_tier_atomic_and_no_default(pd):
     """주 매핑 동형 per-role/tier 원자 tuple: 미설정=None, hard는 normal 폴백을 상속하지 않는다."""
     normal = _fallback_conf()
@@ -2853,13 +2875,11 @@ def test_launch_failure_needs_explicit_signal_not_rc127(pd):
     assert pd.classify_infrastructure_failure(signalled) == pd.FAILURE_CLASS_LAUNCH
 
 
-@pytest.mark.parametrize("harness", ["codex", "claude"])
+@pytest.mark.parametrize("harness", ["codex", "claude", "opencode"])
 def test_default_run_fn_launch_error_carries_explicit_signal(pd, monkeypatch, harness):
     """실 드라이버의 launch 정규화도 rc 가 아니라 명시 신호를 싣는다(분류 근거 단일화)."""
-    def _boom(argv, **kw):
-        raise FileNotFoundError(2, "No such file or directory", argv[0])
-    monkeypatch.setattr(pd.subprocess, "Popen", _boom)
-    monkeypatch.setattr(pd, "_load_relay", lambda: object())
+    monkeypatch.setattr(pd, "_load_relay",
+                        lambda: _FakeRelayWatchdog(FileNotFoundError(2, "No such file", "bin")))
     res = pd._default_run_fn(["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1,
                              harness=harness)
     assert res[pd.RUN_RESULT_LAUNCH_FAILED] is True
@@ -2868,17 +2888,48 @@ def test_default_run_fn_launch_error_carries_explicit_signal(pd, monkeypatch, ha
 
 def test_opencode_first_event_stall_is_infrastructure_class(pd, monkeypatch):
     """opencode 첫-이벤트 stall(재시도 소진)은 rc=1/timed_out=False 로 정규화돼도 인프라 실패다."""
-    relay = _FakeRelayWatchdog(_FakeRelayWatchdog.StallWatchdogError("3회 소진"))
+    stalled = _FakeRelayWatchdog.StallWatchdogError("3회 소진")
+    stalled.timeout_axis = "first-event"
+    stalled.threshold_seconds = 90.0
+    stalled.silence_seconds = 90.0
+    stalled.output = "startup partial stdout\n"
+    stalled.stderr = "startup partial stderr\n"
+    relay = _FakeRelayWatchdog(stalled)
     monkeypatch.setattr(pd, "_load_relay", lambda: relay)
     res = pd._default_run_fn(["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
                              timeout=1, harness="opencode")
     assert res["returncode"] == 1 and res["timed_out"] is False
     assert res[pd.RUN_RESULT_STALLED] is True
+    assert res["stdout"] == "startup partial stdout\n"
+    assert "startup partial stderr" in res["stderr"]
     assert pd.classify_infrastructure_failure(res) == pd.FAILURE_CLASS_STALL
     # 엔진 마커만 남은 결과(신호 키 없음)도 백스톱으로 분류된다 — 마커는 엔진이 직접 찍는다.
     marker_only = {"returncode": 1, "stdout": "",
                    "stderr": f"{pd.OPENCODE_STALL_MARKER} 3회 소진]", "timed_out": False}
     assert pd.classify_infrastructure_failure(marker_only) == pd.FAILURE_CLASS_STALL
+
+
+def test_startup_watchdog_wall_axis_is_timeout_not_first_event_stall(pd, monkeypatch):
+    """--timeout이 첫-event 창보다 짧아 wall이 먼저 울면 timeout 분류·안내를 유지한다."""
+    expired = _FakeRelayWatchdog.StallWatchdogError("overall watchdog")
+    expired.timeout_axis = "wall"
+    expired.threshold_seconds = 30.0
+    expired.silence_seconds = 30.0
+    expired.output = "partial before wall\n"
+    expired.stderr = "wall diagnostic\n"
+    monkeypatch.setattr(pd, "_load_relay", lambda: _FakeRelayWatchdog(expired))
+
+    res = pd._default_run_fn(
+        ["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
+        timeout=30, harness="opencode",
+    )
+    assert res["returncode"] == 1 and res["timed_out"] is True
+    assert res[pd.RUN_RESULT_TIMEOUT_AXIS] == "wall"
+    assert res[pd.RUN_RESULT_TIMEOUT_THRESHOLD_SEC] == 30.0
+    assert pd.RUN_RESULT_STALLED not in res
+    assert pd.OPENCODE_STALL_MARKER not in res["stderr"]
+    assert "벽시계 백스톱 30s" in res["stderr"]
+    assert pd.classify_infrastructure_failure(res) == pd.FAILURE_CLASS_TIMEOUT
 
 
 def test_stall_triggers_configured_fallback(pd, monkeypatch, tmp_path, capsys):
@@ -2902,6 +2953,30 @@ def test_stall_triggers_configured_fallback(pd, monkeypatch, tmp_path, capsys):
     assert rc == 0
     assert [call["harness"] for call in fake.calls] == ["opencode", "claude"]
     assert f"사유: {pd.FAILURE_CLASS_STALL}" in captured.err
+
+
+def test_cleanup_failure_triggers_configured_fallback(pd, monkeypatch, tmp_path, capsys):
+    """정리 실패 명시 신호도 raw 박제 뒤 인프라 분류되어 설정 폴백을 발동한다."""
+    conf = _fallback_conf()
+    fake = _SequenceRun(
+        {"returncode": 1, "stdout": "PARTIAL", "stderr": "cleanup failed",
+         "timed_out": False, pd.RUN_RESULT_CLEANUP_FAILED: True},
+        {"returncode": 0, "stdout": _claude_stdout("cleanup fallback"), "stderr": "",
+         "timed_out": False},
+    )
+    prompt = _write_prompt(tmp_path)
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
+         "--output-dir", str(tmp_path / "raw")],
+        conf, fake,
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert [call["harness"] for call in fake.calls] == ["codex", "claude"]
+    assert f"사유: {pd.FAILURE_CLASS_CLEANUP}" in captured.err
+    primary_raw = sorted((tmp_path / "raw").glob("pm_delegate_codex_*"))[0]
+    assert "PARTIAL" in primary_raw.read_text(encoding="utf-8")
 
 
 def test_dry_run_displays_configured_fallback_mapping(pd, monkeypatch, tmp_path, capsys):
@@ -2994,6 +3069,31 @@ def test_timeout_uses_configured_fallback(pd, monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 0 and len(fake.calls) == 2
     assert "사유: 타임아웃" in captured.err
+
+
+def test_fallback_timeout_message_uses_fallback_harness_value(
+        pd, monkeypatch, tmp_path, capsys):
+    """codex→opencode 폴백 중단 안내가 primary 3600s가 아니라 실제 fallback 14400s를 찍는다."""
+    fake = _SequenceRun(
+        {"returncode": 1, "stdout": "", "stderr": "", "timed_out": True},
+        {"returncode": 1, "stdout": "", "stderr": "", "timed_out": True},
+    )
+    prompt = _write_prompt(tmp_path)
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
+        _fallback_conf(**{
+            "delegate.developer.fallback.harness": "opencode",
+            "delegate.developer.fallback.model": "local/model",
+            "delegate.developer.fallback.reasoning": "",
+        }),
+        fake,
+    )
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert [call["timeout"] for call in fake.calls] == [3600, 14400]
+    assert "폴백 위임 turn 타임아웃(벽시계 백스톱 14400s)" in captured.err
+    assert "폴백 위임 turn 타임아웃(벽시계 백스톱 3600s)" not in captured.err
 
 
 def test_completed_must_fix_does_not_fallback(pd, monkeypatch, tmp_path, capsys):
@@ -3108,8 +3208,8 @@ def test_fallback_identical_to_primary_is_loud_skip(pd, monkeypatch, tmp_path, c
     assert "폴백 비발동" in err and "동일(codex/gpt-x)" in err
 
 
-class _FakeStallKnobs:
-    """opencode 첫-이벤트 워치독 노브만 갖는 relay 대역(env PM_OC_* 비의존 결정성)."""
+class _FakeStallKnobs(_RelayStub):
+    """opencode 첫-이벤트 워치독 노브만 덮는 relay 대역(env PM_OC_* 비의존 결정성)."""
 
     def __init__(self, retries: int = 2, first_event_timeout: float = 90.0):
         self._retries = retries
@@ -3137,6 +3237,37 @@ def test_harness_timeout_budget_counts_opencode_retry_windows(pd, monkeypatch):
     # relay 노브를 못 읽으면 보수적으로 timeout(과대 예고 금지).
     monkeypatch.setattr(pd, "_load_relay", lambda: (_ for _ in ()).throw(OSError("no relay")))
     assert pd._harness_timeout_budget("opencode", 600) == 600
+
+
+def test_max_declared_execution_path_budget_counts_both_attempts(pd, monkeypatch):
+    """정적 하네스 상한 좌변은 단일 wall 이 아니라 primary+fallback 두 시도의 최악이다."""
+    monkeypatch.setattr(pd, "_load_relay", lambda: _FakeStallKnobs(
+        retries=2, first_event_timeout=90.0))
+    # _FakeStallKnobs 는 HARNESS_PROFILES 를 _RelayStub 에서 실 relay 로 위임한다.
+    assert pd.max_declared_execution_path_budget() == 2 * (14400 + 2 * 90)
+
+
+def test_runtime_harness_cap_advisory_is_loud_for_existing_adopter(pd, monkeypatch):
+    """engine.manifest 밖 기존 adapter 설정이 낮으면 실행 시 조용히 무력화되지 않는다."""
+    monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 18180)
+    warning = pd.harness_cap_advisory({
+        "CLAUDECODE": "1",
+        "BASH_MAX_TIMEOUT_MS": "1800000",
+    })
+    assert warning is not None
+    assert "1800s <" in warning and "부분 산출물 보존 전에" in warning
+    assert "18200000ms" in warning
+    assert pd.harness_cap_advisory({
+        "CLAUDECODE": "1",
+        "BASH_MAX_TIMEOUT_MS": "18200000",
+    }) is None
+
+
+def test_runtime_opencode_cap_missing_is_loud(pd, monkeypatch):
+    monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 18180)
+    warning = pd.harness_cap_advisory({"OPENCODE": "1"})
+    assert warning is not None
+    assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS 미해소" in warning
 
 
 def test_dry_run_shows_fallback_time_budget(pd, monkeypatch, tmp_path, capsys):
@@ -3655,24 +3786,16 @@ def test_spawn_stage_errors_still_classified_as_launch(pd, exc):
 
 
 def test_default_run_fn_midrun_oserror_is_not_launch(pd, monkeypatch):
-    """실 드라이버: Popen 성공 후 communicate OSError → 미분류 실패(rc=1·프로세스그룹 정리)."""
-    class _BrokenProc:
-        pid = 999
+    """실 드라이버: 스폰 후 실행-중 OSError → 미분류 실패(rc=1·폴백 금지).
 
-        def __init__(self):
-            self.returncode = 1
-
-        def communicate(self, input=None, timeout=None):
-            raise OSError(32, "Broken pipe")
-
-    killed = _SpyRelayKill()
-    monkeypatch.setattr(pd, "_load_relay", lambda: killed)
-    monkeypatch.setattr(pd.subprocess, "Popen", lambda argv, **kw: _BrokenProc())
+    잔존 프로세스 정리(그룹 kill)는 T-0489 이후 워치독 소관이다 — pm_relay 가 드레인 OSError 를
+    잡아 kill 후 재전파한다(tests/test_idle_progress_watchdog.py 가 단언)."""
+    broken = OSError(32, "Broken pipe")
+    monkeypatch.setattr(pd, "_load_relay", lambda: _FakeRelayWatchdog(broken))
     res = pd._default_run_fn(["codex"], stdin_text="x", cwd="/tmp", env={}, timeout=5,
                              harness="codex")
     assert res["returncode"] == 1 and pd.RUN_RESULT_LAUNCH_FAILED not in res
     assert pd.classify_infrastructure_failure(res) is None
-    assert len(killed.kill_calls) == 1                       # 잔존 프로세스 정리는 유지
 
 
 def test_help_documents_ticket_scope_flag(pd):

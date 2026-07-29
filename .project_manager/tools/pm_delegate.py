@@ -106,16 +106,37 @@ TIER_CHOICES: tuple[str, ...] = ("normal", "hard")
 WRITE_ROLES: frozenset[str] = frozenset({"developer", "architect"})
 READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 
-# 위임 turn 기본 타임아웃(초) — dev 는 reasoning+다중 편집으로 길다(codex driver TURN_TIMEOUT 600 보다
-# 큼). `--timeout`·local.conf `delegate_timeout` 로 override.
+# 위임 turn 의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **하네스 프로필**이 소유한다
+# (`pm_relay.HARNESS_PROFILES` — 클라우드 축 codex/claude 와 로컬 GPU 축 opencode 의 실측 근거가
+# 거기 주석에 있다). 이 모듈에 단일 상수를 두지 않는 이유: 값이 두 군데면 규칙이 둘이 되고,
+# 실제로 초기 구현의 단일 기본값(클라우드 표본 기반)이 3시간짜리 로컬 opencode 위임을 죽였다.
+# 해소 순서: `--timeout`(일회성) > local.conf `harness.<name>.wall_timeout` > `delegate_timeout`
+# (표면-flat legacy) > 프로필 선언. 무진행 축은 `harness.<name>.idle_timeout` >
+# `delegate_idle_timeout` > 프로필 선언.
 # 폴백이 발동하면 primary 소진 후 1회 더 실행한다 — 실행 1회의 최악 소요는 하네스마다 달라서
 # _harness_timeout_budget 이 계산한다(2차 폴백 없음 — 상한은 두 시도 예산의 합으로 닫힌다).
-DELEGATE_TIMEOUT_SECONDS = 1800
+
+# 위임 벽시계와 하네스 Bash 상한 사이에 남겨 두는 최소 여유(초) — kill·수확·분류·박제의 예산.
+# 부등식은 `max(유효 primary+fallback 실행 경로) + 여유 ≤ 하네스 상한` 이고
+# tests/test_settings_hygiene.py 가 전 표면(claude settings·opencode shell-export 지침)을 기계로
+# 단언한다. 여유가 0이면 엔진이 자기 타임아웃을 분류(인프라 실패 → 폴백)하기 전에 하네스가 먼저
+# 죽여 진단이 통째로 사라진다(원인 불명 kill 8회의 한 축).
+#
+# 이 트리에서 `pytest ... --durations=30`으로 실제 종료 경로를 재었다:
+# 실 프로세스 kill+부분수확 1.05s, git scope audit 0.03s, fallback raw 체인 0.02s, 나머지
+# 분류·prompt 합성·secret scan은 각 0.01s 미만. 측정치만 그대로 쓰면 플랫폼 차를 못 담으므로,
+# kill은 pm_relay의 명시 grace 5s × primary/fallback 2회 = 10s로 잡고 나머지 7단계는 관측
+# 최댓값(0.03s)을 초 단위로 올린 1s씩 = 7s로 고정한다. 합 17s를 다음 10초 경계로 올린 20s가
+# 근거 있는 여유다. 출하 상한 29300s와 본체 최악 29160s 사이 실여유 140s가 이 값을 7배 담는다.
+_HARNESS_CAP_KILL_GRACE_BUDGET_SEC = 10
+_HARNESS_CAP_MEASURED_AUX_BUDGET_SEC = 7
+_HARNESS_CAP_MARGIN_SEC = 20
 
 # 인프라 실패 클래스 라벨(loud 메시지·raw provenance 에 그대로 실리는 안정 문자열).
 FAILURE_CLASS_LAUNCH = "스폰 실패/바이너리 부재"
 FAILURE_CLASS_TIMEOUT = "타임아웃"
 FAILURE_CLASS_STALL = "첫-이벤트 stall(재시도 소진)"
+FAILURE_CLASS_CLEANUP = "프로세스 정리 실패"
 FAILURE_CLASS_QUOTA = "한도/레이트리밋"
 FAILURE_CLASS_AUTH = "인증 실패"
 
@@ -123,12 +144,26 @@ FAILURE_CLASS_AUTH = "인증 실패"
 # _execute_attempt)만 세팅한다 — 하네스가 우연히 같은 rc 를 내도 분류되지 않는다.
 RUN_RESULT_LAUNCH_FAILED = "launch_failed"   # 바이너리 부재/PATH/exec 권한 — 프로세스가 뜨지 못함
 RUN_RESULT_STALLED = "stalled"               # opencode 첫-이벤트 stall(유한 재시도 소진·pm_relay)
+RUN_RESULT_CLEANUP_FAILED = "cleanup_failed" # kill/drain 실패 — 부분 산출물 보존 + 인프라 폴백
+# 관측 침묵 초(마지막 진행 이벤트 이후) — 실패 신호가 아니라 **감사 관측치**다. 감사 헤더에 실려
+# 다음 kill 의 원인(하네스 상한 vs 무진행 vs 기타)을 사후 확정 가능하게 한다.
+RUN_RESULT_SILENCE_SEC = "silence_sec"
+# 무진행 판정으로 죽었는지(벽시계 백스톱과 구분) — 감사 헤더 사유 표기 입력.
+RUN_RESULT_IDLE_KILLED = "idle_killed"
+# 중단 진단은 호출부의 primary/default 값을 재사용하지 않고 워치독이 싣는 실제 발화값을 전달한다.
+RUN_RESULT_TIMEOUT_AXIS = "timeout_axis"
+RUN_RESULT_TIMEOUT_THRESHOLD_SEC = "timeout_threshold_sec"
 
 # opencode 첫-이벤트 stall 을 stderr 에 찍는 엔진 마커(단일 출처) — 분류기의 백스톱 신호로도 쓴다.
 OPENCODE_STALL_MARKER = "[opencode 첫-이벤트 stall:"
 
 # opt-in 게이트 키(기본 OFF·per-clone).
 DELEGATE_ENABLED_KEY = "delegate_enabled"
+
+# 표면-flat legacy 시간 노브(하네스 무관·기존 채택자 설정 보존). 하네스별 키
+# `harness.<name>.wall_timeout`/`.idle_timeout` 이 설정돼 있으면 그쪽이 이긴다(더 구체적인 선언).
+DELEGATE_TIMEOUT_KEY = "delegate_timeout"
+DELEGATE_IDLE_TIMEOUT_KEY = "delegate_idle_timeout"
 
 # 합성 프롬프트 전문에 묶는 건별 시크릿 스캔 승인 토큰. SHA-256 전체 계산 뒤 앞 96bit만
 # 표시한다 — 사람이 재실행 커맨드로 옮길 만큼 짧지만, 이 값은 인증 secret이 아니라 "방금 검토한
@@ -411,9 +446,17 @@ def build_codex_argv(model: str, reasoning: str | None, role: str, cwd: str) -> 
 
 def build_claude_argv(model: str, reasoning: str | None, role: str) -> list[str]:
     """claude argv. 프롬프트 stdin 주입·cwd 존중(플래그 불요). `--tools` 로 역할별 가용
-    도구 제한, write 역할은 `--permission-mode acceptEdits` 로 무프롬프트 완주."""
-    argv = ["claude", "-p", "--output-format", "json", "--model", model,
-            "--tools", _claude_tools(role)]
+    도구 제한, write 역할은 `--permission-mode acceptEdits` 로 무프롬프트 완주.
+
+    **출력 형식 = `stream-json`**: `json` 은 종료 시 단일 덩어리라 진행 신호가 0이고,
+    그러면 claude 축만 무진행 판정을 못 받아 벽시계 false-kill 이 남는다. claude 는 운용 폴백
+    대상이라 load-bearing 이므로 신호 축으로 승격한다. `--verbose` 는 CLI 강제 요구다 — 미동반 시
+    `Error: When using --print, --output-format=stream-json requires --verbose` 로 즉시 rc≠0
+    (claude 2.1.220 바이너리 문자열 실측). 회신 추출은 그대로 pm_relay.parse_stream_json 이며,
+    이 파서는 원래 stream-json 용으로 쓰여 있었다(단일 덩어리도 `type:result` 한 줄이라 양 형식이
+    같은 파서를 통과 — tests/test_idle_progress_watchdog.py 가 두 형식 동치를 단언)."""
+    argv = ["claude", "-p", "--output-format", "stream-json", "--verbose",
+            "--model", model, "--tools", _claude_tools(role)]
     if reasoning:
         argv += ["--effort", reasoning]
     if role in WRITE_ROLES:
@@ -435,6 +478,42 @@ def build_opencode_argv(
     if reasoning:
         argv += ["--variant", reasoning]
     return argv
+
+
+# ── 드라이버 관측 능력 선언 (분기 특례가 아니라 테이블) ────────────────────────────
+#
+# 무진행 판정도 startup stall 워치독도 시간 예산도 "드라이버가 무엇을 관측시켜 주느냐 + 어느 축에서
+# 도느냐"에만 의존한다. 하니스별 if 분기를 만들지 않고 **선언 테이블**을 읽는다.
+#   · progress_signal — 실측 형상:
+#       codex    `exec --json`               → 줄 단위 이벤트 스트림.
+#       opencode `run --format json`         → 줄 단위 이벤트(각 이벤트에 timestamp 내장).
+#       claude   `-p --output-format stream-json --verbose` → 줄 단위 이벤트(옛 `json` =
+#                종료 시 단일 덩어리 = 신호 없음이었다).
+#   · startup_watchdog — 첫-stdout-이벤트 창 + 유한 재시도. **opencode 전용**인 이유는
+#     특례가 아니라 근거다: startup network fetch stall(upstream #13841)이 opencode 축에서만
+#     실측됐고, 첫-이벤트 창을 신호 축 전부에 켜면 기동이 느린 실행을 새로 false-kill 한다.
+#   · idle_timeout / wall_timeout — 클라우드 축(codex·claude)과 로컬 GPU 축(opencode)의 값이 다르다
+#     (근거 수치는 pm_relay 선언부 주석). 값이 갈리는 건 허용, **코드가 갈리면 위반**이다.
+# 테이블은 **pm_relay 가 단일 소유**한다 — external_review 도 같은 테이블을 읽어야 리뷰어 축과 위임
+# 축의 규칙이 갈리지 않는다(값이 두 군데면 규칙이 둘).
+
+
+def harness_profile(harness: str, conf: dict[str, str] | None = None):
+    """하네스 → local.conf override 가 해소된 프로필(pm_relay 단일 테이블 재사용).
+
+    conf 미지정이면 per-clone local.conf 를 읽는다(판독 실패는 빈 conf 로 fail-soft — 설정 파일
+    문제로 위임이 죽지 않는다). 해소 순서는 pm_relay.resolve_harness_profile 이 소유한다."""
+    relay = _load_relay()
+    if conf is None:
+        try:
+            conf = local_config()
+        except (OSError, DelegateError):
+            conf = {}
+    return relay.resolve_harness_profile(
+        harness, conf,
+        legacy_idle_key=DELEGATE_IDLE_TIMEOUT_KEY,
+        legacy_wall_key=DELEGATE_TIMEOUT_KEY,
+    )
 
 
 # ── 시크릿 통제  ──────────────────────────────────────────────────────
@@ -1805,16 +1884,31 @@ def _gettempdir() -> str:
     return tempfile.gettempdir()
 
 
+def _format_silence(silence_sec: float | None, idle_killed: bool) -> str:
+    """감사 헤더의 침묵 관측치 1줄 값 — 다음 kill 의 원인을 사후 확정하는 입력.
+
+    관측 불가(신호 없는 축·주입 run_fn 등)는 `n/a` 로 남긴다 — 0 으로 위장하지 않는다(관측 없음과
+    "침묵 0초"는 다른 사실이다). 무진행 kill 은 사유를 병기해 하네스 상한/기타 kill 과 구분한다."""
+    if silence_sec is None:
+        return "n/a (진행 신호 미관측)"
+    label = f"{silence_sec:.1f}"
+    return f"{label} (무진행 판정으로 중단)" if idle_killed else label
+
+
 def _format_meta(argv: list[str], rc: int, harness: str, model: str,
                  elapsed: float, stdout: str, stderr: str, *,
                  attempt: str = "primary", primary_raw: str | None = None,
                  secret_scan_ack_digest: str | None = None,
                  secret_scan_ack_hits: tuple[PromptSecretHit, ...] = (),
-                 secret_scan_ack_primary_recipient: str | None = None) -> str:
-    """raw 박제 본문 — 메타(argv·rc·모델·소요) 헤더 + 원문.
+                 secret_scan_ack_primary_recipient: str | None = None,
+                 silence_sec: float | None = None,
+                 idle_killed: bool = False) -> str:
+    """raw 박제 본문 — 메타(argv·rc·모델·소요·침묵) 헤더 + 원문.
 
     폴백 attempt 는 `# primary_raw:` 로 앞선 primary raw 경로를 적어 **raw 파일 하나만 봐도** 감사
-    체인(왜 이 하네스로 갔는가)이 닫히게 한다."""
+    체인(왜 이 하네스로 갔는가)이 닫히게 한다. `# silence_sec:` 은 최종 진행 이벤트 이후 침묵으로,
+    kill 이 났을 때 원인(하네스 상한 vs 무진행 vs 기타)을 사후에 가르는 유일한 관측치다 — 누적 8회
+    kill 이 전부 원인 불명이었던 구멍을 이 줄이 닫는다."""
     header = [
         "# pm_delegate raw 출력 (감사)",
         f"# harness: {harness}",
@@ -1843,6 +1937,7 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
         f"# argv: {' '.join(argv)}",
         f"# rc: {rc}",
         f"# elapsed_sec: {elapsed:.1f}",
+        f"# silence_sec: {_format_silence(silence_sec, idle_killed)}",
         f"# at: {datetime.datetime.now().isoformat(timespec='seconds')}",
         "",
         "## stdout",
@@ -1997,6 +2092,8 @@ def classify_infrastructure_failure(result: RunResult) -> str | None:
         return None
     if result.get(RUN_RESULT_LAUNCH_FAILED):
         return FAILURE_CLASS_LAUNCH
+    if result.get(RUN_RESULT_CLEANUP_FAILED):
+        return FAILURE_CLASS_CLEANUP
     if bool(result.get("timed_out", False)):
         return FAILURE_CLASS_TIMEOUT
     # stall 은 엔진 신호가 1순위, stderr 마커는 백스톱(둘 다 엔진이 직접 찍는다 — 오분류 위험 0).
@@ -2010,6 +2107,65 @@ def classify_infrastructure_failure(result: RunResult) -> str | None:
     return None
 
 
+def _timeout_failure_result(harness: str, timeout: int,
+                            exc: subprocess.TimeoutExpired) -> RunResult:
+    """타임아웃(무진행/벽시계) 결과 정규화 — **kill 시점까지 받은 출력을 보존**한다.
+
+    워치독이 프로세스 그룹째 kill 한 뒤 부분 산출물을 예외에 실어 올린다. 그걸 버리면 수십 분어치
+    작업이 0바이트가 된다(kill 된 실행의 raw 가 헤더 138바이트뿐이던 실측). 무진행 kill 은 `idle_seconds` 로
+    벽시계 백스톱과 구분해 사유·침묵 초를 감사에 남긴다."""
+    idle_seconds = getattr(exc, "idle_seconds", None)
+    silence_seconds = getattr(exc, "silence_seconds", idle_seconds)
+    timeout_axis = getattr(
+        exc, "timeout_axis", "idle" if idle_seconds is not None else "wall"
+    )
+    threshold = float(getattr(exc, "threshold_seconds", exc.timeout or timeout))
+    if timeout_axis == "idle":
+        measured = idle_seconds if idle_seconds is not None else silence_seconds
+        measured_label = (
+            f"{measured:.0f}s" if measured is not None else "관측 불가"
+        )
+        reason = (f"[{harness} 무진행 임계 {threshold:.0f}s 발화 · 실측 침묵 {measured_label} "
+                  f"— 정상 작업이었다면 local.conf harness.{harness}.idle_timeout=<초> 로 상향]")
+    else:
+        silence_label = (
+            f" · 중단 시 실측 침묵 {silence_seconds:.0f}s"
+            if silence_seconds is not None else " · 중단 시 침묵 관측 불가"
+        )
+        reason = (f"[{harness} 벽시계 백스톱 {threshold:.0f}s 초과{silence_label} "
+                  f"— 늘리려면 local.conf harness.{harness}.wall_timeout=<초>]")
+    result: RunResult = {
+        "returncode": 1,
+        "stdout": exc.output or "",
+        "stderr": f"{reason} {exc.stderr or ''}".rstrip(),
+        "timed_out": True,
+        RUN_RESULT_TIMEOUT_AXIS: timeout_axis,
+        RUN_RESULT_TIMEOUT_THRESHOLD_SEC: threshold,
+    }
+    if silence_seconds is not None:
+        result[RUN_RESULT_SILENCE_SEC] = silence_seconds
+    if timeout_axis == "idle":
+        result[RUN_RESULT_IDLE_KILLED] = True
+    return result
+
+
+def _timeout_result_summary(result: RunResult, *, fallback_timeout: int) -> str:
+    """RunResult의 실제 발화 축·임계를 사용자 안내 한 줄로 만든다.
+
+    주입 runner가 구형 최소 dict만 반환한 경우에만 그 **해당 attempt**의 해소 timeout으로
+    폴백한다. primary 값을 fallback 안내에 재사용하지 않는다."""
+    axis = result.get(RUN_RESULT_TIMEOUT_AXIS, "wall")
+    threshold = result.get(RUN_RESULT_TIMEOUT_THRESHOLD_SEC, fallback_timeout)
+    silence = result.get(RUN_RESULT_SILENCE_SEC)
+    if axis == "idle":
+        base = f"무진행 임계 {float(threshold):g}s"
+    else:
+        base = f"벽시계 백스톱 {float(threshold):g}s"
+    if silence is not None:
+        base += f" · 실측 침묵 {float(silence):g}s"
+    return base
+
+
 def _default_run_fn(
     argv: list[str], *, stdin_text: str | None, cwd: str, env: dict[str, str],
     timeout: int, harness: str,
@@ -2017,8 +2173,11 @@ def _default_run_fn(
     """실 subprocess 실행(테스트는 이 seam 을 mock). timeout 시 **프로세스그룹 종료**(3드라이버 공통·
     start_new_session + killpg·자식[모델 fetch·pytest 등] 잔존 방지).
 
-    opencode 는 첫-이벤트 워치독 경유(startup stall 유한 재시도·pm_relay 재사용·프롬프트는 --file 이라
-    stdin 불요). codex/claude 는 stdin 으로 프롬프트 주입.
+    **3 드라이버 전부 pm_relay 워치독 경로** — codex/claude 도 증분 관측 대상이라야
+    무진행 판정이 선다(옛 구조는 codex/claude 만 `Popen`+`communicate(timeout)` 벽시계 단독이었다).
+    드라이버별로 다른 건 코드 분기가 아니라 **선언**(`pm_relay.HARNESS_PROFILES`)이다: 신호 있는 축은
+    무진행 판정, startup stall 이 실측된 축(opencode)만 첫-이벤트 창 + 재시도. 프롬프트는 codex/
+    claude 가 stdin(워치독의 `input_text`), opencode 는 `--file`(stdin 불요).
 
     **launch 오류 정규화**(codex must-fix): 하네스 바이너리 미설치/실행 불가(FileNotFoundError·
     PermissionError 등 **스폰 단계** 오류)는 traceback 으로 전파하지 않고 RunResult(rc≠0·진단 stderr)로
@@ -2028,67 +2187,74 @@ def _default_run_fn(
     실패로 표시하면 폴백이 발동해 **같은 프롬프트가 외부로 중복 전송**된다. 그래서 launch 신호는
     스폰 지점 예외에만 붙이고, 실행-중 OSError 는 미분류 실패(rc=1)로 남겨 기존 fail-loud 를 태운다."""
     relay = _load_relay()
-    if harness == "opencode":
-        # 워치독이 내부에서 스폰한다 — 바이너리/권한 계열(_LAUNCH_STAGE_ERRORS)만 launch 로 보고
-        # 나머지 OSError 는 실행-중으로 간주한다(전송 후 중복 송신 금지).
-        try:
-            completed = relay.run_with_first_event_watchdog(
-                argv,
-                first_event_timeout=relay.first_event_timeout_default(),
-                overall_timeout=timeout,
-                retries=relay.stall_retries_default(),
-                cwd=str(cwd),
-                env=env,
+    profile = harness_profile(harness)
+    # 워치독이 내부에서 스폰한다 — 바이너리/권한 계열(_LAUNCH_STAGE_ERRORS)만 launch 로 보고
+    # 나머지 OSError 는 실행-중으로 간주한다(전송 후 중복 송신 금지).
+    try:
+        completed = relay.run_with_first_event_watchdog(
+            argv,
+            first_event_timeout=(relay.first_event_timeout_default()
+                                 if profile.startup_watchdog else None),
+            overall_timeout=timeout,
+            retries=(relay.stall_retries_default()
+                     if profile.startup_watchdog else 0),
+            idle_timeout=relay.idle_timeout_for_signal(profile.progress_signal,
+                                                       profile.idle_timeout),
+            cwd=str(cwd),
+            env=env,
+            input_text=stdin_text,
+        )
+        result: RunResult = {
+            "returncode": completed.returncode,
+            "stdout": completed.stdout or "",
+            "stderr": completed.stderr or "",
+            "timed_out": False,
+        }
+        silence = getattr(completed, relay.SILENCE_SEC_ATTR, None)
+        if silence is not None:
+            result[RUN_RESULT_SILENCE_SEC] = silence
+        return result
+    except relay.StallWatchdogError as exc:
+        timeout_axis = getattr(exc, "timeout_axis", None)
+        threshold = getattr(exc, "threshold_seconds", None)
+        silence = getattr(exc, "silence_seconds", None)
+        if timeout_axis == getattr(relay, "TIMEOUT_AXIS_WALL", "wall"):
+            wall_exc = subprocess.TimeoutExpired(
+                argv, threshold if threshold is not None else timeout,
+                output=getattr(exc, "output", "") or "",
+                stderr=getattr(exc, "stderr", "") or "",
             )
-            return {
-                "returncode": completed.returncode,
-                "stdout": completed.stdout or "",
-                "stderr": completed.stderr or "",
-                "timed_out": False,
-            }
-        except relay.StallWatchdogError as exc:
-            # 첫-이벤트 stall(유한 재시도 소진) = 인프라 실패다 — rc=1/timed_out=False 로만
-            # 정규화하면 분류가 누락돼 폴백이 불발한다. 명시 신호로 실어 보낸다.
-            return {"returncode": 1, "stdout": "",
-                    "stderr": f"{OPENCODE_STALL_MARKER} {exc}]",
-                    "timed_out": False, RUN_RESULT_STALLED: True}
-        except subprocess.TimeoutExpired:
-            # 워치독이 프로세스그룹째 kill 후 TimeoutExpired 전파(kill 은 워치독 소관).
-            return {"returncode": 1, "stdout": "", "stderr": f"[opencode timeout {timeout}s]",
-                    "timed_out": True}
-        except _LAUNCH_STAGE_ERRORS as exc:
-            return _launch_failure_result(harness, exc)
-        except OSError as exc:
-            return _midrun_failure_result(harness, exc)
-
-    # codex / claude — stdin 주입 + 프로세스그룹 kill
-    popen_kwargs: dict = dict(
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        cwd=str(cwd), env=env, text=True, encoding="utf-8", errors="replace",
-    )
-    if os.name == "posix":
-        popen_kwargs["start_new_session"] = True
-    elif os.name == "nt":  # pragma: no cover — POSIX 회귀 환경
-        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    try:
-        proc = subprocess.Popen(argv, **popen_kwargs)   # ← 스폰 지점(여기서만 launch 신호)
-    except OSError as exc:
+            wall_exc.timeout_axis = timeout_axis
+            wall_exc.threshold_seconds = (
+                float(threshold) if threshold is not None else float(timeout)
+            )
+            wall_exc.silence_seconds = silence
+            return _timeout_failure_result(harness, timeout, wall_exc)
+        # first-event 축만 startup stall 인프라 실패다. 구형 sentinel(axis 없음)은 기존 계약을
+        # 보존해 stall로 취급한다.
+        partial_stderr = getattr(exc, "stderr", "") or ""
+        result = {"returncode": 1, "stdout": getattr(exc, "output", "") or "",
+                  "stderr": f"{OPENCODE_STALL_MARKER} {exc}] {partial_stderr}".rstrip(),
+                  "timed_out": False, RUN_RESULT_STALLED: True}
+        if timeout_axis is not None:
+            result[RUN_RESULT_TIMEOUT_AXIS] = timeout_axis
+        if threshold is not None:
+            result[RUN_RESULT_TIMEOUT_THRESHOLD_SEC] = threshold
+        if silence is not None:
+            result[RUN_RESULT_SILENCE_SEC] = silence
+        return result
+    except subprocess.TimeoutExpired as exc:
+        # 워치독이 프로세스그룹째 kill 후 전파(kill 은 워치독 소관). 무진행/벽시계 공통 경로 —
+        # IdleTimeoutExpired 는 TimeoutExpired 하위라 분류(FAILURE_CLASS_TIMEOUT)가 그대로 선다.
+        return _timeout_failure_result(harness, timeout, exc)
+    except _LAUNCH_STAGE_ERRORS as exc:
         return _launch_failure_result(harness, exc)
-    try:
-        stdout, stderr = proc.communicate(input=stdin_text, timeout=timeout)
-        return {"returncode": proc.returncode, "stdout": stdout or "", "stderr": stderr or "",
-                "timed_out": False}
-    except subprocess.TimeoutExpired:
-        relay._kill_process_group(proc)  # 그룹째 종료(자식 잔존 방지)
-        try:
-            stdout, stderr = proc.communicate(timeout=5)
-        except Exception:  # noqa: BLE001 — 이미 kill 됨·수확 실패는 무시
-            stdout, stderr = "", ""
-        return {"returncode": 1, "stdout": stdout or "", "stderr": stderr or "", "timed_out": True}
     except OSError as exc:
-        # 프롬프트 전송 후 I/O 오류 — 폴백 대상 아님(중복 외부 전송 차단·fail-loud).
-        relay._kill_process_group(proc)
         return _midrun_failure_result(harness, exc)
+    except Exception as exc:
+        if getattr(exc, "process_cleanup_failed", False) is True:
+            return _cleanup_failure_result(harness, exc)
+        raise
 
 
 # 스폰 단계로 확신할 수 있는 예외들(바이너리 부재·실행 권한·경로 형상). 그 밖의 OSError 는 실행 중
@@ -2118,6 +2284,20 @@ def _midrun_failure_result(harness: str, exc: BaseException) -> RunResult:
     }
 
 
+def _cleanup_failure_result(harness: str, exc: BaseException) -> RunResult:
+    """kill/drain 실패를 부분 산출물과 명시 인프라 신호가 붙은 결과로 정규화한다."""
+    return {
+        "returncode": 1,
+        "stdout": getattr(exc, "output", "") or "",
+        "stderr": (
+            f"[{harness} 프로세스 정리 실패 — 인프라 실패: {exc}] "
+            f"{getattr(exc, 'stderr', '') or ''}"
+        ).rstrip(),
+        "timed_out": False,
+        RUN_RESULT_CLEANUP_FAILED: True,
+    }
+
+
 class DelegateAttempt(NamedTuple):
     """단일 하네스 실행과 감사 raw 결과(폴백 재귀 없이 primary/fallback 각 1회)."""
 
@@ -2141,6 +2321,25 @@ def _build_target_argv(
     if harness == "claude":
         return build_claude_argv(model, reasoning, role)
     return build_opencode_argv(model, reasoning, role, str(cwd), str(prompt_file))
+
+
+def _prepare_attempt_transport(
+    harness: str, model: str, reasoning: str | None, role: str, cwd: Path,
+    prompt: str, output_dir: Path | None,
+) -> tuple[list[str], str | None, Path | None]:
+    """하네스별 wire transport만 준비한다(timeout/판정은 소유하지 않는 좁은 어댑터)."""
+    if harness == "opencode":
+        prompt_path = save_raw_output("opencode_prompt", prompt, output_dir)
+        return (
+            _build_target_argv(harness, model, reasoning, role, cwd, prompt_path),
+            None,
+            prompt_path,
+        )
+    return (
+        _build_target_argv(harness, model, reasoning, role, cwd, Path()),
+        prompt,
+        None,
+    )
 
 
 def _execute_attempt(
@@ -2169,15 +2368,9 @@ def _execute_attempt(
     그 밖의 OSError는 전송 후일 수 있어 미분류 실패로 남긴다(폴백 금지·중복 외부 전송 차단).
     """
     env = build_env(harness)
-    stdin_text: str | None = None
-    prompt_path: Path | None = None
-    if harness == "opencode":
-        prompt_path = save_raw_output("opencode_prompt", prompt, output_dir)
-        argv = _build_target_argv(harness, model, reasoning, role, cwd, prompt_path)
-    else:
-        # prompt_file 인자는 opencode에서만 소비된다.
-        argv = _build_target_argv(harness, model, reasoning, role, cwd, Path())
-        stdin_text = prompt
+    argv, stdin_text, prompt_path = _prepare_attempt_transport(
+        harness, model, reasoning, role, cwd, prompt, output_dir
+    )
 
     started = time.monotonic()
     try:
@@ -2208,6 +2401,8 @@ def _execute_attempt(
             primary_raw=primary_raw, secret_scan_ack_digest=secret_scan_ack_digest,
             secret_scan_ack_hits=secret_scan_ack_hits,
             secret_scan_ack_primary_recipient=secret_scan_ack_primary_recipient,
+            silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
+            idle_killed=bool(result.get(RUN_RESULT_IDLE_KILLED, False)),
         ),
         output_dir,
     )
@@ -2458,7 +2653,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reasoning", default=None, metavar="VAL",
                         help="reasoning override(--harness/--model 동반 시만·드라이버별 허용값)")
     parser.add_argument("--timeout", type=int, default=None, metavar="SEC",
-                        help=f"위임 turn 타임아웃(초·기본 {DELEGATE_TIMEOUT_SECONDS})")
+                        help="위임 turn 벽시계 백스톱(초·기본은 하네스 프로필: 클라우드 축 "
+                             "codex/claude 3600 · 로컬 GPU 축 opencode 14400). 주 판정은 무진행이며 "
+                             "배포별 조정은 local.conf harness.<name>.wall_timeout/.idle_timeout")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
                         help="raw 출력 박제 디렉토리(기본 /tmp)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
@@ -2494,48 +2691,119 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--secret-scan-ack 승인 토큰은 24자리 소문자 hex여야 한다.")
 
 
-def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str]) -> int:
-    """위임 turn 타임아웃(초)을 양의 정수로 해소한다(suggestion — traceback 방지).
+def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str], harness: str) -> int:
+    """위임 turn **벽시계 백스톱**(초)을 양의 정수로 해소한다.
 
-    우선순위: `--timeout`(양수 — _validate_args 가 보장) > local.conf `delegate_timeout` > 기본. conf
-    값은 CLI 가 아니라 usage error 가 부적합하므로 fail-soft(비정수/≤0 은 stderr 경고 후 기본·
-    pm_import `_opencode_models_timeout` 선례). int() 예외로 죽던 경로를 닫는다."""
+    우선순위: `--timeout`(양수 — _validate_args 가 보장) > 하네스 프로필 해소값. 프로필 해소는
+    `pm_relay.resolve_harness_profile`(선언 기본 → `delegate_timeout` legacy → `harness.<name>.
+    wall_timeout`)이 소유하므로 이 함수는 CLI 우선만 얹는다 — 값 규칙이 두 군데로 갈리지 않는다.
+    깨진 conf 값은 그 해소기가 stderr 경고 후 선언 기본으로 fail-soft 한다(usage error 부적합)."""
     if args.timeout is not None:
         return args.timeout  # _validate_args 가 >0 보장
-    raw = (conf.get("delegate_timeout") or "").strip()
-    if not raw:
-        return DELEGATE_TIMEOUT_SECONDS
-    try:
-        val = int(raw)
-    except ValueError:
-        print(f"경고: local.conf delegate_timeout={raw!r} 비정수 — 기본 "
-              f"{DELEGATE_TIMEOUT_SECONDS}s 사용.", file=sys.stderr)
-        return DELEGATE_TIMEOUT_SECONDS
-    if val <= 0:
-        print(f"경고: local.conf delegate_timeout={val} ≤0 — 기본 "
-              f"{DELEGATE_TIMEOUT_SECONDS}s 사용.", file=sys.stderr)
-        return DELEGATE_TIMEOUT_SECONDS
-    return val
+    return int(harness_profile(harness, conf).wall_timeout)
 
 
 def _harness_timeout_budget(harness: str, timeout: int) -> int:
     """하네스 **1회 실행**의 최악 소요 예산(초).
 
-    codex/claude 는 turn timeout 그대로다. opencode 만 다르다 — 첫-이벤트 워치독
-    (pm_relay.run_with_first_event_watchdog)이 **시도마다** overall 예산을 새로 잡으므로 단일 실행이
-    timeout 을 넘을 수 있다. 다만 stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로
-    (`now >= first_deadline` 분기) 예산은 `timeout + retries×min(첫-이벤트 창, timeout)` 이다
-    (기본 1800 + 2×90 = 1980s). relay 노브(env PM_OC_STALL_RETRIES·PM_OC_FIRST_EVENT_TIMEOUT)를 못
-    읽으면 보수적으로 timeout 을 그대로 쓴다."""
-    if harness != "opencode":
-        return timeout
+    첫-이벤트 워치독을 **선언한 축**(프로필 startup_watchdog=True·현재 opencode)만 다르다 —
+    워치독이 **시도마다** overall 예산을 새로 잡으므로 단일 실행이 timeout 을 넘을 수 있다.
+    다만 stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로(`now >= first_deadline`
+    분기) 예산은 `timeout + retries×min(첫-이벤트 창, timeout)` 이다(opencode 기본 14400 + 2×90).
+    나머지 축은 재시도 0이라 turn timeout 그대로다. relay 노브(env PM_OC_STALL_RETRIES·
+    PM_OC_FIRST_EVENT_TIMEOUT)를 못 읽으면 보수적으로 timeout 을 그대로 쓴다.
+    (무진행 판정은 벽시계 *안쪽* 에서만 앞당겨 끝내므로 이 상한을 늘리지 않는다.)"""
     try:
+        if not harness_profile(harness).startup_watchdog:
+            return timeout
         relay = _load_relay()
         retries = max(0, int(relay.stall_retries_default()))
         first_event_window = float(relay.first_event_timeout_default())
     except (OSError, ValueError, TypeError, AttributeError, ImportError):
-        return timeout
+        return timeout  # 선언/노브를 못 읽으면 보수적으로 turn timeout(과대 예고 금지).
     return int(timeout + retries * min(first_event_window, timeout))
+
+
+def max_declared_execution_path_budget() -> int:
+    """기본 선언으로 가능한 primary→fallback 경로의 최악 본체 예산(초).
+
+    폴백은 자기 turn 예산을 새로 쓰며, 같은 하네스의 다른 모델로도 유효하다. 따라서 단일 프로필
+    최댓값이 아니라 **모든 선언 축 두 시도의 합**을 본다. 2단 폴백은 없으므로 깊이는 정확히 2다.
+    startup watchdog 재시도 창도 각 시도의 예산에 포함한다.
+    """
+    relay = _load_relay()
+    budgets = [
+        _harness_timeout_budget(harness, int(profile.wall_timeout))
+        for harness, profile in relay.HARNESS_PROFILES.items()
+    ]
+    return max(primary + fallback for primary in budgets for fallback in budgets)
+
+
+def _pm_harness_and_cap_env(env: dict[str, str] | None = None) -> tuple[str | None, str | None]:
+    """현재 PM 하네스와 그 Bash 상한 env 키를 해소한다(정적 전파 불가 채택자 진단용)."""
+    env = os.environ if env is None else env
+    if env.get("OPENCODE") or env.get("OPENCODE_CONFIG"):
+        return "opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"
+    if env.get("CLAUDECODE") or env.get("CLAUDE_CONFIG_DIR"):
+        return "claude", "BASH_MAX_TIMEOUT_MS"
+    if env.get("CODEX_THREAD_ID") or env.get("CODEX_CI"):
+        return "codex", None  # Codex bash 상한은 이 repo가 해소할 공개 env 표면이 없다.
+    return None, None
+
+
+def harness_cap_advisory(env: dict[str, str] | None = None,
+                         *, execution_budget: int | None = None) -> str | None:
+    """기존 채택자의 런타임 Bash 상한이 엔진 실행 경로보다 낮으면 loud advisory.
+
+    adapter settings 는 engine.manifest 밖 인스턴스 소유라 pm_update 로 정적 상향할 수 없다. 실행
+    시 실제 env 를 읽어 조용한 무력화를 막는다. 기본 선언 최악과 이번 실행의 해소 예산 중 큰 쪽을
+    요구치로 삼아 local.conf/CLI 상향도 놓치지 않는다. 알 수 없는/불량 값 역시 조용히 통과시키지
+    않고 설정 표면을 명시한다(advisory·실행은 차단하지 않음).
+    """
+    env = os.environ if env is None else env
+    pm_harness, cap_key = _pm_harness_and_cap_env(env)
+    if pm_harness is None or cap_key is None:
+        return None
+    required = max_declared_execution_path_budget()
+    if execution_budget is not None:
+        required = max(required, execution_budget)
+    required += _HARNESS_CAP_MARGIN_SEC
+    raw = env.get(cap_key)
+    if raw is None:
+        return (
+            f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_key} 미해소 — "
+            f"엔진 최악 실행 경로+정리 여유 {required}s 이상으로 설정해야 하네스 선행 kill을 막습니다."
+        )
+    try:
+        cap_sec = int(raw) / 1000.0
+    except (TypeError, ValueError, OverflowError):
+        return (
+            f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_key}={raw!r} 해석 불가 — "
+            f"유한한 정수 ms로 {required}s 이상 설정하세요."
+        )
+    if not math.isfinite(cap_sec) or cap_sec < required:
+        return (
+            f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_sec:g}s < "
+            f"엔진 최악 실행 경로+정리 여유 {required}s — 엔진 무진행 진단/부분 산출물 보존 전에 "
+            f"하네스가 kill할 수 있습니다. {cap_key}를 최소 {required * 1000}ms로 상향하세요."
+        )
+    return None
+
+
+def _dry_run_harness_annotations(
+    harness: str, fallback_harness: str | None = None
+) -> tuple[str, str | None]:
+    """dry-run 표시용 하네스별 문구만 반환한다(timeout/판정은 소유하지 않는 표현 어댑터)."""
+    names = (harness,) if fallback_harness is None else (harness, fallback_harness)
+    budget_note = (
+        " · opencode 는 첫-이벤트 워치독 재시도분 포함"
+        if "opencode" in names else ""
+    )
+    transport_note = (
+        "  (opencode: 실행 시 role preamble 합성 프롬프트를 임시 파일로 --file 전달)"
+        if harness == "opencode" else None
+    )
+    return budget_note, transport_note
 
 
 def main(argv: list[str] | None = None, run_fn: Callable | None = None,
@@ -2663,8 +2931,17 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         harness, model, reasoning, args.role, cwd, prompt_file,
     )
 
-    # 타임아웃은 dry-run 미리보기(폴백 시간 예산 표시)와 실행이 같은 값을 쓴다.
-    timeout = _resolve_timeout(args, conf)
+    # 타임아웃은 dry-run 미리보기(폴백 시간 예산 표시)와 실행이 같은 값을 쓴다. 값이 하네스별이라
+    # **시도마다 자기 하네스의 예산**을 쓴다(폴백이 다른 축이면 예산도 그 축의 것).
+    timeout = _resolve_timeout(args, conf, harness)
+    fallback_timeout = (_resolve_timeout(args, conf, fallback[0])
+                        if fallback is not None else timeout)
+    execution_budget = _harness_timeout_budget(harness, timeout)
+    if fallback is not None:
+        execution_budget += _harness_timeout_budget(fallback[0], fallback_timeout)
+    cap_warning = harness_cap_advisory(execution_budget=execution_budget)
+    if cap_warning is not None:
+        print(cap_warning, file=sys.stderr)
 
     # 시크릿 판정은 dry-run과 실행이 같은 exhaustive 결과를 쓴다. 기존 첫-hit API/판정 순서는
     # `scan_prompt_secrets()`에 그대로 남고, 사람 승인 경로만 모든 hit를 끝까지 수집한다.
@@ -2685,9 +2962,10 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         else:
             fallback_harness, fallback_model, fallback_reasoning = fallback
             primary_budget = _harness_timeout_budget(harness, timeout)
-            fallback_budget = _harness_timeout_budget(fallback_harness, timeout)
-            note = (" · opencode 는 첫-이벤트 워치독 재시도분 포함"
-                    if "opencode" in (harness, fallback_harness) else "")
+            fallback_budget = _harness_timeout_budget(fallback_harness, fallback_timeout)
+            note, _transport_note = _dry_run_harness_annotations(
+                harness, fallback_harness
+            )
             print(
                 "폴백: "
                 f"harness={fallback_harness} model={fallback_model} "
@@ -2703,8 +2981,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             print("  (본체 예산만 — kill/정리 오버헤드 수초~수십초 별도 · 외부 하드 데드라인으로 쓰지 말 것)")
         print(f"cwd: {cwd}")
         print(f"argv: {' '.join(argv_display)}")
-        if harness == "opencode":
-            print("  (opencode: 실행 시 role preamble 합성 프롬프트를 임시 파일로 --file 전달)")
+        _budget_note, transport_note = _dry_run_harness_annotations(harness)
+        if transport_note is not None:
+            print(transport_note)
         if secret_hits:
             print(f"시크릿 스캔: 탐지 {len(secret_hits)}건 — 실 실행은 전송 전 차단")
             print(_format_secret_scan_hits(secret_hits))
@@ -2778,7 +3057,8 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         return _execute_and_collect(
             args=args, harness=harness, model=model, reasoning=reasoning,
             fallback=fallback, fallback_skip=fallback_skip, cwd=cwd, prompt=prompt,
-            timeout=timeout, output_dir=output_dir, run_fn=_run,
+            timeout=timeout, fallback_timeout=fallback_timeout,
+            output_dir=output_dir, run_fn=_run,
             secret_scan_ack_digest=secret_scan_ack_digest,
             secret_scan_ack_hits=secret_scan_ack_hits,
         )
@@ -2801,11 +3081,16 @@ def _execute_and_collect(
     run_fn: Callable,
     secret_scan_ack_digest: str | None,
     secret_scan_ack_hits: tuple[PromptSecretHit, ...],
+    fallback_timeout: int | None = None,
 ) -> int:
     """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다.
 
     main 에서 분리한 이유는 위임 범위 판정이 **모든 종료 경로에서 정확히 1회** 돌아야 하기
-    때문이다 — 호출부의 try/finally 가 그 경계다."""
+    때문이다 — 호출부의 try/finally 가 그 경계다.
+
+    `fallback_timeout` = 폴백 하네스의 벽시계 백스톱(미지정이면 primary 값). 값이 하네스별이라
+    다른 축으로 폴백하면 예산도 그 축의 것이어야 한다(클라우드→로컬 GPU 폴백에서 로컬 작업이
+    클라우드 예산에 잘리는 걸 막는다)."""
     try:
         primary = _execute_attempt(
             harness=harness,
@@ -2866,7 +3151,7 @@ def _execute_and_collect(
                 role=args.role,
                 cwd=cwd,
                 prompt=prompt,
-                timeout=timeout,
+                timeout=fallback_timeout if fallback_timeout is not None else timeout,
                 output_dir=output_dir,
                 run_fn=run_fn,
                 attempt=f"fallback-from-{harness}:{failure_class}",
@@ -2886,8 +3171,12 @@ def _execute_and_collect(
         fallback_rc = fallback_result.get("returncode", 1)
         fallback_stdout = fallback_result.get("stdout", "")
         if fallback_result.get("timed_out", False):
+            actual_timeout = _timeout_result_summary(
+                fallback_result,
+                fallback_timeout=(fallback_timeout if fallback_timeout is not None else timeout),
+            )
             print(
-                f"오류: 폴백 위임 turn 타임아웃({timeout}s) — 2차 폴백 없음. "
+                f"오류: 폴백 위임 turn 타임아웃({actual_timeout}) — 2차 폴백 없음. "
                 f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
                 file=sys.stderr,
             )
@@ -2938,7 +3227,8 @@ def _execute_and_collect(
 
     # 미설정 또는 비-인프라 실패 → 현행 fail-loud(rc=1 + stderr + raw 경로).
     if timed_out:
-        print(f"오류: 위임 turn 타임아웃({timeout}s) — 프로세스그룹 종료. raw: {raw_path}",
+        actual_timeout = _timeout_result_summary(result, fallback_timeout=timeout)
+        print(f"오류: 위임 turn 타임아웃({actual_timeout}) — 프로세스그룹 종료. raw: {raw_path}",
               file=sys.stderr)
         return 1
     if rc != 0:

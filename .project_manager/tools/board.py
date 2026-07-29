@@ -3959,6 +3959,29 @@ _DELEGATE_CONF_SEED = (
     "# delegate.developer.hard.fallback.model=opus\n"
 )
 
+# 하네스별 시간 예산 local.conf 시드 — **별도 마커/블록**인 이유: 위 위임 스키마를 이미 받은 기존
+# 채택자도 재실행 시 이 블록을 append 로 받아 키의 존재를 알게 된다(같은 블록에 끼워 넣으면 마커가
+# 이미 있어 영영 도달하지 않는다). 값은 엔진 기본으로 충분하고, 이 시드는 **노브의 존재를 알리는
+# 문서**다 — 전부 주석(활성 key 0)이라 미설정 채택자 동작은 불변.
+_HARNESS_BUDGET_SEED_MARKER = "하네스별 시간 예산"
+_HARNESS_BUDGET_CONF_SEED = (
+    "# ── 하네스별 시간 예산 (무진행 판정 + 벽시계 백스톱·전부 선택) ─────────\n"
+    "# 외부 하네스 실행(위임·외부 리뷰)의 중단 판정은 **무진행**(마지막 진행 출력 이후 침묵)이 주\n"
+    "# 판정이고 벽시계는 백스톱이다. 엔진 기본값은 축별로 다르다 — 클라우드 축(codex·claude)은\n"
+    "# 실측 기반으로 타이트하고, 로컬 GPU 축(opencode)은 긴 침묵 + 장시간 완주를 견딘다.\n"
+    "# **미설정이어도 안전**하다(설정 없이 정상 작업이 죽지 않게 잡혀 있다). 아래는 배포 환경이\n"
+    "# 다를 때만 조인다 — 예: GPU 가 넉넉해 로컬 추론이 빠르면 opencode 값을 낮춘다.\n"
+    "# 단위는 초. 하네스별 키가 표면-flat 키(delegate_timeout·external_review_timeout)를 이긴다.\n"
+    "# harness.codex.idle_timeout=900\n"
+    "# harness.codex.wall_timeout=3600\n"
+    "# harness.claude.idle_timeout=900\n"
+    "# harness.claude.wall_timeout=3600\n"
+    "# harness.opencode.idle_timeout=5400\n"
+    "# harness.opencode.wall_timeout=14400\n"
+    "# 외부 리뷰(external_review)는 reviewer_cmd 의 첫 토큰을 하네스로 보고 같은 키를 읽는다\n"
+    "# (기본 reviewer_cmd 가 `codex exec …` 이므로 harness.codex.* 가 적용된다).\n"
+)
+
 
 def _ctx_pct(key: str, default: int) -> int:
     """local.conf 의 ctx 임계값을 정수로 읽는다. 없거나 비정수면 default."""
@@ -5082,7 +5105,7 @@ def cmd_init(args: argparse.Namespace) -> int:
                  "# ctx_window_tokens_claude=500000\n"
                  "# ctx_window_tokens_opencode=200000\n"
                  "# ctx_window_tokens_codex=200000\n"
-                 + _DELEGATE_CONF_SEED)
+                 + _DELEGATE_CONF_SEED + _HARNESS_BUDGET_CONF_SEED)
         LOCAL_CONF.write_text(conf, encoding="utf-8")
         surface_sess = sess
     else:
@@ -5124,6 +5147,10 @@ def cmd_init(args: argparse.Namespace) -> int:
         # → 재실행 멱등(fresh conf 는 이미 포함하므로 자연 no-op). 실키 opt-in 은 prompt_delegate_optin.
         if _DELEGATE_SEED_MARKER not in merged:
             merged += _DELEGATE_CONF_SEED
+        # 하네스별 시간 예산 스키마도 같은 규칙으로 append(별도 마커 — 위 블록을 이미 받은
+        # 기존 채택자에게도 도달한다). 전부 주석이라 기존 동작/값은 불변.
+        if _HARNESS_BUDGET_SEED_MARKER not in merged:
+            merged += _HARNESS_BUDGET_CONF_SEED
         LOCAL_CONF.write_text(merged, encoding="utf-8")
         surface_sess = existing.get("session") or sess
         if override:

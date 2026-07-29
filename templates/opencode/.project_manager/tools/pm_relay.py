@@ -23,6 +23,8 @@ hook·pm_handoff·pm_bootstrap 는 **무수정**(읽기만) — supervisor 는 �
 """
 from __future__ import annotations
 
+import codecs
+import math
 import os
 import re
 import signal
@@ -32,7 +34,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import NamedTuple, Protocol, TextIO
 
 # marker 디렉토리 — ctx_stop_hook.py 의 _MARKER_DIR 와 동일해야 한다(읽기 측·hook 이 쓰는 측).
 MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
@@ -337,6 +339,28 @@ class StallWatchdogError(RuntimeError):
       - release 라이브 헬퍼: uncatch → 테스트 fail-loud(라이브 환경 문제 가시화).
     """
 
+    def __init__(self, message: str, *, timeout_axis: str | None = None,
+                 threshold_seconds: float | None = None,
+                 silence_seconds: float | None = None,
+                 output: str | None = None, stderr: str | None = None) -> None:
+        super().__init__(message)
+        self.timeout_axis = timeout_axis
+        self.threshold_seconds = threshold_seconds
+        self.silence_seconds = silence_seconds
+        self.output = output or ""
+        self.stderr = stderr or ""
+
+
+class ProcessCleanupError(RuntimeError):
+    """프로세스 그룹 종료/파이프 drain 실패 — 부분 산출물을 싣는 loud sentinel."""
+
+    def __init__(self, message: str, *, output: str | None = None,
+                 stderr: str | None = None) -> None:
+        super().__init__(message)
+        self.process_cleanup_failed = True
+        self.output = output or ""
+        self.stderr = stderr or ""
+
 
 def _env_positive_float(name: str, default: float) -> float:
     """env 노브를 양수 float 로 해소(빈/불량/비양수는 default·fail-soft)."""
@@ -384,41 +408,247 @@ def stall_retries_default() -> int:
     return _env_nonneg_int(STALL_RETRIES_ENV, DEFAULT_STALL_RETRIES)
 
 
-def _kill_process_group(proc) -> None:
-    """proc 를 프로세스 그룹째 kill(자식 잔존 방지) + 짧은 grace. 이미 종료면 no-op.
+# ── 무진행(idle) 판정 — 벽시계 단독 판정의 false-kill 폐쇄 ──────────────────────
+# 외부 프로세스를 "시작 후 경과 시간"으로 죽이면 **정상 진행 중인 작업**이 잘린다. 값 튜닝으로는
+# 못 닫는다 — 동일 입력이 900초를 넘기도 하고 안 넘기도 한 직접 증거(외부 리뷰 채널 실측 2회
+# 실행·입력 동일·한 번은 kill/한 번은 성공)가 임계값이 정상 작업의 **분산 대역 안**에 있음을 보였다.
+# 그래서 판정 기준을 **마지막 진행 이벤트 이후 무진행 시간**으로 교체하고 벽시계는 백스톱으로
+# 강등한다(worktree_pool.py:84-100 "진행이 보이면 관대하게, 안 보이면 유한하게"의 승계).
+# ── 시간 예산 실측 근거 (추측 상수 금지) ────────────────────────────────────────────
+# **클라우드 축**(codex·claude — 원격 추론). 재료 = /tmp 잔존 위임 raw 코퍼스(pm_delegate_codex_*
+# 5,100건·pm_delegate_claude_* 749건) + external_review raw(codex 평문 축 207건).
+#   ⓐ 도구 실행 침묵(직접 실측·N=860 표본/89 파일) — codex 는 command_execution 을 item.started →
+#      (그 도구가 도는 동안 stdout 이벤트 0) → item.completed 로 내므로 **한 도구 실행의 소요 =
+#      그 구간의 stdout 침묵**이다. 도구가 스스로 찍은 소요(pytest "in NNNs")를 표본으로:
+#      p50 0.5s · p90 82.6s · p95 102.7s · p99 124.9s · **max 254.6s**.
+#   ⓑ 이벤트 간 평균 간격(비둘기집 하한·rc=0 완주 153건) — 총 소요/이벤트 수 ≤ 최대 간격:
+#      p50 9.0s · p99 16.4s · max 17.7s. (총 소요 자체는 p50 370.2s·p99 1036.6s·max 1429.1s.)
+#   ⓒ 평문 축(external_review 의 `codex exec` — `--json` 없음) — 진행 로그가 **stderr** 로 촘촘히
+#      흐른다(리뷰 1건 stderr 12,233줄·hook/exec/succeeded 라인이 도구마다). stdout 은 최종 회신
+#      뿐이라(실측 498~759 바이트) **stdout 단독 관측은 이 축을 전량 false-kill 한다** — 그래서
+#      진행 신호는 stdout·stderr **양쪽 chunk 도착**으로 본다.
+CLOUD_IDLE_TIMEOUT_SEC = 900.0    # 관측 최대 침묵(254.6s)의 3.5배.
+CLOUD_WALL_TIMEOUT_SEC = 3600.0   # 관측 최대 완주(1429.1s)의 2.5배 — 백스톱이라 여유를 크게.
 
-    POSIX: `os.killpg(getpgid, SIGKILL)`(Popen 이 start_new_session 으로 새 그룹장). Windows:
-    `proc.kill()`(CREATE_NEW_PROCESS_GROUP). 예외는 삼킨다(best-effort — 이미 죽었을 수 있음)."""
-    if proc.poll() is not None:
-        return
+# **로컬 GPU 축**(opencode — 로컬 모델 추론). 위 코퍼스에 opencode 표본은 **0건**이라 값을 클라우드
+# 측정치로 잡으면 안 된다(초기 구현이 그렇게 했다가 전제가 깨졌다). 근거는 사용자 실측 증언이다:
+# 회사 환경(로컬 GPU 부족)의 opencode 위임은 **3시간까지** 걸리고, 관찰된 진행 양상은
+# **"길게 멈췄다 가끔 움직임"** 이다 — 즉 총 소요만 긴 게 아니라 **침묵 구간 자체가 길다**.
+# 클라우드 값(idle 900s)으로는 그 정상 작업을 죽인다.
+#   · wall 4시간 = 관측된 3시간 완주 + 33% 여유(요구: "3시간 위").
+#   · idle 1.5시간 = 3시간 실행에서 한 침묵이 전체의 절반에 달해도 통과. 이 이상 조용하면 총 소요의
+#     절반을 무출력으로 보낸 것이라 정지로 본다. 하드 표본이 없는 축이라 **설정 안 해도 안 죽는
+#     쪽**으로 잡았다 — 미설정 채택자의 false-kill 이 이 판정 전환의 실패 조건이기 때문이다.
+#     GPU 가 넉넉한 배포는 환경 조건이 다르므로 local.conf `harness.opencode.*` 로 조인다.
+LOCAL_GPU_IDLE_TIMEOUT_SEC = 5400.0    # 1.5시간
+LOCAL_GPU_WALL_TIMEOUT_SEC = 14400.0   # 4시간
+
+# ── 드라이버 진행-신호 능력 선언 (분기 특례가 아니라 테이블) ────────────────────────
+# 무진행 판정은 "드라이버가 살아있음을 스트림으로 알릴 수 있는가"에만 의존한다. 하니스별 if 분기를
+# 만들지 않고 **능력을 선언**한다 — 신호를 못 내는 드라이버가 생기면 선언만 바꾸면 된다.
+PROGRESS_SIGNAL_EVENT_STREAM = "event-stream"  # 줄 단위 이벤트(codex --json·opencode --format json·claude stream-json)
+PROGRESS_SIGNAL_PLAINTEXT = "plaintext"        # 평문 증분(codex exec 기본 — 진행 로그가 stderr 로 흐름)
+PROGRESS_SIGNAL_NONE = "none"                  # 종료 시 단일 덩어리 — 무진행 판정 불가 → 벽시계 유지
+
+PROGRESS_SIGNAL_KINDS: frozenset[str] = frozenset(
+    {PROGRESS_SIGNAL_EVENT_STREAM, PROGRESS_SIGNAL_PLAINTEXT, PROGRESS_SIGNAL_NONE}
+)
+
+
+class HarnessProfile(NamedTuple):
+    """하네스 축 선언 — 관측 능력 + 시간 예산. **값만 갈리고 판정 코드는 하나다.**
+
+    "하네스별 특례 분기 금지"의 금지 대상은 *코드 분기*이고, 드라이버별 *선언된 값*은 이 테이블의
+    존재 이유다. 코드가 갈리면(하네스 이름으로 판정 경로가 바뀌면) 그건 위반이다."""
+
+    progress_signal: str      # PROGRESS_SIGNAL_* — 무진행 판정 가능 여부
+    startup_watchdog: bool    # 첫-stdout-이벤트 창 + 유한 재시도 적용 여부
+    idle_timeout: float       # 무진행 상한(주 판정·초)
+    wall_timeout: float       # 벽시계 백스톱(초)
+
+
+HARNESS_PROFILES: dict[str, HarnessProfile] = {
+    # 클라우드 축 — 원격 추론이라 침묵/완주 모두 짧다(위 ⓐⓑ 실측).
+    "codex": HarnessProfile(PROGRESS_SIGNAL_EVENT_STREAM, False,
+                            CLOUD_IDLE_TIMEOUT_SEC, CLOUD_WALL_TIMEOUT_SEC),
+    "claude": HarnessProfile(PROGRESS_SIGNAL_EVENT_STREAM, False,
+                             CLOUD_IDLE_TIMEOUT_SEC, CLOUD_WALL_TIMEOUT_SEC),
+    # 로컬 GPU 축 — 긴 침묵 + 장시간 완주(사용자 실측 증언). startup stall 워치독은 이 축에서만
+    # 실측된 결함(upstream #13841)이라 여기만 True 다.
+    "opencode": HarnessProfile(PROGRESS_SIGNAL_EVENT_STREAM, True,
+                               LOCAL_GPU_IDLE_TIMEOUT_SEC, LOCAL_GPU_WALL_TIMEOUT_SEC),
+}
+
+# 프로필을 모르는 축의 기본 = **테이블에 선언된 값 중 가장 관대한 쪽**(false-kill 방향 금지).
+# 특정 프로필 상수의 alias 로 두면 더 관대한 축을 추가할 때 조용히 stale 해지므로 반드시 테이블에서
+# 파생한다. 이 두 이름은 기존 호출자의 공개 호환 표면이라 유지하되 값의 소유권은 HARNESS_PROFILES 다.
+DEFAULT_IDLE_TIMEOUT_SEC = max(profile.idle_timeout for profile in HARNESS_PROFILES.values())
+DEFAULT_WALL_TIMEOUT_SEC = max(profile.wall_timeout for profile in HARNESS_PROFILES.values())
+
+# 미지 하네스(설정 오류·신규 추가 누락) — 진행 신호를 **모르므로** 무진행 판정 대상이 아니고
+# (모르는 드라이버를 무진행으로 죽이지 않는다), 벽시계는 가장 관대한 선언값으로 유한하게 남는다.
+UNKNOWN_HARNESS_PROFILE = HarnessProfile(PROGRESS_SIGNAL_NONE, False,
+                                         DEFAULT_IDLE_TIMEOUT_SEC, DEFAULT_WALL_TIMEOUT_SEC)
+
+# 미지 **리뷰어** 커맨드 — 출력 형식을 모르므로 진행 신호가 있다고 가정하지 않는다. 종료 시 한 번에
+# 출력하는 CLI를 평문 증분 축으로 오인하면 정상 침묵 구간이 곧 idle kill 대상이 된다. 모를 때
+# 신호 없음(벽시계만)이 false-kill에 안전하고, 값은 가장 관대한 쪽으로 유한하게 남긴다.
+REVIEWER_FALLBACK_PROFILE = HarnessProfile(PROGRESS_SIGNAL_NONE, False,
+                                           DEFAULT_IDLE_TIMEOUT_SEC, DEFAULT_WALL_TIMEOUT_SEC)
+
+# local.conf 하네스별 override 키 — GPU 여유/네트워크 같은 **환경 조건**은 엔진 속성이 아니라
+# 배포 속성이라 per-clone 으로 받는다. 두 표면(위임·외부리뷰)이 같은 키를 읽는다.
+HARNESS_IDLE_TIMEOUT_KEY = "harness.{harness}.idle_timeout"
+HARNESS_WALL_TIMEOUT_KEY = "harness.{harness}.wall_timeout"
+
+
+def normalize_timeout_seconds(raw, *, minimum: int = 1) -> int | None:
+    """외부 timeout 입력을 **유한한 정수 초**로 정규화한다.
+
+    CLI·local.conf 등 문자열/수치 입력의 단일 경계다. bool·NaN·±inf·분수·최솟값 미만은 None 으로
+    거부한다. 소비처에서 `int()` 로 다시 자르지 않으므로 0.5→0초, int(nan/inf) 예외,
+    `nan` 비교 우회로 idle watchdog 비활성화가 모두 같은 원인에서 닫힌다.
+    """
+    if isinstance(raw, bool):
+        return None
     try:
-        if os.name == "posix":
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        else:
-            proc.kill()
-    except (ProcessLookupError, OSError):
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(value) or not value.is_integer():
+        return None
+    integer = int(value)
+    return integer if integer >= minimum else None
+
+
+def _conf_positive_float(conf: dict, key: str | None) -> float | None:
+    """local.conf timeout 을 정수 초로 해소(미설정/깨진 값은 None + 경고·실행을 막지 않는다)."""
+    if not key:
+        return None
+    raw = (conf.get(key) or "").strip()
+    if not raw:
+        return None
+    value = normalize_timeout_seconds(raw)
+    if value is None:
+        sys.stderr.write(
+            f"경고: local.conf {key}={raw!r} 은 유한한 정수 초(최소 1)가 아님 "
+            "— 선언 기본값 사용.\n"
+        )
+        return None
+    return float(value)
+
+
+def resolve_harness_profile(harness: str, conf: dict | None = None, *,
+                            fallback: HarnessProfile | None = None,
+                            legacy_idle_key: str | None = None,
+                            legacy_wall_key: str | None = None) -> HarnessProfile:
+    """하네스 → 시간 예산이 해소된 프로필. **두 표면이 이 한 함수를 쓴다.**
+
+    해소 순서(뒤가 이긴다): 선언 기본 → 표면-flat legacy 키(`delegate_timeout`·
+    `external_review_timeout` 등 기존 노브) → 하네스별 키(`harness.<name>.*`). CLI 일회성 override 는
+    호출부가 이 결과 위에 얹는다(가장 강함). 미지 하네스는 `fallback`(없으면 UNKNOWN_HARNESS_PROFILE).
+    """
+    conf = conf or {}
+    profile = HARNESS_PROFILES.get(harness) or fallback or UNKNOWN_HARNESS_PROFILE
+    idle, wall = profile.idle_timeout, profile.wall_timeout
+    for key in (legacy_idle_key, HARNESS_IDLE_TIMEOUT_KEY.format(harness=harness)):
+        value = _conf_positive_float(conf, key)
+        if value is not None:
+            idle = value
+    for key in (legacy_wall_key, HARNESS_WALL_TIMEOUT_KEY.format(harness=harness)):
+        value = _conf_positive_float(conf, key)
+        if value is not None:
+            wall = value
+    return profile._replace(idle_timeout=idle, wall_timeout=wall)
+
+
+def max_declared_wall_timeout() -> float:
+    """선언된 하네스 wall 백스톱 중 최댓값 — 하네스 Bash 상한 부등식의 좌변(단일 출처)."""
+    return max(profile.wall_timeout for profile in HARNESS_PROFILES.values())
+
+
+def idle_timeout_for_signal(progress_signal: str,
+                            configured: float | None = None) -> float | None:
+    """진행-신호 선언 → 적용할 무진행 상한(초). 신호 없는 축은 None(=벽시계 유지).
+
+    configured=None 이면 테이블 파생 기본을 쓴다. 미지의 선언은 **보수적으로** 신호 없음으로
+    취급한다(모르는 드라이버를 무진행으로 죽이지 않는다 — false-kill 방향 금지)."""
+    if progress_signal not in PROGRESS_SIGNAL_KINDS or progress_signal == PROGRESS_SIGNAL_NONE:
+        return None
+    value = DEFAULT_IDLE_TIMEOUT_SEC if configured is None else configured
+    normalized = normalize_timeout_seconds(value)
+    if normalized is None:
+        raise ValueError(f"idle_timeout={value!r}: 유한한 정수 초(최소 1) 필요")
+    return float(normalized)
+
+
+def _kill_process_group(proc, process_group_id: int | None = None) -> None:
+    """저장된 process-group ID를 부모 종료 여부와 무관하게 kill한다.
+
+    부모 `poll()`은 그룹 생존 판정이 아니다. 부모가 rc=0으로 먼저 끝나도 자식이 파이프를 쥔 채
+    남을 수 있으므로 POSIX에서는 생성 직후 저장한 pgid로 항상 `killpg`한다. ESRCH는 그룹이 이미
+    사라진 성공 상태지만 권한/플랫폼 오류와 kill 후 부모 wait 실패는 조용히 삼키지 않는다.
+    """
+    if os.name == "posix":
+        pgid = process_group_id
+        if pgid is None:
+            try:
+                pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                return
+            except OSError as exc:
+                raise ProcessCleanupError(
+                    f"프로세스 그룹 ID 해소 실패(pid={proc.pid}): {exc}"
+                ) from exc
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError as exc:
+            raise ProcessCleanupError(
+                f"프로세스 그룹 kill 실패(pgid={pgid}): {exc}"
+            ) from exc
+    elif proc.poll() is None:  # pragma: no cover — POSIX 회귀 환경
         try:
             proc.kill()
-        except OSError:
-            pass
-    try:
-        proc.wait(timeout=_KILL_GRACE_SEC)
-    except subprocess.TimeoutExpired:
-        pass
+        except OSError as exc:
+            raise ProcessCleanupError(f"프로세스 kill 실패(pid={proc.pid}): {exc}") from exc
+
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=_KILL_GRACE_SEC)
+        except subprocess.TimeoutExpired as exc:
+            raise ProcessCleanupError(
+                f"프로세스 그룹 kill 후 부모가 {_KILL_GRACE_SEC:g}s 안에 종료하지 않음"
+            ) from exc
 
 
 class _WatchedPopen:
-    """실 subprocess.Popen 을 감싸 첫-stdout-이벤트 관측 + 프로세스그룹 kill 을 제공.
+    """실 subprocess.Popen 을 감싸 첫-stdout-이벤트 관측 + 진행(chunk) 관측 + 프로세스그룹 kill 제공.
 
-    reader 스레드가 stdout 을 줄단위로 읽어 누적하고 첫 *비어있지-않은* 라인에서 first_event 를
-    set 한다(startup stall = 첫 라인조차 영원히 안 옴). stall 시 메인 루프가 kill 하면 reader 의
-    blocking readline 이 EOF 로 풀린다. stderr 도 별도 스레드로 드레인(파이프 버퍼 데드락 방지).
-    fake(테스트)로 대체 가능한 얇은 어댑터 — 워치독 로직은 run_with_first_event_watchdog 이 쥔다."""
+    reader 스레드가 stdout/stderr 를 **실제 도착 chunk 단위**로 읽어 누적한다. stdout 의 완성된
+    비어있지-않은 라인은 별도 line buffer 로 파싱해 first_event 를 set 한다(startup stall = 첫
+    이벤트 라인조차 영원히 안 옴). stall 시 메인 루프가 kill 하면 blocking read 가 EOF 로 풀린다.
+    stderr 도 별도 스레드로 드레인(파이프 버퍼 데드락 방지).
+    fake(테스트)로 대체 가능한 얇은 어댑터 — 워치독 로직은 run_with_first_event_watchdog 이 쥔다.
 
-    def __init__(self, argv, *, cwd=None, env=None, text=True):
+    **진행 관측**: stdout·stderr **어느 쪽이든** chunk 가 도착한 시각을 `last_event_at()`
+    로 노출한다(무진행 판정의 입력). 양쪽을 보는 이유는 실측이다 — `codex exec` 평문 축은 진행
+    로그가 전부 stderr 로 흐르고 stdout 은 최종 회신뿐이라, stdout 만 보면 정상 진행을 무진행으로
+    오판한다. `first_event_ready()` 는 **stdout 전용 그대로** 둔다(opencode startup stall 의미론
+    보존).
+
+    **stdin 주입**: `input_text` 를 주면 stdin=PIPE 로 열고 별도 스레드가 전문을 쓴 뒤 **닫는다**
+    (EOF 전달 — codex/claude 는 stdin EOF 까지 프롬프트를 읽는다). None 이면 기존처럼 stdin 미개입.
+    """
+
+    def __init__(self, argv, *, cwd=None, env=None, text=True,
+                 input_text: str | None = None, clock=None):
         popen_kwargs = dict(
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env,
         )
+        if input_text is not None:
+            popen_kwargs["stdin"] = subprocess.PIPE
         if text:
             popen_kwargs.update(text=True, encoding="utf-8", errors="replace")
         # 프로세스 그룹 분리 — kill 시 자식(모델 fetch 서브프로세스 등)까지 그룹째 정리.
@@ -426,55 +656,154 @@ class _WatchedPopen:
             popen_kwargs["start_new_session"] = True
         elif os.name == "nt":  # pragma: no cover — POSIX 회귀 환경
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        self._clock = clock if clock is not None else time.monotonic
         self._proc = subprocess.Popen(argv, **popen_kwargs)
+        self._argv = argv
+        # start_new_session=True이므로 POSIX 그룹장은 곧 pid다. 부모 종료 후에는 getpgid(pid)를
+        # 해소할 수 없으므로 생성 시점 값을 저장하는 것이 잔존 자식 정리의 load-bearing 계약이다.
+        self._process_group_id = self._proc.pid if os.name == "posix" else None
         self._first_event = threading.Event()
         self._stdout_chunks: list[str] = []
         self._stderr_chunks: list[str] = []
+        # 리더 스레드(2)와 메인 루프가 공유하는 상태(chunk 누적·마지막 도착 시각)의 단일 락.
+        # 실제 read chunk 당 1회 획득이라 비용은 무시 가능하고, 스냅샷이 append 와 경합하지 않는다.
+        self._progress_lock = threading.Lock()
+        self._last_event_at: float | None = None
         self._stdout_reader = threading.Thread(target=self._pump_stdout, daemon=True)
         self._stderr_reader = threading.Thread(target=self._pump_stderr, daemon=True)
+        self._stdin_writer: threading.Thread | None = None
+        if input_text is not None:
+            self._stdin_writer = threading.Thread(
+                target=self._pump_stdin, args=(input_text,), daemon=True
+            )
+            self._stdin_writer.start()
         self._stdout_reader.start()
         self._stderr_reader.start()
 
-    def _pump_stdout(self) -> None:
-        stream = self._proc.stdout
+    def _pump_stdin(self, text: str) -> None:
+        """프롬프트 전문을 stdin 에 쓰고 **닫는다**(EOF). 파이프 파손은 삼킨다(자식 조기 종료)."""
+        stream = self._proc.stdin
         if stream is None:
-            self._first_event.set()
             return
         try:
-            for line in iter(stream.readline, ""):
-                self._stdout_chunks.append(line)
-                if line.strip():
-                    self._first_event.set()
+            stream.write(text)
+            stream.flush()
+        except (BrokenPipeError, ValueError, OSError):
+            pass
+        finally:
+            try:
+                stream.close()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+
+    def _note_arrival(self, chunks: list[str], text: str) -> None:
+        """실제 byte chunk 도착 시각 갱신 + 디코딩된 텍스트 누적(단일 락).
+
+        UTF-8 다중바이트 문자의 중간 조각은 디코더가 아직 텍스트를 못 내도 **바이트는 도착한
+        것**이므로 시각은 갱신한다. 진행 판정은 텍스트/라인 완성 여부와 무관하다."""
+        with self._progress_lock:
+            if text:
+                chunks.append(text)
+            self._last_event_at = self._clock()
+
+    @staticmethod
+    def _read_chunk(stream):
+        """파이프에서 지금 도착한 chunk 를 읽는다 — 줄 경계를 기다리지 않는다."""
+        raw_stream = getattr(stream, "buffer", stream)
+        read1 = getattr(raw_stream, "read1", None)
+        return read1(4096) if callable(read1) else raw_stream.read(4096)
+
+    def _pump_stream(self, stream, chunks: list[str], *, stdout: bool) -> None:
+        if stream is None:
+            if stdout:
+                self._first_event.set()
+            return
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        pending_line = ""
+        try:
+            while True:
+                raw = self._read_chunk(stream)
+                if raw in (b"", ""):
+                    break
+                text = decoder.decode(raw) if isinstance(raw, bytes) else raw
+                self._note_arrival(chunks, text)
+                if stdout:
+                    pending_line += text
+                    while "\n" in pending_line:
+                        line, _newline, pending_line = pending_line.partition("\n")
+                        if line.strip():
+                            self._first_event.set()
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                with self._progress_lock:
+                    chunks.append(tail)
+                pending_line += tail
+            if stdout and pending_line.strip():
+                self._first_event.set()  # EOF 로 끝난 마지막 비개행 이벤트 라인.
         except (ValueError, OSError):
             pass
         finally:
-            self._first_event.set()  # EOF(빈 출력 포함) — 대기 루프를 풀어준다.
+            if stdout:
+                self._first_event.set()  # EOF/읽기 종료(빈 출력 포함) — startup 대기 해제.
+
+    def _pump_stdout(self) -> None:
+        self._pump_stream(self._proc.stdout, self._stdout_chunks, stdout=True)
 
     def _pump_stderr(self) -> None:
-        stream = self._proc.stderr
-        if stream is None:
-            return
-        try:
-            for line in iter(stream.readline, ""):
-                self._stderr_chunks.append(line)
-        except (ValueError, OSError):
-            pass
+        self._pump_stream(self._proc.stderr, self._stderr_chunks, stdout=False)
 
     def first_event_ready(self) -> bool:
         return self._first_event.is_set()
 
+    def last_event_at(self) -> float | None:
+        """마지막 chunk(stdout/stderr) 도착 시각(단조 시계) — 한 번도 없으면 None.
+
+        무진행 판정의 유일한 입력. 리더 스레드와 같은 락으로 읽어 경합-안전하다."""
+        with self._progress_lock:
+            return self._last_event_at
+
+    def partial_output(self) -> tuple[str, str]:
+        """지금까지 받은 (stdout, stderr) 스냅샷 — kill 시점 부분 산출물 보존용(전량 폐기 폐쇄)."""
+        with self._progress_lock:
+            return "".join(self._stdout_chunks), "".join(self._stderr_chunks)
+
     def poll(self):
         return self._proc.poll()
 
+    def drain_complete(self) -> bool:
+        """부모 종료 + stdin 전달 + stdout/stderr EOF가 모두 끝났을 때만 실행 완료."""
+        return (
+            self._proc.poll() is not None
+            and (self._stdin_writer is None or not self._stdin_writer.is_alive())
+            and not self._stdout_reader.is_alive()
+            and not self._stderr_reader.is_alive()
+        )
+
     def kill(self) -> None:
-        _kill_process_group(self._proc)
+        _kill_process_group(self._proc, self._process_group_id)
 
     def communicate(self, timeout=None):
-        """프로세스 종료를 기다려 (stdout, stderr) 누적을 반환. timeout 초과 시 TimeoutExpired."""
-        self._proc.wait(timeout=timeout)  # TimeoutExpired 를 그대로 전파(overall 백스톱).
-        self._stdout_reader.join(timeout=_KILL_GRACE_SEC)
-        self._stderr_reader.join(timeout=_KILL_GRACE_SEC)
-        return "".join(self._stdout_chunks), "".join(self._stderr_chunks)
+        """전체 deadline 동안 부모 **및 파이프 EOF**를 기다린다."""
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+
+        def remaining() -> float | None:
+            return None if deadline is None else max(0.0, deadline - time.monotonic())
+
+        self._proc.wait(timeout=remaining())
+        if self._stdin_writer is not None:
+            self._stdin_writer.join(timeout=remaining())
+        self._stdout_reader.join(timeout=remaining())
+        self._stderr_reader.join(timeout=remaining())
+        if (
+            (self._stdin_writer is not None and self._stdin_writer.is_alive())
+            or self._stdout_reader.is_alive()
+            or self._stderr_reader.is_alive()
+        ):
+            stdout, stderr = self.partial_output()
+            raise subprocess.TimeoutExpired(
+                self._argv, timeout, output=stdout, stderr=stderr
+            )
+        return self.partial_output()
 
     @property
     def returncode(self):
@@ -487,83 +816,316 @@ def _default_watchdog_log(message: str) -> None:
     sys.stderr.flush()
 
 
+TIMEOUT_AXIS_IDLE = "idle"
+TIMEOUT_AXIS_WALL = "wall"
+TIMEOUT_AXIS_FIRST_EVENT = "first-event"
+TIMEOUT_AXIS_ATTR = "timeout_axis"
+TIMEOUT_THRESHOLD_ATTR = "threshold_seconds"
+
+
+class WatchdogTimeoutExpired(subprocess.TimeoutExpired):
+    """공용 워치독 중단의 구조화된 진단 계약.
+
+    소비자는 호출 시 인자로 받았던 값(하네스별 해소 전/primary 값일 수 있음)을 다시 추정하지 않고,
+    예외가 싣는 **실제 발화 축·임계·중단 시 실측 침묵**을 읽는다."""
+
+    def __init__(self, cmd, timeout, *, timeout_axis: str,
+                 silence_seconds: float | None = None,
+                 output=None, stderr=None) -> None:
+        super().__init__(cmd, timeout, output=output, stderr=stderr)
+        self.timeout_axis = timeout_axis
+        self.threshold_seconds = float(timeout)
+        self.silence_seconds = silence_seconds
+
+
+class IdleTimeoutExpired(WatchdogTimeoutExpired):
+    """무진행(마지막 출력 이후 침묵) 판정으로 중단 — 벽시계 초과와 구분되는 sentinel.
+
+    `subprocess.TimeoutExpired` 를 **상속** 해 기존 호출부의 `except subprocess.TimeoutExpired`
+    가 그대로 잡는다(분류/폴백 경로 회귀 0). 구분이 필요한 지점(감사 헤더·실패 메시지)은
+    `idle_seconds`(실측 침묵 초) 속성 유무로 본다."""
+
+    def __init__(self, cmd, timeout, *, idle_seconds: float,
+                 output=None, stderr=None) -> None:
+        super().__init__(
+            cmd, timeout, timeout_axis=TIMEOUT_AXIS_IDLE, silence_seconds=idle_seconds,
+            output=output, stderr=stderr,
+        )
+        self.idle_seconds = idle_seconds
+
+
+class WallTimeoutExpired(WatchdogTimeoutExpired):
+    """벽시계 백스톱 중단 — 실제 벽시계 임계와 kill 시점 침묵을 함께 보존."""
+
+    def __init__(self, cmd, timeout, *, silence_seconds: float | None,
+                 output=None, stderr=None) -> None:
+        super().__init__(
+            cmd, timeout, timeout_axis=TIMEOUT_AXIS_WALL, silence_seconds=silence_seconds,
+            output=output, stderr=stderr,
+        )
+
+
+# CompletedProcess 에 실어 보내는 관측 침묵 초 속성명 — 감사 헤더(save_raw_output)가 읽는다.
+SILENCE_SEC_ATTR = "silence_sec"
+
+
+def _proc_partial_output(proc) -> tuple[str, str]:
+    """proc 가 지금까지 받은 (stdout, stderr) 스냅샷. 어댑터가 미지원이면 ("","")."""
+    getter = getattr(proc, "partial_output", None)
+    if not callable(getter):
+        return "", ""
+    try:
+        stdout, stderr = getter()
+    except Exception:  # noqa: BLE001 — 부분 산출물 회수 실패가 kill 경로를 깨면 안 된다.
+        return "", ""
+    return stdout or "", stderr or ""
+
+
+def _attach_partial_output(exc: subprocess.TimeoutExpired, proc) -> None:
+    """TimeoutExpired 에 kill 시점까지의 출력을 실어 준다(부분 산출물 전량 폐기 폐쇄)."""
+    stdout, stderr = _proc_partial_output(proc)
+    if not exc.output:
+        exc.output = stdout
+    if not exc.stderr:
+        exc.stderr = stderr
+
+
+def _attach_cleanup_output(exc: ProcessCleanupError, proc) -> None:
+    """정리 실패 sentinel에도 kill 시점까지의 부분 산출물을 보존한다."""
+    stdout, stderr = _proc_partial_output(proc)
+    if not exc.output:
+        exc.output = stdout
+    if not exc.stderr:
+        exc.stderr = stderr
+
+
+def _proc_drain_complete(proc) -> bool:
+    """부모+입출력 채널 완료 판정. 구형/fake 어댑터는 기존 poll 계약으로 호환."""
+    checker = getattr(proc, "drain_complete", None)
+    return bool(checker()) if callable(checker) else proc.poll() is not None
+
+
+def _terminate_and_drain(proc, *, argv) -> tuple[str, str]:
+    """그룹 kill 후 파이프 EOF까지 수확한다. 정리 실패는 부분 성공으로 숨기지 않는다."""
+    try:
+        proc.kill()
+    except ProcessCleanupError as exc:
+        _attach_cleanup_output(exc, proc)
+        raise
+    try:
+        return proc.communicate(timeout=_KILL_GRACE_SEC)
+    except subprocess.TimeoutExpired as exc:
+        _attach_partial_output(exc, proc)
+        # DI용 legacy fake는 kill 뒤 상태/파이프 완료를 모델링하지 않고 같은 예외 객체를 영구
+        # 재발시키기도 한다. 실제 어댑터만 정리 실패를 판정하고, 구형 fake는 기존 부분출력 계약을
+        # 유지한다(프로덕션 loud 보장을 약화하지 않음).
+        if not isinstance(proc, _WatchedPopen):
+            return _proc_partial_output(proc)
+        raise ProcessCleanupError(
+            f"프로세스 그룹 kill 후 파이프가 {_KILL_GRACE_SEC:g}s 안에 닫히지 않음: {argv!r}",
+            output=exc.output, stderr=exc.stderr,
+        ) from exc
+
+
+def _silence_seconds(proc, now: float, start: float) -> float | None:
+    """마지막 진행(chunk 도착) 이후 침묵 초. **관측 불가 어댑터면 None**(판정 skip).
+
+    출력이 한 번도 없었으면 시작 시각을 기준으로 잰다(시작부터 전부 침묵). `last_event_at` 를
+    노출하지 않는 proc 어댑터는 진행을 볼 수 없으므로 무진행 판정 대상이 아니다 —
+    "신호 없으면 벽시계" 원칙(모르는 드라이버를 무진행으로 죽이지 않는다)."""
+    getter = getattr(proc, "last_event_at", None)
+    if not callable(getter):
+        return None
+    last = getter()
+    return now - (start if last is None else last)
+
+
+def _drain_with_idle_judgment(proc, *, argv, start: float, idle_timeout: float,
+                              overall_timeout: float, overall_deadline: float,
+                              clock, sleep, log, poll_interval: float):
+    """드레인 구간을 폴하며 **무진행** 을 주 판정으로 본다(벽시계는 백스톱).
+
+    - 무진행 초과 → 프로세스 그룹째 kill + loud 1줄 + IdleTimeoutExpired(부분 산출물 동반).
+    - 벽시계 초과 → 같은 kill + TimeoutExpired(부분 산출물 동반). 감지기가 고장나도 유한하게
+      닫는다(무제한 금지·worktree_pool 의 captured 러너 폴백-캡과 동형).
+    """
+    while not _proc_drain_complete(proc):
+        now = clock()
+        silence = _silence_seconds(proc, now, start)
+        if silence is not None and silence >= idle_timeout:
+            stdout, stderr = _terminate_and_drain(proc, argv=argv)
+            log(f"[pm-orch] idle watchdog: {silence:.0f}s 무진행(임계 {idle_timeout:.0f}s) "
+                "— 프로세스 그룹 kill. 부분 산출물은 보존.")
+            raise IdleTimeoutExpired(argv, idle_timeout, idle_seconds=silence,
+                                     output=stdout, stderr=stderr)
+        if now >= overall_deadline:
+            stdout, stderr = _terminate_and_drain(proc, argv=argv)
+            log(f"[pm-orch] overall watchdog: 벽시계 백스톱 {overall_timeout:.0f}s 초과 "
+                "— 프로세스 그룹 kill. 부분 산출물은 보존.")
+            raise WallTimeoutExpired(
+                argv, overall_timeout, silence_seconds=silence,
+                output=stdout, stderr=stderr,
+            )
+        sleep(poll_interval)
+    return proc.communicate(timeout=max(0.0, overall_deadline - clock()))
+
+
 def run_with_first_event_watchdog(
     argv,
     *,
-    first_event_timeout: float,
+    first_event_timeout: float | None,
     overall_timeout: float,
     retries: int,
+    idle_timeout: float | None = None,
     cwd=None,
     env=None,
     text: bool = True,
+    input_text: str | None = None,
     popen=None,
     clock=None,
     sleep=None,
     log=None,
     poll_interval: float = _WATCHDOG_POLL_INTERVAL_SEC,
 ):
-    """argv 를 첫-이벤트 워치독으로 실행 — startup stall 을 유한 재시도로 닫는다.
+    """argv 를 관측 워치독으로 실행 — startup stall(유한 재시도) + 무진행을 유한하게 닫는다.
 
     각 시도: 프로세스 시작 → stdout 첫 이벤트를 first_event_timeout 초 내 관측하는지 감시.
-      - 관측(또는 첫 이벤트 없이 빠른 종료) → 완료까지 드레인(overall_timeout 백스톱) 후
+      - 관측(또는 첫 이벤트 없이 빠른 종료) → 완료까지 드레인 후
         subprocess.CompletedProcess(returncode·stdout·stderr) 반환.
       - 미관측(stall) → 프로세스 그룹째 kill·loud 1줄·다음 시도.
     모든 시도(= retries+1) 소진 → StallWatchdogError(fail-loud·호출부가 정책 결정).
 
+    `first_event_timeout=None` = **startup 창 미적용**(첫-이벤트 감시 없이 바로 드레인). 첫 stdout
+    이 종료 직전에야 오는 축(codex exec 평문 리뷰어)이 이 창에 걸려 죽지 않게 하는 선언이다 —
+    하니스별 if 분기가 아니라 호출부의 능력 선언(idle_timeout_for_signal 과 짝).
+
+    `idle_timeout=None` = **무진행 판정 미적용**(현행 동작 불변) — 드레인은 종전처럼 단일 블로킹
+    `communicate(overall 백스톱)` 이다. 값이 있으면 드레인이 폴 루프로 바뀌어 마지막 진행 이후
+    침묵이 그 값을 넘을 때 kill 한다(벽시계는 백스톱으로 잔류).
+
     DI seam(hermetic 테스트·바이너리 불요):
-      popen : argv -> proc(first_event_ready()/poll()/kill()/communicate(timeout)/returncode).
-              기본 = _WatchedPopen(cwd/env/text 바인딩).
+      popen : argv -> proc(first_event_ready()/poll()/kill()/communicate(timeout)/returncode
+              [+ last_event_at()/partial_output() — 무진행 판정·부분 보존]).
+              기본 = _WatchedPopen(cwd/env/text/input_text/clock 바인딩).
       clock : () -> 초(단조). 기본 time.monotonic.
       sleep : (초) -> None. 기본 time.sleep(폴 간격 양보). fake 는 여기서 clock 을 전진시킨다.
       log   : (str) -> None. 기본 stderr 1줄.
-    overall_timeout 은 호출부의 기존 hard 가드(예: TURN_TIMEOUT_SEC=600)를 그대로 받아 mid-turn
-    침묵의 백스톱으로 쓴다 — 워치독은 그 *안쪽*에 startup 첫-이벤트 감시를 더한다.
+    overall_timeout 은 호출부의 벽시계 백스톱이다 — 무진행 판정이 켜지면 주 판정 자리를 내주고
+    "감지기가 고장난 경우"의 유한 상한으로만 남는다.
     """
-    if popen is None:
-        def popen(_argv):  # 기본 실 Popen 어댑터(cwd/env/text 클로저).
-            return _WatchedPopen(_argv, cwd=cwd, env=env, text=text)
     clock = clock if clock is not None else time.monotonic
     sleep = sleep if sleep is not None else time.sleep
     log = log if log is not None else _default_watchdog_log
+    if idle_timeout is not None:
+        normalized_idle = normalize_timeout_seconds(idle_timeout)
+        if normalized_idle is None:
+            raise ValueError(
+                f"idle_timeout={idle_timeout!r}: 유한한 정수 초(최소 1) 필요"
+            )
+        idle_timeout = float(normalized_idle)
+    if popen is None:
+        def popen(_argv):  # 기본 실 Popen 어댑터(cwd/env/text/stdin/clock 클로저).
+            return _WatchedPopen(_argv, cwd=cwd, env=env, text=text,
+                                 input_text=input_text, clock=clock)
 
     attempts = retries + 1  # retries=재시도 횟수 → 총 시도 = retries+1(최초 1 + 재시도 M).
     last_reason = ""
+    last_axis: str | None = None
+    last_threshold: float | None = None
+    last_silence: float | None = None
+    stalled_stdout: list[str] = []
+    stalled_stderr: list[str] = []
     for attempt in range(1, attempts + 1):
         proc = popen(argv)
         start = clock()
-        first_deadline = start + first_event_timeout
         overall_deadline = start + overall_timeout
         stalled = False
-        while True:
-            if proc.first_event_ready():
-                break  # 첫 이벤트 관측 → 드레인 단계로.
-            if proc.poll() is not None:
-                break  # 첫 이벤트 없이 종료(빠른 exit·에러) → 드레인이 결과 수습.
-            now = clock()
-            if now >= first_deadline or now >= overall_deadline:
-                stalled = True  # 첫-이벤트 창 초과(또는 극단적 overall 초과) = startup stall.
-                break
-            sleep(poll_interval)
+        if first_event_timeout is not None:
+            first_deadline = start + first_event_timeout
+            while True:
+                if proc.first_event_ready():
+                    break  # 첫 이벤트 관측 → 드레인 단계로.
+                if proc.poll() is not None:
+                    break  # 첫 이벤트 없이 종료(빠른 exit·에러) → 드레인이 결과 수습.
+                now = clock()
+                if now >= overall_deadline:
+                    stalled = True
+                    last_axis = TIMEOUT_AXIS_WALL
+                    last_threshold = float(overall_timeout)
+                    last_silence = _silence_seconds(proc, now, start)
+                    last_reason = f"벽시계 백스톱 {overall_timeout:.0f}s 초과"
+                    break
+                if now >= first_deadline:
+                    stalled = True
+                    last_axis = TIMEOUT_AXIS_FIRST_EVENT
+                    last_threshold = float(first_event_timeout)
+                    last_silence = _silence_seconds(proc, now, start)
+                    last_reason = f"첫 이벤트 임계 {first_event_timeout:.0f}s 초과"
+                    break
+                sleep(poll_interval)
         if stalled:
-            proc.kill()
-            last_reason = f"{first_event_timeout:.0f}s 무이벤트"
+            stdout, stderr = _terminate_and_drain(proc, argv=argv)
+            if stdout:
+                stalled_stdout.append(stdout)
+            if stderr:
+                stalled_stderr.append(stderr)
             log(
                 f"[pm-orch] stall watchdog: {last_reason} kill·재시도 {attempt}/{attempts}"
             )
             continue
-        remaining = overall_deadline - clock()
-        if remaining < 0:
-            remaining = 0.0
         try:
-            stdout, stderr = proc.communicate(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            raise  # overall(mid-turn) 백스톱 — 기존 TimeoutExpired 계약을 그대로 유지.
-        return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+            if idle_timeout is None:
+                remaining = overall_deadline - clock()
+                if remaining < 0:
+                    remaining = 0.0
+                try:
+                    stdout, stderr = proc.communicate(timeout=remaining)
+                except subprocess.TimeoutExpired as exc:
+                    stdout, stderr = _terminate_and_drain(proc, argv=argv)
+                    if not stdout:
+                        stdout = exc.output or ""
+                    if not stderr:
+                        stderr = exc.stderr or ""
+                    raise WallTimeoutExpired(
+                        argv, overall_timeout,
+                        silence_seconds=_silence_seconds(proc, clock(), start),
+                        output=stdout, stderr=stderr,
+                    ) from exc
+            else:
+                stdout, stderr = _drain_with_idle_judgment(
+                    proc, argv=argv, start=start, idle_timeout=idle_timeout,
+                    overall_timeout=overall_timeout, overall_deadline=overall_deadline,
+                    clock=clock, sleep=sleep, log=log, poll_interval=poll_interval,
+                )
+        except OSError:
+            _terminate_and_drain(proc, argv=argv)
+            raise
+        completed = subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+        # 감사용 관측치 — 완주 시점의 침묵 초(다음 kill 의 원인을 사후 확정하는 입력).
+        setattr(completed, SILENCE_SEC_ATTR, _silence_seconds(proc, clock(), start))
+        return completed
 
+    silence_label = (
+        f", 중단 시 침묵 {last_silence:.1f}s" if last_silence is not None else ""
+    )
+    headline = (
+        f"startup stall 이 {attempts}회 연속 발생"
+        if last_axis == TIMEOUT_AXIS_FIRST_EVENT
+        else f"overall watchdog가 {attempts}회 연속 발화"
+    )
+    diagnosis = (
+        " startup network fetch stall 의심(upstream #13841)."
+        if last_axis == TIMEOUT_AXIS_FIRST_EVENT else ""
+    )
     raise StallWatchdogError(
-        f"opencode 첫-이벤트 stall 이 {attempts}회 연속 발생({last_reason}) — 재시도 소진. "
-        "startup network fetch stall 의심(upstream #13841)."
+        f"{headline}("
+        f"실제 발화: {last_reason}{silence_label}) — 재시도 소진. "
+        f"{diagnosis}".rstrip(),
+        timeout_axis=last_axis,
+        threshold_seconds=last_threshold,
+        silence_seconds=last_silence,
+        output="".join(stalled_stdout),
+        stderr="".join(stalled_stderr),
     )
 
 

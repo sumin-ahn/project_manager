@@ -20,7 +20,12 @@
 종료 코드/신호:
   - 리뷰어 실패(인증/한도/네트워크/타임아웃) → exit 1 + stdout 에 FALLBACK_INTERNAL
     (= 내부 code-reviewer 서브에이전트로 폴백하라는 신호)
-    타임아웃 상한: 기본 900s · local.conf `external_review_timeout` · 일회성 `--timeout`
+    중단 판정: 주 = **무진행**(마지막 진행 출력 이후 침묵), 백스톱 = 벽시계. 값은 별도 상수가
+    아니라 **reviewer_cmd 의 하네스 프로필**(pm_relay·위임 채널과 동일 테이블)에서 오고, 배포별
+    조정은 local.conf `harness.<reviewer>.idle_timeout`/`.wall_timeout`(legacy
+    `external_review_idle_timeout`/`external_review_timeout` 도 계속 유효)·일회성은
+    `--idle-timeout`/`--timeout`. 어느 쪽으로 중단되든 그 시점까지 받은 출력은 원문 파일에
+    보존한다(전량 폐기 금지).
   - must-fix 감지 → exit 1
   - 통과 → exit 0
   - 라운드 상한 초과(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 승인 없이
@@ -49,6 +54,7 @@ import argparse
 import contextlib
 import datetime
 import fnmatch
+import inspect
 import json
 import os
 import re
@@ -171,11 +177,51 @@ def _pm_home_reanchor(anchor: Path) -> Path | None:
 # 외부 리뷰어 기본 명령 (local.conf reviewer_cmd 로 교체 가능)
 DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 
-# 외부 호출 타임아웃 (초).
-# 평범한 diff 153~294초·13파일 대형 227초 — 구 기본 180초는 평상 대역 *안*이라 상시 타임아웃
-# 구조였다. 900 = 평상 최대(294s)의 ~3배 여유. 여전히 유한 상한이며 clone별 조정은
-# local.conf `external_review_timeout`, 일회성 조정은 `--timeout`으로 한다.
-EXTERNAL_TIMEOUT_SECONDS = 900
+# 외부 호출의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **리뷰어 커맨드의 하네스 프로필**이 소유한다
+# (`pm_relay.HARNESS_PROFILES` — 기본 reviewer_cmd 가 `codex exec` 이니 클라우드 축 값). 이 모듈에
+# 별도 타임아웃 상수를 두지 않는 이유가 이 티켓의 편입 이유와 같다: **값이 두 군데면 규칙이 둘이
+# 된다.** 평범한 diff 153~294초·13파일 대형 227초 — 구 기본 180초는 평상 대역 *안*이라 상시 타임아웃
+# 구조였고, 900 으로 올려도 같은 구조였다(실측: **입력·모델이 완전히 동일한 리뷰 2회 중 하나는
+# 900초 초과 kill·다른 하나는 `--timeout 1500` 으로 성공**). 그래서 값을 고르는 게임을 끝내고
+# 판정 기준을 무진행으로 교체했고, 벽시계는 "감지기 자체가 고장난 경우"의 유한 상한으로 강등된다.
+# 조정: 일회성 `--timeout`/`--idle-timeout` > local.conf `harness.<reviewer>.wall_timeout`/
+# `.idle_timeout` > 아래 표면-flat legacy 키 > 프로필 선언.
+EXTERNAL_TIMEOUT_KEY = "external_review_timeout"
+EXTERNAL_IDLE_TIMEOUT_KEY = "external_review_idle_timeout"
+EXTERNAL_PROGRESS_SIGNAL_KEY = "external_review_progress_signal"
+
+# PM 하네스 런타임 마커 → (표시명, Bash 명시호출 최대상한 env). 양쪽 카드가 Bash tool 호출에
+# timeout을 명시하므로 DEFAULT가 아니라 MAX가 실제 제약이다. 판정 코드는 이름으로 갈리지 않고
+# 이 선언을 순회한다. Codex는 repo가 읽을 공개 Bash 상한 env가 없어 등재하지 않는다.
+_REVIEW_HARNESS_CAP_DECLARATIONS = (
+    (("OPENCODE", "OPENCODE_CONFIG"), "opencode",
+     "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
+    (("CLAUDECODE", "CLAUDE_CONFIG_DIR"), "claude", "BASH_MAX_TIMEOUT_MS"),
+)
+
+# 알려진 reviewer CLI의 **실행 파일 + 옵션 계약**. 함수 밖 선언이라 새 CLI/형식 추가가 판정 코드
+# 분기로 번지지 않는다. attr 값은 동적 로드한 pm_relay의 공개 상수명이다.
+_REVIEWER_PROGRESS_CONTRACTS = {
+    "codex": {
+        "default": "PROGRESS_SIGNAL_PLAINTEXT",
+        "flags": {"--json": "PROGRESS_SIGNAL_EVENT_STREAM"},
+        "options": {},
+    },
+    "claude": {
+        "default": "PROGRESS_SIGNAL_NONE",
+        "flags": {},
+        "options": {
+            ("--output-format", "stream-json"): "PROGRESS_SIGNAL_EVENT_STREAM",
+        },
+    },
+    "opencode": {
+        "default": "PROGRESS_SIGNAL_NONE",
+        "flags": {},
+        "options": {
+            ("--format", "json"): "PROGRESS_SIGNAL_EVENT_STREAM",
+        },
+    },
+}
 
 # 라운드 상한 — 같은 --gate 로 승인 없이 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
 # 기본 4 는 사용자 전역 규율(외부 리뷰 ">3~4 라운드면 수렴 판단")의 기계화. local.conf
@@ -303,28 +349,109 @@ def _reviewer_cmd(conf: dict[str, str]) -> str:
     return conf.get("reviewer_cmd", "").strip() or DEFAULT_REVIEWER_CMD
 
 
-def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str]) -> int:
-    """외부 리뷰 timeout 을 `--timeout` > local.conf > 기본 순서로 해소한다.
+def _reviewer_progress_signal(
+    reviewer_cmd: str, conf: dict[str, str], relay
+) -> str:
+    """실행 파일 basename과 그 CLI의 **옵션 계약** 또는 명시 설정으로 진행 신호를 판정한다.
 
-    CLI 양수값은 argparse 검증을 통과한 명시 override다. local.conf 는 사용자 설정이므로
-    깨진 값(비정수/0/음수)은 실행을 막지 않고 stderr 경고와 함께 기본값으로 fail-soft 한다.
-    pm_delegate._resolve_timeout 과 같은 계약이다.
+    이름만 같거나 스트리밍처럼 보이는 플래그만 있다는 이유로 추론하지 않는다. 알려진 실행 파일의
+    알려진 옵션 조합만 계약으로 인정한다. 미지 CLI/형식은 신호 없음으로 두며, 자유 문자열 커맨드는
+    local.conf 명시 키로만 선언할 수 있다.
+    """
+    explicit = (conf.get(EXTERNAL_PROGRESS_SIGNAL_KEY) or "").strip()
+    if explicit:
+        if explicit in relay.PROGRESS_SIGNAL_KINDS:
+            return explicit
+        print(
+            f"경고: local.conf {EXTERNAL_PROGRESS_SIGNAL_KEY}={explicit!r} 은 "
+            f"{sorted(relay.PROGRESS_SIGNAL_KINDS)} 중 하나가 아님 — argv 형식 판정 사용.",
+            file=sys.stderr,
+        )
+    try:
+        argv = shlex.split(reviewer_cmd)
+    except ValueError:
+        return relay.PROGRESS_SIGNAL_NONE
+    if not argv:
+        return relay.PROGRESS_SIGNAL_NONE
+
+    executable = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if executable.endswith(suffix):
+            executable = executable[:-len(suffix)]
+            break
+    contract = _REVIEWER_PROGRESS_CONTRACTS.get(executable)
+    if contract is None:
+        return relay.PROGRESS_SIGNAL_NONE
+
+    def option_value(name: str) -> str | None:
+        for index, token in enumerate(argv[1:], start=1):
+            if token == name and index + 1 < len(argv):
+                return argv[index + 1].strip().lower()
+            prefix = name + "="
+            if token.startswith(prefix):
+                return token[len(prefix):].strip().lower()
+        return None
+
+    for flag, signal_attr in contract["flags"].items():
+        if flag in argv[1:]:
+            return getattr(relay, signal_attr)
+    for (option, expected), signal_attr in contract["options"].items():
+        if option_value(option) == expected:
+            return getattr(relay, signal_attr)
+    return getattr(relay, contract["default"])
+
+
+def reviewer_profile(reviewer_cmd: str, conf: dict[str, str] | None = None):
+    """리뷰어 커맨드 → 시간값 프로필 + 출력형식 기반 진행신호 프로필.
+
+    시간값은 실행 파일 축의 공유 테이블을 쓰되, 진행 신호는 전체 argv/명시 설정으로 독립 판정한다.
+    conf 미지정 facade도 local.conf를 읽어 `pm_delegate.harness_profile`과 대칭이다.
+    """
+    relay = _load_relay()
+    if conf is None:
+        try:
+            conf = local_config()
+        except OSError:
+            conf = {}
+    profile = relay.resolve_harness_profile(
+        reviewer_name(reviewer_cmd), conf,
+        fallback=relay.REVIEWER_FALLBACK_PROFILE,
+        legacy_idle_key=EXTERNAL_IDLE_TIMEOUT_KEY,
+        legacy_wall_key=EXTERNAL_TIMEOUT_KEY,
+    )
+    return profile._replace(
+        progress_signal=_reviewer_progress_signal(reviewer_cmd, conf, relay)
+    )
+
+
+def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str],
+                     reviewer_cmd: str = DEFAULT_REVIEWER_CMD) -> int:
+    """외부 리뷰 **벽시계 백스톱**(초)을 `--timeout` > 리뷰어 프로필 순서로 해소한다.
+
+    CLI 양수값은 argparse 검증을 통과한 명시 override다. 그 아래(legacy flat conf →
+    `harness.<reviewer>.wall_timeout` → 선언 기본)는 `pm_relay.resolve_harness_profile` 이 소유한다
+    — 깨진 conf 값은 거기서 stderr 경고 후 fail-soft. pm_delegate._resolve_timeout 과 같은 계약이다.
     """
     if args.timeout is not None:
         return args.timeout
-    raw = (conf.get("external_review_timeout") or "").strip()
-    if not raw:
-        return EXTERNAL_TIMEOUT_SECONDS
-    try:
-        value = int(raw)
-    except ValueError:
-        print(f"경고: local.conf external_review_timeout={raw!r} 비정수 — 기본 "
-              f"{EXTERNAL_TIMEOUT_SECONDS}s 사용.", file=sys.stderr)
-        return EXTERNAL_TIMEOUT_SECONDS
-    if value <= 0:
-        print(f"경고: local.conf external_review_timeout={value} ≤0 — 기본 "
-              f"{EXTERNAL_TIMEOUT_SECONDS}s 사용.", file=sys.stderr)
-        return EXTERNAL_TIMEOUT_SECONDS
+    return int(reviewer_profile(reviewer_cmd, conf).wall_timeout)
+
+
+def _resolve_idle_timeout(args: argparse.Namespace, conf: dict[str, str],
+                          reviewer_cmd: str = DEFAULT_REVIEWER_CMD) -> float:
+    """무진행 상한(초)을 `--idle-timeout` > 리뷰어 프로필 순서로 해소한다(벽시계 축과 대칭).
+
+    값의 출처가 하나이므로(프로필 테이블) 리뷰어 축과 위임 축의 규칙이 갈리지 않는다."""
+    if getattr(args, "idle_timeout", None) is not None:
+        return float(args.idle_timeout)  # main() 이 양수 검증(usage error)
+    return float(reviewer_profile(reviewer_cmd, conf).idle_timeout)
+
+
+def _timeout_seconds_arg(raw: str) -> int:
+    """CLI timeout 을 pm_relay 의 단일 정규화 경계로 파싱한다."""
+    value = _load_relay().normalize_timeout_seconds(raw)
+    if value is None:
+        raise argparse.ArgumentTypeError("유한한 정수 초(최소 1)여야 합니다")
     return value
 
 
@@ -713,11 +840,171 @@ def build_prompt(
 # ── 외부 리뷰어 실행 ──────────────────────────────────────────────────────
 
 
+def _load_relay():
+    """엔진 pm_relay 를 importlib 로 직접 로드 — **무진행 판정 공용 seam** 재사용
+    (`run_with_first_event_watchdog`·`idle_timeout_for_signal`·프로세스그룹 kill·부분 산출물 보존).
+
+    pm_delegate 가 이 모듈을 deep-import 해 denylist/재앵커를 재사용하는 선례의 대칭 방향이다
+    (형제 `.project_manager/tools/`·PYTHONPATH 무의존). **복붙 구현 금지** — 두 표면(위임·외부
+    리뷰)의 판정 규칙이 코드 상 하나여야 규칙이 둘로 갈리지 않는다."""
+    path = Path(__file__).resolve().parent / "pm_relay.py"
+    spec = importlib.util.spec_from_file_location("pm_relay", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _reviewer_idle_timeout(reviewer_cmd: str, idle_timeout: float | None) -> float | None:
+    """리뷰어 축의 무진행 상한 해소 — 공용 선언 테이블(`idle_timeout_for_signal`)을 그대로 탄다.
+
+    리뷰어 기본 커맨드(`codex exec --sandbox read-only`)는 `--json` 이 없어 이벤트 스트림이 아니라
+    **평문 증분** 축이다. 그래도 진행 신호는 있다 — 실측상 진행 로그(hook/exec/succeeded 라인)가
+    stderr 로 촘촘히 흐르고(리뷰 1건 12,233줄) stdout 은 최종 회신뿐이라(498~759 바이트), chunk
+    도착 자체를 신호로 보면 파서 없이 같은 판정이 선다. 특례 분기 없이 축 선언만 다르다.
+    명시값이 없으면 리뷰어 커맨드의 하네스 프로필 값을 쓴다(위임 축과 같은 테이블)."""
+    relay = _load_relay()
+    profile = reviewer_profile(reviewer_cmd)
+    resolved = idle_timeout if idle_timeout is not None else profile.idle_timeout
+    return relay.idle_timeout_for_signal(profile.progress_signal, resolved)
+
+
+def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
+                           **_ignored) -> subprocess.CompletedProcess:
+    """기본 리뷰어 러너 — pm_relay 공용 워치독 경유(무진행 주 판정 + 벽시계 백스톱).
+
+    `subprocess.run(..., timeout=)` 을 대체한다. 그 단일 호출은 증분 관측이 아예 없어서 (a) 정상
+    진행을 벽시계로 죽이고 (b) `TimeoutExpired.stdout` 에 실려 온 부분 산출물을 아무도 안 읽어
+    통째로 버렸다(kill 된 리뷰의 raw 가 헤더 138바이트뿐이던 실측). 첫-이벤트 창은 **끄고**(None) 들어간다 — 이 축의 첫 stdout 은
+    종료 직전에야 오므로 startup 창을 켜면 정상 리뷰가 전부 죽는다."""
+    relay = _load_relay()
+    return relay.run_with_first_event_watchdog(
+        argv,
+        first_event_timeout=None,
+        overall_timeout=float(timeout),
+        retries=0,
+        idle_timeout=idle_timeout,
+        input_text=input,
+    )  # text 는 워치독 기본(True·utf-8/replace 고정) — 인코딩은 _WatchedPopen 이 소유.
+
+
+def harness_cap_advisory(
+    env: dict[str, str] | None = None, *, execution_budget: int
+) -> str | None:
+    """리뷰 엔진보다 먼저 끝나는 외부 Bash 명시호출 최대상한을 런타임에 loud 표면화한다.
+
+    문서의 호출층 timeout 계약이 누락된 기존 채택자도 진단을 얻는 백스톱이다. 실행은 차단하지
+    않으며 Codex처럼 공개 상한 env가 없는 표면은 판정하지 않는다.
+    """
+    env = os.environ if env is None else env
+    declaration = next(
+        (
+            (harness, cap_key)
+            for markers, harness, cap_key in _REVIEW_HARNESS_CAP_DECLARATIONS
+            if any(env.get(marker) for marker in markers)
+        ),
+        None,
+    )
+    if declaration is None:
+        return None
+    harness, cap_key = declaration
+    relay = _load_relay()
+    required = int(execution_budget + relay._KILL_GRACE_SEC)
+    raw = env.get(cap_key)
+    try:
+        cap_seconds = int(raw) / 1000.0
+    except (TypeError, ValueError, OverflowError):
+        return (
+            f"[external-review] 경고: {harness} 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
+            f"리뷰 벽시계+정리 {required}s 이상을 Bash tool timeout으로 명시하세요."
+        )
+    if cap_seconds < required:
+        return (
+            f"[external-review] 경고: {harness} 호출층 최대상한 "
+            f"{cap_key}={cap_seconds:g}s < "
+            f"리뷰 벽시계+정리 {required}s — 엔진 진단/부분 산출물 보존 전에 하네스가 kill할 수 "
+            "있습니다. Bash tool 호출에 장시간 timeout을 명시하세요."
+        )
+    return None
+
+
+def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
+    """타임아웃 실패 본문 — 사유(무진행/벽시계) + **kill 시점까지 받은 부분 산출물**.
+
+    부분 산출물을 붙이는 게 핵심이다: 판정 기준을 고쳐도 감지기가 늦게 울리는 실행은
+    남으므로, 그때 수백 초어치 리뷰가 0바이트가 되는 현행 동작을 그대로 두면 안 된다."""
+    idle_seconds = getattr(exc, "idle_seconds", None)
+    silence_seconds = getattr(exc, "silence_seconds", idle_seconds)
+    timeout_axis = getattr(
+        exc, "timeout_axis", "idle" if idle_seconds is not None else "wall"
+    )
+    threshold = float(getattr(exc, "threshold_seconds", exc.timeout or timeout))
+    if timeout_axis != "idle":
+        silence_label = (
+            f" · 중단 시 실측 침묵 {silence_seconds:.0f}초"
+            if silence_seconds is not None else " · 중단 시 침묵 관측 불가"
+        )
+        head = (f"[리뷰어 타임아웃 — 벽시계 백스톱 {threshold:.0f}초 초과"
+                f"{silence_label}] "
+                "재시도: `--timeout <초>` 또는 local.conf "
+                "`external_review_timeout=<초>` (양의 정수).")
+    else:
+        measured = idle_seconds if idle_seconds is not None else silence_seconds
+        measured_label = f"{measured:.0f}초" if measured is not None else "관측 불가"
+        head = (f"[리뷰어 타임아웃 — 무진행 임계 {threshold:.0f}초 발화"
+                f" · 실측 침묵 {measured_label}] "
+                f"벽시계 상한 {timeout}초는 미도달. 재시도: `--idle-timeout <초>` 또는 local.conf "
+                f"`{EXTERNAL_IDLE_TIMEOUT_KEY}=<초>` (양의 정수).")
+    partial_stdout = exc.output or ""
+    partial_stderr = exc.stderr or ""
+    parts = [head]
+    if partial_stdout:
+        parts.append(f"\n[중단 시점까지의 stdout — {len(partial_stdout)}자 보존]\n{partial_stdout}")
+    if partial_stderr:
+        parts.append(f"\n[중단 시점까지의 stderr — {len(partial_stderr)}자 보존]\n{partial_stderr}")
+    return "".join(parts)
+
+
+class ReviewerRunSeamError(TypeError):
+    """주입 runner 의 호출 계약 불일치 — 리뷰어 프로세스 오류와 구분하는 loud sentinel."""
+
+
+def _reviewer_run_kwargs(run_fn: Callable, argv: list[str], *,
+                         prompt: str, timeout: int, idle_timeout: float | None) -> dict:
+    """기존 subprocess.run 호환 seam 을 보존하고 명시 지원 runner 에만 idle_timeout 을 확장한다.
+
+    `**kwargs` 만으로는 새 키를 실제 소비하는지 알 수 없다(`subprocess.run` 은 **kwargs 를 Popen 에
+    넘겨 뒤늦게 TypeError). 따라서 시그니처에 `idle_timeout` 이 명시된 runner 에만 전달한다.
+    호출 전에 bind 해 seam skew 를 프로세스 실행 오류와 분리한다.
+    """
+    kwargs = {
+        "input": prompt,
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": timeout,
+    }
+    try:
+        signature = inspect.signature(run_fn)
+    except (TypeError, ValueError):
+        return kwargs  # introspection 불가 callable 은 기존 seam 만 보수적으로 전달.
+    parameter = signature.parameters.get("idle_timeout")
+    if parameter is not None and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+        kwargs["idle_timeout"] = idle_timeout
+    try:
+        signature.bind(argv, **kwargs)
+    except TypeError as exc:
+        raise ReviewerRunSeamError(str(exc)) from exc
+    return kwargs
+
+
 def _run_reviewer_ex(
     prompt: str,
     reviewer_cmd: str,
-    timeout: int,
+    timeout: int | None,
     run_fn: Callable[..., subprocess.CompletedProcess] | None,
+    idle_timeout: float | None = None,
 ) -> tuple[bool, str, bool]:
     """run_reviewer 본체 + 외부 프로세스 스폰 여부(started) 신호.
 
@@ -726,29 +1013,53 @@ def _run_reviewer_ex(
     스폰됨(프롬프트가 전송·과금됐을 수 있음) — 정상 종료(비-0 rc 포함)·타임아웃·기타 실행 오류.
     타임아웃/기타는 시작 여부가 불확실하거나 이미 전송됐으므로 보수적으로 started=True — 라운드
     환불은 started=False 일 때만 해(반복 타임아웃으로 상한을 무한 우회하지 못하게). 확실히 전송
-    전인 경우만 환불한다."""
-    _run = run_fn or subprocess.run
+    전인 경우만 환불한다.
+
+    **판정 기준**: 기본 러너가 `subprocess.run` 단일 호출에서 pm_relay 공용 워치독으로
+    바뀌어, 주 판정이 "시작 후 경과"가 아니라 "마지막 진행 이후 무진행"이다(벽시계는 백스톱).
+    `idle_timeout=None` 이면 reviewer_cmd 프로필 선언이 적용된다.
+
+    `run_fn` 주입의 기존 계약은 subprocess.run 호환 키까지다. 새 `idle_timeout` 은 시그니처에 그
+    이름을 명시한 runner 에만 조건부 전달한다. 호출 계약 불일치는 일반 "리뷰어 실행 오류"로
+    삼키지 않고 seam 오류로 loud 구분한다."""
+    _run = run_fn or _watchdog_reviewer_run
     argv = shlex.split(reviewer_cmd)
     if not argv:
         return False, "[reviewer_cmd 가 비어 있음 — local.conf 확인]", False
+    if timeout is None:  # 미지정 호출(공개 facade) — 리뷰어 프로필의 벽시계 백스톱.
+        timeout = int(reviewer_profile(reviewer_cmd).wall_timeout)
     try:
-        result = _run(argv, input=prompt, capture_output=True, text=True,
-                      encoding="utf-8", errors="replace", timeout=timeout)
+        kwargs = _reviewer_run_kwargs(
+            _run, argv, prompt=prompt, timeout=timeout,
+            idle_timeout=_reviewer_idle_timeout(reviewer_cmd, idle_timeout),
+        )
+        result = _run(argv, **kwargs)
         output = result.stdout or ""
         if result.stderr:
             output += f"\n[stderr]\n{result.stderr}"
         return result.returncode == 0, output, True
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         # 프로세스가 시작돼 실행 중 타임아웃 — 프롬프트가 이미 전송·과금됐을 수 있다 → started=True.
-        return False, (
-            f"[리뷰어 타임아웃 — {timeout}초 초과] "
-            "재시도: `--timeout <초>` 또는 local.conf "
-            "`external_review_timeout=<초>` (양의 정수)."
-        ), True
+        return False, _timeout_output(timeout, exc), True
     except FileNotFoundError:
         # 실행 파일 자체가 없어 exec 실패 — 아무것도 전송되지 않았다 → started=False (환불 대상).
         return False, f"[리뷰어 명령 '{argv[0]}' 를 찾을 수 없음 — 설치 또는 PATH 확인]", False
+    except ReviewerRunSeamError as exc:
+        # 호출 전 bind 실패 — 외부 프로세스는 확실히 시작되지 않았다. 라운드 환불 가능.
+        return False, f"[리뷰어 runner seam 계약 오류 — 호출 전 차단: {exc}]", False
+    except TypeError as exc:
+        # runner 내부에서 발생한 키워드/시그니처 skew. 시작 여부는 불명이라 보수적으로 started=True.
+        return False, f"[리뷰어 runner seam 호출 오류: {exc}]", True
     except Exception as exc:  # noqa: BLE001
+        # _load_relay는 호출마다 독립 module 객체를 만들 수 있어 클래스 identity 대신 sentinel의
+        # 구조화 속성을 본다. 일반 RuntimeError를 정리 실패로 오인하지 않는다.
+        if getattr(exc, "process_cleanup_failed", False) is True:
+            output = f"[리뷰어 프로세스 정리 실패: {exc} — 인프라 실패, 부분 산출물 보존]"
+            if getattr(exc, "output", ""):
+                output += f"\n{exc.output}"
+            if getattr(exc, "stderr", ""):
+                output += f"\n[stderr]\n{exc.stderr}"
+            return False, output, True
         # 시작 여부 불확실 — 보수적으로 started=True (상한 우회 방지 > 과잉 카운트).
         return False, f"[리뷰어 실행 오류: {exc}]", True
 
@@ -756,13 +1067,14 @@ def _run_reviewer_ex(
 def run_reviewer(
     prompt: str,
     reviewer_cmd: str = DEFAULT_REVIEWER_CMD,
-    timeout: int = EXTERNAL_TIMEOUT_SECONDS,
+    timeout: int | None = None,
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+    idle_timeout: float | None = None,
 ) -> tuple[bool, str]:
     """reviewer_cmd 를 stdin(=프롬프트)으로 실행한다. 반환: (성공 여부, 출력 텍스트).
 
     2-튜플 공개 facade — 스폰 여부(started)까지 필요한 내부 호출은 `_run_reviewer_ex` 를 쓴다."""
-    ok, output, _started = _run_reviewer_ex(prompt, reviewer_cmd, timeout, run_fn)
+    ok, output, _started = _run_reviewer_ex(prompt, reviewer_cmd, timeout, run_fn, idle_timeout)
     return ok, output
 
 
@@ -856,18 +1168,20 @@ def save_output(reviewer: str, content: str, output_dir: Path | None = None) -> 
 def run_review(
     prompt: str,
     reviewer_cmd: str = DEFAULT_REVIEWER_CMD,
-    timeout: int = EXTERNAL_TIMEOUT_SECONDS,
+    timeout: int | None = None,
     output_dir: Path | None = None,
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+    idle_timeout: float | None = None,
 ) -> dict:
     """외부 리뷰어를 실행하고 결과를 수합한다.
 
     반환 dict: reviewer / ok / output / verdict / file / failed / started / any_must_fix / all_pass.
     `started` = 외부 프로세스가 스폰됐는가(전송·과금 가능성) — 라운드 카운트 환불
-    판정에 쓴다(False = 확실히 전송 전 실패 → 예약 환불).
+    판정에 쓴다(False = 확실히 전송 전 실패 → 예약 환불). `idle_timeout` = 무진행 상한(None=공유
+    기본) — 타임아웃 시에도 `output` 에 부분 산출물이 실려 `save_output` 이 그대로 박제한다.
     """
     name = reviewer_name(reviewer_cmd)
-    ok, output, started = _run_reviewer_ex(prompt, reviewer_cmd, timeout, run_fn)
+    ok, output, started = _run_reviewer_ex(prompt, reviewer_cmd, timeout, run_fn, idle_timeout)
     verdict = parse_verdict(output)
     out_file: Path | None = None
     if ok or output:
@@ -1003,9 +1317,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="external_review_enabled=false 여도 1회 강제 실행 (외부 전송 발생)")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
                         help="리뷰 원문 저장 디렉토리 (기본: /tmp)")
-    parser.add_argument("--timeout", type=int, default=None,
-                        metavar="SEC", help=f"외부 호출 타임아웃(초) (기본: {EXTERNAL_TIMEOUT_SECONDS}; "
-                        "local.conf external_review_timeout 로 조정 가능)")
+    parser.add_argument("--timeout", type=_timeout_seconds_arg, default=None,
+                        metavar="SEC",
+                        help="외부 호출 벽시계 백스톱(초) — 기본은 reviewer_cmd 의 하네스 프로필. "
+                             "local.conf harness.<reviewer>.wall_timeout 또는 "
+                             f"{EXTERNAL_TIMEOUT_KEY} 로 조정")
+    parser.add_argument("--idle-timeout", type=_timeout_seconds_arg, default=None, metavar="SEC",
+                        help="무진행 상한(초) — 마지막 진행 출력 이후 이 시간 침묵하면 중단(주 판정). "
+                             "local.conf harness.<reviewer>.idle_timeout 또는 "
+                             f"{EXTERNAL_IDLE_TIMEOUT_KEY} 로 조정")
     parser.add_argument("--adr", nargs="+", default=None, metavar="ADR-NNNN",
                         help="관련 ADR 목록 (프롬프트에 포함)")
     return parser
@@ -1020,10 +1340,15 @@ def main(argv: list[str] | None = None) -> int:
     _console_encoding.configure_console_utf8()
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    if args.timeout is not None and args.timeout <= 0:
-        parser.error("--timeout 은 양의 정수여야 합니다 (0/음수 금지).")
     conf = local_config()
-    timeout = _resolve_timeout(args, conf)
+    # 시간 예산은 **리뷰어 커맨드의 하네스 프로필**을 따른다 — reviewer_cmd 를 먼저 해소해야
+    # 어떤 축(클라우드/로컬)의 값을 쓸지 정해진다(기본 `codex exec` → codex 축).
+    reviewer_cmd = _reviewer_cmd(conf)
+    timeout = _resolve_timeout(args, conf, reviewer_cmd)
+    idle_timeout = _resolve_idle_timeout(args, conf, reviewer_cmd)
+    cap_warning = harness_cap_advisory(execution_budget=timeout)
+    if cap_warning is not None:
+        print(cap_warning, file=sys.stderr)
 
     output_dir: Path | None = None
     if args.output_dir:
@@ -1149,11 +1474,10 @@ def main(argv: list[str] | None = None) -> int:
         print("경고: --ack-rounds 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
               file=sys.stderr)
 
-    reviewer_cmd = _reviewer_cmd(conf)
     print(f"외부 리뷰어 실행 중: {reviewer_cmd}", file=sys.stderr)
     result = run_review(
         prompt=prompt, reviewer_cmd=reviewer_cmd,
-        timeout=timeout, output_dir=output_dir,
+        timeout=timeout, output_dir=output_dir, idle_timeout=idle_timeout,
     )
     print_summary(result, gate=args.gate, excluded=excluded)
 
