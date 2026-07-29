@@ -1230,21 +1230,121 @@ def test_into_existing_dir_still_works(pm_import, tmp_path):
 # ── MF3: both 중복 relpath 내용 불일치 — 경고 + claude_code 우선 ──────────────
 
 def test_both_conflicting_relpath_warns_and_prefers_claude(pm_import, tmp_path, capsys):
-    """engine.manifest 는 두 어댑터에서 내용이 달라(claude_code 가 상위집합) — both 에서
-    claude_code 것이 채택되고 stderr 경고가 남는다. 조용한 정책 손실 금지."""
+    """중복 파일 충돌은 선언 순서상 claude_code 우선, manifest 선언은 양 flavor 합집합.
+
+    우선순위 근거는 ``claude_code가 상위집합``이 아니라 CLI의 결정적 선택 순서다.
+    """
     dest = tmp_path / "bothconflict"
     rc = pm_import.main(["--new", str(dest), "--harness", "both", "--name", "BC"])
     assert rc == 0
 
     captured = capsys.readouterr()
     assert "engine.manifest" in captured.err, "내용 다른 중복 relpath 경고가 stderr 에 없음."
-    assert "claude_code" in captured.err, "채택 트리(claude_code 우선)가 경고에 명시되지 않음."
+    assert "선언 순서상 첫 트리 'claude_code'" in captured.err, \
+        "결정적 우선순위(선언 순서)가 경고에 명시되지 않음."
 
-    # 채택된 engine.manifest 는 claude_code 것 — .claude/agents·regression.yml 을 sync 범위에 포함.
-    src_claude = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
+    # engine.manifest 자체의 self-prop 마커 충돌은 첫 트리(claude_code)가 이긴다.
+    entries = pm_import._pm_update_read_manifest(
+        dest / ".project_manager" / "engine.manifest")
+    self_entry = [e for e in entries if str(e) == ".project_manager/engine.manifest"]
+    assert len(self_entry) == 1
+    assert self_entry[0].source_rel == \
+        "templates/claude_code/.project_manager/engine.manifest"
+
+
+def test_both_install_manifest_is_selected_tree_union(pm_import, pm_update, tmp_path):
+    """both 설치 manifest가 양 flavor 선언을 전부 포함하고 opencode 관리 파일까지 plan한다.
+
+    합집합 구현을 되돌려 claude manifest만 설치하면 opencode 선언 subset 단언에서 red가 된다.
+    """
+    dest = tmp_path / "both-union"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "both", "--name", "Union",
+    ]) == 0
+
     dest_manifest = dest / ".project_manager" / "engine.manifest"
-    assert dest_manifest.read_text(encoding="utf-8") == src_claude.read_text(encoding="utf-8"), \
-        "both 의 engine.manifest 가 claude_code(우선) 것이 아님 — MF3 정책 위반."
+    installed = pm_update.read_manifest(dest_manifest)
+    installed_paths = {str(e) for e in installed}
+    for flavor in ("claude_code", "opencode"):
+        source_entries = pm_update.read_manifest(
+            REPO / "templates" / flavor / ".project_manager" / "engine.manifest")
+        assert {str(e) for e in source_entries} <= installed_paths, \
+            f"{flavor} manifest 선언이 both 설치 합집합에서 누락"
+
+    # 디렉터리 선언을 실제 파일로 펼친 관리 plan에도 opencode 산출물이 실린다.
+    empty_dest = tmp_path / "empty-plan"
+    changes, missing = pm_update.plan(REPO, installed, dest_root=empty_dest)
+    opencode_files = {
+        str(rel).replace("\\", "/")
+        for rel, _src, _dst, _kind in changes
+        if str(rel).replace("\\", "/").startswith(".opencode/")
+    }
+    assert not missing
+    assert {
+        ".opencode/agents/developer.md",
+        ".opencode/lib/safe-write-core.cjs",
+        ".opencode/plugins/safe-write.js",
+        ".opencode/pm-instructions.md",
+        ".opencode/pm_orch_opencode.py",
+        ".opencode/.gitignore",
+    } <= opencode_files
+
+
+def test_both_install_then_update_repairs_stale_opencode_in_one_run(
+        pm_import, pm_update, tmp_path, monkeypatch):
+    """both 신규 설치 후 opencode adapter가 낡아져도 pm_update 1회로 복구된다."""
+    dest = tmp_path / "both-update"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "both", "--name", "Both Update",
+    ]) == 0
+    victim_rel = Path(".opencode/plugins/safe-write.js")
+    victim = dest / victim_rel
+    expected = (REPO / "templates" / "opencode" / victim_rel).read_bytes()
+    victim.write_text("// stale adopter copy\n", encoding="utf-8")
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    assert pm_update.main(["--from", str(REPO)]) == 0
+    assert victim.read_bytes() == expected, \
+        "both 설치의 opencode adapter가 pm_update 1회로 복구되지 않음"
+
+
+def test_legacy_claude_manifest_both_adopter_selfheals_opencode_in_one_run(
+        pm_import, pm_update, tmp_path, monkeypatch, capsys):
+    """기존 frozen 형상(양 adapter + claude-only manifest)을 감지해 합집합 승격·복구한다."""
+    dest = tmp_path / "legacy-both"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "both", "--name", "Legacy Both",
+    ]) == 0
+    capsys.readouterr()
+
+    # 수정 이전 설치 실측 형상: adapter는 둘 다 있지만 manifest는 claude flavor 한 벌뿐.
+    dest_manifest = dest / ".project_manager" / "engine.manifest"
+    claude_manifest = (
+        REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest")
+    dest_manifest.write_bytes(claude_manifest.read_bytes())
+    victim_rel = Path(".opencode/lib/safe-write-core.cjs")
+    victim = dest / victim_rel
+    expected = (REPO / "templates" / "opencode" / victim_rel).read_bytes()
+    victim.write_text("// frozen old core\n", encoding="utf-8")
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    assert pm_update.main(["--from", str(REPO)]) == 0
+
+    healed_paths = {
+        str(e) for e in pm_update.read_manifest(dest_manifest)
+    }
+    opencode_paths = {
+        str(e) for e in pm_update.read_manifest(
+            REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest")
+    }
+    assert opencode_paths <= healed_paths
+    assert victim.read_bytes() == expected, \
+        "기존 frozen adapter가 manifest 자기치유와 같은 pm_update 1회에 복구되지 않음"
+    out = capsys.readouterr().out
+    assert "frozen adapter" in out and "선택 flavor 합집합" in out, \
+        f"채택자 frozen 진단이 loud하게 표면화되지 않음: {out!r}"
 
 
 def test_both_identical_relpath_silent(pm_import, tmp_path, capsys):

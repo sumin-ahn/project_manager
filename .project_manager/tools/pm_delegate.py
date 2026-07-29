@@ -2512,6 +2512,21 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
 # 뒤 OPENCODE=<set>, OPENCODE_PID=<set>만 추가했다. 따라서 OPENCODE(보조로
 # OPENCODE_PID)는 런타임 주입 세션 마커다. 반대로 OPENCODE_CONFIG_DIR는 세션 없는 부모에도
 # 있으므로 설정 경로로 확정했고, OPENCODE_CONFIG는 양쪽 어디에도 없어 판정에서 제외한다.
+_HARNESS_SESSION_MARKERS: dict[str, tuple[str, ...]] = {
+    "codex": ("CODEX_THREAD_ID", "CODEX_CI"),
+    "claude": ("CLAUDECODE",),
+    "opencode": ("OPENCODE", "OPENCODE_PID"),
+}
+
+
+def _session_harness(env: dict[str, str]) -> str | None:
+    """실측 세션 마커가 정확히 한 하네스와 일치할 때만 그 하네스를 반환한다."""
+    matches = [
+        name for name, keys in _HARNESS_SESSION_MARKERS.items()
+        if any(env.get(key) for key in keys)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
 
 def native_advisory(harness: str) -> str | None:
     """target 하네스 == PM 하네스면 "네이티브가 더 저렴" advisory 1줄(never-block).
@@ -2519,14 +2534,10 @@ def native_advisory(harness: str) -> str | None:
     PM 하네스 env 마커(codex CODEX_THREAD_ID·claude CLAUDECODE·opencode OPENCODE)를 감지해
     same-harness 위임이면
     경고 문자열을 반환한다(호출부가 stderr 로 냄). 1차 판정은 어댑터 스킬 카드·이건 백스톱."""
-    markers = {
-        "codex": ("CODEX_THREAD_ID", "CODEX_CI"),
-        "claude": ("CLAUDECODE",),
-        "opencode": ("OPENCODE", "OPENCODE_PID"),
-    }
-    matches = [name for name, keys in markers.items()
-               if any(os.environ.get(key) for key in keys)]
-    pm_harness = matches[0] if len(matches) == 1 else None
+    # 직접 호출 seam 에도 공개 하네스 도메인을 적용한다. 이 진단은 하네스 이름별 표현을 소유한다.
+    if harness not in ("claude", "codex", "opencode"):
+        return None
+    pm_harness = _session_harness(os.environ)
     if pm_harness == harness:
         return (f"[pm-delegate] target 하네스({harness}) == PM 하네스 — 네이티브 위임이 더 저렴하다"
                 "(subprocess 스폰 불요). 어댑터 스킬 카드의 native 단락을 우선하라(advisory).")
@@ -2766,13 +2777,14 @@ def max_declared_execution_path_budget() -> int:
 def _pm_harness_and_cap_env(env: dict[str, str] | None = None) -> tuple[str | None, str | None]:
     """현재 PM 하네스와 그 Bash 상한 env 키를 해소한다(정적 전파 불가 채택자 진단용)."""
     env = os.environ if env is None else env
-    if env.get("OPENCODE") or env.get("OPENCODE_CONFIG"):
-        return "opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"
-    if env.get("CLAUDECODE") or env.get("CLAUDE_CONFIG_DIR"):
-        return "claude", "BASH_MAX_TIMEOUT_MS"
-    if env.get("CODEX_THREAD_ID") or env.get("CODEX_CI"):
-        return "codex", None  # Codex bash 상한은 이 repo가 해소할 공개 env 표면이 없다.
-    return None, None
+    # 감지는 공용 세션 마커 표가 소유하고, 이 함수는 하네스별 상한 선언만 소유한다.
+    cap_env = {
+        "opencode": "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
+        "claude": "BASH_MAX_TIMEOUT_MS",
+        "codex": None,  # Codex bash 상한은 이 repo가 해소할 공개 env 표면이 없다.
+    }
+    pm_harness = _session_harness(env)
+    return (pm_harness, cap_env[pm_harness]) if pm_harness is not None else (None, None)
 
 
 def harness_cap_advisory(env: dict[str, str] | None = None,

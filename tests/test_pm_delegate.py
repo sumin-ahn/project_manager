@@ -3274,6 +3274,27 @@ def test_runtime_opencode_cap_missing_is_loud(pd, monkeypatch):
     assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS 미해소" in warning
 
 
+@pytest.mark.parametrize("key", ("OPENCODE_CONFIG", "CLAUDE_CONFIG_DIR",
+                                  "OPENCODE_CONFIG_DIR"))
+def test_runtime_harness_cap_ignores_config_and_unmeasured_keys(pd, key):
+    """설정 경로와 세션 근거 없는 키는 PM 하네스 및 상한 선언을 선택하지 않는다."""
+    assert pd._pm_harness_and_cap_env({key: "configured"}) == (None, None)
+
+
+def test_runtime_harness_cap_multiple_session_markers_are_ambiguous(pd):
+    """둘 이상의 실측 세션이 겹치면 선언 순서로 상한을 고르지 않는다."""
+    env = {"OPENCODE": "child", "CLAUDECODE": "parent"}
+    assert pd._pm_harness_and_cap_env(env) == (None, None)
+    assert pd.harness_cap_advisory(env) is None
+
+
+def test_runtime_harness_cap_accepts_secondary_opencode_session_marker(pd):
+    """OpenCode가 세션에 주입하는 보조 마커도 공용 표를 통해 상한 선언을 선택한다."""
+    assert pd._pm_harness_and_cap_env({"OPENCODE_PID": "123"}) == (
+        "opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
+    )
+
+
 def test_dry_run_shows_fallback_time_budget(pd, monkeypatch, tmp_path, capsys):
     """폴백 발동 실행의 최악 소요를 미리보기가 실수치로 알린다(호출부 대기 예산)."""
     prompt = _write_prompt(tmp_path)

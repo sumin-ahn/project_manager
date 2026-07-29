@@ -149,6 +149,23 @@ class _RenderDst:
         return f"_RenderDst({self._path!r}, render={self.render})"
 
 
+class _ManifestTextSource:
+    """선택된 flavor manifest 합집합 텍스트를 change tuple에 싣는 인메모리 source.
+
+    합집합은 upstream checkout 안의 단일 파일로 존재하지 않는다. 임시 파일을 만들지 않고도
+    plan/apply 4-tuple 계약을 유지하도록 ``read_text``만 제공한다. engine.manifest 전용이며
+    apply의 self-prop 분기가 이 객체를 직접 소비한다.
+    """
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        return self.text
+
+
 def _templates_dir() -> Path:
     """REPO/templates/ 경로. 없어도 안전하게 반환 (존재 여부는 호출부가 판단)."""
     return REPO / "templates"
@@ -282,6 +299,75 @@ def read_manifest(path: Path) -> list[ManifestEntry]:
         line = " ".join(parts)
         out.append(ManifestEntry(line, render, target_owned, source_rel))
     return out
+
+
+def _manifest_entry_line(entry) -> str:
+    """ManifestEntry를 손실 없이 한 manifest 행으로 직렬화한다(마커 순서 결정적)."""
+    markers: list[str] = []
+    if _entry_render_flag(entry):
+        markers.append(RENDER_TAG)
+    if _entry_target_owned_flag(entry):
+        markers.append(TARGET_OWNED_TAG)
+    source_rel = getattr(entry, "source_rel", None)
+    if source_rel:
+        markers.append(f"{SOURCE_TAG_PREFIX}{source_rel}")
+    return "    ".join((str(entry), *markers))
+
+
+def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
+    """선택된 template flavor manifest들을 선언 순서대로 합집합한다.
+
+    경로가 처음 등장한 선언을 채택한다. 같은 경로가 뒤 flavor에도 있고 마커가 다르면 첫 선언의
+    마커를 유지한다. 이는 ``plan_copy``의 MF3(선택 트리 순서가 결정적 우선순위)와 같은 정책이며,
+    첫 flavor가 다른 flavor의 상위집합이라는 전제는 두지 않는다.
+
+    첫 manifest의 주석/레이아웃은 그대로 보존하고, 뒤 manifest에서 새로 추가되는 경로만 생성 절로
+    붙인다. 단일 manifest면 원문을 byte-identical 반환한다.
+    """
+    if not manifest_paths:
+        raise ValueError("합칠 engine.manifest가 없습니다.")
+    paths = [Path(p) for p in manifest_paths]
+    first_text = paths[0].read_text(encoding="utf-8")
+    merged: list[ManifestEntry] = []
+    seen: dict[str, ManifestEntry] = {}
+    additions: list[tuple[str, list[ManifestEntry]]] = []
+    conflicts: list[str] = []
+    for index, path in enumerate(paths):
+        current = read_manifest(path)
+        added_here: list[ManifestEntry] = []
+        for entry in current:
+            key = str(entry).replace("\\", "/")
+            if key in seen:
+                if _manifest_marker_key(seen[key]) != _manifest_marker_key(entry):
+                    conflicts.append(key)
+                continue
+            seen[key] = entry
+            merged.append(entry)
+            if index:
+                added_here.append(entry)
+        if index and added_here:
+            try:
+                flavor = path.parents[1].name
+            except IndexError:
+                flavor = path.parent.name
+            additions.append((flavor, added_here))
+    if len(paths) == 1:
+        text = first_text
+    else:
+        chunks = [first_text.rstrip("\n")]
+        for flavor, entries in additions:
+            chunks.extend([
+                "",
+                f"# ── 선택 flavor 합집합: {flavor} (pm_import/pm_update 생성) ──",
+                *(_manifest_entry_line(entry) for entry in entries),
+            ])
+        text = "\n".join(chunks) + "\n"
+    return {
+        "entries": merged,
+        "text": text,
+        "conflicts": sorted(set(conflicts)),
+        "paths": paths,
+    }
 
 
 def _entry_render_flag(entry) -> bool:
@@ -959,6 +1045,64 @@ def _selfprop_upstream_rel(local_entries: list) -> str:
     return _MANIFEST_SELF_REL
 
 
+def _selected_upstream_manifests(
+    effective_dest: Path,
+    source_root: Path,
+    local_entries: list,
+    local_text: str,
+) -> list[Path]:
+    """채택자에 실제 설치된 flavor들의 upstream manifest를 선택 순서대로 해소한다.
+
+    첫 flavor는 로컬 self-prop ``@source``가 명시한 기존 기준이다. 나머지는
+    ``templates/*/.project_manager/engine.manifest``라는 좁은 관리 디렉터리 glob으로 발견하고,
+    첫 flavor에 없는 고유 관리 경로가 dest에 실제 존재할 때 선택된 flavor로 본다. 따라서 새
+    harness가 추가돼도 경로 이름을 코드에 끼워 넣지 않는다.
+
+    add-harness guest 절은 별도 refresh 채널이므로 core 합집합으로 승격하지 않는다. guest가 소유한
+    경로만 존재해 후보가 된 flavor는 제외해 기존 add-harness 불가침 계약을 유지한다.
+    """
+    source_root = Path(source_root)
+    primary = source_root / _selfprop_upstream_rel(local_entries)
+    selected = [primary]
+    if not primary.is_file():
+        return selected
+    primary_paths = {str(e).replace("\\", "/") for e in read_manifest(primary)}
+    guest_block = _extract_guest_manifest_block(local_text)
+    guest_paths = {
+        ln.split()[0].replace("\\", "/")
+        for ln in guest_block.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    } if guest_block else set()
+    candidates = sorted(
+        source_root.glob("templates/*/.project_manager/engine.manifest"),
+        key=lambda p: p.as_posix(),
+    )
+    for candidate in candidates:
+        if candidate == primary:
+            continue
+        try:
+            entries = read_manifest(candidate)
+        except (FileNotFoundError, OSError):
+            continue
+        unique_paths = [
+            str(entry).replace("\\", "/")
+            for entry in entries
+            if str(entry).replace("\\", "/") not in primary_paths
+        ]
+        # guest 절에 이 flavor의 고유 선언이 하나라도 있으면 add-harness로 설치된 flavor다.
+        # 같은 flavor의 비-@render hook 파일도 dest에 존재할 수 있으므로 개별 경로 차감만으로는
+        # native multi-tree import와 구별되지 않는다 — flavor 전체를 guest 채널에 남긴다.
+        if any(_path_owned_by(rel, guest_paths) for rel in unique_paths):
+            continue
+        unmanaged_unique = [
+            rel for rel in unique_paths
+            if not _path_owned_by(rel, guest_paths)
+        ]
+        if any((Path(effective_dest) / rel).exists() for rel in unmanaged_unique):
+            selected.append(candidate)
+    return selected
+
+
 def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
     """self-update manifest 자기치유 (2-pass 단일 실행) — upstream engine.manifest 를
     이번 sync 의 **계획 기준 manifest 로 승격**해 신규 등재분을 한 번의 실행으로 도달시킨다.
@@ -1008,17 +1152,20 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
         return {"status": "no_local", "added": [], "removed": [],
                 "manifest": None, "upstream_manifest": root_manifest}
     local_entries = read_manifest(dest_manifest)
-    # flavor-correct upstream 읽기 경로 — 채택자 self-prop 엔트리의 @source 를 따라간다(부재/bare 는 root).
-    upstream_rel = _selfprop_upstream_rel(local_entries)
-    upstream_manifest = Path(source_root) / upstream_rel
+    local_text = dest_manifest.read_text(encoding="utf-8")
+    # 설치된 flavor들의 upstream manifest 합집합. 첫 항목은 self-prop가 지정한 기존 flavor이고,
+    # 추가 항목은 실제 dest의 고유 관리 경로로 일반화해 발견한다(`both` 경로 손-끼워넣기 없음).
+    upstream_manifests = _selected_upstream_manifests(
+        effective_dest, source_root, local_entries, local_text)
+    upstream_manifest = upstream_manifests[0]
     try:
-        upstream_text = upstream_manifest.read_text(encoding="utf-8")
-        upstream_entries = read_manifest(upstream_manifest)
+        merged_upstream = merge_manifest_sources(upstream_manifests)
+        upstream_text = merged_upstream["text"]
+        upstream_entries = merged_upstream["entries"]
     except (FileNotFoundError, OSError):
         # flavor upstream 읽기 실패 — skew 대조도 같은 경로를 넘겨 upstream_missing 으로 정합(fail-soft).
         return {"status": "upstream_missing", "added": [], "removed": [],
                 "manifest": None, "upstream_manifest": upstream_manifest}
-    local_text = dest_manifest.read_text(encoding="utf-8")
     # add-harness guest 절(로컬-전용 `@target-owned` guest)은 **core 비교에서 제외**한다:
     #   섞으면 항상 removed 비어있지 않아 영구 diverged → upstream 신규 항목 자기치유(승격) 불능. 절은
     #   apply 가 재부착하므로(대칭·`_copy_manifest_preserving_guest`) 승격돼도 잔존한다. 판정 사본 없이
@@ -1029,7 +1176,9 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
         if ln.strip() and not ln.strip().startswith("#")} if guest_block else set()
     if _strip_guest_manifest_block(local_text) == upstream_text:
         return {"status": "in_sync", "added": [], "removed": [],
-                "manifest": None, "upstream_manifest": upstream_manifest}
+                "manifest": None, "upstream_manifest": upstream_manifest,
+                "upstream_manifests": upstream_manifests,
+                "manifest_text": upstream_text}
     core_local_entries = [
         e for e in local_entries if str(e).replace("\\", "/") not in guest_paths]
     # 경로 + 마커(@render/@target-owned/@source) 동시 비교 — 경로 집합만 보면 flavor manifest 의
@@ -1049,16 +1198,23 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
         #   않고 현행 로컬 manifest 를 유지한다. upstream 신규 등재분은 skew 대조가
         #   surface 한다(안전망). "항목 제외" 커스텀(로컬⊂upstream·마커 정합)은 아래 heal 로 전체 교체.
         return {"status": "diverged", "added": added, "removed": removed,
-                "manifest": None, "upstream_manifest": upstream_manifest}
+                "manifest": None, "upstream_manifest": upstream_manifest,
+                "upstream_manifests": upstream_manifests,
+                "manifest_text": upstream_text}
     if not added:
         # 경로/마커 동일(주석만 차이) — 도달할 신규 등재 경로 0. manifest 자신도 self-prop 엔트리라
         #   plan 이 파일은 갱신한다(승격 불요). in_sync 로 취급(baseline 갱신 진행).
         return {"status": "in_sync", "added": [], "removed": [],
-                "manifest": None, "upstream_manifest": upstream_manifest}
+                "manifest": None, "upstream_manifest": upstream_manifest,
+                "upstream_manifests": upstream_manifests,
+                "manifest_text": upstream_text}
     # 로컬 ⊂ upstream(removed 0·마커 정합·added>0) — 구형/항목-제외 형상. flavor upstream 을 계획
     #   기준으로 승격해 신규(또는 재-등재) 경로를 한 번의 sync 로 도달시킨다(전체 교체·자동 병합 없음).
     return {"status": "heal", "added": added, "removed": [],
-            "manifest": upstream_entries, "upstream_manifest": upstream_manifest}
+            "manifest": upstream_entries, "upstream_manifest": upstream_manifest,
+            "upstream_manifests": upstream_manifests,
+            "manifest_text": upstream_text,
+            "multi_flavor_recovery": len(upstream_manifests) > 1}
 
 
 def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -> None:
@@ -1077,9 +1233,19 @@ def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -
         return
     added = selfheal["added"]
     verb = "자기치유 예정" if dry_run else "자기치유"
+    if selfheal.get("multi_flavor_recovery"):
+        flavors = [
+            path.parents[1].name
+            for path in selfheal.get("upstream_manifests", [])
+            if len(path.parents) >= 2
+        ]
+        print(
+            "⚠️ 설치된 다중 하니스의 manifest 누락(frozen adapter) 감지 — "
+            f"선택 flavor 합집합으로 {verb}: {', '.join(flavors)}"
+        )
     print(
         f"→ engine.manifest {verb} — upstream manifest 를 계획 기준으로 승격 "
-        f"(전체 교체·자동 병합 없음): 신규 등재 +{len(added)}"
+        f"(선택 flavor 합집합·선언 순서 우선): 신규 등재 +{len(added)}"
     )
     for path in added:
         print(f"    + {path}  (upstream 신규/재-등재 — 이번 sync 로 도달)")
@@ -1184,6 +1350,7 @@ def plan(
     dest_root: Path | None = None,
     *,
     render_enabled: bool = True,
+    manifest_source_text: str | None = None,
 ) -> tuple[list[tuple], list[str]]:
     """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update).
 
@@ -1204,6 +1371,22 @@ def plan(
     missing: list[str] = []
     for entry_index, entry in enumerate(manifest):
         rel = str(entry)
+        if rel.replace("\\", "/") == _MANIFEST_SELF_REL and manifest_source_text is not None:
+            # 선택 flavor 합집합은 upstream에 단일 실파일로 존재하지 않는다. 인메모리 source를
+            # change tuple에 실어 self-prop가 합집합 전체를 설치/갱신하게 한다.
+            dst = _RenderDst(effective_dest / rel, False)
+            source = _ManifestTextSource(manifest_source_text)
+            if not dst.exists():
+                changes.append((rel, source, dst, "new"))
+            else:
+                try:
+                    dst_core = _strip_guest_manifest_block(
+                        Path(dst).read_text(encoding="utf-8"))
+                    if dst_core.rstrip("\n") != manifest_source_text.rstrip("\n"):
+                        changes.append((rel, source, dst, "update"))
+                except (OSError, UnicodeDecodeError):
+                    changes.append((rel, source, dst, "update"))
+            continue
         # @source= 있으면 source_root 아래 canonical 소스 경로(source_rel)에서 읽고, dest 엔
         # manifest 경로(rel)로 기록한다(_remap_to_dest). 마커 부재면 source_rel == rel(오늘 동작).
         source_rel = _source_root_rel(entry)
@@ -1368,7 +1551,7 @@ def _prune_guest_block_owned_by_core(guest_block: str | None, core_text: str) ->
     return "\n".join(kept)
 
 
-def _copy_manifest_preserving_guest(sp: Path, dst: Path) -> None:
+def _copy_manifest_preserving_guest(sp, dst: Path) -> None:
     """engine.manifest 를 upstream(sp)으로 덮되 dest 의 add-harness guest 절을 재부착.
 
     재부착 전 **upstream core 가 소유하게 된 경로를 guest 절에서 차감**한다(소유권 전환·이중 등재
@@ -1379,9 +1562,9 @@ def _copy_manifest_preserving_guest(sp: Path, dst: Path) -> None:
             guest_block = _extract_guest_manifest_block(dst.read_text(encoding="utf-8"))
     except OSError:
         guest_block = None
-    new_text = Path(sp).read_text(encoding="utf-8")
+    new_text = sp.read_text(encoding="utf-8")
     guest_block = _prune_guest_block_owned_by_core(guest_block, new_text)
-    if not guest_block:
+    if not guest_block and isinstance(sp, Path):
         shutil.copy2(sp, dst)  # 비-add-harness 또는 전량 승격 — copy2(바이트/메타 무변경).
         return
     dst.write_text(_reattach_guest_block(new_text, guest_block), encoding="utf-8")
@@ -1409,7 +1592,7 @@ def apply(changes: list[tuple]) -> None:
             Path(dst).write_text(rendered, encoding="utf-8")
         elif str(_r).replace("\\", "/") == _MANIFEST_SELF_REL:
             # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존.
-            _copy_manifest_preserving_guest(Path(sp), Path(dst))
+            _copy_manifest_preserving_guest(sp, Path(dst))
         else:
             shutil.copy2(sp, dst)
 
@@ -2412,6 +2595,7 @@ def main(argv: list[str] | None = None) -> int:
     selfheal: dict = {
         "status": "skipped", "added": [], "removed": [],
         "manifest": None, "upstream_manifest": None,
+        "upstream_manifests": [], "manifest_text": None,
     }
     if not args.target:
         selfheal = resolve_manifest_selfheal(effective_dest, source_root)
@@ -2447,7 +2631,16 @@ def main(argv: list[str] | None = None) -> int:
     # render 는 채택자 self-update(--target 없음·local.conf 보유)와 pm_import 경로에서만.
     render_enabled = not args.target
     changes, missing = plan(
-        source_root, manifest, dest_root=dest_root, render_enabled=render_enabled)
+        source_root,
+        manifest,
+        dest_root=dest_root,
+        render_enabled=render_enabled,
+        manifest_source_text=(
+            selfheal.get("manifest_text")
+            if len(selfheal.get("upstream_manifests", [])) > 1
+            else None
+        ),
+    )
 
     for r, _sp, _dst, kind in changes:
         # render path 는 byte-copy 가 아니라 재렌더 산출물 — PM 이 구분하게 [render] 로 표기

@@ -40,6 +40,48 @@ def external():
     return _load("external_review")
 
 
+# ── PM 하네스 세션 마커 / 호출층 상한 진단 ──────────────────────────────────
+
+
+def test_harness_session_marker_table_matches_delegate_source(external):
+    """독립 CLI의 복제 선언은 위임 엔진의 감지 단일 출처와 정확히 같아야 한다."""
+    delegate = _load("pm_delegate")
+    assert external._HARNESS_SESSION_MARKERS == delegate._HARNESS_SESSION_MARKERS
+
+
+@pytest.mark.parametrize("key", ("OPENCODE_CONFIG", "CLAUDE_CONFIG_DIR",
+                                  "OPENCODE_CONFIG_DIR"))
+def test_harness_cap_advisory_ignores_config_and_unmeasured_keys(external, key):
+    """설정 경로와 세션 근거 없는 키만으로는 호출층 상한 안내를 내지 않는다."""
+    assert external.harness_cap_advisory(
+        {key: "configured"}, execution_budget=10,
+    ) is None
+
+
+def test_harness_cap_advisory_multiple_session_markers_are_ambiguous(external):
+    """중첩 세션은 선언 순서로 한 하네스를 택하지 않고 침묵한다."""
+    assert external.harness_cap_advisory(
+        {"OPENCODE": "child", "CLAUDECODE": "parent"},
+        execution_budget=10,
+    ) is None
+
+
+def test_harness_cap_advisory_accepts_secondary_opencode_session_marker(
+        external, monkeypatch):
+    """보조 OpenCode 세션 마커도 공용 표 계약에 따라 OpenCode 상한을 안내한다."""
+    class Relay:
+        @staticmethod
+        def harness_cap_required_budget(execution_budget):
+            return execution_budget
+
+    monkeypatch.setattr(external, "_load_relay", lambda: Relay())
+    warning = external.harness_cap_advisory(
+        {"OPENCODE_PID": "123"}, execution_budget=10,
+    )
+    assert warning is not None
+    assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS" in warning
+
+
 # ── 순수 헬퍼: 상한 파싱 (_round_limit) ─────────────────────────────────────
 
 

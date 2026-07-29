@@ -1006,11 +1006,13 @@ def plan_copy(
     적용해 dst relpath 를 산출하므로, 아래 both 중복 판정·치환 범위는 모두 *dst relpath*
     위에서 일관되게 돈다(lite 모드에선 `X.md` 가 dst — both 양 트리가 각자 lite 변종을 깐다).
 
-    MF3: both 에서 같은 relpath 가 두 트리에 모두 존재하면(예: 공유 엔진), **내용이 같을
+    MF3: 여러 선택 트리에서 같은 relpath 가 중복되면(예: 공유 엔진), **내용이 같을
     때만** 조용히 skip 한다. 내용이 *다르면*(예: engine.manifest·README.md — claude_code 는
     .claude/agents·skills·regression.yml 을 sync 범위에 포함, opencode 는 제외) 첫 트리
-    (template_roots 순서상 claude_code = 상위집합 어댑터)를 우선하되 stderr 경고를 남긴다.
-    조용한 정책 손실 금지. (lite 진입 CLAUDE.md / AGENTS.md 는 트리별로 dst relpath 가
+    (template_roots의 CLI 선언 순서)를 우선하되 stderr 경고를 남긴다. 이 우선순위는 결정적
+    충돌 해소 정책이지 첫 트리가 나머지의 상위집합이라는 전제를 두지 않는다. 단,
+    engine.manifest는 복사 뒤 ``_install_selected_manifest_union``이 선택 트리 선언의 합집합으로
+    다시 쓴다. (lite 진입 CLAUDE.md / AGENTS.md 는 트리별로 dst relpath 가
     달라 — claude→CLAUDE.md, opencode→AGENTS.md — 충돌하지 않는다.)
     """
     seen: dict[Path, tuple[Path, str]] = {}  # relpath → (채택된 src, 채택 트리명)
@@ -1031,8 +1033,9 @@ def plan_copy(
                     continue
                 # 내용이 다른 중복 — 첫 트리(우선) 채택을 명시적으로 경고.
                 print(
-                    f"경고: both 중복 relpath 내용 불일치 — '{rel.as_posix()}' 는 "
-                    f"'{prev_tree}'(우선) 것으로 정함. 무시된 트리: '{template_root.name}'.",
+                    f"경고: 선택 트리 중복 relpath 내용 불일치 — '{rel.as_posix()}' 는 "
+                    f"선언 순서상 첫 트리 '{prev_tree}' 것을 우선함. "
+                    f"후순위 트리: '{template_root.name}'.",
                     file=sys.stderr,
                 )
                 continue
@@ -1088,6 +1091,28 @@ def _same_bytes(a: Path, b: Path) -> bool:
         return a.read_bytes() == b.read_bytes()
     except OSError:
         return False
+
+
+def _install_selected_manifest_union(template_roots: list[Path], dest_root: Path) -> int:
+    """설치 engine.manifest를 선택된 template tree manifest들의 합집합으로 쓴다.
+
+    ``plan_copy``와 동일한 ``template_roots`` 순서를 단일 선택 트리로 소비한다. 경로/하네스별
+    예외는 없고 각 트리의 manifest 선언을 합치므로, 향후 임의 조합도 같은 집합 의미를 그대로
+    재사용할 수 있다. 단일 트리는 기존 복사본을 byte-identical 유지한다.
+    """
+    manifest_paths = [
+        root / ".project_manager" / "engine.manifest"
+        for root in template_roots
+    ]
+    if len(manifest_paths) < 2:
+        return 0
+    pu = _load_pm_update()
+    if pu is None:
+        raise RuntimeError("pm_update.py를 로드할 수 없어 선택 manifest 합집합을 만들 수 없습니다.")
+    merged = pu.merge_manifest_sources(manifest_paths)
+    target = Path(dest_root) / ".project_manager" / "engine.manifest"
+    target.write_text(merged["text"], encoding="utf-8")
+    return len(merged["entries"])
 
 
 # ── placeholder 치환 ───────────────────────────────────────────────────────
@@ -3597,6 +3622,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"  백업 위치: {BACKUP_DIR_NAME}/{today}/  · {git_note}")
     print(f"  → {n_copy} 파일 복사 ({n_backup} 백업), placeholder 치환, board.py init")
+    if len(template_roots) > 1:
+        print(
+            f"  engine.manifest: 선택된 {len(template_roots)}개 트리 선언의 합집합 "
+            "(중복 경로는 선언 순서상 첫 트리 우선)"
+        )
     if args.board_submodule:
         print(f"  board submodule: {args.board_remote} → {_BOARD_SUBMODULE_PATH} "
               f"(빈 remote 면 구조 init+push·ignore=all)")
@@ -3660,6 +3690,13 @@ def main(argv: list[str] | None = None) -> int:
 
     for a in actions:
         a.run()
+
+    merged_manifest_entries = _install_selected_manifest_union(template_roots, dest_root)
+    if merged_manifest_entries:
+        print(
+            f"✓ engine.manifest 선택 트리 합집합 설치 "
+            f"({len(template_roots)}개 flavor · {merged_manifest_entries}개 관리 경로)"
+        )
 
     # MF1: 치환 범위 = 이번 run 이 복사한 파일만(복사 안 한 사용자 파일 불가침).
     copied_relpaths = {a.dst.relative_to(dest_root) for a in actions}
