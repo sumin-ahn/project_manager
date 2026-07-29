@@ -172,6 +172,16 @@ def _load_repo_coordinates():
     return _load_module("repo_coordinates", "repo_coordinates.py")
 
 
+def _load_repo_owned_files():
+    """공용 repo 소유 파일 열거 seam을 로드한다. 부재/손상은 호출부가 fail-loud 한다."""
+    module = _load_module("repo_owned_files", "repo_owned_files.py")
+    if module is None:
+        raise RuntimeError(
+            "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
+        )
+    return module
+
+
 _WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
 
 
@@ -1023,39 +1033,19 @@ def _files_for_directory_touch(touch: str) -> list[str]:
         return [touch]
     checkout, directory, norm = location
 
-    relative_files: list[str] = []
+    repo_files = _load_repo_owned_files()
     try:
-        rc, out = _real_git_runner(checkout)([
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "--",
-            f":(literal){norm}",
-        ])
-    except Exception:  # noqa: BLE001 — git 부재/주입 runner 실패는 filesystem fallback.
-        rc, out = 1, ""
-    if rc == 0:
-        for candidate_text in out.split("\0"):
-            if not candidate_text:
-                continue
-            # ls-files가 이미 ignore와 pathspec을 적용한 git 파일형 엔트리의 진실이다.
-            # working-tree is_file() 재검사는 symlink와 mode 160000 gitlink를 거짓 탈락시킨다.
-            relative_files.append(Path(candidate_text).as_posix())
-    else:
-        try:
-            relative_files = [
-                path.relative_to(checkout).as_posix()
-                for path in directory.rglob("*")
-                if path.is_file()
-                and not any(
-                    part in {".git", "__pycache__", ".pytest_cache"}
-                    for part in path.relative_to(directory).parts
-                )
-            ]
-        except OSError:
-            return [touch]
+        relative_files = [
+            path.as_posix()
+            for path in repo_files.list_repo_owned_files(
+                checkout,
+                norm,
+                mode=repo_files.OWNED,
+                git_runner=_real_git_runner(checkout),
+            )
+        ]
+    except OSError:
+        return [touch]
 
     expanded: list[str] = []
     reconstruction_failures = 0

@@ -3809,3 +3809,79 @@ def test_help_documents_ticket_scope_flag(pd):
     assert "--ticket T-NNNN" in help_text
     assert "범위 밖 변경을 경고 판정" in help_text
     assert "생략 시 허용 경로 0" in help_text
+
+
+# ══ native advisory 하네스 마커 (T-0497) ══════════════════════════════════
+
+_NATIVE_ADVISORY_ENV_KEYS = (
+    "CODEX_THREAD_ID", "CODEX_CI", "CLAUDECODE",
+    # 설정 경로/미실측 키도 반드시 지운다. CI(Codex) 실행 환경의 실측값이 테스트에 섞이면
+    # 설정 경로 단독 시나리오가 거짓 양성이 될 수 있다.
+    "CLAUDE_CONFIG_DIR", "OPENCODE", "OPENCODE_PID", "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_DIR",
+)
+
+
+def _clear_native_advisory_env(monkeypatch):
+    for key in _NATIVE_ADVISORY_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.mark.parametrize("key", ("CODEX_THREAD_ID", "CODEX_CI"))
+def test_native_advisory_accepts_measured_codex_markers(pd, monkeypatch, key):
+    """T-0497 Codex 라이브 dump에서 확인된 두 세션 마커는 각각 충분하다."""
+    _clear_native_advisory_env(monkeypatch)
+    monkeypatch.setenv(key, "session-marker")
+
+    assert pd.native_advisory("codex") is not None
+
+
+def test_native_advisory_claude_survives_opencode_config_dir(pd, monkeypatch):
+    """PM 18차 실측: OpenCode 설정 경로가 섞인 Claude 세션도 Claude로만 판정한다."""
+    _clear_native_advisory_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "session-marker")
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", "/user-config/opencode")
+
+    assert pd.native_advisory("claude") is not None
+    assert pd.native_advisory("opencode") is None
+
+
+@pytest.mark.parametrize("key", ("CLAUDE_CONFIG_DIR", "OPENCODE_CONFIG",
+                                  "OPENCODE_CONFIG_DIR"))
+def test_native_advisory_ignores_config_and_unmeasured_keys(pd, monkeypatch, key):
+    """설정 경로와 실측 근거 없는 OpenCode 키만으로는 native 안내를 내지 않는다."""
+    _clear_native_advisory_env(monkeypatch)
+    monkeypatch.setenv(key, "configured")
+
+    assert pd.native_advisory("codex") is None
+    assert pd.native_advisory("claude") is None
+    assert pd.native_advisory("opencode") is None
+
+
+@pytest.mark.parametrize("key", ("OPENCODE", "OPENCODE_PID"))
+def test_native_advisory_accepts_measured_opencode_markers(pd, monkeypatch, key):
+    """PM 19차 부모 셸 diff에서 OpenCode 세션에만 주입된 키는 각각 충분하다."""
+    _clear_native_advisory_env(monkeypatch)
+    monkeypatch.setenv(key, "opencode-session")
+
+    assert pd.native_advisory("opencode") is not None
+
+
+def test_native_advisory_nested_claude_opencode_is_ambiguous(pd, monkeypatch):
+    """Claude 안에서 띄운 OpenCode는 두 세션 마커가 공존하므로 의도적으로 침묵한다."""
+    _clear_native_advisory_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "claude-parent")
+    monkeypatch.setenv("OPENCODE", "opencode-child")
+
+    assert pd.native_advisory("claude") is None
+    assert pd.native_advisory("opencode") is None
+
+
+def test_native_advisory_multiple_harness_markers_are_ambiguous(pd, monkeypatch):
+    """둘 이상의 실측 세션 마커는 elif 우선순위 대신 모호(None)로 처리한다."""
+    _clear_native_advisory_env(monkeypatch)
+    monkeypatch.setenv("CODEX_THREAD_ID", "codex-session")
+    monkeypatch.setenv("CLAUDECODE", "claude-session")
+
+    assert pd.native_advisory("codex") is None
+    assert pd.native_advisory("claude") is None

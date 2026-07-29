@@ -54,6 +54,9 @@
 # repo_coordinates: PM-home ticket touches(`work/<repo>_<N>/...`)를 검증된 workspace/lease와
 #   일치할 때만 소유-repo 상대 좌표로 바꾸는 공용 normalizer(T-0473). 불일치는 fail-loud.
 .project_manager/tools/repo_coordinates.py
+# repo_owned_files: git 우선 repo 소유 파일 열거 공용 seam(T-0502). tracked_only/owned 모드를
+#   선언하고 git 실패 시 loud filesystem fallback. 신규 전수 rglob/os.walk는 정적 가드가 차단.
+.project_manager/tools/repo_owned_files.py
 # delegate_scope: 위임 전/후 porcelain 상태를 비교해 ticket touches 밖 변경을 loud 경고로
 #   표면화하는 비차단 판정기(T-0462). PM-home 좌표는 repo_coordinates 공용 normalizer를 재사용.
 .project_manager/tools/delegate_scope.py

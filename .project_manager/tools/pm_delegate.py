@@ -2497,18 +2497,36 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
 
 # ── native 단락 advisory (never-block 백스톱) ────────────────────────────
 
+# 라이브 실측(2026년 7월 29일): Codex 세션에서 ``python3 -c``로 CODEX/CLAUDE/OPENCODE
+# 이름만 dump했다 — CODEX_THREAD_ID=<set>, CODEX_CI=<set>,
+# CODEX_SANDBOX_NETWORK_DISABLED=<set>. 세션 판정 근거는 앞의 두 키다.
+# Claude Code는 이전 실측(2026년 7월 28일)에서 CLAUDECODE=<set>,
+# CLAUDE_CODE_SESSION_ID/ENTRYPOINT/EXECPATH/CHILD_SESSION=<set>였고, 판정 근거는
+# CLAUDECODE다.
+#
+# 라이브 실측(2026년 7월 29일): Claude 부모 셸과 그 셸에서
+# ``opencode run -m ollama/glm-5.2:cloud``로 띄운 OpenCode 세션 안의 env를 diff했다.
+# 부모에는 AI_AGENT/CLAUDECODE/CLAUDE_CODE_CHILD_SESSION/CLAUDE_CODE_ENTRYPOINT/
+# CLAUDE_CODE_EXECPATH/CLAUDE_CODE_SESSION_ID/CLAUDE_EFFORT/CLAUDE_PID 및
+# OPENCODE_CONFIG_DIR/ORCA_OPENCODE_CONFIG_DIR가 이미 있었고, OpenCode 세션은 이를 상속한
+# 뒤 OPENCODE=<set>, OPENCODE_PID=<set>만 추가했다. 따라서 OPENCODE(보조로
+# OPENCODE_PID)는 런타임 주입 세션 마커다. 반대로 OPENCODE_CONFIG_DIR는 세션 없는 부모에도
+# 있으므로 설정 경로로 확정했고, OPENCODE_CONFIG는 양쪽 어디에도 없어 판정에서 제외한다.
+
 def native_advisory(harness: str) -> str | None:
     """target 하네스 == PM 하네스면 "네이티브가 더 저렴" advisory 1줄(never-block).
 
-    PM 하네스 env 마커(codex CODEX_THREAD_ID·claude/opencode 마커)를 감지해 same-harness 위임이면
+    PM 하네스 env 마커(codex CODEX_THREAD_ID·claude CLAUDECODE·opencode OPENCODE)를 감지해
+    same-harness 위임이면
     경고 문자열을 반환한다(호출부가 stderr 로 냄). 1차 판정은 어댑터 스킬 카드·이건 백스톱."""
-    pm_harness = None
-    if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI"):
-        pm_harness = "codex"
-    elif os.environ.get("OPENCODE") or os.environ.get("OPENCODE_CONFIG"):
-        pm_harness = "opencode"
-    elif os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CONFIG_DIR"):
-        pm_harness = "claude"
+    markers = {
+        "codex": ("CODEX_THREAD_ID", "CODEX_CI"),
+        "claude": ("CLAUDECODE",),
+        "opencode": ("OPENCODE", "OPENCODE_PID"),
+    }
+    matches = [name for name, keys in markers.items()
+               if any(os.environ.get(key) for key in keys)]
+    pm_harness = matches[0] if len(matches) == 1 else None
     if pm_harness == harness:
         return (f"[pm-delegate] target 하네스({harness}) == PM 하네스 — 네이티브 위임이 더 저렴하다"
                 "(subprocess 스폰 불요). 어댑터 스킬 카드의 native 단락을 우선하라(advisory).")

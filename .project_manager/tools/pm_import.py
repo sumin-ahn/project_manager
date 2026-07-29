@@ -2142,6 +2142,19 @@ def _live_harness_allowed(mode: str) -> bool:
     return mode == "auto" and os.environ.get(LIVE_HARNESS_ENV, "").strip() in ("1", "true", "yes", "on")
 
 
+def _load_repo_owned_files():
+    """공용 repo 소유 파일 열거 seam을 script-relative로 로드한다."""
+    path = Path(__file__).resolve().with_name("repo_owned_files.py")
+    spec = importlib.util.spec_from_file_location("_pm_import_repo_owned_files", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(
+            "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _resolve_fill_scope(dest_root: Path, copied_relpaths: set[Path] | None) -> set[Path]:
     """fill 스캔 대상 relpath set 을 결정한다.
 
@@ -2153,11 +2166,13 @@ def _resolve_fill_scope(dest_root: Path, copied_relpaths: set[Path] | None) -> s
     """
     if copied_relpaths is not None:
         return copied_relpaths
+    # 실 import 경로는 항상 copied_relpaths를 넘기므로 여기의 dest 전수 열거는 직접 호출용 폴백에
+    # 한정된다. adopter가 아직 git repo가 아니면 seam이 filesystem 강등 경고를 1회 표면화한다.
+    # 정상 import에는 노이즈가 없고, 직접 호출자는 추적/ignore 보장 소실을 놓치지 않는다.
+    repo_files = _load_repo_owned_files()
     scope: set[Path] = set()
-    for path in dest_root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(dest_root)
+    for rel in repo_files.list_repo_owned_files(
+            dest_root, ".", mode=repo_files.OWNED):
         if any(part in COPY_EXCLUDE_DIR_NAMES for part in rel.parts):
             continue
         scope.add(rel)

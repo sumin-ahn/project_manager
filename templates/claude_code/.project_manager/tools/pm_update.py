@@ -320,6 +320,19 @@ def _read_local_conf(path: Path) -> dict[str, str]:
     return conf
 
 
+def _load_repo_owned_files():
+    """공용 repo 소유 파일 열거 seam을 script-relative로 로드한다."""
+    path = Path(__file__).resolve().with_name("repo_owned_files.py")
+    spec = importlib.util.spec_from_file_location("_pm_update_repo_owned_files", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(
+            "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _iter_files(root: Path, rel: str):
     """manifest 엔트리(파일/디렉토리) → (repo 기준 relpath, src 절대경로) 들.
 
@@ -331,9 +344,10 @@ def _iter_files(root: Path, rel: str):
     """
     src = root / rel
     if src.is_dir():
-        for p in sorted(src.rglob("*")):
-            if p.is_file():
-                yield p.relative_to(root).as_posix(), p
+        repo_files = _load_repo_owned_files()
+        for relative in repo_files.list_repo_owned_files(
+                root, rel, mode=repo_files.TRACKED_ONLY):
+            yield relative.as_posix(), root / relative
     elif src.is_file():
         yield str(rel), src
     # missing → 아무것도 yield 안 함 (호출부가 missing 으로 보고)
