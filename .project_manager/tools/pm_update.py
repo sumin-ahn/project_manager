@@ -473,6 +473,28 @@ class SkippedRepoShippingEntryWarning(RuntimeWarning):
     """pm-update가 byte-copy할 수 없는 tracked 엔트리를 명시적으로 제외했다는 신호."""
 
 
+class EmptyShippingInventoryError(RuntimeError):
+    """존재하는 manifest 엔트리의 tracked 출하 인벤토리가 0건인 결함."""
+
+    def __init__(
+            self, checkout: Path, subtree: str,
+            *, filesystem_fallback: bool = False) -> None:
+        self.checkout = Path(checkout)
+        self.subtree = subtree
+        self.filesystem_fallback = filesystem_fallback
+        diagnosis = (
+            "filesystem 강등 상태이므로 소스 디렉토리가 비었는지와 checkout 루트가 "
+            "올바른지 확인하라"
+            if filesystem_fallback
+            else "checkout 루트가 올바른지와 git index에 이 경로가 등재됐는지 확인하라"
+        )
+        super().__init__(
+            "pm-update 출하 인벤토리가 0건임 "
+            f"(checkout={self.checkout}, subtree={subtree!r}); "
+            + diagnosis
+        )
+
+
 def _shipping_inventory(repo_files, root: Path, rel: str) -> list:
     """tracked 출하 목록과 미추적 제외 신호를 만든다.
 
@@ -489,6 +511,7 @@ def _shipping_inventory(repo_files, root: Path, rel: str) -> list:
         git_runner=runner,
     )
     rc, inside = runner(["rev-parse", "--is-inside-work-tree"])
+    filesystem_fallback = not (rc == 0 and inside.strip() == "true")
     if rc == 0 and inside.strip() == "true":
         owned = repo_files.list_repo_owned_files(
             root, rel, mode=repo_files.OWNED, git_runner=runner)
@@ -516,6 +539,12 @@ def _shipping_inventory(repo_files, root: Path, rel: str) -> list:
                     f"출하되지 않음: {rel} — ignore 규칙을 제거하고 git add 하라",
                     file=sys.stderr,
                 )
+    if not tracked:
+        # seam은 coverage·부분 subtree 질의도 쓰므로 빈 결과 자체를 예외로 만들지 않는다.
+        # manifest 경로가 존재해 이 소비점에 도달한 경우만 출하 결함으로 직접 승격한다.
+        # 위의 OWNED/check-ignore 진단을 먼저 내 원인 판별 정보도 잃지 않는다.
+        raise EmptyShippingInventoryError(
+            root, rel, filesystem_fallback=filesystem_fallback)
     return tracked
 
 
@@ -3358,6 +3387,9 @@ def main(argv: list[str] | None = None) -> int:
     repo_files = _load_repo_owned_files()
     try:
         return _main(argv)
+    except EmptyShippingInventoryError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
     except repo_files.RepoFilesGitError as exc:
         print(
             "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "

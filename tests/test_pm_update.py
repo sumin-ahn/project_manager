@@ -13,6 +13,7 @@ import importlib.util
 import shutil
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -209,6 +210,116 @@ def test_cli_classification_does_not_reload_repo_files_during_exception(
     err = capsys.readouterr().err
     assert "원 git 열거 오류" in err
     assert "예외 처리 중" not in err
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_empty_tracked_manifest_inventory_is_nonzero_in_apply_and_dry_run(
+        pm_update, tmp_path, monkeypatch, capsys, dry_run):
+    """실제 git 저장소의 빈 index subtree는 실행·dry-run 모두 전파 전에 비0이다."""
+    fake_repo = tmp_path / f"fake-repo-{dry_run}"
+    (fake_repo / "templates" / "tgt").mkdir(parents=True)
+    source = tmp_path / f"source-{dry_run}"
+    ship = source / "ship"
+    ship.mkdir(parents=True)
+    manifest = source / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("ship\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "add", ".project_manager/engine.manifest"],
+        check=True,
+    )
+    assert subprocess.run(
+        ["git", "-C", str(source), "ls-files", "--", "ship"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == ""
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    argv = ["--from", str(source), "--target", "tgt"]
+    if dry_run:
+        argv.append("--dry-run")
+
+    rc = pm_update.main(argv)
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "pm-update 출하 인벤토리가 0건임" in captured.err
+    assert str(source) in captured.err
+    assert "subtree='ship'" in captured.err
+    assert "git index" in captured.err
+    assert list((fake_repo / "templates" / "tgt").iterdir()) == []
+
+
+def test_empty_non_git_manifest_inventory_uses_filesystem_diagnostic(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """비-git filesystem 강등은 git index 대신 빈 소스 디렉토리·checkout 루트를 안내한다."""
+    fake_repo = tmp_path / "fake-repo"
+    (fake_repo / "templates" / "tgt").mkdir(parents=True)
+    source = tmp_path / "unpacked-source"
+    (source / "ship").mkdir(parents=True)
+    manifest = source / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("ship\n", encoding="utf-8")
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    with pytest.warns(
+            pm_update._load_repo_owned_files().RepoFilesFallbackWarning,
+            match="filesystem 전수 순회"):
+        rc = pm_update.main(["--from", str(source), "--target", "tgt"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "filesystem 강등 상태" in err
+    assert "소스 디렉토리가 비었는지" in err
+    assert "checkout 루트" in err
+    assert "git index" not in err
+    assert list((fake_repo / "templates" / "tgt").iterdir()) == []
+
+
+@pytest.mark.parametrize("subtree_state", ["empty", "absent"])
+def test_shipping_inventory_guard_covers_both_silent_seam_shapes(
+        pm_update, tmp_path, subtree_state):
+    """디스크도 빈 subtree와 subtree 부재 모두 warning 없이 소비점의 명시 판정이 막는다."""
+    source = tmp_path / f"source-{subtree_state}"
+    source.mkdir()
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+    rel = "ship"
+    if subtree_state == "empty":
+        (source / rel).mkdir()
+    repo_files = pm_update._load_repo_owned_files()
+    assert subprocess.run(
+        ["git", "-C", str(source), "ls-files"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == ""
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(
+                pm_update.EmptyShippingInventoryError,
+                match=r"pm-update 출하 인벤토리가 0건임.*subtree='ship'"):
+            pm_update._shipping_inventory(repo_files, source, rel)
+
+    assert caught == []
+
+
+def test_missing_manifest_entry_keeps_existing_missing_report_path(
+        pm_update, tmp_path):
+    """경로 자체 부재는 빈 인벤토리 예외가 아니라 기존 plan missing 결과다."""
+    source = tmp_path / "source-missing"
+    source.mkdir()
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+
+    changes, missing = pm_update.plan(
+        source,
+        [".project_manager/tools/absent.py"],
+        dest_root=tmp_path / "dest",
+    )
+
+    assert changes == []
+    assert missing == [".project_manager/tools/absent.py"]
 
 
 # ── ② --from 생략 → local.conf upstream 사용 (plan 도달) ─────────────────────

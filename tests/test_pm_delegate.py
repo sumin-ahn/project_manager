@@ -271,7 +271,15 @@ def _run_main(pd, monkeypatch, argv, conf, run_fn=None):
     monkeypatch.setattr(pd, "local_config", lambda: conf)
     # cwd git-repo 검증은 통과로 고정(테스트 tmp_path 는 git repo 가 아님) — 검증 자체는 전용 테스트에서.
     monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
-    return pd.main(argv, run_fn=run_fn)
+    isolated_argv = list(argv)
+    if "--output-dir" not in isolated_argv and "--prompt-file" in isolated_argv:
+        prompt = Path(isolated_argv[isolated_argv.index("--prompt-file") + 1])
+        raw_dir = prompt.parent / "raw"
+        if "--cwd" in isolated_argv:
+            cwd = Path(isolated_argv[isolated_argv.index("--cwd") + 1])
+            raw_dir = cwd.parent / f".{cwd.name}-raw"
+        isolated_argv += ["--output-dir", str(raw_dir)]
+    return pd.main(isolated_argv, run_fn=run_fn)
 
 
 def test_disabled_returns_rc3(pd, monkeypatch, tmp_path, capsys):
@@ -3937,3 +3945,12 @@ def test_native_advisory_rejects_values_outside_public_domain(pd, monkeypatch):
 
     assert pd.native_advisory("gemini") is None
     assert pd.native_advisory(None) is None
+
+
+def test_save_raw_output_tempdir_fallback_with_injected_destination(
+        pd, monkeypatch, tmp_path):
+    """output_dir 생략 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(tmp_path))
+    dest = pd.save_raw_output("codex", "fallback content")
+    assert dest.parent == tmp_path
+    assert dest.read_text(encoding="utf-8") == "fallback content"

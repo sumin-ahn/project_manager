@@ -924,6 +924,28 @@ class SkippedTemplateShippingEntryWarning(RuntimeWarning):
     """pm-import가 byte-copy할 수 없는 템플릿 엔트리를 명시적으로 제외했다는 신호."""
 
 
+class EmptyTemplateShippingInventoryError(RuntimeError):
+    """존재하는 출하 템플릿의 tracked 인벤토리가 0건인 결함."""
+
+    def __init__(
+            self, checkout: Path, subtree: str = ".",
+            *, filesystem_fallback: bool = False) -> None:
+        self.checkout = Path(checkout)
+        self.subtree = subtree
+        self.filesystem_fallback = filesystem_fallback
+        diagnosis = (
+            "filesystem 강등 상태이므로 소스 디렉토리가 비었는지와 checkout 루트가 "
+            "올바른지 확인하라"
+            if filesystem_fallback
+            else "checkout 루트가 올바른지와 git index에 출하 파일이 등재됐는지 확인하라"
+        )
+        super().__init__(
+            "pm-import 출하 인벤토리가 0건임 "
+            f"(checkout={self.checkout}, subtree={subtree!r}); "
+            + diagnosis
+        )
+
+
 def _full_relpath_for_lite(rel: Path) -> Path:
     """lite 변종 relpath `X.lite.md` → full 진입 relpath `X.md` (이름 치환).
 
@@ -940,6 +962,10 @@ def _shippable_template_files(repo_files, template_root: Path) -> list[Path]:
     git 인벤토리는 index mode가 진실이므로 일반 파일 mode만 허용한다. 비-git 폴백은 mode를
     얻을 수 없어 그 경로에서만 lstat()으로 등가 판정한다. 두 판정을 한 엔트리에 함께 적용하면
     index와 working tree 중 어느 쪽이 출하 계약인지 갈리므로 의도적으로 섞지 않는다.
+
+    0건 판정은 복사 계획 수가 아니라 이 원시 열거 수에 둔다. ``plan_copy``는 목적지 byte를
+    비교하지 않아 동일 트리 재-import도 모든 출하 파일을 다시 계획하므로 정당한 zero-action
+    no-op이 없고, 빈 원시 인벤토리만 출하 결함이다.
     """
     accepted: list[Path] = []
     skipped: dict[str, list[str]] = {
@@ -953,6 +979,15 @@ def _shippable_template_files(repo_files, template_root: Path) -> list[Path]:
     entries = repo_files.list_repo_owned_entries(
         template_root, ".", mode=repo_files.TRACKED_ONLY
     )
+    if not entries:
+        runner = repo_files._real_git_runner(template_root)
+        probe_rc, inside = runner(["rev-parse", "--is-inside-work-tree"])
+        filesystem_fallback = not (
+            probe_rc == 0 and inside.strip() == "true")
+        # seam의 빈 결과는 부분 subtree 질의에는 유효할 수 있다. 그러나 선택된 템플릿은
+        # 프레임워크 출하 단위이므로 소비 지점에서 직접 막아 warning의 조건부 발화에 기대지 않는다.
+        raise EmptyTemplateShippingInventoryError(
+            template_root, ".", filesystem_fallback=filesystem_fallback)
     for entry in entries:
         rel = entry.path
         source = template_root / rel
@@ -2325,6 +2360,7 @@ def _resolve_fill_scope(dest_root: Path, copied_relpaths: set[Path] | None) -> s
     # 실 import 경로는 항상 copied_relpaths를 넘기므로 여기의 dest 전수 열거는 직접 호출용 폴백에
     # 한정된다. adopter가 아직 git repo가 아니면 seam이 filesystem 강등 경고를 1회 표면화한다.
     # 정상 import에는 노이즈가 없고, 직접 호출자는 추적/ignore 보장 소실을 놓치지 않는다.
+    # 이 소비점의 0건은 "채울 파일 없음"이라는 정당 결과이므로 출하용 빈 인벤토리 예외에서 제외한다.
     repo_files = _load_repo_owned_files()
     scope: set[Path] = set()
     for rel in repo_files.list_repo_owned_files(
@@ -3294,7 +3330,13 @@ def add_harness_cli(
     """
     try:
         add_harness(dest_root, harness, dry_run=dry_run, source_root=source_root)
-    except (ValueError, FileNotFoundError, FileVsDirConflict, AncestorConflict) as exc:
+    except (
+        ValueError,
+        FileNotFoundError,
+        FileVsDirConflict,
+        AncestorConflict,
+        EmptyTemplateShippingInventoryError,
+    ) as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
     return 0
@@ -3749,7 +3791,11 @@ def main(argv: list[str] | None = None) -> int:
             if _local_conf.is_file() or _local_conf.is_symlink():
                 _check_ancestor_safe(
                     dest_root, backup_root / ".project_manager" / "local.conf", set())
-    except (FileVsDirConflict, AncestorConflict) as exc:
+    except (
+        FileVsDirConflict,
+        AncestorConflict,
+        EmptyTemplateShippingInventoryError,
+    ) as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
 

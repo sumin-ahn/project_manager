@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import warnings
 from pathlib import Path
 
 import pytest
@@ -889,22 +890,113 @@ def test_iter_source_files_non_git_fallback_lstat_skips_symlink_loudly(
     )
 
 
-def test_iter_source_files_empty_tracked_inventory_keeps_seam_warning(
+def test_iter_source_files_empty_tracked_inventory_fails_and_keeps_seam_warning(
         pm_import, tmp_path):
-    """빈 tracked 인벤토리는 새 오류로 승격하지 않고 공용 seam의 기존 warning을 보존한다."""
+    """실제 빈 index는 소비점에서 실패하고 디스크 비교 seam warning도 그대로 남는다."""
     template = tmp_path / "empty-tracked-template"
     template.mkdir()
     (template / "untracked-local.txt").write_text("local\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(template), "init", "-q"], check=True)
     repo_files = pm_import._load_repo_owned_files()
+    assert subprocess.run(
+        ["git", "-C", str(template), "ls-files"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == ""
 
     with pytest.warns(
         repo_files.RepoFilesEmptyWarning,
         match="tracked_only 열거가 빈 결과",
     ):
-        got = list(pm_import._iter_source_files(template))
+        with pytest.raises(
+            pm_import.EmptyTemplateShippingInventoryError,
+            match=r"pm-import 출하 인벤토리가 0건임.*subtree='\.'",
+        ) as caught:
+            list(pm_import._iter_source_files(template))
 
-    assert got == []
+    assert str(template) in str(caught.value)
+    assert "git index" in str(caught.value)
+
+
+def test_iter_source_files_empty_disk_inventory_fails_without_seam_warning(
+        pm_import, tmp_path):
+    """디스크도 빈 실제 git subtree는 warning 0이어도 소비점의 명시 판정으로 실패한다."""
+    source = tmp_path / "source"
+    template = source / "templates" / "empty-disk-template"
+    template.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(pm_import.EmptyTemplateShippingInventoryError) as error:
+            list(pm_import._iter_source_files(template))
+
+    assert caught == []
+    assert error.value.filesystem_fallback is False
+    assert "git index" in str(error.value)
+
+
+def test_main_empty_non_git_template_uses_filesystem_diagnostic(
+        pm_import, tmp_path, capsys):
+    """비-git filesystem 강등의 빈 템플릿은 git index 대신 소스 디렉토리 원인을 안내한다."""
+    source = tmp_path / "unpacked-source"
+    (source / "templates" / "claude_code").mkdir(parents=True)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    with pytest.warns(
+            pm_import._load_repo_owned_files().RepoFilesFallbackWarning,
+            match="filesystem 전수 순회"):
+        rc = pm_import.main([
+            "--into", str(dest), "--from", str(source), "--harness", "claude",
+        ])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "filesystem 강등 상태" in err
+    assert "소스 디렉토리가 비었는지" in err
+    assert "checkout 루트" in err
+    assert "git index" not in err
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_main_empty_tracked_inventory_is_nonzero_before_copy(
+        pm_import, tmp_path, capsys, dry_run):
+    """--into 실행과 dry-run 모두 실제 빈 index 템플릿을 복사 전에 같은 진단으로 막는다."""
+    source = tmp_path / f"source-{dry_run}"
+    template = source / "templates" / "claude_code"
+    template.mkdir(parents=True)
+    (template / "engine.manifest").write_text(
+        ".project_manager/tools/board.py\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+    assert subprocess.run(
+        ["git", "-C", str(source), "ls-files"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == ""
+    dest = tmp_path / f"dest-{dry_run}"
+    dest.mkdir()
+    argv = [
+        "--into", str(dest), "--from", str(source), "--harness", "claude",
+    ]
+    if dry_run:
+        argv.append("--dry-run")
+
+    with pytest.warns(
+        pm_import._load_repo_owned_files().RepoFilesEmptyWarning,
+        match="tracked_only 열거가 빈 결과",
+    ):
+        rc = pm_import.main(argv)
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "pm-import 출하 인벤토리가 0건임" in captured.err
+    assert str(template) in captured.err
+    assert "subtree='.'" in captured.err
+    assert "git index" in captured.err
+    assert not (dest / ".project_manager").exists()
 
 
 def test_tracked_source_inventory_still_applies_policy_exclusions(

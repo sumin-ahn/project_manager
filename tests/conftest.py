@@ -21,9 +21,79 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
+
+# 테스트가 제품의 output_dir 폴백을 밟으면 tempdir에 감사 raw가 영구 누적된다.
+# 세션 기본 tempdir를 pytest 소유 디렉터리로 격리해 다른 checkout/PM 프로세스 출력과 섞지 않는다.
+_PROJECT_TEMPDIR_GLOBS = (
+    "pm_delegate_*",
+    "external_review_*",
+    "pm_board_seed_*",
+    "safewrite-*",
+    "safewrite-fac-*",
+    "swroot-*",
+    "swout-*",
+)
+_TEMPDIR_ENV_KEYS = ("TMPDIR", "TEMP", "TMP")
+
+
+def _snapshot_project_temp_outputs(
+        root: Path) -> dict[Path, tuple[int, int, int, int]]:
+    """프로젝트가 지정 tempdir에 만드는 이름 있는 산출물의 경로와 파일 정체를 스냅샷한다.
+
+    external_review 파일명은 초 단위라 기존 파일을 덮어쓸 수 있다. 경로 집합만 비교하지 않고
+    inode/mtime/size도 함께 기록해 같은 이름 덮어쓰기도 신규 tempdir 쓰기로 판정한다.
+    """
+    snapshot: dict[Path, tuple[int, int, int, int]] = {}
+    for pattern in _PROJECT_TEMPDIR_GLOBS:
+        for path in root.glob(pattern):
+            try:
+                stat_result = path.stat()
+            except FileNotFoundError:
+                continue
+            snapshot[path] = (
+                stat_result.st_dev,
+                stat_result.st_ino,
+                stat_result.st_mtime_ns,
+                stat_result.st_size,
+            )
+    return snapshot
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _forbid_real_tempdir_project_outputs(tmp_path_factory):
+    """세션 기본 tempdir를 격리하고 이 세션의 프로젝트 산출물만 금지한다.
+
+    Python 현재 프로세스의 캐시와 자식 프로세스가 상속할 표준 환경변수를 함께 고정한다.
+    감시 경로는 지역 변수로 보존하므로 테스트가 이후 env/gettempdir를 monkeypatch해도 바뀌지
+    않는다. 다른 pytest/PM 프로세스는 이 디렉터리를 모르므로 전역 tempdir 동시 출력은 무관하다.
+    """
+    session_tempdir = tmp_path_factory.mktemp("project-temp-output-guard")
+    before = _snapshot_project_temp_outputs(session_tempdir)
+    previous_tempdir = tempfile.tempdir
+    previous_env = {key: os.environ.get(key) for key in _TEMPDIR_ENV_KEYS}
+    for key in _TEMPDIR_ENV_KEYS:
+        os.environ[key] = str(session_tempdir)
+    tempfile.tempdir = str(session_tempdir)
+    try:
+        yield
+        after = _snapshot_project_temp_outputs(session_tempdir)
+    finally:
+        tempfile.tempdir = previous_tempdir
+        for key, value in previous_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    written = sorted(path for path, identity in after.items() if before.get(path) != identity)
+    assert not written, (
+        f"테스트 세션이 격리 tempdir({session_tempdir})에 프로젝트 산출물을 썼습니다. "
+        "흐름 테스트에 pytest tmp_path 기반 --output-dir/output_dir를 명시하세요:\n"
+        + "\n".join(f"  - {path}" for path in written)
+    )
 
 # ── ① codex ambient env 중화 (autouse) ────────────────────────────────────────
 

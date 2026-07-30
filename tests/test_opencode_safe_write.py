@@ -29,9 +29,11 @@ json·glm-5.2)로 별도 실증 — 티켓 메모 기록.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -298,6 +300,20 @@ def test_core_requires_cleanly_in_node():
     assert "REQUIRE_OK" in out, f"core 모듈 require 실패: {out!r}"
 
 
+def test_node_inherits_pytest_session_tempdir_redirect():
+    """자식 node의 os.tmpdir()가 Python 세션 전용 tempdir와 같은 위치를 가리킨다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — tempdir 상속 검증 skip")
+    out = _run_node_check(
+        'const os = require("node:os"); console.log(os.tmpdir());'
+    ).strip()
+
+    assert Path(out).resolve() == Path(tempfile.gettempdir()).resolve()
+    assert Path(os.environ["TMPDIR"]).resolve() == Path(out).resolve()
+
+
 def test_core_pure_logic_node_selfcheck():
     """node 로 core 순수 로직 자가검증 (opencode 런타임 없이·ctx-guard 자가검증 패턴).
 
@@ -367,6 +383,7 @@ assert.strictEqual(m.validateSafeWrite("z".repeat(8192),"create",false,8192).ok,
 
 // ── ② safeWrite fs: create → append (root containment·상대경로·누적 바이트/라인 보고) ──
 const td = fs.mkdtempSync(path.join(os.tmpdir(), "safewrite-"));
+try {
 const fp = path.join(td, "sub", "out.txt");   // 부모 dir 자동 생성 확인.
 let r = m.safeWrite(td, "sub/out.txt", "line1\nline2\n", "create", 8192);
 assert.strictEqual(r.mode, "create");
@@ -384,6 +401,9 @@ assert.throws(() => m.safeWrite(td, "nope.txt", "z", "append", 8192), /없다/);
 assert.throws(() => m.safeWrite(td, "big.txt", "x".repeat(9000), "create", 8192), /상한/);
 
 console.log("SAFE_WRITE_SELFCHECK_OK");
+} finally {
+  fs.rmSync(td, {recursive:true, force:true});
+}
 """
     out = _run_node_check(script)
     assert "SAFE_WRITE_SELFCHECK_OK" in out, f"core 순수 로직 자가검증 실패. out={out!r}"
@@ -413,48 +433,52 @@ const fakeTool = (def) => def; fakeTool.schema = fakeSchema;
 
 (async () => {
   const td = fs.mkdtempSync(path.join(os.tmpdir(), "safewrite-fac-"));
-  const factory = m.makeSafeWritePlugin(fakeTool);
-  const hooks = await factory({ directory: td });
-  assert.ok(hooks.tool && hooks.tool.safe_write, "safe_write custom tool 미등록");
-  assert.strictEqual(typeof hooks.tool.safe_write.execute, "function", "safe_write.execute 없음");
-  assert.strictEqual(typeof hooks["tool.execute.before"], "function", "tool.execute.before 훅 없음");
-
-  // custom tool 을 통해 create → append (상대 경로·directory 해소).
-  const out1 = await hooks.tool.safe_write.execute({filePath:"doc.txt", content:"a\n", mode:"create"}, {directory:td});
-  assert.ok(out1.includes("create ok"), "create 보고 아님: " + out1);
-  const out2 = await hooks.tool.safe_write.execute({filePath:"doc.txt", content:"b\n", mode:"append"}, {directory:td});
-  assert.ok(out2.includes("append ok"), "append 보고 아님: " + out2);
-  assert.strictEqual(fs.readFileSync(path.join(td, "doc.txt"), "utf-8"), "a\nb\n");
-
-  // before 훅: 대형 신규 write → throw(safe_write 유도).
-  let threw = false;
   try {
-    await hooks["tool.execute.before"]({tool:"write"}, {args:{content:"x".repeat(20000), filePath:path.join(td,"new.txt")}});
-  } catch (e) { threw = true; assert.ok(e.message.includes("safe_write"), "deny 메시지 아님: " + e.message); }
-  assert.ok(threw, "대형 신규 write 가 deny 안 됨");
+    const factory = m.makeSafeWritePlugin(fakeTool);
+    const hooks = await factory({ directory: td });
+    assert.ok(hooks.tool && hooks.tool.safe_write, "safe_write custom tool 미등록");
+    assert.strictEqual(typeof hooks.tool.safe_write.execute, "function", "safe_write.execute 없음");
+    assert.strictEqual(typeof hooks["tool.execute.before"], "function", "tool.execute.before 훅 없음");
 
-  // before 훅: 대형 기존 write → throw(edit 유도). 먼저 파일을 만든다.
-  fs.writeFileSync(path.join(td, "exists.txt"), "seed");
-  let threw2 = false;
-  try {
-    await hooks["tool.execute.before"]({tool:"write"}, {args:{content:"x".repeat(20000), filePath:path.join(td,"exists.txt")}});
-  } catch (e) { threw2 = true; assert.ok(e.message.includes("edit"), "기존 파일 deny 가 edit 유도 아님: " + e.message); }
-  assert.ok(threw2, "대형 기존 write 가 deny 안 됨");
+    // custom tool 을 통해 create → append (상대 경로·directory 해소).
+    const out1 = await hooks.tool.safe_write.execute({filePath:"doc.txt", content:"a\n", mode:"create"}, {directory:td});
+    assert.ok(out1.includes("create ok"), "create 보고 아님: " + out1);
+    const out2 = await hooks.tool.safe_write.execute({filePath:"doc.txt", content:"b\n", mode:"append"}, {directory:td});
+    assert.ok(out2.includes("append ok"), "append 보고 아님: " + out2);
+    assert.strictEqual(fs.readFileSync(path.join(td, "doc.txt"), "utf-8"), "a\nb\n");
 
-  // before 훅: 소형 write → 통과(throw 없음).
-  await hooks["tool.execute.before"]({tool:"write"}, {args:{content:"tiny", filePath:path.join(td,"t.txt")}});
+    // before 훅: 대형 신규 write → throw(safe_write 유도).
+    let threw = false;
+    try {
+      await hooks["tool.execute.before"]({tool:"write"}, {args:{content:"x".repeat(20000), filePath:path.join(td,"new.txt")}});
+    } catch (e) { threw = true; assert.ok(e.message.includes("safe_write"), "deny 메시지 아님: " + e.message); }
+    assert.ok(threw, "대형 신규 write 가 deny 안 됨");
 
-  // safe_write 도구 경로도 root containment 강제 — 절대경로·../ 탈출은 tool 을 통해서도 거부.
-  let sec1 = false;
-  try { await hooks.tool.safe_write.execute({filePath:"/tmp/pwn.txt", content:"x", mode:"create"}, {directory:td}); }
-  catch (e) { sec1 = true; assert.ok(e.message.includes("절대경로"), "절대경로 거부 메시지 아님: " + e.message); }
-  assert.ok(sec1, "tool 경로가 절대경로를 거부 안 함");
-  let sec2 = false;
-  try { await hooks.tool.safe_write.execute({filePath:"../escape.txt", content:"x", mode:"create"}, {directory:td}); }
-  catch (e) { sec2 = true; }
-  assert.ok(sec2, "tool 경로가 ../ 탈출을 거부 안 함");
+    // before 훅: 대형 기존 write → throw(edit 유도). 먼저 파일을 만든다.
+    fs.writeFileSync(path.join(td, "exists.txt"), "seed");
+    let threw2 = false;
+    try {
+      await hooks["tool.execute.before"]({tool:"write"}, {args:{content:"x".repeat(20000), filePath:path.join(td,"exists.txt")}});
+    } catch (e) { threw2 = true; assert.ok(e.message.includes("edit"), "기존 파일 deny 가 edit 유도 아님: " + e.message); }
+    assert.ok(threw2, "대형 기존 write 가 deny 안 됨");
 
-  console.log("FACTORY_WIRING_OK");
+    // before 훅: 소형 write → 통과(throw 없음).
+    await hooks["tool.execute.before"]({tool:"write"}, {args:{content:"tiny", filePath:path.join(td,"t.txt")}});
+
+    // safe_write 도구 경로도 root containment 강제 — 절대경로·../ 탈출은 tool 을 통해서도 거부.
+    let sec1 = false;
+    try { await hooks.tool.safe_write.execute({filePath:"/tmp/pwn.txt", content:"x", mode:"create"}, {directory:td}); }
+    catch (e) { sec1 = true; assert.ok(e.message.includes("절대경로"), "절대경로 거부 메시지 아님: " + e.message); }
+    assert.ok(sec1, "tool 경로가 절대경로를 거부 안 함");
+    let sec2 = false;
+    try { await hooks.tool.safe_write.execute({filePath:"../escape.txt", content:"x", mode:"create"}, {directory:td}); }
+    catch (e) { sec2 = true; }
+    assert.ok(sec2, "tool 경로가 ../ 탈출을 거부 안 함");
+
+    console.log("FACTORY_WIRING_OK");
+  } finally {
+    fs.rmSync(td, {recursive:true, force:true});
+  }
 })();
 """
     out = _run_node_check(script)
@@ -480,8 +504,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const td = fs.mkdtempSync(path.join(os.tmpdir(), "swroot-"));
-const outside = fs.mkdtempSync(path.join(os.tmpdir(), "swout-"));
+let td;
+let outside;
+try {
+td = fs.mkdtempSync(path.join(os.tmpdir(), "swroot-"));
+outside = fs.mkdtempSync(path.join(os.tmpdir(), "swout-"));
 
 // (회귀) 정상 상대경로 create+append 는 통과.
 let r = m.safeWrite(td, "sub/ok.txt", "one\n", "create", 8192);
@@ -547,6 +574,10 @@ assert.ok(!m.isWithinRoot("/a/b", "/a/bc"));  // 접두 문자열 오탐 방지
 assert.ok(!m.isWithinRoot("/a/b", "/a"));
 
 console.log("ROOT_CONTAINMENT_OK");
+} finally {
+  if (outside) fs.rmSync(outside, {recursive:true, force:true});
+  if (td) fs.rmSync(td, {recursive:true, force:true});
+}
 """
     out = _run_node_check(script)
     assert "ROOT_CONTAINMENT_OK" in out, f"root containment 자가검증 실패. out={out!r}"

@@ -1753,6 +1753,36 @@ def test_backfill_verified_at_skips_already_present(board, monkeypatch, tmp_path
     assert "verified_at: existing" in arch.read_text(encoding="utf-8")  # 원본 sha 보존
 
 
+def test_backfill_page_selector_changes_only_selected_document_bytes(
+        board, monkeypatch, tmp_path, capsys):
+    """형제 backfill도 같은 선택자를 받고 선택 밖 문서는 byte-for-byte 보존한다."""
+    wiki = tmp_path / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    arch = wiki / "architecture.md"
+    status = wiki / "status.md"
+    _write_verified_doc(arch, verified_at=None)
+    _write_verified_doc(status, verified_at=None, extra="type: status")
+    before_arch = arch.read_bytes()
+    before_status = status.read_bytes()
+    full_oid = "cafe0001" + "0" * 32
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
+    monkeypatch.setattr(board, "STATUS_FILE", status)
+    monkeypatch.setattr(board, "_canonical_commit_oid", lambda _sha: full_oid)
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+
+    rc = board.main([
+        "verified-at-backfill", "--sha", "cafe0001",
+        "--page", ".project_manager/wiki/architecture.md",
+    ])
+
+    assert rc == 0
+    assert arch.read_bytes() != before_arch
+    assert f'verified_at: "{full_oid}"' in arch.read_text(encoding="utf-8")
+    assert status.read_bytes() == before_status
+    assert "1개 문서에 verified_at 삽입" in capsys.readouterr().out
+
+
 def test_cmd_backfill_rejects_unverifiable_explicit_sha(board, monkeypatch, tmp_path, capsys):
     """명시 --sha 는 commit 실존 검증 후에만 기록 (codex must-fix) — 오타/비존재 sha 가 영속되면
     `_git_commits_between` fail-soft(None)에 흡수돼 그 문서 freshness 가 영구 조용 skip(false-green)."""

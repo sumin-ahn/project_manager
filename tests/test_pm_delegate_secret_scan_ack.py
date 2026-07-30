@@ -95,6 +95,8 @@ def _run(pd, monkeypatch, argv: list[str], fake: _FakeRun, conf=None) -> int:
 
 
 def _base_argv(prompt: Path, cwd: Path, output_dir: Path | None = None) -> list[str]:
+    if output_dir is None:
+        output_dir = cwd / "raw"
     argv = [
         "--role",
         "developer",
@@ -102,9 +104,9 @@ def _base_argv(prompt: Path, cwd: Path, output_dir: Path | None = None) -> list[
         str(prompt),
         "--cwd",
         str(cwd),
+        "--output-dir",
+        str(output_dir),
     ]
-    if output_dir is not None:
-        argv += ["--output-dir", str(output_dir)]
     return argv
 
 

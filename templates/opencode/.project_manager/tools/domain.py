@@ -1070,6 +1070,9 @@ def _files_for_directory_touch(touch: str) -> list[str]:
 
     repo_files = _load_repo_owned_files()
     try:
+        # 이 seam 소비는 출하가 아니라 directory touch의 coverage 분모 전개다. 비었거나
+        # 전부 ignored인 디렉토리의 0건은 정당하게 gap에서 사라지므로 출하용 0건 승격을
+        # 적용하지 않는다. 원 touch 보존은 열거 실패에만 해당하며 빈 분모와 의미가 다르다.
         relative_files = repo_files.list_repo_owned_files(
             checkout,
             norm,

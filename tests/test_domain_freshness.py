@@ -699,6 +699,376 @@ def test_repin_migration_replaces_owner_and_anchor_for_all_current_truth_docs(
         assert "deadbeef" not in text
 
 
+def test_repin_page_selector_changes_only_selected_document_bytes(
+        board, domain, monkeypatch, tmp_path, capsys):
+    """선택 문서는 실제 갱신되고 나머지 현재-진실 문서는 byte-for-byte 불변이다."""
+    _init_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("v1\n", encoding="utf-8")
+    pin = _commit(tmp_path, "initial")
+    wiki = tmp_path / ".project_manager" / "wiki"
+    domain_dir = wiki / "domain"
+    domain_dir.mkdir(parents=True)
+    architecture = wiki / "architecture.md"
+    status = wiki / "status.md"
+    architecture.write_text(
+        "---\ntitle: architecture\nrepo: upstream\nverified_at: deadbeef\n---\n\narch body\n",
+        encoding="utf-8")
+    status.write_text(
+        "---\ntitle: status\nrepo: upstream\nverified_at: deadbeef\n---\n\nstatus body\n",
+        encoding="utf-8")
+    page = _domain_page(
+        domain_dir, "engine.md", covers=["src/**"], verified_at="deadbeef",
+        title="engine", repo="upstream")
+    before = {path: path.read_bytes() for path in (architecture, status, page)}
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", architecture)
+    monkeypatch.setattr(board, "STATUS_FILE", status)
+    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+
+    rc = board.main([
+        "verified-at-repin", "--repo", "self", "--sha", pin,
+        "--page", ".project_manager/wiki/architecture.md",
+    ])
+
+    assert rc == 0
+    assert architecture.read_bytes() != before[architecture]
+    assert f'verified_at: "{pin}"' in architecture.read_text(encoding="utf-8")
+    assert status.read_bytes() == before[status]
+    assert page.read_bytes() == before[page]
+    assert "1개 문서 재핀" in capsys.readouterr().out
+
+
+def test_repin_page_selector_validates_entire_selected_set_before_writing(
+        board, monkeypatch, tmp_path):
+    """선택 집합 하나가 invalid면 같은 선택 집합의 valid 문서도 쓰지 않는다."""
+    wiki = tmp_path / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    architecture = wiki / "architecture.md"
+    status = wiki / "status.md"
+    architecture_original = (
+        "---\ntitle: architecture\nrepo: self\nverified_at: deadbeef\n---\n")
+    status_original = "frontmatter 없음\n"
+    architecture.write_text(architecture_original, encoding="utf-8")
+    status.write_text(status_original, encoding="utf-8")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", architecture)
+    monkeypatch.setattr(board, "STATUS_FILE", status)
+
+    full = "cafe0001" + "0" * 32
+    results = dict(board.repin_verified_at(
+        full,
+        "upstream",
+        pages=[
+            ".project_manager/wiki/architecture.md",
+            ".project_manager/wiki/status.md",
+        ],
+    ))
+
+    assert results[architecture] == "not-written:validation-failed"
+    assert results[status] == "error:no-frontmatter"
+    assert architecture.read_text(encoding="utf-8") == architecture_original
+    assert status.read_text(encoding="utf-8") == status_original
+
+
+@pytest.mark.parametrize(
+    "selected",
+    ["", ".project_manager/wiki/domain/does-not-exist.md"],
+    ids=["empty", "missing"],
+)
+def test_repin_page_selector_rejects_vacuous_inputs_without_changes(
+        board, monkeypatch, tmp_path, capsys, selected):
+    """빈/비존재 선택자가 0개 검증 성공으로 퇴화하지 않고 rc!=0·무변경을 보장한다."""
+    _init_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("v1\n", encoding="utf-8")
+    pin = _commit(tmp_path, "initial")
+    wiki = tmp_path / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    architecture = wiki / "architecture.md"
+    status = wiki / "status.md"
+    original = "---\ntitle: page\nrepo: upstream\nverified_at: deadbeef\n---\n"
+    architecture.write_text(original, encoding="utf-8")
+    status.write_text(original, encoding="utf-8")
+    before = {path: path.read_bytes() for path in (architecture, status)}
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", architecture)
+    monkeypatch.setattr(board, "STATUS_FILE", status)
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+
+    rc = board.main([
+        "verified-at-repin", "--repo", "self", "--sha", pin,
+        "--page", selected,
+    ])
+
+    assert rc != 0
+    assert {path: path.read_bytes() for path in before} == before
+    err = capsys.readouterr().err
+    assert "--page" in err and "무변경" in err
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "no-covers",
+        "draft",
+        "readme",
+        "parent-path",
+        "absolute-path",
+        "outside-domain",
+    ],
+)
+def test_repin_page_selector_rejects_noncanonical_targets_without_any_write(
+        board, domain, monkeypatch, tmp_path, capsys, case):
+    """각 거부 가드는 rc!=0뿐 아니라 모든 현재-진실 문서의 byte 불변까지 보장한다."""
+    _init_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("v1\n", encoding="utf-8")
+    pin = _commit(tmp_path, "initial")
+    wiki = tmp_path / ".project_manager" / "wiki"
+    domain_dir = wiki / "domain"
+    domain_dir.mkdir(parents=True)
+    architecture = wiki / "architecture.md"
+    status = wiki / "status.md"
+    for path in (architecture, status):
+        path.write_text(
+            "---\ntitle: fixed\nrepo: self\nverified_at: deadbeef\n---\n",
+            encoding="utf-8",
+        )
+    valid = _domain_page(
+        domain_dir, "valid.md", covers=["src/**"], verified_at="deadbeef",
+        title="valid", repo="self")
+    outside = wiki / "outside.md"
+    outside.write_text(
+        "---\ntitle: outside\ncovers:\n  - \"src/**\"\n"
+        "repo: self\nverified_at: deadbeef\n---\n",
+        encoding="utf-8",
+    )
+    documents = [architecture, status, valid, outside]
+    selected_path = domain_dir / f"{case}.md"
+    if case == "no-covers":
+        selected_path.write_text(
+            "---\ntitle: no covers\nrepo: self\nverified_at: deadbeef\n---\n",
+            encoding="utf-8",
+        )
+        documents.append(selected_path)
+        selected = selected_path.relative_to(tmp_path).as_posix()
+    elif case == "draft":
+        selected_path.write_text(
+            "---\ntitle: draft\nstatus: draft\ncovers:\n  - \"src/**\"\n"
+            "repo: self\nverified_at: deadbeef\n---\n",
+            encoding="utf-8",
+        )
+        documents.append(selected_path)
+        selected = selected_path.relative_to(tmp_path).as_posix()
+    elif case == "readme":
+        selected_path = domain_dir / "README.md"
+        selected_path.write_text(
+            "---\ntitle: readme\ncovers:\n  - \"src/**\"\n"
+            "repo: self\nverified_at: deadbeef\n---\n",
+            encoding="utf-8",
+        )
+        documents.append(selected_path)
+        selected = selected_path.relative_to(tmp_path).as_posix()
+    elif case == "parent-path":
+        selected = ".project_manager/wiki/domain/../domain/valid.md"
+    elif case == "absolute-path":
+        selected = str(valid.resolve())
+    else:
+        selected = outside.relative_to(tmp_path).as_posix()
+
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", architecture)
+    monkeypatch.setattr(board, "STATUS_FILE", status)
+    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
+    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+    before = {path: path.read_bytes() for path in documents}
+
+    rc = board.main([
+        "verified-at-repin", "--repo", "self", "--sha", pin,
+        "--page", selected,
+    ])
+
+    assert rc != 0
+    assert {path: path.read_bytes() for path in before} == before
+    err = capsys.readouterr().err
+    assert "--page" in err and "무변경" in err
+
+
+def test_page_selector_reuses_domain_module_selection_contract(
+        board, monkeypatch, tmp_path):
+    """DOMAIN_DIR·비페이지 집합·parse_page가 선택자의 단일 규칙 원천이다."""
+    custom_domain_dir = tmp_path / "custom-domain"
+    custom_domain_dir.mkdir()
+    page = custom_domain_dir / "page.md"
+    page.write_text("parser owns this contract\n", encoding="utf-8")
+    non_page = custom_domain_dir / "INDEX.md"
+    non_page.write_text("not a page\n", encoding="utf-8")
+    parse_calls = []
+
+    class FakeDomain:
+        DOMAIN_DIR = custom_domain_dir
+        _NON_PAGE_FILES = frozenset({"INDEX.md"})
+        DRAFT_STATUS = "unapproved"
+
+        @staticmethod
+        def parse_page(path):
+            parse_calls.append(path)
+            return {"path": path, "covers": ["src/**"], "status": None}
+
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", tmp_path / "architecture.md")
+    monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "status.md")
+    monkeypatch.setattr(board, "_load_domain_module", lambda: FakeDomain)
+
+    selected = page.relative_to(tmp_path).as_posix()
+    assert board._verified_at_targets([selected]) == [page.resolve()]
+    assert parse_calls == [page.resolve()]
+    with pytest.raises(board._VerifiedAtPageSelectionError, match="canonical domain"):
+        board._verified_at_targets([non_page.relative_to(tmp_path).as_posix()])
+    assert parse_calls == [page.resolve()]
+
+
+def test_page_selector_rejects_domain_symlink_to_repo_internal_non_domain_document(
+        board, domain, monkeypatch, tmp_path):
+    """domain 링크의 해소 대상이 domain 밖이면 유효 문서여도 선택·쓰기를 거부한다."""
+    wiki = tmp_path / ".project_manager" / "wiki"
+    domain_dir = wiki / "domain"
+    domain_dir.mkdir(parents=True)
+    outside = wiki / "outside.md"
+    original = (
+        "---\ntitle: outside\ncovers:\n  - \"src/**\"\n"
+        "repo: self\nverified_at: deadbeef\n---\n\nbody\n"
+    )
+    outside.write_text(original, encoding="utf-8")
+    link = domain_dir / "link.md"
+    link.symlink_to(outside)
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", wiki / "architecture.md")
+    monkeypatch.setattr(board, "STATUS_FILE", wiki / "status.md")
+    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
+    selected = ".project_manager/wiki/domain/link.md"
+
+    with pytest.raises(board._VerifiedAtPageSelectionError, match="domain 문서가 아님"):
+        board.backfill_verified_at("cafe0001", pages=[selected])
+
+    results = board.repin_verified_at(
+        "cafe0001" + "0" * 32, "self", pages=[selected])
+    assert len(results) == 1
+    assert results[0][1].startswith("error:enumeration:")
+    assert outside.read_text(encoding="utf-8") == original
+
+
+def test_page_selector_rejects_symlink_loop_as_controlled_selection_error(
+        board, domain, monkeypatch, tmp_path):
+    """symlink loop 는 traceback 이 아니라 통제된 선택 오류로 정규화되고 아무 문서도 안 바뀐다.
+
+    Python 3.12 의 `Path.resolve()` 는 loop 에 `RuntimeError`("Symlink loop from …") 를 내고
+    3.13+ 는 `OSError`(ELOOP) 를 낸다 — 둘 중 어느 하한에서도 CLI 가 traceback 으로 죽지 않아야
+    한다(실측: 3.12.3 상호/자기 루프 모두 RuntimeError)."""
+    wiki = tmp_path / ".project_manager" / "wiki"
+    domain_dir = wiki / "domain"
+    page = _domain_page(
+        domain_dir, "engine.md", covers=["src/**"], verified_at="deadbeef",
+        title="engine", repo="self")
+    untouched = page.read_text(encoding="utf-8")
+    left = domain_dir / "loop-a.md"
+    right = domain_dir / "loop-b.md"
+    left.symlink_to(right)
+    right.symlink_to(left)
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", wiki / "architecture.md")
+    monkeypatch.setattr(board, "STATUS_FILE", wiki / "status.md")
+    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
+    selected = ".project_manager/wiki/domain/loop-a.md"
+
+    with pytest.raises(board._VerifiedAtPageSelectionError, match="symlink loop"):
+        board._verified_at_targets([selected])
+    with pytest.raises(board._VerifiedAtPageSelectionError, match="symlink loop"):
+        board.backfill_verified_at("cafe0001", pages=[selected])
+
+    results = board.repin_verified_at(
+        "cafe0001" + "0" * 32, "self", pages=[selected])
+    assert len(results) == 1
+    assert results[0][1].startswith("error:enumeration:")
+    assert page.read_text(encoding="utf-8") == untouched
+
+
+def test_page_selector_resolves_normal_domain_path_and_deduplicates_symlink_alias(
+        board, domain, monkeypatch, tmp_path):
+    """정상 상대경로와 같은 파일의 링크 별칭은 해소 경로 하나로만 검증·쓴다."""
+    wiki = tmp_path / ".project_manager" / "wiki"
+    domain_dir = wiki / "domain"
+    page = _domain_page(
+        domain_dir, "engine.md", covers=["src/**"], verified_at="deadbeef",
+        title="engine", repo="self")
+    alias = domain_dir / "engine-alias.md"
+    alias.symlink_to(page)
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", wiki / "architecture.md")
+    monkeypatch.setattr(board, "STATUS_FILE", wiki / "status.md")
+    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
+    selected = [
+        ".project_manager/wiki/domain/engine.md",
+        ".project_manager/wiki/domain/engine-alias.md",
+    ]
+
+    assert board._verified_at_targets(selected) == [page.resolve()]
+    results = board.repin_verified_at(
+        "cafe0001" + "0" * 32, "upstream", pages=selected)
+
+    assert results == [(page.resolve(), "updated")]
+    assert 'verified_at: "cafe0001' in page.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "parsed_type"),
+    [
+        ("- covers\n- src/**", list),
+        ("scalar-frontmatter", str),
+    ],
+    ids=["top-level-list", "top-level-scalar"],
+)
+def test_page_selector_converts_non_mapping_frontmatter_to_controlled_selection_error(
+        board, domain, monkeypatch, tmp_path, capsys, frontmatter, parsed_type):
+    """공용 파서 반환 계약은 유지하되 선택 경계가 non-mapping을 파일 지목 오류로 바꾼다."""
+    wiki = tmp_path / ".project_manager" / "wiki"
+    domain_dir = wiki / "domain"
+    domain_dir.mkdir(parents=True)
+    page = domain_dir / "malformed.md"
+    original = f"---\n{frontmatter}\n---\n\nbody\n"
+    page.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "ARCHITECTURE_FILE", wiki / "architecture.md")
+    monkeypatch.setattr(board, "STATUS_FILE", wiki / "status.md")
+    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
+    full = "cafe0001" + "0" * 32
+    monkeypatch.setattr(board, "_canonical_commit_oid", lambda *_args, **_kwargs: full)
+    selected = ".project_manager/wiki/domain/malformed.md"
+
+    parsed, _body = board.load_ticket(page)
+    assert isinstance(parsed, parsed_type)
+    rc = board.cmd_verified_at_backfill(
+        SimpleNamespace(sha="cafe0001", dry_run=False, pages=[selected]))
+
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert selected in err
+    assert "domain 문서 실소비 파싱 실패" in err
+    results = board.repin_verified_at(full, "self", pages=[selected])
+    assert len(results) == 1
+    assert "error:enumeration:" in results[0][1]
+    assert "domain 문서 실소비 파싱 실패" in results[0][1]
+    assert page.read_text(encoding="utf-8") == original
+
+
 def test_repin_only_replaces_or_inserts_column_zero_keys(board):
     old = (
         "---\n"

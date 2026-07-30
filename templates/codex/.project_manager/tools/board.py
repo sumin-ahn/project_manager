@@ -8803,6 +8803,86 @@ def _verified_at_backfill_targets(*, strict_domain: bool = False) -> list[Path]:
     return targets
 
 
+class _VerifiedAtPageSelectionError(ValueError):
+    """`--page`가 canonical 현재-진실 문서를 가리키지 않을 때의 명시 실패."""
+
+    def __init__(self, page: str, reason: str):
+        self.path = REPO / page if page and not Path(page).is_absolute() else REPO
+        super().__init__(f"--page {page!r}: {reason}")
+
+
+def _verified_at_targets(
+        pages: Sequence[str] | None, *, strict_domain: bool = False) -> list[Path]:
+    """전체 또는 `--page`로 고른 현재-진실 문서 대상을 반환한다.
+
+    선택자 미지정(`None`)은 기존 전체 열거를 그대로 호출한다. 선택자를 지정하면
+    validate-all-first의 "all"은 **선택 집합 전체**로 좁아진다. 이때 선택 밖 문서의 파싱
+    오류가 쓰기를 막지 않는 것은 의도된 계약이다. 그 문서들의 핀은 한 바이트도 바뀌지 않아
+    새 green 주장이 생기지 않기 때문이다. 대신 빈/비존재/비대상 선택을 오류로 거부해
+    "0개를 검증하고 성공"하는 false-green을 막고, domain 문서는 실제 소비 파서로 읽어
+    covers 보유·비-draft인 canonical 대상인지 확인한다.
+    """
+    if pages is None:
+        return _verified_at_backfill_targets(strict_domain=strict_domain)
+    if not pages:
+        raise _VerifiedAtPageSelectionError("", "선택 문서가 비어 있음")
+
+    repo_root = REPO.resolve()
+    fixed_targets = {Path(ARCHITECTURE_FILE).resolve(), Path(STATUS_FILE).resolve()}
+    domain = None
+    targets: list[Path] = []
+    seen: set[Path] = set()
+    for supplied in pages:
+        raw = str(supplied).strip()
+        relative = Path(raw)
+        if not raw:
+            raise _VerifiedAtPageSelectionError(raw, "빈 경로")
+        if relative.is_absolute() or ".." in relative.parts:
+            raise _VerifiedAtPageSelectionError(raw, "REPO 상대 경로만 허용")
+        unresolved = REPO / relative
+        try:
+            candidate = unresolved.resolve()
+            candidate.relative_to(repo_root)
+        except (OSError, ValueError):
+            raise _VerifiedAtPageSelectionError(raw, "REPO 밖 경로") from None
+        except RuntimeError:
+            # Python 3.12 의 `Path.resolve()` 는 symlink loop 에 `RuntimeError`("Symlink loop
+            # from …") 를 낸다 — 3.13+ 는 같은 상황을 `OSError`(ELOOP) 로 낸다. 어느 하한에서도
+            # 통제되지 않은 traceback 이 나지 않게 두 축을 함께 선택 오류로 정규화한다
+            # (실측: 3.12.3 상호/자기 루프 모두 RuntimeError).
+            raise _VerifiedAtPageSelectionError(raw, "경로 해소 실패(symlink loop)") from None
+        if not candidate.is_file():
+            raise _VerifiedAtPageSelectionError(raw, "문서가 존재하지 않음")
+
+        if candidate not in fixed_targets:
+            if domain is None:
+                domain = _load_domain_module()
+            if domain is None:
+                raise _VerifiedAtPageSelectionError(
+                    raw, "domain.py 로드 실패로 canonical domain 문서를 검증할 수 없음")
+            domain_dir = Path(domain.DOMAIN_DIR).resolve()
+            try:
+                candidate.relative_to(domain_dir)
+            except ValueError:
+                raise _VerifiedAtPageSelectionError(
+                    raw, "architecture.md/status.md/covers domain 문서가 아님") from None
+            if candidate.suffix != ".md" or candidate.name in domain._NON_PAGE_FILES:
+                raise _VerifiedAtPageSelectionError(raw, "canonical domain 문서가 아님")
+            try:
+                page = domain.parse_page(candidate)
+            except Exception as exc:  # noqa: BLE001 — domain 소비 파서 오류를 선택 오류로 정규화.
+                raise _VerifiedAtPageSelectionError(
+                    raw, f"domain 문서 실소비 파싱 실패:{exc}") from exc
+            if page.get("status") == domain.DRAFT_STATUS or not page.get("covers"):
+                raise _VerifiedAtPageSelectionError(
+                    raw, "covers 보유·비-draft domain 문서가 아님")
+
+        if candidate not in seen:
+            targets.append(candidate)
+            seen.add(candidate)
+    return targets
+
+
 def _canonical_commit_oid(sha: str, *, repo: Path | None = None) -> str | None:
     """`sha` 가 유효한 backward anchor 면 그 **canonical full OID** 를, 아니면 None (backfill 쓰기).
 
@@ -8815,7 +8895,9 @@ def _canonical_commit_oid(sha: str, *, repo: Path | None = None) -> str | None:
     return full_oid if verdict == _ANCHOR_OK else None
 
 
-def backfill_verified_at(sha: str, *, dry_run: bool = False) -> list[tuple[Path, str]]:
+def backfill_verified_at(
+        sha: str, *, dry_run: bool = False,
+        pages: Sequence[str] | None = None) -> list[tuple[Path, str]]:
     """현재-진실 문서에 초기 `verified_at: <sha>` 를 1회 backfill.
 
     대상 = architecture.md·status.md + covers 보유 domain 페이지(`_verified_at_backfill_targets`).
@@ -8823,7 +8905,7 @@ def backfill_verified_at(sha: str, *, dry_run: bool = False) -> list[tuple[Path,
     (상태 ∈ `added`/`skip:already`/`skip:no-frontmatter`/`skip:read-error`). dry_run 이면 파일을
     쓰지 않고 무엇이 바뀔지만 계산한다."""
     results: list[tuple[Path, str]] = []
-    for path in _verified_at_backfill_targets():
+    for path in _verified_at_targets(pages):
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
@@ -8860,7 +8942,12 @@ def cmd_verified_at_backfill(args: argparse.Namespace) -> int:
             print("verified-at-backfill: --sha 미지정·HEAD 조회 실패 — 기준 sha 미정.",
                   file=sys.stderr)
             return 1
-    results = backfill_verified_at(sha, dry_run=args.dry_run)
+    try:
+        results = backfill_verified_at(
+            sha, dry_run=args.dry_run, pages=getattr(args, "pages", None))
+    except _VerifiedAtPageSelectionError as exc:
+        print(f"verified-at-backfill: 문서 선택 실패 — {exc}", file=sys.stderr)
+        return 1
     if not results:
         print("verified-at-backfill: 대상 문서 없음 (architecture.md·status.md·domain 부재).")
         return 0
@@ -9001,20 +9088,22 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
-def repin_verified_at(sha: str, owner: str, *,
-                      dry_run: bool = False) -> list[tuple[Path, str]]:
-    """architecture/status + covers domain 페이지를 validate-all-first 후 일괄 재핀한다.
+def repin_verified_at(
+        sha: str, owner: str, *, dry_run: bool = False,
+        pages: Sequence[str] | None = None) -> list[tuple[Path, str]]:
+    """architecture/status + covers domain 페이지를 validate-all-first 후 재핀한다.
 
-    1단계에서 전 대상을 읽고 frontmatter 변환 가능 여부를 검증한다. 하나라도 읽기/frontmatter
-    오류면 **어느 파일도 쓰지 않고** `error:*` + `not-written:validation-failed` 상태를 돌려준다.
-    전부 유효할 때만 2단계 원자 교체를 시작한다. 쓰기 오류는 앞서 교체된 파일은 `updated`,
-    원본이 보존된 실패 파일은 `error:write`, 뒤 대상은 `not-written:write-failed`로 명시해
-    호출부가 실제 변경 범위를 정확히 보고할 수 있게 한다. dry-run은 검증까지만 하고 변경
-    예정 대상을 `updated`로 표시한다.
+    선택자 미지정이면 기존 일괄 대상 전부, 지정이면 선택 집합 전부를 1단계에서 읽고
+    frontmatter 변환 가능 여부를 검증한다. 하나라도 읽기/frontmatter 오류면 **그 집합의 어느
+    파일도 쓰지 않고** `error:*` + `not-written:validation-failed` 상태를 돌려준다. 전부
+    유효할 때만 2단계 원자 교체를 시작한다. 쓰기 오류는 앞서 교체된 파일은 `updated`, 원본이
+    보존된 실패 파일은 `error:write`, 뒤 대상은 `not-written:write-failed`로 명시해 호출부가
+    실제 변경 범위를 정확히 보고할 수 있게 한다. dry-run은 검증까지만 하고 변경 예정 대상을
+    `updated`로 표시한다.
     """
     prepared: list[tuple[Path, str, str | None]] = []
     try:
-        targets = _verified_at_backfill_targets(strict_domain=True)
+        targets = _verified_at_targets(pages, strict_domain=True)
     except Exception as exc:  # noqa: BLE001 — 대상 열거 실패도 validate-all-first 중단.
         error_path = Path(getattr(exc, "path", DOMAIN_PY.parent.parent / "wiki" / "domain"))
         return [(error_path, f"error:enumeration:{exc}")]
@@ -9085,7 +9174,8 @@ def cmd_verified_at_repin(args: argparse.Namespace) -> int:
             print(f"verified-at-repin: {owner} repo HEAD 조회 실패 — 기준 sha 미정.",
                   file=sys.stderr)
             return 1
-    results = repin_verified_at(sha, owner, dry_run=args.dry_run)
+    results = repin_verified_at(
+        sha, owner, dry_run=args.dry_run, pages=getattr(args, "pages", None))
     if not results:
         print("verified-at-repin: 대상 문서 없음 (architecture.md·status.md·covers domain 부재).")
         return 0
@@ -9675,6 +9765,9 @@ def build_parser() -> argparse.ArgumentParser:
         "verified-at-backfill",
         help="현재-진실 문서(architecture.md·status.md·domain)에 초기 verified_at sha 채움 (1회)")
     p.add_argument("--sha", help="기준 커밋 sha (미지정 시 REPO HEAD — released 지점 권장)")
+    p.add_argument(
+        "--page", dest="pages", action="append", metavar="REPO_RELATIVE_PATH",
+        help="이 현재-진실 문서만 backfill (REPO 상대경로·복수 지정 가능)")
     p.add_argument("--dry-run", action="store_true", help="쓰기 0·무엇이 바뀔지만 표시")
     p.set_defaults(fn=cmd_verified_at_backfill)
 
@@ -9685,6 +9778,9 @@ def build_parser() -> argparse.ArgumentParser:
                    required=True,
                    help="freshness 소유 시계 — self 또는 local.conf의 경로형 upstream")
     p.add_argument("--sha", help="소유 repo 기준 커밋 sha (미지정 시 그 repo HEAD)")
+    p.add_argument(
+        "--page", dest="pages", action="append", metavar="REPO_RELATIVE_PATH",
+        help="이 현재-진실 문서만 재핀 (REPO 상대경로·복수 지정 가능)")
     p.add_argument("--dry-run", action="store_true",
                    help="쓰기 0·페이지→repo/full-anchor 매핑 미리보기")
     p.set_defaults(fn=cmd_verified_at_repin)

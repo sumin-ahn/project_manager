@@ -68,19 +68,27 @@ def test_pytest_output_parse_green(ticket_finish):
     assert ticket_finish.is_pytest_green("1 failed, 11 passed in 1s", returncode=1) is False
 
 
-def test_verdict_and_exit(external_review):
+def test_verdict_and_exit(external_review, tmp_path):
     def mock(output, rc=0):
         def run_fn(argv, **kw):
             return subprocess.CompletedProcess(argv, rc, stdout=output, stderr="")
         return run_fn
 
-    r = external_review.run_review("p", reviewer_cmd="x", run_fn=mock("판정: 통과\n\n**must-fix**:\n- 없음\n"))
+    r = external_review.run_review(
+        "p", reviewer_cmd="x", output_dir=tmp_path,
+        run_fn=mock("판정: 통과\n\n**must-fix**:\n- 없음\n"),
+    )
     assert r["all_pass"] and external_review.determine_exit_code(r) == 0
 
-    r = external_review.run_review("p", reviewer_cmd="x", run_fn=mock("판정: 반려\n\n**must-fix**:\n- foo\n"))
+    r = external_review.run_review(
+        "p", reviewer_cmd="x", output_dir=tmp_path,
+        run_fn=mock("판정: 반려\n\n**must-fix**:\n- foo\n"),
+    )
     assert r["any_must_fix"] and external_review.determine_exit_code(r) == 1
 
-    r = external_review.run_review("p", reviewer_cmd="x", run_fn=mock("boom", rc=1))
+    r = external_review.run_review(
+        "p", reviewer_cmd="x", output_dir=tmp_path, run_fn=mock("boom", rc=1),
+    )
     assert r["failed"] and external_review.determine_exit_code(r) == 1
 
 

@@ -518,3 +518,47 @@ def test_inventory_delta_flags_stale_entries():
     unexpected, stale = _inventory_delta(Counter({key: 1}), Counter())
     assert not unexpected
     assert stale == Counter({key: 1})
+
+
+def test_temp_output_guard_scopes_concurrent_process_output_to_session_directory(
+    tmp_path,
+):
+    """외부 프로세스의 동형 이름은 무시하고 세션 디렉터리의 산출물만 관찰한다."""
+    suite_conftest = sys.modules["conftest"]
+    session_dir = tmp_path / "session-temp"
+    external_dir = tmp_path / "external-temp"
+    session_dir.mkdir()
+    external_dir.mkdir()
+    before = suite_conftest._snapshot_project_temp_outputs(session_dir)
+    writer = (
+        "from pathlib import Path; import sys; "
+        "Path(sys.argv[1], sys.argv[2]).write_text('raw', encoding='utf-8')"
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            writer,
+            str(external_dir),
+            "pm_delegate_codex_999999_probe.txt",
+        ],
+        check=True,
+    )
+
+    assert suite_conftest._snapshot_project_temp_outputs(session_dir) == before
+    assert len(suite_conftest._snapshot_project_temp_outputs(external_dir)) == 1
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            writer,
+            str(session_dir),
+            "external_review_codex_probe.txt",
+        ],
+        check=True,
+    )
+    after_owned_write = suite_conftest._snapshot_project_temp_outputs(session_dir)
+    assert len(after_owned_write) == 1
+    assert after_owned_write != before

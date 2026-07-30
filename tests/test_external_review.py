@@ -370,6 +370,15 @@ def _wire(external, monkeypatch, tmp_path, *, conf=None,
         external, "local_config",
         lambda: dict(conf) if conf is not None else {"external_review_enabled": "true"})
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, []))
+    real_main = external.main
+
+    def _isolated_main(argv=None):
+        isolated_argv = list(argv or [])
+        if "--output-dir" not in isolated_argv:
+            isolated_argv += ["--output-dir", str(tmp_path / "raw")]
+        return real_main(isolated_argv)
+
+    monkeypatch.setattr(external, "main", _isolated_main)
     calls = {"n": 0}
     ok = {"reviewer": "x", "ok": True, "output": "판정: 통과",
           "verdict": {"has_must_fix": False, "has_pass": True}, "file": None,
@@ -606,3 +615,12 @@ def test_reserve_check_save_under_single_lock(external, monkeypatch, tmp_path):
     assert depth["max"] == 1          # 재진입/중첩 없음 (예약 구간 원자)
     assert depth["enters"] == 1       # 성공 경로 = 예약 1회(환불 없음)
     assert _ledger(external, tmp_path)["T-0116"]["count"] == 1
+
+
+def test_save_output_tempdir_fallback_with_injected_destination(
+        external, monkeypatch, tmp_path):
+    """output_dir 생략 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
+    monkeypatch.setattr(external.tempfile, "gettempdir", lambda: str(tmp_path))
+    dest = external.save_output("x", "fallback content")
+    assert dest.parent == tmp_path
+    assert dest.read_text(encoding="utf-8") == "fallback content"

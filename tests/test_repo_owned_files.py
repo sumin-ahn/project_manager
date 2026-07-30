@@ -591,9 +591,12 @@ def test_pm_update_untracked_single_file_manifest_entry_is_not_shipped(
     ship.mkdir()
     (ship / "single.txt").write_text("machine\n", encoding="utf-8")
 
-    got = list(pm_update._iter_files(repo, "ship/single.txt"))
+    with pytest.raises(
+        pm_update.EmptyShippingInventoryError,
+        match=r"pm-update 출하 인벤토리가 0건임.*subtree='ship/single\.txt'",
+    ):
+        list(pm_update._iter_files(repo, "ship/single.txt"))
 
-    assert got == []
     assert (
         "pm-update: untracked 1건 제외 — git add 후 전파됨"
         in capsys.readouterr().err
@@ -610,7 +613,11 @@ def test_pm_update_ignored_single_file_manifest_entry_is_not_shipped_loudly(
     (ship / "machine.local").write_text("machine\n", encoding="utf-8")
     _git(repo, "add", ".gitignore")
 
-    assert list(pm_update._iter_files(repo, "ship/machine.local")) == []
+    with pytest.raises(
+        pm_update.EmptyShippingInventoryError,
+        match=r"pm-update 출하 인벤토리가 0건임.*subtree='ship/machine\.local'",
+    ):
+        list(pm_update._iter_files(repo, "ship/machine.local"))
     assert (
         "manifest 선언 단일 파일이 source에서 gitignore되어 출하되지 않음: "
         "ship/machine.local"
