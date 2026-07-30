@@ -619,7 +619,8 @@ def test_reserve_check_save_under_single_lock(external, monkeypatch, tmp_path):
 
 def test_save_output_tempdir_fallback_with_injected_destination(
         external, monkeypatch, tmp_path):
-    """output_dir 생략 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
+    """PM 홈 미해소 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
+    monkeypatch.setattr(external, "REPO", tmp_path / "unresolved-adopter")
     monkeypatch.setattr(external.tempfile, "gettempdir", lambda: str(tmp_path))
     dest = external.save_output("x", "fallback content")
     assert dest.parent == tmp_path

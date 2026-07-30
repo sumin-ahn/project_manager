@@ -979,10 +979,14 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
         (
             "external_review",
             "run_review",
-            "ok, output, started = _run_reviewer_ex("
-            "prompt, reviewer_cmd, timeout, run_fn, idle_timeout)",
-            'ok, output, started = _run_reviewer_ex(prompt, reviewer_cmd, timeout, run_fn,\n'
-            '                         None if reviewer_name(reviewer_cmd) == "claude" else idle_timeout)',
+            "ok, output, started = _run_reviewer_ex(\n"
+            "        prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics\n"
+            "    )",
+            'ok, output, started = _run_reviewer_ex(\n'
+            '        prompt, reviewer_cmd, timeout, run_fn,\n'
+            '        None if reviewer_name(reviewer_cmd) == "claude" else idle_timeout,\n'
+            '        metrics,\n'
+            '    )',
         ),
         # S(b): 값이 아니라 signal on/off를 쥔 판정 함수 선두에서 특정 CLI만 NONE으로 강등.
         (

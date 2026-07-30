@@ -129,6 +129,13 @@ Agent 툴 호출:
      작업 위치(worktree 절대경로): <해소 절대경로 — task-mode 시·슬롯/솔로는 생략>.
 
      ticket 본문은 python3 .project_manager/tools/board.py show T-NNNN 로 확인.
+     등록 worktree 에 board 가 없으면 엔진이 worktree lease 장부로 단일 소유 PM 홈을 확정하고,
+     read 명령이 요구하는 PM-owned 입력을 그 홈으로 **함께** 해소한다 — 첫 줄의
+     `PM 입력 앵커: <PM 홈> (PM 홈 폴백: <입력 목록>)` 을 확인하라(`show` 는 `board`, `lint` 는
+     `board·areas·wiki(...)·hooks·local.conf`). 장부 부재·손상·미등록이거나 여러 PM 홈이 같은 슬롯을
+     등록하면 추측하지 않고 `[중단] 이 앵커에는 board가 없고 …` 로 멈춘다 — 그때는
+     **프롬프트 요약만으로 진행하지 말고 즉시 PM 에게 보고**하라. board mutation 은 폴백하지 않으며
+     PM 홈에서만 실행한다.
      본문이 self-contained — 목표/인터페이스/결정/DoD/참고 절 대로 구현.
      (PM 첨부 — 소환된 domain 페이지: <domain affected 출력 경로·있으면>. ⚠ 표시분은 stale 이니 맹신 말 것.)
 
@@ -138,6 +145,20 @@ Agent 툴 호출:
      - 전체 회귀 결과 (A / B passed)
      - DoD 각 항목별 충족 evidence 명시"
 ```
+
+> ⚠ **kill 되어도 산출은 남는다 — 단 `pm_delegate`/`external_review` 실행에 한한다.**
+> **cross-harness** 위임(`pm_delegate.py`)과 외부리뷰(`external_review.py`)는 raw 를 실행 *전*에
+> 공유 JSON 장부(`.project_manager/.local/raw_outputs.json`)에 등재하고 종료 시 감사 관측치
+> (`rc`·`elapsed_sec`·`silence_sec`)로 마감한다. 백그라운드 호출이 끊겨 stdout(그 안의 raw 경로)을
+> 잃어도 `python3 .project_manager/tools/pm_delegate.py raw [--unfinished]` 로 절대경로를 조회하라 —
+> **미마감 레코드 자체가 kill 증거**다. 재위임 전에 반드시 확인한다(완성분을 버리고 중복 과금하는 경로).
+> **native 위임은 장부에 남지 않는다** — 같은 하네스 안에서 도는 위임(각 하네스의 native
+> 서브에이전트 경로)은 `pm_delegate` 를 경유하지 않으므로 이 조회 대상이 아니다. native 산출은
+> 하네스 자체의 보고/전사에서 찾는다.
+> **어느 장부를 봤는지 첫 줄로 확인한다** — `조회 장부: <절대경로>`. 장부는 **엔진 사본별**이라
+> `경고: 다른 엔진 사본 장부가 있습니다(이 조회에서는 읽지 않음): <경로>` 가 뜨면 자동 대체 조회가
+> 된 게 아니다 — 표시된 사본에서 **명시적으로 다시 조회**하라. `--output-dir DIR` 로 저장한 산출은
+> `pm_delegate.py raw --output-dir DIR` 로 조회한다.
 
 ### code-reviewer 위임
 

@@ -562,3 +562,39 @@ def test_temp_output_guard_scopes_concurrent_process_output_to_session_directory
     after_owned_write = suite_conftest._snapshot_project_temp_outputs(session_dir)
     assert len(after_owned_write) == 1
     assert after_owned_write != before
+
+
+def test_repo_raw_output_guard_observes_default_destination_and_ledger(tmp_path):
+    """repo 기본 raw 목적지 축이 실제로 관찰한다 — tempdir 격리만으로는 못 보는 경로.
+
+    위임·외부리뷰 raw 의 **기본** 목적지는 tempdir 가 아니라 해소된 repo 의
+    `.project_manager/.local/` 하위로 옮겼다. 이 축이 없으면 기본 경로를 밟는 신규 테스트가
+    실 작업 트리를 오염시켜도 세션 가드가 조용히 통과한다(vacuous). 빈 트리에서 스냅샷이
+    비어 있는지까지 단언해 "아무것도 안 보고 통과"를 배제한다.
+    """
+    suite_conftest = sys.modules["conftest"]
+    local = tmp_path / ".project_manager" / ".local"
+    (local / "delegate").mkdir(parents=True)
+    (local / "review").mkdir(parents=True)
+
+    empty = suite_conftest._snapshot_repo_raw_outputs(tmp_path)
+    assert empty == {}, "빈 목적지에서 비-빈 스냅샷이 나오면 판정 입력이 오염됐다"
+
+    raw = local / "delegate" / "pm_delegate_codex_1_probe.txt"
+    raw.write_text("raw", encoding="utf-8")
+    after_raw = suite_conftest._snapshot_repo_raw_outputs(tmp_path)
+    assert set(after_raw) == {raw}
+
+    review = local / "review" / "external_review_codex_probe.txt"
+    review.write_text("raw", encoding="utf-8")
+    ledger = local / "raw_outputs.json"
+    ledger.write_text("{}", encoding="utf-8")
+    after_all = suite_conftest._snapshot_repo_raw_outputs(tmp_path)
+    assert set(after_all) == {raw, review, ledger}
+
+    # 동일 이름 덮어쓰기도 델타로 잡아야 한다(경로 집합 비교만으로는 놓친다).
+    ledger.write_text('{"records": []}', encoding="utf-8")
+    assert suite_conftest._snapshot_repo_raw_outputs(tmp_path)[ledger] != after_all[ledger]
+
+    # `.local` 자체가 없는 트리(신규 clone)는 빈 스냅샷이며 예외를 내지 않는다.
+    assert suite_conftest._snapshot_repo_raw_outputs(tmp_path / "absent") == {}

@@ -24,6 +24,9 @@ hook·pm_handoff·pm_bootstrap 는 **무수정**(읽기만) — supervisor 는 �
 from __future__ import annotations
 
 import codecs
+import contextlib
+import datetime
+import json
 import math
 import os
 import re
@@ -34,7 +37,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import NamedTuple, Protocol, TextIO
+from typing import Iterator, NamedTuple, Protocol, TextIO
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
 ENGINE_REV = "v1.5.0"
@@ -73,6 +76,249 @@ MAX_CONSECUTIVE_RESPAWNS = 5
 
 # run_loop 가드 발동 종료 코드 — 정상 종료(0·EOF/quit)와 구분되는 sentinel.
 GUARD_TRIPPED_RC = 1
+
+# 위임/외부리뷰 raw 위치 장부. 두 실행 표면이 같은 파일을 갱신하므로 파일락 아래
+# read-modify-write 하고 unique tmp를 atomic replace한다. 미마감은 완료 폭주와 별도 보존해
+# 최근 비정상 종료를 찾을 수 있게 하되, 기간과 개수에 모두 상한을 둬 조회가 무한 누적으로
+# 무력화되지 않게 한다. raw 파일은 감사 산출물이므로 이 장부 정리에서 삭제하지 않는다.
+RAW_LEDGER_VERSION = 1
+RAW_LEDGER_UNFINISHED_DAYS = 30
+RAW_LEDGER_COMPLETED_DAYS = 7
+RAW_LEDGER_MAX_UNFINISHED = 128
+RAW_LEDGER_MAX_COMPLETED = 256
+
+
+def raw_storage_paths(
+    repo: Path,
+    surface: str,
+    output_dir: Path | None = None,
+    *,
+    temp_dir: Path,
+) -> tuple[Path, Path]:
+    """raw 디렉터리와 공유 장부 경로를 결정한다.
+
+    명시 output_dir은 raw와 장부를 함께 그 디렉터리에 격리한다. 기본은 해소된 repo의
+    `.project_manager/.local/{delegate,review}`와 공유 `raw_outputs.json`이다. 채택자 형상에서
+    PM 홈 마커를 못 찾으면 OS tempdir의 결정적 장부로 폴백한다.
+    """
+    if output_dir is not None:
+        base = Path(output_dir)
+        return base, base / "raw_outputs.json"
+    if (repo / ".project_manager").is_dir():
+        local = repo / ".project_manager" / ".local"
+        return local / surface, local / "raw_outputs.json"
+    fallback = Path(temp_dir)
+    return fallback, fallback / "pm_raw_outputs.json"
+
+
+def _raw_lock_path(ledger_path: Path) -> Path:
+    return ledger_path.with_suffix(ledger_path.suffix + ".lock")
+
+
+def _raw_flock_acquire(fd: int) -> None:
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return
+    except ImportError:
+        pass
+    try:
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    except ImportError:
+        pass
+
+
+def _raw_flock_release(fd: int) -> None:
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return
+    except ImportError:
+        pass
+    try:
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except ImportError:
+        pass
+
+
+@contextlib.contextmanager
+def _raw_ledger_lock(ledger_path: Path) -> Iterator[None]:
+    lock_path = _raw_lock_path(ledger_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        _raw_flock_acquire(fd)
+        try:
+            yield
+        finally:
+            _raw_flock_release(fd)
+    finally:
+        os.close(fd)
+
+
+def _read_raw_ledger(ledger_path: Path) -> dict:
+    """장부 부재만 빈 장부로 보고 손상은 fail-loud한다."""
+    if not ledger_path.exists():
+        return {"version": RAW_LEDGER_VERSION, "records": []}
+    data = json.loads(ledger_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("records"), list):
+        raise ValueError(f"raw 장부 형식 오류: {ledger_path}")
+    return data
+
+
+def _write_raw_ledger(ledger_path: Path, ledger: dict) -> None:
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ledger_path.with_name(
+        f"{ledger_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    payload = json.dumps(ledger, ensure_ascii=False, indent=2) + "\n"
+    try:
+        fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(str(tmp), str(ledger_path))
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _parse_raw_time(value: object) -> datetime.datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _prune_raw_records(
+    records: list[dict], *, now: datetime.datetime | None = None,
+) -> list[dict]:
+    """기간과 개수 상한을 적용하되 미마감/마감을 서로 밀어내지 않게 분리한다."""
+    current = now or datetime.datetime.now(datetime.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=datetime.timezone.utc)
+    current = current.astimezone(datetime.timezone.utc)
+    unfinished: list[dict] = []
+    completed: list[dict] = []
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        started = _parse_raw_time(row.get("started_at"))
+        if started is None:
+            continue
+        is_completed = row.get("finished_at") is not None
+        age_limit = (
+            RAW_LEDGER_COMPLETED_DAYS if is_completed else RAW_LEDGER_UNFINISHED_DAYS
+        )
+        if current - started > datetime.timedelta(days=age_limit):
+            continue
+        (completed if is_completed else unfinished).append(row)
+    key = lambda row: str(row.get("started_at", ""))
+    unfinished = sorted(unfinished, key=key, reverse=True)[:RAW_LEDGER_MAX_UNFINISHED]
+    completed = sorted(completed, key=key, reverse=True)[:RAW_LEDGER_MAX_COMPLETED]
+    return sorted((*unfinished, *completed), key=key)
+
+
+def start_raw_record(
+    ledger_path: Path,
+    *,
+    surface: str,
+    harness: str,
+    model: str,
+    role: str,
+    raw_path: Path,
+    attempt: str,
+    now: datetime.datetime | None = None,
+) -> str:
+    """외부 프로세스 실행 전에 미마감 레코드를 원자 등록하고 record id를 반환한다."""
+    current = now or datetime.datetime.now(datetime.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=datetime.timezone.utc)
+    record_id = uuid.uuid4().hex
+    row = {
+        "id": record_id,
+        "surface": surface,
+        "harness": harness,
+        "model": model,
+        "role": role,
+        "attempt": attempt,
+        "pid": os.getpid(),
+        "started_at": current.astimezone(datetime.timezone.utc).isoformat(
+            timespec="microseconds"
+        ),
+        "raw_path": str(raw_path.resolve()),
+    }
+    with _raw_ledger_lock(ledger_path):
+        ledger = _read_raw_ledger(ledger_path)
+        records = [item for item in ledger["records"] if isinstance(item, dict)]
+        records.append(row)
+        ledger["version"] = RAW_LEDGER_VERSION
+        ledger["records"] = _prune_raw_records(records, now=current)
+        _write_raw_ledger(ledger_path, ledger)
+    return record_id
+
+
+def finish_raw_record(
+    ledger_path: Path,
+    record_id: str,
+    *,
+    rc: int,
+    elapsed_sec: float,
+    silence_sec: float | None,
+    now: datetime.datetime | None = None,
+) -> None:
+    """동일 레코드에 종료 관측치를 기록한다. 시작 레코드 부재는 유실이므로 fail-loud한다."""
+    current = now or datetime.datetime.now(datetime.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=datetime.timezone.utc)
+    with _raw_ledger_lock(ledger_path):
+        ledger = _read_raw_ledger(ledger_path)
+        found = False
+        for row in ledger["records"]:
+            if isinstance(row, dict) and row.get("id") == record_id:
+                row.update({
+                    "finished_at": current.astimezone(
+                        datetime.timezone.utc
+                    ).isoformat(timespec="microseconds"),
+                    "rc": int(rc),
+                    "elapsed_sec": round(float(elapsed_sec), 3),
+                    "silence_sec": (
+                        None if silence_sec is None else round(float(silence_sec), 3)
+                    ),
+                })
+                found = True
+                break
+        if not found:
+            raise ValueError(f"raw 장부 시작 레코드 미발견: {record_id}")
+        ledger["records"] = _prune_raw_records(ledger["records"], now=current)
+        _write_raw_ledger(ledger_path, ledger)
+
+
+def raw_records(ledger_path: Path, *, unfinished_only: bool = False) -> list[dict]:
+    """장부 레코드를 최신순으로 반환한다. 빈 장부와 손상 장부를 구분한다."""
+    with _raw_ledger_lock(ledger_path):
+        ledger = _read_raw_ledger(ledger_path)
+    rows = [
+        row for row in ledger["records"]
+        if (
+            isinstance(row, dict)
+            and (not unfinished_only or row.get("finished_at") is None)
+        )
+    ]
+    return sorted(rows, key=lambda row: str(row.get("started_at", "")), reverse=True)
+
+
+def unfinished_raw_records(ledger_path: Path) -> list[dict]:
+    """미마감 레코드만 최신순으로 반환하는 조회 facade."""
+    return raw_records(ledger_path, unfinished_only=True)
 
 
 class SessionDriver(Protocol):

@@ -1932,7 +1932,7 @@ def save_raw_output(
 
     external_review.save_output 형이나 보안 요구(원자 생성·0600 권한)를 더한다 — 감사용·충돌/권한
     유출 회귀 가드. 반환: 박제 파일 경로."""
-    base_dir = output_dir or Path(_gettempdir())
+    base_dir, _ledger_path = _raw_storage(output_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
     name = f"pm_delegate_{harness}_{os.getpid()}_{uuid.uuid4().hex}.txt"
     dest = base_dir / name
@@ -1945,6 +1945,141 @@ def save_raw_output(
 def _gettempdir() -> str:
     import tempfile
     return tempfile.gettempdir()
+
+
+def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
+    """raw/장부 위치를 공용 seam에서 해소한다(REPO 미해소만 tempdir 폴백)."""
+    relay = _load_relay()
+    return relay.raw_storage_paths(
+        REPO, "delegate", output_dir, temp_dir=Path(_gettempdir())
+    )
+
+
+def _reserve_raw_output(harness: str, output_dir: Path | None = None) -> Path:
+    """실행 전 장부가 가리킬 0600 raw 파일을 O_EXCL로 선점한다."""
+    base_dir, _ledger_path = _raw_storage(output_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    dest = (
+        base_dir
+        / f"pm_delegate_{harness}_{os.getpid()}_{uuid.uuid4().hex}.txt"
+    )
+    fd = os.open(str(dest), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(fd)
+    return dest
+
+
+def _write_reserved_raw(dest: Path, content: str) -> None:
+    """선점한 raw 파일 내용을 교체한다(파일 정체성과 0600 권한 유지)."""
+    with dest.open("w", encoding="utf-8") as handle:
+        handle.write(content)
+
+
+def _peer_engine_ledgers() -> tuple[Path, ...]:
+    """현재 엔진과 같은 PM 홈 계열의 다른 사본이 소유한 기본 장부를 찾는다.
+
+    PM 홈의 실 board + ``work/*`` 관례는 기존 재앵커 판정과 같은 물리 증거다. 후보는 실제
+    ``pm_delegate.py`` 사본과 기본 장부 파일을 모두 가져야 한다. 장부 내용은 읽지 않으며,
+    조회 대상을 다른 사본으로 바꾸지도 않는다.
+    """
+    try:
+        current = REPO.resolve()
+        external_review = _load_external_review()
+        if external_review._owns_real_board(current / ".project_manager"):
+            pm_home = current
+        elif current.parent.name == "work":
+            candidate = current.parent.parent
+            pm_home = (
+                candidate
+                if external_review._owns_real_board(
+                    candidate / ".project_manager"
+                )
+                else None
+            )
+        else:
+            pm_home = None
+        if pm_home is None:
+            return ()
+
+        candidates = [pm_home]
+        work_dir = pm_home / "work"
+        if work_dir.is_dir():
+            candidates.extend(
+                path for path in sorted(work_dir.iterdir()) if path.is_dir()
+            )
+        ledgers: set[Path] = set()
+        for repo in candidates:
+            resolved_repo = repo.resolve()
+            if resolved_repo == current:
+                continue
+            engine = (
+                resolved_repo
+                / ".project_manager"
+                / "tools"
+                / "pm_delegate.py"
+            )
+            ledger = (
+                resolved_repo
+                / ".project_manager"
+                / ".local"
+                / "raw_outputs.json"
+            )
+            if engine.is_file() and ledger.is_file():
+                ledgers.add(ledger.resolve())
+        return tuple(sorted(ledgers))
+    except (OSError, RuntimeError, AttributeError, ImportError) as exc:
+        if _is_engine_rev_skew(exc):
+            raise
+        return ()
+
+
+def _cmd_raw(argv: list[str]) -> int:
+    """공유 장부의 최근 위임/리뷰 raw를 stdout에 조회한다."""
+    parser = argparse.ArgumentParser(
+        prog="pm_delegate.py raw",
+        description="최근 위임·외부리뷰 raw 장부 조회",
+    )
+    parser.add_argument(
+        "--unfinished", action="store_true", help="미마감 레코드만 표시"
+    )
+    parser.add_argument("--limit", type=int, default=20, help="최대 표시 건수(기본 20)")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="DIR",
+        help="조회할 raw 출력 디렉토리(그 안의 raw_outputs.json 장부)",
+    )
+    args = parser.parse_args(argv)
+    if args.limit <= 0:
+        parser.error("--limit은 양수여야 합니다")
+    output_dir = Path(args.output_dir) if args.output_dir is not None else None
+    _raw_dir, ledger_path = _raw_storage(output_dir)
+    resolved_ledger = ledger_path.resolve()
+    print(f"조회 장부: {resolved_ledger}")
+    for peer_ledger in _peer_engine_ledgers():
+        if peer_ledger != resolved_ledger:
+            print(
+                "경고: 다른 엔진 사본 장부가 있습니다"
+                f"(이 조회에서는 읽지 않음): {peer_ledger}"
+            )
+    rows = _load_relay().raw_records(
+        ledger_path, unfinished_only=args.unfinished
+    )[:args.limit]
+    label = "미마감 raw" if args.unfinished else "최근 raw"
+    if not rows:
+        print(f"{label} 없음")
+        return 0
+    print(f"{label} {len(rows)}건")
+    for row in rows:
+        status = (
+            f"완료(rc={row.get('rc')})"
+            if row.get("finished_at") is not None else "미마감"
+        )
+        print(
+            f"{row.get('started_at')} · {status} · {row.get('surface')} · "
+            f"{row.get('harness')} · role={row.get('role')} · "
+            f"pid={row.get('pid')} · raw={row.get('raw_path')}"
+        )
+    return 0
 
 
 def _format_silence(silence_sec: float | None, idle_killed: bool) -> str:
@@ -2441,6 +2576,21 @@ def _execute_attempt(
         harness, model, reasoning, role, cwd, prompt, output_dir
     )
 
+    # raw 경로와 미마감 장부는 외부 프로세스 실행 전에 확정한다. 이 순서가 하네스 Bash/stdout
+    # 유실 시에도 경로를 남기는 핵심 계약이다. 이후 BaseException으로 마감 경로를 건너뛰면
+    # 레코드가 의도적으로 미마감 상태로 남아 kill/비정상 종료의 조회 입력이 된다.
+    raw_path = _reserve_raw_output(harness, output_dir)
+    _raw_dir, ledger_path = _raw_storage(output_dir)
+    relay = _load_relay()
+    record_id = relay.start_raw_record(
+        ledger_path,
+        surface="delegate",
+        harness=harness,
+        model=model,
+        role=role,
+        raw_path=raw_path,
+        attempt=attempt,
+    )
     started = time.monotonic()
     try:
         try:
@@ -2472,8 +2622,8 @@ def _execute_attempt(
         )
         else None
     )
-    raw_path = save_raw_output(
-        harness,
+    _write_reserved_raw(
+        raw_path,
         _format_meta(
             argv, rc, harness, model, elapsed, stdout, stderr, attempt=attempt,
             primary_raw=primary_raw, reasoning=reasoning, local_conf_path=local_conf_path,
@@ -2484,7 +2634,13 @@ def _execute_attempt(
             silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
             idle_killed=bool(result.get(RUN_RESULT_IDLE_KILLED, False)),
         ),
-        output_dir,
+    )
+    relay.finish_raw_record(
+        ledger_path,
+        record_id,
+        rc=rc,
+        elapsed_sec=elapsed,
+        silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
     )
     return DelegateAttempt(harness, model, argv, result, raw_path)
 
@@ -2778,7 +2934,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "codex/claude 3600 · 로컬 GPU 축 opencode 14400). 주 판정은 무진행이며 "
                              "배포별 조정은 local.conf harness.<name>.wall_timeout/.idle_timeout")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
-                        help="raw 출력 박제 디렉토리(기본 /tmp)")
+                        help="raw 출력 박제 디렉토리"
+                             "(기본 .project_manager/.local/delegate, PM 홈 미해소 시 tempdir)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
                              "(생략 시 허용 경로 0·차단 아님)")
@@ -2958,6 +3115,8 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     resolved = list(sys.argv[1:] if argv is None else argv)
     if resolved and resolved[0] == "lint":
         return _cmd_lint(resolved[1:])
+    if resolved and resolved[0] == "raw":
+        return _cmd_raw(resolved[1:])
     parser = build_arg_parser()
     args = parser.parse_args(resolved)
     _validate_args(parser, args)

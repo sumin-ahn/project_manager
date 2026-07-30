@@ -36,8 +36,65 @@ _PROJECT_TEMPDIR_GLOBS = (
     "safewrite-fac-*",
     "swroot-*",
     "swout-*",
+    # tempdir 폴백 장부(PM 홈 미해소 형상) + 그 잠금 파일. 기본 목적지가 repo 로 옮겨졌어도
+    # 폴백 경로는 살아 있으므로 이 축도 세션 누출 대상이다.
+    "pm_raw_outputs.json",
+    "pm_raw_outputs.json.lock",
 )
 _TEMPDIR_ENV_KEYS = ("TMPDIR", "TEMP", "TMP")
+
+# 위임·외부리뷰 raw 의 **기본 목적지**는 tempdir 가 아니라 해소된 repo 의
+# `.project_manager/.local/` 하위다. 그래서 tempdir 격리만으로는 부족하다 — 기본 경로를 밟는
+# 테스트는 tempdir 가 아니라 **실 작업 트리 안**에 raw 를 쓰고, 위 세션 스냅샷은 그것을 보지
+# 못한다. 감시 축을 하나 더 세워 두 목적지를 함께 닫는다(tempdir 폴백 + repo 기본 경로).
+# 이 경로는 *이 checkout* 소유라 다른 PM 프로세스(자기 PM 홈에 쓴다)의 동시 출력과 섞이지 않는다 —
+# 전역 tempdir 감시가 flaky 했던 원인이 여기엔 없다.
+_REPO_ROOT_FOR_RAW_GUARD = Path(__file__).resolve().parent.parent
+_REPO_RAW_OUTPUT_DIRS = (
+    Path(".project_manager") / ".local" / "delegate",
+    Path(".project_manager") / ".local" / "review",
+)
+_REPO_RAW_OUTPUT_FILES = (
+    Path(".project_manager") / ".local" / "raw_outputs.json",
+    # 장부 잠금 파일도 세션이 남기면 누출이다 — 정상 종료면 잠금은 해제되지만 파일 자체가
+    # 새로 생겼다는 사실이 "이 세션이 기본 경로를 밟았다"는 증거다.
+    Path(".project_manager") / ".local" / "raw_outputs.json.lock",
+)
+
+
+def _snapshot_repo_raw_outputs(
+        repo_root: Path) -> dict[Path, tuple[int, int, int, int]]:
+    """repo 기본 raw 목적지(디렉토리 직계 파일 + 장부 파일)의 파일 정체를 스냅샷한다.
+
+    디렉토리/파일 부재는 정상(빈 스냅샷) — 신규 생성 자체가 델타로 잡힌다.
+
+    `delegate/` 디렉토리는 raw 외에 **쓰고-지우는 중간 산출**(opencode 프롬프트 파일)도 만들 수
+    있다. 정상 경로는 unlink 로 지우므로 델타에 남지 않고, 남았다면 그것 자체가 누출 신호다 —
+    특정 접두어로 좁히지 않고 디렉토리의 직계 파일 전부를 본다.
+
+    직계 열거(`iterdir`)로 충분하다 — raw 박제는 목적지 디렉토리에 **평평하게** 파일을 만든다
+    (`pm_delegate_<harness>_<pid>_<uuid>.txt`·`external_review_<reviewer>_<ts>.txt`). 재귀 walk 는
+    공용 repo-owned 열거 seam 을 우회하는 형태가 되고, 감시 대상은 git-ignored 산출물이라 그 seam 의
+    tracked-only 의미와도 맞지 않는다. 하위 디렉토리가 생기는 설계 변경이 오면 그때 seam 을 태운다.
+    """
+    snapshot: dict[Path, tuple[int, int, int, int]] = {}
+    candidates: list[Path] = [repo_root / rel for rel in _REPO_RAW_OUTPUT_FILES]
+    for rel in _REPO_RAW_OUTPUT_DIRS:
+        base = repo_root / rel
+        if base.is_dir():
+            candidates.extend(p for p in base.iterdir() if p.is_file())
+    for path in candidates:
+        try:
+            stat_result = path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        snapshot[path] = (
+            stat_result.st_dev,
+            stat_result.st_ino,
+            stat_result.st_mtime_ns,
+            stat_result.st_size,
+        )
+    return snapshot
 
 
 def _snapshot_project_temp_outputs(
@@ -73,6 +130,7 @@ def _forbid_real_tempdir_project_outputs(tmp_path_factory):
     """
     session_tempdir = tmp_path_factory.mktemp("project-temp-output-guard")
     before = _snapshot_project_temp_outputs(session_tempdir)
+    repo_before = _snapshot_repo_raw_outputs(_REPO_ROOT_FOR_RAW_GUARD)
     previous_tempdir = tempfile.tempdir
     previous_env = {key: os.environ.get(key) for key in _TEMPDIR_ENV_KEYS}
     for key in _TEMPDIR_ENV_KEYS:
@@ -81,6 +139,7 @@ def _forbid_real_tempdir_project_outputs(tmp_path_factory):
     try:
         yield
         after = _snapshot_project_temp_outputs(session_tempdir)
+        repo_after = _snapshot_repo_raw_outputs(_REPO_ROOT_FOR_RAW_GUARD)
     finally:
         tempfile.tempdir = previous_tempdir
         for key, value in previous_env.items():
@@ -93,6 +152,15 @@ def _forbid_real_tempdir_project_outputs(tmp_path_factory):
         f"테스트 세션이 격리 tempdir({session_tempdir})에 프로젝트 산출물을 썼습니다. "
         "흐름 테스트에 pytest tmp_path 기반 --output-dir/output_dir를 명시하세요:\n"
         + "\n".join(f"  - {path}" for path in written)
+    )
+    repo_written = sorted(
+        path for path, identity in repo_after.items() if repo_before.get(path) != identity)
+    assert not repo_written, (
+        "테스트 세션이 실 작업 트리의 기본 raw 목적지"
+        f"({_REPO_ROOT_FOR_RAW_GUARD}/.project_manager/.local/)에 산출물을 썼습니다 — "
+        "기본 목적지가 여기이므로 흐름 테스트는 tmp_path 기반 "
+        "--output-dir/output_dir 를 명시해야 합니다:\n"
+        + "\n".join(f"  - {path}" for path in repo_written)
     )
 
 # ── ① codex ambient env 중화 (autouse) ────────────────────────────────────────

@@ -3949,7 +3949,8 @@ def test_native_advisory_rejects_values_outside_public_domain(pd, monkeypatch):
 
 def test_save_raw_output_tempdir_fallback_with_injected_destination(
         pd, monkeypatch, tmp_path):
-    """output_dir 생략 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
+    """PM 홈 미해소 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
+    monkeypatch.setattr(pd, "REPO", tmp_path / "unresolved-adopter")
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(tmp_path))
     dest = pd.save_raw_output("codex", "fallback content")
     assert dest.parent == tmp_path

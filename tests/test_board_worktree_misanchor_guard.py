@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -81,7 +82,38 @@ def _make_scaffold_board(pm_dir: Path) -> None:
     (base / "README.md").write_text("scaffold\n", encoding="utf-8")
 
 
-def _make_pm_home_with_worktree(tmp_path: Path) -> tuple[Path, Path]:
+def _register_slot(pm_home: Path, worktree: Path, *, slot: str | None = None) -> Path:
+    """worktree_pool 장부 동형으로 슬롯 하나를 등록한다. 상태와 무관하게 경로 등록이 소유 증거다."""
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    if slot is None:
+        slot = str(worktree.relative_to(pm_home))
+    ledger.write_text(
+        json.dumps(
+            {
+                "leases": [
+                    {
+                        "slot": slot,
+                        "repo": "product",
+                        "session": "dev",
+                        "pid": 1,
+                        "started": "",
+                        "state": "leased",
+                        "test_cmd": None,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return ledger
+
+
+def _make_pm_home_with_worktree(
+    tmp_path: Path, *, register: bool = True
+) -> tuple[Path, Path]:
     """실측 재현 토폴로지: PM 홈(실 board 소유) + 등록 worktree(`work/<repo>_1`·*실* linked git
     worktree·빈 board scaffold). 반환 (pm_home, worktree)."""
     pm_home = tmp_path / "project_manager"
@@ -100,6 +132,8 @@ def _make_pm_home_with_worktree(tmp_path: Path) -> tuple[Path, Path]:
 
     # worktree 는 코드 전용·board 미소유 → 빈 scaffold 만(실 티켓 0).
     _make_scaffold_board(worktree / ".project_manager")
+    if register:
+        _register_slot(pm_home, worktree)
     return pm_home, worktree
 
 
@@ -137,6 +171,7 @@ _WRITE_TARGET_CONSTS: dict[str, str] = {
     "BOARD_LOCK": ".local/board.lock",
     "LEASES_FILE": ".local/worktree-leases.json",
     "DOMAIN_PY": "tools/domain.py",
+    "PM_DELEGATE_PY": "tools/pm_delegate.py",
 }
 
 
@@ -253,12 +288,223 @@ def test_every_read_subcommand_surfaces_real_worktree_anchor(
     실제 git worktree 판정이다.
     """
     b = _load_board()
-    _pm_home, worktree = pm_home_worktree
+    pm_home, worktree = pm_home_worktree
     _isolate_board_module(b, monkeypatch, worktree)
 
     b.main(_read_argv(subcommand))
     first_line = capsys.readouterr().out.splitlines()[0]
-    assert first_line == f"repo 앵커: {worktree} (worktree)"
+    assert first_line == (
+        f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: {pm_home} "
+        f"(PM 홈 폴백: {b._READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]})"
+    )
+
+
+def test_show_from_boardless_worktree_reads_single_ledger_owner(
+        pm_home_worktree, monkeypatch, capsys):
+    """실제 빈 worktree 트리에서 show가 PM 홈 티켓을 읽고 선택 홈을 첫 줄에 드러낸다."""
+    b = _load_board()
+    pm_home, worktree = pm_home_worktree
+    local_tickets = worktree / ".project_manager" / "wiki" / "tickets"
+    assert list(local_tickets.glob("*/*.md")) == [], "전제 붕괴 — worktree에 실 티켓이 있음"
+    owner_ticket = (
+        pm_home
+        / ".project_manager"
+        / "board"
+        / "tickets"
+        / "done"
+        / "T-0100-x.md"
+    )
+    assert owner_ticket.is_file(), "전제 붕괴 — PM 홈의 조회 대상 티켓이 없음"
+
+    _isolate_board_module(b, monkeypatch, worktree)
+    assert b.main(["show", "T-0100"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.splitlines()[0] == (
+        f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: {pm_home} "
+        f"(PM 홈 폴백: {b._READ_PM_INPUTS_BY_SUBCOMMAND['show']})"
+    )
+    assert "-- T-0100 (done/) --" in captured.out
+    assert "ticket not found" not in (captured.out + captured.err)
+    assert b._READ_BOARD_ROOT_OVERRIDE is None, "read dispatch 뒤 override가 누출됨"
+    assert b._READ_PM_HOME_OVERRIDE is None, "read dispatch 뒤 PM 홈 override가 누출됨"
+
+
+def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
+        pm_home_worktree, monkeypatch, capsys):
+    """read 호출 구간의 board/wiki/hooks/local 상태가 단일 PM 홈을 따르고 종료 뒤 원복된다."""
+    b = _load_board()
+    pm_home, worktree = pm_home_worktree
+    _isolate_board_module(b, monkeypatch, worktree)
+    observed: list[tuple[Path, ...]] = []
+    args = argparse.Namespace(
+        cmd="list",
+        idea_cmd=None,
+        prefix_cmd=None,
+        fn=lambda _args: observed.append(
+            (
+                b.board_root(), b.tickets_dir(), b.areas_file(), b.DECISIONS_DIR,
+                b.IDEAS_DIR, b.SPECS_DIR, b.ARCHITECTURE_FILE, b.STATUS_FILE,
+                b.HOOKS_DIR, b.LOCAL_CONF, b.LEASES_FILE, b.DOMAIN_PY,
+                b.PM_DELEGATE_PY, *b._SCOPE_AWARE_DIRS,
+            )
+        )
+        or 0,
+    )
+    monkeypatch.setattr(
+        b,
+        "build_parser",
+        lambda: types.SimpleNamespace(parse_args=lambda _argv: args),
+    )
+
+    assert b.main([]) == 0
+    owner_board = pm_home / ".project_manager" / "board"
+    owner_pm = pm_home / ".project_manager"
+    assert observed == [
+        (
+            owner_board, owner_board / "tickets", owner_board / "areas.md",
+            owner_pm / "wiki" / "decisions", owner_pm / "wiki" / "ideas",
+            owner_pm / "wiki" / "specs", owner_pm / "wiki" / "architecture.md",
+            owner_pm / "wiki" / "status.md", owner_pm / "hooks",
+            owner_pm / "local.conf", owner_pm / ".local" / "worktree-leases.json",
+            owner_pm / "tools" / "domain.py", owner_pm / "tools" / "pm_delegate.py",
+            owner_pm / "wiki" / "decisions", owner_pm / "wiki" / "specs",
+        )
+    ]
+    assert b.board_root() == worktree / ".project_manager" / "wiki"
+    assert b._READ_BOARD_ROOT_OVERRIDE is None
+    assert b._READ_PM_HOME_OVERRIDE is None
+    capsys.readouterr()
+
+
+def test_worktree_lint_output_equals_pm_home_and_resolves_pm_wiki_targets(
+        pm_home_worktree, monkeypatch, capsys):
+    """반쪽 재앵커의 실제 오답을 고정한다.
+
+    worktree에는 decisions/가 없고 PM 홈 티켓은 ADR을 참조한다. PM 홈 lint와 worktree
+    폴백 lint의 앵커 첫 줄을 제외한 출력·rc가 완전히 같아야 하며, ADR dangling이 없어야 한다.
+    board 없는 앵커와 PM-only target을 명시 생성하므로 skip/vacuous 경로가 없다.
+    """
+    b = _load_board()
+    pm_home, worktree = pm_home_worktree
+    ticket = (
+        pm_home / ".project_manager" / "board" / "tickets" / "done" / "T-0100-x.md"
+    )
+    ticket.write_text(
+        "---\nid: T-0100\ntitle: x\ndepends_on: []\nblocks: []\n---\n"
+        "# T-0100 — x\n\n참고: [[ADR-0001]]\n",
+        encoding="utf-8",
+    )
+    decisions = pm_home / ".project_manager" / "wiki" / "decisions"
+    decisions.mkdir(parents=True)
+    (decisions / "0001-anchor.md").write_text(
+        "---\ntitle: anchor\nauthor: dev/pm-1\nstatus: accepted\n---\n"
+        "# ADR-0001 — anchor\n",
+        encoding="utf-8",
+    )
+    assert not (
+        worktree / ".project_manager" / "wiki" / "decisions"
+    ).exists(), "전제 붕괴 — worktree에 decisions가 있어 반쪽 재앵커를 재현하지 못함"
+    assert "[[ADR-0001]]" in ticket.read_text(encoding="utf-8")
+
+    _isolate_board_module(b, monkeypatch, pm_home)
+    pm_rc = b.main(["lint"])
+    pm_result = capsys.readouterr()
+
+    _isolate_board_module(b, monkeypatch, worktree)
+    wt_rc = b.main(["lint"])
+    wt_result = capsys.readouterr()
+
+    assert wt_rc == pm_rc
+    assert wt_result.out.splitlines()[1:] == pm_result.out.splitlines()[1:]
+    assert wt_result.err == pm_result.err
+    assert "[dangling-wikilink] ADR-0001" not in wt_result.out
+    assert wt_result.out.splitlines()[0].endswith(
+        f"(PM 홈 폴백: {b._READ_PM_INPUTS_BY_SUBCOMMAND['lint']})"
+    )
+    assert b._READ_BOARD_ROOT_OVERRIDE is None
+    assert b._READ_PM_HOME_OVERRIDE is None
+
+
+def test_worktree_idea_list_reads_pm_home_idea_content(
+        pm_home_worktree, monkeypatch, capsys):
+    """idea list도 빈 worktree 디렉토리가 아니라 같은 PM 홈의 실제 idea 내용을 출력한다."""
+    b = _load_board()
+    pm_home, worktree = pm_home_worktree
+    idea_dir = pm_home / ".project_manager" / "wiki" / "ideas" / "open"
+    idea_dir.mkdir(parents=True)
+    (idea_dir / "0001-anchor.md").write_text(
+        "---\nid: '0001'\ntitle: PM home idea\nstatus: open\ntags: []\n---\n# idea\n",
+        encoding="utf-8",
+    )
+    assert not (
+        worktree / ".project_manager" / "wiki" / "ideas"
+    ).exists(), "전제 붕괴 — worktree에 ideas가 있어 폴백 내용을 검증할 수 없음"
+
+    _isolate_board_module(b, monkeypatch, worktree)
+    assert b.main(["idea", "list"]) == 0
+    captured = capsys.readouterr()
+    assert "PM home idea" in captured.out
+    assert "(no ideas)" not in captured.out
+    assert captured.out.splitlines()[0].endswith("(PM 홈 폴백: ideas)")
+
+
+def test_boardless_worktree_without_ledger_fails_loud_before_ticket_lookup(
+        tmp_path, monkeypatch, capsys):
+    """장부 부재는 빈 board로 강등하지 않고 실제 board 없는 임시 worktree에서 명시 중단한다."""
+    b = _load_board()
+    pm_home, worktree = _make_pm_home_with_worktree(tmp_path, register=False)
+    assert not (
+        pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ).exists(), "전제 붕괴 — 장부 부재 경로가 아님"
+    assert list(
+        (worktree / ".project_manager" / "wiki" / "tickets").glob("*/*.md")
+    ) == [], "전제 붕괴 — worktree에 실 티켓이 있음"
+
+    _isolate_board_module(b, monkeypatch, worktree)
+    assert b.main(["show", "T-0100"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out.splitlines()[0] == (
+        f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: 없음"
+    )
+    assert "이 앵커에는 board가 없" in captured.err
+    assert "worktree lease 장부 없음" in captured.err
+    assert "ticket not found" not in (captured.out + captured.err)
+
+
+def test_boardless_worktree_registered_by_multiple_homes_fails_loud(
+        tmp_path, monkeypatch, capsys):
+    """경로 소유 홈과 git 소유 홈 장부가 같은 슬롯을 등록하면 어느 board도 추측하지 않는다."""
+    b = _load_board()
+    path_home = tmp_path / "path-home"
+    git_home = tmp_path / "git-home"
+    for home in (path_home, git_home):
+        (home / ".project_manager").mkdir(parents=True)
+        _make_real_board(home / ".project_manager", split=True)
+
+    src = git_home / ".repos" / "product"
+    src.mkdir(parents=True)
+    _git(["init", "-q", "-b", "main"], src)
+    (src / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(["add", "-A"], src)
+    _git(["commit", "-qm", "seed"], src)
+    worktree = path_home / "work" / "product_1"
+    _git(["worktree", "add", "-q", str(worktree)], src)
+    _make_scaffold_board(worktree / ".project_manager")
+
+    _register_slot(path_home, worktree)
+    alias = git_home / "work" / "product_1"
+    alias.parent.mkdir(parents=True)
+    alias.symlink_to(worktree, target_is_directory=True)
+    _register_slot(git_home, worktree, slot="work/product_1")
+    assert alias.resolve() == worktree.resolve(), "전제 붕괴 — 두 번째 장부 슬롯이 대상과 다름"
+
+    _isolate_board_module(b, monkeypatch, worktree)
+    assert b.main(["show", "T-0100"]) == 1
+    captured = capsys.readouterr()
+    assert "여러 PM 홈" in captured.err
+    assert str(path_home) in captured.err
+    assert str(git_home) in captured.err
+    assert "ticket not found" not in (captured.out + captured.err)
 
 
 def test_read_anchor_labels_only_real_board_owner_as_pm_home(
@@ -531,6 +777,26 @@ def test_every_subcommand_is_classified():
     )
 
 
+def test_read_input_inventory_covers_every_read_leaf():
+    """read leaf별 PM 입력 표가 분류 집합과 정확히 일치해 신규 형제 surface 누락을 막는다."""
+    b = _load_board()
+    assert set(b._READ_PM_INPUTS_BY_SUBCOMMAND) == set(b._READ_SUBCOMMANDS)
+    assert all(b._READ_PM_INPUTS_BY_SUBCOMMAND.values())
+
+
+def test_pm_owned_path_inventory_is_complete():
+    """import-time PM-owned 경로 상수 전수가 재앵커 표에 있다."""
+    b = _load_board()
+    expected = {
+        "IDEAS_DIR", "DECISIONS_DIR", "SPECS_DIR", "ARCHITECTURE_FILE", "HOOKS_DIR",
+        "BOARD_FILE", "LOG_FILE", "STATUS_FILE", "LOCAL_CONF", "TICKETS_DIR",
+        "TEMPLATE_FILE", "AREAS_FILE", "PM_STATE_FILE", "PM_STATE_TEMPLATE", "LOCAL_DIR",
+        "REGRESSION_FLAG", "LIVEGATE_FLAG", "BOARD_LOCK", "LEASES_FILE", "DOMAIN_PY",
+        "PM_DELEGATE_PY",
+    }
+    assert set(b._READ_PM_PATH_RELS) == expected
+
+
 def test_classification_sets_disjoint():
     b = _load_board()
     m, r, s = (set(b._MUTATION_SUBCOMMANDS),
@@ -555,6 +821,39 @@ def test_dispatch_gate_decision_matches_classification():
                  ["regression", "check"], ["livegate", "check"],
                  ["idea", "list"], ["prefix", "list"]):
         assert not _fires(argv), argv
+
+
+@pytest.mark.parametrize(
+    "subcommand",
+    sorted(
+        _load_board()._MUTATION_SUBCOMMANDS
+        | _load_board()._READ_SUBCOMMANDS
+        | _load_board()._SIDECAR_SUBCOMMANDS
+    ),
+)
+def test_read_board_resolution_opens_only_read_dispatch(
+        monkeypatch, subcommand):
+    """실 등록 leaf 전수에서 PM 홈 board 해소는 read 축에만 열리고 mutation/sidecar는 닫힌다."""
+    b = _load_board()
+    parts = subcommand.split()
+    args = argparse.Namespace(
+        cmd=parts[0],
+        idea_cmd=parts[1] if parts[0] == "idea" else None,
+        prefix_cmd=parts[1] if parts[0] == "prefix" else None,
+        fn=lambda _args: 0,
+    )
+    monkeypatch.setattr(b, "build_parser", lambda: types.SimpleNamespace(parse_args=lambda _argv: args))
+    monkeypatch.setattr(b, "_guard_worktree_misanchor", lambda _action: False)
+    calls: list[Path] = []
+
+    def resolve(anchor):
+        calls.append(anchor)
+        return b._ReadBoardResolution(b._board_root_at(anchor), None, None)
+
+    monkeypatch.setattr(b, "_resolve_read_board", resolve)
+    monkeypatch.setattr(b, "_print_read_anchor", lambda **_kwargs: None)
+    assert b.main([]) == 0
+    assert bool(calls) is (subcommand in b._READ_SUBCOMMANDS)
 
 
 # ── 오탐 0: PM 홈·솔로/standalone 무회귀 ──────────────────────────────────
@@ -584,6 +883,23 @@ def test_solo_standalone_first_ticket_no_false_positive(tmp_path, monkeypatch, c
     assert capsys.readouterr().err == ""
 
 
+def test_solo_board_in_same_repo_show_is_unchanged(tmp_path, monkeypatch, capsys):
+    """board와 작업 트리가 같은 solo 형상은 동일 repo board를 읽고 폴백 문구를 내지 않는다."""
+    b = _load_board()
+    solo = tmp_path / "solo"
+    (solo / ".project_manager").mkdir(parents=True)
+    _make_real_board(solo / ".project_manager", split=True)
+    _git(["init", "-q", "-b", "main"], solo)
+    _isolate_board_module(b, monkeypatch, solo)
+
+    assert b.main(["show", "T-0100"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.splitlines()[0] == f"repo 앵커: {solo} (PM 홈)"
+    assert "-- T-0100 (done/) --" in captured.out
+    assert "PM 홈 폴백" not in captured.out
+    assert captured.err == ""
+
+
 def test_non_git_tree_no_false_positive(tmp_path):
     # 비-git 트리(standalone) → fail-soft None (오탐 0).
     b = _load_board()
@@ -611,6 +927,23 @@ def test_pm_home_cwd_new_proceeds_past_guard(tmp_path, monkeypatch, capsys):
     assert "worktree(코드 전용) 트리에서 실행" not in (out.err + out.out)
     open_dir = pm_home / ".project_manager" / "board" / "tickets" / "open"
     assert len(list(open_dir.glob("T-*.md"))) == 1
+
+
+def test_read_fallback_does_not_weaken_following_mutation_gate(
+        pm_home_worktree, monkeypatch, capsys):
+    """같은 모듈에서 read 폴백 직후 mutation을 실행해도 override는 닫히고 stray 생성은 차단된다."""
+    b = _load_board()
+    _pm_home, worktree = pm_home_worktree
+    _isolate_board_module(b, monkeypatch, worktree)
+
+    assert b.main(["show", "T-0100"]) == 0
+    assert b._READ_BOARD_ROOT_OVERRIDE is None
+    assert b.main(["new", "stray 유발"]) == 1
+    captured = capsys.readouterr()
+    assert "worktree(코드 전용) 트리에서 실행" in captured.err
+    assert list(
+        (worktree / ".project_manager" / "wiki" / "tickets" / "open").glob("T-*.md")
+    ) == []
 
 
 def test_read_anchor_is_first_line_even_when_stderr_present(tmp_path):

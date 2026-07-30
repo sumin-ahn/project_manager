@@ -59,22 +59,42 @@ LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 # board-관련 경로(tickets·_template·areas)는 *상수가 아니라 함수*로 lazy 해소한다 — board/
 # 존재 여부가 런타임(설치/마이그레이션)에 바뀔 수 있고, hermetic 테스트가 REPO 를 monkeypatch
 # 한 뒤 board_root 가 그 tmp REPO 를 따라야 하기 때문(import-time 상수면 실 REPO 에 굳음).
-# 나머지 wiki 잔류 경로(ideas/board.md/decisions/specs/architecture/log/status)는 board 가
-# 아니라 설계축/파생물이므로 상수 그대로 둔다.
+# 나머지 wiki 잔류 경로(ideas/board.md/decisions/specs/architecture/log/status)는 board 와
+# 물리 위치는 다르지만 같은 PM 홈 소유 입력이다. 등록 worktree read 폴백에서는 아래
+# `_read_pm_inputs_at()`가 board와 함께 이 경로들을 한 홈으로 재앵커한다.
+
+# read dispatch 안에서만 설정되는 PM 입력 override. 등록 worktree의 조회가 소유 PM 홈
+# board·wiki·hooks·로컬 PM 설정을 읽을 때 사용하며, main()이 context manager로 즉시
+# 되돌린다. mutation/sidecar와 direct import 호출은 항상 None이라 기존 자기 REPO 해소를
+# 유지한다.
+_READ_BOARD_ROOT_OVERRIDE: Path | None = None
+_READ_PM_HOME_OVERRIDE: Path | None = None
+
+
+def _board_root_at(repo: Path) -> Path:
+    """`repo`가 직접 소유한 board 루트를 graceful 규칙 하나로 해소한다."""
+    base = repo / ".project_manager"
+    if (base / "board" / "tickets").is_dir():
+        return base / "board"
+    return base / "wiki"
+
 
 def board_root() -> Path:
     """board(tickets+areas) 루트 — board/ 분리 시 `<REPO>/.project_manager/board`, 아니면
     legacy `<REPO>/.project_manager/wiki`.
+
+    등록 worktree에서 실행된 read dispatch가 단일 소유 PM 홈을 장부로 확정한 동안에는
+    그 홈의 board 루트를 반환한다. override는 read 명령 실행 구간에만 유효하므로 mutation/
+    sidecar 게이트를 우회하지 않는다.
 
     `.project_manager/board/tickets` 가 실 디렉토리면 board 가 submodule 로 분리된
     형상 → board/ 루트. 아니면 board 가 아직 wiki/ 안에 있는 legacy 형상 →
     wiki/ 루트(현 위치·무변경). install_pre_push_hook 의 디렉토리-탐지와 동형 — *존재할
     때만* 새 경로로 갈리고, 없으면 현재 위치로 100% 폴백한다(솔로·미마이그 무영향).
     """
-    base = REPO / ".project_manager"
-    if (base / "board" / "tickets").is_dir():
-        return base / "board"
-    return base / "wiki"
+    if _READ_BOARD_ROOT_OVERRIDE is not None:
+        return _READ_BOARD_ROOT_OVERRIDE
+    return _board_root_at(REPO)
 
 
 def tickets_dir() -> Path:
@@ -111,9 +131,10 @@ def areas_file() -> Path:
       - board/ 존재 → `board_root()/areas.md` (= board/areas.md·submodule 안)
       - legacy     → `<REPO>/.project_manager/areas.md` (현 위치·wiki 밖·무변경)
     """
-    if (REPO / ".project_manager" / "board" / "tickets").is_dir():
-        return board_root() / "areas.md"
-    return REPO / ".project_manager" / "areas.md"
+    root = board_root()
+    if root.name == "board" and (root / "tickets").is_dir():
+        return root / "areas.md"
+    return root.parent / "areas.md"
 
 
 # board-관련 경로의 module-level 별칭 — 위 함수가 *실제* 해소 경로다(board_root 추종). 이
@@ -184,6 +205,16 @@ _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
 _READ_SUBCOMMANDS: frozenset[str] = frozenset({
     "list", "show", "lint", "idea list", "prefix list",
 })
+# read leaf별 PM-owned 입력 전수. dispatch 첫 줄이 이 값을 그대로 표시하므로, worktree에서
+# 어느 홈의 무엇을 읽는지 조용히 숨지 않는다. 제품 코드(REPO 루트 문서·adapter/template 및
+# git freshness 대상)는 현재 worktree를 계속 읽는다. PM 운영 상태만 단일 소유 홈으로 묶는다.
+_READ_PM_INPUTS_BY_SUBCOMMAND: dict[str, str] = {
+    "list": "board·areas·local.conf·lease",
+    "show": "board",
+    "lint": "board·areas·wiki(decisions·ideas·specs·domain·current-truth)·hooks·local.conf",
+    "idea list": "ideas",
+    "prefix list": "board",
+}
 # anchor-keyed sidecar — board 상태 아님. regression=`.local/regression.json`, livegate=
 # 공유 engine-root `livegate.json`(둘 다 anchor HEAD 로 키·**worktree cwd 실행이 설계 의도**).
 # 게이트하면 릴리즈/회귀 흐름이 깨진다— 비게이트.
@@ -206,14 +237,17 @@ def _resolved_subcommand(args: argparse.Namespace) -> str:
     return cmd
 
 
-def _print_read_anchor() -> None:
+def _print_read_anchor(
+    *, subcommand: str, pm_home: Path | None = None, pm_inputs_missing: bool = False
+) -> None:
     """읽기 조회가 실제로 측정하는 repo 앵커와 역할을 stdout 첫 줄에 표시한다.
 
     앵커는 도구가 이미 사용하는 ``REPO`` 그대로다. 역할은 mutation misanchor
     가드가 등록 worktree라고 확인한 경우만 ``worktree``로, 실 board 소유가 확인된
     경우만 ``PM 홈``으로 표기한다. 어느 양성 증거도 없으면 역할을 단언하지 않는다.
-    조회는 다른 앵커를 보는 것 자체가 정당하므로 이 함수는 안내만 하고 rc/실행
-    경로를 바꾸지 않는다.
+    PM 홈 폴백이면 같은 첫 줄에 실제 PM 입력 앵커와 read leaf별 입력 목록을 함께
+    표시한다. PM 입력 홈을 확정하지 못해 조회를 중단하는 경우에도 첫 줄에서 그 사실을
+    숨기지 않는다.
     """
     anchor = REPO
     if _pm_home_worktree_misanchor(anchor) is not None:
@@ -226,7 +260,13 @@ def _print_read_anchor() -> None:
     # flush 없이는 `board.py <read> 2>&1 | …` 에서 stderr 가 앵커보다 먼저 나와 "첫 줄" 계약이
     # 깨진다. in-process capsys 테스트는
     # 버퍼링을 거치지 않아 이 클래스를 구조적으로 못 본다 — subprocess 순서 테스트가 짝이다.
-    print(f"repo 앵커: {anchor} ({role})", flush=True)
+    line = f"repo 앵커: {anchor} ({role})"
+    if pm_home is not None:
+        inputs = _READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]
+        line += f" → PM 입력 앵커: {pm_home} (PM 홈 폴백: {inputs})"
+    elif pm_inputs_missing:
+        line += " → PM 입력 앵커: 없음"
+    print(line, flush=True)
 
 
 def _git_rev_parse(anchor: Path, *args: str, runner: Any = subprocess.run) -> str | None:
@@ -333,6 +373,183 @@ def _pm_home_worktree_misanchor(anchor: Path, *, runner: Any = subprocess.run) -
             # (무관 프레임워크 홈 하위 우연 중첩이면 등록 실패 → None·fail-soft).
             return parent if _registers_worktree(parent, anchor, runner=runner) else None
     return None
+
+
+class _ReadBoardResolution(NamedTuple):
+    """read dispatch의 board 해소 결과. error가 있으면 root/home은 None이다."""
+
+    root: Path | None
+    home: Path | None
+    error: str | None
+
+
+# 등록 worktree read 폴백에서 같은 PM 홈으로 옮겨야 하는 import-time 경로 상수 전수.
+# board_root/tickets/areas는 lazy override가 담당하고, 이 표는 wiki 잔류 상태·instance hook·
+# PM 로컬 설정·그 상태를 읽는 deep-import 모듈을 담당한다. 상대경로가 단일 진실이라 새
+# PM-owned 입력을 추가할 때 이 표와 `_READ_PM_INPUTS_BY_SUBCOMMAND`를 함께 갱신하게 된다.
+_READ_PM_PATH_RELS: dict[str, str] = {
+    "IDEAS_DIR": "wiki/ideas",
+    "DECISIONS_DIR": "wiki/decisions",
+    "SPECS_DIR": "wiki/specs",
+    "ARCHITECTURE_FILE": "wiki/architecture.md",
+    "HOOKS_DIR": "hooks",
+    "BOARD_FILE": "wiki/board.md",
+    "LOG_FILE": "wiki/log/current.md",
+    "STATUS_FILE": "wiki/status.md",
+    "LOCAL_CONF": "local.conf",
+    "TICKETS_DIR": "wiki/tickets",
+    "TEMPLATE_FILE": "wiki/tickets/_template.md",
+    "AREAS_FILE": "areas.md",
+    "PM_STATE_FILE": "wiki/pm_state.md",
+    "PM_STATE_TEMPLATE": "wiki/pm_state.template.md",
+    "LOCAL_DIR": ".local",
+    "REGRESSION_FLAG": ".local/regression.json",
+    "LIVEGATE_FLAG": ".local/livegate.json",
+    "BOARD_LOCK": ".local/board.lock",
+    "LEASES_FILE": ".local/worktree-leases.json",
+    "DOMAIN_PY": "tools/domain.py",
+    "PM_DELEGATE_PY": "tools/pm_delegate.py",
+}
+
+
+@contextlib.contextmanager
+def _read_pm_inputs_at(pm_home: Path, board_root_path: Path) -> Iterator[None]:
+    """read dispatch 동안 PM-owned 입력 전부를 `pm_home` 하나로 재앵커한다.
+
+    module 상수는 import 시 REPO에 굳으므로 board_root override만으로는 decisions/ideas 등이
+    worktree에 남는다. 이 scope는 그 상수와 파생 tuple을 함께 바꾸고 finally에서 원복한다.
+    mutation/sidecar는 이 context에 진입하지 않아 쓰기 게이트 의미론은 바뀌지 않는다.
+    """
+    global _READ_BOARD_ROOT_OVERRIDE, _READ_PM_HOME_OVERRIDE, _SCOPE_AWARE_DIRS
+    saved = {name: globals()[name] for name in _READ_PM_PATH_RELS}
+    saved_scope_dirs = _SCOPE_AWARE_DIRS
+    saved_board_override = _READ_BOARD_ROOT_OVERRIDE
+    saved_home_override = _READ_PM_HOME_OVERRIDE
+    pm_dir = pm_home / ".project_manager"
+    try:
+        for name, rel in _READ_PM_PATH_RELS.items():
+            globals()[name] = pm_dir / rel
+        _SCOPE_AWARE_DIRS = (DECISIONS_DIR, SPECS_DIR)
+        _READ_BOARD_ROOT_OVERRIDE = board_root_path
+        _READ_PM_HOME_OVERRIDE = pm_home
+        yield
+    finally:
+        for name, value in saved.items():
+            globals()[name] = value
+        _SCOPE_AWARE_DIRS = saved_scope_dirs
+        _READ_BOARD_ROOT_OVERRIDE = saved_board_override
+        _READ_PM_HOME_OVERRIDE = saved_home_override
+
+
+def _candidate_board_homes(anchor: Path, *, runner: Any = subprocess.run) -> list[Path]:
+    """worktree 소유 PM 홈 후보를 경로 조상과 git common-dir 조상에서 찾는다.
+
+    worktree 경로를 둔 홈과 bare git을 둔 홈이 다를 수 있으므로 두 증거축을 합친다.
+    실제 티켓을 가진 board 소유 홈만 후보이며, 최종 선택은 이 함수가 아니라 각 홈의
+    worktree lease 장부가 한다.
+    """
+    search: list[Path] = list(anchor.parents)
+    common = _git_rev_parse(anchor, "--git-common-dir", runner=runner)
+    if common is not None:
+        common_path = Path(common)
+        if not common_path.is_absolute():
+            common_path = (anchor / common_path).resolve()
+        search.extend((common_path, *common_path.parents))
+    homes: list[Path] = []
+    seen: set[Path] = set()
+    for path in search:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if _has_real_board(resolved / ".project_manager"):
+            homes.append(resolved)
+    return homes
+
+
+def _ledger_registration(
+    pm_home: Path, anchor: Path
+) -> tuple[bool, str | None]:
+    """PM 홈 장부가 `anchor` 슬롯을 등록하는지 strict point-read 한다.
+
+    반환은 (일치, 오류). 부재·손상·스키마 오류는 load-bearing 소유 판정에서 빈 장부로
+    강등하지 않고 오류 문자열로 돌려 호출부가 fail-loud 하게 한다.
+    """
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    if not ledger.is_file():
+        return False, f"{pm_home}: worktree lease 장부 없음"
+    try:
+        data = json.loads(ledger.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeError) as exc:
+        return False, f"{pm_home}: worktree lease 장부를 읽을 수 없음 ({exc})"
+    if not isinstance(data, dict):
+        return False, f"{pm_home}: worktree lease 장부 최상위 값이 object가 아님"
+    rows = data.get("leases")
+    if not isinstance(rows, list):
+        return False, f"{pm_home}: worktree lease 장부의 leases 값이 list가 아님"
+    target = anchor.resolve()
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return False, f"{pm_home}: worktree lease 장부 leases[{index}]가 object가 아님"
+        slot = row.get("slot")
+        if not isinstance(slot, str) or not slot:
+            return False, f"{pm_home}: worktree lease 장부 leases[{index}]의 slot이 유효하지 않음"
+        if (pm_home / slot).resolve() == target:
+            return True, None
+    return False, None
+
+
+def _resolve_read_board(
+    anchor: Path, *, runner: Any = subprocess.run
+) -> _ReadBoardResolution:
+    """read-only board를 uniform 규칙으로 해소한다.
+
+    자기 앵커가 실제 board를 가지면 그대로 쓴다. linked worktree가 아니면 legacy/solo
+    graceful 경로를 그대로 보존한다. board 없는 linked worktree만 PM 홈 후보의 strict
+    lease 장부를 조회하며, 정확히 한 홈이 슬롯을 등록할 때만 그 board를 연다.
+    """
+    if _has_real_board(anchor / ".project_manager"):
+        return _ReadBoardResolution(_board_root_at(anchor), anchor, None)
+    if not _is_linked_worktree(anchor, runner=runner):
+        return _ReadBoardResolution(_board_root_at(anchor), None, None)
+
+    matches: list[Path] = []
+    errors: list[str] = []
+    for home in _candidate_board_homes(anchor, runner=runner):
+        matched, error = _ledger_registration(home, anchor)
+        if matched:
+            matches.append(home)
+        elif error is not None and _registers_worktree(home, anchor, runner=runner):
+            # 무관한 상위 board 홈의 장부 부재는 오류가 아니다. 경로/git 증거상 이 슬롯을
+            # 등록한 홈만 load-bearing 장부 부재·손상을 fail-loud 사유로 삼는다.
+            errors.append(error)
+
+    if errors:
+        detail = "; ".join(errors)
+        return _ReadBoardResolution(
+            None,
+            None,
+            "이 앵커에는 board가 없고 소유 PM 홈의 worktree lease 장부를 확정할 수 "
+            f"없습니다: {detail}. PM 홈에서 조회하세요.",
+        )
+    unique = sorted(set(matches))
+    if len(unique) == 1:
+        home = unique[0]
+        return _ReadBoardResolution(_board_root_at(home), home, None)
+    if len(unique) > 1:
+        homes = ", ".join(str(home) for home in unique)
+        return _ReadBoardResolution(
+            None,
+            None,
+            "이 앵커에는 board가 없고 슬롯이 여러 PM 홈의 worktree lease 장부에 "
+            f"등록되어 board 소유자가 모호합니다: {homes}. 장부를 정리한 뒤 다시 조회하세요.",
+        )
+    return _ReadBoardResolution(
+        None,
+        None,
+        "이 앵커에는 board가 없고 worktree lease 장부에서 소유 PM 홈을 찾지 "
+        "못했습니다. PM 홈에서 조회하세요.",
+    )
 
 
 def _guard_worktree_misanchor(action: str, *, runner: Any = subprocess.run) -> bool:
@@ -7329,7 +7546,10 @@ def _collect_wikilink_files() -> list[Path]:
     각 dir 은 harness 별로 존재 여부가 다르므로(claude 채택자엔 `.opencode` 부재·역도 마찬가지)
     `.is_dir()` 가드로 있을 때만 추가한다.
     """
-    wiki = REPO / ".project_manager" / "wiki"
+    # PM 운영 wiki는 등록 worktree read 폴백에서 소유 PM 홈을 따른다. 루트 README와
+    # adapter scaffold는 아래에서 계속 REPO(현재 제품 worktree)를 읽어 코드 lint 의미를 보존한다.
+    pm_repo = _READ_PM_HOME_OVERRIDE or REPO
+    wiki = pm_repo / ".project_manager" / "wiki"
     files: list[Path] = list(wiki.rglob("*.md")) if wiki.is_dir() else []
     # board/ 분리 시 ticket 본문이 wiki/ 밖(board/tickets)으로 빠진다 — 그러면
     # ticket 의 `[[ADR-NNNN]]` 구조참조가 wiki-only 스캔에선 안 보여 dangling 이 *미검출*된다.
@@ -9880,7 +10100,26 @@ def main(argv: list[str] | None = None) -> int:
     if subcommand in _MUTATION_SUBCOMMANDS and _guard_worktree_misanchor(f"board.py {subcommand}"):
         return 1
     if subcommand in _READ_SUBCOMMANDS:
-        _print_read_anchor()
+        resolution = _resolve_read_board(REPO)
+        _print_read_anchor(
+            subcommand=subcommand,
+            pm_home=resolution.home if resolution.home != REPO else None,
+            pm_inputs_missing=resolution.error is not None,
+        )
+        if resolution.error is not None:
+            print(f"[중단] {resolution.error}", file=sys.stderr)
+            return 1
+        local_root = _board_root_at(REPO)
+        if resolution.home is not None and resolution.home != REPO:
+            with _read_pm_inputs_at(resolution.home, resolution.root):
+                return args.fn(args)
+        # 자기 board/solo/standalone은 import-time REPO 경로 그대로다. 별도 context에 넣지 않아
+        # 폴백 문구·경로 재바인딩이 전혀 생기지 않는다.
+        if resolution.root == local_root:
+            return args.fn(args)
+        # 방어적 경계: 현재 resolver 계약상 home 없는 비local root는 나올 수 없다.
+        with _read_pm_inputs_at(REPO, resolution.root):
+            return args.fn(args)
     return args.fn(args)
 
 

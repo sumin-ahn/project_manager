@@ -64,6 +64,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Callable, Iterator, NamedTuple
@@ -1078,6 +1079,7 @@ def _run_reviewer_ex(
     timeout: int | None,
     run_fn: Callable[..., subprocess.CompletedProcess] | None,
     idle_timeout: float | None = None,
+    metrics: dict[str, object] | None = None,
 ) -> tuple[bool, str, bool]:
     """run_reviewer 본체 + 외부 프로세스 스폰 여부(started) 신호.
 
@@ -1095,6 +1097,9 @@ def _run_reviewer_ex(
     `run_fn` 주입의 기존 계약은 subprocess.run 호환 키까지다. 새 `idle_timeout` 은 시그니처에 그
     이름을 명시한 runner 에만 조건부 전달한다. 호출 계약 불일치는 일반 "리뷰어 실행 오류"로
     삼키지 않고 seam 오류로 loud 구분한다."""
+    if metrics is not None:
+        metrics.clear()
+        metrics.update({"rc": 1, "silence_sec": None})
     _run = run_fn or _watchdog_reviewer_run
     argv = shlex.split(reviewer_cmd)
     if not argv:
@@ -1107,15 +1112,24 @@ def _run_reviewer_ex(
             idle_timeout=_reviewer_idle_timeout(reviewer_cmd, idle_timeout),
         )
         result = _run(argv, **kwargs)
+        if metrics is not None:
+            metrics["rc"] = int(result.returncode)
+            metrics["silence_sec"] = getattr(result, "silence_sec", None)
         output = result.stdout or ""
         if result.stderr:
             output += f"\n[stderr]\n{result.stderr}"
         return result.returncode == 0, output, True
     except subprocess.TimeoutExpired as exc:
         # 프로세스가 시작돼 실행 중 타임아웃 — 프롬프트가 이미 전송·과금됐을 수 있다 → started=True.
+        if metrics is not None:
+            metrics["silence_sec"] = getattr(
+                exc, "silence_seconds", getattr(exc, "idle_seconds", None)
+            )
         return False, _timeout_output(timeout, exc), True
     except FileNotFoundError:
         # 실행 파일 자체가 없어 exec 실패 — 아무것도 전송되지 않았다 → started=False (환불 대상).
+        if metrics is not None:
+            metrics["rc"] = 127
         return False, f"[리뷰어 명령 '{argv[0]}' 를 찾을 수 없음 — 설치 또는 PATH 확인]", False
     except ReviewerRunSeamError as exc:
         # 호출 전 bind 실패 — 외부 프로세스는 확실히 시작되지 않았다. 라운드 환불 가능.
@@ -1160,6 +1174,17 @@ def reviewer_name(reviewer_cmd: str) -> str:
     """reviewer_cmd 의 공유 정규화 키(시간 프로필·진행신호·파일명/요약 공통)."""
     argv = shlex.split(reviewer_cmd)
     return _normalized_reviewer_key(argv)
+
+
+def _reviewer_model(reviewer_cmd: str) -> str:
+    """reviewer argv의 명시 model을 장부용으로 해소하고, 생략이면 default로 표기한다."""
+    argv = shlex.split(reviewer_cmd)
+    for flag in ("--model", "-m"):
+        if flag in argv:
+            index = argv.index(flag)
+            if index + 1 < len(argv):
+                return argv[index + 1]
+    return "default"
 
 
 # ── 결과 파싱 ─────────────────────────────────────────────────────────────
@@ -1230,12 +1255,46 @@ def parse_verdict(output: str) -> dict[str, bool]:
 # ── 결과 저장 ─────────────────────────────────────────────────────────────
 
 
+def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
+    """외부리뷰 raw/공유 장부 위치(REPO 미해소만 tempdir 폴백)."""
+    return _load_relay().raw_storage_paths(
+        REPO, "review", output_dir, temp_dir=Path(tempfile.gettempdir())
+    )
+
+
+def _reserve_output(reviewer: str, output_dir: Path | None = None) -> Path:
+    """실행 전 장부가 가리킬 외부리뷰 raw를 충돌 없이 선점한다."""
+    base_dir, _ledger_path = _raw_storage(output_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = base_dir / (
+        f"external_review_{reviewer}_{ts}_{os.getpid()}_{uuid.uuid4().hex}.txt"
+    )
+    fd = os.open(str(dest), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(fd)
+    return dest
+
+
+def _write_reserved_output(
+    dest: Path,
+    content: str,
+    *,
+    local_conf_path: Path | None,
+    resolved_profile: str | None,
+) -> None:
+    with dest.open("w", encoding="utf-8") as handle:
+        handle.write(_review_raw_content(content, local_conf_path, resolved_profile))
+
+
 def save_output(reviewer: str, content: str, output_dir: Path | None = None, *, local_conf_path: Path | None = None, resolved_profile: str | None = None) -> Path:
     """리뷰어 출력 원문(+선택적 conf provenance 감사 헤더)을 저장하고 경로를 반환한다."""
-    base_dir = output_dir or Path(tempfile.gettempdir())
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    dest = base_dir / f"external_review_{reviewer}_{ts}.txt"
-    dest.write_text(_review_raw_content(content, local_conf_path, resolved_profile), encoding="utf-8")
+    dest = _reserve_output(reviewer, output_dir)
+    _write_reserved_output(
+        dest,
+        content,
+        local_conf_path=local_conf_path,
+        resolved_profile=resolved_profile,
+    )
     return dest
 
 
@@ -1258,17 +1317,45 @@ def run_review(
     기본) — 타임아웃 시에도 `output` 에 부분 산출물이 실려 `save_output` 이 그대로 박제한다.
     """
     name = reviewer_name(reviewer_cmd)
-    ok, output, started = _run_reviewer_ex(prompt, reviewer_cmd, timeout, run_fn, idle_timeout)
+    raw_path = _reserve_output(name, output_dir)
+    _raw_dir, ledger_path = _raw_storage(output_dir)
+    relay = _load_relay()
+    model = _reviewer_model(reviewer_cmd)
+    record_id = relay.start_raw_record(
+        ledger_path,
+        surface="external-review",
+        harness=name,
+        model=model,
+        role="code-reviewer",
+        raw_path=raw_path,
+        attempt="primary",
+    )
+    metrics: dict[str, object] = {"rc": 1, "silence_sec": None}
+    started_at = time.monotonic()
+    ok, output, started = _run_reviewer_ex(
+        prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics
+    )
+    elapsed = time.monotonic() - started_at
     verdict = parse_verdict(output)
-    out_file: Path | None = None
-    if ok or output:
-        out_file = save_output(name, output, output_dir, local_conf_path=local_conf_path, resolved_profile=resolved_profile)
+    _write_reserved_output(
+        raw_path,
+        output,
+        local_conf_path=local_conf_path,
+        resolved_profile=resolved_profile,
+    )
+    relay.finish_raw_record(
+        ledger_path,
+        record_id,
+        rc=int(metrics["rc"]),
+        elapsed_sec=elapsed,
+        silence_sec=metrics.get("silence_sec"),
+    )
     return {
         "reviewer": name,
         "ok": ok,
         "output": output,
         "verdict": verdict,
-        "file": out_file,
+        "file": raw_path,
         "failed": not ok,
         "started": started,
         "any_must_fix": ok and verdict["has_must_fix"],
@@ -1393,7 +1480,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true",
                         help="external_review_enabled=false 여도 1회 강제 실행 (외부 전송 발생)")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
-                        help="리뷰 원문 저장 디렉토리 (기본: /tmp)")
+                        help="리뷰 원문 저장 디렉토리"
+                             " (기본: .project_manager/.local/review, PM 홈 미해소 시 tempdir)")
     parser.add_argument("--timeout", type=_timeout_seconds_arg, default=None,
                         metavar="SEC",
                         help="외부 호출 벽시계 백스톱(초) — 기본은 reviewer_cmd 의 하네스 프로필. "
