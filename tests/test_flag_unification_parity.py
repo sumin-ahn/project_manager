@@ -37,6 +37,8 @@ from typing import NamedTuple
 
 import pytest
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -275,7 +277,11 @@ def _scan_paths_for_old_flags(paths: list[Path]) -> list[_OldFlagHit]:
         if base.is_file():
             hits.extend(_scan_file_for_old_flags(base))
         elif base.is_dir():
-            for md in sorted(base.rglob("*.md")):
+            for md in repo_owned_paths(
+                REPO, base.relative_to(REPO), mode=OWNED
+            ):
+                if md.suffix != ".md":
+                    continue
                 hits.extend(_scan_file_for_old_flags(md))
     return hits
 

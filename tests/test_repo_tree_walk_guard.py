@@ -24,109 +24,13 @@ class WalkException:
 # 함께 지운다. 키 = (repo-relative 파일, 함수, 호출 종류, 첫 인자 AST).
 MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
     (
-        "tests/test_pm_render.py",
-        "test_adapter_surfaces_no_machine_variant_tokens",
-        "rglob",
-        "'*.md'",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "REPO의 canonical/template 어댑터 표면 6곳을 스캔"),
-    (
-        "tests/test_adapter_session_identity.py",
-        "_scanned_files",
-        "rglob",
-        "'*.md'",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "_SCANNED_DIRS 아래 REPO 문서를 스캔"),
-    (
-        "tests/test_adapter_free_form_free.py",
-        "test_render_scoped_dir_present_and_nonempty",
-        "rglob",
-        "'*'",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "REPO template render-scoped 디렉토리의 실 파일 존재를 전수 판정"),
-    (
-        "tests/test_adapter_free_form_free.py",
-        "_render_scoped_text_files",
-        "rglob",
-        "'*'",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "REPO template render-scoped 파일의 토큰 인벤토리를 구성"),
-    (
         "tests/test_template_ignore_files_tracked.py",
         "_ondisk_ignore_relpaths",
         "rglob",
         "'*'",
     ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "REPO/templates 디스크 ignore 파일과 git tracked 목록을 대조"),
-    (
-        "tests/test_manifest_template_parity.py",
-        "_expand_manifest_files",
-        "rglob",
-        "'*'",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "REPO와 template manifest 디렉토리를 파일 단위로 전개"),
-    (
-        "tests/test_flag_unification_parity.py",
-        "_scan_paths_for_old_flags",
-        "rglob",
-        "'*.md'",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "REPO의 선언된 문서 디렉토리에서 폐기 flag를 전수 검사"),
-    (
-        "tests/test_settings_hygiene.py",
-        "_long_engine_command_markdown",
-        "rglob",
-        "'*.md'",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "기본 인자 _REPO 아래 PM-facing Markdown을 내용으로 선별"),
-    (
-        "tests/test_pm_handoff_shipping.py",
-        "_expand_manifest_shipping_paths",
-        "os.walk",
-        "abs_p",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "REPO engine.manifest 디렉토리를 출하 파일로 전개"),
-    (
-        "tests/test_opencode_command_skill_pairing.py",
-        "_skill_files",
-        "rglob",
-        "'SKILL.md'",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "REPO canonical과 opencode template 스킬 미러를 대조"),
-    (
-        "tests/test_opencode_adapter_v2_docs.py",
-        "test_no_shipped_opencode_doc_points_to_removed_agents_anchors",
-        "rglob",
-        "'*.md'",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "REPO의 출하 opencode template 문서를 전수 검사"),
-    (
-        "tests/test_skill_command_existence.py",
-        "_iter_md_files",
-        "rglob",
-        "'*.md'",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "_SCAN_DIRS가 가리키는 REPO 문서 인벤토리를 구성"),
-    (
-        "tests/test_terminology.py",
-        "_canonical_source_files",
-        "glob.glob(recursive=True)",
-        "str(REPO / g)",
-    ): WalkException(
-        "실 트리 인벤토리 walk — 공용 seam 전환 대기(T-0506 소관): "
-        "REPO 방법론 template 재귀 glob에서 폐기 용어 검사 파일을 구성"),
+        "실 디스크의 ignored 미추적 ignore 규칙 파일 검출이 판정의 본질이라 OWNED "
+        "(--exclude-standard)로는 자기-은닉 결함이 누락됨; T-0492 sensitivity가 이를 고정"),
 }
 
 
@@ -535,6 +439,137 @@ def test_guard_recursively_scans_nested_python_files(tmp_path):
         "rglob",
         "'*.md'",
     ) in unauthorized
+
+
+@pytest.mark.parametrize(
+    ("key", "body"),
+    [
+        (
+            (
+                "tests/test_pm_render.py",
+                "test_adapter_surfaces_no_machine_variant_tokens",
+                "rglob",
+                "'*.md'",
+            ),
+            "def test_adapter_surfaces_no_machine_variant_tokens(surface):\n"
+            "    return surface.rglob('*.md')\n",
+        ),
+        (
+            (
+                "tests/test_adapter_session_identity.py",
+                "_scanned_files",
+                "rglob",
+                "'*.md'",
+            ),
+            "def _scanned_files(d):\n    return d.rglob('*.md')\n",
+        ),
+        (
+            (
+                "tests/test_adapter_free_form_free.py",
+                "test_render_scoped_dir_present_and_nonempty",
+                "rglob",
+                "'*'",
+            ),
+            "def test_render_scoped_dir_present_and_nonempty(d):\n"
+            "    return d.rglob('*')\n",
+        ),
+        (
+            (
+                "tests/test_adapter_free_form_free.py",
+                "_render_scoped_text_files",
+                "rglob",
+                "'*'",
+            ),
+            "def _render_scoped_text_files(d):\n    return d.rglob('*')\n",
+        ),
+        (
+            (
+                "tests/test_manifest_template_parity.py",
+                "_expand_manifest_files",
+                "rglob",
+                "'*'",
+            ),
+            "def _expand_manifest_files(p):\n    return p.rglob('*')\n",
+        ),
+        (
+            (
+                "tests/test_flag_unification_parity.py",
+                "_scan_paths_for_old_flags",
+                "rglob",
+                "'*.md'",
+            ),
+            "def _scan_paths_for_old_flags(base):\n    return base.rglob('*.md')\n",
+        ),
+        (
+            (
+                "tests/test_settings_hygiene.py",
+                "_long_engine_command_markdown",
+                "rglob",
+                "'*.md'",
+            ),
+            "def _long_engine_command_markdown(root):\n    return root.rglob('*.md')\n",
+        ),
+        (
+            (
+                "tests/test_pm_handoff_shipping.py",
+                "_expand_manifest_shipping_paths",
+                "os.walk",
+                "abs_p",
+            ),
+            "import os\n"
+            "def _expand_manifest_shipping_paths(abs_p):\n"
+            "    return os.walk(abs_p)\n",
+        ),
+        (
+            (
+                "tests/test_opencode_command_skill_pairing.py",
+                "_skill_files",
+                "rglob",
+                "'SKILL.md'",
+            ),
+            "def _skill_files(base):\n    return base.rglob('SKILL.md')\n",
+        ),
+        (
+            (
+                "tests/test_skill_command_existence.py",
+                "_iter_md_files",
+                "rglob",
+                "'*.md'",
+            ),
+            "def _iter_md_files(base):\n    return base.rglob('*.md')\n",
+        ),
+        (
+            (
+                "tests/test_terminology.py",
+                "_canonical_source_files",
+                "glob.glob(recursive=True)",
+                "str(REPO / g)",
+            ),
+            "import glob\n"
+            "def _canonical_source_files(REPO, g):\n"
+            "    return glob.glob(str(REPO / g), recursive=True)\n",
+        ),
+        (
+            (
+                "tests/test_opencode_adapter_v2_docs.py",
+                "test_no_shipped_opencode_doc_points_to_removed_agents_anchors",
+                "rglob",
+                "'*.md'",
+            ),
+            "def test_no_shipped_opencode_doc_points_to_removed_agents_anchors():\n"
+            "    return opencode_root.rglob('*.md')\n",
+        ),
+    ],
+)
+def test_removed_migration_walk_restoration_is_rejected(tmp_path, key, body):
+    """T-0506 전환을 옛 disk walk로 되돌리면 실 원장 가드가 즉시 red다."""
+    target = tmp_path / key[0]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+
+    unauthorized, _stale, _blank = _audit(tmp_path, exceptions=ALL_EXCEPTIONS)
+
+    assert key in unauthorized
 
 
 def test_guard_rejects_blank_exception_reason(tmp_path):

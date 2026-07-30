@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from _harness_matrix import HARNESSES
+from _repo_owned_inventory import OWNED, TRACKED_ONLY, repo_owned_paths
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -57,7 +58,7 @@ def _render_scoped_text_files():
     for rel in RENDER_SCOPED_DIRS:
         d = REPO_ROOT / rel
         if d.is_dir():
-            files.extend(p for p in sorted(d.rglob("*")) if p.is_file())
+            files.extend(repo_owned_paths(REPO_ROOT, rel, mode=OWNED))
     return files
 
 
@@ -68,7 +69,7 @@ def test_render_scoped_dir_present_and_nonempty(rel):
     한 하네스의 render-scoped 트리 소실을 즉시 red 로 표면화한다(하네스 축은 파생·경로 실존은 경로별)."""
     d = REPO_ROOT / rel
     assert d.is_dir(), f"render-scoped 경로 부재(stale/누락?): {rel}"
-    files = [p for p in d.rglob("*") if p.is_file()]
+    files = repo_owned_paths(REPO_ROOT, rel, mode=TRACKED_ONLY)
     assert files, f"render-scoped 경로에 파일 0 (트리 소실?): {rel}"
 
 

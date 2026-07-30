@@ -28,6 +28,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
+
 REPO = Path(__file__).resolve().parents[1]
 ROOT_SKILLS = REPO / ".claude" / "skills"
 OPENCODE_SKILLS_MIRROR = REPO / "templates" / "opencode" / ".claude" / "skills"
@@ -60,7 +62,8 @@ def _skill_files(base: Path) -> "dict[str, Path]":
         return {}
     return {
         p.relative_to(base).as_posix(): p
-        for p in sorted(base.rglob("SKILL.md"))
+        for p in repo_owned_paths(REPO, base.relative_to(REPO), mode=OWNED)
+        if p.name == "SKILL.md"
     }
 
 

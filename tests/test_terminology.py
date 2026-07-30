@@ -17,6 +17,8 @@ from __future__ import annotations
 import glob
 from pathlib import Path
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
+
 REPO = Path(__file__).resolve().parents[1]
 
 # 폐기 용어 (ADR-0016) — LIVE 표면에 0 이어야 한다.
@@ -139,9 +141,38 @@ def _canonical_source_files() -> list[Path]:
     for g in (".project_manager/tools/*.py", "tests/*.py"):
         files += [Path(p) for p in glob.glob(str(REPO / g))]
     for g in _CARRY_WIKI_GLOBS:
-        files += [Path(p) for p in glob.glob(str(REPO / g), recursive=True)]
+        if "**" not in g:
+            files += [Path(p) for p in glob.glob(str(REPO / g))]
+            continue
+        subtree = g.split("/**", 1)[0]
+        files += [
+            path
+            for path in repo_owned_paths(REPO, subtree, mode=OWNED)
+            if path.suffix == ".md"
+        ]
     files += [REPO / rel for rel in _CARRY_WIKI_FILES]
     return [f for f in files if f.is_file() and f.name != _SELF]
+
+
+def test_canonical_source_files_scans_every_carry_wiki_glob(
+        tmp_path, monkeypatch):
+    """wiki glob 튜플에 후속 항목이 추가돼도 인덱스 하드코딩 없이 모두 스캔한다."""
+    third_glob_file = tmp_path / ".project_manager" / "wiki" / "third" / "live.md"
+    third_glob_file.parent.mkdir(parents=True)
+    third_glob_file.write_text("live methodology\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+    monkeypatch.setitem(
+        globals(),
+        "_CARRY_WIKI_GLOBS",
+        (
+            ".project_manager/wiki/first/*.md",
+            ".project_manager/wiki/second/*.md",
+            ".project_manager/wiki/third/*.md",
+        ),
+    )
+    monkeypatch.setitem(globals(), "_CARRY_WIKI_FILES", ())
+
+    assert third_glob_file in _canonical_source_files()
 
 
 def test_no_carry_term_in_canonical_source():

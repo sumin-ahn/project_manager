@@ -35,6 +35,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
+
 REPO = Path(__file__).resolve().parents[1]
 
 # 정체성이 *지시되는* 표면만 스캔한다. RENDER_SCOPED_DIRS(test_adapter_free_form_free.py)
@@ -121,7 +123,11 @@ def _scanned_files() -> list[Path]:
     for rel in _SCANNED_DIRS:
         d = REPO / rel
         if d.is_dir():
-            files.extend(sorted(d.rglob("*.md")))
+            files.extend(
+                path
+                for path in repo_owned_paths(REPO, rel, mode=OWNED)
+                if path.suffix == ".md"
+            )
     for rel in _SCANNED_ENTRY_DOCS:
         f = REPO / rel
         if f.is_file():

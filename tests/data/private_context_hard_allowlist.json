@@ -353,7 +353,7 @@
     },
     {
       "path": ".project_manager/tools/external_review.py",
-      "line": 1364,
+      "line": 1365,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -889,7 +889,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/external_review.py",
-      "line": 1364,
+      "line": 1365,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -1233,7 +1233,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "line": 145,
+      "line": 149,
       "kind": "work_item",
       "match": "ADR-0004",
       "surface": "markdown",
@@ -1241,7 +1241,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "line": 194,
+      "line": 198,
       "kind": "work_item",
       "match": "T-0081",
       "surface": "markdown",
@@ -1249,7 +1249,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "line": 215,
+      "line": 219,
       "kind": "work_item",
       "match": "T-0389",
       "surface": "markdown",
@@ -1257,7 +1257,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "line": 215,
+      "line": 219,
       "kind": "work_item",
       "match": "T-0402",
       "surface": "markdown",
@@ -1265,7 +1265,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "line": 215,
+      "line": 219,
       "kind": "work_item",
       "match": "T-0409",
       "surface": "markdown",
@@ -1273,7 +1273,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "line": 273,
+      "line": 277,
       "kind": "work_item",
       "match": "T-0355",
       "surface": "markdown",
@@ -1281,7 +1281,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "line": 273,
+      "line": 277,
       "kind": "work_item",
       "match": "T-0362",
       "surface": "markdown",
@@ -1289,7 +1289,7 @@
     },
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "line": 280,
+      "line": 284,
       "kind": "work_item",
       "match": "ADR-0075",
       "surface": "markdown",
@@ -1625,7 +1625,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/external_review.py",
-      "line": 1364,
+      "line": 1365,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -2417,7 +2417,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/external_review.py",
-      "line": 1364,
+      "line": 1365,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",

@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -905,7 +907,11 @@ def test_adapter_surfaces_no_machine_variant_tokens():
     offenders = []
     for surface in _ADAPTER_SURFACES:
         assert surface.is_dir(), f"어댑터 표면 부재: {surface}"
-        for md in surface.rglob("*.md"):
+        for md in repo_owned_paths(
+            REPO, surface.relative_to(REPO), mode=OWNED
+        ):
+            if md.suffix != ".md":
+                continue
             text = md.read_text(encoding="utf-8")
             for token in ("{{PY}}", "{{TEST_CMD}}"):
                 if token in text:

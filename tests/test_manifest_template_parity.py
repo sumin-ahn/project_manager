@@ -24,6 +24,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -311,8 +313,7 @@ def _expand_manifest_files(base: Path, relpath: str) -> dict[str, Path]:
     if p.is_dir():
         return {
             str(f.relative_to(base)): f
-            for f in sorted(p.rglob("*"))
-            if f.is_file()
+            for f in repo_owned_paths(base, relpath, mode=OWNED)
         }
     return {}
 

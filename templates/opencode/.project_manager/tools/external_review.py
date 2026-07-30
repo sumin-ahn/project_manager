@@ -54,6 +54,7 @@ import argparse
 import contextlib
 import datetime
 import fnmatch
+import io
 import inspect
 import json
 import os
@@ -65,7 +66,7 @@ import sys
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable, Iterator, NamedTuple
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — engine_rev.py --bump가 전 stamped 모듈과 함께 재작성한다.
@@ -1229,12 +1230,12 @@ def parse_verdict(output: str) -> dict[str, bool]:
 # ── 결과 저장 ─────────────────────────────────────────────────────────────
 
 
-def save_output(reviewer: str, content: str, output_dir: Path | None = None) -> Path:
-    """리뷰어 출력 원문을 파일로 저장하고 경로를 반환한다."""
+def save_output(reviewer: str, content: str, output_dir: Path | None = None, *, local_conf_path: Path | None = None, resolved_profile: str | None = None) -> Path:
+    """리뷰어 출력 원문(+선택적 conf provenance 감사 헤더)을 저장하고 경로를 반환한다."""
     base_dir = output_dir or Path(tempfile.gettempdir())
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     dest = base_dir / f"external_review_{reviewer}_{ts}.txt"
-    dest.write_text(content, encoding="utf-8")
+    dest.write_text(_review_raw_content(content, local_conf_path, resolved_profile), encoding="utf-8")
     return dest
 
 
@@ -1247,7 +1248,7 @@ def run_review(
     timeout: int | None = None,
     output_dir: Path | None = None,
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
-    idle_timeout: float | None = None,
+    idle_timeout: float | None = None, local_conf_path: Path | None = None, resolved_profile: str | None = None,
 ) -> dict:
     """외부 리뷰어를 실행하고 결과를 수합한다.
 
@@ -1261,7 +1262,7 @@ def run_review(
     verdict = parse_verdict(output)
     out_file: Path | None = None
     if ok or output:
-        out_file = save_output(name, output, output_dir)
+        out_file = save_output(name, output, output_dir, local_conf_path=local_conf_path, resolved_profile=resolved_profile)
     return {
         "reviewer": name,
         "ok": ok,
@@ -1407,6 +1408,173 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# ── local.conf 송신 프로필 provenance/divergence ───────────────────────────
+# `_find_repo_root` 보유 도구 기계 inventory: contradiction_lint.py,
+# external_review.py, pm_delegate.py, ticket_finish.py. 이 중 local.conf 로 외부 송신 대상을 고르는
+# 표면은 external_review(reviewer_cmd)와 pm_delegate(delegate.*)뿐이다. ticket_finish는 local.conf의
+# 완료/회귀 노브만 읽고, contradiction_lint는 local.conf 자체를 읽지 않아 이번 송신 분기 범위에서
+# 제외한다. tests/test_conf_resolution_provenance.py가 이 전수와 소비 여부를 소스에서 다시 센다.
+
+
+def _local_conf_path(repo: Path | None = None) -> Path:
+    """repo별 local.conf 경로 — 호출 시점 REPO monkeypatch 를 추종하고 절대경로 provenance 입력."""
+    return ((repo if repo is not None else REPO) / ".project_manager" / "local.conf").resolve()
+
+
+def _read_local_config(path: Path) -> dict[str, str]:
+    """비교 대상의 명시 local.conf를 KEY=value 로 읽는다(없으면 빈 dict)."""
+    conf: dict[str, str] = {}
+    if not path.exists():
+        return conf
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        conf[key.strip()] = value.strip()
+    return conf
+
+
+def _review_raw_content(
+    content: str, local_conf_path: Path | None, resolved_profile: str | None,
+) -> str:
+    """pm_delegate와 같은 `# key: value` 감사 헤더를 external_review 원문에 붙인다."""
+    if local_conf_path is None and resolved_profile is None:
+        return content
+    header = ["# external_review raw 출력 (감사)"]
+    if local_conf_path is not None:
+        header.append(f"# local_conf: {local_conf_path}")
+    if resolved_profile is not None:
+        header.append(f"# resolved_profile: {resolved_profile}")
+    return "\n".join((*header, "", content))
+
+
+class LocalConfDivergence(NamedTuple):
+    """엔진 conf와 호출 대상 repo conf의 실제 송신 프로필 차이."""
+
+    engine_repo: Path
+    engine_conf_path: Path
+    target_repo: Path
+    target_conf_path: Path
+    differences: tuple[str, ...]
+
+
+def repo_root_from_cwd(cwd: Path | None) -> Path | None:
+    """호출 cwd/`--cwd`에서 가장 가까운 제품 repo 루트를 해소한다.
+
+    기존 판정 입력인 cwd를 그대로 쓰되, `--cwd`가 repo 하위 디렉토리여도 루트의 conf를 보도록
+    `.git` + `.project_manager` 마커를 상향 탐색한다. cwd 미지정/비-repo면 None이며 divergence
+    가드는 조용히 skip한다.
+    """
+    if cwd is None:
+        return None
+    resolved = cwd.resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists() and (candidate / ".project_manager").is_dir():
+            return candidate
+    return None
+
+
+def delegate_profile_config(
+    conf: dict[str, str], role: str, tier: str,
+) -> dict[str, str]:
+    """이번 pm_delegate 실행이 해소하는 role/tier의 명시 프로필 키만 반환한다.
+
+    다른 역할 mapping과 fallback/model_alias 등은 이번 primary tuple의 해소 입력이 아니다. 대상
+    per-clone conf에 같은 키가 없다는 사실도 값 충돌이 아니므로, 존재하는 키만 반환해 공용 비교기가
+    양쪽 공통 키의 실제 값 차이만 판정하게 한다.
+    """
+    prefix = f"delegate.{role}" + (".hard" if tier == "hard" else "")
+    keys = tuple(f"{prefix}.{field}" for field in ("harness", "model", "reasoning"))
+    return {
+        key: conf[key].strip()
+        for key in keys
+        if key in conf
+    }
+
+
+def reviewer_profile_config(conf: dict[str, str]) -> dict[str, str]:
+    """external_review의 실제 송신 대상 값. 미지정과 명시 default는 같은 값으로 정규화한다."""
+    return {"reviewer_cmd": _reviewer_cmd(conf)}
+
+
+def local_conf_divergence(
+    *,
+    engine_repo: Path,
+    engine_conf: dict[str, str],
+    target_repo: Path | None,
+    selector: Callable[[dict[str, str]], dict[str, object]],
+) -> LocalConfDivergence | None:
+    """두 repo가 다르고 대상 conf가 있으며 선택된 실제 값이 다를 때만 차이를 반환한다.
+
+    값 동일·대상 conf 부재·cwd repo 미해소는 None(경고 인플레 금지). 비교는 selector가 허용한
+    송신 프로필 키만 하므로 test_cmd 같은 무관 per-clone 차이는 loud 조건이 아니다.
+    """
+    if target_repo is None:
+        return None
+    engine_repo = engine_repo.resolve()
+    target_repo = target_repo.resolve()
+    if target_repo == engine_repo:
+        return None
+    target_conf_path = _local_conf_path(target_repo)
+    if not target_conf_path.is_file():
+        return None
+    try:
+        target_conf = _read_local_config(target_conf_path)
+    except (OSError, UnicodeError):
+        return None
+
+    engine_values = selector(engine_conf)
+    target_values = selector(target_conf)
+    # selector는 비교할 **유효 프로필**을 완전한 동일 키 집합으로 정규화한다. 해소 불가능한
+    # 대상 프로필은 빈 dict라 skip되고, 정상 프로필의 생략 기본값(None 포함)은 공통 키로 비교된다.
+    keys = sorted(set(engine_values) & set(target_values))
+    differences = tuple(
+        f"{key}: engine={engine_values[key]!r}, cwd={target_values[key]!r}"
+        for key in keys
+        if engine_values[key] != target_values[key]
+    )
+    if not differences:
+        return None
+    return LocalConfDivergence(
+        engine_repo=engine_repo,
+        engine_conf_path=_local_conf_path(engine_repo),
+        target_repo=target_repo,
+        target_conf_path=target_conf_path,
+        differences=differences,
+    )
+
+
+def format_local_conf_divergence(
+    divergence: LocalConfDivergence, *, surface: str, cwd_label: str,
+) -> str:
+    """두 송신 표면 공용 never-block loud 경고 문구."""
+    details = "\n".join(f"  · {item}" for item in divergence.differences)
+    return (
+        f"경고: local.conf 프로필 분기 감지 ({surface}) — {cwd_label} repo와 실행 엔진 "
+        "REPO가 다르고 외부 송신 프로필 값이 실제로 갈립니다.\n"
+        f"  · engine REPO: {divergence.engine_repo}\n"
+        f"  · engine conf: {divergence.engine_conf_path}\n"
+        f"  · {cwd_label} repo: {divergence.target_repo}\n"
+        f"  · {cwd_label} conf: {divergence.target_conf_path}\n"
+        f"{details}\n"
+        f"  이번 실행에서는 실행 엔진 conf가 이깁니다: {divergence.engine_conf_path}\n"
+        f"  차단하지 않고 계속합니다. 같은 프로필을 원하면 {cwd_label} conf의 위 키 값을 engine "
+        "conf와 맞추거나, 의도한 local.conf를 가진 엔진 사본을 실행하세요. 실행 결과 raw 헤더의 "
+        "# local_conf/# resolved_profile에도 승자 provenance를 기록합니다."
+    )
+
+
+def resolved_reviewer_profile(
+    reviewer_cmd: str, timeout: int | None, idle_timeout: float | None,
+) -> str:
+    """stderr/raw가 공유하는 external_review 해소 tuple."""
+    return (
+        f"(reviewer_cmd={reviewer_cmd}, wall_timeout_sec={timeout}, "
+        f"idle_timeout_sec={idle_timeout})"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     _console_spec = importlib.util.spec_from_file_location(
         "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
@@ -1419,10 +1587,51 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     conf = local_config()
     # 시간 예산은 **리뷰어 커맨드의 하네스 프로필**을 따른다 — reviewer_cmd 를 먼저 해소해야
-    # 어떤 축(클라우드/로컬)의 값을 쓸지 정해진다(기본 `codex exec` → codex 축).
+    # 어떤 축(클라우드/로컬)의 값을 쓸지 정해진다(기본 `codex exec` → codex 축). 깨진 conf의
+    # fail-soft 경고는 해소 중 발생하지만 stderr 첫 줄 provenance 계약을 지키도록 잠시 보류한다.
     reviewer_cmd = _reviewer_cmd(conf)
-    timeout = _resolve_timeout(args, conf, reviewer_cmd)
-    idle_timeout = _resolve_idle_timeout(args, conf, reviewer_cmd)
+    resolution_warnings = io.StringIO()
+    with contextlib.redirect_stderr(resolution_warnings):
+        resolved_time_profile = reviewer_profile(reviewer_cmd, conf)
+    timeout = (
+        args.timeout
+        if args.timeout is not None
+        else int(resolved_time_profile.wall_timeout)
+    )
+    idle_timeout = (
+        float(args.idle_timeout)
+        if args.idle_timeout is not None
+        else float(resolved_time_profile.idle_timeout)
+    )
+    conf_path = _local_conf_path(REPO)
+    profile = resolved_reviewer_profile(reviewer_cmd, timeout, idle_timeout)
+
+    # 상대 `.project_manager/tools/external_review.py` 선택을 결정한 호출 cwd repo와 실행 엔진
+    # 사본 REPO를 같은 입력으로 대조한다. reviewer_cmd의 **실제 해소값**이 갈릴 때만 경고하며,
+    # 동일(default 명시 포함)·대상 conf 부재·non-repo cwd는 조용히 통과한다.
+    divergence = local_conf_divergence(
+        engine_repo=REPO,
+        engine_conf=conf,
+        target_repo=repo_root_from_cwd(Path.cwd()),
+        selector=reviewer_profile_config,
+    )
+    # 정상 실행·dry-run 공용 첫 provenance. 이후 cap/reanchor/diff 진단이 붙더라도 어느 엔진 conf와
+    # reviewer tuple을 해소했는지가 stderr에 남는다.
+    print(
+        f"[external-review] config provenance: local_conf={conf_path} "
+        f"· resolved_profile={profile}",
+        file=sys.stderr,
+    )
+    deferred_warnings = resolution_warnings.getvalue()
+    if deferred_warnings:
+        print(deferred_warnings, end="", file=sys.stderr)
+    if divergence is not None:
+        print(
+            format_local_conf_divergence(
+                divergence, surface="external_review", cwd_label="호출 cwd",
+            ),
+            file=sys.stderr,
+        )
     cap_warning = harness_cap_advisory(
         execution_budget=_reviewer_execution_budget(reviewer_cmd, timeout)
     )
@@ -1557,6 +1766,7 @@ def main(argv: list[str] | None = None) -> int:
     result = run_review(
         prompt=prompt, reviewer_cmd=reviewer_cmd,
         timeout=timeout, output_dir=output_dir, idle_timeout=idle_timeout,
+        local_conf_path=conf_path, resolved_profile=profile,
     )
     print_summary(result, gate=args.gate, excluded=excluded)
 

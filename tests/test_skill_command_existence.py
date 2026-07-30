@@ -36,6 +36,8 @@ import re
 import shlex
 from pathlib import Path
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -258,7 +260,11 @@ def _iter_md_files() -> "list[Path]":
     for rel in _SCAN_DIRS:
         base = REPO / rel
         if base.is_dir():
-            files.extend(sorted(base.rglob("*.md")))
+            files.extend(
+                path
+                for path in repo_owned_paths(REPO, rel, mode=OWNED)
+                if path.suffix == ".md"
+            )
     return files
 
 

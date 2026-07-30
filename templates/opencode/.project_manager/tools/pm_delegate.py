@@ -1852,6 +1852,63 @@ def _prompt_targets_engine_code(prompt: str) -> bool:
     return False
 
 
+def _local_conf_path(repo: Path | None = None) -> Path:
+    """위임 profile을 해소한 엔진 사본 local.conf의 절대경로(provenance 단일 입력)."""
+    return ((repo if repo is not None else REPO) / ".project_manager" / "local.conf").resolve()
+
+
+def resolved_delegate_profile(
+    harness: str, model: str, reasoning: str | None,
+) -> str:
+    """stderr/raw가 공유하는 pm_delegate 해소 tuple."""
+    return f"(harness={harness}, model={model}, reasoning={reasoning})"
+
+
+def check_local_conf_divergence(
+    cwd: Path, conf: dict[str, str], role: str, tier: str, *,
+    cli_override: bool = False,
+) -> tuple[Path | None, object | None, object]:
+    """기존 `--cwd` repo축으로 이번 role/tier의 **유효 프로필** 분기를 검사한다.
+
+    external_review의 repo-root/conf 비교 seam을 재사용해 두 표면이 별도 판정 규칙을 갖지 않게 한다.
+    양쪽 모두 `resolve_delegate`를 거쳐 reasoning 미지정(None)까지 포함한 완전 tuple을 비교하므로,
+    한쪽만 키를 생략한 실제 수신 프로필 차이도 잡는다. 대상 역할/티어가 불완전하거나 잘못돼
+    해소되지 않으면 실행 가능한 비교 대상이 아니므로 skip한다. CLI 완전지정은 local.conf를 primary
+    프로필 입력으로 쓰지 않는 원자 override라 divergence만 명시 skip한다. 반환 target_repo는 이
+    skip들과 무관하게 write-target 재앵커에도 재사용한다.
+
+    범위 경계: fallback tuple은 이번 primary 수신 프로필이 아니고, `review_denylist_extra`와
+    `review_paths`는 external_review의 송신 *내용* 축이라 여기서 비교하지 않는다.
+    """
+    er = _load_external_review()
+    target_repo = er.repo_root_from_cwd(cwd)
+    if cli_override:
+        return target_repo, None, er
+
+    prefix = f"delegate.{role}" + (".hard" if tier == "hard" else "")
+
+    def effective_profile(candidate: dict[str, str]) -> dict[str, object]:
+        try:
+            harness, model, reasoning = resolve_delegate(
+                candidate, role, tier, None, None, None,
+            )
+        except DelegateError:
+            return {}
+        return {
+            f"{prefix}.harness": harness,
+            f"{prefix}.model": model,
+            f"{prefix}.reasoning": reasoning,
+        }
+
+    divergence = er.local_conf_divergence(
+        engine_repo=REPO,
+        engine_conf=conf,
+        target_repo=target_repo,
+        selector=effective_profile,
+    )
+    return target_repo, divergence, er
+
+
 def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | None:
     """write 역할이 PM 홈 cwd 에서 엔진 코드(import 사본)를 write 타깃하면 재앵커 대상 worktree 반환.
 
@@ -1904,6 +1961,9 @@ def _format_silence(silence_sec: float | None, idle_killed: bool) -> str:
 def _format_meta(argv: list[str], rc: int, harness: str, model: str,
                  elapsed: float, stdout: str, stderr: str, *,
                  attempt: str = "primary", primary_raw: str | None = None,
+                 reasoning: str | None = None,
+                 local_conf_path: Path | None = None,
+                 profile_source: str = "local-conf",
                  secret_scan_ack_digest: str | None = None,
                  secret_scan_ack_hits: tuple[PromptSecretHit, ...] = (),
                  fallback_suppressed_reason: str | None = None,
@@ -1921,6 +1981,12 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
         f"# model: {model}",
         f"# attempt: {attempt}",
     ]
+    if local_conf_path is not None:
+        header.extend([
+            f"# local_conf: {local_conf_path}",
+            f"# profile_source: {profile_source}",
+            f"# resolved_profile: {resolved_delegate_profile(harness, model, reasoning)}",
+        ])
     if primary_raw:
         header.append(f"# primary_raw: {primary_raw}")
     if fallback_suppressed_reason is not None:
@@ -2359,6 +2425,8 @@ def _execute_attempt(
     secret_scan_ack_digest: str | None = None,
     secret_scan_ack_hits: tuple[PromptSecretHit, ...] = (),
     suppress_fallback_for_ack: bool = False,
+    local_conf_path: Path | None = None,
+    profile_source: str = "local-conf",
 ) -> DelegateAttempt:
     """하네스 1회를 실행하고 raw를 박제한다.
 
@@ -2408,7 +2476,9 @@ def _execute_attempt(
         harness,
         _format_meta(
             argv, rc, harness, model, elapsed, stdout, stderr, attempt=attempt,
-            primary_raw=primary_raw, secret_scan_ack_digest=secret_scan_ack_digest,
+            primary_raw=primary_raw, reasoning=reasoning, local_conf_path=local_conf_path,
+            profile_source=profile_source,
+            secret_scan_ack_digest=secret_scan_ack_digest,
             secret_scan_ack_hits=secret_scan_ack_hits,
             fallback_suppressed_reason=fallback_suppressed_reason,
             silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
@@ -2895,6 +2965,8 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     conf = local_config()
     tier = args.tier if (args.role == "developer" and args.tier) else "normal"
     cwd = Path(args.cwd)
+    conf_path = _local_conf_path(REPO)
+    profile_source = "cli-override" if (args.harness and args.model) else "local-conf"
 
     # opt-in 게이트 (비-dry-run·기본 OFF·disabled = rc=3). **매핑 해소보다 앞** — 기본 OFF +
     # 매핑 없는 새 설치는 "매핑 미설정"(rc=1)이 아니라 disabled(rc=3)로 응답해야 한다(codex must-fix).
@@ -2902,7 +2974,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     if not args.dry_run and not _is_enabled(conf):
         print(
             "delegate 비활성 — 외부 하네스 송신이 꺼져 있습니다 "
-            f"(local.conf {DELEGATE_ENABLED_KEY}=false).\n"
+            f"(local.conf: {conf_path} · {DELEGATE_ENABLED_KEY}=false).\n"
             f"켜기: local.conf 에 `{DELEGATE_ENABLED_KEY}=true` 추가(외부 송신·과금 수용 계약). "
             "미리보기는 `--dry-run`.",
             file=sys.stderr,
@@ -2915,7 +2987,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             conf, args.role, tier, args.harness, args.model, args.reasoning)
         fallback = resolve_fallback(conf, args.role, tier)
     except DelegateError as exc:
-        print(f"오류: {exc}", file=sys.stderr)
+        print(f"오류: {exc}\n  · local.conf: {conf_path}", file=sys.stderr)
         return 1
 
     # 폴백 **비발동** 판정(loud skip·설정은 그대로 두고 이번 실행만 끈다). 설정 자체는 위에서 해소해
@@ -2945,6 +3017,13 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         )
         return 1
 
+    # 기존 `--cwd` 신뢰 repo축을 실행 엔진 REPO와 대조한다. 이번 실행이 해소한 role/tier의 같은
+    # 명시 키가 양쪽에 있고 값이 갈릴 때만 loud 경고한다. 다른 역할/키 부재는 per-clone 부분
+    # mapping이며 오배송 근거가 아니다. 승자는 결정적인 실행 엔진 conf이고 성공 경로 rc는 불변이다.
+    cwd_repo, divergence, er = check_local_conf_divergence(
+        cwd, conf, args.role, tier,
+        cli_override=(profile_source == "cli-override"),
+    )
     # prompt-file 존재 + 경로 자체 denylist(내용 읽기 전) + containment (repo 경계 안·유출 차단)
     prompt_file = Path(args.prompt_file)
     if not prompt_file.is_file():
@@ -2980,7 +3059,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     prompt = ROLE_PREAMBLES[args.role] + "\n\n" + task_text
 
     # 쓰기-타깃 axis 재앵커 게이트 (엔진 코드 write + PM 홈 cwd·dry-run 전 = 미리보기서 노출)
-    reanchor = check_write_target_reanchor(args.role, cwd, prompt)
+    # divergence와 같은 cwd repo 해소 입력을 기존 write-target 가드에도 재사용한다. 하위 디렉토리
+    # `--cwd`가 PM 홈 가드를 우회하는 별도 판정축을 만들지 않는다.
+    reanchor = check_write_target_reanchor(args.role, cwd_repo or cwd, prompt)
     if reanchor is not None:
         print(
             "오류: 엔진 코드(.project_manager/tools/) write 위임을 adopter#0 PM 홈 cwd 에서 실행했습니다 —\n"
@@ -2991,6 +3072,20 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             file=sys.stderr,
         )
         return 1
+
+    profile = resolved_delegate_profile(harness, model, reasoning)
+    print(
+        f"[pm-delegate] config provenance: local_conf={conf_path} "
+        f"· source={profile_source} · resolved_profile={profile}",
+        file=sys.stderr,
+    )
+    if divergence is not None:
+        print(
+            er.format_local_conf_divergence(
+                divergence, surface="pm_delegate", cwd_label="--cwd",
+            ),
+            file=sys.stderr,
+        )
 
     # 드라이버 argv 준비 (dry-run·실행 공용). opencode 는 실행 시 합성 프롬프트를 임시 파일로 --file
     # 전달하므로, dry-run argv 는 사용자 prompt-file 경로로 표시(실행 시 합성 파일로 대체).
@@ -3131,6 +3226,8 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             output_dir=output_dir, run_fn=_run,
             secret_scan_ack_digest=secret_scan_ack_digest,
             secret_scan_ack_hits=secret_scan_ack_hits,
+            local_conf_path=conf_path,
+            profile_source=profile_source,
         )
     finally:
         report_scope_audit(scope_audit, args.role)
@@ -3152,6 +3249,8 @@ def _execute_and_collect(
     secret_scan_ack_digest: str | None,
     secret_scan_ack_hits: tuple[PromptSecretHit, ...],
     fallback_timeout: int | None = None,
+    local_conf_path: Path | None = None,
+    profile_source: str = "local-conf",
 ) -> int:
     """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다.
 
@@ -3176,6 +3275,8 @@ def _execute_and_collect(
             secret_scan_ack_digest=secret_scan_ack_digest,
             secret_scan_ack_hits=secret_scan_ack_hits,
             suppress_fallback_for_ack=(fallback is not None),
+            local_conf_path=local_conf_path,
+            profile_source=profile_source,
         )
     except OSError as exc:
         print(f"오류: 위임 실행 준비/raw 박제 실패: {exc}", file=sys.stderr)
@@ -3240,6 +3341,8 @@ def _execute_and_collect(
                 primary_raw=str(raw_path),
                 secret_scan_ack_digest=secret_scan_ack_digest,
                 secret_scan_ack_hits=secret_scan_ack_hits,
+                local_conf_path=local_conf_path,
+                profile_source="local-conf",
             )
         except OSError as exc:
             print(

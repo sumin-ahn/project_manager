@@ -27,6 +27,8 @@ from pathlib import Path
 
 import yaml
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
+
 REPO = Path(__file__).resolve().parents[1]
 OPENCODE = REPO / "templates" / "opencode"
 AGENTS_MD = OPENCODE / "AGENTS.md"
@@ -373,7 +375,11 @@ def test_no_shipped_opencode_doc_points_to_removed_agents_anchors():
     """
     opencode_root = REPO / "templates" / "opencode"
     offenders = []
-    for p in sorted(opencode_root.rglob("*.md")):
+    for p in sorted(
+        path
+        for path in repo_owned_paths(REPO, opencode_root.relative_to(REPO), mode=OWNED)
+        if path.suffix == ".md"
+    ):
         if p.name == "AGENTS.lite.md":
             continue  # 코디네이터 명시 범위 밖 (자족 압축·인라인 §3)
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):

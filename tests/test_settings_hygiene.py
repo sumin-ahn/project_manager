@@ -20,6 +20,12 @@ from pathlib import Path
 
 import pytest
 
+from _repo_owned_inventory import (
+    OWNED,
+    RepoFilesFallbackWarning,
+    repo_owned_paths,
+)
+
 _REPO = Path(__file__).resolve().parent.parent
 _SHIP_TEMPLATE = _REPO / "templates" / "claude_code" / ".claude" / "settings.json"
 _OPENCODE_INSTRUCTIONS = (
@@ -201,7 +207,9 @@ def _long_engine_command_markdown(root: Path = _REPO) -> dict[Path, list[tuple[s
     Markdown이 두 엔진 커맨드를 담는 순간 자동 대상이 된다.
     """
     targets: dict[Path, list[tuple[str, int]]] = {}
-    for path in sorted(root.rglob("*.md")):
+    for path in repo_owned_paths(root, ".", mode=OWNED):
+        if path.suffix != ".md":
+            continue
         relative = path.relative_to(root)
         if relative.parts and relative.parts[0] in {".git", "tests"}:
             continue
@@ -250,7 +258,8 @@ def test_new_markdown_with_engine_command_is_automatically_classified(tmp_path):
         "```bash\npython3 .project_manager/tools/external_review.py --ticket T-9999\n```\n",
         encoding="utf-8",
     )
-    targets = _long_engine_command_markdown(tmp_path)
+    with pytest.warns(RepoFilesFallbackWarning, match="filesystem 전수 순회"):
+        targets = _long_engine_command_markdown(tmp_path)
     assert list(targets) == [new_doc]
     assert targets[new_doc][0][0] == "external_review.py"
 

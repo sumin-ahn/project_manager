@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import _repo_owned_inventory as test_inventory
 from _win_skip import _can_symlink
 
 
@@ -470,6 +471,28 @@ def test_tracked_only_seam_preserves_special_index_modes(
     assert got == [
         repo_files.RepoOwnedEntry(Path(f"ship/mode-{index_mode}"), index_mode)
     ]
+
+
+def test_test_inventory_adapter_preserves_git_entries_without_worktree_recheck(
+        tmp_path, monkeypatch):
+    """테스트 공용 어댑터도 삭제 tracked·symlink·gitlink를 조용히 드롭하지 않는다."""
+    entries = [
+        test_inventory.REPO_FILES.RepoOwnedEntry(Path("ship/deleted.txt"), "100644"),
+        test_inventory.REPO_FILES.RepoOwnedEntry(Path("ship/link"), "120000"),
+        test_inventory.REPO_FILES.RepoOwnedEntry(Path("ship/submodule"), "160000"),
+    ]
+    monkeypatch.setattr(
+        test_inventory.REPO_FILES,
+        "list_repo_owned_entries",
+        lambda *_args, **_kwargs: entries,
+    )
+
+    got = test_inventory.repo_owned_paths(
+        tmp_path, "ship", mode=test_inventory.TRACKED_ONLY
+    )
+
+    assert got == [tmp_path.resolve() / entry.path for entry in entries]
+    assert not any(path.exists() for path in got)
 
 
 def test_unmerged_index_path_stops_shipping_loudly(repo_files, tmp_path):

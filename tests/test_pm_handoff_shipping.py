@@ -24,13 +24,22 @@ timeout)는 폐지됐다 — 분류기(`_shipping_paths_in_pending_push`·`SHIPP
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from _repo_owned_inventory import TRACKED_ONLY, repo_owned_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_HANDOFF_PY = TOOLS / "pm_handoff.py"
+_GIT = shutil.which("git")
+requires_git_binary = pytest.mark.skipif(
+    _GIT is None,
+    reason="git 바이너리 부재 — 임시 repo TRACKED_ONLY sensitivity 실행 불가.",
+)
 
 
 def _load_module(name: str = "pm_handoff"):
@@ -495,25 +504,26 @@ _MANIFEST_GAP_PATHS = (
 )
 
 
-def _expand_manifest_shipping_paths():
+def _expand_manifest_shipping_paths(
+    repo: Path = REPO,
+    manifest: Path = ENGINE_MANIFEST,
+):
     """engine.manifest 의 출하 경로를 디스크로 전개한다 — 파일은 그대로, 디렉토리는 하위 파일.
 
-    한 줄 = 한 경로(repo 루트 기준·'#' 주석). 디렉토리 항목은 os.walk 로 실 파일 경로로
-    전개한다(gap_check.py·PM 36 실측과 동형). 반환: repo-rel 경로 set.
+    한 줄 = 한 경로(repo 루트 기준·'#' 주석). 디렉토리 항목은 출하 의미인 TRACKED_ONLY
+    repo-owned seam으로 전개한다. 반환: repo-rel 경로 set.
     """
-    import os
-
     paths: set[str] = set()
-    for line in ENGINE_MANIFEST.read_text(encoding="utf-8").splitlines():
+    for line in manifest.read_text(encoding="utf-8").splitlines():
         entry = line.strip()
         if not entry or entry.startswith("#"):
             continue
-        abs_p = REPO / entry
+        abs_p = repo / entry
         if abs_p.is_dir():
-            for dirpath, _dirnames, filenames in os.walk(abs_p):
-                for fn in filenames:
-                    rel = os.path.relpath(os.path.join(dirpath, fn), REPO)
-                    paths.add(rel.replace(os.sep, "/"))
+            paths.update(
+                path.relative_to(repo).as_posix()
+                for path in repo_owned_paths(repo, entry, mode=TRACKED_ONLY)
+            )
         else:
             paths.add(entry)
     return paths
@@ -539,6 +549,35 @@ def test_engine_manifest_subset_of_shipping_globs(hf):
         f"engine.manifest 출하 경로 {len(uncovered)}개가 SHIPPING_GLOBS 미커버 — "
         f"SHIPPING_GLOBS 갱신 필요(manifest↔globs drift): {uncovered}"
     )
+
+
+@requires_git_binary
+def test_manifest_shipping_inventory_ignores_untracked_inflow(tmp_path):
+    """TRACKED_ONLY 전환 후 manifest 출하 판정은 미추적 파일 유입에 흔들리지 않는다."""
+    subprocess.run(
+        ["git", "init", "-q"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    manifest = tmp_path / "engine.manifest"
+    manifest.write_text("ship\n", encoding="utf-8")
+    tracked = tmp_path / "ship" / "tracked.md"
+    tracked.parent.mkdir()
+    tracked.write_text("tracked\n", encoding="utf-8")
+    untracked = tracked.with_name("local-only.md")
+    untracked.write_text("untracked\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "engine.manifest", "ship/tracked.md"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    assert _expand_manifest_shipping_paths(tmp_path, manifest) == {
+        "ship/tracked.md"
+    }
+    assert untracked.is_file(), "미추적 유입 sensitivity fixture가 실 디스크에 있어야 함"
 
 
 def test_sensitivity_manifest_conformance_guard_is_load_bearing(hf):
