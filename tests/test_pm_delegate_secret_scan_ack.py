@@ -404,7 +404,7 @@ def test_missing_digest_fails_closed_without_python_assert(
     assert fake.calls == []
 
 
-def test_fallback_raw_marks_ack_as_bound_to_primary_without_reapproval(
+def test_ack_suppresses_infrastructure_fallback_loudly_in_stderr_and_raw(
     pd, monkeypatch, tmp_path, capsys
 ):
     prompt = tmp_path / "prompt.md"
@@ -443,25 +443,77 @@ def test_fallback_raw_marks_ack_as_bound_to_primary_without_reapproval(
 
     assert _run(
         pd, monkeypatch, [*argv, "--secret-scan-ack", digest], fake, conf=conf
-    ) == 0
-    capsys.readouterr()
+    ) == 1
+    captured = capsys.readouterr()
 
-    assert [call["harness"] for call in fake.calls] == ["codex", "claude"]
+    assert [call["harness"] for call in fake.calls] == ["codex"]
+    assert len(fake.results) == 1, "폴백 결과가 소비되면 ack 억제가 발화하지 않은 것"
+    assert pd.ACK_FALLBACK_SUPPRESSION_REASON in captured.err
     raw_texts = [
         path.read_text(encoding="utf-8")
         for path in outdir.glob("pm_delegate_*.txt")
     ]
-    fallback_raw = next(
-        text for text in raw_texts
-        if "# attempt: fallback-from-codex:" in text
-    )
-    assert f"# secret_scan_ack: explicit override · digest={digest}" in fallback_raw
+    assert len(raw_texts) == 1
+    primary_raw = raw_texts[0]
+    assert "# attempt: primary" in primary_raw
     assert (
-        "# secret_scan_ack_binding: 결속=primary <codex:gpt-x> "
-        "· 이 attempt 는 폴백(재승인 없음)"
-    ) in fallback_raw
-    assert "# harness: claude" in fallback_raw
-    assert "# model: opus" in fallback_raw
+        f"# fallback_suppressed: {pd.ACK_FALLBACK_SUPPRESSION_REASON}"
+        in primary_raw
+    )
+    assert f"# secret_scan_ack: explicit override · digest={digest}" in primary_raw
+    assert "# harness: codex" in primary_raw
+    assert "# model: gpt-x" in primary_raw
+    assert all("# attempt: fallback-from-" not in text for text in raw_texts)
+
+
+def test_same_infrastructure_failure_without_ack_still_falls_back(
+    pd, monkeypatch, tmp_path, capsys
+):
+    """ack 유무만 경계를 가른다 — 탐지 없는 정상 실행의 기존 폴백은 그대로다."""
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("정상 프롬프트를 처리하라.", encoding="utf-8")
+    outdir = tmp_path / "raw"
+    argv = _base_argv(prompt, tmp_path, outdir)
+    conf = _conf(
+        **{
+            "delegate.developer.fallback.harness": "claude",
+            "delegate.developer.fallback.model": "opus",
+        }
+    )
+    fake = _SequenceRun(
+        {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "error code: rate_limit_exceeded",
+            "timed_out": False,
+        },
+        {
+            "returncode": 0,
+            "stdout": json.dumps(
+                {
+                    "type": "result",
+                    "result": "FALLBACK-DONE",
+                    "session_id": "s-t0496",
+                }
+            ),
+            "stderr": "",
+            "timed_out": False,
+        },
+    )
+
+    assert _run(pd, monkeypatch, argv, fake, conf=conf) == 0
+    captured = capsys.readouterr()
+
+    assert [call["harness"] for call in fake.calls] == ["codex", "claude"]
+    assert "FALLBACK-DONE" in captured.out
+    assert pd.ACK_FALLBACK_SUPPRESSION_REASON not in captured.err
+    raw_texts = [
+        path.read_text(encoding="utf-8")
+        for path in outdir.glob("pm_delegate_*.txt")
+    ]
+    assert len(raw_texts) == 2
+    assert any("# attempt: fallback-from-codex:" in text for text in raw_texts)
+    assert all("# fallback_suppressed:" not in text for text in raw_texts)
 
 
 def test_exhaustive_hits_deduplicate_cap_display_and_split_raw_audit_lines(
@@ -507,9 +559,15 @@ def test_dry_run_previews_exhaustive_scan_and_bound_digest(
     task = "예시 ~/.aws/credentials 를 확인하라."
     prompt.write_text(task, encoding="utf-8")
     fake = _FakeRun()
+    conf = _conf(
+        **{
+            "delegate.developer.fallback.harness": "claude",
+            "delegate.developer.fallback.model": "opus",
+        }
+    )
 
     assert _run(
-        pd, monkeypatch, [*_base_argv(prompt, tmp_path), "--dry-run"], fake
+        pd, monkeypatch, [*_base_argv(prompt, tmp_path), "--dry-run"], fake, conf=conf
     ) == 0
     out = capsys.readouterr().out
     expected = pd.secret_scan_prompt_digest(
@@ -519,4 +577,29 @@ def test_dry_run_previews_exhaustive_scan_and_bound_digest(
     assert "시크릿 스캔: 탐지 1건" in out
     assert "탐지 1/1: 경로축 판정" in out
     assert f"승인 digest 미리보기: {expected}" in out
+    assert "단, --secret-scan-ack 로 통과하면 비발동" in out
+    assert "--secret-scan-ack 통과 시 폴백 비발동이라 이 최악값은 과대" in out
     assert fake.calls == []
+
+
+def test_dry_run_without_secret_detection_keeps_fallback_preview_unchanged(
+    pd, monkeypatch, tmp_path, capsys
+):
+    """ack 경계 표기는 탐지된 미리보기에만 붙고, 기존 비탐지 출력은 그대로다."""
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("정상 프롬프트를 처리하라.", encoding="utf-8")
+    conf = _conf(
+        **{
+            "delegate.developer.fallback.harness": "claude",
+            "delegate.developer.fallback.model": "opus",
+        }
+    )
+
+    assert _run(
+        pd, monkeypatch, [*_base_argv(prompt, tmp_path), "--dry-run"], _FakeRun(), conf=conf
+    ) == 0
+    out = capsys.readouterr().out
+
+    assert "폴백: harness=claude model=opus reasoning=None (인프라 실패에만 1회)" in out
+    assert "폴백 시간 예산: 최악 primary 3610s + 폴백 3610s = 7220s (2차 폴백 없음)" in out
+    assert "--secret-scan-ack 로 통과하면 비발동" not in out

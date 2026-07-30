@@ -213,11 +213,21 @@ _CARD_MODE_CLI = {
 # 위임 지침의 전달 채널이다(카드=운영 진실 표면 — 정적 doc 이 아니라 엔진 발화라
 # pm_update 갱신이 도달). 하네스 감지는 codex shell tool env 실측 마커로 기계 판정한다
 # (`CODEX_THREAD_ID`=<uuid>·`CODEX_CI`=1). env
-# 미설정 시 절 부재=정상(다른 하네스 카드 무변·회귀 0). ⚠ 대화형 TUI 세션의 env 마커 존치는
-# 미실측(exec 경로만 확인) — 라이브 항목이 확인하고 불일치 시 predicate 를 그 티켓에서 보강.
+# 미설정 시 절 부재=정상(다른 하네스 카드 무변·회귀 0). pm_delegate 의 2026년 7월 29일 라이브
+# 실측은 Codex shell tool(exec) 경로에서 두 키가 모두 set 임을 확인했다. 단, 대화형 TUI 세션의
+# 마커 존치는 여전히 미실측이며 자동화로 검증 불가하다(`domain/codex-adapter.md`의 TUI 한계).
+# 따라서 그 경로에서 판정 불가해 절이 없더라도 정상·무해하다.
+# 이 독립 CLI에서 pm_delegate를 deep-import하면 새 엔진 rev 검증 경계가 필요하므로 codex 축의
+# 작은 선언을 복제한다. tests/test_pm_bootstrap_card.py가 pm_delegate의 동명 축과 동일성을 기계
+# 단언해 두 판정이 서로 갈라지지 않게 한다.
+_CODEX_HARNESS_SESSION_MARKERS: tuple[str, ...] = (
+    "CODEX_THREAD_ID", "CODEX_CI",
+)
+
+
 def _is_codex_harness() -> bool:
     """codex 하네스면 True — `CODEX_THREAD_ID` 또는 `CODEX_CI` env 마커(기계 판정·추측 아님)."""
-    return bool(os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI"))
+    return any(os.environ.get(marker) for marker in _CODEX_HARNESS_SESSION_MARKERS)
 
 
 # codex 절 본문(정적 진입 doc 대체). 카드 렌더 끝에 감지 시 append 된다 —

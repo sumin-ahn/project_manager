@@ -748,6 +748,193 @@ def test_both_excludes_node_modules(pm_import, tmp_path):
     assert not (dest / ".opencode" / "node_modules").exists()
 
 
+def test_import_ships_only_tracked_template_files_and_keeps_tracked_gitignore(
+        pm_import, tmp_path):
+    """출하 e2e: 임의 미추적 파일은 목적지 0, ignore되지만 추적된 .gitignore는 정상 출하."""
+    source = tmp_path / "source"
+    template = source / "templates" / "opencode"
+    shutil.copytree(REPO / "templates" / "opencode", template)
+    _track_source_tree(source)
+
+    injected_rel = Path(".opencode/arbitrary-machine-local.json")
+    (template / injected_rel).write_text('{"machine": "local"}\n', encoding="utf-8")
+    tracked_gitignore = template / ".opencode" / ".gitignore"
+    assert tracked_gitignore.is_file()
+    tracked = subprocess.run(
+        ["git", "-C", str(source), "ls-files", "--error-unmatch",
+         "templates/opencode/.opencode/.gitignore"],
+        capture_output=True,
+        text=True,
+    )
+    assert tracked.returncode == 0, tracked.stderr
+
+    dest = tmp_path / "tracked-only-adopter"
+    rc = pm_import.main([
+        "--new", str(dest), "--from", str(source), "--harness", "opencode",
+        "--name", "Tracked Only",
+    ])
+
+    assert rc == 0
+    assert not (dest / injected_rel).exists(), "미추적 template 파일이 adopter로 출하됨"
+    assert (dest / ".opencode" / ".gitignore").read_bytes() == tracked_gitignore.read_bytes()
+
+
+@requires_symlink
+def test_import_skips_tracked_template_symlink_without_copying_external_payload(
+        pm_import, tmp_path):
+    """추적 symlink는 외부 machine-local 대상을 따라 복사하지 않고 제외 경로를 경고한다."""
+    source = tmp_path / "source"
+    template = source / "templates" / "opencode"
+    shutil.copytree(REPO / "templates" / "opencode", template)
+    external_payload = tmp_path / "machine-local-secret.json"
+    marker = b"T0499-R2-MACHINE-LOCAL-PAYLOAD-MUST-NOT-SHIP"
+    external_payload.write_bytes(marker)
+    injected_rel = Path(".opencode/machine-local-link.json")
+    (template / injected_rel).symlink_to(external_payload)
+    _track_source_tree(source)
+
+    dest = tmp_path / "symlink-safe-adopter"
+    with pytest.warns(
+        pm_import.SkippedTemplateShippingEntryWarning,
+        match=r"symlink\(index mode 120000.*\.opencode/machine-local-link\.json",
+    ):
+        rc = pm_import.main([
+            "--new", str(dest), "--from", str(source), "--harness", "opencode",
+            "--name", "Symlink Safe",
+        ])
+
+    assert rc == 0
+    shipped_link = dest / injected_rel
+    assert not shipped_link.exists()
+    assert not shipped_link.is_symlink()
+    payload_hits = _grep_token_files(dest, marker.decode("ascii"))
+    assert payload_hits == [], f"외부 symlink 대상 내용이 adopter에 복사됨: {payload_hits}"
+
+
+@pytest.mark.parametrize(
+    ("index_mode", "warning_fragment"),
+    [
+        ("120000", "symlink"),
+        ("160000", "gitlink"),
+    ],
+)
+def test_iter_source_files_rejects_special_index_modes_even_if_materialized_regular(
+        pm_import, tmp_path, monkeypatch, index_mode, warning_fragment):
+    """working tree 형상이 일반 파일이어도 index mode 120000/160000이면 출하하지 않는다."""
+    template = tmp_path / "template"
+    template.mkdir()
+    relative = Path(f"mode-{index_mode}")
+    (template / relative).write_text("must not ship\n", encoding="utf-8")
+    real_repo_files = pm_import._load_repo_owned_files()
+
+    class StubRepoFiles:
+        TRACKED_ONLY = real_repo_files.TRACKED_ONLY
+
+        @staticmethod
+        def list_repo_owned_entries(_checkout, _subtree, *, mode):
+            assert mode == real_repo_files.TRACKED_ONLY
+            return [real_repo_files.RepoOwnedEntry(relative, index_mode)]
+
+    monkeypatch.setattr(pm_import, "_load_repo_owned_files", lambda: StubRepoFiles)
+
+    with pytest.warns(
+        pm_import.SkippedTemplateShippingEntryWarning,
+        match=rf"{warning_fragment}.*mode-{index_mode}",
+    ):
+        got = list(pm_import._iter_source_files(template))
+
+    assert got == []
+
+
+def test_iter_source_files_non_git_fallback_is_loud(pm_import, tmp_path):
+    """비-git 배포 사본은 복사를 계속하되 tracked 보장 소실을 공용 seam 경고로 표면화."""
+    template = tmp_path / "unpacked-template"
+    template.mkdir()
+    (template / "kept.txt").write_text("kept\n", encoding="utf-8")
+    repo_files = pm_import._load_repo_owned_files()
+
+    with pytest.warns(repo_files.RepoFilesFallbackWarning, match="filesystem 전수 순회"):
+        got = list(pm_import._iter_source_files(template))
+
+    assert [(rel.as_posix(), path.name) for rel, path in got] == [
+        ("kept.txt", "kept.txt"),
+    ]
+
+
+@requires_symlink
+def test_iter_source_files_non_git_fallback_lstat_skips_symlink_loudly(
+        pm_import, tmp_path):
+    """mode 없는 filesystem 폴백도 lstat으로 symlink를 거르고 폴백·제외를 모두 알린다."""
+    template = tmp_path / "unpacked-template"
+    template.mkdir()
+    external_payload = tmp_path / "outside.txt"
+    external_payload.write_text("outside\n", encoding="utf-8")
+    (template / "outside-link.txt").symlink_to(external_payload)
+    repo_files = pm_import._load_repo_owned_files()
+
+    with pytest.warns(Warning) as caught:
+        got = list(pm_import._iter_source_files(template))
+
+    assert got == []
+    assert any(
+        issubclass(item.category, repo_files.RepoFilesFallbackWarning)
+        and "filesystem 전수 순회" in str(item.message)
+        for item in caught
+    )
+    assert any(
+        issubclass(item.category, pm_import.SkippedTemplateShippingEntryWarning)
+        and "filesystem 폴백 symlink(lstat" in str(item.message)
+        and "outside-link.txt" in str(item.message)
+        for item in caught
+    )
+
+
+def test_iter_source_files_empty_tracked_inventory_keeps_seam_warning(
+        pm_import, tmp_path):
+    """빈 tracked 인벤토리는 새 오류로 승격하지 않고 공용 seam의 기존 warning을 보존한다."""
+    template = tmp_path / "empty-tracked-template"
+    template.mkdir()
+    (template / "untracked-local.txt").write_text("local\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(template), "init", "-q"], check=True)
+    repo_files = pm_import._load_repo_owned_files()
+
+    with pytest.warns(
+        repo_files.RepoFilesEmptyWarning,
+        match="tracked_only 열거가 빈 결과",
+    ):
+        got = list(pm_import._iter_source_files(template))
+
+    assert got == []
+
+
+def test_tracked_source_inventory_still_applies_policy_exclusions(
+        pm_import, tmp_path):
+    """tracked-only 위에도 재설치물·stale bytecode·내부 README 정책 제외는 유지."""
+    template = tmp_path / "tracked-template"
+    (template / "node_modules").mkdir(parents=True)
+    (template / "__pycache__").mkdir()
+    (template / "node_modules" / "pkg.js").write_text("tracked dependency\n", encoding="utf-8")
+    (template / "__pycache__" / "stale.pyc").write_bytes(b"tracked stale bytecode")
+    (template / "README.md").write_text("framework-only docs\n", encoding="utf-8")
+    (template / "kept.txt").write_text("ship me\n", encoding="utf-8")
+    _track_source_tree(template)
+
+    got = {
+        rel.as_posix()
+        for rel, _path in pm_import._iter_source_files(template)
+    }
+
+    assert got == {"kept.txt"}
+    # `.git`은 git 출하 인벤토리에 들어올 수 없지만, fill의 명시 copied_relpaths 소비자는
+    # 호출자가 준 범위를 다시 거른다. 공유 상수에서 빼면 VCS 메타를 텍스트 스캔하게 된다.
+    explicit_scope = {Path(".git/config"), Path("kept.txt")}
+    scanned = {
+        rel.as_posix()
+        for rel, _path in pm_import._iter_copied_files(template, explicit_scope)
+    }
+    assert scanned == {"kept.txt"}
+
+
 # ── ②b --harness codex: 세 번째 하네스 스캐폴드 (ADR-0070 D5·T-0403) ───────────
 
 def test_harness_maps_include_codex(pm_import):

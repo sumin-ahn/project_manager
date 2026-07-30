@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import inspect
 import re
 import shlex
 from pathlib import Path
@@ -60,13 +61,13 @@ def _hermetic_engine_anchor(bootstrap, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_codex_env(monkeypatch):
+def _no_codex_env(bootstrap, monkeypatch):
     """codex 하네스 env 마커(`CODEX_THREAD_ID`/`CODEX_CI`)를 기본 제거 — 이 모듈 전 테스트를 ambient
     codex 세션과 무관하게 결정론화한다(codex 절 부재가 기본·기존 카드 회귀 무변). codex 절 출현을
     검증하는 테스트는 본문에서 명시 `monkeypatch.setenv` 로 opt-in 한다(그 setenv 가 이 fixture 의
     delenv 뒤에 실행돼 우선)."""
-    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
-    monkeypatch.delenv("CODEX_CI", raising=False)
+    for marker in bootstrap._CODEX_HARNESS_SESSION_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
 
 
 @pytest.fixture(scope="module")
@@ -101,6 +102,21 @@ def _card(bootstrap, identity):
     """PmBootstrap 인스턴스 없이 카드 헬퍼만 호출한다(순수 함수·I/O 0)."""
     inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
     return inst._build_command_card_markdown(identity)
+
+
+def test_codex_harness_marker_table_matches_delegate_source(bootstrap):
+    """부트스트랩 복제 선언은 위임 엔진의 codex 축 단일 출처와 정확히 같아야 한다."""
+    delegate = _load("pm_delegate")
+    assert bootstrap._CODEX_HARNESS_SESSION_MARKERS == \
+        delegate._HARNESS_SESSION_MARKERS["codex"]
+
+
+def test_no_codex_env_fixture_iterates_bootstrap_marker_declaration():
+    """ambient env 정리는 literal 사본이 아니라 bootstrap 선언을 순회해야 한다."""
+    source = inspect.getsource(_no_codex_env)
+    assert "for marker in bootstrap._CODEX_HARNESS_SESSION_MARKERS:" in source
+    assert 'delenv("CODEX_THREAD_ID"' not in source
+    assert 'delenv("CODEX_CI"' not in source
 
 
 # ── 1. 정체성 실값 보간 — placeholder 부재 (DoD ①) ────────────────────────────

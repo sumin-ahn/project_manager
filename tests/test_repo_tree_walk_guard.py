@@ -24,12 +24,6 @@ class WalkException:
 # 함께 지운다. 키 = (repo-relative 파일, 함수, 호출 종류, 첫 인자 AST).
 MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
     (
-        ".project_manager/tools/pm_import.py",
-        "_iter_source_files",
-        "rglob",
-        "'*'",
-    ): WalkException("T-0499가 template 출하 열거를 tracked_only seam으로 전환할 때 제거"),
-    (
         "tests/test_pm_render.py",
         "test_adapter_surfaces_no_machine_variant_tokens",
         "rglob",

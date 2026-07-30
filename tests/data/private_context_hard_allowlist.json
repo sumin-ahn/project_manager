@@ -433,7 +433,7 @@
     },
     {
       "path": ".project_manager/tools/pm_bootstrap.py",
-      "line": 686,
+      "line": 696,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -441,7 +441,7 @@
     },
     {
       "path": ".project_manager/tools/pm_delegate.py",
-      "line": 1376,
+      "line": 1380,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -969,7 +969,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/pm_bootstrap.py",
-      "line": 686,
+      "line": 696,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -977,7 +977,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
-      "line": 1376,
+      "line": 1380,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -1705,7 +1705,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/pm_bootstrap.py",
-      "line": 686,
+      "line": 696,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -1713,7 +1713,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/pm_delegate.py",
-      "line": 1376,
+      "line": 1380,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -2497,7 +2497,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/pm_bootstrap.py",
-      "line": 686,
+      "line": 696,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -2505,7 +2505,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
-      "line": 1376,
+      "line": 1380,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",

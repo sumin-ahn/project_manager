@@ -66,9 +66,11 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Callable
 
@@ -359,6 +361,7 @@ def _dest_sed_exclude(dest_root: Path) -> frozenset:
     단계엔 dest 에 실재한다. 부재/실패는 SED_EXCLUDE_FLOOR(fail-soft)."""
     return _derive_sed_exclude_relpaths(dest_root / ".project_manager" / "engine.manifest")
 
+# tracked-only 출하 목록 위에서도 복사 정책과 fill 스캔의 공통 방어를 보존하려고 유지한다.
 # 복사/스캔 제외 디렉토리명 (무겁고 재설치 대상 / stale 산출물 / VCS 메타).
 #   node_modules — opencode 의존성(재설치 대상). __pycache__ — stale 바이트코드(.pyc).
 #   .git — VCS 메타(템플릿엔 없어 복사목록엔 안 끼지만, fill 폴백 전체 스캔이 대형 repo
@@ -917,6 +920,10 @@ def _free_backup_path(backup: Path) -> Path:
 LITE_SUFFIX = ".lite.md"
 
 
+class SkippedTemplateShippingEntryWarning(RuntimeWarning):
+    """pm-import가 byte-copy할 수 없는 템플릿 엔트리를 명시적으로 제외했다는 신호."""
+
+
 def _full_relpath_for_lite(rel: Path) -> Path:
     """lite 변종 relpath `X.lite.md` → full 진입 relpath `X.md` (이름 치환).
 
@@ -927,8 +934,80 @@ def _full_relpath_for_lite(rel: Path) -> Path:
     return rel.with_name(base + ".md")
 
 
+def _shippable_template_files(repo_files, template_root: Path) -> list[Path]:
+    """repo 출하 엔트리를 링크를 추종하지 않는 일반 파일 목록으로 좁힌다.
+
+    git 인벤토리는 index mode가 진실이므로 일반 파일 mode만 허용한다. 비-git 폴백은 mode를
+    얻을 수 없어 그 경로에서만 lstat()으로 등가 판정한다. 두 판정을 한 엔트리에 함께 적용하면
+    index와 working tree 중 어느 쪽이 출하 계약인지 갈리므로 의도적으로 섞지 않는다.
+    """
+    accepted: list[Path] = []
+    skipped: dict[str, list[str]] = {
+        "symlink(index mode 120000, 링크 대상 내용을 복사하지 않음)": [],
+        "gitlink(index mode 160000, 파일 byte-copy 대상 아님)": [],
+        "지원하지 않는 git index mode": [],
+        "filesystem 폴백 symlink(lstat, 링크 대상 내용을 복사하지 않음)": [],
+        "filesystem 폴백 일반 파일이 아닌 엔트리(lstat)": [],
+        "filesystem 폴백 lstat 실패": [],
+    }
+    entries = repo_files.list_repo_owned_entries(
+        template_root, ".", mode=repo_files.TRACKED_ONLY
+    )
+    for entry in entries:
+        rel = entry.path
+        source = template_root / rel
+        index_mode = entry.index_mode
+        if index_mode in {"100644", "100755"}:
+            accepted.append(source)
+            continue
+        if index_mode == "120000":
+            skipped["symlink(index mode 120000, 링크 대상 내용을 복사하지 않음)"].append(
+                rel.as_posix()
+            )
+            continue
+        if index_mode == "160000":
+            skipped["gitlink(index mode 160000, 파일 byte-copy 대상 아님)"].append(
+                rel.as_posix()
+            )
+            continue
+        if index_mode is not None:
+            skipped["지원하지 않는 git index mode"].append(
+                f"{rel.as_posix()} ({index_mode})"
+            )
+            continue
+
+        # filesystem 폴백에는 index mode가 없으므로 여기서만 링크 비추종 lstat 판정을 쓴다.
+        try:
+            fallback_mode = source.lstat().st_mode
+        except OSError as exc:
+            skipped["filesystem 폴백 lstat 실패"].append(
+                f"{rel.as_posix()} ({exc})"
+            )
+            continue
+        if stat.S_ISREG(fallback_mode):
+            accepted.append(source)
+        elif stat.S_ISLNK(fallback_mode):
+            skipped[
+                "filesystem 폴백 symlink(lstat, 링크 대상 내용을 복사하지 않음)"
+            ].append(rel.as_posix())
+        else:
+            skipped["filesystem 폴백 일반 파일이 아닌 엔트리(lstat)"].append(
+                rel.as_posix()
+            )
+
+    for reason, paths in skipped.items():
+        if paths:
+            warnings.warn(
+                f"pm-import 템플릿 출하 엔트리 {len(paths)}건 제외 — {reason}: "
+                + ", ".join(paths),
+                SkippedTemplateShippingEntryWarning,
+                stacklevel=2,
+            )
+    return accepted
+
+
 def _iter_source_files(template_root: Path, weight: str = "full"):
-    """template_root 하위 파일을 (dst relpath, 절대경로)로. node_modules 등 제외.
+    """template_root의 repo 추적 파일을 (dst relpath, 절대경로)로. 정책 경로 추가 제외.
 
     weight 관례 (`*.lite.md` = `*.md` 의 lite 변종):
       - full(기본): 모든 `*.lite.md` 를 복사 대상에서 *제외*한다(lite 변종이 full 배포에
@@ -938,12 +1017,18 @@ def _iter_source_files(template_root: Path, weight: str = "full"):
         도 그대로는 복사 제외(dst 에 `*.lite.md` 잔존 금지).
     yield 하는 relpath 는 *dst* 기준이므로 lite 모드에선 `X.md` 로 치환돼 나간다 —
     placeholder 치환(copied_relpaths 기준)·both 충돌 판정이 이 dst relpath 위에서 돈다.
+
+    출하 인벤토리는 공용 repo_owned_files seam의 TRACKED_ONLY 의미를 쓴다. 따라서 유지보수자
+    checkout의 미추적·machine-local 파일은 복사 후보가 아니며, 비-git 소스에서 filesystem
+    폴백할 때는 seam이 RepoFilesFallbackWarning으로 추적 보장 소실을 loud하게 알린다.
+    COPY_EXCLUDE_*는 추적 여부와 별개인 출하 정책(node_modules·stale bytecode·내부 README)과
+    fill 스캔 공통 방어를 위해 그 위에 계속 적용한다.
     """
+    repo_files = _load_repo_owned_files()
     files = [
         path
-        for path in sorted(template_root.rglob("*"))
-        if path.is_file()
-        and not any(
+        for path in _shippable_template_files(repo_files, template_root)
+        if not any(
             part in COPY_EXCLUDE_DIR_NAMES
             for part in path.relative_to(template_root).parts
         )

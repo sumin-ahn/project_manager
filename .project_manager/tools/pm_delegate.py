@@ -16,8 +16,8 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
                   worktree 재앵커 fail-loud(external_review `_pm_home_reanchor` 재사용).
   · 시크릿 통제  — 합성 프롬프트 denylist 스캔 + 전 탐지를 본 사람의 건별 CLI ack + subprocess env
                   allowlist 정제 + prompt-file containment. ack digest는 해소된 primary
-                  harness:model과 합성 전문에 결속한다. 단, ack 통과 뒤 primary 인프라 실패로 명시
-                  설정된 loud 폴백이 발동하면 타 하네스 수신자가 추가될 수 있다.
+                  harness:model과 합성 전문에 결속한다. ack으로 차단을 통과한 실행은 primary 인프라
+                  실패여도 폴백하지 않는다 — 다른 수신자는 명시 재실행과 별도 승인 판단이 필요하다.
   · 결과 수집    — 최종 reply 텍스트만 stdout·raw+메타는 O_EXCL·0600·PID/UUID 파일 박제.
   · loud 폴백    — 역할/티어별 명시 fallback tuple 이 있을 때만 인프라 실패를 양성 분류해 1회 실행하고
                   실행 provenance 를 reply/raw 에 남김(미설정·비-인프라 실패는 기존 fail-loud).
@@ -168,6 +168,10 @@ DELEGATE_IDLE_TIMEOUT_KEY = "delegate_idle_timeout"
 # 표시한다 — 사람이 재실행 커맨드로 옮길 만큼 짧지만, 이 값은 인증 secret이 아니라 "방금 검토한
 # 프롬프트와 현재 프롬프트가 같은가"를 묶는 변경 감지 토큰이다. conf 키는 의도적으로 두지 않는다.
 SECRET_SCAN_ACK_HEX_LENGTH = 24
+ACK_FALLBACK_SUPPRESSION_REASON = (
+    "시크릿 스캔 승인이 붙은 실행이라 폴백을 끕니다 — 폴백 수신자는 재승인이 필요합니다. "
+    "`--harness/--model` 로 명시 재실행하거나 승인 없이 통과하도록 프롬프트를 정리하십시오."
+)
 # 사람 검토용 stderr/dry-run 목록은 이 수까지만 표시한다. 승인 뒤 raw 감사에는 중복 제거된 전 hit를
 # 한 줄씩 모두 남겨, 대량 탐지가 터미널과 단일 메타 헤더를 비대하게 만들지 않으면서도 감사 완결성을
 # 보존한다.
@@ -1200,8 +1204,8 @@ def secret_scan_prompt_digest(prompt: str, harness: str, model: str) -> str:
     prompt-file 본문을 합친 UTF-8 바이트 전체에 `harness:model`을 함께 결속한다. 도메인 구분자와
     NUL 필드 구분으로 접합 모호성을 없앤다. 출력은 CLI 전사용 96bit hex다.
 
-    이 결속은 primary 수신자를 바꾸는 ack 재사용을 막는다. ack 통과 후 명시 설정된 loud 인프라 폴백이
-    발동해 타 하네스로 갈 수 있는 잔여 창은 수용한다(모듈 docstring의 시크릿 통제 한계)."""
+    이 결속은 primary 수신자를 바꾸는 ack 재사용을 막는다. ack으로 차단을 통과한 실행은 인프라
+    실패여도 자동 폴백을 억제한다 — 타 하네스 수신자는 명시 재실행으로 별도 승인받아야 한다."""
     material = b"\0".join((
         b"pm_delegate.secret-scan-ack.v2",
         harness.encode("utf-8"),
@@ -1902,7 +1906,7 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
                  attempt: str = "primary", primary_raw: str | None = None,
                  secret_scan_ack_digest: str | None = None,
                  secret_scan_ack_hits: tuple[PromptSecretHit, ...] = (),
-                 secret_scan_ack_primary_recipient: str | None = None,
+                 fallback_suppressed_reason: str | None = None,
                  silence_sec: float | None = None,
                  idle_killed: bool = False) -> str:
     """raw 박제 본문 — 메타(argv·rc·모델·소요·침묵) 헤더 + 원문.
@@ -1919,17 +1923,13 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
     ]
     if primary_raw:
         header.append(f"# primary_raw: {primary_raw}")
+    if fallback_suppressed_reason is not None:
+        header.append(f"# fallback_suppressed: {fallback_suppressed_reason}")
     if secret_scan_ack_digest:
         header.append(
             f"# secret_scan_ack: explicit override · digest={secret_scan_ack_digest}"
             f" · 전 탐지={len(secret_scan_ack_hits)}"
         )
-        if attempt != "primary" and secret_scan_ack_primary_recipient is not None:
-            header.append(
-                "# secret_scan_ack_binding: "
-                f"결속=primary <{secret_scan_ack_primary_recipient}> "
-                "· 이 attempt 는 폴백(재승인 없음)"
-            )
         header.extend(
             f"# secret_scan_ack_hit: {index}/{len(secret_scan_ack_hits)} "
             f"· {hit.axis}축 판정 '{hit.pattern}' · 발췌 <{hit.excerpt}>"
@@ -2358,7 +2358,7 @@ def _execute_attempt(
     primary_raw: str | None = None,
     secret_scan_ack_digest: str | None = None,
     secret_scan_ack_hits: tuple[PromptSecretHit, ...] = (),
-    secret_scan_ack_primary_recipient: str | None = None,
+    suppress_fallback_for_ack: bool = False,
 ) -> DelegateAttempt:
     """하네스 1회를 실행하고 raw를 박제한다.
 
@@ -2395,13 +2395,22 @@ def _execute_attempt(
     rc = result.get("returncode", 1)
     stdout = result.get("stdout", "")
     stderr = result.get("stderr", "")
+    fallback_suppressed_reason = (
+        ACK_FALLBACK_SUPPRESSION_REASON
+        if (
+            suppress_fallback_for_ack
+            and secret_scan_ack_digest is not None
+            and classify_infrastructure_failure(result) is not None
+        )
+        else None
+    )
     raw_path = save_raw_output(
         harness,
         _format_meta(
             argv, rc, harness, model, elapsed, stdout, stderr, attempt=attempt,
             primary_raw=primary_raw, secret_scan_ack_digest=secret_scan_ack_digest,
             secret_scan_ack_hits=secret_scan_ack_hits,
-            secret_scan_ack_primary_recipient=secret_scan_ack_primary_recipient,
+            fallback_suppressed_reason=fallback_suppressed_reason,
             silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
             idle_killed=bool(result.get(RUN_RESULT_IDLE_KILLED, False)),
         ),
@@ -3027,11 +3036,14 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             print(
                 "폴백: "
                 f"harness={fallback_harness} model={fallback_model} "
-                f"reasoning={fallback_reasoning} (인프라 실패에만 1회)"
+                f"reasoning={fallback_reasoning} (인프라 실패에만 1회"
+                f"{'· 단, --secret-scan-ack 로 통과하면 비발동' if secret_hits else ''})"
             )
             print(
                 f"폴백 시간 예산: 최악 primary {primary_budget}s + 폴백 {fallback_budget}s = "
-                f"{primary_budget + fallback_budget}s (2차 폴백 없음{note})"
+                f"{primary_budget + fallback_budget}s ("
+                f"{'--secret-scan-ack 통과 시 폴백 비발동이라 이 최악값은 과대· ' if secret_hits else ''}"
+                f"2차 폴백 없음{note})"
             )
             print(
                 "  (실행+정리 예산 — 부모 wait/pipe drain을 startup 재시도마다 산입; "
@@ -3163,7 +3175,7 @@ def _execute_and_collect(
             attempt="primary",
             secret_scan_ack_digest=secret_scan_ack_digest,
             secret_scan_ack_hits=secret_scan_ack_hits,
-            secret_scan_ack_primary_recipient=f"{harness}:{model}",
+            suppress_fallback_for_ack=(fallback is not None),
         )
     except OSError as exc:
         print(f"오류: 위임 실행 준비/raw 박제 실패: {exc}", file=sys.stderr)
@@ -3177,6 +3189,18 @@ def _execute_and_collect(
     stdout = result.get("stdout", "")
     timed_out = result.get("timed_out", False)
     failure_class = classify_infrastructure_failure(result)
+
+    if (
+        failure_class is not None
+        and fallback is not None
+        and secret_scan_ack_digest is not None
+    ):
+        print(
+            f"폴백 비발동: 인프라 실패({failure_class}) — "
+            f"{ACK_FALLBACK_SUPPRESSION_REASON}",
+            file=sys.stderr,
+        )
+        fallback = None
 
     if failure_class is not None and fallback is None and fallback_skip is not None:
         # 설정은 있으나 이번 실행에선 폴백을 끈다 — 조용히 지나가지 않는다(loud skip).
@@ -3216,7 +3240,6 @@ def _execute_and_collect(
                 primary_raw=str(raw_path),
                 secret_scan_ack_digest=secret_scan_ack_digest,
                 secret_scan_ack_hits=secret_scan_ack_hits,
-                secret_scan_ack_primary_recipient=f"{harness}:{model}",
             )
         except OSError as exc:
             print(
