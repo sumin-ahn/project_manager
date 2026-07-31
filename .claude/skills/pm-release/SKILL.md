@@ -38,7 +38,7 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record -
 - 릴리즈 전 codex 교차검증(`external_review`)의 `--paths`도 같은 readonly 슬롯 worktree를 가리킨다.
 - `PM_ORCH_LIVE_RELEASE=1`이 없으면 release wave가 skip되어 수집 N=0, record가 fail한다.
 - board 출력 `release N/<pin> green ✓`의 N==pin을 눈으로 확인해 보고한다. 다르면 마커 소실·wrong-cwd이므로 fail로 릴리즈를 막는다.
-- live tier는 **release 단일**·dual-harness(claude+opencode) 실측(회사 기준 버전·격리 `--dir`·glm-5.2)이다.
+- live tier는 **release 단일**이고 **3 하네스 실측**이다 — claude·opencode 는 wave 전 구간(부트스트랩~핸드오프·multi-repo·multi-user), codex 는 위임 완주와 relay 마커 정체성 2건으로 커버 깊이가 얕다. opencode 는 회사 기준 버전·격리 `--dir`·glm-5.2 로 돈다.
 
 ### 3. CHANGELOG → main push → tag → GitHub Release
 
@@ -89,7 +89,7 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record -
 ## 불변·보고
 
 - 공개 main push는 대화 승인 + 보호훅/livegate 이중 안전을 유지한다(private만 자율). `PM_ALLOW_PROTECTED_PUSH=1`·`PM_SKIP_LIVE_GATE=1`은 PM이 스스로 쓰지 않는다(사용자 명시 OK의 escape hatch이며 환경 문제는 우회 사유가 아니다).
-- livegate record는 `pytest -m release`(dual-harness)를 실측·기록하고 보호훅은 push HEAD의 green을 `livegate check`로 재확인한다(record=기록·check=소비).
+- livegate record는 `pytest -m release`(claude·opencode·codex 3 하네스)를 실측·기록하고 보호훅은 push HEAD의 green을 `livegate check`로 재확인한다(record=기록·check=소비).
 - PM은 각 단계 stdout, 특히 livegate 수집 N과 `gh release view` 결과를 읽어 보고한다.
 - main push 실행·CHANGELOG 문안·GitHub Release 노트는 PM/사용자가 확정·승인한다.
 - backbone: `board.py livegate record`/`livegate check` · `pm_update`([[pm-update]]) · `git`/`gh`; 라이브 하네스 테스트는 `tests/test_pm_release_live.py`(); 보호훅은 보호 브랜치 push 차단 + `livegate check` green을 요구한다(pm_role §릴리즈 절차).
