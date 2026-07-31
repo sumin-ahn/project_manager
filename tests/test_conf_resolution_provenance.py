@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,15 @@ def _delegate_conf(reasoning: str = "medium", *, include_developer: bool = False
             "delegate.developer.harness": "codex",
             "delegate.developer.model": "gpt-5.6-sol",
         })
+    return conf
+
+
+def _with_researcher_fallback(conf: dict[str, str], model: str = "opus"):
+    conf.update({
+        "delegate.researcher.fallback.harness": "claude",
+        "delegate.researcher.fallback.model": model,
+        "delegate.researcher.fallback.reasoning": "high",
+    })
     return conf
 
 
@@ -223,6 +233,141 @@ def test_delegate_difference_in_unused_role_is_quiet(
     assert "delegate.researcher.reasoning" not in err
 
 
+def test_delegate_effective_fallback_difference_warns_only_when_active(
+        delegate, monkeypatch, tmp_path, capsys):
+    """실제 발동 가능한 폴백의 해소 tuple 차이는 경고하되 실행을 막지 않는다."""
+    engine_conf = _with_researcher_fallback(_delegate_conf(), "opus")
+    target_conf = _with_researcher_fallback(_delegate_conf(), "sonnet")
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", target_conf)
+
+    assert _delegate_dry_run(delegate, monkeypatch, engine, target, engine_conf) == 0
+    err = capsys.readouterr().err
+    assert "local.conf 프로필 분기" in err
+    assert "delegate.researcher.fallback.model: engine='opus', cwd='sonnet'" in err
+
+
+def test_delegate_target_fallback_equal_to_its_primary_is_not_compared(
+        delegate, monkeypatch, tmp_path, capsys):
+    """대상 fallback이 자기 primary와 같은 비발동 tuple이면 엔진 fallback과 거짓 비교하지 않는다."""
+    engine_conf = _with_researcher_fallback(_delegate_conf(), "opus")
+    target_conf = _delegate_conf()
+    target_conf.update({
+        "delegate.researcher.fallback.harness": "codex",
+        "delegate.researcher.fallback.model": "gpt-5.6-terra",
+        # reasoning만 달라도 main 규칙상 같은 채널/모델 재타격이라 비발동이다.
+        "delegate.researcher.fallback.reasoning": "high",
+    })
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", target_conf)
+
+    assert _delegate_dry_run(delegate, monkeypatch, engine, target, engine_conf) == 0
+    err = capsys.readouterr().err
+    assert "local.conf 프로필 분기" not in err
+    assert "fallback." not in err
+
+
+def test_delegate_same_effective_fallback_is_quiet(
+        delegate, monkeypatch, tmp_path, capsys):
+    conf = _with_researcher_fallback(_delegate_conf(), "opus")
+    engine = _repo(tmp_path / "engine", conf)
+    target = _repo(tmp_path / "target", dict(conf))
+
+    assert _delegate_dry_run(delegate, monkeypatch, engine, target, conf) == 0
+    assert "local.conf 프로필 분기" not in capsys.readouterr().err
+
+
+def test_delegate_engine_only_fallback_is_quiet(
+        delegate, monkeypatch, tmp_path, capsys):
+    """한쪽 conf만의 fallback은 흔한 per-clone 부분 mapping이라 비교 경고를 만들지 않는다."""
+    engine_conf = _with_researcher_fallback(_delegate_conf(), "opus")
+    target_conf = _delegate_conf()
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", target_conf)
+
+    assert _delegate_dry_run(delegate, monkeypatch, engine, target, engine_conf) == 0
+    err = capsys.readouterr().err
+    assert "local.conf 프로필 분기" not in err
+    assert "fallback." not in err
+
+
+def test_delegate_target_only_fallback_is_quiet_for_unconfigured_execution(
+        delegate, monkeypatch, tmp_path, capsys):
+    """실행 엔진에 폴백이 없는 실행은 대상의 미사용 폴백 차이를 판정하지 않는다."""
+    engine_conf = _delegate_conf()
+    target_conf = _with_researcher_fallback(_delegate_conf(), "opus")
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", target_conf)
+
+    assert _delegate_dry_run(delegate, monkeypatch, engine, target, engine_conf) == 0
+    err = capsys.readouterr().err
+    assert "local.conf 프로필 분기" not in err
+    assert "fallback." not in err
+
+
+def test_delegate_cli_override_suppresses_configured_fallback_divergence(
+        delegate, monkeypatch, tmp_path, capsys):
+    engine_conf = _with_researcher_fallback(_delegate_conf(), "opus")
+    target_conf = _with_researcher_fallback(_delegate_conf("low"), "sonnet")
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", target_conf)
+
+    assert _delegate_dry_run(
+        delegate, monkeypatch, engine, target, engine_conf,
+        cli_override=("codex", "gpt-5.6-sol", "high"),
+    ) == 0
+    err = capsys.readouterr().err
+    assert "local.conf 프로필 분기" not in err
+    assert "source=cli-override" in err
+
+
+def test_delegate_valid_secret_ack_suppresses_unreachable_fallback_warning(
+        delegate, monkeypatch, tmp_path, capsys):
+    """유효 ack가 fallback을 확정 억제한 뒤에는 양쪽 fallback 값이 달라도 경고하지 않는다."""
+    engine_conf = _with_researcher_fallback(_delegate_conf(), "opus")
+    target_conf = _with_researcher_fallback(_delegate_conf(), "sonnet")
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", target_conf)
+    task = "예시 ~/.aws/credentials 를 확인하라."
+    prompt_file = target / "prompt.md"
+    prompt_file.write_text(task, encoding="utf-8")
+    output_dir = tmp_path / "raw"
+    monkeypatch.setattr(delegate, "REPO", engine)
+    monkeypatch.setattr(delegate, "local_config", lambda: dict(engine_conf))
+    monkeypatch.setattr(delegate, "_cwd_in_git_repo", lambda *args, **kwargs: True)
+    monkeypatch.setattr(delegate, "_resolved_adapter_directories", lambda: ())
+    monkeypatch.setattr(delegate, "begin_scope_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(delegate, "report_scope_audit", lambda *args, **kwargs: None)
+    prompt = delegate._role_preamble("researcher", ()) + "\n\n" + task
+    digest = delegate.secret_scan_prompt_digest(
+        prompt, "codex", "gpt-5.6-terra",
+    )
+
+    def _run(*args, **kwargs):
+        stdout = "\n".join([
+            json.dumps({"type": "thread.started", "thread_id": "t"}),
+            json.dumps({
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "DONE"},
+            }),
+        ])
+        return {
+            "returncode": 0, "stdout": stdout, "stderr": "", "timed_out": False,
+        }
+
+    assert delegate.main([
+        "--role", "researcher",
+        "--prompt-file", str(prompt_file),
+        "--cwd", str(target),
+        "--output-dir", str(output_dir),
+        "--secret-scan-ack", digest,
+    ], run_fn=_run) == 0
+    err = capsys.readouterr().err
+    assert "시크릿 스캔 차단을 명시 승인으로 통과" in err
+    assert "local.conf 프로필 분기" not in err
+    assert "fallback.model" not in err
+
+
 def test_delegate_primary_raw_records_conf_and_profile(
         delegate, monkeypatch, tmp_path, capsys):
     conf = _delegate_conf("medium")
@@ -371,6 +516,250 @@ def test_external_review_missing_target_conf_is_quiet(
 
     assert external.main(["--paths", "x.py", "--dry-run"]) == 0
     assert "local.conf 프로필 분기" not in capsys.readouterr().err
+
+
+def test_external_review_dangling_target_conf_symlink_fails_closed(
+        external, monkeypatch, tmp_path, capsys):
+    """dangling local.conf는 부재가 아니라 판독 실패이며 대상 denylist 미확인 송신을 차단한다."""
+    engine_conf = {"external_review_enabled": "true"}
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", None)
+    target_conf = target / ".project_manager" / "local.conf"
+    target_conf.symlink_to(target / "missing-target.conf")
+    _wire_external(external, monkeypatch, engine, target, engine_conf)
+    extracted = []
+    monkeypatch.setattr(
+        external, "extract_diff", lambda *args, **kwargs: extracted.append(True),
+    )
+
+    assert external.main(["--paths", "x.py"]) == 1
+    err = capsys.readouterr().err
+    assert "대상 local.conf 읽기 실패" in err
+    assert "외부 송신 전에 중단" in err
+    assert str(target_conf) in err
+    assert extracted == []
+
+
+@pytest.mark.parametrize("failure_kind", ["invalid-utf8", "not-a-file"])
+def test_external_review_existing_unreadable_target_conf_fails_closed(
+        external, monkeypatch, tmp_path, capsys, failure_kind):
+    """대상 conf의 정상 부재와 달리, 존재하지만 읽기/해석 불가면 diff 추출 전에 중단한다."""
+    engine_conf = {"external_review_enabled": "true"}
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", None)
+    target_conf = target / ".project_manager" / "local.conf"
+    if failure_kind == "invalid-utf8":
+        target_conf.write_bytes(b"\xff\xfe\x00")
+    else:
+        target_conf.mkdir()
+    _wire_external(external, monkeypatch, engine, target, engine_conf)
+    extracted = []
+    monkeypatch.setattr(
+        external, "extract_diff", lambda *args, **kwargs: extracted.append(True),
+    )
+
+    assert external.main(["--paths", "x.py"]) == 1
+    err = capsys.readouterr().err
+    assert "대상 local.conf 읽기 실패" in err
+    assert "외부 송신 전에 중단" in err
+    assert str(target_conf) in err
+    assert extracted == []
+
+
+def test_delegate_target_conf_read_error_is_caught_without_traceback(
+        delegate, monkeypatch, tmp_path, capsys):
+    """raise/catch가 같은 external_review 모듈 클래스를 써 판독 오류를 rc=1 진단으로 닫는다."""
+    engine_conf = _delegate_conf()
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", None)
+    target_conf = target / ".project_manager" / "local.conf"
+    target_conf.write_bytes(b"\xff\xfe\x00")
+
+    assert _delegate_dry_run(delegate, monkeypatch, engine, target, engine_conf) == 1
+    err = capsys.readouterr().err
+    assert "대상 local.conf 읽기 실패" in err
+    assert "외부 송신 전에 중단" in err
+    assert str(target_conf) in err
+    assert "Traceback" not in err
+
+
+def test_external_review_target_only_denylist_warns_and_is_union_applied(
+        external, monkeypatch, tmp_path, capsys):
+    """대상 보호 선언을 경고만 하고 무시하지 않고 실제 diff denylist에 합친다."""
+    engine_conf = {
+        "external_review_enabled": "true",
+        "review_denylist_extra": "*.engine-vault",
+    }
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", {
+        "review_denylist_extra": "*.target-private",
+    })
+    _wire_external(external, monkeypatch, engine, target, engine_conf)
+    seen = {}
+
+    def _extract(*args, **kwargs):
+        seen["denylist"] = kwargs["denylist"]
+        return "diff --git a/x.py b/x.py\n-old\n+new\n", []
+
+    monkeypatch.setattr(external, "extract_diff", _extract)
+    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
+    err = capsys.readouterr().err
+    assert "review_denylist_extra" in err
+    assert "cwd-only=('*.target-private',)" in err
+    assert "합집합 적용" in err
+    assert "*.engine-vault" in seen["denylist"]
+    assert "*.target-private" in seen["denylist"]
+    assert external._matching_denylist_pattern(
+        "config.target-private", seen["denylist"],
+    ) == "*.target-private"
+
+
+def test_external_review_same_denylist_is_quiet(
+        external, monkeypatch, tmp_path, capsys):
+    conf = {
+        "external_review_enabled": "true",
+        "review_denylist_extra": "*.private *.vault",
+    }
+    engine = _repo(tmp_path / "engine", conf)
+    target = _repo(tmp_path / "target", dict(conf))
+    _wire_external(external, monkeypatch, engine, target, conf)
+
+    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
+    assert "local.conf 프로필 분기" not in capsys.readouterr().err
+
+
+def test_external_review_engine_denylist_superset_is_safe_and_quiet(
+        external, monkeypatch, tmp_path, capsys):
+    """엔진이 대상 선언을 이미 모두 포함하면 값 문자열이 달라도 안전 방향이라 무소음이다."""
+    engine_conf = {
+        "external_review_enabled": "true",
+        "review_denylist_extra": "*.private *.vault",
+    }
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", {
+        "review_denylist_extra": "*.private",
+    })
+    _wire_external(external, monkeypatch, engine, target, engine_conf)
+
+    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
+    assert "local.conf 프로필 분기" not in capsys.readouterr().err
+
+
+def test_external_review_effective_review_paths_difference_warns_when_used(
+        external, monkeypatch, tmp_path, capsys):
+    engine_conf = {
+        "external_review_enabled": "true",
+        "review_paths": "src tests",
+    }
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", {
+        "review_paths": "src docs",
+    })
+    _wire_external(external, monkeypatch, engine, target, engine_conf)
+
+    assert external.main(["--dry-run"]) == 0
+    err = capsys.readouterr().err
+    assert "review_paths: engine=('src', 'tests'), cwd=('docs', 'src')" in err
+    assert "review_paths의 이번 범위는 엔진 conf가 정했습니다" in err
+    assert "두 conf를 맞추거나" not in err
+    assert "차단하지 않고 계속합니다" in err
+
+
+def test_external_review_same_effective_review_path_set_is_quiet(
+        external, monkeypatch, tmp_path, capsys):
+    """순서·중복과 src/src/./src 표기만 다르면 같은 Git 경로 집합이라 무소음이다."""
+    engine_conf = {
+        "external_review_enabled": "true",
+        "review_paths": "src tests src/",
+    }
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", {
+        "review_paths": "tests/,./src",
+    })
+    _wire_external(external, monkeypatch, engine, target, engine_conf)
+
+    assert external.main(["--dry-run"]) == 0
+    assert "local.conf 프로필 분기" not in capsys.readouterr().err
+
+
+def test_external_review_target_denylist_explicit_path_uses_real_filter_and_blocks(
+        external, monkeypatch, tmp_path, capsys):
+    """대상 전용 합집합 패턴은 실 extract_diff 필터를 거쳐 명시 --paths를 fail-loud 차단한다."""
+    engine_conf = {
+        "external_review_enabled": "true",
+        "review_denylist_extra": "*.engine-vault",
+    }
+    engine = tmp_path / "engine"
+    (engine / ".project_manager").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(engine)], check=True)
+    protected = engine / "config.target-private"
+    protected.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(engine), "add", protected.name], check=True)
+    subprocess.run([
+        "git", "-C", str(engine),
+        "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "-qm", "baseline",
+    ], check=True)
+    protected.write_text("after\n", encoding="utf-8")
+    target = _repo(tmp_path / "target", {
+        "review_denylist_extra": "*.target-private",
+    })
+    monkeypatch.setattr(external, "REPO", engine)
+    monkeypatch.setattr(external, "local_config", lambda: dict(engine_conf))
+    monkeypatch.setattr(external, "_pm_home_reanchor", lambda anchor: None)
+    monkeypatch.chdir(target)
+
+    assert external.main([
+        "--paths", protected.name, "--dry-run",
+    ]) == 1
+    captured = capsys.readouterr()
+    assert "--paths 로 명시 지정한 경로" in captured.err
+    assert protected.name in captured.err
+    assert "*.target-private" in captured.err
+    assert "외부 호출 생략" not in captured.out
+
+
+def test_external_review_explicit_paths_suppresses_unused_review_paths_difference(
+        external, monkeypatch, tmp_path, capsys):
+    engine_conf = {
+        "external_review_enabled": "true",
+        "review_paths": "src tests",
+    }
+    engine = _repo(tmp_path / "engine", engine_conf)
+    target = _repo(tmp_path / "target", {
+        "review_paths": "private docs",
+    })
+    _wire_external(external, monkeypatch, engine, target, engine_conf)
+
+    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
+    err = capsys.readouterr().err
+    assert "review_paths:" not in err
+    assert "local.conf 프로필 분기" not in err
+
+
+@pytest.mark.parametrize("target_kind", ["none", "same", "missing-conf"])
+def test_review_content_new_axis_preserves_structural_quiet_cases(
+        external, tmp_path, target_kind):
+    engine_conf = {
+        "review_denylist_extra": "*.engine",
+        "review_paths": "src tests",
+    }
+    engine = _repo(tmp_path / "engine", engine_conf)
+    if target_kind == "none":
+        target = None
+    elif target_kind == "same":
+        target = engine
+    else:
+        target = _repo(tmp_path / "target", None)
+
+    resolution = external.resolve_review_content_conf(
+        engine_repo=engine,
+        engine_conf=engine_conf,
+        target_repo=target,
+        include_review_paths=True,
+    )
+    assert resolution.divergence is None
+    assert resolution.denylist == external._denylist_patterns(engine_conf)
 
 
 def test_external_review_actual_execution_keeps_same_provenance(

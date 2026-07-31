@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -90,6 +91,7 @@ class FakePool:
     def __init__(self, hooks_dir: Path, *, ok: bool = True, events: list | None = None,
                  repos_dir: Path | None = None):
         self.REPO_HOOKS_DIR = hooks_dir
+        self.PROTECTED_GATE_CONTRACT_NAME = "gate-contract"
         self.calls: list[tuple[str, list[str]]] = []
         self.events = events if events is not None else []
         self._ok = ok
@@ -98,12 +100,16 @@ class FakePool:
     def bare_repo_path(self, repo):
         return self._repos_dir / f"{repo}.git"
 
-    def install_protected_hook(self, repo, protected, *, git_runner=None):
+    def install_protected_hook(
+            self, repo, protected, *, gate_mode, test_cmd, git_runner=None):
         self.calls.append((repo, list(protected)))
+        self.last_gate = (gate_mode, test_cmd)
         self.events.append("sidecar")
         if not self._ok:
             return False
         write_sidecar(self.REPO_HOOKS_DIR, repo, protected)
+        contract = self.REPO_HOOKS_DIR / repo / self.PROTECTED_GATE_CONTRACT_NAME
+        contract.write_text(f"{gate_mode}\n{test_cmd}\n", encoding="utf-8")
         return True
 
 
@@ -137,6 +143,15 @@ def write_sidecar(hooks_dir: Path, repo: str, branches) -> Path:
     path = hooks_dir / repo / "protected"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(f"{b}\n" for b in branches), encoding="utf-8")
+    return path
+
+
+def write_gate_contract(
+        hooks_dir: Path, repo: str, mode: str, test_cmd: str) -> Path:
+    """bootstrap drift fixture의 원자 증거 계약 sidecar를 시드한다."""
+    path = hooks_dir / repo / "gate-contract"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{mode}\n{test_cmd}\n", encoding="utf-8")
     return path
 
 
@@ -487,13 +502,14 @@ def test_bootstrap_reconciles_when_sidecar_fresh_but_unwired(bootstrap, tmp_path
     """
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main"])
+    write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = FakePool(hooks)
     inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]), pool=pool)
     monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: False)
     assert inst._reconcile_protected_sidecar("svc") is True
     assert pool.calls == [("svc", ["main"])]
     err = capsys.readouterr().err
-    assert "배선돼 있지 않아" in err
+    assert "core.hooksPath` 배선" in err
 
 
 def test_bootstrap_silent_when_content_and_wiring_both_ok(bootstrap, tmp_path,
@@ -501,6 +517,7 @@ def test_bootstrap_silent_when_content_and_wiring_both_ok(bootstrap, tmp_path,
     """두 축 모두 정합이면 여전히 subprocess 0·침묵(정상 상태에서 잡음 0)."""
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main"])
+    write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = FakePool(hooks)
     inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]), pool=pool)
     monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: True)
@@ -513,6 +530,7 @@ def test_bootstrap_wiring_unknown_keeps_current_behaviour(bootstrap, tmp_path,
     """배선 판정이 None("모름")이면 드리프트로 치지 않는다 — 오탐 0(내용 비교만)."""
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main"])
+    write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = FakePool(hooks)
     inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]), pool=pool)
     monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: None)
@@ -840,10 +858,12 @@ class _ReconcileBoard:
     기본은 명시 설정(그 목록), `cell=""` 면 기본값 폴백 상태, `cell=None` 이면 미등록(행 없음).
     """
 
-    def __init__(self, protected, *, repo="svc", cell=_CELL_DEFAULT):
+    def __init__(self, protected, *, repo="svc", cell=_CELL_DEFAULT,
+                 test_cmd: str = "pytest -q"):
         self._protected = list(protected)
         self._repo = repo
         self._cell = ",".join(self._protected) if cell is _CELL_DEFAULT else cell
+        self._test_cmd = test_cmd
 
     def _repo_protected(self, repo):
         return list(self._protected)
@@ -851,7 +871,11 @@ class _ReconcileBoard:
     def _parse_areas(self):
         if self._cell is None:
             return [], []                      # 미등록(행 없음)
-        return [], [{"repo": self._repo, "protected": self._cell}]
+        return [], [{
+            "repo": self._repo,
+            "protected": self._cell,
+            "test_cmd": self._test_cmd,
+        }]
 
     def _pm_home_worktree_misanchor(self, anchor, **_kw):
         return None
@@ -874,6 +898,12 @@ def _reconciler(bootstrap, tmp_path, *, board, pool):
     )
 
 
+def _marked_skew(message="injected engine rev skew"):
+    exc = RuntimeError(message)
+    exc._engine_rev_skew = True
+    return exc
+
+
 def test_bootstrap_reconciles_sidecar_on_drift(bootstrap, tmp_path, capsys):
     """sidecar 가 areas 와 다르면 재설치한다 — *다른 clone* 의 변경을 세션 시작에 흡수."""
     hooks = tmp_path / "hooks"
@@ -886,6 +916,65 @@ def test_bootstrap_reconciles_sidecar_on_drift(bootstrap, tmp_path, capsys):
     assert (hooks / "svc" / "protected").read_text(encoding="utf-8").split() == [
         "main", "release"]
     assert "정합화" in capsys.readouterr().err
+
+
+def test_bootstrap_reinstall_preserves_resolved_self_test_contract(
+        bootstrap, tmp_path, monkeypatch):
+    """실 pm_config resolver 경유 재설치가 self-test/go 계약을 release/pytest로 되돌리지 않는다."""
+    home = tmp_path / "adopter-home"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(
+        f"upstream={tmp_path / 'framework-source'}\ntest_cmd=go test ./...\n",
+        encoding="utf-8",
+    )
+    pm_config = _load("pm_config")
+    pm_config.REPO = home
+    original_load_tool = bootstrap._load_tool
+    monkeypatch.setattr(
+        bootstrap, "_load_tool",
+        lambda name: pm_config if name == "pm_config" else original_load_tool(name),
+    )
+
+    hooks = tmp_path / "hooks"
+    write_sidecar(hooks, "svc", ["main"])
+    pool = FakePool(hooks)
+    inst = _reconciler(
+        bootstrap, tmp_path,
+        board=_ReconcileBoard(["main", "release"], test_cmd="go test ./..."),
+        pool=pool)
+
+    assert inst._reconcile_protected_sidecar("svc") is True
+    assert pool.last_gate == ("self-test", "go test ./...")
+
+
+def test_bootstrap_reconciles_when_only_resolved_test_cmd_drifts(
+        bootstrap, tmp_path, monkeypatch):
+    """A1 — 보호목록은 같고 areas test_cmd만 바뀌어도 즉시 훅 계약을 갱신한다."""
+    home = tmp_path / "adopter-contract-drift"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(f"upstream={tmp_path / 'framework-source'}\n", encoding="utf-8")
+    pm_config = _load("pm_config")
+    pm_config.REPO = home
+    original_load_tool = bootstrap._load_tool
+    monkeypatch.setattr(
+        bootstrap, "_load_tool",
+        lambda name: pm_config if name == "pm_config" else original_load_tool(name),
+    )
+
+    hooks = tmp_path / "hooks"
+    write_sidecar(hooks, "svc", ["main"])
+    write_gate_contract(hooks, "svc", "self-test", "old-test-command")
+    pool = FakePool(hooks)
+    board = _ReconcileBoard(["main"], test_cmd="go test ./...")
+    inst = _reconciler(bootstrap, tmp_path, board=board, pool=pool)
+
+    assert inst._reconcile_protected_sidecar("svc") is True
+    assert pool.calls == [("svc", ["main"])]
+    assert pool.last_gate == ("self-test", "go test ./...")
+    assert (hooks / "svc" / "gate-contract").read_text(encoding="utf-8") == (
+        "self-test\ngo test ./...\n")
 
 
 def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(
@@ -914,25 +1003,39 @@ def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(
 
 
 def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys):
-    """drift 확정 후 재설치가 raise 해도 조용하지 않다 — 같은 실패 안내(fail-soft ≠ 침묵)."""
+    """중앙 설치 깔때기가 raw 예외를 False로 강등해도 실패 안내는 loud하다."""
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main"])
 
     class _Boom(FakePool):
-        def install_protected_hook(self, repo, protected, *, git_runner=None):
+        def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd, git_runner=None):
             raise RuntimeError("hooksPath 설정 실패")
 
     inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["release"]),
                        pool=_Boom(hooks))
     assert inst._reconcile_protected_sidecar("svc") is False
     err = capsys.readouterr().err
-    assert "정합화하지 못했습니다" in err and "RuntimeError" in err
+    assert "정합화하지 못했습니다" in err
+    assert "RuntimeError: hooksPath 설정 실패" in err
 
 
-def test_bootstrap_no_reconcile_when_in_sync(bootstrap, tmp_path, capsys):
+def test_bootstrap_no_reconcile_when_in_sync(
+        bootstrap, tmp_path, monkeypatch, capsys):
     """정합이면 아무것도 하지 않는다 — subprocess 0(매 부트스트랩이 git config 를 안 때린다)."""
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main", "release"])
+    home = tmp_path / "in-sync-home"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(f"upstream={tmp_path / 'external-framework'}\n", encoding="utf-8")
+    pm_config = _load("pm_config")
+    pm_config.REPO = home
+    original_load_tool = bootstrap._load_tool
+    monkeypatch.setattr(
+        bootstrap, "_load_tool",
+        lambda name: pm_config if name == "pm_config" else original_load_tool(name),
+    )
+    write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = FakePool(hooks)
     inst = _reconciler(bootstrap, tmp_path,
                        board=_ReconcileBoard(["main", "release"]), pool=pool)
@@ -971,12 +1074,67 @@ def test_bootstrap_reconcile_failsoft_on_install_exception(bootstrap, tmp_path):
     write_sidecar(hooks, "svc", ["main"])
 
     class _Boom(FakePool):
-        def install_protected_hook(self, repo, protected, *, git_runner=None):
+        def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd, git_runner=None):
             raise RuntimeError("boom")
 
     inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["release"]),
                        pool=_Boom(hooks))
     assert inst._reconcile_protected_sidecar("svc") is False
+
+
+def test_bootstrap_reconcile_comparison_rethrows_marked_engine_rev_skew(
+        bootstrap, tmp_path):
+    """A1 — drift 비교의 넓은 fail-soft는 marked sibling skew를 False로 삼키지 않는다."""
+    hooks = tmp_path / "hooks"
+    write_sidecar(hooks, "svc", ["main"])
+    skew = _marked_skew()
+
+    class _SkewBoard(_ReconcileBoard):
+        def _repo_protected(self, repo):
+            raise skew
+
+    inst = _reconciler(
+        bootstrap, tmp_path, board=_SkewBoard(["main"]), pool=FakePool(hooks))
+    with pytest.raises(RuntimeError, match="engine rev skew"):
+        inst._reconcile_protected_sidecar("svc")
+
+
+def test_bootstrap_reconcile_comparison_keeps_ordinary_error_fail_soft(
+        bootstrap, tmp_path):
+    """A1/B4 경계 — 같은 비교 catch의 일반 parser 오류는 여전히 False다."""
+    hooks = tmp_path / "hooks"
+    write_sidecar(hooks, "svc", ["main"])
+
+    class _BoomBoard(_ReconcileBoard):
+        def _repo_protected(self, repo):
+            raise RuntimeError("ordinary parser failure")
+
+    inst = _reconciler(
+        bootstrap, tmp_path, board=_BoomBoard(["main"]), pool=FakePool(hooks))
+    assert inst._reconcile_protected_sidecar("svc") is False
+
+
+def test_bootstrap_reconcile_install_rethrows_marked_engine_rev_skew(
+        bootstrap, tmp_path, monkeypatch):
+    """A1 — drift 확정 뒤 중앙 installer의 marked skew도 loud 실패 문구로 강등하지 않는다."""
+    hooks = tmp_path / "hooks"
+    write_sidecar(hooks, "svc", ["main"])
+    pool = FakePool(hooks)
+    skew = _marked_skew()
+
+    fake_pm_config = SimpleNamespace(
+        _protected_push_gate_config=lambda *_args, **_kwargs: ("self-test", "pytest -q"),
+        _install_protected_hook=lambda *_args, **_kwargs: (_ for _ in ()).throw(skew),
+        protected_hook_install_failure_reason=lambda _repo: None,
+    )
+    monkeypatch.setattr(
+        bootstrap, "_load_tool",
+        lambda name: fake_pm_config if name == "pm_config" else None,
+    )
+    inst = _reconciler(
+        bootstrap, tmp_path, board=_ReconcileBoard(["release"]), pool=pool)
+    with pytest.raises(RuntimeError, match="engine rev skew"):
+        inst._reconcile_protected_sidecar("svc")
 
 
 def test_phase0_invokes_sidecar_reconcile(bootstrap, tmp_path, monkeypatch):

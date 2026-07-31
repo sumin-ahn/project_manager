@@ -60,6 +60,11 @@ REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / ".project_manager" / "engine.manifest"
 DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 
+
+def _is_engine_rev_skew(exc) -> bool:
+    """stamped sibling 로더가 표시한 사본 불일치인가."""
+    return getattr(exc, "_engine_rev_skew", False)
+
 # manifest 의 render 태그 () — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
 RENDER_TAG = "@render"
 # manifest 의 target-owned 태그 — path 행 끝 `  @target-owned` 면 그 경로는 타깃 자신만
@@ -1101,10 +1106,10 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
         거짓 경보가 상시 뜬다(실측). URL 형상은 **건드리지 않는다** — 스킬층이 fetch 후
         관찰값을 기록한다(한 키 2역 금지·race/자기비교 회피).
 
-    두 키를 한 번의 `_set_conf_keys`+write 로 묶는다 — 중간 중단에도 baseline 만 앞선 반쪽
+    두 키를 한 번의 공용 atomic writer로 묶는다 — 중간 중단에도 baseline 만 앞선 반쪽
     상태가 생기지 않는다(어긋난 두 키 = 거짓 drift 의 원인이었다). rev 읽기는 pm_import 의
-    read_upstream_rev(URL 안전 git 호출), 파일 갱신은 pm_import 의 `_set_conf_keys`(키 단위
-    set-or-replace·타 키/주석 보존·record_upstream_rev·pm_config upstream set 과 동일 백엔드)를
+    read_upstream_rev(URL 안전 git 호출), 파일 갱신은 pm_import 의 `_write_conf_keys`(키 중복
+    정규화·atomic replace·실효값 검증·record_upstream_rev·pm_config upstream set 과 동일 백엔드)를
     재사용한다. git repo 아님·HEAD 해소 실패·pm_import 로드 실패·local.conf 부재는 **graceful
     생략**(best-effort — sync 자체는 안 깬다).
     """
@@ -1124,12 +1129,8 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
     if not local_conf.is_file():
         print(f"경고: local.conf 없음 ({local_conf}) — upstream_rev 기록 건너뜀.", file=sys.stderr)
         return False, {}
-    text = local_conf.read_text(encoding="utf-8")
-    new_text = pm_import._set_conf_keys(text, updates)
-    if new_text == text:
-        return False, updates  # 이미 같은 값(재실행) — 기록 대상은 동일·파일만 무변경.
-    local_conf.write_text(new_text, encoding="utf-8")
-    return True, updates
+    changed = pm_import._write_conf_keys(local_conf, updates)
+    return changed, updates
 
 
 def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
@@ -2911,7 +2912,8 @@ def _protected_hook_in_sync(repo: str, *, pm_config, worktree_pool, board) -> bo
     재설치는 멱등이라 비용이 낮고, 반대 방향(조용히 stale 유지)은 보호가 꺼진 채 침묵하는
     실패모드다.
 
-    **이 함수는 예외를 밖으로 내지 않는 게 계약**이다(전체 fail-safe False). 호출부의
+    **일반 판정 예외는 밖으로 내지 않는 게 계약**이다(fail-safe False). 단 엔진 사본
+    불일치 marker는 계속 실행할 수 없는 상태라 재전파한다. 호출부의
     `unavailable` 은 "dest 엔진/모듈을 못 불렀다"(=판정 자체가 불가능)를 위한 상태지 "파일이
     깨졌다"가 아니다 — 후자를 unavailable 로 흘리면 재설치가 안 돌아 복구 경로가 사라진다."""
     try:
@@ -2920,7 +2922,14 @@ def _protected_hook_in_sync(repo: str, *, pm_config, worktree_pool, board) -> bo
             return False       # 구 엔진 사본(명세 부재) — 판정 불가 → 재설치.
         # 설치가 받는 것과 **같은 입력**(areas 실효 보호목록)으로 기대 산출물을 유도한다.
         expected_list = list(pm_config._resolve_repo_protected(repo, board=board))
-        for artifact in artifacts_of(repo, expected_list):
+        gate_config = getattr(pm_config, "_protected_push_gate_config", None)
+        if gate_config is None:
+            return False       # 구 엔진 사본(형상 resolver 부재) — 재설치로 새 계약 배포.
+        # read-only drift 판정은 steady-state 무출력 계약을 지킨다. 강등 경고는 실제 설치
+        # 깔때기에서 1회 loud하게 나가며, 여기서는 같은 resolver 결과만 소비한다.
+        gate_mode, test_cmd = gate_config(repo, board=board, report_downgrade=False)
+        for artifact in artifacts_of(
+                repo, expected_list, gate_mode=gate_mode, test_cmd=test_cmd):
             if _read_hook_artifact(artifact.path) != artifact.content:
                 return False
             if artifact.executable and not _hook_artifact_executable(artifact.path):
@@ -2928,7 +2937,9 @@ def _protected_hook_in_sync(repo: str, *, pm_config, worktree_pool, board) -> bo
         # 배선 축 — `False`(hooksPath 가 우리 디렉토리를 안 가리킴)면 훅이 아예 발화하지 않는다.
         # `None`(bare 부재·git 실패)은 판정 불가 → 재설치 시도(install 이 결과를 loud 보고).
         return pm_config.protected_hook_wired(repo, worktree_pool=worktree_pool) is True
-    except Exception:  # noqa: BLE001 — 판정 실패는 drift(재설치)로 수렴·예외를 밖으로 내지 않는다.
+    except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 drift로 수렴(단 skew 재전파).
+        if _is_engine_rev_skew(exc):
+            raise
         return False
 
 
@@ -2948,9 +2959,10 @@ def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
     False). 매 sync 마다 경고를 울리는 대신 `no_bare` 로 분리해 요약 1줄로만 surface 한다
     (침묵 아님·`_print_protected_hook_reinstall_finding`).
 
-    **fail-soft** — sync 는 이미 성공했다. 엔진 로드 실패(구형 dest·형제 rev skew)나 레지스트리
+    **fail-soft** — sync 는 이미 성공했다. 일반 엔진 로드 실패(구형 dest)나 레지스트리
     파싱 실패가 update rc 를 바꾸면 안 된다 → 예외를 "unavailable"+사유로 강등하고 호출부가
-    경고로 낸다(훅은 추가 가드·`_install_protected_hook` 의 fail-soft 계약과 동형).
+    경고로 낸다(훅은 추가 가드·`_install_protected_hook` 의 fail-soft 계약과 동형). 단 stamped
+    sibling의 marked rev skew는 불일치 엔진으로 계속 실행하지 않도록 재전파한다.
 
     ⚠ **"unavailable" 은 판정 자체가 불가능한 경우만**이다 — dest 엔진/레지스트리를 못 불러
     *어느 repo 도* 손댈 수 없는 상태. **개별 repo 의 훅 파일이 깨진 것은 unavailable 이 아니라
@@ -2994,6 +3006,8 @@ def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
         result["status"] = "done"
         return result
     except Exception as exc:  # noqa: BLE001 — 재설치 실패가 성공한 sync 를 무효화하면 안 됨.
+        if _is_engine_rev_skew(exc):
+            raise
         result["status"] = "unavailable"
         result["reason"] = f"{type(exc).__name__}: {exc}"
         return result

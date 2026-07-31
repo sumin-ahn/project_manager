@@ -20,12 +20,14 @@ board.py 는 import 하지 않는다(touches 격리·병렬충돌 회피·자체
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import io
 import json
 import multiprocessing as mp
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -70,6 +72,16 @@ def _load_wp_bound(proj: Path):
     }
     for name, val in overrides.items():
         setattr(mod, name, val)
+    # 이 파일의 오래된 직접 설치 테스트는 명시적으로 release 계약을 고르는 test adapter를 탄다.
+    # 프로덕션 API 자체는 gate_mode/test_cmd가 required이며 별도 signature/AST 가드가 고정한다.
+    install = mod.install_protected_hook
+
+    def install_for_test(repo, protected, *, gate_mode="release", test_cmd="pytest -q",
+                         git_runner=None):
+        return install(
+            repo, protected, gate_mode=gate_mode, test_cmd=test_cmd, git_runner=git_runner)
+
+    mod.install_protected_hook = install_for_test
     return mod
 
 
@@ -3824,15 +3836,10 @@ def test_read_ledger_legacy_file_with_branch_key_loads_clean(wp):
 # ════════════════════════════════════════════════════════════════════════
 
 
-def _run_hook(hook_path: Path, stdin: str, *, env_override: bool = False,
-              skip_live_gate: bool = False) -> int:
-    """생성된 pre-push 훅을 `sh` 로 직접 실행하고 종료코드를 반환한다 (T-0076·T-0223).
-
-    훅은 stdin 으로 `<localref> <localsha> <remoteref> <remotesha>` 줄들을 받는다(실 git
-    pre-push 계약). `env_override` 면 `PM_ALLOW_PROTECTED_PUSH=1`, `skip_live_gate` 면
-    `PM_SKIP_LIVE_GATE=1` 을 환경에 둔다. 라이브 게이트 board.py 는 훅 옆 sidecar `engine-root`
-    로 해소되므로(cwd 무관·codex r2) 게이트 분기는 sidecar 유무/내용으로 제어한다.
-    """
+def _run_hook_result(hook_path: Path, stdin: str, *, env_override: bool = False,
+                     skip_live_gate: bool = False, cwd: Path | None = None,
+                     env_extra: dict[str, str] | None = None):
+    """생성된 pre-push 훅을 `sh`로 실행하고 CompletedProcess를 반환한다."""
     env = dict(os.environ)
     if env_override:
         env["PM_ALLOW_PROTECTED_PUSH"] = "1"
@@ -3842,16 +3849,33 @@ def _run_hook(hook_path: Path, stdin: str, *, env_override: bool = False,
         env["PM_SKIP_LIVE_GATE"] = "1"
     else:
         env.pop("PM_SKIP_LIVE_GATE", None)
-    result = subprocess.run(
+    env.pop("PM_SKIP_SELF_TEST", None)
+    env.pop("PM_SELF_TEST_BYPASS_REASON", None)
+    if env_extra:
+        env.update(env_extra)
+    return subprocess.run(
         ["sh", str(hook_path)],
-        input=stdin, capture_output=True, text=True, env=env,
+        input=stdin, capture_output=True, text=True, env=env, cwd=cwd,
     )
-    return result.returncode
+
+
+def _run_hook(hook_path: Path, stdin: str, *, env_override: bool = False,
+              skip_live_gate: bool = False, cwd: Path | None = None) -> int:
+    """생성된 pre-push 훅을 `sh` 로 직접 실행하고 종료코드를 반환한다 (T-0076·T-0223).
+
+    훅은 stdin 으로 `<localref> <localsha> <remoteref> <remotesha>` 줄들을 받는다(실 git
+    pre-push 계약). `env_override` 면 `PM_ALLOW_PROTECTED_PUSH=1`, `skip_live_gate` 면
+    `PM_SKIP_LIVE_GATE=1` 을 환경에 둔다. 라이브 게이트 board.py 는 훅 옆 sidecar `engine-root`
+    로 해소되므로(cwd 무관·codex r2) 게이트 분기는 sidecar 유무/내용으로 제어한다.
+    """
+    return _run_hook_result(
+        hook_path, stdin, env_override=env_override,
+        skip_live_gate=skip_live_gate, cwd=cwd).returncode
 
 
 # 실 git pre-push stdin 한 줄 — remote ref 만 보호 판정에 쓰인다(나머지는 sha placeholder).
-def _push_line(remote_ref: str) -> str:
-    return f"refs/heads/local 0000 {remote_ref} 1111\n"
+def _push_line(remote_ref: str, local_sha: str = "0000") -> str:
+    return f"refs/heads/local {local_sha} {remote_ref} 1111\n"
 
 
 def test_install_protected_hook_writes_hook_sidecar_and_sets_hookspath(wp):
@@ -3873,6 +3897,122 @@ def test_install_protected_hook_writes_hook_sidecar_and_sets_hookspath(wp):
     config_calls = [c for c in git.calls if c[:2] == ["config", "core.hooksPath"]]
     assert len(config_calls) == 1
     assert config_calls[0][2] == str(hook_dir.resolve())
+
+
+def test_install_protected_hook_atomically_replaces_every_hook_and_sidecar(wp, monkeypatch):
+    """A1 — 훅 2종과 sidecar 전수가 같은 디렉터리 완성본에서 원자 교체된다."""
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    old = {
+        artifact.path: artifact.path.read_text(encoding="utf-8")
+        for artifact in wp.protected_hook_artifacts(
+            "A", ["main"], gate_mode="release", test_cmd="pytest -q")
+    }
+    expected = wp.protected_hook_artifacts(
+        "A", ["main", "release"], gate_mode="self-test", test_cmd="go test ./...")
+    replaced = []
+    real_replace = wp.os.replace
+
+    def inspect_then_replace(src, dst):
+        src, dst = Path(src), Path(dst)
+        assert src.parent == dst.parent, "원자 rename과 다른 filesystem의 임시파일"
+        assert dst.read_text(encoding="utf-8") == old[dst], "replace 전 기존 산출물을 제자리 변경"
+        expected_mode = 0o755 if next(a for a in expected if a.path == dst).executable else 0o644
+        assert src.stat().st_mode & 0o777 == expected_mode, "권한 설정 전 산출물 노출"
+        replaced.append(dst)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(wp.os, "replace", inspect_then_replace)
+    assert wp.install_protected_hook(
+        "A", ["main", "release"], gate_mode="self-test",
+        test_cmd="go test ./...", git_runner=FakeGit()) is True
+    assert replaced == [artifact.path for artifact in expected]
+    assert not list((wp.REPO_HOOKS_DIR / "A").glob(".*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("fail_at", "expected_contract"),
+    [
+        ("gate-contract", "self-test\nold-test\n"),
+        ("pre-push", "release\nnew-test\n"),
+    ],
+    ids=["before-contract-replace", "after-contract-replace"],
+)
+def test_install_protected_hook_contract_remains_whole_on_intermediate_failure(
+        wp, monkeypatch, fail_at, expected_contract):
+    """A4 — 재설치 중 어느 세대에서 멈춰도 mode/command는 한 세대의 완성 계약이다.
+
+    gate-contract replace 전 실패는 옛 self-test/old-test를, 교체 후 훅 본문
+    실패는 새 release/new-test를 노출한다. 새 mode+옛 command 조합은 없다.
+    """
+    _mk_bare_placeholder(wp, "A")
+    assert wp.install_protected_hook(
+        "A", ["main"], gate_mode="self-test", test_cmd="old-test",
+        git_runner=FakeGit()) is True
+    contract = wp.REPO_HOOKS_DIR / "A" / "gate-contract"
+    real_replace = wp.os.replace
+
+    def fail_once(src, dst):
+        if Path(dst).name == fail_at:
+            raise OSError(f"injected failure at {fail_at}")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(wp.os, "replace", fail_once)
+    with pytest.raises(OSError, match="injected failure"):
+        wp.install_protected_hook(
+            "A", ["main"], gate_mode="release", test_cmd="new-test",
+            git_runner=FakeGit())
+
+    assert contract.read_text(encoding="utf-8") == expected_contract
+    mode, command = expected_contract.splitlines()
+    assert (mode, command) in {
+        ("self-test", "old-test"), ("release", "new-test")}
+
+
+def test_install_protected_hook_gate_contract_is_keyword_required_and_centralized():
+    """A1 메타가드 — 기본값 회귀와 resolver 우회 프로덕션 호출부를 소스 구조로 차단한다."""
+    wp_tree = ast.parse((TOOLS / "worktree_pool.py").read_text(encoding="utf-8"))
+    install_def = next(
+        node for node in wp_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "install_protected_hook")
+    kw_defaults = dict(zip(
+        (arg.arg for arg in install_def.args.kwonlyargs), install_def.args.kw_defaults))
+    assert kw_defaults["gate_mode"] is None
+    assert kw_defaults["test_cmd"] is None
+
+    pc_tree = ast.parse((TOOLS / "pm_config.py").read_text(encoding="utf-8"))
+    funnel = next(
+        node for node in pc_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_install_protected_hook")
+    install_calls = [
+        node for node in ast.walk(funnel)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "install"
+    ]
+    assert len(install_calls) == 1
+    assert {kw.arg for kw in install_calls[0].keywords} >= {"gate_mode", "test_cmd"}
+
+    # behavior 테스트가 본체다. 이 AST 가드는 정적 direct attribute 호출과 과거 실제 회귀였던
+    # getattr 문자열 DI 두 형태의 resolver 우회만 빠르게 잡는다(동적 문자열/alias까지 증명하진 않음).
+    for name in ("pm_bootstrap.py", "pm_update.py"):
+        tree = ast.parse((TOOLS / name).read_text(encoding="utf-8"))
+        raw_calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "install_protected_hook"
+        ]
+        raw_getattrs = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "install_protected_hook"
+        ]
+        assert raw_calls == [] and raw_getattrs == [], \
+            f"{name}이 gate resolver를 우회해 raw installer를 호출/주입함"
 
 
 def test_install_protected_hook_idempotent_updates_sidecar(wp):
@@ -3966,6 +4106,397 @@ def test_generated_hook_pm_allow_with_skip_passes_protected(wp):
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     assert _run_hook(hook, _push_line("refs/heads/main"),
                      env_override=True, skip_live_gate=True) == 0
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(채택자 자기 검증 훅 실행 불가)")
+def test_generated_hook_adopter_self_test_passes_without_release_marker_or_skip(wp, tmp_path):
+    """release marker 없는 adopter는 PM_ALLOW만으로 자기 test_cmd green이면 결정적으로 통과."""
+    adopter = _init_repo(tmp_path / "adopter-no-release")
+    assert not (adopter / "tests" / "test_release_wave.py").exists()
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test",
+        test_cmd="test ! -e tests/test_release_wave.py && printf ok > self-test-ran",
+    )
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
+
+    rc = _run_hook(hook, _push_line("refs/heads/main", head),
+                   env_override=True, cwd=adopter)
+
+    assert rc == 0
+    assert (adopter / "self-test-ran").read_text(encoding="utf-8") == "ok"
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(채택자 자기 검증 훅 실행 불가)")
+def test_generated_hook_adopter_self_test_red_blocks_even_with_live_skip(wp, tmp_path):
+    """adopter 자기 검증은 release skip 플래그로 꺼지지 않고 RED를 fail-closed 차단한다."""
+    adopter = _init_repo(tmp_path / "adopter-red")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="exit 23")
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
+
+    result = _run_hook_result(
+        hook, _push_line("refs/heads/main", head), env_override=True,
+        skip_live_gate=True, cwd=adopter)
+    assert result.returncode != 0
+    assert "areas.md test_cmd" in result.stderr and "local.conf test_cmd" in result.stderr
+    assert "PM_SKIP_SELF_TEST=1" in result.stderr
+    assert "PM_SELF_TEST_BYPASS_REASON='사유'" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(채택자 자기 검증 훅 실행 불가)")
+def test_generated_hook_adopter_self_test_requires_checkout_at_push_sha(wp, tmp_path):
+    """다른 ref SHA를 push할 때 현재 checkout 검증으로 false-green을 만들지 않고 거부한다."""
+    adopter = _init_repo(tmp_path / "adopter-sha-mismatch")
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test",
+        test_cmd="printf bad > should-not-run",
+    )
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
+
+    assert _run_hook(
+        hook, _push_line("refs/heads/main", "deadbeef" * 5),
+        env_override=True, cwd=adopter,
+    ) != 0
+    assert not (adopter / "should-not-run").exists()
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(채택자 자기 검증 훅 실행 불가)")
+@pytest.mark.parametrize("missing", [True, False], ids=["absent", "empty"])
+def test_generated_hook_adopter_missing_or_empty_test_cmd_fails_closed(
+        wp, tmp_path, missing):
+    """원자 gate-contract 부재/빈 command 모두 명시 사유로 거부한다."""
+    adopter = _init_repo(tmp_path / f"adopter-test-cmd-{missing}")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="true")
+    contract_file = wp.REPO_HOOKS_DIR / "A" / "gate-contract"
+    if missing:
+        contract_file.unlink()
+    else:
+        contract_file.write_text("self-test\n\n", encoding="utf-8")
+
+    result = _run_hook_result(
+        wp.REPO_HOOKS_DIR / "A" / "pre-push",
+        _push_line("refs/heads/main", head), env_override=True, cwd=adopter)
+    assert result.returncode != 0
+    expected = "repo 게이트 스코프 미해소" if missing else "자기 검증 명령 미해소"
+    assert expected in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(채택자 자기 검증 훅 실행 불가)")
+def test_generated_hook_adopter_dirty_worktree_is_rejected_with_exact_reason(wp, tmp_path):
+    """HEAD가 push SHA와 같아도 dirty 현재 트리는 그 SHA의 증거가 아니므로 명시 거부한다."""
+    adopter = _init_repo(tmp_path / "adopter-dirty")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    (adopter / "README.md").write_text("dirty masking change\n", encoding="utf-8")
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="true")
+
+    result = _run_hook_result(
+        wp.REPO_HOOKS_DIR / "A" / "pre-push",
+        _push_line("refs/heads/main", head), env_override=True, cwd=adopter)
+    assert result.returncode != 0
+    assert "dirty 워킹트리" in result.stderr
+    assert "clean checkout" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(채택자 자기 검증 훅 실행 불가)")
+def test_generated_hook_adopter_multi_ref_same_sha_runs_self_test_once(wp, tmp_path):
+    """C — 같은 SHA의 보호 ref 두 개는 SHA memoization으로 self-test를 1회만 실행한다."""
+    adopter = _init_repo(tmp_path / "adopter-multi-ref")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    count = tmp_path / "self-test-count"
+    cmd = f"read ignored || true; printf x >> {shlex.quote(str(count))}"
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main", "release"], git_runner=FakeGit(),
+        gate_mode="self-test", test_cmd=cmd)
+    stdin = (
+        _push_line("refs/heads/main", head)
+        + _push_line("refs/heads/release", head)
+    )
+
+    result = _run_hook_result(
+        wp.REPO_HOOKS_DIR / "A" / "pre-push", stdin,
+        env_override=True, cwd=adopter)
+    assert result.returncode == 0, result.stderr
+    assert count.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(채택자 자기 검증 훅 실행 불가)")
+def test_generated_hook_adopter_test_cmd_cannot_steal_next_push_ref(wp, tmp_path):
+    """서로 다른 SHA의 다음 보호 ref는 stdin 소비 test_cmd에도 반드시 별도 게이트된다."""
+    adopter = _init_repo(tmp_path / "adopter-stdin-isolation")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    different_sha = "deadbeef" * 5
+    count = tmp_path / "self-test-count"
+    cmd = f"read stolen || true; printf x >> {shlex.quote(str(count))}"
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main", "release"], git_runner=FakeGit(),
+        gate_mode="self-test", test_cmd=cmd)
+    stdin = (
+        _push_line("refs/heads/main", head)
+        + _push_line("refs/heads/release", different_sha)
+    )
+
+    result = _run_hook_result(
+        wp.REPO_HOOKS_DIR / "A" / "pre-push", stdin,
+        env_override=True, cwd=adopter)
+
+    assert result.returncode != 0
+    assert "채택자 자기 검증 기준을 push SHA에 고정할 수 없어 거부" in result.stderr
+    assert count.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(채택자 자기 검증 훅 실행 불가)")
+def test_generated_hook_adopter_bypass_requires_approval_reason_and_audits(wp, tmp_path):
+    """신규 self-test 우회는 PM_ALLOW와 사유를 모두 요구하고 성공 시 loud+영속 기록한다."""
+    adopter = _init_repo(tmp_path / "adopter-bypass")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="exit 23")
+    hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
+    hook_text = hook.read_text(encoding="utf-8")
+    assert "printf '%s\\trepo=%s\\tbranch=%s\\tsha=%s\\tdirty=%s\\treason=%s\\n'" in hook_text
+    bypass_sha = "deadbeef" * 5  # 현재 HEAD와 일부러 다름 — 우회는 pin 증거 생성도 건너뛴다.
+    line = _push_line("refs/heads/main", bypass_sha)
+    skip = {"PM_SKIP_SELF_TEST": "1", "PM_SELF_TEST_BYPASS_REASON": "incident INC-42"}
+    (adopter / "untracked-during-incident").write_text("dirty\n", encoding="utf-8")
+
+    no_approval = _run_hook_result(hook, line, cwd=adopter, env_extra=skip)
+    assert no_approval.returncode != 0
+    assert "보호 브랜치 'main' 로의 push 거부" in no_approval.stderr
+
+    no_reason = _run_hook_result(
+        hook, line, cwd=adopter, env_override=True,
+        env_extra={"PM_SKIP_SELF_TEST": "1", "PM_SELF_TEST_BYPASS_REASON": "   "})
+    assert no_reason.returncode != 0
+    assert "PM_SELF_TEST_BYPASS_REASON" in no_reason.stderr
+
+    bypassed = _run_hook_result(
+        hook, line, cwd=adopter, env_override=True, env_extra=skip)
+    assert bypassed.returncode == 0, bypassed.stderr
+    assert "[pm 보호 가드·감사]" in bypassed.stderr
+    assert "incident INC-42" in bypassed.stderr
+    audit = wp.REPO_HOOKS_DIR / "A" / "self-test-bypass.log"
+    logged = audit.read_text(encoding="utf-8")
+    assert "repo=A" in logged and "branch=main" in logged
+    assert f"sha={bypass_sha}" in logged and "dirty=true" in logged
+    assert "reason=incident INC-42" in logged
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(채택자 우회 감사 검사 불가)")
+def test_generated_hook_adopter_bypass_neutralizes_tab_in_reason(wp, tmp_path):
+    """C — 우회 사유 TAB은 공백으로 중화해 감사 필드를 위조하지 못한다."""
+    adopter = _init_repo(tmp_path / "adopter-bypass-tab")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+
+    result = _run_hook_result(
+        wp.REPO_HOOKS_DIR / "A" / "pre-push", _push_line("refs/heads/main", head),
+        cwd=adopter, env_override=True,
+        env_extra={
+            "PM_SKIP_SELF_TEST": "1",
+            "PM_SELF_TEST_BYPASS_REASON": "incident\tdirty=false",
+        })
+    assert result.returncode == 0, result.stderr
+    logged = (wp.REPO_HOOKS_DIR / "A" / "self-test-bypass.log").read_text(
+        encoding="utf-8")
+    assert "reason=incident dirty=false" in logged
+    assert "reason=incident\tdirty=false" not in logged
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(채택자 우회 status 검사 불가)")
+def test_generated_hook_adopter_bypass_status_failure_is_quiet_unknown(wp, tmp_path):
+    """C — 우회 status 실패 stderr는 숨기고 감사 dirty=unknown만 남긴다."""
+    adopter = _init_repo(tmp_path / "adopter-bypass-status-failure")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    real_git = shutil.which("git")
+    bin_dir = tmp_path / "status-fail-bin"
+    bin_dir.mkdir()
+    wrapper = bin_dir / "git"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        "case \" $* \" in *\" status \"*)\n"
+        "  echo 'fatal: injected status failure' >&2\n"
+        "  exit 77\n"
+        "esac\n"
+        f"exec {shlex.quote(real_git)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+
+    result = _run_hook_result(
+        wp.REPO_HOOKS_DIR / "A" / "pre-push", _push_line("refs/heads/main", head),
+        cwd=adopter, env_override=True,
+        env_extra={
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "PM_SKIP_SELF_TEST": "1", "PM_SELF_TEST_BYPASS_REASON": "incident",
+        })
+    assert result.returncode == 0, result.stderr
+    assert "fatal: injected status failure" not in result.stderr
+    assert "dirty=unknown" in result.stderr
+    logged = (wp.REPO_HOOKS_DIR / "A" / "self-test-bypass.log").read_text(
+        encoding="utf-8")
+    assert "dirty=unknown" in logged
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or not hasattr(os, "symlink"),
+                    reason="POSIX sh/symlink 부재(감사 로그 형상 검사 불가)")
+def test_generated_hook_adopter_bypass_rejects_symlink_audit_log(wp, tmp_path):
+    """B1 — /dev/null 등 symlink 감사 채널에는 성공/기록을 거짓 주장하지 않는다."""
+    adopter = _init_repo(tmp_path / "adopter-bypass-symlink")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+    audit = wp.REPO_HOOKS_DIR / "A" / "self-test-bypass.log"
+    audit.symlink_to(os.devnull)
+
+    result = _run_hook_result(
+        wp.REPO_HOOKS_DIR / "A" / "pre-push", _push_line("refs/heads/main", head),
+        cwd=adopter, env_override=True,
+        env_extra={"PM_SKIP_SELF_TEST": "1", "PM_SELF_TEST_BYPASS_REASON": "incident"})
+    assert result.returncode != 0
+    assert "감사 로그가 일반 파일이 아님" in result.stderr
+    assert "  기록:" not in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt" or shutil.which("sh") is None,
+                    reason="POSIX 파일 권한/sh 부재(감사 append 실패 재현 불가)")
+def test_generated_hook_adopter_bypass_rejects_unwritable_audit_log(wp, tmp_path):
+    """C — 일반 파일이어도 append 실패하면 우회를 fail-closed 거부한다."""
+    adopter = _init_repo(tmp_path / "adopter-bypass-unwritable")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+    audit = wp.REPO_HOOKS_DIR / "A" / "self-test-bypass.log"
+    audit.write_text("existing audit\n", encoding="utf-8")
+    audit.chmod(0)
+    try:
+        result = _run_hook_result(
+            wp.REPO_HOOKS_DIR / "A" / "pre-push", _push_line("refs/heads/main", head),
+            cwd=adopter, env_override=True,
+            env_extra={"PM_SKIP_SELF_TEST": "1", "PM_SELF_TEST_BYPASS_REASON": "incident"})
+    finally:
+        audit.chmod(0o600)
+    assert result.returncode != 0
+    assert "감사 로그 기록 실패" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(Git local env 파생 검사 불가)")
+def test_generated_hook_derives_and_unsets_git_local_env_for_status_and_test(wp, tmp_path):
+    """A2 — Git 권위 목록의 확장 변수도 status와 test_cmd 양쪽 전에 제거한다."""
+    adopter = _init_repo(tmp_path / "adopter-derived-git-env")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    real_git = shutil.which("git")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    status_seen = tmp_path / "status-env-clean"
+    wrapper = bin_dir / "git"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        "case \" $* \" in *\" status \"*)\n"
+        "  test -z \"${GIT_CONFIG_COUNT-}${GIT_IMPLICIT_WORK_TREE-}\" || exit 79\n"
+        f"  printf ok > {shlex.quote(str(status_seen))}\n"
+        "esac\n"
+        f"exec {shlex.quote(real_git)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    marker = tmp_path / "test-env-clean"
+    test_cmd = (
+        'test -z "${GIT_CONFIG_COUNT-}${GIT_IMPLICIT_WORK_TREE-}" && '
+        f"printf ok > {shlex.quote(str(marker))}")
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd=test_cmd)
+
+    result = _run_hook_result(
+        wp.REPO_HOOKS_DIR / "A" / "pre-push", _push_line("refs/heads/main", head),
+        cwd=adopter, env_override=True,
+        env_extra={
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "GIT_CONFIG_COUNT": "0", "GIT_IMPLICIT_WORK_TREE": "1",
+        })
+    assert result.returncode == 0, result.stderr
+    assert status_seen.read_text(encoding="utf-8") == "ok"
+    assert marker.read_text(encoding="utf-8") == "ok"
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or shutil.which("git") is None,
+                    reason="POSIX sh/git 부재(Git local env 폴백 검사 불가)")
+def test_generated_hook_git_local_env_query_failure_uses_legacy_fallback(wp, tmp_path):
+    """A2 — `--local-env-vars` 실패 시 기존 7개 폴백으로 status/test를 계속 안전 실행한다."""
+    adopter = _init_repo(tmp_path / "adopter-git-env-fallback")
+    head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
+    real_git = shutil.which("git")
+    bin_dir = tmp_path / "fallback-bin"
+    bin_dir.mkdir()
+    status_seen = tmp_path / "fallback-status-clean"
+    wrapper = bin_dir / "git"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1 $2\" = \"rev-parse --local-env-vars\" ]; then exit 91; fi\n"
+        "case \" $* \" in *\" status \"*)\n"
+        "  test -z \"${GIT_PREFIX-}\" || exit 79\n"
+        f"  printf ok > {shlex.quote(str(status_seen))}\n"
+        "esac\n"
+        f"exec {shlex.quote(real_git)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    marker = tmp_path / "fallback-test-clean"
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook(
+        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test",
+        test_cmd=f'test -z "${{GIT_PREFIX-}}" && printf ok > {shlex.quote(str(marker))}')
+
+    result = _run_hook_result(
+        wp.REPO_HOOKS_DIR / "A" / "pre-push", _push_line("refs/heads/main", head),
+        cwd=adopter, env_override=True,
+        env_extra={
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "GIT_PREFIX": "sentinel/",
+        })
+    assert result.returncode == 0, result.stderr
+    assert status_seen.read_text(encoding="utf-8") == "ok"
+    assert marker.read_text(encoding="utf-8") == "ok"
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_install_protected_hook_rejects_legacy_unresolved_mode(wp):
+    """신규 설치는 B1 강등 전의 unresolved sidecar를 더 만들 수 없다."""
+    _mk_bare_placeholder(wp, "A")
+    with pytest.raises(ValueError, match="알 수 없는 보호 push gate mode"):
+        wp.install_protected_hook(
+            "A", ["main"], git_runner=FakeGit(), gate_mode="unresolved", test_cmd="true")
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
@@ -4133,22 +4664,25 @@ def test_installed_artifact_contents_and_modes_match_spec(wp):
         if artifact.executable:
             assert is_executable, \
                 f"{artifact.path.name} 실행권한 없음 — git 이 훅을 조용히 건너뛴다"
-        # sidecar 는 실행권한을 *요구하지 않는다*(설치도 chmod 안 함) — 명세 flag 와 일치.
+        # sidecar 는 0644로 설치되며 실행권한을 *요구하지 않는다* — 명세 flag 와 일치.
 
 
 def test_install_protected_hook_writes_only_through_artifact_spec():
-    """**메타가드(소스)** — install 의 write/chmod 는 전부 명세 순회 안에서만 일어난다.
+    """**메타가드(소스)** — install은 명세 순회+공용 atomic writer만 쓴다.
 
     실행 메타가드는 "결과 집합" 을 보고, 이건 "경로" 를 본다 — 누군가 명세를 우회해 파일을
     직접 쓰면(다음 축 누락의 씨앗) 여기서 잡힌다."""
     src = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
     body = src.split("def install_protected_hook(", 1)[1].split("\ndef ", 1)[0]
     writes = [line.strip() for line in body.splitlines()
-              if ".write_text(" in line or ".chmod(" in line]
-    assert writes == [
-        "artifact.path.write_text(artifact.content, encoding=\"utf-8\", newline=\"\\n\")",
-        "artifact.path.chmod(_PROTECTED_HOOK_EXECUTABLE_MODE)",
-    ], f"install 이 명세(protected_hook_artifacts) 밖에서 파일을 쓴다: {writes}"
+              if ".write_text(" in line or ".chmod(" in line or "os.replace(" in line]
+    assert writes == [], f"install 이 atomic writer 밖에서 파일을 쓴다: {writes}"
+    assert body.count("_atomic_write_protected_artifact(artifact)") == 1
+
+    writer = src.split("def _atomic_write_protected_artifact(", 1)[1].split("\ndef ", 1)[0]
+    assert "tempfile.mkstemp(" in writer and "dir=artifact.path.parent" in writer
+    assert "tmp.chmod(" in writer
+    assert "os.replace(tmp, artifact.path)" in writer
 
 
 @_git_required
@@ -4364,6 +4898,52 @@ def test_real_git_protected_push_pm_allow_with_skip_allowed(proj, tmp_path):
     # server bare 의 main 이 슬롯 main 으로 전진(승인+skip 이 차단을 풀었다).
     server_main = _git(server, "rev-parse", "main").stdout.strip()
     assert server_main == slot_main, "PM_ALLOW+PM_SKIP push 후 server main 이 전진 안 됨"
+
+
+@_git_required
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 실행 불가)")
+def test_real_git_adopter_self_test_unsets_hook_git_environment(proj, tmp_path):
+    """실 bare+linked worktree push에서 test_cmd의 git fixture가 슬롯 gitdir/index를 건드리지 않는다."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_real_bare(wp, "A", tmp_path)
+    server = tmp_path / "A-self-test-server.git"
+    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+
+    lease = wp.create_slot("A", branch="main", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    fixture = tmp_path / "nested-git-fixture"
+    fixture.mkdir()
+    marker = tmp_path / "self-test-env-clean"
+    inherited = (
+        "${GIT_DIR-}${GIT_WORK_TREE-}${GIT_INDEX_FILE-}${GIT_PREFIX-}"
+        "${GIT_QUARANTINE_PATH-}${GIT_OBJECT_DIRECTORY-}"
+        "${GIT_ALTERNATE_OBJECT_DIRECTORIES-}"
+    )
+    test_cmd = (
+        f'test -z "{inherited}" && cd {shlex.quote(str(fixture))} && '
+        f'git init -q . && test -d .git && printf ok > {shlex.quote(str(marker))}'
+    )
+    assert wp.install_protected_hook(
+        "A", ["main"], gate_mode="self-test", test_cmd=test_cmd) is True
+
+    _git(slot_dir, "remote", "add", "server", str(server))
+    (slot_dir / "change.txt").write_text("self-test push\n", encoding="utf-8")
+    _git(slot_dir, "add", "change.txt")
+    _git(slot_dir, "commit", "-q", "-m", "self-test push",
+         env={"PM_ALLOW_PROTECTED_COMMIT": "1"})
+    pushed = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
+
+    result = subprocess.run(
+        [_GIT, "-C", str(slot_dir), "push", "server", "main"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PM_ALLOW_PROTECTED_PUSH": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text(encoding="utf-8") == "ok"
+    assert (fixture / ".git").is_dir(), "git init이 fixture 대신 슬롯 gitdir을 재초기화함"
+    assert _git(slot_dir, "status", "--porcelain").stdout == ""
+    assert _git(server, "rev-parse", "main").stdout.strip() == pushed
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -5537,6 +6117,24 @@ def test_resolve_protected_uses_board_then_defaults(wp, monkeypatch):
     assert wp._resolve_protected("A", board=board) == ["trunk"]
     monkeypatch.setattr(wp, "_load_board", lambda: None)
     assert wp._resolve_protected("A") == list(wp._DEFAULT_PROTECTED)
+    ordinary_failure = type(
+        "_BoomBoard", (),
+        {"_repo_protected": staticmethod(
+            lambda _repo: (_ for _ in ()).throw(RuntimeError("ordinary parser failure")))},
+    )()
+    assert wp._resolve_protected("A", board=ordinary_failure) == list(wp._DEFAULT_PROTECTED)
+
+
+def test_resolve_protected_rethrows_marked_engine_rev_skew(wp):
+    """A1 — 일반 areas 오류는 default지만 stamped sibling skew는 보호 기본값으로 숨기지 않는다."""
+    skew = RuntimeError("injected engine rev skew")
+    skew._engine_rev_skew = True
+    board = type(
+        "_SkewBoard", (),
+        {"_repo_protected": staticmethod(lambda _repo: (_ for _ in ()).throw(skew))},
+    )()
+    with pytest.raises(RuntimeError, match="engine rev skew"):
+        wp._resolve_protected("A", board=board)
 
 
 def test_cmd_switch_success_reports_what_happened(wp, monkeypatch, capsys):

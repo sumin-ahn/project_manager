@@ -67,6 +67,10 @@ class _StubRunner:
         return self.ok, self.output
 
 
+def _forbidden_popen(*args, **kwargs):
+    raise AssertionError("테스트가 실 하니스 바이너리를 spawn하려 함")
+
+
 def _make_imported_tree(pm_import, tmp_path, harness="claude", name="Fillee"):
     """fill 대상이 될 실제 import 트리를 만든다(자유서술 placeholder 보존 상태).
 
@@ -374,27 +378,39 @@ def test_run_fill_codex_uses_codex_parser_and_labels_codex(pm_import, tmp_path):
     assert "-C" in argv0
 
 
-def test_real_harness_runner_codex_stdin_devnull(pm_import, monkeypatch):
-    """_real_harness_runner: codex 는 stdin=DEVNULL(미닫힘 무기한 대기 방지·실측)·claude 는 None(상속·현행)."""
+def test_real_harness_runner_codex_stdin_eof(pm_import, monkeypatch):
+    """공용 워치독에서도 codex stdin 은 즉시 EOF, claude 는 기존 상속을 유지한다."""
     captured: dict = {}
+    relay = pm_import._load_watchdog()
 
-    class _FakeCompleted:
-        returncode = 0
-        stdout = "{}"
-        stderr = ""
+    class _FakeRelay:
+        def __getattr__(self, name):
+            return getattr(relay, name)
 
-    def fake_run(argv, **kw):
-        captured["stdin"] = kw.get("stdin")
-        return _FakeCompleted()
+        def run_with_first_event_watchdog(self, argv, **kw):
+            captured["input_text"] = kw.get("input_text")
+            return subprocess.CompletedProcess(argv, 0, "{}", "")
 
-    monkeypatch.setattr(pm_import.subprocess, "run", fake_run)
-    # codex → DEVNULL.
+    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: _FakeRelay())
+    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    # codex → 빈 stdin PIPE를 닫아 EOF.
     pm_import._real_harness_runner(pm_import._build_runner_argv("codex", "P"), "P")
-    assert captured["stdin"] is pm_import.subprocess.DEVNULL
+    assert captured["input_text"] == ""
     # claude → None(상속·현행 무변경 — codex-특수 stdin 이 다른 하니스에 새지 않음).
     captured.clear()
     pm_import._real_harness_runner(pm_import._build_runner_argv("claude", "P"), "P")
-    assert captured["stdin"] is None
+    assert captured["input_text"] is None
+
+
+def test_fill_driver_codex_plain_keeps_stdin_eof_without_incremental_signal(pm_import):
+    """codex 평문 출력도 stdin EOF는 유지하되 JSONL 증분 신호로 오인하지 않는다."""
+    harness, emits_progress, input_text = pm_import._fill_driver(
+        ["codex", "exec", "prompt"]
+    )
+
+    assert harness == ""
+    assert emits_progress is False
+    assert input_text == ""
 
 
 # ── codex live fill (gated·실 실행은 T-0407·과금) ─────────────────────────────
@@ -458,6 +474,69 @@ def test_fill_runner_failure_is_soft(pm_import, tmp_path):
     assert "실패" in result.note
     # argv 는 기록(시도 흔적).
     assert result.runner_calls and result.runner_calls[0][0] == "claude"
+
+
+def test_fill_runner_failure_saves_complete_private_raw(pm_import, tmp_path):
+    """긴 stdout 뒤 stderr까지 private raw에 전량 박제하고 note에는 경로만 남긴다."""
+    dest = _make_imported_tree(pm_import, tmp_path, harness="claude", name="RawFail")
+    output = "[stdout]\n" + ("O" * 6000) + "\n[stderr]\n" + ("E" * 3000)
+
+    result = pm_import.run_fill(
+        dest, "claude", live=False, runner=_StubRunner(ok=False, output=output))
+
+    assert len(result.note) < 300
+    assert "부분/오류 출력 원문 보존:" in result.note
+    relative = result.note.split("부분/오류 출력 원문 보존: ", 1)[1]
+    raw_path = dest / relative
+    assert raw_path.read_text(encoding="utf-8") == output
+    assert raw_path.stat().st_mode & 0o777 == 0o600
+    assert "E" * 100 not in result.note, "raw가 note에 중복 노출됨"
+
+
+def test_fill_runner_failure_exposes_full_output_if_raw_save_fails(
+        pm_import, tmp_path, monkeypatch):
+    """raw 박제 실패도 fail-soft이며 preview 절단 없이 stderr 끝까지 화면 note에 싣는다."""
+    dest = _make_imported_tree(pm_import, tmp_path, harness="claude", name="RawFallback")
+    output = "O" * 600 + "\n[stderr]\nTAIL-ERR"
+    monkeypatch.setattr(
+        pm_import, "_save_fill_failure_output",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("read-only")),
+    )
+
+    result = pm_import.run_fill(
+        dest, "claude", live=False, runner=_StubRunner(ok=False, output=output))
+
+    assert "raw 저장 실패" in result.note
+    assert output in result.note
+
+
+@pytest.mark.parametrize("linked_component", [".local", "fill"])
+def test_fill_failure_raw_rejects_symlink_component_without_touching_target(
+        pm_import, tmp_path, linked_component):
+    """raw 경로 또는 조상이 symlink면 repo 밖 chmod/create 없이 전문 표시 폴백한다."""
+    dest = _make_imported_tree(
+        pm_import, tmp_path, harness="claude", name=f"RawLink{linked_component}")
+    local = dest / ".project_manager" / ".local"
+    outside = tmp_path / f"outside-{linked_component}"
+    outside.mkdir(mode=0o755)
+    outside.chmod(0o755)
+
+    if linked_component == ".local":
+        if local.exists():
+            shutil.rmtree(local)
+        local.symlink_to(outside, target_is_directory=True)
+    else:
+        local.mkdir(parents=True, exist_ok=True)
+        (local / "fill").symlink_to(outside, target_is_directory=True)
+
+    output = "FULL-STDOUT\n[stderr]\nFULL-TAIL"
+    result = pm_import.run_fill(
+        dest, "claude", live=False, runner=_StubRunner(ok=False, output=output))
+
+    assert "raw 저장 실패" in result.note
+    assert output in result.note, "symlink 거부 폴백이 원문을 절단함"
+    assert list(outside.iterdir()) == [], "repo 밖 symlink 대상에 raw 파일을 생성함"
+    assert outside.stat().st_mode & 0o777 == 0o755, "repo 밖 디렉터리 권한을 변경함"
 
 
 # ── 비파괴 (MF·T-0009 반려 수정): fill 은 이번 import 가 복사한 파일만 건드린다 ──────
@@ -664,19 +743,20 @@ def test_plan_fill_targets_reads_source_files(pm_import, tmp_path):
 # ── SF: 실 하니스 구동 cwd = dest_root (대상 repo 에서 실행) ────────────────────
 
 def test_real_harness_runner_runs_in_dest_cwd(pm_import, tmp_path, monkeypatch):
-    """_real_harness_runner(cwd=dest_root): subprocess.run 에 cwd 가 대상 repo 로 전달된다."""
+    """_real_harness_runner(cwd=dest_root): 공용 워치독에 대상 repo cwd가 전달된다."""
     captured = {}
+    relay = pm_import._load_watchdog()
 
-    class _FakeCompleted:
-        returncode = 0
-        stdout = "ok"
-        stderr = ""
+    class _FakeRelay:
+        def __getattr__(self, name):
+            return getattr(relay, name)
 
-    def _fake_run(argv, **kwargs):
-        captured["cwd"] = kwargs.get("cwd")
-        return _FakeCompleted()
+        def run_with_first_event_watchdog(self, argv, **kwargs):
+            captured["cwd"] = kwargs.get("cwd")
+            return subprocess.CompletedProcess(argv, 0, "ok", "")
 
-    monkeypatch.setattr(pm_import.subprocess, "run", _fake_run)
+    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: _FakeRelay())
+    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
     dest = tmp_path / "targetrepo"
     dest.mkdir()
     ok, _out = pm_import._real_harness_runner(["claude", "-p", "P"], "P", cwd=dest)

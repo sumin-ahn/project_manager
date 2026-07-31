@@ -2035,20 +2035,28 @@ def resolved_delegate_profile(
 def check_local_conf_divergence(
     cwd: Path, conf: dict[str, str], role: str, tier: str, *,
     cli_override: bool = False,
+    compare_fallback: bool = False,
+    external_review_module=None,
 ) -> tuple[Path | None, object | None, object]:
-    """기존 `--cwd` repo축으로 이번 role/tier의 **유효 프로필** 분기를 검사한다.
+    """기존 `--cwd` repo축으로 이번 role/tier의 **유효 primary/fallback 프로필** 분기를 검사한다.
 
     external_review의 repo-root/conf 비교 seam을 재사용해 두 표면이 별도 판정 규칙을 갖지 않게 한다.
     양쪽 모두 `resolve_delegate`를 거쳐 reasoning 미지정(None)까지 포함한 완전 tuple을 비교하므로,
     한쪽만 키를 생략한 실제 수신 프로필 차이도 잡는다. 대상 역할/티어가 불완전하거나 잘못돼
     해소되지 않으면 실행 가능한 비교 대상이 아니므로 skip한다. CLI 완전지정은 local.conf를 primary
-    프로필 입력으로 쓰지 않는 원자 override라 divergence만 명시 skip한다. 반환 target_repo는 이
-    skip들과 무관하게 write-target 재앵커에도 재사용한다.
+    프로필 입력으로 쓰지 않는 원자 override라 divergence만 명시 skip한다. fallback은 CLI override,
+    primary 동일 skip, 시크릿 승인 억제를 모두 해소한 뒤 실제 발동 가능한 실행에서만 같은 role/tier를
+    비교한다. 또한 양쪽 `resolve_fallback` 결과가 모두 tuple이고 각 후보의 primary와 harness/model이
+    다를 때만 값 차이를 판정한다. 한쪽 미설정·primary 동일은 실제 발동 불가능하므로 무소음이며,
+    불완전/잘못된 대상 tuple도 실행 가능한 비교값이 아니어서 skip한다. 호출자가 이미 로드한
+    external_review 모듈을 넘길 수 있는 것은 그 모듈이 정의한 예외 클래스의 identity를 raise/catch
+    사이에 보존하기 위함이다. 반환 target_repo는 이 skip들과 무관하게 write-target 재앵커에도
+    재사용한다.
 
-    범위 경계: fallback tuple은 이번 primary 수신 프로필이 아니고, `review_denylist_extra`와
-    `review_paths`는 external_review의 송신 *내용* 축이라 여기서 비교하지 않는다.
+    범위 경계: `review_denylist_extra`와 `review_paths`는 external_review가 유효 내용 값 비교와
+    denylist 합집합 적용을 소유한다.
     """
-    er = _load_external_review()
+    er = external_review_module or _load_external_review()
     target_repo = er.repo_root_from_cwd(cwd)
     if cli_override:
         return target_repo, None, er
@@ -2062,11 +2070,27 @@ def check_local_conf_divergence(
             )
         except DelegateError:
             return {}
-        return {
+        values: dict[str, object] = {
             f"{prefix}.harness": harness,
             f"{prefix}.model": model,
             f"{prefix}.reasoning": reasoning,
         }
+        if compare_fallback:
+            try:
+                fallback = resolve_fallback(candidate, role, tier)
+            except DelegateError:
+                return values
+            # main의 비발동 규칙과 후보별로 대칭이다. reasoning만 달라도 같은 harness/model 한도를
+            # 재타격하므로 유효 fallback이 아니며, 한쪽만 유효하면 공통 비교 키가 생기지 않는다.
+            if (
+                fallback is not None
+                and (fallback[0], fallback[1]) != (harness, model)
+            ):
+                for field, value in zip(
+                    ("harness", "model", "reasoning"), fallback,
+                ):
+                    values[f"{prefix}.fallback.{field}"] = value
+        return values
 
     divergence = er.local_conf_divergence(
         engine_repo=REPO,
@@ -3488,13 +3512,10 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         )
         return 1
 
-    # 기존 `--cwd` 신뢰 repo축을 실행 엔진 REPO와 대조한다. 이번 실행이 해소한 role/tier의 같은
-    # 명시 키가 양쪽에 있고 값이 갈릴 때만 loud 경고한다. 다른 역할/키 부재는 per-clone 부분
-    # mapping이며 오배송 근거가 아니다. 승자는 결정적인 실행 엔진 conf이고 성공 경로 rc는 불변이다.
-    cwd_repo, divergence, er = check_local_conf_divergence(
-        cwd, conf, args.role, tier,
-        cli_override=(profile_source == "cli-override"),
-    )
+    # target repo 해소값은 write-target 재앵커에 먼저 쓰되, conf 분기 비교는 프롬프트 시크릿 판정으로
+    # fallback의 실제 발동 가능성까지 해소한 뒤 수행한다.
+    er = _load_external_review()
+    cwd_repo = er.repo_root_from_cwd(cwd)
     # prompt-file 존재 + 경로 자체 denylist(내용 읽기 전) + containment (repo 경계 안·유출 차단)
     prompt_file = Path(args.prompt_file)
     if not prompt_file.is_file():
@@ -3552,14 +3573,6 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         f"· source={profile_source} · resolved_profile={profile}",
         file=sys.stderr,
     )
-    if divergence is not None:
-        print(
-            er.format_local_conf_divergence(
-                divergence, surface="pm_delegate", cwd_label="--cwd",
-            ),
-            file=sys.stderr,
-        )
-
     # 드라이버 argv 준비 (dry-run·실행 공용). opencode 는 실행 시 합성 프롬프트를 임시 파일로 --file
     # 전달하므로, dry-run argv 는 사용자 prompt-file 경로로 표시(실행 시 합성 파일로 대체).
     argv_display = _build_target_argv(
@@ -3584,6 +3597,73 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     prompt_digest = (
         secret_scan_prompt_digest(prompt, harness, model) if secret_hits else None
     )
+
+    # 실제 실행의 시크릿 승인/차단을 fallback 분기 비교보다 먼저 확정한다. 유효 승인은 fallback을
+    # 확정 억제하고, 없거나 잘못된 승인은 여기서 송신 전 차단되므로 아래 비교에는 발동 가능한
+    # fallback만 남는다. dry-run은 승인 실행이 아니므로 미리보기 뒤의 기존 진단만 수행한다.
+    secret_scan_ack_digest: str | None = None
+    secret_scan_ack_hits: tuple[PromptSecretHit, ...] = ()
+    if not args.dry_run and secret_hits:
+        if prompt_digest is None:
+            print(
+                "오류: 시크릿 탐지는 있었지만 승인 digest를 생성하지 못했습니다 — 전송 전 차단합니다.",
+                file=sys.stderr,
+            )
+            return 1
+        ack_matches = (
+            args.secret_scan_ack is not None
+            and hmac.compare_digest(args.secret_scan_ack, prompt_digest)
+        )
+        if ack_matches:
+            secret_scan_ack_digest = prompt_digest
+            secret_scan_ack_hits = secret_hits
+            print(
+                "시크릿 스캔 차단을 명시 승인으로 통과 — "
+                f"발췌 <{secret_hits[0].excerpt}> · digest <{prompt_digest}> "
+                f"· 전 탐지 {len(secret_hits)}건 확인\n"
+                f"{_format_secret_scan_hits(secret_hits)}",
+                file=sys.stderr,
+            )
+        else:
+            mismatch = (
+                "  · 승인 digest 불일치 — 프롬프트 또는 해소된 수신자 "
+                "(harness:model)가 바뀜 · 발췌 재확인\n"
+                if args.secret_scan_ack is not None else ""
+            )
+            print(
+                "오류: 합성 프롬프트가 시크릿 denylist 판정에 걸렸습니다 — 전송 전 차단합니다.\n"
+                f"  · 전 탐지 {len(secret_hits)}건 — 아래 전체를 확인한 뒤에만 승인하세요.\n"
+                f"{_format_secret_scan_hits(secret_hits)}\n"
+                "  해당 텍스트를 프롬프트에서 제거하세요. 정상 식별자(conf 키 등)가 걸렸다면 판정 버그입니다.\n"
+                f"{mismatch}"
+                f"  · 승인 토큰: {prompt_digest}\n"
+                f"  · 재실행: {_secret_scan_retry_command(resolved, prompt_digest)}",
+                file=sys.stderr,
+            )
+            return 1
+
+    # 기존 `--cwd` 신뢰 repo축을 실행 엔진 REPO와 대조한다. 유효 시크릿 승인이 해소된 실행은 fallback이
+    # 확정 비발동이므로 비교하지 않는다. 그 밖에도 양쪽 모두 설정된 fallback 값만 공용 seam이 비교한다.
+    compare_fallback = fallback is not None and secret_scan_ack_digest is None
+    try:
+        _resolved_cwd_repo, divergence, er = check_local_conf_divergence(
+            cwd, conf, args.role, tier,
+            cli_override=(profile_source == "cli-override"),
+            compare_fallback=compare_fallback,
+            # 이미 cwd 해소에 쓴 같은 모듈 객체를 전달한다. `_load_external_review()` 재호출은 새
+            # 모듈/예외 클래스를 만들어 TargetLocalConfReadError catch identity를 깨뜨린다.
+            external_review_module=er,
+        )
+    except er.TargetLocalConfReadError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    if divergence is not None:
+        print(
+            er.format_local_conf_divergence(
+                divergence, surface="pm_delegate", cwd_label="--cwd",
+            ),
+            file=sys.stderr,
+        )
 
     # dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
     if args.dry_run:
@@ -3632,48 +3712,6 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         print(prompt)
         print("=== [dry-run] 외부 호출 생략 ===")
         return 0
-
-    # 시크릿 denylist 스캔 (합성 프롬프트·전송 전 차단·매칭 발췌 표시·값 마스킹)
-    secret_scan_ack_digest: str | None = None
-    secret_scan_ack_hits: tuple[PromptSecretHit, ...] = ()
-    if secret_hits:
-        if prompt_digest is None:
-            print(
-                "오류: 시크릿 탐지는 있었지만 승인 digest를 생성하지 못했습니다 — 전송 전 차단합니다.",
-                file=sys.stderr,
-            )
-            return 1
-        ack_matches = (
-            args.secret_scan_ack is not None
-            and hmac.compare_digest(args.secret_scan_ack, prompt_digest)
-        )
-        if ack_matches:
-            secret_scan_ack_digest = prompt_digest
-            secret_scan_ack_hits = secret_hits
-            print(
-                "시크릿 스캔 차단을 명시 승인으로 통과 — "
-                f"발췌 <{secret_hits[0].excerpt}> · digest <{prompt_digest}> "
-                f"· 전 탐지 {len(secret_hits)}건 확인\n"
-                f"{_format_secret_scan_hits(secret_hits)}",
-                file=sys.stderr,
-            )
-        else:
-            mismatch = (
-                "  · 승인 digest 불일치 — 프롬프트 또는 해소된 수신자 "
-                "(harness:model)가 바뀜 · 발췌 재확인\n"
-                if args.secret_scan_ack is not None else ""
-            )
-            print(
-                "오류: 합성 프롬프트가 시크릿 denylist 판정에 걸렸습니다 — 전송 전 차단합니다.\n"
-                f"  · 전 탐지 {len(secret_hits)}건 — 아래 전체를 확인한 뒤에만 승인하세요.\n"
-                f"{_format_secret_scan_hits(secret_hits)}\n"
-                "  해당 텍스트를 프롬프트에서 제거하세요. 정상 식별자(conf 키 등)가 걸렸다면 판정 버그입니다.\n"
-                f"{mismatch}"
-                f"  · 승인 토큰: {prompt_digest}\n"
-                f"  · 재실행: {_secret_scan_retry_command(resolved, prompt_digest)}",
-                file=sys.stderr,
-            )
-            return 1
 
     # 비용/송신 경고 + native advisory
     print(f"외부 하네스 {harness}(model={model}) 로 프롬프트 전송 중 (과금·외부 송신).", file=sys.stderr)

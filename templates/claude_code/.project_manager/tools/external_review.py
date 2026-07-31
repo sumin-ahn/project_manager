@@ -66,7 +66,7 @@ import sys
 import tempfile
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, NamedTuple
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -1510,10 +1510,8 @@ def _local_conf_path(repo: Path | None = None) -> Path:
 
 
 def _read_local_config(path: Path) -> dict[str, str]:
-    """비교 대상의 명시 local.conf를 KEY=value 로 읽는다(없으면 빈 dict)."""
+    """존재가 확인된 비교 대상 local.conf를 KEY=value 로 읽는다."""
     conf: dict[str, str] = {}
-    if not path.exists():
-        return conf
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -1545,6 +1543,25 @@ class LocalConfDivergence(NamedTuple):
     target_repo: Path
     target_conf_path: Path
     differences: tuple[str, ...]
+
+
+class ReviewContentResolution(NamedTuple):
+    """cross-repo 리뷰의 유효 denylist와 엔진 트리 송신 내용 분기 진단."""
+
+    denylist: tuple[str, ...]
+    divergence: LocalConfDivergence | None
+
+
+class TargetLocalConfReadError(RuntimeError):
+    """존재하는 비교 대상 local.conf를 안전하게 읽지 못해 송신을 중단해야 함."""
+
+    def __init__(self, path: Path, cause: BaseException):
+        self.path = path
+        self.cause = cause
+        super().__init__(
+            f"대상 local.conf 읽기 실패 — 외부 송신 전에 중단합니다: {path} "
+            f"({type(cause).__name__}: {cause})"
+        )
 
 
 def repo_root_from_cwd(cwd: Path | None) -> Path | None:
@@ -1586,6 +1603,109 @@ def reviewer_profile_config(conf: dict[str, str]) -> dict[str, str]:
     return {"reviewer_cmd": _reviewer_cmd(conf)}
 
 
+def _cross_repo_target_conf(
+    engine_repo: Path, target_repo: Path | None,
+) -> tuple[Path, Path, dict[str, str]] | None:
+    """다른 repo conf를 읽되, 진짜 부재만 무소음이고 읽기 실패는 fail-closed로 올린다."""
+    if target_repo is None:
+        return None
+    engine_repo = engine_repo.resolve()
+    target_repo = target_repo.resolve()
+    if target_repo == engine_repo:
+        return None
+    # `_local_conf_path()`는 provenance용으로 symlink까지 resolve한다. 존재 판정은 그보다 앞선
+    # directory entry 자체를 봐야 dangling symlink를 정상 부재로 오인하지 않는다. target_repo는
+    # 위에서 resolve했으므로 이 경로도 절대경로지만 마지막 local.conf symlink는 따라가지 않는다.
+    target_conf_path = target_repo / ".project_manager" / "local.conf"
+    try:
+        # lstat은 dangling symlink도 "존재"로 구분한다. FileNotFoundError만 기존 정상·무소음
+        # 대상 conf 부재 축이고, 그 밖의 stat/read/UTF-8 실패는 보호 선언을 확인할 수 없으므로
+        # 외부 송신 전에 fail-closed 해야 한다.
+        target_conf_path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise TargetLocalConfReadError(target_conf_path, exc) from exc
+    try:
+        target_conf = _read_local_config(target_conf_path)
+    except (OSError, UnicodeError) as exc:
+        raise TargetLocalConfReadError(target_conf_path, exc) from exc
+    return target_repo, target_conf_path, target_conf
+
+
+def _normalized_review_paths(conf: dict[str, str]) -> tuple[str, ...]:
+    """동일 Git 경로를 고르는 평범한 표기(`src`, `src/`, `./src`)를 비교용으로 정규화한다.
+
+    Git pathspec magic(`:(...)`)과 루트 표기는 의미를 보존하기 위해 손대지 않는다. 실제 diff에
+    전달하는 원문은 바꾸지 않고 cross-repo 경고의 동치 판정에만 쓴다.
+    """
+    normalized: set[str] = set()
+    for item in _configured_paths(conf):
+        value = item if item.startswith((":", "/")) else str(PurePosixPath(item))
+        normalized.add(value)
+    return tuple(sorted(normalized))
+
+
+def resolve_review_content_conf(
+    *,
+    engine_repo: Path,
+    engine_conf: dict[str, str],
+    target_repo: Path | None,
+    include_review_paths: bool,
+) -> ReviewContentResolution:
+    """cross-repo 리뷰의 **해소된 유효 내용 값**을 판정하고 denylist를 안전하게 합친다.
+
+    denylist는 순서/중복이 송신 제외 집합을 바꾸지 않으므로 포함 관계로 비교한다. 대상 트리 패턴이
+    실행 엔진 패턴의 부분집합이면 엔진 쪽이 같거나 더 보수적이어서 무소음이고, 대상에만 있는 패턴은
+    경고하면서 양쪽 유효 denylist의 합집합을 실제 diff 추출에 적용한다. 이 합집합의 근거는 양쪽 보호
+    선언을 모두 존중하는 **monotone 안전성**이지 대상 트리 diff 오배송 경로 폐쇄가 아니다.
+    `extract_diff`는 항상 `git -C str(REPO)`로 엔진 트리만 추출하므로 대상 트리 diff 오배송 경로는
+    애초에 없다. 합집합에 따른 추가 과차단은 명시 경로 차단·암묵 경로 제외 보고·빈 diff fail-loud
+    기존 게이트가 가시화한다.
+
+    review_paths는 포함 방향 어느 쪽도 일률적으로 안전하지 않다. 엔진 쪽이 넓으면 대상 선언보다 많은
+    내용을 보내고, 좁으면 리뷰 완전성이 줄기 때문에 **유효 경로 집합 동일성**을 비교한다. 단 CLI
+    `--paths`나 유효 ticket touches가 선택을 완전히 지정해 conf 값을 쓰지 않는 실행에서는 이 축을
+    빼서 미사용 값 경고를 만들지 않는다. 대상 conf 부재·같은 repo·cwd 미해소는 모두 무소음이다.
+    """
+    engine_denylist = _denylist_patterns(engine_conf)
+    loaded = _cross_repo_target_conf(engine_repo, target_repo)
+    if loaded is None:
+        return ReviewContentResolution(engine_denylist, None)
+
+    resolved_target_repo, target_conf_path, target_conf = loaded
+    target_denylist = _denylist_patterns(target_conf)
+    # 엔진 순서를 보존해 기존 매칭/보고를 안정화하고 대상에만 있는 패턴만 뒤에 붙인다.
+    effective_denylist = tuple(dict.fromkeys((*engine_denylist, *target_denylist)))
+    engine_denylist_set = set(engine_denylist)
+    target_only = tuple(sorted(set(target_denylist) - engine_denylist_set))
+    differences: list[str] = []
+    if target_only:
+        differences.append(
+            "review_denylist_extra: "
+            f"cwd-only={target_only!r} (양쪽 유효 denylist 합집합 적용)"
+        )
+
+    if include_review_paths:
+        engine_paths = _normalized_review_paths(engine_conf)
+        target_paths = _normalized_review_paths(target_conf)
+        if engine_paths != target_paths:
+            differences.append(
+                f"review_paths: engine={engine_paths!r}, cwd={target_paths!r}"
+            )
+
+    divergence = None
+    if differences:
+        divergence = LocalConfDivergence(
+            engine_repo=engine_repo.resolve(),
+            engine_conf_path=_local_conf_path(engine_repo.resolve()),
+            target_repo=resolved_target_repo,
+            target_conf_path=target_conf_path,
+            differences=tuple(differences),
+        )
+    return ReviewContentResolution(effective_denylist, divergence)
+
+
 def local_conf_divergence(
     *,
     engine_repo: Path,
@@ -1598,19 +1718,11 @@ def local_conf_divergence(
     값 동일·대상 conf 부재·cwd repo 미해소는 None(경고 인플레 금지). 비교는 selector가 허용한
     송신 프로필 키만 하므로 test_cmd 같은 무관 per-clone 차이는 loud 조건이 아니다.
     """
-    if target_repo is None:
+    loaded = _cross_repo_target_conf(engine_repo, target_repo)
+    if loaded is None:
         return None
+    target_repo, target_conf_path, target_conf = loaded
     engine_repo = engine_repo.resolve()
-    target_repo = target_repo.resolve()
-    if target_repo == engine_repo:
-        return None
-    target_conf_path = _local_conf_path(target_repo)
-    if not target_conf_path.is_file():
-        return None
-    try:
-        target_conf = _read_local_config(target_conf_path)
-    except (OSError, UnicodeError):
-        return None
 
     engine_values = selector(engine_conf)
     target_values = selector(target_conf)
@@ -1635,21 +1747,25 @@ def local_conf_divergence(
 
 def format_local_conf_divergence(
     divergence: LocalConfDivergence, *, surface: str, cwd_label: str,
+    resolution_note: str | None = None,
 ) -> str:
     """두 송신 표면 공용 never-block loud 경고 문구."""
     details = "\n".join(f"  · {item}" for item in divergence.differences)
+    resolution = resolution_note or (
+        f"이번 실행에서는 실행 엔진 conf가 이깁니다: {divergence.engine_conf_path}\n"
+        f"  차단하지 않고 계속합니다. 같은 프로필을 원하면 {cwd_label} conf의 위 키 값을 engine "
+        "conf와 맞추거나, 의도한 local.conf를 가진 엔진 사본을 실행하세요. 실행 결과 raw 헤더의 "
+        "# local_conf/# resolved_profile에도 승자 provenance를 기록합니다."
+    )
     return (
         f"경고: local.conf 프로필 분기 감지 ({surface}) — {cwd_label} repo와 실행 엔진 "
-        "REPO가 다르고 외부 송신 프로필 값이 실제로 갈립니다.\n"
+        "REPO가 다르고 외부 송신 프로필/내용 값이 실제로 갈립니다.\n"
         f"  · engine REPO: {divergence.engine_repo}\n"
         f"  · engine conf: {divergence.engine_conf_path}\n"
         f"  · {cwd_label} repo: {divergence.target_repo}\n"
         f"  · {cwd_label} conf: {divergence.target_conf_path}\n"
         f"{details}\n"
-        f"  이번 실행에서는 실행 엔진 conf가 이깁니다: {divergence.engine_conf_path}\n"
-        f"  차단하지 않고 계속합니다. 같은 프로필을 원하면 {cwd_label} conf의 위 키 값을 engine "
-        "conf와 맞추거나, 의도한 local.conf를 가진 엔진 사본을 실행하세요. 실행 결과 raw 헤더의 "
-        "# local_conf/# resolved_profile에도 승자 provenance를 기록합니다."
+        f"  {resolution}"
     )
 
 
@@ -1697,12 +1813,7 @@ def main(argv: list[str] | None = None) -> int:
     # 상대 `.project_manager/tools/external_review.py` 선택을 결정한 호출 cwd repo와 실행 엔진
     # 사본 REPO를 같은 입력으로 대조한다. reviewer_cmd의 **실제 해소값**이 갈릴 때만 경고하며,
     # 동일(default 명시 포함)·대상 conf 부재·non-repo cwd는 조용히 통과한다.
-    divergence = local_conf_divergence(
-        engine_repo=REPO,
-        engine_conf=conf,
-        target_repo=repo_root_from_cwd(Path.cwd()),
-        selector=reviewer_profile_config,
-    )
+    target_repo = repo_root_from_cwd(Path.cwd())
     # 정상 실행·dry-run 공용 첫 provenance. 이후 cap/reanchor/diff 진단이 붙더라도 어느 엔진 conf와
     # reviewer tuple을 해소했는지가 stderr에 남는다.
     print(
@@ -1713,6 +1824,16 @@ def main(argv: list[str] | None = None) -> int:
     deferred_warnings = resolution_warnings.getvalue()
     if deferred_warnings:
         print(deferred_warnings, end="", file=sys.stderr)
+    try:
+        divergence = local_conf_divergence(
+            engine_repo=REPO,
+            engine_conf=conf,
+            target_repo=target_repo,
+            selector=reviewer_profile_config,
+        )
+    except TargetLocalConfReadError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
     if divergence is not None:
         print(
             format_local_conf_divergence(
@@ -1746,6 +1867,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     # 경로 결정: --paths > --ticket touches > local.conf review_paths > DEFAULT_PATHS
+    include_conf_review_paths = False
     if args.paths:
         paths = args.paths
     elif args.ticket:
@@ -1753,16 +1875,50 @@ def main(argv: list[str] | None = None) -> int:
         if not touches:
             print(f"경고: ticket {args.ticket} 의 touches 미발견 — 기본 경로 사용", file=sys.stderr)
             paths = _configured_paths(conf)
+            include_conf_review_paths = True
         else:
             paths = touches
     else:
         paths = _configured_paths(conf)
+        include_conf_review_paths = True
+
+    try:
+        content_resolution = resolve_review_content_conf(
+            engine_repo=REPO,
+            engine_conf=conf,
+            target_repo=target_repo,
+            include_review_paths=include_conf_review_paths,
+        )
+    except TargetLocalConfReadError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    if content_resolution.divergence is not None:
+        review_paths_note = (
+            "review_paths의 이번 범위는 엔진 conf가 정했습니다"
+            if include_conf_review_paths
+            else "review_paths는 --paths/유효 ticket touches 완전지정으로 conf 비교에서 제외했습니다"
+        )
+        print(
+            format_local_conf_divergence(
+                content_resolution.divergence,
+                surface="external_review 송신 내용",
+                cwd_label="호출 cwd",
+                resolution_note=(
+                    "denylist는 양쪽 해소값의 합집합을 적용하고 "
+                    f"{review_paths_note}: {_local_conf_path(REPO)}\n"
+                    "  차단하지 않고 계속합니다. 대상 전용 denylist도 이번 diff 제외에 적용되며, "
+                    "review_paths 범위를 직접 정하려면 --paths/유효 ticket touches로 이번 범위를 "
+                    "완전히 지정하세요."
+                ),
+            ),
+            file=sys.stderr,
+        )
 
     print(f"검토 경로: {paths}", file=sys.stderr)
     print(f"base: {args.base}", file=sys.stderr)
 
     # diff 추출 (시크릿 denylist 자동 제외 — 제외 경로 목록도 반환)
-    denylist = _denylist_patterns(conf)
+    denylist = content_resolution.denylist
     try:
         diff, excluded = extract_diff(args.base, paths, denylist=denylist)
     except RuntimeError as exc:

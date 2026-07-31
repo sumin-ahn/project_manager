@@ -3564,8 +3564,8 @@ def test_harness_timeout_budget_counts_opencode_retry_windows(pd, monkeypatch):
     assert pd._harness_timeout_budget("codex", 600) == 610      # 단일 시도 정리 10초
     assert pd._harness_timeout_budget("claude", 600) == 610
     assert pd._harness_timeout_budget("opencode", 600) == 810   # 600 + 2×90 + 3×10
-    # timeout 이 첫-이벤트 창보다 짧으면 창이 timeout 으로 클램프된다(워치독 overall_deadline 분기).
-    assert pd._harness_timeout_budget("opencode", 30) == 120    # 30 + 2×30 + 3×10
+    # wall 이 첫-이벤트 창보다 짧으면 중복 전송 없이 첫 시도에서 끝난다.
+    assert pd._harness_timeout_budget("opencode", 30) == 40     # 30 + 단일 정리 10
     # relay/프로필을 못 읽으면 기본 최대 2회가 wall 전부를 쓰는 안전 상한으로 낮게 예고하지 않는다.
     monkeypatch.setattr(pd, "_load_relay", lambda: (_ for _ in ()).throw(OSError("no relay")))
     assert pd._harness_timeout_budget("opencode", 600) == 1830

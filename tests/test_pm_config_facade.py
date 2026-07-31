@@ -35,6 +35,19 @@ def _load_pm_config():
     return mod
 
 
+def _load_board():
+    spec = importlib.util.spec_from_file_location("board_for_pm_config_test", TOOLS / "board.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _marked_skew(message="injected engine rev skew"):
+    exc = RuntimeError(message)
+    exc._engine_rev_skew = True
+    return exc
+
+
 @pytest.fixture(scope="module")
 def pc():
     return _load_pm_config()
@@ -160,11 +173,12 @@ class FakeWorktreePool:
         return FakeLease(slot=f"work/{repo}_1", repo=repo, test_cmd=None if readonly else test_cmd,
                          role=role, session=session)
 
-    def install_protected_hook(self, repo, protected):
+    def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
         # 보호 브랜치 pre-push 훅 (재)설치 대역 (T-0076) — repo·protected 목록을 기록해
         # repo add/worktree add 가 보호 훅 설치를 호출하는 배선을 결정적으로 검증한다.
         # True 반환(bare 존재 시 설치 성공·실 install_protected_hook 계약과 동형).
         self.calls.append(("install_protected_hook", repo, list(protected)))
+        self.last_protected_gate = (gate_mode, test_cmd)
         return True
 
     def set_test_cmd(self, slot, cmd):
@@ -650,6 +664,70 @@ def test_upstream_set_url_valid_records_and_preserves_keys(pc, tmp_path):
     assert "session=pm" in text                 # 타 키 보존
     assert "test_cmd=pytest" in text            # 타 키 보존
     assert text.startswith("# header")          # 주석 보존
+
+
+def test_upstream_set_normalizes_duplicates_and_effective_value_is_requested(
+        pc, tmp_path):
+    """A2 — first/last가 갈린 conf도 upstream 한 줄 + 요청 실효값으로 수렴한다."""
+    conf = _setup_repo_conf(
+        pc, tmp_path,
+        "# header\nsession=pm\nupstream=/first\ntest_cmd=pytest -q\n"
+        "upstream=/stale\nupstream=\nfooter=keep\n",
+    )
+    requested = "https://github.com/acme/framework.git"
+
+    rc = pc.cmd_upstream(
+        argparse.Namespace(upstream_action="set", value=requested),
+        pm_import=_load_pm_import(), git_runner=_good_upstream_runner,
+    )
+
+    assert rc == 0
+    text = conf.read_text(encoding="utf-8")
+    assert text.count("upstream=") == 1
+    assert pc._local_conf_value("upstream") == requested
+    assert _load_pm_import()._parse_conf_keys(text)["upstream"] == requested
+    board = _load_board()
+    board.LOCAL_CONF = conf
+    assert board.local_config()["upstream"] == requested
+    assert "session=pm" in text and "test_cmd=pytest -q" in text and "footer=keep" in text
+    assert text.startswith("# header\n")
+
+
+def test_upstream_set_postcondition_mismatch_fails_loud(
+        pc, tmp_path, monkeypatch, capsys):
+    """A2 — 쓰기 뒤 last-wins 실효값이 요청과 다르면 성공을 출력하지 않는다."""
+    _setup_repo_conf(pc, tmp_path, "upstream=/old\n")
+    pm_import = _load_pm_import()
+    monkeypatch.setattr(pm_import, "_parse_conf_keys", lambda _text: {"upstream": "/raced"})
+
+    rc = pc.cmd_upstream(
+        argparse.Namespace(upstream_action="set", value="https://github.com/acme/new.git"),
+        pm_import=pm_import, git_runner=_good_upstream_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "실효값 불일치" in captured.err
+    assert "✓ upstream 설정" not in captured.out
+
+
+def test_upstream_set_recomputes_installed_gate_contract(pc, tmp_path):
+    """upstream 변경 즉시 등록 repo 훅의 원자 gate contract를 중앙 resolver로 재설치한다."""
+    _setup_repo_conf(pc, tmp_path, "upstream=/old\ntest_cmd=go test ./...\n")
+    board = FakeBoard(
+        registered=("svc",), repo_gits={"svc": "git@github.com:acme/framework.git"},
+        repo_protecteds={"svc": ["main"]},
+    )
+    pool = FakeWorktreePool()
+    args = argparse.Namespace(
+        upstream_action="set", value="https://github.com/acme/framework.git")
+
+    assert pc.cmd_upstream(
+        args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner,
+        board=board, worktree_pool=pool,
+    ) == 0
+    assert pool.last_protected_gate == ("release", "go test ./...")
+    assert _install_hook_call(pool) == ("install_protected_hook", "svc", ["main"])
 
 
 def test_upstream_set_url_unreachable_rejected(pc, tmp_path, capsys):
@@ -1539,9 +1617,342 @@ def test_install_protected_hook_helper_fail_soft_no_wp(pc):
 def test_install_protected_hook_helper_fail_soft_on_exception(pc):
     """_install_protected_hook — install 이 던져도 fail-soft False (등록/슬롯 생성을 안 깬다·T-0076)."""
     class _BoomWp:
-        def install_protected_hook(self, repo, protected):
+        def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
             raise RuntimeError("boom")
     assert pc._install_protected_hook("svc", board=FakeBoard(), worktree_pool=_BoomWp()) is False
+
+
+@pytest.mark.parametrize("action", ["repo-add", "worktree-add"])
+def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
+        pc, tmp_path, capsys, action):
+    """A1/B4 경계 — 일반 설치 예외는 두 생성 명령 모두 rc0·경고이며 traceback이 아니다."""
+    class _BoomWp(FakeWorktreePool):
+        def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
+            raise RuntimeError("ordinary install failure")
+
+    pool = _BoomWp()
+    if action == "repo-add":
+        repos = tmp_path / ".repos"
+        (repos / "svc.git").mkdir(parents=True)
+        rc = pc.cmd_repo_add(
+            _repo_add_args(pc, name="svc"),
+            board=FakeBoard(registered=("svc",)), clone_runner=FakeGitRecorder(rc=0),
+            repos_dir=repos, worktree_pool=pool,
+        )
+    else:
+        rc = pc.cmd_worktree_add(
+            argparse.Namespace(repo="svc", test=None, readonly=False, task=None),
+            board=FakeBoard(), worktree_pool=pool,
+        )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "ordinary install failure" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_install_protected_hook_rethrows_marked_engine_rev_skew(pc):
+    """A1 — 일반 installer 오류와 달리 marked skew는 repo/worktree add 경계 밖으로 전파한다."""
+    class _SkewWp:
+        def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
+            raise _marked_skew()
+
+    with pytest.raises(RuntimeError, match="engine rev skew"):
+        pc._install_protected_hook("svc", board=FakeBoard(), worktree_pool=_SkewWp())
+
+
+def test_protected_hook_resolution_boundaries_rethrow_marked_engine_rev_skew(
+        pc, tmp_path, monkeypatch):
+    """A1 — gate/install 관련 보조 fail-soft 경계도 marker를 None/default로 강등하지 않는다."""
+    skew = _marked_skew()
+
+    class _Board:
+        REPO = pc.REPO
+
+        @staticmethod
+        def _parse_areas():
+            raise skew
+
+        @staticmethod
+        def _areas_git_url(_repo):
+            raise skew
+
+        @staticmethod
+        def _repo_protected(_repo):
+            raise skew
+
+        @staticmethod
+        def _repo_base(_repo):
+            raise skew
+
+        @staticmethod
+        def registered_repos():
+            raise skew
+
+    with pytest.raises(RuntimeError):
+        pc._resolve_repo_test_cmd("svc", board=_Board())
+    with pytest.raises(RuntimeError):
+        pc._repo_registry_git("svc", board=_Board())
+    with pytest.raises(RuntimeError):
+        pc._resolve_repo_protected("svc", board=_Board())
+    with pytest.raises(RuntimeError):
+        pc._resolve_repo_base("svc", board=_Board())
+
+    monkeypatch.setattr(
+        pc, "_load_module",
+        lambda *_args: SimpleNamespace(classify_upstream=lambda _value: (_ for _ in ()).throw(skew)),
+    )
+    with pytest.raises(RuntimeError):
+        pc._classify_upstream("https://example.test/repo.git")
+
+    class _WiringPool:
+        REPO_HOOKS_DIR = tmp_path / "hooks"
+
+        @staticmethod
+        def bare_repo_path(_repo):
+            raise skew
+
+    with pytest.raises(RuntimeError):
+        pc.protected_hook_wired("svc", worktree_pool=_WiringPool())
+    with pytest.raises(RuntimeError):
+        pc._refresh_protected_gate_contracts(board=_Board(), worktree_pool=object())
+
+
+@pytest.mark.parametrize("upstream", ["~pm_user_that_cannot_exist_0524/repo", "bad\0path"])
+def test_install_protected_hook_gate_resolution_error_is_fail_soft(
+        pc, tmp_path, monkeypatch, upstream):
+    """B4 — gate config의 expanduser/Path 오류도 등록·슬롯 생성을 깨지 않고 False로 강등한다."""
+    home = tmp_path / "bad-gate-config"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(f"upstream={upstream}\ntest_cmd=pytest -q\n", encoding="utf-8")
+    monkeypatch.setattr(pc, "REPO", home)
+
+    class _MustNotInstall:
+        def install_protected_hook(self, *args, **kwargs):
+            raise AssertionError("resolver 실패 뒤 raw installer를 호출함")
+
+    assert pc._install_protected_hook(
+        "svc", board=FakeBoard(), worktree_pool=_MustNotInstall()) is False
+    reason = pc.protected_hook_install_failure_reason("svc")
+    assert reason is not None
+    assert "RuntimeError" in reason or "ValueError" in reason
+    assert (upstream in reason or "home directory" in reason
+            or "embedded null byte" in reason)
+
+
+def test_protected_push_gate_config_keeps_framework_self_repo_release_gate(
+        pc, tmp_path, monkeypatch):
+    """upstream이 이 PM 홈의 canonical repo 슬롯이면 기존 release gate를 그대로 선택한다."""
+    home = tmp_path / "pm-home"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(
+        f"upstream={home / 'work' / 'svc_2'}\ntest_cmd=python -m pytest tests/ -q\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pc, "REPO", home)
+
+    assert pc._protected_push_gate_config("svc", board=object()) == (
+        "release", "python -m pytest tests/ -q")
+
+
+def test_protected_push_gate_config_routes_adopter_to_repo_test_cmd(
+        pc, tmp_path, monkeypatch):
+    """외부 framework upstream을 쓰는 adopter는 areas의 자기 test_cmd를 선택한다."""
+    home = tmp_path / "adopter-home"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(
+        f"upstream={tmp_path / 'framework-checkout'}\ntest_cmd=wrong-global-command\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pc, "REPO", home)
+
+    class _Board:
+        @staticmethod
+        def _parse_areas():
+            return ["repo", "test_cmd"], [
+                {"repo": "svc", "test_cmd": "go test ./..."},
+            ]
+
+    assert pc._protected_push_gate_config("svc", board=_Board()) == (
+        "self-test", "go test ./...")
+
+
+def test_protected_push_gate_config_url_identity_keeps_framework_release(
+        pc, tmp_path, monkeypatch):
+    """URL upstream도 areas repo remote와 같은 identity면 framework release gate다."""
+    home = tmp_path / "url-framework-home"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(
+        "upstream=https://github.com/acme/framework.git\ntest_cmd=pytest -q\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pc, "REPO", home)
+    board = FakeBoard(repo_gits={"svc": "git@github.com:acme/framework.git"})
+
+    assert pc._protected_push_gate_config("svc", board=board) == (
+        "release", "pytest -q")
+
+
+@pytest.mark.parametrize(
+    ("upstream", "registered"),
+    [
+        ("ssh://git@github.com:22/acme/framework.git",
+         "https://github.com/acme/framework"),
+        ("https://GITHUB.COM/acme/framework.git/",
+         "git@github.com:acme/framework.git"),
+        ("github.com:acme/framework.git",
+         "ssh://github.com/acme/framework"),
+    ],
+    ids=["ssh-default-port-vs-https", "host-case-https-vs-scp", "scp-vs-ssh"],
+)
+def test_git_remote_identity_normalizes_legitimate_network_notations(
+        pc, upstream, registered):
+    """A3 identity 표 — network transport 표기/user/host case/default port/.git 차이는 합친다."""
+    assert pc._git_remote_identity(upstream) == pc._git_remote_identity(registered)
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("file://github.com/acme/framework.git",
+         "https://github.com/acme/framework.git"),
+        ("ssh://github.com:2222/acme/framework.git",
+         "ssh://github.com:22/acme/framework.git"),
+        ("https://github.com/acme/framework.git",
+         "https://github.com/acme/other.git"),
+    ],
+    ids=["file-vs-network", "non-default-port", "path"],
+)
+def test_git_remote_identity_preserves_security_relevant_axes(pc, left, right):
+    """A3 identity 표 — file transport, non-default port, path는 보존해 오합치지 않는다."""
+    assert pc._git_remote_identity(left) != pc._git_remote_identity(right)
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "same"),
+    [
+        ("ssh://git@[::1]/acme/framework.git", "https://[::1]/acme/framework", True),
+        ("git@[::1]:acme/framework.git", "ssh://[::1]:22/acme/framework", True),
+        ("https://[::1]:443/acme/framework.git", "ssh://[::1]/acme/framework", True),
+        ("file://[::1]/acme/framework.git", "https://[::1]/acme/framework.git", False),
+        ("ssh://[::1]:2222/acme/framework.git", "ssh://[::1]/acme/framework.git", False),
+        ("ssh://[::1]:2222/acme/framework.git", "ssh://[::1:2222]/acme/framework.git", False),
+    ],
+    ids=[
+        "ipv6-ssh-https", "ipv6-scp-default-22", "ipv6-https-default-443",
+        "ipv6-file-vs-network", "ipv6-non-default-port", "ipv6-host-port-boundary",
+    ],
+)
+def test_git_remote_identity_ipv6_decision_table(pc, left, right, same):
+    """A3 — IPv6에서도 transport/default-port/non-default-port 판정표와 host 경계가 유지된다."""
+    left_identity = pc._git_remote_identity(left)
+    right_identity = pc._git_remote_identity(right)
+    assert (left_identity == right_identity) is same
+    assert len(left_identity) == 4 and len(right_identity) == 4
+
+
+def test_protected_push_gate_config_file_transport_collision_is_adopter_self_test(
+        pc, tmp_path, monkeypatch):
+    """A3 — file:// authority/path가 https remote 문자열과 같아도 release로 오판하지 않는다."""
+    home = tmp_path / "file-transport-adopter"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(
+        "upstream=file://github.com/acme/framework.git\ntest_cmd=pytest -q\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pc, "REPO", home)
+    board = FakeBoard(repo_gits={"svc": "https://github.com/acme/framework.git"})
+
+    assert pc._protected_push_gate_config("svc", board=board) == (
+        "self-test", "pytest -q")
+
+
+def test_protected_push_gate_config_scp_without_user_keeps_framework_release(
+        pc, tmp_path, monkeypatch):
+    """지원 SCP `host:path`도 pm_import 공용 분류를 거쳐 같은 remote면 release다."""
+    home = tmp_path / "scp-framework-home"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(
+        "upstream=github.com:acme/framework.git\ntest_cmd=pytest -q\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pc, "REPO", home)
+    board = FakeBoard(repo_gits={"svc": "git@github.com:acme/framework.git"})
+
+    assert pc._protected_push_gate_config("svc", board=board) == (
+        "release", "pytest -q")
+
+
+def test_protected_push_gate_config_missing_upstream_downgrades_to_self_test(
+        pc, tmp_path, monkeypatch, capsys):
+    """사용자 통제 밖 upstream 부재는 영구 차단 대신 증거 요구를 유지한 self-test로 강등한다."""
+    home = tmp_path / "unresolved-home"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text("test_cmd=pytest -q\n", encoding="utf-8")
+    monkeypatch.setattr(pc, "REPO", home)
+
+    assert pc._protected_push_gate_config("svc", board=object()) == (
+        "self-test", "pytest -q")
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 1 and "upstream 축 미해소" in err[0]
+    assert "upstream을 설정" in err[0]
+
+
+def test_protected_push_gate_config_url_without_registry_git_downgrades_to_self_test(
+        pc, tmp_path, monkeypatch, capsys):
+    """URL upstream + 구 registry의 빈 git 칼럼도 unresolved 하드 차단 없이 self-test다."""
+    home = tmp_path / "url-no-registry-git"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(
+        "upstream=https://github.com/acme/framework.git\ntest_cmd=go test ./...\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pc, "REPO", home)
+
+    assert pc._protected_push_gate_config("svc", board=FakeBoard(repo_gits={})) == (
+        "self-test", "go test ./...")
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 1 and "areas.md git 축 미해소" in err[0]
+    assert "git URL을 등록" in err[0]
+
+
+def test_local_conf_value_duplicate_empty_is_last_wins_like_board(
+        pc, tmp_path, monkeypatch):
+    """A2 — 마지막 빈 값도 앞 값을 해제한다(board.local_config과 같은 last-wins)."""
+    home = tmp_path / "local-conf-values"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text("test_cmd=first\ntest_cmd=second\ntest_cmd=   \n", encoding="utf-8")
+    monkeypatch.setattr(pc, "REPO", home)
+    assert pc._local_conf_value("test_cmd") == ""
+
+
+def test_protected_push_gate_trailing_empty_upstream_downgrades_like_upstream_show(
+        pc, tmp_path, monkeypatch, capsys):
+    """A2 — canonical upstream 뒤 `upstream=`는 해제이며 gate도 미해소 self-test로 본다."""
+    home = tmp_path / "cleared-upstream"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(
+        "upstream=https://github.com/acme/framework.git\n"
+        "upstream=\n"
+        "test_cmd=go test ./...\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pc, "REPO", home)
+    board = FakeBoard(repo_gits={"svc": "https://github.com/acme/framework.git"})
+
+    assert pc._local_conf_value("upstream") == ""
+    assert pc._protected_push_gate_config("svc", board=board) == (
+        "self-test", "go test ./...")
+    assert "upstream 축 미해소" in capsys.readouterr().err
 
 
 def test_resolve_repo_protected_board_absent_defaults(pc):

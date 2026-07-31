@@ -365,6 +365,7 @@ def test_embedded_hook_skips_old_python_candidate(tmp_path):
     shutil.copy2(TOOLS / "python_floor.py", board.with_name("python_floor.py"))
     (hook_dir / "protected").write_text("main\n", encoding="utf-8")
     (hook_dir / "engine-root").write_text(f"{engine_root}\n", encoding="utf-8")
+    (hook_dir / "gate-contract").write_text("release\npytest -q\n", encoding="utf-8")
     hook = hook_dir / "pre-push"
     hook.write_text(worktree_pool._PROTECTED_PRE_PUSH_HOOK, encoding="utf-8")
     hook.chmod(0o755)
@@ -401,6 +402,7 @@ def test_embedded_hook_reports_all_old_python_versions(tmp_path):
     shutil.copy2(TOOLS / "python_floor.py", tools / "python_floor.py")
     (hook_dir / "protected").write_text("main\n", encoding="utf-8")
     (hook_dir / "engine-root").write_text(f"{engine_root}\n", encoding="utf-8")
+    (hook_dir / "gate-contract").write_text("release\npytest -q\n", encoding="utf-8")
     hook = hook_dir / "pre-push"
     hook.write_text(worktree_pool._PROTECTED_PRE_PUSH_HOOK, encoding="utf-8")
     hook.chmod(0o755)

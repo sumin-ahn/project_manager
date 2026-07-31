@@ -10,7 +10,7 @@ opencode `run` 이 스타트업 network fetch stall 에 빠지면 `--format json
   ② env 노브 `PM_OC_FIRST_EVENT_TIMEOUT`/`PM_OC_STALL_RETRIES` 해소기 동작.
   ③ opencode driver 배선 — `_make_watchdog_runner` 가 엔진 워치독 호출 · `_turn` 이 stall 소진에
      loud + fail-soft(stall_error 주입 시) · 미주입 시 전파(sensitivity).
-  ④ pm_import `--fill auto` opencode 경로 워치독 경유 · claude 경로는 미경유.
+  ④ pm_import `--fill auto` 세 하네스 공용 워치독 경유 · opencode startup 재시도 불변.
   ⑤ **결정적 e2e**(skipif opencode 부재) — 무응답 소켓 서버(연결 수락·응답 0)를 baseURL 로 물린
      스크래치 config·실 opencode 바이너리로 워치독이 kill+재시도+fail-loud 하는지(first-event
      timeout 을 5초로 낮춰 수십 초 내 검증).
@@ -367,6 +367,7 @@ def test_driver_turn_without_stall_error_propagates():
 def test_pm_import_opencode_fill_routes_watchdog(monkeypatch):
     """opencode fill argv 는 워치독 경유 — stall 소진은 (False, 안내)로 fail-soft."""
     pm_import = _load_pm_import()
+    relay = _load_engine()
     called: dict = {}
 
     class FakeEngine:
@@ -382,36 +383,63 @@ def test_pm_import_opencode_fill_routes_watchdog(monkeypatch):
             return 1
 
         @staticmethod
+        def resolve_harness_profile(harness, conf):
+            return relay.resolve_harness_profile(harness, conf)
+
+        @staticmethod
+        def idle_timeout_for_signal(signal, configured):
+            return relay.idle_timeout_for_signal(signal, configured)
+
+        TIMEOUT_AXIS_WALL = relay.TIMEOUT_AXIS_WALL
+        TIMEOUT_AXIS_IDLE = relay.TIMEOUT_AXIS_IDLE
+
+        @staticmethod
         def run_with_first_event_watchdog(argv, **kw):
             called["argv"] = argv
             called["kw"] = kw
             raise FakeEngine.StallWatchdogError("stall!")
 
     monkeypatch.setattr(pm_import, "_load_watchdog", lambda: FakeEngine)
-    ok, out = pm_import._real_harness_runner(["opencode", "run", "hi"], "prompt")
+    monkeypatch.setattr(
+        pm_import.subprocess, "Popen",
+        lambda *args, **kwargs: pytest.fail("테스트가 실 opencode를 spawn하려 함"),
+    )
+    ok, out = pm_import._real_harness_runner(
+        ["opencode", "run", "hi", "--format", "json"], "prompt")
     assert ok is False
     assert "stall" in out and "재시도 소진" in out
-    assert called["argv"] == ["opencode", "run", "hi"]
-    assert called["kw"]["overall_timeout"] == pm_import.FILL_TIMEOUT_SECONDS
+    assert called["argv"] == ["opencode", "run", "hi", "--format", "json"]
+    profile = relay.HARNESS_PROFILES["opencode"]
+    assert called["kw"]["overall_timeout"] == profile.wall_timeout
+    assert called["kw"]["idle_timeout"] == profile.idle_timeout
 
 
-def test_pm_import_claude_fill_skips_watchdog(monkeypatch):
-    """claude fill argv 는 워치독 미경유 — 기존 subprocess.run 경로(무변경)."""
+def test_pm_import_claude_fill_routes_shared_watchdog(monkeypatch):
+    """claude fill도 공용 워치독 경유 — startup 재시도만 선언대로 꺼진다."""
     pm_import = _load_pm_import()
+    relay = _load_engine()
+    called = {}
 
-    def _boom():
-        raise AssertionError("claude 경로가 워치독을 로드하면 안 된다")
+    class _FakeRelay:
+        def __getattr__(self, name):
+            return getattr(relay, name)
 
-    monkeypatch.setattr(pm_import, "_load_watchdog", _boom)
+        def run_with_first_event_watchdog(self, argv, **kwargs):
+            called.update(kwargs)
+            return subprocess.CompletedProcess(argv, 0, "draft text", "")
 
-    class _Fake:
-        returncode = 0
-        stdout = "draft text"
-        stderr = ""
-
-    monkeypatch.setattr(pm_import.subprocess, "run", lambda *a, **k: _Fake())
+    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: _FakeRelay())
+    monkeypatch.setattr(
+        pm_import.subprocess, "Popen",
+        lambda *args, **kwargs: pytest.fail("테스트가 실 claude를 spawn하려 함"),
+    )
     ok, out = pm_import._real_harness_runner(["claude", "-p", "hi"], "prompt")
     assert ok is True and "draft text" in out
+    profile = relay.HARNESS_PROFILES["claude"]
+    assert called["first_event_timeout"] is None
+    assert called["retries"] == 0
+    assert called["overall_timeout"] == profile.wall_timeout
+    assert called["idle_timeout"] is None
 
 
 # ── ⑤ 결정적 픽스처 e2e (무응답 소켓 서버 + 실 opencode·skipif 부재) ─────────────

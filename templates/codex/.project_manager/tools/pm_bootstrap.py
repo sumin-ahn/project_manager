@@ -4146,12 +4146,14 @@ class PmBootstrap:
             return None
         try:
             protected = repo_protected(repo)
-        except Exception:  # noqa: BLE001 — fail-soft: 파싱 실패는 경고 생략(소프트).
+        except Exception as exc:  # noqa: BLE001 — 일반 파싱 실패만 경고 생략(단 skew 재전파).
+            if _is_engine_rev_skew(exc):
+                raise
             return None
         return branch if branch in protected else None
 
     def _reconcile_protected_sidecar(self, repo: str) -> bool:
-        """훅 sidecar 가 areas.md 보호목록과 다를 때만 재설치한다.
+        """훅 sidecar의 보호목록 **또는 증거 계약**이 현재 해소값과 다르면 재설치한다.
 
         훅이 실제로 읽는 건 areas.md 가 아니라 설치 시점에 복사된 sidecar
         (`.local/repo-hooks/<repo>/protected`)다 — *다른 clone/사용자*가 목록을 바꾸면 이 clone 의
@@ -4160,8 +4162,12 @@ class PmBootstrap:
 
         **비교 우선**: sidecar 를 읽어 resolve 된 목록과 같고 **훅이 배선돼 있으면** 아무것도 하지
         않는다(subprocess 0 — 정합이 정상 상태이므로 매 부트스트랩이 git config 를 때리지 않는다).
-        다를 때만 `worktree_pool.install_protected_hook(repo, protected)` 를 부른다(훅 본문·sidecar·
-        bare `core.hooksPath` 멱등 재설치). 훅 *본문* 신버전 배포는 `pm_update` 축소유라
+        다를 때만 `pm_config._install_protected_hook(repo, ...)` 깔때기를 부른다. 비교 단계에서도
+        현재 upstream provenance의 gate mode/test command를 매번 재해소해, 한 원자
+        `gate-contract` sidecar 실값과 **둘 다** 대조한다. 이 축이 없으면 areas
+        `test_cmd`만 바뀐 뒤 보호목록이 같을 때 stale command가 다음 pm_update까지
+        살아남는다. drift에서는 훅 본문·sidecar·bare `core.hooksPath`를 멱등 재설치한다.
+        훅 *본문* 신버전 배포는 `pm_update` 축 소유라
         여기선 드리프트만 본다.
 
         **배선 축을 함께 본다(should-fix)**: `install_protected_hook` 은 sidecar 기록 뒤 bare
@@ -4188,9 +4194,12 @@ class PmBootstrap:
         if repo_protected is None:
             return False
         wp = self._worktree_pool or _load_worktree_pool()
-        install = getattr(wp, "install_protected_hook", None) if wp else None
+        pm_config = _load_tool("pm_config")
+        install = getattr(pm_config, "_install_protected_hook", None) if pm_config else None
+        gate_config = getattr(pm_config, "_protected_push_gate_config", None) if pm_config else None
         hooks_dir = getattr(wp, "REPO_HOOKS_DIR", None) if wp else None
-        if install is None or hooks_dir is None:
+        contract_name = getattr(wp, "PROTECTED_GATE_CONTRACT_NAME", None) if wp else None
+        if install is None or gate_config is None or hooks_dir is None or not contract_name:
             return False
         try:
             protected = list(repo_protected(repo))
@@ -4200,33 +4209,66 @@ class PmBootstrap:
             current = [line.strip()
                        for line in sidecar.read_text(encoding="utf-8").splitlines()
                        if line.strip()]
-            content_ok = current == protected
+            protected_ok = current == protected
+            gate_mode, test_cmd = gate_config(
+                repo, board=board_mod, report_downgrade=False)
+            expected_contract = f"{gate_mode}\n{test_cmd}\n"
+            contract_sidecar = Path(hooks_dir) / repo / str(contract_name)
+            current_contract = (
+                contract_sidecar.read_text(encoding="utf-8")
+                if contract_sidecar.is_file() else None)
+            contract_ok = current_contract == expected_contract
             # 배선 축 — sidecar 내용이 최신이어도 hooksPath 가 끊겼으면 훅은 발화하지 않는다.
             # `False`(명확히 미배선)만 드리프트로 친다; `None`(모름)·헬퍼 부재는 현행 유지.
             wired = self._protected_hook_wired(repo)
-            if content_ok and wired is not False:
+            if protected_ok and contract_ok and wired is not False:
                 return False  # 정합 — subprocess 0.
-        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 조용히 생략(오탐 0·drift 미확정).
+        except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 생략(단 skew 재전파).
+            if _is_engine_rev_skew(exc):
+                raise
             return False
         # 여기부터는 **drift 확정** — 성공/실패 어느 쪽도 조용히 넘기지 않는다. 원인 2종을
-        # 구별해 보고한다: 목록이 바뀌었나(내용 drift) / 훅이 안 걸려 있나(배선 끊김·부분성공).
-        cause = ("보호 브랜치 목록이 바뀌어" if not content_ok
-                 else "훅이 bare `core.hooksPath` 에 배선돼 있지 않아(목록은 최신)")
-        stale_state = (f"옛 목록({', '.join(current) or '(빈 목록)'})으로 동작"
-                       if not content_ok else "아예 발화하지 않아 보호가 꺼진 상태")
+        # 구별해 보고한다: 목록 / 증거 계약 / 배선. 복수 drift는 함께 표시.
+        drift_axes = []
+        if not protected_ok:
+            drift_axes.append("보호 브랜치 목록")
+        if not contract_ok:
+            drift_axes.append("증거 계약(gate mode/test command)")
+        if wired is False:
+            drift_axes.append("bare `core.hooksPath` 배선")
+        cause = "·".join(drift_axes) + "이 현재 해소값과 달라"
+        stale_parts = []
+        if not protected_ok:
+            stale_parts.append(f"옛 목록({', '.join(current) or '(빈 목록)'})")
+        if not contract_ok:
+            stale_parts.append("옛/미설치 증거 계약")
+        if wired is False:
+            stale_parts.append("미배선(훅 미발화)")
+        stale_state = "·".join(stale_parts) + " 상태로 동작"
+        if wired is False:
+            enforcement_state = f"현재 목록({', '.join(protected)})은 강제되지 않습니다"
+        elif not protected_ok:
+            enforcement_state = (
+                f"현재 목록({', '.join(protected)}) 대신 옛 목록이 강제됩니다")
+        else:
+            enforcement_state = (
+                "보호목록은 강제 중이지만 옛/미설치 증거 계약으로 동작합니다")
         try:
-            installed = bool(install(repo, protected))
+            installed = bool(install(repo, board=board_mod, worktree_pool=wp))
         except Exception as exc:  # noqa: BLE001 — 실패해도 진입은 막지 않되 반드시 loud.
+            if _is_engine_rev_skew(exc):
+                raise  # 엔진 사본 불일치는 일반 설치 실패로 강등하지 않는다.
             installed = False
             reason = f"{exc.__class__.__name__}: {exc}"
         else:
-            reason = ("install_protected_hook 이 실패를 보고 (bare 부재 또는 "
-                      "`core.hooksPath` 설정 실패)")
+            failure_reason = getattr(
+                pm_config, "protected_hook_install_failure_reason", None)
+            reason = (failure_reason(repo) if failure_reason is not None else None)
+            reason = reason or "install_protected_hook이 원인 미해소 실패를 반환"
         if not installed:
             print(
                 f"[경고·0단계] {repo} {cause} 이 clone 의 훅을 **정합화하지 못했습니다** — "
-                f"{reason}. 훅은 아직 {stale_state} 이며, 현재 목록"
-                f"({', '.join(protected)})은 강제되지 않습니다.\n"
+                f"{reason}. 훅은 아직 {stale_state} 이며, {enforcement_state}.\n"
                 f"  → 재실행:  {self._protected_retry_command(repo)}"
                 f"   (멱등·bare 부재면 `repo add {repo}` 먼저)",
                 file=sys.stderr,
@@ -4234,7 +4276,7 @@ class PmBootstrap:
             return False
         print(
             f"[알림·0단계] {repo} {cause} 이 clone 의 훅을 정합화했습니다 — "
-            f"{', '.join(current) or '(빈 목록)'} → {', '.join(protected)}.",
+            f"보호목록={', '.join(protected)}, 계약={gate_mode}.",
             file=sys.stderr,
         )
         return True

@@ -215,7 +215,11 @@ prefix는 작업 카테고리이며 repo 네임스페이스 전용이 아니고 
 - pre-commit 훅 `.project_manager/.local/repo-hooks/<repo>/pre-commit`은 보호 브랜치 commit을 차단한다. PM은 `PM_ALLOW_PROTECTED_COMMIT=1`을 스스로 쓰지 않는다(사용자 명시 OK escape hatch; `PM_ALLOW_PROTECTED_PUSH`와 동형). detached HEAD(readonly 공유 슬롯)는 통과한다.
   - 범위는 풀 슬롯 worktree `work/<repo>_<N>`다. bare 미러 `.repos/<repo>.git`의 `core.hooksPath`를 공유하는 슬롯에서만 발화하며 PM 홈 clone의 `.git/hooks`에는 미배선이다.
   - `git commit --no-verify`, merge commit(`pre-merge-commit` 소관), rebase/cherry-pick/revert sequencer는 비커버다. 우발 방지용이며 하드 백스톱은 pre-push다.
-- pre-push 훅 `.project_manager/.local/repo-hooks/<repo>/pre-push`은 보호 브랜치 push를 차단한다. PM은 `PM_ALLOW_PROTECTED_PUSH=1`을 스스로 쓰지 않는다(사용자 명시 OK escape hatch). override 후에도 릴리즈 라이브 green 기록 `board.py livegate check`(`livegate record`로 기록)이 필요하다. `PM_SKIP_LIVE_GATE=1`은 라이브 무관 변경·긴급 hotfix 두 사유만 허용하며 오프라인·API 장애에는 금지(복구 우선). 보호목록의 라이브 브랜치는 bootstrap identity surface에 🚫 경고한다.
+- pre-push 훅 `.project_manager/.local/repo-hooks/<repo>/pre-push`은 보호 브랜치 push를 차단한다. PM은 `PM_ALLOW_PROTECTED_PUSH=1`을 스스로 쓰지 않는다(사용자 명시 OK escape hatch). 승인 후 증거 계약은 repo 형상에 따라 두 경로로 갈린다.
+  - **프레임워크 release 경로:** push SHA에 `board.py livegate record`로 기록한 릴리즈 라이브 green을 `livegate check`로 확인한다. `PM_SKIP_LIVE_GATE=1`은 라이브 무관 변경·긴급 hotfix 두 사유만 허용하며 오프라인·API 장애에는 금지(복구 우선).
+  - **채택자 self-test 경로:** areas.md의 repo별 `test_cmd`(없으면 local.conf/default)를 push SHA와 같은 clean checkout에서 실행해 green을 요구한다. 그래서 현재 HEAD가 아닌 rev의 보호 push(예: `git push X HEAD~1:main`)와 보호 브랜치 삭제(`git push X --delete main`)는 검증용 clean HEAD를 고정할 수 없어 거부된다. 유일한 통로는 사용자 명시 승인 하의 감사 우회 `PM_SKIP_SELF_TEST=1 PM_SELF_TEST_BYPASS_REASON='<빈 값이 아닌 사유>' PM_ALLOW_PROTECTED_PUSH=1 git push ...`이며, repo·branch·SHA·dirty 상태·사유가 훅 감사 로그에 남는다. `PM_SKIP_LIVE_GATE`는 이 경로를 생략하지 않는다.
+  - 프레임워크 홈이라도 local.conf `upstream`과 areas registry git의 provenance가 미등록·불일치·미해소면 release 증거를 주장하지 않고 **self-test로 강등**한다. 이때 release livegate 기록 대신 areas/local.conf/default의 `test_cmd`가 보호 push 증거가 된다. provenance를 복구하려면 `pm-config upstream set <url|path>`로 검증·기록하고 areas registry git도 같은 upstream identity로 정정한 뒤 훅 계약을 재설치한다. 긴급 통과는 위의 사유 필수 `PM_SKIP_SELF_TEST` 감사 우회만 쓴다.
+  - 보호목록의 라이브 브랜치는 bootstrap identity surface에 🚫 경고한다.
 - 훅은 `.repos/<repo>.git`의 client-side 가드뿐이며 회사 서버 ref·사용자 clone은 바꾸지 않는다.
 
 ### 릴리즈 절차 (순서)

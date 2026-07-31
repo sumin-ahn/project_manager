@@ -38,6 +38,7 @@ import importlib.util
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -67,6 +68,11 @@ def _verify_engine_rev(sibling_module, sibling_filename):
         )
         err._engine_rev_skew = True  # fail-soft 로더가 재-raise 식별
         raise err
+
+
+def _is_engine_rev_skew(exc):
+    """fail-soft 소비 지점에서 rev skew만 재-raise하기 위한 구조화 판정."""
+    return getattr(exc, "_engine_rev_skew", False)
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·pm_*.py 와 동일 앵커 관례.
 # multi-PM 모델에서 이 도구가 어느 worktree cwd 에서 호출돼도 자기 위치(multi-PM 루트 .project_manager)를
@@ -1079,24 +1085,25 @@ def _slot_branch_exists(runner: GitRunner, branch: str) -> bool:
 # bare(`.repos/<repo>.git`)의 `core.hooksPath` 를 그 디렉토리로 set → 슬롯 push 가 이 훅에
 # 게이트된다. **회사 repo 서버/사용자 클론 무변경** — client-side·우리 bare 미러 config 1줄만.
 #
-# 훅은 *generic* 이다 — 보호목록을 sidecar 파일(`protected`·줄당 1브랜치·훅과 같은 디렉토리)
-# 에서 읽는다. 설치(install_protected_hook)가 그 sidecar 를 채우므로(목록 변경 = 재설치로
-# 갱신), 훅 본문 자체는 repo 무관하게 동일하다. POSIX sh — Windows git 번들 sh 로도 동작.
+# 훅은 *generic* 이다 — 보호목록은 `protected`, repo 형상별 증거 계약은
+# `gate-contract` sidecar에서 읽는다. 계약 파일의 1행은 mode(release/self-test),
+# 2행은 self-test 명령이며 둘은 하나의 `os.replace`로 원자 교체된다. 따라서
+# 재설치 중 push가 겹쳐도 서로 다른 세대의 mode/command가 결합하지 않는다.
+# 설치(install_protected_hook)가 sidecar를 채우며, 훅 본문 자체는 repo 무관하게
+# 동일하다. POSIX sh — Windows git 번들 sh 로도 동작.
 #
 # 로직: stdin 의 `<localref> <localsha> <remoteref> <remotesha>` 줄들(=이 push 의 모든 ref)을 순회한다.
 # pre-push 는 push 전체에 한 번 발화하는 all-or-nothing 게이트라 **보호 ref 를 전부 검증**하고 하나라도
 # 실패하면 push 전체를 거부한다(예: `git push main release` 서 main 만 green 이어도 release 가 미검증이면
 # 편승 차단). remote ref (`refs/heads/<b>`)의 `<b>` 가 sidecar 보호목록에 있으면 (그 ref 의 localsha 로) —
 #   - `PM_ALLOW_PROTECTED_PUSH=1` 아니면 하드 차단(echo 안내·exit 1).
-#   - `PM_ALLOW_PROTECTED_PUSH=1` 이면 **라이브 게이트 승격**: push 되는
-#     sha 로 `board.py livegate check --rev <sha>` rc0 을 추가 요구한다(릴리즈 라이브 wave 가
-#     그 커밋에서 green 이어야 함). rc≠0 → 거부(2분기 안내). `PM_SKIP_LIVE_GATE=1` 이면 check
-#     만 생략(라이브-무관·긴급 변경 한정·승인/protected 시맨틱 불변). python/board.py 를 못
-#     돌리면 fail-closed 거부(게이트 무력화 방지). board.py 는 **PM 홈 엔진**을 쓴다 — 슬롯
-#     worktree 는 회사/family repo checkout 이라 PM 엔진 파일이 없으므로(회사 repo 무영향),
-#     설치자가 훅 옆에 쓴 sidecar `engine-root`(PM 홈 REPO 절대경로 1줄)에서 board.py 를 해소한다
-#     (livegate.json 도 그 PM 홈 .local 소유라 기록 위치와 정합)·인터프리터는 실행검증 폴백.
-# feature(비보호) 브랜치·tag push 는 통과(exit 0·PM_ALLOW/라이브 게이트 무관).
+#   - `release`: push SHA의 `board.py livegate check --rev <sha>` rc0을 추가 요구.
+#     `PM_SKIP_LIVE_GATE=1`은 라이브-무관·긴급 변경 한정 우회다.
+#   - `self-test`: 현재 checkout HEAD=push SHA·clean을 고정한 뒤 계약의 repo 테스트
+#     명령을 실행한다. `PM_SKIP_SELF_TEST=1` + 빈 값이 아닌
+#     `PM_SELF_TEST_BYPASS_REASON` 조합만 감사 로그를 남기고 우회한다.
+# 계약/mode 미해소·필요 자원 부재는 fail-closed다. feature(비보호) 브랜치·tag
+# push는 통과(exit 0·PM_ALLOW/증거 게이트 무관).
 #
 # **멱등 자가치유 배포**: install_protected_hook 이 매 호출 이 본문을 덮어쓰므로(repo add·
 # worktree add), 엔진 update 후 다음 재설치가 이 신 버전을 자동 배포한다.
@@ -1108,6 +1115,7 @@ _PROTECTED_PRE_PUSH_HOOK = """\
 hook_dir=$(dirname "$0")
 protected_file="$hook_dir/protected"
 engine_root_file="$hook_dir/engine-root"
+gate_contract_file="$hook_dir/gate-contract"
 [ -f "$protected_file" ] || exit 0
 
 # stdin(<localref> <localsha> <remoteref> <remotesha> 줄들)의 각 push ref 를 순회한다. pre-push 는
@@ -1121,6 +1129,21 @@ py=""
 python_floor=""
 found_versions=""
 resolved=0
+self_tested_shas=""
+
+# 채택자 명령을 실행할 때 제거할 repository-local Git 환경은 현재 Git 자체에서 유도한다.
+# rev-parse가 고장난/구형 Git에서도 훅 자체가 죽지 않도록, 폴백은 이 기능 도입 당시 훅이
+# 명시적으로 지우던 보수적 7개 목록을 유지한다. 정상 경로 목록을 코드에 복제하지 않는다.
+pm_unset_git_local_env() {
+    _pm_git_local_env=$(git rev-parse --local-env-vars 2>/dev/null)
+    _pm_git_local_env_rc=$?
+    if [ "$_pm_git_local_env_rc" -ne 0 ] || [ -z "$_pm_git_local_env" ]; then
+        _pm_git_local_env="GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES"
+    fi
+    unset $_pm_git_local_env
+    unset _pm_git_local_env _pm_git_local_env_rc
+}
+
 while read -r _local_ref local_sha remote_ref _remote_sha; do
     case "$remote_ref" in
         refs/heads/*) branch=${remote_ref#refs/heads/} ;;
@@ -1147,11 +1170,128 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
         exit 1
     fi
 
-    # 승인됨(PM_ALLOW=1) — 라이브 게이트 승격. 승인과 검증 스킵은 별개
-    # 스위치(감사 가능). PM_SKIP_LIVE_GATE=1 이면 이 ref 의 라이브 check 만 생략(승인·protected 불변).
-    [ "$PM_SKIP_LIVE_GATE" = "1" ] && continue
+    # 승인됨(PM_ALLOW=1) — repo 형상별 증거 계약. mode sidecar 부재/미해소는 추측 없이 거부한다.
+    gate_mode=""
+    self_test_cmd=""
+    if [ -f "$gate_contract_file" ]; then
+        {
+            IFS= read -r gate_mode
+            IFS= read -r self_test_cmd
+        } < "$gate_contract_file"
+    fi
+    case "$gate_mode" in
+        release)
+            # PM_SKIP_LIVE_GATE는 framework release livegate만 생략한다. adopter self-test에는
+            # 적용하지 않아 skip 상시화가 자기 검증까지 무력화하지 않게 한다.
+            [ "$PM_SKIP_LIVE_GATE" = "1" ] && continue
+            ;;
+        self-test)
+            # 채택자 전용 한정 우회는 증거 생성(명령 해소·HEAD pin·clean 검사)보다 앞선다.
+            # dirty는 거부 조건이 아니라 감사 메타데이터다. status 자체가 실패해도 우회는
+            # 사용할 수 있어야 하므로 unknown을 기록하고, 감사 append 실패만 fail-closed한다.
+            if [ "$PM_SKIP_SELF_TEST" = "1" ]; then
+                bypass_reason=$(printf '%s' "$PM_SELF_TEST_BYPASS_REASON" | tr '\\r\\n\\t' '   ')
+                case "$bypass_reason" in
+                    *[![:space:]]*) ;;
+                    *)
+                        echo "[pm 보호 가드] 채택자 자기 검증 우회 거부 — PM_SELF_TEST_BYPASS_REASON 사유가 필요하다." >&2
+                        exit 1
+                        ;;
+                esac
+                bypass_status=$(
+                    pm_unset_git_local_env
+                    git status --porcelain --untracked-files=normal 2>/dev/null
+                )
+                bypass_status_rc=$?
+                if [ "$bypass_status_rc" -ne 0 ]; then
+                    bypass_dirty=unknown
+                elif [ -n "$bypass_status" ]; then
+                    bypass_dirty=true
+                else
+                    bypass_dirty=false
+                fi
+                bypass_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ' </dev/null 2>/dev/null || printf unknown)
+                bypass_log="$hook_dir/self-test-bypass.log"
+                if [ -L "$bypass_log" ] || { [ -e "$bypass_log" ] && [ ! -f "$bypass_log" ]; }; then
+                    echo "[pm 보호 가드] 채택자 자기 검증 우회 감사 로그가 일반 파일이 아님 — 보호 push 거부." >&2
+                    exit 1
+                fi
+                if ! printf '%s\\trepo=%s\\tbranch=%s\\tsha=%s\\tdirty=%s\\treason=%s\\n' \
+                        "$bypass_at" "$(basename "$hook_dir")" "$branch" "$local_sha" \
+                        "$bypass_dirty" "$bypass_reason" >> "$bypass_log"; then
+                    echo "[pm 보호 가드] 채택자 자기 검증 우회 감사 로그 기록 실패 — 보호 push 거부." >&2
+                    exit 1
+                fi
+                echo "[pm 보호 가드·감사] 채택자 자기 검증 우회 사용: branch=$branch sha=$local_sha dirty=$bypass_dirty" >&2
+                echo "  사유: $bypass_reason" >&2
+                echo "  기록: $bypass_log" >&2
+                continue
+            fi
 
-    # 라이브 게이트 검증 자원 1회 지연 해소. board.py 는 **PM 홈 엔진**에 있다 — 슬롯 worktree(회사/
+            if [ -z "$self_test_cmd" ]; then
+                echo "[pm 보호 가드] 채택자 자기 검증 명령 미해소 — fail-closed 거부." >&2
+                echo "  areas.md test_cmd 또는 PM 홈 local.conf test_cmd를 설정하고 훅을 재설치하라." >&2
+                exit 1
+            fi
+
+            # 한 push에 같은 SHA의 보호 ref가 여러 개여도 clean checkout에서 같은
+            # repo 계약을 다시 돌릴 필요가 없다. SHA는 git hex라 공백 구분이 안전하다.
+            case " $self_tested_shas " in
+                *" $local_sha "*) continue ;;
+            esac
+            repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
+            current_head=""
+            [ -n "$repo_root" ] && current_head=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null)
+            if [ -z "$repo_root" ] || [ -z "$current_head" ] || [ "$current_head" != "$local_sha" ]; then
+                echo "[pm 보호 가드] 채택자 자기 검증 기준을 push SHA에 고정할 수 없어 거부." >&2
+                echo "  push 대상 브랜치를 checkout한 뒤 같은 HEAD에서 다시 push하라." >&2
+                echo "  checkout HEAD=${current_head:-미해소} · push=${local_sha}" >&2
+                exit 1
+            fi
+
+            # pre-push는 git이 GIT_DIR/GIT_WORK_TREE 등을 훅 환경에 주입할 수 있다. 그 상태로
+            # 채택자 테스트의 git fixture를 실행하면 임시 repo 대신 사용자 슬롯 index/gitdir을
+            # 읽거나 변경한다. repo_root/HEAD 핀은 위에서 먼저 해소하고, clean 판정과 실제 테스트는
+            # git 저장소 지시 환경을 제거한 별도 subshell에서 실행한다.
+            worktree_status=$(
+                pm_unset_git_local_env
+                git -C "$repo_root" status --porcelain --untracked-files=normal
+            )
+            status_rc=$?
+            if [ "$status_rc" -ne 0 ]; then
+                echo "[pm 보호 가드] 채택자 자기 검증 전 워킹트리 clean 상태를 확인할 수 없어 거부." >&2
+                echo "  push 대상 checkout의 git status를 복구한 뒤 다시 push하라." >&2
+                exit 1
+            fi
+            if [ -n "$worktree_status" ]; then
+                echo "[pm 보호 가드] push SHA와 다른 dirty 워킹트리에서는 자기 검증할 수 없어 거부." >&2
+                echo "  tracked/staged/untracked 변경을 commit·stash·정리한 clean checkout에서 다시 push하라." >&2
+                exit 1
+            fi
+
+            echo "[pm 보호 가드] 채택자 자기 검증: $self_test_cmd" >&2
+            (
+                pm_unset_git_local_env
+                cd "$repo_root" && sh -c "$self_test_cmd"
+            ) </dev/null
+            self_test_rc=$?
+            if [ "$self_test_rc" -ne 0 ]; then
+                echo "[pm 보호 가드] 채택자 자기 검증 RED(rc=$self_test_rc) — 보호 push 거부." >&2
+                echo "  areas.md test_cmd 또는 PM 홈 local.conf test_cmd를 현재 repo 명령으로 설정하라." >&2
+                echo "  긴급 우회(감사 기록 필수): PM_SKIP_SELF_TEST=1 PM_SELF_TEST_BYPASS_REASON='사유' PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
+                exit 1
+            fi
+            self_tested_shas="$self_tested_shas $local_sha"
+            continue
+            ;;
+        *)
+            echo "[pm 보호 가드] repo 게이트 스코프 미해소('$gate_mode') — fail-closed 거부." >&2
+            echo "  PM 홈 local.conf upstream을 확인하고 pm-update 또는 pm-config repo add로 훅을 재설치하라." >&2
+            exit 1
+            ;;
+    esac
+
+    # framework release 라이브 게이트 검증 자원 1회 지연 해소. board.py 는 **PM 홈 엔진**에 있다 — 슬롯 worktree(회사/
     # family checkout)엔 PM 엔진 파일이 없으므로(회사 repo 무영향), 설치자가 훅 옆에 쓴 sidecar
     # `engine-root`(PM 홈 REPO 절대경로 1줄)에서 board.py 를 해소한다. livegate.json 도 그 PM 홈 .local
     # 소유라 기록 위치와 정합. 인터프리터는 실행검증 폴백(python3->python->py·WindowsApps 가짜
@@ -1296,10 +1436,13 @@ exit 0
 # 판정도 자동으로 따라간다.
 #
 # 실행권한: 훅 파일은 0755 여야 한다 — **없으면 git 이 훅을 조용히 건너뛴다**(보호 침묵 비활성).
-# sidecar(`protected`·`engine-root`)는 훅이 `read` 로만 읽는 데이터라 실행권한 요구가 없다
-# (설치도 chmod 하지 않는다) → `executable=False`. 나중에 설치가 chmod 를 붙이면 그 플래그만
-# True 로 바꾸면 판정이 따라온다.
+# sidecar(`protected`·`engine-root`·`gate-contract`)는 훅이 `read` 로만 읽는 데이터라 실행권한 요구가 없다
+# (설치는 atomic replace 전에 0644 설정) → `executable=False`. 나중에 실행 파일 sidecar가
+# 생기면 그 플래그만 True로 바꾸면 판정이 따라온다.
 _PROTECTED_HOOK_EXECUTABLE_MODE = 0o755
+_PROTECTED_SIDECAR_MODE = 0o644
+_PROTECTED_GATE_MODES = frozenset({"release", "self-test"})
+PROTECTED_GATE_CONTRACT_NAME = "gate-contract"
 
 
 class ProtectedHookArtifact(NamedTuple):
@@ -1310,23 +1453,63 @@ class ProtectedHookArtifact(NamedTuple):
     executable: bool
 
 
+def _atomic_write_protected_artifact(artifact: ProtectedHookArtifact) -> None:
+    """훅/sidecar 하나를 같은 디렉터리 임시파일에서 완성한 뒤 원자 교체한다.
+
+    재설치와 push가 겹쳐도 독자는 이전 완성본 또는 새 완성본만 본다. 특히 빈/부분
+    ``protected``를 잠깐 노출해 보호 ref를 비보호로 통과시키는 제자리 truncate 창을 없앤다.
+    실행권한도 교체 전에 임시파일에 설정하므로 새 훅이 보이는데 아직 실행 불가인 창이 없다.
+    """
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=f".{artifact.path.name}.", suffix=".tmp", dir=artifact.path.parent)
+    tmp = Path(raw_tmp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(artifact.content)
+        tmp.chmod(
+            _PROTECTED_HOOK_EXECUTABLE_MODE
+            if artifact.executable else _PROTECTED_SIDECAR_MODE)
+        os.replace(tmp, artifact.path)
+    except BaseException:
+        # fdopen 전/중 실패도 descriptor와 임시파일을 남기지 않는다. 원래 산출물은 replace
+        # 전까지 건드리지 않았으므로 그대로 유효하다.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def protected_hook_artifacts(
-    repo: str, protected: list[str],
+    repo: str, protected: list[str], *, gate_mode: str = "release",
+    test_cmd: str = "pytest -q",
 ) -> list[ProtectedHookArtifact]:
     """`install_protected_hook` 이 쓰는 **파일 전수** + 각 파일의 기대 내용/실행권한.
 
-    설치·정합 판정 공용 단일 진실(위 주석). 반환 순서 = 설치 순서(`protected` sidecar 를 쓴 뒤
-    배선하는 순서 보장은 install 이 이 목록 순회 *뒤에* config 를 부르는 것으로 유지).
+    설치·정합 판정 공용 단일 진실(위 주석). 반환 순서 = 설치 순서:
+    데이터 sidecar를 먼저 완성하고 generic 훅 본문을 나중에 노출한다. 배선은 이 목록
+    순회 *뒤에* 수행되므로 초기 설치의 미완성 본문이 발화하지 않는다.
 
     ⚠ bare `core.hooksPath` **배선**은 파일이 아니라 git config 라 이 목록 밖이다 — 판정은
     `pm_config.protected_hook_wired()`(공용 헬퍼)로 그 축을 따로 본다."""
+    if gate_mode not in _PROTECTED_GATE_MODES:
+        raise ValueError(f"알 수 없는 보호 push gate mode: {gate_mode!r}")
+    if not test_cmd.strip() or "\n" in test_cmd or "\r" in test_cmd:
+        raise ValueError("보호 push test_cmd는 비어 있지 않은 한 줄이어야 한다")
     hook_dir = REPO_HOOKS_DIR / repo
+    gate_contract = f"{gate_mode}\n{test_cmd}\n"
     return [
-        ProtectedHookArtifact(hook_dir / "pre-push", _PROTECTED_PRE_PUSH_HOOK, True),
-        ProtectedHookArtifact(hook_dir / "pre-commit", _PROTECTED_PRE_COMMIT_HOOK, True),
         ProtectedHookArtifact(
             hook_dir / "protected", "".join(f"{b}\n" for b in protected), False),
         ProtectedHookArtifact(hook_dir / "engine-root", f"{REPO.resolve()}\n", False),
+        ProtectedHookArtifact(
+            hook_dir / PROTECTED_GATE_CONTRACT_NAME, gate_contract, False),
+        ProtectedHookArtifact(hook_dir / "pre-push", _PROTECTED_PRE_PUSH_HOOK, True),
+        ProtectedHookArtifact(hook_dir / "pre-commit", _PROTECTED_PRE_COMMIT_HOOK, True),
     ]
 
 
@@ -1334,6 +1517,8 @@ def install_protected_hook(
     repo: str,
     protected: list[str],
     *,
+    gate_mode: str,
+    test_cmd: str,
     git_runner: GitRunner | None = None,
 ) -> bool:
     """보호 브랜치 pre-push + pre-commit 훅 + sidecar 를 (재)설치하고 bare `core.hooksPath` 를 wiring 한다.
@@ -1341,10 +1526,11 @@ def install_protected_hook(
     **멱등·자가치유** — `pm-config repo add`·`worktree add`·`pm_update` sync 가 매번 호출(이미
     있으면 갱신). 세 가지를 한다:
       1. 훅 디렉토리 `.project_manager/.local/repo-hooks/<repo>/` 생성(프레임워크 소유·gitignore).
-      2. `pre-push`·`pre-commit`훅(generic·POSIX sh·LF) + sidecar 2종:
+      2. sidecar 3종 + `pre-push`·`pre-commit`훅(generic·POSIX sh·LF):
          `protected`(보호목록·줄당 1브랜치·**두 훅 공용**)와 `engine-root`(PM 홈 REPO 절대경로
-         1줄·라이브 게이트 board.py 해소용). 목록/루트가 바뀌면 재설치가 sidecar 를 덮어
-         갱신한다(훅 본문은 불변).
+         1줄·라이브 게이트 board.py 해소용), `gate-contract`(1행 mode,
+         2행 adopter 자기 검증 명령). mode/command는 **한 파일·한 `os.replace`**로
+         교체되어 재설치 중에도 서로 다른 세대가 결합하지 않는다.
       3. bare(`.repos/<repo>.git`)의 `core.hooksPath` 를 그 디렉토리(절대경로)로 set
          → 슬롯 push/commit 이 이 훅들에 게이트된다.
 
@@ -1356,6 +1542,10 @@ def install_protected_hook(
     `git_runner` 주입 시 `core.hooksPath` config 호출을 그 runner 로(테스트 hermetic·`git -C
     <bare>` 컨텍스트는 `_real_git_runner(bare)` 가 묶는다). LF 줄바꿈 명시(Windows 에서도 sh
     가 읽도록·newline="\\n").
+
+    `gate_mode`/`test_cmd`는 의도적으로 기본값 없는 keyword-only다. 설치 경로가 repo별 계약
+    해소를 잊으면 즉시 TypeError로 실패해야 하며, framework `release/pytest`로 조용히 되돌아가면
+    안 된다. 프로덕션 호출은 `pm_config._install_protected_hook` 한 깔때기를 탄다.
     """
     bare = bare_repo_path(repo)
     if not bare.exists():
@@ -1367,16 +1557,19 @@ def install_protected_hook(
     # 1~2) 훅·sidecar **전수** write(+실행권한). 멱등 — 매 호출 덮어쓰기(엔진 update 자가치유).
     # 산출물 목록·내용·실행권한은 `protected_hook_artifacts` 단일 진실이다 — 여기서 개별 파일을
     # 직접 쓰지 않는다(설치와 정합 판정이 갈라지는 클래스 폐쇄·위 명세 주석). 순회 순서 = 명세
-    # 순서(pre-push → pre-commit → protected → engine-root) 이고, 배선(3)은 그 뒤다.
+    # 순서(protected → engine-root → gate-contract → pre-push → pre-commit)이고,
+    # 배선(3)은 그 뒤다. 데이터를 본문보다 먼저 완성해 초기 설치 중
+    # "신 본문 + mode 부재" 하드 차단 창도 만들지 않는다.
     #   - `pre-push`·`pre-commit`: generic 훅 본문·POSIX sh·LF·0755.
     #   - sidecar `protected`: 보호목록(줄당 1브랜치). 목록 변경 시 재설치가 갱신.
     #   - sidecar `engine-root`: PM 홈 REPO 절대경로 1줄(라이브 게이트 board.py 해소용).
+    #   - sidecar `gate-contract`: repo 형상별 mode + adopter 자기 검증 명령의
+    #     분할 불가 원자 계약.
     #     설치자는 PM 홈 컨텍스트에서 도므로 REPO 를 안다 — 훅은 슬롯 worktree(회사/family
     #     checkout·PM 엔진 파일 없음)에서 발화해 self-locate 가 불가하다.
-    for artifact in protected_hook_artifacts(repo, protected):
-        artifact.path.write_text(artifact.content, encoding="utf-8", newline="\n")
-        if artifact.executable:
-            artifact.path.chmod(_PROTECTED_HOOK_EXECUTABLE_MODE)
+    for artifact in protected_hook_artifacts(
+            repo, protected, gate_mode=gate_mode, test_cmd=test_cmd):
+        _atomic_write_protected_artifact(artifact)
 
     # 3) bare core.hooksPath wiring (절대경로) — client-side·우리 미러 config 1줄.
     # **rc 검사**: config 실패면 훅이 실제로 wiring 안 됐는데 성공 보고하면 보호
@@ -4034,7 +4227,7 @@ def _load_board():
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
     except Exception as exc:  # noqa: BLE001 — 로드 실패는 default 폴백(단 skew 는 재-raise).
-        if getattr(exc, "_engine_rev_skew", False):
+        if _is_engine_rev_skew(exc):
             raise  # 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
         return None
     _verify_engine_rev(mod, "board.py")   # 사본 skew fail-loud (try 밖·pm_config 동형).
@@ -4053,7 +4246,9 @@ def _resolve_protected(repo: str, *, board=None) -> "list[str]":
         return list(_DEFAULT_PROTECTED)
     try:
         return list(repo_protected(repo))
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 default 폴백(보호 기본값 보장).
+    except Exception as exc:  # noqa: BLE001 — 일반 areas 실패는 default 폴백(단 skew 재전파).
+        if _is_engine_rev_skew(exc):
+            raise
         return list(_DEFAULT_PROTECTED)
 
 

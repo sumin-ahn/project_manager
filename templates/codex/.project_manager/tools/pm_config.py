@@ -71,6 +71,7 @@ import sys
 import unicodedata
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py 와 동일 앵커 관례
 # (어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
@@ -363,19 +364,193 @@ def _local_conf_test_cmd() -> str | None:
     구현한다. worktree add 빌드명령 프롬프트의 기본값(`board._test_cmd` 솔로 폴백 레이어와
     동형 — 미지정 시 `pytest -q`)을 제시하는 데 쓴다.
     """
+    return _local_conf_value("test_cmd")
+
+
+_PROTECTED_GATE_RELEASE = "release"
+_PROTECTED_GATE_SELF_TEST = "self-test"
+
+
+def _local_conf_value(key: str) -> str | None:
+    """`local.conf` 한 키의 마지막 값 (부재/OSError → None).
+
+    `board.local_config()`와 같은 **last-wins**다. 중복 키의 마지막 값이
+    비어 있으면 앞의 값을 해제한 것으로 보아 `""`를 반환한다. 동일 파일을
+    `upstream show`와 보호 push gate가 다르게 해석하지 않게 하는 계약이다.
+    """
     conf_file = REPO / ".project_manager" / "local.conf"
     try:
-        text = conf_file.read_text(encoding="utf-8")
+        lines = conf_file.read_text(encoding="utf-8").splitlines()
     except OSError:
         return None
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    value: str | None = None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
-        key, _, val = line.partition("=")
-        if key.strip() == "test_cmd":
-            return val.strip() or None
+        found, _, raw = stripped.partition("=")
+        candidate = raw.strip()
+        if found.strip() == key:
+            value = candidate
+    return value
+
+
+def _git_remote_identity(value: str) -> tuple[str, str, int | None, str]:
+    """Git remote를 transport class + endpoint/path identity로 정규화한다.
+
+    판정 축(코드·테스트 공통 표):
+
+    ======================  ================================================
+    입력 축                 identity 규칙
+    ======================  ================================================
+    ssh/https/scp           같은 ``network`` class로 정규화
+    file://                 ``file`` class를 보존(network과 절대 동일 아님)
+    user, host case         user 제거, host 소문자화
+    host / port             독립 tuple 필드(IPv6 콜론과 port 경계 보존)
+    default port            ssh:22/https:443은 None; non-default는 int로 보존
+    path                    선행/후행 slash·마지막 ``.git`` 정규화
+    ======================  ================================================
+
+    따라서 ``ssh://host:22/a/b``·``git@host:a/b.git``·``https://host/a/b``는
+    같지만, ``file://host/a/b``는 endpoint 문자열이 같아도 다른 identity다.
+    """
+    raw = value.strip().rstrip("/")
+    # SCP-like IPv6는 `user@[::1]:path`처럼 host의 콜론을 대괄호로 감싼다. 일반
+    # `host:path`와 별도 패턴으로 먼저 분리해야 `::1` 일부가 path로 새지 않는다.
+    scp = None
+    if "://" not in raw:
+        scp = re.match(r"^(?:[^@/]+@)?\[([^\]]+)\]:(.+)$", raw)
+        if scp is None:
+            scp = re.match(r"^(?:[^@/]+@)?([^:/]+):(.+)$", raw)
+    if scp is not None:
+        host, path = scp.groups()
+        normalized_path = path.removesuffix(".git").strip("/")
+        return ("network", host.lower(), None, normalized_path)
+    if "://" in raw:
+        parsed = urlsplit(raw)
+        scheme = parsed.scheme.lower()
+        normalized_path = parsed.path.removesuffix(".git").strip("/")
+        try:
+            host = (parsed.hostname or "").lower()
+            port = parsed.port
+        except ValueError:
+            # 잘못된 authority를 유사 remote로 잘못 합치지 않는 안전 방향 폴백.
+            authority = parsed.netloc.rsplit("@", 1)[-1].lower()
+            return (f"invalid-{scheme}", authority, None, normalized_path)
+        default_port = {"ssh": 22, "https": 443}.get(scheme)
+        normalized_port = None if port is None or port == default_port else port
+        transport = "network" if scheme in {"ssh", "https"} else scheme
+        # host와 port를 tuple의 독립 필드로 둔다. 문자열 `host:port` 결합은 IPv6
+        # host 자체의 콜론과 경계가 사라져 `[::1]:2222`와 `[::1:2222]`를 합친다.
+        return (transport, host, normalized_port, normalized_path)
+    return ("path", "", None, raw.removesuffix(".git"))
+
+
+def _repo_registry_git(repo: str, *, board=None) -> str | None:
+    """areas의 repo git remote 값. helper/파서 부재·실패·빈 값은 None."""
+    board_mod = board or _load_module("board", "board.py")
+    getter = getattr(board_mod, "_areas_git_url", None) if board_mod else None
+    if getter is not None:
+        try:
+            value = getter(repo)
+        except Exception as exc:  # noqa: BLE001 — 아래 parser/None 폴백(단 skew 재전파).
+            if _is_engine_rev_skew(exc):
+                raise
+            value = None
+        if value:
+            return value
+    parse_areas = getattr(board_mod, "_parse_areas", None) if board_mod else None
+    if parse_areas is not None:
+        try:
+            _header, rows = parse_areas()
+        except Exception as exc:  # noqa: BLE001 — provenance 미해소로 수렴(단 skew 재전파).
+            if _is_engine_rev_skew(exc):
+                raise
+            rows = []
+        for row in rows:
+            if row.get("repo") == repo and row.get("git"):
+                return row["git"]
     return None
+
+
+def _classify_upstream(value: str) -> str | None:
+    """`pm_import.classify_upstream`의 공용 URL/path 판별을 소비한다.
+
+    판별 규칙을 여기서 다시 쓰지 않는다. 엔진 부재/구버전이면 None으로 돌려 호출자가
+    안전한 adopter self-test로 강등한다.
+    """
+    pm_import_mod = _load_module("pm_import", "pm_import.py")
+    classify = getattr(pm_import_mod, "classify_upstream", None) if pm_import_mod else None
+    if classify is None:
+        return None
+    try:
+        return classify(value)
+    except Exception as exc:  # noqa: BLE001 — provenance 판별 실패는 self-test 강등(단 skew 재전파).
+        if _is_engine_rev_skew(exc):
+            raise
+        return None
+
+
+def _protected_push_gate_config(
+    repo: str, *, board=None, report_downgrade: bool = True,
+) -> tuple[str, str]:
+    """repo 보호 push의 증거 계약 `(mode, self_test_cmd)`를 provenance로 해소한다.
+
+    PM 홈 `local.conf upstream=`이 이 홈의 canonical `work/<repo>_<N>` 슬롯 자체거나,
+    URL identity가 areas의 repo remote와 같으면 프레임워크 자기 repo라 기존 release
+    livegate를 유지한다. 다른 repo면 areas `test_cmd`(없으면 local.conf/default)로 자기 검증한다.
+    upstream/registry provenance를 판별할 수 없으면 사용자 통제 밖 조건으로 영구 차단하지
+    않고 adopter `self-test`로 강등한다. 증거 명령 자체는 그대로 fail-closed다.
+    """
+    test_cmd = _resolve_repo_test_cmd(repo, board=board)
+    upstream = _local_conf_value("upstream")
+    if not upstream:
+        if report_downgrade:
+            print(
+                f"⚠ 보호 push gate 강등({repo}): local.conf upstream 축 미해소 — "
+                "release 대신 self-test를 사용한다; upstream을 설정하라.",
+                file=sys.stderr,
+            )
+        return _PROTECTED_GATE_SELF_TEST, test_cmd
+
+    # URL/scp-like upstream 판별은 pm_import.classify_upstream 단일 진실을 쓴다. 여기서 정규식을
+    # 따로 들면 `host:path` 같은 지원 형식이 경로로 갈라져 release gate가 빠진다.
+    kind = _classify_upstream(upstream)
+    if kind == "url":
+        repo_git = _repo_registry_git(repo, board=board)
+        if not repo_git:
+            if report_downgrade:
+                print(
+                    f"⚠ 보호 push gate 강등({repo}): areas.md git 축 미해소 — "
+                    "release 대신 self-test를 사용한다; 해당 repo의 git URL을 등록하라.",
+                    file=sys.stderr,
+                )
+            return _PROTECTED_GATE_SELF_TEST, test_cmd
+        mode = (_PROTECTED_GATE_RELEASE
+                if _git_remote_identity(upstream) == _git_remote_identity(repo_git)
+                else _PROTECTED_GATE_SELF_TEST)
+        return mode, test_cmd
+
+    # classifier 자체가 미해소된 경우 경로라고 추측하지 않는다. release false-positive보다
+    # 채택자 자기 검증이 안전하고, B1의 판별불가 강등 계약과도 같다.
+    if kind is None:
+        if report_downgrade:
+            print(
+                f"⚠ 보호 push gate 강등({repo}): upstream URL/path 분류 축 미해소 — "
+                "release 대신 self-test를 사용한다; pm_import 엔진과 upstream 값을 확인하라.",
+                file=sys.stderr,
+            )
+        return _PROTECTED_GATE_SELF_TEST, test_cmd
+
+    candidate = Path(upstream).expanduser()
+    if not candidate.is_absolute():
+        candidate = REPO / candidate
+    candidate = candidate.resolve()
+    work_root = (REPO / "work").resolve()
+    name, sep, slot_no = candidate.name.rpartition("_")
+    if candidate.parent == work_root and sep and name == repo and slot_no.isdigit():
+        return _PROTECTED_GATE_RELEASE, test_cmd
+    return _PROTECTED_GATE_SELF_TEST, test_cmd
 
 
 def _default_test_cmd() -> str:
@@ -401,11 +576,25 @@ def _resolve_repo_test_cmd(repo: str, *, board=None) -> str:
     보여주는 게 목적이다(must-fix 1 — 슬롯이 areas 보다 우선이라 잘못 덮으면 안 됨).
     """
     board_mod = board or _load_module("board", "board.py")
+    parse_areas = getattr(board_mod, "_parse_areas", None) if board_mod else None
+    if parse_areas is not None:
+        try:
+            _header, rows = parse_areas()
+        except Exception as exc:  # noqa: BLE001 — areas 파싱 실패는 아래 폴백(단 skew 재전파).
+            if _is_engine_rev_skew(exc):
+                raise
+            rows = []
+        for row in rows:
+            if row.get("repo") == repo and row.get("test_cmd"):
+                return row["test_cmd"]
+    # 구 3칼럼 registry에는 repo 칼럼이 없으므로 prefix lookup을 하위호환으로 유지한다.
     row_for_prefix = getattr(board_mod, "_areas_row_for_prefix", None) if board_mod else None
     if row_for_prefix is not None:
         try:
             row = row_for_prefix(repo)
-        except Exception:  # noqa: BLE001 — areas 파싱 실패는 솔로 폴백으로 강등(크래시 0).
+        except Exception as exc:  # noqa: BLE001 — areas 실패는 솔로 폴백(단 skew 재전파).
+            if _is_engine_rev_skew(exc):
+                raise
             row = None
         if row and row.get("test_cmd"):
             return row["test_cmd"]
@@ -430,7 +619,9 @@ def _resolve_repo_base(repo: str, *, board=None) -> str | None:
         return None
     try:
         return repo_base(repo)
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 None 폴백(현행 bare HEAD 동작).
+    except Exception as exc:  # noqa: BLE001 — 일반 areas 파싱 실패만 None 폴백(단 skew 재전파).
+        if _is_engine_rev_skew(exc):
+            raise
         return None
 
 
@@ -439,6 +630,17 @@ def _resolve_repo_base(repo: str, *, board=None) -> str | None:
 # 기본값이 있어야 — 미해소여도 main 류를 막는다). board 가 있으면 board._repo_protected 가
 # 권위(areas override 반영)이고, 이 상수는 board 부재 폴백 전용이다.
 _DEFAULT_PROTECTED = ("main", "master", "develop")
+
+# `_install_protected_hook` 는 repo add/worktree add를 깨지 않기 위해 bool fail-soft를
+# 유지한다. 단, 그 과정에서 raw 예외 원인을 잃으면 bootstrap/reporting이 모든
+# 실패를 "bare 부재" 로 오도한다. CLI는 단일 process에서 순차 설치하므로 repo별
+# 최신 실패 원인을 함께 기록하고, 공개 helper로 동일 깔때기의 호출자가 소비한다.
+_PROTECTED_HOOK_FAILURE_REASONS: dict[str, str] = {}
+
+
+def protected_hook_install_failure_reason(repo: str) -> str | None:
+    """최근 보호 훅 중앙 설치 실패 원인(성공/미시도면 None)."""
+    return _PROTECTED_HOOK_FAILURE_REASONS.get(repo)
 
 
 def _resolve_repo_protected(repo: str, *, board=None) -> list[str]:
@@ -458,7 +660,9 @@ def _resolve_repo_protected(repo: str, *, board=None) -> list[str]:
         return list(_DEFAULT_PROTECTED)
     try:
         return repo_protected(repo)
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 default 폴백(보호 기본값 보장).
+    except Exception as exc:  # noqa: BLE001 — areas 실패는 default 폴백(단 skew 재전파).
+        if _is_engine_rev_skew(exc):
+            raise
         return list(_DEFAULT_PROTECTED)
 
 
@@ -466,24 +670,38 @@ def _install_protected_hook(repo: str, *, board=None, worktree_pool=None) -> boo
     """그 repo 의 보호 브랜치 훅(pre-push·pre-commit)을 (재)설치한다 — repo add·worktree add·
     `pm_update` sync 후 전수 재설치 공용.
 
-    보호목록을 `_resolve_repo_protected`(areas `protected`→default)로 해소해
-    `worktree_pool.install_protected_hook(repo, protected)` 에 전달한다 — 훅+sidecar+bare
-    `core.hooksPath` wiring(멱등·자가치유). **회사 repo 무영향** — 모든 write 는 `.project_manager
+    보호목록과 형상별 증거 계약(`_protected_push_gate_config`)을 해소해
+    `worktree_pool.install_protected_hook(repo, protected, gate_mode=, test_cmd=)` 에 전달한다 —
+    훅+sidecar+bare `core.hooksPath` wiring(멱등·자가치유). **회사 repo 무영향** — 모든 write 는 `.project_manager
     /.local` + bare config 1줄(client-side).
 
     **fail-soft·best-effort** — worktree_pool 부재/`install_protected_hook` 미존재(구 엔진)/
-    예외는 조용히 False(보호훅은 *추가 가드*이지 repo add/worktree add 의 핵심 부작용이 아니다
-    → 훅 설치 실패가 등록/슬롯 생성을 깨면 안 된다). bare 부재 시 install 이 no-op False.
-    설치 성공 시 True. board 직접 import 금지— `_load_module` DI.
+    예외는 False(보호훅은 *추가 가드*이지 repo add/worktree add 의 핵심 부작용이
+    아니다 → 훅 설치 실패가 등록/슬롯 생성을 깨면 안 된다). 단 fail-soft가
+    **원인 소실**은 뜻하지 않으므로 `protected_hook_install_failure_reason`에
+    실제 예외 타입/메시지 또는 installer False 사유를 기록한다. bare 부재 시 install이
+    no-op False. 설치 성공 시 True. board 직접 import 금지— `_load_module` DI.
     """
+    _PROTECTED_HOOK_FAILURE_REASONS.pop(repo, None)
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
     install = getattr(wp, "install_protected_hook", None) if wp else None
     if install is None:
+        _PROTECTED_HOOK_FAILURE_REASONS[repo] = (
+            "worktree_pool.install_protected_hook 헬퍼 부재(구 엔진 또는 로드 실패)")
         return False  # 구 엔진(헬퍼 부재)/wp 부재 — fail-soft(보호훅은 추가 가드).
-    protected = _resolve_repo_protected(repo, board=board)
     try:
-        return bool(install(repo, protected))
-    except Exception:  # noqa: BLE001 — 훅 설치 실패가 등록/슬롯 생성을 깨면 안 됨(best-effort).
+        protected = _resolve_repo_protected(repo, board=board)
+        gate_mode, test_cmd = _protected_push_gate_config(repo, board=board)
+        installed = bool(install(repo, protected, gate_mode=gate_mode, test_cmd=test_cmd))
+        if not installed:
+            _PROTECTED_HOOK_FAILURE_REASONS[repo] = (
+                "install_protected_hook이 False를 반환(bare 미러 부재 또는 "
+                "bare core.hooksPath 설정 실패)")
+        return installed
+    except Exception as exc:  # noqa: BLE001 — 등록/슬롯 생성은 유지하되 원인은 기록.
+        if _is_engine_rev_skew(exc):
+            raise  # 엔진 사본 불일치는 설치 오류가 아니므로 fail-soft 대상이 아니다.
+        _PROTECTED_HOOK_FAILURE_REASONS[repo] = f"{type(exc).__name__}: {exc}"
         return False
 
 
@@ -608,7 +826,9 @@ def protected_hook_wired(
         if not configured:
             return False
         return Path(configured).resolve() == (Path(hooks_dir) / repo).resolve()
-    except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 None("모름")·오탐 0.
+    except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 None(단 skew 재전파).
+        if _is_engine_rev_skew(exc):
+            raise
         return None
 
 
@@ -624,7 +844,9 @@ def _areas_protected_cell(repo: str, *, board=None) -> str | None:
         return None
     try:
         _header, rows = parse()
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 미해소(None) 로 강등.
+    except Exception as exc:  # noqa: BLE001 — 일반 areas 실패만 None(단 skew 재전파).
+        if _is_engine_rev_skew(exc):
+            raise
         return None
     for row in rows:
         if row.get("repo") == repo:
@@ -749,14 +971,49 @@ def _install_protected_hook_reporting(
         print(f"✓ 보호 브랜치 pre-push + pre-commit 훅 {action}: {repo}.")
         return True
     retry = retry or f"{_FACADE_PROG} repo add {repo}"
+    reason = protected_hook_install_failure_reason(repo) or "원인 미해소"
     print(
-        f"[경고] 보호 브랜치 훅 sidecar 를 {action}하지 못했다: {repo} — bare "
-        f"`.repos/{repo}.git` 부재이거나 `core.hooksPath` 설정 실패(구 엔진 포함). 이 clone 의 "
+        f"[경고] 보호 브랜치 훅 sidecar 를 {action}하지 못했다: {repo} — {reason}. 이 clone 의 "
         "pre-push·pre-commit 훅은 보호목록을 강제하지 않거나 옛 목록으로 동작할 수 있다.\n"
         f"  → 재실행(멱등): {retry}",
         file=sys.stderr,
     )
     return False
+
+
+def _refresh_protected_gate_contracts(*, board=None, worktree_pool=None) -> tuple[list[str], list[str]]:
+    """등록 repo 훅을 현재 upstream 기반 gate 계약으로 재설치한다.
+
+    `upstream set`은 release/self-test provenance 자체를 바꾸므로 설정 파일만 갱신하면 기존
+    sidecar가 다음 일반 설치까지 stale하다. 등록 repo 전수를 중앙 설치 깔때기로 보내
+    보호목록·원자 gate-contract(mode + test command)를 함께 재계산한다. 반환은
+    `(시도 repo, 실패 repo)`이며,
+    보호 훅의 기존 best-effort 계약대로 설정 기록 자체를 롤백하지는 않고 실패를 loud 보고한다.
+    """
+    board_mod = board or _load_module("board", "board.py")
+    registered = getattr(board_mod, "registered_repos", None) if board_mod else None
+    if registered is None:
+        return [], []
+    # hermetic 호출에서 pm_config.REPO만 임시 루트로 바꿨는데 실 board를 주입하지 않은 경우
+    # 실 PM 홈 레지스트리/훅을 건드리지 않는다. 프로덕션 모듈끼리는 같은 REPO다.
+    board_repo = getattr(board_mod, "REPO", REPO)
+    if Path(board_repo).resolve() != REPO.resolve():
+        return [], []
+    try:
+        repos = sorted(registered())
+    except Exception as exc:  # noqa: BLE001 — 설정 보존·일반 refresh 실패만 fail-soft.
+        if _is_engine_rev_skew(exc):
+            raise
+        return [], []
+    attempted: list[str] = []
+    failed: list[str] = []
+    for repo in repos:
+        attempted.append(repo)
+        if not _install_protected_hook_reporting(
+                repo, board=board_mod, worktree_pool=worktree_pool,
+                action="gate 계약으로 (재)설치"):
+            failed.append(repo)
+    return attempted, failed
 
 
 def _stdin_is_tty() -> bool:
@@ -2679,6 +2936,8 @@ def cmd_upstream(
     *,
     pm_import=None,
     git_runner: GitRunner | None = None,
+    board=None,
+    worktree_pool=None,
 ) -> int:
     """`upstream show | set <value>` — upstream 값 조회/전환.
 
@@ -2734,13 +2993,17 @@ def cmd_upstream(
         print(f"[중단] upstream 값 거부 (기록 안 함) — {reason}", file=sys.stderr)
         return 1
 
-    text = local_conf.read_text(encoding="utf-8")
-    new_text = pm_import_mod._set_conf_keys(text, {"upstream": value})
-    if new_text != text:
-        # atomic write — 같은 디렉토리 임시파일에 쓰고 os.replace 로 교체(부분쓰기·crash 중 손상 방지).
-        tmp = local_conf.with_suffix(local_conf.suffix + ".tmp")
-        tmp.write_text(new_text, encoding="utf-8")
-        os.replace(tmp, local_conf)
+    try:
+        pm_import_mod._write_conf_keys(local_conf, {"upstream": value})
+    except RuntimeError as exc:
+        print(
+            f"[중단] {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    # upstream은 보호 push gate의 provenance 입력이다. 값이 같아도 끊긴/stale sidecar를
+    # 자가치유하도록 등록 repo 전수를 중앙 설치 깔때기로 보낸다.
+    _refresh_protected_gate_contracts(board=board, worktree_pool=worktree_pool)
     kind = pm_import_mod.classify_upstream(value)
     print(f"✓ upstream 설정: {value}  ({kind}) — pm_update 가 --from 생략 시 이 값을 쓴다.")
     return 0

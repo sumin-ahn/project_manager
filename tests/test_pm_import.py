@@ -70,6 +70,13 @@ def _load_pm_config():
     return mod
 
 
+def _load_board():
+    spec = importlib.util.spec_from_file_location("board_for_conf_writer_test", TOOLS / "board.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 @pytest.fixture(scope="module")
 def pm_import():
     return _load_pm_import()
@@ -483,6 +490,56 @@ def test_record_upstream_unit(pm_import, tmp_path):
         1 for line in text.splitlines()
         if line.split("=", 1)[0].strip() == "upstream"
     ) == 1
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("project_name", "Writer Project"),
+        ("test_cmd", "python3 -m pytest tests/ -q"),
+        ("py", "python3"),
+        ("upstream", "https://github.com/acme/framework.git"),
+        ("upstream_rev", "abc123"),
+        ("upstream_seen_rev", "def456"),
+        ("opencode_pro_model", "openai/gpt-5.6"),
+    ],
+)
+def test_general_conf_writer_normalizes_every_key_atomically_for_all_readers(
+        pm_import, pm_config, tmp_path, monkeypatch, key, value):
+    """일반 writer는 키 종류와 무관하게 유일화·atomic 기록하고 세 reader와 일치한다."""
+    local_conf = tmp_path / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True)
+    local_conf.write_text(
+        f"# header\n{key}=first\nsession=keep\n{key}=stale\n{key}=\n",
+        encoding="utf-8",
+    )
+    real_replace = os.replace
+    replacements = []
+
+    def recording_replace(src, dst):
+        replacements.append((Path(src), Path(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(pm_import.os, "replace", recording_replace)
+    assert pm_import._write_conf_keys(local_conf, {key: value}) is True
+
+    text = local_conf.read_text(encoding="utf-8")
+    active = [
+        line for line in text.splitlines()
+        if not line.lstrip().startswith("#")
+        and "=" in line
+        and line.split("=", 1)[0].strip() == key
+    ]
+    assert active == [f"{key}={value}"]
+    assert replacements == [(local_conf.with_suffix(".conf.tmp"), local_conf)]
+    assert "session=keep" in text and text.startswith("# header\n")
+
+    assert pm_import._parse_conf_keys(text)[key] == value
+    monkeypatch.setattr(pm_config, "REPO", tmp_path)
+    assert pm_config._local_conf_value(key) == value
+    board = _load_board()
+    board.LOCAL_CONF = local_conf
+    assert board.local_config()[key] == value
 
 
 # ── T-0145: --from↔--upstream 디커플 + origin 자동도출 + upstream_rev baseline ──

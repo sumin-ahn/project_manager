@@ -129,15 +129,26 @@ def test_run_reviewer_passes_utf8_encoding(external_review):
     _assert_utf8(rec.calls[0])
 
 
-# ── pm_import (모듈 subprocess.run monkeypatch) ─────────────────────────────
+# ── pm_import ──────────────────────────────────────────────────────────────
 
 
-def test_pm_import_harness_runner_passes_utf8(pm_import, monkeypatch):
-    rec = _Recorder()
-    monkeypatch.setattr(pm_import.subprocess, "run", rec)
-    pm_import._real_harness_runner(["claude", "-p", "분석 프롬프트"], "프롬프트")
-    assert rec.calls
-    _assert_utf8(rec.calls[0])
+def test_pm_import_harness_runner_uses_utf8_watchdog(pm_import, monkeypatch):
+    """fill 실 워치독의 Popen 경계가 UTF-8/replace를 실제로 전달한다."""
+    calls = []
+
+    def recording_forbidden_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        raise FileNotFoundError("spawn 차단 sentinel")
+
+    monkeypatch.setattr(pm_import.subprocess, "Popen", recording_forbidden_popen)
+    ok, _ = pm_import._real_harness_runner(
+        ["claude", "-p", "분석 프롬프트"], "프롬프트")
+
+    assert ok is False
+    assert len(calls) == 1, "워치독 우회 또는 중복 spawn"
+    _assert_utf8(calls[0][1])
+    assert calls[0][1]["stdout"] is subprocess.PIPE
+    assert calls[0][1]["stderr"] is subprocess.PIPE
 
 
 def test_pm_import_board_init_passes_utf8(pm_import, monkeypatch, tmp_path):

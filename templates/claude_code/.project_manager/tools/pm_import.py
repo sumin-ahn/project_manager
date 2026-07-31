@@ -64,6 +64,7 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -167,20 +168,31 @@ LIVE_HARNESS_ENV = "PM_IMPORT_LIVE_HARNESS"
 
 # 하니스 헤드리스 구동 명령 (fill auto). claude 는 stdout 캡처, opencode 는 --format json 파싱,
 # codex 는 `exec --json` JSONL 파싱(최종 agent_message). codex 는 stdin 미닫힘 시 무기한 대기(실측·
-# spike )라 _real_harness_runner 가 stdin=DEVNULL 을 부여하고, -s workspace-write·--skip-git-repo-check·
+# spike )라 _real_harness_runner 가 빈 stdin PIPE를 즉시 닫아 EOF를 주고, -s workspace-write·--skip-git-repo-check·
 # -C <dest> 는 _build_runner_argv 가 붙인다. codex 는 `model` 생략=사용자 config 상속(harness-특수 분기 0).
 CLAUDE_FILL_CMD = ("claude", "-p")
 OPENCODE_FILL_CMD = ("opencode", "run")
 CODEX_FILL_CMD = ("codex", "exec")
 
-# 하니스 호출 타임아웃 (초) — repo 분석 1회.
-FILL_TIMEOUT_SECONDS = 300
+# fill 실행도 위임·외부리뷰와 같은 하네스 프로필을 쓴다. 과거 fill 전용 300초 wall 상한은
+# cloud idle 임계보다 먼저 발화해 무진행 판정을 사실상 무력화했고, opencode 로컬 GPU 축의 실측
+# 장시간 실행도 잘랐다. 채택 시점 1회성이라는 UX 차이는 별도 판정값의 근거가 아니므로 제거한다.
+# 배포 환경 차이는 대상 repo local.conf 의 `harness.<name>.{idle,wall}_timeout` 으로 조정한다.
+# 실제 fill argv 계약을 선언한다: (하네스, 증분 진행 신호 유무, stdin 입력).
+# claude `-p`는 종료 시 평문 blob 하나를 내므로 profile의 일반 CLI event-stream 선언을 그대로
+# 적용하면 정상 침묵도 idle kill한다. 반면 opencode `--format json`·codex `--json`은 실행 중
+# 이벤트를 내므로 profile 신호를 소비한다. codex만 빈 PIPE를 닫아 즉시 EOF를 전달한다.
+FILL_DRIVER_BY_CMD = {
+    CLAUDE_FILL_CMD: ("claude", False, None),
+    OPENCODE_FILL_CMD: ("opencode", True, None),
+    CODEX_FILL_CMD: ("codex", True, ""),
+}
 
 # `opencode models` 조회 타임아웃 (초). 모델 목록 나열은 빠른 로컬 명령 가정이나, 회사 Pro/원격
 # 게이트웨이는 cold 콜 지연이 커 15s 로는 부족.
 # 기본을 60 으로 올리고, env override 로 환경별 재조정.
-# (FILL_TIMEOUT 300 은 LLM 헤드리스 구동용 — 모델 조회엔 과대. --opencode-model 명시 경로의
-# 대조-조회가 import UX 를 길게 막지 않도록 fail-soft + 적당한 상한.
+# (LLM 헤드리스 구동의 하네스 프로필 wall 값은 모델 조회엔 과대. --opencode-model 명시 경로의
+# 대조-조회가 import UX 를 길게 막지 않도록 fail-soft + 적당한 별도 상한.)
 OPENCODE_MODELS_TIMEOUT_SECONDS = 60
 
 
@@ -1567,9 +1579,11 @@ def run_board_init(dest_root: Path) -> int:
 
 
 def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
-    """local.conf 텍스트에서 지정 키만 set-or-replace. 나머지 줄·주석은 보존.
+    """local.conf 텍스트에서 지정 키를 유일한 한 줄로 정규화한다.
 
-    있으면 그 자리에서 `key=value` 로 교체(첫 등장만), 없으면 끝에 추가. stdlib only.
+    첫 등장 자리에 `key=value`를 기록하고 뒤의 활성 중복은 제거한다. 없으면 끝에
+    추가하며, 갱신하지 않는 줄·주석은 그대로 보존한다. reader들이 모두 last-wins이므로
+    갱신 뒤 옛 중복이 실효값을 되돌리지 않게 하는 일반 set-or-replace 규칙이다.
     """
     remaining = dict(updates)
     lines = text.splitlines(keepends=True)
@@ -1578,9 +1592,10 @@ def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
         stripped = line.lstrip()
         if not stripped.startswith("#") and "=" in stripped:
             key = stripped.split("=", 1)[0].strip()
-            if key in remaining:
-                newline = "\n" if line.endswith("\n") else ""
-                out.append(f"{key}={remaining.pop(key)}{newline}")
+            if key in updates:
+                if key in remaining:
+                    newline = "\n" if line.endswith("\n") else ""
+                    out.append(f"{key}={remaining.pop(key)}{newline}")
                 continue
         out.append(line)
     if remaining:
@@ -1605,17 +1620,12 @@ def sync_local_conf(dest_root: Path, project_name: str) -> bool:
         print(f"경고: local.conf 없음 ({local_conf}) — operational 값 동기화 건너뜀.",
               file=sys.stderr)
         return False
-    text = local_conf.read_text(encoding="utf-8")
     updates = {
         "project_name": project_name,
         "test_cmd": _default_test_cmd(),
         "py": _detected_py(),
     }
-    new_text = _set_conf_keys(text, updates)
-    if new_text != text:
-        local_conf.write_text(new_text, encoding="utf-8")
-        return True
-    return False
+    return _write_conf_keys(local_conf, updates)
 
 
 def _parse_conf_keys(text: str) -> dict[str, str]:
@@ -1628,6 +1638,35 @@ def _parse_conf_keys(text: str) -> dict[str, str]:
         key, _, value = stripped.partition("=")
         conf[key.strip()] = value.strip()
     return conf
+
+
+def _write_conf_keys(path: Path, updates: dict[str, str]) -> bool:
+    """local.conf 키들을 중복 없이 atomic 기록하고 실효값을 검증한다.
+
+    `_set_conf_keys`로 모든 갱신 키를 유일화한 뒤 같은 디렉터리의 임시파일을
+    `os.replace`하여 부분 쓰기를 막는다. 변경이 없어도 reader와 같은 last-wins 파서로
+    postcondition을 확인하며, 불일치는 성공으로 흡수하지 않고 fail-loud한다.
+    """
+    text = path.read_text(encoding="utf-8")
+    new_text = _set_conf_keys(text, updates)
+    changed = new_text != text
+    if changed:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(new_text, encoding="utf-8")
+        os.replace(tmp, path)
+    effective = _parse_conf_keys(path.read_text(encoding="utf-8"))
+    mismatches = {
+        key: (value, effective.get(key))
+        for key, value in updates.items()
+        if effective.get(key) != value.strip()
+    }
+    if mismatches:
+        detail = ", ".join(
+            f"{key}: 요청={requested!r}, 실효={actual!r}"
+            for key, (requested, actual) in mismatches.items()
+        )
+        raise RuntimeError(f"local.conf 기록 후 실효값 불일치 — {detail}; 파일={path}")
+    return changed
 
 
 def backup_existing_local_conf(dest_root: Path, backup_root: Path | None) -> str | None:
@@ -1684,9 +1723,7 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
     }
     if not preserved:
         return False
-    new_text = _set_conf_keys(current_text, preserved)
-    if new_text != current_text:
-        local_conf.write_text(new_text, encoding="utf-8")
+    if _write_conf_keys(local_conf, preserved):
         kept = "·".join(sorted(preserved))
         print(f"✓ 기존 local.conf 사용자 키 보존: {kept}")
         return True
@@ -1701,8 +1738,8 @@ def record_upstream(dest_root: Path, upstream_value) -> bool:
     `--from`(=source_root)을 넘겨 **기존 동작(경로 기록)을 회귀 보존**한다 — `Path` 를 받으면
     `str()` 로 직렬화하므로 옛 `record_upstream(dest_root, source_root)` 호출 형태도 그대로 동작.
 
-    이후 pm_update 가 --from 생략 시 이 값을 기본 upstream 으로 쓴다. _set_conf_keys 의 키 단위
-    set-or-replace 라 기존 줄이 있으면 *제자리 갱신*, 없으면 끝에 추가한다 — 따라서 재-import(--into)
+    이후 pm_update 가 --from 생략 시 이 값을 기본 upstream 으로 쓴다. 공용 writer의 키 단위
+    중복 정규화·atomic replace·실효값 검증을 거친다 — 따라서 재-import(--into)
     는 reapply_preserved_conf_keys 가 백업의 *stale upstream 을 되살려도*(board init 은 upstream 을
     쓰지 않으므로 preserve 가 옛 값을 복원한다) 마지막에 *현재 값* 으로 제자리 확정 갱신된다(stale
     보존 아님). 바로 그 때문에 board init·conf sync·preserve 단계 *이후* 에 호출해야 갱신이 보장된다. 변경 시 True.
@@ -1711,12 +1748,7 @@ def record_upstream(dest_root: Path, upstream_value) -> bool:
     if not local_conf.is_file():
         print(f"경고: local.conf 없음 ({local_conf}) — upstream 기록 건너뜀.", file=sys.stderr)
         return False
-    text = local_conf.read_text(encoding="utf-8")
-    new_text = _set_conf_keys(text, {"upstream": str(upstream_value)})
-    if new_text != text:
-        local_conf.write_text(new_text, encoding="utf-8")
-        return True
-    return False
+    return _write_conf_keys(local_conf, {"upstream": str(upstream_value)})
 
 
 def record_upstream_rev(dest_root: Path, rev: str) -> bool:
@@ -1726,18 +1758,13 @@ def record_upstream_rev(dest_root: Path, rev: str) -> bool:
     import 시(이 함수)와 pm_update 매 sync 시 갱신된다. `upstream_seen_rev`(현재
     관찰값·pm-update 스킬 기록)는 **별개 키** — 한 키 2역 금지(race/자기비교 회피). rev 가
     빈 값(git repo 아님·HEAD 해소 실패)이면 호출부가 이 함수를 부르지 않는다(기록 생략·graceful).
-    _set_conf_keys 키 단위 set-or-replace 라 다른 키·주석 보존. 변경 시 True.
+    공용 writer의 중복 정규화·atomic replace·실효값 검증을 거치며 다른 키·주석은 보존한다.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
         print(f"경고: local.conf 없음 ({local_conf}) — upstream_rev 기록 건너뜀.", file=sys.stderr)
         return False
-    text = local_conf.read_text(encoding="utf-8")
-    new_text = _set_conf_keys(text, {"upstream_rev": rev})
-    if new_text != text:
-        local_conf.write_text(new_text, encoding="utf-8")
-        return True
-    return False
+    return _write_conf_keys(local_conf, {"upstream_rev": rev})
 
 
 def record_opencode_model(dest_root: Path, model: str) -> bool:
@@ -1748,20 +1775,15 @@ def record_opencode_model(dest_root: Path, model: str) -> bool:
     OPENCODE_PRO_MODEL · pm_update._LOCAL_CONF_TO_OPERATIONAL) 키 부재로 leak assertion 에
     걸려 채택자 렌더가 crash 한다. 따라서 *실제로 모델이 해소된* 경로(flag·interactive)에서만
     그 값을 local.conf 에 박아 둔다 — todo(미해소)는 토큰이 YAML 주석으로 남아 렌더 leak 이
-    없으므로 기록하지 않는다(호출부 게이트). _set_conf_keys 키 단위 set-or-replace 라 다른
-    키·주석은 보존. local.conf 부재면 graceful skip. 변경 시 True.
+    없으므로 기록하지 않는다(호출부 게이트). 공용 writer의 중복 정규화·atomic replace·실효값
+    검증을 거치며 다른 키·주석은 보존한다. local.conf 부재면 graceful skip. 변경 시 True.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
         print(f"경고: local.conf 없음 ({local_conf}) — opencode 모델 기록 건너뜀.",
               file=sys.stderr)
         return False
-    text = local_conf.read_text(encoding="utf-8")
-    new_text = _set_conf_keys(text, {"opencode_pro_model": model})
-    if new_text != text:
-        local_conf.write_text(new_text, encoding="utf-8")
-        return True
-    return False
+    return _write_conf_keys(local_conf, {"opencode_pro_model": model})
 
 
 # ── opencode 모델 결정적 해소 단계 (LLM 아님) ──────────────────────
@@ -2147,17 +2169,128 @@ class FillResult:
 
 
 def _load_watchdog():
-    """엔진 pm_relay 의 첫-이벤트 워치독을 지연 로드한다 (deep-import seam·순환 회피).
+    """엔진 pm_relay 의 공용 워치독을 지연 로드한다 (deep-import seam·순환 회피).
 
     pm_import 와 pm_relay 는 형제(`.project_manager/tools/`) — importlib 로 직접 로드해
     PYTHONPATH 의존 없이(테스트 spec_from_file_location 경로 포함) run_with_first_event_watchdog·
-    StallWatchdogError·env 노브 해소기를 빌려 쓴다(board._load_domain_module 선례 동형)."""
+    하네스 프로필·timeout sentinel 을 빌려 쓴다(board._load_domain_module 선례 동형)."""
     engine_path = Path(__file__).resolve().parent / "pm_relay.py"
     spec = importlib.util.spec_from_file_location("pm_relay", engine_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     _verify_engine_rev(module, engine_path.name)
     return module
+
+
+def _fill_driver(argv: list[str]) -> tuple[str, bool, str | None]:
+    """실제 fill argv를 (하네스·증분 신호·stdin) 선언으로 해소한다."""
+    for command, driver in FILL_DRIVER_BY_CMD.items():
+        if tuple(argv[:len(command)]) != command:
+            continue
+        # 실행 중 이벤트를 내는 **실제 출력 형식**까지 argv에서 확인한다. 바이너리 접두사만
+        # 맞고 JSON 플래그가 빠진 주입 호출은 평문/종료시 blob일 수 있으므로 증분 신호 축으로
+        # 올리지 않는다(모르는 형식 = idle 판정 없음·가장 관대한 wall).
+        if command == OPENCODE_FILL_CMD:
+            has_json_format = any(
+                token == "--format=json"
+                or (token == "--format" and index + 1 < len(argv)
+                    and argv[index + 1] == "json")
+                for index, token in enumerate(argv)
+            )
+            if not has_json_format:
+                break
+        elif command == CODEX_FILL_CMD and "--json" not in argv[len(command):]:
+            # 출력이 평문이면 증분 신호/프로필은 보수적으로 미지 축에 두되, codex의 stdin EOF
+            # 정책은 출력 형식과 무관하다. 빈 PIPE를 닫지 않으면 추가 입력 대기로 돌아간다.
+            return "", False, driver[2]
+        return driver
+    # 내부 빌더 밖의 주입 호출은 미지 프로필로 보수 처리한다: 신호·stdin을 추정하지 않고
+    # 가장 관대한 wall만 적용한다. basename이 알려진 이름이어도 argv 계약이 다르면 미지 축이다.
+    return "", False, None
+
+
+def _fill_local_config(cwd: Path | str | None) -> dict[str, str]:
+    """fill 대상 repo의 배포별 하네스 timeout override를 읽는다(fail-soft)."""
+    if cwd is None:
+        return {}
+    path = Path(cwd) / ".project_manager" / "local.conf"
+    try:
+        return _parse_conf_keys(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, UnicodeError) as exc:
+        print(f"경고: fill timeout 설정을 읽을 수 없음({path}): {exc} — 프로필 기본값 사용.",
+              file=sys.stderr)
+        return {}
+
+
+def _fill_partial_text(value) -> str:
+    """TimeoutExpired 계열의 str/bytes 부분 산출물을 손실 없이 표시 가능한 텍스트로 만든다."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value) if value else ""
+
+
+def _fill_failure_with_partial(head: str, exc: BaseException) -> str:
+    """워치독 kill/정리 실패의 stdout·stderr를 fill 실패 진단에 보존한다."""
+    stdout = _fill_partial_text(getattr(exc, "output", ""))
+    stderr = _fill_partial_text(getattr(exc, "stderr", ""))
+    parts = [head]
+    if stdout:
+        parts.append(f"\n[중단 시점까지의 stdout — {len(stdout)}자 보존]\n{stdout}")
+    if stderr:
+        parts.append(f"\n[중단 시점까지의 stderr — {len(stderr)}자 보존]\n{stderr}")
+    return "".join(parts)
+
+
+def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Path:
+    """fill 실패 원문을 repo 안 private raw 파일로 박제한다(symlink 추종 금지)."""
+    dest_root = Path(dest_root)
+    repo_root = dest_root.resolve(strict=True)
+    if not repo_root.is_dir():
+        raise NotADirectoryError(f"fill raw 대상 repo가 디렉터리가 아님: {dest_root}")
+    raw_parts = (".project_manager", ".local", "fill")
+    raw_dir = repo_root.joinpath(*raw_parts)
+    try:
+        raw_dir.resolve(strict=False).relative_to(repo_root)
+    except ValueError as exc:
+        raise OSError(f"fill raw 경로가 대상 repo 밖을 가리킴: {raw_dir}") from exc
+
+    # 경로 검사 뒤 symlink로 바뀌는 TOCTOU도 닫기 위해, 해소된 repo FD에서 각 컴포넌트를
+    # O_NOFOLLOW로 열고 dir_fd 상대 생성만 한다. 이 플랫폼에 안전 플래그가 없으면 저장을
+    # 포기해 호출부의 전문 표시 폴백으로 보낸다.
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise OSError("fill raw 안전 저장에 O_NOFOLLOW/O_DIRECTORY 지원 필요")
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    current_fd = os.open(str(repo_root), dir_flags)
+    prefix = f"pm_import_fill_{harness}_{datetime.datetime.now():%Y%m%d_%H%M%S}_"
+    try:
+        for index, part in enumerate(raw_parts):
+            try:
+                next_fd = os.open(part, dir_flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                os.mkdir(part, 0o700 if index == len(raw_parts) - 1 else 0o777,
+                         dir_fd=current_fd)
+                next_fd = os.open(part, dir_flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        os.fchmod(current_fd, 0o700)
+
+        file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        fd = None
+        raw_basename = ""
+        for _attempt in range(100):
+            raw_basename = f"{prefix}{secrets.token_hex(4)}.txt"
+            try:
+                fd = os.open(raw_basename, file_flags, 0o600, dir_fd=current_fd)
+                break
+            except FileExistsError:
+                continue
+        if fd is None:
+            raise FileExistsError("fill raw 고유 파일명 생성 100회 충돌")
+        with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as handle:
+            handle.write(output)
+        return dest_root.joinpath(*raw_parts, raw_basename)
+    finally:
+        os.close(current_fd)
 
 
 def _real_harness_runner(
@@ -2171,49 +2304,97 @@ def _real_harness_runner(
     SF: cwd 가 주어지면 *대상 repo* 에서 구동한다(run_fill 이 dest_root 를 바인딩). 호출자
     cwd 가 아니라 import 대상에서 돌아야 하니스의 작업 디렉토리·파일 접근이 분석 대상과 맞는다.
 
-    opencode 경로(`opencode run …`)는 엔진 첫-이벤트 워치독을 경유한다 — startup network
-    fetch stall에 무한 hang 하지 않고 유한 재시도 후 fail-soft((False, stall 안내)). claude
-    경로는 무변경(관측된 stall 클래스는 opencode 스타트업 고유).
+    세 하네스 모두 pm_relay 공용 워치독을 경유한다. 하네스별 차이는 코드 분기가 아니라
+    HARNESS_PROFILES 선언(startup 감시 여부·진행 신호·idle/wall 상한)이며 대상 repo local.conf
+    override도 같은 해소기를 탄다. startup stall만 선언된 유한 재시도를 하고, idle/wall kill은
+    중복 과금·외부 전송을 피하려 자동 재시도하지 않은 채 부분 산출물과 함께 fail-soft 한다.
 
-    codex 경로(`codex exec …`)는 **stdin=DEVNULL 로 구동**한다 — stdin 미닫힘 시
-    "Reading additional input from stdin..." 로 무기한 대기. claude/opencode 는
-    argv 로 프롬프트를 받아 stdin 불요라 현행(None=상속) 유지."""
-    use_watchdog = tuple(argv[:2]) == OPENCODE_FILL_CMD
-    is_codex = tuple(argv[:2]) == CODEX_FILL_CMD
-    engine = _load_watchdog() if use_watchdog else None
+    codex 경로(`codex exec …`)는 **빈 stdin PIPE를 즉시 닫아 EOF를 전달**한다 — stdin 미닫힘 시
+    "Reading additional input from stdin..." 로 무기한 대기. stdin·진행 신호 정책은 실제 argv와
+    함께 FILL_DRIVER_BY_CMD에 선언돼 하네스 판정 코드와 분리된다."""
     try:
-        if engine is not None:
-            result = engine.run_with_first_event_watchdog(
-                argv,
-                first_event_timeout=engine.first_event_timeout_default(),
-                overall_timeout=FILL_TIMEOUT_SECONDS,
-                retries=engine.stall_retries_default(),
-                cwd=str(cwd) if cwd is not None else None,
-            )
-        else:
-            result = subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=FILL_TIMEOUT_SECONDS,
-                cwd=str(cwd) if cwd is not None else None,
-                # codex: stdin 미닫힘 시 무기한 대기(실측) → DEVNULL. claude 는 None(상속·현행).
-                stdin=subprocess.DEVNULL if is_codex else None,
-            )
+        engine = _load_watchdog()
+    except Exception as exc:  # noqa: BLE001 — 일반 로드 실패만 fill fail-soft.
+        if _is_engine_rev_skew(exc):
+            raise
+        return False, _fill_failure_with_partial(f"[하니스 워치독 로드 오류: {exc}]", exc)
+
+    try:
+        harness, emits_progress, input_text = _fill_driver(argv)
+        profile = engine.resolve_harness_profile(harness, _fill_local_config(cwd))
+        progress_signal = (
+            profile.progress_signal if emits_progress else engine.PROGRESS_SIGNAL_NONE
+        )
+        idle_timeout = engine.idle_timeout_for_signal(
+            progress_signal, profile.idle_timeout)
+        first_event_timeout = (
+            engine.first_event_timeout_default() if profile.startup_watchdog else None
+        )
+        retries = engine.stall_retries_default() if profile.startup_watchdog else 0
+        idle_label = f"{idle_timeout:.0f}초" if idle_timeout is not None else "비활성(증분 신호 없음)"
+        print(
+            f"[fill auto] 실행 상한: idle={idle_label} · wall={profile.wall_timeout:.0f}초 "
+            "(중단: Ctrl-C)",
+            file=sys.stderr,
+        )
+    except Exception as exc:  # noqa: BLE001 — 일반 프로필 준비 실패만 fill fail-soft.
+        if _is_engine_rev_skew(exc):
+            raise
+        return False, _fill_failure_with_partial(f"[하니스 프로필 준비 오류: {exc}]", exc)
+
+    try:
+        result = engine.run_with_first_event_watchdog(
+            argv,
+            first_event_timeout=first_event_timeout,
+            overall_timeout=profile.wall_timeout,
+            retries=retries,
+            idle_timeout=idle_timeout,
+            cwd=str(cwd) if cwd is not None else None,
+            input_text=input_text,
+        )
+    except subprocess.TimeoutExpired as exc:
+        wall_axis = getattr(engine, "TIMEOUT_AXIS_WALL", "wall")
+        idle_axis = getattr(engine, "TIMEOUT_AXIS_IDLE", "idle")
+        axis = getattr(exc, "timeout_axis", wall_axis)
+        threshold = float(getattr(exc, "threshold_seconds", exc.timeout))
+        silence = getattr(exc, "silence_seconds", None)
+        silence_label = f" · 실측 침묵 {silence:.0f}초" if silence is not None else ""
+        kind = "무진행 임계" if axis == idle_axis else "벽시계 백스톱"
+        return False, _fill_failure_with_partial(
+            f"[하니스 타임아웃 — {kind} {threshold:.0f}초 발화{silence_label}; "
+            "자동 재시도 안 함 — 출력 확인 후 수동 재시도]",
+            exc,
+        )
+    except FileNotFoundError:
+        return False, f"[하니스 명령 '{argv[0] if argv else '?'}' 를 찾을 수 없음 — 설치/PATH 확인]"
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
+        if isinstance(exc, engine.StallWatchdogError):
+            axis = getattr(exc, "timeout_axis", None)
+            threshold = getattr(exc, "threshold_seconds", None)
+            threshold_label = f" {float(threshold):.0f}초" if threshold is not None else ""
+            first_event_axis = getattr(engine, "TIMEOUT_AXIS_FIRST_EVENT", "first-event")
+            idle_axis = getattr(engine, "TIMEOUT_AXIS_IDLE", "idle")
+            if axis == first_event_axis:
+                kind = f"첫-이벤트 stall{threshold_label}"
+            elif axis == idle_axis:
+                kind = f"무진행 임계{threshold_label}"
+            else:
+                kind = f"벽시계 백스톱{threshold_label}"
+            return False, _fill_failure_with_partial(
+                f"[하니스 {kind} — 재시도 소진(fail-soft): {exc}]", exc)
+        return False, _fill_failure_with_partial(f"[하니스 실행 오류: {exc}]", exc)
+
+    try:
         output = result.stdout or ""
         if result.stderr:
             output += f"\n[stderr]\n{result.stderr}"
         return result.returncode == 0, output
-    except subprocess.TimeoutExpired:
-        return False, f"[하니스 타임아웃 — {FILL_TIMEOUT_SECONDS}초 초과]"
-    except FileNotFoundError:
-        return False, f"[하니스 명령 '{argv[0] if argv else '?'}' 를 찾을 수 없음 — 설치/PATH 확인]"
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
-        if engine is not None and isinstance(exc, engine.StallWatchdogError):
-            return False, f"[opencode 첫-이벤트 stall — 재시도 소진(fail-soft): {exc}]"
-        return False, f"[하니스 실행 오류: {exc}]"
+    except Exception as exc:  # noqa: BLE001 — 결과 정규화 실패도 fill fail-soft.
+        if _is_engine_rev_skew(exc):
+            raise
+        return False, _fill_failure_with_partial(f"[하니스 결과 처리 오류: {exc}]", exc)
 
 
 def _build_fill_prompt(dest_root: Path, tokens: list[str]) -> str:
@@ -2241,7 +2422,7 @@ def _build_runner_argv(
       claude   → `claude -p "<p>"`
       opencode → `opencode run "<p>" --format json` (token/cost 파싱 위해 json 출력)
       codex    → `codex exec --json -s workspace-write --skip-git-repo-check [-C <dest>] "<p>"`
-                 (프롬프트=마지막 positional·stdin=DEVNULL 은 _real_harness_runner 가 부여)
+                 (프롬프트=마지막 positional·빈 stdin PIPE EOF는 _real_harness_runner가 부여)
 
     미지원 harness 는 **fail-loud**(ValueError). 과거 codex 가 이 매핑에 없어 조용히 `claude -p`
     로 폴백해 *잘못된 바이너리*를 호출하고 출력만 harness=codex 로 오표기하던 클래스를 닫는다 —
@@ -2567,6 +2748,25 @@ def run_fill(
         )
 
     ok, output = effective_runner(argv, prompt)
+    result = FillResult(mode="auto", harness=harness, live=live)
+    result.runner_calls.append(list(argv))
+    if not ok:
+        try:
+            raw_path = _save_fill_failure_output(dest_root, harness, output)
+            shown_path = raw_path.relative_to(dest_root)
+            result.note = (
+                "하니스 구동 실패(fail-soft) — 제안 없음. "
+                f"부분/오류 출력 원문 보존: {shown_path}"
+            )
+        except Exception as exc:  # noqa: BLE001 — raw 박제 실패도 import를 깨지 않는 fail-soft 경계.
+            # 박제가 실패해도 import는 깨지 않되 진단까지 잃지는 않는다. 이 경로는 의도적으로
+            # preview 절단을 하지 않아 stdout/stderr 전문이 사람에게 도달한다.
+            result.note = (
+                f"하니스 구동 실패(fail-soft) — raw 저장 실패({exc}); 제안 없음. "
+                f"출력 전문:\n{output}"
+            )
+        return result
+
     # 하니스별 응답 파싱: opencode=--format json·codex=exec --json JSONL(agent_message)·claude=평문.
     if harness == "opencode":
         text = _parse_opencode_json(output)
@@ -2574,12 +2774,6 @@ def run_fill(
         text = _parse_codex_json(output)
     else:
         text = output
-
-    result = FillResult(mode="auto", harness=harness, live=live)
-    result.runner_calls.append(list(argv))
-    if not ok:
-        result.note = f"하니스 구동 실패(fail-soft) — 제안 없음. 출력: {text.strip()[:200]}"
-        return result
 
     # 산출 텍스트 = 사람이 검토할 placeholder 값 제안. 각 토큰에 동일 출력을 후보로 매핑한다
     # (정밀 파싱은 모델 출력 형식에 의존 — 초안 전제라 통째로 제안하고 사람이 분배·편집).

@@ -603,11 +603,16 @@ def watchdog_execution_budget(
 ) -> float:
     """공용 워치독 한 번의 최악 실행+정리 예산.
 
-    startup 재시도가 있으면 실패한 각 시도가 `min(first-event 창, wall)`까지 실행된 뒤 정리되고,
-    마지막 시도도 wall 백스톱 뒤 정리될 수 있다. 따라서 정리는 정확히 `retries + 1`회 산입한다.
-    startup 창이 꺼진 축은 전달된 retries를 무시해 기존 단일 시도 계약을 보존한다.
+    startup 창이 wall보다 먼저 발화할 때만 실패한 각 startup 시도를 재실행한다. wall이 먼저거나
+    동시에 발화하면 첫 시도에서 끝나므로 재시도 예산을 더하지 않는다. startup 창이 꺼진 축도
+    전달된 retries를 무시해 기존 단일 시도 계약을 보존한다.
     """
-    retry_count = max(0, int(retries)) if first_event_timeout is not None else 0
+    retry_count = (
+        max(0, int(retries))
+        if first_event_timeout is not None
+        and float(first_event_timeout) < float(overall_timeout)
+        else 0
+    )
     retry_runtime = (
         retry_count * min(float(first_event_timeout), float(overall_timeout))
         if first_event_timeout is not None else 0.0
@@ -914,6 +919,36 @@ def _kill_process_group(proc, process_group_id: int | None = None) -> None:
             ) from exc
 
 
+def _cleanup_failed_watched_spawn(proc, process_group_id: int | None, *, argv,
+                                  threads: list[threading.Thread]) -> None:
+    """`Popen` 성공 뒤 어댑터 초기화 실패를 그룹 kill + pipe drain으로 롤백한다."""
+    _kill_process_group(proc, process_group_id)
+    try:
+        proc.communicate(timeout=_KILL_GRACE_SEC)
+    except subprocess.TimeoutExpired as exc:
+        raise ProcessCleanupError(
+            f"프로세스 생성 후 초기화 실패 정리 중 파이프가 "
+            f"{_KILL_GRACE_SEC:g}s 안에 닫히지 않음: {argv!r}",
+            output=exc.output, stderr=exc.stderr,
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise ProcessCleanupError(
+            f"프로세스 생성 후 초기화 실패 정리 중 파이프 drain 실패: {argv!r}: {exc}"
+        ) from exc
+
+    # Thread.start()가 성공한 뒤 다음 초기화 단계가 실패한 경우 reader/writer까지 회수한다.
+    # 시작 전 Thread.join()은 RuntimeError이므로 ident가 생긴 스레드만 기다린다.
+    for thread in threads:
+        if thread.ident is None:
+            continue
+        thread.join(timeout=_KILL_GRACE_SEC)
+        if thread.is_alive():
+            raise ProcessCleanupError(
+                f"프로세스 생성 후 초기화 실패 정리 중 I/O 스레드가 "
+                f"{_KILL_GRACE_SEC:g}s 안에 종료하지 않음: {argv!r}"
+            )
+
+
 class _WatchedPopen:
     """실 subprocess.Popen 을 감싸 첫-stdout-이벤트 관측 + 진행(chunk) 관측 + 프로세스그룹 kill 제공.
 
@@ -948,28 +983,47 @@ class _WatchedPopen:
         elif os.name == "nt":  # pragma: no cover — POSIX 회귀 환경
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         self._clock = clock if clock is not None else time.monotonic
-        self._proc = subprocess.Popen(argv, **popen_kwargs)
-        self._argv = argv
-        # start_new_session=True이므로 POSIX 그룹장은 곧 pid다. 부모 종료 후에는 getpgid(pid)를
-        # 해소할 수 없으므로 생성 시점 값을 저장하는 것이 잔존 자식 정리의 load-bearing 계약이다.
-        self._process_group_id = self._proc.pid if os.name == "posix" else None
-        self._first_event = threading.Event()
-        self._stdout_chunks: list[str] = []
-        self._stderr_chunks: list[str] = []
-        # 리더 스레드(2)와 메인 루프가 공유하는 상태(chunk 누적·마지막 도착 시각)의 단일 락.
-        # 실제 read chunk 당 1회 획득이라 비용은 무시 가능하고, 스냅샷이 append 와 경합하지 않는다.
-        self._progress_lock = threading.Lock()
-        self._last_event_at: float | None = None
-        self._stdout_reader = threading.Thread(target=self._pump_stdout, daemon=True)
-        self._stderr_reader = threading.Thread(target=self._pump_stderr, daemon=True)
-        self._stdin_writer: threading.Thread | None = None
-        if input_text is not None:
-            self._stdin_writer = threading.Thread(
-                target=self._pump_stdin, args=(input_text,), daemon=True
-            )
-            self._stdin_writer.start()
-        self._stdout_reader.start()
-        self._stderr_reader.start()
+        spawned = None
+        io_threads: list[threading.Thread] = []
+        try:
+            # 실제 자식 생성도 try 안에 둔다. Popen이 핸들을 반환한 직후부터 아래 후속 초기화
+            # (Event/Lock/Thread 생성·start)가 실패해도 같은 트랜잭션에서 자식을 회수한다.
+            spawned = subprocess.Popen(argv, **popen_kwargs)
+            self._proc = spawned
+            self._argv = argv
+            # start_new_session=True이므로 POSIX 그룹장은 곧 pid다. 부모 종료 후에는 getpgid(pid)를
+            # 해소할 수 없으므로 생성 시점 값을 저장하는 것이 잔존 자식 정리의 load-bearing 계약이다.
+            self._process_group_id = self._proc.pid if os.name == "posix" else None
+            self._first_event = threading.Event()
+            self._stdout_chunks: list[str] = []
+            self._stderr_chunks: list[str] = []
+            # 리더 스레드(2)와 메인 루프가 공유하는 상태(chunk 누적·마지막 도착 시각)의 단일 락.
+            # 실제 read chunk 당 1회 획득이라 비용은 무시 가능하고, 스냅샷이 append 와 경합하지 않는다.
+            self._progress_lock = threading.Lock()
+            self._last_event_at: float | None = None
+            self._stdout_reader = threading.Thread(target=self._pump_stdout, daemon=True)
+            self._stderr_reader = threading.Thread(target=self._pump_stderr, daemon=True)
+            io_threads.extend((self._stdout_reader, self._stderr_reader))
+            self._stdin_writer: threading.Thread | None = None
+            if input_text is not None:
+                self._stdin_writer = threading.Thread(
+                    target=self._pump_stdin, args=(input_text,), daemon=True
+                )
+                io_threads.append(self._stdin_writer)
+                self._stdin_writer.start()
+            self._stdout_reader.start()
+            self._stderr_reader.start()
+        except BaseException as primary:
+            if spawned is not None:
+                process_group_id = spawned.pid if os.name == "posix" else None
+                try:
+                    _cleanup_failed_watched_spawn(
+                        spawned, process_group_id, argv=argv, threads=io_threads
+                    )
+                except Exception as cleanup_error:
+                    # 원래 KeyboardInterrupt/SystemExit/초기화 오류의 identity를 유지한다.
+                    raise primary from cleanup_error
+            raise
 
     def _pump_stdin(self, text: str) -> None:
         """프롬프트 전문을 stdin 에 쓰고 **닫는다**(EOF). 파이프 파손은 삼킨다(자식 조기 종료)."""
@@ -1330,43 +1384,57 @@ def run_with_first_event_watchdog(
     stalled_stderr: list[str] = []
     for attempt in range(1, attempts + 1):
         proc = popen(argv)
-        start = clock()
-        overall_deadline = start + overall_timeout
-        stalled = False
-        if first_event_timeout is not None:
-            first_deadline = start + first_event_timeout
-            while True:
-                if proc.first_event_ready():
-                    break  # 첫 이벤트 관측 → 드레인 단계로.
-                if proc.poll() is not None:
-                    break  # 첫 이벤트 없이 종료(빠른 exit·에러) → 드레인이 결과 수습.
-                now = clock()
-                if now >= overall_deadline:
-                    stalled = True
-                    last_axis = TIMEOUT_AXIS_WALL
-                    last_threshold = float(overall_timeout)
-                    last_silence = _silence_seconds(proc, now, start)
-                    last_reason = f"벽시계 백스톱 {overall_timeout:.0f}s 초과"
-                    break
-                if now >= first_deadline:
-                    stalled = True
-                    last_axis = TIMEOUT_AXIS_FIRST_EVENT
-                    last_threshold = float(first_event_timeout)
-                    last_silence = _silence_seconds(proc, now, start)
-                    last_reason = f"첫 이벤트 임계 {first_event_timeout:.0f}s 초과"
-                    break
-                sleep(poll_interval)
-        if stalled:
-            stdout, stderr = _terminate_and_drain(proc, argv=argv)
-            if stdout:
-                stalled_stdout.append(stdout)
-            if stderr:
-                stalled_stderr.append(stderr)
-            log(
-                f"[pm-orch] stall watchdog: {last_reason} kill·재시도 {attempt}/{attempts}"
-            )
-            continue
+        cleaned = False
         try:
+            start = clock()
+            overall_deadline = start + overall_timeout
+            stalled = False
+            wall_expired = False
+            if first_event_timeout is not None:
+                first_deadline = start + first_event_timeout
+                while True:
+                    if proc.first_event_ready():
+                        break  # 첫 이벤트 관측 → 드레인 단계로.
+                    if proc.poll() is not None:
+                        break  # 첫 이벤트 없이 종료(빠른 exit·에러) → 드레인이 결과 수습.
+                    now = clock()
+                    first_expired = now >= first_deadline
+                    wall_expired = now >= overall_deadline
+                    if first_expired and (
+                        not wall_expired or first_deadline < overall_deadline
+                    ):
+                        # coarse poll로 둘 다 지났더라도 더 이른 first-event 축을 최종 선택한다.
+                        wall_expired = False
+                        stalled = True
+                        last_axis = TIMEOUT_AXIS_FIRST_EVENT
+                        last_threshold = float(first_event_timeout)
+                        last_silence = _silence_seconds(proc, now, start)
+                        last_reason = f"첫 이벤트 임계 {first_event_timeout:.0f}s 초과"
+                        break
+                    if wall_expired:
+                        last_silence = _silence_seconds(proc, now, start)
+                        break
+                    sleep(poll_interval)
+            if wall_expired:
+                stdout, stderr = _terminate_and_drain(proc, argv=argv)
+                cleaned = True
+                log(f"[pm-orch] overall watchdog: 벽시계 백스톱 {overall_timeout:.0f}s 초과 "
+                    "— 프로세스 그룹 kill. 부분 산출물은 보존. 자동 재시도 안 함.")
+                raise WallTimeoutExpired(
+                    argv, overall_timeout, silence_seconds=last_silence,
+                    output=stdout, stderr=stderr,
+                )
+            if stalled:
+                stdout, stderr = _terminate_and_drain(proc, argv=argv)
+                cleaned = True
+                if stdout:
+                    stalled_stdout.append(stdout)
+                if stderr:
+                    stalled_stderr.append(stderr)
+                log(
+                    f"[pm-orch] stall watchdog: {last_reason} kill·재시도 {attempt}/{attempts}"
+                )
+                continue
             if idle_timeout is None:
                 remaining = overall_deadline - clock()
                 if remaining < 0:
@@ -1375,6 +1443,7 @@ def run_with_first_event_watchdog(
                     stdout, stderr = proc.communicate(timeout=remaining)
                 except subprocess.TimeoutExpired as exc:
                     stdout, stderr = _terminate_and_drain(proc, argv=argv)
+                    cleaned = True
                     if not stdout:
                         stdout = exc.output or ""
                     if not stderr:
@@ -1390,13 +1459,23 @@ def run_with_first_event_watchdog(
                     overall_timeout=overall_timeout, overall_deadline=overall_deadline,
                     clock=clock, sleep=sleep, log=log, poll_interval=poll_interval,
                 )
-        except OSError:
-            _terminate_and_drain(proc, argv=argv)
+            completed = subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+            # 감사용 관측치 — 완주 시점의 침묵 초(다음 kill 의 원인을 사후 확정하는 입력).
+            setattr(completed, SILENCE_SEC_ATTR, _silence_seconds(proc, clock(), start))
+            return completed
+        except (WatchdogTimeoutExpired, ProcessCleanupError):
+            # 이 sentinel들은 해당 판정 경로가 이미 그룹 kill+drain을 끝냈거나 그 정리 자체가
+            # 실패했음을 뜻한다. 기존 timeout 의미론을 그대로 재전파한다.
             raise
-        completed = subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
-        # 감사용 관측치 — 완주 시점의 침묵 초(다음 kill 의 원인을 사후 확정하는 입력).
-        setattr(completed, SILENCE_SEC_ATTR, _silence_seconds(proc, clock(), start))
-        return completed
+        except BaseException as primary:
+            # Ctrl-C/SystemExit 및 실행 중 예상 밖 오류 모두 새 세션의 자식을 남기지 않는다.
+            # 정리 실패 시에도 원래 BaseException을 재전파하되 cause로 안전 실패를 노출한다.
+            if not cleaned:
+                try:
+                    _terminate_and_drain(proc, argv=argv)
+                except Exception as cleanup_error:
+                    raise primary from cleanup_error
+            raise
 
     silence_label = (
         f", 중단 시 침묵 {last_silence:.1f}s" if last_silence is not None else ""

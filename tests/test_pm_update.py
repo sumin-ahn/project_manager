@@ -15,6 +15,7 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -613,7 +614,7 @@ def test_record_upstream_revs_reports_recorded_keys_per_shape(
 
 def test_record_upstream_revs_writes_both_keys_in_single_pass(
         pm_update, tmp_path, monkeypatch):
-    """두 키는 **한 번의 set-or-replace + 한 번의 write** — baseline 만 앞선 반쪽 상태 불가.
+    """두 키는 **공용 writer 한 번**에 묶인다 — baseline 만 앞선 반쪽 상태 불가.
 
     중간 중단 시 두 키가 어긋난 채 남는 것이 바로 이 티켓이 없앤 거짓 drift 의 원인이므로,
     분리 write 로 되돌아가면 실패한다(회귀 가드).
@@ -627,10 +628,10 @@ def test_record_upstream_revs_writes_both_keys_in_single_pass(
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "onepassrev5")
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     calls: list[dict] = []
-    real_set = pm_import._set_conf_keys
+    real_write = pm_import._write_conf_keys
     monkeypatch.setattr(
-        pm_import, "_set_conf_keys",
-        lambda text, updates: (calls.append(dict(updates)), real_set(text, updates))[1])
+        pm_import, "_write_conf_keys",
+        lambda path, updates: (calls.append(dict(updates)), real_write(path, updates))[1])
 
     assert pm_update.record_upstream_revs(dest, source)[0] is True
     assert calls == [{"upstream_rev": "onepassrev5", "upstream_seen_rev": "onepassrev5"}], \
@@ -3839,6 +3840,22 @@ def test_reinstall_protected_hooks_installs_both_hooks(pm_update, tmp_path, caps
 
 
 @_git_required
+def test_reinstall_protected_hooks_deploys_adopter_self_test_contract(pm_update, tmp_path):
+    """pm_update 재설치는 adopter mode와 repo test_cmd sidecar를 새 훅 본문과 함께 배포한다."""
+    dest = _make_pm_home(tmp_path / "adopter-home")
+    _write_local_conf(dest, f"upstream={tmp_path / 'framework-upstream'}\n")
+
+    result = pm_update.reinstall_protected_hooks(dest, write=True)
+
+    assert result["failed"] == [] and result["drifted"] == ["svc"]
+    hooks = _hook_dir(dest, "svc")
+    assert (hooks / "gate-contract").read_text(encoding="utf-8") == (
+        "self-test\npytest -q\n")
+    body = (hooks / "pre-push").read_text(encoding="utf-8")
+    assert "self-test)" in body and "sh -c \"$self_test_cmd\"" in body
+
+
+@_git_required
 def test_reinstall_protected_hooks_dry_run_writes_nothing(pm_update, tmp_path):
     """`write=False`(dry-run) — 판정만 하고 훅 파일은 쓰지 않는다 (무부작용)."""
     dest = _make_pm_home(tmp_path / "home")
@@ -3887,6 +3904,17 @@ def test_reinstall_protected_hooks_engine_absent_is_fail_soft_loud(pm_update, tm
     pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
     cap = capsys.readouterr()
     assert "[경고]" in cap.err and "repo add" in cap.err
+
+
+def test_reinstall_protected_hooks_rethrows_marked_engine_rev_skew(
+        pm_update, tmp_path, monkeypatch):
+    """A1 — dest 엔진 로드의 marked skew는 unavailable 경고로 강등하지 않는다."""
+    skew = RuntimeError("injected engine rev skew")
+    skew._engine_rev_skew = True
+    monkeypatch.setattr(pm_update, "_load_dest_pm_config", lambda _dest: (_ for _ in ()).throw(skew))
+
+    with pytest.raises(RuntimeError, match="engine rev skew"):
+        pm_update.reinstall_protected_hooks(tmp_path, write=True)
 
 
 @_git_required
@@ -4065,7 +4093,8 @@ _UNDECODABLE = b"\xff\xfe\x00\x80 broken hook\n"
 
 
 @_git_required
-@pytest.mark.parametrize("artifact", ["pre-commit", "pre-push", "protected", "engine-root"])
+@pytest.mark.parametrize(
+    "artifact", ["pre-commit", "pre-push", "protected", "engine-root", "gate-contract"])
 def test_reinstall_protected_hooks_unreadable_artifact_is_drift_not_unavailable(
         pm_update, tmp_path, artifact):
     """훅 산출물이 **읽기 불가**(non-UTF-8)여도 `unavailable` 이 아니라 `drifted` → 재설치 복구."""
@@ -4109,7 +4138,9 @@ def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
     dest = _make_pm_home(tmp_path / "home")
     pm_update.reinstall_protected_hooks(dest, write=True)
     _pc, _board, worktree_pool = _dest_engine(pm_update, dest)
-    spec = worktree_pool.protected_hook_artifacts("svc", ["main", "release"])
+    gate_mode, test_cmd = _pc._protected_push_gate_config("svc", board=_board)
+    spec = worktree_pool.protected_hook_artifacts(
+        "svc", ["main", "release"], gate_mode=gate_mode, test_cmd=test_cmd)
     assert spec, "명세가 비었다(테스트 전제 깨짐)"
 
     for artifact in spec:
@@ -4167,7 +4198,8 @@ def test_exec_bit_axis_disabled_on_windows(pm_update, tmp_path, monkeypatch):
 
 
 @_git_required
-@pytest.mark.parametrize("artifact", ["pre-commit", "pre-push", "protected", "engine-root"])
+@pytest.mark.parametrize(
+    "artifact", ["pre-commit", "pre-push", "protected", "engine-root", "gate-contract"])
 def test_protected_hook_in_sync_never_raises_on_unreadable(pm_update, tmp_path, artifact):
     """판정 함수 자체의 계약 — 읽기 실패에 예외 대신 `False`(drift) (4축 동형)."""
     dest = _make_pm_home(tmp_path / "home")
@@ -4179,3 +4211,16 @@ def test_protected_hook_in_sync_never_raises_on_unreadable(pm_update, tmp_path, 
     worktree_pool = pm_config._load_module("worktree_pool", "worktree_pool.py")
     assert pm_update._protected_hook_in_sync(
         "svc", pm_config=pm_config, worktree_pool=worktree_pool, board=board) is False
+
+
+def test_protected_hook_in_sync_rethrows_marked_engine_rev_skew(pm_update):
+    """A1 — read-only drift 판정도 marked skew를 일반 drift(False)로 흡수하지 않는다."""
+    skew = RuntimeError("injected engine rev skew")
+    skew._engine_rev_skew = True
+    pm_config = SimpleNamespace(
+        _resolve_repo_protected=lambda *_args, **_kwargs: (_ for _ in ()).throw(skew))
+    worktree_pool = SimpleNamespace(protected_hook_artifacts=lambda *_args, **_kwargs: [])
+
+    with pytest.raises(RuntimeError, match="engine rev skew"):
+        pm_update._protected_hook_in_sync(
+            "svc", pm_config=pm_config, worktree_pool=worktree_pool, board=object())
