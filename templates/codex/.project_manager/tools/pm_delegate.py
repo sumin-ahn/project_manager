@@ -286,7 +286,7 @@ def _adapter_directories_from_engine_source() -> tuple[str, ...]:
 
     등록부는 ``dict[str, tuple[tuple[str, ...], str]]`` literal이어야 한다. 읽힌 literal의 값
     shape가 다르면 문자 단위 펼침 같은 조용한 오염을 막기 위해 명시 실패한다. 반면 변수 참조나
-    ``frozenset(...)``처럼 AST literal이 아닌 *표기*는 `_adapter_directories_for_prompt`가 일반
+    ``frozenset(...)``처럼 AST literal이 아닌 *표기*는 `_resolved_adapter_directories`가 일반
     금지 문구로 degrade한다. 최소 형제 hermetic 사본의 파일 부재도 같은 빈 튜플 경로다.
     """
     source = Path(__file__).resolve().parent / "pm_import.py"
@@ -354,16 +354,22 @@ def _adapter_directories_from_engine_source() -> tuple[str, ...]:
     return tuple(dict.fromkeys(directories))
 
 
-def _adapter_directories_for_prompt() -> tuple[str, ...]:
-    """표기 변화는 프롬프트 범위만 보수적으로 축소하되 schema/skew는 숨기지 않는다."""
+def _resolved_adapter_directories() -> tuple[str, ...]:
+    """금지 preamble 과 어댑터 경고 축이 **함께** 소비하는 파생 어댑터 루트.
+
+    표기 변화(비-literal 등록부)는 빈 tuple 로 보수 강등하되 schema/skew 는 숨기지 않는다.
+    강등 시 preamble 은 일반 문구로, 경고 축은 "판정 불가" advisory 로 각자 처리한다 —
+    두 소비자가 같은 값을 봐야 하므로(실행 전 1회 파생해 ScopeAudit 에 스냅샷) 이 헬퍼
+    밖에서 등록부를 재조회하지 마라.
+    """
     try:
         return _adapter_directories_from_engine_source()
     except _AdapterRegistryNotationError:
         return ()
 
 
-def _prohibition() -> str:
-    adapter_directories = _adapter_directories_for_prompt()
+def _prohibition(adapter_directories: Sequence[str] | None = None) -> str:
+    adapter_directories = (_resolved_adapter_directories() if adapter_directories is None else adapter_directories)
     adapter_scope = "/".join(adapter_directories)
     adapter_definition = (
         f"엔진 등록 통합 루트 전체: {adapter_scope}"
@@ -390,21 +396,21 @@ _ROLE_IDENTITIES: dict[str, str] = {
 }
 
 
-def _role_preamble(role: str) -> str:
-    return _ROLE_IDENTITIES[role] + "\n" + _prohibition()
+def _role_preamble(role: str, adapter_directories: Sequence[str] | None = None) -> str:
+    return _ROLE_IDENTITIES[role] + "\n" + _prohibition(adapter_directories)
 
 
 class _LazyAdapterDirectories(Sequence[str]):
     """기존 소비 API를 보존하되 pm_import registry 평가는 실제 접근까지 지연한다."""
 
     def __getitem__(self, index):
-        return _adapter_directories_for_prompt()[index]
+        return _resolved_adapter_directories()[index]
 
     def __len__(self) -> int:
-        return len(_adapter_directories_for_prompt())
+        return len(_resolved_adapter_directories())
 
     def __iter__(self):
-        return iter(_adapter_directories_for_prompt())
+        return iter(_resolved_adapter_directories())
 
 
 class _LazyRolePreambles(Mapping[str, str]):
@@ -2813,9 +2819,10 @@ class ScopeAudit(NamedTuple):
     """위임 **전체 단위**(primary + 폴백 attempt 포함) 범위 판정 입력."""
 
     scope: object                 # delegate_scope 모듈
-    touches: tuple[str, ...]      # ticket frontmatter touches(미지정 = 허용 0)
+    touches: tuple[str, ...] | None  # None이면 generic 축만 강등(ticket 준비 실패)
     before: object                # delegate_scope.WorktreeState
     workspace: Path               # git toplevel(=--cwd 가 하위 디렉토리여도 판정 기준은 루트)
+    adapter_roots: tuple[str, ...] = ()  # preamble과 같은 실행-전 등록부 스냅샷
 
 
 def _warn_dropped_touch(item: str, reason: str) -> None:
@@ -2827,46 +2834,137 @@ def _warn_dropped_touch(item: str, reason: str) -> None:
     )
 
 
-def begin_scope_audit(ticket: str | None, cwd: Path) -> ScopeAudit | None:
+def begin_scope_audit(
+    ticket: str | None,
+    cwd: Path,
+    *,
+    adapter_roots: Sequence[str] | None = None,
+) -> ScopeAudit | None:
     """위임 실행 **직전** worktree 상태를 캡처한다.
 
     호출 시점은 전송-전 게이트(opt-in·매핑·containment·denylist·재앵커·dry-run)를 **모두 통과한
     뒤**다 — 아무것도 실행하지 않은 경로에서 판정을 켜면 무의미한 git 호출·오탐만 는다.
     캡처/정규화 기준은 `--cwd` 가 아니라 **git toplevel** 이다 — repo 하위 디렉토리를 --cwd 로 주면
     슬롯 루트와 좌표가 어긋나 판정이 통째로 꺼진다. `--ticket` 이 없으면 touches=() 라 허용 경로가
-    0이다(delegate_scope 계약 — 변경이 있으면 전부 경고). 판정 **준비** 실패(toplevel 해소·board
-    로드·ticket 부재·git status 실패)는 위임을 막지 않는다 — loud 1줄 후 None(판정 생략).
-    단, 엔진 사본 skew는 부분 동기를 숨기지 않도록 재-raise 한다."""
+    0이다(delegate_scope 계약 — 변경이 있으면 전부 경고).
+
+    공통 베이스라인(모듈·toplevel·worktree 캡처)이 실패하면 전후 차이를 만들 수 없어 generic과
+    어댑터 두 축이 모두 죽는다. 반면 board 로드·ticket 부재/손상으로 touches 준비만 실패하면
+    generic 축만 loud 강등하고, 같은 worktree 캡처를 쓰는 어댑터 축은 보존한다. 일반 실패는
+    위임을 막지 않되 엔진 사본 skew는 부분 동기를 숨기지 않도록 재-raise 한다."""
+    roots = tuple(
+        _resolved_adapter_directories()
+        if adapter_roots is None
+        else adapter_roots
+    )
     try:
         scope = _load_delegate_scope()
         workspace = scope.resolve_workspace_root(cwd)
-        touches = scope.ticket_touches(BOARD_PY, ticket, pm_root=REPO) if ticket else ()
         before = scope.capture_worktree_state(workspace)
-        # 해시 대상이 있는데 지문을 하나도 못 구했으면 이미 dirty 한 파일의 재수정을 못 잡는다 —
-        # 강등된 채로 조용히 통과시키지 않는다(축소된 감지력을 PM 이 알아야 한다).
-        degraded = scope.content_signal_missing(before, workspace)
-    except Exception as exc:  # noqa: BLE001 — 일반 준비 실패만 비차단, 엔진 skew는 fail-loud.
+    except Exception as exc:  # noqa: BLE001 — 공통 캡처 실패만 두 축을 함께 끈다.
         if _is_engine_rev_skew(exc):
             raise
-        print(f"경고: 위임 범위 판정 준비 실패({exc}) — 비차단 진행.", file=sys.stderr)
+        print(
+            "경고: 위임 범위 판정 준비 실패"
+            f"(공통 worktree 캡처: {exc}) — generic·어댑터 두 축 모두 판정 불가, 비차단 진행.",
+            file=sys.stderr,
+        )
         return None
+
+    # 해시 대상이 있는데 지문을 하나도 못 구했으면 이미 dirty 한 파일의 재수정을 못 잡는다 —
+    # 강등된 채로 조용히 통과시키지 않는다(축소된 감지력을 PM 이 알아야 한다).
+    try:
+        degraded = scope.content_signal_missing(before, workspace)
+    except Exception as exc:  # noqa: BLE001 — 보강 신호 진단 실패로 두 판정축을 버리지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
+        degraded = False
+        print(f"경고: 내용 해시 보강 상태 확인 실패({exc}) — 비차단 진행.", file=sys.stderr)
     if degraded:
         print(
             "경고: 내용 해시 보강 신호 없음 — 이미 dirty 한 파일의 재수정은 감지 불가"
             "(상태코드/mode 신호로만 판정).",
             file=sys.stderr,
         )
-    return ScopeAudit(scope, touches, before, workspace)
+
+    try:
+        touches = scope.ticket_touches(BOARD_PY, ticket, pm_root=REPO) if ticket else ()
+    except Exception as exc:  # noqa: BLE001 — touches의 형제인 어댑터 축은 보존한다.
+        if _is_engine_rev_skew(exc):
+            raise
+        touches = None
+        print(
+            "=== ⚠ 위임 범위 판정 축 강등 ===\n"
+            f"ticket touches 준비 실패({exc}) — generic 범위 축만 판정할 수 없습니다. "
+            "공통 worktree 캡처가 살아 있어 어댑터 편집 축은 계속 판정합니다.",
+            file=sys.stderr,
+        )
+    return ScopeAudit(scope, touches, before, workspace, roots)
+
+
+def _adapter_edit_paths(
+    scope,
+    before,
+    after,
+    *,
+    workspace: Path,
+    roots: Sequence[str],
+) -> tuple[str, ...] | None:
+    """touches와 무관하게 등록 어댑터 루트 전체에서 바뀐 경로를 반환한다.
+
+    대상은 출하 카드 하위로 좁히지 않는다. 실제 템플릿의 등록 루트에는 카드뿐 아니라
+    settings/hooks/runner/agent 정의도 함께 있고, 역할 preamble도 "통합 루트 전체"를 금지한다.
+    여기서 별도 하위 목록을 만들면 새 어댑터 표면이 다시 빠지므로 preamble 합성 때 선행 등록부에서
+    파생해 ``ScopeAudit``에 보존한 동일 스냅샷을 소비한다. 회수 시 등록부를 다시 읽으면 위임 중
+    registry 변경에 따라 전달한 금지 범위와 판정 범위가 갈린다.
+
+    ``None``은 비-literal 표기/형제 파일 부재가 기존 graceful-degrade 경로를 타 등록 루트가
+    0개가 된 경우다. 추측 목록으로 보충하지 않고 호출부가 판정 불가를 loud 경고한다.
+    """
+    roots = tuple(roots)
+    if not roots:
+        return None
+    changed = set(scope.changed_status_paths(before, after))
+    changed.update(scope.committed_paths(before, after, workspace=workspace))
+    return tuple(
+        path for path in sorted(changed)
+        if any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
+    )
+
+
+def _format_adapter_edit_warning(paths: Sequence[str]) -> str:
+    """역할 공통 금지 위반을 기존 범위-밖 축과 구분된 advisory 블록으로 만든다."""
+    unique = tuple(sorted(set(paths)))
+    if not unique:
+        return ""
+    lines = [
+        "=== ⚠ 역할 공통 금지 위반: 어댑터 편집 ===",
+        "어댑터 디렉토리 수정이 감지되었습니다. 이는 ticket touches 포함 여부와 무관한 "
+        "역할 공통 금지 위반입니다.",
+        "차단하지 않으며 PM이 정당한 어댑터 작업으로 수용할지 격리/복원할지 판정해야 합니다.",
+        "  · gitignored 산출물(.project_manager/.local 등)은 git status 입력에 없어 판정 대상이 아닙니다.",
+        "  · 위임 시간창 기준이라 다른 터미널/도구가 만든 변경도 섞일 수 있습니다.",
+        "  · 판정 범위는 이 git repo(toplevel) 안입니다 — 그 밖/중첩 repo 안의 변경은 보이지 않습니다.",
+    ]
+    lines.extend(f"  - {path}" for path in unique)
+    return "\n".join(lines)
 
 
 def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
-    """위임 **회수 시점**(모든 attempt 종료 후 1회)의 범위 밖 변경을 loud 경고한다(차단 아님).
+    """위임 **회수 시점**(모든 attempt 종료 후 1회)의 변경을 두 독립 축으로 loud 경고한다.
 
-    반환값/rc 를 바꾸지 않는다 — 격리/복원/수용 판정은 PM 몫이다. 판정 자체가 실패해도
-    위임 결과를 바꾸지 않는다(비차단 보험). 쓰기 허용 역할집합은 이 모듈의 WRITE_ROLES 를 주입해
-    단일 출처로 쓴다(감지기 기본값과의 드리프트는 테스트가 막는다). raw 박제는 기본 /tmp 라 판정에
-    안 잡히지만, `--output-dir` 를 repo 안으로 주면 그 산출물도 '위임이 만든 변경'으로 잡힌다(의도).
-    일반 판정 실패는 비차단하되 엔진 사본 skew만은 재-raise 한다."""
+    축 1은 ticket touches 기반 범위 밖 변경, 축 2는 touches와 독립적인 역할 공통 어댑터 편집
+    금지 위반이다. 반환값/rc 를 바꾸지 않는다 — 격리/복원/수용 판정은 PM 몫이다. 한 축의 판정
+    실패가 다른 축까지 지우지 않으며 둘 다 비차단이다. 쓰기 허용 역할집합은 이 모듈의
+    WRITE_ROLES 를 주입해 단일 출처로 쓴다(감지기 기본값과의 드리프트는 테스트가 막는다).
+    raw 박제는 기본 /tmp 라 판정에 안 잡히지만, `--output-dir` 를 repo 안으로 주면 그 산출물도
+    '위임이 만든 변경'으로 잡힌다(의도). 일반 판정 실패는 비차단하되 엔진 사본 skew만은
+    재-raise 한다.
+
+    형제-가지 여집합 결정: 어댑터 축은 ``--ticket``이 있을 때만 돌지 않는다. 생략 실행에서도
+    반드시 돌며, 그때 같은 경로가 "허용 0의 범위 밖"과 "역할 공통 금지 위반" 두 블록에 나오는
+    중복은 의도적이다. 한 블록으로 합치면 PM이 정책 성격을 오판하므로 경로 중복보다 축 식별을
+    우선한다."""
     if audit is None:
         return
     try:
@@ -2880,19 +2978,49 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
                 "커밋된 변경도 범위 판정에 합산합니다.",
                 file=sys.stderr,
             )
-        paths = audit.scope.out_of_scope_changes(
-            audit.before, after,
-            touches=audit.touches, role=role, pm_root=REPO, workspace=audit.workspace,
-            write_roles=WRITE_ROLES, on_drop=_warn_dropped_touch,
-        )
-        warning = audit.scope.format_warning(paths)
-    except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 비차단, 엔진 skew는 fail-loud.
+    except Exception as exc:  # noqa: BLE001 — 공통 캡처 실패면 두 축 모두 판정 불가.
         if _is_engine_rev_skew(exc):
             raise
         print(f"경고: 위임 범위 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
         return
-    if warning:
-        print(warning, file=sys.stderr)
+
+    if audit.touches is not None:
+        try:
+            paths = audit.scope.out_of_scope_changes(
+                audit.before, after,
+                touches=audit.touches, role=role, pm_root=REPO, workspace=audit.workspace,
+                write_roles=WRITE_ROLES, on_drop=_warn_dropped_touch,
+            )
+            warning = audit.scope.format_warning(paths)
+        except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 비차단, 엔진 skew는 fail-loud.
+            if _is_engine_rev_skew(exc):
+                raise
+            print(f"경고: 위임 범위 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
+        else:
+            if warning:
+                print(warning, file=sys.stderr)
+
+    try:
+        adapter_paths = _adapter_edit_paths(
+            audit.scope, audit.before, after, workspace=audit.workspace,
+            roots=audit.adapter_roots,
+        )
+    except Exception as exc:  # noqa: BLE001 — 어댑터 축만 강등, 기존 범위 축은 보존.
+        if _is_engine_rev_skew(exc):
+            raise
+        print(f"경고: 어댑터 편집 경고 축 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
+        return
+    if adapter_paths is None:
+        print(
+            "=== ⚠ 어댑터 편집 경고 축 강등 ===\n"
+            "선행 등록부 파생 경로가 0개라 역할 공통 어댑터 수정 금지 위반을 판정할 수 없습니다. "
+            "새 목록으로 추측하지 않으며 비차단 진행합니다.",
+            file=sys.stderr,
+        )
+        return
+    adapter_warning = _format_adapter_edit_warning(adapter_paths)
+    if adapter_warning:
+        print(adapter_warning, file=sys.stderr)
 
 
 # ── native 단락 advisory (never-block 백스톱) ────────────────────────────
@@ -3376,8 +3504,10 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         print(f"오류: --prompt-file 읽기 실패: {exc}", file=sys.stderr)
         return 1
 
-    # 프롬프트 합성 (role preamble + task)
-    prompt = ROLE_PREAMBLES[args.role] + "\n\n" + task_text
+    # 프롬프트 합성과 회수 판정이 같은 실행-전 등록부 스냅샷을 쓴다. 위임 중 pm_import.py가
+    # 바뀌어도 전달한 금지 루트와 다른 현재값으로 재판정하지 않는다.
+    adapter_roots = _resolved_adapter_directories()
+    prompt = _role_preamble(args.role, adapter_roots) + "\n\n" + task_text
 
     # 쓰기-타깃 axis 재앵커 게이트 (엔진 코드 write + PM 홈 cwd·dry-run 전 = 미리보기서 노출)
     # divergence와 같은 cwd repo 해소 입력을 기존 write-target 가드에도 재사용한다. 하위 디렉토리
@@ -3538,7 +3668,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # 범위 판정 캡처 — **위임 전체 단위**로 1회. 폴백 attempt 도 같은 위임의 일부라
     # attempt 마다 재캡처하지 않는다(PM 이 회수 시점에 "이 위임이 범위 밖을 만졌나"를 본다). 아래
     # 실행·회수 블록의 모든 종료 경로(성공·폴백·fail-loud·예외)에서 finally 가 정확히 1회 보고한다.
-    scope_audit = begin_scope_audit(args.ticket, cwd)
+    scope_audit = begin_scope_audit(args.ticket, cwd, adapter_roots=adapter_roots)
     try:
         return _execute_and_collect(
             args=args, harness=harness, model=model, reasoning=reasoning,

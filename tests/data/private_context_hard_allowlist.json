@@ -441,7 +441,7 @@
     },
     {
       "path": ".project_manager/tools/pm_delegate.py",
-      "line": 1542,
+      "line": 1548,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -977,7 +977,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
-      "line": 1542,
+      "line": 1548,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -1713,7 +1713,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/pm_delegate.py",
-      "line": 1542,
+      "line": 1548,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -2505,7 +2505,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
-      "line": 1542,
+      "line": 1548,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",

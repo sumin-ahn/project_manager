@@ -3562,6 +3562,9 @@ def test_fallback_raw_points_back_to_primary_raw(pd, monkeypatch, tmp_path, caps
 # ══ T-0462: 위임 범위 밖 변경 loud 경고 훅 (delegate_scope 통합·never-block) ═══
 
 WARNING_HEADER = "=== ⚠ 위임 범위 밖 변경 ==="
+SCOPE_DEGRADED_HEADER = "=== ⚠ 위임 범위 판정 축 강등 ==="
+ADAPTER_WARNING_HEADER = "=== ⚠ 역할 공통 금지 위반: 어댑터 편집 ==="
+ADAPTER_DEGRADED_HEADER = "=== ⚠ 어댑터 편집 경고 축 강등 ==="
 TICKET_ID = "T-9999"
 
 
@@ -3689,6 +3692,345 @@ def test_ticket_omitted_treats_every_change_as_out_of_scope(pd, monkeypatch, tmp
     err = capsys.readouterr().err
     assert rc == 0
     assert WARNING_HEADER in err and "src/impl.py" in err
+
+
+def _assert_adapter_warning(err: str, relative: str) -> None:
+    assert ADAPTER_WARNING_HEADER in err, "어댑터 경고 축 header 누락"
+    assert relative in err, "변경 어댑터 경로 누락"
+    assert "역할 공통 금지 위반" in err, "경고의 정책 위반 이유 누락"
+    assert "수용할지 격리/복원할지" in err, "PM 후속 판정 안내 누락"
+    assert "gitignored" in err and "판정 대상이 아닙니다" in err
+    assert "다른 터미널" in err
+    assert "중첩 repo" in err
+
+
+def test_adapter_edit_warns_even_when_ticket_touches_allow_it(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """핵심 실측: touches 안 어댑터 변경도 독립 축이 경고하고 rc는 바꾸지 않는다."""
+    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    relative = f"{adapter_root}/settings/delegated.json"
+    workspace, prompt = _scope_workspace(
+        tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{adapter_root}",),
+    )
+    fake = _WritingRun(workspace, ([relative], _ok_result()))
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+         "--ticket", TICKET_ID],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert WARNING_HEADER not in err                 # touches 축에서는 정상 범위
+    _assert_adapter_warning(err, relative)           # 역할 공통 금지 축은 독립 발화
+
+
+def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """손상 ticket으로 touches 준비가 실패해도 캡처가 성공했으면 형제 어댑터 축은 경고한다."""
+    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    relative = f"{adapter_root}/settings/corrupt-ticket.json"
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
+    ticket_path = (
+        tmp_path / "pm_home" / ".project_manager" / "wiki" / "tickets" / "open"
+        / f"{TICKET_ID}-scope.md"
+    )
+    ticket_path.write_text(
+        "---\n"
+        "id: T-CORRUPTED\n"
+        "title: 손상 ticket\n"
+        "status: open\n"
+        "touches:\n"
+        f"- work/demo_1/{adapter_root}\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    fake = _WritingRun(workspace, ([relative], _ok_result()))
+
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+         "--ticket", TICKET_ID],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+
+    assert rc == 0 and fake.calls == ["codex"]
+    assert SCOPE_DEGRADED_HEADER in err
+    assert "generic 범위 축만 판정할 수 없습니다" in err
+    assert WARNING_HEADER not in err
+    _assert_adapter_warning(err, relative)
+
+
+def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """sensitivity: touches 실패 시 audit 전체를 None으로 되돌리면 어댑터 경고 oracle이 red다."""
+    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    relative = f"{adapter_root}/settings/coupled-regression.json"
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
+    ticket_path = (
+        tmp_path / "pm_home" / ".project_manager" / "wiki" / "tickets" / "open"
+        / f"{TICKET_ID}-scope.md"
+    )
+    ticket_path.write_text(
+        "---\nid: T-CORRUPTED\ntitle: 손상\nstatus: open\ntouches: []\n---\n",
+        encoding="utf-8",
+    )
+    real_begin = pd.begin_scope_audit
+
+    def _coupled_begin(ticket, cwd, *, adapter_roots=None):
+        audit = real_begin(ticket, cwd, adapter_roots=adapter_roots)
+        return None if audit is not None and audit.touches is None else audit
+
+    monkeypatch.setattr(pd, "begin_scope_audit", _coupled_begin)
+    fake = _WritingRun(workspace, ([relative], _ok_result()))
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+         "--ticket", TICKET_ID],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+
+    assert rc == 0 and SCOPE_DEGRADED_HEADER in err
+    with pytest.raises(AssertionError, match="어댑터 경고 축 header 누락"):
+        _assert_adapter_warning(err, relative)
+
+
+def test_adapter_axis_consumes_every_derived_registry_root(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """새 목록 없이 T-0521 파생의 모든 루트 전체(임의 하위 포함)를 경고 대상으로 삼는다."""
+    adapter_roots = tuple(pd.ADAPTER_DIRECTORIES)
+    assert adapter_roots, "등록부 파생 루트 0이면 테스트가 vacuous"
+    touches = tuple(f"work/demo_1/{root}" for root in adapter_roots)
+    relatives = [f"{root}/arbitrary/deep/file.txt" for root in adapter_roots]
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd, touches=touches)
+    fake = _WritingRun(workspace, (relatives, _ok_result()))
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+         "--ticket", TICKET_ID],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+    assert rc == 0 and WARNING_HEADER not in err
+    assert err.count(ADAPTER_WARNING_HEADER) == 1
+    for relative in relatives:
+        assert relative in err
+
+
+def test_adapter_axis_uses_lazy_registry_value_not_a_second_static_list(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """실행 전 등록부 파생값이 미래 루트여도 별도 정적 목록 없이 preamble·판정이 함께 따라간다."""
+    future_root = ".future-harness"
+    monkeypatch.setattr(pd, "_resolved_adapter_directories", lambda: (future_root,))
+    relative = f"{future_root}/runtime/adapter.py"
+    workspace, prompt = _scope_workspace(
+        tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{future_root}",),
+    )
+    fake = _WritingRun(workspace, ([relative], _ok_result()))
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+         "--ticket", TICKET_ID],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+    assert rc == 0 and WARNING_HEADER not in err
+    _assert_adapter_warning(err, relative)
+
+
+def test_adapter_roots_are_snapshotted_with_preamble_before_delegation(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """위임 중 pm_import 등록부가 바뀌어도 전달한 preamble 루트의 변경을 같은 스냅샷으로 잡는다."""
+    initial_root = ".registry-before"
+    changed_root = ".registry-after"
+    registry_source = tmp_path / "registry-fixture" / "pm_import.py"
+    registry_source.parent.mkdir()
+    registry_source.write_text(initial_root, encoding="utf-8")
+    derived: list[str] = []
+
+    def _derive_registry():
+        root = registry_source.read_text(encoding="utf-8")
+        derived.append(root)
+        return (root,)
+
+    monkeypatch.setattr(pd, "_adapter_directories_from_engine_source", _derive_registry)
+    relative = f"{initial_root}/runtime/adapter.py"
+    workspace, prompt = _scope_workspace(
+        tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{initial_root}",),
+    )
+
+    class _RegistryChangingRun(_WritingRun):
+        sent_prompt = ""
+
+        def __call__(self, argv, *, stdin_text, cwd, env, timeout, harness):
+            self.sent_prompt = stdin_text
+            registry_source.write_text(changed_root, encoding="utf-8")
+            return super().__call__(
+                argv, stdin_text=stdin_text, cwd=cwd, env=env,
+                timeout=timeout, harness=harness,
+            )
+
+    fake = _RegistryChangingRun(workspace, ([relative], _ok_result()))
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+         "--ticket", TICKET_ID],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+
+    assert rc == 0 and registry_source.read_text(encoding="utf-8") == changed_root
+    assert derived == [initial_root], "실행 후 등록부를 lazy 재읽으면 두 번째 값이 나타난다"
+    assert f"엔진 등록 통합 루트 전체: {initial_root}" in fake.sent_prompt
+    assert changed_root not in fake.sent_prompt
+    assert WARNING_HEADER not in err
+    _assert_adapter_warning(err, relative)
+
+
+def test_adapter_root_snapshot_oracle_is_sensitive_to_postrun_registry_reread(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """sensitivity: 판정을 종료시점 등록부로 되돌리면 전달한 루트 변경 경고 oracle이 red다."""
+    initial_root = ".registry-before"
+    changed_root = ".registry-after"
+    registry_source = tmp_path / "registry-sensitivity" / "pm_import.py"
+    registry_source.parent.mkdir()
+    registry_source.write_text(initial_root, encoding="utf-8")
+
+    def _derive_registry():
+        return (registry_source.read_text(encoding="utf-8"),)
+
+    monkeypatch.setattr(pd, "_adapter_directories_from_engine_source", _derive_registry)
+    real_adapter_paths = pd._adapter_edit_paths
+
+    def _lazy_adapter_paths(scope, before, after, *, workspace, roots):
+        return real_adapter_paths(
+            scope, before, after, workspace=workspace,
+            roots=pd._resolved_adapter_directories(),
+        )
+
+    monkeypatch.setattr(pd, "_adapter_edit_paths", _lazy_adapter_paths)
+    relative = f"{initial_root}/runtime/adapter.py"
+    workspace, prompt = _scope_workspace(
+        tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{initial_root}",),
+    )
+
+    class _RegistryChangingRun(_WritingRun):
+        def __call__(self, argv, *, stdin_text, cwd, env, timeout, harness):
+            registry_source.write_text(changed_root, encoding="utf-8")
+            return super().__call__(
+                argv, stdin_text=stdin_text, cwd=cwd, env=env,
+                timeout=timeout, harness=harness,
+            )
+
+    fake = _RegistryChangingRun(workspace, ([relative], _ok_result()))
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+         "--ticket", TICKET_ID],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+
+    assert rc == 0 and registry_source.read_text(encoding="utf-8") == changed_root
+    with pytest.raises(AssertionError, match="어댑터 경고 축 header 누락"):
+        _assert_adapter_warning(err, relative)
+
+
+def test_adapter_axis_does_not_match_sibling_prefix(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """등록 루트 '전체'는 경로 경계 기준이며 이름만 비슷한 형제 디렉토리까지 넓히지 않는다."""
+    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    sibling = f"{adapter_root}-backup"
+    relative = f"{sibling}/settings.json"
+    workspace, prompt = _scope_workspace(
+        tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{sibling}",),
+    )
+    fake = _WritingRun(workspace, ([relative], _ok_result()))
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+         "--ticket", TICKET_ID],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert WARNING_HEADER not in err and ADAPTER_WARNING_HEADER not in err
+
+
+def test_ticket_omitted_runs_both_policy_axes_for_adapter_edit(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """여집합: --ticket 생략도 새 축을 끄지 않고, 두 정책을 구분해 의도적으로 함께 보고한다."""
+    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    relative = f"{adapter_root}/settings.json"
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
+    fake = _WritingRun(workspace, ([relative], _ok_result()))
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace)],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert err.count(WARNING_HEADER) == 1
+    assert err.count(ADAPTER_WARNING_HEADER) == 1
+    assert err.count(relative) == 2                  # 서로 다른 정책축의 의도적 중복
+
+
+def test_nonliteral_registry_degrades_adapter_axis_loudly_without_blocking(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """T-0521 graceful degrade 연장: 파생 0이면 추측 목록 없이 판정 불가를 loud 알리고 rc는 보존."""
+    monkeypatch.setattr(pd, "_resolved_adapter_directories", lambda: ())
+    relative = ".claude/settings.json"
+    workspace, prompt = _scope_workspace(
+        tmp_path, monkeypatch, pd, touches=("work/demo_1/.claude",),
+    )
+    fake = _WritingRun(workspace, ([relative], _ok_result()))
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+         "--ticket", TICKET_ID],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+    assert rc == 0 and WARNING_HEADER not in err
+    assert ADAPTER_DEGRADED_HEADER in err
+    assert "파생 경로가 0개" in err and "판정할 수 없습니다" in err
+    assert ADAPTER_WARNING_HEADER not in err          # 경로를 추측해 양성 판정하지 않음
+
+
+def test_adapter_warning_oracle_is_sensitive_when_axis_is_removed(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """축 formatter를 되돌린 형상에서는 핵심 oracle이 red임을 기계적으로 입증한다."""
+    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    relative = f"{adapter_root}/settings.json"
+    workspace, prompt = _scope_workspace(
+        tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{adapter_root}",),
+    )
+    monkeypatch.setattr(pd, "_format_adapter_edit_warning", lambda _paths: "")
+    fake = _WritingRun(workspace, ([relative], _ok_result()))
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+         "--ticket", TICKET_ID],
+        _enabled_conf(), fake,
+    )
+    err = capsys.readouterr().err
+    assert rc == 0 and WARNING_HEADER not in err
+    with pytest.raises(AssertionError, match="어댑터 경고 축 header 누락"):
+        _assert_adapter_warning(err, relative)
 
 
 def test_scope_audit_covers_whole_delegation_once_including_fallback(pd, monkeypatch, tmp_path,
