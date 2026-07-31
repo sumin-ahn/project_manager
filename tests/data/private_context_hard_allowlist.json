@@ -441,7 +441,7 @@
     },
     {
       "path": ".project_manager/tools/pm_delegate.py",
-      "line": 1380,
+      "line": 1542,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -977,7 +977,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
-      "line": 1380,
+      "line": 1542,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -1121,7 +1121,7 @@
     },
     {
       "path": "templates/claude_code/CLAUDE.lite.md",
-      "line": 38,
+      "line": 50,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -1129,7 +1129,7 @@
     },
     {
       "path": "templates/claude_code/CLAUDE.md",
-      "line": 91,
+      "line": 112,
       "kind": "work_item",
       "match": "ADR-0023",
       "surface": "markdown",
@@ -1137,7 +1137,7 @@
     },
     {
       "path": "templates/claude_code/CLAUDE.md",
-      "line": 112,
+      "line": 133,
       "kind": "work_item",
       "match": "ADR-0018",
       "surface": "markdown",
@@ -1713,7 +1713,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/pm_delegate.py",
-      "line": 1380,
+      "line": 1542,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -1745,7 +1745,7 @@
     },
     {
       "path": "templates/codex/AGENTS.md",
-      "line": 180,
+      "line": 183,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "markdown",
@@ -1753,7 +1753,7 @@
     },
     {
       "path": "templates/codex/AGENTS.md",
-      "line": 180,
+      "line": 183,
       "kind": "work_item",
       "match": "ADR-0069",
       "surface": "markdown",
@@ -2505,7 +2505,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
-      "line": 1380,
+      "line": 1542,
       "kind": "work_item",
       "match": "T-0472",
       "surface": "python-prose",
@@ -2649,7 +2649,7 @@
     },
     {
       "path": "templates/opencode/AGENTS.lite.md",
-      "line": 53,
+      "line": 64,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -2657,7 +2657,7 @@
     },
     {
       "path": "templates/opencode/AGENTS.lite.md",
-      "line": 108,
+      "line": 119,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "markdown",
@@ -2665,7 +2665,7 @@
     },
     {
       "path": "templates/opencode/AGENTS.md",
-      "line": 180,
+      "line": 183,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "markdown",
@@ -2673,7 +2673,7 @@
     },
     {
       "path": "templates/opencode/AGENTS.md",
-      "line": 180,
+      "line": 183,
       "kind": "work_item",
       "match": "ADR-0069",
       "surface": "markdown",

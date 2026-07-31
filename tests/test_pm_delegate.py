@@ -20,8 +20,10 @@ import importlib.util
 import json as _json
 import os
 import re
+import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1881,12 +1883,149 @@ def test_role_preambles_cover_all_four_roles(pd):
 
 def test_role_preambles_include_prohibition_phrases(pd):
     """4 preamble 모두 금지 문구(commit/push·board 조작·어댑터 수정 금지)를 포함(drift 가드)."""
+    adapter_directories = tuple(pd.ADAPTER_DIRECTORIES)
+    assert adapter_directories, "엔진 등록부에서 파생된 어댑터 디렉토리가 0개"
     for role, text in pd.ROLE_PREAMBLES.items():
         assert "commit" in text and "push" in text, f"{role}: git 비가역 금지 문구 누락"
         assert "board" in text, f"{role}: board 조작 금지 문구 누락"
-        # 어댑터 디렉토리 수정 금지 — 3 하네스 디렉토리명 중 하나 이상 명시
-        assert any(d in text for d in (".claude", ".codex", ".opencode")), \
-            f"{role}: 어댑터 디렉토리 수정 금지 문구 누락"
+        assert "엔진 등록 통합 루트 전체" in text, f"{role}: 어댑터 범위 정의 누락"
+        for adapter_dir in adapter_directories:
+            assert adapter_dir in text, f"{role}: 등록 어댑터 {adapter_dir} 수정 금지 문구 누락"
+        assert text.count(pd._prohibition()) == 1, f"{role}: 공통 금지 문구를 정확히 한 번 써야 함"
+
+
+def _isolated_delegate(tmp_path: Path, registry_source: str):
+    tools = tmp_path / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    for filename in ("pm_delegate.py", "console_encoding.py"):
+        shutil.copy2(TOOLS / filename, tools / filename)
+    (tools / "pm_import.py").write_text(
+        f'ENGINE_REV = "{_load("pm_delegate_rev", TOOLS / "pm_delegate.py").ENGINE_REV}"\n'
+        f"{registry_source}\n",
+        encoding="utf-8",
+    )
+    return _load(f"pm_delegate_isolated_{id(tmp_path)}", tools / "pm_delegate.py"), tools
+
+
+def test_adapter_registry_engine_rev_skew_fails_loud_when_lazy_boundary_is_consumed(
+    tmp_path,
+):
+    """A sensitivity: import는 lazy라 살지만 stamped source를 실제 읽으면 skew가 명시 red다."""
+    delegate, tools = _isolated_delegate(
+        tmp_path,
+        'ADD_HARNESS_ADAPTER = {"claude": ((".claude",), "CLAUDE.md")}',
+    )
+    source = tools / "pm_import.py"
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            f'ENGINE_REV = "{delegate.ENGINE_REV}"',
+            'ENGINE_REV = "v0.0.0-stale"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="엔진 사본 버전 불일치") as exc:
+        tuple(delegate.ADAPTER_DIRECTORIES)
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    assert "pm_import.py" in str(exc.value)
+
+
+def test_adapter_registry_old_value_shape_fails_explicitly_without_character_spread(
+    tmp_path,
+):
+    """A schema sensitivity: 구형 `(dir, doc)` 값은 `.claude` 문자 펼침 전에 명시 실패한다."""
+    delegate, _tools = _isolated_delegate(
+        tmp_path,
+        'ADD_HARNESS_ADAPTER = {"claude": (".claude", "CLAUDE.md")}',
+    )
+
+    with pytest.raises(delegate._AdapterRegistrySchemaError, match="adapter_dirs"):
+        tuple(delegate.ADAPTER_DIRECTORIES)
+
+
+@pytest.mark.parametrize(
+    ("registry_source", "expected"),
+    [
+        (
+            'ADD_HARNESS_ADAPTER: dict = '
+            '{"claude": ((".claude",), "CLAUDE.md")}',
+            (".claude",),
+        ),
+        (
+            'REGISTRY = {"claude": ((".claude",), "CLAUDE.md")}\n'
+            "ADD_HARNESS_ADAPTER = REGISTRY",
+            (),
+        ),
+        (
+            'ADD_HARNESS_ADAPTER = '
+            '{"claude": (frozenset({".claude"}), "CLAUDE.md")}',
+            (),
+        ),
+    ],
+    ids=("annotated-assignment", "variable-reference", "frozenset-expression"),
+)
+def test_adapter_registry_notation_changes_do_not_brick_cli(
+    tmp_path, registry_source, expected,
+):
+    """B sensitivity: AnnAssign는 파생하고 비-literal 표기는 일반 문구 degrade·CLI help rc=0."""
+    delegate, tools = _isolated_delegate(tmp_path, registry_source)
+    assert tuple(delegate.ADAPTER_DIRECTORIES) == expected
+    prohibition = delegate.ROLE_PREAMBLES["developer"]
+    assert "엔진 등록 통합 루트 전체" in prohibition
+    for adapter_dir in expected:
+        assert adapter_dir in prohibition
+
+    completed = subprocess.run(
+        [sys.executable, str(tools / "pm_delegate.py"), "--help"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def _template_adapter_surface():
+    """출하 템플릿 최상위의 실제 어댑터 디렉토리 합집합(등록 목록과 독립 관측)."""
+    pm_import = _load("pm_import_adapter_surface", TOOLS / "pm_import.py")
+    template_dirs = {
+        dirname
+        for names in pm_import.HARNESS_TEMPLATE_DIRS.values()
+        if len(names) == 1
+        for dirname in names
+    }
+    infrastructure = {".project_manager", ".github"}
+    observed = {
+        child.name
+        for dirname in template_dirs
+        for child in (REPO / "templates" / dirname).iterdir()
+        if child.is_dir() and child.name.startswith(".") and child.name not in infrastructure
+    }
+    assert observed, "실제 템플릿에서 관측한 어댑터 디렉토리가 0개"
+    return observed
+
+
+def _assert_adapter_registry_matches_surface(registered, observed):
+    assert set(registered) == set(observed), (
+        f"엔진 등록 어댑터와 실제 템플릿 표면 불일치: "
+        f"등록={sorted(registered)} 실제={sorted(observed)}"
+    )
+
+
+def test_adapter_registry_matches_actual_template_surface(pd):
+    """단일 출처가 템플릿 3타깃의 실제 어댑터 루트를 빠짐없이 포괄한다."""
+    _assert_adapter_registry_matches_surface(
+        pd.ADAPTER_DIRECTORIES, _template_adapter_surface())
+
+
+def test_adapter_surface_guard_is_sensitive_to_each_omission(pd):
+    """등록 어댑터를 어느 하나라도 빼면 표면 대조 가드가 red임을 전 항목으로 입증한다."""
+    observed = _template_adapter_surface()
+    _assert_adapter_registry_matches_surface(pd.ADAPTER_DIRECTORIES, observed)
+    for omitted in pd.ADAPTER_DIRECTORIES:
+        reduced = tuple(d for d in pd.ADAPTER_DIRECTORIES if d != omitted)
+        with pytest.raises(AssertionError, match="실제 템플릿 표면 불일치"):
+            _assert_adapter_registry_matches_surface(reduced, observed)
 
 
 # ══ ⑬ 시크릿 판정 양성매칭 2축 (경로축/값축·오탐 폐쇄·T-0472) ═══════════════════

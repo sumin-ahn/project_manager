@@ -17,12 +17,23 @@
 
 ## 1. 부트스트랩 (세션 시작)
 
-```bash
-{{PY}} .project_manager/tools/board.py list   # 잡을 수 있는 ticket
-{{PY}} .project_manager/tools/pm_log.py tail   # 직전 핸드오프(마지막 entry)
-```
+<!-- pm-bootstrap-preread:start -->
+세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
 
-순서: 1. 이미 로드된 **이 파일** → 2. **보드**, [`architecture.md`](.project_manager/wiki/architecture.md)(현재 아키텍처 단일 진실: ① live / ② target; 부트스트랩 1순위·충돌 시 기준), `.project_manager/wiki/status.md`(모듈 진행상태·비고·judgment-only), `.project_manager/wiki/pm_state.md`(slot은 `.local/slots/<repo>_<N>/`, 예 `project_manager_1`; `<repo>_<N>`=worktree `work/<repo>_<N>` basename; 솔로는 wiki 폴백) → 3. **직전 핸드오프**(부트스트랩이 본문 dump).
+1. **이 문서(AGENTS.md·lite 코어)** — 이미 로드된 프로젝트 규칙·형상.
+2. **현재 정체성의 `pm_state`** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`,
+   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`, 솔로는 `wiki/pm_state.md`
+   legacy 폴백. 신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
+3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
+   surface한다. Python backbone은 `{{PY}} .project_manager/tools/pm_bootstrap.py`다.
+<!-- pm-bootstrap-preread:end -->
+
+정식 계약은 `.project_manager/wiki/pm_role.md` §부트스트랩이 단일 진실이다.
+`architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는 시작 시
+통독하지 않고 실제 필요가 생길 때 해당 절만 읽는다.
+
+**현재 진실:** [`architecture.md`](.project_manager/wiki/architecture.md)는 현재 아키텍처 단일
+진실이며, 옛 ADR 또는 현재 의도·실측과 충돌하면 기준으로 따른다. 바뀐 것은 읽는 시점뿐이다.
 
 세션명 canonical은 **`<repo>_<N>`**이다. `board.py ... --repo <repo> --slot <N>`을 쓰며 솔로는 생략 가능하다. 위임 라벨은 `orch-dev-TNNNN`/`orch-review-TNNNN`. 첫 turn에는 board 1줄 + 직전 요약 3~5줄 + 다음 옵션 + *무엇부터?* 결정 요청을 보고한다. 기계 dump는 `pm_bootstrap.py`.
 

@@ -712,6 +712,161 @@ def parse_open_tickets(board_output: str) -> list[str]:
 # 별도 메커니즘(`_collect_dashboard_others`·leases 유래)이라 유지된다.
 
 
+_LINT_GATE_HEADER = re.compile(
+    r"^\s*⚠️\s+(?P<total>\d+)\s+lint issue\(s\)\s+"
+    r"\((?P<blocking>\d+)\s+blocking 차단\):\s*$"
+)
+_LINT_ISSUE_LINE = re.compile(
+    r"^(?:\s*✗\s*\[[^\]]+\]|\s+\[[^\]]+\])"
+)
+_LINT_BLOCKING_LINE = re.compile(r"^\s*✗\s*\[[^\]]+\]")
+_LINT_REPRESENTATIVE_LIMIT = 3
+_LINT_WARNING_BYTE_LIMIT = 2048
+_LINT_WARNING_LINE_BYTE_LIMIT = 384
+_LINT_ERROR_EXCERPT_LIMIT = 3
+
+
+def _lint_issue_lines(lint_output: str) -> list[str]:
+    """`board.py lint --gate` 상세에서 실제 issue 행만 반환한다."""
+    return [
+        line for line in lint_output.splitlines()
+        if _LINT_ISSUE_LINE.match(line)
+    ]
+
+
+def parse_lint_counts(lint_output: str) -> tuple[int, int] | None:
+    """gate 헤더의 (총계, blocking)를 파싱한다.
+
+    비정형 헤더라도 issue 행이 있으면 그 행으로 보수 폴백한다. clean marker도 명시적인
+    ``(0, 0)`` 이다. 어느 신호도 없는 traceback/usage error/빈 출력은 ``None`` 으로
+    반환해 "lint 이슈 0건"과 실행·파싱 실패를 구분한다.
+    """
+    for line in lint_output.splitlines():
+        match = _LINT_GATE_HEADER.match(line)
+        if match:
+            try:
+                return int(match.group("total")), int(match.group("blocking"))
+            except ValueError:
+                # 비정상적으로 긴 숫자 등 int 변환 불가 출력은 아래 비정형 오류 경로로 보낸다.
+                break
+    issues = _lint_issue_lines(lint_output)
+    if issues:
+        return len(issues), sum(bool(_LINT_BLOCKING_LINE.match(line)) for line in issues)
+    if any(
+        re.match(r"^\s*✓\s*no lint issues\s*$", line)
+        for line in lint_output.splitlines()
+    ):
+        return 0, 0
+    return None
+
+
+def _clip_utf8(text: str, byte_limit: int) -> str:
+    """문자 경계를 깨지 않고 UTF-8 byte 상한 안으로 한 줄을 clip한다."""
+    if byte_limit < 0:
+        raise ValueError("byte_limit은 0 이상이어야 한다")
+    encoded = text.encode("utf-8")
+    if len(encoded) <= byte_limit:
+        return text
+    ellipsis = "…".encode("utf-8")
+    if byte_limit < len(ellipsis):
+        return encoded[:byte_limit].decode("utf-8", errors="ignore")
+    prefix = encoded[: byte_limit - len(ellipsis)].decode("utf-8", errors="ignore")
+    return prefix + "…"
+
+
+def _bounded_warning_with_details(
+    candidates: list[str],
+    build_lines: Callable[[list[str]], list[str]],
+) -> str:
+    """행 clip 후 전체 byte 예산에 들어오는 대표 행만 순서대로 채운다."""
+    clipped = [
+        _clip_utf8(line, _LINT_WARNING_LINE_BYTE_LIMIT)
+        for line in candidates
+    ]
+
+    def bounded_lines(selected: list[str]) -> list[str]:
+        return [
+            _clip_utf8(line, _LINT_WARNING_LINE_BYTE_LIMIT)
+            for line in build_lines(selected)
+        ]
+
+    selected: list[str] = []
+    for line in clipped:
+        trial = [*selected, line]
+        if len("\n".join(bounded_lines(trial)).encode("utf-8")) > _LINT_WARNING_BYTE_LIMIT:
+            break
+        selected = trial
+    warning = "\n".join(bounded_lines(selected))
+    # 고정 헤더/안내문 자체가 상한을 넘는 변경도 즉시 드러내는 내부 불변식.
+    if len(warning.encode("utf-8")) > _LINT_WARNING_BYTE_LIMIT:
+        raise AssertionError("lint warning 고정 문구가 byte 상한을 초과했다")
+    return warning
+
+
+def format_blocking_lint_warning(
+    lint_output: str,
+    *,
+    representative_limit: int = _LINT_REPRESENTATIVE_LIMIT,
+    lint_rc: int | None = None,
+) -> str:
+    """blocking lint의 red 신호는 유지하면서 기본 stderr를 bounded 요약으로 만든다.
+
+    전체 gate 전문은 이미 `lint_output`에 보존되어 있으나 기본 bootstrap 출력에는 총계,
+    blocking 수, 대표 항목만 싣는다. 전체 진단은 안내한 `board.py lint --gate`를 사용자가
+    명시 실행할 때만 출력한다.
+    """
+    if representative_limit < 0:
+        raise ValueError("representative_limit은 0 이상이어야 한다")
+    counts = parse_lint_counts(lint_output)
+    opt_in = "전체 진단(opt-in): `python3 .project_manager/tools/board.py lint --gate`"
+    if counts is None:
+        raw_nonblank = [
+            f"  {line}" for line in lint_output.splitlines() if line.strip()
+        ]
+        raw_excerpt = raw_nonblank[:_LINT_ERROR_EXCERPT_LIMIT]
+        if not raw_excerpt:
+            raw_excerpt = ["  <출력 없음>"]
+        rc_label = str(lint_rc) if lint_rc is not None else "nonzero"
+
+        def build_error_lines(selected: list[str]) -> list[str]:
+            omitted = max(len(raw_nonblank) - len(selected), 0)
+            lines = [
+                "[경고] board lint gate 실행/출력 파싱 실패 "
+                f"(rc={rc_label}) — blocking 비0 신호는 유지됨",
+                f"오류 excerpt {len(selected)}줄:",
+                *selected,
+            ]
+            if omitted:
+                lines.append(f"  … 추가 excerpt {omitted}줄 생략")
+            lines.append(opt_in)
+            return lines
+
+        return _bounded_warning_with_details(raw_excerpt, build_error_lines)
+
+    total, blocking = counts
+    issues = _lint_issue_lines(lint_output)
+    # 차단 경고에서는 blocking 항목을 먼저 보여준다. gate 출력의 각 그룹 안 순서는 보존한다.
+    candidates = (
+        [line for line in issues if _LINT_BLOCKING_LINE.match(line)]
+        + [line for line in issues if not _LINT_BLOCKING_LINE.match(line)]
+    )[:representative_limit]
+
+    def build_summary_lines(selected: list[str]) -> list[str]:
+        lines = [
+            "[경고] board lint 차단(blocking) 이슈 — 위 dump 는 정상 출력됨: "
+            f"총계 {total}건 · blocking {blocking}건",
+            f"대표 항목 {len(selected)}건:",
+            *selected,
+        ]
+        omitted = max(total - len(selected), 0)
+        if omitted:
+            lines.append(f"  … 나머지 {omitted}건 생략")
+        lines.append(opt_in)
+        return lines
+
+    return _bounded_warning_with_details(candidates, build_summary_lines)
+
+
 def parse_lint_result(lint_output: str) -> str:
     """board lint 출력에서 결과 요약을 반환한다.
 
@@ -730,10 +885,7 @@ def parse_lint_result(lint_output: str) -> str:
         return "clean"
     # issue 라인 수만 양성 매칭한다. 일반 lint는 "  [kind] ...", gate lint는
     # "  ✗ [kind] ..." 이다. 앵커/요약 등 표시 헤더는 어느 쪽도 아니므로 무영향.
-    warning_lines = [
-        line for line in lint_output.splitlines()
-        if re.match(r"^(?:\s*✗\s*\[[^\]]+\]|\s+\[[^\]]+\])", line)
-    ]
+    warning_lines = _lint_issue_lines(lint_output)
     count = len(warning_lines)
     if count == 0:
         return "clean"
@@ -1725,14 +1877,27 @@ class PmBootstrap:
         # unstable-ref-advice)는 rc=0 (board.cmd_lint). dump-then-warn—
         # blocking 이어도 여기서 abort 하지 않고 플래그만 실어 반환한다.
         lint_rc, lint_output = self._run_board_fn(["lint", "--gate"])
-        lint_result = parse_lint_result(lint_output)
+        lint_counts = parse_lint_counts(lint_output)
+        # 파싱 실패는 rc 와 **독립**으로 판정한다. `parse_lint_counts` 는 명시 clean
+        # (`✓ no lint issues`)과 canonical 헤더/issue 행만 인식하고 그 밖은 None 이다 —
+        # 따라서 None 은 "이슈 0건" 이 아니라 **lint 상태를 모른다** 는 뜻이다.
+        # rc==0 가지를 빼면 빈 출력·traceback 이 `clean` 으로 보고돼(실측 확인) 모르는 상태가
+        # 성공으로 위장된다. 모르는 상태는 clean 이 아니므로 blocking 으로 surface 한다.
+        lint_parse_failed = lint_counts is None
+        lint_result = (
+            "gate error (unparsed)"
+            if lint_parse_failed
+            else parse_lint_result(lint_output)
+        )
 
         return {
             "counts": counts,
             "counts_scope": counts_scope,
             "open_tickets": open_tickets,
             "lint": lint_result,
-            "lint_blocking": lint_rc != 0,
+            "lint_blocking": lint_rc != 0 or lint_parse_failed,
+            "lint_gate_rc": lint_rc,
+            "lint_parse_failed": lint_parse_failed,
             "lint_gate_output": lint_output,
         }
 
@@ -2968,8 +3133,10 @@ class PmBootstrap:
             # 경고 + 비-0 종료한다 — mid-wave 세션 진입이 dump 0 으로 손 재구성하던 것을 막는다.
             if board.get("lint_blocking"):
                 print(
-                    f"[경고] board lint 차단(blocking) 이슈 — 위 dump 는 정상 출력됨:\n"
-                    f"{board['lint_gate_output']}",
+                    format_blocking_lint_warning(
+                        board["lint_gate_output"],
+                        lint_rc=board.get("lint_gate_rc"),
+                    ),
                     file=sys.stderr,
                 )
                 return 1

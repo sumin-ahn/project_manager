@@ -1,28 +1,49 @@
 # CLAUDE.md
 
-> Claude Code 세션 시작 시 자동 로드되는 진입점. **새 세션이면 먼저 읽고 → `board.py list` 로 보드를 확인하라.**
+> Claude Code 세션 시작 시 자동 로드되는 진입점.
 
 ## 프로젝트 한 줄
 
 {{PROJECT_TAGLINE}}
 <!-- TODO: {{PROJECT_NAME}} 가 무엇을 하는 시스템인지 1~2 문장. -->
 
-## 새 세션 부트스트랩 (3 단계)
+## 새 세션 부트스트랩
 
-1. **상황 파악** — 순서대로 본다:
-   - 보드 — `{{PY}} .project_manager/tools/board.py list`. `board.md` 는 파생 대시보드라 git 에 없을 수 있다. 파일로 보려면 `board.py refresh`.
-   - [`.project_manager/wiki/architecture.md`](.project_manager/wiki/architecture.md) — **현재-아키텍처 단일 진실**(① live / ② target). 부트스트랩 1순위이며 충돌 시 기준.
-   - [`.project_manager/wiki/status.md`](.project_manager/wiki/status.md) — 모듈 진행상태·비고.
-   - [`.project_manager/wiki/domain/`](.project_manager/wiki/domain/) — architecture 세부 지식(concept · `covers:` 코드 링크 · freshness).
-   결정 근거·히스토리는 [`.project_manager/wiki/decisions/`](.project_manager/wiki/decisions/). ADR 은 현재 구속력 없음(현재 기준은 architecture.md).
-2. **세션 이름 정하기** — **PM 세션명 canonical = `<repo>_<N>`**(`<repo>`=프로젝트 repo, `<N>`=PM 슬롯 번호). 아래 `claim` 의 `--repo <repo> --slot <N>` 으로 전달하며 `--repo` 가 board 의 repo prefix 를 유도한다. **솔로(M=1)** 는 `--repo/--slot` 생략 가능. CLI 에서는 `export PM_SESSION_NAME=<repo>_<N>` 도 가능. 식별 우선순위: `--repo`/`--slot` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` deprecated alias도 인식) > **활성 슬롯 lease 가 정확히 1개면 그 세션**(단일-lease 유도) > (lease 장부 부재·leased 0인 솔로) `local.conf session=` legacy 폴백 > 미해소. 미해소 시 귀속 쓰기(claim 등)는 fail-loud하며 `--repo <repo> --slot <N>` 을 요구한다. **leased ≥2면 `local.conf session=` 층을 건너뛴다.**
-3. **Ticket 잡기** — 외부 의존이 없고 다른 세션이 claim 하지 않은 것을 고른다:
-   ```bash
-   {{PY}} .project_manager/tools/board.py list --status open
-   {{PY}} .project_manager/tools/board.py show T-NNNN
-   {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1 · 솔로(M=1)면 생략 가능
-   ```
-   ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크** 만으로 작업 가능해야 한다. 부족하면 본문부터 보강한다.
+<!-- pm-bootstrap-preread:start -->
+세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
+
+1. **이 문서** — 자동 로드된 프로젝트 규칙·형상.
+2. **현재 정체성의 `pm_state`** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`,
+   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`, 솔로는
+   `.project_manager/wiki/pm_state.md` legacy 폴백. 신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
+3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
+   surface한다. Python backbone은 `{{PY}} .project_manager/tools/pm_bootstrap.py`다.
+<!-- pm-bootstrap-preread:end -->
+
+정식 계약은 [`.project_manager/wiki/pm_role.md`](.project_manager/wiki/pm_role.md) §부트스트랩이
+단일 진실이다. `architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는
+시작 시 통독하지 않고 실제 필요가 생길 때 해당 절만 읽는다.
+
+**현재 진실:** [`.project_manager/wiki/architecture.md`](.project_manager/wiki/architecture.md)는
+현재 아키텍처 단일 진실이며, 옛 ADR 또는 현재 의도·실측과 충돌하면 기준으로 따른다. 바뀐 것은
+읽는 시점뿐이다.
+
+### 부트스트랩 후 ticket 잡기
+
+세션명 canonical은 `<repo>_<N>`이다. 식별 우선순위는 `--repo`/`--slot` >
+`$PM_SESSION_NAME` > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) >
+솔로의 `local.conf session=` legacy 폴백 > 미해소다. 미해소 귀속 쓰기는 fail-loud한다.
+
+외부 의존이 없고 다른 세션이 claim하지 않은 ticket을 고른다:
+
+```bash
+{{PY}} .project_manager/tools/board.py list --status open
+{{PY}} .project_manager/tools/board.py show T-NNNN
+{{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1 · 솔로(M=1)면 생략 가능
+```
+
+ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만으로 작업 가능해야 한다. 부족하면
+본문부터 보강한다.
 
 ## 멀티-PM clone (동시 다중 PM 프로젝트)
 

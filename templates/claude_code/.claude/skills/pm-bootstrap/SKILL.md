@@ -15,25 +15,11 @@ audience: user-entrypoint
 
 ## 사전 부트스트랩 (skill 외부)
 
-skill 호출 전에 pm_role.md §부트스트랩에 따라 읽는다:
+<!-- pm-bootstrap-preread:start -->
+세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
+<!-- pm-bootstrap-preread:end -->
 
-1. `CLAUDE.md`
-2. `.project_manager/wiki/pm_role.md`
-3. 현재 정체성의 pm_state:
-   - task: `.project_manager/.local/tasks/<task>/pm_state.md`(연속성의 단일 앵커)
-   - slot: `.project_manager/.local/slots/<repo>_<N>/pm_state.md`(`<repo>_<N>` = `work/<repo>_<N>` basename)
-   - solo: `wiki/pm_state.md` legacy 폴백
-
-   신규 task는 파일이 없어도 정상이다. backbone이 장부 생성 즉시 pm_state를 만들고 같은 실행에서 읽는다. 사용자가 미리 만들거나 slot을 줄 필요가 없다. 차수·남은작업은 자동 surface하며 손-read는 보충용이다.
-4. `.project_manager/wiki/status.md`
-5. board 상태:
-
-   ```bash
-   python3 .project_manager/tools/board.py list
-   ```
-
-   `board.md`는 파생·git-untracked 대시보드이며 skill이 자동 측정한다.
-6. `log/current.md` 마지막 handoff entry는 부트스트랩이 본문 전체를 dump한다. 직접 `python3 .project_manager/tools/pm_log.py tail`은 baseline 재확인·더 넓은 인용에만 쓴다.
+정식 계약은 `pm_role.md` §부트스트랩이 단일 진실이다. `architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는 시작 시 통독하지 않고 실제 필요가 생길 때 해당 절만 읽는다. `architecture.md`는 현재 아키텍처 단일 진실이며, 옛 ADR 또는 현재 의도·실측과 충돌하면 기준으로 따른다. 바뀐 것은 읽는 시점뿐이다.
 
 skill은 기계 측정만 자동화하며 컨텍스트 인지·결정은 PM이 한다.
 

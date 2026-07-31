@@ -34,6 +34,7 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import datetime
 import functools
@@ -48,6 +49,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, NamedTuple
 
@@ -242,26 +244,186 @@ _HARNESS_AUTH_ENV: dict[str, tuple[str, ...]] = {
 }
 
 # role preamble — 최소 4개(정체성 1줄 + 금지사항 + 결과 보고). identity 는 codex `exec`
-# `--agent` 부재로 prompt 합성해야 하므로 엔진이 harness-중립 최소본을 소유한다. 이 카드/문구를
-# 다듬는다(이 티켓은 얇은 계약만·과설계 금지). 합성 = preamble + "\n\n" + prompt-file 내용.
-_PROHIBITION = (
-    "금지: commit/push/force/reset/rm 등 git 비가역 조작·board 조작·어댑터 디렉토리"
-    "(.claude/.codex/.opencode) 수정을 하지 마라(PM 이 결과 회수 후 담당). 결과는 최종 텍스트로 보고하라."
-)
-ROLE_PREAMBLES: dict[str, str] = {
+# `--agent` 부재로 prompt 합성해야 하므로 엔진이 harness-중립 최소본을 소유한다. 합성 =
+# preamble + "\n\n" + prompt-file 내용.
+class _AdapterRegistryNotationError(RuntimeError):
+    """등록부의 정적 literal 표기를 해석할 수 없음(프롬프트는 일반 문구로 degrade)."""
+
+
+class _AdapterRegistrySchemaError(RuntimeError):
+    """등록부 literal은 읽혔지만 `(tuple[str, ...], str)` 값 계약이 깨짐."""
+
+
+def _module_assignment_value(
+        tree: ast.Module, name: str, source: Path) -> ast.expr:
+    """모듈 최상위 Assign/AnnAssign 하나의 RHS를 반환한다."""
+    matches: list[ast.expr] = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            if any(isinstance(target, ast.Name) and target.id == name
+                   for target in node.targets):
+                matches.append(node.value)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+            and node.value is not None
+        ):
+            matches.append(node.value)
+    if len(matches) != 1:
+        raise _AdapterRegistryNotationError(
+            f"어댑터 단일 출처 {name}의 최상위 Assign/AnnAssign 하나를 찾지 못함: {source}"
+        )
+    return matches[0]
+
+
+def _adapter_directories_from_engine_source() -> tuple[str, ...]:
+    """pm_import 등록부에서 어댑터 루트 합집합을 순서 보존 파생한다.
+
+    pm_import 전체 import는 위임 CLI 시작에 무관한 엔진을 실행하므로 정적 선언만 AST로 읽는다.
+    다만 이 읽기도 stamped sibling 경계다. 따라서 registry를 소비하기 전에 같은 source의 baked
+    ENGINE_REV를 `_verify_engine_rev`로 검증하며 skew는 fail-loud다.
+
+    등록부는 ``dict[str, tuple[tuple[str, ...], str]]`` literal이어야 한다. 읽힌 literal의 값
+    shape가 다르면 문자 단위 펼침 같은 조용한 오염을 막기 위해 명시 실패한다. 반면 변수 참조나
+    ``frozenset(...)``처럼 AST literal이 아닌 *표기*는 `_adapter_directories_for_prompt`가 일반
+    금지 문구로 degrade한다. 최소 형제 hermetic 사본의 파일 부재도 같은 빈 튜플 경로다.
+    """
+    source = Path(__file__).resolve().parent / "pm_import.py"
+    if not source.is_file():
+        return ()
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+
+    try:
+        rev_node = _module_assignment_value(tree, "ENGINE_REV", source)
+        sibling_rev = ast.literal_eval(rev_node)
+    except _AdapterRegistryNotationError:
+        sibling_rev = None
+    except (ValueError, TypeError):
+        sibling_rev = None
+    source_spec = importlib.util.spec_from_file_location(
+        "_pm_import_adapter_registry", source,
+    )
+    if source_spec is None:
+        raise _AdapterRegistryNotationError(
+            f"pm_import source spec 생성 실패: {source}"
+        )
+    source_module = importlib.util.module_from_spec(source_spec)
+    source_module.ENGINE_REV = sibling_rev
+    _verify_engine_rev(source_module, source.name)
+
+    registry_node = _module_assignment_value(tree, "ADD_HARNESS_ADAPTER", source)
+    try:
+        registry = ast.literal_eval(registry_node)
+    except (ValueError, TypeError) as exc:
+        raise _AdapterRegistryNotationError(
+            f"어댑터 단일 출처 ADD_HARNESS_ADAPTER가 정적 literal 표기가 아님: {source}"
+        ) from exc
+
+    if not isinstance(registry, dict) or not registry:
+        raise _AdapterRegistrySchemaError(
+            "ADD_HARNESS_ADAPTER는 비어 있지 않은 "
+            "dict[str, tuple[tuple[str, ...], str]]여야 한다"
+        )
+
+    directories: list[str] = []
+    for harness, value in registry.items():
+        if (
+            not isinstance(harness, str)
+            or not harness
+            or not isinstance(value, tuple)
+            or len(value) != 2
+        ):
+            raise _AdapterRegistrySchemaError(
+                f"ADD_HARNESS_ADAPTER[{harness!r}] 값은 "
+                "(adapter_dirs: tuple[str, ...], root_doc: str)여야 한다"
+            )
+        adapter_dirs, root_doc = value
+        if (
+            not isinstance(adapter_dirs, tuple)
+            or not adapter_dirs
+            or not all(isinstance(item, str) and item for item in adapter_dirs)
+            or not isinstance(root_doc, str)
+            or not root_doc
+        ):
+            raise _AdapterRegistrySchemaError(
+                f"ADD_HARNESS_ADAPTER[{harness!r}] 값은 "
+                "(adapter_dirs: tuple[str, ...], root_doc: str)여야 한다"
+            )
+        directories.extend(adapter_dirs)
+    return tuple(dict.fromkeys(directories))
+
+
+def _adapter_directories_for_prompt() -> tuple[str, ...]:
+    """표기 변화는 프롬프트 범위만 보수적으로 축소하되 schema/skew는 숨기지 않는다."""
+    try:
+        return _adapter_directories_from_engine_source()
+    except _AdapterRegistryNotationError:
+        return ()
+
+
+def _prohibition() -> str:
+    adapter_directories = _adapter_directories_for_prompt()
+    adapter_scope = "/".join(adapter_directories)
+    adapter_definition = (
+        f"엔진 등록 통합 루트 전체: {adapter_scope}"
+        if adapter_scope else
+        "엔진 등록 통합 루트 전체"
+    )
+    return (
+        "금지: commit/push/force/reset/rm 등 git 비가역 조작·board 조작·어댑터 디렉토리"
+        f"({adapter_definition}) 수정을 하지 마라(PM 이 결과 회수 후 담당). "
+        "결과는 최종 텍스트로 보고하라."
+    )
+
+
+_ROLE_IDENTITIES: dict[str, str] = {
     "developer":
-        "너는 이 프로젝트의 developer 서브에이전트다 — 단일 작업을 구현하고 테스트까지 낸다.\n"
-        + _PROHIBITION,
+        "너는 이 프로젝트의 developer 서브에이전트다 — 단일 작업을 구현하고 테스트까지 낸다.",
     "researcher":
-        "너는 이 프로젝트의 researcher 서브에이전트다 — 조사·분석만 하고 코드를 수정하지 않는다.\n"
-        + _PROHIBITION,
+        "너는 이 프로젝트의 researcher 서브에이전트다 — 조사·분석만 하고 코드를 수정하지 않는다.",
     "architect":
-        "너는 이 프로젝트의 architect 서브에이전트다 — 설계 초안을 낸다(발행은 PM/사용자 게이트).\n"
-        + _PROHIBITION,
+        "너는 이 프로젝트의 architect 서브에이전트다 — 설계 초안을 낸다(발행은 PM/사용자 게이트).",
     "code-reviewer":
         "너는 이 프로젝트의 code-reviewer 서브에이전트다 — 변경을 검토하고 테스트를 실행해 판정한다"
-        "(코드를 수정하지 않는다).\n" + _PROHIBITION,
+        "(코드를 수정하지 않는다).",
 }
+
+
+def _role_preamble(role: str) -> str:
+    return _ROLE_IDENTITIES[role] + "\n" + _prohibition()
+
+
+class _LazyAdapterDirectories(Sequence[str]):
+    """기존 소비 API를 보존하되 pm_import registry 평가는 실제 접근까지 지연한다."""
+
+    def __getitem__(self, index):
+        return _adapter_directories_for_prompt()[index]
+
+    def __len__(self) -> int:
+        return len(_adapter_directories_for_prompt())
+
+    def __iter__(self):
+        return iter(_adapter_directories_for_prompt())
+
+
+class _LazyRolePreambles(Mapping[str, str]):
+    """직접 조회와 main의 합성 프롬프트가 항상 같은 lazy preamble을 보게 한다."""
+
+    def __getitem__(self, role: str) -> str:
+        if role not in _ROLE_IDENTITIES:
+            raise KeyError(role)
+        return _role_preamble(role)
+
+    def __iter__(self):
+        return iter(_ROLE_IDENTITIES)
+
+    def __len__(self) -> int:
+        return len(_ROLE_IDENTITIES)
+
+
+ADAPTER_DIRECTORIES: Sequence[str] = _LazyAdapterDirectories()
+ROLE_PREAMBLES: Mapping[str, str] = _LazyRolePreambles()
 
 
 class DelegateError(Exception):

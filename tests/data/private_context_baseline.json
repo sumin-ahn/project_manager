@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 554,
+  "count": 544,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -1137,20 +1137,6 @@
         "count": 1
       }
     ],
-    "templates/claude_code/CLAUDE.lite.md": [
-      {
-        "kind": "circled_marker",
-        "hash": "9a2ea2e42e50b58d524202266e8b0a289fcc0ffa09c8306f528f87e93156d862",
-        "count": 2
-      }
-    ],
-    "templates/claude_code/CLAUDE.md": [
-      {
-        "kind": "circled_marker",
-        "hash": "b6366efb21723605fcd2e25ffe1e19c68e673b22fba93ccf75fdd71e69b609f5",
-        "count": 2
-      }
-    ],
     "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md": [
       {
         "kind": "circled_marker",
@@ -1718,13 +1704,6 @@
         "kind": "session_stamp",
         "hash": "86925bb9abcf6de0d194b8f6ff14eec2925eb2855bffc8db9729cb8568161b7a",
         "count": 1
-      }
-    ],
-    "templates/codex/AGENTS.md": [
-      {
-        "kind": "circled_marker",
-        "hash": "15947661a40d3f44191b67802770744c2371e8375f2808e62507052c88d2f998",
-        "count": 2
       }
     ],
     "templates/codex/README.md": [
@@ -2504,11 +2483,6 @@
     ],
     "templates/opencode/AGENTS.lite.md": [
       {
-        "kind": "circled_marker",
-        "hash": "5bf795cb1e83220bb9308dba8458fe2638acf162820ca61297ca67b597b70883",
-        "count": 2
-      },
-      {
         "kind": "session_stamp",
         "hash": "0f8c91993612e7684ddbaf8c8f0b9956126db5666970c124988a57296311b68e",
         "count": 1
@@ -2522,13 +2496,6 @@
         "kind": "session_stamp",
         "hash": "f94574db2e9deaf3ce112cb3f67326744709457f547716a5a8f9ce13c8a9d292",
         "count": 1
-      }
-    ],
-    "templates/opencode/AGENTS.md": [
-      {
-        "kind": "circled_marker",
-        "hash": "15947661a40d3f44191b67802770744c2371e8375f2808e62507052c88d2f998",
-        "count": 2
       }
     ],
     "templates/opencode/README.md": [

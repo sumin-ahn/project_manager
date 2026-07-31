@@ -7,16 +7,20 @@ type: handoff
 
 # PM Role — Project Manager Session 인계 문서
 
-PM 세션 시작 시 첫 번째로 읽는다. PM 역할은 보드 운영·분할·위임·spec/ADR 정비이며 개별 ticket 구현과 다르다.
+PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·위임·spec/ADR 정비이며 개별 ticket
+구현과 다르다. 세션 시작 필독 계약은 아래 §부트스트랩이 단일 진실이다.
 
 ⚙️ **이 파일은 엔진**(`pm_update`가 upstream에서 자동 갱신)이므로 프로젝트별 값을 넣지 않는다.
 `{{PROJECT_NAME}}`는 `local.conf`에서 해소되는 리터럴, `python3` 표기는 관례(Windows는 `py` 런처·래퍼 self-resolve), test 명령은 local.conf `test_cmd=`(`board regression`이 해소), 보호 영역·게이트 등 프로젝트 내용은 [[pm_role.local.md]]가 소유하며 갱신이 건드리지 않는다.
 
 ## 부트스트랩 (PM 세션 시작 시)
 
+<!-- pm-bootstrap-preread:start -->
+세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
+
 필독 셋:
 ```
-1) CLAUDE.md                          ← 프로젝트 규칙·형상
+1) 진입문서(CLAUDE.md 또는 AGENTS.md) ← 프로젝트 규칙·형상
 2) 현재 정체성의 pm_state           ← 내 동적 상태(세션 window·남은작업)
    · task: `.project_manager/.local/tasks/<task>/pm_state.md` (세션보다 오래 사는 연속성 앵커)
      신규 task는 `/pm-bootstrap --task <이름>` 진입 즉시 생성되므로 호출 전에는 없어도 정상
@@ -28,11 +32,14 @@ PM 세션 시작 시 첫 번째로 읽는다. PM 역할은 보드 운영·분할
    · 차수 · 직전 handoff entry 본문 · 남은작업(self-sufficient)
    · `--mine` 보드 카운트 + 타 PM 대시보드 slot 1줄
 ```
+<!-- pm-bootstrap-preread:end -->
+
 기계 측정은 `/pm-bootstrap` skill(backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
 
 **task 계약:** 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff --task <이름>`만 쓴다. Python backbone의 task 진입도 각각 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름>`뿐이다. 신규 task는 작업공간 0개여도 task pm_state를 즉시 만들고, 기존 task는 보유 슬롯 집합과 task pm_state를 자동 수령한다. task와 repo/slot 혼합 진입은 거부한다. 작업공간 대여·편입은 task-aware pm-env/worktree 명령의 책임이다. 단, alloc/release와 rebase 소유검사처럼 repo/slot이 **대상 자원**, task가 **소유 명의**인 자원 연산은 유지한다.
 
-architecture·status·decisions·roadmap·전체 보드·타 슬롯 log는 필요할 때만 §찾아가는 법에 따라 연다.
+`architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는 시작 시 통독하지
+않고, 실제 필요가 생길 때 §찾아가는 법에 따라 해당 절만 읽는다.
 
 **운영면:**
 - task 모드: 진행/남은작업은 per-task `pm_state.md`, 연속성은 `(task:<이름>)` handoff entry, 작업공간은 task 보유 슬롯 집합. task-only 부트스트랩은 전역 auto-slot을 쓰지 않는다.

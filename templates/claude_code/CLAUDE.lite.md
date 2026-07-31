@@ -9,11 +9,23 @@
 
 ## 1. 부트스트랩 (세션 시작)
 
-1. **이 파일** — 이미 로드됨.
-2. **보드** — `{{PY}} .project_manager/tools/board.py list`.
-3. **아키텍처** — [`architecture.md`](.project_manager/wiki/architecture.md): 현재-아키텍처 단일 진실(① live / ② target), 부트스트랩 1순위·충돌 시 기준.
-4. **상태** — [`.project_manager/wiki/status.md`](.project_manager/wiki/status.md)(모듈 진행상태·비고, judgment-only) + pm_state(세션 window·남은 작업; 솔로 `wiki/pm_state.md`, 멀티-PM per-slot `.local/slots/<repo>_<N>/`, 예 `project_manager_1` = worktree `work/<repo>_<N>` basename).
-5. **직전 핸드오프** — `{{PY}} .project_manager/tools/pm_log.py tail`.
+<!-- pm-bootstrap-preread:start -->
+세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
+
+1. **이 문서(CLAUDE.md·lite 코어)** — 이미 로드된 프로젝트 규칙·형상.
+2. **현재 정체성의 `pm_state`** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`,
+   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`, 솔로는 `wiki/pm_state.md`
+   legacy 폴백. 신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
+3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
+   surface한다. Python backbone은 `{{PY}} .project_manager/tools/pm_bootstrap.py`다.
+<!-- pm-bootstrap-preread:end -->
+
+정식 계약은 `.project_manager/wiki/pm_role.md` §부트스트랩이 단일 진실이다.
+`architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는 시작 시
+통독하지 않고 실제 필요가 생길 때 해당 절만 읽는다.
+
+**현재 진실:** [`architecture.md`](.project_manager/wiki/architecture.md)는 현재 아키텍처 단일
+진실이며, 옛 ADR 또는 현재 의도·실측과 충돌하면 기준으로 따른다. 바뀐 것은 읽는 시점뿐이다.
 
 > 세션명 canonical = `<repo>_<N>`. `claim` 에 `--repo <repo> --slot <N>` 으로 전달하며 솔로 M=1은 생략 가능. 우선순위: `--repo`/`--slot` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` alias) > 활성 슬롯 lease 1개면 그 세션(단일-lease 유도) > 솔로 `local.conf session=` > 미해소(귀속 쓰기 fail-loud). leased ≥2면 `local.conf` 층을 건너뛴다.
 > 첫 turn 권장 보고: board 1줄 + 직전 세션 요약 3~5줄 + 다음 옵션 + 결정 요청(*무엇부터?*).
@@ -75,7 +87,7 @@ bare commit 은 남이 stage 한 변경까지 싣는다. ticket 이동은 **옛�
 {{TEST_CMD}}                                                  # 전체 테스트(수의 단일 진실 = status.md)
 {{PY}} .project_manager/tools/board.py list|show|claim|complete|new|lint
 {{PY}} .project_manager/tools/pm_log.py tail                  # 마지막 entry
-{{PY}} .project_manager/tools/pm_bootstrap.py                 # board·git·log 일괄 dump(선택)
+{{PY}} .project_manager/tools/pm_bootstrap.py                 # 세션 시작 필수 dump(세션 중 재실행만 선택)
 {{PY}} .project_manager/tools/pm_handoff.py --dry-run         # 세션 종료 핸드오프
 {{PY}} .project_manager/tools/pm_update.py --from <upstream> --dry-run   # 엔진 동기화(메인테이너)
 ```

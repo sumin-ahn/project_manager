@@ -23,22 +23,25 @@ env prefix 없이 호출한다:
 
 ## 2. PM 부트스트랩 (세션 시작 시 순서)
 
-다음을 순서대로 수행한다. **Read tool로 파일을 읽을 땐 절대 경로를 쓴다.**
+**Read tool로 파일을 읽을 땐 절대 경로를 쓴다.**
 
-1. **이 문서(AGENTS.md·공통 코어)** — 이미 로드됨. §1과 함께 별도 전달된 하네스별 실행·위임 지침을 파악한다.
-2. **PM 운영 매뉴얼** — `.project_manager/wiki/pm_role.md`(책임·결정 권한·핸드오프).
-3. **PM 동적 상태** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`, slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`(`<repo>_<N>`=worktree `work/<repo>_<N>` basename), 솔로는 `wiki/pm_state.md` legacy 폴백. 세션 window·진행 중 결정·남은 작업을 담는 git-ignored 연속성 앵커다. 신규 task는 `/pm-bootstrap --task <이름>` 진입 즉시 생성하므로 호출 전 없어도 정상이고, 기존 task에서 빠졌으면 같은 진입에서 복구한다. slot/solo state가 없으면 setup 미완이므로 `board.py init`이 template에서 생성한다.
-4. **현재-진실 + 진행 상태** — `.project_manager/wiki/architecture.md`(현재 아키텍처 단일 진실: ① live / ② target; 부트스트랩 1순위·충돌 시 기준) → `.project_manager/wiki/status.md`(모듈 진행상태·비고). `decisions/` ADR은 현재 구속력 없는 이유의 히스토리다.
-5. **보드 조회** — 지금 잡을 수 있는 ticket:
-   ```bash
-   {{PY}} .project_manager/tools/board.py list
-   ```
-6. **직전 세션 핸드오프** — log의 마지막 entry만 읽고 full Read는 금지:
-   ```bash
-   {{PY}} .project_manager/tools/pm_log.py tail
-   ```
+<!-- pm-bootstrap-preread:start -->
+세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
 
-`pm_bootstrap.py`는 board·git·회귀·차수(`PM N차`)·마지막 handoff 본문 전체·pm_state 남은작업/사용자발의를 한 번에 surface한다: `{{PY}} .project_manager/tools/pm_bootstrap.py`. `board.py`·`pm_log.py` 직접 호출은 baseline 재확인용이다.
+1. **이 문서(AGENTS.md·공통 코어)** — 이미 로드된 프로젝트 규칙·형상.
+2. **현재 정체성의 `pm_state`** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`,
+   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`, 솔로는 `wiki/pm_state.md`
+   legacy 폴백. 신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
+3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
+   surface한다. Python backbone은 `{{PY}} .project_manager/tools/pm_bootstrap.py`다.
+<!-- pm-bootstrap-preread:end -->
+
+정식 계약은 `.project_manager/wiki/pm_role.md` §부트스트랩이 단일 진실이다.
+`architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는 시작 시
+통독하지 않고 실제 필요가 생길 때 해당 절만 읽는다.
+
+**현재 진실:** `architecture.md`는 현재 아키텍처 단일 진실이며, 옛 ADR 또는 현재 의도·실측과
+충돌하면 기준으로 따른다. 바뀐 것은 읽는 시점뿐이다.
 
 ### 세션 식별
 

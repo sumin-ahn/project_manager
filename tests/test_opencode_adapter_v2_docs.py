@@ -75,14 +75,14 @@ def test_agents_lite_points_to_domain():
 # ── architecture.md 1순위 배선 (ADR-0022·T-0105) ─────────────────────────────
 
 def test_agents_lite_links_architecture():
-    """AGENTS.lite.md §1 부트스트랩이 architecture.md(현재-진실 #1)로 링크한다.
+    """AGENTS.lite.md도 architecture.md의 현재-진실 지위를 링크로 보존한다.
 
     T-0102 가 full AGENTS.md 에만 배선하고 lite 진입문서를 놓쳤던 것(잔여)을 못박는다 —
-    lite 도 §1 부트스트랩에서 architecture.md 를 1순위로 안내해야 한다 (ADR-0022·T-0105).
+    시작 시 통독 대상은 아니지만 필요 시 읽을 현재 아키텍처 단일 진실 포인터는 유지한다.
     """
     text = AGENTS_LITE_MD.read_text(encoding="utf-8")
     assert "](.project_manager/wiki/architecture.md)" in text, (
-        "AGENTS.lite.md 가 architecture.md(현재-진실 #1)로 링크해야 함 (ADR-0022·T-0105)"
+        "AGENTS.lite.md 가 architecture.md 현재-진실 포인터를 링크해야 함"
     )
 
 

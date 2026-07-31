@@ -1176,6 +1176,185 @@ def test_run_dump_then_warn_prints_dump_before_warning_and_exits_nonzero(tmp_pat
     assert "- 인계 사항 A" in out.out
     # 경고는 stderr 로.
     assert "차단(blocking)" in out.err
+    assert "총계 1건 · blocking 1건" in out.err
+    assert "대표 항목 1건" in out.err
+    assert "전체 진단(opt-in)" in out.err
+    assert out.err.count("[dangling-wikilink]") == 1
+
+
+def _lint_gate_output(*, total: int, blocking: int) -> str:
+    assert 0 <= blocking <= total
+    lines = [f"⚠️  {total} lint issue(s) ({blocking} blocking 차단):"]
+    lines.extend(
+        f"  ✗ [blocking-kind] T-{idx:04d}: blocking detail {idx}"
+        for idx in range(blocking)
+    )
+    lines.extend(
+        f"    [advisory-kind] T-{idx:04d}: advisory detail {idx}"
+        for idx in range(blocking, total)
+    )
+    return "\n".join(lines) + "\n"
+
+
+def test_blocking_lint_warning_is_bounded_for_large_board():
+    """대량 gate 전문은 대표 3건으로 줄고 총계·blocking·opt-in 경로는 보존한다."""
+    mod = _load_module()
+    detail = _lint_gate_output(total=249, blocking=93)
+    warning = mod.format_blocking_lint_warning(detail)
+
+    assert "총계 249건 · blocking 93건" in warning
+    assert "대표 항목 3건" in warning
+    assert "나머지 246건 생략" in warning
+    assert "전체 진단(opt-in)" in warning
+    assert warning.count("[blocking-kind]") == 3
+    assert "[advisory-kind]" not in warning
+    assert len(warning.encode("utf-8")) < 1024
+    assert len(warning.encode("utf-8")) < len(detail.encode("utf-8"))
+
+
+def test_lint_count_parser_falls_back_to_issue_lines_for_noncanonical_header():
+    """헤더 문구가 비정형이어도 issue 행에서 총계·blocking을 잃지 않는다."""
+    mod = _load_module()
+    detail = (
+        "custom lint heading\n"
+        "  ✗ [blocking-kind] T-0001: one\n"
+        "    [advisory-kind] T-0002: two\n"
+    )
+    assert mod.parse_lint_counts(detail) == (2, 1)
+
+
+def test_lint_count_parser_distinguishes_noncanonical_failure_from_zero_issues():
+    """traceback/usage error는 명시 clean ``(0, 0)`` 과 다른 ``None`` 이다."""
+    mod = _load_module()
+    assert mod.parse_lint_counts("Traceback (most recent call last):\nRuntimeError: hook boom\n") is None
+    assert mod.parse_lint_counts("✓ no lint issues\n") == (0, 0)
+
+
+def test_collect_board_preserves_noncanonical_lint_failure_and_excerpt():
+    """lint nonzero+비정형 출력은 clean으로 위장하지 않고 원문·rc·parse 상태를 보존한다."""
+    mod = _load_module()
+    lint_error = "Traceback (most recent call last):\nRuntimeError: hook boom\n"
+
+    def board_fn(args: list[str]) -> tuple[int, str]:
+        if args[0] == "list":
+            return (0, "  [open   ] T-0010  x  -  adapter\n")
+        if args == ["lint", "--gate"]:
+            return (2, lint_error)
+        raise AssertionError(f"예상치 못한 board 호출: {args}")
+
+    board = mod.PmBootstrap(run_board_fn=board_fn)._collect_board()
+    assert board["lint"] == "gate error (unparsed)"
+    assert board["lint_blocking"] is True
+    assert board["lint_parse_failed"] is True
+    assert board["lint_gate_rc"] == 2
+    assert board["lint_gate_output"] == lint_error
+
+    warning = mod.format_blocking_lint_warning(lint_error, lint_rc=2)
+    assert "실행/출력 파싱 실패 (rc=2)" in warning
+    assert "Traceback" in warning
+    assert "RuntimeError: hook boom" in warning
+    assert "총계 0건" not in warning
+    assert len(warning.encode("utf-8")) <= mod._LINT_WARNING_BYTE_LIMIT
+
+
+@pytest.mark.parametrize(
+    ("label", "lint_output"),
+    (
+        ("빈 출력", ""),
+        ("traceback", "Traceback (most recent call last):\nRuntimeError: hook boom\n"),
+        ("미인식 산문", "lint finished, nothing to report\n"),
+    ),
+)
+def test_collect_board_flags_unparsed_lint_even_when_gate_rc_is_zero(label, lint_output):
+    """rc=0 이어도 출력을 못 읽으면 clean 이 아니다 — 모르는 상태를 성공으로 위장하지 않는다.
+
+    `parse_lint_counts` 는 명시 clean 과 canonical 형식만 인식하므로 None 은 "이슈 0건" 이
+    아니라 "lint 상태를 모른다" 는 뜻이다. rc 축만 보면 빈 출력·traceback 이 `clean` 으로
+    보고된다(회귀 전 실측). 판정은 rc 와 독립이어야 한다.
+    """
+    mod = _load_module()
+
+    def board_fn(args: list[str]) -> tuple[int, str]:
+        if args[0] == "list":
+            return (0, "  [open   ] T-0010  x  -  adapter\n")
+        if args == ["lint", "--gate"]:
+            return (0, lint_output)
+        raise AssertionError(f"예상치 못한 board 호출: {args}")
+
+    board = mod.PmBootstrap(run_board_fn=board_fn)._collect_board()
+    assert board["lint_parse_failed"] is True, f"{label}: 파싱 실패를 인지해야 한다"
+    assert board["lint"] == "gate error (unparsed)", f"{label}: clean 으로 위장하면 안 된다"
+    assert board["lint_blocking"] is True, f"{label}: 모르는 상태는 blocking 으로 surface"
+    assert board["lint_gate_rc"] == 0
+    assert board["lint_gate_output"] == lint_output
+
+
+def test_collect_board_keeps_explicit_clean_nonblocking():
+    """명시 clean 은 여전히 비차단이다 — 위 판정이 정상 경로를 오탐 차단하지 않는다."""
+    mod = _load_module()
+
+    def board_fn(args: list[str]) -> tuple[int, str]:
+        if args[0] == "list":
+            return (0, "  [open   ] T-0010  x  -  adapter\n")
+        if args == ["lint", "--gate"]:
+            return (0, "✓ no lint issues\n")
+        raise AssertionError(f"예상치 못한 board 호출: {args}")
+
+    board = mod.PmBootstrap(run_board_fn=board_fn)._collect_board()
+    assert board["lint_parse_failed"] is False
+    assert board["lint_blocking"] is False
+    assert board["lint"] == "clean"
+
+
+def test_run_noncanonical_lint_failure_keeps_rc_nonzero(tmp_path, capsys):
+    """비정형 lint 실패도 dump 뒤 bounded 진단을 내고 bootstrap rc=1 신호를 유지한다."""
+    mod = _load_module()
+    inst = _make_hermetic_bootstrap(
+        mod,
+        tmp_path,
+        log_text=_LOG_TEXT,
+        pm_state_text=_PM_STATE_TEXT,
+    )
+    lint_error = "Traceback (most recent call last):\nRuntimeError: hook boom\n"
+
+    def board_fn(args: list[str]) -> tuple[int, str]:
+        if args[0] == "list":
+            return (0, "  [open   ] T-0010  x  -  adapter\n")
+        if args == ["lint", "--gate"]:
+            return (2, lint_error)
+        raise AssertionError(f"예상치 못한 board 호출: {args}")
+
+    inst._run_board_fn = board_fn
+    assert inst.run() == 1
+    captured = capsys.readouterr()
+    assert "## PM 42차 부트스트랩" in captured.out
+    assert "실행/출력 파싱 실패 (rc=2)" in captured.err
+    assert len(captured.err.encode("utf-8")) <= mod._LINT_WARNING_BYTE_LIMIT + 1
+
+
+def test_blocking_lint_warning_clips_single_extreme_hook_detail():
+    """대표 1행이어도 자유 문자열 detail이 100KB면 행·전체 byte 상한으로 잘린다."""
+    mod = _load_module()
+    detail = (
+        "⚠️  1 lint issue(s) (1 blocking 차단):\n"
+        f"  ✗ [hook] T-0001: {'가' * 100_000}\n"
+    )
+    warning = mod.format_blocking_lint_warning(detail, lint_rc=1)
+
+    assert "총계 1건 · blocking 1건" in warning
+    assert "대표 항목 1건" in warning
+    assert "[hook] T-0001:" in warning
+    assert "전체 진단(opt-in)" in warning
+    assert len(warning.encode("utf-8")) <= mod._LINT_WARNING_BYTE_LIMIT
+    assert max(len(line.encode("utf-8")) for line in warning.splitlines()) <= (
+        mod._LINT_WARNING_LINE_BYTE_LIMIT
+    )
+
+
+def test_blocking_lint_warning_rejects_negative_representative_limit():
+    mod = _load_module()
+    with pytest.raises(ValueError, match="0 이상"):
+        mod.format_blocking_lint_warning(_BLOCKING_GATE_OUT, representative_limit=-1)
 
 
 # ── T-0217: git freshness (fetch + behind 표면화 + clean·ff 자동 pull) ─────────
