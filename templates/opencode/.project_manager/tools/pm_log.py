@@ -38,7 +38,7 @@ import sys
 from pathlib import Path
 
 # ── 엔진 사본 rev 스탬프 (pm_bootstrap deep-import target) ────────────────
-ENGINE_REV = "v1.5.0"
+ENGINE_REV = "v1.5.1"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
