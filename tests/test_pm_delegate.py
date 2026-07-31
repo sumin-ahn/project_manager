@@ -3014,6 +3014,187 @@ def test_error_event_reply_field_is_not_scanned(pd):
         {"returncode": 1, "stdout": event, "stderr": "", "timed_out": False}) is None
 
 
+def _failed_stdout(stdout: str) -> dict:
+    return {"returncode": 1, "stdout": stdout, "stderr": "", "timed_out": False}
+
+
+def _claude_api_retry_event(error: str) -> str:
+    """claude 2.1.220 무효-key 실측 stdout JSONL 형상(error 값만 교체 가능)."""
+    return _json.dumps({
+        "type": "system",
+        "subtype": "api_retry",
+        "attempt": 10,
+        "max_retries": 10,
+        "retry_delay_ms": 32126,
+        "error_status": 401,
+        "error": error,
+        "session_id": "5b1f6a05-measured-shape",
+        "uuid": "4dbf088f-measured-shape",
+    })
+
+
+def _claude_assistant_error_event(error: str) -> str:
+    """claude 2.1.220 fresh-config 미로그인 실측 stdout JSONL 형상."""
+    return _json.dumps({
+        "type": "assistant",
+        "message": {
+            "model": "<synthetic>",
+            "content": [{"type": "text", "text": "Not logged in · Please run /login"}],
+        },
+        "error": error,
+        "is_api_error_message": True,
+        "session_id": "0d512ef0-measured-shape",
+        "uuid": "97241cee-measured-shape",
+    })
+
+
+def _opencode_api_error_event(response_body: str) -> str:
+    """opencode 1.18.4 provider APIError 실측 stdout JSONL 형상(responseBody passthrough)."""
+    return _json.dumps({
+        "type": "error",
+        "timestamp": 1785456000000,
+        "sessionID": "ses_measured_shape",
+        "error": {
+            "name": "APIError",
+            "data": {
+                "message": "API key is invalid.",
+                "statusCode": 401,
+                "isRetryable": False,
+                "responseBody": response_body,
+                "metadata": {"url": "https://api.anthropic.com/v1/messages"},
+            },
+        },
+    })
+
+
+def test_claude_api_retry_authentication_failed_is_auth(pd):
+    """무효 key: api_retry 비-reply error enum이 AUTH 양성 근거다."""
+    event = _claude_api_retry_event("authentication_failed")
+    assert pd.classify_infrastructure_failure(_failed_stdout(event)) == pd.FAILURE_CLASS_AUTH
+
+
+def test_claude_assistant_authentication_failed_is_auth(pd):
+    """미로그인: 사람용 content는 제외돼도 top-level error enum으로 AUTH를 분류한다."""
+    event = _claude_assistant_error_event("authentication_failed")
+    assert pd.classify_infrastructure_failure(_failed_stdout(event)) == pd.FAILURE_CLASS_AUTH
+
+
+@pytest.mark.parametrize(
+    ("event_factory", "error"),
+    [
+        (_claude_api_retry_event, "rate_limit"),
+        (_claude_api_retry_event, "billing_error"),
+        (_claude_assistant_error_event, "rate_limit"),
+        (_claude_assistant_error_event, "billing_error"),
+    ],
+)
+def test_claude_error_enums_are_quota(pd, event_factory, error):
+    """실측한 두 claude 이벤트 형상에서 quota error enum만 바꿔도 QUOTA로 분류한다."""
+    assert pd.classify_infrastructure_failure(
+        _failed_stdout(event_factory(error))
+    ) == pd.FAILURE_CLASS_QUOTA
+
+
+def test_opencode_provider_authentication_error_passthrough_is_auth(pd):
+    """APIError name/status int가 아니라 responseBody의 상류 401 enum이 AUTH 근거다."""
+    response_body = _json.dumps({
+        "type": "error",
+        "error": {"type": "authentication_error", "message": "API key is invalid."},
+    })
+    event = _opencode_api_error_event(response_body)
+    assert pd.classify_infrastructure_failure(_failed_stdout(event)) == pd.FAILURE_CLASS_AUTH
+
+
+@pytest.mark.parametrize(
+    "response_body",
+    [
+        _json.dumps({"type": "error", "error": {"type": "rate_limit_error"}}),
+        _json.dumps({"type": "error", "error": {"message": "Credit balance is too low"}}),
+    ],
+)
+def test_opencode_provider_quota_passthrough_is_quota(pd, response_body):
+    """opencode가 responseBody에 전달한 Anthropic enum/메시지를 QUOTA로 분류한다."""
+    event = _opencode_api_error_event(response_body)
+    assert pd.classify_infrastructure_failure(_failed_stdout(event)) == pd.FAILURE_CLASS_QUOTA
+
+
+@pytest.mark.parametrize(
+    ("reply_key", "quote"),
+    [
+        ("result", "authentication_failed"),
+        ("text", "authentication_error"),
+        ("result", "rate_limit"),
+        ("text", "rate_limit_error"),
+        ("result", "billing_error"),
+        ("text", "credit balance is too low"),
+        ("result", "credit balance too low"),
+        ("text", "Not logged in"),
+    ],
+)
+def test_new_infra_terms_in_reply_fields_are_not_classified(pd, reply_key, quote):
+    """각 신규 패턴(및 실측 사람용 문구)은 rc≠0 error 이벤트의 reply 인용만으로 발동하지 않는다."""
+    event = _json.dumps({
+        "type": "error",
+        "is_error": True,
+        "session_id": "echo-only",
+        reply_key: f"문서에 {quote} 패턴을 인용했다",
+    })
+    assert pd.classify_infrastructure_failure(_failed_stdout(event)) is None
+
+
+def test_bare_rate_limit_pattern_has_token_boundary(pd):
+    """bare enum은 단독 줄만 잡는다 — 합성어·산문 문장-중간 표기는 배제한다."""
+    bare = next(pattern for pattern in pd._INFRA_QUOTA_PATTERNS
+                if pattern.pattern == r"^\s*rate_limit\s*$")
+    dedicated = next(pattern for pattern in pd._INFRA_QUOTA_PATTERNS
+                     if pattern.pattern == r"\brate_limit_error\b")
+    assert bare.search("rate_limit_options_menu") is None
+    assert bare.search("rate_limit_error") is None
+    assert bare.search("configuration key rate_limit is invalid") is None
+    assert bare.search("diag\nrate_limit\ndiag") is not None  # 진단 join 의 독립 줄 = 실측 enum 형상
+    assert bare.search("diag\nrate_limit\r\ndiag") is not None  # CRLF stderr 보험
+    assert dedicated.search("rate_limit_error") is not None
+
+
+@pytest.mark.parametrize(
+    "unlisted",
+    ["overloaded", "server_error", "invalid_request", "oauth_org_not_allowed",
+     "API key is invalid."],
+)
+def test_complement_enums_stay_unclassified(pd, unlisted):
+    """여집합 결정 핀 — 주석이 '추가하지 않는다'고 못박은 표기는 단독 enum 줄로 와도 None 이다.
+    이 테스트가 red 면 누군가 패턴을 과광범화한 것이다(보수 방향 위반)."""
+    event = _claude_api_retry_event(unlisted)
+    assert pd.classify_infrastructure_failure(_failed_stdout(event)) is None
+
+
+@pytest.mark.parametrize("channel", ["stderr", "stdout_diag"])
+def test_prose_rate_limit_mention_is_not_quota(pd, channel):
+    """산문 진단("configuration key rate_limit is invalid")은 stderr/이벤트 진단 어느 채널에서도
+    quota 로 오분류되지 않는다(단독-줄 앵커 음성 회귀)."""
+    prose = "configuration key rate_limit is invalid"
+    if channel == "stderr":
+        res = {"returncode": 1, "stdout": "", "stderr": prose, "timed_out": False}
+    else:
+        event = _json.dumps({"type": "error", "is_error": True, "message": prose})
+        res = {"returncode": 1, "stdout": event, "stderr": "", "timed_out": False}
+    assert pd.classify_infrastructure_failure(res) is None
+
+
+def test_opencode_model_not_found_remains_unclassified(pd):
+    """카탈로그/config 오류는 한도·인증이 아니므로 fail-loud(None) 여집합에 남긴다."""
+    event = _json.dumps({
+        "type": "error",
+        "timestamp": 1785456000000,
+        "sessionID": "ses_catalog_error",
+        "error": {
+            "name": "UnknownError",
+            "data": {"message": "Model not found: unconfigured-provider/missing-model"},
+        },
+    })
+    assert pd.classify_infrastructure_failure(_failed_stdout(event)) is None
+
+
 def test_launch_failure_needs_explicit_signal_not_rc127(pd):
     """rc=127 추론 폐기 — 정상 실행된 하네스의 자체 exit 127 을 스폰 실패로 오분류하지 않는다."""
     harness_own_127 = {"returncode": 127, "stdout": _codex_stdout("bash: 명령 없음"),
@@ -3513,10 +3694,11 @@ def test_dry_run_reports_fallback_skip_reason(pd, monkeypatch, tmp_path, capsys)
 
 
 def test_help_documents_classification_coverage_boundary(pd):
-    """분류 패턴 근거는 codex 축뿐 — 타 하네스 표기는 실측 전까지 미포함이라고 §help 가 못박는다."""
+    """§help가 3축 근거 편입과 opencode 무진단 침묵의 stall 경계를 함께 못박는다."""
     help_text = pd.build_arg_parser().format_help()
-    assert "codex CLI 축" in help_text
-    assert "후속 실측" in help_text
+    assert "codex 실근거와 claude 2.1.220 실측/바이너리 enum" in help_text
+    assert "opencode 1.18.4 provider passthrough 실측" in help_text
+    assert "opencode 무진단 연결/fetch 침묵은 첫-이벤트 stall 축" in help_text
     # 시간 예산 표기는 하네스별 실예산 — "2×timeout" 같은 거짓 단일 계수 금지(codex R2).
     assert "primary·폴백 각 하네스 예산의 합" in help_text
     assert "2×timeout" not in help_text

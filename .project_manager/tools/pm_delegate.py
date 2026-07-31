@@ -2346,17 +2346,20 @@ def extract_reply(harness: str, stdout: str) -> str | None:
 RunResult = dict  # {"returncode": int, "stdout": str, "stderr": str, "timed_out": bool}
 
 # 폴백 발동용 실패 분류 — **양성 패턴만** 열거한다. 정상 판정(반려/must-fix)이나 임의 rc≠0를
-# "인프라"로 추론하지 않는다. Codex CLI 관측/공식 upstream 표기:
+# "인프라"로 추론하지 않는다. 세 하네스 CLI 관측/공식 upstream 표기:
 #   · 한도: `rate_limit_reached` / `rate_limit_exceeded`, "Rate limit reached …",
 #           "You've hit your usage limit.", `insufficient_quota` (HTTP 429 계열).
 #   · 인증: `unexpected status 401 Unauthorized`, `invalid_api_key`, "not logged in" /
 #           "please run codex login", OAuth `invalid_state`.
-# **커버리지 경계(§help 에도 명시)**: 위 표기는 전부 **codex CLI 축의 실근거**다. claude
-# ("Credit balance is too low" 류)·opencode(provider passthrough 오류) 고유 표기는 실측/문서 근거를
-# 확보하기 전까지 **추가하지 않는다** — 추측 패턴은 오분류(=부당 폴백·요청 밖 하네스로 유료 재송신)
-# 위험만 키운다. 미커버 표기는 미분류로 남아 기존 fail-loud 를 탄다(보수 방향·후속 실측 티켓).
+# **커버리지 경계(§help 에도 명시)**: 기존 codex 실근거에 claude 2.1.220 stdout JSONL 실측/
+# 바이너리 enum, opencode 1.18.4 provider responseBody passthrough 실측과 Anthropic API enum을
+# 편입했다. opencode 연결 거부·첫 provider 패키지 fetch stall은 stdout/stderr 무진단 침묵이라
+# 패턴이 아니라 기존 첫-이벤트 stall 축이 커버한다. `Model not found` 같은 카탈로그/config 오류는
+# 한도/인증이 아니므로 의도적으로 미분류해 fail-loud 를 유지한다.
 # 스폰 실패/타임아웃/stall 은 패턴이 아니라 **엔진이 세팅한 명시 신호**(RUN_RESULT_* 키)로만 잡는다.
-# 오분류 시 보수 방향은 None(폴백 안 함·기존 fail-loud)이다.
+# 형제-가지 여집합: `overloaded`/`server_error`(transient지만 한도/인증 아님), `invalid_request`,
+# `oauth_org_not_allowed`(org 정책·실측 없음), `APIError`(5xx도 쓰는 과광범 name), 중복 진단인
+# "API key is invalid"는 추가하지 않는다. 그 밖/오분류 시 보수 방향은 None(폴백 없이 fail-loud)이다.
 _INFRA_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\brate_limit_(?:reached|exceeded)\b", re.IGNORECASE),
     re.compile(r"\brate limit (?:has been )?(?:reached|exceeded)\b", re.IGNORECASE),
@@ -2365,6 +2368,20 @@ _INFRA_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\binsufficient_quota\b", re.IGNORECASE),
     re.compile(r"\b429\b[^\n]{0,120}\btoo many requests\b", re.IGNORECASE),
     re.compile(r"\btoo many requests\b[^\n]{0,120}\b429\b", re.IGNORECASE),
+    # claude **내부 enum** 계열은 **단독 줄 앵커** — _failure_scan_text 가 진단 문자열을 줄로
+    # 연결하므로 독립 JSON 값(`"error":"rate_limit"` 류)은 항상 단독 줄이고, 스캔 대상 비-reply
+    # 필드(예: permission_denials 의 command 에코)에 실린 산문 문장-중간 표기는 구조적으로
+    # 배제된다(짧은 단독 토큰의 오분류=부당 폴백 차단·`\s*` 는 CRLF/공백 보험).
+    # 반면 opencode passthrough 계열(아래 rate_limit_error 등)은 responseBody **JSON 문자열 안에**
+    # 박혀 오므로 앵커 금지 — substring `\b` 를 유지해야 실측 양성이 산다(비대칭은 의도).
+    # claude 2.1.220 바이너리의 429/usage-limit/credits 경로 `_u({error:"rate_limit"})`.
+    re.compile(r"^\s*rate_limit\s*$", re.IGNORECASE | re.MULTILINE),
+    # claude 2.1.220 바이너리의 credit-balance HTTP 400 경로 error enum.
+    re.compile(r"^\s*billing_error\s*$", re.IGNORECASE | re.MULTILINE),
+    # Anthropic 공식 429 enum; opencode는 상류 API enum을 responseBody에 verbatim passthrough한다.
+    re.compile(r"\brate_limit_error\b", re.IGNORECASE),
+    # Anthropic 공식 메시지이자 claude 2.1.220 바이너리 자체 감지 regex와 동형.
+    re.compile(r"\bcredit balance (?:is )?too low\b", re.IGNORECASE),
 )
 _INFRA_AUTH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?:unexpected status\s+)?401 unauthorized\b", re.IGNORECASE),
@@ -2377,6 +2394,11 @@ _INFRA_AUTH_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"|\binvalid_state\b[^\n]{0,80}\bauthentication\b)",
         re.IGNORECASE,
     ),
+    # claude 2.1.220 미로그인 assistant/error 및 무효-key api_retry 이벤트의 error enum —
+    # claude 내부 enum 이라 단독-줄 앵커(사유는 _INFRA_QUOTA_PATTERNS 블록 주석).
+    re.compile(r"^\s*authentication_failed\s*$", re.IGNORECASE | re.MULTILINE),
+    # opencode 1.18.4 responseBody passthrough 실측 + Anthropic 공식 401 error enum.
+    re.compile(r"\bauthentication_error\b", re.IGNORECASE),
 )
 
 
@@ -2957,9 +2979,9 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
     금지 위반이다. 반환값/rc 를 바꾸지 않는다 — 격리/복원/수용 판정은 PM 몫이다. 한 축의 판정
     실패가 다른 축까지 지우지 않으며 둘 다 비차단이다. 쓰기 허용 역할집합은 이 모듈의
     WRITE_ROLES 를 주입해 단일 출처로 쓴다(감지기 기본값과의 드리프트는 테스트가 막는다).
-    raw 박제는 기본 /tmp 라 판정에 안 잡히지만, `--output-dir` 를 repo 안으로 주면 그 산출물도
-    '위임이 만든 변경'으로 잡힌다(의도). 일반 판정 실패는 비차단하되 엔진 사본 skew만은
-    재-raise 한다.
+    raw 박제 기본 `.project_manager/.local/delegate/`는 gitignored라 판정에 안 잡히며(PM 홈
+    미해소 시 tempdir 폴백도 repo 밖), `--output-dir`를 repo 안의 비-ignore 경로로 주면 그 산출물도
+    '위임이 만든 변경'으로 잡힌다(의도). 일반 판정 실패는 비차단하되 엔진 사본 skew만은 재-raise 한다.
 
     형제-가지 여집합 결정: 어댑터 축은 ``--ticket``이 있을 때만 돌지 않는다. 생략 실행에서도
     반드시 돌며, 그때 같은 경로가 "허용 0의 범위 밖"과 "역할 공통 금지 위반" 두 블록에 나오는
@@ -3199,9 +3221,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "폴백이 primary 와 같은 하네스/모델이면 loud 로 건너뜁니다. 폴백이 발동하면 최악 소요는\n"
             "primary·폴백 각 하네스 예산의 합입니다 — codex/claude 는 timeout, opencode 는 첫-이벤트\n"
             "워치독 재시도분(retries×창)이 더 붙습니다. --dry-run 이 실수치를 표시합니다(2차 폴백 없음).\n"
-            "실패 분류 커버리지: 한도/인증 패턴은 현재 **codex CLI 축 실근거**만 담습니다 —\n"
-            "claude/opencode 고유 표기(Credit balance 류)는 후속 실측 전까지 미포함이며, 미분류는\n"
-            "폴백 없이 기존 fail-loud 로 처리됩니다."
+            "실패 분류 커버리지: codex 실근거와 claude 2.1.220 실측/바이너리 enum,\n"
+            "opencode 1.18.4 provider passthrough 실측·Anthropic API enum을 편입했습니다.\n"
+            "opencode 무진단 연결/fetch 침묵은 첫-이벤트 stall 축이 커버하며 그 밖은 fail-loud입니다."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

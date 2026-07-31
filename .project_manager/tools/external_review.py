@@ -9,7 +9,7 @@
   (프로젝트 맥락 헤더 +) diff 결합 → 표준 프롬프트 생성
   외부 리뷰어 실행 (reviewer_cmd, stdin 으로 프롬프트 주입, read-only 권장)
   출력에서 판정(통과/반려)·must-fix 파싱
-  결과 요약 stdout + 원문 파일 저장 (/tmp 또는 --output-dir)
+  결과 요약 stdout + 원문 파일 저장 (기본 `.project_manager/.local/review/` · --output-dir 로 격리)
 
 기본 비활성:
   - 코드 diff 가 *외부로 전송*되므로 기본 OFF. local.conf `external_review_enabled=true`
