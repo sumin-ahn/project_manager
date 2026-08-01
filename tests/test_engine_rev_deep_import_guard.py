@@ -14,6 +14,7 @@ collection shape and retain their existing unconditional runtime verifier.
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import re
 import shutil
@@ -1002,6 +1003,43 @@ def _module_assignment(tree: ast.Module, name: str) -> ast.Assign | ast.AnnAssig
     return matches[0]
 
 
+def _bootstrap_block_hashes(tools: Path) -> dict[str, str]:
+    """실측 bootstrap 소비자의 공통 블록을 source byte 범위로 해시한다."""
+    hashes: dict[str, str] = {}
+    for source in sorted(tools.glob("*.py"), key=lambda path: path.name):
+        text = source.read_text(encoding="utf-8")
+        tree = ast.parse(text, filename=str(source))
+        starts = []
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(
+                isinstance(target, ast.Name) and target.id == "_TOOLS_BOOTSTRAP"
+                for target in targets
+            ):
+                starts.append(node)
+        if not starts:
+            continue
+        assert len(starts) == 1, source
+        bootstrap_try = next(
+            node for node in tree.body
+            if isinstance(node, ast.Try) and node.lineno > starts[0].lineno
+        )
+        lines = text.splitlines(keepends=True)
+        block = "".join(lines[starts[0].lineno - 1:bootstrap_try.end_lineno])
+        hashes[source.name] = hashlib.sha256(block.encode("utf-8")).hexdigest()
+    return hashes
+
+
+def _assert_bootstrap_blocks_identical(tools: Path) -> None:
+    hashes = _bootstrap_block_hashes(tools)
+    report = collect_central_guard_report(tools)
+    consumers = {source for source, _function, _line in report.loader_calls}
+    assert set(hashes) == consumers
+    assert len(set(hashes.values())) == 1, hashes
+
+
 def _set_literal_mapping_value(path: Path, name: str, key, value) -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     assignment = _module_assignment(tree, name)
@@ -1098,6 +1136,24 @@ def test_ast_target_set_is_measured_not_frozen_to_ticket_snapshot():
     assert {"pm_delegate.py", "pm_update.py", "worktree_pool.py"} <= consumers
 
 
+def test_all_measured_bootstrap_blocks_are_byte_identical():
+    _assert_bootstrap_blocks_identical(TOOLS)
+
+
+def test_bootstrap_identity_guard_detects_one_consumer_drift(tmp_path):
+    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
+    board = tools / "board.py"
+    text = board.read_text(encoding="utf-8")
+    needle = "_TOOLS_BOOTSTRAP_SENTINEL = object()"
+    assert needle in text
+    board.write_text(
+        text.replace(needle, needle + "  # local drift", 1), encoding="utf-8"
+    )
+
+    with pytest.raises(AssertionError):
+        _assert_bootstrap_blocks_identical(tools)
+
+
 def test_bootstrap_ignores_preloaded_same_name_module(monkeypatch):
     fake = types.ModuleType("repo_owned_files")
     fake.__file__ = "/unrelated/worktree/repo_owned_files.py"
@@ -1168,7 +1224,6 @@ def test_bootstrap_fallback_restores_path_and_same_name_module_on_error(
 
 
 def test_manifest_ships_central_loader_before_every_consumer():
-    pm_update = _load_module(TOOLS, "pm_update")
     seam = ".project_manager/tools/repo_owned_files.py"
     consumers = []
     for source in TOOLS.glob("*.py"):
@@ -1191,12 +1246,19 @@ def test_manifest_ships_central_loader_before_every_consumer():
           for flavor in ("claude_code", "codex", "opencode")),
     ]
     for path in manifests:
-        manifest = [str(entry) for entry in pm_update.read_manifest(path)]
+        manifest = [
+            line.split()[0].replace("\\", "/")
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
         seam_index = manifest.index(seam)
+        assert seam_index == 0, path
         assert all(seam_index < manifest.index(consumer) for consumer in consumers), path
 
 
-@pytest.mark.parametrize("seam_state", ("old", "missing", "syntax_error", "empty"))
+@pytest.mark.parametrize(
+    "seam_state", ("old", "missing", "syntax_error", "empty", "partial_api")
+)
 def test_interrupted_update_new_pm_update_with_unusable_seam_recovers(
     tmp_path, seam_state,
 ):
@@ -1235,6 +1297,18 @@ def test_interrupted_update_new_pm_update_with_unusable_seam_recovers(
         dest_seam.write_text("def broken(:\n", encoding="utf-8")
     elif seam_state == "empty":
         dest_seam.write_text("", encoding="utf-8")
+    elif seam_state == "partial_api":
+        source_text = (TOOLS / "repo_owned_files.py").read_text(encoding="utf-8")
+        source_tree = ast.parse(source_text)
+        load_module = next(
+            node for node in source_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "load_module"
+        )
+        partial = "".join(source_text.splitlines(keepends=True)[:load_module.end_lineno])
+        ast.parse(partial)
+        assert "def load_module(" in partial
+        assert "def _real_git_runner(" not in partial
+        dest_seam.write_text(partial, encoding="utf-8")
 
     result = subprocess.run(
         [
@@ -1255,6 +1329,50 @@ def test_interrupted_update_new_pm_update_with_unusable_seam_recovers(
     assert "def load_module(" in (
         dest_tools / "repo_owned_files.py"
     ).read_text(encoding="utf-8")
+
+
+def test_recovery_first_rejects_symlink_source(tmp_path):
+    source = tmp_path / "source"
+    dest = tmp_path / "dest"
+    source_tools = source / ".project_manager" / "tools"
+    dest_tools = dest / ".project_manager" / "tools"
+    source_tools.mkdir(parents=True)
+    dest_tools.mkdir(parents=True)
+    manifest_text = (
+        ".project_manager/tools/repo_owned_files.py\n"
+        ".project_manager/tools/pm_update.py\n"
+        ".project_manager/tools/console_encoding.py\n"
+    )
+    for root in (source, dest):
+        (root / ".project_manager" / "engine.manifest").write_text(
+            manifest_text, encoding="utf-8"
+        )
+    payload = tmp_path / "external_payload.py"
+    payload.write_text((TOOLS / "repo_owned_files.py").read_text(encoding="utf-8"))
+    (source_tools / "repo_owned_files.py").symlink_to(payload)
+    for name in ("pm_update.py", "console_encoding.py"):
+        shutil.copy2(TOOLS / name, source_tools / name)
+        shutil.copy2(TOOLS / name, dest_tools / name)
+    dest_seam = dest_tools / "repo_owned_files.py"
+    dest_seam.write_text("def broken(:\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(dest_tools / "pm_update.py"),
+            "--from",
+            str(source),
+        ],
+        cwd=dest,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+
+    assert result.returncode == 1
+    assert "중앙 로더 선복구 실패" in result.stderr
+    assert dest_seam.read_text(encoding="utf-8") == "def broken(:\n"
 
 
 def test_mutation_unregistered_unverified_call_is_red(tmp_path):

@@ -47,6 +47,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 import warnings
 import zlib
 from pathlib import Path
@@ -437,6 +438,33 @@ def read_manifest(path: Path) -> list[ManifestEntry]:
     return sorted(out, key=lambda entry: str(entry) != _CENTRAL_LOADER_REL)
 
 
+def _central_loader_first_manifest_text(path: Path) -> str:
+    """주석/공백을 보존하며 중앙 seam 행만 첫 물리 엔트리로 옮긴 원문을 반환한다."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    bodies = [line.rstrip("\r\n") for line in lines]
+    endings = [line[len(body):] for line, body in zip(lines, bodies)]
+    entries = [
+        index for index, line in enumerate(bodies)
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    seam_indexes = [
+        index for index in entries
+        if bodies[index].split()[0].replace("\\", "/") == _CENTRAL_LOADER_REL
+    ]
+    if not entries or not seam_indexes or seam_indexes[0] == entries[0]:
+        return text
+    seam_body = bodies.pop(seam_indexes[0])
+    bodies.insert(entries[0], seam_body)
+    # EOF 개행이 없고 seam 바로 앞에 빈 행이 있던 경우, 안정 이동 뒤 그 빈 행이 마지막이 되면
+    # 텍스트가 개행으로 끝나게 된다. 행은 보존하되 EOF 빈 행만 seam 앞 비엔트리 위치로 옮겨
+    # 원문의 trailing-newline 상태와 seam-first 성질을 함께 유지한다.
+    if endings and not endings[-1] and bodies[-1] == "":
+        trailing_empty = bodies.pop()
+        bodies.insert(entries[0], trailing_empty)
+    return "".join(body + ending for body, ending in zip(bodies, endings))
+
+
 def _manifest_entry_line(entry) -> str:
     """ManifestEntry를 손실 없이 한 manifest 행으로 직렬화한다(마커 순서 결정적)."""
     markers: list[str] = []
@@ -565,14 +593,7 @@ def _load_repo_owned_files():
         cache=True,
         cache_key=f"_project_manager_repo_owned_files:{path}",
     )
-    required = (
-        "_real_git_runner",
-        "list_repo_owned_entries",
-        "list_repo_owned_files",
-        "TRACKED_ONLY",
-        "OWNED",
-    )
-    missing = [name for name in required if not hasattr(module, name)]
+    missing = _missing_repo_owned_files_api(module)
     if missing:
         raise RuntimeError(
             "repo_owned_files.py 복구 API가 불완전함 "
@@ -582,8 +603,40 @@ def _load_repo_owned_files():
     return module
 
 
+_REPO_OWNED_FILES_REQUIRED = (
+    "load_module",
+    "_real_git_runner",
+    "list_repo_owned_entries",
+    "list_repo_owned_files",
+    "TRACKED_ONLY",
+    "OWNED",
+)
+
+
+def _missing_repo_owned_files_api(module) -> list[str]:
+    """공용 seam 소비에 필요한 API 누락 — 로드와 선복구가 공유하는 단일 판정."""
+    return [
+        name for name in _REPO_OWNED_FILES_REQUIRED
+        if not hasattr(module, name)
+    ]
+
+
+def _atomic_copy2(source: Path, dest: Path) -> None:
+    """같은 디렉토리의 완성된 임시 사본을 원자적으로 dest에 교체한다."""
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{dest.name}.", suffix=".tmp", dir=dest.parent,
+    )
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        shutil.copy2(source, tmp)
+        os.replace(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _predeploy_central_loader(source_root: Path, dest_root: Path) -> None:
-    """손상/구형 seam을 manifest 계획보다 먼저 복사해 self-update 복구를 연다."""
+    """손상/구형 seam을 검증된 tracked 일반 파일로 원자 선복구한다."""
     global _TOOLS_BOOTSTRAP_MODULE
     source = source_root / _CENTRAL_LOADER_REL
     dest = dest_root / _CENTRAL_LOADER_REL
@@ -593,14 +646,37 @@ def _predeploy_central_loader(source_root: Path, dest_root: Path) -> None:
         )
     except Exception:  # noqa: BLE001 — 바로 아래 source 선복구 판정으로 수렴.
         current = None
-    if callable(getattr(current, "load_module", None)):
+    if not _missing_repo_owned_files_api(current):
         return
-    if not source.is_file():
+    try:
+        source.lstat()
+    except FileNotFoundError:
         # seam을 manifest에 싣지 않은 레거시/부분 fixture는 기존 계획 경로를 보존한다.
         # 실제 신 엔진 source는 manifest 순서 가드가 이 파일의 존재를 별도로 강제한다.
         return
+    except OSError as exc:
+        raise RuntimeError(f"중앙 로더 source 상태를 확인할 수 없음: {source}: {exc}") from exc
+    relative = Path(_CENTRAL_LOADER_REL)
+    if not _is_shippable_regular_file(source_root, relative, index_mode=None):
+        raise RuntimeError(f"중앙 로더 source가 일반 파일이 아님: {source}")
+    try:
+        source_module = _load_module_from_path(
+            source, "repo_owned_files.py", allow_unverified=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — source seam 자체의 손상을 복구 실패로 표면화.
+        raise RuntimeError(f"중앙 로더 source를 불러올 수 없음: {source}") from exc
+    missing = _missing_repo_owned_files_api(source_module)
+    if missing:
+        raise RuntimeError(
+            "중앙 로더 source 복구 API가 불완전함 "
+            f"({', '.join(missing)} 누락): {source}"
+        )
+    tracked = _shipping_inventory(source_module, source_root, _CENTRAL_LOADER_REL)
+    accepted = _shippable_tracked_entries(source_root, tracked)
+    if accepted != [(relative, source)]:
+        raise RuntimeError(f"중앙 로더 source가 tracked 일반 파일이 아님: {source}")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, dest)
+    _atomic_copy2(source, dest)
     _TOOLS_BOOTSTRAP_MODULE = None
     sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
     sys.modules.pop(f"_project_manager_repo_owned_files:{dest.resolve()}", None)
@@ -3316,6 +3392,16 @@ def _main(argv: list[str] | None = None) -> int:
         return 1
 
     manifest = read_manifest(manifest_path)
+    target_manifest_source = None
+    if args.target:
+        target_manifest_source = next(
+            (
+                source_root / _source_root_rel(entry)
+                for entry in manifest
+                if str(entry).replace("\\", "/") == _MANIFEST_SELF_REL
+            ),
+            None,
+        )
 
     # ── manifest 자기치유 (self-update 2-pass) — upstream engine.manifest 를 이번 sync 의
     #    계획 기준으로 승격해, 로컬 manifest 가 구형이어도 신규 등재분이 한 번의 실행으로 plan→apply
@@ -3379,9 +3465,13 @@ def _main(argv: list[str] | None = None) -> int:
         dest_root=dest_root,
         render_enabled=render_enabled,
         manifest_source_text=(
-            selfheal.get("manifest_text")
-            if len(selfheal.get("upstream_manifests", [])) > 1
-            else None
+            _central_loader_first_manifest_text(target_manifest_source)
+            if target_manifest_source is not None and target_manifest_source.is_file()
+            else (
+                selfheal.get("manifest_text")
+                if len(selfheal.get("upstream_manifests", [])) > 1
+                else None
+            )
         ),
     )
 
