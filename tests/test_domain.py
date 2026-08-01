@@ -1815,6 +1815,22 @@ def test_directory_recall_dedups_page_after_multiple_files_expand(
     assert dm.pages_for_touches(["src"], [page]) == [page]
 
 
+def test_directory_recall_preserves_injected_page_order(
+        dm, tmp_path, monkeypatch):
+    """파일 열거 순서와 무관하게 공개 결과는 주입된 pages 순서를 보존한다."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("# a\n", encoding="utf-8")
+    (src / "b.py").write_text("# b\n", encoding="utf-8")
+    pages = [
+        {"path": Path("b.md"), "title": "b", "covers": ["src/b.py"]},
+        {"path": Path("a.md"), "title": "a", "covers": ["src/a.py"]},
+    ]
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+
+    assert dm.pages_for_path("src", pages) == pages
+
+
 def test_directory_expansion_success_is_cached_only_within_public_batch(
         dm, tmp_path, monkeypatch):
     """capture의 affected/gap은 한 번 전개하고 다음 공개 조회는 새로 열거한다."""
@@ -1851,6 +1867,56 @@ def test_directory_expansion_success_is_cached_only_within_public_batch(
 
     assert dm.pages_for_touches(["src"], [page]) == [page]
     assert len(calls) == 2
+
+
+def test_directory_expansion_failure_is_consistent_then_next_query_retries(
+        dm, tmp_path, monkeypatch, capsys):
+    """일시 열거 실패는 affected/gap 배치에 고정되고 다음 공개 조회에서 재시도한다."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "covered.py").write_text("# covered\n", encoding="utf-8")
+    page = {
+        "path": Path("owner.md"),
+        "title": "owner",
+        "covers": ["src/covered.py"],
+    }
+    calls = 0
+
+    class TransientRepoFiles:
+        OWNED = "owned"
+
+        @staticmethod
+        def list_repo_owned_files(
+                _checkout, _norm, *, mode, git_runner):
+            assert mode == TransientRepoFiles.OWNED
+            return git_runner(["ls-files"])
+
+    def transient_factory(_cwd):
+        def runner(argv):
+            nonlocal calls
+            assert argv == ["ls-files"]
+            calls += 1
+            if calls == 1:
+                raise OSError("transient enumeration failure")
+            return [Path("src/covered.py")]
+
+        return runner
+
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "load_pages", lambda _domain_dir=None: [page])
+    monkeypatch.setattr(dm, "_load_repo_owned_files", lambda: TransientRepoFiles)
+    monkeypatch.setattr(dm, "_real_git_runner", transient_factory)
+
+    assert dm.main(["capture", "--touches", "src"]) == 0
+    captured = capsys.readouterr()
+    assert "영향 페이지" not in captured.out
+    assert "coverage gap" in captured.out
+    assert "  src\n" in captured.out
+    assert "판정 불일치 의심" not in captured.out
+    assert calls == 1
+
+    assert dm.pages_for_touches(["src"], [page]) == [page]
+    assert calls == 2
 
 
 def test_directory_touch_git_path_collects_tracked_and_nonignored_untracked(

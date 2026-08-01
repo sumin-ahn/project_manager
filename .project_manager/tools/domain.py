@@ -107,7 +107,7 @@ _REPOSITORY_FAILURE_CACHE: ContextVar[
     dict[Path, tuple[Path | None, str | None]] | None
 ] = ContextVar("_REPOSITORY_FAILURE_CACHE", default=None)
 _DIRECTORY_EXPANSION_CACHE: ContextVar[
-    dict[tuple[Path, str], tuple[str, ...]] | None
+    dict[tuple[Path, str], tuple[str, ...] | None] | None
 ] = ContextVar("_DIRECTORY_EXPANSION_CACHE", default=None)
 
 
@@ -898,19 +898,20 @@ def pages_for_path(
     common-dir를 공유할 때만 매치한다. 소유 checkout/정체성 미해소·별개 저장소와 self 채널
     탈락은 advisory를 낸다.
     """
-    candidates = _files_for_directory_touch(path)
-    covers_matches: list[dict] = []
-    seen_pages: set[Path] = set()
-    for candidate in candidates:
+    candidates: list[str] = []
+    for candidate in _files_for_directory_touch(path):
         norm = candidate.replace(os.sep, "/").replace("\\", "/")
         while norm.startswith("./"):
             norm = norm[2:]
-        for page in pages:
-            if page["path"] in seen_pages:
-                continue
-            if _path_matches_covers(norm, page["covers"]):
-                seen_pages.add(page["path"])
-                covers_matches.append(page)
+        candidates.append(norm)
+    # 디렉토리의 파일 순서는 열거 구현 세부다. 반환은 기존 공개 계약인 pages 순서를
+    # 보존해 같은 페이지 집합이 파일명/열거 순서 변화만으로 재정렬되지 않게 한다.
+    covers_matches = [
+        page
+        for page in pages
+        if any(_path_matches_covers(candidate, page["covers"])
+               for candidate in candidates)
+    ]
 
     owner = getattr(path, "owner", None)
     touch_repo = getattr(path, "repo", None)
@@ -1053,12 +1054,13 @@ def _files_for_directory_touch(touch: str) -> list[str]:
 
     expansion_cache = _DIRECTORY_EXPANSION_CACHE.get()
     cache_key = (checkout, norm)
-    cached_files = (
-        expansion_cache.get(cache_key)
-        if expansion_cache is not None
-        else None
-    )
-    if cached_files is None:
+    cache_hit = expansion_cache is not None and cache_key in expansion_cache
+    cached_files = expansion_cache[cache_key] if cache_hit else None
+    if cache_hit and cached_files is None:
+        # OSError 폴백도 성공 결과와 같은 배치 수명으로 고정한다. affected가 실패 폴백을
+        # 본 뒤 gap이 즉시 재시도해 파일별 covered로 뒤집히면 둘 다 0인 모순이 재발한다.
+        return [touch]
+    if not cache_hit:
         repo_files = _load_repo_owned_files()
         try:
             # 이 seam 소비는 출하가 아니라 directory touch의 coverage 분모 전개다. 비었거나
@@ -1071,6 +1073,8 @@ def _files_for_directory_touch(touch: str) -> list[str]:
                 git_runner=_real_git_runner(checkout),
             )
         except OSError:
+            if expansion_cache is not None:
+                expansion_cache[cache_key] = None
             return [touch]
         cached_files = tuple(path.as_posix() for path in relative_files)
         if expansion_cache is not None:
