@@ -1424,6 +1424,89 @@ def test_weight_full_excludes_lite_variants(pm_import, tmp_path):
     assert _lite_md_files(dest) == [], f"full 배포에 *.lite.md 잔존: {_lite_md_files(dest)}"
 
 
+def test_neutral_shared_entry_members_are_derived_from_adapter_registry(pm_import):
+    """중립 진입문서 멤버는 이름 손-열거 없이 add-harness 선언의 root doc에서 파생한다."""
+    for rel, (members, neutral_harness) in pm_import.NEUTRAL_SHARED_ENTRY_DOCS.items():
+        expected = frozenset(
+            harness
+            for harness, (_dirs, root_doc) in pm_import.ADD_HARNESS_ADAPTER.items()
+            if root_doc == rel.as_posix()
+        )
+        assert members == expected
+        assert neutral_harness in members
+
+
+def test_neutral_shared_entry_override_auto_includes_real_fourth_tree(tmp_path):
+    """실제 fourth template tree+registry 등록만으로 AGENTS.md 중립 override에 자동 편입된다."""
+    checkout = tmp_path / "checkout"
+    tools = checkout / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    source = (TOOLS / "pm_import.py").read_text(encoding="utf-8")
+
+    template_registry_anchor = '    "codex": ("codex",),\n}'
+    adapter_registry_anchor = '    "codex": ((".codex", ".agents"), "AGENTS.md"),\n}'
+    assert template_registry_anchor in source
+    assert adapter_registry_anchor in source
+    source = source.replace(
+        template_registry_anchor,
+        '    "codex": ("codex",),\n    "fourth": ("fourth",),\n}',
+        1,
+    ).replace(
+        adapter_registry_anchor,
+        '    "codex": ((".codex", ".agents"), "AGENTS.md"),\n'
+        '    "fourth": ((".fourth",), "AGENTS.md"),\n}',
+        1,
+    )
+    (tools / "pm_import.py").write_text(source, encoding="utf-8")
+
+    for dirname in ("opencode", "codex", "fourth"):
+        tree = checkout / "templates" / dirname
+        tree.mkdir(parents=True)
+        (tree / "AGENTS.md").write_text(f"{dirname} entry\n", encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(
+        "pm_import_with_fourth_shared_entry", tools / "pm_import.py"
+    )
+    fourth_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fourth_module)
+
+    members, _neutral = fourth_module.NEUTRAL_SHARED_ENTRY_DOCS[Path("AGENTS.md")]
+    assert members == frozenset({"opencode", "codex", "fourth"})
+    overrides = fourth_module._selected_entry_doc_source_overrides(
+        checkout, ("opencode", "codex", "fourth"), "full"
+    )
+    fourth_key = (checkout / "templates" / "fourth", Path("AGENTS.md"))
+    assert overrides[fourth_key] == checkout / "templates" / "codex" / "AGENTS.md"
+
+
+@pytest.mark.parametrize("neutral_lite_exists", (True, False))
+def test_neutral_shared_entry_source_honors_lite_with_full_fallback(
+        pm_import, tmp_path, neutral_lite_exists):
+    """공존 lite는 중립 lite 변종을 우선하고, 변종이 없는 현행 트리는 full로 호환 폴백한다."""
+    source = tmp_path / "source"
+    for dirname in ("opencode", "codex"):
+        shutil.copytree(REPO / "templates" / dirname, source / "templates" / dirname)
+    lite_source = source / "templates" / "codex" / "AGENTS.lite.md"
+    lite_marker = "T-0501-NEUTRAL-LITE-SOURCE"
+    if neutral_lite_exists:
+        lite_source.write_text(f"# {lite_marker}\n", encoding="utf-8")
+    _track_source_tree(source)
+
+    dest = tmp_path / ("neutral-lite" if neutral_lite_exists else "neutral-full-fallback")
+    assert pm_import.main([
+        "--new", str(dest), "--from", str(source),
+        "--harness", "opencode,codex", "--weight", "lite", "--name", "Neutral",
+    ]) == 0
+    installed = (dest / "AGENTS.md").read_text(encoding="utf-8")
+    if neutral_lite_exists:
+        assert lite_marker in installed
+        assert FULL_AGENTS_MARKER not in installed
+    else:
+        assert FULL_AGENTS_MARKER in installed
+        assert lite_marker not in installed
+    assert not (dest / "AGENTS.lite.md").exists()
+
+
 _ALL_NONEMPTY_HARNESS_SELECTIONS = tuple(
     ",".join(selection)
     for size in range(1, len(HARNESSES) + 1)

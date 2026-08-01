@@ -454,7 +454,11 @@ flowchart LR
 <manager>/pm-import.sh --new <project> --harness claude
 <manager>/pm-import.sh --new <project> --harness opencode
 <manager>/pm-import.sh --new <project> --harness codex
+<manager>/pm-import.sh --new <project> --harness claude,codex
+<manager>/pm-import.sh --new <project> --harness all
 ```
+
+콤마 선택은 순서·중복과 무관한 집합이며, `all`은 현재 등록된 하네스 전체에서 자동 파생된다.
 
 에이전트에게 채택 자체를 맡기려면 [`ADOPT.md`](ADOPT.md), 손으로 밟으려면
 [`docs/manual-import.md`](docs/manual-import.md)를 사용한다. 기존 프로젝트에는 `--into`로 넣는다.
@@ -490,20 +494,22 @@ CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 upstream rev baseline 
 
 #### frozen 다중 하네스 진단과 마이그레이션
 
-예전 `both` 채택본에서 한쪽 어댑터가 manifest 선언 밖에 남으면 그 트리는 `pm-update` 갱신을 받지
+예전 고정 `both` 채택본에서 한쪽 어댑터가 manifest 선언 밖에 남으면 그 트리는 `pm-update` 갱신을 받지
 못한 채 오래된 상태로 동결될 수 있다. 채택자 루트에서 `./pm-update.sh --dry-run`
 (`pm_update --dry-run`)을 실행해 `frozen 다중-harness 의심` 경고와 관측 형상을 확인한다. legacy
 manifest는 core 경로 집합이 정확히 한 현행 flavor와 완전 일치할 때만 자동 승격한다. 그 밖의
 형상은 flavor 승격·행 제거·치유 없이 로컬 manifest 그대로 갱신하며, 사용자 stray/커스텀 행이면
 경고를 무시할 수 있다.
 
-`add-harness`는 guest `@render`만 등록하므로 완전 마이그레이션이 아니다. frozen
-Claude+opencode `both`를 완전히 전환하려면 아래 순서를 그대로 실행한다. `--into`는 충돌 파일을
-`.pm_import_backups/`에 백업하고 현재 `both` manifest 합집합을 설치한다.
+`pm-update`는 정확히 어느 flavor의 옛 manifest인지 판별되는 경우 그 flavor만 자기치유한다. 고정
+쌍의 누락된 flavor는 사용자 stray 파일과 구별할 수 없어 자동 승격하지 않는다. `add-harness`도 guest
+`@render`만 등록하므로 완전 마이그레이션이 아니다. frozen Claude+opencode 채택본을 완전히
+전환하려면 아래 순서를 그대로 실행한다. `--into`는 충돌 파일을 `.pm_import_backups/`에 백업하고
+현재 두 flavor의 manifest 합집합을 설치한다.
 
 ```bash
-<manager>/pm-import.sh --into <project> --harness both --dry-run
-<manager>/pm-import.sh --into <project> --harness both
+<manager>/pm-import.sh --into <project> --harness claude,opencode --dry-run
+<manager>/pm-import.sh --into <project> --harness claude,opencode
 cd <project> && ./pm-update.sh
 ```
 

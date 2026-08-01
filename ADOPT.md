@@ -15,10 +15,11 @@
 
 ## 자율 판단 3가지
 
-1. **harness — 권장 `both`** (CLI default 은 `claude`·README 권장 정합) — claude+opencode 어댑터 둘 다
-   설치·엔진은 공유라 비용 미미. 사용자가 단일 하니스를 명시했거나 대상 환경에 한쪽만 쓰는 게 확실하면
-   그것만 (`--harness claude` | `opencode` | `codex`). `both` 는 claude+opencode 조합 키 — codex 를
-   기존 채택본에 *추가* 공존시키는 건 add-harness 채널이다. (자명하므로 사용자에게 묻지 않는다.)
+1. **harness — 권장 `all`** (CLI default 은 `claude`) — 등록된 모든 어댑터를 설치하고 엔진은 공유한다.
+   사용자가 단일 하네스를 명시했거나 대상 환경이 좁으면 그것만(`--harness claude` | `opencode` |
+   `codex`), 원하는 조합이면 콤마로 고른다(예 `--harness claude,codex`). 순서와 중복은 결과에
+   영향이 없고 `all`은 등록 목록에서 파생된다. 기존 채택본에 나중에 추가할 때는 `add-harness` 채널이다.
+   (자명하므로 사용자에게 묻지 않는다.)
 2. **`--new` vs `--into`** — 맥락으로 고른다:
    - **`--new <dest>`** : 코드 없는 **PM 홈**을 새로 만든다(빈 디렉토리 + `git init`). 표준 채택(ADR-0026).
      "프로젝트 PM 을 새로 시작" / "PM 홈 만들어" 류.

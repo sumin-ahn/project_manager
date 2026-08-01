@@ -354,7 +354,14 @@ ADD_HARNESS_ADAPTER = {
 # 선언을 타므로 두 무게축의 정책이 갈리지 않는다. 하네스별 실행/위임 지침은 각 namespace
 # (.opencode/pm-instructions.md, .agents/skills·.codex/agents)에 그대로 분리되어 있다.
 NEUTRAL_SHARED_ENTRY_DOCS = {
-    Path("AGENTS.md"): (frozenset({"opencode", "codex"}), "codex"),
+    Path("AGENTS.md"): (
+        frozenset(
+            harness
+            for harness, (_dirs, root_doc) in ADD_HARNESS_ADAPTER.items()
+            if root_doc == "AGENTS.md"
+        ),
+        "codex",
+    ),
 }
 
 # add-harness가 절대 merge/clobber하지 않는 adopter-owned adapter 설정의 단일 정책 지점.
@@ -1420,6 +1427,7 @@ def _warn_selected_manifest_union_conflicts(merged: dict | None) -> None:
 def _selected_entry_doc_source_overrides(
     source_root: Path,
     selected_harnesses: tuple[str, ...] | list[str],
+    weight: str = "full",
 ) -> dict[tuple[Path, Path], Path]:
     """공유 자동-load 진입 doc의 조합별 중립 source override를 만든다.
 
@@ -1438,6 +1446,14 @@ def _selected_entry_doc_source_overrides(
             )
         neutral_root = source_root / "templates" / neutral_dirs[0]
         neutral_source = neutral_root / rel
+        if weight == "lite":
+            lite_source = neutral_source.with_name(
+                f"{neutral_source.stem}.lite{neutral_source.suffix}"
+            )
+            # lite 변종 부재는 선언된 full 호환 폴백이다. 현행 중립 트리에 변종이 없어 정상
+            # 조합마다 경고하면 기존 무소음 계약을 깨므로, 실제 선택 source로만 관측 가능하게 둔다.
+            if lite_source.is_file() and not lite_source.is_symlink():
+                neutral_source = lite_source
         if not neutral_source.is_file() or neutral_source.is_symlink():
             raise FileNotFoundError(
                 f"공존용 중립 진입문서 없음/비정상 파일: {neutral_source}"
@@ -4171,7 +4187,7 @@ def main(argv: list[str] | None = None) -> int:
         prepared_manifest_union = _prepare_selected_manifest_union(template_roots)
         _warn_selected_manifest_union_conflicts(prepared_manifest_union)
         entry_doc_source_overrides = _selected_entry_doc_source_overrides(
-            source_root, args.harness)
+            source_root, args.harness, args.weight)
     except (OSError, ValueError, RuntimeError) as exc:
         print(
             "오류: 선택된 어댑터 manifest 합집합/진입문서 병합을 만들 수 없어 복사 전에 "
