@@ -1897,7 +1897,7 @@ def test_role_preambles_include_prohibition_phrases(pd):
 def _isolated_delegate(tmp_path: Path, registry_source: str):
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)
-    for filename in ("pm_delegate.py", "console_encoding.py"):
+    for filename in ("pm_delegate.py", "repo_owned_files.py", "console_encoding.py"):
         shutil.copy2(TOOLS / filename, tools / filename)
     (tools / "pm_import.py").write_text(
         f'ENGINE_REV = "{_load("pm_delegate_rev", TOOLS / "pm_delegate.py").ENGINE_REV}"\n'

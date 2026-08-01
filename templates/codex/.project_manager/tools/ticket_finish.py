@@ -29,12 +29,135 @@ import argparse
 import datetime
 import os
 import re
-import importlib.util
 import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable, NamedTuple
+
+_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
+_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
+    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
+)
+_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
+_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
+_TOOLS_BOOTSTRAP_SENTINEL = object()
+try:
+    if (
+        _TOOLS_BOOTSTRAP_MODULE is not None
+        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+        != _TOOLS_BOOTSTRAP_FILE
+    ):
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+        _TOOLS_BOOTSTRAP_MODULE = None
+    if _TOOLS_BOOTSTRAP_MODULE is None:
+        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
+            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
+        )
+        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
+        if _TOOLS_BOOTSTRAP_ADDED:
+            sys.path.insert(0, _TOOLS_BOOTSTRAP)
+        try:
+            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
+            if (
+                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+                != _TOOLS_BOOTSTRAP_FILE
+            ):
+                raise ImportError(
+                    "repo_owned_files 형제 경로 불일치: "
+                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
+                )
+            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
+        finally:
+            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
+            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
+            if _TOOLS_BOOTSTRAP_ADDED:
+                try:
+                    sys.path.remove(_TOOLS_BOOTSTRAP)
+                except ValueError:
+                    pass
+            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
+                sys.modules.pop("repo_owned_files", None)
+            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
+                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
+    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
+except Exception as _TOOLS_BOOTSTRAP_ERROR:
+    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+
+    def _load_module_from_path(
+        path,
+        expected_filename,
+        *,
+        verifier=None,
+        allow_unverified=False,
+        cache=False,
+        cache_key=None,
+    ):
+        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
+        target = os.path.realpath(os.fspath(path))
+        if os.path.basename(target) != expected_filename:
+            raise ValueError(
+                f"module filename mismatch: expected {expected_filename!r}, "
+                f"got {os.path.basename(target)!r}"
+            )
+        if verifier is not None and allow_unverified:
+            raise ValueError("choose verifier or allow_unverified=True, not both")
+        if verifier is None and not allow_unverified:
+            raise ValueError(
+                "module load requires verifier or explicit allow_unverified=True"
+            )
+        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
+        module = sys.modules.get(module_key) if cache else None
+        inserted = False
+        try:
+            if module is None:
+                if (
+                    target == _TOOLS_BOOTSTRAP_FILE
+                    and _TOOLS_BOOTSTRAP_MODULE is not None
+                ):
+                    module = _TOOLS_BOOTSTRAP_MODULE
+                else:
+                    import_name = os.path.splitext(expected_filename)[0]
+                    previous = sys.modules.pop(
+                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
+                    )
+                    parent = os.path.dirname(target)
+                    added = not sys.path or sys.path[0] != parent
+                    if added:
+                        sys.path.insert(0, parent)
+                    try:
+                        module = __import__(import_name)
+                        if os.path.realpath(getattr(module, "__file__", "")) != target:
+                            raise ImportError(
+                                f"{expected_filename} 형제 경로 불일치"
+                            )
+                    finally:
+                        if added:
+                            try:
+                                sys.path.remove(parent)
+                            except ValueError:
+                                pass
+                        if sys.modules.get(import_name) is module:
+                            sys.modules.pop(import_name, None)
+                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
+                            sys.modules[import_name] = previous
+                if cache:
+                    sys.modules[module_key] = module
+                    inserted = True
+            if verifier is not None:
+                verifier(module, expected_filename)
+            return module
+        except Exception as exc:
+            if cache and (inserted or sys.modules.get(module_key) is module):
+                sys.modules.pop(module_key, None)
+            if target == _TOOLS_BOOTSTRAP_FILE:
+                raise RuntimeError(
+                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
+                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
+                ) from exc
+            raise
+
 
 # ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형) ──────────
 # 하드코딩 `parents[2]` 는 tools 가 `<root>/.project_manager/tools/` 정확히 2단 깊이에 있다고
@@ -112,14 +235,10 @@ def _load_identity_args():
     """공용 정체성 인자 모듈(identity_args.py)을 같은 tools/ 에서 경로 로드한다 (board.py
     `_load_identity_args`·pm_handoff 동형·sys.path 무오염). `--repo/--slot` 정체성 파싱에
     load-bearing 이라 로드 실패는 엔진 손상 — 예외를 그대로 낸다(fail-loud·board.py 동일)."""
-    import importlib.util
-
     ia_path = Path(__file__).resolve().parent / "identity_args.py"
-    spec = importlib.util.spec_from_file_location("identity_args", ia_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    _verify_engine_rev(mod, "identity_args.py")  # 사본 skew fail-loud
-    return mod
+    return _load_module_from_path(
+        ia_path, "identity_args.py", verifier=_verify_engine_rev,
+    )
 
 
 identity_args = _load_identity_args()
@@ -138,22 +257,18 @@ def _load_pm_handoff():
     `_load_board_module`·`_load_domain_module` 과 동형 — `spec_from_file_location`
     (스크립트-위치 앵커). 부재/실패는 None 이고 호출부가 `str(REPO)` 로 폴백하므로 무해.
     """
-    import importlib.util
 
     hp_path = TOOLS_DIR / "pm_handoff.py"
     if not hp_path.exists():
         return None
-    spec = importlib.util.spec_from_file_location("pm_handoff", hp_path)
-    if spec is None:
-        return None
-    mod = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(mod)
+        mod = _load_module_from_path(
+            hp_path, "pm_handoff.py", verifier=_verify_engine_rev,
+        )
     except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
         if _is_engine_rev_skew(exc):
             raise  # pm_handoff 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
         return None
-    _verify_engine_rev(mod, "pm_handoff.py")  # 로드 성공 후 skew 는 fail-loud(try 밖)
     return mod
 
 
@@ -268,14 +383,10 @@ def _load_board_module():
     별도 함수로 둔 건 테스트가 areas.md/local.conf 해소를 hermetic 하게 가로채는 seam —
     board 의 areas/local 경로 전역을 tmp 로 재바인딩한 모듈을 주입할 수 있게 한다.
     """
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("_board_test_cmd", BOARD_PY)
-    if spec is None:
-        return None
-    mod = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "board.py")  # stamped sibling 로드 지점은 verify
+        mod = _load_module_from_path(
+            BOARD_PY, "board.py", verifier=_verify_engine_rev,
+        )
     except Exception as exc:
         if _is_engine_rev_skew(exc):
             raise  # 사본 skew 는 fail-loud(삼키지 않는다).
@@ -397,14 +508,10 @@ def count_board_done(board_py: Path) -> int:
     board.py 를 직접 import 해 find_ticket / STATUS_DIRS 를 활용한다.
     실패 시 -1 반환.
     """
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("_board_helper", board_py)
-    if spec is None:
-        return -1
-    mod = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "board.py")  # stamped sibling 로드 지점은 verify
+        mod = _load_module_from_path(
+            Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
+        )
         # board_root() 추종 — board/ 분리시 ticket 이 board/tickets 로 빠지므로
         # legacy 별칭 상수(mod.TICKETS_DIR)가 아니라 함수를 부른다(분리 후 stale wiki/ 안 봄).
         done_dir = mod.tickets_dir() / "done"
@@ -420,14 +527,10 @@ def get_ticket_title(board_py: Path, ticket_id: str) -> str:
 
     실패 시 빈 문자열 반환.
     """
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("_board_helper2", board_py)
-    if spec is None:
-        return ""
-    mod = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "board.py")  # stamped sibling 로드 지점은 verify
+        mod = _load_module_from_path(
+            Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
+        )
         _status, path = mod.find_ticket(ticket_id)
         fm, _body = mod.load_ticket(path)
         return fm.get("title") or ""
@@ -443,14 +546,10 @@ def get_ticket_touches(board_py: Path, ticket_id: str) -> list[str]:
     문자열 원소만 취한다(비-문자열 오기는 버림). board 미로드·ticket 부재/깨짐 →
     [](graceful·crash 0 — soft 알림은 막지 않는다). domain soft 알림 step 이 쓴다.
     """
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("_board_helper3", board_py)
-    if spec is None:
-        return []
-    mod = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "board.py")  # stamped sibling 로드 지점은 verify
+        mod = _load_module_from_path(
+            Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
+        )
         _status, path = mod.find_ticket(ticket_id)
         fm, _body = mod.load_ticket(path)
     except Exception as exc:
@@ -480,16 +579,12 @@ def _load_domain_module():
     board.py·areas 해소와 동일한 deep-import seam — 테스트가 hermetic 하게 대역을
     주입하거나 None(부재)을 흉내낼 수 있다.
     """
-    import importlib.util
     if not DOMAIN_PY.exists():
         return None
-    spec = importlib.util.spec_from_file_location("_domain_soft", DOMAIN_PY)
-    if spec is None:
-        return None
-    mod = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "domain.py")  # stamped sibling 로드 지점은 verify
+        mod = _load_module_from_path(
+            DOMAIN_PY, "domain.py", verifier=_verify_engine_rev,
+        )
     except Exception as exc:
         if _is_engine_rev_skew(exc):
             raise  # domain 사본 skew 는 fail-loud(삼키지 않는다).
@@ -629,18 +724,14 @@ def _load_tool_module(path: Path):
     자체는 None 으로 돌려 호출부가 **눈에 띄게** 처리하게 한다(조용한 skip 아님 — 아래
     `stage_scope` 는 None 을 stage 불능으로 보고 loud 경고를 낸다).
     """
-    import importlib.util
 
     path = Path(path)
     if not path.exists():
         return None
-    spec = importlib.util.spec_from_file_location(f"_tf_sibling_{path.stem}", path)
-    if spec is None:
-        return None
-    mod = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, path.name)  # stamped sibling 로드 지점은 verify
+        mod = _load_module_from_path(
+            path, path.name, verifier=_verify_engine_rev,
+        )
     except Exception as exc:
         if _is_engine_rev_skew(exc):
             raise  # 사본 skew 는 fail-loud(삼키지 않는다).
@@ -664,18 +755,14 @@ def load_board_module(board_py: Path):
 
 def _load_repo_coordinates():
     """공용 repo 좌표 normalizer를 경로 로드한다. 부재/손상은 stage_scope가 loud error로 바꾼다."""
-    import importlib.util
 
     path = TOOLS_DIR / "repo_coordinates.py"
     if not path.exists():
         return None
-    spec = importlib.util.spec_from_file_location("_tf_repo_coordinates", path)
-    if spec is None:
-        return None
-    mod = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "repo_coordinates.py")
+        mod = _load_module_from_path(
+            path, "repo_coordinates.py", verifier=_verify_engine_rev,
+        )
     except Exception as exc:  # noqa: BLE001 — 호출부가 stage 불능 사유로 표면화.
         if _is_engine_rev_skew(exc):
             raise
@@ -1453,12 +1540,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _console_spec = importlib.util.spec_from_file_location(
-        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    _console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
     )
-    _console_encoding = importlib.util.module_from_spec(_console_spec)
-    _console_spec.loader.exec_module(_console_encoding)
-    _verify_engine_rev(_console_encoding, "console_encoding.py")
     _console_encoding.configure_console_utf8()
     parser = build_parser()
     args = parser.parse_args(argv)

@@ -5187,6 +5187,7 @@ def _install_engine(engine_root: Path) -> None:
     tools = engine_root / ".project_manager" / "tools"
     tools.mkdir(parents=True, exist_ok=True)
     shutil.copy(str(TOOLS / "board.py"), str(tools / "board.py"))
+    shutil.copy(str(TOOLS / "repo_owned_files.py"), str(tools / "repo_owned_files.py"))
     shutil.copy(str(TOOLS / "identity_args.py"), str(tools / "identity_args.py"))
     shutil.copy(str(TOOLS / "console_encoding.py"), str(tools / "console_encoding.py"))
     shutil.copy(str(TOOLS / "python_floor.py"), str(tools / "python_floor.py"))

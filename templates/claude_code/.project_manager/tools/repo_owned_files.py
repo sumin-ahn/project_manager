@@ -14,9 +14,11 @@ ignore와 추적 여부 보장이 사라지므로 ``RepoFilesFallbackWarning``�
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 import warnings
 from pathlib import Path
 from typing import Any, Callable, Literal, NamedTuple
@@ -30,6 +32,67 @@ OWNED = "owned"
 RepoFileMode = Literal["tracked_only", "owned"]
 GitRunner = Callable[[list[str]], "tuple[int, str]"]
 GitOutputMode = Literal["stdout", "stdout_stderr", "stdout_or_error"]
+Verifier = Callable[[object, str], None]
+
+
+def load_module(
+    path: Path,
+    expected_filename: str,
+    *,
+    verifier: Verifier | None = None,
+    allow_unverified: bool = False,
+    cache: bool = False,
+    cache_key: str | None = None,
+):
+    """basename과 명시 검증 정책을 강제해 한 경로의 모듈을 로드한다.
+
+    엔진의 유일한 file-location import 경계이며 stdlib-only다. 복구 도구는
+    ``allow_unverified=True``를 명시하고 stamped 소비자는 verifier를 넘긴다. 캐시 모듈도
+    검증 소비 때마다 재검증하며 exec/검증 실패 시 해당 캐시를 제거한다.
+    """
+    if not isinstance(path, Path):
+        raise TypeError("path must be a pathlib.Path")
+    target = path.resolve()
+    if (
+        not expected_filename
+        or "/" in expected_filename
+        or "\\" in expected_filename
+        or expected_filename in {".", ".."}
+    ):
+        raise ValueError("expected_filename must be one basename")
+    if target.name != expected_filename:
+        raise ValueError(
+            f"module filename mismatch: expected {expected_filename!r}, got {target.name!r}"
+        )
+    if verifier is not None and allow_unverified:
+        raise ValueError("choose verifier or allow_unverified=True, not both")
+    if verifier is None and not allow_unverified:
+        raise ValueError("module load requires verifier or explicit allow_unverified=True")
+    if verifier is not None and not callable(verifier):
+        raise TypeError("verifier must be callable")
+    if cache_key is not None and not cache:
+        raise ValueError("cache_key requires cache=True")
+
+    module_name = cache_key or f"_project_manager_loaded:{target}"
+    module = sys.modules.get(module_name) if cache else None
+    inserted = False
+    try:
+        if module is None:
+            spec = importlib.util.spec_from_file_location(module_name, target)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"module spec/loader unavailable: {target}")
+            module = importlib.util.module_from_spec(spec)
+            if cache:
+                sys.modules[module_name] = module
+                inserted = True
+            spec.loader.exec_module(module)
+        if verifier is not None:
+            verifier(module, expected_filename)
+        return module
+    except Exception:
+        if cache and (inserted or sys.modules.get(module_name) is module):
+            sys.modules.pop(module_name, None)
+        raise
 
 _MODE_GIT_ARGS: dict[RepoFileMode, tuple[str, ...]] = {
     TRACKED_ONLY: ("--stage", "--cached"),

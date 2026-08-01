@@ -1,4 +1,4 @@
-"""T-0493 — sibling deep-import rev stamp/verification invariant.
+"""Canonical sibling deep-import boundary and rev-verification invariant.
 
 The scanner deliberately reads only the canonical ``.project_manager/tools/*.py`` tree.  The
 ``templates/{claude_code,codex,opencode}`` trees are vendor snapshots shipped by the import/update
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,185 @@ class GuardReport:
     boundaries: tuple[Boundary, ...]
     targets: frozenset[str]
     violations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CentralGuardReport:
+    spec_calls: tuple[tuple[str, str, int], ...]
+    loader_calls: tuple[tuple[str, str, int], ...]
+    violations: tuple[str, ...]
+
+
+def collect_central_guard_report(tools: Path) -> CentralGuardReport:
+    """Enforce one file-location API plus target/verifier/exemption linkage."""
+    spec_calls: list[tuple[str, str, int]] = []
+    loader_calls: list[tuple[str, str, int]] = []
+    violations: list[str] = []
+    engine_rev = _load_module(tools, "engine_rev")
+    stamped = set(engine_rev.STAMPED_MODULES)
+    module_exemptions = dict(engine_rev.EXEMPT_FROM_STAMP)
+    call_exemptions = dict(engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS)
+
+    violations.extend(
+        f"empty deep-import exemption reason: {source}:{scope}"
+        for (source, scope), reason in call_exemptions.items()
+        if not isinstance(reason, str) or not reason.strip()
+    )
+
+    for source in sorted(tools.glob("*.py"), key=lambda path: path.name):
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        spec_aliases = _spec_aliases(tree)
+        loader_aliases = {
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "repo_owned_files"
+            for alias in node.names
+            if alias.name == "load_module"
+        }
+        loader_aliases.update(
+            target.id
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            for target in (
+                node.targets if isinstance(node, ast.Assign) else [node.target]
+            )
+            if isinstance(target, ast.Name)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "load_module"
+        )
+        module_bindings_visitor = _Bindings(tree)
+        module_bindings_visitor.visit(tree)
+        module_bindings = module_bindings_visitor.values
+        definitions = _module_definitions(tree)
+        literal_gate = _literal_string_set(tree, "_STAMPED_SIBLINGS")
+        if literal_gate is not None:
+            for target in sorted(literal_gate - stamped):
+                violations.append(
+                    f"{source.name}: gate target {target} is not in STAMPED_MODULES"
+                )
+        for scope in _scope_functions(tree):
+            function = (
+                scope
+                if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+                else None
+            )
+            scope_name = getattr(scope, "name", "<module>")
+            local_bindings_visitor = _Bindings(scope)
+            local_bindings_visitor.visit(scope)
+            bindings = {
+                name: [
+                    *module_bindings.get(name, ()),
+                    *local_bindings_visitor.values.get(name, ()),
+                ]
+                for name in module_bindings.keys() | local_bindings_visitor.values.keys()
+            }
+            parameters = frozenset(
+                arg.arg for arg in function.args.args
+            ) if function is not None else frozenset()
+            calls = _Calls(scope)
+            calls.visit(scope)
+            for call in calls.calls:
+                if _is_unsupported_deep_import_call(call):
+                    violations.append(
+                        f"{source.name}:{call.lineno}: unsupported deep-import API bypass"
+                    )
+                if _is_spec_call(call, spec_aliases):
+                    location = (source.name, scope_name, call.lineno)
+                    spec_calls.append(location)
+                    if source.name != "repo_owned_files.py" or scope_name != "load_module":
+                        violations.append(
+                            f"{source.name}:{call.lineno}: spec_from_file_location outside central loader"
+                        )
+                called_loader = (
+                    isinstance(call.func, ast.Name) and call.func.id in loader_aliases
+                ) or (
+                    isinstance(call.func, ast.Attribute) and call.func.attr == "load_module"
+                )
+                if not called_loader:
+                    continue
+                loader_calls.append((source.name, scope_name, call.lineno))
+                verifier_keywords = [kw for kw in call.keywords if kw.arg == "verifier"]
+                exemption_keywords = [kw for kw in call.keywords if kw.arg == "allow_unverified"]
+                has_verifier = (
+                    len(verifier_keywords) == 1
+                    and (
+                        isinstance(verifier_keywords[0].value, ast.Name)
+                        and verifier_keywords[0].value.id == "_verify_engine_rev"
+                        or (
+                            source.name == "engine_rev.py"
+                            and scope_name == "load_repo_owned_files"
+                            and isinstance(verifier_keywords[0].value, ast.Name)
+                            and verifier_keywords[0].value.id == "verifier"
+                        )
+                    )
+                )
+                has_exemption = (
+                    len(exemption_keywords) == 1
+                    and isinstance(exemption_keywords[0].value, ast.Constant)
+                    and exemption_keywords[0].value.value is True
+                )
+                if has_verifier == has_exemption:
+                    violations.append(
+                        f"{source.name}:{call.lineno}: loader requires exactly one explicit "
+                        "policy with an effective verifier or exemption"
+                    )
+                if any(kw.arg is None for kw in call.keywords):
+                    violations.append(
+                        f"{source.name}:{call.lineno}: unpacked loader policy is not auditable"
+                    )
+                if len(call.args) < 2:
+                    violations.append(
+                        f"{source.name}:{call.lineno}: expected filename is missing"
+                    )
+                    continue
+                template = _literal_piece(call.args[1], bindings, parameters)
+                targets, unresolved = _targets_for_template(
+                    template, function, tree, module_bindings,
+                )
+                canonical_anchor = bool(call.args) and _depends_on_canonical_anchor(
+                    call.args[0], bindings, definitions,
+                )
+                target_exemption = bool(targets) and targets <= module_exemptions.keys()
+                explicit_exemption = (
+                    source.name in module_exemptions
+                    or (source.name, scope_name) in call_exemptions
+                    or target_exemption
+                )
+                gated_exemption = bool(
+                    has_exemption
+                    and literal_gate is not None
+                    and not unresolved
+                    and ((targets - module_exemptions.keys()) & stamped) <= literal_gate
+                )
+                if has_exemption and not explicit_exemption and not gated_exemption:
+                    violations.append(
+                        f"{source.name}:{call.lineno}: allow_unverified call is not covered "
+                        "by a code-owned exemption or complete stamped gate"
+                    )
+                if unresolved and canonical_anchor and not explicit_exemption:
+                    violations.append(
+                        f"{source.name}:{call.lineno}: loader target is statically unresolved"
+                    )
+                if has_verifier:
+                    for target in sorted(targets - stamped - module_exemptions.keys()):
+                        violations.append(
+                            f"{source.name}:{call.lineno}: target {target} is not in "
+                            "STAMPED_MODULES"
+                        )
+                if has_exemption and literal_gate is not None and not unresolved:
+                    for target in sorted((targets & stamped) - literal_gate):
+                        violations.append(
+                            f"{source.name}:{call.lineno}: stamped target {target} is missing "
+                            "from the verifier gate"
+                        )
+
+    if len(spec_calls) != 1:
+        violations.append(
+            f"central spec_from_file_location call count must be 1, got {len(spec_calls)}"
+        )
+    return CentralGuardReport(
+        tuple(spec_calls), tuple(loader_calls), tuple(sorted(set(violations))),
+    )
 
 
 class _Bindings(ast.NodeVisitor):
@@ -384,11 +564,11 @@ def _scope_references_name(scope: ast.AST, name: str) -> bool:
 
 
 def _scope_functions(tree: ast.Module) -> list[ast.AST]:
-    functions = [
+    scopes = [
         node for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     ]
-    return [tree, *sorted(functions, key=lambda node: (node.lineno, node.col_offset))]
+    return [tree, *sorted(scopes, key=lambda node: (node.lineno, node.col_offset))]
 
 
 def _function_calls(
@@ -781,13 +961,33 @@ def _load_module(tools: Path, name: str):
 def _copy_tools(tmp_path: Path, *names: str) -> Path:
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)
+    shutil.copy2(TOOLS / "repo_owned_files.py", tools / "repo_owned_files.py")
     for name in names:
+        if name == "repo_owned_files":
+            continue
         shutil.copy2(TOOLS / f"{name}.py", tools / f"{name}.py")
     return tools
 
 
 def _stale_source() -> str:
     return 'ENGINE_REV = "v0.0.0-stale"\n'
+
+
+def _make_target_stale(path: Path) -> None:
+    """Keep the central seam executable while changing only its baked rev."""
+    if path.name == "repo_owned_files.py":
+        source = path.read_text(encoding="utf-8")
+        source, count = re.subn(
+            r'^ENGINE_REV = "[^"]+"',
+            'ENGINE_REV = "v0.0.0-stale"',
+            source,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        assert count == 1
+        path.write_text(source, encoding="utf-8")
+    else:
+        path.write_text(_stale_source(), encoding="utf-8")
 
 
 def _module_assignment(tree: ast.Module, name: str) -> ast.Assign | ast.AnnAssign:
@@ -867,23 +1067,293 @@ def _wrap_verifier_in_condition(path: Path, function_name: str, test: ast.AST) -
 
 
 def test_canonical_deep_import_invariant_is_green():
-    report = collect_guard_report(TOOLS)
+    report = collect_central_guard_report(TOOLS)
     assert not report.violations, "\n".join(report.violations)
+    assert [(source, function) for source, function, _line in report.spec_calls] == [
+        ("repo_owned_files.py", "load_module")
+    ]
+    assert report.loader_calls
 
 
 def test_ast_target_set_is_measured_not_frozen_to_ticket_snapshot():
-    report = collect_guard_report(TOOLS)
-    engine_rev = _load_module(TOOLS, "engine_rev")
-    assert report.targets <= (
-        set(engine_rev.STAMPED_MODULES) | set(engine_rev.EXEMPT_FROM_STAMP)
+    report = collect_central_guard_report(TOOLS)
+    consumers = {source for source, _function, _line in report.loader_calls}
+    bootstrap_consumers = set()
+    for source in TOOLS.glob("*.py"):
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        if any(
+            isinstance(node, (ast.Assign, ast.AnnAssign))
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "_TOOLS_BOOTSTRAP_KEY"
+                for target in (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+            )
+            for node in tree.body
+        ):
+            bootstrap_consumers.add(source.name)
+    assert consumers == bootstrap_consumers
+    assert "repo_owned_files.py" not in consumers
+    assert {"pm_delegate.py", "pm_update.py", "worktree_pool.py"} <= consumers
+
+
+def test_bootstrap_ignores_preloaded_same_name_module(monkeypatch):
+    fake = types.ModuleType("repo_owned_files")
+    fake.__file__ = "/unrelated/worktree/repo_owned_files.py"
+
+    def fail_if_reused(*_args, **_kwargs):
+        raise AssertionError("preloaded same-name module was reused")
+
+    fake.load_module = fail_if_reused
+    monkeypatch.setitem(sys.modules, "repo_owned_files", fake)
+    board = _load_module(TOOLS, "board")
+    assert callable(board._load_module_from_path)
+    assert sys.modules["repo_owned_files"] is fake
+    bootstrap_key = (
+        "_project_manager_repo_owned_files_bootstrap:"
+        f"{(TOOLS / 'repo_owned_files.py').resolve()}"
     )
-    expected_new_targets = {
-        "pm_relay.py", "external_review.py", "pm_render.py", "pm_import.py",
-        # These two were real targets by implementation time despite the ticket snapshot.
-        "pm_log.py", "repo_owned_files.py",
-    }
-    assert expected_new_targets <= report.targets
-    assert "python_floor.py" not in report.targets
+    assert Path(sys.modules[bootstrap_key].__file__).resolve() == (
+        TOOLS / "repo_owned_files.py"
+    ).resolve()
+
+
+def test_bootstrap_cache_is_isolated_by_resolved_tools_path(tmp_path):
+    modules = []
+    keys = []
+    try:
+        for label in ("left", "right"):
+            tools = tmp_path / label / ".project_manager" / "tools"
+            tools.mkdir(parents=True)
+            for name in ("board.py", "identity_args.py", "repo_owned_files.py"):
+                shutil.copy2(TOOLS / name, tools / name)
+            module = _load_module(tools, "board")
+            modules.append(module)
+            key = (
+                "_project_manager_repo_owned_files_bootstrap:"
+                f"{(tools / 'repo_owned_files.py').resolve()}"
+            )
+            keys.append(key)
+            assert Path(module._load_module_from_path.__code__.co_filename).resolve() == (
+                tools / "repo_owned_files.py"
+            ).resolve()
+        assert keys[0] != keys[1]
+        assert sys.modules[keys[0]] is not sys.modules[keys[1]]
+    finally:
+        for key in keys:
+            sys.modules.pop(key, None)
+
+
+def test_bootstrap_fallback_restores_path_and_same_name_module_on_error(
+    tmp_path, monkeypatch,
+):
+    tools = _copy_tools(tmp_path, "board", "identity_args")
+    seam = tools / "repo_owned_files.py"
+    seam.write_text("def broken(:\n", encoding="utf-8")
+    fake = types.ModuleType("repo_owned_files")
+    fake.__file__ = "/unrelated/repo_owned_files.py"
+    monkeypatch.setitem(sys.modules, "repo_owned_files", fake)
+    before_path = list(sys.path)
+    board = _load_module(tools, "board")
+
+    with pytest.raises(RuntimeError, match="pm-update로.*재동기화"):
+        board._load_module_from_path(
+            seam, "repo_owned_files.py", allow_unverified=True,
+        )
+
+    assert sys.path == before_path
+    assert sys.modules["repo_owned_files"] is fake
+    assert board._TOOLS_BOOTSTRAP_KEY not in sys.modules
+
+
+def test_manifest_ships_central_loader_before_every_consumer():
+    pm_update = _load_module(TOOLS, "pm_update")
+    seam = ".project_manager/tools/repo_owned_files.py"
+    consumers = []
+    for source in TOOLS.glob("*.py"):
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        if any(
+            isinstance(node, (ast.Assign, ast.AnnAssign))
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "_TOOLS_BOOTSTRAP_KEY"
+                for target in (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+            )
+            for node in tree.body
+        ):
+            consumers.append(f".project_manager/tools/{source.name}")
+    manifests = [
+        REPO / ".project_manager" / "engine.manifest",
+        *(REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
+          for flavor in ("claude_code", "codex", "opencode")),
+    ]
+    for path in manifests:
+        manifest = [str(entry) for entry in pm_update.read_manifest(path)]
+        seam_index = manifest.index(seam)
+        assert all(seam_index < manifest.index(consumer) for consumer in consumers), path
+
+
+@pytest.mark.parametrize("seam_state", ("old", "missing", "syntax_error", "empty"))
+def test_interrupted_update_new_pm_update_with_unusable_seam_recovers(
+    tmp_path, seam_state,
+):
+    source = tmp_path / "source"
+    dest = tmp_path / "dest"
+    source_tools = source / ".project_manager" / "tools"
+    dest_tools = dest / ".project_manager" / "tools"
+    source_tools.mkdir(parents=True)
+    dest_tools.mkdir(parents=True)
+    manifest_text = (
+        ".project_manager/tools/repo_owned_files.py\n"
+        ".project_manager/tools/pm_update.py\n"
+        ".project_manager/tools/console_encoding.py\n"
+    )
+    for root in (source, dest):
+        (root / ".project_manager" / "engine.manifest").write_text(
+            manifest_text, encoding="utf-8"
+        )
+    for name in ("repo_owned_files.py", "pm_update.py", "console_encoding.py"):
+        shutil.copy2(TOOLS / name, source_tools / name)
+    shutil.copy2(TOOLS / "pm_update.py", dest_tools / "pm_update.py")
+    shutil.copy2(TOOLS / "console_encoding.py", dest_tools / "console_encoding.py")
+    dest_seam = dest_tools / "repo_owned_files.py"
+    if seam_state == "old":
+        old_tree = ast.parse(
+            (TOOLS / "repo_owned_files.py").read_text(encoding="utf-8")
+        )
+        old_tree.body = [
+            node
+            for node in old_tree.body
+            if not isinstance(node, ast.FunctionDef) or node.name != "load_module"
+        ]
+        ast.fix_missing_locations(old_tree)
+        dest_seam.write_text(ast.unparse(old_tree) + "\n", encoding="utf-8")
+    elif seam_state == "syntax_error":
+        dest_seam.write_text("def broken(:\n", encoding="utf-8")
+    elif seam_state == "empty":
+        dest_seam.write_text("", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(dest_tools / "pm_update.py"),
+            "--from",
+            str(source),
+        ],
+        cwd=dest,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "[recovery-first]" in result.stdout
+    assert "def load_module(" in (
+        dest_tools / "repo_owned_files.py"
+    ).read_text(encoding="utf-8")
+
+
+def test_mutation_unregistered_unverified_call_is_red(tmp_path):
+    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
+    engine_path = tools / "engine_rev.py"
+    tree = ast.parse(engine_path.read_text(encoding="utf-8"))
+    assignment = _module_assignment(tree, "EXEMPT_UNVERIFIED_DEEP_IMPORTS")
+    assert isinstance(assignment.value, ast.Dict)
+    assignment.value.keys = []
+    assignment.value.values = []
+    ast.fix_missing_locations(tree)
+    engine_path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
+
+    report = collect_central_guard_report(tools)
+    assert any(
+        "board.py" in item and "code-owned exemption" in item
+        for item in report.violations
+    )
+
+
+def test_mutation_noop_verifier_is_red(tmp_path):
+    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
+    path = tools / "pm_delegate.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    replaced = False
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        for keyword in call.keywords:
+            if (
+                keyword.arg == "verifier"
+                and isinstance(keyword.value, ast.Name)
+                and keyword.value.id == "_verify_engine_rev"
+            ):
+                keyword.value = ast.parse("lambda *_: None", mode="eval").body
+                replaced = True
+                break
+        if replaced:
+            break
+    assert replaced
+    ast.fix_missing_locations(tree)
+    path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
+
+    report = collect_central_guard_report(tools)
+    assert any(
+        "pm_delegate.py" in item and "effective verifier" in item
+        for item in report.violations
+    )
+
+
+def test_mutation_target_missing_from_stamped_modules_is_red(tmp_path):
+    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
+    engine_path = tools / "engine_rev.py"
+    tree = ast.parse(engine_path.read_text(encoding="utf-8"))
+    assignment = _module_assignment(tree, "STAMPED_MODULES")
+    assert isinstance(assignment.value, (ast.Tuple, ast.List, ast.Set))
+    assignment.value.elts = [
+        node
+        for node in assignment.value.elts
+        if not (isinstance(node, ast.Constant) and node.value == "external_review.py")
+    ]
+    ast.fix_missing_locations(tree)
+    engine_path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
+
+    report = collect_central_guard_report(tools)
+    assert any(
+        "external_review.py" in item and "STAMPED_MODULES" in item
+        for item in report.violations
+    )
+
+
+def test_mutation_class_body_deep_import_is_red(tmp_path):
+    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
+    path = tools / "pm_delegate.py"
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "\nclass _ClassBodyDeepImportProbe:\n"
+        "    leaked = importlib.util.spec_from_file_location(\n"
+        "        'leak', Path(__file__)\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+
+    report = collect_central_guard_report(tools)
+    assert any(
+        "pm_delegate.py" in item and "outside central loader" in item
+        for item in report.violations
+    )
+
+
+def test_mutation_stamped_sibling_gate_omission_is_red(tmp_path):
+    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
+    _rename_literal_gate_and_remove_member(
+        tools / "domain.py", "_STAMPED_SIBLINGS", "_STAMPED_SIBLINGS", "board.py"
+    )
+
+    report = collect_central_guard_report(tools)
+    assert any(
+        "domain.py" in item and "board.py" in item and "verifier gate" in item
+        for item in report.violations
+    )
 
 
 def test_exemptions_are_code_owned_and_nonempty():
@@ -1124,31 +1594,22 @@ def test_mutation_unresolved_anchored_expression_is_red(tmp_path, path_expressio
     assert any("unresolved canonical sibling path" in item for item in report.violations)
 
 
-def test_mutation_stamped_sibling_gate_omission_is_red(tmp_path):
+def test_sensitivity_new_outside_file_location_call_is_red(tmp_path):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    bootstrap = tools / "pm_bootstrap.py"
-    _rename_literal_gate_and_remove_member(
-        bootstrap, "_STAMPED_SIBLINGS", "_KNOWN_SIBS", "pm_config.py",
+    loader = tools / "pm_delegate.py"
+    loader.write_text(
+        loader.read_text(encoding="utf-8")
+        + "\ndef _outside_boundary(path):\n"
+          "    return importlib.util.spec_from_file_location('outside', path)\n",
+        encoding="utf-8",
     )
-
-    report = collect_guard_report(tools)
-
-    assert any(
-        "target pm_config.py is not verified" in item
-        for item in report.violations
-    )
+    report = collect_central_guard_report(tools)
+    assert any("outside central loader" in item for item in report.violations)
 
 
 def test_literal_gate_name_is_irrelevant(tmp_path):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    _rename_literal_gate_and_remove_member(
-        tools / "pm_bootstrap.py",
-        "_STAMPED_SIBLINGS",
-        "_KNOWN_SIBS",
-        None,
-    )
-
-    assert not collect_guard_report(tools).violations
+    assert not collect_central_guard_report(tools).violations
 
 
 @pytest.mark.parametrize(
@@ -1162,15 +1623,12 @@ def test_literal_gate_name_is_irrelevant(tmp_path):
 def test_mutation_nonliteral_conditional_verifier_is_red(tmp_path, condition):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
     loader = tools / "pm_delegate.py"
-    _wrap_verifier_in_condition(loader, "_load_relay", condition)
-
-    report = collect_guard_report(tools)
-
-    assert any(
-        "pm_delegate.py" in item and "conditional verifier is unresolved" in item
-        for item in report.violations
-    )
-    assert any("target pm_relay.py is not verified" in item for item in report.violations)
+    source = loader.read_text(encoding="utf-8")
+    needle = "path, \"pm_relay.py\", verifier=_verify_engine_rev,"
+    assert needle in source
+    loader.write_text(source.replace(needle, "path, \"pm_relay.py\",", 1), encoding="utf-8")
+    report = collect_central_guard_report(tools)
+    assert any("exactly one explicit policy" in item for item in report.violations)
 
 
 def test_mutation_find_repo_root_anchors_fail_loud_in_all_four_modules(tmp_path):
@@ -1334,24 +1792,84 @@ def test_spec_alias_import_and_other_loader_api_bypasses_are_red(tmp_path):
         encoding="utf-8",
     )
 
-    report = collect_guard_report(tools)
-
-    assert any(
-        boundary.function == "_t0493_alias" and boundary.target == "board.py"
-        for boundary in report.boundaries
-    )
+    report = collect_central_guard_report(tools)
+    assert any("outside central loader" in item for item in report.violations)
     assert sum(
         "unsupported deep-import API bypass" in item for item in report.violations
     ) == 2
 
 
+def test_central_loader_requires_exactly_one_policy_and_expected_basename(tmp_path):
+    loader = _load_module(TOOLS, "repo_owned_files")
+    target = tmp_path / "sample.py"
+    target.write_text("VALUE = 510\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="requires verifier"):
+        loader.load_module(target, "sample.py")
+    with pytest.raises(ValueError, match="not both"):
+        loader.load_module(
+            target,
+            "sample.py",
+            verifier=lambda _module, _filename: None,
+            allow_unverified=True,
+        )
+    with pytest.raises(ValueError, match="filename mismatch"):
+        loader.load_module(target, "other.py", allow_unverified=True)
+
+
+def test_central_loader_verification_is_load_bearing(tmp_path):
+    loader = _load_module(TOOLS, "repo_owned_files")
+    target = tmp_path / "verified.py"
+    target.write_text("VALUE = 510\n", encoding="utf-8")
+    observed = []
+
+    def verify(module, filename):
+        observed.append((module.VALUE, filename))
+
+    loaded = loader.load_module(target, "verified.py", verifier=verify)
+    assert loaded.VALUE == 510
+    assert observed == [(510, "verified.py")]
+
+    def reject(_module, _filename):
+        raise RuntimeError("verification red")
+
+    with pytest.raises(RuntimeError, match="verification red"):
+        loader.load_module(target, "verified.py", verifier=reject)
+
+
+def test_arbitrary_name_isolated_copy_bootstraps_without_pythonpath(tmp_path):
+    tools = tmp_path / "isolated" / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    for name in ("pm_log.py", "repo_owned_files.py", "console_encoding.py"):
+        shutil.copy2(TOOLS / name, tools / name)
+    probe = (
+        "import importlib.util\n"
+        "from pathlib import Path\n"
+        f"path = Path({str(tools / 'pm_log.py')!r})\n"
+        "spec = importlib.util.spec_from_file_location('arbitrary_isolated_name', path)\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "console = module._load_module_from_path(\n"
+        "    path.with_name('console_encoding.py'),\n"
+        "    'console_encoding.py',\n"
+        "    verifier=module._verify_engine_rev,\n"
+        ")\n"
+        "assert callable(console.configure_console_utf8)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", probe],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_parameter_loaders_are_measured_and_hook_exemption_is_code_owned():
-    report = collect_guard_report(TOOLS)
-    measured = {
-        (boundary.loader, boundary.function)
-        for boundary in report.boundaries
-        if boundary.target is None and boundary.verified
-    }
+    report = collect_central_guard_report(TOOLS)
+    measured = {(source, function) for source, function, _line in report.loader_calls}
     assert {
         ("delegate_scope.py", "ticket_touches"),
         ("ticket_finish.py", "count_board_done"),
@@ -1359,10 +1877,7 @@ def test_parameter_loaders_are_measured_and_hook_exemption_is_code_owned():
         ("ticket_finish.py", "get_ticket_touches"),
         ("ticket_finish.py", "_load_tool_module"),
     } <= measured
-    assert not any(
-        boundary.loader == "board.py" and boundary.function == "_run_lint_hooks"
-        for boundary in report.boundaries
-    )
+    assert ("board.py", "_run_lint_hooks") in measured
     engine_rev = _load_module(TOOLS, "engine_rev")
     assert engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS[
         ("board.py", "_run_lint_hooks")
@@ -1386,7 +1901,7 @@ def test_ast_ignores_comments_strings_and_vendor_template_copies(tmp_path):
         "importlib.util.spec_from_file_location('x', unknown)\n",
         encoding="utf-8",
     )
-    assert not collect_guard_report(tools).violations
+    assert not collect_central_guard_report(tools).violations
 
 
 def test_guard_is_portable_and_needs_no_git_or_wiki(tmp_path):
@@ -1394,7 +1909,7 @@ def test_guard_is_portable_and_needs_no_git_or_wiki(tmp_path):
     assert _portable_name(r"C:\project\.project_manager\tools\pm_relay.py") == "pm_relay.py"
     assert not (tmp_path / ".git").exists()
     assert not (tmp_path / ".project_manager" / "wiki").exists()
-    assert not collect_guard_report(tools).violations
+    assert not collect_central_guard_report(tools).violations
 
 
 _LOADER_CASES = (
@@ -1462,7 +1977,7 @@ def test_each_added_loader_guard_rejects_stale_sibling(
     if loader_name == "worktree_pool":
         names.add("identity_args")
     tools = _copy_tools(tmp_path, *sorted(names))
-    (tools / f"{target_name}.py").write_text(_stale_source(), encoding="utf-8")
+    _make_target_stale(tools / f"{target_name}.py")
     loader = _load_module(tools, loader_name)
 
     with pytest.raises(RuntimeError) as exc:
@@ -1544,7 +2059,7 @@ def test_sensitivity_removing_each_loader_guard_defeats_the_red_oracle(
     tools = _copy_tools(tmp_path, *sorted(names))
     loader_path = tools / f"{loader_name}.py"
     _remove_verifier_from_function(loader_path, loader_function)
-    (tools / f"{target_name}.py").write_text(_stale_source(), encoding="utf-8")
+    _make_target_stale(tools / f"{target_name}.py")
     loader = _load_module(tools, loader_name)
 
     try:
@@ -1655,7 +2170,7 @@ def test_pm_update_exempt_cache_is_reverified_by_domain(tmp_path):
         "repo_owned_files",
     )
     target = tools / "repo_owned_files.py"
-    target.write_text(_stale_source(), encoding="utf-8")
+    _make_target_stale(target)
     path = target.resolve()
     module_name = f"_project_manager_repo_owned_files:{path}"
     sys.modules.pop(module_name, None)
@@ -1691,8 +2206,8 @@ def test_pm_update_exempt_cache_is_reverified_by_domain(tmp_path):
 def test_pm_import_exec_failure_removes_partial_cache(tmp_path):
     tools = _copy_tools(tmp_path, "engine_rev", "pm_import", "repo_owned_files")
     target = tools / "repo_owned_files.py"
-    target.write_text("raise RuntimeError('exec boom')\n", encoding="utf-8")
     pm_import = _load_module(tools, "pm_import")
+    target.write_text("raise RuntimeError('exec boom')\n", encoding="utf-8")
     path = target.resolve()
     module_name = f"_project_manager_repo_owned_files:{path}"
     sys.modules.pop(module_name, None)
@@ -1776,7 +2291,7 @@ def test_sensitivity_removing_each_failsoft_reraise_loses_skew(
     tools = _copy_tools(tmp_path, *sorted(names))
     loader_path = tools / f"{loader_name}.py"
     _remove_skew_reraise_from_function(loader_path, function_name)
-    (tools / f"{target_name}.py").write_text(_stale_source(), encoding="utf-8")
+    _make_target_stale(tools / f"{target_name}.py")
     loader = _load_module(tools, loader_name)
 
     try:

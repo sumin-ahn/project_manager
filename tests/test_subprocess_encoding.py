@@ -486,6 +486,7 @@ def test_every_main_entrypoint_calls_common_console_helper():
         ):
             leading = leading[1:]  # 함수 docstring은 출력/dispatch가 아닌 메타데이터
         allowed_loader_calls = {
+            "_load_module_from_path",
             "spec_from_file_location",
             "module_from_spec",
             "exec_module",
@@ -511,8 +512,8 @@ def test_every_main_entrypoint_calls_common_console_helper():
     assert not missing, (
         "__main__ 보유 도구의 main() 최상위 선행 console helper 관용구 위반: "
         f"{missing}; 스캔 전수={sorted(entrypoints)}. 각 main() 첫 동작에 "
-        "`spec_from_file_location(... console_encoding.py) → module_from_spec → exec_module "
-        "→ (stamped면 _verify_engine_rev) → _console_encoding.configure_console_utf8()`를 "
+        "`_load_module_from_path(... console_encoding.py, verifier/allow_unverified=...) "
+        "→ _console_encoding.configure_console_utf8()`를 "
         "parser/print/dispatch보다 먼저 넣어라."
     )
 

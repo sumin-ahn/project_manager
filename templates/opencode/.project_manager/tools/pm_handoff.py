@@ -40,11 +40,134 @@ import difflib
 import fnmatch
 import os
 import re
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Iterator
+
+_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
+_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
+    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
+)
+_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
+_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
+_TOOLS_BOOTSTRAP_SENTINEL = object()
+try:
+    if (
+        _TOOLS_BOOTSTRAP_MODULE is not None
+        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+        != _TOOLS_BOOTSTRAP_FILE
+    ):
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+        _TOOLS_BOOTSTRAP_MODULE = None
+    if _TOOLS_BOOTSTRAP_MODULE is None:
+        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
+            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
+        )
+        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
+        if _TOOLS_BOOTSTRAP_ADDED:
+            sys.path.insert(0, _TOOLS_BOOTSTRAP)
+        try:
+            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
+            if (
+                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+                != _TOOLS_BOOTSTRAP_FILE
+            ):
+                raise ImportError(
+                    "repo_owned_files 형제 경로 불일치: "
+                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
+                )
+            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
+        finally:
+            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
+            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
+            if _TOOLS_BOOTSTRAP_ADDED:
+                try:
+                    sys.path.remove(_TOOLS_BOOTSTRAP)
+                except ValueError:
+                    pass
+            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
+                sys.modules.pop("repo_owned_files", None)
+            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
+                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
+    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
+except Exception as _TOOLS_BOOTSTRAP_ERROR:
+    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+
+    def _load_module_from_path(
+        path,
+        expected_filename,
+        *,
+        verifier=None,
+        allow_unverified=False,
+        cache=False,
+        cache_key=None,
+    ):
+        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
+        target = os.path.realpath(os.fspath(path))
+        if os.path.basename(target) != expected_filename:
+            raise ValueError(
+                f"module filename mismatch: expected {expected_filename!r}, "
+                f"got {os.path.basename(target)!r}"
+            )
+        if verifier is not None and allow_unverified:
+            raise ValueError("choose verifier or allow_unverified=True, not both")
+        if verifier is None and not allow_unverified:
+            raise ValueError(
+                "module load requires verifier or explicit allow_unverified=True"
+            )
+        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
+        module = sys.modules.get(module_key) if cache else None
+        inserted = False
+        try:
+            if module is None:
+                if (
+                    target == _TOOLS_BOOTSTRAP_FILE
+                    and _TOOLS_BOOTSTRAP_MODULE is not None
+                ):
+                    module = _TOOLS_BOOTSTRAP_MODULE
+                else:
+                    import_name = os.path.splitext(expected_filename)[0]
+                    previous = sys.modules.pop(
+                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
+                    )
+                    parent = os.path.dirname(target)
+                    added = not sys.path or sys.path[0] != parent
+                    if added:
+                        sys.path.insert(0, parent)
+                    try:
+                        module = __import__(import_name)
+                        if os.path.realpath(getattr(module, "__file__", "")) != target:
+                            raise ImportError(
+                                f"{expected_filename} 형제 경로 불일치"
+                            )
+                    finally:
+                        if added:
+                            try:
+                                sys.path.remove(parent)
+                            except ValueError:
+                                pass
+                        if sys.modules.get(import_name) is module:
+                            sys.modules.pop(import_name, None)
+                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
+                            sys.modules[import_name] = previous
+                if cache:
+                    sys.modules[module_key] = module
+                    inserted = True
+            if verifier is not None:
+                verifier(module, expected_filename)
+            return module
+        except Exception as exc:
+            if cache and (inserted or sys.modules.get(module_key) is module):
+                sys.modules.pop(module_key, None)
+            if target == _TOOLS_BOOTSTRAP_FILE:
+                raise RuntimeError(
+                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
+                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
+                ) from exc
+            raise
+
 
 REPO = Path(__file__).resolve().parents[2]
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
@@ -109,14 +232,10 @@ def _load_identity_args():
     identity_args 는 `--repo/--slot` 정체성 파싱에 load-bearing 이라(main ingress 가 그 결과로
     액터/리스를 해소) 로드 실패는 엔진 손상이다 — lint 계열의 fail-soft 로 흡수하지 않고 예외를
     그대로 낸다(fail-loud·board.py 동일)."""
-    import importlib.util
-
     ia_path = Path(__file__).resolve().parent / "identity_args.py"
-    spec = importlib.util.spec_from_file_location("identity_args", ia_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    _verify_engine_rev(mod, "identity_args.py")  # 사본 skew fail-loud
-    return mod
+    return _load_module_from_path(
+        ia_path, "identity_args.py", verifier=_verify_engine_rev,
+    )
 
 
 identity_args = _load_identity_args()
@@ -166,22 +285,19 @@ def _load_worktree_pool():
     pm_bootstrap._load_worktree_pool 과 동형 — REPO/tools 스크립트-위치 앵커.
     솔로(multi-PM 미사용·slot 미지정)에선 호출 안 되거나 None 이어도 무해.
     """
-    import importlib.util
-
     wp_path = TOOLS_DIR / "worktree_pool.py"
     if not wp_path.exists():
         return None
     try:
-        spec = importlib.util.spec_from_file_location("worktree_pool", wp_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        mod = _load_module_from_path(
+            wp_path, "worktree_pool.py", verifier=_verify_engine_rev,
+        )
     except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
         if _is_engine_rev_skew(exc):
             raise  # 중첩 로드에서 검출된 형제 skew 는 fail-loud(삼키지 않는다).
         return None
     # 로드 성공 후 rev skew 는 fail-loud(try 밖이라 fail-soft 로 삼켜지지 않는다).
     # 부재(파일 없음)는 위에서 이미 None 폴백 — 여기선 "present-but-skewed" 만 표출.
-    _verify_engine_rev(mod, "worktree_pool.py")
     return mod
 
 
@@ -196,20 +312,17 @@ def _load_pm_bootstrap():
     _load_worktree_pool 과 동형 — REPO/tools 스크립트-위치 앵커. 회귀 cwd 해소에서
     `_auto_slot` 재사용용. 부재/실패는 None 이고 호출부가 `str(REPO)` 로 폴백하므로 무해.
     """
-    import importlib.util
-
     bp_path = TOOLS_DIR / "pm_bootstrap.py"
     if not bp_path.exists():
         return None
     try:
-        spec = importlib.util.spec_from_file_location("pm_bootstrap", bp_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        mod = _load_module_from_path(
+            bp_path, "pm_bootstrap.py", verifier=_verify_engine_rev,
+        )
     except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
         if _is_engine_rev_skew(exc):
             raise  # pm_bootstrap(및 그 중첩 형제) skew 는 fail-loud(삼키지 않는다).
         return None
-    _verify_engine_rev(mod, "pm_bootstrap.py")  # 불변식: stamped sibling 로드 지점은 verify
     return mod
 
 
@@ -220,20 +333,17 @@ def _load_board():
     (`<repo>_<N>`) 거부용 `registered_repos()` 를 fail-soft 로 얻는 데만 쓴다(부재면 None →
     traversal·구문 검증만·pm_config.cmd_alloc 동형·board.py 직접 import 는 안 함·touches 격리).
     """
-    import importlib.util
-
     b_path = TOOLS_DIR / "board.py"
     if not b_path.exists():
         return None
     try:
-        spec = importlib.util.spec_from_file_location("board", b_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        mod = _load_module_from_path(
+            b_path, "board.py", verifier=_verify_engine_rev,
+        )
     except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 예약패턴 검증만 완화(traversal 유지).
         if _is_engine_rev_skew(exc):
             raise  # board 사본 skew 는 fail-loud(삼키지 않는다).
         return None
-    _verify_engine_rev(mod, "board.py")  # 불변식: stamped sibling 로드 지점은 verify
     return mod
 
 
@@ -2999,12 +3109,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _console_spec = importlib.util.spec_from_file_location(
-        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    _console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
     )
-    _console_encoding = importlib.util.module_from_spec(_console_spec)
-    _console_spec.loader.exec_module(_console_encoding)
-    _verify_engine_rev(_console_encoding, "console_encoding.py")
     _console_encoding.configure_console_utf8()
     parser = build_parser()
     args = parser.parse_args(argv)

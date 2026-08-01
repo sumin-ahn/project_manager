@@ -42,7 +42,6 @@ import argparse
 import base64
 import datetime
 import filecmp
-import importlib.util
 import os
 import re
 import shutil
@@ -52,6 +51,129 @@ import warnings
 import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
+_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
+    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
+)
+_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
+_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
+_TOOLS_BOOTSTRAP_SENTINEL = object()
+try:
+    if (
+        _TOOLS_BOOTSTRAP_MODULE is not None
+        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+        != _TOOLS_BOOTSTRAP_FILE
+    ):
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+        _TOOLS_BOOTSTRAP_MODULE = None
+    if _TOOLS_BOOTSTRAP_MODULE is None:
+        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
+            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
+        )
+        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
+        if _TOOLS_BOOTSTRAP_ADDED:
+            sys.path.insert(0, _TOOLS_BOOTSTRAP)
+        try:
+            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
+            if (
+                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+                != _TOOLS_BOOTSTRAP_FILE
+            ):
+                raise ImportError(
+                    "repo_owned_files 형제 경로 불일치: "
+                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
+                )
+            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
+        finally:
+            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
+            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
+            if _TOOLS_BOOTSTRAP_ADDED:
+                try:
+                    sys.path.remove(_TOOLS_BOOTSTRAP)
+                except ValueError:
+                    pass
+            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
+                sys.modules.pop("repo_owned_files", None)
+            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
+                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
+    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
+except Exception as _TOOLS_BOOTSTRAP_ERROR:
+    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+
+    def _load_module_from_path(
+        path,
+        expected_filename,
+        *,
+        verifier=None,
+        allow_unverified=False,
+        cache=False,
+        cache_key=None,
+    ):
+        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
+        target = os.path.realpath(os.fspath(path))
+        if os.path.basename(target) != expected_filename:
+            raise ValueError(
+                f"module filename mismatch: expected {expected_filename!r}, "
+                f"got {os.path.basename(target)!r}"
+            )
+        if verifier is not None and allow_unverified:
+            raise ValueError("choose verifier or allow_unverified=True, not both")
+        if verifier is None and not allow_unverified:
+            raise ValueError(
+                "module load requires verifier or explicit allow_unverified=True"
+            )
+        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
+        module = sys.modules.get(module_key) if cache else None
+        inserted = False
+        try:
+            if module is None:
+                if (
+                    target == _TOOLS_BOOTSTRAP_FILE
+                    and _TOOLS_BOOTSTRAP_MODULE is not None
+                ):
+                    module = _TOOLS_BOOTSTRAP_MODULE
+                else:
+                    import_name = os.path.splitext(expected_filename)[0]
+                    previous = sys.modules.pop(
+                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
+                    )
+                    parent = os.path.dirname(target)
+                    added = not sys.path or sys.path[0] != parent
+                    if added:
+                        sys.path.insert(0, parent)
+                    try:
+                        module = __import__(import_name)
+                        if os.path.realpath(getattr(module, "__file__", "")) != target:
+                            raise ImportError(
+                                f"{expected_filename} 형제 경로 불일치"
+                            )
+                    finally:
+                        if added:
+                            try:
+                                sys.path.remove(parent)
+                            except ValueError:
+                                pass
+                        if sys.modules.get(import_name) is module:
+                            sys.modules.pop(import_name, None)
+                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
+                            sys.modules[import_name] = previous
+                if cache:
+                    sys.modules[module_key] = module
+                    inserted = True
+            if verifier is not None:
+                verifier(module, expected_filename)
+            return module
+        except Exception as exc:
+            if cache and (inserted or sys.modules.get(module_key) is module):
+                sys.modules.pop(module_key, None)
+            if target == _TOOLS_BOOTSTRAP_FILE:
+                raise RuntimeError(
+                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
+                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
+                ) from exc
+            raise
 
 if TYPE_CHECKING:
     from repo_owned_files import RepoOwnedEntry
@@ -82,6 +204,7 @@ SOURCE_TAG_PREFIX = "@source="
 # read_manifest 가 path 행 끝에서 떼어낼 수 있는 boolean 마커들(복수·순서 무관). `@source=<path>` 는
 # 값 운반 마커라 prefix 검사로 별도 처리(이 튜플 밖).
 _MANIFEST_MARKERS = (RENDER_TAG, TARGET_OWNED_TAG)
+_CENTRAL_LOADER_REL = ".project_manager/tools/repo_owned_files.py"
 
 
 class ManifestEntry(str):
@@ -309,7 +432,9 @@ def read_manifest(path: Path) -> list[ManifestEntry]:
                 source_rel = marker[len(SOURCE_TAG_PREFIX):] or None
         line = " ".join(parts)
         out.append(ManifestEntry(line, render, target_owned, source_rel))
-    return out
+    # 구형·flavor manifest의 물리 행 순서가 남아 있어도 새 updater는 중앙 loader를 먼저
+    # 배포한다. self-update가 pm_update 직후 중단돼도 재실행 시 이 정규화가 복구 창을 닫는다.
+    return sorted(out, key=lambda entry: str(entry) != _CENTRAL_LOADER_REL)
 
 
 def _manifest_entry_line(entry) -> str:
@@ -427,51 +552,59 @@ def _read_local_conf(path: Path) -> dict[str, str]:
 
 
 def _load_repo_owned_files():
-    """공용 seam을 복구채널 면제로 로드한다(구형/부재 helper면 인라인 폴백).
+    """공용 seam을 복구채널 명시 면제로 로드한다.
 
-    이 도구는 부분/중단 배포를 고치는 복구 채널이므로 새 ``engine_rev`` seam 자체에 의존해
-    자기잠김되면 안 된다. 폴백도 공용 seam과 같은 path-key 캐시를 써서, 이후 stamped 소비자가
-    그 캐시를 다시 검증하는 성질은 그대로 보존한다.
+    중앙 로더는 stdlib-only이며 engine_rev를 import하지 않는다. 따라서 손상·구형 engine_rev와
+    무관하게 복구 채널이 열리고, path-key 캐시는 stamped 소비 시점에 다시 검증된다.
     """
     path = Path(__file__).resolve().with_name("repo_owned_files.py").resolve()
-
-    def load_direct():
-        module_name = f"_project_manager_repo_owned_files:{path}"
-        cached = sys.modules.get(module_name)
-        if cached is not None:
-            return cached
-        direct_spec = importlib.util.spec_from_file_location(module_name, path)
-        if direct_spec is None or direct_spec.loader is None:
-            raise RuntimeError(
-                "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
-            )
-        module = importlib.util.module_from_spec(direct_spec)
-        sys.modules[module_name] = module
-        try:
-            direct_spec.loader.exec_module(module)
-        except Exception:
-            sys.modules.pop(module_name, None)
-            raise
-        return module
-
-    helper_path = Path(__file__).resolve().with_name("engine_rev.py")
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "_pm_update_repo_owned_loader", helper_path
+    module = _load_module_from_path(
+        path,
+        "repo_owned_files.py",
+        allow_unverified=True,
+        cache=True,
+        cache_key=f"_project_manager_repo_owned_files:{path}",
+    )
+    required = (
+        "_real_git_runner",
+        "list_repo_owned_entries",
+        "list_repo_owned_files",
+        "TRACKED_ONLY",
+        "OWNED",
+    )
+    missing = [name for name in required if not hasattr(module, name)]
+    if missing:
+        raise RuntimeError(
+            "repo_owned_files.py 복구 API가 불완전함 "
+            f"({', '.join(missing)} 누락); pm-update로 .project_manager/tools 전체를 "
+            "재동기화하라."
         )
-        if spec is None or spec.loader is None:
-            return load_direct()
-        helper = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(helper)
-        loader = getattr(helper, "load_repo_owned_files", None)
-        if loader is None:
-            return load_direct()
-        return loader(path, allow_unverified=True)
-    # pm-update는 중단된 배포를 고치는 복구 채널이다. helper의 import·API 협상 어느
-    # 단계든 실패하면(손상된 소스의 SyntaxError·구형 시그니처 TypeError 포함) 직접
-    # 로드로 계속해야 자기잠김이 없다. BaseException은 종료/인터럽트 의미를 보존한다.
-    except Exception:
-        return load_direct()
+    return module
+
+
+def _predeploy_central_loader(source_root: Path, dest_root: Path) -> None:
+    """손상/구형 seam을 manifest 계획보다 먼저 복사해 self-update 복구를 연다."""
+    global _TOOLS_BOOTSTRAP_MODULE
+    source = source_root / _CENTRAL_LOADER_REL
+    dest = dest_root / _CENTRAL_LOADER_REL
+    try:
+        current = _load_module_from_path(
+            dest, "repo_owned_files.py", allow_unverified=True,
+        )
+    except Exception:  # noqa: BLE001 — 바로 아래 source 선복구 판정으로 수렴.
+        current = None
+    if callable(getattr(current, "load_module", None)):
+        return
+    if not source.is_file():
+        # seam을 manifest에 싣지 않은 레거시/부분 fixture는 기존 계획 경로를 보존한다.
+        # 실제 신 엔진 source는 manifest 순서 가드가 이 파일의 존재를 별도로 강제한다.
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
+    _TOOLS_BOOTSTRAP_MODULE = None
+    sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+    sys.modules.pop(f"_project_manager_repo_owned_files:{dest.resolve()}", None)
+    print(f"  [recovery-first] {_CENTRAL_LOADER_REL}")
 
 
 class SkippedRepoShippingEntryWarning(RuntimeWarning):
@@ -799,12 +932,9 @@ def _load_pm_render():
     안전쪽으로 처리하게 예외를 전파(render path 인데 렌더러 없음 = 명확한 에러가 옳다).
     """
     render_py = Path(__file__).resolve().parent / "pm_render.py"
-    spec = importlib.util.spec_from_file_location("pm_render", render_py)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"pm_render 로드 불가: {render_py}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return _load_module_from_path(
+        render_py, "pm_render.py", allow_unverified=True,
+    )
 
 
 def _load_pm_import():
@@ -818,12 +948,9 @@ def _load_pm_import():
     (baseline 기록은 best-effort·sync 자체를 깨지 않는다).
     """
     import_py = Path(__file__).resolve().parent / "pm_import.py"
-    spec = importlib.util.spec_from_file_location("pm_import", import_py)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"pm_import 로드 불가: {import_py}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return _load_module_from_path(
+        import_py, "pm_import.py", allow_unverified=True,
+    )
 
 
 # ── upstream baseline↔HEAD 변경점 요약 (read-only) ─────────
@@ -2879,12 +3006,9 @@ def _load_dest_pm_config(dest_root: Path):
     pm_config_py = Path(dest_root) / ".project_manager" / "tools" / "pm_config.py"
     if not pm_config_py.exists():
         return None
-    spec = importlib.util.spec_from_file_location("pm_config", pm_config_py)
-    if spec is None or spec.loader is None:
-        return None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return _load_module_from_path(
+        pm_config_py, "pm_config.py", allow_unverified=True,
+    )
 
 
 def _read_hook_artifact(path: Path) -> str | None:
@@ -3175,6 +3299,15 @@ def _main(argv: list[str] | None = None) -> int:
         return rc
     effective_dest = dest_root if dest_root is not None else REPO
 
+    # dry-run은 무변경 계약을 지킨다. 실제 sync에서는 manifest 해석/출하 인벤토리보다 먼저
+    # 중앙 seam을 복구해, missing/syntax/empty/old 어느 중단 상태에서도 같은 명령을 재실행한다.
+    if not args.dry_run:
+        try:
+            _predeploy_central_loader(source_root, effective_dest)
+        except (OSError, RuntimeError) as exc:
+            print(f"오류: 중앙 로더 선복구 실패 — {exc}", file=sys.stderr)
+            return 1
+
     # manifest: dest_root 의 것 우선, 없으면 source 의 것
     try:
         manifest_path = resolve_manifest_for_dest(effective_dest, source_root)
@@ -3420,19 +3553,23 @@ def main(argv: list[str] | None = None) -> int:
 
     apply/render/IO 등 다른 예외는 프로그래밍·시퀀싱 오류이므로 기존처럼 호출자에게 전파한다.
     """
-    _console_spec = importlib.util.spec_from_file_location(
-        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    _console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        allow_unverified=True,
     )
-    _console_encoding = importlib.util.module_from_spec(_console_spec)
-    _console_spec.loader.exec_module(_console_encoding)
     _console_encoding.configure_console_utf8()
-    repo_files = _load_repo_owned_files()
     try:
         return _main(argv)
     except EmptyShippingInventoryError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
-    except repo_files.RepoFilesGitError as exc:
+    except Exception as exc:
+        # 중앙 seam 복구는 _main이 --from을 해소한 뒤 선행한다. 예외 타입 판별 때문에
+        # main import 시점부터 seam을 요구하면 missing/syntax 복구가 다시 자기잠김된다.
+        repo_files = _load_repo_owned_files()
+        if not isinstance(exc, repo_files.RepoFilesGitError):
+            raise
         print(
             "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "
             f"{exc}; 해당 checkout 경로와 git index 상태를 확인·복구한 뒤 다시 실행하라.",

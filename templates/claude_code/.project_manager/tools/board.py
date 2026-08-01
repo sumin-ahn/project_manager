@@ -20,7 +20,6 @@ import contextlib
 import datetime
 import fnmatch
 import functools
-import importlib.util
 import json
 import os
 import re
@@ -35,6 +34,129 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import yaml
+
+_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
+_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
+    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
+)
+_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
+_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
+_TOOLS_BOOTSTRAP_SENTINEL = object()
+try:
+    if (
+        _TOOLS_BOOTSTRAP_MODULE is not None
+        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+        != _TOOLS_BOOTSTRAP_FILE
+    ):
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+        _TOOLS_BOOTSTRAP_MODULE = None
+    if _TOOLS_BOOTSTRAP_MODULE is None:
+        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
+            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
+        )
+        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
+        if _TOOLS_BOOTSTRAP_ADDED:
+            sys.path.insert(0, _TOOLS_BOOTSTRAP)
+        try:
+            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
+            if (
+                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+                != _TOOLS_BOOTSTRAP_FILE
+            ):
+                raise ImportError(
+                    "repo_owned_files 형제 경로 불일치: "
+                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
+                )
+            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
+        finally:
+            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
+            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
+            if _TOOLS_BOOTSTRAP_ADDED:
+                try:
+                    sys.path.remove(_TOOLS_BOOTSTRAP)
+                except ValueError:
+                    pass
+            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
+                sys.modules.pop("repo_owned_files", None)
+            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
+                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
+    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
+except Exception as _TOOLS_BOOTSTRAP_ERROR:
+    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+
+    def _load_module_from_path(
+        path,
+        expected_filename,
+        *,
+        verifier=None,
+        allow_unverified=False,
+        cache=False,
+        cache_key=None,
+    ):
+        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
+        target = os.path.realpath(os.fspath(path))
+        if os.path.basename(target) != expected_filename:
+            raise ValueError(
+                f"module filename mismatch: expected {expected_filename!r}, "
+                f"got {os.path.basename(target)!r}"
+            )
+        if verifier is not None and allow_unverified:
+            raise ValueError("choose verifier or allow_unverified=True, not both")
+        if verifier is None and not allow_unverified:
+            raise ValueError(
+                "module load requires verifier or explicit allow_unverified=True"
+            )
+        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
+        module = sys.modules.get(module_key) if cache else None
+        inserted = False
+        try:
+            if module is None:
+                if (
+                    target == _TOOLS_BOOTSTRAP_FILE
+                    and _TOOLS_BOOTSTRAP_MODULE is not None
+                ):
+                    module = _TOOLS_BOOTSTRAP_MODULE
+                else:
+                    import_name = os.path.splitext(expected_filename)[0]
+                    previous = sys.modules.pop(
+                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
+                    )
+                    parent = os.path.dirname(target)
+                    added = not sys.path or sys.path[0] != parent
+                    if added:
+                        sys.path.insert(0, parent)
+                    try:
+                        module = __import__(import_name)
+                        if os.path.realpath(getattr(module, "__file__", "")) != target:
+                            raise ImportError(
+                                f"{expected_filename} 형제 경로 불일치"
+                            )
+                    finally:
+                        if added:
+                            try:
+                                sys.path.remove(parent)
+                            except ValueError:
+                                pass
+                        if sys.modules.get(import_name) is module:
+                            sys.modules.pop(import_name, None)
+                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
+                            sys.modules[import_name] = previous
+                if cache:
+                    sys.modules[module_key] = module
+                    inserted = True
+            if verifier is not None:
+                verifier(module, expected_filename)
+            return module
+        except Exception as exc:
+            if cache and (inserted or sys.modules.get(module_key) is module):
+                sys.modules.pop(module_key, None)
+            if target == _TOOLS_BOOTSTRAP_FILE:
+                raise RuntimeError(
+                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
+                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
+                ) from exc
+            raise
 
 REPO = Path(__file__).resolve().parents[2]
 IDEAS_DIR = REPO / ".project_manager" / "wiki" / "ideas"
@@ -689,11 +811,9 @@ def _load_identity_args():
     advisory fail-soft 관용구와 달리) 조용히 흡수하지 않고 그대로 예외를 낸다(fail-loud).
     """
     ia_path = Path(__file__).resolve().parent / "identity_args.py"
-    spec = importlib.util.spec_from_file_location("identity_args", ia_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    _verify_engine_rev(mod, "identity_args.py")  # 사본 skew fail-loud
-    return mod
+    return _load_module_from_path(
+        ia_path, "identity_args.py", verifier=_verify_engine_rev,
+    )
 
 
 identity_args = _load_identity_args()
@@ -4000,9 +4120,9 @@ def _minimum_python() -> tuple[int, int]:
     # os.name 은 _detect_py Windows 분기 테스트/실행에서 바뀔 수 있으므로, 그 값에 따라
     # WindowsPath/PosixPath 구현을 고르는 pathlib 대신 import 시 고정된 os.path 를 쓴다.
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine_rev.py")
-    spec = importlib.util.spec_from_file_location("_engine_rev_python_floor", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = _load_module_from_path(
+        type(REPO)(path), "engine_rev.py", allow_unverified=True,
+    )
     return tuple(mod.MIN_PYTHON)
 
 
@@ -5961,12 +6081,9 @@ def _load_pm_bootstrap_module():
     실패 시 None → 호출부가 freshness 표면화를 조용히 생략(fail-soft·advisory 라 무발화)."""
     pmb_py = Path(__file__).resolve().parent / "pm_bootstrap.py"
     try:
-        spec = importlib.util.spec_from_file_location("pm_bootstrap", pmb_py)
-        if spec is None or spec.loader is None:
-            return None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "pm_bootstrap.py")  # 불변식: stamped sibling 로드 지점은 verify
+        mod = _load_module_from_path(
+            pmb_py, "pm_bootstrap.py", verifier=_verify_engine_rev,
+        )
         return mod
     except Exception as exc:  # noqa: BLE001 — 로드 실패는 무발화(freshness 생략·advisory).
         if _is_engine_rev_skew(exc):
@@ -7069,11 +7186,9 @@ def _run_lint_hooks() -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for hook in sorted(HOOKS_DIR.glob("lint_*.py")):
         try:
-            spec = importlib.util.spec_from_file_location(hook.stem, hook)
-            if spec is None or spec.loader is None:
-                continue
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+            mod = _load_module_from_path(
+                hook, hook.name, allow_unverified=True,
+            )
             check = getattr(mod, "check", None)
             if not callable(check):
                 print(f"⚠️  lint hook {hook.name}: check() 미정의 — 건너뜀", file=sys.stderr)
@@ -7762,13 +7877,9 @@ def _load_pm_update_module():
     덮어쓴다 — 호출마다 새 exec 라 그 대입이 갇히는데, 캐시를 도입하면 전역 오염이 된다."""
     pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("pm_update", pm_update_py)
-        if spec is None or spec.loader is None:
-            return None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
+        return _load_module_from_path(
+            pm_update_py, "pm_update.py", allow_unverified=True,
+        )
     except Exception:  # noqa: BLE001 — 로드 실패는 무발화(검사 대상 0).
         return None
 
@@ -9530,13 +9641,10 @@ def _load_domain_module():
     """
     if not DOMAIN_PY.exists():
         return None
-    spec = importlib.util.spec_from_file_location("_domain_lint", DOMAIN_PY)
-    if spec is None:
-        return None
-    mod = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(mod)
-        _verify_engine_rev(mod, "domain.py")  # stamped sibling 로드 지점은 verify
+        mod = _load_module_from_path(
+            DOMAIN_PY, "domain.py", verifier=_verify_engine_rev,
+        )
     except Exception as exc:  # noqa: BLE001 — 로드 실패는 None 으로 흡수(비차단).
         if _is_engine_rev_skew(exc):
             raise  # domain 사본 skew 는 fail-loud(삼키지 않는다).
@@ -9594,16 +9702,13 @@ def _load_pm_delegate_module():
     if not PM_DELEGATE_PY.exists():
         return None
     try:
-        spec = importlib.util.spec_from_file_location("_delegate_lint", PM_DELEGATE_PY)
-        if spec is None or spec.loader is None:
-            return None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        mod = _load_module_from_path(
+            PM_DELEGATE_PY, "pm_delegate.py", verifier=_verify_engine_rev,
+        )
     except Exception as exc:  # noqa: BLE001 — 일반 로드 실패만 None, 중첩 skew는 fail-loud.
         if _is_engine_rev_skew(exc):
             raise
         return None
-    _verify_engine_rev(mod, "pm_delegate.py")
     return mod
 
 
@@ -10085,12 +10190,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _console_spec = importlib.util.spec_from_file_location(
-        "_console_encoding", Path(__file__).resolve().with_name("console_encoding.py")
+    _console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
     )
-    _console_encoding = importlib.util.module_from_spec(_console_spec)
-    _console_spec.loader.exec_module(_console_encoding)
-    _verify_engine_rev(_console_encoding, "console_encoding.py")
     _console_encoding.configure_console_utf8()
     args = build_parser().parse_args(argv)
     # PM-홈 worktree 오실행 가드 — mutation subcommand 전수·단일 dispatch 지점.

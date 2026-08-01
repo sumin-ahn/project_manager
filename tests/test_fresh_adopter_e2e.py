@@ -201,6 +201,40 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
+def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, harness):
+    """세 flavor 실출하 사본이 중앙 loader를 포함하고 self-update 뒤에도 직접 CLI로 동작한다."""
+    dest = tmp_path / f"central-loader-{harness}"
+    assert pm_import.main(
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    ) == 0
+    seam = dest / ".project_manager" / "tools" / "repo_owned_files.py"
+    assert seam.is_file() and "def load_module(" in seam.read_text(encoding="utf-8")
+
+    updated = subprocess.run(
+        [
+            sys.executable,
+            str(dest / ".project_manager" / "tools" / "pm_update.py"),
+            "--from",
+            str(REPO),
+        ],
+        cwd=dest,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PM_NONINTERACTIVE": "1"},
+        timeout=60,
+    )
+    assert updated.returncode == 0, (
+        f"{harness} self-update failed\nstdout={updated.stdout}\nstderr={updated.stderr}"
+    )
+    lint = _board(dest, "lint", "--gate")
+    assert lint.returncode == 0, (
+        f"{harness} post-update board bootstrap failed\nstdout={lint.stdout}\nstderr={lint.stderr}"
+    )
+
+
+@pytest.mark.parametrize("harness", HARNESSES)
 def test_harness_templates_ship_ticket_status_scaffold(pm_import, harness):
     """파생 HARNESSES 축의 모든 template이 README와 상태-dir keep 파일을 출하한다."""
     (template_dir,) = pm_import.HARNESS_TEMPLATE_DIRS[harness]
