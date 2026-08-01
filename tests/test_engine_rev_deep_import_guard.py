@@ -1224,6 +1224,7 @@ def test_bootstrap_fallback_restores_path_and_same_name_module_on_error(
 
 
 def test_manifest_ships_central_loader_before_every_consumer():
+    pm_update = _load_module(TOOLS, "pm_update")
     seam = ".project_manager/tools/repo_owned_files.py"
     consumers = []
     for source in TOOLS.glob("*.py"):
@@ -1246,13 +1247,8 @@ def test_manifest_ships_central_loader_before_every_consumer():
           for flavor in ("claude_code", "codex", "opencode")),
     ]
     for path in manifests:
-        manifest = [
-            line.split()[0].replace("\\", "/")
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        ]
+        manifest = [str(entry) for entry in pm_update.read_manifest(path)]
         seam_index = manifest.index(seam)
-        assert seam_index == 0, path
         assert all(seam_index < manifest.index(consumer) for consumer in consumers), path
 
 

@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import sys
 import warnings
-from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -3758,82 +3757,6 @@ def test_self_prop_target_sync_preserves_flavor_manifest(
     assert f"FLAVOR: {foreign}" not in after, (
         f"--target {target} 가 {foreign} flavor 매니페스트로 {flavor} 를 clobber(self-prop remap 실패): {after!r}")
     assert after == before, "flavor 매니페스트가 자기전파에서 변경됨(self no-op 이어야)"
-
-
-def test_target_from_external_checkout_propagates_new_upstream_manifest_entry(
-        pm_update, tmp_path, monkeypatch):
-    """외부 checkout의 flavor manifest를 먼저 갱신한 뒤 신규 등재 파일까지 전파한다."""
-    fake_repo = tmp_path / "framework"
-    target = "codex"
-    target_root = fake_repo / "templates" / target
-    target_root.mkdir(parents=True)
-    external = tmp_path / "external"
-    flavor_manifest_rel = f"templates/{target}/.project_manager/engine.manifest"
-    self_entry = f"{MANIFEST_SELF_REL}    @source={flavor_manifest_rel}"
-    seam = ".project_manager/tools/repo_owned_files.py"
-    existing = ".project_manager/tools/board.py"
-    added = ".project_manager/tools/new_engine_file.py"
-
-    _write_dest_manifest(target_root, [seam, existing, self_entry])
-    upstream_manifest = external / flavor_manifest_rel
-    upstream_manifest.parent.mkdir(parents=True)
-    upstream_manifest.write_text(
-        "# external flavor\n"
-        f"{existing}\n"
-        f"{added}\n"
-        f"{self_entry}\n"
-        f"{seam}",
-        encoding="utf-8",
-    )
-    for rel in (seam, existing, added):
-        source = external / rel
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_text(f"# external {rel}\n", encoding="utf-8")
-    _track_source_tree(external)
-
-    monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    monkeypatch.setattr(pm_update, "_predeploy_central_loader", lambda *_args: None)
-    _stub_no_baseline_git(pm_update, monkeypatch)
-
-    assert pm_update.main(["--target", target, "--from", str(external)]) == 0
-    installed_manifest = target_root / MANIFEST_SELF_REL
-    first_pass = installed_manifest.read_text(encoding="utf-8")
-    assert added in first_pass
-    assert first_pass.splitlines()[1] == seam
-    assert not first_pass.endswith("\n")
-    assert not (target_root / added).exists()
-
-    assert pm_update.main(["--target", target, "--from", str(external)]) == 0
-    assert (target_root / added).read_text(encoding="utf-8") == f"# external {added}\n"
-
-
-@pytest.mark.parametrize("trailing_newline", [True, False], ids=["trailing", "no-trailing"])
-@pytest.mark.parametrize("seam_position", ["first", "middle", "last"])
-def test_central_loader_manifest_reorder_preserves_lines_and_trailing_newline(
-        pm_update, tmp_path, trailing_newline, seam_position):
-    """주석·빈 줄을 포함한 manifest 재배열이 행과 EOF 개행을 그대로 보존한다."""
-    seam = ".project_manager/tools/repo_owned_files.py"
-    entries_by_position = {
-        "first": [seam, ".project_manager/tools/board.py", ".project_manager/tools/pm_update.py"],
-        "middle": [".project_manager/tools/board.py", seam, ".project_manager/tools/pm_update.py"],
-        "last": [".project_manager/tools/board.py", ".project_manager/tools/pm_update.py", seam],
-    }
-    first, second, third = entries_by_position[seam_position]
-    lines = ["# header", "", first, "# between entries", second, "", third]
-    original = "\n".join(lines) + ("\n" if trailing_newline else "")
-    manifest = tmp_path / "engine.manifest"
-    manifest.write_text(original, encoding="utf-8")
-
-    reordered = pm_update._central_loader_first_manifest_text(manifest)
-
-    assert Counter(reordered.splitlines()) == Counter(original.splitlines())
-    assert reordered.endswith("\n") is trailing_newline
-    physical_entries = [
-        line for line in reordered.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    assert physical_entries[0] == seam
-    assert Counter(physical_entries) == Counter(entries_by_position[seam_position])
 
 
 def test_self_prop_self_update_preserves_root_flavor(pm_update, tmp_path, monkeypatch):

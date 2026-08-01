@@ -14,7 +14,6 @@
 #   - 어댑터 파일(.opencode/agents·lib·plugins·AGENTS.md)은 opencode-고유 어댑터층으로 잔존.
 
 # ── 도구 (순수 엔진) ─────────────────────────────────────────────
-.project_manager/tools/repo_owned_files.py
 .project_manager/tools/board.py
 # engine_rev: 엔진 사본 rev 스탬프 단일 진실 (T-0397) — sibling 로더가 로드한 형제 모듈의
 #   ENGINE_REV 를 이 값과 대조해 사본 skew(신 도구+구 형제)를 로드 시점 fail-loud 로 표출.
@@ -55,6 +54,7 @@
 # repo_owned_files: git 우선 repo 소유 파일 열거 공용 seam. tracked_only/owned 모드를 선언한다.
 #   owned는 git 실패 시 폴백, tracked_only는 비저장소(rc 128)/git 부재만 loud 경고 후 폴백하고
 #   옵션 미지원(rc 129)·손상 index·unmerged는 누출 방지를 위해 실패한다.
+.project_manager/tools/repo_owned_files.py
 # delegate_scope: 위임 전/후 porcelain 상태를 비교해 ticket touches 밖 변경을 loud 경고로
 #   표면화하는 비차단 판정기(T-0462). PM-home 좌표는 repo_coordinates 공용 normalizer를 재사용.
 .project_manager/tools/delegate_scope.py

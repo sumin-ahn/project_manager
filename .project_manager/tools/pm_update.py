@@ -438,33 +438,6 @@ def read_manifest(path: Path) -> list[ManifestEntry]:
     return sorted(out, key=lambda entry: str(entry) != _CENTRAL_LOADER_REL)
 
 
-def _central_loader_first_manifest_text(path: Path) -> str:
-    """주석/공백을 보존하며 중앙 seam 행만 첫 물리 엔트리로 옮긴 원문을 반환한다."""
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
-    bodies = [line.rstrip("\r\n") for line in lines]
-    endings = [line[len(body):] for line, body in zip(lines, bodies)]
-    entries = [
-        index for index, line in enumerate(bodies)
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    seam_indexes = [
-        index for index in entries
-        if bodies[index].split()[0].replace("\\", "/") == _CENTRAL_LOADER_REL
-    ]
-    if not entries or not seam_indexes or seam_indexes[0] == entries[0]:
-        return text
-    seam_body = bodies.pop(seam_indexes[0])
-    bodies.insert(entries[0], seam_body)
-    # EOF 개행이 없고 seam 바로 앞에 빈 행이 있던 경우, 안정 이동 뒤 그 빈 행이 마지막이 되면
-    # 텍스트가 개행으로 끝나게 된다. 행은 보존하되 EOF 빈 행만 seam 앞 비엔트리 위치로 옮겨
-    # 원문의 trailing-newline 상태와 seam-first 성질을 함께 유지한다.
-    if endings and not endings[-1] and bodies[-1] == "":
-        trailing_empty = bodies.pop()
-        bodies.insert(entries[0], trailing_empty)
-    return "".join(body + ending for body, ending in zip(bodies, endings))
-
-
 def _manifest_entry_line(entry) -> str:
     """ManifestEntry를 손실 없이 한 manifest 행으로 직렬화한다(마커 순서 결정적)."""
     markers: list[str] = []
@@ -3392,17 +3365,6 @@ def _main(argv: list[str] | None = None) -> int:
         return 1
 
     manifest = read_manifest(manifest_path)
-    target_manifest_source = None
-    if args.target:
-        target_manifest_source = next(
-            (
-                source_root / _source_root_rel(entry)
-                for entry in manifest
-                if str(entry).replace("\\", "/") == _MANIFEST_SELF_REL
-            ),
-            None,
-        )
-
     # ── manifest 자기치유 (self-update 2-pass) — upstream engine.manifest 를 이번 sync 의
     #    계획 기준으로 승격해, 로컬 manifest 가 구형이어도 신규 등재분이 한 번의 실행으로 plan→apply
     #    에 실린다(회사 실측: bare CLI 흡수가 신규 등재분 미도달). manifest 자신도 self-prop 엔트리
@@ -3465,13 +3427,9 @@ def _main(argv: list[str] | None = None) -> int:
         dest_root=dest_root,
         render_enabled=render_enabled,
         manifest_source_text=(
-            _central_loader_first_manifest_text(target_manifest_source)
-            if target_manifest_source is not None and target_manifest_source.is_file()
-            else (
-                selfheal.get("manifest_text")
-                if len(selfheal.get("upstream_manifests", [])) > 1
-                else None
-            )
+            selfheal.get("manifest_text")
+            if len(selfheal.get("upstream_manifests", [])) > 1
+            else None
         ),
     )
 
