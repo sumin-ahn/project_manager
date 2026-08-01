@@ -7,17 +7,17 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
 
 사용:
     pm_import.py (--into <기존프로젝트> | --new <프로젝트>)   # 모드 택1
-                 --harness {claude,opencode,both,codex}      # 어댑터 (default: claude)
+                 --harness <harness[,harness...]|all>        # 어댑터 집합 (default: claude)
                  --weight  {full,lite}                        # 무게축 (default: full)
                  [--from <프레임워크-checkout>]               # 소스 (default: 이 repo 루트)
                  [--name <표시이름>]                          # {{PROJECT_NAME}} (default: 디렉토리명)
                  [--fill {auto,manual}]                       # 자유서술 채움 (default: manual)
-                 [--fill-harness {claude,opencode}]           # 구동 하니스 (default: --harness)
+                 [--fill-harness {@REGISTERED_FILL_HARNESSES@}] # 구동 하니스 (default: --harness)
                  [--dry-run]                                  # 적용 없이 계획만 출력(fill 미호출)
 
 동작:
   소스 = <--from>/templates/<harness>/ 트리(엔진 + 어댑터)를 대상으로 복사한다.
-  `both` 면 두 어댑터 트리를 병합 복사(엔진 동일·어댑터 디렉토리/파일명 안 겹쳐 충돌 0).
+  콤마 선택 또는 `all`이면 선택된 어댑터 트리를 집합으로 병합 복사한다.
   복사 후 operational placeholder 를 sed 치환하고 `board.py init`(solo)을 호출한다.
     - sed 대상 = {{PROJECT_NAME}}·{{PROJECT_TAGLINE}}·{{PROJECT_ROOT}}·{{PY}}·{{TEST_CMD}}·{{DATE}}.
     - 엔진 문서(wiki/pm_role.md·pm_playbook.md)는 sed 제외 — local.conf 가 런타임 해소.
@@ -43,10 +43,10 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
   - fill opt-in 게이트(external_review 선례): 하니스 실구동은 토큰·외부모델 비용 → 기본 OFF.
     **실호출은 환경변수 PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만.** 둘 중 하나라도
     없으면 실 runner 를 호출하지 않는다(CI·기본 테스트는 stub). 회사 배포(claude code 없음)는
-    opencode 구동 경로 1급 — `both`/혼합이면 claude 우선·부재 시 opencode 폴백.
+    opencode 구동 경로 1급 — 혼합이면 등록 순서상 첫 가용 하네스를 택한다.
 
 opt-in 실 e2e (CI 비포함 — 토큰·외부모델 비용 발생):
-    1) 대상 하니스 바이너리 설치 확인 (`claude` 또는 `opencode` 가 PATH 에 있어야 함).
+    1) 대상 하니스 바이너리 설치 확인 (@REGISTERED_FILL_BINARIES@ 중 선택한 것이 PATH 에 있어야 함).
     2) 환경변수와 플래그를 *동시* 지정해 실구동:
            PM_IMPORT_LIVE_HARNESS=1 pm_import.py --into <repo> --fill auto [--fill-harness opencode]
        - 둘 중 하나만 주면 실호출이 차단되고 stub/manual 로 폴백한다(안전).
@@ -136,14 +136,132 @@ import tomllib
 
 REPO = Path(__file__).resolve().parents[2]
 
-# import 어댑터 선택. codex = 세 번째 하네스. `both`(claude+opencode)는 legacy 조합 키로
-# 유지하되 **신규 조합 키는 만들지 않는다**(claude+codex 등) — N번째 하네스 공존은 add-harness 채널로
-# 통일한다(조합 폭발[7키] 회피·uniform 규칙).
-HARNESS_CHOICES = ("claude", "opencode", "both", "codex")
+# import 어댑터 registry의 단일 진실. 공개 ``--harness``는 이 키들의 콤마 집합 또는 ``all``을
+# 받는다. ``all``은 별도 튜플을 갖지 않고 항상 이 mapping의 키 전체에서 파생된다. 값은 template
+# 디렉터리 튜플 shape를 유지해 기존 소비자/테스트 축이 새 하네스를 자동 발견하게 한다.
+HARNESS_TEMPLATE_DIRS = {
+    "claude": ("claude_code",),
+    "opencode": ("opencode",),
+    "codex": ("codex",),
+}
+REGISTERED_HARNESSES = tuple(HARNESS_TEMPLATE_DIRS)
+HARNESS_ALL = "all"
+
+# v1.5.x에 현재 접근 가능한 등록 live adopter 중 legacy alias 채택자는 0건이었지만, 공개 문서/스크립트에
+# 남았던 호출을 조용히 깨지 않도록 한 feature 경계만 loud alias로 유지한다. v1.6.0에서 제거한다:
+# 실사용 0 + v1.5.x 경고/새 표기 안내 한 주기가 짧은 유예의 근거다.
+LEGACY_HARNESS_ALIASES = {"both": ("claude", "opencode")}
+LEGACY_BOTH_REMOVAL_VERSION = "v1.6.0"
+HARNESS_CHOICES = (*REGISTERED_HARNESSES, HARNESS_ALL, *LEGACY_HARNESS_ALIASES)
 WEIGHT_CHOICES = ("full", "lite")
 
+
+def _engine_rev_tuple(value: str) -> tuple[int, int, int]:
+    """정규 engine rev(``vMAJOR.MINOR.PATCH``)를 비교 가능한 정수 튜플로 바꾼다."""
+    match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", value)
+    if match is None:
+        raise RuntimeError(f"기계 비교할 수 없는 ENGINE_REV 형식: {value!r}")
+    return tuple(int(part) for part in match.groups())
+
+
+def _enforce_legacy_harness_alias_deadline(
+    engine_rev: str = ENGINE_REV,
+    aliases: dict[str, tuple[str, ...]] | None = None,
+) -> None:
+    """제거 버전에 도달한 legacy alias가 사람의 기억에만 기대어 잔존하지 않게 한다."""
+    active_aliases = LEGACY_HARNESS_ALIASES if aliases is None else aliases
+    if (
+        active_aliases
+        and _engine_rev_tuple(engine_rev)
+        >= _engine_rev_tuple(LEGACY_BOTH_REMOVAL_VERSION)
+    ):
+        raise RuntimeError(
+            f"ENGINE_REV {engine_rev}에서는 legacy harness alias를 제거해야 합니다: "
+            f"{', '.join(active_aliases)} (기한 {LEGACY_BOTH_REMOVAL_VERSION})"
+        )
+
+
+_enforce_legacy_harness_alias_deadline()
+
+LEGACY_BOTH_WARNING = (
+    "경고: --harness both 는 deprecated alias입니다; "
+    f"--harness claude,opencode 를 사용하세요 ({LEGACY_BOTH_REMOVAL_VERSION}에서 제거)."
+)
+
+
+def parse_harness_selection(
+    value: str,
+    *,
+    harness_template_dirs: dict[str, tuple[str, ...]] | None = None,
+    warn_legacy: bool = False,
+) -> tuple[str, ...]:
+    """콤마 선택을 registry 순서의 중복 없는 하네스 튜플로 정규화한다.
+
+    입력 순서는 결과/충돌 우선순위에 영향을 주지 않는다. ``all``은 호출 시점 registry의 키
+    전체로 확장돼 네 번째 하네스가 추가돼도 자동 편입된다. legacy ``both``도 집합 원소처럼
+    확장할 수 있지만 한 호출에 경고는 정확히 한 줄만 낸다.
+    """
+    registry = HARNESS_TEMPLATE_DIRS if harness_template_dirs is None else harness_template_dirs
+    if not isinstance(value, str):
+        raise ValueError(f"--harness 값은 문자열이어야 합니다: {value!r}")
+    raw_tokens = value.split(",")
+    tokens = [token.strip() for token in raw_tokens]
+    if not tokens or any(not token for token in tokens):
+        raise ValueError(
+            "--harness 선택에 빈 항목이 있습니다 — 예: claude,codex 또는 all"
+        )
+    known = set(registry) | {HARNESS_ALL} | set(LEGACY_HARNESS_ALIASES)
+    unknown = sorted(set(tokens) - known)
+    if unknown:
+        raise ValueError(
+            f"미지원 harness: {', '.join(unknown)} — 지원: "
+            f"{', '.join(registry)}; 조합은 콤마 구분, 전체는 all"
+        )
+
+    selected: set[str] = set()
+    used_legacy = False
+    for token in tokens:
+        if token == HARNESS_ALL:
+            selected.update(registry)
+        elif token in LEGACY_HARNESS_ALIASES:
+            aliases = LEGACY_HARNESS_ALIASES[token]
+            missing = [harness for harness in aliases if harness not in registry]
+            if missing:
+                raise ValueError(
+                    f"legacy harness alias {token!r}가 미등록 하네스를 가리킵니다: "
+                    f"{', '.join(missing)}"
+                )
+            selected.update(aliases)
+            used_legacy = True
+        else:
+            selected.add(token)
+    if not selected:
+        raise ValueError("--harness 선택 결과가 비었습니다.")
+    if used_legacy and warn_legacy:
+        print(LEGACY_BOTH_WARNING, file=sys.stderr)
+    return tuple(harness for harness in registry if harness in selected)
+
+
+def _parse_harness_arg(value: str) -> tuple[str, ...]:
+    """argparse 경계: 집합 파서 오류를 표준 CLI usage 오류로 바꾼다."""
+    try:
+        return parse_harness_selection(value, warn_legacy=True)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
 FILL_CHOICES = ("auto", "manual")
-FILL_HARNESS_CHOICES = ("claude", "opencode")
+FILL_HARNESS_CHOICES = REGISTERED_HARNESSES
+
+
+def _cli_description() -> str:
+    """모듈 도움말의 fill 목록도 현재 registry에서 렌더한다."""
+    registered = tuple(HARNESS_TEMPLATE_DIRS)
+    return (__doc__ or "").replace(
+        "@REGISTERED_FILL_HARNESSES@", ",".join(registered)
+    ).replace(
+        "@REGISTERED_FILL_BINARIES@",
+        "·".join(f"`{harness}`" for harness in registered),
+    )
 
 # fill 단계가 채우는 자유서술 placeholder 3종 (sed 로 못 채움 — repo 분석 필요).
 # operational(보존) 토큰과 달리 board init 후 하니스 구동(auto) 또는 TODO 표시(manual)로 처리.
@@ -209,14 +327,6 @@ def _opencode_models_timeout() -> int:
         return OPENCODE_MODELS_TIMEOUT_SECONDS
     return val if val > 0 else OPENCODE_MODELS_TIMEOUT_SECONDS
 
-# --harness 값 → templates/ 하위 어댑터 트리 디렉토리명.
-HARNESS_TEMPLATE_DIRS = {
-    "claude": ("claude_code",),
-    "opencode": ("opencode",),
-    "both": ("claude_code", "opencode"),
-    "codex": ("codex",),
-}
-
 # add_harness어댑터 네임스페이스 = {adapter dir(들), root doc}. 라이브 인스턴스에 두 번째
 # harness 를 *비파괴로 추가*할 때 복사 스코프 = 이 네임스페이스 ∪ **guest flavor 가 `@render` 로 선언한
 # 경로**(cross-ns 의존물 포함) − **host 실소유**. 그 밖(엔진·wiki dev-state·타 harness·
@@ -224,7 +334,7 @@ HARNESS_TEMPLATE_DIRS = {
 # opencode 를 codex host 에 추가하면 opencode 가 네이티브 소비하는 `.claude/skills`(`.opencode` 밖·
 # flavor `@render` 선언이라 복사·등재된다. host 가 이미 소유한 경로(dest engine.manifest
 # core·`_dest_manifest_core_paths`)는 스코프 안이라도 제외한다(중복 레이다운 방지). 단일 harness
-# (claude|opencode|codex)만 추가한다('both' 는 최초 import 소관).
+# (claude|opencode|codex) 하나만 추가한다(집합 선택은 최초 import 소관).
 #
 # 값 shape = **`(adapter_dirs: tuple, root_doc)`**. claude/opencode 는
 # 어댑터 dir 가 하나라 단일-원소 튜플(`(".claude",)`)이고, codex 는 네임스페이스가 **둘**로 갈린다 —
@@ -235,6 +345,16 @@ ADD_HARNESS_ADAPTER = {
     "claude": ((".claude",), "CLAUDE.md"),
     "opencode": ((".opencode",), "AGENTS.md"),
     "codex": ((".codex", ".agents"), "AGENTS.md"),
+}
+
+# 둘 이상의 하네스가 같은 루트 진입 문서를 자동 로드할 때의 공존 정책.
+# 값 = (문서를 공유하는 하네스 집합, harness-neutral 원본을 소유한 하네스). opencode 단독 lite는
+# 자족형 AGENTS.lite.md를 계속 쓰지만, opencode+codex 공존에서는 그 opencode 실행 모델(task tool)이
+# codex에도 자동 로드되지 않도록 두 트리의 AGENTS.md source를 공통 코어로 통일한다. full도 같은
+# 선언을 타므로 두 무게축의 정책이 갈리지 않는다. 하네스별 실행/위임 지침은 각 namespace
+# (.opencode/pm-instructions.md, .agents/skills·.codex/agents)에 그대로 분리되어 있다.
+NEUTRAL_SHARED_ENTRY_DOCS = {
+    Path("AGENTS.md"): (frozenset({"opencode", "codex"}), "codex"),
 }
 
 # add-harness가 절대 merge/clobber하지 않는 adopter-owned adapter 설정의 단일 정책 지점.
@@ -383,7 +503,7 @@ COPY_EXCLUDE_DIR_NAMES = frozenset({"node_modules", "__pycache__", ".git"})
 # 복사 제외 파일 (정확 dst relpath) — adopter 에게 출하하지 않을 프레임워크-repo 내부 문서.
 #   README.md(최상위) — 템플릿 트리의 "어댑터 타깃" 설명서다(프레임워크 상대링크 `../../README.md`·
 #   `../opencode/README.md` 를 담아 adopter 트리에선 dangling·오해 소지). 채택자는 자기 프로젝트
-#   README 를 쓴다 → 프레임워크-내부 doc 를 adopter README 로 박제하지 않는다(both 도 이 충돌 소거).
+#   README 를 쓴다 → 프레임워크-내부 doc 를 adopter README 로 박제하지 않는다(다중 선택 충돌도 소거).
 #   하위 `.project_manager/wiki/*/README.md`(wiki 구조 안내)는 유지 — 정확 relpath `README.md` 만 제외.
 COPY_EXCLUDE_RELPATHS = frozenset({"README.md"})
 
@@ -1063,7 +1183,7 @@ def _iter_source_files(template_root: Path, weight: str = "full"):
         트리의 full `X.md` 는 복사 제외(lite 가 그 자리를 차지), (b) 원본 이름 `X.lite.md`
         도 그대로는 복사 제외(dst 에 `*.lite.md` 잔존 금지).
     yield 하는 relpath 는 *dst* 기준이므로 lite 모드에선 `X.md` 로 치환돼 나간다 —
-    placeholder 치환(copied_relpaths 기준)·both 충돌 판정이 이 dst relpath 위에서 돈다.
+    placeholder 치환(copied_relpaths 기준)·다중-tree 충돌 판정이 이 dst relpath 위에서 돈다.
 
     출하 인벤토리는 공용 repo_owned_files seam의 TRACKED_ONLY 의미를 쓴다. 따라서 유지보수자
     checkout의 미추적·machine-local 파일은 복사 후보가 아니며, 비-git 소스에서 filesystem
@@ -1147,8 +1267,9 @@ def plan_copy(
     git_safe: set | None = None,
     skip_existing_relpaths: set[Path] | None = None,
     include_relpath: Callable[[Path], bool] | None = None,
+    source_overrides: dict[tuple[Path, Path], Path] | None = None,
 ) -> list[CopyAction]:
-    """어댑터 트리들 → dest 복사 액션. both 면 여러 트리 병합(relpath 유일하면 충돌 0).
+    """선택된 어댑터 트리들 → dest 복사 액션(여러 트리는 relpath 기준 병합).
 
     backup_root: None 이면 백업 안 함(--new — 빈 디렉토리 보장). 비-None 이면 기존 충돌
     파일을 *중앙 디렉토리* `backup_root/<relpath>` 로 백업(--into). 형제 `*.backup.<DATE>`(트리
@@ -1160,24 +1281,30 @@ def plan_copy(
 
     weight: 'full'(기본) 이면 `*.lite.md` 를 제외, 'lite' 면 `X.lite.md` 를
     dst `X.md` 로 rename 복사(같은 트리 full `X.md` 제외). _iter_source_files 가 이 관례를
-    적용해 dst relpath 를 산출하므로, 아래 both 중복 판정·치환 범위는 모두 *dst relpath*
-    위에서 일관되게 돈다(lite 모드에선 `X.md` 가 dst — both 양 트리가 각자 lite 변종을 깐다).
+    적용해 dst relpath 를 산출하므로, 아래 다중-tree 중복 판정·치환 범위는 모두 *dst relpath*
+    위에서 일관되게 돈다(lite 모드에선 `X.md` 가 dst — 선택 트리들이 각자 lite 변종을 깐다).
 
     MF3: 여러 선택 트리에서 같은 relpath 가 중복되면(예: 공유 엔진), **내용이 같을
-    때만** 조용히 skip 한다. 내용이 *다르면*(예: engine.manifest·README.md — claude_code 는
+    때만** 조용히 skip 한다. 내용이 *다르면*(예: README.md — claude_code 는
     .claude/agents·skills·regression.yml 을 sync 범위에 포함, opencode 는 제외) 첫 트리
-    (template_roots의 CLI 선언 순서)를 우선하되 stderr 경고를 남긴다. 이 우선순위는 결정적
+    (registry 정규 순서)를 우선하되 stderr 경고를 남긴다. CLI 입력 순서는 집합 정규화에서
+    소거되므로 충돌 결과에 영향을 주지 않는다. 이 우선순위는 결정적
     충돌 해소 정책이지 첫 트리가 나머지의 상위집합이라는 전제를 두지 않는다. 단,
     engine.manifest는 복사 뒤 ``_install_selected_manifest_union``이 선택 트리 선언의 합집합으로
-    다시 쓴다. (lite 진입 CLAUDE.md / AGENTS.md 는 트리별로 dst relpath 가
-    달라 — claude→CLAUDE.md, opencode→AGENTS.md — 충돌하지 않는다.)
+    다시 쓰므로 이 첫-tree 충돌 경고 대상이 아니다. 공유 자동-load 진입문서의 하네스 공존은
+    ``NEUTRAL_SHARED_ENTRY_DOCS`` 선언이 중립 source로 통일한다.
     """
     seen: dict[Path, tuple[Path, str]] = {}  # relpath → (채택된 src, 채택 트리명)
     skip_existing_relpaths = skip_existing_relpaths or set()
+    source_overrides = source_overrides or {}
     actions: list[CopyAction] = []
     checked_ancestors: set[Path] = set()  # 검증 완료 조상 캐시(중복 검사 회피).
     for template_root in template_roots:
         for rel, src in _iter_source_files(template_root, weight):
+            # 같은 자동-load 진입 doc을 공유하는 하네스 조합은 선언된 중립 source로 병합한다.
+            # key에 template_root까지 포함해, 미래의 제4 하네스가 같은 relpath를 쓰더라도 이
+            # 그룹 밖 source를 무관하게 덮지 않는다.
+            src = source_overrides.get((template_root, rel), src)
             # add_harness처럼 전체 template 중 일부 namespace만 배포할 때는, 범위 밖 파일의
             # conflict/backup/ancestor safety 검증도 만들지 않는다. 최종 action 필터보다 앞에 둬
             # 무관한 engine 파일이 backup root 검증을 발화시키지 않게 한다.
@@ -1188,10 +1315,14 @@ def plan_copy(
                 if _same_bytes(prev_src, src):
                     # 공유 엔진 등 byte-identical — 한 번만 복사(정상).
                     continue
+                if rel.as_posix() == ".project_manager/engine.manifest":
+                    # 직후 선택 flavor manifest 합집합으로 교체된다. 첫 tree가 최종 결과라는
+                    # 일반 충돌 문구를 내면 사용자에게 거짓을 말하므로 여기서는 경고하지 않는다.
+                    continue
                 # 내용이 다른 중복 — 첫 트리(우선) 채택을 명시적으로 경고.
                 print(
                     f"경고: 선택 트리 중복 relpath 내용 불일치 — '{rel.as_posix()}' 는 "
-                    f"선언 순서상 첫 트리 '{prev_tree}' 것을 우선함. "
+                    f"registry 정규 순서상 첫 트리 '{prev_tree}' 것을 우선함. "
                     f"후순위 트리: '{template_root.name}'.",
                     file=sys.stderr,
                 )
@@ -1268,6 +1399,53 @@ def _prepare_selected_manifest_union(template_roots: list[Path]) -> dict | None:
     if pu is None:
         raise RuntimeError("pm_update.py를 로드할 수 없어 선택 manifest 합집합을 만들 수 없습니다.")
     return pu.merge_manifest_sources(manifest_paths)
+
+
+def _warn_selected_manifest_union_conflicts(merged: dict | None) -> None:
+    """manifest 합집합의 실제 marker 충돌만 stderr에 표면화한다.
+
+    서로 다른 경로를 선언한 정상 합집합은 ``conflicts``가 비어 완전 무소음이다. 같은 관리 경로의
+    @render/@target-owned/@source 의미가 다를 때만 merge 결과가 넣은 경로를 소비한다.
+    """
+    conflicts = [] if merged is None else merged.get("conflicts", [])
+    if not conflicts:
+        return
+    print(
+        "경고: 선택 manifest 중복 경로의 marker/@source 불일치 — registry 정규 순서상 "
+        f"첫 flavor를 우선함 ({len(conflicts)}건): {', '.join(conflicts)}",
+        file=sys.stderr,
+    )
+
+
+def _selected_entry_doc_source_overrides(
+    source_root: Path,
+    selected_harnesses: tuple[str, ...] | list[str],
+) -> dict[tuple[Path, Path], Path]:
+    """공유 자동-load 진입 doc의 조합별 중립 source override를 만든다.
+
+    정책은 ``NEUTRAL_SHARED_ENTRY_DOCS`` 선언만 소비한다. 그룹 전원이 선택됐을 때만 발화하므로
+    단일 하네스의 full/lite 선택은 기존 동작을 보존한다.
+    """
+    selected = set(selected_harnesses)
+    overrides: dict[tuple[Path, Path], Path] = {}
+    for rel, (members, neutral_harness) in NEUTRAL_SHARED_ENTRY_DOCS.items():
+        if not members <= selected:
+            continue
+        neutral_dirs = HARNESS_TEMPLATE_DIRS[neutral_harness]
+        if len(neutral_dirs) != 1:
+            raise RuntimeError(
+                f"중립 진입문서 소유 하네스 {neutral_harness!r}가 단일 template tree가 아닙니다."
+            )
+        neutral_root = source_root / "templates" / neutral_dirs[0]
+        neutral_source = neutral_root / rel
+        if not neutral_source.is_file() or neutral_source.is_symlink():
+            raise FileNotFoundError(
+                f"공존용 중립 진입문서 없음/비정상 파일: {neutral_source}"
+            )
+        for member in members:
+            for dirname in HARNESS_TEMPLATE_DIRS[member]:
+                overrides[(source_root / "templates" / dirname, rel)] = neutral_source
+    return overrides
 
 
 def _install_selected_manifest_union(merged: dict | None, dest_root: Path) -> int:
@@ -2836,35 +3014,43 @@ def ensure_pm_playbook_local_stub(dest_root: Path, backup_root: Path | None) -> 
 
 
 def _harness_binary_available(harness: str) -> bool:
-    """fill 구동 하니스의 실 바이너리(claude/opencode/codex)가 PATH 에 있는가.
+    """등록 fill 하니스와 동명의 실 바이너리가 PATH 에 있는가.
 
     shutil.which 로 탐지한다. 테스트는 monkeypatch(pm_import.shutil.which) 또는 PATH 조작으로
-    부재를 stub 한다. 알 수 없는 harness 면 보수적으로 False(폴백 유도).
+    부재를 stub 한다. registry에 없는 이름은 새 하네스의 등록 누락/호출부 오류이므로 조용히
+    첫 하네스로 폴백하지 않고 fail-loud 한다. 등록됐지만 바이너리가 없는 것은 정상적인
+    환경 가용성 판정(False)이며 ``_resolve_fill_harness``가 다음 등록 후보를 탐색한다.
     """
-    binary = {"claude": "claude", "opencode": "opencode", "codex": "codex"}.get(harness)
-    if binary is None:
-        return False
-    return shutil.which(binary) is not None
+    if harness not in HARNESS_TEMPLATE_DIRS:
+        raise ValueError(
+            f"미등록 fill harness의 바이너리를 판정할 수 없습니다: {harness!r} — "
+            f"지원: {', '.join(HARNESS_TEMPLATE_DIRS)}"
+        )
+    return shutil.which(harness) is not None
 
 
-def _resolve_fill_harness(fill_harness_arg: str | None, harness: str) -> str:
-    """fill 구동 하니스 결정. --fill-harness 명시값 우선, 없으면 --harness 따름.
+def _resolve_fill_harness(
+    fill_harness_arg: str | None,
+    harness: str | tuple[str, ...] | list[str],
+) -> str:
+    """fill 구동 하네스 결정. 명시값 우선, 없으면 선택 집합의 첫 가용 하네스를 쓴다.
 
-    both(또는 fill-harness 미지정)에서는 claude 를 우선하되 **claude 바이너리가 없으면
-    opencode 로 폴백**한다(MF1: claude code 없는 회사 배포에서 opencode 1급 구동 — opencode 도
-    없으면 claude 를 그대로 반환해 상위 게이트/manual 폴백에 맡긴다). --fill-harness 명시값은
-    바이너리 유무와 무관하게 그대로 존중한다(사용자 의도 우선).
+    registry 정규 순서가 결정적 우선순위다(현재 claude→opencode→codex). 선택된 바이너리가 모두
+    없으면 첫 하네스를 그대로 반환해 상위 opt-in 게이트/manual 폴백이 명확히 진단하게 한다.
     """
     if fill_harness_arg:
         return fill_harness_arg
-    if harness == "both":
-        # both → claude 우선. claude 바이너리 부재 시 opencode 폴백(회사 배포 1급 경로).
-        if _harness_binary_available("claude"):
-            return "claude"
-        if _harness_binary_available("opencode"):
-            return "opencode"
-        return "claude"  # 둘 다 없음 — 상위 opt-in 게이트/manual 폴백이 처리.
-    return harness
+    selected = (
+        parse_harness_selection(harness)
+        if isinstance(harness, str)
+        else tuple(harness)
+    )
+    if len(selected) == 1:
+        return selected[0]
+    for candidate in selected:
+        if _harness_binary_available(candidate):
+            return candidate
+    return selected[0]
 
 
 def _print_fill_result(result: FillResult, dry_run: bool) -> None:
@@ -2894,18 +3080,27 @@ def _print_fill_result(result: FillResult, dry_run: bool) -> None:
 
 # ── 모드 준비 (--new / --into) ─────────────────────────────────────────────
 
-def resolve_template_roots(source_root: Path, harness: str) -> list[Path]:
-    """--from 의 templates/<harness>/ 어댑터 트리 경로들. 없으면 FileNotFoundError."""
+def resolve_template_roots(
+    source_root: Path,
+    harness: str | tuple[str, ...] | list[str],
+) -> list[Path]:
+    """선택 집합에 대응하는 ``templates/<harness>/`` 경로들. 없으면 fail-loud."""
+    selected = (
+        parse_harness_selection(harness)
+        if isinstance(harness, str)
+        else tuple(harness)
+    )
     roots: list[Path] = []
-    for name in HARNESS_TEMPLATE_DIRS[harness]:
-        root = source_root / "templates" / name
-        if not root.is_dir():
-            raise FileNotFoundError(
-                f"소스 어댑터 트리 없음: {root}. "
-                f"--from 이 올바른 프레임워크 checkout 인지 확인하라 "
-                f"(templates/{name}/ 필요)."
-            )
-        roots.append(root)
+    for harness_name in selected:
+        for name in HARNESS_TEMPLATE_DIRS[harness_name]:
+            root = source_root / "templates" / name
+            if not root.is_dir():
+                raise FileNotFoundError(
+                    f"소스 어댑터 트리 없음: {root}. "
+                    f"--from 이 올바른 프레임워크 checkout 인지 확인하라 "
+                    f"(templates/{name}/ 필요)."
+                )
+            roots.append(root)
     return roots
 
 
@@ -2968,7 +3163,7 @@ def _resolve_add_harness_source(
 
 
 # ── add_harness (라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가) ──────
-# raw `--into --harness both` 재-import 는 91파일 full 재-laydown 으로 라이브 wiki dev-state/엔진을
+# raw 다중-harness `--into` 재-import 는 full 재-laydown 으로 라이브 wiki dev-state/엔진을
 # 템플릿 starter 로 덮는다. add_harness 는 복사 스코프를 *추가되는 harness 의
 # 어댑터 네임스페이스*(ADD_HARNESS_ADAPTER)로 제한해 그 파괴를 구조적으로 차단한다 — 기존 copy/
 # render/backup 머신(plan_copy·substitute·resolve_opencode_model·_run_manual_fill)만 재사용한다(신규
@@ -3356,12 +3551,12 @@ def add_harness(
     source_root 생략 시 _resolve_add_harness_source 로 소스를 정한다: dest local.conf
     upstream(path·templates 보유) > dest 자신(templates 보유·framework-checkout 자기전환) > 친화
     에러. imported 인스턴스(templates 부재)도 upstream 에서 어댑터 소스를 해소한다.
-    harness 는 단일('claude'|'opencode') — 'both'/미지원은 ValueError. dest 미존재는 FileNotFoundError.
+    harness 는 등록된 단일 하네스 — 집합/미지원 값은 ValueError. dest 미존재는 FileNotFoundError.
     """
     if harness not in ADD_HARNESS_ADAPTER:
         raise ValueError(
             f"add_harness: harness 는 {tuple(ADD_HARNESS_ADAPTER)} 중 하나여야 한다 "
-            f"(단일 harness 추가·'both' 는 최초 import 소관): {harness!r}"
+            f"(단일 harness 추가·집합 선택은 최초 import 소관): {harness!r}"
         )
     dest_root = Path(dest_root).resolve()
     if not dest_root.is_dir():
@@ -3512,7 +3707,7 @@ def add_harness_cli(
     운영 진입(`pm_config add-harness`·Decision 3)이 verbatim 위임하는 얇은 래퍼다. add_harness
     자체(확정 시그니처/로직)는 건드리지 않고, 그것이 던지는 인터페이스 예외만 CLI 경계에서
     잡아 `main()` 과 *동일하게* 처리한다(에러 처리의 단일 진실 = CLI contract owner = pm_import):
-      - ValueError            : 미지원 harness('both'/오타·add_harness 입구 검증).
+      - ValueError            : 미지원/집합 harness(add_harness 입구 검증).
       - FileNotFoundError     : dest 부재/비-디렉토리·소스 템플릿 부재(resolve_template_roots).
       - FileVsDirConflict     : 어댑터 dst 위치에 기존 디렉토리(plan_copy·비파괴 거부).
       - AncestorConflict      : dst 조상에 symlink/비-디렉토리 파일(plan_copy·비파괴 거부).
@@ -3830,11 +4025,12 @@ def main(argv: list[str] | None = None) -> int:
     _console_encoding.configure_console_utf8()
     ap = argparse.ArgumentParser(
         prog="pm_import.py",
-        description=__doc__,
+        description=_cli_description(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "온보딩(fresh 채택자): manager(project_manager) 경로/URL 만 있으면 자율 import — "
-            "harness=자기 세션(claude|opencode), --new(빈 PM 홈)/--into(기존 프로젝트 임베드) "
+            "harness=자기 세션(" + "|".join(HARNESS_TEMPLATE_DIRS)
+            + "), --new(빈 PM 홈)/--into(기존 프로젝트 임베드) "
             "맥락 판단. 상세 가이드 = manager 루트 ADOPT.md. import 후 다음 단계: /pm-bootstrap → /pm-env.\n\n"
             "upstream 기록: --from 은 *파일 소스*, --upstream 은 *future update 기록*으로 "
             "디커플된다. local.conf 에 `upstream=`(pm_update 가 --from 생략 시 사용) + "
@@ -3846,8 +4042,16 @@ def main(argv: list[str] | None = None) -> int:
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--into", metavar="PATH", help="기존 프로젝트에 임베드 import(비파괴·백업·특정 케이스)")
     mode.add_argument("--new", metavar="PATH", help="PM 홈 생성 + git init (코드 없는 홈·표준 채택)")
-    ap.add_argument("--harness", choices=HARNESS_CHOICES, default="claude",
-                    help="어댑터 선택 (default: claude)")
+    ap.add_argument(
+        "--harness",
+        type=_parse_harness_arg,
+        default="claude",
+        metavar="HARNESS[,HARNESS...]|all",
+        help=(
+            "어댑터 집합 (등록: " + ", ".join(REGISTERED_HARNESSES)
+            + "; 전체: all; default: claude)"
+        ),
+    )
     ap.add_argument("--weight", choices=WEIGHT_CHOICES, default="full",
                     help="무게축 (default: full)")
     ap.add_argument("--from", dest="source", default=str(REPO),
@@ -3862,8 +4066,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fill", choices=FILL_CHOICES, default="manual",
                     help="자유서술 placeholder 채움 — auto: 하니스 구동 제안(opt-in), "
                          "manual: TODO 표시(default)")
-    ap.add_argument("--fill-harness", choices=FILL_HARNESS_CHOICES, default=None,
-                    help="fill 구동 하니스 (default: --harness; both→claude, claude 부재 시 opencode 폴백)")
+    ap.add_argument(
+        "--fill-harness",
+        choices=tuple(HARNESS_TEMPLATE_DIRS),
+        default=None,
+        help="fill 구동 하네스 (default: 선택 집합 중 등록 순서상 첫 가용 바이너리)",
+    )
     ap.add_argument("--opencode-model", dest="opencode_model", metavar="PROVIDER/MODEL",
                     default=None,
                     help="{{OPENCODE_PRO_MODEL}} 결정적 치환값 (비대화/CI). 예 'ollama/glm-5.2:cloud'. "
@@ -3961,9 +4169,13 @@ def main(argv: list[str] | None = None) -> int:
     # 후순위 manifest 부재/병합 실패를 복사 뒤 발견하면 --new/--into 모두 부분 설치가 남는다.
     try:
         prepared_manifest_union = _prepare_selected_manifest_union(template_roots)
+        _warn_selected_manifest_union_conflicts(prepared_manifest_union)
+        entry_doc_source_overrides = _selected_entry_doc_source_overrides(
+            source_root, args.harness)
     except (OSError, ValueError, RuntimeError) as exc:
         print(
-            "오류: 선택된 어댑터 manifest 합집합을 만들 수 없어 복사 전에 중단합니다 — "
+            "오류: 선택된 어댑터 manifest 합집합/진입문서 병합을 만들 수 없어 복사 전에 "
+            "중단합니다 — "
             f"{exc}",
             file=sys.stderr,
         )
@@ -3975,8 +4187,10 @@ def main(argv: list[str] | None = None) -> int:
     backup_root = None if is_new else dest_root / BACKUP_DIR_NAME / today
     git_safe = None if is_new else git_safe_relpaths(dest_root)
     try:
-        actions = plan_copy(template_roots, dest_root, backup_root, args.weight,
-                            git_safe=git_safe)
+        actions = plan_copy(
+            template_roots, dest_root, backup_root, args.weight,
+            git_safe=git_safe, source_overrides=entry_doc_source_overrides,
+        )
         # local.conf 백업 target 의 조상도 plan 단계에서 검증한다. 이 백업은
         #   plan_copy actions 밖(apply 후 backup_existing_local_conf)에서 일어나므로, 그 조상이
         #   일반 파일/symlink 면 *복사가 일부 끝난 뒤* mkdir 실패로 부분 적용이 남는다 → 사전 차단.
@@ -3995,8 +4209,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── 계획 출력 ──
     mode_label = f"--new {dest_root}" if is_new else f"--into {dest_root}"
-    print(f"[pm_import] {mode_label}  harness={args.harness}  weight={args.weight}")
-    print(f"  소스: {source_root}/templates/{'+'.join(HARNESS_TEMPLATE_DIRS[args.harness])}")
+    harness_label = ",".join(args.harness)
+    template_dir_names = [
+        template_dir
+        for harness_name in args.harness
+        for template_dir in HARNESS_TEMPLATE_DIRS[harness_name]
+    ]
+    print(f"[pm_import] {mode_label}  harness={harness_label}  weight={args.weight}")
+    print(f"  소스: {source_root}/templates/{'+'.join(template_dir_names)}")
     n_copy = len(actions)
     n_backup = sum(1 for a in actions if a.backup is not None)
     n_git_safe = sum(1 for a in actions if a._git_safe_skip)
@@ -4014,7 +4234,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(template_roots) > 1:
         print(
             f"  engine.manifest: 선택된 {len(template_roots)}개 트리 선언의 합집합 "
-            "(중복 경로는 선언 순서상 첫 트리 우선)"
+            "(중복 경로는 registry 정규 순서상 첫 트리 우선)"
         )
     if args.board_submodule:
         print(f"  board submodule: {args.board_remote} → {_BOARD_SUBMODULE_PATH} "
@@ -4233,7 +4453,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"✓ import 완료: {dest_root}")
     print("  다음: 자유서술 placeholder 제안 검토·반영(--fill auto 했으면) + 첫 ticket 발행.")
     # codex 어댑터는 laydown 후 trusted project + hook trust 2단계 승인이 있어야 발화.
-    if args.harness == "codex":
+    if "codex" in args.harness:
         _print_codex_trust_guidance()
     return 0
 

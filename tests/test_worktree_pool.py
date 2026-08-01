@@ -3298,6 +3298,28 @@ def test_alloc_resume_does_not_reattach_creating_orphan(wp):
 # ── (3) _real_git_runner stdout+stderr surface + except → (1, str(exc)) ──────
 
 
+def test_real_git_runner_wires_combined_output_shared_policy(wp, monkeypatch):
+    """captured factory/DI seam을 유지하며 동적 유한 cap과 결합 출력을 공용 구현에 전달한다."""
+    captured = {}
+    sentinel = lambda _argv: (0, "sentinel")
+
+    class _RepoFiles:
+        @staticmethod
+        def real_git_runner(cwd, **kwargs):
+            captured["cwd"] = cwd
+            captured["kwargs"] = kwargs
+            return sentinel
+
+    monkeypatch.setattr(wp, "_load_repo_owned_files", lambda: _RepoFiles)
+    monkeypatch.setattr(wp, "GIT_TIMEOUT_SECONDS", None)
+
+    assert wp._real_git_runner(wp.REPO) is sentinel
+    assert captured["cwd"] == wp.REPO
+    assert captured["kwargs"]["missing_binary_rc"] == 1
+    assert captured["kwargs"]["timeout"] == wp._GIT_TIMEOUT_DEFAULT
+    assert captured["kwargs"]["output_mode"] == "stdout_stderr"
+
+
 def test_real_git_runner_combines_stdout_and_stderr(wp, monkeypatch):
     """`_real_git_runner` 가 stdout + stderr 를 합쳐 반환한다(T-0070·pm_config 정합).
 

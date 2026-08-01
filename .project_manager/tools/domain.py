@@ -345,7 +345,7 @@ def _path_or_directory_matches_covers(path: str, covers: list[str]) -> bool:
 
 
 def _real_git_runner(cwd: Path) -> GitRunner:
-    """실 git 을 `cwd` 컨텍스트로 호출하는 GitRunner (worktree_pool._real_git_runner 패턴).
+    """공용 captured runner를 domain의 기존 stdout-only 정책으로 배선한다.
 
     반환 callable: argv(list) → (returncode, stdout). git 바이너리 부재(shutil.which)면
     (1, msg)·예외(타임아웃 등)는 (1, str(exc)) 로 감싼다(fail-soft·rc!=0 로 호출부 위임·
@@ -353,25 +353,15 @@ def _real_git_runner(cwd: Path) -> GitRunner:
     encoding="utf-8"(한글 경로/메시지 안전). page_stale 은 stdout(커밋 날짜)만 보므로
     stderr 는 합치지 않는다(worktree_pool 의 dirty 진단 결합과 달리 여기선 깔끔한 날짜만).
     """
-    git_binary = shutil.which("git")
-
-    def runner(argv: list) -> tuple[int, str]:
-        if git_binary is None:
-            return 1, "git 바이너리를 찾을 수 없음 (PATH)."
-        try:
-            result = subprocess.run(
-                [git_binary, "-C", str(cwd), *argv],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=GIT_TIMEOUT_SECONDS,
-            )
-            return result.returncode, result.stdout or ""
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 타임아웃/예외를 rc!=0 로 surface.
-            return 1, str(exc)
-
-    return runner
+    repo_files = _load_repo_owned_files()
+    return repo_files.real_git_runner(
+        cwd,
+        missing_binary_rc=1,
+        timeout=GIT_TIMEOUT_SECONDS,
+        output_mode="stdout",
+        which=shutil.which,
+        run=subprocess.run,
+    )
 
 
 def _page_owner_repo(page: dict) -> tuple[Path | None, str | None]:

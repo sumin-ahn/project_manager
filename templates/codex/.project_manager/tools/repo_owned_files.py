@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import warnings
 from pathlib import Path
-from typing import Callable, Literal, NamedTuple
+from typing import Any, Callable, Literal, NamedTuple
 
 # baked 엔진 rev — 여러 sibling deep-import 경계가 이 공용 seam을 검증한다.
 ENGINE_REV = "v1.5.1"
@@ -29,6 +29,7 @@ TRACKED_ONLY = "tracked_only"
 OWNED = "owned"
 RepoFileMode = Literal["tracked_only", "owned"]
 GitRunner = Callable[[list[str]], "tuple[int, str]"]
+GitOutputMode = Literal["stdout", "stdout_stderr", "stdout_or_error"]
 
 _MODE_GIT_ARGS: dict[RepoFileMode, tuple[str, ...]] = {
     TRACKED_ONLY: ("--stage", "--cached"),
@@ -62,43 +63,88 @@ class RepoOwnedEntry(NamedTuple):
     index_mode: str | None
 
 
+# 통합 전 captured runner 의미 차이(조용한 동작 변경 방지):
+#
+# | 소비처             | git 부재 rc | 출력                         | timeout               | locale |
+# | repo_owned_files   | 127         | 성공 stdout / 실패 진단      | 120                   | C      |
+# | domain             | 1           | rc와 무관하게 stdout         | 120                   | 상속   |
+# | worktree_pool      | 1           | stdout + stderr              | 동적·captured 유한 cap | 상속   |
+#
+# 차이는 각 소비처의 기존 계약이다. 아래 옵션은 새 정책이 아니라 이 세 의미를 그대로 옮기기 위한
+# 호환 축이다. worktree_pool의 console-visible runner와 보호훅 셸 git 환경 격리는 대상이 아니다.
+def real_git_runner(
+        cwd: Path,
+        *,
+        missing_binary_rc: int,
+        timeout: "float | None",
+        output_mode: GitOutputMode,
+        force_c_locale: bool = False,
+        which: "Callable[[str], str | None] | None" = None,
+        run: "Callable[..., Any] | None" = None,
+) -> GitRunner:
+    """정책 옵션을 보존해 ``git -C <cwd>``를 실행하는 공용 captured runner.
+
+    ``which``/``run`` 주입은 기존 소비처의 monkeypatch seam을 보존한다. 제품 호출부는 각
+    모듈의 ``shutil.which``/``subprocess.run``을 넘기며, 테스트 외 동작은 stdlib 그대로다.
+    """
+    which_git = which if which is not None else shutil.which
+    run_git = run if run is not None else subprocess.run
+    git_binary = which_git("git")
+
+    def runner(argv: list[str]) -> tuple[int, str]:
+        if git_binary is None:
+            return missing_binary_rc, "git 바이너리를 찾을 수 없음 (PATH)."
+        try:
+            kwargs: dict[str, Any] = {
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "timeout": timeout,
+            }
+            if force_c_locale:
+                env = os.environ.copy()
+                env["LC_ALL"] = "C"
+                env["LANGUAGE"] = ""
+                kwargs["env"] = env
+            result = run_git(
+                [git_binary, "-C", str(cwd), *argv],
+                **kwargs,
+            )
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            if output_mode == "stdout":
+                out = stdout
+            elif output_mode == "stdout_stderr":
+                out = stdout + stderr
+            else:
+                out = stdout if result.returncode == 0 else stderr or stdout
+            return result.returncode, out
+        except FileNotFoundError as exc:
+            # which 이후 바이너리가 사라지는 exec 경쟁은 각 소비처의 기존 git 부재 rc로 보존한다.
+            return missing_binary_rc, str(exc)
+        except Exception as exc:  # noqa: BLE001 — 호출 실패도 각 상위 계약이 rc로 처리.
+            return 1, str(exc)
+
+    return runner
+
+
 def _real_git_runner(cwd: Path) -> GitRunner:
-    """``git -C <cwd>`` argv runner.
+    """repo 소유 파일 열거용 ``git -C <cwd>`` runner.
 
     성공은 stdout만, 실패는 진단 문자열을 반환한다. rc 127은 git 실행 파일 부재를 뜻하는
     seam 예약값이며, 그 밖의 실패는 실제 git rc를 보존한다. 주입 runner도 이 규약과
     ``rev-parse --git-dir``의 rc 128=비-repo 경계를 따라야 한다.
     """
-    git_binary = shutil.which("git")
-
-    def runner(argv: list[str]) -> tuple[int, str]:
-        if git_binary is None:
-            return _GIT_BINARY_MISSING_RC, "git 바이너리를 찾을 수 없음 (PATH)."
-        try:
-            env = os.environ.copy()
-            env["LC_ALL"] = "C"
-            env["LANGUAGE"] = ""
-            result = subprocess.run(
-                [git_binary, "-C", str(cwd), *argv],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=GIT_TIMEOUT_SECONDS,
-                env=env,
-            )
-            # stdout만 열거 데이터다. stderr는 성공 시 trace/advice가 섞일 수 있으므로
-            # rc=0 결과에 절대 합치지 않고 실패 진단에만 사용한다.
-            if result.returncode == 0:
-                return 0, result.stdout or ""
-            return result.returncode, result.stderr or result.stdout or ""
-        except FileNotFoundError as exc:
-            # shutil.which 이후 바이너리가 사라지는 exec 경쟁도 git 부재와 같은 축이다.
-            return _GIT_BINARY_MISSING_RC, str(exc)
-        except Exception as exc:  # noqa: BLE001 — 호출 실패도 상위 mode 계약이 처리.
-            return 1, str(exc)
-
-    return runner
+    return real_git_runner(
+        cwd,
+        missing_binary_rc=_GIT_BINARY_MISSING_RC,
+        timeout=GIT_TIMEOUT_SECONDS,
+        output_mode="stdout_or_error",
+        force_c_locale=True,
+        which=shutil.which,
+        run=subprocess.run,
+    )
 
 
 def _parse_staged_entries(out: str) -> list[RepoOwnedEntry]:

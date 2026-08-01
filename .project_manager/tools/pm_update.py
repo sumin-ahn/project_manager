@@ -1298,12 +1298,13 @@ def _print_frozen_flavor_warning(
     print(
         lead
         + f"({len(observed)}/{len(evidence_paths)}: {', '.join(observed)}). "
-        "이 상태는 frozen both 설치의 일부 누락 또는 사용자 stray 파일일 수 있어 "
+        "이 상태는 legacy 다중-harness 설치의 일부 누락 또는 사용자 stray 파일일 수 있어 "
         "해당 flavor는 자동 자기치유하지 않는다.\n"
         f"    `add-harness {cli_flavor}`는 guest @render만 등록하므로 완전 마이그레이션이 아니다.\n"
-        "    완전 마이그레이션(frozen Claude+opencode both):\n"
-        "      <manager>/pm-import.sh --into <project> --harness both --dry-run\n"
-        "      <manager>/pm-import.sh --into <project> --harness both\n"
+        "    완전 마이그레이션(등록 flavor 전체; 관측 누락에도 안전하나 원치 않는 flavor도 "
+        "추가될 수 있으므로 dry-run 검토):\n"
+        "      <manager>/pm-import.sh --into <project> --harness all --dry-run\n"
+        "      <manager>/pm-import.sh --into <project> --harness all\n"
         "      cd <project> && ./pm-update.sh\n"
         "    재-import가 커스터마이즈된 CLAUDE.md/AGENTS.md를 템플릿 판으로 덮을 수 있으니, "
         "진입 문서 커스텀은 .pm_import_backups/<날짜>/ 백업에서 재병합하라.\n"
@@ -1353,9 +1354,10 @@ def _print_legacy_nonmatch_warning(
         f"관측 형상: 로컬 core {len(local_core_paths)}행; {shapes}.\n"
         "    로컬 manifest는 그대로 사용한다(자동 flavor 승격·행 제거·치유 0).\n"
         "    `add-harness`는 guest @render만 등록하므로 완전 마이그레이션이 아니다.\n"
-        "    완전 마이그레이션(frozen Claude+opencode both):\n"
-        "      <manager>/pm-import.sh --into <project> --harness both --dry-run\n"
-        "      <manager>/pm-import.sh --into <project> --harness both\n"
+        "    완전 마이그레이션(등록 flavor 전체; 관측 0개·누락에도 안전하나 원치 않는 flavor도 "
+        "추가될 수 있으므로 dry-run 검토):\n"
+        "      <manager>/pm-import.sh --into <project> --harness all --dry-run\n"
+        "      <manager>/pm-import.sh --into <project> --harness all\n"
         "      cd <project> && ./pm-update.sh\n"
         "    재-import가 커스터마이즈된 CLAUDE.md/AGENTS.md를 템플릿 판으로 덮을 수 있으니, "
         "진입 문서 커스텀은 .pm_import_backups/<날짜>/ 백업에서 재병합하라.\n"
@@ -1639,7 +1641,7 @@ def resolve_manifest_selfheal(effective_dest: Path, source_root: Path) -> dict:
     local_entries = read_manifest(dest_manifest)
     local_text = dest_manifest.read_text(encoding="utf-8")
     # 설치된 flavor들의 upstream manifest 합집합. 첫 항목은 self-prop가 지정한 기존 flavor이고,
-    # 추가 항목은 실제 dest의 고유 관리 경로로 일반화해 발견한다(`both` 경로 손-끼워넣기 없음).
+    # 추가 항목은 설치 manifest의 flavor provenance로 일반화해 발견한다(고정 조합 손-끼워넣기 없음).
     upstream_manifest = Path(source_root) / _selfprop_upstream_rel(local_entries)
     upstream_manifests: list[Path] = [upstream_manifest]
     try:

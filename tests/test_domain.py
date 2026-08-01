@@ -593,6 +593,28 @@ def test_same_bare_linked_worktree_slots_match_repository_identity(
     assert common_dir_calls == [slot_a.resolve(), slot_b.resolve()]
 
 
+def test_domain_real_git_runner_wires_stdout_only_shared_policy(
+        dm, tmp_path, monkeypatch):
+    """domain factory 이름/DI seam은 유지하며 공용 runner에 기존 정책만 전달한다."""
+    captured = {}
+    sentinel = lambda _argv: (0, "sentinel")
+
+    class _RepoFiles:
+        @staticmethod
+        def real_git_runner(cwd, **kwargs):
+            captured["cwd"] = cwd
+            captured["kwargs"] = kwargs
+            return sentinel
+
+    monkeypatch.setattr(dm, "_load_repo_owned_files", lambda: _RepoFiles)
+
+    assert dm._real_git_runner(tmp_path) is sentinel
+    assert captured["cwd"] == tmp_path
+    assert captured["kwargs"]["missing_binary_rc"] == 1
+    assert captured["kwargs"]["timeout"] == dm.GIT_TIMEOUT_SECONDS
+    assert captured["kwargs"]["output_mode"] == "stdout"
+
+
 def test_multi_repo_same_relative_touch_matches_only_page_owner_checkout(
         dm, tmp_path, monkeypatch, capsys):
     """별개 git 저장소의 같은 상대경로는 common-dir가 달라 계속 제외한다."""

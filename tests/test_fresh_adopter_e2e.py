@@ -288,19 +288,10 @@ def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
 # `../opencode/README.md` 상대링크)라 adopter 트리에선 dangling. adopter 로 복사되면 안 된다.
 # 하위 `.project_manager/wiki/*/README.md`(wiki 구조 안내)는 adopter-facing 이라 유지.
 
-# 축 = 유효 `--harness` 인자 전체(단일 하네스 + 콤보 키) — README 미출하 불변식은 import 모드와
-# 무관하게 성립하므로(top README 는 어느 하네스로도 출하 금지) 전 인자를 태운다. 손-열거
-# `["claude","opencode","both"]` 는 codex(ADR-0070)를 못 따라온 decay 였다 — codex 도
-# templates/codex/README.md 를 가지므로 **비-공허 정당 대상**(실측: top README 미출하·wiki README
-# 유지·dangling 0). 단일 축 = 파생 HARNESSES(codex 자동 편입), 콤보 축 = HARNESS_TEMPLATE_DIRS 의
-# len>1 키(derive_harnesses 여집합·T-0453 _ADD_HARNESS_PAIRS 순열/조합 파생 선례). 재열거 금지.
-def _combo_harness_args(harness_template_dirs) -> tuple[str, ...]:
-    """콤보 `--harness` 키(어댑터 트리 2개+·예 'both'=claude_code+opencode) — derive_harnesses 가
-    단일 축에서 걸러낸 여집합. 새 콤보 키가 자동 편입된다(손-열거 아님·T-0455)."""
-    return tuple(sorted(k for k, dirs in harness_template_dirs.items() if len(dirs) > 1))
-
-
-_README_HARNESS_ARGS = (*HARNESSES, *_combo_harness_args(_PM_IMPORT.HARNESS_TEMPLATE_DIRS))
+# 축 = 등록된 단일 하네스 + registry 파생 ``all``. README 미출하 불변식은 import 모드와 무관하게
+# 성립하므로(top README는 어느 선택으로도 출하 금지) 전체 선택까지 태운다. 임의 콤마 조합의
+# 순서/중복/합집합은 ``test_pm_import``의 집합 parser·e2e가 담당한다.
+_README_HARNESS_ARGS = (*HARNESSES, "all")
 
 
 @pytest.mark.parametrize("harness", _README_HARNESS_ARGS)
@@ -328,20 +319,14 @@ def test_fresh_adopter_excludes_framework_internal_readme(pm_import, tmp_path, h
             f"{harness}: {md.relative_to(dest)} 에 프레임워크-상대 dangling 링크 잔존")
 
 
-def test_readme_axis_is_derived_covers_all_import_args():
-    """README 미출하 테스트 축이 유효 `--harness` 인자 전체(단일+콤보)를 파생 커버함을 못박는다 —
-    손-열거였으면 codex·신규 콤보를 놓친다(T-0455·[[cross-cutting-breaking-blast-radius]]).
+def test_readme_axis_is_derived_and_covers_all_keyword():
+    """README 미출하 축이 등록 하네스와 파생 전체 선택을 커버함을 못박는다.
 
     codex 는 정당 대상(templates/codex/README.md 존재하나 top README 미출하·wiki README 유지·
     dangling 0·실측). 파생이라 새 단일 하네스/콤보 키가 자동 편입된다(T-0434 가짜-하네스 패턴).
     """
-    # 단일(HARNESSES) + 콤보(len>1 파생) = 유효 --harness 인자 전체(HARNESS_TEMPLATE_DIRS 키).
-    assert set(_README_HARNESS_ARGS) == set(_PM_IMPORT.HARNESS_TEMPLATE_DIRS)
-    assert {"claude", "codex", "opencode", "both"} <= set(_README_HARNESS_ARGS)
-    # 가짜 4번째 단일 하네스 + 가짜 콤보 → 콤보 파생이 새 콤보만 자동 편입(단일은 HARNESSES 축).
-    fake_map = {**_PM_IMPORT.HARNESS_TEMPLATE_DIRS,
-                "fourth": ("fourth_tmpl",), "trio": ("claude_code", "opencode", "fourth_tmpl")}
-    assert _combo_harness_args(fake_map) == ("both", "trio")
+    assert set(_README_HARNESS_ARGS) == {*_PM_IMPORT.HARNESS_TEMPLATE_DIRS, "all"}
+    assert {"claude", "codex", "opencode", "all"} <= set(_README_HARNESS_ARGS)
 
 
 # ── 출하 @render 스킬/command materialize 가드 (T-0142/T-0143 — 신규 스킬 회귀) ──────

@@ -344,6 +344,59 @@ def test_git_exec_file_not_found_race_maps_to_missing_binary_rc(
     assert "git disappeared after which" in detail
 
 
+@pytest.mark.parametrize(
+    ("missing_rc", "timeout", "output_mode", "force_c_locale", "expected"),
+    (
+        (127, 120, "stdout_or_error", True, "stderr-data"),
+        (1, 120, "stdout", False, "stdout-data"),
+        (1, 1800, "stdout_stderr", False, "stdout-datastderr-data"),
+    ),
+)
+def test_shared_git_runner_preserves_pre_consolidation_policy_matrix(
+        repo_files, tmp_path, missing_rc, timeout, output_mode,
+        force_c_locale, expected):
+    """T-0507 표의 세 captured runner 의미를 공용 옵션이 손실 없이 표현한다."""
+    captured = {}
+
+    class _Result:
+        returncode = 7
+        stdout = "stdout-data"
+        stderr = "stderr-data"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return _Result()
+
+    runner = repo_files.real_git_runner(
+        tmp_path,
+        missing_binary_rc=missing_rc,
+        timeout=timeout,
+        output_mode=output_mode,
+        force_c_locale=force_c_locale,
+        which=lambda _name: "/usr/bin/git",
+        run=fake_run,
+    )
+
+    assert runner(["status"]) == (7, expected)
+    assert captured["command"] == ["/usr/bin/git", "-C", str(tmp_path), "status"]
+    assert captured["kwargs"]["timeout"] == timeout
+    if force_c_locale:
+        assert captured["kwargs"]["env"]["LC_ALL"] == "C"
+        assert captured["kwargs"]["env"]["LANGUAGE"] == ""
+    else:
+        assert "env" not in captured["kwargs"]
+
+    missing = repo_files.real_git_runner(
+        tmp_path,
+        missing_binary_rc=missing_rc,
+        timeout=timeout,
+        output_mode=output_mode,
+        which=lambda _name: None,
+    )
+    assert missing(["status"])[0] == missing_rc
+
+
 def test_unknown_mode_is_rejected_before_enumeration(repo_files, tmp_path):
     with pytest.raises(ValueError, match="알 수 없는 repo 파일 열거 mode"):
         repo_files.list_repo_owned_files(tmp_path, ".", mode="consumer_a")

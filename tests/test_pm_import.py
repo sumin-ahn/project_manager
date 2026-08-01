@@ -10,6 +10,7 @@ import argparse
 import datetime
 import importlib.util
 import io
+import itertools
 import os
 import re
 import shutil
@@ -152,7 +153,9 @@ def test_exposes_symbols(pm_import):
     assert callable(pm_import.plan_copy)
     assert callable(pm_import.substitute_placeholders)
     assert callable(pm_import.resolve_template_roots)
-    assert pm_import.HARNESS_CHOICES == ("claude", "opencode", "both", "codex")
+    assert pm_import.REGISTERED_HARNESSES == tuple(pm_import.HARNESS_TEMPLATE_DIRS)
+    assert pm_import.HARNESS_CHOICES == (
+        *pm_import.REGISTERED_HARNESSES, "all", "both")
 
 
 # ── ① --new: 트리 존재 · board init 산출 · 잔여 operational {{ 0 ──────────────
@@ -782,11 +785,15 @@ def test_set_conf_keys_appends_missing(pm_import):
     assert "session=pm" in out
 
 
-# ── ② --harness both: 두 어댑터 공존 ─────────────────────────────────────────
+# ── ② --harness 집합: 어댑터 공존 ────────────────────────────────────────────
 
-def test_both_harness_coexists(pm_import, tmp_path):
+def test_harness_combination_is_order_independent_and_duplicate_safe(pm_import, tmp_path):
     dest = tmp_path / "dual"
-    rc = pm_import.main(["--new", str(dest), "--harness", "both", "--name", "Dual"])
+    assert pm_import.parse_harness_selection("opencode,claude,opencode") == (
+        "claude", "opencode")
+    rc = pm_import.main([
+        "--new", str(dest), "--harness", "opencode,claude,opencode", "--name", "Dual",
+    ])
     assert rc == 0
     # claude 어댑터.
     assert (dest / ".claude").is_dir()
@@ -798,12 +805,70 @@ def test_both_harness_coexists(pm_import, tmp_path):
     assert (dest / ".project_manager" / "tools" / "board.py").is_file()
 
 
-def test_both_excludes_node_modules(pm_import, tmp_path):
+def test_harness_combination_excludes_node_modules(pm_import, tmp_path):
     """opencode 의 node_modules 는 무겁고 재설치 대상 — 복사 제외."""
     dest = tmp_path / "dual2"
-    rc = pm_import.main(["--new", str(dest), "--harness", "both", "--name", "D2"])
+    rc = pm_import.main([
+        "--new", str(dest), "--harness", "claude,opencode", "--name", "D2",
+    ])
     assert rc == 0
     assert not (dest / ".opencode" / "node_modules").exists()
+
+
+def test_all_is_derived_from_registry_and_auto_includes_fourth_harness(
+        pm_import, tmp_path, monkeypatch):
+    """``all``은 고정 3-tuple이 아니라 호출 시점 registry에서 파생된다(sensitivity)."""
+    templates = tmp_path / "templates"
+    fake_registry = {
+        "claude": ("claude_code",),
+        "opencode": ("opencode",),
+        "codex": ("codex",),
+        "fourth": ("fourth_tmpl",),
+    }
+    for (dirname,) in fake_registry.values():
+        (templates / dirname).mkdir(parents=True)
+    monkeypatch.setattr(pm_import, "HARNESS_TEMPLATE_DIRS", fake_registry)
+
+    assert pm_import.parse_harness_selection("all") == (
+        "claude", "opencode", "codex", "fourth")
+    assert [root.name for root in pm_import.resolve_template_roots(tmp_path, "all")] == [
+        "claude_code", "opencode", "codex", "fourth_tmpl",
+    ]
+
+
+def test_unknown_or_empty_harness_selection_fails_loud(pm_import, tmp_path, capsys):
+    with pytest.raises(ValueError, match="미지원 harness.*unknown"):
+        pm_import.parse_harness_selection("claude,unknown")
+    with pytest.raises(ValueError, match="빈 항목"):
+        pm_import.parse_harness_selection("claude,")
+    dest = tmp_path / "must-not-exist"
+    with pytest.raises(SystemExit) as exc_info:
+        pm_import.main(["--new", str(dest), "--harness", "claude,unknown"])
+    assert exc_info.value.code == 2
+    assert "미지원 harness: unknown" in capsys.readouterr().err
+    assert not dest.exists()
+
+
+def test_legacy_both_alias_warns_once_and_matches_canonical_selection(pm_import, capsys):
+    """legacy alias는 결과를 보존하되 한 줄 경고·새 표기·제거 버전을 함께 알린다."""
+    got = pm_import._parse_harness_arg("both,both")
+    assert got == pm_import.parse_harness_selection("claude,opencode")
+    lines = capsys.readouterr().err.splitlines()
+    assert lines == [pm_import.LEGACY_BOTH_WARNING]
+    assert "--harness claude,opencode" in lines[0]
+    assert pm_import.LEGACY_BOTH_REMOVAL_VERSION in lines[0]
+
+
+def test_legacy_both_alias_deadline_is_self_enforcing(pm_import):
+    """v1.6.0 bump가 alias 제거 누락을 즉시 red로 만들고, 제거 뒤에는 통과한다."""
+    pm_import._enforce_legacy_harness_alias_deadline(
+        "v1.5.9", {"both": ("claude", "opencode")}
+    )
+    with pytest.raises(RuntimeError, match="legacy harness alias를 제거"):
+        pm_import._enforce_legacy_harness_alias_deadline(
+            "v1.6.0", {"both": ("claude", "opencode")}
+        )
+    pm_import._enforce_legacy_harness_alias_deadline("v1.6.0", {})
 
 
 def test_import_ships_only_tracked_template_files_and_keeps_tracked_gitignore(
@@ -1087,11 +1152,12 @@ def test_tracked_source_inventory_still_applies_policy_exclusions(
 # ── ②b --harness codex: 세 번째 하네스 스캐폴드 (ADR-0070 D5·T-0403) ───────────
 
 def test_harness_maps_include_codex(pm_import):
-    """3맵에 codex 편입 — 신규 조합 키는 없음(both 만 legacy·공존은 add-harness·D5 ②)."""
+    """registry에는 단일 하네스만 있고 조합은 parser가 집합으로 표현한다."""
     assert "codex" in pm_import.HARNESS_CHOICES
     assert pm_import.HARNESS_TEMPLATE_DIRS["codex"] == ("codex",)
-    # 조합 폭발 회피: claude+codex 등 신규 조합 키 불신설(both 만 유지).
-    assert set(pm_import.HARNESS_CHOICES) == {"claude", "opencode", "both", "codex"}
+    assert set(pm_import.HARNESS_TEMPLATE_DIRS) == {"claude", "opencode", "codex"}
+    assert "all" in pm_import.HARNESS_CHOICES
+    assert "both" not in pm_import.HARNESS_TEMPLATE_DIRS
 
 
 def test_codex_new_creates_tree_and_inits(pm_import, tmp_path):
@@ -1319,10 +1385,10 @@ def test_weight_lite_opencode_places_lite_entry(pm_import, tmp_path):
     assert _lite_md_files(dest) == [], f"dst 에 *.lite.md 잔존: {_lite_md_files(dest)}"
 
 
-def test_weight_lite_both_places_both_lite_entries(pm_import, tmp_path, capsys):
-    """--weight lite (both): CLAUDE.md·AGENTS.md 둘 다 lite · 어떤 *.lite.md 도 dst 부재."""
+def test_weight_lite_combination_places_both_lite_entries(pm_import, tmp_path, capsys):
+    """--weight lite 조합: CLAUDE.md·AGENTS.md 둘 다 lite · 어떤 *.lite.md 도 dst 부재."""
     dest = tmp_path / "liteb"
-    rc = pm_import.main(["--new", str(dest), "--harness", "both", "--weight", "lite",
+    rc = pm_import.main(["--new", str(dest), "--harness", "claude,opencode", "--weight", "lite",
                          "--name", "LB"])
     assert rc == 0
     claude_text = (dest / "CLAUDE.md").read_text(encoding="utf-8")
@@ -1334,9 +1400,9 @@ def test_weight_lite_both_places_both_lite_entries(pm_import, tmp_path, capsys):
     # 공유 엔진은 그대로 한 벌.
     assert (dest / ".project_manager" / "tools" / "board.py").is_file()
     # lite 모드 full X.md 제외 가드(c) 고정 — 진입 파일(CLAUDE.md·AGENTS.md)에 대한 스퓨리어스
-    # both 중복-relpath 충돌 경고가 없어야 한다. (가드 제거 시 lite 와 full 이 같은 dst X.md 로
-    # 충돌해 "내용 불일치" 경고가 새어나온다.) engine.manifest·README.md 의 충돌 경고는 lite 와
-    # 무관한 기존 both 동작이므로 진입 파일명으로 한정해 검사한다.
+    # 다중-tree 중복-relpath 충돌 경고가 없어야 한다. (가드 제거 시 lite 와 full 이 같은 dst X.md 로
+    # 충돌해 "내용 불일치" 경고가 새어나온다.) .gitignore 같은 일반 충돌 경고는 lite 와
+    # 무관한 기존 다중 선택 동작이므로 진입 파일명으로 한정해 검사한다.
     conflict_lines = [ln for ln in capsys.readouterr().err.splitlines()
                       if "중복 relpath 내용 불일치" in ln]
     assert not any("CLAUDE.md" in ln or "AGENTS.md" in ln for ln in conflict_lines), \
@@ -1346,7 +1412,7 @@ def test_weight_lite_both_places_both_lite_entries(pm_import, tmp_path, capsys):
 def test_weight_full_excludes_lite_variants(pm_import, tmp_path):
     """--weight full(기본): CLAUDE.md = full 진입 · dst 에 *.lite.md 없음(lite 변종 제외)."""
     dest = tmp_path / "fullp"
-    rc = pm_import.main(["--new", str(dest), "--harness", "both", "--weight", "full",
+    rc = pm_import.main(["--new", str(dest), "--harness", "claude,opencode", "--weight", "full",
                          "--name", "FP"])
     assert rc == 0
     claude_text = (dest / "CLAUDE.md").read_text(encoding="utf-8")
@@ -1356,6 +1422,58 @@ def test_weight_full_excludes_lite_variants(pm_import, tmp_path):
     assert FULL_AGENTS_MARKER in agents_text and LITE_MARKER not in agents_text
     # full 모드도 lite 변종은 배포에 끼면 안 됨.
     assert _lite_md_files(dest) == [], f"full 배포에 *.lite.md 잔존: {_lite_md_files(dest)}"
+
+
+_ALL_NONEMPTY_HARNESS_SELECTIONS = tuple(
+    ",".join(selection)
+    for size in range(1, len(HARNESSES) + 1)
+    for selection in itertools.combinations(HARNESSES, size)
+)
+
+
+@pytest.mark.parametrize("weight", ("full", "lite"))
+@pytest.mark.parametrize("selection", _ALL_NONEMPTY_HARNESS_SELECTIONS)
+def test_entry_document_execution_models_are_isolated_for_every_selection_and_weight(
+        pm_import, tmp_path, selection, weight):
+    """단일/2조합/3조합 × full/lite 설치 결과에서 자동-load 진입문서 오염이 없다.
+
+    opencode+codex는 AGENTS.md를 함께 자동 로드하므로 공존 시 중립 코어만 허용한다. 각자의
+    실행 모델은 namespace별 지침에 남아 있어야 한다. claude는 별도 CLAUDE.md를 자동 로드하므로
+    opencode 단독 lite의 기존 자족형 AGENTS.md와 공존해도 교차 로드되지 않는다.
+    """
+    dest = tmp_path / f"entry-{selection.replace(',', '-')}-{weight}"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", selection, "--weight", weight,
+        "--name", "Entry Isolation",
+    ]) == 0
+    selected = set(pm_import.parse_harness_selection(selection))
+
+    if "claude" in selected:
+        assert (dest / "CLAUDE.md").is_file()
+    if selected & {"opencode", "codex"}:
+        agents_text = (dest / "AGENTS.md").read_text(encoding="utf-8")
+        if {"opencode", "codex"} <= selected:
+            assert FULL_AGENTS_MARKER in agents_text
+            assert "## 0. opencode 실행 모델" not in agents_text
+            assert ".opencode/agents/*.md" not in agents_text
+            assert "네이티브 `task` tool" not in agents_text
+            assert "spawn_agent" not in agents_text
+        elif "codex" in selected:
+            assert FULL_AGENTS_MARKER in agents_text
+            assert "네이티브 `task` tool" not in agents_text
+        elif "opencode" in selected and weight == "lite":
+            assert "## 0. opencode 실행 모델" in agents_text
+
+    if "opencode" in selected:
+        opencode_instructions = (
+            dest / ".opencode" / "pm-instructions.md").read_text(encoding="utf-8")
+        assert "네이티브 `task` tool" in opencode_instructions
+        assert ".opencode/agents/*.md" in opencode_instructions
+    if "codex" in selected:
+        codex_instructions = (
+            dest / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        assert "spawn_agent" in codex_instructions
 
 
 def test_weight_default_is_full_no_lite_variants(pm_import, tmp_path):
@@ -1583,21 +1701,28 @@ def test_into_existing_dir_still_works(pm_import, tmp_path):
     assert (dest / ".project_manager" / "local.conf").is_file()
 
 
-# ── MF3: both 중복 relpath 내용 불일치 — 경고 + claude_code 우선 ──────────────
+# ── MF3: 다중-tree 중복 relpath 내용 불일치 — 경고 + registry 우선 ───────────
 
-def test_both_conflicting_relpath_warns_and_prefers_claude(pm_import, tmp_path, capsys):
-    """중복 파일 충돌은 선언 순서상 claude_code 우선, manifest 선언은 양 flavor 합집합.
+def test_combination_conflicting_relpath_warns_and_prefers_registry_first(
+        pm_import, tmp_path, capsys):
+    """일반 중복은 registry 우선 경고, manifest는 거짓 경고 없이 flavor 합집합.
 
-    우선순위 근거는 ``claude_code가 상위집합``이 아니라 CLI의 결정적 선택 순서다.
+    우선순위 근거는 ``claude_code가 상위집합``이 아니라 registry의 결정적 정규 순서다.
     """
     dest = tmp_path / "bothconflict"
-    rc = pm_import.main(["--new", str(dest), "--harness", "both", "--name", "BC"])
+    rc = pm_import.main([
+        "--new", str(dest), "--harness", "opencode,claude", "--name", "BC",
+    ])
     assert rc == 0
 
     captured = capsys.readouterr()
-    assert "engine.manifest" in captured.err, "내용 다른 중복 relpath 경고가 stderr 에 없음."
-    assert "선언 순서상 첫 트리 'claude_code'" in captured.err, \
-        "결정적 우선순위(선언 순서)가 경고에 명시되지 않음."
+    assert "'.project_manager/engine.manifest' 는" not in captured.err, \
+        "최종 합집합으로 교체되는 manifest에 첫-tree 우선이라는 거짓 경고가 남음."
+    assert "선택 manifest 중복 경로의 marker/@source 불일치" not in captured.err, \
+        "실제 flavor의 정상 합집합에서 marker 충돌 경고가 부풀려짐."
+    assert "'.gitignore'" in captured.err, "일반 내용 불일치 relpath 경고까지 사라짐."
+    assert "registry 정규 순서상 첫 트리 'claude_code'" in captured.err, \
+        "결정적 우선순위(registry 순서)가 경고에 명시되지 않음."
 
     # engine.manifest 자체의 self-prop 마커 충돌은 첫 트리(claude_code)가 이긴다.
     entries = pm_import._pm_update_read_manifest(
@@ -1608,24 +1733,28 @@ def test_both_conflicting_relpath_warns_and_prefers_claude(pm_import, tmp_path, 
         "templates/claude_code/.project_manager/engine.manifest"
 
 
-def test_both_install_manifest_is_selected_tree_union(pm_import, pm_update, tmp_path):
-    """both 설치 manifest가 양 flavor 선언을 전부 포함하고 opencode 관리 파일까지 plan한다.
+def test_combination_install_manifest_is_selected_tree_union(pm_import, pm_update, tmp_path):
+    """조합 설치 manifest가 각 flavor 선언을 전부 포함하고 opencode 관리 파일까지 plan한다.
 
     합집합 구현을 되돌려 claude manifest만 설치하면 opencode 선언 subset 단언에서 red가 된다.
     """
     dest = tmp_path / "both-union"
     assert pm_import.main([
-        "--new", str(dest), "--harness", "both", "--name", "Union",
+        "--new", str(dest), "--harness", "claude,opencode", "--name", "Union",
     ]) == 0
 
     dest_manifest = dest / ".project_manager" / "engine.manifest"
     installed = pm_update.read_manifest(dest_manifest)
     installed_paths = {str(e) for e in installed}
+    expected_paths: set[str] = set()
     for flavor in ("claude_code", "opencode"):
         source_entries = pm_update.read_manifest(
             REPO / "templates" / flavor / ".project_manager" / "engine.manifest")
+        expected_paths.update(str(e) for e in source_entries)
         assert {str(e) for e in source_entries} <= installed_paths, \
-            f"{flavor} manifest 선언이 both 설치 합집합에서 누락"
+            f"{flavor} manifest 선언이 조합 설치 합집합에서 누락"
+    assert installed_paths == expected_paths, \
+        "설치 manifest 수치/내용이 선택 flavor 합집합과 정확히 일치하지 않음"
 
     # 디렉터리 선언을 실제 파일로 펼친 관리 plan에도 opencode 산출물이 실린다.
     empty_dest = tmp_path / "empty-plan"
@@ -1646,9 +1775,57 @@ def test_both_install_manifest_is_selected_tree_union(pm_import, pm_update, tmp_
     } <= opencode_files
 
 
-def test_both_missing_second_manifest_fails_before_any_copy(
+def test_selected_manifest_union_disjoint_paths_are_warning_silent(
+        pm_import, pm_update, tmp_path, capsys):
+    """서로 다른 관리 경로의 정상 합집합은 marker 충돌 경고를 1줄도 만들지 않는다."""
+    first = tmp_path / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = tmp_path / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(".first/a    @render\n", encoding="utf-8")
+    second.write_text(".second/b    @source=templates/second/.second/b\n", encoding="utf-8")
+
+    merged = pm_update.merge_manifest_sources([first, second])
+    assert merged["conflicts"] == []
+    pm_import._warn_selected_manifest_union_conflicts(merged)
+    assert capsys.readouterr().err == ""
+
+
+def test_selected_manifest_union_real_marker_conflict_warns(
+        pm_import, pm_update, tmp_path, capsys, monkeypatch):
+    """같은 관리 경로의 marker 충돌을 main이 소비해 경로·우선순위와 함께 경고한다."""
+    first = tmp_path / "templates" / "first" / ".project_manager" / "engine.manifest"
+    second = tmp_path / "templates" / "second" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(".shared/x    @render\n", encoding="utf-8")
+    second.write_text(
+        ".shared/x    @source=templates/second/.shared/x\n", encoding="utf-8")
+
+    merged = pm_update.merge_manifest_sources([first, second])
+    assert merged["conflicts"] == [".shared/x"]
+    pm_import._warn_selected_manifest_union_conflicts(merged)
+    err = capsys.readouterr().err
+    assert "marker/@source 불일치" in err
+    assert "registry 정규 순서상 첫 flavor" in err
+    assert ".shared/x" in err
+
+    # CLI 연결 회귀: prepare 결과의 conflicts가 helper에만 머물지 않고 main 경로에서 소비된다.
+    monkeypatch.setattr(
+        pm_import, "_prepare_selected_manifest_union", lambda _roots: merged)
+    dest = tmp_path / "main-conflict-preview"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "claude,opencode", "--dry-run",
+        "--name", "Conflict Preview",
+    ]) == 0
+    cli_err = capsys.readouterr().err
+    assert "marker/@source 불일치" in cli_err
+    assert ".shared/x" in cli_err
+
+
+def test_combination_missing_second_manifest_fails_before_any_copy(
         pm_import, tmp_path, capsys):
-    """both의 후순위 manifest 부재는 apply 전에 loud 실패하고 부분 설치를 남기지 않는다."""
+    """조합의 후순위 manifest 부재는 apply 전에 loud 실패하고 부분 설치를 남기지 않는다."""
     source = tmp_path / "source"
     claude = source / "templates" / "claude_code"
     opencode = source / "templates" / "opencode"
@@ -1662,7 +1839,7 @@ def test_both_missing_second_manifest_fails_before_any_copy(
     dest = tmp_path / "partial-install-must-not-exist"
 
     rc = pm_import.main([
-        "--new", str(dest), "--from", str(source), "--harness", "both",
+        "--new", str(dest), "--from", str(source), "--harness", "claude,opencode",
         "--name", "No Partial",
     ])
 
@@ -1672,12 +1849,12 @@ def test_both_missing_second_manifest_fails_before_any_copy(
     assert not dest.exists(), "후순위 manifest 부재인데 복사/git init 등 부분 설치가 남음"
 
 
-def test_both_install_then_update_repairs_stale_opencode_in_one_run(
+def test_combination_install_then_update_repairs_stale_opencode_in_one_run(
         pm_import, pm_update, tmp_path, monkeypatch):
-    """both 신규 설치 후 opencode adapter가 낡아져도 pm_update 1회로 복구된다."""
+    """조합 신규 설치 후 opencode adapter가 낡아져도 pm_update 1회로 복구된다."""
     dest = tmp_path / "both-update"
     assert pm_import.main([
-        "--new", str(dest), "--harness", "both", "--name", "Both Update",
+        "--new", str(dest), "--harness", "claude,opencode", "--name", "Combo Update",
     ]) == 0
     victim_rel = Path(".opencode/plugins/safe-write.js")
     victim = dest / victim_rel
@@ -1688,7 +1865,63 @@ def test_both_install_then_update_repairs_stale_opencode_in_one_run(
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
     assert pm_update.main(["--from", str(REPO)]) == 0
     assert victim.read_bytes() == expected, \
-        "both 설치의 opencode adapter가 pm_update 1회로 복구되지 않음"
+        "조합 설치의 opencode adapter가 pm_update 1회로 복구되지 않음"
+
+
+@pytest.mark.parametrize(
+    ("selection", "victim_rels"),
+    [
+        (
+            "claude,codex",
+            (Path(".claude/ctx_guard.py"), Path(".codex/agents/developer.toml")),
+        ),
+        (
+            "all",
+            (
+                Path(".claude/ctx_guard.py"),
+                Path(".opencode/plugins/safe-write.js"),
+                Path(".codex/agents/developer.toml"),
+            ),
+        ),
+    ],
+)
+def test_arbitrary_selection_manifest_union_survives_pm_update(
+        pm_import, pm_update, tmp_path, monkeypatch, selection, victim_rels):
+    """claude+codex와 all이 각 flavor 전체를 manifest에 싣고 한 번의 update로 갱신된다."""
+    dest = tmp_path / f"selection-{selection.replace(',', '-') }"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", selection, "--name", "Set Selection",
+    ]) == 0
+
+    installed_paths = {
+        str(entry)
+        for entry in pm_update.read_manifest(
+            dest / ".project_manager" / "engine.manifest")
+    }
+    selected = pm_import.parse_harness_selection(selection)
+    for harness in selected:
+        (flavor,) = pm_import.HARNESS_TEMPLATE_DIRS[harness]
+        source_paths = {
+            str(entry)
+            for entry in pm_update.read_manifest(
+                REPO / "templates" / flavor / ".project_manager" / "engine.manifest")
+        }
+        assert source_paths <= installed_paths, \
+            f"{selection}: {flavor}의 manifest 고유 경로가 선택 합집합에서 누락"
+
+    expected: dict[Path, bytes] = {}
+    for rel in victim_rels:
+        # @render 파일은 source token-form이 아니라 채택자 local.conf로 렌더된 byte가 정답이다.
+        # 같은 conf의 pm_update 뒤에는 import 직후 byte로 되돌아와야 한다.
+        expected[rel] = (dest / rel).read_bytes()
+        (dest / rel).write_text(f"stale {rel}\n", encoding="utf-8")
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    assert pm_update.main(["--from", str(REPO)]) == 0
+    for rel, expected_bytes in expected.items():
+        assert (dest / rel).read_bytes() == expected_bytes, \
+            f"{selection}: {rel}가 pm_update 1회로 갱신되지 않음"
 
 
 @pytest.mark.parametrize(
@@ -1775,10 +2008,19 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     assert "설치된 다중 하네스" not in combined
     assert "@source 선언이 없는 legacy manifest" in combined
     assert f"타 flavor({stray_flavor}) 관리 경로 일부" in combined
-    assert "frozen both 설치의 일부 누락 또는 사용자 stray" in combined
+    assert "legacy 다중-harness 설치의 일부 누락 또는 사용자 stray" in combined
     cli_flavor = "claude" if stray_flavor == "claude_code" else stray_flavor
     assert f"`add-harness {cli_flavor}`는 guest @render만 등록" in combined
-    assert "<manager>/pm-import.sh --into <project> --harness both --dry-run" in combined
+    migration = re.search(
+        r"<manager>/pm-import\.sh --into <project> --harness (\S+) --dry-run",
+        combined,
+    )
+    assert migration, "frozen 진단에 실행 가능한 dry-run 마이그레이션 명령이 없음"
+    guided_selection = pm_import.parse_harness_selection(migration.group(1))
+    assert cli_flavor in guided_selection, \
+        f"안내 명령이 실제 관측 flavor({cli_flavor})를 포함하지 않음: {guided_selection}"
+    assert migration.group(1) == "all", \
+        "불완전한 관측만으로 flavor 집합을 좁혀 frozen 복구를 누락할 수 있음"
     observed_rel = "/".join(Path(stray_rel).parts[:2])
     candidate_manifests = sorted(
         REPO.glob("templates/*/.project_manager/engine.manifest")
@@ -1882,7 +2124,7 @@ def test_declared_claude_manifest_with_opencode_tree_warns_without_promoting(
     """선언 claude manifest + 실재 opencode 트리는 frozen 경고만 내고 선택 flavor를 승격하지 않는다."""
     dest = tmp_path / "declared-claude-with-frozen-opencode"
     assert pm_import.main([
-        "--new", str(dest), "--harness", "both", "--name", "Declared Frozen",
+        "--new", str(dest), "--harness", "claude,opencode", "--name", "Declared Frozen",
     ]) == 0
     capsys.readouterr()
     claude_manifest = (
@@ -1898,7 +2140,7 @@ def test_declared_claude_manifest_with_opencode_tree_warns_without_promoting(
     assert "frozen 다중-harness 의심" in diagnostic
     assert "선언되지 않은 타 flavor(opencode)" in diagnostic
     assert "`add-harness opencode`는 guest @render만 등록" in diagnostic
-    assert "<manager>/pm-import.sh --into <project> --harness both" in diagnostic
+    assert "<manager>/pm-import.sh --into <project> --harness all" in diagnostic
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
@@ -1961,7 +2203,7 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors
     """문서 절차를 그대로 밟으면 declared union이 설치되고 다음 pm_update가 두 flavor 전체를 갱신한다."""
     dest = tmp_path / "legacy-both"
     assert pm_import.main([
-        "--new", str(dest), "--harness", "both", "--name", "Legacy Both",
+        "--new", str(dest), "--harness", "claude,opencode", "--name", "Legacy Both",
     ]) == 0
     capsys.readouterr()
 
@@ -1987,24 +2229,25 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors
     for rel in victim_rels:
         (dest / rel).write_text(f"# frozen before migration: {rel}\n", encoding="utf-8")
     expected_manifest = pm_update.merge_manifest_sources([
-        REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest",
-        REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest",
+        REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
+        for dirs in pm_import.HARNESS_TEMPLATE_DIRS.values()
+        for flavor in dirs
     ])["text"].encode("utf-8")
 
     preview = pm_update.resolve_manifest_selfheal(dest, REPO)
     assert preview["upstream_manifests"] == [claude_manifest]
     diagnostic = capsys.readouterr().err
     assert "frozen 다중-harness 의심" in diagnostic
-    assert "<manager>/pm-import.sh --into <project> --harness both --dry-run" in diagnostic
+    assert "<manager>/pm-import.sh --into <project> --harness all --dry-run" in diagnostic
 
     before_dry_run = dest_manifest.read_bytes()
     assert pm_import.main([
-        "--into", str(dest), "--harness", "both", "--name", "Legacy Both", "--dry-run",
+        "--into", str(dest), "--harness", "all", "--name", "Legacy Both", "--dry-run",
     ]) == 0
     assert dest_manifest.read_bytes() == before_dry_run
     capsys.readouterr()
     assert pm_import.main([
-        "--into", str(dest), "--harness", "both", "--name", "Legacy Both",
+        "--into", str(dest), "--harness", "all", "--name", "Legacy Both",
     ]) == 0
     assert dest_manifest.read_bytes() == expected_manifest
 
@@ -2020,10 +2263,12 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors
     assert dest_manifest.read_bytes() == expected_manifest
 
 
-def test_both_identical_relpath_silent(pm_import, tmp_path, capsys):
+def test_combination_identical_relpath_silent(pm_import, tmp_path, capsys):
     """byte-identical 한 공유 엔진(board.py 등)은 경고 없이 조용히 한 번만 복사."""
     dest = tmp_path / "bothsilent"
-    rc = pm_import.main(["--new", str(dest), "--harness", "both", "--name", "BS"])
+    rc = pm_import.main([
+        "--new", str(dest), "--harness", "claude,opencode", "--name", "BS",
+    ])
     assert rc == 0
     captured = capsys.readouterr()
     # board.py 는 두 트리에서 동일 — 이 파일에 대한 경고는 없어야 한다.
@@ -2382,7 +2627,9 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
 def test_import_excludes_pycache(pm_import, tmp_path):
     """__pycache__/*.pyc(stale 바이트코드)는 새 프로젝트로 복사되지 않는다."""
     dest = tmp_path / "nopyc"
-    rc = pm_import.main(["--new", str(dest), "--harness", "both", "--name", "NP"])
+    rc = pm_import.main([
+        "--new", str(dest), "--harness", "claude,opencode", "--name", "NP",
+    ])
     assert rc == 0
     pycache_dirs = [p for p in dest.rglob("__pycache__")]
     assert pycache_dirs == [], f"__pycache__ 가 복사됨: {pycache_dirs}"
@@ -4374,7 +4621,7 @@ def test_pm_update_updates_promoted_guest_path_in_single_run(
         shutil.copytree(REPO / sub, fw / sub)
     shutil.copy2(REPO / ".gitattributes", fw / ".gitattributes")
     dest = tmp_path / "inst"
-    assert pm_import.main(["--new", str(dest), "--harness", "both", "--name", "X",
+    assert pm_import.main(["--new", str(dest), "--harness", "claude,opencode", "--name", "X",
                            "--from", str(fw)]) == 0
     pm_import.add_harness(dest, "codex", dry_run=False, source_root=fw)  # codex guest 절.
     # 승격: 선택 순서상 후순위인 opencode flavor core에 `.codex/agents` 추가 + 소스 sentinel.
@@ -4412,7 +4659,7 @@ def test_pm_update_diverged_selfheal_preserves_guest_owned_file(
 
     dest = tmp_path / "diverged-inst"
     assert pm_import.main([
-        "--new", str(dest), "--harness", "both", "--name", "Diverged Guest",
+        "--new", str(dest), "--harness", "claude,opencode", "--name", "Diverged Guest",
         "--from", str(fw),
     ]) == 0
     capsys.readouterr()

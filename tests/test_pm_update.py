@@ -1350,7 +1350,7 @@ def test_declared_manifest_warns_on_undeclared_flavor_tree_without_promoting(
     assert "선언되지 않은 타 flavor(second)" in err
     assert "(1/1: .second/a)" in err
     assert "`add-harness second`는 guest @render만 등록" in err
-    assert "<manager>/pm-import.sh --into <project> --harness both --dry-run" in err
+    assert "<manager>/pm-import.sh --into <project> --harness all --dry-run" in err
     assert "cd <project> && ./pm-update.sh" in err
 
 
@@ -1538,6 +1538,9 @@ def test_legacy_exact_path_set_must_match_exactly_one_candidate(
     err = capsys.readouterr().err
     assert "정확히 하나와 완전 일치하지 않는다" in err
     assert "자동 flavor 승격·행 제거·치유 0" in err
+    assert "배타적 flavor 경로 관측 0" in err
+    assert "<manager>/pm-import.sh --into <project> --harness all --dry-run" in err, \
+        "관측 flavor가 0개여도 빈 --harness가 아닌 안전한 migration 안내가 필요함"
 
 
 def test_legacy_opencode_proper_subset_does_not_promote_or_rewrite_manifest(
@@ -2362,9 +2365,9 @@ def test_pm_import_in_manifest(pm_update, manifest_path):
 
 
 def test_pm_import_byte_identical_root_templates():
-    """pm_import.py 가 root↔양 템플릿 byte-identical (전파 무드리프트·`both` import 첫-트리 mismatch 회피).
+    """pm_import.py 가 root↔양 템플릿 byte-identical (전파 무드리프트·다중 import 첫-tree mismatch 회피).
 
-    pm_import 의 `--harness both` 는 공유 엔진파일을 양 템플릿 트리에서 가져오므로, 두 트리의
+    pm_import 의 다중 선택은 공유 엔진파일을 여러 템플릿 트리에서 가져오므로, 두 트리의
     pm_import.py 가 다르면 import 가 mismatch 한다. root 단일 진실 → pm_update --target 전파로
     byte-identical 유지([[verify-engine-template-propagation]]·test_agents_root_templates_byte_identical 동형).
     """

@@ -89,7 +89,7 @@ def _make_imported_tree(pm_import, tmp_path, harness="claude", name="Fillee"):
 def test_exposes_fill_symbols(pm_import):
     assert callable(pm_import.run_fill)
     assert pm_import.FILL_CHOICES == ("auto", "manual")
-    assert pm_import.FILL_HARNESS_CHOICES == ("claude", "opencode")
+    assert pm_import.FILL_HARNESS_CHOICES == pm_import.REGISTERED_HARNESSES
     # codex fill runner 매핑 (ADR-0070 D5·silent claude 폴백 소멸).
     assert pm_import.CODEX_FILL_CMD == ("codex", "exec")
     assert pm_import.FREE_FORM_TOKENS == FREE_FORM_TOKENS
@@ -99,6 +99,19 @@ def test_exposes_fill_symbols(pm_import):
     fr = pm_import.FillResult(mode="auto")
     assert fr.mode == "auto"
     assert fr.values == {} and fr.drafts == {} and fr.todos == []
+
+
+def test_fill_harness_help_lists_are_registry_derived(pm_import, capsys):
+    """실제 --help의 choices·본문 바이너리 목록이 codex 포함 registry와 일치한다."""
+    with pytest.raises(SystemExit) as exc_info:
+        pm_import.main(["--help"])
+    assert exc_info.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    registered_csv = ",".join(pm_import.HARNESS_TEMPLATE_DIRS)
+    assert f"--fill-harness {{{registered_csv}}}" in help_text
+    for harness in pm_import.HARNESS_TEMPLATE_DIRS:
+        assert f"`{harness}`" in help_text
+    assert "--fill-harness {claude,opencode}" not in help_text
 
 
 # ── DoD ①: --fill auto + stub runner → 자유서술 3종 해소·제안 생성 (토큰 0) ────
@@ -306,12 +319,12 @@ def test_opencode_json_text_extracted(pm_import, tmp_path):
 
 
 def test_fill_harness_resolution(pm_import, monkeypatch):
-    """_resolve_fill_harness: --fill-harness 우선, 없으면 --harness, both→claude(존재 시)."""
-    # both→claude 폴백 판정을 결정론화: claude 바이너리 존재 stub.
+    """명시값 우선, 집합이면 registry 순서의 첫 가용 하네스를 선택한다."""
+    # claude가 가용한 조합 판정을 결정론화한다.
     monkeypatch.setattr(pm_import, "_harness_binary_available", lambda h: h == "claude")
     assert pm_import._resolve_fill_harness(None, "claude") == "claude"
     assert pm_import._resolve_fill_harness(None, "opencode") == "opencode"
-    assert pm_import._resolve_fill_harness(None, "both") == "claude"  # both→claude 우선(존재).
+    assert pm_import._resolve_fill_harness(None, "claude,opencode") == "claude"
     assert pm_import._resolve_fill_harness("opencode", "claude") == "opencode"  # override.
     # codex 는 standalone — --harness codex → fill harness codex(claude 폴백 아님·ADR-0070 D5).
     assert pm_import._resolve_fill_harness(None, "codex") == "codex"
@@ -614,35 +627,35 @@ def test_mark_todos_scoped_to_copied_relpaths(pm_import, tmp_path):
         "_mark_todos 가 범위 밖 사용자 파일을 수정함(비파괴 위반)."
 
 
-# ── MF1: both + claude 부재 시 opencode 폴백 (회사 배포 1급 경로) ──────────────
+# ── MF1: 조합 + claude 부재 시 opencode 폴백 (회사 배포 1급 경로) ────────────
 
-def test_both_falls_back_to_opencode_when_claude_absent(pm_import, monkeypatch):
-    """both: claude 바이너리 부재(which stub) → opencode 폴백(회사 배포 claude code 없음)."""
+def test_combination_falls_back_to_opencode_when_claude_absent(pm_import, monkeypatch):
+    """조합: claude 바이너리 부재 → opencode 폴백(회사 배포 claude code 없음)."""
     # claude 는 PATH 에 없고 opencode 만 있는 상황 stub.
     monkeypatch.setattr(pm_import, "_harness_binary_available",
                         lambda h: h == "opencode")
-    assert pm_import._resolve_fill_harness(None, "both") == "opencode", \
-        "both + claude 부재인데 opencode 로 폴백하지 않음(회사 배포 1급 경로 깨짐)."
+    assert pm_import._resolve_fill_harness(None, "claude,opencode") == "opencode", \
+        "조합 + claude 부재인데 opencode 로 폴백하지 않음(회사 배포 1급 경로 깨짐)."
 
 
-def test_both_prefers_claude_when_present(pm_import, monkeypatch):
-    """both: claude 바이너리 존재 → claude 우선(opencode 도 있어도 claude)."""
+def test_combination_prefers_claude_when_present(pm_import, monkeypatch):
+    """조합: claude 바이너리 존재 → registry상 claude 우선."""
     monkeypatch.setattr(pm_import, "_harness_binary_available", lambda h: True)
-    assert pm_import._resolve_fill_harness(None, "both") == "claude"
+    assert pm_import._resolve_fill_harness(None, "claude,opencode") == "claude"
 
 
-def test_both_both_absent_returns_claude_for_gate(pm_import, monkeypatch):
-    """both: claude·opencode 둘 다 부재 → claude 반환(상위 게이트/manual 폴백에 위임)."""
+def test_combination_all_absent_returns_first_for_gate(pm_import, monkeypatch):
+    """조합의 바이너리가 모두 부재하면 첫 하네스를 반환해 상위 게이트에 위임한다."""
     monkeypatch.setattr(pm_import, "_harness_binary_available", lambda h: False)
-    assert pm_import._resolve_fill_harness(None, "both") == "claude"
+    assert pm_import._resolve_fill_harness(None, "claude,opencode") == "claude"
 
 
 def test_explicit_fill_harness_overrides_binary_detection(pm_import, monkeypatch):
     """--fill-harness 명시값은 바이너리 유무와 무관하게 그대로 존중(사용자 의도 우선)."""
     # 둘 다 부재여도 명시값 opencode 는 그대로.
     monkeypatch.setattr(pm_import, "_harness_binary_available", lambda h: False)
-    assert pm_import._resolve_fill_harness("opencode", "both") == "opencode"
-    assert pm_import._resolve_fill_harness("claude", "both") == "claude"
+    assert pm_import._resolve_fill_harness("opencode", "claude,codex") == "opencode"
+    assert pm_import._resolve_fill_harness("claude", "opencode,codex") == "claude"
 
 
 def test_harness_binary_available_uses_shutil_which(pm_import, monkeypatch):
@@ -651,24 +664,79 @@ def test_harness_binary_available_uses_shutil_which(pm_import, monkeypatch):
                         lambda binary: "/usr/bin/claude" if binary == "claude" else None)
     assert pm_import._harness_binary_available("claude") is True
     assert pm_import._harness_binary_available("opencode") is False
-    # 알 수 없는 harness 는 보수적으로 False.
-    assert pm_import._harness_binary_available("nope") is False
+    # 알 수 없는 harness를 False로 삼으면 조용히 첫 하네스로 떨어지므로 구성 오류를 loud 처리한다.
+    with pytest.raises(ValueError, match="미등록 fill harness"):
+        pm_import._harness_binary_available("nope")
 
 
-def test_both_runner_argv_uses_opencode_when_claude_absent(pm_import, tmp_path, monkeypatch):
-    """end-to-end(stub): both + claude 부재 → run_fill 이 opencode argv 로 조립한다."""
-    # opencode 어댑터 트리를 import 해 토큰이 잔존하게 한다(both 폴백 시 opencode 가 채울 대상).
+def test_real_fourth_registry_tree_drives_help_and_binary_resolution(
+        pm_import, tmp_path, capsys):
+    """소스 registry에 실제 4번째 트리를 등록하면 help와 가용 바이너리 선택이 자동 추종한다.
+
+    제품 모듈 monkeypatch가 아니라 임시 checkout의 registry 소스 자체를 한 줄 확장하고
+    ``templates/fourth_tmpl`` 및 PATH 실행 파일을 실제 생성하는 sensitivity다.
+    """
+    checkout = tmp_path / "checkout"
+    tools_dir = checkout / ".project_manager" / "tools"
+    tools_dir.mkdir(parents=True)
+    source = (TOOLS / "pm_import.py").read_text(encoding="utf-8")
+    registry_anchor = '    "codex": ("codex",),\n}'
+    assert registry_anchor in source
+    source = source.replace(
+        registry_anchor,
+        '    "codex": ("codex",),\n    "fourth": ("fourth_tmpl",),\n}',
+        1,
+    )
+    (tools_dir / "pm_import.py").write_text(source, encoding="utf-8")
+    shutil.copy2(TOOLS / "console_encoding.py", tools_dir / "console_encoding.py")
+    for dirname in ("claude_code", "opencode", "codex", "fourth_tmpl"):
+        (checkout / "templates" / dirname).mkdir(parents=True)
+
+    spec = importlib.util.spec_from_file_location(
+        "pm_import_with_real_fourth", tools_dir / "pm_import.py"
+    )
+    fourth_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fourth_module)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fourth_binary = bin_dir / "fourth"
+    fourth_binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fourth_binary.chmod(0o755)
+    previous_path = os.environ.get("PATH")
+    os.environ["PATH"] = str(bin_dir)
+    try:
+        roots = fourth_module.resolve_template_roots(checkout, "all")
+        assert [root.name for root in roots][-1] == "fourth_tmpl"
+        assert fourth_module._resolve_fill_harness(None, "all") == "fourth"
+        with pytest.raises(SystemExit) as exc_info:
+            fourth_module.main(["--help"])
+        assert exc_info.value.code == 0
+    finally:
+        if previous_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = previous_path
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "--fill-harness {claude,opencode,codex,fourth}" in help_text
+    assert "`fourth`" in help_text
+
+
+def test_combination_runner_argv_uses_opencode_when_claude_absent(
+        pm_import, tmp_path, monkeypatch):
+    """end-to-end(stub): 조합 + claude 부재 → run_fill 이 opencode argv 로 조립한다."""
+    # opencode 어댑터 트리를 import 해 토큰이 잔존하게 한다(조합 폴백 시 opencode가 채울 대상).
     dest = _make_imported_tree(pm_import, tmp_path, harness="opencode", name="BothFallback")
     monkeypatch.setattr(pm_import, "_harness_binary_available",
                         lambda h: h == "opencode")
-    resolved = pm_import._resolve_fill_harness(None, "both")
+    resolved = pm_import._resolve_fill_harness(None, "claude,opencode")
     assert resolved == "opencode"
     stub = _StubRunner(ok=True, output='{"result": "ollama/gemma4:26b"}')
     pm_import.run_fill(dest, resolved, live=False, runner=stub)
     assert len(stub.calls) == 1
     argv, _ = stub.calls[0]
     assert argv[0] == "opencode" and argv[1] == "run", \
-        "both 폴백인데 opencode runner argv 로 조립되지 않음."
+        "조합 폴백인데 opencode runner argv 로 조립되지 않음."
 
 
 # ── MF2: --dry-run + --fill auto → fill 계획 출력 (실호출·파일변경 없음) ────────

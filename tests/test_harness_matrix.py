@@ -5,7 +5,7 @@
 샌다. 그래서 파생원(엔진 상수)과 디렉토리 실존이 **어긋나는** 형상들을 tmp fixture 로 직접 먹인다:
   - stray 디렉토리(빈 dir·파일만·`.hidden`)가 하네스로 오인되지 않는가
   - 상수엔 있는데 디렉토리 없음 / 디렉토리 있는데 상수 없음(양방향 불일치)
-  - combo 키('both')는 단일 하네스가 아니라 제외되는가
+  - legacy 복수-dir shape는 단일 하네스가 아니라 제외되는가
   - 축소 형상(1-하네스 트리)·**0-하네스(vacuous green 방지 loud fail)**
   - 새 `templates/<name>/` + 상수 등록이 **자동 편입**되는가(손 편집 0)
 
@@ -108,13 +108,13 @@ def test_derive_registered_without_dir_raises_loud(tmp_path):
         hm.derive_harnesses(templates, const)
 
 
-def test_derive_excludes_combo_key(tmp_path):
-    """combo 키('both' = 어댑터 트리 2개)는 단일 하네스가 아니라 제외(디렉토리 다 있어도)."""
+def test_derive_excludes_legacy_multi_dir_shape(tmp_path):
+    """복수 template-dir legacy shape는 단일 하네스가 아니라 제외한다."""
     templates = _mk_templates(tmp_path, "claude_code", "opencode")
     const = {
         "claude": ("claude_code",),
         "opencode": ("opencode",),
-        "both": ("claude_code", "opencode"),
+        "legacy_combo": ("claude_code", "opencode"),
     }
     assert hm.derive_harnesses(templates, const) == ("claude", "opencode")
 
@@ -130,7 +130,7 @@ def test_derive_reduced_shape_single_harness(tmp_path):
 def test_derive_only_combo_keys_raises_loud(tmp_path):
     """단일-하네스 등록 항목이 하나도 없으면(combo 키만) 파생 0 → loud RuntimeError(vacuous green 방지)."""
     templates = _mk_templates(tmp_path, "claude_code", "opencode")
-    const = {"both": ("claude_code", "opencode")}   # combo 키만 — 단일 하네스 0
+    const = {"legacy_combo": ("claude_code", "opencode")}  # 복수-dir만 — 단일 하네스 0
     with pytest.raises(RuntimeError, match="파생된 하네스 0개"):
         hm.derive_harnesses(templates, const)
 

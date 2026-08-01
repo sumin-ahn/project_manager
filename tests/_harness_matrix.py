@@ -10,7 +10,7 @@
 ## 파생 원칙 (손-열거 금지 · [[ADR-0006]])
   - `pm_import.HARNESS_TEMPLATE_DIRS` = 하네스 → `templates/` 어댑터 트리 디렉토리명(엔진 권위 목록).
   - `templates/<dir>/` 디렉토리 실존 = "디렉토리 존재만으로 발견"(pm_update.resolve_target_root).
-`HARNESSES` = 그 둘의 **교집합**(단일-어댑터 하네스만 · combo 키 'both' 제외). 새 하네스가 제대로
+`HARNESSES` = 그 둘의 **교집합**(단일-어댑터 하네스만). 새 하네스가 제대로
 추가되면(상수 + 디렉토리) 게이트에 자동 편입되고, `templates/` 밑 stray 디렉토리(빈 dir·파일만
 있는 dir·`.hidden`)는 상수에 없어 **하네스로 오인되지 않는다**(파생 로직 자체의 강건성).
 
@@ -39,7 +39,7 @@ def derive_harnesses(templates_dir, harness_template_dirs) -> tuple[str, ...]:
 
     출처 = 엔진 `HARNESS_TEMPLATE_DIRS`(하네스→어댑터 트리 디렉토리 매핑·권위) + 파일시스템
     (`templates/<dir>/` 실존·ADR-0006). 규칙:
-      - combo 키('both' = 어댑터 트리 2개)는 단일 하네스가 아니라 **제외**한다.
+      - 복수 template-dir 값은 단일 하네스가 아니라 **제외**한다(legacy shape 방어).
       - **등록 ⇒ 실존 불변식**: combo 제외한 각 등록 하네스의 `templates/<dir>/` 가 없으면 **loud
         RuntimeError**. 조용히 드롭하면(옛 ∩ 동작) templates/<dir> 소실·개명 시 그 하네스의 전
         parametrize 게이트가 **무음 우회**된다(수집 축소만·red 0)·round3 MF.
@@ -54,7 +54,7 @@ def derive_harnesses(templates_dir, harness_template_dirs) -> tuple[str, ...]:
     out: list[str] = []
     for harness, template_dirs in harness_template_dirs.items():
         if len(template_dirs) != 1:
-            continue  # combo 키('both') — 단일 하네스 아님
+            continue  # legacy combo shape — 단일 하네스 아님
         (dirname,) = template_dirs
         if not (templates_dir / dirname).is_dir():
             raise RuntimeError(

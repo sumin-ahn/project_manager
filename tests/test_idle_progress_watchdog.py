@@ -216,12 +216,8 @@ _HARNESS_LITERAL_EXEMPTIONS = {
         "dry-run 표시 문구만 만드는 표현 어댑터(timeout 비소유)",
     ("pm_import", "_build_runner_argv"):
         "fill 하네스별 wire argv를 만드는 전달 어댑터(timeout 비소유)",
-    ("pm_import", "_harness_binary_available"):
-        "fill 후보 바이너리 설치 여부를 확인하는 probe(timeout 비소유)",
     ("pm_import", "_real_models_runner"):
         "opencode 모델 목록 wire 명령 전용 runner(LLM fill 판정과 별도)",
-    ("pm_import", "_resolve_fill_harness"):
-        "설치된 어댑터 중 fill 송신 하네스를 고르는 선택 어댑터(timeout 비소유)",
     ("pm_import", "run_fill"):
         "하네스별 wire 출력 parser를 고르는 fill reply 디코더(timeout 비소유)",
     ("pm_import", "add_harness"):

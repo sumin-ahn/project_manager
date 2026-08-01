@@ -1442,6 +1442,10 @@ _LOADER_CASES = (
         "domain", "repo_owned_files", lambda mod, _tools: mod._load_repo_owned_files(),
         "_load_repo_owned_files",
     ),
+    (
+        "worktree_pool", "repo_owned_files", lambda mod, _tools: mod._load_repo_owned_files(),
+        "_load_repo_owned_files",
+    ),
 )
 
 
@@ -1455,6 +1459,8 @@ def test_each_added_loader_guard_rejects_stale_sibling(
     names = {loader_name, target_name}
     if target_name == "repo_owned_files":
         names.add("engine_rev")
+    if loader_name == "worktree_pool":
+        names.add("identity_args")
     tools = _copy_tools(tmp_path, *sorted(names))
     (tools / f"{target_name}.py").write_text(_stale_source(), encoding="utf-8")
     loader = _load_module(tools, loader_name)
@@ -1533,6 +1539,8 @@ def test_sensitivity_removing_each_loader_guard_defeats_the_red_oracle(
     names = {loader_name, target_name}
     if target_name == "repo_owned_files":
         names.add("engine_rev")
+    if loader_name == "worktree_pool":
+        names.add("identity_args")
     tools = _copy_tools(tmp_path, *sorted(names))
     loader_path = tools / f"{loader_name}.py"
     _remove_verifier_from_function(loader_path, loader_function)

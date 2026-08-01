@@ -861,6 +861,31 @@ def _write_ledger(leases: list[Lease]) -> None:
 # ── git DI seam ────────────────────────────────────────────────────────────
 
 
+def _load_repo_owned_files():
+    """공용 captured git runner seam을 rev 검증 후 로드한다."""
+    path = Path(__file__).resolve().with_name("repo_owned_files.py")
+    if not path.exists():
+        raise RuntimeError(
+            "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
+        )
+    try:
+        helper_path = Path(__file__).resolve().with_name("engine_rev.py")
+        spec = importlib.util.spec_from_file_location(
+            "_worktree_pool_repo_owned_loader", helper_path
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("공용 loader module spec/loader 부재")
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        return helper.load_repo_owned_files(path, verifier=_verify_engine_rev)
+    except Exception as exc:
+        if _is_engine_rev_skew(exc):
+            raise
+        raise RuntimeError(
+            "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
+        ) from exc
+
+
 def _real_git_runner(cwd: Path) -> GitRunner:
     """실 git 을 `cwd` 컨텍스트로 호출하는 GitRunner 를 만든다 (pm_import._real_git_runner 선례).
 
@@ -882,26 +907,16 @@ def _real_git_runner(cwd: Path) -> GitRunner:
     안 보여(silent) 무제한이면 network stall(base 파생 `fetch origin`) 시 silent hang 하기 때문.
     무제한(None)은 진행이 콘솔에 보이는 worktree-add 인터랙티브 러너에만 허용한다.
     """
-    git_binary = shutil.which("git")
-
-    def runner(argv: list) -> tuple[int, str]:
-        if git_binary is None:
-            return 1, "git 바이너리를 찾을 수 없음 (PATH)."
-        try:
-            result = subprocess.run(
-                [git_binary, "-C", str(cwd), *argv],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                # captured=항상 유한: None(무제한)이면 silent hang → _GIT_TIMEOUT_DEFAULT 로 캡.
-                timeout=GIT_TIMEOUT_SECONDS or _GIT_TIMEOUT_DEFAULT,
-            )
-            return result.returncode, (result.stdout or "") + (result.stderr or "")
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 타임아웃/예외 메시지를 surface.
-            return 1, str(exc)
-
-    return runner
+    repo_files = _load_repo_owned_files()
+    return repo_files.real_git_runner(
+        cwd,
+        missing_binary_rc=1,
+        # captured=항상 유한: None(무제한)이면 silent hang → 기본값으로 캡.
+        timeout=GIT_TIMEOUT_SECONDS or _GIT_TIMEOUT_DEFAULT,
+        output_mode="stdout_stderr",
+        which=shutil.which,
+        run=subprocess.run,
+    )
 
 
 def _real_git_runner_interactive(
