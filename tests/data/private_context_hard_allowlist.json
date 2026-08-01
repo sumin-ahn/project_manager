@@ -332,7 +332,7 @@
     {
       "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "kind": "work_item",
-      "line": 1421,
+      "line": 1424,
       "match": "ADR-0018",
       "path": ".project_manager/tools/domain.py",
       "surface": "python-prose"
@@ -340,7 +340,7 @@
     {
       "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "kind": "work_item",
-      "line": 1421,
+      "line": 1424,
       "match": "T-0080",
       "path": ".project_manager/tools/domain.py",
       "surface": "python-prose"
@@ -868,7 +868,7 @@
     {
       "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "kind": "work_item",
-      "line": 1421,
+      "line": 1424,
       "match": "ADR-0018",
       "path": "templates/claude_code/.project_manager/tools/domain.py",
       "surface": "python-prose"
@@ -876,7 +876,7 @@
     {
       "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "kind": "work_item",
-      "line": 1421,
+      "line": 1424,
       "match": "T-0080",
       "path": "templates/claude_code/.project_manager/tools/domain.py",
       "surface": "python-prose"
@@ -1604,7 +1604,7 @@
     {
       "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "kind": "work_item",
-      "line": 1421,
+      "line": 1424,
       "match": "ADR-0018",
       "path": "templates/codex/.project_manager/tools/domain.py",
       "surface": "python-prose"
@@ -1612,7 +1612,7 @@
     {
       "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "kind": "work_item",
-      "line": 1421,
+      "line": 1424,
       "match": "T-0080",
       "path": "templates/codex/.project_manager/tools/domain.py",
       "surface": "python-prose"
@@ -2396,7 +2396,7 @@
     {
       "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "kind": "work_item",
-      "line": 1421,
+      "line": 1424,
       "match": "ADR-0018",
       "path": "templates/opencode/.project_manager/tools/domain.py",
       "surface": "python-prose"
@@ -2404,7 +2404,7 @@
     {
       "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "kind": "work_item",
-      "line": 1421,
+      "line": 1424,
       "match": "T-0080",
       "path": "templates/opencode/.project_manager/tools/domain.py",
       "surface": "python-prose"

@@ -491,7 +491,7 @@ def test_pages_for_touches_dir_touch_matches_trailing_double_star(dm, tmp_path):
     assert _titles(dm.pages_for_touches(["src/analysis"], pages)) == ["a"]
 
 
-def test_pages_for_touches_directory_prefix_matches_exact_file_cover(
+def test_pages_for_touches_directory_expansion_matches_exact_file_cover(
         dm, tmp_path, monkeypatch):
     """실 board형 디렉토리 touch가 그 아래 exact 파일 cover 페이지를 소환한다."""
     tools_dir = tmp_path / ".project_manager" / "tools"
@@ -511,6 +511,17 @@ def test_pages_for_touches_directory_prefix_matches_exact_file_cover(
     monkeypatch.setattr(dm, "REPO", tmp_path)
     assert _titles(dm.pages_for_touches([touch], pages)) == ["domain-layer"]
     assert dm.uncovered_paths([touch], pages) == []
+
+
+def test_nonexistent_directory_shaped_touch_does_not_prefix_match(dm, tmp_path):
+    """실재 파일로 전개되지 않는 경로는 하위 cover 원문 prefix만으로 소환하지 않는다."""
+    pages = [{
+        "path": Path("domain.md"),
+        "title": "domain-layer",
+        "covers": ["missing/domain.py"],
+    }]
+
+    assert dm.pages_for_path("missing", pages) == []
 
 
 def test_pages_for_path_preserved_owner_filters_same_relative_path(
@@ -971,7 +982,9 @@ def test_affected_ticket_directory_touch_summons_exact_cover(
         dm, tmp_path, monkeypatch, capsys):
     """실 board 형식 work/<repo>_<N>/.project_manager/tools → exact cover recall 회귀."""
     slot = "work/project_manager_1"
-    (tmp_path / slot).mkdir(parents=True)
+    tools_dir = tmp_path / slot / ".project_manager" / "tools"
+    tools_dir.mkdir(parents=True)
+    (tools_dir / "domain.py").write_text("# covered\n", encoding="utf-8")
     ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
     ledger.write_text(
@@ -1766,9 +1779,9 @@ def test_uncovered_paths_loads_pages_when_not_injected(dm, tmp_path, monkeypatch
     assert dm.uncovered_paths(["src/x/y.py", "other/z.py"]) == ["other/z.py"]
 
 
-def test_uncovered_paths_expands_directory_without_changing_recall(
+def test_recall_and_gaps_expand_directory_with_the_same_file_unit(
         dm, tmp_path, monkeypatch):
-    """디렉토리는 gap에서만 파일별 전개되고 affected 소환은 기존 prefix recall을 유지한다."""
+    """디렉토리 recall과 gap은 같은 파일 전개 결과를 판정한다."""
     src = tmp_path / "src"
     (src / "nested").mkdir(parents=True)
     (src / "covered.py").write_text("# covered\n", encoding="utf-8")
@@ -1783,6 +1796,61 @@ def test_uncovered_paths_expands_directory_without_changing_recall(
     assert _titles(dm.pages_for_path("src", pages)) == ["owner"]
     assert _titles(dm.pages_for_touches(["src"], pages)) == ["owner"]
     assert dm.uncovered_paths(["src"], pages) == ["src/nested/new.py"]
+
+
+def test_directory_recall_dedups_page_after_multiple_files_expand(
+        dm, tmp_path, monkeypatch):
+    """여러 파일이 같은 페이지를 덮어도 공개 결과 dedup 키는 페이지다."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("# a\n", encoding="utf-8")
+    (src / "b.py").write_text("# b\n", encoding="utf-8")
+    page = {
+        "path": Path("owner.md"),
+        "title": "owner",
+        "covers": ["src/*.py"],
+    }
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+
+    assert dm.pages_for_touches(["src"], [page]) == [page]
+
+
+def test_directory_expansion_success_is_cached_only_within_public_batch(
+        dm, tmp_path, monkeypatch):
+    """capture의 affected/gap은 한 번 전개하고 다음 공개 조회는 새로 열거한다."""
+    repo = _init_git_repo(tmp_path / "repo")
+    src = repo / "src"
+    src.mkdir()
+    (src / "covered.py").write_text("# covered\n", encoding="utf-8")
+    _git("add", "src/covered.py", cwd=repo)
+    page = {
+        "path": Path("owner.md"),
+        "title": "owner",
+        "covers": ["src/covered.py"],
+    }
+    real_factory = dm._real_git_runner
+    calls = []
+
+    def recording_factory(cwd):
+        runner = real_factory(cwd)
+
+        def runner_with_record(argv):
+            if argv and argv[0] == "ls-files":
+                calls.append(argv)
+            return runner(argv)
+
+        return runner_with_record
+
+    monkeypatch.setattr(dm, "REPO", repo)
+    monkeypatch.setattr(dm, "_real_git_runner", recording_factory)
+
+    with dm._repository_query_batch():
+        assert dm.pages_for_touches(["src"], [page]) == [page]
+        assert dm.uncovered_paths(["src"], [page]) == []
+    assert len(calls) == 1
+
+    assert dm.pages_for_touches(["src"], [page]) == [page]
+    assert len(calls) == 2
 
 
 def test_directory_touch_git_path_collects_tracked_and_nonignored_untracked(
@@ -1924,6 +1992,8 @@ def test_uncovered_directory_files_preserve_normalized_repo_metadata(
     monkeypatch.setattr(dm, "_page_owner_repo", lambda _page: (workspace, None))
     monkeypatch.setattr(
         dm, "_same_repository_checkouts", lambda _left, _right: (True, None))
+
+    assert _titles(dm.pages_for_touches([OwnedPath("src")], pages)) == ["upstream"]
 
     gaps = dm.uncovered_paths(
         [OwnedPath("src")], pages, warn_owner_mismatch=False)
@@ -2133,9 +2203,9 @@ def test_capture_no_change_prints_none_message(dm, tmp_path, monkeypatch, capsys
     assert "판정 불일치 의심" not in out
 
 
-def test_capture_guard_exposes_directory_leading_wildcard_inconsistency(
+def test_capture_directory_leading_wildcard_is_affected_without_gap(
         dm, tmp_path, monkeypatch, capsys):
-    """파일 gap 판정만 선두 wildcard cover를 찾으면 silent no-change 대신 모순을 띄운다."""
+    """선두 wildcard cover도 디렉토리 파일 전개를 통해 recall된다."""
     src = tmp_path / "src"
     src.mkdir()
     (src / "README.md").write_text("# readme\n", encoding="utf-8")
@@ -2151,10 +2221,36 @@ def test_capture_guard_exposes_directory_leading_wildcard_inconsistency(
     assert dm.main(["capture", "--touches", "src"]) == 0
     out = capsys.readouterr().out
 
+    assert "영향 페이지" in out
+    assert "README 담당" in out
+    assert "coverage gap" not in out
+    assert "capture 판정 불일치 의심" not in out
+    assert "(채록할 domain 변화 없음)" not in out
+
+
+def test_capture_guard_remains_for_other_empty_judgment_inconsistencies(
+        dm, tmp_path, monkeypatch, capsys):
+    """원인이 닫혀도 판정 대상이 양쪽에서 사라지는 증상 가드는 유지한다."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "owned.py").write_text("# owned\n", encoding="utf-8")
+    domain_dir = tmp_path / "domain"
+    domain_dir.mkdir()
+    monkeypatch.setattr(dm, "REPO", tmp_path)
+    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(dm, "pages_for_touches", lambda _touches, _pages: [])
+    monkeypatch.setattr(
+        dm,
+        "_uncovered_path_groups",
+        lambda _touches, _pages, warn_owner_mismatch: [("src", [])],
+    )
+
+    assert dm.main(["capture", "--touches", "src"]) == 0
+    out = capsys.readouterr().out
+
     assert "capture 판정 불일치 의심" in out
     assert "touch 1개" in out
     assert "전개된 파일 1개" in out
-    assert "(채록할 domain 변화 없음)" not in out
 
 
 def test_capture_empty_directory_keeps_no_change_message(

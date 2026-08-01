@@ -106,19 +106,27 @@ _REPOSITORY_MATCH_CACHE: dict[tuple[Path, Path], tuple[bool | None, str | None]]
 _REPOSITORY_FAILURE_CACHE: ContextVar[
     dict[Path, tuple[Path | None, str | None]] | None
 ] = ContextVar("_REPOSITORY_FAILURE_CACHE", default=None)
+_DIRECTORY_EXPANSION_CACHE: ContextVar[
+    dict[tuple[Path, str], tuple[str, ...]] | None
+] = ContextVar("_DIRECTORY_EXPANSION_CACHE", default=None)
 
 
 @contextlib.contextmanager
 def _repository_query_batch():
-    """저장소 정체성 실패를 한 공개 조회 호출 동안만 일관되게 보존한다."""
-    if _REPOSITORY_FAILURE_CACHE.get() is not None:
-        yield
-        return
-    token = _REPOSITORY_FAILURE_CACHE.set({})
+    """저장소 조회 결과를 한 공개 조회 호출 동안만 일관되게 보존한다."""
+    failure_token = None
+    expansion_token = None
+    if _REPOSITORY_FAILURE_CACHE.get() is None:
+        failure_token = _REPOSITORY_FAILURE_CACHE.set({})
+    if _DIRECTORY_EXPANSION_CACHE.get() is None:
+        expansion_token = _DIRECTORY_EXPANSION_CACHE.set({})
     try:
         yield
     finally:
-        _REPOSITORY_FAILURE_CACHE.reset(token)
+        if expansion_token is not None:
+            _DIRECTORY_EXPANSION_CACHE.reset(expansion_token)
+        if failure_token is not None:
+            _REPOSITORY_FAILURE_CACHE.reset(failure_token)
 
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -312,29 +320,6 @@ def _glob_to_regex(pattern: str) -> "re.Pattern[str]":
 def _path_matches_covers(path: str, covers: list[str]) -> bool:
     """repo-relative 코드 경로가 covers 글롭 중 하나라도 anchored full-match 하면 True."""
     return any(_glob_to_regex(glob).match(path) for glob in covers)
-
-
-def _path_or_directory_matches_covers(path: str, covers: list[str]) -> bool:
-    """파일 exact/glob 또는 디렉토리 touch 아래 covers를 advisory 매치한다.
-
-    tickets의 지배적 실형태는 ``.project_manager/tools``·``tests`` 같은 디렉토리
-    선언이다. covers 원문이 ``<touch>/`` 아래에서 시작하면 그 하위 파일/글롭을 담당하는
-    페이지로 소환한다. affected/capture는 soft 표면이라 확장자 없는 파일을 디렉토리로
-    과대 해석할 가능성보다 recall 0 방지가 우선이다.
-    """
-    if _path_matches_covers(path, covers):
-        return True
-    directory = path.rstrip("/")
-    if not directory:
-        return False
-    prefix = directory + "/"
-    for glob in covers:
-        normalized_glob = glob.replace(os.sep, "/").replace("\\", "/")
-        while normalized_glob.startswith("./"):
-            normalized_glob = normalized_glob[2:]
-        if normalized_glob.startswith(prefix):
-            return True
-    return False
 
 
 # ── staleness (git 기반·covers→pathspec·fail-soft) ───────────────────────────
@@ -906,22 +891,30 @@ def pages_for_path(
 
     경로 구분자를 POSIX(`/`)로 정규화해 매칭한다(Windows 백슬래시 무관). os.sep 뿐
     아니라 백슬래시도 직접 치환해 POSIX 실행 중 들어온 Windows 경로도 정규화한다. 빈
-    covers 페이지(코드-무관 개념)는 어떤 경로도 매치하지 않는다. normalized touch는
+    covers 페이지(코드-무관 개념)는 어떤 경로도 매치하지 않는다. 실재 디렉토리는 gap과
+    같은 전개기로 파일 목록을 얻고 파일별 covers 결과를 페이지 단위로 합친다. normalized touch는
     owner 채널뿐 아니라 검증된 workspace의 **저장소 정체성**도 소비한다. 페이지 ``repo:``
     채널을 ``board._freshness_owner_repo``로 해소한 checkout과 workspace가 같은 git
     common-dir를 공유할 때만 매치한다. 소유 checkout/정체성 미해소·별개 저장소와 self 채널
     탈락은 advisory를 낸다.
     """
+    candidates = _files_for_directory_touch(path)
+    covers_matches: list[dict] = []
+    seen_pages: set[Path] = set()
+    for candidate in candidates:
+        norm = candidate.replace(os.sep, "/").replace("\\", "/")
+        while norm.startswith("./"):
+            norm = norm[2:]
+        for page in pages:
+            if page["path"] in seen_pages:
+                continue
+            if _path_matches_covers(norm, page["covers"]):
+                seen_pages.add(page["path"])
+                covers_matches.append(page)
+
     owner = getattr(path, "owner", None)
     touch_repo = getattr(path, "repo", None)
     touch_workspace = getattr(path, "workspace", None)
-    norm = path.replace(os.sep, "/").replace("\\", "/")
-    while norm.startswith("./"):
-        norm = norm[2:]
-    covers_matches = [
-        page for page in pages
-        if _path_or_directory_matches_covers(norm, page["covers"])
-    ]
     matches: list[dict] = []
     unresolved: list[str] = []
     mismatched: list[tuple[Path, Path]] = []
@@ -1058,24 +1051,34 @@ def _files_for_directory_touch(touch: str) -> list[str]:
         return [touch]
     checkout, directory, norm = location
 
-    repo_files = _load_repo_owned_files()
-    try:
-        # 이 seam 소비는 출하가 아니라 directory touch의 coverage 분모 전개다. 비었거나
-        # 전부 ignored인 디렉토리의 0건은 정당하게 gap에서 사라지므로 출하용 0건 승격을
-        # 적용하지 않는다. 원 touch 보존은 열거 실패에만 해당하며 빈 분모와 의미가 다르다.
-        relative_files = repo_files.list_repo_owned_files(
-            checkout,
-            norm,
-            mode=repo_files.OWNED,
-            git_runner=_real_git_runner(checkout),
-        )
-    except OSError:
-        return [touch]
+    expansion_cache = _DIRECTORY_EXPANSION_CACHE.get()
+    cache_key = (checkout, norm)
+    cached_files = (
+        expansion_cache.get(cache_key)
+        if expansion_cache is not None
+        else None
+    )
+    if cached_files is None:
+        repo_files = _load_repo_owned_files()
+        try:
+            # 이 seam 소비는 출하가 아니라 directory touch의 coverage 분모 전개다. 비었거나
+            # 전부 ignored인 디렉토리의 0건은 정당하게 gap에서 사라지므로 출하용 0건 승격을
+            # 적용하지 않는다. 원 touch 보존은 열거 실패에만 해당하며 빈 분모와 의미가 다르다.
+            relative_files = repo_files.list_repo_owned_files(
+                checkout,
+                norm,
+                mode=repo_files.OWNED,
+                git_runner=_real_git_runner(checkout),
+            )
+        except OSError:
+            return [touch]
+        cached_files = tuple(path.as_posix() for path in relative_files)
+        if expansion_cache is not None:
+            expansion_cache[cache_key] = cached_files
 
     expanded: list[str] = []
     reconstruction_failures = 0
-    for relative_path in relative_files:
-        relative = relative_path.as_posix()
+    for relative in cached_files:
         candidate = _touch_with_relative_path(touch, relative)
         if type(candidate) is _CoordinatePath and type(touch) is not _CoordinatePath:
             reconstruction_failures += 1
@@ -1146,8 +1149,8 @@ def uncovered_paths(
 
     capture(채록)의 gap 검출 — touched 코드인데 담당 domain 페이지가 없는 경로 = 후보
     신규 페이지. 실재 디렉토리 touch는 checkout의 파일 단위로 전개한 뒤 각 파일에
-    `pages_for_path`를 적용해 매칭 0 인 것만 남긴다. 이 전개는 gap 검출 전용이며
-    `pages_for_path`/`pages_for_touches`의 디렉토리 소환 recall은 바꾸지 않는다.
+    `pages_for_path`를 적용해 매칭 0 인 것만 남긴다. recall도 같은 전개기를 사용하므로
+    affected와 gap의 판정 단위는 항상 파일이다.
     **발견 순서 보존·dedup 키=(owner, repo, 경로)**라 같은 repo 좌표 중복만 접고, 문자열
     값이 같은 self/upstream·서로 다른 repo gap은 각각 보존한다. 비-문자열 touch·빈/공백
     경로는 방어적으로 건너뛴다(`pages_for_touches` 동형). 빈/None touches → [].
@@ -1476,8 +1479,19 @@ def _load_manifest_reader():
     return reader
 
 
+def _load_manifest_shipping_inventory():
+    """형제 ``pm_update``의 실제 출하 inventory seam을 로드한다."""
+    pm_update = _load_module("_domain_pm_update_inventory", "pm_update.py")
+    inventory = getattr(pm_update, "manifest_entry_shipping_inventory", None)
+    if not callable(inventory):
+        raise RuntimeError(
+            "pm_update 출하 inventory를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
+        )
+    return inventory
+
+
 def _engine_tool_paths_from_manifest(manifest_path: Path) -> list[str]:
-    """파일·디렉토리 manifest 엔트리를 tools/ 직계 Python 도구 분모로 전개한다."""
+    """실제 출하 inventory를 tools/ 직계 Python 도구 분모로 협착한다."""
     tools_parent = Path(".project_manager") / "tools"
     repo_root = manifest_path.parent.parent
     paths: list[str] = []
@@ -1491,20 +1505,35 @@ def _engine_tool_paths_from_manifest(manifest_path: Path) -> list[str]:
         seen.add(rel)
         paths.append(rel.as_posix())
 
-    # 주석·빈 줄·@render/@target-owned/@source 문법은 여기서 재구현하지 않는다. 출하/update와
-    # 같은 canonical parser를 소비해야 manifest 문법 진화가 coverage 분모에도 함께 반영된다.
-    for entry in _load_manifest_reader()(manifest_path):
+    # parser와 파일/디렉토리 전개를 모두 update의 canonical 경로에서 가져온다. 여기서는
+    # coverage 제품 정의인 tools/ 직계 Python CLI 협착만 소유한다. flavor manifest의
+    # @source는 upstream에만 있는 어댑터 source를 정상적으로 가리키므로, destination이 이
+    # 분모에 기여할 수 없는 항목은 source 존재 여부까지 검사하지 않는다.
+    manifest = _load_manifest_reader()(manifest_path)
+    inventory_for = _load_manifest_shipping_inventory()
+    for entry_index, entry in enumerate(manifest):
         rel = Path(str(entry))
         if rel.is_absolute() or ".." in rel.parts:
             continue
-        source = repo_root / rel
-        if source.is_dir():
-            # 분모 정의가 tools/ 직계 Python CLI라 재귀 tree-walk 없이 직계만 열거한다.
-            for child in sorted(source.iterdir()):
-                if child.is_file():
-                    add_tool(child.relative_to(repo_root))
-        else:
-            add_tool(rel)
+        can_ship_tools_tree = rel == tools_parent or tools_parent.is_relative_to(rel)
+        can_ship_direct_python = rel.parent == tools_parent and rel.suffix == ".py"
+        if not (can_ship_tools_tree or can_ship_direct_python):
+            continue
+        files, source_missing, target_owned = inventory_for(
+            repo_root,
+            manifest,
+            entry_index,
+            repo_root,
+        )
+        if source_missing:
+            if target_owned:
+                continue
+            raise RuntimeError(
+                "non-@target-owned manifest source가 없어 출하 inventory를 해석할 수 없음: "
+                f"{entry}"
+            )
+        for shipped_rel, _source in files:
+            add_tool(Path(shipped_rel))
     return paths
 
 
@@ -1923,6 +1952,9 @@ def cmd_capture(args: argparse.Namespace) -> int:
     ]
 
     if not affected and not gaps:
+        # 파일 단위 recall은 선두 wildcard covers가 디렉토리 prefix 규칙에서 빠지던 원인을
+        # 없앴다. 이 가드는 그 원인 하나가 아니라 판정 대상이 양쪽에서 사라지는 증상 전체를
+        # 계속 loud하게 드러낸다.
         judgment_targets: list[str] = []
         expanded_file_count = 0
         expanded_directory_touch = False

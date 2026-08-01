@@ -754,6 +754,43 @@ def _manifest_owner_index(manifest: list, rel: str, dest_root: Path) -> int | No
     return max(owners)[2] if owners else None
 
 
+def manifest_entry_shipping_inventory(
+    source_root: Path,
+    manifest: list,
+    entry_index: int,
+    dest_root: Path | None = None,
+) -> tuple[list[tuple[str, Path]], bool, bool]:
+    """manifest 한 항목의 실제 byte-copy 출하 inventory와 누락 성격을 반환한다.
+
+    반환은 ``(files, missing, target_owned)``다. ``files``의 각 항목은
+    ``(dest repo 상대경로, source 절대경로)``이며, 디렉토리의 tracked-only 열거·일반 파일
+    협착·``@source`` 리매핑·가장 구체적인 manifest 소유권·dest 레이아웃 리매핑을 모두
+    ``plan``과 같은 경로로 적용한다. source가 없으면 files는 비고 ``missing=True``이며,
+    호출자가 ``target_owned``로 정상적인 전파 제외와 엔진 누락 오류를 구분한다.
+
+    출하 목록을 관찰하는 다른 엔진 기능은 이 seam을 소비해야 한다. manifest 경로를 직접
+    ``iterdir``/``rglob``로 전개하면 git ignore, index mode, source remap과 override 의미가
+    실제 update 계획에서 다시 갈라진다.
+    """
+    source_root = Path(source_root)
+    effective_dest = Path(dest_root) if dest_root is not None else REPO
+    entry = manifest[entry_index]
+    rel = str(entry)
+    source_rel = _source_root_rel(entry)
+    target_owned = _entry_target_owned_flag(entry)
+    if not (source_root / source_rel).exists():
+        return [], True, target_owned
+
+    files: list[tuple[str, Path]] = []
+    for shipped_rel, source in _iter_files(source_root, source_rel):
+        shipped_rel = _remap_to_dest(shipped_rel, source_rel, rel)
+        shipped_rel = _dest_relpath_for(shipped_rel, effective_dest)
+        if _manifest_owner_index(manifest, shipped_rel, effective_dest) != entry_index:
+            continue
+        files.append((shipped_rel, source))
+    return files, False, target_owned
+
+
 def _load_pm_render():
     """pm_render 모듈을 같은 tools/ 디렉토리에서 직접 로드 (sys.path 오염 없이·stdlib seam).
 
@@ -1953,33 +1990,22 @@ def plan(
                 except (OSError, UnicodeDecodeError):
                     changes.append((rel, source, dst, "update"))
             continue
-        # @source= 있으면 source_root 아래 canonical 소스 경로(source_rel)에서 읽고, dest 엔
-        # manifest 경로(rel)로 기록한다(_remap_to_dest). 마커 부재면 source_rel == rel(오늘 동작).
-        source_rel = _source_root_rel(entry)
         # render_enabled=False(--target) 면 @render 태그를 강제로 끈다 — 템플릿은 토큰-form
         # 소스라 copy2 로 토큰을 보존해야 한다(렌더 시 operational leak·crash 회피).
         render = _entry_render_flag(entry) if render_enabled else False
-        if not (source_root / source_rel).exists():
+        inventory, source_missing, _target_owned = manifest_entry_shipping_inventory(
+            source_root,
+            manifest,
+            entry_index,
+            effective_dest,
+        )
+        if source_missing:
             # 부재 보고는 manifest(dest) 경로(rel) — missing-핸들러가 @target-owned 플래그를
             # str(entry) key 로 조회한다. @source 항목은 non-@target-owned → source 부재면 rc2
             # (템플릿 누락 은폐 금지·안전판).
             missing.append(rel)
             continue
-        for r, sp in _iter_files(source_root, source_rel):
-            # @source source-remap: yield relpath 의 source_rel prefix 를 manifest 경로로 치환
-            # (_remap_to_dest). 마커 부재면 무변경(source_rel == rel).
-            r = _remap_to_dest(r, source_rel, rel)
-            # board-분리 dest 면 `wiki/tickets/_template.md` 를 `board/tickets/_template.md` 로
-            # 리매핑한다(board_root() 추종) — source 는 upstream wiki/ 에서 그대로 읽되
-            # dest 경로만 옮긴다. legacy dest·그 외 항목은 입력 그대로(무변경). 표시 relpath(r)도
-            # 리매핑 후 경로로 둬 dry-run 출력이 실제 기록 위치를 정직히 보인다(_dest_root_for
-            # 역산도 part 수 동일이라 정합).
-            r = _dest_relpath_for(r, effective_dest)
-            # 상위 directory remap과 더 구체적인 file/directory remap이 겹치면 가장 구체적인
-            # destination 선언만 공급한다. Codex처럼 공유 스킬 디렉터리 중 한 파일만 하네스
-            # native 형상으로 override할 때, 상위 shared source가 override를 다시 덮지 않게 한다.
-            if _manifest_owner_index(manifest, r, effective_dest) != entry_index:
-                continue
+        for r, sp in inventory:
             # render 대상 판정 = @render manifest 선언 + **텍스트로 읽히는가**.
             # 옛 `.md` 확장자 하드 필터는 제거했다: 확장자 열거는 manifest 선언을 덮는 중복
             # 판정이라, codex 가 들여온 `.codex/agents/*.toml`(@render 선언 O)이 byte-copy 로

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -60,6 +61,18 @@ def _coverage_tree(
             encoding="utf-8",
         )
     readme = domain_dir / "README.md"
+    subprocess.run(
+        ["git", "-C", str(root), "init", "-q"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "add", "-f", "-A"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     return root, tools_dir, domain_dir, manifest, readme
 
 
@@ -95,7 +108,7 @@ def test_false_readme_complete_claim_is_finding(domain, tmp_path):
 
 def test_new_unowned_shipped_tool_is_finding(domain, tmp_path):
     """기존 complete fixture에 manifest 출하 파일을 추가하면 coverage gap으로 red."""
-    _root, tools_dir, domain_dir, manifest, readme = _coverage_tree(
+    root, tools_dir, domain_dir, manifest, readme = _coverage_tree(
         tmp_path, domain, shipped=("alpha.py",)
     )
     _readme(domain, readme, "complete")
@@ -104,6 +117,10 @@ def test_new_unowned_shipped_tool_is_finding(domain, tmp_path):
     (tools_dir / "new_tool.py").write_text("# new\n", encoding="utf-8")
     with manifest.open("a", encoding="utf-8") as fh:
         fh.write((Path(".project_manager") / "tools" / "new_tool.py").as_posix() + "\n")
+    subprocess.run(
+        ["git", "-C", str(root), "add", "-f", ".project_manager/tools/new_tool.py"],
+        check=True,
+    )
 
     findings = _findings(domain, domain_dir, manifest)
     assert any(label == "new_tool.py" and "담당 covers" in detail
@@ -278,6 +295,10 @@ def test_manifest_nested_python_entry_is_not_engine_tool(domain, tmp_path):
     nested = root / ".project_manager" / "tools" / "nested"
     nested.mkdir()
     (nested / "helper.py").write_text("# helper\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(root), "add", "-f", ".project_manager/tools/nested/helper.py"],
+        check=True,
+    )
     _readme(domain, readme, "complete")
 
     report = domain.coverage_report(
@@ -309,6 +330,27 @@ def test_empty_manifest_denominator_is_error_not_complete(domain, tmp_path):
     assert "분모가 0" in report["reason"]
 
 
+def test_empty_tracked_directory_inventory_is_error_not_complete(domain, tmp_path):
+    """디렉토리 선언이 있어도 tracked 출하 파일 0이면 공허한 complete가 아니다."""
+    _root, _tools, domain_dir, manifest, readme = _coverage_tree(
+        tmp_path,
+        domain,
+        shipped=(),
+        manifest_entries=(".project_manager/tools/",),
+    )
+    _readme(domain, readme, "complete")
+
+    report = domain.coverage_report(
+        domain.load_pages(domain_dir),
+        domain_dir=domain_dir,
+        manifest_path=manifest,
+        exemptions={},
+    )
+
+    assert report["status"] == "error"
+    assert "출하 인벤토리가 0건" in report["reason"]
+
+
 def test_manifest_tools_directory_expands_to_python_denominator(domain, tmp_path):
     """manifest 디렉토리 엔트리는 직계 Python 도구로 전개되고 gap을 숨기지 않는다."""
     _root, _tools, domain_dir, manifest, readme = _coverage_tree(
@@ -331,6 +373,126 @@ def test_manifest_tools_directory_expands_to_python_denominator(domain, tmp_path
     ]
     assert report["status"] == "incomplete"
     assert report["gaps"] == [".project_manager/tools/beta.py"]
+
+
+def test_manifest_directory_excludes_untracked_and_ignored_python_files(
+        domain, tmp_path):
+    """디렉토리 분모는 update의 tracked 출하 목록이라 disk-only Python을 포함하지 않는다."""
+    root, tools_dir, domain_dir, manifest, readme = _coverage_tree(
+        tmp_path,
+        domain,
+        shipped=("alpha.py",),
+        manifest_entries=(".project_manager/tools/",),
+    )
+    (tools_dir / "untracked.py").write_text("# local\n", encoding="utf-8")
+    (tools_dir / "ignored.py").write_text("# ignored\n", encoding="utf-8")
+    (root / ".gitignore").write_text(
+        ".project_manager/tools/ignored.py\n", encoding="utf-8"
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "add", ".gitignore"],
+        check=True,
+    )
+    _readme(domain, readme, "complete")
+
+    report = domain.coverage_report(
+        domain.load_pages(domain_dir),
+        domain_dir=domain_dir,
+        manifest_path=manifest,
+        exemptions={},
+    )
+
+    assert report["status"] == "complete"
+    assert report["tools"] == [".project_manager/tools/alpha.py"]
+
+
+def test_manifest_directory_uses_source_remap_shipping_inventory(domain, tmp_path):
+    """@source 디렉토리는 canonical source를 열거하고 manifest 목적지로 분모를 리매핑한다."""
+    root, _tools, domain_dir, manifest, readme = _coverage_tree(
+        tmp_path,
+        domain,
+        shipped=("alpha.py",),
+        manifest_entries=(
+            ".project_manager/tools/ @source=canonical/project-tools",
+        ),
+    )
+    source = root / "canonical" / "project-tools"
+    source.mkdir(parents=True)
+    (source / "alpha.py").write_text("# canonical\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(root), "add", "canonical/project-tools/alpha.py"],
+        check=True,
+    )
+    _readme(domain, readme, "complete")
+
+    report = domain.coverage_report(
+        domain.load_pages(domain_dir),
+        domain_dir=domain_dir,
+        manifest_path=manifest,
+        exemptions={},
+    )
+
+    assert report["status"] == "complete"
+    assert report["tools"] == [".project_manager/tools/alpha.py"]
+
+
+@pytest.mark.parametrize("flavor", ["claude_code", "codex", "opencode"])
+def test_flavor_manifest_engine_tool_paths_ignore_unrelated_upstream_sources(
+        domain, flavor):
+    """채택자 flavor의 upstream-only @source가 도구 분모 해석을 깨지 않는다."""
+    manifest = REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
+
+    assert domain.engine_tool_paths(manifest) == domain.engine_tool_paths(
+        REPO / ".project_manager" / "engine.manifest"
+    )
+
+
+def test_missing_target_owned_tool_is_not_shipping_denominator(domain, tmp_path):
+    """source가 없는 @target-owned 항목은 실제 update처럼 전파 제외되고 분모에도 없다."""
+    _root, _tools, domain_dir, manifest, readme = _coverage_tree(
+        tmp_path,
+        domain,
+        shipped=("alpha.py",),
+        manifest_entries=(
+            ".project_manager/tools/alpha.py",
+            ".project_manager/tools/adopter_only.py @target-owned",
+        ),
+    )
+    _readme(domain, readme, "complete")
+
+    report = domain.coverage_report(
+        domain.load_pages(domain_dir),
+        domain_dir=domain_dir,
+        manifest_path=manifest,
+        exemptions={},
+    )
+
+    assert report["status"] == "complete"
+    assert report["tools"] == [".project_manager/tools/alpha.py"]
+
+
+def test_missing_engine_source_makes_denominator_error(domain, tmp_path):
+    """non-target-owned source 누락은 update 중단과 같이 coverage도 해석불가 error다."""
+    _root, _tools, domain_dir, manifest, readme = _coverage_tree(
+        tmp_path,
+        domain,
+        shipped=("alpha.py",),
+        manifest_entries=(
+            ".project_manager/tools/alpha.py",
+            ".project_manager/tools/missing.py",
+        ),
+    )
+    _readme(domain, readme, "complete")
+
+    report = domain.coverage_report(
+        domain.load_pages(domain_dir),
+        domain_dir=domain_dir,
+        manifest_path=manifest,
+        exemptions={},
+    )
+
+    assert report["status"] == "error"
+    assert "non-@target-owned manifest source" in report["reason"]
 
 
 def test_manifest_paths_are_parsed_by_canonical_pm_update_reader(domain, tmp_path):
