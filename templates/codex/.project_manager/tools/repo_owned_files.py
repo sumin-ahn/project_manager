@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, NamedTuple
 
 # baked 엔진 rev — 여러 sibling deep-import 경계가 이 공용 seam을 검증한다.
-ENGINE_REV = "v1.5.1"
+ENGINE_REV = "v1.5.2"
 
 
 TRACKED_ONLY = "tracked_only"

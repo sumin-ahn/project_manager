@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Iterator, NamedTuple, Protocol, TextIO
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
-ENGINE_REV = "v1.5.1"
+ENGINE_REV = "v1.5.2"
 
 # marker 디렉토리 — ctx_stop_hook.py 의 _MARKER_DIR 와 동일해야 한다(읽기 측·hook 이 쓰는 측).
 MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
