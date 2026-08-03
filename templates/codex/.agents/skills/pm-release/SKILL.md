@@ -1,10 +1,10 @@
 ---
 name: pm-release
-description: "릴리즈 절차 명령어化 — adopter#0 sync 선행 → livegate record(readonly 슬롯 핀·수집 N 확인) → main push(대화 승인·자동 안 함) → tag → gh release create → gh release view 완결 확인 → adopter#0 흡수 → audience 라벨. backbone = board.py livegate record/check + pm_update(=/pm-update). 공개 main push 는 사용자 승인 게이트 유지. Triggers: '릴리즈 내', 'release vX.Y.Z', '태그·GitHub Release', 'pm-release'."
+description: "릴리즈 절차 명령어化 — adopter#0 sync 선행 → livegate record(readonly 슬롯 핀·수집 N 확인) → main push(대화 승인·자동 안 함) → tag → gh release create → gh release view 완결 확인 → adopter#0 흡수 → audience 라벨. backbone = board.py livegate record/check + pm_update(= pm-update 스킬). 공개 main push 는 사용자 승인 게이트 유지. Triggers: '릴리즈 내', 'release vX.Y.Z', '태그·GitHub Release', 'pm-release'."
 audience: pm-internal
 ---
 
-# /pm-release — 릴리즈 절차 (순서 고정·명령어化)
+# $pm-release — 릴리즈 절차 (순서 고정·명령어化)
 
 기존 엔진 CLI(`board.py livegate record/check` · `pm_update`=[[pm-update]])와 `git`/`gh`를 순서대로 호출한다. **공개 main push는 사용자 승인 게이트를 유지하며 이 스킬이 대신 실행하지 않는다.** 청중은 릴리즈를 내는 PM(`pm-internal`)이다.
 

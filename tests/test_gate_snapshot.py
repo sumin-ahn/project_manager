@@ -1,0 +1,946 @@
+"""격리 게이트 스냅샷의 내용 신선도와 대상 경계 회귀."""
+
+from __future__ import annotations
+
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+
+REPO = Path(__file__).resolve().parents[1]
+TOOLS = REPO / ".project_manager" / "tools"
+MANIFESTS = {
+    flavor: REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
+    for flavor in ("claude_code", "codex", "opencode")
+}
+TEMPLATE_TOOLS = {
+    flavor: manifest.parent / "tools" / "gate_snapshot.py"
+    for flavor, manifest in MANIFESTS.items()
+}
+
+
+def _load(name: str):
+    sys.path.insert(0, str(TOOLS))
+    try:
+        spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(TOOLS))
+
+
+@pytest.fixture
+def snapshot():
+    return _load("gate_snapshot")
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+def _repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "review").mkdir()
+    (repo / "review" / "target.txt").write_text("committed\n", encoding="utf-8")
+    (repo / "other.txt").write_text("committed-other\n", encoding="utf-8")
+    _git(repo, "add", "review/target.txt", "other.txt")
+    _git(repo, "commit", "-qm", "initial")
+    return repo
+
+
+def _index_bytes(repo: Path) -> bytes:
+    raw_path = _git(repo, "rev-parse", "--git-path", "index").stdout.strip()
+    index_path = Path(raw_path)
+    if not index_path.is_absolute():
+        index_path = repo / index_path
+    return index_path.read_bytes()
+
+
+def _manifest_engine_tools(path: Path) -> set[str]:
+    return {
+        line.split()[0]
+        for raw in path.read_text(encoding="utf-8").splitlines()
+        if (line := raw.strip())
+        and not line.startswith("#")
+        and line.split()[0].startswith(".project_manager/tools/")
+        and line.split()[0].endswith(".py")
+    }
+
+
+def test_all_manifests_register_and_all_flavors_ship_gate_snapshot():
+    """PM 전파 전에는 red여야 하며, 전파 뒤 실재 파일까지 출하됐음을 단언한다."""
+    gate_tool = ".project_manager/tools/gate_snapshot.py"
+    root_tools = _manifest_engine_tools(REPO / ".project_manager" / "engine.manifest")
+    assert gate_tool in root_tools, "canonical manifest에 gate_snapshot.py가 미등록"
+    unregistered = [
+        flavor
+        for flavor, manifest in MANIFESTS.items()
+        if gate_tool not in _manifest_engine_tools(manifest)
+    ]
+    assert not unregistered, (
+        f"flavor manifest에 gate_snapshot.py가 미등록: {unregistered}"
+    )
+    for flavor in MANIFESTS:
+        shipped = TEMPLATE_TOOLS[flavor]
+        assert shipped.is_file(), f"{flavor} flavor 도구 미출하: {shipped}"
+        assert shipped.read_bytes() == (TOOLS / "gate_snapshot.py").read_bytes(), (
+            f"{flavor} flavor 도구가 canonical과 다름: {shipped}"
+        )
+
+
+def test_staged_first_round_then_unstaged_second_round_is_rejected(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    target = repo / "review" / "target.txt"
+    target.write_text("first-round\n", encoding="utf-8")
+    _git(repo, "add", "review/target.txt")
+    target.write_text("second-round\n", encoding="utf-8")
+    output = tmp_path / "gate"
+    index_before = _index_bytes(repo)
+
+    with pytest.raises(snapshot.SnapshotError, match="working tree와 다릅니다"):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+    assert _index_bytes(repo) == index_before
+    assert _git(repo, "show", ":review/target.txt").stdout == "first-round\n"
+    assert target.read_text(encoding="utf-8") == "second-round\n"
+
+
+def test_unrelated_live_edit_does_not_raise_or_enter_review_target(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    target = repo / "review" / "target.txt"
+    target.write_text("ready-for-review\n", encoding="utf-8")
+    _git(repo, "add", "review/target.txt")
+    (repo / "other.txt").write_text("parallel-live-edit\n", encoding="utf-8")
+    output = tmp_path / "gate"
+    index_before = _index_bytes(repo)
+
+    created, files = snapshot.create_snapshot(repo, output, ["review"])
+
+    assert created == output.resolve()
+    assert files == ("review/target.txt",)
+    assert _index_bytes(repo) == index_before
+    assert (output / "review" / "target.txt").read_text(encoding="utf-8") == \
+        "ready-for-review\n"
+    assert (output / "other.txt").read_text(encoding="utf-8") == "committed-other\n"
+
+
+def test_parallel_wave_directory_scope_blocks_tracked_wip_with_branch_guidance(
+    snapshot, tmp_path
+):
+    repo = _repo(tmp_path)
+    tools = repo / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    target = tools / "dev_a_target.py"
+    target.write_text("committed-target\n", encoding="utf-8")
+    parallel = tools / "dev_b_parallel.py"
+    parallel.write_text("committed-parallel\n", encoding="utf-8")
+    _git(repo, "add", ".project_manager/tools")
+    _git(repo, "commit", "-qm", "parallel fixture")
+    target.write_text("dev-a-ready\n", encoding="utf-8")
+    _git(repo, "add", ".project_manager/tools/dev_a_target.py")
+    parallel.write_text("dev-b-live-wip\n", encoding="utf-8")
+    output = tmp_path / "gate"
+
+    with pytest.raises(snapshot.SnapshotError) as exc:
+        snapshot.create_snapshot(repo, output, [".project_manager/tools"])
+
+    message = str(exc.value)
+    assert "working tree와 다릅니다" in message
+    assert "이 경로가 검토 대상이면 `git add`로 index를 갱신" in message
+    assert "다른 dev의 WIP이면 `--paths`를 파일 단위로 좁히십시오" in message
+    assert not output.exists()
+
+
+def test_parallel_wave_file_scope_passes_without_copying_neighbor_wip(
+    snapshot, tmp_path
+):
+    repo = _repo(tmp_path)
+    tools = repo / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    target = tools / "dev_a_target.py"
+    target.write_text("committed-target\n", encoding="utf-8")
+    parallel = tools / "dev_b_parallel.py"
+    parallel.write_text("committed-parallel\n", encoding="utf-8")
+    _git(repo, "add", ".project_manager/tools")
+    _git(repo, "commit", "-qm", "parallel fixture")
+    target.write_text("dev-a-ready\n", encoding="utf-8")
+    _git(repo, "add", ".project_manager/tools/dev_a_target.py")
+    parallel.write_text("dev-b-live-wip\n", encoding="utf-8")
+    untracked = tools / "dev_c_new.py"
+    untracked.write_text("dev-c-live-wip\n", encoding="utf-8")
+    output = tmp_path / "gate"
+
+    created, files = snapshot.create_snapshot(
+        repo, output, [".project_manager/tools/dev_a_target.py"]
+    )
+
+    assert created == output.resolve()
+    assert files == (".project_manager/tools/dev_a_target.py",)
+    assert (output / ".project_manager" / "tools" / "dev_a_target.py").read_text(
+        encoding="utf-8"
+    ) == "dev-a-ready\n"
+    assert (
+        output / ".project_manager" / "tools" / "dev_b_parallel.py"
+    ).read_text(encoding="utf-8") == "committed-parallel\n"
+    assert not (
+        output / ".project_manager" / "tools" / "dev_c_new.py"
+    ).exists()
+
+
+def test_missing_target_fails_before_snapshot_creation(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+
+    with pytest.raises(snapshot.SnapshotError, match="비교할 Git 소유 파일이 없습니다"):
+        snapshot.create_snapshot(repo, output, ["absent.txt"])
+
+    assert not output.exists()
+
+
+def test_unstaged_deleted_tracked_target_explains_how_to_stage(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "review" / "target.txt").unlink()
+    output = tmp_path / "gate"
+
+    with pytest.raises(snapshot.SnapshotError) as exc:
+        snapshot.create_snapshot(repo, output, ["review"])
+
+    message = str(exc.value)
+    assert "`git add -u -- review/target.txt`" in message
+    assert "`git add -u`" not in message
+    assert not output.exists()
+
+
+def test_staged_deletion_is_absent_from_snapshot(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    target = repo / "review" / "target.txt"
+    target.unlink()
+    _git(repo, "add", "-u", "review/target.txt")
+    output = tmp_path / "gate"
+
+    created, files = snapshot.create_snapshot(repo, output, ["review"])
+
+    assert created == output.resolve()
+    assert files == ("review/target.txt",)
+    assert not (output / "review" / "target.txt").exists()
+
+
+def test_staged_deletion_with_working_file_left_is_rejected(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "rm", "--cached", "review/target.txt")
+    output = tmp_path / "gate"
+    index_before = _index_bytes(repo)
+
+    with pytest.raises(
+        snapshot.SnapshotError, match="index에서 삭제됐지만 working tree에 남은"
+    ):
+        snapshot.create_snapshot(repo, output, ["review"])
+
+    assert not output.exists()
+    assert _index_bytes(repo) == index_before
+    assert (repo / "review" / "target.txt").is_file()
+
+
+def test_staged_untrack_plus_gitignore_treats_residue_as_intentional_deletion(
+    snapshot, tmp_path
+):
+    repo = _repo(tmp_path)
+    target = repo / "review" / "target.txt"
+    _git(repo, "rm", "--cached", "review/target.txt")
+    (repo / ".gitignore").write_text("/review/target.txt\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    output = tmp_path / "gate"
+
+    created, files = snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert created == output.resolve()
+    assert files == ("review/target.txt",)
+    assert target.read_text(encoding="utf-8") == "committed\n"
+    assert not (output / "review" / "target.txt").exists()
+
+
+def test_unstaged_gitignore_does_not_exempt_staged_deletion_residue(
+    snapshot, tmp_path
+):
+    repo = _repo(tmp_path)
+    target = repo / "review" / "target.txt"
+    _git(repo, "rm", "--cached", "review/target.txt")
+    (repo / ".gitignore").write_text("/review/target.txt\n", encoding="utf-8")
+    output = tmp_path / "gate"
+
+    with pytest.raises(
+        snapshot.SnapshotError, match="index에서 삭제됐지만 working tree에 남은"
+    ):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+    assert target.read_text(encoding="utf-8") == "committed\n"
+
+
+def test_staged_file_to_directory_transition_is_delete_and_add(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    old_file = repo / "review" / "target.txt"
+    old_file.unlink()
+    old_file.mkdir()
+    child = old_file / "child.txt"
+    child.write_text("directory-child\n", encoding="utf-8")
+    _git(repo, "add", "-A", "review/target.txt")
+    output = tmp_path / "gate"
+
+    _, files = snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert files == ("review/target.txt", "review/target.txt/child.txt")
+    assert not (output / "review" / "target.txt").is_file()
+    assert (output / "review" / "target.txt" / "child.txt").read_text(
+        encoding="utf-8"
+    ) == "directory-child\n"
+
+
+def test_staged_directory_to_file_transition_is_delete_and_add(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    target = repo / "review" / "target.txt"
+    target.unlink()
+    target.mkdir()
+    child = target / "child.txt"
+    child.write_text("committed-child\n", encoding="utf-8")
+    _git(repo, "add", "-A", "review/target.txt")
+    _git(repo, "commit", "-qm", "directory shape")
+    child.unlink()
+    target.rmdir()
+    target.write_text("replacement-file\n", encoding="utf-8")
+    _git(repo, "add", "-A", "review/target.txt")
+    output = tmp_path / "gate"
+
+    _, files = snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert files == ("review/target.txt", "review/target.txt/child.txt")
+    assert (output / "review" / "target.txt").read_text(
+        encoding="utf-8"
+    ) == "replacement-file\n"
+    assert not (output / "review" / "target.txt" / "child.txt").exists()
+
+
+def test_untracked_new_file_explains_target_or_parallel_wip_branches(
+    snapshot, tmp_path
+):
+    repo = _repo(tmp_path)
+    (repo / "review" / "new.txt").write_text("new\n", encoding="utf-8")
+    output = tmp_path / "gate"
+
+    with pytest.raises(snapshot.SnapshotError) as exc:
+        snapshot.create_snapshot(repo, output, ["review"])
+
+    message = str(exc.value)
+    assert "untracked 신규 파일" in message
+    assert "이 경로가 검토 대상이면 `git add`로 index를 갱신" in message
+    assert "다른 dev의 WIP이면 `--paths`를 파일 단위로 좁히십시오" in message
+    assert not output.exists()
+
+
+def test_file_created_during_snapshot_changes_selected_set(snapshot, tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._checked_git_input
+    injected = False
+
+    def checked_git(root, input_text, *args):
+        nonlocal injected
+        result = original(root, input_text, *args)
+        if not injected and args[:1] == ("checkout-index",):
+            injected = True
+            for base in (repo, output):
+                (base / "review" / "late.txt").write_text("late\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(snapshot, "_checked_git_input", checked_git)
+
+    with pytest.raises(snapshot.SnapshotError, match="파일 집합이 변경됐습니다"):
+        snapshot.create_snapshot(repo, output, ["review"])
+
+    assert not output.exists()
+    assert (repo / "review" / "late.txt").is_file()
+
+
+def test_file_created_after_first_reenumeration_is_caught_by_final_bookend(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._signatures
+    injected = False
+
+    def signatures(root, files):
+        nonlocal injected
+        result = original(root, files)
+        if not injected and Path(root) == output:
+            injected = True
+            (repo / "review" / "late.txt").write_text("late\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(snapshot, "_signatures", signatures)
+
+    with pytest.raises(snapshot.SnapshotError, match="파일 집합이 변경됐습니다"):
+        snapshot.create_snapshot(repo, output, ["review"])
+
+    assert not output.exists()
+    assert (repo / "review" / "late.txt").is_file()
+
+
+def test_snapshot_only_file_is_caught_by_snapshot_file_set_bookend(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._signatures
+    injected = False
+
+    def signatures(root, files):
+        nonlocal injected
+        result = original(root, files)
+        if not injected and Path(root) == output:
+            injected = True
+            (output / "review" / "snapshot-only.txt").write_text(
+                "snapshot-only\n", encoding="utf-8"
+            )
+        return result
+
+    monkeypatch.setattr(snapshot, "_signatures", signatures)
+
+    with pytest.raises(snapshot.SnapshotError, match="실 파일 집합"):
+        snapshot.create_snapshot(repo, output, ["review"])
+
+    assert not output.exists()
+
+
+def test_snapshot_only_file_after_index_replication_is_caught_by_first_bookend(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original_replicate = snapshot._replicate_index_and_checkout
+    original_signatures = snapshot._signatures
+    injected = False
+    removed = False
+
+    def replicate(root, destination):
+        nonlocal injected
+        original_replicate(root, destination)
+        injected = True
+        (output / "review" / "snapshot-only.txt").write_text(
+            "snapshot-only\n", encoding="utf-8"
+        )
+
+    def signatures(root, files):
+        nonlocal removed
+        result = original_signatures(root, files)
+        if injected and not removed and Path(root) == output:
+            (output / "review" / "snapshot-only.txt").unlink()
+            removed = True
+        return result
+
+    monkeypatch.setattr(snapshot, "_replicate_index_and_checkout", replicate)
+    monkeypatch.setattr(snapshot, "_signatures", signatures)
+
+    with pytest.raises(snapshot.SnapshotError, match="실 파일 집합"):
+        snapshot.create_snapshot(repo, output, ["review"])
+
+    assert injected
+    assert not removed
+    assert not output.exists()
+
+
+def test_working_tree_stability_check_is_independently_sensitive(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._checked_git_input
+    injected = False
+
+    def checked_git(root, input_text, *args):
+        nonlocal injected
+        result = original(root, input_text, *args)
+        if not injected and args[:1] == ("checkout-index",):
+            injected = True
+            for base in (repo, output):
+                (base / "review" / "target.txt").write_text(
+                    "changed-during-snapshot\n", encoding="utf-8"
+                )
+        return result
+
+    monkeypatch.setattr(snapshot, "_checked_git_input", checked_git)
+
+    with pytest.raises(
+        snapshot.SnapshotError, match="생성 중 검토 대상 working tree가 변경"
+    ):
+        snapshot.create_snapshot(repo, output, ["review"])
+
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("change", ["blob", "mode"])
+def test_index_stage_entry_change_is_caught_even_when_file_set_is_stable(
+    snapshot, tmp_path, monkeypatch, change
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._checked_git_input
+    injected = False
+
+    def checked_git(root, input_text, *args):
+        nonlocal injected
+        result = original(root, input_text, *args)
+        if not injected and args[:1] == ("checkout-index",):
+            injected = True
+            target = repo / "review" / "target.txt"
+            if change == "blob":
+                target.write_text("new-index-blob\n", encoding="utf-8")
+            else:
+                target.chmod(target.stat().st_mode | 0o111)
+            _git(repo, "add", "review/target.txt")
+        return result
+
+    monkeypatch.setattr(snapshot, "_checked_git_input", checked_git)
+
+    with pytest.raises(
+        snapshot.SnapshotError, match="index stage 엔트리\\(mode/OID/stage\\)"
+    ):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+
+
+def test_head_oid_change_is_caught_even_when_file_set_is_stable(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._checked_git_input
+    injected = False
+
+    def checked_git(root, input_text, *args):
+        nonlocal injected
+        result = original(root, input_text, *args)
+        if not injected and args[:1] == ("checkout-index",):
+            injected = True
+            _git(repo, "commit", "--allow-empty", "-qm", "move head only")
+        return result
+
+    monkeypatch.setattr(snapshot, "_checked_git_input", checked_git)
+
+    with pytest.raises(snapshot.SnapshotError, match="HEAD OID가 변경됐습니다"):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+
+
+def test_snapshot_head_must_match_the_captured_source_basis(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._checked_git_input
+    injected = False
+
+    def checked_git(root, input_text, *args):
+        nonlocal injected
+        result = original(root, input_text, *args)
+        if not injected and args[:1] == ("checkout-index",):
+            injected = True
+            _git(output, "commit", "--allow-empty", "-qm", "move snapshot head")
+        return result
+
+    monkeypatch.setattr(snapshot, "_checked_git_input", checked_git)
+
+    with pytest.raises(
+        snapshot.SnapshotError, match="스냅샷의 HEAD OID가 생성 기준점과 다릅니다"
+    ):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+
+
+def test_snapshot_index_entries_must_match_the_captured_source_basis(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._selected_files
+    injected = False
+
+    def selected_files(root, paths):
+        nonlocal injected
+        if not injected and Path(root) == output:
+            injected = True
+            (output / "review" / "target.txt").write_text(
+                "snapshot-index-diverged\n", encoding="utf-8"
+            )
+            _git(output, "add", "review/target.txt")
+        return original(root, paths)
+
+    monkeypatch.setattr(snapshot, "_selected_files", selected_files)
+
+    with pytest.raises(
+        snapshot.SnapshotError,
+        match="스냅샷의 Git index stage 엔트리.*생성 기준점과 다릅니다",
+    ):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+
+
+def test_final_working_tree_bookend_catches_same_path_content_change(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._signatures
+    root_calls = 0
+
+    def signatures(root, files):
+        nonlocal root_calls
+        if Path(root) == repo:
+            root_calls += 1
+            if root_calls == 3:
+                (repo / "review" / "target.txt").write_text(
+                    "changed-at-final-bookend\n", encoding="utf-8"
+                )
+        return original(root, files)
+
+    monkeypatch.setattr(snapshot, "_signatures", signatures)
+
+    with pytest.raises(
+        snapshot.SnapshotError, match="검증 중 검토 대상 working tree가 변경"
+    ):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+
+
+def test_final_snapshot_bookend_catches_same_path_content_change(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._signatures
+    root_calls = 0
+
+    def signatures(root, files):
+        nonlocal root_calls
+        result = original(root, files)
+        if Path(root) == repo:
+            root_calls += 1
+            if root_calls == 3:
+                (output / "review" / "target.txt").write_text(
+                    "changed-snapshot-at-final-bookend\n", encoding="utf-8"
+                )
+        return result
+
+    monkeypatch.setattr(snapshot, "_signatures", signatures)
+
+    with pytest.raises(
+        snapshot.SnapshotError, match="검증 중 격리 스냅샷이 변경"
+    ):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+
+
+def test_active_submodule_source_is_unchanged_and_gitlink_stays_in_snapshot_index(
+    snapshot, tmp_path
+):
+    submodule_source = tmp_path / "board-source"
+    submodule_source.mkdir()
+    _git(submodule_source, "init", "-q")
+    _git(submodule_source, "config", "user.email", "test@example.invalid")
+    _git(submodule_source, "config", "user.name", "Test User")
+    (submodule_source / "ticket.txt").write_text("committed\n", encoding="utf-8")
+    _git(submodule_source, "add", "ticket.txt")
+    _git(submodule_source, "commit", "-qm", "board initial")
+
+    repo = _repo(tmp_path)
+    _git(
+        repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(submodule_source),
+        "board",
+    )
+    _git(repo, "commit", "-qam", "add board submodule")
+    board = repo / "board"
+    (board / "ticket.txt").write_text("parallel-board-wip\n", encoding="utf-8")
+    source_head = _git(board, "rev-parse", "HEAD").stdout
+    source_status = _git(board, "status", "--porcelain=v1").stdout
+    source_diff = _git(board, "diff", "--binary").stdout
+    source_gitfile = (board / ".git").read_bytes()
+    source_gitlink = _git(repo, "ls-files", "--stage", "--", "board").stdout
+    output = tmp_path / "gate"
+
+    snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert _git(board, "rev-parse", "HEAD").stdout == source_head
+    assert _git(board, "status", "--porcelain=v1").stdout == source_status
+    assert _git(board, "diff", "--binary").stdout == source_diff
+    assert (board / ".git").read_bytes() == source_gitfile
+    assert _git(output, "ls-files", "--stage", "--", "board").stdout == \
+        source_gitlink
+    assert not (output / "board").exists()
+
+
+def test_unexpected_exception_rolls_back_registered_worktree(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    original = snapshot._selected_files
+    calls = 0
+
+    def selected_files(root, paths):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("injected unexpected failure")
+        return original(root, paths)
+
+    monkeypatch.setattr(snapshot, "_selected_files", selected_files)
+
+    with pytest.raises(ValueError, match="injected unexpected failure"):
+        snapshot.create_snapshot(repo, output, ["review"])
+
+    assert not output.exists()
+    assert str(output) not in _git(repo, "worktree", "list", "--porcelain").stdout
+
+
+def test_snapshot_creation_failure_is_loud(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    output = tmp_path / "missing-parent" / "gate"
+
+    with pytest.raises(snapshot.SnapshotError, match="부모 디렉터리가 없습니다"):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+
+def test_output_inside_shared_repo_is_rejected_before_creating_files(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    output = repo / "gate-output"
+
+    with pytest.raises(snapshot.SnapshotError, match="저장소 밖"):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+    assert "gate-output" not in _git(repo, "status", "--porcelain").stdout
+
+
+def test_existing_output_is_rejected_without_changing_it(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    output.mkdir()
+    marker = output / "keep.txt"
+    marker.write_text("keep\n", encoding="utf-8")
+
+    with pytest.raises(snapshot.SnapshotError, match="이미 존재"):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert marker.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_absolute_review_path_is_normalized_for_snapshot_enumeration(
+    snapshot, tmp_path
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+
+    created, files = snapshot.create_snapshot(repo, output, [str(repo / "review")])
+
+    assert created == output.resolve()
+    assert files == ("review/target.txt",)
+
+
+def test_eol_attribute_uses_git_normalized_blob_identity(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    attributes = repo / ".gitattributes"
+    command = repo / "review" / "build.cmd"
+    attributes.write_text("*.cmd text eol=crlf\n", encoding="utf-8")
+    command.write_bytes(b"echo committed\n")
+    _git(repo, "add", ".gitattributes", "review/build.cmd")
+    _git(repo, "commit", "-qm", "eol fixture")
+    command.write_bytes(b"echo staged\n")
+    _git(repo, "add", "review/build.cmd")
+    output = tmp_path / "gate"
+
+    created, files = snapshot.create_snapshot(repo, output, ["review/build.cmd"])
+
+    assert created == output.resolve()
+    assert files == ("review/build.cmd",)
+    assert _git(repo, "diff", "--", "review/build.cmd").stdout == ""
+    assert command.read_bytes() == b"echo staged\n"
+    assert (output / "review" / "build.cmd").read_bytes() == b"echo staged\r\n"
+
+
+def test_cli_requires_explicit_review_paths(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        snapshot.main(
+            ["--repo", str(repo), "--output", str(tmp_path / "gate")]
+        )
+    assert exc.value.code == 2
+
+
+def test_cli_requires_explicit_repo_even_when_cwd_is_a_repo(
+    snapshot, tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(SystemExit) as exc:
+        snapshot.main(
+            [
+                "--output",
+                str(tmp_path / "gate"),
+                "--paths",
+                "review/target.txt",
+            ]
+        )
+    assert exc.value.code == 2
+
+
+def test_module_and_cli_help_require_file_scope_for_parallel_waves(snapshot):
+    assert "병렬 wave에서는" in snapshot.__doc__
+    assert "파일 단위로 지정" in snapshot.__doc__
+    paths_action = next(
+        action for action in snapshot.build_parser()._actions if action.dest == "paths"
+    )
+    assert paths_action.help == (
+        "검토 대상 파일 또는 디렉터리(병렬 wave에서는 파일 단위로 지정)"
+    )
+
+
+def test_external_review_head_diff_includes_unstaged_selected_path(tmp_path):
+    external = _load("external_review")
+    repo = _repo(tmp_path)
+    target = repo / "review" / "target.txt"
+    target.write_text("working-only\n", encoding="utf-8")
+    external.REPO = repo
+
+    diff, excluded = external.extract_diff("HEAD", ["review/target.txt"])
+
+    assert excluded == []
+    assert "+working-only" in diff
+    assert "review/target.txt" in diff
+
+
+def test_snapshot_index_exposes_new_modified_deleted_and_renamed_files(
+    snapshot, tmp_path
+):
+    external = _load("external_review")
+    repo = _repo(tmp_path)
+    deleted = repo / "review" / "deleted.txt"
+    renamed = repo / "review" / "rename-source.txt"
+    deleted.write_text("deleted-body\n", encoding="utf-8")
+    renamed.write_text("rename-body\n", encoding="utf-8")
+    _git(repo, "add", "review")
+    _git(repo, "commit", "-qm", "review fixtures")
+
+    (repo / "review" / "target.txt").write_text("modified-body\n", encoding="utf-8")
+    deleted.unlink()
+    _git(repo, "mv", "review/rename-source.txt", "review/rename-destination.txt")
+    (repo / "review" / "new.txt").write_text("new-body\n", encoding="utf-8")
+    _git(repo, "add", "-A", "review")
+    index_before = _index_bytes(repo)
+    output = tmp_path / "gate"
+
+    _, files = snapshot.create_snapshot(repo, output, ["review"])
+
+    assert _index_bytes(repo) == index_before
+    tracked = set(_git(output, "ls-files").stdout.splitlines())
+    assert "review/new.txt" in tracked
+    assert "review/rename-destination.txt" in tracked
+    assert "review/deleted.txt" not in tracked
+    assert "review/rename-source.txt" not in tracked
+    assert {
+        "review/new.txt",
+        "review/target.txt",
+        "review/deleted.txt",
+        "review/rename-source.txt",
+        "review/rename-destination.txt",
+    }.issubset(files)
+
+    external.REPO = output
+    diff, excluded = external.extract_diff("HEAD", ["review"])
+
+    assert excluded == []
+    assert "+new-body" in diff
+    assert "+modified-body" in diff
+    assert "-deleted-body" in diff
+    assert "rename from review/rename-source.txt" in diff
+    assert "rename to review/rename-destination.txt" in diff
+
+
+def test_cli_process_reports_stale_snapshot_without_staging(tmp_path):
+    repo = _repo(tmp_path)
+    target = repo / "review" / "target.txt"
+    target.write_text("staged-copy\n", encoding="utf-8")
+    _git(repo, "add", "review/target.txt")
+    target.write_text("working-copy\n", encoding="utf-8")
+    output = tmp_path / "gate"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "gate_snapshot.py"),
+            "--repo",
+            str(repo),
+            "--output",
+            str(output),
+            "--paths",
+            "review/target.txt",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 1
+    assert "working tree와 다릅니다" in result.stderr
+    assert _git(repo, "show", ":review/target.txt").stdout == "staged-copy\n"
+
+
+def test_cli_success_reports_resolved_repo_root(tmp_path):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "gate_snapshot.py"),
+            "--repo",
+            str(repo),
+            "--output",
+            str(output),
+            "--paths",
+            "review/target.txt",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"repo root: {repo.resolve()}" in result.stdout

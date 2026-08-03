@@ -291,7 +291,8 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     assert leases["work/app_2"].git is not None, "app_2 도 재스냅 대상(전 슬롯)"
 
     # (c) 인계 트리거 = `--task` 앵커(T-0394) — 슬롯 열거 없이 task-only.
-    assert f"/pm-bootstrap --task {task}" in out3, "인계 트리거에 --task 앵커 없음(T-0394)"
+    expected_trigger = handoff_mod._runtime_skill_entry("pm-bootstrap") + f" --task {task}"
+    assert expected_trigger in out3, "인계 트리거에 --task 앵커 없음"
 
     # (d) 정상-종료 task pid=0(T-0392) — 차기 재개가 clean resume 이 되도록.
     task_rec = next(t for t in wp.list_tasks() if t.name == task)

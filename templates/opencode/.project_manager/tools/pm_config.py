@@ -249,6 +249,16 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
+def _report_engine_rev_skew_at_terminal(exc) -> int:
+    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
+    print(
+        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+        "동기화한 뒤 다시 실행하세요.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 # ── 엔진 모듈 동적 로드 (스크립트-위치 앵커·pm_bootstrap 선례) ──────────────────
 # board.py·worktree_pool.py 는 같은 tools/ 에 있다. spec_from_file_location 으로
 # 로드한다 — 패키지 설치 없이 동작(board.py·pm_*.py 와 같은 로드 관례). 부재/로드
@@ -274,6 +284,12 @@ def _load_module(name: str, filename: str):
             raise  # 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
         return None
     return mod
+
+
+def _runtime_skill_entry(skill: str) -> str:
+    """현재 실행 하네스의 사용자 호출 표기(Codex env marker 외 slash)."""
+    prefix = "$" if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI") else "/"
+    return f"{prefix}{skill}"
 
 
 def _real_clone_runner() -> GitRunner:
@@ -1769,7 +1785,7 @@ def _print_protected_status(
         print(f"  훅 sidecar: {path} → {listed}  "
               f"⚠ 옛 목록({', '.join(sidecar) or '없음'}) — 이 clone 의 훅은 아직 옛 값으로 동작")
         print(f"    → 정합화:  {retry}"
-              "   (또는 `/pm-bootstrap` 이 세션 시작에 자동 정합화)")
+              f"   (또는 `{_runtime_skill_entry('pm-bootstrap')}` 이 세션 시작에 자동 정합화)")
         return 0
     if wired is False:
         # 내용은 최신인데 배선이 끊긴 부분성공 — sidecar 만 보면 `✓ 정합` 으로 보이는 그 상태.
@@ -1899,7 +1915,9 @@ def cmd_repo_protected(
                 sync("repo protected", (areas_file(),))
             else:
                 sync("repo protected")
-        except Exception:  # noqa: BLE001 — best-effort: 동기 실패가 설정을 되돌리지 않는다.
+        except Exception as exc:  # noqa: BLE001 — best-effort: 동기 실패가 설정을 되돌리지 않는다.
+            if _is_engine_rev_skew(exc):
+                return _report_engine_rev_skew_at_terminal(exc)
             pass
 
     # 5) 브랜치 실재 경고 1줄 — `repo add --protected` 와 **같은 공용 깔때기**(검증 비대칭 방지).
@@ -2097,6 +2115,8 @@ def cmd_worktree_add(
         lease = wp.create_slot(args.repo, base=base, test_cmd=test_cmd, readonly=readonly,
                                owner_task=task)
     except RuntimeError as exc:
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
         print(f"[중단] worktree 슬롯 생성 실패: {exc}", file=sys.stderr)
         return 1
     slot_path = wp.slot_path(lease.slot)
@@ -2113,7 +2133,8 @@ def cmd_worktree_add(
             f"✓ readonly 공유 슬롯 생성: {lease.slot} (repo={lease.repo}·role=readonly) → {slot_path}\n"
             "  research 전용 read-only 기준면(detached HEAD·배타 대여 없음·session/pid 없음). 코드를\n"
             "  *읽어* PM 홈 wiki(domain·architecture·status)를 쓰는 역할의 읽기 기준면이다.\n"
-            f"  갱신은 `/pm-worktree refresh {lease.repo}_{slot_num}` 로만(fetch→detach 이동·dirty=거부). "
+            f"  갱신은 `{_runtime_skill_entry('pm-worktree')} refresh "
+            f"{lease.repo}_{slot_num}` 로만(fetch→detach 이동·dirty=거부). "
             "set-base/rebase/dev/sync 는 거부된다."
         )
     elif task is not None:
@@ -2129,8 +2150,10 @@ def cmd_worktree_add(
         print(
             f"✓ worktree 슬롯 생성: {lease.slot} (repo={lease.repo}) → {slot_path}{test_line}\n"
             "  코드 작업은 이 슬롯 cwd 에서 — 보드/wiki 는 multi-PM 공유 `.project_manager`.\n"
-            f"  다음 스텝 — 이 슬롯을 세션에 바인딩: `/pm-bootstrap {lease.repo} --slot {slot_num}` "
-            "(정체성 선언·자동 아님). 솔로/단일 슬롯이면 무인자 `/pm-bootstrap` 가 자동바인딩."
+            f"  다음 스텝 — 이 슬롯을 세션에 바인딩: "
+            f"`{_runtime_skill_entry('pm-bootstrap')} {lease.repo} --slot {slot_num}` "
+            f"(정체성 선언·자동 아님). 솔로/단일 슬롯이면 무인자 "
+            f"`{_runtime_skill_entry('pm-bootstrap')}` 가 자동바인딩."
         )
     # 보호 브랜치 pre-push 훅 (재)설치 (멱등 자가치유) — 슬롯 op 마다 (재)설치해 엔진
     # update 후 기존 repo 도 다음 worktree add 에 훅을 얻는다(별도 명령 불요·회사 repo 무영향).
@@ -2206,7 +2229,7 @@ def cmd_status(
 
     status·whoami 는 같은 데이터·같은 핸들러 — whoami 는 이 세션 줄을 머리에 둔다. 데이터는
     전부 장부(기계)에서 파생([[living-truth-docs-anti-ossification]]) — 신설 저장소 없음. 전
-    surface(task/slot/git)는 fail-soft — 조회 실패가 status 를 막지 않는다(조회 전용).
+    surface(task/slot/git)는 일반 조회 실패에 fail-soft 이되 marked engine skew 는 막는다.
 
     worktree_pool 주입으로 hermetic 테스트.
     """
@@ -2276,7 +2299,9 @@ def cmd_status(
     if callable(list_tasks_fn):
         try:
             tasks = list_tasks_fn() or []
-        except Exception:  # noqa: BLE001 — task 조회 실패가 status 를 막지 않는다(조회 전용·fail-soft).
+        except Exception as exc:  # noqa: BLE001 — task 조회 실패가 status 를 막지 않는다(조회 전용·fail-soft).
+            if _is_engine_rev_skew(exc):
+                return _report_engine_rev_skew_at_terminal(exc)
             tasks = []
     # truthy name 만 — 레코드가 name 미보유(None/빈값)면 집합에 넣지 않는다(방어). None 이 섞이면
     # idle lease(session=None/"")가 `보유 task=None` 으로 오귀인될 수 있다(reviewer suggestion).
@@ -2290,7 +2315,9 @@ def cmd_status(
             if callable(slots_for_task_fn):
                 try:
                     slots = slots_for_task_fn(t.name) or []
-                except Exception:  # noqa: BLE001 — 슬롯 귀속 실패는 fail-soft(작업공간 미표시).
+                except Exception as exc:  # noqa: BLE001 — 슬롯 귀속 실패는 fail-soft(작업공간 미표시).
+                    if _is_engine_rev_skew(exc):
+                        return _report_engine_rev_skew_at_terminal(exc)
                     slots = []
             ws = ", ".join(s.slot for s in slots) or "(보유 작업공간 없음)"
             prefix = getattr(t, "prefix", None) or "없음(기본)"
@@ -2305,7 +2332,9 @@ def cmd_status(
             return None
         try:
             status = slot_git_status_fn(slot)
-        except Exception:  # noqa: BLE001 — git 조회 실패는 요약 생략(status 무중단·조회 전용).
+        except Exception as exc:  # noqa: BLE001 — 일반 git 조회 실패만 요약 생략.
+            if _is_engine_rev_skew(exc):
+                raise
             return None
         if not isinstance(status, dict):
             return None
@@ -2340,7 +2369,9 @@ def cmd_status(
     #   - incomplete = provisional("creating") — worktree add 후 확정 전 중단된 create 흔적.
     try:
         recon = wp.reconcile_worktrees()
-    except Exception:  # noqa: BLE001 — reconcile 실패가 status 를 막지 않는다(조회 전용).
+    except Exception as exc:  # noqa: BLE001 — reconcile 실패가 status 를 막지 않는다(조회 전용).
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
         recon = None
     if recon is not None and (recon.orphans or recon.stale or recon.incomplete):
         print("## ⚠ worktree × 장부 drift (조회 전용 — 자동삭제 안 함·정리는 사용자):")
@@ -2453,6 +2484,8 @@ def cmd_worktree_remove(
             )
         return 1
     except RuntimeError as exc:
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
         print(f"[중단] worktree 슬롯 제거 실패: {exc}", file=sys.stderr)
         return 1
 
@@ -2638,7 +2671,7 @@ def _validate_prebound_task(wp, board_mod, task: str) -> int:
     if wp.find_task(task) is None:
         print(
             f"[중단] task {task!r} 이(가) 아직 없다 — alloc/add 는 기존 task 에 슬롯을 붙일 뿐 "
-            "정체성을 생성하지 않는다( 순서). 먼저 `/pm-bootstrap --task "
+            f"정체성을 생성하지 않는다( 순서). 먼저 `{_runtime_skill_entry('pm-bootstrap')} --task "
             f"{task}` 로 task 를 만든 뒤 다시 시도하라.",
             file=sys.stderr,
         )
@@ -2657,7 +2690,9 @@ def _slot_live_branch(wp, slot: str) -> str:
         return "(조회불가)"
     try:
         return fn(slot) or "(detached)"
-    except Exception:  # noqa: BLE001 — 조회 실패는 표시 흡수(재열거는 부작용 0·크래시 0).
+    except Exception as exc:  # noqa: BLE001 — 일반 조회 실패는 표시 흡수(재열거는 부작용 0).
+        if _is_engine_rev_skew(exc):
+            raise
         return "(조회불가)"
 
 
@@ -2674,7 +2709,9 @@ def _render_task_slots(wp, task_name: str, *, header: "str | None" = None) -> No
         return
     try:
         slots = list(slots_fn(task_name) or [])
-    except Exception:  # noqa: BLE001 — 재열거 조회 실패는 흡수(연산 자체는 이미 성공·크래시 0).
+    except Exception as exc:  # noqa: BLE001 — 일반 재열거 실패는 흡수(연산 자체는 이미 성공).
+        if _is_engine_rev_skew(exc):
+            raise
         return
     label = header or f"작업공간 (task {task_name!r} 보유 {len(slots)})"
     if not slots:
@@ -2956,7 +2993,7 @@ def cmd_task_prefix(
     if updated is None:
         print(
             f"[중단] task {name!r} 이(가) 아직 없다 — prefix 설정은 기존 task 레코드를 갱신할 뿐 "
-            "정체성을 생성하지 않는다(). 먼저 `/pm-bootstrap --task "
+            f"정체성을 생성하지 않는다(). 먼저 `{_runtime_skill_entry('pm-bootstrap')} --task "
             f"{name}` 로 task 를 만든 뒤 다시 설정하라.",
             file=sys.stderr,
         )
@@ -3549,7 +3586,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--readonly", action="store_true",
         help="research 전용 read-only 공유 슬롯 생성 (detached HEAD·role=readonly·"
              "session/pid 없음·배타 대여 없음). 코드를 읽어 PM 홈 wiki 를 쓰는 읽기 기준면. "
-             "갱신은 `/pm-worktree refresh` 로만·set-base/rebase/dev/sync 는 거부.",
+             f"갱신은 `{_runtime_skill_entry('pm-worktree')} refresh` 로만·"
+             "set-base/rebase/dev/sync 는 거부.",
     )
     p_wt_add.add_argument(
         "--task", metavar="<이름>", default=None,
@@ -3691,7 +3729,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     _console_encoding = _load_module_from_path(
         Path(__file__).resolve().with_name("console_encoding.py"),
         "console_encoding.py",
@@ -3748,6 +3786,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     return args.func(args)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
+    try:
+        _console_encoding = _load_module_from_path(
+            Path(__file__).resolve().with_name("console_encoding.py"),
+            "console_encoding.py",
+            verifier=_verify_engine_rev,
+        )
+        _console_encoding.configure_console_utf8()
+        return _main(argv)
+    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
+        raise
 
 
 if __name__ == "__main__":

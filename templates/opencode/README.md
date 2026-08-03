@@ -27,7 +27,7 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
 - **`.claude/skills/`** — PM workflow 스킬 (pm-bootstrap·pm-wave-claim·pm-dev-delegate·pm-qa·
   pm-wave-finish·pm-handoff·pm-env·pm-update·pm-worktree·pm-release·spike-new · 전체는 `.claude/skills/`
   디렉토리). **canonical `SKILL.md` 단일 소비**(ADR-0065) — opencode(≥1.17.19)가 Claude Code 스킬을
-  네이티브 스캔·슬래시(`/pm-…`) 호출하므로 claude 와 **같은 스킬을 양 하네스가 공유**한다(옛
+  네이티브 스캔 후 접두사 없이 `pm-…` 이름을 언급해 호출하므로 claude 와 **같은 스킬을 양 하네스가 공유**한다(옛
   `.opencode/command/` 수기 사본 채널 은퇴·T-0364). 스킬 스캔 비활성화 금지(`OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 미설정).
 
 ### 위임 규약 단일 진실 = `.opencode/pm-instructions.md §2`

@@ -4,7 +4,7 @@ description: "PM 세션 종료 핸드오프 7단계 자동화 — log entry skel
 audience: user-entrypoint
 ---
 
-# /pm-handoff — PM 세션 종료 핸드오프 자동화
+# $pm-handoff — PM 세션 종료 핸드오프 자동화
 
 {{PROJECT_NAME}} PM 세션의 핸드오프 7단계를 한 trigger 로 처리한다. PM 손작업은 *log/current.md handoff entry 본문 서술 + 이번 세션 산출 경로를 pathspec 으로 명시한 git commit*이다. 인계 본문은 다음 세션 부트스트랩이 log entry 에서 dump한다. backbone = `.project_manager/tools/pm_handoff.py`.
 
@@ -24,7 +24,7 @@ audience: user-entrypoint
 task 세션의 일반 사용자 종료 경로:
 
 ```text
-/pm-handoff --task <이름>
+$pm-handoff --task <이름>
 ```
 
 backbone Python도 같은 task-only 계약:
@@ -33,7 +33,7 @@ backbone Python도 같은 task-only 계약:
 python3 .project_manager/tools/pm_handoff.py --task <이름>
 ```
 
-엔진이 task pm_state에서 차수를 추론하고 기본 wave 요약과 task 보유 작업공간 집합을 해소한다. 사용자에게 repo/slot·session-seq를 받지 않으며, task와 repo/slot/branch/done의 혼합을 거부한다. 다음 세션 트리거는 `/pm-bootstrap --task <이름>` 하나다.
+엔진이 task pm_state에서 차수를 추론하고 기본 wave 요약과 task 보유 작업공간 집합을 해소한다. 사용자에게 repo/slot·session-seq를 받지 않으며, task와 repo/slot/branch/done의 혼합을 거부한다. 다음 세션 트리거는 `$pm-bootstrap --task <이름>` 하나다.
 
 slot/솔로 모드에서 skill 내부 backbone 호출:
 
@@ -60,7 +60,7 @@ python3 .project_manager/tools/pm_handoff.py \
 2. **log/current.md handoff entry skeleton append** — `## [YYYY-MM-DD] handoff | PM N차 → 다음 PM 세션` 형식. 본문 = `<PM 손 채움>`.
 3. **pm_state.md sliding window 정리** — §세션 식별 표에 N차 entry 추가 + 가장 오래된 entry 제거. 자세히 → pm_role.md §핸드오프 절차 #4.
 4. **pm_state.md 길이 검증** — `wc -l` 700 라인 초과 시 warning (과거 누적 정리 누락 신호). + log/current.md entry 가 임계(40) 초과면 `pm_log.py archive` 권장 warning.
-5. **인계 프롬프트(트리거) stdout 출력** — pm_playbook.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)" 의 트리거(역할 framing + `/pm-bootstrap`). **인계 본문은 채우지 않는다** — log entry 가 carry·다음 세션 부트스트랩이 자동 dump(차수·인계 본문·남은작업).
+5. **인계 프롬프트(트리거) stdout 출력** — pm_playbook.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)" 의 트리거(역할 framing + `$pm-bootstrap`). **인계 본문은 채우지 않는다** — log entry 가 carry·다음 세션 부트스트랩이 자동 dump(차수·인계 본문·남은작업).
 6. **git status dump** — `git status -s` 출력 + 변경 파일 카운트.
 7. **잔여 PM 수동 작업 checklist 출력**.
 
@@ -87,9 +87,9 @@ python3 .project_manager/tools/pm_handoff.py \
    ```
 
    - **`log/current.md` 하나만 적으면 위 2단계 domain capture 산출을 잃는다.** 이 CLI 가 스스로 쓰는 파일은 `log/current.md` 뿐이지만 잔여 손작업 1~2 단계에서 고친 domain 페이지·status 도 이번 세션 산출이다. 고치지 않은 줄은 지운다.
-   - 핸드오프엔 `/pm-wave-finish` 같은 스코프 잔여 보고가 없다. [6/7] `git status -s` dump에서 *내 세션 산출*을 골라 pathspec 에 넣고 남의 WIP 는 남긴다.
+   - 핸드오프엔 `$pm-wave-finish` 같은 스코프 잔여 보고가 없다. [6/7] `git status -s` dump에서 *내 세션 산출*을 골라 pathspec 에 넣고 남의 WIP 는 남긴다.
    - **신규 파일은 `git add` 선행 필수** — 미추적 경로를 pathspec 에 주면 `error: pathspec '…' did not match any file(s) known to git` 으로 **커밋 전체가 rc=1 로 죽는다**(실측).
    - `pm_state.md`(solo `wiki/pm_state.md` · per-slot/per-task `.local/…`)는 **gitignored** 라 커밋 대상이 아니다. commit message 에만 남긴다. trailer `Co-Authored-By: Claude`.
-4. **마지막 응답에 인계 프롬프트(트리거) 코드블록 출력** — 다음 세션은 `/pm-bootstrap` 실행(트리거 붙여넣기 or 직접). 인계 본문은 부트스트랩이 log entry 에서 자동 dump 하므로 손-채움 불요.
+4. **마지막 응답에 인계 프롬프트(트리거) 코드블록 출력** — 다음 세션은 `$pm-bootstrap` 실행(트리거 붙여넣기 or 직접). 인계 본문은 부트스트랩이 log entry 에서 자동 dump 하므로 손-채움 불요.
 
 참고: `.project_manager/tools/pm_handoff.py`(backbone CLI), `.project_manager/wiki/pm_role.md`(핸드오프 절차 7단계 단일 진실).

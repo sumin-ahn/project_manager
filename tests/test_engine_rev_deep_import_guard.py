@@ -1,4 +1,4 @@
-"""Canonical sibling deep-import boundary and rev-verification invariant.
+"""Central repo-owned loader boundary and rev-verification invariant.
 
 The scanner deliberately reads only the canonical ``.project_manager/tools/*.py`` tree.  The
 ``templates/{claude_code,codex,opencode}`` trees are vendor snapshots shipped by the import/update
@@ -6,10 +6,12 @@ pipeline, not additional sources of truth; scanning both would duplicate every b
 stale generated copy block canonical development.  Template parity belongs to the manifest/update
 tests.  A mutation test below locks this scope decision.
 
-All source decisions use ``ast`` nodes.  Comments and string literals are never searched.  A
-statically unresolved path derived from this module's canonical tools anchor is always a violation;
-generic loaders whose path is supplied by an external/adopter caller are outside that syntactic
-collection shape and retain their existing unconditional runtime verifier.
+All repo-owned imports must pass through ``repo_owned_files.load_module``; the only direct
+``spec_from_file_location`` call lives inside that seam.  The AST guard links every caller to an
+effective verifier or a code-owned exemption and keeps stamped-module and literal-gate policy
+auditable.  ``collect_central_guard_report`` owns that central seam exclusivity and caller policy;
+``collect_guard_report`` retains raw-loader target/stamp/verifier dataflow sensitivity.  Comments
+and string literals are never searched.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import traceback
 import types
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
@@ -28,6 +31,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+_CENTRAL_LOADER = ("repo_owned_files.py", "load_module")
 
 
 @dataclass(frozen=True)
@@ -54,7 +58,7 @@ class CentralGuardReport:
 
 
 def collect_central_guard_report(tools: Path) -> CentralGuardReport:
-    """Enforce one file-location API plus target/verifier/exemption linkage."""
+    """Own the central file-location seam and every caller's verifier/exemption policy."""
     spec_calls: list[tuple[str, str, int]] = []
     loader_calls: list[tuple[str, str, int]] = []
     violations: list[str] = []
@@ -94,6 +98,11 @@ def collect_central_guard_report(tools: Path) -> CentralGuardReport:
         module_bindings_visitor.visit(tree)
         module_bindings = module_bindings_visitor.values
         definitions = _module_definitions(tree)
+        central_loader = (
+            _top_level_function(tree, _CENTRAL_LOADER[1])
+            if source.name == _CENTRAL_LOADER[0]
+            else None
+        )
         literal_gate = _literal_string_set(tree, "_STAMPED_SIBLINGS")
         if literal_gate is not None:
             for target in sorted(literal_gate - stamped):
@@ -129,7 +138,7 @@ def collect_central_guard_report(tools: Path) -> CentralGuardReport:
                 if _is_spec_call(call, spec_aliases):
                     location = (source.name, scope_name, call.lineno)
                     spec_calls.append(location)
-                    if source.name != "repo_owned_files.py" or scope_name != "load_module":
+                    if source.name != _CENTRAL_LOADER[0] or scope is not central_loader:
                         violations.append(
                             f"{source.name}:{call.lineno}: spec_from_file_location outside central loader"
                         )
@@ -283,27 +292,6 @@ class _Calls(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         self.calls.append(node)
         self.generic_visit(node)
-
-
-class _Names(ast.NodeVisitor):
-    """Names in one lexical scope, excluding names in nested definitions."""
-
-    def __init__(self, root: ast.AST):
-        self.root = root
-        self.names: set[str] = set()
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        if node is self.root:
-            self.generic_visit(node)
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        if node is self.root:
-            self.generic_visit(node)
-
-    def visit_Name(self, node: ast.Name) -> None:
-        self.names.add(node.id)
 
 
 def _portable_name(value: str) -> str:
@@ -558,18 +546,25 @@ def _verifier_module_is_same_scope_module_from_spec(
     )
 
 
-def _scope_references_name(scope: ast.AST, name: str) -> bool:
-    names = _Names(scope)
-    names.visit(scope)
-    return name in names.names
-
-
 def _scope_functions(tree: ast.Module) -> list[ast.AST]:
     scopes = [
         node for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     ]
     return [tree, *sorted(scopes, key=lambda node: (node.lineno, node.col_offset))]
+
+
+def _top_level_function(
+    tree: ast.Module,
+    name: str,
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    """Return one direct module child, never a same-named method or nested function."""
+    matches = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == name
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _function_calls(
@@ -750,7 +745,7 @@ def _membership_condition_targets(
 
 
 def collect_guard_report(tools: Path) -> GuardReport:
-    """Collect canonical sibling boundaries and enforce stamp/verify/exemption invariants."""
+    """Own raw-loader target resolution plus stamp/verifier dataflow sensitivity."""
     engine_rev = _load_module(tools, "engine_rev")
     stamped = set(engine_rev.STAMPED_MODULES)
     exemptions = dict(engine_rev.EXEMPT_FROM_STAMP)
@@ -777,6 +772,11 @@ def collect_guard_report(tools: Path) -> GuardReport:
             for child in ast.iter_child_nodes(parent)
         }
         definitions = _module_definitions(tree)
+        central_loader = (
+            _top_level_function(tree, _CENTRAL_LOADER[1])
+            if source.name == _CENTRAL_LOADER[0]
+            else None
+        )
         module_bindings_visitor = _Bindings(tree)
         module_bindings_visitor.visit(tree)
         module_bindings = module_bindings_visitor.values
@@ -796,6 +796,10 @@ def collect_guard_report(tools: Path) -> GuardReport:
             ) if function is not None else frozenset()
             calls = _Calls(scope)
             calls.visit(scope)
+            scope_has_loader_boundary = any(
+                _is_spec_call(call, aliases) or _is_common_repo_loader_call(call)
+                for call in calls.calls
+            )
             verified_targets: set[str] = set()
             has_valid_verifier = False
             for verifier in (call for call in calls.calls if _is_verifier_call(call)):
@@ -804,10 +808,11 @@ def collect_guard_report(tools: Path) -> GuardReport:
                 if not _verifier_module_is_same_scope_module_from_spec(
                     verifier.args[0], local_visitor.values,
                 ):
-                    violations.append(
-                        f"{source.name}:{verifier.lineno}: verifier first argument is not "
-                        "a same-scope module_from_spec result"
-                    )
+                    if scope_has_loader_boundary:
+                        violations.append(
+                            f"{source.name}:{scope_name}:{verifier.lineno}: verifier first "
+                            "argument is not a same-scope module_from_spec result"
+                        )
                     continue
                 verifier_template = _literal_piece(
                     verifier.args[1], bindings, parameters,
@@ -837,7 +842,8 @@ def collect_guard_report(tools: Path) -> GuardReport:
                         allowed &= condition_targets
                 if condition_errors:
                     violations.append(
-                        f"{source.name}:{verifier.lineno}: conditional verifier is unresolved "
+                        f"{source.name}:{scope_name}:{verifier.lineno}: conditional verifier "
+                        "is unresolved "
                         f"({'; '.join(condition_errors)})"
                     )
                 else:
@@ -847,12 +853,21 @@ def collect_guard_report(tools: Path) -> GuardReport:
             for call in calls.calls:
                 if _is_unsupported_deep_import_call(call):
                     violations.append(
-                        f"{source.name}:{call.lineno}: unsupported deep-import API bypass"
+                        f"{source.name}:{scope_name}:{call.lineno}: unsupported deep-import "
+                        "API bypass"
                     )
                     continue
                 is_spec = _is_spec_call(call, aliases)
                 is_common_repo_loader = _is_common_repo_loader_call(call)
                 if not is_spec and not is_common_repo_loader:
+                    continue
+                if (
+                    is_spec
+                    and source.name == _CENTRAL_LOADER[0]
+                    and scope is central_loader
+                ):
+                    # 중앙 seam 내부 구현은 collect_central_guard_report가 유일 호출 지점과
+                    # verifier/exemption 계약을 함께 검사한다. legacy sibling oracle의 경계가 아니다.
                     continue
                 location, ambiguous_args = (
                     _spec_location(call)
@@ -864,7 +879,8 @@ def collect_guard_report(tools: Path) -> GuardReport:
                         source.name, scope_name, call.lineno, None, False,
                     ))
                     violations.append(
-                        f"{source.name}:{call.lineno}: unresolved spec_from_file_location "
+                        f"{source.name}:{scope_name}:{call.lineno}: unresolved "
+                        "spec_from_file_location "
                         "argument shape"
                     )
                     continue
@@ -889,7 +905,8 @@ def collect_guard_report(tools: Path) -> GuardReport:
                     continue
                 if unresolved and anchored and not adopter_path_exemption:
                     violations.append(
-                        f"{source.name}:{call.lineno}: unresolved canonical sibling path"
+                        f"{source.name}:{scope_name}:{call.lineno}: unresolved canonical "
+                        "sibling path"
                     )
                 if not targets:
                     if unresolved and adopter_path_exemption:
@@ -908,7 +925,8 @@ def collect_guard_report(tools: Path) -> GuardReport:
                             and source.name not in exemptions
                         ):
                             violations.append(
-                                f"{source.name}:{call.lineno}: unresolved external loader "
+                                f"{source.name}:{scope_name}:{call.lineno}: unresolved "
+                                "external loader "
                                 "has no verifier or code-owned exemption"
                             )
                     continue
@@ -931,7 +949,8 @@ def collect_guard_report(tools: Path) -> GuardReport:
                     boundaries.append(boundary)
                     if target not in stamped and target not in exemptions:
                         violations.append(
-                            f"{source.name}:{call.lineno}: target {target} is not stamped"
+                            f"{source.name}:{scope_name}:{call.lineno}: target {target} "
+                            "is not stamped"
                         )
                     if (
                         source.name not in exemptions
@@ -939,7 +958,8 @@ def collect_guard_report(tools: Path) -> GuardReport:
                         and not target_verified
                     ):
                         violations.append(
-                            f"{source.name}:{call.lineno}: target {target} is not verified"
+                            f"{source.name}:{scope_name}:{call.lineno}: target {target} "
+                            "is not verified"
                         )
         if source_has_boundary and source.name not in stamped and source.name not in exemptions:
             violations.append(f"{source.name}: loader is not stamped")
@@ -1081,25 +1101,25 @@ def _rename_literal_gate_and_remove_member(
     path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
 
 
-def _wrap_verifier_in_condition(path: Path, function_name: str, test: ast.AST) -> None:
+def _move_central_spec_call_to_same_named_scope(path: Path, nested_source: str) -> None:
+    """Move the sole file-location call out of the direct module-level loader node."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    functions = [
+    aliases = _spec_aliases(tree)
+    matches = [
         node for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == function_name
+        if isinstance(node, ast.Call) and _is_spec_call(node, aliases)
     ]
-    assert len(functions) == 1
+    assert len(matches) == 1
+    original = matches[0]
 
-    class Wrap(ast.NodeTransformer):
-        def visit_Expr(self, node: ast.Expr):
-            if isinstance(node.value, ast.Call) and _is_verifier_call(node.value):
-                return ast.copy_location(
-                    ast.If(test=test, body=[node], orelse=[]),
-                    node,
-                )
+    class RemoveOriginal(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call):
+            if node is original:
+                return ast.copy_location(ast.Constant(value=None), node)
             return self.generic_visit(node)
 
-    Wrap().visit(functions[0])
+    tree = RemoveOriginal().visit(tree)
+    tree.body.extend(ast.parse(nested_source).body)
     ast.fix_missing_locations(tree)
     path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
 
@@ -1107,10 +1127,15 @@ def _wrap_verifier_in_condition(path: Path, function_name: str, test: ast.AST) -
 def test_canonical_deep_import_invariant_is_green():
     report = collect_central_guard_report(TOOLS)
     assert not report.violations, "\n".join(report.violations)
-    assert [(source, function) for source, function, _line in report.spec_calls] == [
-        ("repo_owned_files.py", "load_module")
-    ]
+    assert [
+        (source, function) for source, function, _line in report.spec_calls
+    ] == [_CENTRAL_LOADER]
     assert report.loader_calls
+
+
+def test_legacy_deep_import_oracle_is_clean_on_canonical_tree():
+    report = collect_guard_report(TOOLS)
+    assert not report.violations, "\n".join(report.violations)
 
 
 def test_ast_target_set_is_measured_not_frozen_to_ticket_snapshot():
@@ -1371,6 +1396,64 @@ def test_recovery_first_rejects_symlink_source(tmp_path):
     assert dest_seam.read_text(encoding="utf-8") == "def broken(:\n"
 
 
+def test_pm_update_main_preserves_original_error_when_seam_reload_fails(monkeypatch):
+    pm_update = _load_module(TOOLS, "pm_update")
+    original = RuntimeError("original update failure")
+
+    def fail_update(_argv):
+        raise original
+
+    def fail_seam_reload():
+        raise SyntaxError("broken central loader")
+
+    monkeypatch.setattr(pm_update, "_main", fail_update)
+    monkeypatch.setattr(pm_update, "_load_repo_owned_files", fail_seam_reload)
+
+    with pytest.raises(RuntimeError, match="original update failure") as caught:
+        pm_update.main([])
+
+    assert caught.value is original
+    assert caught.value.__context__ is None
+
+
+def test_pm_update_main_preserves_original_error_when_seam_lacks_error_type(
+    monkeypatch,
+):
+    pm_update = _load_module(TOOLS, "pm_update")
+    original = RuntimeError("original update failure")
+    stub = types.SimpleNamespace(
+        ENGINE_REV="stub-rev",
+        load_module=lambda *args, **kwargs: None,
+        _real_git_runner=lambda _cwd: None,
+        list_repo_owned_entries=lambda *args, **kwargs: [],
+        list_repo_owned_files=lambda *args, **kwargs: [],
+        TRACKED_ONLY="tracked_only",
+        OWNED="owned",
+    )
+    assert pm_update._missing_repo_owned_files_api(stub) == ["RepoFilesGitError"]
+    original_load = pm_update._load_module_from_path
+
+    def load_stub(path, expected_filename, **kwargs):
+        if expected_filename == _CENTRAL_LOADER[0]:
+            return stub
+        return original_load(path, expected_filename, **kwargs)
+
+    def fail_update(_argv):
+        raise original
+
+    monkeypatch.setattr(pm_update, "_load_module_from_path", load_stub)
+    monkeypatch.setattr(pm_update, "_main", fail_update)
+
+    with pytest.raises(RuntimeError, match="original update failure") as caught:
+        pm_update.main([])
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert caught.value is original
+    assert caught.value.__context__ is None
+    assert rendered.count("Traceback (most recent call last):") == 1
+    assert "During handling of the above exception" not in rendered
+
+
 def test_mutation_unregistered_unverified_call_is_red(tmp_path):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
     engine_path = tools / "engine_rev.py"
@@ -1626,7 +1709,8 @@ def test_mutation_verifier_first_argument_must_be_loaded_module(tmp_path):
     report = collect_guard_report(tools)
 
     assert any(
-        "verifier first argument is not a same-scope module_from_spec result" in item
+        "pm_delegate.py:_t0493_wrong_verifier_module:" in item
+        and "verifier first argument is not a same-scope module_from_spec result" in item
         for item in report.violations
     )
     assert any(
@@ -1721,9 +1805,57 @@ def test_sensitivity_new_outside_file_location_call_is_red(tmp_path):
     assert any("outside central loader" in item for item in report.violations)
 
 
-def test_literal_gate_name_is_irrelevant(tmp_path):
+@pytest.mark.parametrize(
+    "nested_source",
+    (
+        "class X:\n"
+        "    @staticmethod\n"
+        "    def load_module(path):\n"
+        "        return importlib.util.spec_from_file_location('x', path)\n",
+        "def outer():\n"
+        "    def load_module(path):\n"
+        "        return importlib.util.spec_from_file_location('x', path)\n"
+        "    return load_module\n",
+    ),
+    ids=("same-named-class-method", "same-named-nested-function"),
+)
+def test_same_named_nested_scope_cannot_impersonate_central_loader(
+    tmp_path, nested_source,
+):
+    tools = _copy_tools(tmp_path, "engine_rev", "repo_owned_files")
+    _move_central_spec_call_to_same_named_scope(
+        tools / _CENTRAL_LOADER[0], nested_source,
+    )
+
+    central = collect_central_guard_report(tools)
+    legacy = collect_guard_report(tools)
+
+    assert len(central.spec_calls) == 1
+    assert central.spec_calls[0][1] == _CENTRAL_LOADER[1]
+    assert any("outside central loader" in item for item in central.violations)
+    assert any(
+        boundary.loader == _CENTRAL_LOADER[0]
+        and boundary.function == _CENTRAL_LOADER[1]
+        for boundary in legacy.boundaries
+    )
+    assert any(
+        item.startswith(f"{_CENTRAL_LOADER[0]}:{_CENTRAL_LOADER[1]}:")
+        for item in legacy.violations
+    )
+
+
+def test_literal_gate_is_name_coupled_and_rename_is_red(tmp_path):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    assert not collect_central_guard_report(tools).violations
+    _rename_literal_gate_and_remove_member(
+        tools / "domain.py", "_STAMPED_SIBLINGS", "_STAMPED_KIN", None
+    )
+
+    report = collect_central_guard_report(tools)
+
+    assert len(report.violations) == 1
+    violation = report.violations[0]
+    assert "domain.py" in violation
+    assert "allow_unverified call is not covered" in violation
 
 
 @pytest.mark.parametrize(

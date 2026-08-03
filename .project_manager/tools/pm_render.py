@@ -141,6 +141,163 @@ class RenderLeakError(RuntimeError):
     """렌더 산출물에 리터럴 `{{...}}` 또는 stray omit-marker 가 잔존 — 미해소 leak(자족 산출물 위반)."""
 
 
+# 스킬 호출 표기의 단일 진실. 키는 공개 harness 별칭이 아니라 `templates/` 아래 실 디렉터리명이다.
+# pm_update --all-targets 가 같은 디렉터리 축을 발견해 이 registry에 넘기고, 출하 표기 가드도
+# 이 값을 직접 읽는다. 새 template 디렉터리에 canonical 호출 토큰이 있는데 값이 미등록이면 아래
+# renderer가 fail-loud한다(알 수 없는 하네스를 조용히 `/`로 복사하지 않음).
+SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR: dict[str, str] = {
+    "claude_code": "/",
+    "codex": "$",
+    "opencode": "/",
+}
+
+
+def _installed_skill_entry_names() -> tuple[str, ...]:
+    """현재 설치 root의 모든 실제 스킬 카드 이름을 파생한다.
+
+    canonical/Claude/OpenCode는 ``.claude/skills``, Codex는 ``.agents/skills``를 쓴다.
+    두 root를 모두 열어 특정 접두사나 손 목록 없이 ``*/SKILL.md`` 실재 카드만 소비한다.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    return tuple(sorted({
+        card.parent.name
+        for skills_root in (
+            project_root / ".claude" / "skills",
+            project_root / ".agents" / "skills",
+        )
+        for card in skills_root.glob("*/SKILL.md")
+    }))
+
+
+# 일반 하이픈 식별자를 전부 호출로 간주하지 않고 실제 설치 카드 집합만 렌더한다. 새 비-pm
+# 카드도 파일을 추가하는 순간 자동 편입된다. 빈 설치 root에서는 빈 집합이므로 unrelated
+# operational 렌더는 유지되며, 출하 inventory 테스트가 제품 template의 비어 있음을 fail-loud한다.
+SKILL_ENTRY_NAMES: tuple[str, ...] = _installed_skill_entry_names()
+
+_HARNESS_LABEL_BY_TEMPLATE_DIR: dict[str, str] = {
+    "claude_code": "claude",
+    "codex": "codex",
+    "opencode": "opencode",
+}
+
+# canonical 스킬 카드에서 렌더 대상으로 삼는 것은 설치 카드 이름과 일치하는 호출 토큰뿐이다. 양쪽 경계가
+# 경로/확장자/식별자 문자가 아니어야 하므로 `.claude/skills/pm-*`·`/pm-bootstrap.md`·
+# `/pm-bootstrap/sub`·`/pm-bootstrap-extra`를 그대로 둔다. inline-code 호출은 인자까지 함께
+# 소비해 다중 하네스 산출에서 각 전체 호출을 독립 inline-code로 쓴다. 이미 병기된 slash 대안 뒤의
+# harness label은 멱등 재렌더 대상이 아니다. `$<설치 카드>`는 이미 concrete라 source token으로 보지 않는다.
+_SKILL_ENTRY_NAME_ALT = "|".join(
+    re.escape(name) for name in sorted(SKILL_ENTRY_NAMES, key=len, reverse=True)
+)
+_CANONICAL_INLINE_SKILL_ENTRY_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.>/\-])`/(?P<skill>{_SKILL_ENTRY_NAME_ALT})"
+    rf"(?P<args>(?:[ \t][^`\n]*)?)`"
+    # 경로 판정은 위의 opening/closing backtick **안**에서 끝낸다. 닫는 backtick 뒤의
+    # ``.``/``/`` 등은 코드 스팬 밖 문장부호·산문이므로 확장자/경로 경계가 아니다. 이미
+    # 하네스 label이 붙은 렌더 산출만 멱등성을 위해 제외한다.
+    rf"(?!\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\))"
+)
+_CANONICAL_SKILL_ENTRY_RE = re.compile(
+    rf"(?<![\w.>/=\-`])(?<!\]\()/(?P<skill>{_SKILL_ENTRY_NAME_ALT})"
+    # 문장부호 ``.``는 호출 경계지만 ``.md`` 같은 확장자는 경로다.
+    rf"(?![\w>/\-]|\.[A-Za-z0-9_])"
+)
+_CONCRETE_CODEX_SKILL_ENTRY_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.>/\-])\$(?P<skill>{_SKILL_ENTRY_NAME_ALT})"
+    rf"(?![A-Za-z0-9_.>/\-])"
+    rf"(?![^`\n]*`\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\))"
+)
+_ANNOTATED_SKILL_ENTRY_GROUP_RE = re.compile(
+    rf"`[/\$](?P<skill>{_SKILL_ENTRY_NAME_ALT})"
+    rf"(?P<args>(?:[ \t][^`\n]*)?)`"
+    rf"\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\)"
+    rf"(?: / `[/\$](?P=skill)(?P=args)`"
+    rf"\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\))+"
+)
+
+
+def render_skill_entry_notation(
+    text: str,
+    template_dir: str | tuple[str, ...] | list[str],
+    *,
+    source: str | None = None,
+) -> str:
+    """canonical ``/<설치 카드>`` 호출 토큰만 선택 template 하네스의 실제 표기로 치환한다.
+
+    단일 하네스는 표기 하나만 낸다. 같은 물리 경로를 서로 다른 표기의 하네스가 함께 읽으면
+    설치된 하네스만 병기한다(같은 표기는 label을 묶음). 예: codex+opencode는
+    ``$pm-bootstrap``(codex) / ``/pm-bootstrap``(opencode). 경로/확장자/하이픈 식별자와
+    concrete ``$pm-*`` 설명은 비대상이다. 토큰이 있는데 어느 template 값이든 미등록이면 원문을
+    복사하지 않고 RenderLeakError로 중단한다.
+    """
+    template_dirs = (template_dir,) if isinstance(template_dir, str) else tuple(template_dir)
+    template_dirs = tuple(dict.fromkeys(template_dirs))
+    if len(template_dirs) > 1:
+        # 이미 두 하네스 표기로 병기된 라이브 문서에 세 번째 하네스를 추가하는 경우도 같은
+        # 입력 형태로 합류시킨다. 전체 병기 group만 접어 경로/확장자와 일반 산문은 건드리지 않는다.
+        text = _ANNOTATED_SKILL_ENTRY_GROUP_RE.sub(
+            lambda match: f"`/{match.group('skill')}{match.group('args')}`",
+            text,
+        )
+    has_canonical = bool(
+        _CANONICAL_INLINE_SKILL_ENTRY_RE.search(text)
+        or _CANONICAL_SKILL_ENTRY_RE.search(text)
+    )
+    has_multi_codex_source = (
+        len(template_dirs) > 1
+        and _CONCRETE_CODEX_SKILL_ENTRY_RE.search(text) is not None
+    )
+    if not has_canonical and not has_multi_codex_source:
+        return text
+    unknown = [
+        dirname for dirname in template_dirs
+        if dirname not in SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR
+        or dirname not in _HARNESS_LABEL_BY_TEMPLATE_DIR
+    ]
+    if not template_dirs or unknown:
+        where = f" ({source})" if source else ""
+        raise RenderLeakError(
+            f"스킬 호출 표기 렌더{where} 실패 — templates/"
+            f"{', '.join(unknown) if unknown else '(empty)'} 표기 값이 미등록이다. "
+            "새 하네스의 실제 호출 표기를 registry에 명시하라."
+        )
+
+    by_prefix: dict[str, list[str]] = {}
+    for dirname in template_dirs:
+        prefix = SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR[dirname]
+        by_prefix.setdefault(prefix, []).append(_HARNESS_LABEL_BY_TEMPLATE_DIR[dirname])
+
+    # 공존 root doc의 선언된 중립 source가 codex 단일 문서면 `$`가 canonical 입력이다. 서로 다른
+    # prefix가 실제 공존할 때만 이를 slash token-form으로 되돌려 아래 단일 병기 경로에 합류시킨다.
+    if len(by_prefix) > 1:
+        text = _CONCRETE_CODEX_SKILL_ENTRY_RE.sub(
+            lambda match: "/" + match.group("skill"),
+            text,
+        )
+
+    def inline_replacement(match: re.Match[str]) -> str:
+        skill = match.group("skill")
+        args = match.group("args")
+        if len(by_prefix) == 1:
+            prefix = next(iter(by_prefix))
+            return f"`{prefix}{skill}{args}`"
+        return " / ".join(
+            f"`{prefix}{skill}{args}`({'·'.join(labels)})"
+            for prefix, labels in by_prefix.items()
+        )
+
+    def plain_replacement(match: re.Match[str]) -> str:
+        skill = match.group("skill")
+        if len(by_prefix) == 1:
+            return next(iter(by_prefix)) + skill
+        return " / ".join(
+            f"`{prefix}{skill}`({'·'.join(labels)})"
+            for prefix, labels in by_prefix.items()
+        )
+
+    result = _CANONICAL_INLINE_SKILL_ENTRY_RE.sub(inline_replacement, text)
+    return _CANONICAL_SKILL_ENTRY_RE.sub(plain_replacement, result)
+
+
 def _fill_operational(text: str, operational: dict) -> tuple[str, list[str]]:
     """operational 토큰(`{{PROJECT_NAME}}` 등)을 plain string replace — omit 없음·행-문맥 불요.
 
@@ -182,6 +339,7 @@ def render_adapter(
     *,
     source: str | None = None,
     empty_keys: list[str] | None = None,
+    template_dir: str | tuple[str, ...] | list[str] | None = None,
 ) -> str:
     """어댑터 템플릿 → 자족 .md (operational plain replace).
 
@@ -189,13 +347,23 @@ def render_adapter(
     empty_keys: 호출자(pm_update)가 local.conf 빈값이라 dict 에서 제외한 token-key 목록(선택).
     렌더러가 직접 감지한 빈값 key 와 합쳐 leak 힌트("값을 채우라")에 싣는다.
 
+    template_dir가 주어지면 operational보다 먼저 canonical 스킬 호출 토큰을 그 하네스 값으로
+    치환한다. 값은 SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR 단일 registry에서만 읽는다.
+
     operational 은 행-문맥 무관 plain string replace(omit 없음) → 템플릿 전체에 whole-text
     패스로 적용한다(멱등). 결과는 자족(잔여 `{{...}}`·stray 마커 0) — post-render assertion 이
     잔존 시 RenderLeakError(자족 위반). free-form 토큰·omit-marker 는 어댑터에 없어야 하며
     잔존하면 leak 으로 표면화된다(미마이그레이션 신호).
     """
     operational = operational or {}
-    result, detected_empty = _fill_operational(template_text, operational)
+    result = (
+        render_skill_entry_notation(
+            template_text, template_dir, source=source
+        )
+        if template_dir is not None
+        else template_text
+    )
+    result, detected_empty = _fill_operational(result, operational)
     # pm_update 가 excluded 한 빈값 key(empty_keys) + 렌더러가 직접 감지한 빈값 key 를 합쳐
     # leak 힌트에 싣는다(중복 제거·순서 보존).
     all_empty = list(dict.fromkeys([*(empty_keys or []), *detected_empty]))

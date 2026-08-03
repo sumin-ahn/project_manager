@@ -250,7 +250,7 @@ def test_handoff_prompt_template_is_lean(handoff):
     text = handoff.PM_PLAYBOOK_FILE.read_text(encoding="utf-8")
     template = handoff.extract_handoff_prompt_template(text)
     assert template is not None, "프롬프트 템플릿 앵커/코드블록 추출 실패"
-    # bare(T-0193): /pm-bootstrap 커맨드만 — 역할문구(2인칭)·인계라벨·사족 전부 부재.
+    # 공유 canonical은 실제 Claude/OpenCode 입력값인 slash 표기를 유지한다.
     assert "/pm-bootstrap" in template
     assert "당신은" not in template, "2인칭 역할문구 잔존 — bare(T-0193)와 모순"
     # 폐기: 인계 본문 라벨 재기술 사족 (부트스트랩 dump·log skeleton 이 단일 진실).

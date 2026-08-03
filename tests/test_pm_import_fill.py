@@ -95,10 +95,110 @@ def test_exposes_fill_symbols(pm_import):
     assert pm_import.FREE_FORM_TOKENS == FREE_FORM_TOKENS
     assert pm_import.OPENCODE_MODEL_TOKEN == OPENCODE_MODEL_TOKEN
     assert pm_import.LIVE_HARNESS_ENV == "PM_IMPORT_LIVE_HARNESS"
+    assert set(pm_import.FILL_CAPABLE_HARNESSES) <= set(pm_import.REGISTERED_HARNESSES)
     # FillResult 형태.
     fr = pm_import.FillResult(mode="auto")
     assert fr.mode == "auto"
     assert fr.values == {} and fr.drafts == {} and fr.todos == []
+
+
+def test_fill_capability_and_runner_mapping_are_registry_derived(pm_import, tmp_path):
+    """선언된 모든 fill 가능 하네스는 argv runner 매핑을 가져야 한다."""
+    for harness in pm_import.FILL_CAPABLE_HARNESSES:
+        argv = pm_import._build_runner_argv(harness, "PROMPT", tmp_path)
+        assert argv
+
+
+def test_fill_failure_formatter_preserves_head_for_non_utf8_output(pm_import):
+    """kill 경로의 비-UTF8 bytes도 원 진단을 가리지 않고 replacement로 표시한다."""
+    exc = subprocess.TimeoutExpired(["runner"], 1, output=b"ok\xff", stderr=b"err\xfe")
+    rendered = pm_import._fill_failure_with_partial("[원 진단]", exc)
+    assert rendered.startswith("[원 진단]")
+    assert "ok�" in rendered and "err�" in rendered
+
+
+@pytest.mark.parametrize("output, expected", [
+    ("", "[원 진단]"),
+    ("short", "short"),
+    ("x" * 200, "x" * 200),
+    ("x" * 10000, "x" * 10000),
+])
+def test_shared_partial_formatter_keeps_all_text_without_truncation(pm_import, output, expected):
+    """없음·짧음·기존 preview 경계·대용량 모두 공용 seam에서 전량 보존한다."""
+    exc = subprocess.TimeoutExpired(["runner"], 1, output=output)
+    rendered = pm_import._fill_failure_with_partial("[원 진단]", exc)
+    assert expected in rendered
+    assert rendered.startswith("[원 진단]")
+
+
+def test_shared_partial_formatter_keeps_head_when_output_stringification_fails(pm_import):
+    """포맷할 산출물이 고장나도 kill 원인 진단은 남는다."""
+    class BrokenOutput:
+        def __bool__(self):
+            return True
+
+        def __str__(self):
+            raise UnicodeError("broken")
+
+    exc = subprocess.TimeoutExpired(["runner"], 1)
+    exc.output = BrokenOutput()
+    assert pm_import._fill_failure_with_partial("[원 진단]", exc).startswith("[원 진단]")
+
+
+def test_fill_failure_routes_through_shared_partial_formatter(pm_import, monkeypatch):
+    """fill 소비처를 옛 로컬 결합기로 되돌리면 이 seam 감지가 실패한다."""
+    class Relay:
+        @staticmethod
+        def format_partial_output(head, exc):
+            return f"shared:{head}:{exc.output}"
+
+    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: Relay())
+    exc = subprocess.TimeoutExpired(["runner"], 1, output="partial")
+    assert pm_import._fill_failure_with_partial("head", exc) == "shared:head:partial"
+
+
+@pytest.mark.parametrize("failure_site", ("loader", "formatter"))
+def test_fill_failure_partial_formatter_keeps_head_for_general_failure(
+        pm_import, monkeypatch, failure_site):
+    """일반 로더·포맷터 실패는 원 진단을 가리지 않고 fill fail-soft를 유지한다."""
+    failure = RuntimeError("general")
+    if failure_site == "loader":
+        monkeypatch.setattr(
+            pm_import, "_load_watchdog",
+            lambda: (_ for _ in ()).throw(failure),
+        )
+    else:
+        class BrokenRelay:
+            @staticmethod
+            def format_partial_output(head, exc):
+                raise failure
+
+        monkeypatch.setattr(pm_import, "_load_watchdog", lambda: BrokenRelay())
+
+    assert pm_import._fill_failure_with_partial("head", RuntimeError("original")) == "head"
+
+
+@pytest.mark.parametrize("failure_site", ("loader", "formatter"))
+def test_fill_failure_partial_formatter_reraises_engine_rev_skew(
+        pm_import, monkeypatch, failure_site):
+    """rev skew는 일반 포맷 실패와 달리 fill 경로에서도 숨기지 않는다."""
+    skew = RuntimeError("skew")
+    skew._engine_rev_skew = True
+    if failure_site == "loader":
+        monkeypatch.setattr(
+            pm_import, "_load_watchdog",
+            lambda: (_ for _ in ()).throw(skew),
+        )
+    else:
+        class BrokenRelay:
+            @staticmethod
+            def format_partial_output(head, exc):
+                raise skew
+
+        monkeypatch.setattr(pm_import, "_load_watchdog", lambda: BrokenRelay())
+
+    with pytest.raises(RuntimeError, match="skew"):
+        pm_import._fill_failure_with_partial("head", RuntimeError("original"))
 
 
 def test_fill_harness_help_lists_are_registry_derived(pm_import, capsys):
@@ -112,6 +212,33 @@ def test_fill_harness_help_lists_are_registry_derived(pm_import, capsys):
     for harness in pm_import.HARNESS_TEMPLATE_DIRS:
         assert f"`{harness}`" in help_text
     assert "--fill-harness {claude,opencode}" not in help_text
+
+
+def test_fill_harness_cap_advisory_uses_shared_relay_judgment(pm_import, monkeypatch, tmp_path):
+    """fill은 호출층 상한 부족을 never-block 경고로 표면화한다."""
+    monkeypatch.setenv("CLAUDECODE", "session")
+    monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "1")
+    warning = pm_import.fill_harness_cap_advisory("claude", tmp_path)
+    assert warning is not None
+    assert warning.startswith("[fill auto] 경고:")
+    assert "부분 산출물 보존 전에" in warning
+
+
+def test_fill_harness_cap_advisory_counts_startup_budget_without_progress_signal(
+        pm_import, monkeypatch, tmp_path):
+    """advisory는 실행 경로와 같이 startup 선언을 진행 신호로 다시 줄이지 않는다."""
+    monkeypatch.setitem(
+        pm_import.FILL_DRIVER_BY_CMD,
+        pm_import.OPENCODE_FILL_CMD,
+        ("opencode", False, None),
+    )
+    monkeypatch.setenv("OPENCODE", "session")
+    monkeypatch.setenv("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS", "14619000")
+
+    warning = pm_import.fill_harness_cap_advisory("opencode", tmp_path)
+
+    assert warning is not None
+    assert "14620s" in warning
 
 
 # ── DoD ①: --fill auto + stub runner → 자유서술 3종 해소·제안 생성 (토큰 0) ────
@@ -157,7 +284,11 @@ def test_fill_auto_stub_opencode_excludes_model_token(pm_import, tmp_path, monke
     # render_managed_files(@render)가 미해소 리터럴 토큰을 leak 로 hard-fail 하므로(T-0133
     # RenderLeakError) 함께 no-op — 이 테스트는 fill 스캔(run_fill)만 격리 검증한다(render 계약은
     # test_pm_render.py 소관).
-    monkeypatch.setattr(pm_import, "render_managed_files", lambda dest_root, subs, copied: 0)
+    monkeypatch.setattr(
+        pm_import,
+        "render_managed_files",
+        lambda dest_root, subs, copied, **kwargs: 0,
+    )
     dest = _make_imported_tree(pm_import, tmp_path, harness="opencode", name="OpenFill")
     # 어댑터 트리이므로 모델 토큰은 잔존하나(전제 확인) — 그건 resolve_opencode_model 소관.
     assert pm_import._token_present(dest, OPENCODE_MODEL_TOKEN), \

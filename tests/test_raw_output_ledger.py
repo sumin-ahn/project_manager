@@ -51,7 +51,24 @@ def _ledger(path: Path) -> dict:
 
 def _engine_family(tmp_path: Path) -> tuple[Path, Path]:
     pm_home = tmp_path / "pm-home"
+    pm_home.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=pm_home, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=pm_home, check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "test"], cwd=pm_home, check=True,
+    )
+    (pm_home / "seed.txt").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "seed.txt"], cwd=pm_home, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=pm_home, check=True)
     worktree = pm_home / "work" / "project_1"
+    worktree.parent.mkdir()
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "raw-slot", str(worktree)],
+        cwd=pm_home, check=True,
+    )
     ticket = (
         pm_home
         / ".project_manager"
@@ -69,6 +86,12 @@ def _engine_family(tmp_path: Path) -> tuple[Path, Path]:
         (tools / "external_review.py").write_text(
             "# engine copy\n", encoding="utf-8"
         )
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps({"leases": [{"slot": "work/project_1", "state": "leased"}]}),
+        encoding="utf-8",
+    )
     return pm_home, worktree
 
 

@@ -305,8 +305,7 @@ def test_agents_md_is_thin_common_core():
         "### 프로젝트 고유 제약",           # @render agent 가 참조하는 named anchor
     ):
         assert core in text, f"AGENTS.md 공통 코어 절 '{core}' 누락 (ADR-0069·T-0401)"
-    # harness-neutral — codex 어댑터(T-0402)가 이 코어를 byte-parity 로 공유하므로 특정 하네스에
-    # 종속된 어휘가 남으면 안 된다. (byte-parity 가드 자체는 T-0402 신설 — 여기선 opencode-종속 잔재 조기 차단.)
+    # harness-neutral — 특정 하네스 어휘는 별도 전달 채널에만 둔다.
     for hs in ("opencode", ".opencode", ".claude", "task tool"):
         assert hs not in text, (
             f"AGENTS.md 공통 코어에 harness-specific 어휘 '{hs}' 잔존 — harness-neutral 이어야 한다 (ADR-0069)")

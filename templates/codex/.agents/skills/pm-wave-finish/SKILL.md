@@ -4,7 +4,7 @@ description: "wave 안 ticket 완료 부기 — ticket_finish.py wrapper + 회�
 audience: pm-internal
 ---
 
-# /pm-wave-finish T-NNNN — wave ticket 완료 부기
+# $pm-wave-finish T-NNNN — wave ticket 완료 부기
 
 dev/reviewer cycle 통과(must-fix 0) 또는 PM 직접 구현 ticket 완료 시 `.project_manager/tools/ticket_finish.py`를 실행하고 잔여 판단·서술·commit은 PM이 한다.
 
@@ -18,7 +18,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
 ```
 
 - `--repo <repo> --slot <N>` (multi-PM): 회귀를 돌릴 worktree 슬롯. 분리된 PM 홈에는 `tests/`가 없어 활성 worktree에서 회귀해야 한다. **솔로/단일슬롯/default-1은 생략 가능**(자동해소). 미지정 상태에서 진짜 모호(repo≥2·slot-1 부재)하면 **fail-loud**하며 `--slot`을 요구한다. pm_handoff `--repo/--slot`과 동형.
-- **`--no-pytest`**: 회귀를 별도(`/pm-qa` 등)로 이미 측정했을 때 회귀를 skip한다(board complete는 `--tests-pass` 유지). 회귀 cwd가 불필요하므로 모호 게이트도 우회한다.
+- **`--no-pytest`**: 회귀를 별도(`$pm-qa` 등)로 이미 측정했을 때 회귀를 skip한다(board complete는 `--tests-pass` 유지). 회귀 cwd가 불필요하므로 모호 게이트도 우회한다.
 - `--section`: **deprecated no-op**(status.md 합계표 제거, 후방호환 수용만).
 
 ## CLI 자동 처리
@@ -66,7 +66,7 @@ ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 �
    - **status.md·ADR·domain 페이지는 자동 stage 대상이 아니다.** 이번에 고쳤으면 경로를 직접 나열한다. 새 파일은 먼저 `git add <경로>`한다. 미추적 경로를 pathspec에 주면 `error: pathspec '…' did not match any file(s) known to git`으로 **커밋 전체가 rc=1로 죽는다**.
    - wave 단위 단일 commit(복수 ticket)이면 각 ticket 목록의 **합집합**을 나열한다. pathspec 생략·`-A` 대체 금지.
 
-4. **wave 진행 중** — `/pm-wave-claim`으로 다음 ticket.
+4. **wave 진행 중** — `$pm-wave-claim`으로 다음 ticket.
 
 5. **wave 종결** — pm_playbook.md §"Wave 메타 학습 누적" 표준에 따라 wave 메타 entry append.
 

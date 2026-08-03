@@ -2280,11 +2280,11 @@ def test_self_location_mixed_absent_engine_missing_wins(
     assert engine_absent in captured.err, "엔진경로 누락이 에러로 surface 되지 않음."
 
 
-# ── --target = copy2 (render_enabled=False) 가드 (T-0133·should-fix) ──────────
+# ── --target = operational 렌더 off + codex 표기 최소 렌더 가드 ───────────────
 # main() 의 `render_enabled = not args.target` 매핑을 회귀로 박는다. --target 동기는
 # 템플릿(local.conf 없는 토큰-form 소스)을 렌더하면 operational leak/_assert_no_leak crash
-# 나므로 copy2 여야 한다. plan-level 가드(plan(render_enabled=...))는 별 테스트가 박았으나,
-# main() 의 매핑 자체는 회귀 그물 밖이었다(reviewer should-fix). @render 활성화 후 load-bearing.
+# 나므로 operational 토큰은 copy2 여야 한다. canonical slash와 값이 다른 codex만 호출 표기 최소
+# 렌더를 하며 claude/opencode는 byte-copy다.
 
 def _spy_render_enabled(pm_update, monkeypatch, captured):
     """pm_update.plan 을 감싸 main() 이 전달한 render_enabled 키워드를 포착한다(실 plan 위임)."""
@@ -2292,13 +2292,14 @@ def _spy_render_enabled(pm_update, monkeypatch, captured):
 
     def spy(*args, **kwargs):
         captured["render_enabled"] = kwargs.get("render_enabled")
+        captured["entry_notation_template"] = kwargs.get("entry_notation_template")
         return real_plan(*args, **kwargs)
 
     monkeypatch.setattr(pm_update, "plan", spy)
 
 
 def test_main_target_passes_render_disabled(pm_update, tmp_path, monkeypatch):
-    """main() --target → plan(render_enabled=False) — 템플릿 동기는 copy2(토큰-form 보존)."""
+    """main() --target → operational render off, 표기 context는 target 이름으로 전달."""
     fake_repo = tmp_path / "fake_repo"
     (fake_repo / "templates" / "oc").mkdir(parents=True)
     stored = tmp_path / "up_target"
@@ -2310,6 +2311,7 @@ def test_main_target_passes_render_disabled(pm_update, tmp_path, monkeypatch):
 
     assert pm_update.main(["--target", "oc", "--dry-run"]) == 0
     assert captured["render_enabled"] is False, "--target 인데 render 가 켜졌다(템플릿 토큰 렌더 위험)."
+    assert captured["entry_notation_template"] == "oc"
 
 
 def test_main_self_location_passes_render_enabled(pm_update, tmp_path, monkeypatch):
@@ -2324,6 +2326,220 @@ def test_main_self_location_passes_render_enabled(pm_update, tmp_path, monkeypat
 
     assert pm_update.main(["--dry-run"]) == 0
     assert captured["render_enabled"] is True, "채택자 self-update 인데 render 가 꺼졌다(토큰 출하 위험)."
+    assert captured["entry_notation_template"] is None
+
+
+@pytest.mark.parametrize(
+    ("template_dir", "expected", "notation_template"),
+    (("codex", "$pm-bootstrap", "codex"), ("opencode", "/pm-bootstrap", None)),
+)
+def test_target_export_conditionally_renders_only_skill_entry_notation(
+        pm_update, tmp_path, template_dir, expected, notation_template):
+    source = tmp_path / f"source-{template_dir}"
+    skill = source / ".claude" / "skills" / "pm-bootstrap" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "# /pm-bootstrap — entry\n"
+        "run `/pm-bootstrap --task main`\n"
+        "path .claude/skills/pm-bootstrap/SKILL.md\n"
+        "project {{PROJECT_NAME}}\n",
+        encoding="utf-8",
+    )
+    _track_source_tree(source)
+    dest = tmp_path / f"dest-{template_dir}"
+    manifest = [pm_update.ManifestEntry(".claude/skills", render=True)]
+
+    changes, missing = pm_update.plan(
+        source,
+        manifest,
+        dest_root=dest,
+        render_enabled=False,
+        entry_notation_template=template_dir,
+    )
+    assert not missing and len(changes) == 1
+    assert changes[0][2].render is False
+    assert changes[0][2].entry_notation_template == notation_template
+    pm_update.apply(changes)
+
+    rendered = (dest / ".claude/skills/pm-bootstrap/SKILL.md").read_text(encoding="utf-8")
+    assert f"# {expected} — entry" in rendered
+    assert f"`{expected} --task main`" in rendered
+    assert ".claude/skills/pm-bootstrap/SKILL.md" in rendered
+    assert "{{PROJECT_NAME}}" in rendered, "--target 최소 렌더가 operational 토큰까지 건드렸다"
+
+
+def test_target_export_wiring_sensitivity_identity_renderer_leaves_wrong_prefix(
+        pm_update, tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    skill = source / ".claude" / "skills" / "pm-bootstrap" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# /pm-bootstrap — entry\n", encoding="utf-8")
+    _track_source_tree(source)
+    dest = tmp_path / "dest"
+    real_render = pm_update._load_pm_render()
+    fake_render = SimpleNamespace(
+        render_skill_entry_notation=lambda text, _template, **_kwargs: text,
+        render_adapter=real_render.render_adapter,
+    )
+    monkeypatch.setattr(pm_update, "_load_pm_render", lambda: fake_render)
+
+    changes, missing = pm_update.plan(
+        source,
+        [pm_update.ManifestEntry(".claude/skills", render=True)],
+        dest_root=dest,
+        render_enabled=False,
+        entry_notation_template="codex",
+    )
+    assert not missing
+    pm_update.apply(changes)
+    rendered = (dest / ".claude/skills/pm-bootstrap/SKILL.md").read_text(encoding="utf-8")
+    assert "/pm-bootstrap" in rendered and "$pm-bootstrap" not in rendered
+
+
+def test_render_comparison_detects_crlf_byte_drift(pm_update, tmp_path):
+    source = tmp_path / "source"
+    src = source / "card.md"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"/pm-bootstrap\n")
+    _track_source_tree(source)
+    dest = tmp_path / "dest"
+    dst = dest / "card.md"
+    dst.parent.mkdir(parents=True)
+    dst.write_bytes(b"/pm-bootstrap\r\n")
+
+    changes, missing = pm_update.plan(
+        source,
+        [pm_update.ManifestEntry("card.md", render=True)],
+        dest_root=dest,
+        entry_notation_template="claude_code",
+    )
+    assert not missing and [(rel, kind) for rel, _, _, kind in changes] == [
+        ("card.md", "update")
+    ]
+    pm_update.apply(changes)
+    assert dst.read_bytes() == b"/pm-bootstrap\n"
+
+
+def test_render_comparison_treats_non_utf8_destination_as_update(pm_update, tmp_path):
+    source = tmp_path / "source"
+    src = source / "card.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("/pm-bootstrap\n", encoding="utf-8")
+    _track_source_tree(source)
+    dest = tmp_path / "dest"
+    dst = dest / "card.md"
+    dst.parent.mkdir(parents=True)
+    dst.write_bytes(b"\xff\xfe\x00")
+
+    changes, missing = pm_update.plan(
+        source,
+        [pm_update.ManifestEntry("card.md", render=True)],
+        dest_root=dest,
+        entry_notation_template="codex",
+    )
+    assert not missing and len(changes) == 1 and changes[0][3] == "update"
+    pm_update.apply(changes)
+    assert dst.read_bytes() == b"$pm-bootstrap\n"
+
+
+def test_multi_harness_render_preserves_per_entry_flavor(pm_update, tmp_path):
+    source = tmp_path / "source"
+    first = source / "templates" / "opencode" / ".project_manager" / "engine.manifest"
+    second = source / "templates" / "codex" / ".project_manager" / "engine.manifest"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(".claude/skills    @render\n", encoding="utf-8")
+    second.write_text(
+        ".agents/skills    @render @source=.claude/skills\n",
+        encoding="utf-8",
+    )
+    card = source / ".claude" / "skills" / "pm-bootstrap" / "SKILL.md"
+    card.parent.mkdir(parents=True)
+    card.write_text("# /pm-bootstrap — entry\n", encoding="utf-8")
+    _track_source_tree(source)
+    contexts = pm_update._entry_notation_templates_from_manifests(
+        [first, second], source
+    )
+    assert contexts == {
+        ".claude/skills": ("opencode",),
+        ".agents/skills": ("codex",),
+    }
+
+    entries = pm_update.merge_manifest_sources([first, second])["entries"]
+    broken_dest = tmp_path / "broken-dest"
+    broken_changes, _ = pm_update.plan(
+        source,
+        entries,
+        dest_root=broken_dest,
+        entry_notation_template="opencode",  # 옛 first-manifest 전역 적용
+    )
+    pm_update.apply(broken_changes)
+    assert (broken_dest / ".agents/skills/pm-bootstrap/SKILL.md").read_text(
+        encoding="utf-8"
+    ).startswith("# /pm-bootstrap"), "전역 flavor 파손 재현이 공허함"
+
+    dest = tmp_path / "dest"
+    changes, missing = pm_update.plan(
+        source,
+        entries,
+        dest_root=dest,
+        entry_notation_templates=contexts,
+    )
+    assert not missing
+    pm_update.apply(changes)
+    assert (dest / ".claude/skills/pm-bootstrap/SKILL.md").read_text(
+        encoding="utf-8"
+    ).startswith("# /pm-bootstrap")
+    assert (dest / ".agents/skills/pm-bootstrap/SKILL.md").read_text(
+        encoding="utf-8"
+    ).startswith("# $pm-bootstrap")
+
+
+def test_multi_harness_shared_path_combines_selected_flavors(pm_update, tmp_path):
+    source = tmp_path / "source"
+    first = source / "templates" / "codex" / ".project_manager" / "engine.manifest"
+    second = source / "templates" / "opencode" / ".project_manager" / "engine.manifest"
+    for path in (first, second):
+        path.parent.mkdir(parents=True)
+        path.write_text(".project_manager/wiki/pm_role.md\n", encoding="utf-8")
+    role = source / ".project_manager" / "wiki" / "pm_role.md"
+    role.parent.mkdir(parents=True)
+    role.write_text("start `/pm-bootstrap --task main`\n", encoding="utf-8")
+    _track_source_tree(source)
+
+    contexts = pm_update._entry_notation_templates_from_manifests(
+        [first, second], source
+    )
+    assert contexts == {
+        ".project_manager/wiki/pm_role.md": ("codex", "opencode")
+    }
+    changes, missing = pm_update.plan(
+        source,
+        pm_update.merge_manifest_sources([first, second])["entries"],
+        dest_root=tmp_path / "dest",
+        entry_notation_templates=contexts,
+    )
+    assert not missing
+    pm_update.apply(changes)
+    assert (tmp_path / "dest" / ".project_manager" / "wiki" / "pm_role.md").read_text(
+        encoding="utf-8"
+    ) == (
+        "start `$pm-bootstrap --task main`(codex) / "
+        "`/pm-bootstrap --task main`(opencode)\n"
+    )
+
+
+def test_selected_flavor_manifest_read_failure_is_loud(pm_update, tmp_path):
+    source = tmp_path / "source"
+    unreadable_shape = (
+        source / "templates" / "codex" / ".project_manager" / "engine.manifest"
+    )
+    unreadable_shape.mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="context.*중단"):
+        pm_update._entry_notation_templates_from_manifests(
+            [unreadable_shape], source
+        )
 
 
 # ── v2 엔진 manifest 정합 (T-0088 — 신규 엔진 등재/개명 누락 가드) ────────────────
@@ -3906,18 +4122,48 @@ def test_reinstall_protected_hooks_engine_absent_is_fail_soft_loud(pm_update, tm
     assert result["status"] == "unavailable" and "pm_config.py" in result["reason"]
     pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
     cap = capsys.readouterr()
-    assert "[경고]" in cap.err and "repo add" in cap.err
+    assert "[경고]" in cap.err and "pm-update" in cap.err and "repo add" in cap.err
 
 
-def test_reinstall_protected_hooks_rethrows_marked_engine_rev_skew(
+def test_reinstall_protected_hooks_absorbs_marked_skew_at_recovery_boundary(
         pm_update, tmp_path, monkeypatch):
-    """A1 — dest 엔진 로드의 marked skew는 unavailable 경고로 강등하지 않는다."""
+    """목적지 엔진 skew가 부가 훅 수렴을 막아도 update 복구 채널은 계속 열린다."""
     skew = RuntimeError("injected engine rev skew")
     skew._engine_rev_skew = True
     monkeypatch.setattr(pm_update, "_load_dest_pm_config", lambda _dest: (_ for _ in ()).throw(skew))
 
-    with pytest.raises(RuntimeError, match="engine rev skew"):
-        pm_update.reinstall_protected_hooks(tmp_path, write=True)
+    result = pm_update.reinstall_protected_hooks(tmp_path, write=True)
+
+    assert result["status"] == "unavailable"
+    assert "사본 불일치" in result["reason"] and "복구 sync는 유지" in result["reason"]
+
+
+@_git_required
+def test_main_sync_stays_available_when_post_sync_dest_engine_is_skewed(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """실제 main sync는 marked skew를 loud하게 보고하고도 파일 복구와 rc=0을 완료한다."""
+    dest = _make_pm_home(tmp_path / "home")
+    source = tmp_path / "upstream"
+    _make_upstream(source)
+    _write_local_conf(dest, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    _stub_no_baseline_git(pm_update, monkeypatch)
+    skew = RuntimeError("injected post-sync engine skew")
+    skew._engine_rev_skew = True
+    monkeypatch.setattr(
+        pm_update,
+        "_load_dest_pm_config",
+        lambda _dest: (_ for _ in ()).throw(skew),
+    )
+
+    rc = pm_update.main([])
+
+    assert rc == 0
+    assert (dest / SENTINEL_REL).read_text(encoding="utf-8") == (
+        source / SENTINEL_REL
+    ).read_text(encoding="utf-8")
+    captured = capsys.readouterr()
+    assert "[경고]" in captured.err and "사본 불일치" in captured.err
 
 
 @_git_required

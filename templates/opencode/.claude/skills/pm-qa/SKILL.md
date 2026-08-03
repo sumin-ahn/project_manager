@@ -20,7 +20,7 @@ wave 종료 직전·시작 baseline 또는 사용자 `"qa·회귀 확인·통합
 - [[pm-wave-finish]]: `ticket_finish`·board complete로 단일 ticket 종료.
 - [[pm-bootstrap]]: 세션 시작의 board/git/회귀 측정.
 
-wave 시작은 **baseline fix → wave 시작** 순서이며 red baseline 위에 wave를 쌓지 않는다. wave 종료 직전에는 `pm-wave-finish` 전에 실행한다.
+wave 시작은 **baseline fix → wave 시작** 순서이며 red baseline 위에 wave를 쌓지 않는다. wave 종료 직전에는 `/pm-wave-finish` 전에 실행한다.
 
 ## 실행 순서
 

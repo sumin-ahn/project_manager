@@ -4,7 +4,7 @@ description: "사용자와 대화형으로 한 설계 주제를 진행하고 그
 audience: pm-internal
 ---
 
-# /spike-new <주제> — 대화형 설계 spike
+# $spike-new <주제> — 대화형 설계 spike
 
 사용자와 한 주제를 **대화형으로** 설계해 `raw/spikes/` 에 박제한다. ⚠️ **혼자 다 쓰고 끝내지 않는다.** 실측은 먼저 파악해 보고하고, 옵션·결정은 사용자와 한 절씩 합의한다. 생성 시 `status: draft`(편집·세션무관 resume), 합의+사용자 사인오프 시 `sealed (<date>)`. **sealed 후 IMMUTABLE**이며 개정은 새 날짜 파일.
 

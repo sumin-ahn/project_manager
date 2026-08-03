@@ -48,7 +48,7 @@ START = "<!-- pm-bootstrap-preread:start -->"
 END = "<!-- pm-bootstrap-preread:end -->"
 CONTRACT_SENTENCE = (
     "세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, "
-    "`/pm-bootstrap` dump 한 번뿐이다."
+    "`pm-bootstrap` dump 한 번뿐이다."
 )
 FORBIDDEN_PRELOADS = (
     "architecture.md",
@@ -61,7 +61,7 @@ FORBIDDEN_PRELOADS = (
 REQUIRED_LEAN_SIGNALS = (
     "진입문서",
     "pm_state",
-    "/pm-bootstrap",
+    "pm-bootstrap",
 )
 CIRCLED_NUMERAL = re.compile(r"[\u2460-\u2473\u3251-\u325f]")
 MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+\S", re.MULTILINE)
@@ -153,6 +153,7 @@ def _assert_lean_contract(path: Path) -> None:
     assert path.is_file(), f"계약 대조 대상 누락: {path}"
     text = path.read_text(encoding="utf-8")
     block = _extract_contract(text, label=str(path))
+    block = re.sub(r"(?<![A-Za-z0-9_.>/])[/\$](pm-bootstrap)", r"\1", block)
     assert CONTRACT_SENTENCE in block, f"{path}: lean 필독 셋 선언 불일치"
     for signal in REQUIRED_LEAN_SIGNALS:
         assert signal in block, f"{path}: lean 필독 신호 누락: {signal}"

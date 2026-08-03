@@ -153,10 +153,10 @@ def _parse_catalog(text: str) -> dict[str, set[str]]:
         if len(cells) < 5:
             continue
         skill_cell, engine_cell = cells[1], cells[3]
-        m = re.search(r"/pm-[\w-]+", skill_cell)
+        m = re.search(r"(?<![\w-])(?P<entry>[/\$]pm-[\w-]+)", skill_cell)
         if not m:
             continue
-        catalog[m.group(0)] = _engine_tokens_from_cell(engine_cell)
+        catalog[m.group("entry")] = _engine_tokens_from_cell(engine_cell)
     return catalog
 
 

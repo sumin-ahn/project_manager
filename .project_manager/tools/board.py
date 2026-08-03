@@ -795,6 +795,16 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
+def _report_engine_rev_skew_at_terminal(exc) -> int:
+    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
+    print(
+        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+        "동기화한 뒤 다시 실행하세요.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def _load_identity_args():
     """공용 정체성 인자 모듈(`identity_args.py`)을 같은 tools/ 디렉토리에서
     경로 로드한다 (`_load_pm_update_module`/`_load_domain_module` 동형 — 스크립트-위치 앵커·
@@ -816,7 +826,19 @@ def _load_identity_args():
     )
 
 
-identity_args = _load_identity_args()
+try:
+    identity_args = _load_identity_args()
+except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
+    if _is_engine_rev_skew(exc):
+        if __name__ == "__main__":
+            print(
+                f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+                "동기화한 뒤 다시 실행하세요.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        raise
+    raise
 
 
 def session_name(override: str | None = None, *, required: bool = False) -> str | None:
@@ -7996,6 +8018,9 @@ def _template_mirror_report(path: Path, rel_posix: str,
     except OSError:
         source_resolved = path
     scopes = (_shipping_template_render_scopes() if template_scopes is None else template_scopes)
+    # 조건부 표기 렌더가 켜진 @render source는 타깃 사본과 의도적으로 byte-different다. 비교 전에
+    # pm_update의 실제 최소-render seam으로 source를 같은 타깃 산출값으로 바꿔야 진짜 drift만 남는다.
+    pm_update = _load_pm_update_module()
     matched = 0                     # 판정 참여 후보 수(@render 선언 + 비-자기참조).
     drifted_targets: list[str] = []  # 그중 drift(내용 불일치·사본 부재·확인 실패·트리 밖 링크) 타깃.
     for template_root, render_managed in scopes:
@@ -8014,8 +8039,18 @@ def _template_mirror_report(path: Path, rel_posix: str,
                 drifted = True
             else:
                 # 범위 안인데 사본이 **아예 없으면** 신규 파일 미전파 = drift 다(면제 근거 아님).
-                drifted = (not exists) or candidate.read_bytes() != source_bytes
-        except OSError:
+                if pm_update is None or not hasattr(
+                    pm_update, "render_skill_entry_notation",
+                ):
+                    drifted = True
+                else:
+                    expected = pm_update.render_skill_entry_notation(
+                        source_bytes.decode("utf-8"),
+                        template_root.name,
+                        source=str(path),
+                    ).encode("utf-8")
+                    drifted = (not exists) or candidate.read_bytes() != expected
+        except (OSError, UnicodeError, RuntimeError, AttributeError):
             drifted = True  # 사본 상태를 확인 못 했다 — 확인 못 한 것을 면제하지 않는다(보수).
         matched += 1
         if drifted:
@@ -8999,7 +9034,9 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
         return []
     try:
         pages = domain.load_pages(domain.DOMAIN_DIR)
-    except Exception:  # noqa: BLE001 — 스캔 실패는 [] 로 흡수(board lint 정상 진행).
+    except Exception as exc:  # noqa: BLE001 — 스캔 실패는 [] 로 흡수(board lint 정상 진행).
+        if _is_engine_rev_skew(exc):
+            raise
         return []
     findings: list[tuple[str, str, str]] = []
     _UNVERIFIABLE_PREFIX = ("이 저장소에서 freshness 검증 불가(소유 페이지일 수 있음·소유 "
@@ -9128,7 +9165,9 @@ def _verified_at_backfill_targets(*, strict_domain: bool = False) -> list[Path]:
             for page in pages:
                 if page.get("covers"):
                     targets.append(Path(page["path"]))
-        except Exception:  # noqa: BLE001 — strict repin은 열거 오류를 전체 중단으로 전파.
+        except Exception as exc:  # noqa: BLE001 — strict repin은 열거 오류를 전체 중단으로 전파.
+            if _is_engine_rev_skew(exc):
+                raise
             if strict_domain:
                 raise
     return targets
@@ -9202,6 +9241,8 @@ def _verified_at_targets(
             try:
                 page = domain.parse_page(candidate)
             except Exception as exc:  # noqa: BLE001 — domain 소비 파서 오류를 선택 오류로 정규화.
+                if _is_engine_rev_skew(exc):
+                    raise
                 raise _VerifiedAtPageSelectionError(
                     raw, f"domain 문서 실소비 파싱 실패:{exc}") from exc
             if page.get("status") == domain.DRAFT_STATUS or not page.get("covers"):
@@ -9436,6 +9477,8 @@ def repin_verified_at(
     try:
         targets = _verified_at_targets(pages, strict_domain=True)
     except Exception as exc:  # noqa: BLE001 — 대상 열거 실패도 validate-all-first 중단.
+        if _is_engine_rev_skew(exc):
+            raise
         error_path = Path(getattr(exc, "path", DOMAIN_PY.parent.parent / "wiki" / "domain"))
         return [(error_path, f"error:enumeration:{exc}")]
     for path in targets:
@@ -9686,7 +9729,9 @@ def lint_domain() -> list[tuple[str, str, str]]:
             return runners[owner_repo]
 
         findings = domain.lint_pages(pages, git_runner_factory=git_runner_factory)
-    except Exception:  # noqa: BLE001 — 어떤 실패도 빈 결과로 흡수(board lint 정상 진행).
+    except Exception as exc:  # noqa: BLE001 — 어떤 실패도 빈 결과로 흡수(board lint 정상 진행).
+        if _is_engine_rev_skew(exc):
+            raise
         return []
     # domain (kind, label, detail) → board (label, kind, detail) 재배열.
     return [(label, kind, detail) for kind, label, detail in findings]
@@ -10189,13 +10234,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+def _main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     # PM-홈 worktree 오실행 가드 — mutation subcommand 전수·단일 dispatch 지점.
     # board 상태를 쓰는 명령만(read·sidecar 제외) 착지 *전에* fail-loud. 분류는 위 상수·미래
@@ -10225,6 +10264,22 @@ def main(argv: list[str] | None = None) -> int:
         with _read_pm_inputs_at(REPO, resolution.root):
             return args.fn(args)
     return args.fn(args)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
+    try:
+        _console_encoding = _load_module_from_path(
+            Path(__file__).resolve().with_name("console_encoding.py"),
+            "console_encoding.py",
+            verifier=_verify_engine_rev,
+        )
+        _console_encoding.configure_console_utf8()
+        return _main(argv)
+    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
+        raise
 
 
 if __name__ == "__main__":

@@ -603,7 +603,7 @@ def test_containment_external_project_manager_rejected(pd, tmp_path, monkeypatch
     outside.mkdir(parents=True)
     prompt = outside / "secret.txt"
     prompt.write_text("x", encoding="utf-8")
-    assert pd._prompt_file_contained(prompt, cwd) is False
+    assert pd._prompt_file_contained(prompt, cwd, pm_home=repo) is False
 
 
 def test_containment_repo_pm_home_allowed(pd, tmp_path, monkeypatch):
@@ -615,7 +615,7 @@ def test_containment_repo_pm_home_allowed(pd, tmp_path, monkeypatch):
     cwd.mkdir()
     prompt = repo / ".project_manager" / "task.md"
     prompt.write_text("x", encoding="utf-8")
-    assert pd._prompt_file_contained(prompt, cwd) is True
+    assert pd._prompt_file_contained(prompt, cwd, pm_home=repo) is True
 
 
 def test_containment_symlink_escape_rejected(pd, tmp_path, monkeypatch):
@@ -629,7 +629,7 @@ def test_containment_symlink_escape_rejected(pd, tmp_path, monkeypatch):
     secret.write_text("s", encoding="utf-8")
     link = cwd / "link.md"
     link.symlink_to(secret)
-    assert pd._prompt_file_contained(link, cwd) is False
+    assert pd._prompt_file_contained(link, cwd, pm_home=repo) is False
 
 
 def test_cwd_root_usage_error(pd, monkeypatch, tmp_path):
@@ -3604,7 +3604,8 @@ def test_runtime_opencode_cap_missing_is_loud(pd, monkeypatch):
 
 def test_runtime_harness_cap_table_matches_session_markers(pd):
     """상한 표는 모든 세션 감지 축을 빠짐없이 명시한다."""
-    assert set(pd._DELEGATE_HARNESS_CAP_ENV) == set(pd._HARNESS_SESSION_MARKERS)
+    relay = pd._load_relay()
+    assert set(relay.HARNESS_CAP_ENV) == set(relay.HARNESS_SESSION_MARKERS)
 
 
 @pytest.mark.parametrize("key", ("OPENCODE_CONFIG", "CLAUDE_CONFIG_DIR",
@@ -3638,8 +3639,11 @@ def test_runtime_harness_cap_accepts_secondary_opencode_session_marker(pd):
 
 def test_runtime_harness_cap_unknown_marker_is_never_blocking(pd, monkeypatch):
     """상한 표보다 세션 마커가 먼저 늘어나도 조회 실패로 위임을 막지 않는다."""
-    markers = {**pd._HARNESS_SESSION_MARKERS, "gemini": ("GEMINI_SESSION",)}
-    monkeypatch.setattr(pd, "_HARNESS_SESSION_MARKERS", markers)
+    relay = pd._load_relay()
+    relay.HARNESS_SESSION_MARKERS = {
+        **relay.HARNESS_SESSION_MARKERS, "gemini": ("GEMINI_SESSION",),
+    }
+    monkeypatch.setattr(pd, "_load_relay", lambda: relay)
     env = {"GEMINI_SESSION": "session"}
 
     assert pd._pm_harness_and_cap_env(env) == (("gemini", None),)
@@ -3757,8 +3761,19 @@ def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src"
     통과시키기 위한 형상(test_delegate_scope 픽스처 동형)."""
     pm_home = tmp_path / "pm_home"
     workspace = pm_home / "work" / "demo_1"
-    workspace.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True, capture_output=True)
+    pm_home.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=pm_home, check=True, capture_output=True)
+    (pm_home / "seed.txt").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "seed.txt"], cwd=pm_home, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "seed"],
+        cwd=pm_home, check=True, capture_output=True,
+    )
+    workspace.parent.mkdir()
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "scope-slot", str(workspace)],
+        cwd=pm_home, check=True, capture_output=True,
+    )
     tickets = pm_home / ".project_manager" / "wiki" / "tickets" / "open"
     tickets.mkdir(parents=True)
     touches_block = "\n".join(f"- {item}" for item in touches) or "[]"
@@ -3770,6 +3785,12 @@ def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src"
         f"touches:\n{touches_block}\n"
         "---\n\n"
         f"# {TICKET_ID} — 범위 훅 e2e\n",
+        encoding="utf-8",
+    )
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        _json.dumps({"leases": [{"slot": "work/demo_1", "state": "leased"}]}),
         encoding="utf-8",
     )
     monkeypatch.setattr(pd, "REPO", pm_home)
@@ -3963,8 +3984,10 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
     )
     real_begin = pd.begin_scope_audit
 
-    def _coupled_begin(ticket, cwd, *, adapter_roots=None):
-        audit = real_begin(ticket, cwd, adapter_roots=adapter_roots)
+    def _coupled_begin(ticket, cwd, *, pm_root=None, adapter_roots=None):
+        audit = real_begin(
+            ticket, cwd, pm_root=pm_root, adapter_roots=adapter_roots,
+        )
         return None if audit is not None and audit.touches is None else audit
 
     monkeypatch.setattr(pd, "begin_scope_audit", _coupled_begin)

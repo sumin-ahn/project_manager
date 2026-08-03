@@ -542,6 +542,8 @@ def _repository_identity(checkout: Path) -> tuple[Path | None, str | None]:
     try:
         rc, out = _real_git_runner(resolved)(["rev-parse", "--git-common-dir"])
     except Exception as exc:  # noqa: BLE001 — 주입 runner 예외도 fail-closed.
+        if _is_engine_rev_skew(exc):
+            raise
         return failure(f"git common-dir 호출 예외: {exc}")
     common_dir_text = out.strip()
     if rc != 0 or not common_dir_text or "\n" in common_dir_text:
@@ -991,6 +993,8 @@ def load_pages(domain_dir: Path = DOMAIN_DIR, *, strict: bool = False) -> list[d
         try:
             page = parse_page(path)
         except Exception as exc:  # noqa: BLE001 — 기본 조회는 깨진 페이지 skip·strict는 전파.
+            if _is_engine_rev_skew(exc):
+                raise
             if strict:
                 raise DomainPageEnumerationError(path, exc) from exc
             print(f"domain: {path.name} 파싱 skip — {exc}", file=sys.stderr)
@@ -1394,6 +1398,8 @@ def coverage_report(
     try:
         tools = engine_tool_paths(Path(manifest_path))
     except (OSError, UnicodeError, RuntimeError) as exc:
+        if _is_engine_rev_skew(exc):
+            raise
         return {
             "status": "error",
             "reason": f"engine.manifest 읽기 실패: {exc}",
@@ -1991,6 +1997,8 @@ def cmd_affected(args: argparse.Namespace) -> int:
             # 이미 이 CLI의 repo 상대 입력 계약이므로 변환하지 않는다.
             touches = _normalize_ticket_touches(touches)
         except RuntimeError as exc:
+            if _is_engine_rev_skew(exc):
+                raise
             print(
                 f"domain: ticket {args.ticket} touches 좌표 정규화 실패 — {exc}",
                 file=sys.stderr,
@@ -2055,6 +2063,8 @@ def cmd_capture(args: argparse.Namespace) -> int:
         try:
             touches = _normalize_ticket_touches(touches)
         except RuntimeError as exc:
+            if _is_engine_rev_skew(exc):
+                raise
             print(
                 f"domain: tickets touches 좌표 정규화 실패 — {exc}",
                 file=sys.stderr,

@@ -4,7 +4,7 @@ description: "비차단 백그라운드 회귀 — full 테스트를 run_in_back
 audience: pm-internal
 ---
 
-# /pm-regression — 비차단 백그라운드 회귀
+# $pm-regression — 비차단 백그라운드 회귀
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
 > 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.

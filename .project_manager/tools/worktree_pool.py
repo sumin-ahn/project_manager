@@ -197,6 +197,16 @@ def _is_engine_rev_skew(exc):
     """fail-soft 소비 지점에서 rev skew만 재-raise하기 위한 구조화 판정."""
     return getattr(exc, "_engine_rev_skew", False)
 
+
+def _report_engine_rev_skew_at_terminal(exc) -> int:
+    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
+    print(
+        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+        "동기화한 뒤 다시 실행하세요.",
+        file=sys.stderr,
+    )
+    return 1
+
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·pm_*.py 와 동일 앵커 관례.
 # multi-PM 모델에서 이 도구가 어느 worktree cwd 에서 호출돼도 자기 위치(multi-PM 루트 .project_manager)를
 # 자동 타깃한다.
@@ -1236,8 +1246,13 @@ def _slot_branch_exists(runner: GitRunner, branch: str) -> bool:
 #   - `self-test`: 현재 checkout HEAD=push SHA·clean을 고정한 뒤 계약의 repo 테스트
 #     명령을 실행한다. `PM_SKIP_SELF_TEST=1` + 빈 값이 아닌
 #     `PM_SELF_TEST_BYPASS_REASON` 조합만 감사 로그를 남기고 우회한다.
-# 계약/mode 미해소·필요 자원 부재는 fail-closed다. feature(비보호) 브랜치·tag
-# push는 통과(exit 0·PM_ALLOW/증거 게이트 무관).
+# 계약/mode 미해소·필요 자원 부재는 fail-closed다. 보호목록을 정상 해소한 뒤의
+# feature(비보호) 브랜치와 목록이 필요 없는 tag push는 통과(exit 0·PM_ALLOW/증거 게이트 무관).
+#
+# 외부 명령 실패 방향: pre-push의 `cat`(보호목록 I/O 건전성), 비우회 self-test의 `git`·`sh`,
+# 우회 감사의 `tr`·`date`, release의 Python launcher·board.py는 모두 실패 시 거부한다.
+# 우회 중 `git status`만 검증 결과가 아닌 보조 dirty telemetry라 실패를 `unknown`으로 명시 기록한다.
+# pre-commit의 `git` 판정 실패도 거부한다. 경로 계산은 셸 확장만 써 dirname/basename 의존이 없다.
 #
 # **멱등 자가치유 배포**: install_protected_hook 이 매 호출 이 본문을 덮어쓰므로(repo add·
 # worktree add), 엔진 update 후 다음 재설치가 이 신 버전을 자동 배포한다.
@@ -1246,11 +1261,84 @@ _PROTECTED_PRE_PUSH_HOOK = """\
 # pm 보호 브랜치 pre-push 가드 — PM 이 보호 브랜치(main 등)에 자율 push 못 하게 +
 # 승인(PM_ALLOW_PROTECTED_PUSH=1)된 protected push 도 릴리즈 라이브 게이트 green 을 추가 요구.
 # install_protected_hook() 가 설치. 보호목록 = 같은 디렉토리의 sidecar `protected`(줄당 1브랜치).
-hook_dir=$(dirname "$0")
+case "$0" in
+    */*) hook_dir=${0%/*} ;;
+    *) hook_dir=. ;;
+esac
 protected_file="$hook_dir/protected"
 engine_root_file="$hook_dir/engine-root"
 gate_contract_file="$hook_dir/gate-contract"
-[ -f "$protected_file" ] || exit 0
+protected_loaded=0
+protected_branches="
+"
+
+# tag/non-branch ref는 이름만으로 비보호임이 확정된다. 보호목록은 첫 branch ref에서만 읽어,
+# 판정에 필요 없는 sidecar 손상이 tag-only push 계약을 막지 않게 한다. branch ref는 목록을
+# 해소하지 못하면 비보호로 추측하지 않고 fail-closed한다.
+pm_load_protected_branches() {
+    if [ ! -f "$protected_file" ]; then
+        echo "[pm 보호 가드] 보호 브랜치 목록을 찾을 수 없어 push 거부: $protected_file" >&2
+        echo "  sidecar를 직접 편집하지 말고 보호목록 설정 후 훅을 재설치하라:" >&2
+        echo "    pm-config repo protected ${hook_dir##*/} <목록>" >&2
+        echo "    pm-update" >&2
+        return 1
+    fi
+    if ! command -v cat >/dev/null 2>&1; then
+        echo "[pm 보호 가드] 보호 브랜치 목록을 읽을 cat 명령을 찾을 수 없어 push 거부." >&2
+        echo "  실행 환경의 PATH를 복구한 뒤 다시 push하라." >&2
+        return 1
+    fi
+
+    # 파일은 cat 한 번으로만 읽고, 종료코드와 그때 얻은 문자열을 같은 스냅샷의 두 축으로 쓴다.
+    # 명령 치환이 후행 개행을 지우므로 셸 builtin printf가 종단 바이트 하나를 붙여 보존한 뒤
+    # 위치로 제거한다. 이 바이트는 성공 표식이 아니다(cat rc는 $?가 단독 담당) — 파일 내용이
+    # 같은 바이트를 포함해도 마지막에 훅이 붙인 한 바이트만 제거하므로 위조 채널이 없다.
+    protected_snapshot=$(
+        cat "$protected_file"
+        protected_read_rc=$?
+        printf .
+        exit "$protected_read_rc"
+    )
+    protected_read_rc=$?
+    protected_snapshot=${protected_snapshot%.}
+
+    protected_entries=0
+    protected_malformed=0
+    # 정상 sidecar는 각 행(마지막 행 포함)이 개행으로 끝난다. 위 프레이밍 덕분에 명령 치환
+    # 뒤에도 원본의 마지막 개행 유무가 남아 있어, 여러 완성 행 뒤의 마지막 부분행도 잡는다.
+    case "$protected_snapshot" in
+        *"
+") ;;
+        *) protected_malformed=1 ;;
+    esac
+    while IFS= read -r protected_branch; do
+        [ -n "$protected_branch" ] || continue
+        case "$protected_branch" in
+            *[[:space:]]*) protected_malformed=1 ;;
+        esac
+        protected_entries=$((protected_entries + 1))
+        protected_branches="${protected_branches}${protected_branch}
+"
+    done <<PM_PROTECTED_SNAPSHOT
+$protected_snapshot
+PM_PROTECTED_SNAPSHOT
+
+    protected_invalid=0
+    [ "$protected_read_rc" -eq 0 ] || protected_invalid=1
+    [ "$protected_entries" -gt 0 ] || protected_invalid=1
+    [ "$protected_malformed" -eq 0 ] || protected_invalid=1
+    if [ "$protected_invalid" -ne 0 ]; then
+        echo "[pm 보호 가드] 보호 브랜치 목록을 확인할 수 없어 push 거부 — 손상됐거나 훅 재설치 중일 수 있음: $protected_file" >&2
+        echo "  sidecar를 직접 편집하지 말고 보호목록 설정 후 훅을 재설치하라:" >&2
+        echo "    pm-config repo protected ${hook_dir##*/} <목록>" >&2
+        echo "    pm-update" >&2
+        return 1
+    fi
+    protected_loaded=1
+    unset protected_branch protected_entries protected_malformed
+    unset protected_snapshot protected_read_rc protected_invalid
+    return 0
+}
 
 # stdin(<localref> <localsha> <remoteref> <remotesha> 줄들)의 각 push ref 를 순회한다. pre-push 는
 # push 전체에 한 번 발화(all-or-nothing) — 보호 ref 를 *전부* 검증하고, 하나라도 실패하면(하드 차단
@@ -1284,15 +1372,17 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
         *) continue ;;
     esac
 
-    # 이 ref 가 sidecar 보호목록에 있나?
+    if [ "$protected_loaded" != "1" ]; then
+        pm_load_protected_branches || exit 1
+    fi
+
+    # 이 ref 가 첫 branch ref 시점에 읽어 둔 sidecar 보호목록에 있나?
     is_protected=0
-    while IFS= read -r protected_branch; do
-        [ -n "$protected_branch" ] || continue
-        if [ "$branch" = "$protected_branch" ]; then
-            is_protected=1
-            break
-        fi
-    done < "$protected_file"
+    case "$protected_branches" in
+        *"
+$branch
+"*) is_protected=1 ;;
+    esac
     [ "$is_protected" = "1" ] || continue   # 비보호 ref(feature)·tag → 이 ref 통과·다음 ref.
 
     # 보호 ref — 승인(PM_ALLOW_PROTECTED_PUSH=1) 없으면 하드 차단 (즉시 push 전체 거부).
@@ -1322,9 +1412,19 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
         self-test)
             # 채택자 전용 한정 우회는 증거 생성(명령 해소·HEAD pin·clean 검사)보다 앞선다.
             # dirty는 거부 조건이 아니라 감사 메타데이터다. status 자체가 실패해도 우회는
-            # 사용할 수 있어야 하므로 unknown을 기록하고, 감사 append 실패만 fail-closed한다.
+            # 사용할 수 있어야 하므로 unknown을 기록한다. 반면 시각·사유·append는 누가 왜 언제
+            # 우회했는지 남기는 감사 증거 자체라 하나라도 만들지 못하면 fail-closed한다.
             if [ "$PM_SKIP_SELF_TEST" = "1" ]; then
+                if ! command -v tr >/dev/null 2>&1 || ! command -v date >/dev/null 2>&1; then
+                    echo "[pm 보호 가드] 채택자 자기 검증 우회 감사에 필요한 tr/date 명령을 찾을 수 없어 보호 push 거부." >&2
+                    exit 1
+                fi
                 bypass_reason=$(printf '%s' "$PM_SELF_TEST_BYPASS_REASON" | tr '\\r\\n\\t' '   ')
+                bypass_reason_rc=$?
+                if [ "$bypass_reason_rc" -ne 0 ]; then
+                    echo "[pm 보호 가드] 채택자 자기 검증 우회 사유를 안전하게 정규화할 수 없어 보호 push 거부." >&2
+                    exit 1
+                fi
                 case "$bypass_reason" in
                     *[![:space:]]*) ;;
                     *)
@@ -1344,14 +1444,24 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
                 else
                     bypass_dirty=false
                 fi
-                bypass_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ' </dev/null 2>/dev/null || printf unknown)
+                bypass_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ' </dev/null 2>/dev/null)
+                bypass_at_rc=$?
+                if [ "$bypass_at_rc" -ne 0 ] || [ -z "$bypass_at" ]; then
+                    echo "[pm 보호 가드] 채택자 자기 검증 우회 시각을 기록할 수 없어 보호 push 거부." >&2
+                    exit 1
+                fi
                 bypass_log="$hook_dir/self-test-bypass.log"
                 if [ -L "$bypass_log" ] || { [ -e "$bypass_log" ] && [ ! -f "$bypass_log" ]; }; then
                     echo "[pm 보호 가드] 채택자 자기 검증 우회 감사 로그가 일반 파일이 아님 — 보호 push 거부." >&2
                     exit 1
                 fi
+                repo_name=${hook_dir##*/}
+                if [ -z "$repo_name" ]; then
+                    echo "[pm 보호 가드] 채택자 자기 검증 우회 감사 repo 이름을 해소할 수 없어 보호 push 거부." >&2
+                    exit 1
+                fi
                 if ! printf '%s\\trepo=%s\\tbranch=%s\\tsha=%s\\tdirty=%s\\treason=%s\\n' \
-                        "$bypass_at" "$(basename "$hook_dir")" "$branch" "$local_sha" \
+                        "$bypass_at" "$repo_name" "$branch" "$local_sha" \
                         "$bypass_dirty" "$bypass_reason" >> "$bypass_log"; then
                     echo "[pm 보호 가드] 채택자 자기 검증 우회 감사 로그 기록 실패 — 보호 push 거부." >&2
                     exit 1
@@ -1362,9 +1472,17 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
                 continue
             fi
 
+            if ! command -v git >/dev/null 2>&1; then
+                echo "[pm 보호 가드] 채택자 자기 검증에 필요한 git 명령을 찾을 수 없어 보호 push 거부." >&2
+                exit 1
+            fi
             if [ -z "$self_test_cmd" ]; then
                 echo "[pm 보호 가드] 채택자 자기 검증 명령 미해소 — fail-closed 거부." >&2
                 echo "  areas.md test_cmd 또는 PM 홈 local.conf test_cmd를 설정하고 훅을 재설치하라." >&2
+                exit 1
+            fi
+            if ! command -v sh >/dev/null 2>&1; then
+                echo "[pm 보호 가드] 채택자 자기 검증 명령을 실행할 sh를 찾을 수 없어 보호 push 거부." >&2
                 exit 1
             fi
 
@@ -1500,7 +1618,9 @@ exit 0
 # ── 보호 브랜치 pre-commit 훅 (commit-time 강제) ──────────────
 # pre-push 훅과 **같은 배선**을 탄다 — 같은 훅 디렉토리(`.local/repo-hooks/<repo>/`)·같은
 # sidecar `protected`(줄당 1브랜치)·같은 bare `core.hooksPath`(신규 seam 0). 파일 하나가
-# 더 놓일 뿐이라 슬롯 worktree 는 재설치 즉시 이 훅을 탄다.
+# 더 놓일 뿐이라 슬롯 worktree 는 재설치 즉시 이 훅을 탄다. 단, sidecar 부재 처리는 의도적으로
+# 비대칭이다: pre-commit은 전 commit 차단의 blast radius를 피하려 통과시키고, 하드 백스톱인
+# pre-push만 보호목록 미해소를 fail-closed로 거부한다.
 #
 # 왜 pre-push 만으론 부족한가: pm_role §보호 브랜치 가드의 "보호 브랜치에 자율 commit 하지
 # 않는다" 는 강제 수단이 push 단계뿐이었고, 부트스트랩 0단계 main-참조 검사는 세션 *진입
@@ -1524,16 +1644,38 @@ _PROTECTED_PRE_COMMIT_HOOK = """\
 # pm 보호 브랜치 pre-commit 가드 — PM 이 보호 브랜치(main 등)에서 자율로
 # commit 하지 못하게 한다. install_protected_hook() 가 pre-push 훅과 같은 디렉토리에 설치하고,
 # 보호목록 = 같은 디렉토리의 sidecar `protected`(줄당 1브랜치·pre-push 와 공유).
-hook_dir=$(dirname "$0")
+case "$0" in
+    */*) hook_dir=${0%/*} ;;
+    *) hook_dir=. ;;
+esac
 protected_file="$hook_dir/protected"
+# 의도적 비대칭: 이 commit-time 우발 방지 가드는 sidecar 부재 시 전 commit 차단의 blast radius를
+# 피하려 통과한다. 보호목록 미해소의 하드 fail-closed 백스톱은 pre-push가 담당한다.
 [ -f "$protected_file" ] || exit 0
 
 # 현재 브랜치. **detached HEAD 는 통과** — symbolic-ref 가 rc≠0(브랜치 없음)이고, readonly
 # 공유 슬롯 시맨틱(0단계 readonly carve-out)과 일치시킨다.
-branch=$(git symbolic-ref --short HEAD 2>/dev/null) || exit 0
-[ -n "$branch" ] || exit 0
+if ! command -v git >/dev/null 2>&1; then
+    echo "[pm 보호 가드] 현재 브랜치 판정에 필요한 git 명령을 찾을 수 없어 commit 거부." >&2
+    exit 1
+fi
+branch=$(git symbolic-ref -q --short HEAD 2>/dev/null)
+branch_rc=$?
+if [ "$branch_rc" -eq 1 ]; then
+    # symbolic-ref rc1은 정상 detached HEAD일 때만 통과한다. 저장소/HEAD까지 읽을 수 없는
+    # 손상을 detached로 오인하지 않도록 commit 객체 해소를 추가 확인한다.
+    git rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1 || {
+        echo "[pm 보호 가드] detached HEAD 여부를 확인할 수 없어 commit 거부." >&2
+        exit 1
+    }
+    exit 0
+fi
+if [ "$branch_rc" -ne 0 ] || [ -z "$branch" ]; then
+    echo "[pm 보호 가드] 현재 브랜치를 판정할 수 없어 commit 거부." >&2
+    exit 1
+fi
 
-# 이 브랜치가 sidecar 보호목록에 있나? (pre-push 훅의 목록 순회와 같은 규칙)
+# 이 브랜치가 sidecar 보호목록에 있나? (pre-commit이 직접 순회해 정확히 일치하는 행을 찾는다)
 is_protected=0
 while IFS= read -r protected_branch; do
     [ -n "$protected_branch" ] || continue
@@ -1634,6 +1776,11 @@ def protected_hook_artifacts(
         raise ValueError(f"알 수 없는 보호 push gate mode: {gate_mode!r}")
     if not test_cmd.strip() or "\n" in test_cmd or "\r" in test_cmd:
         raise ValueError("보호 push test_cmd는 비어 있지 않은 한 줄이어야 한다")
+    if not protected or any(
+            not isinstance(branch, str) or not branch or
+            any(char.isspace() for char in branch)
+            for branch in protected):
+        raise ValueError("보호 브랜치 목록은 비어 있지 않은 공백 없는 이름이어야 한다")
     hook_dir = REPO_HOOKS_DIR / repo
     gate_contract = f"{gate_mode}\n{test_cmd}\n"
     return [
@@ -2854,7 +3001,8 @@ def create_slot(
                         print(
                             f"[경고] `git -C {bare} fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
                             f"  로컬 `{base}`(동결 head)에서 readonly 슬롯을 detach 한다 — 네트워크 복구 후 "
-                            "`/pm-worktree refresh` 로 최신 released tip 으로 갱신하라 (fail-soft).",
+                            f"`{_runtime_skill_entry('pm-worktree')} refresh` 로 최신 released tip "
+                            "으로 갱신하라 (fail-soft).",
                             file=sys.stderr,
                         )
                     else:
@@ -3526,8 +3674,9 @@ def _apply_git_snapshot(lease: "Lease", *, base_branch: "str | None" = None,
         if base is not None:
             snap = {"base": base, **snap}   # base 를 앞에(스키마 순서·cosmetic).
         lease.git = snap
-    except Exception:  # noqa: BLE001 — fail-soft: 스냅 실패가 alloc/bind/create 를 막지 않는다.
-        pass
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 스냅 실패가 alloc/bind/create 를 막지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
 
 
 def record_git_snapshot(slot: str, *, base_branch: "str | None" = None,
@@ -3755,7 +3904,8 @@ class ReadonlySlotMutation(RuntimeError):
         super().__init__(
             f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly·⑬)이라 `{op}` 를 거부한다 — 문서 검증 "
             f"기준면(released base·detached)이라 git 상태를 바꾸는 op 은 불가하다. 갱신은 "
-            f"`/pm-worktree refresh {slot} [--onto <branch>]`(fetch→detach 이동)로만 한다."
+            f"`{_runtime_skill_entry('pm-worktree')} refresh {slot} "
+            f"[--onto <branch>]`(fetch→detach 이동)로만 한다."
         )
 
 
@@ -3788,7 +3938,8 @@ class ReadonlySlotNotLeasable(RuntimeError):
         super().__init__(
             f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly·⑬)이라 `{op}`(대여/반납/바인딩) 대상이 "
             f"아니다 — 무소유 공유 자산(배타 대여 없음·session/pid 없음). 제거하려면 "
-            f"`worktree remove {slot} --force`, 최신 갱신은 `/pm-worktree refresh {slot}`."
+            f"`worktree remove {slot} --force`, 최신 갱신은 "
+            f"`{_runtime_skill_entry('pm-worktree')} refresh {slot}`."
         )
 
 
@@ -4715,7 +4866,10 @@ def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
     try:
         updated = record_git_snapshot(slot, git_runner=git_runner)
     except Exception as exc:  # noqa: BLE001 — must-fix: 장부 IO/권한/락 예외도 안내 채널로 수렴.
-        raise SwitchRefused(slot, "record-failed", detail=f"장부 기록 예외: {exc}") from exc
+        converted = SwitchRefused(slot, "record-failed", detail=f"장부 기록 예외: {exc}")
+        if _is_engine_rev_skew(exc):
+            converted._engine_rev_skew = True
+        raise converted from exc
     recorded = updated.git if (updated is not None and isinstance(updated.git, dict)) else None
     # 판정은 `_cmd_record` 와 동형 — 무변경(스냅 불가로 기존 git 보존)도 실패로 본다. branch 만
     # 보면 "기록=X·live=main diverged 에서 switch X" 처럼 **이미 X 로 기록된** 장부가 stale head 를
@@ -5262,7 +5416,21 @@ def _load_identity_args():
 
 # state 생성과 handoff 갱신이 같은 marker를 쓰도록 literal은 identity_args 한 곳만 소유한다.
 # 앞서 정의된 함수들은 이 전역을 호출 시점에 조회하므로 module import 계약은 그대로다.
-TASK_PM_STATE_EMPTY_MARKER = _load_identity_args().TASK_PM_STATE_EMPTY_MARKER
+try:
+    _identity_args = _load_identity_args()
+except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
+    if _is_engine_rev_skew(exc):
+        if __name__ == "__main__":
+            print(
+                f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+                "동기화한 뒤 다시 실행하세요.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        raise
+    raise
+TASK_PM_STATE_EMPTY_MARKER = _identity_args.TASK_PM_STATE_EMPTY_MARKER
+_runtime_skill_entry = _identity_args._runtime_skill_entry
 
 
 def _resolve_actor_slot_for_repo(repo: str) -> str:
@@ -5564,6 +5732,8 @@ def _cmd_switch(args) -> int:
     try:
         result = switch(slot, args.branch)
     except (SwitchRefused, ReadonlySlotMutation) as exc:
+        if _is_engine_rev_skew(exc):
+            raise
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
     kind = "비파괴 생성 전환(`-b`)" if result.created else "기존 브랜치 전환"
@@ -5575,7 +5745,7 @@ def _cmd_switch(args) -> int:
     return 0
 
 
-def main(argv: "list[str] | None" = None) -> int:
+def _main(argv: "list[str] | None" = None) -> int:
     """argparse 진입점 — pm-worktree 스킬이 래핑할 `dev`/`sync`/`set-base`/`status` 커맨드
     
 
@@ -5747,6 +5917,22 @@ def main(argv: "list[str] | None" = None) -> int:
         return 1
     print(f"✓ 슬롯 {slot} 재동기 완료 (skip/경고 사유는 위 stderr 참조).")
     return 0
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
+    try:
+        _console_encoding = _load_module_from_path(
+            Path(__file__).resolve().with_name("console_encoding.py"),
+            "console_encoding.py",
+            verifier=_verify_engine_rev,
+        )
+        _console_encoding.configure_console_utf8()
+        return _main(argv)
+    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
+        raise
 
 
 if __name__ == "__main__":

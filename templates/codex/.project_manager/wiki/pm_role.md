@@ -191,7 +191,7 @@ prefix는 작업 카테고리이며 repo 네임스페이스 전용이 아니고 
   - `delete <A>`: 0-ticket 등록만 제거. ticket이 있으면 fail-loud하며 rename/merge 안내.
 
 **어댑터 마이그 절차(사용자 주도, 순서):**
-1. `pm-update`로 prefix 도구를 흡수.
+1. `/pm-update`로 prefix 도구를 흡수.
 2. `board.py prefix list`.
 3. `board.py prefix merge/rename ... --dry-run`.
 4. 홈 git clean 확인 후 실행(board-git 자동 백업). 예: finance_dev `board.py prefix merge finance --into none` → `T-finance-*`를 created 순 무prefix로 흡수.

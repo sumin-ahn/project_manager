@@ -45,7 +45,7 @@ env prefix 없이 호출한다:
 
 ### 세션 식별
 
-- **task 사용자 경로** — 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff --task <이름>`만 쓴다. 신규 task는 작업공간 0개로 시작하고 task 진입 시 pm_state를 즉시 만든 뒤 PM이 슬롯을 별도로 대여한다. 기존 task는 보유 슬롯 집합과 task pm_state를 수령한다. Python도 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름>`만 사용하며 task와 repo/slot 혼합 진입은 엔진이 거부한다.
+- **task 사용자 경로** — 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff --task <이름>`만 쓴다. 이 표기는 스킬 진입 표기이며 자체 slash command를 뜻하지 않는다. 신규 task는 작업공간 0개로 시작하고 task 진입 시 pm_state를 즉시 만든 뒤 PM이 슬롯을 별도로 대여한다. 기존 task는 보유 슬롯 집합과 task pm_state를 수령한다. Python도 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름>`만 사용하며 task와 repo/slot 혼합 진입은 엔진이 거부한다.
 - **PM 세션명 canonical=`<repo>_<N>`**(`<repo>`=프로젝트 repo, `<N>`=PM 슬롯). board 쓰기는 `--repo <repo> --slot <N>`을 전달한다:
   ```bash
   {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1
@@ -143,7 +143,7 @@ ctx 정지/넛지 %의 100% 기준은 `.project_manager/local.conf`의 `ctx_wind
 |---|---|
 | `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py · pm_log.py(공유 엔진 · 0 수정) |
 | `.project_manager/wiki/` | 비-코드 산출물(작업/결정/사양/상태/domain 지식 레이어(§10)/pm_role·pm_state·pm_playbook/log/raw) |
-| PM-workflow 스킬 | canonical `SKILL.md` 단일 소비. 하네스가 네이티브 스캔·슬래시(`/pm-…`) 호출하며 스킬 스캔 비활성화 금지. |
+| PM-workflow 스킬 | canonical `SKILL.md` 단일 소비. `/pm-bootstrap` 같은 진입 표기로 호출하며 스킬 스캔 비활성화 금지. |
 | 하네스 어댑터(하네스별 디렉토리) | subagent 정의 + 하네스별 실행 모델·위임 채널 |
 | `AGENTS.md` | 이 파일: PM 부트스트랩·공통 코어 |
 

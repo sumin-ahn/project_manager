@@ -203,6 +203,12 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 ENGINE_REV = "v1.5.1"
 
 
+def _runtime_skill_entry(skill: str) -> str:
+    """현재 실행 하네스의 사용자 호출 표기(Codex env marker 외 slash)."""
+    prefix = "$" if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI") else "/"
+    return f"{prefix}{skill}"
+
+
 def _verify_engine_rev(sibling_module, sibling_filename):
     """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
     got = getattr(sibling_module, "ENGINE_REV", None)
@@ -371,7 +377,6 @@ def _parse_harness_arg(value: str) -> tuple[str, ...]:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 FILL_CHOICES = ("auto", "manual")
-FILL_HARNESS_CHOICES = REGISTERED_HARNESSES
 
 
 def _cli_description() -> str:
@@ -426,6 +431,16 @@ FILL_DRIVER_BY_CMD = {
     OPENCODE_FILL_CMD: ("opencode", True, None),
     CODEX_FILL_CMD: ("codex", True, ""),
 }
+
+# fill 가능 여부는 runner argv 계약 선언에서 파생한다. 등록 하네스 전체가 자동 fill을 할 수 있다는
+# 가정은 두지 않는다; 새 등록분은 여기의 명시 runner 계약 없이는 --fill auto를 통과할 수 없다.
+FILL_CAPABLE_HARNESSES = tuple(
+    harness for harness in REGISTERED_HARNESSES
+    if any(driver[0] == harness for driver in FILL_DRIVER_BY_CMD.values())
+)
+# ``--fill-harness`` argparse choices는 등록 adapter 전부다. auto 가능 여부는 설치 전
+# ``FILL_CAPABLE_HARNESSES`` 게이트가 별도로 판정하므로 manual 경로를 여기서 막지 않는다.
+FILL_HARNESS_CHOICES = REGISTERED_HARNESSES
 
 # `opencode models` 조회 타임아웃 (초). 모델 목록 나열은 빠른 로컬 명령 가정이나, 회사 Pro/원격
 # 게이트웨이는 cold 콜 지연이 커 15s 로는 부족.
@@ -540,7 +555,7 @@ ENGINE_METADATA_RELPATHS = frozenset({
 
 # operational placeholder 치환에서 *제외*하는 방법론 문서 (repo 기준 relpath) — engine.manifest 파생.
 # 하드코딩 목록(과거 pm_role.md·pm_playbook.md 리터럴 frozenset) 대신 manifest 의 `.project_manager/wiki/`
-# 직속 비-템플릿 `.md`(= 방법론 문서 절)에서 결정적으로 유도한다. 이 문서들은 `{{PROJECT_NAME}}`·
+# 직속 `pm_*.md` 비-템플릿(= 방법론 문서 절)에서 결정적으로 유도한다. 이 문서들은 `{{PROJECT_NAME}}`·
 # `{{DATE}}` 토큰을 *메커니즘 설명*으로 담아(placeholder 아님·local.conf 가 런타임 해소·`docs/placeholders.md`)
 # 치환하면 문서가 concrete 값으로 변질되므로 제외한다. 파생이라 신규 방법론 .md 가 manifest 에 추가되면
 # 자동 편입 — "목록 수동 추가 잊음 → 조용한 placeholder 오치환" 클래스 종결.
@@ -574,7 +589,9 @@ def _is_template_scaffold(filename: str) -> bool:
 def _derive_sed_exclude_relpaths(manifest_path: Path) -> frozenset:
     """치환-제외 방법론 문서(repo 기준 relpath·POSIX) 집합을 engine.manifest 에서 파생한다.
 
-    규칙 = manifest 엔트리 중 `.project_manager/wiki/` **직속** `.md` 파일 중 *템플릿이 아닌* 것.
+    규칙 = manifest 엔트리 중 `.project_manager/wiki/` **직속** `pm_*.md` 파일 중
+    *템플릿이 아닌* 것. README 같은 출하 색인은 render/update 채널에 들어와도 operational
+    placeholder는 실제 프로젝트 값으로 치환돼야 하므로 방법론 리터럴 제외 집합에는 들지 않는다.
     서브디렉토리(`tickets/_template.md`·`raw/spikes/_template.md`·`domain/_template.md`)는 "직속"
     조건으로, 직속 템플릿(`pm_state.template.md`)은 `_is_template_scaffold` 로 제외된다 — 현재
     산출은 정확히 {pm_role.md, pm_playbook.md}.
@@ -603,6 +620,8 @@ def _derive_sed_exclude_relpaths(manifest_path: Path) -> frozenset:
         if "/" in remainder:  # 서브디렉토리 — 방법론 문서 절이 아님(직속만)
             continue
         if not remainder.endswith(".md"):
+            continue
+        if not remainder.startswith("pm_"):
             continue
         if _is_template_scaffold(remainder):  # 템플릿 스캐폴드 — 치환 대상(제외 아님)
             continue
@@ -1807,6 +1826,7 @@ def render_managed_files(
     dest_root: Path,
     subs: dict[str, str],
     copied_relpaths: set[Path],
+    entry_notation_templates: dict[str, tuple[str, ...]] | None = None,
 ) -> int:
     """이번 run 이 복사한 @render path 파일을 render_adapter 산출물로 다시 쓴다. 변경 수 반환.
 
@@ -1822,7 +1842,8 @@ def render_managed_files(
 
     subs(중괄호 포함 token→value)를 pm_render 의 bare-key operational dict 로 변환해 넘긴다."""
     managed = _render_managed_relpaths(dest_root)
-    if not managed:
+    notation_contexts = entry_notation_templates or {}
+    if not managed and not notation_contexts:
         return 0
     render_mod = _load_pm_render_module()
     if render_mod is None:
@@ -1832,9 +1853,26 @@ def render_managed_files(
         token.strip("{}"): value for token, value in subs.items()
     }
     changed = 0
+
+    def notation_context(rel_posix: str) -> tuple[str, ...] | None:
+        matches = [
+            (len(owner.rstrip("/")), context)
+            for owner, context in notation_contexts.items()
+            if rel_posix == owner.rstrip("/")
+            or rel_posix.startswith(owner.rstrip("/") + "/")
+        ]
+        return max(matches, default=(0, None), key=lambda item: item[0])[1]
+
     for rel in sorted(copied_relpaths):
         rel_posix = rel.as_posix()
-        if not _is_render_managed(rel_posix, managed):
+        file_render = _is_render_managed(rel_posix, managed)
+        context = notation_context(rel_posix)
+        notation_managed = (
+            file_render
+            or rel_posix.startswith(".project_manager/wiki/")
+            or rel_posix == "AGENTS.md"
+        )
+        if not file_render and not (context and notation_managed):
             continue
         path = dest_root / rel
         if not path.is_file():
@@ -1843,7 +1881,15 @@ def render_managed_files(
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        rendered = render_mod.render_adapter(text, operational=operational)
+        rendered = (
+            render_mod.render_adapter(
+                text,
+                operational=operational,
+                template_dir=context,
+            )
+            if file_render
+            else render_mod.render_skill_entry_notation(text, context)
+        )
         if rendered != text:
             path.write_text(rendered, encoding="utf-8")
             changed += 1
@@ -2523,23 +2569,47 @@ def _fill_local_config(cwd: Path | str | None) -> dict[str, str]:
         return {}
 
 
-def _fill_partial_text(value) -> str:
-    """TimeoutExpired 계열의 str/bytes 부분 산출물을 손실 없이 표시 가능한 텍스트로 만든다."""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return str(value) if value else ""
+def fill_harness_cap_advisory(harness: str, cwd: Path | str | None) -> str | None:
+    """fill도 위임·리뷰와 같은 호출층 상한 판정을 소비한다(never-block advisory)."""
+    relay = _load_watchdog()
+    profile = relay.resolve_harness_profile(harness, _fill_local_config(cwd))
+    first_event_timeout = (
+        relay.first_event_timeout_default() if profile.startup_watchdog else None
+    )
+    retries = relay.stall_retries_default() if profile.startup_watchdog else 0
+    execution_budget = relay.watchdog_execution_budget(
+        profile.wall_timeout,
+        first_event_timeout=first_event_timeout,
+        retries=retries,
+    )
+    return relay.harness_cap_advisory(
+        os.environ, execution_budget=execution_budget,
+        session_markers=relay.HARNESS_SESSION_MARKERS,
+        cap_env=relay.HARNESS_CAP_ENV,
+        render_missing=lambda _harness, cap_key, required: (
+            f"[fill auto] 경고: 호출층 상한 {cap_key} 미해소 — "
+            f"실행+정리+부분 산출물 보존 여유 {required}s 이상을 설정하세요."
+        ),
+        render_invalid=lambda _harness, cap_key, raw, required: (
+            f"[fill auto] 경고: 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
+            f"실행+정리+부분 산출물 보존 여유 {required}s 이상을 설정하세요."
+        ),
+        render_low=lambda _harness, cap_key, cap_seconds, required: (
+            f"[fill auto] 경고: 호출층 상한 {cap_key}={cap_seconds:g}s < "
+            f"실행+정리+부분 산출물 보존 여유 {required}s — 엔진 진단/부분 산출물 보존 전에 "
+            f"하네스가 kill할 수 있습니다. {cap_key}를 상향하세요."
+        ),
+    )
 
 
 def _fill_failure_with_partial(head: str, exc: BaseException) -> str:
     """워치독 kill/정리 실패의 stdout·stderr를 fill 실패 진단에 보존한다."""
-    stdout = _fill_partial_text(getattr(exc, "output", ""))
-    stderr = _fill_partial_text(getattr(exc, "stderr", ""))
-    parts = [head]
-    if stdout:
-        parts.append(f"\n[중단 시점까지의 stdout — {len(stdout)}자 보존]\n{stdout}")
-    if stderr:
-        parts.append(f"\n[중단 시점까지의 stderr — {len(stderr)}자 보존]\n{stderr}")
-    return "".join(parts)
+    try:
+        return _load_watchdog().format_partial_output(head, exc)
+    except Exception as formatter_exc:  # noqa: BLE001 — 일반 formatter/load 실패는 fail-soft.
+        if _is_engine_rev_skew(formatter_exc):
+            raise
+        return head
 
 
 def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Path:
@@ -2738,8 +2808,9 @@ def _build_runner_argv(
             argv += ["-C", str(dest_root)]     # workdir 핀(codex 는 -C 로 작업 디렉토리 고정)
         argv.append(prompt)                    # 프롬프트 = 마지막 positional
         return argv
+    supported = "·".join(FILL_CAPABLE_HARNESSES)
     raise ValueError(
-        f"_build_runner_argv: 미지원 fill harness {harness!r} — 지원: claude·opencode·codex. "
+        f"_build_runner_argv: 미지원 fill harness {harness!r} — 지원: {supported}. "
         f"silent 폴백 금지(잘못된 바이너리 호출·오표기 방지·runner 매핑에 명시 등록 필요)."
     )
 
@@ -3691,6 +3762,41 @@ def add_harness(
     src_root = _resolve_add_harness_source(dest_root, harness, source_root)
     template_root = resolve_template_roots(src_root, harness)[0]
 
+    # 기존 adapter namespace로 실제 설치 하네스를 판별한다. opencode가 `.claude/skills`를 함께
+    # 설치하므로 claude는 CLAUDE.md까지 요구하고, codex는 두 namespace를 모두 요구한다.
+    installed_harnesses = []
+    for candidate, (candidate_dirs, candidate_doc) in ADD_HARNESS_ADAPTER.items():
+        dirs_present = all((dest_root / dirname).is_dir() for dirname in candidate_dirs)
+        doc_present = (dest_root / candidate_doc).is_file()
+        if dirs_present and doc_present:
+            installed_harnesses.append(candidate)
+    selected_harnesses = tuple(
+        candidate
+        for candidate in REGISTERED_HARNESSES
+        if candidate in {*installed_harnesses, harness}
+    )
+    pm_update_mod = _load_pm_update()
+    if pm_update_mod is None:
+        raise RuntimeError(
+            "add-harness: pm_update.py를 로드할 수 없어 공유 경로 표기 context를 만들 수 없습니다."
+        )
+    entry_notation_templates = pm_update_mod._entry_notation_templates_from_manifests(
+        [
+            src_root / "templates" / HARNESS_TEMPLATE_DIRS[name][0]
+            / ".project_manager" / "engine.manifest"
+            for name in selected_harnesses
+        ],
+        src_root,
+    )
+    shared_agents_members = NEUTRAL_SHARED_ENTRY_DOCS[Path("AGENTS.md")][0]
+    selected_shared_agents = tuple(
+        HARNESS_TEMPLATE_DIRS[name][0]
+        for name in selected_harnesses
+        if name in shared_agents_members
+    )
+    if len(selected_shared_agents) > 1:
+        entry_notation_templates["AGENTS.md"] = selected_shared_agents
+
     adapter_dirs, root_doc = ADD_HARNESS_ADAPTER[harness]
     # 스코프 표시 문자열 — dirs 튜플을 `d/**` 로 합친다(codex=`.codex/** + .agents/**`·단일은 그대로).
     adapter_scope = " + ".join(f"{d}/**" for d in adapter_dirs)
@@ -3780,6 +3886,15 @@ def add_harness(
     #   생성 파일(내용 상이·copied)은 제외된다(과확장 봉쇄). 기존 렌더 파이프 재사용.
     proc_relpaths = copied_relpaths | _byte_identical_skipped(
         template_root, dest_root, copied_relpaths, adapter_dirs)
+    # 같은 물리 문서를 둘 이상의 설치 하네스가 읽으면 기존 파일도 병기 렌더 대상이다.
+    # 사용자 상태 전체를 다시 복사하지 않고 manifest가 선언한 공유 wiki와 공유 root doc만 좁게 연다.
+    proc_relpaths |= {
+        Path(rel)
+        for rel, context in entry_notation_templates.items()
+        if len(context) > 1
+        and (rel.startswith(".project_manager/wiki/") or rel == "AGENTS.md")
+        and (dest_root / rel).is_file()
+    }
     # 라이브 인스턴스의 project_name 은 기존 local.conf 를 존중(없으면 디렉토리명 폴백).
     project_name = _instance_project_name(dest_root)
     subs = _substitution_map(project_name, dest_root, today)
@@ -3788,7 +3903,12 @@ def add_harness(
     resolve_opencode_model(dest_root, proc_relpaths, model_arg=None)
     # render_managed_files 는 dest 인스턴스 engine.manifest 의 @render path 만 렌더한다 — 위에서 guest
     # `@render` 를 dest manifest 에 등재했으므로 guest 어댑터도 렌더된다.
-    render_managed_files(dest_root, subs, proc_relpaths)
+    render_managed_files(
+        dest_root,
+        subs,
+        proc_relpaths,
+        entry_notation_templates=entry_notation_templates,
+    )
     # 자유서술 placeholder 는 TODO 표시(비-LLM·main manual 흐름과 동일).
     _run_manual_fill(dest_root, proc_relpaths)
     # main import(:3289)와 **대칭** — 이번 add 가 실제로 중앙 백업을 만들었으면
@@ -4146,7 +4266,9 @@ def main(argv: list[str] | None = None) -> int:
             "온보딩(fresh 채택자): manager(project_manager) 경로/URL 만 있으면 자율 import — "
             "harness=자기 세션(" + "|".join(HARNESS_TEMPLATE_DIRS)
             + "), --new(빈 PM 홈)/--into(기존 프로젝트 임베드) "
-            "맥락 판단. 상세 가이드 = manager 루트 ADOPT.md. import 후 다음 단계: /pm-bootstrap → /pm-env.\n\n"
+            "맥락 판단. 상세 가이드 = manager 루트 ADOPT.md. import 후 다음 단계: "
+            + _runtime_skill_entry("pm-bootstrap") + " → "
+            + _runtime_skill_entry("pm-env") + ".\n\n"
             "upstream 기록: --from 은 *파일 소스*, --upstream 은 *future update 기록*으로 "
             "디커플된다. local.conf 에 `upstream=`(pm_update 가 --from 생략 시 사용) + "
             "`upstream_rev=<commit>`(drift baseline·--from 이 로컬 git checkout 일 때)이 기록된다. "
@@ -4183,7 +4305,7 @@ def main(argv: list[str] | None = None) -> int:
                          "manual: TODO 표시(default)")
     ap.add_argument(
         "--fill-harness",
-        choices=tuple(HARNESS_TEMPLATE_DIRS),
+        choices=FILL_HARNESS_CHOICES,
         default=None,
         help="fill 구동 하네스 (default: 선택 집합 중 등록 순서상 첫 가용 바이너리)",
     )
@@ -4322,6 +4444,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
 
+    try:
+        pm_update_mod = _load_pm_update()
+        if pm_update_mod is None:
+            raise RuntimeError(
+                "pm_update.py를 로드할 수 없어 하네스별 스킬 표기 context를 만들 수 없습니다."
+            )
+        entry_notation_templates = pm_update_mod._entry_notation_templates_from_manifests(
+            [root / ".project_manager" / "engine.manifest" for root in template_roots],
+            source_root,
+        )
+        shared_agents_members = NEUTRAL_SHARED_ENTRY_DOCS[Path("AGENTS.md")][0]
+        selected_shared_agents = tuple(
+            HARNESS_TEMPLATE_DIRS[harness][0]
+            for harness in args.harness
+            if harness in shared_agents_members
+        )
+        if len(selected_shared_agents) > 1:
+            entry_notation_templates["AGENTS.md"] = selected_shared_agents
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(
+            "오류: 선택된 어댑터의 스킬 표기 context를 만들 수 없어 복사 전에 중단합니다 — "
+            f"{exc}",
+            file=sys.stderr,
+        )
+        return 1
+
     # ── 계획 출력 ──
     mode_label = f"--new {dest_root}" if is_new else f"--into {dest_root}"
     harness_label = ",".join(args.harness)
@@ -4358,7 +4506,24 @@ def main(argv: list[str] | None = None) -> int:
     # fill 단계 계획/게이트 미리보기 (dry-run·실행 공통). 실 하니스 호출 여부는 opt-in 게이트
     # (PM_IMPORT_LIVE_HARNESS=1 AND --fill auto)로 결정한다 — 여기서는 의도만 출력한다.
     fill_harness = _resolve_fill_harness(args.fill_harness, args.harness)
+    if args.fill == "auto" and fill_harness not in FILL_CAPABLE_HARNESSES:
+        print(
+            f"오류: fill harness {fill_harness!r}는 runner 매핑이 없습니다 — "
+            f"지원: {', '.join(FILL_CAPABLE_HARNESSES)}. 파일 설치 전 중단합니다.",
+            file=sys.stderr,
+        )
+        return 1
     live_allowed = _live_harness_allowed(args.fill)
+    if args.fill == "auto":
+        try:
+            cap_warning = fill_harness_cap_advisory(fill_harness, dest_root)
+        except Exception as exc:  # noqa: BLE001 — advisory는 import를 막지 않는다.
+            if _is_engine_rev_skew(exc):
+                raise
+            print(f"[fill auto] 경고: 하네스 상한 판정 실패({exc})", file=sys.stderr)
+        else:
+            if cap_warning is not None:
+                print(cap_warning, file=sys.stderr)
     if args.fill == "auto":
         gate = "실구동(게이트 통과)" if live_allowed else "stub/미구동(게이트 미통과 — 안전)"
         print(f"  fill=auto  harness={fill_harness}  → {gate}")
@@ -4453,7 +4618,12 @@ def main(argv: list[str] | None = None) -> int:
     # render 단계: @render manifest path 의 복사본을 render_adapter
     # 산출물로 다시 쓴다 — operational 토큰(subs·이미 sed) 치환. free-form value-fill 은 
     # 로 제거(FILL 채널이 canonical home 전담). substitute·모델해소 *직후*. 범위 = copied_relpaths(비파괴).
-    n_render = render_managed_files(dest_root, subs, copied_relpaths)
+    n_render = render_managed_files(
+        dest_root,
+        subs,
+        copied_relpaths,
+        entry_notation_templates=entry_notation_templates,
+    )
     if n_render:
         print(f"✓ {n_render} 파일 render (operational 토큰 치환)")
 

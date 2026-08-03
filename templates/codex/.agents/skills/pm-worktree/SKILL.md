@@ -4,7 +4,7 @@ description: "worktree/submodule 운영중 관리 — submodule 을 dev 브랜�
 audience: pm-internal
 ---
 
-# /pm-worktree — worktree/submodule 운영중 관리
+# $pm-worktree — worktree/submodule 운영중 관리
 
 {{PROJECT_NAME}} 슬롯의 worktree/submodule 운영중 관리용 **pm-internal** 스킬. backbone =
 `.project_manager/tools/worktree_pool.py`(`dev`/`sync`/`set-base`/`status`/`rebase`/`refresh`/`record`/`switch`);
@@ -122,7 +122,7 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   base.branch 최신 tip으로 옮기고 submodule을 재동기해 옛 gitlink pin 잔존에 따른 stale+dirty
   자가 잠금을 막는다. 이동 tip을 base.commit으로 재기록한다. dirty면 "누군가 여기 썼다"는
   신호이므로 reset하지 않고 loud 거부한다. 기준 미해소 또는 non-readonly 대상은 rc 1이다.
-  readonly 슬롯의 `set-base`/`rebase`/`dev`/`sync`·`release`/바인딩(`/pm-bootstrap --slot`)은
+  readonly 슬롯의 `set-base`/`rebase`/`dev`/`sync`·`release`/바인딩(`$pm-bootstrap --slot`)은
   엔진이 거부하며 갱신은 `refresh`만 허용한다.
 - `record`: `<slot>` 위치인자. 현재 live branch·head·recorded_at으로 `lease.git` 도착 스냅만 명시
   재기록하고 base는 보존한다(base는 `set-base`/`rebase`만 변경). 부트스트랩 0단계의
@@ -172,7 +172,7 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
 - 부트스트랩 0단계의 base 후보를 사용자에게 전달하고, 선택된 기준만 `set-base`로 기록한다.
 - rebase 전 활성 dev 위임이 없는지 확인한다. 충돌 시 상태를 그대로 두었음을 알리고
   continue/abort 해소를 사용자에게 위임한다.
-- readonly 슬롯 생성(`/pm-env worktree add <repo> --readonly`)은 코드 전체 사본을 만드는 사용자
+- readonly 슬롯 생성(`$pm-env worktree add <repo> --readonly`)은 코드 전체 사본을 만드는 사용자
   승인 flow이므로 PM이 자율 생성하지 않는다.
 
 ## 참고

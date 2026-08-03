@@ -9,12 +9,12 @@ wiki/board.md
 wiki/log/dashboard.md
 
 # pm_state.md = 로컬 핸드오프 상태 (pm-init 이 pm_state.template.md 에서 생성).
-#   solo = clone당 1개(wiki/pm_state.md). multi-PM = 슬롯별(.local/slots/<slot>/pm_state.md·
+#   solo = clone당 1개(wiki/pm_state.md). multi-PM = 슬롯별(.local/slots/<repo>_<N>/pm_state.md·
 #   pm_handoff 가 첫 핸드오프 시 graceful 이동·T-0166·ADR-0033 §3.1). 둘 다 gitignored.
 wiki/pm_state.md
 
 # local.conf = per-clone 설정 (prefix·session). pm-init 이 생성.
 local.conf
 
-# .local/ = per-clone·per-slot 스크래치 (회귀 게이트 플래그·worktree-leases·slots/<slot>/pm_state.md).
+# .local/ = per-clone·per-slot 스크래치 (회귀 게이트 플래그·worktree-leases·slots/<repo>_<N>/pm_state.md).
 .local/

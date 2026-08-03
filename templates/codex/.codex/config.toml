@@ -13,7 +13,7 @@ approvals_reviewer = "auto_review"
 
 # D4 ②(대화형 경로): 문서화된 숫자 threshold만 설정한다. 이 값은 auto-compaction을 끄지 않으며,
 #   off sentinel을 발명하지 않는다. threshold 도달 시 hooks.json PreCompact가 transaction을 hard-stop하고
-#   사용자는 즉시 /pm-handoff 해야 한다(0.145.0 manual/auto live probe 확인).
+#   사용자는 즉시 $pm-handoff 해야 한다(0.145.0 manual/auto live probe 확인).
 model_auto_compact_token_limit = 900000
 
 [features]

@@ -13,7 +13,7 @@ venv/
 # throwaway PoC/실험 스크립트 (PM 12차·T-0044 — verdict 는 ticket 메모·log 에 박제·스크립트는 미커밋).
 scratch/
 
-# multi-PM 우산 풀 잔재 (ADR-0011 — repo add 의 bare .git 원·worktree add 의 슬롯은 per-clone·미추적).
+# multi-PM 공유 풀 잔재 (ADR-0011 — repo add 의 bare .git 원·worktree add 의 슬롯은 per-clone·미추적).
 .repos/
 work/
 

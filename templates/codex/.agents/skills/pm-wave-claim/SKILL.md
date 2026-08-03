@@ -4,7 +4,7 @@ description: "wave 안 ticket claim — board show + DoD self-containment PM 검
 audience: pm-internal
 ---
 
-# /pm-wave-claim T-NNNN — wave 시작 ticket claim
+# $pm-wave-claim T-NNNN — wave 시작 ticket claim
 
 wave 시작 시 ticket 하나를 claim하며, claim 전에 ticket self-containment를 PM이 검증한다.
 

@@ -188,6 +188,27 @@ def _is_engine_rev_skew(exc) -> bool:
     """stamped sibling 로더가 표시한 사본 불일치인가."""
     return getattr(exc, "_engine_rev_skew", False)
 
+
+_ENGINE_REV_SKEW_RECOVERY_REASONS = {
+    "reinstall_protected_hooks": (
+        "동기화가 끝난 뒤의 훅 재설치가 부분 동기 목적지 엔진 때문에 실패해도 "
+        "다음 pm-update 재실행 경로를 열어 둔다"
+    ),
+}
+
+
+def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
+    """업데이트의 최외곽 복구 경계가 marked skew를 의도적으로 흡수했음을 표시한다.
+
+    동기화 뒤의 보호 훅 재설치는 부가 수렴 단계다. 목적지 엔진이 부분 동기 상태라 이 단계가
+    실패해도 ``pm_update`` 자체는 다음 재실행으로 나머지 엔진을 복구할 수 있어야 한다. 호출부는
+    반환값으로 일반 실패와 사본 불일치를 구분해 loud 진단하되 update 성공을 되돌리지 않는다.
+    """
+    reason = _ENGINE_REV_SKEW_RECOVERY_REASONS.get(boundary, "").strip()
+    if not reason:
+        raise ValueError(f"등록되지 않았거나 사유가 빈 복구 경계: {boundary!r}")
+    return _is_engine_rev_skew(exc)
+
 # manifest 의 render 태그 () — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
 RENDER_TAG = "@render"
 # manifest 의 target-owned 태그 — path 행 끝 `  @target-owned` 면 그 경로는 타깃 자신만
@@ -255,11 +276,17 @@ class _RenderDst:
     직접 호출)는 이 래퍼가 아니므로 `getattr(dst, "render", False)` 가 False → copy2(후방호환).
     """
 
-    __slots__ = ("_path", "render")
+    __slots__ = ("_path", "render", "entry_notation_template")
 
-    def __init__(self, path: Path, render: bool = False) -> None:
+    def __init__(
+        self,
+        path: Path,
+        render: bool = False,
+        entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
+    ) -> None:
         self._path = Path(path)
         self.render = render
+        self.entry_notation_template = entry_notation_template
 
     def __fspath__(self) -> str:
         return str(self._path)
@@ -281,7 +308,10 @@ class _RenderDst:
         return str(self._path)
 
     def __repr__(self) -> str:
-        return f"_RenderDst({self._path!r}, render={self.render})"
+        return (
+            f"_RenderDst({self._path!r}, render={self.render}, "
+            f"entry_notation_template={self.entry_notation_template!r})"
+        )
 
 
 class _ManifestTextSource:
@@ -576,8 +606,11 @@ def _load_repo_owned_files():
     return module
 
 
+# ``main``도 이 seam의 예외 타입으로 실패를 분류한다. 분류 지점마다 방어하지 않고 예외 타입을
+# 필수 API 계약에 포함해, 불완전한 seam은 attribute 조회 전에 선복구 대상으로 일관되게 거부한다.
 _REPO_OWNED_FILES_REQUIRED = (
     "load_module",
+    "RepoFilesGitError",
     "_real_git_runner",
     "list_repo_owned_entries",
     "list_repo_owned_files",
@@ -2030,6 +2063,93 @@ def _selected_upstream_core_paths(selfheal: dict) -> set[str]:
     return {str(entry).replace("\\", "/") for entry in entries}
 
 
+def _template_dir_from_manifest(
+    manifest_path: Path | None,
+    source_root: Path,
+) -> str | None:
+    """flavor manifest 경로에서 `templates/<dir>` context를 파생한다. root manifest면 None."""
+    if manifest_path is None:
+        return None
+    try:
+        rel = Path(manifest_path).resolve().relative_to(
+            (Path(source_root) / "templates").resolve()
+        )
+    except (OSError, ValueError):
+        return None
+    return rel.parts[0] if len(rel.parts) >= 3 else None
+
+
+def _entry_notation_templates_from_manifests(
+    manifest_paths: list[Path],
+    source_root: Path,
+) -> dict[str, tuple[str, ...]]:
+    """선택 manifest의 항목별 flavor 집합을 선언 순서대로 보존한다.
+
+    서로 다른 경로는 각 flavor 하나를 받고, 같은 물리 경로는 그 파일을 실제로 읽는 flavor를
+    전부 받는다. 선택된 flavor manifest를 읽지 못하면 context만 조용히 버리지 않고 fail-loud한다.
+    로컬 manifest 동기화는 계속하면서 notation context만 유실하면 canonical slash가 codex의 기존
+    dollar 산출물을 덮기 때문이다.
+    """
+    contexts: dict[str, list[str]] = {}
+    for manifest_path in manifest_paths:
+        template_dir = _template_dir_from_manifest(manifest_path, source_root)
+        if template_dir is None:
+            continue
+        try:
+            entries = read_manifest(manifest_path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise RuntimeError(
+                "선택된 flavor manifest에서 스킬 표기 context를 해소할 수 없다 — "
+                f"기존 렌더 산출물을 보존하기 위해 동기화를 중단한다: {manifest_path} ({exc})"
+            ) from exc
+        for entry in entries:
+            rel = str(entry).replace("\\", "/")
+            flavors = contexts.setdefault(rel, [])
+            if template_dir not in flavors:
+                flavors.append(template_dir)
+    return {rel: tuple(flavors) for rel, flavors in contexts.items()}
+
+
+def _installed_entry_notation_manifests(
+    effective_dest: Path,
+    source_root: Path,
+    upstream_manifests: list[Path],
+) -> list[Path]:
+    """core 선택에 더해 실제 설치된 add-harness guest를 표기 context에만 포함한다.
+
+    guest는 update plan/manifest self-heal에서는 계속 불가침이다. 다만 공유 wiki를 실제로 읽는
+    하네스 집합에서는 빠지면 안 되므로, add-harness가 쓰는 adapter registry와 같은 디렉터리+
+    root-doc 실재 판정으로 설치 하네스를 찾고 그 flavor manifest를 context 입력에만 보탠다.
+    """
+    paths = list(upstream_manifests)
+    try:
+        pm_import = _load_pm_import()
+        harnesses = pm_import.REGISTERED_HARNESSES
+        adapter_registry = pm_import.ADD_HARNESS_ADAPTER
+        template_registry = pm_import.HARNESS_TEMPLATE_DIRS
+    except Exception:  # noqa: BLE001 — 중앙 seam/형제 복구 중 pm_import 부재·손상은 core sync 우선.
+        return paths
+    seen = {Path(path).resolve() for path in paths}
+    for harness in harnesses:
+        adapter_dirs, root_doc = adapter_registry[harness]
+        if not all((Path(effective_dest) / dirname).is_dir() for dirname in adapter_dirs):
+            continue
+        if not (Path(effective_dest) / root_doc).is_file():
+            continue
+        template_dir = template_registry[harness][0]
+        manifest = (
+            Path(source_root) / "templates" / template_dir
+            / ".project_manager" / "engine.manifest"
+        )
+        if not manifest.is_file():
+            continue
+        resolved = manifest.resolve()
+        if resolved not in seen:
+            paths.append(manifest)
+            seen.add(resolved)
+    return paths
+
+
 # local.conf key(lowercase) → operational token key(uppercase·pm_render). board.py init 은
 # py·test_cmd·project_name 만 기록 — 나머지(project_root·project_tagline·date)는 local.conf
 # 에 없으므로 매핑 부재 시 빈값(render 시 그 토큰이 남아있으면 leak assertion 이 잡는다·그러나
@@ -2080,7 +2200,11 @@ def _operational_from_local_conf(dest_root: Path) -> tuple[dict[str, str], list[
     return operational, empty_keys
 
 
-def _render_text(source_path: Path, dest_root: Path) -> str:
+def _render_text(
+    source_path: Path,
+    dest_root: Path,
+    entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
+) -> str:
     """source 템플릿을 채택자 local.conf(operational)로 렌더한 텍스트.
 
     local.conf 의 operational 값을 plain replace 로 채운다(free-form 은 pm_import FILL 채널이
@@ -2090,7 +2214,37 @@ def _render_text(source_path: Path, dest_root: Path) -> str:
     render_mod = _load_pm_render()
     operational, empty_keys = _operational_from_local_conf(dest_root)
     text = Path(source_path).read_text(encoding="utf-8")
-    return render_mod.render_adapter(text, operational=operational, empty_keys=empty_keys)
+    return render_mod.render_adapter(
+        text,
+        operational=operational,
+        empty_keys=empty_keys,
+        template_dir=entry_notation_template,
+        source=str(source_path),
+    )
+
+
+def render_skill_entry_notation(
+    text: str,
+    template_dir: str | tuple[str, ...] | list[str],
+    *,
+    source: str | None = None,
+) -> str:
+    """호출 표기 최소 렌더 public seam — board mirror 판정도 같은 경로를 재사용한다."""
+    render_mod = _load_pm_render()
+    return render_mod.render_skill_entry_notation(
+        text, template_dir, source=source
+    )
+
+
+def _render_skill_entry_text(
+    source_path: Path,
+    template_dir: str | tuple[str, ...] | list[str],
+) -> str:
+    """--target export용 파일 wrapper — operational은 건드리지 않고 호출 표기만 치환."""
+    text = Path(source_path).read_text(encoding="utf-8")
+    return render_skill_entry_notation(
+        text, template_dir, source=str(source_path)
+    )
 
 
 def _is_text_source(source_path: Path) -> bool:
@@ -2108,7 +2262,12 @@ def _is_text_source(source_path: Path) -> bool:
     return True
 
 
-def _render_eq_dst(sp: Path, dst: Path, dest_root: Path) -> bool:
+def _render_eq_dst(
+    sp: Path,
+    dst: Path,
+    dest_root: Path,
+    entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
+) -> bool:
     """render path 의 '변경 없음' 정직 판정 — 렌더 산출물 == dst 현재 내용 ().
 
     filecmp.cmp(템플릿, dst) 는 render path 에 *틀림*(템플릿은 렌더 산출물과 byte-equal 일 수
@@ -2117,8 +2276,10 @@ def _render_eq_dst(sp: Path, dst: Path, dest_root: Path) -> bool:
     change 로 띄워 apply 가 실제 렌더에서 명확히 실패하게 한다(침묵 폴백 금지).
     """
     try:
-        rendered = _render_text(sp, dest_root)
-        return rendered == dst.read_text(encoding="utf-8")
+        rendered = _render_text(sp, dest_root, entry_notation_template)
+        # newline=None인 read_text는 CRLF를 LF로 정규화해 byte drift를 숨긴다. 산출물 encoding을
+        # 명시해 결정적 bytes로 대조하면 LF/CRLF 차이와 비-UTF8 dest를 모두 update로 판정한다.
+        return rendered.encode("utf-8") == dst.read_bytes()
     except Exception:  # noqa: BLE001 — 렌더/IO 실패는 '다름'으로 보수 처리.
         return False
 
@@ -2129,6 +2290,8 @@ def plan(
     dest_root: Path | None = None,
     *,
     render_enabled: bool = True,
+    entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
+    entry_notation_templates: dict[str, tuple[str, ...]] | None = None,
     manifest_source_text: str | None = None,
 ) -> tuple[list[tuple], list[str]]:
     """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update).
@@ -2140,10 +2303,10 @@ def plan(
     str 항목(레거시 호출)은 render=False(후방호환·순수 copy2). render path 의 변경검출은
     filecmp 대신 rendered-output 비교(`_render_eq_dst`) — 템플릿≠산출물 오보 회피().
 
-    render_enabled=False 면 manifest @render 태그를 *무시*하고 전부 copy2(토큰-form 보존).
-    `--target`(루트→templates/<name> 동기) 경로 전용 — 템플릿은 토큰-form 소스라 절대 렌더
-    대상이 아니다(local.conf 부재 → operational 토큰 leak·_assert_no_leak crash). render 는
-    채택자 self-update(--target 없음·local.conf 보유)와 pm_import 경로에서만 일어난다.
+    render_enabled=False 면 operational 전체 렌더는 끈다. 다만 entry notation context가 있으면
+    ``@render`` 어댑터와 공유 canonical wiki의 `/pm-*` 호출 토큰만 타깃 표기로 바꾼다. 프로젝트명
+    등 나머지 토큰-form은 그대로 보존한다. 채택자 self-update에서도 같은 항목별 하네스 context를
+    넘겨 canonical 스킬 표기가 되돌아오지 않게 한다.
     """
     effective_dest = dest_root if dest_root is not None else REPO
     changes: list[tuple] = []
@@ -2166,9 +2329,13 @@ def plan(
                 except (OSError, UnicodeDecodeError):
                     changes.append((rel, source, dst, "update"))
             continue
-        # render_enabled=False(--target) 면 @render 태그를 강제로 끈다 — 템플릿은 토큰-form
-        # 소스라 copy2 로 토큰을 보존해야 한다(렌더 시 operational leak·crash 회피).
-        render = _entry_render_flag(entry) if render_enabled else False
+        declared_render = _entry_render_flag(entry)
+        item_notation_template = (
+            (entry_notation_templates or {}).get(rel.replace("\\", "/"))
+            or entry_notation_template
+        )
+        # 전체 render는 adopter self-update에서만. --target은 아래 호출 표기 최소 렌더만 허용한다.
+        render = declared_render if render_enabled else False
         inventory, source_missing, _target_owned = manifest_entry_shipping_inventory(
             source_root,
             manifest,
@@ -2187,14 +2354,45 @@ def plan(
             # 판정이라, codex 가 들여온 `.codex/agents/*.toml`(@render 선언 O)이 byte-copy 로
             # 새어 채택자 트리에 `{{PROJECT_NAME}}` 리터럴을 재전파했다(pm_import 와 동형 결함·
             # 두 채널을 함께 닫는다). 텍스트 아님(바이너리 리소스)은 여전히 byte-copy 로 남는다.
-            file_render = render and _is_text_source(sp)
-            dst = _RenderDst(effective_dest / r, file_render)
+            text_source = _is_text_source(sp)
+            file_render = render and text_source
+            notation_template = None
+            rendered_entry: str | None = None
+            notation_managed = declared_render or (
+                render_enabled
+                and str(r).replace("\\", "/").startswith(".project_manager/wiki/")
+            )
+            if (
+                not file_render
+                and notation_managed
+                and text_source
+                and item_notation_template is not None
+            ):
+                # 변환 지점이 실제로 있는 파일만 생성 산출물로 표시한다. 토큰 부재 파일은 기존
+                # copy2 경로를 유지해 metadata/출력 churn을 만들지 않는다. 미등록 template 값은
+                # helper가 여기서 fail-loud한다(dry-run도 원문 복사 false-green 금지).
+                source_text = Path(sp).read_text(encoding="utf-8")
+                rendered_entry = _render_skill_entry_text(sp, item_notation_template)
+                if rendered_entry != source_text:
+                    notation_template = item_notation_template
+            dst = _RenderDst(
+                effective_dest / r,
+                file_render,
+                entry_notation_template=(
+                    item_notation_template if file_render else notation_template
+                ),
+            )
             if not dst.exists():
                 changes.append((r, sp, dst, "new"))
             elif file_render:
                 # render path: 템플릿이 산출물과 byte-equal 일 수 없으므로 filecmp 는 항상 오보.
                 # 렌더한 결과가 dst 와 다를 때만 update(정직 판정).
-                if not _render_eq_dst(sp, dst, effective_dest):
+                if not _render_eq_dst(
+                    sp, dst, effective_dest, item_notation_template
+                ):
+                    changes.append((r, sp, dst, "update"))
+            elif notation_template is not None and rendered_entry is not None:
+                if rendered_entry.encode("utf-8") != dst.read_bytes():
                     changes.append((r, sp, dst, "update"))
             elif str(r).replace("\\", "/") == _MANIFEST_SELF_REL:
                 # engine.manifest self-prop: dest 는 apply 가 재부착한 add-harness guest 절을 갖고
@@ -2356,8 +2554,23 @@ def apply(changes: list[tuple]) -> None:
             operational, empty_keys = _operational_from_local_conf(dest_root)
             text = Path(sp).read_text(encoding="utf-8")
             rendered = render_mod.render_adapter(
-                text, operational=operational, empty_keys=empty_keys)
-            Path(dst).write_text(rendered, encoding="utf-8")
+                text,
+                operational=operational,
+                empty_keys=empty_keys,
+                template_dir=getattr(dst, "entry_notation_template", None),
+                source=str(sp),
+            )
+            Path(dst).write_bytes(rendered.encode("utf-8"))
+        elif getattr(dst, "entry_notation_template", None) is not None:
+            if render_mod is None:
+                render_mod = _load_pm_render()
+            text = Path(sp).read_text(encoding="utf-8")
+            rendered = render_mod.render_skill_entry_notation(
+                text,
+                dst.entry_notation_template,
+                source=str(sp),
+            )
+            Path(dst).write_bytes(rendered.encode("utf-8"))
         elif str(_r).replace("\\", "/") == _MANIFEST_SELF_REL:
             # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존.
             _copy_manifest_preserving_guest(sp, Path(dst))
@@ -3162,8 +3375,9 @@ def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
 
     **fail-soft** — sync 는 이미 성공했다. 일반 엔진 로드 실패(구형 dest)나 레지스트리
     파싱 실패가 update rc 를 바꾸면 안 된다 → 예외를 "unavailable"+사유로 강등하고 호출부가
-    경고로 낸다(훅은 추가 가드·`_install_protected_hook` 의 fail-soft 계약과 동형). 단 stamped
-    sibling의 marked rev skew는 불일치 엔진으로 계속 실행하지 않도록 재전파한다.
+    경고로 낸다(훅은 추가 가드·`_install_protected_hook` 의 fail-soft 계약과 동형). stamped
+    sibling의 marked rev skew도 이 최외곽 복구 경계에서는 명시적으로 흡수한다. 여기서 update를
+    중단하면 사본 불일치를 고칠 유일한 채널이 자기잠김하기 때문이다.
 
     ⚠ **"unavailable" 은 판정 자체가 불가능한 경우만**이다 — dest 엔진/레지스트리를 못 불러
     *어느 repo 도* 손댈 수 없는 상태. **개별 repo 의 훅 파일이 깨진 것은 unavailable 이 아니라
@@ -3207,10 +3421,14 @@ def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
         result["status"] = "done"
         return result
     except Exception as exc:  # noqa: BLE001 — 재설치 실패가 성공한 sync 를 무효화하면 안 됨.
-        if _is_engine_rev_skew(exc):
-            raise
+        recovery_skew = _absorb_engine_rev_skew_for_recovery(
+            exc, "reinstall_protected_hooks",
+        )
         result["status"] = "unavailable"
-        result["reason"] = f"{type(exc).__name__}: {exc}"
+        result["reason"] = (
+            f"엔진 사본 불일치(복구 sync는 유지): {exc}"
+            if recovery_skew else f"{type(exc).__name__}: {exc}"
+        )
         return result
 
 
@@ -3227,7 +3445,8 @@ def _print_protected_hook_reinstall_finding(result: dict, *, dry_run: bool = Fal
         print(
             "[경고] 보호 브랜치 훅 정합 확인/재설치를 건너뛰었다 — "
             f"{result.get('reason')}. 이 clone 의 훅은 **옛 엔진 본문**으로 남을 수 있다.\n"
-            "  → 재설치(멱등): pm-config repo add <repo>",
+            "  → 먼저 pm-update로 엔진 전체를 동기화한 뒤 재실행하세요.\n"
+            "  → 그 다음 재설치(멱등): pm-config repo add <repo>",
             file=sys.stderr,
         )
         return
@@ -3417,15 +3636,38 @@ def _main(argv: list[str] | None = None) -> int:
                 gpaths -= upstream_core_paths
             manifest = [e for e in manifest if str(e).replace("\\", "/") not in gpaths]
 
-    # --target(루트→templates/<name>) 은 render 를 끈다 — 템플릿은 토큰-form 소스라 copy2 로
-    # 토큰을 보존해야 한다(렌더 시 local.conf 부재 → operational leak·_assert_no_leak crash).
-    # render 는 채택자 self-update(--target 없음·local.conf 보유)와 pm_import 경로에서만.
+    # --target은 operational 전체 render를 끄되 @render 경로의 호출 표기 토큰만 target 이름으로
+    # 조건부 렌더한다. adopter self-update는 선택된 flavor manifest 경로에서 같은 context를 파생한다.
+    # root canonical manifest는 flavor template가 아니므로 None(기존 `/` token-form 유지).
     render_enabled = not args.target
+    entry_notation_template = args.target if args.target else None
+    try:
+        notation_manifests = (
+            []
+            if args.target
+            else _installed_entry_notation_manifests(
+                effective_dest,
+                source_root,
+                selfheal.get("upstream_manifests") or [],
+            )
+        )
+        entry_notation_templates = (
+            {}
+            if args.target
+            else _entry_notation_templates_from_manifests(
+                notation_manifests, source_root
+            )
+        )
+    except RuntimeError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 2
     changes, missing = plan(
         source_root,
         manifest,
         dest_root=dest_root,
         render_enabled=render_enabled,
+        entry_notation_template=entry_notation_template,
+        entry_notation_templates=entry_notation_templates,
         manifest_source_text=(
             selfheal.get("manifest_text")
             if len(selfheal.get("upstream_manifests", [])) > 1
@@ -3436,7 +3678,14 @@ def _main(argv: list[str] | None = None) -> int:
     for r, _sp, _dst, kind in changes:
         # render path 는 byte-copy 가 아니라 재렌더 산출물 — PM 이 구분하게 [render] 로 표기
         # ([update] = byte-copy· dry-run 표기). new 든 update 든 render 면 [render].
-        label = "render" if getattr(_dst, "render", False) else kind
+        label = (
+            "render"
+            if (
+                getattr(_dst, "render", False)
+                or getattr(_dst, "entry_notation_template", None) is not None
+            )
+            else kind
+        )
         print(f"  [{label}] {r}")
 
     # ── source 부재 항목 처리 (@target-owned skip · 양 모드 공통) ──
@@ -3615,8 +3864,12 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         # 중앙 seam 복구는 _main이 --from을 해소한 뒤 선행한다. 예외 타입 판별 때문에
         # main import 시점부터 seam을 요구하면 missing/syntax 복구가 다시 자기잠김된다.
-        repo_files = _load_repo_owned_files()
-        if not isinstance(exc, repo_files.RepoFilesGitError):
+        repo_files = None
+        try:
+            repo_files = _load_repo_owned_files()
+        except Exception:  # noqa: BLE001 — 분류 보조 실패가 원 예외를 가리면 안 된다.
+            pass
+        if repo_files is None or not isinstance(exc, repo_files.RepoFilesGitError):
             raise
         print(
             "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "

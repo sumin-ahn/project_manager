@@ -15,7 +15,7 @@ Agent 툴 + `subagent_type: developer|code-reviewer` + `run_in_background` 옵�
 
 ## 사전 조건
 
-- ticket 이미 claim (`pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>` · 솔로(M=1)는 생략).
+- ticket 이미 claim (`/pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>` · 솔로(M=1)는 생략).
 - depends_on 모두 done.
 - touches 명시.
 - DoD verify-able.
@@ -192,17 +192,21 @@ ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**
 
 #### 게이트 격리 스냅샷 (병렬 wave · 내부 reviewer 전용)
 
-병렬 dev가 공유 트리를 라이브 편집 중이면 PM은 reviewer 위임 전에 미리 `git add`한 **staged** 상태만 격리 worktree로 스냅샷해 dev 편집·reviewer git 조작(sensitivity `git checkout` 등)의 경합을 막는다. `<scratch>`는 repo 밖 경로(`/tmp` 또는 repo 상위 `..`), 최종 경로는 `<scratch>/gate-<T>`.
+병렬 dev가 공유 트리를 라이브 편집 중이면 PM은 reviewer 위임 전에 검토 대상의 **staged** 상태를 격리 worktree로 스냅샷해 dev 편집·reviewer git 조작(sensitivity `git checkout` 등)의 경합을 막는다. 스냅샷 생성·신선도 검증은 엔진 도구 `gate_snapshot.py`가 수행한다 — 검토 대상 경로의 staged 내용이 working tree와 다르면(미-stage dev 산출 = stale index) 생성을 fail-loud로 거부해 stale 검토(false-green)를 기계로 차단한다. `<scratch>`는 repo 밖 경로(`/tmp` 또는 repo 상위 `..`), 최종 경로는 `<scratch>/gate-<T>`.
 
-1. **생성** — unstaged 병렬 WIP는 제외. ⚠ 두 커맨드는 모두 **공유(메인) 트리 cwd**에서 실행한다. gate로 `cd` 후 `checkout-index`를 실행하면 gate index를 읽어 staged가 빠진 HEAD-only 스냅샷으로 false-green이 난다.
+1. **stage** — 검토 대상 dev 산출을 먼저 `git add <경로>` 한다. **다라운드 게이트는 라운드마다 다시** — 누락하면 도구가 불일치로 차단한다(그게 이 도구가 닫는 클래스다).
+2. **생성** —
 
    ```bash
-   git worktree add --detach <scratch>/gate-<T>
-   git checkout-index -a -f --prefix=<scratch>/gate-<T>/
+   python3 .project_manager/tools/gate_snapshot.py \
+       --repo <공유 트리 절대경로> --output <scratch>/gate-<T> \
+       --paths <검토 파일1> <검토 파일2> ...
    ```
 
-2. **주입** — reviewer 프롬프트 작업 위치에 `<scratch>/gate-<T>` **절대경로**를 넣고 그 스냅샷에서만 읽고 검토시킨다. 그 안의 git 조작(checkout·stash 등)은 공유 트리에 닿지 않는다.
-3. **제거** — 리뷰 후:
+   - **병렬 wave에서는 `--paths`를 파일 단위로** 지정한다 — 디렉터리를 주면 같은 디렉터리의 타 dev WIP(tracked-unstaged·untracked)가 불일치로 검출돼 차단된다(설계 동작). 진단 안내대로 검토 대상이면 `git add`, 타 dev WIP면 파일 단위로 좁힌다.
+   - rc=0 = 스냅샷이 캡처 시점 index와 일치함을 도구가 검증(HEAD OID·index 엔트리·파일 집합 이중 bookend·submodule gitlink 원본 불변·eol 정규화 비교 포함). rc=1 = fail-loud — 자동 `git add` 해소는 하지 않는다(타 dev WIP 오염 금지).
+3. **주입** — reviewer 프롬프트 작업 위치에 `<scratch>/gate-<T>` **절대경로**를 넣고 그 스냅샷에서만 읽고 검토시킨다. 그 안의 git 조작(checkout·stash 등)은 공유 트리에 닿지 않는다.
+4. **제거** — 리뷰 후:
 
    ```bash
    git worktree remove --force <scratch>/gate-<T>
@@ -210,7 +214,7 @@ ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**
 
    `--force`는 오버레이가 미커밋이라 dirty인, 버려도 안전한 스냅샷 제거에 필요.
 
-- 내부 reviewer만 대상. codex `external_review`는 **staged diff** 기반이라 이미 스냅샷-안정 → 격리 **대상 아님**(라이브 working tree 를 읽지 않는다).
+- 내부 reviewer만 대상. codex `external_review`는 **staged diff** 기반이라 이미 스냅샷-안정 → 격리 **대상 아님**(라이브 working tree 를 읽지 않는다). 단 staged 가 최신인지는 같은 원칙이다 — 검토 파일을 재-`git add` 한 뒤 실행한다.
 - 솔로(비병렬)는 격리 선택.
 - 격리와 프롬프트의 *공유 트리 git 조작 금지* 완화는 **병행**한다(**이중 방어** — 절차가 경합을 구조적으로 막고, 프롬프트가 사고성 git 조작을 막는다).
 

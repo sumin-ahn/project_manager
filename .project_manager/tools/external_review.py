@@ -29,8 +29,9 @@
   - must-fix 감지 → exit 1
   - 통과 → exit 0
   - 라운드 상한 초과(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 승인 없이
-    limit 회(local.conf external_review_round_limit·기본 4) 실 전송하면 이후 실행을 기계 차단하고
-    "사용자 보고·대기" loud 안내를 낸다 — 사용자 승인 후 `--ack-rounds` 로 +limit 재개.
+    판정 4회(local.conf external_review_round_limit) 또는 미완 2회
+    (external_review_incomplete_round_limit)를 채우면 이후 실행을 기계 차단하고 "사용자 보고·대기"
+    loud 안내를 낸다 — 사용자 승인 후 `--ack-rounds` 로 각 한도만큼 재개.
 
 설계:
   - 어댑터 seam: 외부 도구를 `reviewer_cmd`(local.conf) 뒤로 격리 → codex 외 교체 가능.
@@ -66,7 +67,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterator, NamedTuple
+from typing import Callable, Iterator, NamedTuple, Sequence
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
 _TOOLS_BOOTSTRAP_FILE = os.path.realpath(
@@ -243,6 +244,280 @@ REVIEW_CONTEXT_FILE = REPO / ".project_manager" / "review_context.local.md"  # �
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 
 
+class AnchorResolutionError(RuntimeError):
+    """명시 입력에서 diff/board/config 앵커를 유일하게 해소하지 못한 오류."""
+
+
+def _load_board():
+    """형제 board 엔진을 위치로 로드해 worktree lease 재앵커 판정을 승계한다."""
+    path = Path(__file__).resolve().with_name("board.py")
+    return _load_module_from_path(path, "board.py", verifier=_verify_engine_rev)
+
+
+def resolve_pm_home_for_repo(
+    anchor: Path, *, required: bool = False, warning_sink: list[str] | None = None,
+) -> Path:
+    """repo/worktree가 소속된 PM 홈을 lease 장부로 해소한다.
+
+    실 board를 가진 repo는 자기 자신, 등록 linked worktree는 정확히 한 lease 소유 홈을
+    반환한다. 일반 standalone repo는 자기 local.conf를 쓰도록 자기 자신을 반환한다.
+    board가 필수면 장부 부재·손상·중복은 fail-loud다. board 불필요 실행은 한 줄 경고 후
+    자기 repo를 standalone 앵커로 사용한다.
+    """
+    anchor = anchor.resolve()
+    board = _load_board()
+
+    # PM 홈 자기 checkout과 plain clone은 lease가 없는 정상 standalone 형상이다. linked
+    # worktree만 소유자 재해소가 필요하다. board._resolve_read_board()는 티켓이 실재하는 홈만
+    # 후보로 삼으므로, 아직 티켓이 하나도 없는 등록 슬롯의 config 소유자 판정에는 쓸 수 없다.
+    if board._has_real_board(anchor / ".project_manager"):
+        return anchor
+    if not board._is_linked_worktree(anchor):
+        return anchor
+
+    search: list[Path] = list(anchor.parents)
+    common = board._git_rev_parse(anchor, "--git-common-dir")
+    if common is not None:
+        common_path = Path(common)
+        if not common_path.is_absolute():
+            common_path = (anchor / common_path).resolve()
+        search.extend((common_path, *common_path.parents))
+
+    # config 소유자는 아직 ticket이 없는 PM 홈도 lease로 해소해야 한다. 다만 board.py보다
+    # 넓게 보이는 tools-only checkout은 오류 후보가 아니다: 유효 lease match는 인정하되,
+    # 장부 오류는 실 board 소유자에게서만 load-bearing으로 취급한다. board._resolve_read_board()가
+    # 어떤 장부 오류든 유일 match보다 우선하는 것과 의도적으로 다르다: 이 복구 경로는 정상
+    # 소유자를 제3자의 손상된 장부로 자기잠금하지 않고, 실제 중복 match만 모호성으로 차단한다.
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for path in search:
+        home = path.resolve()
+        if home in seen:
+            continue
+        seen.add(home)
+        if not (home / ".project_manager").is_dir():
+            continue
+        if board._registers_worktree(home, anchor):
+            candidates.append(home)
+
+    matches: list[Path] = []
+    errors: list[str] = []
+    for home in candidates:
+        matched, error = board._ledger_registration(home, anchor)
+        if matched:
+            matches.append(home)
+        elif error is not None and board._has_real_board(home / ".project_manager"):
+            errors.append(error)
+
+    unique = sorted(set(matches))
+    if len(unique) == 1:
+        return unique[0]
+    if len(unique) > 1:
+        homes = ", ".join(str(home) for home in unique)
+        resolution_error = (
+            "이 앵커가 여러 PM 홈의 worktree lease 장부에 등록되어 소유자가 "
+            f"모호합니다: {homes}"
+        )
+    elif errors:
+        detail = "; ".join(errors)
+        resolution_error = (
+            "이 앵커의 소유 PM 홈 worktree lease 장부를 확정할 수 없습니다: "
+            f"{detail}"
+        )
+    else:
+        resolution_error = (
+            "worktree lease 장부에서 소유 PM 홈을 찾지 못했습니다."
+        )
+
+    if required:
+        raise AnchorResolutionError(f"{anchor}: {resolution_error}")
+    warning = (
+        "경고: PM 홈 해소 실패 — board가 필요 없는 실행이라 repo 자기 앵커를 사용합니다: "
+        f"{anchor} ({resolution_error})"
+    )
+    if warning_sink is None:
+        print(warning, file=sys.stderr)
+    else:
+        warning_sink.append(warning)
+    return anchor
+
+
+def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
+    """PM 홈의 실재 worktree 후보를 lease 장부에서 파생한다(하네스 목록/슬롯 추측 없음)."""
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    try:
+        data = json.loads(ledger.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ()
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AnchorResolutionError(f"worktree lease 장부 읽기 실패: {ledger} ({exc})") from exc
+    rows = data.get("leases") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise AnchorResolutionError(f"worktree lease 장부 형식 오류: {ledger}")
+    found: set[Path] = set()
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or not isinstance(row.get("slot"), str):
+            raise AnchorResolutionError(f"worktree lease 장부 leases[{index}] 형식 오류: {ledger}")
+        candidate = (pm_home / row["slot"]).resolve()
+        if candidate.is_dir() and (candidate / ".git").exists():
+            found.add(candidate)
+    return tuple(sorted(found))
+
+
+def _path_repo_root(path: Path) -> Path | None:
+    """존재 경로(파일이면 부모)에서 가장 가까운 git repo 루트를 반환한다."""
+    start = path if path.is_dir() else path.parent
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip()).resolve()
+
+
+def _ticket_worktree_candidates(
+    pm_home: Path, touches: Sequence[str], candidates: Sequence[Path],
+) -> tuple[Path, ...]:
+    """PM-home 좌표 touches가 실제로 가리키는 worktree 후보만 고른다."""
+    selected: set[Path] = set()
+    for raw in touches:
+        path = Path(raw)
+        absolute = path.resolve() if path.is_absolute() else (pm_home / path).resolve()
+        for candidate in candidates:
+            try:
+                absolute.relative_to(candidate)
+            except ValueError:
+                continue
+            selected.add(candidate)
+    return tuple(sorted(selected))
+
+
+def _candidate_has_diff(root: Path, base: str, paths: Sequence[str]) -> bool:
+    """여러 등록 슬롯 중 명시 pathspec의 변경을 가진 슬롯을 고르는 read-only 판정."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "diff", base, "--", *paths],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _resolve_diff_root(
+    engine_repo: Path,
+    *,
+    pm_home: Path,
+    paths: Sequence[str],
+    base: str,
+    ticket_selected: bool,
+) -> Path:
+    """명시 paths/touches와 엔진-홈 관계에서 diff worktree를 유일하게 파생한다."""
+    absolute_roots = {
+        root
+        for raw in paths
+        if Path(raw).is_absolute()
+        and (root := _path_repo_root(Path(raw).resolve())) is not None
+    }
+    if len(absolute_roots) > 1:
+        raise AnchorResolutionError(
+            "--paths가 여러 git repo를 가리킵니다 — 외부 리뷰 1회는 diff 앵커 하나만 허용합니다."
+        )
+    if absolute_roots:
+        selected_root = next(iter(absolute_roots)).resolve()
+        # 비-ticket 절대 경로는 이미 repo 하나를 확정했다. 복구 채널이 손상된 PM-home
+        # lease 장부 때문에 자기잠김하지 않도록 장부를 읽기 전에 반환한다.
+        if not ticket_selected:
+            return selected_root
+        candidates = _registered_worktrees(pm_home)
+        if (
+            ticket_selected
+            and engine_repo.resolve() != pm_home.resolve()
+            and selected_root in candidates
+            and selected_root != engine_repo.resolve()
+        ):
+            raise AnchorResolutionError(
+                "ticket touches가 실행 엔진 worktree와 다른 등록 worktree를 가리킵니다: "
+                f"engine={engine_repo.resolve()} touches={selected_root}"
+            )
+        return selected_root
+
+    candidates = _registered_worktrees(pm_home)
+
+    if ticket_selected and candidates:
+        selected = _ticket_worktree_candidates(pm_home, paths, candidates)
+        if len(selected) == 1:
+            if (
+                engine_repo.resolve() != pm_home.resolve()
+                and selected[0] != engine_repo.resolve()
+            ):
+                raise AnchorResolutionError(
+                    "ticket touches가 실행 엔진 worktree와 다른 등록 worktree를 가리킵니다: "
+                    f"engine={engine_repo.resolve()} touches={selected[0]}"
+                )
+            return selected[0]
+        if len(selected) > 1:
+            raise AnchorResolutionError(
+                "ticket touches가 여러 등록 worktree를 가리킵니다 — diff 앵커가 모호합니다."
+            )
+
+    if engine_repo.resolve() != pm_home.resolve():
+        return engine_repo.resolve()
+
+    if not candidates:
+        # standalone/solo repo에는 lease 장부가 없다. 이 경우 명시 paths의 유일한 repo는
+        # 엔진 자기 repo이며, PM-home 다중 슬롯 오해소와 구분된다.
+        return engine_repo.resolve()
+    changed = tuple(
+        candidate for candidate in candidates
+        if _candidate_has_diff(candidate, base, paths)
+    )
+    if len(changed) == 1:
+        return changed[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    detail = ", ".join(str(path) for path in (changed or candidates)) or "(후보 0)"
+    raise AnchorResolutionError(
+        "명시 경로에서 diff worktree를 하나로 해소할 수 없습니다. "
+        f"ticket touches에 등록 슬롯 경로를 포함하거나 절대 --paths를 사용하세요: {detail}"
+    )
+
+
+def _normalize_review_paths(
+    paths: Sequence[str], *, diff_root: Path, pm_home: Path, ticket_selected: bool,
+) -> tuple[str, ...]:
+    """PM-home/절대 좌표를 선택된 diff repo의 pathspec으로 변환한다."""
+    normalized: list[str] = []
+    for raw in paths:
+        path = Path(raw)
+        if path.is_absolute():
+            absolute = path.resolve()
+            try:
+                value = absolute.relative_to(diff_root).as_posix()
+            except ValueError as exc:
+                raise AnchorResolutionError(
+                    f"검토 경로가 해소된 diff worktree 밖입니다: {raw} (diff={diff_root})"
+                ) from exc
+        elif ticket_selected:
+            absolute = (pm_home / path).resolve()
+            try:
+                value = absolute.relative_to(diff_root).as_posix()
+            except ValueError:
+                # solo/legacy ticket은 이미 repo-relative touches를 저장한다.
+                value = path.as_posix()
+        else:
+            value = path.as_posix()
+        if value:
+            normalized.append(value)
+    if not normalized:
+        raise AnchorResolutionError("검토 경로가 0개로 해소됐습니다.")
+    return tuple(dict.fromkeys(normalized))
+
+
 # ── board root 추종 (board/ 분리) ───────────────────────
 # board(tickets)는 `.project_manager/board/`(submodule)로 분리될 수 있다. 그러면
 # ticket touches 해소(`parse_ticket_touches`)가 wiki/ legacy 위치를 보면 *stale*(ticket 미발견
@@ -317,6 +592,8 @@ def _pm_home_reanchor(anchor: Path) -> Path | None:
     전용·board 미소유)에서 실행하면 여기서 탈락해 None(정상·재지정 불요), (2) anchor 아래 canonical
     코드 worktree(`work/<name>`) 존재. 솔로/일반 채택자(로컬 upstream 포함)는 (1) 또는 (2) 미충족으로
     None(무영향)."""
+    # external_review.main은 명시 selector 기반 diff_root 해소로 전환되어 이 헬퍼를 호출하지 않는다.
+    # pm_delegate.check_write_target_reanchor가 adopter write-target 보호에 계속 사용하므로 유지한다.
     if not _owns_real_board(anchor / ".project_manager"):
         return None
     return _canonical_worktree(anchor)
@@ -336,23 +613,6 @@ DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 EXTERNAL_TIMEOUT_KEY = "external_review_timeout"
 EXTERNAL_IDLE_TIMEOUT_KEY = "external_review_idle_timeout"
 EXTERNAL_PROGRESS_SIGNAL_KEY = "external_review_progress_signal"
-
-# PM 하네스 런타임 마커. 이 독립 CLI에서 pm_delegate를 deep-import하면 새 엔진 rev 검증 경계가
-# 필요하므로 작은 선언을 복제한다. tests/test_external_review.py가 pm_delegate의 동명 선언과
-# 동일성을 기계 단언해 두 판정이 서로 갈라지지 않게 한다.
-_HARNESS_SESSION_MARKERS: dict[str, tuple[str, ...]] = {
-    "codex": ("CODEX_THREAD_ID", "CODEX_CI"),
-    "claude": ("CLAUDECODE",),
-    "opencode": ("OPENCODE", "OPENCODE_PID"),
-}
-
-# Bash 명시호출 최대상한 env 선언은 리뷰 진단의 고유 책임이다. 양쪽 카드가 timeout을 명시하므로
-# DEFAULT가 아니라 MAX가 실제 제약이다. Codex는 repo가 읽을 공개 Bash 상한 env가 없다.
-_REVIEW_HARNESS_CAP_ENV: dict[str, str | None] = {
-    "codex": None,
-    "claude": "BASH_MAX_TIMEOUT_MS",
-    "opencode": "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
-}
 
 # 알려진 reviewer CLI의 **실행 파일 + 옵션 계약**. 함수 밖 선언이라 새 CLI/형식 추가가 판정 코드
 # 분기로 번지지 않는다. attr 값은 동적 로드한 pm_relay의 공개 상수명이다.
@@ -382,6 +642,7 @@ _REVIEWER_PROGRESS_CONTRACTS = {
 # 기본 4 는 사용자 전역 규율(외부 리뷰 ">3~4 라운드면 수렴 판단")의 기계화. local.conf
 # external_review_round_limit 로 조정 가능.
 DEFAULT_ROUND_LIMIT = 4
+DEFAULT_INCOMPLETE_ROUND_LIMIT = 2
 
 # 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분).
 # 실행 전 거부라 리뷰어는 호출되지 않는다(외부 전송·과금 없음).
@@ -446,35 +707,44 @@ _EMPTY_DIFF_GUIDANCE = (
     "오류: 리뷰할 diff 가 없습니다 (검토 경로에 tracked 변경 없음).\n"
     "  빈 diff 를 리뷰하면 외부 리뷰어가 '변경 없음'을 통과로 판정해 가짜 통과(false-green)가\n"
     "  발생합니다 — 외부 리뷰어를 호출하지 않고 중단합니다.\n"
-    "  · adopter#0/worktree 형상: 실 변경이 있는 worktree cwd 의 canonical 사본에서\n"
-    "    `--paths <경로>` 로 실행하세요 (REPO 앵커가 PM 홈을 가리키면 diff 가 빕니다).\n"
+    "  · 첫 provenance의 `diff_root`가 실 변경 worktree인지 확인하고, 필요하면 그 repo를 가리키는\n"
+    "    절대 `--paths <경로>`로 다시 실행하세요. 프로세스 cwd는 diff 판정 입력이 아닙니다.\n"
     "  · 신규 파일만 변경했다면 먼저 `git add` 후 재실행하세요 (diff 는 tracked 변경만 봅니다)."
 )
 
-# PM 홈 앵커 재지정 안내. 위 빈-diff 안내(:166)를
-# *능동 게이트*로 승격한다: REPO 앵커가 adopter#0 PM 홈(import 사본)을 가리키면, 빈 diff 로 실패할
-# 때까지 기다리지 않고 diff 추출 전에 canonical 코드 worktree 재지정을 안내하며 fail-loud 한다.
-_PM_HOME_ANCHOR_GUIDANCE = (
-    "오류: 외부 리뷰를 adopter#0 PM 홈(import 사본)에서 실행했습니다 — 실 코드 변경은 worktree 에\n"
-    "  있어 여기서는 diff 가 비어 가짜 통과(false-green)가 납니다 (REPO 앵커가 PM 홈을 가리킴).\n"
-    "  · canonical 코드 worktree 에서 재실행하세요:  cd {worktree}\n"
-    "    리뷰 경로는 `--ticket T-NNNN`(touches 로 자동) 또는 `--paths <경로>`(직접 지정)로 핀하세요.\n"
-    "  · 이 앵커에서 의도적으로 실행하려면 `--paths <경로>` 로 명시하세요 — override 는 `--paths` 만\n"
-    "    받습니다(`--ticket` 은 여전히 차단·touches 상대경로라 PM 홈 git 기준 빈 diff false-green).\n"
-    "  (현재 앵커: {anchor})"
-)
+
+def _empty_diff_guidance(paths: Sequence[str], *, root: Path) -> str:
+    """콤마 nargs 오용이 실제로 의심될 때만 기존 빈-diff 안내에 형식 진단을 보탠다."""
+    suspicious: list[str] = []
+    for raw in paths:
+        if "," not in raw or (root / raw).exists():
+            continue
+        suspicious.append(raw)
+    if not suspicious:
+        return _EMPTY_DIFF_GUIDANCE
+    rendered = ", ".join(repr(item) for item in suspicious)
+    return (
+        _EMPTY_DIFF_GUIDANCE
+        + "\n  · --paths는 공백 구분 인자입니다. 콤마가 든 미존재 경로를 감지했습니다: "
+        + rendered
+        + "\n    예: --paths a.py b.py (자동 교정하지 않음 — 콤마가 파일명인 경우를 보존)."
+    )
 
 # 라운드 상한 초과 fail-loud 안내. 같은 게이트로
 # 승인 없이 limit 회를 넘겨 실 전송이 시도되면 diff 추출·리뷰어 호출 전에 이 안내로 차단한다
 # (과금·외부 전송 게이트라 초과분은 기계가 멈춘다·자의 우회 불가). 유일한 재개 경로는 사용자
 # 승인 후 `--ack-rounds` — 환경 문제 우회 플래그가 아니다.
 _ROUND_LIMIT_GUIDANCE = (
-    "오류: 외부 리뷰 라운드 상한 초과 — 게이트 {gate} 에서 승인 없이 {unacked}회 실 전송했습니다\n"
-    "  (상한 {limit}). 외부 전송·과금 게이트라 초과분은 기계가 멈춥니다 — 자의 우회 불가.\n"
+    "오류: 외부 리뷰 라운드 상한 초과 — 게이트 {gate} · "
+    "count={unacked}(판정 {verdicts} · 미완 {incomplete})\n"
+    "  (판정 상한 {limit} · 미완 재시도 상한 {incomplete_limit}). 외부 전송·과금 게이트라 "
+    "초과분은 기계가 멈춥니다 — 자의 우회 불가.\n"
     "  · 지금까지의 리뷰 라운드 수렴 상황을 **사용자에게 보고하고 대기**하세요.\n"
-    "  · 사용자 승인을 받은 뒤에만 `--ack-rounds` 로 재개하세요 (승인분 +{limit}라운드):\n"
+    "  · 사용자 승인을 받은 뒤에만 `--ack-rounds` 로 재개하세요 "
+    "(판정 +{limit} · 미완 +{incomplete_limit}):\n"
     "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-rounds [기존 옵션]\n"
-    "  · 상한 자체 조정은 local.conf `external_review_round_limit` (기본 4).\n"
+    "  · 상한 조정은 local.conf `external_review_round_limit`(판정)과 "
+    "`external_review_incomplete_round_limit`(미완).\n"
     "  (장부: .project_manager/.local/review_rounds.json · count={count} acked_through={acked})"
 )
 
@@ -482,18 +752,24 @@ _ROUND_LIMIT_GUIDANCE = (
 # ── 설정 ──────────────────────────────────────────────────────────────────
 
 
-def local_config() -> dict[str, str]:
+def local_config(repo: Path | None = None) -> dict[str, str]:
     """per-clone local.conf 를 KEY=value 로 읽는다 (없으면 빈 dict). board.py 와 동일 포맷."""
     conf: dict[str, str] = {}
-    if not LOCAL_CONF.exists():
+    path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
+    if not path.exists():
         return conf
-    for line in LOCAL_CONF.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         conf[key.strip()] = value.strip()
     return conf
+
+
+def _local_config_for_repo(repo: Path) -> dict[str, str]:
+    """해소된 PM 홈의 config만 읽는 명시적 seam."""
+    return local_config(repo)
 
 
 def _is_enabled(conf: dict[str, str]) -> bool:
@@ -649,6 +925,18 @@ def _round_limit(conf: dict[str, str]) -> int:
     return value if value >= 0 else DEFAULT_ROUND_LIMIT
 
 
+def _incomplete_round_limit(conf: dict[str, str]) -> int:
+    """판정 없는 전송의 별도 재시도 상한(기본 2)."""
+    raw = conf.get("external_review_incomplete_round_limit", "").strip()
+    if not raw:
+        return DEFAULT_INCOMPLETE_ROUND_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_INCOMPLETE_ROUND_LIMIT
+    return value if value >= 0 else DEFAULT_INCOMPLETE_ROUND_LIMIT
+
+
 # ── 라운드 상한 장부 ─────────────
 # 외부 리뷰는 과금·전송 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한 게이트
 # 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다([[mechanize-dont-instruct-llm]]):
@@ -660,7 +948,11 @@ def _round_limit(conf: dict[str, str]) -> int:
 
 
 def _round_ledger_path() -> Path:
-    """라운드 장부 경로 — `<REPO>/.project_manager/.local/review_rounds.json` (호출 시점 REPO 파생)."""
+    """라운드 장부 경로 — 해소된 diff repo별 `.local/review_rounds.json`.
+
+    같은 PM 홈의 여러 슬롯은 서로 다른 변경·게이트 실행 수명을 가지므로 PM 홈 장부를 공유하지
+    않는다. main이 REPO를 diff_root로 고정한 뒤 호출해 프로세스 cwd나 엔진 사본 위치와도 분리한다.
+    """
     return REPO / ".project_manager" / ".local" / "review_rounds.json"
 
 
@@ -763,19 +1055,80 @@ def _as_int(value: object) -> int:
 
 
 def _gate_entry(ledger: dict, gate: str) -> dict:
-    """게이트의 장부 항목을 정규화된 {count, acked_through} 로 반환하고 ledger 에 심는다.
+    """게이트 항목을 전송 레코드를 포함한 현 스키마로 정규화한다.
 
     항목이 없거나 손상(비-dict·비정수 필드)이면 0/0 으로 정규화해 저장한다 — 반환 dict 를 그 자리에서
     수정한 뒤 `_save_round_ledger(ledger)` 하면 깨끗한 값이 기록된다(read→normalize→mutate→write)."""
     entry = ledger.get(gate)
     if not isinstance(entry, dict):
         entry = {}
+    records = entry.get("records")
+    if not isinstance(records, list):
+        records = []
+    records = [row for row in records if isinstance(row, dict)]
     normalized = {
         "count": _as_int(entry.get("count")),
         "acked_through": _as_int(entry.get("acked_through")),
+        "sequence": max(
+            _as_int(entry.get("sequence")),
+            *(_as_int(row.get("sequence", row.get("number"))) for row in records),
+            0,
+        ),
+        "records": records,
     }
     ledger[gate] = normalized
     return normalized
+
+
+def _unacked_round_counts(entry: dict) -> tuple[int, int, int]:
+    """승인 이후 (전체, 판정, 미완) 수를 구한다; 구 장부 count는 판정으로 보수 승계한다."""
+    count = max(0, _as_int(entry.get("count")))
+    acked = min(count, max(0, _as_int(entry.get("acked_through"))))
+    records = [row for row in entry.get("records", []) if isinstance(row, dict)]
+    # sequence/number는 identity일 뿐 count 좌표가 아니다. 환불로 sequence에 gap이 생겨도
+    # 장부의 순서와 count만으로 승인 이전 레코드를 잘라 조기 차단/예산 우회를 모두 막는다.
+    logical_records = records[-min(len(records), count):] if count else []
+    legacy_count = max(0, count - len(logical_records))
+    legacy_verdicts = max(0, legacy_count - acked)
+    acked_records = max(0, acked - legacy_count)
+    current = logical_records[acked_records:]
+    verdicts = legacy_verdicts + sum(bool(row.get("verdict")) for row in current)
+    total = count - acked
+    return total, verdicts, max(0, total - verdicts)
+
+
+def _round_has_verdict(result: dict) -> bool:
+    """리뷰어 결과에 통과 또는 must-fix/반려 판정이 실제로 있었는지 판별한다."""
+    if not result.get("ok"):
+        return False
+    verdict = result.get("verdict")
+    if not isinstance(verdict, dict):
+        return False
+    return bool(verdict.get("has_pass") or verdict.get("has_must_fix"))
+
+
+def _reserve_round(entry: dict, record_id: str) -> dict:
+    """단조 sequence identity로 전송을 예약하고 레코드를 반환한다."""
+    entry["sequence"] = max(0, _as_int(entry.get("sequence"))) + 1
+    entry["count"] = max(0, _as_int(entry.get("count"))) + 1
+    record = {
+        "id": record_id,
+        "number": entry["sequence"],
+        "sequence": entry["sequence"],
+        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    entry.setdefault("records", []).append(record)
+    return record
+
+
+def _refund_round(entry: dict, record_id: str) -> None:
+    """스폰 전 실패 예약만 제거한다; sequence는 재사용하지 않는다."""
+    before = len(entry.get("records", []))
+    entry["records"] = [
+        row for row in entry.get("records", []) if row.get("id") != record_id
+    ]
+    if len(entry["records"]) != before and entry.get("count", 0) > 0:
+        entry["count"] -= 1
 
 
 # ── 시크릿 필터링 ────────────────────────────────────────────────────────
@@ -912,15 +1265,22 @@ def extract_diff(
 # ── ticket touches 파싱 ───────────────────────────────────────────────────
 
 
-def parse_ticket_touches(ticket_id: str) -> list[str]:
+def parse_ticket_touches(ticket_id: str, *, pm_home: Path | None = None) -> list[str]:
     """board ticket frontmatter 의 touches 필드를 파싱해 경로 목록을 반환한다.
 
-    YAML frontmatter 직접 파싱 (board.py 를 import 하지 않음). 못 찾으면 빈 목록.
+    YAML frontmatter 직접 파싱 (board.py 를 import 하지 않음). 못 찾으면 fail-loud.
 
     ticket 디렉토리는 `_tickets_dir()`로 *호출 시점* 해소한다 —
     board/ 분리 후 wiki/ legacy 위치(stale·ticket 미발견)를 안 보게.
     """
-    tickets_dir = _tickets_dir()
+    if not ticket_id or re.search(r"[\\/*?\[\]]", ticket_id):
+        raise AnchorResolutionError(f"ticket id 형식이 안전하지 않습니다: {ticket_id!r}")
+    if pm_home is None:
+        tickets_dir = _tickets_dir()
+    else:
+        pm_dir = pm_home / ".project_manager"
+        board_tickets = pm_dir / "board" / "tickets"
+        tickets_dir = board_tickets if board_tickets.is_dir() else pm_dir / "wiki" / "tickets"
     for status_dir in STATUS_DIRS:
         dir_path = tickets_dir / status_dir
         if not dir_path.exists():
@@ -930,7 +1290,9 @@ def parse_ticket_touches(ticket_id: str) -> list[str]:
         exact = dir_path / f"{ticket_id}.md"
         if exact.exists():
             return _parse_touches_from_file(exact)
-    return []
+    raise AnchorResolutionError(
+        f"ticket {ticket_id} 을 해소된 board에서 찾지 못했습니다: {tickets_dir}"
+    )
 
 
 def _parse_touches_from_file(path: Path) -> list[str]:
@@ -947,8 +1309,12 @@ def _parse_touches_from_file(path: Path) -> list[str]:
     in_touches = False
     for line in fm_text.splitlines():
         if re.match(r"^touches\s*:", line):
+            empty_inline = re.match(r"^touches\s*:\s*\[\s*\]\s*$", line)
             inline_match = re.match(r"^touches\s*:\s*\[(.+)\]", line)
-            if inline_match:
+            if empty_inline:
+                touches = []
+                in_touches = False
+            elif inline_match:
                 items = [s.strip().strip("\"'") for s in inline_match.group(1).split(",")]
                 touches = [i for i in items if i]
                 in_touches = False
@@ -1086,39 +1452,36 @@ def harness_cap_advisory(
     않으며 Codex처럼 공개 상한 env가 없는 표면은 판정하지 않는다.
     """
     env = os.environ if env is None else env
-    matched_caps = tuple(
-        (harness, _REVIEW_HARNESS_CAP_ENV.get(harness))
-        for harness, markers in _HARNESS_SESSION_MARKERS.items()
-        if any(env.get(marker) for marker in markers)
-    )
-    matched_caps = tuple(
-        (harness, cap_key)
-        for harness, cap_key in matched_caps
-        if cap_key is not None
-    )
-    if not matched_caps:
+    # 설정 경로만 있는 비하네스 쉘에서는 형제 모듈을 읽지 않는다. 이 검사는
+    # 판정 표가 아니라 로더 조기 반환용 보수적 후보 필터이며, 실제 판정은 relay 선언만 쓴다.
+    if not any(
+        value and _is_possible_harness_session_key(key)
+        for key, value in env.items()
+    ):
         return None
     relay = _load_relay()
-    required = int(relay.harness_cap_required_budget(execution_budget))
-    warnings = []
-    for harness, cap_key in matched_caps:
-        raw = env.get(cap_key)
-        try:
-            cap_seconds = int(raw) / 1000.0
-        except (TypeError, ValueError, OverflowError):
-            warnings.append(
-                f"[external-review] 경고: {harness} 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
-                f"리뷰 실행+재시도별 정리+박제 여유 {required}s 이상을 Bash tool timeout으로 명시하세요."
-            )
-            continue
-        if cap_seconds < required:
-            warnings.append(
-                f"[external-review] 경고: {harness} 호출층 최대상한 "
-                f"{cap_key}={cap_seconds:g}s < "
-                f"리뷰 실행+재시도별 정리+박제 여유 {required}s — 엔진 진단/부분 산출물 보존 전에 하네스가 kill할 수 "
-                "있습니다. Bash tool 호출에 장시간 timeout을 명시하세요."
-            )
-    return "\n".join(warnings) or None
+    session_markers = relay.HARNESS_SESSION_MARKERS
+    cap_env = relay.HARNESS_CAP_ENV
+    return relay.harness_cap_advisory(
+        env, execution_budget=execution_budget,
+        session_markers=session_markers, cap_env=cap_env,
+        render_missing=None,
+        render_invalid=lambda harness, cap_key, raw, required: (
+            f"[external-review] 경고: {harness} 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
+            f"리뷰 실행+재시도별 정리+박제 여유 {required}s 이상을 Bash tool timeout으로 명시하세요."
+        ),
+        render_low=lambda harness, cap_key, cap_seconds, required: (
+            f"[external-review] 경고: {harness} 호출층 최대상한 "
+            f"{cap_key}={cap_seconds:g}s < "
+            f"리뷰 실행+재시도별 정리+박제 여유 {required}s — 엔진 진단/부분 산출물 보존 전에 하네스가 kill할 수 "
+            "있습니다. Bash tool 호출에 장시간 timeout을 명시하세요."
+        ),
+    )
+
+
+def _is_possible_harness_session_key(key: str) -> bool:
+    """relay를 안 읽는 조기 반환용 사설 필터(선언표 coverage는 테스트가 단언)."""
+    return key.startswith(("CODEX_", "CLAUDE", "OPENCODE")) and "CONFIG" not in key
 
 
 def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
@@ -1148,14 +1511,12 @@ def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
                 f" · 실측 침묵 {measured_label}] "
                 f"벽시계 상한 {timeout}초는 미도달. 재시도: `--idle-timeout <초>` 또는 local.conf "
                 f"`{EXTERNAL_IDLE_TIMEOUT_KEY}=<초>` (양의 정수).")
-    partial_stdout = exc.output or ""
-    partial_stderr = exc.stderr or ""
-    parts = [head]
-    if partial_stdout:
-        parts.append(f"\n[중단 시점까지의 stdout — {len(partial_stdout)}자 보존]\n{partial_stdout}")
-    if partial_stderr:
-        parts.append(f"\n[중단 시점까지의 stderr — {len(partial_stderr)}자 보존]\n{partial_stderr}")
-    return "".join(parts)
+    try:
+        return _load_relay().format_partial_output(head, exc)
+    except Exception as formatter_exc:  # noqa: BLE001 - timeout diagnosis must survive formatter/load failure.
+        if _is_engine_rev_skew(formatter_exc):
+            raise
+        return head
 
 
 class ReviewerRunSeamError(TypeError):
@@ -1376,7 +1737,11 @@ def parse_verdict(output: str) -> dict[str, bool]:
 
 
 def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
-    """외부리뷰 raw/공유 장부 위치(REPO 미해소만 tempdir 폴백)."""
+    """외부리뷰 raw/공유 장부 위치(REPO 미해소만 tempdir 폴백).
+
+    delegate의 raw 장부는 표현 축이 아닌 저장 경로 축이므로 포맷터 통합에서 제외하고,
+    두 소비처 모두 relay.raw_storage_paths를 쓰는 현재 경계를 유지한다.
+    """
     return _load_relay().raw_storage_paths(
         REPO, "review", output_dir, temp_dir=Path(tempfile.gettempdir())
     )
@@ -1772,6 +2137,8 @@ def resolve_review_content_conf(
     engine_conf: dict[str, str],
     target_repo: Path | None,
     include_review_paths: bool,
+    engine_label: str = "engine",
+    target_label: str = "cwd",
 ) -> ReviewContentResolution:
     """cross-repo 리뷰의 **해소된 유효 내용 값**을 판정하고 denylist를 안전하게 합친다.
 
@@ -1803,7 +2170,7 @@ def resolve_review_content_conf(
     if target_only:
         differences.append(
             "review_denylist_extra: "
-            f"cwd-only={target_only!r} (양쪽 유효 denylist 합집합 적용)"
+            f"{target_label}-only={target_only!r} (양쪽 유효 denylist 합집합 적용)"
         )
 
     if include_review_paths:
@@ -1811,7 +2178,8 @@ def resolve_review_content_conf(
         target_paths = _normalized_review_paths(target_conf)
         if engine_paths != target_paths:
             differences.append(
-                f"review_paths: engine={engine_paths!r}, cwd={target_paths!r}"
+                f"review_paths: {engine_label}={engine_paths!r}, "
+                f"{target_label}={target_paths!r}"
             )
 
     divergence = None
@@ -1832,6 +2200,8 @@ def local_conf_divergence(
     engine_conf: dict[str, str],
     target_repo: Path | None,
     selector: Callable[[dict[str, str]], dict[str, object]],
+    engine_label: str = "engine",
+    target_label: str = "cwd",
 ) -> LocalConfDivergence | None:
     """두 repo가 다르고 대상 conf가 있으며 선택된 실제 값이 다를 때만 차이를 반환한다.
 
@@ -1850,7 +2220,8 @@ def local_conf_divergence(
     # 대상 프로필은 빈 dict라 skip되고, 정상 프로필의 생략 기본값(None 포함)은 공통 키로 비교된다.
     keys = sorted(set(engine_values) & set(target_values))
     differences = tuple(
-        f"{key}: engine={engine_values[key]!r}, cwd={target_values[key]!r}"
+        f"{key}: {engine_label}={engine_values[key]!r}, "
+        f"{target_label}={target_values[key]!r}"
         for key in keys
         if engine_values[key] != target_values[key]
     )
@@ -1867,21 +2238,22 @@ def local_conf_divergence(
 
 def format_local_conf_divergence(
     divergence: LocalConfDivergence, *, surface: str, cwd_label: str,
-    resolution_note: str | None = None,
+    resolution_note: str | None = None, source_label: str = "실행 엔진",
 ) -> str:
     """두 송신 표면 공용 never-block loud 경고 문구."""
     details = "\n".join(f"  · {item}" for item in divergence.differences)
     resolution = resolution_note or (
-        f"이번 실행에서는 실행 엔진 conf가 이깁니다: {divergence.engine_conf_path}\n"
-        f"  차단하지 않고 계속합니다. 같은 프로필을 원하면 {cwd_label} conf의 위 키 값을 engine "
+        f"이번 실행에서는 {source_label} conf가 이깁니다: {divergence.engine_conf_path}\n"
+        f"  차단하지 않고 계속합니다. 같은 프로필을 원하면 {cwd_label} conf의 위 키 값을 "
+        f"{source_label} "
         "conf와 맞추거나, 의도한 local.conf를 가진 엔진 사본을 실행하세요. 실행 결과 raw 헤더의 "
         "# local_conf/# resolved_profile에도 승자 provenance를 기록합니다."
     )
     return (
-        f"경고: local.conf 프로필 분기 감지 ({surface}) — {cwd_label} repo와 실행 엔진 "
+        f"경고: local.conf 프로필 분기 감지 ({surface}) — {cwd_label} repo와 {source_label} "
         "REPO가 다르고 외부 송신 프로필/내용 값이 실제로 갈립니다.\n"
-        f"  · engine REPO: {divergence.engine_repo}\n"
-        f"  · engine conf: {divergence.engine_conf_path}\n"
+        f"  · {source_label} REPO: {divergence.engine_repo}\n"
+        f"  · {source_label} conf: {divergence.engine_conf_path}\n"
         f"  · {cwd_label} repo: {divergence.target_repo}\n"
         f"  · {cwd_label} conf: {divergence.target_conf_path}\n"
         f"{details}\n"
@@ -1899,16 +2271,91 @@ def resolved_reviewer_profile(
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+def _main(argv: list[str] | None = None) -> int:
+    global REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    conf = local_config()
+    engine_repo = REPO.resolve()
+    ticket_selected = bool(args.ticket and not args.paths)
+    try:
+        engine_pm_home = resolve_pm_home_for_repo(
+            engine_repo, required=ticket_selected,
+        )
+        # config의 review_paths도 diff-root selector 입력이다. 먼저 PM 홈 config를 읽어
+        # 슬롯 선택과 실제 diff 추출이 정확히 같은 path 집합을 소비하게 한다.
+        conf = _local_config_for_repo(engine_pm_home)
+        if ticket_selected:
+            raw_paths = tuple(parse_ticket_touches(args.ticket, pm_home=engine_pm_home))
+            if not raw_paths:
+                raise AnchorResolutionError(
+                    f"board anchor {engine_pm_home}: ticket {args.ticket} 의 touches가 비어 있어 "
+                    "검토 범위를 확정할 수 없습니다."
+                )
+        else:
+            raw_paths = tuple(args.paths or _configured_paths(conf))
+        paths_from_initial_conf = (
+            not ticket_selected
+            and not args.paths
+            and bool(conf.get("review_paths", "").strip())
+        )
+        diff_root = _resolve_diff_root(
+            engine_repo,
+            pm_home=engine_pm_home,
+            paths=raw_paths,
+            base=args.base,
+            ticket_selected=ticket_selected,
+        )
+        pm_home = (
+            engine_pm_home
+            if diff_root.resolve() == engine_repo
+            else resolve_pm_home_for_repo(
+                diff_root, required=ticket_selected,
+            )
+        )
+        if ticket_selected and pm_home != engine_pm_home:
+            raise AnchorResolutionError(
+                "ticket board 소유 PM 홈과 diff worktree의 lease 소유 PM 홈이 다릅니다: "
+                f"board={engine_pm_home} diff-owner={pm_home}"
+            )
+        if paths_from_initial_conf and pm_home != engine_pm_home:
+            raise AnchorResolutionError(
+                "인자 없는 실행의 review_paths가 최초 PM 홈 local.conf에서 diff_root "
+                "선택에 사용됐지만, 해소된 diff 소유 PM 홈이 다릅니다. config "
+                "provenance와 실제 전송 범위를 일치시킬 수 없어 외부 송신 전에 중단합니다: "
+                f"initial-pm-home={engine_pm_home} diff-owner-pm-home={pm_home}\n"
+                "  · 절대 `--paths <경로>`로 이번 검토 범위를 직접 지정하거나, 유효한 "
+                "`--ticket T-NNNN`(touches 채워진 것)으로 범위를 파생시키세요.\n"
+                "  · 두 PM 홈이 같은 슬롯을 등록한 상태라면 lease 장부의 슬롯 등록을 정리하세요."
+            )
+        selected_paths = _normalize_review_paths(
+            raw_paths,
+            diff_root=diff_root,
+            pm_home=pm_home,
+            ticket_selected=ticket_selected,
+        )
+    except (AnchorResolutionError, OSError, UnicodeError) as exc:
+        print(f"오류: 외부 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
+        return 1
+
+    # 이후 기존 diff/raw/round helper는 module seam을 계속 소비한다. 한 프로세스 실행 안에서만
+    # 명시 입력으로 해소된 diff 앵커를 주입하며, board/config는 별도 pm_home 경로를 유지한다.
+    REPO = diff_root
+    LOCAL_CONF = pm_home / ".project_manager" / "local.conf"
+    # 리뷰 context overlay는 선택된 코드 worktree가 아니라 board/config 소유 PM 인스턴스 입력이다.
+    # diff_root에 빈/구 사본이 있어도 해소된 local.conf와 같은 소유 경계에서 읽도록 의도적으로 둔다.
+    REVIEW_CONTEXT_FILE = pm_home / ".project_manager" / "review_context.local.md"
+    TICKETS_DIR = pm_home / ".project_manager" / "wiki" / "tickets"
+    if pm_home != engine_pm_home:
+        try:
+            conf = _local_config_for_repo(pm_home)
+        except (OSError, UnicodeError) as exc:
+            conf_path = _local_conf_path(pm_home)
+            print(
+                "오류: 해소된 local.conf 읽기 실패 — 외부 송신 전에 중단합니다: "
+                f"{conf_path} ({type(exc).__name__}: {exc})",
+                file=sys.stderr,
+            )
+            return 1
     # 시간 예산은 **리뷰어 커맨드의 하네스 프로필**을 따른다 — reviewer_cmd 를 먼저 해소해야
     # 어떤 축(클라우드/로컬)의 값을 쓸지 정해진다(기본 `codex exec` → codex 축). 깨진 conf의
     # fail-soft 경고는 해소 중 발생하지만 stderr 첫 줄 provenance 계약을 지키도록 잠시 보류한다.
@@ -1926,18 +2373,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.idle_timeout is not None
         else float(resolved_time_profile.idle_timeout)
     )
-    conf_path = _local_conf_path(REPO)
+    conf_path = _local_conf_path(pm_home)
     profile = resolved_reviewer_profile(reviewer_cmd, timeout, idle_timeout)
 
-    # 상대 `.project_manager/tools/external_review.py` 선택을 결정한 호출 cwd repo와 실행 엔진
-    # 사본 REPO를 같은 입력으로 대조한다. reviewer_cmd의 **실제 해소값**이 갈릴 때만 경고하며,
-    # 동일(default 명시 포함)·대상 conf 부재·non-repo cwd는 조용히 통과한다.
-    target_repo = repo_root_from_cwd(Path.cwd())
-    # 정상 실행·dry-run 공용 첫 provenance. 이후 cap/reanchor/diff 진단이 붙더라도 어느 엔진 conf와
+    target_repo = diff_root
+    # 정상 실행·dry-run 공용 첫 provenance. 이후 cap/reanchor/diff 진단이 붙더라도 어느 PM-home conf와
     # reviewer tuple을 해소했는지가 stderr에 남는다.
     print(
         f"[external-review] config provenance: local_conf={conf_path} "
-        f"· resolved_profile={profile}",
+        f"· diff_root={diff_root} · pm_home={pm_home} · resolved_profile={profile}",
         file=sys.stderr,
     )
     deferred_warnings = resolution_warnings.getvalue()
@@ -1945,10 +2389,12 @@ def main(argv: list[str] | None = None) -> int:
         print(deferred_warnings, end="", file=sys.stderr)
     try:
         divergence = local_conf_divergence(
-            engine_repo=REPO,
+            engine_repo=pm_home,
             engine_conf=conf,
             target_repo=target_repo,
             selector=reviewer_profile_config,
+            engine_label="pm-home",
+            target_label="diff-worktree",
         )
     except TargetLocalConfReadError as exc:
         print(f"오류: {exc}", file=sys.stderr)
@@ -1956,7 +2402,17 @@ def main(argv: list[str] | None = None) -> int:
     if divergence is not None:
         print(
             format_local_conf_divergence(
-                divergence, surface="external_review", cwd_label="호출 cwd",
+                divergence,
+                surface="external_review",
+                cwd_label="diff worktree",
+                source_label="해소된 PM 홈",
+                resolution_note=(
+                    "이번 실행에서는 --paths/--ticket에서 해소된 PM 홈 conf가 적용됩니다: "
+                    f"{divergence.engine_conf_path}\n"
+                    "  차단하지 않고 계속합니다. 같은 프로필을 원하면 diff worktree conf의 위 "
+                    "키 값을 PM 홈 conf와 맞추세요. 다른 PM 홈 conf를 선택하려면 --paths/--ticket이 "
+                    "가리키는 등록 worktree와 lease 소유 관계를 확인하세요."
+                ),
             ),
             file=sys.stderr,
         )
@@ -1971,49 +2427,25 @@ def main(argv: list[str] | None = None) -> int:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # PM 홈 앵커 재지정 가드. REPO 앵커가 adopter#0
-    # PM 홈(실 board 소유 + canonical 코드 worktree 보유)을 가리키고 `--paths` 로 명시 override 하지
-    # 않았다면, import 사본을 리뷰해 빈 diff false-green 이 나기 전에 fail-loud 로 차단하고 canonical
-    # worktree 재지정을 안내한다(빈-diff 안내 :166 을 능동 게이트로 승격). diff 추출·dry-run·비활성
-    # no-op 보다 앞서므로 잘못된 형상은 codex 전송 없이 미리보기에서도 드러난다. `--paths` 명시 시엔
-    # 통과(deliberate override) — 그래도 빈 diff 면 아래 빈-diff 가드가 백스톱. REPO 는 호출 시점 읽어
-    # (module global) 테스트 monkeypatch 를 추종한다.
-    if not args.paths:
-        reanchor_target = _pm_home_reanchor(REPO)
-        if reanchor_target is not None:
-            print(_PM_HOME_ANCHOR_GUIDANCE.format(worktree=reanchor_target, anchor=REPO),
-                  file=sys.stderr)
-            return 1
-
-    # 경로 결정: --paths > --ticket touches > local.conf review_paths > DEFAULT_PATHS
-    include_conf_review_paths = False
-    if args.paths:
-        paths = args.paths
-    elif args.ticket:
-        touches = parse_ticket_touches(args.ticket)
-        if not touches:
-            print(f"경고: ticket {args.ticket} 의 touches 미발견 — 기본 경로 사용", file=sys.stderr)
-            paths = _configured_paths(conf)
-            include_conf_review_paths = True
-        else:
-            paths = touches
-    else:
-        paths = _configured_paths(conf)
-        include_conf_review_paths = True
+    # 슬롯 선택과 diff 추출은 위에서 확정한 동일 path 집합을 쓴다.
+    paths = list(selected_paths)
+    include_conf_review_paths = not args.paths and not ticket_selected
 
     try:
         content_resolution = resolve_review_content_conf(
-            engine_repo=REPO,
+            engine_repo=pm_home,
             engine_conf=conf,
             target_repo=target_repo,
             include_review_paths=include_conf_review_paths,
+            engine_label="pm-home",
+            target_label="diff-worktree",
         )
     except TargetLocalConfReadError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
     if content_resolution.divergence is not None:
         review_paths_note = (
-            "review_paths의 이번 범위는 엔진 conf가 정했습니다"
+            "review_paths의 이번 범위는 해소된 PM 홈 conf가 정했습니다"
             if include_conf_review_paths
             else "review_paths는 --paths/유효 ticket touches 완전지정으로 conf 비교에서 제외했습니다"
         )
@@ -2021,10 +2453,11 @@ def main(argv: list[str] | None = None) -> int:
             format_local_conf_divergence(
                 content_resolution.divergence,
                 surface="external_review 송신 내용",
-                cwd_label="호출 cwd",
+                cwd_label="diff worktree",
+                source_label="해소된 PM 홈",
                 resolution_note=(
                     "denylist는 양쪽 해소값의 합집합을 적용하고 "
-                    f"{review_paths_note}: {_local_conf_path(REPO)}\n"
+                    f"{review_paths_note}: {_local_conf_path(pm_home)}\n"
                     "  차단하지 않고 계속합니다. 대상 전용 denylist도 이번 diff 제외에 적용되며, "
                     "review_paths 범위를 직접 정하려면 --paths/유효 ticket touches로 이번 범위를 "
                     "완전히 지정하세요."
@@ -2064,7 +2497,7 @@ def main(argv: list[str] | None = None) -> int:
     # 플래그 없음. 기존 오류 규약(비-0 = 1)과 정합. dry-run/비활성 no-op 보다 앞서므로 잘못된
     # 형상(worktree 아닌 곳에서 실행 등)은 codex 전송 없이 미리보기 단계에서도 드러난다.
     if not diff.strip():
-        print(_EMPTY_DIFF_GUIDANCE, file=sys.stderr)
+        print(_empty_diff_guidance(paths, root=diff_root), file=sys.stderr)
         return 1
 
     prompt = build_prompt(diff=diff, adr_refs=args.adr, gate=args.gate)
@@ -2099,28 +2532,34 @@ def main(argv: list[str] | None = None) -> int:
     # --ack-rounds 는 acked_through 를 현 count 로 올려(엔진은 기록만·승인 판단은 사용자/카드) +limit
     # 창을 열고 그 호출도 실 전송이므로 함께 예약한다. 초과면 리뷰어 호출 전에 거부(전용 rc·과금 없음).
     reserved_gate: str | None = None
+    reserved_round_id: str | None = None
     if args.gate:
         limit = _round_limit(conf)
+        incomplete_limit = _incomplete_round_limit(conf)
         with _round_ledger_lock():
             ledger = _load_round_ledger()
             entry = _gate_entry(ledger, args.gate)
             count, acked = entry["count"], entry["acked_through"]
             if args.ack_rounds:
                 entry["acked_through"] = count      # 승인 수위 상향 (+limit 창)
-                entry["count"] = count + 1          # 이 호출도 실 전송 → 예약
-                _save_round_ledger(ledger)
-                reserved_gate = args.gate
+                entry["records"] = []               # 승인된 상세 레코드는 집계에서 영구 불필요
                 print(f"라운드 상한 승인 재개: 게이트 {args.gate} — acked_through={count} "
                       f"(+{limit}라운드).", file=sys.stderr)
-            elif count - acked >= limit:
+            else:
+                unacked, verdicts, incomplete = _unacked_round_counts(entry)
+            if not args.ack_rounds and (
+                verdicts >= limit or incomplete >= incomplete_limit
+            ):
                 print(_ROUND_LIMIT_GUIDANCE.format(
-                    gate=args.gate, unacked=count - acked, limit=limit,
+                    gate=args.gate, unacked=unacked, verdicts=verdicts,
+                    incomplete=incomplete, limit=limit,
+                    incomplete_limit=incomplete_limit,
                     count=count, acked=acked), file=sys.stderr)
                 return EXIT_ROUND_LIMIT_EXCEEDED    # 예약 없음 (전송 전 거부)
-            else:
-                entry["count"] = count + 1          # 호출 전 라운드 예약
-                _save_round_ledger(ledger)
-                reserved_gate = args.gate
+            reserved_round_id = uuid.uuid4().hex
+            _reserve_round(entry, reserved_round_id)  # 호출 전 라운드 예약
+            _save_round_ledger(ledger)
+            reserved_gate = args.gate
     elif args.ack_rounds:
         print("경고: --ack-rounds 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
               file=sys.stderr)
@@ -2133,18 +2572,42 @@ def main(argv: list[str] | None = None) -> int:
     )
     print_summary(result, gate=args.gate, excluded=excluded)
 
-    # 예약 환불 — 외부 프로세스가 *확실히 시작되지 않은* 경우(started=False·스폰 실패·
-    # 전송 0)만 되돌린다. 타임아웃·비정상 종료(started=True)는 프롬프트가 이미 전송·과금됐을 수 있어
-    # 유지한다(반복 타임아웃 상한 우회 차단). 예약과 같은 lock 아래 재-load→감소→저장(원자·MF-B).
-    if reserved_gate is not None and not result.get("started", True):
+    # 정상 복귀한 호출은 판정 유무와 별개로 종료 마감한다. 프로세스 kill처럼 이 지점에 도달하지
+    # 못한 레코드는 finished_at 없이 남아 다음 호출에서 미완 재시도 예산으로 식별된다.
+    if reserved_gate is not None and reserved_round_id is not None:
         with _round_ledger_lock():
             ledger = _load_round_ledger()
             entry = _gate_entry(ledger, reserved_gate)
-            if entry["count"] > 0:
-                entry["count"] -= 1
+            matching = next(
+                (row for row in entry["records"] if row.get("id") == reserved_round_id),
+                None,
+            )
+            if not result.get("started", True):
+                _refund_round(entry, reserved_round_id)
+            elif matching is not None:
+                matching["finished_at"] = datetime.datetime.now(
+                    datetime.timezone.utc
+                ).isoformat()
+                matching["verdict"] = _round_has_verdict(result)
             _save_round_ledger(ledger)
 
     return determine_exit_code(result)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """한 호출 동안만 selector 해소 전역을 주입하고 재진입 전에 원복한다."""
+    _console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
+    )
+    _console_encoding.configure_console_utf8()
+    global REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR
+    original = (REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR)
+    try:
+        return _main(argv)
+    finally:
+        REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR = original
 
 
 if __name__ == "__main__":

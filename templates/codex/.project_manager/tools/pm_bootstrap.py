@@ -352,6 +352,11 @@ def _is_codex_harness() -> bool:
     return any(os.environ.get(marker) for marker in _CODEX_HARNESS_SESSION_MARKERS)
 
 
+def _runtime_skill_entry(skill: str) -> str:
+    """사용자에게 제시할 현재 하네스의 스킬 호출 표기."""
+    return f"{'$' if _is_codex_harness() else '/'}{skill}"
+
+
 # codex 절 본문(정적 진입 doc 대체). 카드 렌더 끝에 감지 시 append 된다 —
 # 위임=세션 내 spawn(`.codex/agents` 4축·`codex exec --agent` 부재) trust 2단계 힌트
 # 방법론 소재(공통 코어 AGENTS.md 자동 로드 + 이 카드 + `.agents/skills`·CLAUDE.md 미로드).
@@ -435,6 +440,16 @@ def _is_engine_rev_skew(exc) -> bool:
     판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
     (예: 신 pm_bootstrap→신 board→구 identity_args 검출이 None 강등되지 않게)."""
     return getattr(exc, "_engine_rev_skew", False)
+
+
+def _report_engine_rev_skew_at_terminal(exc) -> int:
+    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
+    print(
+        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+        "동기화한 뒤 다시 실행하세요.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 # ── worktree_pool import seam (multi-PM 모드) ───────────────────────────
@@ -725,7 +740,9 @@ def _pm_state_display_path(
     if resolved is None:
         try:
             resolved = _auto_slot(areas_file, leases_file)
-        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 legacy 표기 폴백.
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 legacy 표기 폴백.
+            if _is_engine_rev_skew(exc):
+                raise
             resolved = None
     if resolved is None:
         return "pm_state.md"
@@ -1488,7 +1505,7 @@ _SESSION_LABEL_PLACEHOLDER = "PM <?>차"
 # 자동 pm_state 생성은 pm_handoff 소관 경계 유지).
 _FRESH_SLOT_BANNER = (
     "🆕 첫 바인딩 슬롯 · 이전 세션 맥락 없음 · 차수=1(fresh) · 폴백 스캔 불요 — "
-    "새 PM 세션으로 시작하고 첫 /pm-handoff 가 pm_state 를 생성한다."
+    f"새 PM 세션으로 시작하고 첫 {_runtime_skill_entry('pm-handoff')} 가 pm_state 를 생성한다."
 )
 
 def _slot_count_label(session: str) -> str:
@@ -1829,7 +1846,9 @@ class PmBootstrap:
             return str(REPO / task_slot) if task_slot else str(REPO)
         try:
             auto = _auto_slot()
-        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 REPO 폴백.
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 REPO 폴백.
+            if _is_engine_rev_skew(exc):
+                raise
             auto = None
         if auto:
             repo, n = auto
@@ -2057,7 +2076,8 @@ class PmBootstrap:
         if not slots:
             print(
                 f"[중단] task {self._task_name!r} 보유 작업공간이 0개라 --with-pytest 대상을 "
-                "해소할 수 없습니다 — `/pm-env alloc <repo> --task <이름>`으로 작업공간을 "
+                f"해소할 수 없습니다 — `{_runtime_skill_entry('pm-env')} alloc <repo> "
+                "--task <이름>`으로 작업공간을 "
                 "대여한 뒤 다시 실행하세요. 전역 auto-slot으로 대체하지 않습니다.",
                 file=sys.stderr,
             )
@@ -2391,7 +2411,9 @@ class PmBootstrap:
             auto = _resolve_session_slot(self._areas_file, leases_file)
         except SlotResolutionError:
             return None  # 진짜 모호(멀티-PM under-specified) → 솔로 폴백(read crash 금지).
-        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 솔로 폴백(현행 무변경).
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 솔로 폴백(현행 무변경).
+            if _is_engine_rev_skew(exc):
+                raise
             return None
         if not auto:
             return None
@@ -2878,7 +2900,8 @@ class PmBootstrap:
             # fresh 슬롯 — pm_state 파일 부재(첫 /pm-handoff 가 생성). "미해소 — 직접 확인"
             # 은 없는 legacy pm_state 를 뒤지게 만드는 스크램블이라 금지·복구할 남은작업 없음을 명시.
             lines.append(
-                "- (🆕 첫 바인딩 슬롯 — pm_state 없음 · 첫 /pm-handoff 가 생성 · 복구할 남은작업 없음)"
+                f"- (🆕 첫 바인딩 슬롯 — pm_state 없음 · 첫 "
+                f"{_runtime_skill_entry('pm-handoff')} 가 생성 · 복구할 남은작업 없음)"
             )
         else:
             ptr_path = handoff_ctx.get("state_path") if handoff_ctx else self._pm_state_display_path()
@@ -3337,7 +3360,8 @@ class PmBootstrap:
                 f"[중단·0단계] 슬롯 {slot_id} 은(는) readonly 공유 슬롯(⑬)이라 바인딩(점유)할 수 없습니다 "
                 f"— 무소유 공유 자산(배타 대여 없음)이라 세션 정체성을 선언하는 대상이 아닙니다.\n"
                 f"  → 코드를 읽어 참조하는 용도면 bind 없이 그 worktree 를 읽으세요. 최신 갱신은 "
-                f"`/pm-worktree refresh {session}`(fetch→detach). 작업 슬롯이 필요하면 `--slot` 번호를 "
+                f"`{_runtime_skill_entry('pm-worktree')} refresh {session}`(fetch→detach). "
+                f"작업 슬롯이 필요하면 `--slot` 번호를 "
                 f"작업 슬롯으로 맞추거나 새 슬롯을 alloc 하세요.",
                 file=sys.stderr,
             )
@@ -3496,7 +3520,9 @@ class PmBootstrap:
         등)·조회불가·풀 미지원은 None(fail-soft·오탐 0)."""
         try:
             branch = wp.current_branch(slot_id)
-        except Exception:  # noqa: BLE001 — fail-soft: 브랜치 조회불가는 판정 생략(오탐 0).
+        except Exception as exc:  # noqa: BLE001 — 일반 조회불가는 판정 생략(오탐 0).
+            if _is_engine_rev_skew(exc):
+                raise
             branch = None
         protected = self._protected_warning(repo, branch)
         if protected is not None:
@@ -3519,7 +3545,9 @@ class PmBootstrap:
             return None
         try:
             status = getter(slot_id)
-        except Exception:  # noqa: BLE001 — fail-soft: 상태 조회 실패는 판정 생략(오탐 0).
+        except Exception as exc:  # noqa: BLE001 — 일반 상태 조회 실패는 판정 생략(오탐 0).
+            if _is_engine_rev_skew(exc):
+                raise
             return None
         if status is None or not getattr(status, "upstream_ok", False):
             return None
@@ -3601,7 +3629,9 @@ class PmBootstrap:
 
         try:
             ok = normalize(branch, git_runner=runner) == branch
-        except Exception:  # noqa: BLE001 — fail-soft: 판정기 예외는 검사 생략(안내 계속).
+        except Exception as exc:  # noqa: BLE001 — 일반 판정기 예외는 검사 생략(안내 계속).
+            if _is_engine_rev_skew(exc):
+                raise
             return True
         return True if failed else ok
 
@@ -3668,7 +3698,9 @@ class PmBootstrap:
             return 0  # 구버전 풀 — 정합 검사 비활성(fail-soft·소프트 진단).
         try:
             result = compare(slot_id)
-        except Exception:  # noqa: BLE001 — fail-soft: compare 실패는 정합 검사 생략(통과).
+        except Exception as exc:  # noqa: BLE001 — 일반 compare 실패는 정합 검사 생략(통과).
+            if _is_engine_rev_skew(exc):
+                raise
             return 0
         if getattr(result, "fail_loud", False):
             recorded = getattr(result, "recorded", None) or {}
@@ -3929,6 +3961,8 @@ class PmBootstrap:
                 raise RuntimeError("slots_for_task가 None을 반환")
             return list(resolved)
         except Exception as exc:  # noqa: BLE001 — 해소 실패 ≠ 실제 빈 집합: fail-loud.
+            if _is_engine_rev_skew(exc):
+                raise
             print(
                 f"[중단·진입검증] task {task!r} 보유 슬롯 장부 조회 실패 — {exc}. "
                 "실제 0슬롯으로 간주하지 않고 부분 dump 없이 중단합니다.",
@@ -4026,7 +4060,9 @@ class PmBootstrap:
         if callable(compare):
             try:
                 result = compare(slot_id)
-            except Exception:  # noqa: BLE001 — fail-soft: compare 실패는 fault 아님(통과).
+            except Exception as exc:  # noqa: BLE001 — 일반 compare 실패는 fault 아님(통과).
+                if _is_engine_rev_skew(exc):
+                    raise
                 result = None
             if result is not None and getattr(result, "fail_loud", False):
                 return (
@@ -4054,7 +4090,9 @@ class PmBootstrap:
                 return []
             try:
                 leases = list(slots_fn(task) or [])
-            except Exception:  # noqa: BLE001 — fail-soft: 직접 호출의 surface 조회 실패.
+            except Exception as exc:  # noqa: BLE001 — fail-soft: 직접 호출의 surface 조회 실패.
+                if _is_engine_rev_skew(exc):
+                    raise
                 return []
         else:
             leases = list(leases)
@@ -4088,7 +4126,9 @@ class PmBootstrap:
             return {}
         try:
             return fn(slot_id) or {}
-        except Exception:  # noqa: BLE001 — fail-soft: 상태 조회 실패는 빈 dict(행 표시 흡수).
+        except Exception as exc:  # noqa: BLE001 — 일반 상태 조회 실패는 빈 dict(행 표시 흡수).
+            if _is_engine_rev_skew(exc):
+                raise
             return {}
 
     def _task_slot_record_live(self, wp, slot_id: str) -> str:
@@ -4098,7 +4138,9 @@ class PmBootstrap:
             return "unknown"
         try:
             result = fn(slot_id)
-        except Exception:  # noqa: BLE001 — fail-soft: compare 실패는 unknown(표시만).
+        except Exception as exc:  # noqa: BLE001 — 일반 compare 실패는 unknown(표시만).
+            if _is_engine_rev_skew(exc):
+                raise
             return "unknown"
         if result is None:
             return "unknown"
@@ -4228,7 +4270,9 @@ class PmBootstrap:
             return None
         try:
             return slot_status_to_dict(fn(slot))
-        except Exception:  # noqa: BLE001 — fail-soft: 슬롯 상태는 소프트(실패=절 생략).
+        except Exception as exc:  # noqa: BLE001 — 일반 슬롯 상태 실패는 소프트(절 생략).
+            if _is_engine_rev_skew(exc):
+                raise
             return None
 
     def _slot_status_block(self, identity: dict | None) -> list[str]:
@@ -4484,7 +4528,9 @@ class PmBootstrap:
             return None
         try:
             base = repo_base(repo)
-        except Exception:  # noqa: BLE001 — fail-soft: 시대차는 소프트(실패=판정 생략).
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 시대차는 소프트(실패=판정 생략).
+            if _is_engine_rev_skew(exc):
+                raise
             return None
         if not isinstance(base, str) or not base.strip():
             return None
@@ -4506,7 +4552,9 @@ class PmBootstrap:
         """
         try:
             wt = Path(self._worktree_cwd(self._bound_slot)).resolve()
-        except Exception:  # noqa: BLE001 — fail-soft: cwd 해소 실패는 None(best-effort).
+        except Exception as exc:  # noqa: BLE001 — fail-soft: cwd 해소 실패는 None(best-effort).
+            if _is_engine_rev_skew(exc):
+                raise
             return None
         for scope in freshness or []:
             try:
@@ -4698,7 +4746,14 @@ class PmBootstrap:
             해소된 도구 접두로 시작하지 않으므로 카드↔CLI argparse 정합 가드·정체성 `--repo/--slot`
             검사(불변식 3)의 대상이 아니다 — backbone 은 아래 `engine()` 줄로 종속화한다.
             """
-            return f"{invocation}  # {comment}" if comment else invocation
+            # canonical 카드 리터럴은 `/`다. 실제 발화 시에는 이미 쓰는 codex 하네스 감지값에서
+            # 호출 접두사를 파생해 한 카드 안의 `$<스킬명>` 설명과 실행줄이 모순되지 않게 한다.
+            rendered_invocation = _runtime_skill_entry(invocation.lstrip("/$"))
+            return (
+                f"{rendered_invocation}  # {comment}"
+                if comment
+                else rendered_invocation
+            )
 
         def engine(rec: _CardCmd, note: str = "스킬이 부르는 내부 엔진·직접 금지",
                    suffix: str = "", prefix: str = "") -> str:
@@ -4789,7 +4844,7 @@ class PmBootstrap:
         ))
         lines.append(cmd(
             _C_BOARD_COMPLETE,
-            "직접 완료 — fresh-adopter/concept(--allow-untested)·정상 wave 는 /pm-wave-finish",
+            "직접 완료 — fresh-adopter/concept(--allow-untested)·정상 wave 는 finish 스킬",
         ))
         lines.append("")
 
@@ -5139,7 +5194,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "multi-PM 모드 — repo 이름(positional). `--repo` 의 alias — handoff rewriter 산출 "
-            "`/pm-bootstrap <repo> --slot N` 정합용. `--repo` 와 둘 다 주면 값 일치 필수."
+            f"`{_runtime_skill_entry('pm-bootstrap')} <repo> --slot N` 정합용. "
+            "`--repo` 와 둘 다 주면 값 일치 필수."
         ),
     )
     # `--repo`/`--slot` — 공용 `identity_args.add_identity_args` 채택
@@ -5167,13 +5223,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+def _main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     # positional `repo` 를 `--repo` alias 로 정합한다 (rewriter↔CLI). 둘 다 주고 값이
     # 다르면 fail-loud, 한쪽만/일치면 그 값을 `args.repo` 로 접어 downstream(자동바인딩·alloc)이
@@ -5248,6 +5298,22 @@ def main(argv: list[str] | None = None) -> int:
         slot=args.slot,
         task=getattr(args, "task", None),
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
+    try:
+        _console_encoding = _load_module_from_path(
+            Path(__file__).resolve().with_name("console_encoding.py"),
+            "console_encoding.py",
+            verifier=_verify_engine_rev,
+        )
+        _console_encoding.configure_console_utf8()
+        return _main(argv)
+    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
+        raise
 
 
 if __name__ == "__main__":

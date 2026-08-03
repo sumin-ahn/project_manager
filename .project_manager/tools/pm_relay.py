@@ -45,9 +45,19 @@ ENGINE_REV = "v1.5.1"
 # marker 디렉토리 — ctx_stop_hook.py 의 _MARKER_DIR 와 동일해야 한다(읽기 측·hook 이 쓰는 측).
 MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 
+
+def _runtime_skill_entry(skill: str) -> str:
+    """현재 실행 하네스의 사용자 호출 표기(Codex env marker 외 slash)."""
+    prefix = "$" if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI") else "/"
+    return f"{prefix}{skill}"
+
 # child 에 줄 bootstrap 프롬프트 — 새 PM 이 file(board+handoff)에서 맥락을 재유도하게 유도.
 # 맥락 자체를 주입하지 않는다(stateless·file-as-memory) — 새 세션이 직접 읽게 한다.
-def build_bootstrap_prompt(task: str | None = None) -> str:
+def build_bootstrap_prompt(
+    task: str | None = None,
+    *,
+    entry: str | None = None,
+) -> str:
     """재진입 부트스트랩 프롬프트를 빌드한다 — task 명시 시 `/pm-bootstrap --task <name>` 로 주입.
 
     **relay task 전달 = () 명시 전달**(): supervisor 가 받은 task 정체성을
@@ -55,7 +65,9 @@ def build_bootstrap_prompt(task: str | None = None) -> str:
     (resume)하게 한다. cwd/env 추론()은 기각("cwd 는 해소에 참여하지 않는다"·"cwd/env
     추론 금지"와 모순) — 정체성은 per-call 명시 전달이다. task 슬롯 0개 엣지에서도 (b)만
     동작한다. task 없으면(슬롯/솔로) bare `/pm-bootstrap`(현행·byte-동일)."""
-    cmd = f"/pm-bootstrap --task {task}" if task else "/pm-bootstrap"
+    cmd = entry or _runtime_skill_entry("pm-bootstrap")
+    if task:
+        cmd += f" --task {task}"
     return (
         "너는 이 프로젝트의 PM 세션이다. 이전 PM 세션이 컨텍스트 한계로 회전됐다. "
         f"먼저 `{cmd}` 을 수행하고 `log/current.md` 의 최신 handoff entry 를 읽어 "
@@ -64,7 +76,7 @@ def build_bootstrap_prompt(task: str | None = None) -> str:
 
 
 # 기본(task 무·슬롯/솔로) 재진입 프롬프트 — 현행 bare `/pm-bootstrap` 프롬프트와 byte-동일.
-BOOTSTRAP_PROMPT = build_bootstrap_prompt()
+BOOTSTRAP_PROMPT = build_bootstrap_prompt(entry="/" + "pm-bootstrap")
 
 # 종료 명령 — supervisor 루프를 끝낸다(EOF 와 동치).
 QUIT_COMMANDS = frozenset({"/quit", "/exit"})
@@ -626,6 +638,67 @@ def harness_cap_required_budget(execution_budget: float) -> float:
     return float(execution_budget) + HARNESS_CAP_MARGIN_SEC
 
 
+def format_partial_output(head: str, exc: BaseException) -> str:
+    """실패 진단 뒤에 kill 시점 stdout/stderr를 안전하게 붙인다.
+
+    이미 실패한 timeout/cleanup 경로에서 쓰이므로, 예외 객체의 비정상 속성이나 비-UTF8 bytes가
+    원래 진단을 가리는 일은 허용하지 않는다. 문자열 입력의 형식은 기존 소비처 형식을 보존한다.
+
+    | 입력 ``output=b\"ok\\xff\"`` | 이전 external-review | 현재 공용 포맷터 |
+    | --- | --- | --- |
+    | 표시 | ``b'ok\\xff'`` (repr) | ``ok�`` (UTF-8 replacement decode) |
+
+    pm_import fill은 통합 전에도 replacement decode를 사용했으므로 이 bytes 처리에는 변화가 없다.
+    """
+    def as_text(value) -> str:
+        try:
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return str(value) if value else ""
+        except Exception:  # noqa: BLE001 - formatter failure must not erase the diagnosis.
+            return "[부분 산출물 표시 불가]"
+
+    try:
+        stdout = as_text(getattr(exc, "output", ""))
+        stderr = as_text(getattr(exc, "stderr", ""))
+        parts = [head]
+        if stdout:
+            parts.append(f"\n[중단 시점까지의 stdout — {len(stdout)}자 보존]\n{stdout}")
+        if stderr:
+            parts.append(f"\n[중단 시점까지의 stderr — {len(stderr)}자 보존]\n{stderr}")
+        return "".join(parts)
+    except Exception:  # noqa: BLE001 - `head` itself may be a hostile str subclass.
+        return head if isinstance(head, str) else "[실패 진단]"
+
+
+def harness_cap_advisory(
+    env: dict[str, str], *, execution_budget: float,
+    session_markers: dict[str, tuple[str, ...]], cap_env: dict[str, str | None],
+    render_missing, render_invalid, render_low,
+) -> str | None:
+    """세 실행 표면이 공유하는 호출층 상한 판정; 표면별 기존 문구는 renderer가 소유한다."""
+    required = int(harness_cap_required_budget(execution_budget))
+    warnings = []
+    for harness, markers in session_markers.items():
+        if not any(env.get(marker) for marker in markers):
+            continue
+        cap_key = cap_env.get(harness)
+        if cap_key is None:
+            continue
+        raw = env.get(cap_key)
+        if raw is None and render_missing is not None:
+            warnings.append(render_missing(harness, cap_key, required))
+            continue
+        try:
+            cap_seconds = int(raw) / 1000.0
+        except (TypeError, ValueError, OverflowError):
+            warnings.append(render_invalid(harness, cap_key, raw, required))
+            continue
+        if not math.isfinite(cap_seconds) or cap_seconds < required:
+            warnings.append(render_low(harness, cap_key, cap_seconds, required))
+    return "\n".join(warnings) or None
+
+
 class StallWatchdogError(RuntimeError):
     """첫-이벤트 워치독이 모든 재시도를 소진(반복 startup stall) → fail-loud.
 
@@ -749,6 +822,19 @@ PROGRESS_SIGNAL_NONE = "none"                  # 종료 시 단일 덩어리 —
 PROGRESS_SIGNAL_KINDS: frozenset[str] = frozenset(
     {PROGRESS_SIGNAL_EVENT_STREAM, PROGRESS_SIGNAL_PLAINTEXT, PROGRESS_SIGNAL_NONE}
 )
+
+# 호출층 Bash 상한을 관측할 수 있는 세션 축의 단일 선언. 공개 상한이 없는 codex는 None으로
+# 남기며, 그 자체는 advisory 대상이 아니다.
+HARNESS_SESSION_MARKERS: dict[str, tuple[str, ...]] = {
+    "codex": ("CODEX_THREAD_ID", "CODEX_CI"),
+    "claude": ("CLAUDECODE",),
+    "opencode": ("OPENCODE", "OPENCODE_PID"),
+}
+HARNESS_CAP_ENV: dict[str, str | None] = {
+    "codex": None,
+    "claude": "BASH_MAX_TIMEOUT_MS",
+    "opencode": "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
+}
 
 
 class HarnessProfile(NamedTuple):

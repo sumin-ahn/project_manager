@@ -31,6 +31,21 @@ _RETIRED_TERM_EN = "umb" + "rella"
 # 자기 자신은 제외(이 파일은 폐기 용어를 *논의*하므로 정당히 포함).
 _SELF = Path(__file__).name
 
+# 설치자가 읽는 ignore 산문은 문서 확장자가 아니지만 출하 surface다. 두 용어 가드가 이
+# 목록을 공유해 한쪽만 제외하는 틈을 만들지 않는다.
+_SHIPPED_IGNORE_PROSE = (
+    ".project_manager/.gitignore",
+    "templates/claude_code/.project_manager/.gitignore",
+    "templates/opencode/.project_manager/.gitignore",
+    "templates/codex/.project_manager/.gitignore",
+    # 루트 판도 세 하네스 전부에서 출하된다(pm_import 실측). 폐기 용어가 실제로
+    # 잔존했던 자리가 여기다 — 빠뜨리면 되살린 잔재를 어느 가드도 못 잡는다.
+    ".gitignore",
+    "templates/claude_code/.gitignore",
+    "templates/opencode/.gitignore",
+    "templates/codex/.gitignore",
+)
+
 
 def _live_files() -> list[Path]:
     globs = [
@@ -70,6 +85,7 @@ def _live_files() -> list[Path]:
         REPO / "pm-config.cmd",
         REPO / "pm-import.cmd",
         REPO / "pm-update.cmd",
+        *(REPO / relpath for relpath in _SHIPPED_IGNORE_PROSE),
     ]
     return [f for f in files if f.exists() and f.name != _SELF]
 
@@ -103,6 +119,14 @@ def test_no_retired_umbrella_term_english_in_live_surface():
     assert not offenders, (
         f"폐기 용어 '{_RETIRED_TERM_EN}' 잔존 — ADR-0016 후 multi-PM 으로 (historical 제외): {offenders}"
     )
+
+
+def test_retired_term_scope_includes_shipped_ignore_prose():
+    """출하 .gitignore의 산문 주석은 두 폐기 용어 가드 모두의 검사 대상이다."""
+    relpaths = {path.relative_to(REPO).as_posix() for path in _live_files()}
+    assert {
+        *_SHIPPED_IGNORE_PROSE,
+    } <= relpaths
 
 
 # ── T-0268: 'carry' 폐기 용어 가드 (deferred/전달 → 후속·이월) ────────────────
@@ -198,7 +222,7 @@ def test_no_carry_term_in_canonical_source():
 # (`pm_bootstrap._pm_state_display_path` → `slots/{repo}_{n}/`)·spike 와 정합. 재발을 기계로 못박는다
 # ([[T-0098]] terminology 가드 선례·재발 용어/규칙은 지식 아닌 테스트로).
 #
-# 스코프 = 사람이 읽는 **가이드 문서**만. 엔진 `.py`·`.gitignore` 는 **제외** — 코드는 T-0298 소관이고
+# 스코프 = 사람이 읽는 가이드 문서와 출하 `.gitignore` 산문. 엔진 `.py` 는 제외 — 코드는 T-0298 소관이고
 # `pm_handoff.py` 의 `slots/<N>` 은 divergent-bare(`--slot 4` verbatim) 마이그(T-0201)를 *설명*하는
 # 정당한 등장이다. `.claude/skills/*/SKILL.md`(양 하네스 단일 소비·ADR-0065·opencode 미러 포함)도
 # 포함 — 그 사본 편집은 PM 직접(harness: 백그라운드 subagent 는 `.claude/` 쓰기 불가). REPO(=① worktree)
@@ -215,6 +239,7 @@ def _slot_key_guide_docs() -> list[Path]:
         REPO / "templates/opencode/AGENTS.md",
         REPO / "templates/opencode/AGENTS.lite.md",
         REPO / "templates/claude_code/CLAUDE.lite.md",
+        *(REPO / relpath for relpath in _SHIPPED_IGNORE_PROSE),
     ]
     for g in (
         ".claude/skills/*/SKILL.md",
@@ -230,16 +255,43 @@ def test_slot_key_notation_explicit_in_guide_docs():
 
     모호한 `slots/<slot>`(placeholder)·`slots/<N>`(숫자 오독) 금지 — multi-slot PM 이
     `.local/slots/<repo>_<N>/`(예 `project_manager_1`)를 헛찾던 표기 결함 재발 차단. 엔진
-    `.py`·`.gitignore` 는 스코프 밖(코드=T-0298·pm_handoff `slots/<N>` 는 T-0201 마이그 설명).
+    `.py` 는 스코프 밖(코드=T-0298·pm_handoff `slots/<N>` 는 T-0201 마이그 설명).
     `.claude`/opencode 하니스 사본은 PM 직접 편집(harness) 후 green.
     """
-    offenders = []
-    for f in _slot_key_guide_docs():
-        for lineno, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
-            for bare in _SLOT_KEY_BARE:
-                if bare in line:
-                    offenders.append(f"{f.relative_to(REPO).as_posix()}:{lineno} :: {bare}")
+    offenders = _slot_key_offenders(_slot_key_guide_docs())
     assert not offenders, (
         "모호한 slot-key 표기 잔존 — 명시형 `slots/<repo>_<N>`"
         f"(예 project_manager_1·= worktree basename) 로 정정하라 (T-0299): {offenders}"
     )
+
+
+def _slot_key_offenders(files: list[Path]) -> list[str]:
+    """검사 대상의 모호한 slot-key 표기를 줄 단위로 반환한다."""
+    offenders = []
+    for f in files:
+        for lineno, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            for bare in _SLOT_KEY_BARE:
+                if bare in line:
+                    offenders.append(f"{f.relative_to(REPO).as_posix()}:{lineno} :: {bare}")
+    return offenders
+
+
+def test_slot_key_scope_includes_shipped_ignore_prose():
+    """slot-key와 폐기 용어 가드가 출하 ignore 산문 목록을 공유한다."""
+    relpaths = {path.relative_to(REPO).as_posix() for path in _slot_key_guide_docs()}
+    assert set(_SHIPPED_IGNORE_PROSE) <= relpaths
+
+
+def test_slot_key_guard_detects_retired_notation_in_shipped_ignore_prose(tmp_path, monkeypatch):
+    """네 출하 ignore 산문 각각에 폐기 표기를 다시 넣으면 slot-key 검사가 검출한다."""
+    ignored = []
+    for relpath in _SHIPPED_IGNORE_PROSE:
+        path = tmp_path / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# .local/slots/<slot>/pm_state.md\n", encoding="utf-8")
+        ignored.append(path)
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+    offenders = _slot_key_offenders(ignored)
+    assert offenders == [
+        f"{relpath}:1 :: slots/<slot>" for relpath in _SHIPPED_IGNORE_PROSE
+    ]

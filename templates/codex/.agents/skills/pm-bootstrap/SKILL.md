@@ -4,7 +4,7 @@ description: "PM 세션 시작 부트스트랩 — board 실측 / git 상태 / �
 audience: user-entrypoint
 ---
 
-# /pm-bootstrap — PM 세션 시작 부트스트랩
+# $pm-bootstrap — PM 세션 시작 부트스트랩
 
 `.project_manager/tools/pm_bootstrap.py`로 board·git·회귀, 차수(`PM N차`), 마지막 handoff 본문 전체, 현재 정체성의 pm_state 남은작업/사용자발의 절을 dump한다. PM은 결과를 요약·판단하고 옵션과 결정 요청을 제시한다.
 
@@ -16,7 +16,7 @@ audience: user-entrypoint
 ## 사전 부트스트랩 (skill 외부)
 
 <!-- pm-bootstrap-preread:start -->
-세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
+세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `$pm-bootstrap` dump 한 번뿐이다.
 <!-- pm-bootstrap-preread:end -->
 
 정식 계약은 `pm_role.md` §부트스트랩이 단일 진실이다. `architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는 시작 시 통독하지 않고 실제 필요가 생길 때 해당 절만 읽는다. `architecture.md`는 현재 아키텍처 단일 진실이며, 옛 ADR 또는 현재 의도·실측과 충돌하면 기준으로 따른다. 바뀐 것은 읽는 시점뿐이다.
@@ -28,14 +28,14 @@ skill은 기계 측정만 자동화하며 컨텍스트 인지·결정은 PM이 �
 사용자 진입:
 
 ```text
-/pm-bootstrap
+$pm-bootstrap
 ```
 
 backbone `.project_manager/tools/pm_bootstrap.py` 호출은 skill 내부에서 수행한다.
 
 ### multi-PM 모드 (멀티-PM·lean)
 
-`/pm-bootstrap <repo> --slot <N>`의 repo·슬롯을 그대로 forward한다.
+`$pm-bootstrap <repo> --slot <N>`의 repo·슬롯을 그대로 forward한다.
 
 ```bash
 python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
@@ -48,7 +48,7 @@ python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
 auto-task 없이 신규 task를 시작하거나 기존 task를 재개한다.
 
 ```text
-/pm-bootstrap --task <이름>
+$pm-bootstrap --task <이름>
 ```
 
 backbone도 task-only 계약이다:
@@ -59,7 +59,7 @@ python3 .project_manager/tools/pm_bootstrap.py --task <이름>
 
 - 미등록 이름은 신규 task와 `.project_manager/.local/tasks/<이름>/pm_state.md`를 즉시 만든다(작업공간 0개 가능).
 - 기존 이름은 resume하여 보유 슬롯 집합·prefix 상태·task pm_state를 복원한다. 구 엔진의 state 없는 task도 즉시 backfill한다.
-- task 진입은 항상 `--task` 단독이다. 사용자/skill은 repo/slot을 지정하지 않고 엔진은 `--task + --repo/--slot/--branch/--resume` 혼합을 거부한다. 작업공간은 `/pm-env alloc <repo> --task <이름>` 또는 task-aware worktree add로 대여·편입한다.
+- task 진입은 항상 `--task` 단독이다. 사용자/skill은 repo/slot을 지정하지 않고 엔진은 `--task + --repo/--slot/--branch/--resume` 혼합을 거부한다. 작업공간은 `$pm-env alloc <repo> --task <이름>` 또는 task-aware worktree add로 대여·편입한다.
 - task-only 수집은 전역 auto-slot을 쓰지 않는다. 보유 0개면 PM 홈, 1개면 그 작업공간, 다중이면 모두를 freshness/opt-in 회귀 범위로 삼고 Git 대표 cwd는 정렬 첫 슬롯으로 surface한다.
 - task identity surface의 정체성 + **prefix 상태(기본=없음)**를 사용자와 확인한다. 변경은 후속 `task prefix` 명령이다.
 - 같은 task가 살아있는 다른 창에서 열려 있으면 `"다른 창에서 열려 있음"`으로 거부한다. 비정상 종료면 자동 회수 후 재개할 수 있고 회수 진입 시 `"다른 창 작업중일 수 있음"` 경고를 surface한다.

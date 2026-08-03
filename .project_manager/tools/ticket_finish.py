@@ -231,6 +231,16 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
+def _report_engine_rev_skew_at_terminal(exc) -> int:
+    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
+    print(
+        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+        "동기화한 뒤 다시 실행하세요.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def _load_identity_args():
     """공용 정체성 인자 모듈(identity_args.py)을 같은 tools/ 에서 경로 로드한다 (board.py
     `_load_identity_args`·pm_handoff 동형·sys.path 무오염). `--repo/--slot` 정체성 파싱에
@@ -241,7 +251,20 @@ def _load_identity_args():
     )
 
 
-identity_args = _load_identity_args()
+try:
+    identity_args = _load_identity_args()
+except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
+    if _is_engine_rev_skew(exc):
+        if __name__ == "__main__":
+            print(
+                f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+                "동기화한 뒤 다시 실행하세요.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        raise
+    raise
+_runtime_skill_entry = identity_args._runtime_skill_entry
 
 
 # ── 회귀 cwd 자동해소 (pm_handoff `_regression_cwd` 재사용·DRY) ────
@@ -289,7 +312,9 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
     if hp is not None:
         try:
             return hp._regression_cwd(worktree_slot)
-        except Exception:  # noqa: BLE001 — fail-soft: 위임 실패는 REPO 폴백.
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 위임 실패는 REPO 폴백.
+            if _is_engine_rev_skew(exc):
+                raise
             pass
     return str(REPO)
 
@@ -326,7 +351,9 @@ def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None
             return None, None
         try:
             return hp._resolve_session_worktree_slot(None)
-        except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 현행 폴백(모호 아님).
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 해소 실패는 현행 폴백(모호 아님).
+            if _is_engine_rev_skew(exc):
+                raise
             return None, None
     if hp is None:
         # pm_handoff 부재 — (리스 조인) 검증 불가하니 단순 조립만.
@@ -623,6 +650,8 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
     try:
         coords = _load_repo_coordinates() if prefixed else None
     except RuntimeError as exc:
+        if _is_engine_rev_skew(exc):
+            raise
         print(f"ticket_finish: repo 좌표 normalizer skew — {exc}", file=sys.stderr)
         return None
     if prefixed and coords is None:
@@ -656,7 +685,9 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
         # 완료 알림도 domain affected와 같은 touches∩covers 계열이다. task stage와 별개로
         # 같은 normalizer를 거쳐
         pages = domain.pages_for_touches(touches, domain.load_pages())
-    except Exception:
+    except Exception as exc:
+        if _is_engine_rev_skew(exc):
+            raise
         return None
     board = load_board_module(board_py)
     resolver = getattr(board, "_freshness_owner_repo", None) if board is not None else None
@@ -679,14 +710,18 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
             if owner_repo not in runners:
                 runners[owner_repo] = domain._real_git_runner(owner_repo)
             return runners[owner_repo]
-        except Exception:  # noqa: BLE001 — owner/runner 해소 실패는 stale unknown.
+        except Exception as exc:  # noqa: BLE001 — 일반 owner/runner 해소 실패는 stale unknown.
+            if _is_engine_rev_skew(exc):
+                raise
             return None
 
     out: list[tuple[str, bool | None]] = []
     for page in pages:
         try:
             stale = domain.page_stale(page, git_runner=runner_for_page(page))
-        except Exception:  # noqa: BLE001 — stale 못 구하면 무표시(None)·비차단.
+        except Exception as exc:  # noqa: BLE001 — stale 못 구하면 무표시(None)·비차단.
+            if _is_engine_rev_skew(exc):
+                raise
             stale = None
         out.append((page["title"], stale))
     return out
@@ -861,6 +896,8 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
             try:
                 coords = _load_repo_coordinates()
             except RuntimeError as exc:
+                if _is_engine_rev_skew(exc):
+                    raise
                 return StageScope((), f"repo 좌표 normalizer skew ({exc})")
             if coords is None:
                 return StageScope(
@@ -1268,7 +1305,10 @@ class TicketFinisher:
         if skip_pytest:
             # --no-pytest — 회귀 측정은 PM 이 별도(/pm-qa 등). board complete 는 --tests-pass 유지
             # (pm_handoff --no-pytest 동형·red 아님·skip 로 진행). 측정 total 은 log 스켈레톤에서 "?".
-            print("  [--no-pytest] 회귀 측정 skip — 측정은 별도(/pm-qa 등). board complete 는 --tests-pass 유지.")
+            print(
+                "  [--no-pytest] 회귀 측정 skip — 측정은 별도("
+                f"{_runtime_skill_entry('pm-qa')} 등). board complete 는 --tests-pass 유지."
+            )
             new_total: int | str = "?"
         else:
             if dry_run:
@@ -1485,14 +1525,16 @@ class TicketFinisher:
         """이 ticket 이 건드린 영역의 domain 페이지를 soft 알림으로 출력한다 (비차단).
 
         영향 페이지가 stale(covers 코드가 page updated 후 커밋)이면 그 줄 앞에
-        `⚠` 를 단다 — fresh(False)/unknown(None)은 무표시. 도그푸딩/multi-PM 어디서든 완료를
-        절대 막지 않는다 — domain 부재·예외는 조용히 삼키고(crash 0), 영향 0 이면 한 줄
-        안내만 낸다. dry-run/실행 동일(정보 출력만). stale 못 구해도(예외/unknown) 비차단.
+        `⚠` 를 단다 — fresh(False)/unknown(None)은 무표시. 도그푸딩/multi-PM 어디서든 일반 domain
+        부재·예외는 조용히 삼켜 완료를 막지 않되, marked engine skew 는 막는다. 영향 0 이면 한 줄
+        안내만 낸다. dry-run/실행 동일(정보 출력만). 일반 stale 예외/unknown 은 비차단.
         """
         print("\n[domain] 영향받는 domain 페이지 (soft·비차단):")
         try:
             affected = self._affected_domain_fn(ticket_id)
-        except Exception:  # noqa: BLE001 — soft 알림은 완료를 막지 않는다.
+        except Exception as exc:  # noqa: BLE001 — 일반 soft 알림 실패만 완료를 막지 않는다.
+            if _is_engine_rev_skew(exc):
+                raise
             affected = None
         if affected is None:
             print("  (domain 레이어 없음 — skip)")
@@ -1534,18 +1576,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-pytest",
         action="store_true",
-        help="[1/5] 회귀 단계를 skip 한다 (측정은 /pm-qa 등으로 별도·board complete 는 --tests-pass 유지).",
+        help=f"[1/5] 회귀 단계를 skip 한다 (측정은 {_runtime_skill_entry('pm-qa')} 등으로 "
+             "별도·board complete 는 --tests-pass 유지).",
     )
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -1614,7 +1651,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n[중단] 회귀 슬롯 해소 모호 — {ambiguity}", file=sys.stderr)
             print(
                 "  → `--repo <name> [--slot <N>]`(예: --repo project_manager --slot 1) 으로 슬롯을 "
-                "명시하거나, `--no-pytest` 로 회귀를 skip 하라(측정은 /pm-qa 등으로 별도).",
+                f"명시하거나, `--no-pytest` 로 회귀를 skip 하라(측정은 "
+                f"{_runtime_skill_entry('pm-qa')} 등으로 별도).",
                 file=sys.stderr,
             )
             return 1
@@ -1630,6 +1668,22 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         skip_pytest=args.no_pytest,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
+    try:
+        _console_encoding = _load_module_from_path(
+            Path(__file__).resolve().with_name("console_encoding.py"),
+            "console_encoding.py",
+            verifier=_verify_engine_rev,
+        )
+        _console_encoding.configure_console_utf8()
+        return _main(argv)
+    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
+        raise
 
 
 if __name__ == "__main__":

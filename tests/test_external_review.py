@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import multiprocessing
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -43,13 +45,34 @@ def external():
 # ── PM 하네스 세션 마커 / 호출층 상한 진단 ──────────────────────────────────
 
 
-def test_harness_session_marker_table_matches_delegate_source(external):
-    """독립 CLI의 복제 선언은 위임 엔진의 감지 단일 출처와 정확히 같아야 한다."""
+def test_harness_session_marker_table_matches_relay_source(external):
+    """세 표면의 상한 판정 입력 표는 relay 단일 선언을 그대로 참조한다."""
     delegate = _load("pm_delegate")
-    assert external._HARNESS_SESSION_MARKERS == delegate._HARNESS_SESSION_MARKERS
-    assert set(external._REVIEW_HARNESS_CAP_ENV) == set(external._HARNESS_SESSION_MARKERS)
-    assert set(delegate._DELEGATE_HARNESS_CAP_ENV) == set(delegate._HARNESS_SESSION_MARKERS)
-    assert external._REVIEW_HARNESS_CAP_ENV == delegate._DELEGATE_HARNESS_CAP_ENV
+    relay = _load("pm_relay")
+    external_relay = external._load_relay()
+    delegate_relay = delegate._load_relay()
+    assert relay.HARNESS_SESSION_MARKERS == external_relay.HARNESS_SESSION_MARKERS == \
+        delegate_relay.HARNESS_SESSION_MARKERS
+    assert relay.HARNESS_CAP_ENV == external_relay.HARNESS_CAP_ENV == \
+        delegate_relay.HARNESS_CAP_ENV
+    assert set(external_relay.HARNESS_CAP_ENV) == set(external_relay.HARNESS_SESSION_MARKERS)
+    assert set(delegate_relay.HARNESS_CAP_ENV) == set(delegate_relay.HARNESS_SESSION_MARKERS)
+    assert external_relay.HARNESS_CAP_ENV == delegate_relay.HARNESS_CAP_ENV
+    def assert_prefilter_coverage(marker_table):
+        declared_markers = {
+            marker
+            for markers in marker_table.values()
+            for marker in markers
+        }
+        assert all(external._is_possible_harness_session_key(marker)
+                   for marker in declared_markers)
+
+    assert_prefilter_coverage(relay.HARNESS_SESSION_MARKERS)
+    with pytest.raises(AssertionError):
+        assert_prefilter_coverage({
+            **relay.HARNESS_SESSION_MARKERS,
+            "future": ("GEMINI_SESSION",),
+        })
 
 
 @pytest.mark.parametrize("key", ("OPENCODE_CONFIG", "CLAUDE_CONFIG_DIR",
@@ -61,14 +84,32 @@ def test_harness_cap_advisory_ignores_config_and_unmeasured_keys(external, key):
     ) is None
 
 
+def test_harness_cap_advisory_does_not_load_relay_without_session_marker(monkeypatch):
+    """비하네스 셸은 advisory 계산/로더 실패 표면을 만들지 않고 즉시 반환한다."""
+    spec = importlib.util.spec_from_file_location(
+        "external_review_no_relay", TOOLS / "external_review.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    real_spec_from_file_location = importlib.util.spec_from_file_location
+
+    def reject_relay(name, location, *args, **kwargs):
+        if Path(location).name == "pm_relay.py":
+            raise AssertionError("relay must not load")
+        return real_spec_from_file_location(name, location, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", reject_relay)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module, "_load_relay",
+        lambda: (_ for _ in ()).throw(AssertionError("relay must not load")),
+    )
+    assert module.harness_cap_advisory(
+        {"OPENCODE_CONFIG_DIR": "/config"}, execution_budget=10,
+    ) is None
+
+
 def test_harness_cap_advisory_warns_for_all_nested_session_axes(external, monkeypatch):
     """중첩 세션의 공개 호출층 상한을 모두 검사해 경고를 합친다."""
-    class Relay:
-        @staticmethod
-        def harness_cap_required_budget(execution_budget):
-            return execution_budget
-
-    monkeypatch.setattr(external, "_load_relay", lambda: Relay())
     warning = external.harness_cap_advisory(
         {"OPENCODE": "child", "CLAUDECODE": "parent"},
         execution_budget=10,
@@ -82,12 +123,6 @@ def test_harness_cap_advisory_warns_for_all_nested_session_axes(external, monkey
 def test_harness_cap_advisory_keeps_claude_axis_with_opencode_config(
         external, monkeypatch):
     """OpenCode 설정 경로가 섞여도 Claude 세션의 호출층 상한을 진단한다."""
-    class Relay:
-        @staticmethod
-        def harness_cap_required_budget(execution_budget):
-            return execution_budget
-
-    monkeypatch.setattr(external, "_load_relay", lambda: Relay())
     warning = external.harness_cap_advisory(
         {"CLAUDECODE": "session", "OPENCODE_CONFIG_DIR": "/config/opencode"},
         execution_budget=10,
@@ -99,17 +134,72 @@ def test_harness_cap_advisory_keeps_claude_axis_with_opencode_config(
 def test_harness_cap_advisory_accepts_secondary_opencode_session_marker(
         external, monkeypatch):
     """보조 OpenCode 세션 마커도 공용 표 계약에 따라 OpenCode 상한을 안내한다."""
-    class Relay:
-        @staticmethod
-        def harness_cap_required_budget(execution_budget):
-            return execution_budget
-
-    monkeypatch.setattr(external, "_load_relay", lambda: Relay())
     warning = external.harness_cap_advisory(
         {"OPENCODE_PID": "123"}, execution_budget=10,
     )
     assert warning is not None
     assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS" in warning
+
+
+def test_timeout_output_routes_through_shared_partial_formatter(external, monkeypatch):
+    """리뷰 소비처를 옛 로컬 결합기로 되돌리면 이 seam 감지가 실패한다."""
+    class Relay:
+        @staticmethod
+        def format_partial_output(head, exc):
+            return f"shared:{head}:{exc.output}"
+
+    monkeypatch.setattr(external, "_load_relay", lambda: Relay())
+    exc = subprocess.TimeoutExpired(["reviewer"], 1, output="partial")
+    assert external._timeout_output(1, exc).endswith(":partial")
+
+
+@pytest.mark.parametrize("failure", (RuntimeError("loader"), ValueError("formatter")))
+def test_timeout_output_keeps_head_when_partial_formatter_fails(
+        external, monkeypatch, failure):
+    """이미 timeout인 리뷰는 relay 로더·포맷터 실패로 CLI 밖으로 튀지 않는다."""
+    if isinstance(failure, RuntimeError):
+        monkeypatch.setattr(external, "_load_relay", lambda: (_ for _ in ()).throw(failure))
+    else:
+        class BrokenRelay:
+            @staticmethod
+            def format_partial_output(head, exc):
+                raise failure
+        monkeypatch.setattr(external, "_load_relay", lambda: BrokenRelay())
+    exc = subprocess.TimeoutExpired(["reviewer"], 1, output="partial")
+    assert external._timeout_output(1, exc).startswith("[리뷰어 타임아웃")
+
+
+@pytest.mark.parametrize("failure_site", ("loader", "formatter"))
+def test_timeout_output_reraises_engine_rev_skew(external, monkeypatch, failure_site):
+    """rev skew는 기존 loud 계약대로 timeout 포맷 경로에서도 숨기지 않는다."""
+    skew = RuntimeError("skew")
+    skew._engine_rev_skew = True
+    if failure_site == "loader":
+        monkeypatch.setattr(
+            external, "_load_relay",
+            lambda: (_ for _ in ()).throw(skew),
+        )
+    else:
+        class BrokenRelay:
+            @staticmethod
+            def format_partial_output(head, exc):
+                raise skew
+
+        monkeypatch.setattr(external, "_load_relay", lambda: BrokenRelay())
+    with pytest.raises(RuntimeError, match="skew"):
+        external._timeout_output(1, subprocess.TimeoutExpired(["reviewer"], 1))
+
+
+@pytest.mark.parametrize("output, expected", [
+    ("", "[리뷰어 타임아웃"),
+    ("x" * 10000, "x" * 10000),
+    (b"ok\xff", "ok�"),
+])
+def test_timeout_output_shared_formatter_policy(external, output, expected):
+    """변경된 external-review 소비처에도 무절단·bytes 정책을 고정한다."""
+    rendered = external._timeout_output(1, subprocess.TimeoutExpired(["reviewer"], 1, output=output))
+    assert rendered.startswith("[리뷰어 타임아웃")
+    assert expected in rendered
 
 
 # ── 순수 헬퍼: 상한 파싱 (_round_limit) ─────────────────────────────────────
@@ -232,12 +322,58 @@ def test_ledger_corrupt_falls_back_to_empty(external, tmp_path, monkeypatch):
 
 def test_gate_entry_normalizes_missing_and_corrupt(external):
     """`_gate_entry` — 부재/손상 항목을 0/0 으로 정규화하고 ledger 에 심는다."""
-    ledger: dict = {"T-0002": {"count": "bad", "acked_through": None}, "T-0003": 7}
-    assert external._gate_entry(ledger, "T-0001") == {"count": 0, "acked_through": 0}
-    assert external._gate_entry(ledger, "T-0002") == {"count": 0, "acked_through": 0}
-    assert external._gate_entry(ledger, "T-0003") == {"count": 0, "acked_through": 0}
+    gate_one, gate_two, gate_three = ("T-" + suffix for suffix in ("0001", "0002", "0003"))
+    ledger: dict = {gate_two: {"count": "bad", "acked_through": None}, gate_three: 7}
+    assert external._gate_entry(ledger, gate_one) == {
+        "count": 0, "acked_through": 0, "sequence": 0, "records": [],
+    }
+    assert external._gate_entry(ledger, gate_two) == {
+        "count": 0, "acked_through": 0, "sequence": 0, "records": [],
+    }
+    assert external._gate_entry(ledger, gate_three) == {
+        "count": 0, "acked_through": 0, "sequence": 0, "records": [],
+    }
     # 정규화 결과가 ledger 에 심겨 후속 save 가 깨끗한 값을 기록한다.
-    assert ledger["T-0001"] == {"count": 0, "acked_through": 0}
+    assert ledger[gate_one] == {
+        "count": 0, "acked_through": 0, "sequence": 0, "records": [],
+    }
+
+    ledger["mixed-records"] = {
+        "count": "bad",
+        "acked_through": None,
+        "records": ["junk", {"sequence": "3", "verdict": True}, 7],
+    }
+    assert external._gate_entry(ledger, "mixed-records") == {
+        "count": 0,
+        "acked_through": 0,
+        "sequence": 3,
+        "records": [{"sequence": "3", "verdict": True}],
+    }
+
+
+def test_refund_keeps_concurrent_reservation_accounting_consistent(external):
+    ledger = {}
+    entry = external._gate_entry(ledger, "gate")
+    external._reserve_round(entry, "first")
+    external._reserve_round(entry, "second")
+    external._refund_round(entry, "first")
+    entry["records"][0]["verdict"] = True
+
+    assert entry["count"] == 1
+    assert entry["sequence"] == 2
+    assert entry["records"][0]["number"] == 2
+    assert external._unacked_round_counts(entry) == (1, 1, 0)
+
+    external._reserve_round(entry, "third")
+    assert [row["number"] for row in entry["records"]] == [2, 3]
+
+
+def test_failed_result_with_partial_verdict_text_is_still_incomplete(external):
+    result = {
+        "ok": False,
+        "verdict": {"has_pass": True, "has_must_fix": False},
+    }
+    assert external._round_has_verdict(result) is False
 
 
 # ── started 신호: 스폰 여부 판정 (_run_reviewer_ex·MF-A 근원) ────────────────
@@ -368,7 +504,7 @@ def _wire(external, monkeypatch, tmp_path, *, conf=None,
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(
         external, "local_config",
-        lambda: dict(conf) if conf is not None else {"external_review_enabled": "true"})
+        lambda repo=None: dict(conf) if conf is not None else {"external_review_enabled": "true"})
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, []))
     real_main = external.main
 
@@ -406,6 +542,29 @@ def _ledger(external, tmp_path):
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
+def test_valid_json_with_corrupt_records_still_runs_gate(
+    external, monkeypatch, tmp_path,
+):
+    calls = _wire(external, monkeypatch, tmp_path)
+    ledger_path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(
+        json.dumps({"corrupt-gate": {
+            "count": "bad",
+            "acked_through": None,
+            "records": ["junk"],
+        }}),
+        encoding="utf-8",
+    )
+
+    assert external.main(["--gate", "corrupt-gate", "--paths", "x.py"]) == 0
+    assert calls["n"] == 1
+    entry = _ledger(external, tmp_path)["corrupt-gate"]
+    assert entry["count"] == 1
+    assert len(entry["records"]) == 1
+    assert entry["records"][0]["verdict"] is True
+
+
 # ── red-first: 4회 정상 → 5회째 거부 (DoD) ──────────────────────────────────
 
 
@@ -420,14 +579,17 @@ def test_fifth_round_refused_before_reviewer(external, monkeypatch, tmp_path, ca
     for i in range(1, 5):  # 1..4 정상
         assert external.main(argv) == 0, f"round {i} 는 정상이어야 한다"
     assert calls["n"] == 4
-    assert _ledger(external, tmp_path)["T-0100"] == {"count": 4, "acked_through": 0}
+    entry = _ledger(external, tmp_path)[argv[1]]
+    assert (entry["count"], entry["acked_through"]) == (4, 0)
+    assert len(entry["records"]) == 4 and all(row["verdict"] for row in entry["records"])
 
     rc = external.main(argv)  # 5회째 거부
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert rc not in (0, 1)  # 기존 0/1 과 구분되는 전용 rc
     assert calls["n"] == 4   # 리뷰어 미호출 (외부 전송 없음·과금 차단)
     # count 는 거부된 라운드로 늘지 않는다 (실 전송만 count).
-    assert _ledger(external, tmp_path)["T-0100"] == {"count": 4, "acked_through": 0}
+    entry = _ledger(external, tmp_path)[argv[1]]
+    assert (entry["count"], entry["acked_through"]) == (4, 0)
     err = capsys.readouterr().err
     assert "라운드 상한 초과" in err
     assert "사용자" in err and "대기" in err  # 보고·대기 안내
@@ -452,13 +614,15 @@ def test_ack_rounds_resumes_then_reblocks(external, monkeypatch, tmp_path, capsy
     rc = external.main(argv + ["--ack-rounds"])
     assert rc == 0
     assert calls["n"] == 5  # ack 호출이 실 전송으로 진행됨
-    assert _ledger(external, tmp_path)["T-0101"] == {"count": 5, "acked_through": 4}
+    entry = _ledger(external, tmp_path)[argv[1]]
+    assert (entry["count"], entry["acked_through"]) == (5, 4)
     assert "승인 재개" in capsys.readouterr().err
 
     # 재개 창에서 +limit(=4) 소진: ack 라운드(#5) 뒤 3라운드(#6,7,8) 더 정상 → #9 재차단.
     for i in range(3):
         assert external.main(argv) == 0, f"재개 후 round {i} 는 정상이어야 한다"
-    assert _ledger(external, tmp_path)["T-0101"] == {"count": 8, "acked_through": 4}
+    entry = _ledger(external, tmp_path)[argv[1]]
+    assert (entry["count"], entry["acked_through"]) == (8, 4)
     assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED  # 재차단
     assert calls["n"] == 8  # 재차단 라운드는 리뷰어 미호출
 
@@ -484,22 +648,25 @@ def test_empty_diff_excluded_from_count(external, monkeypatch, tmp_path):
     assert _ledger(external, tmp_path) == {}
 
 
-def test_timeout_keeps_count_and_reaches_limit(external, monkeypatch, tmp_path):
-    """타임아웃/비정상 종료(started=True)는 카운트 유지 — 반복 타임아웃이 상한에 도달해 차단된다.
+def test_timeout_uses_separate_incomplete_retry_limit(external, monkeypatch, tmp_path, capsys):
+    """판정 없는 종료는 별도 재시도 예산 2회를 쓰고 판정 상한은 소진하지 않는다.
 
-    MF-A red-첫: 프롬프트가 이미 전송·과금됐을 수 있으므로 실패여도 예약을 환불하지 않는다. 그러지
-    않으면(성공시에만 +1) 반복 타임아웃으로 상한을 무한 우회한다. limit=4 → 4회 타임아웃 뒤 5회째
-    거부, 각 라운드는 실 전송(리뷰어 호출)임을 단언한다."""
+    프롬프트가 이미 전송·과금됐을 수 있으므로 실패여도 예약을 환불하지 않는다. 두 번 모두 종료
+    마감되지만 verdict=false이고, 세 번째 호출은 reviewer 전에 차단된다."""
     calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_STARTED)
     argv = ["--gate", "T-0104", "--paths", "x.py"]
-    for i in range(1, 5):  # 1..4 타임아웃 — 실패(rc=1)지만 카운트는 유지
+    for i in range(1, 3):
         assert external.main(argv) == 1, f"round {i} 는 FALLBACK(rc=1)"
-    assert calls["n"] == 4
-    assert _ledger(external, tmp_path)["T-0104"] == {"count": 4, "acked_through": 0}
+    assert calls["n"] == 2
+    entry = _ledger(external, tmp_path)[argv[1]]
+    assert (entry["count"], entry["acked_through"]) == (2, 0)
+    assert all(row["finished_at"] and not row["verdict"] for row in entry["records"])
 
-    rc = external.main(argv)  # 5회째 — 상한 도달 → 거부
+    rc = external.main(argv)
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert calls["n"] == 4    # 거부 라운드는 리뷰어 미호출
+    assert calls["n"] == 2
+    err = capsys.readouterr().err
+    assert "count=2(판정 0 · 미완 2)" in err
 
 
 def test_spawn_failure_refunds_reservation(external, monkeypatch, tmp_path):
@@ -513,6 +680,41 @@ def test_spawn_failure_refunds_reservation(external, monkeypatch, tmp_path):
         assert external.main(["--gate", "T-0114", "--paths", "x.py"]) == 1
     assert calls["n"] == 6                       # 전송은 시도됨(리뷰어 호출)
     assert _ledger(external, tmp_path)["T-0114"]["count"] == 0  # 예약 환불 → never blocked
+
+
+def test_killed_main_leaves_machine_counted_unfinished_record(
+    external, monkeypatch, tmp_path,
+):
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("process kill ledger test requires fork")
+    _wire(external, monkeypatch, tmp_path)
+
+    def _block(*args, **kwargs):
+        time.sleep(30)
+
+    monkeypatch.setattr(external, "run_review", _block)
+    gate = "kill-gate"
+    process = multiprocessing.get_context("fork").Process(
+        target=external.main,
+        args=(["--gate", gate, "--paths", "x.py"],),
+    )
+    process.start()
+    deadline = time.monotonic() + 5
+    entry = None
+    while time.monotonic() < deadline:
+        ledger = _ledger(external, tmp_path)
+        entry = ledger.get(gate)
+        if entry and entry.get("records"):
+            break
+        time.sleep(0.02)
+    assert entry is not None and entry["records"]
+    process.kill()
+    process.join(timeout=5)
+    assert not process.is_alive()
+
+    entry = _ledger(external, tmp_path)[gate]
+    assert "finished_at" not in entry["records"][0]
+    assert external._unacked_round_counts(entry) == (1, 0, 1)
 
 
 # ── local.conf 노브 · --gate 미지정 · ack-without-gate ──────────────────────
@@ -613,7 +815,7 @@ def test_reserve_check_save_under_single_lock(external, monkeypatch, tmp_path):
     monkeypatch.setattr(external, "_round_ledger_lock", _instrumented)
     assert external.main(["--gate", "T-0116", "--paths", "x.py"]) == 0
     assert depth["max"] == 1          # 재진입/중첩 없음 (예약 구간 원자)
-    assert depth["enters"] == 1       # 성공 경로 = 예약 1회(환불 없음)
+    assert depth["enters"] == 2       # 실행 전 등재 + 종료 시 마감
     assert _ledger(external, tmp_path)["T-0116"]["count"] == 1
 
 

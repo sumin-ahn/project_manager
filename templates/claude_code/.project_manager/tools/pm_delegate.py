@@ -359,7 +359,7 @@ _ENV_ALLOWLIST_PREFIXES: tuple[str, ...] = ("LC_",)
 # config)로 완주했다 — OPENAI/ANTHROPIC_API_KEY env 는 부재해도 무방(파일 auth 경로). load-bearing 키 =
 # base 의 HOME + opencode 의 OPENCODE_CONFIG_DIR(ollama provider config 위치). API-key 항목은 env-auth
 # adopter 용 보험이라 유지(존재 시만 통과·과잉 아님). 이 allowlist 로 충분(키 추가/축소 불요).
-# 인증/설정 전달 allowlist이며 세션 감지 마커가 아니다 — 감지는 `_HARNESS_SESSION_MARKERS`가 소유한다.
+# 인증/설정 전달 allowlist이며 세션 감지 마커가 아니다 — 감지 선언은 relay가 소유한다.
 _HARNESS_AUTH_ENV: dict[str, tuple[str, ...]] = {
     "codex": ("CODEX_HOME", "CODEX_SANDBOX_NETWORK_DISABLED", "OPENAI_API_KEY"),
     "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"),
@@ -581,14 +581,18 @@ def _load_delegate_scope():
 
 # ── 설정 ──────────────────────────────────────────────────────────────────
 
+_CONFIG_REPO_OVERRIDE: Path | None = None
+
+
 def local_config() -> dict[str, str]:
     """per-clone local.conf 를 KEY=value 로 읽는다(external_review.local_config 재사용).
 
     독립 주석 라인(`#` 시작)만 처리하고 값 안의 `#` 은 제거하지 않는다 — `delegate.*` 값은 inline
     주석 금지(독립 주석 라인만). REPO 를 호출 시점 읽어 테스트 monkeypatch 를 추종한다."""
     er = _load_external_review()
-    er.REPO = REPO
-    er.LOCAL_CONF = REPO / ".project_manager" / "local.conf"
+    config_repo = _CONFIG_REPO_OVERRIDE or REPO
+    er.REPO = config_repo
+    er.LOCAL_CONF = config_repo / ".project_manager" / "local.conf"
     return er.local_config()
 
 
@@ -1572,8 +1576,10 @@ def build_env(harness: str) -> dict[str, str]:
     return out
 
 
-def _prompt_file_contained(prompt_file: Path, cwd: Path) -> bool:
-    """prompt-file 이 (a) 해소된 cwd(realpath) 하위 또는 (b) 이 repo PM 홈(REPO/.project_manager)
+def _prompt_file_contained(
+    prompt_file: Path, cwd: Path, *, pm_home: Path,
+) -> bool:
+    """prompt-file 이 (a) 해소된 cwd(realpath) 하위 또는 (b) 해소된 PM 홈의 `.project_manager`
     하위인가(containment).
 
     realpath 로 해소(심볼릭·`..` 이탈 차단·resolve 가 symlink 를 실경로로 편다)한 뒤 **두 신뢰 루트에
@@ -1586,8 +1592,8 @@ def _prompt_file_contained(prompt_file: Path, cwd: Path) -> bool:
     except OSError:
         return False
     cwd_resolved = cwd.resolve()
-    pm_home = (REPO / ".project_manager").resolve()
-    return _is_relative_to(resolved, cwd_resolved) or _is_relative_to(resolved, pm_home)
+    trusted_pm_dir = (pm_home / ".project_manager").resolve()
+    return _is_relative_to(resolved, cwd_resolved) or _is_relative_to(resolved, trusted_pm_dir)
 
 
 def _is_relative_to(path: Path, base: Path) -> bool:
@@ -2143,6 +2149,7 @@ def resolved_delegate_profile(
 
 def check_local_conf_divergence(
     cwd: Path, conf: dict[str, str], role: str, tier: str, *,
+    config_repo: Path,
     cli_override: bool = False,
     compare_fallback: bool = False,
     external_review_module=None,
@@ -2202,10 +2209,12 @@ def check_local_conf_divergence(
         return values
 
     divergence = er.local_conf_divergence(
-        engine_repo=REPO,
+        engine_repo=config_repo,
         engine_conf=conf,
         target_repo=target_repo,
         selector=effective_profile,
+        engine_label="pm-home",
+        target_label="cwd-worktree",
     )
     return target_repo, divergence, er
 
@@ -2249,10 +2258,11 @@ def _gettempdir() -> str:
 
 
 def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
-    """raw/장부 위치를 공용 seam에서 해소한다(REPO 미해소만 tempdir 폴백)."""
+    """raw/장부 위치를 해소된 PM 홈 소유자에서 정한다(REPO 미해소만 폴백)."""
     relay = _load_relay()
     return relay.raw_storage_paths(
-        REPO, "delegate", output_dir, temp_dir=Path(_gettempdir())
+        _CONFIG_REPO_OVERRIDE or REPO,
+        "delegate", output_dir, temp_dir=Path(_gettempdir()),
     )
 
 
@@ -2285,28 +2295,9 @@ def _peer_engine_ledgers() -> tuple[Path, ...]:
     try:
         current = REPO.resolve()
         external_review = _load_external_review()
-        if external_review._owns_real_board(current / ".project_manager"):
-            pm_home = current
-        elif current.parent.name == "work":
-            candidate = current.parent.parent
-            pm_home = (
-                candidate
-                if external_review._owns_real_board(
-                    candidate / ".project_manager"
-                )
-                else None
-            )
-        else:
-            pm_home = None
-        if pm_home is None:
-            return ()
-
-        candidates = [pm_home]
-        work_dir = pm_home / "work"
-        if work_dir.is_dir():
-            candidates.extend(
-                path for path in sorted(work_dir.iterdir()) if path.is_dir()
-            )
+        pm_home = (_CONFIG_REPO_OVERRIDE or
+                   external_review.resolve_pm_home_for_repo(current)).resolve()
+        candidates = [pm_home, *external_review._registered_worktrees(pm_home)]
         ledgers: set[Path] = set()
         for repo in candidates:
             resolved_repo = repo.resolve()
@@ -2977,6 +2968,7 @@ class ScopeAudit(NamedTuple):
     touches: tuple[str, ...] | None  # None이면 generic 축만 강등(ticket 준비 실패)
     before: object                # delegate_scope.WorktreeState
     workspace: Path               # git toplevel(=--cwd 가 하위 디렉토리여도 판정 기준은 루트)
+    pm_root: Path = REPO          # --cwd lease에서 해소한 board/config 소유 PM 홈
     adapter_roots: tuple[str, ...] = ()  # preamble과 같은 실행-전 등록부 스냅샷
 
 
@@ -2989,10 +2981,47 @@ def _warn_dropped_touch(item: str, reason: str) -> None:
     )
 
 
+def _with_template_propagation(
+    touches: Sequence[str], *, workspace: Path, pm_root: Path | None = None,
+) -> tuple[str, ...]:
+    """엔진 tools touch에 대응하는 실재 templates 하네스 경로를 허용 집합에 보탠다."""
+    templates = workspace / "templates"
+    harnesses = tuple(
+        path.name for path in sorted(templates.iterdir()) if path.is_dir()
+    ) if templates.is_dir() else ()
+    expanded = list(touches)
+    for raw in touches:
+        parts = PurePosixPath(raw.replace("\\", "/")).parts
+        # ticket이 실제 workspace 루트 엔진 tools를 허용한 경우에만 기계 전파본을 보탠다.
+        # 이미 templates 아래인 touch나 경로 중간의 tools 표기는 다른 하네스 전체를 열지 않는다.
+        marker = next(
+            (
+                index for index in range(len(parts) - 1)
+                if parts[index:index + 2] == (".project_manager", "tools")
+            ),
+            None,
+        )
+        if marker is None:
+            continue
+        prefix = PurePosixPath(*parts[:marker])
+        root_touch = not prefix.parts
+        if pm_root is not None and prefix.parts:
+            root_touch = (pm_root / prefix).resolve() == workspace.resolve()
+        if not root_touch:
+            continue
+        suffix = parts[marker:]
+        for harness in harnesses:
+            candidate = workspace / "templates" / harness
+            if (candidate / ".project_manager" / "tools").is_dir():
+                expanded.append(PurePosixPath("templates", harness, *suffix).as_posix())
+    return tuple(dict.fromkeys(expanded))
+
+
 def begin_scope_audit(
     ticket: str | None,
     cwd: Path,
     *,
+    pm_root: Path | None = None,
     adapter_roots: Sequence[str] | None = None,
 ) -> ScopeAudit | None:
     """위임 실행 **직전** worktree 상태를 캡처한다.
@@ -3043,7 +3072,13 @@ def begin_scope_audit(
         )
 
     try:
-        touches = scope.ticket_touches(BOARD_PY, ticket, pm_root=REPO) if ticket else ()
+        resolved_pm_root = pm_root or REPO
+        touches = scope.ticket_touches(
+            BOARD_PY, ticket, pm_root=resolved_pm_root,
+        ) if ticket else ()
+        touches = _with_template_propagation(
+            touches, workspace=workspace, pm_root=resolved_pm_root,
+        )
     except Exception as exc:  # noqa: BLE001 — touches의 형제인 어댑터 축은 보존한다.
         if _is_engine_rev_skew(exc):
             raise
@@ -3054,7 +3089,7 @@ def begin_scope_audit(
             "공통 worktree 캡처가 살아 있어 어댑터 편집 축은 계속 판정합니다.",
             file=sys.stderr,
         )
-    return ScopeAudit(scope, touches, before, workspace, roots)
+    return ScopeAudit(scope, touches, before, workspace, pm_root or REPO, roots)
 
 
 def _adapter_edit_paths(
@@ -3143,7 +3178,8 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
         try:
             paths = audit.scope.out_of_scope_changes(
                 audit.before, after,
-                touches=audit.touches, role=role, pm_root=REPO, workspace=audit.workspace,
+                touches=audit.touches, role=role, pm_root=audit.pm_root,
+                workspace=audit.workspace,
                 write_roles=WRITE_ROLES, on_drop=_warn_dropped_touch,
             )
             warning = audit.scope.format_warning(paths)
@@ -3195,24 +3231,11 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
 # 뒤 OPENCODE=<set>, OPENCODE_PID=<set>만 추가했다. 따라서 OPENCODE(보조로
 # OPENCODE_PID)는 런타임 주입 세션 마커다. 반대로 OPENCODE_CONFIG_DIR는 세션 없는 부모에도
 # 있으므로 설정 경로로 확정했고, OPENCODE_CONFIG는 양쪽 어디에도 없어 판정에서 제외한다.
-_HARNESS_SESSION_MARKERS: dict[str, tuple[str, ...]] = {
-    "codex": ("CODEX_THREAD_ID", "CODEX_CI"),
-    "claude": ("CLAUDECODE",),
-    "opencode": ("OPENCODE", "OPENCODE_PID"),
-}
-
-# 런타임 Bash 상한 env 선언. 키 집합은 세션 마커 표와 같고, 공개 조회 표면이 없는 축은 None이다.
-_DELEGATE_HARNESS_CAP_ENV: dict[str, str | None] = {
-    "codex": None,
-    "claude": "BASH_MAX_TIMEOUT_MS",
-    "opencode": "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
-}
-
-
 def _session_harnesses(env: dict[str, str]) -> tuple[str, ...]:
     """실측 세션 마커와 일치하는 하네스를 모두 반환한다."""
+    session_markers = _load_relay().HARNESS_SESSION_MARKERS
     return tuple(
-        name for name, keys in _HARNESS_SESSION_MARKERS.items()
+        name for name, keys in session_markers.items()
         if any(env.get(key) for key in keys)
     )
 
@@ -3475,9 +3498,13 @@ def _pm_harness_and_cap_env(
 ) -> tuple[tuple[str, str | None], ...]:
     """현재 PM 하네스 전축과 각 Bash 상한 env 키를 해소한다."""
     env = os.environ if env is None else env
+    relay = _load_relay()
+    session_markers = relay.HARNESS_SESSION_MARKERS
+    cap_env = relay.HARNESS_CAP_ENV
     return tuple(
-        (pm_harness, _DELEGATE_HARNESS_CAP_ENV.get(pm_harness))
-        for pm_harness in _session_harnesses(env)
+        (pm_harness, cap_env.get(pm_harness))
+        for pm_harness, markers in session_markers.items()
+        if any(env.get(marker) for marker in markers)
     )
 
 
@@ -3491,42 +3518,31 @@ def harness_cap_advisory(env: dict[str, str] | None = None,
     않고 설정 표면을 명시한다(advisory·실행은 차단하지 않음).
     """
     env = os.environ if env is None else env
-    matched_caps = tuple(
-        (pm_harness, cap_key)
-        for pm_harness, cap_key in _pm_harness_and_cap_env(env)
-        if cap_key is not None
-    )
-    if not matched_caps:
+    if not _session_harnesses(env):
         return None
     relay = _load_relay()
+    session_markers = relay.HARNESS_SESSION_MARKERS
+    cap_env = relay.HARNESS_CAP_ENV
     required = max_declared_execution_path_budget()
     if execution_budget is not None:
         required = max(required, execution_budget)
-    required = int(relay.harness_cap_required_budget(required))
-    warnings = []
-    for pm_harness, cap_key in matched_caps:
-        raw = env.get(cap_key)
-        if raw is None:
-            warnings.append(
+    return relay.harness_cap_advisory(
+        env, execution_budget=required,
+        session_markers=session_markers, cap_env=cap_env,
+        render_missing=lambda pm_harness, cap_key, required: (
                 f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_key} 미해소 — "
                 f"엔진 최악 실행 경로+정리 여유 {required}s 이상으로 설정해야 하네스 선행 kill을 막습니다."
-            )
-            continue
-        try:
-            cap_sec = int(raw) / 1000.0
-        except (TypeError, ValueError, OverflowError):
-            warnings.append(
+        ),
+        render_invalid=lambda pm_harness, cap_key, raw, required: (
                 f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_key}={raw!r} 해석 불가 — "
                 f"유한한 정수 ms로 {required}s 이상 설정하세요."
-            )
-            continue
-        if not math.isfinite(cap_sec) or cap_sec < required:
-            warnings.append(
+        ),
+        render_low=lambda pm_harness, cap_key, cap_sec, required: (
                 f"[pm-delegate] 경고: {pm_harness} 하네스 상한 {cap_sec:g}s < "
                 f"엔진 최악 실행 경로+정리 여유 {required}s — 엔진 무진행 진단/부분 산출물 보존 전에 "
                 f"하네스가 kill할 수 있습니다. {cap_key}를 최소 {required * 1000}ms로 상향하세요."
-            )
-    return "\n".join(warnings) or None
+        ),
+    )
 
 
 def _dry_run_harness_annotations(
@@ -3553,6 +3569,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         verifier=_verify_engine_rev,
     )
     _console_encoding.configure_console_utf8()
+    global _CONFIG_REPO_OVERRIDE
+    # main() 재호출 간 config 앵커가 새지 않게 모든 분기(lint/raw 포함) 진입 전에 초기화한다.
+    _CONFIG_REPO_OVERRIDE = None
     # `lint` 서브커맨드 — flat 위임 옵션(--role/--prompt-file/--cwd required)과 분리한 별도 경로.
     # 위임과 인자 형상이 다르므로 build_arg_parser 앞에서 분기(subparsers 로 위임 required 를 흩지
     # 않는다). never-block(항상 rc=0).
@@ -3565,11 +3584,51 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     args = parser.parse_args(resolved)
     _validate_args(parser, args)
 
-    conf = local_config()
     tier = args.tier if (args.role == "developer" and args.tier) else "normal"
     cwd = Path(args.cwd)
-    conf_path = _local_conf_path(REPO)
     profile_source = "cli-override" if (args.harness and args.model) else "local-conf"
+
+    # --cwd는 실행 타깃뿐 아니라 config/board 소유자를 정하는 명시 입력이다. 먼저 git 루트를
+    # 확정한 뒤 worktree lease 장부로 PM 홈을 해소해, 어느 엔진 사본을 호출했는지와 분리한다.
+    if not _cwd_in_git_repo(cwd, git_run_fn):
+        print(
+            f"오류: --cwd 는 git 저장소 루트이거나 그 하위여야 합니다: {cwd}\n"
+            "  광범위 경로(홈 디렉토리 등 non-repo)는 신뢰 작업공간이 아닙니다 — worktree/repo 를 지정하세요.",
+            file=sys.stderr,
+        )
+        return 1
+    er = _load_external_review()
+    cwd_repo = er.repo_root_from_cwd(cwd) or cwd.resolve()
+    try:
+        config_repo = er.resolve_pm_home_for_repo(
+            cwd_repo, required=bool(args.ticket),
+        )
+    except er.AnchorResolutionError as exc:
+        print(f"오류: --cwd 소유 PM 홈 해소 실패 — {exc}", file=sys.stderr)
+        return 1
+    _CONFIG_REPO_OVERRIDE = config_repo
+    board_repo = config_repo
+    if (
+        args.ticket
+        and er._owns_real_board(REPO / ".project_manager")
+        and REPO.resolve() != config_repo.resolve()
+    ):
+        print(
+            "오류: 실행 엔진 board와 --cwd 소유 PM 홈이 다릅니다 — 같은 ticket id를 다른 "
+            f"board에서 읽을 수 없어 중단합니다: engine={REPO.resolve()} owner={config_repo.resolve()}",
+            file=sys.stderr,
+        )
+        return 1
+    conf_path = _local_conf_path(config_repo)
+    try:
+        conf = local_config()
+    except (OSError, UnicodeError) as exc:
+        print(
+            f"오류: 해소된 local.conf 읽기 실패 — 외부 송신 전에 중단합니다: "
+            f"{conf_path} ({type(exc).__name__}: {exc})",
+            file=sys.stderr,
+        )
+        return 1
 
     # opt-in 게이트 (비-dry-run·기본 OFF·disabled = rc=3). **매핑 해소보다 앞** — 기본 OFF +
     # 매핑 없는 새 설치는 "매핑 미설정"(rc=1)이 아니라 disabled(rc=3)로 응답해야 한다(codex must-fix).
@@ -3611,19 +3670,8 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                              "한도 소진된 같은 채널 재타격 금지")
             fallback = None
 
-    # cwd = git 저장소 루트/하위 검증 (광범위 홈 디렉토리 등 거부·경계 보강)
-    if not _cwd_in_git_repo(cwd, git_run_fn):
-        print(
-            f"오류: --cwd 는 git 저장소 루트이거나 그 하위여야 합니다: {cwd}\n"
-            "  광범위 경로(홈 디렉토리 등 non-repo)는 신뢰 작업공간이 아닙니다 — worktree/repo 를 지정하세요.",
-            file=sys.stderr,
-        )
-        return 1
-
     # target repo 해소값은 write-target 재앵커에 먼저 쓰되, conf 분기 비교는 프롬프트 시크릿 판정으로
     # fallback의 실제 발동 가능성까지 해소한 뒤 수행한다.
-    er = _load_external_review()
-    cwd_repo = er.repo_root_from_cwd(cwd)
     # prompt-file 존재 + 경로 자체 denylist(내용 읽기 전) + containment (repo 경계 안·유출 차단)
     prompt_file = Path(args.prompt_file)
     if not prompt_file.is_file():
@@ -3637,10 +3685,10 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             file=sys.stderr,
         )
         return 1
-    if not _prompt_file_contained(prompt_file, cwd):
+    if not _prompt_file_contained(prompt_file, cwd, pm_home=config_repo):
         print(
             f"오류: --prompt-file 이 repo 경계 밖입니다: {prompt_file}\n"
-            "  해소된 --cwd 하위 또는 이 repo PM 홈(.project_manager/) 하위만 허용됩니다(유출 경로 차단).",
+            "  해소된 --cwd 하위 또는 소유 PM 홈(.project_manager/) 하위만 허용됩니다(유출 경로 차단).",
             file=sys.stderr,
         )
         return 1
@@ -3678,7 +3726,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     profile = resolved_delegate_profile(harness, model, reasoning)
     print(
         f"[pm-delegate] config provenance: local_conf={conf_path} "
-        f"· source={profile_source} · resolved_profile={profile}",
+        f"· pm_home={config_repo.resolve()} · source={profile_source} · resolved_profile={profile}",
         file=sys.stderr,
     )
     # 드라이버 argv 준비 (dry-run·실행 공용). opencode 는 실행 시 합성 프롬프트를 임시 파일로 --file
@@ -3750,12 +3798,13 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             )
             return 1
 
-    # 기존 `--cwd` 신뢰 repo축을 실행 엔진 REPO와 대조한다. 유효 시크릿 승인이 해소된 실행은 fallback이
+    # 기존 `--cwd` 신뢰 repo축을 파생 config_repo와 대조한다. 유효 시크릿 승인이 해소된 실행은 fallback이
     # 확정 비발동이므로 비교하지 않는다. 그 밖에도 양쪽 모두 설정된 fallback 값만 공용 seam이 비교한다.
     compare_fallback = fallback is not None and secret_scan_ack_digest is None
     try:
         _resolved_cwd_repo, divergence, er = check_local_conf_divergence(
             cwd, conf, args.role, tier,
+            config_repo=config_repo,
             cli_override=(profile_source == "cli-override"),
             compare_fallback=compare_fallback,
             # 이미 cwd 해소에 쓴 같은 모듈 객체를 전달한다. `_load_external_review()` 재호출은 새
@@ -3768,7 +3817,17 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     if divergence is not None:
         print(
             er.format_local_conf_divergence(
-                divergence, surface="pm_delegate", cwd_label="--cwd",
+                divergence,
+                surface="pm_delegate",
+                cwd_label="--cwd worktree",
+                source_label="해소된 PM 홈",
+                resolution_note=(
+                    "이번 실행에서는 --cwd의 lease 소유자로 해소된 PM 홈 conf가 적용됩니다: "
+                    f"{divergence.engine_conf_path}\n"
+                    "  차단하지 않고 계속합니다. 같은 프로필을 원하면 --cwd worktree conf의 위 "
+                    "키 값을 PM 홈 conf와 맞추세요. 다른 PM 홈 conf를 선택하려면 --cwd가 "
+                    "가리키는 worktree와 lease 소유 관계를 확인하세요."
+                ),
             ),
             file=sys.stderr,
         )
@@ -3836,7 +3895,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # 범위 판정 캡처 — **위임 전체 단위**로 1회. 폴백 attempt 도 같은 위임의 일부라
     # attempt 마다 재캡처하지 않는다(PM 이 회수 시점에 "이 위임이 범위 밖을 만졌나"를 본다). 아래
     # 실행·회수 블록의 모든 종료 경로(성공·폴백·fail-loud·예외)에서 finally 가 정확히 1회 보고한다.
-    scope_audit = begin_scope_audit(args.ticket, cwd, adapter_roots=adapter_roots)
+    scope_audit = begin_scope_audit(
+        args.ticket, cwd, pm_root=board_repo, adapter_roots=adapter_roots,
+    )
     try:
         return _execute_and_collect(
             args=args, harness=harness, model=model, reasoning=reasoning,

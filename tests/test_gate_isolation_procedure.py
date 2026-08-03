@@ -91,37 +91,45 @@ def test_gate_isolation_has_executable_bash_block():
     )
 
 
-# ── (2) 커맨드 문법 유효 (git worktree add/remove·detach·staged 스냅샷) ────────
+# ── (2) 커맨드 문법 유효 (gate_snapshot 도구 호출 + worktree remove) ──────────
 
 def test_gate_isolation_worktree_commands_present():
-    """격리 절이 검증된 커맨드 문법을 담는다 — worktree add --detach · checkout-index --prefix ·
-    worktree remove (scratch 미니 repo 실증으로 확정한 문법).
+    """격리 절이 기계 절차의 커맨드를 담는다 — 생성은 엔진 도구 `gate_snapshot.py`
+    (--repo/--output/--paths·신선도 검증 내장) · 제거는 `git worktree remove`.
+
+    수동 2-커맨드(worktree add + checkout-index)는 stale-index false-green 클래스라 도구가
+    대체했다 — 그 커맨드가 되살아나면 이 가드가 잡는다(아래 부재 단언).
     """
     region = _isolation_region()
     assert region, "격리 절 마커 부재 (T-0410)"
     required = [
-        ("worktree add", "git worktree add"),
-        ("detach 플래그", "--detach"),
-        ("staged 스냅샷(checkout-index)", "git checkout-index"),
-        ("prefix 대상 경로", "--prefix"),
+        ("스냅샷 도구 호출", "gate_snapshot.py"),
+        ("공유 트리 인자", "--repo"),
+        ("출력 경로 인자", "--output"),
+        ("검토 경로 인자", "--paths"),
         ("worktree remove", "git worktree remove"),
     ]
     missing = [name for name, token in required if token not in region]
     assert not missing, (
         f"격리 절에 커맨드 문법 누락: {missing} — "
-        f"worktree add --detach / checkout-index --prefix / worktree remove 를 명시해야 함 (T-0410)"
+        f"gate_snapshot.py --repo/--output/--paths + git worktree remove 를 명시해야 함 (T-0410)"
+    )
+    # 수동 절차 부활 금지 — 도구가 닫은 false-green 클래스의 재유입 백스톱.
+    revived = [t for t in ("git worktree add", "git checkout-index") if t in region]
+    assert not revived, (
+        f"격리 절에 수동 스냅샷 커맨드가 되살아남: {revived} — 생성은 gate_snapshot.py 단일 경로여야 함"
     )
 
 
 def test_gate_isolation_add_precedes_remove():
-    """커맨드가 올바른 순서(생성=add 가 제거=remove 앞)로 문서화됐다."""
+    """커맨드가 올바른 순서(생성=도구 호출이 제거=remove 앞)로 문서화됐다."""
     region = _isolation_region()
     assert region, "격리 절 마커 부재 (T-0410)"
-    add_at = region.find("git worktree add")
+    create_at = region.find("gate_snapshot.py")
     remove_at = region.find("git worktree remove")
-    assert add_at != -1 and remove_at != -1, "worktree add/remove 커맨드 부재 (T-0410)"
-    assert add_at < remove_at, (
-        "격리 절 커맨드 순서 역전 — 생성(worktree add)이 제거(worktree remove) 앞에 와야 함 (T-0410)"
+    assert create_at != -1 and remove_at != -1, "생성 도구/remove 커맨드 부재 (T-0410)"
+    assert create_at < remove_at, (
+        "격리 절 커맨드 순서 역전 — 생성(gate_snapshot.py)이 제거(worktree remove) 앞에 와야 함 (T-0410)"
     )
 
 

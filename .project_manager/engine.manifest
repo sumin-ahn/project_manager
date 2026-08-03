@@ -42,6 +42,8 @@
 .project_manager/tools/pm_relay.py
 # external_review: 외부 리뷰어 어댑터 (ADR-0004·기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
 .project_manager/tools/external_review.py
+# gate_snapshot: 명시 검토 경로만 working tree↔격리 worktree 내용 해시를 대조하는 fail-loud 생성기.
+.project_manager/tools/gate_snapshot.py
 # worktree_pool: multi-PM worktree 풀/슬롯 리스 엔진 (ADR-0013). 리스 장부(.local/worktree-leases.json)는 per-clone(manifest 밖)
 .project_manager/tools/worktree_pool.py
 # pm_config: multi-PM 셋업/관리 파사드 디스패처 (ADR-0011·0014). 루트 forwarder pm-config.sh/.cmd 는
@@ -79,6 +81,7 @@
 # ── 방법론 문서 (엔진 · 프로젝트별 칸은 *.local.md / local.conf, manifest 밖) ──
 .project_manager/wiki/pm_role.md
 .project_manager/wiki/pm_playbook.md
+.project_manager/wiki/README.md
 
 # ── 템플릿 (도구·skill 이 소비) ──────────────────────────────────
 .project_manager/wiki/pm_state.template.md

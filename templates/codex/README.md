@@ -19,14 +19,14 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
   `pm.md`(mode: primary) 에 해당하는 파일이 **없다**(load-bearing 부재). relay(supervisor 위임)는
   `codex exec --json` 으로 세션을 열어 `thread.started.thread_id` 를 파싱하고 `codex exec resume <id>`
   로 이어간다(`.codex/pm_orch_codex.py`).
-- **`AGENTS.md`** (공통 코어·harness-neutral·instance-owned) — PM 부트스트랩·엔진 호출(인코딩)·완료
-  부기·결정 권한·안전 가드. `templates/opencode/AGENTS.md` 와 **byte-identical**(공통 코어 수렴·가드) →
-  opencode 와 dual-harness 로 공존해도 진입 doc 충돌이 byte-identical git-safe skip 으로 자연 소멸한다.
+- **`AGENTS.md`** (공통 코어·instance-owned) — PM 부트스트랩·엔진 호출(인코딩)·완료
+  부기·결정 권한·안전 가드와 `$pm-…` 진입 표기를 제공한다. 같은 파일을 공유하는 다중 하네스 설치는
+  설치기가 선택된 하네스 표기만 병기해 어느 한쪽도 침묵 오표기하지 않는다.
 - **codex 전용 정적 진입 doc 없음** (ADR-0070 D3 C-v2) — `AGENTS.override.md`·`.codex/AGENTS.md`
   같은 codex 전용 진입 문서를 두지 않는다. codex 방법론 전달 채널 3개:
   - **위임 4축** = `.codex/agents/{architect,code-reviewer,developer,researcher}.toml` (아래 §위임).
   - **운영 규율** = canonical 스킬(`.agents/skills`·아래 §스킬).
-  - **실행 모델·위임 규약** = `/pm-bootstrap` 커맨드 카드가 하네스 감지(`CODEX_THREAD_ID`/`CODEX_CI`
+  - **실행 모델·위임 규약** = `$pm-bootstrap` 커맨드 카드가 하네스 감지(`CODEX_THREAD_ID`/`CODEX_CI`
     env)로 codex 절을 발화(아래 §PM 시작).
   - **부수 이득**: 방법론이 전부 pm_update 갱신 도달 채널(TOML @source·스킬·엔진 카드)에 실려 —
     instance-owned 진입 doc 의 drift 표면이 codex 엔 애초에 생기지 않는다.
@@ -38,15 +38,15 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
 
 `model_auto_compact_token_limit`은 auto-compaction을 유발하는 숫자 threshold일 뿐 off 스위치가 아니다.
 대신 `hooks.json`은 `auto`와 `manual` PreCompact를 구분해 JSON `continue:false`로 compaction
-transaction을 hard-stop하고 `/pm-handoff`를 요구한다. codex-cli 0.145.0의 trusted disposable probe에서
+transaction을 hard-stop하고 `$pm-handoff`를 요구한다. codex-cli 0.145.0의 trusted disposable probe에서
 두 matcher 모두 `PreCompact (stopped)`·matcher별 stopReason·`turn_aborted(reason=interrupted)`를 남겼고,
 `context_compacted`는 만들지 않았으며 abort 뒤 canary turn이 원문 연속성을 회수했다. 각 handler는 POSIX
 `command`와 native Windows PowerShell-safe `commandWindows`에서 같은 JSON을 stdout으로 낸다.
 
 - direct TUI: PreCompact hard-stop은 **reactive 최후 방어선**이다. manual hard-stop이면 먼저 같은
-  thread에서 `/pm-handoff`를 실행한다. auto 임계 초과로 다음 model turn도 반복 차단되면 hard-stop
+  thread에서 `$pm-handoff`를 실행한다. auto 임계 초과로 다음 model turn도 반복 차단되면 hard-stop
   가이드대로 `/status`에서 chat ID를 확인하고 `/quit`한 뒤
-  `codex resume --disable hooks <CHAT_ID>`로 해당 invocation만 hooks 없이 재개해 `/pm-handoff`하고,
+  `codex resume --disable hooks <CHAT_ID>`로 해당 invocation만 hooks 없이 재개해 `$pm-handoff`하고,
   fresh normal session을 시작해 hooks를 다시 활성화한다. 이 break-glass는 compaction을 허용하므로
   handoff가 lossy summary 기반일 수 있다. project config의 hooks를 영구 비활성화하지 않는다.
   hook trust가 없으면 이 방어선도 실행되지 않는다.
@@ -106,7 +106,7 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
 
 - **AGENTS.md 자동 로드** — codex 가 git root→cwd 의 `AGENTS.md` 를 진입으로 병합 로드한다(공통
   코어·`CLAUDE.md` 는 codex 미로드·아래 §주의). 세션은 이 문서대로 board·wiki 를 파악해 PM 을 운영한다.
-- **부트스트랩 카드가 위임 지침** — codex 세션에서 `$pm-bootstrap`(또는 `/pm-bootstrap`)을 부르면
+- **부트스트랩 카드가 위임 지침** — codex 세션에서 `$pm-bootstrap`을 부르면
   엔진이 하네스를 감지(`CODEX_THREAD_ID`/`CODEX_CI` env)해 카드 끝에 **codex 절**을 발화한다 — 실행
   모델·위임 규약·trust 힌트가 여기로 전달된다(정적 진입 doc 이 없는 C-v2 구조의 유일 전달 채널).
 
@@ -129,7 +129,7 @@ spike-new … 전체는 `.agents/skills/` 디렉토리)은 codex 가 `.agents/sk
 
 - **canonical `SKILL.md` 단일 소비**(ADR-0065) — 방법론 소스는 root `.claude/skills`(claude/opencode
   와 동일 단일 진실)이고 `@source` 가 codex 네임스페이스 `.agents/skills` 로 remap 한다(ADR-0054).
-  단, 실행 도구 schema가 다른 `pm-dev-delegate`만 Codex template의 file-level override가 단일 진실이며,
+  단, 실행 도구 schema가 다른 `$pm-dev-delegate`만 Codex template의 file-level override가 단일 진실이며,
   manifest의 구체 경로 우선순위로 shared directory 전파 뒤에도 보존된다.
 
 ## 주의 (codex 고유)

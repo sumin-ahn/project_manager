@@ -24,6 +24,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+_FIXTURE_TICKET = "T-" + "0001"
 
 
 def _load(name: str = "external_review"):
@@ -50,13 +51,22 @@ def _make_pm_home(tmp_path: Path, *, with_ticket: bool = True,
     home = tmp_path / "pm_home"
     (home / ".project_manager" / "board" / "tickets" / "open").mkdir(parents=True)
     if with_ticket:
-        (home / ".project_manager" / "board" / "tickets" / "open" / "T-0001-x.md").write_text(
-            "---\nid: T-0001\n---\n", encoding="utf-8")
+        (home / ".project_manager" / "board" / "tickets" / "open" / f"{_FIXTURE_TICKET}-x.md").write_text(
+            f"---\nid: {_FIXTURE_TICKET}\ntouches:\n"
+            "- work/project_manager_1/.project_manager/tools\n---\n",
+            encoding="utf-8")
     worktree = home / "work" / "project_manager_1"
     if with_worktree:
         (worktree / ".project_manager" / "tools").mkdir(parents=True)
+        (worktree / ".git").write_text("gitdir: fixture\n", encoding="utf-8")
         (worktree / ".project_manager" / "tools" / "external_review.py").write_text(
             "# engine copy\n", encoding="utf-8")
+        ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text(
+            '{"leases": [{"slot": "work/project_manager_1", "state": "leased"}]}',
+            encoding="utf-8",
+        )
     return home, worktree
 
 
@@ -147,7 +157,10 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
 
     반환: (exit_code, reviewer_called). 게이트가 codex 전송 전에 차단함을 격리한다."""
     monkeypatch.setattr(external, "REPO", anchor)
-    monkeypatch.setattr(external, "local_config", lambda: conf)
+    monkeypatch.setattr(external, "local_config", lambda repo=None: conf)
+    monkeypatch.setattr(
+        external, "resolve_pm_home_for_repo", lambda target, **kwargs: anchor,
+    )
     # extract_diff 는 (diff, 제외 경로 목록) 튜플 반환 (T-0428) — 제외 없음(빈 목록)으로 주입.
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: ("diff --git a/x b/x\n+y\n", []))
     called = {"reviewer": False}
@@ -162,32 +175,77 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
     return external.main(argv), called["reviewer"]
 
 
-def test_main_pm_home_no_paths_blocks_loud(external, monkeypatch, tmp_path, capsys):
-    """PM 홈 앵커 + `--paths` 미지정 → 비-0 exit + codex 미호출 + worktree 재지정 안내 (게이트 승격).
-
-    non-empty diff 를 주입해도 게이트가 diff 추출 전에 차단함을 단언한다 — 빈-diff 사후 차단(T-0326)이
-    아니라 PM 홈 앵커의 *능동* 사전 차단(false-green 원천)."""
+def test_main_pm_home_no_paths_derives_worktree(external, monkeypatch, tmp_path, capsys):
+    """PM 홈 엔진 사본도 등록 슬롯 하나에서 diff worktree를 자동 파생한다."""
     home, worktree = _make_pm_home(tmp_path)
     conf = {"external_review_enabled": "true"}
     exit_code, reviewer_called = _run_main(external, monkeypatch, home, conf, [])
-    assert exit_code != 0
-    assert reviewer_called is False  # codex subprocess 미호출 (DoD — false-green 전송 차단)
+    assert exit_code == 0
+    assert reviewer_called is True
     err = capsys.readouterr().err
-    assert "PM 홈" in err
-    assert str(worktree) in err       # canonical worktree(work/ 스캔) 재지정 경로 안내
-    assert "--paths" in err           # override 안내
+    assert "앵커 해소 실패" not in err
 
 
-def test_main_pm_home_ticket_also_blocks(external, monkeypatch, tmp_path, capsys):
-    """`--ticket` 도 `--paths` override 가 아니므로 PM 홈 앵커에서 동일 차단된다.
+def test_main_default_review_paths_rejects_changed_pm_home_before_send(
+        external, monkeypatch, tmp_path, capsys):
+    """다중 슬롯을 최초 conf review_paths로 고른 뒤 소유 PM 홈이 바뀌면 송신 전 차단한다."""
+    engine_home = tmp_path / "engine-pm-home"
+    owner_home = tmp_path / "resolved-owner-pm-home"
+    slot_one = engine_home / "work" / "slot-one"
+    slot_two = engine_home / "work" / "slot-two"
+    for slot in (slot_one, slot_two):
+        slot.mkdir(parents=True)
+        (slot / ".git").write_text("gitdir: fixture\n", encoding="utf-8")
+    ledger = engine_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases": [{"slot": "work/slot-one"}, {"slot": "work/slot-two"}]}',
+        encoding="utf-8",
+    )
+    (owner_home / ".project_manager").mkdir(parents=True)
+    configs = {
+        engine_home: {
+            "external_review_enabled": "true",
+            "review_paths": "engine-only-path",
+        },
+        owner_home: {
+            "external_review_enabled": "true",
+            "review_paths": "owner-only-path",
+        },
+    }
+    monkeypatch.setattr(external, "REPO", engine_home)
+    monkeypatch.setattr(external, "local_config", lambda repo=None: configs[repo.resolve()])
+    monkeypatch.setattr(
+        external, "resolve_pm_home_for_repo",
+        lambda anchor, **kwargs: owner_home if anchor.resolve() == slot_two else engine_home,
+    )
+    monkeypatch.setattr(
+        external, "_candidate_has_diff",
+        lambda root, base, paths: root == slot_two and tuple(paths) == ("engine-only-path",),
+    )
+    monkeypatch.setattr(
+        external, "run_review",
+        lambda *args, **kwargs: pytest.fail("fail-loud must happen before external send"),
+    )
 
-    --ticket touches 는 PM 홈 git 기준 상대경로라 여전히 빈 diff → false-green. --paths 만이
-    deliberate override."""
+    assert external.main([]) == 1
+    err = capsys.readouterr().err
+    assert "review_paths" in err
+    assert str(engine_home) in err
+    assert str(owner_home) in err
+    assert "외부 송신 전에 중단" in err
+
+
+def test_main_pm_home_ticket_derives_board_and_diff_separately(external, monkeypatch, tmp_path, capsys):
+    """PM 홈 board touches와 등록 diff worktree를 별도 앵커로 파생해 리뷰한다."""
     home, worktree = _make_pm_home(tmp_path)
-    exit_code, reviewer_called = _run_main(external, monkeypatch, home, {}, ["--ticket", "T-0001"])
-    assert exit_code != 0
-    assert reviewer_called is False
-    assert "PM 홈" in capsys.readouterr().err
+    exit_code, reviewer_called = _run_main(
+        external, monkeypatch, home, {"external_review_enabled": "true"},
+        ["--ticket", _FIXTURE_TICKET],
+    )
+    assert exit_code == 0
+    assert reviewer_called is True
+    assert "검토 경로: ['.project_manager/tools']" in capsys.readouterr().err
 
 
 def test_main_pm_home_with_paths_passes_gate(external, monkeypatch, tmp_path, capsys):
@@ -224,7 +282,9 @@ def test_main_local_upstream_adopter_ticket_not_blocked(external, monkeypatch, t
     fail-soft 로 리뷰어까지 정상 진행한다."""
     home, _ = _make_pm_home(tmp_path, with_worktree=False)  # 실 board 소유·work/ 슬롯 없음
     # ticket touches 해소를 결정론화(실 board 의 T-0001 은 touches 부재라 기본경로 폴백해도 무방).
-    monkeypatch.setattr(external, "parse_ticket_touches", lambda t: [".project_manager/tools/"])
+    monkeypatch.setattr(
+        external, "parse_ticket_touches", lambda t, **kwargs: [".project_manager/tools/"],
+    )
     conf = {"upstream": str(tmp_path / "foreign"), "external_review_enabled": "true"}
     exit_code, reviewer_called = _run_main(external, monkeypatch, home, conf, ["--ticket", "T-0001"])
     assert reviewer_called is True   # 게이트 미차단 → 리뷰어 진행 (오탐 0)

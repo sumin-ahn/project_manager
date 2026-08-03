@@ -184,6 +184,7 @@ STAMPED_MODULES = (
     "delegate_scope.py",
     "pm_relay.py",
     "external_review.py",
+    "gate_snapshot.py",
     "pm_render.py",
     "pm_import.py",
     "pm_log.py",

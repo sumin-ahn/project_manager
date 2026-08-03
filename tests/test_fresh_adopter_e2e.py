@@ -33,9 +33,61 @@ from _harness_matrix import (
     _PM_IMPORT,
     entry_docs as _entry_docs,
 )
+from _repo_owned_inventory import OWNED, repo_owned_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+
+_RAW_PM_SKILLS = (
+    "pm-adr", "pm-bootstrap", "pm-dev-delegate", "pm-env", "pm-handoff",
+    "pm-qa", "pm-regression", "pm-release", "pm-review", "pm-ticket",
+    "pm-update", "pm-wave-claim", "pm-wave-finish", "pm-worktree",
+)
+_RAW_SLASH_ENTRY = re.compile(
+    r"(?<![A-Za-z0-9_.>/\-])/(?P<skill>"
+    + "|".join(sorted(_RAW_PM_SKILLS, key=len, reverse=True))
+    + r")(?![A-Za-z0-9_>/\-]|\.[A-Za-z0-9_])"
+)
+
+
+def _codex_readable_text_paths(dest: Path) -> list[Path]:
+    roots = [dest / "AGENTS.md", dest / "README.md", dest / ".agents", dest / ".codex",
+             dest / ".project_manager" / "wiki"]
+    paths = []
+    for root in roots:
+        if root.is_file():
+            paths.append(root)
+        elif root.is_dir():
+            paths.extend(
+                path
+                for path in repo_owned_paths(
+                    dest, root.relative_to(dest), mode=OWNED
+                )
+                if path.is_file()
+            )
+    return sorted(set(paths))
+
+
+def _raw_unannotated_slash_entries(path: Path) -> list[tuple[int, str]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return []
+    issues = []
+    for match in _RAW_SLASH_ENTRY.finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.end())
+        line_end = len(text) if line_end < 0 else line_end
+        line = text[line_start:line_end]
+        local_start = match.start() - line_start
+        left_tick = line.rfind("`", 0, local_start)
+        right_tick = line.find("`", match.end() - line_start)
+        if left_tick >= 0 and right_tick >= 0:
+            label = re.match(r"\(([^)]*)\)", line[right_tick + 1:])
+            if label and "codex" not in label.group(1).split("·"):
+                continue
+        issues.append((text.count("\n", 0, match.start()) + 1, match.group(0)))
+    return issues
 
 def _board_status_dirs() -> tuple[str, ...]:
     """엔진 `board.STATUS_DIRS`(open/claimed/blocked/done) 파생 — lifecycle 이 요구하는 ticket 상태
@@ -75,6 +127,28 @@ def _load_pm_update():
 @pytest.fixture(scope="module")
 def pm_update():
     return _load_pm_update()
+
+
+@pytest.mark.parametrize("weight", ("full", "lite"))
+@pytest.mark.parametrize(
+    "selection", ("codex", "claude,codex", "codex,opencode", "all")
+)
+def test_real_install_codex_readable_surfaces_have_no_unannotated_slash_entries(
+        pm_import, tmp_path, selection, weight):
+    """실제 import 조합의 Codex 가 읽는 전체 문서 표면을 renderer와 독립 스캐너로 검사한다."""
+    dest = tmp_path / f"notation-{selection.replace(',', '-')}-{weight}"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", selection, "--name", "Notation Probe",
+        "--weight", weight, "--fill", "manual",
+    ]) == 0
+    paths = _codex_readable_text_paths(dest)
+    assert paths and any(".project_manager/wiki/" in path.as_posix() for path in paths)
+    failures = {
+        path.relative_to(dest).as_posix(): issues
+        for path in paths
+        if (issues := _raw_unannotated_slash_entries(path))
+    }
+    assert not failures, f"실 설치본 Codex-readable 문서의 slash 오표기 잔존: {failures}"
 
 
 def _board(dest: Path, *args: str) -> subprocess.CompletedProcess:
@@ -646,27 +720,43 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
         f"{base}→{added}: add-harness 가 네임스페이스·flavor @render 밖 파일 추가(라이브-안전 위반): {outside}")
     # sanity — 어댑터가 실제로 추가됐다(스코프가 맞는 트리를 잡았다는 방증).
     add_dirs, add_doc = _ADD_HARNESS_NS_BOUND[added]
-    # root doc 은 둘 중 하나여야 한다: (a) 신규(추가되는 harness 의 진입 doc 이 base 에 없음) → added_rels
-    #   에 있어야 하고, (b) 이미 byte-identical 로 존재(opencode↔codex 공통 코어 AGENTS.md 수렴·D3 C-v2)
-    #   → add-harness 가 재추가하지 않음(git-safe skip 또는 backup+동일-재기록·_snapshot_tree 주석) → 따라서
-    #   추가(added_rels)가 아니라 *live 바이트 무변*으로 확인한다(위 (3) 도 재확인). 누락/실제변경은 red.
+    # 공유 root doc은 추가 뒤 두 하네스가 실제로 읽으므로 서로 다른 진입 표기를 병기한다.
     if add_doc in before:
-        assert before[add_doc] == after[add_doc], (
-            f"{base}→{added}: 공통 코어 root doc {add_doc} 이 변경됨(byte-parity 수렴 skip 이 아니라 덮어씀)")
+        if {base, added} == {"codex", "opencode"}:
+            root_text = after[add_doc].decode("utf-8")
+            assert "`$pm-bootstrap`(codex)" in root_text
+            assert "`/pm-bootstrap`(opencode)" in root_text
+        else:
+            assert before[add_doc] == after[add_doc]
     else:
         assert add_doc in added_rels, f"{base}→{added}: root doc {add_doc} 미추가"
     assert any(r.startswith(d + "/") for d in add_dirs for r in added_rels), \
         f"{base}→{added}: 어댑터 dir({'/'.join(add_dirs)}/**) 미추가"
 
-    # (3) 기존 relpath 바이트 불변 (wiki `.project_manager/**`·엔진·타 harness·root doc 0 변경) —
+    # (3) 기존 relpath 바이트 불변. manifest와 설치 하네스가 함께 읽는 표기 문서만 예외다.
     #   단 **`engine.manifest` 는 예외**([[T-0456]]): add-harness 가 자기가 레이다운한 guest 어댑터의
     #   `@render` 를 인스턴스 manifest 에 **append-only 등재**한다(dev-state metadata·네임스페이스 밖이나
     #   T-0456 이 sanction — manifest-파생 overlay 스캔·render 가 guest 를 커버하게 하는 근본 배선).
     #   그 한 파일만 예외로 빼고 나머지 clobber 0 을 유지하며, manifest 변경은 append-only(기존 내용
     #   보존)만 허용한다(guest 라인 없는 added=claude 는 무변도 정상).
     _MANIFEST_REL = ".project_manager/engine.manifest"
-    changed = sorted(r for r in before_rels & after_rels
-                     if before[r] != after[r] and r != _MANIFEST_REL)
+    notation_shared = {
+        ".project_manager/wiki/README.md",
+        ".project_manager/wiki/pm_role.md",
+        ".project_manager/wiki/pm_playbook.md",
+        ".project_manager/wiki/pm_state.template.md",
+        ".project_manager/wiki/tickets/_template.md",
+        ".project_manager/wiki/raw/spikes/_template.md",
+        ".project_manager/wiki/domain/_template.md",
+    }
+    if {base, added} == {"codex", "opencode"}:
+        notation_shared.add("AGENTS.md")
+    changed = sorted(
+        r for r in before_rels & after_rels
+        if before[r] != after[r]
+        and r != _MANIFEST_REL
+        and r not in notation_shared
+    )
     assert changed == [], (
         f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest 외·byte diff≠0·clobber 재발): {changed}")
     if _MANIFEST_REL in before and before[_MANIFEST_REL] != after[_MANIFEST_REL]:

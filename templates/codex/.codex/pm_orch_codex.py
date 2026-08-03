@@ -275,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--task", default=None, metavar="이름",
         help="task 정체성(F7·T-0356) — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <이름>` 실값을 "
              "박아 같은 task 를 resume 하게 한다((b) 명시 전달·cwd 추론 금지). 미지정이면 bare "
-             "`/pm-bootstrap`(슬롯/솔로).",
+             "`$pm-bootstrap`(슬롯/솔로).",
     )
     return parser
 

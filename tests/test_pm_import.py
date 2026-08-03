@@ -1514,6 +1514,44 @@ _ALL_NONEMPTY_HARNESS_SELECTIONS = tuple(
 )
 
 
+@pytest.mark.parametrize(
+    ("selection", "expected_labels", "expected_prefixes"),
+    (
+        ("claude,codex", {"claude", "codex"}, {"/", "$"}),
+        ("codex,opencode", {"codex", "opencode"}, {"/", "$"}),
+        ("all", {"claude", "codex", "opencode"}, {"/", "$"}),
+    ),
+)
+def test_multi_harness_shared_wiki_lists_only_installed_native_entries(
+        pm_import, tmp_path, selection, expected_labels, expected_prefixes):
+    dest = tmp_path / f"shared-{selection.replace(',', '-')}"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", selection, "--name", "Shared Entry",
+    ]) == 0
+    role = (dest / ".project_manager" / "wiki" / "pm_role.md").read_text(
+        encoding="utf-8"
+    )
+    annotated = re.findall(
+        r"`(?P<prefix>[/\$])pm-[^`]+`\((?P<labels>claude|codex|opencode|"
+        r"claude·opencode|opencode·claude)\)",
+        role,
+    )
+    assert annotated, "공유 wiki에 다중 하네스 진입 표기 병기가 없다"
+    prefixes = {prefix for prefix, _labels in annotated}
+    labels = {
+        label
+        for _prefix, grouped in annotated
+        for label in grouped.split("·")
+    }
+    assert prefixes == expected_prefixes
+    assert labels == expected_labels
+
+    # 같은 자동-load root doc을 공유하는 조합도 침묵 first-wins가 아니라 같은 설치 집합을 밝힌다.
+    if {"codex", "opencode"} <= expected_labels:
+        agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
+        assert "(codex)" in agents and "(opencode)" in agents
+
+
 @pytest.mark.parametrize("weight", ("full", "lite"))
 @pytest.mark.parametrize("selection", _ALL_NONEMPTY_HARNESS_SELECTIONS)
 def test_entry_document_execution_models_are_isolated_for_every_selection_and_weight(
@@ -1803,9 +1841,28 @@ def test_combination_conflicting_relpath_warns_and_prefers_registry_first(
         "최종 합집합으로 교체되는 manifest에 첫-tree 우선이라는 거짓 경고가 남음."
     assert "선택 manifest 중복 경로의 marker/@source 불일치" not in captured.err, \
         "실제 flavor의 정상 합집합에서 marker 충돌 경고가 부풀려짐."
-    assert "'.gitignore'" in captured.err, "일반 내용 불일치 relpath 경고까지 사라짐."
-    assert "registry 정규 순서상 첫 트리 'claude_code'" in captured.err, \
-        "결정적 우선순위(registry 순서)가 경고에 명시되지 않음."
+    normalized_relpaths = {
+        ".gitignore",
+        ".project_manager/wiki/tickets/README.md",
+        ".project_manager/wiki/tickets/blocked/.gitkeep",
+        ".project_manager/wiki/tickets/claimed/.gitkeep",
+        ".project_manager/wiki/tickets/done/.gitkeep",
+        ".project_manager/wiki/tickets/open/.gitkeep",
+    }
+    assert not any(f"'{relpath}'" in captured.err for relpath in normalized_relpaths), \
+        "정규화한 템플릿 사본에서 첫 트리 충돌 경고가 남음."
+
+    # 경고 채널 자체는 유지한다. 인위 충돌은 여전히 registry 첫 트리 우선 경고여야 한다.
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for root, payload in ((first, b"first\n"), (second, b"second\n")):
+        target = root / "shared.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    pm_import.plan_copy([first, second], tmp_path / "planned", None)
+    warning = capsys.readouterr().err
+    assert "'shared.txt'" in warning
+    assert "registry 정규 순서상 첫 트리 'first'" in warning
 
     # engine.manifest 자체의 self-prop 마커 충돌은 첫 트리(claude_code)가 이긴다.
     entries = pm_import._pm_update_read_manifest(
@@ -4790,6 +4847,9 @@ def test_add_harness_guest_render_survives_pm_update(pm_import, pm_update, tmp_p
     agent.write_text(agent.read_text(encoding="utf-8").rstrip() + '\nmodel = "USER/OVERRIDE"\n',
                      encoding="utf-8")
     assert pu._extract_guest_manifest_block(manifest.read_text(encoding="utf-8")) is not None
+    role = dest / ".project_manager" / "wiki" / "pm_role.md"
+    before_update = role.read_text(encoding="utf-8")
+    assert "(claude)" in before_update and "(codex)" in before_update
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     assert pm_update.main(["--from", str(REPO)]) == 0, "self-update rc≠0"
@@ -4802,6 +4862,12 @@ def test_add_harness_guest_render_survives_pm_update(pm_import, pm_update, tmp_p
     # MF-2: 사용자 override 잔존(재렌더 clobber 없음).
     assert "USER/OVERRIDE" in agent.read_text(encoding="utf-8"), \
         "pm_update 재렌더가 사용자 model override 를 덮었다(MF-2 미해소)"
+    after_update = role.read_text(encoding="utf-8")
+    assert "(claude)" in after_update and "(codex)" in after_update
+    assert "`$pm-bootstrap`(codex)" in after_update
+    assert pm_update.main(["--from", str(REPO)]) == 0, "2차 self-update rc≠0"
+    assert role.read_text(encoding="utf-8") == after_update, \
+        "2차 self-update가 guest 포함 공유 wiki 표기를 다시 바꿈"
 
 
 def test_render_managed_files_covers_guest_when_registered(pm_import, tmp_path):

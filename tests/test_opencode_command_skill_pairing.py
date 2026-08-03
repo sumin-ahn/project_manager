@@ -8,10 +8,9 @@ content-hash 대조)를 **은퇴**하고, 그 자리를 [[ADR-0065]] 단일 소�
 한다(가드로 잡을 drift 가 없어짐). 파일명은 legacy(전환 이력 보존·rm 대신 in-place 재작성).
 
 **대체 가드 3종** (ADR-0065 실행 티켓 T-0364 DoD):
-  (a) 스킬 출하 경로 byte-정합 — opencode 출하 미러(`templates/opencode/.claude/skills`)가 root
-      canonical(`.claude/skills`)과 1바이트도 다르지 않다. opencode 는 claude_code 와 **동일한**
-      bare `@render`(root-sourced) 로 canonical 스킬을 소비하므로, 별도 hand-drift 채널이 아니라
-      `pm_update --target opencode` 전파 미러다 — 그 전파 무결성을 못박는다.
+  (a) 스킬 출하 경로 의미 정합 — opencode 출하 미러(`templates/opencode/.claude/skills`)가 root
+      canonical(`.claude/skills`)과 진입 표기만 다르고 나머지는 동일하다. root는 claude의 `/` 표기,
+      opencode는 접두사 없는 이름 언급을 쓰므로 표기 정규화 뒤 전파 무결성을 못박는다.
   (b) command 잔존 0 (재유입 loud) — `templates/opencode/.opencode/command/` 에 PM-workflow 사본
       `.md` 가 0. 은퇴의 실제 실행(사본 파일 제거)은 **사용자 위임**(rm 직접 금지) — 삭제 전엔 이
       가드가 fail 로 '삭제 대기'를 loud 하게 표면화한다. 삭제 후 green. 재유입(신설 command 사본
@@ -70,8 +69,12 @@ def _skill_files(base: Path) -> "dict[str, Path]":
 # ── (a) 스킬 출하 경로 byte-정합 (전파 미러 무결성) ────────────────────────────
 
 
-def test_opencode_skill_mirror_byte_identical_to_canonical():
-    """opencode 출하 스킬 미러가 root canonical 과 byte-정합 (ADR-0065 단일 소비 출하 무결성).
+def _neutralize_entry_notation(raw: bytes) -> bytes:
+    return re.sub(rb"(?<![A-Za-z0-9_.>/])[/\$](pm-[a-z][a-z0-9-]*)", rb"\1", raw)
+
+
+def test_opencode_skill_mirror_matches_canonical_except_entry_notation():
+    """opencode 출하 스킬 미러는 native 진입 표기 외에 canonical 과 동일하다.
 
     opencode 는 claude_code 와 동일한 bare @render(root `.claude/skills` 소스)로 canonical 스킬을
     소비하고, `pm_update --target opencode` 가 root 를 `templates/opencode/.claude/skills` 로 미러
@@ -89,22 +92,28 @@ def test_opencode_skill_mirror_byte_identical_to_canonical():
         "opencode 스킬 미러가 canonical 과 스킬 집합 불일치 — "
         f"canonical에만: {sorted(set(canon) - set(mirror))} / 미러에만: {sorted(set(mirror) - set(canon))}. "
         "`pm_update --target opencode` 로 재전파.")
-    drifted = sorted(rel for rel in canon if canon[rel].read_bytes() != mirror[rel].read_bytes())
+    drifted = sorted(
+        rel
+        for rel in canon
+        if _neutralize_entry_notation(canon[rel].read_bytes())
+        != _neutralize_entry_notation(mirror[rel].read_bytes())
+    )
     assert not drifted, (
-        f"opencode 스킬 미러가 canonical 과 byte drift: {drifted} — "
-        "pm_update 전파 누락/구버전 잔존. `pm_update --target opencode` 로 재전파해야 한다(단일 소비 출하 무결성).")
+        f"opencode 스킬 미러가 진입 표기 외 canonical 내용과 drift: {drifted} — "
+        "전파 누락/구버전 잔존 또는 허용 범위 밖 수기 변경.")
 
 
-def test_byte_parity_guard_is_sensitive_to_drift():
-    """sensitivity — byte-정합 비교가 1바이트 차이를 검출함을 in-memory 로 입증(non-vacuous·실 파일 불변).
+def test_normalized_parity_guard_is_sensitive_to_non_notation_drift():
+    """sensitivity — 진입 표기 외 1바이트 차이는 정규화 뒤에도 검출한다.
 
     실 canonical SKILL.md 한 개의 바이트에 1바이트를 더한 사본이 원본과 다르게(검출) 판정되는지,
     동일 바이트는 같게(음성 통제) 판정되는지 확인한다 — 가드가 공허(vacuous)하지 않음을 못박는다."""
     canon = _skill_files(ROOT_SKILLS)
     assert canon, "sensitivity: canonical 스킬 0개"
     raw = next(iter(canon.values())).read_bytes()
-    assert raw == raw, "음성 통제: 동일 바이트가 다르게 판정됨"
-    assert raw != raw + b"# drift\n", "1바이트 차이를 byte-비교가 못 잡음(vacuous 위험)"
+    normalized = _neutralize_entry_notation(raw)
+    assert normalized == _neutralize_entry_notation(raw), "음성 통제 실패"
+    assert normalized != _neutralize_entry_notation(raw + b"# drift\n")
 
 
 # ── (b) command 잔존 0 (재유입 loud · 삭제 위임 대기 표면화) ───────────────────

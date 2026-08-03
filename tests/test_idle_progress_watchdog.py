@@ -46,6 +46,13 @@ def _load(name: str, path: Path):
     return mod
 
 
+# pytest parameter values are fixed at collection time, before the pm_import fixture exists.
+# Load the production registry here so a newly declared fill runner expands this case automatically.
+FILL_CAPABLE_HARNESSES = _load(
+    "pm_import_fill_parametrize", TOOLS / "pm_import.py"
+).FILL_CAPABLE_HARNESSES
+
+
 @pytest.fixture(scope="module")
 def relay():
     return _load("pm_relay", TOOLS / "pm_relay.py")
@@ -1244,7 +1251,7 @@ def _wire_relay(pd, monkeypatch, fake, conf=None):
     return fake
 
 
-@pytest.mark.parametrize("harness", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("harness", FILL_CAPABLE_HARNESSES)
 def test_fill_routes_every_driver_through_shared_watchdog(
         pm_import, relay, monkeypatch, harness):
     """세 번째 표면 fill도 3 드라이버 전부 같은 profile+watchdog 판정을 탄다."""
@@ -1260,7 +1267,11 @@ def test_fill_routes_every_driver_through_shared_watchdog(
     call = fake.calls[0]
     profile = relay.HARNESS_PROFILES[harness]
     assert call["overall_timeout"] == profile.wall_timeout
-    expected_idle = None if harness == "claude" else profile.idle_timeout
+    emits_progress = next(
+        driver[1] for driver in pm_import.FILL_DRIVER_BY_CMD.values()
+        if driver[0] == harness
+    )
+    expected_idle = profile.idle_timeout if emits_progress else None
     assert call["idle_timeout"] == expected_idle
     assert call["first_event_timeout"] == (
         90.0 if profile.startup_watchdog else None)

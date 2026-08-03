@@ -26,6 +26,12 @@ README_COPIES = [
     REPO / "templates" / "opencode" / ".project_manager" / "wiki" / "README.md",
 ]
 
+MANIFESTS = [
+    REPO / ".project_manager" / "engine.manifest",
+    *(REPO / "templates" / name / ".project_manager" / "engine.manifest"
+      for name in ("claude_code", "codex", "opencode")),
+]
+
 
 def _read_canonical() -> str:
     """루트 wiki/README.md 본문 (모델 단언의 검사 대상)."""
@@ -51,6 +57,17 @@ def test_readme_three_copies_byte_identical():
             f"wiki/README.md 가 byte-동일이 아니다: {path} != {README_COPIES[0]} — "
             "한 copy 만 고치고 다른 copy 를 놓쳤다 (3 copy 수동 정합 필요)."
         )
+
+
+def test_readme_is_registered_in_every_flavor_manifest():
+    rel = ".project_manager/wiki/README.md"
+    for manifest in MANIFESTS:
+        entries = {
+            line.split()[0]
+            for line in manifest.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        assert rel in entries, f"wiki README render/update channel 누락: {manifest}"
 
 
 # ── (2a) architecture.md = 현재-아키텍처 단일 진실 ───────────────────────────

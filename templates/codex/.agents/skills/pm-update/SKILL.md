@@ -4,7 +4,7 @@ description: "엔진 갱신 PM front door — pm-update.sh facade wrap + upstrea
 audience: pm-internal
 ---
 
-# /pm-update — 엔진 갱신 (facade-기반 PM front door)
+# $pm-update — 엔진 갱신 (facade-기반 PM front door)
 
 upstream 엔진 변경을 raw `pm_update.py`가 아닌 facade(`./pm-update.sh`)로 흡수한다. git freshness는 이 스킬층, 파일 복사는 엔진(`pm_update`)이 담당한다.
 

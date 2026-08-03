@@ -4,7 +4,7 @@ description: "Codex native spawn_agent 기반 dev/code-reviewer 위임 표준 �
 audience: pm-internal
 ---
 
-# /pm-dev-delegate T-NNNN [--role developer|code-reviewer] — orchestrator 위임
+# $pm-dev-delegate T-NNNN [--role developer|code-reviewer] — orchestrator 위임
 
 > {{PROJECT_NAME}} PM 의 Codex native `spawn_agent` 위임 표준 프롬프트. 역할은
 > `agent_type="developer|code-reviewer"`로 고르고, spawn 이 반환한 thread 는 비동기로 진행된다.
@@ -17,7 +17,7 @@ audience: pm-internal
 
 ## 사전 조건
 
-- ticket 이미 claim (`pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>` · 솔로(M=1)는 생략).
+- ticket 이미 claim (`$pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>` · 솔로(M=1)는 생략).
 - depends_on 모두 done.
 - touches 명시.
 - DoD verify-able.

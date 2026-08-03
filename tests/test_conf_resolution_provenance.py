@@ -37,7 +37,7 @@ def delegate():
 def _repo(root: Path, conf: dict[str, str] | None) -> Path:
     pm = root / ".project_manager"
     pm.mkdir(parents=True)
-    (root / ".git").mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
     if conf is not None:
         (pm / "local.conf").write_text(
             "".join(f"{key}={value}\n" for key, value in conf.items()),
@@ -73,11 +73,13 @@ def _with_researcher_fallback(conf: dict[str, str], model: str = "opus"):
 def _delegate_dry_run(delegate, monkeypatch, engine: Path, target: Path,
                       engine_conf: dict[str, str], *, role: str = "researcher",
                       tier: str | None = None,
-                      cli_override: tuple[str, str, str | None] | None = None):
+                      cli_override: tuple[str, str, str | None] | None = None,
+                      inject_conf: bool = True):
     prompt = target / "prompt.md"
     prompt.write_text("구현을 조사하라.", encoding="utf-8")
     monkeypatch.setattr(delegate, "REPO", engine)
-    monkeypatch.setattr(delegate, "local_config", lambda: dict(engine_conf))
+    if inject_conf:
+        monkeypatch.setattr(delegate, "local_config", lambda: dict(engine_conf))
     monkeypatch.setattr(delegate, "_cwd_in_git_repo", lambda *args, **kwargs: True)
     argv = [
         "--role", role,
@@ -98,17 +100,21 @@ def _delegate_dry_run(delegate, monkeypatch, engine: Path, target: Path,
 def _wire_external(external, monkeypatch, engine: Path, target: Path,
                    engine_conf: dict[str, str]):
     monkeypatch.setattr(external, "REPO", engine)
-    monkeypatch.setattr(external, "local_config", lambda: dict(engine_conf))
-    monkeypatch.setattr(external, "_pm_home_reanchor", lambda anchor: None)
+    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(engine_conf))
+    monkeypatch.setattr(
+        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: engine,
+    )
+    monkeypatch.setattr(
+        external, "_resolve_diff_root", lambda *args, **kwargs: target,
+    )
     monkeypatch.setattr(
         external,
         "extract_diff",
         lambda *args, **kwargs: ("diff --git a/x.py b/x.py\n-old\n+new\n", []),
     )
-    monkeypatch.chdir(target)
 
 
-def test_delegate_cross_repo_same_role_different_value_warns_without_blocking(
+def test_delegate_uses_derived_target_config_without_engine_divergence(
         delegate, monkeypatch, tmp_path, capsys):
     engine_conf = _delegate_conf("medium")
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -117,18 +123,13 @@ def test_delegate_cross_repo_same_role_different_value_warns_without_blocking(
     assert _delegate_dry_run(delegate, monkeypatch, engine, target, engine_conf) == 0
     err = capsys.readouterr().err
     assert err.splitlines()[0].startswith("[pm-delegate] config provenance:")
-    assert "local.conf 프로필 분기" in err
-    assert "경고:" in err
-    assert "delegate.researcher.reasoning" in err
-    assert "실행 엔진 conf가 이깁니다" in err
-    assert "차단하지 않고 계속합니다" in err
-    assert str(engine / ".project_manager" / "local.conf") in err
+    assert "local.conf 프로필 분기" not in err
     assert str(target / ".project_manager" / "local.conf") in err
 
 
-def test_delegate_effective_profile_detects_explicit_reasoning_vs_omitted_default(
+def test_delegate_profile_comparison_uses_derived_config_anchor(
         delegate, monkeypatch, tmp_path, capsys):
-    """원시 키 교집합이면 놓치던 `medium` 대 미지정(None) 실제 tuple 차이를 경고한다."""
+    """실행 엔진 값과 달라도 파생 config와 비교 대상을 같은 repo로 유지한다."""
     engine_conf = _delegate_conf("medium")
     target_conf = _delegate_conf("low")
     target_conf.pop("delegate.researcher.reasoning")
@@ -137,11 +138,7 @@ def test_delegate_effective_profile_detects_explicit_reasoning_vs_omitted_defaul
 
     assert _delegate_dry_run(delegate, monkeypatch, engine, target, engine_conf) == 0
     err = capsys.readouterr().err
-    assert "local.conf 프로필 분기" in err
-    assert (
-        "delegate.researcher.reasoning: engine='medium', cwd=None"
-        in err
-    )
+    assert "local.conf 프로필 분기" not in err
 
 
 def test_delegate_cli_override_skips_conf_divergence_and_marks_source(
@@ -176,7 +173,7 @@ def test_delegate_cross_repo_same_values_is_quiet_and_shows_provenance(
     assert captured.err.splitlines()[0].startswith("[pm-delegate] config provenance:")
     assert (
         f"[pm-delegate] config provenance: "
-        f"local_conf={engine / '.project_manager' / 'local.conf'}"
+        f"local_conf={target / '.project_manager' / 'local.conf'}"
     ) in captured.err
     assert (
         "resolved_profile=(harness=codex, model=gpt-5.6-terra, reasoning=medium)"
@@ -233,9 +230,9 @@ def test_delegate_difference_in_unused_role_is_quiet(
     assert "delegate.researcher.reasoning" not in err
 
 
-def test_delegate_effective_fallback_difference_warns_only_when_active(
+def test_delegate_effective_fallback_uses_derived_config_anchor(
         delegate, monkeypatch, tmp_path, capsys):
-    """실제 발동 가능한 폴백의 해소 tuple 차이는 경고하되 실행을 막지 않는다."""
+    """폴백 비교도 파생 config repo를 engine 좌표로 사용한다."""
     engine_conf = _with_researcher_fallback(_delegate_conf(), "opus")
     target_conf = _with_researcher_fallback(_delegate_conf(), "sonnet")
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -243,8 +240,7 @@ def test_delegate_effective_fallback_difference_warns_only_when_active(
 
     assert _delegate_dry_run(delegate, monkeypatch, engine, target, engine_conf) == 0
     err = capsys.readouterr().err
-    assert "local.conf 프로필 분기" in err
-    assert "delegate.researcher.fallback.model: engine='opus', cwd='sonnet'" in err
+    assert "local.conf 프로필 분기" not in err
 
 
 def test_delegate_target_fallback_equal_to_its_primary_is_not_compared(
@@ -405,9 +401,9 @@ def test_delegate_primary_raw_records_conf_and_profile(
     assert err.splitlines()[0].startswith(
         "[pm-delegate] config provenance:"
     )
-    assert "local.conf 프로필 분기" in err
+    assert "local.conf 프로필 분기" not in err
     raw = next(output_dir.glob("pm_delegate_codex_*.txt")).read_text(encoding="utf-8")
-    assert f"# local_conf: {engine / '.project_manager' / 'local.conf'}" in raw
+    assert f"# local_conf: {target / '.project_manager' / 'local.conf'}" in raw
     assert (
         "# resolved_profile: (harness=codex, model=gpt-5.6-terra, reasoning=medium)"
         in raw
@@ -480,7 +476,11 @@ def test_external_review_cross_repo_different_reviewer_warns_without_blocking(
     assert "local.conf 프로필 분기" in err
     assert "경고:" in err
     assert "reviewer_cmd" in err
-    assert "실행 엔진 conf가 이깁니다" in err
+    assert "해소된 PM 홈 conf가 적용됩니다" in err
+    assert f"해소된 PM 홈 REPO: {engine.resolve()}" in err
+    assert f"diff worktree repo: {target.resolve()}" in err
+    assert "engine REPO:" not in err
+    assert "의도한 local.conf를 가진 엔진 사본을 실행하세요" not in err
     assert "차단하지 않고 계속합니다" in err
     assert str(engine / ".project_manager" / "local.conf") in err
     assert str(target / ".project_manager" / "local.conf") in err
@@ -575,9 +575,11 @@ def test_delegate_target_conf_read_error_is_caught_without_traceback(
     target_conf = target / ".project_manager" / "local.conf"
     target_conf.write_bytes(b"\xff\xfe\x00")
 
-    assert _delegate_dry_run(delegate, monkeypatch, engine, target, engine_conf) == 1
+    assert _delegate_dry_run(
+        delegate, monkeypatch, engine, target, engine_conf, inject_conf=False,
+    ) == 1
     err = capsys.readouterr().err
-    assert "대상 local.conf 읽기 실패" in err
+    assert "해소된 local.conf 읽기 실패" in err
     assert "외부 송신 전에 중단" in err
     assert str(target_conf) in err
     assert "Traceback" not in err
@@ -605,7 +607,7 @@ def test_external_review_target_only_denylist_warns_and_is_union_applied(
     assert external.main(["--paths", "x.py", "--dry-run"]) == 0
     err = capsys.readouterr().err
     assert "review_denylist_extra" in err
-    assert "cwd-only=('*.target-private',)" in err
+    assert "diff-worktree-only=('*.target-private',)" in err
     assert "합집합 적용" in err
     assert "*.engine-vault" in seen["denylist"]
     assert "*.target-private" in seen["denylist"]
@@ -659,8 +661,11 @@ def test_external_review_effective_review_paths_difference_warns_when_used(
 
     assert external.main(["--dry-run"]) == 0
     err = capsys.readouterr().err
-    assert "review_paths: engine=('src', 'tests'), cwd=('docs', 'src')" in err
-    assert "review_paths의 이번 범위는 엔진 conf가 정했습니다" in err
+    assert (
+        "review_paths: pm-home=('src', 'tests'), "
+        "diff-worktree=('docs', 'src')"
+    ) in err
+    assert "review_paths의 이번 범위는 해소된 PM 홈 conf가 정했습니다" in err
     assert "두 conf를 맞추거나" not in err
     assert "차단하지 않고 계속합니다" in err
 
@@ -702,12 +707,19 @@ def test_external_review_target_denylist_explicit_path_uses_real_filter_and_bloc
     ], check=True)
     protected.write_text("after\n", encoding="utf-8")
     target = _repo(tmp_path / "target", {
-        "review_denylist_extra": "*.target-private",
+        "review_denylist_extra": "*.engine-vault",
     })
+    (engine / ".project_manager" / "local.conf").write_text(
+        "review_denylist_extra=*.target-private\n", encoding="utf-8",
+    )
     monkeypatch.setattr(external, "REPO", engine)
-    monkeypatch.setattr(external, "local_config", lambda: dict(engine_conf))
-    monkeypatch.setattr(external, "_pm_home_reanchor", lambda anchor: None)
-    monkeypatch.chdir(target)
+    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(engine_conf))
+    monkeypatch.setattr(
+        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: target,
+    )
+    monkeypatch.setattr(
+        external, "_resolve_diff_root", lambda *args, **kwargs: engine,
+    )
 
     assert external.main([
         "--paths", protected.name, "--dry-run",

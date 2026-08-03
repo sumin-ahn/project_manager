@@ -757,6 +757,16 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
+def _report_engine_rev_skew_at_terminal(exc) -> int:
+    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
+    print(
+        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+        "동기화한 뒤 다시 실행하세요.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def _load_contradiction_lint():
     """contradiction_lint.py 를 sibling import 한다 (실패 시 None·graceful·advisory 는 부가 기능)."""
     try:
@@ -791,7 +801,9 @@ def emit_contradiction_advisory(
             new_adr_id=new_id, new_adr_title=title, new_adr_text=adr_text, target_ids=targets,
         )
         print("\n" + cl.format_advisory(new_id, targets, result), file=sys.stderr)
-    except Exception:
+    except Exception as exc:
+        if _is_engine_rev_skew(exc):
+            raise
         return  # advisory 는 fail-soft — 어떤 오류도 발행을 막지 않는다.
 
 
@@ -930,19 +942,29 @@ def cmd_new(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "new":
         return cmd_new(args)
     parser.error(f"unknown command: {args.cmd}")
     return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
+    try:
+        _console_encoding = _load_module_from_path(
+            Path(__file__).resolve().with_name("console_encoding.py"),
+            "console_encoding.py",
+            verifier=_verify_engine_rev,
+        )
+        _console_encoding.configure_console_utf8()
+        return _main(argv)
+    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
+        raise
 
 
 if __name__ == "__main__":

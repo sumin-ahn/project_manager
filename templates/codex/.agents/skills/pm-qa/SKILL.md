@@ -4,7 +4,7 @@ description: "통합 검증 게이트 — 회귀(pytest) + board.py lint + git s
 audience: pm-internal
 ---
 
-# /pm-qa — 통합 검증 게이트
+# $pm-qa — 통합 검증 게이트
 
 wave 종료 직전·시작 baseline 또는 사용자 `"qa·회귀 확인·통합 검증"` 요청 시 회귀+lint+git을 foreground로 합쳐 즉시 진행/중단을 판단한다.
 
@@ -20,7 +20,7 @@ wave 종료 직전·시작 baseline 또는 사용자 `"qa·회귀 확인·통합
 - [[pm-wave-finish]]: `ticket_finish`·board complete로 단일 ticket 종료.
 - [[pm-bootstrap]]: 세션 시작의 board/git/회귀 측정.
 
-wave 시작은 **baseline fix → wave 시작** 순서이며 red baseline 위에 wave를 쌓지 않는다. wave 종료 직전에는 `pm-wave-finish` 전에 실행한다.
+wave 시작은 **baseline fix → wave 시작** 순서이며 red baseline 위에 wave를 쌓지 않는다. wave 종료 직전에는 `$pm-wave-finish` 전에 실행한다.
 
 ## 실행 순서
 

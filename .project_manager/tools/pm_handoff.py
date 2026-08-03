@@ -225,6 +225,16 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
+def _report_engine_rev_skew_at_terminal(exc) -> int:
+    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
+    print(
+        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+        "동기화한 뒤 다시 실행하세요.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def _load_identity_args():
     """공용 정체성 인자 모듈(identity_args.py)을 같은 tools/ 에서 경로 로드한다 (board.py
     `_load_identity_args`·아래 worktree_pool/pm_bootstrap 로더 동형·sys.path 무오염).
@@ -238,7 +248,19 @@ def _load_identity_args():
     )
 
 
-identity_args = _load_identity_args()
+try:
+    identity_args = _load_identity_args()
+except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
+    if _is_engine_rev_skew(exc):
+        if __name__ == "__main__":
+            print(
+                f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+                "동기화한 뒤 다시 실행하세요.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        raise
+    raise
 TASK_PM_STATE_EMPTY_MARKER = identity_args.TASK_PM_STATE_EMPTY_MARKER
 
 
@@ -427,7 +449,9 @@ def _regression_cwd(
     if bp is not None:
         try:
             auto = bp._auto_slot(areas_file, leases_file)
-        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 REPO 폴백.
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 REPO 폴백.
+            if _is_engine_rev_skew(exc):
+                raise
             auto = None
         if auto:
             repo, n = auto
@@ -564,7 +588,9 @@ def _resolve_state_slot(
         # 진짜 모호(`{2,3}`·repo≥2) — display/preview 는 fail-soft(None→legacy 표기). 실제
         # write 경로는 run() 가드가 이미 fail-loud 로 막았다(여기 도달=방어적).
         return None
-    except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 None(legacy 폴백).
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 None(legacy 폴백).
+        if _is_engine_rev_skew(exc):
+            raise
         return None
     if not auto:
         return None
@@ -621,7 +647,9 @@ def _resolve_session_worktree_slot(
         auto = bp._resolve_session_slot(areas_file, leases_file)
     except bp.SlotResolutionError as exc:
         return None, str(exc)  # 진짜 모호 → fail-loud.
-    except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 현행 폴백(모호 아님).
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 현행 폴백(모호 아님).
+        if _is_engine_rev_skew(exc):
+            raise
         return None, None
     if not auto:
         return None, None  # solo/미해소 → 현행 폴백.
@@ -797,6 +825,7 @@ SHIPPING_GLOBS = (
     "requirements*.txt",              # 런타임/개발 의존성
     ".project_manager/wiki/pm_role.md",       # 방법론 — templates 로 출하
     ".project_manager/wiki/pm_playbook.md",
+    ".project_manager/wiki/README.md",
     ".project_manager/wiki/_template/**",
     ".project_manager/wiki/domain/**",
     # ── engine.manifest 정합 갭 (정확 경로 1:1·과잉발동 회피) ──────────
@@ -911,7 +940,7 @@ def _normalize_session_num(session_num: int | str) -> str:
 HANDOFF_LOG_SKELETON_TEMPLATE = """\
 ## [{date}] handoff | PM {session_num}차{session_tag} → 다음 PM 세션
 
-- 읽기 범위: <PM 손 — 이 entry + 인용할 과거 entry/ADR. 라인수·전체Read 아님. board/git/log 는 /pm-bootstrap 라이브 — 적지 마라.>
+- 읽기 범위: <PM 손 — 이 entry + 인용할 과거 entry/ADR. 라인수·전체Read 아님. board/git/log 는 {bootstrap_entry} 라이브 — 적지 마라.>
 - 메타 학습: <PM 손 — ticket 상태에서 도출 불가한 교훈만. 없으면 "없음".>
 {next_intent}
 {worktree_line}- 회귀/incident: <PM 손 — 회귀 "N passed / 상태" 1줄(green 도 — baseline) + 비-자명 incident. (회귀는 1줄 load-bearing 이라 항상 적음 — board/git/log 대량 재열거만 금지.)>
@@ -943,6 +972,7 @@ def build_handoff_log_skeleton(
         session_tag=_session_tag(session),
         next_intent=_next_intent_lines(thread_tail),
         worktree_line=_worktree_line(worktree_slot, branch),
+        bootstrap_entry=_runtime_skill_entry("pm-bootstrap"),
     )
 
 
@@ -1382,8 +1412,40 @@ def extract_handoff_prompt_template(pm_playbook_text: str) -> str | None:
     return match.group(1)
 
 
-# bare `/pm-bootstrap` 트리거 — 멀티-PM 슬롯 주입 대상.
+# canonical 기본값은 외부 테스트/호출자의 fixture seam으로 유지하되, 소비는 아래 regex만 쓴다.
 _BARE_BOOTSTRAP_TRIGGER = "/pm-bootstrap"
+
+_runtime_skill_entry_prefix = identity_args._runtime_skill_entry_prefix
+_runtime_skill_entry = identity_args._runtime_skill_entry
+
+# bare 스킬 트리거 — canonical(`/`)과 렌더 사본(`$`) 및 prefix 없는 구 사본을 모두 받는다.
+# 경로(`skills/pm-bootstrap`)·접미 변형(`pm-bootstrap-extra`)은 호출 토큰이 아니므로 제외한다.
+_BARE_BOOTSTRAP_TRIGGER_RE = re.compile(
+    r"(?<![A-Za-z0-9_.>/\-])(?P<trigger>(?:[/$])?pm-bootstrap)"
+    r"(?![A-Za-z0-9_.>/\-])"
+)
+
+_MULTI_HARNESS_BOOTSTRAP_RE = re.compile(
+    r"`(?P<first_prefix>[/$])pm-bootstrap`\((?P<first_labels>[^)]+)\)"
+    r"(?: / `(?P<second_prefix>[/$])pm-bootstrap`\((?P<second_labels>[^)]+)\))"
+)
+
+
+def _select_runtime_bootstrap_notation(template: str) -> str:
+    """공유 wiki의 다중-harness 병기를 현재 하네스 표기 하나로 축약한다."""
+    prefix = _runtime_skill_entry_prefix()
+
+    def select(match: re.Match[str]) -> str:
+        for key in ("first", "second"):
+            if match.group(f"{key}_prefix") == prefix:
+                return f"{prefix}pm-bootstrap"
+        return f"{prefix}pm-bootstrap"
+
+    selected = _MULTI_HARNESS_BOOTSTRAP_RE.sub(select, template)
+    return _BARE_BOOTSTRAP_TRIGGER_RE.sub(
+        lambda _match: f"{prefix}pm-bootstrap",
+        selected,
+    )
 
 
 def _parse_worktree_slot(worktree_slot: str | None) -> tuple[str, int] | None:
@@ -1405,7 +1467,7 @@ def _parse_worktree_slot(worktree_slot: str | None) -> tuple[str, int] | None:
 
 
 def _inject_slot_into_template(template: str, worktree_slot: str | None) -> str:
-    """복사 블록 템플릿의 bare `/pm-bootstrap` 을 slot-qualified 로 치환한다.
+    """복사 블록 템플릿의 bare ``pm-bootstrap`` 호출을 slot-qualified 로 치환한다.
 
     `worktree_slot` 이 `work/<repo>_<N>` 형식이면 템플릿 내 모든 `/pm-bootstrap` 을
     `/pm-bootstrap <repo> --slot <N>` 로 치환한다 — 멀티-PM 다음 세션이 슬롯 disambiguator
@@ -1416,12 +1478,14 @@ def _inject_slot_into_template(template: str, worktree_slot: str | None) -> str:
     if parsed is None:
         return template
     repo, n = parsed
-    qualified = f"{_BARE_BOOTSTRAP_TRIGGER} {repo} --slot {n}"
-    return template.replace(_BARE_BOOTSTRAP_TRIGGER, qualified)
+    return _BARE_BOOTSTRAP_TRIGGER_RE.sub(
+        lambda match: f"{match.group('trigger')} {repo} --slot {n}",
+        template,
+    )
 
 
 def _inject_task_into_template(template: str, task: str) -> str:
-    """복사 블록 템플릿의 bare `/pm-bootstrap` 을 task-qualified 로 치환한다.
+    """복사 블록 템플릿의 bare ``pm-bootstrap`` 호출을 task-qualified 로 치환한다.
 
     task 모드 핸드오프면 트리거를 `/pm-bootstrap --task <task>` 로 치환한다 — 다음 세션이
     task 앵커로 재개(차수 추론·per-task pm_state 포인터·clean resume 실링크)하게 연속성을
@@ -1432,8 +1496,10 @@ def _inject_task_into_template(template: str, task: str) -> str:
     검증하므로 단일 안전 토큰(공백·괄호·path 문자·예약패턴 불가)이 보장돼 quoting 이 불필요하다.
     슬롯/솔로 모드는 이 경로를 타지 않는다(호출부에서 task None).
     """
-    qualified = f"{_BARE_BOOTSTRAP_TRIGGER} --task {task}"
-    return template.replace(_BARE_BOOTSTRAP_TRIGGER, qualified)
+    return _BARE_BOOTSTRAP_TRIGGER_RE.sub(
+        lambda match: f"{match.group('trigger')} --task {task}",
+        template,
+    )
 
 
 def build_handoff_prompt_output(
@@ -1466,6 +1532,7 @@ def build_handoff_prompt_output(
             f"앵커: '{_HANDOFF_PROMPT_SECTION_ANCHOR}'\n"
             "pm_playbook.md §'다음 PM 세션 부트스트랩 프롬프트 (템플릿)' 을 직접 복사하라."
         )
+    template = _select_runtime_bootstrap_notation(template)
     if task is not None:
         # 삽입 전 공유 validator 로 fail-loud — build_handoff_prompt_output() 직접 호출도 우회 못 하게
         # 트리거 경계에서 닫는다. run() 은 진입에서 이미 검증하므로 멱등 재검증.
@@ -1477,7 +1544,8 @@ def build_handoff_prompt_output(
     header = (
         f"=== 인계 프롬프트 (PM {session_num}차 → 다음 PM 세션) ===\n"
         f"--- 아래를 복사해 다음 PM 세션에 붙여넣기 ---\n"
-        f"(인계 본문은 /pm-bootstrap 이 log entry 에서 자동 dump — 프롬프트는 트리거만)\n\n"
+        f"(인계 본문은 {_runtime_skill_entry('pm-bootstrap')} 이 log entry 에서 자동 dump — "
+        f"프롬프트는 트리거만)\n\n"
     )
     footer = (
         f"\n--- 복사 끝 ---\n"
@@ -2053,6 +2121,8 @@ class PmHandoff:
             try:
                 owned = bool(checker(slot, task)) if callable(checker) else False
             except Exception as exc:  # noqa: BLE001
+                if _is_engine_rev_skew(exc):
+                    raise
                 print(f"  [중단·소유권 재검증] task 슬롯 {slot!r} 장부 조회 실패 — {exc}. "
                       "git 재스냅을 실행하지 않습니다.", file=sys.stderr)
                 return False
@@ -2065,6 +2135,8 @@ class PmHandoff:
         try:
             lease = wp.record_git_snapshot(slot)
         except Exception as exc:  # noqa: BLE001 — fail-soft: 재스냅 실패가 핸드오프를 막지 않는다.
+            if _is_engine_rev_skew(exc):
+                raise
             print(f"  ⚠ git 재스냅 실패 — {exc} (skip·무해).", file=sys.stderr)
             return True
         if lease is None:
@@ -2096,7 +2168,9 @@ class PmHandoff:
             return None
         try:
             lease = reader(slot)
-        except Exception:  # noqa: BLE001 — fail-soft: 조회 실패는 None(판별 보수적 폴백).
+        except Exception as exc:  # noqa: BLE001 — 일반 조회 실패는 None(판별 보수적 폴백).
+            if _is_engine_rev_skew(exc):
+                raise
             return None
         if lease is None:
             return None
@@ -2132,6 +2206,8 @@ class PmHandoff:
                 raise RuntimeError("slots_for_task가 None을 반환")
             leases = list(resolved)
         except Exception as exc:
+            if _is_engine_rev_skew(exc):
+                raise
             raise RuntimeError(f"slots_for_task({task!r}) 조회 실패: {exc}") from exc
         slots: list[str] = []
         for lease in leases:
@@ -2159,7 +2235,9 @@ class PmHandoff:
             return True, "worktree_pool 미배선·보수적 변경 취급"
         try:
             cmp = wp.compare_slot_git(slot)
-        except Exception:  # noqa: BLE001 — fail-soft 보수: 판정 불가는 변경 취급(회귀 포함).
+        except Exception as exc:  # noqa: BLE001 — fail-soft 보수: 판정 불가는 변경 취급(회귀 포함).
+            if _is_engine_rev_skew(exc):
+                raise
             return True, "compare 예외·보수적 변경 취급"
         if getattr(cmp, "unrecorded", False):
             return True, "스냅 미기록·보수적 변경 취급"
@@ -2170,7 +2248,9 @@ class PmHandoff:
             return True, f"head {getattr(cmp, 'head_relation', None)}(전진/재설정)"
         try:
             dirty = bool(wp.slot_git_status(slot).get("dirty", False))
-        except Exception:  # noqa: BLE001 — fail-soft 보수: dirty 조회 불가는 변경 취급.
+        except Exception as exc:  # noqa: BLE001 — fail-soft 보수: dirty 조회 불가는 변경 취급.
+            if _is_engine_rev_skew(exc):
+                raise
             return True, "dirty 조회 예외·보수적 변경 취급"
         if dirty:
             return True, "dirty(미커밋 변경)"
@@ -2221,6 +2301,8 @@ class PmHandoff:
         try:
             task_rec = primitive(task)
         except Exception as exc:  # noqa: BLE001 — fail-soft: task pid 기록 실패가 핸드오프를 막지 않는다.
+            if _is_engine_rev_skew(exc):
+                raise
             print(f"  ⚠ task pid 기록 실패 — {exc} (skip·무해).", file=sys.stderr)
             return
         if task_rec is None:
@@ -2284,7 +2366,9 @@ class PmHandoff:
             return False
         try:
             return not resolver(slot).exists()
-        except Exception:  # noqa: BLE001 — fail-soft: 판별 실패는 차단 안 함(기존 해소에 위임).
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 판별 실패는 차단 안 함(기존 해소에 위임).
+            if _is_engine_rev_skew(exc):
+                raise
             return False
 
     def _classify_task_changed_slots(self, task: str) -> list[tuple[str, str]]:
@@ -2302,7 +2386,8 @@ class PmHandoff:
         if not slots:
             print(
                 f"  · task {task!r} 보유 슬롯 0개 — 대상 없음(skip). "
-                "회귀가 필요하면 `/pm-env alloc <repo> --task <이름>` 또는 task-aware "
+                f"회귀가 필요하면 `{_runtime_skill_entry('pm-env')} alloc <repo> --task <이름>` "
+                "또는 task-aware "
                 "worktree add로 작업공간을 대여한 뒤 task-only handoff를 다시 실행."
             )
             return []
@@ -2337,7 +2422,8 @@ class PmHandoff:
                 print(
                     f"\n[중단] task 슬롯 {slot!r} 의 worktree 디렉터리 부재(stale — 장부엔 존재·"
                     f"{REPO / slot}) — REPO 폴백 회귀는 vacuous-pass(엉뚱한 트리 green)이므로 "
-                    "그 슬롯을 red 로 차단한다. `/pm-worktree prune-stale`(장부 정리) 또는 "
+                    f"그 슬롯을 red 로 차단한다. `{_runtime_skill_entry('pm-worktree')} "
+                    "prune-stale`(장부 정리) 또는 "
                     "`worktree add <repo> --task <이름>`(재생성) 후 재시도하라. "
                     "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
                     file=sys.stderr,
@@ -2583,6 +2669,8 @@ class PmHandoff:
             try:
                 validate_task_name_engine(task)
             except Exception as exc:  # noqa: BLE001 — InvalidTaskName(.reason)·RuntimeError(엔진 부재)
+                if _is_engine_rev_skew(exc):
+                    raise
                 print(
                     f"\n[중단] --task 이름 {task!r} 이(가) 부적합 — {getattr(exc, 'reason', exc)} "
                     "(log/current.md·pm_state 어떤 것도 건드리지 않는다.)",
@@ -2601,6 +2689,8 @@ class PmHandoff:
             try:
                 held_slots = self._task_held_slots(task)
             except Exception as exc:  # noqa: BLE001 — 해소 실패 ≠ 실제 빈 집합.
+                if _is_engine_rev_skew(exc):
+                    raise
                 print(
                     f"\n[중단] task {task!r} 보유 슬롯 장부 해소 실패 — {exc}. "
                     "실제 0슬롯으로 간주하지 않습니다. "
@@ -2917,7 +3007,12 @@ class PmHandoff:
 
         # ── 7. 잔여 PM 수동 작업 출력 ──────────────────────────────────────────
         print("\n[7/7] PM 이 손으로 할 잔여 작업:")
-        print("  [ ] log/current.md handoff entry 본문 채우기 — lean 3섹션(읽기범위·메타학습·다음intent)+회귀/incident(회귀 1줄 baseline). board/git/log 대량 재열거 금지(/pm-bootstrap 라이브).")
+        print(
+            "  [ ] log/current.md handoff entry 본문 채우기 — lean 3섹션"
+            "(읽기범위·메타학습·다음intent)+회귀/incident(회귀 1줄 baseline). "
+            "board/git/log 대량 재열거 금지("
+            f"{_runtime_skill_entry('pm-bootstrap')} 라이브)."
+        )
         print("  [ ] domain capture 검토 — `domain.py capture --tickets \"T-0001,T-0002\"`(이 세션 done ticket ID·콤마분리 또는 공백 나열) 출력 보고 ⚠/gap 페이지 갱신/신설(채록·surface-only).")
         print("  [ ] pm_state.md '진행 중인 의사결정' 표 갱신")
         print("  [ ] pm_state.md '남은 작업 전체 그림' 갱신")
@@ -3108,13 +3203,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     handoff = PmHandoff()
@@ -3167,6 +3256,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             validate_task_name_engine(identity.task)
         except RuntimeError as exc:
+            if _is_engine_rev_skew(exc):
+                raise
             parser.error(str(exc))
         except Exception as exc:  # noqa: BLE001 — worktree_pool.InvalidTaskName(.reason 진단)
             parser.error(
@@ -3216,6 +3307,22 @@ def main(argv: list[str] | None = None) -> int:
         done=args.done,
         task=identity.task,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
+    try:
+        _console_encoding = _load_module_from_path(
+            Path(__file__).resolve().with_name("console_encoding.py"),
+            "console_encoding.py",
+            verifier=_verify_engine_rev,
+        )
+        _console_encoding.configure_console_utf8()
+        return _main(argv)
+    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
+        raise
 
 
 if __name__ == "__main__":

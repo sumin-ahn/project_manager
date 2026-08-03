@@ -10,7 +10,7 @@ denylist 패턴 자체는 불변(오탐 허용·누락 금지·external_review.p
 → 차단(exit 1 + 왜), (C) --ticket/기본 암묵 수집분 제외 → 비차단·판정 라인 병기, (D) 제외 0건 →
 종전 완전 동일.
 
-hermetic: extract_diff·run_review·_pm_home_reanchor 를 monkeypatch 해 외부 codex 실호출(ADR-0004
+hermetic: PM-home 해소·extract_diff·run_review 를 monkeypatch 해 외부 codex 실호출(ADR-0004
 opt-in·과금) 없이 main() 분기를 격리한다. 발단 end-to-end 재현(F)만 실 subprocess.run 을 주입해
 diff→실 filter→차단의 전 production 경로를 태운다(외부 git 바이너리 없이).
 """
@@ -133,16 +133,20 @@ def _run_main(external, monkeypatch, *, argv, excluded, diff=None,
               conf=None, verdict="pass", touches=None):
     """main() 을 격리 실행 — extract_diff 를 (diff, excluded) 로 주입, 리뷰어 호출을 기록.
 
-    PM 홈 재지정 게이트(T-0367)는 무력화(_pm_home_reanchor→None)해 denylist 보고 분기만 격리한다.
+    selector 상류의 PM-home 해소도 고정해 checkout/lease 형상과 무관하게 denylist 분기만 격리한다.
     반환: (exit_code, reviewer_called)."""
     if diff is None:
         diff = f"diff --git a/{REAL_FILE} b/{REAL_FILE}\n@@ -0,0 +1 @@\n+ok = 1\n"
     conf = {"external_review_enabled": "true"} if conf is None else conf
-    monkeypatch.setattr(external, "local_config", lambda: conf)
-    monkeypatch.setattr(external, "_pm_home_reanchor", lambda anchor: None)
+    monkeypatch.setattr(external, "local_config", lambda repo=None: conf)
+    monkeypatch.setattr(
+        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: external.REPO,
+    )
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, list(excluded)))
     if touches is not None:
-        monkeypatch.setattr(external, "parse_ticket_touches", lambda t: list(touches))
+        monkeypatch.setattr(
+            external, "parse_ticket_touches", lambda t, **kwargs: list(touches),
+        )
     called = {"reviewer": False}
 
     def _fake_run_review(*a, **k):
@@ -330,8 +334,13 @@ def test_reproduce_false_confidence_end_to_end(external, monkeypatch, capsys):
         return subprocess.CompletedProcess(argv, 0, stdout=raw, stderr="")
 
     monkeypatch.setattr(external.subprocess, "run", _fake_git)
-    monkeypatch.setattr(external, "local_config", lambda: {"external_review_enabled": "true"})
-    monkeypatch.setattr(external, "_pm_home_reanchor", lambda anchor: None)
+    monkeypatch.setattr(
+        external, "local_config",
+        lambda repo=None: {"external_review_enabled": "true"},
+    )
+    monkeypatch.setattr(
+        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: external.REPO,
+    )
     called = {"reviewer": False}
 
     def _rr(*a, **k):

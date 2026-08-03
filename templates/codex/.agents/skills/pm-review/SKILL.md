@@ -4,7 +4,7 @@ description: "codex 외부 교차검증 게이트 실행 규율 명령어化 —
 audience: pm-internal
 ---
 
-# /pm-review — codex 외부 교차검증 게이트
+# $pm-review — codex 외부 교차검증 게이트
 
 backbone은 `.project_manager/tools/external_review.py`(opt-in)이며, PM이 외부 게이트를 실행할 때 사용한다.
 

@@ -4,7 +4,7 @@ description: "ADR 발행/개정 명령어化 — 번호 자동 채번 + frontmat
 audience: pm-internal
 ---
 
-# /pm-adr — ADR 발행/개정 명령어化
+# $pm-adr — ADR 발행/개정 명령어化
 
 PM 에이전트가 사용자 지시로 ADR을 발행·개정할 때 `.project_manager/tools/pm_adr.py new`를 호출한다.
 새 결정은 구조적·비가역적·다중 모듈 영향, 같은 질문의 재발, PM 내부 프로세스 결정

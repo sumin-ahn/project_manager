@@ -451,6 +451,19 @@ def test_every_main_entrypoint_calls_common_console_helper():
             continue
         main_tree = main_defs[0]
 
+        scan_body = list(main_tree.body)
+        if (
+            scan_body
+            and isinstance(scan_body[0], ast.Expr)
+            and isinstance(scan_body[0].value, ast.Constant)
+            and isinstance(scan_body[0].value.value, str)
+        ):
+            scan_body = scan_body[1:]
+        # Marked engine-skew를 traceback 대신 사용자 진단+rc로 번역하는 진입점은 loader와
+        # helper를 최외곽 try 안에 둔다. try.body의 선행 순서를 동일한 계약으로 검사한다.
+        if len(scan_body) == 1 and isinstance(scan_body[0], ast.Try):
+            scan_body = scan_body[0].body
+
         def direct_call(stmt):
             if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
                 return stmt.value
@@ -467,7 +480,7 @@ def test_every_main_entrypoint_calls_common_console_helper():
 
         helper_indexes = [
             index
-            for index, stmt in enumerate(main_tree.body)
+            for index, stmt in enumerate(scan_body)
             if isinstance(stmt, ast.Expr)
             and (call := direct_call(stmt)) is not None
             and call_name(call) == "configure_console_utf8"
@@ -477,7 +490,7 @@ def test_every_main_entrypoint_calls_common_console_helper():
             continue
 
         helper_index = helper_indexes[0]
-        leading = main_tree.body[:helper_index]
+        leading = scan_body[:helper_index]
         if (
             leading
             and isinstance(leading[0], ast.Expr)
@@ -500,7 +513,7 @@ def test_every_main_entrypoint_calls_common_console_helper():
                 unexpected.append(name)
         loads_common_file = any(
             isinstance(node, ast.Constant) and node.value == "console_encoding.py"
-            for stmt in main_tree.body[:helper_index + 1]
+            for stmt in scan_body[:helper_index + 1]
             for node in ast.walk(stmt)
         )
         if unexpected or not loads_common_file:

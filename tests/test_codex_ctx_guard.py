@@ -161,7 +161,7 @@ def test_hooks_precompact_hard_stop_uses_manual_auto_matchers_and_json_stdout():
         )
     joined = " ".join(e["command"] for e in cmd_entries)
     assert "[ctx-tripwire]" in joined, "tripwire 표지([ctx-tripwire]) 없음"
-    assert "/pm-handoff" in joined, "핸드오프 안내(/pm-handoff) 없음 — 상태 박제 유도 불가"
+    assert "$pm-handoff" in joined, "핸드오프 안내($pm-handoff) 없음 — 상태 박제 유도 불가"
     assert "printf" in joined, "JSON stdout을 내는 printf command 없음"
     assert '\"continue\":false' in joined, "live-confirmed continue:false hard-stop contract 없음"
     assert '\"stopReason\"' in joined, "matcher별 stopReason 없음"
@@ -178,21 +178,21 @@ def test_hooks_windows_commands_match_posix_structured_warning_contract():
         assert posix["continue"] is False
         assert posix["suppressOutput"] is False
         assert "[ctx-tripwire]" in posix["systemMessage"]
-        assert "/pm-handoff" in posix["systemMessage"]
+        assert "$pm-handoff" in posix["systemMessage"]
         assert posix["stopReason"] == (
             "auto compaction blocked; follow the recovery guide"
-            if matcher == "^auto$" else "manual compaction blocked; run /pm-handoff"
+            if matcher == "^auto$" else "manual compaction blocked; run $pm-handoff"
         )
 
     assert payloads["^auto$"][0]["systemMessage"] == (
         "[ctx-tripwire] Auto compaction was blocked. This thread is over the limit, so another model turn "
         "may be blocked again.\nRecovery: 1) /status and copy the chat ID; 2) /quit; 3) run codex resume "
-        "--disable hooks <CHAT_ID>; 4) run /pm-handoff; 5) start a fresh normal session so hooks are enabled "
+        "--disable hooks <CHAT_ID>; 4) run $pm-handoff; 5) start a fresh normal session so hooks are enabled "
         "again. This one-shot recovery allows compaction, so the handoff may use a lossy summary."
     )
     assert payloads["^manual$"][0]["systemMessage"] == (
-        "[ctx-tripwire] Manual compaction was blocked. Run /pm-handoff now. If auto hard-stop repeats, run "
-        "/status and copy the chat ID, /quit, then codex resume --disable hooks <CHAT_ID>; run /pm-handoff "
+        "[ctx-tripwire] Manual compaction was blocked. Run $pm-handoff now. If auto hard-stop repeats, run "
+        "/status and copy the chat ID, /quit, then codex resume --disable hooks <CHAT_ID>; run $pm-handoff "
         "and start a fresh normal session afterward."
     )
 
@@ -204,7 +204,7 @@ def test_auto_hard_stop_guide_orders_one_shot_recovery_without_persistent_hook_d
         "/status",
         "/quit",
         "codex resume --disable hooks <CHAT_ID>",
-        "/pm-handoff",
+        "$pm-handoff",
         "fresh normal session",
     )
     positions = [auto.index(step) for step in steps]

@@ -1,0 +1,736 @@
+#!/usr/bin/env python3
+"""검토 대상 경로의 신선도를 검증하는 격리 worktree 스냅샷 생성기.
+
+사용:
+    python3 .project_manager/tools/gate_snapshot.py \
+        --repo /path/to/shared-worktree \
+        --output /tmp/gate-review --paths src/file.py tests/
+
+명시 경로마다 Git 소유 파일 집합을 확정한 뒤 detached worktree에 index를 overlay한다.
+생성 전후의 공유 working tree와 생성된 스냅샷에서 대상 파일의 종류, 실행 비트,
+Git 속성 정규화 blob OID를 대조한다. 대상 밖 변경은 비교하지 않는다. 생성된 격리
+worktree의 전용 index만 내용과 동기화하며, 입력 working tree의 공유 index는 수정하지
+않는다.
+
+병렬 wave에서는 같은 디렉터리의 다른 dev WIP가 검토 범위에 섞이지 않도록 ``--paths``를
+파일 단위로 지정한다.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import shlex
+import stat
+import subprocess
+import sys
+from pathlib import Path
+from typing import NamedTuple, Sequence
+
+
+_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
+_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
+    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
+)
+_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
+_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
+_TOOLS_BOOTSTRAP_SENTINEL = object()
+try:
+    if (
+        _TOOLS_BOOTSTRAP_MODULE is not None
+        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+        != _TOOLS_BOOTSTRAP_FILE
+    ):
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+        _TOOLS_BOOTSTRAP_MODULE = None
+    if _TOOLS_BOOTSTRAP_MODULE is None:
+        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
+            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
+        )
+        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
+        if _TOOLS_BOOTSTRAP_ADDED:
+            sys.path.insert(0, _TOOLS_BOOTSTRAP)
+        try:
+            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
+            if (
+                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+                != _TOOLS_BOOTSTRAP_FILE
+            ):
+                raise ImportError(
+                    "repo_owned_files 형제 경로 불일치: "
+                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
+                )
+            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
+        finally:
+            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
+            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
+            if _TOOLS_BOOTSTRAP_ADDED:
+                try:
+                    sys.path.remove(_TOOLS_BOOTSTRAP)
+                except ValueError:
+                    pass
+            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
+                sys.modules.pop("repo_owned_files", None)
+            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
+                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
+    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
+except Exception as _TOOLS_BOOTSTRAP_ERROR:
+    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+
+    def _load_module_from_path(
+        path,
+        expected_filename,
+        *,
+        verifier=None,
+        allow_unverified=False,
+        cache=False,
+        cache_key=None,
+    ):
+        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
+        target = os.path.realpath(os.fspath(path))
+        if os.path.basename(target) != expected_filename:
+            raise ValueError(
+                f"module filename mismatch: expected {expected_filename!r}, "
+                f"got {os.path.basename(target)!r}"
+            )
+        if verifier is not None and allow_unverified:
+            raise ValueError("choose verifier or allow_unverified=True, not both")
+        if verifier is None and not allow_unverified:
+            raise ValueError(
+                "module load requires verifier or explicit allow_unverified=True"
+            )
+        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
+        module = sys.modules.get(module_key) if cache else None
+        inserted = False
+        try:
+            if module is None:
+                if (
+                    target == _TOOLS_BOOTSTRAP_FILE
+                    and _TOOLS_BOOTSTRAP_MODULE is not None
+                ):
+                    module = _TOOLS_BOOTSTRAP_MODULE
+                else:
+                    import_name = os.path.splitext(expected_filename)[0]
+                    previous = sys.modules.pop(
+                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
+                    )
+                    parent = os.path.dirname(target)
+                    added = not sys.path or sys.path[0] != parent
+                    if added:
+                        sys.path.insert(0, parent)
+                    try:
+                        module = __import__(import_name)
+                        if os.path.realpath(getattr(module, "__file__", "")) != target:
+                            raise ImportError(
+                                f"{expected_filename} 형제 경로 불일치"
+                            )
+                    finally:
+                        if added:
+                            try:
+                                sys.path.remove(parent)
+                            except ValueError:
+                                pass
+                        if sys.modules.get(import_name) is module:
+                            sys.modules.pop(import_name, None)
+                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
+                            sys.modules[import_name] = previous
+                if cache:
+                    sys.modules[module_key] = module
+                    inserted = True
+            if verifier is not None:
+                verifier(module, expected_filename)
+            return module
+        except Exception as exc:
+            if cache and (inserted or sys.modules.get(module_key) is module):
+                sys.modules.pop(module_key, None)
+            if target == _TOOLS_BOOTSTRAP_FILE:
+                raise RuntimeError(
+                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
+                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
+                ) from exc
+            raise
+
+
+# baked stamp. 소비처는 이 값을 자기 rev와 대조해 부분 동기된 구 사본을
+# SnapshotError 속성 접근 전에 명시적인 sibling-skew 오류로 막는다.
+ENGINE_REV = "v1.5.1"
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True
+        raise err
+
+
+class SnapshotError(RuntimeError):
+    """스냅샷을 만들거나 대상 경로의 신선도를 증명하지 못한 오류."""
+
+
+class FileSignature(NamedTuple):
+    kind: str
+    executable: bool
+    digest: str
+
+
+class IndexEntry(NamedTuple):
+    path: str
+    mode: str
+    oid: str
+    stage: int
+
+
+class Selection(NamedTuple):
+    selectors: tuple[str, ...]
+    files: tuple[str, ...]
+    indexed: frozenset[str]
+    head: frozenset[str]
+    index_entries: tuple[IndexEntry, ...]
+    head_oid: str
+
+
+def _git(
+    repo: Path, *args: str, input_text: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            input=input_text,
+        )
+    except OSError as exc:
+        raise SnapshotError(f"git 실행 실패: {exc}") from exc
+
+
+def _checked_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    result = _git(repo, *args)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "진단 없음"
+        raise SnapshotError(
+            f"git {' '.join(args)} 실패 (rc={result.returncode}): {detail}"
+        )
+    return result
+
+
+def _checked_git_input(
+    repo: Path, input_text: str, *args: str
+) -> subprocess.CompletedProcess[str]:
+    result = _git(repo, *args, input_text=input_text)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "진단 없음"
+        raise SnapshotError(
+            f"git {' '.join(args)} 실패 (rc={result.returncode}): {detail}"
+        )
+    return result
+
+
+def _repo_root(anchor: Path) -> Path:
+    result = _checked_git(anchor, "rev-parse", "--show-toplevel")
+    value = result.stdout.strip()
+    if not value:
+        raise SnapshotError(f"git 저장소 루트를 해소하지 못했습니다: {anchor}")
+    return Path(value).resolve()
+
+
+def _normalize_selector(root: Path, raw: str) -> str:
+    candidate = Path(raw)
+    absolute = Path(os.path.abspath(candidate if candidate.is_absolute() else root / candidate))
+    try:
+        relative = absolute.relative_to(root)
+    except ValueError as exc:
+        raise SnapshotError(f"검토 경로가 저장소 밖입니다: {raw}") from exc
+    if not relative.parts:
+        raise SnapshotError("저장소 전체('.')는 검토 경로로 지정할 수 없습니다.")
+    if relative.parts[0] == ".git":
+        raise SnapshotError(f"Git 메타데이터는 검토 경로로 지정할 수 없습니다: {raw}")
+    return relative.as_posix()
+
+
+def _selected_files(root: Path, selectors: Sequence[str]) -> Selection:
+    normalized_selectors: set[str] = set()
+    selected: set[str] = set()
+    indexed: set[str] = set()
+    head_files: set[str] = set()
+    index_entries: set[IndexEntry] = set()
+    head_oid = _checked_git(root, "rev-parse", "--verify", "HEAD").stdout.strip()
+    if not head_oid:
+        raise SnapshotError("스냅샷 기준 HEAD OID를 해소하지 못했습니다.")
+    for raw in selectors:
+        relative = _normalize_selector(root, raw)
+        normalized_selectors.add(relative)
+        pathspec = f":(top,literal){relative}"
+        cached = _checked_git(
+            root,
+            "ls-files",
+            "--stage",
+            "-z",
+            "--cached",
+            "--",
+            pathspec,
+        )
+        others = _checked_git(
+            root,
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--",
+            pathspec,
+        )
+        head = _checked_git(
+            root, "ls-tree", "-r", "--name-only", "-z", head_oid, "--", pathspec
+        )
+        cached_entries: set[IndexEntry] = set()
+        for record in cached.stdout.split("\0"):
+            if not record:
+                continue
+            try:
+                metadata, path = record.split("\t", 1)
+                mode, oid, stage_text = metadata.split()
+                cached_entries.add(IndexEntry(path, mode, oid, int(stage_text)))
+            except (TypeError, ValueError) as exc:
+                raise SnapshotError(
+                    f"Git index stage 엔트리를 해석할 수 없습니다: {record!r}"
+                ) from exc
+        cached_matches = {entry.path for entry in cached_entries}
+        other_matches = {path for path in others.stdout.split("\0") if path}
+        head_matches = {path for path in head.stdout.split("\0") if path}
+        matches = cached_matches | other_matches | head_matches
+        if not matches:
+            raise SnapshotError(
+                f"검토 경로에 비교할 Git 소유 파일이 없습니다: {raw}"
+            )
+        selected.update(matches)
+        indexed.update(cached_matches)
+        index_entries.update(cached_entries)
+        head_files.update(head_matches)
+    if not selected:
+        raise SnapshotError("검토 대상 파일 집합이 비었습니다.")
+    return Selection(
+        tuple(sorted(normalized_selectors)),
+        tuple(sorted(selected)),
+        frozenset(indexed),
+        frozenset(head_files),
+        tuple(sorted(index_entries)),
+        head_oid,
+    )
+
+
+def _signature(path: Path, *, git_path: tuple[Path, str]) -> FileSignature | None:
+    try:
+        metadata = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        raise SnapshotError(f"대상 파일을 읽을 수 없습니다: {path} ({exc})") from exc
+
+    if stat.S_ISREG(metadata.st_mode):
+        root, relative = git_path
+        digest = _checked_git(
+            root, "hash-object", "--path", relative, "--", relative
+        ).stdout.strip()
+        if not digest:
+            raise SnapshotError(
+                f"Git 정규화 blob OID를 해소하지 못했습니다: {relative}"
+            )
+        return FileSignature("file", bool(metadata.st_mode & 0o111), digest)
+    if stat.S_ISLNK(metadata.st_mode):
+        try:
+            target = os.readlink(path).encode("utf-8", errors="surrogateescape")
+        except OSError as exc:
+            raise SnapshotError(f"심볼릭 링크를 읽을 수 없습니다: {path} ({exc})") from exc
+        return FileSignature("symlink", False, hashlib.sha256(target).hexdigest())
+    if stat.S_ISDIR(metadata.st_mode):
+        # selection의 각 항목은 어느 한 Git 상태에서는 blob이다. 그 blob 경로가
+        # 다른 상태에서 디렉터리인 것은 file -> directory 전환의 삭제 쪽이다.
+        return None
+    raise SnapshotError(f"지원하지 않는 대상 파일 종류입니다: {path}")
+
+
+def _signatures(
+    root: Path, files: Sequence[str]
+) -> dict[str, FileSignature | None]:
+    signatures: dict[str, FileSignature | None] = {}
+    for relative in files:
+        path = root / relative
+        signatures[relative] = _signature(path, git_path=(root, relative))
+    return signatures
+
+
+def _actual_files(root: Path, selectors: Sequence[str]) -> frozenset[str]:
+    """선택 범위의 실 파일 집합을 ignored/untracked까지 포함해 열거한다."""
+    files: set[str] = set()
+    for relative in selectors:
+        pathspec = f":(top,literal){relative}"
+        listed = _checked_git(
+            root, "ls-files", "-z", "--cached", "--others", "--", pathspec
+        )
+        for candidate in listed.stdout.split("\0"):
+            if not candidate:
+                continue
+            try:
+                metadata = (root / candidate).lstat()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as exc:
+                raise SnapshotError(
+                    f"대상 파일 집합을 열거할 수 없습니다: {candidate} ({exc})"
+                ) from exc
+            if not stat.S_ISDIR(metadata.st_mode):
+                files.add(candidate)
+    return frozenset(files)
+
+
+def _format_paths(paths: Sequence[str]) -> str:
+    return ", ".join(paths[:8]) + (" …" if len(paths) > 8 else "")
+
+
+_PARALLEL_WAVE_GUIDANCE = (
+    " 이 경로가 검토 대상이면 `git add`로 index를 갱신하고, "
+    "다른 dev의 WIP이면 `--paths`를 파일 단위로 좁히십시오."
+)
+
+
+def _ignored_paths(index_checkout: Path, paths: Sequence[str]) -> set[str]:
+    ignored: set[str] = set()
+    for path in paths:
+        result = _git(index_checkout, "check-ignore", "-q", "--", path)
+        if result.returncode == 0:
+            ignored.add(path)
+        elif result.returncode != 1:
+            detail = result.stderr.strip() or result.stdout.strip() or "진단 없음"
+            raise SnapshotError(f"git check-ignore 실패 (rc={result.returncode}): {detail}")
+    return ignored
+
+
+def _validate_live_selection(
+    index_checkout: Path,
+    selection: Selection,
+    signatures: dict[str, FileSignature | None],
+) -> dict[str, FileSignature | None]:
+    staged_deletion_residue = sorted(
+        path
+        for path in selection.files
+        if signatures[path] is not None
+        and path not in selection.indexed
+        and path in selection.head
+    )
+    # Ignore 면제도 검토 기준과 같은 캡처 index를 checkout한 스냅샷에서
+    # 판정한다. 원본 working tree의 unstaged .gitignore는 개입하지 않는다.
+    ignored_residue = _ignored_paths(index_checkout, staged_deletion_residue)
+    if ignored_residue:
+        # `git rm --cached f` + staged .gitignore는 index 관점의 정상 삭제다. 남아 있는
+        # ignored working 파일을 스냅샷에 복사하거나 stale 변경으로 간주하지 않는다.
+        signatures = dict(signatures)
+        for path in ignored_residue:
+            signatures[path] = None
+        staged_deletion_residue = [
+            path for path in staged_deletion_residue if path not in ignored_residue
+        ]
+    if staged_deletion_residue:
+        raise SnapshotError(
+            "index에서 삭제됐지만 working tree에 남은 파일이 있습니다. "
+            "삭제를 working tree에도 반영하거나 index에 복원하십시오: "
+            + _format_paths(staged_deletion_residue)
+            + _PARALLEL_WAVE_GUIDANCE
+        )
+
+    untracked = sorted(
+        path
+        for path in selection.files
+        if signatures[path] is not None
+        and path not in selection.indexed
+        and path not in selection.head
+    )
+    if untracked:
+        raise SnapshotError(
+            "스냅샷 index에 없는 untracked 신규 파일입니다: "
+            + _format_paths(untracked)
+            + _PARALLEL_WAVE_GUIDANCE
+        )
+
+    missing_from_worktree = sorted(
+        path
+        for path in selection.files
+        if signatures[path] is None and path in selection.indexed
+    )
+    if missing_from_worktree:
+        command_paths = " ".join(
+            shlex.quote(path) for path in missing_from_worktree[:8]
+        )
+        raise SnapshotError(
+            "working tree에는 없지만 index에 남은 파일이 있습니다. "
+            f"삭제를 `git add -u -- {command_paths}`로 stage하십시오: "
+            + _format_paths(missing_from_worktree)
+            + _PARALLEL_WAVE_GUIDANCE
+        )
+    return signatures
+
+
+def _verify_selection_stable(before: Selection, after: Selection) -> None:
+    if before.head_oid != after.head_oid:
+        raise SnapshotError(
+            "스냅샷 생성 중 저장소 HEAD OID가 변경됐습니다: "
+            f"{before.head_oid} -> {after.head_oid}"
+        )
+    if before.files != after.files:
+        before_set = set(before.files)
+        after_set = set(after.files)
+        added = sorted(after_set - before_set)
+        removed = sorted(before_set - after_set)
+        details: list[str] = []
+        if added:
+            details.append("추가=" + _format_paths(added))
+        if removed:
+            details.append("제거=" + _format_paths(removed))
+        raise SnapshotError(
+            "스냅샷 생성 중 검토 대상 파일 집합이 변경됐습니다: "
+            + "; ".join(details)
+        )
+    if before.index_entries != after.index_entries:
+        raise SnapshotError(
+            "스냅샷 생성 중 검토 대상의 Git index stage 엔트리(mode/OID/stage)가 "
+            "변경됐습니다."
+        )
+    if before.indexed != after.indexed or before.head != after.head:
+        raise SnapshotError(
+            "스냅샷 생성 중 검토 대상의 Git index 또는 HEAD 집합이 변경됐습니다."
+        )
+
+
+def _verify_snapshot_basis(
+    expected: Selection,
+    snapshot: Selection,
+    expected_actual_files: frozenset[str],
+    snapshot_actual_files: frozenset[str],
+) -> None:
+    if snapshot.head_oid != expected.head_oid:
+        raise SnapshotError(
+            "격리 스냅샷의 HEAD OID가 생성 기준점과 다릅니다: "
+            f"expected={expected.head_oid}, actual={snapshot.head_oid}"
+        )
+    if snapshot.index_entries != expected.index_entries:
+        raise SnapshotError(
+            "격리 스냅샷의 Git index stage 엔트리(mode/OID/stage)가 "
+            "생성 기준점과 다릅니다."
+        )
+    if snapshot_actual_files != expected_actual_files:
+        added = sorted(snapshot_actual_files - expected_actual_files)
+        removed = sorted(expected_actual_files - snapshot_actual_files)
+        details: list[str] = []
+        if added:
+            details.append("추가=" + _format_paths(added))
+        if removed:
+            details.append("제거=" + _format_paths(removed))
+        raise SnapshotError(
+            "격리 스냅샷의 선택 범위 실 파일 집합이 "
+            "생성 기준점과 다릅니다: "
+            + "; ".join(details)
+        )
+
+
+def _format_mismatches(
+    expected: dict[str, FileSignature | None],
+    actual: dict[str, FileSignature | None],
+) -> str:
+    changed = [path for path in expected if expected[path] != actual[path]]
+    return ", ".join(changed[:8]) + (" …" if len(changed) > 8 else "")
+
+
+def _replicate_index_and_checkout(root: Path, destination: Path) -> None:
+    """공유 index 엔트리를 복제하고 gitlink를 제외한 stage-0 파일만 checkout한다."""
+    staged = _checked_git(root, "ls-files", "--stage", "-z").stdout
+    checkout_paths: list[str] = []
+    for record in staged.split("\0"):
+        if not record:
+            continue
+        try:
+            metadata, path = record.split("\t", 1)
+            mode, _oid, stage_text = metadata.split()
+        except ValueError as exc:
+            raise SnapshotError(
+                f"Git index stage 엔트리를 해석할 수 없습니다: {record!r}"
+            ) from exc
+        if mode != "160000" and stage_text == "0":
+            checkout_paths.append(path)
+
+    # linked worktree의 HEAD index를 공유 index의 mode/OID/stage 엔트리로 교체한다.
+    # gitlink는 index에만 복제하고 checkout 입력에서는 제외해 활성 원본 submodule을
+    # 절대 이동시키지 않는다.
+    _checked_git(destination, "read-tree", "--empty")
+    _checked_git_input(destination, staged, "update-index", "-z", "--index-info")
+    _checked_git_input(
+        destination,
+        "".join(path + "\0" for path in checkout_paths),
+        "checkout-index",
+        "-f",
+        "-z",
+        "--stdin",
+    )
+
+
+def _rollback(root: Path, output: Path) -> str | None:
+    result = _git(root, "worktree", "remove", "--force", str(output))
+    if result.returncode == 0:
+        return None
+    detail = result.stderr.strip() or result.stdout.strip() or "진단 없음"
+    return f"생성 실패 후 격리 worktree 정리도 실패했습니다: {detail}"
+
+
+def create_snapshot(
+    repo: Path, output: Path, paths: Sequence[str]
+) -> tuple[Path, tuple[str, ...]]:
+    """스냅샷을 만들고 명시 대상 파일만 working tree와 동일함을 검증한다."""
+    root = _repo_root(repo)
+    requested_output = Path(os.path.abspath(output))
+    if os.path.lexists(requested_output):
+        raise SnapshotError(f"스냅샷 출력 경로가 이미 존재합니다: {requested_output}")
+    destination = requested_output.resolve(strict=False)
+    try:
+        destination.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise SnapshotError(f"격리 스냅샷은 저장소 밖에 만들어야 합니다: {destination}")
+    if not destination.parent.is_dir():
+        raise SnapshotError(f"스냅샷 출력 부모 디렉터리가 없습니다: {destination.parent}")
+
+    selection_before = _selected_files(root, paths)
+    selectors = selection_before.selectors
+    before = _signatures(root, selection_before.files)
+    add = _git(
+        root,
+        "worktree",
+        "add",
+        "--detach",
+        "--no-checkout",
+        str(destination),
+    )
+    if add.returncode != 0:
+        detail = add.stderr.strip() or add.stdout.strip() or "진단 없음"
+        raise SnapshotError(f"격리 worktree 생성 실패 (rc={add.returncode}): {detail}")
+
+    try:
+        _replicate_index_and_checkout(root, destination)
+        selection_after = _selected_files(root, selectors)
+        _verify_selection_stable(selection_before, selection_after)
+        before = _validate_live_selection(destination, selection_before, before)
+        after = _signatures(root, selection_after.files)
+        after = _validate_live_selection(destination, selection_after, after)
+        expected_actual_files = frozenset(
+            path for path, signature in after.items() if signature is not None
+        )
+        snapshot_selection_before = _selected_files(destination, selectors)
+        snapshot_actual_before = _actual_files(destination, selectors)
+        _verify_snapshot_basis(
+            selection_before,
+            snapshot_selection_before,
+            expected_actual_files,
+            snapshot_actual_before,
+        )
+        snapshot_before = _signatures(destination, selection_after.files)
+        if before != after:
+            changed = _format_mismatches(before, after)
+            raise SnapshotError(
+                "스냅샷 생성 중 검토 대상 working tree가 변경됐습니다: " + changed
+            )
+        if after != snapshot_before:
+            changed = _format_mismatches(after, snapshot_before)
+            raise SnapshotError(
+                "격리 스냅샷이 검토 대상 working tree와 다릅니다: "
+                + changed
+                + _PARALLEL_WAVE_GUIDANCE
+            )
+
+        selection_final = _selected_files(root, selectors)
+        _verify_selection_stable(selection_after, selection_final)
+        final = _signatures(root, selection_final.files)
+        final = _validate_live_selection(destination, selection_final, final)
+        final_expected_actual_files = frozenset(
+            path for path, signature in final.items() if signature is not None
+        )
+        snapshot_selection_final = _selected_files(destination, selectors)
+        snapshot_actual_final = _actual_files(destination, selectors)
+        _verify_snapshot_basis(
+            selection_before,
+            snapshot_selection_final,
+            final_expected_actual_files,
+            snapshot_actual_final,
+        )
+        snapshot_final = _signatures(destination, selection_final.files)
+        if after != final:
+            changed = _format_mismatches(after, final)
+            raise SnapshotError(
+                "스냅샷 검증 중 검토 대상 working tree가 변경됐습니다: " + changed
+            )
+        if snapshot_before != snapshot_final:
+            changed = _format_mismatches(snapshot_before, snapshot_final)
+            raise SnapshotError(
+                "스냅샷 검증 중 격리 스냅샷이 변경됐습니다: " + changed
+            )
+        if final != snapshot_final:
+            changed = _format_mismatches(final, snapshot_final)
+            raise SnapshotError(
+                "격리 스냅샷이 검토 대상 working tree와 다릅니다: "
+                + changed
+                + _PARALLEL_WAVE_GUIDANCE
+            )
+    except Exception as exc:
+        cleanup_error = _rollback(root, destination)
+        if cleanup_error is not None:
+            raise SnapshotError(f"{exc}\n{cleanup_error}") from exc
+        raise
+
+    return destination, selection_final.files
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="검토 대상 경로가 최신임을 검증하는 격리 worktree 스냅샷 생성기"
+    )
+    parser.add_argument("--repo", type=Path, required=True, help="공유 working tree")
+    parser.add_argument("--output", type=Path, required=True, help="저장소 밖의 새 스냅샷 경로")
+    parser.add_argument(
+        "--paths",
+        nargs="+",
+        required=True,
+        help="검토 대상 파일 또는 디렉터리(병렬 wave에서는 파일 단위로 지정)",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 인자를 검증하고 격리 게이트 스냅샷을 생성한다."""
+    _console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
+    )
+    _console_encoding.configure_console_utf8()
+    args = build_parser().parse_args(argv)
+    try:
+        root = _repo_root(args.repo)
+        output, files = create_snapshot(root, args.output, args.paths)
+    except SnapshotError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"격리 스냅샷 생성 완료: {output} "
+        f"(repo root: {root}, 검증 대상 {len(files)}개)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

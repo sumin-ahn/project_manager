@@ -4,7 +4,7 @@ description: "티켓 authoring flow 자동화 — draft 발행(board.py new) →
 audience: pm-internal
 ---
 
-# /pm-ticket — 티켓 authoring flow
+# $pm-ticket — 티켓 authoring flow
 
 PM이 draft 발행 → 본문 fill → promote를 실행하는 운영 스킬이다. backbone은 `.project_manager/tools/board.py`(`new`/`lint`/`promote`)이며 자체 로직은 없다.
 

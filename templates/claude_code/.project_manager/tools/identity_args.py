@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
@@ -44,6 +45,21 @@ ENGINE_REV = "v1.5.1"
 # task pm_state 신규 세션 window의 단일 empty marker. state 생성(worktree_pool)과
 # handoff 갱신(pm_handoff)이 같은 literal을 소비해야 하므로 공용 경계 모듈이 소유한다.
 TASK_PM_STATE_EMPTY_MARKER = "  - (아직 완료된 task 세션 없음)"
+
+_CODEX_HARNESS_SESSION_MARKERS: tuple[str, ...] = (
+    "CODEX_THREAD_ID",
+    "CODEX_CI",
+)
+
+
+def _runtime_skill_entry_prefix() -> str:
+    """현재 실행 하네스의 스킬 진입 접두사. Codex env marker 외 경로는 slash다."""
+    return "$" if any(os.environ.get(key) for key in _CODEX_HARNESS_SESSION_MARKERS) else "/"
+
+
+def _runtime_skill_entry(skill: str) -> str:
+    """사용자에게 제시할 현재 하네스의 PM 스킬 호출 표기."""
+    return f"{_runtime_skill_entry_prefix()}{skill}"
 
 
 class Identity:
@@ -427,7 +443,8 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
                              test_cmd=ro.get("test_cmd"), readonly=True)
         raise WorkspaceResolutionError(
             f"작업공간 {target} 은 task {task!r} 보유가 아니다 — F6 소유검사 거부(⑦). 내 task 가 "
-            f"보유한 슬롯을 `--repo/--slot` 으로 지칭하거나 `/pm-env alloc {identity.repo} --task "
+            f"보유한 슬롯을 `--repo/--slot` 으로 지칭하거나 `{_runtime_skill_entry('pm-env')} "
+            f"alloc {identity.repo} --task "
             f"{task}` 로 대여하라 (readonly 공유 슬롯이면 조회 지칭은 허용)."
         )
 
@@ -440,7 +457,7 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
         if not in_repo:
             raise WorkspaceResolutionError(
                 f"task {task!r} 이(가) repo {identity.repo!r} 에서 보유한 작업공간이 없다 — "
-                f"`/pm-env alloc {identity.repo} --task {task}` 로 먼저 대여하라."
+                f"`{_runtime_skill_entry('pm-env')} alloc {identity.repo} --task {task}` 로 먼저 대여하라."
             )
         slots = ", ".join(sorted(r.get("slot") or "" for r in in_repo))
         raise WorkspaceResolutionError(
@@ -455,7 +472,8 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
                          session=task, test_cmd=r.get("test_cmd"))
     if not held:
         raise WorkspaceResolutionError(
-            f"task {task!r} 이(가) 보유한 작업공간이 없다 — `/pm-env alloc <repo> --task {task}` "
+            f"task {task!r} 이(가) 보유한 작업공간이 없다 — "
+            f"`{_runtime_skill_entry('pm-env')} alloc <repo> --task {task}` "
             f"로 먼저 대여하라."
         )
     slots = ", ".join(sorted(r.get("slot") or "" for r in held))

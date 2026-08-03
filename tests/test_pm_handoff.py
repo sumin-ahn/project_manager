@@ -779,8 +779,7 @@ def test_shipped_pm_playbook_prompt_is_trigger_only():
     ).read_text(encoding="utf-8")
     template = hf.extract_handoff_prompt_template(playbook_text)
     assert template is not None, "출하 pm_playbook 에서 프롬프트 템플릿 추출 실패"
-    # bare(T-0193): /pm-bootstrap 커맨드만. 역할문구(2인칭 "당신은")·위임 framing 은 폐기 —
-    # pm_role.md(bootstrap 필독)·CLAUDE.md 가 auto-load 로 담당. who-pastes 혼동의 근원 제거.
+    # 공유 canonical은 실제 Claude/OpenCode 입력값인 slash 표기를 유지한다.
     assert "/pm-bootstrap" in template
     assert "당신은" not in template, "2인칭 역할문구 잔존 — bare(T-0193)와 모순"
     assert "위임" not in template, "역할 framing 잔존 — pm_role/CLAUDE.md 로 이관됐어야 함"
@@ -794,6 +793,88 @@ def test_shipped_pm_playbook_prompt_is_trigger_only():
     assert "차수 announce" not in template
     assert "자동 surface" not in template
     assert "단계로 보고" not in template
+
+
+@pytest.mark.parametrize("prefix", ["/", "$", ""])
+def test_trigger_injection_is_notation_independent(prefix):
+    hf = _load_module()
+    template = f"{prefix}pm-bootstrap\n"
+    assert hf._inject_slot_into_template(template, "work/repoA_2") == (
+        f"{prefix}pm-bootstrap repoA --slot 2\n"
+    )
+    assert hf._inject_task_into_template(template, "mytask") == (
+        f"{prefix}pm-bootstrap --task mytask\n"
+    )
+
+
+def test_trigger_consumer_sensitivity_old_literal_matching_breaks_codex_copy():
+    rendered = "$pm-bootstrap\n"
+    old_result = rendered.replace("/pm-bootstrap", "/pm-bootstrap --task mytask")
+    assert old_result == rendered, "구 literal 소비처가 codex 파손을 재현하지 못함"
+    hf = _load_module()
+    assert hf._inject_task_into_template(rendered, "mytask") == (
+        "$pm-bootstrap --task mytask\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "non_call",
+    (
+        "/pm-bootstrap.md",
+        "/pm-bootstrap/path",
+        "/pm-bootstrap-extra",
+        "prefix-/pm-bootstrap",
+    ),
+)
+def test_trigger_injection_excludes_extensions_paths_and_identifiers(non_call):
+    hf = _load_module()
+    assert hf._inject_task_into_template(non_call, "mytask") == non_call
+
+
+def test_multi_harness_shared_prompt_emits_one_runtime_notation(monkeypatch):
+    hf = _load_module()
+    playbook = """## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)
+```
+`$pm-bootstrap`(codex) / `/pm-bootstrap`(opencode)
+```
+"""
+    monkeypatch.setenv("CODEX_CI", "1")
+    codex = hf.build_handoff_prompt_output(
+        playbook, 3, "ok", "2026-08-01", task="mytask"
+    )
+    assert "$pm-bootstrap --task mytask" in codex
+    assert "/pm-bootstrap" not in codex
+
+    monkeypatch.delenv("CODEX_CI")
+    opencode = hf.build_handoff_prompt_output(
+        playbook, 3, "ok", "2026-08-01", task="mytask"
+    )
+    assert "/pm-bootstrap --task mytask" in opencode
+    assert "$pm-bootstrap" not in opencode
+
+
+@pytest.mark.parametrize(
+    ("relative", "prefix"),
+    (
+        (".project_manager/wiki/pm_playbook.md", "/"),
+        ("templates/claude_code/.project_manager/wiki/pm_playbook.md", "/"),
+        ("templates/codex/.project_manager/wiki/pm_playbook.md", "/"),
+        ("templates/opencode/.project_manager/wiki/pm_playbook.md", "/"),
+    ),
+)
+def test_shipped_playbook_real_files_keep_trigger_injection(relative, prefix):
+    """출하 실파일을 직접 태워 slot/task 주입과 하네스 표기 보존을 함께 검증한다."""
+    hf = _load_module()
+    text = (REPO / relative).read_text(encoding="utf-8")
+    template = hf.extract_handoff_prompt_template(text)
+    assert template is not None
+    assert f"{prefix}pm-bootstrap\n" in template
+    assert f"{prefix}pm-bootstrap repoA --slot 2" in hf._inject_slot_into_template(
+        template, "work/repoA_2"
+    )
+    assert f"{prefix}pm-bootstrap --task mytask" in hf._inject_task_into_template(
+        template, "mytask"
+    )
 
 
 def test_shipped_handoff_procedure_docs_have_no_handfill_instruction():

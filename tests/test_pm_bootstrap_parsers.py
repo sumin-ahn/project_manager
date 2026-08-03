@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +28,47 @@ TOOLS = REPO / ".project_manager" / "tools"
 BOOTSTRAP_PY = TOOLS / "pm_bootstrap.py"
 BOARD_PY = TOOLS / "board.py"
 HANDOFF_PY = TOOLS / "pm_handoff.py"
+
+
+@pytest.fixture
+def isolated_board_anchor(tmp_path):
+    """실제 lint가 읽을 최소 독립 앵커와 도구 사본을 만든다."""
+    anchor = tmp_path / "anchor"
+    tools = anchor / ".project_manager" / "tools"
+    # 앵커는 subprocess cwd가 아니라 도구 사본의 위치로 결정되므로 copytree가 필요하다.
+    shutil.copytree(TOOLS, tools)
+    tickets = anchor / ".project_manager" / "board" / "tickets"
+    for status in ("open", "claimed", "blocked", "done"):
+        (tickets / status).mkdir(parents=True, exist_ok=True)
+    (tickets / "open" / "T-0001.md").write_text(
+        """---
+id: T-0001
+title: Independent lint input
+status: open
+created: '2026-01-01'
+created_by: test
+claimed_by:
+claimed_at:
+completed_at:
+depends_on: []
+blocks: []
+touches:
+- tests
+estimate: small
+tags: []
+---
+
+# Independent lint input
+
+This deliberately omits every standard section and references [[T-9999]].
+It also uses [[0001-foo]] so gate output contains an advisory issue line.
+""",
+        encoding="utf-8",
+    )
+    decisions = anchor / ".project_manager" / "wiki" / "decisions"
+    decisions.mkdir(parents=True)
+    (decisions / "0001-foo.md").write_text("# Fixture decision\n", encoding="utf-8")
+    return anchor, tools / "board.py"
 
 
 def _load_module(name: str = "pm_bootstrap"):
@@ -230,7 +272,9 @@ def test_parse_lint_result_gate_advisory_only():
 
 
 @pytest.mark.parametrize("lint_argv", [["lint"], ["lint", "--gate"]])
-def test_parse_lint_result_matches_actual_board_lint_output(lint_argv):
+def test_parse_lint_result_matches_actual_board_lint_output(
+    lint_argv, isolated_board_anchor
+):
     """실제 `board.py lint` 합성 출력의 자체 요약 N과 파서 결과가 일치한다.
 
     T-0465 앵커 같은 새 표시 줄은 lint issue 형식이 아니므로 세지 않아야 한다.
@@ -243,24 +287,27 @@ def test_parse_lint_result_matches_actual_board_lint_output(lint_argv):
     mod = _load_module()
     # encoding 명시 필수 — 자식은 UTF-8 을 내보내는데 text=True 만 주면 로캘 코덱으로 디코딩해
     # CP949 콘솔(Windows)에서 한글 lint 메시지가 UnicodeDecodeError 를 낸다(엔진 관례와 동일).
+    anchor, board_py = isolated_board_anchor
     result = subprocess.run(
-        [sys.executable, str(BOARD_PY), *lint_argv], cwd=REPO,
+        [sys.executable, str(board_py), *lint_argv], cwd=anchor,
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     output = result.stdout + result.stderr  # pm_bootstrap._default_run_board 와 같은 합성 방식
     summary = re.search(r"⚠️\s+(\d+) lint issue\(s\)", output)
-    # tautology 방지 — summary 도 clean 마커도 없으면 CLI 가 죽었거나 출력 형식이 바뀐 것이다.
-    # 그걸 "clean 기대"로 흘려보내면 이 테스트가 조용히 무의미해진다(codex 게이트 지적).
-    # clean 마커도 줄 단위로 본다 — substring 이면 저장소 경로에 그 문구가 있을 때 CLI 가
-    # 앵커만 찍고 실패해도 이 단언이 통과해 false-green 이 된다(codex 게이트 지적).
-    has_clean_marker = any(
-        re.match(r"^\s*✓\s*no lint issues\s*$", line) for line in output.splitlines()
-    )
-    assert summary is not None or has_clean_marker, (
-        f"board.py {' '.join(lint_argv)} 출력에 요약도 clean 마커도 없다 — "
+    # 이 fixture는 반드시 issue를 내므로 clean 경로로 조용히 돌아가면 실패시킨다.
+    assert summary is not None, (
+        f"board.py {' '.join(lint_argv)} 출력에 issue 요약이 없다 — "
         f"rc={result.returncode} 출력={output[:400]!r}"
     )
-    expected = "clean" if summary is None else f"{summary.group(1)} warnings"
+    if lint_argv == ["lint"]:
+        assert re.search(r"^  \[thin\] ", output, re.MULTILINE)
+        assert re.search(r"^  \[dangling-wikilink\] ", output, re.MULTILINE)
+        assert re.search(r"^  \[unstable-ref-advice\] ", output, re.MULTILINE)
+    else:
+        assert re.search(r"^  ✗ \[thin\] ", output, re.MULTILINE)
+        assert re.search(r"^  ✗ \[dangling-wikilink\] ", output, re.MULTILINE)
+        assert re.search(r"^    \[unstable-ref-advice\] ", output, re.MULTILINE)
+    expected = f"{summary.group(1)} warnings"
     assert mod.parse_lint_result(output) == expected
 
 

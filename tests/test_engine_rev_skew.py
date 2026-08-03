@@ -181,7 +181,7 @@ def test_partial_copy_current_engine_rev_but_old_baked_sibling_detected(tmp_path
     assert _cur_rev() in msg                        # 신 로더 baked rev
 
 
-def test_stale_console_encoding_fails_loud_via_loader_verify(tmp_path):
+def test_stale_console_encoding_fails_loud_via_loader_verify(tmp_path, capsys):
     """신 CLI + stale console_encoding은 기존 로더 verify로 marked RuntimeError와 복구 안내를 낸다."""
     tools = _build_tools(tmp_path, {
         "pm_handoff.py": None,
@@ -190,17 +190,15 @@ def test_stale_console_encoding_fails_loud_via_loader_verify(tmp_path):
     })
     mod = _load(tools, "pm_handoff")
 
-    with pytest.raises(RuntimeError) as exc:
-        mod.main([])
-
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    msg = str(exc.value)
+    assert mod.main([]) == 1
+    msg = capsys.readouterr().err
+    assert "[중단] 엔진 사본 불일치" in msg
     assert "pm_handoff.py" in msg                 # 로더명
     assert "console_encoding.py" in msg           # stale 형제명
     assert "v0.0.0-stale" in msg
     assert _cur_rev() in msg
     assert "pm-update" in msg
-    assert "전체를 재동기" in msg
+    assert "전체를 동기화" in msg
 
 
 def test_missing_engine_rev_is_benign_at_runtime(tmp_path):

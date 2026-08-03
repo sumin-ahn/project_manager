@@ -22,6 +22,7 @@ canonical ↔ 각 템플릿 byte-identical 로 강제해 그 갭을 메운다. �
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
@@ -112,12 +113,51 @@ TEMPLATE_ROOTS = {
     "codex": REPO / "templates" / "codex",
 }
 
+# 여러 harness가 같은 대상 relpath를 설치하면 ``plan_copy``는 byte가 다를 때 경고하고
+# registry 첫 트리를 택한다. engine.manifest는 선택 선언의 합집합으로 다시 쓰는 예외라 이
+# 사전 정합 대상에서 뺀다. 한 트리에만 있는 경로는 어댑터 소유일 수 있으므로 여기서 판단하지
+# 않는다.
+_IMPORT_MERGED_EXCEPTIONS = {
+    ".project_manager/engine.manifest",
+    # 단일 설치에서는 각 실제 진입 표기를 갖고, 다중 설치에서는 pm_import의 선언된 중립-source
+    # override + 선택 flavor 병기가 충돌을 해소한다. 다른 공유 relpath는 계속 byte-identity 대상이다.
+    "AGENTS.md",
+}
+
 
 def _load_pm_update():
     spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _load_pm_import():
+    spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _shared_import_diffs(template_roots: dict[str, Path]) -> list[str]:
+    """다중-harness 설치에서 실제로 병합되는 공유 relpath의 byte drift를 반환한다.
+
+    두 트리 이상에 있는 파일만 비교한다. 한 트리 부재는 어댑터-고유 경로일 수 있어 여기서는
+    판정하지 않는다. manifest path-set 가드는 등록된 경로만 다루므로, 미등록 출하 relpath의
+    부재 정합은 이 가드 계열의 범위 밖이며 별도 후속 범위다. 같은 경로가 둘 이상에서 출하될
+    때의 거짓 충돌만 이 가드의 책임이다.
+    """
+    pm_import = _load_pm_import()
+    sources: dict[str, list[Path]] = {}
+    for root in template_roots.values():
+        for rel, source in pm_import._iter_source_files(root, "full"):
+            rel_s = rel.as_posix()
+            if rel_s not in _IMPORT_MERGED_EXCEPTIONS:
+                sources.setdefault(rel_s, []).append(source)
+    return sorted(
+        rel for rel, paths in sources.items()
+        if len(paths) > 1 and any(path.read_bytes() != paths[0].read_bytes() for path in paths[1:])
+    )
 
 
 def _manifest_path_set(manifest: Path) -> set[str]:
@@ -180,22 +220,20 @@ def test_codex_manifest_diff_is_whitelisted_only():
     )
 
 
-def test_codex_and_opencode_agents_md_byte_identical():
-    """codex ↔ opencode 공통 코어 AGENTS.md 가 byte-identical (ADR-0070 D3 C-v2·신규 가드 클래스·T-0402).
-
-    진입 doc 을 얇은 harness-neutral 공통 코어로 축소(ADR-0069)하고 opencode↔codex 템플릿 트리를
-    byte-parity 로 못박는다 — add-harness 로 opencode+codex 공존 시 진입 doc 파일명 충돌(둘 다 AGENTS.md)이
-    내용 수렴(byte-identical → git-safe skip)으로 자연 소멸한다. AGENTS.md 는 instance-owned(manifest 밖·
-    미전파)라 기존 manifest content-parity 가드가 안 보던 신규 가드 클래스(spike architect 보고 ⑤)."""
+def test_codex_and_opencode_agents_md_differ_only_by_native_entry_notation():
+    """단일-harness AGENTS 코어는 실제 호출 표기 외 같은 내용을 유지한다."""
     oc_agents = REPO / "templates" / "opencode" / "AGENTS.md"
     cx_agents = REPO / "templates" / "codex" / "AGENTS.md"
     assert oc_agents.is_file(), f"opencode AGENTS.md 없음: {oc_agents}"
     assert cx_agents.is_file(), f"codex AGENTS.md 없음: {cx_agents}"
-    assert oc_agents.read_bytes() == cx_agents.read_bytes(), (
-        "codex/opencode 공통 코어 AGENTS.md 가 byte-identical 아님 — 진입 doc 공통 코어 수렴 위반 "
-        "(ADR-0070 D3 C-v2). 한쪽만 수정됐다면 다른 쪽에도 반영해 byte-parity 를 유지하라 "
-        "(instance-owned 라 manifest 전파가 안 잡는 표면)."
+    normalize = lambda text: re.sub(
+        r"(?<![A-Za-z0-9_.>/\-])[/\$](pm-[a-z][a-z0-9-]*)",
+        r"<ENTRY>\1",
+        text,
     )
+    assert normalize(oc_agents.read_text(encoding="utf-8")) == normalize(
+        cx_agents.read_text(encoding="utf-8")
+    ), "codex/opencode AGENTS 코어가 실제 호출 표기 외 내용까지 drift"
 
 
 # ── 가드 2c: engine-mirror hook/driver 등록 + manifest 자기전파 (T-0305·ADR-0032 Q3) ──────────
@@ -301,6 +339,50 @@ def test_instance_owned_config_not_registered():
 
 
 # ── 가드 2b: content 정합 (공유 엔진 byte-identical) ─────────────────────────
+
+
+def test_shared_imported_relpaths_are_byte_identical():
+    """실제 다중-harness 병합 공유 파일은 byte-identical이라 첫 트리 경고를 만들지 않는다."""
+    diffs = _shared_import_diffs(TEMPLATE_ROOTS)
+    assert not diffs, (
+        "다중-harness 설치 공유 relpath content drift — 첫 트리 우선 경고의 거짓 양성: "
+        f"{diffs}"
+    )
+
+
+def test_shared_import_guard_classifies_equal_missing_and_byte_drift(tmp_path):
+    """동일·어댑터 부재는 통과하고 0/1바이트를 포함한 공유 drift는 검출한다."""
+    roots = {name: tmp_path / name for name in TEMPLATE_ROOTS}
+    rel = Path("tickets") / ".gitkeep"
+    for root in roots.values():
+        target = root / rel
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"")
+    assert _shared_import_diffs(roots) == []
+
+    # 0-byte vs 1-byte는 사람이 보기엔 사소해도 설치 충돌의 원인이므로 red다.
+    (roots["codex"] / rel).write_bytes(b"\n")
+    assert _shared_import_diffs(roots) == [rel.as_posix()]
+
+    # 한 harness 부재는 adapter-owned 후보라 이 content 가드에서는 판정하지 않는다.
+    (roots["codex"] / rel).unlink()
+    (roots["codex"] / "adapter-only.txt").write_bytes(b"adapter\n")
+    assert _shared_import_diffs(roots) == []
+
+
+def test_shared_import_guard_detects_byte_drift_in_exactly_two_trees(tmp_path):
+    """세 harness 중 정확히 둘이 출하한 relpath도 byte drift면 검출한다."""
+    roots = {name: tmp_path / name for name in TEMPLATE_ROOTS}
+    for root in roots.values():
+        root.mkdir()
+        (root / "common.txt").write_bytes(b"same\n")
+    rel = Path(".claude") / "skills" / "example" / "SKILL.md"
+    for name, content in (("claude_code", b"claude\n"), ("opencode", b"opencode\n")):
+        target = roots[name] / rel
+        target.parent.mkdir(parents=True)
+        target.write_bytes(content)
+
+    assert _shared_import_diffs(roots) == [rel.as_posix()]
 
 
 def _expand_manifest_files(base: Path, relpath: str) -> dict[str, Path]:

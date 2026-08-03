@@ -108,7 +108,7 @@ def test_codex_harness_marker_table_matches_delegate_source(bootstrap):
     """부트스트랩 복제 선언은 위임 엔진의 codex 축 단일 출처와 정확히 같아야 한다."""
     delegate = _load("pm_delegate")
     assert bootstrap._CODEX_HARNESS_SESSION_MARKERS == \
-        delegate._HARNESS_SESSION_MARKERS["codex"]
+        delegate._load_relay().HARNESS_SESSION_MARKERS["codex"]
 
 
 def test_no_codex_env_fixture_iterates_bootstrap_marker_declaration():
@@ -870,14 +870,19 @@ def test_card_codex_section_appears_for_each_marker(bootstrap, monkeypatch, mark
     assert "# codex 하네스" in _card(bootstrap, LEAN_IDENTITY)
 
 
-def test_card_codex_section_appended_leaves_body_unchanged(bootstrap, monkeypatch):
-    """codex 절은 카드 *끝에 append* 만 — 기존 본문 byte 무변(append-only·회귀 0)."""
+def test_card_codex_detection_derives_skill_prefix_and_appends_section(bootstrap, monkeypatch):
+    """codex 감지는 본문 스킬을 ``$``로 파생하고 codex 설명 절을 끝에 붙인다."""
     body = _card(bootstrap, LEAN_IDENTITY)          # autouse 로 env 제거됨 → 절 부재
     assert "codex 하네스" not in body
+    assert "/pm-wave-claim" in body and "$pm-wave-claim" not in body
     monkeypatch.setenv("CODEX_CI", "1")
     full = _card(bootstrap, LEAN_IDENTITY)
-    assert full.startswith(body), "codex 절이 기존 카드 본문을 변경함(무변 위배)"
-    assert full[len(body):].lstrip("\n").startswith("# codex 하네스")
+    assert "$pm-wave-claim" in full and "$pm-handoff" in full
+    assert not re.search(
+        r"(?<![A-Za-z0-9_.>/\-])/pm-[a-z][a-z0-9-]*",
+        full,
+    ), "codex 카드 mid-line 포함 claude slash 표기 잔존"
+    assert "\n\n# codex 하네스" in full
 
 
 @pytest.mark.parametrize("mode", ["slot", "solo", "task", "readonly"])
@@ -896,6 +901,11 @@ def test_card_codex_section_appended_in_all_modes(bootstrap, monkeypatch, mode):
     else:  # readonly
         card = inst._build_command_card_markdown({**LEAN_IDENTITY, "role": "readonly"})
     assert "# codex 하네스" in card, f"{mode} 모드 카드에 codex 절 누락"
+    skill_lines = [
+        line.strip() for line in card.splitlines()
+        if line.strip().startswith(("/pm-", "$pm-"))
+    ]
+    assert skill_lines and all(line.startswith("$pm-") for line in skill_lines)
 
 
 def test_task_card_execution_commands_use_task_only_identity(bootstrap):

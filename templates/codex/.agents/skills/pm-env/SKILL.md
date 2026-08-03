@@ -4,7 +4,7 @@ description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo 
 audience: user-entrypoint
 ---
 
-# /pm-env — PM 환경 관리 (pm-config facade)
+# $pm-env — PM 환경 관리 (pm-config facade)
 
 `./pm-config.sh`가 repo/worktree/slot/upstream 환경 셋업·조회의 CLI 계약이다.
 
@@ -42,7 +42,7 @@ sidecar는 파생 캐시다.
 - 조회는 실효값·출처(명시/기본값 폴백/미등록)·훅 sidecar 정합의 3줄이다. 기본값 상태와 다른 clone 변경으로
   이 clone 훅만 낡은 drift를 구별하며, drift면 `⚠ 옛 목록(...)`과 재실행 안내가 붙는다.
 - 설정은 **areas.md 먼저, 훅 sidecar 다음** 순서 고정. 변경은 board-git로 즉시 공유되고, 다른 clone은
-  `/pm-bootstrap` 세션 시작 시 drift만 흡수한다.
+  `$pm-bootstrap` 세션 시작 시 drift만 흡수한다.
 - **"보호 없음"은 지정 불가**: 빈 문자열은 거부되고 `default`로 안내한다. 브랜치 실재는 검증하지
   않는다. 아직 없는 `release`의 선보호도 정상이지만 bare에 없으면 경고 1줄.
 - `areas.md`에 같은 repo 행이 2개 이상이면 설정을 **부작용 없이 거부**한다. `board.py lint`도
@@ -55,11 +55,11 @@ sidecar는 파생 캐시다.
 ./pm-config.sh worktree add <repo> --readonly   # readonly 공유 슬롯(research 기준면)
 ```
 
-추가 후 **"이제 `/pm-bootstrap <repo> --slot N` 으로 이 슬롯에 바인딩하세요"**라고 안내한다.
+추가 후 **"이제 `$pm-bootstrap <repo> --slot N` 으로 이 슬롯에 바인딩하세요"**라고 안내한다.
 
 `--readonly`는 코드 읽기와 PM 홈 wiki(domain·architecture·status) 작성용 공유 기준면이다. detached
 HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소유 공유 자산이므로
-**바인딩(`/pm-bootstrap --slot`)·release를 거부**하고, 갱신은 [[pm-worktree]] `refresh`만 허용한다
+**바인딩(`$pm-bootstrap --slot`)·release를 거부**하고, 갱신은 [[pm-worktree]] `refresh`만 허용한다
 (set-base/rebase/dev/sync 거부). 제거는 `worktree remove --force`.
 
 ## slot status / release / remove
@@ -115,7 +115,7 @@ prefix는 task와 독립인 opt-in 분류 라벨이며 claim 경계가 아니다
 ```
 
 - 포맷은 `[a-z0-9_]`; 그 외 rc1, 소문자 권장. `none`은 해제 리터럴. task 미존재면 rc1이며 생성은
-  `/pm-bootstrap --task`에서만 한다.
+  `$pm-bootstrap --task`에서만 한다.
 - `board.py new` 해소 순서: 명시 `--prefix` > task 지정 prefix > 기본 없음. task 명의
   (`--task <이름>`) 발행에 지정 prefix가 자동 적용되고 명시값이 1회 우선한다.
 - prefix 카테고리 list/rename/merge는 별도 `board.py prefix`.
