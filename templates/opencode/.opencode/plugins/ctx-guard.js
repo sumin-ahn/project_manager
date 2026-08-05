@@ -1,4 +1,4 @@
-// opencode 어댑터 — ctx 정지-핸드오프 plugin 진입점 (얇은 ESM shim · T-0014 · T-0283 로드 fix).
+// opencode 어댑터 — ctx checkpoint plugin 진입점 (얇은 ESM shim · T-0551 · T-0283 로드 fix).
 //
 // opencode plugin 로드 규약(실측 T-0283 · opencode 1.17.18): `.opencode/plugins/` 안 각 파일의
 // export 를 순회(Object.values)해 *모두 함수*이길 요구하고, 그 각각을 플러그인 팩토리로 호출한다.

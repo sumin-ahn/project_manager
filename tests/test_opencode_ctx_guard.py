@@ -1,17 +1,13 @@
-"""opencode 어댑터 ctx 정지-핸드오프 plugin 정합 테스트 (T-0014·ADR-0038 D2).
+"""opencode 어댑터 ctx checkpoint plugin 정합 테스트 (T-0551·ADR-0081 Decision 1·3).
 
 opencode plugin(`.opencode/plugins/ctx-guard.js`)이 컨텍스트 토큰을 추적해 임계 도달 시
-하드 정지(새 작업 도구만 차단·진행 중 핸드오프 도구는 예외 통과)하고 STOP marker 를 직접
-박제(relay 회전 신호·no pm_handoff --trigger)하며, PM 가드보다 뒤에서 자식 세션을 보존하는
-자동 컴팩션의 기본 동작을 유지하는 것을 여러 층위에서 단언한다:
+checkpoint 박제를 안내하고, `session.compacted`를 병행 관측해 count·re-arm·압축 후 안내를
+수행하며, await 중 re-arm된 새 사이클을 구 메시지가 덮지 않는 것을 여러 층위에서 단언한다:
 
   1. config 정합  — opencode.jsonc 가 `compaction.auto:false`를 재도입하지 않고, 모델 limit 의
        output < context 제약을 만족한다.
-  2. plugin 정합  — plugin 파일 존재 + 필수 호출/구조 정적 검증:
-       event 토큰추적 · permission.ask deny(새 작업만) · tool.execute.before throw(allow-list) ·
-       임계값(ctx_*_pct / local.conf) 참조 · 멱등 가드 · STOP marker 직접 박제.
-  3. 순수 로직   — node 가 있으면 core 모듈의 결정 로직(임계 분기·sanity 폴백·토큰누적·핸드오프
-       allow-list)을 이벤트/opencode 런타임 없이 자가검증. node 부재 시 skip (정적 검증만으로도 게이트).
+  2. plugin 정합  — event 토큰추적·session.compacted 병행 신호·차단/marker 제거·checkpoint 문구.
+  3. node 동작    — 밴드 판정, 세션별 관측 count·re-arm·안내, cycle epoch 경합 방지.
   4. 라이브 로드 — (T-0283·release-tier·`PM_OPENCODE_LIVE=1`+opencode 바이너리) 실 opencode 헤드리스가
        플러그인을 autoload 성공(로드 실패 로그 부재 + factory 실행 마커)하는지 실측. 기본 skip(CI green 불변).
 
@@ -21,7 +17,7 @@ opencode plugin(`.opencode/plugins/ctx-guard.js`)이 컨텍스트 토큰을 추�
 이고, 순수 헬퍼·상수·팩토리 본체는 plugins/ *바깥* CJS 모듈 `lib/ctx-guard-core.cjs`(opencode 미스캔·node
 require 대상)에 둔다. 정적/순수 검증은 그 core 를, autoload 규약은 라이브 로드 게이트가 본다.
 
-JS 로직 실동작(실제 deny 강제·세션 정지)은 비결정적(T-0011 메모) → opencode Pro 환경 수동 검증.
+JS 로직의 SDK wiring 은 mock client 로 결정적으로 검증한다.
 """
 from __future__ import annotations
 
@@ -96,9 +92,9 @@ def test_config_exists_and_parses():
 def test_config_does_not_disable_auto_compaction():
     """전역 자동 컴팩션은 기본값(켜짐)을 유지한다 — 전역 off 재유입 차단.
 
-    컴팩션을 전역으로 끄면 native task 자식 세션이 ctx-guard 면제(nudge/STOP/deny 생략)와 겹쳐
-    **컴팩션도 정지도 없는** 상태가 된다 — 위임 서브에이전트가 컨텍스트 초과로 죽는 클래스.
-    PM 세션은 정지가 컴팩션 발화점보다 먼저 와서 정제 핸드오프가 여전히 선행한다(라이브 실측).
+    컴팩션을 전역으로 끄면 native task 자식 세션의 ctx-guard 면제와 겹쳐 checkpoint 안내도
+    native compaction도 없는 상태가 된다 — 위임 서브에이전트가 컨텍스트 초과로 죽는 클래스.
+    PM 메인 세션은 사전 checkpoint 안내와 native compaction 사후 안내를 함께 사용한다.
     (jsonc 주석은 파서가 제거하므로 주석 안 문자열은 이 가드를 통과시키지 못한다.)
     """
     data = _load_config()
@@ -209,19 +205,42 @@ def test_plugin_subscribes_message_events():
     assert "tokens" in src, "tokens 참조 없음 — ctx% 산출 불가"
 
 
-def test_plugin_hard_stops_via_permission_deny():
-    """하드 정지 = permission.ask → status deny (T-0012 필수 정지 레버)."""
+def test_plugin_removes_stop_consumers_and_allowlist():
+    """stop 판정은 유지하되 deny/throw/marker/allow-list 소비 표면은 완전히 제거한다."""
     src = _plugin_src()
-    assert "permission.ask" in src, "permission.ask 훅 없음 — 하드 정지 레버 없음"
-    assert re.search(r'status\s*=\s*["\']deny["\']', src), (
-        "permission.ask 에서 status='deny' 설정 없음"
-    )
+    assert 'level = "stop"' in src, "computeCtxState stop 레벨 반환이 사라짐"
+    for removed in (
+        "fired.stop",
+        "writeStopMarker",
+        '"permission.ask"',
+        '"tool.execute.before"',
+        "isHandoffTool",
+        "isHandoffBash",
+        "isHandoffTarget",
+        "isNewWorkPermission",
+        "ctx-stop handoff triggered",
+    ):
+        assert removed not in src, f"폐기된 stop 소비 표면 잔존: {removed}"
 
 
-def test_plugin_has_tool_execute_guard():
-    """보조 하드 정지 = tool.execute.before throw (permission deny 우회 대비)."""
+def test_plugin_subscribes_compaction_events_with_local_observation_count():
+    """session.compacted는 세션-로컬 event count만 올리고 사후 복원은 하지 않는다."""
     src = _plugin_src()
-    assert "tool.execute.before" in src, "보조 정지(tool.execute.before) 없음"
+    assert "session.compacted" in src, "session.compacted 이벤트 분기 없음"
+    assert "compactionCount" in src, "세션별 compaction count 없음"
+    assert re.search(r"compactionCount\s*\+=\s*1", src), "관측 이벤트 단순 증가 없음"
+    for removed in (
+        "client.session.messages",
+        "CompactionPart",
+        "compactionRestore",
+        "readCompactionSnapshot",
+        "mergeCompactionCount",
+        "reconcileCompactionEvent",
+        "compactionRestoredBaseline",
+    ):
+        assert removed not in src, f"폐기된 compaction 복원 기계 잔존: {removed}"
+    assert "buildCompactedGuidance" in src, "압축 후 모델 안내 빌더 없음"
+    assert "notifyCompacted" in src, "압축 후 사람용 toast 없음"
 
 
 def test_plugin_reads_thresholds_from_local_conf():
@@ -259,22 +278,17 @@ def test_plugin_uses_resolve_budget_not_model_limit():
 
 
 def test_plugin_has_idempotency_guard():
-    """넛지·정지·트리거는 세션당 1회만 — 멱등 가드(중복 handoff 방지·codex 인계)."""
+    """nudge/nudge2 는 세션별·compaction 사이클별 1회이며 compaction 뒤 재무장한다."""
     src = _plugin_src()
-    # sessionID keyed 상태 안의 fired 객체로 세션별 1회 가드 (nudge/stop 각 1회).
     assert re.search(r"sessionStates\s*=\s*new Map", src), "세션별 상태 Map 없음"
-    assert "fired.stop" in src and "fired.nudge" in src, (
-        "정지/넛지 1회 가드(fired.stop/fired.nudge) 없음"
-    )
+    assert "fired.nudge" in src and "fired.nudge2" in src, "밴드 멱등 가드 없음"
+    assert re.search(r"fired\.nudge\s*=\s*false", src), "compaction 후 nudge re-arm 없음"
+    assert re.search(r"fired\.nudge2\s*=\s*false", src), "compaction 후 nudge2 re-arm 없음"
+    assert re.search(r"cycleEpoch\s*\+=\s*1", src), "compaction re-arm cycle epoch 증가 없음"
 
 
 def test_plugin_exempts_native_subsessions_and_caches_lookup_outcomes(tmp_path):
-    """native task 자식(parentID)는 ctx 발화를 건너뛰고, 역조회 불확실성은 메인으로 폴백한다.
-
-    PluginInput.client의 실제 SDK 표면은 `session.get({path:{id}}) -> {data: Session}`다.
-    node mock으로 (1) parentID 자식 전 훅 면제, (2) SDK 실패/never-resolve 시 비면제,
-    (3) 성공·실패·timeout 모두 같은 SID에서 lookup 한 번으로 고정되는 Promise 캐시를 검증한다.
-    """
+    """native task 자식은 밴드·compaction·모델 주입 모두 면제하며 lookup 을 캐시한다."""
     if _NODE is None:
         import pytest
 
@@ -284,36 +298,23 @@ def test_plugin_exempts_native_subsessions_and_caches_lookup_outcomes(tmp_path):
     script = r'''
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
-const fs = require("node:fs");
-const path = require("node:path");
-assert.strictEqual(typeof m.CtxGuardPlugin, "function", "missing CtxGuardPlugin");
 const projectRoot = __PROJECT_ROOT__;
-
-const stopEvent = (sessionID) => ({
-  event: { type: "message.updated", properties: { info: {
-    sessionID, role: "assistant", tokens: { input: 160000 }
-  } } }
-});
-const denied = async (hooks, sessionID) => {
-  const output = {};
-  await hooks["permission.ask"]({sessionID, pattern:"ls *"}, output);
-  return output.status;
-};
 
 (async () => {
   const childID = "ses_child_cache";
   let childCalls = 0;
-  const childHooks = await m.CtxGuardPlugin({client:{session:{get: async (opts) => {
-    childCalls++;
-    assert.deepStrictEqual(opts, {path:{id:childID}}, "SDK session.get 호출 형식");
-    return {data:{id:childID, parentID:"ses_parent_cache"}};
-  }}}, directory:projectRoot});
-  await childHooks.event(stopEvent(childID));
-  await childHooks.event(stopEvent(childID));
-  assert.strictEqual(await denied(childHooks, childID), undefined, "child permission must bypass");
-  await childHooks["tool.execute.before"](
-    {sessionID:childID, tool:"bash"}, {args:{command:"ls -la"}}
-  );
+  const childHooks = await m.CtxGuardPlugin({client:{session:{
+    get: async (opts) => {
+      childCalls++;
+      assert.deepStrictEqual(opts, {path:{id:childID}}, "SDK session.get 호출 형식");
+      return {data:{id:childID, parentID:"ses_parent_cache"}};
+    },
+  }}, directory:projectRoot});
+  const nudge = {event:{type:"message.updated", properties:{info:{
+    sessionID:childID, role:"assistant", tokens:{input:145000}
+  }}}};
+  await childHooks.event(nudge);
+  await childHooks.event({event:{type:"session.compacted", properties:{sessionID:childID}}});
   const childSystem = {system:[]};
   await childHooks["experimental.chat.system.transform"]({sessionID:childID}, childSystem);
   assert.deepStrictEqual(childSystem.system, [], "child injection must bypass");
@@ -325,28 +326,31 @@ const denied = async (hooks, sessionID) => {
     failureCalls++;
     throw new Error("SDK unavailable");
   }}}, directory:projectRoot});
-  await failureHooks.event(stopEvent(failureID));
-  assert.strictEqual(await denied(failureHooks, failureID), "deny", "lookup failure must not exempt");
-  await assert.rejects(
-    failureHooks["tool.execute.before"](
-      {sessionID:failureID, tool:"bash"}, {args:{command:"ls -la"}}
-    ),
-    /컨텍스트 정지 임계/,
-  );
+  await failureHooks.event({event:{type:"message.updated", properties:{info:{
+    sessionID:failureID, role:"assistant", tokens:{input:145000}
+  }}}});
+  const failureSystem = {system:[]};
+  await failureHooks["experimental.chat.system.transform"]({sessionID:failureID}, failureSystem);
+  assert.strictEqual(failureSystem.system.length, 1, "lookup failure must not exempt main session");
   assert.strictEqual(failureCalls, 1, "failed lookup result must stay cached");
 
   const timeoutID = "ses_lookup_timeout";
   let timeoutCalls = 0;
-  const timeoutHooks = await m.CtxGuardPlugin({client:{session:{get: async () => {
-    timeoutCalls++;
-    return new Promise(() => {});
-  }}}, directory:projectRoot});
-  const started = Date.now();
-  await timeoutHooks.event(stopEvent(timeoutID));
-  const elapsed = Date.now() - started;
-  assert.ok(elapsed < 3000, `never-resolving lookup did not time out: ${elapsed}ms`);
-  assert.strictEqual(await denied(timeoutHooks, timeoutID), "deny", "timeout must not exempt");
-  assert.strictEqual(timeoutCalls, 1, "timeout result must stay cached");
+  const timeoutHooks = await m.CtxGuardPlugin({client:{session:{
+    get: async () => {
+      timeoutCalls++;
+      return new Promise(() => {});
+    },
+  }}, directory:projectRoot});
+  const timeoutStarted = Date.now();
+  await timeoutHooks.event({event:{type:"message.updated", properties:{info:{
+    sessionID:timeoutID, role:"assistant", tokens:{input:145000}
+  }}}});
+  const timeoutSystem = {system:[]};
+  await timeoutHooks["experimental.chat.system.transform"]({sessionID:timeoutID}, timeoutSystem);
+  assert.ok(Date.now() - timeoutStarted < 3000, "never-resolving session.get did not time out");
+  assert.strictEqual(timeoutSystem.system.length, 1, "lookup timeout must not exempt main session");
+  assert.strictEqual(timeoutCalls, 1, "timed-out lookup result must stay cached");
 
   console.log("JS_SUBSESSION_GUARD_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -355,112 +359,232 @@ const denied = async (hooks, sessionID) => {
     assert "JS_SUBSESSION_GUARD_OK" in out, f"sub-session SDK mock 단위 실패. out={out!r}"
 
 
-def test_plugin_separates_main_child_guards_and_markers_in_one_hook_instance(tmp_path):
-    """메인 stop 뒤에도 같은 hooks 인스턴스의 자식 permission/tool은 통과하고 marker도 생기지 않는다."""
+def test_plugin_compacted_counts_rearms_and_injects_post_notice(tmp_path):
+    """compacted는 로컬 count만 증가하고 re-arm·횟수 없는 사후 안내를 병행한다."""
     if _NODE is None:
         import pytest
 
-        pytest.skip("node 없음 — 교차 세션 guard 단위 skip")
+        pytest.skip("node 없음 — compaction 병행 신호 단위 skip")
 
     project_root = _make_ctx_guard_project(tmp_path)
     script = r'''
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
-const fs = require("node:fs");
-const path = require("node:path");
 const projectRoot = __PROJECT_ROOT__;
-const mainID = "ses_main_cross";
-const childID = "ses_child_cross";
-const marker = (sid) => path.join(
-  projectRoot, ".project_manager", ".local", "ctx-stop", `${sid}.done`
-);
-const stopEvent = (sessionID) => ({
+const sessionID = "ses_compaction_cycle";
+const nudgeEvent = () => ({
   event: {type:"message.updated", properties:{info:{
-    sessionID, role:"assistant", tokens:{input:160000}
+    sessionID, role:"assistant", tokens:{input:145000}
   }}}
 });
 
 (async () => {
-  const calls = new Map();
-  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => {
-    calls.set(id, (calls.get(id) || 0) + 1);
-    return {data:{id, ...(id === childID ? {parentID:mainID} : {})}};
-  }}}, directory:projectRoot});
+  const toasts = [];
+  const hooks = await m.CtxGuardPlugin({client:{
+    session:{
+      get: async () => ({data:{id:sessionID}}),
+    },
+    tui:{showToast: async (toast) => { toasts.push(toast.body.message); }},
+  }, directory:projectRoot});
 
-  await hooks.event(stopEvent(mainID));
-  assert.ok(fs.existsSync(marker(mainID)), "main stop marker missing");
-
-  const childPermission = {};
-  await hooks["permission.ask"]({sessionID:childID, pattern:"ls *"}, childPermission);
-  assert.strictEqual(childPermission.status, undefined, "child permission inherited main stop");
-  await hooks["tool.execute.before"](
-    {sessionID:childID, tool:"bash"}, {args:{command:"ls -la"}}
+  assert.deepStrictEqual(
+    Object.keys(hooks).sort(),
+    ["event", "experimental.chat.system.transform"].sort(),
+    "stop deny/throw hooks must be absent",
   );
-  assert.ok(!fs.existsSync(marker(childID)), "child marker must not be created");
+  await hooks.event({event:{type:"message.updated", properties:{info:{
+    sessionID, role:"assistant", tokens:{input:160000}
+  }}}});
+  let output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  assert.strictEqual(output.system.length, 1, "stop band must be absorbed by final nudge guidance");
+  assert.ok(output.system[0].includes("[ctx-nudge/강화]"), "stop band did not reuse final guidance");
+  assert.ok(output.system[0].includes("pm_log.py checkpoint"), "stop-band guidance lacks checkpoint");
 
-  const mainPermission = {};
-  await hooks["permission.ask"]({sessionID:mainID, pattern:"ls *"}, mainPermission);
-  assert.strictEqual(mainPermission.status, "deny", "main stop must still deny");
-  await assert.rejects(
-    hooks["tool.execute.before"](
-      {sessionID:mainID, tool:"bash"}, {args:{command:"ls -la"}}
-    ),
-    /컨텍스트 정지 임계/,
-  );
-  assert.strictEqual(calls.get(mainID), 1, "main lookup cache miss");
-  assert.strictEqual(calls.get(childID), 1, "child lookup cache miss across hooks");
-  console.log("JS_SESSION_GUARDS_ISOLATED_OK");
+  await hooks.event(nudgeEvent());
+  output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  assert.strictEqual(output.system.length, 1, "first-cycle nudge missing");
+  assert.ok(output.system[0].includes("pm_log.py checkpoint"), "nudge is not checkpoint instruction");
+
+  await hooks.event(nudgeEvent());
+  output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  assert.deepStrictEqual(output.system, [], "same-cycle nudge fired twice");
+
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  assert.strictEqual(output.system.length, 1, "post-compaction notice missing");
+  assert.ok(output.system[0].includes("compaction이 방금 일어났다"), "event notice missing");
+  assert.ok(!/compaction\s+\d+회/.test(output.system[0]), "display-only count must not be exposed");
+  assert.ok(output.system[0].includes(
+    "python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction"
+  ));
+  assert.ok(output.system[0].includes("구간·서사"), "post-compaction skeleton fill instruction missing");
+  assert.ok(toasts.some((text) => text.includes("compaction이 방금 일어남")), "human toast missing");
+  assert.ok(toasts.every((text) => !/compaction\s+\d+회/.test(text)), "toast exposed count");
+
+  await hooks.event(nudgeEvent());
+  output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  assert.strictEqual(output.system.length, 1, "nudge was not re-armed after compaction");
+  console.log("JS_COMPACTION_REARM_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
     out = _run_node_check(script)
-    assert "JS_SESSION_GUARDS_ISOLATED_OK" in out, f"교차 세션 guard 실패. out={out!r}"
+    assert "JS_COMPACTION_REARM_OK" in out, f"compaction 병행 신호 실패. out={out!r}"
 
 
-def test_plugin_captures_marker_sid_across_concurrent_lookup(tmp_path):
-    """메인 parentID 조회 pending 중 자식 event가 끼어도 메인 marker SID를 클로저로 유지한다."""
+def test_plugin_stages_compacted_notice_before_unawaited_event_hook_settles(tmp_path):
+    """dispatcher가 event Promise를 버려도 첫 transform 전에 압축 후 안내를 동기 적재한다.
+
+    upstream opencode v1.18.5 ``plugin/index.ts`` 의 event dispatcher는 각 plugin event hook을
+    await하지 않는다. event 훅의 첫 await 전 적재를 정적으로 단언하고, toast가
+    pending인 동안에도 transform이 안내를 소비할 수 있는지 동적으로 검증한다.
+    """
     if _NODE is None:
         import pytest
 
-        pytest.skip("node 없음 — marker SID 경합 단위 skip")
+        pytest.skip("node 없음 — non-awaited compacted event 경합 단위 skip")
+
+    src = _plugin_src()
+    branch = src.index('if (event.type === "session.compacted")')
+    staged = src.index("session.pendingNudgeText = stagedGuidance", branch)
+    first_await = src.index("if (await isChildSession", branch)
+    assert staged < first_await, "compacted 안내가 첫 await 뒤로 밀렸음"
 
     project_root = _make_ctx_guard_project(tmp_path)
     script = r'''
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
-const fs = require("node:fs");
-const path = require("node:path");
 const projectRoot = __PROJECT_ROOT__;
-const mainID = "ses_main_race";
-const childID = "ses_child_race";
-let resolveMain;
-const mainLookup = new Promise((resolve) => { resolveMain = resolve; });
-const marker = (sid) => path.join(
-  projectRoot, ".project_manager", ".local", "ctx-stop", `${sid}.done`
-);
-const stopEvent = (sessionID) => ({
-  event: {type:"message.updated", properties:{info:{
-    sessionID, role:"assistant", tokens:{input:160000}
-  }}}
-});
+const sessionID = "ses_unawaited_compacted";
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => {
-    if (id === mainID) return mainLookup;
-    return {data:{id:childID, parentID:mainID}};
-  }}}, directory:projectRoot});
+  let resolveToast;
+  const toastPending = new Promise((resolve) => { resolveToast = resolve; });
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }, tui:{showToast: async () => toastPending}}, directory:projectRoot});
 
-  const pendingMainEvent = hooks.event(stopEvent(mainID));
-  await hooks.event(stopEvent(childID));
-  resolveMain({data:{id:mainID}});
-  await pendingMainEvent;
+  // plugin/index.ts dispatcher와 같이 반환 Promise를 기다리지 않는다.
+  let eventSettled = false;
+  const eventPromise = hooks.event({event:{
+    type:"session.compacted", properties:{sessionID}
+  }}).then(() => { eventSettled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
 
-  assert.ok(fs.existsSync(marker(mainID)), "pending main lookup wrote no main marker");
-  assert.ok(!fs.existsSync(marker(childID)), "main stop was mislabeled with child SID");
-  console.log("JS_MARKER_SID_RACE_OK");
+  const output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  assert.strictEqual(eventSettled, false, "toast fixture did not keep event hook pending");
+  assert.strictEqual(output.system.length, 1, "unawaited event did not stage notice");
+  assert.ok(output.system[0].includes("[ctx-checkpoint/압축후]"));
+
+  resolveToast();
+  await eventPromise;
+  console.log("JS_COMPACTED_SYNC_STAGE_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
     out = _run_node_check(script)
-    assert "JS_MARKER_SID_RACE_OK" in out, f"marker SID 경합 실패. out={out!r}"
+    assert "JS_COMPACTED_SYNC_STAGE_OK" in out, f"compacted 동기 적재 경합 실패. out={out!r}"
+
+
+def test_plugin_cycle_epoch_rejects_old_message_after_compaction_rearm(tmp_path):
+    """lookup await 중 re-arm이 끼어든 구 메시지는 새 사이클 상태를 덮지 않는다.
+
+    epoch guard를 제거한 구 코드에서는 lookup 해제 후 old message.updated가 compacted
+    안내를 nudge로 덮고 fired.nudge를 다시 올려 이 테스트가 red가 된다.
+    """
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — cycle epoch 경합 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const projectRoot = __PROJECT_ROOT__;
+const sessionID = "ses_cycle_epoch";
+const nudgeEvent = () => ({event:{type:"message.updated", properties:{info:{
+  sessionID, role:"assistant", tokens:{input:145000}
+}}}});
+
+(async () => {
+  let resolveLookup;
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: () => new Promise((resolve) => { resolveLookup = resolve; }),
+  }}, directory:projectRoot});
+
+  const oldMessage = hooks.event(nudgeEvent());
+  assert.strictEqual(typeof resolveLookup, "function", "lookup await boundary was not reached");
+  const compacted = hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  resolveLookup({data:{id:sessionID}});
+  await Promise.all([oldMessage, compacted]);
+
+  const output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  assert.strictEqual(output.system.length, 1, "compacted notice was lost");
+  assert.ok(output.system[0].includes("[ctx-checkpoint/압축후]"), "old message overwrote new-cycle notice");
+
+  await hooks.event(nudgeEvent());
+  const freshOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, freshOutput);
+  assert.strictEqual(freshOutput.system.length, 1, "old message dirtied re-armed fired state");
+  assert.ok(freshOutput.system[0].includes("[ctx-nudge]"), "fresh-cycle nudge did not fire");
+  console.log("JS_CYCLE_EPOCH_GUARD_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
+    out = _run_node_check(script)
+    assert "JS_CYCLE_EPOCH_GUARD_OK" in out, f"cycle epoch 경합 방지 실패. out={out!r}"
+
+
+def test_plugin_attributes_pending_nudge_to_sid_captured_before_await(tmp_path):
+    """await 순서가 뒤집혀도 pendingNudgeText는 event 진입 때 캡처한 SID에 귀속된다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — pending nudge SID 경합 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const projectRoot = __PROJECT_ROOT__;
+const firstID = "ses_race_first";
+const secondID = "ses_race_second";
+const resolvers = new Map();
+const nudgeEvent = (sessionID, input) => ({event:{type:"message.updated", properties:{info:{
+  sessionID, role:"assistant", tokens:{input}
+}}}});
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: ({path:{id}}) => new Promise((resolve) => resolvers.set(id, resolve)),
+  }}, directory:projectRoot});
+
+  const first = hooks.event(nudgeEvent(firstID, 145000));
+  const second = hooks.event(nudgeEvent(secondID, 155000));
+  assert.ok(resolvers.has(firstID) && resolvers.has(secondID), "both SID lookups must be pending");
+  resolvers.get(secondID)({data:{id:secondID}});
+  await second;
+  resolvers.get(firstID)({data:{id:firstID}});
+  await first;
+
+  const firstOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:firstID}, firstOutput);
+  const secondOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:secondID}, secondOutput);
+  assert.strictEqual(firstOutput.system.length, 1);
+  assert.ok(firstOutput.system[0].includes("[ctx-nudge]"), "first SID lost its nudge payload");
+  assert.strictEqual(secondOutput.system.length, 1);
+  assert.ok(secondOutput.system[0].includes("[ctx-nudge/강화]"), "second SID lost its nudge2 payload");
+  console.log("JS_PENDING_NUDGE_SID_RACE_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
+    out = _run_node_check(script)
+    assert "JS_PENDING_NUDGE_SID_RACE_OK" in out, f"pending nudge SID 경합 실패. out={out!r}"
 
 
 def test_plugin_keeps_pending_nudge_per_session_and_exempts_child_injection(tmp_path):
@@ -503,6 +627,7 @@ const nudgeEvent = (sessionID) => ({
   await hooks["experimental.chat.system.transform"]({sessionID:mainID}, mainOutput);
   assert.strictEqual(mainOutput.system.length, 1, "main did not receive its pending nudge");
   assert.ok(mainOutput.system[0].includes("[ctx-nudge]"), "wrong main nudge payload");
+  assert.ok(mainOutput.system[0].includes("pm_log.py checkpoint"), "checkpoint command missing");
 
   const mainAgain = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID:mainID}, mainAgain);
@@ -525,163 +650,6 @@ def test_plugin_emits_nudge():
     assert "nudge" in src.lower(), "넛지 로직 없음"
     # toast 경고 경로 (best-effort).
     assert "showToast" in src or "toast" in src.lower(), "넛지 안내(toast) 경로 없음"
-
-
-# ── 2b. STOP sentinel marker write (ADR-0009 · T-0048) 정적 검증 ─────────────
-
-def test_plugin_writes_stop_marker_path():
-    """정지 시 STOP marker 를 claude ctx_stop_hook 와 동일 경로/내용으로 쓴다 (ADR-0009 sentinel).
-
-    relay(pm_orch_opencode.py)가 이 marker 를 stat 해 세션 회전을 트리거한다 —
-    경로 `.project_manager/.local/ctx-stop/<sanitize(sid)>.done`·내용 동일이어야 같은
-    Supervisor 코드가 양 하니스를 구동한다(엔진 무변경·ADR-0009 핵심 불변식).
-    """
-    src = _plugin_src()
-    # marker 디렉토리 규약 (claude _MARKER_DIR·엔진 MARKER_DIR 미러).
-    assert "ctx-stop" in src, "STOP marker 디렉토리(ctx-stop) 참조 없음"
-    assert ".local" in src, "marker 경로(.local) 참조 없음"
-    assert ".done" in src, "marker 파일 확장자(.done) 없음"
-    # marker 내용 = claude hook 과 동일 문자열.
-    assert "ctx-stop handoff triggered" in src, "marker 내용(claude hook 동일) 없음"
-    # 실제 파일 write 경로 (fs.writeFileSync).
-    assert "writeFileSync" in src, "marker 파일 write(fs.writeFileSync) 없음"
-    # mkdir -p (recursive) — marker 디렉토리 자동 생성(claude hook 의 mkdir parents 동치).
-    assert re.search(r"mkdirSync\([^)]*recursive", src), (
-        "marker 디렉토리 recursive mkdir 없음(claude hook mkdir parents 동치)"
-    )
-
-
-def test_plugin_marker_uses_session_id_from_event():
-    """marker SID는 event 로컬 캡처값을 인자로 전달하며 전역 currentSessionID를 쓰지 않는다."""
-    src = _plugin_src()
-    assert "info.sessionID" in src, "event hook 의 info.sessionID 캡처 없음"
-    assert "sanitizeSessionId" in src, "marker 파일명 sanitize 호출 없음"
-    assert "currentSessionID" not in src, "전역 currentSessionID 경합 경로가 남아 있음"
-    assert re.search(r"writeStopMarker\s*\(\s*sessionID\s*\)", src), (
-        "marker writer가 해당 event sessionID를 인자로 받지 않음"
-    )
-
-
-def test_plugin_marker_fail_soft_and_sid_guard():
-    """marker write 는 fail-soft(정지 유지) + sid 미상 시 skip+경고(침묵 금지)."""
-    src = _plugin_src()
-    # sid 미상 경고 (stderr) — silent-fail 방어.
-    assert "stderr" in src, "sid 미상 경고(stderr) 없음 — 침묵 금지 위반"
-    # STOP marker write 함수 존재 (event 정지 경로에서 직접 호출·ADR-0038 D2).
-    assert "writeStopMarker" in src, "STOP marker write 함수 없음"
-
-
-def test_plugin_marker_written_unconditionally_on_stop():
-    """STOP marker 는 정지 감지 시 무조건 박제된다 — pm_handoff --trigger·handoffRc 게이트 없음
-    (ADR-0038 D2/D4: relay 회전은 marker 로만 신호·엔진 --trigger spawn 폐기).
-
-    writeStopMarker() 호출이 event(message.updated) 정지 분기의 `fired.stop = true` 와 나란히
-    (co-located·무조건) 온다. 어떤 handoffRc/--trigger 게이트도 재도입되지 않았음을 함께 단언한다.
-    """
-    src = _plugin_src()
-    # --trigger spawn·handoffRc 게이트가 완전히 사라졌다 (ADR-0038 회귀 방지).
-    # (설명 주석에 "no --trigger"·findEngineRoot 의 pm_handoff.py *경로 probe* 는 남으므로
-    #  substring 이 아니라 실 배선 토큰[spawn 함수·rc 게이트]으로 부재를 단언한다.)
-    assert "triggerHandoff" not in src, "triggerHandoff spawn 함수 재도입 (ADR-0038 D4 위반)"
-    assert "handoffRc" not in src, "handoffRc 게이트 재도입 (ADR-0038 D2 위반·marker 무조건이어야)"
-    assert not re.search(r"spawnSync\s*\(", src), (
-        "pm_handoff --trigger spawnSync() 호출 재도입 (ADR-0038 D4 위반·marker 로만 신호)"
-    )
-    # fired.stop = true 세팅 직후 writeStopMarker(sessionID) 무조건 호출 (co-located).
-    idx_fired = src.find("fired.stop = true")
-    idx_call = src.find("writeStopMarker(sessionID)", idx_fired)
-    assert idx_fired != -1, "정지 분기(fired.stop = true) 없음"
-    assert idx_call != -1 and idx_call > idx_fired, (
-        "writeStopMarker(sessionID)가 정지 분기(fired.stop = true) 직후에 무조건 호출되지 않음"
-    )
-
-
-# ── 3b. node 순수 검증: JS sanitizeSessionId == _session_id 규칙 동치 ─────────
-
-def test_js_sanitize_matches_hook_session_id_rule():
-    """node 로 JS sanitizeSessionId 가 claude `_session_id` 규칙(ticket 정의)과 동치임을 검증.
-
-    규칙: `[A-Za-z0-9]`/`-`/`_` 만 남기고 `.slice(0,64)`·빈→"unknown". opencode sid 는 ASCII
-    (`ses_...`·실측)라 marker 예측이 양 하니스에서 일치한다(driver-파싱 sid == plugin-write sid
-    의 sanitize 동일성 = 핵심 가정·silent-fail 방어). node 부재 시 skip(정적 검증으로 게이트).
-
-    NOTE(실측·보고): Python `_session_id` 는 `str.isalnum()` 을 써 유니코드 문자(한글·악센트)도
-    보존하나 JS `[A-Za-z0-9]` 는 ASCII 만 매칭 — 유니코드 입력에서만 갈린다. opencode sid 는
-    ASCII 전용이라 실무상 무관(아래 케이스는 ASCII·경계 규칙만 검증).
-    """
-    if _NODE is None:
-        import pytest
-
-        pytest.skip("node 없음 — JS sanitize 동치 검증 skip (정적 검증만 적용)")
-
-    script = r"""
-const m = require("./ctx-guard-core.cjs");
-const assert = require("node:assert");
-assert.strictEqual(typeof m.sanitizeSessionId, "function", "missing export: sanitizeSessionId");
-
-// 실 opencode sid (ASCII·`ses_<base62>`) 는 그대로 보존(`_` 안전 문자).
-assert.strictEqual(m.sanitizeSessionId("ses_1326c468affeQKslN5GD1FbHRR"), "ses_1326c468affeQKslN5GD1FbHRR");
-// 특수문자 제거 (path traversal 방어 — `/`·`.` drop).
-assert.strictEqual(m.sanitizeSessionId("a/b"), "ab");
-assert.strictEqual(m.sanitizeSessionId("../../etc/passwd"), "etcpasswd");
-// uuid4 형태 보존 (하이픈 안전).
-assert.strictEqual(m.sanitizeSessionId("11111111-2222-3333-4444-555555555555"), "11111111-2222-3333-4444-555555555555");
-// 빈 / 공백 / 비-문자열 → "unknown" (hook 폴백 동치).
-assert.strictEqual(m.sanitizeSessionId("  "), "unknown");
-assert.strictEqual(m.sanitizeSessionId(""), "unknown");
-assert.strictEqual(m.sanitizeSessionId(null), "unknown");
-assert.strictEqual(m.sanitizeSessionId(undefined), "unknown");
-// 64자 초과 → 절단.
-assert.strictEqual(m.sanitizeSessionId("z".repeat(100)).length, 64);
-assert.strictEqual(m.sanitizeSessionId("z".repeat(100)), "z".repeat(64));
-
-console.log("JS_SANITIZE_EQUIV_OK");
-"""
-    out = _run_node_check(script)
-    assert "JS_SANITIZE_EQUIV_OK" in out, f"JS sanitize 동치 검증 실패. out={out!r}"
-
-
-def test_js_sanitize_equiv_python_on_ascii():
-    """ASCII 입력에서 JS sanitizeSessionId == Python _sanitize_session_id 결과 동일(cross-check).
-
-    양 하니스가 각자 자기 sid 를 sanitize 하므로(claude→claude sid·opencode→opencode sid),
-    ASCII sid 에서 두 구현이 같은 marker 파일명을 내야 supervisor 의 marker 예측이 성립한다.
-    """
-    if _NODE is None:
-        import pytest
-
-        pytest.skip("node 없음 — JS/Python sanitize cross-check skip")
-
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "pm_relay", REPO / ".project_manager" / "tools" / "pm_relay.py"
-    )
-    orch = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(orch)
-
-    cases = [
-        "ses_1326c468affeQKslN5GD1FbHRR",
-        "a/b",
-        "../../etc/passwd",
-        "11111111-2222-3333-4444-555555555555",
-        "  ",
-        "",
-        "z" * 100,
-        "ses_With.Dots-and_Under",
-    ]
-    # JS 결과를 node 로 일괄 산출.
-    js_script = (
-        'const m=require("./ctx-guard-core.cjs");'
-        "const cs=" + json.dumps(cases) + ";"
-        'console.log(JSON.stringify(cs.map(c=>m.sanitizeSessionId(c))));'
-    )
-    js_out = _run_node_check(js_script).strip()
-    js_results = json.loads(js_out)
-    py_results = [orch._sanitize_session_id(c) for c in cases]
-    assert js_results == py_results, (
-        f"ASCII sanitize 불일치 — JS={js_results} Python={py_results}"
-    )
 
 
 # ── 3. 순수 결정 로직 자가검증 (node 있으면) ─────────────────────────────────
@@ -814,110 +782,7 @@ def test_plugin_requires_cleanly_in_node():
     assert "REQUIRE_OK" in out, f"core 모듈 require 실패: {out!r}"
 
 
-# ── 4. 핸드오프 도구 allow-list (ADR-0038 D2 — claude _is_handoff_* 미러) ─────
-# hard-stop 중 진행 중인 rich /pm-handoff 도구는 통과·그 외 새 작업은 정지. tool.execute.before
-# (input.tool + output.args)가 authoritative gate·permission.ask(Permission best-effort)는 fail-open 보조.
-
-
-def test_plugin_has_handoff_allowlist_hooks():
-    """정지 후 hard-stop 이 새 작업만 deny 하고 핸드오프 도구는 통과시키는 allow-list 배선 (정적)."""
-    src = _plugin_src()
-    # permission.ask 는 확실한 새 작업만 deny (isNewWorkPermission 게이트).
-    assert "isNewWorkPermission" in src, "permission.ask 의 새 작업 판정(isNewWorkPermission) 없음"
-    # tool.execute.before 는 핸드오프 도구가 아니면 throw (authoritative allow-list gate).
-    assert "isHandoffTool" in src, "tool.execute.before 의 allow-list 판정(isHandoffTool) 없음"
-    assert re.search(r"fired\.stop\s*&&\s*!isHandoffTool", src), (
-        "tool.execute.before 가 (fired.stop && !isHandoffTool) throw 형태가 아님"
-    )
-    assert re.search(r"fired\.stop\s*&&\s*isNewWorkPermission", src), (
-        "permission.ask 가 (fired.stop && isNewWorkPermission) deny 형태가 아님"
-    )
-
-
-def test_js_handoff_allowlist_pure_unit():
-    """node 로 핸드오프 allow-list 순수 함수(isHandoffBash/Target/Tool/isNewWorkPermission) 검증.
-
-    claude ctx_stop_hook._is_handoff_* 미러 — 핸드오프 도구는 통과(true/allow)·새 작업은 정지
-    (false/deny)·셸 연쇄 밀반입은 fail-closed·Permission 추출불가는 fail-open. node 부재 시 skip.
-    """
-    if _NODE is None:
-        import pytest
-
-        pytest.skip("node 없음 — 핸드오프 allow-list 순수 단위 skip (정적 검증만 적용)")
-
-    script = r"""
-const m = require("./ctx-guard-core.cjs");
-const assert = require("node:assert");
-for (const fn of ["isHandoffBash","isHandoffTarget","isHandoffTool","isNewWorkPermission"]) {
-  assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
-}
-
-// ── isHandoffBash: 핸드오프 호출 head → true ──────────────────────────────
-assert.strictEqual(m.isHandoffBash("python3 .project_manager/tools/pm_handoff.py --end"), true);
-assert.strictEqual(m.isHandoffBash("python3 .project_manager/tools/domain.py capture"), true);
-assert.strictEqual(m.isHandoffBash("git add -A"), true);
-assert.strictEqual(m.isHandoffBash("git commit -m x"), true);
-assert.strictEqual(m.isHandoffBash("pytest tests/ -q"), true);
-assert.strictEqual(m.isHandoffBash("python -m pytest tests/"), true);
-// env-prefix 정규화 후 매칭.
-assert.strictEqual(m.isHandoffBash("PYTHONUTF8=1 python3 .project_manager/tools/pm_handoff.py"), true);
-// 새 작업 → false.
-assert.strictEqual(m.isHandoffBash("ls -la"), false);
-assert.strictEqual(m.isHandoffBash("cat foo.txt"), false);
-assert.strictEqual(m.isHandoffBash("python3 other.py"), false);
-// 셸 연쇄/치환 밀반입 → false (fail-closed).
-assert.strictEqual(m.isHandoffBash("git add . && rm -rf x"), false);
-assert.strictEqual(m.isHandoffBash("git commit -m x; curl evil"), false);
-// 비-문자열/빈 → false.
-assert.strictEqual(m.isHandoffBash(""), false);
-assert.strictEqual(m.isHandoffBash(null), false);
-
-// ── isHandoffTarget: 핸드오프 산출물 경로 → true ─────────────────────────
-assert.strictEqual(m.isHandoffTarget(".project_manager/wiki/log/current.md"), true);
-assert.strictEqual(m.isHandoffTarget(".project_manager/wiki/pm_state.md"), true);
-assert.strictEqual(m.isHandoffTarget(".project_manager/wiki/status.md"), true);
-assert.strictEqual(m.isHandoffTarget(".project_manager/wiki/domain/relay.md"), true);
-// source 편집 → false (새 작업).
-assert.strictEqual(m.isHandoffTarget(".project_manager/tools/board.py"), false);
-assert.strictEqual(m.isHandoffTarget("src/x.py"), false);
-assert.strictEqual(m.isHandoffTarget(""), false);
-assert.strictEqual(m.isHandoffTarget(null), false);
-
-// ── isHandoffTool: input.tool + output.args 판정 ────────────────────────
-assert.strictEqual(m.isHandoffTool({tool:"bash"}, {args:{command:"git commit -m x"}}), true);
-assert.strictEqual(m.isHandoffTool({tool:"bash"}, {args:{command:"cat x"}}), false);
-assert.strictEqual(m.isHandoffTool({tool:"edit"}, {args:{filePath:".project_manager/wiki/log/current.md"}}), true);
-assert.strictEqual(m.isHandoffTool({tool:"edit"}, {args:{filePath:"src/x.py"}}), false);
-// write/read/patch 도 같은 target 규칙.
-assert.strictEqual(m.isHandoffTool({tool:"write"}, {args:{filePath:".project_manager/wiki/status.md"}}), true);
-assert.strictEqual(m.isHandoffTool({tool:"read"}, {args:{filePath:".project_manager/wiki/domain/x.md"}}), true);
-// 방어적 file_path/path 별칭.
-assert.strictEqual(m.isHandoffTool({tool:"edit"}, {args:{file_path:".project_manager/wiki/pm_state.md"}}), true);
-// unknown 도구 → false (deny).
-assert.strictEqual(m.isHandoffTool({tool:"grep"}, {args:{pattern:"x"}}), false);
-assert.strictEqual(m.isHandoffTool({}, {}), false);
-
-// ── isNewWorkPermission: 새 작업만 deny(true)·핸드오프/불명은 통과(false) ──
-assert.strictEqual(m.isNewWorkPermission({pattern:"ls *"}), true);        // 새 작업 → deny
-assert.strictEqual(m.isNewWorkPermission({pattern:"git commit *"}), false); // 핸드오프 → allow
-assert.strictEqual(m.isNewWorkPermission({}), false);                     // 추출불가 → fail-open
-assert.strictEqual(m.isNewWorkPermission({pattern:undefined}), false);    // 추출불가 → fail-open
-assert.strictEqual(m.isNewWorkPermission(null), false);                   // 비객체 → fail-open
-// 후보 하나라도 핸드오프면 통과(false). title 은 anchored 매칭 — 핸드오프 head 로 *시작*해야.
-assert.strictEqual(m.isNewWorkPermission({title:"git add -A"}), false);
-// title 이 핸드오프 head 로 시작 안 하면(단순 포함) 매칭 안 됨 → 새 작업(true·deny).
-assert.strictEqual(m.isNewWorkPermission({title:"Run git add -A"}), true);
-// pattern 배열·metadata 값도 후보.
-assert.strictEqual(m.isNewWorkPermission({pattern:["rm *","ls *"]}), true);
-assert.strictEqual(m.isNewWorkPermission({metadata:{cmd:"pytest tests/"}}), false);
-
-console.log("JS_HANDOFF_ALLOWLIST_OK");
-"""
-    out = _run_node_check(script)
-    assert "JS_HANDOFF_ALLOWLIST_OK" in out, f"핸드오프 allow-list 순수 단위 실패. out={out!r}"
-
-
-# ── graceful nudge 모델-주입 (ADR-0037) — 정적 + node 순수 검증 ────────────────
+# ── checkpoint 모델-주입 — 정적 + node 순수 검증 ────────────────────────────
 
 
 def test_plugin_injects_nudge_to_model():
@@ -937,7 +802,7 @@ def test_plugin_injects_nudge_to_model():
 
 
 def test_js_build_nudge_guidance():
-    """node 로 buildNudgeGuidance 가 조건부 안내문(/pm-handoff·ADR-0037)을 만드는지 검증.
+    """node 로 buildNudgeGuidance 가 실제 checkpoint 명령을 포함하는지 검증.
 
     claude build_nudge_guidance 와 동형 문구. node 부재 시 skip(정적 검증으로 게이트).
     """
@@ -953,18 +818,17 @@ assert.strictEqual(typeof m.buildNudgeGuidance, "function", "missing export: bui
 const g = m.buildNudgeGuidance({ remainingPct: 18, usedPct: 82 }, { nudge_pct: 20, stop_pct: 10 });
 assert.ok(g.includes("ctx-nudge"), "ctx-nudge 누락");
 assert.ok(g.includes("잔여 18%"), "잔여% 누락: " + g);
-assert.ok(g.includes("/pm-handoff"), "/pm-handoff 누락");
-assert.ok(g.includes("10%"), "stop_pct 안내 누락");
-assert.ok(g.includes("ADR-0037"), "ADR-0037 누락");
+assert.ok(g.includes("ticket 경계"), "ticket 경계 마무리 안내 누락");
+assert.ok(g.includes("complete entry"), "complete 박제 안내 누락");
+assert.ok(g.includes("python3 .project_manager/tools/pm_log.py checkpoint --task <이름>"), "실 checkpoint 명령 누락");
 console.log("JS_NUDGE_GUIDANCE_OK");
 """
     out = _run_node_check(script)
     assert "JS_NUDGE_GUIDANCE_OK" in out, f"JS buildNudgeGuidance 검증 실패. out={out!r}"
 
 
-# ── graceful nudge 2단(strong·stop 직전·ADR-0037·T-0328) — 정적 + node 순수 검증 ──────────────
-# 1단 유지 + 2단 추가: hard-stop 직전 "지금 즉시 /pm-handoff·새 작업 금지" 강한 재안내. 2단 임계 =
-# min(stop_pct+3, nudge_pct) 파생(config 노브 신설 없음). fired.nudge2 로 세션당 1회·1단과 독립.
+# ── checkpoint 2단(strong·compaction 임박) — 정적 + node 순수 검증 ────────────
+# 2단 임계는 min(stop_pct+3, nudge_pct) 파생. fired.nudge2 로 사이클당 1회·1단과 독립.
 
 
 def test_plugin_injects_nudge2_to_model():
@@ -1019,14 +883,12 @@ assert.strictEqual(m.computeCtxState(770, 1000, t).level, "nudge2"); // 잔여 2
 assert.strictEqual(m.computeCtxState(790, 1000, t).level, "nudge2"); // 잔여 21%
 assert.strictEqual(m.computeCtxState(800, 1000, t).level, "stop");   // 잔여 20% (stop 경계·<=)
 
-// buildNudge2Guidance 문구 (claude build_nudge2_guidance 동형·strong).
+// buildNudge2Guidance 문구 (compaction 임박 checkpoint 지시).
 const g = m.buildNudge2Guidance({remainingPct:18, usedPct:82}, {nudge_pct:20, stop_pct:10});
-assert.ok(g.includes("ctx-nudge/최종"), "ctx-nudge/최종 누락: " + g);
+assert.ok(g.includes("ctx-nudge/강화"), "ctx-nudge/강화 누락: " + g);
 assert.ok(g.includes("잔여 18%"), "잔여% 누락: " + g);
-assert.ok(g.includes("hard-stop"), "hard-stop 누락");
-assert.ok(g.includes("/pm-handoff"), "/pm-handoff 누락");
-assert.ok(g.includes("10%"), "stop_pct 안내 누락");
-assert.ok(g.includes("강제 정지"), "강제 정지 누락");
+assert.ok(g.includes("python3 .project_manager/tools/pm_log.py checkpoint --task <이름>"), "실 checkpoint 명령 누락");
+assert.ok(g.includes("구간·서사"), "checkpoint 서사 박제 지시 누락");
 // 1단 문구와 구별된다 (별개 강도 표지).
 const g1 = m.buildNudgeGuidance({remainingPct:18, usedPct:82}, {nudge_pct:20, stop_pct:10});
 assert.ok(g !== g1, "2단 문구가 1단과 동일 — 강도 구별 없음");

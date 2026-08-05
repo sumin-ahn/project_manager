@@ -1,28 +1,26 @@
-// opencode 어댑터 — ctx 정지-핸드오프 core (T-0014, 설계 T-0012, 엔진 T-0013).
+// opencode 어댑터 — ctx checkpoint 가드 core (T-0551, ADR-0081 Decision 1·3).
 //
 // 이 파일(CJS)은 ctx-guard 의 *순수 로직 + 플러그인 팩토리 본체*를 담는다. opencode plugin
 // 진입점은 `../plugins/ctx-guard.js`(ESM 얇은 shim)이며 여기서 CtxGuardPlugin 팩토리만 named-export
 // 한다 — opencode 의 plugin 로드 규약(각 plugins/ 파일의 export 를 순회해 *모두 함수*이길 요구하고
 // 각각을 팩토리로 호출·실측 T-0283) 때문에, 순수 헬퍼·상수는 plugins/ *바깥*(이 lib/ 모듈)에 둔다
 // (opencode 는 plugins/ 만 스캔·lib/ 는 로드 안 함). node 자가검증 test 는 이 CJS 모듈을 require 해
-// 순수 함수(parseLocalConf·computeCtxState·…16개)를 이벤트/opencode 런타임 없이 검증한다.
+// 순수 함수(parseLocalConf·computeCtxState 등)를 이벤트/opencode 런타임 없이 검증한다.
 //
 // 무엇:
-//   opencode 세션의 컨텍스트 토큰 사용을 추적해, 임계 도달 시
-//     1) 넛지(이른 경고·1회 toast + 모델-주입 안내·ADR-0037) → "티켓 마무리·큰 거 새로 시작 마라"
-//     2) 하드 정지(ADR-0038 D2) → 새 작업 도구만 차단(tool.execute.before)·진행 중 핸드오프 도구는
-//        예외 통과·STOP marker 직접 박제(relay 회전 신호·no pm_handoff --trigger).
-//   한다. 자동 컴팩션은 전역 기본(켜짐)으로 두되, PM 세션에선 이 정지가 컴팩션 발화점보다 훨씬
-//   먼저 와서(출하 형상 실측) lossy 요약 대신 정제 핸드오프가 선행한다 — 근거는 opencode.jsonc 주석.
+//   opencode 세션의 컨텍스트 토큰 사용을 추적해 임박 밴드에서 checkpoint 박제를 안내하고,
+//   session.compacted 를 병행 관측해 세션-로컬 횟수 누적·밴드 재무장·압축 후 checkpoint 안내를 한다.
+//   관측 횟수는 표시하지 않고 plugin 재기동 시 0부터 다시 시작한다.
 //
-// 모델 (T-0012, 2D): 넛지(이른) → 하드 정지(필수) → 새 세션. 컴팩션보다 정지가 선행.
+// 모델 (ADR-0081): 사전 checkpoint 넛지 → native compaction → 사후 checkpoint 넛지.
 //
 // 임계값(엔진 T-0013·T-0207 상향): local.conf `ctx_nudge_pct`/`ctx_stop_pct`(기본 30/20) = "잔여 컨텍스트 %".
-//   잔여% = (1 - used/limit) * 100.  잔여 ≤ nudge_pct → 넛지,  잔여 ≤ stop_pct → 정지.
+//   잔여% = (1 - used/limit) * 100. computeCtxState 의 stop 반환은 파리티를 위해 유지하고,
+//   plugin 은 stop 밴드를 최종 checkpoint 안내로만 흡수한다(차단·marker 없음).
 //   plugin 은 local.conf 를 직접 파싱(의존 적음·board.py shell-out 회피).
 //
-// 멱등성(codex T-0013 인계): 넛지·정지·handoff 트리거는 세션당 각 1회만 (중복 호출 가드).
-// sanity(codex 인계): 읽은 nudge/stop 이 비정상(음수·stop>nudge)이면 엔진 기본(30/20) 폴백.
+// 멱등성: nudge/nudge2 는 compaction 사이클당 각 1회. session.compacted 가 둘을 re-arm 한다.
+// sanity: 읽은 nudge/stop 이 비정상(음수·stop>nudge)이면 엔진 기본(30/20) 폴백.
 //
 // 엔진(pm_handoff/board) 미수정 — shell-out 호출만. 어댑터층(templates/opencode/.opencode/)만.
 //
@@ -33,12 +31,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 // ── 엔진 기본값 (board.py CTX_*_PCT_DEFAULT 미러 — 폴백 전용) ──────────────────
-// T-0207 상향(20/10→30/20): 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬(PM 47 실측).
+// T-0207 상향(20/10→30/20). stop 값은 computeCtxState 파리티와 nudge2 파생에 계속 쓰인다.
 const NUDGE_PCT_DEFAULT = 30; // 잔여 ≤ 이 % → 넛지 (일은 계속).
-const STOP_PCT_DEFAULT = 20; // 잔여 ≤ 이 % → 정지·핸드오프.
+const STOP_PCT_DEFAULT = 20; // 구 stop 경계(판정만 유지·차단 소비 없음).
 
 // 2단(strong) nudge 임계 마진 (%p·파생값·T-0328·ADR-0037). nudge2 밴드 = stop_pct < 잔여 ≤
-// min(stop_pct + 이 마진, nudge_pct) — hard-stop 직전 강한 유도(1단 soft 를 모델이 무시해도 재안내).
+// min(stop_pct + 이 마진, nudge_pct) — compaction 임박 전 강한 유도.
 // config 노브 신설 없이 stop_pct 에서 파생. claude ctx_guard.CTX_NUDGE2_MARGIN_PCT 와 미러.
 const NUDGE2_MARGIN_PCT = 3;
 
@@ -48,31 +46,10 @@ const NUDGE2_MARGIN_PCT = 3;
 const CTX_WINDOW_TOKENS_DEFAULT = 200000;
 
 // 엔진 경로 (plugin 의 directory 기준 .project_manager 까지 거슬러 올라가 해석).
-const ENGINE_REL = path.join(".project_manager", "tools");
 const LOCAL_CONF_REL = path.join(".project_manager", "local.conf");
-// STOP marker 디렉토리 (claude ctx_stop_hook._MARKER_DIR·엔진 pm_relay.MARKER_DIR 미러).
-// relay(ADR-0009)가 이 marker 를 stat 해 세션 회전을 트리거한다 — 양 하니스가 동일
-// marker 규약을 공유해 같은 Supervisor 코드가 둘 다 구동한다(엔진 무변경·ADR-0009 핵심 불변식).
-const MARKER_REL = path.join(".project_manager", ".local", "ctx-stop");
-const MARKER_CONTENT = "ctx-stop handoff triggered\n";
 // 세션 parentID 역조회는 ctx guard 의 보조 입력이다. SDK가 응답하지 않아 이벤트 처리가 멈추지
-// 않도록 짧게 제한하고, 실패는 반드시 비-자식(=가드 적용)으로 처리한다.
+// 않도록 짧게 제한한다.
 const SESSION_LOOKUP_TIMEOUT_MS = 1000;
-
-// ── 순수 함수: 세션 id sanitize (claude ctx_stop_hook._session_id 규칙 JS 재현) ──
-// 파일명 안전 문자([A-Za-z0-9]·`-`·`_`)만 남기고 64자로 잘라 marker 파일명을 짓는다.
-// claude hook 과 동일 규칙이어야 relay 의 marker 경로 예측이 양 하니스에서 일치한다.
-// 빈 결과(또는 비-문자열)는 "unknown"(hook 폴백 동치).
-function sanitizeSessionId(sessionID) {
-  if (typeof sessionID !== "string") return "unknown";
-  const safe = sessionID
-    .trim()
-    .split("")
-    .filter((c) => /[A-Za-z0-9]/.test(c) || c === "-" || c === "_")
-    .join("")
-    .slice(0, 64);
-  return safe || "unknown";
-}
 
 // ── 순수 함수: local.conf 파싱 (board.local_config 미러 — KEY=value·# 주석 무시) ──
 function parseLocalConf(text) {
@@ -162,7 +139,7 @@ function nudge2Threshold(thresholds) {
 // ── 순수 함수: ctx 상태 판정 (테스트 핵심) ──────────────────────────────────
 // used: accumulateTokens 결과, limit: 해소된 ctx 예산(resolveBudget·ADR-0041·구 물리한도 폐기),
 // thresholds: resolveThresholds 결과. 반환: { remainingPct, usedPct, level: "ok"|"nudge"|"nudge2"|"stop" }.
-//   nudge2(T-0328) = stop 직전 강한 유도 밴드. limit 미상(0/음수/NaN)이면 판정 불가 → level "ok"(과도 정지 방지·안전).
+//   nudge2(T-0328) = 구 stop 경계 직전 강한 유도 밴드. limit 미상이면 level "ok".
 function computeCtxState(used, limit, thresholds) {
   const u = Number(used) || 0;
   const lim = Number(limit);
@@ -179,97 +156,42 @@ function computeCtxState(used, limit, thresholds) {
   return { remainingPct, usedPct, level };
 }
 
-// ── 순수 함수: nudge 안내문 (모델-facing 비차단 주입용·ADR-0037) ──────────────
-// claude ctx_guard.build_nudge_guidance 미러. 조건부 권고(지시 아님) — 현 단계 마무리 후 핸드오프
-// 유도로 wave 중간 끊김(premature interrupt) 회피. experimental.chat.system.transform 이 이 문자열을
-// system[] 에 push 한다(모델 컨텍스트·비차단). hard-stop 과 달리 모델이 살아있어 스스로 /pm-handoff.
+// ── 순수 함수: compaction 전 checkpoint 안내문 (모델-facing 비차단 주입) ────────
+// 잔여 nudge 밴드에서 온전한 컨텍스트로 ticket 경계를 정리하고 checkpoint 를 박제하게 한다.
+// experimental.chat.system.transform 이 이 문자열을 system[] 에 push 한다.
+// 두 builder의 thresholds 인자는 Claude 미러 시그니처를 보존하려고 남긴다(현재 문구에서는 미사용).
 function buildNudgeGuidance(state, thresholds) {
   const remaining = Math.round((state && state.remainingPct) || 0);
   const used = Math.round((state && state.usedPct) || 0);
-  const stopPct =
-    thresholds && thresholds.stop_pct != null ? thresholds.stop_pct : STOP_PCT_DEFAULT;
   return (
-    `[ctx-nudge] 컨텍스트 사용 ${used}% (잔여 ${remaining}%) — 핸드오프 준비 구간. ` +
-    `지금 진행 중인 단계(ticket/wave)를 마무리한 뒤, 새 큰 작업을 시작하지 말고 ` +
-    `/pm-handoff 로 핸드오프하라. 잔여 ${stopPct}% 도달 시 자동 정지된다 (ADR-0037).`
+    `[ctx-nudge] 컨텍스트 사용 ${used}% (잔여 ${remaining}%) — 박제 준비 구간. ` +
+    `현재 ticket 경계까지만 마무리하고 complete entry 로 결과를 박제하라. 다음 구간에 들어가기 전에 ` +
+    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>\` 을 실행해 현재 서사를 보존하라.`
   );
 }
 
-// ── 순수 함수: 2단(strong) nudge 안내문 (stop 직전 능동 유도·ADR-0037·T-0328) ──────────
-// claude ctx_guard.build_nudge2_guidance 미러. 1단(soft)을 모델이 무시했거나 1단 창을 건너뛴
-// 세션에 hard-stop 직전 강하게 재안내한다 — "새 tool 작업 시작 말고 지금 즉시 /pm-handoff".
-// 여전히 비차단 안내(엔진 박제 X). 1단 문구는 무변경 — 이건 2단 추가.
+// ── 순수 함수: 2단(strong) checkpoint 안내문 (compaction 임박) ────────────────
+// 1단을 놓쳤거나 건너뛴 세션에 checkpoint 실행을 즉시 지시한다. 여전히 비차단 안내다.
 function buildNudge2Guidance(state, thresholds) {
   const remaining = Math.round((state && state.remainingPct) || 0);
-  const stopPct =
-    thresholds && thresholds.stop_pct != null ? thresholds.stop_pct : STOP_PCT_DEFAULT;
   return (
-    `[ctx-nudge/최종] 잔여 ${remaining}% — hard-stop 직전. 새 tool 작업을 시작하지 말고 ` +
-    `지금 즉시 /pm-handoff 를 실행하라. 잔여 ${stopPct}% 도달 시 강제 정지된다 (ADR-0037).`
+    `[ctx-nudge/강화] 컨텍스트 사용 ${Math.round((state && state.usedPct) || 0)}% ` +
+    `(잔여 ${remaining}%) — 지금 ` +
+    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>\` 을 실행하고 ` +
+    `checkpoint entry 의 구간·서사를 채워 현재 상태를 즉시 박제하라.`
   );
 }
 
-// ── 순수 함수: 핸드오프 도구 allow-list (ADR-0038 D2 — claude ctx_stop_hook._is_handoff_* 미러) ──
-// hard-stop 중 진행 중인 rich /pm-handoff 가 완주하도록 핸드오프 도구를 통과시키고 그 외 새 작업은
-// 정지한다. tool.execute.before(clean schema: input.tool + output.args)가 authoritative gate,
-// permission.ask(Permission best-effort)는 fail-open 보조(핸드오프 절대 오차단 안 함).
-const _SHELL_OPS = ["&&", "||", ";", "|", "`", "$(", "\n", ">", "<", "&"];
-const _ENV_PREFIX_RE = /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/;
-const _HANDOFF_BASH_PATTERNS = [
-  /^(?:python3?\s+)?\S*pm_handoff\.py(?:\s|$)/,
-  /^(?:python3?\s+)?\S*domain\.py(?:\s|$)/,
-  /^git\s+add(?:\s|$)/,
-  /^git\s+commit(?:\s|$)/,
-  /^(?:python3?\s+-m\s+)?pytest(?:\s|$)/,
-];
-const _HANDOFF_TARGET_SUBSTR = ["log/current.md", "pm_state", "status.md"];
-const _HANDOFF_TARGET_DIR = "/domain/";
-
-// Bash command 가 핸드오프-allow 호출로 *시작*하는가 (연쇄 연산자 없이·anchored·claude _is_handoff_bash 미러).
-function isHandoffBash(command) {
-  if (typeof command !== "string" || !command.trim()) return false;
-  if (_SHELL_OPS.some((op) => command.includes(op))) return false; // 복합 명령 → deny(fail-closed).
-  const core = command.replace(_ENV_PREFIX_RE, "").trim();
-  return _HANDOFF_BASH_PATTERNS.some((re) => re.test(core));
-}
-
-// Edit/Write/Read 대상이 핸드오프 산출물(log/pm_state/status/domain)인가 (claude _is_handoff_target 미러).
-function isHandoffTarget(filePath) {
-  if (typeof filePath !== "string" || !filePath) return false;
-  const p = filePath.replace(/\\/g, "/");
-  if (_HANDOFF_TARGET_SUBSTR.some((s) => p.includes(s))) return true;
-  return p.includes(_HANDOFF_TARGET_DIR);
-}
-
-// tool.execute.before 용 — input.tool(이름)+output.args 로 판정 (authoritative·clean schema).
-// bash → args.command, edit/write/read/patch → args.filePath(방어적: file_path/path 도). 그 외 → false(deny).
-function isHandoffTool(input, output) {
-  const tool = String((input && input.tool) || "").toLowerCase();
-  const args = (output && output.args) || {};
-  if (tool === "bash") return isHandoffBash(args.command);
-  if (tool === "edit" || tool === "write" || tool === "read" || tool === "patch") {
-    return isHandoffTarget(args.filePath || args.file_path || args.path || "");
-  }
-  return false;
-}
-
-// permission.ask 용 — Permission{type,pattern,title,metadata} best-effort. tool.execute.before 가
-// authoritative 라 여기선 *확실한 새 작업만* deny(prompt 회피)하고 핸드오프/불명은 통과(fail-open →
-// tool.execute.before 위임·핸드오프 false-block 방지). 반환 true = 새 작업(deny), false = 통과.
-function isNewWorkPermission(permission) {
-  if (!permission || typeof permission !== "object") return false;
-  const cand = [];
-  if (typeof permission.pattern === "string") cand.push(permission.pattern);
-  else if (Array.isArray(permission.pattern))
-    cand.push(...permission.pattern.filter((x) => typeof x === "string"));
-  if (typeof permission.title === "string") cand.push(permission.title);
-  const meta = permission.metadata;
-  if (meta && typeof meta === "object") {
-    for (const v of Object.values(meta)) if (typeof v === "string") cand.push(v);
-  }
-  if (cand.length === 0) return false; // 추출 불가 → 통과(fail-open).
-  // 후보 중 하나라도 핸드오프 신호면 통과(false). 전부 비-핸드오프면 새 작업(true·deny).
-  return !cand.some((c) => isHandoffBash(c) || isHandoffTarget(c));
+// ── 순수 함수: compaction 후 checkpoint 안내문 ─────────────────────────────
+function buildCompactedGuidance() {
+  return (
+    `[ctx-checkpoint/압축후] compaction이 방금 일어났다. ` +
+    `직전 박제 경계 이후 구간을 ` +
+    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction\` ` +
+    `으로 기록하고, 생성된 골격의 구간·서사 불릿을 즉시 채워 요약 직후 ` +
+    `결정·진행·검증 상태를 보충 박제하라. ` +
+    `(ADR-0081).`
+  );
 }
 
 // ── 엔진 루트 탐색: directory 에서 위로 .project_manager 를 찾는다 ───────────
@@ -290,16 +212,14 @@ function findEngineRoot(startDir) {
 const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   // 로드 검증 마커 (env-gated·라이브-로드 게이트 T-0283 전용·실 세션엔 무음). opencode 는 성공 로드
   // 시 positive 로그를 남기지 않아(실측 1.17.18) — factory 실행을 관측하려면 스스로 마커를 낸다.
-  // 훅 로직 무관(정지/넛지 동작 불변) — CTX_GUARD_LOAD_PROBE 미설정 시 완전 무음(프로덕션 기본).
+  // 훅 로직 무관 — CTX_GUARD_LOAD_PROBE 미설정 시 완전 무음(프로덕션 기본).
   if (process.env.CTX_GUARD_LOAD_PROBE) {
     process.stderr.write("[ctx-guard] plugin factory loaded (CTX_GUARD_LOAD_PROBE)\n");
   }
   let cachedThresholds = null;
   let cachedConf = null;
-  // 모든 가드 상태는 hook 인스턴스 전역이 아니라 sessionID 별로 분리한다. OpenCode 는 event,
-  // permission.ask, tool.execute.before, system.transform 각각의 input 에 sessionID 를 싣는다.
-  // childLookup Promise 자체도 같은 레코드에 캐시해 조회 pending 중 교차 이벤트가 와도 SID가 섞이지
-  // 않으며, 실패/timeout 결과(false)도 해당 세션에 고정된다.
+  // 모든 가드 상태는 hook 인스턴스 전역이 아니라 sessionID 별로 분리한다. childLookup
+  // Promise 도 같은 레코드에 캐시해 동시 이벤트의 중복 SDK 조회를 막는다.
   const sessionStates = new Map();
 
   function sessionState(sessionID) {
@@ -307,8 +227,10 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     let state = sessionStates.get(sessionID);
     if (!state) {
       state = {
-        fired: { nudge: false, nudge2: false, stop: false },
+        fired: { nudge: false, nudge2: false },
         pendingNudgeText: null,
+        compactionCount: 0,
+        cycleEpoch: 0,
         childLookup: null,
       };
       sessionStates.set(sessionID, state);
@@ -343,7 +265,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
 
   // OpenCode SDK 표면: client.session.get({ path: { id: sessionID } }) -> { data: Session }.
   // Session.parentID가 있으면 native task가 만든 자식 세션이다. 이때만 Claude의 sub-session
-  // 등가 정책처럼 nudge/STOP/deny를 모두 생략하고, 생존은 전역 자동 컴팩션에 맡긴다. 역조회
+  // 등가 정책처럼 checkpoint 안내를 생략하고, 생존은 전역 자동 컴팩션에 맡긴다. 역조회
   // 불확실성은 절대 면제 사유가 아니다.
   function isChildSession(sessionID) {
     const state = sessionState(sessionID);
@@ -376,7 +298,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     return lookup;
   }
 
-  // 넛지: 1회 toast(없으면 무음 — fail-soft).
+  // 넛지: 사이클당 1회 toast(없으면 무음 — fail-soft).
   async function notifyNudge(state, t) {
     try {
       if (client && client.tui && client.tui.showToast) {
@@ -384,8 +306,8 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
           body: {
             message:
               `[ctx-guard] 잔여 컨텍스트 ~${Math.round(state.remainingPct)}% ` +
-              `(넛지 임계 ${t.nudge_pct}%). 지금 티켓을 마무리하고, 큰 작업을 새로 ` +
-              `시작하지 마라. 잔여 ${t.stop_pct}% 도달 시 자동 정지·핸드오프.`,
+              `(넛지 임계 ${t.nudge_pct}%). ticket/wave 경계를 마무리하고 checkpoint 박제를 ` +
+              `준비하라.`,
             variant: "warning",
           },
         });
@@ -395,16 +317,16 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     }
   }
 
-  // 2단 넛지: 1회 강한 toast(stop 직전·T-0328). notifyNudge 와 별개로 사람용 2단 표시(없으면 무음).
+  // 2단 넛지: 사이클당 1회 강한 toast(compaction 임박). 사람용 2단 표시(없으면 무음).
   async function notifyNudge2(state, t) {
     try {
       if (client && client.tui && client.tui.showToast) {
         await client.tui.showToast({
           body: {
             message:
-              `[ctx-guard/최종] 잔여 컨텍스트 ~${Math.round(state.remainingPct)}% — hard-stop 직전. ` +
-              `새 작업을 시작하지 말고 지금 즉시 /pm-handoff 를 실행하라. ` +
-              `잔여 ${t.stop_pct}% 도달 시 강제 정지된다.`,
+              `[ctx-guard/임박] 잔여 컨텍스트 ~${Math.round(state.remainingPct)}% — ` +
+              `auto-compaction 임박. 지금 pm_log.py checkpoint 를 실행하고 새 큰 작업은 ` +
+              `시작하지 마라.`,
             variant: "warning",
           },
         });
@@ -414,77 +336,92 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     }
   }
 
-  // STOP marker 박제 (ADR-0009 sentinel) — relay(pm_orch_opencode.py)가 이 marker 를
-  // stat 해 세션 회전을 트리거한다. claude ctx_stop_hook._mark_triggered 와 동일 포맷
-  // (경로 `<root>/.project_manager/.local/ctx-stop/<sanitize(sid)>.done`·내용 동일)로 써서
-  // 같은 Supervisor 코드가 양 하니스를 구동한다(엔진 무변경). fail-soft — marker 실패해도
-  // 정지(deny)는 유지. sid 미상이면 skip + stderr 경고(침묵 금지·silent-fail 방어).
-  function writeStopMarker(sessionID) {
-    if (!root) return;
-    if (typeof sessionID !== "string" || !sessionID.trim()) {
-      process.stderr.write(
-        "[ctx-guard] sessionID 미상 — STOP marker skip (relay 회전 트리거 누락 가능).\n",
-      );
-      return;
-    }
+  // compaction 직후 사람용 toast. 모델 안내는 pendingNudgeText/system.transform 채널을 병행한다.
+  async function notifyCompacted() {
     try {
-      const dir = path.join(root, MARKER_REL);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, `${sanitizeSessionId(sessionID)}.done`),
-        MARKER_CONTENT,
-        "utf-8",
-      );
+      if (client && client.tui && client.tui.showToast) {
+        await client.tui.showToast({
+          body: {
+            message:
+              `[ctx-guard] compaction이 방금 일어남 — ` +
+              `지금 pm_log.py checkpoint 로 상태를 보충 박제하라.`,
+            variant: "warning",
+          },
+        });
+      }
     } catch {
-      /* marker write 실패해도 정지(deny)는 유지 — best-effort(claude hook 동일). */
+      /* toast 실패는 무시 — 모델-facing checkpoint 안내는 별도 채널이다. */
     }
   }
 
   return {
-    // ── 토큰 추적: 어시스턴트 메시지 갱신마다 ctx% 재평가 ──────────────────
+    // ── 병행 신호: compaction 사후 안내 + 어시스턴트 메시지 임박 밴드 ────────
     event: async ({ event }) => {
-      if (!event || event.type !== "message.updated") return;
+      if (!event) return;
+
+      if (event.type === "session.compacted") {
+        const sessionID = event.properties && event.properties.sessionID;
+        const session = sessionState(sessionID);
+        if (!session) return;
+        session.compactionCount += 1;
+        session.cycleEpoch += 1;
+        // compaction 이후 사용량이 낮아지는 새 사이클에서 사전 밴드 안내가 다시 발화하도록 재무장.
+        session.fired.nudge = false;
+        session.fired.nudge2 = false;
+        // opencode v1.18.5 packages/opencode/src/plugin/index.ts 의 event dispatcher는 hook Promise를
+        // await하지 않는다. auto-continue의 첫 system.transform보다 앞서도록 첫 await 전에 적재한다.
+        const stagedGuidance = buildCompactedGuidance();
+        session.pendingNudgeText = stagedGuidance;
+
+        if (await isChildSession(sessionID)) {
+          if (session.pendingNudgeText === stagedGuidance) session.pendingNudgeText = null;
+          return;
+        }
+        await notifyCompacted();
+        return;
+      }
+
+      if (event.type !== "message.updated") return;
       const info = event.properties && event.properties.info;
       if (!info) return;
       if (info.role !== "assistant" || !info.tokens) return;
-      // await 전 로컬 const 로 캡처한다. parentID 역조회 중 다른 세션 event 가 끼어도 marker/state
-      // 대상은 이 message.updated 의 SID로 고정된다.
+      // SID는 아래 await들보다 먼저 event-local로 캡처한다(pendingNudgeText 귀속 경합 방지).
       const sessionID = info.sessionID;
-
-      // Native task 자식은 독립 컨텍스트로 구동되므로 PM 메인 세션 전용 ctx 가드를 적용하지
-      // 않는다. lookup 실패/timeout/parentID 부재는 false라 아래 기존 hard-stop 경로로 진행한다.
-      if (await isChildSession(sessionID)) return;
       const session = sessionState(sessionID);
       if (!session) return;
+      // await 중 session.compacted가 re-arm하면 이 이벤트는 구 사이클 소속이다.
+      // 진입 시 epoch를 캡처해 새 사이클의 fired/pending 상태를 덮지 않는다.
+      const cycleEpoch = session.cycleEpoch;
+
+      // Native task 자식은 독립 컨텍스트로 구동되므로 PM 메인 세션용 checkpoint 가드를 면제한다.
+      if (await isChildSession(sessionID)) return;
+      if (session.cycleEpoch !== cycleEpoch) return;
 
       const used = accumulateTokens(info.tokens);
       const limit = resolveBudget(loadConf(), "opencode"); // ctx 예산 (물리한도 폐기·ADR-0041).
       const t = thresholds();
       const state = computeCtxState(used, limit, t);
 
-      if (state.level === "stop" && !session.fired.stop) {
-        session.fired.stop = true;
-        writeStopMarker(sessionID); // 이 event SID marker 직접 박제(ADR-0038 D2·relay 신호).
-      } else if (state.level === "nudge2" && !session.fired.nudge2) {
-        // 2단(strong·stop 직전·T-0328) — 1단 발화 여부와 독립(1단 창을 건너뛴 세션도 발화).
+      // stop의 차단 소비만 폐지했다. stop 밴드 자체는 최종(nudge2) checkpoint 안내로 무음 흡수한다.
+      if ((state.level === "nudge2" || state.level === "stop") && !session.fired.nudge2) {
+        // 2단(strong·compaction 임박) — 1단 발화 여부와 독립(1단 창을 건너뛴 세션도 발화).
         session.fired.nudge2 = true;
-        // 2단 모델-주입 안내 대기 (ADR-0037·T-0328) — 1단과 동일 채널(system.transform 1회 소비).
+        // 2단 모델-주입 안내 대기 — 1단과 동일 채널(system.transform 1회 소비).
         session.pendingNudgeText = buildNudge2Guidance(state, t);
         await notifyNudge2(state, t); // 2단 강한 toast (사람 UI·1회).
       } else if (state.level === "nudge" && !session.fired.nudge) {
         session.fired.nudge = true;
-        // 모델-주입 안내 대기 (ADR-0037) — 다음 모델 호출의 system.transform 이 소비. toast(사람)
-        // 와 별개로 모델이 실제로 받아 스스로 /pm-handoff 하게 한다(claude UserPromptSubmit 등가).
+        // 다음 모델 호출의 system.transform 이 checkpoint 안내를 소비한다.
         session.pendingNudgeText = buildNudgeGuidance(state, t);
         await notifyNudge(state, t); // 넛지 toast (사람 UI·1회).
       }
     },
 
-    // ── graceful nudge 모델-주입 (ADR-0037): nudge 안내를 system 에 비차단 1회 주입 ────
+    // ── checkpoint 모델-주입: pending 안내를 system 에 비차단 1회 주입 ────────
     // experimental.chat.system.transform 은 모델 호출 전 system[] 을 비차단 수정한다(@opencode-ai
     // /plugin Hooks·opencode 1.17.11 타입 확인). chat.message 의 full Part 구성(id/sessionID/
     // messageID 필수)보다 string push 가 안전·정확. ⚠️ experimental namespace — opencode 가 이 surface
-    // 를 바꾸면 *조용히* 주입이 멈출 수 있다(hard-stop 은 무관·안전). 호환성 게이트 = T-0183 Tier2
+    // 를 바꾸면 *조용히* 주입이 멈출 수 있다. 호환성 게이트 = T-0183 Tier2
     // 라이브 smoke(버전 회귀 포착)·codex 권고 반영. 변동 시 안정 chat.message 전환 검토.
     // 멱등: 해당 SID의 pendingNudgeText 만 1회 소비(push 후 null). 자식 세션은 주입도 면제한다.
     "experimental.chat.system.transform": async (input, output) => {
@@ -494,32 +431,6 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       if (session && session.pendingNudgeText && output && Array.isArray(output.system)) {
         output.system.push(session.pendingNudgeText);
         session.pendingNudgeText = null;
-      }
-    },
-
-    // ── 하드 정지 (ADR-0038 D2): 새 작업만 deny·진행 중 핸드오프 도구는 예외 통과 ────
-    // permission.ask 는 Permission best-effort 라 *확실한 새 작업만* 미리 deny(prompt 회피)하고
-    // 핸드오프/불명은 통과시킨다(fail-open — 핸드오프를 절대 오차단하지 않는다). 실제 authoritative
-    // gate 는 아래 tool.execute.before(clean schema).
-    "permission.ask": async (input, output) => {
-      const sessionID = input && input.sessionID;
-      if (await isChildSession(sessionID)) return;
-      const session = sessionState(sessionID);
-      if (session && session.fired.stop && isNewWorkPermission(input)) {
-        output.status = "deny";
-      }
-    },
-
-    // ── authoritative 하드 정지 gate: 정지 후 새 작업 도구 실행만 차단 (핸드오프 도구는 통과) ────
-    "tool.execute.before": async (input, output) => {
-      const sessionID = input && input.sessionID;
-      if (await isChildSession(sessionID)) return;
-      const session = sessionState(sessionID);
-      if (session && session.fired.stop && !isHandoffTool(input, output)) {
-        throw new Error(
-          "[ctx-guard] 컨텍스트 정지 임계 도달 — 새 작업 중단. 진행 중인 rich /pm-handoff " +
-            "(핸드오프 도구)는 통과한다 — 핸드오프를 완료하고 이 세션을 종료한 뒤 새 세션에서 이어받아라.",
-        );
       }
     },
   };
@@ -539,13 +450,8 @@ module.exports = {
   computeCtxState,
   buildNudgeGuidance,
   buildNudge2Guidance,
+  buildCompactedGuidance,
   findEngineRoot,
-  sanitizeSessionId,
-  // 핸드오프 도구 allow-list (ADR-0038 D2 — claude _is_handoff_* 미러·테스트용 export).
-  isHandoffBash,
-  isHandoffTarget,
-  isHandoffTool,
-  isNewWorkPermission,
   SESSION_LOOKUP_TIMEOUT_MS,
   NUDGE_PCT_DEFAULT,
   STOP_PCT_DEFAULT,
