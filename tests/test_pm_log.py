@@ -13,6 +13,8 @@ pm_log.py 는 227줄·직접 테스트 0 이었다. log/current.md 의 entry 분
 from __future__ import annotations
 
 import importlib.util
+import re
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -250,7 +252,11 @@ def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
     """공유 log append seam은 RMW 없이 O_APPEND 단일 write를 사용한다."""
     mod = _load_module()
     calls = []
-    monkeypatch.setattr(mod.os, "open", lambda path, flags: calls.append(("open", path, flags)) or 41)
+    monkeypatch.setattr(
+        mod.os,
+        "open",
+        lambda path, flags, mode=0: calls.append(("open", path, flags, mode)) or 41,
+    )
     monkeypatch.setattr(mod.os, "write", lambda fd, payload: calls.append(("write", fd, payload)))
     monkeypatch.setattr(mod.os, "close", lambda fd: calls.append(("close", fd)))
 
@@ -259,7 +265,61 @@ def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
 
     assert calls[0][0:2] == ("open", str(target))
     assert calls[0][2] & mod.os.O_APPEND
+    assert calls[0][2] & mod.os.O_CREAT
     assert calls[1:] == [("write", 41, b"\nentry"), ("close", 41)]
+
+
+def test_log_write_lock_uses_single_project_local_lock(tmp_path, monkeypatch):
+    """운영 log 경로의 모든 writer는 `.project_manager/.local/log.lock` 하나를 쓴다."""
+    mod = _load_module()
+    current = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
+    calls = []
+    monkeypatch.setattr(
+        mod.os,
+        "open",
+        lambda path, flags, mode=0: calls.append(("open", Path(path), flags, mode)) or 43,
+    )
+    monkeypatch.setattr(mod, "_flock_acquire", lambda fd: calls.append(("acquire", fd)))
+    monkeypatch.setattr(mod, "_flock_release", lambda fd: calls.append(("release", fd)))
+    monkeypatch.setattr(mod.os, "close", lambda fd: calls.append(("close", fd)))
+
+    with mod.log_write_lock(current):
+        calls.append(("critical",))
+
+    assert calls[0][0:2] == (
+        "open",
+        tmp_path / ".project_manager" / ".local" / "log.lock",
+    )
+    assert calls[1:] == [
+        ("acquire", 43),
+        ("critical",),
+        ("release", 43),
+        ("close", 43),
+    ]
+
+
+def test_all_current_log_writers_use_shared_seam_grep_guard():
+    """complete·handoff·decide·archive/checkpoint에 직접 current RMW가 재발하지 않는다."""
+    consumer_sources = {
+        name: (TOOLS / name).read_text(encoding="utf-8")
+        for name in ("ticket_finish.py", "pm_handoff.py", "pm_adr.py")
+    }
+    for name, source in consumer_sources.items():
+        assert "_load_pm_log(" in source and ".append_log(" in source, name
+        assert not re.search(r"self\._log_file\.write_text\(", source), name
+
+    pm_log_source = PM_LOG_PY.read_text(encoding="utf-8")
+    archive_source = pm_log_source.split("def cmd_archive", 1)[1].split(
+        "def cmd_migrate", 1
+    )[0]
+    checkpoint_source = pm_log_source.split("def cmd_checkpoint", 1)[1].split(
+        "# ── 유틸", 1
+    )[0]
+    assert "with log_write_lock(CURRENT_FILE):" in archive_source
+    assert "_replace_atomic(CURRENT_FILE, new_current)" in archive_source
+    assert "CURRENT_FILE.write_text(" not in archive_source
+    assert "append_log(CURRENT_FILE," in checkpoint_source
+    assert "CURRENT_FILE.write_text(" not in checkpoint_source
 
 
 def test_checkpoint_parser_default_manual_appends_entry(tmp_path, monkeypatch):
@@ -366,6 +426,66 @@ def test_cmd_archive_seals_old_keeps_recent(tmp_path, monkeypatch, capsys):
     remaining = current.read_text(encoding="utf-8")
     assert remaining == _HEADER + _ENTRY_C
     assert "본문 A" not in remaining and "본문 B" not in remaining
+
+
+def test_archive_and_append_interleave_preserves_both_writers(tmp_path, monkeypatch):
+    """archive 교체 직전 append가 경합해도 lock 순서대로 실행돼 신규 entry를 잃지 않는다."""
+    mod = _load_module()
+    log_dir, _archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    current.write_text(_HEADER + _ENTRY_A + _ENTRY_C, encoding="utf-8")
+    appended = "## [2026-08-06] ticket | 동시 append\n본문 D\n"
+
+    replace_entered = threading.Event()
+    allow_replace = threading.Event()
+    append_done = threading.Event()
+    errors = []
+    original_replace = mod._replace_atomic
+
+    def paused_replace(path, text):
+        replace_entered.set()
+        if not allow_replace.wait(2):
+            raise AssertionError("archive replace release timeout")
+        original_replace(path, text)
+
+    def run_archive():
+        try:
+            assert mod.cmd_archive(
+                SimpleNamespace(before="2026-06-13", dry_run=False)
+            ) == 0
+        except BaseException as exc:  # thread 예외를 주 테스트로 전달.
+            errors.append(exc)
+
+    def run_append():
+        try:
+            mod.append_log(current, "\n" + appended)
+        except BaseException as exc:  # thread 예외를 주 테스트로 전달.
+            errors.append(exc)
+        finally:
+            append_done.set()
+
+    monkeypatch.setattr(mod, "_replace_atomic", paused_replace)
+    archive_thread = threading.Thread(target=run_archive)
+    append_thread = threading.Thread(target=run_append)
+    archive_thread.start()
+    try:
+        assert replace_entered.wait(2), "archive did not reach replace seam"
+        append_thread.start()
+        # archive가 lock을 가진 동안 append는 완료할 수 없다. 이 순서가 과거 lost-update
+        # interleave(read archive → append → stale replace)를 닫는다.
+        assert not append_done.wait(0.1)
+    finally:
+        allow_replace.set()
+    archive_thread.join(2)
+    append_thread.join(2)
+
+    assert not archive_thread.is_alive() and not append_thread.is_alive()
+    assert errors == []
+    remaining = current.read_text(encoding="utf-8")
+    assert _ENTRY_C in remaining
+    assert appended in remaining
+    assert _ENTRY_A not in remaining
 
 
 def test_cmd_archive_cutoff_boundary_is_strict_keeps_on_date(tmp_path, monkeypatch, capsys):

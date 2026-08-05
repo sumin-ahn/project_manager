@@ -33,10 +33,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import os
 import re
 import sys
+import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
@@ -250,6 +253,110 @@ def next_archive_index(archive_dir: Path) -> int:
     return max(max_idx + 1, 1)
 
 
+# ── 공유 log write seam ───────────────────────────────────────────────────
+
+def _log_lock_path(log_path: Path) -> Path:
+    """current.md가 속한 `.project_manager/.local/log.lock`을 해소한다.
+
+    운영 경로가 아닌 주입형 테스트 경로는 그 파일의 부모 아래 `.local/`로 격리한다.
+    """
+    log_path = Path(log_path)
+    log_dir = log_path.parent
+    if (
+        log_dir.name == "log"
+        and log_dir.parent.name == "wiki"
+        and log_dir.parent.parent.name == ".project_manager"
+    ):
+        local_dir = log_dir.parent.parent / ".local"
+    else:
+        local_dir = log_dir / ".local"
+    return local_dir / "log.lock"
+
+
+def _flock_acquire(fd: int) -> None:
+    """배타 파일락 획득 — Unix flock, Windows msvcrt 폴백."""
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return
+    except ImportError:
+        pass
+    try:
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    except ImportError:
+        pass
+
+
+def _flock_release(fd: int) -> None:
+    """배타 파일락 해제 — `_flock_acquire`와 같은 플랫폼 분기."""
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return
+    except ImportError:
+        pass
+    try:
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except ImportError:
+        pass
+
+
+@contextlib.contextmanager
+def log_write_lock(log_path: Path) -> Iterator[None]:
+    """모든 `log/current.md` writer를 단일 OS 파일락으로 직렬화한다.
+
+    운영 경로의 잠금 파일은 `.project_manager/.local/log.lock` 하나다. append와
+    archive 재작성 모두 이 seam을 거쳐 서로의 갱신을 덮어쓰지 않는다. 프로세스가
+    종료되면 OS가 락을 회수하므로 stale lock은 남지 않는다. 재진입은 지원하지 않는다.
+    """
+    lock_path = _log_lock_path(Path(log_path))
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        _flock_acquire(fd)
+        try:
+            yield
+        finally:
+            _flock_release(fd)
+    finally:
+        os.close(fd)
+
+
+def _append_atomic(path: Path, text: str) -> None:
+    """단일 O_APPEND write로 UTF-8 텍스트를 추가한다 (호출자가 lock 소유)."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def append_log(path: Path, text: str) -> None:
+    """공유 log append 공개 seam — flock 안에서 O_APPEND 단일 write."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with log_write_lock(path):
+        _append_atomic(path, text)
+
+
+def _replace_atomic(path: Path, text: str) -> None:
+    """같은 디렉터리의 임시 파일을 쓴 뒤 `os.replace`로 원자 교체한다."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(str(tmp), str(path))
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
 # ── 명령 ───────────────────────────────────────────────────────────────────
 
 def cmd_tail(args: argparse.Namespace) -> int:
@@ -284,53 +391,57 @@ def cmd_archive(args: argparse.Namespace) -> int:
             print(f"--before 날짜 형식 오류: {before!r} (YYYY-MM-DD)", file=sys.stderr)
             return 1
 
-    if not CURRENT_FILE.exists():
-        print(f"(current.md 없음: {_rel(CURRENT_FILE)} — migrate 먼저)", file=sys.stderr)
-        return 2
+    # 존재 확인부터 최신 내용 read, archive index 발행, current 원자 교체까지 한 lock
+    # 구간이다. append writer도 같은 lock을 쓰므로 archive가 읽은 뒤 들어온 entry가
+    # stale `new_current`에 덮여 유실되는 interleave가 없다.
+    with log_write_lock(CURRENT_FILE):
+        if not CURRENT_FILE.exists():
+            print(f"(current.md 없음: {_rel(CURRENT_FILE)} — migrate 먼저)", file=sys.stderr)
+            return 2
 
-    text = CURRENT_FILE.read_text(encoding="utf-8")
-    preamble, entries = split_entries(text)
+        text = CURRENT_FILE.read_text(encoding="utf-8")
+        preamble, entries = split_entries(text)
 
-    if cutoff is not None:
-        # 날짜 기반: DATE 미만(strict <)만 봉인, DATE 이상은 유지.
-        old = [(d, e) for d, e in entries if datetime.date.fromisoformat(d) < cutoff]
-        keep = [(d, e) for d, e in entries if datetime.date.fromisoformat(d) >= cutoff]
-        mode_line = f"--before {before}"
-        noop_msg = f"옮길 entry 없음 (--before {before} 미만 entry 0개) — no-op."
-    else:
-        # 개수 기반: 최근 N entry(tail)만 유지, 나머지 오래된 쪽을 봉인. entry 단위(줄/바이트 아님).
-        # N ≥ entry 수면 old 0개 → no-op (기존 no-op 경로 재사용).
-        n = keep_last
-        old = entries[:-n] if n < len(entries) else []
-        keep = entries[-n:] if n < len(entries) else entries
-        mode_line = f"--keep-last {n}"
-        noop_msg = f"옮길 entry 없음 (entry {len(entries)}개 ≤ --keep-last {n}) — no-op."
+        if cutoff is not None:
+            # 날짜 기반: DATE 미만(strict <)만 봉인, DATE 이상은 유지.
+            old = [(d, e) for d, e in entries if datetime.date.fromisoformat(d) < cutoff]
+            keep = [(d, e) for d, e in entries if datetime.date.fromisoformat(d) >= cutoff]
+            mode_line = f"--before {before}"
+            noop_msg = f"옮길 entry 없음 (--before {before} 미만 entry 0개) — no-op."
+        else:
+            # 개수 기반: 최근 N entry(tail)만 유지, 나머지 오래된 쪽을 봉인. entry 단위.
+            n = keep_last
+            old = entries[:-n] if n < len(entries) else []
+            keep = entries[-n:] if n < len(entries) else entries
+            mode_line = f"--keep-last {n}"
+            noop_msg = f"옮길 entry 없음 (entry {len(entries)}개 ≤ --keep-last {n}) — no-op."
 
-    if not old:
-        print(noop_msg)
+        if not old:
+            print(noop_msg)
+            return 0
+
+        idx = next_archive_index(ARCHIVE_DIR)
+        first, last = old[0][0], old[-1][0]
+        slice_name = f"{idx:04d}-{first}_to_{last}.md"
+        slice_path = ARCHIVE_DIR / slice_name
+        slice_body = (
+            f"# Log archive {idx:04d} ({first} ~ {last})\n\n"
+            f"> `pm_log.py archive {mode_line}` 로 current.md 에서 봉인. 수정 금지.\n\n"
+            + "".join(e for _d, e in old)
+        )
+        new_current = preamble + "".join(e for _d, e in keep)
+
+        if args.dry_run:
+            print(f"[dry-run] {_rel(slice_path)} 로 {len(old)} entry 봉인, "
+                  f"current.md 는 {len(keep)} entry 유지.")
+            return 0
+
+        ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        slice_path.write_text(slice_body, encoding="utf-8")
+        _replace_atomic(CURRENT_FILE, new_current)
+        print(f"✓ {len(old)} entry → {_rel(slice_path)} 봉인. "
+              f"current.md {len(keep)} entry 유지.")
         return 0
-
-    idx = next_archive_index(ARCHIVE_DIR)
-    first, last = old[0][0], old[-1][0]
-    slice_name = f"{idx:04d}-{first}_to_{last}.md"
-    slice_path = ARCHIVE_DIR / slice_name
-    slice_body = (
-        f"# Log archive {idx:04d} ({first} ~ {last})\n\n"
-        f"> `pm_log.py archive {mode_line}` 로 current.md 에서 봉인. 수정 금지.\n\n"
-        + "".join(e for _d, e in old)
-    )
-    new_current = preamble + "".join(e for _d, e in keep)
-
-    if args.dry_run:
-        print(f"[dry-run] {_rel(slice_path)} 로 {len(old)} entry 봉인, "
-              f"current.md 는 {len(keep)} entry 유지.")
-        return 0
-
-    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    slice_path.write_text(slice_body, encoding="utf-8")
-    CURRENT_FILE.write_text(new_current, encoding="utf-8")
-    print(f"✓ {len(old)} entry → {_rel(slice_path)} 봉인. current.md {len(keep)} entry 유지.")
-    return 0
 
 
 def cmd_migrate(args: argparse.Namespace) -> int:
@@ -436,15 +547,6 @@ def _guard_worktree_misanchor() -> bool:
     return True
 
 
-def _append_atomic(path: Path, text: str) -> None:
-    """단일 O_APPEND write로 공유 log에 추가해 동시 writer의 lost update를 막는다."""
-    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND)
-    try:
-        os.write(fd, text.encode("utf-8"))
-    finally:
-        os.close(fd)
-
-
 def cmd_checkpoint(args: argparse.Namespace) -> int:
     """checkpoint 골격을 current.md에 append한다 (호출별 신규 entry)."""
     identity_args = _load_identity_args()
@@ -466,7 +568,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     )
     # 선행 LF는 기존 파일이 trailing newline 없이 끝나도 새 `##` entry 경계를 보장한다.
     # 이미 LF로 끝난 파일에는 빈 줄 하나가 추가될 뿐이며, 전체 payload는 단일 원자 write다.
-    _append_atomic(CURRENT_FILE, "\n" + entry)
+    append_log(CURRENT_FILE, "\n" + entry)
     print(f"✓ checkpoint append: task={args.task} · trigger={args.trigger}")
     return 0
 

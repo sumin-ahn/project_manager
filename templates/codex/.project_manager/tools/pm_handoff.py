@@ -2966,7 +2966,7 @@ class PmHandoff:
             print("  [dry-run] log/current.md 에 append 할 skeleton:")
             print("  " + skeleton.replace("\n", "\n  "))
         else:
-            self._log_file.write_text(log_text + "\n" + skeleton, encoding="utf-8")
+            _load_pm_log().append_log(self._log_file, "\n" + skeleton)
             print(f"  ✓ log/current.md handoff entry skeleton append (PM {session_num}차)")
 
         # log/current.md entry 누적 점검 — 임계 초과 시 archive 권장 (차단 아님).
@@ -3413,6 +3413,13 @@ def _main(argv: list[str] | None = None) -> int:
         branch=args.branch,
         done=args.done,
         task=identity.task,
+    )
+
+
+def _load_pm_log():
+    """공유 log writer seam을 같은 tools/의 pm_log.py에서 로드한다."""
+    return _load_module_from_path(
+        TOOLS_DIR / "pm_log.py", "pm_log.py", verifier=_verify_engine_rev,
     )
 
 

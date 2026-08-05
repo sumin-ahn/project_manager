@@ -251,6 +251,13 @@ def _load_identity_args():
     )
 
 
+def _load_pm_log():
+    """공유 log writer seam을 같은 tools/의 pm_log.py에서 로드한다."""
+    return _load_module_from_path(
+        TOOLS_DIR / "pm_log.py", "pm_log.py", verifier=_verify_engine_rev,
+    )
+
+
 try:
     identity_args = _load_identity_args()
 except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
@@ -989,6 +996,11 @@ def split_dirty(entries: Sequence[tuple[str, str]],
     staged_out: list[str] = []
     unstaged: list[str] = []
     for code, path in entries:
+        # 공용 writer의 flock inode는 clone-local 런타임 상태다. 정상 adopter에서는
+        # `.project_manager/.local/`이 gitignore지만, 최소/격리 repo에서도 ticket 산출물
+        # 누락으로 오보하지 않게 이 정확한 lock 파일만 잔여 보고에서 제외한다.
+        if path == ".project_manager/.local/log.lock":
+            continue
         if code[0] not in (" ", "?") and not scope_covers(pathspec, path):
             staged_out.append(f"{code} {path}")
         if code[1] != " ":
@@ -1378,8 +1390,7 @@ class TicketFinisher:
             print("  [dry-run] log/current.md 에 append 할 스켈레톤:")
             print("  " + skeleton.replace("\n", "\n  "))
         else:
-            log_text = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
-            self._log_file.write_text(log_text + "\n" + skeleton, encoding="utf-8")
+            _load_pm_log().append_log(self._log_file, "\n" + skeleton)
             print(f"  ✓ log/current.md 스켈레톤 append ({ticket_id})")
 
         # ── 3. board.py complete ──────────────────────────────────────

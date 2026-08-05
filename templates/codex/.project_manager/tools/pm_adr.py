@@ -712,9 +712,9 @@ class AdrIssuer:
             self._readme_file.write_text(plan["readme_text"], encoding="utf-8")
 
     def _append_log(self, plan: dict) -> None:
-        existing = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
-        self._log_file.parent.mkdir(parents=True, exist_ok=True)
-        self._log_file.write_text(existing + "\n" + plan["log_entry"], encoding="utf-8")
+        pm_log = _load_pm_log()
+        payload = "\n" + plan["log_entry"]
+        pm_log.append_log(self._log_file, payload)
 
 
 # ── contradiction lint 트리거 ───────────────────────────────
@@ -949,6 +949,15 @@ def _main(argv: list[str] | None = None) -> int:
         return cmd_new(args)
     parser.error(f"unknown command: {args.cmd}")
     return 2
+
+
+def _load_pm_log():
+    """공유 log writer seam을 같은 tools/의 pm_log.py에서 로드한다."""
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "pm_log.py",
+        "pm_log.py",
+        verifier=_verify_engine_rev,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
