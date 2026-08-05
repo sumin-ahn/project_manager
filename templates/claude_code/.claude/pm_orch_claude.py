@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ctx_guard  # noqa: E402  (repo_root 재사용 — 같은 디렉토리 어댑터 코어)
 
 CLAUDE_BIN = "claude"
-DEFAULT_MODEL = "claude-haiku-4-5"  # frugal 기본. CLI `--model` 로 override(opus 등).
+DEFAULT_MODEL = "claude-opus-5"  # PM 세션 기본 = opus (품질 우선·2026-08-06 사용자 결정). CLI `--model` 로 frugal override 가능.
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음).
 
 
