@@ -7,8 +7,8 @@ codex 어댑터의 2층 ctx 가드 중 **대화형 경로**를 여러 층위에�
        `[features]` multi_agent/hooks·`[sandbox_workspace_write]` network_access=false ·
        **machine-local 무시 키 부재**(trusted-repo 로드 규칙·spike §1.2).
   2. hooks.json 정합 — 실 codex 스키마(최상위 `hooks` 래퍼 → 이벤트 → matcher-group → 중첩
-       `hooks[]` → `{type:command, command:<셸 문자열>}`·Claude Code 형 동일)로 `PreCompact` loud
-       tripwire(인라인 command string·별도 스크립트 파일 금지) + strict JSON.
+       `hooks[]` → `{type:command, command:<셸 문자열>}`·Claude Code 형 동일)로 `PreCompact` 비차단
+       checkpoint 안내(인라인 command string·별도 스크립트 파일 금지) + strict JSON.
   3. ctx 예산 키 — `board.py init` 스캐폴드가 `ctx_window_tokens_codex` 주석 예시를 claude/opencode
        와 나란히 박는다(relay driver `_maybe_mark_ctx` 예산 원천·ADR-0041 per-harness 키).
 
@@ -63,7 +63,7 @@ def test_config_uses_documented_numeric_auto_compact_threshold_not_off_sentinel(
 
 
 def test_config_enables_multi_agent_and_hooks():
-    """[features] multi_agent/hooks on — 위임 spawn + PreCompact tripwire 발화 전제."""
+    """[features] multi_agent/hooks on — 위임 spawn + PreCompact checkpoint 안내 전제."""
     features = _load_config().get("features", {})
     assert features.get("multi_agent") is True, "[features] multi_agent 활성 아님"
     assert features.get("hooks") is True, "[features] hooks 활성 아님(PreCompact 전제)"
@@ -100,7 +100,7 @@ def test_config_omits_machine_local_keys():
     assert set(data) <= allowed, f"config.toml 에 예상 밖 top-level 키: {sorted(set(data) - allowed)}"
 
 
-# ── 2. hooks.json: PreCompact JSON hard-stop (manual/auto 구분) ──────────────
+# ── 2. hooks.json: PreCompact 비차단 checkpoint 안내 (manual/auto 구분) ────
 
 def test_hooks_exists_and_parses_strict_json():
     """hooks.json 이 존재하고 strict JSON 으로 파싱된다(주석 없음 — codex 소비 규약·DoD)."""
@@ -147,8 +147,8 @@ def _precompact_payloads_by_matcher() -> dict[str, tuple[dict, dict]]:
     return payloads
 
 
-def test_hooks_precompact_hard_stop_uses_manual_auto_matchers_and_json_stdout():
-    """PreCompact은 live-confirmed common JSON contract로 manual/auto transaction을 중단한다."""
+def test_hooks_precompact_allows_compaction_with_manual_auto_matchers_and_json_stdout():
+    """PreCompact은 matcher를 보존하되 compaction을 중단하지 않고 checkpoint를 안내한다."""
     groups = _load_hooks()["hooks"]["PreCompact"]
     assert {group.get("matcher") for group in groups} == {"^auto$", "^manual$"}
     entries = _precompact_command_entries()
@@ -160,64 +160,65 @@ def test_hooks_precompact_hard_stop_uses_manual_auto_matchers_and_json_stdout():
             f"command 가 문자열이 아님 (실 스키마=셸 command string·argv 배열 아님): {e.get('command')!r}"
         )
     joined = " ".join(e["command"] for e in cmd_entries)
-    assert "[ctx-tripwire]" in joined, "tripwire 표지([ctx-tripwire]) 없음"
-    assert "$pm-handoff" in joined, "핸드오프 안내($pm-handoff) 없음 — 상태 박제 유도 불가"
+    assert "[ctx-checkpoint]" in joined, "checkpoint 표지([ctx-checkpoint]) 없음"
+    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction" in joined, (
+        "실행 가능한 checkpoint 커맨드 안내 없음"
+    )
     assert "printf" in joined, "JSON stdout을 내는 printf command 없음"
-    assert '\"continue\":false' in joined, "live-confirmed continue:false hard-stop contract 없음"
-    assert '\"stopReason\"' in joined, "matcher별 stopReason 없음"
+    assert '\"continue\"' not in joined, "비차단 hook에 continue 제어 키가 남음"
+    assert '\"stopReason\"' not in joined, "비차단 hook에 stopReason이 남음"
     assert '\"systemMessage\"' in joined, "UI/event stream 경고 systemMessage 없음"
     assert '\"suppressOutput\":false' in joined, "common output suppressOutput contract 없음"
 
 
-def test_hooks_windows_commands_match_posix_structured_warning_contract():
-    """PowerShell-safe native Windows fallback도 각 handler의 JSON 경고 의미를 보존한다."""
+def test_hooks_windows_commands_match_posix_nonblocking_checkpoint_contract():
+    """Windows ASCII payload도 POSIX handler와 같은 비차단 checkpoint를 안내한다."""
     payloads = _precompact_payloads_by_matcher()
     assert set(payloads) == {"^auto$", "^manual$"}
     for matcher, (posix, windows) in payloads.items():
-        assert posix == windows, f"{matcher} POSIX/Windows payload 의미 불일치"
-        assert posix["continue"] is False
-        assert posix["suppressOutput"] is False
-        assert "[ctx-tripwire]" in posix["systemMessage"]
-        assert "$pm-handoff" in posix["systemMessage"]
-        assert posix["stopReason"] == (
-            "auto compaction blocked; follow the recovery guide"
-            if matcher == "^auto$" else "manual compaction blocked; run $pm-handoff"
+        assert set(posix) == set(windows) == {"systemMessage", "suppressOutput"}
+        for payload in (posix, windows):
+            assert "continue" not in payload
+            assert "stopReason" not in payload
+            assert payload["suppressOutput"] is False
+            assert "[ctx-checkpoint]" in payload["systemMessage"]
+            assert ".project_manager/tools/pm_log.py checkpoint" in payload["systemMessage"]
+            assert "--trigger compaction" in payload["systemMessage"]
+        assert posix["systemMessage"] == (
+            "[ctx-checkpoint] compaction 이 일어난다. 직전 박제 경계 이후 구간을 "
+            "python3 .project_manager/tools/pm_log.py checkpoint --task <이름> "
+            "--trigger compaction 으로 기록하고, 생성된 골격의 구간·서사 불릿을 즉시 채워라. "
+            "compaction은 차단되지 않는다."
         )
-
-    assert payloads["^auto$"][0]["systemMessage"] == (
-        "[ctx-tripwire] Auto compaction was blocked. This thread is over the limit, so another model turn "
-        "may be blocked again.\nRecovery: 1) /status and copy the chat ID; 2) /quit; 3) run codex resume "
-        "--disable hooks <CHAT_ID>; 4) run $pm-handoff; 5) start a fresh normal session so hooks are enabled "
-        "again. This one-shot recovery allows compaction, so the handoff may use a lossy summary."
-    )
-    assert payloads["^manual$"][0]["systemMessage"] == (
-        "[ctx-tripwire] Manual compaction was blocked. Run $pm-handoff now. If auto hard-stop repeats, run "
-        "/status and copy the chat ID, /quit, then codex resume --disable hooks <CHAT_ID>; run $pm-handoff "
-        "and start a fresh normal session afterward."
-    )
+        assert windows["systemMessage"].isascii(), f"{matcher} Windows payload가 ASCII가 아님"
+        assert "Compaction is not blocked." in windows["systemMessage"]
 
 
-def test_auto_hard_stop_guide_orders_one_shot_recovery_without_persistent_hook_disable():
-    """auto 임계 초과 thread의 반복 abort를 실제로 풀 수 있는 순서와 손실 경고를 고정한다."""
-    auto = _precompact_payloads_by_matcher()["^auto$"][0]["systemMessage"]
-    steps = (
-        "/status",
-        "/quit",
-        "codex resume --disable hooks <CHAT_ID>",
-        "$pm-handoff",
-        "fresh normal session",
-    )
-    positions = [auto.index(step) for step in steps]
-    assert positions == sorted(positions), f"auto recovery 단계 순서가 실행 불가: {positions!r}"
-    assert "allows compaction" in auto
-    assert "lossy summary" in auto
-
+def test_readme_documents_nonblocking_probe_and_confirmed_headless_non_reachability():
+    """README는 0.146.0 비차단 실측과 headless systemMessage 미도달 결론을 고정한다."""
     readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
-    config = (REPO / "templates" / "codex" / ".codex" / "config.toml").read_text(encoding="utf-8")
-    assert " 해당 invocation만 hooks 없이 재개" in readme
-    assert "project config의 hooks를 영구 비활성화하지 않는다" in readme
+    normalized = " ".join(readme.split())
+    anchors = (
+        "compaction을 차단하지 않는다",
+        "python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction",
+        "compaction 횟수를 세는 영속 상태는 두지 않는다",
+        "메인테이너 실측(2026-08-06, codex-cli 0.146.0)",
+        "`--oss` 프로브(`reach-probe/`)",
+        "marker 발화를 확인",
+        "`turn_aborted` 0건·`context_compacted` 기록",
+        "후속 turn 정상 계속",
+        "stdout JSONL·stderr·rollout·`CODEX_HOME` 전수 grep",
+        "모델 자기보고도 음성이었다",
+        "exec 경로 안내는 모델에 닿지 않는다(관측만 가능)",
+        "direct TUI 표시는 미검증",
+        "driver 회전 선점이 relay 경로를 실보호",
+        "trusted project와 `/hooks` 승인",
+    )
+    for anchor in anchors:
+        assert anchor in normalized, f"README Context safety 앵커 누락: {anchor!r}"
+    assert "PM 게이트 실측 후 확정" not in normalized
+    assert "codex resume --disable hooks" not in normalized
     assert "features.hooks=false" not in readme
-    assert "hooks = true" in config
 
 
 def test_hooks_warning_is_inline_no_external_script():
@@ -226,16 +227,10 @@ def test_hooks_warning_is_inline_no_external_script():
         assert e.get("type") == "command", f"command 타입 hook 아님: {e!r}"
         body = e.get("command", "")
         assert isinstance(body, str), f"command 가 문자열 아님 (실 스키마 위반): {body!r}"
-        # 별도 스크립트(.sh/.py 파일) 실행이 아니라 printf 인라인이어야 한다.
-        assert ".sh" not in body and ".py" not in body, (
-            f"별도 스크립트 파일 참조 감지 (인라인 규약 위반): {body!r}"
-        )
-        assert "printf" in body, f"구조화 JSON printf 형태 아님: {body!r}"
+        # 안내문은 pm_log.py 커맨드를 말하지만 hook handler 자체는 printf 인라인이어야 한다.
+        assert body.startswith("printf '%s\\n' '{"), f"구조화 JSON printf 형태 아님: {body!r}"
         windows = e.get("commandWindows", "")
         assert isinstance(windows, str) and windows, f"Windows commandWindows 누락: {e!r}"
-        assert ".sh" not in windows and ".py" not in windows, (
-            f"Windows handler가 외부 스크립트를 참조함: {windows!r}"
-        )
         assert windows.startswith("Write-Output '"), (
             f"Windows handler가 PowerShell-safe Write-Output 형태 아님: {windows!r}"
         )
@@ -259,7 +254,7 @@ def test_hooks_windows_command_emits_parseable_json_when_powershell_available():
 
 
 def _rollout_summary(jsonl: str) -> tuple[int, set[str], bool]:
-    """저장 Codex JSONL의 event_msg payload만 읽어 compaction/hook 증거를 요약한다."""
+    """저장 Codex JSONL에서 compaction과 예전 echo-only 훅 증거를 요약한다."""
     records = []
     for line in jsonl.splitlines():
         if not line.strip():
@@ -279,7 +274,9 @@ def _rollout_summary(jsonl: str) -> tuple[int, set[str], bool]:
         and record.get("payload", {}).get("type") == "context_compacted"
         for record in records
     )
-    return compacted, event_types & {"hook_started", "hook_completed"}, "[ctx-tripwire]" in jsonl
+    # [ctx-tripwire]는 현행 contract가 아니라 삭제된 echo-only 가드의 역사 fixture marker다.
+    legacy_echo_seen = "[ctx-tripwire]" in jsonl
+    return compacted, event_types & {"hook_started", "hook_completed"}, legacy_echo_seen
 
 
 def test_recorded_long_tui_rollout_fixture_proves_echo_only_tripwire_was_false_green():
@@ -302,79 +299,6 @@ def test_recorded_long_tui_rollout_fixture_proves_echo_only_tripwire_was_false_g
     _, hook_events, tripwire_output = _rollout_summary(observed)
     assert hook_events == {"hook_started"}
     assert tripwire_output is True
-
-
-LIVE_CANARY = "PROBE_AFTER_ABORT T0442_CANARY_7F3A"
-
-
-def _live_probe_segment_summary(jsonl: str) -> tuple[int, int, int, bool]:
-    """한 probe segment의 시작·interrupted abort·compaction·assistant canary만 읽는다.
-
-    실제 task_started payload에는 manual/auto trigger가 없으므로, trigger를 event에 발명하지 않는다.
-    어느 probe인지의 provenance는 호출자가 분리한 segment 이름으로만 보존한다.
-    """
-    records = [json.loads(line) for line in jsonl.splitlines() if line.strip()]
-    events = [
-        record["payload"] for record in records
-        if record.get("type") == "event_msg" and isinstance(record.get("payload"), dict)
-    ]
-    started = sum(event.get("type") == "task_started" for event in events)
-    aborted = sum(
-        event.get("type") == "turn_aborted" and event.get("reason") == "interrupted"
-        for event in events
-    )
-    compacted = sum(event.get("type") == "context_compacted" for event in events)
-    canary_recovered = any(
-        event.get("type") == "agent_message"
-        and (event.get("message") == LIVE_CANARY or event.get("content") == LIVE_CANARY)
-        for event in events
-    )
-    return started, aborted, compacted, canary_recovered
-
-
-def _live_probe_succeeds(segments: dict[str, str]) -> bool:
-    """manual/auto provenance segment 각각에 abort 증거가 있고 manual canary가 회수됐는지 판정한다."""
-    if set(segments) != {"manual", "auto"}:
-        return False
-    return (
-        _live_probe_segment_summary(segments["manual"]) == (1, 1, 0, True)
-        and _live_probe_segment_summary(segments["auto"]) == (1, 1, 0, False)
-    )
-
-
-def test_live_precompact_hard_stop_fixture_preserves_history_after_manual_and_auto_abort():
-    """live-confirmed branch: provenance가 분리된 manual/auto probe 모두 abort되고 compaction이 없다."""
-    manual_jsonl = "\n".join([
-        '{"type":"event_msg","payload":{"type":"task_started"}}',
-        '{"type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted","duration_ms":5}}',
-        '{"type":"event_msg","payload":{"type":"agent_message","message":"PROBE_AFTER_ABORT T0442_CANARY_7F3A"}}',
-    ])
-    auto_jsonl = "\n".join([
-        '{"type":"event_msg","payload":{"type":"task_started"}}',
-        '{"type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted","duration_ms":5}}',
-    ])
-    segments = {"manual": manual_jsonl, "auto": auto_jsonl}
-    assert _live_probe_segment_summary(manual_jsonl) == (1, 1, 0, True)
-    assert _live_probe_segment_summary(auto_jsonl) == (1, 1, 0, False)
-    assert _live_probe_succeeds(segments) is True
-
-    # 감도: auto provenance가 manual로 바뀌거나 누락되면 두 matcher의 독립 증거가 아니다.
-    assert _live_probe_succeeds({"manual": manual_jsonl, "manual_relabelled": auto_jsonl}) is False
-    assert _live_probe_succeeds({"manual": manual_jsonl}) is False
-
-    # canary는 user/input/metadata raw text가 아니라 assistant agent_message exact payload여야 한다.
-    for field in ("user_input", "metadata", "content"):
-        injected = manual_jsonl.replace(
-            '{"type":"event_msg","payload":{"type":"agent_message","message":"PROBE_AFTER_ABORT T0442_CANARY_7F3A"}}',
-            json.dumps({"type": "event_msg", "payload": {"type": field, "message": LIVE_CANARY}}),
-        )
-        assert _live_probe_segment_summary(injected) == (1, 1, 0, False)
-        assert _live_probe_succeeds({"manual": injected, "auto": auto_jsonl}) is False
-
-    # context_compacted 하나라도 생기면 hard-stop 성공 증거가 아니다.
-    compacted_auto = auto_jsonl + '\n{"type":"event_msg","payload":{"type":"context_compacted"}}'
-    assert _live_probe_segment_summary(compacted_auto) == (1, 1, 1, False)
-    assert _live_probe_succeeds({"manual": manual_jsonl, "auto": compacted_auto}) is False
 
 
 # ── 3. ctx_window_tokens_codex 예산 키: board.py init 스캐폴드 ────────────────

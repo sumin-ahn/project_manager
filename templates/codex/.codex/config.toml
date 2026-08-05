@@ -12,13 +12,13 @@ approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 
 # D4 ②(대화형 경로): 문서화된 숫자 threshold만 설정한다. 이 값은 auto-compaction을 끄지 않으며,
-#   off sentinel을 발명하지 않는다. threshold 도달 시 hooks.json PreCompact가 transaction을 hard-stop하고
-#   사용자는 즉시 $pm-handoff 해야 한다(0.145.0 manual/auto live probe 확인).
+#   off sentinel을 발명하지 않는다. threshold 도달 시 hooks.json PreCompact는 compaction을
+#   통과시키고 직전 내구 경계 이후 구간의 checkpoint 기록을 안내한다.
 model_auto_compact_token_limit = 900000
 
 [features]
 multi_agent = true    # .codex/agents/*.toml in-session spawn (stable·기본 on·명시)
-hooks = true          # PreCompact tripwire 발화 전제
+hooks = true          # 비차단 PreCompact checkpoint 안내 발화 전제
 
 [sandbox_workspace_write]
 network_access = false    # egress 차단(안전 경계)·채택자 필요 시 완화

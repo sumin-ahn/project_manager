@@ -1,5 +1,5 @@
 {
-  "description": "PreCompact hard-stops manual and automatic compaction so PM state can be handed off first.",
+  "description": "PreCompact allows compaction and asks the PM to checkpoint the interval since its last durable boundary.",
   "hooks": {
     "PreCompact": [
       {
@@ -7,8 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '%s\\n' '{\"continue\":false,\"stopReason\":\"auto compaction blocked; follow the recovery guide\",\"systemMessage\":\"[ctx-tripwire] Auto compaction was blocked. This thread is over the limit, so another model turn may be blocked again.\\nRecovery: 1) /status and copy the chat ID; 2) /quit; 3) run codex resume --disable hooks <CHAT_ID>; 4) run $pm-handoff; 5) start a fresh normal session so hooks are enabled again. This one-shot recovery allows compaction, so the handoff may use a lossy summary.\",\"suppressOutput\":false}'",
-            "commandWindows": "Write-Output '{\"continue\":false,\"stopReason\":\"auto compaction blocked; follow the recovery guide\",\"systemMessage\":\"[ctx-tripwire] Auto compaction was blocked. This thread is over the limit, so another model turn may be blocked again.\\nRecovery: 1) /status and copy the chat ID; 2) /quit; 3) run codex resume --disable hooks <CHAT_ID>; 4) run $pm-handoff; 5) start a fresh normal session so hooks are enabled again. This one-shot recovery allows compaction, so the handoff may use a lossy summary.\",\"suppressOutput\":false}'"
+            "command": "printf '%s\\n' '{\"systemMessage\":\"[ctx-checkpoint] compaction 이 일어난다. 직전 박제 경계 이후 구간을 python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction 으로 기록하고, 생성된 골격의 구간·서사 불릿을 즉시 채워라. compaction은 차단되지 않는다.\",\"suppressOutput\":false}'",
+            "commandWindows": "Write-Output '{\"systemMessage\":\"[ctx-checkpoint] Compaction is starting. Record the interval since the last durable boundary with python3 .project_manager/tools/pm_log.py checkpoint --task <name> --trigger compaction, then immediately fill the interval and narrative bullets of the generated skeleton. Compaction is not blocked.\",\"suppressOutput\":false}'"
           }
         ]
       },
@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '%s\\n' '{\"continue\":false,\"stopReason\":\"manual compaction blocked; run $pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Manual compaction was blocked. Run $pm-handoff now. If auto hard-stop repeats, run /status and copy the chat ID, /quit, then codex resume --disable hooks <CHAT_ID>; run $pm-handoff and start a fresh normal session afterward.\",\"suppressOutput\":false}'",
-            "commandWindows": "Write-Output '{\"continue\":false,\"stopReason\":\"manual compaction blocked; run $pm-handoff\",\"systemMessage\":\"[ctx-tripwire] Manual compaction was blocked. Run $pm-handoff now. If auto hard-stop repeats, run /status and copy the chat ID, /quit, then codex resume --disable hooks <CHAT_ID>; run $pm-handoff and start a fresh normal session afterward.\",\"suppressOutput\":false}'"
+            "command": "printf '%s\\n' '{\"systemMessage\":\"[ctx-checkpoint] compaction 이 일어난다. 직전 박제 경계 이후 구간을 python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction 으로 기록하고, 생성된 골격의 구간·서사 불릿을 즉시 채워라. compaction은 차단되지 않는다.\",\"suppressOutput\":false}'",
+            "commandWindows": "Write-Output '{\"systemMessage\":\"[ctx-checkpoint] Compaction is starting. Record the interval since the last durable boundary with python3 .project_manager/tools/pm_log.py checkpoint --task <name> --trigger compaction, then immediately fill the interval and narrative bullets of the generated skeleton. Compaction is not blocked.\",\"suppressOutput\":false}'"
           }
         ]
       }

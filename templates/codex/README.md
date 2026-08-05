@@ -30,29 +30,33 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
     env)로 codex 절을 발화(아래 §PM 시작).
   - **부수 이득**: 방법론이 전부 pm_update 갱신 도달 채널(TOML @source·스킬·엔진 카드)에 실려 —
     instance-owned 진입 doc 의 drift 표면이 codex 엔 애초에 생기지 않는다.
-- **`.codex/config.toml`·`.codex/hooks.json`** (instance-owned·채택자 소유) — 대화형 ctx 가드
-  (문서화된 `model_auto_compact_token_limit` + PreCompact 구조화 경고). 트리에 실재하되 pm_update 미전파
+- **`.codex/config.toml`·`.codex/hooks.json`** (instance-owned·채택자 소유) — ctx checkpoint 안내
+  (문서화된 `model_auto_compact_token_limit` + 비차단 PreCompact 구조화 메시지). 트리에 실재하되 pm_update 미전파
   (settings.json/opencode.jsonc 대칭·hook trust 재승인 churn 회피).
 
 ## Context safety: direct TUI vs. relay
 
 `model_auto_compact_token_limit`은 auto-compaction을 유발하는 숫자 threshold일 뿐 off 스위치가 아니다.
-대신 `hooks.json`은 `auto`와 `manual` PreCompact를 구분해 JSON `continue:false`로 compaction
-transaction을 hard-stop하고 `$pm-handoff`를 요구한다. codex-cli 0.145.0의 trusted disposable probe에서
-두 matcher 모두 `PreCompact (stopped)`·matcher별 stopReason·`turn_aborted(reason=interrupted)`를 남겼고,
-`context_compacted`는 만들지 않았으며 abort 뒤 canary turn이 원문 연속성을 회수했다. 각 handler는 POSIX
-`command`와 native Windows PowerShell-safe `commandWindows`에서 같은 JSON을 stdout으로 낸다.
+`hooks.json`도 compaction을 차단하지 않는다. `auto`와 `manual` PreCompact matcher는 각각 JSON
+`systemMessage`로 `[ctx-checkpoint]` 안내를 내고 transaction을 통과시킨다. 안내를 받은 PM은 직전 박제
+경계 이후 구간을 `python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction`으로
+기록한다.
+compaction 횟수를 세는 영속 상태는 두지 않는다. 각 handler는 POSIX `command`와 native Windows
+PowerShell-safe `commandWindows`에서 동일한 checkpoint 의미의 JSON을 stdout으로 낸다. Windows payload는
+PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않도록 ASCII 안내문을 쓴다.
 
-- direct TUI: PreCompact hard-stop은 **reactive 최후 방어선**이다. manual hard-stop이면 먼저 같은
-  thread에서 `$pm-handoff`를 실행한다. auto 임계 초과로 다음 model turn도 반복 차단되면 hard-stop
-  가이드대로 `/status`에서 chat ID를 확인하고 `/quit`한 뒤
-  `codex resume --disable hooks <CHAT_ID>`로 해당 invocation만 hooks 없이 재개해 `$pm-handoff`하고,
-  fresh normal session을 시작해 hooks를 다시 활성화한다. 이 break-glass는 compaction을 허용하므로
-  handoff가 lossy summary 기반일 수 있다. project config의 hooks를 영구 비활성화하지 않는다.
-  hook trust가 없으면 이 방어선도 실행되지 않는다.
+- direct TUI: 메인테이너 실측(2026-08-06, codex-cli 0.146.0)에서 `^manual$`은 TUI의
+  `/compact` 전용임을 확인했다. `systemMessage`의 direct TUI 표시는 미검증이다. trusted project와
+  `/hooks` 승인이 없으면 PreCompact 자체가 조용히 발화하지 않는다.
+- headless exec: 같은 메인테이너 실측의 `--oss` 프로브(`reach-probe/`)에서 `^auto$` 비차단
+  훅 marker 발화를 확인했고, `turn_aborted` 0건·`context_compacted` 기록과 후속 turn 정상 계속으로
+  compaction 통과를 확인했다. 단, `systemMessage`는 `codex exec`의
+  stdout JSONL·stderr·rollout·`CODEX_HOME` 전수 grep 어디에도 나타나지 않았고 모델 자기보고도 음성이었다. 따라서
+  **exec 경로 안내는 모델에 닿지 않는다(관측만 가능)**.
 - relay: `codex exec --json`의 `turn.completed.usage`를 매 turn 파싱한다. 누적 usage가 예산의 STOP
-  경계에 닿으면 relay driver가 post-turn STOP marker를 남기고 Supervisor가 세션을 회전한다. 이것이
-  장기 경로의 **proactive** 기계 가드다.
+  경계에 닿으면 relay driver가 post-turn STOP marker를 남기고 Supervisor가 세션을 회전한다. exec에서
+  소실되는 hook 안내 대신 driver 회전 선점이 relay 경로를 실보호한다. 이것이 장기 경로의
+  **proactive** 기계 가드다.
 
 2026-07-22~23 장기 TUI rollout에서는 `context_compacted`가 네 번 기록됐고, 해당 event stream에
 `hook_started`/`hook_completed` 및 기존 echo tripwire 출력은 없었다. 따라서 이전 echo-only tripwire는
@@ -84,12 +88,12 @@ false-green이었다. direct TUI rollout의 token_count는 관측되지만 stabl
 
 codex 의 `.codex/config.toml`·`.codex/hooks.json`·`.codex/agents/*.toml` 은 **trusted project + hook
 trust 승인** 후에만 로드·발화한다. import 는 완료 시 이 2단계를 loud 하게 안내한다 — 미승인 상태로
-두면 위임 subagent 스폰·PreCompact ctx tripwire 가 조용히 발화하지 않는다. import/add-harness 직후
+두면 위임 subagent 스폰·PreCompact ctx checkpoint 안내가 조용히 발화하지 않는다. import/add-harness 직후
 1회 수동으로 밟는다:
 
 1. 이 디렉토리에서 대화형 `codex` 를 한 번 열어 **프로젝트 trust 를 수락**한다
    (`.codex/agents/*.toml`·`config.toml` 은 trusted project 한정 로드).
-2. codex 안에서 `/hooks` 로 **hook trust 를 승인**한다 (PreCompact ctx tripwire 발화 전제).
+2. codex 안에서 `/hooks` 로 **hook trust 를 승인**한다 (PreCompact ctx checkpoint 안내 발화 전제).
 3. 검증 — 위임 스폰 대상 목록에 `architect`/`code-reviewer`/`developer`/`researcher` 가 보이면 로드 성공.
 
 > ⚠️ `-c projects.<path>.trust_level=trusted` CLI override 는 **먹지 않는다**(실측) — user config

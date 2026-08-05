@@ -429,11 +429,12 @@ def test_codex_maybe_mark_ctx_writes_marker_over_budget(orch, driver_mod, tmp_pa
     assert orch.stop_marker_present(tmp_path, "tid_over") is True
 
 
-def test_relay_usage_stop_marker_is_proactive_long_session_guard_while_tui_hook_is_reactive():
-    """direct TUI hook은 reactive hard-stop, stable usage를 가진 relay marker는 proactive 경로다."""
+def test_relay_usage_stop_marker_is_proactive_guard_when_nonblocking_hook_is_observation_only():
+    """headless hook 안내는 미도달하므로 relay의 proactive driver 회전이 실보호 경로다."""
     readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
-    assert "PreCompact hard-stop은 **reactive 최후 방어선**" in readme
-    assert "장기 경로의 **proactive** 기계 가드" in readme
+    assert "exec 경로 안내는 모델에 닿지 않는다(관측만 가능)" in readme
+    assert "driver 회전 선점이 relay 경로를 실보호" in readme
+    assert "**proactive** 기계 가드" in readme
     assert "turn.completed.usage" in readme
 
 
@@ -694,7 +695,7 @@ def test_codex_driver_repo_root_finds_engine(driver_mod, tmp_path):
 #   ③ compaction off — `config.toml model_auto_compact_token_limit=900000`(D4 ②)는 trusted project 에서
 #      **오류 없이 로드**(unknown field/invalid config 없음·codex 0.144.6 수용). 완전-off 스위치는 여전히
 #      미확인(900k fill 실측은 비현실적 과금) — 900k 상향이 실효 상한이고 auto-compact 는 최후 backstop,
-#      손실은 PreCompact tripwire 가 loud 화(설계 D4 ② 성립).
+#      현행 PreCompact는 compaction을 통과시키고 checkpoint 기록을 안내한다.
 #   ④ hooks PreCompact 1>&2 셸-실행(T-0406 전제) — codex 는 hooks.json 의 문자열 command 를 **셸로
 #      해석**한다. 실측: `echo … 1> <file>` 셸 리다이렉션이 파일을 생성(content 정확) → 같은 리다이렉션
 #      클래스인 shipped `echo '…' 1>&2` 는 유효(stdout→stderr). **단 hook 은 trust 승인 후에만 발화** —
