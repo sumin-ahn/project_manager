@@ -8,7 +8,7 @@ test_claude_ctx_guard 패턴: importlib 로드·DI runner·subprocess 폭발 가
   ① marker-watch 분기(있음/없음) — stop_marker_present stat.
   ② respawn 결정 — marker 시 새 session·없으면 relay 지속(호출 카운트).
   ③ parse_stream_json — sid/result 추출 + JSONDecodeError 라인 skip.
-  ④ 직전 입력 재전송 — STOP 유발 입력을 respawn 후 새 PM 에 재전송.
+  ④ post-turn 단일 의미론 — marker 회전 후 처리된 입력 재전송 없음.
   ⑤ stateless — supervisor 가 대화/작업 상태 필드를 보유하지 않음.
   ⑥ subprocess 폭발 가드 — relay 경로가 실 claude 를 부르지 않음(FakeDriver).
 
@@ -51,21 +51,31 @@ class FakeDriver:
 
     stop_after_relays: 이 횟수만큼 relay 한 뒤(누적) marker 를 root 에 박는다 → supervisor 가
     다음 stat 에서 STOP 을 관측하게 한다(실 ctx_stop_hook 의 marker write 를 모사).
-    always_stop: 매 relay 직후 그 세션에 marker 를 박는다 → fresh 세션마다 즉시 STOP 하는
-    *병적* 케이스 모사(연속 respawn 가드 검증용·무한 회전 시뮬).
+    always_stop: 매 relay 직후 그 세션에 post-turn marker 를 박는다.
+    stop_on_spawn: 매 bootstrap turn 직후 marker 를 박아 병적 spawn-loop 를 모사한다.
+    stop_on_even_spawn: 짝수 번째 bootstrap turn 직후에만 marker 를 박는다.
+    spawn_reply: bootstrap reply(None이면 구 sid 계약).
+    spawn_result_factory: reply 를 선언 계약 타입으로 감싸는 factory(미주입이면 tuple 호환 계약).
     stop_predicate: (relay_index, session_id, text) -> bool. True 면 그 relay 직후 marker 박제.
-    relay 별 STOP 을 정밀 제어해 "정상 turn 이 끼면 카운터 리셋" 을 검증한다(1-based index).
+    relay 별 marker 를 정밀 제어한다(1-based index).
     relay 가 실 claude 를 부르지 않음을 보장(subprocess 폭발 가드 — 여긴 순수 인메모리).
     """
 
     def __init__(self, root: Path, *, marker_dir, sanitize,
-                 stop_after_relays=None, always_stop=False, stop_predicate=None):
+                 stop_after_relays=None, always_stop=False, stop_predicate=None,
+                 stop_on_spawn=False, stop_on_even_spawn=False, spawn_reply=None,
+                 spawn_result_factory=None):
         self.root = root
         self._marker_dir = marker_dir
         self._sanitize = sanitize
         self.stop_after_relays = stop_after_relays
         self.always_stop = always_stop
         self.stop_predicate = stop_predicate
+        self.stop_on_spawn = stop_on_spawn
+        self.stop_on_even_spawn = stop_on_even_spawn
+        self.spawn_reply = spawn_reply
+        self.spawn_result_factory = spawn_result_factory
+        self.spawn_results: list[object] = []
         self.spawns: list[str] = []      # spawn 으로 발급된 session_id 목록.
         self.relays: list[tuple[str, str]] = []  # (session_id, text) relay 기록.
         self.closes: list[str] = []
@@ -75,15 +85,23 @@ class FakeDriver:
         # 실 claude 가 --session-id 를 존중하듯 요청 sid 를 그대로 쓴다(예측 모사).
         return requested
 
-    def spawn(self, cwd: str, session_id: str, bootstrap: str) -> str:
+    def spawn(self, cwd: str, session_id: str, bootstrap: str) -> str | tuple[str, str]:
         sid = self._next_sid(session_id)
         self.spawns.append(sid)
+        if self.stop_on_spawn or (self.stop_on_even_spawn and len(self.spawns) % 2 == 0):
+            self._write_marker(sid)
+        if self.spawn_reply is not None:
+            if self.spawn_result_factory is not None:
+                spawned = self.spawn_result_factory(sid, self.spawn_reply)
+                self.spawn_results.append(spawned)
+                return spawned
+            return sid, self.spawn_reply
         return sid
 
     def relay_turn(self, session_id: str, text: str) -> str:
         self.relays.append((session_id, text))
         relay_index = len(self.relays)  # 1-based.
-        # always_stop: 매 relay 가 즉시 STOP(병적 케이스) — fresh 세션마다 marker 박제.
+        # always_stop: 매 완료 relay 직후 post-turn marker 박제.
         if self.always_stop:
             self._write_marker(session_id)
         elif self.stop_predicate is not None:
@@ -153,6 +171,55 @@ def test_sanitize_session_id_matches_hook_rule(orch):
         "11111111-2222-3333-4444-555555555555"
 
 
+def test_mark_ctx_post_turn_if_over_boundary_and_under(orch, tmp_path):
+    calls = []
+
+    def mark(root, sid):
+        calls.append((root, sid))
+        return True
+
+    assert orch.mark_ctx_post_turn_if_over(
+        tmp_path, "under", 79_999, 100_000, 20, mark=mark,
+    ) is False
+    assert calls == []
+    assert orch.mark_ctx_post_turn_if_over(
+        tmp_path, "boundary", 80_000, 100_000, 20, mark=mark,
+    ) is True
+    assert calls == [(tmp_path, "boundary")]
+
+
+@pytest.mark.parametrize(
+    ("used_tokens", "budget"),
+    [(0, 100_000), (-1, 100_000), (90_000, 0), (90_000, -1)],
+)
+def test_mark_ctx_post_turn_if_over_noop_without_signal(
+    orch, tmp_path, used_tokens, budget,
+):
+    def unexpected_mark(*args):
+        raise AssertionError("no-op 조건에서 marker writer 호출")
+
+    assert orch.mark_ctx_post_turn_if_over(
+        tmp_path, "sid", used_tokens, budget, 20, mark=unexpected_mark,
+    ) is False
+
+
+def test_mark_ctx_post_turn_if_over_returns_writer_result(orch, tmp_path):
+    assert orch.mark_ctx_post_turn_if_over(
+        tmp_path, "sid", 90_000, 100_000, 20, mark=lambda *_: False,
+    ) is False
+
+
+def test_relay_budget_effective_threshold_boundary_and_unset(orch):
+    assert orch.RELAY_BOOTSTRAP_COST_TOKENS == 40_400
+    with pytest.raises(ValueError, match="40400 tok"):
+        orch.validate_relay_budget(50_500, 20)  # 유효 임계 40,400: 같으면 거부.
+    orch.validate_relay_budget(50_501, 20)      # 유효 임계 40,400.8: 초과면 통과.
+    with pytest.raises(ValueError, match="40400 tok"):
+        orch.validate_relay_budget(44_888, 10)  # stop_pct 변화도 산식에 반영.
+    orch.validate_relay_budget(44_889, 10)
+    orch.validate_relay_budget(None, 20)        # 미주입이면 가드 비활성.
+
+
 # ── ② respawn 결정 (marker 시 새 session · 없으면 relay 지속 · 호출 카운트) ────
 
 def test_no_marker_relays_persist_same_session(orch, tmp_path):
@@ -195,38 +262,59 @@ def test_respawn_clears_old_marker(orch, tmp_path):
     assert orch.stop_marker_present(tmp_path, old_sid) is False  # 정리됨.
 
 
-# ── ②b 연속 respawn 가드 (병적 무한 STOP 차단 · 정상 turn 리셋) ────────────────
+def test_spawn_reply_is_written_to_out_stream(orch, tmp_path):
+    driver = _make_driver(
+        orch, tmp_path, spawn_reply="READY", spawn_result_factory=orch.SpawnResult,
+    )
+    out_stream = io.StringIO()
+    rc = orch.Supervisor(driver, root=tmp_path).run_loop(
+        "/cwd", io.StringIO(""), out_stream,
+    )
+    assert rc == 0
+    assert len(driver.spawn_results) == 1
+    assert isinstance(driver.spawn_results[0], orch.SpawnResult)
+    assert out_stream.getvalue() == "READY\n"
+
+
+def test_respawn_announces_rotation_and_forwards_spawn_reply(orch, tmp_path):
+    driver = _make_driver(
+        orch, tmp_path, stop_after_relays=1, spawn_reply="READY",
+    )
+    out_stream = io.StringIO()
+    orch.Supervisor(driver, root=tmp_path).run_loop(
+        "/cwd", io.StringIO("first\n"), out_stream,
+    )
+    assert out_stream.getvalue().splitlines() == [
+        "READY",
+        "reply:first",
+        "[relay] ctx 임계 도달 — 세션 회전 (turn 초과)",
+        "READY",
+    ]
+
+
+# ── ②b bootstrap 직후 연속 회전 가드 ─────────────────────────
 
 def test_consecutive_respawn_guard_halts_pathological_loop(orch, tmp_path):
-    """병적 케이스 — fresh 세션마다 즉시 STOP(같은 입력 무한 재전송 회전) → max 회 후 종료.
-
-    always_stop 으로 매 relay 가 즉시 marker 를 박는다(임계 오설정·거대 단일 입력 모사).
-    가드 없으면 무한 루프. 가드가 max_consecutive_respawns 초과 시 종료해야 한다.
-    """
-    driver = _make_driver(orch, tmp_path, always_stop=True)
+    """bootstrap 만으로 매 fresh 세션이 marker 를 남겨도 max 후 종료."""
+    driver = _make_driver(orch, tmp_path, stop_on_spawn=True)
     sup = orch.Supervisor(driver, root=tmp_path, max_consecutive_respawns=5)
-    # 입력 1줄만 — 첫 turn 이 STOP 유발, 이후 재전송이 매번 또 STOP(병적). 무한 루프 위험.
     in_stream = io.StringIO("poison\n")
     out_stream = io.StringIO()
     rc = sup.run_loop("/cwd", in_stream, out_stream)
-    # sentinel rc(정상 0 과 구분) — 가드 발동 종료.
     assert rc == orch.GUARD_TRIPPED_RC
-    assert rc != 0
-    # 무한 루프 아님 — spawn 횟수가 max 근방에서 멈춘다(여유 포함 ≤ max+2).
-    assert len(driver.spawns) <= sup.max_consecutive_respawns + 2
-    # 진단 1줄이 out_stream 에 쓰였다(병적 상황 알림).
-    assert "relay" in out_stream.getvalue()
-    assert "respawn" in out_stream.getvalue().lower() or "STOP" in out_stream.getvalue()
+    assert len(driver.spawns) == sup.max_consecutive_respawns + 1
+    assert driver.relays == []
+    assert "무한 회전 차단" in out_stream.getvalue()
+    assert "세션 회전 (bootstrap 초과)" in out_stream.getvalue()
 
 
 def test_consecutive_respawn_guard_respects_custom_max(orch, tmp_path):
     """max_consecutive_respawns 가 작으면 더 일찍 종료(상수 존중)."""
-    driver = _make_driver(orch, tmp_path, always_stop=True)
+    driver = _make_driver(orch, tmp_path, stop_on_spawn=True)
     sup = orch.Supervisor(driver, root=tmp_path, max_consecutive_respawns=2)
     rc = sup.run_loop("/cwd", io.StringIO("poison\n"), io.StringIO())
     assert rc == orch.GUARD_TRIPPED_RC
-    # max=2 면 max=5 보다 spawn 이 적다(더 빨리 멈춤).
-    assert len(driver.spawns) <= 2 + 2
+    assert len(driver.spawns) == 3
 
 
 def test_default_max_consecutive_respawns_constant(orch, tmp_path):
@@ -238,59 +326,36 @@ def test_default_max_consecutive_respawns_constant(orch, tmp_path):
 
 
 def test_normal_rotation_does_not_trip_guard(orch, tmp_path):
-    """정상 회전(긴 작업→자연 STOP→재전송 성공→새 입력으로 계속)은 가드 비발동.
-
-    건강한 회전: 각 입력이 처음엔 STOP(ctx 한계 도달) 하나, 재전송(fresh 세션)은 성공한다 →
-    respawn 없이 진행 = 진전 → 카운터 리셋. max(5) 보다 많은 10개의 *서로 다른* 입력을 매 입력
-    1회 STOP→재전송 성공 패턴으로 흘려도 가드가 발동하면 안 된다(병적 아님).
-    """
-    seen: set[str] = set()  # 각 text 의 첫 등장(=fresh-read turn)만 STOP, 재전송은 성공.
-
-    def stop_first_time(idx, sid, text):
-        if text in seen:
-            return False  # 재전송 turn — 성공(STOP 없음·진전).
-        seen.add(text)
-        return True       # fresh-read turn — 1회 STOP(자연 ctx 한계 모사).
-
-    driver = _make_driver(orch, tmp_path, stop_predicate=stop_first_time)
+    """매 완료 turn 후 정상 회전해도 입력을 한 번씩 처리하며 가드는 비발동."""
+    driver = _make_driver(orch, tmp_path, always_stop=True)
     sup = orch.Supervisor(driver, root=tmp_path, max_consecutive_respawns=5)
     lines = "".join(f"input{i}\n" for i in range(10))
     rc = sup.run_loop("/cwd", io.StringIO(lines), io.StringIO())
     # 모든 입력을 소비하고 EOF 로 정상 종료 — 가드 비발동(rc=0).
     assert rc == 0
-    # 모든 사용자 입력이 (재전송 후) relay 됐다.
-    relayed_texts = [t for _, t in driver.relays]
-    for i in range(10):
-        assert f"input{i}" in relayed_texts
+    assert [text for _, text in driver.relays] == [f"input{i}" for i in range(10)]
 
 
-def test_non_respawn_turn_resets_counter_below_trip(orch, tmp_path):
-    """진전(respawn 없이 끝난 turn)이 끼면 가드가 발동하지 않는다 — 사용자-체감 동작 검증.
-
-    같은 입력을 재전송하다 *한 번이라도* STOP 없이 통과하면(진전) 가드는 trip 하지 않는다.
-    max=2 에서 idx3 relay 만 STOP 을 빼(진전) → counter1 에서 멈추고 다음 readline 이 EOF →
-    정상 종료(rc=0). (이 흐름은 line 270 의 reset 분기를 *거치나*, 직후 EOF 라 그 reset 값이
-    후속 trip 에 닿지 못해 효과는 관측 불가 — 실 trip-관련 리셋은 새 chain 의 fresh-STOP[line 255].
-    여기선 "진전 turn → 비-trip" 이라는 동작만 단언한다.)
-    """
-    # relay idx3 만 STOP 을 빼고 나머지는 STOP(병적). idx3 의 비-STOP turn 이 카운터를 리셋.
+def test_non_respawn_turn_resets_counter_between_intermittent_spawn_markers(
+    orch, tmp_path,
+):
+    """정상 turn 사이의 간헐 bootstrap marker는 누적되지 않고 매번 리셋된다."""
     driver = _make_driver(
-        orch, tmp_path,
-        stop_predicate=lambda idx, sid, text: idx != 3,
+        orch, tmp_path, always_stop=True, stop_on_even_spawn=True,
     )
     sup = orch.Supervisor(driver, root=tmp_path, max_consecutive_respawns=2)
-    # 입력 1줄: t1 read→STOP(reset,counter0), t2 resend→STOP(counter1), t3 resend→NO STOP
-    # (counter0·진전) → pending 비고 다음 readline 이 EOF → 정상 종료. trip 안 함.
-    rc = sup.run_loop("/cwd", io.StringIO("p\n"), io.StringIO())
-    assert rc == 0  # 진전 리셋 덕에 가드 비발동·정상 종료.
+    inputs = [f"input{i}" for i in range(sup.max_consecutive_respawns + 3)]
+    rc = sup.run_loop("/cwd", io.StringIO("\n".join(inputs) + "\n"), io.StringIO())
+    assert rc == 0
+    assert [text for _, text in driver.relays] == inputs
 
 
 def test_consecutive_respawn_guard_no_reset_would_trip(orch, tmp_path):
-    """대조군 — 진전(비-STOP turn)이 전혀 없으면 max 초과로 trip(리셋 분기의 필요성 입증)."""
-    driver = _make_driver(orch, tmp_path, always_stop=True)  # 진전 0(매 turn STOP).
+    """대조군 — bootstrap marker 가 연속되면 리셋 없이 trip."""
+    driver = _make_driver(orch, tmp_path, stop_on_spawn=True)
     sup = orch.Supervisor(driver, root=tmp_path, max_consecutive_respawns=2)
     rc = sup.run_loop("/cwd", io.StringIO("p\n"), io.StringIO())
-    assert rc == orch.GUARD_TRIPPED_RC  # 진전 없음 → trip.
+    assert rc == orch.GUARD_TRIPPED_RC
 
 
 # ── ③ parse_stream_json (sid/result 추출 + JSONDecodeError 라인 skip) ────────
@@ -342,35 +407,38 @@ def test_parse_stream_json_ignores_non_dict_events(orch):
     assert sid is None and result == "x"
 
 
-# ── ④ 직전 입력 재전송 ───────────────────────────────────────────────────────
+# ── ④ post-turn marker 단일 의미론(재전송 없음) ────────────────
 
-def test_pending_input_resent_to_new_session(orch, tmp_path):
-    """STOP 을 유발한(차단된) 입력이 respawn 후 새 PM 에 재전송된다(in-flight 의도 보존)."""
+def test_marker_turn_is_not_resent_to_new_session(orch, tmp_path):
+    """marker 를 남긴 완료 turn 은 회전 후 재전송하지 않는다."""
     driver = _make_driver(orch, tmp_path, stop_after_relays=1)
     sup = orch.Supervisor(driver, root=tmp_path)
-    # "trigger" 입력이 첫 relay → marker → respawn. "trigger" 가 새 세션에 재전송돼야.
     in_stream = io.StringIO("trigger\nfollowup\n")
     out_stream = io.StringIO()
     sup.run_loop("/cwd", in_stream, out_stream)
 
     new_sid = driver.spawns[1]
-    # 새 세션에 재전송된 첫 입력이 "trigger"(차단된 입력) 다.
     new_session_relays = [text for sid, text in driver.relays if sid == new_sid]
-    assert new_session_relays[0] == "trigger"
-    # 그 뒤에 사용자 새 입력 "followup" 이 이어진다(재전송이 입력 소비를 안 함).
-    assert "followup" in new_session_relays
+    assert new_session_relays == ["followup"]
+    assert [text for _, text in driver.relays] == ["trigger", "followup"]
 
 
-def test_pending_resent_not_user_input_consumed(orch, tmp_path):
-    """재전송 turn 은 사용자 새 입력을 읽지 않는다 — 입력 스트림 라인 수 보존."""
+def test_marker_payload_is_ignored_and_input_is_not_resent(orch, tmp_path):
+    """구 pre-turn payload도 존재만으로 회전하며 처리된 입력은 재전송하지 않는다."""
     driver = _make_driver(orch, tmp_path, stop_after_relays=1)
     sup = orch.Supervisor(driver, root=tmp_path)
-    # 입력 2줄. 첫 turn(=trigger) → marker → 재전송 1 turn + 둘째 입력 1 turn = relay 3회.
     sup.run_loop("/cwd", io.StringIO("trigger\nsecond\n"), io.StringIO())
-    # relay 총 3회: trigger(old) · trigger(재전송·new) · second(new).
-    assert len(driver.relays) == 3
-    texts = [t for _, t in driver.relays]
-    assert texts == ["trigger", "trigger", "second"]
+    assert [text for _, text in driver.relays] == ["trigger", "second"]
+
+
+def test_run_loop_has_no_resend_or_payload_classification_path(orch):
+    import inspect
+
+    source = inspect.getsource(orch.Supervisor.run_loop)
+    # 아래 문자열은 구현 identifier rename 시 이 부재 검증과 함께 갱신한다.
+    assert "pending" not in source
+    assert "is_resend" not in source
+    assert "stop_marker_is_post_turn" not in source
 
 
 # ── ⑤ stateless (상태 미보유) ────────────────────────────────────────────────
@@ -448,7 +516,7 @@ def test_supervisor_task_bakes_and_forwards_on_respawn(orch, tmp_path):
     assert "--task mytask" in sup.bootstrap
     # stateless 불변식 — task 는 인스턴스 필드로 안 남는다(bootstrap 에만 흡수).
     assert "task" not in vars(sup)
-    # 한 입력 → relay 1회 후 STOP → respawn(재전송). spawn 2회(초기+respawn) 모두 task 포함.
+    # 한 입력 → relay 1회 후 marker → respawn(재전송 없음). 두 spawn 모두 task 포함.
     sup.run_loop("/cwd", io.StringIO("hello\n"), io.StringIO())
     assert len(seen) >= 2
     assert all("/pm-bootstrap --task mytask" in b for b in seen)
