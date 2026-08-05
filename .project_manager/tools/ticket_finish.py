@@ -1023,6 +1023,7 @@ def build_log_skeleton(
     entry_type: str = "<!-- feat/fix/verify/… -->",
     date: str | None = None,
     task: str | None = None,
+    session: str | None = None,
 ) -> str:
     if date is None:
         date = datetime.date.today().isoformat()
@@ -1031,7 +1032,11 @@ def build_log_skeleton(
         entry_type=entry_type,
         ticket_id=ticket_id,
         title=title,
-        task_tag=f" ({_TASK_TAG_PREFIX}{task})" if task else "",
+        task_tag=(
+            f" ({_TASK_TAG_PREFIX}{task})" if task
+            else f" ({session})" if session
+            else ""
+        ),
         new_total=new_total,
         board_before=board_before,
         board_after=board_after,
@@ -1288,6 +1293,7 @@ class TicketFinisher:
         dry_run: bool,
         skip_pytest: bool = False,
         task: str | None = None,
+        session: str | None = None,
     ) -> int:
         """ticket_id 완료 부기 전체 흐름을 실행한다.
 
@@ -1365,6 +1371,7 @@ class TicketFinisher:
             board_before=board_before,
             board_after=board_after,
             task=task,
+            session=session,
         )
 
         if dry_run:
@@ -1641,6 +1648,7 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
 
     regression_cwd: str | None = None
+    session: str | None = identity.session
     task_workspace: Path | None = None
     if identity.task:
         # task-mode 해소는 regression·stage·잔여 보고가 공유한다. --no-pytest 는 측정만
@@ -1669,6 +1677,7 @@ def _main(argv: list[str] | None = None) -> int:
         # solo/미해소(None)면 regression_cwd 미주입 → _default_run_pytest 런타임 폴백(현행 100% 보존).
         if worktree_slot:
             regression_cwd = _regression_cwd(worktree_slot)
+            session = Path(worktree_slot).name
 
     finisher = TicketFinisher(regression_cwd=regression_cwd, task_workspace=task_workspace)
     return finisher.run(
@@ -1677,6 +1686,7 @@ def _main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         skip_pytest=args.no_pytest,
         task=identity.task,
+        session=session,
     )
 
 

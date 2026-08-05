@@ -426,19 +426,6 @@ def write_post_turn_marker(root: Path, session_id: str) -> bool:
         return False
 
 
-def stop_marker_is_post_turn(root: Path, session_id: str) -> bool:
-    """구 driver/test 소비자용 payload 조회 호환 facade.
-
-    Supervisor 는 이 함수를 호출하지 않고 marker 존재만으로 회전한다. driver 전환
-    중 기존 API 소비자를 깨지 않기 위해 조회 표면만 한시 보존한다.
-    """
-    try:
-        payload = _marker_path(root, session_id).read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
-        return False
-    return payload.split(maxsplit=1)[:1] == ["post-turn"]
-
-
 def mark_ctx_post_turn_if_over(
     root: Path,
     session_id: str,
@@ -461,12 +448,17 @@ def mark_ctx_post_turn_if_over(
     return bool(mark(root, session_id))
 
 
-def parse_stream_json(lines) -> tuple[str | None, str | None]:
-    """`claude -p --output-format stream-json` 출력에서 (session_id, result) 추출.
+def parse_stream_json(lines) -> tuple[str | None, str | None, int | None]:
+    """`claude -p --output-format stream-json` 출력에서 (session_id, result, used_tokens) 추출.
 
     - session_id: `system/init` 이벤트의 `session_id`(이후 모든 이벤트에도 실리나 init 우선).
       init 가 없으면 `result` 이벤트의 session_id 로 폴백.
     - result: `result` 이벤트의 `result` 필드(= 최종 reply 텍스트).
+    - used_tokens: 마지막 `assistant` 이벤트의 `message.usage` 입력 계열
+      (`input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens`) +
+      `output_tokens` 합 — 회전(post-turn) 판정은 *다음* turn 이 지게 될 컨텍스트가 기준이라
+      이번 응답 출력을 포함한다(훅의 pre-turn "현재 점유"=입력 계열과 용도가 다름·codex 게이트).
+      각 값은 음이 아닌 정수만 인정하며 신호가 하나도 없으면 None.
     - JSONDecodeError 라인은 skip(부분/비-JSON 라인에 robust).
 
     PoC(`scratch/poc/orchestrator_claude_relay_swap.py`)의 run_turn 파싱 골격을
@@ -476,6 +468,7 @@ def parse_stream_json(lines) -> tuple[str | None, str | None]:
 
     session_id: str | None = None
     result: str | None = None
+    used_tokens: int | None = None
     for raw in lines:
         line = raw.strip()
         if not line:
@@ -488,23 +481,48 @@ def parse_stream_json(lines) -> tuple[str | None, str | None]:
             continue
         if event.get("type") == "system" and event.get("subtype") == "init":
             session_id = event.get("session_id") or session_id
+        if event.get("type") == "assistant":
+            message = event.get("message")
+            usage = message.get("usage") if isinstance(message, dict) else None
+            if isinstance(usage, dict):
+                keys = (
+                    "input_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                    "output_tokens",
+                )
+                values = [usage.get(key, 0) for key in keys]
+                used_tokens = (
+                    sum(values)
+                    if any(key in usage for key in keys)
+                    and all(isinstance(value, int) and not isinstance(value, bool)
+                            and value >= 0 for value in values)
+                    else None
+                )
+            else:
+                used_tokens = None
         if event.get("type") == "result":
             result = event.get("result")
             session_id = session_id or event.get("session_id")
-    return session_id, result
+    return session_id, result, used_tokens
 
 
-def parse_opencode_json(lines) -> tuple[str | None, str | None]:
-    """`opencode run --format json` 출력에서 (session_id, reply) 추출.
+def parse_opencode_json(lines) -> tuple[str | None, str | None, int | None]:
+    """`opencode run --format json` 출력에서 (session_id, reply, used_tokens) 추출.
 
     claude `parse_stream_json` 과 **대칭** 위치의 opencode 어댑터용 순수 헬퍼 —
-    하니스가 다른 한 줄=한 이벤트 JSON 스트림을 같은 (sid, reply) 규격으로 흡수한다.
+    하니스가 다른 한 줄=한 이벤트 JSON 스트림을 같은 3-tuple 규격으로 흡수한다.
     opencode driver(`pm_orch_opencode.py`)가 DI 로 주입받아 쓴다(엔진은 파싱만 보유).
 
     - session_id: 모든 이벤트 top-level `sessionID`(실측 — 매 이벤트에 실린다). 첫 등장값
       을 잡는다(opencode 가 sid 를 발급 — claude 와 달리 사전지정 불가, 출력 파싱으로 획득).
     - reply: `type:"text"` 이벤트의 `part.text` 를 등장 순서대로 누적(멀티-part 답변 대응).
       reply 가 없으면(text part 0) None.
+    - used_tokens: 마지막 `step_finish` 이벤트의 `part.tokens` 에서 유효한 `total`(양의 정수)을
+      우선하고, 없으면 `input + output + reasoning + cache.read + cache.write`로 폴백한다. 이때
+      reasoning을 별도 가산해 보수적 상위집합으로 잡는다. tokens가 없거나 어느 값/cache 형상이
+      비정상이면 None.
+      설치 opencode 1.18.5 바이너리 실측도 total 우선 + cache 합산 폴백을 확인했다.
     - 비-JSON / 비-dict 라인은 skip(부분/노이즈 라인에 robust — claude 파서와 동일 정책).
 
     실측 이벤트 형식(opencode 1.17.6):
@@ -514,6 +532,7 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None]:
 
     session_id: str | None = None
     reply_parts: list[str] = []
+    used_tokens: int | None = None
     for raw in lines:
         line = raw.strip()
         if not line:
@@ -533,20 +552,45 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None]:
                 text = part.get("text")
                 if isinstance(text, str) and text:
                     reply_parts.append(text)
+        if event.get("type") == "step_finish":
+            part = event.get("part")
+            tokens = part.get("tokens") if isinstance(part, dict) else None
+            if isinstance(tokens, dict):
+                total = tokens.get("total")
+                if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+                    used_tokens = total
+                else:
+                    cache = tokens.get("cache", {})
+                    values = [tokens.get(key, 0) for key in ("input", "output", "reasoning")]
+                    if isinstance(cache, dict):
+                        values.extend(cache.get(key, 0) for key in ("read", "write"))
+                    else:
+                        values.append(None)
+                    # Upstream v1.18.5 근거 파일: session.ts, overflow.ts.
+                    used_tokens = (
+                        sum(values)
+                        if all(isinstance(value, int) and not isinstance(value, bool)
+                               and value >= 0 for value in values)
+                        else None
+                    )
+            else:
+                used_tokens = None
     reply = "".join(reply_parts) if reply_parts else None
-    return session_id, reply
+    return session_id, reply, used_tokens
 
 
 def _codex_usage_contract(wire: dict) -> dict:
-    """codex wire usage(`*_tokens` 키)를 엔진 contract(`{input,cached_input,output,reasoning_output}`)로 정규화.
+    """codex wire usage(`*_tokens` 키)를 엔진 usage contract로 정규화.
 
     실측(codex 0.144.6·PM 라이브 프로브 5회): `turn.completed.usage` 의 실 wire 키는 접미사 `_tokens`
-    형(`input_tokens`·`cached_input_tokens`·`output_tokens`·`reasoning_output_tokens` — 예 input_tokens=
+    형(`input_tokens`·`cached_input_tokens`·`cache_write_input_tokens`·`output_tokens`·
+    `reasoning_output_tokens` — 예 input_tokens=
     12481·cached_input_tokens=9600·output_tokens=105·reasoning_output_tokens=92). 파서가 이 **wire→contract
     경계를 소유** 해 driver 인터페이스(접미사 없는 contract 키)를 하니스-무관으로 유지한다 — driver 는
     codex wire 형태를 몰라도 된다(claude/opencode 파서가 각자 wire 를 흡수하는 것과 동형). 비-정수/누락
-    키는 0. (cached_input 은 contract 에 실어 관측 가능하게 두되, driver 의 사용 합산은 이를 제외한다 —
-    input_tokens 가 cached_input_tokens 를 포함하는 상위집합이라 이중 계상 방지·codex driver `_maybe_mark_ctx`.)
+    키는 0. cached_input/cache_write_input은 contract에 실어 관측 가능하게 두되 driver 사용 합산에서는
+    제외한다. cached_input의 input 포함 관계는 실측됐지만 cache_write_input은 관측만 했고 포함 관계를
+    검증하지 않았으므로 비합산 정책 자체만 보존한다(codex driver `_maybe_mark_ctx`).
     """
     def _n(key: str) -> int:
         val = wire.get(key)
@@ -555,6 +599,7 @@ def _codex_usage_contract(wire: dict) -> dict:
     return {
         "input": _n("input_tokens"),
         "cached_input": _n("cached_input_tokens"),
+        "cache_write_input": _n("cache_write_input_tokens"),
         "output": _n("output_tokens"),
         "reasoning_output": _n("reasoning_output_tokens"),
     }
@@ -576,7 +621,8 @@ def parse_codex_json(lines) -> tuple[str | None, str | None, dict | None]:
       텍스트로 덮어쓴다. reasoning 등 다른 item 은 제외. 없으면 None.
       라이브 smoke 가 확정 — item 의 텍스트 필드가 다르면 여기 한 지점만 조정.)
     - usage: `turn.completed` 이벤트의 `usage`(마지막 등장값)를 wire(`*_tokens`)→contract
-      (`{input,cached_input,output,reasoning_output}`)로 `_codex_usage_contract` 가 정규화한 값.
+      (`{input,cached_input,cache_write_input,output,reasoning_output}`)로
+      `_codex_usage_contract` 가 정규화한 값.
       없으면 None. (**실측 wire 키는 접미사 `_tokens`** — 접미사 없는 키를 읽으면 used==0 으로
       ctx 가드가 영구 사멸한다·PM 라이브 프로브 5회 권위·codex/opencode 리뷰 수렴 결함.)
     - 비-JSON / 비-dict 라인은 skip(claude·opencode 파서와 동일 robust 정책).

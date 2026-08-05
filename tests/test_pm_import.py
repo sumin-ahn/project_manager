@@ -1231,6 +1231,45 @@ def test_non_codex_import_no_trust_guidance(pm_import, tmp_path, capsys):
     assert "hook trust" not in out
 
 
+# ── Claude permissions.allow trust 안내 (T-0556) ─────────────────────────────
+
+def test_claude_import_prints_permissions_allow_trust_guidance(pm_import, tmp_path, capsys):
+    """claude import 완료 출력은 trust 미승인 시 degrade와 수락 방법을 loud 안내한다."""
+    dest = tmp_path / "claude_permissions_trust"
+    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "Trust"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "아직 trust 승인하지 않았다면" in out
+    assert "permissions.allow" in out
+    assert "전역 설정에 의존" in out
+    assert "Ignoring N permissions.allow entries" in out
+    assert "첫 대화형 `claude` 세션에서 trust 다이얼로그를 수락하면 적용" in out
+
+
+def test_claude_import_into_prints_conditional_trust_guidance(pm_import, tmp_path, capsys):
+    """--into 대상은 이미 trusted일 수 있으므로 trust 상태를 단정하지 않는다."""
+    dest = tmp_path / "claude_permissions_trust_into"
+    dest.mkdir()
+    rc = pm_import.main(["--into", str(dest), "--harness", "claude", "--name", "TrustInto"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "이 디렉토리를 아직 trust 승인하지 않았다면" in out
+    assert "첫 대화형 `claude` 세션에서 trust 다이얼로그를 수락하면 적용" in out
+    assert "이 프로젝트는 아직 untrusted" not in out
+
+
+@pytest.mark.parametrize("harness", ["opencode", "codex"])
+def test_non_claude_import_omits_permissions_allow_trust_guidance(
+        pm_import, tmp_path, capsys, harness):
+    """타 하네스 import에는 Claude settings.json trust 안내를 출력하지 않는다."""
+    dest = tmp_path / f"{harness}_no_claude_permissions_trust"
+    rc = pm_import.main(["--new", str(dest), "--harness", harness, "--name", "NoClaudeTrust"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Claude Code permissions.allow 적용 조건 안내" not in out
+    assert "아직 untrusted" not in out
+
+
 # ── ③ 자유서술 placeholder 3종 보존 (T-0009 몫) ──────────────────────────────
 
 def test_free_form_placeholders_preserved(pm_import, tmp_path):
@@ -4235,6 +4274,20 @@ def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_impo
     # 라이브 dev-state·엔진·기존 opencode 어댑터(root doc+agent)는 바이트 단위 불변(라이브-안전).
     for p, raw in before.items():
         assert p.read_bytes() == raw, f"add-harness 가 스코프 밖 파일을 변경했다: {p}"
+
+
+def test_add_harness_claude_prints_only_claude_trust_guidance(pm_import, tmp_path, capsys):
+    """claude add-harness 완료 출력은 Claude 안내만 내고 codex 안내는 내지 않는다."""
+    dest = _build_live_instance(pm_import, tmp_path / "opencode_add_claude_trust", "opencode")
+    capsys.readouterr()
+
+    pm_import.add_harness(dest, "claude", dry_run=False, source_root=REPO)
+
+    out = capsys.readouterr().out
+    assert "Claude Code permissions.allow 적용 조건 안내" in out
+    assert "Ignoring N permissions.allow entries" in out
+    assert "2단계 trust 승인" not in out
+    assert "hook trust" not in out
 
 
 # 전 하네스쌍(base ≠ added) — 파생 축 HARNESSES 에서 유도(손-열거 아님·codex 포함 6쌍).

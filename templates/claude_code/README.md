@@ -37,6 +37,14 @@ manager 루트의 `pm-import.sh`(`/.cmd`) 파사드로 한다 (default harness =
 (Windows 는 `pm-import.cmd`. `--from` 은 manager 루트 auto-default.) 파사드 없이 푸는 수동
 longhand·placeholder 표는 루트 [`docs/manual-import.md`](../../docs/manual-import.md)·[`docs/placeholders.md`](../../docs/placeholders.md).
 
+### trust 확인 (미승인 시)
+
+이 디렉토리를 아직 trust 승인하지 않았다면 출하 `.claude/settings.json`의
+`permissions.allow`가 적용되지 않아 전역 설정에 의존한다. 콘솔의
+`Ignoring N permissions.allow entries` 경고가 이 상태의 실측 신호다. 첫 대화형 `claude`
+세션에서 trust 다이얼로그를 수락하면 적용된다. import는 이 보안 경계를 자동 승인하거나
+`~/.claude.json`을 조작·검사하지 않는다.
+
 ## 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 
 엔진 경로만 덮어쓴다 — 어댑터·CLAUDE.md·README 는 보존(manifest 밖). 전체 엔진 변경은 이 타깃만

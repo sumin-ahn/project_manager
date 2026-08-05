@@ -13,7 +13,7 @@ opencode sid 발급(claude 와 다른 핵심): claude 는 `--session-id <uuid>` 
 *지정* 하지만, opencode 는 `opencode run -s <없는id>` → "Session not found"(실측) — sid 사전
 지정 불가다. 대신 `--format json` 모든 이벤트에 `sessionID` 가 실리므로(실측) **출력에서 sid 를
 파싱해 획득** 한다. 엔진이 발급한 uuid4 session_id 인자는 **무시** 한다(opencode 가 발급한 sid 가
-권위 — 그 sid 로 ctx-guard.js plugin 이 marker 를 쓴다 → supervisor 가 그 marker 를 stat).
+권위 — driver 가 그 sid 로 post-turn marker 를 쓰고 supervisor 가 stat).
 
 opencode 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(ctx-guard 는 JS plugin) —
 그래서 엔진 루트 탐색을 driver 자체에 둔다(JS `findEngineRoot` 와 동일 규칙·동형 어댑터).
@@ -30,6 +30,8 @@ from pathlib import Path
 OPENCODE_BIN = "opencode"
 DEFAULT_AGENT = "pm"          # T-0045 PM primary spawn 타깃. build 폴백(`--agent build`).
 TURN_TIMEOUT_SEC = 600        # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음).
+CTX_STOP_PCT_DEFAULT = 20     # 잔여 정지 임계(%).
+CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
 def repo_root(start: Path) -> Path:
@@ -58,6 +60,50 @@ def _load_engine():
     return module, root
 
 
+def load_local_config(root: Path) -> dict[str, str]:
+    """`.project_manager/local.conf` 를 KEY=value dict 로 읽는다(없으면 {})."""
+    conf: dict[str, str] = {}
+    path = root / ".project_manager" / "local.conf"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return conf
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        conf[key.strip()] = value.strip()
+    return conf
+
+
+def resolve_ctx_budget(conf: dict[str, str]) -> int:
+    """`ctx_window_tokens_opencode` > generic > 200000 순으로 예산을 해소한다."""
+    for key in ("ctx_window_tokens_opencode", "ctx_window_tokens"):
+        raw = conf.get(key)
+        if raw is None:
+            continue
+        try:
+            budget = int(str(raw).strip())
+        except (ValueError, AttributeError):
+            continue
+        if budget > 0:
+            return budget
+    return CTX_WINDOW_TOKENS_DEFAULT
+
+
+def resolve_stop_pct(conf: dict[str, str]) -> int:
+    """잔여 ctx 정지 %를 해소한다. 비정상 값은 기본 20으로 폴백한다."""
+    raw = conf.get("ctx_stop_pct")
+    if raw is None:
+        return CTX_STOP_PCT_DEFAULT
+    try:
+        stop_pct = int(str(raw).strip())
+    except (ValueError, AttributeError):
+        return CTX_STOP_PCT_DEFAULT
+    return stop_pct if 0 < stop_pct < 100 else CTX_STOP_PCT_DEFAULT
+
+
 class OpencodeCliDriver:
     """`opencode run` subprocess 로 PM 세션을 구동하는 SessionDriver (opencode 고유 어댑터).
 
@@ -65,11 +111,25 @@ class OpencodeCliDriver:
     opencode CLI 호출 + json 파싱만 한다(claude driver 동형).
     """
 
-    def __init__(self, parse_opencode_json, *, agent: str = DEFAULT_AGENT,
+    def __init__(self, parse_opencode_json, *, ctx_budget: int | None = None,
+                 stop_pct: int | None = None, root: Path | None = None,
+                 mark_stop=None, spawn_result=None, agent: str = DEFAULT_AGENT,
                  opencode_bin: str = OPENCODE_BIN, timeout: int = TURN_TIMEOUT_SEC,
                  runner=subprocess.run, stall_error=None) -> None:
         # parse_opencode_json 은 엔진 순수 헬퍼 주입(DI) — driver 가 파싱 로직을 중복 보유하지 않음.
         self._parse = parse_opencode_json
+        self._ctx_budget = ctx_budget
+        self._stop_pct = stop_pct
+        self._root = Path(root) if root is not None else None
+        # mark_stop = 엔진 mark_ctx_post_turn_if_over(root, sid, used, budget, stop_pct).
+        self._mark_stop = mark_stop
+        # main은 SpawnResult를 명시 주입한다. parser만 주입한 기존/단위 경로도 parser 소유
+        # 엔진 타입을 찾아 쓰며, 제3자 parser면 구조 호환 tuple로 폴백한다.
+        parser_globals = getattr(parse_opencode_json, "__globals__", {})
+        self._spawn_result = (
+            spawn_result or parser_globals.get("SpawnResult")
+            or (lambda sid, reply: (sid, reply))
+        )
         self.agent = agent
         self.opencode_bin = opencode_bin
         self.timeout = timeout
@@ -84,12 +144,12 @@ class OpencodeCliDriver:
         # 엔진 Supervisor 의 stateless 불변식은 그대로다.
         self._session_cwd: dict[str, str] = {}
 
-    def spawn(self, cwd: str, session_id: str, bootstrap: str) -> str:
+    def spawn(self, cwd: str, session_id: str, bootstrap: str):
         """첫 세션 — `opencode run --agent <pm|build> --dir <cwd>` 로 bootstrap 전송.
 
         session_id 인자(엔진 uuid4)는 **무시** — opencode 가 sid 사전지정 불가라 출력에서
-        파싱한 sid 를 권위로 반환한다(ctx-guard.js plugin 도 그 sid 로 marker 를 쓴다)."""
-        observed, _ = self._turn(cwd, bootstrap, new_session=True)
+        파싱한 sid 를 권위로 반환한다. bootstrap reply 도 SpawnResult 로 보존한다."""
+        observed, reply, used_tokens = self._turn(cwd, bootstrap, new_session=True)
         if not observed:
             # sid 파싱 실패 = 치명 — opencode 는 sid 사전지정 불가라 uuid4 로 폴백하면 그 세션이
             # *존재하지 않아* 다음 relay_turn 의 `-s <uuid>` 가 "Session not found" → 연속성
@@ -100,12 +160,14 @@ class OpencodeCliDriver:
                 "(opencode 는 sid 사전지정 불가라 폴백 불가 · opencode/모델/agent 설정 확인.)"
             )
         self._session_cwd[observed] = cwd  # resume 이 같은 cwd(--dir)로 잇도록 기억.
-        return observed
+        self._maybe_mark_ctx(observed, used_tokens)
+        return self._spawn_result(observed, reply)
 
     def relay_turn(self, session_id: str, text: str) -> str:
         """기존 세션 resume — `opencode run -s <sid> --dir <cwd> --format json` 한 turn 중계."""
         cwd = self._session_cwd.get(session_id)
-        _, reply = self._turn(cwd=cwd, prompt=text, session_id=session_id)
+        _, reply, used_tokens = self._turn(cwd=cwd, prompt=text, session_id=session_id)
+        self._maybe_mark_ctx(session_id, used_tokens)
         return reply or ""
 
     def close(self, session_id: str) -> None:
@@ -115,7 +177,7 @@ class OpencodeCliDriver:
     # ── opencode CLI 한 turn ───────────────────────────────────────────────────
 
     def _turn(self, cwd, prompt, *, new_session=False, session_id=None):
-        """비대화 opencode turn 1회. (observed_session_id, reply_text) 반환.
+        """비대화 opencode turn 1회. (observed_session_id, reply_text, used_tokens) 반환.
 
         - new_session=True: `--agent <agent>` 로 fresh 세션(opencode 가 sid 발급).
         - session_id 주어지면: `-s <sid>` 로 그 세션 resume.
@@ -140,13 +202,13 @@ class OpencodeCliDriver:
             # stall·PM 70) 대신 유한 재시도 후 여기 도달 → loud stderr + turn-level fail-soft
             # (relay 루프는 살아 다음 입력을 받는다·기존 timeout/OSError 처리와 동일 결).
             sys.stderr.write(f"[pm-orch] {exc}\n")
-            return None, None
+            return None, None, None
         except subprocess.TimeoutExpired:
             sys.stderr.write(f"[pm-orch] opencode turn timeout ({self.timeout}s)\n")
-            return None, None
+            return None, None, None
         except OSError as exc:
             sys.stderr.write(f"[pm-orch] opencode 실행 실패: {exc}\n")
-            return None, None
+            return None, None, None
 
         # 실패를 조용한 빈 응답으로 삼키지 않는다 — 최소 진단을 stderr 로(stdout=PM 대화 채널 보존).
         if getattr(completed, "returncode", 0):
@@ -157,6 +219,16 @@ class OpencodeCliDriver:
 
         lines = (completed.stdout or "").splitlines()
         return self._parse(lines)
+
+    def _maybe_mark_ctx(self, session_id: str, used_tokens: int | None) -> None:
+        """usage 신호와 DI가 모두 있으면 엔진 post-turn 예산 판정을 호출한다."""
+        if any(value is None for value in (
+            used_tokens, self._ctx_budget, self._stop_pct, self._root, self._mark_stop,
+        )):
+            return
+        self._mark_stop(
+            self._root, session_id, used_tokens, self._ctx_budget, self._stop_pct,
+        )
 
 
 def _make_watchdog_runner(engine):
@@ -202,10 +274,19 @@ def main(argv: list[str] | None = None) -> int:
     engine, root = _load_engine()
 
     cwd = args.cwd or os.getcwd()
+    conf = load_local_config(root)
+    budget = resolve_ctx_budget(conf)
+    stop_pct = resolve_stop_pct(conf)
+    engine.validate_relay_budget(budget, stop_pct)
     # 프로덕션 driver 는 첫-이벤트 워치독 runner 로 opencode 를 구동(startup stall→유한 재시도·
     # T-0336). 소진 시 StallWatchdogError → driver `_turn` 이 loud + fail-soft(stall_error 주입).
     driver = OpencodeCliDriver(
         engine.parse_opencode_json,
+        ctx_budget=budget,
+        stop_pct=stop_pct,
+        root=root,
+        mark_stop=engine.mark_ctx_post_turn_if_over,
+        spawn_result=engine.SpawnResult,
         agent=args.agent,
         runner=_make_watchdog_runner(engine),
         stall_error=engine.StallWatchdogError,

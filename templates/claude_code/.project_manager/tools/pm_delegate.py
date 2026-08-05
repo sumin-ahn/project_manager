@@ -2449,18 +2449,20 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
 def extract_reply(harness: str, stdout: str) -> str | None:
     """하네스 stdout 에서 최종 reply 텍스트를 추출한다(pm_relay 파서 재사용).
 
-    claude=parse_stream_json(session_id, result) → result · codex=parse_codex_json → reply ·
-    opencode=parse_opencode_json → reply. reply 미추출(파싱 실패·빈 출력)은 None(호출자 fail-loud)."""
+    claude=parse_stream_json(session_id, result, used_tokens) → result ·
+    codex=parse_codex_json → reply ·
+    opencode=parse_opencode_json(session_id, reply, used_tokens) → reply. reply 미추출
+    (파싱 실패·빈 출력)은 None(호출자 fail-loud)."""
     relay = _load_relay()
     lines = stdout.splitlines()
     if harness == "claude":
-        _sid, result = relay.parse_stream_json(lines)
+        _sid, result, _usage = relay.parse_stream_json(lines)
         return result
     if harness == "codex":
         _tid, reply, _usage = relay.parse_codex_json(lines)
         return reply
     if harness == "opencode":
-        _sid, reply = relay.parse_opencode_json(lines)
+        _sid, reply, _usage = relay.parse_opencode_json(lines)
         return reply
     raise DelegateError(f"미지원 harness {harness!r} — reply 추출 불가.")
 

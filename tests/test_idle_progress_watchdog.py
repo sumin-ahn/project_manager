@@ -1802,7 +1802,8 @@ def test_claude_reply_extraction_identical_across_formats(pd, relay):
     """전환 전후 회신 추출 동일 — 두 형식이 같은 파서를 통과한다(⑤ 전제 검증).
 
     구 `--output-format json` = 종료 시 단일 덩어리(`type:result` 한 줄), 신 `stream-json` =
-    init/assistant/result 줄 단위 스트림. 둘 다 `parse_stream_json` 이 같은 (sid, reply) 를 낸다."""
+    init/assistant/result 줄 단위 스트림. 둘 다 `parse_stream_json` 이 같은
+    (sid, reply, used_tokens) 를 낸다."""
     single_blob = json.dumps({"type": "result", "subtype": "success",
                               "result": "REPLY-BODY", "session_id": "sess-1"})
     stream = "\n".join([
@@ -1812,8 +1813,8 @@ def test_claude_reply_extraction_identical_across_formats(pd, relay):
         json.dumps({"type": "result", "subtype": "success", "result": "REPLY-BODY",
                     "session_id": "sess-1"}),
     ])
-    assert relay.parse_stream_json(single_blob.splitlines()) == ("sess-1", "REPLY-BODY")
-    assert relay.parse_stream_json(stream.splitlines()) == ("sess-1", "REPLY-BODY")
+    assert relay.parse_stream_json(single_blob.splitlines()) == ("sess-1", "REPLY-BODY", None)
+    assert relay.parse_stream_json(stream.splitlines()) == ("sess-1", "REPLY-BODY", None)
     assert pd.extract_reply("claude", single_blob) == pd.extract_reply("claude", stream)
 
 

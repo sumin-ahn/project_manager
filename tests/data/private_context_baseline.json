@@ -1740,8 +1740,7 @@
       {
         "kind": "session_stamp",
         "hash": "b052ed90297a1e25f2a8af852962c51a71ca178ee9ec7b1cd95f4fc49b997991",
-        "count": 1,
-        "reason": "codex-cli 0.146.0 PreCompact 동작을 메인테이너가 실측한 provenance 날짜"
+        "count": 1
       }
     ],
     "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md": [

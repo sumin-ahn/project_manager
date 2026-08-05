@@ -24,7 +24,7 @@ relay 경로엔 그 채널이 없다 — driver 가 `turn.completed.usage` 로 �
 stop marker 를 박제한다(엔진 `write_post_turn_marker` DI·Supervisor 무수정 회전). ⚠ 이 marker 는 turn
 *실행 후* 박제라 opencode/claude 의 pre-turn(입력 차단) marker 와 의미가 다르다 — Supervisor 는
 post-turn marker 에선 그 입력을 **재전송하지 않는다**(이미 실행된 turn 의 이중 실행 방지·codex R2·
-엔진 `stop_marker_is_post_turn` 이 payload sentinel 로 구분). 예산 = local.conf
+엔진 Supervisor 가 marker 존재를 다음 입력 전 소비). 예산 = local.conf
 `ctx_window_tokens_codex` > generic `ctx_window_tokens` > 200000(ADR-0041 per-harness precedence).
 
 codex 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(claude=`.claude/ctx_guard.py`·
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -132,6 +133,88 @@ def resolve_stop_pct(conf: dict[str, str]) -> int:
     return stop if 0 < stop < 100 else CTX_STOP_PCT_DEFAULT
 
 
+def _resolve_rollout_file(session_id: str) -> Path | None:
+    """CODEX_HOME 아래에서 thread id가 든 최신 rollout 파일을 찾는다(fail-soft)."""
+    if not session_id:
+        return None
+    codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    sessions = codex_home / "sessions"
+    try:
+        candidates = [
+            path for path in sessions.rglob("rollout-*.jsonl")
+            if session_id in path.name
+        ]
+        return max(candidates, key=lambda path: path.stat().st_mtime_ns, default=None)
+    except (OSError, ValueError):
+        return None
+
+
+def _last_rollout_turn_tokens(path: Path, expected_input: int | None) -> int | None:
+    """신선한 rollout token_count의 마지막 요청 단위 total_tokens를 뒤에서부터 읽는다.
+
+    codex 내부 JSONL 형식은 공개 wire 계약이 아니므로 예상 구조만 좁게 읽고, 파일/디코딩/JSON/
+    필드 이상은 모두 조용히 ``None``으로 돌려 누계 차분 폴백을 사용하게 한다. 해당 이벤트의
+    ``total_token_usage.input_tokens``가 방금 받은 ``turn.completed.usage.input_tokens`` 누계와
+    일치해야만 같은 turn의 신호로 인정한다. 불일치는 stale rollout로 보고 폴백한다.
+    """
+    valid_expected = (
+        isinstance(expected_input, int)
+        and not isinstance(expected_input, bool)
+        and expected_input >= 0
+    )
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            position = stream.tell()
+            partial = b""
+            while position > 0:
+                size = min(64 * 1024, position)
+                position -= size
+                stream.seek(position)
+                chunk = stream.read(size) + partial
+                lines = chunk.split(b"\n")
+                partial = lines[0]
+                for raw_line in reversed(lines[1:]):
+                    found, total, anchor = _parse_token_count_total(raw_line)
+                    if found:
+                        return total if valid_expected and anchor == expected_input else None
+            found, total, anchor = _parse_token_count_total(partial)
+            return (
+                total
+                if found and valid_expected and anchor == expected_input
+                else None
+            )
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def _parse_token_count_total(
+    raw_line: bytes,
+) -> tuple[bool, int | None, int | None]:
+    """rollout 한 줄의 token_count 여부, 요청 단위 total, 누계 input anchor를 반환한다."""
+    if not raw_line.strip():
+        return False, None, None
+    event = json.loads(raw_line)
+    if not isinstance(event, dict):
+        return False, None, None
+    payload = event.get("payload")
+    token_event = payload if isinstance(payload, dict) else event
+    if token_event.get("type") != "token_count":
+        return False, None, None
+    info = token_event.get("info")
+    last_usage = info.get("last_token_usage") if isinstance(info, dict) else None
+    total = last_usage.get("total_tokens") if isinstance(last_usage, dict) else None
+    total_usage = info.get("total_token_usage") if isinstance(info, dict) else None
+    anchor = total_usage.get("input_tokens") if isinstance(total_usage, dict) else None
+    valid_total = isinstance(total, int) and not isinstance(total, bool) and total >= 0
+    valid_anchor = isinstance(anchor, int) and not isinstance(anchor, bool) and anchor >= 0
+    return (
+        True,
+        total if valid_total else None,
+        anchor if valid_anchor else None,
+    )
+
+
 class CodexCliDriver:
     """`codex exec` subprocess 로 PM 세션을 구동하는 SessionDriver (codex 고유 어댑터).
 
@@ -142,6 +225,7 @@ class CodexCliDriver:
 
     def __init__(self, parse_codex_json, *, ctx_budget: int | None = None,
                  stop_pct: int = CTX_STOP_PCT_DEFAULT, mark_stop=None,
+                 mark_ctx_if_over=None, spawn_result=None,
                  codex_bin: str = CODEX_BIN, timeout: int = TURN_TIMEOUT_SEC,
                  runner=subprocess.run, root: Path | None = None) -> None:
         # parse_codex_json 은 엔진 순수 헬퍼 주입(DI) — driver 가 파싱 로직을 중복 보유하지 않음.
@@ -150,6 +234,14 @@ class CodexCliDriver:
         # 계약을 엔진이 소유하고 driver 는 예산 판정 후 트리거만 한다. post-turn 표식이라 Supervisor 가
         # 재전송 없이 회전한다(이미 실행된 turn 의 이중 실행 방지·codex R2). None 이면 가드 no-op.
         self._mark_stop = mark_stop
+        parser_globals = getattr(parse_codex_json, "__globals__", {})
+        self._mark_ctx_if_over = (
+            mark_ctx_if_over or parser_globals.get("mark_ctx_post_turn_if_over")
+        )
+        self._spawn_result = (
+            spawn_result or parser_globals.get("SpawnResult")
+            or (lambda sid, reply: (sid, reply))
+        )
         self._ctx_budget = ctx_budget
         self._stop_pct = stop_pct  # 잔여 정지 임계(%) — main 이 local.conf ctx_stop_pct 로 해소해 주입.
         self._root = Path(root) if root is not None else None
@@ -160,14 +252,18 @@ class CodexCliDriver:
         # 기억해 relay 에 재사용한다. 어댑터-국소 세션 메타(codex CLI 고유)지 relay 대화 상태가
         # 아니다 — 엔진 Supervisor 의 stateless 불변식은 그대로다(opencode _session_cwd 대칭).
         self._session_cwd: dict[str, str] = {}
+        # turn.completed.usage 는 turn 단독값이 아니라 thread billing 누계다.
+        # rollout 정밀 신호를 못 읽을 때 직전 누계와의 차분을 보수적 폴백으로 쓴다.
+        self._last_total: dict[str, int] = {}
+        self._rollout_files: dict[str, Path] = {}
 
-    def spawn(self, cwd: str, session_id: str, bootstrap: str) -> str:
-        """첫 세션 — `codex exec --json` 으로 bootstrap 전송, `thread.started.thread_id` 반환.
+    def spawn(self, cwd: str, session_id: str, bootstrap: str):
+        """첫 세션 — codex 권위 thread id와 bootstrap reply를 ``SpawnResult`` 로 반환.
 
         session_id 인자(엔진 uuid4)는 **무시** — codex 는 thread_id 사전지정 불가라 출력에서
         파싱한 thread_id 를 권위로 반환한다(그 tid 로 driver 가 ctx marker 를 쓰고 supervisor 가
         stat)."""
-        tid, _reply, usage = self._turn(cwd, bootstrap)
+        tid, reply, usage = self._turn(cwd, bootstrap)
         if not tid:
             # thread_id 파싱 실패 = 치명 — codex 는 tid 사전지정 불가라 uuid4 폴백 시 `resume <uuid>`
             # 가 존재하지 않는 세션을 가리켜 연속성 침묵 파손(opencode sid-fail 동형·resume 불가).
@@ -178,7 +274,7 @@ class CodexCliDriver:
             )
         self._session_cwd[tid] = cwd  # resume 이 같은 cwd(-C)로 잇도록 기억.
         self._maybe_mark_ctx(tid, usage)  # ADR-0070 D4 ① driver-side 기계 ctx 가드.
-        return tid
+        return self._spawn_result(tid, reply)
 
     def relay_turn(self, session_id: str, text: str) -> str:
         """기존 세션 resume — `codex exec resume <tid> -C <cwd> --json` 한 turn 중계."""
@@ -188,8 +284,10 @@ class CodexCliDriver:
         return reply or ""
 
     def close(self, session_id: str) -> None:
-        """`codex exec` 1회성 turn 은 자동 exit — 명시 kill 불요. 세션 cwd 메타만 정리."""
+        """`codex exec` 1회성 turn 은 자동 exit — 세션의 어댑터-국소 메타만 정리."""
         self._session_cwd.pop(session_id, None)
+        self._last_total.pop(session_id, None)
+        self._rollout_files.pop(session_id, None)
 
     # ── codex CLI 한 turn ───────────────────────────────────────────────────────
 
@@ -244,24 +342,50 @@ class CodexCliDriver:
         opencode 는 plugin 이 (입력 처리 전) marker 를 쓰지만 codex relay 경로엔 그 채널이 없어 driver 가
         turn.completed 후 예산 초과를 판정한다(spike §3.4). turn 이 *이미 실행·응답됐으므로* 엔진
         `write_post_turn_marker` 로 post-turn 표식을 박제 → Supervisor 는 재전송 없이 회전한다(이중 실행
-        방지·codex R2·엔진 `stop_marker_is_post_turn` 판정). 예산·usage·root·mark_stop 중 하나라도 없으면
-        no-op(가드 비활성·부트/테스트 경로 무영향). 정지점 = 예산 × (100 - stop_pct)/100.
+        방지·codex R2). 예산·usage·root·mark_stop·엔진 판정 헬퍼 중 하나라도 없으면
+        no-op(가드 비활성·부트/테스트 경로 무영향 — usage None turn 은 rollout 도 안 읽는다:
+        신선도 anchor 가 wire 누계 대조를 요구하므로 검증 불가 rollout 채택은 fail-open 재도입.
+        그 turn 의 소모는 다음 turn 차분이 보수 흡수한다·PM override). 정지점 = 예산 × (100 - stop_pct)/100.
 
-        사용 토큰 = input + output + reasoning_output. **cached_input 은 가산하지 않는다** — 실측
-        (codex 0.144.6·PM 프로브 5회) input_tokens 가 cached_input_tokens 를 포함하는 상위집합
-        (예 input_tokens=12481 ⊃ cached_input_tokens=9600)이라 cached 를 더하면 이중 계상이 된다.
+        사용 토큰 = input + output. **reasoning_output·cached_input 은 가산하지 않는다** — codex
+        upstream usage fixture상 output_tokens는 reasoning 포함(100+10(내 reasoning 5)=110)이라
+        reasoning을 재가산하지 않는다. 실측(codex 0.144.6·PM 프로브 5회) input_tokens는
+        cached_input_tokens를 포함하는 상위집합(예 input_tokens=12481 ⊃ cached_input_tokens=9600)이라
+        각각을 더하면 이중 계상이 된다.
         usage 는 parse_codex_json 이 wire(`*_tokens`)→contract 로 정규화한 dict(접미사 없는 키).
-        ⚠ T-0407 watch-item: input_tokens 가 *누적* 컨텍스트를 반영하는지 per-turn 인지 라이브 확인 —
-        엔진 예산 판정은 누적 점유 가정(per-turn 이면 누적 환산이 필요). marker 박제 실패는 fail-soft."""
-        if not (self._ctx_budget and usage and self._root and self._mark_stop):
+        1순위 점유는 rollout의 마지막 token_count.last_token_usage.total_tokens(요청 단위)지만,
+        같은 이벤트의 total_token_usage.input_tokens가 방금 wire로 받은 누계 input과 일치할 때만
+        신선한 값으로 채택한다. 불일치·부재·파싱 실패는 2순위인 turn.completed 누계(input+output)
+        차분으로 폴백한다. 이 차분은 turn 내 다중 모델 호출 합이라 실제 마지막 요청 점유의 보수적
+        상한 근사다.
+        marker 박제 실패는 fail-soft."""
+        if not (self._ctx_budget and usage and self._root and self._mark_stop
+                and self._mark_ctx_if_over):
             return
-        used = ((usage.get("input") or 0)
-                + (usage.get("output") or 0)
-                + (usage.get("reasoning_output") or 0))
-        stop_threshold = self._ctx_budget * (100 - self._stop_pct) / 100
-        if used >= stop_threshold:
-            # post-turn 표식으로 박제 — Supervisor 가 재전송 없이 회전(이 turn 은 이미 실행·응답됨).
-            if not self._mark_stop(self._root, session_id):  # 박제 실패는 fail-soft(relay 무중단).
+        # codex upstream usage fixture 상 output_tokens 는 reasoning 포함:
+        # 100+10(내 reasoning 5)=110. 따라서 reasoning_output 재가산 금지.
+        total = (usage.get("input") or 0) + (usage.get("output") or 0)
+        delta = total - self._last_total.get(session_id, 0)
+        self._last_total[session_id] = total
+
+        rollout = self._rollout_files.get(session_id)
+        if rollout is None or not rollout.is_file():
+            rollout = _resolve_rollout_file(session_id)
+            if rollout is not None:
+                self._rollout_files[session_id] = rollout
+        precise = (
+            _last_rollout_turn_tokens(rollout, usage.get("input"))
+            if rollout is not None else None
+        )
+        used = precise if precise is not None else delta
+        if not self._mark_ctx_if_over(
+            self._root, session_id, used, self._ctx_budget, self._stop_pct,
+            self._mark_stop,
+        ):
+            # 임계 미달과 writer 실패가 같은 False 계약이지만, 여기까지 온 양수 사용량은
+            # helper가 판정한다. 실패도 relay를 막지는 않고 운영 가시성만 복원한다.
+            stop_threshold = self._ctx_budget * (100 - self._stop_pct) / 100
+            if used >= stop_threshold:
                 sys.stderr.write("[pm-orch] codex ctx marker 박제 실패\n")
 
 
@@ -288,12 +412,17 @@ def main(argv: list[str] | None = None) -> int:
 
     cwd = args.cwd or os.getcwd()
     conf = load_local_config(root)
+    ctx_budget = resolve_ctx_budget(conf)
+    stop_pct = resolve_stop_pct(conf)
+    engine.validate_relay_budget(ctx_budget, stop_pct)
     # driver-side ctx 가드 원천 — local.conf 예산·정지임계 해소 + 엔진 post-turn marker writer 주입.
     driver = CodexCliDriver(
         engine.parse_codex_json,
-        ctx_budget=resolve_ctx_budget(conf),
-        stop_pct=resolve_stop_pct(conf),
+        ctx_budget=ctx_budget,
+        stop_pct=stop_pct,
         mark_stop=engine.write_post_turn_marker,
+        mark_ctx_if_over=engine.mark_ctx_post_turn_if_over,
+        spawn_result=engine.SpawnResult,
         root=root,
     )
     supervisor = engine.Supervisor(driver, root=root, task=args.task)

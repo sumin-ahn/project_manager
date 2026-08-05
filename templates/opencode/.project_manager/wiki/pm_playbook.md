@@ -174,12 +174,11 @@ board·status·log·로드맵 단일 진실은 PM 1명이 유지하되 잡일을
 
 handoff 는 board/git/log/ADR 에서 파생 가능한 상태를 재열거하지 않고 source 를 가리킨다.
 
-**비파생 salient 레이어(반드시 포함):**
+**비파생 salient 레이어와 자동 박제(반드시 포함):**
 
-- **(a) 읽기 범위** — 사본이 아니라 포인터("이 entry + T-NNNN~MMMM complete + 직전 PM N차 handoff"). 들어오는 세션이 `pm_log.py tail`/targeted Read 로 따른다.
+- **(a) 이 세션 박제 entries** — `/pm-handoff`가 직전 자기 handoff 뒤의 complete/checkpoint 헤더를 자동 나열한다. 자기 경계가 없으면 직전 임의 handoff를 경계로 삼고, handoff가 전혀 없으면 `(경계 미해소 — 최근 10건)`과 함께 최근 10건만 싣는다.
 - **(b) 메타 학습** — ticket 상태에서 도출 불가한 교훈.
 - **(c) 다음 intent**:
-  - **대화 thread-tail** — 정지 직전 사용자 발화. ctx-trigger 경로는 어댑터 훅이 transcript 에서 자동 초안; 정지 후 PM 이 검토·편집해 민감 발화 노출을 최소화한다. 대화형 경로는 PM 손.
   - **pending user intent** — 다음 우선순위 + 사용자 결정 대기. PM 손.
 
 **FORBIDDEN (본문 재열거 금지):**
@@ -187,7 +186,7 @@ handoff 는 board/git/log/ADR 에서 파생 가능한 상태를 재열거하지 
 - ❌ board done/open/claimed/blocked **카운트** (→ `board.py list`[무인자=내 스트림·전체는 `--all`]·`/pm-bootstrap` 라이브).
 - ❌ **open ticket ID 목록** (→ `pm_bootstrap` 가 라이브로 출력).
 - ❌ **commit 해시·push 상태** (→ `git log`/`git status`).
-- ❌ **직전 complete entry 산출물 재요약** (→ 인접 entry. "읽기 범위" 로 가리켜라).
+- ❌ **직전 complete entry 산출물 재요약** (→ 자동 박제된 entry 헤더와 인접 원문을 따른다).
 
 금지는 board 상태·ticket 목록·commit·산문을 대량 재열거하는 경우다.
 
@@ -214,7 +213,7 @@ upstream 엔진 개선을 당기는 저빈도 유지보수. **메인테이너가
 /pm-bootstrap
 ```
 
-인계 본문은 log handoff entry 가 단일 진실이다. `/pm-bootstrap` 이 읽기 범위·메타 학습·다음 intent·회귀/incident를 dump 하므로 프롬프트에 옮겨 적지 않는다. *대화 thread-tail*(ctx-trigger 경로 어댑터 자동 초안)은 새 세션이 entry 슬롯에서 검토·편집한다.
+인계 본문은 log handoff entry 가 단일 진실이다. `/pm-bootstrap` 이 자동 박제 entries·메타 학습·pending intent·회귀/incident를 dump 하므로 프롬프트에 옮겨 적지 않는다.
 
 ---
 

@@ -7,7 +7,7 @@ test_claude_ctx_guard 패턴: importlib 로드·DI runner·subprocess 폭발 가
 검증 축 (ticket DoD):
   ① marker-watch 분기(있음/없음) — stop_marker_present stat.
   ② respawn 결정 — marker 시 새 session·없으면 relay 지속(호출 카운트).
-  ③ parse_stream_json — sid/result 추출 + JSONDecodeError 라인 skip.
+  ③ parse_stream_json — sid/result/usage 추출 + JSONDecodeError 라인 skip.
   ④ post-turn 단일 의미론 — marker 회전 후 처리된 입력 재전송 없음.
   ⑤ stateless — supervisor 가 대화/작업 상태 필드를 보유하지 않음.
   ⑥ subprocess 폭발 가드 — relay 경로가 실 claude 를 부르지 않음(FakeDriver).
@@ -358,7 +358,7 @@ def test_consecutive_respawn_guard_no_reset_would_trip(orch, tmp_path):
     assert rc == orch.GUARD_TRIPPED_RC
 
 
-# ── ③ parse_stream_json (sid/result 추출 + JSONDecodeError 라인 skip) ────────
+# ── ③ parse_stream_json (sid/result/usage 추출 + JSONDecodeError 라인 skip) ──
 
 def test_parse_stream_json_extracts_sid_and_result(orch):
     lines = [
@@ -366,9 +366,28 @@ def test_parse_stream_json_extracts_sid_and_result(orch):
         json.dumps({"type": "assistant", "session_id": "sid-init"}),
         json.dumps({"type": "result", "result": "the answer", "session_id": "sid-init"}),
     ]
-    sid, result = orch.parse_stream_json(lines)
+    sid, result, used_tokens = orch.parse_stream_json(lines)
     assert sid == "sid-init"
     assert result == "the answer"
+    assert used_tokens is None
+
+
+def test_parse_stream_json_usage_includes_output_tokens(orch):
+    """회전 판정 usage 는 입력 계열 + output 합 — 다음 turn 컨텍스트 기준(codex 게이트 회귀).
+
+    입력 계열이 임계 직하이고 출력이 임계를 넘기는 케이스에서 output 미합산이면 marker 없이
+    다음 입력이 전달된다 — output 포함을 고정한다.
+    """
+    import json as _json
+    line = _json.dumps({
+        "type": "assistant", "session_id": "s1",
+        "message": {"usage": {
+            "input_tokens": 100, "cache_creation_input_tokens": 200,
+            "cache_read_input_tokens": 300, "output_tokens": 50,
+        }},
+    })
+    sid, _reply, used = orch.parse_stream_json([line])
+    assert used == 650
 
 
 def test_parse_stream_json_skips_malformed_lines(orch):
@@ -380,31 +399,67 @@ def test_parse_stream_json_skips_malformed_lines(orch):
         "another bad line {",
         json.dumps({"type": "result", "result": "ok"}),
     ]
-    sid, result = orch.parse_stream_json(lines)
+    sid, result, used_tokens = orch.parse_stream_json(lines)
     assert sid == "sid-2"
     assert result == "ok"
+    assert used_tokens is None
 
 
 def test_parse_stream_json_falls_back_to_result_sid(orch):
     """system/init 없으면 result 이벤트의 session_id 로 폴백."""
     lines = [json.dumps({"type": "result", "result": "r", "session_id": "sid-from-result"})]
-    sid, result = orch.parse_stream_json(lines)
+    sid, result, used_tokens = orch.parse_stream_json(lines)
     assert sid == "sid-from-result"
     assert result == "r"
+    assert used_tokens is None
 
 
 def test_parse_stream_json_empty_and_no_result(orch):
-    assert orch.parse_stream_json([]) == (None, None)
+    assert orch.parse_stream_json([]) == (None, None, None)
     # init 만 있고 result 없음 → sid 만.
     lines = [json.dumps({"type": "system", "subtype": "init", "session_id": "s"})]
-    assert orch.parse_stream_json(lines) == ("s", None)
+    assert orch.parse_stream_json(lines) == ("s", None, None)
 
 
 def test_parse_stream_json_ignores_non_dict_events(orch):
     """JSON 배열/스칼라 라인은 dict 가 아니라 skip(robust)."""
     lines = ["[1, 2, 3]", "42", json.dumps({"type": "result", "result": "x"})]
-    sid, result = orch.parse_stream_json(lines)
-    assert sid is None and result == "x"
+    sid, result, used_tokens = orch.parse_stream_json(lines)
+    assert sid is None and result == "x" and used_tokens is None
+
+
+def test_parse_stream_json_extracts_measured_assistant_usage(orch):
+    """Claude 2.1.222 실측 wire의 입력·cache 생성·cache 읽기 합을 반환한다."""
+    lines = [json.dumps({
+        "type": "assistant",
+        "message": {"usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 31_641,
+            "cache_read_input_tokens": 0,
+        }},
+    })]
+    assert orch.parse_stream_json(lines) == (None, None, 31_643)
+
+
+def test_parse_stream_json_usage_absent_is_none(orch):
+    lines = [
+        json.dumps({"type": "assistant", "message": {}}),
+        json.dumps({"type": "result", "result": "ok"}),
+    ]
+    assert orch.parse_stream_json(lines) == (None, "ok", None)
+
+
+def test_parse_stream_json_uses_last_assistant_partial_usage(orch):
+    """마지막 assistant가 권위이며 부분 wire는 존재하는 음이 아닌 정수만 합산한다."""
+    lines = [
+        json.dumps({"type": "assistant", "message": {"usage": {
+            "input_tokens": 90_000,
+        }}}),
+        json.dumps({"type": "assistant", "message": {"usage": {
+            "input_tokens": 7,
+        }}}),
+    ]
+    assert orch.parse_stream_json(lines) == (None, None, 7)
 
 
 # ── ④ post-turn marker 단일 의미론(재전송 없음) ────────────────
@@ -531,27 +586,57 @@ def test_claude_driver_parser_accepts_task(driver_mod):
     assert parser.parse_args([]).task is None
 
 
-def test_claude_main_forwards_task_to_supervisor(driver_mod, monkeypatch, tmp_path):
-    """claude main 이 `--task` 를 engine.Supervisor(task=...) 로 forward 한다 (재진입 배선)."""
+def test_claude_main_resolves_and_injects_ctx_config(driver_mod, monkeypatch, tmp_path):
+    """main 이 claude local.conf 예산/임계를 해소·검증하고 driver/Supervisor 에 주입한다."""
     captured: dict = {}
 
     class _FakeSup:
         def __init__(self, driver, *, root, task=None):
             captured["task"] = task
+            captured["driver"] = driver
+            captured["events"].append("supervisor")
 
         def run_loop(self, cwd, in_stream, out_stream):
             return 0
 
     class _FakeEngine:
         Supervisor = _FakeSup
+        SpawnResult = staticmethod(lambda sid, reply: (sid, reply))
 
         @staticmethod
         def parse_stream_json(lines):
-            return None, None
+            return None, None, None
 
+        @staticmethod
+        def mark_ctx_post_turn_if_over(*args):
+            captured["marked"] = args
+
+        @staticmethod
+        def validate_relay_budget(budget, stop_pct):
+            captured["validated"] = (budget, stop_pct)
+            captured["events"].append("validate")
+
+    captured["events"] = []
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
+    monkeypatch.setattr(driver_mod.ctx_guard, "load_local_config", lambda root: {
+        "ctx_window_tokens_claude": "123456", "ctx_stop_pct": "17",
+    })
+    monkeypatch.setattr(
+        driver_mod.ctx_guard, "resolve_budget",
+        lambda conf, harness: 123_456 if harness == "claude" else 0,
+    )
+    monkeypatch.setattr(
+        driver_mod.ctx_guard, "ctx_thresholds",
+        lambda conf: {"nudge_pct": 30, "stop_pct": 17},
+    )
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"
+    assert captured["validated"] == (123_456, 17)
+    assert captured["events"] == ["validate", "supervisor"]
+    driver = captured["driver"]
+    assert driver._ctx_budget == 123_456 and driver._stop_pct == 17
+    assert driver._root == tmp_path
+    assert driver._mark_stop is _FakeEngine.mark_ctx_post_turn_if_over
 
 
 def test_new_session_id_unique_uuid(orch):
@@ -680,8 +765,9 @@ def test_claude_driver_spawn_passes_session_id(orch, driver_mod):
         )
 
     driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, runner=fake_run)
-    observed = driver.spawn("/repo/root", "uuid-123", "bootstrap text")
-    assert observed == "uuid-123"
+    spawned = driver.spawn("/repo/root", "uuid-123", "bootstrap text")
+    assert isinstance(spawned, orch.SpawnResult)
+    assert spawned == orch.SpawnResult("uuid-123", "READY")
     cmd = captured["cmd"]
     assert "--session-id" in cmd and "uuid-123" in cmd
     assert "--resume" not in cmd  # spawn 은 resume 안 함.
@@ -753,6 +839,162 @@ def test_claude_driver_relay_reuses_spawn_cwd(orch, driver_mod):
     assert "uuid-cwd" not in driver._session_cwd
 
 
+def test_claude_driver_marks_ctx_after_spawn_and_relay(orch, driver_mod, tmp_path):
+    """usage 임계 초과 turn은 spawn/relay 양쪽에서 엔진 회전 헬퍼로 전달된다."""
+    calls = []
+
+    def mark_stop(root, sid, used_tokens, budget, stop_pct):
+        calls.append((root, sid, used_tokens, budget, stop_pct))
+        return True
+
+    def fake_run(cmd, **kwargs):
+        sid = "uuid-high" if "--session-id" in cmd else None
+        events = [json.dumps({
+            "type": "assistant",
+            "message": {"usage": {
+                "input_tokens": 2,
+                "cache_creation_input_tokens": 80_000,
+                "cache_read_input_tokens": 0,
+            }},
+        })]
+        if sid:
+            events.insert(0, json.dumps({
+                "type": "system", "subtype": "init", "session_id": sid,
+            }))
+        events.append(json.dumps({"type": "result", "result": "ok"}))
+        return _FakeCompleted("\n".join(events))
+
+    driver = driver_mod.ClaudeCliDriver(
+        orch.parse_stream_json,
+        ctx_budget=100_000,
+        stop_pct=20,
+        root=tmp_path,
+        mark_stop=mark_stop,
+        spawn_result=orch.SpawnResult,
+        runner=fake_run,
+    )
+    spawned = driver.spawn("/repo/root", "uuid-high", "boot")
+    assert spawned == orch.SpawnResult("uuid-high", "ok")
+    assert driver.relay_turn("uuid-high", "next") == "ok"
+    assert calls == [
+        (tmp_path, "uuid-high", 80_002, 100_000, 20),
+        (tmp_path, "uuid-high", 80_002, 100_000, 20),
+    ]
+
+
+@pytest.mark.parametrize("operation", ["spawn", "relay"])
+def test_claude_driver_real_marker_integration_over_threshold(
+    orch, driver_mod, tmp_path, operation,
+):
+    """실 엔진 mark_ctx_post_turn_if_over DI와 임계 초과 wire usage가 spawn/relay
+    양쪽에서 supervisor가 stat 할 수 있는 post-turn marker를 박는다.
+    """
+    sid = f"uuid-real-{operation}"
+
+    def fake_run(cmd, **kwargs):
+        events = []
+        if "--session-id" in cmd:
+            events.append(json.dumps({
+                "type": "system", "subtype": "init", "session_id": sid,
+            }))
+        events.extend([
+            json.dumps({
+                "type": "assistant",
+                "message": {"usage": {
+                    "input_tokens": 1,
+                    "cache_creation_input_tokens": 8_000,
+                    "cache_read_input_tokens": 0,
+                }},
+            }),
+            json.dumps({"type": "result", "result": "ok"}),
+        ])
+        return _FakeCompleted("\n".join(events))
+
+    driver = driver_mod.ClaudeCliDriver(
+        orch.parse_stream_json,
+        ctx_budget=10_000,
+        stop_pct=20,
+        root=tmp_path,
+        mark_stop=orch.mark_ctx_post_turn_if_over,
+        spawn_result=orch.SpawnResult,
+        runner=fake_run,
+    )
+    if operation == "spawn":
+        assert driver.spawn("/repo/root", sid, "boot") == orch.SpawnResult(sid, "ok")
+    else:
+        assert driver.relay_turn(sid, "work") == "ok"
+    assert orch.stop_marker_present(tmp_path, sid) is True
+
+
+@pytest.mark.parametrize("control", ["helper-missing", "under-threshold"])
+def test_claude_driver_real_marker_integration_old_red_controls(
+    orch, driver_mod, tmp_path, control,
+):
+    """old-red 대조: 헬퍼 미주입 또는 임계 미달이면 실 marker는 없다."""
+    sid = f"uuid-control-{control}"
+    used = 8_001 if control == "helper-missing" else 7_999
+    runner = lambda *args, **kwargs: _FakeCompleted("\n".join([
+        json.dumps({
+            "type": "assistant",
+            "message": {"usage": {
+                "input_tokens": used,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            }},
+        }),
+        json.dumps({"type": "result", "result": "ok"}),
+    ]))
+    driver = driver_mod.ClaudeCliDriver(
+        orch.parse_stream_json,
+        ctx_budget=10_000,
+        stop_pct=20,
+        root=tmp_path,
+        mark_stop=(None if control == "helper-missing" else orch.mark_ctx_post_turn_if_over),
+        runner=runner,
+    )
+    assert driver.relay_turn(sid, "work") == "ok"
+    assert orch.stop_marker_present(tmp_path, sid) is False
+
+
+def test_claude_driver_warns_once_when_usage_missing_with_complete_ctx_di(
+    orch, driver_mod, tmp_path, capsys,
+):
+    """ctx DI는 완비됐는데 usage만 소실되면 never-block advisory를 1회 표면화한다."""
+    driver = driver_mod.ClaudeCliDriver(
+        orch.parse_stream_json,
+        ctx_budget=100_000,
+        stop_pct=20,
+        root=tmp_path,
+        mark_stop=orch.mark_ctx_post_turn_if_over,
+    )
+    driver._maybe_mark_ctx("sid", None)
+    driver._maybe_mark_ctx("sid", None)
+    assert capsys.readouterr().err == (
+        "[pm-orch] claude usage 신호 소실 — ctx post-turn 가드를 판정할 수 없음\n"
+    )
+
+
+def test_claude_driver_ctx_guard_noop_when_any_signal_missing(
+    orch, driver_mod, tmp_path,
+):
+    """usage 또는 ctx DI 신호 하나라도 없으면 회전 헬퍼를 호출하지 않는다."""
+    def unexpected_mark(*args):
+        raise AssertionError("불완전한 ctx 신호에서 mark_stop 호출")
+
+    complete = {
+        "ctx_budget": 100_000,
+        "stop_pct": 20,
+        "root": tmp_path,
+        "mark_stop": unexpected_mark,
+    }
+    for missing in complete:
+        kwargs = {**complete, missing: None}
+        driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, **kwargs)
+        driver._maybe_mark_ctx("sid", 90_000)
+    driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, **complete)
+    driver._maybe_mark_ctx("sid", None)
+
+
 def test_claude_driver_timeout_returns_empty(orch, driver_mod):
     """subprocess timeout 은 fail-soft — 빈 reply(루프 안 죽음)."""
     import subprocess as _sp
@@ -794,15 +1036,20 @@ def test_live_spawn_relay_swap_smoke(orch, driver_mod, tmp_path):
     도 그 uuid 로 marker 를 쓸 것 — marker 예측 가정 확증). 루트 `.claude/` 엔 ctx hook 이
     없어 실 ctx-STOP 은 못 트리거하므로 marker 는 강제 생성으로 swap 만 검증(deferred 부분).
     """
-    driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, model="claude-haiku-4-5")
+    driver = driver_mod.ClaudeCliDriver(
+        orch.parse_stream_json,
+        spawn_result=orch.SpawnResult,
+        model="claude-haiku-4-5",
+    )
     requested_sid = orch.new_session_id()
 
     # ── spawn: --session-id 로 세션 id 지정 + 사실 심기 ──
-    observed = driver.spawn(
+    spawned = driver.spawn(
         str(tmp_path),
         requested_sid,
         "Remember this code word for our chat: MANGO77. Reply with exactly: STORED",
     )
+    observed = spawned.session_id
     assert observed, "spawn 이 session_id 를 관측하지 못함"
     # *** sid 예측 가능성 핵심 검증 ***
     assert observed == requested_sid, (
@@ -825,11 +1072,12 @@ def test_live_spawn_relay_swap_smoke(orch, driver_mod, tmp_path):
     # ── swap: 새 세션 spawn(다른 sid) → relay 완주 ──
     new_sid = orch.new_session_id()
     assert new_sid != requested_sid
-    new_observed = driver.spawn(
+    new_spawned = driver.spawn(
         str(tmp_path),
         new_sid,
         "Context handoff: the prior code word was MANGO77. Reply with exactly: CONTINUED",
     )
+    new_observed = new_spawned.session_id
     assert new_observed == new_sid, "swap 후 새 세션 sid 예측 실패"
     swap_reply = driver.relay_turn(new_observed, "Reply with only the prior code word.")
     assert "MANGO77" in swap_reply.upper(), f"swap 후 relay 실패 — reply={swap_reply!r}"

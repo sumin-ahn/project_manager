@@ -53,10 +53,11 @@ PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않
   compaction 통과를 확인했다. 단, `systemMessage`는 `codex exec`의
   stdout JSONL·stderr·rollout·`CODEX_HOME` 전수 grep 어디에도 나타나지 않았고 모델 자기보고도 음성이었다. 따라서
   **exec 경로 안내는 모델에 닿지 않는다(관측만 가능)**.
-- relay: `codex exec --json`의 `turn.completed.usage`를 매 turn 파싱한다. 누적 usage가 예산의 STOP
-  경계에 닿으면 relay driver가 post-turn STOP marker를 남기고 Supervisor가 세션을 회전한다. exec에서
-  소실되는 hook 안내 대신 driver 회전 선점이 relay 경로를 실보호한다. 이것이 장기 경로의
-  **proactive** 기계 가드다.
+- relay: `codex exec --json`의 `turn.completed.usage` 누계를 매 turn 파싱하고 직전 누계와의 차분을
+  보수적 점유 상한으로 쓴다. rollout `token_count.last_token_usage`는 같은 이벤트의 누계 input이 방금
+  받은 wire 누계 input과 일치할 때만 더 정밀한 1순위 신호로 채택한다. 이 판정값이 예산의 STOP 경계에
+  닿으면 relay driver가 post-turn STOP marker를 남기고 Supervisor가 세션을 회전한다. exec에서 소실되는
+  hook 안내 대신 driver 회전 선점이 relay 경로를 실보호한다. 이것이 장기 경로의 **proactive** 기계 가드다.
 
 2026-07-22~23 장기 TUI rollout에서는 `context_compacted`가 네 번 기록됐고, 해당 event stream에
 `hook_started`/`hook_completed` 및 기존 echo tripwire 출력은 없었다. 따라서 이전 echo-only tripwire는

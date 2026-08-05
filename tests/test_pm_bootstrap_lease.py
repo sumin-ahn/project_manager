@@ -770,12 +770,16 @@ def test_handoff_skeleton_records_slot_branch(handoff):
 
 
 def test_handoff_skeleton_solo_omits_slot_line(handoff):
-    """솔로(미지정)면 worktree 줄을 생략한다 (현행 lean 스키마 100% 보존)."""
+    """솔로면 worktree를 생략하고 자동 박제 목록 + 손-채움 신 스키마를 보존한다."""
     sk = handoff.build_handoff_log_skeleton(session_num=9, date="2026-06-16")
     assert "worktree: slot" not in sk
-    # lean 3섹션 + 회귀/incident 는 그대로.
-    assert "- 읽기 범위:" in sk
+    assert "- 이 세션 박제 entries: (이 세션 박제 entry 없음)" in sk
+    assert "- 메타 학습:" in sk
+    assert f"- pending user intent: {handoff.PENDING_INTENT_PLACEHOLDER}" in sk
     assert "- 회귀/incident:" in sk
+    assert "회귀 \"N passed / 상태\" 1줄" in sk
+    assert "- 읽기 범위:" not in sk
+    assert "대화 thread-tail" not in sk
 
 
 # ── handoff fixture (DI — pytest/git stub·worktree_pool mock) ─────────────────

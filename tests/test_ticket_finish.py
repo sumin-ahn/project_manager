@@ -369,8 +369,19 @@ def test_log_skeleton_adds_task_tag_when_task_is_resolved(tf):
     )
 
 
+def test_log_skeleton_adds_canonical_slot_tag_when_session_is_resolved(tf):
+    """slot 완료 entry는 handoff와 같은 canonical 세션 태그를 헤더 말미에 생산한다."""
+    skeleton = tf.build_log_skeleton(
+        ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
+        entry_type="feat", date="2026-08-06", session="project_manager_2",
+    )
+    assert skeleton.splitlines()[0] == (
+        "## [2026-08-06] feat | T-0547 — 박제 (project_manager_2)"
+    )
+
+
 def test_log_skeleton_without_task_is_byte_compatible(tf):
-    """솔로/슬롯처럼 task 미해소면 종전 헤더와 바이트 단위로 동일하다."""
+    """솔로처럼 task/slot 정체성이 미해소면 종전 헤더와 바이트 단위로 동일하다."""
     skeleton = tf.build_log_skeleton(
         ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
         entry_type="feat", date="2026-08-06",
@@ -1160,6 +1171,7 @@ def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
 
         def run(self, **kw):
             captured["skip_pytest"] = kw.get("skip_pytest")
+            captured["session"] = kw.get("session")
             return 0
 
     monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
@@ -1167,6 +1179,7 @@ def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
     assert rc == 0
     assert captured["regression_cwd"].replace(os.sep, "/").endswith("work/project_manager_1")
     assert captured["skip_pytest"] is False
+    assert captured["session"] == "project_manager_1"
 
 
 def test_main_no_pytest_bypasses_ambiguity_gate(tf, monkeypatch):

@@ -3362,7 +3362,7 @@ def _resolve_add_harness_source(
 
 # codex 어댑터(`​.codex/agents/*.toml`·`config.toml`·hooks)는 **trusted project + hook trust 승인
 # 후에만** 발화한다. import/add-harness 직후 신선 인스턴스는 이 2단계가
-# 미승인 상태 — 조용히 두면 위임 subagent 스폰·PreCompact ctx tripwire 가 안 뜬다. `-c projects.<path>.
+# 미승인 상태 — 조용히 두면 위임 subagent 스폰·PreCompact ctx checkpoint 안내가 안 뜬다. `-c projects.<path>.
 # trust_level` CLI override 는 **안 먹으므로** 대화형 승인이 유일 경로다.
 def _print_codex_trust_guidance() -> None:
     """codex 어댑터 laydown 후 loud 2단계 trust 안내.
@@ -3374,11 +3374,21 @@ def _print_codex_trust_guidance() -> None:
     print("⚠️  codex 어댑터 활성화 전 2단계 trust 승인 필요 (미승인 시 위임/훅 미발화):")
     print("  ① 이 디렉토리에서 대화형 `codex` 를 1회 열어 프로젝트 trust 를 수락한다")
     print("     (`.codex/agents/*.toml`·`config.toml` 은 trusted project 한정 로드).")
-    print("  ② codex 안에서 `/hooks` 로 hook trust 를 승인한다 (PreCompact ctx tripwire 발화 전제).")
+    print("  ② codex 안에서 `/hooks` 로 hook trust 를 승인한다 (PreCompact ctx checkpoint 안내 발화 전제).")
     print("  검증: 대화형 codex 에서 위임 4축(architect/developer/code-reviewer/researcher)이 "
           "스폰 목록에 뜨는지 확인한다.")
     print("  ⚠️ `-c projects.<path>.trust_level=trusted` CLI override 는 안 먹는다(실측) — "
           "위 ① 대화형 승인이 필수다.")
+
+
+def _print_claude_trust_guidance() -> None:
+    """claude 어댑터 laydown 후 permissions.allow trust 선행 조건을 loud 안내."""
+    print("")
+    print("⚠️  Claude Code permissions.allow 적용 조건 안내:")
+    print("  이 디렉토리를 아직 trust 승인하지 않았다면 출하 `.claude/settings.json`의")
+    print("  `permissions.allow`가 적용되지 않으며 전역 설정에 의존한다.")
+    print('  콘솔의 "Ignoring N permissions.allow entries" 경고가 이 상태의 실측 신호다.')
+    print("  첫 대화형 `claude` 세션에서 trust 다이얼로그를 수락하면 적용된다.")
 
 
 def _in_adapter_namespace(
@@ -3925,6 +3935,9 @@ def add_harness(
                   f"수동으로 `{BACKUP_DIR_NAME}/` 한 줄을 추가하세요.")
     print(f"✓ add-harness 완료: {harness} 어댑터 {len(plan)} 파일 복사 · "
           f"{n_subst} 파일 토큰 치환 (스코프: {adapter_scope} + {root_doc})")
+    # claude 는 프로젝트 trust 수락 전 settings.json permissions.allow 를 조용히 무시한다.
+    if harness == "claude":
+        _print_claude_trust_guidance()
     # codex 는 laydown 만으로 활성화되지 않는다 — trusted project + hook trust 2단계 안내.
     if harness == "codex":
         _print_codex_trust_guidance()
@@ -4737,6 +4750,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"✓ import 완료: {dest_root}")
     print("  다음: 자유서술 placeholder 제안 검토·반영(--fill auto 했으면) + 첫 ticket 발행.")
+    # claude 는 프로젝트 trust 수락 전 settings.json permissions.allow 를 조용히 무시한다.
+    if "claude" in args.harness:
+        _print_claude_trust_guidance()
     # codex 어댑터는 laydown 후 trusted project + hook trust 2단계 승인이 있어야 발화.
     if "codex" in args.harness:
         _print_codex_trust_guidance()

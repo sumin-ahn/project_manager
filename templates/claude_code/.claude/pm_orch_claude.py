@@ -10,8 +10,8 @@ CLI 진입점: `python3 pm_orch_claude.py [--cwd <PM repo root>] [--model opus]`
 사용자가 이 wrapper 를 띄우면 ctx 한계 도달 시 손 안 대고 새 PM 으로 자동 회전(연속 운영).
 
 결정적 `--session-id`: 엔진이 uuid4 발급 → 첫 spawn 은 `--session-id <uuid>` 로 child 의 세션
-id 를 *지정* → ctx_stop_hook 이 그 uuid 로 marker(`<uuid>.done`)를 쓰므로 supervisor 가 marker
-파일명을 예측한다. resume 은 `--resume <uuid>`. (sid 예측 가능성은 통합 스모크에서 실측.)
+id 를 *지정*. driver 가 turn 후 usage 판정으로 post-turn marker(`<uuid>.done`)를 박고
+supervisor 가 같은 sid 로 stat 한다. resume 은 `--resume <uuid>`. (sid 예측 가능성은 통합 스모크에서 실측.)
 
 nested claude 실행은 OAuth 상속(T-0044 PoC 확증) — SDK 없이 CLI subprocess 만.
 """
@@ -55,11 +55,27 @@ class ClaudeCliDriver:
     claude CLI 호출 + stream-json 파싱만 한다. PoC run_turn 골격을 메서드로 재사용.
     """
 
-    def __init__(self, parse_stream_json, *, model: str = DEFAULT_MODEL,
+    def __init__(self, parse_stream_json, *, ctx_budget: int | None = None,
+                 stop_pct: int | None = None, root: Path | None = None,
+                 mark_stop=None, spawn_result=None, model: str = DEFAULT_MODEL,
                  claude_bin: str = CLAUDE_BIN, timeout: int = TURN_TIMEOUT_SEC,
                  runner=subprocess.run) -> None:
         # parse_stream_json 은 엔진 순수 헬퍼 주입(DI) — driver 가 파싱 로직을 중복 보유하지 않음.
         self._parse = parse_stream_json
+        # ctx 회전 판정과 SpawnResult 생성은 엔진 소유 헬퍼/타입 주입(DI). 어느 ctx 신호든
+        # 빠지면 가드는 no-op 이라 기존 단위·부트 경로에 영향을 주지 않는다.
+        self._ctx_budget = ctx_budget
+        self._stop_pct = stop_pct
+        self._root = Path(root) if root is not None else None
+        self._mark_stop = mark_stop
+        self._warned_missing_usage = False
+        # main 은 타입을 명시 주입한다. parser만 주입하는 기존/단위 경로도 parser 소유 엔진의
+        # SpawnResult를 찾아 같은 선언 타입을 쓰며, 제3자 parser면 구조 호환 tuple로 폴백한다.
+        parser_globals = getattr(parse_stream_json, "__globals__", {})
+        self._spawn_result = (
+            spawn_result or parser_globals.get("SpawnResult")
+            or (lambda sid, reply: (sid, reply))
+        )
         self.model = model
         self.claude_bin = claude_bin
         self.timeout = timeout
@@ -70,22 +86,24 @@ class ClaudeCliDriver:
         # 대화 상태가 아니다 — 엔진 Supervisor 의 stateless 불변식은 그대로다.
         self._session_cwd: dict[str, str] = {}
 
-    def spawn(self, cwd: str, session_id: str, bootstrap: str) -> str:
+    def spawn(self, cwd: str, session_id: str, bootstrap: str):
         """첫 세션 — `--session-id <uuid>` 로 세션 id 지정 + bootstrap 프롬프트 전송.
 
-        반환 = stream-json 에서 관측된 실제 session_id(보통 입력 session_id 와 같음 —
-        marker 예측의 핵심 가정. 다르면 hook 환원 경로용으로 관측값을 따른다)."""
-        observed, _ = self._turn(cwd, bootstrap, session_id=session_id)
+        반환 = SpawnResult(관측된 실제 session_id, bootstrap reply). session_id 는 보통 입력값과
+        같으며 다르면 marker 환원 경로용으로 관측값을 따른다."""
+        observed, reply, used_tokens = self._turn(cwd, bootstrap, session_id=session_id)
         sid = observed or session_id
         self._session_cwd[sid] = cwd  # resume 이 같은 cwd 에서 세션을 찾도록 기억.
-        return sid
+        self._maybe_mark_ctx(sid, used_tokens)
+        return self._spawn_result(sid, reply)
 
     def relay_turn(self, session_id: str, text: str) -> str:
         """기존 세션 resume — `--resume <uuid>` 로 한 turn 중계하고 reply 반환.
 
         claude 세션은 cwd-scoped 라 spawn 때의 cwd 에서 resume 해야 한다(없으면 현재 dir)."""
         cwd = self._session_cwd.get(session_id)
-        _, result = self._turn(cwd=cwd, prompt=text, resume=session_id)
+        _, result, used_tokens = self._turn(cwd=cwd, prompt=text, resume=session_id)
+        self._maybe_mark_ctx(session_id, used_tokens)
         return result or ""
 
     def close(self, session_id: str) -> None:
@@ -95,7 +113,7 @@ class ClaudeCliDriver:
     # ── claude CLI 한 turn (PoC run_turn 골격) ─────────────────────────────────
 
     def _turn(self, cwd, prompt, *, session_id=None, resume=None):
-        """비대화 claude turn 1회. (observed_session_id, result_text) 반환.
+        """비대화 claude turn 1회. (observed_session_id, result_text, used_tokens) 반환.
 
         child cwd 격리 — subprocess cwd 를 PM repo root 로 명시(엔진 제약 ①). resume 은
         같은 세션을 cwd 인자 없이 잇는다(claude 가 세션에 cwd 를 묶음)."""
@@ -118,10 +136,10 @@ class ClaudeCliDriver:
             completed = self.runner(cmd, **run_kwargs)
         except subprocess.TimeoutExpired:
             sys.stderr.write(f"[pm-orch] claude turn timeout ({self.timeout}s)\n")
-            return None, None
+            return None, None, None
         except OSError as exc:
             sys.stderr.write(f"[pm-orch] claude 실행 실패: {exc}\n")
-            return None, None
+            return None, None, None
 
         # 실패를 조용한 빈 응답으로 삼키지 않는다 — 최소 진단을 stderr 로(stdout=PM 대화 채널 보존).
         if getattr(completed, "returncode", 0):
@@ -132,6 +150,26 @@ class ClaudeCliDriver:
 
         lines = (completed.stdout or "").splitlines()
         return self._parse(lines)
+
+    def _maybe_mark_ctx(self, session_id: str, used_tokens: int | None) -> None:
+        """주입된 usage·예산 신호가 모두 있으면 엔진의 post-turn 회전 헬퍼를 호출한다."""
+        ctx_di_complete = all(value is not None for value in (
+            self._ctx_budget, self._stop_pct, self._root, self._mark_stop,
+        ))
+        if used_tokens is None:
+            if ctx_di_complete and not self._warned_missing_usage:
+                sys.stderr.write(
+                    "[pm-orch] claude usage 신호 소실 — ctx post-turn 가드를 판정할 수 없음\n"
+                )
+                self._warned_missing_usage = True
+            return
+        if not ctx_di_complete:
+            return
+        # claude usage 는 요청 단위 절대 점유라 codex `_last_total` 누계 차분이 불요하다.
+        # 파서와 ctx_guard._usage_input_tokens 모두 입력+캐시 계열을 현재 점유로 정의한다.
+        self._mark_stop(
+            self._root, session_id, used_tokens, self._ctx_budget, self._stop_pct,
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -160,7 +198,19 @@ def main(argv: list[str] | None = None) -> int:
     engine, root = _load_engine()
 
     cwd = args.cwd or os.getcwd()
-    driver = ClaudeCliDriver(engine.parse_stream_json, model=args.model)
+    conf = ctx_guard.load_local_config(root)
+    ctx_budget = ctx_guard.resolve_budget(conf, "claude")
+    stop_pct = ctx_guard.ctx_thresholds(conf)["stop_pct"]
+    engine.validate_relay_budget(ctx_budget, stop_pct)
+    driver = ClaudeCliDriver(
+        engine.parse_stream_json,
+        ctx_budget=ctx_budget,
+        stop_pct=stop_pct,
+        root=root,
+        mark_stop=engine.mark_ctx_post_turn_if_over,
+        spawn_result=engine.SpawnResult,
+        model=args.model,
+    )
     supervisor = engine.Supervisor(driver, root=root, task=args.task)
 
     sys.stderr.write(

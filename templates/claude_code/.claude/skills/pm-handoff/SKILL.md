@@ -67,14 +67,12 @@ python3 .project_manager/tools/pm_handoff.py \
 ## 잔여 PM 손작업 (CLI 후)
 
 1. **log/current.md handoff entry 본문 서술 (lean 스키마)** — skeleton 의 `<...>` placeholder 를 채운다. 파생 가능한 상태는 source 에 미루고 다음 비파생 salient 레이어만 쓴다.
-   - **읽기 범위** — 이 entry + 인용할 과거 entry/ADR 의 *포인터* (라인수·전체Read 아님).
+   - **이 세션 박제 entries** — 기계 자동(직전 자기 handoff 이후의 complete/checkpoint 헤더
+     목록·경계 미해소 시 최근 N건 표기). 본문 재요약 금지 — log 원문이 서사의 단일 진실.
    - **메타 학습** — ticket 상태에서 도출 불가한 교훈만. 없으면 "없음".
-   - **다음 intent**:
-     - **대화 thread-tail** — 정지 직전 사용자 발화. ctx-trigger 경로는 어댑터 훅이 transcript 에서 자동 추출(초안). 대화형은 PM 손.
-     - **pending user intent** — 다음 우선순위 + 사용자 결정 대기. PM 손.
+   - **pending user intent** — 다음 우선순위 + 사용자 결정 대기. PM 손.
    - **회귀/incident** — 회귀 "N passed / 상태" **1줄(green 도 — baseline)** + 비-자명 incident. 회귀는 항상 적는다.
-   - **정지 후 thread-tail 검토** — ctx-trigger 자동 채움분은 *초안*이다. 새 PM 이 슬롯을 검토·편집한다(민감 발화 노출 최소화·과/부족 추출 보정).
-   - **FORBIDDEN (대량 재열거 금지 — source 가 답한다):** board done/open/claimed/blocked 카운트 (→ `board.py list`) · open ticket ID 목록 (→ `pm_bootstrap`) · commit 해시·push 상태 (→ `git log`/`git status`) · 직전 complete entry 산출물 재요약 (→ 인접 entry. "읽기 범위" 로 가리켜라). 회귀 1줄 baseline 은 예외다.
+   - **FORBIDDEN (대량 재열거 금지 — source 가 답한다):** board done/open/claimed/blocked 카운트 (→ `board.py list`) · open ticket ID 목록 (→ `pm_bootstrap`) · commit 해시·push 상태 (→ `git log`/`git status`) · 직전 complete entry 산출물 재요약 (→ 자동 박제 목록의 헤더와 인접 log 원문이 답한다). 회귀 1줄 baseline 은 예외다.
 2. **domain capture (채록) 검토** — `python3 .project_manager/tools/domain.py capture --tickets "T-0001,T-0002"`(이 세션 done ticket ID — 콤마분리 또는 공백 나열 `T-0001 T-0002`) 실행. 출력의 *영향 페이지*(`⚠ `=stale) 와 *coverage gap*(담당 페이지 없는 touched 경로)을 보고 관련 domain 페이지를 갱신하거나 신규 scaffold 한다. **surface-only** — 도구는 *무엇을 갱신/신설할지 띄울 뿐*, 본문 자동생성·`updated:` 자동스탬프는 안 한다(stale 탐지 거짓 방지). 갱신할 것 없으면 생략.
 3. **git commit — pathspec 필수** — 공유 PM 홈에서 bare `git commit` 은 다른 슬롯 WIP도 싣는다. **이번 세션이 만든 것을 전부, 그리고 그것만** 나열한다:
 

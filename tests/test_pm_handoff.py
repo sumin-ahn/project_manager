@@ -34,6 +34,15 @@ def _load_module(name: str = "pm_handoff"):
     return mod
 
 
+def _load_tool(name: str):
+    """producer-consumer 계약 테스트용 실제 tools 모듈 로더."""
+    path = TOOLS / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"test_{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 @pytest.fixture(scope="module")
 def hf():
     return _load_module()
@@ -967,6 +976,218 @@ def test_handoff_skeleton_no_double_cha(hf, raw):
     head = hf.build_handoff_log_skeleton(raw, date="2026-06-19").splitlines()[0]
     assert head == "## [2026-06-19] handoff | PM 19차 → 다음 PM 세션"
     assert "차차" not in head
+
+
+# ── T-0549 handoff 박제 entry 자동 목록 ───────────────────────────────────────
+
+_MIXED_SESSION_LOG = """\
+## [2026-08-01] handoff | PM 3차 (task:alpha) → 다음 PM 세션
+
+## [2026-08-01] complete | T-0001 — alpha 완료 (task:alpha)
+
+- alpha 본문은 수집하지 않는다.
+## [2026-08-01] complete | T-0002 — 다른 task 완료 (task:beta)
+
+## [2026-08-01] complete | T-0003 — legacy 무태그 완료
+
+## [2026-08-02] checkpoint | (task:alpha) — compaction
+
+- checkpoint 본문도 수집하지 않는다.
+## [2026-08-02] checkpoint | (task:beta) — manual
+
+## [2026-08-03] handoff | PM 4차 (task:alpha) → 다음 PM 세션
+
+## [2026-08-03] complete | T-0004 — 이번 세션 완료 (task:alpha)
+
+## [2026-08-03] complete | T-0005 — alpha 표기가 제목뿐 (task:beta)
+
+## [2026-08-04] checkpoint | (task:alpha) — manual
+
+## [2026-08-04] verify | T-0004 — 임의 action 완료 (task:alpha)
+"""
+
+
+def test_collect_session_entries_filters_mixed_task_log(hf):
+    assert hf.collect_session_entries(_MIXED_SESSION_LOG, "alpha") == [
+        "## [2026-08-03] complete | T-0004 — 이번 세션 완료 (task:alpha)",
+        "## [2026-08-04] checkpoint | (task:alpha) — manual",
+        "## [2026-08-04] verify | T-0004 — 임의 action 완료 (task:alpha)",
+    ]
+
+
+def test_collect_session_entries_round_trip_prefixed_id_from_real_producers(hf):
+    """ticket_finish의 prefixed ID 헤더와 pm_log 헤더를 생산→소비 round-trip한다."""
+    ticket_finish = _load_tool("ticket_finish")
+    pm_log = _load_tool("pm_log")
+    task = "orch-dev-T0549-r3"
+    finish = ticket_finish.build_log_skeleton(
+        "T-service-a-001", "수집기 실 round-trip", 42, 1, 2,
+        entry_type="feat", date="2026-08-06", task=task,
+    )
+    checkpoint = pm_log.build_checkpoint_entry(
+        task, "compaction", date="2026-08-06",
+    )
+    log_text = (
+        f"## [2026-08-05] handoff | PM 2차 (task:{task}) → 다음 PM 세션\n\n"
+        + finish + "\n" + checkpoint
+    )
+
+    assert hf.collect_session_entries(log_text, task) == [
+        finish.splitlines()[0],
+        checkpoint.splitlines()[0],
+    ]
+
+
+def test_slot_session_uses_own_previous_handoff_as_boundary(hf):
+    """slot handoff가 반복돼도 같은 slot의 직전 경계 이전 entry를 재수집하지 않는다."""
+    log_text = """\
+## [2026-08-01] handoff | PM 1차 (project_manager_1) → 다음 PM 세션
+## [2026-08-01] feat | T-0001 — 이전 slot 세션 완료 (project_manager_1)
+## [2026-08-02] handoff | PM 1차 (project_manager_2) → 다음 PM 세션
+## [2026-08-02] fix | T-0002 — 다른 slot 완료 (project_manager_2)
+## [2026-08-03] handoff | PM 2차 (project_manager_1) → 다음 PM 세션
+## [2026-08-03] verify | T-0003 — 현재 slot 세션 완료 (project_manager_1)
+"""
+    skeleton = hf.build_handoff_log_skeleton(
+        3, date="2026-08-04", session="project_manager_1", log_text=log_text,
+    )
+
+    assert "verify | T-0003 — 현재 slot 세션 완료" in skeleton
+    assert "feat | T-0001 — 이전 slot 세션 완료" not in skeleton
+    assert "fix | T-0002 — 다른 slot 완료" not in skeleton
+
+
+def test_slot_session_collects_only_own_tag_across_concurrent_slot_order(hf):
+    """slot 태그가 귀속 권위라 interleave된 타 slot·legacy 무태그 complete를 흡수하지 않는다."""
+    log_text = """\
+## [2026-08-01] handoff | PM 1차 (project_manager_1) → 다음 PM 세션
+## [2026-08-02] feat | T-0001 — slot1 완료 (project_manager_1)
+## [2026-08-03] handoff | PM 1차 (project_manager_2) → 다음 PM 세션
+## [2026-08-04] fix | T-0002 — slot2 완료 (project_manager_2)
+## [2026-08-05] verify | T-0003 — legacy 무태그 혼입 후보
+## [2026-08-06] complete | T-0004 — slot1 후속 완료 (project_manager_1)
+"""
+
+    assert hf.collect_session_entries(log_text, None, "project_manager_1") == [
+        "## [2026-08-02] feat | T-0001 — slot1 완료 (project_manager_1)",
+        "## [2026-08-06] complete | T-0004 — slot1 후속 완료 (project_manager_1)",
+    ]
+
+
+def test_task_first_handoff_collects_all_own_tagged_entries(hf):
+    """자기 handoff가 아직 없는 task는 무관 handoff로 자르지 않고 태그 기준 전체를 수집한다."""
+    log_text = """\
+## [2026-08-01] feat | T-0001 — 첫 task 완료 (task:alpha)
+## [2026-08-02] handoff | PM 9차 (project_manager_2) → 다음 PM 세션
+## [2026-08-03] fix | T-0002 — 두 번째 task 완료 (task:alpha)
+"""
+
+    assert hf.collect_session_entries(log_text, "alpha") == [
+        "## [2026-08-01] feat | T-0001 — 첫 task 완료 (task:alpha)",
+        "## [2026-08-03] fix | T-0002 — 두 번째 task 완료 (task:alpha)",
+    ]
+
+
+def test_collect_session_entries_solo_uses_last_untagged_handoff(hf):
+    log_text = _MIXED_SESSION_LOG + """\
+## [2026-08-05] handoff | PM 9차 → 다음 PM 세션
+
+## [2026-08-05] complete | T-0006 — solo legacy 완료
+
+## [2026-08-05] checkpoint | (task:beta) — compaction
+"""
+    assert hf.collect_session_entries(log_text, None) == [
+        "## [2026-08-05] complete | T-0006 — solo legacy 완료",
+    ]
+
+
+def test_collect_session_entries_unresolved_boundary_caps_old_red_104(hf):
+    """자기/임의 handoff가 전혀 없는 adopter#0 로그도 최근 10건만 박제한다."""
+    log_text = "\n".join(
+        f"## [2026-08-01] feat | T-{index:04d} — adopter entry {index}"
+        for index in range(1, 105)
+    )
+
+    entries = hf.collect_session_entries(log_text, None)
+    skeleton = hf.build_handoff_log_skeleton(1, log_text=log_text)
+
+    assert len(entries) == 10
+    assert entries[0].endswith("T-0095 — adopter entry 95")
+    assert entries[-1].endswith("T-0104 — adopter entry 104")
+    assert "(경계 미해소 — 최근 10건)" in skeleton
+    assert "T-0094 — adopter entry 94" not in skeleton
+
+
+def test_slot_missing_own_identity_does_not_absorb_legacy_untagged_entries(hf):
+    log_text = """\
+## [2026-08-01] feat | T-0001 — 오래된 완료
+## [2026-08-02] handoff | PM 3차 (other_1) → 다음 PM 세션
+## [2026-08-03] fix | T-0002 — 최근 완료
+"""
+    skeleton = hf.build_handoff_log_skeleton(
+        1, session="new_1", log_text=log_text,
+    )
+
+    assert "T-0001 — 오래된 완료" not in skeleton
+    assert "T-0002 — 최근 완료" not in skeleton
+    assert "이 세션 박제 entry 없음" in skeleton
+
+
+def test_slot_and_solo_exclude_other_task_tagged_entries(hf):
+    log_text = """\
+## [2026-08-01] handoff | PM 1차 (slot_1) → 다음 PM 세션
+## [2026-08-02] feat | T-0001 — slot 완료 (slot_1)
+## [2026-08-02] fix | T-0002 — 타 task 완료 (task:beta)
+## [2026-08-02] checkpoint | (task:beta) — compaction
+"""
+    assert hf.collect_session_entries(log_text, None, "slot_1") == [
+        "## [2026-08-02] feat | T-0001 — slot 완료 (slot_1)",
+    ]
+    assert hf.collect_session_entries(log_text, None) == []
+
+
+def test_collect_session_entries_matches_placeholder_type_and_wide_ticket_id(hf):
+    log_text = """\
+## [2026-08-01] handoff | PM 1차 (task:alpha) → 다음 PM 세션
+## [2026-08-02] <!-- feat/fix/verify/… --> | T-12345 — 미채움 (task:alpha)
+"""
+    assert hf.collect_session_entries(log_text, "alpha") == [
+        "## [2026-08-02] <!-- feat/fix/verify/… --> | T-12345 — 미채움 (task:alpha)",
+    ]
+
+
+def test_handoff_skeleton_lists_only_collected_entry_headers(hf):
+    skeleton = hf.build_handoff_log_skeleton(
+        5,
+        date="2026-08-05",
+        session="task:alpha",
+        log_text=_MIXED_SESSION_LOG,
+        task="alpha",
+    )
+    assert "- 이 세션 박제 entries:\n" in skeleton
+    assert "  - ## [2026-08-03] complete | T-0004 — 이번 세션 완료 (task:alpha)" in skeleton
+    assert "  - ## [2026-08-04] checkpoint | (task:alpha) — manual" in skeleton
+    assert "alpha 본문은 수집하지 않는다" not in skeleton
+    assert "읽기 범위" not in skeleton
+    assert "대화 thread-tail" not in skeleton
+
+
+def test_handoff_skeleton_marks_empty_session_entries(hf):
+    skeleton = hf.build_handoff_log_skeleton(1, date="2026-08-05")
+    # 0건이면 경계 표기 없이 없음 문구만 — 빈 목록의 "최근 N건" 서술은 무의미.
+    assert "- 이 세션 박제 entries: (이 세션 박제 entry 없음)" in skeleton
+    assert "경계 미해소" not in skeleton
+
+
+def test_thread_tail_interface_removed(hf):
+    import inspect
+
+    assert "thread_tail" not in inspect.signature(hf.build_handoff_log_skeleton).parameters
+    assert "--thread-tail" not in hf.build_parser()._option_string_actions
+    assert not hasattr(hf, "_flatten_thread_tail")
+    assert not hasattr(hf, "_next_intent_lines")
+    assert not hasattr(hf, "THREAD_TAIL_PLACEHOLDER")
+    assert not hasattr(hf, "THREAD_TAIL_MAX_CHARS")
 
 
 @pytest.mark.parametrize("raw", ["20", "20차", "20차차"])

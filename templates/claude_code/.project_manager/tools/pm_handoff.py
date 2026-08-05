@@ -13,7 +13,7 @@ slot/solo 호환 경로:
 
 동작 순서 (하나라도 실패하면 이후 단계 중단):
   1. 회귀 측정 — pytest tests/ -q. red 면 즉시 중단·핸드오프 불가.
-  2. log/current.md handoff entry skeleton append — lean 3섹션(읽기범위·메타학습·다음intent)+회귀/incident(1줄 baseline).
+  2. log/current.md handoff entry skeleton append — 세션 중 박제 entry 자동 목록+메타학습·pending intent+회귀/incident.
   3. pm_state.md 세션 식별 표 sliding window 정리 — 신규 entry 추가 + 가장 오래된 entry 제거.
   4. pm_state.md 길이 검증 — wc -l 기준 700 라인 초과 시 warning.
   5. 인계 프롬프트 stdout 출력 — pm_playbook.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
@@ -844,50 +844,9 @@ SHIPPING_GLOBS = (
 
 # ── log/current.md handoff entry skeleton ────────────────────────────────────────────
 
-# "다음 intent" 세분(재검토 트리거): 한 줄 → 두 줄.
-#   - 대화 thread-tail: 어댑터(claude ctx 훅)가 정지 직전 사용자 발화를 transcript 에서 추출해
-#     자동 채운다. 미주입 시 아래 placeholder 유지(하위호환).
-#   - pending user intent: PM 손 — 다음 우선순위 + 사용자 결정 대기.
-THREAD_TAIL_PLACEHOLDER = (
-    "<자동 — 정지 직전 사용자 발화. 어댑터 미주입 시 비움.>"
-)
 PENDING_INTENT_PLACEHOLDER = (
     "<PM 손 — 다음 우선순위 + 사용자 결정 대기. board open ticket 재열거 금지.>"
 )
-
-
-THREAD_TAIL_MAX_CHARS = 600  # 엔진 레벨 방어 cap (어댑터 추출 캡과 동일·CLI 직접 호출 대비).
-
-
-def _flatten_thread_tail(thread_tail: str) -> str:
-    """thread_tail 을 한 줄 슬롯에 안전하게 — 개행 평탄화·trim·cap.
-
-    `build_handoff_log_skeleton(thread_tail=...)` 은 공개 API 라 다중행 입력이 후속 섹션
-    (`- 회귀/incident:` 등)을 위조하거나 lean 줄단위 handoff 스키마를 깰 수 있다. 엔진이 *자기*
-    규격(줄단위 슬롯)을 직접 방어한다 — 어댑터(ctx_guard)가 이미 평탄화해도 defense-in-depth
-    (엔진 인터페이스는 공개라 신뢰 안 함).
-    """
-    flat = " / ".join(part.strip() for part in thread_tail.splitlines() if part.strip())
-    flat = flat.strip()
-    if len(flat) > THREAD_TAIL_MAX_CHARS:
-        flat = flat[: THREAD_TAIL_MAX_CHARS - 1].rstrip() + "…"
-    return flat
-
-
-def _next_intent_lines(thread_tail: str | None) -> str:
-    """"다음 intent" 두 줄(대화 thread-tail / pending user intent)을 빌드한다.
-
-    thread_tail 이 주어지면(어댑터 자동 주입) 첫 줄 슬롯에 *평탄화·trim·cap 한* 텍스트를 넣고,
-    None/빈/공백뿐이면 placeholder 를 유지한다(하위호환). 엔진은 transcript 를 보지 않고 받은
-    string 을 *자기 줄단위 규격에 맞게 sanitize 해* 슬롯에 넣는다(harness-agnostic seam·CLI 방어).
-    """
-    tail = _flatten_thread_tail(thread_tail) if thread_tail else ""
-    if not tail:
-        tail = THREAD_TAIL_PLACEHOLDER
-    return (
-        f"- 대화 thread-tail: {tail}\n"
-        f"- pending user intent: {PENDING_INTENT_PLACEHOLDER}"
-    )
 
 
 def _worktree_line(worktree_slot: str | None, branch: str | None) -> str:
@@ -911,6 +870,150 @@ def _worktree_line(worktree_slot: str | None, branch: str | None) -> str:
 # 미러(모듈 격리라 상수를 각 모듈에 inline). dashboard 자기 섹션은 sentinel 없이 verbatim
 # `## <task>`(interface 2) — 사람 가독 표면과 기계 파싱 표면의 요구가 달라 값을 분리한다.
 _TASK_TAG_PREFIX = "task:"
+_UNRESOLVED_BOUNDARY_ENTRY_LIMIT = 10
+_ENTRY_TYPE_RE = r"(?:\S+|<!-- feat/fix/verify/… -->)"
+# board.py의 발행 문법(`_TICKET_ID_BODY`) 미러: legacy `T-NNNN`와
+# namespaced `T-<prefix>-NNN`을 함께 소비한다. prefix는 영숫자로 시작하고 이후
+# 영숫자/underscore/hyphen을 허용한다(`T-PAY-001`, `T-service-a-001`).
+_TICKET_ID_BODY = r"T-(?:[A-Za-z0-9][A-Za-z0-9_-]*-\d+|\d+)"
+_ANY_HANDOFF_RE = re.compile(
+    r"^## \[\d{4}-\d{2}-\d{2}\] handoff \| PM \d+차"
+    r"(?: \(.+\))? → 다음 PM 세션$"
+)
+_TASK_ENTRY_TAG_RE = re.compile(r"(?: \(|\| \()task:[^)]+\)")
+_SLOT_ENTRY_TAG_RE = re.compile(r" \([^()\s]+_\d+\)$")
+
+
+def _log_entry_headers(log_text: str) -> list[str]:
+    """`_LOG_ENTRY_RE`가 가리키는 entry 헤더만 원문 순서로 반환한다."""
+    headers: list[str] = []
+    for match in _LOG_ENTRY_RE.finditer(log_text):
+        line_end = log_text.find("\n", match.start())
+        if line_end < 0:
+            line_end = len(log_text)
+        headers.append(log_text[match.start():line_end].rstrip("\r"))
+    return headers
+
+
+def _collect_session_entries(
+    log_text: str,
+    task: str | None,
+    session: str | None = None,
+) -> tuple[list[str], bool]:
+    """직전 자기 handoff 이후 이 세션에 귀속된 완료/checkpoint 헤더를 수집한다.
+
+    task 세션은 같은 ``(task:<name>)`` handoff를 경계로 삼고, ticket_finish/pm_log 가 생산하는
+    같은 task 태그의 티켓 완료형/checkpoint만 소비한다. 자기 handoff가 아직 없으면 태그가 귀속
+    권위이므로 무관 handoff로 자르지 않고 전체에서 최근 10건만 반환한다. 완료형의 action은
+    ``feat``/``fix``/``verify`` 등 임의 단어이며 board 발행 문법의 ticket ID 뒤 ``— …`` 형태로
+    판별한다. slot 세션도 같은 canonical session 태그 entry만 소비한다. legacy 무태그 entry는
+    동시 slot 혼입 위험 때문에 slot 모드에서 수집하지 않는다. solo 세션만 태그 없는 canonical
+    handoff를 경계로 삼고, 자기 경계가 없으면 가장 최근의 다른 handoff로 폴백한다. 본문은
+    반환하지 않아 log 원문이 서사의 단일 진실로 남는다.
+    """
+    headers = _log_entry_headers(log_text)
+    if task is not None:
+        escaped_task = re.escape(task)
+        handoff_re = re.compile(
+            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] handoff \| PM \d+차 "
+            rf"\({_TASK_TAG_PREFIX}{escaped_task}\) → 다음 PM 세션$"
+        )
+        ticket_entry_re = re.compile(
+            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] {_ENTRY_TYPE_RE} \| {_TICKET_ID_BODY} — .+ "
+            rf"\({_TASK_TAG_PREFIX}{escaped_task}\)$"
+        )
+        checkpoint_re = re.compile(
+            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] checkpoint \| "
+            rf"\({_TASK_TAG_PREFIX}{escaped_task}\) — .+$"
+        )
+        own_boundaries = [
+            index for index, header in enumerate(headers)
+            if handoff_re.fullmatch(header)
+        ]
+        boundary = own_boundaries[-1] if own_boundaries else -1
+        entries = [
+            header
+            for header in headers[boundary + 1:]
+            if ticket_entry_re.fullmatch(header) or checkpoint_re.fullmatch(header)
+        ]
+        unresolved = boundary < 0
+        return (
+            entries[-_UNRESOLVED_BOUNDARY_ENTRY_LIMIT:] if unresolved else entries,
+            unresolved,
+        )
+
+    if session is not None:
+        escaped_session = re.escape(session)
+        handoff_re = re.compile(
+            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] handoff \| PM \d+차 "
+            rf"\({escaped_session}\) → 다음 PM 세션$"
+        )
+        ticket_entry_re = re.compile(
+            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] {_ENTRY_TYPE_RE} \| {_TICKET_ID_BODY} — .+ "
+            rf"\({escaped_session}\)$"
+        )
+        checkpoint_re = re.compile(
+            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] checkpoint \| "
+            rf"\({escaped_session}\) — .+$"
+        )
+    else:
+        handoff_re = re.compile(
+            r"^## \[\d{4}-\d{2}-\d{2}\] handoff \| PM \d+차 → 다음 PM 세션$"
+        )
+        ticket_entry_re = re.compile(
+            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] {_ENTRY_TYPE_RE} \| {_TICKET_ID_BODY} — .+$"
+        )
+        checkpoint_re = re.compile(
+            r"^## \[\d{4}-\d{2}-\d{2}\] checkpoint \| .+$"
+        )
+    own_boundaries = [
+        index for index, header in enumerate(headers)
+        if handoff_re.fullmatch(header)
+    ]
+    # 무관 handoff 경계 폴백은 태그 귀속 권위가 없는 solo legacy에만 허용한다.
+    fallback_boundaries = (
+        [
+            index for index, header in enumerate(headers)
+            if _ANY_HANDOFF_RE.fullmatch(header)
+        ]
+        if session is None else []
+    )
+    boundary = own_boundaries[-1] if own_boundaries else (
+        fallback_boundaries[-1] if fallback_boundaries else -1
+    )
+    entries = [
+        header
+        for header in headers[boundary + 1:]
+        if not _TASK_ENTRY_TAG_RE.search(header)
+        and (session is not None or not _SLOT_ENTRY_TAG_RE.search(header))
+        and (ticket_entry_re.fullmatch(header) or checkpoint_re.fullmatch(header))
+    ]
+    unresolved = boundary < 0
+    return (
+        entries[-_UNRESOLVED_BOUNDARY_ENTRY_LIMIT:] if unresolved else entries,
+        unresolved,
+    )
+
+
+def collect_session_entries(
+    log_text: str,
+    task: str | None,
+    session: str | None = None,
+) -> list[str]:
+    """현재 세션 entry만 반환한다. 경계 미해소 시 최근 10건으로 제한한다."""
+    return _collect_session_entries(log_text, task, session)[0]
+
+
+def _session_entries_text(entries: list[str], boundary_unresolved: bool = False) -> str:
+    """handoff skeleton의 자동 박제 목록을 compact한 중첩 목록으로 렌더한다."""
+    notice = (
+        f" (경계 미해소 — 최근 {_UNRESOLVED_BOUNDARY_ENTRY_LIMIT}건)"
+        if boundary_unresolved else ""
+    )
+    if not entries:
+        # 0건이면 경계 표기를 붙이지 않는다 — 빈 목록엔 "최근 N건" 서술이 무의미(혼동만).
+        return " (이 세션 박제 entry 없음)"
+    return notice + "\n" + "\n".join(f"  - {header}" for header in entries)
 
 
 def _session_tag(session: str | None) -> str:
@@ -940,9 +1043,9 @@ def _normalize_session_num(session_num: int | str) -> str:
 HANDOFF_LOG_SKELETON_TEMPLATE = """\
 ## [{date}] handoff | PM {session_num}차{session_tag} → 다음 PM 세션
 
-- 읽기 범위: <PM 손 — 이 entry + 인용할 과거 entry/ADR. 라인수·전체Read 아님. board/git/log 는 {bootstrap_entry} 라이브 — 적지 마라.>
+- 이 세션 박제 entries:{entries}
 - 메타 학습: <PM 손 — ticket 상태에서 도출 불가한 교훈만. 없으면 "없음".>
-{next_intent}
+- pending user intent: {pending_intent}
 {worktree_line}- 회귀/incident: <PM 손 — 회귀 "N passed / 상태" 1줄(green 도 — baseline) + 비-자명 incident. (회귀는 1줄 load-bearing 이라 항상 적음 — board/git/log 대량 재열거만 금지.)>
 """
 
@@ -950,14 +1053,15 @@ HANDOFF_LOG_SKELETON_TEMPLATE = """\
 def build_handoff_log_skeleton(
     session_num: int | str,
     date: str | None = None,
-    thread_tail: str | None = None,
     worktree_slot: str | None = None,
     branch: str | None = None,
     session: str | None = None,
+    log_text: str = "",
+    task: str | None = None,
 ) -> str:
     """log/current.md 에 append 할 handoff entry skeleton 을 반환한다.
 
-    thread_tail 주입 시 "다음 intent" 의 대화 thread-tail 슬롯을 자동 채운다.
+    log_text/task로 직전 자기 handoff 이후 complete/checkpoint 헤더를 자동 채운다.
     worktree_slot 주입 시(multi-PM 모드) slot/branch 기록 줄을 추가한다 — 회전 재부착
     연속성 단서. 미지정(솔로)이면 줄 생략(현행 스키마 보존).
     session 주입 시(multi-PM 정체성 해소·canonical `<repo>_<N>`) 헤더 차수 뒤에 `({session})`
@@ -966,13 +1070,14 @@ def build_handoff_log_skeleton(
     """
     if date is None:
         date = datetime.date.today().isoformat()
+    entries, boundary_unresolved = _collect_session_entries(log_text, task, session)
     return HANDOFF_LOG_SKELETON_TEMPLATE.format(
         date=date,
         session_num=_normalize_session_num(session_num),
         session_tag=_session_tag(session),
-        next_intent=_next_intent_lines(thread_tail),
+        entries=_session_entries_text(entries, boundary_unresolved),
+        pending_intent=PENDING_INTENT_PLACEHOLDER,
         worktree_line=_worktree_line(worktree_slot, branch),
-        bootstrap_entry=_runtime_skill_entry("pm-bootstrap"),
     )
 
 
@@ -1513,7 +1618,7 @@ def build_handoff_prompt_output(
     """인계 프롬프트 stdout 출력 문자열을 빌드한다.
 
     pm_playbook.md §부트스트랩 프롬프트 템플릿(역할 framing + `/pm-bootstrap` 트리거)을 그대로
-    포함한다. 부트스트랩이 인계 본문(읽기 범위·메타 학습·다음 intent·회귀/incident)을
+    포함한다. 부트스트랩이 인계 본문(박제 entries·메타 학습·pending intent·회귀/incident)을
     log handoff entry 에서 자동 dump 하므로, 프롬프트는 더 이상 `<핵심 인계 사항>` 손-채움을
     싣지 않는다
 
@@ -1807,7 +1912,7 @@ def _dashboard_lock() -> Iterator[None]:
 # 자기 섹션 본문 최대 줄 수 (헤딩 제외) — 3~5줄 상한(차수·wave·claimed·다음). 초과분 truncate.
 DASHBOARD_SECTION_MAX_LINES = 5
 
-# 본문 한 줄 char cap — "가벼운 대시보드" 방어(거대 단일 줄 유입 차단·_flatten_thread_tail 동형).
+# 본문 한 줄 char cap — "가벼운 대시보드" 방어(거대 단일 줄 유입 차단).
 DASHBOARD_LINE_MAX_CHARS = 200
 
 # lazy 생성 시 파일 머리말 (대시보드 부재 → 첫 write 에서 헤더 + 자기 섹션).
@@ -1838,7 +1943,7 @@ def _flatten_dashboard_value(value: object) -> str:
 
     render_dashboard_section 인자는 공개라 다중행 입력(wave_summary·next_plan)이 `## ` 헤딩을
     위조하거나 상한 줄수를 우회할 수 있다 — 개행을 공백으로 접고(single line) char cap 을 씌워
-    자기 규격(줄단위·경량)을 엔진이 직접 방어한다(_flatten_thread_tail 동형).
+    자기 규격(줄단위·경량)을 엔진이 직접 방어한다.
     """
     flat = " ".join(part.strip() for part in str(value).splitlines() if part.strip())
     flat = flat.strip()
@@ -2846,19 +2951,21 @@ class PmHandoff:
             _parsed_slot = _parse_worktree_slot(worktree_slot)
             session_identity = f"{_parsed_slot[0]}_{_parsed_slot[1]}" if _parsed_slot else None
             log_session_tag = session_identity
+        log_text = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
         skeleton = build_handoff_log_skeleton(
             session_num=_normalize_session_num(session_num),
             date=date_str,
             worktree_slot=worktree_slot,
             branch=branch,
             session=log_session_tag,
+            log_text=log_text,
+            task=task,
         )
 
         if dry_run:
             print("  [dry-run] log/current.md 에 append 할 skeleton:")
             print("  " + skeleton.replace("\n", "\n  "))
         else:
-            log_text = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
             self._log_file.write_text(log_text + "\n" + skeleton, encoding="utf-8")
             print(f"  ✓ log/current.md handoff entry skeleton append (PM {session_num}차)")
 
