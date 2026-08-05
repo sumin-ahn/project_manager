@@ -313,7 +313,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 10192,
+      "line": 10198,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-non-prose",
@@ -849,7 +849,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 10192,
+      "line": 10198,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-non-prose",
@@ -1153,7 +1153,7 @@
     },
     {
       "path": "templates/claude_code/README.md",
-      "line": 67,
+      "line": 82,
       "kind": "work_item",
       "match": "ADR-0005",
       "surface": "markdown",
@@ -1585,7 +1585,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 10192,
+      "line": 10198,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-non-prose",
@@ -1873,7 +1873,7 @@
     },
     {
       "path": "templates/codex/README.md",
-      "line": 135,
+      "line": 143,
       "kind": "work_item",
       "match": "ADR-0065",
       "surface": "markdown",
@@ -1881,7 +1881,7 @@
     },
     {
       "path": "templates/codex/README.md",
-      "line": 136,
+      "line": 144,
       "kind": "work_item",
       "match": "ADR-0054",
       "surface": "markdown",
@@ -1889,7 +1889,7 @@
     },
     {
       "path": "templates/codex/README.md",
-      "line": 149,
+      "line": 157,
       "kind": "work_item",
       "match": "ADR-0054",
       "surface": "markdown",
@@ -1897,7 +1897,7 @@
     },
     {
       "path": "templates/codex/README.md",
-      "line": 174,
+      "line": 182,
       "kind": "work_item",
       "match": "ADR-0069",
       "surface": "markdown",
@@ -1905,7 +1905,7 @@
     },
     {
       "path": "templates/codex/README.md",
-      "line": 174,
+      "line": 182,
       "kind": "work_item",
       "match": "ADR-0070",
       "surface": "markdown",
@@ -1913,7 +1913,7 @@
     },
     {
       "path": "templates/codex/README.md",
-      "line": 175,
+      "line": 183,
       "kind": "work_item",
       "match": "ADR-0054",
       "surface": "markdown",
@@ -1921,7 +1921,7 @@
     },
     {
       "path": "templates/codex/README.md",
-      "line": 175,
+      "line": 183,
       "kind": "work_item",
       "match": "ADR-0065",
       "surface": "markdown",
@@ -2449,7 +2449,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 10192,
+      "line": 10198,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-non-prose",
@@ -2801,7 +2801,7 @@
     },
     {
       "path": "templates/opencode/README.md",
-      "line": 62,
+      "line": 76,
       "kind": "work_item",
       "match": "T-0033",
       "surface": "markdown",
@@ -2809,7 +2809,7 @@
     },
     {
       "path": "templates/opencode/README.md",
-      "line": 80,
+      "line": 94,
       "kind": "work_item",
       "match": "ADR-0058",
       "surface": "markdown",
@@ -2817,7 +2817,7 @@
     },
     {
       "path": "templates/opencode/README.md",
-      "line": 85,
+      "line": 99,
       "kind": "work_item",
       "match": "ADR-0054",
       "surface": "markdown",
@@ -2825,7 +2825,7 @@
     },
     {
       "path": "templates/opencode/README.md",
-      "line": 89,
+      "line": 103,
       "kind": "work_item",
       "match": "ADR-0048",
       "surface": "markdown",
@@ -2833,7 +2833,7 @@
     },
     {
       "path": "templates/opencode/README.md",
-      "line": 89,
+      "line": 103,
       "kind": "work_item",
       "match": "ADR-0058",
       "surface": "markdown",
@@ -2841,7 +2841,7 @@
     },
     {
       "path": "templates/opencode/README.md",
-      "line": 116,
+      "line": 130,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "markdown",
@@ -2849,7 +2849,7 @@
     },
     {
       "path": "templates/opencode/README.md",
-      "line": 116,
+      "line": 130,
       "kind": "work_item",
       "match": "ADR-0069",
       "surface": "markdown",

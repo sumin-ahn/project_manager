@@ -8602,7 +8602,13 @@ def lint_adr_lifecycle() -> list[tuple[str, str, str]]:
                     findings.append((tgt, "adr-lifecycle",
                                      f"{adr_id} 이 {verb} 하는데 {back_field} 에 {adr_id} 누락"))
                 tgt_status = str(tfm.get("status") or "").strip()
-                if tgt_status != want_status:
+                # supersession은 amendment보다 강한 종결 상태다. 이미 superseded 된 ADR에
+                # 후속 ADR이 amendment 역사를 더해도 상태를 amended로 되돌리지 않는다.
+                status_satisfies = (
+                    tgt_status == want_status
+                    or (verb == "amends" and tgt_status == "superseded")
+                )
+                if not status_satisfies:
                     findings.append((tgt, "adr-lifecycle",
                                      f"{adr_id} 이 {verb} 하는데 status={tgt_status or '없음'} (기대 {want_status})"))
         # 자가일관 — status 가 amended/superseded 면 back-ref 가 있어야.
@@ -9631,7 +9637,7 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
       - baseline(`upstream_rev`) 미기록(아직 revision 추적 전·구 import) → [](관찰 기준점 자체 부재).
       - baseline 은 있으나 seen(`upstream_seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → **관찰불가
         advisory 1줄**(never-block). 과거엔 조용한 [](silent skip)였으나, hooks/driver 등 safety-critical
-        잔여가 *관찰 없이* 낡으면 "green 인데 고장"(hard-stop 미발화·회귀 게이트 무력)이라 관찰불가 자체를
+        잔여가 *관찰 없이* 낡으면 "green 인데 고장"(checkpoint 가드 미발화·회귀 게이트 무력)이라 관찰불가 자체를
         표면화한다. advisory 라 `--gate` 미차단·1줄이라 flood 아님.
     """
     findings: list[tuple[str, str, str]] = []

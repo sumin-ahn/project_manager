@@ -45,6 +45,21 @@ longhand·placeholder 표는 루트 [`docs/manual-import.md`](../../docs/manual-
 세션에서 trust 다이얼로그를 수락하면 적용된다. import는 이 보안 경계를 자동 승인하거나
 `~/.claude.json`을 조작·검사하지 않는다.
 
+## Context safety: native compaction + checkpoint
+
+Claude Code의 native auto-compaction을 켠 채 사용한다. 메인 PM 세션의
+`PreToolUse`/`UserPromptSubmit` 훅은 컨텍스트가 nudge·강화·final 밴드에 들어갈 때
+`additionalContext`로 checkpoint 안내를 사이클당 한 번씩 주입한다. 모든 밴드는 비차단이며 prompt,
+도구 실행, compaction을 거부하지 않는다. `PostCompact`는 완료된 압축 경계에서 멱등 marker를
+재무장한다. 서브에이전트는 checkpoint 안내 대상에서 제외되고 native compaction으로 독립 정리된다.
+
+안내를 받은 PM은 현재 ticket 경계를 닫고
+`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>`으로 진행·결정·검증 상태를
+박제한다. 압축 직후 안내에는 `--trigger compaction`을 붙인다. 훅 wrapper(`ctx_stop_hook.sh`)와
+python 훅 본체는 framework-owned(`@source`)라 `pm_update`가 갱신한다. instance-owned 는
+`settings.json`뿐이므로, 기존 채택자는 v1.6.0 템플릿의 비차단 훅 *설정*(PreToolUse/PostCompact
+등록·PreCompact 제거)만 자기 `settings.json`에 수동 병합한다.
+
 ## 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 
 엔진 경로만 덮어쓴다 — 어댑터·CLAUDE.md·README 는 보존(manifest 밖). 전체 엔진 변경은 이 타깃만

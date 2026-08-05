@@ -119,6 +119,10 @@ function resolveBudget(conf, harness) {
 // (input/cache 가 누적 컨텍스트를 반영 — 매 턴의 최신값을 쓰고, 합산이 아니라 최신 메시지 기준.)
 function accumulateTokens(tokens) {
   if (!tokens || typeof tokens !== "object") return 0;
+  // total 우선 — opencode 자체 overflow 판정과 동일(1.18.5 overflow.ts·driver 파서와 통일).
+  // 부재/비양수면 기존 합산 폴백(보수적 상위집합).
+  const total = Number(tokens.total);
+  if (Number.isFinite(total) && total > 0) return total;
   const input = Number(tokens.input) || 0;
   const output = Number(tokens.output) || 0;
   const reasoning = Number(tokens.reasoning) || 0;

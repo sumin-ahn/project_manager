@@ -996,10 +996,11 @@ def split_dirty(entries: Sequence[tuple[str, str]],
     staged_out: list[str] = []
     unstaged: list[str] = []
     for code, path in entries:
-        # 공용 writer의 flock inode는 clone-local 런타임 상태다. 정상 adopter에서는
-        # `.project_manager/.local/`이 gitignore지만, 최소/격리 repo에서도 ticket 산출물
-        # 누락으로 오보하지 않게 이 정확한 lock 파일만 잔여 보고에서 제외한다.
-        if path == ".project_manager/.local/log.lock":
+        # `.project_manager/.local/` 전체는 clone-local 런타임 상태다. 정상 adopter에서는
+        # gitignore지만, 최소/격리 repo에서도 lock·ledger·task 상태가 ticket 산출물 누락으로
+        # 오보되지 않게 접두 클래스 전체를 잔여 보고에서 제외한다. 비슷한 이름의 sibling
+        # (`.project_manager/.locality/`)은 제외하지 않는다.
+        if path == ".project_manager/.local" or path.startswith(".project_manager/.local/"):
             continue
         if code[0] not in (" ", "?") and not scope_covers(pathspec, path):
             staged_out.append(f"{code} {path}")

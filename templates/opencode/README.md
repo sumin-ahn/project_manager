@@ -59,6 +59,20 @@ opencode 는 모델 placeholder 해소가 필수라 **수동 `cp -r` 은 불완�
 > Windows 는 `pm-import.cmd`. 파사드 없이 직접 호출하려면
 > `python3 .project_manager/tools/pm_import.py …` (Windows 런처: `py -3.12 …pm_import.py …`).
 
+## Context safety: native compaction + checkpoint
+
+OpenCode의 native compaction을 유지하고 `.opencode/plugins/ctx-guard.js`가 메인 세션의 최신
+`AssistantMessage.tokens`를 관측한다. nudge·강화·final 밴드는 다음 model turn의 system context에
+checkpoint 안내를 사이클당 한 번씩 추가할 뿐 prompt, 도구 실행, compaction을
+차단하지 않는다. `session.compacted` 뒤에는 압축 후 checkpoint 안내를 내고 다음 사이클을 재무장한다.
+native task가 만든 자식 세션은 checkpoint 안내 대상에서 제외되고 자체 compaction으로 정리된다.
+
+안내를 받은 PM은 현재 ticket 경계를 닫고
+`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>`으로 진행·결정·검증 상태를
+박제한다. 압축 직후에는 `--trigger compaction`을 붙인다. host로 채택한 인스턴스의 plugin은
+`pm_update` 갱신 대상이고, guest로 추가한 plugin은 위 §갱신 채널대로 `add-harness opencode`를
+다시 실행해 갱신한다.
+
 ### 모델 선택 (`{{OPENCODE_PRO_MODEL}}` 해소 · T-0033)
 
 opencode 어댑터의 subagent `model:` 필드는 placeholder `{{OPENCODE_PRO_MODEL}}` 로 출하된다.

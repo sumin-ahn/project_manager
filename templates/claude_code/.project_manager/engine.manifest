@@ -90,7 +90,7 @@
 .claude/skills    @render
 
 # ── 서브에이전트 훅/드라이버 (엔진-미러·framework-owned 전파·T-0305·ADR-0032 Q3 결착) ──────
-# ctx-guard·hard-stop·statusline·회귀 게이트 훅·relay 드라이버는 board 상수/pm_relay 엔진의 미러라
+# ctx-guard·checkpoint nudge·statusline·회귀 게이트 훅·relay 드라이버는 board 상수/pm_relay 엔진의 미러라
 #   (test_ctx_default_mirror 가 board↔ctx_guard 상수 동기 강제) framework-owned 전파 대상이다 —
 #   engine safety-훅 fix 가 채택자에 닿게(frozen 근절·H1). canonical 소스는 ship 템플릿
 #   `templates/claude_code/.claude/*` 라 `@source=<루트-상대>` 마커가 채택자 dest `.claude/*` 로

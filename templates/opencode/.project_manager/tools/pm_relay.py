@@ -10,11 +10,11 @@ LLM 이 아니라 dumb pipe 인 코드 프로세스다 — user↔PM 메시지�
   spawn PM(fresh ctx + bootstrap 프롬프트로 file 재유도)
     → (user 입력 ↔ relay_turn) 반복
     → 매 turn 직후 stop_marker_present(sid) 1회 stat
-        → marker 있으면: 그 turn 은 이미 처리된 post-turn 신호 →
-           새 sid 로 respawn(재전송 없음) → 계속
+        → marker 있으면: 그 turn 은 이미 처리된 완료 후 신호 →
+           새 sid 로 respawn(같은 입력 반복 없음) → 계속
   EOF / `/quit` → 종료.
 
-STOP 관측 = ctx_stop_hook 이 박는 marker(`.project_manager/.local/ctx-stop/<sid>.done`).
+회전 관측 = ctx 가드가 박는 marker(`.project_manager/.local/ctx-stop/<sid>.done`).
 marker 파일명 예측 = 결정적 `--session-id`(supervisor 가 uuid4 발급 → driver 가 child 에 전달).
 hook·pm_handoff·pm_bootstrap 는 **무수정**(읽기만) — supervisor 는 그 marker 를 stat 만 한다.
 
@@ -391,7 +391,7 @@ def new_session_id() -> str:
 
 
 def stop_marker_present(root: Path, session_id: str) -> bool:
-    """ctx_stop_hook 이 박은 STOP marker 가 있는지 1회 stat. 폴 스레드 없음(thin)."""
+    """ctx 가드가 박은 회전 marker가 있는지 1회 stat. 폴 스레드 없음(thin)."""
     return _marker_path(root, session_id).exists()
 
 
@@ -407,19 +407,19 @@ def clear_marker(root: Path, session_id: str) -> bool:
 
 # ── post-turn marker 계약 ────────────────────────────────────────
 # marker 파일 존재 = "이 세션을 다음 입력 전에 회전하라" 는 단일 post-turn 신호.
-# payload 는 기존 파일 형식 호환을 위해 유지하지만 소비자는 존재만 판정한다.
+# payload는 진단용일 뿐 소비자는 존재만 판정한다.
 # marker 생산자는 turn 완료 후에 신호를 박제한다.
 # Supervisor 는 payload 를 판독하지 않는다.
 def write_post_turn_marker(root: Path, session_id: str) -> bool:
     """post-turn 회전 marker 박제(best-effort).
 
-    파일명/경로와 payload 형식은 호환 유지하지만 Supervisor 는 payload 를 판독하지
+    파일명/경로는 호환 유지하며 Supervisor는 payload를 판독하지
     않고 존재만을 post-turn 신호로 소비한다. 실패는 fail-soft(relay 무중단)."""
     path = _marker_path(root, session_id)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            "post-turn ctx-stop handoff triggered\n", encoding="utf-8"
+            "post-turn rotation requested\n", encoding="utf-8"
         )
         return True
     except OSError:
@@ -457,7 +457,7 @@ def parse_stream_json(lines) -> tuple[str | None, str | None, int | None]:
     - used_tokens: 마지막 `assistant` 이벤트의 `message.usage` 입력 계열
       (`input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens`) +
       `output_tokens` 합 — 회전(post-turn) 판정은 *다음* turn 이 지게 될 컨텍스트가 기준이라
-      이번 응답 출력을 포함한다(훅의 pre-turn "현재 점유"=입력 계열과 용도가 다름·codex 게이트).
+      이번 응답 출력을 포함한다(훅이 도구 실행 전에 보는 "현재 점유"와 용도가 다름·codex 게이트).
       각 값은 음이 아닌 정수만 인정하며 신호가 하나도 없으면 None.
     - JSONDecodeError 라인은 skip(부분/비-JSON 라인에 robust).
 
@@ -1769,7 +1769,7 @@ class Supervisor:
 
     **stateless 불변식**: 인스턴스 상태는 *주입된 협력자*(driver)와 *고정 config*(root·
     marker_dir)뿐 — 대화/작업 상태 필드는 0. user↔PM 메시지는 누적하지 않고 지나보낸다
-    (재전송 버퍼 없음). 연속성은 file.
+    (입력 반복 버퍼 없음). 연속성은 file.
     """
 
     def __init__(self, driver: SessionDriver, *, root: Path,
@@ -1800,7 +1800,7 @@ class Supervisor:
         - 반환 = exit code(0=정상 종료 EOF/quit · GUARD_TRIPPED_RC=연속 respawn 가드 발동).
 
         marker 존재는 payload 구분 없이 "다음 입력 전 회전" 단일 규칙으로 소비한다.
-        이미 완료된 turn 의 입력은 재전송하지 않는다.
+        이미 완료된 turn 의 입력은 다시 보내지 않는다.
 
         연속 respawn 가드: bootstrap turn 만으로 marker 가 박히는 fresh 세션이 연속되면
         spawn-loop 가 된다. 이 연속 즉시-회전 횟수를 지역 카운터로 세고 max 초과 시
@@ -1814,13 +1814,13 @@ class Supervisor:
             # 불변식(): **marker 를 지닌 세션엔 추가 입력을 relay 하지 않는다.**
             # spawn/respawn 의 bootstrap turn 이 예산을 넘겨 marker 를 남겼으면
             # 첫 입력 처리 *전* 여기서 회전한다 — 안 그러면 과예산 세션에 입력 1회가 추가 실행된다
-            # (지연 회전). bootstrap 은 이미 실행됐으니 재전송 대상이 아니다. 병적
+            # (지연 회전). bootstrap 은 이미 실행됐으니 반복 대상이 아니다. 병적
             # spawn-loop(예산이 bootstrap turn 보다도 작음)는 연속 즉시-회전 카운터로 막는다.
             if self.stop_marker_present(session_id):
                 consecutive_respawns += 1
                 if consecutive_respawns > self.max_consecutive_respawns:
                     out_stream.write(
-                        f"[relay] spawn 직후 연속 {consecutive_respawns}회 ctx-STOP — 무한 회전 "
+                        f"[relay] spawn 직후 연속 {consecutive_respawns}회 ctx 회전 — 무한 회전 "
                         f"차단(max={self.max_consecutive_respawns}). 종료. ctx 예산이 bootstrap "
                         "turn 보다 작은지 점검.\n"
                     )
@@ -1860,7 +1860,7 @@ class Supervisor:
                     pass
 
             # 매 turn 직후 1회 stat — marker 있으면 다음 입력을 받기 전에 회전.
-            # 이 turn 은 이미 처리·응답됐으므로 입력을 재전송하지 않는다.
+            # 이 turn 은 이미 처리·응답됐으므로 입력을 다시 보내지 않는다.
             if self.stop_marker_present(session_id):
                 session_id = self._respawn(
                     cwd, session_id, out_stream, reason="turn 초과",

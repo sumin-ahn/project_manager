@@ -399,6 +399,22 @@ def test_split_dirty_scope_covers_declared_directory(tf):
     assert staged_out == ()
 
 
+def test_split_dirty_excludes_all_project_manager_local_runtime_state(tf):
+    """clone-local 런타임 트리는 파일 종류와 staged 여부에 관계없이 잔여가 아니다."""
+    entries = (
+        ("??", ".project_manager/.local/log.lock"),
+        (" M", ".project_manager/.local/tasks/orch-dev/pm_state.md"),
+        ("M ", ".project_manager/.local/worktree-leases.json"),
+        ("??", ".project_manager/.local"),
+        ("??", ".project_manager/.locality/keep.md"),
+    )
+
+    staged_out, unstaged = tf.split_dirty(entries, ("src",))
+
+    assert staged_out == ()
+    assert unstaged == ("?? .project_manager/.locality/keep.md",)
+
+
 def test_parse_porcelain_z_keeps_both_columns_and_rename_target(board):
     """NUL 파서는 XY 두 열을 보존하고 rename 2토큰에서 **신규 경로**를 취한다 (공유 단일 구현)."""
     out = "M  a.md\0 D b.md\0?? c.md\0R  new.md\0old.md\0"

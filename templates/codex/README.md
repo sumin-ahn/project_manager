@@ -56,13 +56,21 @@ PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않
 - relay: `codex exec --json`의 `turn.completed.usage` 누계를 매 turn 파싱하고 직전 누계와의 차분을
   보수적 점유 상한으로 쓴다. rollout `token_count.last_token_usage`는 같은 이벤트의 누계 input이 방금
   받은 wire 누계 input과 일치할 때만 더 정밀한 1순위 신호로 채택한다. 이 판정값이 예산의 STOP 경계에
-  닿으면 relay driver가 post-turn STOP marker를 남기고 Supervisor가 세션을 회전한다. exec에서 소실되는
+  닿으면 relay driver가 turn 완료 회전 신호를 남기고 Supervisor가 세션을 교체한다. exec에서 소실되는
   hook 안내 대신 driver 회전 선점이 relay 경로를 실보호한다. 이것이 장기 경로의 **proactive** 기계 가드다.
 
 2026-07-22~23 장기 TUI rollout에서는 `context_compacted`가 네 번 기록됐고, 해당 event stream에
 `hook_started`/`hook_completed` 및 기존 echo tripwire 출력은 없었다. 따라서 이전 echo-only tripwire는
 false-green이었다. direct TUI rollout의 token_count는 관측되지만 stable post-turn usage callback은 없으므로,
 장기 PM은 relay의 `turn.completed.usage` 가드를 사용한다.
+
+### 기존 채택자 v1.6.0 수동 반영
+
+`.codex/hooks.json`은 instance-owned라 `pm_update`가 덮지 않는다. 기존 채택자는 프로젝트별 command나
+권한을 보존한 채 v1.6.0 템플릿의 `PreCompact` `auto`·`manual` handler를 자기 파일에 수동 병합한다.
+두 handler는 checkpoint 의미의 JSON `systemMessage`를 stdout으로 내고 성공 종료해야 하며,
+compaction을 abort하거나 거부하는 설정을 두지 않는다. 병합 뒤 JSON 파싱과 POSIX `command`·Windows
+`commandWindows`가 모두 남았는지 확인하고, trusted project에서 `/hooks` 승인을 다시 확인한다.
 
 ## 채택 (pm_import — 정규 경로)
 

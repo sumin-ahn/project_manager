@@ -1181,6 +1181,22 @@ def test_adr_lifecycle_supersede(board, decisions_dir):
     assert any(k == "adr-lifecycle" for _l, k, _d in board.lint_adr_lifecycle())
 
 
+def test_adr_lifecycle_supersession_closes_later_amendment(board, decisions_dir):
+    """superseded는 종결 상태라 후속 amends가 있어도 amended로 되돌릴 필요가 없다."""
+    _write_adr(
+        decisions_dir,
+        "0038",
+        status="superseded",
+        amended_by=["ADR-0076", "ADR-0080"],
+        superseded_by=["ADR-0081"],
+    )
+    _write_adr(decisions_dir, "0076", amends=["ADR-0038"])
+    _write_adr(decisions_dir, "0080", amends=["ADR-0038"])
+    _write_adr(decisions_dir, "0081", supersedes="ADR-0038")
+
+    assert board.lint_adr_lifecycle() == []
+
+
 def test_adr_lifecycle_refines_not_checked(board, decisions_dir):
     # refines(추가·대상 불변)는 검사 안 함 — 0009 refines 0006, 0006 은 accepted·back-ref 없어도 0 finding.
     _write_adr(decisions_dir, "0006", status="accepted")

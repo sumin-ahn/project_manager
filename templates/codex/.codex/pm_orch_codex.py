@@ -19,12 +19,10 @@ codex thread_id 발급(claude 와 다른 핵심·opencode 동형): claude 는 `-
 로 **무기한 대기** 한다(라이브 실측·spike §D3·3m timeout 재현) — 매 turn subprocess 에
 `stdin=subprocess.DEVNULL` 을 준다. 미준수 시 relay 가 첫 turn 에서 영원히 멈춘다.
 
-ctx 기계 가드(ADR-0070 D4 ①·ADR-0041): opencode 는 JS plugin 이 ctx-STOP marker 를 쓰지만 codex
-relay 경로엔 그 채널이 없다 — driver 가 `turn.completed.usage` 로 예산 초과를 직접 판정해 **post-turn**
-stop marker 를 박제한다(엔진 `write_post_turn_marker` DI·Supervisor 무수정 회전). ⚠ 이 marker 는 turn
-*실행 후* 박제라 opencode/claude 의 pre-turn(입력 차단) marker 와 의미가 다르다 — Supervisor 는
-post-turn marker 에선 그 입력을 **재전송하지 않는다**(이미 실행된 turn 의 이중 실행 방지·codex R2·
-엔진 Supervisor 가 marker 존재를 다음 입력 전 소비). 예산 = local.conf
+ctx 기계 가드(ADR-0081 D4·ADR-0041): 세 하네스 모두 driver 가 usage 로 예산 초과를 판정해
+**post-turn** 회전 marker 를 박제한다(엔진 `write_post_turn_marker` DI·Supervisor 무수정 회전).
+marker 는 turn *실행 후* 박제 단일 의미론 — Supervisor 는 그 입력을 다시 보내지 않고 다음 입력 전
+회전한다(세션 안 가드는 marker 를 만들지 않는다·비차단 안내 전용). 예산 = local.conf
 `ctx_window_tokens_codex` > generic `ctx_window_tokens` > 200000(ADR-0041 per-harness precedence).
 
 codex 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(claude=`.claude/ctx_guard.py`·
@@ -232,7 +230,7 @@ class CodexCliDriver:
         self._parse = parse_codex_json
         # mark_stop 은 엔진 `write_post_turn_marker`(root, sid)->bool 주입(DI) — marker payload/경로
         # 계약을 엔진이 소유하고 driver 는 예산 판정 후 트리거만 한다. post-turn 표식이라 Supervisor 가
-        # 재전송 없이 회전한다(이미 실행된 turn 의 이중 실행 방지·codex R2). None 이면 가드 no-op.
+        # 그 입력을 다시 보내지 않고 회전한다(이미 실행된 turn 의 이중 실행 방지·codex R2). None 이면 가드 no-op.
         self._mark_stop = mark_stop
         parser_globals = getattr(parse_codex_json, "__globals__", {})
         self._mark_ctx_if_over = (
@@ -337,11 +335,11 @@ class CodexCliDriver:
     # ── driver-side ctx 기계 가드 (ADR-0070 D4 ①·relay 경로 전용) ─────────────────
 
     def _maybe_mark_ctx(self, session_id: str, usage) -> None:
-        """turn usage 가 ctx 예산 정지점(잔여 <= stop_pct)에 도달하면 **post-turn** stop marker 를 박제한다.
+        """turn usage 가 ctx 예산 정지점(잔여 <= stop_pct)에 도달하면 **post-turn** 회전 marker 를 박제한다.
 
-        opencode 는 plugin 이 (입력 처리 전) marker 를 쓰지만 codex relay 경로엔 그 채널이 없어 driver 가
-        turn.completed 후 예산 초과를 판정한다(spike §3.4). turn 이 *이미 실행·응답됐으므로* 엔진
-        `write_post_turn_marker` 로 post-turn 표식을 박제 → Supervisor 는 재전송 없이 회전한다(이중 실행
+        세 하네스 공통으로 driver 가 회전 판정 주체다(ADR-0081 D4 — 세션 안 가드는 비차단 안내
+        전용·marker 미생산). codex 는 turn.completed 후 판정한다. turn 이 *이미 실행·응답됐으므로* 엔진
+        `write_post_turn_marker` 로 post-turn 표식을 박제 → Supervisor 는 그 입력을 다시 보내지 않고 회전한다(이중 실행
         방지·codex R2). 예산·usage·root·mark_stop·엔진 판정 헬퍼 중 하나라도 없으면
         no-op(가드 비활성·부트/테스트 경로 무영향 — usage None turn 은 rollout 도 안 읽는다:
         신선도 anchor 가 wire 누계 대조를 요구하므로 검증 불가 rollout 채택은 fail-open 재도입.

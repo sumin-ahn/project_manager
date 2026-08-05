@@ -7,7 +7,7 @@ PostCompact(compaction 완료 후)에서 호출한다.
 (statusline 전용) — 그래서 훅은 ``transcript_path`` JSONL 을 읽어 컨텍스트 점유를 자체 산출한다.
 
 세 밴드(nudge/nudge2/stop) 모두 모델-facing 비차단 안내를 PreToolUse/UserPromptSubmit
-``additionalContext`` 로 주입한다. stop 밴드는 구 hard-stop 대신 최종 넛지이며 `.final` marker 로
+``additionalContext`` 로 주입한다. stop 밴드는 구 차단형 대신 최종 넛지이며 `.final` marker 로
 사이클당 한 번만 주입한다. PostCompact 경계에서 `.nudge`/`.nudge2`/`.final` marker 를 기계적으로
 지워 다음 상승 사이클을 재무장한다. 완료 후 발화라 압축 실패/차단 시 재무장하지 않으며,
 compaction 뒤 유효한 ok 실측도 보조 재무장 신호로 유지한다.
@@ -177,7 +177,7 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
             return 0, None
         return 0, output
 
-    # state == "stop" — 구 hard-stop 대신 최종 비차단 넛지(사이클당 1회·`.final`).
+    # state == "stop" — 구 차단형 대신 최종 비차단 넛지(사이클당 1회·`.final`).
     output = nudge_output(stdin, ctx_guard.build_final_guidance(used, thresholds))
     if output is None:
         return 0, None

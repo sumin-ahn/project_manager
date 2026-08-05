@@ -82,6 +82,23 @@ def _make_ctx_guard_project(tmp_path: Path) -> Path:
 
 # ── 1. config 정합: 기본 compaction + 모델 limit 제약 ───────────────────────
 
+def test_accumulate_tokens_prefers_total_with_sum_fallback():
+    """plugin 판정도 driver 파서와 동일하게 total 우선 + 합산 폴백 (T-0557 통일)."""
+    script = (
+        "const m = require(\"./ctx-guard-core.cjs\");"
+        "const a = m.accumulateTokens({total: 500, input: 1, output: 1});"
+        "const b = m.accumulateTokens({input: 2, output: 3, reasoning: 0,"
+        " cache: {read: 4, write: 5}});"
+        "if (a !== 500 || b !== 14) throw new Error(`a=${a} b=${b}`);"
+        "console.log(['TOTAL','FIRST','GREEN'].join('_'));"
+    )
+    if _NODE is None:
+        pytest.skip("node 없음")
+    out = _run_node_check(script)
+    # 성공 마커는 소스에 리터럴로 없다(join 조립) — 실패 시 stderr 의 소스 echo 로 위양성 불가.
+    assert "TOTAL_FIRST_GREEN" in out
+
+
 def test_config_exists_and_parses():
     """opencode.jsonc 가 존재하고 jsonc 로 파싱된다."""
     assert PROJECT_CONFIG.exists(), f"project config 없음: {PROJECT_CONFIG}"

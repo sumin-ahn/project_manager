@@ -295,3 +295,91 @@ def test_slot_key_guard_detects_retired_notation_in_shipped_ignore_prose(tmp_pat
     assert offenders == [
         f"{relpath}:1 :: slots/<slot>" for relpath in _SHIPPED_IGNORE_PROSE
     ]
+
+
+# ── T-0557: compaction-native 전환 뒤 폐기된 ctx 안전 표기 가드 ─────────────
+# 리터럴은 분할해 이 가드 자체가 자기 검사에 걸리지 않게 한다. CHANGELOG·ADR·sealed spike·
+# log·실 ticket은 시점 기록이라 제외한다. 하네스 namespace는 PM이 직접 관리하는 별도 변경
+# 표면이고, 이 dev 작업의 출하 가드는 canonical 엔진·동기 문서·README와 그 엔진 미러를 본다.
+_V160_RETIRED_CTX_TERMS = (
+    "hard" + "-stop",
+    "stop" + " marker",
+    "pre" + "-turn",
+    "재" + "전송",
+    "ctx" + "-tripwire",
+    "break" + "-glass",
+    "--disable" + " hooks",
+)
+_V160_TEXT_SUFFIXES = {
+    ".py", ".md", ".sh", ".cmd", ".json", ".jsonc", ".toml", ".manifest",
+}
+_V160_ADAPTER_DIRS = {".claude", ".opencode", ".codex", ".agents"}
+
+# 어댑터 제외의 예외 — ctx 가드/driver/plugin 파일은 v1.6.0 재설계 표면 그 자체라 스코프에
+# 편입한다(T-0557 내부 게이트: 어댑터 일괄 제외는 재유입을 못 잡는다).
+_V160_ADAPTER_INCLUDE_NAMES = {
+    "ctx_guard.py", "ctx_stop_hook.py", "ctx_stop_hook.sh", "ctx_statusline.py",
+    "ctx_statusline.sh", "pm_orch_claude.py", "pm_orch_codex.py", "pm_orch_opencode.py",
+    "ctx-guard-core.cjs", "ctx-guard.js", "hooks.json",
+}
+
+
+def _v160_shipping_surface() -> list[Path]:
+    files = []
+    for path in repo_owned_paths(REPO, ".", mode=OWNED):
+        rel = path.relative_to(REPO)
+        parts = rel.parts
+        if not path.is_file() or path.name == _SELF:
+            continue
+        if parts[0] == "tests" or rel.as_posix() == "CHANGELOG.md":
+            continue
+        if (any(part in _V160_ADAPTER_DIRS for part in parts)
+                and path.name not in _V160_ADAPTER_INCLUDE_NAMES):
+            continue
+        rel_text = rel.as_posix()
+        if any(segment in rel_text for segment in (
+            "/wiki/decisions/", "/wiki/log/", "/wiki/tickets/open/",
+            "/wiki/tickets/claimed/", "/wiki/tickets/blocked/", "/wiki/tickets/done/",
+        )):
+            continue
+        if "/wiki/raw/spikes/" in rel_text and not rel_text.endswith("/_template.md"):
+            continue
+        if path.suffix.lower() in _V160_TEXT_SUFFIXES or path.name in {".gitignore"}:
+            files.append(path)
+    return files
+
+
+def _v160_ctx_terminology_offenders(files: list[Path]) -> list[str]:
+    offenders = []
+    for path in files:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            lowered = line.lower()
+            for term in _V160_RETIRED_CTX_TERMS:
+                if term in lowered:
+                    offenders.append(
+                        f"{path.relative_to(REPO).as_posix()}:{lineno} :: {term}"
+                    )
+            # ctx-stop은 런타임 호환 경로명만 허용하고 사람 대상 안내·서술에서는 금지한다.
+            ctx_stop = "ctx" + "-stop"
+            if ctx_stop in lowered and not (
+                ".local/ctx-stop" in lowered or "marker_dir" in lowered
+            ):
+                offenders.append(
+                    f"{path.relative_to(REPO).as_posix()}:{lineno} :: {ctx_stop}"
+                )
+    return offenders
+
+
+def test_no_retired_ctx_safety_terminology_in_v160_shipping_surface():
+    """compaction-native 출하 표면에 옛 차단·회전 안내가 다시 들어오지 않는다."""
+    assert not _v160_ctx_terminology_offenders(_v160_shipping_surface())
+
+
+def test_v160_terminology_scope_covers_readmes_and_canonical_engine():
+    relpaths = {path.relative_to(REPO).as_posix() for path in _v160_shipping_surface()}
+    assert {
+        ".project_manager/tools/pm_relay.py",
+        "templates/claude_code/README.md",
+        "templates/codex/README.md",
+        "templates/opencode/README.md",
+    } <= relpaths
