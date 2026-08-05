@@ -1000,8 +1000,13 @@ def split_dirty(entries: Sequence[tuple[str, str]],
 
 # 회귀 baseline 은 *실측* new_total 1줄만 남긴다
 # 합계는 status.md 에 박제하지 않으므로 delta 는 PM 이 서술로 채운다·history 단일 진실=log).
+# task 태그 sentinel은 pm_log.py·pm_handoff.py의 동명 상수와 미러한다.
+# 모듈 격리를 유지하려고 각 생산자가 상수를 소유한다.
+_TASK_TAG_PREFIX = "task:"
+
+
 LOG_SKELETON_TEMPLATE = """\
-## [{date}] {entry_type} | {ticket_id} — {title}
+## [{date}] {entry_type} | {ticket_id} — {title}{task_tag}
 
 - <!-- PM: 무엇을·왜 서술 -->
 - 테스트: 회귀 {new_total} / {new_total} (실측 · 직전 대비 delta 는 PM 서술).
@@ -1017,6 +1022,7 @@ def build_log_skeleton(
     board_after: int,
     entry_type: str = "<!-- feat/fix/verify/… -->",
     date: str | None = None,
+    task: str | None = None,
 ) -> str:
     if date is None:
         date = datetime.date.today().isoformat()
@@ -1025,6 +1031,7 @@ def build_log_skeleton(
         entry_type=entry_type,
         ticket_id=ticket_id,
         title=title,
+        task_tag=f" ({_TASK_TAG_PREFIX}{task})" if task else "",
         new_total=new_total,
         board_before=board_before,
         board_after=board_after,
@@ -1280,6 +1287,7 @@ class TicketFinisher:
         section: str | None,
         dry_run: bool,
         skip_pytest: bool = False,
+        task: str | None = None,
     ) -> int:
         """ticket_id 완료 부기 전체 흐름을 실행한다.
 
@@ -1356,6 +1364,7 @@ class TicketFinisher:
             new_total=new_total,
             board_before=board_before,
             board_after=board_after,
+            task=task,
         )
 
         if dry_run:
@@ -1667,6 +1676,7 @@ def _main(argv: list[str] | None = None) -> int:
         section=args.section,
         dry_run=args.dry_run,
         skip_pytest=args.no_pytest,
+        task=identity.task,
     )
 
 

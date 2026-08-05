@@ -46,6 +46,8 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 - slot 모드: 내 티켓은 `board.py list --mine`, 진행/남은작업은 per-slot `pm_state.md`, 연속성은 자기 슬롯 태그 handoff entry. 자기 공간만 관리한다.
 - 공유: 타 PM은 부트스트랩 대시보드 slot 1줄만 본다. `log/current.md`는 필요한 슬롯 태그 entry만 검색하고 평시 통독하지 않는다. 전체 보드 `board.py list --all`은 열람용이며 무인자 기본 뷰는 내 스트림이다. 솔로(M=1)는 대시보드·슬롯 태그가 무의미하다.
 
+`log/current.md`의 complete entry는 다음 세션이 그 entry만 읽고도 완료 구간의 무엇을·왜·어떻게 검증했는지 재구성할 수 있는 수준으로 서술한다. `ticket_finish.py`가 만든 `<PM 손>` 골격을 결과 나열로만 두지 말고 결정 이유·핵심 변경·회귀 evidence까지 채우며, compaction 경계에서 그 연속성이 부족하면 `pm_log.py checkpoint --task <이름> [--trigger compaction|manual]`로 보충 골격을 append한 뒤 서사를 PM 손으로 완성한다.
+
 **현재 진실:** `architecture.md`가 현재 아키텍처 단일 진실이다. `decisions/` ADR은 *왜*의 히스토리이며 현재 구속력이 없다. 옛 ADR과 현재 의도/실측이 충돌하면 `architecture.md`를 따르고, architect가 architecture 갱신과 ADR amend/supersede를 한다. `architecture.md`·`status.md` content-truth(구조·구현상태 판정·비고)는 architect가 유지하고 PM은 점검한다.
 
 **세션 정체성:** canonical 문자열은 `<repo>_<N>`이며 board/리스 조작에는 `--repo <repo> --slot <N>`을 명시한다. 실값은 부트스트랩 카드가 채우므로 외우지 않는다. 솔로는 `--repo/--slot` 불요이며 env `PM_SESSION_NAME`/local.conf `session=` 자동 해소(§세션 식별 규칙).
@@ -72,7 +74,7 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 
 PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/command로 invoke**한다(claude=Skill 툴, opencode=command). 스킬이 강제하는 읽기범위·메타학습·금지 재열거·우선순위·DoD 자족성 판단을 건너뛰므로 backbone CLI를 직접 호출하지 않는다.
 
-직접 CLI는 래핑 스킬이 없는 op만 허용한다: read-only 조회, 아직 명령어화되지 않은 ticket authoring `new`/`promote`, release `livegate record`, 희귀 ID/카테고리 유지보수 `reid`/`prefix`/`migrate-identity`. authoring/release 스킬이 생기면 스킬로 승격한다. **스킬이 있는 op은 반드시 스킬로 실행한다.** 실제 인자·정체성 표기는 부트스트랩 카드가 단일 진실이다.
+직접 CLI는 래핑 스킬이 없는 op만 허용한다: read-only 조회, 아직 명령어화되지 않은 ticket authoring `new`/`promote`, release `livegate record`, compaction 보충 기록 `pm_log.py checkpoint`(쓰기·스킬 승격 전까지), 희귀 ID/카테고리 유지보수 `reid`/`prefix`/`migrate-identity`. authoring/release/checkpoint 스킬이 생기면 스킬로 승격한다. **스킬이 있는 op은 반드시 스킬로 실행한다.** 실제 인자·정체성 표기는 부트스트랩 카드가 단일 진실이다.
 
 ## skill 카탈로그
 

@@ -825,7 +825,7 @@ def _canonical_sources(tools: Path = TOOLS) -> dict[str, str]:
 def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     report = collect_failsoft_report(_canonical_sources())
     assert report.boundaries, "scanner found no marked-skew boundaries"
-    assert len(report.boundaries) == 141, "propagation sweep boundary ratchet changed"
+    assert len(report.boundaries) == 143, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

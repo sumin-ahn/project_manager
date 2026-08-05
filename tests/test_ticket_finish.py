@@ -358,6 +358,26 @@ def test_log_skeleton_reports_measured_total_no_old_total(tf):
     assert "board: done 1→2" in skeleton
 
 
+def test_log_skeleton_adds_task_tag_when_task_is_resolved(tf):
+    """task 완료 entry는 handoff와 같은 sentinel 태그를 헤더 말미에 생산한다."""
+    skeleton = tf.build_log_skeleton(
+        ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
+        entry_type="feat", date="2026-08-06", task="orch-dev-T0547",
+    )
+    assert skeleton.splitlines()[0] == (
+        "## [2026-08-06] feat | T-0547 — 박제 (task:orch-dev-T0547)"
+    )
+
+
+def test_log_skeleton_without_task_is_byte_compatible(tf):
+    """솔로/슬롯처럼 task 미해소면 종전 헤더와 바이트 단위로 동일하다."""
+    skeleton = tf.build_log_skeleton(
+        ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
+        entry_type="feat", date="2026-08-06",
+    )
+    assert skeleton.splitlines()[0] == "## [2026-08-06] feat | T-0547 — 박제"
+
+
 def test_get_ticket_touches_non_list_returns_empty(tf, tmp_path):
     """get_ticket_touches — board 부재(spec 실패 가능)·touches 비-리스트 graceful []."""
     # 존재하지 않는 board_py → spec 은 만들어지나 exec 실패 → [].

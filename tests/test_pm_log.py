@@ -164,6 +164,181 @@ def test_cmd_tail_missing_current(tmp_path, monkeypatch, capsys):
     assert "current.md 없음" in capsys.readouterr().err
 
 
+# ── cmd_checkpoint ──────────────────────────────────────────────────────────
+
+def test_build_checkpoint_entry_explicit_date_is_deterministic():
+    """날짜 결정성은 CLI args 비공개 seam 없이 순수 빌더 입력으로 검증한다."""
+    mod = _load_module()
+    assert mod.build_checkpoint_entry(
+        "orch-dev-T0547", "compaction", date="2026-08-06"
+    ).startswith(
+        "## [2026-08-06] checkpoint | (task:orch-dev-T0547) — compaction\n"
+    )
+
+
+def test_cmd_checkpoint_appends_explicit_compaction_trigger(tmp_path, monkeypatch):
+    """명시 trigger와 task 태그를 가진 골격을 기존 current.md 뒤에 append한다."""
+    mod = _load_module()
+    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    current.write_text(_HEADER + _ENTRY_A, encoding="utf-8")
+
+    before_count = len(mod.split_entries(current.read_text(encoding="utf-8"))[1])
+    rc = mod.cmd_checkpoint(
+        SimpleNamespace(task="orch-dev-T0547", trigger="compaction")
+    )
+
+    assert rc == 0
+    text = current.read_text(encoding="utf-8")
+    assert _ENTRY_A in text
+    assert "checkpoint | (task:orch-dev-T0547) — compaction" in text
+    assert "- 구간: <직전 박제 경계 이후>" in text
+    assert "- 서사: <PM 손>" in text
+    assert len(mod.split_entries(text)[1]) == before_count + 1
+
+
+def test_cmd_checkpoint_appends_entry_boundary_without_trailing_newline(tmp_path, monkeypatch):
+    """EOF LF가 없어도 checkpoint 헤더는 앞 entry 본문과 붙지 않고 새 entry로 분리된다."""
+    mod = _load_module()
+    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    current.write_text((_HEADER + _ENTRY_A).rstrip("\n"), encoding="utf-8")
+    before_count = len(mod.split_entries(current.read_text(encoding="utf-8"))[1])
+
+    rc = mod.cmd_checkpoint(
+        SimpleNamespace(task="orch-dev-T0547", trigger="manual")
+    )
+
+    text = current.read_text(encoding="utf-8")
+    assert rc == 0
+    assert "본문 A\n## [" in text
+    assert len(mod.split_entries(text)[1]) == before_count + 1
+
+
+def test_cmd_checkpoint_missing_current(tmp_path, monkeypatch, capsys):
+    """current.md 부재 → rc 2 + stderr 안내, 파일은 만들지 않는다."""
+    mod = _load_module()
+    _redirect_paths(mod, monkeypatch, tmp_path)
+
+    rc = mod.cmd_checkpoint(SimpleNamespace(task="orch-dev-T0547", trigger="manual"))
+
+    assert rc == 2
+    assert "current.md 없음" in capsys.readouterr().err
+    assert not mod.CURRENT_FILE.exists()
+
+
+@pytest.mark.parametrize("task", ["foo)bar", "foo\nbar"])
+def test_cmd_checkpoint_rejects_invalid_task_before_write(tmp_path, monkeypatch, capsys, task):
+    """공유 validator가 태그 종료·개행 주입 task를 rc 1로 거부하고 log를 보존한다."""
+    mod = _load_module()
+    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    original = _HEADER + _ENTRY_A
+    current.write_text(original, encoding="utf-8")
+
+    rc = mod.cmd_checkpoint(SimpleNamespace(task=task, trigger="manual"))
+
+    assert rc == 1
+    assert "부적합 task 명" in capsys.readouterr().err
+    assert current.read_text(encoding="utf-8") == original
+
+
+def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
+    """공유 log append seam은 RMW 없이 O_APPEND 단일 write를 사용한다."""
+    mod = _load_module()
+    calls = []
+    monkeypatch.setattr(mod.os, "open", lambda path, flags: calls.append(("open", path, flags)) or 41)
+    monkeypatch.setattr(mod.os, "write", lambda fd, payload: calls.append(("write", fd, payload)))
+    monkeypatch.setattr(mod.os, "close", lambda fd: calls.append(("close", fd)))
+
+    target = tmp_path / "current.md"
+    mod._append_atomic(target, "\nentry")
+
+    assert calls[0][0:2] == ("open", str(target))
+    assert calls[0][2] & mod.os.O_APPEND
+    assert calls[1:] == [("write", 41, b"\nentry"), ("close", 41)]
+
+
+def test_checkpoint_parser_default_manual_appends_entry(tmp_path, monkeypatch):
+    """--trigger 생략 시 기본값 manual로 실제 checkpoint entry를 append한다."""
+    mod = _load_module()
+    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    current.write_text(_HEADER, encoding="utf-8")
+
+    args = mod.build_parser().parse_args(["checkpoint", "--task", "orch-dev-T0547"])
+    assert args.task == "orch-dev-T0547"
+    assert args.trigger == "manual"
+    assert args.fn is mod.cmd_checkpoint
+    assert args.fn(args) == 0
+    assert "checkpoint | (task:orch-dev-T0547) — manual" in current.read_text(encoding="utf-8")
+
+
+def test_registered_repos_non_utf8_areas_failure_is_fail_soft(monkeypatch):
+    """board areas 파싱 실패는 None으로 강등해 기본 task 구문 검증을 유지한다."""
+    mod = _load_module()
+
+    class BrokenBoard:
+        @staticmethod
+        def registered_repos():
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(mod, "_load_module_from_path", lambda *args, **kwargs: BrokenBoard)
+    assert mod._registered_repos() is None
+
+
+def test_registered_repos_engine_rev_skew_is_fail_loud(monkeypatch):
+    """일반 오류와 달리 ENGINE_REV skew는 배포 손상이므로 그대로 전파한다."""
+    mod = _load_module()
+    skew = RuntimeError("skew")
+    skew._engine_rev_skew = True
+
+    def raise_skew(*args, **kwargs):
+        raise skew
+
+    monkeypatch.setattr(mod, "_load_module_from_path", raise_skew)
+    with pytest.raises(RuntimeError, match="skew"):
+        mod._registered_repos()
+
+
+def test_main_checkpoint_worktree_misanchor_fails_before_write(
+    tmp_path, monkeypatch, capsys
+):
+    """checkpoint는 worktree 앵커에서 PM 홈 안내 후 append 전에 중단한다."""
+    mod = _load_module()
+    _redirect_paths(mod, monkeypatch, tmp_path / "work" / "product_1")
+    pm_home = tmp_path / "pm-home"
+    monkeypatch.setattr(mod, "_pm_home_misanchor", lambda: pm_home)
+
+    rc = mod.main(["checkpoint", "--task", "orch-dev-T0547"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "PM 홈에서 실행하세요" in err
+    assert str(pm_home) in err
+    assert not mod.CURRENT_FILE.exists()
+
+
+def test_main_tail_remains_ungated(tmp_path, monkeypatch, capsys):
+    """read-only tail은 worktree 앵커 판정을 호출하지 않고 현행 동작을 유지한다."""
+    mod = _load_module()
+    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    (log_dir / "current.md").write_text(_HEADER + _ENTRY_A, encoding="utf-8")
+    monkeypatch.setattr(
+        mod,
+        "_guard_worktree_misanchor",
+        lambda: pytest.fail("tail must not invoke the write-only guard"),
+    )
+
+    assert mod.main(["tail"]) == 0
+    assert "첫 작업" in capsys.readouterr().out
+
+
 # ── cmd_archive (파괴적 — tmp_path 에서만) ────────────────────────────────────
 
 def test_cmd_archive_seals_old_keeps_recent(tmp_path, monkeypatch, capsys):

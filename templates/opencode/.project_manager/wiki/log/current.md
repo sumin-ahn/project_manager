@@ -4,7 +4,7 @@
 > 여러 세션/clone 이 동시에 append 해도 OK — `.gitattributes` 의 union merge 가 양쪽 entry 를 보존한다.
 > 오래된 entry 는 `pm_log.py archive` 로 `log/archive/` 에 봉인된다.
 > 형식: `## [YYYY-MM-DD] action | subject`
-> Actions: create, update, decide (ADR), ticket, spec, split, handoff, lint
+> Actions: create, update, decide (ADR), ticket, spec, split, handoff, checkpoint, lint
 
 ## [{{DATE}}] create | Project wiki initialized
 

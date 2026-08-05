@@ -10,6 +10,7 @@
     python3 .project_manager/tools/pm_log.py archive --before YYYY-MM-DD [--dry-run]
     python3 .project_manager/tools/pm_log.py archive --keep-last N [--dry-run]
     python3 .project_manager/tools/pm_log.py migrate [--dry-run]
+    python3 .project_manager/tools/pm_log.py checkpoint --task NAME [--trigger compaction|manual]
 
 명령:
   tail                  — current.md 의 마지막 `## [..]` entry 만 출력 (의미단위 읽기 헬퍼).
@@ -20,6 +21,8 @@
                           `--before` 와 상호배타 — 정확히 하나만 지정한다.
   migrate               — 기존 단일 `log.md` → `log/archive/0000-legacy.md` 로 봉인 +
                           `log/current.md` 생성. 일회성·멱등 (current.md 가 이미 있으면 no-op).
+  checkpoint            — compaction/manual 경계의 보충 박제 골격을 current.md 에 append.
+                          호출마다 신규 entry 를 만들며 서사는 PM 이 채운다.
 
 결정:
   - 쓰기 대상은 current.md 단일 경로다. legacy `log.md` 는 migrate 로 봉인만 한다 — 런타임 fallback 없음.
@@ -177,12 +180,29 @@ def _verify_engine_rev(sibling_module, sibling_filename):
         raise err
 
 
+def _is_engine_rev_skew(exc) -> bool:
+    """fail-soft 로더에서도 엔진 사본 skew만은 삼키지 않게 식별한다."""
+    return getattr(exc, "_engine_rev_skew", False)
+
+
+def _load_identity_args():
+    """공용 task 이름 validator를 같은 tools/에서 경로 로드한다."""
+    ia_path = Path(__file__).resolve().parent / "identity_args.py"
+    return _load_module_from_path(
+        ia_path, "identity_args.py", verifier=_verify_engine_rev,
+    )
+
+
 REPO = Path(__file__).resolve().parents[2]
 WIKI_DIR = REPO / ".project_manager" / "wiki"
 LOG_DIR = WIKI_DIR / "log"
 CURRENT_FILE = LOG_DIR / "current.md"
 ARCHIVE_DIR = LOG_DIR / "archive"
 LEGACY_LOG = WIKI_DIR / "log.md"
+
+# task 태그 sentinel은 ticket_finish.py·pm_handoff.py의 동명 상수와 미러한다.
+# 모듈 격리를 유지하려고 각 생산자가 상수를 소유한다.
+_TASK_TAG_PREFIX = "task:"
 
 # 새 current.md 가 처음 생길 때 얹는 표준 헤더 (log.md 의 기존 헤더와 동일 형식).
 CURRENT_HEADER = """\
@@ -192,7 +212,7 @@ CURRENT_HEADER = """\
 > 여러 세션/clone 이 동시에 append 해도 OK — `.gitattributes` 의 union merge 가 양쪽 entry 를 보존한다.
 > 오래된 entry 는 `pm_log.py archive` 로 `log/archive/` 에 봉인된다.
 > 형식: `## [YYYY-MM-DD] action | subject`
-> Actions: create, update, decide (ADR), ticket, spec, split, handoff, lint
+> Actions: create, update, decide (ADR), ticket, spec, split, handoff, checkpoint, lint
 """
 
 # entry 시작 앵커: "## [YYYY-MM-DD] ..." 줄.
@@ -349,6 +369,108 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def build_checkpoint_entry(
+    task: str,
+    trigger: str = "manual",
+    date: str | None = None,
+) -> str:
+    """task의 compaction/manual 경계 보충 박제 골격을 만든다."""
+    if date is None:
+        date = datetime.date.today().isoformat()
+    return (
+        f"## [{date}] checkpoint | ({_TASK_TAG_PREFIX}{task}) — {trigger}\n\n"
+        "- 구간: <직전 박제 경계 이후>\n"
+        "- 서사: <PM 손>\n"
+    )
+
+
+def _registered_repos() -> set[str] | None:
+    """예약 task 판정용 등록 repo를 fail-soft 해소한다(skew만 fail-loud)."""
+    board_path = Path(__file__).resolve().parent / "board.py"
+    try:
+        board = _load_module_from_path(
+            board_path, "board.py", verifier=_verify_engine_rev,
+        )
+        return board.registered_repos()
+    except Exception as exc:  # noqa: BLE001 — 부재/areas 파싱 실패는 예약패턴 검증만 완화.
+        if _is_engine_rev_skew(exc):
+            raise
+        return None
+
+
+# ── PM-홈 worktree 오실행 가드 (checkpoint 쓰기 경로 전용) ──────────────
+
+def _pm_home_misanchor() -> Path | None:
+    """REPO가 PM 홈의 등록 worktree면 그 PM 홈을 반환한다(board detector 재사용)."""
+    board_path = Path(__file__).resolve().parent / "board.py"
+    try:
+        board = _load_module_from_path(
+            board_path, "board.py", verifier=_verify_engine_rev,
+        )
+    except Exception as exc:  # noqa: BLE001 — detector 부재/로드 실패는 현행 동작 보존.
+        if _is_engine_rev_skew(exc):
+            raise
+        return None
+    detector = getattr(board, "_pm_home_worktree_misanchor", None)
+    if detector is None:
+        return None
+    try:
+        return detector(REPO)
+    except Exception:  # noqa: BLE001 — detector 해소 실패는 오탐 없이 fail-soft.
+        return None
+
+
+def _guard_worktree_misanchor() -> bool:
+    """checkpoint가 코드 전용 worktree log에 쓰기 전에 fail-loud 한다."""
+    pm_home = _pm_home_misanchor()
+    if pm_home is None:
+        return False
+    print(
+        "[중단] `pm_log checkpoint` 를 worktree(코드 전용) 트리에서 실행했습니다 — "
+        "checkpoint log는 PM 홈이 소유합니다. 이대로면 이 worktree에 stray log를 "
+        "잘못 만듭니다.\n"
+        f"  → PM 홈에서 실행하세요:  cd {pm_home}\n"
+        f"  (현재 앵커: {REPO})",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _append_atomic(path: Path, text: str) -> None:
+    """단일 O_APPEND write로 공유 log에 추가해 동시 writer의 lost update를 막는다."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND)
+    try:
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def cmd_checkpoint(args: argparse.Namespace) -> int:
+    """checkpoint 골격을 current.md에 append한다 (호출별 신규 entry)."""
+    identity_args = _load_identity_args()
+    try:
+        identity_args.validate_task_name(args.task, _registered_repos())
+    except identity_args.InvalidTaskName as exc:
+        print(
+            f"[중단] {exc} — `--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴"
+            "(`<repo>_<N>`·⑥)은 쓸 수 없다.",
+            file=sys.stderr,
+        )
+        return 1
+    if not CURRENT_FILE.exists():
+        print(f"(current.md 없음: {_rel(CURRENT_FILE)} — migrate 먼저)", file=sys.stderr)
+        return 2
+    entry = build_checkpoint_entry(
+        args.task,
+        args.trigger,
+    )
+    # 선행 LF는 기존 파일이 trailing newline 없이 끝나도 새 `##` entry 경계를 보장한다.
+    # 이미 LF로 끝난 파일에는 빈 줄 하나가 추가될 뿐이며, 전체 payload는 단일 원자 write다.
+    _append_atomic(CURRENT_FILE, "\n" + entry)
+    print(f"✓ checkpoint append: task={args.task} · trigger={args.trigger}")
+    return 0
+
+
 # ── 유틸 ───────────────────────────────────────────────────────────────────
 
 def _rel(path: Path) -> str:
@@ -394,6 +516,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_migrate)
 
+    p = sub.add_parser("checkpoint", help="compaction/manual 경계 보충 박제 골격 append")
+    p.add_argument("--task", required=True, metavar="이름", help="checkpoint 귀속 task 이름")
+    p.add_argument(
+        "--trigger",
+        choices=("compaction", "manual"),
+        default="manual",
+        help="박제 계기 (기본값: manual)",
+    )
+    p.set_defaults(fn=cmd_checkpoint)
+
     return parser
 
 
@@ -405,6 +537,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     _console_encoding.configure_console_utf8()
     args = build_parser().parse_args(argv)
+    # checkpoint만 쓰기 op다. tail 등 read-only 서브커맨드는 기존처럼 가드하지 않는다.
+    if args.cmd == "checkpoint" and _guard_worktree_misanchor():
+        return 1
     return args.fn(args)
 
 
