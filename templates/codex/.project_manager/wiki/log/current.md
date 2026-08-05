@@ -10,4 +10,4 @@
 
 - Claude Project Framework 템플릿에서 부트스트랩.
 - 구조 생성: README, status, board, log/, architecture, pm_role, pm_state + tickets/ decisions/ specs/ ideas/
-- 다음: AGENTS.md·status.md·architecture.md 의 placeholder 를 채우고 첫 ticket 발행.
+- 다음: 진입문서(CLAUDE.md 또는 AGENTS.md)·status.md·architecture.md 의 placeholder 를 채우고 첫 ticket 발행.
