@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -491,6 +492,35 @@ def test_new_session_id_unique_uuid(orch):
     assert len(a) == 36 and a.count("-") == 4  # uuid4 형태.
 
 
+def test_watched_popen_defaults_stdin_to_devnull(orch, monkeypatch):
+    """input_text 없는 공용 watchdog child 는 supervisor stdin 을 상속하지 않는다."""
+    captured = {}
+
+    class _FakeProc:
+        pid = 4321
+        returncode = 0
+        stdin = None
+
+        def __init__(self):
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+    def fake_popen(argv, **kwargs):
+        captured["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    proc = orch._WatchedPopen(["child"], input_text=None)
+    proc.communicate(timeout=1)
+    assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
+
+
 # ── ⑥ subprocess 폭발 가드 (relay 경로가 실 claude 안 부름) ───────────────────
 
 def test_run_loop_does_not_spawn_real_subprocess(orch, tmp_path, monkeypatch):
@@ -588,6 +618,29 @@ def test_claude_driver_spawn_passes_session_id(orch, driver_mod):
     assert "--session-id" in cmd and "uuid-123" in cmd
     assert "--resume" not in cmd  # spawn 은 resume 안 함.
     assert captured["kwargs"]["cwd"] == "/repo/root"  # child cwd 격리.
+
+
+def test_claude_driver_turn_closes_supervisor_stdin(orch, driver_mod):
+    """파이프 입력 relay 에서 claude child 가 supervisor 입력을 상속·소비하지 않는다."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return _FakeCompleted(json.dumps({"type": "result", "result": "ok"}))
+
+    driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, runner=fake_run)
+    assert driver.relay_turn("uuid", "prompt") == "ok"
+    assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
+
+
+def test_claude_driver_rc0_empty_stdout_warns(orch, driver_mod, capsys):
+    driver = driver_mod.ClaudeCliDriver(
+        orch.parse_stream_json, runner=lambda *args, **kwargs: _FakeCompleted("")
+    )
+    assert driver.relay_turn("uuid", "prompt") == ""
+    assert capsys.readouterr().err == (
+        "[pm-orch] claude turn 무출력(rc 0) — stdin/파싱 점검\n"
+    )
 
 
 def test_claude_driver_relay_uses_resume(orch, driver_mod):

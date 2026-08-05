@@ -107,7 +107,11 @@ class ClaudeCliDriver:
         if resume:
             cmd += ["--resume", resume]
 
-        run_kwargs = dict(capture_output=True, text=True, timeout=self.timeout)
+        run_kwargs = dict(
+            capture_output=True, text=True, timeout=self.timeout,
+            # relay supervisor 의 파이프 stdin 을 child 가 삼키지 않게 즉시 EOF 로 격리.
+            stdin=subprocess.DEVNULL,
+        )
         if cwd is not None:
             run_kwargs["cwd"] = cwd  # child cwd 격리(PM repo root).
         try:
@@ -123,6 +127,8 @@ class ClaudeCliDriver:
         if getattr(completed, "returncode", 0):
             tail = (completed.stderr or "").strip().splitlines()[-1:] or [""]
             sys.stderr.write(f"[pm-orch] claude rc={completed.returncode}: {tail[0]}\n")
+        elif not (completed.stdout or ""):
+            sys.stderr.write("[pm-orch] claude turn 무출력(rc 0) — stdin/파싱 점검\n")
 
         lines = (completed.stdout or "").splitlines()
         return self._parse(lines)

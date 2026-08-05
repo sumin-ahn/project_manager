@@ -213,6 +213,29 @@ def test_opencode_driver_spawn_agent_arg(orch, driver_mod):
     assert cmd[cmd.index("--agent") + 1] == "build"
 
 
+def test_opencode_driver_turn_closes_supervisor_stdin(orch, driver_mod):
+    """파이프 입력 relay 에서 opencode child 가 supervisor 입력을 상속·소비하지 않는다."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return _FakeCompleted(_json_stream("ses_stdin", "ok"))
+
+    driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
+    assert driver.relay_turn("ses_stdin", "prompt") == "ok"
+    assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
+
+
+def test_opencode_driver_rc0_empty_stdout_warns(orch, driver_mod, capsys):
+    driver = driver_mod.OpencodeCliDriver(
+        orch.parse_opencode_json, runner=lambda *args, **kwargs: _FakeCompleted("")
+    )
+    assert driver.relay_turn("ses", "prompt") == ""
+    assert capsys.readouterr().err == (
+        "[pm-orch] opencode turn 무출력(rc 0) — stdin/파싱 점검\n"
+    )
+
+
 def test_opencode_driver_spawn_sid_parse_failure_raises(orch, driver_mod):
     """sid 파싱 실패 = 치명·명시 중단 (codex T-0048).
 

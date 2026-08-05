@@ -231,6 +231,8 @@ class CodexCliDriver:
         if getattr(completed, "returncode", 0):
             tail = (completed.stderr or "").strip().splitlines()[-1:] or [""]
             sys.stderr.write(f"[pm-orch] codex rc={completed.returncode}: {tail[0]}\n")
+        elif not (completed.stdout or ""):
+            sys.stderr.write("[pm-orch] codex turn 무출력(rc 0) — stdin/파싱 점검\n")
 
         return self._parse((completed.stdout or "").splitlines())
 

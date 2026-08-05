@@ -131,7 +131,9 @@ class OpencodeCliDriver:
 
         try:
             completed = self.runner(
-                cmd, capture_output=True, text=True, timeout=self.timeout
+                cmd, capture_output=True, text=True, timeout=self.timeout,
+                # relay supervisor 의 파이프 stdin 을 child 가 삼키지 않게 즉시 EOF 로 격리.
+                stdin=subprocess.DEVNULL,
             )
         except self._stall_error_types as exc:
             # 첫-이벤트 stall 재시도 소진(T-0336) = fail-loud. 무한 hang(startup network fetch
@@ -150,6 +152,8 @@ class OpencodeCliDriver:
         if getattr(completed, "returncode", 0):
             tail = (completed.stderr or "").strip().splitlines()[-1:] or [""]
             sys.stderr.write(f"[pm-orch] opencode rc={completed.returncode}: {tail[0]}\n")
+        elif not (completed.stdout or ""):
+            sys.stderr.write("[pm-orch] opencode turn 무출력(rc 0) — stdin/파싱 점검\n")
 
         lines = (completed.stdout or "").splitlines()
         return self._parse(lines)

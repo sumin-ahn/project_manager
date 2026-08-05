@@ -1051,7 +1051,8 @@ class _WatchedPopen:
     보존).
 
     **stdin 주입**: `input_text` 를 주면 stdin=PIPE 로 열고 별도 스레드가 전문을 쓴 뒤 **닫는다**
-    (EOF 전달 — codex/claude 는 stdin EOF 까지 프롬프트를 읽는다). None 이면 기존처럼 stdin 미개입.
+    (EOF 전달 — codex/claude 는 stdin EOF 까지 프롬프트를 읽는다). None 이면 DEVNULL 로 닫아
+    supervisor stdin 을 상속하지 않는다(relay 사용자 입력을 child 가 삼키는 fail-silent 방지).
     """
 
     def __init__(self, argv, *, cwd=None, env=None, text=True,
@@ -1059,8 +1060,9 @@ class _WatchedPopen:
         popen_kwargs = dict(
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env,
         )
-        if input_text is not None:
-            popen_kwargs["stdin"] = subprocess.PIPE
+        popen_kwargs["stdin"] = (
+            subprocess.PIPE if input_text is not None else subprocess.DEVNULL
+        )
         if text:
             popen_kwargs.update(text=True, encoding="utf-8", errors="replace")
         # 프로세스 그룹 분리 — kill 시 자식(모델 fetch 서브프로세스 등)까지 그룹째 정리.

@@ -385,6 +385,16 @@ def test_codex_driver_relay_oserror_returns_empty(orch, driver_mod):
     assert driver.relay_turn("tid", "x") == ""
 
 
+def test_codex_driver_rc0_empty_stdout_warns(orch, driver_mod, capsys):
+    driver = driver_mod.CodexCliDriver(
+        orch.parse_codex_json, runner=lambda *args, **kwargs: _FakeCompleted("")
+    )
+    assert driver.relay_turn("tid", "prompt") == ""
+    assert capsys.readouterr().err == (
+        "[pm-orch] codex turn 무출력(rc 0) — stdin/파싱 점검\n"
+    )
+
+
 def test_codex_driver_does_not_spawn_real_subprocess(orch, driver_mod, monkeypatch):
     """driver 경로가 (FakeRunner 주입 시) 실 subprocess.run/Popen 을 호출하지 않는다."""
     import subprocess as _sp
