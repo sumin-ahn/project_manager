@@ -1,4 +1,4 @@
-"""ctx 임계 디폴트 3-사이트 미러 정합 가드 (T-0207).
+"""ctx 임계 디폴트 3-사이트 미러 정합 가드 (T-0207·T-0550).
 
 nudge/stop 디폴트 상수는 세 곳에 손으로 미러링돼 있다 — 엔진 board.py(fresh init 이
 local.conf 에 쓰는 값) + 두 어댑터 훅(claude ctx_guard.py·opencode ctx-guard.js). 어댑터는
@@ -6,7 +6,8 @@ board.py 를 import 하지 않고(touches 격리·의존 최소) 리터럴을 �
 미러를 잊으면 board 가 기록한 값과 훅 판정 임계가 어긋난다.
 
 이 가드는 세 파일을 정규식으로 파싱(언어 무관·hermetic·라이브/import 없음)해 세 사이트의
-디폴트가 서로 **일치**함을 강제한다. 구체 값(현재 30/20)은 각 사이트별 단위테스트가 핀
+디폴트가 서로 **일치**함을 강제한다. ``stop`` 이름은 호환성을 위해 유지하며 Claude 훅에서는
+최종 비차단 넛지 밴드, relay 에서는 회전 임계로 소비한다. 구체 값(현재 30/20)은 각 사이트별 단위테스트가 핀
 (test_handoff_trigger·test_claude_ctx_guard·test_opencode_ctx_guard) — 여기서는 셋의 합의만
 검사해 값 변경 시 이 가드를 매번 손대지 않아도 되게 한다.
 """

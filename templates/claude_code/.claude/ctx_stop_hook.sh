@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PreToolUse/UserPromptSubmit hook 래퍼: ctx_stop_hook.py 를 인터프리터 self-resolve 로 실행한다.
-# stdin: Claude Code hook JSON (그대로 python 에 전달). stdout: 훅 JSON (deny/block/없음). rc 보존.
+# stdin: Claude Code hook JSON (그대로 python 에 전달). stdout: 훅 JSON (additionalContext/없음). rc 보존.
 #
 # 멀티-유저/멀티-프로젝트 안전(T-0202·A안 portable-by-construction): settings.json 에 인터프리터
 # 토큰({{PY}})·절대경로를 박지 않는다 — 스크립트 위치에서 자기 디렉토리를 self-resolve 하고

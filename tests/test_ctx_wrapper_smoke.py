@@ -8,16 +8,16 @@ r"""ctx 래퍼(.sh) 런타임 smoke — statusline/ctx_stop 발화의 *래퍼 �
 
 회귀 클래스: 래퍼가 인터프리터를 *실행검증*(`--version` rc)이 아니라 구 *존재검증*(`command -v
 python3`)으로 되돌리면, Windows WindowsApps 가짜 python3 shim(command -v 통과·실행 시 rc126)을 못
-걸러 `.py` 가 발화되지 못하고 hard-stop 게이트가 조용히 죽는다. 이 테스트는 래퍼 경유 발화를
+걸러 `.py` 가 발화되지 못하고 컨텍스트 넛지가 조용히 죽는다. 이 테스트는 래퍼 경유 발화를
 결정적으로 박제해 그 회귀를 잡는다(개발 중 sensitivity 실측: 래퍼를 구 패턴으로 되돌리면 이 박스에서
-statusline/stop 이 발화 실패 → 여기 단언이 fail).
+statusline/최종 넛지가 발화 실패 → 여기 단언이 fail).
 
 하니스는 `test_run_tests_hook.py` 패턴을 미러한다: `shutil.which("bash")` 절대경로(WSL 런처 아닌
 Git Bash·Windows-form 경로 일관)·hermetic tmp repo(.claude/ 래퍼+backbone 사본, 실 repo 무오염)·
 인터프리터 PATH 구성. stdin JSON 은 json.dumps 로 만들어 실제 하네스와 동일한 유효 이스케이프를 준다.
 
 POSIX 의미 보존: 래퍼는 python3→python 폴백이라 POSIX 에선 python3(=러너 인터프리터 심링크)로
-`.py` 를 exec 한다 — statusline `ctx 50%`·stop block/deny/pass 단언이 동일하게 유효하다. transcript
+`.py` 를 exec 한다 — statusline `ctx 50%`·최종 넛지/비차단 단언이 동일하게 유효하다. transcript
 mount(`/c/..`)형은 Windows Git-Bash 전용이라 POSIX 에선 native 문자열과 동일(마운트 개념 없음).
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ def _make_ctx_repo(tmp_path: Path) -> tuple[Path, Path]:
 
     래퍼는 자기 위치(.claude/)에서 hook_dir 를 self-resolve 해 옆 `.py` 를 exec 하고, backbone 은
     `ctx_guard.repo_root` 로 `.project_manager/local.conf` 있는 최근접 조상을 root 로 본다. 그 앵커를
-    tmp root 에 둬 marker(`.project_manager/.local/ctx-stop/*.done`)가 실 트리로 새지 않게 격리한다.
+    tmp root 에 둬 marker(`.project_manager/.local/ctx-stop/*.final`)가 실 트리로 새지 않게 격리한다.
     """
     root = tmp_path / "proj"
     claude = root / ".claude"
@@ -147,7 +147,7 @@ def _transcript_arg(tx: Path, form: str) -> str:
 
 
 def _fires(form: str) -> bool:
-    """이 form 의 transcript_path 를 backbone `Path()` 가 읽어 stop 이 발화하는가.
+    """이 form 의 transcript_path 를 backbone `Path()` 가 읽어 최종 넛지가 발화하는가.
 
     backbone 은 native 만 해소(`Path()`) — Windows mount(`/c/..`)형은 미해소돼 used 0(ok·무발화).
     POSIX 엔 마운트 형이 native 와 같은 문자열이라 항상 발화(형식 커버 의미·ticket §인터페이스).
@@ -192,12 +192,12 @@ def test_statusline_wrapper_malformed_graceful(tmp_path):
     assert "Traceback" not in proc.stderr, f"비정상 종료(traceback): {proc.stderr!r}"
 
 
-# ── ctx_stop 래퍼: stop 밴드 3분기 (block / deny / 핸드오프 통과) ───────────────
-# backbone 계약([[ADR-0038]] hard-stop·T-0205 핸드오프 예외)을 *래퍼 경유* 재확인.
+# ── ctx_stop 래퍼: stop 밴드 최종 넛지 (비차단·멱등·재무장) ───────────────────
+# compaction-native 계약([[ADR-0081]])을 *래퍼 경유* 재확인한다.
 
 @requires_bash
-def test_stop_wrapper_userpromptsubmit_blocks(tmp_path):
-    """transcript 95% + UserPromptSubmit(비-핸드오프) → `{"decision":"block"}`·rc0·STOP marker."""
+def test_stop_wrapper_userpromptsubmit_injects_final_nudge(tmp_path):
+    """transcript 95% + UserPromptSubmit → 비차단 최종 넛지·rc0·`.final` marker 만 생성."""
     root, claude = _make_ctx_repo(tmp_path)
     env = _hook_env(tmp_path)
     tx = _write_transcript(root, _STOP_INPUT_TOKENS)
@@ -209,16 +209,21 @@ def test_stop_wrapper_userpromptsubmit_blocks(tmp_path):
 
     proc = _run(claude / _STOP_WRAPPER, stdin, env)
     assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-    data = json.loads(proc.stdout)  # UserPromptSubmit 은 top-level block 스키마.
-    assert data["decision"] == "block", f"block 스키마 아님: {proc.stdout!r}"
-    assert "/pm-handoff" in data["reason"], data["reason"]
-    marker = root / ".project_manager" / ".local" / "ctx-stop" / "sess-ups.done"
-    assert marker.exists(), "STOP marker 미박제(relay 회전 신호)"
+    data = json.loads(proc.stdout)
+    hso = data["hookSpecificOutput"]
+    assert hso["hookEventName"] == "UserPromptSubmit"
+    guidance = hso["additionalContext"]
+    assert "ctx-nudge/최종" in guidance
+    assert "pm_log.py checkpoint" in guidance
+    assert "auto-compact" in guidance
+    assert "decision" not in data and "permissionDecision" not in hso
+    marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
+    assert sorted(path.name for path in marker_dir.iterdir()) == ["sess-ups.final"]
 
 
 @requires_bash
-def test_stop_wrapper_pretooluse_denies(tmp_path):
-    """transcript 95% + PreToolUse(새 작업 도구) → deny JSON·rc0."""
+def test_stop_wrapper_pretooluse_injects_and_consumes_final(tmp_path):
+    """PreToolUse 가 최종 넛지를 비차단 주입하고 공유 marker 를 먼저 소비한다."""
     root, claude = _make_ctx_repo(tmp_path)
     env = _hook_env(tmp_path)
     tx = _write_transcript(root, _STOP_INPUT_TOKENS)
@@ -227,7 +232,7 @@ def test_stop_wrapper_pretooluse_denies(tmp_path):
         "session_id": "sess-ptu",
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
-        "tool_input": {"command": "ls -la"},  # 핸드오프 allow-list 밖 = 새 작업.
+        "tool_input": {"command": "ls -la"},  # 일반 도구 호출도 비차단 통과.
     }
 
     proc = _run(claude / _STOP_WRAPPER, stdin, env)
@@ -235,16 +240,21 @@ def test_stop_wrapper_pretooluse_denies(tmp_path):
     data = json.loads(proc.stdout)
     hso = data["hookSpecificOutput"]
     assert hso["hookEventName"] == "PreToolUse"
-    assert hso["permissionDecision"] == "deny", f"deny 아님: {proc.stdout!r}"
-    assert "ctx-stop" in hso["permissionDecisionReason"], hso["permissionDecisionReason"]
+    assert "ctx-nudge/최종" in hso["additionalContext"]
+    assert "permissionDecision" not in hso and "decision" not in data
+    marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
+    assert sorted(path.name for path in marker_dir.iterdir()) == ["sess-ptu.final"]
+
+    stdin["hook_event_name"] = "UserPromptSubmit"
+    proc = _run(claude / _STOP_WRAPPER, stdin, env)
+    assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+    assert proc.stdout.strip() == "", "같은 사이클의 뒤 UserPromptSubmit 이 중복 주입함"
+    assert sorted(path.name for path in marker_dir.iterdir()) == ["sess-ptu.final"]
 
 
 @requires_bash
-def test_stop_wrapper_handoff_prompt_passes(tmp_path):
-    """transcript 95% + UserPromptSubmit prompt `/pm-handoff` → rc0·무출력(T-0205 예외)·marker.
-
-    stop 밴드에서도 핸드오프 트리거 prompt 는 통과(락아웃 해소) — 통과해도 STOP marker 는 박힌다.
-    """
+def test_stop_wrapper_final_is_idempotent_and_rearms_after_ok(tmp_path):
+    """`/pm-handoff`도 최종 넛지 대상이며, `.final`은 ok 복귀 뒤 제거돼 다음 사이클에 재발화한다."""
     root, claude = _make_ctx_repo(tmp_path)
     env = _hook_env(tmp_path)
     tx = _write_transcript(root, _STOP_INPUT_TOKENS)
@@ -257,9 +267,28 @@ def test_stop_wrapper_handoff_prompt_passes(tmp_path):
 
     proc = _run(claude / _STOP_WRAPPER, stdin, env)
     assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-    assert proc.stdout.strip() == "", f"핸드오프 통과인데 출력 발생: {proc.stdout!r}"
-    marker = root / ".project_manager" / ".local" / "ctx-stop" / "sess-hp.done"
-    assert marker.exists(), "통과 변형에서도 STOP marker 는 박혀야 함(회전 신호)"
+    data = json.loads(proc.stdout)
+    assert "ctx-nudge/최종" in data["hookSpecificOutput"]["additionalContext"]
+    marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
+    marker = marker_dir / "sess-hp.final"
+    assert marker.exists()
+    assert sorted(path.name for path in marker_dir.iterdir()) == ["sess-hp.final"]
+
+    duplicate = _run(claude / _STOP_WRAPPER, stdin, env)
+    assert duplicate.returncode == 0
+    assert duplicate.stdout.strip() == "", "같은 사이클에서 최종 넛지가 중복 주입됨"
+
+    _write_transcript(root, _OK_USED_TOKENS)
+    rearm = _run(claude / _STOP_WRAPPER, stdin, env)
+    assert rearm.returncode == 0 and rearm.stdout.strip() == ""
+    assert not marker.exists(), "ok 복귀에서 `.final` marker 가 재무장되지 않음"
+
+    _write_transcript(root, _STOP_INPUT_TOKENS)
+    next_cycle = _run(claude / _STOP_WRAPPER, stdin, env)
+    assert next_cycle.returncode == 0
+    data = json.loads(next_cycle.stdout)
+    assert "ctx-nudge/최종" in data["hookSpecificOutput"]["additionalContext"]
+    assert marker.exists()
 
 
 @requires_bash
@@ -281,7 +310,7 @@ def test_stop_wrapper_malformed_graceful(tmp_path):
 def test_stop_wrapper_transcript_form(tmp_path, form):
     r"""transcript_path 를 native(`C:\..`)·mount(`/c/..`) 두 형식으로 — backbone Path() 는 native 처리.
 
-    native → 해소·발화(block). Windows mount 형은 현행 backbone 이 미해소(used 0→ok)라 발화하지
+    native → 해소·최종 넛지 발화. Windows mount 형은 현행 backbone 이 미해소(used 0→ok)라 발화하지
     않지만, 그 *무발화 자체는 계약이 아니라 incidental* — 실하네스는 native 만 보내고, backbone 이
     후일 mount 정규화를 얻으면 발화하는 게 옳다. 그래서 Windows mount 분기는 graceful(rc0·
     traceback 0)만 단언한다 (T-0215 reviewer should-fix — "옳은 동작의 부재" 박제 회피).
@@ -298,15 +327,23 @@ def test_stop_wrapper_transcript_form(tmp_path, form):
 
     proc = _run(claude / _STOP_WRAPPER, stdin, env)
     assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-    marker = root / ".project_manager" / ".local" / "ctx-stop" / f"sess-form-{form}.done"
+    marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
+    marker = marker_dir / f"sess-form-{form}.final"
     if _fires(form):
         data = json.loads(proc.stdout)
-        assert data["decision"] == "block", f"{form} 형식 미발화: {proc.stdout!r}"
+        hso = data["hookSpecificOutput"]
+        assert hso["hookEventName"] == "UserPromptSubmit"
+        assert "ctx-nudge/최종" in hso["additionalContext"], f"{form} 형식 미발화: {proc.stdout!r}"
+        assert "decision" not in data and "permissionDecision" not in hso
         assert marker.exists()
+        assert sorted(path.name for path in marker_dir.iterdir()) == [marker.name]
     else:
         # Windows mount 형: graceful-only — 무발화를 계약으로 박제하지 않는다(backbone 이 mount
         # 정규화를 얻어 발화하게 되면 그건 개선이지 회귀가 아님). crash/traceback 없음만 단언.
         assert "Traceback" not in proc.stderr, f"mount 형식 크래시: {proc.stderr!r}"
         if proc.stdout.strip():
-            # 발화했다면(미래 backbone 개선) 유효한 block JSON 이어야 한다 — 깨진 출력만 금지.
-            assert json.loads(proc.stdout)["decision"] == "block"
+            # 발화했다면(미래 backbone 개선) 유효한 최종 넛지 JSON 이어야 한다 — 깨진 출력만 금지.
+            data = json.loads(proc.stdout)
+            hso = data["hookSpecificOutput"]
+            assert "ctx-nudge/최종" in hso["additionalContext"]
+            assert "decision" not in data and "permissionDecision" not in hso

@@ -4,7 +4,7 @@
 동기화된다(pm_update 전파). 드리프트 시 채택 프로젝트가 옛/다른 동작을 받는다
 ([[verify-engine-template-propagation]]). v2 머지 전 codex 제안 — 핵심 어댑터 산출물의
 양 트리 parity 를 자동 검증한다:
-  - `settings.json`(PreCompact 비대칭): root=PreCompact breadcrumb / template=PreCompact 없음.
+  - `settings.json` 훅 집합 비대칭: root=PreCompact breadcrumb / template=PostCompact ctx 재무장.
     양쪽 auto-compact ON(template 은 T-0458 로 autoCompactEnabled:true — 메인은 훅 hard-stop 선행·
     서브에이전트는 compaction 자체 정리). breadcrumb 은 net-less 도그푸딩 root 전용으로 유지.
   - `precompact_capture_hook.sh`: root 전용(template 엔 없음) — byte-identical 대상 아님.
@@ -13,7 +13,7 @@
 
 **의도된 차이 허용**: 루트 settings 는 ctx 훅(PreToolUse/UserPromptSubmit/statusLine·
 ctx_stop_hook·ctx_statusline)을 *싣지 않는다* — 루트 도그푸딩은 그 훅을 안 쓴다. 그래서
-settings 는 byte-identical 을 강제하지 않고 **PreCompact 전파만** 양쪽 강제한다(채택
+settings 는 byte-identical 을 강제하지 않고 **등록 훅 집합**을 양쪽에서 고정한다(채택
 프로젝트 폴백 보장·codex must-fix 맥락). stdlib + json. 파일 iterate(hermetic).
 """
 from __future__ import annotations
@@ -49,12 +49,7 @@ IDENTICAL_RELPATHS = [
 ]
 
 
-def _precompact_block(settings_path: Path):
-    data = json.loads(settings_path.read_text(encoding="utf-8"))
-    return data.get("hooks", {}).get("PreCompact")
-
-
-# ── settings.json: PreCompact 전파 (양쪽 존재 + 동일 명령) ────────────────────
+# ── settings.json: root/template 등록 훅 집합 핀 ──────────────────────────────
 
 def test_settings_present_both_trees():
     """settings.json 이 양 트리에 존재 + 유효 JSON."""
@@ -64,20 +59,26 @@ def test_settings_present_both_trees():
         json.loads(path.read_text(encoding="utf-8"))  # 파싱 실패 시 raise
 
 
-def test_precompact_asymmetric_root_breadcrumb_only_both_autocompact_on():
-    """PreCompact breadcrumb 는 **root(도그푸딩) 전용 비대칭** — 양 트리 auto-compact ON.
+def test_hook_registration_sets_asymmetric_both_autocompact_on():
+    """root PreCompact breadcrumb / template PostCompact 재무장 비대칭과 auto-compact ON을 고정.
 
     - root(도그푸딩·ctx hard-stop 훅 부재·auto-compact **ON**): PreCompact breadcrumb 존재
       → `precompact_capture_hook.sh` 를 가리킴 (압축이 수동 핸드오프를 선점할 수 있는 유일한
       net-less tree 라 1줄 신호 보존).
-    - template(auto-compact **ON**·T-0458): `autoCompactEnabled:true` **단일 정본 토글**
-      (env `DISABLE_AUTO_COMPACT` 중복 제거·T-0300). 메인 세션은 ctx_stop_hook hard-stop 이
-      auto-compact 트리거보다 먼저 발화(정제 handoff 선행)하고 서브에이전트(sidechain)는 hard-stop
-      면제라 compaction 으로 자체 정리한다 — PreCompact breadcrumb 은 **template 엔 없음**(root 전용
-      net·template 은 훅 hard-stop 선행 + compaction 폴백이 수용된 설계·ADR-0038 D3 amend PM 몫).
+    - template(auto-compact **ON**·T-0458): PreToolUse/UserPromptSubmit 넛지 +
+      PostCompact 완료 후 재무장.
+      압축 전 발화하는 PreCompact에는 재무장 훅을 등록하지 않아 실패/차단 시 marker를 보존한다.
     """
     root = json.loads((ROOT_CLAUDE / "settings.json").read_text(encoding="utf-8"))
     tmpl = json.loads((TEMPLATE_CLAUDE / "settings.json").read_text(encoding="utf-8"))
+    assert set(root.get("hooks", {})) == {"PostToolUse", "PreCompact"}, (
+        f"root 등록 훅 집합 드리프트: {set(root.get('hooks', {}))}"
+    )
+    assert set(tmpl.get("hooks", {})) == {
+        "PostToolUse", "PreToolUse", "UserPromptSubmit", "PostCompact",
+    }, (
+        f"template 등록 훅 집합 드리프트: {set(tmpl.get('hooks', {}))}"
+    )
     # root: PreCompact breadcrumb 존재 + auto-compact 유지(비활성 아님).
     root_block = root.get("hooks", {}).get("PreCompact")
     assert root_block, "root settings.json 에 PreCompact breadcrumb 누락 (auto-compact ON tree)"
@@ -85,9 +86,10 @@ def test_precompact_asymmetric_root_breadcrumb_only_both_autocompact_on():
         f"root PreCompact 가 precompact 훅을 안 가리킴: {root_block}"
     )
     assert root.get("autoCompactEnabled") is not False, "root 는 auto-compact 유지여야 함"
-    # template: PreCompact breadcrumb 없음(root 전용) + auto-compact 정본 단일 토글 ON(T-0458).
-    assert tmpl.get("hooks", {}).get("PreCompact") is None, (
-        "template settings.json 에 PreCompact 잔존 — breadcrumb 은 net-less root 전용(template 엔 없음)"
+    # template: PostCompact 완료 후 재무장 + auto-compact 정본 단일 토글 ON(T-0458).
+    postcompact = tmpl["hooks"]["PostCompact"]
+    assert "ctx_stop_hook.sh" in json.dumps(postcompact), (
+        f"template PostCompact 가 ctx 재무장 훅을 안 가리킴: {postcompact}"
     )
     assert tmpl.get("autoCompactEnabled") is True, (
         "template autoCompactEnabled:true 누락 — 서브에이전트 compaction 허용(T-0458·발단 T-0431)"

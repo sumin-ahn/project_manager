@@ -3,14 +3,15 @@
 
 claude Code 가 statusLine 입력 JSON 을 stdin 으로 준다 (``context_window`` 포함).
 이 스크립트는 컨텍스트 **사용** % 를 산출해 statusline 한 줄을 stdout 에 낸다.
-임계(local.conf ``ctx_nudge_pct``/``ctx_stop_pct``)에 닿으면 색·문구로 경고한다.
+임계(local.conf ``ctx_nudge_pct``/``ctx_stop_pct``)에 닿으면 색·문구로 checkpoint 시점을 알린다.
 
   - ok    : 회색 ctx N%
-  - nudge : 노랑 "ctx N% — 곧 정지(핸드오프 준비)"
-  - nudge2: 빨강 "ctx N% — 정지 임박(지금 /pm-handoff)" (2단 strong·T-0328)
-  - stop  : 빨강 "ctx N% — 정지 임계·핸드오프"
+  - nudge : 노랑 "ctx N% — checkpoint 준비"
+  - nudge2: 빨강 "ctx N% — checkpoint 권고" (2단 strong·T-0328)
+  - stop  : 빨강 "ctx N% — checkpoint 최종 알림"
 
-statusLine 은 **흐름을 안 끊는다**(가시화만) — 하드 정지는 PreToolUse 훅(ctx_stop_hook.py).
+statusLine 은 **흐름을 안 끊는다**(가시화만). ctx_stop_hook.py도 같은 밴드에서 모델-facing
+checkpoint 안내만 비차단 주입한다.
 배선은 settings.json ``statusLine.command`` 가 이 스크립트를 가리킨다.
 """
 from __future__ import annotations
@@ -35,18 +36,18 @@ def render_line(used_pct: int, state: str) -> str:
     """used % + 분류 → ANSI statusline 문자열 (색·문구)."""
     color = _COLOR.get(state, _GREY)
     if state == "stop":
-        body = f"ctx {used_pct}% — 정지 임계·핸드오프"
+        body = f"ctx {used_pct}% — checkpoint 최종 알림"
     elif state == "nudge2":
-        body = f"ctx {used_pct}% — 정지 임박(지금 /pm-handoff)"
+        body = f"ctx {used_pct}% — checkpoint 권고"
     elif state == "nudge":
-        body = f"ctx {used_pct}% — 곧 정지(핸드오프 준비)"
+        body = f"ctx {used_pct}% — checkpoint 준비"
     else:
         body = f"ctx {used_pct}%"
     return f"{color}{body}{_RESET}"
 
 
 def build_statusline(stdin: dict, conf: dict) -> str:
-    # 분모 = 해소된 claude 예산(ADR-0041) — hook 과 같은 예산으로 표시=정지 일관.
+    # 분모 = 해소된 claude 예산(ADR-0041) — hook 과 같은 예산으로 표시=밴드 일관.
     budget = ctx_guard.resolve_budget(conf, "claude")
     used = ctx_guard.context_used_pct_from_statusline(stdin, budget)
     thresholds = ctx_guard.ctx_thresholds(conf)

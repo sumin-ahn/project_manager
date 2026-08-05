@@ -1,4 +1,4 @@
-"""claude 어댑터 ctx 정지-핸드오프 단위 테스트 (T-0015).
+"""claude 어댑터 ctx compaction-native 넛지 단위 테스트 (T-0550).
 
 어댑터 스크립트(templates/claude_code/.claude/ctx_guard·ctx_statusline·ctx_stop_hook)를
 importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·외부 호출 없이
@@ -7,12 +7,10 @@ importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·�
 검증 축:
   1. 임계 config — local.conf nudge/stop 읽기 + sanity 폴백 (codex 인계).
   2. statusLine — context_window → used % (current_usage 단일 소스·ADR-0041) + 색/문구 넛지.
-  3. 훅 — transcript JSONL 토큰합 → used %, 임계 분기(ok/nudge/stop), deny/block 출력 스키마.
-  3c. 핸드오프 도구 allow-list (ADR-0038 D2) — stop 밴드에서 진행 중 /pm-handoff 도구는
-      통과(None)·새 작업 도구는 deny. Bash 셸-연산자 밀반입 fail-closed·env-prefix 정규화.
-  4. STOP marker — stop 도달 시 `.done` 무조건 박제(relay 신호·ADR-0038 D4·handoff_rc 게이트 없음),
-      멱등=파일 존재(write 실패 시 부재로 남아 다음 호출 self-heal 재시도).
-  5. settings 배선 — settings.json 에 PreToolUse·UserPromptSubmit 훅·statusLine.
+  3. 훅 — 세 밴드 모두 PreToolUse/UserPromptSubmit additionalContext 비차단 주입 +
+     채널 공유 사이클별 marker 멱등.
+  4. re-arm — PostCompact 완료 경계 또는 유효한 ok 실측 시 `.nudge`/`.nudge2`/`.final` 삭제.
+  5. settings 배선 — PreToolUse·UserPromptSubmit·PostCompact 를 ctx 훅에 연결.
 """
 from __future__ import annotations
 
@@ -69,6 +67,25 @@ def _write_transcript(tmp_path: Path, messages, *, sidechain=None) -> Path:
     return path
 
 
+def _append_transcript_entry(path: Path, entry: dict) -> None:
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(entry) + "\n")
+
+
+def _compact_boundary(*, post_tokens=11_387) -> dict:
+    """Claude Code 2.1.222 환경에서 관측한 저장 transcript compact 경계 최소 fixture."""
+    return {
+        "type": "system",
+        "subtype": "compact_boundary",
+        "compactMetadata": {
+            "trigger": "manual",
+            "preTokens": 655_736,
+            "postTokens": post_tokens,
+        },
+        "isSidechain": False,
+    }
+
+
 # ── 1. 임계 config (local.conf 읽기 + sanity 폴백) ──────────────────────────
 
 def test_thresholds_defaults(guard):
@@ -109,15 +126,6 @@ def test_load_local_config_parses(guard, tmp_path):
 
 def test_load_local_config_missing(guard, tmp_path):
     assert guard.load_local_config(tmp_path) == {}
-
-
-def test_window_tokens_default_and_override(guard):
-    # generic-only 헬퍼(back-compat) — 유지(하네스 오버라이드는 무시·resolve_budget 이 담당).
-    assert guard.ctx_window_tokens({}) == 200_000
-    assert guard.ctx_window_tokens({"ctx_window_tokens": "100000"}) == 100_000
-    # 비정상(0·음수·비정수) → 기본.
-    assert guard.ctx_window_tokens({"ctx_window_tokens": "0"}) == 200_000
-    assert guard.ctx_window_tokens({"ctx_window_tokens": "-5"}) == 200_000
 
 
 # ── 1b. resolve_budget: per-harness precedence (ADR-0041 Decision 1) ────────
@@ -225,29 +233,29 @@ def test_statusline_render_colors(guard, statusline):
     # conf={} → 예산 200K 기본·기본 임계(30/20·T-0207). current_usage 토큰으로 밴드 구성.
     def _sl(tokens):
         return {"context_window": {"current_usage": {"input_tokens": tokens}}}
-    # ok (used 50, 잔여 50 > 30): 회색·정지문구 없음.
+    # ok (used 50, 잔여 50 > 30): 회색·checkpoint 문구 없음.
     ok = statusline.build_statusline(_sl(100_000), {})
-    assert "\033[90m" in ok and "ctx 50%" in ok and "정지" not in ok
-    # nudge (used 75, 잔여 25 <= 30·> 20): 노랑·"곧 정지".
+    assert "\033[90m" in ok and "ctx 50%" in ok and "checkpoint" not in ok
+    # nudge (used 75, 잔여 25 <= 30·> 20): 노랑·checkpoint 준비.
     nudge = statusline.build_statusline(_sl(150_000), {})
-    assert "\033[33m" in nudge and "곧 정지" in nudge
-    # nudge2 (used 78, 잔여 22 <= 23[=min(20+3,30)]·> 20): 빨강·"정지 임박" (2단 strong·T-0328).
+    assert "\033[33m" in nudge and "checkpoint 준비" in nudge
+    # nudge2 (used 78, 잔여 22 <= 23[=min(20+3,30)]·> 20): 빨강·checkpoint 권고.
     nudge2 = statusline.build_statusline(_sl(156_000), {})
-    assert "\033[31m" in nudge2 and "정지 임박" in nudge2
-    # stop (used 92, 잔여 8 <= 20): 빨강·"정지 임계".
+    assert "\033[31m" in nudge2 and "checkpoint 권고" in nudge2
+    # stop (used 92, 잔여 8 <= 20): 빨강·checkpoint 최종 알림.
     stop = statusline.build_statusline(_sl(184_000), {})
-    assert "\033[31m" in stop and "정지 임계" in stop
+    assert "\033[31m" in stop and "checkpoint 최종 알림" in stop
 
 
 def test_statusline_render_colors_respects_budget_override(guard, statusline):
-    # 하네스 오버라이드로 예산이 커지면 같은 토큰이 낮은 %로 표시(표시=정지 일관·per-harness).
+    # 하네스 오버라이드로 예산이 커지면 같은 토큰이 낮은 %로 표시(표시=밴드 일관·per-harness).
     sl = {"context_window": {"current_usage": {"input_tokens": 184_000}}}
     # 기본 200K: 92% used → stop(빨강).
     stop = statusline.build_statusline(sl, {})
-    assert "\033[31m" in stop and "정지 임계" in stop
+    assert "\033[31m" in stop and "checkpoint 최종 알림" in stop
     # claude 오버라이드 1M: 18% used → ok(회색).
     ok = statusline.build_statusline(sl, {"ctx_window_tokens_claude": "1000000"})
-    assert "\033[90m" in ok and "ctx 18%" in ok and "정지" not in ok
+    assert "\033[90m" in ok and "ctx 18%" in ok and "checkpoint" not in ok
 
 
 def test_classify_boundaries(guard):
@@ -287,6 +295,30 @@ def test_transcript_tokens_last_request(guard, tmp_path):
     assert guard.context_tokens_from_transcript(path) == 180_000
 
 
+def test_transcript_tokens_stop_at_compact_boundary_without_new_usage(guard, tmp_path):
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
+    _append_transcript_entry(path, _compact_boundary())
+
+    # compactMetadata.postTokens 는 compact 결과 크기지만 아직 새 assistant 요청의 usage 실측이
+    # 아니다. 경계 뒤 usage 가 없으면 측정불가 0으로 두어 이전 사이클 usage를 재사용하지 않는다.
+    assert guard.context_tokens_from_transcript(path) == 0
+
+
+def test_transcript_tokens_only_use_usage_after_compact_boundary(guard, tmp_path):
+    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
+    _append_transcript_entry(path, _compact_boundary(post_tokens=12_345))
+    _append_transcript_entry(path, {
+        "type": "assistant",
+        "message": {"role": "assistant", "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 48_000,
+            "cache_read_input_tokens": 102_000,
+        }},
+    })
+
+    assert guard.context_tokens_from_transcript(path) == 150_002
+
+
 def test_transcript_used_pct(guard, tmp_path):
     path = _write_transcript(tmp_path, [
         ("assistant", {"input_tokens": 180_000}),
@@ -316,49 +348,50 @@ def test_hook_evaluate_ok_passes(guard, stop_hook, tmp_path):
     stdin = {"transcript_path": str(path), "session_id": "sess-ok"}
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
     assert rc == 0 and output is None
-    # ok → STOP marker 안 박힌다.
-    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-ok.done").exists()
+    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop").exists()
 
 
-def test_hook_evaluate_stop_denies_and_triggers(guard, stop_hook, tmp_path):
-    # used 92% (잔여 8 <= 20) + 새 작업 도구 → deny + STOP marker 무조건 박제 (ADR-0038 D4).
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 184_000})])
+def _stop_transcript(tmp_path: Path) -> Path:
+    # input_tokens 190_000 / window 200_000 = 95% used → 잔여 5 <= stop_pct 20 → stop.
+    return _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
+
+
+def test_hook_stop_userpromptsubmit_injects_final_nudge(stop_hook, tmp_path):
+    # stop 밴드는 block/deny 대신 additionalContext 최종 넛지를 주입한다.
     stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-stop",
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": {"command": "ls -la"},  # 새 작업 도구.
+        "transcript_path": str(_stop_transcript(tmp_path)),
+        "session_id": "sess-final",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "다음 작업도 진행해줘",
     }
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
     assert rc == 0
     hso = output["hookSpecificOutput"]
-    assert hso["hookEventName"] == "PreToolUse"
-    assert hso["permissionDecision"] == "deny"
-    assert "새 세션" in hso["permissionDecisionReason"]
-    assert "ctx-stop" in hso["permissionDecisionReason"]
-    # STOP marker 가 무조건(handoff_rc 게이트 없음) 박제됐다.
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-stop.done").exists()
+    assert hso["hookEventName"] == "UserPromptSubmit"
+    guidance = hso["additionalContext"]
+    assert "ctx-nudge/최종" in guidance
+    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction" in guidance
+    assert "<이름>`에는 현재 task 이름" in guidance
+    assert "auto-compact" in guidance
+    assert "permissionDecision" not in hso
+    assert "decision" not in output
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    assert (marker_dir / "sess-final.final").exists()
 
 
-def test_hook_idempotent_single_trigger(guard, stop_hook, tmp_path):
-    """같은 세션에서 두 번 정지 임계여도 marker 는 1개·2회차도 에러 없이 deny (멱등=파일 존재)."""
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
+def test_hook_final_nudge_idempotent_within_cycle(stop_hook, tmp_path):
+    """같은 상승 사이클의 stop 밴드에서는 `.final` 넛지를 한 번만 주입한다."""
     stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-idem",
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": {"command": "cat foo.py"},  # 새 작업 도구.
+        "transcript_path": str(_stop_transcript(tmp_path)),
+        "session_id": "sess-final-idem",
+        "hook_event_name": "UserPromptSubmit",
     }
     rc1, out1 = stop_hook.evaluate(stdin, tmp_path, {})
     rc2, out2 = stop_hook.evaluate(stdin, tmp_path, {})
-    # 두 번 다 deny.
-    assert out1["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert out2["hookSpecificOutput"]["permissionDecision"] == "deny"
-    # marker 파일이 (한 번) 생성돼 두 번째 호출에도 그대로 남아있다.
-    marker = tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-idem.done"
-    assert marker.exists()
+    assert rc1 == rc2 == 0
+    assert "additionalContext" in out1["hookSpecificOutput"]
+    assert out2 is None
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-final-idem.final").exists()
 
 
 def test_hook_no_transcript_passes(stop_hook, tmp_path):
@@ -367,191 +400,98 @@ def test_hook_no_transcript_passes(stop_hook, tmp_path):
     assert rc == 0 and output is None
 
 
-def test_hook_marker_write_failure_self_heals_next_call(stop_hook, tmp_path, monkeypatch):
-    # marker 파일 write 자체가 실패하면 marker 는 부재·_already_triggered 는 False 로 남아
-    # 다음 stop-도구 호출이 재시도(self-heal) — in-memory 플래그를 두지 않는 설계(ADR-0038 D4).
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
+def test_hook_final_marker_claim_failure_does_not_inject_and_retries(
+        stop_hook, tmp_path, monkeypatch):
+    # marker 선점 실패 호출은 무주입이고, 파일이 없으면 다음 호출에서 다시 선점할 수 있다.
     stdin = {
-        "transcript_path": str(path),
+        "transcript_path": str(_stop_transcript(tmp_path)),
         "session_id": "sess-heal",
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": {"command": "ls"},  # 새 작업 도구.
-    }
-    # marker write 를 no-op 로 만들어 파일이 안 생기게 한다 (디렉토리 unwritable 등가).
-    monkeypatch.setattr(stop_hook, "_mark_triggered", lambda root, sid: None)
-    rc1, out1 = stop_hook.evaluate(stdin, tmp_path, {})
-    rc2, out2 = stop_hook.evaluate(stdin, tmp_path, {})
-    marker = tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-heal.done"
-    # marker 부재 → 매 호출이 미박제로 판정(_already_triggered False)해 재시도한다.
-    assert not marker.exists()
-    assert not stop_hook._already_triggered(tmp_path, "sess-heal")
-    # 정지(deny) 자체는 두 번 다 유효 (marker 실패해도 hard-stop 은 살아있다).
-    assert out1["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert out2["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
-def test_hook_user_prompt_submit_blocks(guard, stop_hook, tmp_path):
-    # UserPromptSubmit 이벤트 → prompt 자체 block (새 작업 진입 차단·ADR-0038 D2 정지 경계).
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
-    stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-ups",
         "hook_event_name": "UserPromptSubmit",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    # UserPromptSubmit 은 top-level block 스키마 (PreToolUse 의 hookSpecificOutput 아님).
-    assert output["decision"] == "block"
-    assert "새 세션" in output["reason"]
-    # marker 는 event 무관하게 stop 도달 즉시 박제된다.
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-ups.done").exists()
+
+    def fail_open(*args, **kwargs):
+        raise PermissionError("marker unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(stop_hook.os, "open", fail_open)
+        rc1, out1 = stop_hook.evaluate(stdin, tmp_path, {})
+    marker = tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-heal.final"
+    assert not marker.exists()
+    assert rc1 == 0 and out1 is None
+
+    rc2, out2 = stop_hook.evaluate(stdin, tmp_path, {})
+    assert marker.exists()
+    assert rc2 == 0
+    assert "additionalContext" in out2["hookSpecificOutput"]
 
 
-def test_hook_pretooluse_default_when_no_event(guard, stop_hook, tmp_path):
-    # hook_event_name 없으면 기본 PreToolUse 처리 — 새 작업 도구(핸드오프 아님)면 deny.
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
+def test_hook_atomic_marker_claim_race_loser_does_not_inject(
+        stop_hook, tmp_path, monkeypatch):
+    """경쟁 호출이 직전에 marker를 선점하면 `.nudge`/`.nudge2`/`.final` loser는 무주입."""
+    cases = (("nudge", 150_000), ("nudge2", 156_000), ("final", 190_000))
+    real_open = stop_hook.os.open
+    claimed = []
+
+    def competing_open(path, flags, mode=0o777):
+        # evaluate의 O_EXCL 시점에 경쟁 호출이 같은 marker를 먼저 생성한 상황을 결정적으로 재현한다.
+        fd = real_open(path, flags, mode)
+        stop_hook.os.close(fd)
+        claimed.append(Path(path).suffix.removeprefix("."))
+        raise FileExistsError(path)
+
+    monkeypatch.setattr(stop_hook.os, "open", competing_open)
+    for suffix, tokens in cases:
+        transcript = _write_transcript(
+            tmp_path, [("assistant", {"input_tokens": tokens})])
+        rc, output = stop_hook.evaluate({
+            "transcript_path": str(transcript),
+            "session_id": f"sess-race-{suffix}",
+            "hook_event_name": "PreToolUse",
+        }, tmp_path, {})
+        marker = (
+            tmp_path / ".project_manager" / ".local" / "ctx-stop" /
+            f"sess-race-{suffix}.{suffix}"
+        )
+        assert rc == 0 and output is None
+        assert marker.exists()
+
+    assert claimed == ["nudge", "nudge2", "final"]
+
+
+def test_hook_final_pretooluse_injects_without_permission_decision(stop_hook, tmp_path):
+    # Claude Code v2.1.9+ PreToolUse additionalContext 비차단 주입 계약.
     stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-def",
-        "tool_name": "Bash",
-        "tool_input": {"command": "python3 other.py"},  # 새 작업 도구.
-    }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
-# ── 3c. 핸드오프 도구 allow-list (ADR-0038 D2 — 진행 중 /pm-handoff 통과) ─────
-# stop 밴드에서 PreToolUse 도구를 통과(None)/deny 로 가르는 안전-핵심 로직.
-# transcript 는 used 95%(잔여 5 <= stop 20·기본 T-0207)로 stop 밴드에 넣는다.
-
-def _stop_transcript(tmp_path: Path) -> Path:
-    # input_tokens 190_000 / window 200_000 = 95% used → 잔여 5 <= stop_pct 20 → stop.
-    return _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
-
-
-def _pretooluse_stdin(tmp_path: Path, session_id: str, tool_name: str, tool_input: dict) -> dict:
-    return {
         "transcript_path": str(_stop_transcript(tmp_path)),
-        "session_id": session_id,
+        "session_id": "sess-pretool",
         "hook_event_name": "PreToolUse",
-        "tool_name": tool_name,
-        "tool_input": tool_input,
+        "tool_name": "Bash",
+        "tool_input": {"command": "python3 build.py"},
     }
-
-
-@pytest.mark.parametrize("command", [
-    "python3 .project_manager/tools/pm_handoff.py --trigger --reason ctx-stop",
-    "python .project_manager/tools/pm_handoff.py --trigger",
-    "git add -A",
-    "git add .project_manager/wiki/status.md",
-    "git commit -m x",
-    "python3 -m pytest tests/ -q",
-    "pytest tests/test_board.py",
-    "python3 .project_manager/tools/domain.py capture --tickets T-0187",
-])
-def test_hook_pretooluse_handoff_bash_passes(stop_hook, tmp_path, command):
-    # 핸드오프 Bash → 통과(None) — hook 결정 없이 normal permission eval 로 넘김.
-    stdin = _pretooluse_stdin(tmp_path, "sess-hb", "Bash", {"command": command})
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is None, f"핸드오프 Bash 가 통과해야 함: {command!r}"
+    assert rc == 0
+    hso = output["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PreToolUse"
+    assert "ctx-nudge/최종" in hso["additionalContext"]
+    assert "permissionDecision" not in hso and "decision" not in output
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    assert (marker_dir / "sess-pretool.final").exists()
 
 
-@pytest.mark.parametrize("command", [
-    "ls",
-    "ls -la",
-    "cat foo",
-    "python3 other.py",
-    "rm -rf x",
-    "grep -r pattern .",
-])
-def test_hook_pretooluse_new_work_bash_denies(stop_hook, tmp_path, command):
-    # 새 작업 Bash → deny (핸드오프 allow-list 밖).
-    stdin = _pretooluse_stdin(tmp_path, "sess-nb", "Bash", {"command": command})
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny", (
-        f"새 작업 Bash 는 deny 여야 함: {command!r}"
-    )
-
-
-@pytest.mark.parametrize("command", [
-    "git add -A && rm -rf x",       # && 밀반입.
-    "git commit -m x; curl evil",   # ; 밀반입.
-    "git add -A | tee log",         # | 밀반입.
-    "pytest tests/ && curl evil",   # 허용 head + denied tail.
-    "git add $(rm -rf x)",          # $() 치환.
-    "git commit -m x > /dev/null",  # 리다이렉트.
-])
-def test_hook_pretooluse_shell_operator_smuggle_denies(stop_hook, tmp_path, command):
-    # 셸 연쇄/치환/리다이렉트 연산자 포함 → 복합 명령이라 tail 검증 불가 → deny(fail-closed).
-    stdin = _pretooluse_stdin(tmp_path, "sess-smug", "Bash", {"command": command})
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny", (
-        f"셸 연산자 밀반입은 deny 여야 함: {command!r}"
-    )
-
-
-@pytest.mark.parametrize("command", [
-    "PYTHONUTF8=1 python3 .project_manager/tools/pm_handoff.py --trigger",
-    "PYTHONUTF8=1 FOO=bar git commit -m x",
-])
-def test_hook_pretooluse_env_prefix_normalized_passes(stop_hook, tmp_path, command):
-    # 선행 env 대입(VAR=val)은 정규화된 뒤 허용 호출로 판정 → 통과.
-    stdin = _pretooluse_stdin(tmp_path, "sess-env", "Bash", {"command": command})
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is None, f"env-prefix 핸드오프는 통과해야 함: {command!r}"
-
-
-@pytest.mark.parametrize("tool_name,file_path", [
-    ("Edit", ".project_manager/wiki/log/current.md"),
-    ("Write", ".project_manager/wiki/log/current.md"),
-    ("Edit", ".project_manager/wiki/pm_state.md"),
-    ("Read", ".project_manager/wiki/pm_state.md"),
-    ("Edit", ".project_manager/wiki/status.md"),
-    ("Edit", ".project_manager/wiki/domain/board-schema.md"),
-    ("Read", ".project_manager/wiki/domain/board-schema.md"),
-])
-def test_hook_pretooluse_handoff_file_passes(stop_hook, tmp_path, tool_name, file_path):
-    # 핸드오프 산출물(log/current.md·pm_state·status.md·domain/) Edit/Write/Read → 통과.
-    stdin = _pretooluse_stdin(tmp_path, "sess-hf", tool_name, {"file_path": file_path})
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is None, f"핸드오프 파일은 통과해야 함: {tool_name} {file_path!r}"
-
-
-@pytest.mark.parametrize("tool_name,file_path", [
-    ("Edit", ".project_manager/tools/board.py"),
-    ("Read", ".project_manager/tools/board.py"),
-    ("Write", "src/new_feature.py"),
-    ("Edit", "README.md"),
-])
-def test_hook_pretooluse_new_work_file_denies(stop_hook, tmp_path, tool_name, file_path):
-    # 소스/무관 파일 Edit/Write/Read → deny (핸드오프 산출물 밖·새 작업 방어).
-    stdin = _pretooluse_stdin(tmp_path, "sess-nf", tool_name, {"file_path": file_path})
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny", (
-        f"소스 파일 편집은 deny 여야 함: {tool_name} {file_path!r}"
-    )
-
-
-def test_hook_pretooluse_handoff_tool_marks_stop_unconditionally(stop_hook, tmp_path):
-    # 핸드오프 도구가 통과(None)돼도 STOP marker 는 무조건 박제된다 (회전 신호 누락 방지).
-    stdin = _pretooluse_stdin(
-        tmp_path, "sess-hmark", "Bash",
-        {"command": "python3 .project_manager/tools/pm_handoff.py --trigger"},
-    )
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert output is None  # 통과.
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-hmark.done").exists()
-
-
-def test_settings_wires_user_prompt_submit():
-    # settings.json 에 UserPromptSubmit 훅(ctx_stop_hook) 배선 — 새 작업 진입 차단.
+def test_settings_wires_pretool_userprompt_and_postcompact():
+    # PreToolUse/UserPromptSubmit 은 넛지 주입, PostCompact 는 완료 경계 재무장 채널이다.
     # T-0202: 이제 래퍼(ctx_stop_hook.sh) 경유 — 래퍼가 인터프리터 self-resolve 후 ctx_stop_hook.py 를
     #   exec(stdin/args/rc 투명 전달). 래퍼→.py 링크는 test_new_wrappers_self_contained 가 커버.
     data = json.loads((CLAUDE / "settings.json").read_text(encoding="utf-8"))
-    ups = data["hooks"]["UserPromptSubmit"]
-    assert isinstance(ups, list) and ups
-    cmds = [h.get("command", "") for m in ups for h in m.get("hooks", [])]
-    assert any("ctx_stop_hook.sh" in c for c in cmds), "UserPromptSubmit 에 ctx_stop_hook 래퍼 누락"
+    for event in ("PreToolUse", "UserPromptSubmit", "PostCompact"):
+        registrations = data["hooks"][event]
+        assert isinstance(registrations, list) and registrations
+        cmds = [h.get("command", "") for m in registrations for h in m.get("hooks", [])]
+        assert any("ctx_stop_hook.sh" in c for c in cmds), f"{event} 에 ctx_stop_hook 래퍼 누락"
+    assert data["hooks"]["PostCompact"] == data["hooks"]["UserPromptSubmit"], (
+        "PostCompact 등록이 UserPromptSubmit ctx 훅과 동형이 아님")
+    assert data["hooks"]["PreToolUse"][0].get("matcher") == "*"
+    assert "PreCompact" not in data["hooks"], (
+        "압축 전 발화하는 PreCompact 에 재무장 훅이 남음")
 
 
 def test_hook_session_id_sanitized(stop_hook):
@@ -571,7 +511,7 @@ def test_statusline_main_emits_line(statusline, monkeypatch, capsys):
     rc = statusline.main()
     out = capsys.readouterr().out
     assert rc == 0
-    assert "ctx 95%" in out and "정지 임계" in out
+    assert "ctx 95%" in out and "checkpoint 최종 알림" in out
 
 
 def test_statusline_main_empty_stdin(statusline, monkeypatch, capsys):
@@ -582,9 +522,9 @@ def test_statusline_main_empty_stdin(statusline, monkeypatch, capsys):
     assert rc == 0 and "ctx 0%" in out
 
 
-# ── 5. settings 배선 (statusLine·PreToolUse 훅) ────────────────────────────
+# ── 5. settings 배선 (statusLine·UserPromptSubmit 훅) ─────────────────────
 
-# T-0202: statusLine·PreToolUse 배선은 이제 래퍼(.sh) 경유 — 래퍼가 인터프리터를 self-resolve
+# T-0202: statusLine·UserPromptSubmit 배선은 래퍼(.sh) 경유 — 래퍼가 인터프리터를 self-resolve
 #   (python3→python) 후 대응 .py 를 exec(stdin/args/rc 투명). settings.json 이 .py 를 직접 부르지
 #   않아 {{PY}} 치환토큰·절대경로가 사라진다(portable-by-construction). 래퍼→.py 링크는
 #   test_claude_adapter_parity.test_new_wrappers_self_contained 가 커버.
@@ -601,13 +541,8 @@ def test_settings_wires_statusline(name):
 def test_settings_wires_pretooluse_hook(name):
     data = json.loads((CLAUDE / name).read_text(encoding="utf-8"))
     pre = data["hooks"]["PreToolUse"]
-    assert isinstance(pre, list) and pre
-    cmds = [
-        h.get("command", "")
-        for matcher in pre
-        for h in matcher.get("hooks", [])
-    ]
-    assert any("ctx_stop_hook.sh" in c for c in cmds), f"{name} PreToolUse 에 ctx_stop_hook 래퍼 누락"
+    assert pre and pre[0].get("matcher") == "*"
+    assert "ctx_stop_hook.sh" in json.dumps(pre)
 
 
 @pytest.mark.parametrize("name", ["settings.json"])
@@ -619,19 +554,25 @@ def test_settings_preserves_posttooluse(name):
     assert any("run_tests_hook.sh" in c for c in cmds)
 
 
-# ── graceful nudge (ADR-0037) — nudge 임계서 모델-facing 비차단 안내 주입 ──────────
-# 1단(nudge)이 비어있던 자리를 채운다: UserPromptSubmit additionalContext 로 모델이 스스로
-# /pm-handoff 하게 유도. hard-stop(2단)은 독립 fail-safe 로 무변경.
+# ── 6. compaction-native 넛지 + 사이클 재무장 (ADR-0081) ──────────────────
 
 
 def test_build_nudge_guidance(guard):
-    # 안내문 = 조건부 권고(현 단계 마무리 후·/pm-handoff·자동정지 임계). 정지/지시 아님.
+    # 1단은 미기록 상태를 알리고 ticket 경계의 complete/checkpoint 기록 규약을 권고한다.
     g = guard.build_nudge_guidance(82, {"nudge_pct": 20, "stop_pct": 10})
     assert "ctx-nudge" in g
     assert "잔여 18%" in g          # remaining_pct(82) = 18.
-    assert "/pm-handoff" in g
-    assert "10%" in g               # stop_pct 안내.
-    assert "ADR-0037" in g
+    assert "ticket 경계" in g
+    assert "complete" in g
+    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름>" in g
+    assert "Windows는 `py -3`" in g
+    assert len(g) <= 10_000
+    assert "직전 박제 경계 이후 구간이 미기록 상태" in g
+    assert "다음 단계 경계" in g and "이 프로젝트의 규약" in g
+    assert "<이름>`에는 현재 task 이름" in g
+    assert not any(command in g for command in ("실행하라", "박제하라", "넣어라"))
+    assert "--trigger compaction" not in g
+    assert "/pm-handoff" not in g
 
 
 def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
@@ -647,23 +588,29 @@ def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "UserPromptSubmit"
     assert "additionalContext" in hso
-    assert "/pm-handoff" in hso["additionalContext"]
+    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름>" in hso["additionalContext"]
     assert "ctx-nudge" in hso["additionalContext"]
     # 비차단: deny/block 아님 (정지 스키마 부재).
     assert "permissionDecision" not in hso
     assert output.get("decision") != "block"
-    # nudge marker(.nudge) 생성·stop marker(.done) 미생성.
+    # nudge marker 만 생성된다.
     assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge.nudge").exists()
-    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge.done").exists()
 
 
-def test_hook_nudge_pretooluse_passes_no_injection(stop_hook, tmp_path):
-    # nudge 레벨(잔여 25) + PreToolUse(주입 채널 없음) → 통과(도구 진행)·주입/marker 없음.
+def test_hook_nudge_pretooluse_injects_and_consumes_cycle(stop_hook, tmp_path):
+    # PreToolUse 가 먼저 발화하면 비차단 주입하고 채널 공유 marker 를 소비한다.
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
-    stdin = {"transcript_path": str(path), "session_id": "sess-nudge-ptu"}  # event 없음=PreToolUse 기본.
+    stdin = {"transcript_path": str(path), "session_id": "sess-nudge-ptu",
+             "hook_event_name": "PreToolUse"}
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is None
-    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge-ptu.nudge").exists()
+    assert rc == 0
+    hso = output["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PreToolUse"
+    assert "ctx-nudge]" in hso["additionalContext"]
+    assert "permissionDecision" not in hso and "decision" not in output
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge-ptu.nudge").exists()
+    stdin["hook_event_name"] = "UserPromptSubmit"
+    assert stop_hook.evaluate(stdin, tmp_path, {}) == (0, None)
 
 
 def test_hook_nudge_idempotent_single_injection(stop_hook, tmp_path):
@@ -680,174 +627,198 @@ def test_hook_nudge_idempotent_single_injection(stop_hook, tmp_path):
     assert out2 is None                                        # 2회차 통과(이미 주입).
 
 
-def test_hook_nudge_independent_from_stop(stop_hook, tmp_path):
-    # 2단 fail-safe 독립: nudge(.nudge) 발동해도 stop 은 별개로 deny+박제 (서로 marker 분리).
-    sid = "sess-2tier"
+def test_hook_nudge_independent_from_final(stop_hook, tmp_path):
+    # 1단 marker 가 있어도 stop 밴드의 최종 비차단 넛지는 별도로 발화한다.
+    sid = "sess-nudge-final"
     nudge_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     nudge_stdin = {"transcript_path": str(nudge_tx), "session_id": sid,
                    "hook_event_name": "UserPromptSubmit"}
     stop_hook.evaluate(nudge_stdin, tmp_path, {})  # nudge 주입.
-    # 같은 세션이 stop 레벨 transcript 로 진입(transcript.jsonl 은 같은 경로라 덮어씀) → nudge
-    # marker(.nudge)는 stop marker(.done)와 *별개 파일*이라 stop 을 막지 않는다(2단 fail-safe 독립).
     stop_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
     stop_stdin = {
         "transcript_path": str(stop_tx),
         "session_id": sid,
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": {"command": "ls"},  # 새 작업 도구.
+        "hook_event_name": "UserPromptSubmit",
     }
     rc, output = stop_hook.evaluate(stop_stdin, tmp_path, {})
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"  # stop 정상 작동.
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / f"{sid}.nudge").exists()
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / f"{sid}.done").exists()
+    guidance = output["hookSpecificOutput"]["additionalContext"]
+    assert "ctx-nudge/최종" in guidance
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    assert (marker_dir / f"{sid}.nudge").exists()
+    assert (marker_dir / f"{sid}.final").exists()
 
 
-# ── 6. hard-stop 핸드오프-intent 예외 (T-0205·ADR-0038 D2 amend) ────────────────
-# 락아웃 해소: stop 밴드 UserPromptSubmit 에서 `/pm-handoff` 로 *시작*하는 prompt 는 통과(None),
-# 그 외 prompt 는 block 유지(좁은 매칭·과통과=hard-stop 무력화 방지). 통과 케이스도 STOP marker 는
-# 이벤트 무관하게 박힌다. 회귀: nudge/ok/PreToolUse 경로는 이 예외에 무영향.
-
-_OMIT = object()  # "prompt 키 자체 부재" 를 명시(None 값과 구분).
-
-
-def _ups_stop_stdin(tmp_path: Path, session_id: str, prompt=_OMIT) -> dict:
-    """stop 밴드 UserPromptSubmit stdin (prompt=_OMIT → 키 생략·그 외는 그대로 세팅)."""
-    stdin = {
-        "transcript_path": str(_stop_transcript(tmp_path)),
-        "session_id": session_id,
+def test_hook_ok_rearms_all_cycle_markers(stop_hook, tmp_path):
+    sid = "sess-rearm-all"
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    marker_dir.mkdir(parents=True)
+    for suffix in ("nudge", "nudge2", "final"):
+        (marker_dir / f"{sid}.{suffix}").write_text("fired\n", encoding="utf-8")
+    ok = {
+        "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 100_000})])),
+        "session_id": sid,
         "hook_event_name": "UserPromptSubmit",
     }
-    if prompt is not _OMIT:
-        stdin["prompt"] = prompt
-    return stdin
+    rc, output = stop_hook.evaluate(ok, tmp_path, {})
+    assert rc == 0 and output is None
+    assert not any((marker_dir / f"{sid}.{suffix}").exists() for suffix in ("nudge", "nudge2", "final"))
 
 
-def test_hook_ups_handoff_prompt_passes(stop_hook, tmp_path):
-    # stop 밴드 + `/pm-handoff` prompt → 통과(None·block JSON 없음)로 핸드오프 진입 허용.
-    stdin = _ups_stop_stdin(tmp_path, "sess-hp", prompt="/pm-handoff")
+def test_hook_zero_pct_with_raw_tokens_rearms_cycle_markers(stop_hook, tmp_path):
+    """1M 예산의 raw 4K는 정수 0%여도 유효 측정이므로 ok 사이클을 재무장한다."""
+    sid = "sess-measured-zero-pct"
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    marker_dir.mkdir(parents=True)
+    markers = [marker_dir / f"{sid}.{suffix}" for suffix in ("nudge", "nudge2", "final")]
+    for marker in markers:
+        marker.write_text("fired\n", encoding="utf-8")
+
+    transcript = _write_transcript(tmp_path, [("assistant", {"input_tokens": 4_000})])
+    assert stop_hook.ctx_guard.context_used_pct_from_transcript(transcript, 1_000_000) == 0
+    stdin = {
+        "transcript_path": str(transcript),
+        "session_id": sid,
+        "hook_event_name": "UserPromptSubmit",
+    }
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {"ctx_window_tokens_claude": "1000000"})
+    assert rc == 0 and output is None
+    assert not any(marker.exists() for marker in markers)
+
+
+@pytest.mark.parametrize("measurement", ["absent", "unreadable", "usage-missing"])
+def test_hook_unmeasurable_raw_zero_preserves_cycle_markers(
+        stop_hook, tmp_path, measurement):
+    """raw 0 폴백은 측정불가이므로 현재 사이클 marker를 보존한다."""
+    sid = f"sess-unmeasurable-{measurement}"
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    marker_dir.mkdir(parents=True)
+    markers = [marker_dir / f"{sid}.{suffix}" for suffix in ("nudge", "nudge2", "final")]
+    for marker in markers:
+        marker.write_text("fired\n", encoding="utf-8")
+
+    stdin = {"session_id": sid, "hook_event_name": "UserPromptSubmit"}
+    if measurement == "unreadable":
+        unreadable = tmp_path / "unreadable-transcript"
+        unreadable.mkdir()
+        stdin["transcript_path"] = str(unreadable)
+    elif measurement == "usage-missing":
+        stdin["transcript_path"] = str(_write_transcript(tmp_path, [("assistant", None)]))
+
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
     assert rc == 0 and output is None
-    # 통과해도 STOP marker(.done)는 stop 도달 즉시 박힌다 (이벤트 무관·회전 신호 누락 방지).
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-hp.done").exists()
+    assert all(marker.exists() for marker in markers)
 
 
-@pytest.mark.parametrize("prompt", [
-    "/pm-handoff --dry-run",       # 인자 허용.
-    "/pm-handoff --reason ctx-stop",
-    "  /pm-handoff  ",             # 선행/후행 공백.
-    "\t/pm-handoff\n",             # 탭·개행도 strip.
-])
-def test_hook_ups_handoff_prompt_variants_pass(stop_hook, tmp_path, prompt):
-    # 인자/공백 변형도 통과 — strip 후 정확 커맨드(+공백 인자). 변형 통과에도 STOP marker
-    # 계약(이벤트 무관 박제)은 유지된다(codex suggestion — 대표 케이스 아닌 전 변형 단언).
-    stdin = _ups_stop_stdin(tmp_path, "sess-hpv", prompt=prompt)
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is None, f"핸드오프 트리거 변형은 통과해야 함: {prompt!r}"
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-hpv.done").exists(), \
-        f"통과 변형에서 STOP marker 누락: {prompt!r} (relay 회전 신호 계약)"
+def test_hook_nudge_refires_after_ok_rearm(stop_hook, tmp_path):
+    sid = "sess-rearm-cycle"
+
+    def evaluate_at(tokens):
+        return stop_hook.evaluate({
+            "transcript_path": str(_write_transcript(
+                tmp_path, [("assistant", {"input_tokens": tokens})])),
+            "session_id": sid,
+            "hook_event_name": "UserPromptSubmit",
+        }, tmp_path, {})
+
+    _, first = evaluate_at(150_000)   # nudge → marker 생성.
+    _, duplicate = evaluate_at(150_000)
+    _, compacted = evaluate_at(100_000)  # ok → marker 삭제(re-arm).
+    _, second_cycle = evaluate_at(150_000)
+    assert first is not None and duplicate is None and compacted is None
+    assert second_cycle is not None
 
 
-@pytest.mark.parametrize("prompt", [
-    "/pm-handofffoo",              # 접미 변형 — 비정확 커맨드 (토큰 경계·codex must-fix).
-    "/pm-handoffs",
-    "/pm-handoff;echo x",          # 공백 없는 접미(세미콜론) — 커맨드 토큰이 아님.
-])
-def test_hook_ups_inexact_command_suffix_blocks(stop_hook, tmp_path, prompt):
-    # 토큰 경계: 정확 커맨드 단독 또는 공백 뒤 인자만 통과 — bare prefix 매칭이 허용하던
-    # `/pm-handoffX` 류 비정확 커맨드는 block 유지 (codex·내부 reviewer 수렴 지점).
-    stdin = _ups_stop_stdin(tmp_path, "sess-hpx", prompt=prompt)
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is not None and output.get("decision") == "block", \
-        f"비정확 커맨드 접미 변형이 통과됨(토큰 경계 붕괴): {prompt!r}"
-
-
-@pytest.mark.parametrize("prompt", [
-    "핸드오프 해줘",              # 자연어(키워드) — 오인식 위험이라 계속 block.
-    "인계 부탁해",                # 자연어 키워드.
-    "pm-handoff",                 # 슬래시 없음.
-    "버그 고치고 /pm-handoff",    # `/pm-handoff` 가 시작 아님(중간).
-    "please run /pm-handoff",     # 영문 산문 — 시작 아님.
-])
-def test_hook_ups_non_handoff_prompt_still_blocks(stop_hook, tmp_path, prompt):
-    # 좁은 매칭 경계(핵심): `/pm-handoff` 로 *시작*하지 않으면 새 작업 진입 block 유지.
-    stdin = _ups_stop_stdin(tmp_path, "sess-nblk", prompt=prompt)
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert output["decision"] == "block", f"비-핸드오프 prompt 는 block 유지: {prompt!r}"
-    # block 이어도 STOP marker 는 박힌다 (이벤트 무관).
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nblk.done").exists()
-
-
-def test_hook_ups_block_reason_guides_handoff_command(stop_hook, tmp_path):
-    # block reason 이 통과 가능한 정확 커맨드(`/pm-handoff`)를 안내 → 락아웃 없음.
-    stdin = _ups_stop_stdin(tmp_path, "sess-guide", prompt="다른 일 해줘")
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert output["decision"] == "block"
-    assert "/pm-handoff" in output["reason"], "락아웃 해소 안내(정확 커맨드) 누락"
-
-
-@pytest.mark.parametrize("prompt", [_OMIT, None, 123, {"cmd": "/pm-handoff"}, ["/pm-handoff"]])
-def test_hook_ups_missing_or_nonstr_prompt_blocks(stop_hook, tmp_path, prompt):
-    # prompt 필드 부재/비-str → fail-closed block (기존 동작 보존·과통과 방지).
-    stdin = _ups_stop_stdin(tmp_path, "sess-badp", prompt=prompt)
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert output["decision"] == "block", f"prompt 부재/비-str 은 fail-closed block: {prompt!r}"
-
-
-def test_hook_ups_handoff_exception_scoped_to_stop_band(stop_hook, tmp_path):
-    # 회귀: 핸드오프-intent 예외는 stop 밴드 한정 — nudge 밴드 UserPromptSubmit 은 prompt 내용과
-    # 무관하게 여전히 비차단 nudge 주입(예외가 nudge 경로를 오염시키지 않음).
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])  # 잔여 25 = nudge.
-    stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-nudge-hp",
+def test_hook_nudge_refires_after_postcompact_without_ok_observation(stop_hook, tmp_path):
+    """nudge 뒤 ok 관측 없이 PostCompact가 오면 marker를 지워 재상승 넛지를 허용한다."""
+    sid = "sess-postcompact-rearm"
+    high = str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})]))
+    prompt = {
+        "transcript_path": high,
+        "session_id": sid,
         "hook_event_name": "UserPromptSubmit",
-        "prompt": "/pm-handoff",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0
-    hso = output["hookSpecificOutput"]
-    assert "additionalContext" in hso              # nudge 주입 — 통과(None)도 block 도 아님.
-    assert output.get("decision") != "block"
+
+    rc1, first = stop_hook.evaluate(prompt, tmp_path, {})
+    rc2, duplicate = stop_hook.evaluate(prompt, tmp_path, {})
+    rc3, compacting = stop_hook.evaluate({
+        "transcript_path": high,
+        "session_id": sid,
+        "hook_event_name": "PostCompact",
+    }, tmp_path, {})
+    rc4, next_cycle = stop_hook.evaluate(prompt, tmp_path, {})
+
+    assert rc1 == rc2 == rc3 == rc4 == 0
+    assert first is not None and duplicate is None
+    assert compacting is None
+    assert next_cycle is not None
 
 
-def test_hook_ups_ok_band_passes_regardless_of_prompt(stop_hook, tmp_path):
-    # 회귀: ok 밴드면 prompt 내용 무관 통과·marker 미박제 (stop 예외 로직 미진입).
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 100_000})])  # used 50 = ok.
-    stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-ok-ups",
+def test_hook_postcompact_waits_for_postboundary_usage_before_refiring(stop_hook, tmp_path):
+    """compact 직후 첫 prompt는 old usage로 marker를 재생성하지 않고 새 usage를 기다린다."""
+    sid = "sess-postcompact-boundary"
+    transcript = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
+    prompt = {
+        "transcript_path": str(transcript),
+        "session_id": sid,
         "hook_event_name": "UserPromptSubmit",
-        "prompt": "아무 일이나 해줘",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is None
-    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-ok-ups.done").exists()
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    markers = [marker_dir / f"{sid}.{suffix}" for suffix in ("nudge", "nudge2", "final")]
+
+    rc1, first = stop_hook.evaluate(prompt, tmp_path, {})
+    assert rc1 == 0 and first is not None
+    assert markers[-1].exists()
+
+    _append_transcript_entry(transcript, _compact_boundary())
+    rc2, compacted = stop_hook.evaluate({
+        "transcript_path": str(transcript),
+        "session_id": sid,
+        "hook_event_name": "PostCompact",
+    }, tmp_path, {})
+    assert rc2 == 0 and compacted is None
+    assert not any(marker.exists() for marker in markers)
+
+    rc3, first_prompt = stop_hook.evaluate(prompt, tmp_path, {})
+    assert rc3 == 0 and first_prompt is None
+    assert not any(marker.exists() for marker in markers)
+
+    _append_transcript_entry(transcript, {
+        "type": "assistant",
+        "message": {"role": "assistant", "usage": {"input_tokens": 190_000}},
+    })
+    rc4, next_high = stop_hook.evaluate(prompt, tmp_path, {})
+    assert rc4 == 0 and next_high is not None
+    assert markers[-1].exists()
 
 
-@pytest.mark.parametrize("stdin,expected", [
-    ({"prompt": "/pm-handoff"}, True),
-    ({"prompt": "/pm-handoff --dry-run"}, True),
-    ({"prompt": "  /pm-handoff  "}, True),
-    ({"prompt": "핸드오프 해줘"}, False),
-    ({"prompt": "pm-handoff"}, False),
-    ({"prompt": "버그 고치고 /pm-handoff"}, False),
-    # 토큰 경계 (codex·reviewer 수렴) — 정확 커맨드 단독/공백+인자만·접미 변형은 비정확 커맨드.
-    ({"prompt": "/pm-handofffoo"}, False),
-    ({"prompt": "/pm-handoffs"}, False),
-    ({"prompt": "/pm-handoff;echo x"}, False),
-    ({"prompt": 123}, False),
-    ({}, False),
-])
-def test_is_handoff_prompt_unit(stop_hook, stdin, expected):
-    # 좁은 매칭 계약 단위 검증 — 정확 커맨드 `/pm-handoff` 단독 또는 공백 뒤 인자만 True.
-    assert stop_hook._is_handoff_prompt(stdin) is expected
+def test_hook_precompact_does_not_rearm_before_compaction_completes(stop_hook, tmp_path):
+    """압축 전 발화하는 PreCompact는 실패/차단 가능성이 있으므로 현재 marker를 보존한다."""
+    sid = "sess-precompact-no-rearm"
+    high = str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})]))
+    prompt = {
+        "transcript_path": high,
+        "session_id": sid,
+        "hook_event_name": "UserPromptSubmit",
+    }
+
+    rc1, first = stop_hook.evaluate(prompt, tmp_path, {})
+    rc2, before_compaction = stop_hook.evaluate({
+        "transcript_path": high,
+        "session_id": sid,
+        "hook_event_name": "PreCompact",
+    }, tmp_path, {})
+    rc3, still_same_cycle = stop_hook.evaluate(prompt, tmp_path, {})
+
+    marker = tmp_path / ".project_manager" / ".local" / "ctx-stop" / f"{sid}.nudge"
+    assert rc1 == rc2 == rc3 == 0
+    assert first is not None
+    assert before_compaction is None and still_same_cycle is None
+    assert marker.exists()
 
 
-# ── 7. graceful nudge 2단(strong·stop 직전·ADR-0037·T-0328) — 능동 유도 재안내 ──────────────
-# 1단(soft)이 비었던 자리에 2단(strong)을 추가: 모델이 1단을 무시했거나 1단 창을 건너뛴 세션에
-# hard-stop 직전 "지금 즉시 /pm-handoff·새 작업 금지" 강하게 재안내. 별도 `.nudge2` marker(세션당
-# 1회·1단과 독립). 1단 문구·hard-stop 경로는 무변경(이 스코프는 2단 추가만). 밴드(기본 30/20):
+# ── 7. 강화 넛지 + 최종 넛지 (ADR-0081) ──────────────────────────────────
+# nudge2 는 checkpoint 즉시 실행을 재안내하고, stop 밴드는 auto-compact 임박을 알리는 최종 넛지다.
+# 별도 `.nudge2`/`.final` marker 로 같은 사이클에서 각 1회 발화한다. 밴드(기본 30/20):
 # nudge2_threshold=23 → 잔여 (20,23] 이 nudge2, (23,30] 이 nudge(1단).
 
 def _nudge2_transcript(tmp_path: Path) -> Path:
@@ -856,17 +827,37 @@ def _nudge2_transcript(tmp_path: Path) -> Path:
 
 
 def test_build_nudge2_guidance(guard):
-    # 2단 안내문 = 능동 유도(즉시 /pm-handoff·새 tool 작업 금지·hard-stop 직전). 여전히 안내(비차단).
+    # 2단 안내문도 미기록 사실 + 프로젝트 checkpoint 규약의 권고형이다.
     g = guard.build_nudge2_guidance(82, {"nudge_pct": 20, "stop_pct": 10})
-    assert "ctx-nudge/최종" in g
+    assert "ctx-nudge/강화" in g
     assert "잔여 18%" in g          # remaining_pct(82) = 18.
-    assert "hard-stop" in g
-    assert "/pm-handoff" in g
-    assert "10%" in g               # stop_pct 안내.
-    assert "강제 정지" in g
-    assert "ADR-0037" in g
-    # 1단 문구와 구별된다 (별개 강도 표지).
+    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름>" in g
+    assert "Windows는 `py -3`" in g
+    assert len(g) <= 10_000
+    assert "직전 박제 경계 이후 구간이 미기록 상태" in g
+    assert "다음 단계 경계" in g and "이 프로젝트의 규약" in g
+    assert "<이름>`에는 현재 task 이름" in g
+    assert "--trigger compaction" not in g
+    assert not any(command in g for command in ("실행하라", "박제하라", "넣어라"))
+    assert "/pm-handoff" not in g
     assert g != guard.build_nudge_guidance(82, {"nudge_pct": 20, "stop_pct": 10})
+
+
+def test_build_final_guidance(guard):
+    g = guard.build_final_guidance(92, {"nudge_pct": 30, "stop_pct": 20})
+    assert "ctx-nudge/최종" in g
+    assert "잔여 8% ≤ 20%" in g
+    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction" in g
+    assert "Windows는 `py -3`" in g
+    assert len(g) <= 10_000
+    assert "직전 박제 경계 이후 구간이 미기록 상태" in g
+    assert "다음 단계 경계" in g and "이 프로젝트의 규약" in g
+    assert "<이름>`에는 현재 task 이름" in g
+    assert "새 큰 작업" in g
+    assert "auto-compact" in g
+    assert "권고된다" in g
+    assert not any(command in g for command in ("실행하라", "박제하라", "넣어라"))
+    assert "차단" not in g and "/pm-handoff" not in g
 
 
 def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
@@ -881,23 +872,27 @@ def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "UserPromptSubmit"
     assert "additionalContext" in hso
-    assert "ctx-nudge/최종" in hso["additionalContext"]   # 2단 강도 표지.
-    assert "/pm-handoff" in hso["additionalContext"]
+    assert "ctx-nudge/강화" in hso["additionalContext"]
+    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름>" in hso["additionalContext"]
     # 비차단: deny/block 아님.
     assert "permissionDecision" not in hso
     assert output.get("decision") != "block"
-    # nudge2 marker(.nudge2) 생성·stop(.done) 미생성.
+    # nudge2 marker 를 생성한다.
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / "sess-nudge2.nudge2").exists()
-    assert not (ctx / "sess-nudge2.done").exists()
 
 
-def test_hook_nudge2_pretooluse_passes_no_injection(stop_hook, tmp_path):
-    # nudge2 레벨 + PreToolUse(주입 채널 없음) → 통과(도구 진행)·주입/marker 없음 (1단 동형).
-    stdin = {"transcript_path": str(_nudge2_transcript(tmp_path)), "session_id": "sess-n2-ptu"}
+def test_hook_nudge2_pretooluse_injects_without_permission_decision(stop_hook, tmp_path):
+    # nudge2 레벨도 PreToolUse additionalContext 비차단 주입(제결정 없음).
+    stdin = {"transcript_path": str(_nudge2_transcript(tmp_path)), "session_id": "sess-n2-ptu",
+             "hook_event_name": "PreToolUse"}
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is None
-    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-n2-ptu.nudge2").exists()
+    assert rc == 0
+    hso = output["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PreToolUse"
+    assert "ctx-nudge/강화" in hso["additionalContext"]
+    assert "permissionDecision" not in hso and "decision" not in output
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-n2-ptu.nudge2").exists()
 
 
 def test_hook_nudge2_idempotent_single_injection(stop_hook, tmp_path):
@@ -922,7 +917,7 @@ def test_hook_nudge2_fires_independent_of_nudge1(stop_hook, tmp_path):
         "hook_event_name": "UserPromptSubmit",
     }
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert "ctx-nudge/최종" in output["hookSpecificOutput"]["additionalContext"]
+    assert "ctx-nudge/강화" in output["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / "sess-n2-solo.nudge2").exists()
     assert not (ctx / "sess-n2-solo.nudge").exists()
@@ -944,15 +939,15 @@ def test_hook_nudge1_then_nudge2_both_fire(stop_hook, tmp_path):
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
     }
     rc2, out2 = stop_hook.evaluate(nudge2_stdin, tmp_path, {})
-    assert "ctx-nudge/최종" in out2["hookSpecificOutput"]["additionalContext"]  # 2단 표지.
+    assert "ctx-nudge/강화" in out2["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / f"{sid}.nudge").exists()
     assert (ctx / f"{sid}.nudge2").exists()
 
 
-def test_hook_nudge2_independent_from_stop(stop_hook, tmp_path):
-    # nudge2(.nudge2) 발동해도 stop 은 별개로 deny+박제 (marker 분리·2단 fail-safe 독립).
-    sid = "sess-n2-stop"
+def test_hook_nudge2_independent_from_final(stop_hook, tmp_path):
+    # nudge2 marker 가 있어도 stop 밴드의 최종 넛지는 별도로 주입된다.
+    sid = "sess-n2-final"
     nudge2_stdin = {
         "transcript_path": str(_nudge2_transcript(tmp_path)),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
@@ -961,15 +956,13 @@ def test_hook_nudge2_independent_from_stop(stop_hook, tmp_path):
     stop_stdin = {
         "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])),
         "session_id": sid,
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": {"command": "ls"},  # 새 작업 도구.
+        "hook_event_name": "UserPromptSubmit",
     }
     rc, output = stop_hook.evaluate(stop_stdin, tmp_path, {})
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"  # stop 정상 작동.
+    assert "ctx-nudge/최종" in output["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / f"{sid}.nudge2").exists()
-    assert (ctx / f"{sid}.done").exists()
+    assert (ctx / f"{sid}.final").exists()
 
 
 def test_nudge2_margin_mirrors_opencode(guard):
@@ -985,10 +978,10 @@ def test_nudge2_margin_mirrors_opencode(guard):
     )
 
 
-# ── 8. 서브에이전트(sidechain) 감지 + 면제 (T-0458 — 메인 세션만 hard-stop) ──────
+# ── 8. 서브에이전트(sidechain) 감지 + 면제 (메인 세션만 checkpoint 넛지) ─────
 # claude 는 서브에이전트(Task) 대화를 <parent>/subagents/agent-*.jsonl 에 전 엔트리 isSidechain:true
 # 로 기록하고, 메인 세션 <session>.jsonl 은 전 엔트리 false (실측 확인). 훅은 transcript_path 로 이
-# 필드를 읽어 서브에이전트면 면제(통과·auto-compact 로 자체 정리)·메인이면 기존 hard-stop. 감지
+# 필드를 읽어 서브에이전트면 면제(통과·auto-compact 로 자체 정리)·메인이면 넛지한다. 감지
 # 불능/모호(신호 부재·읽기 실패·비-boolean)는 **메인 취급**(보수적 — 면제는 확실할 때만).
 
 def test_transcript_is_sidechain_true(guard, tmp_path):
@@ -1049,36 +1042,18 @@ def test_transcript_is_sidechain_non_bool_ignored(guard, tmp_path):
     assert guard.transcript_is_sidechain(path) is False
 
 
-def test_hook_sidechain_exempt_at_stop_band_pretooluse(guard, stop_hook, tmp_path):
-    # 서브에이전트(isSidechain:true) + stop 밴드(used 95) + 새 작업 도구 → 면제(통과·None).
-    # 메인이면 deny 됐을 상황(cf. test_hook_evaluate_stop_denies_and_triggers)이 통과된다.
+def test_hook_sidechain_exempt_at_final_band(stop_hook, tmp_path):
+    # 서브에이전트 + stop 밴드 UserPromptSubmit → checkpoint 최종 넛지 없이 통과한다.
     path = _write_transcript(
         tmp_path, [("assistant", {"input_tokens": 190_000})], sidechain=True)
     stdin = {
         "transcript_path": str(path),
         "session_id": "sess-sub",
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": {"command": "python3 build.py"},  # 새 작업 도구여도 면제.
-    }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is None
-    # 면제라 STOP marker(.done)도 안 박힌다 (서브에이전트는 relay 회전 신호 주체 아님).
-    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-sub.done").exists()
-
-
-def test_hook_sidechain_exempt_at_stop_band_userpromptsubmit(stop_hook, tmp_path):
-    # 서브에이전트 + UserPromptSubmit stop 밴드(핸드오프 아닌 prompt) → block 대신 통과(None).
-    path = _write_transcript(
-        tmp_path, [("assistant", {"input_tokens": 190_000})], sidechain=True)
-    stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-sub-ups",
         "hook_event_name": "UserPromptSubmit",
-        "prompt": "다음 파일 고쳐줘",  # 새 작업 prompt 여도 면제.
     }
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
     assert rc == 0 and output is None
+    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-sub.final").exists()
 
 
 def test_hook_sidechain_exempt_at_nudge_band(stop_hook, tmp_path):
@@ -1096,41 +1071,34 @@ def test_hook_sidechain_exempt_at_nudge_band(stop_hook, tmp_path):
     assert not (ctx / "sess-sub-nudge.nudge").exists()
 
 
-def test_hook_main_session_still_stops(guard, stop_hook, tmp_path):
-    # 회귀 대칭(핵심): isSidechain:false(메인) + stop 밴드 → 기존대로 deny + STOP marker 박제.
-    # 면제 로직이 메인 세션을 과-통과시키지 않음을 못박는다.
+def test_hook_main_session_gets_final_nudge(stop_hook, tmp_path):
+    # 회귀 대칭: isSidechain:false(메인) + stop 밴드 → 최종 넛지 + `.final` marker.
     path = _write_transcript(
         tmp_path, [("assistant", {"input_tokens": 190_000})], sidechain=False)
     stdin = {
         "transcript_path": str(path),
         "session_id": "sess-main",
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": {"command": "ls"},  # 새 작업 도구.
+        "hook_event_name": "UserPromptSubmit",
     }
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-main.done").exists()
+    assert "ctx-nudge/최종" in output["hookSpecificOutput"]["additionalContext"]
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-main.final").exists()
 
 
 def test_hook_no_sidechain_field_treated_as_main(stop_hook, tmp_path):
-    # isSidechain 필드 자체가 없는 transcript(신호 없음) → 메인 취급(보수적) → 기존 hard-stop.
-    # (isSidechain 없는 기존 stop 테스트들이 계속 deny 를 단언하는 무변경 회귀도 이걸 보증.)
+    # isSidechain 필드 부재(신호 없음) → 메인 취급(보수적) → 최종 넛지.
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
     stdin = {
         "transcript_path": str(path),
         "session_id": "sess-nofield",
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": {"command": "ls"},
+        "hook_event_name": "UserPromptSubmit",
     }
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "ctx-nudge/최종" in output["hookSpecificOutput"]["additionalContext"]
 
 
 def test_settings_auto_compact_enabled_true():
-    # T-0458: 서브에이전트 compaction 허용 위해 auto-compact 재활성(false→true). 메인은 훅
-    # hard-stop 이 auto-compact 트리거보다 먼저 발화(정제 handoff 선행)하고 compaction 은 폴백.
+    # hard-stop 없이 메인/서브에이전트 모두 native compaction 을 허용한다.
     data = json.loads((CLAUDE / "settings.json").read_text(encoding="utf-8"))
     assert data.get("autoCompactEnabled") is True, (
         "settings.json autoCompactEnabled 가 true 가 아님 — 서브에이전트 compaction 봉쇄 재발 위험(T-0458)"

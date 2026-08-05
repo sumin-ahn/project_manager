@@ -720,25 +720,22 @@ def test_release_wave_multiuser_composite_opencode(tmp_path):
     _assert_multiuser_view_isolation(home, proc, "opencode")
 
 
-# ── hard-stop 락아웃/실발화 라이브 단언 (ADR-0038 D4/T-D · T-0190) ─────────────────────────
-# 위 wave 테스트는 정상 컨텍스트에서 도는 full wave 다. 아래는 그 *경계* — hard-stop machinery
-# (ADR-0038)가 실 claude transcript 위에서 실제로 발화하고, 락아웃 예외(T-0205)가 성립하는지를
-# 라이브로 못박는다. 기계 단위 테스트(test_claude_ctx_guard)가 로직을 결정적으로 커버하지만,
+# ── compaction-native 최종 넛지 라이브 단언 (ADR-0038 D4/T-D · T-0190) ─────────────────────────
+# 위 wave 테스트는 정상 컨텍스트에서 도는 full wave 다. 아래는 그 *경계* — 최종 넛지가
+# 실 claude transcript 위에서 비차단으로 발화하는지를 라이브로 못박는다. 기계 단위 테스트
+# (test_claude_ctx_guard)가 로직을 결정적으로 커버하지만,
 # transcript-slug 탐색·실 transcript 의 100% 판정·래퍼(.sh) exec 발화는 실 하니스 형상에서만
 # 드러나는 갭이다([[verify-real-output-not-just-review]]·설계검증 allow-list 렌즈).
 
 # ctx 예산 극소 설정 — 실 transcript 의 첫 턴이 곧장 stop 밴드(잔여 0)에 들도록. local.conf
 # 에 이 값을 *append* 해 마지막-줄이 이긴다(last-wins·load_local_config 규칙·PM 47 실측).
 _TINY_CTX_WINDOW = 2000
-# hard-stop 훅 stdin 세션 id — marker 파일명(`<sid>.done`)의 단일 진실.
-_HARD_STOP_SID = "release-hard-stop-probe"
-# stop 밴드에서 통과하는 유일한 UserPromptSubmit prompt(T-0205 핸드오프 예외) vs 계속 block 되는 것.
-_HANDOFF_PROMPT = "/pm-handoff"
-_NON_HANDOFF_PROMPT = "다른 일 해줘"
+# 최종 넛지 훅 stdin 세션 id — marker 파일명(`<sid>.final`)의 단일 진실.
+_FINAL_NUDGE_SID = "release-final-nudge-probe"
 
 
 def _append_tiny_ctx_window(dest: Path) -> None:
-    """adopter local.conf 에 극소 ctx_window_tokens 를 append(last-wins) — 즉발 hard-stop.
+    """adopter local.conf 에 극소 ctx_window_tokens 를 append(last-wins) — 즉발 stop 밴드.
 
     import 기본 local.conf 는 이미 ctx_window_tokens=200000 을 담는다 — append 한 극소값이
     *마지막 줄* 로 이겨(load_local_config 는 KEY 마지막 값 채택) 첫 실 턴이 잔여 0 = stop 밴드.
@@ -811,31 +808,26 @@ def _fire_stop_hook(dest: Path, stdin_payload: dict) -> subprocess.CompletedProc
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("claude"),
-    reason="release wave hard-stop — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
+    reason="release wave final nudge — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
            "기본 skip·사용자 트리거.",
 )
-def test_release_wave_claude_hard_stop_lockout_exception(tmp_path):
-    """실 claude transcript 로 hard-stop 이 발화하고 락아웃 예외(T-0205)가 성립하는지 라이브 단언.
+def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
+    """실 claude transcript 로 PreToolUse 최종 넛지·driver marker 소유권을 라이브 단언.
 
-    레시피(PM 47 라이브 probe 실증·2026-07-02): fresh claude adopter import → local.conf 에
-    ctx_window_tokens=2000 append(극소 예산·last-wins) → **turn1: 실 claude 1콜**(비용 절제 —
-    단 1회)로 CLAUDE.md 를 읽고 요약시켜 transcript 를 인플레이션 → 실 transcript(`~/.claude/
-    projects/<cwd-slug>/*.jsonl`)가 극소 window 대비 used=100%/stop 으로 판정되는지
-    (`ctx_guard.context_used_pct_from_transcript` 로 실증) → adopter 래퍼(`.claude/
-    ctx_stop_hook.sh`)를 하니스 형상 stdin JSON + 실 transcript_path 로 발화해 단언:
-      1. PreToolUse + 새 작업(Bash `ls`) → deny JSON(`permissionDecision == "deny"`).
-      2. UserPromptSubmit + 비-핸드오프 prompt → block JSON + reason 에 `/pm-handoff` 안내 포함
-         (락아웃 계약 — 새 작업 진입 차단하되 탈출 커맨드 안내).
-      3. UserPromptSubmit + `"/pm-handoff"` → **무출력 rc0 통과**(T-0205 fix — 이 예외가 없으면
-         stop 후 전면 block 으로 핸드오프 진입 자체가 봉쇄되는 락아웃이었다·사용자 실측).
-      4. STOP marker `.done` 실박제(`.project_manager/.local/ctx-stop/<sid>.done`) — hard-stop 이
-         *실제로* 발화했다는 증거(mis-wire=가짜 게이트 방어·[[verify-real-output-not-just-review]]).
+    fresh claude adopter 에 극소 컨텍스트 예산을 적용하고, 1회의 실 Claude 턴으로 만든
+    transcript 가 stop 밴드인지 같은 ctx_guard machinery 로 확인한다. 그 transcript 위에서
+    adopter 래퍼를 하니스 형상으로 발화해 다음 계약을 핀한다.
 
-    **왜 래퍼-발화 방식인가(설계 결정)**: `claude -p --continue` full-e2e 로 실제 block/통과까지
-    PM probe 로 확증됐으나 테스트엔 넣지 않는다 — turn2 LLM 콜은 추가 과금·비결정을 낳고, 래퍼-발화가
-    실 transcript 위에서 계약(deny/block/pass/marker)을 결정적으로 전부 커버한다(turn1 1콜만 라이브).
+      1. PreToolUse + Bash 호출은 ``additionalContext`` 최종 넛지를 내며
+         ``permissionDecision``을 포함하지 않는다.
+      2. 같은 사이클의 UserPromptSubmit 은 먼저 발화한 PreToolUse 가 공유 marker 를
+         소비했으므로 무출력이다.
+      3. 훅 소유 ``.final`` marker 는 생성되지만 ``.done``은 생성되지 않는다.
+         ``.done`` 생산자는 relay driver 계약이며 T-0553에서 연결한다.
 
-    claude 는 subprocess cwd 를 존중한다(`--dir` 불요). API 과금(turn1 1콜).
+    turn2 LLM 콜은 추가 과금·비결정을 낳으므로 래퍼 발화로 주입/멱등/marker 소유
+    계약을 결정적으로 검증한다. claude 는 subprocess cwd 를 존중한다(``--dir`` 불요).
+    API 과금은 transcript 생성용 turn1 1콜만 발생한다.
     """
     dest = _import_adopter(tmp_path, "claude")
     _append_tiny_ctx_window(dest)
@@ -856,7 +848,7 @@ def test_release_wave_claude_hard_stop_lockout_exception(tmp_path):
 
     transcript = _find_claude_transcript(dest, not_before=test_start)
     assert transcript is not None, (
-        "turn1 후 실 claude transcript 를 못 찾음 — hard-stop 판정 근거 부재.\n"
+        "turn1 후 실 claude transcript 를 못 찾음 — 최종 넛지 판정 근거 부재.\n"
         f"찾은 slug={_claude_project_slug(dest)}  projects={Path.home() / '.claude' / 'projects'}\n"
         f"--- claude stdout(tail) ---\n{turn1.stdout[-1500:]}\n"
         f"--- stderr(tail) ---\n{turn1.stderr[-800:]}"
@@ -870,49 +862,36 @@ def test_release_wave_claude_hard_stop_lockout_exception(tmp_path):
         f"stop 밴드 진입 실패.\ntranscript={transcript}"
     )
 
-    base_stdin = {"transcript_path": str(transcript), "session_id": _HARD_STOP_SID}
+    base_stdin = {"transcript_path": str(transcript), "session_id": _FINAL_NUDGE_SID}
 
-    # (1) PreToolUse + 새 작업(Bash ls) → deny.
-    deny = _fire_stop_hook(dest, {
+    # (1) PreToolUse + 새 작업(Bash ls) → additionalContext 비차단 주입.
+    pretool = _fire_stop_hook(dest, {
         **base_stdin, "hook_event_name": "PreToolUse",
         "tool_name": "Bash", "tool_input": {"command": "ls -la"},
     })
-    assert deny.returncode == 0 and deny.stdout.strip(), (
-        f"PreToolUse 새 작업에 훅이 출력 없음 — deny 미발화.\nstdout={deny.stdout!r} stderr={deny.stderr!r}"
+    assert pretool.returncode == 0 and pretool.stdout.strip(), (
+        f"PreToolUse 최종 넛지 미발화.\nstdout={pretool.stdout!r} stderr={pretool.stderr!r}"
     )
-    deny_out = json.loads(deny.stdout)
-    assert deny_out["hookSpecificOutput"]["permissionDecision"] == "deny", (
-        f"새 작업 도구가 deny 되지 않음: {deny_out}"
-    )
+    pretool_out = json.loads(pretool.stdout)
+    hso = pretool_out["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PreToolUse"
+    assert "ctx-nudge/최종" in hso["additionalContext"]
+    assert "permissionDecision" not in hso and "decision" not in pretool_out
 
-    # (2) UserPromptSubmit + 비-핸드오프 prompt → block + reason 에 `/pm-handoff` 안내(락아웃 계약).
-    block = _fire_stop_hook(dest, {
-        **base_stdin, "hook_event_name": "UserPromptSubmit", "prompt": _NON_HANDOFF_PROMPT,
+    # (2) 같은 사이클 UserPromptSubmit → 채널 공유 `.final` marker 로 중복 없이 통과.
+    duplicate = _fire_stop_hook(dest, {
+        **base_stdin, "hook_event_name": "UserPromptSubmit", "prompt": "다음 작업",
     })
-    assert block.returncode == 0 and block.stdout.strip(), (
-        f"UserPromptSubmit 비-핸드오프에 훅이 출력 없음 — block 미발화.\n"
-        f"stdout={block.stdout!r} stderr={block.stderr!r}"
-    )
-    block_out = json.loads(block.stdout)
-    assert block_out["decision"] == "block", f"비-핸드오프 prompt 가 block 되지 않음: {block_out}"
-    assert _HANDOFF_PROMPT in block_out["reason"], (
-        f"block reason 에 탈출 커맨드({_HANDOFF_PROMPT}) 안내 누락 — 락아웃(계약 위반): {block_out['reason']!r}"
+    assert duplicate.returncode == 0 and duplicate.stdout.strip() == "", (
+        f"같은 사이클에서 최종 넛지가 중복 주입됨.\n"
+        f"stdout={duplicate.stdout!r} stderr={duplicate.stderr!r}"
     )
 
-    # (3) UserPromptSubmit + `/pm-handoff` → 무출력 rc0 통과(T-0205 락아웃 예외).
-    handoff = _fire_stop_hook(dest, {
-        **base_stdin, "hook_event_name": "UserPromptSubmit", "prompt": _HANDOFF_PROMPT,
-    })
-    assert handoff.returncode == 0 and handoff.stdout.strip() == "", (
-        f"stop 밴드 `/pm-handoff` prompt 가 통과(무출력)하지 않음 — 락아웃 재현(T-0205 회귀).\n"
-        f"rc={handoff.returncode} stdout={handoff.stdout!r} stderr={handoff.stderr!r}"
-    )
-
-    # (4) STOP marker `.done` 실박제 — hard-stop 이 실제로 발화했다는 증거(mis-wire 방어).
-    marker = dest / ".project_manager" / ".local" / "ctx-stop" / f"{_HARD_STOP_SID}.done"
-    assert marker.exists(), (
-        f"STOP marker {marker} 부재 — hard-stop 미발화(가짜 게이트).\n"
-        f"ctx-stop 디렉토리: {list((dest / '.project_manager' / '.local' / 'ctx-stop').glob('*')) if (dest / '.project_manager' / '.local' / 'ctx-stop').exists() else '(없음)'}"
+    # 훅은 `.final`만 생산. relay driver 소유 `.done`은 T-0553 연결 전제를 핀한다.
+    marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
+    assert (marker_dir / f"{_FINAL_NUDGE_SID}.final").exists()
+    assert not (marker_dir / f"{_FINAL_NUDGE_SID}.done").exists(), (
+        "ctx 훅이 driver 소유 `.done` marker 를 생산함 — T-0553 계약 위반"
     )
 
 
@@ -1161,7 +1140,7 @@ _RELEASE_TEST_FILES = (
     Path(__file__).parent / "test_pm_delegate_live.py",
 )
 # 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
-# 6(이 파일: full/multirepo × claude/opencode + hard-stop + multiuser-composite opencode·T-0309)
+# 6(이 파일: full/multirepo × claude/opencode + final-nudge + multiuser-composite opencode·T-0309)
 # + 2(runtime_smoke: pm_update opencode/claude)
 # + 2(command_card_usability: claude/opencode 카드 사용성·ADR-0046·T-0255)
 # + 2(pm_worktree_live: claude/opencode 스킬 라이브 하네스·ADR-0050·T-0278)
