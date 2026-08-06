@@ -182,7 +182,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 # 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다.
 # 릴리즈 bump 는 `engine_rev.py --bump vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄
 # 재작성한다(사람 N곳 편집 0).
-ENGINE_REV = "v1.6.0"
+ENGINE_REV = "v1.6.1"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):

@@ -39,7 +39,7 @@ import re
 from pathlib import Path
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
-ENGINE_REV = "v1.6.0"
+ENGINE_REV = "v1.6.1"
 
 # operational — import sed 치환된 리터럴 (local.conf 재유도). plain replace·omit 없음.
 # pm_import.OPERATIONAL_TOKENS(중괄호 포함)와 동일 집합을 bare key 로 + opencode 전용
