@@ -732,14 +732,14 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# _append_atomic (O_APPEND 원자 추가)
+# append_atomic (O_APPEND 원자 추가 — 공용 `file_lock` seam·T-0565)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_append_atomic_creates_and_appends(board, tmp_path):
-    """_append_atomic — 파일 없으면 생성하고, 있으면 끝에 원자 추가(덮어쓰기 아님)."""
+    """board 가 바인딩한 seam append — 파일 없으면 생성, 있으면 끝에 원자 추가(덮어쓰기 아님)."""
     f = tmp_path / "log.md"
-    board._append_atomic(f, "line1\n")
-    board._append_atomic(f, "line2\n")
+    board.file_lock.append_atomic(f, "line1\n")
+    board.file_lock.append_atomic(f, "line2\n")
     assert f.read_text(encoding="utf-8") == "line1\nline2\n"
 
 

@@ -249,24 +249,50 @@ def test_cmd_checkpoint_rejects_invalid_task_before_write(tmp_path, monkeypatch,
 
 
 def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
-    """공유 log append seam은 RMW 없이 O_APPEND 단일 write를 사용한다."""
+    """공유 log append seam은 RMW 없이 O_APPEND 단일 write를 사용한다.
+
+    O_APPEND write 자체는 공용 `file_lock` seam이 소유하므로(T-0565) 관측도 그 seam에서
+    한다 — pm_log는 락 경로 규약과 부모 디렉토리 생성만 정한다.
+    """
     mod = _load_module()
+    lock_mod = mod._load_file_lock()
     calls = []
     monkeypatch.setattr(
-        mod.os,
+        lock_mod.os,
         "open",
         lambda path, flags, mode=0: calls.append(("open", path, flags, mode)) or 41,
     )
-    monkeypatch.setattr(mod.os, "write", lambda fd, payload: calls.append(("write", fd, payload)))
-    monkeypatch.setattr(mod.os, "close", lambda fd: calls.append(("close", fd)))
+    monkeypatch.setattr(
+        lock_mod.os, "write", lambda fd, payload: calls.append(("write", fd, payload))
+    )
+    monkeypatch.setattr(lock_mod.os, "close", lambda fd: calls.append(("close", fd)))
 
     target = tmp_path / "current.md"
-    mod._append_atomic(target, "\nentry")
+    lock_mod.append_atomic(target, "\nentry")
 
     assert calls[0][0:2] == ("open", str(target))
-    assert calls[0][2] & mod.os.O_APPEND
-    assert calls[0][2] & mod.os.O_CREAT
+    assert calls[0][2] & lock_mod.os.O_APPEND
+    assert calls[0][2] & lock_mod.os.O_CREAT
     assert calls[1:] == [("write", 41, b"\nentry"), ("close", 41)]
+
+
+def test_append_log_delegates_the_write_to_the_shared_seam(tmp_path, monkeypatch):
+    """append_log는 락 구간 *안에서* seam append를 호출한다 (직접 write 0)."""
+    mod = _load_module()
+    lock_mod = mod._load_file_lock()
+    calls = []
+    monkeypatch.setattr(
+        lock_mod,
+        "append_atomic",
+        lambda path, text, **kwargs: calls.append((Path(path), text)),
+    )
+    current = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
+
+    mod.append_log(current, "\nentry")
+
+    assert calls == [(current, "\nentry")]
+    assert (tmp_path / ".project_manager" / ".local" / "log.lock").is_file()
+    assert not current.exists()   # 실제 write는 seam이 소유(대역이 가로챔)
 
 
 def test_log_write_lock_uses_single_project_local_lock(tmp_path, monkeypatch):

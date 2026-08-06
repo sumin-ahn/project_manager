@@ -40,6 +40,9 @@
 2. **`/pm-env`** — 환경 관리(multi-PM repo/worktree 슬롯·upstream show/switch). 솔로면 보통 불필요.
 3. 이후 엔진 갱신이 필요할 때 **`/pm-update`** — upstream(위 값)에서 엔진 변경을 흡수(URL→cache clone·경로→pull).
 
+설치된 하네스 목록은 `.project_manager/install.json`(git 추적)이 기록한다 — 하네스를 제거했거나
+목록을 고치려면 그 파일의 `harnesses` 배열을 편집한다(엔진 경고문에도 같은 경로가 병기된다).
+
 ## 기존 채택자가 *새* PM command 를 받으려면 (opencode)
 
 opencode 어댑터 command(`.opencode/command/`)는 `@target-owned` 라 `pm-update` 전파에서 제외된다(채택자 소유).

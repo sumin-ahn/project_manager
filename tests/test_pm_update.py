@@ -4473,3 +4473,484 @@ def test_protected_hook_in_sync_rethrows_marked_engine_rev_skew(pm_update):
     with pytest.raises(RuntimeError, match="engine rev skew"):
         pm_update._protected_hook_in_sync(
             "svc", pm_config=pm_config, worktree_pool=worktree_pool, board=object())
+
+
+# ── `--paths` 경로 스코프 (opt-in 부분 전파) ────────────────────────────────
+# 기본 sync 는 manifest 전량이라 all-or-nothing 이다 — 한 파일만 내보내야 할 때 엔진 밖 수동 복사로
+# 우회하면 안전 판정·render 를 통째로 건너뛴다. 이 축이 그 필요를 엔진 안에서 처리한다:
+# 명시 경로만 전파 · manifest 등재분에 한정(미등재 rc1) · 부분 전파라 "전량 흡수" 후속 단계 비발화.
+
+
+def _make_upstream_tree(root: Path, files: dict, manifest_entries: list) -> None:
+    """source(upstream) 트리 — 임의 파일 집합 + 직접 지정한 manifest 등재 목록.
+
+    `_make_upstream_manifest` 는 등재 1줄=파일 1개라 **디렉토리 등재**(재귀 동기)를 못 만든다.
+    경로 스코프의 핵심 성질(디렉토리 등재 안에서 파일 하나만 고르기)이 그 형상에서만 재현된다.
+    """
+    for rel, text in files.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    manifest = root / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("\n".join(manifest_entries) + "\n", encoding="utf-8")
+    _track_source_tree(root)
+
+
+_SCOPE_FILES = {
+    ".project_manager/tools/__scope_alpha__.py": "# alpha\n",
+    ".project_manager/tools/__scope_beta__.py": "# beta\n",
+    "adapterdir/one.md": "# one\n",
+    "adapterdir/two.md": "# two\n",
+}
+_SCOPE_MANIFEST = [
+    ".project_manager/tools/__scope_alpha__.py",
+    ".project_manager/tools/__scope_beta__.py",
+    "adapterdir",
+]
+
+
+def _scope_fixture(pm_update, tmp_path, monkeypatch, name: str) -> tuple[Path, Path]:
+    """(dest=self-location REPO, source) — 파일 2개 + 디렉토리 등재 1개를 가진 upstream."""
+    dest = tmp_path / f"{name}_dest"
+    source = tmp_path / f"{name}_source"
+    _make_upstream_tree(source, _SCOPE_FILES, _SCOPE_MANIFEST)
+    _write_local_conf(dest, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    return dest, source
+
+
+def _landed(dest: Path) -> set:
+    return {
+        p.relative_to(dest).as_posix()
+        for p in dest.rglob("*")
+        if p.is_file() and ".git" not in p.relative_to(dest).parts
+        and p.relative_to(dest).as_posix() != ".project_manager/local.conf"
+    }
+
+
+def test_paths_scope_propagates_only_the_named_file(pm_update, tmp_path, monkeypatch):
+    """명시한 파일 하나만 착지한다 — 같은 manifest 의 나머지 등재분은 손대지 않는다."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "single")
+
+    rc = pm_update.main(["--paths", ".project_manager/tools/__scope_alpha__.py"])
+
+    assert rc == 0
+    assert _landed(dest) == {".project_manager/tools/__scope_alpha__.py"}
+
+
+def test_paths_scope_picks_one_file_inside_a_directory_entry(pm_update, tmp_path, monkeypatch):
+    """디렉토리 등재 **안의 파일 하나**도 고를 수 있다 — 스코프가 항목 단위가 아니라 파일 단위다.
+
+    manifest 항목으로 자르면 `adapterdir` 등재 전체가 딸려 온다(요청하지 않은 파일 전파). plan 이
+    산출한 파일 목록에서 고르므로 경로 리매핑·render 판정은 그대로 물려받는다."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "indir")
+
+    rc = pm_update.main(["--paths", "adapterdir/one.md"])
+
+    assert rc == 0
+    assert _landed(dest) == {"adapterdir/one.md"}
+
+
+def test_paths_scope_directory_request_covers_its_files(pm_update, tmp_path, monkeypatch):
+    """디렉토리를 지정하면 그 아래 전부 — 파일/디렉토리 지정이 같은 규칙을 탄다."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "dir")
+
+    rc = pm_update.main(["--paths", "adapterdir"])
+
+    assert rc == 0
+    assert _landed(dest) == {"adapterdir/one.md", "adapterdir/two.md"}
+
+
+def test_paths_scope_accepts_repeated_and_multi_value_flags(pm_update, tmp_path, monkeypatch):
+    """반복 지정과 다중 값이 함께 쌓인다(누적) — 마지막 `--paths` 가 앞을 덮지 않는다."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "multi")
+
+    rc = pm_update.main([
+        "--paths", ".project_manager/tools/__scope_alpha__.py", "adapterdir/one.md",
+        "--paths", ".project_manager/tools/__scope_beta__.py",
+    ])
+
+    assert rc == 0
+    assert _landed(dest) == {
+        ".project_manager/tools/__scope_alpha__.py",
+        ".project_manager/tools/__scope_beta__.py",
+        "adapterdir/one.md",
+    }
+
+
+def test_paths_scope_refuses_unregistered_path_loudly(pm_update, tmp_path, monkeypatch, capsys):
+    """manifest 미등재 경로는 조용한 무전파가 아니라 rc1 — 오타·인스턴스 소유 파일 지정을 잡는다."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "unreg")
+
+    rc = pm_update.main(["--paths", ".project_manager/wiki/status.md"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "[미등재] .project_manager/wiki/status.md" in err, err
+    assert _landed(dest) == set(), "거부인데 파일이 착지함"
+
+
+@pytest.mark.parametrize(
+    "case, bad",
+    [("abs", "/etc/passwd"), ("dotdot", "../outside.py"),
+     ("inner_dotdot", ".project_manager/../../x"), ("blank", "   ")])
+def test_paths_scope_refuses_unsafe_values_before_any_work(
+        pm_update, tmp_path, monkeypatch, capsys, case, bad):
+    """절대경로·`..`·빈 값은 입구에서 거부한다(스코프가 저장소 밖을 가리킬 수 없다)."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, f"bad_{case}")
+
+    rc = pm_update.main(["--paths", bad])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "[거부]" in err and "--paths" in err, err
+    assert _landed(dest) == set()
+
+
+def test_paths_scope_is_refused_with_changes_mode(pm_update, tmp_path, monkeypatch, capsys):
+    """`--changes`(read-only 확인)와는 함께 쓸 수 없다 — 조용히 무시되는 옵션 0."""
+    _dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "chg")
+
+    rc = pm_update.main(["--changes", "--paths", "adapterdir"])
+
+    assert rc == 1
+    assert "--paths" in capsys.readouterr().err
+
+
+def test_paths_scope_dry_run_writes_nothing(pm_update, tmp_path, monkeypatch, capsys):
+    """dry-run 은 스코프 안 계획만 보여주고 파일을 만들지 않는다(무변경 계약 유지)."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "dry")
+
+    rc = pm_update.main(["--dry-run", "--paths", "adapterdir/one.md"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "adapterdir/one.md" in out and "adapterdir/two.md" not in out, out
+    assert _landed(dest) == set()
+
+
+def test_paths_scope_does_not_record_upstream_baseline(pm_update, tmp_path, monkeypatch):
+    """부분 전파는 baseline 을 갱신하지 않는다 — 갱신하면 미전파분이 drift-lint 에서 사라진다.
+
+    같은 형상에서 스코프 없이 돌리면 baseline 이 기록된다(대조군) — 억제가 이 모드 고유임을 못박는다."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "baseline")
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "scopedrev7")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
+    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    assert "upstream_rev" not in conf, "부분 전파가 baseline 을 최신으로 박음(거짓 최신)"
+
+    assert pm_update.main([]) == 0  # 대조군 — 전량 sync 는 기존대로 기록한다.
+    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    assert conf.get("upstream_rev") == "scopedrev7"
+
+
+def test_paths_scope_skips_whole_instance_steps(pm_update, tmp_path, monkeypatch):
+    """진입 doc 마이그레이션·보호 훅 재설치는 발화하지 않는다 — 요청 밖 write 0."""
+    _dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "steps")
+    called: list = []
+    monkeypatch.setattr(
+        pm_update, "migrate_entry_doc",
+        lambda *a, **k: called.append("migrate") or {"status": "skipped"})
+    monkeypatch.setattr(
+        pm_update, "reinstall_protected_hooks",
+        lambda *a, **k: called.append("hooks") or {"status": "skipped"})
+
+    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
+
+    assert called == [], f"부분 전파가 전량 흡수 후속 단계를 태웠다: {called}"
+
+
+def test_paths_scope_forwards_to_every_target(pm_update, tmp_path, monkeypatch, capsys):
+    """`--all-targets` 와 조합 — 각 타깃이 같은 스코프만 받는다(전파 채널 하나·자식 재검증)."""
+    fake_repo = tmp_path / "targets_repo"
+    for target in ("alpha", "beta"):
+        (fake_repo / "templates" / target).mkdir(parents=True)
+    source = tmp_path / "targets_source"
+    _make_upstream_tree(source, _SCOPE_FILES, _SCOPE_MANIFEST)
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    rc = pm_update.main(
+        ["--from", str(source), "--all-targets", "--paths", "adapterdir/one.md"])
+
+    assert rc == 0
+    for target in ("alpha", "beta"):
+        assert _landed(fake_repo / "templates" / target) == {"adapterdir/one.md"}
+
+
+def test_scope_helpers_normalize_and_match(pm_update):
+    """정규화·등재 판정·후보 파생의 단위 규칙(호출부가 의존하는 성질)."""
+    normalized, rejected = pm_update._normalize_scope_paths(
+        [" a/b/ ", "a\\b", "a/b", "", "/abs", "x/../y"])
+    assert normalized == ["a/b"]  # 공백·백슬래시·꼬리 슬래시·중복 접기
+    assert len(rejected) == 3
+
+    manifest = ["pkg", "tools/one.py"]
+    # 양방향 겹침 — 디렉토리 등재 아래 파일, 여러 등재를 담는 상위 디렉토리 모두 등재로 본다.
+    assert pm_update._unregistered_scope_paths(manifest, ["pkg/deep/f.md"]) == []
+    assert pm_update._unregistered_scope_paths(manifest, ["tools"]) == []
+    assert pm_update._unregistered_scope_paths(manifest, ["other/f.md"]) == ["other/f.md"]
+
+    # `@source` 리매핑 항목은 dest·upstream 경로가 다르다 — 둘 다 후보여야 어느 쪽으로 지정해도 걸린다.
+    source_root = Path("/src")
+    assert pm_update._scope_change_candidates(
+        ".opencode/agents/pm.md", source_root / "templates/opencode/.opencode/agents/pm.md",
+        source_root) == [".opencode/agents/pm.md",
+                         "templates/opencode/.opencode/agents/pm.md"]
+    # 인메모리 source(manifest 합집합)는 파일 경로가 없어 dest 후보만 남는다(TypeError 로 안 샌다).
+    assert pm_update._scope_change_candidates(
+        ".project_manager/engine.manifest", pm_update._ManifestTextSource("x"),
+        source_root) == [".project_manager/engine.manifest"]
+
+
+def test_paths_scope_reports_a_missing_source_entry_that_holds_the_request(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """요청 파일을 담은 등재가 source 에 통째로 없으면 rc2 — '변경 없음' 거짓 성공 0.
+
+    부재 보고는 항목 단위(디렉토리)라 스코프 판정이 단방향이면 그 보고가 접혀 사라진다."""
+    dest = tmp_path / "missing_dest"
+    source = tmp_path / "missing_source"
+    _make_upstream_tree(
+        source,
+        {".project_manager/tools/__scope_alpha__.py": "# alpha\n"},
+        [".project_manager/tools/__scope_alpha__.py", "adapterdir"],
+    )
+    _write_local_conf(dest, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    rc = pm_update.main(["--paths", "adapterdir/one.md"])
+
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "adapterdir" in err, err
+
+
+def test_paths_scope_matches_equivalent_path_spellings(pm_update, tmp_path, monkeypatch):
+    """`./a/b`·`a//b` 는 `a/b` 와 같은 요청이다 — 정규화 결과를 저장·매칭한다.
+
+    원본 표기를 그대로 들고 있으면 등재 검증은 통과하고 변경 매칭만 빗나가 **조용한 rc0 무전파**가
+    된다(요청했는데 아무것도 안 갔는데 성공으로 끝난다)."""
+    for index, spelling in enumerate(("./adapterdir/one.md", "adapterdir//one.md")):
+        dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, f"spell{index}")
+
+        rc = pm_update.main(["--paths", spelling])
+
+        assert rc == 0
+        assert _landed(dest) == {"adapterdir/one.md"}, f"{spelling!r} 가 매칭되지 않음"
+
+
+def test_scope_normalization_folds_equivalent_spellings(pm_update):
+    """정규화 단위 규칙 — 동치 표기는 한 항목으로 접히고 `.`/`..` 는 사유별로 거부된다."""
+    normalized, rejected = pm_update._normalize_scope_paths(
+        ["a/b", "./a/b", "a//b", ".", "../x"])
+    assert normalized == ["a/b"]
+    assert len(rejected) == 2
+    assert any("자기 참조" in reason for reason in rejected)
+    assert any(".." in reason for reason in rejected)
+
+
+def test_paths_scope_refusal_writes_nothing_to_dest(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """미등재 거부는 **어떤 dest 쓰기보다 먼저**다 — 중앙 로더 선복구도 돌지 않는다.
+
+    거부인데 seam 복구 write 가 선행하면 "rc1 인데 파일이 바뀐다" 가 된다(무변경 계약 위반)."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "nowrite")
+    predeployed: list = []
+    monkeypatch.setattr(
+        pm_update, "_predeploy_central_loader",
+        lambda *a, **k: predeployed.append("called"))
+
+    rc = pm_update.main(["--paths", ".project_manager/wiki/status.md"])
+
+    assert rc == 1
+    assert predeployed == [], "거부 전에 중앙 로더 선복구(dest 쓰기)가 돌았다"
+    assert _landed(dest) == set()
+    assert "[미등재]" in capsys.readouterr().err
+
+
+def test_paths_scope_reports_guest_clause_separately(pm_update, tmp_path, monkeypatch, capsys):
+    """guest 절 경로는 "미등재(오타)" 가 아니라 **채널이 다른 것**이라 사유를 갈라 알린다."""
+    dest = tmp_path / "guest_dest"
+    source = tmp_path / "guest_source"
+    _make_upstream_tree(source, _SCOPE_FILES, _SCOPE_MANIFEST)
+    _write_local_conf(dest, f"upstream={source}\n")
+    manifest = dest / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        "\n".join(_SCOPE_MANIFEST) + "\n"
+        + pm_update._GUEST_MANIFEST_BEGIN + "\n"
+        + ".opencode/agents @render @target-owned\n"
+        + pm_update._GUEST_MANIFEST_END + "\n",
+        encoding="utf-8")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    rc = pm_update.main(["--paths", ".opencode/agents"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "[guest 절]" in err and "add-harness" in err, err
+
+
+def test_paths_scope_warns_on_engine_rev_mixing(pm_update, tmp_path, monkeypatch, capsys):
+    """엔진 도구가 스코프에 들면 rev 혼재 가능성을 알린다 — 차단이 아니라 경고(최종 방어는 전량 전파)."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "revmix")
+
+    rc = pm_update.main(["--paths", ".project_manager/tools/__scope_alpha__.py"])
+
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "ENGINE_REV" in err and "all-targets" in err, err
+    # 어댑터만 옮기는 스코프는 조용하다(경고가 무차별이 아님).
+    dest2, _s2 = _scope_fixture(pm_update, tmp_path, monkeypatch, "revquiet")
+    capsys.readouterr()
+    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
+    assert "ENGINE_REV" not in capsys.readouterr().err
+
+
+def test_paths_scope_reports_missing_source_for_source_remapped_entry(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """`@source` 항목을 **upstream 경로**로 지정했는데 그 source 가 없으면 rc2 — 접히지 않는다.
+
+    부재 보고는 dest 경로(manifest 경로)로 오므로, 스코프 대조가 dest 좌표만 보면 upstream 경로로
+    지정한 요청이 스코프 밖으로 접혀 "변경 없음 rc0" 라는 거짓 성공이 된다."""
+    dest = tmp_path / "remap_dest"
+    source = tmp_path / "remap_source"
+    _make_upstream_tree(
+        source,
+        {".project_manager/tools/__scope_alpha__.py": "# alpha\n"},
+        [".project_manager/tools/__scope_alpha__.py",
+         ".opencode/agents @render @source=templates/opencode/.opencode/agents"],
+    )
+    _write_local_conf(dest, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    rc = pm_update.main(["--paths", "templates/opencode/.opencode/agents"])
+
+    err = capsys.readouterr().err
+    assert rc == 2, f"source 부재가 접혀 성공으로 끝남(err={err!r})"
+    assert ".opencode/agents" in err, err
+
+
+def test_paths_scope_refuses_a_typo_under_a_registered_directory(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """등재 **디렉토리 안의 오타**는 등재 검증을 통과하지만 대응 파일이 없다 — rc1 로 멈춘다.
+
+    `adapterdir/typo.md` 는 `adapterdir` 등재와 겹쳐 소유권 판정을 통과하고, 변경 0 은 "이미 최신"
+    과 구분되지 않는다 → 옛 형상은 아무것도 전파하지 않고 rc0 으로 끝났다(조용한 무전파)."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "typo")
+
+    rc = pm_update.main(["--paths", "adapterdir/typo.md"])
+
+    err = capsys.readouterr().err
+    assert rc == 1, "오타가 조용한 rc0 무전파로 끝남"
+    assert "[대응 없음] adapterdir/typo.md" in err, err
+    assert _landed(dest) == set()
+
+
+def test_paths_scope_accepts_an_already_in_sync_path(pm_update, tmp_path, monkeypatch):
+    """이미 최신인 경로는 정상이다 — 대응 검증이 "변경 0" 을 오타로 오분류하지 않는다."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "insync")
+    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
+    assert _landed(dest) == {"adapterdir/one.md"}
+
+    rc = pm_update.main(["--paths", "adapterdir/one.md"])  # 두 번째 실행 — 변경 0.
+
+    assert rc == 0
+    assert _landed(dest) == {"adapterdir/one.md"}
+
+
+def test_paths_scope_accepts_the_manifest_union_self_prop(pm_update, tmp_path, monkeypatch):
+    """`engine.manifest` 를 스코프로 지정할 수 있다 — 합집합 분기도 계획 인벤토리에 실린다.
+
+    그 분기는 upstream 에 단일 실파일이 없어 인메모리 source 로 계획된다. 인벤토리에서 빠지면
+    유효 변경인데도 "대응 없음" 으로 거부돼(rc1) 스스로 만든 게이트에 막힌다."""
+    dest = tmp_path / "union_dest"
+    source = tmp_path / "union_source"
+    _make_upstream_tree(source, _SCOPE_FILES, _SCOPE_MANIFEST + [".project_manager/engine.manifest"])
+    # flavor 합집합 경로 재현 — selfheal 이 여러 upstream manifest 를 계획 기준으로 올린다.
+    for flavor in ("claude_code", "codex"):
+        flavor_manifest = source / "templates" / flavor / ".project_manager" / "engine.manifest"
+        flavor_manifest.parent.mkdir(parents=True, exist_ok=True)
+        flavor_manifest.write_text(
+            "\n".join(_SCOPE_MANIFEST + [".project_manager/engine.manifest"]) + "\n",
+            encoding="utf-8")
+    _track_source_tree(source)
+    _write_local_conf(dest, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    rc = pm_update.main(["--paths", ".project_manager/engine.manifest"])
+
+    assert rc == 0, "합집합 self-prop 좌표가 인벤토리에서 빠져 유효 요청이 거부됨"
+    assert (dest / ".project_manager" / "engine.manifest").is_file()
+    assert _landed(dest) == {".project_manager/engine.manifest"}
+
+
+def _loader_rel() -> str:
+    return ".project_manager/tools/repo_owned_files.py"
+
+
+def test_paths_scope_does_not_touch_the_central_loader(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """스코프 밖 중앙 로더는 갱신하지 않는다 — "명시 경로만 전파" 계약(내용·mtime 불변).
+
+    복구가 필요한 상태면 **알린다**(조용한 방치 금지) — 전량 sync 로 안내."""
+    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "loader")
+    stale = dest / _loader_rel()
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("# 구형 seam(복구 대상)\n", encoding="utf-8")
+    before_bytes = stale.read_bytes()
+    before_mtime = stale.stat().st_mtime_ns
+    assert pm_update.central_loader_needs_recovery(dest), "픽스처 전제(복구 대상 상태)"
+
+    rc = pm_update.main(["--paths", "adapterdir/one.md"])
+
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert stale.read_bytes() == before_bytes, "스코프 밖 파일이 갱신됨(계약 위반)"
+    assert stale.stat().st_mtime_ns == before_mtime
+    assert "경로 스코프 밖이라 건드리지 않는다" in err, err
+
+
+def test_loader_in_scope_is_still_recovered(pm_update, tmp_path, monkeypatch):
+    """그 경로를 스코프에 넣으면 정상 복구된다(기능 제거가 아니라 스코프 준수)."""
+    dest = tmp_path / "loader_in_scope"
+    source = tmp_path / "loader_source"
+    _make_upstream_tree(
+        source,
+        {**_SCOPE_FILES, _loader_rel(): (REPO / _loader_rel()).read_text(encoding="utf-8")},
+        _SCOPE_MANIFEST + [_loader_rel()],
+    )
+    _write_local_conf(dest, f"upstream={source}\n")
+    stale = dest / _loader_rel()
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("# 구형 seam\n", encoding="utf-8")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    rc = pm_update.main(["--paths", _loader_rel()])
+
+    assert rc == 0
+    assert not pm_update.central_loader_needs_recovery(dest), "스코프 안인데 복구되지 않음"
+
+
+def test_paths_scope_accepts_board_separated_remap(pm_update, tmp_path, monkeypatch):
+    """board 분리 인스턴스의 리매핑 좌표(`board/tickets/_template.md`)를 등재로 인정한다.
+
+    계획은 그 좌표로 착지시키는데 게이트만 manifest 원문(`wiki/tickets/_template.md`)을 보면,
+    실제 관리 파일을 요청해도 rc1 로 거부된다(스스로 만든 게이트에 막힘)."""
+    dest = tmp_path / "board_dest"
+    source = tmp_path / "board_source"
+    template_rel = ".project_manager/wiki/tickets/_template.md"
+    board_rel = ".project_manager/board/tickets/_template.md"
+    _make_upstream_tree(source, {template_rel: "# ticket 템플릿\n"}, [template_rel])
+    (dest / ".project_manager" / "board" / "tickets").mkdir(parents=True)  # board 분리 형상.
+    _write_local_conf(dest, f"upstream={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    assert pm_update._is_board_separated(dest), "픽스처 전제(board 분리 판정)"
+
+    rc = pm_update.main(["--paths", board_rel])
+
+    assert rc == 0, "board 분리 좌표를 미등재로 거부함"
+    assert (dest / board_rel).read_text(encoding="utf-8") == "# ticket 템플릿\n"

@@ -43,7 +43,9 @@ updated: YYYY-MM-DD
 {{PY}} .project_manager/tools/domain.py list                 # 페이지 카탈로그 (type·covers·stale)
 {{PY}} .project_manager/tools/domain.py affected --ticket T-NNNN   # ticket touches 와 겹치는 covers 페이지
 {{PY}} .project_manager/tools/domain.py capture --tickets T-NNNN   # 갱신 reminder (touch∩covers)
-{{PY}} .project_manager/tools/domain.py lint                 # freshness(stale) 검사
+{{PY}} .project_manager/tools/domain.py lint                 # freshness(stale) + history 축 검사
 ```
+
+> ℹ️ `lint` 의 **`history` 축**(advisory·never-block): 페이지는 *"지금 X다"* 만 담고 *"언제 X로 바뀌었다"* 는 `log/` 가 갖는다. 시점 스탬프(`YYYY-MM-DD`·`vX.Y.Z`·`T-NNNN`)로 **시작하는** 블록과 이력 절 헤딩(`## 변경 이력` 류)을 누적으로 검출한다 — 본문 안에서 날짜·ticket 을 *근거로* 인용하는 건 대상이 아니다.
 
 > ℹ️ 살아있는 루프: 코드 touch → 겹치는 페이지 **소환**(`affected`) → 갱신 reminder(`capture`) → 채록 → stale ⚠ 는 `lint` 가 가시화. 막지 않고 보이게.

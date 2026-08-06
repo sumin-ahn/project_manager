@@ -7,7 +7,8 @@ repo별 worktree 풀의 슬롯 리스 라이프사이클을 검증한다:
   - release: 작업완료 반납 · dirty+require_clean 거부(ReleaseRefused) · 자동경로 stash.
   - reclaim_stale: pid 죽은 leased 회수(dirty→stash) · pid 살아있으면 미회수.
   - force_release: leased/dirty 무시 강제 idle 화.
-  - 리스장부 동시쓰기 안전(자체 파일락) — 부모 monkeypatch 비상속 자식 spawn.
+  - 리스장부 동시쓰기 안전(공용 `file_lock` seam 배타락·경로 규약만 이 도구 소유) —
+    부모 monkeypatch 비상속 자식 spawn.
   - sensitivity: stale 판정(pid)·풀소진 핵심 로직 무력화 시 fail 재현.
   - **실 git 통합**(hermetic·임시 git repo): create_slot 이 `git worktree add` 로 실제
     슬롯 생성·branch checkout·submodule init(임시 superproject+submodule)·반납.
@@ -16,7 +17,8 @@ repo별 worktree 풀의 슬롯 리스 라이프사이클을 검증한다:
 import 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 재지정해 실 `.project_manager` 를
 절대 건드리지 않는다(test_board_concurrency.py 의 monkeypatch hermetic 패턴 동류). git DI
 seam(주입 가능 runner)으로 단위테스트는 mock git, 통합테스트만 실 임시 git repo 를 쓴다.
-board.py 는 import 하지 않는다(touches 격리·병렬충돌 회피·자체 파일락 검증).
+board.py 는 import 하지 않는다(touches 격리·병렬충돌 회피) — 배타락 자체는 board 와 *같은*
+공용 seam(`file_lock.py`)을 쓰지만 board 모듈 의존은 없다(seam 은 형제를 로드하지 않는 leaf).
 """
 from __future__ import annotations
 
@@ -7055,6 +7057,11 @@ _BASE_TIP = "c" * 40      # set-base 로 지정한 base 브랜치 tip(슬롯 HEA
 class _BaseGit:
     """set-base/status/rebase-gate 커스텀 runner — FakeGit 이 안 다루는 rev-parse verify·rev-list count 모델.
 
+    ⚠️ 이름이 같은 `tips` 를 쓰는 fake 가 둘이다 — **축이 다르다**: 이 `_BaseGit.tips` 는
+    `rev-parse --verify` 해소 축(미등록=rc128)이고, refresh 절의 `_RefTipGit.tips` 는
+    `checkout --detach`/`show-ref` 축(미등록=checkout rc≠0·착지 sha 모델)이다. 한쪽 fake 로
+    다른 축의 회귀를 쓰면 검증이 조용히 빗나가므로 대상 op 에 맞는 fake 를 고른다.
+
     `tips` = ref→sha(`rev-parse --verify <ref>^{commit}` 해소·미등록 ref=rc128), `behind` = base→N
     (`rev-list --count HEAD..<base>`·미등록=rc128), `head`/`head_sha`/`subs` = 스냅 필드. 슬롯 tip
     (`rev-parse HEAD`)과 base 브랜치 tip(`--verify`)을 **다른 sha** 로 두어 set-base 가 base.commit 을
@@ -8422,14 +8429,86 @@ def test_mutation_allowed_on_work_slot_sensitivity(wp):
 # ── refresh (fetch → detach 이동·dirty=거부+loud·no-base·not-readonly·⑬·§F11) ──
 
 
+# ref 해소 판정용 tip 모델값(T-0569) — 같은 브랜치명의 로컬 tip 과 origin tip 이 **다른 sha** 다.
+# 조용한 origin 대체는 ref 문자열뿐 아니라 착지 커밋까지 바꾸므로, 판정을 sha 축까지 내린다.
+_LOCAL_ONTO_TIP = "e" * 40    # 미push 로컬 브랜치 tip(사용자가 --onto 로 원한 지점).
+_ORIGIN_ONTO_TIP = "f" * 40   # origin/<branch> tip(구 sha — 조용한 대체가 집어가던 지점).
+
+
+class _RefTipGit(FakeGit):
+    """ref→tip sha 를 모델링하는 git runner — `checkout --detach <ref>` 가 HEAD 를 그 ref tip 으로 옮긴다.
+
+    refresh 의 "어디로 갔나"를 ref 문자열만이 아니라 **착지 sha** 로 판정하기 위한 fake(T-0569 발견 재현:
+    로컬 `<b>` 와 `origin/<b>` 가 다른 커밋일 때 어느 쪽을 집었는지는 sha 로만 확정된다). `tips` 에 없는
+    ref 는 `checkout` rc≠0(미해소 ref — 실 git 의 invalid reference 모델)이라 자동 대체 0을 검증할 수 있고,
+    `show-ref --verify refs/remotes/origin/<b>` 도 같은 `tips` 로 답한다(origin ref 존재 여부 단일 축).
+
+    ⚠️ set-base/rebase 절의 `_BaseGit` 도 `tips` 를 갖지만 **축이 다르다** — 그쪽은 `rev-parse
+    --verify` 해소(미등록=rc128) 모델이라 checkout 착지 sha 를 모델링하지 않는다."""
+
+    def __init__(self, tips: dict, **kw):
+        super().__init__(**kw)
+        self.tips = dict(tips)
+
+    def __call__(self, argv: list) -> tuple[int, str]:
+        if argv[:2] == ["checkout", "--detach"]:
+            self.calls.append(list(argv))
+            ref = argv[-1]
+            if ref not in self.tips:
+                return (1, f"fatal: invalid reference: {ref}")
+            self.head_sha = self.tips[ref]   # 착지 HEAD sha = 그 ref 의 tip.
+            self.head = None                 # detached(실 git 동형·symbolic-ref rc≠0).
+            return (0, "")
+        if argv[:3] == ["show-ref", "--verify", "--quiet"]:
+            self.calls.append(list(argv))
+            # `refs/remotes/origin/<b>` → tips 의 `origin/<b>` 키 존재 여부.
+            return (0, "") if argv[-1].replace("refs/remotes/", "") in self.tips else (1, "")
+        return super().__call__(argv)
+
+
 def test_refresh_fast_forwards_detached_head(wp):
     """refresh — clean readonly 슬롯을 fetch 후 origin/<base> 최신 tip 으로 detach 이동(⑬·§F11)."""
     _seed_readonly(wp)
     git = FakeGit(origin_has_base=True)   # clean·fetch rc0·origin/main 해소
-    ref = wp.refresh("work/A_1", git_runner=git)
+    ref, head = wp.refresh("work/A_1", git_runner=git)
     assert ref == "origin/main"
+    assert head == git.head_sha           # 이동 후 실 HEAD sha 를 함께 반환(T-0569)
     assert git.did("fetch", "origin")
     assert git.did("checkout", "--detach", "origin/main")   # detached HEAD 이동
+
+
+def test_refresh_fetch_failure_warning_names_the_actual_fallback_ref(wp, capsys):
+    """refresh — fetch 실패 폴백 경고가 로컬 브랜치 / stale remote-tracking ref 를 구분한다.
+
+    `--onto origin/<b>` 처럼 remote-tracking ref 가 기준이면 폴백 대상은 로컬 브랜치가 아니라
+    직전 fetch 시점에 멈춘 remote-tracking ref 다 — "로컬 …(동결 head)" 로 뭉뚱그리면 사용자가
+    로컬 브랜치를 갱신해 해소하려 하지만(그 ref 는 안 움직인다) 실제 해소는 fetch 복구뿐이다.
+    """
+    _seed_readonly(wp)                                   # 기록된 base.branch = main(로컬 브랜치)
+    wp.refresh("work/A_1", git_runner=FakeGit(fetch_rc=1))
+    local_err = capsys.readouterr().err
+    assert "로컬 `main`(동결 head)" in local_err
+
+    wp.refresh("work/A_1", onto="origin/main", git_runner=FakeGit(fetch_rc=1))
+    remote_err = capsys.readouterr().err
+    assert "stale remote-tracking `origin/main`(직전 fetch 시점 동결)" in remote_err
+    assert "로컬 `origin/main`" not in remote_err
+
+
+def test_frozen_fallback_label_is_the_single_source_for_fetch_warnings(wp):
+    """폴백 표기는 공용 라벨 하나 — 경고 문구에 하드코딩 '로컬 `{…}`' 재유입 0."""
+    assert wp._frozen_fallback_label("develop") == "로컬 `develop`(동결 head)"
+    assert wp._frozen_fallback_label("origin/develop") == (
+        "stale remote-tracking `origin/develop`(직전 fetch 시점 동결)"
+    )
+    source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
+    assert source.count("로컬 `{") == 1, (
+        "폴백 표기 f-string 은 헬퍼 정의부 1곳뿐이어야 한다 — 경고 문구에 하드코딩이 되살아났다"
+    )
+    assert source.count("_frozen_fallback_label(") == 5, (
+        "헬퍼 정의 1 + fetch 실패 경고 4곳(create_slot readonly·create_slot base·refresh·rebase) "
+        "= 5 — 경고가 늘거나 줄면 이 수와 함께 확인하라"
+    )
 
 
 def test_refresh_resyncs_submodules(wp):
@@ -8472,14 +8551,84 @@ def test_refresh_updates_base_commit_when_onto_omitted(wp):
 
 
 def test_refresh_onto_overrides_recorded_base(wp):
-    """refresh --onto 명시 → 그 기준으로 이동(기록된 base.branch 무시)·base 도 그 값으로 갱신(⑬)."""
+    """refresh --onto 명시 → 그 기준으로 이동(기록된 base.branch 무시)·base 도 그 값으로 갱신(⑬).
+
+    T-0569 이후 --onto 는 **준 ref 그대로** 해소한다 — origin/<branch> 파생 없이 `develop` 로 이동한다."""
     _seed_readonly(wp)
     git = FakeGit(origin_has_base=True, head_sha=_NEW_SHA)
-    ref = wp.refresh("work/A_1", onto="develop", git_runner=git)
-    assert ref == "origin/develop"
-    assert git.did("checkout", "--detach", "origin/develop")
+    ref, head = wp.refresh("work/A_1", onto="develop", git_runner=git)
+    assert (ref, head) == ("develop", _NEW_SHA)
+    assert git.did("checkout", "--detach", "develop")
     recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
     assert recorded == {"branch": "develop", "commit": _NEW_SHA}   # base branch+commit 둘 다 갱신
+
+
+# ── --onto 명시 ref 는 조용히 대체하지 않는다 (T-0569 · 사용자 실측 발견 재현) ──
+
+
+def test_refresh_onto_local_branch_takes_local_tip_even_when_origin_differs(wp):
+    """발견 재현 — `--onto <로컬브랜치>` 는 origin/<브랜치> 가 **다른 sha** 로 있어도 로컬 tip 을 집는다.
+
+    구 거동: 브랜치명이 `origin/` 으로 시작 안 하면 무조건 origin/<branch> 해소를 우선해 명시 인자가
+    조용히 덮였다(미push 로컬 tip 으로 갱신할 방법 자체가 없었다). 명시 인자 재해석 금지 — 사용자가
+    origin 기준을 원하면 `origin/<branch>` 로 적는다. sensitivity: 그 override 를 되살리면 ref 도 sha 도
+    origin 쪽이 되어 이 단언이 red."""
+    _seed_readonly(wp)   # 기록된 base.branch = "main"(무관 — --onto 가 이긴다)
+    git = _RefTipGit({"task/main": _LOCAL_ONTO_TIP, "origin/task/main": _ORIGIN_ONTO_TIP})
+    ref, head = wp.refresh("work/A_1", onto="task/main", git_runner=git)
+    assert (ref, head) == ("task/main", _LOCAL_ONTO_TIP)          # 준 ref·로컬 tip 착지
+    assert git.did("checkout", "--detach", "task/main")
+    assert not git.did("checkout", "--detach", "origin/task/main")  # 조용한 대체 0
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
+    assert recorded == {"branch": "task/main", "commit": _LOCAL_ONTO_TIP}
+
+
+def test_refresh_onto_origin_ref_moves_to_origin_tip(wp):
+    """`--onto origin/<branch>` 명시 = 원격 기준 — 그대로 origin tip 으로 이동(불변·T-0569)."""
+    _seed_readonly(wp)
+    git = _RefTipGit({"task/main": _LOCAL_ONTO_TIP, "origin/task/main": _ORIGIN_ONTO_TIP})
+    ref, head = wp.refresh("work/A_1", onto="origin/task/main", git_runner=git)
+    assert (ref, head) == ("origin/task/main", _ORIGIN_ONTO_TIP)
+    assert git.did("checkout", "--detach", "origin/task/main")
+
+
+def test_refresh_without_onto_still_prefers_origin_tip(wp):
+    """`--onto` 미지정 기본 경로는 origin 자동 우선 유지 — 기록된 base 를 origin tip 으로 갱신(T-0569).
+
+    readonly 기준면은 공개된 released 상태를 반영한다는 기본 경로 설계 의도 — 로컬 `main` 이 앞서 있어도
+    origin/main tip 을 집는다(명시 경로와 대칭 판정: 여기선 origin 쪽 sha 가 정답)."""
+    _seed_readonly(wp)   # 기록된 base.branch = "main"
+    git = _RefTipGit({"main": _LOCAL_ONTO_TIP, "origin/main": _ORIGIN_ONTO_TIP})
+    ref, head = wp.refresh("work/A_1", git_runner=git)
+    assert (ref, head) == ("origin/main", _ORIGIN_ONTO_TIP)
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
+    assert recorded == {"branch": "main", "commit": _ORIGIN_ONTO_TIP}   # 논리 branch 는 보존
+
+
+def test_refresh_without_onto_falls_back_to_local_when_origin_ref_absent(wp):
+    """`--onto` 미지정 + origin/<base> 미해소 → 로컬 <base> 폴백(기본 경로 불변·T-0569)."""
+    _seed_readonly(wp)
+    git = _RefTipGit({"main": _LOCAL_ONTO_TIP})   # origin/main 없음
+    ref, head = wp.refresh("work/A_1", git_runner=git)
+    assert (ref, head) == ("main", _LOCAL_ONTO_TIP)
+    assert git.did("checkout", "--detach", "main")
+
+
+def test_refresh_unresolvable_onto_fails_loud_without_substitution(wp):
+    """`--onto` ref 해소 실패는 자동 대체 없이 fail-loud — 메시지에 실제 ref + 대체 안 함 안내(T-0569).
+
+    origin/<branch> 가 존재해도 폴백하지 않는다(대체가 필요한 상황이면 조용히 바꾸지 말고 loud 거부).
+    실패한 refresh 는 장부 기준면도 건드리지 않는다."""
+    _seed_readonly(wp)
+    git = _RefTipGit({"origin/task/main": _ORIGIN_ONTO_TIP})   # 로컬 task/main 부재·origin 만 존재
+    with pytest.raises(wp.RefreshRefused) as ei:
+        wp.refresh("work/A_1", onto="task/main", git_runner=git)
+    assert ei.value.reason == "git-error"
+    msg = str(ei.value)
+    assert "task/main" in msg and "자동 대체" in msg   # 실제 ref + 대체 안 함을 loud 안내
+    assert not git.did("checkout", "--detach", "origin/task/main")   # 대체 시도 0
+    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
+    assert recorded == {"branch": "main", "commit": "c0"}   # 기준면 기록 불변(반쯤 갱신 없음)
 
 
 def test_refresh_dirty_refused_loud(wp):
@@ -8580,13 +8729,41 @@ def test_main_refresh_dispatches_to_refresh_backbone(wp, monkeypatch, capsys):
 
     def spy_refresh(slot, *, onto=None, git_runner=None):
         seen.update(slot=slot, onto=onto)
-        return "origin/main"
+        return "origin/main", _NEW_SHA
 
     monkeypatch.setattr(wp, "refresh", spy_refresh)
     rc = wp.main(["refresh", "A_1", "--onto", "main"])
     assert rc == 0
     assert seen == {"slot": "work/A_1", "onto": "main"}
     assert "refresh" in capsys.readouterr().out
+
+
+def test_main_refresh_reports_resolved_ref_and_sha(wp, monkeypatch, capsys):
+    """CLI — 성공 메시지가 백본이 돌려준 **실제 이동 ref + HEAD sha** 를 찍는다(추정 아님·T-0569).
+
+    구 거동은 `--onto` 를 조용히 origin/<branch> 로 바꾼 뒤 그 이름으로 성공 보고해 사용자가 어디로
+    갔는지 오인했다 — 보고값을 백본 실측(ref·sha)에 붙인다."""
+    monkeypatch.setattr(wp, "refresh",
+                        lambda slot, *, onto=None, git_runner=None: ("task/main", _LOCAL_ONTO_TIP))
+    rc = wp.main(["refresh", "A_1", "--onto", "task/main"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "task/main" in out and _LOCAL_ONTO_TIP[:12] in out
+    assert "origin/" not in out          # 명시 ref 를 다른 이름으로 보고하지 않는다
+
+
+def test_main_refresh_reports_unknown_sha_placeholder(wp, monkeypatch, capsys):
+    """CLI — sha 조회 불가(백본이 빈 문자열)면 `?` 로 표기하고 성공 보고는 유지(fail-soft·T-0569).
+
+    단언은 sha 자리(`@ ?`)까지 내린다 — 헐거운 `"?" in out` 은 메시지 어디에 물음표가 있어도
+    통과해 placeholder 소실을 못 잡는다.
+    """
+    monkeypatch.setattr(wp, "refresh",
+                        lambda slot, *, onto=None, git_runner=None: ("origin/main", ""))
+    rc = wp.main(["refresh", "A_1"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "origin/main @ ?" in out
 
 
 def test_main_refresh_dirty_refused_returns_rc1(wp, monkeypatch, capsys):

@@ -455,6 +455,7 @@ def _stub_reviewer(external, monkeypatch) -> None:
     """외부 프로세스 스폰 없이 run_review 본체(raw 박제·장부 등재)를 그대로 태운다."""
     def _fake_run_reviewer_ex(
         prompt, reviewer_cmd, timeout, run_fn, idle_timeout=None, metrics=None,
+        *, cwd=None, env=None,
     ):
         if metrics is not None:
             metrics.clear()
@@ -528,9 +529,13 @@ def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
     assert str(raw_path.resolve()) in query
 
 
-def test_raw_anchor_oracle_is_sensitive_to_diff_root_regression(
+def test_legacy_diff_root_raw_anchor_writes_to_the_slot_ledger(
         external, monkeypatch, tmp_path, capsys):
-    """기록 앵커를 diff 슬롯(REPO)으로 되돌리면 위 회귀가 red 임을 박제한다."""
+    """옛 규칙(기록 앵커=diff 슬롯 REPO)의 실제 동작을 핀으로 박제한다 — 슬롯 장부로 갈린다.
+
+    이름이 "오라클 감도"가 아니라 *무슨 동작을 핀했는지*를 말하도록 둔다: 이 테스트가 green 인
+    한 위 회귀(소유 PM 홈 등재)는 앵커 규칙 덕분에 통과한 것이지 우연이 아니다.
+    """
     pm_home, worktree = _review_slot_family(tmp_path)
     monkeypatch.setattr(external, "REPO", worktree)
     _stub_reviewer(external, monkeypatch)
@@ -578,6 +583,210 @@ def test_unresolvable_pm_home_keeps_loud_diff_root_fallback(
     assert not (
         pm_home / ".project_manager" / ".local" / "raw_outputs.json"
     ).exists()
+
+
+# ── 라운드 장부 앵커 = 소유 PM 홈 (과금 상한 연속성) ──────────────────────────
+# 라운드 장부(`review_rounds.json`)는 `--gate` 별 실 전송 횟수로 과금 상한을 강제한다. 그 앵커가
+# diff_root 면 게이트 스냅샷 worktree·새로 판 슬롯에서 같은 게이트를 돌릴 때 count 가 0 부터 다시
+# 세어져 **상한이 조용히 리셋**된다. 라운드는 이미 `--gate` 키로 분리되므로 슬롯별 장부 분리가 주는
+# 추가 격리는 없다 — raw 장부와 같은 소유 PM 홈 앵커로 모은다.
+
+
+def _second_review_slot(pm_home: Path) -> Path:
+    """같은 PM 홈에 등록된 **두 번째** 슬롯 — 게이트 스냅샷/새 worktree 형상의 대역."""
+    worktree = pm_home / "work" / "project_2"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "raw-slot-2", str(worktree)],
+        cwd=pm_home, check=True,
+    )
+    (worktree / "seed.txt").write_text("changed elsewhere\n", encoding="utf-8")
+    tools = worktree / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "external_review.py").write_text("# engine copy\n", encoding="utf-8")
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    data = _ledger(ledger)
+    data["leases"].append({"slot": "work/project_2", "state": "leased"})
+    ledger.write_text(json.dumps(data), encoding="utf-8")
+    return worktree
+
+
+def _round_count(anchor: Path, gate: str) -> int:
+    """앵커의 라운드 장부에 기록된 게이트 전송 횟수 (장부 부재 = 0)."""
+    path = anchor / ".project_manager" / ".local" / "review_rounds.json"
+    if not path.is_file():
+        return 0
+    return _ledger(path).get(gate, {}).get("count", 0)
+
+
+def test_round_ledger_counts_continue_across_diff_roots(
+        external, monkeypatch, tmp_path, capsys):
+    """같은 게이트를 서로 다른 슬롯(=다른 diff_root)에서 돌려도 라운드 수가 이어진다 (리셋 0)."""
+    pm_home, worktree = _review_slot_family(tmp_path)
+    snapshot = _second_review_slot(pm_home)
+    _stub_reviewer(external, monkeypatch)
+    gate = "T-" + "0001"
+
+    monkeypatch.setattr(external, "REPO", worktree)
+    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    capsys.readouterr()
+    assert _round_count(pm_home, gate) == 1
+
+    monkeypatch.setattr(external, "REPO", snapshot)
+    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    capsys.readouterr()
+
+    assert _round_count(pm_home, gate) == 2          # 이어서 센다(상한이 살아 있다)
+    assert _round_count(worktree, gate) == 0         # 슬롯 장부로 갈리지 않는다
+    assert _round_count(snapshot, gate) == 0
+    # 락도 같은 앵커를 따라간다 — 장부만 옮기면 두 실행이 서로 다른 파일을 잠근다.
+    assert (
+        pm_home / ".project_manager" / ".local" / "review_rounds.lock"
+    ).is_file()
+
+
+def test_legacy_diff_root_round_anchor_resets_the_count_per_slot(
+        external, monkeypatch, tmp_path, capsys):
+    """옛 규칙(라운드 앵커=diff_root)의 실제 동작을 핀으로 박제한다 — 슬롯마다 count 가 1 로 리셋.
+
+    이 핀이 green 인 한 위 연속성 회귀는 앵커 이동 덕분에 통과한 것이다(감도 실증).
+    """
+    pm_home, worktree = _review_slot_family(tmp_path)
+    snapshot = _second_review_slot(pm_home)
+    _stub_reviewer(external, monkeypatch)
+    gate = "T-" + "0001"
+
+    def legacy_round_ledger_path():
+        return (
+            external.REPO / ".project_manager" / ".local" / "review_rounds.json"
+        )
+
+    monkeypatch.setattr(external, "_round_ledger_path", legacy_round_ledger_path)
+
+    monkeypatch.setattr(external, "REPO", worktree)
+    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    monkeypatch.setattr(external, "REPO", snapshot)
+    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    capsys.readouterr()
+
+    assert _round_count(worktree, gate) == 1         # 각 슬롯이 자기 장부에서 1 부터
+    assert _round_count(snapshot, gate) == 1         # → 상한이 슬롯마다 리셋
+    assert _round_count(pm_home, gate) == 0
+
+
+# ── 앵커 이동 1회 승계(backfill) ────────────────────────────────────────────
+# 앵커만 옮기면 옛 diff_root 장부의 **차단 중인 게이트**(rc 4·사용자 승인 대기)가 새 앵커에서
+# 0 으로 되살아나 승인 게이트를 무통보로 연다. 예약 접근 시점에 그 게이트를 1회 승계(이관)해
+# 차단 상태를 정직하게 유지한다 — 런타임 합산 폴백이 아니라 원천 마이그레이션이다.
+
+
+def _write_legacy_round_ledger(anchor: Path, gate: str, entry: dict) -> Path:
+    """옛 규칙(diff 앵커) 장부를 그 슬롯에 심는다 — 앵커 이동 이전 상태의 대역."""
+    path = anchor / ".project_manager" / ".local" / "review_rounds.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({gate: entry}), encoding="utf-8")
+    return path
+
+
+def test_legacy_blocking_gate_is_inherited_and_still_blocks(
+        external, monkeypatch, tmp_path, capsys):
+    """차단 중이던 legacy 게이트는 앵커 이동 후에도 rc 4 — 승계 고지 + PM 홈으로 이관된다."""
+    pm_home, worktree = _review_slot_family(tmp_path)
+    _stub_reviewer(external, monkeypatch)
+    gate = "T-" + "0001"
+    _write_legacy_round_ledger(worktree, gate, {"count": 4, "acked_through": 0})
+    monkeypatch.setattr(external, "REPO", worktree)
+
+    rc = external.main(["--paths", "seed.txt", "--gate", gate, "--force"])
+
+    err = capsys.readouterr().err
+    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert "legacy 라운드 장부 승계" in err
+    assert f"gate={gate} verdicts=4 incomplete=0" in err
+    home_ledger = pm_home / ".project_manager" / ".local" / "review_rounds.json"
+    assert str(home_ledger) in err                # 상한 안내가 실 장부 절대경로를 찍는다
+    assert "오염 진단으로 무효화된" in err        # 미완 축에 오염이 포함됨을 고지
+    assert _round_count(pm_home, gate) == 4       # 차단 상태가 새 앵커로 이관됨(재승계 불필요)
+
+    # 2회차 — 이미 이관됐으므로 재승계 없이(고지 1회) 계속 차단한다.
+    assert external.main(
+        ["--paths", "seed.txt", "--gate", gate, "--force"]
+    ) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert "legacy 라운드 장부 승계" not in capsys.readouterr().err
+
+
+def test_inherited_gate_reopens_only_by_user_ack(
+        external, monkeypatch, tmp_path, capsys):
+    """승계된 차단 게이트도 재개 경로는 그대로 — 사용자 승인(`--ack-rounds`)에서만 열린다."""
+    pm_home, worktree = _review_slot_family(tmp_path)
+    _stub_reviewer(external, monkeypatch)
+    gate = "T-" + "0001"
+    _write_legacy_round_ledger(worktree, gate, {"count": 4, "acked_through": 0})
+    monkeypatch.setattr(external, "REPO", worktree)
+
+    assert external.main(
+        ["--paths", "seed.txt", "--gate", gate, "--ack-rounds", "--force"]
+    ) == 0
+    err = capsys.readouterr().err
+    assert "legacy 라운드 장부 승계" in err
+    assert "라운드 상한 승인 재개" in err
+    assert _round_count(pm_home, gate) == 5       # 승계 4 + 승인 실행 1
+
+
+def test_gate_absent_from_legacy_starts_from_zero(
+        external, monkeypatch, tmp_path, capsys):
+    """legacy 에 없는 게이트는 승계 없이 0 에서 시작한다 (없는 카운트를 만들어내지 않는다)."""
+    pm_home, worktree = _review_slot_family(tmp_path)
+    _stub_reviewer(external, monkeypatch)
+    _write_legacy_round_ledger(worktree, "T-" + "0001", {"count": 4, "acked_through": 0})
+    fresh_gate = "T-" + "0002"
+    monkeypatch.setattr(external, "REPO", worktree)
+
+    assert external.main(
+        ["--paths", "seed.txt", "--gate", fresh_gate, "--force"]
+    ) == 0
+
+    err = capsys.readouterr().err
+    assert "legacy 라운드 장부 승계" not in err
+    assert _round_count(pm_home, fresh_gate) == 1
+
+
+def test_legacy_round_inheritance_happens_once_per_gate(
+        external, monkeypatch, tmp_path, capsys):
+    """승계는 게이트당 1회 — 이후 legacy 장부가 어떻게 변하든 PM 홈 장부가 유일한 진실이다."""
+    pm_home, worktree = _review_slot_family(tmp_path)
+    _stub_reviewer(external, monkeypatch)
+    gate = "T-" + "0001"
+    _write_legacy_round_ledger(worktree, gate, {"count": 1, "acked_through": 0})
+    monkeypatch.setattr(external, "REPO", worktree)
+
+    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    assert "legacy 라운드 장부 승계" in capsys.readouterr().err
+    assert _round_count(pm_home, gate) == 2       # 승계 1 + 이번 예약 1
+
+    # legacy 를 차단 수위로 바꿔도 두 번째 실행은 쳐다보지 않는다(재승계면 rc 4 로 막혔을 값).
+    _write_legacy_round_ledger(worktree, gate, {"count": 99, "acked_through": 0})
+
+    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    assert "legacy 라운드 장부 승계" not in capsys.readouterr().err
+    assert _round_count(pm_home, gate) == 3
+
+
+def test_unresolvable_pm_home_keeps_loud_diff_root_round_fallback(
+        external, monkeypatch, tmp_path, capsys):
+    """소유자 해소 실패면 라운드 장부도 loud 경고 + diff_root 폴백(raw 장부와 같은 강등 경로)."""
+    pm_home, worktree = _review_slot_family(tmp_path)
+    lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(external, "REPO", worktree)
+    _stub_reviewer(external, monkeypatch)
+    gate = "T-" + "0001"
+
+    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+
+    err = capsys.readouterr().err
+    assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
+    assert _round_count(worktree, gate) == 1        # 강등 앵커에 기록(자기잠김 금지)
+    assert _round_count(pm_home, gate) == 0
 
 
 def test_main_clears_raw_anchor_between_calls(

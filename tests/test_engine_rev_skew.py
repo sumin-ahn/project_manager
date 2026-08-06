@@ -155,6 +155,7 @@ def test_normal_sync_no_effect(tmp_path):
         "engine_rev.py": None,
         "pm_handoff.py": None,
         "identity_args.py": None,
+        "file_lock.py": None,                  # import 시점 바인딩 형제(T-0565)
     })
     mod = _load(tools, "pm_handoff")           # no raise
     assert mod.ENGINE_REV == _cur_rev()
@@ -186,6 +187,7 @@ def test_stale_console_encoding_fails_loud_via_loader_verify(tmp_path, capsys):
     tools = _build_tools(tmp_path, {
         "pm_handoff.py": None,
         "identity_args.py": None,
+        "file_lock.py": None,                  # import 시점 바인딩 형제(T-0565)
         "console_encoding.py": _stale_source("console_encoding"),
     })
     mod = _load(tools, "pm_handoff")
@@ -207,8 +209,9 @@ def test_missing_engine_rev_is_benign_at_runtime(tmp_path):
     (engine_rev.py 는 bump CLI·평시 가드 테스트의 참조일 뿐, 형제 verify 는 이 파일을 읽지 않는다.)"""
     tools = _build_tools(tmp_path, {
         "pm_handoff.py": None,
-        "identity_args.py": None,                 # engine_rev.py 는 일부러 뺌 — 그래도 정상 로드
-    })
+        "identity_args.py": None,
+        "file_lock.py": None,                     # import 시점 바인딩 형제(T-0565)
+    })                                            # engine_rev.py 는 일부러 뺌 — 그래도 정상 로드
     mod = _load(tools, "pm_handoff")              # no raise (baked 리터럴 일치)
     assert mod.ENGINE_REV == _cur_rev()
     assert mod.identity_args is not None

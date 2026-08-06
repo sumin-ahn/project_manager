@@ -41,6 +41,13 @@
     가 있으면 주입, 없으면 generic 헤더. 엔진 도구엔 도메인 콘텐츠 0.
   - subprocess DI (run_fn 매개변수) — 테스트에서 mock 주입 가능.
   - 외부 호출은 코드를 수정하지 않는다 (read-only 인자 사용 권장).
+  - 리뷰어 가시 범위 격리: 리뷰어 프로세스는 PM 세션의 cwd/env/홈을 물려받지 않고, 저장소 밖에
+    만든 **tracked 파일 거울**(PM 로컬 산출물·전사 부재)과 **세션·이력 없는 임시 홈**(선언된 인증/
+    설정 파일만 복제)을 받는다. 판정 본문에 옛 리뷰 raw·세션 전사가 echo 되면 오염 진단을 loud 로
+    남기고 판정을 불명확 처리한다. 격리 실패는 기본 차단이고 `--allow-unisolated-reviewer` 가
+    유일한 탈출구다. 배포별 조정 키(local.conf):
+      · `reviewer_env_keep_extra` — 리뷰어에게 물려줄 env 이름 추가(기본 allowlist 밖 인증 변수).
+      · `reviewer_home_artifacts_extra` — 임시 홈에 복제할 인증/설정 파일 추가(홈 상대경로).
   - 시크릿 denylist (.env·*secret*·*credential*·*.key·*token*·*.pem 등) 파일은 diff 에서
     자동 제외한다. 제외 사실은 판정에 반영 — --paths 명시 지정분 제외는 차단(exit 1),
     --ticket/기본 암묵 수집분 제외는 종합 판정 라인에 병기. review_denylist_extra 로 추가 가능.
@@ -62,10 +69,13 @@ import json
 import os
 import re
 import shlex
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, NamedTuple, Sequence
@@ -214,6 +224,23 @@ def _verify_engine_rev(sibling_module, sibling_filename):
 def _is_engine_rev_skew(exc) -> bool:
     """fail-soft 소비 지점에서 rev skew만 재-raise하기 위한 구조화 판정."""
     return getattr(exc, "_engine_rev_skew", False)
+
+
+def _require_engine_sibling(path: Path, filename: str) -> None:
+    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
+
+    부재는 raw `FileNotFoundError` 로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
+    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew 로 표출한다
+    (board.py `_require_engine_sibling` 동형·self-contained 복제)."""
+    if path.exists():
+        return
+    err = RuntimeError(
+        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
+        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
+        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+    )
+    err._engine_rev_skew = True
+    raise err
 
 
 # ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형) ──────────
@@ -861,6 +888,59 @@ _REJECT_TOKENS: tuple[str, ...] = (
 _PASS_TOKENS: tuple[str, ...] = (
     "통과", "PASS", "pass", "승인", "APPROVE", "approve", "lgtm", "LGTM",
 )
+# 판정 라인 자체의 인식 규칙 — 판정 파서와 echo 오염 검출이 **같은 함수**를 봐야 "검출기 ⊇ 파서"가
+# 성립한다(파서가 집어 든 라인을 검출기가 못 보면 오염된 판정이 조용히 통과한다).
+_VERDICT_LINE_RE = re.compile(r"^[ \t]*[*_#\s-]*판정[ \t]*:[ \t]*(\S+)")
+_CODE_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+_QUOTE_LINE_RE = re.compile(r"^\s*>")
+
+# 판정값 허용 토큰 — **정확일치**다(부분 문자열 금지). 부분 문자열이면 프롬프트 템플릿 echo
+# `판정: [통과 | 반려]`·부정형 `판정: 비통과`·선택지 나열 `판정: PASS/REJECT` 가 전부 '통과'로 읽혀
+# false-green 이 난다(실측). 허용 목록에 없는 판정값은 통과도 반려도 아닌 **불명확**이다 —
+# 리뷰어가 무엇을 말했는지 기계가 모르면 통과로 접지 않는다.
+_PASS_VERDICT_TOKENS = frozenset({
+    "통과", "PASS", "pass", "승인", "APPROVE", "approve", "LGTM", "lgtm",
+})
+_REJECT_VERDICT_TOKENS = frozenset({"반려", "REJECT", "reject"})
+# 정확일치 전에 벗겨내는 것은 **강조/문장부호뿐**이다(`**통과**`·`통과.`). 괄호·슬래시는 남긴다 —
+# 그게 템플릿 echo(`[통과`)와 선택지 나열(`PASS/REJECT`)을 불명확으로 세우는 신호다.
+_VERDICT_WORD_TRIM = "*_`.,!;:"
+
+VERDICT_PASS = "pass"
+VERDICT_REJECT = "reject"
+VERDICT_UNKNOWN = "unknown"
+
+
+def verdict_kind(word: str) -> str:
+    """판정값 낱말 → `pass`/`reject`/`unknown` (정확일치·파서와 검출기 공용)."""
+    normalized = word.strip().strip(_VERDICT_WORD_TRIM)
+    if normalized in _PASS_VERDICT_TOKENS:
+        return VERDICT_PASS
+    if normalized in _REJECT_VERDICT_TOKENS:
+        return VERDICT_REJECT
+    return VERDICT_UNKNOWN
+
+
+def verdict_words(text: str) -> tuple[str, ...]:
+    """판정 라인이 선언한 낱말들 — **행 선두 선언만**, 코드펜스 안·인용행은 제외한다.
+
+    좁히는 규칙을 검출기에만 걸면 파서가 보는 라인을 검출기가 못 보게 되어 오염 판정이 새므로,
+    파서와 검출기가 이 함수 하나를 공유한다. 인용/코드펜스 안의 판정 문구는 리뷰어 자신의 선언이
+    아니라 인용물이라 어느 쪽에서도 판정으로 세지 않는다(리뷰 대상 diff에 든 판정 문안이 이 축의
+    상시 오탐 원천이다).
+    """
+    words: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if _CODE_FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence or _QUOTE_LINE_RE.match(line):
+            continue
+        match = _VERDICT_LINE_RE.match(line)
+        if match:
+            words.append(match.group(1).strip())
+    return tuple(words)
 
 # 프롬프트 형식에서 must-fix 섹션 헤더를 인식하는 정규식
 _MUST_FIX_SECTION_RE = re.compile(
@@ -931,13 +1011,15 @@ _ROUND_LIMIT_GUIDANCE = (
     "count={unacked}(판정 {verdicts} · 미완 {incomplete})\n"
     "  (판정 상한 {limit} · 미완 재시도 상한 {incomplete_limit}). 외부 전송·과금 게이트라 "
     "초과분은 기계가 멈춥니다 — 자의 우회 불가.\n"
+    "  · **미완**은 판정이 없던 전송입니다 — 타임아웃·중단뿐 아니라 **오염 진단으로 무효화된 "
+    "판정**도 이 축에 들어갑니다(판정 표면과 같은 규칙이라 두 표면이 갈리지 않습니다).\n"
     "  · 지금까지의 리뷰 라운드 수렴 상황을 **사용자에게 보고하고 대기**하세요.\n"
     "  · 사용자 승인을 받은 뒤에만 `--ack-rounds` 로 재개하세요 "
     "(판정 +{limit} · 미완 +{incomplete_limit}):\n"
     "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-rounds [기존 옵션]\n"
     "  · 상한 조정은 local.conf `external_review_round_limit`(판정)과 "
     "`external_review_incomplete_round_limit`(미완).\n"
-    "  (장부: .project_manager/.local/review_rounds.json · count={count} acked_through={acked})"
+    "  (장부: {ledger} · count={count} acked_through={acked})"
 )
 
 
@@ -1144,21 +1226,65 @@ def _incomplete_round_limit(conf: dict[str, str]) -> int:
 
 
 def _round_ledger_path() -> Path:
-    """라운드 장부 경로 — 해소된 diff repo별 `.local/review_rounds.json`.
+    """라운드 장부 경로 — 해소된 **소유 PM 홈**의 `.local/review_rounds.json`.
 
-    같은 PM 홈의 여러 슬롯은 서로 다른 변경·게이트 실행 수명을 가지므로 PM 홈 장부를 공유하지
-    않는다. main이 REPO를 diff_root로 고정한 뒤 호출해 프로세스 cwd나 엔진 사본 위치와도 분리한다.
+    앵커 규칙은 raw 장부(`_raw_storage`)와 같다 — `_PM_HOME_OVERRIDE`(같은 실행이 해소한 소유
+    PM 홈) 우선, 미주입(라이브러리 직접 호출)·해소 실패는 엔진 자기 앵커 `REPO` 폴백이다
+    (`_main` 이 해소 실패 시 loud 경고와 함께 diff_root 로 이미 강등해 둔 값 — 복구 채널
+    자기잠김 금지).
+
+    diff 앵커(diff_root)에 매달면 **같은 게이트의 과금 상한이 diff_root 가 바뀔 때마다 조용히
+    리셋된다** — 게이트 스냅샷 worktree 나 새로 판 슬롯에서 같은 `--gate T-NNNN` 을 돌리면
+    count 가 0 부터 다시 세어져 상한이 무력화된다. 라운드는 이미 `--gate` 키로 분리되므로 슬롯별
+    장부 분리가 주는 추가 격리는 없다(옛 "슬롯별 게이트 수명 분리" 근거 대체).
+    """
+    return (
+        (_PM_HOME_OVERRIDE or REPO) / ".project_manager" / ".local" / "review_rounds.json"
+    )
+
+
+def _legacy_round_ledger_path() -> Path:
+    """옛 규칙(diff 앵커)의 라운드 장부 경로 — 1회 승계(backfill)의 입력.
+
+    앵커를 소유 PM 홈으로 옮기기 전의 실행들은 이 경로에 카운트를 쌓아 뒀다. 그 중에는 상한을
+    이미 넘겨 **차단 중인 게이트**(rc 4·사용자 승인 대기)가 있고, 새 앵커에서 0 부터 다시 세면
+    그 승인 게이트가 무통보로 열린다.
     """
     return REPO / ".project_manager" / ".local" / "review_rounds.json"
 
 
-def _load_round_ledger() -> dict:
-    """라운드 장부(gate→{count, acked_through})를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
+def _read_round_ledger_at(path: Path) -> dict:
+    """지정 경로의 라운드 장부를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
     try:
-        data = json.loads(_round_ledger_path().read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _load_round_ledger() -> dict:
+    """라운드 장부(gate→{count, acked_through})를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
+    return _read_round_ledger_at(_round_ledger_path())
+
+
+def _inherit_legacy_round_entry(ledger: dict, gate: str) -> dict | None:
+    """diff 앵커 legacy 장부의 게이트 항목을 PM 홈 장부로 **1회 승계**한다 (없으면 None).
+
+    앵커 이동(diff_root → 소유 PM 홈)의 마이그레이션이다 — 런타임 폴백(두 장부를 계속 합산)이
+    아니라 원천 이관이라, 승계 뒤에는 PM 홈 장부가 유일한 진실이다(게이트당 1회·호출부가
+    즉시 저장한다). 승계 대상은 **PM 홈에 아직 그 게이트가 없을 때**뿐이라 이미 이관된 게이트의
+    카운트를 옛 값으로 되돌리지 않는다. 두 앵커가 같은 실행(솔로·강등 폴백)은 대상이 아니다.
+    """
+    if gate in ledger:
+        return None
+    legacy_path = _legacy_round_ledger_path()
+    if legacy_path == _round_ledger_path():
+        return None
+    legacy = _read_round_ledger_at(legacy_path)
+    if gate not in legacy:
+        return None
+    ledger[gate] = _gate_entry(legacy, gate)   # 손상 필드는 저장과 같은 규칙으로 정규화
+    return ledger[gate]
 
 
 def _save_round_ledger(ledger: dict) -> None:
@@ -1179,46 +1305,33 @@ def _save_round_ledger(ledger: dict) -> None:
                 tmp.unlink()  # replace 성공 시 no-op·실패 시 잔재 제거
 
 
+def _load_file_lock():
+    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
+
+    `_load_relay`·`_load_board` 와 같은 경로-앵커 로더이고, 그 둘처럼 **쓰는 경로에서만** 지연
+    로드한다 — 라운드 락을 잡는 건 `--gate` 실행의 예약/마감 두 구간뿐이라 나머지 경로(진단·
+    denylist·재앵커를 deep-import 로 재사용하는 pm_delegate 포함)를 seam 부재로 무너뜨리지
+    않는다. 로드 실패는 흡수하지 않고(fail-loud) 캐시하되, 중앙 loader 가 소비 때마다 baked rev
+    를 재검증하므로 사본 skew 는 계속 표출된다.
+
+    (지연/import-시점 선택의 근거는 **기능 축**이다 — "seam 없이도 살아야 하는 경로가 있나".
+    board·worktree_pool 은 모든 변경 경로가 락을 지나 import 바인딩이 맞고, 여기는 아니다.
+    fail-soft 경계 ratchet 은 그 선택의 *결과*를 계량할 뿐 근거가 아니다.)
+    """
+    lock_path = Path(__file__).resolve().parent / "file_lock.py"
+    _require_engine_sibling(lock_path, "file_lock.py")
+    return _load_module_from_path(
+        lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
+    )
+
+
 def _round_ledger_lock_path() -> Path:
-    """라운드 장부 배타락 파일 — `<REPO>/.project_manager/.local/review_rounds.lock` (호출 시점 REPO)."""
-    return REPO / ".project_manager" / ".local" / "review_rounds.lock"
+    """라운드 장부 배타락 파일 — 장부 **옆** `review_rounds.lock`(장부 경로에서 파생).
 
-
-def _flock_acquire(fd: int) -> None:
-    """OS 배타락 획득 (블로킹). POSIX=fcntl.flock·Windows=msvcrt.locking·둘 다 없으면 무락 폴백.
-
-    stdlib 만 사용한다(외부 filelock 의존 금지·board.py `_flock_acquire` 동형·self-contained 복제).
-    임포트 안 되는 희귀 환경은 단일-머신 전제로 무락 진행(락 파일 자체는 존재)."""
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-        return
-    except (ImportError, OSError):
-        pass  # best-effort — 락 프리미티브 없음/실패 시 무락 진행
-
-
-def _flock_release(fd: int) -> None:
-    """OS 배타락 해제 (close 가 자동 해제하지만 명시적으로 풀어 둔다·board.py 동형)."""
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        return
-    except (ImportError, OSError):
-        pass
+    앵커를 장부에서 파생한다 — 락과 장부가 각자 앵커를 계산하면 앵커 규칙이 갈릴 때 서로 다른
+    파일을 잠근 두 실행이 같은 장부를 동시에 read-modify-write 한다(상한 우회 창).
+    """
+    return _round_ledger_path().with_name("review_rounds.lock")
 
 
 @contextlib.contextmanager
@@ -1228,18 +1341,13 @@ def _round_ledger_lock() -> Iterator[None]:
     확인(상한 대조)→예약(count+1)→저장을 하나의 임계 구역으로 묶어, 동시 실행 2개가 같은 잔여
     슬롯을 통과해 상한을 우회하는 것을 막는다. 프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock
     없음). **재진입 금지**(flock 관례·board_lock 동형) — 예약과 환불은 *각자 독립* 락 구간이다
-    (중첩 아님). 락 프리미티브 미지원 환경은 무락 폴백(board.py 와 동일·인터페이스 불변)."""
-    lock_path = _round_ledger_lock_path()
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        _flock_acquire(fd)
-        try:
-            yield
-        finally:
-            _flock_release(fd)
-    finally:
-        os.close(fd)  # close 만으로도 OS 가 락 해제 (크래시 안전망)
+    (중첩 아님).
+
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `file_lock` seam 이 소유하고 이
+    도구는 *어느 파일에 거는지*(경로 규약)만 정한다.
+    """
+    with _load_file_lock().exclusive_file_lock(_round_ledger_lock_path()):
+        yield
 
 
 def _as_int(value: object) -> int:
@@ -1294,8 +1402,11 @@ def _unacked_round_counts(entry: dict) -> tuple[int, int, int]:
 
 
 def _round_has_verdict(result: dict) -> bool:
-    """리뷰어 결과에 통과 또는 must-fix/반려 판정이 실제로 있었는지 판별한다."""
-    if not result.get("ok"):
+    """리뷰어 결과에 통과 또는 must-fix/반려 판정이 실제로 있었는지 판별한다.
+
+    오염 진단이 붙은 출력은 판정으로 세지 않는다 — 판정 표면(all_pass·any_must_fix)에서 무효화한
+    것을 라운드 장부에서만 판정으로 세면 두 표면이 갈린다."""
+    if not result.get("ok") or result.get("contamination"):
         return False
     verdict = result.get("verdict")
     if not isinstance(verdict, dict):
@@ -1616,6 +1727,675 @@ def build_prompt(
     return "".join(parts)
 
 
+# ── 리뷰어 가시 범위 격리 ─────────────────────────────────────────────────
+#
+# 외부 리뷰어의 판정 입력은 **프롬프트에 실린 diff** 여야 한다. 그런데 스폰된 리뷰어 프로세스는
+# 종전에 PM 세션의 cwd 와 env 를 그대로 물려받았고, 그 자리에서 저장소 밖 PM 로컬 산출물이
+# 손 닿는 거리에 있었다 — 옛 리뷰 raw(`.project_manager/.local/review/`)와 하네스 세션 전사
+# (`~/.claude/projects/<cwd 슬러그>/<세션 id>.jsonl`). 실측된 게이트 raw 에서 리뷰어는 그것들을 읽어
+# 같은 세션 내부 reviewer 보고를 verbatim echo 했고, 옛 raw 를 재인용했다. 오염은 이중 게이트의
+# 독립성(generate≠evaluate)을 침식하고, echo 된 옛 판정 블록이 파서에 먼저 잡히면 **가짜 판정**이 된다.
+# 프롬프트 금지문(텍스트 의도-가드)은 수렴하지 않으므로 기계 격리/검출로만 닫는다
+# ([[mechanize-dont-instruct-llm]]).
+#
+# **방향 기각 근거 박제 (codex-cli 0.146.0 실측):**
+#   · *리뷰어 CLI 의 read 스코프 제한* — 기각. `codex exec --help` 에 읽기 범위 옵션이 없다.
+#     `--sandbox read-only` 는 쓰기 전용 제한이다: 같은 정책에서
+#     `codex sandbox -c sandbox_mode='"read-only"' -- touch /tmp/x` 는 "읽기전용 파일 시스템"으로
+#     거부되지만 `-- head <홈>/.codex/config.toml` 은 rc=0 으로 성공한다. 정책 구조체도
+#     `writable_roots`(쓰기)만 갖고, 바이너리에 실린 codex 자신의 승인 정책 문구가
+#     "The sandbox allows it read access everywhere, and write access in its writable root" 다.
+#     `--sandbox-state-readable-root` 는 임의 커맨드용 `codex sandbox` 서브커맨드 전용이라
+#     `codex exec` 경로에 없다. → **절대경로 읽기는 어떤 CLI 옵션으로도 못 막는다**(그래서 아래
+#     echo 검출이 선택이 아니라 필수 백스톱이다).
+#   · *OS 수준 읽기 경계(bwrap/unshare 등) 도입* — 채택하지 않는다. 근거 셋:
+#     (a) 리뷰어 CLI 자체에는 read 스코프가 없음이 위 실측으로 확정됐고, 그 공백을 OS 로 메우려면
+#         게이트가 커널 기능에 의존하게 된다.
+#     (b) 이 축의 완료 기준은 "가시 범위 부재 **또는** 접근 시 검출·loud" 양로다. 채택 설계는
+#         **거울**(발견 경로·유인 제거) + **env 정화**(세션/원본 포인터 제거) + **echo 검출**
+#         (백스톱)의 심층 방어로 그 기준을 양쪽에서 만족한다.
+#     (c) bwrap/unshare 류는 Linux 한정이라 Windows/macOS 게이트가 다른 격리 등급으로 갈린다 —
+#         하네스 파리티를 깨는 인프라 확장이고, 파리티가 깨지면 "이 게이트가 무엇을 보장하는가"가
+#         플랫폼마다 달라진다.
+#     **알려진 한계(잔여 위험)**: 포인터가 없어도 리뷰어가 홈/전사 절대경로를 스스로 재구성해
+#     조용히 참조하는 경로는 남는다. 인용하지 않으면 검출도 못 한다 — 이 한계를 감수한 선택이며,
+#     감수 못 할 형상이면 OS 경계를 별도 인프라 티켓으로 세워야 한다(이 티켓 범위 밖).
+#   · *`gate_snapshot` 격리 worktree 재사용* — 개념만 채택하고 구현은 기각. (a) linked worktree 의
+#     `.git` 은 공유 저장소를 가리키는 **절대 gitdir 포인터**라 `cat .git` 한 번이면 원본 트리와 그
+#     상위 PM 홈(`.project_manager/.local/review/`)으로 돌아오는 다리가 남는다 — 격리 목적 자체가
+#     무효다. (b) `create_snapshot` 은 검토 범위가 완전히 staged 임을 요구해(untracked 신규·unstaged
+#     수정에서 SnapshotError) 언스테이징 작업물 게이트를 통째로 막는다. 그래서 "저장소 밖 격리 트리"
+#     라는 성질만 가져오고 복제는 **작업 트리 내용의 tracked 파일 거울**로 한다 — 원본으로 돌아가는
+#     포인터가 없고, staged 를 요구하지 않아 종전 게이트 입력이 그대로 통과한다.
+
+_REVIEWER_WORKSPACE_PREFIX = "pm_review_workspace_"
+
+# 거울 커밋용 명시 identity — 로컬 git 설정(user.*)이 없어도 거울 생성이 실패하지 않게.
+_WORKSPACE_GIT_IDENTITY = (
+    "-c", "user.name=external-review",
+    "-c", "user.email=external-review@localhost",
+)
+
+# 리뷰어에게 물려줄 env **최소 allowlist**(이름 완전일치·대소문자 무시). 제거-list 는 쓰지 않는다 —
+# "포인터처럼 생긴 이름을 지운다"는 규칙은 새 이름 하나(`CLAUDE_TRANSCRIPT_PATH`·`CODEX_ROLLOUT_PATH`
+# 처럼 인증 예외어를 품은 포인터)마다 구멍이 나고, 그 구멍이 곧 전사 위치를 손에 쥐여 주는 창이다.
+# 모르는 이름은 기본 차단이고, 배포별로 더 필요한 이름은 local.conf `reviewer_env_keep_extra` 로 명시
+# 추가한다(인증이 조용히 깨지지 않게 남긴 탈출구).
+_REVIEWER_ENV_ALLOWLIST = frozenset({
+    # 프로세스 기본 실행 환경
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TZ", "HOSTNAME",
+    "TMPDIR", "TEMP", "TMP",
+    "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
+    # Windows 실행 환경
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "OS",
+    "APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+    # 로케일·인코딩
+    "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_NUMERIC",
+    "LC_TIME", "LC_COLLATE", "PYTHONUTF8", "PYTHONIOENCODING",
+    # 네트워크(프록시·인증서) — 사내망 리뷰어가 이걸 잃으면 호출 자체가 죽는다.
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "FTP_PROXY",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS", "CODEX_CA_CERTIFICATES",
+    # 리뷰어 하네스 인증/설정 앵커 (세션 포인터가 아닌 것만)
+    "CODEX_HOME", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN",
+    "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN",
+    "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR",
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORGANIZATION",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+})
+_REVIEWER_ENV_KEEP_EXTRA_KEY = "reviewer_env_keep_extra"
+
+# 거울 생성 중 원본 git 환경 하이재킹 차단용(훅 안에서 실행되면 GIT_DIR 이 살아 있다).
+_GIT_ENV_PREFIX = "GIT_"
+
+# 임시 홈에 복제할 **인증/설정 파일** 선언 표(사용자 홈 기준 상대경로·파일만). 세션/이력/메모리는
+# 여기에 절대 넣지 않는다 — 리뷰어의 홈이 그것들의 부모가 되는 순간 전사 탐색이 다시 열린다.
+# 하네스별로 값만 다르고 복제 코드는 하나다. 배포별 추가분은 local.conf `reviewer_home_artifacts_extra`.
+# 부재는 정상이다(그 하네스를 안 쓰는 형상) — 진짜 부족분의 증상은 "미인증/다른 모델로 실행"이고,
+# 그때의 처방은 실패 진단이 직접 안내한다.
+_REVIEWER_HOME_ARTIFACTS: tuple[str, ...] = (
+    # codex: 로그인 + 모델/추론 설정. config 가 없으면 게이트가 **다른 모델**로 돈다.
+    ".codex/auth.json",
+    ".codex/config.toml",
+    # claude: 자격증명 + 온보딩/신뢰 상태(`~/.claude.json`). 후자는 세션 흔적을 품고 있어
+    # `_REVIEWER_HOME_JSON_SCRUB` 가 그 키를 떼고 복제한다.
+    ".claude/.credentials.json",
+    ".claude.json",
+    # opencode: 설정은 XDG_CONFIG_HOME, 인증은 XDG_DATA_HOME 쪽이다(둘 다 임시 홈으로 재지정됨).
+    # 실측(1.18.x): 데이터 디렉터리에 `auth.json` 이 없고 자격증명이 세션 이력과 함께
+    # `opencode.db` 한 파일에 들어 있다 — 그 DB 는 **복제하지 않는다**(전사를 통째로 되들이는 셈이고
+    # 수백 MB다). 그 형상의 opencode 리뷰어는 codex 와 동형으로 "미인증/다른 모델" 증상을 내고,
+    # 처방도 같다: local.conf `reviewer_home_artifacts_extra` 로 필요한 파일만 명시 추가.
+    ".local/share/opencode/auth.json",
+    ".config/opencode/opencode.json",
+    ".config/opencode/opencode.jsonc",
+)
+_REVIEWER_HOME_EXTRA_KEY = "reviewer_home_artifacts_extra"
+
+# 복제 전에 **떼어낼 JSON 키** 선언 — 인증/온보딩과 세션 흔적이 한 파일에 섞여 있는 경우만.
+# 실측(`~/.claude.json`): 최상위는 온보딩/설치 상태지만 `projects` 하위에 원본 저장소 경로 16개와
+# `lastSessionId`(전사 파일명)·`lastSessionFirstPrompt`(사용자 프롬프트 원문)가 들어 있다. 통째로
+# 복제하면 이 티켓이 닫은 채널이 그대로 다시 열리므로, 그 키만 떼고 나머지를 복제한다.
+# 파싱 실패 시에는 복제하지 않는다(정화 못 한 파일을 홈에 두느니 미인증 증상이 낫다).
+_REVIEWER_HOME_JSON_SCRUB: dict[str, tuple[str, ...]] = {
+    # `projects` = 저장소 절대경로 + 전사 id + 프롬프트 원문 · `githubRepoPaths` = 저장소 경로 목록.
+    ".claude.json": ("projects", "githubRepoPaths"),
+}
+# 같은 이유의 TOML 축 + **기능 테이블 중화**. 실측(`~/.codex/config.toml`): `projects` 는 신뢰한
+# 저장소 절대경로 목록이고, `hooks`·`mcp_servers`·`plugins` 는 실 홈의 스크립트/서버 **절대경로**를
+# 담는다. 후자는 경로 노출에 그치지 않는다 — 그 선언대로 리뷰어 codex 가 **실 홈의 훅/서버를 실제로
+# 실행**하게 되어 격리 취지를 정면으로 뒤집는다(임시 홈에 그 파일들은 없고, 있어도 실행돼선 안 된다).
+# 그래서 중화 방법은 무력화가 아니라 제거다. 리뷰어에게 필요한 건 **모델/추론 설정과 인증**뿐이고,
+# 나머지 키(tui 등 표시 설정)는 경로를 담지 않으므로 그대로 남긴다.
+_REVIEWER_HOME_TOML_SCRUB: dict[str, tuple[str, ...]] = {
+    ".codex/config.toml": ("projects", "hooks", "mcp_servers", "plugins"),
+}
+
+# 인증 원본 위치는 `$HOME` 고정이 아니라 **기존 env 앵커 우선**이다 — 사용자가 `CODEX_HOME` 등으로
+# 다른 경로를 쓰는 형상에서 홈만 보면 인증 파일을 못 찾아 게이트가 미인증으로 죽는다.
+_REVIEWER_HOME_SOURCE_ANCHORS: tuple[tuple[str, str], ...] = (
+    (".codex", "CODEX_HOME"),
+    (".claude", "CLAUDE_CONFIG_DIR"),
+    (".config", "XDG_CONFIG_HOME"),
+    (".local/share", "XDG_DATA_HOME"),
+)
+
+# **라이브 검증 범위 박제**: codex 프로필은 실 게이트로 인증 생존까지 실측했다. claude 프로필은
+# 기계 검증(선언·복제·env 재지정)까지만이고 **라이브 미실측**이다 — 복제한 자격증명으로 리뷰어가
+# 토큰을 갱신하면 원본 refresh 토큰이 회전·무효화될 수 있어(사용자 계정에 영향) 자율 프로브 대상이
+# 아니다. 필요해지면 `reviewer_home_artifacts_extra` 로 보강한 뒤 **사용자 승인 아래 라이브 1회**.
+
+# 임시 홈이 대체하는 env — 실 홈 값을 물려주면 `~/.codex/sessions`·`~/.claude/projects` 의 부모를
+# 그대로 쥐여 주는 셈이다. allowlist 를 통과한 뒤 **마지막에** 덮어쓴다.
+_REVIEWER_HOME_ENV_OVERRIDES = (
+    "HOME", "USERPROFILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
+    "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "APPDATA", "LOCALAPPDATA",
+)
+
+# 거울에 절대 싣지 않는 저장소-내 경로(추적돼 있더라도). 리뷰 raw 장부가 사는 자리다.
+_MIRROR_DENIED_PREFIXES = (PurePosixPath(".project_manager") / ".local",)
+
+
+class ReviewerWorkspaceError(RuntimeError):
+    """격리 작업 루트를 만들지 못함 — 호출부가 loud 경고 후 미격리 실행을 결정한다."""
+
+
+class ReviewerWorkspace(NamedTuple):
+    """리뷰어에게 줄 격리 컨테이너 — tracked 파일 거울(`tree`) + 세션 없는 임시 홈(`home`).
+
+    `root` 는 둘을 담는 컨테이너다(정리 단위). 홈을 거울 **안**에 두지 않는 이유: 거울은 리뷰어가
+    읽는 저장소 사본이자 `git add -A` 대상이라, 홈이 그 안에 있으면 인증 파일이 검토 대상처럼 보인다.
+    """
+
+    root: Path
+    tree: Path
+    home: Path
+    files: int
+    skipped_unsafe: int
+    git_repo: bool
+    copied_home_artifacts: tuple[str, ...] = ()
+    skipped_secret: int = 0
+    home_scrub_failed: tuple[str, ...] = ()
+
+
+def _project_manager_ancestor(path: Path) -> Path | None:
+    """조상 중 PM 인스턴스 루트(`.project_manager/` 보유)를 찾는다 — 없으면 None.
+
+    격리의 기계 불변식이 이것 하나다: **격리 루트의 조상에 `.project_manager` 가 없다.** 그래야
+    PM 홈 분리 형상(raw 가 상위 PM 홈)과 standalone 채택자 형상(`pm_home == diff_root == repo` 라
+    raw 가 저장소 안)이 같은 검사로 함께 닫힌다.
+    """
+    for ancestor in path.parents:
+        if (ancestor / ".project_manager").is_dir():
+            return ancestor
+    return None
+
+
+def _tracked_relative_paths(root: Path, env: dict[str, str] | None = None) -> list[str]:
+    """index 에 등재된 경로 목록(`git ls-files -z`). 신규도 stage 돼 있으면 포함된다.
+
+    거울 생성과 **같은 정화 env** 로 돈다 — 훅 안에서 실행돼 `GIT_DIR` 이 살아 있으면 이 열거가
+    다른 저장소의 목록을 돌려주고, 거울이 통째로 엉뚱한 트리가 된다.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=env,
+    )
+    if result.returncode != 0:
+        raise ReviewerWorkspaceError(
+            f"tracked 파일 목록 조회 실패 (rc={result.returncode}): {result.stderr.strip()}"
+        )
+    return [path for path in result.stdout.split("\0") if path]
+
+
+def _is_denied_mirror_path(relative: str) -> bool:
+    """거울 복제 금지 경로인가 — gitignore 와 무관하게 이름으로 막는다.
+
+    `.project_manager/.local/**` 이 추적되는 형상(채택자가 실수로 add 한 경우)에서도 옛 리뷰 raw 가
+    거울에 실리면 격리가 통째로 무의미해진다. ignore 규칙에 의존하지 않는 두 번째 자물쇠다.
+    """
+    candidate = PurePosixPath(relative)
+    return any(
+        candidate == denied or candidate.is_relative_to(denied)
+        for denied in _MIRROR_DENIED_PREFIXES
+    )
+
+
+def _contained_real_parent(path: Path, boundary: Path) -> Path | None:
+    """`path` 부모 디렉터리의 realpath — 경계 밖이면 None.
+
+    최종 경로만 lstat 하면 **중간 구성요소**가 뚫린다: tracked `dir/file` 의 `dir` 가 저장소 밖을
+    가리키는 symlink 로 바뀌어 있으면 lstat 은 정상 파일을 보고하고 복사는 저장소 밖 파일을
+    집어온다. realpath 는 모든 구성요소를 해소하므로 이 한 번의 검사가 경로 전체를 덮는다.
+    """
+    try:
+        real_parent = Path(os.path.realpath(path.parent))
+    except OSError:
+        return None
+    return real_parent if real_parent.is_relative_to(boundary) else None
+
+
+def _mirror_tracked_files(
+    root: Path, destination: Path,
+    denylist: tuple[str, ...] = _SECRET_DENYLIST_PATTERNS,
+) -> tuple[int, int, int]:
+    """tracked 파일을 **작업 트리 내용 그대로** destination 에 복제한다.
+
+    반환: (복제 수, 격리 경계 제외 수, 시크릿 denylist 제외 수).
+
+    index 목록을 쓰되 내용은 작업 트리에서 읽는다 — 리뷰어가 읽는 파일이 프롬프트 diff(스테이징+
+    언스테이징)와 어긋나지 않게. git-ignored 산출물(`.project_manager/.local/`)과 untracked 잔재는
+    목록에 없으므로 애초에 실리지 않는다.
+
+    **경계 검사**는 읽는 쪽과 쓰는 쪽 양쪽이다. 읽는 경로는 모든 구성요소를 해소한 realpath 가
+    저장소 안이어야 하고(중간 디렉터리 symlink 로 저장소 밖 파일을 빨아오는 창 폐쇄), 쓰는 경로도
+    거울 안이어야 한다. symlink 자체는 저장소 안을 가리키는 상대 링크만 재현한다 — 절대 링크는
+    원본 트리로 돌아가는 다리이고 밖을 가리키는 링크는 격리 우회다. 제외분은 개수로 진단에 남는다.
+
+    **시크릿 denylist 는 프롬프트와 같은 폭으로 적용한다.** diff 에서 빼놓고 거울에는 복제하면
+    리뷰어가 그 파일을 그냥 열어 읽는다 — 제외의 의미(외부로 보내지 않음)가 거울 쪽 구멍으로
+    무효화된다. 두 경로가 같은 해소값(local.conf 승계 포함)을 받아야 폭이 갈리지 않는다.
+    """
+    real_root = Path(os.path.realpath(root))
+    real_destination = Path(os.path.realpath(destination))
+    copied = 0
+    skipped_unsafe = 0
+    skipped_secret = 0
+    for relative in _tracked_relative_paths(root, _workspace_git_env(destination)):
+        source = root / relative
+        target = destination / relative
+        if _is_secret_path(relative, denylist):
+            skipped_secret += 1
+            continue
+        if _is_denied_mirror_path(relative):
+            # 추적됐더라도 리뷰 raw 장부 자리는 거울에 싣지 않는다(gitignore 에만 기대지 않는다).
+            skipped_unsafe += 1
+            continue
+        try:
+            info = source.lstat()
+        except OSError:
+            continue  # index 에만 있고 작업 트리에 없음(미반영 삭제) — 거울에도 없는 게 맞다.
+        if stat.S_ISDIR(info.st_mode):
+            continue  # gitlink(서브모듈) 작업 트리 — 이 거울의 검토 대상이 아니다.
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+            # FIFO·소켓·디바이스 노드: 복사하면 열기에서 블록되거나 의미 없는 노드를 만든다.
+            skipped_unsafe += 1
+            continue
+        if _contained_real_parent(source, real_root) is None:
+            skipped_unsafe += 1
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if _contained_real_parent(target, real_destination) is None:
+            skipped_unsafe += 1
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            link_target = os.readlink(source)
+            resolved = Path(os.path.realpath(source))
+            if os.path.isabs(link_target) or not resolved.is_relative_to(real_root):
+                skipped_unsafe += 1
+                continue
+            os.symlink(link_target, target)
+            copied += 1
+            continue
+        shutil.copy2(source, target)
+        copied += 1
+    return copied, skipped_unsafe, skipped_secret
+
+
+def _workspace_git_env(destination: Path) -> dict[str, str]:
+    """거울 git 실행 전용 환경 — 바깥 git 설정/훅/저장소 포인터를 전부 끊는다.
+
+    `--no-verify` 는 pre-commit/commit-msg 만 막는다. 사용자 global/system config 의
+    `core.hooksPath`·`init.templateDir`·`commit.gpgsign` 은 그대로 살아, 거울을 만드는 이 몇 줄이
+    바깥에서 주입된 스크립트를 실행하고 거울 내용을 바꿀 수 있는 창이 된다. 그래서 config 자체를
+    끊는다(구형 git 이 `GIT_CONFIG_GLOBAL` 을 모르면 HOME/XDG 재지정이 같은 일을 한다).
+    """
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(_GIT_ENV_PREFIX)
+    }
+    scratch = destination / ".git"  # git 이 내용으로 취급하지 않는 유일한 경로.
+    env.update({
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "HOME": str(scratch),
+        "XDG_CONFIG_HOME": str(scratch),
+    })
+    return env
+
+
+def _init_workspace_git(destination: Path) -> bool:
+    """거울을 자족 git 저장소로 만든다(원본을 가리키는 포인터 없음). 실패는 fail-soft(False).
+
+    `--skip-git-repo-check` 를 안 붙인 채택자 `reviewer_cmd` 도 종전처럼 동작하게 하는 게 목적이다.
+    실행 설정은 전용 env + 명시 `-c` 뿐이라 바깥 git config 가 이 단계에 개입하지 못한다.
+    """
+    env = _workspace_git_env(destination)
+    hooks_path = destination / ".git" / "pm-review-no-hooks"
+    isolation = (
+        "-c", f"core.hooksPath={hooks_path}",
+        "-c", "core.fsmonitor=false",
+        "-c", "commit.gpgsign=false",
+    )
+    steps = (
+        ("-c", "init.defaultBranch=main", "-c", "init.templateDir=", "init", "-q"),
+        ("add", "-A"),
+        (*_WORKSPACE_GIT_IDENTITY, "commit", "-q", "--no-verify",
+         "-m", "external review basis"),
+    )
+    for step in steps:
+        result = subprocess.run(
+            ["git", "-C", str(destination), *isolation, *step],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            env=env,
+        )
+        if result.returncode != 0:
+            return False
+    return True
+
+
+def reviewer_home_artifacts(conf: dict[str, str] | None = None) -> tuple[str, ...]:
+    """임시 홈에 복제할 인증/설정 파일의 홈-상대 경로 — 엔진 선언 + 배포 추가분."""
+    extra = (conf or {}).get(_REVIEWER_HOME_EXTRA_KEY, "").strip()
+    declared = tuple(p for p in re.split(r"[,\s]+", extra) if p) if extra else ()
+    return _REVIEWER_HOME_ARTIFACTS + declared
+
+
+def _reviewer_home_source(
+    relative: PurePosixPath, base: Path, env: dict[str, str],
+) -> Path:
+    """인증 원본 경로 — 선언된 env 앵커가 있으면 그것을, 없으면 홈 기준 상대경로를 쓴다."""
+    for prefix, key in _REVIEWER_HOME_SOURCE_ANCHORS:
+        anchor = PurePosixPath(prefix)
+        if relative == anchor or relative.is_relative_to(anchor):
+            configured = (env.get(key) or "").strip()
+            if configured:
+                remainder = relative.relative_to(anchor)
+                return Path(configured) / Path(*remainder.parts)
+            break
+    return base / Path(*relative.parts)
+
+
+class ReviewerHomeBuild(NamedTuple):
+    """임시 홈 구성 결과 — 복제분과 **정화 실패로 빠진 분**을 구분해 진단에 싣는다.
+
+    둘을 뭉뚱그리면 "그 하네스를 안 쓰는 형상(부재)"과 "정화 실패로 설정이 빠져 다른 모델로 도는
+    형상"이 같은 화면이 되어, 게이트가 왜 이상하게 도는지 PM 이 알 방법이 없다.
+    """
+
+    copied: tuple[str, ...]
+    scrub_failed: tuple[str, ...]
+
+
+def _leaks_isolated_paths(payload: str, forbidden: Sequence[str]) -> bool:
+    """정화 결과에 격리 대상 절대경로가 남았는가 — 남으면 그 아티팩트는 복제하지 않는다.
+
+    키 열거만으로는 **새로 생기는 경로 키**를 못 막는다(도구가 판올림하며 테이블이 는다). 그래서
+    선언표로 아는 것을 지우고, 그러고도 남은 절대경로를 성질로 한 번 더 막는다 — 이쪽이 조용히
+    열리는 경로를 닫는 실제 자물쇠다. 걸리면 '정화 실패'로 진단에 뜬다(부재와 구분).
+    """
+    return any(marker and marker in payload for marker in forbidden)
+
+
+def _build_reviewer_home(
+    home: Path, artifacts: Sequence[str], source_home: Path | None = None,
+    env: dict[str, str] | None = None, forbidden_paths: Sequence[str] = (),
+) -> ReviewerHomeBuild:
+    """세션·이력이 없는 임시 홈을 만들고 선언된 인증/설정 파일만 복제한다.
+
+    실 홈을 물려주면 리뷰어에게 `~/.codex/sessions`·`~/.claude/projects` 의 **부모**를 쥐여 주는
+    셈이라, 인용 없이 내용만 반영된 오염은 어떤 검출로도 안 보인다. 그래서 홈 자체를 갈아끼우되
+    게이트가 죽지 않도록 로그인/설정 파일만 골라 복제한다(디렉터리는 복제하지 않는다 — 하위에
+    이력이 섞여 들어온다). 복제 실패는 조용히 넘긴다: 없는 파일은 그 하네스를 안 쓴다는 뜻이고,
+    진짜 인증 파손은 리뷰어 실행이 loud 하게 실패시킨다.
+    """
+    base = Path(source_home if source_home is not None else Path.home())
+    resolved_env = dict(os.environ if env is None else env)
+    home.mkdir(parents=True, exist_ok=True)
+    os.chmod(home, 0o700)
+    copied: list[str] = []
+    scrub_failed: list[str] = []
+    for relative in artifacts:
+        candidate = PurePosixPath(relative)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            continue
+        source = _reviewer_home_source(candidate, base, resolved_env)
+        if not source.is_file():
+            continue
+        payload: str | None = None
+        json_scrub = _REVIEWER_HOME_JSON_SCRUB.get(relative)
+        toml_scrub = _REVIEWER_HOME_TOML_SCRUB.get(relative)
+        if json_scrub is not None or toml_scrub is not None:
+            payload = (
+                _scrubbed_json_text(source, json_scrub) if json_scrub is not None
+                else _scrubbed_toml_text(source, toml_scrub)
+            )
+            if payload is not None and _leaks_isolated_paths(payload, forbidden_paths):
+                payload = None  # 선언표가 못 지운 경로 키가 남았다 — 성질 검사가 잡는다.
+            if payload is None:
+                scrub_failed.append(relative)
+                continue  # 정화 실패 — 흔적이 든 채로 홈에 두느니 없는 게 낫다.
+        target = home / Path(*candidate.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(target.parent, 0o700)
+        if payload is None:
+            shutil.copy2(source, target)
+        else:
+            target.write_text(payload, encoding="utf-8")
+        os.chmod(target, 0o600)
+        copied.append(relative)
+    return ReviewerHomeBuild(tuple(copied), tuple(scrub_failed))
+
+
+def _scrubbed_json_text(source: Path, drop_keys: Sequence[str]) -> str | None:
+    """최상위 선언 키를 떼어낸 JSON 본문 — 읽기/파싱/형식이 어긋나면 None(복제 안 함)."""
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    for key in drop_keys:
+        payload.pop(key, None)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+# TOML 테이블 헤더(`[a.b]`·`[[a.b]]`) 인식 — 줄 단위 절단으로 테이블 하나를 통째로 뺀다.
+_TOML_TABLE_HEADER_RE = re.compile(r"^\s*\[\[?([^\]]+)\]\]?\s*(?:#.*)?$")
+
+
+def _scrubbed_toml_text(source: Path, drop_tables: Sequence[str]) -> str | None:
+    """선언된 최상위 테이블을 떼어낸 TOML 본문 — 읽기/파싱/잔존 검증에 실패하면 None.
+
+    TOML 을 쓰기(직렬화)하는 표준 모듈이 없어 **줄 단위로 테이블 구간을 뺀 뒤** 결과를 다시
+    파싱해 (a) 문법이 살아 있고 (b) 드롭 대상이 실제로 사라졌는지 확인한다. 인라인 선언
+    (`projects = {...}`)처럼 줄 절단으로 못 빼는 형태는 이 검증에서 걸려 복제 자체가 취소된다.
+    """
+    try:
+        text = source.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    dropped = set(drop_tables)
+    kept: list[str] = []
+    dropping = False
+    for line in text.splitlines(keepends=True):
+        header = _TOML_TABLE_HEADER_RE.match(line)
+        if header is not None:
+            root_key = header.group(1).strip().split(".", 1)[0].strip().strip("\"'")
+            dropping = root_key in dropped
+        if dropping:
+            continue
+        kept.append(line)
+    scrubbed = "".join(kept)
+    try:
+        parsed = tomllib.loads(scrubbed)
+    except (tomllib.TOMLDecodeError, ValueError):
+        return None
+    if any(key in parsed for key in dropped):
+        return None
+    return scrubbed
+
+
+def create_reviewer_workspace(
+    diff_root: Path, *, base_dir: Path | None = None,
+    conf: dict[str, str] | None = None, source_home: Path | None = None,
+    denylist: tuple[str, ...] = _SECRET_DENYLIST_PATTERNS,
+) -> ReviewerWorkspace:
+    """저장소 밖에 리뷰어 격리 컨테이너(거울 + 임시 홈)를 만들고 정체를 반환한다.
+
+    복사/링크/git 실행에서 오는 `OSError` 계열은 전부 `ReviewerWorkspaceError` 로 정규화한다 —
+    호출부의 복구 채널(`--allow-unisolated-reviewer`)이 실제로 타야지, traceback 으로 죽으면 안 된다.
+    """
+    root = Path(diff_root).resolve()
+    base = Path(base_dir).resolve() if base_dir is not None else Path(tempfile.gettempdir())
+    try:
+        container = Path(tempfile.mkdtemp(prefix=_REVIEWER_WORKSPACE_PREFIX, dir=base))
+    except OSError as exc:
+        raise ReviewerWorkspaceError(f"격리 작업 루트 생성 실패: {exc}") from exc
+    try:
+        resolved = container.resolve()
+        polluted = _project_manager_ancestor(resolved)
+        if polluted is not None:
+            raise ReviewerWorkspaceError(
+                "격리 작업 루트의 조상이 PM 인스턴스입니다 — 그 자리에서는 로컬 리뷰 raw 가 "
+                f"리뷰어 손에 닿습니다: {resolved} (PM 인스턴스: {polluted}). "
+                "TMPDIR 을 저장소/PM 홈 밖으로 지정하세요."
+            )
+        if resolved.is_relative_to(root) or root.is_relative_to(resolved):
+            raise ReviewerWorkspaceError(
+                f"격리 작업 루트가 검토 저장소와 겹칩니다: {resolved} (저장소: {root})"
+            )
+        tree = container / "tree"
+        home = container / "home"
+        tree.mkdir()
+        home_build = _build_reviewer_home(
+            home, reviewer_home_artifacts(conf), source_home,
+            forbidden_paths=(
+                str(Path(source_home) if source_home is not None else Path.home()),
+                str(root),
+            ),
+        )
+        copied, skipped_unsafe, skipped_secret = _mirror_tracked_files(
+            root, tree, denylist,
+        )
+        if copied == 0:
+            raise ReviewerWorkspaceError(
+                f"복제할 tracked 파일이 없습니다 (저장소: {root})"
+            )
+        git_repo = _init_workspace_git(tree)
+    except ReviewerWorkspaceError:
+        shutil.rmtree(container, ignore_errors=True)
+        raise
+    except OSError as exc:
+        shutil.rmtree(container, ignore_errors=True)
+        raise ReviewerWorkspaceError(f"격리 작업 루트 구성 실패: {exc}") from exc
+    except Exception:
+        shutil.rmtree(container, ignore_errors=True)
+        raise
+    return ReviewerWorkspace(
+        root=container, tree=tree, home=home, files=copied,
+        skipped_unsafe=skipped_unsafe, git_repo=git_repo,
+        copied_home_artifacts=home_build.copied, skipped_secret=skipped_secret,
+        home_scrub_failed=home_build.scrub_failed,
+    )
+
+
+def reviewer_env_keep_extra(conf: dict[str, str]) -> tuple[str, ...]:
+    """배포가 추가로 물려주라고 선언한 env 이름(대문자 정규화) — allowlist 확장 입력."""
+    raw = conf.get(_REVIEWER_ENV_KEEP_EXTRA_KEY, "").strip()
+    return tuple(name.upper() for name in re.split(r"[,\s]+", raw) if name) if raw else ()
+
+
+def reviewer_env(
+    tree: Path | None,
+    home: Path | None = None,
+    env: dict[str, str] | None = None,
+    *,
+    extra_keep: Sequence[str] = (),
+) -> dict[str, str] | None:
+    """리뷰어에게 넘길 환경 — **allowlist 구성**(모르는 이름은 차단). 미격리면 None(상속 유지).
+
+    `CLAUDE_CODE_SESSION_ID` 하나면 전사 파일이 확정되고 `GIT_DIR`/`CLAUDE_PROJECT_DIR` 하나면
+    원본 트리가 확정되므로 cwd 격리만으로는 부족하다. 지울 이름을 세는 규칙은 새 포인터 이름마다
+    구멍이 난다(인증 예외어를 품은 `*_TRANSCRIPT_PATH`·`*_ROLLOUT_PATH` 가 실제 반례). 그래서
+    **물려줄 이름만** 세고 나머지는 이름이 무엇이든 차단한다.
+
+    relay 의 하네스 세션 마커 선언은 이 구성에서 자동으로 빠진다 — 마커 목록을 여기 다시 적지
+    않고, 테스트가 "선언된 마커 전량이 결과 env 에 없다"를 단언해 두 표가 갈릴 여지를 없앤다.
+
+    allowlist 를 통과한 **홈 계열 값은 마지막에 임시 홈으로 덮어쓴다**. 실 홈 값을 남기면 이름을
+    아무리 걸러도 `~/.codex/sessions`·`~/.claude/projects` 의 부모를 그대로 넘기는 것과 같다.
+    """
+    if tree is None:
+        return None
+    source = dict(os.environ if env is None else env)
+    allowed = _REVIEWER_ENV_ALLOWLIST | {name.upper() for name in extra_keep}
+    resolved = {key: value for key, value in source.items() if key.upper() in allowed}
+    if home is not None:
+        for key in list(resolved):
+            if key.upper() in _REVIEWER_HOME_ENV_OVERRIDES:
+                del resolved[key]
+        resolved.update({
+            "HOME": str(home),
+            "CODEX_HOME": str(home / ".codex"),
+            "CLAUDE_CONFIG_DIR": str(home / ".claude"),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "XDG_CACHE_HOME": str(home / ".cache"),
+            "XDG_DATA_HOME": str(home / ".local" / "share"),
+        })
+        if os.name == "nt":
+            resolved.update({
+                "USERPROFILE": str(home),
+                "APPDATA": str(home / "AppData" / "Roaming"),
+                "LOCALAPPDATA": str(home / "AppData" / "Local"),
+            })
+    # cwd 를 무시하고 PWD 로 작업 루트를 해석하는 하네스(opencode 실측)까지 같은 값으로 닫는다.
+    resolved["PWD"] = str(tree)
+    return resolved
+
+
+UNISOLATED_REVIEWER_FLAG = "--allow-unisolated-reviewer"
+
+_UNISOLATED_GUIDANCE = (
+    "오류: 리뷰어 가시 범위 격리 실패 — 외부 전송 전에 중단합니다: {reason}\n"
+    "  격리 없이 실행하면 리뷰어가 PM 세션 cwd 에서 옛 리뷰 raw·세션 전사에 닿습니다. echo 검출은\n"
+    "  *인용한 경우*만 잡으므로, 읽고도 인용하지 않은 참조는 아무도 못 봅니다 — 그래서 기본은 차단입니다.\n"
+    f"  · 격리 실패 사유를 먼저 해소하세요(TMPDIR 위치·디스크·git 실행 가능 여부).\n"
+    f"  · 그래도 이번 1회를 미격리로 보내야 하면 `{UNISOLATED_REVIEWER_FLAG}` 를 명시하세요 "
+    "(loud 경고 · 판정 강등 없음)."
+)
+
+
+def _remove_reviewer_workspace(workspace: ReviewerWorkspace) -> None:
+    """격리 컨테이너 정리 — 실패를 조용히 삼키지 않는다(저장소 사본이 남는다는 뜻이다)."""
+    try:
+        shutil.rmtree(workspace.root)
+    except OSError as exc:
+        print(
+            "[external-review] 경고: 리뷰어 격리 컨테이너 정리 실패 — 저장소 사본과 인증 파일 "
+            f"사본이 남아 있습니다. 직접 지우세요: {workspace.root} ({exc})",
+            file=sys.stderr,
+        )
+
+
+@contextlib.contextmanager
+def reviewer_visibility_scope(
+    diff_root: Path, *, base_dir: Path | None = None, allow_unisolated: bool = False,
+    conf: dict[str, str] | None = None,
+    denylist: tuple[str, ...] = _SECRET_DENYLIST_PATTERNS,
+) -> Iterator[ReviewerWorkspace | None]:
+    """리뷰어 작업 루트를 만들고 실행 뒤 지운다. 실패는 **기본 차단**(예외 전파).
+
+    미격리 폴백을 기본값으로 두지 않는 이유: echo 검출은 리뷰어가 *인용한* 참조만 잡는다. 읽고
+    조용히 판정에 반영한 참조는 어떤 검출로도 안 보이므로, 격리가 없으면 오염 여부를 아무도 모른다.
+    대신 자기잠김을 막는 명시 탈출구를 하나 남긴다(`allow_unisolated`) — 그 경로는 조용하지 않고
+    loud 경고를 남기며, 판정은 건드리지 않는다(격리 부재는 오염의 *증거*가 아니라 가능성이다).
+    """
+    workspace: ReviewerWorkspace | None = None
+    try:
+        workspace = create_reviewer_workspace(
+            diff_root, base_dir=base_dir, conf=conf, denylist=denylist,
+        )
+    except ReviewerWorkspaceError:
+        if not allow_unisolated:
+            raise
+        print(
+            f"[external-review] 경고: {UNISOLATED_REVIEWER_FLAG} 로 미격리 실행합니다 — "
+            "리뷰어가 PM 세션 cwd 에서 옛 리뷰 raw·세션 전사를 탐색할 수 있습니다.",
+            file=sys.stderr,
+        )
+    try:
+        yield workspace
+    finally:
+        if workspace is not None:
+            _remove_reviewer_workspace(workspace)
+
+
 # ── 외부 리뷰어 실행 ──────────────────────────────────────────────────────
 
 
@@ -1668,6 +2448,7 @@ def _reviewer_execution_budget(reviewer_cmd: str, timeout: int) -> int:
 
 
 def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
+                           cwd=None, env=None,
                            **_ignored) -> subprocess.CompletedProcess:
     """기본 리뷰어 러너 — pm_relay 공용 워치독 경유(무진행 주 판정 + 벽시계 백스톱).
 
@@ -1675,7 +2456,10 @@ def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
     진행을 벽시계로 죽이고 (b) `TimeoutExpired.stdout` 에 실려 온 부분 산출물을 아무도 안 읽어
     통째로 버렸다(kill 된 리뷰의 raw 가 헤더 138바이트뿐이던 실측). startup 창/재시도는 리뷰어
     이름 특례가 아니라 **해소된 공유 프로필 선언**을 따른다. 따라서 기본 codex(False)는 종전처럼
-    꺼져 있고, 알려진 startup stall 축인 opencode(True)만 유한 재시도를 얻는다."""
+    꺼져 있고, 알려진 startup stall 축인 opencode(True)만 유한 재시도를 얻는다.
+
+    `cwd`/`env` 는 리뷰어 가시 범위 격리 입력이다 — 시그니처에 명시해 relay 워치독까지 내려보낸다
+    (`**_ignored` 가 삼키면 격리가 조용히 사라진다)."""
     reviewer_cmd = shlex.join(argv)
     relay, first_event_timeout, retries = _reviewer_watchdog_settings(reviewer_cmd)
     return relay.run_with_first_event_watchdog(
@@ -1685,6 +2469,8 @@ def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
         retries=retries,
         idle_timeout=idle_timeout,
         input_text=input,
+        cwd=cwd,
+        env=env,
     )  # text 는 워치독 기본(True·utf-8/replace 고정) — 인코딩은 _WatchedPopen 이 소유.
 
 
@@ -1764,17 +2550,52 @@ def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
         return head
 
 
+# raw 박제/진단 **표시**에만 쓰는 구분자. 판정 경계는 이 문자열이 아니라 아래 두 필드다 —
+# 표시 형식으로 경계를 되찾으려 하면 모델 회신이나 재인용된 옛 raw 에 같은 문자열이 들어오는 순간
+# `옛 통과 → 구분자 → 이번 반려` 가 '깨끗한 통과'로 잘린다(구분자 파싱 = 신뢰 경계로 부적격).
+_STDERR_SECTION_MARKER = "\n[stderr]\n"
+
+
+class ReviewerOutput(NamedTuple):
+    """리뷰어 실행 산출물 — 두 채널을 **구조로** 분리 보관한다.
+
+    `answer` = 리뷰어 회신(stdout). 판정·오염 검출은 오직 이것만 본다.
+    `log`    = 진행 로그(stderr). 프롬프트 전문과 검토 대상 diff 원문이 그대로 실려 오므로 판정
+               입력이 될 수 없다(실측). raw 박제와 사람 진단에만 쓴다.
+    """
+
+    answer: str
+    log: str = ""
+
+    @property
+    def combined(self) -> str:
+        """사람이 읽는 박제/진단 표시 — 표시 전용이고 다시 파싱하지 않는다."""
+        return self.answer + (f"{_STDERR_SECTION_MARKER}{self.log}" if self.log else "")
+
+
+def _as_reviewer_output(value: object) -> ReviewerOutput:
+    """주입 러너/스텁이 돌려준 산출물을 두 채널 구조로 정규화한다(문자열 = 회신만)."""
+    return value if isinstance(value, ReviewerOutput) else ReviewerOutput(str(value))
+
+
 class ReviewerRunSeamError(TypeError):
     """주입 runner 의 호출 계약 불일치 — 리뷰어 프로세스 오류와 구분하는 loud sentinel."""
 
 
 def _reviewer_run_kwargs(run_fn: Callable, argv: list[str], *,
-                         prompt: str, timeout: int, idle_timeout: float | None) -> dict:
+                         prompt: str, timeout: int, idle_timeout: float | None,
+                         cwd: str | None = None,
+                         env: dict[str, str] | None = None) -> dict:
     """기존 subprocess.run 호환 seam 을 보존하고 명시 지원 runner 에만 idle_timeout 을 확장한다.
 
     `**kwargs` 만으로는 새 키를 실제 소비하는지 알 수 없다(`subprocess.run` 은 **kwargs 를 Popen 에
     넘겨 뒤늦게 TypeError). 따라서 시그니처에 `idle_timeout` 이 명시된 runner 에만 전달한다.
     호출 전에 bind 해 seam skew 를 프로세스 실행 오류와 분리한다.
+
+    `cwd`/`env`(리뷰어 가시 범위 격리)는 **값이 있을 때 무조건** 넘긴다 — 조건부로 넘기면 그 키를
+    선언하지 않은 runner 에서 격리가 조용히 사라져(silent degrade) 오염 차단이 있다고 착각하게 된다.
+    받지 못하는 runner 는 아래 bind 검사가 loud seam 오류로 세운다. 격리 미적용 실행(None)의 kwargs 는
+    종전과 바이트 단위로 같다.
     """
     kwargs = {
         "input": prompt,
@@ -1784,6 +2605,10 @@ def _reviewer_run_kwargs(run_fn: Callable, argv: list[str], *,
         "errors": "replace",
         "timeout": timeout,
     }
+    if cwd is not None:
+        kwargs["cwd"] = cwd
+    if env is not None:
+        kwargs["env"] = env
     try:
         signature = inspect.signature(run_fn)
     except (TypeError, ValueError):
@@ -1806,10 +2631,13 @@ def _run_reviewer_ex(
     run_fn: Callable[..., subprocess.CompletedProcess] | None,
     idle_timeout: float | None = None,
     metrics: dict[str, object] | None = None,
-) -> tuple[bool, str, bool]:
+    *,
+    cwd: Path | str | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, ReviewerOutput, bool]:
     """run_reviewer 본체 + 외부 프로세스 스폰 여부(started) 신호.
 
-    반환: (성공 여부, 출력 텍스트, started). started=False = 외부 프로세스가 *확실히 시작되지
+    반환: (성공 여부, `ReviewerOutput`(회신/로그 **분리 보관**), started). started=False = 외부 프로세스가 *확실히 시작되지
     않음*(전송 0·과금 0) — 빈 reviewer_cmd·실행 파일 부재(FileNotFoundError). started=True =
     스폰됨(프롬프트가 전송·과금됐을 수 있음) — 정상 종료(비-0 rc 포함)·타임아웃·기타 실행 오류.
     타임아웃/기타는 시작 여부가 불확실하거나 이미 전송됐으므로 보수적으로 started=True — 라운드
@@ -1829,40 +2657,46 @@ def _run_reviewer_ex(
     _run = run_fn or _watchdog_reviewer_run
     argv = shlex.split(reviewer_cmd)
     if not argv:
-        return False, "[reviewer_cmd 가 비어 있음 — local.conf 확인]", False
+        return False, ReviewerOutput("[reviewer_cmd 가 비어 있음 — local.conf 확인]"), False
     if timeout is None:  # 미지정 호출(공개 facade) — 리뷰어 프로필의 벽시계 백스톱.
         timeout = int(reviewer_profile(reviewer_cmd).wall_timeout)
     try:
         kwargs = _reviewer_run_kwargs(
             _run, argv, prompt=prompt, timeout=timeout,
             idle_timeout=_reviewer_idle_timeout(reviewer_cmd, idle_timeout),
+            cwd=None if cwd is None else str(cwd), env=env,
         )
         result = _run(argv, **kwargs)
         if metrics is not None:
             metrics["rc"] = int(result.returncode)
             metrics["silence_sec"] = getattr(result, "silence_sec", None)
-        output = result.stdout or ""
-        if result.stderr:
-            output += f"\n[stderr]\n{result.stderr}"
-        return result.returncode == 0, output, True
+        # 두 채널을 합치지 않는다 — 합치면 경계가 문자열이 되고, 그 문자열은 모델 회신이나
+        # 재인용된 옛 raw 에 그대로 나타날 수 있다(판정 경계로 부적격).
+        return (
+            result.returncode == 0,
+            ReviewerOutput(result.stdout or "", result.stderr or ""),
+            True,
+        )
     except subprocess.TimeoutExpired as exc:
         # 프로세스가 시작돼 실행 중 타임아웃 — 프롬프트가 이미 전송·과금됐을 수 있다 → started=True.
         if metrics is not None:
             metrics["silence_sec"] = getattr(
                 exc, "silence_seconds", getattr(exc, "idle_seconds", None)
             )
-        return False, _timeout_output(timeout, exc), True
+        return False, ReviewerOutput(_timeout_output(timeout, exc)), True
     except FileNotFoundError:
         # 실행 파일 자체가 없어 exec 실패 — 아무것도 전송되지 않았다 → started=False (환불 대상).
         if metrics is not None:
             metrics["rc"] = 127
-        return False, f"[리뷰어 명령 '{argv[0]}' 를 찾을 수 없음 — 설치 또는 PATH 확인]", False
+        return False, ReviewerOutput(
+            f"[리뷰어 명령 '{argv[0]}' 를 찾을 수 없음 — 설치 또는 PATH 확인]"), False
     except ReviewerRunSeamError as exc:
         # 호출 전 bind 실패 — 외부 프로세스는 확실히 시작되지 않았다. 라운드 환불 가능.
-        return False, f"[리뷰어 runner seam 계약 오류 — 호출 전 차단: {exc}]", False
+        return False, ReviewerOutput(
+            f"[리뷰어 runner seam 계약 오류 — 호출 전 차단: {exc}]"), False
     except TypeError as exc:
         # runner 내부에서 발생한 키워드/시그니처 skew. 시작 여부는 불명이라 보수적으로 started=True.
-        return False, f"[리뷰어 runner seam 호출 오류: {exc}]", True
+        return False, ReviewerOutput(f"[리뷰어 runner seam 호출 오류: {exc}]"), True
     except Exception as exc:  # noqa: BLE001
         # _load_relay는 호출마다 독립 module 객체를 만들 수 있어 클래스 identity 대신 sentinel의
         # 구조화 속성을 본다. 일반 RuntimeError를 정리 실패로 오인하지 않는다.
@@ -1875,11 +2709,9 @@ def _run_reviewer_ex(
             )
             if getattr(exc, "output", ""):
                 output += f"\n{exc.output}"
-            if getattr(exc, "stderr", ""):
-                output += f"\n[stderr]\n{exc.stderr}"
-            return False, output, True
+            return False, ReviewerOutput(output, getattr(exc, "stderr", "") or ""), True
         # 시작 여부 불확실 — 보수적으로 started=True (상한 우회 방지 > 과잉 카운트).
-        return False, f"[리뷰어 실행 오류: {exc}]", True
+        return False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"), True
 
 
 def run_reviewer(
@@ -1891,9 +2723,10 @@ def run_reviewer(
 ) -> tuple[bool, str]:
     """reviewer_cmd 를 stdin(=프롬프트)으로 실행한다. 반환: (성공 여부, 출력 텍스트).
 
-    2-튜플 공개 facade — 스폰 여부(started)까지 필요한 내부 호출은 `_run_reviewer_ex` 를 쓴다."""
+    2-튜플 공개 facade — 스폰 여부(started)와 채널 분리가 필요한 내부 호출은 `_run_reviewer_ex` 를
+    쓴다. 이 facade 는 사람이 읽는 표시 문자열(회신+로그)을 돌려준다."""
     ok, output, _started = _run_reviewer_ex(prompt, reviewer_cmd, timeout, run_fn, idle_timeout)
-    return ok, output
+    return ok, output.combined
 
 
 def reviewer_name(reviewer_cmd: str) -> str:
@@ -1952,6 +2785,13 @@ def parse_verdict(output: str) -> dict[str, bool]:
 
     반환: {"has_must_fix": bool, "has_pass": bool}. 보수적: 판정 라인 없이 must-fix/반려
     토큰만 있어도 has_must_fix=True. 예외: must-fix 섹션이 "없음/N/A/none" 만이면 False.
+
+    **통과 인정은 `verdict_words` 가 거른 명시 판정선에서만** 나온다. 본문 아무 곳의 '통과' 토큰을
+    통과 근거로 세면 두 가지가 깨진다. (a) 코드펜스에 든 `판정: 통과`(= 검토 대상 diff 나 인용물) +
+    본문 `must-fix: 없음` 조합이 파서만 통과시키고 오염 검출은 그 라인을 안 세는 **비대칭**이 생긴다.
+    (b) 형식을 아예 안 지킨 산문("회귀 통과 확인. 문제 없음.")이 통과로 접힌다 — 실측된 형상이다.
+    판정선이 하나도 없으면 통과가 아니라 '판정 불명확'(보수적 exit 1)이며, 그 성질은 파서 단독
+    회귀가 소유한다(별도 폴백 분기 없음 — 실측상 no-op 이라 두지 않는다).
     """
     must_fix_items = _extract_must_fix_items(output)
     section_found = bool(_MUST_FIX_SECTION_RE.search(output))
@@ -1963,19 +2803,111 @@ def parse_verdict(output: str) -> dict[str, bool]:
     else:
         has_must_fix = any(token in output for token in _REJECT_TOKENS)
 
-    has_pass = any(token in output for token in _PASS_TOKENS)
-
-    verdict_line_match = re.search(r"판정\s*:\s*(\S+)", output)
-    if verdict_line_match:
-        verdict_word = verdict_line_match.group(1).strip()
-        if any(tok in verdict_word for tok in
-               ("통과", "PASS", "pass", "승인", "APPROVE", "approve", "LGTM", "lgtm")):
-            if not must_fix_items or _is_none_items(must_fix_items):
-                has_must_fix = False
-        elif any(tok in verdict_word for tok in ("반려", "REJECT", "reject")):
-            has_must_fix = True
+    declared_verdicts = verdict_words(output)
+    kind = verdict_kind(declared_verdicts[0]) if declared_verdicts else VERDICT_UNKNOWN
+    has_pass = kind == VERDICT_PASS
+    if has_pass:
+        if not must_fix_items or _is_none_items(must_fix_items):
+            has_must_fix = False
+    elif kind == VERDICT_REJECT:
+        has_must_fix = True
 
     return {"has_must_fix": has_must_fix, "has_pass": has_pass}
+
+
+# ── echo 오염 검출 (가시 범위 격리의 백스톱) ──────────────────────────────
+#
+# 리뷰어 CLI 로는 절대경로 읽기를 못 막으므로(위 기각 근거) 격리는 완전 차단이 아니다. 남는 구멍을
+# **판정 본문의 증거**로 닫는다: 리뷰어가 옛 리뷰 raw 나 하네스 세션 전사를 읽었으면 그 파일명/경로
+# 형태가 출력에 남고, 옛 판정 블록을 통째로 옮겨 오면 판정 라인이 여러 개가 된다.
+# 검사 대상은 **회신 채널만**이다(`ReviewerOutput.answer`) — 진행 로그에는 프롬프트와 diff 원문이
+# 그대로 실려 있어 그것까지 세면 정상 실행이 전부 오염으로 잡힌다(라이브 실측).
+
+# 이 엔진이 만드는 raw 산출물 파일명(`_reserve_output`·pm_delegate 동형). 타임스탬프/pid 자리가
+# 있어 diff 본문에서 우연히 나오지 않는다 — 인용됐다면 로컬 산출물 디렉터리를 읽었다는 증거다.
+# reviewer/harness 이름에는 `_` 가 들어갈 수 있다(`external_review_<이름>_<타임스탬프>_…`) —
+# 이름 문자에서 `_` 를 빼면 그런 배포의 인용을 통째로 놓친다.
+_RAW_ARTIFACT_RE = re.compile(
+    r"\b(?:external_review|pm_delegate)_[A-Za-z0-9._-]+_\d{4,}[A-Za-z0-9_.-]*\.txt\b"
+)
+# 하네스 세션 전사 저장소(실측 경로만 선언 — 추정 경로는 넣지 않는다). 구분자는 `/`·`\` 양쪽을
+# 받는다 — Windows 형상(`C:\Users\u\.claude\projects\…`)을 못 보면 그 플랫폼에서 백스톱이 없다.
+_SESSION_TRANSCRIPT_RE = re.compile(
+    r"[\w~.:/\\-]*(?:\.claude[/\\]projects|\.codex[/\\]sessions)[/\\][\w.:@/\\-]*"
+)
+
+
+class OutputContamination(NamedTuple):
+    """리뷰어 출력에 남은 저장소 밖 탐색 흔적."""
+
+    verdicts: tuple[str, ...]
+    raw_artifacts: tuple[str, ...]
+    transcripts: tuple[str, ...]
+
+    @property
+    def verdict_conflict(self) -> bool:
+        """판정 라인이 여러 개면서 서로 다른 판정을 말한다 = 어느 게 이번 판정인지 모른다.
+
+        같은 판정의 재진술은 위험이 없어 잡지 않는다(false-red 억제). 서로 다르면 파서가 고른
+        한 줄이 이번 리뷰의 판정이라는 보장이 사라지므로 보수적으로 '불명확'이어야 한다.
+        """
+        return len(self._verdict_kinds()) > 1
+
+    def _verdict_kinds(self) -> set[str]:
+        """판정 라인 낱말을 파서와 **같은 함수**(`verdict_kind`)로 접는다.
+
+        허용 토큰이 아닌 판정선(`[통과`·`PASS/REJECT` 같은 템플릿/선택지 echo)은 `unknown` 이라
+        고유한 종류로 센다 — 그런 줄이 진짜 판정선과 섞여 있으면 어느 게 이번 판정인지 모른다.
+        """
+        return {verdict_kind(word) for word in self.verdicts}
+
+    @property
+    def contaminated(self) -> bool:
+        """오염 신호가 하나라도 있으면 이 판정은 리뷰어 자신의 것이라는 보장이 없다."""
+        return bool(self.markers)
+
+    @property
+    def markers(self) -> tuple[str, ...]:
+        """PM 이 읽을 오염 진단 — 비어 있으면 오염 신호 없음."""
+        markers: list[str] = []
+        if self.verdict_conflict:
+            markers.append(
+                f"판정 라인 {len(self.verdicts)}개가 서로 다름 "
+                f"({', '.join(self.verdicts)}) — 옛 판정 블록 echo 가능"
+            )
+        if self.raw_artifacts:
+            markers.append(
+                "옛 리뷰/위임 raw 파일명 인용: " + ", ".join(self.raw_artifacts)
+            )
+        if self.transcripts:
+            markers.append(
+                "하네스 세션 전사 경로 인용: " + ", ".join(self.transcripts)
+            )
+        return tuple(markers)
+
+
+def _unique(values: Sequence[str], limit: int = 5) -> tuple[str, ...]:
+    """등장 순서를 유지한 중복 제거 + 진단 상한."""
+    seen: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.append(value)
+        if len(seen) >= limit:
+            break
+    return tuple(seen)
+
+
+def detect_output_contamination(output: str) -> OutputContamination:
+    """리뷰어 출력에서 저장소 밖 탐색 흔적을 찾는다(판정 무관·순수 함수).
+
+    판정 라인은 파서와 같은 `verdict_words` 로 센다 — 검출 범위가 파서보다 좁으면 파서가 집어 든
+    echo 라인이 검출을 빠져나간다.
+    """
+    return OutputContamination(
+        verdicts=verdict_words(output),
+        raw_artifacts=_unique(_RAW_ARTIFACT_RE.findall(output)),
+        transcripts=_unique(_SESSION_TRANSCRIPT_RE.findall(output)),
+    )
 
 
 # ── 결과 저장 ─────────────────────────────────────────────────────────────
@@ -2047,13 +2979,23 @@ def run_review(
     output_dir: Path | None = None,
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
     idle_timeout: float | None = None, local_conf_path: Path | None = None, resolved_profile: str | None = None,
+    cwd: Path | str | None = None, env: dict[str, str] | None = None,
 ) -> dict:
     """외부 리뷰어를 실행하고 결과를 수합한다.
 
-    반환 dict: reviewer / ok / output / verdict / file / failed / started / any_must_fix / all_pass.
+    반환 dict: reviewer / ok / output / verdict / contamination / file / failed / started /
+    any_must_fix / all_pass.
     `started` = 외부 프로세스가 스폰됐는가(전송·과금 가능성) — 라운드 카운트 환불
     판정에 쓴다(False = 확실히 전송 전 실패 → 예약 환불). `idle_timeout` = 무진행 상한(None=공유
     기본) — 타임아웃 시에도 `output` 에 부분 산출물이 실려 `save_output` 이 그대로 박제한다.
+    `cwd`/`env` = 리뷰어 가시 범위 격리 입력(None=미격리·종전 상속). 격리 여부는 **실제 실행 인자
+    에서 도출**한다(`unisolated = cwd is None`) — 별도 플래그를 받으면 공개 facade 나 직접 호출이
+    격리 없이도 '격리됨'으로 기록돼 판정 블록이 거짓말을 한다. 미격리 사실은 결과 dict 와 판정
+    블록에 남는다(stderr 경고는 로그를 안 읽으면 사라지지만 판정 블록은 PM 이 반드시 읽는다).
+
+    `contamination` = 저장소 밖 탐색 흔적 진단. **하나라도 잡히면** `all_pass` 를 내려 '판정
+    불명확'(보수적 exit 1)로 만든다 — 옛 raw·전사를 읽고 쓴 판정은 그 자체로 리뷰어 자신의 판정이
+    아닐 수 있어, 오염된 출력에서 통과가 나가는 false-green 을 기계가 막는다.
     """
     name = reviewer_name(reviewer_cmd)
     raw_path = _reserve_output(name, output_dir)
@@ -2072,13 +3014,18 @@ def run_review(
     metrics: dict[str, object] = {"rc": 1, "silence_sec": None}
     started_at = time.monotonic()
     ok, output, started = _run_reviewer_ex(
-        prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics
+        prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics,
+        cwd=cwd, env=env,
     )
     elapsed = time.monotonic() - started_at
-    verdict = parse_verdict(output)
+    # 판정과 오염 검출은 **회신 채널**만 본다(진행 로그는 프롬프트·diff 원문을 그대로 싣는다).
+    # 경계는 구조(필드)라서 표시 문자열에 무엇이 섞여 와도 되찾을 필요가 없다.
+    output = _as_reviewer_output(output)
+    verdict = parse_verdict(output.answer)
+    contamination = detect_output_contamination(output.answer)
     _write_reserved_output(
         raw_path,
-        output,
+        output.combined,
         local_conf_path=local_conf_path,
         resolved_profile=resolved_profile,
     )
@@ -2092,13 +3039,26 @@ def run_review(
     return {
         "reviewer": name,
         "ok": ok,
-        "output": output,
+        "output": output.combined,
+        "answer": output.answer,
+        "log": output.log,
         "verdict": verdict,
+        "contamination": contamination.markers,
+        # 격리는 두 축이 **모두** 있어야 성립한다 — cwd 만 옮기고 env 를 상속하면 세션 포인터가
+        # 그대로 넘어가므로 격리로 기록하면 안 된다.
+        "unisolated": cwd is None or env is None,
         "file": raw_path,
         "failed": not ok,
         "started": started,
-        "any_must_fix": ok and verdict["has_must_fix"],
-        "all_pass": ok and verdict["has_pass"] and not verdict["has_must_fix"],
+        # 오염된 출력은 통과도 반려도 아니다. 반려만 남겨 두면 옛 반려 블록 echo 가 **이번 리뷰의
+        # 반려**로 기록돼(라운드 장부·PM 판단 모두) 리뷰어가 하지 않은 지적을 근거로 일이 돌아간다.
+        "any_must_fix": (
+            ok and verdict["has_must_fix"] and not contamination.contaminated
+        ),
+        "all_pass": (
+            ok and verdict["has_pass"] and not verdict["has_must_fix"]
+            and not contamination.contaminated
+        ),
     }
 
 
@@ -2145,6 +3105,14 @@ def print_summary(result: dict, gate: str | None = None,
     print(f"\n[{name}] {_format_verdict(result['ok'], result.get('verdict'))}")
     if result.get("file"):
         print(f"  원문: {result['file']}")
+    # 오염 진단은 판정 라인과 같은 자리에 둔다 — stderr 경고는 로그를 안 읽으면 사라지지만 PM 은
+    # 판정 블록을 반드시 읽는다. 판정 자체를 뒤집지는 않고(엇갈린 판정만 run_review 가 불명확 처리),
+    # 이번 판정이 리뷰어 자신의 것인지 PM 이 확인할 근거를 남긴다.
+    for marker in result.get("contamination") or ():
+        print(f"  ⚠ 오염 의심(저장소 밖 탐색 흔적): {marker}")
+    if result.get("unisolated"):
+        print("  ⚠ 미격리 실행 — 리뷰어가 PM 세션 cwd 에서 옛 리뷰 raw·세션 전사를 탐색할 수 "
+              f"있었습니다({UNISOLATED_REVIEWER_FLAG}).")
     print()
     if result["failed"]:
         # 실패 사유 1줄을 판정 라인에 병기 — 타임아웃 안내(`--timeout`/conf 키) 같은 실패
@@ -2233,6 +3201,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              f"{EXTERNAL_IDLE_TIMEOUT_KEY} 로 조정")
     parser.add_argument("--adr", nargs="+", default=None, metavar="ADR-NNNN",
                         help="관련 ADR 목록 (프롬프트에 포함)")
+    parser.add_argument(UNISOLATED_REVIEWER_FLAG, action="store_true",
+                        help="리뷰어 가시 범위 격리에 실패해도 중단하지 않고 PM 세션 cwd/env 를 "
+                             "그대로 물려준 채 1회 실행 (loud 경고 · 기본은 차단)")
     return parser
 
 
@@ -2814,6 +3785,73 @@ def _main(argv: list[str] | None = None) -> int:
         )
         return 0  # no-op — 실패 아님
 
+    # ── 리뷰어 가시 범위 격리 ──────────
+    # 라운드 예약보다 **먼저** 만든다 — 격리 실패로 중단하는 실행은 외부 전송이 없으므로 라운드를
+    # 소비하지 않아야 하고(환불 경로를 새로 만들 이유가 없다), 리뷰어는 이 거울 안에서만 돈다.
+    isolation = contextlib.ExitStack()
+    try:
+        workspace = isolation.enter_context(reviewer_visibility_scope(
+            diff_root, allow_unisolated=args.allow_unisolated_reviewer, conf=conf,
+            # 거울과 프롬프트가 **같은 해소값**으로 시크릿을 제외한다(폭이 갈리면 제외가 무의미).
+            denylist=content_resolution.denylist,
+        ))
+    except ReviewerWorkspaceError as exc:
+        isolation.close()
+        print(_UNISOLATED_GUIDANCE.format(reason=exc), file=sys.stderr)
+        return 1
+    # 생성 이후 **모든 경로**(라운드 상한 거부·예외 포함)가 이 finally 를 지나 정리된다.
+    try:
+        return _run_isolated_review(
+            args, workspace, conf=conf, prompt=prompt, reviewer_cmd=reviewer_cmd,
+            timeout=timeout, idle_timeout=idle_timeout, output_dir=output_dir,
+            conf_path=conf_path, profile=profile, excluded=excluded,
+        )
+    finally:
+        isolation.close()
+
+
+def _run_isolated_review(
+    args, workspace, *, conf, prompt, reviewer_cmd, timeout, idle_timeout,
+    output_dir, conf_path, profile, excluded,
+) -> int:
+    """격리 컨테이너 수명 **안**에서 도는 구간 — 라운드 상한 예약·리뷰 실행·장부 마감.
+
+    `_main` 에서 떼어낸 이유는 수명 관리 하나다: 여기서 어떤 경로로 빠져나가도(조기 return·예외)
+    호출부의 단일 finally 가 컨테이너를 지운다. 거울에는 저장소 사본과 인증 파일 사본이 있어
+    잔존이 곧 누출이다.
+    """
+    workspace_tree = workspace.tree if workspace is not None else None
+    extra_keep = reviewer_env_keep_extra(conf)
+    reviewer_environment = reviewer_env(
+        workspace_tree,
+        workspace.home if workspace is not None else None,
+        extra_keep=extra_keep,
+    )
+    applied_extra = tuple(
+        name for name in extra_keep
+        if name in {key.upper() for key in (reviewer_environment or {})}
+    )
+    if workspace is not None:
+        print(
+            f"[external-review] 리뷰어 가시 범위: cwd={workspace.tree} "
+            f"· HOME={workspace.home} "
+            f"(tracked {workspace.files}개 거울 · git 저장소="
+            f"{'예' if workspace.git_repo else '아니오'}"
+            + (f" · 홈 인증/설정 {len(workspace.copied_home_artifacts)}개 복제"
+               if workspace.copied_home_artifacts else " · 홈 인증/설정 복제 0개(부재)")
+            + (f" · 홈 정화 실패 {len(workspace.home_scrub_failed)}개 미복제"
+               f"({', '.join(workspace.home_scrub_failed)}) — 설정이 빠져 **다른 모델**로 동작할 수 "
+               "있습니다" if workspace.home_scrub_failed else "")
+            + (f" · 격리 밖 참조 {workspace.skipped_unsafe}개 제외"
+               if workspace.skipped_unsafe else "")
+            + (f" · 시크릿 denylist {workspace.skipped_secret}개 제외"
+               if workspace.skipped_secret else "")
+            + (f" · {_REVIEWER_ENV_KEEP_EXTRA_KEY} 통과: {', '.join(applied_extra)}"
+               if applied_extra else "")
+            + ")",
+            file=sys.stderr,
+        )
+
     # ── 라운드 상한 게이트: 호출 전 예약 ──────────
     # 여기까지 왔으면 dry-run·빈-diff·비활성 no-op 을 모두 통과해 *실 외부 전송*이 일어난다 —
     # 그것들은 전송이 없어 라운드가 아니므로(카운트 제외) 이 앞의 조기 return 뒤에 게이트를 둔다.
@@ -2830,60 +3868,118 @@ def _main(argv: list[str] | None = None) -> int:
     if args.gate:
         limit = _round_limit(conf)
         incomplete_limit = _incomplete_round_limit(conf)
-        with _round_ledger_lock():
-            ledger = _load_round_ledger()
-            entry = _gate_entry(ledger, args.gate)
-            count, acked = entry["count"], entry["acked_through"]
-            if args.ack_rounds:
-                entry["acked_through"] = count      # 승인 수위 상향 (+limit 창)
-                entry["records"] = []               # 승인된 상세 레코드는 집계에서 영구 불필요
-                print(f"라운드 상한 승인 재개: 게이트 {args.gate} — acked_through={count} "
-                      f"(+{limit}라운드).", file=sys.stderr)
-            else:
-                unacked, verdicts, incomplete = _unacked_round_counts(entry)
-            if not args.ack_rounds and (
-                verdicts >= limit or incomplete >= incomplete_limit
-            ):
-                print(_ROUND_LIMIT_GUIDANCE.format(
-                    gate=args.gate, unacked=unacked, verdicts=verdicts,
-                    incomplete=incomplete, limit=limit,
-                    incomplete_limit=incomplete_limit,
-                    count=count, acked=acked), file=sys.stderr)
-                return EXIT_ROUND_LIMIT_EXCEEDED    # 예약 없음 (전송 전 거부)
-            reserved_round_id = uuid.uuid4().hex
-            _reserve_round(entry, reserved_round_id)  # 호출 전 라운드 예약
-            _save_round_ledger(ledger)
-            reserved_gate = args.gate
+        try:
+            with _round_ledger_lock():
+                ledger = _load_round_ledger()
+                # 앵커 이동 1회 승계 — legacy(diff 앵커) 장부의 차단 상태를 그대로 이관한다.
+                # 승계분은 판정 *이전에* 저장한다: 차단으로 조기 return 해도 마이그레이션은
+                # 남아야 다음 실행이 다시 승계하지 않는다(게이트당 1회).
+                if _inherit_legacy_round_entry(ledger, args.gate) is not None:
+                    _, legacy_verdicts, legacy_incomplete = _unacked_round_counts(
+                        ledger[args.gate]
+                    )
+                    print(
+                        f"legacy 라운드 장부 승계: {_legacy_round_ledger_path()} → "
+                        f"{_round_ledger_path()} · gate={args.gate} "
+                        f"verdicts={legacy_verdicts} incomplete={legacy_incomplete}",
+                        file=sys.stderr,
+                    )
+                    _save_round_ledger(ledger)
+                entry = _gate_entry(ledger, args.gate)
+                count, acked = entry["count"], entry["acked_through"]
+                if args.ack_rounds:
+                    entry["acked_through"] = count      # 승인 수위 상향 (+limit 창)
+                    entry["records"] = []               # 승인된 상세 레코드는 집계에서 영구 불필요
+                    print(f"라운드 상한 승인 재개: 게이트 {args.gate} — acked_through={count} "
+                          f"(+{limit}라운드).", file=sys.stderr)
+                else:
+                    unacked, verdicts, incomplete = _unacked_round_counts(entry)
+                if not args.ack_rounds and (
+                    verdicts >= limit or incomplete >= incomplete_limit
+                ):
+                    print(_ROUND_LIMIT_GUIDANCE.format(
+                        gate=args.gate, unacked=unacked, verdicts=verdicts,
+                        incomplete=incomplete, limit=limit,
+                        incomplete_limit=incomplete_limit,
+                        ledger=_round_ledger_path(),
+                        count=count, acked=acked), file=sys.stderr)
+                    # 거울 정리는 호출부의 단일 finally 가 한다(전송 없이 되돌아감).
+                    return EXIT_ROUND_LIMIT_EXCEEDED    # 예약 없음 (전송 전 거부)
+                reserved_round_id = uuid.uuid4().hex
+                _reserve_round(entry, reserved_round_id)  # 호출 전 라운드 예약
+                _save_round_ledger(ledger)
+                reserved_gate = args.gate
+        except OSError as exc:
+            # 락 획득/장부 write 실패 — 상한을 확인하지 못한 채 전송하면 과금 게이트가 무력화되므로
+            # **전송 전에** 멈춘다(과금 0). 가장 흔한 원인은 동시 실행의 락 보유다(Windows
+            # `msvcrt.locking` 은 재시도 소진 시 OSError·POSIX 는 블로킹이라 여기 안 온다).
+            print(
+                f"오류: 라운드 장부 임계 구역 진입 실패 ({type(exc).__name__}: {exc}) — 다른 "
+                "게이트 실행이 장부 락을 보유 중일 수 있습니다. 잠시 후 다시 실행하세요 "
+                f"(장부: {_round_ledger_path()}).",
+                file=sys.stderr,
+            )
+            return 1
     elif args.ack_rounds:
         print("경고: --ack-rounds 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
               file=sys.stderr)
 
     print(f"외부 리뷰어 실행 중: {reviewer_cmd}", file=sys.stderr)
+    # 리뷰어는 PM 세션의 cwd/env/홈을 물려받지 않는다 — 거울과 임시 홈, allowlist env 만 받는다.
     result = run_review(
         prompt=prompt, reviewer_cmd=reviewer_cmd,
         timeout=timeout, output_dir=output_dir, idle_timeout=idle_timeout,
         local_conf_path=conf_path, resolved_profile=profile,
+        cwd=workspace_tree,
+        env=reviewer_environment,
     )
     print_summary(result, gate=args.gate, excluded=excluded)
+    if result.get("failed") and workspace is not None:
+        # 격리 임시 홈에서 로그인 파일이 빠졌을 때의 증상이 '리뷰어 실패'라, 원인 분리 채널을 준다.
+        print(
+            "[external-review] 힌트: 격리(임시 홈·allowlist env)에서 인증 입력이 빠져 실패했을 수 "
+            f"있습니다 — 홈 인증/설정 복제 {len(workspace.copied_home_artifacts)}개("
+            f"{', '.join(workspace.copied_home_artifacts) or '없음'}) · "
+            f"{_REVIEWER_ENV_KEEP_EXTRA_KEY} 통과 {len(applied_extra)}개("
+            f"{', '.join(applied_extra) or '없음'}).\n"
+            + (f"  · 정화 실패로 빠진 설정: {', '.join(workspace.home_scrub_failed)} — 그 파일의 "
+               "경로 선언(hooks·mcp_servers·plugins·projects 류)을 정리하거나 필요한 키만 남기세요.\n"
+               if workspace.home_scrub_failed else "")
+            + f"  · 인증 파일 추가: local.conf `{_REVIEWER_HOME_EXTRA_KEY}=<홈 상대경로 …>`\n"
+            f"  · 인증 환경변수 추가: local.conf `{_REVIEWER_ENV_KEEP_EXTRA_KEY}=<이름 …>`\n"
+            f"  · 원인 분리: `{UNISOLATED_REVIEWER_FLAG}` 실행과 비교(격리 탓인지 확정).",
+            file=sys.stderr,
+        )
 
     # 정상 복귀한 호출은 판정 유무와 별개로 종료 마감한다. 프로세스 kill처럼 이 지점에 도달하지
     # 못한 레코드는 finished_at 없이 남아 다음 호출에서 미완 재시도 예산으로 식별된다.
     if reserved_gate is not None and reserved_round_id is not None:
-        with _round_ledger_lock():
-            ledger = _load_round_ledger()
-            entry = _gate_entry(ledger, reserved_gate)
-            matching = next(
-                (row for row in entry["records"] if row.get("id") == reserved_round_id),
-                None,
+        try:
+            with _round_ledger_lock():
+                ledger = _load_round_ledger()
+                entry = _gate_entry(ledger, reserved_gate)
+                matching = next(
+                    (row for row in entry["records"] if row.get("id") == reserved_round_id),
+                    None,
+                )
+                if not result.get("started", True):
+                    _refund_round(entry, reserved_round_id)
+                elif matching is not None:
+                    matching["finished_at"] = datetime.datetime.now(
+                        datetime.timezone.utc
+                    ).isoformat()
+                    matching["verdict"] = _round_has_verdict(result)
+                _save_round_ledger(ledger)
+        except OSError as exc:
+            # 마감은 이미 *끝난* 전송의 부기다 — 여기서 rc 를 바꾸면 리뷰 판정이 락 사정으로
+            # 뒤집힌다. loud 경고만 남기고 판정 종료코드를 그대로 돌려준다. 마감 못 한 레코드는
+            # finished_at 없이 남아 다음 실행의 미완 재시도 예산으로 보수적으로 집계된다.
+            print(
+                f"경고: 라운드 장부 마감 실패 ({type(exc).__name__}: {exc}) — 다른 게이트 "
+                "실행이 장부 락을 보유 중일 수 있습니다. 이 라운드는 미완으로 남아 다음 실행의 "
+                f"재시도 예산에서 세어집니다 (장부: {_round_ledger_path()}).",
+                file=sys.stderr,
             )
-            if not result.get("started", True):
-                _refund_round(entry, reserved_round_id)
-            elif matching is not None:
-                matching["finished_at"] = datetime.datetime.now(
-                    datetime.timezone.utc
-                ).isoformat()
-                matching["verdict"] = _round_has_verdict(result)
-            _save_round_ledger(ledger)
 
     return determine_exit_code(result)
 

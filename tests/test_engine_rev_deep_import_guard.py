@@ -2224,7 +2224,8 @@ def test_each_added_loader_guard_rejects_stale_sibling(
     if target_name == "repo_owned_files":
         names.add("engine_rev")
     if loader_name == "worktree_pool":
-        names.add("identity_args")
+        # import 시점 바인딩 형제 — identity_args(ADR-0057)·file_lock(T-0565·리스 장부 락).
+        names.update(("identity_args", "file_lock"))
     tools = _copy_tools(tmp_path, *sorted(names))
     _make_target_stale(tools / f"{target_name}.py")
     loader = _load_module(tools, loader_name)
@@ -2304,7 +2305,8 @@ def test_sensitivity_removing_each_loader_guard_defeats_the_red_oracle(
     if target_name == "repo_owned_files":
         names.add("engine_rev")
     if loader_name == "worktree_pool":
-        names.add("identity_args")
+        # import 시점 바인딩 형제 — identity_args(ADR-0057)·file_lock(T-0565·리스 장부 락).
+        names.update(("identity_args", "file_lock"))
     tools = _copy_tools(tmp_path, *sorted(names))
     loader_path = tools / f"{loader_name}.py"
     _remove_verifier_from_function(loader_path, loader_function)
@@ -2585,6 +2587,7 @@ def test_sensitivity_removing_external_review_reraise_swallows_skew(tmp_path, mo
         raise skew
 
     monkeypatch.setattr(mutant, "_reviewer_idle_timeout", raise_skew)
+    # 산출물은 두 채널 구조다(T-0563) — 진단 본문은 회신 채널에 실린다.
     assert mutant._run_reviewer_ex(
         "prompt", "reviewer", 1, lambda *_a, **_kw: None,
-    ) == (False, "[리뷰어 실행 오류: nested relay skew]", True)
+    ) == (False, mutant.ReviewerOutput("[리뷰어 실행 오류: nested relay skew]", ""), True)

@@ -16,7 +16,7 @@ audience: user-entrypoint
 ## 사용 시점
 
 - 사용자 명시 종료 신호 (*"세션 종료"·"인계해"*)
-- PM 컨텍스트 < 10% 신호 (자기 보고)
+- PM 컨텍스트 정지 밴드 신호(잔여 ≤ ctx_stop_pct·기본 20%·최종 checkpoint 넛지)
 - wave 마지막 commit 후 자연 종료 시점
 
 ## 실행

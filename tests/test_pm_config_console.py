@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
+import sys
 from pathlib import Path
 
 import pytest
@@ -343,24 +345,37 @@ def test_console_w_marked_engine_skew_stops_the_loop(pc):
     assert prompts.count("선택: ") == 1
 
 
-def test_console_entry_translates_propagated_marked_skew(pc, monkeypatch, capsys):
-    """콘솔 표면으로 전파된 marked skew 는 `main` 이 명시 중단 안내 + rc 1 로 번역한다.
+def test_console_w_marked_engine_skew_ends_entry_with_guidance_and_rc1(
+        pc, monkeypatch, capsys):
+    """`[w]` 경계의 marked skew → 무인자 진입이 CLI 와 같은 안내·rc 1 로 끝난다 (T-0545 ②).
 
-    무인자(tty) 진입은 `main → _main → run_console` 이라 콘솔에서 전파된 skew 도 CLI 와 같은
-    종료 경계를 탄다 — traceback 0.
+    `main → _main → run_console → [w] → cmd_worktree_add` 를 **한 방향으로** 태운다 — 콘솔
+    표면을 stub 하지 않으므로 "콘솔이 재전파한다"(위 테스트)와 "main 이 번역한다"를 두 테스트로
+    나눠 추론할 필요가 없다. 대역은 엔진 로드(board·worktree_pool)와 stdin 뿐이라 hermetic
+    (실 clone/worktree 0·라이브 input 0). 메뉴 프롬프트 횟수로 루프 계속 0 도 같이 본다.
     """
-    def _boom():
-        exc = RuntimeError("board.py 사본 불일치")
-        exc._engine_rev_skew = True
-        raise exc
+    real_load_module = pc._load_module
+    fakes = {"board.py": FakeBoardAreas(rows=[]), "worktree_pool.py": _SkewWorktreePool()}
+
+    def fake_load_module(name, filename):
+        # 대역은 콘솔이 로드하는 두 엔진뿐 — 그 밖(console_encoding 등)은 실 로더 그대로.
+        return fakes[filename] if filename in fakes else real_load_module(name, filename)
 
     monkeypatch.setattr(pc, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(pc, "run_console", _boom)
+    monkeypatch.setattr(pc, "_load_module", fake_load_module)
+    # 무인자 tty 진입은 run_console 기본 input_fn(=builtin input)을 쓴다 — 메뉴 `w` · repo 이름 ·
+    # 빌드명령(Enter) 세 줄. stdin 대체는 pytest 캡처 하에서 builtin input 의 readline 경로다.
+    monkeypatch.setattr(sys, "stdin", io.StringIO("w\nsvc\n\n"))
+
     rc = pc.main([])
-    err = capsys.readouterr().err
+
+    captured = capsys.readouterr()
     assert rc == 1
-    assert err.startswith("[중단] 엔진 사본 불일치")
-    assert "Traceback" not in err
+    assert captured.err.startswith("[중단] 엔진 사본 불일치")
+    assert "pm-update" in captured.err
+    assert "Traceback" not in captured.err
+    # 메뉴 프롬프트는 skew 를 만난 그 회차 1번뿐 — 루프가 계속 돌았으면 2 이상이 된다.
+    assert captured.out.count("선택: ") == 1
 
 
 def test_console_b_routes_to_set_test_cmd(pc, monkeypatch):

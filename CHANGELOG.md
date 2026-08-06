@@ -14,9 +14,25 @@
 문서의 히스토리 누적이 각각 가드·fail-loud·공용 seam 으로 닫힌다.
 
 ### Added
-- **공용 파일락 seam** — `file_lock.py` 신설. board·pm_log·pm_relay 의 배타 파일락 3벌을 단일
-  구현(POSIX flock·Windows msvcrt·무락 폴백)으로 수렴한다. 락 경로 규약·권한은 각 도구가
-  유지하며, 플랫폼 락 분기의 재복제를 AST 가드가 차단한다.
+- **공용 파일락 seam** — `file_lock.py` 신설. board·pm_log·pm_relay·pm_handoff·worktree_pool·
+  external_review 의 배타 파일락과 O_APPEND 원자 append 를 단일 구현(POSIX flock·Windows msvcrt·
+  프리미티브 부재 시에만 무락 폴백)으로 수렴한다. 락 경로 규약·권한은 각 도구가 유지하며,
+  플랫폼 락 분기의 재복제를 AST 가드가 차단한다(수렴 잔여 0 을 가드가 박제).
+- **codex 외부 리뷰어 가시 범위 격리** — 게이트 리뷰어를 저장소 밖 tracked 거울(시크릿 denylist
+  동일 적용) + 세션·이력 없는 임시 홈(인증만 선언 복제·projects/기능 테이블 scrub·경로 노출 성질
+  자물쇠) + 최소 allowlist env 로 실행한다. 세션 전사·옛 raw 의 echo 오염은 회신 채널 한정 검출로
+  판정을 전면 불명확 처리하고, 격리 실패는 기본 차단(`--allow-unisolated-reviewer` 탈출구)이다.
+- **영속 설치 기록(install receipt)** — `pm_import`/`add-harness` 가 실제 성립한 하네스를
+  `.project_manager/install.json`(git 추적)에 기록하고 표기 독자 판정이 기록을 1순위로 소비한다
+  (부재 시 증거 추론 폴백·손상은 `.corrupt` 백업 후 재기록·미래 schema 읽기/쓰기 거부).
+- **pm_update `--paths`** — 명시 경로만 전파하는 opt-in 스코프(등재 검증 선행·디렉토리 하위 오타
+  rc=1·board 분리 리매핑·부분 전파는 baseline/마이그레이션 비발화).
+- **라운드 장부 소유 PM 홈 앵커** — 외부리뷰 라운드 상한 장부가 diff 슬롯이 아닌 소유 PM 홈에
+  쌓인다(스냅샷/새 worktree 로 상한이 리셋되던 창 폐쇄·기존 슬롯 장부는 1회 승계·차단 상태 유지).
+- **worktree refresh `--onto` 명시 해소** — 명시 ref 를 그대로 해소한다(자동 origin 대체 제거·
+  무인자 기본 경로는 origin 우선 유지·성공 메시지가 실측 ref/sha 표기).
+- **codex 템플릿 wiki seed 대칭** — claude/opencode 와 동일한 13종 seed(architecture·status·
+  decisions/ideas/specs 스캐폴드 등)를 codex 템플릿도 출하한다(README dangling 링크 0).
 - **domain lint `history` 축** — 현재-진실 domain 페이지에 세션별 delta/변경 이력이 쌓이면
   advisory 로 검출한다(시점 스탬프 lead-in·라벨-only 헤딩·bold delta·never-block). 판정 기준은
   `wiki/domain/README.md` 가 문서화한다.
@@ -45,6 +61,14 @@
 - **failsoft 가드 self.<attr> 축** — 인스턴스 속성 바인딩 콜러블의 skew 전파를 스캐너가 추적,
   기존 fail-soft 가 삼키던 실 결함 4건을 재전파로 교정. 콘솔 worktree add 는 marked skew 시
   루프를 종료한다.
+- **pm_import 쓰기 채널 TOCTOU 전면 폐쇄** — 복사·중앙 백업·재렌더·placeholder 치환·모델 해소·
+  fill 전 채널의 dest IO 를 fd(`O_NOFOLLOW` 컴포넌트 순회·루트 (st_dev,st_ino) 신원 고정·기존
+  파일은 단일 `O_RDWR` fd 로 백업+쓰기 결속·계획-상태 보존)로 전환한다. 루트 교체는 전체 중단
+  (오염 차단), 파일 단위 경쟁은 loud 제외·rc 0 이다.
+- **private-context 대장 라인 키 탈결합** — 검토 대장 키를 `(path, kind, match, surface, hash)`
+  +count 로 재설계해 라인 이동만으로 재생성이 강제되던 결합을 제거한다(재생성 CLI 동반).
+- **domain 현재-진실 규칙 출하** — 판정 요지를 `_template.md` 스캐폴드와 capture-draft 산출에
+  싣고, 출하 wiki 전 파일의 링크 해소를 가드가 검증한다.
 
 ### Breaking (채택자 체감 동작 변경)
 - 소유 PM 홈을 해소할 수 없는 위치의 무인자 `external_review` 실행은 경고 후 진행하지 않고

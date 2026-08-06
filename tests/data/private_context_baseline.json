@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 545,
+  "count": 554,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -1685,6 +1685,38 @@
         "count": 1
       }
     ],
+    "templates/codex/.project_manager/wiki/architecture.md": [
+      {
+        "kind": "circled_marker",
+        "hash": "43dd21dcb159f547508186ffb977d150340d8fb1f92a10edd8599a8cdf27a3ec",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "9bdf9dfd8789d307bcf30691b8c024b5873070111d96565a20be088ab1ba7b57",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "bca42d45555134e4db420bc5f0efc4beb477aadb48d2ada96afb60559f867533",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "d5d93d4ae171f9f5bf03fd0cf73ff0700d99798da691c9746b238468444f5308",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "daeb749a8ab60236a1b531e7b6d027e1fe60ace7955d0ccd1288e7648ba14a51",
+        "count": 2
+      },
+      {
+        "kind": "circled_marker",
+        "hash": "ec6ed70bbae949ed1034dabc677978e7c9826881641169a1e1f63f6b80a0ce1f",
+        "count": 1
+      }
+    ],
     "templates/codex/.project_manager/wiki/pm_role.md": [
       {
         "kind": "session_stamp",
@@ -1696,6 +1728,13 @@
       {
         "kind": "session_stamp",
         "hash": "bdeb5e74740f3c9d3e3532e8d9fa13d6945433c3cbc656e03b7889986dcfa1e1",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/wiki/raw/README.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "57e02cdf3f3801d163201cee8e87a3d9ffba536548328540ec25583dce8ac107",
         "count": 1
       }
     ],

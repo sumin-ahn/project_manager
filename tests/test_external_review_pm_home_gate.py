@@ -18,6 +18,7 @@ local.conf `upstream` 은 참조하지 않는다 — upstream 은 URL/무관 로
 from __future__ import annotations
 
 import importlib.util
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -163,6 +164,18 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
     )
     # extract_diff 는 (diff, 제외 경로 목록) 튜플 반환 (T-0428) — 제외 없음(빈 목록)으로 주입.
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: ("diff --git a/x b/x\n+y\n", []))
+    # 리뷰어 가시 범위 거울도 스텁 (T-0563) — 이 픽스처의 앵커는 실 git 저장소가 아니고, 이 파일이
+    # 보는 것은 앵커 해소/차단 분기다. 실 거울 회귀는 test_external_review_reviewer_isolation.py 소유.
+    monkeypatch.setattr(
+        external, "create_reviewer_workspace",
+        lambda diff_root, *, base_dir=None, conf=None, source_home=None, denylist=():
+        external.ReviewerWorkspace(
+            root=Path(tempfile.mkdtemp(prefix="stub_reviewer_mirror_")),
+            tree=Path(tempfile.mkdtemp(prefix="stub_reviewer_tree_")),
+            home=Path(tempfile.mkdtemp(prefix="stub_reviewer_home_")),
+            files=1, skipped_unsafe=0, git_repo=True,
+        ),
+    )
     called = {"reviewer": False}
 
     def _fake_run_review(*a, **k):

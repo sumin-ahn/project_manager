@@ -739,7 +739,12 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     #   T-0456 이 sanction — manifest-파생 overlay 스캔·render 가 guest 를 커버하게 하는 근본 배선).
     #   그 한 파일만 예외로 빼고 나머지 clobber 0 을 유지하며, manifest 변경은 append-only(기존 내용
     #   보존)만 허용한다(guest 라인 없는 added=claude 는 무변도 정상).
+    #   **설치 기록도 예외**다: add-harness 는 자기가 추가한 하네스를 인스턴스 설치 기록에 박제해,
+    #   이후 판정(`installed_harnesses`·pm_update 표기 독자)이 증거 추론 대신 그 기록을 읽게 한다
+    #   (dev-state metadata·manifest 와 같은 성질). 이 파일의 변경은 아래에서 "하네스 목록이 정확히
+    #   base∪added 로 늘었는가" 로 못박는다(허용만 하면 그 파일의 탐지력이 0 이 된다).
     _MANIFEST_REL = ".project_manager/engine.manifest"
+    _RECEIPT_REL = pm_import.INSTALL_RECEIPT_RELPATH.as_posix()
     notation_shared = {
         ".project_manager/wiki/README.md",
         ".project_manager/wiki/pm_role.md",
@@ -759,11 +764,18 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     changed = sorted(
         r for r in before_rels & after_rels
         if before[r] != after[r]
-        and r != _MANIFEST_REL
+        and r not in (_MANIFEST_REL, _RECEIPT_REL)
         and r not in notation_shared
     )
     assert changed == [], (
-        f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest 외·byte diff≠0·clobber 재발): {changed}")
+        f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest·설치 기록 외·byte diff≠0·"
+        f"clobber 재발): {changed}")
+
+    # (3-a) 설치 기록의 변경 내용 — 정확히 base∪added(registry 순서)여야 한다. 표기 독자 집합이
+    #   여기서 갈리므로 하나라도 빠지면 이후 공유 문서 재렌더가 그 하네스 표기를 지운다.
+    receipt_after = json.loads(after[_RECEIPT_REL].decode("utf-8"))["harnesses"]
+    assert receipt_after == [h for h in pm_import.REGISTERED_HARNESSES if h in {base, added}], (
+        f"{base}→{added}: 설치 기록이 base∪added 가 아님: {receipt_after}")
 
     # (3-b) 예외 2경로는 "바이트 변경 허용"에서 끝내지 않고 **무엇이 바뀌었는지** 못박는다 —
     #   허용만 하면 그 두 파일의 clobber 탐지력이 0 이 된다(치환·fill 오염도 통과). 변경 줄은

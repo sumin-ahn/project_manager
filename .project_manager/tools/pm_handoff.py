@@ -225,6 +225,24 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
+def _require_engine_sibling(path: Path, filename: str) -> None:
+    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
+
+    부재는 raw `FileNotFoundError` 로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
+    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew 로 표출한다
+    (board.py `_require_engine_sibling` 동형·self-contained 복제). *옵션* 형제
+    (`_load_worktree_pool` 등 fail-soft 대상)에는 쓰지 않는다 — 부재가 정상 경로인 곳이다."""
+    if path.exists():
+        return
+    err = RuntimeError(
+        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
+        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
+        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+    )
+    err._engine_rev_skew = True
+    raise err
+
+
 def _report_engine_rev_skew_at_terminal(exc) -> int:
     """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
     print(
@@ -248,8 +266,24 @@ def _load_identity_args():
     )
 
 
+def _load_file_lock():
+    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
+
+    `_load_identity_args` 동형 — 경로-앵커 로더다. **import 시점** 바인딩으로 둔다(아래
+    `file_lock = ...`·board.py 동형): 락을 잡을 때마다 형제를 로드하면 pm_handoff 를 fail-soft
+    로 소비하는 호출층이 사본 skew 를 조용히 삼키는 경로가 대시보드 write 의 호출 그래프만큼
+    늘어난다 — import 경계 단일 fail-loud 로 그 확산을 막는다.
+    """
+    lock_path = Path(__file__).resolve().parent / "file_lock.py"
+    _require_engine_sibling(lock_path, "file_lock.py")
+    return _load_module_from_path(
+        lock_path, "file_lock.py", verifier=_verify_engine_rev,
+    )
+
+
 try:
     identity_args = _load_identity_args()
+    file_lock = _load_file_lock()
 except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
     if _is_engine_rev_skew(exc):
         if __name__ == "__main__":
@@ -1844,50 +1878,11 @@ def _dashboard_lock_file() -> Path:
     return REPO / ".project_manager" / ".local" / "dashboard.lock"
 
 
-# ── 대시보드 자체 파일락 (worktree_pool `_lease_lock` 와 같은 패턴·독립 구현·import 금지) ──────
+# ── 대시보드 파일락 (경로 규약만 소유·플랫폼 분기는 공용 `file_lock` seam) ────────────
 # 대시보드는 슬롯-공유 파일이라 read-modify-write 를 직렬화하지 않으면 **두 다른 슬롯이 동시
 # 핸드오프**할 때 lost update 가 난다(둘 다 같은 이전 파일을 읽고 나중 write 가 상대 슬롯 섹션
 # 갱신을 덮음"타 슬롯 byte 불변/현재 스냅샷" 위반). "슬롯=단일 세션" 은 *같은 슬롯*
-# 동시성만 배제하지 cross-slot 을 못 막는다 — 그래서 락이 필요하다(codex MF-2). worktree_pool
-# 을 import 하지 않고(touches 격리·`_load_worktree_pool` 은 --done 경로 전용) flock 헬퍼를
-# 독립 복제한다(stdlib fcntl/msvcrt·둘 다 없으면 단일-머신 전제 무락 폴백·외부 의존 금지).
-# ⚠ 이 복제 사유는 공용 `file_lock` seam 신설 *이전*의 것이다 — 그 seam 은 형제를 로드하지 않는
-#   leaf 라 이 사본도 같은 방식으로 수렴할 수 있다(후속 수렴 대상·현재는 스코프 밖).
-
-
-def _dashboard_flock_acquire(fd: int) -> None:
-    """OS 배타락 획득 (블로킹). POSIX=fcntl.flock·Windows=msvcrt.locking·폴백 no-op."""
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-        return
-    except ImportError:
-        pass
-    # 폴백: 락 프리미티브 없음 — 단일-머신 전제로 무락 진행(락 파일만 존재).
-
-
-def _dashboard_flock_release(fd: int) -> None:
-    """OS 배타락 해제. close 시 OS 가 자동 해제하지만 명시적으로 풀어 둔다."""
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        return
-    except ImportError:
-        pass
+# 동시성만 배제하지 cross-slot 을 못 막는다 — 그래서 락이 필요하다(codex MF-2).
 
 
 @contextlib.contextmanager
@@ -1897,18 +1892,12 @@ def _dashboard_lock() -> Iterator[None]:
     `.project_manager/.local/dashboard.lock` 에 배타 OS 락. 프로세스가 죽으면 OS 가 자동
     해제(stale-lock 없음·worktree_pool `_lease_lock` 동형). **재진입 금지** — 대시보드의 모든
     read→upsert→write 가 이 한 구간 안에서 일어나 cross-slot lost update 를 막는다.
+
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `file_lock` seam 이 소유하고
+    (모듈 상단 import 시점 바인딩) 이 도구는 *어느 파일에 거는지*(경로 규약)만 정한다.
     """
-    lock_file = _dashboard_lock_file()
-    lock_file.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        _dashboard_flock_acquire(fd)
-        try:
-            yield
-        finally:
-            _dashboard_flock_release(fd)
-    finally:
-        os.close(fd)  # close 만으로도 OS 가 락을 해제 (크래시 시 안전망).
+    with file_lock.exclusive_file_lock(_dashboard_lock_file()):
+        yield
 
 
 # 자기 섹션 본문 최대 줄 수 (헤딩 제외) — 3~5줄 상한(차수·wave·claimed·다음). 초과분 truncate.

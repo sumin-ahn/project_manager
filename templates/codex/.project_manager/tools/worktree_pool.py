@@ -18,9 +18,10 @@ repo별 git worktree 풀로 *코드*를 격리한다(병렬 브랜치·나중 gi
   - git 연동 = DI seam(주입 가능 runner) — `git worktree add/remove`·dirty 검사·stash·
     submodule init 을 seam 통해 호출 → hermetic 테스트(mock 또는 실 임시 repo).
 
-장부 동시쓰기 보호 = **자체 파일락**(stdlib fcntl/msvcrt·둘 다 없으면 단일-머신 폴백).
-board.py 의 `board_lock` 과 *같은 패턴*이지만 **독립 구현**이다 — 병렬 작업 충돌 회피 +
-worktree 풀이 board 모듈에 의존하지 않게 하기 위함(import 금지).
+장부 동시쓰기 보호 = **배타 파일락**(공용 `file_lock` seam·경로 규약
+`.local/worktree-leases.lock` 만 이 도구 소유). board.py 의 `board_lock` 과 *같은
+프리미티브*를 쓰지만 board 모듈에는 여전히 의존하지 않는다(top-level import 금지 — seam 은
+형제를 로드하지 않는 leaf).
 (예외 — `switch` 의 보호목록 조회만 board 를 **동적 sibling 로드**한다: `_load_board`·
 `_resolve_protected`. `identity_args`와 동형의 단방향 로더로 top-level import
 는 여전히 없고, 로드 실패는 default 보호목록 폴백이다.)
@@ -196,6 +197,24 @@ def _verify_engine_rev(sibling_module, sibling_filename):
 def _is_engine_rev_skew(exc):
     """fail-soft 소비 지점에서 rev skew만 재-raise하기 위한 구조화 판정."""
     return getattr(exc, "_engine_rev_skew", False)
+
+
+def _require_engine_sibling(path: Path, filename: str) -> None:
+    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
+
+    부재는 raw `FileNotFoundError` 로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
+    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew 로 표출한다
+    (board.py `_require_engine_sibling` 동형·self-contained 복제). *옵션* 형제(`_load_board`
+    처럼 부재가 정상 폴백인 곳)에는 쓰지 않는다."""
+    if path.exists():
+        return
+    err = RuntimeError(
+        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
+        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
+        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+    )
+    err._engine_rev_skew = True
+    raise err
 
 
 def _report_engine_rev_skew_at_terminal(exc) -> int:
@@ -848,47 +867,28 @@ def _now_local() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-# ── 자체 파일락 (board.py 와 같은 패턴·독립 구현·import 금지) ───────────────────
-# 장부 read-modify-write 를 직렬화한다. POSIX=fcntl.flock·Windows=msvcrt.locking·둘 다
-# 없으면 단일-머신 전제의 무락 폴백(락 파일만 생성). 프로세스가 죽으면 OS 가 락을 자동
-# 해제(stale-lock 없음). stdlib 만 사용(외부 filelock 의존 금지·런타임 의존은 stdlib+git).
-# ⚠ 위 "독립 구현·import 금지" 는 공용 `file_lock` seam 신설 *이전*의 사유다 — 그 seam 은 형제를
-#   로드하지 않는 leaf 라 이 사본도 같은 방식으로 수렴할 수 있다(후속 수렴 대상·현재는 스코프 밖).
+# ── 리스 장부 파일락 (경로 규약만 소유·플랫폼 분기는 공용 `file_lock` seam) ──────────
+# 장부 read-modify-write 를 직렬화한다. 프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock
+# 없음). 플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 seam 이 소유하고
+# 이 도구는 *어느 파일에 거는지*(`.local/worktree-leases.lock`)만 정한다.
+# board 를 top-level import 하지 않는다는 원칙은 그대로다 — seam 은 형제를 로드하지 않는
+# leaf 라 그 원칙과 무관하게 공유할 수 있다.
 
 
-def _flock_acquire(fd: int) -> None:
-    """OS 배타락 획득 (블로킹). POSIX=fcntl.flock·Windows=msvcrt.locking·폴백 no-op."""
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-        return
-    except ImportError:
-        pass
-    # 폴백: 락 프리미티브 없음 — 단일-머신 전제로 무락 진행(락 파일만 존재).
+def _load_file_lock():
+    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
 
-
-def _flock_release(fd: int) -> None:
-    """OS 배타락 해제. close 시 OS 가 자동 해제하지만 명시적으로 풀어 둔다."""
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        return
-    except ImportError:
-        pass
+    `_load_identity_args` 동형 — 경로-앵커 로더다. **import 시점** 바인딩으로 둔다(`file_lock`
+    전역·identity_args 와 같은 블록·board.py 동형): 장부의 *모든* op 가 이 락을 지나므로, 락을
+    잡을 때마다 형제를 로드하면 worktree_pool 을 fail-soft 로 소비하는 호출층(pm_bootstrap·
+    pm_handoff·pm_config)이 사본 skew 를 조용히 삼키는 경로가 장부 op 수만큼 늘어난다 —
+    import 경계 단일 fail-loud 로 그 확산을 막는다.
+    """
+    lock_path = Path(__file__).resolve().with_name("file_lock.py")
+    _require_engine_sibling(lock_path, "file_lock.py")
+    return _load_module_from_path(
+        lock_path, "file_lock.py", verifier=_verify_engine_rev,
+    )
 
 
 @contextlib.contextmanager
@@ -900,16 +900,8 @@ def _lease_lock() -> Iterator[None]:
     안 된다(flock 재진입 동작은 OS 별로 다름). 장부의 모든 read-modify-write 가 이 한
     구간 안에서 일어난다.
     """
-    LEASES_LOCK.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(LEASES_LOCK), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        _flock_acquire(fd)
-        try:
-            yield
-        finally:
-            _flock_release(fd)
-    finally:
-        os.close(fd)  # close 만으로도 OS 가 락을 해제 (크래시 시 안전망)
+    with file_lock.exclusive_file_lock(LEASES_LOCK):
+        yield
 
 
 # ── 장부 읽기/쓰기 (락 보유 전제) ────────────────────────────────────────────
@@ -1136,6 +1128,20 @@ def _stash(slot_path: Path, *, git_runner: GitRunner | None = None) -> tuple[int
     runner = git_runner or _real_git_runner(slot_path)
     return runner(["stash", "push", "--include-untracked",
                    "-m", f"worktree_pool auto-stash {_now_utc()}"])
+
+
+# `fetch origin` 실패 시 폴백 대상 ref 의 정체 — 경고 문구 단일 소스. remote-tracking ref
+# (`origin/<branch>`)가 기준이면 폴백 대상은 로컬 브랜치가 아니라 **직전 fetch 시점에 멈춘
+# remote-tracking ref** 다. 둘을 "로컬 …(동결 head)" 로 뭉뚱그리면 사용자가 로컬 브랜치를
+# 갱신해 해소하려 하지만(그 ref 는 안 움직인다) 실제 해소는 fetch 복구뿐이다.
+_REMOTE_TRACKING_PREFIX = "origin/"
+
+
+def _frozen_fallback_label(ref: str) -> str:
+    """fetch 실패 폴백 대상 표기 — 로컬 브랜치 / stale remote-tracking ref 를 구분한다."""
+    if ref.startswith(_REMOTE_TRACKING_PREFIX):
+        return f"stale remote-tracking `{ref}`(직전 fetch 시점 동결)"
+    return f"로컬 `{ref}`(동결 head)"
 
 
 # ── 슬롯 네이밍 ──────────────────────────────────────────────────────────────
@@ -3002,7 +3008,7 @@ def create_slot(
                     if rc != 0:
                         print(
                             f"[경고] `git -C {bare} fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
-                            f"  로컬 `{base}`(동결 head)에서 readonly 슬롯을 detach 한다 — 네트워크 복구 후 "
+                            f"  {_frozen_fallback_label(base)}에서 readonly 슬롯을 detach 한다 — 네트워크 복구 후 "
                             f"`{_runtime_skill_entry('pm-worktree')} refresh` 로 최신 released tip "
                             "으로 갱신하라 (fail-soft).",
                             file=sys.stderr,
@@ -3053,7 +3059,7 @@ def create_slot(
                 if rc != 0:
                     print(
                         f"[경고] `git -C {bare} fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
-                        f"  로컬 `{base}`(동결 head)에서 슬롯을 판다 — 네트워크 복구 후 새 슬롯은 "
+                        f"  {_frozen_fallback_label(base)}에서 슬롯을 판다 — 네트워크 복구 후 새 슬롯은 "
                         "origin 최신에서 시작한다 (fail-soft).",
                         file=sys.stderr,
                     )
@@ -3973,7 +3979,7 @@ class RefreshRefused(RuntimeError):
 
 
 def refresh(slot: str, *, onto: "str | None" = None,
-            git_runner: GitRunner | None = None) -> str:
+            git_runner: GitRunner | None = None) -> "tuple[str, str]":
     """readonly 공유 슬롯을 released 최신으로 갱신한다 — fetch → detached HEAD 이동 ().
 
     read-only 슬롯(detached·문서 검증 기준면)을 최신 released tip 으로 fast-forward 하는 유일 경로다
@@ -3984,15 +3990,27 @@ def refresh(slot: str, *, onto: "str | None" = None,
          (추론 금지).
       3. **dirty 거부 + loud** — 슬롯 worktree 에 미커밋 변경이 있으면 `RefreshRefused("dirty")`. read-only
          슬롯의 dirty 는 "누군가 썼다"는 신호라 조용히 reset 하지 않는다(감지=기계·해소=사용자).
-      4. **fetch → detach 이동** — `git fetch origin`(best-effort) 후 기준의 최신 tip(`origin/<branch>`
-         해소되면 그 최신·아니면 로컬 `<branch>`)으로 `git checkout --detach <ref>`(detached HEAD 이동).
+      4. **fetch → detach 이동** — `git fetch origin`(best-effort) 후 기준 ref 로 `git checkout
+         --detach <ref>`(detached HEAD 이동). **기준 ref 해소는 두 경로가 다르다**:
+           - `onto` **명시** = 준 ref 를 **그대로** 쓴다(로컬 브랜치명이면 로컬 tip·자동 대체 없음).
+             명시 인자를 `origin/<branch>` 로 조용히 바꾸면 미push 로컬 tip 으로 갱신할 길이 없고,
+             사용자가 지정한 기준과 실제 이동 지점이 어긋난 채 성공 보고된다. 원격 기준을 원하면
+             `origin/<branch>` 로 적는다. 해소 실패는 대체 없이 fail-loud(`RefreshRefused`).
+           - `onto` **미지정**(기록된 base.branch) = `origin/<branch>` 우선·미해소면 로컬 `<branch>`
+             폴백(readonly 기준면 = 공개된 released 상태라는 기본 경로 설계 의도 유지).
       4b. **submodule 재동기** — `git submodule update --init --recursive --force`(gitlink 옛 pin 잔존
          →stale+dirty 자가 잠금 방지·readonly=dev submodule 없어 전체 재동기 안전).
-      5. **스냅 갱신** — `record_git_snapshot(base_branch=해소된 branch)` — base.commit 을 새 head 로
-         갱신한다(onto 생략[기록된 base 로 refresh]에도 갱신 — HEAD 이동했는데 장부 base.commit
-         옛값 잔존 불일치 방지). refresh 는 base 가 정당하게 바뀌는 유일 지점( "rebase 로만" 의 readonly 예외).
-    반환 = detach 이동한 기준 ref(본체 CLI 가 보고). `git_runner` 주입 시 그 runner(테스트 hermetic·
-    미주입이면 슬롯 worktree 바인딩 실 runner)."""
+      5. **스냅 갱신** — `record_git_snapshot(base_branch=기준 branch)` — 기준 branch 는 onto(명시 시)
+         또는 기록된 base.branch 이며(무인자 경로에서 ref 가 origin/<branch> 로 해소돼도 장부에는 논리
+         branch 가 남는다), base.commit 을 새 head 로 갱신한다(onto 생략에도 갱신 — HEAD 이동했는데
+         장부 base.commit 옛값 잔존 불일치 방지). refresh 는 base 가 정당하게 바뀌는 유일 지점
+         ("rebase 로만" 의 readonly 예외). 주의: 명시 `--onto` 는 비-고착 — 장부에 남는 건 그 branch 명이라
+         다음 무인자 refresh 는 기본 규칙(origin 우선)대로 origin/<branch> 로 되돌아간다(성공 메시지의
+         실측 ref/sha 로 확인).
+    반환 = `(이동한 기준 ref, 이동 후 HEAD 커밋 sha)` — 본체 CLI 가 이 실측값을 그대로 보고한다(조용한
+    ref 대체 제거의 짝: 결과 메시지도 추정이 아니라 실제 해소값). sha 조회 불가는 빈 문자열(fail-soft·
+    이동 자체는 성공). `git_runner` 주입 시 그 runner(테스트 hermetic·미주입이면 슬롯 worktree 바인딩
+    실 runner)."""
     lease = read_lease_strict(slot)
     if lease is None or lease.role != _LEASE_ROLE_READONLY:
         raise RefreshRefused(slot, "not-readonly")
@@ -4019,26 +4037,33 @@ def refresh(slot: str, *, onto: "str | None" = None,
     if _is_dirty(slot_path(slot), git_runner=runner):
         raise RefreshRefused(slot, "dirty")
 
-    # fetch → 최신 tip 해소(origin/<branch> 우선·로컬 폴백) → detach 이동.
+    # fetch → 기준 ref 해소 → detach 이동 (해소 규칙은 docstring 4 — 명시 인자는 그대로·기본 경로만
+    # origin 우선). 명시 인자를 조용히 다른 ref 로 바꾸면 사용자가 지정한 기준과 실제 이동 지점이
+    # 어긋난 채 성공 보고된다(미push 로컬 tip 갱신 불가). 대체가 필요한 상황이면 loud 실패로 남긴다.
     ref = base_branch
     rc, out = runner(["fetch", "origin"])
     if rc != 0:
         print(
             f"[경고] 슬롯 {slot} `git fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
-            f"  로컬 `{base_branch}`(동결 head)로 detach 이동한다 — 네트워크 복구 후 재-refresh 하라 "
+            f"  {_frozen_fallback_label(base_branch)}로 detach 이동한다 — 네트워크 복구 후 재-refresh 하라 "
             "(fail-soft).",
             file=sys.stderr,
         )
-    else:
-        # base_branch 가 이미 `origin/…` 면 그대로·순수 브랜치명이면 origin/<branch> 해소 시도.
-        if not base_branch.startswith("origin/"):
-            rc2, _ = runner(["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base_branch}"])
-            if rc2 == 0:
-                ref = f"origin/{base_branch}"
+    elif onto is None and not base_branch.startswith("origin/"):
+        # `--onto` 미지정 기본 경로 한정 — 기록된 base.branch 는 순수 브랜치명이면 origin/<branch> 로
+        # 해소 시도(공개 released 상태 = readonly 기준면), 미해소면 로컬 <branch> 폴백.
+        rc2, _ = runner(["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base_branch}"])
+        if rc2 == 0:
+            ref = f"origin/{base_branch}"
     rc, out = runner(["checkout", "--detach", ref])
     if rc != 0:
+        # 명시 인자 해소 실패는 자동 대체 없이 여기서 끝난다 — 대안(원격 기준)은 사용자가 명시한다.
+        hint = ("" if onto is None else
+                " — `--onto` 는 준 ref 를 그대로 해소한다(자동 대체 없음). 원격 기준을 원하면 "
+                "`origin/<branch>` 로 명시하라")
         raise RefreshRefused(slot, "git-error",
-                             detail=f"`git checkout --detach {ref}` 실패 (rc={rc}): {str(out).strip()[:200]}")
+                             detail=f"`git checkout --detach {ref}` 실패 (rc={rc}): "
+                                    f"{str(out).strip()[:200]}{hint}")
     # submodule 재동기 () — `checkout --detach` 는 superproject HEAD 만 옮기고
     # submodule gitlink 는 **옛 pin 잔존** → readonly 기준면이 stale + `git status` dirty(gitlink 변경)
     # 로 남아 **다음 refresh 가 자기 dirty 거부에 걸리는 자가 잠금**이 된다(create_slot 은 init 하는데
@@ -4049,14 +4074,16 @@ def refresh(slot: str, *, onto: "str | None" = None,
     if rc != 0:
         raise RefreshRefused(slot, "git-error",
                              detail=f"submodule 재동기 실패 (rc={rc}): {str(out).strip()[:200]}")
-    # 스냅 갱신 () — base 를 **해소된 branch 로 재기록**해 base.commit=새 head 로
+    # 스냅 갱신 () — base 를 **기준 branch(onto 또는 기록된 base.branch)로 재기록**해 base.commit=새 head 로
     # 갱신한다. onto 생략(기록된 base.branch 로 refresh)에도 base_branch 를 넘겨야, HEAD 는 최신
     # origin/<base> 로 이동했는데 장부 base.commit 은 옛 커밋으로 남아 status "N behind"·기준면 기록이
     # 실제와 어긋나는 불일치를 막는다. refresh(readonly 전용)는 set-base/rebase 외에 base 가 바뀌는
     # *유일한 정당 지점*이다( "base 는 rebase 로만" 결정의 readonly 예외 — detached 기준면 이동이 곧
     # base 이동). base_commit 미지정 → `_apply_git_snapshot` 이 방금 스냅한 head 를 commit 으로 쓴다.
     record_git_snapshot(slot, base_branch=base_branch, git_runner=git_runner)
-    return ref
+    # 이동 후 실 HEAD sha — 결과 메시지가 "어느 ref 의 어느 커밋으로 갔는지"를 실측으로 보고하게 한다
+    # (해소 규칙을 사용자 명시 존중으로 바꾼 것의 짝). 조회 불가는 "" fail-soft(이동 자체는 성공).
+    return ref, (_slot_head(runner) or "")
 
 
 def _parse_base_ref(base_arg: str) -> "tuple[str, str | None]":
@@ -4425,7 +4452,7 @@ def _rebase_one(slot: str, *, onto: "str | None", owner: str,
     if rc != 0:
         print(
             f"[경고] 슬롯 {slot} `git fetch origin` 실패 (rc={rc}): {str(out).strip()[:200]}\n"
-            f"  로컬 `{base_branch}`(동결)로 rebase 를 시도한다 — 네트워크 복구 후 재시도 권장 "
+            f"  {_frozen_fallback_label(base_branch)}로 rebase 를 시도한다 — 네트워크 복구 후 재시도 권장 "
             "(fail-soft).",
             file=sys.stderr,
         )
@@ -5417,9 +5444,12 @@ def _load_identity_args():
 
 
 # state 생성과 handoff 갱신이 같은 marker를 쓰도록 literal은 identity_args 한 곳만 소유한다.
-# 앞서 정의된 함수들은 이 전역을 호출 시점에 조회하므로 module import 계약은 그대로다.
+# 앞서 정의된 함수들은 이 전역을 호출 시점에 조회하므로 module import 계약은 그대로다
+# (`file_lock` 도 같은 이유로 여기서 묶어 바인딩한다 — `_lease_lock` 은 위에 정의돼 있지만
+#  호출 시점에 이 전역을 본다·board.py 의 identity_args+file_lock 동시 바인딩 동형).
 try:
     _identity_args = _load_identity_args()
+    file_lock = _load_file_lock()
 except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
     if _is_engine_rev_skew(exc):
         if __name__ == "__main__":
@@ -5673,19 +5703,23 @@ def _cmd_rebase(args) -> int:
 def _cmd_refresh(args) -> int:
     """`refresh <slot> [--onto <branch>]` CLI 핸들러 — readonly 슬롯 갱신 ().
 
-    fetch → detached HEAD 를 기준(onto 또는 기록된 base.branch) 최신 tip 으로 이동한다. dirty(누군가
-    씀·신호)·미readonly·base 미해소는 rc 1 로 명시 실패(`RefreshRefused`·조용히 reset 안 함)."""
+    fetch → detached HEAD 를 기준(onto 또는 기록된 base.branch) 최신 tip 으로 이동한다. `--onto` 는 준
+    ref 를 그대로 해소하고(자동 대체 없음·원격 기준은 `origin/<branch>` 로 명시), 생략 시에만 기록된
+    base.branch 를 origin 우선으로 해소한다. 성공 메시지는 백본이 돌려준 **실제 이동 ref + HEAD sha**
+    를 그대로 찍는다. dirty(누군가 씀·신호)·미readonly·base 미해소·ref 해소 실패는 rc 1 로 명시
+    실패(`RefreshRefused`·조용히 reset 안 함)."""
     try:
         slot = _normalize_slot(args.slot)
     except SlotResolutionError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
     try:
-        ref = refresh(slot, onto=args.onto)
+        ref, head = refresh(slot, onto=args.onto)
     except RefreshRefused as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
-    print(f"✓ 슬롯 {slot} refresh: detached HEAD → {ref} 최신 tip 으로 이동(fetch→detach).")
+    print(f"✓ 슬롯 {slot} refresh: detached HEAD → {ref} @ {(head or '?')[:12]} "
+          "로 이동(fetch→detach).")
     return 0
 
 
@@ -5833,7 +5867,9 @@ def _main(argv: "list[str] | None" = None) -> int:
         help="readonly 공유 슬롯을 released 최신으로 갱신(fetch→detach 이동·dirty=거부+loud).")
     p_refresh.add_argument("slot", help="대상 readonly 슬롯(`work/<repo>_<N>` 또는 접두 생략 `<repo>_<N>`).")
     p_refresh.add_argument("--onto", default=None,
-                           help="갱신 기준 브랜치(생략 시 기록된 base.branch·둘 다 없으면 거부).")
+                           help="갱신 기준 ref — 준 값 그대로 해소한다(로컬 브랜치명=로컬 tip·원격 기준은 "
+                                "`origin/<branch>` 로 명시·자동 대체 없음). 생략 시 기록된 "
+                                "base.branch 를 origin 우선으로 해소하고, 둘 다 없으면 거부.")
 
     # record <slot> — 도착 기대 스냅(lease.git)을 live 로 재기록(base 보존·위치인자 <slot>).
     # 0단계 record-vs-live diverged FAIL-LOUD 를 사용자가 정당(의도한 브랜치 전환 등)이라 판단했을

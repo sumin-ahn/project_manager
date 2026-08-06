@@ -42,10 +42,11 @@ CODEX_BIN = "codex"
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음·codex reasoning).
 
 # ── ctx 기계 가드 상수 (ADR-0070 D4 ①·ADR-0041 — 엔진 ctx_guard 미러) ──────────
-# 엔진 ctx-guard 는 "잔여 <= ctx_stop_pct" 에서 정지한다 — relay 경로엔 plugin 채널이 없어 driver 가
-# usage 로 그 정지점을 직접 미러한다. 임계는 local.conf `ctx_stop_pct` override 해소(기본 20·아래
-# resolve_stop_pct·claude ctx_guard.ctx_thresholds 대칭). 잔여 20% 정지 ⟺ 사용률 80%.
-CTX_STOP_PCT_DEFAULT = 20  # 잔여 정지 임계(%) — claude ctx_guard.CTX_STOP_PCT_DEFAULT 미러.
+# 엔진 밴드 "잔여 <= ctx_stop_pct" 는 세션 안에서 최종 checkpoint 넛지(비차단)로 소비된다 — relay
+# 경로는 그 같은 경계에서 driver 가 usage 로 **회전** 한다(post-turn marker → Supervisor 가 새 세션
+# 으로 교체·실보호는 회전이 한다). 임계는 local.conf `ctx_stop_pct` override 해소(기본 20·아래
+# resolve_stop_pct·claude ctx_guard.ctx_thresholds 대칭). 잔여 20% 회전 ⟺ 사용률 80%.
+CTX_STOP_PCT_DEFAULT = 20  # 잔여 회전 임계(%) — claude ctx_guard.CTX_STOP_PCT_DEFAULT 미러.
 # ctx 예산(분모) 최종 폴백 — local.conf ctx_window_tokens_<codex|generic> 미설정 시(ADR-0041).
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
@@ -117,10 +118,10 @@ def resolve_ctx_budget(conf: dict[str, str]) -> int:
 
 
 def resolve_stop_pct(conf: dict[str, str]) -> int:
-    """ctx 정지 임계(잔여 %)를 conf `ctx_stop_pct` 로 해소 — 없으면/비정상이면 기본 20.
+    """회전 임계(잔여 %)를 conf `ctx_stop_pct` 로 해소 — 없으면/비정상이면 기본 20.
 
     claude `ctx_guard.ctx_thresholds` 의 stop 축과 대칭(sanity: 0 < stop < 100·위반 시 기본 폴백).
-    relay 기계 가드는 정지만 판정하므로 nudge 축은 불요 — driver 는 이 하나로 예산 정지점을 잡는다."""
+    relay 기계 가드는 회전 시점만 판정하므로 nudge 축은 불요 — driver 는 이 하나로 회전 경계를 잡는다."""
     raw = conf.get("ctx_stop_pct")
     if raw is None:
         return CTX_STOP_PCT_DEFAULT

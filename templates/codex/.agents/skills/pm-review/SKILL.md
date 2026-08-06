@@ -1,6 +1,6 @@
 ---
 name: pm-review
-description: "codex 외부 교차검증 게이트 실행 규율 명령어化 — worktree cwd 앵커 + stage 선행(git add) + --paths/--ticket 경로 핀. backbone = external_review.py(opt-in). adopter#0 PM 홈 앵커면 external_review 가 빈 diff false-green 을 loud 차단·worktree 재지정 안내. 외부 전송은 과금·load-bearing 게이트에만(사소 docs 는 self/내부 리뷰). Triggers: 'codex 게이트', '외부 교차검증', 'external review 돌려', 'pm-review'."
+description: "codex 외부 교차검증 게이트 실행 규율 명령어化 — worktree cwd 앵커 + stage 선행(git add) + --paths/--ticket 경로 핀. backbone = external_review.py(opt-in). 앵커는 명시 selector 기반 diff_root 해소(등록 슬롯 lease 장부 자동 파생)·소유 PM 홈 해소 불가 무인자 실행은 rc=1 차단. 외부 전송은 과금·load-bearing 게이트에만(사소 docs 는 self/내부 리뷰). Triggers: 'codex 게이트', '외부 교차검증', 'external review 돌려', 'pm-review'."
 audience: pm-internal
 ---
 
@@ -21,7 +21,7 @@ backbone은 `.project_manager/tools/external_review.py`(opt-in)이며, PM이 외
 
 ## 라운드 상한
 
-engine은 `--gate <T-NNNN>`별 라운드 장부를 세고 한도(기본 4, `local.conf`의 `external_review_round_limit`) 초과분을 실행 전에 거부한다(rc=4). 호출 전 예약되며 전송-전 실패만 환불되어 반복 타임아웃으로 우회할 수 없다.
+engine은 `--gate <T-NNNN>`별 라운드 장부를 세고 한도(기본 4, `local.conf`의 `external_review_round_limit`) 초과분을 실행 전에 거부한다(rc=4). 호출 전 예약되며 전송-전 실패만 환불되어 반복 타임아웃으로 우회할 수 없다. 미완(미마감) 라운드는 별도 상한(기본 2, `DEFAULT_INCOMPLETE_ROUND_LIMIT`)이 먼저 걸린다.
 
 1. rc=4 → 즉시 사용자에게 보고하고 대기한다. 보고 내용: *지금까지 라운드 수 · 라운드별 수락/기각 판정 요지 · 남은 findings의 실질성 평가 · 계속/종결/설계-재질문 권고*.
 2. 사용자가 계속을 승인한 경우에만 `--ack-rounds`를 붙여 재개한다(+한도만큼 창이 열린다). **승인 없이 `--ack-rounds` 금지**. 엔진은 기록만 하고 승인 게이트는 이 규율이다.
@@ -33,14 +33,14 @@ engine은 `--gate <T-NNNN>`별 라운드 장부를 세고 한도(기본 4, `loca
 
 ### 1. worktree cwd 앵커
 
-실 코드가 변경된 worktree cwd의 canonical `external_review.py`로 실행한다. adopter#0에서 PM 홈 import 사본은 stale이며 REPO 앵커가 PM 홈을 가리키면 diff가 비어 false-green이 난다.
+실 코드가 변경된 worktree cwd의 canonical `external_review.py`로 실행한다(엔진 갱신 동기 전 PM 홈 import 사본은 stale 일 수 있다). 앵커 해소는 명시 selector 기반이다 — `--ticket`/`--paths` 를 주면 엔진이 lease 장부에서 diff worktree 를 자동 파생하므로 PM 홈 cwd 에서도 올바른 슬롯으로 해소된다(provenance 첫 줄의 `diff_root` 로 확인).
 
 ```bash
 # canonical 코드 worktree 에서 실행 (PM 홈 import 사본 금지).
 cd <worktree-canonical-경로>     # 예 work/project_manager_1
 ```
 
-external_review가 PM 홈 앵커 + `--paths` 미지정을 loud 차단하고 worktree 재지정 경로를 안내하면, `cd <worktree>` 후 재실행한다.
+소유 PM 홈을 해소할 수 없는 위치의 **무인자 실행은 rc=1 로 차단**된다(경고 후 진행 없음). 커밋만 된 변경으로 슬롯을 고르려면 `--base` 앵커를 명시한다. 복구 채널은 `--paths`(절대경로)·유효한 `--ticket` 이다.
 
 ### 2. stage 선행
 

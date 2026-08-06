@@ -1,15 +1,18 @@
-"""공용 배타 파일락 seam 회귀 (T-0561).
+"""공용 동시-쓰기 파일 프리미티브 seam 회귀 (T-0561·T-0565).
 
-board(`board.lock`·`board-git.lock`)·pm_log(`log.lock`)·pm_relay(raw 장부 `<ledger>.lock`)가
-각자 복제하던 플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)를 `file_lock.py` 하나로
-수렴했다. 검증 축:
+`file_lock.py` 가 두 프리미티브를 소유한다 — **배타 파일락**(board `board.lock`·
+`board-git.lock` / pm_log `log.lock` / pm_relay raw 장부 `<ledger>.lock` / pm_handoff
+`dashboard.lock` / worktree_pool `worktree-leases.lock` / external_review 라운드 장부
+`review_rounds.lock`)과 **O_APPEND 원자 추가**(board areas 등록 · pm_log log append). 각 도구가
+복제하던 플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)와 append 구현을 한 곳으로 수렴했다.
+검증 축:
 
   1. seam 자체 — 경로/권한/획득·해제·close 순서, 실 프로세스 간 상호배제, 보유자 크래시 시
-     OS 자동 해제(stale lock 없음).
-  2. 소비 — 3 도구가 *같은 파일*의 seam 을 쓰고 각자의 락 경로 규약(0o600·`.local/log.lock`
-     등)은 그대로 보존한다.
-  3. 재-복제 차단 — 수렴한 3 도구에 플랫폼 락 분기가 되살아나면 red. 아직 수렴 안 한 사본은
-     사유와 함께 등재해 이 가드가 후속 티켓에서 조여지게 둔다.
+     OS 자동 해제(stale lock 없음), append 의 O_APPEND 단일 write.
+  2. 소비 — 소비 도구가 *같은 파일*의 seam 을 쓰고 각자의 경로 규약(0o600·`.local/log.lock`·
+     `.local/dashboard.lock` 등)은 그대로 보존한다.
+  3. 재-복제 차단 — 어느 도구에든 플랫폼 락 분기나 O_APPEND write 가 되살아나면 red. 미수렴
+     사본 등재부는 현재 0건(수렴 완결)이라 등재를 되살리려면 완결 단언을 함께 손대야 한다.
   4. 사본 skew — 소비자가 stale `file_lock.py` 를 만나면 marked skew 로 fail-loud.
 
 도구는 패키지가 아니므로 importlib 경로 로드 관용구를 쓴다(test_pm_log 동형).
@@ -22,7 +25,9 @@ import multiprocessing as mp
 import os
 import re
 import shutil
+import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -33,19 +38,18 @@ FILE_LOCK_PY = TOOLS / "file_lock.py"
 
 SYNC_TIMEOUT = 120
 
-# 아직 공용 seam 으로 수렴하지 않은 사본 — **구조적 면제가 아니라 이번 스코프 밖일 뿐**이다.
-# (T-0561 은 board/pm_log/pm_relay 3 도구만 수렴했다.) 공용 seam 은 형제를 로드하지 않는 leaf 라
-# 이 3 도구도 같은 방식으로 수렴할 수 있다 — 각 사본의 "독립 구현·import 금지" 주석은 seam 신설
-# *이전*의 사유이므로 후속 수렴 때 코드와 함께 지운다. 하나씩 지우면 이 가드가 자동으로 조여지고,
-# 목록 밖 새 사본이 생기면 red.
-PENDING_DUPLICATE_LOCK_MODULES = {
-    "pm_handoff.py": "대시보드 자체 파일락 — T-0561 스코프 밖·후속 수렴 대상",
-    "worktree_pool.py": "리스 장부 자체 파일락 — T-0561 스코프 밖·후속 수렴 대상",
-    "external_review.py": "라운드 장부 자체 파일락 — T-0561 스코프 밖·후속 수렴 대상",
-}
+# 아직 공용 seam 으로 수렴하지 않은 사본의 등재부 — **현재 0건**(전 도구 수렴 완결: board·
+# pm_log·pm_relay·pm_handoff·worktree_pool·external_review). 비어 있는 상태가 정상이고,
+# `test_lock_convergence_has_no_pending_duplicates` 가 그 완결을 박제한다. 새 사본이 불가피하면
+# 사유와 함께 등재하되(그만큼 가드가 느슨해진다) 그 완결 테스트도 함께 손대야 하므로, 조용히
+# 미수렴 사본이 되살아나지 않는다.
+PENDING_DUPLICATE_LOCK_MODULES: dict[str, str] = {}
 
 # 플랫폼 락 프리미티브 (모듈 → 그 모듈의 락 호출 이름). 주석·문자열 아님·AST 로만 판정.
 _LOCK_PRIMITIVES = {"fcntl": {"flock"}, "msvcrt": {"locking"}}
+
+# O_APPEND 원자 추가 플래그 — 이 이름을 *참조*하는 모듈이 곧 append write 사본 보유자다.
+_APPEND_FLAG = "O_APPEND"
 
 
 def _load(path: Path, name: str):
@@ -109,6 +113,37 @@ def _modules_with_platform_lock_calls() -> dict[str, int]:
     return {name: calls for name, calls in found.items() if calls}
 
 
+def _append_flag_reference_count(source: str) -> int:
+    """소스 한 벌의 `O_APPEND` 참조 수 (from-import 별칭 해소·주석/문자열 제외).
+
+    append write 는 락처럼 전용 호출 이름이 없고 `os.open` 의 *플래그*로 드러난다 — 그래서
+    플래그 이름 참조를 센다. `_lock_call_count` 와 같은 이유로 별칭을 해소한다.
+    """
+    tree = ast.parse(source)
+    direct_names = {_APPEND_FLAG}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "os":
+            for alias in node.names:
+                if alias.name == _APPEND_FLAG:
+                    direct_names.add(alias.asname or alias.name)
+    count = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == _APPEND_FLAG:
+            count += 1
+        elif isinstance(node, ast.Name) and node.id in direct_names:
+            count += 1
+    return count
+
+
+def _modules_with_append_writes() -> dict[str, int]:
+    """tools/ 에서 O_APPEND write 를 직접 구현하는 모듈 → 플래그 참조 수."""
+    found = {
+        path.name: _append_flag_reference_count(path.read_text(encoding="utf-8"))
+        for path in sorted(TOOLS.glob("*.py"))
+    }
+    return {name: refs for name, refs in found.items() if refs}
+
+
 # ── 1. seam 자체 ──────────────────────────────────────────────────────────
 
 def test_lock_file_and_parent_directory_are_created_with_requested_mode(
@@ -158,6 +193,37 @@ def test_acquire_release_close_wrap_the_critical_section(
         with file_lock.exclusive_file_lock(tmp_path / "a.lock"):
             raise RuntimeError("boom")
     assert calls == ["acquire", "release", "close"]
+
+
+def test_primitive_failure_is_raised_instead_of_progressing_lockless(
+    file_lock, tmp_path, monkeypatch,
+):
+    """프리미티브가 *있는데* 획득이 실패하면 무락 진행하지 않고 그대로 올린다 (계약 핀).
+
+    무락 폴백은 프리미티브 **부재**(import 실패) 전용이다 — 획득 실패(Windows msvcrt 재시도
+    소진 등)를 삼키면 배타성 없는 임계 구역이 성공으로 위장돼 직렬화가 조용히 사라진다.
+    실패해도 fd 는 닫힌다(누수 0).
+    """
+    stub = types.ModuleType("fcntl")
+    stub.LOCK_EX = 2
+    stub.LOCK_UN = 8
+
+    def _boom(fd, operation):
+        raise OSError(11, "resource temporarily unavailable")
+
+    stub.flock = _boom
+    monkeypatch.setitem(sys.modules, "fcntl", stub)
+    closed: list[int] = []
+    real_close = os.close
+    monkeypatch.setattr(
+        file_lock.os, "close", lambda fd: closed.append(fd) or real_close(fd)
+    )
+
+    with pytest.raises(OSError):
+        with file_lock.exclusive_file_lock(tmp_path / "contended.lock"):
+            pytest.fail("배타성 없이 임계 구역에 진입했다")
+
+    assert len(closed) == 1
 
 
 def test_lock_file_survives_the_critical_section(file_lock, tmp_path):
@@ -254,26 +320,98 @@ def test_second_process_is_excluded_and_crash_releases_the_lock(tmp_path):
         child.join(timeout=10)
 
 
-# ── 2. 소비 (3 도구가 같은 seam 파일을 쓴다) ────────────────────────────────
+def test_append_atomic_creates_the_file_and_appends_without_truncating(
+    file_lock, tmp_path,
+):
+    """append 는 없으면 만들고, 있으면 끝에 붙인다 (덮어쓰기 아님·수렴 전 동작 보존)."""
+    target = tmp_path / "areas.md"
+    file_lock.append_atomic(target, "line1\n")
+    file_lock.append_atomic(target, "line2\n")
+    assert target.read_text(encoding="utf-8") == "line1\nline2\n"
 
-def test_board_binds_the_canonical_seam_at_import():
-    """board 는 모듈 import 시점에 canonical `file_lock.py` 를 바인딩한다 (지연 로드 아님).
 
-    락을 잡을 때마다 형제를 로드하면 board 를 fail-soft 로 소비하는 호출층이 사본 skew 를
-    조용히 삼키는 경로가 생긴다 — import 경계 단일 fail-loud 로 그 확산을 막는다.
+def test_append_atomic_uses_one_o_append_write_with_requested_mode(
+    file_lock, tmp_path, monkeypatch,
+):
+    """RMW 없이 O_APPEND 단일 write — open/write/close 3콜·권한은 호출자 소유."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        file_lock.os,
+        "open",
+        lambda path, flags, mode=0: calls.append(("open", path, flags, mode)) or 41,
+    )
+    monkeypatch.setattr(
+        file_lock.os, "write", lambda fd, payload: calls.append(("write", fd, payload))
+    )
+    monkeypatch.setattr(file_lock.os, "close", lambda fd: calls.append(("close", fd)))
+
+    target = tmp_path / "current.md"
+    file_lock.append_atomic(target, "\nentry")
+    file_lock.append_atomic(target, "x", mode=0o600)
+
+    assert calls[0][0:2] == ("open", str(target))
+    assert calls[0][2] & os.O_APPEND and calls[0][2] & os.O_CREAT
+    assert calls[0][2] & os.O_WRONLY == os.O_WRONLY
+    assert calls[0][3] == file_lock.DEFAULT_APPEND_MODE == 0o644
+    assert calls[1:3] == [("write", 41, b"\nentry"), ("close", 41)]
+    assert calls[3][3] == 0o600
+
+
+def test_append_atomic_closes_the_descriptor_when_the_write_fails(
+    file_lock, tmp_path, monkeypatch,
+):
+    """write 실패에도 fd 를 닫는다 (예외 경로 누수 0)."""
+    closed: list[int] = []
+    real_close = os.close
+    monkeypatch.setattr(
+        file_lock.os, "close", lambda fd: closed.append(fd) or real_close(fd)
+    )
+
+    def boom(fd, payload):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(file_lock.os, "write", boom)
+    with pytest.raises(OSError):
+        file_lock.append_atomic(tmp_path / "a.md", "x")
+    assert len(closed) == 1
+
+
+# ── 2. 소비 (수렴 도구가 같은 seam 파일을 쓴다) ─────────────────────────────
+
+@pytest.mark.parametrize(
+    "tool", ("board.py", "pm_handoff.py", "worktree_pool.py")
+)
+def test_import_time_consumers_bind_the_canonical_seam(tool):
+    """락이 *모든* 변경 경로에 깔린 도구는 import 시점에 seam 을 바인딩한다 (지연 로드 아님).
+
+    락을 잡을 때마다 형제를 로드하면 그 도구를 fail-soft 로 소비하는 호출층이 사본 skew 를
+    조용히 삼키는 경로가 락 호출 그래프만큼 늘어난다(test_engine_rev_failsoft_guard 의 경계
+    ratchet 이 그 확산을 계량한다) — import 경계 단일 fail-loud 로 그 확산을 막는다.
     """
-    board = _load(TOOLS / "board.py", "board_file_lock_seam")
-    assert Path(board.file_lock.__file__).resolve() == FILE_LOCK_PY.resolve()
+    module = _load(TOOLS / tool, f"{tool[:-3]}_file_lock_seam")
+    assert Path(module.file_lock.__file__).resolve() == FILE_LOCK_PY.resolve()
     assert "with file_lock.exclusive_file_lock(" in (
-        TOOLS / "board.py"
+        TOOLS / tool
     ).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("tool", ("pm_log.py", "pm_relay.py"))
+@pytest.mark.parametrize("tool", ("pm_log.py", "pm_relay.py", "external_review.py"))
 def test_lazy_consumers_load_the_canonical_seam(tool):
-    """pm_log·pm_relay 는 write 경로에서만 seam 을 로드한다(읽기 경로 fail-soft 보존)."""
+    """지연 소비자는 쓰는 경로에서만 seam 을 로드한다(읽기·재사용 경로 fail-soft 보존)."""
     module = _load(TOOLS / tool, f"{tool[:-3]}_file_lock_seam")
     assert Path(module._load_file_lock().__file__).resolve() == FILE_LOCK_PY.resolve()
+
+
+def test_board_append_uses_the_seam_instead_of_its_own_o_append_write():
+    """board 의 areas 등록은 seam append 로 위임한다 (자체 O_APPEND write 0).
+
+    (pm_log 쪽 append 위임은 그 도구 suite 가 대역으로 라우팅까지 본다 —
+    `test_pm_log.py::test_append_log_delegates_the_write_to_the_shared_seam`.)
+    """
+    board = _load(TOOLS / "board.py", "board_append_seam")
+    source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    assert "file_lock.append_atomic(" in source
+    assert not hasattr(board, "_append_atomic")
 
 
 def test_relay_raw_ledger_lock_keeps_its_path_and_permission_convention(
@@ -307,12 +445,56 @@ def test_pm_log_lock_path_stays_in_project_local(tmp_path):
     assert (tmp_path / ".project_manager" / ".local" / "log.lock").is_file()
 
 
+def _record_seam_opens(lock_module, monkeypatch) -> list[tuple]:
+    """seam 이 여는 (경로, 권한)을 기록한다 (실제 open 은 그대로 수행)."""
+    seen: list[tuple] = []
+    real_open = os.open
+    monkeypatch.setattr(
+        lock_module.os,
+        "open",
+        lambda path, flags, mode=0: seen.append((Path(path), mode))
+        or real_open(path, flags, mode),
+    )
+    return seen
+
+
+def test_handoff_dashboard_lock_keeps_its_path_and_permission_convention(
+    tmp_path, monkeypatch,
+):
+    """대시보드 락 = `.project_manager/.local/dashboard.lock` · 0o644 (수렴 전 규약 보존)."""
+    handoff = _load(TOOLS / "pm_handoff.py", "pm_handoff_file_lock_seam")
+    monkeypatch.setattr(handoff, "REPO", tmp_path)
+    seen = _record_seam_opens(handoff.file_lock, monkeypatch)
+
+    with handoff._dashboard_lock():
+        pass
+
+    assert seen == [
+        (tmp_path / ".project_manager" / ".local" / "dashboard.lock", 0o644)
+    ]
+
+
+def test_worktree_pool_lease_lock_keeps_its_path_and_permission_convention(
+    tmp_path, monkeypatch,
+):
+    """리스 장부 락 = `.local/worktree-leases.lock` · 0o644 (수렴 전 규약 보존)."""
+    pool = _load(TOOLS / "worktree_pool.py", "worktree_pool_file_lock_seam")
+    lock_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.lock"
+    monkeypatch.setattr(pool, "LEASES_LOCK", lock_path)
+    seen = _record_seam_opens(pool.file_lock, monkeypatch)
+
+    with pool._lease_lock():
+        pass
+
+    assert seen == [(lock_path, 0o644)]
+
+
 # ── 3. 재-복제 차단 ───────────────────────────────────────────────────────
 
 def test_platform_lock_branch_lives_only_in_the_shared_seam():
     """플랫폼 락 호출은 공용 seam + 아직 미수렴 사본(등재분)에만 있다.
 
-    수렴한 board/pm_log/pm_relay 에 분기가 되살아나거나, 등재 밖 모듈에 새 사본이 생기면 red.
+    수렴한 도구에 분기가 되살아나거나, 등재 밖 모듈에 새 사본이 생기면 red.
     미수렴 사본이 후속 티켓에서 수렴하면 이 목록을 함께 지운다.
     """
     measured = set(_modules_with_platform_lock_calls())
@@ -324,12 +506,88 @@ def test_platform_lock_branch_lives_only_in_the_shared_seam():
     assert all(reason.strip() for reason in PENDING_DUPLICATE_LOCK_MODULES.values())
 
 
+def test_lock_convergence_has_no_pending_duplicates():
+    """수렴 완결 박제 — 미수렴 등재 0건이고 플랫폼 락 분기는 seam 단 하나다.
+
+    등재부를 다시 채우려면 이 단언을 의도적으로 손봐야 한다(조용한 되돌림 차단).
+    """
+    assert PENDING_DUPLICATE_LOCK_MODULES == {}
+    assert set(_modules_with_platform_lock_calls()) == {"file_lock.py"}
+
+
 def test_converged_tools_delegate_instead_of_reimplementing():
-    """3 도구는 락 컨텍스트를 seam 위임으로만 연다 (자체 open+acquire 재구현 0)."""
-    for tool in ("board.py", "pm_log.py", "pm_relay.py"):
+    """수렴 도구는 락 컨텍스트를 seam 위임으로만 연다 (자체 open+acquire 재구현 0)."""
+    for tool in (
+        "board.py", "pm_log.py", "pm_relay.py", "pm_handoff.py", "worktree_pool.py",
+        "external_review.py",
+    ):
         source = (TOOLS / tool).read_text(encoding="utf-8")
         assert "exclusive_file_lock(" in source, tool
         assert not re.search(r"def _[a-z_]*flock_(acquire|release)\b", source), tool
+
+
+def test_o_append_write_lives_only_in_the_shared_seam():
+    """O_APPEND write 도 공용 seam 한 곳뿐이다 (board/pm_log 사본 수렴분).
+
+    판정 폭은 락 가드와 같다 — `tools/*.py` 전수를 AST 로 훑어 **`O_APPEND` 플래그 참조**를
+    센다(주석·문자열 제외·`from os import O_APPEND as X` 별칭 해소). 락 가드가 호출 이름으로
+    보는 자리를 append 는 플래그 이름으로 볼 뿐 대상 범위는 동일하다. 문자열 조립
+    (`getattr(os, "O_APPEND")`)은 두 가드 모두의 사각이다 — 재복제는 그렇게 우회하지 않고
+    쓰이므로 이 폭을 의도적으로 유지한다.
+    """
+    assert set(_modules_with_append_writes()) == {"file_lock.py"}
+
+
+def test_converged_tools_delegate_the_append_write():
+    """append 소비 도구는 `_append_atomic` 사본을 정의하지 않고 seam 을 부른다."""
+    for tool in ("board.py", "pm_log.py"):
+        source = (TOOLS / tool).read_text(encoding="utf-8")
+        assert "append_atomic(" in source, tool
+        assert not re.search(r"^def _append_atomic\b", source, re.MULTILINE), tool
+
+
+@pytest.mark.parametrize(
+    ("label", "snippet"),
+    (
+        ("plain", "import os\nos.open(p, os.O_WRONLY | os.O_APPEND, 0o644)\n"),
+        (
+            "from-import",
+            "from os import O_APPEND, open as _open\n_open(p, O_APPEND, 0o644)\n",
+        ),
+        (
+            "from-import-alias",
+            "from os import O_APPEND as _APP\nos.open(p, _APP, 0o644)\n",
+        ),
+    ),
+)
+def test_append_guard_counts_aliased_and_from_imported_flags(label, snippet):
+    """별칭·from-import 로 우회한 append 재복제도 가드가 센다."""
+    assert _append_flag_reference_count(snippet) >= 1, label
+
+
+def test_mutation_reintroduced_append_write_in_converged_tool_is_red():
+    """수렴 도구에 자체 O_APPEND write 를 되살리면 가드가 red 로 잡는다 (감도 실증)."""
+    source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    mutated = source.replace(
+        "        file_lock.append_atomic(\n            af,",
+        "        _fd = os.open(str(af), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)\n"
+        "        os.close(_fd)\n"
+        "        file_lock.append_atomic(\n            af,",
+        1,
+    )
+    assert mutated != source, "변이 앵커 소실"
+    assert _append_flag_reference_count(source) == 0, "board.py 는 수렴 상태여야 한다"
+    assert _append_flag_reference_count(mutated) > 0
+
+
+def test_append_guard_ignores_flag_names_in_comments_and_strings():
+    """주석·문자열의 O_APPEND 언급은 세지 않는다(AST 판정·문서화 자유)."""
+    prose = (
+        '"""append 는 os.O_APPEND 단일 write 다."""\n'
+        "# os.open(path, os.O_WRONLY | os.O_APPEND, 0o644)\n"
+        'DOC = "O_APPEND"\n'
+    )
+    assert _append_flag_reference_count(prose) == 0
 
 
 @pytest.mark.parametrize(
@@ -413,6 +671,9 @@ def _make_stale(path: Path) -> None:
         ("board", ("identity_args", "repo_owned_files", "engine_rev", "console_encoding")),
         ("pm_log", ("identity_args", "repo_owned_files")),
         ("pm_relay", ("repo_owned_files",)),
+        ("pm_handoff", ("identity_args", "repo_owned_files", "console_encoding")),
+        ("worktree_pool", ("identity_args", "repo_owned_files", "console_encoding")),
+        ("external_review", ("repo_owned_files", "console_encoding")),
     ),
 )
 def test_stale_seam_copy_is_reported_as_marked_skew(tmp_path, consumer, extra):
@@ -426,3 +687,52 @@ def test_stale_seam_copy_is_reported_as_marked_skew(tmp_path, consumer, extra):
 
     assert getattr(exc.value, "_engine_rev_skew", False) is True
     assert "file_lock.py" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("consumer", "extra"),
+    (
+        ("board", ("identity_args", "repo_owned_files", "engine_rev", "console_encoding")),
+        ("pm_log", ("identity_args", "repo_owned_files")),
+        ("pm_relay", ("repo_owned_files",)),
+        ("pm_handoff", ("identity_args", "repo_owned_files", "console_encoding")),
+        ("worktree_pool", ("identity_args", "repo_owned_files", "console_encoding")),
+        ("external_review", ("repo_owned_files", "console_encoding")),
+    ),
+)
+def test_missing_seam_copy_is_translated_like_a_stale_copy(tmp_path, consumer, extra):
+    """seam **부재**도 raw FileNotFoundError 가 아니라 복구 안내가 붙은 marked skew 다.
+
+    부재의 원인(부분/수동 복사)과 해소(pm-update 재동기)가 stale 사본과 같으므로 진단도 같은
+    등급으로 준다 — raw traceback 은 "무엇을 해야 하나"를 안 알려주고, unmarked 예외는
+    fail-soft 로더가 조용히 None 으로 삼킨다.
+    """
+    tools = _copy_tools(tmp_path, consumer, *extra)      # file_lock.py 를 일부러 빼고 복사
+    assert not (tools / "file_lock.py").exists()
+
+    with pytest.raises(RuntimeError) as exc:
+        module = _load(tools / f"{consumer}.py", f"{consumer}_missing_seam")
+        module._load_file_lock()
+
+    message = str(exc.value)
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    assert "file_lock.py" in message and "pm-update" in message
+    assert not isinstance(exc.value, FileNotFoundError)
+
+
+def test_missing_seam_diagnosis_is_absent_when_the_check_is_removed(tmp_path):
+    """가드 감도 — 부재 선-검사를 지우면 raw FileNotFoundError 로 되돌아간다.
+
+    번역이 실제로 그 검사에서 나오는지(우연한 다른 경로가 아니라) 변이로 실증한다.
+    """
+    tools = _copy_tools(tmp_path, "pm_log", "identity_args", "repo_owned_files")
+    source = (tools / "pm_log.py").read_text(encoding="utf-8")
+    mutated = source.replace(
+        '    _require_engine_sibling(lock_path, "file_lock.py")\n', "", 1
+    )
+    assert mutated != source, "변이 앵커 소실"
+    (tools / "pm_log.py").write_text(mutated, encoding="utf-8")
+
+    module = _load(tools / "pm_log.py", "pm_log_missing_seam_unguarded")
+    with pytest.raises(FileNotFoundError):
+        module._load_file_lock()

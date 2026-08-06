@@ -38,6 +38,12 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
 # 원장에 사유와 기대 개수를 명시하지 않는 한 red다.
 REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
     (
+        "tests/test_template_scaffold_parity.py",
+        "_unresolved_wiki_links",
+        "rglob",
+        "'*.md'",
+    ): WalkException("출하 wiki 전 파일 링크 해소 검증 — 대상 열거 자체가 판정의 본질"),
+    (
         ".project_manager/tools/repo_owned_files.py",
         "list_repo_owned_entries",
         "rglob",
@@ -182,11 +188,67 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException("tmp_path add-harness fixture의 각 landing namespace가 nonempty인지 검증"),
     (
+        "tests/test_pm_update.py",
+        "_landed",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp_path 합성 dest fixture에 **무엇이 착지했는가** 전수 확인 — 경로 스코프의 판정이 "
+        "'요청 밖 파일이 하나도 안 왔다'라 열거 자체가 본질(seam 열거로는 미착지 증명 불가)"),
+    (
         "tests/test_adapter_token_substitution.py",
         "_token_leaks",
         "rglob",
         "'*'",
     ): WalkException("tmp_path에 fresh import한 adapter fixture의 치환 결과만 검사"),
+    (
+        "tests/test_external_review_reviewer_isolation.py",
+        "test_workspace_hides_old_review_raw_from_reviewer_visible_tree",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp 리뷰어 거울 fixture의 **전수** 검사가 판정의 본질 — 격리 성질은 '어떤 파일도 옛 raw를 "
+        "담지 않는다'라 seam의 tracked-only 열거로는 검증 자체가 성립하지 않는다"),
+    (
+        "tests/test_external_review_reviewer_isolation.py",
+        "test_no_isolated_absolute_path_survives_in_any_home_artifact",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp 임시 홈 fixture **전수**에 격리 대상 절대경로가 없음을 검증 — '무엇이 남았나'가 판정의 "
+        "본질이라 좁힌 열거로는 새 경로 키를 놓친다"),
+    (
+        "tests/test_external_review_reviewer_isolation.py",
+        "test_mirror_excludes_secret_denylist_files",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp 거울 fixture **전수**에 시크릿 본문이 없음을 검증 — '어떤 파일에도 없다'가 판정의 "
+        "본질이라 좁힌 열거로는 유출을 놓친다"),
+    (
+        "tests/test_external_review_reviewer_isolation.py",
+        "test_reviewer_home_carries_auth_but_no_sessions",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp 임시 홈 fixture의 **전수** 검사가 판정의 본질 — '선언된 인증/설정 파일 말고는 아무것도 "
+        "없다'는 성질이라 좁힌 열거로는 세션/이력 잔존을 놓친다"),
+    (
+        "tests/test_external_review_reviewer_isolation.py",
+        "test_workspace_builds_tree_and_home_side_by_side",
+        "rglob",
+        "'auth.json'",
+    ): WalkException(
+        "tmp 거울 fixture 안에 인증 파일이 섞이지 않았음을 이름으로 검증(거울은 git 인벤토리가 "
+        "아니라 방금 만든 닫힌 트리)"),
+    (
+        "tests/test_external_review_reviewer_isolation.py",
+        "test_workspace_refuses_files_reached_through_out_of_repo_parent_symlink",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp 리뷰어 거울 fixture 전수에 저장소 밖 내용이 없음을 검증 — 거울은 git 저장소 인벤토리가 "
+        "아니라 방금 만든 닫힌 트리다"),
 }
 
 ALL_EXCEPTIONS = {**MIGRATION_EXCEPTIONS, **REVIEWED_NON_INVENTORY_EXCEPTIONS}

@@ -120,7 +120,9 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   - **자동 rebase 없음**: 사용자 요청 때만 실행한다.
 - `refresh`: **readonly 공유 슬롯 전용**. fetch 후 detached HEAD를 `--onto <branch>` 또는 기록된
   base.branch 최신 tip으로 옮기고 submodule을 재동기해 옛 gitlink pin 잔존에 따른 stale+dirty
-  자가 잠금을 막는다. 이동 tip을 base.commit으로 재기록한다. dirty면 "누군가 여기 썼다"는
+  자가 잠금을 막는다. ref 해소 규칙: `--onto` 명시 = 준 ref 그대로(로컬 브랜치면 로컬 tip·자동 대체
+  없음·미해소는 loud 거부), 무인자 = 기록된 base.branch 의 `origin/<branch>` 우선(부재 시 로컬 폴백).
+  성공 메시지가 실제 해소된 ref 와 sha 를 찍는다. 이동 tip을 base.commit으로 재기록한다. dirty면 "누군가 여기 썼다"는
   신호이므로 reset하지 않고 loud 거부한다. 기준 미해소 또는 non-readonly 대상은 rc 1이다.
   readonly 슬롯의 `set-base`/`rebase`/`dev`/`sync`·`release`/바인딩(`$pm-bootstrap --slot`)은
   엔진이 거부하며 갱신은 `refresh`만 허용한다.

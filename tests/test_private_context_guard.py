@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import importlib.util
 import json
@@ -9,9 +10,11 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import TypeVar
 
 import pytest
 
@@ -21,6 +24,11 @@ SCANNER_SCRIPT = REPO / "scripts/strip_private_refs.py"
 DATA_DIR = REPO / "tests/data"
 HARD_REPORT = DATA_DIR / "private_context_hard_allowlist.json"
 RATCHET_BASELINE = DATA_DIR / "private_context_baseline.json"
+HARD_REPORT_VERSION = 2
+# 대장 재생성은 이 모듈을 직접 실행한다 — pytest 안에서는 절대 자기치유하지 않는다.
+REGENERATE_COMMAND = (
+    f"python3 {Path(__file__).resolve().relative_to(REPO).as_posix()} --regenerate"
+)
 
 HARD_PATTERNS = {
     "work_item": re.compile(
@@ -83,6 +91,11 @@ class Occurrence:
     match: str
     surface: str
     digest: str
+
+
+# (path, kind, match, surface, context-digest) — 대장 엔트리의 라인 무관 신원.
+HardKey = tuple[str, str, str, str, str]
+InventoryKey = TypeVar("InventoryKey")
 
 
 def _normalise_line(text: str) -> str:
@@ -232,24 +245,69 @@ def _collect(root: Path = REPO) -> tuple[list[Occurrence], list[Occurrence]]:
     return sorted(hard, key=key), sorted(ratchet, key=key)
 
 
+def _hard_key(item: Occurrence) -> HardKey:
+    """대장 엔트리의 라인 무관 신원.
+
+    자리(``line``)는 키에서 뺀다 — 무관한 라인 이동만으로 대장을 재생성하게 만들던
+    결합이 여기서 끊긴다. 대신 ``hash``(그 참조가 놓인 정규화 라인 문맥의 digest)가
+    자리 역할을 대신하므로 문구가 바뀌면 여전히 red 다. 같은 파일에서 같은 키가 여러 번
+    나오는 경우(한 라인의 반복 출현·문맥이 동일한 라인 중복)는 순번이 아니라 ``count``로
+    구분한다 — 순번은 다시 파일 안 순서에 결합되기 때문이다.
+    """
+    return (item.path, item.kind, item.match, item.surface, item.digest)
+
+
+def _hard_counter(occurrences: list[Occurrence]) -> Counter[HardKey]:
+    return Counter(_hard_key(item) for item in occurrences)
+
+
+def _hard_baseline_counter(report: dict[str, object]) -> Counter[HardKey]:
+    """검토된 대장 파일을 라인 무관 multiset으로 읽는다.
+
+    ``count`` 없는 옛 형식(엔트리마다 ``line``을 들고 출현 1건씩 나열)도 같은 함수로
+    읽혀 동일한 multiset이 된다 — 옛 대장에서 새 형식으로의 무손실 마이그레이션 경로다.
+    """
+    entries = report["entries"]
+    assert isinstance(entries, list)
+    counter: Counter[HardKey] = Counter()
+    for entry in entries:
+        assert isinstance(entry, dict)
+        key = (
+            entry["path"],
+            entry["kind"],
+            entry["match"],
+            entry["surface"],
+            entry["hash"],
+        )
+        counter[key] += int(entry.get("count", 1))
+    return counter
+
+
 def _hard_report(occurrences: list[Occurrence]) -> dict[str, object]:
     surface_counts = Counter(item.surface for item in occurrences)
     return {
-        "version": 1,
+        "version": HARD_REPORT_VERSION,
         "count": len(occurrences),
         "surface_counts": dict(sorted(surface_counts.items())),
         "entries": [
             {
-                "path": item.path,
-                "line": item.line,
-                "kind": item.kind,
-                "match": item.match,
-                "surface": item.surface,
-                "hash": item.digest,
+                "path": path,
+                "kind": kind,
+                "match": match,
+                "surface": surface,
+                "hash": digest,
+                "count": count,
             }
-            for item in occurrences
+            for (path, kind, match, surface, digest), count in sorted(
+                _hard_counter(occurrences).items()
+            )
         ],
     }
+
+
+def _format_hard_key(key: HardKey) -> str:
+    path, kind, match, surface, digest = key
+    return f"{path}:{kind}:{match}:{surface}:{digest[:12]}"
 
 
 def _ratchet_counter(
@@ -291,20 +349,28 @@ def _baseline_counter(
 
 
 def _inventory_delta(
-    expected: Counter[tuple[str, str, str]],
-    actual: Counter[tuple[str, str, str]],
-) -> tuple[Counter[tuple[str, str, str]], Counter[tuple[str, str, str]]]:
+    expected: Counter[InventoryKey],
+    actual: Counter[InventoryKey],
+) -> tuple[Counter[InventoryKey], Counter[InventoryKey]]:
+    # ratchet baseline과 hard 대장이 같은 델타 판정을 쓴다(키 모양만 다르다).
     return actual - expected, expected - actual
 
 
+def _format_ratchet_key(key: tuple[str, str, str]) -> str:
+    path, kind, digest = key
+    return f"{path}:{kind}:{digest[:12]}"
+
+
 def _describe_delta(
-    unexpected: Counter[tuple[str, str, str]],
-    stale: Counter[tuple[str, str, str]],
+    unexpected: Counter[InventoryKey],
+    stale: Counter[InventoryKey],
+    format_key: Callable[[InventoryKey], str],
 ) -> str:
-    def sample(items: Counter[tuple[str, str, str]]) -> list[str]:
+    # ratchet baseline과 hard 대장이 같은 델타 서술을 쓴다(키 표기만 다르다).
+    def sample(items: Counter[InventoryKey]) -> list[str]:
         return [
-            f"{path}:{kind}:{digest[:12]} x{count}"
-            for (path, kind, digest), count in sorted(items.items())[:20]
+            f"{format_key(key)} x{count}"
+            for key, count in sorted(items.items())[:20]
         ]
 
     return (
@@ -442,10 +508,224 @@ def test_shipping_inventory_git_missing_archive_falls_back_loudly(
 def test_hard_private_context_matches_reviewed_allowlist():
     hard, _ = _collect()
     expected = json.loads(HARD_REPORT.read_text(encoding="utf-8"))
-    assert _hard_report(hard) == expected, (
-        "Hard private context changed. Review every occurrence and edit "
-        f"{HARD_REPORT.relative_to(REPO)} explicitly."
+    unexpected, stale = _inventory_delta(
+        _hard_baseline_counter(expected), _hard_counter(hard)
     )
+    assert not unexpected and not stale, (
+        "Hard private context changed. Review every occurrence, then rerun "
+        f"`{REGENERATE_COMMAND}`. "
+        + _describe_delta(unexpected, stale, _format_hard_key)
+    )
+    # 델타가 없어도 구조(정렬·집계 필드·version)까지 정규 덤프와 같아야 한다. 값 비교라
+    # 들여쓰기 같은 순수 재포맷은 여기서 통과하고, byte 동일성은 재생성 헬퍼 테스트가 본다.
+    assert _hard_report(hard) == expected, (
+        "대장 내용은 같지만 구조가 정규 덤프와 다르다 — "
+        f"`{REGENERATE_COMMAND}` 로 다시 덤프하라."
+    )
+
+
+_SYNTHETIC_REF = "T-" + "9" * 4
+_SYNTHETIC_OTHER = "ADR-" + "8" * 4
+_SYNTHETIC_INFLOW = "T-" + "7" * 4
+
+
+def _synthetic_hard_document() -> str:
+    """라인 이동·내용 변경을 나눠 실험하기 위한 합성 출하 문서.
+
+    한 라인 안 반복 출현과 문맥이 같은 중복 라인을 모두 담아 다중 출현 집계까지 태운다.
+    """
+    return "\n".join(
+        (
+            f"- 첫 항목은 {_SYNTHETIC_REF} 를 참조한다",
+            "",
+            f"- 두 번째 항목은 {_SYNTHETIC_OTHER} 를 참조한다",
+            f"- 한 라인에 {_SYNTHETIC_REF} 와 {_SYNTHETIC_REF} 가 함께 나온다",
+            f"- 반복되는 문맥에서 {_SYNTHETIC_OTHER} 를 본다",
+            f"- 반복되는 문맥에서 {_SYNTHETIC_OTHER} 를 본다",
+        )
+    )
+
+
+def _synthetic_report(source: str) -> dict[str, object]:
+    return _hard_report(_markdown_occurrences("doc.md", source, HARD_PATTERNS))
+
+
+def _legacy_hard_report(occurrences: list[Occurrence]) -> dict[str, object]:
+    """자리(``line``)를 키에 담던 옛 대장 형식 — 마이그레이션 입력 재현용."""
+    surface_counts = Counter(item.surface for item in occurrences)
+    return {
+        "version": 1,
+        "count": len(occurrences),
+        "surface_counts": dict(sorted(surface_counts.items())),
+        "entries": [
+            {
+                "path": item.path,
+                "line": item.line,
+                "kind": item.kind,
+                "match": item.match,
+                "surface": item.surface,
+                "hash": item.digest,
+            }
+            for item in occurrences
+        ],
+    }
+
+
+def test_hard_ledger_is_invariant_to_line_only_moves():
+    """빈 줄 삽입·블록 재배치처럼 자리만 바뀌는 리팩터에서 대장 델타는 0이다."""
+    source = _synthetic_hard_document()
+    baseline_occurrences = _markdown_occurrences("doc.md", source, HARD_PATTERNS)
+    baseline = _hard_report(baseline_occurrences)
+    padded_occurrences = _markdown_occurrences(
+        "doc.md", "\n\n\n" + source.replace("\n", "\n\n"), HARD_PATTERNS
+    )
+    lines = source.splitlines()
+    reordered = "\n".join(lines[3:] + lines[:3])
+
+    # 민감도: 자리는 실제로 이동했다(불변식이 vacuous 하지 않다).
+    assert [item.line for item in baseline_occurrences] != [
+        item.line for item in padded_occurrences
+    ]
+    assert _hard_report(padded_occurrences) == baseline
+    assert _synthetic_report(reordered) == baseline
+    assert baseline["count"] == len(baseline_occurrences)
+    # 자리 중복이 실제로 접혔다 — 집계 축이 태워졌다는 근거.
+    assert len(baseline["entries"]) < baseline["count"]
+
+
+def test_hard_ledger_flags_reference_inflow_removal_and_rewording():
+    """참조 유입·삭제·문구 변경은 여전히 red 다(ratchet 성질 유지)."""
+    source = _synthetic_hard_document()
+    baseline = _synthetic_report(source)
+    lines = source.splitlines()
+
+    inflow = _synthetic_report(source + f"\n- 신규 참조 {_SYNTHETIC_INFLOW} 유입")
+    unexpected, stale = _inventory_delta(
+        _hard_baseline_counter(baseline), _hard_baseline_counter(inflow)
+    )
+    assert inflow["count"] == baseline["count"] + 1
+    assert unexpected and not stale
+
+    removal = _synthetic_report("\n".join(lines[:2] + lines[3:]))
+    unexpected, stale = _inventory_delta(
+        _hard_baseline_counter(baseline), _hard_baseline_counter(removal)
+    )
+    assert removal["count"] == baseline["count"] - 1
+    assert stale and not unexpected
+
+    reworded = _synthetic_report(
+        source.replace("첫 항목은", "첫 항목(문구가 바뀐 항목)은")
+    )
+    unexpected, stale = _inventory_delta(
+        _hard_baseline_counter(baseline), _hard_baseline_counter(reworded)
+    )
+    # 문구 변경은 출현 수가 아니라 문맥 digest 로 잡힌다.
+    assert reworded["count"] == baseline["count"]
+    assert unexpected and stale
+
+    # 파일만 바뀌는 이동: 문맥 digest 는 그대로고 path 축만 갈라져 red 가 된다.
+    single = f"- 이 항목만 {_SYNTHETIC_REF} 를 참조한다"
+    origin = _hard_report(_markdown_occurrences("doc.md", single, HARD_PATTERNS))
+    relocated = _hard_report(
+        _markdown_occurrences("moved.md", single, HARD_PATTERNS)
+    )
+    unexpected, stale = _inventory_delta(
+        _hard_baseline_counter(origin), _hard_baseline_counter(relocated)
+    )
+    assert (sum(unexpected.values()), sum(stale.values())) == (1, 1)
+    assert origin["entries"][0]["hash"] == relocated["entries"][0]["hash"]
+
+    # 표면만 바뀌는 전환: 같은 라인 텍스트를 prose 에서 non-prose 로 옮겨도 red 다.
+    literal = f'"""{_SYNTHETIC_REF} 를 본다"""'
+    prose = _hard_report(_python_hard_occurrences("mod.py", literal + "\n"))
+    non_prose = _hard_report(
+        _python_hard_occurrences("mod.py", f"VALUE = (\n{literal}\n)\n")
+    )
+    unexpected, stale = _inventory_delta(
+        _hard_baseline_counter(prose), _hard_baseline_counter(non_prose)
+    )
+    assert prose["surface_counts"] == {"python-prose": 1}
+    assert non_prose["surface_counts"] == {"python-non-prose": 1}
+    assert prose["entries"][0]["hash"] == non_prose["entries"][0]["hash"]
+    assert (sum(unexpected.values()), sum(stale.values())) == (1, 1)
+
+
+def test_hard_ledger_separates_multiple_occurrences_by_count():
+    """같은 파일의 동일 match 다중 출현은 자리가 아니라 count 로 구분한다."""
+    source = _synthetic_hard_document()
+    baseline = _synthetic_report(source)
+    entries = baseline["entries"]
+    assert isinstance(entries, list)
+
+    assert all("line" not in entry for entry in entries)
+    assert sum(entry["count"] for entry in entries) == baseline["count"]
+    # 한 라인 안 반복(2회)과 문맥이 같은 중복 라인(2회)이 각각 하나의 엔트리로 접힌다.
+    assert sorted(entry["count"] for entry in entries if entry["count"] > 1) == [2, 2]
+
+    lines = source.splitlines()
+    dropped = _synthetic_report("\n".join(lines[:-1]))
+    _, stale = _inventory_delta(
+        _hard_baseline_counter(baseline), _hard_baseline_counter(dropped)
+    )
+    assert stale
+
+
+def test_reviewed_ledger_uses_line_independent_schema():
+    data = json.loads(HARD_REPORT.read_text(encoding="utf-8"))
+    entries = data["entries"]
+    keys = [
+        (
+            entry["path"],
+            entry["kind"],
+            entry["match"],
+            entry["surface"],
+            entry["hash"],
+        )
+        for entry in entries
+    ]
+
+    assert data["version"] == HARD_REPORT_VERSION
+    assert all("line" not in entry for entry in entries)
+    assert data["count"] == sum(entry["count"] for entry in entries)
+    assert data["count"] == sum(data["surface_counts"].values())
+    assert keys == sorted(keys)
+    assert len(set(keys)) == len(keys)
+
+
+def test_legacy_line_keyed_ledger_migrates_without_loss():
+    """옛 (path, line, match) 대장은 같은 multiset 으로 읽혀 출현 총계를 보존한다."""
+    occurrences = _markdown_occurrences(
+        "doc.md", _synthetic_hard_document(), HARD_PATTERNS
+    )
+    legacy = _legacy_hard_report(occurrences)
+    migrated = _hard_report(occurrences)
+
+    assert _hard_baseline_counter(legacy) == _hard_baseline_counter(migrated)
+    assert legacy["count"] == migrated["count"]
+    assert legacy["surface_counts"] == migrated["surface_counts"]
+    assert len(migrated["entries"]) < len(legacy["entries"])
+
+
+def test_regeneration_helper_reproduces_reviewed_ledger(tmp_path):
+    destination = tmp_path / "regenerated.json"
+
+    assert main(["--regenerate", "--output", str(destination)]) == 0
+    assert destination.read_text(encoding="utf-8") == HARD_REPORT.read_text(
+        encoding="utf-8"
+    )
+    assert main(["--output", str(destination)]) == 0
+
+    tampered = json.loads(destination.read_text(encoding="utf-8"))
+    entries = tampered["entries"]
+    assert isinstance(entries, list)
+    entries.pop()
+    destination.write_text(
+        json.dumps(tampered, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+    # 검사 모드는 drift 를 보고만 하고 파일을 고치지 않는다(pytest 자기치유 차단).
+    assert main(["--output", str(destination)]) == 1
+    assert json.loads(destination.read_text(encoding="utf-8")) == tampered
 
 
 def test_ratchet_matches_reviewed_baseline_without_stale_entries():
@@ -454,7 +734,9 @@ def test_ratchet_matches_reviewed_baseline_without_stale_entries():
     expected = _baseline_counter(expected_data)
     actual = _ratchet_counter(ratchet)
     unexpected, stale = _inventory_delta(expected, actual)
-    assert not unexpected and not stale, _describe_delta(unexpected, stale)
+    assert not unexpected and not stale, _describe_delta(
+        unexpected, stale, _format_ratchet_key
+    )
     assert expected_data["count"] == sum(expected.values())
 
 
@@ -598,3 +880,60 @@ def test_repo_raw_output_guard_observes_default_destination_and_ledger(tmp_path)
 
     # `.local` 자체가 없는 트리(신규 clone)는 빈 스냅샷이며 예외를 내지 않는다.
     assert suite_conftest._snapshot_repo_raw_outputs(tmp_path / "absent") == {}
+
+
+def _dump_hard_report(report: dict[str, object]) -> str:
+    return json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    """검토된 hard 대장을 현재 트리에서 다시 덤프한다.
+
+    기본은 비파괴 검사(드리프트를 델타로 출력하고 rc=1)이고, ``--regenerate`` 일 때만
+    파일을 다시 쓴다. 재생성 경로를 pytest 밖에 두어 회귀가 대장을 자기치유하지 못하게 한다.
+    """
+    if hasattr(sys.stdout, "reconfigure"):
+        # 델타 샘플에 비-ASCII match(§ 절 표기·한글 문맥)가 섞일 수 있다.
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--regenerate",
+        action="store_true",
+        help="드리프트가 있으면 대장 파일을 다시 쓴다 (기본은 검사만)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=HARD_REPORT,
+        help=f"덤프 대상 경로 (기본: {HARD_REPORT.relative_to(REPO).as_posix()})",
+    )
+    args = parser.parse_args(argv)
+
+    hard, _ = _collect()
+    report = _hard_report(hard)
+    payload = _dump_hard_report(report)
+    entries = report["entries"]
+    assert isinstance(entries, list)
+    summary = f"count={report['count']} entries={len(entries)}"
+    current = (
+        args.output.read_text(encoding="utf-8") if args.output.is_file() else ""
+    )
+    if payload == current:
+        print(f"unchanged {args.output} — {summary}")
+        return 0
+
+    expected: Counter[HardKey] = (
+        _hard_baseline_counter(json.loads(current)) if current else Counter()
+    )
+    unexpected, stale = _inventory_delta(expected, _hard_counter(hard))
+    print(_describe_delta(unexpected, stale, _format_hard_key))
+    if not args.regenerate:
+        print(f"drift {args.output} — {summary}; rerun with --regenerate")
+        return 1
+    args.output.write_text(payload, encoding="utf-8")
+    print(f"regenerated {args.output} — {summary}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

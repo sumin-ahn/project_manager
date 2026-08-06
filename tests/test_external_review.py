@@ -20,6 +20,7 @@ import json
 import multiprocessing
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -291,10 +292,31 @@ def test_print_summary_failure_shows_reason_line(external, capsys):
 
 
 def test_ledger_path_derives_from_repo(external, tmp_path, monkeypatch):
-    """장부 경로 = `<REPO>/.project_manager/.local/review_rounds.json` (호출 시점 REPO·per-clone)."""
+    """장부 경로 = `<앵커>/.project_manager/.local/review_rounds.json` (호출 시점 해소·per-clone).
+
+    앵커는 raw 장부와 같은 규칙 — 해소된 소유 PM 홈(`_PM_HOME_OVERRIDE`) 우선, 미주입이면
+    엔진 자기 앵커 REPO 폴백.
+    """
     monkeypatch.setattr(external, "REPO", tmp_path)
     assert external._round_ledger_path() == \
         tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+
+    pm_home = tmp_path / "pm-home"
+    monkeypatch.setattr(external, "_PM_HOME_OVERRIDE", pm_home)
+    assert external._round_ledger_path() == \
+        pm_home / ".project_manager" / ".local" / "review_rounds.json"
+
+
+def test_ledger_lock_path_follows_the_ledger_anchor(external, tmp_path, monkeypatch):
+    """락 파일은 장부 경로에서 파생된다 — 앵커가 갈리면 같은 장부를 두 실행이 동시에 고쳐 쓴다."""
+    monkeypatch.setattr(external, "REPO", tmp_path)
+    assert external._round_ledger_lock_path() == \
+        external._round_ledger_path().with_name("review_rounds.lock")
+
+    pm_home = tmp_path / "pm-home"
+    monkeypatch.setattr(external, "_PM_HOME_OVERRIDE", pm_home)
+    assert external._round_ledger_lock_path() == \
+        pm_home / ".project_manager" / ".local" / "review_rounds.lock"
 
 
 def test_ledger_load_missing_is_empty(external, tmp_path, monkeypatch):
@@ -400,9 +422,10 @@ def test_started_true_on_timeout(external):
         import subprocess
         raise subprocess.TimeoutExpired(cmd="codex", timeout=5)
     ok, out, started = external._run_reviewer_ex("p", "codex", 5, _raise)
-    assert ok is False and started is True and "타임아웃" in out
-    assert "--timeout <초>" in out
-    assert "external_review_timeout=<초>" in out
+    # 산출물은 두 채널 구조다(T-0563) — 진단 본문은 회신 채널에 실린다.
+    assert ok is False and started is True and "타임아웃" in out.answer
+    assert "--timeout <초>" in out.answer
+    assert "external_review_timeout=<초>" in out.answer
 
 
 def test_started_false_on_spawn_failures(external):
@@ -463,8 +486,8 @@ def test_runner_seam_skew_is_loud_and_distinct(external):
 
     ok, out, started = external._run_reviewer_ex("p", "codex", 5, incompatible)
     assert (ok, started) == (False, False)
-    assert "runner seam 계약 오류" in out
-    assert "리뷰어 실행 오류" not in out
+    assert "runner seam 계약 오류" in out.answer
+    assert "리뷰어 실행 오류" not in out.answer
 
 
 def test_run_reviewer_remains_two_tuple_facade(external):
@@ -493,6 +516,24 @@ def test_run_review_surfaces_started(external, tmp_path):
 # ── main() 게이트 harness ───────────────────────────────────────────────────
 
 
+def _stub_reviewer_isolation(external, monkeypatch) -> None:
+    """리뷰어 가시 범위 거울 생성을 스텁한다 (T-0563 · run_review 스텁과 같은 취지).
+
+    이 파일의 게이트 테스트는 라운드 장부/앵커 분기만 보며 diff 를 주입하므로 tmp REPO 가 실제 git
+    저장소가 아니다. 실 거울(격리) 회귀는 `test_external_review_reviewer_isolation.py` 가 실 저장소로
+    소유한다 — 여기서는 격리 성립을 가정하고 그 아래 분기만 격리한다."""
+    def _fake_workspace(diff_root, *, base_dir=None, conf=None, source_home=None,
+                        denylist=()):
+        return external.ReviewerWorkspace(
+            root=Path(tempfile.mkdtemp(prefix="stub_reviewer_mirror_")),
+            tree=Path(tempfile.mkdtemp(prefix="stub_reviewer_tree_")),
+            home=Path(tempfile.mkdtemp(prefix="stub_reviewer_home_")),
+            files=1, skipped_unsafe=0, git_repo=True,
+        )
+
+    monkeypatch.setattr(external, "create_reviewer_workspace", _fake_workspace)
+
+
 def _wire(external, monkeypatch, tmp_path, *, conf=None,
           diff="diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n", result=None):
     """main() 을 tmp REPO 로 격리 배선 — 외부 리뷰어 호출 횟수를 세는 counter 반환.
@@ -506,6 +547,7 @@ def _wire(external, monkeypatch, tmp_path, *, conf=None,
         external, "local_config",
         lambda repo=None: dict(conf) if conf is not None else {"external_review_enabled": "true"})
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, []))
+    _stub_reviewer_isolation(external, monkeypatch)
     real_main = external.main
 
     def _isolated_main(argv=None):
@@ -776,6 +818,65 @@ def test_save_ledger_uses_unique_tmp_names(external, tmp_path, monkeypatch):
     assert len(seen) == 2 and seen[0] != seen[1]                 # unique (고정 .tmp 아님)
     assert all(f".{external.os.getpid()}." in s for s in seen)   # pid 포함
     assert all(s.endswith(".tmp") for s in seen)
+
+
+def _flaky_round_lock(external, monkeypatch, *, fail_on: int):
+    """`fail_on` 번째 진입에서만 OSError 를 내는 라운드 락 대역 (락 경합 재현).
+
+    공용 seam 은 프리미티브 획득 실패를 삼키지 않고 올린다(무락 진행 폐지) — 그 예외를 두 구간
+    (예약·마감)이 각각 어떻게 번역하는지 본다. Windows `msvcrt.locking` 재시도 소진이 실 유입원.
+    """
+    import contextlib as _contextlib
+
+    real_lock = external._round_ledger_lock
+    entries = {"n": 0}
+
+    @_contextlib.contextmanager
+    def _flaky():
+        entries["n"] += 1
+        if entries["n"] == fail_on:
+            raise OSError(11, "resource temporarily unavailable")
+        with real_lock():
+            yield
+
+    monkeypatch.setattr(external, "_round_ledger_lock", _flaky)
+    return entries
+
+
+def test_lock_failure_before_send_is_translated_and_blocks_the_send(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """예약 구간 락 실패 = **전송 전 중단**(과금 0) + 조치 문구 — 상한 미확인 전송 금지."""
+    calls = _wire(external, monkeypatch, tmp_path)
+    _flaky_round_lock(external, monkeypatch, fail_on=1)
+
+    rc = external.main(["--gate", "T-0565", "--paths", "x.py"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert calls["n"] == 0                       # 외부 전송 시도 0
+    assert "다른 게이트 실행이 장부 락을 보유" in err
+    assert "잠시 후 다시 실행" in err
+    assert str(external._round_ledger_path()) in err
+
+
+def test_lock_failure_at_finish_keeps_the_verdict_exit_code(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """마감 구간 락 실패는 판정 rc 를 보존한다 — 끝난 전송의 부기가 판정을 뒤집지 않는다."""
+    calls = _wire(external, monkeypatch, tmp_path)
+    _flaky_round_lock(external, monkeypatch, fail_on=2)
+
+    rc = external.main(["--gate", "T-0565", "--paths", "x.py"])
+
+    err = capsys.readouterr().err
+    assert rc == 0                               # 통과 판정 그대로 (락 사정으로 안 뒤집힘)
+    assert calls["n"] == 1                       # 전송은 정상 수행
+    assert "라운드 장부 마감 실패" in err
+    assert "미완으로 남아" in err
+    # 마감 못 한 레코드는 finished_at 없이 남아 다음 실행이 보수적으로(미완) 센다.
+    record = _ledger(external, tmp_path)["T-0565"]["records"][0]
+    assert "finished_at" not in record
 
 
 def test_ledger_lock_acquires_and_releases(external, tmp_path, monkeypatch):

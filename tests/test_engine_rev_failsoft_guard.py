@@ -10,7 +10,18 @@ subclasses that are constructed by a marker-preserving transform.  Handlers that
 
 Deliberate exclusions include dynamic ``getattr`` member names, arbitrary duck-typed objects with
 same-named methods, and invocation links to nested definitions (their own bodies are still
-scanned).
+scanned).  Two exclusions on the instance-attribute axis are worth naming because they look linked
+but are not:
+
+* ``setattr(self, "<attr>", <callable>)`` — the retained callable is only recognised through an
+  assignment statement (``self.<attr> = <callable>``), so a dynamic write leaves the later
+  ``self.<attr>(...)`` call unlinked (same rule as dynamic ``getattr`` member names).
+* inheritance — retained callables are keyed by the *lexically enclosing* class, with no MRO
+  resolution.  A subclass storing ``self.<attr>`` while the base class calls ``self.<attr>()``
+  stays unlinked in both directions.
+
+Both classes still hold whenever the handler itself consumes ``_is_engine_rev_skew`` (explicit
+root), which is why that root exists.
 
 An affected handler must re-raise the marked exception, invoke the dedicated recovery marker, or
 invoke the dedicated terminal-report marker.  Markers are code-owned, per-boundary intent; there is
@@ -1166,15 +1177,20 @@ class Holder:
                for violation in report.violations)
 
 
-def test_scanner_instance_callable_attribute_axis_keeps_foreign_receivers_unlinked():
-    """다른 객체의 같은-이름 속성은 링크하지 않는다 (provenance 없는 duck-typing 배제)."""
-    caller = """\
+# 수신자 규칙 twin — 두 fixture 는 **수신자 이름 한 글자**(`self` ↔ `sel`)만 다르다. 저장 형태·
+# 호출 형태·로더 provenance 가 전부 같아야 "링크는 수신자가 `self`/`cls` 일 때만"이라는 규칙
+# 하나만 시험된다. 옛 음성 fixture 는 저장 대상(`other._run_fn`)과 기본 구현 유무까지 달라서,
+# 판정을 가른 게 수신자인지 다른 차이인지 fixture 만 봐선 알 수 없었다.
+_INSTANCE_CALLABLE_RECEIVER_TWIN = """\
 def _load_leaf():
     return _load_module("leaf.py")
 
 class Holder:
-    def __init__(self, other):
-        self._run_fn = other._run_fn
+    def __init__(self, sel):
+        self._run_fn = {receiver}._default_run
+
+    def _default_run(self):
+        _load_leaf().risky()
 
     def consume(self):
         try:
@@ -1182,8 +1198,28 @@ class Holder:
         except Exception:
             return None
 """
+
+
+@pytest.mark.parametrize(("receiver", "linked"), [("self", True), ("sel", False)])
+def test_scanner_instance_callable_attribute_axis_links_self_receivers_only(
+    receiver, linked,
+):
+    """수신자만 한 글자 다른 쌍 — `self` 는 링크, 같은-이름 속성을 든 남의 객체는 링크 안 한다.
+
+    음성 쪽(`sel`)이 provenance 없는 duck-typing 배제다 — 이름이 같다는 이유만으로 임의 객체의
+    속성을 엮으면 스캐너가 근거 없는 경계를 만들어 낸다.
+    """
+    caller = _INSTANCE_CALLABLE_RECEIVER_TWIN.format(receiver=receiver)
     report = collect_failsoft_report({"leaf.py": _SYNTHETIC_LEAF, "caller.py": caller})
-    assert not report.violations
+    matched = [
+        violation for violation in report.violations
+        if "caller.py" in violation and ": Holder.consume " in violation
+    ]
+    assert bool(matched) is linked, (
+        f"수신자 {receiver!r} 링크 판정이 예상과 다름 — 검출 {report.violations}"
+    )
+    if not linked:
+        assert not report.violations, report.violations
 
 
 def test_scanner_rejects_unmarked_stderr_nonzero_helper_as_terminal():

@@ -398,23 +398,34 @@ def _position_regex(spellings, separators: str, *, boundary: bool) -> str:
     return "(?:" + "|".join(branches) + ")"
 
 
-def _variant_regex(words, separator_chars: str) -> re.Pattern[str]:
-    """낱말 표기표 → 변형 정규식 (생성 규칙 1~3은 위 절 주석 참조)."""
+def _variant_regex(
+    words, separator_chars: str, *, capture_separators: bool = False,
+) -> re.Pattern[str]:
+    """낱말 표기표 → 변형 정규식 (생성 규칙 1~3은 위 절 주석 참조).
+
+    `capture_separators=True` 면 낱말 **위치 사이**의 구분자를 그룹으로 잡는다(위치 안 낱말은
+    그대로). 축 태그 진실성 검사(`_matched_separators`)가 쓰는 같은 조립 규칙 — 정규식을 따로
+    손으로 쓰면 표기표와 드리프트한다.
+    """
     optional, required = separator_chars + "*", separator_chars + "+"
+
+    def glued(separator: str, parts) -> str:
+        return (f"({separator})" if capture_separators else separator).join(parts)
+
     if not any(_has_latin_letter(word) for word in _iter_spelling_words(words)):
-        joined = "".join(
+        joined = glued("", [
             _position_regex(position, "", boundary=False) for position in words
-        )
-        separated = required.join(
+        ])
+        separated = glued(required, [
             _position_regex(position, optional, boundary=(index == 0))
             for index, position in enumerate(words)
-        )
+        ])
         return re.compile(f"(?:{joined})|(?:{separated})", re.IGNORECASE)
     return re.compile(
-        optional.join(
+        glued(optional, [
             _position_regex(position, optional, boundary=(index == 0))
             for index, position in enumerate(words)
-        ),
+        ]),
         re.IGNORECASE,
     )
 
@@ -595,6 +606,31 @@ def _supported_variant_axes(term: _RetiredCtxTerm) -> tuple[str, ...]:
     return tuple(axes)
 
 
+def _matched_separators(term: _RetiredCtxTerm, text: str) -> tuple[str, ...] | None:
+    """그 문장에서 실제로 걸린 표기의 낱말 사이 구분자 (미검출이면 None).
+
+    한글 전용 표기는 붙여 쓴 갈래와 띄어 쓴 갈래가 alternation 이라, 안 걸린 갈래의 그룹은
+    None 으로 빠진다 — 걸린 갈래의 구분자만 남긴다(붙여 쓰면 빈 문자열).
+    """
+    match = _variant_regex(
+        term.words, term.separator_chars, capture_separators=True,
+    ).search(text)
+    if match is None:
+        return None
+    return tuple(group for group in match.groups() if group is not None)
+
+
+def _is_separator_variant(term: _RetiredCtxTerm, sample: str) -> bool:
+    """샘플이 정규 표기와 **구분자가 다른** 변형인가 — 구분자 축 태그의 진실 조건.
+
+    대소문자·한영 축과 달리 구분자 축은 검사 없이 태그만 달려 있었다. 그러면 태그가 실제
+    커버리지와 어긋나도(정규 구분자 그대로인 샘플에 태그를 달아도) 커버리지 테스트가 그 축을
+    충족으로 세어 축 하나가 통째로 미검증으로 남는다.
+    """
+    found = _matched_separators(term, sample)
+    return found is not None and found != _matched_separators(term, term.canonical)
+
+
 # 보강 전(정확 문자열 매칭) 가드를 그대로 통과하던 변형들 — (정규 표기, 그 샘플이 보이는 변형
 # 축, 출하 표면에 이렇게 새어들 수 있는 문장). 축 태그는 커버리지 테스트가 소비한다.
 _V160_VARIANT_RED_SAMPLES = (
@@ -731,11 +767,17 @@ def test_v160_variant_escapes_exact_match_but_guard_blocks(
     """보강 전 정확 매칭이 놓치던 변형을 지금은 차단한다 (T-0562 red 재현).
 
     첫 assert 가 red 상태의 재현이다 — 이 문장은 옛 정확 문자열 규칙(`term in line.lower()`)에
-    안 걸렸다. 이어서 축 태그가 샘플과 맞는지 보고, 마지막에 보강 후 차단을 확인한다.
+    안 걸렸다. 이어서 축 태그가 샘플과 맞는지 **세 축 모두** 보고(구분자 축도 기계 확인 —
+    태그만 달고 실제로는 정규 구분자인 샘플은 커버리지를 가짜로 채운다), 마지막에 보강 후
+    차단을 확인한다.
     """
     assert term not in sample.lower(), (
         f"샘플이 정규 표기 '{term}' 을 그대로 담고 있어 변형 데모가 아니다"
     )
+    if _SEPARATOR_AXIS in axes:
+        assert _is_separator_variant(_term_by_canonical(term), sample), (
+            f"구분자 축 태그인데 샘플 구분자가 정규 표기 '{term}' 과 같다: {sample!r}"
+        )
     if _LETTER_CASE_AXIS in axes:
         assert re.search(r"[A-Z]", sample), (
             f"대소문자 축 태그인데 샘플에 대문자가 없다: {sample!r}"
@@ -754,6 +796,46 @@ def test_v160_variant_escapes_exact_match_but_guard_blocks(
     assert any(f":: {term} (" in offender for offender in offenders), (
         f"변형 표기가 '{term}' 가드를 통과했다: {sample!r} → {offenders}"
     )
+
+
+def test_v160_separator_axis_truth_check_rejects_a_mistagged_sample():
+    """구분자 축 진실성 검사 자체의 감도 — 정규 구분자 그대로면 그 축 변형이 아니다.
+
+    "STOP 마커" 는 대소문자·한영 변형이지만 구분자는 정규 표기와 같은 공백이다. 이 판정이
+    무뎌지면(항상 참) 위 커버리지 강제가 구분자 축을 가짜로 채운 샘플에 속는다.
+    """
+    term = _term_by_canonical("stop" + " marker")
+    assert not _is_separator_variant(term, "STOP 마커 가 남아 있으면 회전으로 본다")
+    assert _is_separator_variant(term, "stop-marker 를 지운 뒤 relay 를 되살린다")
+
+
+@pytest.mark.parametrize("term", _V160_RETIRED_CTX_TERMS, ids=lambda t: t.canonical)
+def test_v160_separator_capture_regex_matches_the_same_span(term):
+    """구분자 캡처 정규식은 판정 정규식과 **같은 구간**을 잡는다 (조립 규칙 드리프트 방지).
+
+    축 진실성 검사가 판정과 다른 구간을 보면 태그 검증이 엉뚱한 문자열을 근거로 삼는다.
+    """
+    capture = _variant_regex(
+        term.words, term.separator_chars, capture_separators=True,
+    )
+    samples = [
+        term.canonical,
+        term.canonical.upper(),
+        *(
+            sample for canonical, _axes, sample in _V160_VARIANT_RED_SAMPLES
+            if canonical == term.canonical
+        ),
+        *_V160_COMPOUND_SAFE_LINES,
+    ]
+    for sample in samples:
+        expected, found = term.pattern.search(sample), capture.search(sample)
+        assert (found is None) == (expected is None), (
+            f"'{term.canonical}' 캡처/판정 정규식의 검출 여부가 다르다: {sample!r}"
+        )
+        if expected is not None:
+            assert found.group(0) == expected.group(0), (
+                f"'{term.canonical}' 캡처/판정 정규식의 구간이 다르다: {sample!r}"
+            )
 
 
 @pytest.mark.parametrize("line", _V160_RUNTIME_IDENTIFIER_LINES)

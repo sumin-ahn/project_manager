@@ -92,4 +92,4 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record -
 - livegate record는 `pytest -m release`(claude·opencode·codex 3 하네스)를 실측·기록하고 보호훅은 push HEAD의 green을 `livegate check`로 재확인한다(record=기록·check=소비).
 - PM은 각 단계 stdout, 특히 livegate 수집 N과 `gh release view` 결과를 읽어 보고한다.
 - main push 실행·CHANGELOG 문안·GitHub Release 노트는 PM/사용자가 확정·승인한다.
-- backbone: `board.py livegate record`/`livegate check` · `pm_update`([[pm-update]]) · `git`/`gh`; 라이브 하네스 테스트는 `tests/test_pm_release_live.py`(); 보호훅은 보호 브랜치 push 차단 + `livegate check` green을 요구한다(pm_role §릴리즈 절차).
+- backbone: `board.py livegate record`/`livegate check` · `pm_update`([[pm-update]]) · `git`/`gh`; 라이브 하네스 테스트는 `tests/test_pm_release_live.py`; 보호훅은 보호 브랜치 push 차단 + `livegate check` green을 요구한다(pm_role §릴리즈 절차).

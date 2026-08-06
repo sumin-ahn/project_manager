@@ -135,7 +135,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 위임(dev/reviewer/architect/researcher)은 하네스 네이티브 채널로 한다. 도구·프롬프트·role 매핑은 하네스별 운영 지침이 단일 진실이다.
 
-ctx 정지/넛지 %의 100% 기준은 `.project_manager/local.conf`의 `ctx_window_tokens_<harness>` > generic `ctx_window_tokens` > 200000 순으로 해소한다. 여러 하네스를 함께 쓰면 하네스별 키로 독립 설정하며, 미설정 기본은 200000이다.
+ctx 정지 밴드(현행 의미 = 최종 checkpoint 넛지·키 이름은 호환 유지)/넛지 %의 100% 기준은 `.project_manager/local.conf`의 `ctx_window_tokens_<harness>` > generic `ctx_window_tokens` > 200000 순으로 해소한다. 여러 하네스를 함께 쓰면 하네스별 키로 독립 설정하며, 미설정 기본은 200000이다.
 
 ## 8. 핵심 디렉토리
 

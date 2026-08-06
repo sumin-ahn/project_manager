@@ -262,6 +262,12 @@ DRAFT_SUFFIX = ".draft.md"
 # 기존 frontmatter 자유서술 토큰 관례(`<!-- TODO PM: ... -->`)와 정합 — promote 전 PM 손.
 SOURCE_TODO_PLACEHOLDER = "<!-- TODO PM: 출처 -->"
 
+# 현재-진실/히스토리 규칙 안내는 스캐폴드 `_template.md` 가 **단일 소유**다. capture-draft 는
+# 사람이 그 스캐폴드를 복사하는 경로를 우회해 코드로 페이지를 만들므로, 같은 문구를 여기 두 벌
+# 두지 말고 스캐폴드에서 **읽어서** 싣는다(두 벌이면 한쪽만 고쳐 조용히 갈린다).
+DOMAIN_TEMPLATE_FILE = "_template.md"
+CURRENT_TRUTH_GUIDE_MARKER = "현재-진실 vs 히스토리"
+
 # git CLI argv → (returncode, stdout). DI seam 타입(worktree_pool.GitRunner 선례).
 GitRunner = Callable[[list], "tuple[int, str]"]
 GitRunnerFactory = Callable[[dict], "GitRunner | None"]
@@ -2420,18 +2426,45 @@ def _yaml_quote(value: str) -> str:
     return f'"{escaped}"'
 
 
-def _draft_body(title: str, covers: list[str], prose: str) -> str:
+def current_truth_guide_block(domain_dir: Path) -> str:
+    """`<domain_dir>/_template.md` 의 현재-진실/히스토리 안내 주석 블록 (없으면 빈 문자열).
+
+    스캐폴드가 규칙 문구의 단일 소유고 여기선 **인용만** 한다. 마커를 품은 주석 블록을
+    통째로 돌려준다. 템플릿 부재·마커 부재·주석 형태 붕괴는 fail-soft(빈 문자열) — 안내가
+    빠질 뿐 draft 생성 자체는 막지 않는다(엔진 동기가 곧 템플릿을 되돌려 놓는다).
+    """
+    try:
+        text = (Path(domain_dir) / DOMAIN_TEMPLATE_FILE).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    marker = text.find(CURRENT_TRUTH_GUIDE_MARKER)
+    if marker < 0:
+        return ""
+    start = text.rfind("<!--", 0, marker)
+    end = text.find("-->", marker)
+    if start < 0 or end < 0:
+        return ""
+    return text[start:end + len("-->")]
+
+
+def _draft_body(title: str, covers: list[str], prose: str, guide: str = "") -> str:
     """draft 페이지 body(scaffold) — `_template.md` 골격 + prose **verbatim 배치**.
 
     조사 prose 를 요약/구조화하지 않고 `## 조사 결과` 아래 *그대로* 배치한다(기계는 배치만·
     의미 판단은 PM/LLM). covers 미지정 시 `## 조사 결과` 앞에 `TODO PM: covers 글롭` 을
     띄운다. 한 줄 요약·gotcha·관련 절은 TODO placeholder 로 PM 손을 기다린다.
+
+    `guide`(스캐폴드의 현재-진실/히스토리 안내)는 제목 **앞**에 놓는다 — 손으로 복사한
+    페이지와 같은 자리다. body 는 frontmatter *뒤*에 붙으므로 `---` 시작은 유지된다
+    (안내가 frontmatter 앞에 가면 load_pages 가 페이지 아님으로 조용히 skip 한다).
     """
     covers_todo = "" if covers else "<!-- TODO PM: covers 글롭 (담당 코드) -->\n\n"
+    guide_block = f"{guide.strip()}\n\n" if guide.strip() else ""
     # prose 의 `## ` 헤딩을 `### ` 로 강등 — `## 조사 결과` 절 하위로 일관 배치(페이지 절과 미충돌).
     prose = _demote_prose_headings(prose) if prose.strip() else prose
     prose_block = prose if prose.strip() else "<!-- TODO PM: 조사 prose (--source) -->"
     return (
+        f"{guide_block}"
         f"# {title}\n\n"
         f"## 한 줄\n"
         f"<!-- TODO PM: 한 줄 요약 -->\n\n"
@@ -2469,7 +2502,10 @@ def write_draft_page(title: str, *, ptype: str = DEFAULT_DRAFT_TYPE,
     domain_dir.mkdir(parents=True, exist_ok=True)
     path = domain_dir / f"{slug}{DRAFT_SUFFIX}"
     frontmatter = _draft_frontmatter(title, ptype, covers, source_label, today)
-    body = _draft_body(title, covers, prose)
+    # 규칙 안내는 스캐폴드에서 파생한다 — 사람이 `_template.md` 를 복사하는 경로만 규칙을 받고
+    # 코드 생성 경로(capture-draft)는 못 받던 갭을 같은 문구 한 벌로 닫는다.
+    body = _draft_body(title, covers, prose,
+                       guide=current_truth_guide_block(domain_dir))
     path.write_text(f"---\n{frontmatter}---\n{body}", encoding="utf-8")
     return path
 

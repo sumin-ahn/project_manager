@@ -5,9 +5,11 @@ v2 domain 지식 레이어가 adopter 에게 *절반만* 출하된 갭(엔진 `d
 templates 에 안 간 것)의 **재발 방지**. 근본 원인 = template 파리티 미검증(root pm_role 만
 보고 template lint 미확인) → 두 template 에 `[[ADR-0018]]`·`[[ADR-0019]]` dangling-wikilink.
 
-검증 (두 template = claude_code·opencode):
+검증 (출하 타깃 전부 — 아래 `TEMPLATE_NAMES` 파생):
   - `wiki/domain/{README,_template}.md` 존재.
-  - `wiki/architecture.md` 가 retire stub("retired").
+  - `wiki/domain/_template.md` 가 현재-진실/히스토리 규칙을 싣고 canonical ↔ 존재하는 모든
+    타깃에 동일 (T-0568 — 엔진의 `history` 축만 가고 규칙 원문은 안 가던 갭).
+  - `wiki/architecture.md` 가 현재-진실 scaffold (부재 선언 타깃은 아래 ratchet 이 관리).
   - **각 template `board.py lint` 가 dangling-wikilink 0** (1급 acceptance·fresh-adopter
     lint-clean). 각 template 은 자기 `board.py` 를 싣고, cwd=template 으로 호출 → 그 트리의
     wiki 만 본다 (REPO 를 board.py 의 `__file__` 로 해소).
@@ -19,6 +21,7 @@ stdlib + subprocess. lint 는 warning-only(exit 0)라 종료코드가 아니라 
 """
 from __future__ import annotations
 
+import importlib.util
 import re
 import subprocess
 import sys
@@ -26,9 +29,20 @@ from pathlib import Path
 
 import pytest
 
+from _harness_matrix import HARNESSES, _PM_IMPORT
+
 REPO = Path(__file__).resolve().parents[1]
 TEMPLATES = REPO / "templates"
-TEMPLATE_NAMES = ["claude_code", "opencode"]
+
+# 파리티 대상 = 출하 타깃 **전부**. 손-열거 2벌(claude_code·opencode)이던 자리다 — 세 번째
+# 하네스(codex)가 게이트에 안 잡히는 결함 클래스가 [[T-0429]] 에서 이미 실측됐고, 그 티켓이
+# 만든 공용 축(`_harness_matrix`: 엔진 등록 ∩ `templates/<dir>/` 실존·등록⇒실존 loud)에서
+# 그대로 파생한다. 네 번째 하네스는 자동 편입된다.
+TEMPLATE_NAMES = sorted(
+    dirname
+    for harness in HARNESSES
+    for dirname in _PM_IMPORT.HARNESS_TEMPLATE_DIRS[harness]
+)
 
 
 def _wiki(name: str) -> Path:
@@ -46,6 +60,45 @@ def test_domain_skeleton_present(name: str):
         assert path.exists(), f"{name}: domain 골격 누락 {path} (T-0090 수기 전파 필요)"
 
 
+# domain seed README = 채택자가 읽는 판정 안내다. CHANGELOG 가 "`history` 축 판정 기준은
+# `wiki/domain/README.md` 가 문서화한다"고 선언했는데 출하 seed 엔 그 축 언급이 0 이었다(선언과
+# 출하물의 어긋남). 축 존재 + 판정 한 문장이 실렸는지 보고, 세 벌은 같은 문서이므로 바이트까지
+# 같은지 본다(수기 전파라 한 벌만 고치는 drift 가 실제 경로다).
+DOMAIN_README_REL = Path(".project_manager") / "wiki" / "domain" / "README.md"
+DOMAIN_README_MARKERS = (
+    "`history` 축",           # 축 존재
+    '"지금 X다"',              # 판정 한 문장 — 페이지 쪽
+    '"언제 X로 바뀌었다"',      # 판정 한 문장 — log 쪽
+)
+
+
+@pytest.mark.parametrize("name", TEMPLATE_NAMES)
+def test_domain_readme_documents_history_axis(name: str):
+    """domain seed README 가 `history` 축과 그 판정 한 문장을 싣는다 (CHANGELOG 선언의 근거)."""
+    path = TEMPLATES / name / DOMAIN_README_REL
+    text = path.read_text(encoding="utf-8")
+    missing = [marker for marker in DOMAIN_README_MARKERS if marker not in text]
+    assert not missing, (
+        f"{name}: domain README 에 history 축 서술 누락 {missing} — 채택자가 lint 의 "
+        "advisory 판정 기준을 못 받는다"
+    )
+
+
+def test_domain_readme_is_byte_identical_across_targets():
+    """domain seed README 세 벌이 바이트 동일 (수기 전파 drift 차단)."""
+    paths = [TEMPLATES / name / DOMAIN_README_REL for name in TEMPLATE_NAMES]
+    assert len(paths) > 1, "출하 타깃이 하나뿐 — 파리티 비교가 공허"
+    expected = paths[0].read_bytes()
+    drifted = [
+        str(path.relative_to(REPO)) for path in paths[1:]
+        if path.read_bytes() != expected
+    ]
+    assert not drifted, (
+        f"domain README 가 {TEMPLATE_NAMES[0]} 판과 바이트 drift — {drifted}. "
+        "같은 문서이므로 한 벌을 고치면 나머지에도 그대로 복사한다."
+    )
+
+
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
 def test_domain_skeleton_no_dogfood(name: str):
     """template domain/ 은 빈 골격(README+_template)만 — dogfood 페이지(dual-gate-review) 제외."""
@@ -55,7 +108,124 @@ def test_domain_skeleton_no_dogfood(name: str):
     )
 
 
-# ── architecture retire stub (두 template) ───────────────────────────────────
+# ── domain scaffold = 현재-진실/히스토리 규칙 출하 (T-0568) ───────────────────
+#
+# 채택자는 엔진(`domain.py lint` 의 `history` 축)만 받고 규칙 원문은 못 받는 갭이 있었다.
+# 규칙은 canonical `_template.md` 가 싣고 `pm_update` 로 전 타깃에 간다. 파리티 대상은
+# 하드코딩 2벌이 아니라 **존재하는 모든 타깃**을 파일 실재로 파생한다(새 하네스 템플릿 자동 편입).
+
+DOMAIN_TEMPLATE_REL = Path(".project_manager") / "wiki" / "domain" / "_template.md"
+
+# 규칙의 뼈대. 표현을 다듬는 건 자유지만 이 네 축이 빠지면 채택자가 규칙을 못 받는다.
+DOMAIN_RULE_MARKERS = (
+    '"지금 X다"',            # 판정 한 문장 — 페이지 쪽
+    '"언제 X로 바뀌었다"',   # 판정 한 문장 — log 쪽
+    "갱신은 덧붙이기가 아니라 교체다",
+    "history 축",            # 기계 판정 포인터 (domain.py lint)
+)
+
+
+def _domain_template_paths() -> list[Path]:
+    """canonical + `templates/` 아래 실재하는 모든 타깃의 domain `_template.md`."""
+    paths = [REPO / DOMAIN_TEMPLATE_REL]
+    paths += sorted(
+        target / DOMAIN_TEMPLATE_REL
+        for target in TEMPLATES.iterdir()
+        if (target / DOMAIN_TEMPLATE_REL).exists()
+    )
+    return paths
+
+
+def _load_domain():
+    spec = importlib.util.spec_from_file_location(
+        "domain", REPO / ".project_manager" / "tools" / "domain.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize(
+    "path", _domain_template_paths(), ids=lambda p: str(p.relative_to(REPO)))
+def test_domain_template_ships_current_truth_rule(path: Path):
+    """domain scaffold 가 현재-진실/히스토리 규칙을 싣는다 (canonical + 전 타깃)."""
+    text = path.read_text(encoding="utf-8")
+    missing = [marker for marker in DOMAIN_RULE_MARKERS if marker not in text]
+    assert not missing, (
+        f"{path.relative_to(REPO)}: 현재-진실/히스토리 규칙 축 누락 {missing} — "
+        "채택자가 가드(`domain.py lint` history)만 받고 규칙은 못 받는다 "
+        "(canonical 수정 후 `pm_update.py --all-targets` 전파)"
+    )
+
+
+@pytest.mark.parametrize(
+    "path", _domain_template_paths(), ids=lambda p: str(p.relative_to(REPO)))
+def test_domain_template_starts_with_frontmatter(path: Path):
+    """규칙 안내가 frontmatter 앞에 오면 안 된다 — 복사한 페이지가 index 에서 사라진다.
+
+    `load_pages` 는 텍스트가 `---` 로 시작하지 않는 파일을 "페이지 아님"으로 **조용히** skip
+    한다. 안내 블록을 frontmatter 위에 두면 스캐폴드를 복사해 만든 페이지가 전부 소환·lint
+    대상에서 빠지고, 경고도 안 난다.
+    """
+    text = path.read_text(encoding="utf-8")
+    assert text.lstrip().startswith("---"), (
+        f"{path.relative_to(REPO)}: frontmatter 로 시작하지 않음 — 안내는 frontmatter 뒤에 둔다 "
+        "(load_pages 가 조용히 skip)"
+    )
+
+
+def test_domain_template_is_byte_identical_across_targets():
+    """canonical ↔ 전 타깃 바이트 동일.
+
+    marker 단언만으로는 canonical 문구를 고친 뒤 전파를 빠뜨린 상태를 통과시킨다 — 채택자는
+    옛 문구를 계속 받는다. 규칙은 canonical 단일 소유이므로 사본은 바이트까지 같아야 한다.
+    """
+    paths = _domain_template_paths()
+    canonical, copies = paths[0], paths[1:]
+    assert copies, "templates/ 아래 domain `_template.md` 사본이 하나도 없다(전파 채널 붕괴)"
+    expected = canonical.read_bytes()
+    drifted = [
+        str(path.relative_to(REPO)) for path in copies
+        if path.read_bytes() != expected
+    ]
+    assert not drifted, (
+        f"domain `_template.md` 가 canonical 과 바이트 drift — {drifted}. "
+        "canonical 수정 후 전파 필요(`pm_update.py --from . --all-targets`)"
+    )
+
+
+def test_domain_template_anchors_capture_draft_derivation():
+    """`domain.py` 가 안내 블록을 뽑는 앵커가 스캐폴드에 실재한다.
+
+    capture-draft scaffold 는 이 마커로 안내를 *파생*한다(문구 이중 서술 금지). 마커가
+    사라지면 파생은 fail-soft 로 빈 문자열이 되어 draft 만 조용히 규칙을 잃는다.
+    """
+    dm = _load_domain()
+    text = (REPO / DOMAIN_TEMPLATE_REL).read_text(encoding="utf-8")
+    assert dm.CURRENT_TRUTH_GUIDE_MARKER in text, (
+        f"domain `_template.md` 에 파생 앵커 '{dm.CURRENT_TRUTH_GUIDE_MARKER}' 부재 — "
+        "capture-draft 산출이 규칙을 조용히 잃는다"
+    )
+    assert dm.current_truth_guide_block(REPO / DOMAIN_TEMPLATE_REL.parent), (
+        "스캐폴드에서 안내 블록 추출 실패 — 주석 블록 형태가 깨졌다"
+    )
+
+
+def test_domain_template_guidance_is_history_clean():
+    """스캐폴드 자신이 `history` 축을 발화시키지 않는다.
+
+    안내 블록을 안 지운 채 페이지를 만드는 건 흔한 경로다. 그 예시가 시점 스탬프로 시작하는
+    lead-in 이면 복사한 페이지가 전부 첫날부터 history finding 을 달고 태어난다.
+    """
+    dm = _load_domain()
+    body = (REPO / DOMAIN_TEMPLATE_REL).read_text(encoding="utf-8").split("---", 2)[2]
+    leadins = dm.history_leadins(body)
+    assert leadins == [], (
+        f"domain `_template.md` 의 안내가 history lead-in 으로 잡힌다 {leadins} — "
+        "예시는 헤딩·인용·굵은 도입부가 아니라 산문/불릿으로 쓴다"
+    )
+
+
+# ── architecture 현재-진실 scaffold (전 타깃) ────────────────────────────────
 
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
 def test_architecture_is_living_truth(name: str):
@@ -70,6 +240,93 @@ def test_architecture_is_living_truth(name: str):
     assert "현재-아키텍처 단일 진실" in text, f"{name}: architecture.md 가 현재-진실 scaffold 아님 (ADR-0022 부활)"
     assert "target" in text, f"{name}: architecture.md 에 ①live/②target 분리 없음"
     assert "domain/" in text, f"{name}: architecture 가 domain/ 세부로 안내 안 함"
+
+
+# ── 출하 wiki 문서의 상대 링크 해소 (wiki seed 대칭) ─────────────────────────
+#
+# 채택자가 받는 wiki 문서의 링크가 안 풀리면 fresh 채택자가 깨진 안내를 받는다. 실측 회귀:
+# codex 템플릿이 wiki seed 12종(architecture·status·status_done·decisions/·ideas/·specs/·
+# raw/README·log/archive)을 안 실어 `README.md` 만 11개 dangling 이었고, `pm_playbook.md` 는 세
+# 벌 모두 claude 전용 어댑터 경로(`.claude/agents/*.md`)를 링크해 codex·opencode 트리에서
+# 깨졌다. 그래서 진입 문서 한 파일이 아니라 **출하 wiki `.md` 전부**를 본다.
+_MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+# 코드 영역(fence·inline span)은 건너뛴다 — 문서가 "링크 금지" 를 설명하려고 **일부러** 담은
+# 예시(❌ `[adr](decisions/0006-….md)`)까지 실제 링크로 오독하면, 규율 설명을 지워야 green 이
+# 되는 거꾸로 된 압력이 생긴다. 엔진 wikilink lint 도 같은 규칙으로 코드 영역을 건너뛴다.
+_CODE_FENCE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
+_CODE_SPAN = re.compile(r"(`+)(?:(?!\1).)*?\1", re.DOTALL)
+# 출하 트리에 없어도 정상인 링크 = `board.py init` 이 만드는 인스턴스 산출물뿐(템플릿엔
+# `pm_state.template.md` 만 실린다). 그 밖의 미해소는 seed 누락이거나 잘못된 경로다.
+WIKI_RUNTIME_LINK_TARGETS = {"pm_state.md"}
+
+
+def _prose_only(text: str) -> str:
+    """코드 fence·inline code span 을 지운 산문 — 링크 스캔 대상."""
+    return _CODE_SPAN.sub(" ", _CODE_FENCE.sub(" ", text))
+
+
+def _unresolved_wiki_links(name: str) -> dict[str, set[str]]:
+    """그 템플릿의 출하 wiki `.md` 별 미해소 상대 링크 (파일 상대경로 → 대상 집합)."""
+    wiki = _wiki(name)
+    unresolved: dict[str, set[str]] = {}
+    for path in sorted(wiki.rglob("*.md")):
+        targets = {
+            target.split("#")[0]
+            for target in _MARKDOWN_LINK.findall(
+                _prose_only(path.read_text(encoding="utf-8"))
+            )
+            if not target.startswith(("http://", "https://", "#", "mailto:"))
+        }
+        missing = {
+            target for target in targets
+            if target and not (path.parent / target).exists()
+        }
+        if missing:
+            unresolved[path.relative_to(wiki).as_posix()] = missing
+    return unresolved
+
+
+@pytest.mark.parametrize("name", TEMPLATE_NAMES)
+def test_wiki_links_resolve_in_shipped_tree(name: str):
+    """출하 wiki `.md` 의 상대 링크가 그 트리에서 전부 풀린다 (런타임 산출물만 예외).
+
+    예외 선언도 같이 검증한다 — 선언한 대상이 실제로 출하되기 시작하면 선언이 낡은 것이라
+    red 로 알린다(조용히 넓은 예외를 남겨 두지 않는다).
+    """
+    unresolved = _unresolved_wiki_links(name)
+    offenders = {
+        rel: sorted(targets - WIKI_RUNTIME_LINK_TARGETS)
+        for rel, targets in unresolved.items()
+        if targets - WIKI_RUNTIME_LINK_TARGETS
+    }
+    assert not offenders, (
+        f"{name}: 출하 wiki 가 그 트리에 없는 경로를 링크 — {offenders}. "
+        "instance seed 를 실어라(claude_code 판과 byte-identical·manifest 밖). "
+        "하네스마다 다른 어댑터 경로는 링크가 아니라 plain text 로 쓴다."
+    )
+    shipped_runtime_targets = [
+        target for target in WIKI_RUNTIME_LINK_TARGETS
+        if (_wiki(name) / target).exists()
+    ]
+    assert not shipped_runtime_targets, (
+        f"{name}: {shipped_runtime_targets} 를 이제 출하한다 — "
+        "WIKI_RUNTIME_LINK_TARGETS 예외 선언을 지워라"
+    )
+
+
+def test_wiki_link_scan_skips_code_regions_but_still_reads_prose(tmp_path):
+    """스캔이 코드 영역만 건너뛴다 — 산문 링크는 그대로 읽는다(예외가 넓어지지 않게).
+
+    `pm_playbook.md` 의 "markdown 경로 링크 금지" 예시가 코드 span 안에 있어 실제 링크가
+    아니다. 그 규칙이 fence·span 을 넘어 산문까지 삼키면 이 가드가 통째로 공허해진다.
+    """
+    text = (
+        "산문 링크 [a](missing_prose.md)\n"
+        "인라인 예시 `[b](missing_span.md)` 와 `` `[c](missing_double.md)` ``\n"
+        "```\n[d](missing_fence.md)\n```\n"
+    )
+    targets = set(_MARKDOWN_LINK.findall(_prose_only(text)))
+    assert targets == {"missing_prose.md"}
 
 
 # ── fresh-adopter lint-clean: dangling-wikilink 0 (1급 acceptance) ───────────

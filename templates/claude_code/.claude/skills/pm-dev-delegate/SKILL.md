@@ -192,7 +192,7 @@ ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**
 
 #### 게이트 격리 스냅샷 (병렬 wave · 내부 reviewer 전용)
 
-병렬 dev가 공유 트리를 라이브 편집 중이면 PM은 reviewer 위임 전에 검토 대상의 **staged** 상태를 격리 worktree로 스냅샷해 dev 편집·reviewer git 조작(sensitivity `git checkout` 등)의 경합을 막는다. 스냅샷 생성·신선도 검증은 엔진 도구 `gate_snapshot.py`가 수행한다 — 검토 대상 경로의 staged 내용이 working tree와 다르면(미-stage dev 산출 = stale index) 생성을 fail-loud로 거부해 stale 검토(false-green)를 기계로 차단한다. `<scratch>`는 repo 밖 경로(`/tmp` 또는 repo 상위 `..`), 최종 경로는 `<scratch>/gate-<T>`.
+병렬 dev가 공유 트리를 라이브 편집 중이면 PM은 reviewer 위임 전에 검토 대상의 **staged** 상태를 격리 worktree로 스냅샷해 dev 편집·reviewer git 조작(sensitivity `git checkout` 등)의 경합을 막는다. 스냅샷 생성·신선도 검증은 엔진 도구 `gate_snapshot.py`가 수행한다 — 검토 대상 경로의 staged 내용이 working tree와 다르면(미-stage dev 산출 = stale index) 생성을 fail-loud로 거부해 stale 검토(false-green)를 기계로 차단한다. `<scratch>`는 repo 밖 경로(`/tmp` 또는 repo 상위 `..`), 최종 경로는 `<scratch>/gate-<T>`. 출력 경로는 공유 worktree·같은 저장소 git 공용 디렉터리·다른 등록 worktree 안이면 거부된다(prunable 등록 재사용은 `git worktree prune` 처방).
 
 1. **stage** — 검토 대상 dev 산출을 먼저 `git add <경로>` 한다. **다라운드 게이트는 라운드마다 다시** — 누락하면 도구가 불일치로 차단한다(그게 이 도구가 닫는 클래스다).
 2. **생성** —

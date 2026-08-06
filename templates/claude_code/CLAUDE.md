@@ -137,7 +137,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 {{PY}} .project_manager/tools/domain.py lint                       # freshness — stale 페이지 검사
 ```
 
-> **ctx 예산:** ctx 정지/넛지 %의 100% 기준은 `.project_manager/local.conf` 의 `ctx_window_tokens_<harness>`(예 `ctx_window_tokens_claude=500000`) > generic `ctx_window_tokens` > 200000 순. 한 repo 를 여러 harness 로 동시 운용하면 각각 설정한다.
+> **ctx 예산:** ctx 정지 밴드(현행 의미 = 최종 checkpoint 넛지·키 이름은 호환 유지)/넛지 %의 100% 기준은 `.project_manager/local.conf` 의 `ctx_window_tokens_<harness>`(예 `ctx_window_tokens_claude=500000`) > generic `ctx_window_tokens` > 200000 순. 한 repo 를 여러 harness 로 동시 운용하면 각각 설정한다.
 
 ## 핵심 디렉토리
 

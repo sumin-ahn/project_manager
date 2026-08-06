@@ -795,6 +795,25 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
+def _require_engine_sibling(path: Path, filename: str) -> None:
+    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
+
+    부재는 `spec_from_file_location`+exec 단계에서 raw `FileNotFoundError` 로 터져 복구 방법
+    (pm-update 재동기)을 알려주지 않는다 — 부분/수동 복사라는 원인은 stale 사본과 같으므로
+    같은 marked skew 로 표출한다(`_engine_rev_skew`: fail-soft 로더가 조용히 None 으로
+    삼키지 않고 재-raise 한다).
+    """
+    if path.exists():
+        return
+    err = RuntimeError(
+        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
+        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
+        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+    )
+    err._engine_rev_skew = True
+    raise err
+
+
 def _report_engine_rev_skew_at_terminal(exc) -> int:
     """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
     print(
@@ -835,6 +854,7 @@ def _load_file_lock():
     삼키는 새 경로가 생긴다 — import 경계에서 한 번 fail-loud 로 세워 그 확산을 막는다.
     """
     lock_path = Path(__file__).resolve().parent / "file_lock.py"
+    _require_engine_sibling(lock_path, "file_lock.py")
     return _load_module_from_path(
         lock_path, "file_lock.py", verifier=_verify_engine_rev,
     )
@@ -2150,7 +2170,7 @@ def areas_append(prefix: str, area: str, owner: str,
                 encoding="utf-8")
         # O_APPEND atomic append — areas 는 append-only 레지스트리이므로
         # read-modify-write 가 아니라 OS 가 보장하는 원자 추가로 동시 등록 충돌을 없앤다.
-        _append_atomic(
+        file_lock.append_atomic(
             af,
             f"| {_repo} | {prefix} | {_git} | {_test} | {owner} | {_base} "
             f"| {_protected} | {_area_owner} |\n")
@@ -2311,7 +2331,7 @@ def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
 # 단일 루트 동시 세션이 공유 `.project_manager` 파일을 안전하게 쓰게 한다.
 #   - board_lock: OS 파일락 — ID 발행(new)·공유 단일파일 write(board.md) 직렬화.
 #     프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock 없음).
-#   - _append_atomic: O_APPEND — log/areas 같은 append-only 파일의 원자 추가.
+#   - file_lock.append_atomic: O_APPEND — log/areas 같은 append-only 파일의 원자 추가.
 #   - claim(`cmd_claim` 의 load→rename 임계구역)도 board_lock 으로 직렬화한다 — POSIX rename 은
 #     원자적이나 Windows os.rename 은 동시 프로세스에 배타적이지 않아
 #     락으로 배타성을 복원한다(패배자는 깨끗한 `claim race lost`). complete/block 같은 비경합
@@ -2319,9 +2339,9 @@ def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
 #
 # 크로스플랫폼(stdlib-only — 런타임 의존은 PyYAML 뿐): POSIX=fcntl.flock,
 # Windows=msvcrt.locking. 둘 다 없으면 단일-머신 전제의 무락 폴백(락 파일만 생성).
-# 그 플랫폼 분기 자체는 공용 `file_lock` seam 이 소유한다 — board/pm_log/pm_relay 가 같은
-# 구현을 쓰고(모듈 상단 `file_lock` 바인딩), board 는 *어느 파일에 언제 거는지*(경로 규약·
-# 락 순서)만 정한다.
+# 그 플랫폼 분기도, O_APPEND 원자 추가도 공용 `file_lock` seam 이 소유한다 —
+# 엔진 도구가 같은 구현을 쓰고(board 는 모듈 상단 `file_lock` 바인딩), board 는 *어느 파일에
+# 언제 거는지·무엇을 붙이는지*(경로 규약·락 순서·행 포맷)만 정한다.
 
 
 @contextlib.contextmanager
@@ -2338,20 +2358,6 @@ def board_lock() -> Iterator[None]:
     """
     with file_lock.exclusive_file_lock(BOARD_LOCK):
         yield
-
-
-def _append_atomic(path: Path, text: str) -> None:
-    """O_APPEND 로 텍스트를 원자 추가한다 (log/areas 같은 append-only).
-
-    `O_APPEND` 는 각 write 의 offset 이동+기록을 OS 가 원자로 처리해, 동시 writer 가
-    서로의 추가를 덮어쓰지 않는다(read-modify-write 의 lost update 회피). 파일이 없으면
-    생성한다. 인코딩은 엔진 관례대로 UTF-8.
-    """
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    try:
-        os.write(fd, text.encode("utf-8"))
-    finally:
-        os.close(fd)
 
 
 # ── 회귀 게이트 ──────────────────────────────────────────────────────
@@ -2580,8 +2586,8 @@ def _ensure_board_gitattributes() -> bool:
     같은 이유다 — 빠지면 이 backfill 이 영구 미커밋으로 남아 배포가 죽는다.
 
     **비파괴**: 파일이 있으면 덮어쓰지 않고, union 선언이 *없을 때만* 블록을 append 한다(채택자
-    가 자기 규칙을 가진 경우 보존). 이미 선언돼 있으면 no-write(멱등). append 는 `_append_atomic`
-    (O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
+    가 자기 규칙을 가진 경우 보존). 이미 선언돼 있으면 no-write(멱등). append 는
+    `file_lock.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
 
     fail-soft: board 미분리(legacy·솔로)·areas 가 이 git 밖·IO 실패면 아무 것도 하지 않고 False.
     반환 True = 이번 호출이 보강했다.
@@ -2596,7 +2602,7 @@ def _ensure_board_gitattributes() -> bool:
             return False
         # 기존 내용 뒤에 빈 줄 하나를 띄우고 append (줄바꿈 없이 끝난 파일도 안전하게 이어붙임).
         separator = "" if not text else ("\n" if text.endswith("\n") else "\n\n")
-        _append_atomic(attrs, separator + _BOARD_GITATTRIBUTES_BLOCK)
+        file_lock.append_atomic(attrs, separator + _BOARD_GITATTRIBUTES_BLOCK)
     except (OSError, UnicodeError):
         # IO 실패·비-UTF8 `.gitattributes` — 보강을 포기한다. 이 함수는 ticket mutation 의
         # commit funnel 에서 불리므로 어떤 예외도 mutation 을 깨선 안 된다(advisory 가 표면화).

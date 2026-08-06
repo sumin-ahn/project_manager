@@ -19,12 +19,18 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
     # 루트(upstream)에서 존재하는 모든 templates 타깃으로 동기화:
     python3 .project_manager/tools/pm_update.py --from <upstream-checkout> --all-targets [--dry-run]
 
+    # 명시 경로만 전파 (opt-in 부분 전파 · 단독/--target/--all-targets 와 조합):
+    python3 .project_manager/tools/pm_update.py --all-targets --paths <path> [<path>...]
+
     # 받은 baseline ↔ upstream HEAD 변경점만 read-only 확인 (실 sync 안 함):
     python3 .project_manager/tools/pm_update.py --changes [--from <checkout>] [--count-only] [--log]
 
 동작:
   engine.manifest 의 각 경로를 <upstream>/<path> → <dest-root>/<path> 로 복사(overwrite).
   디렉토리는 재귀. manifest 에 없는 경로는 무시. --dry-run = 변경 예정만 출력(미적용).
+  --paths 지정 시 그 경로(파일 또는 디렉토리) 아래만 전파한다 — manifest 등재분에 한정하고
+  미등재 경로는 rc1 로 거부한다. 부분 전파이므로 upstream_rev baseline 기록·진입 doc
+  마이그레이션·보호 훅 재설치·동기 후 프롬프트는 발화하지 않는다(전량 흡수로 오인 방지).
   --target 지정 시 dest-root = REPO/templates/<target>/ (타깃 자신의 manifest 우선).
   sync 적용 후에는 등록 repo 전수 **보호 훅 재설치**— 훅은 엔진 코드에서 생성되는
   런타임 산출물이라 파일 복사만으론 새 훅이 배포되지 않는다(--target 은 비발화).
@@ -50,7 +56,7 @@ import sys
 import tempfile
 import warnings
 import zlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
@@ -641,18 +647,27 @@ def _atomic_copy2(source: Path, dest: Path) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def central_loader_needs_recovery(dest_root: Path) -> bool:
+    """dest 의 중앙 로더 seam이 부재·손상·구형인가(선복구가 실제로 write 할 상황인가).
+
+    경로 스코프 실행이 "이 경로만 전파" 계약을 지키려면 선복구를 건너뛰어야 하는데, 그때 조용히
+    넘기면 seam이 깨진 인스턴스는 다음 실행도 같은 자리에서 막힌다 — 판정만 따로 떼어 호출부가
+    **알리고** 건너뛸 수 있게 한다."""
+    try:
+        current = _load_module_from_path(
+            dest_root / _CENTRAL_LOADER_REL, "repo_owned_files.py", allow_unverified=True,
+        )
+    except Exception:  # noqa: BLE001 — 로드 실패도 복구 대상(아래 판정과 같은 결론).
+        current = None
+    return bool(_missing_repo_owned_files_api(current))
+
+
 def _predeploy_central_loader(source_root: Path, dest_root: Path) -> None:
     """손상/구형 seam을 검증된 tracked 일반 파일로 원자 선복구한다."""
     global _TOOLS_BOOTSTRAP_MODULE
     source = source_root / _CENTRAL_LOADER_REL
     dest = dest_root / _CENTRAL_LOADER_REL
-    try:
-        current = _load_module_from_path(
-            dest, "repo_owned_files.py", allow_unverified=True,
-        )
-    except Exception:  # noqa: BLE001 — 바로 아래 source 선복구 판정으로 수렴.
-        current = None
-    if not _missing_repo_owned_files_api(current):
+    if not central_loader_needs_recovery(dest_root):
         return
     try:
         source.lstat()
@@ -1057,6 +1072,191 @@ def _path_under_manifest(rel_path: str, manifest: list) -> bool:
         if rel_norm == item or rel_norm.startswith(item + "/"):
             return True
     return False
+
+
+# 엔진 도구 접두사 — 이 아래 파일은 rev 스탬프(ENGINE_REV)를 들고 서로를 로드하므로, 부분 전파가
+# 트리 안 rev 를 섞을 수 있다(스코프 경고의 판정 기준).
+_ENGINE_TOOLS_PREFIX = ".project_manager/tools/"
+
+
+# ── `--paths` 경로 스코프 (opt-in 부분 전파) ────────────────────────────────
+# 기본 sync 는 manifest 전량이라 all-or-nothing 이다 — 병렬 작업 중 한 파일만 내보내려면 엔진 밖
+# 수동 복사로 우회하게 된다(그 우회가 안전 판정·render 를 통째로 건너뛴다). 이 옵션은 그 필요를
+# 엔진 안으로 들여 **명시한 경로만** 전파한다. 스코프 판정은 manifest 등재분에 한정하고(미등재는
+# 거부), 부분 전파이므로 "전량 흡수" 를 전제하는 후속 단계(baseline 기록·마이그레이션·훅 재설치)는
+# 발화하지 않는다 — 그것들이 돌면 drift-lint 가 거짓 '최신' 을 말한다.
+
+def _normalize_scope_paths(raw_paths) -> tuple[list[str], list[str]]:
+    """`--paths` 입력을 repo 기준 posix relpath 로 정규화 — (정규화 목록, 거부 사유 목록).
+
+    거부: 빈 값(`.` 자기참조 포함)·절대경로/드라이브·`..` 컴포넌트(스코프가 저장소 밖을 가리키면
+    안 된다). **저장하는 값은 정규화 결과**다 — 원본을 저장하면 `./a/b`·`a//b` 같은 동치 표기가
+    매칭에서 빗나가 "등재는 통과했는데 아무것도 전파 안 되는" 조용한 rc0 이 된다. 정규화 뒤에
+    중복을 입력 순서대로 접는다(`a/b` 와 `./a/b` 는 한 항목)."""
+    normalized: list[str] = []
+    rejected: list[str] = []
+    for raw in raw_paths:
+        value = str(raw).strip().replace("\\", "/").rstrip("/")
+        if not value:
+            rejected.append(f"{raw!r}: 빈 경로")
+            continue
+        candidate = PurePosixPath(value)
+        # posix anchor(`/`·UNC `//host/share`)와 Windows 드라이브(`C:x`)를 한 식으로 거른다 —
+        #   백슬래시는 위에서 이미 `/` 로 통일했다.
+        if candidate.is_absolute() or PureWindowsPath(value).drive:
+            rejected.append(f"{value!r}: 절대경로(스코프는 repo 루트 상대여야 한다)")
+            continue
+        if any(part == ".." for part in candidate.parts):
+            rejected.append(f"{value!r}: `..` 컴포넌트(저장소 밖 지향)")
+            continue
+        # `PurePosixPath` 가 `.`·중복 `/` 를 접으므로 그 산출이 곧 정규형이다(`.` 만 준 경우는
+        #   parts 가 비어 빈 경로로 거부된다).
+        canonical = candidate.as_posix()
+        if not candidate.parts:
+            rejected.append(f"{value!r}: 빈 경로(자기 참조 `.`)")
+            continue
+        if canonical not in normalized:
+            normalized.append(canonical)
+    return normalized, rejected
+
+
+def _paths_overlap(one: str, other: str) -> bool:
+    """두 경로가 겹치는가 — 같거나 한쪽이 다른 쪽의 상위 디렉토리(양방향)."""
+    return one == other or one.startswith(other + "/") or other.startswith(one + "/")
+
+
+def _unregistered_scope_paths(manifest: list, scope: list[str],
+                              effective_dest: Path | None = None) -> list[str]:
+    """manifest 어느 항목과도 겹치지 않는 요청 경로 — 거부 대상(조용한 무전파 금지).
+
+    겹침은 양방향이다: 요청이 manifest 항목 *아래*(디렉토리 항목의 파일 하나)여도, 요청이 여러
+    manifest 항목을 *담는* 상위 디렉토리여도 유효하다. 판정 대상은 세 좌표다 — manifest 의 dest
+    경로, `@source` 읽기 경로, 그리고 **dest 레이아웃 리매핑 결과**(`_dest_relpath_for`). 마지막을
+    빼면 board 분리 인스턴스에서 실제 관리 파일인 `board/tickets/_template.md` 가 미등재로 거부된다
+    (계획은 그 좌표로 착지시키는데 게이트만 옛 좌표를 본다)."""
+    declared: set[str] = set()
+    for entry in manifest:
+        declared.add(str(entry).replace("\\", "/").strip("/"))
+        declared.add(_source_root_rel(entry).replace("\\", "/").strip("/"))
+        if effective_dest is not None:
+            declared.add(
+                _dest_relpath_for(str(entry), effective_dest).replace("\\", "/").strip("/"))
+    declared.discard("")
+    return [
+        path for path in scope
+        if not any(_paths_overlap(path, item) for item in declared)
+    ]
+
+
+def _in_scope_paths(rel: str, scope: list[str]) -> bool:
+    """이 relpath 가 요청 스코프 안인가 — 요청 경로 자신이거나 요청 디렉토리 아래.
+
+    전파 대상 판정은 **단방향**이다: 요청보다 상위 경로(요청을 담는 디렉토리)는 스코프 밖 파일까지
+    끌고 오므로 대상이 아니다. 반대로 source 부재 보고는 항목 단위(디렉토리)라 양방향으로 본다
+    (`_paths_overlap`) — 요청 파일을 담은 디렉토리 등재가 통째로 없으면 그 사실이 신호여야 한다."""
+    rel_norm = str(rel).replace("\\", "/").strip("/")
+    return any(rel_norm == path or rel_norm.startswith(path + "/") for path in scope)
+
+
+def _dest_guest_manifest_paths(effective_dest: Path) -> set[str]:
+    """dest engine.manifest 의 add-harness guest 절 경로 집합 — 읽기 실패·절 부재는 빈 집합.
+
+    guest 절은 update plan 에서 빠지는 **다른 채널**(add-harness refresh 전용·update 불가침)이라,
+    스코프 거부 진단이 그것을 "미등재(오타)" 로 뭉치면 사람이 없는 오타를 찾게 된다."""
+    manifest_file = Path(effective_dest) / ".project_manager" / "engine.manifest"
+    try:
+        block = _extract_guest_manifest_block(manifest_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return set()
+    if not block:
+        return set()
+    return {
+        line.split()[0].replace("\\", "/").strip("/")
+        for line in block.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+
+def _refuse_unregistered_scope_paths(
+        manifest: list, scope: list[str], guest_paths: set[str],
+        effective_dest: Path | None = None) -> int:
+    """스코프 요청 중 manifest 미등재분을 사유별로 loud 거부 — 있으면 rc1, 없으면 0.
+
+    두 사유를 가른다: **guest 절**(add-harness 채널이라 update 가 원래 안 건드린다)과 **미등재**
+    (오타·인스턴스 소유·아직 manifest 에 안 올린 신규 파일). 같은 문구로 뭉치면 전자는 manifest 를
+    뒤지게 만들고 후자는 채널을 오해하게 만든다."""
+    unregistered = _unregistered_scope_paths(manifest, scope, effective_dest)
+    if not unregistered:
+        return 0
+    guest_hits = [
+        path for path in unregistered
+        if any(_paths_overlap(path, guest) for guest in guest_paths)
+    ]
+    for path in unregistered:
+        if path in guest_hits:
+            print(f"  [guest 절] {path} — add-harness 가 등재한 guest `@render` 경로다. "
+                  "update 채널의 전파 대상이 아니므로(refresh 는 add-harness 소관) 스코프로 "
+                  "지정할 수 없다.", file=sys.stderr)
+        else:
+            print(f"  [미등재] {path}", file=sys.stderr)
+    plain = [path for path in unregistered if path not in guest_hits]
+    if plain:
+        print(
+            f"오류: --paths 경로 {len(plain)}개가 engine.manifest 등재분이 아니다 — pm-update 는 "
+            "manifest 소유 경로만 전파한다(인스턴스 소유 파일은 대상 아님). 경로 오타이거나, 그 "
+            "파일이 아직 manifest 에 등재되지 않았는지 확인하라.", file=sys.stderr)
+    if guest_hits:
+        print(
+            f"오류: --paths 경로 {len(guest_hits)}개가 add-harness guest 절 소속이다 — "
+            "`pm_config add-harness <harness>` 로 갱신하라(update 는 guest 를 건드리지 않는다).",
+            file=sys.stderr)
+    return 1
+
+
+def _scope_validation_manifest(effective_dest: Path, source_root: Path) -> list | None:
+    """스코프 **소유권 선검증**용 manifest 합 — dest 것과 source 것의 합집합(best-effort).
+
+    실 계획 manifest 는 중앙 로더 선복구(dest 쓰기) 뒤에 해소된다. 미등재 요청이 rc1 로 끝나는데
+    그 전에 쓰기가 일어나면 "거부인데 파일이 바뀐다" 가 되므로, 쓰기 전에 읽기만으로 한 번 거른다.
+    이 시점 판정은 **관대해야** 한다(합집합): self-heal 이 upstream 등재분을 계획 기준으로 올리는
+    경우가 있어 dest manifest 만 보면 유효 요청을 오거부한다. 좁은 판정은 계획 확정 뒤 한 번 더
+    돈다. 양쪽 다 못 읽으면 None(선검증 생략 — 정규 경로가 같은 오류를 더 정확히 낸다)."""
+    entries: list = []
+    seen: set[str] = set()
+    candidates = [
+        Path(effective_dest) / ".project_manager" / "engine.manifest",
+        Path(source_root) / ".project_manager" / "engine.manifest",
+    ]
+    found = False
+    for manifest_path in candidates:
+        if not manifest_path.is_file():
+            continue
+        try:
+            parsed = read_manifest(manifest_path)
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        found = True
+        for entry in parsed:
+            key = str(entry).replace("\\", "/").strip("/")
+            if key not in seen:
+                seen.add(key)
+                entries.append(entry)
+    return entries if found else None
+
+
+def _scope_change_candidates(rel: str, source_path, source_root: Path) -> list[str]:
+    """한 변경을 스코프에 대볼 후보 경로 — dest relpath + (가능하면) source relpath.
+
+    `@source` 리매핑 항목은 dest 와 upstream 경로가 다르다(opencode 어댑터). 둘 다 후보로 두면
+    "내가 고친 파일 경로" 로 지정해도, "채택자 트리에서 보이는 경로" 로 지정해도 걸린다. 인메모리
+    source(manifest 합집합)는 파일 경로가 없어 dest 후보만 남는다."""
+    candidates = [str(rel)]
+    if isinstance(source_path, Path):
+        try:
+            candidates.append(source_path.relative_to(source_root).as_posix())
+        except ValueError:
+            pass
+    return candidates
 
 
 def summarize_upstream_changes(
@@ -2295,6 +2495,7 @@ def plan(
     entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
     entry_notation_templates: dict[str, tuple[str, ...]] | None = None,
     manifest_source_text: str | None = None,
+    inventory_out: set[str] | None = None,
 ) -> tuple[list[tuple], list[str]]:
     """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update).
 
@@ -2309,6 +2510,10 @@ def plan(
     ``@render`` 어댑터와 공유 canonical wiki의 `/pm-*` 호출 토큰만 타깃 표기로 바꾼다. 프로젝트명
     등 나머지 토큰-form은 그대로 보존한다. 채택자 self-update에서도 같은 항목별 하네스 context를
     넘겨 canonical 스킬 표기가 되돌아오지 않게 한다.
+
+    ``inventory_out``을 주면 이번 계획이 훑은 **출하 파일 좌표**(dest relpath + source relpath)를
+    거기에 모은다. 변경 0인 파일도 담기므로 "요청 경로가 실제로 존재하는가"를 changes 유무와 독립
+    으로 판정할 수 있다(경로 스코프의 오타 검출 — 별도 재열거 없이 같은 열거를 재사용).
     """
     effective_dest = dest_root if dest_root is not None else REPO
     changes: list[tuple] = []
@@ -2318,6 +2523,10 @@ def plan(
         if rel.replace("\\", "/") == _MANIFEST_SELF_REL and manifest_source_text is not None:
             # 선택 flavor 합집합은 upstream에 단일 실파일로 존재하지 않는다. 인메모리 source를
             # change tuple에 실어 self-prop가 합집합 전체를 설치/갱신하게 한다.
+            if inventory_out is not None:
+                # 이 분기도 **계획이 다루는 좌표**다 — 빼면 `--paths .project_manager/engine.manifest`
+                #   가 유효 변경인데도 "대응 없음" 으로 거부된다(합집합 경로에만 생기는 갭).
+                inventory_out.add(rel.replace("\\", "/").strip("/"))
             dst = _RenderDst(effective_dest / rel, False)
             source = _ManifestTextSource(manifest_source_text)
             if not dst.exists():
@@ -2351,6 +2560,13 @@ def plan(
             missing.append(rel)
             continue
         for r, sp in inventory:
+            if inventory_out is not None:
+                # 이 계획이 **실제로 다루는** 좌표(dest·source 양쪽) — 변경 유무와 무관하게 모은다.
+                inventory_out.add(str(r).replace("\\", "/").strip("/"))
+                try:
+                    inventory_out.add(Path(sp).relative_to(source_root).as_posix())
+                except ValueError:
+                    pass
             # render 대상 판정 = @render manifest 선언 + **텍스트로 읽히는가**.
             # 옛 `.md` 확장자 하드 필터는 제거했다: 확장자 열거는 manifest 선언을 덮는 중복
             # 판정이라, codex 가 들여온 `.codex/agents/*.toml`(@render 선언 O)이 byte-copy 로
@@ -3498,6 +3714,21 @@ def _main(argv: list[str] | None = None) -> int:
             "새 타깃도 디렉토리만 있으면 자동 포함한다. --target 및 --changes 와 함께 쓸 수 없다."
         ),
     )
+    ap.add_argument(
+        "--paths",
+        metavar="PATH",
+        action="extend",
+        nargs="+",
+        default=None,
+        help=(
+            "명시한 경로만 전파한다(opt-in 부분 전파·반복 지정 가능). manifest 등재 경로만 "
+            "허용하며 미등재 경로는 거부한다(rc1·조용한 무전파 없음). 경로는 repo 루트 상대 "
+            "(파일 또는 디렉토리)다. 전량 흡수가 아니므로 upstream_rev baseline 기록·진입 doc "
+            "마이그레이션·보호 훅 재설치·동기 후 프롬프트는 건너뛴다(부분 전파를 '최신' 으로 "
+            "박으면 drift-lint 가 거짓 침묵한다). --target·--all-targets 와 조합 가능하고 "
+            "--changes 와는 함께 쓸 수 없다."
+        ),
+    )
     # ── read-only 변경점 확인 (실 sync 안 함) ──────────────
     ap.add_argument(
         "--changes",
@@ -3537,6 +3768,27 @@ def _main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # ── `--paths` 경로 스코프 입구 검증 (부작용 전·--all-targets 분기보다 앞) ──
+    #    나쁜 값(절대경로·`..`)과 모드 충돌은 어떤 복사/기록보다 먼저 거른다. --all-targets 는 이
+    #    검증을 통과한 값을 자식 argv 로 그대로 넘긴다(자식이 다시 같은 검증을 탄다).
+    scope_paths: list[str] = []
+    if args.paths is not None:
+        if args.changes:
+            print("오류: --paths 는 실 동기화 옵션이며 --changes(read-only 확인)와 함께 쓸 수 없다.",
+                  file=sys.stderr)
+            return 1
+        scope_paths, rejected = _normalize_scope_paths(args.paths)
+        if rejected:
+            for reason in rejected:
+                print(f"  [거부] {reason}", file=sys.stderr)
+            print("오류: --paths 값이 repo 루트 상대 경로가 아니다 — 위 항목을 고쳐 다시 실행하라.",
+                  file=sys.stderr)
+            return 1
+        if not scope_paths:
+            print("오류: --paths 에 유효한 경로가 없다(빈 스코프는 전파 0 이라 무의미).",
+                  file=sys.stderr)
+            return 1
+
     # 전체 export 는 타깃 집합을 디렉토리에서 매번 발견한다. 단일 타깃 실행을 재사용해
     # manifest/안전 가드/출력의 의미를 갈라놓지 않는다. 한 타깃의 실패는 즉시 반환한다.
     if args.all_targets:
@@ -3553,6 +3805,10 @@ def _main(argv: list[str] | None = None) -> int:
                 child_argv = ["--from", args.source, *child_argv]
             if args.dry_run:
                 child_argv.append("--dry-run")
+            if scope_paths:
+                # 경로 스코프는 타깃마다 같은 값이다 — 정규화된 값을 넘겨 자식이 다시 같은 검증을
+                #   통과하게 한다(타깃별로 스코프가 달라지는 경로 없음).
+                child_argv.extend(["--paths", *scope_paths])
             rc = main(child_argv)
             if rc:
                 return rc
@@ -3569,14 +3825,37 @@ def _main(argv: list[str] | None = None) -> int:
         return rc
     effective_dest = dest_root if dest_root is not None else REPO
 
+    # ── `--paths` 소유권 선검증: **어떤 dest 쓰기보다 먼저**(중앙 로더 선복구 포함). 미등재 요청은
+    #    rc1 로 끝나는데 그 전에 seam 복구 write 가 일어나면 "거부인데 파일이 바뀐다" 가 된다.
+    #    판정은 읽기만 하고 관대하다(dest∪source manifest 합집합) — 좁은 판정은 계획 확정 뒤 한 번
+    #    더 돈다. manifest 를 못 읽으면 선검증을 생략한다(정규 경로가 같은 오류를 더 정확히 낸다).
+    if scope_paths:
+        early_manifest = _scope_validation_manifest(effective_dest, source_root)
+        if early_manifest is not None:
+            rc = _refuse_unregistered_scope_paths(
+                early_manifest, scope_paths, _dest_guest_manifest_paths(effective_dest),
+                effective_dest)
+            if rc:
+                return rc
+
     # dry-run은 무변경 계약을 지킨다. 실제 sync에서는 manifest 해석/출하 인벤토리보다 먼저
     # 중앙 seam을 복구해, missing/syntax/empty/old 어느 중단 상태에서도 같은 명령을 재실행한다.
+    # **경로 스코프는 예외**다: 그 실행의 계약은 "명시 경로만 전파" 라, 스코프 밖인 이 seam 을
+    # 고치면 요청하지 않은 파일이 바뀐다. 스코프에 그 경로가 들어 있으면 정상대로 복구하고,
+    # 아니면 건너뛰되 **복구가 필요한 상태면 알린다**(조용한 방치 금지 — 전량 sync 로 안내).
     if not args.dry_run:
-        try:
-            _predeploy_central_loader(source_root, effective_dest)
-        except (OSError, RuntimeError) as exc:
-            print(f"오류: 중앙 로더 선복구 실패 — {exc}", file=sys.stderr)
-            return 1
+        loader_in_scope = not scope_paths or _in_scope_paths(
+            _CENTRAL_LOADER_REL, scope_paths)
+        if loader_in_scope:
+            try:
+                _predeploy_central_loader(source_root, effective_dest)
+            except (OSError, RuntimeError) as exc:
+                print(f"오류: 중앙 로더 선복구 실패 — {exc}", file=sys.stderr)
+                return 1
+        elif central_loader_needs_recovery(effective_dest):
+            print(f"  ⚠️ 중앙 로더({_CENTRAL_LOADER_REL})가 복구 대상이지만 경로 스코프 밖이라 "
+                  "건드리지 않는다 — 전량 sync 를 돌리거나 그 경로를 --paths 에 포함하라.",
+                  file=sys.stderr)
 
     # manifest: dest_root 의 것 우선, 없으면 source 의 것
     try:
@@ -3622,12 +3901,10 @@ def _main(argv: list[str] | None = None) -> int:
     # 남고, plan 에서만 뺀다. 마커/절 추출은 pm_update 재사용(사본 0·guest 정의 = 마커 구획).
     dest_manifest_file = Path(effective_dest) / ".project_manager" / "engine.manifest"
     if dest_manifest_file.is_file():
-        gblock = _extract_guest_manifest_block(
-            dest_manifest_file.read_text(encoding="utf-8"))
-        if gblock:
-            gpaths = {
-                ln.split()[0] for ln in gblock.splitlines()
-                if ln.strip() and not ln.strip().startswith("#")}
+        # 추출은 공용 helper 한 곳(`_dest_guest_manifest_paths`) — 스코프 거부 진단이 같은 정의를
+        #   봐야 "guest 라서 빠졌는데 미등재라고 말하는" 어긋남이 생기지 않는다.
+        gpaths = _dest_guest_manifest_paths(effective_dest)
+        if gpaths:
             # **승격분 제외**: guest 경로가 upstream core 로
             # 승격되면(selfheal 이 그 경로를 담은 upstream 을 계획 기준으로 올림) 이제 core 라 **1차
             # sync 에서 갱신돼야** 한다 — dest guest 절에 있어도 **upstream core 에 실재하면 필터 밖**
@@ -3667,6 +3944,10 @@ def _main(argv: list[str] | None = None) -> int:
             raise
         print(f"오류: {exc}", file=sys.stderr)
         return 2
+    # 경로 스코프가 있으면 계획이 훑은 출하 좌표를 함께 모은다 — 등재 디렉토리 **안의 오타**
+    #   (`adapterdir/typo.md`)는 등재 검증을 통과하지만 실제로 대응하는 파일이 없다. 변경 0 은
+    #   "이미 최신" 과 구분되지 않으므로, 계획 인벤토리 대응 여부로 그 침묵을 닫는다.
+    scope_inventory: set[str] | None = set() if scope_paths else None
     changes, missing = plan(
         source_root,
         manifest,
@@ -3679,7 +3960,91 @@ def _main(argv: list[str] | None = None) -> int:
             if len(selfheal.get("upstream_manifests", [])) > 1
             else None
         ),
+        inventory_out=scope_inventory,
     )
+
+    # ── 경로 스코프 적용: **계획을 좁히는 게 아니라 계획 결과를 거른다.** manifest 항목은 디렉토리
+    #    일 수 있어(예 `.claude/skills`) 항목 단위로 자르면 "그 디렉토리 안 파일 하나" 를 못 고른다 —
+    #    plan 이 산출한 파일 단위 결과에서 고르면 경로 리매핑·render 판정을 그대로 물려받는다.
+    #    등재 검증은 manifest 기준(요청이 어떤 항목과도 안 겹치면 rc1) — 오타가 조용한 무전파로
+    #    끝나지 않게 한다. 계획 자체는 여전히 manifest 전량을 훑으므로 스코프 밖 항목의 구조 오류
+    #    (출하 인벤토리 0 등)는 그대로 표면화된다 — 스코프는 *적용 범위*를 좁히지 실패 판정을
+    #    끄지 않는다.
+    if scope_paths:
+        # 좁은 판정(계획 확정 manifest 기준) — 선검증은 합집합이라 관대했다. guest 절 소속은
+        #   "오타" 가 아니라 채널이 다른 것이라 사유를 갈라 알린다.
+        rc = _refuse_unregistered_scope_paths(
+            manifest, scope_paths, _dest_guest_manifest_paths(effective_dest),
+            effective_dest)
+        if rc:
+            return rc
+        # 등재 디렉토리 **안의 오타**는 위 판정을 통과한다(`adapterdir/typo.md` 는 `adapterdir`
+        #   등재와 겹친다) — 실제 계획 인벤토리(변경 0 포함)와 source 부재 보고 어디에도 대응이
+        #   없으면 그 요청은 아무 파일도 가리키지 않는다. 조용한 rc0 무전파 대신 거부한다.
+        # 부재 보고의 좌표는 dest·source 양쪽이다(`@source` 항목은 둘이 다르다) — 한쪽만 보면
+        #   upstream 경로로 지정한 "source 부재" 요청이 오타로 오분류된다(rc2 여야 할 것이 rc1).
+        source_rel_by_dest = {
+            str(entry).replace("\\", "/").strip("/"):
+                _source_root_rel(entry).replace("\\", "/").strip("/")
+            for entry in manifest
+        }
+        missing_coordinates: set[str] = set()
+        for rel in missing:
+            dest_norm = str(rel).replace("\\", "/").strip("/")
+            missing_coordinates.add(dest_norm)
+            missing_coordinates.add(source_rel_by_dest.get(dest_norm, dest_norm))
+        phantom = [
+            path for path in scope_paths
+            if not any(_paths_overlap(path, item) for item in (scope_inventory or set()))
+            and not any(_paths_overlap(path, item) for item in missing_coordinates)
+        ]
+        if phantom:
+            for path in phantom:
+                print(f"  [대응 없음] {path}", file=sys.stderr)
+            print(
+                f"오류: --paths 경로 {len(phantom)}개가 이번 계획의 출하 인벤토리에 대응하지 "
+                "않는다(등재 디렉토리 안의 오타·이미 폐기된 경로). 아무것도 전파하지 않고 멈춘다 — "
+                "경로 철자와 upstream 에 그 파일이 있는지 확인하라.",
+                file=sys.stderr,
+            )
+            return 1
+        changes = [
+            change for change in changes
+            if any(_in_scope_paths(candidate, scope_paths)
+                   for candidate in _scope_change_candidates(
+                       change[0], change[1], source_root))
+        ]
+        # source 부재 보고는 **항목 단위**(디렉토리 등재 하나)이고 `@source` 항목은 dest·upstream
+        #   경로가 다르다 — dest 경로만 대조하면 upstream 경로로 지정한 요청의 부재 보고가 접혀
+        #   "변경 없음 rc0" 라는 거짓 성공이 된다. 위에서 만든 양쪽 좌표를 그대로 쓴다.
+        missing = [
+            rel for rel in missing
+            if any(
+                _paths_overlap(coordinate, path)
+                for coordinate in {
+                    str(rel).replace("\\", "/").strip("/"),
+                    source_rel_by_dest.get(
+                        str(rel).replace("\\", "/").strip("/"),
+                        str(rel).replace("\\", "/").strip("/")),
+                }
+                for path in scope_paths
+            )
+        ]
+        print(f"  경로 스코프: {' '.join(scope_paths)} — 이 경로만 전파한다"
+              "(baseline 기록·진입 doc 마이그레이션·훅 재설치·동기 후 프롬프트 생략).")
+        # 엔진 사본은 rev 스탬프를 들고 있다 — 일부만 옮기면 트리 안에 rev 가 섞여 sibling 로더가
+        #   skew 로 볼 수 있다. 부분 전파의 성질이라 차단하지 않고 알리기만 한다(최종 방어는 wave
+        #   말 `--all-targets` 전량 전파 + parity 게이트).
+        stamped = sorted({
+            str(change[0]).replace("\\", "/")
+            for change in changes
+            if str(change[0]).replace("\\", "/").startswith(_ENGINE_TOOLS_PREFIX)
+        })
+        if stamped:
+            print(f"  ⚠️ 엔진 도구 {len(stamped)}건이 스코프에 포함됐다 — 부분 전파는 트리 안 "
+                  f"ENGINE_REV 를 섞을 수 있다(로더 skew 진단 유발 가능). 차단하지 않으니 wave "
+                  f"마감에 `--all-targets` 전량 전파 + parity 로 수렴시켜라: {', '.join(stamped)}",
+                  file=sys.stderr)
 
     for r, _sp, _dst, kind in changes:
         # render path 는 byte-copy 가 아니라 재렌더 산출물 — PM 이 구분하게 [render] 로 표기
@@ -3773,14 +4138,17 @@ def _main(argv: list[str] | None = None) -> int:
     #    전환 전이 더 안전한 역설. 따라서 apply 실패 시 채택자가 *완전한 구형*에 남도록, has-changes
     #    경로는 apply 뒤에서만 전환한다. changes 없음(=엔진 최신·신규 등재분도 이미 laydown)·dry-run
     #    (무write)은 apply 가 없으므로 각 경로에서 직접 처리한다. 각 경로 migrate 1회(write flag 만 상이).
-    do_migrate = not args.target
+    #    `--paths`(부분 전파)도 비발화다 — 요청 밖 인스턴스 파일을 고치지 않는다는 게 이 모드의
+    #    전부이고, 진입 doc 전환은 요청하지 않은 write 다.
+    do_migrate = not args.target and not scope_paths
 
     # ── 보호 훅 정합 확인 + drift 재설치 — migrate 와 **같은 경계·같은
     #    시퀀싱**(--target 비발화 · changes 0 경로에서도 write · dry-run 은 판정만). changes 로
     #    게이트하면 이 기능을 배달하는 sync(구 엔진이 실행)도, 그 다음 실행(changes 0)도 발화
     #    하지 않아 채택자가 가드를 못 받는다(격리 실측 RUN1/RUN2·모듈 주석). 반복 출력은
     #    `_protected_hook_in_sync` 정합 판정이 흡수한다(정합이면 무출력).
-    do_reinstall = not args.target
+    #    `--paths` 는 migrate 와 같은 이유로 비발화(요청 밖 write 0).
+    do_reinstall = not args.target and not scope_paths
 
     if not changes:
         print("최신 — 변경 없음.")
@@ -3801,7 +4169,9 @@ def _main(argv: list[str] | None = None) -> int:
         # 변경 0 재실행에서도 경로 upstream의 baseline/seen 쌍을 확인한다. dry-run은 기존
         # 계약대로 local.conf를 절대 쓰지 않는다. manifest skew면 has-changes 경로와 동형으로
         # 두 키를 함께 억제해 반쪽 상태/거짓 drift를 만들지 않는다.
-        if not args.dry_run:
+        #    `--paths` 는 baseline 을 건드리지 않는다 — 부분 전파를 "여기까지 흡수함" 으로 박으면
+        #    나머지 미전파분이 drift-lint 에서 사라진다(거짓 최신).
+        if not args.dry_run and not scope_paths:
             converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
             maybe_prompt_delegate_optin(effective_dest)  # 변경 0 경로에서도 opt-in/안내
         return 0
@@ -3844,6 +4214,12 @@ def _main(argv: list[str] | None = None) -> int:
     # source 가 로컬 git checkout 일 때만(URL upstream 은 로컬 checkout 없어 graceful 생략).
     # best-effort — 기록 실패가 동기화 자체를 무효화하지 않는다(파일은 이미 적용됨). --target
     # 모드는 effective_dest(templates/<name>)의 conf 에 기록(루트 오염 방지·maybe_prompt 와 동형).
+    # `--paths`(부분 전파)는 baseline·프롬프트를 건너뛴다 — 요청 경로만 옮긴 실행을 "전량 흡수"
+    # 로 박으면 나머지 미전파분이 drift-lint 에서 사라진다(거짓 최신).
+    if scope_paths:
+        print("  (경로 스코프 — upstream_rev baseline 을 갱신하지 않는다: 나머지 경로는 "
+              "여전히 미전파다.)")
+        return 0
     converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
 
     maybe_prompt_external_review(effective_dest)

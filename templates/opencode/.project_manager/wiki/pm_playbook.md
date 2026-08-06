@@ -54,15 +54,15 @@ type: reference
 
 ticket 본문이 self-contained 이므로 위임 프롬프트는 bespoke 일 필요 없다.
 
-> **harness 노트:** 아래 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준. **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/` 참조. 축 분리·touches disjoint·single-source 프롬프트·PM 산출 비준 원칙은 동일하다.
+> **harness 노트:** 아래 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준. **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/` 참조. **codex 는 `.codex/agents/`(TOML 카드)** 를 쓰고 위임 채널은 하네스 네이티브다(`AGENTS.md` 공통 코어 + 하네스 운영 지침이 단일 진실). 역할 카드 경로는 하네스마다 다르므로(디렉토리·확장자 모두) 아래 목록은 카드를 `subagent_type` 이름으로만 가리킨다. 축 분리·touches disjoint·single-source 프롬프트·PM 산출 비준 원칙은 동일하다.
 
 ### 방식 A — orchestrator 서브에이전트 (Agent 툴, 권장)
 
 PM 이 `Agent` 툴로 spawn 하고 `subagent_type` 으로 전용 정의를 쓴다:
 
-- **설계(architect)** — `subagent_type: architect` ([`.claude/agents/architect.md`](../../.claude/agents/architect.md), Opus). idea 검토·ADR 초안·spec 추출·가설 검증·인터페이스. **산출은 PM 이 비준** — 발행·board·idea promote 는 PM.
-- **구현(developer)** — `subagent_type: developer` ([`.claude/agents/developer.md`](../../.claude/agents/developer.md))
-- **검토(code-reviewer)** — `subagent_type: code-reviewer` ([`.claude/agents/code-reviewer.md`](../../.claude/agents/code-reviewer.md))
+- **설계(architect)** — `subagent_type: architect` (Opus). idea 검토·ADR 초안·spec 추출·가설 검증·인터페이스. **산출은 PM 이 비준** — 발행·board·idea promote 는 PM.
+- **구현(developer)** — `subagent_type: developer`
+- **검토(code-reviewer)** — `subagent_type: code-reviewer`
 
 세 정의가 역할·제약·부트스트랩·프로젝트 제약을 담으므로 프롬프트는 한 줄이면 된다(구현/검토는 `/pm-dev-delegate` skill 이 표준 프롬프트를 dump):
 

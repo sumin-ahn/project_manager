@@ -2860,6 +2860,45 @@ def test_capture_draft_writes_scaffold_with_draft_status(dm, tmp_path):
     assert "## 조사 결과" in text
 
 
+def _write_scaffold_with_guide(dm, domain_dir: Path) -> str:
+    """tmp domain dir 에 안내 블록을 품은 `_template.md` 를 놓고 그 블록을 돌려준다."""
+    guide = (
+        f"<!-- {dm.CURRENT_TRUTH_GUIDE_MARKER} (무엇이 이 페이지에 남나)\n"
+        '  판정: "지금 X다"로 쓸 수 있으면 페이지, "언제 X로 바뀌었다"로만 쓸 수 있으면 log. -->'
+    )
+    domain_dir.mkdir(parents=True, exist_ok=True)
+    (domain_dir / "_template.md").write_text(
+        f"---\ntitle: tpl\ntype: concept\n---\n\n{guide}\n\n# <제목>\n", encoding="utf-8")
+    return guide
+
+
+def test_capture_draft_carries_current_truth_guide_from_scaffold(dm, tmp_path):
+    """코드 생성 경로(capture-draft)도 스캐폴드의 현재-진실/히스토리 안내를 싣는다.
+
+    손으로 `_template.md` 를 복사하는 경로만 규칙을 받고 capture-draft 산출은 못 받던 갭.
+    문구는 스캐폴드에서 **파생**(verbatim)이라 두 벌이 갈릴 여지가 없다.
+    """
+    guide = _write_scaffold_with_guide(dm, tmp_path)
+
+    path = dm.write_draft_page(
+        "샘플 개념", covers=["src/**"], domain_dir=tmp_path, today="2026-06-27")
+    text = path.read_text(encoding="utf-8")
+
+    assert guide in text, "스캐폴드 안내가 draft 산출에 안 실렸다(규칙 미출하 경로 잔존)"
+    # frontmatter 가 먼저 — 안내가 위로 가면 load_pages 가 '페이지 아님'으로 조용히 skip 한다.
+    assert text.startswith("---")
+    assert text.index(guide) > text.index("status: draft")
+    assert text.index(guide) < text.index("# 샘플 개념")
+
+
+def test_capture_draft_without_scaffold_omits_guide(dm, tmp_path):
+    # `_template.md` 부재는 fail-soft — 안내만 빠지고 draft 생성은 정상(크래시 0).
+    path = dm.write_draft_page("샘플 개념", domain_dir=tmp_path, today="2026-06-27")
+    text = path.read_text(encoding="utf-8")
+    assert dm.CURRENT_TRUTH_GUIDE_MARKER not in text
+    assert text.startswith("---") and "# 샘플 개념" in text
+
+
 def test_capture_draft_source_file_prose_verbatim(dm, tmp_path):
     # --source <file>: 파일 prose 가 ## 조사 결과 아래 *그대로*(verbatim) 배치된다.
     src = tmp_path / "research.txt"

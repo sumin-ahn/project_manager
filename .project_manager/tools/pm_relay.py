@@ -180,6 +180,24 @@ def _verify_engine_rev(sibling_module, sibling_filename):
         raise err
 
 
+def _require_engine_sibling(path: Path, filename: str) -> None:
+    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
+
+    부재는 raw `FileNotFoundError`로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
+    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew로 표출한다
+    (board.py `_require_engine_sibling` 동형·self-contained 복제).
+    """
+    if path.exists():
+        return
+    err = RuntimeError(
+        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
+        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
+        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+    )
+    err._engine_rev_skew = True
+    raise err
+
+
 def _load_file_lock():
     """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/에서 경로 로드한다.
 
@@ -188,6 +206,7 @@ def _load_file_lock():
     중앙 loader가 소비 때마다 baked rev를 재검증하므로 사본 skew는 계속 표출된다.
     """
     lock_path = Path(__file__).resolve().parent / "file_lock.py"
+    _require_engine_sibling(lock_path, "file_lock.py")
     return _load_module_from_path(
         lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
     )
@@ -731,7 +750,7 @@ def parse_codex_json(lines) -> tuple[str | None, str | None, dict | None]:
     순수 헬퍼 — codex 는 thread_id 를 사전지정 못 하고 `thread.started` 이벤트로 발급하므로
     (opencode sid 동형) 출력 파싱으로 획득한다. usage 는 codex driver 의 driver-side 기계 ctx
     가드(relay 경로엔 opencode plugin 같은 marker 채널이 없어 driver 가 예산을
-    직접 판정)의 원천이라 claude/opencode 파서와 달리 3번째 값으로 usage 를 함께 낸다.
+    직접 판정)의 원천이다. 세 파서 모두 3번째 값으로 usage 를 낸다(v1.6.0 일원화 — codex 는 dict·claude/opencode 는 정수).
 
     - thread_id: `thread.started` 이벤트의 `thread_id`(첫 등장값 = resume 권위 id). 없으면 None
       (driver 가 치명 처리 — resume 불가).

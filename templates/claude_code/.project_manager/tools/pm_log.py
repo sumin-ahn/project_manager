@@ -188,6 +188,24 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
+def _require_engine_sibling(path: Path, filename: str) -> None:
+    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
+
+    부재는 raw `FileNotFoundError`로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
+    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew로 표출한다
+    (board.py `_require_engine_sibling` 동형·self-contained 복제).
+    """
+    if path.exists():
+        return
+    err = RuntimeError(
+        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
+        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
+        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+    )
+    err._engine_rev_skew = True
+    raise err
+
+
 def _load_identity_args():
     """공용 task 이름 validator를 같은 tools/에서 경로 로드한다."""
     ia_path = Path(__file__).resolve().parent / "identity_args.py"
@@ -205,6 +223,7 @@ def _load_file_lock():
     계속 표출된다.
     """
     lock_path = Path(__file__).resolve().parent / "file_lock.py"
+    _require_engine_sibling(lock_path, "file_lock.py")
     return _load_module_from_path(
         lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
     )
@@ -302,21 +321,16 @@ def log_write_lock(log_path: Path) -> Iterator[None]:
         yield
 
 
-def _append_atomic(path: Path, text: str) -> None:
-    """단일 O_APPEND write로 UTF-8 텍스트를 추가한다 (호출자가 lock 소유)."""
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    try:
-        os.write(fd, text.encode("utf-8"))
-    finally:
-        os.close(fd)
-
-
 def append_log(path: Path, text: str) -> None:
-    """공유 log append 공개 seam — flock 안에서 O_APPEND 단일 write."""
+    """공유 log append 공개 seam — flock 안에서 O_APPEND 단일 write.
+
+    O_APPEND 원자 추가 자체는 공용 `file_lock` seam이 소유한다 — pm_log는 락 경로
+    규약과 부모 디렉토리 생성만 정한다.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with log_write_lock(path):
-        _append_atomic(path, text)
+        _load_file_lock().append_atomic(path, text)
 
 
 def _replace_atomic(path: Path, text: str) -> None:

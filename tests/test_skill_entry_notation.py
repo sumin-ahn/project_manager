@@ -135,7 +135,23 @@ def _shared_docs(root: Path = REPO / ".project_manager" / "wiki") -> list[Path]:
     )
 
 
-def _has_render_channel(harness: str, path: Path) -> bool:
+def _render_channel(harness: str, path: Path) -> str | None:
+    """그 출하 파일의 호출 토큰을 설치 시 렌더하는 채널 이름 (없으면 None).
+
+    채널은 둘이다.
+
+    * ``manifest`` — manifest 가 선언한 경로(upstream 관리·``@render`` 전파).
+    * ``install-fallback`` — manifest **미소유 인스턴스 wiki seed**(``status.md``·
+      ``architecture.md``·``raw/README.md`` …). 소유자가 없어 표기 context 를 못 받던 것을
+      설치 하네스 전체 집합 폴백으로 해소한다(엔진 ``_is_notation_fallback_scope`` 가 범위
+      소유). 이 부류를 manifest 에 등재하는 건 답이 아니다 — 등재하면 ``pm_update`` 가 채택자
+      상태를 덮는다(엔진/상태 분리).
+
+    두 번째 채널을 모르면 codex 가 wiki seed 를 실을 때마다 false-red 가 나고, 회피책으로
+    canonical 표기를 하네스별로 동결하게 된다. 실측(codex 단일·claude+codex 조합 설치)에서
+    동결본과 canonical 본의 **설치 산출은 동일**했다 — 동결은 이득 없이 템플릿 간 byte-parity
+    만 깬다.
+    """
     root = _template_root(harness)
     rel = path.relative_to(root).as_posix()
     entries = {
@@ -144,10 +160,18 @@ def _has_render_channel(harness: str, path: Path) -> bool:
             root / ".project_manager" / "engine.manifest"
         )
     }
-    return any(
+    if any(
         rel == entry or rel.startswith(entry.rstrip("/") + "/")
         for entry in entries
-    )
+    ):
+        return "manifest"
+    if _PM_IMPORT._is_notation_fallback_scope(rel):
+        return "install-fallback"
+    return None
+
+
+def _has_render_channel(harness: str, path: Path) -> bool:
+    return _render_channel(harness, path) is not None
 
 
 def _notation_issues(harness: str, text: str) -> list[str]:
@@ -459,7 +483,7 @@ def test_every_shipped_wiki_with_skill_entry_has_render_channel(harness):
     if _ENTRY_PREFIX[harness] == "/":
         pytest.skip("canonical slash와 native 표기가 같아 render channel이 필요하지 않음")
     root = _template_root(harness)
-    uncovered = []
+    channels = {}
     for path in _shipping_texts(harness):
         rel = path.relative_to(root).as_posix()
         if not rel.startswith(".project_manager/wiki/"):
@@ -467,9 +491,20 @@ def test_every_shipped_wiki_with_skill_entry_has_render_channel(harness):
         text = path.read_text(encoding="utf-8")
         if not _PREFIXED_ENTRY.search(text):
             continue
-        if not _has_render_channel(harness, path):
-            uncovered.append(rel)
+        channels[rel] = _render_channel(harness, path)
+    assert channels, f"{harness} wiki에 검사할 skill entry가 없다(수집 공허)"
+    uncovered = sorted(rel for rel, channel in channels.items() if channel is None)
     assert not uncovered, f"skill entry가 있으나 render channel 밖인 wiki: {uncovered}"
+    # 채널 분포 못박기 — manifest 등재 문서가 폴백으로 미끄러지면 안 된다. 폴백 판정이
+    # manifest 판정을 통째로 가리면(순서 뒤집힘·등재 경로 소실) 여기서 red.
+    assert channels.get(".project_manager/wiki/README.md") == "manifest", (
+        f"{harness} wiki/README.md 의 렌더 채널이 manifest 가 아니다: "
+        f"{channels.get('.project_manager/wiki/README.md')!r}"
+    )
+    # 채널 경계 — wiki 밖 어댑터 표면은 폴백 대상이 아니다(설치 하네스 전체로 렌더하면
+    # 그 하네스만 읽는 문서에 오표기가 박힌다). 폴백이 wiki 밖으로 새면 여기서 red.
+    assert _render_channel(harness, root / ".codex" / "hooks.json") != "install-fallback"
+    assert _render_channel(harness, root / entry_docs(harness)[0]) != "install-fallback"
 
 
 def test_non_markdown_injected_message_poisoning_is_detected():

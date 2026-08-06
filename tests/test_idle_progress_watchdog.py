@@ -1148,12 +1148,14 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
             "external_review",
             "run_review",
             "ok, output, started = _run_reviewer_ex(\n"
-            "        prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics\n"
+            "        prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics,\n"
+            "        cwd=cwd, env=env,\n"
             "    )",
             'ok, output, started = _run_reviewer_ex(\n'
             '        prompt, reviewer_cmd, timeout, run_fn,\n'
             '        None if reviewer_name(reviewer_cmd) == "claude" else idle_timeout,\n'
             '        metrics,\n'
+            '        cwd=cwd, env=env,\n'
             '    )',
         ),
         # S(b): 값이 아니라 signal on/off를 쥔 판정 함수 선두에서 특정 CLI만 NONE으로 강등.
@@ -1894,9 +1896,11 @@ def test_external_review_idle_kill_preserves_partial_output(external, monkeypatc
     monkeypatch.setattr(external, "_load_relay", lambda: _RecordingRelay(exc=exc))
     ok, output, started = external._run_reviewer_ex("p", "codex exec", 1700, None)
     assert (ok, started) == (False, True)
-    assert "REVIEW SO FAR" in output and "progress log" in output
-    assert "무진행 임계 900초" in output and "실측 침묵 905초" in output
-    assert "--idle-timeout" in output and external.EXTERNAL_IDLE_TIMEOUT_KEY in output
+    # 타임아웃 진단은 회신 채널 하나에 담긴다(T-0563 채널 구조 분리 — 구분자 파싱 없음).
+    diagnosis = output.answer
+    assert "REVIEW SO FAR" in diagnosis and "progress log" in diagnosis
+    assert "무진행 임계 900초" in diagnosis and "실측 침묵 905초" in diagnosis
+    assert "--idle-timeout" in diagnosis and external.EXTERNAL_IDLE_TIMEOUT_KEY in diagnosis
 
 
 def test_external_review_wall_timeout_keeps_actual_diagnostics(
@@ -1908,10 +1912,11 @@ def test_external_review_wall_timeout_keeps_actual_diagnostics(
     monkeypatch.setattr(external, "_load_relay", lambda: _RecordingRelay(exc=exc))
     ok, output, started = external._run_reviewer_ex("p", "codex exec", 1700, None)
     assert (ok, started) == (False, True)
-    assert "리뷰어 타임아웃" in output and "--timeout <초>" in output
-    assert "벽시계 백스톱 1800초" in output and "실측 침묵 7초" in output
-    assert "external_review_timeout=<초>" in output
-    assert "PARTIAL" in output
+    diagnosis = output.answer
+    assert "리뷰어 타임아웃" in diagnosis and "--timeout <초>" in diagnosis
+    assert "벽시계 백스톱 1800초" in diagnosis and "실측 침묵 7초" in diagnosis
+    assert "external_review_timeout=<초>" in diagnosis
+    assert "PARTIAL" in diagnosis
 
 
 def test_external_review_run_review_saves_partial_output(external, monkeypatch, tmp_path):

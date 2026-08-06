@@ -40,6 +40,12 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
   - --weight lite 는 진입 파일 선택만 영향. 어댑터의 `X.lite.md`(예 CLAUDE.lite.md·
     AGENTS.lite.md)를 dst `X.md` 로 rename 배치하고 full `X.md`·원본 `*.lite.md` 는 제외한다.
     full(기본)은 모든 `*.lite.md` 를 제외하고 full 진입(X.md)만 깐다.
+  - **적용 단계의 파일 단위 제외는 rc 0 이고 신호는 stderr 요약이다.** 계획을 통과한 대상이 적용
+    중에 교체·삭제되거나 백업 자리가 막혀 빠지면 그 파일만 건너뛰고 `⚠️ …` 요약을 stderr 로 낸다
+    (백업 못 하는 파일은 고치지 않는다). 나머지 설치·추가는 그대로 완료되므로 비0 은 "아무것도
+    안 됐다"는 잘못된 신호가 된다 — 백업 자리가 막힌 공유 문서를 재렌더에서 빼고 rc 0 으로 끝내는
+    기존 처리와 같은 규칙이다. 계획 단계 위반은 반대다: 아직 아무것도 복사하지 않았으므로 전체를
+    rc 1 로 멈춘다(부분 설치 0). dest 루트 자체 교체만 예외로 적용 중에도 즉시 전체 중단이다.
   - fill opt-in 게이트(external_review 선례): 하니스 실구동은 토큰·외부모델 비용 → 기본 OFF.
     **실호출은 환경변수 PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만.** 둘 중 하나라도
     없으면 실 runner 를 호출하지 않는다(CI·기본 테스트는 stub). 회사 배포(claude code 없음)는
@@ -59,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import errno
 import functools
 import json
 import os
@@ -72,7 +79,7 @@ import sys
 import tempfile
 import warnings
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple, NoReturn
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
 _TOOLS_BOOTSTRAP_FILE = os.path.realpath(
@@ -1099,10 +1106,22 @@ class CopyAction:
                 대상 디렉토리는 run() 이 mkdir(parents) 로 만든다.
     """
 
-    def __init__(self, src: Path, dst: Path, backup: Path | None):
+    def __init__(self, src: Path, dst: Path, backup: Path | None,
+                 dest_root: Path | None = None, *,
+                 existed: bool | None = None, is_symlink: bool | None = None):
         self.src = src
         self.dst = dst
         self.backup = backup  # None = 백업 안 함(신규 또는 git-safe)
+        # dest 루트 바인딩 — `run()` 이 dest 상대 fd 순회로 쓰기 위해 필요하다(plan_copy 가 넣는다).
+        #   계획 전용으로 손-구성한 액션(dry-run 미리보기 등)은 None 이고 `run()` 이 fail-loud 한다.
+        self.dest_root = dest_root
+        # **계획 시점 관측 상태**를 액션에 박아 둔다 — `run()` 이 적용 시점에 다시 보면 그 사이의
+        #   생성·삭제가 조용히 다른 동작으로 바뀐다(계획은 "신규" 라 백업이 없는데 그 사이 생긴
+        #   사용자 파일을 무백업으로 덮거나, 계획은 "기존" 인데 그 사이 지워진 파일을 되살린다).
+        #   인자 생략(손-구성 액션)이면 **생성 시점**을 계획 시점으로 보고 여기서 관측한다.
+        self.planned_symlink = dst.is_symlink() if is_symlink is None else is_symlink
+        self.planned_existed = (
+            (self.planned_symlink or dst.exists()) if existed is None else existed)
 
     def describe(self) -> str:
         rel = self.dst
@@ -1126,24 +1145,77 @@ class CopyAction:
     # 알아야 한다 — plan_copy 가 충돌&git-safe 인 액션에 표시한다(기본 False = 신규).
     _git_safe_skip: bool = False
 
-    def run(self) -> None:
+    def run(self, root_identity: tuple | None = None) -> None:
+        """복사를 적용한다 — 목적지 쓰기는 **dest 상대 fd 순회**(symlink 미추종)로만 한다.
+
+        옛 코드는 `dst.parent.mkdir(parents=True)` + `shutil.copy2(src, dst)` 로 경로를 열어,
+        계획과 복사 사이에 조상·목적지·**dest 루트 자체**가 symlink 로 바뀌면 저장소 밖 트리에
+        먼저 썼다(재렌더 채널만 닫아서는 남는 구멍). 이제 디렉토리 생성과 파일 쓰기가 모두
+        `_open_dest_relative_nofollow`(컴포넌트별 `O_NOFOLLOW` + 루트 신원 대조)를 탄다.
+        원본(src)은 신뢰 소스(템플릿)라 경로로 읽는다."""
+        if self.dest_root is None:
+            raise ValueError(
+                "CopyAction.run 은 dest_root 바인딩이 필요합니다 — 실행 대상은 plan_copy 산출뿐"
+                "입니다(손-구성 액션은 계획 미리보기 전용).")
+        rel = self.dst.relative_to(self.dest_root)
         # MF1: 기존 dst 가 symlink 이면 shutil.copy2 가 링크를 *따라가* 링크 대상(프로젝트
         #      밖일 수 있음) 파일을 백업/덮어쓴다 — 비파괴 보장 위반 + 외부 파일 변조 위험.
         #      따라서 symlink 는 *링크 자체*를 처리한다: 링크를 그대로 백업(follow 안 함) →
         #      링크 unlink → 일반 파일로 src 복사. 링크 대상 파일은 절대 건드리지 않는다.
+        # 계획 뒤 상태가 달라졌으면 **그 파일은 건드리지 않는다** — 적용 시점 관측으로 동작을
+        #   갈아타면 (a) 계획엔 없던 새 파일(백업 계획도 없음)을 무백업으로 덮고 (b) 그 사이
+        #   사용자가 지운 파일을 되살린다. 둘 다 비파괴 위반이라 호출부가 loud 로 제외한다.
         dst_is_symlink = self.dst.is_symlink()
-        if self.backup is not None and (self.dst.exists() or dst_is_symlink):
-            # SF1: 백업 경로가 이미 존재하면(같은 날 재실행 등) 덮지 말고 순번 부여 —
-            #      가장 오래된 원본(=진짜 사용자 파일)이 살아남게 한다.
-            target = _free_backup_path(self.backup)
-            # 백업이 중앙 디렉토리(relpath 미러)이므로 부모 디렉토리를 먼저 만든다.
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(self.dst, target, follow_symlinks=False)
-        if dst_is_symlink:
-            # 링크 자체를 제거(대상 파일 불변) — 이후 일반 파일로 덮어쓴다.
-            os.unlink(self.dst)
-        self.dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(self.src, self.dst)
+        dst_existed = dst_is_symlink or self.dst.exists()
+        if (dst_existed, dst_is_symlink) != (self.planned_existed, self.planned_symlink):
+            was = "있었" if self.planned_existed else "없었"
+            now = "생겼" if dst_existed else "사라졌"
+            raise PlanStateChangedError(
+                f"계획 시점과 상태가 다릅니다({rel.as_posix()}: 계획 때는 {was}고 지금은 "
+                f"{now}습니다) — 계획에 없던 처리를 하지 않기 위해 이 파일을 건너뜁니다.")
+        # 링크 교체 축(아래 unlink)에서 쓸 leaf 신원 — 상태 확인과 **같은 시점** 값이어야 한다.
+        leaf_identity = (
+            _dest_leaf_identity(self.dest_root, rel, root_identity=root_identity)
+            if dst_is_symlink else None)
+        # 백업·삭제는 **dest 만 만지는** 단계다 — 상태 확인 뒤에도 삭제 경쟁이 남으므로
+        #   `FileNotFoundError` 를 상태 변화 클래스로 정규화한다(그대로 새면 적용 루프가 죽는다).
+        #   소스 쪽 오류는 쓰기 단계가 별도로 가른다(진짜 누락은 그대로 올린다).
+        try:
+            if dst_existed and not dst_is_symlink:
+                # **기존 일반 파일: fd 하나로 백업 읽기와 덮어쓰기를 모두 한다.** 옛 흐름은 백업과
+                #   쓰기가 각각 leaf 를 다시 열어, 그 사이 같은 자리가 다른 파일로 바뀌면 백업 없는
+                #   새 파일을 잘랐다. 열린 fd 는 계획이 본 inode 에 묶이므로 그 창 자체가 없다
+                #   (재검사로 좁히는 게 아니라 구조적 폐쇄 — 루트 신원 고정과 같은 원리).
+                _refresh_existing_dest_file(
+                    self.dest_root, rel, self.src,
+                    backup_base_rel=(
+                        self.backup.relative_to(self.dest_root)
+                        if self.backup is not None else None),
+                    root_identity=root_identity)
+                return
+            if self.backup is not None and dst_existed:
+                # SF1: 백업 경로가 이미 존재하면(같은 날 재실행 등) 덮지 말고 순번 부여 —
+                #      가장 오래된 원본(=진짜 사용자 파일)이 살아남게 한다(`_free_backup_path`).
+                # 링크 *자체* 백업은 fd 스트리밍으로 표현할 수 없다(내용이 아니라 대상 문자열을
+                #   보존해야 한다). 그래서 양쪽 **부모 디렉토리 fd** 안에서 `readlink`/`symlink`
+                #   만 한다 — 옛 `copy2(follow_symlinks=False)` 는 원본·백업 경로를 다시 해소해,
+                #   부모가 그 사이 교체되면 밖의 링크를 읽거나 밖에 링크를 만들었다.
+                _backup_symlink_nofollow(
+                    self.dest_root, rel, self.backup.relative_to(self.dest_root),
+                    root_identity=root_identity)
+            if dst_is_symlink:
+                # 링크는 fd 로 붙들 수 없으므로(열면 대상이 열린다) **백업 시점 신원(lstat)** 을
+                #   재대조한 뒤 지운다 — 백업한 그 링크가 아니면 건드리지 않는다. 재대조와 unlink
+                #   사이 한 syscall 창은 남는다(구조적 폐쇄가 아님·명시).
+                _unlink_dest_leaf_if_unchanged(
+                    self.dest_root, rel, leaf_identity, root_identity=root_identity)
+        except (FileExistsError, FileNotFoundError) as exc:
+            raise PlanStateChangedError(
+                f"계획 뒤 대상 상태가 달라져 백업·정리를 멈춥니다({rel.as_posix()}: {exc}) — "
+                "이 파일을 건너뜁니다(원본·백업 모두 불변).") from exc
+        _write_dest_file_from_source_nofollow(
+            self.dest_root, rel, self.src, overwrite=False,
+            root_identity=root_identity)
 
 
 class FileVsDirConflict(Exception):
@@ -1167,6 +1239,26 @@ class AncestorConflict(Exception):
     컴포넌트를 따로 거부한다(dry-run·apply 모두 안전). dest_root 자신은 --into/--new 가드가
     처리하므로 그 *하위* 조상에만 집중한다.
     """
+
+
+class DestRootSwappedError(RuntimeError):
+    """계획 시점에 고정한 **dest 루트 자체**가 다른 디렉토리로 바뀌었다.
+
+    파일 단위 경로 교체(`UnsafeDestPathError`)와 **의도적으로 다른 클래스**다 — 그쪽은 그 파일만
+    빼고 진행하지만, 루트가 바뀐 뒤의 계속 진행은 남은 단계(치환·fill·board init 등 우리가 fd 로
+    감싸지 못하는 외부 단계 포함)가 **교체된 트리에 쓰는** 것을 뜻한다. 그래서 즉시 전체 중단이다.
+
+    이 시점의 중단은 "부분 적용을 남긴다"가 아니라 **오염 차단**이다: 대상 트리는 이미 공격자가
+    바꿔치기한 것이라 거기서 무엇을 더 하든 원래 인스턴스를 완성하지 못한다. 남은 작업을 계속해
+    저장소 밖에 쓰는 것보다, 멈추고 사람에게 알리는 쪽이 항상 낫다."""
+
+
+class PlanStateChangedError(RuntimeError):
+    """계획 시점에 관측한 대상 상태(존재/부재·symlink 여부)가 적용 시점에 달라졌다.
+
+    적용 시점 재관측으로 동작을 갈아타면 두 방향 모두 비파괴를 깬다 — 계획이 "신규"(백업 없음)인
+    자리에 그 사이 생긴 사용자 파일을 무백업으로 덮거나, 계획이 "기존"인 자리에서 그 사이 지워진
+    파일을 되살린다. **파일 단위 제외 + loud** 클래스다(루트 교체와 달리 전체 중단 아님)."""
 
 
 class UnsafeDestPathError(RuntimeError):
@@ -1514,7 +1606,10 @@ def plan_copy(
                     #   일부 조상이 일반 파일/symlink 면 apply 중 mkdir 실패로 부분 복사가 잔존한다.
                     #   dst 조상 가드와 동일 helper·캐시 재사용(중앙 백업 자리 점유까지 한 번에 포착).
                     _check_ancestor_safe(dest_root, backup, checked_ancestors)
-            action = CopyAction(src, dst, backup)
+            # 계획 시점 관측(`is_conflict`·symlink 여부)을 액션에 넘긴다 — 적용 시점 재관측은
+            #   계획 뒤 생성·삭제를 조용히 다른 동작으로 바꾼다(`CopyAction.run` 참조).
+            action = CopyAction(src, dst, backup, dest_root=dest_root,
+                                existed=is_conflict, is_symlink=dst.is_symlink())
             action._git_safe_skip = git_safe_skip
             actions.append(action)
     return actions
@@ -1687,6 +1782,7 @@ def substitute_placeholders(
     dest_root: Path,
     subs: dict[str, str],
     copied_relpaths: set[Path],
+    root_identity: tuple | None = None,
 ) -> int:
     """**이번 run 이 복사한 파일만** 대상으로 operational placeholder 치환. 변경 파일 수 반환.
 
@@ -1705,17 +1801,34 @@ def substitute_placeholders(
     빈값이 render 가드 도달 전에 이미 지워졌다(codex must-fix — 최초 import 경로 사각).
     """
     changed = 0
+    swapped: list[str] = []
+    vanished: list[str] = []
     sed_exclude = _dest_sed_exclude(dest_root)  # 치환 시점·dest manifest 기준(codex must-fix)
     for rel in sorted(copied_relpaths):
         if any(part in COPY_EXCLUDE_DIR_NAMES for part in rel.parts):
             continue
         if not _should_substitute(rel, sed_exclude):
             continue
-        path = dest_root / rel
-        if not path.is_file():
+        # 복사 직후라도 교체 창은 실재한다 — 선검사는 lstat, 실 IO 는 nofollow fd 로 한다.
+        #   **선검사 탈락도 loud** 다: 이 범위는 방금 복사한 파일이라 부재·형상 변화가 곧 사고다.
+        anomaly = _copied_scope_anomaly(dest_root, rel)
+        if anomaly == "vanished":
+            vanished.append(rel.as_posix())
+            continue
+        if anomaly == "swapped":
+            swapped.append(rel.as_posix())
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_dest_text(dest_root, rel, root_identity=root_identity)
+        except UnsafeDestPathError:
+            swapped.append(rel.as_posix())
+            continue
+        except FileNotFoundError:
+            # 선검사↔읽기 사이 삭제 경쟁 — 쓰기 쪽과 **같은 loud 제외**로 흡수한다. 일반 OSError
+            #   로 삼키면 요약에 안 실려 "적용 단계 제외는 stderr 요약이 신호" 라는 규칙이 이
+            #   경로에서만 깨진다(제외는 하되 반드시 알린다).
+            vanished.append(rel.as_posix())
+            continue
         except (UnicodeDecodeError, OSError):
             continue
         new_text = text
@@ -1731,8 +1844,16 @@ def substitute_placeholders(
             if token in new_text:
                 new_text = new_text.replace(token, value)
         if new_text != text:
-            path.write_text(new_text, encoding="utf-8")
+            try:
+                write_dest_text(dest_root, rel, new_text, root_identity=root_identity)
+            except UnsafeDestPathError:
+                swapped.append(rel.as_posix())
+                continue
+            except FileNotFoundError:
+                vanished.append(rel.as_posix())
+                continue
             changed += 1
+    _report_copied_scope_anomalies("placeholder 치환", swapped, vanished)
     return changed
 
 
@@ -1889,6 +2010,596 @@ def write_text_keeping_newlines(path: Path, text: str) -> None:
         handle.write(text)
 
 
+# ── 계획-적용 사이 TOCTOU 창 ─────────────────────────────────────────────────
+# 경로 안전은 `_is_safe_dest_path` 가 **계획 시점**에 판정한다(symlink·조상 symlink·`..` 거부).
+# 그 판정과 실제 쓰기 사이에 대상 경로가 symlink 로 교체되면 판정이 무력해지고, 경로로 다시 여는
+# 쓰기가 링크를 따라 **저장소 밖 파일**을 고친다. 그래서 아래 **여섯 채널**의 실 IO 는 경로가 아니라
+# **fd** 로 한다 — dest 루트 fd 에서 각 컴포넌트를 `O_NOFOLLOW` 로 열고 마지막 컴포넌트도
+# `O_NOFOLLOW` 로 연다. 열린 fd 는 그 시점 inode 에 묶이므로 이후 경로가 바뀌어도 우리가 읽고 쓰는
+# 대상은 변하지 않는다(창을 좁히는 게 아니라 없앤다).
+#   (1) 복사(`CopyAction.run` — 디렉토리 생성 포함) (2) 중앙 백업 (3) 공유 문서 재렌더
+#   (4) placeholder 치환 (5) opencode 모델 해소 (6) 자유서술 fill(TODO 표시·토큰 판정).
+#   원본(template)은 신뢰 소스라 경로로 읽는다.
+#   ⚠ **여기 없는 dest 쓰기는 여전히 경로 기반이다** — engine.manifest 병합/guest 절 갱신 ·
+#     `.gitignore` 보강 · local.conf 채널(백업·키 기록) · pm_playbook.local 스텁 생성 ·
+#     board submodule scaffold · `--new` 최초 `mkdir`. 이들은 **정적 형상에서 안전**하다(계획 대상이
+#     아니거나·인스턴스 소유라 계획-적용 창 밖이거나·존재하면 덮지 않는다). 그러나 **동적 교체 창
+#     자체는 남는다** — 이 티켓의 범위가 계획-적용 창(위 6채널)이라 그렇게 한정했고, 확장은 별도
+#     판단거리다(조용한 축소가 아니라 명시된 경계).
+#   ⚠ dest 루트 **자체** 교체는 파일 단위가 아니라 전체 중단 클래스다(`DestRootSwappedError`) —
+#     고정한 루트 신원(`dest_root_identity`)을 매 열기에서 fd 로 대조한다.
+#   ⚠ 보장하는 축은 **symlink** 다 — 저장소 안에 미리 만들어 둔 **하드링크**는 같은 inode 라 fd 열기로
+#     구분되지 않으므로 "저장소 밖 파일 불변" 문구는 symlink·경로 탈출 축에 한정된다(범위 밖).
+_DEST_FD_WALK_SUPPORTED = (
+    hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+    and os.open in getattr(os, "supports_dir_fd", frozenset())
+)
+# 거부로 승격하는 errno 와 **그 errno 가 실제로 말하는 것** — ENOTDIR 을 symlink 교체로 단정하지
+# 않는다(일반 파일 컴포넌트·구조 변경일 수도 있다). 판정은 같아도(거부) 진단 문구는 갈라 쓴다.
+_DEST_PATH_REFUSAL_REASONS = {
+    getattr(errno, name): reason
+    for name, reason in (
+        ("ELOOP", "symlink 교체 의심"),
+        ("EMLINK", "symlink 교체 의심(일부 BSD 의 O_NOFOLLOW errno)"),
+        ("ENOTDIR", "경로 컴포넌트가 디렉토리가 아님 — 교체·구조 변경 의심"),
+        ("ENXIO", "FIFO·디바이스 등 비-일반 파일 — 교체 의심"),
+    )
+    if hasattr(errno, name)
+}
+
+# 비-일반 파일(FIFO·디바이스)에서 **열기 자체가 멈추는** 창을 닫는 플래그. `O_NOFOLLOW` 는 symlink
+# 만 거른다 — 계획 통과 뒤 대상이 FIFO 로 바뀌면 `O_RDONLY` 열기가 writer 를 기다리며 무기한 블록해
+# 설치가 그 자리에 선다(교체 축의 남은 파생: 유출이 아니라 정지). 일반 파일에는 읽기·쓰기 의미가
+# 없으므로(POSIX) 내용 IO 채널에 상시 얹고, 연 fd 를 `fstat` 해 일반 파일이 아니면 거부한다 —
+# 검사 대상이 **연 fd 자신**이라 재검사 창이 없다. 쓰기 쪽은 열기가 ENXIO 로 먼저 실패한다(위 표).
+_DEST_NONBLOCK_FLAG = getattr(os, "O_NONBLOCK", 0)
+
+
+def _raise_dest_path_refusal(rel: Path, exc: OSError) -> NoReturn:
+    """열기 거부로 볼 OSError 는 `UnsafeDestPathError` 로 승격해 던지고, 그 밖은 원본 재-raise.
+
+    호출부는 승격된 예외만 "계획 뒤 교체" 로 다루고(해당 파일 제외 + loud), 나머지 OSError 는
+    기존 처리(권한·부재 등)를 그대로 탄다 — 진단을 뭉개지 않는다."""
+    reason = _DEST_PATH_REFUSAL_REASONS.get(exc.errno)
+    if reason is None:
+        raise exc
+    raise UnsafeDestPathError(
+        f"계획 검증 뒤 경로를 안전하게 열 수 없습니다({reason}): {Path(rel).as_posix()} — "
+        "저장소 밖 파일을 고치지 않기 위해 이 파일을 건너뜁니다.") from exc
+
+
+def dest_root_identity(dest_root: Path) -> tuple:
+    """dest 루트를 **한 번** 해소해 그 디렉토리의 `(st_dev, st_ino)` 신원을 고정한다.
+
+    계획 시점(복사 전)에 잡아 적용까지 넘긴다. 이후 매 IO 는 자기가 **연 fd** 를 `fstat` 해 이
+    신원과 대조하므로(검사 대상 = 사용할 fd 자신), 계획 뒤 dest 루트 자체가 다른 디렉토리·저장소
+    밖 symlink 로 교체돼도 그 트리를 따라가지 않고 거부한다 — 루트 재해소가 조용히 다른 inode 를
+    고르던 창이 닫힌다.
+
+    획득 실패는 **fail-loud** 다(옛 None 폴백 폐기): None 을 돌려주면 루트 검사가 통째로 꺼지므로,
+    "획득 순간만 해소 불가로 만들고 그 뒤 교체" 라는 우회가 성립한다. 루트를 못 잡으면 무엇도
+    안전하게 열 수 없으니 **적용 전에** 중단한다(호출부가 rc1 로 번역)."""
+    try:
+        st = os.stat(Path(dest_root).resolve(strict=True))
+    except OSError as exc:
+        raise UnsafeDestPathError(
+            f"dest 루트 신원을 확정할 수 없습니다: {dest_root} ({exc}) — 루트 교체 검사를 끄고 "
+            "진행하지 않고 적용 전에 중단합니다.") from exc
+    if not stat.S_ISDIR(st.st_mode):
+        raise UnsafeDestPathError(f"dest 루트가 디렉토리가 아닙니다: {dest_root}")
+    return (st.st_dev, st.st_ino)
+
+
+def _open_dest_root_fd(dest_root: Path, root_identity: tuple | None) -> int:
+    """dest 루트를 열고 **그 fd 자신**으로 고정 신원을 대조한다 — 실패는 전부 루트 교체 클래스.
+
+    루트 해소·열기 실패(삭제·깨진 링크·일반 파일로 교체)를 `UnsafeDestPathError` 나 raw `OSError`
+    로 흘리면 **파일 단위** 핸들러가 그것을 흡수해 실행이 계속되고, 남은 단계가 교체된 트리에
+    쓴다(루트 교체는 파일 하나를 빼는 상황이 아니라 대상 트리가 통째로 바뀐 상황이다). 그래서
+    고정 신원이 있는 실행에서는 그 계열을 전부 `DestRootSwappedError`(즉시 전체 중단)로 번역한다.
+    고정이 없는 호출(질의성 읽기 등)은 대조 기준이 없으므로 옛 경로 오류를 유지한다."""
+    try:
+        fd = os.open(str(Path(dest_root).resolve(strict=True)),
+                     os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as exc:
+        if root_identity is not None:
+            raise DestRootSwappedError(
+                f"계획 검증 뒤 dest 루트를 열 수 없습니다: {dest_root} ({exc}) — 삭제·깨진 링크·"
+                "비-디렉토리로 바뀐 형상이므로 즉시 전체 중단합니다.") from exc
+        raise UnsafeDestPathError(f"dest 루트를 해소할 수 없습니다: {dest_root}") from exc
+    if root_identity is None:
+        return fd
+    try:
+        # 검사 대상이 **지금 연 fd 자신**이라 검사-사용 사이 창이 없다(경로 재검사와 다른 점).
+        root_stat = os.fstat(fd)
+        if (root_stat.st_dev, root_stat.st_ino) != root_identity:
+            raise DestRootSwappedError(
+                f"계획 검증 뒤 dest 루트가 다른 디렉토리로 바뀌었습니다: {dest_root} — "
+                "저장소 밖 트리를 건드리지 않기 위해 즉시 중단합니다.")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _open_dest_dir_nofollow(dest_root: Path, rel_dir: Path,
+                            root_identity: tuple | None = None) -> int:
+    """dest 하위 디렉토리를 **컴포넌트마다 symlink 를 거부하며** 열어 dir fd 를 반환한다.
+
+    빈 rel(= dest 루트 자신)은 루트를 직접 연다. "부모 디렉토리 fd 를 잡고 그 안에서만 조작"
+    해야 하는 채널(링크 자체 백업·링크 삭제)이 쓴다 — 그쪽은 내용 IO 가 아니라 디렉토리 엔트리
+    조작이라 경로로 다시 열면 부모 교체 창이 그대로 남는다."""
+    parts = Path(rel_dir).parts
+    if not parts:
+        return _open_dest_root_fd(dest_root, root_identity)
+    return _open_dest_relative_nofollow(
+        dest_root, Path(*parts), os.O_RDONLY | os.O_DIRECTORY,
+        root_identity=root_identity)
+
+
+def _open_dest_relative_nofollow(
+        dest_root: Path, rel: Path, flags: int, mode: int = 0o666,
+        create_parents: bool = False, root_identity: tuple | None = None,
+        create_leaf_dir: bool = False, regular_only: bool = False) -> int:
+    """`dest_root/rel` 을 **컴포넌트마다 symlink 를 거부하며** 열어 fd 를 반환한다.
+
+    `create_parents` 는 부재 중간 디렉토리를 dir_fd 상대로 만든다(백업 target 용) — 경로 문자열
+    `mkdir(parents=True)` 는 조상 symlink 를 따라가 저장소 밖에 쓰기 때문이다.
+
+    `root_identity`(= `dest_root_identity()` 산출)를 주면 **루트 자체 교체**도 거부한다. 컴포넌트
+    순회는 rel 안의 교체만 막으므로, 루트가 통째로 바뀌면 안전한 순회가 엉뚱한 트리에서 일어난다.
+
+    `regular_only` 는 **파일 내용 IO 채널** 전용이다: `O_NONBLOCK` 을 얹어 FIFO·디바이스에서 열기가
+    무기한 멈추는 것을 막고, 연 fd 를 `fstat` 해 일반 파일이 아니면 거부한다(디렉토리를 여는 호출은
+    이 옵션을 쓰지 않는다). 판정 대상이 fd 자신이라 경로 재검사와 달리 검사-사용 창이 없다.
+
+    dir_fd/`O_NOFOLLOW` 미지원 플랫폼(주로 Windows)은 **열기 직전 `_is_safe_dest_path` 재검사**로
+    폴백한다 — 창을 syscall 하나로 좁히지만 구조적 폐쇄는 아니다. 그 플랫폼은 symlink 생성 자체가
+    관리자/개발자 모드 권한이라 노출면이 다르며, 폴백임을 여기 명시해 둔다."""
+    rel = Path(rel)
+    parts = rel.parts
+    # 절대경로·드라이브·anchor 는 `dir_fd` 를 **무시**하고 그대로 열린다
+    #   (`os.open("/etc/hostname", dir_fd=…)` 실측) — 컴포넌트 순회를 통째로 우회하므로 입구에서
+    #   거부한다. 현 호출부는 relpath 만 넘기지만 containment 는 호출부 규율이 아니라 여기서
+    #   성립해야 한다. `drive`/`root` 는 Windows `C:x`·UNC·POSIX anchor 까지 한 식으로 덮는다.
+    if (rel.is_absolute() or rel.drive or rel.root or not parts
+            or any(part in ("", ".", "..") for part in parts)):
+        raise UnsafeDestPathError(f"dest 상대경로가 안전하지 않습니다: {rel.as_posix()}")
+    binary = getattr(os, "O_BINARY", 0)  # Windows 텍스트 모드 줄끝 번역 차단(줄끝 보존).
+    if regular_only:
+        flags |= _DEST_NONBLOCK_FLAG
+
+    def _regular_or_refuse(fd: int) -> int:
+        """연 fd 가 일반 파일인가 — 아니면 fd 를 닫고 거부한다(내용 IO 채널 공통 출구)."""
+        if not regular_only:
+            return fd
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise UnsafeDestPathError(
+                    f"경로가 일반 파일이 아닙니다(FIFO·디바이스·교체 의심): {rel.as_posix()}")
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    if not _DEST_FD_WALK_SUPPORTED:
+        if not _is_safe_dest_path(dest_root, rel):
+            raise UnsafeDestPathError(
+                f"경로가 안전하지 않습니다(symlink·조상 symlink·repo 밖): {rel.as_posix()}")
+        if root_identity is not None:
+            try:
+                current_identity = dest_root_identity(dest_root)
+            except UnsafeDestPathError as exc:  # 루트 자체 이상 = 루트 클래스로 승격.
+                raise DestRootSwappedError(str(exc)) from exc
+            if current_identity != root_identity:
+                raise DestRootSwappedError(
+                    f"계획 검증 뒤 dest 루트가 다른 디렉토리로 바뀌었습니다: {dest_root}")
+        target = Path(dest_root) / rel
+        if create_parents:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        return _regular_or_refuse(os.open(str(target), flags | binary, mode))
+    # 루트 열기 + 신원 대조는 한 지점(`_open_dest_root_fd`)이 전담한다 — 해소 실패·비-디렉토리·
+    #   불일치를 전부 **전체 중단 클래스**로 번역해, 파일 단위 핸들러가 루트 교체를 흡수하는 창을
+    #   남기지 않는다.
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY
+    current = _open_dest_root_fd(dest_root, root_identity)
+    try:
+        for part in parts[:-1]:
+            try:
+                nxt = os.open(part, dir_flags | os.O_NOFOLLOW, dir_fd=current)
+            except OSError as exc:
+                if not (create_parents and isinstance(exc, FileNotFoundError)):
+                    _raise_dest_path_refusal(rel, exc)
+                try:
+                    os.mkdir(part, dir_fd=current)
+                except FileExistsError:
+                    pass  # 경쟁 생성 — 아래 재-open 이 판정한다(symlink 로 선점됐으면 거부).
+                try:
+                    nxt = os.open(part, dir_flags | os.O_NOFOLLOW, dir_fd=current)
+                except OSError as retry_exc:
+                    # 부모 생성 경쟁도 같은 정규화를 탄다 — raw OSError 로 새 나가지 않는다.
+                    _raise_dest_path_refusal(rel, retry_exc)
+            os.close(current)
+            current = nxt
+        try:
+            return _regular_or_refuse(
+                os.open(parts[-1], flags | os.O_NOFOLLOW | binary, mode, dir_fd=current))
+        except OSError as exc:
+            if not (create_leaf_dir and isinstance(exc, FileNotFoundError)):
+                _raise_dest_path_refusal(rel, exc)
+            try:
+                os.mkdir(parts[-1], dir_fd=current)
+            except FileExistsError:
+                pass  # 경쟁 생성 — 아래 재-open 이 판정한다(symlink 로 선점됐으면 거부).
+            try:
+                return _regular_or_refuse(os.open(
+                    parts[-1], flags | os.O_NOFOLLOW | binary, mode, dir_fd=current))
+            except OSError as retry_exc:
+                _raise_dest_path_refusal(rel, retry_exc)
+    finally:
+        os.close(current)
+
+
+def _fdopen_text(fd: int, mode: str, newline: str | None = ""):
+    """fd 소유권을 넘긴 텍스트 핸들 — 실패 시 fd 를 흘리지 않는다.
+
+    `newline=""` = 줄끝 미번역(재렌더 채널·왕복 byte 보존), `newline=None` = universal
+    (`Path.read_text`/`write_text` 와 **동일 의미** — 복사분 채널이 옛 동작을 그대로 유지한다)."""
+    try:
+        return os.fdopen(fd, mode, encoding="utf-8", newline=newline)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _fdopen_binary(fd: int, mode: str):
+    """fd 소유권을 넘긴 바이너리 핸들 — 실패 시 fd 를 흘리지 않는다(백업 스트리밍용)."""
+    try:
+        return os.fdopen(fd, mode)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def read_dest_text_keeping_newlines(
+        dest_root: Path, rel: Path, root_identity: tuple | None = None) -> str:
+    """`read_text_keeping_newlines` 의 TOCTOU 안전 짝 — symlink 미추종 fd 로 읽는다."""
+    with _fdopen_text(
+            _open_dest_relative_nofollow(
+                dest_root, rel, os.O_RDONLY, root_identity=root_identity,
+                regular_only=True), "r") as handle:
+        return handle.read()
+
+
+def write_dest_text_keeping_newlines(
+        dest_root: Path, rel: Path, text: str,
+        root_identity: tuple | None = None) -> None:
+    """`write_text_keeping_newlines` 의 TOCTOU 안전 짝 — symlink 미추종 fd 로 제자리 덮어쓴다.
+
+    `O_CREAT` 를 주지 않는다: 제자리 편집 전용이라 대상이 사라졌으면(경쟁 삭제) 만들지 않고
+    실패해야 한다."""
+    with _fdopen_text(
+            _open_dest_relative_nofollow(
+                dest_root, rel, os.O_WRONLY | os.O_TRUNC,
+                root_identity=root_identity, regular_only=True), "w") as handle:
+        handle.write(text)
+
+
+def read_dest_text(dest_root: Path, rel: Path, root_identity: tuple | None = None) -> str:
+    """`Path.read_text(encoding="utf-8")` 의 TOCTOU 안전 짝 — symlink 미추종 fd + universal newline.
+
+    복사분 채널(치환·모델 해소·fill)용이다. 줄끝 의미를 옛 경로 IO 와 **동일하게** 두고 여는
+    방식만 바꾼다 — 여기서 줄끝 보존으로 바꾸면 `_mark_todos` 의 줄 단위 마커 삽입이 CRLF 를
+    깨뜨린다(의도치 않은 동작 변경)."""
+    with _fdopen_text(
+            _open_dest_relative_nofollow(
+                dest_root, rel, os.O_RDONLY, root_identity=root_identity,
+                regular_only=True),
+            "r", newline=None) as handle:
+        return handle.read()
+
+
+def write_dest_text(dest_root: Path, rel: Path, text: str,
+                    root_identity: tuple | None = None) -> None:
+    """`Path.write_text(encoding="utf-8")` 의 TOCTOU 안전 짝 — 제자리 덮어쓰기 전용(생성 안 함)."""
+    with _fdopen_text(
+            _open_dest_relative_nofollow(
+                dest_root, rel, os.O_WRONLY | os.O_TRUNC, root_identity=root_identity,
+                regular_only=True),
+            "w", newline=None) as handle:
+        handle.write(text)
+
+
+def _ensure_dest_dir_nofollow(dest_root: Path, rel_dir: Path,
+                              root_identity: tuple | None = None) -> None:
+    """`dest_root/rel_dir` 디렉토리 체인을 **컴포넌트별 `O_NOFOLLOW` 로** 만든다(경로 mkdir 금지).
+
+    `mkdir(parents=True)` 는 조상 symlink 를 따라가 저장소 밖에 디렉토리를 만든다 — 복사 목적지와
+    백업 자리 양쪽에서 그게 첫 외부 쓰기였다. 빈 rel(=dest 루트)은 무동작."""
+    parts = Path(rel_dir).parts
+    if not parts:
+        return
+    rel_path = Path(*parts)
+    if not _DEST_FD_WALK_SUPPORTED:
+        # 폴백(dir_fd 미지원·주로 Windows): 만들기 직전 재검사 — 창을 좁힐 뿐 구조적 폐쇄가 아니다.
+        if not _is_safe_dest_path(dest_root, rel_path):
+            raise UnsafeDestPathError(
+                f"디렉토리 경로가 안전하지 않습니다(symlink·조상 symlink·repo 밖): "
+                f"{rel_path.as_posix()}")
+        assert_dest_root_unchanged(dest_root, root_identity)
+        (Path(dest_root) / rel_path).mkdir(parents=True, exist_ok=True)
+        return
+    fd = _open_dest_relative_nofollow(
+        dest_root, rel_path, os.O_RDONLY | os.O_DIRECTORY,
+        create_parents=True, root_identity=root_identity, create_leaf_dir=True)
+    os.close(fd)
+
+
+def _stream_fd_into(src_fd: int, dst_handle) -> None:
+    """열린 fd 의 내용을 처음부터 스트리밍해 핸들에 쓴다(경로 재열기 0·메모리 적재 0)."""
+    os.lseek(src_fd, 0, os.SEEK_SET)
+    chunk_size = 1 << 20
+    while True:
+        data = os.read(src_fd, chunk_size)
+        if not data:
+            return
+        dst_handle.write(data)
+
+
+def _dest_leaf_identity(dest_root: Path, rel: Path,
+                        root_identity: tuple | None = None) -> tuple:
+    """dest leaf 의 `(st_dev, st_ino, 파일 종류)` — **부모 fd 안 `lstat`** 이라 링크도 링크 자신을 잰다.
+
+    링크는 fd 로 붙들 수 없다(열면 대상이 열린다). 그래서 백업 시점 신원을 재 두고 삭제 직전에
+    재대조한다 — 그 사이 같은 자리가 다른 파일로 바뀌면 백업 없는 남의 파일을 지우게 되므로.
+
+    **파일 종류(`S_IFMT`)를 신원에 포함**한다: 지우고 곧바로 만들면 커널이 같은 inode 번호를
+    재사용할 수 있어 `(dev, ino)` 만으로는 교체를 못 가른다(실측). 종류가 바뀌는 교체(링크→일반
+    파일 등)는 이걸로 확실히 걸린다. 같은 종류로 교체 + inode 재사용은 남는 잔여인데, 그 경우
+    지워지는 것도 링크뿐이라 사용자 데이터 손실 클래스가 아니다(명시된 경계)."""
+    rel = Path(rel)
+    if not _DEST_FD_WALK_SUPPORTED:
+        st = os.lstat(Path(dest_root) / rel)  # 폴백 — 창을 좁힐 뿐(다른 폴백과 동형).
+        return (st.st_dev, st.st_ino, stat.S_IFMT(st.st_mode))
+    dir_fd = _open_dest_dir_nofollow(dest_root, rel.parent, root_identity=root_identity)
+    try:
+        st = os.lstat(rel.name, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+    return (st.st_dev, st.st_ino, stat.S_IFMT(st.st_mode))
+
+
+def _unlink_dest_leaf_if_unchanged(dest_root: Path, rel: Path, leaf_identity: tuple | None,
+                                   root_identity: tuple | None = None) -> None:
+    """백업한 그 leaf 가 맞을 때만 지운다 — 신원이 다르면 파일 단위 제외로 올린다."""
+    if leaf_identity is not None:
+        current = _dest_leaf_identity(dest_root, rel, root_identity=root_identity)
+        if current != leaf_identity:
+            raise PlanStateChangedError(
+                f"백업 뒤 대상이 다른 파일로 바뀌었습니다({Path(rel).as_posix()}) — 백업하지 "
+                "않은 파일을 지우지 않기 위해 이 파일을 건너뜁니다.")
+    _unlink_dest_relative_nofollow(dest_root, rel, root_identity=root_identity)
+
+
+def _refresh_existing_dest_file(
+        dest_root: Path, rel: Path, src: Path, *, backup_base_rel: Path | None,
+        root_identity: tuple | None = None) -> None:
+    """기존 일반 파일을 **fd 하나로** 백업하고 그 자리에서 덮어쓴다(백업↔쓰기 창 폐쇄).
+
+    옛 흐름은 백업과 쓰기가 leaf 를 각각 다시 열어, 그 사이 같은 자리가 다른 파일로 교체되면
+    **백업 없는 새 파일을 truncate** 했다. 여기서는 `O_RDWR` fd 하나를 계획이 본 inode 에 묶어
+    백업 읽기와 덮어쓰기를 모두 처리하므로 그 창이 존재하지 않는다(재검사가 아니라 구조적 폐쇄).
+
+    소스는 **dest 를 건드리기 전에** 연다 — 소스 열기가 실패하면 dest 는 자르지도 않은 원본 그대로다.
+    dest 경쟁(ENOENT)은 `PlanStateChangedError` 로 정규화한다(파일 단위 제외)."""
+    with src.open("rb") as src_handle:  # 소스 먼저 — 실패 시 dest 불변.
+        src_stat = os.fstat(src_handle.fileno())
+        try:
+            leaf_fd = _open_dest_relative_nofollow(
+                dest_root, rel, os.O_RDWR, root_identity=root_identity, regular_only=True)
+        except (FileExistsError, FileNotFoundError) as exc:
+            raise PlanStateChangedError(
+                f"계획 뒤 대상 상태가 달라져 복사를 멈춥니다({Path(rel).as_posix()}: {exc}) — "
+                "계획에 없던 처리를 하지 않기 위해 이 파일을 건너뜁니다.") from exc
+        try:
+            if backup_base_rel is not None:
+                _backup_open_fd_nofollow(
+                    dest_root, leaf_fd, backup_base_rel, root_identity=root_identity)
+            os.ftruncate(leaf_fd, 0)
+            os.lseek(leaf_fd, 0, os.SEEK_SET)
+            while True:
+                data = src_handle.read(1 << 20)
+                if not data:
+                    break
+                os.write(leaf_fd, data)
+            if hasattr(os, "fchmod"):
+                os.fchmod(leaf_fd, stat.S_IMODE(src_stat.st_mode))
+            if os.utime in getattr(os, "supports_fd", frozenset()):
+                os.utime(leaf_fd, ns=(src_stat.st_atime_ns, src_stat.st_mtime_ns))
+            # 쓰기 자체는 fd(=계획이 본 inode)로 안전하게 끝났다. 다만 그 사이 **경로**가 다른
+            #   파일로 바뀌었다면 우리가 쓴 내용은 그 자리에 보이지 않는다 — 성공으로 보고하면
+            #   사람이 없는 결과를 믿는다. 손상은 0이지만 제외로 올려 요약에 싣는다.
+            fd_stat = os.fstat(leaf_fd)
+            current = _dest_leaf_identity(dest_root, rel, root_identity=root_identity)
+            if current != (fd_stat.st_dev, fd_stat.st_ino, stat.S_IFMT(fd_stat.st_mode)):
+                raise PlanStateChangedError(
+                    f"쓰기 중 대상 경로가 다른 파일로 바뀌었습니다({Path(rel).as_posix()}) — "
+                    "저장한 내용이 그 자리에 보이지 않으므로 이 파일을 제외로 보고합니다"
+                    "(교체된 파일은 건드리지 않았습니다).")
+        finally:
+            os.close(leaf_fd)
+
+
+def _write_dest_file_from_source_nofollow(
+        dest_root: Path, rel: Path, src: Path, *, overwrite: bool,
+        root_identity: tuple | None = None) -> None:
+    """신뢰 소스 `src` 를 `dest_root/rel` 로 **fd 스트리밍** 복사한다(모드·타임스탬프 보존).
+
+    `overwrite=False`(신규)는 `O_CREAT|O_EXCL` 로 만들어 계획 뒤 생긴 남의 파일을 덮지 않고,
+    `True`(refresh)는 `O_WRONLY|O_TRUNC` 로 기존 파일만 덮는다(기존 일반 파일 갱신은 백업까지 한
+    fd 로 묶는 `_refresh_existing_dest_file` 이 쓰므로, 이 경로의 `True` 는 직접 호출·테스트용이다).
+    어느 쪽이든 `O_NOFOLLOW` 라 그 자리에 심어진 symlink 는 거부된다. `shutil.copy2` 가 보존하던
+    실행 비트(출하 `.sh`)와 mtime 은 fd 기반으로 유지한다.
+
+    **소스를 먼저 연다** — dest 를 `O_TRUNC` 로 연 뒤 소스 열기가 실패하면 dest 는 비워진 채 남고
+    그 fd 는 주인이 없다(누수). 소스가 읽히는 것을 확인한 뒤에만 dest 를 건드린다.
+
+    두 플래그 조합이 **계획 뒤 dest 경쟁**을 그대로 표면화한다: 신규인데 그 사이 생겼으면 EEXIST,
+    기존인데 그 사이 지워졌으면 ENOENT 다. 둘 다 `PlanStateChangedError`(파일 단위 제외)로
+    정규화한다 — 그대로 새면 적용 루프가 통째로 죽어 rc 정책이 깨진다. **소스(template) 쪽**
+    오류는 정규화하지 않는다(진짜 누락 신호라 그대로 올린다·`src.open` 은 try 밖)."""
+    flags = os.O_WRONLY | (os.O_TRUNC if overwrite else os.O_CREAT | os.O_EXCL)
+    with src.open("rb") as src_handle:  # 소스 먼저 — 실패 시 dest 미접촉·fd 누수 0.
+        src_stat = os.fstat(src_handle.fileno())
+        try:
+            # 디렉토리 체인 생성도 dest 조작이라 같은 정규화 안에 둔다 — 부모가 그 사이 생겼다
+            #   사라지면 재-open 이 ENOENT 로 새어 적용 루프를 죽인다(인접 창).
+            _ensure_dest_dir_nofollow(dest_root, Path(rel).parent, root_identity=root_identity)
+            dst_fd = _open_dest_relative_nofollow(
+                dest_root, rel, flags, stat.S_IMODE(src_stat.st_mode),
+                root_identity=root_identity, regular_only=True)
+        except (FileExistsError, FileNotFoundError) as exc:
+            raise PlanStateChangedError(
+                f"계획 뒤 대상 상태가 달라져 복사를 멈춥니다({Path(rel).as_posix()}: {exc}) — "
+                "계획에 없던 처리를 하지 않기 위해 이 파일을 건너뜁니다.") from exc
+        with _fdopen_binary(dst_fd, "wb") as dst_handle:
+            shutil.copyfileobj(src_handle, dst_handle)
+            dst_handle.flush()
+            if hasattr(os, "fchmod"):
+                os.fchmod(dst_handle.fileno(), stat.S_IMODE(src_stat.st_mode))
+            if os.utime in getattr(os, "supports_fd", frozenset()):
+                os.utime(dst_handle.fileno(),
+                         ns=(src_stat.st_atime_ns, src_stat.st_mtime_ns))
+
+
+class CopyApplyOutcome(NamedTuple):
+    """복사 plan 적용 결과 — 실제로 쓴 것과 **건드리지 않은 것**을 사유별로 가른다."""
+
+    copied: list[Path]    # 실제로 복사된 dest relpath(후속 채널의 범위 = 이것뿐).
+    refused: list[str]    # 계획 뒤 경로 교체(symlink·비-디렉토리 컴포넌트).
+    changed: list[str]    # 계획 뒤 대상 상태 변화(신규 생성·삭제).
+
+
+def apply_copy_plan(plan: list, dest_root: Path,
+                    root_identity: tuple | None = None) -> CopyApplyOutcome:
+    """복사 plan 을 적용하고 **파일 단위 제외**를 사유별로 돌려준다.
+
+    적용 단계의 파일 단위 위반(경로 교체·계획 뒤 상태 변화)은 그 파일만 빼고 계속한다 — 모듈
+    docstring 이 명문화한 rc 정책(적용 단계 제외 = rc 0 + stderr 요약)과 같은 규칙이다. 여기서
+    전체를 중단하면 이미 복사된 파일이 남아 오히려 부분 설치가 된다.
+
+    반환 `copied` 는 **성공한 액션만** 담는다 — 후속 채널(치환·모델 해소·fill·설치 기록)의 범위가
+    곧 이 집합이라, 제외된 파일이 섞이면 없는 파일을 처리 대상으로 세거나 교체된 경로를 범위로
+    들인다. dest 루트 교체(`DestRootSwappedError`)만 예외로 그대로 올라간다(전체 중단 클래스)."""
+    copied: list[Path] = []
+    refused: list[str] = []
+    changed: list[str] = []
+    for action in plan:
+        rel = action.dst.relative_to(dest_root)
+        try:
+            action.run(root_identity=root_identity)
+        except UnsafeDestPathError:
+            refused.append(rel.as_posix())
+            continue
+        except PlanStateChangedError:
+            changed.append(rel.as_posix())
+            continue
+        copied.append(rel)
+    return CopyApplyOutcome(copied, refused, changed)
+
+
+def report_copy_apply_anomalies(outcome: CopyApplyOutcome) -> None:
+    """복사 단계 파일 단위 제외를 loud 로 알린다(조용한 degrade 금지)."""
+    if outcome.refused:
+        print(f"  ⚠️ 복사 대상 {len(outcome.refused)}건: 계획 검증 뒤 경로를 안전하게 열 수 없어"
+              f"(symlink 교체·비-디렉토리 컴포넌트) 복사를 건너뜁니다(저장소 밖 파일 불변): "
+              f"{', '.join(outcome.refused)}", file=sys.stderr)
+    if outcome.changed:
+        print(f"  ⚠️ 복사 대상 {len(outcome.changed)}건: 계획 뒤 대상 상태가 달라져(그 사이 생성·"
+              f"삭제) 복사를 건너뜁니다(무백업 덮기·삭제분 재생성 금지): "
+              f"{', '.join(outcome.changed)}", file=sys.stderr)
+
+
+def _copied_scope_anomaly(dest_root: Path, rel: Path) -> str | None:
+    """복사분 채널의 선검사 탈락 사유 — `'vanished'`·`'swapped'`·`None`(정상 대상).
+
+    이 채널들의 범위는 **이번 run 이 방금 복사한 파일**이라, 대상이 없다는 것은 "원래 대상이 아님"
+    이 아니라 복사 뒤 삭제다. 조용히 건너뛰면 그 사실이 어디에도 안 남는다(적용 단계의 유일한
+    신호가 stderr 요약이므로). 부재는 `vanished`, 실재하는데 편집 대상이 아니면(디렉토리·FIFO 등
+    형상 변화) `swapped` 로 갈라 호출부가 같은 요약 채널에 싣는다."""
+    if _is_inplace_edit_candidate(dest_root, rel):
+        return None
+    return "swapped" if os.path.lexists(Path(dest_root) / rel) else "vanished"
+
+
+def _report_copied_scope_anomalies(
+        channel: str, swapped: list[str], vanished: list[str]) -> None:
+    """복사분 채널의 파일 단위 제외를 loud 로 알린다(조용한 degrade 금지·채널명 포함).
+
+    루트 교체(`DestRootSwappedError`)는 여기 오지 않는다 — 그건 흡수 대상이 아니라 전체 중단이다."""
+    if swapped:
+        print(f"  ⚠️ {channel} 대상 {len(swapped)}건: 복사 뒤 경로를 안전하게 열 수 없어(symlink "
+              f"교체·비-디렉토리 컴포넌트) 처리를 건너뜁니다(저장소 밖 파일 불변): "
+              f"{', '.join(swapped)}", file=sys.stderr)
+    if vanished:
+        print(f"  ⚠️ {channel} 대상 {len(vanished)}건: 복사 뒤 대상이 사라져(경쟁 삭제) 처리를 "
+              f"건너뜁니다(새로 만들지 않습니다): {', '.join(vanished)}", file=sys.stderr)
+
+
+def assert_dest_root_unchanged(dest_root: Path, root_identity: tuple | None) -> None:
+    """고정한 루트 신원을 **외부 단계 직전에** 재확인한다(board init·실 하니스 fill 등).
+
+    그 단계들은 subprocess/외부 프로세스라 우리 fd 를 물려줄 수 없다 — 구조적 폐쇄가 불가능한
+    구간이므로 직전 재확인으로 창을 좁힌다(검사-사용 사이 gap 은 남는다·명시). 불일치는 파일
+    단위가 아니라 **전체 중단** 클래스다."""
+    if root_identity is None:
+        return
+    try:
+        current = dest_root_identity(dest_root)
+    except UnsafeDestPathError as exc:
+        raise DestRootSwappedError(str(exc)) from exc
+    if current != root_identity:
+        raise DestRootSwappedError(
+            f"dest 루트가 실행 중에 다른 디렉토리로 바뀌었습니다: {dest_root} — 남은 단계가 "
+            "교체된 트리에 쓰지 않도록 즉시 중단합니다.")
+
+
+def _is_inplace_edit_candidate(dest_root: Path, rel: Path) -> bool:
+    """제자리 편집(백업·재렌더·복사분 채널) 선검사 — **링크를 따라가지 않는다**(`lstat`).
+
+    옛 `is_file()` 선검사는 링크를 따라가므로 **깨진 symlink** 로 교체된 대상을 False 로 보고
+    조용히 건너뛰었다 — 요구된 "파일 단위 loud 제외" 가 그 경로에서만 침묵으로 바뀐다. 그래서
+    여기서는 symlink 를 **후보로 통과**시키고, 실제 판정(거부 + loud)은 fd 가드 한 지점에 맡긴다.
+
+    `lstat` 실패도 errno 로 가른다 — 삼키면 같은 침묵이 조상 축으로 되살아난다:
+      - `ENOENT` + **조상에 symlink 없음** = 진짜 부재 → 조용한 제외(원래 대상이 아니다).
+      - `ENOENT` + **조상이 symlink**(깨진 링크로 교체) 또는 `ELOOP`/`ENOTDIR` 류 = 안전 거부
+        대상 → 후보로 통과시켜 fd 가드가 loud 로 거른다.
+    조상 순회는 dest 루트 **하위**로 한정한다(루트 자신이 symlink 를 거쳐 있는 정상 형상 —
+    예 `/tmp`→`/private/tmp` — 을 매 부재 파일마다 거부로 오판하지 않기 위해)."""
+    try:
+        st = os.lstat(Path(dest_root) / rel)
+    except OSError as exc:
+        if exc.errno in _DEST_PATH_REFUSAL_REASONS:
+            return True
+        return isinstance(exc, FileNotFoundError) and _has_symlink_ancestor(dest_root, rel)
+    return stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)
+
+
+def _has_symlink_ancestor(dest_root: Path, rel: Path) -> bool:
+    """`rel` 의 조상 컴포넌트(dest 루트 하위)에 symlink 가 있는가 — 부재 사유 판별용."""
+    current = Path(dest_root)
+    for part in Path(rel).parts[:-1]:
+        current = current / part
+        try:
+            if stat.S_ISLNK(os.lstat(current).st_mode):
+                return True
+        except OSError:
+            return False  # 조상 자체가 부재 — 진짜 부재 경로다.
+    return False
+
+
 def _is_notation_fallback_scope(rel_posix: str) -> bool:
     """manifest 소유자가 없을 때 **설치 하네스 전체 표기**로 폴백해도 되는 relpath 인가.
 
@@ -1904,6 +2615,7 @@ def render_managed_files(
     copied_relpaths: set[Path],
     entry_notation_templates: dict[str, tuple[str, ...]] | None = None,
     installed_notation_context: tuple[str, ...] | None = None,
+    root_identity: tuple | None = None,
 ) -> int:
     """이번 run 이 복사한 @render path 파일을 render_adapter 산출물로 다시 쓴다. 변경 수 반환.
 
@@ -1951,6 +2663,10 @@ def render_managed_files(
         return max(matches, default=(0, None), key=lambda item: item[0])[1]
 
     fallback_rendered: list[str] = []
+    # 계획 검증 뒤 경로가 교체된 대상 — 그 파일만 빼고 크게 알린다(아래 loud).
+    swapped: list[str] = []
+    # 읽은 뒤 쓰기 전에 대상이 사라진 경우(경쟁 삭제) — 같은 파일 단위 제외이되 사유가 다르다.
+    vanished: list[str] = []
     for rel in sorted(copied_relpaths):
         rel_posix = rel.as_posix()
         file_render = _is_render_managed(rel_posix, managed)
@@ -1973,11 +2689,27 @@ def render_managed_files(
             used_fallback = True
         if not file_render and not (context and notation_managed):
             continue
-        path = dest_root / rel
-        if not path.is_file():
+        # 선검사는 `lstat` 이다 — `is_file()` 은 링크를 따라가 **깨진 symlink** 로 교체된 대상을
+        #   조용히 건너뛰었다(loud 제외가 그 경로에서만 침묵으로 바뀜). 이 범위(복사분 + 계획이
+        #   실재를 확인한 재렌더 대상)에서 부재·형상 변화는 사고이므로 요약에 싣는다.
+        anomaly = _copied_scope_anomaly(dest_root, rel)
+        if anomaly == "vanished":
+            vanished.append(rel_posix)
             continue
+        if anomaly == "swapped":
+            swapped.append(rel_posix)
+            continue
+        # 읽기·쓰기 모두 **경로가 아니라 fd** 로 한다 — 계획(`_is_safe_dest_path`)과 이 쓰기
+        #   사이에 대상이 symlink 로 교체되면 경로 재열기는 링크를 따라 저장소 밖을 고친다.
         try:
-            text = read_text_keeping_newlines(path)
+            text = read_dest_text_keeping_newlines(
+                dest_root, rel, root_identity=root_identity)
+        except UnsafeDestPathError:
+            swapped.append(rel_posix)
+            continue
+        except FileNotFoundError:
+            vanished.append(rel_posix)  # 읽기 전 삭제도 loud 제외(아래 쓰기 쪽과 동형).
+            continue
         except (UnicodeDecodeError, OSError):
             continue
         rendered = (
@@ -1990,7 +2722,18 @@ def render_managed_files(
             else render_mod.render_skill_entry_notation(text, context)
         )
         if rendered != text:
-            write_text_keeping_newlines(path, rendered)
+            try:
+                write_dest_text_keeping_newlines(
+                    dest_root, rel, rendered, root_identity=root_identity)
+            except UnsafeDestPathError:
+                swapped.append(rel_posix)
+                continue
+            except FileNotFoundError:
+                # 읽기와 쓰기 사이 삭제 경쟁. `O_CREAT` 를 안 주므로 되살리지 않고, 적용 단계라
+                #   전체 중단도 하지 않는다 — 교체와 같은 파일 단위 loud 제외로 흡수한다
+                #   (uncaught 로 터지면 "복사 전에만 던진다 → 부분 적용 0" 불변식이 깨진다).
+                vanished.append(rel_posix)
+                continue
             changed += 1
             if used_fallback:
                 fallback_rendered.append(rel_posix)
@@ -1998,6 +2741,19 @@ def render_managed_files(
         print(
             f"  ⚠️ manifest 미소유 인스턴스 wiki {len(fallback_rendered)}건 — 설치 하네스 전체"
             f"({', '.join(fallback_context)}) 표기로 폴백 렌더: {', '.join(fallback_rendered)}",
+            file=sys.stderr,
+        )
+    if swapped:
+        print(
+            f"  ⚠️ 렌더 대상 {len(swapped)}건: 계획 검증 뒤 경로를 안전하게 열 수 없어(symlink "
+            f"교체·비-디렉토리 컴포넌트) 렌더를 건너뜁니다(저장소 밖 파일 불변·비파괴): "
+            f"{', '.join(swapped)}. 경로를 정리한 뒤 다시 실행하세요.",
+            file=sys.stderr,
+        )
+    if vanished:
+        print(
+            f"  ⚠️ 렌더 대상 {len(vanished)}건: 계획 검증 뒤 대상이 사라져(경쟁 삭제) 렌더를 "
+            f"건너뜁니다(새로 만들지 않습니다): {', '.join(vanished)}.",
             file=sys.stderr,
         )
     return changed
@@ -2365,6 +3121,7 @@ def _substitute_model_token(
     dest_root: Path,
     model: str,
     copied_relpaths: set[Path],
+    root_identity: tuple | None = None,
 ) -> int:
     """{{OPENCODE_PRO_MODEL}} 을 복사 파일 전역에서 결정적 치환. 변경 파일 수 반환.
 
@@ -2374,23 +3131,44 @@ def _substitute_model_token(
     대상 = `.opencode/agents/*.md` 의 `model:` 필드·AGENTS.md 잔존분.
     """
     changed = 0
+    swapped: list[str] = []
+    vanished: list[str] = []
     sed_exclude = _dest_sed_exclude(dest_root)  # 치환 시점·dest manifest 기준(codex must-fix)
     for rel in sorted(copied_relpaths):
         if any(part in COPY_EXCLUDE_DIR_NAMES for part in rel.parts):
             continue
         if not _should_substitute(rel, sed_exclude):
             continue
-        path = dest_root / rel
-        if not path.is_file():
+        anomaly = _copied_scope_anomaly(dest_root, rel)
+        if anomaly == "vanished":
+            vanished.append(rel.as_posix())
+            continue
+        if anomaly == "swapped":
+            swapped.append(rel.as_posix())
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_dest_text(dest_root, rel, root_identity=root_identity)
+        except UnsafeDestPathError:
+            swapped.append(rel.as_posix())
+            continue
+        except FileNotFoundError:
+            vanished.append(rel.as_posix())  # 읽기 전 삭제도 loud 제외(쓰기 쪽과 동형).
+            continue
         except (UnicodeDecodeError, OSError):
             continue
         if OPENCODE_MODEL_TOKEN not in text:
             continue
-        path.write_text(text.replace(OPENCODE_MODEL_TOKEN, model), encoding="utf-8")
+        try:
+            write_dest_text(dest_root, rel, text.replace(OPENCODE_MODEL_TOKEN, model),
+                            root_identity=root_identity)
+        except UnsafeDestPathError:
+            swapped.append(rel.as_posix())
+            continue
+        except FileNotFoundError:
+            vanished.append(rel.as_posix())
+            continue
         changed += 1
+    _report_copied_scope_anomalies("모델 토큰 치환", swapped, vanished)
     return changed
 
 
@@ -2429,6 +3207,7 @@ def _mark_model_todos(
     dest_root: Path,
     copied_relpaths: set[Path],
     available: list[str],
+    root_identity: tuple | None = None,
 ) -> list[str]:
     """비-tty/opencode 부재 폴백: `model:` 줄을 주석화하고 그 안의 모델 토큰을 중화한다.
 
@@ -2465,9 +3244,18 @@ def _mark_model_todos(
             "확인하세요(.project_manager/tools/pm_render.py)."
         )
     marked = False
-    for _rel, path in _iter_copied_files(dest_root, copied_relpaths):
+    swapped: list[str] = []
+    vanished: list[str] = []
+    for _rel, _path in _iter_copied_files(
+            dest_root, copied_relpaths, swapped=swapped, vanished=vanished):
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_dest_text(dest_root, _rel, root_identity=root_identity)
+        except UnsafeDestPathError:
+            swapped.append(_rel.as_posix())
+            continue
+        except FileNotFoundError:
+            vanished.append(_rel.as_posix())  # 읽기 전 삭제도 loud 제외(쓰기 쪽과 동형).
+            continue
         except (UnicodeDecodeError, OSError):
             continue
         # 공유 중화(pm_render): agent frontmatter 의 `model:` 필드 줄만 주석화·토큰 중화한다 —
@@ -2475,8 +3263,16 @@ def _mark_model_todos(
         # `model:` 시작 줄로 한정·YAML 주석 안전). 비파괴 멱등도 그쪽이 보장.
         new_text, changed = render_mod.neutralize_model_todo(text, available)
         if changed and new_text != text:
-            path.write_text(new_text, encoding="utf-8")
+            try:
+                write_dest_text(dest_root, _rel, new_text, root_identity=root_identity)
+            except UnsafeDestPathError:
+                swapped.append(_rel.as_posix())
+                continue
+            except FileNotFoundError:
+                vanished.append(_rel.as_posix())
+                continue
             marked = True
+    _report_copied_scope_anomalies("모델 TODO 표시", swapped, vanished)
     return [OPENCODE_MODEL_TOKEN] if marked else []
 
 
@@ -2487,6 +3283,7 @@ def resolve_opencode_model(
     model_arg: str | None,
     models_runner: ModelsRunner | None = None,
     stdin=None,
+    root_identity: tuple | None = None,
 ) -> ModelResolveResult:
     """{{OPENCODE_PRO_MODEL}} 을 결정적으로 해소. board init·conf sync 직후·fill 이전.
 
@@ -2503,7 +3300,16 @@ def resolve_opencode_model(
     치환은 substitute_placeholders 와 동일한 copied_relpaths 비파괴 범위·_should_substitute 규칙.
     """
     # opencode 토큰이 이번 복사본에 없으면 단계 자체가 무의미(claude-only) — inactive.
-    if not _token_present(dest_root, OPENCODE_MODEL_TOKEN, copied_relpaths):
+    model_scan_swapped: list[str] = []
+    model_scan_vanished: list[str] = []
+    token_present = _token_present(
+        dest_root, OPENCODE_MODEL_TOKEN, copied_relpaths,
+        root_identity=root_identity, swapped=model_scan_swapped,
+        vanished=model_scan_vanished)
+    # 교체됐거나 사라져 못 읽은 파일은 "토큰 없음"이 아니다 — 판정에서 빼되 조용히 넘기지 않는다.
+    _report_copied_scope_anomalies(
+        "모델 토큰 판정", model_scan_swapped, model_scan_vanished)
+    if not token_present:
         return ModelResolveResult(active=False, path="inactive",
                                   note="opencode 모델 토큰 미잔존 — 해소 단계 비활성(claude-only).")
 
@@ -2516,7 +3322,8 @@ def resolve_opencode_model(
         # 명시값을 **먼저 확정**(치환) — 외부 `opencode models` 조회가 명시-플래그 경로의 import
         # 를 막지 않게(codex suggestion). 목록 대조는 그 *뒤* best-effort 경고만(짧은 timeout·
         # fail-soft — 조회 실패/지연이 치환 결과를 바꾸지 않는다).
-        changed = _substitute_model_token(dest_root, model_arg, copied_relpaths)
+        changed = _substitute_model_token(dest_root, model_arg, copied_relpaths,
+                                          root_identity=root_identity)
         ok, available = runner()
         if ok and available and model_arg not in available:
             print(
@@ -2537,14 +3344,16 @@ def resolve_opencode_model(
     if is_tty and ok and available:
         choice = _prompt_model_choice(available, stream)
         if choice:
-            changed = _substitute_model_token(dest_root, choice, copied_relpaths)
+            changed = _substitute_model_token(dest_root, choice, copied_relpaths,
+                                              root_identity=root_identity)
             return ModelResolveResult(
                 active=True, path="interactive", model=choice, changed=changed,
                 available=available, tty=True,
                 note=f"대화형 선택 '{choice}' 로 치환({changed} 파일).",
             )
         # 선택 안 함(빈 입력·범위 밖) → TODO 폴백.
-        todos = _mark_model_todos(dest_root, copied_relpaths, available)
+        todos = _mark_model_todos(dest_root, copied_relpaths, available,
+                                  root_identity=root_identity)
         print("경고: opencode 모델 미선택 — {{OPENCODE_PRO_MODEL}} 을 TODO 로 표시(손으로 채우세요).",
               file=sys.stderr)
         return ModelResolveResult(
@@ -2554,7 +3363,8 @@ def resolve_opencode_model(
         )
 
     # ③ 비-tty / opencode 부재·조회 실패 → 치환 안 함·TODO 마커(가용목록 인라인 시도)+경고.
-    todos = _mark_model_todos(dest_root, copied_relpaths, available if ok else [])
+    todos = _mark_model_todos(dest_root, copied_relpaths, available if ok else [],
+                              root_identity=root_identity)
     if not ok:
         reason = "opencode 바이너리 부재 또는 `opencode models` 조회 실패"
     elif not is_tty:
@@ -3032,7 +3842,9 @@ def _resolve_fill_scope(dest_root: Path, copied_relpaths: set[Path] | None) -> s
     return scope
 
 
-def _iter_copied_files(dest_root: Path, copied_relpaths: set[Path]):
+def _iter_copied_files(dest_root: Path, copied_relpaths: set[Path],
+                       swapped: list[str] | None = None,
+                       vanished: list[str] | None = None):
     """이번 import 가 복사한 파일들만 (relpath, 절대경로)로 순회한다.
 
     MF(비파괴): fill 단계가 dest_root.rglob 로 *대상 프로젝트 전체* 를 훑으면, --into 에서
@@ -3045,13 +3857,23 @@ def _iter_copied_files(dest_root: Path, copied_relpaths: set[Path]):
     for rel in sorted(copied_relpaths):
         if any(part in COPY_EXCLUDE_DIR_NAMES for part in rel.parts):
             continue
-        path = dest_root / rel
-        if not path.is_file():
+        # 선검사는 `lstat` — symlink 를 후보로 통과시켜 소비처의 nofollow fd 가드가 판정하게 한다
+        #   (`is_file()` 은 깨진 링크를 조용히 제외하고 정상 링크는 따라간다). 탈락 사유(복사 뒤
+        #   삭제·형상 변화)는 호출부 목록에 실어 요약으로 나가게 한다(조용한 skip 0).
+        anomaly = _copied_scope_anomaly(dest_root, rel)
+        if anomaly == "vanished":
+            if vanished is not None and rel.as_posix() not in vanished:
+                vanished.append(rel.as_posix())
             continue
-        yield rel, path
+        if anomaly == "swapped":
+            if swapped is not None and rel.as_posix() not in swapped:
+                swapped.append(rel.as_posix())
+            continue
+        yield rel, dest_root / rel
 
 
-def _fill_targets(dest_root: Path, copied_relpaths: set[Path] | None = None) -> list[str]:
+def _fill_targets(dest_root: Path, copied_relpaths: set[Path] | None = None,
+                  root_identity: tuple | None = None) -> list[str]:
     """이번 import 가 복사한 파일에 실제로 남아있는 자유서술 placeholder 토큰 목록.
 
     잔존 grep 으로 판정 — 트리에 없는 토큰은 채울 필요 없음. 스캔 범위는 copied_relpaths
@@ -3064,9 +3886,13 @@ def _fill_targets(dest_root: Path, copied_relpaths: set[Path] | None = None) -> 
     """
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
     present: list[str] = []
+    swapped: list[str] = []
+    vanished: list[str] = []
     for token in FREE_FORM_TOKENS:
-        if _token_present(dest_root, token, scan):
+        if _token_present(dest_root, token, scan, root_identity=root_identity,
+                          swapped=swapped, vanished=vanished):
             present.append(token)
+    _report_copied_scope_anomalies("자유서술 토큰 판정", swapped, vanished)
     return present
 
 
@@ -3115,18 +3941,34 @@ def _token_present(
     dest_root: Path,
     token: str,
     copied_relpaths: set[Path] | None = None,
+    root_identity: tuple | None = None,
+    swapped: list[str] | None = None,
+    vanished: list[str] | None = None,
 ) -> bool:
     """이번 import 가 복사한 파일에 token 이 한 파일이라도 남아있는가(비파괴 범위 한정).
 
     copied_relpaths=None 이면 dest 트리 전체 폴백(COPY_EXCLUDE_DIR_NAMES 제외) — 직접 호출용.
-    """
+
+    swapped/vanished: 계획 뒤 교체됐거나 사라져 **읽지 못한** relpath 를 담을 리스트(호출부가
+    loud 로 보고). 삼키면 "토큰 없음"으로 오판정해 모델 해소가 inactive 로 빠지거나 fill 대상이
+    조용히 준다 — 판정 채널이라고 침묵하면 안 되는 이유다(제외는 하되 반드시 알린다). 삭제 경쟁을
+    일반 OSError 로 묶으면 그 축만 무요약이 되므로 교체와 같은 격으로 가른다."""
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
-    for _rel, path in _iter_copied_files(dest_root, scan):
+    for _rel, _path in _iter_copied_files(
+            dest_root, scan, swapped=swapped, vanished=vanished):
         if _is_engine_source(_rel):  # 엔진 소스 주석의 토큰-문서는 placeholder 아님
             continue
         try:
-            if token in path.read_text(encoding="utf-8"):
+            if token in read_dest_text(dest_root, _rel, root_identity=root_identity):
                 return True
+        except UnsafeDestPathError:
+            if swapped is not None and _rel.as_posix() not in swapped:
+                swapped.append(_rel.as_posix())
+            continue
+        except FileNotFoundError:
+            if vanished is not None and _rel.as_posix() not in vanished:
+                vanished.append(_rel.as_posix())
+            continue
         except (UnicodeDecodeError, OSError):
             continue
     return False
@@ -3136,6 +3978,7 @@ def _mark_todos(
     dest_root: Path,
     tokens: list[str],
     copied_relpaths: set[Path] | None = None,
+    root_identity: tuple | None = None,
 ) -> list[str]:
     """manual 모드: 자유서술 placeholder 옆에 `<!-- TODO -->` 가 없으면 표시한다.
 
@@ -3149,25 +3992,46 @@ def _mark_todos(
     """
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
     marked: set[str] = set()
+    swapped: list[str] = []
+    vanished: list[str] = []
     marker = " <!-- TODO: 손으로 채우세요 -->"
-    for _rel, path in _iter_copied_files(dest_root, scan):
+    for _rel, _path in _iter_copied_files(
+            dest_root, scan, swapped=swapped, vanished=vanished):
         if _is_engine_source(_rel):  # 엔진 소스(.py)에 TODO 마커 주입 금지 — verbatim
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_dest_text(dest_root, _rel, root_identity=root_identity)
+        except UnsafeDestPathError:
+            swapped.append(_rel.as_posix())
+            continue
+        except FileNotFoundError:
+            vanished.append(_rel.as_posix())  # 읽기 전 삭제도 loud 제외(쓰기 쪽과 동형).
+            continue
         except (UnicodeDecodeError, OSError):
             continue
         new_text = text
         changed = False
+        # 이 파일에서 마킹한 토큰은 **쓰기 성공 뒤에** 반영한다 — 계획 시점에 더하면 교체·삭제로
+        #   제외된 파일의 토큰이 "표시됨"으로 보고돼 사람이 없는 처리 결과를 믿는다.
+        pending: set[str] = set()
         for line in text.splitlines(keepends=True):
             for token in tokens:
                 if token in line and "TODO" not in line:
                     replacement = line.replace("\n", "") + marker + ("\n" if line.endswith("\n") else "")
                     new_text = new_text.replace(line, replacement, 1)
-                    marked.add(token)
+                    pending.add(token)
                     changed = True
         if changed and new_text != text:
-            path.write_text(new_text, encoding="utf-8")
+            try:
+                write_dest_text(dest_root, _rel, new_text, root_identity=root_identity)
+            except UnsafeDestPathError:
+                swapped.append(_rel.as_posix())
+                continue
+            except FileNotFoundError:
+                vanished.append(_rel.as_posix())
+                continue
+            marked.update(pending)
+    _report_copied_scope_anomalies("자유서술 TODO 표시", swapped, vanished)
     return sorted(marked)
 
 
@@ -3178,6 +4042,7 @@ def run_fill(
     live: bool,
     runner: HarnessRunner | None = None,
     copied_relpaths: set[Path] | None = None,
+    root_identity: tuple | None = None,
 ) -> FillResult:
     """자유서술 placeholder 채움 단계. board init 직후 hook.
 
@@ -3193,7 +4058,7 @@ def run_fill(
     여기서 '하니스 미구동'은 *실 바이너리* 미구동을 뜻한다 — 주입 runner(stub)는 항상 안전.
     """
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
-    tokens = _fill_targets(dest_root, scan)
+    tokens = _fill_targets(dest_root, scan, root_identity=root_identity)
 
     # manual(또는 채울 토큰 없음): 하니스 미구동 — TODO 표시만.
     if not tokens:
@@ -3262,6 +4127,7 @@ def run_fill(
 def _run_manual_fill(
     dest_root: Path,
     copied_relpaths: set[Path] | None = None,
+    root_identity: tuple | None = None,
 ) -> FillResult:
     """manual 모드(기본): 하니스 미구동. 자유서술 placeholder 에 TODO 마커 표시만.
 
@@ -3269,10 +4135,10 @@ def _run_manual_fill(
     한정한다(비파괴). None 이면 dest 트리 전체 폴백(직접 호출용). main 은 항상 전달한다.
     """
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
-    tokens = _fill_targets(dest_root, scan)
+    tokens = _fill_targets(dest_root, scan, root_identity=root_identity)
     if not tokens:
         return FillResult(mode="manual", note="자유서술 placeholder 가 트리에 없음 — 처리 불필요.")
-    marked = _mark_todos(dest_root, tokens, scan)
+    marked = _mark_todos(dest_root, tokens, scan, root_identity=root_identity)
     return FillResult(
         mode="manual",
         todos=marked,
@@ -3280,7 +4146,8 @@ def _run_manual_fill(
     )
 
 
-def ensure_pm_playbook_local_stub(dest_root: Path, backup_root: Path | None) -> str:
+def ensure_pm_playbook_local_stub(dest_root: Path, backup_root: Path | None,
+                                  root_identity: tuple | None = None) -> str:
     """pm_playbook.local.md 스텁을 dest 에 생성한다.
 
     backup_root: 중앙 백업 디렉토리(또는 None=--new). 이 함수는 기존 .local 을
@@ -3297,16 +4164,39 @@ def ensure_pm_playbook_local_stub(dest_root: Path, backup_root: Path | None) -> 
     그대로 보존한다(누적 학습 trail 은 사용자 VCS 가 이력 관리). 백업하지 않는 이유: 백업은
     "import 가 덮는 파일"을 위한 것인데 여기선 애초에 덮지 않으므로 백업할 원본 변경이 없다.
 
+    쓰기는 **dest 상대 fd 순회**로 한다 — 이 스텁 자리의 조상(`.project_manager/wiki`)이 저장소 밖
+    지향 링크로 바뀌어 있으면 경로 `mkdir`+`write_text` 가 링크를 따라 밖에 파일을 만든다. 복사
+    단계가 파일 단위 제외로 **계속 진행**하게 된 뒤로는 그 형상에서도 이 지점에 도달하므로, 여기도
+    같은 fd 규율을 탄다(생성 실패는 loud skip — 스텁은 설치 성공 조건이 아니다).
+
     반환값(사람 대상 상태):
       "created" — 새 스텁 생성.
       "preserved" — 기존 .local 발견·비파괴 보존(미생성).
+      "unsafe-skip" — 경로가 안전하지 않아 생성하지 않음(저장소 밖 쓰기 차단).
     """
-    target = dest_root / PM_PLAYBOOK_LOCAL_RELPATH
-    if target.exists():
-        # 비파괴: 인스턴스 소유 누적 학습 보존(덮지 않음·skip).
+    rel = Path(PM_PLAYBOOK_LOCAL_RELPATH)
+    if not _is_safe_dest_path(dest_root, rel.parent):
+        # 조상이 저장소 밖을 향하면 그 아래를 **보지도 만들지도 않는다** — 밖의 동명 파일을
+        #   "기존 보존" 으로 오보고하지도, 밖에 스텁을 만들지도 않는다.
+        print(f"  ⚠️ pm_playbook.local.md 스텁 자리의 조상 경로가 안전하지 않아 생략합니다 "
+              f"({rel.as_posix()}) — 저장소 밖 쓰기를 피합니다.", file=sys.stderr)
+        return "unsafe-skip"
+    if os.path.lexists(dest_root / rel):
+        # 비파괴: 인스턴스 소유 누적 학습 보존(덮지 않음·skip). 링크로 바뀌어 있어도 그 자리를
+        #   새로 만들지 않는다(`lexists` — 깨진 링크도 점유로 본다).
         return "preserved"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(PM_PLAYBOOK_LOCAL_STUB, encoding="utf-8")
+    try:
+        _ensure_dest_dir_nofollow(dest_root, rel.parent, root_identity=root_identity)
+        with _fdopen_text(
+                _open_dest_relative_nofollow(
+                    dest_root, rel, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    root_identity=root_identity, regular_only=True),
+                "w", newline=None) as handle:
+            handle.write(PM_PLAYBOOK_LOCAL_STUB)
+    except (OSError, UnsafeDestPathError) as exc:
+        print(f"  ⚠️ pm_playbook.local.md 스텁을 만들지 못했습니다 "
+              f"({rel.as_posix()}: {exc}) — 저장소 밖 쓰기를 피해 생략합니다.", file=sys.stderr)
+        return "unsafe-skip"
     return "created"
 
 
@@ -3688,7 +4578,7 @@ def _is_safe_dest_path(dest_root: Path, rel: Path) -> bool:
 
 def _byte_identical_skipped(
         template_root: Path, dest_root: Path, copied_relpaths: set,
-        adapter_dirs: tuple) -> set:
+        adapter_dirs: tuple, root_identity: tuple | None = None) -> set:
     """이번 하네스 template 과 **byte-identical 이라 복사만 생략된** dest 파일 relpath 집합
     .
 
@@ -3707,10 +4597,40 @@ def _byte_identical_skipped(
             continue  # 이미 copy plan 이 실음 → 렌더 대상(중복 방지).
         if not _is_safe_dest_path(dest_root, rel):
             continue  # 조작 경로·symlink → skip(repo 밖 순회/치환 방지).
-        dst = dest_root / rel
-        if dst.is_file() and _same_bytes(src, dst):
-            out.add(rel)
+        # 비교는 **nofollow 로 한 번 연 fd** 에서 한다 — lstat 으로 걸러도 그 뒤 `_same_bytes` 가
+        #   경로를 *다시 열면* 그 사이 교체된 링크의 대상을 읽어 byte-identical 로 보고, 그 경로가
+        #   치환·렌더 대상 집합에 들어간다(경로 기반 소비처가 저장소 밖을 고칠 입구). 재열기 제거.
+        try:
+            # `regular_only` 가 일반 파일 판정(FIFO·디바이스 거부)까지 연 fd 에서 처리한다 —
+            #   거부는 아래 UnsafeDestPathError 핸들러가 범위 밖으로 흘린다(옛 별도 S_ISREG 검사와
+            #   같은 결과·판정 지점 하나).
+            with _fdopen_binary(
+                    _open_dest_relative_nofollow(
+                        dest_root, rel, os.O_RDONLY,
+                        root_identity=root_identity, regular_only=True), "rb") as dst_handle:
+                if _same_bytes_fd(src, dst_handle):
+                    out.add(rel)
+        except UnsafeDestPathError:
+            continue  # 교체된 경로는 범위 밖(위 `_is_safe_dest_path` 거부와 같은 결과).
+        except OSError:
+            continue
     return out
+
+
+def _same_bytes_fd(src: Path, dst_handle) -> bool:
+    """template 원본과 **이미 연 dest 핸들**의 내용이 같은가(dest 재열기 없음·스트리밍 비교)."""
+    chunk_size = 1 << 20
+    try:
+        with src.open("rb") as src_handle:
+            while True:
+                src_chunk = src_handle.read(chunk_size)
+                dst_chunk = dst_handle.read(chunk_size)
+                if src_chunk != dst_chunk:
+                    return False
+                if not src_chunk:
+                    return True
+    except OSError:
+        return False
 
 
 # PM 어댑터 고유 판별자로 인정하는 이름 관례 — 파일명/디렉토리에 이 접두사가 있으면 PM 이
@@ -3760,6 +4680,277 @@ def _pm_install_evidence(source_root: Path) -> tuple[dict[str, set[str]], dict[s
     return evidence, shipped_all
 
 
+# ── 영속 설치 기록(install receipt) ──────────────────────────────────────────
+# 이 인스턴스에 PM 어댑터를 **실제로 설치한** 하네스 목록을 인스턴스 메타에 박제한다. 증거 추론
+# (`_pm_install_evidence`)은 구조상 두 방향으로 틀릴 수 있다 — 증거가 둘뿐인 하네스는 그 파일이
+# 함께 사라지면 미검출(표기 유실)이고, 채택자 자작 진입문서는 거짓 양성(표기 소음)이다. 기록이
+# 있으면 그 추론을 아예 안 탄다.
+#
+# 위치를 local.conf 키가 아니라 **별도 소파일**로 둔 근거:
+#   - git 추적: local.conf 는 per-clone 이라 엔진 `.gitignore` 가 무시한다. 그런데 기록이 서술하는
+#     대상(어댑터 파일 `.claude/**`·`.codex/**`)은 추적물이라 clone 마다 실재한다 — 기록만 빠지면
+#     그 clone 은 다시 추론으로 내려가 이 기록이 닫으려는 한계를 그대로 맞는다. 소파일은 기본
+#     추적이라 기록과 대상이 같은 채널로 함께 이동한다(다중 사용자 clone 공유).
+#   - clobber 면역: manifest 미등재라 pm_update 동기 대상이 아니고, `board.py init` 이 통째로 다시
+#     쓰는 local.conf 의 백업·재병합 왕복도 타지 않는다(재-import 마다 값이 되살아나는 창 없음).
+# 형식은 JSON 한 객체 — `harnesses` 목록만 의미를 갖고(읽기는 `schema` 를 요구하지 않는다) 날짜 등
+# 변하는 값을 넣지 않아 같은 집합이면 매 실행 byte 동일이다(재-import churn 0).
+INSTALL_RECEIPT_RELPATH = Path(".project_manager") / "install.json"
+INSTALL_RECEIPT_SCHEMA = 1
+
+
+def _install_receipt_fix_hint(dest_root: Path) -> str:
+    """기록을 사람이 고칠 위치를 실값 경로로 알려 주는 꼬리말(수정·복구 채널 노출).
+
+    기록은 관측(증거 추론)을 덮으므로, 잘못 박힌 기록은 사람이 고치지 않으면 계속 그 판정을
+    강제한다 — 제거·수정 채널이 없는 채로 두면 유령 하네스가 영구히 독자로 남는다."""
+    return (f"수정 경로: {Path(dest_root) / INSTALL_RECEIPT_RELPATH} 의 "
+            "`harnesses` 배열을 직접 편집하세요")
+
+
+class InstallReceiptDocument(NamedTuple):
+    """기록 파일 판독 결과 — 문서와 **왜 못 읽었는지**를 함께 나른다.
+
+    `status`: `ok`(문서 유효) · `absent`(파일 없음) · `unreadable`(경로 교체·권한 등 열기 실패) ·
+    `corrupt`(열렸는데 JSON·형식이 깨짐). 부재와 손상을 같은 `None` 으로 접으면 기록 갱신이
+    손상 파일을 그냥 덮어써 원본이 영구 소실된다 — 그래서 사유를 남긴다."""
+
+    document: dict | None
+    status: str
+
+
+def _load_install_receipt_document(dest_root: Path, *,
+                                   quiet: bool = False) -> InstallReceiptDocument:
+    """기록 파일을 파싱한 **원본 문서 + 판독 사유**.
+
+    schema 판정을 읽기(해석)와 쓰기(덮어쓰기) 양쪽이 봐야 해서 문서 단계를 따로 둔다. `quiet` 는
+    같은 실행에서 두 번 읽을 때(판정 → 기록) 경고가 겹치지 않게 하는 스위치다."""
+    dest_root = Path(dest_root)
+    if not dest_root.is_dir():
+        # 아직 만들어지지 않은 dest(--new 계획 단계) — 기록 없음이 정상.
+        return InstallReceiptDocument(None, "absent")
+    try:
+        text = read_dest_text(dest_root, INSTALL_RECEIPT_RELPATH)
+    except FileNotFoundError:
+        # 기록 미도입 인스턴스(구 설치·수기 설치) — 호출부가 추론으로 폴백.
+        return InstallReceiptDocument(None, "absent")
+    except (OSError, UnsafeDestPathError, UnicodeDecodeError) as exc:
+        if not quiet:
+            print(f"경고: 설치 기록을 읽을 수 없어 증거 추론으로 판정합니다 "
+                  f"({Path(dest_root) / INSTALL_RECEIPT_RELPATH}: {exc}). "
+                  f"{_install_receipt_fix_hint(dest_root)}.", file=sys.stderr)
+        return InstallReceiptDocument(None, "unreadable")
+    try:
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise TypeError("기록 최상위는 객체여야 합니다")
+    except (ValueError, TypeError) as exc:
+        if not quiet:
+            print(f"경고: 설치 기록 형식이 올바르지 않아 증거 추론으로 판정합니다 "
+                  f"({Path(dest_root) / INSTALL_RECEIPT_RELPATH}: {exc}). "
+                  f"{_install_receipt_fix_hint(dest_root)}.", file=sys.stderr)
+        return InstallReceiptDocument(None, "corrupt")
+    return InstallReceiptDocument(data, "ok")
+
+
+def _install_receipt_is_newer_schema(document: dict | None) -> bool:
+    """이 엔진이 해석할 수 없는 **상위 schema** 기록인가(읽기 거부·쓰기 거부 공통 판정)."""
+    schema = (document or {}).get("schema")
+    return isinstance(schema, int) and schema > INSTALL_RECEIPT_SCHEMA
+
+
+def _read_install_receipt_raw(dest_root: Path) -> list | None:
+    """기록의 `harnesses` 값을 **거르지 않고** 반환 — 부재·해독 불가·형식 오류면 `None`.
+
+    등록 필터는 소비 지점(`read_install_receipt`)이 하고, 기록 갱신(`record_install_receipt`)은
+    이 원본을 봐야 한다: 신 엔진이 남긴 미등록 하네스 이름을 구 엔진의 재기록이 영구 삭제하지
+    않으려면 원본 목록이 필요하다. 경고는 여기서 한 번만 낸다(중복 출력 방지)."""
+    document = _load_install_receipt_document(dest_root).document
+    if document is None:
+        return None
+    # 전방 호환 가드: 상위 schema 기록은 이 엔진이 모르는 의미(예 항목별 조건·제외 규칙)를 담을 수
+    #   있다 — 그걸 목록으로만 읽으면 신 엔진의 의도를 조용히 왜곡한다. 알리고 추론으로 내려간다.
+    if _install_receipt_is_newer_schema(document):
+        print(f"경고: 설치 기록 schema {document.get('schema')} 는 이 엔진(지원 상한 "
+              f"{INSTALL_RECEIPT_SCHEMA})보다 새롭습니다 — 해석하지 않고 증거 추론으로 판정합니다 "
+              f"({Path(dest_root) / INSTALL_RECEIPT_RELPATH}). 엔진을 갱신하세요.",
+              file=sys.stderr)
+        return None
+    recorded = document.get("harnesses")
+    if not isinstance(recorded, list):
+        print(f"경고: 설치 기록 형식이 올바르지 않아 증거 추론으로 판정합니다 "
+              f"({Path(dest_root) / INSTALL_RECEIPT_RELPATH}: harnesses 는 목록이어야 합니다). "
+              f"{_install_receipt_fix_hint(dest_root)}.", file=sys.stderr)
+        return None
+    return recorded
+
+
+def read_install_receipt(dest_root: Path) -> list[str] | None:
+    """인스턴스에 기록된 설치 하네스(registry 정규 순서) — 기록 부재·해독 불가면 `None`.
+
+    `None` 은 "기록 없음"이고 빈 목록과 다르다: 호출부는 `None` 일 때만 증거 추론으로 내려간다.
+    깨진 기록(JSON 오류·`harnesses` 부재·상위 schema·등록 하네스 0)도 `None` 로 강등하되 **조용히
+    하지 않는다** — 기록을 진실로 쓰던 판정이 침묵으로 추론으로 바뀌면 그 전환을 아무도 못 본다.
+    다만 dest 가 아직 없거나(`--new` 계획 단계) `.project_manager/` 가 없는 트리는 정상이라 무음이다.
+
+    읽기는 symlink 미추종 fd 경로다 — 기록 경로가 저장소 밖 지향 링크로 바뀌어도 따라가지 않는다."""
+    dest_root = Path(dest_root)
+    recorded = _read_install_receipt_raw(dest_root)
+    if recorded is None:
+        return None
+    unknown = [str(name) for name in recorded if name not in REGISTERED_HARNESSES]
+    if unknown:
+        # 신 엔진이 쓴 미래 하네스일 수 있다 — 판정에서 빼되 알린다(등록 밖 이름은 registry 조회
+        #   에서 터지므로 통과시킬 수 없고, 조용히 버리면 표기 독자가 말없이 준다). 기록 자체에는
+        #   보존된다(`record_install_receipt`) — 구 엔진이 신 엔진의 값을 지우지 않게.
+        print(f"경고: 설치 기록에 미등록 하네스가 있어 판정에서 제외합니다: "
+              f"{', '.join(unknown)} "
+              f"({Path(dest_root) / INSTALL_RECEIPT_RELPATH}).", file=sys.stderr)
+    known = [name for name in REGISTERED_HARNESSES if name in recorded]
+    if not known:
+        # 유효 항목 0 = 기록 없음과 같게 다루되(표기 유실보다 소음이 낫다) **조용히 하지 않는다** —
+        #   빈 `harnesses` 는 정상 상태가 아니라 잘린·손상된 기록이다.
+        print(f"경고: 설치 기록에 유효한 하네스가 없어 증거 추론으로 판정합니다 "
+              f"({Path(dest_root) / INSTALL_RECEIPT_RELPATH}). "
+              f"{_install_receipt_fix_hint(dest_root)}.", file=sys.stderr)
+        return None
+    return known
+
+
+def established_harnesses(dest_root: Path, candidates, preexisting) -> tuple[list, list]:
+    """기록에 올릴 자격이 있는 하네스 — `(성립분, 제외분)`.
+
+    "이번 run 이 선택했다" 와 "그 어댑터가 실제로 트리에 섰다" 는 다르다: 적용 단계에서 그 하네스
+    파일이 전부 제외되면(경로 교체·계획 뒤 상태 변화) 어댑터는 서지 않는데 기록만 "설치됨" 이 된다
+    — 그 순간 기록은 유령을 진실로 만든다(기록이 관측을 덮으므로 스스로 교정되지도 않는다).
+
+    판정은 구조 증거(`_has_adapter_shape`)다. 단 **이미 설치돼 있던 하네스**(`preexisting`)는 그대로
+    통과시킨다 — 기록은 설치 사실이라 사용자가 파일을 지웠다고 이번 run 이 임의로 철회하지 않는다
+    (철회는 명시 편집 채널)."""
+    preexisting_set = set(preexisting)
+    established: list = []
+    dropped: list = []
+    for name in candidates:
+        if name in preexisting_set or _has_adapter_shape(dest_root, name):
+            established.append(name)
+        else:
+            dropped.append(name)
+    return established, dropped
+
+
+INSTALL_RECEIPT_CORRUPT_SUFFIX = ".corrupt"
+
+
+def _preserve_corrupt_install_receipt(dest_root: Path,
+                                      root_identity: tuple | None = None) -> bool:
+    """손상된 기록을 `install.json.corrupt`(순번)로 **백업**하고 재기록을 허용한다 — 성공 시 True.
+
+    손상을 부재와 같게 다루면 갱신이 그 파일을 `O_TRUNC` 로 덮어 원본이 영구 소실된다(사람이 나중에
+    무엇이 깨졌는지 볼 수 없다). 그렇다고 기록을 영영 거부하면 그 인스턴스는 계속 추론 판정에
+    머문다 — 그래서 **백업 후 재기록**을 택한다(엔진의 "백업하고 바꾼다" 규율과 같은 결). 백업에
+    실패하면 재기록도 하지 않는다(백업 못 하는 파일은 고치지 않는다)."""
+    try:
+        target = _copy_dest_file_nofollow(
+            dest_root, INSTALL_RECEIPT_RELPATH,
+            INSTALL_RECEIPT_RELPATH.with_name(
+                INSTALL_RECEIPT_RELPATH.name + INSTALL_RECEIPT_CORRUPT_SUFFIX),
+            root_identity=root_identity)
+    except (OSError, UnsafeDestPathError) as exc:
+        print(f"경고: 손상된 설치 기록을 백업하지 못해 갱신하지 않습니다 "
+              f"({Path(dest_root) / INSTALL_RECEIPT_RELPATH}: {exc}) — 원본을 보존합니다.",
+              file=sys.stderr)
+        return False
+    print(f"  ⚠️ 손상된 설치 기록을 백업하고 다시 씁니다: {target.relative_to(dest_root).as_posix()}",
+          file=sys.stderr)
+    return True
+
+
+def record_install_receipt(dest_root: Path, harnesses,
+                           root_identity: tuple | None = None) -> bool:
+    """설치 하네스를 인스턴스 설치 기록에 박제한다 — 내용이 바뀌었으면 True.
+
+    기록 시점은 **실제 설치·추가가 일어난 run**(`--new`·`--into`·add-harness 의 적용 경로)뿐이다.
+    판정 함수(`installed_harnesses`)는 읽기만 한다 — 거기서 쓰면 dry-run·read-only 갱신 확인 같은
+    무변경 명령이 인스턴스를 고치고, 비-PM 트리에도 기록을 남긴다. 기록이 없던 구 인스턴스는 그래서
+    다음 설치 행위에서 backfill 된다(그 시점의 추론 산출 ∪ 이번 선택을 그대로 박제 — 폴백을 계속
+    쌓는 대신 한 번 원천으로 옮긴다). 엔진 동기(pm_update)는 기록 채널이 아니다: 그쪽 dest 는 채택자
+    인스턴스일 수도, 출하 템플릿 트리(`--target`)나 프레임워크 checkout 자신일 수도 있어 "설치했다"
+    는 사실을 만들 자격이 없다(설치 행위를 한 쪽만 기록한다).
+
+    기존 기록의 **미등록 이름은 보존한다**: 그 값은 이 엔진보다 새로운 엔진이 남긴 하네스일 수
+    있어, 구 엔진의 재기록이 지우면 신 엔진의 설치 사실이 영구 소실된다(판정에서 빼는 것과 기록에서
+    지우는 것은 다른 일이다). 보존분은 registry 순서 뒤에 원래 순서로 붙는다.
+
+    쓰기 실패(경로 교체·권한·`.project_manager/` 부재)는 경고 후 False — 기록은 판정을 더 정확하게
+    할 뿐 설치의 성공 조건이 아니므로 설치 전체를 되돌리지 않는다. dest 루트 교체(전체 중단
+    클래스)만 예외로 그대로 올라간다."""
+    ordered = [name for name in REGISTERED_HARNESSES if name in set(harnesses)]
+    if not ordered:
+        return False
+    # **상위 schema 기록은 덮지 않는다** — 해석할 수 없다고 판정에서 뺀 문서를 이 엔진 형식으로
+    #   다시 쓰면 신 엔진의 기록이 통째로 파괴된다(읽기 거부와 쓰기 거부는 짝이어야 한다).
+    existing = _load_install_receipt_document(dest_root, quiet=True)
+    if _install_receipt_is_newer_schema(existing.document):
+        print(f"경고: 설치 기록 schema {existing.document.get('schema')} 가 이 엔진(지원 상한 "
+              f"{INSTALL_RECEIPT_SCHEMA})보다 새로워 갱신하지 않습니다 — 기존 기록을 보존합니다 "
+              f"({Path(dest_root) / INSTALL_RECEIPT_RELPATH}). 엔진을 갱신한 뒤 다시 실행하세요.",
+              file=sys.stderr)
+        return False
+    if existing.status == "unreadable":
+        # 경로 자체를 안전하게 열 수 없다(교체·권한) — 새로 쓰면 그 자리를 건드리는 셈이라 멈춘다.
+        print(f"경고: 설치 기록 경로를 읽을 수 없어 갱신하지 않습니다 "
+              f"({Path(dest_root) / INSTALL_RECEIPT_RELPATH}). "
+              f"{_install_receipt_fix_hint(dest_root)}.", file=sys.stderr)
+        return False
+    if existing.status == "corrupt" and not _preserve_corrupt_install_receipt(
+            dest_root, root_identity=root_identity):
+        return False
+    # 보존 대상은 **이미 읽은 문서**에서 뽑는다 — 여기서 다시 읽으면 판정용 경고("증거 추론으로
+    #   판정합니다")가 기록 갱신 실행에서 오도성으로 한 번 더 나간다(이 실행은 판정이 아니다).
+    existing_names = (existing.document or {}).get("harnesses")
+    preserved = [
+        str(name) for name in (existing_names if isinstance(existing_names, list) else [])
+        if name not in REGISTERED_HARNESSES and str(name) not in ordered
+    ]
+    seen_preserved: list[str] = []
+    for name in preserved:  # 중복 접기(원래 순서 유지·byte 안정).
+        if name not in seen_preserved:
+            seen_preserved.append(name)
+    text = json.dumps(
+        {"schema": INSTALL_RECEIPT_SCHEMA, "harnesses": ordered + seen_preserved},
+        ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    try:
+        if read_dest_text(dest_root, INSTALL_RECEIPT_RELPATH,
+                          root_identity=root_identity) == text:
+            return False  # 같은 집합 재기록 — 무변경(멱등·byte churn 0).
+    except (OSError, UnsafeDestPathError, UnicodeDecodeError):
+        pass  # 부재·해독 불가는 아래에서 새로 쓴다.
+    try:
+        with _fdopen_text(
+                _open_dest_relative_nofollow(
+                    dest_root, INSTALL_RECEIPT_RELPATH,
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                    root_identity=root_identity, regular_only=True),
+                "w", newline=None) as handle:
+            handle.write(text)
+    except (OSError, UnsafeDestPathError) as exc:
+        print(f"경고: 설치 기록을 남기지 못했습니다 "
+              f"({Path(dest_root) / INSTALL_RECEIPT_RELPATH}: {exc}) — 판정이 증거 추론으로 "
+              f"내려갑니다. {_install_receipt_fix_hint(dest_root)}.", file=sys.stderr)
+        return False
+    return True
+
+
+def _has_adapter_shape(dest_root: Path, harness: str) -> bool:
+    """그 하네스 어댑터의 **구조 증거**(네임스페이스 디렉토리 전부 + 루트 진입문서)가 있는가.
+
+    추론 판정의 1단이자 기록 보유 인스턴스의 유령 형상(기록엔 있는데 트리엔 없음) 판별에 함께
+    쓴다 — 두 곳이 같은 판정을 봐야 "무엇을 설치로 보는가"가 갈리지 않는다."""
+    adapter_dirs, root_doc = ADD_HARNESS_ADAPTER[harness]
+    return (all((Path(dest_root) / dirname).is_dir() for dirname in adapter_dirs)
+            and (Path(dest_root) / root_doc).is_file())
+
+
 def installed_harnesses(dest_root: Path, source_root: Path | None = None) -> list[str]:
     """dest 트리에 **PM 어댑터가 실제로 설치된** 하네스. registry 정규 순서.
 
@@ -3767,7 +4958,15 @@ def installed_harnesses(dest_root: Path, source_root: Path | None = None) -> lis
     전부**다 — codex 인스턴스에 `--into claude` 로 claude 를 얹으면 공유 wiki 는 두 하네스가
     함께 읽는다.
 
-    판정 2단: (a) 어댑터 네임스페이스 + 루트 진입문서 실재(opencode 가 `.claude/skills` 를 함께
+    판정 순서는 **기록 우선**이다: 영속 설치 기록(`read_install_receipt`)이 있으면 그것이 진실이고
+    아래 증거 추론은 아예 타지 않는다 — 판별자 파일이 전부 지워져도 독자 집합이 유실되지 않는다.
+    기록이 없는 인스턴스(기록 도입 전 설치·수기 설치)만 추론으로 폴백하며, 그 인스턴스는 다음
+    설치 행위(`--into` 재-import·add-harness)가 기록을 backfill 한다.
+
+    ⚠ 기록은 **설치 사실**이라 어댑터 파일을 지웠다고 자동 철회되지 않는다 — 제거는 기록을 고치는
+    명시 행위여야 한다(현재 제거 채널 없음).
+
+    폴백 판정 2단: (a) 어댑터 네임스페이스 + 루트 진입문서 실재(opencode 가 `.claude/skills` 를 함께
     깔기 때문에 claude 는 `CLAUDE.md` 까지 요구하고 codex 는 두 네임스페이스를 모두 요구한다)
     (b) **PM 자산 실재**(`_pm_install_evidence` 의 증거 집합). (b)가 없으면 일반 프로젝트가 자기
     용도로 가진 `.codex/`·`.agents/`·`AGENTS.md` 를 codex PM 설치로 오인해, PM 카드가 없는
@@ -3779,19 +4978,28 @@ def installed_harnesses(dest_root: Path, source_root: Path | None = None) -> lis
     반대 방향 오차(채택자 자작 `CLAUDE.md` + opencode 설치 → claude 도 독자로 셈)는 병기 표기가
     하나 늘 뿐이라 **유실보다 안전하다**(비대칭 판단·거짓 양성 허용).
 
-    ⚠ 한계: 증거가 적은 하네스는 그 파일들이 다 지워지면 미검출된다 — opencode 는 증거가
+    ⚠ 폴백의 한계: 증거가 적은 하네스는 그 파일들이 다 지워지면 미검출된다 — opencode 는 증거가
     `.opencode/pm-instructions.md`·`pm_orch_opencode.py` 둘뿐이라 둘 다 사라지면 구조 증거가 있어도
-    설치로 안 본다(영속 설치 기록이 없는 추론 판정의 잔여 한계·후속 후보).
+    설치로 안 본다. 이 한계는 **기록이 있는 인스턴스에는 없다**(기록이 추론을 대체한다).
 
     source_root 미지정/증거 파생 실패는 (a)만으로 판정한다(옛 동작·호출부는 항상 소스를 준다)."""
     dest_root = Path(dest_root)
+    recorded = read_install_receipt(dest_root)
+    if recorded is not None:
+        # 기록이 관측을 덮으므로 **유령 형상**(기록엔 있는데 어댑터 자체가 트리에 없음)은 알린다 —
+        #   기록은 진실로 쓰되(판정 불변), 사람이 고칠 위치를 함께 준다. 안 알리면 잘못 박힌 기록이
+        #   영구히 그 하네스를 독자로 붙든다(제거 채널이 편집뿐이라 더더욱 보여야 한다).
+        ghosts = [name for name in recorded if not _has_adapter_shape(dest_root, name)]
+        if ghosts:
+            print(f"경고: 설치 기록의 {', '.join(ghosts)} 어댑터가 트리에 없습니다 — 기록을 진실로 "
+                  f"쓰므로 표기 독자에는 그대로 남습니다. 제거하려면 "
+                  f"{_install_receipt_fix_hint(dest_root)}.", file=sys.stderr)
+        return recorded
     evidence, _shipped_all = (
         _pm_install_evidence(source_root) if source_root is not None else ({}, {}))
     structural = [
-        candidate
-        for candidate, (candidate_dirs, candidate_doc) in ADD_HARNESS_ADAPTER.items()
-        if all((dest_root / dirname).is_dir() for dirname in candidate_dirs)
-        and (dest_root / candidate_doc).is_file()
+        candidate for candidate in ADD_HARNESS_ADAPTER
+        if _has_adapter_shape(dest_root, candidate)
     ]
 
     def _present(rels) -> bool:
@@ -3894,7 +5102,7 @@ def _notation_rerender_contexts(
 
 def _shared_notation_rerender_plan(
         dest_root: Path, entry_notation_templates: dict, backup_root: Path | None,
-        git_safe: set | None,
+        git_safe: set | None, root_identity: tuple | None = None,
 ) -> tuple[list[Path], list[str]]:
     """같은 물리 문서를 둘 이상의 설치 하네스가 읽어 **기존 파일도 병기 렌더**해야 하는 relpath.
 
@@ -3933,9 +5141,22 @@ def _shared_notation_rerender_plan(
             if (dest_root / rel).is_symlink() or (dest_root / rel).exists():
                 unsafe.append(rel_posix)
             continue
-        if not (dest_root / rel).is_file():
+        # 선검사는 `lstat` 이다 — `is_file()` 은 링크를 따라가 **깨진 symlink** 로 교체된 대상을
+        #   False 로 보고 조용히 건너뛰었다(fd 가드에 닿지도 않는 침묵 제외). symlink 는 후보로
+        #   통과시키고 판정은 아래 nofollow 열기 한 지점에 맡긴다(계획 단계라 그 결과는 fail-loud).
+        #   ⚠ 여기서만은 **부재가 정상**이다 — 이 단계의 후보는 "있으면 재렌더할 경로" 라서 없는
+        #   것은 사고가 아니다(적용 단계 채널의 loud 부재 규칙과 의도적으로 다른 지점).
+        if not _is_inplace_edit_candidate(dest_root, rel):
             continue
-        if not _notation_rerender_changes_file(dest_root / rel, context, render_mod):
+        try:
+            changes = _notation_rerender_changes_file(
+                dest_root, rel, context, render_mod, root_identity=root_identity)
+        except UnsafeDestPathError:
+            # `_is_safe_dest_path` 판정과 이 미리보기 읽기 사이에 경로가 교체됐다 — 계획 단계라
+            #   전체 fail-loud 로 보낸다(복사 시작 전 중단·부분 적용 0).
+            unsafe.append(rel_posix)
+            continue
+        if not changes:
             continue  # 산출 무변경 — 계획·백업·처리 어디에도 넣지 않는다(멱등 재실행 소음 0).
         if backup_root is not None and not (
                 git_safe is not None and rel_posix in git_safe):
@@ -3953,7 +5174,9 @@ def _shared_notation_rerender_plan(
     return out, backup_blocked
 
 
-def _notation_rerender_changes_file(path: Path, context: tuple, render_mod) -> bool:
+def _notation_rerender_changes_file(
+        dest_root: Path, rel: Path, context: tuple, render_mod,
+        root_identity: tuple | None = None) -> bool:
     """이 파일이 재렌더로 **실제로 바뀌는가** (표기 산출 미리보기 + 미해소 토큰 잔존).
 
     렌더러는 순수 함수라 계획 단계에서 산출을 미리 만들어 볼 수 있다. 무변경 파일을 계획·백업·
@@ -3965,45 +5188,233 @@ def _notation_rerender_changes_file(path: Path, context: tuple, render_mod) -> b
     멱등이 깨진다(실측: 재실행마다 3건 재계획·백업 누적). 그 문서들의 operational 치환은
     최초 import 가 이미 끝냈고 sed 제외 규칙이 리터럴 유지를 의도한다.
 
-    렌더 모듈 로드 실패는 True — 판정 불가 시 보수적으로 대상에 넣는다(백업 우선)."""
+    렌더 모듈 로드 실패는 True — 판정 불가 시 보수적으로 대상에 넣는다(백업 우선).
+
+    읽기는 symlink 미추종 fd 경로다 — `_is_safe_dest_path` 판정 직후라도 이 미리보기 읽기 전에
+    경로가 교체될 수 있어서, 그때는 `UnsafeDestPathError` 를 그대로 올려 호출부가 **복사 전
+    fail-loud** 로 처리하게 한다(저장소 밖 파일을 읽지도 않는다). 그래서 이 읽기는 렌더 모듈
+    로드 여부보다 **먼저** 한다 — 로드 실패를 이유로 안전 판정을 건너뛰면 계획된 대상 중 일부가
+    nofollow 열기를 통과하지 않은 채 백업·렌더 범위로 들어간다."""
+    try:
+        # 실제 렌더와 **같은 읽기**(줄끝 미번역)여야 계획과 적용이 어긋나지 않는다.
+        text = read_dest_text_keeping_newlines(dest_root, rel, root_identity=root_identity)
+    except (UnicodeDecodeError, OSError):
+        return False  # 텍스트가 아니면 렌더 대상이 아니다(byte-copy 그대로).
     if render_mod is None:
         return True
     try:
-        # 실제 렌더와 **같은 읽기**(줄끝 미번역)여야 계획과 적용이 어긋나지 않는다.
-        text = read_text_keeping_newlines(path)
-    except (UnicodeDecodeError, OSError):
-        return False  # 텍스트가 아니면 렌더 대상이 아니다(byte-copy 그대로).
-    try:
         return render_mod.render_skill_entry_notation(
-            text, context, source=str(path)) != text
+            text, context, source=str(dest_root / rel)) != text
     except Exception as exc:  # noqa: BLE001 — 판정 실패는 보수적으로 대상 포함(백업 우선).
         if _is_engine_rev_skew(exc):
             raise  # 엔진 사본 skew 는 삼키지 않는다(로드 경계 진단 보존).
         return True
 
 
+def _copy_dest_file_nofollow(
+        dest_root: Path, src_rel: Path, target_base_rel: Path,
+        root_identity: tuple | None = None) -> Path:
+    """dest 안 파일을 dest 안 다른 경로로 **fd↔fd 스트리밍** 복사하고 실제 경로 반환.
+
+    옛 `shutil.copy2(src, target, follow_symlinks=False)` 는 두 창을 열어 뒀다:
+      - 원본 경로가 검증 뒤 symlink 로 바뀌면 **링크 자체**를 백업해 백업이 원본 내용을 안
+        담는다(그 상태로 재렌더가 진행되면 복원 불가).
+      - target 의 조상이 symlink 로 바뀌면 `mkdir(parents=True, exist_ok=True)` 가 링크를 따라가
+        **저장소 밖에 사용자 파일 내용을 쓴다**(외부 쓰기·내용 유출).
+    양쪽 다 fd 열기로 닫는다. 원본이 일반 파일이 아니면(교체 의심) 거부한다. target 이 점유돼
+    있으면 `_free_backup_path` 순번으로 비켜 간다(원본 보존 우선). `copy2` 가 보존하던 모드·
+    타임스탬프는 fd 기반(`fchmod`/`utime`)으로 유지하고, 내용은 스트리밍이라 메모리 적재가 없다."""
+    # 원본이 일반 파일이 아니면(symlink 교체 뒤 FIFO·디바이스 포함) `regular_only` 가 연 fd 에서
+    #   거부한다. 연 fd 를 그대로 백업 함수에 넘긴다 — 열기와 읽기가 같은 inode 다.
+    src_fd = _open_dest_relative_nofollow(
+        dest_root, src_rel, os.O_RDONLY, root_identity=root_identity, regular_only=True)
+    try:
+        return _backup_open_fd_nofollow(
+            dest_root, src_fd, target_base_rel, root_identity=root_identity,
+            label=Path(src_rel).as_posix())
+    finally:
+        os.close(src_fd)
+
+
+def _backup_open_fd_nofollow(
+        dest_root: Path, src_fd: int, target_base_rel: Path,
+        root_identity: tuple | None = None, label: str = "") -> Path:
+    """**이미 연 dest fd** 의 내용을 dest 안 백업 자리로 스트리밍 복사하고 실제 경로 반환.
+
+    호출부가 fd 를 쥔 채 넘기므로 백업 대상은 그 fd 의 inode 로 고정된다 — 백업과 그 뒤의 덮어쓰기가
+    **같은 파일**임이 구조적으로 보장된다(경로 재열기 창 없음). target 이 점유돼 있으면
+    `_free_backup_path` 순번으로 비켜 가고, 모드·타임스탬프는 fd 기반으로 유지한다."""
+    src_stat = os.fstat(src_fd)
+    for _attempt in range(100):
+        target = _free_backup_path(Path(dest_root) / target_base_rel)
+        try:
+            target_rel = target.relative_to(dest_root)
+        except ValueError as exc:
+            raise UnsafeDestPathError(f"백업 위치가 dest 밖입니다: {target}") from exc
+        try:
+            dst_fd = _open_dest_relative_nofollow(
+                dest_root, target_rel, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IMODE(src_stat.st_mode), create_parents=True,
+                root_identity=root_identity)
+        except FileExistsError:
+            continue  # 순번을 고른 사이 선점됨 — 다음 순번(원본 보존 우선).
+        with _fdopen_binary(dst_fd, "wb") as dst:
+            _stream_fd_into(src_fd, dst)  # 순번 재시도 시 처음부터 다시 흘린다.
+            dst.flush()
+            if hasattr(os, "fchmod"):
+                os.fchmod(dst.fileno(), stat.S_IMODE(src_stat.st_mode))
+            if os.utime in getattr(os, "supports_fd", frozenset()):
+                os.utime(dst.fileno(),
+                         ns=(src_stat.st_atime_ns, src_stat.st_mtime_ns))
+        return target
+    raise OSError(f"백업 경로 순번 100회 충돌: {label or target_base_rel}")
+
+
+def _backup_symlink_nofollow(
+        dest_root: Path, src_rel: Path, target_base_rel: Path,
+        root_identity: tuple | None = None) -> Path:
+    """dest 안 **symlink 자체**를 dest 안 백업 자리에 재생성한다(경로 재해소 0).
+
+    링크는 내용이 아니라 *대상 문자열*이 자산이라 fd 스트리밍 복사로 표현할 수 없다. 그렇다고
+    `copy2(follow_symlinks=False)` 로 두면 원본·백업 경로를 다시 해소하므로, 그 사이 부모가 저장소
+    밖 지향 링크로 바뀌면 밖의 링크를 읽거나 밖에 링크를 만든다. 그래서 양쪽 **부모 디렉토리 fd**
+    를 symlink 미추종으로 열고 그 안에서 `readlink`/`symlink` 만 한다 — 우리가 쓰는 디렉토리는 연
+    fd 에 묶여 이후 경로 교체와 무관하다. 점유 자리는 `_free_backup_path` 순번으로 비켜 간다.
+
+    dir_fd 미지원 플랫폼은 다른 채널과 같은 폴백을 쓴다(직전 재검사 + 경로 조작·창을 좁힐 뿐)."""
+    src_rel = Path(src_rel)
+    if not _DEST_FD_WALK_SUPPORTED:
+        # 검사 대상은 **조상**뿐이다 — 이 채널의 원본은 정의상 symlink 라(그 링크를 보존하러 왔다)
+        #   leaf 까지 거부하면 정상 형상이 통째로 막힌다. 조상 링크만 밖을 향하게 만들 수 있다.
+        if not _is_safe_dest_path(dest_root, src_rel.parent):
+            raise UnsafeDestPathError(
+                f"백업 원본 조상 경로가 안전하지 않습니다: {src_rel.as_posix()}")
+        assert_dest_root_unchanged(dest_root, root_identity)
+        target = _free_backup_path(Path(dest_root) / target_base_rel)
+        _ensure_dest_dir_nofollow(
+            dest_root, target.relative_to(dest_root).parent, root_identity=root_identity)
+        shutil.copy2(Path(dest_root) / src_rel, target, follow_symlinks=False)
+        return target
+    src_dir_fd = _open_dest_dir_nofollow(
+        dest_root, src_rel.parent, root_identity=root_identity)
+    try:
+        try:
+            link_target = os.readlink(src_rel.name, dir_fd=src_dir_fd)
+        except OSError as exc:
+            _raise_dest_path_refusal(src_rel, exc)
+        for _attempt in range(100):
+            target = _free_backup_path(Path(dest_root) / target_base_rel)
+            try:
+                target_rel = target.relative_to(dest_root)
+            except ValueError as exc:
+                raise UnsafeDestPathError(f"백업 위치가 dest 밖입니다: {target}") from exc
+            _ensure_dest_dir_nofollow(
+                dest_root, target_rel.parent, root_identity=root_identity)
+            dst_dir_fd = _open_dest_dir_nofollow(
+                dest_root, target_rel.parent, root_identity=root_identity)
+            try:
+                os.symlink(link_target, target_rel.name, dir_fd=dst_dir_fd)
+            except FileExistsError:
+                continue  # 순번을 고른 사이 선점됨 — 다음 순번(원본 보존 우선).
+            except OSError as exc:
+                _raise_dest_path_refusal(target_rel, exc)
+            finally:
+                os.close(dst_dir_fd)
+            return target
+        raise OSError(f"백업 경로 순번 100회 충돌: {src_rel.as_posix()}")
+    finally:
+        os.close(src_dir_fd)
+
+
+def _unlink_dest_relative_nofollow(
+        dest_root: Path, rel: Path, root_identity: tuple | None = None) -> None:
+    """dest 안 파일/링크를 **부모 디렉토리 fd 안에서** 지운다(경로 재해소 0).
+
+    경로 `os.unlink` 은 삭제 직전 조상이 교체되면 저장소 밖 파일을 지운다 — 링크를 걷어내고 그
+    자리에 일반 파일을 놓는 복사 경로가 그 창을 갖고 있었다."""
+    rel = Path(rel)
+    if not _DEST_FD_WALK_SUPPORTED:
+        # 조상만 검사한다 — 삭제 대상 자신이 symlink 인 것이 이 채널의 정상 형상이고(`os.unlink` 은
+        #   링크를 따라가지 않는다), 밖을 가리키게 만드는 건 조상 링크뿐이다.
+        if not _is_safe_dest_path(dest_root, rel.parent):
+            raise UnsafeDestPathError(
+                f"삭제 대상 조상 경로가 안전하지 않습니다: {rel.as_posix()}")
+        assert_dest_root_unchanged(dest_root, root_identity)
+        os.unlink(Path(dest_root) / rel)
+        return
+    dir_fd = _open_dest_dir_nofollow(dest_root, rel.parent, root_identity=root_identity)
+    try:
+        try:
+            os.unlink(rel.name, dir_fd=dir_fd)
+        except OSError as exc:
+            _raise_dest_path_refusal(rel, exc)
+    finally:
+        os.close(dir_fd)
+
+
+def _backup_to_central_dir_nofollow(
+        dest_root: Path, rel: Path, backup_root: Path,
+        root_identity: tuple | None = None) -> Path:
+    """`dest_root/rel` 을 `backup_root/<rel>` 로 symlink 미추종 복사(제자리 편집 백업 채널)."""
+    try:
+        target_base_rel = (Path(backup_root) / rel).relative_to(dest_root)
+    except ValueError as exc:
+        raise UnsafeDestPathError(
+            f"백업 위치가 dest 밖입니다: {Path(backup_root) / rel}") from exc
+    return _copy_dest_file_nofollow(
+        dest_root, rel, target_base_rel, root_identity=root_identity)
+
+
+class InplaceBackupOutcome(NamedTuple):
+    """제자리 편집 백업 결과 — 성공분과 **고치면 안 되는 분**을 사유별로 가른다."""
+
+    backed_up: list[str]
+    refused: list[str]   # 계획 뒤 경로를 안전하게 열 수 없음(교체 의심).
+    vanished: list[str]  # 선검사 뒤 대상이 사라짐(삭제 경쟁).
+
+
 def _backup_before_inplace_edit(
         dest_root: Path, relpaths: list[Path], backup_root: Path | None,
-        git_safe: set | None) -> list[str]:
-    """복사 대상이 아닌 기존 파일을 **변경 직전에** 중앙 백업한다. 백업한 relpath 목록 반환.
+        git_safe: set | None,
+        root_identity: tuple | None = None) -> InplaceBackupOutcome:
+    """복사 대상이 아닌 기존 파일을 **변경 직전에** 중앙 백업한다.
 
     `CopyAction` 백업 규칙과 동형: git 추적&미변경(git_safe)은 git 이 복원 가능하므로 생략하고,
     그 밖은 `backup_root/<relpath>`(경로 점유 시 `_free_backup_path` 순번). backup_root=None 이면
-    백업 위치가 없어 무동작. symlink 는 `_shared_notation_rerender_plan` 이 이미 거부했다."""
+    백업 위치가 없어 무동작. 계획 시점의 symlink 는 `_shared_notation_rerender_plan` 이 이미
+    거부했고, **계획 뒤 교체·삭제**는 여기서 각각의 목록으로 돌려준다 — 호출부가 재렌더 대상에서
+    빼고 loud 하게 알린다(백업 못 하는 파일은 고치지 않는다).
+
+    삭제 경쟁(`FileNotFoundError`)을 예외로 흘리지 않는 이유: 이 시점엔 복사·manifest 변경이 이미
+    끝나 있어 예외가 곧 **부분 적용 잔존**이다. 렌더 쓰기의 같은 경쟁 처리와 동형으로 흡수한다."""
     if backup_root is None:
-        return []
+        return InplaceBackupOutcome([], [], [])
     done: list[str] = []
+    refused: list[str] = []
+    vanished: list[str] = []
     for rel in relpaths:
-        src = dest_root / rel
-        if not src.is_file():
+        # 이 목록은 계획이 **실재를 확인한** 대상이라, 부재·형상 변화는 계획 뒤 사고다 — 조용한
+        #   skip 대신 사유별 목록에 실어 호출부가 재렌더에서 빼고 loud 로 알리게 한다.
+        anomaly = _copied_scope_anomaly(dest_root, rel)
+        if anomaly == "vanished":
+            vanished.append(rel.as_posix())
+            continue
+        if anomaly == "swapped":
+            refused.append(rel.as_posix())
             continue
         if git_safe is not None and rel.as_posix() in git_safe:
             continue  # git 이 복원 가능 — 백업 생략(plan_copy git-safe skip 과 동형).
-        target = _free_backup_path(backup_root / rel)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, target, follow_symlinks=False)
+        try:
+            _backup_to_central_dir_nofollow(
+                dest_root, rel, backup_root, root_identity=root_identity)
+        except UnsafeDestPathError:
+            refused.append(rel.as_posix())
+            continue
+        except FileNotFoundError:
+            vanished.append(rel.as_posix())
+            continue
         done.append(rel.as_posix())
-    return done
+    return InplaceBackupOutcome(done, refused, vanished)
 
 
 def _guest_line_key(line: str) -> tuple:
@@ -4178,10 +5589,13 @@ def add_harness(
     template_root = resolve_template_roots(src_root, harness)[0]
 
     # 표기 독자 = dest 실설치 하네스 ∪ 이번에 추가하는 하네스(공용 판정 helper).
+    # 기존 설치분은 따로 붙들어 둔다 — 설치 기록에 올릴 자격 판정(`established_harnesses`)이
+    #   "이번에 선 어댑터" 와 "원래 있던 것" 을 갈라야 하기 때문(원래 것은 이번 실행이 철회 안 함).
+    preexisting_harnesses = installed_harnesses(dest_root, src_root)
     selected_harnesses = tuple(
         candidate
         for candidate in REGISTERED_HARNESSES
-        if candidate in {*installed_harnesses(dest_root, src_root), harness}
+        if candidate in {*preexisting_harnesses, harness}
     )
     # 미등록 표기 하네스는 **복사 시작 전** 거부한다 — 렌더 단계에서 터지면 부분 설치가 남는다
     #   (main import 게이트와 같은 성질·같은 문구). ValueError 라 add_harness_cli 가 친화
@@ -4264,8 +5678,12 @@ def add_harness(
             src_root, selected_harnesses, entry_notation_templates),
         installed_notation_context,
     )
+    # dest 루트 신원을 **계획 전에** 고정해 적용까지 넘긴다 — 계획 뒤 루트 자체가 저장소 밖
+    #   symlink·다른 디렉토리로 교체되면 컴포넌트 순회가 엉뚱한 트리에서 안전하게 일어난다.
+    #   획득 실패는 여기서 fail-loud(`add_harness_cli` 가 rc1 번역·복사 시작 전).
+    root_identity = dest_root_identity(dest_root)
     shared_rerender_relpaths, shared_backup_blocked = _shared_notation_rerender_plan(
-        dest_root, rerender_contexts, backup_root, git_safe)
+        dest_root, rerender_contexts, backup_root, git_safe, root_identity=root_identity)
 
     # 전체 어댑터 트리 plan → (네임스페이스 ∪ flavor `@render` − host 실소유)로 구조적 제한(Decision 2·5·
     # ). 그 밖(엔진·wiki·타 harness·설정·파사드·flavor 미선언)은 필터로 제거돼 plan 에 0개다(불변식).
@@ -4328,9 +5746,15 @@ def add_harness(
 
     # ── 적용 ── 스코프(네임스페이스 ∪ flavor `@render` − host 실소유) 안 파일만 복사·토큰 처리
     #   (스코프 밖은 plan 에 없어 불가침).
-    for a in plan:
-        a.run()
-    copied_relpaths = {a.dst.relative_to(dest_root) for a in plan}
+    # 복사 **직전** 루트 재확인 — 뒤에 두면 첫 mkdir/쓰기가 이미 교체된 트리에 들어간다.
+    #   fd 가드는 *열 파일이 있을 때만* 발화하므로 단계 경계 검사가 false-green(대응 경로 없는
+    #   교체 트리에서 아무 일도 안 하고 rc0)까지 막는다.
+    assert_dest_root_unchanged(dest_root, root_identity)
+    # 파일 단위 위반(경로 교체·계획 뒤 상태 변화)은 그 파일만 빼고 loud 로 알린다 — 적용 단계
+    #   rc 정책과 같은 규칙이고, 후속 채널 범위는 **성공분만** 이다(제외분 미접촉).
+    copy_outcome = apply_copy_plan(plan, dest_root, root_identity=root_identity)
+    report_copy_apply_anomalies(copy_outcome)
+    copied_relpaths = set(copy_outcome.copied)
     # guest 어댑터 `@render` 를 dest engine.manifest 에 멱등 등재 —
     # 인스턴스 manifest 가 "이 인스턴스에서 framework-managed 인 것"의 단일 진실이 되어, 아래
     # render_managed_files 와 manifest-파생 overlay 스캔이 guest 를 자연 커버한다.
@@ -4348,15 +5772,33 @@ def add_harness(
     #   template(신뢰)에서 오고 안전 검증(`_is_safe_dest_path`)을 거치며, 타 guest·adopter 자체
     #   생성 파일(내용 상이·copied)은 제외된다(과확장 봉쇄). 기존 렌더 파이프 재사용.
     proc_relpaths = copied_relpaths | _byte_identical_skipped(
-        template_root, dest_root, copied_relpaths, adapter_dirs)
+        template_root, dest_root, copied_relpaths, adapter_dirs,
+        root_identity=root_identity)
     # 같은 물리 문서를 둘 이상의 설치 하네스가 읽으면 기존 파일도 병기 렌더 대상이다(계획은
     #   복사 전 `_shared_notation_rerender_plan` 이 안전 검증까지 마쳤다). 이 파일들은 복사
     #   액션이 아니라 **제자리 변경**이므로 백업이 CopyAction 을 안 탄다 — 변경 직전에 같은
     #   중앙 백업 규칙으로 직접 백업한다(비파괴: 적용 전 계획 제시 + 백업 후 변경).
-    shared_backed_up = _backup_before_inplace_edit(
-        dest_root, shared_rerender_relpaths, backup_root, git_safe)
+    backup_outcome = _backup_before_inplace_edit(
+        dest_root, shared_rerender_relpaths, backup_root, git_safe,
+        root_identity=root_identity)
+    shared_backed_up = backup_outcome.backed_up
     if shared_backed_up:
         print(f"  ✓ 공유 문서 {len(shared_backed_up)}건 백업: {', '.join(shared_backed_up)}")
+    # 백업 못 한 파일은 고치지 않는다(비파괴) — 교체·삭제 둘 다 재렌더 대상에서 뺀다.
+    if backup_outcome.refused:
+        print(f"  ⚠️ 공유 문서 {len(backup_outcome.refused)}건: 계획 검증 뒤 경로를 안전하게 열 수 "
+              f"없어(symlink 교체·비-디렉토리 컴포넌트) 백업할 수 없습니다 — 재렌더에서 "
+              f"제외합니다(원본·저장소 밖 파일 불변): {', '.join(backup_outcome.refused)}",
+              file=sys.stderr)
+    if backup_outcome.vanished:
+        print(f"  ⚠️ 공유 문서 {len(backup_outcome.vanished)}건: 계획 검증 뒤 대상이 사라져(경쟁 "
+              f"삭제) 백업할 수 없습니다 — 재렌더에서 제외합니다(새로 만들지 않습니다): "
+              f"{', '.join(backup_outcome.vanished)}", file=sys.stderr)
+    _backup_dropped = set(backup_outcome.refused) | set(backup_outcome.vanished)
+    if _backup_dropped:
+        shared_rerender_relpaths = [
+            rel for rel in shared_rerender_relpaths
+            if rel.as_posix() not in _backup_dropped]
     # ⚠ 기존 문서는 **표기 렌더 채널에만** 싣는다 — placeholder 치환·자유서술 fill 범위
     #   (`proc_relpaths`)에 넣으면 채택자가 쓴 `{{PROJECT_NAME}}` 리터럴이 이름으로 바뀌고
     #   자유서술 토큰에 TODO 마커가 붙는다(콘텐츠 훼손·실측). 이번 run 이 *복사한* 파일만
@@ -4365,22 +5807,26 @@ def add_harness(
     # 라이브 인스턴스의 project_name 은 기존 local.conf 를 존중(없으면 디렉토리명 폴백).
     project_name = _instance_project_name(dest_root)
     subs = _substitution_map(project_name, dest_root, today)
-    n_subst = substitute_placeholders(dest_root, subs, proc_relpaths)
+    n_subst = substitute_placeholders(dest_root, subs, proc_relpaths,
+                                      root_identity=root_identity)
     # opencode 모델 토큰 결정적 해소(claude-only 는 inactive) — main 흐름과 동일.
-    resolve_opencode_model(dest_root, proc_relpaths, model_arg=None)
+    resolve_opencode_model(dest_root, proc_relpaths, model_arg=None,
+                           root_identity=root_identity)
     # render_managed_files 는 dest 인스턴스 engine.manifest 의 @render path 만 렌더한다 — 위에서 guest
     # `@render` 를 dest manifest 에 등재했으므로 guest 어댑터도 렌더된다.
     render_managed_files(
         dest_root,
         subs,
         render_relpaths,
+        root_identity=root_identity,
         entry_notation_templates=entry_notation_templates,
         # manifest 미소유 wiki seed 는 소유자 매칭으로 context 가 안 나온다 — 설치 하네스 전체를
         #   폴백 컨텍스트로 넘겨야 위 재렌더 대상이 실제로 병기 표기를 받는다(최초 설치와 같은 채널).
         installed_notation_context=installed_notation_context,
     )
     # 자유서술 placeholder 는 TODO 표시(비-LLM·main manual 흐름과 동일).
-    _run_manual_fill(dest_root, proc_relpaths)
+    assert_dest_root_unchanged(dest_root, root_identity)  # 단계 경계 재확인(위와 같은 이유).
+    _run_manual_fill(dest_root, proc_relpaths, root_identity=root_identity)
     # main import(:3289)와 **대칭** — 이번 add 가 실제로 중앙 백업을 만들었으면
     #   (backup_root 생성) .gitignore 가 `.pm_import_backups/` 를 무시하게 보장한다(채택자
     #   git status 오염 방지). 같은 헬퍼 재사용(신규 로직 0)·발화 조건은 git repo(git_safe
@@ -4393,7 +5839,20 @@ def add_harness(
         elif gi_status == "unsafe-skip":
             print(f"  ⚠️ .gitignore 가 미추적/변경 상태 — 비파괴 위해 자동 추가 생략. "
                   f"수동으로 `{BACKUP_DIR_NAME}/` 한 줄을 추가하세요.")
-    print(f"✓ add-harness 완료: {harness} 어댑터 {len(plan)} 파일 복사 · "
+    # 설치 기록 — 이번에 추가한 하네스 ∪ 이미 설치돼 있던 하네스(`selected_harnesses`) 중 **실제로
+    #   어댑터가 선 것만** 박제한다(적용 단계에서 전부 제외됐으면 기록이 유령을 만든다). 이후 판정은
+    #   이 기록을 진실로 쓰므로 판별자 파일이 사라져도 독자 집합이 유실되지 않고, 기록이 없던 구
+    #   인스턴스는 여기서 backfill 된다(그 시점 추론 산출이 합집합에 이미 들어 있다).
+    recordable, unestablished = established_harnesses(
+        dest_root, selected_harnesses, preexisting_harnesses)
+    if unestablished:
+        print(f"  ⚠️ {', '.join(unestablished)} 어댑터가 이번 실행에서 서지 않아(복사 제외) 설치 "
+              f"기록에 올리지 않습니다 — 위 제외 사유를 해소한 뒤 다시 실행하세요.", file=sys.stderr)
+    if record_install_receipt(dest_root, recordable, root_identity=root_identity):
+        print(f"  ✓ 설치 기록 갱신 ({INSTALL_RECEIPT_RELPATH.as_posix()}): "
+              f"{', '.join(recordable)}")
+    # 실복사 수를 보고한다(계획 수 아님) — 제외가 있었으면 위 요약이 사유를 이미 말한다.
+    print(f"✓ add-harness 완료: {harness} 어댑터 {len(copied_relpaths)} 파일 복사 · "
           f"{n_subst} 파일 토큰 치환 (스코프: {adapter_scope} + {root_doc})")
     # claude 는 프로젝트 trust 수락 전 settings.json permissions.allow 를 조용히 무시한다.
     if harness == "claude":
@@ -4421,10 +5880,16 @@ def add_harness_cli(
       - FileVsDirConflict     : 어댑터 dst 위치에 기존 디렉토리(plan_copy·비파괴 거부).
       - AncestorConflict      : dst 조상에 symlink/비-디렉토리 파일(plan_copy·비파괴 거부).
       - UnsafeDestPathError   : engine.manifest·공유 문서 경로가 repo 밖 지향(복사 전 거부).
-    이 다섯 예외는 add_harness 가 *복사 전*(plan_copy·resolve_template_roots·입구 검증·경로 안전
-    가드)에 던지므로 부분 적용 없이 깨끗한 `오류: …`(stderr) + rc 1 로 끝난다(traceback 0·main
-    동형). 성공은 add_harness 가 자체 plan/summary 를 출력하고 여기선 rc 0 만 돌려준다(위임
-    verbatim·중복 출력 0).
+      - DestRootSwappedError  : dest 루트 자체가 계획 뒤 교체됨(**적용 중에도** 즉시 전체 중단).
+    앞 넷(ValueError·FileNotFoundError·FileVsDirConflict·AncestorConflict)과
+    `EmptyTemplateShippingInventoryError` 는 add_harness 가 *복사 전*(plan_copy·
+    resolve_template_roots·입구 검증)에 던지므로 부분 적용 없이 깨끗한 `오류: …`(stderr) + rc 1 로
+    끝난다(traceback 0·main 동형). **`UnsafeDestPathError` 는 복사 전(계획 경로 안전 가드)뿐 아니라
+    복사 *중*(`CopyAction.run` 의 fd 가드 — 계획 뒤 조상·목적지 교체)에도 나올 수 있다**: 그때는
+    그 시점까지의 복사가 남지만 저장소 밖 쓰기는 0이고, 사람이 정리한 뒤 재실행하면 된다.
+    `DestRootSwappedError` 도 적용 중에 나올 수 있으며 그 중단은 부분 적용이 아니라 **오염
+    차단**이다(대상 트리가 이미 바꿔치기됐다). 성공은 add_harness 가 자체 plan/summary 를 출력하고
+    여기선 rc 0 만 돌려준다(위임 verbatim·중복 출력 0).
 
     dry_run/source_root 는 add_harness 로 그대로 전달한다(투명 위임). 반환: 0(성공)·1(인터페이스 예외).
     """
@@ -4436,6 +5901,7 @@ def add_harness_cli(
         FileVsDirConflict,
         AncestorConflict,
         UnsafeDestPathError,
+        DestRootSwappedError,
         EmptyTemplateShippingInventoryError,
     ) as exc:
         print(f"오류: {exc}", file=sys.stderr)
@@ -4727,6 +6193,30 @@ def ensure_backup_dir_gitignored(
 
 # ── main ───────────────────────────────────────────────────────────────────
 
+def _translate_dest_safety_errors(func: Callable) -> Callable:
+    """경로 안전 예외를 CLI 경계에서 rc 1 + 친화 메시지로 번역하는 데코레이터(traceback 0).
+
+    두 클래스를 모두 잡는다:
+      - `DestRootSwappedError` — dest 루트 자체 교체. 파일 단위 교체는 각 단계가 흡수하지만
+        (그 파일만 제외 + loud) **루트 교체는 어느 단계도 흡수하면 안 된다**(흡수하면 남은
+        단계가 교체된 트리에 계속 쓴다). 실행 전체를 감싸 한 번만 잡고 즉시 끝낸다.
+      - `UnsafeDestPathError` — 계획 단계는 각 호출부가 이미 rc1 로 번역하지만, **복사 단계**의
+        fd 가드(`CopyAction.run`)도 이 예외를 던질 수 있다. 백스톱이 없으면 그 경로만 traceback
+        으로 끝나 `add_harness_cli` 와 비대칭이 된다.
+
+    래핑 함수를 쪼개지 않고 데코레이터로 두는 이유: `main` 본문을 별도 함수로 옮기면 엔진 관용구
+    가드(진입 `main()` 의 console helper 선행·하네스 이름 분기 면제)가 이름 기준이라 함께 깨진다."""
+    @functools.wraps(func)
+    def wrapper(argv: list[str] | None = None) -> int:
+        try:
+            return func(argv)
+        except (DestRootSwappedError, UnsafeDestPathError) as exc:
+            print(f"오류: {exc}", file=sys.stderr)
+            return 1
+    return wrapper
+
+
+@_translate_dest_safety_errors
 def main(argv: list[str] | None = None) -> int:
     _console_encoding = _load_module_from_path(
         Path(__file__).resolve().with_name("console_encoding.py"),
@@ -4899,6 +6389,17 @@ def main(argv: list[str] | None = None) -> int:
     #   relpath 집합(또는 None=비-git·판정불가). git 호출 실패는 None→전부 백업(보수적 폴백).
     backup_root = None if is_new else dest_root / BACKUP_DIR_NAME / today
     git_safe = None if is_new else git_safe_relpaths(dest_root)
+    # dest 루트 신원을 **계획(plan_copy) 앞에서** 고정한다 — 계획 자체가 dest 를 읽으므로, 고정이
+    #   계획 뒤면 "계획은 원래 트리에서 세우고 적용은 교체된 트리에서" 라는 어긋남이 남는다.
+    #   `--new` 는 아직 트리가 없어 생성 직후에 잡는다. 획득 실패는 fail-loud(복사 전 rc1) —
+    #   None 폴백은 루트 검사를 통째로 끄는 우회가 된다.
+    root_identity = None
+    if not is_new:
+        try:
+            root_identity = dest_root_identity(dest_root)
+        except UnsafeDestPathError as exc:
+            print(f"오류: {exc}", file=sys.stderr)
+            return 1
     try:
         actions = plan_copy(
             template_roots, dest_root, backup_root, args.weight,
@@ -4930,9 +6431,12 @@ def main(argv: list[str] | None = None) -> int:
         #   얹으면 공유 wiki 는 두 하네스가 함께 읽는다 — 이번 run 의 집합만 쓰면 새로 깔린
         #   문서가 claude 단독 표기로 나가 기존 codex 독자에게 틀린 표기가 된다(실측).
         #   `--new` 는 빈 dest 라 실설치 집합이 비어 선택과 같다(현행 회귀 불변).
+        #   기존 설치분은 따로 붙들어 둔다 — 설치 기록 자격 판정이 "이번에 선 어댑터" 와 "원래
+        #   있던 것" 을 갈라야 한다(원래 것은 이번 실행이 임의로 철회하지 않는다).
+        preexisting_harnesses = installed_harnesses(dest_root, source_root)
         notation_harnesses = tuple(
             name for name in HARNESS_TEMPLATE_DIRS
-            if name in {*installed_harnesses(dest_root, source_root), *args.harness}
+            if name in {*preexisting_harnesses, *args.harness}
         )
         # context 파생 manifest 도 그 독자 집합에서 뽑는다(선택 트리만 보면 기존 하네스가 빠져
         #   공유 문서가 단독 표기로 재렌더된다). 소스에서 한 하네스의 manifest 라도 못 얻으면
@@ -5024,6 +6528,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 backup_root,
                 git_safe,
+                root_identity=root_identity,
             )
         )
     except UnsafeDestPathError as exc:
@@ -5143,9 +6648,19 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return git_rc
+        # 트리를 이제 만들었으므로 여기서 신원을 고정한다(이후 렌더까지 재사용). 여기도 fail-loud
+        #   — 아직 파일을 하나도 복사하지 않은 지점이라 중단이 곧 "부분 적용 0" 이다.
+        try:
+            root_identity = dest_root_identity(dest_root)
+        except UnsafeDestPathError as exc:
+            print(f"오류: {exc}", file=sys.stderr)
+            return 1
 
-    for a in actions:
-        a.run()
+    # 복사 **직전** 루트 재확인(위 add-harness 와 동형) — 뒤에 두면 첫 쓰기가 교체 트리에 간다.
+    assert_dest_root_unchanged(dest_root, root_identity)
+    # 파일 단위 위반은 그 파일만 빼고 loud(적용 단계 rc 정책) — 루트 교체만 전체 중단.
+    copy_outcome = apply_copy_plan(actions, dest_root, root_identity=root_identity)
+    report_copy_apply_anomalies(copy_outcome)
 
     merged_manifest_entries = _install_selected_manifest_union(
         prepared_manifest_union, dest_root)
@@ -5155,11 +6670,13 @@ def main(argv: list[str] | None = None) -> int:
             f"({len(template_roots)}개 flavor · {merged_manifest_entries}개 관리 경로)"
         )
 
-    # MF1: 치환 범위 = 이번 run 이 복사한 파일만(복사 안 한 사용자 파일 불가침).
-    copied_relpaths = {a.dst.relative_to(dest_root) for a in actions}
+    # MF1: 치환 범위 = 이번 run 이 **실제로 복사한** 파일만(복사 안 한 사용자 파일 불가침·
+    #      적용 단계에서 제외된 파일도 범위 밖).
+    copied_relpaths = set(copy_outcome.copied)
     subs = _substitution_map(project_name, dest_root, today)
-    n_subst = substitute_placeholders(dest_root, subs, copied_relpaths)
-    print(f"✓ {n_copy} 파일 복사 · {n_subst} 파일 placeholder 치환")
+    n_subst = substitute_placeholders(dest_root, subs, copied_relpaths,
+                                      root_identity=root_identity)
+    print(f"✓ {len(copied_relpaths)} 파일 복사 · {n_subst} 파일 placeholder 치환")
 
     # ── opencode 모델 결정적 해소: substitute *직후*·render *이전*. @render 활성화
     #    로 .opencode/agents 가 render 대상이 됐으므로, render_managed_files 가 model: 줄의
@@ -5171,7 +6688,8 @@ def main(argv: list[str] | None = None) -> int:
     #    LLM 추측(fill)이 아니라 `opencode models` 결정적 조회로 해소(환각·미가용 모델 제거).
     #    범위 = substitute_placeholders 와 동일한 copied_relpaths(비파괴). claude-only=inactive.
     model_result = resolve_opencode_model(
-        dest_root, copied_relpaths, model_arg=args.opencode_model)
+        dest_root, copied_relpaths, model_arg=args.opencode_model,
+        root_identity=root_identity)
     if model_result.active:
         if model_result.path == "flag":
             print(f"✓ {OPENCODE_MODEL_TOKEN} 치환(--opencode-model "
@@ -5187,16 +6705,34 @@ def main(argv: list[str] | None = None) -> int:
     # 로 제거(FILL 채널이 canonical home 전담). substitute·모델해소 *직후*. 범위 = copied_relpaths(비파괴).
     # 복사 밖 기존 문서(위 계획)는 **변경 직전 백업 후** 같은 render 채널에 실어 병기 표기를
     #   받는다. 치환·fill 범위(copied_relpaths·MF1)는 넓히지 않는다 — 표기 렌더만 태운다.
-    existing_backed_up = _backup_before_inplace_edit(
-        dest_root, existing_rerender_relpaths, backup_root, git_safe)
-    if existing_backed_up:
-        print(f"✓ 기존 문서 {len(existing_backed_up)}건 백업: {', '.join(existing_backed_up)}")
+    existing_backup = _backup_before_inplace_edit(
+        dest_root, existing_rerender_relpaths, backup_root, git_safe,
+        root_identity=root_identity)
+    if existing_backup.backed_up:
+        print(f"✓ 기존 문서 {len(existing_backup.backed_up)}건 백업: "
+              f"{', '.join(existing_backup.backed_up)}")
+    # 백업 못 한 파일은 고치지 않는다(비파괴) — 교체·삭제 둘 다 재렌더 대상에서 뺀다.
+    if existing_backup.refused:
+        print(f"  ⚠️ 기존 문서 {len(existing_backup.refused)}건: 계획 검증 뒤 경로를 안전하게 열 수 "
+              f"없어(symlink 교체·비-디렉토리 컴포넌트) 백업할 수 없습니다 — 재렌더에서 "
+              f"제외합니다(원본·저장소 밖 파일 불변): {', '.join(existing_backup.refused)}",
+              file=sys.stderr)
+    if existing_backup.vanished:
+        print(f"  ⚠️ 기존 문서 {len(existing_backup.vanished)}건: 계획 검증 뒤 대상이 사라져(경쟁 "
+              f"삭제) 백업할 수 없습니다 — 재렌더에서 제외합니다(새로 만들지 않습니다): "
+              f"{', '.join(existing_backup.vanished)}", file=sys.stderr)
+    _existing_dropped = set(existing_backup.refused) | set(existing_backup.vanished)
+    if _existing_dropped:
+        existing_rerender_relpaths = [
+            rel for rel in existing_rerender_relpaths
+            if rel.as_posix() not in _existing_dropped]
     n_render = render_managed_files(
         dest_root,
         subs,
         copied_relpaths | set(existing_rerender_relpaths),
         entry_notation_templates=entry_notation_templates,
         installed_notation_context=notation_context_dirs,
+        root_identity=root_identity,
     )
     if n_render:
         print(f"✓ {n_render} 파일 render (operational 토큰 치환)")
@@ -5220,6 +6756,9 @@ def main(argv: list[str] | None = None) -> int:
     preserved_conf_text = backup_existing_local_conf(dest_root, backup_root) if not is_new else None
 
     # SF2: board.py init 비0 이면 local.conf·pm_state 미생성 = import 미완 → 비0 전파.
+    # board init 은 subprocess 라 우리 fd 를 물려줄 수 없다 — 직전에 루트를 재확인해 창을 좁힌다
+    #   (검사-사용 gap 은 남는다·구조적 폐쇄 아님). 불일치는 전체 중단 클래스다.
+    assert_dest_root_unchanged(dest_root, root_identity)
     rc = run_board_init(dest_root)
     if rc != 0:
         print(f"오류: board.py init 비0 종료({rc}) — import 미완(local.conf·pm_state 확인 필요).",
@@ -5272,30 +6811,53 @@ def main(argv: list[str] | None = None) -> int:
         if record_opencode_model(dest_root, model_result.model):
             print(f"✓ local.conf opencode_pro_model 기록 ({model_result.model})")
 
+    # ── 설치 기록(install receipt): 이번 선택 ∪ dest 에 이미 설치돼 있던 하네스(=
+    #    `notation_harnesses`·복사 전에 산출한 그 독자 집합)를 인스턴스 메타에 박제한다. 이후
+    #    `installed_harnesses`(pm_import 판정·pm_update 표기 독자)는 증거 추론 대신 이 기록을 읽으므로
+    #    판별자 파일이 지워져도 독자가 유실되지 않는다. 기록이 없던 구 인스턴스는 `--into` 재-import
+    #    가 이 지점에서 backfill 한다(추론 산출을 한 번 원천으로 옮긴다). 복사·render 이후에 두는
+    #    이유는 `.project_manager/` 가 그때 확실히 존재하기 때문이다(--new 포함).
+    #    **실제로 어댑터가 선 하네스만** 올린다 — 적용 단계에서 그 하네스 파일이 전부 제외되면
+    #    기록이 유령을 진실로 만든다(기록이 관측을 덮어 스스로 교정되지도 않는다).
+    recordable, unestablished = established_harnesses(
+        dest_root, notation_harnesses, preexisting_harnesses)
+    if unestablished:
+        print(f"  ⚠️ {', '.join(unestablished)} 어댑터가 이번 실행에서 서지 않아(복사 제외) 설치 "
+              f"기록에 올리지 않습니다 — 위 제외 사유를 해소한 뒤 다시 실행하세요.", file=sys.stderr)
+    if record_install_receipt(dest_root, recordable, root_identity=root_identity):
+        print(f"✓ 설치 기록 갱신 ({INSTALL_RECEIPT_RELPATH.as_posix()}): "
+              f"{', '.join(recordable)}")
+
     # ── fill 단계: board init·conf sync 직후 hook. 자유서술 placeholder 처리.
     #    auto + opt-in 게이트 통과 → 하니스 구동 *제안*(파일 미변경, 사람 검토 전제).
     #    그 외(manual 또는 게이트 미통과) → TODO 표시(채택자 손작업 지점 명시).
     #    MF(비파괴): fill 스캔 범위 = substitute_placeholders 와 동일한 copied_relpaths —
     #    이번 import 가 복사한 파일만. --into 에서 복사 안 한 사용자 파일은 절대 스캔/수정 안 함.
     if args.fill == "auto" and live_allowed:
+        # 실 하니스는 subprocess 라 우리 fd 를 못 물려준다 — 직전에 루트를 재확인해 창을 좁힌다.
+        assert_dest_root_unchanged(dest_root, root_identity)
         fill_result = run_fill(dest_root, fill_harness, live=True,
-                               copied_relpaths=copied_relpaths)
+                               copied_relpaths=copied_relpaths,
+                               root_identity=root_identity)
         if not fill_result.values:
             # 하니스 미구동/실패 → manual 폴백(자유서술이 빈 채로 남지 않게 TODO 표시).
             print(f"  fill=auto 제안 없음({fill_result.note}) — manual 폴백.")
-            fill_result = _run_manual_fill(dest_root, copied_relpaths)
+            fill_result = _run_manual_fill(dest_root, copied_relpaths,
+                                           root_identity=root_identity)
     else:
         # --fill auto 라도 게이트 미통과면 실호출 차단 → manual 강제(안전·토큰 0).
-        fill_result = _run_manual_fill(dest_root, copied_relpaths)
+        fill_result = _run_manual_fill(dest_root, copied_relpaths,
+                                       root_identity=root_identity)
     _print_fill_result(fill_result, dry_run=False)
 
     # pm_playbook.local 스텁 생성: fill 과 같은 자리 — 인스턴스 소유
     # 누적 학습 칸. 루트 .local 은 manifest 밖이라 복사로 안 오니 여기서 생성한다. 재-import
     # 에서 기존 .local 은 비파괴 보존(누적 학습 손실 방지·local.conf 백업 철학과 같은 결).
-    playbook_status = ensure_pm_playbook_local_stub(dest_root, backup_root)
+    playbook_status = ensure_pm_playbook_local_stub(
+        dest_root, backup_root, root_identity=root_identity)
     if playbook_status == "created":
         print(f"✓ pm_playbook.local.md 스텁 생성 ({PM_PLAYBOOK_LOCAL_RELPATH})")
-    else:
+    elif playbook_status == "preserved":
         print("  pm_playbook.local.md 기존 파일 비파괴 보존 (인스턴스 소유 — 덮지 않음).")
 
     # dest 가 git repo(git_safe is not None)이고 이번에 중앙 백업 디렉토리가

@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -111,6 +112,19 @@ def _wire_external(external, monkeypatch, engine: Path, target: Path,
         external,
         "extract_diff",
         lambda *args, **kwargs: ("diff --git a/x.py b/x.py\n-old\n+new\n", []),
+    )
+    # 리뷰어 가시 범위 거울 스텁 (T-0563) — 이 파일은 conf provenance 만 본다. 픽스처 앵커는 실
+    # git 저장소가 아니라 거울을 못 만든다. 실 거울 회귀는
+    # test_external_review_reviewer_isolation.py 가 실 저장소로 소유한다.
+    monkeypatch.setattr(
+        external, "create_reviewer_workspace",
+        lambda diff_root, *, base_dir=None, conf=None, source_home=None, denylist=():
+        external.ReviewerWorkspace(
+            root=Path(tempfile.mkdtemp(prefix="stub_reviewer_mirror_")),
+            tree=Path(tempfile.mkdtemp(prefix="stub_reviewer_tree_")),
+            home=Path(tempfile.mkdtemp(prefix="stub_reviewer_home_")),
+            files=1, skipped_unsafe=0, git_repo=True,
+        ),
     )
 
 
