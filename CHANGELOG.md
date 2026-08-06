@@ -7,6 +7,45 @@
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-06
+
+**Compaction-native 컨텍스트 가드 릴리스.** 관통 성질: 컨텍스트 한계 대응을 차단(hard-stop)에서
+"압축은 허용하고 서사를 미리 박제"로 전환한다. 가드 산출은 비차단 checkpoint 안내·log 박제·relay
+회전으로 한정되며, 세 하네스(claude·opencode·codex)가 같은 규약을 공유한다. 전 경로 3하네스 실
+LLM 라이브 검증 완료.
+
+### Added
+- **checkpoint 점진 박제** — `pm_log.py checkpoint` subcommand 신설. ticket 경계의 complete
+  entry 에 task 태그가 붙고, compaction 경계에서 checkpoint entry 골격을 만들어 서사를 압축 전에
+  보존한다. 연속성의 단일 진실은 파일(log·pm_state·board)이다.
+- **relay 회전 가시화** — 세션 회전 시 loud 알림을 출력하고, 첫 spawn 의 bootstrap 응답도
+  출력한다. ctx 예산의 유효 회전 임계가 bootstrap 실측 상한 이하이면 구동 전에 fail-loud 로
+  거부한다(spawn-loop·토큰 무한 소모 차단).
+- **import trust 상태 loud 화** — 신규 import 프로젝트가 trust 미승인이라 출하
+  `permissions.allow` 가 무력한 상태(silent degrade)를 import 시점 안내와 콘솔 경고로 표면화한다.
+
+### Changed
+- **3하네스 ctx 가드 비차단 전환** — claude 훅은 stop 차단(deny/block)·핸드오프 allow-list·
+  PreToolUse 등록을 삭제하고 stop 을 최종 넛지로 전환하며, compaction 후 밴드 marker 를
+  재무장한다(멱등을 세션당 1회에서 사이클당 1회로 재정의). opencode plugin 은 stop 차단을
+  삭제하고 임박 안내에 `session.compacted` 병행 신호를 추가한다(압축 후 checkpoint 안내 적재·
+  plugin 재기동 시 압축 횟수 복원). codex PreCompact 훅은 compaction 차단을 제거하고 통과 +
+  checkpoint 안내로 전환한다(README Context safety 전면 개정·headless 도달성 실측 명기).
+- **relay 회전 판정을 driver usage 판정으로 일원화** — 세 driver 가 매 turn 후 wire usage 로
+  post-turn marker 를 박제한다(claude stream-json usage / opencode step_finish tokens / codex
+  누계 차분). pre-turn 의미론은 폐기. codex 는 thread 누계 usage 를 점유로 오독해 약 2.8배
+  조기 회전하던 것을 turn 간 차분 판정으로 교정했다.
+- **handoff 얇은 마감** — handoff entry 를 박제 entries 자동 목록 + 메타 학습 + pending intent +
+  회귀 1줄로 축소했다(thread-tail 슬롯 폐지 — 서사는 ticket/checkpoint 경계 박제가 담당).
+
+### Fixed
+- **relay 파이프 입력이 조용히 사라지던 문제** — claude/opencode driver 가 child stdin 을
+  격리하지 않아 supervisor 의 파이프 입력을 child 가 통째로 삼키던 것(첫 spawn 후 무출력
+  정상종료)을 stdin 격리로 통일했다. 무출력 rc0 급 이상은 stderr 진단을 남긴다.
+- **공유 log writer 의 동시 기록 lost-update** — log append 계열 writer 전부를 flock 직렬화
+  seam 으로 수렴해 병렬 기록 유실 클래스를 닫았다.
+- 옛 차단형(hard-stop) 표기 잔재 전수 정리 — README 3종 개정·전 타깃 전파·fresh-adopter 검증.
+
 ## [1.5.2] - 2026-08-03
 
 **게이트 신뢰성 릴리스.** 관통 성질 — 게이트가 무엇을 검토했는지 기계가 보장한다: stale 스냅샷
