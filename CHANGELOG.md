@@ -7,6 +7,52 @@
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-08-06
+
+**게이트·렌더 견고화 릴리스.** 관통 성질: 조용한 degrade 의 잔여 클래스를 기계 판정으로 폐쇄한다 —
+표기 렌더의 미소유 파일 skip, 외부리뷰 앵커의 자기잠김/무필터 송신, 락 사본 중복, 현재-진실
+문서의 히스토리 누적이 각각 가드·fail-loud·공용 seam 으로 닫힌다.
+
+### Added
+- **공용 파일락 seam** — `file_lock.py` 신설. board·pm_log·pm_relay 의 배타 파일락 3벌을 단일
+  구현(POSIX flock·Windows msvcrt·무락 폴백)으로 수렴한다. 락 경로 규약·권한은 각 도구가
+  유지하며, 플랫폼 락 분기의 재복제를 AST 가드가 차단한다.
+- **domain lint `history` 축** — 현재-진실 domain 페이지에 세션별 delta/변경 이력이 쌓이면
+  advisory 로 검출한다(시점 스탬프 lead-in·라벨-only 헤딩·bold delta·never-block). 판정 기준은
+  `wiki/domain/README.md` 가 문서화한다.
+- **manifest 실재 일반화 가드** — 각 flavor manifest 의 비-`@source` 경로가 템플릿 트리에
+  실재하는지 회귀로 단언한다(등록됐는데 안 실리는 클래스 기계 차단).
+- **미등재 출하 wiki 원장 가드** — 출하되는 manifest 미소유 wiki relpath 집합을 원장으로 박제,
+  신규 미등재 파일 유입 시 red.
+
+### Changed
+- **표기 렌더 폴백** — manifest 미소유 출하 wiki(인스턴스 seed)는 설치 하네스 전체 집합 표기로
+  폴백 렌더한다(loud·조용한 skip 제거). add-harness/`--into` 도 기존 공유 문서·seed 를 복사 전
+  계획 표시·중앙 백업·경로 안전 검증·개행 보존으로 재렌더하며(멱등), placeholder 치환·manual
+  fill 은 이번 실행이 복사한 파일로 한정한다. 표기 독자 = dest 실설치 하네스 ∪ 이번 선택
+  (`installed_harnesses` 단일 판정·`pm_update` 동일 소비).
+- **외부리뷰 앵커 보안** — conf 소유자 강등 시 소유 PM 홈의 유효 범위·denylist 를 승계하고,
+  승계 불가면 전송 전 차단한다(`--paths` 탈출구 유지). 소유자 conf 읽기 실패는 `--paths` 로도
+  차단(fail-closed). 명시 앵커 실행은 선택-전 config 를 읽지 않는다(자기잠김 제거). diff 폭
+  서술은 단일 표로 수렴하고 슬롯 소유 근거는 명시 base 로 한정한다.
+- **리뷰 raw 장부 앵커** — external_review 의 raw 기록이 diff 슬롯이 아니라 해소된 소유 PM 홈
+  장부에 박제된다(`pm_delegate raw` 통합 조회 정합·슬롯 축적/오염 원천 제거).
+- **gate_snapshot 정밀화** — 심링크 prefix-only 해소(false-red 제거), 출력 경로 거부를 git 공용
+  디렉터리·타 등록 worktree 로 확장(prunable 등록 제외·`worktree prune` 처방), 성공 출력 검증
+  파일 전량 열거, `worktree list -z` 파싱.
+- **terminology 가드 변형 클래스 매칭** — 옛 표기 재유입 검사를 낱말 표기표+생성 정규식으로
+  재편(구분자·대소문자·한영 혼용·합성어 경계). 항목별 변형 축 샘플·음역 선언을 메타 테스트로 강제.
+- **failsoft 가드 self.<attr> 축** — 인스턴스 속성 바인딩 콜러블의 skew 전파를 스캐너가 추적,
+  기존 fail-soft 가 삼키던 실 결함 4건을 재전파로 교정. 콘솔 worktree add 는 marked skew 시
+  루프를 종료한다.
+
+### Breaking (채택자 체감 동작 변경)
+- 소유 PM 홈을 해소할 수 없는 위치의 무인자 `external_review` 실행은 경고 후 진행하지 않고
+  rc=1 로 차단한다(문서화된 게이트 경로 `--ticket`/`--paths` 는 무영향). 커밋만 된 변경으로
+  슬롯을 고르려면 `--base` 앵커 명시가 필요하다.
+- wiki seed 를 symlink 로 운용하는 인스턴스는 add-harness/`--into` 가 rc=1 로 중단한다
+  (이전: 해당 파일만 조용히 무시).
+
 ## [1.6.0] - 2026-08-06
 
 **Compaction-native 컨텍스트 가드 릴리스.** 관통 성질: 컨텍스트 한계 대응을 차단(hard-stop)에서
