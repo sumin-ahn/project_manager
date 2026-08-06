@@ -274,11 +274,13 @@ HARNESS_TEMPLATE_DIRS = {
 REGISTERED_HARNESSES = tuple(HARNESS_TEMPLATE_DIRS)
 HARNESS_ALL = "all"
 
-# v1.5.x에 현재 접근 가능한 등록 live adopter 중 legacy alias 채택자는 0건이었지만, 공개 문서/스크립트에
-# 남았던 호출을 조용히 깨지 않도록 한 feature 경계만 loud alias로 유지한다. v1.6.0에서 제거한다:
-# 실사용 0 + v1.5.x 경고/새 표기 안내 한 주기가 짧은 유예의 근거다.
-LEGACY_HARNESS_ALIASES = {"both": ("claude", "opencode")}
-LEGACY_BOTH_REMOVAL_VERSION = "v1.6.0"
+# legacy harness alias seam — v1.5.x 의 `both`(=claude,opencode)는 예약대로 v1.6.0 에서
+# 제거됐다(실사용 0 + v1.5.x 경고 한 주기 유예·아래 ratchet 이 기한을 기계 강제한 결과).
+# 새 legacy alias 를 들일 땐 여기에 (alias → 정식 하네스 튜플)로 등록하고 제거 기한을 아래
+# 상수로 예약한다 — 기한 도달 시 _enforce_legacy_harness_alias_deadline 이 모듈 로드 자체를
+# 막아 제거가 사람 기억에 의존하지 않는다. 파서 확장 분기는 이 dict 로 구동되는 범용 기계다.
+LEGACY_HARNESS_ALIASES: dict[str, tuple[str, ...]] = {}
+LEGACY_ALIAS_REMOVAL_VERSION = "v1.6.0"
 HARNESS_CHOICES = (*REGISTERED_HARNESSES, HARNESS_ALL, *LEGACY_HARNESS_ALIASES)
 WEIGHT_CHOICES = ("full", "lite")
 
@@ -300,33 +302,27 @@ def _enforce_legacy_harness_alias_deadline(
     if (
         active_aliases
         and _engine_rev_tuple(engine_rev)
-        >= _engine_rev_tuple(LEGACY_BOTH_REMOVAL_VERSION)
+        >= _engine_rev_tuple(LEGACY_ALIAS_REMOVAL_VERSION)
     ):
         raise RuntimeError(
             f"ENGINE_REV {engine_rev}에서는 legacy harness alias를 제거해야 합니다: "
-            f"{', '.join(active_aliases)} (기한 {LEGACY_BOTH_REMOVAL_VERSION})"
+            f"{', '.join(active_aliases)} (기한 {LEGACY_ALIAS_REMOVAL_VERSION})"
         )
 
 
 _enforce_legacy_harness_alias_deadline()
-
-LEGACY_BOTH_WARNING = (
-    "경고: --harness both 는 deprecated alias입니다; "
-    f"--harness claude,opencode 를 사용하세요 ({LEGACY_BOTH_REMOVAL_VERSION}에서 제거)."
-)
 
 
 def parse_harness_selection(
     value: str,
     *,
     harness_template_dirs: dict[str, tuple[str, ...]] | None = None,
-    warn_legacy: bool = False,
 ) -> tuple[str, ...]:
     """콤마 선택을 registry 순서의 중복 없는 하네스 튜플로 정규화한다.
 
     입력 순서는 결과/충돌 우선순위에 영향을 주지 않는다. ``all``은 호출 시점 registry의 키
-    전체로 확장돼 네 번째 하네스가 추가돼도 자동 편입된다. legacy ``both``도 집합 원소처럼
-    확장할 수 있지만 한 호출에 경고는 정확히 한 줄만 낸다.
+    전체로 확장돼 네 번째 하네스가 추가돼도 자동 편입된다. ``LEGACY_HARNESS_ALIASES`` 에
+    등록된 alias 도 집합 원소처럼 확장된다(현재 빈 seam — `both` 는 v1.6.0 에서 제거).
     """
     registry = HARNESS_TEMPLATE_DIRS if harness_template_dirs is None else harness_template_dirs
     if not isinstance(value, str):
@@ -346,7 +342,6 @@ def parse_harness_selection(
         )
 
     selected: set[str] = set()
-    used_legacy = False
     for token in tokens:
         if token == HARNESS_ALL:
             selected.update(registry)
@@ -359,20 +354,17 @@ def parse_harness_selection(
                     f"{', '.join(missing)}"
                 )
             selected.update(aliases)
-            used_legacy = True
         else:
             selected.add(token)
     if not selected:
         raise ValueError("--harness 선택 결과가 비었습니다.")
-    if used_legacy and warn_legacy:
-        print(LEGACY_BOTH_WARNING, file=sys.stderr)
     return tuple(harness for harness in registry if harness in selected)
 
 
 def _parse_harness_arg(value: str) -> tuple[str, ...]:
     """argparse 경계: 집합 파서 오류를 표준 CLI usage 오류로 바꾼다."""
     try:
-        return parse_harness_selection(value, warn_legacy=True)
+        return parse_harness_selection(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 

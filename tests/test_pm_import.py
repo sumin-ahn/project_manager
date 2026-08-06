@@ -155,7 +155,7 @@ def test_exposes_symbols(pm_import):
     assert callable(pm_import.resolve_template_roots)
     assert pm_import.REGISTERED_HARNESSES == tuple(pm_import.HARNESS_TEMPLATE_DIRS)
     assert pm_import.HARNESS_CHOICES == (
-        *pm_import.REGISTERED_HARNESSES, "all", "both")
+        *pm_import.REGISTERED_HARNESSES, "all")
 
 
 # ── ① --new: 트리 존재 · board init 산출 · 잔여 operational {{ 0 ──────────────
@@ -849,14 +849,23 @@ def test_unknown_or_empty_harness_selection_fails_loud(pm_import, tmp_path, caps
     assert not dest.exists()
 
 
-def test_legacy_both_alias_warns_once_and_matches_canonical_selection(pm_import, capsys):
-    """legacy alias는 결과를 보존하되 한 줄 경고·새 표기·제거 버전을 함께 알린다."""
-    got = pm_import._parse_harness_arg("both,both")
-    assert got == pm_import.parse_harness_selection("claude,opencode")
-    lines = capsys.readouterr().err.splitlines()
-    assert lines == [pm_import.LEGACY_BOTH_WARNING]
-    assert "--harness claude,opencode" in lines[0]
-    assert pm_import.LEGACY_BOTH_REMOVAL_VERSION in lines[0]
+def test_legacy_both_alias_removed_and_rejected_as_unknown(pm_import):
+    """v1.6.0 예약 제거 이후 `both` 는 전용 경로 없이 일반 unknown 으로 거부된다."""
+    assert pm_import.LEGACY_HARNESS_ALIASES == {}
+    with pytest.raises(ValueError, match="미지원 harness: both"):
+        pm_import.parse_harness_selection("both")
+
+
+def test_legacy_alias_seam_expands_registered_alias(pm_import, monkeypatch):
+    """빈 seam 에 alias 를 등록하면 파서 확장 분기가 정식 튜플로 전개한다(범용 기계 생존 가드)."""
+    monkeypatch.setattr(
+        pm_import, "LEGACY_HARNESS_ALIASES", {"pair": ("claude", "codex")})
+    assert pm_import.parse_harness_selection("pair") == \
+        pm_import.parse_harness_selection("claude,codex")
+    monkeypatch.setattr(
+        pm_import, "LEGACY_HARNESS_ALIASES", {"ghost": ("claude", "nope")})
+    with pytest.raises(ValueError, match="미등록 하네스"):
+        pm_import.parse_harness_selection("ghost")
 
 
 def test_legacy_both_alias_deadline_is_self_enforcing(pm_import):
