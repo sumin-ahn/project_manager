@@ -2116,7 +2116,11 @@ def cmd_worktree_add(
                                owner_task=task)
     except RuntimeError as exc:
         if _is_engine_rev_skew(exc):
-            return _report_engine_rev_skew_at_terminal(exc)
+            # 여기서 rc 로 번역하지 않고 재전파한다 — 이 핸들러는 종료 경계가 아니다. 콘솔
+            # `[w]` 액션(`_console_worktree_add`)은 rc 를 안 읽으므로 rc 번역이 그 surface 에선
+            # 진단만 남기고 메뉴 루프를 계속 돌렸다. `main` 이 같은 문구·같은 rc(1)로 번역하니
+            # CLI 표면은 그대로고(바이트 동일), 콘솔은 루프가 끝난다.
+            raise
         print(f"[중단] worktree 슬롯 생성 실패: {exc}", file=sys.stderr)
         return 1
     slot_path = wp.slot_path(lease.slot)
@@ -3386,6 +3390,10 @@ def _console_worktree_add(input_fn, wp, board_mod=None):
     board_mod 를 cmd_worktree_add 에 전달해 빌드명령 프롬프트의 표시 기본값(areas 해소)을
     콘솔이 이미 로드한 board 로 재사용한다(중복 로드 0). 빌드명령 프롬프트 내부 중단은
     cmd_worktree_add → _prompt_test_cmd 가 None 으로 흡수(크래시 0·기존 폴백).
+
+    이 액션은 핸들러 rc 를 읽지 않는다(취소/중단 sentinel 만 반환) — 그래서 엔진 사본 불일치
+    (marked engine skew)는 rc 가 아니라 예외로 올라와야 루프가 끝난다. cmd_worktree_add 가
+    그 경계를 재전파하고 `main` 이 CLI 와 같은 문구·rc 로 번역한다.
     """
     repo = _console_input(input_fn, "슬롯을 만들 repo 이름: ")
     if repo is _CONSOLE_ABORT:

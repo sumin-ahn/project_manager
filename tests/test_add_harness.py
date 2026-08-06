@@ -371,6 +371,11 @@ def test_add_harness_no_backup_leaves_gitignore_untouched(pm_import, tmp_path):
     dest = _build_live_instance(pm_import, tmp_path / "oc_nobk", "opencode")
     _git_commit_all(dest)                            # AGENTS.md·.gitignore 전부 git-safe
     _set_conf_upstream(dest, str(REPO))              # (local.conf 만 dirty·AGENTS.md 는 clean)
+    # 생성 산출물 pm_state.md 는 git-ignored(per-clone·버려도 되는 로컬)라 git-safe 가 아니고,
+    #   하네스를 추가하면 표기 병기로 재렌더되며 그 직전 백업이 생긴다(T-0541). 이 케이스의 주제는
+    #   *백업이 없을 때* .gitignore 를 안 건드리는지이므로, 재생성 가능한 그 파일을 치워 전제를
+    #   유지한다(board init 이 언제든 template 에서 다시 만든다).
+    (dest / ".project_manager" / "wiki" / "pm_state.md").unlink()
     before = (dest / ".gitignore").read_text(encoding="utf-8")
     assert f"{pm_import.BACKUP_DIR_NAME}/" not in before   # sanity: 원래 패턴 없음
     today = datetime.date.today().isoformat()

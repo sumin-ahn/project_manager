@@ -748,6 +748,11 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
         ".project_manager/wiki/tickets/_template.md",
         ".project_manager/wiki/raw/spikes/_template.md",
         ".project_manager/wiki/domain/_template.md",
+        # manifest 미소유 출하 seed + 템플릿이 만든 인스턴스 파일도 같은 표기 축이다(T-0541):
+        #   하네스를 추가하면 이 둘도 두 독자 표기로 재렌더된다(계획 표시·백업 후 변경). 옛 코드는
+        #   이들만 canonical 표기로 남겨 다중 하네스 인스턴스에 잘못된 호출법을 출하했다.
+        ".project_manager/wiki/raw/README.md",
+        ".project_manager/wiki/pm_state.md",
     }
     if {base, added} == {"codex", "opencode"}:
         notation_shared.add("AGENTS.md")
@@ -759,6 +764,38 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     )
     assert changed == [], (
         f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest 외·byte diff≠0·clobber 재발): {changed}")
+
+    # (3-b) 예외 2경로는 "바이트 변경 허용"에서 끝내지 않고 **무엇이 바뀌었는지** 못박는다 —
+    #   허용만 하면 그 두 파일의 clobber 탐지력이 0 이 된다(치환·fill 오염도 통과). 변경 줄은
+    #   전부 두 하네스 label 병기여야 하고 줄 수는 불변이어야 한다(표기 렌더 외 변경 0).
+    entry_prefix = {"claude": "/", "codex": "$", "opencode": "/"}
+    mixed_notation = entry_prefix[base] != entry_prefix[added]
+    rerendered_paths = (
+        ".project_manager/wiki/raw/README.md", ".project_manager/wiki/pm_state.md")
+    for rel in rerendered_paths:
+        if rel not in before or rel not in after or before[rel] == after[rel]:
+            continue
+        before_lines = before[rel].decode("utf-8").splitlines()
+        after_lines = after[rel].decode("utf-8").splitlines()
+        assert len(before_lines) == len(after_lines), \
+            f"{base}→{added}: {rel} 줄 수 변화 — 표기 렌더 외 변경(치환·fill 오염?)"
+        diff_lines = [a for b, a in zip(before_lines, after_lines) if b != a]
+        assert diff_lines, f"{base}→{added}: {rel} 바이트만 다르고 줄 diff 0(정합 붕괴)"
+        for line in diff_lines:
+            assert f"({base})" in line and f"({added})" in line, (
+                f"{base}→{added}: {rel} 의 변경 줄이 병기 표기가 아님(표기 외 변경): {line}")
+    if mixed_notation:
+        # 비공허 — 표기가 갈리는 조합에서는 두 축이 반드시 따라온다(옛 코드는 둘 다 안 따라왔다).
+        #   ① 템플릿 생성 산출물(pm_state.md) ② manifest 미소유 출하 seed(raw/README.md·base 가
+        #   출하하는 경우만 존재). 둘 중 하나라도 빼면 이 e2e 가 red 가 된다(변이 실측).
+        state_rel = ".project_manager/wiki/pm_state.md"
+        assert before[state_rel] != after[state_rel], (
+            f"{base}→{added}: 생성 산출물 {state_rel} 표기가 안 따라옴(조용한 잔존 재발)")
+        seed_rel = ".project_manager/wiki/raw/README.md"
+        if seed_rel in before:
+            assert before[seed_rel] != after[seed_rel], (
+                f"{base}→{added}: manifest 미소유 출하 seed {seed_rel} 표기가 안 따라옴 "
+                "(조용한 잔존 재발)")
     if _MANIFEST_REL in before and before[_MANIFEST_REL] != after[_MANIFEST_REL]:
         mf_before = before[_MANIFEST_REL].decode("utf-8")
         mf_after = after[_MANIFEST_REL].decode("utf-8")

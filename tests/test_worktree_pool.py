@@ -5771,9 +5771,10 @@ def _install_engine(engine_root: Path) -> None:
     `livegate check` 가 standalone 동작(yaml=런타임 의존·테스트 env 보유). board.py
     REPO=Path(__file__).parents[2]=engine_root → livegate.json 을 engine_root/.project_manager/.local 에서 읽는다.
 
-    `identity_args.py`(ADR-0057·T-0322)도 함께 심는다 — board.py 가 같은 tools/ 디렉토리에서
-    경로-앵커 로드(`_load_identity_args`)하는 **load-bearing sibling**이라, 빠지면 이 최소-격리
-    엔진(board.py 단일 파일)이 import 시점에 fail-loud 로 죽는다(전 서브에 정체성 파싱 필수).
+    `identity_args.py`(ADR-0057·T-0322)와 `file_lock.py`(T-0561)도 함께 심는다 — board.py 가 같은
+    tools/ 디렉토리에서 경로-앵커 로드(`_load_identity_args`·`_load_file_lock`)하는 **load-bearing
+    sibling**이라, 빠지면 이 최소-격리 엔진(board.py 단일 파일)이 import 시점에 fail-loud 로
+    죽는다(전 서브에 정체성 파싱·보드 write 직렬화가 필수).
 
     (T-0397 rev 스탬프는 board·identity_args·console_encoding 소스에 baked 리터럴이라 실 복사본이면
     서로 일치한다 — engine_rev.py 는 런타임 verify 가 읽지 않으므로 이 최소 격리 엔진엔 불요.)
@@ -5783,6 +5784,7 @@ def _install_engine(engine_root: Path) -> None:
     shutil.copy(str(TOOLS / "board.py"), str(tools / "board.py"))
     shutil.copy(str(TOOLS / "repo_owned_files.py"), str(tools / "repo_owned_files.py"))
     shutil.copy(str(TOOLS / "identity_args.py"), str(tools / "identity_args.py"))
+    shutil.copy(str(TOOLS / "file_lock.py"), str(tools / "file_lock.py"))
     shutil.copy(str(TOOLS / "console_encoding.py"), str(tools / "console_encoding.py"))
     shutil.copy(str(TOOLS / "python_floor.py"), str(tools / "python_floor.py"))
 

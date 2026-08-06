@@ -2118,24 +2118,26 @@ def _installed_entry_notation_manifests(
     """core 선택에 더해 실제 설치된 add-harness guest를 표기 context에만 포함한다.
 
     guest는 update plan/manifest self-heal에서는 계속 불가침이다. 다만 공유 wiki를 실제로 읽는
-    하네스 집합에서는 빠지면 안 되므로, add-harness가 쓰는 adapter registry와 같은 디렉터리+
-    root-doc 실재 판정으로 설치 하네스를 찾고 그 flavor manifest를 context 입력에만 보탠다.
+    하네스 집합에서는 빠지면 안 되므로, 설치 하네스를 찾아 그 flavor manifest를 context 입력에만
+    보탠다.
+
+    판정은 **pm_import.installed_harnesses 단일 진실**을 쓴다(구조 판정 사본 금지). 어댑터
+    디렉터리+root-doc 실재만 보면 일반 프로젝트가 자기 용도로 가진 `.codex/`·`AGENTS.md`를 codex
+    PM 설치로 오인해, PM 카드가 없는 인스턴스의 공유 wiki에 codex 표기(`$pm-bootstrap`)를 주입한다
+    — pm_import(최초 설치·add-harness)와 pm_update(자기 갱신)가 같은 판정을 써야 표기가 어긋나지
+    않는다.
     """
     paths = list(upstream_manifests)
     try:
         pm_import = _load_pm_import()
-        harnesses = pm_import.REGISTERED_HARNESSES
-        adapter_registry = pm_import.ADD_HARNESS_ADAPTER
+        harnesses = pm_import.installed_harnesses(effective_dest, source_root)
         template_registry = pm_import.HARNESS_TEMPLATE_DIRS
-    except Exception:  # noqa: BLE001 — 중앙 seam/형제 복구 중 pm_import 부재·손상은 core sync 우선.
+    except Exception as exc:  # noqa: BLE001 — pm_import 부재·손상은 core sync 우선.
+        if _is_engine_rev_skew(exc):
+            raise
         return paths
     seen = {Path(path).resolve() for path in paths}
     for harness in harnesses:
-        adapter_dirs, root_doc = adapter_registry[harness]
-        if not all((Path(effective_dest) / dirname).is_dir() for dirname in adapter_dirs):
-            continue
-        if not (Path(effective_dest) / root_doc).is_file():
-            continue
         template_dir = template_registry[harness][0]
         manifest = (
             Path(source_root) / "templates" / template_dir
@@ -3659,6 +3661,10 @@ def _main(argv: list[str] | None = None) -> int:
             )
         )
     except RuntimeError as exc:
+        # 엔진 사본 skew 는 삼키지 않는다 — 이 블록이 설치 하네스 판별(pm_import 로드·출하 열거)
+        #   까지 품게 됐고, 그걸 "context 실패 rc2" 로 덮으면 로드 경계 진단이 사라진다.
+        if _is_engine_rev_skew(exc):
+            raise
         print(f"오류: {exc}", file=sys.stderr)
         return 2
     changes, missing = plan(
@@ -3862,6 +3868,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:
+        # 엔진 사본 skew 는 분류 이전에 그대로 올린다 — 아래 분기도 결과적으로 re-raise 하지만,
+        #   skew 가 이 경계를 지난다는 사실을 명시해 둔다(_main 이 설치 하네스 판별을 품은 뒤로
+        #   실제 도달 경로가 생겼다).
+        if _is_engine_rev_skew(exc):
+            raise
         # 중앙 seam 복구는 _main이 --from을 해소한 뒤 선행한다. 예외 타입 판별 때문에
         # main import 시점부터 seam을 요구하면 missing/syntax 복구가 다시 자기잠김된다.
         repo_files = None

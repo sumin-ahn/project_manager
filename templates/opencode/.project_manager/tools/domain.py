@@ -192,6 +192,61 @@ DOMAIN_COVERAGE_EXEMPTIONS: dict[str, str] = {}
 # domain lint oversized 임계 — 본문 라인수가 이 값을 넘으면 advisory finding(상수·비차단).
 OVERSIZED_LINES = 200
 
+# ── history 축 (현재-진실 페이지에 쌓이는 변경 이력 검출) ─────────────────────
+# domain 페이지는 *지금 무엇인가*를 담는 현재-진실 문서다 — 현재-진실 doc 과 히스토리를 가르는
+# 구분(architecture·status 에 세운 것)의 domain 확장이다. "언제 왜 그렇게 바뀌었나"는 log/ADR
+# 소관이고 페이지는 링크만 건다. 실측에서
+# 한 페이지가 세션당 12.3줄씩 세션-delta blockquote 로 자라 200줄 임계를 반복해 넘겼고, 그
+# 압박이 지식 자체를 손상시켰다(무관한 bullet 안으로 접힌 문장 1건). 그래서 판정 대상은
+# **페이지 크기가 아니라 히스토리 항목의 존재**다 — "쪼개라"가 아니라 "안 쌓는다".
+#
+# 판정 = 블록의 lead-in(헤딩 텍스트 · blockquote 첫 줄 · 줄머리 굵은 도입부)이 *무엇인가*가
+# 아니라 *언제 있었나*로 라벨돼 있는가. 세 축 중 하나면 히스토리 항목이다:
+#   ⓐ lead-in 이 시점 스탬프로 **시작**한다 (`YYYY-MM-DD …` · `PM <N>차 …` · `vX.Y.Z …` ·
+#      `T-NNNN …`) — 개념이 아니라 변경 단위로 절을 조직한 것.
+#   ⓑ lead-in 에 시점 스탬프와 변경-기록 라벨이 **함께** 있다 (`YYYY-MM-DD (PM <N>차) delta` ·
+#      `vX.Y.Z 코드 재검증 delta` · `T-NNNN verification checkpoint`).
+#   ⓒ **헤딩 제목 자체가 이력 절 이름**이다 (`## 변경 이력` · `## changelog` · `## 히스토리`) —
+#      스탬프가 한 줄도 없어도 그 절의 목적이 히스토리 축적이라 ⓐ·ⓑ 가 놓친다.
+# 세 축 모두 lead-in 만 본다 — 본문이 날짜를 인용하거나(`1.18.4 실측`) 근거 티켓을 다는 건
+# 정상 현재-진실 서술이라 대상이 아니다.
+#
+# 스탬프 문법은 **한 곳에서만** 선언한다 — 아래 세 정규식이 같은 조각을 조합해 쓰므로 축을
+# 넓히거나 좁힐 때 두 벌을 고칠 일이 없다(두 벌 = 한쪽만 고쳐 조용히 갈리는 재발 클래스).
+_TIME_STAMP_PATTERN = (
+    r"\d{4}-\d{2}-\d{2}"              # YYYY-MM-DD
+    r"|PM\s*\d+\s*차"                 # PM <N>차
+    r"|v\d+\.\d+(?:\.\d+)?"           # vX.Y.Z (접두 v 필수 — 외부 도구 버전 `1.18.4` 인용은 제외)
+)
+_WORK_STAMP_PATTERN = r"T-\d{3,}"       # T-NNNN
+HISTORY_STAMP_RE = re.compile(rf"(?:{_TIME_STAMP_PATTERN}|{_WORK_STAMP_PATTERN})")
+HISTORY_STAMP_HEAD_RE = re.compile(
+    rf"^\W*(?:{_TIME_STAMP_PATTERN}|{_WORK_STAMP_PATTERN})"
+)
+# 구분 줄 없이 이어 쌓은 이력 목록의 항목 머리 — **시점** 스탬프만 인정한다(티켓 ID 제외).
+# 줄바꿈으로 이어진 산문이 `[[T-NNNN]]` 로 시작하는 건 흔한 정상 서술이라 그 축은 뺀다.
+HISTORY_TIME_STAMP_HEAD_RE = re.compile(rf"^\W*(?:{_TIME_STAMP_PATTERN})")
+HISTORY_LABEL_RE = re.compile(
+    r"(?:delta|changelog|재검증|checkpoint|변경\s*이력|갱신\s*이력|히스토리|변경\s*기록)",
+    re.IGNORECASE,
+)
+# ⓒ 축 — 헤딩 제목이 이력 절 이름으로 **시작**할 때만. 시작-앵커라 "호출 이력 조회 API" 같은
+# 기능 서술 헤딩은 안 걸리고, 산문/불릿의 `history` 언급도 대상이 아니다(헤딩 전용 축).
+HISTORY_SECTION_TITLE_RE = re.compile(
+    r"^\W*(?:변경\s*이력|갱신\s*이력|수정\s*이력|변경\s*기록|이력|히스토리|연혁"
+    r"|changelog|change\s+log|revision\s+history|history)",
+    re.IGNORECASE,
+)
+# lead-in 추출 — 헤딩(`## …`) · blockquote 첫 줄(`> …`) · 줄머리 굵은 도입부(`**…**`).
+_HISTORY_HEADING_RE = re.compile(r"^\s{0,3}#{2,6}\s+(.*)$")
+_HISTORY_QUOTE_RE = re.compile(r"^\s{0,3}>\s*(.*)$")
+_HISTORY_BOLD_RE = re.compile(r"^\s{0,3}(?:[-*+]\s+)?\*\*(.+?)\*\*")
+# lead-in 판정에 쓰는 앞부분 길이 — 멀리 떨어진 스탬프와 라벨이 우연히 짝지어 오탐하는 걸 막는다.
+HISTORY_LEADIN_CHARS = 120
+# lead-in 을 finding detail 에 몇 개까지 인용하나 / 한 인용의 최대 길이.
+HISTORY_DETAIL_LIMIT = 3
+HISTORY_DETAIL_WIDTH = 60
+
 # capture에서 디렉토리 touch 하나가 표시하는 gap 상한. 전체 gap API는 자르지 않고,
 # CLI 기본 출력만 접는다(`capture --all-gaps`로 전체 표시).
 DIRECTORY_GAP_DISPLAY_LIMIT = 15
@@ -1822,6 +1877,88 @@ def _wikilink_targets(body: str) -> set[str]:
     return {m.strip().lower() for m in _WIKILINK_RE.findall(body)}
 
 
+def _is_history_leadin(text: str, *, stamp_head: bool,
+                       section_title: bool = False) -> bool:
+    """lead-in 텍스트가 히스토리 항목(시점으로 라벨된 블록)인지 판정한다.
+
+    `stamp_head=True`(헤딩·blockquote 항목)면 시점 스탬프로 **시작**하는 것만으로 히스토리다 —
+    절/항목을 개념이 아니라 변경 단위로 조직한 형태. 굵은 문단 도입부는 티켓 근거를 앞세운 정상
+    서술이 흔해 그 축을 빼고, 스탬프와 변경-기록 라벨이 **함께** 있을 때만 잡는다.
+    `section_title=True`(헤딩 전용)는 제목이 이력 절 이름으로 시작하면 스탬프 없이도 잡는다 —
+    `## 변경 이력` 처럼 절 이름만으로 목적이 히스토리 축적인 경우를 스탬프 축이 통째로 놓친다.
+    """
+    head = text[:HISTORY_LEADIN_CHARS]
+    if section_title and HISTORY_SECTION_TITLE_RE.match(head):
+        return True
+    if stamp_head and HISTORY_STAMP_HEAD_RE.match(head):
+        return True
+    return bool(HISTORY_STAMP_RE.search(head) and HISTORY_LABEL_RE.search(head))
+
+
+def history_leadins(body: str) -> list[str]:
+    """페이지 본문에서 히스토리 항목의 lead-in 을 등장 순서대로 뽑는다 (fenced code 제외).
+
+    블록 단위로 lead-in 하나만 본다 — 헤딩 텍스트 · blockquote 항목의 첫 줄(`>` 단독 줄이 항목
+    경계) · 줄머리 굵은 도입부. 본문 안쪽에서 날짜/티켓을 *근거로* 인용하는 건 정상 현재-진실
+    서술이라 판정 대상이 아니다(`HISTORY_STAMP_RE` 주석의 세 축 참조).
+
+    **알려진 한계 (advisory 라 수용)** — 인용 안에서 항목 경계(`>` 단독 줄) 없이 줄바꿈만으로
+    이어진 문장이 마침 시점 스탬프로 *시작*하면 새 항목으로 센다. 개수가 과대 계상될 뿐 판정
+    자체(그 인용이 이력인가)는 안 뒤집히고, 반대로 항목을 줄바꿈으로 감춰 회피하는 것도 막는다.
+    정확히 가르려면 마크다운 파서가 필요한데 이 축의 값어치(never-block 권고)에 비해 과하다.
+    """
+    leadins: list[str] = []
+    quote_entry_open = False
+    for raw in _markdown_without_fenced_code(body).splitlines():
+        line = raw.rstrip()
+        heading = _HISTORY_HEADING_RE.match(line)
+        if heading is not None:
+            quote_entry_open = False
+            if _is_history_leadin(heading.group(1), stamp_head=True,
+                                  section_title=True):
+                leadins.append(heading.group(1))
+            continue
+        quote = _HISTORY_QUOTE_RE.match(line)
+        if quote is not None:
+            inner = quote.group(1).strip()
+            if not inner:
+                quote_entry_open = False  # `>` 단독 줄 = 인용 안의 항목 경계.
+                continue
+            if not quote_entry_open:
+                quote_entry_open = True
+                if _is_history_leadin(inner, stamp_head=True):
+                    leadins.append(inner)
+            elif HISTORY_TIME_STAMP_HEAD_RE.match(inner):
+                # 구분 빈 줄 없이 `> (YYYY-MM-DD) …` 를 줄줄이 쌓은 이력 목록 — 시점 스탬프로
+                # 시작하는 줄은 그 자체가 새 항목의 머리다(줄바꿈 이어짐은 날짜로 안 시작).
+                leadins.append(inner)
+            continue
+        quote_entry_open = False
+        if not line.strip():
+            continue
+        bold = _HISTORY_BOLD_RE.match(line)
+        if bold is not None and _is_history_leadin(bold.group(1), stamp_head=False):
+            leadins.append(bold.group(1))
+    return leadins
+
+
+def _history_detail(leadins: list[str]) -> str:
+    """history finding 의 detail — 개수 + 규칙 한 줄 + 실제 lead-in 인용(상한)."""
+    shown = []
+    for text in leadins[:HISTORY_DETAIL_LIMIT]:
+        flat = " ".join(text.split())
+        if len(flat) > HISTORY_DETAIL_WIDTH:
+            flat = flat[:HISTORY_DETAIL_WIDTH] + "…"
+        shown.append(flat)
+    hidden = len(leadins) - len(shown)
+    tail = f" 외 {hidden}건" if hidden else ""
+    return (
+        f"변경 이력 항목 {len(leadins)}개 — 현재-진실 페이지엔 *지금 유효한 것*만 두고 "
+        f"'언제 왜 바뀌었나'는 log/ADR 로 옮긴다(페이지는 링크만): "
+        + " · ".join(shown) + tail
+    )
+
+
 def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
                git_runner_factory: GitRunnerFactory | None = None,
                oversized_lines: int = OVERSIZED_LINES,
@@ -1830,13 +1967,16 @@ def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
                manifest_path: Path | None = None) -> list[tuple[str, str, str]]:
     """domain 페이지 스캔 → finding 리스트 `(kind, page, detail)` (advisory·비차단).
 
-    kind ∈ {`stale`, `orphan`, `oversized`, `coverage`}:
+    kind ∈ {`stale`, `orphan`, `oversized`, `history`, `coverage`}:
       - **stale** — `page_stale==True`(covers 코드가 updated 후 커밋). unknown(None)은 제외.
       - **orphan** — 다른 domain 페이지에서 이 페이지로의 `[[슬러그]]` 인링크 0(고립). 슬러그
         (파일 stem)와 title 둘 다 인링크로 인정(표기 흔들림 흡수). **자기참조 제외**(자기 body
         의 자기링크는 안 침)·README/_template 은 애초에 load_pages 가 뺀다. **페이지 ≥2 일 때만
         평가** — 1개뿐이면 peer 가 없어 자연 고립이라 skip.
       - **oversized** — body 라인수 > `oversized_lines`(기본 OVERSIZED_LINES=200).
+      - **history** — 현재-진실 페이지에 쌓인 변경 이력 항목(`history_leadins`). 크기가 아니라
+        *누적 자체*를 본다 — 페이지를 쪼개는 건 증상 유예일 뿐이고, 원인은 현재-진실 문서에
+        히스토리를 쓰는 관행이다(현재-진실 doc / 히스토리 구분의 domain 확장).
       - **coverage** — claim marker 의도가 있거나 엔진 coverage 문맥인 README의 수치형
         coverage 산문을 검사한다. 출하 도구 gap·면제·README claim 대조는 같은 트리 README가
         claim marker 의도를 실제로 가질 때만 opt-in한다. marker 없는 채택자의 일반 도메인
@@ -1894,6 +2034,11 @@ def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
         line_count = len(bodies[slug].splitlines())
         if line_count > oversized_lines:
             findings.append(("oversized", label, f"본문 {line_count}줄 > {oversized_lines}"))
+
+        # history — 시점으로 라벨된 블록(세션 delta·버전 절)이 페이지에 남아 있는가.
+        leadins = history_leadins(bodies[slug])
+        if leadins:
+            findings.append(("history", label, _history_detail(leadins)))
 
     coverage_domain_dir = Path(DOMAIN_DIR if domain_dir is None else domain_dir)
     coverage_manifest = Path(
@@ -2120,6 +2265,11 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
     if affected:
         print("영향 페이지 (갱신 검토):")
+        print(
+            "  ※ 갱신 = 현재-진실을 *교체*(지금 유효한 서술로 고쳐 쓰기). "
+            "세션별 delta 를 덧붙이지 마라 — '언제 왜 바뀌었나'는 log/ADR 몫이고 "
+            "페이지는 링크만 건다(domain lint `history` 축)."
+        )
         for page in affected:
             marker = _stale_marker(page)
             covers = ",".join(page["covers"])

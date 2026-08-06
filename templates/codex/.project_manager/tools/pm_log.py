@@ -196,6 +196,20 @@ def _load_identity_args():
     )
 
 
+def _load_file_lock():
+    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/에서 경로 로드한다.
+
+    write 경로에서만 지연 로드한다 — pm_bootstrap이 fail-soft로 재사용하는 *읽기* 경로
+    (`split_entries`)까지 seam 부재로 무너뜨리지 않기 위해서다. 로드 실패는 흡수하지 않고
+    (fail-loud) 캐시하되, 중앙 loader가 소비 때마다 baked rev를 재검증하므로 사본 skew는
+    계속 표출된다.
+    """
+    lock_path = Path(__file__).resolve().parent / "file_lock.py"
+    return _load_module_from_path(
+        lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
+    )
+
+
 REPO = Path(__file__).resolve().parents[2]
 WIKI_DIR = REPO / ".project_manager" / "wiki"
 LOG_DIR = WIKI_DIR / "log"
@@ -273,38 +287,6 @@ def _log_lock_path(log_path: Path) -> Path:
     return local_dir / "log.lock"
 
 
-def _flock_acquire(fd: int) -> None:
-    """배타 파일락 획득 — Unix flock, Windows msvcrt 폴백."""
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-    except ImportError:
-        pass
-
-
-def _flock_release(fd: int) -> None:
-    """배타 파일락 해제 — `_flock_acquire`와 같은 플랫폼 분기."""
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-    except ImportError:
-        pass
-
-
 @contextlib.contextmanager
 def log_write_lock(log_path: Path) -> Iterator[None]:
     """모든 `log/current.md` writer를 단일 OS 파일락으로 직렬화한다.
@@ -312,18 +294,12 @@ def log_write_lock(log_path: Path) -> Iterator[None]:
     운영 경로의 잠금 파일은 `.project_manager/.local/log.lock` 하나다. append와
     archive 재작성 모두 이 seam을 거쳐 서로의 갱신을 덮어쓰지 않는다. 프로세스가
     종료되면 OS가 락을 회수하므로 stale lock은 남지 않는다. 재진입은 지원하지 않는다.
+
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `file_lock` seam이 소유하고
+    경로 규약만 이 도구가 정한다.
     """
-    lock_path = _log_lock_path(Path(log_path))
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        _flock_acquire(fd)
-        try:
-            yield
-        finally:
-            _flock_release(fd)
-    finally:
-        os.close(fd)
+    with _load_file_lock().exclusive_file_lock(_log_lock_path(Path(log_path))):
+        yield
 
 
 def _append_atomic(path: Path, text: str) -> None:

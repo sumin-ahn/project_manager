@@ -39,8 +39,159 @@ import uuid
 from pathlib import Path
 from typing import Iterator, NamedTuple, Protocol, TextIO
 
+_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
+_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
+    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
+)
+_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
+_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
+_TOOLS_BOOTSTRAP_SENTINEL = object()
+try:
+    if (
+        _TOOLS_BOOTSTRAP_MODULE is not None
+        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+        != _TOOLS_BOOTSTRAP_FILE
+    ):
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+        _TOOLS_BOOTSTRAP_MODULE = None
+    if _TOOLS_BOOTSTRAP_MODULE is None:
+        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
+            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
+        )
+        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
+        if _TOOLS_BOOTSTRAP_ADDED:
+            sys.path.insert(0, _TOOLS_BOOTSTRAP)
+        try:
+            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
+            if (
+                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+                != _TOOLS_BOOTSTRAP_FILE
+            ):
+                raise ImportError(
+                    "repo_owned_files 형제 경로 불일치: "
+                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
+                )
+            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
+        finally:
+            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
+            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
+            if _TOOLS_BOOTSTRAP_ADDED:
+                try:
+                    sys.path.remove(_TOOLS_BOOTSTRAP)
+                except ValueError:
+                    pass
+            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
+                sys.modules.pop("repo_owned_files", None)
+            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
+                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
+    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
+except Exception as _TOOLS_BOOTSTRAP_ERROR:
+    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+
+    def _load_module_from_path(
+        path,
+        expected_filename,
+        *,
+        verifier=None,
+        allow_unverified=False,
+        cache=False,
+        cache_key=None,
+    ):
+        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
+        target = os.path.realpath(os.fspath(path))
+        if os.path.basename(target) != expected_filename:
+            raise ValueError(
+                f"module filename mismatch: expected {expected_filename!r}, "
+                f"got {os.path.basename(target)!r}"
+            )
+        if verifier is not None and allow_unverified:
+            raise ValueError("choose verifier or allow_unverified=True, not both")
+        if verifier is None and not allow_unverified:
+            raise ValueError(
+                "module load requires verifier or explicit allow_unverified=True"
+            )
+        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
+        module = sys.modules.get(module_key) if cache else None
+        inserted = False
+        try:
+            if module is None:
+                if (
+                    target == _TOOLS_BOOTSTRAP_FILE
+                    and _TOOLS_BOOTSTRAP_MODULE is not None
+                ):
+                    module = _TOOLS_BOOTSTRAP_MODULE
+                else:
+                    import_name = os.path.splitext(expected_filename)[0]
+                    previous = sys.modules.pop(
+                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
+                    )
+                    parent = os.path.dirname(target)
+                    added = not sys.path or sys.path[0] != parent
+                    if added:
+                        sys.path.insert(0, parent)
+                    try:
+                        module = __import__(import_name)
+                        if os.path.realpath(getattr(module, "__file__", "")) != target:
+                            raise ImportError(
+                                f"{expected_filename} 형제 경로 불일치"
+                            )
+                    finally:
+                        if added:
+                            try:
+                                sys.path.remove(parent)
+                            except ValueError:
+                                pass
+                        if sys.modules.get(import_name) is module:
+                            sys.modules.pop(import_name, None)
+                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
+                            sys.modules[import_name] = previous
+                if cache:
+                    sys.modules[module_key] = module
+                    inserted = True
+            if verifier is not None:
+                verifier(module, expected_filename)
+            return module
+        except Exception as exc:
+            if cache and (inserted or sys.modules.get(module_key) is module):
+                sys.modules.pop(module_key, None)
+            if target == _TOOLS_BOOTSTRAP_FILE:
+                raise RuntimeError(
+                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
+                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
+                ) from exc
+            raise
+
+
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
 ENGINE_REV = "v1.6.0"
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True
+        raise err
+
+
+def _load_file_lock():
+    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/에서 경로 로드한다.
+
+    장부 락 경로(읽기·쓰기 모두 이 락을 지난다)에서만 지연 로드한다 — 회전 루프(supervisor)와
+    driver import 경로는 이 seam에 의존하지 않게 두려는 것이다. 로드 실패는 흡수하지 않고(fail-loud) 캐시하되,
+    중앙 loader가 소비 때마다 baked rev를 재검증하므로 사본 skew는 계속 표출된다.
+    """
+    lock_path = Path(__file__).resolve().parent / "file_lock.py"
+    return _load_module_from_path(
+        lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
+    )
+
 
 # marker 디렉토리 — ctx_stop_hook.py 의 _MARKER_DIR 와 동일해야 한다(읽기 측·hook 이 쓰는 측).
 MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
@@ -149,49 +300,17 @@ def _raw_lock_path(ledger_path: Path) -> Path:
     return ledger_path.with_suffix(ledger_path.suffix + ".lock")
 
 
-def _raw_flock_acquire(fd: int) -> None:
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-    except ImportError:
-        pass
-
-
-def _raw_flock_release(fd: int) -> None:
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-    except ImportError:
-        pass
-
-
 @contextlib.contextmanager
 def _raw_ledger_lock(ledger_path: Path) -> Iterator[None]:
-    lock_path = _raw_lock_path(ledger_path)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        _raw_flock_acquire(fd)
-        try:
-            yield
-        finally:
-            _raw_flock_release(fd)
-    finally:
-        os.close(fd)
+    """장부 read-modify-write를 배타 파일락으로 직렬화한다.
+
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `file_lock` seam이 소유하고
+    락 경로 규약(장부 옆 `.lock`)과 권한(0o600)만 이 도구가 정한다.
+    """
+    with _load_file_lock().exclusive_file_lock(
+        _raw_lock_path(ledger_path), mode=0o600,
+    ):
+        yield
 
 
 def _read_raw_ledger(ledger_path: Path) -> dict:

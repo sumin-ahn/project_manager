@@ -437,3 +437,158 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
     assert "최근 raw 1건" in query
     assert "완료(rc=0)" in query
     assert str(result.raw_path.resolve()) in query
+
+
+# ── 외부리뷰 raw 기록 앵커 = 소유 PM 홈 (기록·조회 단일 앵커) ────────────────────
+# 기록이 diff 슬롯 장부로 갈리면 PM 홈 장부를 읽는 `pm_delegate raw` 통합 조회가 게이트 raw 를
+# 영구히 못 본다(실측 2건). 조회를 넓히지 않고 기록을 소유 PM 홈으로 수렴시킨 뒤의 회귀다.
+
+
+def _review_slot_family(tmp_path: Path) -> tuple[Path, Path]:
+    """PM 홈 + 등록 슬롯 + 슬롯의 tracked 변경 1건(비어있지 않은 diff)."""
+    pm_home, worktree = _engine_family(tmp_path)
+    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
+    return pm_home, worktree
+
+
+def _stub_reviewer(external, monkeypatch) -> None:
+    """외부 프로세스 스폰 없이 run_review 본체(raw 박제·장부 등재)를 그대로 태운다."""
+    def _fake_run_reviewer_ex(
+        prompt, reviewer_cmd, timeout, run_fn, idle_timeout=None, metrics=None,
+    ):
+        if metrics is not None:
+            metrics.clear()
+            metrics.update({"rc": 0, "silence_sec": 0.1})
+        return True, "판정: 통과\n\n## must-fix\n- 없음\n", True
+
+    monkeypatch.setattr(external, "_run_reviewer_ex", _fake_run_reviewer_ex)
+
+
+def test_external_raw_storage_anchor_is_resolved_pm_home_owner(
+        external, monkeypatch, tmp_path):
+    """앵커 seam: 주입된 소유 PM 홈 > 엔진 자기 앵커 REPO · 명시 output_dir 격리는 불변."""
+    pm_home, worktree = _engine_family(tmp_path)
+    monkeypatch.setattr(external, "REPO", worktree)
+
+    assert external._raw_storage() == (
+        worktree / ".project_manager" / ".local" / "review",
+        worktree / ".project_manager" / ".local" / "raw_outputs.json",
+    )
+
+    monkeypatch.setattr(external, "_PM_HOME_OVERRIDE", pm_home)
+    assert external._raw_storage() == (
+        pm_home / ".project_manager" / ".local" / "review",
+        pm_home / ".project_manager" / ".local" / "raw_outputs.json",
+    )
+
+    explicit = tmp_path / "explicit-output"
+    assert external._raw_storage(explicit) == (
+        explicit, explicit / "raw_outputs.json",
+    )
+
+
+@pytest.mark.parametrize("engine_side", ["slot", "pm-home"])
+def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
+        external, delegate, monkeypatch, tmp_path, capsys, engine_side):
+    """어느 엔진 사본으로 실행하든 raw 가 소유 PM 홈 장부에 등재되고 통합 조회에 보인다.
+
+    두 실측 형상을 모두 태운다 — 슬롯 사본 + 상대 `--paths`, PM 홈 사본 + 절대 `--paths`.
+    diff 앵커는 두 경우 모두 슬롯이므로, 옛 규칙(REPO=diff_root)이면 둘 다 슬롯 장부로 갈린다.
+    """
+    pm_home, worktree = _review_slot_family(tmp_path)
+    engine_repo, review_paths = (
+        (worktree, ["--paths", "seed.txt"])
+        if engine_side == "slot"
+        else (pm_home, ["--paths", str(worktree / "seed.txt")])
+    )
+    monkeypatch.setattr(external, "REPO", engine_repo)
+    _stub_reviewer(external, monkeypatch)
+
+    assert external.main([*review_paths, "--force"]) == 0
+    capsys.readouterr()
+
+    home_ledger = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
+    rows = _ledger(home_ledger)["records"]
+    assert len(rows) == 1
+    assert rows[0]["surface"] == "external-review"
+    assert rows[0]["rc"] == 0
+    raw_path = Path(rows[0]["raw_path"])
+    assert raw_path.parent == pm_home / ".project_manager" / ".local" / "review"
+    assert raw_path.is_file()
+    # 슬롯에는 raw 도 장부도 쌓이지 않는다 — 옛 raw 축적이 후속 reviewer 컨텍스트를 오염시키던
+    # 축(판정 echo)까지 원천 소멸한다.
+    assert not (worktree / ".project_manager" / ".local").exists()
+
+    monkeypatch.setattr(delegate, "REPO", pm_home)
+    assert delegate._cmd_raw([]) == 0
+    query = capsys.readouterr().out
+    assert query.splitlines()[0] == f"조회 장부: {home_ledger.resolve()}"
+    assert "최근 raw 1건" in query
+    assert "external-review" in query
+    assert str(raw_path.resolve()) in query
+
+
+def test_raw_anchor_oracle_is_sensitive_to_diff_root_regression(
+        external, monkeypatch, tmp_path, capsys):
+    """기록 앵커를 diff 슬롯(REPO)으로 되돌리면 위 회귀가 red 임을 박제한다."""
+    pm_home, worktree = _review_slot_family(tmp_path)
+    monkeypatch.setattr(external, "REPO", worktree)
+    _stub_reviewer(external, monkeypatch)
+    relay = external._load_relay()
+
+    def legacy_raw_storage(output_dir=None):
+        return relay.raw_storage_paths(
+            external.REPO, "review", output_dir, temp_dir=tmp_path / "os-temp",
+        )
+
+    monkeypatch.setattr(external, "_raw_storage", legacy_raw_storage)
+    assert external.main(["--paths", "seed.txt", "--force"]) == 0
+    capsys.readouterr()
+
+    assert not (
+        pm_home / ".project_manager" / ".local" / "raw_outputs.json"
+    ).exists()
+    slot_rows = _ledger(
+        worktree / ".project_manager" / ".local" / "raw_outputs.json"
+    )["records"]
+    assert len(slot_rows) == 1
+    assert slot_rows[0]["surface"] == "external-review"
+
+
+def test_unresolvable_pm_home_keeps_loud_diff_root_fallback(
+        external, monkeypatch, tmp_path, capsys):
+    """lease 손상으로 소유자를 확정 못 하면 loud 경고 + diff_root 폴백을 유지한다(자기잠김 금지)."""
+    pm_home, worktree = _review_slot_family(tmp_path)
+    lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(external, "REPO", worktree)
+    _stub_reviewer(external, monkeypatch)
+
+    assert external.main(["--paths", "seed.txt", "--force"]) == 0
+
+    err = capsys.readouterr().err
+    assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
+    assert "board가 필요 없는 실행" in err
+    assert f"pm_home={worktree.resolve()}" in err
+    slot_rows = _ledger(
+        worktree / ".project_manager" / ".local" / "raw_outputs.json"
+    )["records"]
+    assert len(slot_rows) == 1
+    assert slot_rows[0]["surface"] == "external-review"
+    assert not (
+        pm_home / ".project_manager" / ".local" / "raw_outputs.json"
+    ).exists()
+
+
+def test_main_clears_raw_anchor_between_calls(
+        external, monkeypatch, tmp_path, capsys):
+    """main() 의 finally 원복을 검증 — 호출 뒤 override 잔존이면 다음 호출/라이브러리
+    호출이 남의 PM 홈에 박제한다. (_main 진입 초기화는 pm_delegate 대칭 방어로 별도 유지 —
+    이 테스트의 오라클은 main() 원복이다.)"""
+    _pm_home, worktree = _review_slot_family(tmp_path)
+    monkeypatch.setattr(external, "REPO", worktree)
+    _stub_reviewer(external, monkeypatch)
+
+    assert external.main(["--paths", "seed.txt", "--force"]) == 0
+    capsys.readouterr()
+    assert external._PM_HOME_OVERRIDE is None

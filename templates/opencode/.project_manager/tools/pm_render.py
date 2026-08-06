@@ -170,8 +170,11 @@ def _installed_skill_entry_names() -> tuple[str, ...]:
 
 
 # 일반 하이픈 식별자를 전부 호출로 간주하지 않고 실제 설치 카드 집합만 렌더한다. 새 비-pm
-# 카드도 파일을 추가하는 순간 자동 편입된다. 빈 설치 root에서는 빈 집합이므로 unrelated
-# operational 렌더는 유지되며, 출하 inventory 테스트가 제품 template의 비어 있음을 fail-loud한다.
+# 카드도 파일을 추가하는 순간 자동 편입된다. 빈 설치 root면 이 집합이 비고, 그러면 아래
+# `_SKILL_ENTRY_NAME_ALT`가 빈 문자열이라 정규식이 **맨 `/`·`$`에 매칭해 산문을 훼손한다**
+# (`'a / b 로 구분한다'` → `'a $ b 로 구분한다'` 실측). 그래서 render_skill_entry_notation이
+# 입구에서 빈 집합을 무동작 반환으로 막는다(아래 가드). 출하 형상의 비어 있음 자체는 출하
+# inventory 테스트가 fail-loud한다.
 SKILL_ENTRY_NAMES: tuple[str, ...] = _installed_skill_entry_names()
 
 _HARNESS_LABEL_BY_TEMPLATE_DIR: dict[str, str] = {
@@ -228,7 +231,12 @@ def render_skill_entry_notation(
     ``$pm-bootstrap``(codex) / ``/pm-bootstrap``(opencode). 경로/확장자/하이픈 식별자와
     concrete ``$pm-*`` 설명은 비대상이다. 토큰이 있는데 어느 template 값이든 미등록이면 원문을
     복사하지 않고 RenderLeakError로 중단한다.
+
+    설치 카드가 하나도 없으면(빈 root) 아래 정규식들의 대안이 비어 맨 `/`·`$`에 매칭하므로
+    산문을 훼손한다 — 그 경우는 렌더 대상 자체가 없으니 입구에서 원문을 그대로 돌려준다.
     """
+    if not SKILL_ENTRY_NAMES:
+        return text
     template_dirs = (template_dir,) if isinstance(template_dir, str) else tuple(template_dir)
     template_dirs = tuple(dict.fromkeys(template_dirs))
     if len(template_dirs) > 1:

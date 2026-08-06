@@ -1,15 +1,16 @@
 """Repository-wide guard for fail-soft boundaries around marked engine skew.
 
 The scanner follows top-level functions, same-class methods, loader-proven module aliases passed
-through parameters or lexical free variables, and literal-name ``getattr`` callable aliases through
-conditional/boolean expressions and lexical closures.  Catch recognition covers builtin
-``RuntimeError``/``Exception``/``BaseException`` plus repository ``RuntimeError`` subclasses that
-are constructed by a marker-preserving transform.  Handlers that consume ``_is_engine_rev_skew``
-directly remain explicit roots as a defense against incomplete provenance.
+through parameters or lexical free variables, literal-name ``getattr`` callable aliases through
+conditional/boolean expressions and lexical closures, and same-class callable instance attributes
+(``self.<attr> = <callable>`` retained for a later ``self.<attr>(...)`` call).  Catch recognition
+covers builtin ``RuntimeError``/``Exception``/``BaseException`` plus repository ``RuntimeError``
+subclasses that are constructed by a marker-preserving transform.  Handlers that consume
+``_is_engine_rev_skew`` directly remain explicit roots as a defense against incomplete provenance.
 
 Deliberate exclusions include dynamic ``getattr`` member names, arbitrary duck-typed objects with
-same-named methods, callable instance attributes (``self.<attr>``), and invocation links to nested
-definitions (their own bodies are still scanned).
+same-named methods, and invocation links to nested definitions (their own bodies are still
+scanned).
 
 An affected handler must re-raise the marked exception, invoke the dedicated recovery marker, or
 invoke the dedicated terminal-report marker.  Markers are code-owned, per-boundary intent; there is
@@ -448,6 +449,9 @@ def collect_failsoft_report(sources: dict[str, str]) -> FailSoftReport:
         tuple[str, str], dict[str, set[tuple[str, str]]]
     ] = {key: {} for key in scope_data}
     class_attrs: dict[tuple[str, str], set[str]] = {}
+    # Callables retained on an instance attribute (``self.<attr> = <callable>``), keyed by
+    # ``(source, "Class.attr")`` so a later ``self.<attr>(...)`` call reaches the bound function.
+    class_callable_attrs: dict[tuple[str, str], set[tuple[str, str]]] = {}
     parameter_sources: dict[tuple[str, str], dict[str, set[str]]] = {
         key: {} for key in scope_data
     }
@@ -543,6 +547,7 @@ def collect_failsoft_report(sources: dict[str, str]) -> FailSoftReport:
     def callable_sources(
         expr: ast.expr, key: tuple[str, str],
     ) -> set[tuple[str, str]]:
+        source_name, qualname = key
         if (
             isinstance(expr, ast.Call)
             and isinstance(expr.func, ast.Name)
@@ -559,6 +564,19 @@ def collect_failsoft_report(sources: dict[str, str]) -> FailSoftReport:
             }
         if isinstance(expr, ast.Name):
             return callable_name_sources(expr.id, key)
+        if isinstance(expr, ast.Attribute):
+            # ``self.<method>`` bound-method reference and ``self.<attr>`` retained callable.  A
+            # non-``self`` receiver stays unlinked (same provenance rule as duck-typed objects).
+            if not (isinstance(expr.value, ast.Name) and expr.value.id in {"self", "cls"}):
+                return set()
+            prefix = _class_prefix(qualname)
+            if prefix is None:
+                return set()
+            member = (source_name, f"{prefix}.{expr.attr}")
+            resolved = set(class_callable_attrs.get(member, ()))
+            if member in scope_data:
+                resolved.add(member)
+            return resolved
         if isinstance(expr, (ast.BoolOp, ast.Tuple, ast.List, ast.Set)):
             found: set[tuple[str, str]] = set()
             values = expr.values if isinstance(expr, ast.BoolOp) else expr.elts
@@ -605,9 +623,19 @@ def collect_failsoft_report(sources: dict[str, str]) -> FailSoftReport:
                 resolved = callable_sources(value, key)
                 if resolved:
                     for target in _assignment_targets(node):
-                        if not isinstance(target, ast.Name):
+                        if isinstance(target, ast.Name):
+                            call_bucket = callable_aliases[key].setdefault(target.id, set())
+                        elif (
+                            isinstance(target, ast.Attribute)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id in {"self", "cls"}
+                            and _class_prefix(qualname) is not None
+                        ):
+                            call_bucket = class_callable_attrs.setdefault(
+                                (source_name, f"{_class_prefix(qualname)}.{target.attr}"), set()
+                            )
+                        else:
                             continue
-                        call_bucket = callable_aliases[key].setdefault(target.id, set())
                         before = len(call_bucket)
                         call_bucket.update(resolved)
                         if len(call_bucket) != before:
@@ -634,6 +662,7 @@ def collect_failsoft_report(sources: dict[str, str]) -> FailSoftReport:
             method = f"{prefix}.{attr}" if prefix is not None else ""
             if (source_name, method) in scope_data:
                 found.add((source_name, method))
+            found.update(class_callable_attrs.get((source_name, method), ()))
         for module_name in module_sources(call.func.value, key):
             target = simple_scopes.get(module_name, {}).get(attr)
             if target is not None:
@@ -825,7 +854,7 @@ def _canonical_sources(tools: Path = TOOLS) -> dict[str, str]:
 def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     report = collect_failsoft_report(_canonical_sources())
     assert report.boundaries, "scanner found no marked-skew boundaries"
-    assert len(report.boundaries) == 143, "propagation sweep boundary ratchet changed"
+    assert len(report.boundaries) == 154, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1113,6 +1142,50 @@ def consume():
                for violation in report.violations)
 
 
+def test_scanner_instance_callable_attribute_axis_has_an_independent_synthetic_fixture():
+    fn = "Holder.consume"
+    caller = """\
+def _load_leaf():
+    return _load_module("leaf.py")
+
+class Holder:
+    def __init__(self, injected=None):
+        self._run_fn = injected or self._default_run
+
+    def _default_run(self):
+        _load_leaf().risky()
+
+    def consume(self):
+        try:
+            self._run_fn()
+        except Exception:
+            return None
+"""
+    report = collect_failsoft_report({"leaf.py": _SYNTHETIC_LEAF, "caller.py": caller})
+    assert any("caller.py" in violation and f": {fn} " in violation
+               for violation in report.violations)
+
+
+def test_scanner_instance_callable_attribute_axis_keeps_foreign_receivers_unlinked():
+    """다른 객체의 같은-이름 속성은 링크하지 않는다 (provenance 없는 duck-typing 배제)."""
+    caller = """\
+def _load_leaf():
+    return _load_module("leaf.py")
+
+class Holder:
+    def __init__(self, other):
+        self._run_fn = other._run_fn
+
+    def consume(self):
+        try:
+            self._run_fn()
+        except Exception:
+            return None
+"""
+    report = collect_failsoft_report({"leaf.py": _SYNTHETIC_LEAF, "caller.py": caller})
+    assert not report.violations
+
+
 def test_scanner_rejects_unmarked_stderr_nonzero_helper_as_terminal():
     caller = """\
 import sys
@@ -1147,6 +1220,45 @@ def test_guard_sensitivity_new_caller_boundaries_turn_red(source_name, function)
     sources[source_name] = _remove_marker_branch(sources[source_name], function)
     report = collect_failsoft_report(sources)
     assert any(source_name in violation and function in violation
+               for violation in report.violations)
+
+
+def _remove_marker_statement(source: str, function: str, occurrence: int = 0) -> str:
+    """마커 분기를 **문장째** 지운다 — 마커를 아예 안 쓰는 신규 코드 모양(plain-absorb).
+
+    `_remove_marker_branch`(분기 body 만 `pass` 로) 와 다르다: 그 변형은 핸들러가 여전히
+    `_is_engine_rev_skew` 를 소비해 명시 root 로 잡히지만, 이쪽은 핸들러가 마커를 아예 안 써서
+    호출 그래프 추적만으로 잡아야 한다(축 커버리지의 실제 시험).
+    """
+    tree, handler = _scope_handler(source, function, occurrence)
+    marker = _marker_call(handler, "_is_engine_rev_skew")
+    kept = [
+        statement for statement in handler.body
+        if not (isinstance(statement, ast.If) and statement.test is marker)
+    ]
+    assert len(kept) < len(handler.body), f"{function}: 마커 분기가 핸들러 최상위에 없다"
+    handler.body = kept or [ast.copy_location(ast.Pass(), handler.body[0])]
+    return ast.unparse(ast.fix_missing_locations(tree)) + "\n"
+
+
+@pytest.mark.parametrize(
+    ("source_name", "function"),
+    [
+        ("ticket_finish.py", "TicketFinisher._notify_affected_domain"),
+        ("ticket_finish.py", "TicketFinisher._dirty_split"),
+        ("pm_bootstrap.py", "PmBootstrap._slot_branch_exists"),
+        ("pm_bootstrap.py", "PmBootstrap._unrecorded_base_candidates"),
+        ("pm_bootstrap.py", "PmBootstrap._slot_era_info"),
+    ],
+)
+def test_guard_sensitivity_instance_callable_attribute_plain_absorb_turns_red(
+    source_name, function,
+):
+    """`self.<attr>(...)` 경계는 마커 문장을 통째로 지운 신규 코드 모양에서도 잡힌다."""
+    sources = _canonical_sources()
+    sources[source_name] = _remove_marker_statement(sources[source_name], function)
+    report = collect_failsoft_report(sources)
+    assert any(source_name in violation and f": {function} " in violation
                for violation in report.violations)
 
 
@@ -1275,6 +1387,48 @@ def test_runtime_affected_domain_caller_rethrows_marked_skew(monkeypatch):
     instance._affected_domain_fn = instance._default_affected_domain
     with pytest.raises(RuntimeError) as raised:
         instance._notify_affected_domain("ticket")
+    assert raised.value is skew
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "bootstrap_slot_branch_exists",
+        "bootstrap_unrecorded_base_candidates",
+        "bootstrap_slot_era_info",
+        "finish_dirty_split",
+    ],
+)
+def test_runtime_instance_callable_attribute_boundaries_rethrow_marked_skew(case):
+    """DI 속성(`self._run_git_fn`·`self._status_entries_fn`) 경계의 런타임 재전파.
+
+    기본 구현이 형제 모듈 로드를 타므로(`_worktree_cwd`·`load_board_module`) marked skew 가
+    이 fail-soft 핸들러들에 도달한다 — 미존재/빈 목록/빈 보고로 강등하면 안 된다.
+    """
+    skew = _marked_skew()
+    if case == "finish_dirty_split":
+        module = _runtime_tool("ticket_finish.py")
+        instance = object.__new__(module.TicketFinisher)
+        instance._status_entries_fn = _raiser(skew)
+        invoke = lambda: instance._dirty_split(["src/file.py"])
+    else:
+        module = _runtime_tool("pm_bootstrap.py")
+        instance = object.__new__(module.PmBootstrap)
+        instance._bound_slot = None
+        instance._run_git_fn = _raiser(skew)
+        if case == "bootstrap_slot_branch_exists":
+            worktree_pool = SimpleNamespace(slot_path=lambda _slot: Path("slot"))
+            invoke = lambda: instance._slot_branch_exists(worktree_pool, "work/repo_1", "feature")
+        elif case == "bootstrap_unrecorded_base_candidates":
+            invoke = lambda: instance._unrecorded_base_candidates("slot")
+        else:
+            instance._resolve_slot_base = lambda _repo: SimpleNamespace(
+                branch="main", source="repo-default", target="origin/main", needs_fetch=False,
+            )
+            instance._worktree_cwd = lambda _slot: "slot"
+            invoke = lambda: instance._slot_era_info("repo", [])
+    with pytest.raises(RuntimeError) as raised:
+        invoke()
     assert raised.value is skew
 
 

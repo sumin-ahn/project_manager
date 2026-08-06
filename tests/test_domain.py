@@ -1617,6 +1617,234 @@ def test_lint_oversized_threshold_is_strict_gt(dm, tmp_path, monkeypatch):
     assert any(k == "oversized" for k, _p, _d in findings)
 
 
+# ── domain lint history (현재-진실 페이지의 변경 이력 누적·T-0503) ──────────────
+# 크기(oversized)가 아니라 **누적 자체**를 본다 — 페이지를 쪼개는 건 증상 유예이고, 원인은
+# 현재-진실 문서에 세션 delta 를 쓰는 관행이다. 아래는 검출축(⓵ 스탬프-머리 ⓶ 스탬프+라벨)과
+# 오탐 경계(본문 안 근거 인용은 대상 아님)를 함께 고정한다.
+
+_HISTORY_DELTA_BLOCK = (
+    "\n> **2026-07-26 (PM 12차) delta ([[T-0467]]):** 타임아웃 기본값을 올렸다.\n"
+)
+
+
+def _history_details(findings: list[tuple[str, str, str]]) -> list[str]:
+    return [detail for kind, _page, detail in findings if kind == "history"]
+
+
+def test_lint_detects_session_delta_blockquote(dm, tmp_path, monkeypatch, capsys):
+    # `> **YYYY-MM-DD (PM N차) delta:**` = 세션 delta 항목 → history finding.
+    _write_page(
+        tmp_path, "adapter.md",
+        frontmatter="title: 어댑터\ntype: concept",
+        body="\n지금의 형상은 이렇다. [[peer]]\n" + _HISTORY_DELTA_BLOCK,
+    )
+    _write_page(
+        tmp_path, "peer.md",
+        frontmatter="title: 피어\ntype: concept",
+        body="\n[[adapter]] 를 본다.\n",
+    )
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    assert dm.main(["lint"]) == 0
+    out = capsys.readouterr().out
+    assert "history" in out and "어댑터" in out
+    assert "log/ADR" in out          # detail 이 규칙(어디로 옮기나)을 함께 알린다
+    assert "피어" not in out          # 이력 없는 페이지는 finding 0
+
+
+def test_lint_history_sensitivity_fires_on_reaccrual(dm, tmp_path, monkeypatch):
+    """정리된 페이지는 clean 이고, delta 절을 **다시 쌓으면** 발화한다(재발 방지 sensitivity)."""
+    page = _write_page(
+        tmp_path, "clean.md",
+        frontmatter="title: 정리됨\ntype: concept",
+        body="\n지금 유효한 계약만 적혀 있다. 근거는 [[ADR-0022]].\n",
+    )
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    pages = dm.load_pages(domain_dir=tmp_path)
+    assert _history_details(dm.lint_pages(pages)) == []
+
+    # 다음 세션이 같은 관행으로 delta 를 덧붙인다 → 가드가 다시 운다.
+    page.write_text(page.read_text(encoding="utf-8") + _HISTORY_DELTA_BLOCK,
+                    encoding="utf-8")
+    pages = dm.load_pages(domain_dir=tmp_path)
+    details = _history_details(dm.lint_pages(pages))
+    assert len(details) == 1
+    assert "1개" in details[0]
+
+
+def test_lint_history_detects_stamp_headed_heading(dm, tmp_path, monkeypatch):
+    # 절을 개념이 아니라 변경 단위(티켓·릴리즈)로 조직한 헤딩도 히스토리 축이다.
+    _write_page(
+        tmp_path, "sections.md",
+        frontmatter="title: 절\ntype: concept",
+        body=(
+            "\n## T-0441 add-harness instance ownership\n본문.\n"
+            "\n### v1.4.2 첫 실전 보강\n본문.\n"
+        ),
+    )
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    pages = dm.load_pages(domain_dir=tmp_path)
+    details = _history_details(dm.lint_pages(pages))
+    assert len(details) == 1
+    assert "2개" in details[0]
+
+
+def test_lint_history_counts_run_on_dated_quote_list(dm, tmp_path, monkeypatch):
+    # 구분 빈 줄 없이 줄줄이 쌓은 `> (날짜) …` 이력 목록은 줄마다 한 항목이다.
+    _write_page(
+        tmp_path, "tail.md",
+        frontmatter="title: 꼬리\ntype: concept",
+        body=(
+            "\n본문.\n\n"
+            "> (2026-07-03) 재작성 — 3-tier → 2-tier.\n"
+            "> (2026-07-10) pin 7→9.\n"
+            "> (2026-07-14) pin 9→12.\n"
+        ),
+    )
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    pages = dm.load_pages(domain_dir=tmp_path)
+    details = _history_details(dm.lint_pages(pages))
+    assert len(details) == 1
+    assert "3개" in details[0]
+
+
+def test_lint_history_detects_label_only_heading(dm, tmp_path, monkeypatch):
+    """제목이 이력 절 이름이면 스탬프가 한 줄도 없어도 잡는다(스탬프 축 단독의 미탐 구멍).
+
+    `## 변경 이력` 아래 계보를 쌓으면 항목마다 날짜를 안 달아도 그 절 자체가 자라는 이력이다.
+    """
+    _write_page(
+        tmp_path, "sectioned.md",
+        frontmatter="title: 절이름\ntype: concept",
+        body=(
+            "\n## 변경 이력\n- 처음엔 A 였다가 B 를 거쳐 지금 C 다.\n"
+            "\n## changelog\n- 값이 올랐다.\n"
+            "\n## 히스토리\n- 그리고 또 올랐다.\n"
+        ),
+    )
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    pages = dm.load_pages(domain_dir=tmp_path)
+    details = _history_details(dm.lint_pages(pages))
+    assert len(details) == 1
+    assert "3개" in details[0]
+
+
+def test_lint_history_label_only_axis_is_start_anchored(dm, tmp_path, monkeypatch):
+    """이력 절 이름 축은 **시작-앵커** — 기능 서술 헤딩·산문의 같은 낱말은 안 잡는다."""
+    _write_page(
+        tmp_path, "feature.md",
+        frontmatter="title: 기능\ntype: concept",
+        body=(
+            "\n## 호출 이력 조회 API\n지금 유효한 계약.\n"
+            "\n## gotcha\n- 라이브 검증 history 는 log 에 있다.\n"
+        ),
+    )
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    pages = dm.load_pages(domain_dir=tmp_path)
+    assert _history_details(dm.lint_pages(pages)) == []
+
+
+def test_lint_history_detects_bold_leadin_outside_quote(dm, tmp_path, monkeypatch):
+    """인용 밖 줄머리 굵은 도입부(`- **vX.Y.Z … delta:** …`)도 스탬프+라벨이면 잡는다.
+
+    delta 를 blockquote 가 아니라 그냥 불릿으로 쓰는 형태 — 이 축이 없으면 인용만 피해서
+    같은 누적을 계속할 수 있다(축 제거 시 red 가 나는지로만 이 분기가 검증된다).
+    """
+    _write_page(
+        tmp_path, "bulleted.md",
+        frontmatter="title: 불릿\ntype: concept",
+        body=(
+            "\n## 본문\n"
+            "- **v1.5.2 코드 재검증 delta:** 이번 릴리즈에서 이렇게 바뀌었다.\n"
+            "- **지금 유효한 계약**: 이건 정상 현재-진실 서술이다.\n"
+        ),
+    )
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    pages = dm.load_pages(domain_dir=tmp_path)
+    details = _history_details(dm.lint_pages(pages))
+    assert len(details) == 1
+    assert "1개" in details[0]          # 정상 bold 불릿은 안 센다
+
+
+def test_lint_history_ignores_evidence_citation_in_prose(dm, tmp_path, monkeypatch):
+    """본문이 날짜·티켓·외부 버전을 *근거로* 인용하는 건 정상 현재-진실 서술 — 오탐 금지."""
+    _write_page(
+        tmp_path, "prose.md",
+        frontmatter="title: 산문\ntype: concept",
+        body=(
+            "\n## 본문\n"
+            "> 근거 = sealed spike `raw/spikes/harness-2026-07-20.md`(프로브 7회) + 코드 실측.\n"
+            "\n- **gap 은 파일 단위로 판정한다** ([[T-0480]]): 지금 규칙은 이렇다.\n"
+            "- 회사 기준 opencode 1.18.4 에서 재측정했다.\n"
+            "\n### 7. brownout = 일시 hang 창\n지금도 밟는 함정.\n"
+        ),
+    )
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    pages = dm.load_pages(domain_dir=tmp_path)
+    assert _history_details(dm.lint_pages(pages)) == []
+
+
+def test_lint_history_ignores_fenced_code(dm, tmp_path, monkeypatch):
+    # 코드펜스 안의 delta-형 예시는 실제 이력 항목이 아니다(문서가 규칙을 *설명*하는 경우).
+    _write_page(
+        tmp_path, "fenced.md",
+        frontmatter="title: 펜스\ntype: concept",
+        body=(
+            "\n규칙 예시:\n\n```\n"
+            "> **2026-07-26 (PM 12차) delta:** 이렇게 쓰지 마라.\n"
+            "```\n"
+        ),
+    )
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    pages = dm.load_pages(domain_dir=tmp_path)
+    assert _history_details(dm.lint_pages(pages)) == []
+
+
+def test_lint_history_applies_to_research_type(dm, tmp_path, monkeypatch):
+    """타입 분기 없음 — research 페이지의 세션 delta 도 같은 규칙으로 잡힌다."""
+    _write_page(
+        tmp_path, "research.md",
+        frontmatter="title: 조사\ntype: research",
+        body="\n조사 결과.\n" + _HISTORY_DELTA_BLOCK,
+    )
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    pages = dm.load_pages(domain_dir=tmp_path)
+    assert len(_history_details(dm.lint_pages(pages))) == 1
+
+
+def test_lint_history_is_independent_of_page_size(dm, tmp_path, monkeypatch):
+    """크기 임계와 직교 — 작아도 이력이 있으면 잡고, 커도 이력이 없으면 안 잡는다."""
+    _write_page(
+        tmp_path, "small.md",
+        frontmatter="title: 작음\ntype: concept",
+        body="\n짧다.\n" + _HISTORY_DELTA_BLOCK,
+    )
+    _write_page(
+        tmp_path, "big.md",
+        frontmatter="title: 큼\ntype: concept",
+        body="\n" + "\n".join(f"현재 계약 {i}." for i in range(40)) + "\n",
+    )
+    monkeypatch.setattr(dm, "page_stale", lambda page, **kw: None)
+    pages = dm.load_pages(domain_dir=tmp_path)
+    findings = dm.lint_pages(pages, oversized_lines=10)
+    assert [p for k, p, _d in findings if k == "history"] == ["작음"]
+    assert [p for k, p, _d in findings if k == "oversized"] == ["큼"]
+
+
+def test_history_detail_caps_quoted_leadins(dm):
+    # detail 은 lead-in 을 상한까지만 인용하고 나머지는 건수로 접는다(출력 부피 통제).
+    body = "".join(
+        f"\n> **2026-08-0{i} (PM 3{i}차) delta:** {'가' * 200}\n"
+        for i in range(1, 6)
+    )
+    leadins = dm.history_leadins(body)
+    assert len(leadins) == 5
+    detail = dm._history_detail(leadins)
+    assert "5개" in detail
+    assert f"외 {5 - dm.HISTORY_DETAIL_LIMIT}건" in detail
+    assert "…" in detail                       # 긴 lead-in 은 잘려 인용된다
+
+
 def test_lint_detects_stale_finding(dm, tmp_path, monkeypatch, capsys):
     # page_stale==True → stale finding (상호참조로 orphan 회피).
     _write_page(
@@ -2267,6 +2495,25 @@ def test_capture_no_change_prints_none_message(dm, tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert out == "(채록할 domain 변화 없음)\n"
     assert "판정 불일치 의심" not in out
+
+
+def test_capture_affected_prints_current_truth_replacement_rule(
+        dm, tmp_path, monkeypatch, capsys):
+    """채록 안내가 '갱신=현재-진실 교체'를 명시한다 — 세션 delta 유도 금지(T-0503 ④).
+
+    옛 안내는 "영향 페이지 (갱신 검토)" 뿐이라, 세션 done ticket 목록을 손에 든 시점의 자연스러운
+    행동이 *그 세션 delta 를 페이지에 덧붙이는 것*이었다(실측: 11 페이지에 44 항목 누적). 이제
+    같은 지점에서 히스토리의 행선지(log/ADR)를 함께 알린다.
+    """
+    _write_page(
+        tmp_path, "a.md",
+        frontmatter="title: A\ntype: concept\ncovers:\n  - src/a/**",
+    )
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    assert dm.main(["capture", "--touches", "src/a/x.py"]) == 0
+    out = capsys.readouterr().out
+    assert "영향 페이지" in out
+    assert "delta" in out and "log/ADR" in out
 
 
 def test_capture_directory_leading_wildcard_is_affected_without_gap(

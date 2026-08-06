@@ -235,6 +235,7 @@ def test_board_normal_sync_ok(tmp_path):
         "engine_rev.py": None,
         "board.py": None,
         "identity_args.py": None,
+        "file_lock.py": None,
     })
     mod = _load(tools, "board")
     assert mod.ENGINE_REV == _cur_rev()
@@ -297,6 +298,7 @@ def test_pm_bootstrap_load_board_normal_returns_module(tmp_path):
         "pm_bootstrap.py": None,
         "board.py": None,
         "identity_args.py": None,
+        "file_lock.py": None,
     })
     pmb = _load(tools, "pm_bootstrap")
     board = pmb._load_board()
@@ -412,6 +414,7 @@ def test_board_pm_delegate_loader_stale_sibling_fails_loud(tmp_path):
     tools = _build_tools(tmp_path, {
         "board.py": None,
         "identity_args.py": None,
+        "file_lock.py": None,
         "pm_delegate.py": _stale_source("pm_delegate"),
     })
     board = _load(tools, "board")
@@ -436,6 +439,7 @@ def test_board_pm_delegate_loader_reraises_nested_skew(tmp_path):
     tools = _build_tools(tmp_path, {
         "board.py": None,
         "identity_args.py": None,
+        "file_lock.py": None,
         "pm_delegate.py": nested,
     })
     board = _load(tools, "board")
@@ -450,6 +454,7 @@ def test_board_lint_delegate_reraises_marked_skew(tmp_path, monkeypatch):
     tools = _build_tools(tmp_path, {
         "board.py": None,
         "identity_args.py": None,
+        "file_lock.py": None,
     })
     board = _load(tools, "board")
 
@@ -469,6 +474,7 @@ def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch
     tools = _build_tools(tmp_path, {
         "board.py": None,
         "identity_args.py": None,
+        "file_lock.py": None,
         "console_encoding.py": None,
         "pm_delegate.py": _stale_source("pm_delegate"),
     })

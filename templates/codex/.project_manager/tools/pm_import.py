@@ -1169,14 +1169,27 @@ class AncestorConflict(Exception):
     """
 
 
+class UnsafeDestPathError(RuntimeError):
+    """dest 안이어야 할 경로가 symlink·조상 symlink·`..` 로 저장소 밖을 가리켜 거부됐다.
+
+    읽기/쓰기 전에 `_is_safe_dest_path` 로 판정하고 **작업 시작 전** 던진다(부분 적용 0·외부
+    파일 불변). RuntimeError 를 상속해 옛 호출부 처리를 유지하면서, CLI 경계
+    (`add_harness_cli`)가 이 타입만 골라 친화 메시지 + rc 1 로 번역한다(traceback 0)."""
+
+
 def _free_backup_path(backup: Path) -> Path:
-    """backup 경로가 비었으면 그대로, 점유됐으면 .1·.2… 순번을 붙여 빈 경로 반환."""
-    if not backup.exists():
+    """backup 경로가 비었으면 그대로, 점유됐으면 .1·.2… 순번을 붙여 빈 경로 반환.
+
+    점유 판정은 **링크를 따라가지 않는다**(`os.path.lexists`) — `exists()` 는 **깨진 symlink**
+    에 False 를 주므로, 그 자리를 "비었다"고 보고 그대로 쓰면 뒤이은 `shutil.copy2` 가 링크를
+    따라가 **저장소 밖에 파일을 만든다**. 링크 자체가 있으면 점유로 보고 다음 순번을 고른다
+    (원본 보존 + 외부 쓰기 차단)."""
+    if not os.path.lexists(backup):
         return backup
     n = 1
     while True:
         candidate = backup.with_name(f"{backup.name}.{n}")
-        if not candidate.exists():
+        if not os.path.lexists(candidate):
             return candidate
         n += 1
 
@@ -1750,6 +1763,43 @@ def _load_pm_render_module():
         return None
 
 
+def unregistered_skill_notation_template_dirs(
+    template_dirs: tuple[str, ...] | list[str],
+) -> list[str]:
+    """pm_render 스킬 표기 registry 에 값이 없는 template dir 목록(설치 전 게이트용).
+
+    렌더러는 호출 토큰이 있는 문서를 미등록 하네스 context 로 만나면 `RenderLeakError` 로
+    중단한다(알 수 없는 하네스를 조용히 `/` 로 복사하지 않는 fail-loud). 그런데 그 판정이
+    **복사 뒤 렌더 단계**라, 새 하네스를 registry 에 등록하고 표기 값을 안 넣은 채 설치하면
+    파일이 다 깔린 뒤 uncaught 로 터져 **부분 설치가 남았다**. 이 함수로 *복사 전에* 같은
+    조건을 판정해 `--fill auto` 미매핑 하네스 게이트와 같은 성질(파일 설치 전 중단·traceback 0·
+    설치 파일 0)을 `--fill manual` 경로에도 준다.
+
+    pm_render 로드 실패는 빈 목록 — 렌더 단계 자체가 skip 되므로 게이트할 대상이 없다
+    (`_load_pm_render_module` 의 render-skip 동작과 같은 경계).
+    """
+    render_mod = _load_pm_render_module()
+    if render_mod is None:
+        return []
+    prefixes = getattr(render_mod, "SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR", {})
+    labels = getattr(render_mod, "_HARNESS_LABEL_BY_TEMPLATE_DIR", {})
+    return [
+        dirname
+        for dirname in dict.fromkeys(template_dirs)
+        if dirname not in prefixes or dirname not in labels
+    ]
+
+
+def _unregistered_skill_notation_message(unregistered: list[str]) -> str:
+    """미등록 표기 하네스 안내 — main/add-harness 가 같은 문구를 쓴다(단일 진실)."""
+    return (
+        f"스킬 호출 표기 값이 미등록인 template 디렉터리: {', '.join(unregistered)} — "
+        "파일 설치 전 중단합니다. pm_render.SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR 와 "
+        "_HARNESS_LABEL_BY_TEMPLATE_DIR 에 그 하네스의 실제 호출 표기를 등록한 뒤 다시 "
+        "시도하세요(부분 설치를 남기지 않습니다)."
+    )
+
+
 def _render_managed_relpaths(dest_root: Path) -> set[str]:
     """복사된 트리의 engine.manifest 에서 `@render` path(repo 기준 relpath·POSIX) 집합.
 
@@ -1814,11 +1864,46 @@ def _engine_render_relpaths(root: Path) -> set[str]:
         return set()
 
 
+# manifest 미소유 출하 텍스트 중 **설치 하네스 전체**가 함께 읽는 표면 = 인스턴스 wiki.
+#   engine.manifest 는 *upstream 이 관리하는* 경로만 담는다 — status·log·architecture·raw/README
+#   같은 wiki seed 는 인스턴스 상태라 등재하면 pm_update 가 채택자 상태를 덮는다(엔진/상태 분리).
+#   그래서 이 부류는 "등재 강제"가 아니라 **설치 하네스 전체 집합 폴백**으로 표기를 해소한다.
+#   루트 진입 문서(AGENTS.md)는 독자가 하네스 부분집합이라 이 접두사에 넣지 않는다 — 호출부가
+#   NEUTRAL_SHARED_ENTRY_DOCS 멤버십으로 좁힌 context 를 명시 전달한다.
+INSTANCE_SHARED_WIKI_PREFIX = ".project_manager/wiki/"
+
+
+def read_text_keeping_newlines(path: Path) -> str:
+    """줄끝을 **번역하지 않고** 읽는다(`\\r\\n` 은 `\\r\\n` 그대로).
+
+    기본 텍스트 모드는 universal-newlines 라 `read_text`→`write_text` 왕복만으로 CRLF 가 LF 로
+    바뀐다. 렌더 범위가 *인스턴스 소유* 문서까지 넓어진 뒤에는 그게 표기와 무관한 바이트 변경
+    (Windows 채택자 트리 전체 줄끝 뒤집기·git diff 오염)이므로 원본 줄끝을 보존한다."""
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
+def write_text_keeping_newlines(path: Path, text: str) -> None:
+    """줄끝을 **번역하지 않고** 쓴다 — `read_text_keeping_newlines` 와 쌍(왕복 byte 보존)."""
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+
+
+def _is_notation_fallback_scope(rel_posix: str) -> bool:
+    """manifest 소유자가 없을 때 **설치 하네스 전체 표기**로 폴백해도 되는 relpath 인가.
+
+    폴백 대상 = 인스턴스 wiki 하위 전부(설치 하네스 전원이 같은 물리 문서를 읽는 표면).
+    엔진 backbone(`tools/**`)·어댑터 네임스페이스·루트 진입 문서는 독자가 특정 하네스라
+    여기 들어오지 않는다(전체 집합으로 렌더하면 오히려 오표기가 된다)."""
+    return rel_posix.startswith(INSTANCE_SHARED_WIKI_PREFIX)
+
+
 def render_managed_files(
     dest_root: Path,
     subs: dict[str, str],
     copied_relpaths: set[Path],
     entry_notation_templates: dict[str, tuple[str, ...]] | None = None,
+    installed_notation_context: tuple[str, ...] | None = None,
 ) -> int:
     """이번 run 이 복사한 @render path 파일을 render_adapter 산출물로 다시 쓴다. 변경 수 반환.
 
@@ -1832,10 +1917,20 @@ def render_managed_files(
     free-form 은 pm_import 의 FILL 채널이 canonical home 에서 전담하므로 render-overlay 가
     관여하지 않는다.
 
+    installed_notation_context: **이 인스턴스를 읽는 하네스 전체**의 template dir(registry
+    순서·dest 실설치 ∪ 이번 선택). manifest 어느 엔트리도 소유하지 않는 인스턴스 wiki 문서
+    (`_is_notation_fallback_scope`)의 표기를 이 집합으로 폴백 렌더한다 — 옛 동작은 소유자 부재를
+    `continue` 로 **조용히 건너뛰어** 다중 하네스 설치에서 canonical slash 가 그대로 출하됐다
+    (예 `wiki/raw/README.md` 의 `/spike-new`). 이번 run 의 선택만 넘기면 `--into` 로 하네스를
+    덧붙일 때 기존 독자가 빠져 반대 방향 오표기가 되므로 호출부가 `installed_harnesses` 로 합집합을
+    만든다. 폴백이 실제로 문서를 바꾸면 stderr 로 표기한다(조용한 degrade 금지). None 이면 폴백
+    없음(호출자 미배선).
+
     subs(중괄호 포함 token→value)를 pm_render 의 bare-key operational dict 로 변환해 넘긴다."""
     managed = _render_managed_relpaths(dest_root)
     notation_contexts = entry_notation_templates or {}
-    if not managed and not notation_contexts:
+    fallback_context = tuple(installed_notation_context or ())
+    if not managed and not notation_contexts and not fallback_context:
         return 0
     render_mod = _load_pm_render_module()
     if render_mod is None:
@@ -1855,22 +1950,34 @@ def render_managed_files(
         ]
         return max(matches, default=(0, None), key=lambda item: item[0])[1]
 
+    fallback_rendered: list[str] = []
     for rel in sorted(copied_relpaths):
         rel_posix = rel.as_posix()
         file_render = _is_render_managed(rel_posix, managed)
         context = notation_context(rel_posix)
         notation_managed = (
             file_render
-            or rel_posix.startswith(".project_manager/wiki/")
+            or rel_posix.startswith(INSTANCE_SHARED_WIKI_PREFIX)
             or rel_posix == "AGENTS.md"
         )
+        # manifest 소유자 부재 = 인스턴스 소유 wiki seed. 조용히 건너뛰지 않고 설치 하네스
+        #   전체 집합으로 폴백한다(단일 하네스면 그 하네스 표기·다중이면 병기).
+        used_fallback = False
+        if (
+            context is None
+            and not file_render
+            and fallback_context
+            and _is_notation_fallback_scope(rel_posix)
+        ):
+            context = fallback_context
+            used_fallback = True
         if not file_render and not (context and notation_managed):
             continue
         path = dest_root / rel
         if not path.is_file():
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_text_keeping_newlines(path)
         except (UnicodeDecodeError, OSError):
             continue
         rendered = (
@@ -1883,8 +1990,16 @@ def render_managed_files(
             else render_mod.render_skill_entry_notation(text, context)
         )
         if rendered != text:
-            path.write_text(rendered, encoding="utf-8")
+            write_text_keeping_newlines(path, rendered)
             changed += 1
+            if used_fallback:
+                fallback_rendered.append(rel_posix)
+    if fallback_rendered:
+        print(
+            f"  ⚠️ manifest 미소유 인스턴스 wiki {len(fallback_rendered)}건 — 설치 하네스 전체"
+            f"({', '.join(fallback_context)}) 표기로 폴백 렌더: {', '.join(fallback_rendered)}",
+            file=sys.stderr,
+        )
     return changed
 
 
@@ -3598,6 +3713,299 @@ def _byte_identical_skipped(
     return out
 
 
+# PM 어댑터 고유 판별자로 인정하는 이름 관례 — 파일명/디렉토리에 이 접두사가 있으면 PM 이
+# 깔아 준 자산이다(`pm_orch_claude.py`·`pm-instructions.md`·`skills/pm-bootstrap/`). 어댑터
+# 네임스페이스만 보면 일반 프로젝트가 자기 용도로 만든 `.codex/`·`AGENTS.md` 를 PM 설치로
+# 오인한다 — 그 오판은 표기 독자 집합을 부풀려 없는 하네스의 호출법을 출하한다.
+_PM_ASSET_NAME_PREFIXES = ("pm-", "pm_")
+
+
+def _pm_install_evidence(source_root: Path) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """`(하네스 → PM 설치 증거 후보, 하네스 → 전체 출하 relpath)`.
+
+    증거 후보 = 그 하네스 **어댑터 네임스페이스 안**의 PM 관례 자산(경로 컴포넌트가
+    `_PM_ASSET_NAME_PREFIXES` 로 시작 — `skills/pm-bootstrap/`·`pm_orch_claude.py`·
+    `pm-instructions.md`). 네임스페이스 밖(공유 wiki·엔진 backbone)은 하네스를 못 가르므로 제외.
+
+    두 번째 dict(전체 출하)는 **귀속 판정**용이다 — 어떤 증거가 다른 하네스에서도 나오는지
+    (예 `.claude/skills/pm-*` 는 claude 네임스페이스지만 opencode template 도 출하) 알아야
+    거짓 양성을 막는다. 소스 열거 실패는 그 하네스 빈 집합(호출부가 구조 판정으로 강등)."""
+    evidence: dict[str, set[str]] = {}
+    shipped_all: dict[str, set[str]] = {}
+    for name in REGISTERED_HARNESSES:
+        adapter_dirs = ADD_HARNESS_ADAPTER.get(name, ((), ""))[0]
+        rels: set[str] = set()
+        every: set[str] = set()
+        for dirname in HARNESS_TEMPLATE_DIRS.get(name, ()):
+            root = Path(source_root) / "templates" / dirname
+            if not root.is_dir():
+                continue
+            try:
+                shipped = list(_iter_source_files(root, "full"))
+            except Exception as exc:  # noqa: BLE001 — 열거 실패는 판별자 0(구조 판정으로 강등).
+                if _is_engine_rev_skew(exc):
+                    raise
+                continue
+            for rel, _src in shipped:
+                rel_posix = rel.as_posix()
+                every.add(rel_posix)
+                if not any(rel_posix == d.rstrip("/") or rel_posix.startswith(d.rstrip("/") + "/")
+                           for d in adapter_dirs):
+                    continue
+                if any(part.startswith(_PM_ASSET_NAME_PREFIXES)
+                       for part in rel_posix.split("/")):
+                    rels.add(rel_posix)
+        evidence[name] = rels
+        shipped_all[name] = every
+    return evidence, shipped_all
+
+
+def installed_harnesses(dest_root: Path, source_root: Path | None = None) -> list[str]:
+    """dest 트리에 **PM 어댑터가 실제로 설치된** 하네스. registry 정규 순서.
+
+    표기 렌더의 독자 집합은 "이번 run 이 고른 하네스"가 아니라 **그 인스턴스를 읽는 하네스
+    전부**다 — codex 인스턴스에 `--into claude` 로 claude 를 얹으면 공유 wiki 는 두 하네스가
+    함께 읽는다.
+
+    판정 2단: (a) 어댑터 네임스페이스 + 루트 진입문서 실재(opencode 가 `.claude/skills` 를 함께
+    깔기 때문에 claude 는 `CLAUDE.md` 까지 요구하고 codex 는 두 네임스페이스를 모두 요구한다)
+    (b) **PM 자산 실재**(`_pm_install_evidence` 의 증거 집합). (b)가 없으면 일반 프로젝트가 자기
+    용도로 가진 `.codex/`·`.agents/`·`AGENTS.md` 를 codex PM 설치로 오인해, PM 카드가 없는
+    인스턴스에 codex 호출 표기(`$pm-bootstrap`)를 출하한다.
+
+    (b)는 **전용·공유 증거를 가리지 않는다** — 구조 증거가 있는 하네스는 공유 자산(예 opencode
+    도 함께 까는 `.claude/skills/pm-*`)만으로도 설치로 본다. 공유 증거를 다른 하네스에 귀속해
+    빼면 공존 인스턴스에서 전용 판별자 하나가 빠졌을 때 그 하네스를 통째로 놓쳐 표기가 유실된다.
+    반대 방향 오차(채택자 자작 `CLAUDE.md` + opencode 설치 → claude 도 독자로 셈)는 병기 표기가
+    하나 늘 뿐이라 **유실보다 안전하다**(비대칭 판단·거짓 양성 허용).
+
+    ⚠ 한계: 증거가 적은 하네스는 그 파일들이 다 지워지면 미검출된다 — opencode 는 증거가
+    `.opencode/pm-instructions.md`·`pm_orch_opencode.py` 둘뿐이라 둘 다 사라지면 구조 증거가 있어도
+    설치로 안 본다(영속 설치 기록이 없는 추론 판정의 잔여 한계·후속 후보).
+
+    source_root 미지정/증거 파생 실패는 (a)만으로 판정한다(옛 동작·호출부는 항상 소스를 준다)."""
+    dest_root = Path(dest_root)
+    evidence, _shipped_all = (
+        _pm_install_evidence(source_root) if source_root is not None else ({}, {}))
+    structural = [
+        candidate
+        for candidate, (candidate_dirs, candidate_doc) in ADD_HARNESS_ADAPTER.items()
+        if all((dest_root / dirname).is_dir() for dirname in candidate_dirs)
+        and (dest_root / candidate_doc).is_file()
+    ]
+
+    def _present(rels) -> bool:
+        return any((dest_root / rel).is_file() for rel in rels)
+
+    # 구조 증거(어댑터 네임스페이스 + 루트 진입문서)가 있는 하네스는 **공유 증거만으로도**
+    #   인정한다 — 공유 자산을 다른 하네스에 귀속해 빼면 공존 인스턴스에서 전용 판별자 하나가
+    #   사라졌을 때 그 하네스가 통째로 미검출된다(claude+opencode 공존에서 `pm_orch_claude.py`
+    #   만 없어도 `.claude/skills/pm-*` 가 전부 opencode 몫이 돼 claude 유실·실측). 거짓 양성은
+    #   표기 소음이고 거짓 음성은 표기 유실이라 보수적으로 포함한다(비대칭).
+    #   판별자를 못 만든 하네스(소스 부재 등)는 구조 판정만으로 인정한다(옛 동작).
+    found = [
+        name for name in structural
+        if not evidence.get(name) or _present(evidence[name])
+    ]
+    return [name for name in REGISTERED_HARNESSES if name in found]
+
+
+def _unowned_shipped_wiki_relpaths(
+        source_root: Path, harnesses, notation_contexts: dict) -> list[str]:
+    """선택 하네스 template 이 **출하하는** wiki relpath 중 manifest 소유자가 없는 것.
+
+    표기 폴백이 해소하는 그 부류(인스턴스 상태 seed — `status.md`·`log/current.md`·
+    `raw/README.md` …)의 기계 파생이다. 손-열거 0: 출하 인벤토리(`_iter_source_files`·tracked-only)
+    에서 wiki 하위를 모으고 manifest 선언(`notation_contexts` 키)이 소유하는 경로를 뺀다.
+
+    add-harness 가 **기존 dest 파일**을 재렌더할 대상을 이 집합으로 한정한다 — 채택자가 직접
+    쓴 wiki 문서(티켓·ADR·spike·domain 페이지)는 여기 없으므로 제자리 재작성 대상이 되지
+    않는다(출하 seed 만·blast radius 한정). 소스 트리 부재/열거 실패는 빈 목록(무동작)."""
+    owners = {rel.rstrip("/") for rel in notation_contexts}
+    out: set[str] = set()
+    for name in harnesses:
+        for dirname in HARNESS_TEMPLATE_DIRS.get(name, ()):  # noqa: B905
+            root = Path(source_root) / "templates" / dirname
+            if not root.is_dir():
+                continue
+            try:
+                shipped = list(_iter_source_files(root, "full"))
+            except Exception as exc:  # noqa: BLE001 — 열거 실패는 후보 0(무동작).
+                # 엔진 사본 skew 는 삼키지 않는다 — 구 사본 부분 도달을 조용한 후보 0 으로
+                #   덮으면 재렌더가 통째로 사라진다(엔진 관례: fail-soft 하되 skew 만 재-raise).
+                if _is_engine_rev_skew(exc):
+                    raise
+                continue
+            for rel, _src in shipped:
+                rel_posix = rel.as_posix()
+                if not _is_notation_fallback_scope(rel_posix):
+                    continue
+                if any(rel_posix == owner or rel_posix.startswith(owner + "/")
+                       for owner in owners):
+                    continue
+                out.add(rel_posix)
+    return sorted(out)
+
+
+_WIKI_TEMPLATE_SUFFIX = ".template.md"
+
+
+def _generated_template_sibling(rel_posix: str) -> str | None:
+    """`wiki/pm_state.template.md` → `wiki/pm_state.md` (템플릿이 만들어 내는 인스턴스 파일).
+
+    `board.py init` 이 이 산출물을 만들고 그 시점 표기가 박제된다 — 나중에 하네스를 추가하면
+    템플릿은 재렌더되는데 산출물은 아무도 안 건드려 옛 표기로 남는다. 손-열거 대신 `*.template.md`
+    관례에서 파생한다(`_template.md` 스캐폴드는 1:1 산출물이 아니라 대상 아님)."""
+    if not rel_posix.endswith(_WIKI_TEMPLATE_SUFFIX):
+        return None
+    return rel_posix[: -len(_WIKI_TEMPLATE_SUFFIX)] + ".md"
+
+
+def _notation_rerender_contexts(
+        entry_notation_templates: dict, unowned_wiki_relpaths, installed_context: tuple,
+) -> dict:
+    """기존 dest 파일 재렌더 후보 relpath → 표기 context.
+
+    세 부류를 합친다:
+      - **manifest 소유 공유 문서** — 둘 이상 하네스가 같은 물리 경로를 읽는 것만(단일이면 그
+        하네스 template 이 이미 native 로 깔았다).
+      - **manifest 미소유 출하 wiki seed** — 소유자가 없어 `entry_notation_templates` 에 안
+        나타난다. 설치 하네스 전체를 독자로 본다(render 단계 폴백과 같은 의미·같은 값).
+      - **템플릿이 만들어 낸 인스턴스 파일**(`pm_state.template.md` → `pm_state.md`) — 생성
+        시점 표기가 박제돼 하네스 추가 후 옛 표기로 남는 유일한 파생 산출물이다.
+    실제로 바뀌는지(무변경 no-op 제외)는 `_shared_notation_rerender_plan` 이 산출 미리보기로
+    판정하므로 여기서는 후보만 넓게 모은다.
+    """
+    contexts = {
+        rel: context
+        for rel, context in entry_notation_templates.items()
+        if len(context) > 1
+    }
+    for rel, context in entry_notation_templates.items():
+        if not _is_notation_fallback_scope(rel):
+            continue
+        sibling = _generated_template_sibling(rel)
+        if sibling is not None:
+            contexts.setdefault(sibling, tuple(installed_context) or tuple(context))
+    for rel in unowned_wiki_relpaths:
+        contexts.setdefault(rel, tuple(installed_context))
+    return contexts
+
+
+def _shared_notation_rerender_plan(
+        dest_root: Path, entry_notation_templates: dict, backup_root: Path | None,
+        git_safe: set | None,
+) -> tuple[list[Path], list[str]]:
+    """같은 물리 문서를 둘 이상의 설치 하네스가 읽어 **기존 파일도 병기 렌더**해야 하는 relpath.
+
+    반환 `(재렌더 대상, 백업 불가로 제외한 relpath)`.
+
+    manifest 가 선언한 공유 wiki·공유 루트 doc 중 dest 에 이미 있는 파일만 좁게 연다(사용자
+    상태 전체 재복사 아님). **복사 시작 전** 계획으로 산출해 (a) dry-run 이 이 변경을 표시하고
+    (b) 적용 시 백업 범위에 들어가게 한다 — 옛 코드는 복사·적용이 끝난 뒤에야 이 집합을 계산해
+    dry-run 계획에도 백업에도 없었다(비파괴 보장 구멍).
+
+    경로 안전(`_is_safe_dest_path`)은 **여기서** 판정한다 — 옛 `is_file()` 단독 검사는 symlink 를
+    따라가고 `..` 도 안 걸러, 이후 치환·렌더가 저장소 밖 파일을 고칠 수 있었다. 위험 경로는
+    조용히 skip 하지 않고 **복사 시작 전 fail-loud**(engine.manifest 가드와 같은 성질 — 부분 적용
+    0·외부 파일 불변).
+
+    백업 대상 조상도 여기서 검증한다(`plan_copy` 와 동형 — git 추적&미변경은 git 이 복원하므로
+    백업 불요). 백업 자리가 막혀 있으면(예 `.pm_import_backups` 가 일반 파일) **그 파일만 재렌더
+    대상에서 빼고 호출부가 loud 하게 알린다** — 백업 못 할 파일은 고치지 않는다(비파괴). 여기서
+    전체를 중단하지 않는 이유는 이 재렌더가 *피할 수 있는* 변경이기 때문이다(local.conf 백업은
+    board init 이 무조건 덮어 회피 불가라 fail-loud 인 것과 대비).
+    """
+    render_mod = _load_pm_render_module()
+    unsafe: list[str] = []
+    backup_blocked: list[str] = []
+    out: list[Path] = []
+    checked_ancestors: set[Path] = set()
+    for rel_posix, context in sorted(entry_notation_templates.items()):
+        if not context:
+            continue
+        if not (rel_posix.startswith(INSTANCE_SHARED_WIKI_PREFIX)
+                or rel_posix == "AGENTS.md"):
+            continue
+        rel = Path(rel_posix)
+        if not _is_safe_dest_path(dest_root, rel):
+            # 존재하지 않는 경로는 애초에 대상이 아니다 — 실존하는데 불안전할 때만 거부한다.
+            if (dest_root / rel).is_symlink() or (dest_root / rel).exists():
+                unsafe.append(rel_posix)
+            continue
+        if not (dest_root / rel).is_file():
+            continue
+        if not _notation_rerender_changes_file(dest_root / rel, context, render_mod):
+            continue  # 산출 무변경 — 계획·백업·처리 어디에도 넣지 않는다(멱등 재실행 소음 0).
+        if backup_root is not None and not (
+                git_safe is not None and rel_posix in git_safe):
+            try:
+                _check_ancestor_safe(dest_root, backup_root / rel, checked_ancestors)
+            except AncestorConflict:
+                backup_blocked.append(rel_posix)
+                continue
+        out.append(rel)
+    if unsafe:
+        raise UnsafeDestPathError(
+            "add-harness 거부: 공유 문서 재렌더 대상 경로가 안전하지 않습니다 "
+            f"({', '.join(unsafe)}) — symlink·조상 symlink·repo 밖. 링크를 직접 옮기거나 "
+            "제거한 뒤 다시 시도하세요(복사 시작 전 중단 — 외부 파일을 건드리지 않습니다).")
+    return out, backup_blocked
+
+
+def _notation_rerender_changes_file(path: Path, context: tuple, render_mod) -> bool:
+    """이 파일이 재렌더로 **실제로 바뀌는가** (표기 산출 미리보기 + 미해소 토큰 잔존).
+
+    렌더러는 순수 함수라 계획 단계에서 산출을 미리 만들어 볼 수 있다. 무변경 파일을 계획·백업·
+    처리 범위에서 빼면 (a) `[rerender]` 계획이 실제 변경만 말하고 (b) 비-git 인스턴스에서
+    add-harness 를 재실행해도 이 경로로는 백업이 쌓이지 않는다(멱등).
+
+    판정 축은 **표기 산출**뿐이다 — 잔존 `{{...}}` 를 변경 후보로 세면 토큰을 *설명*으로 담는
+    방법론 문서(pm_role·pm_playbook)와 free-form 홈(pm_role.local.md)이 매 실행 재대상이 돼
+    멱등이 깨진다(실측: 재실행마다 3건 재계획·백업 누적). 그 문서들의 operational 치환은
+    최초 import 가 이미 끝냈고 sed 제외 규칙이 리터럴 유지를 의도한다.
+
+    렌더 모듈 로드 실패는 True — 판정 불가 시 보수적으로 대상에 넣는다(백업 우선)."""
+    if render_mod is None:
+        return True
+    try:
+        # 실제 렌더와 **같은 읽기**(줄끝 미번역)여야 계획과 적용이 어긋나지 않는다.
+        text = read_text_keeping_newlines(path)
+    except (UnicodeDecodeError, OSError):
+        return False  # 텍스트가 아니면 렌더 대상이 아니다(byte-copy 그대로).
+    try:
+        return render_mod.render_skill_entry_notation(
+            text, context, source=str(path)) != text
+    except Exception as exc:  # noqa: BLE001 — 판정 실패는 보수적으로 대상 포함(백업 우선).
+        if _is_engine_rev_skew(exc):
+            raise  # 엔진 사본 skew 는 삼키지 않는다(로드 경계 진단 보존).
+        return True
+
+
+def _backup_before_inplace_edit(
+        dest_root: Path, relpaths: list[Path], backup_root: Path | None,
+        git_safe: set | None) -> list[str]:
+    """복사 대상이 아닌 기존 파일을 **변경 직전에** 중앙 백업한다. 백업한 relpath 목록 반환.
+
+    `CopyAction` 백업 규칙과 동형: git 추적&미변경(git_safe)은 git 이 복원 가능하므로 생략하고,
+    그 밖은 `backup_root/<relpath>`(경로 점유 시 `_free_backup_path` 순번). backup_root=None 이면
+    백업 위치가 없어 무동작. symlink 는 `_shared_notation_rerender_plan` 이 이미 거부했다."""
+    if backup_root is None:
+        return []
+    done: list[str] = []
+    for rel in relpaths:
+        src = dest_root / rel
+        if not src.is_file():
+            continue
+        if git_safe is not None and rel.as_posix() in git_safe:
+            continue  # git 이 복원 가능 — 백업 생략(plan_copy git-safe skip 과 동형).
+        target = _free_backup_path(backup_root / rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, target, follow_symlinks=False)
+        done.append(rel.as_posix())
+    return done
+
+
 def _guest_line_key(line: str) -> tuple:
     """guest manifest 라인의 **마커-무관 비교 키** = (path, frozenset(markers)).
 
@@ -3680,7 +4088,7 @@ def _append_guest_render_to_manifest(
     #   따라가 외부 파일을 노출/덮는다 — **fail-loud**(조용한 skip 아님). 부분 적용 방지는 add_harness 의
     #   복사 시작 전 조기 가드가 맡고, 여기선 직접 호출·TOCTOU 백스톱.
     if not _is_safe_dest_path(dest_root, Path(".project_manager") / "engine.manifest"):
-        raise RuntimeError(
+        raise UnsafeDestPathError(
             f"add-harness: engine.manifest 경로가 안전하지 않아 guest 등재를 거부합니다 ({manifest}) "
             "— symlink·조상 symlink·repo 밖. 링크를 옮기거나 제거한 뒤 다시 시도하세요(외부 파일 불변).")
     if not manifest.is_file():
@@ -3736,6 +4144,11 @@ def add_harness(
     instance-owned config는 create-if-absent 보존·`--into` 백업 철학). fill(LLM) 불요 — operational 토큰 치환(substitute_placeholders)·opencode
     모델 결정적 해소(resolve_opencode_model)·자유서술 TODO 표시(_run_manual_fill·비-LLM)만.
 
+    복사 대상은 아니지만 이번 add 로 **기존 공유 문서**(둘 이상 하네스가 읽는 wiki·`AGENTS.md`)가
+    병기 표기로 재렌더된다 — 그 계획은 `_shared_notation_rerender_plan` 이 **복사 시작 전**
+    산출·안전 검증하고, 출력/dry-run 계획에 `[rerender]` 로 표시되며, 적용 시 변경 직전에 중앙
+    백업을 거친다(비파괴: 계획 제시 + 백업 후 변경).
+
     dry_run=True 면 plan 만 산출·출력(파일시스템 미변경). 반환값 = 스코프 제한된 CopyAction plan.
     source_root 생략 시 _resolve_add_harness_source 로 소스를 정한다: dest local.conf
     upstream(path·templates 보유) > dest 자신(templates 보유·framework-checkout 자기전환) > 친화
@@ -3757,46 +4170,62 @@ def add_harness(
     #   manifest`)가 링크를 따라가 외부 파일을 노출/덮는다. 불안전이면 어떤 복사·등재도 시작하지 않는다
     #   (부분 적용 0). 읽기·쓰기 지점이 같은 경로라 이 단일 가드가 양쪽을 덮는다.
     if not _is_safe_dest_path(dest_root, Path(".project_manager") / "engine.manifest"):
-        raise RuntimeError(
+        raise UnsafeDestPathError(
             f"add-harness 거부: engine.manifest 경로가 안전하지 않습니다 "
             f"({dest_root / '.project_manager' / 'engine.manifest'}) — symlink·조상 symlink·repo 밖. "
             "링크를 직접 옮기거나 제거한 뒤 다시 시도하세요(비파괴 — 외부 파일을 건드리지 않습니다).")
     src_root = _resolve_add_harness_source(dest_root, harness, source_root)
     template_root = resolve_template_roots(src_root, harness)[0]
 
-    # 기존 adapter namespace로 실제 설치 하네스를 판별한다. opencode가 `.claude/skills`를 함께
-    # 설치하므로 claude는 CLAUDE.md까지 요구하고, codex는 두 namespace를 모두 요구한다.
-    installed_harnesses = []
-    for candidate, (candidate_dirs, candidate_doc) in ADD_HARNESS_ADAPTER.items():
-        dirs_present = all((dest_root / dirname).is_dir() for dirname in candidate_dirs)
-        doc_present = (dest_root / candidate_doc).is_file()
-        if dirs_present and doc_present:
-            installed_harnesses.append(candidate)
+    # 표기 독자 = dest 실설치 하네스 ∪ 이번에 추가하는 하네스(공용 판정 helper).
     selected_harnesses = tuple(
         candidate
         for candidate in REGISTERED_HARNESSES
-        if candidate in {*installed_harnesses, harness}
+        if candidate in {*installed_harnesses(dest_root, src_root), harness}
     )
+    # 미등록 표기 하네스는 **복사 시작 전** 거부한다 — 렌더 단계에서 터지면 부분 설치가 남는다
+    #   (main import 게이트와 같은 성질·같은 문구). ValueError 라 add_harness_cli 가 친화
+    #   메시지 + rc1 로 번역한다(traceback 0).
+    unregistered_notation = unregistered_skill_notation_template_dirs(
+        [HARNESS_TEMPLATE_DIRS[name][0] for name in selected_harnesses])
+    if unregistered_notation:
+        raise ValueError(
+            f"add-harness: {_unregistered_skill_notation_message(unregistered_notation)}")
     pm_update_mod = _load_pm_update()
     if pm_update_mod is None:
         raise RuntimeError(
             "add-harness: pm_update.py를 로드할 수 없어 공유 경로 표기 context를 만들 수 없습니다."
         )
+    # 설치 하네스의 표기 manifest 는 **전원 확보**돼야 한다 — 하나라도 없으면 그 독자를 뺀 채
+    #   공유 문서를 재렌더하게 되므로 복사 전에 중단한다(main import 와 같은 성질). 타입은
+    #   FileNotFoundError — `add_harness_cli` 가 소스 템플릿 부재와 같은 친화 메시지 + rc 1 로
+    #   번역해 traceback 을 남기지 않는다(양 진입 대칭).
+    notation_manifests = []
+    missing_notation_manifests = []
+    for name in selected_harnesses:
+        manifest = (src_root / "templates" / HARNESS_TEMPLATE_DIRS[name][0]
+                    / ".project_manager" / "engine.manifest")
+        (notation_manifests if manifest.is_file() else missing_notation_manifests).append(
+            manifest if manifest.is_file() else f"{name}({manifest})")
+    if missing_notation_manifests:
+        raise FileNotFoundError(
+            "add-harness: 설치 하네스의 표기 manifest 를 소스에서 찾을 수 없습니다: "
+            f"{', '.join(missing_notation_manifests)}. 그 하네스를 독자에서 조용히 빼면 공유 "
+            "문서가 잘못된 단독 표기로 재렌더되므로 복사 전에 중단합니다 — `--from` 이 그 flavor "
+            "template 을 가진 checkout 인지 확인하세요."
+        )
     entry_notation_templates = pm_update_mod._entry_notation_templates_from_manifests(
-        [
-            src_root / "templates" / HARNESS_TEMPLATE_DIRS[name][0]
-            / ".project_manager" / "engine.manifest"
-            for name in selected_harnesses
-        ],
-        src_root,
-    )
+        notation_manifests, src_root)
     shared_agents_members = NEUTRAL_SHARED_ENTRY_DOCS[Path("AGENTS.md")][0]
     selected_shared_agents = tuple(
         HARNESS_TEMPLATE_DIRS[name][0]
         for name in selected_harnesses
         if name in shared_agents_members
     )
-    if len(selected_shared_agents) > 1:
+    # main import 와 같은 규칙 — AGENTS.md 는 manifest 미등재라 소유자 매칭으로 context 가 안
+    #   나오고, 독자는 이 진입문서를 읽는 하네스 부분집합이다. 단일 멤버여도 명시 전달한다
+    #   (조용한 skip 0·단일이면 그 하네스 표기라 출하 형상에선 no-op).
+    if selected_shared_agents:
         entry_notation_templates["AGENTS.md"] = selected_shared_agents
 
     adapter_dirs, root_doc = ADD_HARNESS_ADAPTER[harness]
@@ -3822,6 +4251,22 @@ def add_harness(
     backup_root = dest_root / BACKUP_DIR_NAME / today
     git_safe = git_safe_relpaths(dest_root)
 
+    # 기존 공유 문서 재렌더 계획 — **복사 시작 전** 산출해 경로 안전을 검증하고(위험 경로면 여기서
+    #   fail-loud·부분 적용 0) dry-run 표시·백업 범위에 싣는다. 후보는 두 부류다:
+    #   manifest 소유 공유 문서(다중 하네스) + **manifest 미소유 출하 wiki seed**. 후자를 빼면
+    #   claude 인스턴스에 codex 를 얹었을 때 `wiki/raw/README.md` 가 canonical slash 로 남아
+    #   최초 설치 경로에서 닫은 조용한 degrade 가 이 경로로 되살아난다(add-harness 축 실측).
+    installed_notation_context = tuple(
+        HARNESS_TEMPLATE_DIRS[name][0] for name in selected_harnesses)
+    rerender_contexts = _notation_rerender_contexts(
+        entry_notation_templates,
+        _unowned_shipped_wiki_relpaths(
+            src_root, selected_harnesses, entry_notation_templates),
+        installed_notation_context,
+    )
+    shared_rerender_relpaths, shared_backup_blocked = _shared_notation_rerender_plan(
+        dest_root, rerender_contexts, backup_root, git_safe)
+
     # 전체 어댑터 트리 plan → (네임스페이스 ∪ flavor `@render` − host 실소유)로 구조적 제한(Decision 2·5·
     # ). 그 밖(엔진·wiki·타 harness·설정·파사드·flavor 미선언)은 필터로 제거돼 plan 에 0개다(불변식).
     create_if_absent = ADD_HARNESS_CREATE_IF_ABSENT[harness]
@@ -3836,6 +4281,12 @@ def add_harness(
             rel, adapter_dirs, root_doc, dest_owned, guest_render_paths),
     )
 
+    # 복사 plan 이 이미 실을 경로는 재렌더 목록에서 뺀다 — 그쪽이 CopyAction 백업 + render 를
+    #   모두 하므로 남겨 두면 같은 파일을 두 번 백업하고 계획에 두 번 나온다(예 공유 `AGENTS.md`).
+    planned_copy_relpaths = {a.dst.relative_to(dest_root) for a in plan}
+    shared_rerender_relpaths = [
+        rel for rel in shared_rerender_relpaths if rel not in planned_copy_relpaths]
+
     n_new = sum(1 for a in plan if a.backup is None and not a._git_safe_skip)
     n_refresh = len(plan) - n_new
     print(f"[pm_import add-harness] {harness} → {dest_root}")
@@ -3848,6 +4299,16 @@ def add_harness(
         print(f"  ⚠️ instance-owned {rel}: 기존 값이 template과 다름 — byte 보존. "
               "template 변경은 수동 반영하세요.")
     print(f"  → {len(plan)} 파일 ({n_new} 신규 · {n_refresh} refresh)")
+    # 복사 대상은 아니지만 이번 add 로 *내용이 바뀌는* 기존 공유 문서 — 계획에 명시한다
+    #   (dry-run·적용 공통. 적용 경로는 아래에서 백업 후 렌더한다).
+    if shared_rerender_relpaths:
+        print(f"  공유 문서 재렌더 ({len(shared_rerender_relpaths)}건 · 병기 표기 · 백업 후 변경):")
+        for rel in shared_rerender_relpaths:
+            print(f"  [rerender] {rel.as_posix()}")
+    for rel_posix in shared_backup_blocked:
+        print(f"  ⚠️ 공유 문서 {rel_posix}: 백업 자리({BACKUP_DIR_NAME}/)가 막혀 있어 재렌더를 "
+              "생략합니다 — 백업 못 하는 파일은 고치지 않습니다(비파괴). 해당 경로를 정리한 뒤 "
+              "다시 실행하세요.", file=sys.stderr)
 
     if dry_run:
         # engine.manifest guest `@render` 동기 미리보기 — 추가/제거 예정 둘 다(실제 sync 와 같은 계획·
@@ -3888,15 +4349,19 @@ def add_harness(
     #   생성 파일(내용 상이·copied)은 제외된다(과확장 봉쇄). 기존 렌더 파이프 재사용.
     proc_relpaths = copied_relpaths | _byte_identical_skipped(
         template_root, dest_root, copied_relpaths, adapter_dirs)
-    # 같은 물리 문서를 둘 이상의 설치 하네스가 읽으면 기존 파일도 병기 렌더 대상이다.
-    # 사용자 상태 전체를 다시 복사하지 않고 manifest가 선언한 공유 wiki와 공유 root doc만 좁게 연다.
-    proc_relpaths |= {
-        Path(rel)
-        for rel, context in entry_notation_templates.items()
-        if len(context) > 1
-        and (rel.startswith(".project_manager/wiki/") or rel == "AGENTS.md")
-        and (dest_root / rel).is_file()
-    }
+    # 같은 물리 문서를 둘 이상의 설치 하네스가 읽으면 기존 파일도 병기 렌더 대상이다(계획은
+    #   복사 전 `_shared_notation_rerender_plan` 이 안전 검증까지 마쳤다). 이 파일들은 복사
+    #   액션이 아니라 **제자리 변경**이므로 백업이 CopyAction 을 안 탄다 — 변경 직전에 같은
+    #   중앙 백업 규칙으로 직접 백업한다(비파괴: 적용 전 계획 제시 + 백업 후 변경).
+    shared_backed_up = _backup_before_inplace_edit(
+        dest_root, shared_rerender_relpaths, backup_root, git_safe)
+    if shared_backed_up:
+        print(f"  ✓ 공유 문서 {len(shared_backed_up)}건 백업: {', '.join(shared_backed_up)}")
+    # ⚠ 기존 문서는 **표기 렌더 채널에만** 싣는다 — placeholder 치환·자유서술 fill 범위
+    #   (`proc_relpaths`)에 넣으면 채택자가 쓴 `{{PROJECT_NAME}}` 리터럴이 이름으로 바뀌고
+    #   자유서술 토큰에 TODO 마커가 붙는다(콘텐츠 훼손·실측). 이번 run 이 *복사한* 파일만
+    #   치환·fill 대상이라는 비파괴 범위(MF1)는 그대로 둔다.
+    render_relpaths = proc_relpaths | set(shared_rerender_relpaths)
     # 라이브 인스턴스의 project_name 은 기존 local.conf 를 존중(없으면 디렉토리명 폴백).
     project_name = _instance_project_name(dest_root)
     subs = _substitution_map(project_name, dest_root, today)
@@ -3908,8 +4373,11 @@ def add_harness(
     render_managed_files(
         dest_root,
         subs,
-        proc_relpaths,
+        render_relpaths,
         entry_notation_templates=entry_notation_templates,
+        # manifest 미소유 wiki seed 는 소유자 매칭으로 context 가 안 나온다 — 설치 하네스 전체를
+        #   폴백 컨텍스트로 넘겨야 위 재렌더 대상이 실제로 병기 표기를 받는다(최초 설치와 같은 채널).
+        installed_notation_context=installed_notation_context,
     )
     # 자유서술 placeholder 는 TODO 표시(비-LLM·main manual 흐름과 동일).
     _run_manual_fill(dest_root, proc_relpaths)
@@ -3948,13 +4416,15 @@ def add_harness_cli(
     운영 진입(`pm_config add-harness`·Decision 3)이 verbatim 위임하는 얇은 래퍼다. add_harness
     자체(확정 시그니처/로직)는 건드리지 않고, 그것이 던지는 인터페이스 예외만 CLI 경계에서
     잡아 `main()` 과 *동일하게* 처리한다(에러 처리의 단일 진실 = CLI contract owner = pm_import):
-      - ValueError            : 미지원/집합 harness(add_harness 입구 검증).
+      - ValueError            : 미지원/집합 harness·미등록 표기 하네스(add_harness 입구 검증).
       - FileNotFoundError     : dest 부재/비-디렉토리·소스 템플릿 부재(resolve_template_roots).
       - FileVsDirConflict     : 어댑터 dst 위치에 기존 디렉토리(plan_copy·비파괴 거부).
       - AncestorConflict      : dst 조상에 symlink/비-디렉토리 파일(plan_copy·비파괴 거부).
-    이 네 예외는 add_harness 가 *출력 전*(plan_copy·resolve_template_roots·입구 검증)에 던지므로
-    부분 출력/부작용 없이 깨끗한 `오류: …`(stderr) + rc 1 로 끝난다(traceback 0·main 동형). 성공은
-    add_harness 가 자체 plan/summary 를 출력하고 여기선 rc 0 만 돌려준다(위임 verbatim·중복 출력 0).
+      - UnsafeDestPathError   : engine.manifest·공유 문서 경로가 repo 밖 지향(복사 전 거부).
+    이 다섯 예외는 add_harness 가 *복사 전*(plan_copy·resolve_template_roots·입구 검증·경로 안전
+    가드)에 던지므로 부분 적용 없이 깨끗한 `오류: …`(stderr) + rc 1 로 끝난다(traceback 0·main
+    동형). 성공은 add_harness 가 자체 plan/summary 를 출력하고 여기선 rc 0 만 돌려준다(위임
+    verbatim·중복 출력 0).
 
     dry_run/source_root 는 add_harness 로 그대로 전달한다(투명 위임). 반환: 0(성공)·1(인터페이스 예외).
     """
@@ -3965,6 +4435,7 @@ def add_harness_cli(
         FileNotFoundError,
         FileVsDirConflict,
         AncestorConflict,
+        UnsafeDestPathError,
         EmptyTemplateShippingInventoryError,
     ) as exc:
         print(f"오류: {exc}", file=sys.stderr)
@@ -4455,19 +4926,58 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError(
                 "pm_update.py를 로드할 수 없어 하네스별 스킬 표기 context를 만들 수 없습니다."
             )
+        # 표기 독자 = **dest 실설치 하네스 ∪ 이번 선택**. `--into` 로 codex 인스턴스에 claude 를
+        #   얹으면 공유 wiki 는 두 하네스가 함께 읽는다 — 이번 run 의 집합만 쓰면 새로 깔린
+        #   문서가 claude 단독 표기로 나가 기존 codex 독자에게 틀린 표기가 된다(실측).
+        #   `--new` 는 빈 dest 라 실설치 집합이 비어 선택과 같다(현행 회귀 불변).
+        notation_harnesses = tuple(
+            name for name in HARNESS_TEMPLATE_DIRS
+            if name in {*installed_harnesses(dest_root, source_root), *args.harness}
+        )
+        # context 파생 manifest 도 그 독자 집합에서 뽑는다(선택 트리만 보면 기존 하네스가 빠져
+        #   공유 문서가 단독 표기로 재렌더된다). 소스에서 한 하네스의 manifest 라도 못 얻으면
+        #   **조용히 빼지 않고 복사 전에 중단한다** — 조용한 제외는 그 독자가 없는 것처럼
+        #   재렌더해(기존 codex 인스턴스에 claude 단독 표기) 이 티켓이 닫은 클래스를 되살린다.
+        notation_manifests = []
+        missing_notation_manifests = []
+        for name in notation_harnesses:
+            for dirname in HARNESS_TEMPLATE_DIRS[name]:
+                manifest = (source_root / "templates" / dirname
+                            / ".project_manager" / "engine.manifest")
+                if manifest.is_file():
+                    notation_manifests.append(manifest)
+                else:
+                    missing_notation_manifests.append(f"{name}({manifest})")
+        if missing_notation_manifests:
+            raise RuntimeError(
+                "설치 하네스의 표기 manifest 를 소스에서 찾을 수 없습니다: "
+                f"{', '.join(missing_notation_manifests)}. 그 하네스를 독자에서 조용히 빼면 "
+                "공유 문서가 잘못된 단독 표기로 재렌더되므로 중단합니다 — `--from` 이 그 flavor "
+                "template 을 가진 checkout 인지 확인하세요."
+            )
         entry_notation_templates = pm_update_mod._entry_notation_templates_from_manifests(
-            [root / ".project_manager" / "engine.manifest" for root in template_roots],
+            notation_manifests
+            or [root / ".project_manager" / "engine.manifest" for root in template_roots],
             source_root,
         )
         shared_agents_members = NEUTRAL_SHARED_ENTRY_DOCS[Path("AGENTS.md")][0]
         selected_shared_agents = tuple(
             HARNESS_TEMPLATE_DIRS[harness][0]
-            for harness in args.harness
+            for harness in notation_harnesses
             if harness in shared_agents_members
         )
-        if len(selected_shared_agents) > 1:
+        # AGENTS.md 는 manifest 미등재(instance-owned 루트 doc)라 소유자 매칭으로는 context 가
+        #   안 나온다. 독자가 설치 하네스 전체가 아니라 이 진입문서를 읽는 부분집합이므로
+        #   wiki 폴백에 맡기지 않고 그 멤버십을 명시 전달한다 — 단일 하네스도 마찬가지다
+        #   (조용한 skip 0·단일이면 그 하네스 표기라 출하 형상에선 no-op).
+        if selected_shared_agents:
             entry_notation_templates["AGENTS.md"] = selected_shared_agents
     except (OSError, ValueError, RuntimeError) as exc:
+        # 엔진 사본 skew 는 삼키지 않는다 — 이 블록은 설치 하네스 판별(`installed_harnesses` →
+        #   출하 인벤토리 열거)까지 품어 skew 가 도달할 수 있고, 그걸 "context 실패 rc1" 로
+        #   덮으면 로드 경계 진단이 사라진다(엔진 관례: fail-soft 하되 skew 만 재-raise).
+        if _is_engine_rev_skew(exc):
+            raise
         print(
             "오류: 선택된 어댑터의 스킬 표기 context를 만들 수 없어 복사 전에 중단합니다 — "
             f"{exc}",
@@ -4475,14 +4985,57 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # ── 계획 출력 ──
-    mode_label = f"--new {dest_root}" if is_new else f"--into {dest_root}"
-    harness_label = ",".join(args.harness)
     template_dir_names = [
         template_dir
         for harness_name in args.harness
         for template_dir in HARNESS_TEMPLATE_DIRS[harness_name]
     ]
+    # 폴백 표기 context = 이 인스턴스를 읽는 하네스 전체(기존 설치 + 이번 선택).
+    notation_context_dirs = tuple(
+        template_dir
+        for harness_name in notation_harnesses
+        for template_dir in HARNESS_TEMPLATE_DIRS[harness_name]
+    )
+    # 미등록 표기 하네스는 **복사 전** 중단한다 — 렌더 단계에서 터지면 부분 설치가 남는다.
+    #   판정 대상은 실제 렌더 context 전체다(기존 설치 하네스가 미등록이어도 복사 뒤에 터진다).
+    unregistered_notation = unregistered_skill_notation_template_dirs(
+        notation_context_dirs)
+    if unregistered_notation:
+        print(
+            f"오류: {_unregistered_skill_notation_message(unregistered_notation)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 복사 대상이 아닌 **기존 dest 파일**의 재렌더 계획(`--into` 축·`--new` 는 빈 dest 라 0건).
+    #   복사가 닿지 않는 두 부류가 여기서 걸린다: (a) 이번 선택 하네스가 출하하지 않는 wiki seed
+    #   (기존 하네스가 깔아 둔 것) (b) 템플릿에서 *생성된* 인스턴스 파일(`pm_state.md`). 계획·백업·
+    #   경로 안전을 add-harness 와 같은 경로로 태운다(비파괴 보장 동형).
+    copied_dst_relpaths = {a.dst.relative_to(dest_root) for a in actions}
+    try:
+        existing_rerender_relpaths, existing_backup_blocked = (
+            _shared_notation_rerender_plan(
+                dest_root,
+                _notation_rerender_contexts(
+                    entry_notation_templates,
+                    _unowned_shipped_wiki_relpaths(
+                        source_root, notation_harnesses, entry_notation_templates),
+                    notation_context_dirs,
+                ),
+                backup_root,
+                git_safe,
+            )
+        )
+    except UnsafeDestPathError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    # 이번 run 이 복사하는 파일은 이미 render 범위 안이라 중복 처리하지 않는다.
+    existing_rerender_relpaths = [
+        rel for rel in existing_rerender_relpaths if rel not in copied_dst_relpaths]
+
+    # ── 계획 출력 ──
+    mode_label = f"--new {dest_root}" if is_new else f"--into {dest_root}"
+    harness_label = ",".join(args.harness)
     print(f"[pm_import] {mode_label}  harness={harness_label}  weight={args.weight}")
     print(f"  소스: {source_root}/templates/{'+'.join(template_dir_names)}")
     n_copy = len(actions)
@@ -4499,6 +5052,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"  백업 위치: {BACKUP_DIR_NAME}/{today}/  · {git_note}")
     print(f"  → {n_copy} 파일 복사 ({n_backup} 백업), placeholder 치환, board.py init")
+    # 복사 대상은 아니지만 표기 병기로 *내용이 바뀌는* 기존 파일 — 계획에 명시한다(dry-run 공통).
+    if existing_rerender_relpaths:
+        print(f"  기존 문서 재렌더 ({len(existing_rerender_relpaths)}건 · 병기 표기 · "
+              "백업 후 변경):")
+        for rel in existing_rerender_relpaths:
+            print(f"  [rerender] {rel.as_posix()}")
+    for rel_posix in existing_backup_blocked:
+        print(f"  ⚠️ 기존 문서 {rel_posix}: 백업 자리({BACKUP_DIR_NAME}/)가 막혀 있어 재렌더를 "
+              "생략합니다 — 백업 못 하는 파일은 고치지 않습니다(비파괴).", file=sys.stderr)
     if len(template_roots) > 1:
         print(
             f"  engine.manifest: 선택된 {len(template_roots)}개 트리 선언의 합집합 "
@@ -4623,11 +5185,18 @@ def main(argv: list[str] | None = None) -> int:
     # render 단계: @render manifest path 의 복사본을 render_adapter
     # 산출물로 다시 쓴다 — operational 토큰(subs·이미 sed) 치환. free-form value-fill 은 
     # 로 제거(FILL 채널이 canonical home 전담). substitute·모델해소 *직후*. 범위 = copied_relpaths(비파괴).
+    # 복사 밖 기존 문서(위 계획)는 **변경 직전 백업 후** 같은 render 채널에 실어 병기 표기를
+    #   받는다. 치환·fill 범위(copied_relpaths·MF1)는 넓히지 않는다 — 표기 렌더만 태운다.
+    existing_backed_up = _backup_before_inplace_edit(
+        dest_root, existing_rerender_relpaths, backup_root, git_safe)
+    if existing_backed_up:
+        print(f"✓ 기존 문서 {len(existing_backed_up)}건 백업: {', '.join(existing_backed_up)}")
     n_render = render_managed_files(
         dest_root,
         subs,
-        copied_relpaths,
+        copied_relpaths | set(existing_rerender_relpaths),
         entry_notation_templates=entry_notation_templates,
+        installed_notation_context=notation_context_dirs,
     )
     if n_render:
         print(f"✓ {n_render} 파일 render (operational 토큰 치환)")

@@ -73,7 +73,7 @@ python3 .project_manager/tools/pm_handoff.py \
    - **pending user intent** — 다음 우선순위 + 사용자 결정 대기. PM 손.
    - **회귀/incident** — 회귀 "N passed / 상태" **1줄(green 도 — baseline)** + 비-자명 incident. 회귀는 항상 적는다.
    - **FORBIDDEN (대량 재열거 금지 — source 가 답한다):** board done/open/claimed/blocked 카운트 (→ `board.py list`) · open ticket ID 목록 (→ `pm_bootstrap`) · commit 해시·push 상태 (→ `git log`/`git status`) · 직전 complete entry 산출물 재요약 (→ 자동 박제 목록의 헤더와 인접 log 원문이 답한다). 회귀 1줄 baseline 은 예외다.
-2. **domain capture (채록) 검토** — `python3 .project_manager/tools/domain.py capture --tickets "T-0001,T-0002"`(이 세션 done ticket ID — 콤마분리 또는 공백 나열 `T-0001 T-0002`) 실행. 출력의 *영향 페이지*(`⚠ `=stale) 와 *coverage gap*(담당 페이지 없는 touched 경로)을 보고 관련 domain 페이지를 갱신하거나 신규 scaffold 한다. **surface-only** — 도구는 *무엇을 갱신/신설할지 띄울 뿐*, 본문 자동생성·`updated:` 자동스탬프는 안 한다(stale 탐지 거짓 방지). 갱신할 것 없으면 생략.
+2. **domain capture (채록) 검토** — `python3 .project_manager/tools/domain.py capture --tickets "T-0001,T-0002"`(이 세션 done ticket ID — 콤마분리 또는 공백 나열 `T-0001 T-0002`) 실행. 출력의 *영향 페이지*(`⚠ `=stale) 와 *coverage gap*(담당 페이지 없는 touched 경로)을 보고 관련 domain 페이지를 갱신하거나 신규 scaffold 한다. **갱신 = 현재-진실 교체** — 세션별 delta 를 페이지에 덧붙이지 마라("언제 왜 바뀌었나"는 log/ADR 몫·domain lint `history` 축이 검출). **surface-only** — 도구는 *무엇을 갱신/신설할지 띄울 뿐*, 본문 자동생성·`updated:` 자동스탬프는 안 한다(stale 탐지 거짓 방지). 갱신할 것 없으면 생략.
 3. **git commit — pathspec 필수** — 공유 PM 홈에서 bare `git commit` 은 다른 슬롯 WIP도 싣는다. **이번 세션이 만든 것을 전부, 그리고 그것만** 나열한다:
 
    ```bash

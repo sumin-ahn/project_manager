@@ -1207,7 +1207,10 @@ def test_bootstrap_cache_is_isolated_by_resolved_tools_path(tmp_path):
         for label in ("left", "right"):
             tools = tmp_path / label / ".project_manager" / "tools"
             tools.mkdir(parents=True)
-            for name in ("board.py", "identity_args.py", "repo_owned_files.py"):
+            # board는 import 시점에 identity_args·file_lock을 바인딩한다(load-bearing 형제).
+            for name in (
+                "board.py", "identity_args.py", "file_lock.py", "repo_owned_files.py",
+            ):
                 shutil.copy2(TOOLS / name, tools / name)
             module = _load_module(tools, "board")
             modules.append(module)
@@ -1229,7 +1232,7 @@ def test_bootstrap_cache_is_isolated_by_resolved_tools_path(tmp_path):
 def test_bootstrap_fallback_restores_path_and_same_name_module_on_error(
     tmp_path, monkeypatch,
 ):
-    tools = _copy_tools(tmp_path, "board", "identity_args")
+    tools = _copy_tools(tmp_path, "board", "identity_args", "file_lock")
     seam = tools / "repo_owned_files.py"
     seam.write_text("def broken(:\n", encoding="utf-8")
     fake = types.ModuleType("repo_owned_files")

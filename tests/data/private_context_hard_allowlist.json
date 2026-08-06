@@ -29,7 +29,7 @@
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": ".claude/skills/pm-handoff/SKILL.md",
@@ -37,7 +37,7 @@
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": ".claude/skills/pm-handoff/SKILL.md",
@@ -45,7 +45,7 @@
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": ".claude/skills/pm-handoff/SKILL.md",
@@ -53,7 +53,7 @@
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": ".project_manager/tools/board.py",
@@ -65,7 +65,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1470,
+      "line": 1485,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -73,7 +73,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1487,
+      "line": 1502,
       "kind": "work_item",
       "match": "T-0250",
       "surface": "python-prose",
@@ -81,7 +81,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1596,
+      "line": 1611,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -89,7 +89,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1596,
+      "line": 1611,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -97,7 +97,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1597,
+      "line": 1612,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -105,7 +105,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1597,
+      "line": 1612,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -113,7 +113,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -121,7 +121,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -129,7 +129,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -137,7 +137,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1604,
+      "line": 1619,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -145,7 +145,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1634,
+      "line": 1649,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -153,7 +153,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1635,
+      "line": 1650,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -161,7 +161,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 1635,
+      "line": 1650,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -169,7 +169,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 6535,
+      "line": 6496,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
@@ -177,7 +177,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 6552,
+      "line": 6513,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
@@ -185,7 +185,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 6586,
+      "line": 6547,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -193,7 +193,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 6586,
+      "line": 6547,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -201,7 +201,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 6610,
+      "line": 6571,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -209,7 +209,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -217,7 +217,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -225,7 +225,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0250",
       "surface": "python-prose",
@@ -233,7 +233,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 7001,
+      "line": 6962,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -241,7 +241,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 7001,
+      "line": 6962,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -249,7 +249,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 7002,
+      "line": 6963,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -257,7 +257,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 7002,
+      "line": 6963,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -265,7 +265,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 7774,
+      "line": 7735,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -273,7 +273,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0001",
       "surface": "python-prose",
@@ -281,7 +281,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0002",
       "surface": "python-prose",
@@ -289,7 +289,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0011",
       "surface": "python-prose",
@@ -297,7 +297,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 8558,
+      "line": 8519,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "python-prose",
@@ -305,7 +305,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 8558,
+      "line": 8519,
       "kind": "work_item",
       "match": "ADR-0008",
       "surface": "python-prose",
@@ -313,7 +313,7 @@
     },
     {
       "path": ".project_manager/tools/board.py",
-      "line": 10198,
+      "line": 10159,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-non-prose",
@@ -337,7 +337,7 @@
     },
     {
       "path": ".project_manager/tools/domain.py",
-      "line": 1555,
+      "line": 1610,
       "kind": "work_item",
       "match": "ADR-0018",
       "surface": "python-prose",
@@ -345,7 +345,7 @@
     },
     {
       "path": ".project_manager/tools/domain.py",
-      "line": 1555,
+      "line": 1610,
       "kind": "work_item",
       "match": "T-0080",
       "surface": "python-prose",
@@ -353,7 +353,7 @@
     },
     {
       "path": ".project_manager/tools/external_review.py",
-      "line": 1937,
+      "line": 2191,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -449,7 +449,7 @@
     },
     {
       "path": ".project_manager/tools/pm_handoff.py",
-      "line": 3123,
+      "line": 3125,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-non-prose",
@@ -457,7 +457,7 @@
     },
     {
       "path": ".project_manager/tools/pm_handoff.py",
-      "line": 3123,
+      "line": 3125,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "python-non-prose",
@@ -465,7 +465,7 @@
     },
     {
       "path": ".project_manager/tools/worktree_pool.py",
-      "line": 2874,
+      "line": 2876,
       "kind": "private_section",
       "match": "spike\n         §8-4(d",
       "surface": "python-prose",
@@ -549,7 +549,7 @@
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
@@ -557,7 +557,7 @@
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
@@ -565,7 +565,7 @@
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
@@ -573,7 +573,7 @@
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/claude_code/.project_manager/hooks/README.md",
@@ -601,7 +601,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1470,
+      "line": 1485,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -609,7 +609,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1487,
+      "line": 1502,
       "kind": "work_item",
       "match": "T-0250",
       "surface": "python-prose",
@@ -617,7 +617,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1596,
+      "line": 1611,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -625,7 +625,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1596,
+      "line": 1611,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -633,7 +633,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1597,
+      "line": 1612,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -641,7 +641,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1597,
+      "line": 1612,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -649,7 +649,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -657,7 +657,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -665,7 +665,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -673,7 +673,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1604,
+      "line": 1619,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -681,7 +681,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1634,
+      "line": 1649,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -689,7 +689,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1635,
+      "line": 1650,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -697,7 +697,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 1635,
+      "line": 1650,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -705,7 +705,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 6535,
+      "line": 6496,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
@@ -713,7 +713,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 6552,
+      "line": 6513,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
@@ -721,7 +721,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 6586,
+      "line": 6547,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -729,7 +729,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 6586,
+      "line": 6547,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -737,7 +737,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 6610,
+      "line": 6571,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -745,7 +745,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -753,7 +753,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -761,7 +761,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0250",
       "surface": "python-prose",
@@ -769,7 +769,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 7001,
+      "line": 6962,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -777,7 +777,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 7001,
+      "line": 6962,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -785,7 +785,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 7002,
+      "line": 6963,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -793,7 +793,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 7002,
+      "line": 6963,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -801,7 +801,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 7774,
+      "line": 7735,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -809,7 +809,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0001",
       "surface": "python-prose",
@@ -817,7 +817,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0002",
       "surface": "python-prose",
@@ -825,7 +825,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0011",
       "surface": "python-prose",
@@ -833,7 +833,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 8558,
+      "line": 8519,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "python-prose",
@@ -841,7 +841,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 8558,
+      "line": 8519,
       "kind": "work_item",
       "match": "ADR-0008",
       "surface": "python-prose",
@@ -849,7 +849,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
-      "line": 10198,
+      "line": 10159,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-non-prose",
@@ -873,7 +873,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/domain.py",
-      "line": 1555,
+      "line": 1610,
       "kind": "work_item",
       "match": "ADR-0018",
       "surface": "python-prose",
@@ -881,7 +881,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/domain.py",
-      "line": 1555,
+      "line": 1610,
       "kind": "work_item",
       "match": "T-0080",
       "surface": "python-prose",
@@ -889,7 +889,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/external_review.py",
-      "line": 1937,
+      "line": 2191,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -985,7 +985,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/pm_handoff.py",
-      "line": 3123,
+      "line": 3125,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-non-prose",
@@ -993,7 +993,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/pm_handoff.py",
-      "line": 3123,
+      "line": 3125,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "python-non-prose",
@@ -1001,7 +1001,7 @@
     },
     {
       "path": "templates/claude_code/.project_manager/tools/worktree_pool.py",
-      "line": 2874,
+      "line": 2876,
       "kind": "private_section",
       "match": "spike\n         §8-4(d",
       "surface": "python-prose",
@@ -1301,7 +1301,7 @@
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/codex/.agents/skills/pm-handoff/SKILL.md",
@@ -1309,7 +1309,7 @@
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/codex/.agents/skills/pm-handoff/SKILL.md",
@@ -1317,7 +1317,7 @@
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/codex/.agents/skills/pm-handoff/SKILL.md",
@@ -1325,7 +1325,7 @@
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
@@ -1337,7 +1337,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1470,
+      "line": 1485,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -1345,7 +1345,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1487,
+      "line": 1502,
       "kind": "work_item",
       "match": "T-0250",
       "surface": "python-prose",
@@ -1353,7 +1353,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1596,
+      "line": 1611,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1361,7 +1361,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1596,
+      "line": 1611,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1369,7 +1369,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1597,
+      "line": 1612,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1377,7 +1377,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1597,
+      "line": 1612,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1385,7 +1385,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1393,7 +1393,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1401,7 +1401,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1409,7 +1409,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1604,
+      "line": 1619,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1417,7 +1417,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1634,
+      "line": 1649,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1425,7 +1425,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1635,
+      "line": 1650,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1433,7 +1433,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 1635,
+      "line": 1650,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -1441,7 +1441,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 6535,
+      "line": 6496,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
@@ -1449,7 +1449,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 6552,
+      "line": 6513,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
@@ -1457,7 +1457,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 6586,
+      "line": 6547,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -1465,7 +1465,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 6586,
+      "line": 6547,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -1473,7 +1473,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 6610,
+      "line": 6571,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -1481,7 +1481,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -1489,7 +1489,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -1497,7 +1497,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0250",
       "surface": "python-prose",
@@ -1505,7 +1505,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 7001,
+      "line": 6962,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -1513,7 +1513,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 7001,
+      "line": 6962,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -1521,7 +1521,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 7002,
+      "line": 6963,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -1529,7 +1529,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 7002,
+      "line": 6963,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -1537,7 +1537,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 7774,
+      "line": 7735,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -1545,7 +1545,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0001",
       "surface": "python-prose",
@@ -1553,7 +1553,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0002",
       "surface": "python-prose",
@@ -1561,7 +1561,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0011",
       "surface": "python-prose",
@@ -1569,7 +1569,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 8558,
+      "line": 8519,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "python-prose",
@@ -1577,7 +1577,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 8558,
+      "line": 8519,
       "kind": "work_item",
       "match": "ADR-0008",
       "surface": "python-prose",
@@ -1585,7 +1585,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/board.py",
-      "line": 10198,
+      "line": 10159,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-non-prose",
@@ -1609,7 +1609,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/domain.py",
-      "line": 1555,
+      "line": 1610,
       "kind": "work_item",
       "match": "ADR-0018",
       "surface": "python-prose",
@@ -1617,7 +1617,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/domain.py",
-      "line": 1555,
+      "line": 1610,
       "kind": "work_item",
       "match": "T-0080",
       "surface": "python-prose",
@@ -1625,7 +1625,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/external_review.py",
-      "line": 1937,
+      "line": 2191,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -1721,7 +1721,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/pm_handoff.py",
-      "line": 3123,
+      "line": 3125,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-non-prose",
@@ -1729,7 +1729,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/pm_handoff.py",
-      "line": 3123,
+      "line": 3125,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "python-non-prose",
@@ -1737,7 +1737,7 @@
     },
     {
       "path": "templates/codex/.project_manager/tools/worktree_pool.py",
-      "line": 2874,
+      "line": 2876,
       "kind": "private_section",
       "match": "spike\n         §8-4(d",
       "surface": "python-prose",
@@ -1949,7 +1949,7 @@
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
@@ -1957,7 +1957,7 @@
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
@@ -1965,7 +1965,7 @@
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
@@ -1973,7 +1973,7 @@
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
-      "hash": "b8648259231c68e1eae9aa801cd64a4421237c3b5ebea45b0d425bd195fe488d"
+      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb"
     },
     {
       "path": "templates/opencode/.opencode/agents/architect.md",
@@ -2201,7 +2201,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1470,
+      "line": 1485,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -2209,7 +2209,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1487,
+      "line": 1502,
       "kind": "work_item",
       "match": "T-0250",
       "surface": "python-prose",
@@ -2217,7 +2217,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1596,
+      "line": 1611,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2225,7 +2225,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1596,
+      "line": 1611,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2233,7 +2233,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1597,
+      "line": 1612,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2241,7 +2241,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1597,
+      "line": 1612,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2249,7 +2249,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2257,7 +2257,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2265,7 +2265,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1600,
+      "line": 1615,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2273,7 +2273,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1604,
+      "line": 1619,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2281,7 +2281,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1634,
+      "line": 1649,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2289,7 +2289,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1635,
+      "line": 1650,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2297,7 +2297,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 1635,
+      "line": 1650,
       "kind": "work_item",
       "match": "T-0063",
       "surface": "python-prose",
@@ -2305,7 +2305,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 6535,
+      "line": 6496,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
@@ -2313,7 +2313,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 6552,
+      "line": 6513,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
@@ -2321,7 +2321,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 6586,
+      "line": 6547,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -2329,7 +2329,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 6586,
+      "line": 6547,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -2337,7 +2337,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 6610,
+      "line": 6571,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -2345,7 +2345,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -2353,7 +2353,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -2361,7 +2361,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 6968,
+      "line": 6929,
       "kind": "work_item",
       "match": "T-0250",
       "surface": "python-prose",
@@ -2369,7 +2369,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 7001,
+      "line": 6962,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -2377,7 +2377,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 7001,
+      "line": 6962,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -2385,7 +2385,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 7002,
+      "line": 6963,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -2393,7 +2393,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 7002,
+      "line": 6963,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-prose",
@@ -2401,7 +2401,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 7774,
+      "line": 7735,
       "kind": "work_item",
       "match": "T-0164",
       "surface": "python-prose",
@@ -2409,7 +2409,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0001",
       "surface": "python-prose",
@@ -2417,7 +2417,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0002",
       "surface": "python-prose",
@@ -2425,7 +2425,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 8557,
+      "line": 8518,
       "kind": "work_item",
       "match": "ADR-0011",
       "surface": "python-prose",
@@ -2433,7 +2433,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 8558,
+      "line": 8519,
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "python-prose",
@@ -2441,7 +2441,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 8558,
+      "line": 8519,
       "kind": "work_item",
       "match": "ADR-0008",
       "surface": "python-prose",
@@ -2449,7 +2449,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
-      "line": 10198,
+      "line": 10159,
       "kind": "work_item",
       "match": "T-0036",
       "surface": "python-non-prose",
@@ -2473,7 +2473,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/domain.py",
-      "line": 1555,
+      "line": 1610,
       "kind": "work_item",
       "match": "ADR-0018",
       "surface": "python-prose",
@@ -2481,7 +2481,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/domain.py",
-      "line": 1555,
+      "line": 1610,
       "kind": "work_item",
       "match": "T-0080",
       "surface": "python-prose",
@@ -2489,7 +2489,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/external_review.py",
-      "line": 1937,
+      "line": 2191,
       "kind": "work_item",
       "match": "T-0259",
       "surface": "python-non-prose",
@@ -2585,7 +2585,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/pm_handoff.py",
-      "line": 3123,
+      "line": 3125,
       "kind": "work_item",
       "match": "T-0001",
       "surface": "python-non-prose",
@@ -2593,7 +2593,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/pm_handoff.py",
-      "line": 3123,
+      "line": 3125,
       "kind": "work_item",
       "match": "T-0002",
       "surface": "python-non-prose",
@@ -2601,7 +2601,7 @@
     },
     {
       "path": "templates/opencode/.project_manager/tools/worktree_pool.py",
-      "line": 2874,
+      "line": 2876,
       "kind": "private_section",
       "match": "spike\n         §8-4(d",
       "surface": "python-prose",

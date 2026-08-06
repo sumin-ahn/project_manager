@@ -243,13 +243,27 @@ def _repo_root(anchor: Path) -> Path:
     return Path(value).resolve()
 
 
+def _relative_to_root(root: Path, absolute: Path) -> Path | None:
+    """root 기준 상대 경로(밖이면 None) — 예외 흐름 대신 판정만 돌려준다."""
+    try:
+        return absolute.relative_to(root)
+    except ValueError:
+        return None
+
+
 def _normalize_selector(root: Path, raw: str) -> str:
     candidate = Path(raw)
     absolute = Path(os.path.abspath(candidate if candidate.is_absolute() else root / candidate))
-    try:
-        relative = absolute.relative_to(root)
-    except ValueError as exc:
-        raise SnapshotError(f"검토 경로가 저장소 밖입니다: {raw}") from exc
+    relative = _relative_to_root(root, absolute)
+    if relative is None:
+        # `_repo_root`는 resolve()한 경로라, 저장소 경로 prefix에 심볼릭 링크가 끼면
+        # lexical abspath가 저장소 밖으로 보여 false-red가 난다. prefix(부모 체인)만
+        # 해소하고 leaf 이름은 그대로 둔다 — leaf까지 resolve하면 저장소 안 심볼릭 링크
+        # 파일을 지정한 선택자가 링크 대상 경로로 바뀌어 검토 범위 자체가 달라진다.
+        prefix_resolved = absolute.parent.resolve(strict=False) / absolute.name
+        relative = _relative_to_root(root, prefix_resolved)
+    if relative is None:
+        raise SnapshotError(f"검토 경로가 저장소 밖입니다: {raw}")
     if not relative.parts:
         raise SnapshotError("저장소 전체('.')는 검토 경로로 지정할 수 없습니다.")
     if relative.parts[0] == ".git":
@@ -392,8 +406,17 @@ def _actual_files(root: Path, selectors: Sequence[str]) -> frozenset[str]:
     return frozenset(files)
 
 
+# 진단 메시지에 나열하는 경로 상한. 넘치면 목록에는 `…`를, 처방 커맨드에는 절단 표시를 붙인다.
+_DISPLAY_PATH_LIMIT = 8
+
+# 성공 열거에서 스냅샷에 실리지 않은 대상에 붙이는 사유 표기.
+_SNAPSHOT_ABSENT_NOTE = " (스냅샷에 없음 — index 기준 삭제)"
+
+
 def _format_paths(paths: Sequence[str]) -> str:
-    return ", ".join(paths[:8]) + (" …" if len(paths) > 8 else "")
+    return ", ".join(paths[:_DISPLAY_PATH_LIMIT]) + (
+        " …" if len(paths) > _DISPLAY_PATH_LIMIT else ""
+    )
 
 
 _PARALLEL_WAVE_GUIDANCE = (
@@ -428,6 +451,15 @@ def _validate_live_selection(
     )
     # Ignore 면제도 검토 기준과 같은 캡처 index를 checkout한 스냅샷에서
     # 판정한다. 원본 working tree의 unstaged .gitignore는 개입하지 않는다.
+    #
+    # `--paths` 밖 .gitignore를 안정성 검사 대상에 넣는 안은 실측 후 기각했다. 면제
+    # 판정의 기준은 언제나 `index_checkout`(=격리 스냅샷)이고, 스냅샷의 .gitignore는
+    # index 복제 시점의 단일 `ls-files --stage` 읽기로 확정된 뒤 더 이상 바뀌지 않는다.
+    # 즉 판정 근거와 리뷰어가 실제로 보는 산출물이 같은 트리라, 원본 저장소에서 범위 밖
+    # .gitignore가 캡처 전후 어느 시점에 staged되든 판정과 산출물이 어긋나지 않는다.
+    # 범위 밖 .gitignore를 비교 대상에 넣으면 검토와 무관한 병렬 dev의 index 변경이
+    # 게이트를 막는 false-red만 늘어난다. 실측 회귀는 tests/test_gate_snapshot.py의
+    # `test_out_of_scope_gitignore_*` 두 건이 양방향으로 고정한다.
     ignored_residue = _ignored_paths(index_checkout, staged_deletion_residue)
     if ignored_residue:
         # `git rm --cached f` + staged .gitignore는 index 관점의 정상 삭제다. 남아 있는
@@ -467,11 +499,19 @@ def _validate_live_selection(
     )
     if missing_from_worktree:
         command_paths = " ".join(
-            shlex.quote(path) for path in missing_from_worktree[:8]
+            shlex.quote(path) for path in missing_from_worktree[:_DISPLAY_PATH_LIMIT]
+        )
+        # 커맨드도 목록과 같은 상한에서 잘린다. 표시가 없으면 그대로 복사해 실행한 사람이
+        # 나머지를 stage했다고 오해한다 — 절단 사실과 전체 개수를 커맨드 밖에 병기한다.
+        truncation = (
+            f" (커맨드는 앞 {_DISPLAY_PATH_LIMIT}개만 표시 · 전체 "
+            f"{len(missing_from_worktree)}개)"
+            if len(missing_from_worktree) > _DISPLAY_PATH_LIMIT
+            else ""
         )
         raise SnapshotError(
             "working tree에는 없지만 index에 남은 파일이 있습니다. "
-            f"삭제를 `git add -u -- {command_paths}`로 stage하십시오: "
+            f"삭제를 `git add -u -- {command_paths}`로 stage하십시오{truncation}: "
             + _format_paths(missing_from_worktree)
             + _PARALLEL_WAVE_GUIDANCE
         )
@@ -545,7 +585,7 @@ def _format_mismatches(
     actual: dict[str, FileSignature | None],
 ) -> str:
     changed = [path for path in expected if expected[path] != actual[path]]
-    return ", ".join(changed[:8]) + (" …" if len(changed) > 8 else "")
+    return _format_paths(changed)
 
 
 def _replicate_index_and_checkout(root: Path, destination: Path) -> None:
@@ -580,6 +620,83 @@ def _replicate_index_and_checkout(root: Path, destination: Path) -> None:
     )
 
 
+_WORKTREE_PORCELAIN_PREFIX = "worktree "
+
+
+def _registered_worktrees(root: Path) -> tuple[Path, ...]:
+    """등록된 worktree 경로들 (선언 순서·중복 제거 없음).
+
+    `-z`(NUL 구분)로 읽는다. 줄 단위 porcelain은 개행이 든 경로를 두 줄로 흘리고 후행
+    공백도 구분자와 섞여, 그런 경로를 가진 worktree가 거부 목록에서 통째로 빠지는
+    차단 우회 창이 된다.
+    """
+    listing = _checked_git(root, "worktree", "list", "--porcelain", "-z").stdout
+    return tuple(
+        Path(field[len(_WORKTREE_PORCELAIN_PREFIX):]).resolve(strict=False)
+        for field in listing.split("\0")
+        if field.startswith(_WORKTREE_PORCELAIN_PREFIX)
+    )
+
+
+def _git_common_dir(root: Path) -> Path:
+    common = Path(_checked_git(root, "rev-parse", "--git-common-dir").stdout.strip())
+    if not common.is_absolute():
+        common = root / common
+    return common.resolve(strict=False)
+
+
+def _forbidden_output_locations(
+    root: Path, registered: Sequence[Path] | None = None
+) -> tuple[tuple[Path, str], ...]:
+    """스냅샷 출력이 들어가면 안 되는 위치 — (경로, 사람이 읽는 이름) 순서쌍.
+
+    공유 working tree뿐 아니라 같은 저장소의 Git 공용 디렉터리와 다른 등록 worktree까지
+    막는다. 셋 중 어디에 만들어도 병렬 작업 트리나 Git 메타데이터를 오염시킨다.
+
+    디렉터리가 사라지고 등록만 남은(prunable) worktree는 제외한다. 그 자리는 지켜야 할
+    작업 트리가 아니고, 같은 경로 재실행은 조치 가능한 별도 진단(prune 처방)이 맡는다.
+    """
+    if registered is None:
+        registered = _registered_worktrees(root)
+    locations: list[tuple[Path, str]] = [
+        (root, "공유 저장소 working tree"),
+        (_git_common_dir(root), "Git 공용 디렉터리"),
+    ]
+    locations.extend(
+        (path, "같은 저장소의 다른 worktree")
+        for path in registered
+        if path.exists()
+    )
+    seen: set[Path] = set()
+    unique: list[tuple[Path, str]] = []
+    for location, label in locations:
+        if location in seen:
+            continue
+        seen.add(location)
+        unique.append((location, label))
+    return tuple(unique)
+
+
+def _reject_output_location(root: Path, destination: Path) -> None:
+    registered = _registered_worktrees(root)
+    # 실재하는 자산의 오염이 먼저다 — 저장소 안 경로는 등록 상태와 무관하게 그 진단을
+    # 받아야 prune 뒤 두 번 실패하는 흐름이 안 생긴다.
+    for location, label in _forbidden_output_locations(root, registered):
+        if destination.is_relative_to(location):
+            raise SnapshotError(
+                f"격리 스냅샷은 저장소 밖에 만들어야 합니다 — {label} 안입니다: "
+                f"{destination} ({label}: {location})"
+            )
+    if any(path == destination and not path.exists() for path in registered):
+        # `git worktree remove` 없이 디렉터리만 지운 뒤 같은 경로로 다시 도는 흐름이다.
+        # '저장소 밖에 만들라'는 안내는 조치가 불가능하다 — 등록 정리를 처방한다.
+        raise SnapshotError(
+            f"같은 경로에 삭제된 worktree 등록이 남아 있습니다: {destination}. "
+            f"`git -C {shlex.quote(str(root))} worktree prune`으로 등록을 정리한 뒤 "
+            "다시 실행하십시오."
+        )
+
+
 def _rollback(root: Path, output: Path) -> str | None:
     result = _git(root, "worktree", "remove", "--force", str(output))
     if result.returncode == 0:
@@ -597,12 +714,7 @@ def create_snapshot(
     if os.path.lexists(requested_output):
         raise SnapshotError(f"스냅샷 출력 경로가 이미 존재합니다: {requested_output}")
     destination = requested_output.resolve(strict=False)
-    try:
-        destination.relative_to(root)
-    except ValueError:
-        pass
-    else:
-        raise SnapshotError(f"격리 스냅샷은 저장소 밖에 만들어야 합니다: {destination}")
+    _reject_output_location(root, destination)
     if not destination.parent.is_dir():
         raise SnapshotError(f"스냅샷 출력 부모 디렉터리가 없습니다: {destination.parent}")
 
@@ -729,6 +841,12 @@ def main(argv: list[str] | None = None) -> int:
         f"격리 스냅샷 생성 완료: {output} "
         f"(repo root: {root}, 검증 대상 {len(files)}개)"
     )
+    # 개수만 찍으면 무엇을 검증했는지 확인할 방법이 없다. 호출자가 의도한 검토 범위와
+    # 대조할 수 있도록 절단 없이 전량 열거한다. 스냅샷에 없는 항목은 검증 누락이 아니라
+    # index 기준 삭제이므로, 리뷰어가 부재를 결함으로 읽지 않도록 사유를 병기한다.
+    for path in files:
+        note = "" if os.path.lexists(output / path) else _SNAPSHOT_ABSENT_NOTE
+        print(f"  - {path}{note}")
     return 0
 
 

@@ -2543,6 +2543,27 @@ def test_main_routes_worktree_add_to_engine(pc, monkeypatch):
     assert ("create_slot", "svc", None, None) in wp.calls   # --test 없음 → None(현행 하위호환)
 
 
+def test_main_worktree_add_marked_skew_translates_at_cli_terminal(pc, monkeypatch, capsys):
+    """create_slot 의 marked skew 는 핸들러가 rc 로 번역하지 않고 재전파 → main 이 번역 (T-0545 ②).
+
+    핸들러 rc 번역은 rc 를 읽지 않는 surface(콘솔 `[w]`)에서 종료 경계가 아니었다. 재전파로
+    돌려도 CLI 표면은 동일하다 — 같은 안내 문구·rc 1·traceback 0(main 이 같은 헬퍼로 번역).
+    """
+    class _SkewPool(FakeWorktreePool):
+        def create_slot(self, *args, **kwargs):
+            raise _marked_skew("worktree_pool.py 사본 불일치")
+
+    pool = _SkewPool()
+    monkeypatch.setattr(pc, "_load_module",
+                        lambda name, filename: pool if name == "worktree_pool" else None)
+    rc = pc.main(["worktree", "add", "svc", "--test", "pytest -q"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert err.startswith("[중단] 엔진 사본 불일치")
+    assert "pm-update" in err
+    assert "Traceback" not in err
+
+
 def test_main_worktree_add_test_flag_parses_and_forwards(pc, monkeypatch):
     """main(["worktree","add","svc","--test","<cmd>"]) → create_slot(svc, test_cmd=cmd) (T-0066 end-to-end 파싱).
 

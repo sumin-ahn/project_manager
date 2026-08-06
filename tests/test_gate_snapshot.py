@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from _win_skip import _can_symlink
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -82,7 +86,10 @@ def _manifest_engine_tools(path: Path) -> set[str]:
 
 
 def test_all_manifests_register_and_all_flavors_ship_gate_snapshot():
-    """PM 전파 전에는 red여야 하며, 전파 뒤 실재 파일까지 출하됐음을 단언한다."""
+    """PM 전파 전에는 red여야 하며, 전파 뒤 실재 파일까지 출하됐음을 단언한다.
+
+    이 도구 개별 단언이다 — "등록은 됐는데 파일이 안 실림" 클래스 전체는
+    tests/test_manifest_shipped_paths.py 가 flavor manifest 전 경로로 일반화해 본다."""
     gate_tool = ".project_manager/tools/gate_snapshot.py"
     root_tools = _manifest_engine_tools(REPO / ".project_manager" / "engine.manifest")
     assert gate_tool in root_tools, "canonical manifest에 gate_snapshot.py가 미등록"
@@ -223,6 +230,8 @@ def test_unstaged_deleted_tracked_target_explains_how_to_stage(snapshot, tmp_pat
     message = str(exc.value)
     assert "`git add -u -- review/target.txt`" in message
     assert "`git add -u`" not in message
+    # 상한 이하면 절단 표시를 붙이지 않는다 (T-0544 ⑥ 음성 통제).
+    assert "커맨드는 앞" not in message
     assert not output.exists()
 
 
@@ -773,6 +782,243 @@ def test_absolute_review_path_is_normalized_for_snapshot_enumeration(
     assert files == ("review/target.txt",)
 
 
+@pytest.mark.skipif(not _can_symlink(), reason="symlink 을 만들 수 없는 환경")
+def test_absolute_path_through_symlinked_repo_prefix_is_accepted(snapshot, tmp_path):
+    """저장소 경로 prefix 에 심볼릭 링크가 껴도 절대경로 `--paths` 가 통과한다 (T-0544 ①).
+
+    `_repo_root` 는 resolve() 결과라, 링크 경유 절대경로를 lexical 로만 보면 '저장소 밖'
+    false-red 가 났다. prefix 해소로 같은 파일임을 인식해야 한다."""
+    repo = _repo(tmp_path)
+    link = tmp_path / "link"
+    os.symlink(repo, link, target_is_directory=True)
+    output = tmp_path / "gate"
+
+    created, files = snapshot.create_snapshot(
+        link, output, [str(link / "review" / "target.txt")]
+    )
+
+    assert created == output.resolve()
+    assert files == ("review/target.txt",)
+
+
+@pytest.mark.skipif(not _can_symlink(), reason="symlink 을 만들 수 없는 환경")
+def test_symlinked_repo_prefix_does_not_resolve_the_selector_leaf(snapshot, tmp_path):
+    """prefix 만 해소하고 leaf 는 그대로 둔다 — 선택자가 링크 대상으로 바뀌면 안 된다 (T-0544 ①).
+
+    leaf 까지 resolve 하면 저장소 안 심볼릭 링크 파일(`review/alias.txt`)을 지정한 선택자가
+    링크 대상(`review/target.txt`)으로 바뀌어 검토 범위 자체가 달라진다."""
+    repo = _repo(tmp_path)
+    alias = repo / "review" / "alias.txt"
+    os.symlink("target.txt", alias)
+    _git(repo, "add", "review/alias.txt")
+    _git(repo, "commit", "-qm", "symlink alias")
+    link = tmp_path / "link"
+    os.symlink(repo, link, target_is_directory=True)
+    output = tmp_path / "gate"
+
+    _, files = snapshot.create_snapshot(
+        link, output, [str(link / "review" / "alias.txt")]
+    )
+
+    assert files == ("review/alias.txt",)
+    assert (output / "review" / "alias.txt").is_symlink()
+    assert os.readlink(output / "review" / "alias.txt") == "target.txt"
+
+
+def test_output_inside_git_common_dir_is_rejected(snapshot, tmp_path):
+    """공유 working tree 밖이라도 같은 저장소의 Git 공용 디렉터리면 거부한다 (T-0544 ②)."""
+    repo = _repo(tmp_path)
+    common_dir = tmp_path / "separate-git-dir"
+    _git(repo, "init", "-q", f"--separate-git-dir={common_dir}")
+    output = common_dir / "gate"
+
+    with pytest.raises(snapshot.SnapshotError) as exc:
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    message = str(exc.value)
+    assert "저장소 밖" in message
+    assert "Git 공용 디렉터리" in message
+    assert not output.exists()
+
+
+def test_output_inside_other_registered_worktree_is_rejected(snapshot, tmp_path):
+    """같은 저장소의 다른 등록 worktree 안에는 스냅샷을 만들지 않는다 (T-0544 ②).
+
+    병렬 wave 에서 다른 작업 트리를 오염시키는 경로다 — 생성 전에 거부해야 한다."""
+    repo = _repo(tmp_path)
+    other = tmp_path / "other-worktree"
+    _git(repo, "worktree", "add", "-q", "--detach", str(other))
+    output = other / "gate"
+
+    with pytest.raises(snapshot.SnapshotError) as exc:
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    message = str(exc.value)
+    assert "저장소 밖" in message
+    assert "다른 worktree" in message
+    assert not output.exists()
+    assert _git(other, "status", "--porcelain").stdout == ""
+    assert str(output) not in _git(repo, "worktree", "list", "--porcelain").stdout
+
+
+def test_stale_worktree_registration_prescribes_prune_instead_of_outside_repo(
+    snapshot, tmp_path
+):
+    """등록만 남은 경로로 재실행하면 prune 처방을 낸다 (조치 불가능한 오진단 차단).
+
+    `git worktree remove` 없이 디렉터리만 지운 뒤 같은 경로로 다시 도는 흐름에서
+    '저장소 밖에 만들어야 한다'는 안내는 손쓸 데가 없다 — git 자체 진단보다도 후퇴한다."""
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    _git(repo, "worktree", "add", "-q", "--detach", str(output))
+    shutil.rmtree(output)
+
+    with pytest.raises(snapshot.SnapshotError) as exc:
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    message = str(exc.value)
+    assert "worktree prune" in message
+    assert "저장소 밖" not in message
+    assert not output.exists()
+
+
+def test_stale_worktree_registration_does_not_block_other_output_paths(
+    snapshot, tmp_path
+):
+    """prune 분기가 무관한 출력 경로까지 막지 않음을 고정하는 경계 회귀(부수효과 없음)."""
+    repo = _repo(tmp_path)
+    stale = tmp_path / "stale-gate"
+    _git(repo, "worktree", "add", "-q", "--detach", str(stale))
+    shutil.rmtree(stale)
+    output = tmp_path / "gate"
+
+    created, files = snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert created == output.resolve()
+    assert files == ("review/target.txt",)
+
+
+def test_registered_worktree_paths_are_parsed_as_nul_records(snapshot, tmp_path):
+    """개행·후행 공백이 든 worktree 경로도 거부 목록에 온전히 들어간다 (`-z` 파싱).
+
+    줄 단위 porcelain은 그런 경로를 두 줄로 흘리거나 후행 공백을 잘라, 해당 worktree가
+    거부 목록에서 통째로 빠지는 차단 우회 창이 된다."""
+    repo = _repo(tmp_path)
+    hostile = tmp_path / "other wt \nnewline"
+    _git(repo, "worktree", "add", "-q", "--detach", str(hostile))
+    output = hostile / "gate"
+
+    with pytest.raises(snapshot.SnapshotError) as exc:
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert "다른 worktree" in str(exc.value)
+    assert hostile in snapshot._registered_worktrees(
+        snapshot._repo_root(repo)
+    )
+    assert not output.exists()
+
+
+def test_out_of_scope_gitignore_staged_before_replication_follows_snapshot_basis(
+    snapshot, tmp_path, monkeypatch
+):
+    """`--paths` 밖 .gitignore 가 캡처 뒤 staged 돼도 면제 판정은 스냅샷 기준을 따른다 (T-0544 ③).
+
+    index 복제 직전에 staged 된 .gitignore 는 스냅샷에 그대로 실린다. 판정 근거(스냅샷)와
+    리뷰어가 보는 산출물이 같은 트리라 어긋날 창이 없다 — 안정성 비교 대상 확장이 불필요함을
+    보이는 실측 절반."""
+    repo = _repo(tmp_path)
+    target = repo / "review" / "target.txt"
+    _git(repo, "rm", "--cached", "review/target.txt")
+    # 캡처 시점에는 미-staged — 이 상태로 판정하면 '삭제 잔여'로 차단된다.
+    (repo / ".gitignore").write_text("/review/target.txt\n", encoding="utf-8")
+    output = tmp_path / "gate"
+    original = snapshot._replicate_index_and_checkout
+    injected = False
+
+    def replicate(root, destination):
+        nonlocal injected
+        if not injected:
+            injected = True
+            _git(repo, "add", ".gitignore")
+        original(root, destination)
+
+    monkeypatch.setattr(snapshot, "_replicate_index_and_checkout", replicate)
+
+    created, files = snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert injected
+    assert created == output.resolve()
+    assert files == ("review/target.txt",)
+    # 판정 근거 = 스냅샷의 .gitignore. 그 스냅샷이 곧 리뷰 산출물이다.
+    assert (output / ".gitignore").read_text(encoding="utf-8") == "/review/target.txt\n"
+    assert not (output / "review" / "target.txt").exists()
+    assert target.read_text(encoding="utf-8") == "committed\n"
+
+
+def test_out_of_scope_gitignore_staged_after_replication_does_not_flip_verdict(
+    snapshot, tmp_path, monkeypatch
+):
+    """index 복제 뒤 `--paths` 밖 .gitignore 가 바뀌어도 면제 판정은 흔들리지 않는다 (T-0544 ③).
+
+    스냅샷의 .gitignore 는 복제 시점 단일 `ls-files --stage` 읽기로 확정되고 이후 불변이다.
+    범위 밖 병렬 index 변경이 게이트 판정을 뒤집지 못함을 보이는 실측 나머지 절반."""
+    repo = _repo(tmp_path)
+    target = repo / "review" / "target.txt"
+    _git(repo, "rm", "--cached", "review/target.txt")
+    gitignore = repo / ".gitignore"
+    gitignore.write_text("/review/target.txt\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    output = tmp_path / "gate"
+    original = snapshot._replicate_index_and_checkout
+    injected = False
+
+    def replicate(root, destination):
+        nonlocal injected
+        original(root, destination)
+        if not injected:
+            injected = True
+            gitignore.write_text("/unrelated\n", encoding="utf-8")
+            _git(repo, "add", ".gitignore")
+
+    monkeypatch.setattr(snapshot, "_replicate_index_and_checkout", replicate)
+
+    created, files = snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert injected
+    assert created == output.resolve()
+    assert files == ("review/target.txt",)
+    assert (output / ".gitignore").read_text(encoding="utf-8") == "/review/target.txt\n"
+    assert gitignore.read_text(encoding="utf-8") == "/unrelated\n"
+    assert not (output / "review" / "target.txt").exists()
+    assert target.read_text(encoding="utf-8") == "committed\n"
+
+
+def test_stage_prescription_marks_truncated_command(snapshot, tmp_path):
+    """처방 커맨드가 상한에서 잘리면 절단 사실과 전체 개수를 병기한다 (T-0544 ⑥).
+
+    표시가 없으면 커맨드를 그대로 복사해 실행한 사람이 나머지도 stage 됐다고 오해한다."""
+    repo = _repo(tmp_path)
+    bulk = [f"review/bulk{index:02d}.txt" for index in range(10)]
+    for relative in bulk:
+        (repo / relative).write_text("committed\n", encoding="utf-8")
+    _git(repo, "add", "review")
+    _git(repo, "commit", "-qm", "bulk fixture")
+    (repo / "review" / "target.txt").unlink()
+    for relative in bulk:
+        (repo / relative).unlink()
+    output = tmp_path / "gate"
+
+    with pytest.raises(snapshot.SnapshotError) as exc:
+        snapshot.create_snapshot(repo, output, ["review"])
+
+    message = str(exc.value)
+    shown = " ".join(bulk[:8])
+    assert f"`git add -u -- {shown}`" in message
+    assert "커맨드는 앞 8개만 표시 · 전체 11개" in message
+    assert "review/target.txt" not in message.split("`git add -u -- ")[1].split("`")[0]
+    assert not output.exists()
+
+
 def test_eol_attribute_uses_git_normalized_blob_identity(snapshot, tmp_path):
     repo = _repo(tmp_path)
     attributes = repo / ".gitattributes"
@@ -944,3 +1190,69 @@ def test_cli_success_reports_resolved_repo_root(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert f"repo root: {repo.resolve()}" in result.stdout
+
+
+def test_cli_success_enumerates_verified_files(tmp_path):
+    """성공 출력이 개수와 함께 검증 대상 파일 목록을 병기한다 (T-0544 ⑤).
+
+    개수만으론 무엇을 검증했는지 확인할 수 없어, 수집 누락이 조용한 stale 잔여로 남는다."""
+    repo = _repo(tmp_path)
+    (repo / "review" / "extra.txt").write_text("extra\n", encoding="utf-8")
+    _git(repo, "add", "review/extra.txt")
+    _git(repo, "commit", "-qm", "extra fixture")
+    output = tmp_path / "gate"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "gate_snapshot.py"),
+            "--repo",
+            str(repo),
+            "--output",
+            str(output),
+            "--paths",
+            "review",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "검증 대상 2개" in result.stdout
+    assert "  - review/extra.txt" in result.stdout
+    assert "  - review/target.txt" in result.stdout
+    assert "스냅샷에 없음" not in result.stdout
+
+
+def test_cli_success_marks_paths_absent_from_the_snapshot(tmp_path):
+    """스냅샷에 없는 대상엔 index 기준 삭제라는 사유를 병기한다.
+
+    표기가 없으면 리뷰어가 부재를 검증 누락이나 복사 실패로 읽는다."""
+    repo = _repo(tmp_path)
+    (repo / "review" / "kept.txt").write_text("kept\n", encoding="utf-8")
+    _git(repo, "add", "review/kept.txt")
+    _git(repo, "commit", "-qm", "kept fixture")
+    (repo / "review" / "target.txt").unlink()
+    _git(repo, "add", "-u", "review/target.txt")
+    output = tmp_path / "gate"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "gate_snapshot.py"),
+            "--repo",
+            str(repo),
+            "--output",
+            str(output),
+            "--paths",
+            "review",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "  - review/target.txt (스냅샷에 없음 — index 기준 삭제)" in result.stdout
+    assert "  - review/kept.txt\n" in result.stdout

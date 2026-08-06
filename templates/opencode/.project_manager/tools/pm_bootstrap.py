@@ -3674,7 +3674,9 @@ class PmBootstrap:
             rc, _out = self._run_git_fn(
                 ["-C", slot_dir, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"]
             )
-        except Exception:  # noqa: BLE001 — fail-soft: git 호출 실패는 미존재(안내 계속).
+        except Exception as exc:  # noqa: BLE001 — fail-soft: git 호출 실패는 미존재(안내 계속).
+            if _is_engine_rev_skew(exc):
+                raise  # 엔진 사본 불일치는 "미존재" 로 강등하지 않는다(fail-loud).
             return False
         return rc == 0
 
@@ -3751,7 +3753,9 @@ class PmBootstrap:
         for br in _UNRECORDED_BASE_CANDIDATE_BRANCHES:
             try:
                 rc, out = self._run_git_fn(["-C", slot_dir, "merge-base", "HEAD", br])
-            except Exception:  # noqa: BLE001 — fail-soft: 후보 계산 실패는 그 후보만 건너뛴다.
+            except Exception as exc:  # noqa: BLE001 — fail-soft: 후보 계산 실패는 그 후보만 건너뛴다.
+                if _is_engine_rev_skew(exc):
+                    raise  # 엔진 사본 불일치는 후보 skip 으로 강등하지 않는다(fail-loud).
                 continue
             sha = (out or "").strip()
             if rc == 0 and sha:
@@ -4599,7 +4603,9 @@ class PmBootstrap:
         d = self._worktree_cwd(self._bound_slot)
         try:
             rc, out = self._run_git_fn(["-C", d, "rev-list", "--count", f"HEAD..{target}"])
-        except Exception:  # noqa: BLE001 — 시대차는 소프트 진단(실행 실패=조용히 생략).
+        except Exception as exc:  # noqa: BLE001 — 시대차는 소프트 진단(실행 실패=조용히 생략).
+            if _is_engine_rev_skew(exc):
+                raise  # 엔진 사본 불일치는 소프트 생략으로 강등하지 않는다(fail-loud).
             return None
         if rc != 0:
             return None

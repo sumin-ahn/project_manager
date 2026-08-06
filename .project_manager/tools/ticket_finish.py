@@ -1513,7 +1513,9 @@ class TicketFinisher:
         try:
             entries = (self._status_entries_fn() if cwd == REPO
                        else self._status_entries_at_fn(cwd))
-        except Exception:  # noqa: BLE001 — 보고는 완료를 막지 않는다.
+        except Exception as exc:  # noqa: BLE001 — 보고는 완료를 막지 않는다.
+            if _is_engine_rev_skew(exc):
+                raise  # 엔진 사본 불일치는 빈 보고로 강등하지 않는다(fail-loud).
             return (), ()
         return split_dirty(entries, scope)
 

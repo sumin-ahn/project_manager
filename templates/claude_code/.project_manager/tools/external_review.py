@@ -9,7 +9,8 @@
   (프로젝트 맥락 헤더 +) diff 결합 → 표준 프롬프트 생성
   외부 리뷰어 실행 (reviewer_cmd, stdin 으로 프롬프트 주입, read-only 권장)
   출력에서 판정(통과/반려)·must-fix 파싱
-  결과 요약 stdout + 원문 파일 저장 (기본 `.project_manager/.local/review/` · --output-dir 로 격리)
+  결과 요약 stdout + 원문 파일 저장 (기본 = **소유 PM 홈**의 `.project_manager/.local/review/`
+    + 공유 장부 `raw_outputs.json` · --output-dir 로 격리)
 
 기본 비활성:
   - 코드 diff 가 *외부로 전송*되므로 기본 OFF. local.conf `external_review_enabled=true`
@@ -243,9 +244,28 @@ LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 REVIEW_CONTEXT_FILE = REPO / ".project_manager" / "review_context.local.md"  # 인스턴스 소유 overlay
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 
+# raw 산출/공유 장부의 앵커 = **소유 PM 홈**(diff 슬롯이 아니다). `_main` 이 명시 selector 로 해소한
+# PM 홈을 한 호출 동안만 주입하고, 미주입(라이브러리 직접 호출)은 엔진 자기 앵커 REPO 로 폴백한다 —
+# pm_delegate `_CONFIG_REPO_OVERRIDE or REPO` 와 같은 규칙이다. 기록과 조회가 같은 앵커를 타야
+# PM 홈 장부를 읽는 `pm_delegate raw` 통합 조회가 게이트 raw 를 본다.
+_PM_HOME_OVERRIDE: Path | None = None
+
 
 class AnchorResolutionError(RuntimeError):
     """명시 입력에서 diff/board/config 앵커를 유일하게 해소하지 못한 오류."""
+
+
+class PmHomeDemotion(NamedTuple):
+    """소유 PM 홈 해소에 실패해 anchor 자신이 이 실행의 config 앵커가 된 근거.
+
+    `candidates` 는 이 anchor 를 자기 worktree 로 등록한다고 주장한 PM 홈들이다 — 장부 손상 등으로
+    소유 판정까지 가지 못했을 뿐 config 소유자 후보로는 남아 있다. 강등 실행의 필터 승계
+    (`_conf_with_owner_filters`)가 이 후보에서 소유 PM 홈의 보호 선언을 되찾는다.
+    """
+
+    anchor: Path
+    reason: str
+    candidates: tuple[Path, ...]
 
 
 def _load_board():
@@ -256,6 +276,7 @@ def _load_board():
 
 def resolve_pm_home_for_repo(
     anchor: Path, *, required: bool = False, warning_sink: list[str] | None = None,
+    demotion_sink: list[PmHomeDemotion] | None = None,
 ) -> Path:
     """repo/worktree가 소속된 PM 홈을 lease 장부로 해소한다.
 
@@ -263,6 +284,10 @@ def resolve_pm_home_for_repo(
     반환한다. 일반 standalone repo는 자기 local.conf를 쓰도록 자기 자신을 반환한다.
     board가 필수면 장부 부재·손상·중복은 fail-loud다. board 불필요 실행은 한 줄 경고 후
     자기 repo를 standalone 앵커로 사용한다.
+
+    `demotion_sink` 를 주면 그 폴백(강등)의 근거를 `PmHomeDemotion` 으로 담는다 — 호출부가
+    소유 PM 홈 필터 승계/차단을 판단하는 입력이다. standalone·실 board 소유처럼 폴백이 아닌
+    정상 해소는 아무것도 담지 않는다.
     """
     anchor = anchor.resolve()
     board = _load_board()
@@ -339,7 +364,151 @@ def resolve_pm_home_for_repo(
         print(warning, file=sys.stderr)
     else:
         warning_sink.append(warning)
+    if demotion_sink is not None:
+        demotion_sink.append(
+            PmHomeDemotion(anchor, resolution_error, tuple(candidates))
+        )
     return anchor
+
+
+# ── 강등 실행의 소유 PM 홈 필터 승계 (외부 송신 방향) ──────────────────────
+# PM 홈 해소가 실패해 config 소유자가 anchor 자신으로 강등되면, 소유 PM 홈이 선언한
+# `review_denylist_extra`/`review_paths` 가 빠진 채 diff 가 외부로 나간다 — 경고와 provenance 는
+# loud 하지만 **필터가 좁아지는 방향**이라 비정상 상태의 송신이 무필터에 가까워진다. 그래서
+# 강등을 감지하면 (1) 소유 PM 홈을 하나로 되찾을 수 있으면 그 **유효 필터**를 승계하고,
+# (2) 되찾을 수 없으면 외부 송신 전에 차단한다.
+#
+# **검사 대상 = 이번 실행이 실제로 쓰는 conf 소유자 하나**다. 명시 앵커(--paths/--ticket) 실행은
+# diff_root·소유 PM 홈을 해소한 *뒤에* 그 소유자만 검사한다 — 초기 엔진 컨텍스트가 강등·손상이어도
+# 다른 repo 를 가리키는 절대 --paths 는 그 손상과 무관하므로, 먼저 검사하면 복구 채널이 자기잠긴다.
+# 인자 없는 실행만 범위 파생 전에 검사하며, 그 실행의 선택 소유자는 정의상 최초 PM 홈이다(다르면
+# 교차 소유 가드가 이미 차단).
+#
+# 탈출구 매트릭스 (선택된 소유자의 후보 수 × 그 conf 상태 × 명시 --paths):
+#   유일 후보 · conf 정상(선언/미선언 무관) → 승계 후 진행 (--paths 유무 무관)
+#   유일 후보 · conf 읽기 실패             → **항상 차단** — `--paths` 는 *범위*만 명시할 뿐
+#                                            확인하지 못한 `review_denylist_extra` 를 대신하지 못한다
+#   후보 0 또는 2+                          → --paths 없으면 차단 / 있으면 loud 경고 후 진행
+# 마지막 줄만 탈출구인 이유: 어느 PM 홈도 이 실행을 지배한다고 확정할 수 없는 상태에서 사용자가
+# 범위를 직접 지정한 것이 남은 유일한 복구 채널이다(자기잠김 금지).
+
+# 승계 대상 = 값이 좁아지면 외부로 더 많이 나가는 축뿐이다(리뷰어/타임아웃 등 실행 프로필은 제외).
+_OWNER_FILTER_KEYS: tuple[str, ...] = ("review_paths", "review_denylist_extra")
+
+
+class OwnerFilterConfError(AnchorResolutionError):
+    """강등 실행이 승계할 소유 PM 홈 conf 를 안전하게 읽지 못해 송신을 중단해야 함.
+
+    후보 모호성과 달리 이 오류는 `--paths` 로 우회되지 않는다 — 보호 선언을 *확인하지 못한*
+    상태이고, 검토 범위 지정은 시크릿 필터의 대체물이 아니다.
+    """
+
+
+def _owner_filter_conf(demotion: PmHomeDemotion) -> tuple[Path, dict[str, str]]:
+    """강등 실행이 승계할 소유 PM 홈과 그 필터 선언을 유일 후보에서 읽는다.
+
+    후보가 0개거나 2개 이상이면 어느 선언이 이번 송신을 지배하는지 확정할 수 없어 fail-loud 다.
+    conf 파일 부재는 '추가 선언이 없음'을 확인한 상태라 빈 선언으로 승계하고, 읽기 실패는 보호
+    선언을 확인할 수 없으므로 fail-closed 다(`_cross_repo_target_conf` 와 같은 규칙).
+    """
+    if len(demotion.candidates) != 1:
+        listed = ", ".join(str(home) for home in demotion.candidates) or "(후보 0)"
+        raise AnchorResolutionError(
+            f"소유 PM 홈 후보를 하나로 좁히지 못했습니다: {listed}"
+        )
+    owner = demotion.candidates[0]
+    conf_path = owner / ".project_manager" / "local.conf"
+    owner_conf: dict[str, str] = {}
+    try:
+        # lstat 은 dangling symlink 도 '존재'로 구분한다 — 진짜 부재만 '선언 없음'이고, 그 밖의
+        # stat/read/UTF-8 실패는 보호 선언을 확인할 수 없어 fail-closed 다.
+        declared = True
+        try:
+            conf_path.lstat()
+        except FileNotFoundError:
+            declared = False
+        if declared:
+            owner_conf = _read_local_config(conf_path)
+    except (OSError, UnicodeError) as exc:
+        raise OwnerFilterConfError(
+            "강등 실행이 승계할 소유 PM 홈 conf 를 읽지 못했습니다 — 확인하지 못한 "
+            "review_denylist_extra 는 명시 --paths 로 대체되지 않으므로(범위 지정은 시크릿 필터가 "
+            "아니다) 어떤 인자에서도 외부 송신 전에 중단합니다: "
+            f"{conf_path} ({type(exc).__name__}: {exc})"
+        ) from exc
+    return owner, {
+        key: owner_conf[key] for key in _OWNER_FILTER_KEYS if key in owner_conf
+    }
+
+
+def _merged_owner_filters(
+    conf: dict[str, str], owner_filters: dict[str, str],
+) -> dict[str, str]:
+    """강등 실행의 유효 conf — denylist 는 합집합, review_paths 는 소유 **유효 범위**로 교체.
+
+    denylist 합집합의 근거는 양쪽 보호 선언을 모두 존중하는 monotone 안전성이다
+    (`resolve_review_content_conf` 와 같은 규칙). review_paths 는 포함 방향 어느 쪽도 일률적으로
+    안전하지 않아 합치지 않고, 소유 PM 홈의 유효 범위를 통째로 승계한다 — 소유 홈이 선언하지
+    않았으면 **엔진 고정 기본 경로가 그 유효 범위**이므로 그것으로 덮는다. 슬롯 선언을 남겨두면
+    (예: 슬롯 `review_paths=.`) lease 손상만으로 송신 범위가 소유 선언보다 넓어진다.
+    """
+    merged = dict(conf)
+    merged["review_paths"] = " ".join(_configured_paths(owner_filters))
+    extras = tuple(dict.fromkeys(
+        (*_denylist_extras(conf), *_denylist_extras(owner_filters))
+    ))
+    if extras:
+        merged["review_denylist_extra"] = " ".join(extras)
+    return merged
+
+
+def _conf_with_owner_filters(
+    conf: dict[str, str],
+    demotions: Sequence[PmHomeDemotion],
+    *,
+    explicit_paths: bool,
+) -> dict[str, str]:
+    """강등 실행이면 소유 PM 홈 필터를 승계한 conf 를 반환하고, 승계 불가면 차단한다.
+
+    `demotions` 는 한 번의 `resolve_pm_home_for_repo` 가 채운 sink 라 강등 근거는 최대 1건이고,
+    비어 있으면(정상 해소) conf 를 그대로 돌려준다. 탈출구 규칙은 위 §탈출구 매트릭스를 따른다 —
+    소유 conf 읽기 실패는 `--paths` 로도 통과하지 못한다.
+    """
+    if not demotions:
+        return conf
+    demotion = demotions[0]
+    try:
+        owner, owner_filters = _owner_filter_conf(demotion)
+    except OwnerFilterConfError:
+        # 보호 선언을 확인하지 못한 실행 — 범위 명시로 대체 불가라 인자와 무관하게 올린다.
+        raise
+    except AnchorResolutionError as exc:
+        if not explicit_paths:
+            raise AnchorResolutionError(
+                "PM 홈 해소 실패로 config 소유자가 이 repo 로 강등됐고, 소유 PM 홈의 필터 선언"
+                "(review_denylist_extra/review_paths)을 승계할 수 없습니다 — 시크릿 필터가 좁아진 "
+                "채로 외부에 송신하지 않도록 전송 전에 중단합니다: "
+                f"anchor={demotion.anchor} · 강등 사유={demotion.reason} · 승계 실패={exc}\n"
+                "  · `--paths <경로>` 로 이번 검토 범위를 직접 지정하면 이 실행은 통과합니다 "
+                "(범위를 명시하는 행위 자체가 '알고 있고 의도했다'는 표현).\n"
+                "  · 근본 해소는 worktree lease 장부를 고쳐 소유 PM 홈을 하나로 확정하는 것입니다."
+            ) from exc
+        print(
+            "경고: PM 홈 강등 실행 — 소유 PM 홈 필터를 승계하지 못했습니다 "
+            f"({exc}). 명시 --paths 범위로 계속하며, 이번 송신에는 "
+            f"{_local_conf_path(demotion.anchor)} 의 선언만 적용됩니다.",
+            file=sys.stderr,
+        )
+        return conf
+    merged = _merged_owner_filters(conf, owner_filters)
+    print(
+        "경고: PM 홈 강등 실행 — 소유 PM 홈 유효 필터를 승계했습니다: "
+        f"owner={owner} · conf={_local_conf_path(owner)} · "
+        f"review_paths={merged.get('review_paths', '') or '(기본)'!r} · "
+        f"review_denylist_extra={merged.get('review_denylist_extra', '') or '(없음)'!r}",
+        file=sys.stderr,
+    )
+    return merged
 
 
 def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
@@ -397,15 +566,17 @@ def _ticket_worktree_candidates(
 
 
 def _candidate_has_diff(root: Path, base: str, paths: Sequence[str]) -> bool:
-    """여러 등록 슬롯 중 명시 pathspec의 변경을 가진 슬롯을 고르는 read-only 판정."""
+    """등록 슬롯 후보가 **한 diff 단계**에서 변경을 갖는지 read-only 판정.
+
+    단계 문자열과 실행은 추출(`extract_diff`)과 같은 코드 경로(`_stage_diff_text`)를 타므로 폭
+    해석이 두 벌로 갈리지 않는다. 어느 단계를 근거로 삼을지는 호출부(`_resolve_diff_root`)가
+    `_slot_selection_bases` 로 정한다. git 실행 자체가 불가능한 후보는 변경 없음으로 본다
+    (fail-soft·선택 대상 밖).
+    """
     try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "diff", base, "--", *paths],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-        )
+        return bool(_stage_diff_text(root, base, paths).strip())
     except OSError:
         return False
-    return result.returncode == 0 and bool(result.stdout.strip())
 
 
 def _resolve_diff_root(
@@ -472,10 +643,17 @@ def _resolve_diff_root(
         # standalone/solo repo에는 lease 장부가 없다. 이 경우 명시 paths의 유일한 repo는
         # 엔진 자기 repo이며, PM-home 다중 슬롯 오해소와 구분된다.
         return engine_repo.resolve()
-    changed = tuple(
-        candidate for candidate in candidates
-        if _candidate_has_diff(candidate, base, paths)
-    )
+    # 슬롯 소유 근거가 되는 단계(`_slot_selection_bases`)만 순서대로 본다 — 암묵 폴백 단계는
+    # 놀고 있는 슬롯까지 후보로 만들기 때문에 여기서 제외된다. 선택된 슬롯에서 추출이 어느
+    # 단계를 쓰든, 슬롯을 *고른* 근거는 항상 사용자가 지정한 base 자신이다.
+    changed: tuple[Path, ...] = ()
+    for stage_base in _slot_selection_bases(base):
+        changed = tuple(
+            candidate for candidate in candidates
+            if _candidate_has_diff(candidate, stage_base, paths)
+        )
+        if changed:
+            break
     if len(changed) == 1:
         return changed[0]
     if len(candidates) == 1:
@@ -483,7 +661,10 @@ def _resolve_diff_root(
     detail = ", ".join(str(path) for path in (changed or candidates)) or "(후보 0)"
     raise AnchorResolutionError(
         "명시 경로에서 diff worktree를 하나로 해소할 수 없습니다. "
-        f"ticket touches에 등록 슬롯 경로를 포함하거나 절대 --paths를 사용하세요: {detail}"
+        f"ticket touches에 등록 슬롯 경로를 포함하거나 절대 --paths를 사용하세요: {detail}\n"
+        "  · 변경을 이미 커밋했다면 `--base <공통 base ref>`로 앵커를 명시하세요 — 직전 커밋 한 "
+        "칸(HEAD~1..HEAD)은 아무 것도 안 한 슬롯도 공유 base 의 마지막 커밋으로 걸리므로 슬롯 "
+        "소유 근거로 쓰지 않습니다."
     )
 
 
@@ -516,6 +697,17 @@ def _normalize_review_paths(
     if not normalized:
         raise AnchorResolutionError("검토 경로가 0개로 해소됐습니다.")
     return tuple(dict.fromkeys(normalized))
+
+
+def _scope_from_initial_pm_home(*, ticket_selected: bool, explicit_paths: bool) -> bool:
+    """이번 검토 범위가 **최초 PM 홈**에서 파생됐는가 (diff 소유자 대조 대상).
+
+    명시 `--paths` 나 유효 ticket touches 가 범위를 완전 지정하지 않은 실행은 최초 PM 홈 config
+    를 읽어 범위를 얻는다. 그 config 가 `review_paths` 를 선언했든 엔진 고정 기본 경로
+    (`DEFAULT_PATHS`)로 떨어졌든 **범위의 출처는 최초 PM 홈 하나**라, 표시 conf 와 실제 전송
+    범위가 갈리는 위험은 같다 — 그래서 선언 유무를 판정 입력으로 쓰지 않는다.
+    """
+    return not ticket_selected and not explicit_paths
 
 
 # ── board root 추종 (board/ 분리) ───────────────────────
@@ -904,10 +1096,14 @@ def _configured_paths(conf: dict[str, str]) -> list[str]:
     return [p for p in re.split(r"[,\s]+", raw) if p] if raw else list(DEFAULT_PATHS)
 
 
-def _denylist_patterns(conf: dict[str, str]) -> tuple[str, ...]:
+def _denylist_extras(conf: dict[str, str]) -> tuple[str, ...]:
+    """conf 가 추가 선언한 denylist 패턴만 — 엔진 고정분 없이(승계 합집합의 입력)."""
     extra = conf.get("review_denylist_extra", "").strip()
-    extras = tuple(p for p in re.split(r"[,\s]+", extra) if p) if extra else ()
-    return _SECRET_DENYLIST_PATTERNS + extras
+    return tuple(p for p in re.split(r"[,\s]+", extra) if p) if extra else ()
+
+
+def _denylist_patterns(conf: dict[str, str]) -> tuple[str, ...]:
+    return _SECRET_DENYLIST_PATTERNS + _denylist_extras(conf)
 
 
 def _round_limit(conf: dict[str, str]) -> int:
@@ -1218,6 +1414,68 @@ def _format_explicit_exclusion_block(excluded: list[str], patterns: tuple[str, .
 
 
 # ── git diff 추출 ─────────────────────────────────────────────────────────
+# "이번 base 의 diff 는 어디까지인가"(=폭)를 여기서 한 번만 서술한다. 등록 슬롯 후보 판정
+# (`_candidate_has_diff`)과 실제 추출(`extract_diff`)이 같은 단계 표를 소비해야, 후보 판정에서
+# '변경 없음'으로 탈락한 슬롯을 추출은 리뷰하는(또는 그 반대) 한 칸 어긋남이 생기지 않는다.
+
+_COMMIT_FALLBACK_BASE = "HEAD~1..HEAD"
+
+
+def _diff_bases(base: str) -> tuple[str, ...]:
+    """`base` 한 폭을 이루는 diff 단계 목록 — 앞 단계가 비었을 때만 다음 단계가 유효하다.
+
+    'HEAD' 는 작업트리(스테이징+언스테이징)가 첫 단계이고, 그게 비면 직전 커밋 한 칸까지가
+    같은 폭이다. 명시 base 는 단계가 하나뿐이다.
+    """
+    return (base, _COMMIT_FALLBACK_BASE) if base == "HEAD" else (base,)
+
+
+def _slot_selection_bases(base: str) -> tuple[str, ...]:
+    """등록 슬롯 후보 판정에 **소유 근거로 쓸 수 있는** 단계 — `_diff_bases` 의 부분집합.
+
+    사용자가 지정한 base 자신만 근거다. 암묵 폴백 단계(`HEAD~1..HEAD`)는 이 슬롯이 무엇을 했는지
+    말해주지 않는다 — 슬롯이 아무 것도 안 해도 **공유 base 의 마지막 커밋**이 검토 경로를
+    건드렸으면 비어 있지 않아, 놀고 있는 슬롯을 '변경 슬롯'으로 뽑고 그 커밋을 이번 작업물인 양
+    외부로 보낸다. 그래서 그 단계는 *이미 고른 repo 안에서 무엇을 리뷰할지*(추출 폭)에만 남기고
+    *어느 repo인지*의 근거에서는 뺀다. 커밋만 된 변경으로 슬롯을 고르려면 앵커를 명시해야 한다 —
+    `--base <공통 base ref>`(그 자체로 단계 하나) 또는 repo 를 직접 지정하는 절대 `--paths`.
+    """
+    return tuple(stage for stage in _diff_bases(base) if stage == base)
+
+
+def _stage_diff_runs(
+    root: Path, stage_base: str, paths: Sequence[str],
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+) -> list[subprocess.CompletedProcess]:
+    """한 diff 단계를 이루는 git 실행 결과 — 'HEAD' 단계만 스테이징/언스테이징 2회다."""
+    _run = run_fn or subprocess.run
+    arg_sets = (("--cached",), ()) if stage_base == "HEAD" else ((stage_base,),)
+    return [
+        _run(["git", "-C", str(root), "diff", *args, "--", *paths],
+             capture_output=True, text=True, encoding="utf-8", errors="replace")
+        for args in arg_sets
+    ]
+
+
+def _stage_diff_text(
+    root: Path, stage_base: str, paths: Sequence[str],
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+    *, strict: bool = False,
+) -> str:
+    """한 diff 단계의 원문(성공한 실행분만 이어붙임).
+
+    strict 면 실패한 git 실행을 RuntimeError 로 올린다 — 명시 base 의 오타/미존재 리비전은
+    조용한 빈 diff 가 아니라 오류여야 한다. 폴백 단계와 후보 판정은 실패를 '이 단계에는 변경
+    없음'으로 본다(그 단계가 없는 repo 도 정상 형상).
+    """
+    runs = _stage_diff_runs(root, stage_base, paths, run_fn)
+    if strict:
+        for result in runs:
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"git diff 실패 (rc={result.returncode}): {result.stderr.strip()}"
+                )
+    return "".join(result.stdout for result in runs if result.returncode == 0)
 
 
 def extract_diff(
@@ -1233,29 +1491,16 @@ def extract_diff(
     버려, 제외분이 조용히 빠진 채 '통과'가 나던 게이트 false-confidence 를 낳았다. 제외 메시징은
     호출자(main)가 모드별(명시 --paths=차단 / 암묵 --ticket=병기)로 소유한다.
 
-    base 가 'HEAD' 이면 스테이징+언스테이징 변경분(없으면 HEAD~1..HEAD)을 추출한다.
+    폭은 `_diff_bases` 단계 표를 따른다(base 가 'HEAD' 면 스테이징+언스테이징, 비면 HEAD~1..HEAD).
     run_fn — subprocess.run 대체 주입 (테스트용).
     """
-    _run = run_fn or subprocess.run
-    if base == "HEAD":
-        staged = _run(["git", "-C", str(REPO), "diff", "--cached", "--"] + paths,
-                      capture_output=True, text=True, encoding="utf-8", errors="replace")
-        unstaged = _run(["git", "-C", str(REPO), "diff", "--"] + paths,
-                        capture_output=True, text=True, encoding="utf-8", errors="replace")
-        combined = (staged.stdout if staged.returncode == 0 else "") + \
-                   (unstaged.stdout if unstaged.returncode == 0 else "")
-        if not combined.strip():
-            commit = _run(["git", "-C", str(REPO), "diff", "HEAD~1..HEAD", "--"] + paths,
-                          capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if commit.returncode == 0:
-                combined = commit.stdout
-        raw_diff = combined
-    else:
-        result = _run(["git", "-C", str(REPO), "diff", base, "--"] + paths,
-                      capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if result.returncode != 0:
-            raise RuntimeError(f"git diff 실패 (rc={result.returncode}): {result.stderr.strip()}")
-        raw_diff = result.stdout
+    raw_diff = ""
+    for stage_base in _diff_bases(base):
+        raw_diff = _stage_diff_text(
+            REPO, stage_base, paths, run_fn, strict=base != "HEAD",
+        )
+        if raw_diff.strip():
+            break
 
     # 제외 목록을 삼키지 않고 그대로 반환한다 — 호출자(main)가 모드별 제외 보고(차단/병기)를
     # 소유한다. stderr 경고도 main 으로 이관해 제외 메시징을 한곳에서 관장한다.
@@ -1737,13 +1982,22 @@ def parse_verdict(output: str) -> dict[str, bool]:
 
 
 def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
-    """외부리뷰 raw/공유 장부 위치(REPO 미해소만 tempdir 폴백).
+    """외부리뷰 raw/공유 장부 위치 — 앵커는 해소된 소유 PM 홈(미해소만 tempdir 폴백).
+
+    diff 앵커(`_main` 이 주입하는 REPO=diff_root)가 아니라 `_PM_HOME_OVERRIDE`(= 같은 실행이
+    해소한 소유 PM 홈)를 쓴다. 기록이 슬롯/스냅샷 장부로 갈리면 PM 홈 장부를 읽는
+    `pm_delegate raw` 통합 조회가 게이트 raw 를 영구히 못 본다. PM 홈 해소 불가 형상
+    (미등록 worktree·lease 손상)에서는 `_main` 의 해소 자체가 loud 경고와 함께 diff_root
+    자기 앵커로 폴백하므로 이 앵커도 그것을 따른다 — 복구 채널 자기잠김 금지.
 
     delegate의 raw 장부는 표현 축이 아닌 저장 경로 축이므로 포맷터 통합에서 제외하고,
     두 소비처 모두 relay.raw_storage_paths를 쓰는 현재 경계를 유지한다.
     """
     return _load_relay().raw_storage_paths(
-        REPO, "review", output_dir, temp_dir=Path(tempfile.gettempdir())
+        _PM_HOME_OVERRIDE or REPO,
+        "review",
+        output_dir,
+        temp_dir=Path(tempfile.gettempdir()),
     )
 
 
@@ -1950,7 +2204,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 """,
     )
     parser.add_argument("--base", default="HEAD",
-                        help="git diff 기준 ref (기본: HEAD — 스테이징+언스테이징)")
+                        help=("git diff 기준 ref (기본: HEAD — 작업트리"
+                              "(스테이징+언스테이징), 비면 직전 커밋 HEAD~1..HEAD)"))
     parser.add_argument("--paths", nargs="+", default=None,
                         help="검토 대상 경로 (기본: local.conf review_paths / src tests scripts ...)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
@@ -2272,18 +2527,31 @@ def resolved_reviewer_profile(
 
 
 def _main(argv: list[str] | None = None) -> int:
-    global REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR
+    global REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR, _PM_HOME_OVERRIDE
+    # main() 재호출 간 raw 앵커가 새지 않게 해소 전에 비운다(해소 전 조기 return 은 raw 를 쓰지 않는다).
+    _PM_HOME_OVERRIDE = None
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     engine_repo = REPO.resolve()
     ticket_selected = bool(args.ticket and not args.paths)
+    explicit_paths = bool(args.paths)
+    engine_demotions: list[PmHomeDemotion] = []
+    diff_owner_demotions: list[PmHomeDemotion] = []
     try:
         engine_pm_home = resolve_pm_home_for_repo(
-            engine_repo, required=ticket_selected,
+            engine_repo, required=ticket_selected, demotion_sink=engine_demotions,
         )
-        # config의 review_paths도 diff-root selector 입력이다. 먼저 PM 홈 config를 읽어
-        # 슬롯 선택과 실제 diff 추출이 정확히 같은 path 집합을 소비하게 한다.
-        conf = _local_config_for_repo(engine_pm_home)
+        scope_from_initial_pm_home = _scope_from_initial_pm_home(
+            ticket_selected=ticket_selected, explicit_paths=explicit_paths,
+        )
+        # **명시 앵커(--paths/--ticket) 실행은 선택 전 config를 읽지 않는다.** 이번 범위가 그
+        # config에서 나오지 않아 읽을 이유가 없고, 읽는 행위 자체가(판독 불가 시) diff 대상 해소
+        # *전* 중단이 되어 다른 repo를 가리키는 절대 --paths 복구 채널을 자기잠근다. 그 실행의
+        # config는 아래에서 **선택된 소유자**로부터 한 번만 읽는다 — 소비처(reviewer_cmd·타임아웃·
+        # denylist·opt-in·라운드 상한)는 모두 해소 뒤라 읽는 시점만 옮겨지고 값의 출처는 종전과 같다.
+        # config를 읽는 조건은 아래 **분기 자신**이다(판정 헬퍼 결과가 아니라) — 범위 원천 분기와
+        # 로드 조건이 따로 놀 수 없게.
+        conf: dict[str, str] | None = None
         if ticket_selected:
             raw_paths = tuple(parse_ticket_touches(args.ticket, pm_home=engine_pm_home))
             if not raw_paths:
@@ -2291,13 +2559,18 @@ def _main(argv: list[str] | None = None) -> int:
                     f"board anchor {engine_pm_home}: ticket {args.ticket} 의 touches가 비어 있어 "
                     "검토 범위를 확정할 수 없습니다."
                 )
+        elif args.paths:
+            raw_paths = tuple(args.paths)
         else:
-            raw_paths = tuple(args.paths or _configured_paths(conf))
-        paths_from_initial_conf = (
-            not ticket_selected
-            and not args.paths
-            and bool(conf.get("review_paths", "").strip())
-        )
+            # 인자 없는 실행 — 이 config가 **범위의 원천**이라 파생 전에 읽고 승계까지 마친다
+            # (승계한 review_paths가 슬롯 선택과 diff 추출에 함께 반영돼야 표시 conf와 실제 전송
+            # 범위가 갈리지 않는다). 이 실행의 선택 소유자는 정의상 최초 PM 홈이다 — 다르면 아래
+            # 교차 소유 가드가 차단한다.
+            conf = _conf_with_owner_filters(
+                _local_config_for_repo(engine_pm_home), engine_demotions,
+                explicit_paths=explicit_paths,
+            )
+            raw_paths = tuple(_configured_paths(conf))
         diff_root = _resolve_diff_root(
             engine_repo,
             pm_home=engine_pm_home,
@@ -2310,6 +2583,7 @@ def _main(argv: list[str] | None = None) -> int:
             if diff_root.resolve() == engine_repo
             else resolve_pm_home_for_repo(
                 diff_root, required=ticket_selected,
+                demotion_sink=diff_owner_demotions,
             )
         )
         if ticket_selected and pm_home != engine_pm_home:
@@ -2317,12 +2591,14 @@ def _main(argv: list[str] | None = None) -> int:
                 "ticket board 소유 PM 홈과 diff worktree의 lease 소유 PM 홈이 다릅니다: "
                 f"board={engine_pm_home} diff-owner={pm_home}"
             )
-        if paths_from_initial_conf and pm_home != engine_pm_home:
+        if scope_from_initial_pm_home and pm_home != engine_pm_home:
             raise AnchorResolutionError(
-                "인자 없는 실행의 review_paths가 최초 PM 홈 local.conf에서 diff_root "
-                "선택에 사용됐지만, 해소된 diff 소유 PM 홈이 다릅니다. config "
-                "provenance와 실제 전송 범위를 일치시킬 수 없어 외부 송신 전에 중단합니다: "
+                "인자 없는 실행의 검토 범위(local.conf review_paths 또는 엔진 고정 기본 경로)를 "
+                "최초 PM 홈에서 파생해 diff_root를 선택했지만, 해소된 diff 소유 PM 홈이 다릅니다. "
+                "config provenance와 실제 전송 범위를 일치시킬 수 없어 외부 송신 전에 중단합니다: "
                 f"initial-pm-home={engine_pm_home} diff-owner-pm-home={pm_home}\n"
+                "  · review_paths 선언 유무와 무관한 같은 기준입니다 — 기본 경로도 최초 PM 홈 "
+                "config를 읽어 얻은 이번 실행의 범위입니다.\n"
                 "  · 절대 `--paths <경로>`로 이번 검토 범위를 직접 지정하거나, 유효한 "
                 "`--ticket T-NNNN`(touches 채워진 것)으로 범위를 파생시키세요.\n"
                 "  · 두 PM 홈이 같은 슬롯을 등록한 상태라면 lease 장부의 슬롯 등록을 정리하세요."
@@ -2345,9 +2621,24 @@ def _main(argv: list[str] | None = None) -> int:
     # diff_root에 빈/구 사본이 있어도 해소된 local.conf와 같은 소유 경계에서 읽도록 의도적으로 둔다.
     REVIEW_CONTEXT_FILE = pm_home / ".project_manager" / "review_context.local.md"
     TICKETS_DIR = pm_home / ".project_manager" / "wiki" / "tickets"
-    if pm_home != engine_pm_home:
+    # raw 산출/공유 장부도 board/config 와 같은 소유 경계에 등재한다 — 슬롯(diff_root) 장부에
+    # 박제하면 PM 홈 장부를 읽는 `pm_delegate raw` 통합 조회가 이 실행의 raw 를 못 본다.
+    # 해소 실패 형상에서는 pm_home 자체가 loud 경고 뒤 diff_root 로 폴백해 있다.
+    _PM_HOME_OVERRIDE = pm_home
+    if conf is None:
+        # 명시 앵커 실행의 config는 여기서 **처음이자 유일하게** 읽고, 강등 필터 검사도 여기서
+        # 한다 — 대상은 이번 실행이 실제로 쓰는 conf 소유자뿐이다. 초기 엔진 컨텍스트가 강등·손상
+        # 이어도 diff 대상이 다른 소유자로 확정됐으면 그 손상은 이 송신과 무관하다(절대 --paths
+        # 복구 채널 보존). 인자 없는 실행은 범위 파생 지점에서 이미 읽고 검사했고, 그 실행의 선택
+        # 소유자는 정의상 최초 PM 홈이다(다르면 교차 소유 가드가 이미 차단).
+        selected_demotions = (
+            engine_demotions if pm_home == engine_pm_home else diff_owner_demotions
+        )
         try:
-            conf = _local_config_for_repo(pm_home)
+            conf = _conf_with_owner_filters(
+                _local_config_for_repo(pm_home), selected_demotions,
+                explicit_paths=explicit_paths,
+            )
         except (OSError, UnicodeError) as exc:
             conf_path = _local_conf_path(pm_home)
             print(
@@ -2355,6 +2646,9 @@ def _main(argv: list[str] | None = None) -> int:
                 f"{conf_path} ({type(exc).__name__}: {exc})",
                 file=sys.stderr,
             )
+            return 1
+        except AnchorResolutionError as exc:
+            print(f"오류: 외부 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
             return 1
     # 시간 예산은 **리뷰어 커맨드의 하네스 프로필**을 따른다 — reviewer_cmd 를 먼저 해소해야
     # 어떤 축(클라우드/로컬)의 값을 쓸지 정해진다(기본 `codex exec` → codex 축). 깨진 conf의
@@ -2602,12 +2896,17 @@ def main(argv: list[str] | None = None) -> int:
         verifier=_verify_engine_rev,
     )
     _console_encoding.configure_console_utf8()
-    global REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR
-    original = (REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR)
+    global REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR, _PM_HOME_OVERRIDE
+    original = (
+        REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR, _PM_HOME_OVERRIDE,
+    )
     try:
         return _main(argv)
     finally:
-        REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR = original
+        (
+            REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR,
+            _PM_HOME_OVERRIDE,
+        ) = original
 
 
 if __name__ == "__main__":

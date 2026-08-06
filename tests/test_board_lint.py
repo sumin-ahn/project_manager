@@ -1059,11 +1059,22 @@ def test_gate_excludes_domain_findings(board, monkeypatch, tmp_path):
         ("낡음", "stale", "covers 코드가 updated(2026-06-19) 후 커밋됨"),
         ("고립", "orphan", "다른 domain 페이지에서 인링크 0 (고립)"),
         ("거대", "oversized", "본문 250줄 > 200"),
+        ("이력쌓임", "history", "변경 이력 항목 3개 — …"),
     ])
     # --gate: domain 은 종료코드에 기여 안 함 → 0.
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
     # 무인자(full): 같은 입력에서 1 (보고는 함·현행 계약).
     assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
+
+
+def test_domain_lint_kinds_are_registered_advisory(board):
+    """domain 이 내는 4 kind 전부 `_ADVISORY_LINT_KINDS` 등재 — visibility>enforcement.
+
+    신규 kind(history·T-0503)가 등재를 빠뜨리면 `--gate` 가 push 를 막는다 — domain lint 의
+    never-block 계약 위반이라 이 축을 kind 목록째 고정한다.
+    """
+    for kind in ("stale", "orphan", "oversized", "history"):
+        assert kind in board._ADVISORY_LINT_KINDS
 
 
 def test_lint_domain_graceful_when_domain_absent(board, monkeypatch, tmp_path):

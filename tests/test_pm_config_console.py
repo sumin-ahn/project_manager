@@ -309,6 +309,60 @@ def test_console_w_empty_repo_cancels(pc, monkeypatch):
     assert called["n"] == 0
 
 
+class _SkewWorktreePool(FakeWorktreePool):
+    """create_slot 이 marked engine skew(엔진 사본 불일치)를 던지는 풀 대역."""
+
+    def create_slot(self, repo, **kwargs):
+        exc = RuntimeError("worktree_pool.py 사본 불일치")
+        exc._engine_rev_skew = True
+        raise exc
+
+
+def test_console_w_marked_engine_skew_stops_the_loop(pc):
+    """`[w]` 경계의 marked skew 는 메뉴 루프를 계속 돌리지 않는다 (T-0545 ②).
+
+    `cmd_worktree_add` 가 skew 를 rc 로 번역하던 동안, 콘솔 액션은 rc 를 안 읽어 진단만 남고
+    루프가 계속 돌았다(엔진 사본이 어긋난 상태로 다음 액션 수용). 이제 그 경계는 재전파하고
+    `main` 이 CLI 와 같은 문구·rc 로 번역한다 — 루프 계속 0.
+    """
+    prompts: list[str] = []
+    lines = iter(["w", "svc", "s", "s", "q"])
+
+    def reader(prompt=""):
+        prompts.append(prompt)
+        try:
+            return next(lines)
+        except StopIteration:
+            raise EOFError()
+
+    with pytest.raises(RuntimeError) as raised:
+        pc.run_console(input_fn=reader, board=FakeBoardAreas(rows=[]),
+                       worktree_pool=_SkewWorktreePool())
+    assert getattr(raised.value, "_engine_rev_skew", False) is True
+    # 메뉴 프롬프트는 skew 를 만난 그 회차 1번뿐 — 그 뒤 회차가 있으면 루프가 계속 돈 것이다.
+    assert prompts.count("선택: ") == 1
+
+
+def test_console_entry_translates_propagated_marked_skew(pc, monkeypatch, capsys):
+    """콘솔 표면으로 전파된 marked skew 는 `main` 이 명시 중단 안내 + rc 1 로 번역한다.
+
+    무인자(tty) 진입은 `main → _main → run_console` 이라 콘솔에서 전파된 skew 도 CLI 와 같은
+    종료 경계를 탄다 — traceback 0.
+    """
+    def _boom():
+        exc = RuntimeError("board.py 사본 불일치")
+        exc._engine_rev_skew = True
+        raise exc
+
+    monkeypatch.setattr(pc, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(pc, "run_console", _boom)
+    rc = pc.main([])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert err.startswith("[중단] 엔진 사본 불일치")
+    assert "Traceback" not in err
+
+
 def test_console_b_routes_to_set_test_cmd(pc, monkeypatch):
     """`b` → _console_set_test_cmd → cmd_set_test_cmd(slot, cmd) 호출."""
     seen = {}

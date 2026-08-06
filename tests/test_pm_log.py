@@ -270,18 +270,27 @@ def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
 
 
 def test_log_write_lock_uses_single_project_local_lock(tmp_path, monkeypatch):
-    """운영 log 경로의 모든 writer는 `.project_manager/.local/log.lock` 하나를 쓴다."""
+    """운영 log 경로의 모든 writer는 `.project_manager/.local/log.lock` 하나를 쓴다.
+
+    플랫폼 분기는 공용 `file_lock` seam이 소유하므로(T-0561) 획득/해제 관측도 그 seam에서
+    한다 — pm_log는 경로 규약만 정한다.
+    """
     mod = _load_module()
+    lock_mod = mod._load_file_lock()
     current = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
     calls = []
     monkeypatch.setattr(
-        mod.os,
+        lock_mod.os,
         "open",
         lambda path, flags, mode=0: calls.append(("open", Path(path), flags, mode)) or 43,
     )
-    monkeypatch.setattr(mod, "_flock_acquire", lambda fd: calls.append(("acquire", fd)))
-    monkeypatch.setattr(mod, "_flock_release", lambda fd: calls.append(("release", fd)))
-    monkeypatch.setattr(mod.os, "close", lambda fd: calls.append(("close", fd)))
+    monkeypatch.setattr(
+        lock_mod, "acquire_exclusive", lambda fd: calls.append(("acquire", fd))
+    )
+    monkeypatch.setattr(
+        lock_mod, "release_exclusive", lambda fd: calls.append(("release", fd))
+    )
+    monkeypatch.setattr(lock_mod.os, "close", lambda fd: calls.append(("close", fd)))
 
     with mod.log_write_lock(current):
         calls.append(("critical",))

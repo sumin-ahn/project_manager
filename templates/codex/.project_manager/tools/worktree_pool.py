@@ -852,6 +852,8 @@ def _now_local() -> str:
 # 장부 read-modify-write 를 직렬화한다. POSIX=fcntl.flock·Windows=msvcrt.locking·둘 다
 # 없으면 단일-머신 전제의 무락 폴백(락 파일만 생성). 프로세스가 죽으면 OS 가 락을 자동
 # 해제(stale-lock 없음). stdlib 만 사용(외부 filelock 의존 금지·런타임 의존은 stdlib+git).
+# ⚠ 위 "독립 구현·import 금지" 는 공용 `file_lock` seam 신설 *이전*의 사유다 — 그 seam 은 형제를
+#   로드하지 않는 leaf 라 이 사본도 같은 방식으로 수렴할 수 있다(후속 수렴 대상·현재는 스코프 밖).
 
 
 def _flock_acquire(fd: int) -> None:

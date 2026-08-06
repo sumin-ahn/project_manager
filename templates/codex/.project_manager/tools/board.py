@@ -826,8 +826,23 @@ def _load_identity_args():
     )
 
 
+def _load_file_lock():
+    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
+
+    `_load_identity_args` 동형 — 경로-앵커 로더다. board 의 *모든* 변경 경로가 이 락을 지나므로
+    identity_args 와 같은 **import 시점** 바인딩으로 둔다(아래 `file_lock = ...`): 락을 잡을 때마다
+    형제를 로드하면 board 를 fail-soft 로 소비하는 호출층(pm_config 등)이 사본 skew 를 조용히
+    삼키는 새 경로가 생긴다 — import 경계에서 한 번 fail-loud 로 세워 그 확산을 막는다.
+    """
+    lock_path = Path(__file__).resolve().parent / "file_lock.py"
+    return _load_module_from_path(
+        lock_path, "file_lock.py", verifier=_verify_engine_rev,
+    )
+
+
 try:
     identity_args = _load_identity_args()
+    file_lock = _load_file_lock()
 except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
     if _is_engine_rev_skew(exc):
         if __name__ == "__main__":
@@ -2304,46 +2319,9 @@ def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
 #
 # 크로스플랫폼(stdlib-only — 런타임 의존은 PyYAML 뿐): POSIX=fcntl.flock,
 # Windows=msvcrt.locking. 둘 다 없으면 단일-머신 전제의 무락 폴백(락 파일만 생성).
-
-
-def _flock_acquire(fd: int) -> None:
-    """OS 배타락 획득 (블로킹). POSIX=fcntl.flock·Windows=msvcrt.locking·폴백 no-op.
-
-    stdlib 만 사용한다 (외부 `filelock` 의존 금지). 둘 다 임포트 안 되는 희귀 환경은
-    단일-머신 전제로 무락 폴백 — 락 파일 자체는 존재하므로 인터페이스는 동일하다.
-    """
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        # 첫 1바이트에 배타락 — 블로킹(LK_LOCK). 빈 파일이면 한 바이트 확보가 필요.
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-        return
-    except ImportError:
-        pass
-    # 폴백: 락 프리미티브 없음 — 단일-머신 전제로 무락 진행(락 파일만 존재).
-
-
-def _flock_release(fd: int) -> None:
-    """OS 배타락 해제. close 시 OS 가 자동 해제하지만 명시적으로 풀어 둔다."""
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return
-    except ImportError:
-        pass
-    try:
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        return
-    except ImportError:
-        pass
+# 그 플랫폼 분기 자체는 공용 `file_lock` seam 이 소유한다 — board/pm_log/pm_relay 가 같은
+# 구현을 쓰고(모듈 상단 `file_lock` 바인딩), board 는 *어느 파일에 언제 거는지*(경로 규약·
+# 락 순서)만 정한다.
 
 
 @contextlib.contextmanager
@@ -2358,16 +2336,8 @@ def board_lock() -> Iterator[None]:
     동작은 OS 별로 다름). `cmd_new` 의 ID 발행 트랜잭션과 `refresh_board` 의 board.md
     write 는 *각자 독립* 락 구간으로 분리한다(중첩 아님).
     """
-    BOARD_LOCK.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(BOARD_LOCK), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        _flock_acquire(fd)
-        try:
-            yield
-        finally:
-            _flock_release(fd)
-    finally:
-        os.close(fd)  # close 만으로도 OS 가 락을 해제 (크래시 시 안전망)
+    with file_lock.exclusive_file_lock(BOARD_LOCK):
+        yield
 
 
 def _append_atomic(path: Path, text: str) -> None:
@@ -2766,17 +2736,8 @@ def board_git_lock() -> Iterator[None]:
     if not _board_git_enabled():
         yield
         return
-    lock = _board_git_lock_file()
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        _flock_acquire(fd)
-        try:
-            yield
-        finally:
-            _flock_release(fd)
-    finally:
-        os.close(fd)  # close 만으로도 OS 가 락을 해제 (크래시 시 안전망)
+    with file_lock.exclusive_file_lock(_board_git_lock_file()):
+        yield
 
 
 def _board_git_head() -> str | None:
@@ -8509,8 +8470,8 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     resolve 실패는 kind=`unstable-ref` 로 차단됨.
 #   - scope-advice : family_scope 형식/등록 권고 — scope 자체로 hard-fail 안 함
 #     "차단은 최소·advisory 우선").
-#   - stale·orphan·oversized : domain freshness finding (lint_domain). domain lint 는
-#     enforcement 아닌 visibility — push 를 절대 막지 않는다(advisory only·`--gate` 제외).
+#   - stale·orphan·oversized·history : domain freshness finding (lint_domain·history=현재-진실
+#     페이지에 쌓인 변경 이력 항목). enforcement 아닌 visibility — push 를 절대 막지 않는다.
 #   - dangling-wikilink-scaffold : 어댑터 scaffold(.claude/.opencode) 에서만 등장하는 framework
 #     ADR/idea dangling. 채택자(framework ADR 부재 다운스트림)의 scaffold bracket-ref 는
 #     영구 dangling 이 정상 — visibility 만, push 미차단. ticket dangling·wiki/root-doc dangling 은
@@ -8538,7 +8499,7 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     (`_ensure_board_gitattributes`) 채택자가 자기 `.gitattributes` 를 가질 수 있어 never-block.
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice", "coverage",
-     "stale", "orphan", "oversized", "adr-lifecycle", "architecture-stale",
+     "stale", "orphan", "oversized", "history", "adr-lifecycle", "architecture-stale",
      "status-stale", "domain-stale", "domain-unverifiable",
      "architecture-unverifiable", "status-unverifiable",
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
@@ -9705,7 +9666,7 @@ def lint_domain() -> list[tuple[str, str, str]]:
     """domain freshness finding 을 board lint finding 으로 표면화 (advisory·비차단).
 
     domain.lint_pages 의 `(kind, label, detail)` 를 board 관례 `(label, kind, detail)` 로
-    재배열해 돌려준다. kind 는 domain 의 `stale`/`orphan`/`oversized` 를 보존 —
+    재배열해 돌려준다. kind 는 domain 의 `stale`/`orphan`/`oversized`/`history` 를 보존 —
     `_ADVISORY_LINT_KINDS` 에 등재돼 `--gate` 종료코드에 *절대* 기여하지 않는다(visibility>
     enforcement). domain.py 부재·로드 실패·깨진 페이지·git 부재 → [] (솔로/domain 미사용
     프로젝트 무영향). domain.py 가 이미 graceful 이므로 얇게 위임하되, 어떤 예외도 [] 로
@@ -9861,7 +9822,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     idea status/directory agreement + status.md ✅ 완성 행 누적 권고(judgment-only) +
     dangling wikilink + unstable (slug/filename) refs +
     family wiki scope 인지+
-    domain freshness advisory(stale/orphan/oversized·never-block) +
+    domain freshness advisory(stale/orphan/oversized/history·never-block) +
     architecture.md freshness advisory(architecture-stale·never-block) +
     adapter-layer drift advisory(adapter-drift·never-block·baseline rev 비교) +
     render-leak(리터럴 `{{...}}` 누출·blocking·@render 산출물 한정·활성화 전 무발화) +

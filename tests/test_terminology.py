@@ -15,7 +15,11 @@ LIVE 코드·동기 methodology 문서에 폐기 용어가 *다시 새어드는*
 from __future__ import annotations
 
 import glob
+import re
 from pathlib import Path
+from typing import NamedTuple
+
+import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
 
@@ -301,14 +305,169 @@ def test_slot_key_guard_detects_retired_notation_in_shipped_ignore_prose(tmp_pat
 # 리터럴은 분할해 이 가드 자체가 자기 검사에 걸리지 않게 한다. CHANGELOG·ADR·sealed spike·
 # log·실 ticket은 시점 기록이라 제외한다. 하네스 namespace는 PM이 직접 관리하는 별도 변경
 # 표면이고, 이 dev 작업의 출하 가드는 canonical 엔진·동기 문서·README와 그 엔진 미러를 본다.
-_V160_RETIRED_CTX_TERMS = (
-    "hard" + "-stop",
-    "stop" + " marker",
-    "pre" + "-turn",
-    "재" + "전송",
-    "ctx" + "-tripwire",
-    "break" + "-glass",
-    "--disable" + " hooks",
+#
+# T-0562: 정확 문자열 매칭이라 표기 변형이 그대로 통과했다 — "hard-stop" 가드가 "hard stop"·
+# "hardstop"·"하드스톱" 을 못 잡았다. 이제 각 항목을 **낱말 표기표**로 선언하고 거기서 변형
+# 정규식을 기계로 생성한다. 손으로 쓴 정규식을 나열하면 항목마다 규칙이 제각각이 되고(실제로
+# ctx-stop 만 한글 음역 "스톱" 이 빠져 미탐), 표기를 늘려도 샘플이 안 따라온다. 금지어 목록
+# 자체는 T-0557 그대로다(신규 금지어 추가는 이 가드의 범위가 아니다).
+#
+# 생성 규칙 세 가지:
+#  1. 낱말 사이 구분자 = 항목별 문자 클래스 + `*`. 기본은 `_` 포함(`hard_stop_pct` 처럼 폐기
+#     기능이 식별자로 재도입되는 것도 차단한다). `_` 를 뺀 항목은 v1.6.0 이 **의도적으로 남긴**
+#     live 런타임 이름과 겹치는 두 개뿐이고, 각각 사유를 선언한다(선언 강제 =
+#     `test_v160_underscore_exclusion_declares_reason`).
+#  2. 선두 낱말 앞에 합성어 경계를 건다 — 한글 음역(스톱·하드)에는 `(?<![가-힣])`, 영문 표기
+#     에는 `(?<![A-Za-z])`. "백스톱"(출하 표면 250줄)·"backstop"(live 표기) 의 꼬리가 각각
+#     "스톱 마커"·"stop marker" 로 오탐되는 걸 막는다. 두 문자계에 대칭으로 걸어야 한쪽만
+#     보호되는 비대칭이 안 생긴다. 하이픈으로 끊긴 "non-stop marker" 는 합성어가 아니라
+#     그대로 차단된다(경계는 낱말 문자 바로 뒤만 막는다).
+#  3. 한글 **전용** 표기(재전송 — 음역이 아니라 그 자체가 온전한 낱말)는 붙여 쓴 형태를 경계
+#     없이 잡고("자동재전송"), 띄어 쓴 형태에만 경계를 건다("현재 전송"·"잠재 전송" 통과).
+#
+# 한글 음역을 안 적어서 생기는 미탐(위 ctx-stop 사례)은 표기표 자체에 대한 테스트로 닫는다 —
+# 영문 표기가 있으면 한글 음역을 적거나 못 적는 사유를 선언해야 한다
+# (`test_v160_retired_term_declares_korean_spelling_or_reason`).
+#
+# 정규 표기 열은 기존 관례대로 분할 리터럴로 둔다(이 가드가 자기 검사에 안 걸리게).
+_HANGUL_SYLLABLE = r"[가-힣]"
+_LATIN_LETTER = r"[A-Za-z]"
+# 앞 글자가 낱말 문자면 = 합성어의 꼬리(백스톱·현재·backstop·shard_stop)라 폐기 표기가 아니다.
+_HANGUL_COMPOUND_BOUNDARY = rf"(?<!{_HANGUL_SYLLABLE})"
+_LATIN_COMPOUND_BOUNDARY = rf"(?<!{_LATIN_LETTER})"
+_SEPARATORS_WITH_UNDERSCORE = r"[\s_-]"
+_SEPARATORS_PROSE_ONLY = r"[\s-]"
+
+
+class _RetiredCtxTerm(NamedTuple):
+    """폐기 표기 한 항목 — 낱말 표기표에서 변형 정규식을 생성한다.
+
+    `words` = 낱말 위치별 표기 후보. 한 표기는 문자열이거나 여러 낱말의 튜플이다
+    (예 ("트립", "와이어") → 낱말 사이에도 같은 구분자 클래스가 들어간다).
+    """
+
+    canonical: str
+    words: tuple[tuple[object, ...], ...]
+    pattern: re.Pattern[str]
+    separator_chars: str
+    runtime_allowances: tuple[str, ...]
+    underscore_exemption_reason: str
+    korean_exemption_reason: str
+
+
+def _spelling_words(spelling) -> tuple[str, ...]:
+    return (spelling,) if isinstance(spelling, str) else tuple(spelling)
+
+
+def _iter_spelling_words(words) -> list[str]:
+    return [
+        word
+        for position in words
+        for spelling in position
+        for word in _spelling_words(spelling)
+    ]
+
+
+def _has_latin_letter(text: str) -> bool:
+    return bool(re.search(r"[A-Za-z]", text))
+
+
+def _is_hangul_spelling(spelling) -> bool:
+    return bool(re.match(_HANGUL_SYLLABLE, _spelling_words(spelling)[0]))
+
+
+def _spelling_regex(spelling, separators: str) -> str:
+    return separators.join(re.escape(word) for word in _spelling_words(spelling))
+
+
+def _compound_boundary_prefix(spelling) -> str:
+    """선두 낱말의 문자계에 맞는 합성어 경계 — 한글·라틴에 대칭으로 건다."""
+    head = _spelling_words(spelling)[0]
+    if re.match(_HANGUL_SYLLABLE, head):
+        return _HANGUL_COMPOUND_BOUNDARY
+    if re.match(_LATIN_LETTER, head):
+        return _LATIN_COMPOUND_BOUNDARY
+    return ""  # 기호로 시작하는 표기(--disable)는 합성어 꼬리가 될 수 없다
+
+
+def _position_regex(spellings, separators: str, *, boundary: bool) -> str:
+    branches = []
+    for spelling in spellings:
+        prefix = _compound_boundary_prefix(spelling) if boundary else ""
+        branches.append(prefix + _spelling_regex(spelling, separators))
+    return "(?:" + "|".join(branches) + ")"
+
+
+def _variant_regex(words, separator_chars: str) -> re.Pattern[str]:
+    """낱말 표기표 → 변형 정규식 (생성 규칙 1~3은 위 절 주석 참조)."""
+    optional, required = separator_chars + "*", separator_chars + "+"
+    if not any(_has_latin_letter(word) for word in _iter_spelling_words(words)):
+        joined = "".join(
+            _position_regex(position, "", boundary=False) for position in words
+        )
+        separated = required.join(
+            _position_regex(position, optional, boundary=(index == 0))
+            for index, position in enumerate(words)
+        )
+        return re.compile(f"(?:{joined})|(?:{separated})", re.IGNORECASE)
+    return re.compile(
+        optional.join(
+            _position_regex(position, optional, boundary=(index == 0))
+            for index, position in enumerate(words)
+        ),
+        re.IGNORECASE,
+    )
+
+
+def _retired_ctx_term(
+    canonical: str,
+    words,
+    *,
+    separator_chars: str = _SEPARATORS_WITH_UNDERSCORE,
+    runtime_allowances: tuple[str, ...] = (),
+    underscore_exemption_reason: str = "",
+    korean_exemption_reason: str = "",
+) -> _RetiredCtxTerm:
+    return _RetiredCtxTerm(
+        canonical=canonical,
+        words=words,
+        pattern=_variant_regex(words, separator_chars),
+        separator_chars=separator_chars,
+        runtime_allowances=runtime_allowances,
+        underscore_exemption_reason=underscore_exemption_reason,
+        korean_exemption_reason=korean_exemption_reason,
+    )
+
+
+_V160_RETIRED_CTX_TERMS: tuple[_RetiredCtxTerm, ...] = (
+    _retired_ctx_term("hard" + "-stop", (("hard", "하드"), ("stop", "스톱"))),
+    _retired_ctx_term(
+        "stop" + " marker", (("stop", "스톱"), ("marker", "마커")),
+        separator_chars=_SEPARATORS_PROSE_ONLY,
+        underscore_exemption_reason=(
+            "pm_relay 의 live 런타임 이름 stop_marker_present 와 겹친다"
+        ),
+    ),
+    _retired_ctx_term("pre" + "-turn", (("pre", "프리"), ("turn", "턴"))),
+    _retired_ctx_term("재" + "전송", (("재",), ("전송",))),
+    _retired_ctx_term(
+        "ctx" + "-tripwire", (("ctx",), ("tripwire", ("트립", "와이어"))),
+    ),
+    _retired_ctx_term("break" + "-glass", (("break", "브레이크"), ("glass", "글라스"))),
+    _retired_ctx_term(
+        "--disable" + " hooks", (("--disable",), ("hooks",)),
+        korean_exemption_reason="CLI 플래그 문자열이라 한글 음역형이 없다",
+    ),
+    # ctx-stop 만 조건부 — 런타임 marker 경로/식별자 문맥이면 허용하고 사람 대상 안내·서술에서만
+    # 금지한다. 허용 문맥도 표기표 옆에 둬야 어떤 항목이 왜 느슨한지 한눈에 보인다.
+    _retired_ctx_term(
+        "ctx" + "-stop", (("ctx",), ("stop", "스톱")),
+        separator_chars=_SEPARATORS_PROSE_ONLY,
+        underscore_exemption_reason=(
+            "live 런타임 이름 ctx_stop_pct·ctx_stop_hook.py 와 겹친다"
+        ),
+        runtime_allowances=(".local/ctx-stop", "marker_dir"),
+    ),
 )
 _V160_TEXT_SUFFIXES = {
     ".py", ".md", ".sh", ".cmd", ".json", ".jsonc", ".toml", ".manifest",
@@ -349,30 +508,47 @@ def _v160_shipping_surface() -> list[Path]:
     return files
 
 
+def _v160_offender(location: str, term: str, found: str) -> str:
+    """검출 위치·정규 표기·실제 발견 표기를 한 줄로 만든다.
+
+    변형 매칭이라 정규 표기만 찍으면 파일에서 그 문자열을 찾을 수 없다 — 실제로 걸린
+    표기("하드 스톱" 등)를 같이 보여줘야 고칠 자리를 바로 찾는다.
+    """
+    return f"{location} :: {term} (발견 표기 '{found}')"
+
+
+def _v160_runtime_allowed(term: _RetiredCtxTerm, lowered_line: str) -> bool:
+    """그 줄이 이 항목의 런타임 허용 문맥(marker 경로/식별자)인지 판정한다."""
+    return any(allowance in lowered_line for allowance in term.runtime_allowances)
+
+
 def _v160_ctx_terminology_offenders(files: list[Path]) -> list[str]:
     offenders = []
     for path in files:
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            location = f"{path.relative_to(REPO).as_posix()}:{lineno}"
             lowered = line.lower()
             for term in _V160_RETIRED_CTX_TERMS:
-                if term in lowered:
+                if _v160_runtime_allowed(term, lowered):
+                    continue
+                found = term.pattern.search(line)
+                if found:
                     offenders.append(
-                        f"{path.relative_to(REPO).as_posix()}:{lineno} :: {term}"
+                        _v160_offender(location, term.canonical, found.group(0))
                     )
-            # ctx-stop은 런타임 호환 경로명만 허용하고 사람 대상 안내·서술에서는 금지한다.
-            ctx_stop = "ctx" + "-stop"
-            if ctx_stop in lowered and not (
-                ".local/ctx-stop" in lowered or "marker_dir" in lowered
-            ):
-                offenders.append(
-                    f"{path.relative_to(REPO).as_posix()}:{lineno} :: {ctx_stop}"
-                )
     return offenders
 
 
 def test_no_retired_ctx_safety_terminology_in_v160_shipping_surface():
-    """compaction-native 출하 표면에 옛 차단·회전 안내가 다시 들어오지 않는다."""
-    assert not _v160_ctx_terminology_offenders(_v160_shipping_surface())
+    """compaction-native 출하 표면에 옛 차단·회전 안내가 다시 들어오지 않는다.
+
+    T-0562 이후 정확 표기뿐 아니라 변형(구분자·대소문자·한영 혼용)까지 전수 0 이어야 한다.
+    """
+    offenders = _v160_ctx_terminology_offenders(_v160_shipping_surface())
+    assert not offenders, (
+        "폐기된 ctx 안전 표기(변형 포함) 잔존 — compaction-native 서술로 정정하라 "
+        f"(T-0557·T-0562): {offenders}"
+    )
 
 
 def test_v160_terminology_scope_covers_readmes_and_canonical_engine():
@@ -383,3 +559,229 @@ def test_v160_terminology_scope_covers_readmes_and_canonical_engine():
         "templates/codex/README.md",
         "templates/opencode/README.md",
     } <= relpaths
+
+
+# ── T-0562: 변형 클래스 매칭 데모·경계 ─────────────────────────────────────
+# 아래 샘플 문자열은 정규 표기를 담지 않은 **변형**이라 분할 리터럴이 필요 없다. 게다가
+# `_v160_shipping_surface` 가 `tests/` 를 통째로 제외하므로 이 파일은 자기 검사 대상이 아니다.
+_SEPARATOR_AXIS = "구분자"
+_LETTER_CASE_AXIS = "대소문자"
+_MIXED_LANGUAGE_AXIS = "한영"
+
+
+def _term_by_canonical(canonical: str) -> _RetiredCtxTerm:
+    """정규 표기로 표기표 항목을 찾는다 — 샘플 테이블이 표기표와 어긋나면 즉시 실패."""
+    for term in _V160_RETIRED_CTX_TERMS:
+        if term.canonical == canonical:
+            return term
+    raise AssertionError(f"표기표에 없는 정규 표기: {canonical!r}")
+
+
+def _supported_variant_axes(term: _RetiredCtxTerm) -> tuple[str, ...]:
+    """그 항목이 실제로 지원하는 변형 축 — 표기표에서 파생한다(손 선언 아님).
+
+    한글 음역을 표기표에 추가하면 한영 축이 자동으로 생기고, 아래 커버리지 테스트가 그 축의
+    샘플을 요구한다. 표기만 늘리고 샘플은 안 늘리는 drift 를 기계로 막는다.
+    """
+    axes = [_SEPARATOR_AXIS]  # 모든 항목이 낱말 2개 이상이라 구분자 축은 항상 있다
+    if any(_has_latin_letter(word) for word in _iter_spelling_words(term.words)):
+        axes.append(_LETTER_CASE_AXIS)
+    if any(
+        any(_has_latin_letter(_spelling_words(s)[0]) for s in position)
+        and any(_is_hangul_spelling(s) for s in position)
+        for position in term.words
+    ):
+        axes.append(_MIXED_LANGUAGE_AXIS)
+    return tuple(axes)
+
+
+# 보강 전(정확 문자열 매칭) 가드를 그대로 통과하던 변형들 — (정규 표기, 그 샘플이 보이는 변형
+# 축, 출하 표면에 이렇게 새어들 수 있는 문장). 축 태그는 커버리지 테스트가 소비한다.
+_V160_VARIANT_RED_SAMPLES = (
+    ("hard" + "-stop", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS),
+     "잔여 5% 밴드에서 Hard Stop 으로 세션을 끊는다"),
+    ("hard" + "-stop", (_SEPARATOR_AXIS,), "hardstop 밴드에 닿으면 새 세션으로 넘긴다"),
+    ("hard" + "-stop", (_SEPARATOR_AXIS,), "hard_stop_pct 임계를 다시 넣는다"),
+    ("hard" + "-stop", (_MIXED_LANGUAGE_AXIS,), "하드스톱 이 걸리면 핸드오프를 먼저 쓴다"),
+    ("hard" + "-stop", (_SEPARATOR_AXIS, _MIXED_LANGUAGE_AXIS),
+     "hard 스톱 안내를 statusline 에 띄운다"),
+    ("stop" + " marker", (_SEPARATOR_AXIS,), "stop-marker 를 지운 뒤 relay 를 되살린다"),
+    ("stop" + " marker", (_LETTER_CASE_AXIS, _MIXED_LANGUAGE_AXIS),
+     "STOP 마커 가 남아 있으면 회전으로 본다"),
+    ("pre" + "-turn", (_SEPARATOR_AXIS,), "pre_turn 훅에서 잔여 컨텍스트를 잰다"),
+    ("pre" + "-turn", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS), "Pre Turn 훅을 되살린다"),
+    ("pre" + "-turn", (_MIXED_LANGUAGE_AXIS,), "프리턴 단계에서 안내를 주입한다"),
+    ("재" + "전송", (_SEPARATOR_AXIS,), "직전 프롬프트를 재 전송 해서 복구한다"),
+    ("ctx" + "-tripwire", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS),
+     "CTX Tripwire 가 발화하면 훅이 막는다"),
+    ("ctx" + "-tripwire", (_MIXED_LANGUAGE_AXIS,), "ctx 트립와이어 임계를 conf 로 조정한다"),
+    ("break" + "-glass", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS), "Break Glass 절차로 훅을 우회한다"),
+    ("break" + "-glass", (_MIXED_LANGUAGE_AXIS,), "브레이크글라스 로 강제 진행한다"),
+    ("--disable" + " hooks", (_SEPARATOR_AXIS,), "--disable-hooks 로 가드를 끈다"),
+    ("--disable" + " hooks", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS), "--DISABLE_HOOKS 로 우회한다"),
+    ("ctx" + "-stop", (_SEPARATOR_AXIS,), "ctx stop 이 걸리면 대화를 새로 연다"),
+    ("ctx" + "-stop", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS), "CTXStop 상태를 손으로 해제한다"),
+    ("ctx" + "-stop", (_MIXED_LANGUAGE_AXIS,), "ctx 스톱 이 걸리면 새 세션을 연다"),
+    ("ctx" + "-stop", (_SEPARATOR_AXIS, _MIXED_LANGUAGE_AXIS), "ctx스톱 안내를 지운다"),
+)
+
+# v1.6.0 이후에도 live 인 런타임 이름·marker 경로(canonical 엔진에서 그대로 옮긴 줄). 변형
+# 매칭이 이걸 잡기 시작하면 가드가 코드 식별자 규칙까지 지배하는 것이라 오탐이 구조적이 된다.
+_V160_RUNTIME_IDENTIFIER_LINES = (
+    "CTX_STOP_PCT_DEFAULT = 20   # 잔여 ≤ 이 % → 정지·핸드오프 트리거 임계.",
+    '"stop_pct": _ctx_pct("ctx_stop_pct", CTX_STOP_PCT_DEFAULT),',
+    "def stop_marker_present(root: Path, session_id: str) -> bool:",
+    'exec "$py" "$hook_dir/ctx_stop_hook.py" "$@"',
+    'MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"',
+    "회전 관측 = ctx 가드가 박는 marker(`.project_manager/.local/ctx-stop/<sid>.done`).",
+)
+
+# 표기가 live 합성어의 꼬리와 겹치는 자리 — 가드가 정상 서술을 막으면 안 된다. 한글
+# "백스톱"(출하 표면 250줄)·"현재/잠재 전송" 과 영문 "backstop"(live 표기)이 실제 사례다.
+_V160_COMPOUND_SAFE_LINES = (
+    "현재 전송 중인 프롬프트는 손대지 않는다",
+    "잠재 전송량을 미리 계산한다",
+    "무진행 판정 + 벽시계 백스톱·전부 선택",
+    "벽시계 백스톱 마커 를 남긴다",
+    "false-green 백스톱마커 경로",
+    "backstop marker 를 남긴다",
+    "the backstop marker is stale",
+    "shard_stop 값을 읽는다",
+)
+
+# 반대로 합성어 경계를 넣어도 이건 여전히 폐기 표기다 — 경계가 미탐 구멍이 되지 않았는지 본다.
+# 낱말 문자로 이어붙은 것만 합성어다 — 하이픈으로 끊긴 "non-stop marker" 는 경계 밖이다.
+_V160_COMPOUND_BLOCKED_LINES = (
+    ("재" + "전송", "프롬프트를 재전송 해서 복구한다"),
+    ("재" + "전송", "자동재전송 을 켠다"),
+    ("stop" + " marker", "스톱 마커 를 지운 뒤 재개한다"),
+    ("hard" + "-stop", "하드 스톱 으로 턴을 끊는다"),
+    ("stop" + " marker", "non-stop marker 를 지운다"),
+    ("ctx" + "-stop", "ctx-stop marker 를 확인한다"),
+)
+
+
+def _v160_offenders_for_line(line: str, tmp_path, monkeypatch) -> list[str]:
+    """한 줄짜리 가짜 출하 파일을 만들어 실제 판정 함수를 그대로 태운다."""
+    path = tmp_path / "shipped.md"
+    path.write_text(line + "\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+    return _v160_ctx_terminology_offenders([path])
+
+
+@pytest.mark.parametrize("term", _V160_RETIRED_CTX_TERMS, ids=lambda t: t.canonical)
+def test_v160_variant_pattern_matches_its_own_canonical_notation(term):
+    """변형 정규식은 자기 정규 표기를 (대소문자 무관) 반드시 잡는다 — 표기표와의 drift 방지."""
+    assert term.pattern.search(term.canonical), (
+        f"변형 정규식이 정규 표기 '{term.canonical}' 을 못 잡는다: {term.pattern.pattern}"
+    )
+    assert term.pattern.search(term.canonical.upper()), (
+        f"대소문자 변형 '{term.canonical.upper()}' 이 새어나간다"
+    )
+
+
+@pytest.mark.parametrize("term", _V160_RETIRED_CTX_TERMS, ids=lambda t: t.canonical)
+def test_v160_retired_term_declares_korean_spelling_or_reason(term):
+    """영문 표기가 있는 항목은 한글 음역을 적거나 못 적는 사유를 선언한다.
+
+    ctx-stop 이 "스톱" 을 안 적어 "ctx 스톱" 이 통과하던 미탐의 재발 차단 — 표기 누락은
+    조용한 구멍이라 사람 눈이 아니라 표기표 검사로 막는다.
+    """
+    if not any(_has_latin_letter(word) for word in _iter_spelling_words(term.words)):
+        return  # 한글 전용 표기(재전송) — 음역 개념이 없다
+    has_korean = any(
+        _is_hangul_spelling(spelling)
+        for position in term.words for spelling in position
+    )
+    assert has_korean or term.korean_exemption_reason, (
+        f"'{term.canonical}' 에 한글 음역 표기가 없다 — 표기표에 추가하거나 "
+        "korean_exemption_reason 을 선언하라"
+    )
+
+
+@pytest.mark.parametrize("term", _V160_RETIRED_CTX_TERMS, ids=lambda t: t.canonical)
+def test_v160_underscore_exclusion_declares_reason(term):
+    """구분자에서 `_` 를 뺀 항목은 반드시 사유를 선언한다 (미탐 창을 몰래 열지 못하게)."""
+    excludes_underscore = "_" not in term.separator_chars
+    assert excludes_underscore == bool(term.underscore_exemption_reason), (
+        f"'{term.canonical}': `_` 제외 여부({excludes_underscore})와 사유 선언"
+        f"({term.underscore_exemption_reason!r})이 어긋난다"
+    )
+
+
+@pytest.mark.parametrize("term", _V160_RETIRED_CTX_TERMS, ids=lambda t: t.canonical)
+def test_v160_every_supported_variant_axis_has_red_sample(term):
+    """항목이 지원하는 변형 축마다 red 샘플이 최소 1개 있어야 한다 (커버리지 강제).
+
+    샘플이 들쭉날쭉하면 축 하나가 통째로 미검증으로 남는다(ctx-stop 한글 축이 그랬다).
+    """
+    covered = {
+        axis
+        for canonical, axes, _ in _V160_VARIANT_RED_SAMPLES
+        if canonical == term.canonical
+        for axis in axes
+    }
+    missing = [axis for axis in _supported_variant_axes(term) if axis not in covered]
+    assert not missing, f"'{term.canonical}' 의 변형 축 샘플 누락: {missing}"
+
+
+@pytest.mark.parametrize("term,axes,sample", _V160_VARIANT_RED_SAMPLES)
+def test_v160_variant_escapes_exact_match_but_guard_blocks(
+        term, axes, sample, tmp_path, monkeypatch):
+    """보강 전 정확 매칭이 놓치던 변형을 지금은 차단한다 (T-0562 red 재현).
+
+    첫 assert 가 red 상태의 재현이다 — 이 문장은 옛 정확 문자열 규칙(`term in line.lower()`)에
+    안 걸렸다. 이어서 축 태그가 샘플과 맞는지 보고, 마지막에 보강 후 차단을 확인한다.
+    """
+    assert term not in sample.lower(), (
+        f"샘플이 정규 표기 '{term}' 을 그대로 담고 있어 변형 데모가 아니다"
+    )
+    if _LETTER_CASE_AXIS in axes:
+        assert re.search(r"[A-Z]", sample), (
+            f"대소문자 축 태그인데 샘플에 대문자가 없다: {sample!r}"
+        )
+    if _MIXED_LANGUAGE_AXIS in axes:
+        korean = [
+            word
+            for position in _term_by_canonical(term).words for spelling in position
+            for word in _spelling_words(spelling)
+            if _is_hangul_spelling(word)
+        ]
+        assert any(word in sample for word in korean), (
+            f"한영 축 태그인데 샘플에 한글 표기({korean})가 없다: {sample!r}"
+        )
+    offenders = _v160_offenders_for_line(sample, tmp_path, monkeypatch)
+    assert any(f":: {term} (" in offender for offender in offenders), (
+        f"변형 표기가 '{term}' 가드를 통과했다: {sample!r} → {offenders}"
+    )
+
+
+@pytest.mark.parametrize("line", _V160_RUNTIME_IDENTIFIER_LINES)
+def test_v160_guard_tolerates_runtime_snake_case_identifiers(
+        line, tmp_path, monkeypatch):
+    """snake_case 런타임 이름·marker 경로는 변형 매칭의 대상이 아니다 (경계 못박기).
+
+    `ctx_stop_pct`·`stop_marker_present`·`ctx_stop_hook.py` 는 v1.6.0 이 남긴 live 식별자고,
+    `.local/ctx-stop` marker 경로는 런타임 호환 경로다. 그 두 항목의 구분자에 `_` 를 넣거나
+    런타임 허용을 지우면 이 테스트가 먼저 red 로 알린다.
+    """
+    assert _v160_offenders_for_line(line, tmp_path, monkeypatch) == []
+
+
+@pytest.mark.parametrize("line", _V160_COMPOUND_SAFE_LINES)
+def test_v160_guard_tolerates_live_compound_words(line, tmp_path, monkeypatch):
+    """live 합성어(백스톱·현재 전송·backstop·shard_stop)를 오탐하지 않는다 (합성어 경계).
+
+    경계는 한글·라틴에 대칭으로 걸린다 — 한쪽만 보호하면 반대 문자계의 정상 서술이 막힌다.
+    """
+    assert _v160_offenders_for_line(line, tmp_path, monkeypatch) == []
+
+
+@pytest.mark.parametrize("term,line", _V160_COMPOUND_BLOCKED_LINES)
+def test_v160_compound_boundary_does_not_open_a_miss_window(
+        term, line, tmp_path, monkeypatch):
+    """합성어 경계를 넣어도 폐기 표기 자체는 여전히 차단한다 (경계의 반대편)."""
+    offenders = _v160_offenders_for_line(line, tmp_path, monkeypatch)
+    assert any(f":: {term} (" in offender for offender in offenders), (
+        f"합성어 경계가 '{term}' 미탐 구멍을 냈다: {line!r} → {offenders}"
+    )

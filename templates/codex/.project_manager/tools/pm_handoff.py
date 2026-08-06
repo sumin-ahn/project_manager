@@ -1851,6 +1851,8 @@ def _dashboard_lock_file() -> Path:
 # 동시성만 배제하지 cross-slot 을 못 막는다 — 그래서 락이 필요하다(codex MF-2). worktree_pool
 # 을 import 하지 않고(touches 격리·`_load_worktree_pool` 은 --done 경로 전용) flock 헬퍼를
 # 독립 복제한다(stdlib fcntl/msvcrt·둘 다 없으면 단일-머신 전제 무락 폴백·외부 의존 금지).
+# ⚠ 이 복제 사유는 공용 `file_lock` seam 신설 *이전*의 것이다 — 그 seam 은 형제를 로드하지 않는
+#   leaf 라 이 사본도 같은 방식으로 수렴할 수 있다(후속 수렴 대상·현재는 스코프 밖).
 
 
 def _dashboard_flock_acquire(fd: int) -> None:
@@ -3121,6 +3123,8 @@ class PmHandoff:
             f"{_runtime_skill_entry('pm-bootstrap')} 라이브)."
         )
         print("  [ ] domain capture 검토 — `domain.py capture --tickets \"T-0001,T-0002\"`(이 세션 done ticket ID·콤마분리 또는 공백 나열) 출력 보고 ⚠/gap 페이지 갱신/신설(채록·surface-only).")
+        print("        갱신 = 현재-진실 *교체* — 세션별 delta 를 페이지에 덧붙이지 마라"
+              "('언제 왜 바뀌었나'는 log/ADR 몫·domain lint `history` 축).")
         print("  [ ] pm_state.md '진행 중인 의사결정' 표 갱신")
         print("  [ ] pm_state.md '남은 작업 전체 그림' 갱신")
         # 커밋 지시는 **경로 명시형** 이다 (공유 워킹트리 mutation 은 선언된 경로만).

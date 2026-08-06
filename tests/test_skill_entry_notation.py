@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -280,6 +281,43 @@ def test_renderer_limits_path_boundary_to_inside_inline_code(source, expected):
 def test_renderer_fails_loud_for_unregistered_template_with_call_token():
     with pytest.raises(_PM_RENDER.RenderLeakError, match="미등록"):
         _PM_RENDER.render_skill_entry_notation("/pm-bootstrap\n", "fourth")
+
+
+def _pm_render_in_empty_install_root(tmp_path: Path):
+    """스킬 카드가 하나도 없는 설치 root 에 놓인 pm_render 인스턴스(실 형상 재현).
+
+    `SKILL_ENTRY_NAMES` 는 모듈 로드 시점에 설치 root 를 스캔해 확정되고 정규식도 그때 만들어
+    지므로, 상수만 monkeypatch 하면 정규식이 안 따라와 빈-root 위험이 재현되지 않는다."""
+    tools = tmp_path / "empty_install_root" / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    target = tools / "pm_render.py"
+    shutil.copy2(REPO / ".project_manager" / "tools" / "pm_render.py", target)
+    spec = importlib.util.spec_from_file_location("empty_root_pm_render", target)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_renderer_is_a_noop_when_no_skill_card_is_installed(tmp_path):
+    """빈 설치 root(카드 0)에서는 렌더러가 무동작이다 — 옛 코드는 산문을 훼손했다.
+
+    카드 집합이 비면 `_SKILL_ENTRY_NAME_ALT` 가 빈 문자열이라 정규식 대안이 비고, 맨 `/`·`$`
+    가 호출 토큰으로 매칭돼 `'a / b 로 구분한다'` → `'a $ b 로 구분한다'` 가 됐다(실측·주석은
+    반대로 "유지되며" 라고 단언했다). 입구 가드를 지우면 아래 단언이 red 가 된다."""
+    module = _pm_render_in_empty_install_root(tmp_path)
+    assert module.SKILL_ENTRY_NAMES == ()
+    prose = "옵션은 a / b 로 구분한다\n"
+    # 위험 실재 확인 — 이 인스턴스의 정규식은 실제로 맨 `/` 에 매칭한다(가드 비공허성).
+    assert module._CANONICAL_SKILL_ENTRY_RE.search(prose) is not None
+    assert module.render_skill_entry_notation(prose, "codex") == prose
+    assert module.render_skill_entry_notation(prose, ("codex", "opencode")) == prose
+
+
+def test_empty_install_root_renderer_keeps_operational_text_intact(tmp_path):
+    """빈 root 무동작이 산문 전반에 적용된다(경로·달러 표기 포함 원문 보존)."""
+    module = _pm_render_in_empty_install_root(tmp_path)
+    text = "`/pm-bootstrap` 와 `$pm-handoff` 와 a / b 와 .claude/skills/pm-adr/SKILL.md\n"
+    assert module.render_skill_entry_notation(text, ("claude_code", "codex")) == text
 
 
 def test_renderer_unknown_template_without_call_token_is_noop():
