@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Codex cross-harness egress 승인 브리지** — `workspace-write` 샌드박스의
+  `network_access=false`를 유지한 채 `pm_delegate → claude/opencode/codex CLI` 실위임만
+  Codex `exec_command` 건별 승격으로 실행한다. dry-run이 승격 필요를 미리
+  표시하고, 실행은 `sandbox_permissions=require_escalated` +
+  `--codex-egress-escalated` attestation을 동반한다. 최초 승인은 `pm_delegate.py`
+  전용 reusable prefix로 기억하고, `delegate_enabled=true`인 후속 호출은 과금을
+  재질문하지 않는다. 일반 sandbox 오호출은 원격 CLI
+  재시도·raw 예약·과금 전 fail-loud하고, 거절/실패를 native GPT로 무음
+  대체하지 않는다.
+
 ### Docs
 - pm-handoff 스킬 §사용 시점 구 계약 잔재 교정 — 컨텍스트 임계·wave 자연 종료를 핸드오프
   트리거로 나열하던 서술 제거. 핸드오프는 사용자 명시 종료 신호가 유일한 트리거이며, 컨텍스트

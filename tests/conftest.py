@@ -165,14 +165,20 @@ def _forbid_real_tempdir_project_outputs(tmp_path_factory):
 
 # ── ① codex ambient env 중화 (autouse) ────────────────────────────────────────
 
-# 카드 감지 predicate 가 읽는 두 마커(pm_bootstrap._is_codex_harness)만 중화한다 —
-# CODEX_SANDBOX_NETWORK_DISABLED 등 다른 codex 마커는 카드 감지와 무관이라 건드리지 않는다.
-_CODEX_AMBIENT_MARKERS = ("CODEX_THREAD_ID", "CODEX_CI")
+# 카드 감지 predicate 의 두 마커와 T-0592 실송신 게이트의 network-off 마커를 중화한다.
+# 후자는 승인형 비샌드박스 실행에서도 부모 Codex가 `1`로 유지하는 ambient 값이라, mock runner로
+# 제품 흐름을 검증하는 기존 테스트가 호출층 attestation 부재로 차단되는 것을 막아야 한다. egress
+# 전용 테스트는 이 fixture 뒤에 monkeypatch.setenv 로 다시 켜 두 축을 명시 검증한다.
+_CODEX_AMBIENT_MARKERS = (
+    "CODEX_THREAD_ID",
+    "CODEX_CI",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+)
 
 
 @pytest.fixture(autouse=True)
 def _neutralize_codex_ambient_markers(request, monkeypatch):
-    """모든 기계 테스트에 codex-미감지 env baseline 을 준다 (release-marked 라이브 게이트는 제외).
+    """모든 기계 테스트에 codex-미감지·egress-neutral env baseline 을 준다.
 
     라이브 게이트(`@pytest.mark.release`) 테스트는 실 codex 를 격리 CODEX_HOME env 로 명시 스폰하므로
     부모 프로세스의 ambient 마커에 의존/간섭하지 않는다 — 중화가 그 의도를 흐리지 않게 제외한다."""

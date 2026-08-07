@@ -111,6 +111,41 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
     --prompt-file <프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard]
 ```
 
+#### Codex egress 건별 승격 (load-bearing)
+
+Codex 출하 기본은 `workspace-write` + `network_access=false`다. 이 경계는 일상 명령의
+egress를 막지만 자식 `claude -p`/`opencode run` 역시 동일한 sandbox를 상속한다.
+따라서 Codex PM의 cross 실위임은 아래 두 계층을 **항상 동반**한다.
+
+1. 먼저 일반 sandbox에서 위 명령의 `--dry-run`을 실행한다. 해소 profile·argv·합성
+   프롬프트·시크릿 판정을 확인하고, `Codex egress: escalation required`가 표시되는지
+   본다. dry-run은 외부 송신·raw 예약·과금을 하지 않는다.
+2. 승격이 필요한 실 명령은 Codex `exec_command` 호출에
+   `sandbox_permissions="require_escalated"`와 기술적 network `justification`을 주고, 명령 argv에
+   `--codex-egress-escalated`를 동시에 추가한다.
+
+```text
+exec_command(
+  cmd="python3 .project_manager/tools/pm_delegate.py --codex-egress-escalated --role <역할> --prompt-file <절대경로> --cwd <절대경로> [--tier normal|hard] [--ticket T-NNNN]",
+  workdir="<PM 홈 절대경로>",
+  sandbox_permissions="require_escalated",
+  justification="설정된 pm_delegate 수신자 호출에 필요한 network를 sandbox 밖에서 허용합니다.",
+  prefix_rule=["python3", ".project_manager/tools/pm_delegate.py"],
+)
+```
+
+`--codex-egress-escalated`는 권한을 만드는 플래그가 아니라 호출층 attestation이다. 단독으로
+샌드박스 명령에 붙이지 말고 반드시 위 `sandbox_permissions` 메타데이터와 같이 쓴다.
+최초 승인은 위의 좁은 reusable `prefix_rule`로 기억할 수 있다. Python 전체나 인자
+전체를 prefix로 승인하지 마라. `delegate_enabled=true`는 설정된 profile의 외부 전송과
+통상 과금에 대한 지속 의사표시이므로 PM은 후속 호출마다 비용을 다시 묻지 않는다.
+Windows의 동일 좁은 prefix는 `prefix_rule=["py", ".project_manager/tools/pm_delegate.py"]`이며,
+복사용 재실행 명령도 같은 `py + script` 2 token으로 시작해야 한다.
+승인이 거절되거나 실행이 `rc!=0`/reply 미추출로 끝나면 그 역할 위임은 실패다.
+사용자에게 보고하지 않고 native Codex/GPT로 무음 대체하지 마라. 대체는 사용자 지시
+또는 이미 명시된 `fallback.*` tuple의 현행 규약으로만 한다. 전역
+`sandbox_workspace_write.network_access=true`로 이 문제를 회피하지 마라.
+
 - `--prompt-file` — PM 이 만든 **self-contained task 프롬프트**를 담은 파일. 아래 §실행 패턴의 위임
   프롬프트 본문(developer/code-reviewer)을 그대로 파일로 저장해 넘긴다. 경로는 해소된 `--cwd` 하위
   또는 이 repo `.project_manager/` 하위만 허용(repo 경계 밖 = fail-loud·유출 차단).

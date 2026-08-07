@@ -26,6 +26,10 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
                   첫-이벤트 워치독 재시도분이 더 붙는다·_harness_timeout_budget). 호출부(스킬·CI)의
                   대기 예산은 --dry-run 이 찍는 실수치로 잡아라.
   · opt-in 게이트 — `delegate_enabled`(기본 OFF) 비활성 시 rc=3 + stderr 안내(false-green 차단).
+  · Codex egress  — Codex sandbox 의 네트워크 차단(`CODEX_SANDBOX_NETWORK_DISABLED`) 환경에서는
+                  `--codex-egress-escalated` 호출층 증명이 없는 실행을 스폰·raw 예약·과금 전에
+                  rc=1 로 끊고 도구 승격(`sandbox_permissions="require_escalated"`) 처방을 낸다.
+                  엔진은 sandbox 를 스스로 해제하지 않으며, 증명 실행도 기존 드라이버 그대로다.
 
 설정 시드/lint·어댑터 배선·라이브 실측은 별도 티켓. 이 티켓은 라이브 CLI 를
 호출하지 않는다 — 단위 테스트는 전부 mock(run_fn DI).
@@ -297,6 +301,14 @@ ACK_FALLBACK_SUPPRESSION_REASON = (
     "시크릿 스캔 승인이 붙은 실행이라 폴백을 끕니다 — 폴백 수신자는 재승인이 필요합니다. "
     "`--harness/--model` 로 명시 재실행하거나 승인 없이 통과하도록 프롬프트를 정리하십시오."
 )
+
+# Codex sandbox 의 egress 차단 마커와 감사 라벨. 자식 CLI(claude -p·opencode run)는 부모 Codex
+# sandbox 의 네트워크 차단을 그대로 상속하므로, 이 마커가 참인 환경의 실위임은 스폰 전에 끊는다.
+# 라벨은 stderr/stdout 실행 provenance 와 raw 감사 헤더가 같은 값을 쓴다.
+CODEX_EGRESS_MARKER_ENV = "CODEX_SANDBOX_NETWORK_DISABLED"
+CODEX_EGRESS_NOT_REQUIRED = "not-required"
+CODEX_EGRESS_ESCALATED_ATTESTED = "escalated-attested"
+_CODEX_EGRESS_MARKER_TRUE = frozenset({"1", "true", "yes", "on"})
 # 사람 검토용 stderr/dry-run 목록은 이 수까지만 표시한다. 승인 뒤 raw 감사에는 중복 제거된 전 hit를
 # 한 줄씩 모두 남겨, 대량 탐지가 터미널과 단일 메타 헤더를 비대하게 만들지 않으면서도 감사 완결성을
 # 보존한다.
@@ -2394,6 +2406,7 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
                  secret_scan_ack_digest: str | None = None,
                  secret_scan_ack_hits: tuple[PromptSecretHit, ...] = (),
                  fallback_suppressed_reason: str | None = None,
+                 codex_egress: str = CODEX_EGRESS_NOT_REQUIRED,
                  silence_sec: float | None = None,
                  idle_killed: bool = False) -> str:
     """raw 박제 본문 — 메타(argv·rc·모델·소요·침묵) 헤더 + 원문.
@@ -2407,6 +2420,9 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
         f"# harness: {harness}",
         f"# model: {model}",
         f"# attempt: {attempt}",
+        # 승격 없이 돌 수 없던 실행인지(escalated-attested) 그냥 돌 수 있던 실행인지(not-required)를
+        # primary·fallback raw 가 같은 값으로 기록한다 — 사후 안전 경계 재구성의 입력.
+        f"# codex_egress: {codex_egress}",
     ]
     if local_conf_path is not None:
         header.extend([
@@ -2878,6 +2894,7 @@ def _execute_attempt(
     suppress_fallback_for_ack: bool = False,
     local_conf_path: Path | None = None,
     profile_source: str = "local-conf",
+    codex_egress: str = CODEX_EGRESS_NOT_REQUIRED,
 ) -> DelegateAttempt:
     """하네스 1회를 실행하고 raw를 박제한다.
 
@@ -2886,6 +2903,9 @@ def _execute_attempt(
     attempt마다 만들고 즉시 정리한다. DI run_fn이 예외를 직접 raise해도 _default_run_fn과 **같은
     분류 신호**로 정규화한다 — 스폰 단계 예외(_LAUNCH_STAGE_ERRORS)만 RUN_RESULT_LAUNCH_FAILED 이고,
     그 밖의 OSError는 전송 후일 수 있어 미분류 실패로 남긴다(폴백 금지·중복 외부 전송 차단).
+
+    `codex_egress`는 감사 라벨만 전달한다 — 승격 증명이 붙은 실행도 argv/env/timeout/권한축을
+    바꾸지 않고 기존 드라이버를 그대로 탄다(엔진은 sandbox 를 해제하지 않는다).
     """
     env = build_env(harness)
     argv, stdin_text, prompt_path = _prepare_attempt_transport(
@@ -2947,6 +2967,7 @@ def _execute_attempt(
             secret_scan_ack_digest=secret_scan_ack_digest,
             secret_scan_ack_hits=secret_scan_ack_hits,
             fallback_suppressed_reason=fallback_suppressed_reason,
+            codex_egress=codex_egress,
             silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
             idle_killed=bool(result.get(RUN_RESULT_IDLE_KILLED, False)),
         ),
@@ -3264,6 +3285,135 @@ def native_advisory(harness: str | None) -> str | None:
     return None
 
 
+# ── Codex egress 승격 브리지 (network-off 안전 경계 × 실위임) ──────────────
+
+# 실측(2026년 8월 7일·adopter#0): Codex PM(`workspace-write` + `network_access=false`)에서 띄운
+# `pm_delegate → claude -p`는 API 재시도 10회·0 token 뒤 `ENOTIMP`/rc=1로 끝난다. 자식 CLI는 부모
+# sandbox 의 egress 차단을 그대로 상속하므로, 이 실패는 수신 하네스 문제가 아니라 호출층 권한
+# 문제다. 엔진은 sandbox 를 스스로 벗어나지 않는다(재실행·config 자동 완화 없음) — 실제 이탈은
+# Codex 도구 호출의 `sandbox_permissions="require_escalated"` 메타데이터만 수행하고, 엔진은 그
+# 의도를 `--codex-egress-escalated` 호출층 attestation 으로 감사한다.
+#
+# 같은 실측에서 **승인형 비샌드박스 명령에도 `CODEX_SANDBOX_NETWORK_DISABLED='1'`이 그대로
+# 남았다**. 그래서 이 마커는 "승격이 필요한 형상인가"만 판정하고, "이번 호출이 승격됐는가"는
+# 마커로 알 수 없다 — 그 축을 attestation 플래그가 소유한다(플래그는 권한을 만들지 않으므로,
+# 샌드박스 안에서 잘못 붙이면 권한 상승 없이 타겟 CLI가 기존처럼 fail-loud 한다).
+
+
+def codex_egress_escalation_required(env: dict[str, str] | None = None) -> bool:
+    """현재 환경이 cross-harness 실위임에 Codex egress 승격을 요구하나.
+
+    마커 부재/false(채택자가 네트워크를 명시 허용한 형상)는 False — 기존 실행을 그대로 보존한다."""
+    env = os.environ if env is None else env
+    value = env.get(CODEX_EGRESS_MARKER_ENV)
+    return value is not None and value.strip().lower() in _CODEX_EGRESS_MARKER_TRUE
+
+
+def codex_egress_label(*, escalation_required: bool, attested: bool) -> str:
+    """실행 provenance·raw 감사 헤더가 공유하는 egress 라벨(두 값만)."""
+    return (
+        CODEX_EGRESS_ESCALATED_ATTESTED
+        if (escalation_required and attested)
+        else CODEX_EGRESS_NOT_REQUIRED
+    )
+
+
+def codex_egress_provenance(*, escalation_required: bool, attested: bool,
+                            env: dict[str, str] | None = None) -> str:
+    """`codex_egress=<라벨>` 1줄 — 실행 후 안전 경계를 재구성하는 감사 입력."""
+    env = os.environ if env is None else env
+    label = codex_egress_label(
+        escalation_required=escalation_required, attested=attested)
+    if label == CODEX_EGRESS_ESCALATED_ATTESTED:
+        marker = env.get(CODEX_EGRESS_MARKER_ENV)
+        note = (f"호출층 attestation(--codex-egress-escalated) 동반 · "
+                f"{CODEX_EGRESS_MARKER_ENV}={marker!r} 은 승격 명령에서도 남는다"
+                "(실측·엔진은 마커를 해제하지 않음)")
+    elif attested:
+        note = (f"{CODEX_EGRESS_MARKER_ENV} 미설정/false — 승격이 필요 없는 환경이라 "
+                "--codex-egress-escalated 는 권한 의미가 없다(감사 기록만)")
+    else:
+        note = f"{CODEX_EGRESS_MARKER_ENV} 미설정/false — Codex sandbox egress 차단 없음"
+    return f"codex_egress={label} · {note}"
+
+
+def _codex_egress_entrypoint() -> tuple[str, str]:
+    """Codex 도구 재사용 승인과 복사 재실행이 공유하는 2-token prefix."""
+    return (
+        "py" if _running_on_windows() else "python3",
+        ".project_manager/tools/pm_delegate.py",
+    )
+
+
+def _codex_egress_prefix_rule_text() -> str:
+    interpreter, script = _codex_egress_entrypoint()
+    return f'prefix_rule=["{interpreter}", "{script}"]'
+
+
+def _codex_egress_retry_command(argv: list[str]) -> str:
+    """재사용 승인 prefix와 동일한 진입점 + attestation 재실행 표시."""
+    cleaned = [token for token in argv if token != "--codex-egress-escalated"]
+    # 안내를 복사한 실행이 바로 위 `prefix_rule`을 소비해야 한다. sys.executable·
+    # resolve 절대경로를 쓰면 기능은 같아도 승인 토큰이 달라져 다시 prompt 될 수 있다.
+    interpreter, script = _codex_egress_entrypoint()
+    command = [
+        interpreter,
+        script,
+        *cleaned,
+        "--codex-egress-escalated",
+    ]
+    if not _running_on_windows():
+        return shlex.join(command)
+    # Encoded PowerShell wrapper를 쓰면 도구가 보는 명령 prefix가 `powershell.exe`로
+    # 바뀌어 `py + script` 재사용 승인을 소비하지 못한다. 첫 2 token은 그대로 두고
+    # 나머지만 PowerShell literal로 quote한다.
+    rest = " ".join("'" + token.replace("'", "''") + "'" for token in command[2:])
+    return f"{interpreter} {script}{' ' + rest if rest else ''}"
+
+
+def codex_egress_block_message(argv: list[str], harness: str, model: str) -> str:
+    """증명 없는 network-off 실행의 차단 사유 + 실행 가능한 승격 처방."""
+    return (
+        "오류: Codex sandbox 네트워크 차단 환경에서 승격 증명 없는 cross-harness 실위임을 "
+        "중단합니다 — 외부 스폰·raw 예약·과금 전입니다.\n"
+        f"  · 판정 근거: {CODEX_EGRESS_MARKER_ENV}=true · 수신자 {harness}(model={model})\n"
+        "  · 자식 CLI는 부모 Codex sandbox 의 egress 차단을 상속합니다. 지금 실행하면 API 재시도 뒤 "
+        "무진행으로 끝납니다(엔진은 sandbox 를 스스로 벗어나지 않습니다).\n"
+        "  · 미리보기는 이 환경에서 그대로 가능합니다(외부 송신 없음): --dry-run\n"
+        "  · 실 실행은 두 계층을 **함께** 씁니다 — Codex 도구 호출을 "
+        'sandbox_permissions="require_escalated" + 기술적 network justification 으로 올리고, 같은 명령에 '
+        "--codex-egress-escalated 를 동반하세요(플래그는 권한을 만들지 않는 호출층 attestation).\n"
+        f"  · 최초 도구 승인은 {_codex_egress_prefix_rule_text()} "
+        "로 이 진입점만 재사용 승인하세요. Python 전체를 승인하지 마세요.\n"
+        "  · delegate_enabled=true 는 설정된 profile의 외부 전송·통상 과금에 대한 "
+        "지속 동의입니다. 후속 호출마다 비용을 다시 묻지 마세요.\n"
+        f"  · 재실행: {_codex_egress_retry_command(argv)}\n"
+        "  · 전역 sandbox_workspace_write.network_access=true 로 우회하지 마세요 — 일상 명령의 "
+        "egress 차단은 프로젝트 안전 경계로 유지합니다."
+    )
+
+
+def _dry_run_codex_egress_line(*, escalation_required: bool, attested: bool) -> str:
+    """dry-run 이 표시하는 승격 필요/불필요 1~2줄(외부 송신·raw·관측 부작용 없음)."""
+    if not escalation_required:
+        return (
+            f"Codex egress: 승격 불필요 ({CODEX_EGRESS_MARKER_ENV} 미설정/false · "
+            f"codex_egress={CODEX_EGRESS_NOT_REQUIRED})"
+        )
+    attestation = (
+        "--codex-egress-escalated 동반됨 — 실 실행은 이 플래그와 함께 도구 승격도 유지하세요."
+        if attested else
+        "실 실행은 --codex-egress-escalated 없이는 스폰 전 rc=1 로 중단됩니다."
+    )
+    return (
+        f"Codex egress: escalation required ({CODEX_EGRESS_MARKER_ENV}=true)\n"
+        '  실행 도구 호출을 sandbox_permissions="require_escalated" + 기술적 network justification 으로 '
+        f"올리고, 같은 명령에 --codex-egress-escalated 를 동반합니다.\n"
+        f"  최초에만 {_codex_egress_prefix_rule_text()} 로 재사용 "
+        f"승인하고, delegate_enabled=true 후속 호출의 비용은 재질문하지 않습니다.\n  {attestation}"
+    )
+
+
 # ── config lint (동일-모델 dev/reviewer 경고·never-block) ────────────────
 
 # alias 정규화 테이블 키 접두 — `delegate.model_alias.<name> = m1, m2, …`.
@@ -3381,7 +3531,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "워치독 재시도분(retries×창)이 더 붙습니다. --dry-run 이 실수치를 표시합니다(2차 폴백 없음).\n"
             "실패 분류 커버리지: codex 실근거와 claude 2.1.220 실측/바이너리 enum,\n"
             "opencode 1.18.4 provider passthrough 실측·Anthropic API enum을 편입했습니다.\n"
-            "opencode 무진단 연결/fetch 침묵은 첫-이벤트 stall 축이 커버하며 그 밖은 fail-loud입니다."
+            "opencode 무진단 연결/fetch 침묵은 첫-이벤트 stall 축이 커버하며 그 밖은 fail-loud입니다.\n"
+            "Codex sandbox(CODEX_SANDBOX_NETWORK_DISABLED=true)에서의 실위임은 --dry-run 선행 뒤\n"
+            "도구 호출을 sandbox_permissions=\"require_escalated\" 로 올리고 --codex-egress-escalated 를\n"
+            "동반해야 합니다 — 증명이 없으면 스폰·과금 전에 rc=1 로 중단합니다."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -3413,6 +3566,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="이번 합성 프롬프트의 차단을 사람이 발췌 확인 후 건별 승인"
                              "(digest는 합성 프롬프트 전문 + 해소된 primary 수신자 harness:model에 결속"
                              "·차단 출력 digest와 정확히 일치할 때만 유효·CLI 전용)")
+    parser.add_argument("--codex-egress-escalated", action="store_true",
+                        help="Codex egress 승격 호출층 증명 — 이 호출을 "
+                             'sandbox_permissions="require_escalated" 로 올려 실행한다는 '
+                             "attestation(권한 생성 아님·network-off 마커 환경의 실행 게이트 통과 조건)")
     parser.add_argument("--dry-run", action="store_true",
                         help="합성 프롬프트 요약 + argv 만 출력·미실행(비활성이어도 허용)")
     return parser
@@ -3834,6 +3991,14 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             file=sys.stderr,
         )
 
+    # Codex egress 승격 판정 — dry-run 표시와 실행 게이트가 같은 입력을 쓴다. 마커는 "승격이 필요한
+    # 형상인가"만 정하고, "이번 호출이 승격됐는가"는 호출층 attestation 이 소유한다.
+    codex_egress_required = codex_egress_escalation_required()
+    codex_egress = codex_egress_label(
+        escalation_required=codex_egress_required,
+        attested=args.codex_egress_escalated,
+    )
+
     # dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
     if args.dry_run:
         print("=== [dry-run] pm_delegate 미리보기 (미실행) ===")
@@ -3871,6 +4036,10 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         _budget_note, transport_note = _dry_run_harness_annotations(harness)
         if transport_note is not None:
             print(transport_note)
+        print(_dry_run_codex_egress_line(
+            escalation_required=codex_egress_required,
+            attested=args.codex_egress_escalated,
+        ))
         if secret_hits:
             print(f"시크릿 스캔: 탐지 {len(secret_hits)}건 — 실 실행은 전송 전 차단")
             print(_format_secret_scan_hits(secret_hits))
@@ -3882,7 +4051,21 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         print("=== [dry-run] 외부 호출 생략 ===")
         return 0
 
-    # 비용/송신 경고 + native advisory
+    # Codex egress 게이트 — 타겟 CLI 스폰·raw 예약·과금 문구보다 **앞**이다. 증명 없는 network-off
+    # 실행은 여기서 끝난다(엔진이 sandbox 를 완화하거나 다른 모델로 무음 대체하지 않는다).
+    if codex_egress_required and not args.codex_egress_escalated:
+        print(codex_egress_block_message(resolved, harness, model), file=sys.stderr)
+        return 1
+
+    # 비용/송신 경고 + native advisory + egress provenance
+    print(
+        "[pm-delegate] 실행 provenance: "
+        + codex_egress_provenance(
+            escalation_required=codex_egress_required,
+            attested=args.codex_egress_escalated,
+        ),
+        file=sys.stderr,
+    )
     print(f"외부 하네스 {harness}(model={model}) 로 프롬프트 전송 중 (과금·외부 송신).", file=sys.stderr)
     advisory = native_advisory(harness)
     if advisory is not None:
@@ -3910,6 +4093,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             secret_scan_ack_hits=secret_scan_ack_hits,
             local_conf_path=conf_path,
             profile_source=profile_source,
+            codex_egress=codex_egress,
         )
     finally:
         report_scope_audit(scope_audit, args.role)
@@ -3933,6 +4117,7 @@ def _execute_and_collect(
     fallback_timeout: int | None = None,
     local_conf_path: Path | None = None,
     profile_source: str = "local-conf",
+    codex_egress: str = CODEX_EGRESS_NOT_REQUIRED,
 ) -> int:
     """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다.
 
@@ -3959,6 +4144,7 @@ def _execute_and_collect(
             suppress_fallback_for_ack=(fallback is not None),
             local_conf_path=local_conf_path,
             profile_source=profile_source,
+            codex_egress=codex_egress,
         )
     except OSError as exc:
         print(f"오류: 위임 실행 준비/raw 박제 실패: {exc}", file=sys.stderr)
@@ -4025,6 +4211,7 @@ def _execute_and_collect(
                 secret_scan_ack_hits=secret_scan_ack_hits,
                 local_conf_path=local_conf_path,
                 profile_source="local-conf",
+                codex_egress=codex_egress,
             )
         except OSError as exc:
             print(
@@ -4084,6 +4271,9 @@ def _execute_and_collect(
                 "[pm-delegate] 실행 provenance: 시크릿 스캔 명시 승인 통과 · "
                 f"digest={secret_scan_ack_digest}"
             )
+        if codex_egress == CODEX_EGRESS_ESCALATED_ATTESTED:
+            # 폴백 attempt 도 같은 승격 증명 아래에서 돌았다 — 회수 stdout 이 그 사실을 보존한다.
+            print(f"[pm-delegate] 실행 provenance: codex_egress={codex_egress}")
         print(fallback_reply)
         print(
             f"[pm-delegate] primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
@@ -4123,6 +4313,10 @@ def _execute_and_collect(
             "[pm-delegate] 실행 provenance: 시크릿 스캔 명시 승인 통과 · "
             f"digest={secret_scan_ack_digest}"
         )
+    if codex_egress == CODEX_EGRESS_ESCALATED_ATTESTED:
+        # 승격 실행은 provenance를 첫 줄에, reply를 그 뒤에 내보낸다. not-required만
+        # 기존 reply-only(첫 줄=reply) 계약을 보존하며, 두 형상을 전용 테스트가 각각 고정한다.
+        print(f"[pm-delegate] 실행 provenance: codex_egress={codex_egress}")
     print(reply)
     print(f"[pm-delegate] raw: {raw_path}", file=sys.stderr)
     return 0

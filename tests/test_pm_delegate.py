@@ -13,6 +13,7 @@
   ⑨ dry-run 출력(§3.1).
   ⑩ 결과 수집 — reply 추출·빈 reply/rc≠0/timeout fail-loud·raw O_EXCL/0600 박제(§3.4).
   ⑪ 시크릿 denylist 스캔(§4.7).
+  ⑫ Codex egress 승격 브리지 — network-off 마커 환경의 증명 게이트·dry-run 표시·감사 라벨(T-0592).
 """
 from __future__ import annotations
 
@@ -4641,3 +4642,350 @@ def test_save_raw_output_tempdir_fallback_with_injected_destination(
     dest = pd.save_raw_output("codex", "fallback content")
     assert dest.parent == tmp_path
     assert dest.read_text(encoding="utf-8") == "fallback content"
+
+
+# ══ ⑫ Codex egress 승격 브리지 (T-0592·network-off 안전 경계 × 실위임) ═══════
+#
+# 전부 run_fn DI mock — 외부 네트워크/실 하네스 스폰은 이 절에서도 0이다. 판정 입력은 env 마커
+# `CODEX_SANDBOX_NETWORK_DISABLED` 와 호출층 attestation 플래그 두 축뿐이다.
+
+_EGRESS_MARKER = "CODEX_SANDBOX_NETWORK_DISABLED"
+
+
+@pytest.fixture(autouse=True)
+def _neutral_codex_egress_marker(monkeypatch):
+    """ambient Codex egress 마커를 중화한 baseline.
+
+    승격 명령에서도 이 마커는 `1` 로 남는 실측이라(T-0592), Codex 세션에서 pytest 를 돌리면
+    기존 실행 흐름 테스트가 통째로 승격 게이트에 걸린다. 마커를 쓰는 테스트만 명시로 켠다."""
+    monkeypatch.delenv(_EGRESS_MARKER, raising=False)
+
+
+def _egress_argv(prompt: Path, cwd: Path, *extra: str) -> list[str]:
+    return ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(cwd), *extra]
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", " yes ", "on"])
+def test_codex_egress_marker_true_values_require_escalation(pd, monkeypatch, value):
+    """네트워크 차단을 뜻하는 마커 값은 승격 필요로 판정한다."""
+    monkeypatch.setenv(_EGRESS_MARKER, value)
+    assert pd.codex_egress_escalation_required() is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "", "off"])
+def test_codex_egress_marker_false_values_preserve_current_execution(pd, monkeypatch, value):
+    """마커 false = 채택자가 네트워크를 명시 허용한 형상 — 승격 판정 없음(하위 호환)."""
+    monkeypatch.setenv(_EGRESS_MARKER, value)
+    assert pd.codex_egress_escalation_required() is False
+
+
+def test_codex_egress_marker_absent_requires_nothing(pd):
+    """마커 부재(비-Codex 셸)는 기존 실행 그대로다."""
+    assert pd.codex_egress_escalation_required() is False
+    assert pd.codex_egress_escalation_required({}) is False
+
+
+def test_codex_egress_label_pairs(pd):
+    """라벨은 두 값뿐 — 승격 필요 × 증명 동반일 때만 escalated-attested."""
+    assert pd.codex_egress_label(escalation_required=True, attested=True) == \
+        pd.CODEX_EGRESS_ESCALATED_ATTESTED
+    assert pd.codex_egress_label(escalation_required=True, attested=False) == \
+        pd.CODEX_EGRESS_NOT_REQUIRED
+    assert pd.codex_egress_label(escalation_required=False, attested=True) == \
+        pd.CODEX_EGRESS_NOT_REQUIRED
+    assert pd.codex_egress_label(escalation_required=False, attested=False) == \
+        pd.CODEX_EGRESS_NOT_REQUIRED
+
+
+def test_network_disabled_without_attestation_fails_before_spawn(
+        pd, monkeypatch, tmp_path, capsys):
+    """마커 true + 증명 없음 = 스폰·raw 예약·과금 전 rc=1(무음 대체 없음)."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    prompt = _write_prompt(tmp_path)
+    outdir = tmp_path / "raw"
+    fake = _FakeRun(stdout=_codex_stdout("가면 안 되는 답"))
+    rc = _run_main(pd, monkeypatch,
+                   _egress_argv(prompt, tmp_path, "--output-dir", str(outdir)),
+                   _enabled_conf(), fake)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert fake.calls == []                     # 타겟 CLI 스폰 0
+    assert not list(outdir.glob("*"))           # raw 예약 0(디렉토리 생성돼도 파일 없음)
+    assert "과금·외부 송신" not in captured.err  # 과금 문구 앞에서 끊긴다
+    assert captured.out == ""
+
+
+def test_network_disabled_block_prescribes_escalation_and_flag(
+        pd, monkeypatch, tmp_path, capsys):
+    """차단 stderr 는 도구 승격 + 플래그 동반 + dry-run 대안을 실행 가능하게 처방한다."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(pd, monkeypatch, _egress_argv(prompt, tmp_path), _enabled_conf(), fake)
+    err = capsys.readouterr().err
+    assert rc == 1
+    for expected in (
+        'sandbox_permissions="require_escalated"',
+        "--codex-egress-escalated",
+        "--dry-run",
+        f"{_EGRESS_MARKER}=true",
+        "sandbox_workspace_write.network_access=true",
+        'prefix_rule=["python3", ".project_manager/tools/pm_delegate.py"]',
+        "delegate_enabled=true",
+        "후속 호출마다 비용을 다시 묻지 마세요",
+        "재실행: ",
+    ):
+        assert expected in err, expected
+    # 처방된 재실행 줄은 같은 호출에 플래그 하나만 더한 형태다(다른 수신자로 갈아타지 않는다).
+    retry_line = next(line for line in err.splitlines() if "재실행: " in line)
+    assert retry_line.strip().startswith(
+        "· 재실행: python3 .project_manager/tools/pm_delegate.py "
+    )
+    assert "--codex-egress-escalated" in retry_line
+    assert str(prompt) in retry_line or "prompt.md" in retry_line
+    assert "--role" in retry_line
+
+
+def test_codex_egress_windows_retry_matches_windows_reusable_prefix(pd, monkeypatch):
+    """Windows도 encoded PowerShell wrapper 없이 `py + script` 승인 prefix를 바로 소비한다."""
+    monkeypatch.setattr(pd, "_running_on_windows", lambda: True)
+    command = pd._codex_egress_retry_command([
+        "--role", "developer", "--prompt-file", "C:/repo/task prompt.md",
+        "--cwd", "C:/repo",
+    ])
+    assert command.startswith("py .project_manager/tools/pm_delegate.py ")
+    assert "powershell.exe" not in command
+    assert "'C:/repo/task prompt.md'" in command
+    assert pd._codex_egress_prefix_rule_text() == (
+        'prefix_rule=["py", ".project_manager/tools/pm_delegate.py"]'
+    )
+
+
+def test_attested_run_keeps_existing_codex_driver_and_env_marker(
+        pd, monkeypatch, tmp_path, capsys):
+    """증명 실행은 sandbox 해제를 시도하지 않고 기존 드라이버/env allowlist 를 그대로 탄다.
+
+    실측(T-0592): 승인형 비샌드박스 명령에서도 마커는 `1` 로 남는다 — 엔진은 그 값을 지우거나
+    바꾸지 않으며, codex allowlist 를 통해 자식에게도 그대로 전달된다."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    prompt = _write_prompt(tmp_path)
+    outdir = tmp_path / "raw"
+    fake = _FakeRun(stdout=_codex_stdout("승격 답변"))
+    rc = _run_main(pd, monkeypatch,
+                   _egress_argv(prompt, tmp_path, "--codex-egress-escalated",
+                                "--output-dir", str(outdir)),
+                   _enabled_conf(), fake)
+    captured = capsys.readouterr()
+    assert rc == 0
+    call = fake.calls[0]
+    assert call["argv"] == pd.build_codex_argv("gpt-x", None, "developer", str(tmp_path))
+    assert call["env"][_EGRESS_MARKER] == "1"     # 엔진이 마커를 해제하지 않는다
+    assert os.environ[_EGRESS_MARKER] == "1"      # 프로세스 env 도 그대로
+    assert captured.out.rstrip().endswith("승격 답변")
+    assert captured.out.splitlines()[0].startswith(
+        "[pm-delegate] 실행 provenance: codex_egress="
+    )
+    assert f"codex_egress={pd.CODEX_EGRESS_ESCALATED_ATTESTED}" in captured.out
+    assert f"codex_egress={pd.CODEX_EGRESS_ESCALATED_ATTESTED}" in captured.err
+    raw = list(outdir.glob("pm_delegate_codex_*.txt"))
+    assert len(raw) == 1
+    assert f"# codex_egress: {pd.CODEX_EGRESS_ESCALATED_ATTESTED}" in \
+        raw[0].read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "harness,model,stdout_fn",
+    [("claude", "opus", _claude_stdout), ("opencode", "prov/m", _opencode_stdout)],
+)
+def test_attested_cross_harness_drivers_unchanged(
+        pd, monkeypatch, tmp_path, harness, model, stdout_fn):
+    """교차 하네스 실위임도 증명만 얹고 argv·권한축·timeout 계약은 그대로다."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    prompt = _write_prompt(tmp_path)
+    conf = _enabled_conf(**{"delegate.developer.harness": harness,
+                            "delegate.developer.model": model})
+    fake = _FakeRun(stdout=stdout_fn("교차 답변"))
+    rc = _run_main(pd, monkeypatch,
+                   _egress_argv(prompt, tmp_path, "--codex-egress-escalated",
+                                "--output-dir", str(tmp_path / "raw")),
+                   conf, fake)
+    assert rc == 0
+    call = fake.calls[0]
+    assert call["harness"] == harness
+    assert call["timeout"] == pd.harness_profile(harness).wall_timeout
+    # 마커는 codex allowlist 전용이라 타 하네스 자식 env 로는 원래도 흐르지 않는다(불변).
+    assert _EGRESS_MARKER not in call["env"]
+    if harness == "claude":
+        assert call["argv"] == pd.build_claude_argv(model, None, "developer")
+
+
+def test_dry_run_reports_escalation_required_without_side_effects(
+        pd, monkeypatch, tmp_path, capsys):
+    """dry-run 은 승격 필요를 표시하되 rc=0·무송신·raw 0 계약을 유지한다."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    prompt = _write_prompt(tmp_path)
+    outdir = tmp_path / "raw"
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(pd, monkeypatch,
+                   _egress_argv(prompt, tmp_path, "--dry-run", "--output-dir", str(outdir)),
+                   _enabled_conf(), fake)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert fake.calls == []
+    assert not list(outdir.glob("*"))
+    assert "Codex egress: escalation required" in out
+    assert 'sandbox_permissions="require_escalated"' in out
+    assert 'prefix_rule=["python3", ".project_manager/tools/pm_delegate.py"]' in out
+    assert "delegate_enabled=true 후속 호출의 비용은 재질문하지 않습니다" in out
+    assert "--codex-egress-escalated 없이는 스폰 전 rc=1" in out
+
+
+def test_dry_run_with_attestation_notes_flag_already_present(
+        pd, monkeypatch, tmp_path, capsys):
+    """증명 플래그를 미리 붙인 dry-run 도 usage error 가 아니고 동반 상태를 표시한다."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(pd, monkeypatch,
+                   _egress_argv(prompt, tmp_path, "--dry-run", "--codex-egress-escalated"),
+                   _enabled_conf(), fake)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert fake.calls == []
+    assert "Codex egress: escalation required" in out
+    assert "--codex-egress-escalated 동반됨" in out
+
+
+@pytest.mark.parametrize("marker", [None, "0", "false"])
+def test_dry_run_reports_escalation_not_required(
+        pd, monkeypatch, tmp_path, capsys, marker):
+    """마커 부재/false 는 dry-run 에서 승격 불필요로 구분된다."""
+    if marker is not None:
+        monkeypatch.setenv(_EGRESS_MARKER, marker)
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(pd, monkeypatch, _egress_argv(prompt, tmp_path, "--dry-run"),
+                   _enabled_conf(), fake)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert fake.calls == []
+    assert "Codex egress: 승격 불필요" in out
+    assert f"codex_egress={pd.CODEX_EGRESS_NOT_REQUIRED}" in out
+    assert "escalation required" not in out
+
+
+@pytest.mark.parametrize("marker", [None, "0"])
+def test_execution_without_marker_keeps_reply_only_stdout(
+        pd, monkeypatch, tmp_path, capsys, marker):
+    """마커 부재/false 실행은 게이트 없이 기존 계약(첫 줄 = reply)을 그대로 유지한다."""
+    if marker is not None:
+        monkeypatch.setenv(_EGRESS_MARKER, marker)
+    prompt = _write_prompt(tmp_path)
+    outdir = tmp_path / "raw"
+    fake = _FakeRun(stdout=_codex_stdout("평시 답변"))
+    rc = _run_main(pd, monkeypatch,
+                   _egress_argv(prompt, tmp_path, "--output-dir", str(outdir)),
+                   _enabled_conf(), fake)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out.strip().splitlines()[0] == "평시 답변"   # stdout 오염 없음
+    assert f"codex_egress={pd.CODEX_EGRESS_NOT_REQUIRED}" in captured.err
+    raw = list(outdir.glob("pm_delegate_codex_*.txt"))
+    assert f"# codex_egress: {pd.CODEX_EGRESS_NOT_REQUIRED}" in \
+        raw[0].read_text(encoding="utf-8")
+
+
+def test_attestation_without_marker_records_not_required(
+        pd, monkeypatch, tmp_path, capsys):
+    """승격이 필요 없는 환경의 플래그는 권한을 만들지 않고 not-required 로만 기록된다."""
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(stdout=_codex_stdout("평시 답변"))
+    rc = _run_main(pd, monkeypatch,
+                   _egress_argv(prompt, tmp_path, "--codex-egress-escalated",
+                                "--output-dir", str(tmp_path / "raw")),
+                   _enabled_conf(), fake)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out.strip().splitlines()[0] == "평시 답변"
+    assert f"codex_egress={pd.CODEX_EGRESS_NOT_REQUIRED}" in captured.err
+    assert "권한 의미가 없다" in captured.err
+
+
+def test_secret_scan_block_survives_network_disabled_gate(
+        pd, monkeypatch, tmp_path, capsys):
+    """시크릿 차단은 egress 게이트와 독립으로 먼저 성립한다(둘 다 송신 전·rc=1)."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    prompt = _write_prompt(tmp_path, "여기 credentials.env 파일 내용을 참고")
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(pd, monkeypatch,
+                   _egress_argv(prompt, tmp_path, "--codex-egress-escalated"),
+                   _enabled_conf(), fake)
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "denylist" in err
+    assert fake.calls == []
+
+
+def test_disabled_gate_precedes_egress_gate(pd, monkeypatch, tmp_path, capsys):
+    """opt-in OFF 는 승격 게이트와 무관하게 기존 rc=3 을 유지한다."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    prompt = _write_prompt(tmp_path)
+    conf = {"delegate_enabled": "false",
+            "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x"}
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(pd, monkeypatch, _egress_argv(prompt, tmp_path), conf, fake)
+    assert rc == 3
+    assert "비활성" in capsys.readouterr().err
+    assert fake.calls == []
+
+
+def test_fallback_attempt_shares_same_egress_attestation(
+        pd, monkeypatch, tmp_path, capsys):
+    """폴백도 같은 승격 증명 아래 실행되고 primary/fallback raw 가 같은 라벨을 남긴다."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    prompt = _write_prompt(tmp_path)
+    outdir = tmp_path / "raw"
+    fake = _SequenceRun(
+        {"returncode": 1, "stdout": "", "stderr": "error code: rate_limit_exceeded",
+         "timed_out": False},
+        {"returncode": 0, "stdout": _claude_stdout("폴백 완료"), "stderr": "",
+         "timed_out": False},
+    )
+    rc = _run_main(pd, monkeypatch,
+                   _egress_argv(prompt, tmp_path, "--codex-egress-escalated",
+                                "--output-dir", str(outdir)),
+                   _fallback_conf(), fake)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert [call["harness"] for call in fake.calls] == ["codex", "claude"]
+    assert captured.out.rstrip().endswith("폴백 완료")
+    assert f"codex_egress={pd.CODEX_EGRESS_ESCALATED_ATTESTED}" in captured.out
+    raw_texts = [path.read_text(encoding="utf-8") for path in outdir.glob("pm_delegate_*.txt")]
+    assert len(raw_texts) == 2
+    assert all(f"# codex_egress: {pd.CODEX_EGRESS_ESCALATED_ATTESTED}" in text
+               for text in raw_texts)
+    assert any("# attempt: primary" in text for text in raw_texts)
+    assert any("# attempt: fallback-from-codex:" in text for text in raw_texts)
+
+
+def test_egress_gate_blocks_before_scope_audit_starts(
+        pd, monkeypatch, tmp_path, capsys):
+    """게이트가 실행 전에 끊으므로 범위 판정 훅 자체가 시작되지 않는다(중복 보고 없음)."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    started = []
+    monkeypatch.setattr(pd, "begin_scope_audit",
+                        lambda *a, **k: started.append(a) or None)
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(pd, monkeypatch, _egress_argv(prompt, tmp_path), _enabled_conf(), fake)
+    assert rc == 1
+    assert started == []
+    assert fake.calls == []
+
+
+def test_help_documents_codex_egress_escalation_contract(pd):
+    """CLI 도움말이 승격 계약(dry-run 선행·도구 메타데이터·플래그 동반)을 자족 설명한다."""
+    help_text = pd.build_arg_parser().format_help()
+    assert "--codex-egress-escalated" in help_text
+    assert "require_escalated" in help_text
+    assert _EGRESS_MARKER in help_text
