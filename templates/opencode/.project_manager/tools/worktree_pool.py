@@ -2284,19 +2284,20 @@ def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
 
 
 def release_task_pid(name: str) -> "Task | None":
-    """task 정상-종료 기록 — 장부 task 레코드 `pid=0`(미점유) 세팅 (핸드오프 "두고 간다"의 task 판).
+    """task handoff intent — 장부 task 레코드 `pid=0`(미점유) 세팅.
 
-    pm_handoff task 모드 완료 단계가 호출한다. task 장부 pid 는 dump 후 즉사하는 bootstrap subprocess
-    pid라, 핸드오프가 종료를 기록하지 않으면 **정상 인계 후 재개도** dead-pid →
+    pm_handoff task 모드가 log 쓰기 전 load-bearing released/occupied 경계로 호출한다.
+    task 장부 pid 는 dump 후 즉사하는 bootstrap subprocess pid라, 핸드오프가 intent를 기록하지
+    않으면 **정상 인계 후 재개도** dead-pid →
     `bind_task` 가 `reclaimed`(crash 회수 loud notice)로 상시 오탐한다. 종료 시 pid 를
     0(미점유)으로 비워 두면 다음 부트스트랩이 clean `resumed`(경고 없음)로 재개한다 — 진짜 crash
     (핸드오프 없이 죽어 pid>0 잔존)만 회수 경고를 받게 구분한다. (슬롯 lease 재스냅·session
     end="두고 간다")의 task 축 짝. task end(`end_task`)와는 별개 — end 는 레코드 제거·아카이브,
     이건 세션 인계라 레코드는 유지하고 pid 만 비운다.
 
-    반환 = 갱신된 `Task`. **task 부재면 `None`(fail-soft·무해)** — 솔로/슬롯 모드(task 레코드 없음)나
-    이미 end 된 task 에서 무해히 no-op(호출부 fail-soft loud). 신규 상태/필드 없이 기존 "미점유" 값
-    (pid=0)을 재사용하는 최소 변경.
+    반환 = 갱신된 `Task`. task 부재면 primitive는 `None`을 반환하지만, load-bearing
+    pm_handoff 호출부는 이를 log 무접촉 fail-loud로 올린다. 신규 상태/필드 없이 기존
+    "미점유" 값(pid=0)을 재사용하는 최소 변경.
 
     **장부 IO 는 이 모듈이 단일 소유**(직접 JSON 금지·flock/스키마) — `_lease_lock` 아래
     `_read_tasks`/`_write_tasks`(형제 `leases`·미지 top-level 키 무손실 round-trip)로 atomic 갱신한다.

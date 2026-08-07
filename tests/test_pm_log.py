@@ -295,6 +295,24 @@ def test_append_log_delegates_the_write_to_the_shared_seam(tmp_path, monkeypatch
     assert not current.exists()   # 실제 write는 seam이 소유(대역이 가로챔)
 
 
+def test_append_log_locked_is_the_lock_free_inner_primitive(tmp_path, monkeypatch):
+    """판정과 append를 한 외부 lock에 묶는 소비자는 inner primitive를 재락 없이 쓴다."""
+    mod = _load_module()
+    lock_mod = mod._load_file_lock()
+    calls = []
+    monkeypatch.setattr(
+        lock_mod,
+        "append_atomic",
+        lambda path, text, **kwargs: calls.append((Path(path), text)),
+    )
+    current = tmp_path / "current.md"
+
+    mod.append_log_locked(current, "entry")
+
+    assert calls == [(current, "entry")]
+    assert not mod._log_lock_path(current).exists()
+
+
 def test_log_write_lock_uses_single_project_local_lock(tmp_path, monkeypatch):
     """운영 log 경로의 모든 writer는 `.project_manager/.local/log.lock` 하나를 쓴다.
 
@@ -340,8 +358,13 @@ def test_all_current_log_writers_use_shared_seam_grep_guard():
         for name in ("ticket_finish.py", "pm_handoff.py", "pm_adr.py")
     }
     for name, source in consumer_sources.items():
-        assert "_load_pm_log(" in source and ".append_log(" in source, name
+        assert "_load_pm_log(" in source, name
+        assert ".append_log(" in source or ".append_log_locked(" in source, name
         assert not re.search(r"self\._log_file\.write_text\(", source), name
+
+    handoff_source = consumer_sources["pm_handoff.py"]
+    if ".append_log_locked(" in handoff_source:
+        assert "with pm_log.log_write_lock(" in handoff_source
 
     pm_log_source = PM_LOG_PY.read_text(encoding="utf-8")
     archive_source = pm_log_source.split("def cmd_archive", 1)[1].split(
@@ -461,6 +484,26 @@ def test_cmd_archive_seals_old_keeps_recent(tmp_path, monkeypatch, capsys):
     remaining = current.read_text(encoding="utf-8")
     assert remaining == _HEADER + _ENTRY_C
     assert "본문 A" not in remaining and "본문 B" not in remaining
+
+
+def test_cmd_archive_preserves_crlf_bytes_in_kept_current(tmp_path, monkeypatch):
+    """archive read/replace는 유니버설 개행 변환 없이 남은 current CRLF를 보존한다."""
+    mod = _load_module()
+    log_dir, _archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    original = (_HEADER + _ENTRY_A + _ENTRY_C).replace("\n", "\r\n").encode("utf-8")
+    current.write_bytes(original)
+
+    assert mod.cmd_archive(
+        SimpleNamespace(before="2026-06-13", keep_last=None, dry_run=False)
+    ) == 0
+
+    expected = (_HEADER + _ENTRY_C).replace("\n", "\r\n").encode("utf-8")
+    remaining = current.read_bytes()
+    assert remaining == expected
+    assert all(index > 0 and remaining[index - 1] == 0x0D
+               for index, byte in enumerate(remaining) if byte == 0x0A)
 
 
 def test_archive_and_append_interleave_preserves_both_writers(tmp_path, monkeypatch):

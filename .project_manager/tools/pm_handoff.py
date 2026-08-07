@@ -864,7 +864,7 @@ SHIPPING_GLOBS = (
     ".project_manager/wiki/_template/**",
     ".project_manager/wiki/domain/**",
     # ── engine.manifest 정합 갭 (정확 경로 1:1·과잉발동 회피) ──────────
-    # manifest 출하 항목 중 위 글롭에 안 잡히던 6경로를 *정확 경로* 글롭으로 1:1 닫는다
+    # manifest 출하 항목 중 위 글롭에 안 잡히던 5경로를 *정확 경로* 글롭으로 1:1 닫는다
     # 포괄 글롭(`**/_template.md`·`**/*.template.md`·`**/.gitignore` 등)은 repo
     # 전체를 매칭해 비-출하(tests/fixtures/_template.md·wiki decisions/foo.template.md 등)
     # 까지 게이트를 false-fire 시킨다 — ticket 결정("정밀·과잉발동 회피")·tests/ non-shipping
@@ -874,7 +874,6 @@ SHIPPING_GLOBS = (
     ".project_manager/wiki/pm_state.template.md",     # pm_state 템플릿 (manifest 갭)
     ".gitattributes",                                 # log union-merge·forwarder EOL (루트만)
     ".project_manager/.gitignore",                    # .project_manager .gitignore (manifest 갭)
-    ".github/workflows/regression.yml",               # 예시 CI 스캐폴드 (manifest 가 덮어쓰는 출하 파일)
 )
 
 # ── log/current.md handoff entry skeleton ────────────────────────────────────────────
@@ -1114,6 +1113,175 @@ def build_handoff_log_skeleton(
         pending_intent=PENDING_INTENT_PLACEHOLDER,
         worktree_line=_worktree_line(worktree_slot, branch),
     )
+
+
+# 같은 세션에서 핸드오프를 재실행할 때 기존 entry 중 기계 소유 구획만 갱신한다. 후보
+# 정규식은 일부러 관대하게 두어 차수 오형식도 "기존 handoff는 있으나 파싱 실패"로 loud
+# surface 하고, 실제 갱신은 canonical 헤더 정규식이 성공한 경우에만 허용한다.
+_HANDOFF_HEADER_CANDIDATE_RE = re.compile(
+    r"^## \[[^\]\n]+\]\s+handoff\s*\|\s*PM\s+.*→ 다음 PM 세션\s*$",
+    re.MULTILINE,
+)
+_HANDOFF_HEADER_SESSION_RE = re.compile(
+    r"^## \[\d{4}-\d{2}-\d{2}\] handoff \| PM (?P<num>\d+)차"
+    r"(?: \((?P<session>[^()]+)\))? → 다음 PM 세션$"
+)
+_SESSION_ENTRIES_BLOCK_RE = re.compile(
+    r"^- 이 세션 박제 entries:[^\n]*"
+    r"(?:\n  - ## \[[^\n]*)*",
+    re.MULTILINE,
+)
+_NESTED_SESSION_ENTRY_RE = re.compile(r"^  - (## \[[^\n]+)$", re.MULTILINE)
+
+
+def _read_log_text_exact(path: Path) -> str:
+    """UTF-8 log를 universal-newline 변환 없이 읽어 원문 bytes를 보존한다."""
+    return Path(path).read_bytes().decode("utf-8")
+
+
+def _handoff_header_belongs_to_session(header: str, session: str | None) -> bool:
+    """handoff 후보 헤더가 현재 task/slot/solo 정체성에 속하는지 보수적으로 판정한다.
+
+    차수는 per-slot 시퀀스라 다른 슬롯의 같은 N차는 정상이다. 따라서 "같은 차수" 판정
+    전에 현재 정체성 태그를 먼저 좁힌다. solo는 태그 없는 헤더만 자기 것으로 본다.
+    """
+    if session is not None:
+        return header.rstrip().endswith(f" ({session}) → 다음 PM 세션")
+    return "(" not in header and header.rstrip().endswith(" → 다음 PM 세션")
+
+
+def _prepare_handoff_log_change(
+    log_text: str,
+    *,
+    session_num: int | str,
+    date: str,
+    worktree_slot: str | None,
+    branch: str | None,
+    session: str | None,
+    task: str | None,
+) -> tuple[bool, str, str, str | None]:
+    """handoff log 변경 계획을 만든다.
+
+    반환은 ``(update_mode, payload, preview, warning)`` 이다. update_mode면 payload는
+    기존 log 전체를 비파괴 갱신한 값이고, 아니면 append할 문자열이다. 같은 정체성의 마지막
+    handoff 차수가 이번 차수와 같을 때만 갱신한다. 헤더 차수 파싱 실패나 기계 구획 경계
+    모호(marker 0/2+)는 현행 append로 보수적 폴백하며 warning 한 줄을 돌려준다.
+    """
+    normalized_num = _normalize_session_num(session_num)
+    candidates = [
+        match
+        for match in _HANDOFF_HEADER_CANDIDATE_RE.finditer(log_text)
+        if _handoff_header_belongs_to_session(match.group(0), session)
+    ]
+
+    warning: str | None = None
+    target: re.Match | None = None
+    if candidates:
+        candidate = candidates[-1]
+        parsed = _HANDOFF_HEADER_SESSION_RE.fullmatch(candidate.group(0).rstrip())
+        if parsed is None:
+            warning = (
+                "같은-세션 판정 실패 — 마지막 handoff 헤더 차수 파싱 실패; "
+                "보수적으로 새 entry를 append합니다 (이중 부기 가능)."
+            )
+        elif not normalized_num.isdigit():
+            warning = (
+                f"같은-세션 판정 실패 — 이번 실행 차수 {normalized_num!r} 파싱 실패; "
+                "보수적으로 새 entry를 append합니다 (이중 부기 가능)."
+            )
+        elif int(parsed.group("num")) == int(normalized_num):
+            target = candidate
+
+    if target is not None:
+        # entry 경계는 다음 canonical log entry 직전. 중첩 박제 목록의 `  - ## [...]`는
+        # 두 칸 들여써 `_LOG_ENTRY_RE` 경계가 되지 않는다.
+        next_entry = _LOG_ENTRY_RE.search(log_text, target.end())
+        entry_end = next_entry.start() if next_entry is not None else len(log_text)
+        entry_text = log_text[target.start():entry_end]
+        blocks = list(_SESSION_ENTRIES_BLOCK_RE.finditer(entry_text))
+        if len(blocks) == 1:
+            original_block = blocks[0].group(0)
+            block_newline = (
+                "\r\n"
+                if "\r\n" in original_block or original_block.endswith("\r")
+                else "\n"
+            )
+            old_entries = [
+                header.rstrip("\r")
+                for header in _NESTED_SESSION_ENTRY_RE.findall(original_block)
+            ]
+            fresh_entries, _boundary_unresolved = _collect_session_entries(
+                log_text, task, session
+            )
+            # 기존 기계 목록 + 조기 handoff 뒤 새 complete/checkpoint를 원문 순서로 합친다.
+            # dict는 insertion order를 보존해 재실행도 byte-멱등이다.
+            entries = list(dict.fromkeys([*old_entries, *fresh_entries]))
+            refreshed_block = (
+                "- 이 세션 박제 entries:" + _session_entries_text(entries)
+            )
+            if block_newline != "\n":
+                refreshed_block = refreshed_block.replace("\n", block_newline)
+            # regex는 마지막 줄의 CR은 block에, LF는 suffix에 남긴다. CRLF block이면
+            # replacement 끝의 CR도 되살려 경계 개행이 bare LF로 변하지 않게 한다.
+            if original_block.endswith("\r") and not refreshed_block.endswith("\r"):
+                refreshed_block += "\r"
+            block_start = target.start() + blocks[0].start()
+            block_end = target.start() + blocks[0].end()
+            updated = log_text[:block_start] + refreshed_block + log_text[block_end:]
+            return True, updated, refreshed_block, None
+        warning = (
+            "같은-세션 판정 실패 — 기존 handoff의 '이 세션 박제 entries' 구획 경계가 "
+            f"모호함(marker {len(blocks)}개); 보수적으로 새 entry를 append합니다 "
+            "(이중 부기 가능)."
+        )
+
+    skeleton = build_handoff_log_skeleton(
+        session_num=normalized_num,
+        date=date,
+        worktree_slot=worktree_slot,
+        branch=branch,
+        session=session,
+        log_text=log_text,
+        task=task,
+    )
+    return False, "\n" + skeleton, skeleton, warning
+
+
+def _commit_handoff_log_change(
+    log_file: Path,
+    *,
+    session_num: int | str,
+    date: str,
+    worktree_slot: str | None,
+    branch: str | None,
+    session: str | None,
+    task: str | None,
+    pm_log_module=None,
+) -> tuple[bool, str, str | None]:
+    """handoff log 판정과 append/replace를 공유 lock 한 구간에서 원자화한다.
+
+    반환은 ``(same_session_rerun, preview, warning)``. ``pm_log_module``은 lock 보유 중
+    append가 실행되는지를 결정적으로 검증하는 테스트 DI seam이다.
+    """
+    pm_log = pm_log_module or _load_pm_log()
+    log_file = Path(log_file)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with pm_log.log_write_lock(log_file):
+        log_text = _read_log_text_exact(log_file) if log_file.exists() else ""
+        same_session_rerun, payload, preview, warning = _prepare_handoff_log_change(
+            log_text,
+            session_num=session_num,
+            date=date,
+            worktree_slot=worktree_slot,
+            branch=branch,
+            session=session,
+            task=task,
+        )
+        if same_session_rerun:
+            pm_log._replace_atomic(log_file, payload)
+        else:
+            pm_log.append_log_locked(log_file, payload)
+    return same_session_rerun, preview, warning
 
 
 # ── pm_state.md sliding window 편집 ──────────────────────────────────────────
@@ -1465,13 +1633,18 @@ def infer_next_task_session_num(
     pm_state_text: str | None,
     log_text: str | None,
     task: str,
+    *,
+    task_released: bool = False,
 ) -> int | str:
     """task의 다음 차수를 state와 task-tagged log에서 함께 복구한다.
 
-    state 세션 window의 최고차+1과 `log/current.md`의 동일 `(task:<name>)` handoff 최고차+1
-    중 큰 값을 반환한다. log append 뒤 state 기록 전에 중단됐거나 legacy state backfill이
-    뒤처진 경우에도 이미 기록된 차수를 재발행하지 않는다. 둘 다 미해소면 state 추론의
-    placeholder 규격을 보존한다.
+    state 세션 window의 최고차+1과 `log/current.md`의 동일 `(task:<name>)` handoff를 함께
+    본다. 정상 handoff가 task 장부 pid를 0으로 release한 뒤 bootstrap 없이 재실행된 경우
+    (`task_released=True`)에는 마지막 log 차수를 그대로 반환해 같은 세션 갱신 모드로 들어간다.
+    release가 log보다 먼저 영속되므로 log append 뒤 state 기록 전에 중단된 반쪽 상태도 같은
+    경로로 복구된다. 다음 정상 세션은 bootstrap의 `bind_task`가 pid를 다시 채우므로 N+1이다.
+    따라서 `task_released=False`인 bootstrap/read 경로는 state가 뒤처져도 log N을 새 세션
+    N+1로 해석한다. 둘 다 미해소면 state 추론의 placeholder 규격을 보존한다.
 
     pm_handoff write 경로와 pm_bootstrap read 경로가 함께 쓰는 task 차수 복구 단일 규칙이다.
     """
@@ -1487,7 +1660,13 @@ def infer_next_task_session_num(
     ]
     candidates = [value for value in (state_next,) if isinstance(value, int)]
     if log_nums:
-        candidates.append(max(log_nums) + 1)
+        log_highest = max(log_nums)
+        # 정상 종료 또는 log 전 intent 기록(pid=0) 뒤 bootstrap을 다시 거치지 않은 호출은
+        # 같은 세션 재실행이다. bootstrap/read 경로(task_released=False)는 언제나 log N의
+        # 다음 차수 N+1로 전진해야 한다.
+        if task_released:
+            return log_highest
+        candidates.append(log_highest + 1)
     if candidates:
         return max(candidates)
     return state_next
@@ -2178,6 +2357,9 @@ class PmHandoff:
         # task handoff 시작 시 영속 변경 전에 한 번 해소한 보유 슬롯 스냅샷. 회귀/출하/재스냅이
         # 같은 집합을 재사용해 후반 재조회 실패가 이미 기록된 handoff를 false-green으로 끝내지 않게 한다.
         self._task_slots_snapshot: tuple[str, tuple[str, ...]] | None = None
+        # membership gate가 읽은 task record 스냅샷. 정상 handoff가 pid=0으로 release한 뒤
+        # bootstrap 없이 같은 CLI를 재실행했는지 차수 추론에서 구분한다.
+        self._task_record_snapshot: tuple[str, object] | None = None
 
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
         self._run_git_fn = run_git_fn or self._default_run_git
@@ -2410,42 +2592,46 @@ class PmHandoff:
                     return False
         return True
 
-    def _release_task_pid(self, task: str) -> None:
-        """task 정상-종료를 장부에 기록한다 — `pid=0`(미점유) 세팅 ("여기 두고 간다"의 task 판).
+    def _release_task_pid(self, task: str) -> bool:
+        """task handoff intent를 장부 `pid=0`으로 기록한다 — 성공 여부 반환.
 
-        핸드오프 부기(log·pm_state) 완료 후 task 모드에서 호출한다. task 장부 pid 는 dump 후 즉사하는
+        핸드오프 부기(log·pm_state) 전 task 모드에서 호출한다. task 장부 pid 는 dump 후 즉사하는
         bootstrap subprocess pid라, 종료를 안 기록하면 **정상 인계 후 재개도** dead-pid →
         `bind_task` 가 `reclaimed`("재개(회수·이전 세션 crash)" + "⚠️ 회수 진입")로 상시 오탐한다
         write 프리미티브 `worktree_pool.release_task_pid(task)` 만 호출해 pid 를 0 으로
         비워, 차기 부트스트랩이 clean `resumed`(경고 없음)로 재개하게 한다 — 진짜 crash(핸드오프 없이
         죽어 pid>0 잔존)만 회수 경고를 받는다.
 
-        `_record_slot_snapshot`(슬롯 lease 재스냅)과 동형 배치·fail-soft loud: worktree_pool
-        부재(솔로/미셋업)·구버전 풀(release_task_pid 부재)·task 부재(record None)·예외는 무해 skip
-        (핸드오프 차단 안 함)."""
+        같은-session 재실행 판정이 이 durable 신호에 의존하므로 더는 보조 fail-soft 부기가 아니다.
+        step2 log write **전**에 성공해야 하며, 엔진/primitive/record 부재·예외는 fail-loud(False)다.
+        성공 뒤 후속 단계가 중단돼도 pid=0이 남아 재실행이 같은 차수로 복구된다."""
         wp = self._worktree_pool or _load_worktree_pool()
         if wp is None:
-            print("  worktree_pool 미배선(솔로/미셋업) — task pid 미기록 skip(무해).")
-            return
+            print("  [중단] worktree_pool 미배선 — task handoff intent를 기록할 수 없다.",
+                  file=sys.stderr)
+            return False
         primitive = getattr(wp, "release_task_pid", None)
         if primitive is None:
-            print("  ⚠ worktree_pool 구버전(release_task_pid 부재) — task pid 미기록 skip(무해).",
+            print("  [중단] worktree_pool 구버전(release_task_pid 부재) — "
+                  "멱등성 신호를 기록할 수 없다.",
                   file=sys.stderr)
-            return
+            return False
         try:
             task_rec = primitive(task)
-        except Exception as exc:  # noqa: BLE001 — fail-soft: task pid 기록 실패가 핸드오프를 막지 않는다.
+        except Exception as exc:  # noqa: BLE001 — load-bearing intent 기록 실패는 차단.
             if _is_engine_rev_skew(exc):
                 raise
-            print(f"  ⚠ task pid 기록 실패 — {exc} (skip·무해).", file=sys.stderr)
-            return
+            print(f"  [중단] task handoff intent(pid=0) 기록 실패 — {exc}.", file=sys.stderr)
+            return False
         if task_rec is None:
-            print(f"  ⚠ task {task!r} 장부에 없음 — task pid 미기록 skip(무해).", file=sys.stderr)
-            return
+            print(f"  [중단] task {task!r} 장부에 없음 — 멱등성 신호를 기록하지 못했다.",
+                  file=sys.stderr)
+            return False
         print(
-            f"  ✓ task 정상-종료 기록: {task} → pid=0(미점유) "
-            "(다음 재개=clean resume·crash 회수 경고 없음)"
+            f"  ✓ task handoff intent 기록: {task} → pid=0(미점유) "
+            "(재실행=같은 차수·다음 bootstrap=새 pid/N+1)"
         )
+        return True
 
     # ── 기본 subprocess 구현 (실제 실행) ──────────────────────────────────────
 
@@ -2679,6 +2865,7 @@ class PmHandoff:
                 file=sys.stderr,
             )
             return False
+        self._task_record_snapshot = (task, registered)
         return True
 
     def _ensure_task_pm_state(self, task: str) -> bool:
@@ -2952,8 +3139,13 @@ class PmHandoff:
                 return 1
             inferred = infer_next_task_session_num(
                 self._pm_state_file.read_text(encoding="utf-8"),
-                self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else "",
+                _read_log_text_exact(self._log_file) if self._log_file.exists() else "",
                 task,
+                task_released=(
+                    self._task_record_snapshot is not None
+                    and self._task_record_snapshot[0] == task
+                    and getattr(self._task_record_snapshot[1], "pid", None) == 0
+                ),
             )
             if not isinstance(inferred, int):
                 print(
@@ -2965,8 +3157,18 @@ class PmHandoff:
             session_num = inferred
             print(f"  ✓ task state+log 차수 자동 복구: {session_num}차")
 
-        # ── 2. log/current.md handoff entry skeleton append ────────────────────────────
-        print("\n[2/7] log/current.md handoff entry skeleton append...")
+        # task의 pid=0은 이제 같은-session 재실행을 판별하는 load-bearing handoff intent다.
+        # log/state/dashboard 어떤 handoff write보다 먼저 기록해, 이후 단계가 중단돼도 재실행이
+        # 같은 차수로 복구되게 한다. dry-run은 예고만 하고 장부를 쓰지 않는다.
+        if task_mode:
+            print("\n[task] handoff intent pid=0 기록 (log write 전)...")
+            if dry_run:
+                print(f"  [dry-run] task pid=0(미점유) 기록 예고: {task} (실행 생략).")
+            elif not self._release_task_pid(task):
+                return 1
+
+        # ── 2. log/current.md handoff entry append / 같은-세션 갱신 ────────────────────
+        print("\n[2/7] log/current.md handoff entry append/갱신...")
         # 세션 정체성 태그— 해소된 슬롯(`work/<repo>_<N>`)에서 canonical `<repo>_<N>`
         # 를 유도해 헤더에 박는다(감사 메타·상태 저장 아님·무충돌·태그 값에 `work/`
         # 프리픽스 없음). 솔로(미해소)면 None → 태그 생략·현행 헤더 byte-호환.
@@ -2980,26 +3182,61 @@ class PmHandoff:
             _parsed_slot = _parse_worktree_slot(worktree_slot)
             session_identity = f"{_parsed_slot[0]}_{_parsed_slot[1]}" if _parsed_slot else None
             log_session_tag = session_identity
-        log_text = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
-        skeleton = build_handoff_log_skeleton(
-            session_num=_normalize_session_num(session_num),
-            date=date_str,
-            worktree_slot=worktree_slot,
-            branch=branch,
-            session=log_session_tag,
-            log_text=log_text,
-            task=task,
-        )
-
+        normalized_session_num = _normalize_session_num(session_num)
         if dry_run:
-            print("  [dry-run] log/current.md 에 append 할 skeleton:")
-            print("  " + skeleton.replace("\n", "\n  "))
+            log_text = (
+                _read_log_text_exact(self._log_file)
+                if self._log_file.exists() else ""
+            )
+            same_session_rerun, _payload, preview, handoff_warning = (
+                _prepare_handoff_log_change(
+                    log_text,
+                    session_num=normalized_session_num,
+                    date=date_str,
+                    worktree_slot=worktree_slot,
+                    branch=branch,
+                    session=log_session_tag,
+                    task=task,
+                )
+            )
         else:
-            _load_pm_log().append_log(self._log_file, "\n" + skeleton)
-            print(f"  ✓ log/current.md handoff entry skeleton append (PM {session_num}차)")
+            # 판정+read-modify-write/append는 helper가 pm_log 공유 락 한 임계구역에서 원자화한다.
+            same_session_rerun, preview, handoff_warning = _commit_handoff_log_change(
+                self._log_file,
+                session_num=normalized_session_num,
+                date=date_str,
+                worktree_slot=worktree_slot,
+                branch=branch,
+                session=log_session_tag,
+                task=task,
+            )
+
+        if handoff_warning is not None:
+            print(f"  ⚠ {handoff_warning}", file=sys.stderr)
+        if same_session_rerun:
+            print(
+                f"[모드] 같은 차수({normalized_session_num}) 재실행 — "
+                "entry 갱신·윈도 shift 생략"
+            )
+            if dry_run:
+                print("  [dry-run] 기존 entry 본문 유지·기계 소유 구획 갱신 미리보기:")
+                print("  " + preview.replace("\n", "\n  "))
+            else:
+                print(
+                    f"  ✓ 기존 handoff entry 유지·박제 목록 갱신 "
+                    f"(PM {normalized_session_num}차)"
+                )
+        elif dry_run:
+            print("  [dry-run] log/current.md 에 append 할 skeleton:")
+            print("  " + preview.replace("\n", "\n  "))
+        else:
+            print(
+                f"  ✓ log/current.md handoff entry skeleton append "
+                f"(PM {normalized_session_num}차)"
+            )
 
         # log/current.md entry 누적 점검 — 임계 초과 시 archive 권장 (차단 아님).
-        cur_log_text = self._log_file.read_text(encoding="utf-8") if self._log_file.exists() else ""
+        cur_log_text = _read_log_text_exact(self._log_file) if self._log_file.exists() else ""
         entry_count = len(_LOG_ENTRY_RE.findall(cur_log_text))
         if entry_count > LOG_ARCHIVE_SUGGEST_THRESHOLD:
             print(
@@ -3055,9 +3292,12 @@ class PmHandoff:
             state_text = self._pm_state_file.read_text(encoding="utf-8")
 
             try:
+                # update_session_window 자체가 같은 차수면 byte no-op이다. 재실행에서도 이
+                # primitive를 태워 step2(log) 뒤 step3(state) 전 중단된 반쪽 상태만 정확히
+                # 복구하고, 이미 shift된 정상 재실행은 실제 write 없이 건너뛴다.
                 new_state_text = update_session_window(
                     pm_state_text=state_text,
-                    session_num=_normalize_session_num(session_num),
+                    session_num=normalized_session_num,
                     date_str=date_str,
                     wave_summary=wave_summary,
                 )
@@ -3073,7 +3313,24 @@ class PmHandoff:
                 )
                 new_state_text = state_text  # window 미편집 — 원본 유지(step4 길이검증은 원본으로).
             else:
-                if dry_run:
+                if same_session_rerun:
+                    if new_state_text == state_text:
+                        print(
+                            f"  ↷ 같은 차수({normalized_session_num}) 재실행 — "
+                            "세션 window shift 생략(write 0·이미 반영)."
+                        )
+                    elif dry_run:
+                        print(
+                            f"  [dry-run] 같은 차수({normalized_session_num}) log 선행 반쪽 상태 — "
+                            "세션 window 미반영분 복구 예고."
+                        )
+                    else:
+                        self._pm_state_file.write_text(new_state_text, encoding="utf-8")
+                        print(
+                            f"  ✓ 같은 차수({normalized_session_num}) log 선행 반쪽 상태 — "
+                            "세션 window 미반영분 복구."
+                        )
+                elif dry_run:
                     # diff 미리보기: 변경된 줄 출력
                     old_lines = state_text.splitlines()
                     new_lines = new_state_text.splitlines()
@@ -3184,20 +3441,6 @@ class PmHandoff:
                     print(f"  [dry-run] git 재스냅 예고: {self._worktree_slot} (실행 생략).")
                 else:
                     self._record_slot_snapshot(self._worktree_slot)
-
-        # ── task 모드: 정상-종료 task pid 기록 ("두고 간다"의 task 판) ────────
-        # task 장부 pid = dump 후 즉사하는 bootstrap subprocess pid라, 핸드오프가 종료를
-        # 안 기록하면 정상 인계 후 재개도 dead-pid → bind_task `reclaimed`(crash 회수 경고)로 상시
-        # 오탐한다. 완료 단계에서 pid=0(미점유)으로 비워 차기 부트스트랩이 clean resumed
-        # 로 재개하게 한다 — 진짜 crash(핸드오프 없이 죽어 pid>0 잔존)만 회수 경고를 받는다. 슬롯
-        # 재스냅과 동형 배치·fail-soft(내부 무해 skip). dry_run 은 예고만. slot/솔로 모드
-        # (task_mode=False)는 무영향. task_mode True 면 task 는 not None(정의상).
-        if task_mode:
-            print("\n[task] 정상-종료 task pid 기록 (여기 두고 간다)...")
-            if dry_run:
-                print(f"  [dry-run] task pid=0(미점유) 기록 예고: {task} (실행 생략).")
-            else:
-                self._release_task_pid(task)
 
         # ── multi-PM 모드: --done 작업완료 슬롯 release ─────────────────
         # 세션종료/회전 ≠ release — --done 명시 시에만 슬롯을 idle 반납한다. release 는 비가역

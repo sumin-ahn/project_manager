@@ -18,6 +18,11 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -52,8 +57,11 @@ def hf():
 class _RegisteredTaskPool:
     """task membership만 양성으로 답하는 최소 handoff 테스트 seam."""
 
+    def __init__(self, *, pid=12345):
+        self.pid = pid
+
     def find_task(self, name):
-        return type("_T", (), {"name": name})()
+        return type("_T", (), {"name": name, "pid": self.pid})()
 
     def slots_for_task(self, name):
         return []
@@ -1773,10 +1781,10 @@ def test_run_task_writes_task_tag_and_dashboard_key(hf, tmp_path, capsys):
     assert "## task:mytask" not in out
 
 
-def test_run_task_recovers_from_log_only_interrupt_and_ignores_session_num_999(
+def test_run_task_recovers_log_only_interrupt_as_same_session_and_ignores_999(
     hf, tmp_path
 ):
-    """log append 후 state write 전 중단 재시도는 log 최고차+1을 세 영속 표면에 고정한다."""
+    """log append 후 state 전 중단은 같은 log 차수로 window만 복구한다."""
     pm_state = tmp_path / "pm_state.md"
     pm_state.write_text(_state(_entry(1), _entry(2)), encoding="utf-8")
     log_file = tmp_path / "current.md"
@@ -1798,7 +1806,9 @@ def test_run_task_recovers_from_log_only_interrupt_and_ignores_session_num_999(
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
         dashboard_file=dashboard_file,
-        worktree_pool=_RegisteredTaskPool(),
+        # log-only 반쪽 상태는 log보다 먼저 남는 handoff intent(pid=0)가
+        # 반드시 있다. 새 bootstrap이 bind한 pid>0이면 log 3 다음 4차가 맞다.
+        worktree_pool=_RegisteredTaskPool(pid=0),
     )
 
     rc = handoff.run(
@@ -1814,9 +1824,9 @@ def test_run_task_recovers_from_log_only_interrupt_and_ignores_session_num_999(
     state_text = pm_state.read_text(encoding="utf-8")
     dashboard_text = dashboard_file.read_text(encoding="utf-8")
     assert log_text.count("PM 3차 (task:mytask)") == 1
-    assert "PM 4차 (task:mytask)" in log_text
-    assert "**4차**" in state_text
-    assert "- 차수: PM 4차" in dashboard_text
+    assert "PM 4차 (task:mytask)" not in log_text
+    assert "**3차**" in state_text
+    assert "- 차수: PM 3차" in dashboard_text
     assert "PM 999차" not in log_text + state_text + dashboard_text
 
 
@@ -1870,10 +1880,13 @@ def test_run_task_records_precreated_pm_state(hf, tmp_path, capsys, monkeypatch)
     # lease 유지 증거 — release 가 불리면 fail 하는 sentinel worktree_pool(done=False 라 미호출 기대).
     class _NoReleasePool:
         def find_task(self, name):
-            return type("_T", (), {"name": name})()
+            return type("_T", (), {"name": name, "pid": 12345})()
 
         def slots_for_task(self, name):
             return []
+
+        def release_task_pid(self, name):
+            return type("_T", (), {"name": name, "pid": 0})()
 
         def release(self, *a, **k):  # noqa: ANN002 ANN003
             raise AssertionError("task 세션 종료가 lease 를 release 하면 안 된다(F7·세션종료≠task종료)")
@@ -1975,6 +1988,352 @@ def _hermetic_handoff(hf, tmp_path, pool):
         dashboard_file=tmp_path / "dashboard.md",
         worktree_pool=pool,
     )
+
+
+# ── 같은-차수 handoff 재실행 멱등성 (T-0588) ───────────────────────────────
+
+def _run_slot_handoff(handoff, session_num: int, *, dry_run: bool = False) -> int:
+    return handoff.run(
+        session_num=session_num,
+        wave_summary=f"{session_num}차 요약",
+        dry_run=dry_run,
+        skip_pytest=True,
+        worktree_slot="work/project_manager_1",
+    )
+
+
+def test_same_session_rerun_keeps_one_entry_and_shifts_window_once(
+    hf, tmp_path, capsys
+):
+    """같은 차수 2회 실실행은 handoff 1개·window shift 1회이고 갱신 모드를 밝힌다."""
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+
+    assert _run_slot_handoff(handoff, 7) == 0
+    after_first_state = handoff._pm_state_file.read_text(encoding="utf-8")
+    capsys.readouterr()
+    assert _run_slot_handoff(handoff, 7) == 0
+
+    log_text = handoff._log_file.read_text(encoding="utf-8")
+    after_second_state = handoff._pm_state_file.read_text(encoding="utf-8")
+    assert log_text.count("handoff | PM 7차 (project_manager_1)") == 1
+    assert after_second_state == after_first_state
+    assert "**4차**" not in after_second_state
+    assert all(f"**{num}차**" in after_second_state for num in (5, 6, 7))
+    assert "이전 차 (PM 1차~4차)" in after_second_state
+    out = capsys.readouterr().out
+    assert "[모드] 같은 차수(7) 재실행 — entry 갱신·윈도 shift 생략" in out
+    assert "세션 window shift 생략" in out
+
+
+def test_same_session_rerun_refreshes_entries_added_after_first_handoff(
+    hf, tmp_path, capsys
+):
+    """조기 handoff 뒤 추가된 complete는 재실행 시 기존 기계 목록에 합쳐진다."""
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    handoff._log_file.write_text(
+        "## [2026-08-07] complete | T-0587 — 첫 박제 (project_manager_1)\n",
+        encoding="utf-8",
+    )
+    assert _run_slot_handoff(handoff, 7) == 0
+    first_log = handoff._log_file.read_text(encoding="utf-8")
+    assert "T-0587 — 첫 박제" in first_log
+
+    handoff._log_file.write_text(
+        first_log
+        + "\n## [2026-08-07] complete | T-0588 — 조기 handoff 뒤 완료 "
+          "(project_manager_1)\n",
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert _run_slot_handoff(handoff, 7) == 0
+
+    refreshed = handoff._log_file.read_text(encoding="utf-8")
+    assert refreshed.count("handoff | PM 7차 (project_manager_1)") == 1
+    assert "  - ## [2026-08-07] complete | T-0587 — 첫 박제" in refreshed
+    assert "  - ## [2026-08-07] complete | T-0588 — 조기 handoff 뒤 완료" in refreshed
+    # 원본 top-level complete entry도 보존되고 기계 목록에 1회 반영된다.
+    assert refreshed.count("T-0588 — 조기 handoff 뒤 완료") == 2
+
+
+def test_same_session_rerun_preserves_pm_authored_body(hf, tmp_path):
+    """PM이 skeleton 본문을 채운 뒤 재실행해도 기계 목록 외 byte는 보존한다."""
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    assert _run_slot_handoff(handoff, 7) == 0
+    authored = handoff._log_file.read_text(encoding="utf-8")
+    authored = authored.replace(
+        "- 메타 학습: <PM 손 — ticket 상태에서 도출 불가한 교훈만. 없으면 \"없음\".>",
+        "- 메타 학습: 사람이 채운 비가역 서술",
+    ).replace(
+        f"- pending user intent: {hf.PENDING_INTENT_PLACEHOLDER}",
+        "- pending user intent: 사용자 결정을 기다린다",
+    ).replace(
+        "- 회귀/incident: <PM 손 — 회귀 \"N passed / 상태\" 1줄(green 도 — baseline) + "
+        "비-자명 incident. (회귀는 1줄 load-bearing 이라 항상 적음 — board/git/log 대량 "
+        "재열거만 금지.)>",
+        "- 회귀/incident: 123 passed / green",
+    )
+    handoff._log_file.write_text(authored, encoding="utf-8")
+
+    assert _run_slot_handoff(handoff, 7) == 0
+    refreshed = handoff._log_file.read_text(encoding="utf-8")
+    assert "- 메타 학습: 사람이 채운 비가역 서술" in refreshed
+    assert "- pending user intent: 사용자 결정을 기다린다" in refreshed
+    assert "- 회귀/incident: 123 passed / green" in refreshed
+    # 기계 소유 구획을 sentinel로 치환하면 entry의 나머지 bytes가 동일하다.
+    assert hf._SESSION_ENTRIES_BLOCK_RE.sub("<MACHINE>", refreshed) == (
+        hf._SESSION_ENTRIES_BLOCK_RE.sub("<MACHINE>", authored)
+    )
+
+
+def test_same_session_dry_run_previews_update_without_writes(hf, tmp_path, capsys):
+    """dry-run도 같은 차수 갱신 모드를 미리 보이되 log/state를 쓰지 않는다."""
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    assert _run_slot_handoff(handoff, 7) == 0
+    log_before = handoff._log_file.read_bytes()
+    state_before = handoff._pm_state_file.read_bytes()
+    capsys.readouterr()
+
+    assert _run_slot_handoff(handoff, 7, dry_run=True) == 0
+
+    assert handoff._log_file.read_bytes() == log_before
+    assert handoff._pm_state_file.read_bytes() == state_before
+    out = capsys.readouterr().out
+    assert "[모드] 같은 차수(7) 재실행" in out
+    assert "기계 소유 구획 갱신 미리보기" in out
+
+
+def test_log_plan_and_append_share_one_lock_critical_section(hf, tmp_path):
+    """첫 append 판정과 실제 O_APPEND가 같은 shared-lock 구간에 있다(TOCTOU 구조 차단)."""
+    current = tmp_path / "current.md"
+    events = []
+
+    class FakePmLog:
+        locked = False
+
+        @contextmanager
+        def log_write_lock(self, path):
+            assert Path(path) == current
+            assert not self.locked
+            self.locked = True
+            events.append("lock-enter")
+            try:
+                yield
+            finally:
+                events.append("lock-exit")
+                self.locked = False
+
+        def append_log_locked(self, path, text):
+            assert self.locked, "append가 판정 lock 밖으로 빠짐"
+            events.append("append")
+            Path(path).write_bytes(text.encode("utf-8"))
+
+        def _replace_atomic(self, path, text):
+            assert self.locked, "replace가 판정 lock 밖으로 빠짐"
+            events.append("replace")
+            Path(path).write_bytes(text.encode("utf-8"))
+
+    fake = FakePmLog()
+    first = hf._commit_handoff_log_change(
+        current, session_num=7, date="2026-08-07", worktree_slot=None,
+        branch=None, session=None, task=None, pm_log_module=fake,
+    )
+    second = hf._commit_handoff_log_change(
+        current, session_num=7, date="2026-08-07", worktree_slot=None,
+        branch=None, session=None, task=None, pm_log_module=fake,
+    )
+
+    assert first[0] is False and second[0] is True
+    assert events == [
+        "lock-enter", "append", "lock-exit",
+        "lock-enter", "replace", "lock-exit",
+    ]
+    assert current.read_text(encoding="utf-8").count("handoff | PM 7차") == 1
+
+
+def test_concurrent_first_log_commits_cross_barrier_leave_one_entry(hf, tmp_path):
+    """barrier로 동시에 출발한 첫 handoff 둘도 shared lock 재판정으로 entry 하나다."""
+    current = tmp_path / "current.md"
+    pm_log = _load_tool("pm_log")
+    # worker 둘이 동시에 lazy import를 타면 importlib/sys.modules 경합을
+    # log lock 경합으로 오인한다. 실제 임계구역 테스트 전 dependency를 선로드한다.
+    assert pm_log._load_file_lock() is not None
+    barrier = threading.Barrier(2)
+
+    def worker():
+        barrier.wait(timeout=5)
+        return hf._commit_handoff_log_change(
+            current, session_num=7, date="2026-08-07", worktree_slot=None,
+            branch=None, session=None, task=None, pm_log_module=pm_log,
+        )[0]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: worker(), range(2)))
+
+    assert sorted(results) == [False, True]
+    assert current.read_text(encoding="utf-8").count("handoff | PM 7차") == 1
+
+
+def test_same_session_update_preserves_crlf_mixed_pm_body_bytes(hf, tmp_path):
+    """CRLF/mixed log도 machine block 바깥 PM 한글 본문 bytes를 그대로 둔다."""
+    current = tmp_path / "current.md"
+    original = (
+        "## [2026-08-07] handoff | PM 7차 → 다음 PM 세션\r\n"
+        "\r\n"
+        "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\r\n"
+        "- 메타 학습: 사람이 쓴 한글 본문\r\n"
+        "- pending user intent: 혼합 개행은 보존\n"
+        "- 회귀/incident: 123 passed / green\r\n"
+        "\n"
+        "## [2026-08-07] complete | T-0588 — 뒤늦은 완료\r\n"
+    )
+    current.write_bytes(original.encode("utf-8"))
+    before_match = hf._SESSION_ENTRIES_BLOCK_RE.search(original)
+    assert before_match is not None
+    prefix = original[:before_match.start()].encode("utf-8")
+    suffix = original[before_match.end():].encode("utf-8")
+
+    same, _preview, warning = hf._commit_handoff_log_change(
+        current, session_num=7, date="2026-08-07", worktree_slot=None,
+        branch=None, session=None, task=None,
+    )
+
+    updated = current.read_bytes()
+    assert same is True and warning is None
+    assert updated.startswith(prefix) and updated.endswith(suffix)
+    assert "사람이 쓴 한글 본문".encode("utf-8") in updated
+    assert b"\r\n" in updated and b"\n" in updated
+
+
+def test_same_session_update_preserves_pure_crlf_machine_boundary(hf, tmp_path):
+    """순수 CRLF log의 machine block 마지막 구분 개행도 bare LF로 바뀌지 않는다."""
+    current = tmp_path / "current.md"
+    original = (
+        "## [2026-08-07] handoff | PM 7차 → 다음 PM 세션\r\n"
+        "\r\n"
+        "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\r\n"
+        "- 메타 학습: 순수 CRLF 본문\r\n"
+        "- pending user intent: 보존\r\n"
+        "- 회귀/incident: green\r\n"
+        "\r\n"
+        "## [2026-08-07] complete | T-0588 — 뒤늦은 완료\r\n"
+    )
+    current.write_bytes(original.encode("utf-8"))
+
+    same, _preview, warning = hf._commit_handoff_log_change(
+        current, session_num=7, date="2026-08-07", worktree_slot=None,
+        branch=None, session=None, task=None,
+    )
+
+    updated = current.read_bytes()
+    assert same is True and warning is None
+    assert "순수 CRLF 본문".encode("utf-8") in updated
+    assert all(index > 0 and updated[index - 1] == 0x0D
+               for index, byte in enumerate(updated) if byte == 0x0A)
+
+
+def test_task_session_inference_advances_after_bootstrap_but_reruns_when_released(hf):
+    """log N은 bind 상태에서 N+1, handoff intent(pid=0) 상태에서 N 재실행이다."""
+    state = (
+        "# pm_state\n\n"
+        "## 세션 식별 (현재까지 사용된 이름)\n"
+        "  - **1차** stale state\n"
+    )
+    log = (
+        "# log\n\n"
+        "## [2026-08-07] handoff | PM 3차 (task:job1) → 다음 PM 세션\n"
+    )
+    assert hf.infer_next_task_session_num(state, log, "job1") == 4
+    assert hf.infer_next_task_session_num(
+        state, log, "job1", task_released=True
+    ) == 3
+
+
+def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(tmp_path):
+    """실제 adopter CLI: 같은 task handoff 두 프로세스는 1개, 새 bootstrap 뒤엔 N+1."""
+    dest = tmp_path / "task-adopter"
+    env = {**os.environ, "PM_NONINTERACTIVE": "1"}
+
+    def run(tool, *args):
+        return subprocess.run(
+            [sys.executable, str(dest / ".project_manager" / "tools" / tool), *args],
+            cwd=str(dest), env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=300,
+        )
+
+    install = subprocess.run(
+        [
+            sys.executable, str(TOOLS / "pm_import.py"), "--new", str(dest),
+            "--harness", "codex", "--name", "handoff-task-e2e", "--fill", "manual",
+        ],
+        cwd=str(REPO), env=env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=300,
+    )
+    assert install.returncode == 0, install.stdout + install.stderr
+
+    boot1 = run("pm_bootstrap.py", "--task", "mytask", "--json")
+    assert boot1.returncode == 0, boot1.stdout + boot1.stderr
+    first = run("pm_handoff.py", "--task", "mytask", "--no-pytest")
+    second = run("pm_handoff.py", "--task", "mytask", "--no-pytest")
+    assert first.returncode == second.returncode == 0, (
+        first.stdout + first.stderr + second.stdout + second.stderr
+    )
+    assert "[모드] 같은 차수(1) 재실행" in second.stdout
+
+    log_file = dest / ".project_manager" / "wiki" / "log" / "current.md"
+    task_state = (
+        dest / ".project_manager" / ".local" / "tasks" / "mytask" / "pm_state.md"
+    )
+    assert log_file.read_text(encoding="utf-8").count(
+        "handoff | PM 1차 (task:mytask)"
+    ) == 1
+    once_shifted = task_state.read_bytes()
+
+    # 진짜 다음 세션은 bootstrap bind가 pid를 다시 채운 뒤 N+1로 전진한다.
+    boot2 = run("pm_bootstrap.py", "--task", "mytask", "--json")
+    assert boot2.returncode == 0, boot2.stdout + boot2.stderr
+    third = run("pm_handoff.py", "--task", "mytask", "--no-pytest")
+    assert third.returncode == 0, third.stdout + third.stderr
+    final_log = log_file.read_text(encoding="utf-8")
+    assert final_log.count("handoff | PM 1차 (task:mytask)") == 1
+    assert final_log.count("handoff | PM 2차 (task:mytask)") == 1
+    assert task_state.read_bytes() != once_shifted
+
+
+def test_malformed_last_handoff_number_falls_back_to_append_with_loud_warning(
+    hf, tmp_path, capsys
+):
+    """마지막 자기 handoff 차수 파싱 실패는 기존 append 동작과 loud 위험 경고를 유지한다."""
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    handoff._log_file.write_text(
+        "## [2026-08-07] handoff | PM seven차 (project_manager_1) → 다음 PM 세션\n\n"
+        "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\n"
+        "- 메타 학습: 기존 본문\n",
+        encoding="utf-8",
+    )
+
+    assert _run_slot_handoff(handoff, 7) == 0
+
+    log_text = handoff._log_file.read_text(encoding="utf-8")
+    assert "PM seven차 (project_manager_1)" in log_text
+    assert "PM 7차 (project_manager_1)" in log_text
+    err = capsys.readouterr().err
+    assert "마지막 handoff 헤더 차수 파싱 실패" in err
+    assert "이중 부기 가능" in err
+
+
+def test_different_session_number_keeps_append_and_window_behavior(hf, tmp_path):
+    """다른 차수는 기존처럼 새 entry append와 다음 window shift를 수행한다."""
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    assert _run_slot_handoff(handoff, 7) == 0
+    assert _run_slot_handoff(handoff, 8) == 0
+
+    log_text = handoff._log_file.read_text(encoding="utf-8")
+    state_text = handoff._pm_state_file.read_text(encoding="utf-8")
+    assert log_text.count("handoff | PM 7차 (project_manager_1)") == 1
+    assert log_text.count("handoff | PM 8차 (project_manager_1)") == 1
+    assert "**5차**" not in state_text
+    assert all(f"**{num}차**" in state_text for num in (6, 7, 8))
+    assert "이전 차 (PM 1차~5차)" in state_text
 
 
 def test_run_prints_pathspec_commit_guidance(hf, tmp_path, capsys):
@@ -2181,30 +2540,34 @@ def test_snapshot_updates_lease_and_next_phase0_passes(hf, tmp_path):
     assert after.head_relation == wp.HEAD_MATCH
 
 
-# ── 핸드오프 완료 task 정상-종료 pid=0 기록 ("여기 두고 간다"의 task 판·T-0392) ─────────
+# ── task handoff intent pid=0 선행 기록 ("여기 두고 간다"의 task 판·T-0392) ────────────
 #
 # task 장부 pid = dump 후 즉사하는 bootstrap subprocess pid(㉑·T-0353)라, pm_handoff 가 종료를 안
 # 기록하면 정상 인계 후 재개도 dead-pid → bind_task `reclaimed`("재개(회수·이전 세션 crash)" +
-# "⚠️ 회수 진입") 로 상시 오탐한다(PM 78 실측). task 모드 완료 단계에서 pid=0(미점유)으로 비워
-# 차기 부트스트랩이 clean resumed 로 재개하게 한다 — 슬롯 재스냅(T-0388)과 동형 배치·fail-soft·
-# dry_run 예고·slot/솔로 모드(--task 없음)는 무영향.
+# "⚠️ 회수 진입") 로 상시 오탐한다(PM 78 실측). 이제 같은-task 재실행 판정이
+# released 상태에 의존하므로 log 쓰기 전 pid=0(미점유)을 먼저 남긴다. 이 intent 기록은
+# load-bearing·fail-loud이고, dry_run은 예고만, slot/솔로 모드(--task 없음)는 무영향이다.
 
 
 class _TaskPidPool(_SnapPool):
     """_SnapPool + release_task_pid 호출 기록 (T-0392 task pid 배선 검증).
 
-    `omit_task_pid` 면 release_task_pid 속성 미노출(구버전 풀·getattr 가드 fail-soft 모델).
-    `task_pid_none` 면 release_task_pid 가 None(task 장부 부재) 반환(fail-soft loud 모델)."""
+    `omit_task_pid` 면 release_task_pid 속성 미노출(구버전 풀·fail-loud 모델).
+    `task_pid_none` 면 release_task_pid 가 None(task 장부 부재) 반환(fail-loud 모델)."""
 
-    def __init__(self, *, omit_task_pid=False, task_pid_none=False, **kwargs):
+    def __init__(self, *, omit_task_pid=False, task_pid_none=False,
+                 task_pid_error=False, **kwargs):
         super().__init__(**kwargs)
         self.task_pid_calls: list[str] = []
         self._task_pid_none = task_pid_none
+        self._task_pid_error = task_pid_error
         if not omit_task_pid:
             self.release_task_pid = self._do_release_task_pid
 
     def _do_release_task_pid(self, name):
         self.task_pid_calls.append(name)
+        if self._task_pid_error:
+            raise OSError("ledger unavailable")
         if self._task_pid_none:
             return None
         return type("_T", (), {"name": name, "pid": 0})()
@@ -2236,8 +2599,8 @@ def _task_mode_handoff(hf, tmp_path, monkeypatch, pool):
     )
 
 
-def test_run_task_mode_releases_task_pid_after_bookkeeping(hf, tmp_path, monkeypatch, capsys):
-    """task 모드 핸드오프가 부기 완료 후 release_task_pid 를 task 명으로 1회 호출 — 정상-종료 pid=0 기록(T-0392)."""
+def test_run_task_mode_records_task_pid_before_log_bookkeeping(hf, tmp_path, monkeypatch, capsys):
+    """task pid=0 intent는 log보다 먼저 기록돼 이후 중단도 같은 차수로 복구된다."""
     pool = _TaskPidPool()
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
     rc = handoff.run(
@@ -2246,9 +2609,8 @@ def test_run_task_mode_releases_task_pid_after_bookkeeping(hf, tmp_path, monkeyp
     assert rc == 0
     assert pool.task_pid_calls == ["mytask"]
     out = capsys.readouterr().out
-    # 완료 단계(부기 후) 배치 — [3/7] pm_state 부기 뒤.
-    assert out.index("[task] 정상-종료 task pid 기록") > out.index("[3/7]")
-    assert "task 정상-종료 기록: mytask → pid=0" in out
+    assert out.index("[task] handoff intent pid=0 기록") < out.index("[2/7]")
+    assert "task handoff intent 기록: mytask → pid=0" in out
 
 
 def test_run_task_mode_dry_run_previews_task_pid_without_call(hf, tmp_path, monkeypatch, capsys):
@@ -2263,28 +2625,47 @@ def test_run_task_mode_dry_run_previews_task_pid_without_call(hf, tmp_path, monk
     assert "[dry-run] task pid=0(미점유) 기록 예고: mytask" in capsys.readouterr().out
 
 
-def test_run_task_mode_failsoft_when_task_absent(hf, tmp_path, monkeypatch, capsys):
-    """release_task_pid 가 None(task 장부 부재)이면 무해 skip·핸드오프 완주 (fail-soft loud)."""
+def test_run_task_mode_blocks_before_log_when_task_intent_record_absent(
+    hf, tmp_path, monkeypatch, capsys
+):
+    """release_task_pid가 None이면 load-bearing intent 부재로 log write 전 차단한다."""
     pool = _TaskPidPool(task_pid_none=True)
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
     rc = handoff.run(
         session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
     )
-    assert rc == 0                               # fail-soft — 기록 실패가 핸드오프를 막지 않는다.
+    assert rc == 1
     assert pool.task_pid_calls == ["mytask"]
     assert "장부에 없음" in capsys.readouterr().err
+    assert not handoff._log_file.exists()
 
 
-def test_run_task_mode_failsoft_when_pool_lacks_primitive(hf, tmp_path, monkeypatch, capsys):
-    """구버전 풀(release_task_pid 부재)이면 무해 skip·핸드오프 완주 (getattr 가드·fail-soft)."""
+def test_run_task_mode_blocks_before_log_when_pool_lacks_intent_primitive(
+    hf, tmp_path, monkeypatch, capsys
+):
+    """구버전 풀은 멱등성 intent를 못 남기므로 log write 전 차단한다."""
     pool = _TaskPidPool(omit_task_pid=True)
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
     rc = handoff.run(
         session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
     )
-    assert rc == 0
+    assert rc == 1
     assert pool.task_pid_calls == []
     assert "구버전" in capsys.readouterr().err
+    assert not handoff._log_file.exists()
+
+
+def test_run_task_mode_blocks_before_log_when_intent_write_raises(
+    hf, tmp_path, monkeypatch, capsys
+):
+    pool = _TaskPidPool(task_pid_error=True)
+    handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+    )
+    assert rc == 1
+    assert "ledger unavailable" in capsys.readouterr().err
+    assert not handoff._log_file.exists()
 
 
 def test_run_slot_mode_no_task_does_not_release_task_pid(hf, tmp_path):

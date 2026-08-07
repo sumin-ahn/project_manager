@@ -330,7 +330,19 @@ def append_log(path: Path, text: str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with log_write_lock(path):
-        _load_file_lock().append_atomic(path, text)
+        append_log_locked(path, text)
+
+
+def append_log_locked(path: Path, text: str) -> None:
+    """이미 ``log_write_lock(path)``를 보유한 호출자의 O_APPEND primitive.
+
+    read→판정→append 전체를 한 임계구역에 묶어야 하는 소비자용이다. 이 함수 자체는 락을
+    잡지 않는다. 공개 기본 경로는 계속 :func:`append_log`이며, 소비자는 반드시 같은
+    ``log_write_lock`` 문맥 안에서만 이 함수를 호출한다.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _load_file_lock().append_atomic(path, text)
 
 
 def _replace_atomic(path: Path, text: str) -> None:
@@ -339,12 +351,20 @@ def _replace_atomic(path: Path, text: str) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        # newline=""은 입력 문자열의 LF/CRLF/mixed newline bytes를 그대로 인코딩한다.
+        # read-modify-write 소비자가 PM 작성 본문을 byte-preserve할 때 플랫폼 개행 변환으로
+        # 범위 밖 bytes가 흔들리지 않게 한다.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
         os.replace(str(tmp), str(path))
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink()
+
+
+def _read_text_exact(path: Path) -> str:
+    """UTF-8 파일을 universal-newline 변환 없이 읽어 CRLF/mixed bytes를 보존한다."""
+    return Path(path).read_bytes().decode("utf-8")
 
 
 # ── 명령 ───────────────────────────────────────────────────────────────────
@@ -353,7 +373,7 @@ def cmd_tail(args: argparse.Namespace) -> int:
     if not CURRENT_FILE.exists():
         print(f"(current.md 없음: {_rel(CURRENT_FILE)} — migrate 먼저)", file=sys.stderr)
         return 2
-    _preamble, entries = split_entries(CURRENT_FILE.read_text(encoding="utf-8"))
+    _preamble, entries = split_entries(_read_text_exact(CURRENT_FILE))
     if not entries:
         print("(entry 없음)")
         return 0
@@ -389,7 +409,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
             print(f"(current.md 없음: {_rel(CURRENT_FILE)} — migrate 먼저)", file=sys.stderr)
             return 2
 
-        text = CURRENT_FILE.read_text(encoding="utf-8")
+        text = _read_text_exact(CURRENT_FILE)
         preamble, entries = split_entries(text)
 
         if cutoff is not None:
@@ -451,7 +471,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
 
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     if LEGACY_LOG.exists():
-        legacy_text = LEGACY_LOG.read_text(encoding="utf-8")
+        legacy_text = _read_text_exact(LEGACY_LOG)
         sealed = (
             "# Log archive 0000 (legacy — 마이그레이션 이전 단일 log.md)\n\n"
             "> 구조 전환 전의 기존 `log.md` 를 그대로 봉인. 수정 금지. "
