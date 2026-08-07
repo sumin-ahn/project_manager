@@ -17,6 +17,11 @@
   재질문하지 않는다. 일반 sandbox 오호출은 원격 CLI
   재시도·raw 예약·과금 전 fail-loud하고, 거절/실패를 native GPT로 무음
   대체하지 않는다.
+- **PM 홈 상시-red 예시 CI 제거** — claude_code 채택자 템플릿에서
+  `.github/workflows/regression.yml`을 제거하고 세 하네스 manifest 모두 GitHub workflow를
+  비출하한다. 표준 PM 홈에는 제품 테스트가 없어 기존 예시가 push마다 pytest exit 5와 실패 메일을
+  만들었다. 기존 채택자는 자동 삭제 대상이 아니므로 `git rm .github/workflows/regression.yml`로
+  제거한다(프로젝트가 직접 만든 workflow라면 삭제하지 말고 프로젝트 CI로 소유권을 전환).
 
 ### Docs
 - pm-handoff 스킬 §사용 시점 구 계약 잔재 교정 — 컨텍스트 임계·wave 자연 종료를 핸드오프

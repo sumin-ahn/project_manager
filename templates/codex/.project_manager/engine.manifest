@@ -91,7 +91,7 @@
 .project_manager/.gitignore
 .gitattributes
 
-# .github/workflows/regression.yml — 제외: codex 채택자(Windows 등)는 GitHub Actions 없을 수 있음 (opencode 선례)
+# .github/workflows/* — 비출하: PM 홈에는 제품 테스트가 없어 예시 CI가 영구 red가 된다.
 
 # ── PM-workflow 스킬 (canonical 단일 소비·ADR-0065·claude 와 공유하되 codex 네임스페이스로 remap) ──
 # codex 는 `.agents/skills/*/SKILL.md`(project·cwd→root 스캔)를 네이티브 소비($skill 멘션·auto-trigger).

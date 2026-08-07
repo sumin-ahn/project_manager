@@ -120,4 +120,4 @@
 # ── 설정 (엔진) ──────────────────────────────────────────────────
 .project_manager/.gitignore
 .gitattributes
-.github/workflows/regression.yml
+# .github/workflows/* — 비출하: PM 홈에는 제품 테스트가 없어 예시 CI가 영구 red가 된다.

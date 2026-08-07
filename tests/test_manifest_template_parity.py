@@ -40,8 +40,8 @@ CODEX_MANIFEST = REPO / "templates" / "codex" / ".project_manager" / "engine.man
 #   opencode 가 추가: .opencode 어댑터 트리(claude 의 .claude 대응) — agents·lib·plugins·
 #     pm_orch_opencode.py(hook/driver). (`.opencode/command` 은 T-0364/ADR-0065 로 은퇴 — PM-workflow
 #     스킬은 `.claude/skills` 단일 소비로 전환돼 이제 opencode 도 등록·claude 와 공유 경로.)
-#   opencode 가 제외: .claude/agents(opencode 는 .opencode/agents)·ctx 훅·회귀 훅·relay 드라이버 +
-#     regression.yml(claude-scoped CI 워크플로). `.claude/skills` 는 **더 이상 제외 아님** — opencode
+#   opencode 가 제외: .claude/agents(opencode 는 .opencode/agents)·ctx 훅·회귀 훅·relay 드라이버.
+#     regression.yml 은 이제 어느 채택자 템플릿에도 출하하지 않는다. `.claude/skills` 는 **더 이상 제외 아님** — opencode
 #     (≥1.17.x)가 네이티브 스캔하는 canonical 스킬을 claude 와 동일 bare @render 로 공유한다(ADR-0065).
 # NOTE(T-0305 supersedes T-0283): .opencode/lib·.opencode/plugins(ctx-guard core+shim)·pm_orch_opencode.py
 #   는 T-0283 당시 `@target-owned` 등재=self-update skip(전파 0)이라 미등재였으나, T-0303 `@source`
@@ -60,7 +60,7 @@ OPENCODE_ONLY_PATHS = {
     ".opencode/.gitignore",
 }
 CLAUDE_ONLY_PATHS = {
-    ".claude/agents", ".github/workflows/regression.yml",
+    ".claude/agents",
     ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
     ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",
@@ -190,7 +190,8 @@ def test_opencode_manifest_diff_is_whitelisted_only():
     """opencode 템플릿 manifest 는 harness-correct 하게 다르되, 차이가 화이트리스트에만 있어야 한다.
 
     claude_code 대비 opencode 의 추가/누락 경로가 의도적 어댑터 비대칭(.opencode/* 추가·
-    .claude/* + regression.yml 제외)에만 있음을 단언. 임의 경로가 새로 들고/빠지면 fail."""
+    .claude/* 제외)에만 있음을 단언. workflow는 어느 템플릿도 출하하지 않는다. 임의 경로가
+    새로 들고/빠지면 fail."""
     cc = _manifest_path_set(CC_MANIFEST)
     oc = _manifest_path_set(OC_MANIFEST)
     added = oc - cc        # opencode 가 추가한 경로

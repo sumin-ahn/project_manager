@@ -144,4 +144,4 @@
 # ── 설정 (엔진) ──────────────────────────────────────────────────
 .project_manager/.gitignore
 .gitattributes
-.github/workflows/regression.yml
+# 공개 제품 루트의 .github/workflows/regression.yml 은 제품 CI 이며 adopter PM 홈에는 출하하지 않는다.

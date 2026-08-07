@@ -493,10 +493,10 @@ def test_sensitivity_uncommitted_detection_is_load_bearing(hf):
 
 ENGINE_MANIFEST = REPO / ".project_manager" / "engine.manifest"
 
-# PM 36 실측 미커버 6경로 — 글롭 추가 전엔 어떤 SHIPPING_GLOB 에도 안 잡혔다.
+# PM 36 실측 미커버 경로 — 글롭 추가 전엔 어떤 SHIPPING_GLOB 에도 안 잡혔다.
+# regression.yml 은 T-0589에서 adopter manifest 비출하로 전환되어 이 manifest-gap 집합에서 빠졌다.
 _MANIFEST_GAP_PATHS = (
     ".gitattributes",
-    ".github/workflows/regression.yml",
     ".project_manager/.gitignore",
     ".project_manager/wiki/pm_state.template.md",
     ".project_manager/wiki/raw/spikes/_template.md",
@@ -529,8 +529,8 @@ def _expand_manifest_shipping_paths(
     return paths
 
 
-def test_six_manifest_gap_paths_now_shipping(hf):
-    """PM 36 실측 미커버 6경로가 이제 `_path_is_shipping` True (갭 6개 닫힘·T-0154)."""
+def test_manifest_gap_paths_now_shipping(hf):
+    """현재 manifest gap 경로가 모두 `_path_is_shipping` True다(T-0154·T-0589)."""
     for path in _MANIFEST_GAP_PATHS:
         assert hf._path_is_shipping(path), f"manifest 출하 경로가 SHIPPING_GLOBS 미커버: {path}"
 

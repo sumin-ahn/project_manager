@@ -306,20 +306,29 @@ def test_opencode_manifest_excludes_claude_adapter(pm_update):
     )
 
 
-def test_opencode_manifest_excludes_github_workflows(pm_update):
-    """opencode manifest 가 .github/workflows/ 항목을 포함하지 않는다.
+def test_templates_do_not_ship_github_workflows(pm_update):
+    """모든 채택자 템플릿은 제품 repo 소유인 GitHub workflow를 출하하지 않는다.
 
-    opencode 채택자(Windows 환경 등)는 GitHub Actions 가 없을 수 있으므로
-    regression.yml 같은 CI 설정은 opencode 타깃 manifest 에서 제외한다.
+    PM 홈에는 제품 테스트가 없으므로 예시 regression workflow는 pytest exit 5 상시 red를 만든다.
+    manifest 비등재와 템플릿 실파일 부재를 함께 잠가, 둘 중 한쪽만 되살아나는 재유입도 막는다.
     """
-    opencode_manifest = (
-        REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
-    )
-    entries = pm_update.read_manifest(opencode_manifest)
-    gh_entries = [e for e in entries if e.startswith(".github/")]
-    assert gh_entries == [], (
-        f".github/ 항목이 opencode manifest 에 있으면 안 됨: {gh_entries}"
-    )
+    for template_root in sorted((REPO / "templates").iterdir()):
+        if not template_root.is_dir():
+            continue
+        manifest = template_root / ".project_manager" / "engine.manifest"
+        entries = pm_update.read_manifest(manifest)
+        gh_entries = [str(e) for e in entries if str(e).startswith(".github/")]
+        assert gh_entries == [], (
+            f"{template_root.name} manifest가 .github/ 항목을 출하함: {gh_entries}"
+        )
+        workflows = template_root / ".github" / "workflows"
+        shipped_workflows = (
+            [path for path in workflows.rglob("*") if path.is_file()]
+            if workflows.exists() else []
+        )
+        assert shipped_workflows == [], (
+            f"{template_root.name} 템플릿이 workflow 파일을 출하함: {shipped_workflows}"
+        )
 
 
 def test_opencode_manifest_includes_engine_tools(pm_update):
