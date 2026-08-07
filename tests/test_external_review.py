@@ -633,9 +633,14 @@ def test_fifth_round_refused_before_reviewer(external, monkeypatch, tmp_path, ca
     entry = _ledger(external, tmp_path)[argv[1]]
     assert (entry["count"], entry["acked_through"]) == (4, 0)
     err = capsys.readouterr().err
-    assert "라운드 상한 초과" in err
-    assert "사용자" in err and "대기" in err  # 보고·대기 안내
+    assert "라운드 상한 도달" in err
+    # 상한의 성격은 무한 루프 차단이지 비용 재승인 요구가 아니다 — 안내는 조회면 확인 뒤 PM 자율
+    # 재개를 지시하고, 사람 호출은 수렴 실패 때로 한정한다.
+    assert "--rounds-report" in err           # 먼저 볼 조회면
     assert "--ack-rounds" in err              # 재개 경로
+    assert "자율" in err                       # PM 자율 재개 (사용자 비용 승인 대기 아님)
+    assert "수렴" in err                       # 사람 호출 조건 = 수렴 실패
+    assert "대기" not in err                   # '사용자 승인 대기' 규율은 삭제됐다
 
 
 # ── --ack-rounds 승인 재개 + 재차단 (DoD·멱등·장부 정합) ─────────────────────
@@ -1488,7 +1493,7 @@ def test_ack_wave_does_not_open_the_gate_round_limit(
     capsys.readouterr()
 
     assert external.main(argv + ["--ack-wave"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert "라운드 상한 초과" in capsys.readouterr().err
+    assert "라운드 상한 도달" in capsys.readouterr().err
     assert calls["n"] == 4
 
 
@@ -1557,7 +1562,7 @@ def test_wave_approval_survives_a_round_limit_refusal(
     argv = ["--gate", "T-0330", "--paths", "x.py"]
     assert external.main(argv + ["--ack-wave"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
     err = capsys.readouterr().err
-    assert "라운드 상한 초과" in err
+    assert "라운드 상한 도달" in err
     assert calls["n"] == 2
     assert _wave(external, tmp_path)["spent"] == 0        # 리셋은 남았다
     assert "wave 예산 승인 재개" not in err                # 거부된 실행은 '재개'라 말하지 않는다

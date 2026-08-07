@@ -251,9 +251,12 @@ def test_reasoning_claude_opencode_measured_sets(pd):
         pd._validate_reasoning("claude", "ultra")
     with pytest.raises(pd.DelegateError, match="허용집합"):
         pd._validate_reasoning("opencode", "bogus")
-    # claude 는 max 지원·codex 는 미지원(드라이버별 집합이 실제로 다름).
+    # 드라이버별 집합이 실제로 다르다 — codex/claude 는 `xhigh`·`max` 를 함께 수용하지만
+    # (T-0590 에서 codex `max` 편입: 추가 리뷰어 기본 프로필 ladder 상단), opencode 는 `xhigh` 가
+    # 없다. 집합이 서로의 사본이 아님을 이 대비로 못박는다.
+    assert pd._validate_reasoning("codex", "max") == "max"
     with pytest.raises(pd.DelegateError, match="허용집합"):
-        pd._validate_reasoning("codex", "max")
+        pd._validate_reasoning("opencode", "xhigh")
 
 
 def test_reasoning_none_omits_flag(pd):
@@ -779,7 +782,8 @@ def test_conf_delegate_timeout_failsoft(pd):
 def test_opencode_argv_has_message_positional(pd):
     """opencode run 은 --file 이 있어도 비어있지 않은 positional message 를 요구(부재 시 rc=1·실측)."""
     argv = pd.build_opencode_argv("m", None, "developer", "/w", "/p")
-    assert argv[:3] == ["opencode", "run", pd._OPENCODE_ATTACHED_MSG]
+    # 고정 message 선언은 공용 드라이버 계약(pm_relay)이 소유한다 — 위임 wrapper 는 그 값을 쓴다.
+    assert argv[:3] == ["opencode", "run", pd._load_relay().OPENCODE_ATTACHED_MSG]
     assert argv[2].strip()  # 비어있지 않음
 
 

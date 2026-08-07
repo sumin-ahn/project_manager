@@ -222,20 +222,27 @@ def test_pm_delegate_backbone_shipped_and_loadable():
     """backbone pm_delegate.py 가 canonical 에 존재·로드 가능하고 위임 API 를 노출 — setup-rot pin."""
     pd = _load_pd()
     for attr in ("main", "resolve_delegate", "build_codex_argv", "build_claude_argv",
-                 "build_opencode_argv", "_REASONING_ALLOWED"):
+                 "build_opencode_argv", "_validate_reasoning"):
         assert hasattr(pd, attr), f"pm_delegate.py 에 {attr} 부재 — API rot."
 
 
 def test_reasoning_allowed_measured_sets_pinned():
-    """`_REASONING_ALLOWED` 가 T-0449 라이브 실측 집합을 보유 — 빈 집합 회귀/실측값 소실을 red 로 잡는다.
+    """reasoning 허용집합이 라이브 실측값을 보유 — 빈 집합 회귀/실측값 소실을 red 로 잡는다.
 
     claude `--effort`=low/medium/high/xhigh/max(CLI-authoritative)·opencode `--variant`=minimal/low/
-    medium/high/max(문서 ladder·passthrough typo-guard)·codex=low/medium/high/xhigh(0.145.0). 실측 전
-    빈 집합으로 되돌아가면(silent-무시 재발) 여기서 red."""
+    medium/high/max(문서 ladder·passthrough typo-guard)·codex `-c model_reasoning_effort`=low/medium/
+    high/xhigh/max(0.145.0 xhigh 실측 + T-0590 max 편입). 실측 전 '미확정 빈 집합'으로 되돌아가면
+    (silent-무시 재발) 여기서 red.
+
+    테이블 소유자는 위임/추가 리뷰어 공용 계약 모듈 `pm_relay` 다(T-0590) — 위임은 그 검증을 부르는
+    wrapper 이므로 실효 판정을 `_validate_reasoning` 으로도 함께 못박는다."""
     pd = _load_pd()
-    assert pd._REASONING_ALLOWED["codex"] == frozenset({"low", "medium", "high", "xhigh"})
-    assert pd._REASONING_ALLOWED["claude"] == frozenset({"low", "medium", "high", "xhigh", "max"})
-    assert pd._REASONING_ALLOWED["opencode"] == frozenset({"minimal", "low", "medium", "high", "max"})
+    allowed = pd._load_relay().REASONING_ALLOWED
+    assert allowed["codex"] == frozenset({"low", "medium", "high", "xhigh", "max"})
+    assert allowed["claude"] == frozenset({"low", "medium", "high", "xhigh", "max"})
+    assert allowed["opencode"] == frozenset({"minimal", "low", "medium", "high", "max"})
+    assert pd._validate_reasoning("codex", "max") == "max"
+    assert pd._validate_reasoning("opencode", "minimal") == "minimal"
 
 
 def test_marker_absent_from_prompt_present_in_readme(tmp_path):

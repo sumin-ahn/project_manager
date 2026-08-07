@@ -711,20 +711,32 @@ def test_cleanup_failure_is_loud(external, tmp_path, monkeypatch, capsys):
     assert "정리 실패" in err and str(workspace.root) in err
 
 
-def test_round_limit_rejection_still_removes_the_workspace(external, monkeypatch, tmp_path):
-    """생성 이후 **모든 경로**가 정리를 지난다 — 조기 return(라운드 상한 거부)도 포함."""
+def _blocked_gate_repo(external, monkeypatch, tmp_path) -> Path:
+    """라운드 상한이 이미 닫힌 실 저장소 형상 (거부가 확정된 실행의 입력)."""
     repo = _standalone_adopter(tmp_path)
     monkeypatch.setattr(external, "REPO", repo)
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
         "external_review_enabled": "true", "external_review_round_limit": "0"})
-    created: dict[str, Path] = {}
+    return repo
+
+
+def test_round_limit_rejection_never_enters_the_isolation_seam(
+        external, monkeypatch, tmp_path):
+    """상한에 닿은 실행은 거울을 **만들지도 않는다** — 만들었다 지우는 건 부작용 0 이 아니다.
+
+    "남은 게 없다"와 "격리 seam 에 들어간 적 없다"는 다른 진술이다: 거울 생성은 tracked 파일과 홈
+    인증/설정을 실제로 복제하는 작업이고, 정리 실패는 loud 경고로 남을 뿐 되돌려지지 않는다
+    (`test_cleanup_failure_is_loud`). 전송도 못 할 실행이 그 왕복을 하지 않게 예산 게이트가 격리
+    **앞**에 선다."""
+    repo = _blocked_gate_repo(external, monkeypatch, tmp_path)
+    created: list[Path] = []
     real_create = external.create_reviewer_workspace
 
     def _record(*args, **kwargs):
         workspace = real_create(*args, **kwargs)
-        created["root"] = workspace.root
+        created.append(workspace.root)
         return workspace
 
     monkeypatch.setattr(external, "create_reviewer_workspace", _record)
@@ -738,6 +750,34 @@ def test_round_limit_rejection_still_removes_the_workspace(external, monkeypatch
     rc = external.main(["--gate", "T-9999", "--paths", str(repo / "src"),
                         "--output-dir", str(tmp_path / "raw")])
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED and calls["n"] == 0
+    assert created == []                                   # 격리 seam 진입 0
+
+
+def test_workspace_is_removed_when_the_review_raises(external, monkeypatch, tmp_path):
+    """생성 이후 **모든 경로**가 정리를 지난다 — 예외로 빠져나가는 경로 포함."""
+    repo = _standalone_adopter(tmp_path)
+    monkeypatch.setattr(external, "REPO", repo)
+    monkeypatch.setattr(external, "extract_diff",
+                        lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
+    monkeypatch.setattr(external, "local_config", lambda repo=None: {
+        "external_review_enabled": "true"})
+    created: dict[str, Path] = {}
+    real_create = external.create_reviewer_workspace
+
+    def _record(*args, **kwargs):
+        workspace = real_create(*args, **kwargs)
+        created["root"] = workspace.root
+        return workspace
+
+    monkeypatch.setattr(external, "create_reviewer_workspace", _record)
+
+    def _boom(**kwargs):
+        raise RuntimeError("리뷰 도중 예외")
+
+    monkeypatch.setattr(external, "run_review", _boom)
+    with pytest.raises(RuntimeError):
+        external.main(["--gate", "T-9999", "--paths", str(repo / "src"),
+                       "--output-dir", str(tmp_path / "raw")])
     assert created and not created["root"].exists()
 
 

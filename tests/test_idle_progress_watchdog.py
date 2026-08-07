@@ -207,17 +207,24 @@ _HARNESS_NAMES = frozenset({"codex", "claude", "opencode"})
 # 진행신호 함수는 하나도 면제하지 않는다. 값은 리뷰 가능한 근거이며 빈 근거는 아래 가드가 red 낸다
 # (T-0493 EXEMPT_FROM_STAMP와 같은 "면제에는 사유" 형식).
 _HARNESS_LITERAL_EXEMPTIONS = {
-    ("pm_delegate", "build_codex_argv"):
+    # argv 조립·wire 파서 선택은 위임/추가 리뷰어 공용 계약이라 pm_relay 가 소유한다(T-0590).
+    # pm_delegate 의 같은 이름 함수는 이제 리터럴 없는 wrapper 라 스캔에 걸리지 않는다.
+    ("pm_relay", "build_codex_argv"):
         "codex 실행 파일 토큰을 만드는 전용 argv 빌더",
-    ("pm_delegate", "build_claude_argv"):
+    ("pm_relay", "build_claude_argv"):
         "claude 실행 파일 토큰을 만드는 전용 argv 빌더",
-    ("pm_delegate", "build_opencode_argv"):
+    ("pm_relay", "build_opencode_argv"):
         "opencode 실행 파일 토큰을 만드는 전용 argv 빌더",
-    ("pm_delegate", "extract_reply"):
+    ("pm_relay", "extract_harness_reply"):
         "하네스별 wire format 파서를 고르는 reply 디코더",
     ("pm_delegate", "_build_target_argv"):
         "세 전용 argv 빌더 중 하나를 고르는 전달 어댑터",
     ("pm_delegate", "_prepare_attempt_transport"):
+        "opencode만 요구하는 prompt-file wire transport 전용 어댑터(timeout 비소유)",
+    ("external_review", "_structured_reviewer_argv"):
+        "추가 리뷰어 쪽에서 세 전용 argv 빌더 중 하나를 고르는 전달 어댑터"
+        "(pm_delegate._build_target_argv 와 같은 역할·timeout 비소유)",
+    ("external_review", "_structured_transport"):
         "opencode만 요구하는 prompt-file wire transport 전용 어댑터(timeout 비소유)",
     ("pm_delegate", "_dry_run_harness_annotations"):
         "dry-run 표시 문구만 만드는 표현 어댑터(timeout 비소유)",
@@ -1148,15 +1155,17 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
             "external_review",
             "run_review",
             "ok, output, started = _run_reviewer_ex(\n"
-            "        prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics,\n"
-            "        cwd=cwd, env=env,\n"
-            "    )",
+            "                prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics,\n"
+            "                cwd=cwd, env=env, argv=argv, stdin_text=stdin_text,\n"
+            "                on_spawn_attempt=_spawn_attempt,\n"
+            "            )",
             'ok, output, started = _run_reviewer_ex(\n'
-            '        prompt, reviewer_cmd, timeout, run_fn,\n'
-            '        None if reviewer_name(reviewer_cmd) == "claude" else idle_timeout,\n'
-            '        metrics,\n'
-            '        cwd=cwd, env=env,\n'
-            '    )',
+            '                prompt, reviewer_cmd, timeout, run_fn,\n'
+            '                None if reviewer_name(reviewer_cmd) == "claude" else idle_timeout,\n'
+            '                metrics,\n'
+            '                cwd=cwd, env=env, argv=argv, stdin_text=stdin_text,\n'
+            '                on_spawn_attempt=_spawn_attempt,\n'
+            '            )',
         ),
         # S(b): 값이 아니라 signal on/off를 쥔 판정 함수 선두에서 특정 CLI만 NONE으로 강등.
         (

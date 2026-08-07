@@ -305,59 +305,20 @@ ACK_FALLBACK_SUPPRESSION_REASON = (
 # Codex sandbox 의 egress 차단 마커와 감사 라벨. 자식 CLI(claude -p·opencode run)는 부모 Codex
 # sandbox 의 네트워크 차단을 그대로 상속하므로, 이 마커가 참인 환경의 실위임은 스폰 전에 끊는다.
 # 라벨은 stderr/stdout 실행 provenance 와 raw 감사 헤더가 같은 값을 쓴다.
+# **판정/문구의 단일 소유자는 `pm_relay`**(추가 리뷰어 표면과 공유) — 여기 리터럴은 시그니처
+# 기본값으로 쓰려고 남긴 사본이고, relay 선언과의 드리프트는 회귀 테스트가 막는다.
 CODEX_EGRESS_MARKER_ENV = "CODEX_SANDBOX_NETWORK_DISABLED"
 CODEX_EGRESS_NOT_REQUIRED = "not-required"
 CODEX_EGRESS_ESCALATED_ATTESTED = "escalated-attested"
-_CODEX_EGRESS_MARKER_TRUE = frozenset({"1", "true", "yes", "on"})
 # 사람 검토용 stderr/dry-run 목록은 이 수까지만 표시한다. 승인 뒤 raw 감사에는 중복 제거된 전 hit를
 # 한 줄씩 모두 남겨, 대량 탐지가 터미널과 단일 메타 헤더를 비대하게 만들지 않으면서도 감사 완결성을
 # 보존한다.
 SECRET_SCAN_HIT_DISPLAY_LIMIT = 20
 
-# reasoning 드라이버별 허용집합 — (codex-cli 0.145.0·claude 2.1.218·
-# opencode 1.18.4). 허용집합 밖 `.reasoning` 지정은 fail-loud(조용한 무시/강등 금지):
-#   · codex(`-c model_reasoning_effort`): low/medium/high/xhigh — 0.145.0 xhigh 실측 수용(exec 앞/뒤
-#     위치 무관 rc=0).
-#   · claude(`--effort`): low/medium/high/xhigh/max — claude CLI 가 미지원값에 "Valid values: low,
-#     medium, high, xhigh, max" 경고를 뱉어 **CLI-authoritative 실측**.
-#   · opencode(`--variant`): minimal/low/medium/high/max — opencode 는 `--variant` 를 **CLI 검증하지
-#     않고 provider 로 passthrough**(valid/invalid 모두 rc=0·미지원값은 provider 가 silent-ignore·
-#     reasoning:0). 그래서 이 집합은 opencode 의 문서화 ladder(help: "e.g. high, max,
-#     minimal")를 pm_delegate 의 **typo-guard** 로 인코딩한 것 — silent no-op을 전송 전에 차단한다.
-#     provider 별 실지원은 다를 수 있다(passthrough 특성).
-_REASONING_ALLOWED: dict[str, frozenset[str]] = {
-    "codex": frozenset({"low", "medium", "high", "xhigh"}),
-    "claude": frozenset({"low", "medium", "high", "xhigh", "max"}),      
-    "opencode": frozenset({"minimal", "low", "medium", "high", "max"}),  
-}
-
-# reasoning 드라이버별 argv 플래그 — 매핑만 보유(값 검증은 _REASONING_ALLOWED).
-#   codex `-c model_reasoning_effort=<r>` · claude `--effort <r>` · opencode `--variant <r>`.
-
-# codex sandbox 모드 — write=workspace-write·read=read-only.
-# **실측(0.145.0)**:
-#   · read-only 는 worktree 밖 `/tmp` 쓰기까지 **차단**("Read-only file system") → pytest 는 tmp 캡처
-#     파일을 못 만들어 **아예 시작 불가**("No usable temporary directory found"). 즉 **codex 의
-#     code-reviewer(read axis→read-only)는 read-only 로는 pytest 를 못 돌린다** —
-#     테스트 실행이 필요한 리뷰는 workspace-write 상향이 필요(보장 수준=기계적→규율 하향). 이 매핑
-#     조정은 보류(researcher=순수읽기는 read-only 로 정상).
-#   · `-a never` 하 `git push` 는 **hang/승인-refusal 없이 즉시 실행**되어 git 레벨에서 실패한다
-#     (도달 불가 원격→rc=128·refspec 불일치→rc=1). 승인 deadlock은 없음 — 그래서 push
-#     방어선은 sandbox/approval 이 아니라 **role prompt(위임 역할은 push 안 함)**다.
-_CODEX_SANDBOX = {"write": "workspace-write", "read": "read-only"}
-# opencode 권한 agent — write=build·read=plan.
-_OPENCODE_AGENT = {"write": "build", "read": "plan"}
-# opencode `run` 은 첨부 `--file` 이 있어도 **비어있지 않은 positional message 를 요구**한다(실측·codex
-# must-fix — message 부재 시 rc=1). 실 지시는 `--file` 프롬프트에 있으므로 고정 안내 message 를 positional
-# 로 준다(프롬프트 파일을 가리키는 얇은 지시).
-_OPENCODE_ATTACHED_MSG = "첨부된 프롬프트 파일(--file)의 지시를 그대로 수행하라."
-
-# claude 가용 도구셋 — `--tools`(가용성 제한, `--allowedTools` 아님). 역할축:
-#   write(developer/architect) = 편집 도구 포함 · researcher = 순수읽기(Bash 제외·기계적) ·
-#   code-reviewer = 읽기+Bash(pytest·Write/Edit 제외·규율 수준). 콤마-구분 단일 인자로 전달.
-_CLAUDE_TOOLS_WRITE = "Read,Glob,Grep,Bash,Write,Edit"
-_CLAUDE_TOOLS_RESEARCHER = "Read,Glob,Grep"
-_CLAUDE_TOOLS_REVIEWER = "Read,Glob,Grep,Bash"
+# 드라이버 계약 테이블(reasoning 허용집합·codex sandbox 모드·opencode agent·claude `--tools`·
+# opencode 첨부 message)은 **pm_relay 가 단일 소유**한다 — 같은 세 CLI 를 추가 리뷰어 표면도
+# 스폰하므로 값이 두 군데면 규칙이 둘이 된다. 실측 근거 주석도 그 선언부에 있다. 이 모듈의
+# `_validate_*`/`build_*_argv` 는 그 계약을 부르는 얇은 wrapper 다.
 
 # subprocess env allowlist — PM 세션 환경을 통째 상속시키지 않고 최소 키만 전달(타 크리덴셜
 # 미상속). base + LC_* 접두 + 하네스별 인증 키. 가능하게 상수로 둔다.
@@ -615,28 +576,23 @@ def _is_enabled(conf: dict[str, str]) -> bool:
 # ── config 해소 (원자 tuple) ────────────────────────────────────────────
 
 def _validate_harness(harness: str) -> str:
-    if harness not in HARNESS_CHOICES:
-        raise DelegateError(
-            f"미지원 harness {harness!r} — 지원: {', '.join(HARNESS_CHOICES)}. "
-            "조용한 폴백 금지(명시 등록 요구)."
-        )
-    return harness
+    """공용 드라이버 계약(pm_relay) 검증의 얇은 wrapper — 예외만 이 표면 타입으로 옮긴다."""
+    relay = _load_relay()
+    try:
+        return relay.validate_harness(harness)
+    except relay.HarnessContractError as exc:
+        raise DelegateError(str(exc)) from exc
 
 
 def _validate_reasoning(harness: str, reasoning: str | None) -> str | None:
-    """reasoning 값을 드라이버별 허용집합으로 검증. 미지정=None(플래그 생략). 허용집합 밖이거나
-    capability 미확정이면 fail-loud — 조용한 무시/자동 강등 금지."""
-    if reasoning is None or not reasoning.strip():
-        return None
-    reasoning = reasoning.strip()
-    allowed = _REASONING_ALLOWED.get(harness, frozenset())
-    if reasoning not in allowed:
-        known = ", ".join(sorted(allowed)) if allowed else "(미확정 라이브 실측 전)"
-        raise DelegateError(
-            f"reasoning {reasoning!r} 은 {harness} 드라이버 허용집합 {known} 밖 — "
-            "조용한 무시/강등 금지·명시 설정을 요구한다."
-        )
-    return reasoning
+    """reasoning 값을 드라이버별 허용집합으로 검증(공용 계약 wrapper). 미지정=None(플래그 생략).
+
+    허용집합 밖이거나 capability 미확정이면 fail-loud — 조용한 무시/자동 강등 금지."""
+    relay = _load_relay()
+    try:
+        return relay.validate_reasoning(harness, reasoning)
+    except relay.HarnessContractError as exc:
+        raise DelegateError(str(exc)) from exc
 
 
 def resolve_delegate(
@@ -711,7 +667,9 @@ def resolve_fallback(
     return harness, model, reasoning
 
 
-# ── 3 드라이버 argv 빌더 (pm_import._build_runner_argv 확장형) ─────────────────
+# ── 3 드라이버 argv 빌더 (pm_relay 공용 계약의 얇은 wrapper) ──────────────────
+# 조립 규칙과 실측 근거는 `pm_relay` 가 소유한다(추가 리뷰어 표면도 같은 빌더를 쓴다). 여기 함수는
+# 기존 공개 시그니처를 보존하는 호환 seam 이다.
 
 def _perm_axis(role: str) -> str:
     """역할 → 권한축('write' | 'read')."""
@@ -719,64 +677,25 @@ def _perm_axis(role: str) -> str:
 
 
 def _claude_tools(role: str) -> str:
-    if role in WRITE_ROLES:
-        return _CLAUDE_TOOLS_WRITE
-    if role == "researcher":
-        return _CLAUDE_TOOLS_RESEARCHER
-    return _CLAUDE_TOOLS_REVIEWER  # code-reviewer — 읽기 + Bash(pytest)
+    return _load_relay().claude_tools(role)
 
 
 def build_codex_argv(model: str, reasoning: str | None, role: str, cwd: str) -> list[str]:
-    """codex argv. `-a never -s <mode>` 는 exec **앞** 전역 옵션(exec 뒤는 rc=2).
-
-    프롬프트는 stdin 주입(external_review 동형·argv positional 아님). cwd 는 `-C` 로 핀."""
-    mode = _CODEX_SANDBOX[_perm_axis(role)]
-    argv = ["codex", "-a", "never", "-s", mode, "exec", "--json", "--skip-git-repo-check"]
-    argv += ["-C", str(cwd)]
-    if model:
-        argv += ["-m", model]
-    if reasoning:
-        # `-c model_reasoning_effort=<r>` 는 `-a`/`-s`(exec 뒤=rc=2)와 달리
-        # exec **앞/뒤 모두 rc=0 수용**된다(xhigh 로 전/후 위치 각 1회 실측). 그래서 exec 뒤 이 위치를
-        # 유지한다(옮길 필요 없음). reasoning 미지정 시 무영향.
-        argv += ["-c", f"model_reasoning_effort={reasoning}"]
-    return argv
+    """codex argv(공용 계약 wrapper) — cwd 는 `-C` 로 핀하고 프롬프트는 stdin 주입."""
+    return _load_relay().build_codex_argv(model, reasoning, role, str(cwd))
 
 
 def build_claude_argv(model: str, reasoning: str | None, role: str) -> list[str]:
-    """claude argv. 프롬프트 stdin 주입·cwd 존중(플래그 불요). `--tools` 로 역할별 가용
-    도구 제한, write 역할은 `--permission-mode acceptEdits` 로 무프롬프트 완주.
-
-    **출력 형식 = `stream-json`**: `json` 은 종료 시 단일 덩어리라 진행 신호가 0이고,
-    그러면 claude 축만 무진행 판정을 못 받아 벽시계 false-kill 이 남는다. claude 는 운용 폴백
-    대상이라 load-bearing 이므로 신호 축으로 승격한다. `--verbose` 는 CLI 강제 요구다 — 미동반 시
-    `Error: When using --print, --output-format=stream-json requires --verbose` 로 즉시 rc≠0
-    (claude 2.1.220 바이너리 문자열 실측). 회신 추출은 그대로 pm_relay.parse_stream_json 이며,
-    이 파서는 원래 stream-json 용으로 쓰여 있었다(단일 덩어리도 `type:result` 한 줄이라 양 형식이
-    같은 파서를 통과 — tests/test_idle_progress_watchdog.py 가 두 형식 동치를 단언)."""
-    argv = ["claude", "-p", "--output-format", "stream-json", "--verbose",
-            "--model", model, "--tools", _claude_tools(role)]
-    if reasoning:
-        argv += ["--effort", reasoning]
-    if role in WRITE_ROLES:
-        argv += ["--permission-mode", "acceptEdits"]
-    return argv
+    """claude argv(공용 계약 wrapper) — `--tools` 역할 제한 + stream-json 진행 신호."""
+    return _load_relay().build_claude_argv(model, reasoning, role)
 
 
 def build_opencode_argv(
     model: str, reasoning: str | None, role: str, cwd: str, prompt_file: str,
 ) -> list[str]:
-    """opencode argv. 프롬프트는 `--file`(실존 인터페이스·길이/ps 노출 회피)·cwd 는 `--dir`
-    로 핀(opencode 는 subprocess cwd 무시). `--agent build|plan` 으로 권한 강제."""
-    agent = _OPENCODE_AGENT[_perm_axis(role)]
-    # message positional 필수(비어있으면 rc=1·실측) — `run` 뒤에 고정 안내 message 를 둔다.
-    argv = ["opencode", "run", _OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
-            "--agent", agent, "--format", "json", "--dir", str(cwd)]
-    if model:
-        argv += ["-m", model]
-    if reasoning:
-        argv += ["--variant", reasoning]
-    return argv
+    """opencode argv(공용 계약 wrapper) — `--file` 프롬프트·`--dir` cwd 핀·`--agent` 권한축."""
+    return _load_relay().build_opencode_argv(
+        model, reasoning, role, str(cwd), str(prompt_file))
 
 
 # ── 드라이버 관측 능력 선언 (분기 특례가 아니라 테이블) ────────────────────────────
@@ -2463,24 +2382,15 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
 # ── reply 추출 (pm_relay 3파서 재사용) ────────────────────────────────────
 
 def extract_reply(harness: str, stdout: str) -> str | None:
-    """하네스 stdout 에서 최종 reply 텍스트를 추출한다(pm_relay 파서 재사용).
+    """하네스 stdout 에서 최종 reply 텍스트를 추출한다(공용 추출기 wrapper).
 
-    claude=parse_stream_json(session_id, result, used_tokens) → result ·
-    codex=parse_codex_json → reply ·
-    opencode=parse_opencode_json(session_id, reply, used_tokens) → reply. reply 미추출
-    (파싱 실패·빈 출력)은 None(호출자 fail-loud)."""
+    claude=parse_stream_json → result · codex=parse_codex_json → reply ·
+    opencode=parse_opencode_json → reply. reply 미추출(파싱 실패·빈 출력)은 None(호출자 fail-loud)."""
     relay = _load_relay()
-    lines = stdout.splitlines()
-    if harness == "claude":
-        _sid, result, _usage = relay.parse_stream_json(lines)
-        return result
-    if harness == "codex":
-        _tid, reply, _usage = relay.parse_codex_json(lines)
-        return reply
-    if harness == "opencode":
-        _sid, reply, _usage = relay.parse_opencode_json(lines)
-        return reply
-    raise DelegateError(f"미지원 harness {harness!r} — reply 추출 불가.")
+    try:
+        return relay.extract_harness_reply(harness, stdout)
+    except relay.HarnessContractError as exc:
+        raise DelegateError(str(exc)) from exc
 
 
 # ── 실행 seam (run_fn DI) ──────────────────────────────────────────
@@ -3300,117 +3210,73 @@ def native_advisory(harness: str | None) -> str | None:
 # 샌드박스 안에서 잘못 붙이면 권한 상승 없이 타겟 CLI가 기존처럼 fail-loud 한다).
 
 
+# 아래 wrapper 들은 공용 seam(`pm_relay`)에 표면 인자(진입점 스크립트·지속 동의 키·주어)만 얹는다.
+# Windows 판정은 이 모듈의 `_running_on_windows` 를 그대로 통과시켜(주입 가능) 재사용 승인 prefix 와
+# 재실행 안내가 한 축에서만 결정되게 한다.
+
+_CODEX_EGRESS_SUBJECT = "cross-harness 실위임"
+
+
 def codex_egress_escalation_required(env: dict[str, str] | None = None) -> bool:
     """현재 환경이 cross-harness 실위임에 Codex egress 승격을 요구하나.
 
     마커 부재/false(채택자가 네트워크를 명시 허용한 형상)는 False — 기존 실행을 그대로 보존한다."""
-    env = os.environ if env is None else env
-    value = env.get(CODEX_EGRESS_MARKER_ENV)
-    return value is not None and value.strip().lower() in _CODEX_EGRESS_MARKER_TRUE
+    return _load_relay().codex_egress_escalation_required(env)
 
 
 def codex_egress_label(*, escalation_required: bool, attested: bool) -> str:
     """실행 provenance·raw 감사 헤더가 공유하는 egress 라벨(두 값만)."""
-    return (
-        CODEX_EGRESS_ESCALATED_ATTESTED
-        if (escalation_required and attested)
-        else CODEX_EGRESS_NOT_REQUIRED
-    )
+    return _load_relay().codex_egress_label(
+        escalation_required=escalation_required, attested=attested)
 
 
 def codex_egress_provenance(*, escalation_required: bool, attested: bool,
                             env: dict[str, str] | None = None) -> str:
     """`codex_egress=<라벨>` 1줄 — 실행 후 안전 경계를 재구성하는 감사 입력."""
-    env = os.environ if env is None else env
-    label = codex_egress_label(
-        escalation_required=escalation_required, attested=attested)
-    if label == CODEX_EGRESS_ESCALATED_ATTESTED:
-        marker = env.get(CODEX_EGRESS_MARKER_ENV)
-        note = (f"호출층 attestation(--codex-egress-escalated) 동반 · "
-                f"{CODEX_EGRESS_MARKER_ENV}={marker!r} 은 승격 명령에서도 남는다"
-                "(실측·엔진은 마커를 해제하지 않음)")
-    elif attested:
-        note = (f"{CODEX_EGRESS_MARKER_ENV} 미설정/false — 승격이 필요 없는 환경이라 "
-                "--codex-egress-escalated 는 권한 의미가 없다(감사 기록만)")
-    else:
-        note = f"{CODEX_EGRESS_MARKER_ENV} 미설정/false — Codex sandbox egress 차단 없음"
-    return f"codex_egress={label} · {note}"
+    return _load_relay().codex_egress_provenance(
+        escalation_required=escalation_required, attested=attested, env=env)
 
 
 def _codex_egress_entrypoint() -> tuple[str, str]:
     """Codex 도구 재사용 승인과 복사 재실행이 공유하는 2-token prefix."""
-    return (
-        "py" if _running_on_windows() else "python3",
-        ".project_manager/tools/pm_delegate.py",
-    )
+    relay = _load_relay()
+    return relay.codex_egress_entrypoint(
+        relay.DELEGATE_ENTRYPOINT, windows=_running_on_windows())
 
 
 def _codex_egress_prefix_rule_text() -> str:
-    interpreter, script = _codex_egress_entrypoint()
-    return f'prefix_rule=["{interpreter}", "{script}"]'
+    relay = _load_relay()
+    return relay.codex_egress_prefix_rule_text(
+        relay.DELEGATE_ENTRYPOINT, windows=_running_on_windows())
 
 
 def _codex_egress_retry_command(argv: list[str]) -> str:
     """재사용 승인 prefix와 동일한 진입점 + attestation 재실행 표시."""
-    cleaned = [token for token in argv if token != "--codex-egress-escalated"]
-    # 안내를 복사한 실행이 바로 위 `prefix_rule`을 소비해야 한다. sys.executable·
-    # resolve 절대경로를 쓰면 기능은 같아도 승인 토큰이 달라져 다시 prompt 될 수 있다.
-    interpreter, script = _codex_egress_entrypoint()
-    command = [
-        interpreter,
-        script,
-        *cleaned,
-        "--codex-egress-escalated",
-    ]
-    if not _running_on_windows():
-        return shlex.join(command)
-    # Encoded PowerShell wrapper를 쓰면 도구가 보는 명령 prefix가 `powershell.exe`로
-    # 바뀌어 `py + script` 재사용 승인을 소비하지 못한다. 첫 2 token은 그대로 두고
-    # 나머지만 PowerShell literal로 quote한다.
-    rest = " ".join("'" + token.replace("'", "''") + "'" for token in command[2:])
-    return f"{interpreter} {script}{' ' + rest if rest else ''}"
+    relay = _load_relay()
+    return relay.codex_egress_retry_command(
+        argv, script=relay.DELEGATE_ENTRYPOINT, windows=_running_on_windows())
 
 
 def codex_egress_block_message(argv: list[str], harness: str, model: str) -> str:
     """증명 없는 network-off 실행의 차단 사유 + 실행 가능한 승격 처방."""
-    return (
-        "오류: Codex sandbox 네트워크 차단 환경에서 승격 증명 없는 cross-harness 실위임을 "
-        "중단합니다 — 외부 스폰·raw 예약·과금 전입니다.\n"
-        f"  · 판정 근거: {CODEX_EGRESS_MARKER_ENV}=true · 수신자 {harness}(model={model})\n"
-        "  · 자식 CLI는 부모 Codex sandbox 의 egress 차단을 상속합니다. 지금 실행하면 API 재시도 뒤 "
-        "무진행으로 끝납니다(엔진은 sandbox 를 스스로 벗어나지 않습니다).\n"
-        "  · 미리보기는 이 환경에서 그대로 가능합니다(외부 송신 없음): --dry-run\n"
-        "  · 실 실행은 두 계층을 **함께** 씁니다 — Codex 도구 호출을 "
-        'sandbox_permissions="require_escalated" + 기술적 network justification 으로 올리고, 같은 명령에 '
-        "--codex-egress-escalated 를 동반하세요(플래그는 권한을 만들지 않는 호출층 attestation).\n"
-        f"  · 최초 도구 승인은 {_codex_egress_prefix_rule_text()} "
-        "로 이 진입점만 재사용 승인하세요. Python 전체를 승인하지 마세요.\n"
-        "  · delegate_enabled=true 는 설정된 profile의 외부 전송·통상 과금에 대한 "
-        "지속 동의입니다. 후속 호출마다 비용을 다시 묻지 마세요.\n"
-        f"  · 재실행: {_codex_egress_retry_command(argv)}\n"
-        "  · 전역 sandbox_workspace_write.network_access=true 로 우회하지 마세요 — 일상 명령의 "
-        "egress 차단은 프로젝트 안전 경계로 유지합니다."
+    relay = _load_relay()
+    return relay.codex_egress_block_message(
+        argv, harness, model,
+        script=relay.DELEGATE_ENTRYPOINT,
+        consent_key=DELEGATE_ENABLED_KEY,
+        subject=_CODEX_EGRESS_SUBJECT,
+        windows=_running_on_windows(),
     )
 
 
 def _dry_run_codex_egress_line(*, escalation_required: bool, attested: bool) -> str:
     """dry-run 이 표시하는 승격 필요/불필요 1~2줄(외부 송신·raw·관측 부작용 없음)."""
-    if not escalation_required:
-        return (
-            f"Codex egress: 승격 불필요 ({CODEX_EGRESS_MARKER_ENV} 미설정/false · "
-            f"codex_egress={CODEX_EGRESS_NOT_REQUIRED})"
-        )
-    attestation = (
-        "--codex-egress-escalated 동반됨 — 실 실행은 이 플래그와 함께 도구 승격도 유지하세요."
-        if attested else
-        "실 실행은 --codex-egress-escalated 없이는 스폰 전 rc=1 로 중단됩니다."
-    )
-    return (
-        f"Codex egress: escalation required ({CODEX_EGRESS_MARKER_ENV}=true)\n"
-        '  실행 도구 호출을 sandbox_permissions="require_escalated" + 기술적 network justification 으로 '
-        f"올리고, 같은 명령에 --codex-egress-escalated 를 동반합니다.\n"
-        f"  최초에만 {_codex_egress_prefix_rule_text()} 로 재사용 "
-        f"승인하고, delegate_enabled=true 후속 호출의 비용은 재질문하지 않습니다.\n  {attestation}"
+    relay = _load_relay()
+    return relay.dry_run_codex_egress_line(
+        escalation_required=escalation_required, attested=attested,
+        script=relay.DELEGATE_ENTRYPOINT,
+        consent_key=DELEGATE_ENABLED_KEY,
+        windows=_running_on_windows(),
     )
 
 

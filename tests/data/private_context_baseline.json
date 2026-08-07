@@ -175,7 +175,7 @@
     ".project_manager/tools/external_review.py": [
       {
         "kind": "session_stamp",
-        "hash": "e34f67d59d24394073e8cb105c9d9e8b7fc43e9abedbe273e178eec61fceb0a3",
+        "hash": "061de23892c2d01c86e1bbb76fc45708665c966b9b19c4547d32630a10331903",
         "count": 1
       }
     ],
@@ -755,7 +755,7 @@
     "templates/claude_code/.project_manager/tools/external_review.py": [
       {
         "kind": "session_stamp",
-        "hash": "e34f67d59d24394073e8cb105c9d9e8b7fc43e9abedbe273e178eec61fceb0a3",
+        "hash": "061de23892c2d01c86e1bbb76fc45708665c966b9b19c4547d32630a10331903",
         "count": 1
       }
     ],
@@ -1363,7 +1363,7 @@
     "templates/codex/.project_manager/tools/external_review.py": [
       {
         "kind": "session_stamp",
-        "hash": "e34f67d59d24394073e8cb105c9d9e8b7fc43e9abedbe273e178eec61fceb0a3",
+        "hash": "061de23892c2d01c86e1bbb76fc45708665c966b9b19c4547d32630a10331903",
         "count": 1
       }
     ],
@@ -2143,7 +2143,7 @@
     "templates/opencode/.project_manager/tools/external_review.py": [
       {
         "kind": "session_stamp",
-        "hash": "e34f67d59d24394073e8cb105c9d9e8b7fc43e9abedbe273e178eec61fceb0a3",
+        "hash": "061de23892c2d01c86e1bbb76fc45708665c966b9b19c4547d32630a10331903",
         "count": 1
       }
     ],

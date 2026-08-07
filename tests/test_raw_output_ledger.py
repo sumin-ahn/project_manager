@@ -389,7 +389,8 @@ def test_external_review_kill_leaves_discoverable_unfinished_record_before_runne
 
     unfinished = external._load_relay().unfinished_raw_records(ledger_path)
     assert len(unfinished) == 1
-    assert unfinished[0]["model"] == "gpt-x"
+    assert unfinished[0]["model"] == external.UNPINNED_MODEL_LABEL
+    assert unfinished[0]["command"] == "codex exec --model gpt-x"
     assert Path(unfinished[0]["raw_path"]).is_file()
 
 
@@ -455,8 +456,15 @@ def _stub_reviewer(external, monkeypatch) -> None:
     """외부 프로세스 스폰 없이 run_review 본체(raw 박제·장부 등재)를 그대로 태운다."""
     def _fake_run_reviewer_ex(
         prompt, reviewer_cmd, timeout, run_fn, idle_timeout=None, metrics=None,
-        *, cwd=None, env=None,
+        *, cwd=None, env=None, argv=None, stdin_text=None, on_spawn_attempt=None,
     ):
+        # 이 파일의 형상은 모두 legacy 대상(구조화 키 없음)이라 wire transport 주입이 없어야
+        # 한다 — legacy 실행 형상이 구조화 경로 도입으로 바뀌지 않았음을 여기서도 못박는다.
+        assert argv is None and stdin_text is None
+        # 스폰 시도 seam 은 러너를 대신 서는 이 대역이 소유한다 — 실 경로와 같은 순서로 한 번
+        # 부른다(안 부르면 raw 레코드가 스폰 전 중단으로 닫혀 이 파일의 장부 계약이 갈린다).
+        if on_spawn_attempt is not None:
+            on_spawn_attempt()
         if metrics is not None:
             metrics.clear()
             metrics.update({"rc": 0, "silence_sec": 0.1})

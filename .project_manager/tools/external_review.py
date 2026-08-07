@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""외부 코드리뷰 래퍼 — 외부 리뷰어 어댑터 CLI.
+"""추가 리뷰어 래퍼 — 추가 리뷰어(외부 하네스) 어댑터 CLI.
+
+사람 역할 이름은 **추가 리뷰어(additional reviewer)** 다 — 팀에 한 명 더 붙는 리뷰어다.
+`external` 은 전송/격리/과금 축(코드가 저장소 밖으로 나간다)과 기계 식별자(모듈 이름·
+`external_review_enabled`·raw 파일 접두)에만 남는다.
 
 사용:
     python3 .project_manager/tools/external_review.py [옵션]
@@ -7,7 +11,7 @@
 동작:
   git diff <base> -- <paths> 추출 (시크릿 denylist 경로 자동 제외)
   (프로젝트 맥락 헤더 +) diff 결합 → 표준 프롬프트 생성
-  외부 리뷰어 실행 (reviewer_cmd, stdin 으로 프롬프트 주입, read-only 권장)
+  추가 리뷰어 실행 (additional_reviewer.* 원자 tuple · 읽기 권위 code-reviewer 고정)
   출력에서 판정(통과/반려)·must-fix 파싱
   결과 요약 stdout + 원문 파일 저장 (기본 = **소유 PM 홈**의 `.project_manager/.local/review/`
     + 공유 장부 `raw_outputs.json` · --output-dir 로 격리)
@@ -19,31 +23,36 @@
     단 빈/공백 diff 는 dry-run·비활성 포함 무조건 exit 1 (false-green 원천 차단).
 
 종료 코드/신호:
-  - 리뷰어 실패(인증/한도/네트워크/타임아웃) → exit 1 + stdout 에 FALLBACK_INTERNAL
-    (= 내부 code-reviewer 서브에이전트로 폴백하라는 신호)
+  - 리뷰어 실패(인증/한도/네트워크/타임아웃·구조화 wire 에서 최종 회신 미추출) → exit 1 +
+    stdout 에 FALLBACK_INTERNAL (= 내부 code-reviewer 서브에이전트로 폴백하라는 신호).
+    회신을 못 뽑은 실행은 rc=0 으로 끝났어도 **리뷰를 받지 못한 실행**이라 같은 축으로 내린다 —
+    wire 원문은 원문 파일에 그대로 보존되고 raw 장부는 정상 마감된다.
     중단 판정: 주 = **무진행**(마지막 진행 출력 이후 침묵), 백스톱 = 벽시계. 값은 별도 상수가
-    아니라 **reviewer_cmd 의 하네스 프로필**(pm_relay·위임 채널과 동일 테이블)에서 오고, 배포별
+    아니라 **해소된 추가 리뷰어 대상의 하네스 프로필**(pm_relay·위임 채널과 동일 테이블)에서 오고, 배포별
     조정은 local.conf `harness.<reviewer>.idle_timeout`/`.wall_timeout`(legacy
     `external_review_idle_timeout`/`external_review_timeout` 도 계속 유효)·일회성은
     `--idle-timeout`/`--timeout`. 어느 쪽으로 중단되든 그 시점까지 받은 출력은 원문 파일에
     보존한다(전량 폐기 금지).
   - must-fix 감지 → exit 1
   - 통과 → exit 0
-  - 라운드 상한 초과(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 승인 없이
+  - 라운드 상한 도달(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 ack 없이
     판정 4회(local.conf external_review_round_limit) 또는 미완 2회
-    (external_review_incomplete_round_limit)를 채우면 이후 실행을 기계 차단하고 "사용자 보고·대기"
-    loud 안내를 낸다 — 사용자 승인 후 `--ack-rounds` 로 각 한도만큼 재개.
+    (external_review_incomplete_round_limit)를 채우면 이후 실행을 기계 차단한다. 성격은
+    **무한 루프 차단(anti-loop pause)**이지 비용 재승인 요구가 아니다 — PM 이 `--rounds-report`
+    로 수렴 상황을 확인한 뒤 같은 범위의 정상 수렴이면 `--ack-rounds` 로 자율 재개하고, 사람에게
+    보고하는 건 수렴 실패(같은 지적 반복·범위 재설계)일 때다.
   - wave 예산 소진 → exit 4 (같은 rc·같은 실행 전 거부). 게이트별 상한과 **별개로** wave 단위
     총 라운드 예산(local.conf external_review_wave_budget·기본 24)을 두어 티켓 수 × 라운드 상한
-    으로 비용이 무한 확장되는 구조를 막는다 — 사용자 승인 후 `--ack-wave` 로 예산 리셋 재개.
+    으로 비용이 무한 확장되는 구조를 막는다 — 재개는 같은 규율의 `--ack-wave`(예산 리셋).
 
 설계:
-  - 어댑터 seam: 외부 도구를 `reviewer_cmd`(local.conf) 뒤로 격리 → codex 외 교체 가능.
-    기본 `codex exec --sandbox read-only --skip-git-repo-check` (stdin 으로 프롬프트).
+  - 어댑터 seam: canonical `additional_reviewer.{harness,model,reasoning}` tuple 을 pm_relay 의
+    3-harness 드라이버로 해소한다. tuple 이 전혀 없을 때만 임의 `reviewer_cmd`/기본 command 를
+    legacy `unpinned-model` 경로로 보존한다.
   - 도메인 외부화: 프로젝트 맥락은 `.project_manager/review_context.local.md`(인스턴스 소유)
     가 있으면 주입, 없으면 generic 헤더. 엔진 도구엔 도메인 콘텐츠 0.
   - subprocess DI (run_fn 매개변수) — 테스트에서 mock 주입 가능.
-  - 외부 호출은 코드를 수정하지 않는다 (read-only 인자 사용 권장).
+  - 구조화 외부 호출의 권한은 code-reviewer read 축으로 고정하며 설정으로 쓰기 권한을 올릴 수 없다.
   - 리뷰어 가시 범위 격리: 리뷰어 프로세스는 PM 세션의 cwd/env/홈을 물려받지 않고, 저장소 밖에
     만든 **tracked 파일 거울**(PM 로컬 산출물·전사 부재)과 **세션·이력 없는 임시 홈**(선언된 인증/
     설정 파일만 복제)을 받는다. 판정 본문에 옛 리뷰 raw·세션 전사가 echo 되면 오염 진단을 loud 로
@@ -54,10 +63,11 @@
   - 시크릿 denylist (.env·*secret*·*credential*·*.key·*token*·*.pem 등) 파일은 diff 에서
     자동 제외한다. 제외 사실은 판정에 반영 — --paths 명시 지정분 제외는 차단(exit 1),
     --ticket/기본 암묵 수집분 제외는 종합 판정 라인에 병기. review_denylist_extra 로 추가 가능.
-  - 라운드 상한 기계 차단: 외부 리뷰(과금·전송)가 무한 반복되지 않게 `--gate <T-NNNN>`
+  - 라운드 상한 기계 차단: 추가 리뷰어 호출(과금·전송)이 무한 반복되지 않게 `--gate <T-NNNN>`
     별 라운드 장부(`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 전송을
-    count 하고, 승인 없이 limit(기본 4)회를 넘기면 실행 *전에* 거부(exit 4)한다. PM 자의 판단을
-    기계 판정으로 대체 — 사용자 승인 후 `--ack-rounds` 로만 재개한다([[mechanize-dont-instruct-llm]]).
+    count 하고, ack 없이 limit(기본 4)회를 넘기면 실행 *전에* 거부(exit 4)한다. "몇 라운드나
+    돌았나"라는 PM 자의 집계를 기계 장부로 대체하는 것이고([[mechanize-dont-instruct-llm]]),
+    재개 판단 자체는 조회면(`--rounds-report`) + `--ack-rounds` 로 PM 이 자율로 한다.
   - 라운드별 산출 장부 + wave 예산: 같은 장부에 라운드마다 산출(`rounds` — 판정 rc·must-fix 수)을
     append 하고, 전 게이트 합계 전송을 wave 단위로 센다(`wave` 절). 라운드 수만으로는 "그 라운드가
     실결함을 냈는가"를 기계로 확인할 수 없어 게이트 심도 대비 비용 적정성 판단이 PM 자기보고에
@@ -232,6 +242,28 @@ def _verify_engine_rev(sibling_module, sibling_filename):
 def _is_engine_rev_skew(exc) -> bool:
     """fail-soft 소비 지점에서 rev skew만 재-raise하기 위한 구조화 판정."""
     return getattr(exc, "_engine_rev_skew", False)
+
+
+# 사본 불일치를 **의도적으로 흡수**하는 경계의 등록부 (경계 이름 → 사유). 등록되지 않은 경계는
+# 흡수 자격이 없다 — 기본 규율은 여전히 "marked skew 는 재-raise" 다.
+_ENGINE_REV_SKEW_RECOVERY_REASONS = {
+    "abort_pre_spawn_raw": (
+        "스폰 전 중단의 raw 정리는 **주 예외를 덮지 않는 것**이 계약이다 — 정리 중 사본 불일치로 "
+        "갈아타면 이 실행이 왜 죽었는지가 사라지고 라운드 환불 판정의 근거도 함께 사라진다. "
+        "불일치는 경고 한 줄로 남기고 중단 사유(주 예외)를 그대로 전파한다"
+    ),
+}
+
+
+def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
+    """정리 경계가 marked skew 를 의도적으로 흡수했음을 표시한다 (사유 등록 필수).
+
+    반환값으로 일반 실패와 사본 불일치를 구분해 호출부가 진단 문구를 달리한다 — 흡수는 하되
+    조용하지는 않다."""
+    reason = _ENGINE_REV_SKEW_RECOVERY_REASONS.get(boundary, "").strip()
+    if not reason:
+        raise ValueError(f"등록되지 않았거나 사유가 빈 복구 경계: {boundary!r}")
+    return _is_engine_rev_skew(exc)
 
 
 def _require_engine_sibling(path: Path, filename: str) -> None:
@@ -825,11 +857,11 @@ def _pm_home_reanchor(anchor: Path) -> Path | None:
         return None
     return _canonical_worktree(anchor)
 
-# 외부 리뷰어 기본 명령 (local.conf reviewer_cmd 로 교체 가능)
+# legacy 경로의 기본 명령 (구조화 키 부재 시 · local.conf reviewer_cmd 로 교체 가능·unpinned-model)
 DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 
-# 외부 호출의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **리뷰어 커맨드의 하네스 프로필**이 소유한다
-# (`pm_relay.HARNESS_PROFILES` — 기본 reviewer_cmd 가 `codex exec` 이니 클라우드 축 값). 이 모듈에
+# 외부 호출의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **해소된 대상의 하네스 프로필**이 소유한다
+# (`pm_relay.HARNESS_PROFILES` — legacy 기본 command가 `codex exec`이면 codex 축 값). 이 모듈에
 # 별도 타임아웃 상수를 두지 않는 이유가 이 티켓의 편입 이유와 같다: **값이 두 군데면 규칙이 둘이
 # 된다.** 평범한 diff 153~294초·13파일 대형 227초 — 구 기본 180초는 평상 대역 *안*이라 상시 타임아웃
 # 구조였고, 900 으로 올려도 같은 구조였다(실측: **입력·모델이 완전히 동일한 리뷰 2회 중 하나는
@@ -837,6 +869,13 @@ DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 # 판정 기준을 무진행으로 교체했고, 벽시계는 "감지기 자체가 고장난 경우"의 유한 상한으로 강등된다.
 # 조정: 일회성 `--timeout`/`--idle-timeout` > local.conf `harness.<reviewer>.wall_timeout`/
 # `.idle_timeout` > 아래 표면-flat legacy 키 > 프로필 선언.
+# opt-in 키·raw 파일 접두 같은 **기계 식별자는 external_review 그대로** 유지한다(사람 역할 이름만
+# '추가 리뷰어'로 바뀐다) — 채택자 local.conf·기존 raw 감사물의 안정 계약이다.
+EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
+# Codex egress attestation 플래그 — 판정/문구 단일 소유자는 pm_relay 이고, 여기 리터럴은 argparse
+# 선언용 사본이다(드리프트는 회귀 테스트가 막는다).
+CODEX_EGRESS_FLAG = "--codex-egress-escalated"
+
 EXTERNAL_TIMEOUT_KEY = "external_review_timeout"
 EXTERNAL_IDLE_TIMEOUT_KEY = "external_review_idle_timeout"
 EXTERNAL_PROGRESS_SIGNAL_KEY = "external_review_progress_signal"
@@ -873,8 +912,8 @@ DEFAULT_INCOMPLETE_ROUND_LIMIT = 2
 
 # wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 **별개** 축이다. 게이트 상한만 있으면 비용이
 # 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 전송을 이 예산으로 묶는다. 기본 24 는
-# 게이트 상한 4 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 "반쯤에서 한 번
-# 사용자 확인"이 걸리게 한다. local.conf external_review_wave_budget 로 조정 가능.
+# 게이트 상한 4 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
+# `--rounds-report`로 수렴 상태를 점검하는 관측점을 만든다. local.conf external_review_wave_budget 로 조정 가능.
 DEFAULT_WAVE_BUDGET = 24
 
 # 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분).
@@ -992,8 +1031,8 @@ _OUTPUT_FORMAT_BLOCK = """\
 # 통과(false-green)를 낸다. codex 호출 전에 이 메시지로 fail-loud 한다 (우회 플래그 없음).
 _EMPTY_DIFF_GUIDANCE = (
     "오류: 리뷰할 diff 가 없습니다 (검토 경로에 tracked 변경 없음).\n"
-    "  빈 diff 를 리뷰하면 외부 리뷰어가 '변경 없음'을 통과로 판정해 가짜 통과(false-green)가\n"
-    "  발생합니다 — 외부 리뷰어를 호출하지 않고 중단합니다.\n"
+    "  빈 diff 를 리뷰하면 추가 리뷰어가 '변경 없음'을 통과로 판정해 가짜 통과(false-green)가\n"
+    "  발생합니다 — 추가 리뷰어를 호출하지 않고 중단합니다.\n"
     "  · 첫 provenance의 `diff_root`가 실 변경 worktree인지 확인하고, 필요하면 그 repo를 가리키는\n"
     "    절대 `--paths <경로>`로 다시 실행하세요. 프로세스 cwd는 diff 판정 입력이 아닙니다.\n"
     "  · 신규 파일만 변경했다면 먼저 `git add` 후 재실행하세요 (diff 는 tracked 변경만 봅니다)."
@@ -1017,37 +1056,45 @@ def _empty_diff_guidance(paths: Sequence[str], *, root: Path) -> str:
         + "\n    예: --paths a.py b.py (자동 교정하지 않음 — 콤마가 파일명인 경우를 보존)."
     )
 
-# 라운드 상한 초과 fail-loud 안내. 같은 게이트로
-# 승인 없이 limit 회를 넘겨 실 전송이 시도되면 diff 추출·리뷰어 호출 전에 이 안내로 차단한다
-# (과금·외부 전송 게이트라 초과분은 기계가 멈춘다·자의 우회 불가). 유일한 재개 경로는 사용자
-# 승인 후 `--ack-rounds` — 환경 문제 우회 플래그가 아니다.
+# 라운드 상한 초과 fail-loud 안내. 같은 게이트로 ack 없이 limit 회를 넘겨 실 전송이 시도되면
+# diff 추출·추가 리뷰어 호출 전에 이 안내로 차단한다.
+#
+# 이 상한의 성격은 **무한 루프 차단(anti-loop pause)**이지 비용 재승인 요구가 아니다 —
+# `external_review_enabled=true` 가 이미 설정된 대상의 외부 전송·통상 과금에 대한 지속 동의이므로,
+# 같은 범위가 정상적으로 수렴 중이면 PM 이 `--rounds-report` 로 상태를 확인한 뒤 자율로 재개한다.
+# 사람을 부르는 건 수렴이 **안 되고 있을 때**(같은 지적 반복·범위 재설계 필요)다. 상한 자체는
+# 그대로 기계가 소유한다(자의 우회 불가).
 _ROUND_LIMIT_GUIDANCE = (
-    "오류: 외부 리뷰 라운드 상한 초과 — 게이트 {gate} · "
+    "오류: 추가 리뷰어 라운드 상한 도달 — 게이트 {gate} · "
     "count={unacked}(판정 {verdicts} · 미완 {incomplete})\n"
-    "  (판정 상한 {limit} · 미완 재시도 상한 {incomplete_limit}). 외부 전송·과금 게이트라 "
+    "  (판정 상한 {limit} · 미완 재시도 상한 {incomplete_limit}). 무한 라운드 차단이라 "
     "초과분은 기계가 멈춥니다 — 자의 우회 불가.\n"
     "  · **미완**은 판정이 없던 전송입니다 — 타임아웃·중단뿐 아니라 **오염 진단으로 무효화된 "
     "판정**도 이 축에 들어갑니다(판정 표면과 같은 규칙이라 두 표면이 갈리지 않습니다).\n"
-    "  · 지금까지의 리뷰 라운드 수렴 상황을 **사용자에게 보고하고 대기**하세요.\n"
-    "  · 사용자 승인을 받은 뒤에만 `--ack-rounds` 로 재개하세요 "
+    "  · 먼저 `--rounds-report` 로 라운드별 산출과 수렴 상황을 확인하세요.\n"
+    "  · 같은 범위가 정상 수렴 중이면 PM 이 자율로 `--ack-rounds` 를 붙여 재개합니다 "
     "(판정 +{limit} · 미완 +{incomplete_limit}):\n"
     "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-rounds [기존 옵션]\n"
+    "  · 같은 지적이 반복되거나 범위 재설계가 필요하면 그때 사용자에게 보고하고 판단을 받으세요 "
+    "(비용 재승인이 아니라 **수렴 실패** 보고입니다).\n"
     "  · 상한 조정은 local.conf `external_review_round_limit`(판정)과 "
     "`external_review_incomplete_round_limit`(미완).\n"
     "  (장부: {ledger} · count={count} acked_through={acked})"
 )
 
 # wave 예산 소진 fail-loud 안내. 게이트별 상한을 통과한 전송이라도 wave 합계가 예산을 채우면
-# 같은 자리(리뷰어 호출 전)에서 같은 rc 로 막는다 — 게이트마다 상한을 새로 받는 구조에서는 티켓
-# 수만큼 비용이 늘어나기 때문이다. 재개 경로는 사용자 승인 후 `--ack-wave` 하나뿐이다.
+# 같은 자리(추가 리뷰어 호출 전)에서 같은 rc 로 막는다 — 게이트마다 상한을 새로 받는 구조에서는
+# 티켓 수만큼 라운드가 늘어나기 때문이다. 성격은 라운드 상한과 같은 anti-loop pause 다.
 _WAVE_BUDGET_GUIDANCE = (
-    "오류: wave 예산 소진 — 사용자 승인 후 `--ack-wave` 로 재개(예산 리셋)\n"
+    "오류: wave 예산 소진 — `--ack-wave` 로 재개(예산 리셋)\n"
     "  게이트 {gate} · wave spent={spent} (예산 {budget} · wave 시작 {started})\n"
     "  · 게이트별 라운드 상한과 **별개**인 wave 단위 총 라운드 예산입니다 — 티켓 수 × 라운드 "
-    "상한으로 비용이 확장되는 것을 막습니다.\n"
-    "  · 라운드별 산출을 `--rounds-report` 로 확인해 **사용자에게 보고하고 대기**하세요.\n"
-    "  · 사용자 승인을 받은 뒤에만 `--ack-wave` 로 재개하세요 (spent 를 0 으로 리셋):\n"
+    "상한으로 라운드가 확장되는 것을 막습니다.\n"
+    "  · 먼저 `--rounds-report` 로 라운드별 산출을 확인하세요.\n"
+    "  · 같은 범위가 정상 수렴 중이면 PM 이 자율로 `--ack-wave` 를 붙여 재개합니다 "
+    "(spent 를 0 으로 리셋):\n"
     "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-wave [기존 옵션]\n"
+    "  · 수렴이 안 되고 있으면(같은 지적 반복·범위 재설계) 그때 사용자에게 보고하세요.\n"
     "  · 예산 조정은 local.conf `external_review_wave_budget`.\n"
     "  (장부: {ledger})"
 )
@@ -1077,11 +1124,234 @@ def _local_config_for_repo(repo: Path) -> dict[str, str]:
 
 
 def _is_enabled(conf: dict[str, str]) -> bool:
-    return conf.get("external_review_enabled", "false").strip().lower() in ("true", "1", "yes", "on")
+    """설정된 추가 리뷰어로의 외부 전송·통상 과금에 대한 **지속 동의** 여부.
+
+    한 번 켜면 그 프로필의 호출마다 비용을 다시 묻지 않는다 — 반복 질문은 게이트가 아니라 마찰이고,
+    실제 상한은 라운드/wave 예산(무한 루프 차단)이 기계로 소유한다."""
+    return conf.get(EXTERNAL_REVIEW_ENABLED_KEY, "false").strip().lower() in (
+        "true", "1", "yes", "on")
 
 
 def _reviewer_cmd(conf: dict[str, str]) -> str:
     return conf.get("reviewer_cmd", "").strip() or DEFAULT_REVIEWER_CMD
+
+
+# ── 추가 리뷰어 대상 해소 (원자 tuple) ──────────────────────────────────────
+#
+# 사람 역할 이름은 **추가 리뷰어(additional reviewer)** 다 — 팀에 한 명 더 붙는 리뷰어라는 뜻이고,
+# `external` 은 전송/격리/과금(외부로 나간다)에만 남는다. 그래서 설정 키는 `additional_reviewer.*`,
+# opt-in 키·raw 파일 접두·모듈 이름 같은 **기계 식별자는 external_review 그대로** 유지한다.
+#
+# 정상 경로의 대상은 위임과 동형의 **원자 tuple**(harness+model 동반 필수·reasoning 선택)이다.
+# 모델을 고정하지 않는 자유 문자열(`reviewer_cmd`)은 "어느 모델이 봤는지"를 사후에 알 수 없어
+# 라운드 장부·raw 감사가 거짓말을 하게 된다. 하위 호환으로 legacy 경로를 남기되 **unpinned-model**
+# 로 크게 라벨링한다.
+ADDITIONAL_REVIEWER_PREFIX = "additional_reviewer"
+ADDITIONAL_REVIEWER_HARNESS_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.harness"
+ADDITIONAL_REVIEWER_MODEL_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.model"
+ADDITIONAL_REVIEWER_REASONING_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.reasoning"
+LEGACY_REVIEWER_CMD_KEY = "reviewer_cmd"
+ADDITIONAL_REVIEWER_KEYS: tuple[str, ...] = (
+    ADDITIONAL_REVIEWER_HARNESS_KEY,
+    ADDITIONAL_REVIEWER_MODEL_KEY,
+    ADDITIONAL_REVIEWER_REASONING_KEY,
+)
+
+REVIEWER_SOURCE_STRUCTURED = "structured"
+REVIEWER_SOURCE_LEGACY = "legacy"
+# legacy 경로 라벨 — stderr provenance·dry-run·raw 헤더·raw 장부가 같은 낱말을 쓴다.
+UNPINNED_MODEL_LABEL = "unpinned-model"
+# legacy argv 에 `-m/--model` 표기가 없을 때 `_reviewer_model` 이 돌려주는 자리표시자.
+LEGACY_UNSPECIFIED_MODEL = "default"
+# 모델 축의 **예약 sentinel** — 엔진이 "이 실행은 모델이 고정되지 않았다"를 뜻하는 데 쓰는 낱말이다.
+# 구조화 프로필은 정의상 모델을 고정한 tuple 이므로 이 낱말들을 값으로 받을 수 없다: 받으면 장부·
+# raw 헤더·stderr 가 legacy 미고정 실행과 **글자 단위로 구분 불가**해져 "어느 모델이 봤는가"를
+# 사후에 확정할 수 없다(고정했다는 선언과 기록이 서로 반대말을 한다).
+RESERVED_MODEL_VALUES: frozenset[str] = frozenset(
+    {LEGACY_UNSPECIFIED_MODEL, UNPINNED_MODEL_LABEL}
+)
+
+# 추가 리뷰어의 권한축은 **불변**이다 — 읽기 권위(code-reviewer)로 고정하고 설정으로 올릴 수 없다.
+# 리뷰는 저장소를 고치지 않는다(고치는 것은 위임 developer 축의 일이다).
+REVIEWER_ROLE = "code-reviewer"
+
+# 실행 시점에만 정해지는 경로는 세 표면(dry-run·stderr provenance·raw)이 **같은 자리표시자**로
+# 표시한다. 값이 실행마다 달라지는 토큰을 정체 문자열에 넣으면 세 표면이 서로 다른 문자열을
+# 말하게 되고, 그러면 "같은 대상을 말했는가"를 기계가 대조할 수 없다. 실 argv 에는 그 자리에
+# 실제 거울 경로/프롬프트 파일이 들어간다(opencode 만 해당).
+REVIEWER_CWD_PLACEHOLDER = "<isolated-cwd>"
+REVIEWER_PROMPT_FILE_PLACEHOLDER = "<prompt-file>"
+
+
+class ReviewerTargetError(RuntimeError):
+    """추가 리뷰어 대상 설정이 원자 tuple 계약을 어김 — 외부 송신 전에 중단해야 함."""
+
+
+class ReviewerTarget(NamedTuple):
+    """이번 실행이 실제로 부를 추가 리뷰어 — 세 표면이 공유하는 단일 해소 결과.
+
+    `command` = 세 표면(dry-run·stderr provenance·raw 헤더)이 **같은 문자열로** 말하는 정체다.
+    구조화 대상은 argv 를 그대로 렌더한 값이고, legacy 대상은 설정된 자유 문자열 그대로다.
+    """
+
+    source: str
+    command: str
+    harness: str | None = None
+    model: str | None = None
+    reasoning: str | None = None
+
+    @property
+    def structured(self) -> bool:
+        return self.source == REVIEWER_SOURCE_STRUCTURED
+
+    @property
+    def name(self) -> str:
+        """시간 프로필·진행신호·raw 파일명이 공유하는 정규화 키."""
+        return reviewer_name(self.command)
+
+    @property
+    def ledger_model(self) -> str:
+        """이 실행의 **모델 정체** — 네 표면(dry-run·stderr·raw 헤더·raw 장부)이 공유하는 단일 값.
+
+        구조화 대상은 **명시 모델 그대로**다. 구조화 tuple 의 모델을 커맨드 문자열에서 역추론하지
+        않는다(그러면 명시 모델이 argv 표기 규칙에 따라 `default` 로 퇴화할 수 있다).
+
+        legacy `reviewer_cmd`는 임의 실행기까지 허용하는 opaque 문자열이라 `-m/--model` 토큰이
+        실제 수신 모델을 고정한다는 스키마를 엔진이 보증할 수 없다. 따라서 표기 유무와 무관하게
+        항상 `unpinned-model`로 기록한다. exact command는 별도 provenance에 그대로 남으므로 정보는
+        사라지지 않으며, 모델 정체를 보증하려면 구조화 tuple을 써야 한다."""
+        if self.structured:
+            return self.model or ""
+        return UNPINNED_MODEL_LABEL
+
+    @property
+    def profile_tail(self) -> str:
+        """해소 tuple 의 출처/모델 축 — provenance 문자열의 공통 꼬리.
+
+        모델 축은 장부·raw 헤더와 **같은 정체 값**(`ledger_model`)을 쓴다. legacy 라는 사실은
+        `source=legacy` 가 이미 말하므로 여기서 모델 이름을 다르게 부를 이유가 없다."""
+        if self.structured:
+            return (f"source={self.source}, harness={self.harness}, "
+                    f"model={self.model}, reasoning={self.reasoning}")
+        return f"source={self.source}, model={self.ledger_model}"
+
+
+def _structured_reviewer_argv(
+    harness: str, model: str, reasoning: str | None, *,
+    cwd: str, prompt_file: str,
+) -> list[str]:
+    """구조화 대상의 argv — 공용 드라이버 계약(pm_relay)만으로 조립한다.
+
+    모델·reasoning 은 **항상 argv 에 명시**되고 권한축은 code-reviewer(읽기)로 고정된다. 격리 홈에
+    복제된 사용자 config 기본값(모델·effort)이 실제 수신자를 바꿀 수 없는 이유가 이것이다 —
+    명시 플래그가 config 기본값을 이긴다.
+
+    codex/claude 는 프로세스 cwd(=격리 거울)를 그대로 쓰므로 실행마다 달라지는 토큰이 argv 에
+    없다. opencode 만 subprocess cwd 를 무시해 `--dir` 이 필요하고 프롬프트도 `--file` 첨부라,
+    그 두 자리는 자리표시자로 렌더한 뒤 실행 시점에 실 경로로 조립한다.
+    """
+    relay = _load_relay()
+    if harness == "codex":
+        return relay.build_codex_argv(model, reasoning, REVIEWER_ROLE)
+    if harness == "claude":
+        return relay.build_claude_argv(model, reasoning, REVIEWER_ROLE)
+    return relay.build_opencode_argv(model, reasoning, REVIEWER_ROLE, cwd, prompt_file)
+
+
+def legacy_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
+    """구조화 키가 없는 형상의 대상 — 종전 `reviewer_cmd`/엔진 기본 커맨드 그대로."""
+    return ReviewerTarget(source=REVIEWER_SOURCE_LEGACY, command=_reviewer_cmd(conf))
+
+
+def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
+    """`additional_reviewer.{harness,model,reasoning}` 을 **원자로** 해소한다.
+
+    · 구조화 키가 **하나도 없으면**(키 자체가 conf 에 부재) legacy 경로(하위 호환·unpinned-model).
+    · 구조화 키가 하나라도 **있으면**(값이 비어 있어도 선언이다) harness/model 동반 필수 —
+      부분 지정은 fail-loud 다(조용한 폴백·절반만 반영된 대상 금지). 선언 판정을 값의 truthiness
+      로 하면 `additional_reviewer.harness=` 처럼 **비운 채 선언한 부분 tuple** 이 legacy 로 조용히
+      떨어져, 사용자가 지정한 것과 다른 대상으로 나간다. 그래서 기준은 **키 존재**다.
+      `reasoning` 만 빈 값이 허용되고(선택 축·플래그 생략), 그것도 harness/model 이 온전할 때다.
+    · model 이 **예약 sentinel**(`RESERVED_MODEL_VALUES` — 엔진이 '모델 미고정'을 뜻하는 낱말)이면
+      거부한다. 값이 비어있지 않다는 것만으로 통과시키면 `additional_reviewer.model=default` 가
+      "고정했다"는 선언과 함께 미고정 라벨을 장부에 박아, 감사가 자기 모순을 기록한다.
+    · 같은 conf 에 비어있지 않은 `reviewer_cmd` 가 함께 있으면 대상이 둘이라 fail-loud 다(구조화
+      키가 비어 있어도 **선언은 선언**이라 같은 판정을 받는다). 어느 쪽이 이기는지 추측해 외부로
+      보내지 않는다.
+    · harness/reasoning 값 검증은 공용 드라이버 계약(pm_relay)이 소유한다.
+
+    모든 거부는 **송신·격리·라운드 예약·raw 예약 전**에 성립한다 — 호출부가 이 함수를 그 게이트들
+    앞에서 부르고, 이 함수 자체는 부작용이 없다.
+    """
+    present = tuple(key for key in ADDITIONAL_REVIEWER_KEYS if key in conf)
+    declared = {
+        key: (conf.get(key) or "").strip()
+        for key in ADDITIONAL_REVIEWER_KEYS
+    }
+    if not present:
+        return legacy_reviewer_target(conf)
+
+    legacy_cmd = (conf.get(LEGACY_REVIEWER_CMD_KEY) or "").strip()
+    if legacy_cmd:
+        given = ", ".join(present)
+        raise ReviewerTargetError(
+            f"추가 리뷰어 대상이 둘입니다 — 구조화 프로필({given})과 legacy "
+            f"`{LEGACY_REVIEWER_CMD_KEY}={legacy_cmd}` 가 같은 local.conf 에 있습니다. "
+            "어느 쪽이 이기는지 추측해 외부로 보내지 않습니다 — 하나만 남기세요"
+            f"(권장: `{LEGACY_REVIEWER_CMD_KEY}` 를 지우고 {ADDITIONAL_REVIEWER_PREFIX}.* 유지)."
+        )
+
+    harness = declared[ADDITIONAL_REVIEWER_HARNESS_KEY]
+    model = declared[ADDITIONAL_REVIEWER_MODEL_KEY]
+    if not harness or not model:
+        missing = ", ".join(
+            key for key in (ADDITIONAL_REVIEWER_HARNESS_KEY, ADDITIONAL_REVIEWER_MODEL_KEY)
+            if not declared[key]
+        )
+        raise ReviewerTargetError(
+            f"추가 리뷰어 프로필이 불완전합니다({missing} 부재/빈 값) — harness/model 은 동반 "
+            "필수인 원자 tuple 입니다. 부분 설정으로 조용한 기본값을 쓰지 않습니다. local.conf 에 "
+            f"`{ADDITIONAL_REVIEWER_HARNESS_KEY}`·`{ADDITIONAL_REVIEWER_MODEL_KEY}` 를 함께 "
+            f"설정하세요(선택: `{ADDITIONAL_REVIEWER_REASONING_KEY}`). 구조화 프로필을 쓰지 않을 "
+            f"거면 {ADDITIONAL_REVIEWER_PREFIX}.* 줄을 지우세요(선언이 남아 있으면 legacy 로 "
+            "조용히 떨어지지 않습니다)."
+        )
+    if model.lower() in RESERVED_MODEL_VALUES:
+        raise ReviewerTargetError(
+            f"`{ADDITIONAL_REVIEWER_MODEL_KEY}={model}` 은 예약 sentinel 입니다 — 엔진이 '모델 "
+            f"미고정'을 표시하는 낱말이라(예약: {', '.join(sorted(RESERVED_MODEL_VALUES))}) "
+            "구조화 프로필의 모델 값이 될 수 없습니다. 구조화 프로필은 정의상 모델을 고정한 "
+            "tuple 인데 이 값을 받으면 raw 장부·raw 헤더·stderr provenance 가 legacy 미고정 실행과 "
+            "구분되지 않아 '어느 모델이 이 판정을 냈는가'를 사후에 확정할 수 없습니다.\n"
+            f"  · 실제 모델 이름을 적으세요(예: `{ADDITIONAL_REVIEWER_MODEL_KEY}=gpt-5.6-sol`).\n"
+            f"  · 모델을 고정하지 않을 거면 {ADDITIONAL_REVIEWER_PREFIX}.* 줄을 지우고 "
+            f"`{LEGACY_REVIEWER_CMD_KEY}` 를 쓰세요(그 경로가 `{UNPINNED_MODEL_LABEL}` 로 "
+            "라벨링됩니다)."
+        )
+
+    relay = _load_relay()
+    try:
+        harness = relay.validate_harness(harness)
+        reasoning = relay.validate_reasoning(
+            harness, declared[ADDITIONAL_REVIEWER_REASONING_KEY] or None)
+    except relay.HarnessContractError as exc:
+        raise ReviewerTargetError(
+            f"추가 리뷰어 프로필 값 오류 — {exc}"
+        ) from exc
+
+    command = shlex.join(_structured_reviewer_argv(
+        harness, model, reasoning,
+        cwd=REVIEWER_CWD_PLACEHOLDER, prompt_file=REVIEWER_PROMPT_FILE_PLACEHOLDER,
+    ))
+    return ReviewerTarget(
+        source=REVIEWER_SOURCE_STRUCTURED, command=command,
+        harness=harness, model=model, reasoning=reasoning,
+    )
+
+
+def _running_on_windows() -> bool:
+    """진입점 인터프리터 표기 판정(Windows 는 런처 `py`) — 주입 가능한 좁은 seam."""
+    return os.name == "nt"
 
 
 def _normalized_reviewer_key(argv: list[str]) -> str:
@@ -1261,10 +1531,11 @@ def _wave_budget(conf: dict[str, str]) -> int:
 
 
 # ── 라운드 상한 장부 ─────────────
-# 외부 리뷰는 과금·전송 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한 게이트
-# 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다([[mechanize-dont-instruct-llm]]):
-# `--gate <T-NNNN>` 별로 실 전송 횟수(count)와 사용자 승인 수위(acked_through)를 per-clone·git-ignored
-# 장부에 기록하고, 승인 없이 limit 을 넘기면 실행 전에 거부한다. 장부는 세션/클론 로컬 현상이라
+# 추가 리뷰어 호출은 과금·전송 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한
+# 게이트 클러스터 25라운드). PM 자의 라운드 집계를 기계 장부로 대체한다
+# ([[mechanize-dont-instruct-llm]]): `--gate <T-NNNN>` 별로 실 전송 횟수(count)와 ack 수위
+# (acked_through)를 per-clone·git-ignored
+# 장부에 기록하고, ack 없이 limit 을 넘기면 실행 전에 거부한다. 장부는 세션/클론 로컬 현상이라
 # `.project_manager/.local/`(regression/livegate sidecar 와 동위·board 상태 아님)에 둔다. 경로는
 # 호출 시점 REPO(module-level·monkeypatch 가능)에서 파생해 hermetic 테스트가 tmp 로 격리할 수 있게
 # 한다(_tickets_dir 동형). 손상 장부는 빈 장부로 fail-soft(회귀해소·regression flag 동형).
@@ -1304,8 +1575,8 @@ def _legacy_round_ledger_path() -> Path:
     """옛 규칙(diff 앵커)의 라운드 장부 경로 — 1회 승계(backfill)의 입력.
 
     앵커를 소유 PM 홈으로 옮기기 전의 실행들은 이 경로에 카운트를 쌓아 뒀다. 그 중에는 상한을
-    이미 넘겨 **차단 중인 게이트**(rc 4·사용자 승인 대기)가 있고, 새 앵커에서 0 부터 다시 세면
-    그 승인 게이트가 무통보로 열린다.
+    이미 넘겨 **차단 중인 게이트**(rc 4·ack 대기)가 있고, 새 앵커에서 0 부터 다시 세면
+    그 차단이 무통보로 열린다.
     """
     return REPO / ".project_manager" / ".local" / "review_rounds.json"
 
@@ -1595,7 +1866,7 @@ def _refund_wave_round(state: dict, wave_id: str | None) -> bool:
 
 
 def _reset_wave(ledger: dict) -> dict:
-    """`--ack-wave` — 사용자 승인 뒤 예산을 리셋한다(다음 전송이 새 시작 시각을 찍는다).
+    """`--ack-wave` — ack 시점에 예산을 리셋한다(다음 전송이 새 시작 시각을 찍는다).
 
     새 세대 id 를 발급한다 — 리셋 전에 예약한 실행의 환불이 이 wave 의 예산을 깎지 못하게."""
     ledger[WAVE_SECTION_KEY] = {"id": _new_wave_id(), "started": None, "spent": 0}
@@ -1785,6 +2056,294 @@ def _approval_notes(
     if wave_reset:
         notes.append(f"wave 예산 승인 {verb}: spent 리셋 (예산 {wave_budget}).")
     return notes
+
+
+# ── 예산 게이트: 확인→예약 (격리·전송보다 **앞**) ───────────────────────────
+# 두 예산(게이트 라운드 상한·wave)의 확인과 예약은 리뷰어 격리 컨테이너 생성보다 먼저다. 이미
+# 상한에 닿은 호출은 리뷰어를 스폰하지 않더라도 격리를 먼저 만들면 저장소 tracked 사본과 홈
+# 인증/설정 사본을 디스크에 만들었다 지우는 실 작업을 한 번 수행한다 — "차단된 호출은 아무것도
+# 하지 않는다"가 거짓이 된다(**남은 게 없다 ≠ 격리 seam 에 들어간 적 없다**). 정리가 끝까지
+# 성공한다는 보장도 없어(정리 실패는 loud 경고로 남는다) 전송도 못 할 실행이 사본을 남길 수 있다.
+#
+# 순서를 뒤집는 대가는 하나뿐이다: 예약 뒤·스폰 전에 끝나는 구간(격리 생성·리뷰어 환경 준비)이
+# 생긴다. 그 구간은 외부 전송이 확실히 없으므로 마감 시점의 `started=False` 환불과 **같은 조건**
+# 이고, 같은 기계(`_refund_reserved_round`)를 같은 락 아래에서 재사용해 되돌린다
+# (`_release_round_reservation`). 구간 전체의 소유는 `_PreSpawnReservation` 하나가 진다 — 어떤
+# 예외로 나가든 한 번만 환불하고, 스폰 직전에 소유권을 마감 경로로 넘긴다.
+
+
+class RoundBudget(NamedTuple):
+    """이번 실행의 예산 판정 결과 — 거부 rc 또는 예약 identity.
+
+    `refused_rc` 가 채워진 결과는 **그 자리에서 끝나는 실행**이다(격리·raw·스폰·과금 없음).
+    통과한 실행 중 `--gate` 지정분만 예약 좌표(gate·round_id·sequence·wave_id)를 갖는다 —
+    `--gate` 없는 실행은 종전대로 장부 밖이라 세 값이 비어 있는 통과 결과다.
+
+    `sequence` 는 **예약 시점** 순번이다: 마감 때 레코드를 되찾아 읽으면 그 사이 승인
+    (`--ack-rounds`)이 집계 창을 비운 실행만 순번을 잃는다. `wave_id` 는 예약 시점 wave 세대라
+    환불이 그 세대에만 유효하다(리셋된 새 wave 의 예산을 옛 실패가 깎지 못한다)."""
+
+    refused_rc: int | None = None
+    gate: str | None = None
+    round_id: str | None = None
+    sequence: int | None = None
+    wave_id: str | None = None
+
+    @property
+    def reserved(self) -> bool:
+        """되돌리거나 마감할 예약이 실제로 있는지."""
+        return self.gate is not None and self.round_id is not None
+
+
+def _reserve_round_budget(args, conf: dict[str, str]) -> RoundBudget:
+    """라운드 상한·wave 예산을 한 임계 구역에서 확인하고 이번 전송을 예약한다.
+
+    여기까지 왔으면 dry-run·빈-diff·비활성 no-op·egress 차단을 모두 통과해 *실 외부 전송*이
+    일어난다 — 그것들은 전송이 없어 라운드가 아니므로(카운트 제외) 이 앞의 조기 return 뒤에
+    게이트를 둔다. `--gate` 지정 시에만 per-gate 장부를 대조한다("--gate 미지정 실행은 상한 대상 밖").
+
+    MF-A(예약-후-환불): count 를 *호출 전에* +1 예약한다 — 타임아웃·비정상 종료도 프롬프트가 이미
+    전송·과금됐을 수 있는데 성공시에만 세면 반복 타임아웃으로 상한을 무한 우회한다. 외부 프로세스가
+    확실히 시작되지 않은 경우(스폰 실패·started=False, 그리고 예약 뒤 스폰 전 중단)만 환불한다.
+    MF-B(원자성): 확인→예약→저장을 `_round_ledger_lock()` 한 임계 구역으로 묶어 동시 실행이 같은
+    잔여 슬롯을 통과 못 하게 한다. --ack-rounds 는 PM 이 report 로 정상 수렴을 확인한 뒤
+    acked_through 를 현 count 로 올려 +limit 창을 열고, 그 호출도 실 전송이므로 함께 예약한다.
+    초과면 리뷰어 호출 전에 거부(전용 rc·과금 없음).
+
+    승인(--ack-rounds/--ack-wave)은 **먼저 전부 적용한 뒤** 두 상한을 다시 본다. 한 축의 승인을
+    적용해 놓고 다른 축에서 저장 없이 되돌아가면 PM 이 적용한 ack가 조용히 사라지기 때문이다.
+    그래서 (1) 두 플래그 동시 지정은 둘 다 적용돼 그대로 재개되고, (2) 남은 축이 여전히 막으면
+    적용된 ack만 저장하고 거부한다(다음 실행이 그 상태를 이어받는다)."""
+    if not args.gate:
+        if args.ack_rounds or args.ack_wave:
+            acks = " / ".join(
+                flag for flag, given in (
+                    ("--ack-rounds", args.ack_rounds), ("--ack-wave", args.ack_wave),
+                ) if given
+            )
+            print(f"경고: {acks} 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
+                  file=sys.stderr)
+        return RoundBudget()
+
+    limit = _round_limit(conf)
+    incomplete_limit = _incomplete_round_limit(conf)
+    wave_budget = _wave_budget(conf)
+    try:
+        with _round_ledger_lock():
+            ledger = _load_round_ledger()
+            # 앵커 이동 1회 승계 — legacy(diff 앵커) 장부의 차단 상태를 그대로 이관한다.
+            # 승계분은 판정 *이전에* 저장한다: 차단으로 조기 return 해도 마이그레이션은
+            # 남아야 다음 실행이 다시 승계하지 않는다(게이트당 1회).
+            if _inherit_legacy_round_entry(ledger, args.gate) is not None:
+                _, legacy_verdicts, legacy_incomplete = _unacked_round_counts(
+                    ledger[args.gate]
+                )
+                print(
+                    f"legacy 라운드 장부 승계: {_legacy_round_ledger_path()} → "
+                    f"{_round_ledger_path()} · gate={args.gate} "
+                    f"verdicts={legacy_verdicts} incomplete={legacy_incomplete}",
+                    file=sys.stderr,
+                )
+                _save_round_ledger(ledger)
+            entry = _gate_entry(ledger, args.gate)
+            # 손상 복구(재계산된 spent)는 거부되는 실행에서도 저장한다 — 안 그러면 손상값이
+            # 남아 매 실행 같은 경고를 반복하고 장부가 계속 거짓말을 한다. 저장 판정은 정규화와
+            # **같은 술어**를 쓴다.
+            wave_repaired = _wave_corruption_note(ledger.get(WAVE_SECTION_KEY)) is not None
+            wave = _wave_state(ledger)
+            # 승인 적용 (두 축 모두·판정 전). **고지는 아직 하지 않는다** — 재개인지 거부인지는
+            # 두 상한을 다시 본 뒤에야 정해지고, 거부되는 실행이 "재개"를 말하면 rc 4 와
+            # 어긋난 loud 오보가 된다.
+            acked_rounds_to: int | None = None
+            wave_reset = False
+            if args.ack_rounds:
+                acked_rounds_to = entry["count"]
+                entry["acked_through"] = acked_rounds_to  # 승인 수위 상향 (+limit 창)
+                entry["records"] = []               # 승인된 상세 레코드는 집계에서 영구 불필요
+            if args.ack_wave:
+                wave = _reset_wave(ledger)
+                wave_reset = True
+            approved = acked_rounds_to is not None or wave_reset
+
+            def announce(resumed: bool) -> None:
+                for note in _approval_notes(
+                    gate=args.gate, acked_rounds_to=acked_rounds_to, limit=limit,
+                    wave_reset=wave_reset, wave_budget=wave_budget, resumed=resumed,
+                ):
+                    print(note, file=sys.stderr)
+
+            # 판정은 승인 반영 **뒤**의 값으로 한다. wave 예산은 게이트 상한과 독립 축이라
+            # 한쪽 승인이 다른 쪽을 열지 않는다 — 게이트 축을 먼저 보는 이유는 그쪽이 더
+            # 좁은(그 게이트가 수렴했다는) 진단이라서다.
+            count, acked = entry["count"], entry["acked_through"]
+            unacked, verdicts, incomplete = _unacked_round_counts(entry)
+            if verdicts >= limit or incomplete >= incomplete_limit:
+                if approved or wave_repaired:
+                    _save_round_ledger(ledger)      # 승인·손상 복구는 거부돼도 남긴다
+                announce(resumed=False)
+                print(_ROUND_LIMIT_GUIDANCE.format(
+                    gate=args.gate, unacked=unacked, verdicts=verdicts,
+                    incomplete=incomplete, limit=limit,
+                    incomplete_limit=incomplete_limit,
+                    ledger=_round_ledger_path(),
+                    count=count, acked=acked), file=sys.stderr)
+                # 예약 없음 (전송 전 거부) — 격리도 아직 없다(이 게이트가 그보다 앞이다).
+                return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
+            if wave["spent"] >= wave_budget:
+                if approved or wave_repaired:
+                    _save_round_ledger(ledger)
+                announce(resumed=False)
+                print(_WAVE_BUDGET_GUIDANCE.format(
+                    gate=args.gate, spent=wave["spent"], budget=wave_budget,
+                    started=wave["started"] or "미기록",
+                    ledger=_round_ledger_path()), file=sys.stderr)
+                return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
+            announce(resumed=True)                  # 두 축을 모두 통과한 뒤에만 "재개"
+            round_id = uuid.uuid4().hex
+            # 예약 sequence 는 **여기서** 잡는다 — 마감 시점에 레코드를 되찾아 읽으면 그 사이
+            # 승인(`--ack-rounds`)이 집계 창을 비운 실행만 순번을 잃는다.
+            sequence = _reserve_round(entry, round_id)["sequence"]  # 호출 전 라운드 예약
+            _spend_wave_round(wave)                   # 같은 전송을 wave 예산에서도 차감
+            _save_round_ledger(ledger)
+            return RoundBudget(
+                gate=args.gate, round_id=round_id, sequence=sequence,
+                wave_id=wave["id"],                   # 환불은 이 세대에만 유효
+            )
+    except OSError as exc:
+        # 락 획득/장부 write 실패 — 상한을 확인하지 못한 채 전송하면 과금 게이트가 무력화되므로
+        # **전송 전에** 멈춘다(과금 0). 가장 흔한 원인은 동시 실행의 락 보유다(Windows
+        # `msvcrt.locking` 은 재시도 소진 시 OSError·POSIX 는 블로킹이라 여기 안 온다).
+        print(
+            f"오류: 라운드 장부 임계 구역 진입 실패 ({type(exc).__name__}: {exc}) — 다른 "
+            "게이트 실행이 장부 락을 보유 중일 수 있습니다. 잠시 후 다시 실행하세요 "
+            f"(장부: {_round_ledger_path()}).",
+            file=sys.stderr,
+        )
+        return RoundBudget(refused_rc=1)
+
+
+def _refund_reserved_round(ledger: dict, reservation: RoundBudget) -> bool:
+    """예약 하나를 두 예산 축에서 **같은 조건으로** 되돌린다 (전송이 확실히 없던 실행).
+
+    호출부가 이미 `_round_ledger_lock()` 안에서 로드한 장부를 그 자리에서 고치고 저장은 호출부가
+    한다 — 마감 경로는 같은 임계 구역에서 산출 기록까지 함께 쓰기 때문이다. 환불 조건이 한 군데라
+    "격리 실패로 되돌린 예약"과 "스폰 실패로 되돌린 예약"이 서로 다른 규칙을 갖지 않는다.
+
+    wave 는 **예약 시점 세대**만 깎는다: 그 사이 `--ack-wave` 로 새 wave 가 열렸으면 이 실패는 그
+    예산과 무관하다(깎으면 승인 1회로 예산이 늘어난다). 라운드 count 를 되돌리지 못했으면(동시
+    `--ack-rounds` 로 레코드가 접힌 경우) wave 도 건드리지 않는다 — 한쪽만 깎으면 두 축의 소비가
+    갈린다."""
+    entry = _gate_entry(ledger, reservation.gate)
+    if not _refund_round(entry, reservation.round_id):
+        return False
+    if not _refund_wave_round(_wave_state(ledger), reservation.wave_id):
+        print(
+            "경고: 예약 시점 wave 가 이미 리셋돼 wave 예산은 환불하지 않았습니다 "
+            "(라운드 count 만 환불).",
+            file=sys.stderr,
+        )
+    return True
+
+
+def _release_round_reservation(reservation: RoundBudget, *, reason: str) -> None:
+    """전송 **전에** 끝난 실행의 예약을 그 자리에서 원자 환불한다 (락→로드→환불→저장).
+
+    예약 뒤·스폰 전에 중단하는 구간의 소유자(`_PreSpawnReservation`)가 쓴다. 락과 환불 기계는 마감
+    경로와 같은 것을 재사용하므로 동시 실행 직렬화와 세대 규칙이 두 경로에서 갈리지 않는다.
+
+    락/저장 실패는 loud 경고만 남기고 삼킨다 — 이 실행의 rc(또는 전파할 예외)는 중단 사유가 소유하고,
+    환불하지 못한 예약은 finished_at 없는 미완 레코드로 남아 다음 실행의 재시도 예산에서
+    보수적으로 세어진다(장부가 실제보다 헐거워지는 방향으로는 틀리지 않는다)."""
+    if not reservation.reserved:
+        return
+    try:
+        with _round_ledger_lock():
+            ledger = _load_round_ledger()
+            refunded = _refund_reserved_round(ledger, reservation)
+            _save_round_ledger(ledger)
+    except OSError as exc:
+        print(
+            f"경고: 라운드 예약 환불 실패 ({type(exc).__name__}: {exc}) — {reason}(으)로 전송 "
+            "없이 중단한 실행의 예약이 장부에 남았습니다. 다음 실행의 미완 재시도 예산에서 "
+            f"세어집니다 (장부: {_round_ledger_path()}).",
+            file=sys.stderr,
+        )
+        return
+    if refunded:
+        print(
+            f"라운드 예약 환불: 게이트 {reservation.gate} — {reason}(으)로 전송 없이 "
+            "중단했습니다(상한·wave 예산 미소진).",
+            file=sys.stderr,
+        )
+
+
+class _PreSpawnReservation:
+    """예약~스폰 사이 구간의 **단일 소유 seam** — 그 구간에서 끝난 실행의 예약을 한 번만 환불한다.
+
+    예산 게이트가 격리보다 앞에 서면서 "예약은 잡혔는데 리뷰어는 아직 못 떴다"는 구간이 생겼다
+    (격리 컨테이너 생성 · 리뷰어 환경/커맨드 준비). 이 구간에서 어떤 이유로 빠져나가든 외부 전송은
+    확실히 없으므로 예약은 되돌아가야 한다. 환불 조건을 예외 **종류**로 잡으면(알려진
+    `ReviewerWorkspaceError` 만) 나머지 예외가 예약을 finished_at 없는 미완 레코드로 남겨, 전송도
+    과금도 없던 실행이 다음 실행의 미완 재시도 예산을 깎는다 —
+    `external_review_incomplete_round_limit=1` 이면 다음 **정상** 호출이 곧바로 차단된다. 그래서
+    조건은 종류가 아니라 **구간**이다: 여기서 나가는 모든 `BaseException`
+    (`KeyboardInterrupt`·`SystemExit` 포함)이 환불을 부른다.
+
+    환불은 하되 예외는 그대로 다시 던진다 — 예상 못 한 실패를 격리 실패와 같은 rc 로 바꾸면 진단이
+    사라진다. 판정 rc 를 갖는 건 이미 정의된 격리 실패 경로뿐이다.
+
+    소유권은 **러너 호출 직전**의 `hand_off()` 로 넘어간다 — 스폰할 *수도* 있는 함수의 입구가
+    아니라, argv·kwargs·seam 검증이 끝나 다음 문장이 자식을 띄우는 그 한 줄 앞이다(`run_review`
+    → `_run_reviewer_ex` 의 `on_spawn_attempt`). 그 뒤의 실패는 전송이 이미 일어났을 수 있어 조건이
+    다르고, 마감 경로(`started` 판정)가 본다. `_settled` 는 한 번만 서므로 여러 층이 같은 예외를
+    잡아도 이중 환불(상한이 조용히 늘어남)이 되지 않는다.
+
+    이전은 **대칭 반납**을 갖는다(`reclaim_no_spawn()`). 러너가 `started=False` 로 돌아온 실행은
+    자식이 확실히 없었다고 **판명**된 것이라, 스폰 직전에 넘긴 소유권이 그 자리에서 되돌아온다 —
+    그러지 않으면 그 뒤의 요약 출력·진단·마감이 죽었을 때(닫힌 stdout 파이프의 `BrokenPipeError`
+    가 실측 축이다) 예약이 finished_at 없는 미완 레코드로 남아, 전송 0·과금 0 인 실행이
+    `incomplete_limit=1` 형상에서 다음 **정상** 호출을 곧바로 막는다. 반납 조건은 판명된
+    `started=False` 하나뿐이다 — 타임아웃·불확실 예외(started=True)는 이미 나갔을 수 있어
+    그대로 마감 경로가 소비한다."""
+
+    def __init__(self, budget: RoundBudget) -> None:
+        self.budget = budget
+        self._settled = False
+
+    def __enter__(self) -> "_PreSpawnReservation":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        if exc_type is not None:
+            self.release(reason=f"스폰 전 예외 {exc_type.__name__}")
+        return False                                  # 예외는 삼키지 않는다
+
+    def release(self, *, reason: str) -> None:
+        """아직 소유 중인 예약을 환불한다 (이미 환불·이전됐으면 no-op)."""
+        if self._settled:
+            return
+        self._settled = True
+        _release_round_reservation(self.budget, reason=reason)
+
+    def hand_off(self) -> None:
+        """스폰 구간으로 소유권 이전 — 이후 실패는 이 seam 이 아니라 마감 경로가 판정한다."""
+        self._settled = True
+
+    def reclaim_no_spawn(self) -> None:
+        """스폰이 **없었다고 판명된** 뒤 소유권을 되찾는다 (`hand_off` 의 대칭).
+
+        호출 자격은 러너가 결론적으로 `started=False` 로 돌아온 직후 한 자리뿐이다 — 그 시점의
+        사실은 "자식이 뜰 수도 있었다"가 아니라 "뜬 적 없다"이므로, 스폰 직전에 넘긴 권리가 그대로
+        되돌아온다. 되찾은 뒤의 실패(요약·진단·마감)는 다시 이 seam 이 한 번 환불한다."""
+        self._settled = False
+
+    def settle_refunded(self) -> None:
+        """마감 경로가 이 예약을 이미 환불했음을 기록한다 — 같은 예약을 두 번 되돌리지 않는다.
+
+        `hand_off` 와 상태 변화는 같지만 사실이 다르다: 저쪽은 "스폰 구간이 판정한다", 이쪽은
+        "환불이 끝났다"이다. 되돌린 뒤 다시 되돌리는 건 상한이 조용히 늘어나는 방향이라 이름으로
+        구분해 둔다."""
+        self._settled = True
 
 
 # ── 장부 조회면 (--rounds-report) ───────────────────────────────────────────
@@ -2205,9 +2764,9 @@ def build_prompt(
     return "".join(parts)
 
 
-# ── 리뷰어 가시 범위 격리 ─────────────────────────────────────────────────
+# ── 추가 리뷰어 가시 범위 격리 ────────────────────────────────────────────
 #
-# 외부 리뷰어의 판정 입력은 **프롬프트에 실린 diff** 여야 한다. 그런데 스폰된 리뷰어 프로세스는
+# 추가 리뷰어의 판정 입력은 **프롬프트에 실린 diff** 여야 한다. 그런데 스폰된 리뷰어 프로세스는
 # 종전에 PM 세션의 cwd 와 env 를 그대로 물려받았고, 그 자리에서 저장소 밖 PM 로컬 산출물이
 # 손 닿는 거리에 있었다 — 옛 리뷰 raw(`.project_manager/.local/review/`)와 하네스 세션 전사
 # (`~/.claude/projects/<cwd 슬러그>/<세션 id>.jsonl`). 실측된 게이트 raw 에서 리뷰어는 그것들을 읽어
@@ -2874,7 +3433,7 @@ def reviewer_visibility_scope(
             _remove_reviewer_workspace(workspace)
 
 
-# ── 외부 리뷰어 실행 ──────────────────────────────────────────────────────
+# ── 추가 리뷰어 실행 ──────────────────────────────────────────────────────
 
 
 def _load_relay():
@@ -2897,7 +3456,7 @@ def _reviewer_idle_timeout(reviewer_cmd: str, idle_timeout: float | None) -> flo
     **평문 증분** 축이다. 그래도 진행 신호는 있다 — 실측상 진행 로그(hook/exec/succeeded 라인)가
     stderr 로 촘촘히 흐르고(리뷰 1건 12,233줄) stdout 은 최종 회신뿐이라(498~759 바이트), chunk
     도착 자체를 신호로 보면 파서 없이 같은 판정이 선다. 특례 분기 없이 축 선언만 다르다.
-    명시값이 없으면 리뷰어 커맨드의 하네스 프로필 값을 쓴다(위임 축과 같은 테이블)."""
+    명시값이 없으면 해소 command가 가리키는 하네스 프로필 값을 쓴다(위임 축과 같은 테이블)."""
     relay = _load_relay()
     profile = reviewer_profile(reviewer_cmd)
     resolved = idle_timeout if idle_timeout is not None else profile.idle_timeout
@@ -3112,6 +3671,9 @@ def _run_reviewer_ex(
     *,
     cwd: Path | str | None = None,
     env: dict[str, str] | None = None,
+    argv: Sequence[str] | None = None,
+    stdin_text: str | None = None,
+    on_spawn_attempt: Callable[[], None] | None = None,
 ) -> tuple[bool, ReviewerOutput, bool]:
     """run_reviewer 본체 + 외부 프로세스 스폰 여부(started) 신호.
 
@@ -3128,22 +3690,45 @@ def _run_reviewer_ex(
 
     `run_fn` 주입의 기존 계약은 subprocess.run 호환 키까지다. 새 `idle_timeout` 은 시그니처에 그
     이름을 명시한 runner 에만 조건부 전달한다. 호출 계약 불일치는 일반 "리뷰어 실행 오류"로
-    삼키지 않고 seam 오류로 loud 구분한다."""
+    삼키지 않고 seam 오류로 loud 구분한다.
+
+    `argv`/`stdin_text` = 구조화 대상의 wire transport 주입. 미지정이면 종전대로
+    `shlex.split(reviewer_cmd)` + 프롬프트 stdin 이라, legacy 자유 문자열 커맨드의 실행 형상은
+    바이트 단위로 동일하다(구조화 플래그/파서로 다시 쓰지 않는다).
+
+    `on_spawn_attempt` = **실제 스폰 시도 직전** 1회 호출되는 seam(기본 None = 종전 동작). 라운드
+    예약 소유권 이전(`_PreSpawnReservation.hand_off`)이 이 콜백을 탄다: 호출 지점은 argv·timeout·
+    kwargs·bind 검증이 모두 끝나 **다음 문장이 자식을 띄우는** 자리이고, 그보다 앞의 실패
+    (빈 커맨드·seam 계약 오류·준비 중 예외)는 전송 0 이라 예약이 환불 대상으로 남는다. 콜백이
+    돌지 않은 채 돌아온 `started=False` 결과는 종전대로 마감 경로가 환불한다(이중 환불 없음).
+
+    콜백이 **돈 뒤에** 돌아온 `started=False`(실행 파일 부재)는 자식이 없었다고 판명된 결과라,
+    호출부(`run_review` 의 `on_no_spawn`)가 그 자리에서 소유권을 되찾는다 — 판정 자체는 이 함수의
+    반환값 하나가 소유하고, 되돌림 시점만 호출부 계약이다. 임의 주입 러너의 예외까지 '스폰 전'으로
+    단정하지는 않는다: 확실한 건 이 표의 `started` 값뿐이고, 그 밖은 보수적으로 started=True 다."""
     if metrics is not None:
         metrics.clear()
         metrics.update({"rc": 1, "silence_sec": None})
     _run = run_fn or _watchdog_reviewer_run
-    argv = shlex.split(reviewer_cmd)
+    argv = list(argv) if argv is not None else shlex.split(reviewer_cmd)
     if not argv:
         return False, ReviewerOutput("[reviewer_cmd 가 비어 있음 — local.conf 확인]"), False
     if timeout is None:  # 미지정 호출(공개 facade) — 리뷰어 프로필의 벽시계 백스톱.
         timeout = int(reviewer_profile(reviewer_cmd).wall_timeout)
     try:
         kwargs = _reviewer_run_kwargs(
-            _run, argv, prompt=prompt, timeout=timeout,
+            _run, argv,
+            prompt=prompt if stdin_text is None else stdin_text,
+            timeout=timeout,
             idle_timeout=_reviewer_idle_timeout(reviewer_cmd, idle_timeout),
             cwd=None if cwd is None else str(cwd), env=env,
         )
+        # ── 스폰 시도 seam ──────────────────────────────────────────────
+        # 여기가 "확실히 전송 전"이 끝나는 **한 줄**이다 — 다음 문장이 자식을 띄우므로 그 뒤의
+        # 실패는 프롬프트가 이미 나갔을 수 있다. 예약 소유권 이전을 이보다 앞(스폰할 *수도* 있는
+        # 함수의 입구)에서 하면, 스폰 0·과금 0 으로 끝난 준비 실패까지 환불받지 못한다.
+        if on_spawn_attempt is not None:
+            on_spawn_attempt()
         result = _run(argv, **kwargs)
         if metrics is not None:
             metrics["rc"] = int(result.returncode)
@@ -3214,14 +3799,17 @@ def reviewer_name(reviewer_cmd: str) -> str:
 
 
 def _reviewer_model(reviewer_cmd: str) -> str:
-    """reviewer argv의 명시 model을 장부용으로 해소하고, 생략이면 default로 표기한다."""
+    """legacy argv의 model처럼 보이는 토큰을 읽는 호환 관측 seam.
+
+    이 값은 **정체가 아니다**. 임의 실행기 문자열의 옵션 의미를 엔진이 보증할 수 없으므로 실제
+    provenance는 `ReviewerTarget.ledger_model == unpinned-model`을 사용한다."""
     argv = shlex.split(reviewer_cmd)
     for flag in ("--model", "-m"):
         if flag in argv:
             index = argv.index(flag)
             if index + 1 < len(argv):
                 return argv[index + 1]
-    return "default"
+    return LEGACY_UNSPECIFIED_MODEL
 
 
 # ── 결과 파싱 ─────────────────────────────────────────────────────────────
@@ -3430,24 +4018,141 @@ def _write_reserved_output(
     *,
     local_conf_path: Path | None,
     resolved_profile: str | None,
+    target: ReviewerTarget | None = None,
+    codex_egress: str | None = None,
 ) -> None:
     with dest.open("w", encoding="utf-8") as handle:
-        handle.write(_review_raw_content(content, local_conf_path, resolved_profile))
+        handle.write(_review_raw_content(
+            content, local_conf_path, resolved_profile, target, codex_egress))
 
 
-def save_output(reviewer: str, content: str, output_dir: Path | None = None, *, local_conf_path: Path | None = None, resolved_profile: str | None = None) -> Path:
-    """리뷰어 출력 원문(+선택적 conf provenance 감사 헤더)을 저장하고 경로를 반환한다."""
+def save_output(reviewer: str, content: str, output_dir: Path | None = None, *, local_conf_path: Path | None = None, resolved_profile: str | None = None, target: ReviewerTarget | None = None, codex_egress: str | None = None) -> Path:
+    """추가 리뷰어 출력 원문(+선택적 conf provenance 감사 헤더)을 저장하고 경로를 반환한다."""
     dest = _reserve_output(reviewer, output_dir)
     _write_reserved_output(
         dest,
         content,
         local_conf_path=local_conf_path,
         resolved_profile=resolved_profile,
+        target=target,
+        codex_egress=codex_egress,
     )
     return dest
 
 
 # ── 실행 + 수합 ────────────────────────────────────────────────────────────
+
+
+@contextlib.contextmanager
+def _structured_transport(
+    target: ReviewerTarget, prompt: str, cwd: Path | str | None,
+) -> Iterator[tuple[list[str] | None, str | None]]:
+    """구조화 대상의 (argv, stdin) 을 준비하고 임시 자원을 **모든 종료 경로**에서 정리한다.
+
+    codex/claude 는 프롬프트를 stdin 으로 받으므로 준비할 자원이 없다. opencode 만 `--file` 첨부라
+    0600 프롬프트 파일을 만들고(프롬프트에는 검토 대상 diff 원문이 들어간다 — 다른 사용자에게
+    읽히면 안 된다) 실행 성공·실패·예외 무관하게 지운다. legacy 대상은 이 경로를 타지 않는다."""
+    if not target.structured:
+        yield None, None
+        return
+    if target.harness != "opencode":
+        yield _structured_reviewer_argv(
+            target.harness, target.model, target.reasoning,
+            cwd=str(cwd) if cwd is not None else REVIEWER_CWD_PLACEHOLDER,
+            prompt_file=REVIEWER_PROMPT_FILE_PLACEHOLDER,
+        ), None
+        return
+    handle, raw_name = tempfile.mkstemp(prefix="external_review_prompt_", suffix=".md")
+    prompt_file = Path(raw_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(prompt)
+        os.chmod(prompt_file, 0o600)  # mkstemp 기본값 재확인(umask 무관 고정).
+        yield _structured_reviewer_argv(
+            target.harness, target.model, target.reasoning,
+            cwd=str(cwd) if cwd is not None else str(Path.cwd()),
+            prompt_file=str(prompt_file),
+        ), ""
+    finally:
+        try:
+            prompt_file.unlink()
+        except OSError as exc:
+            # 정리 실패는 **주 결과를 덮지 않는다** — 리뷰어 판정/예외는 그대로 위로 전파되고
+            # 여기서는 진단만 낸다. 그러나 조용히 삼키면 검토 대상 diff 원문이 담긴 임시 파일이
+            # 남은 사실이 아무 표면에도 남지 않아, 누출 흔적을 사람이 알 방법이 없다.
+            print(
+                "경고: 추가 리뷰어 프롬프트 파일 정리 실패 — 검토 대상 diff 원문이 담긴 0600 "
+                f"임시 파일이 남아 있습니다: {prompt_file} ({type(exc).__name__}: {exc}). "
+                "확인 후 직접 삭제하세요.",
+                file=sys.stderr,
+            )
+
+
+# 스폰 전 중단으로 마감하는 raw 레코드의 rc — 리뷰를 하나도 받지 못한 실행이라 실패 축(1)이다
+# (빈 커맨드·실행 파일 부재 같은 다른 '스폰 없음' 마감과 **같은 축**이라 조회면의 뜻이 갈리지
+# 않는다). "왜 실패했나"는 그 레코드가 가리키는 raw 파일의 중단 사유 줄이 소유한다 — 장부 스키마에
+# 새 상태 값을 만들지 않는다(마감 API 는 rc/경과/침묵만 받는다).
+_PRE_SPAWN_ABORT_RC = 1
+
+
+def _abort_pre_spawn_raw(
+    relay, ledger_path: Path | None, record_id: str | None, raw_path: Path, *,
+    reason: str, elapsed: float, local_conf_path: Path | None,
+    resolved_profile: str | None, target: ReviewerTarget | None,
+    codex_egress: str | None,
+) -> None:
+    """스폰 **전에** 끊긴 실행이 남긴 raw 선점/미마감 레코드를 그 자리에서 정직하게 닫는다.
+
+    raw 장부의 미마감 레코드는 "떠 있을지 모르는 자식"(고아 프로세스 조회면 `--unfinished` 의
+    입력)이라는 뜻이다. 스폰이 확실히 없던 실행이 그 상태로 남으면 조회면이 없는 프로세스를
+    가리키고, 0바이트 raw 파일은 "리뷰어가 아무 말도 안 했다"로 읽힌다. 그래서 두 경우로 닫는다:
+
+    · 장부가 이 raw 를 가리키기 전에 끊겼으면(레코드 없음) 선점 파일만 지운다 — 되돌릴 원자 단위가
+      그것 하나다.
+    · 레코드가 있으면 raw 에 중단 사유를 박제하고 레코드를 실패 축으로 마감한다.
+
+    정리 실패는 loud 경고만 남기고 삼킨다 — 이 구간의 **주 예외**(호출부가 다시 던진다)가 진단을
+    소유하고, 정리 예외가 그것을 덮으면 원인이 사라진다."""
+    if record_id is None or ledger_path is None:
+        try:
+            raw_path.unlink()
+        except OSError as exc:
+            print(
+                f"경고: 스폰 전 중단의 raw 선점 정리 실패 ({type(exc).__name__}: {exc}) — "
+                f"빈 파일이 남았습니다: {raw_path}",
+                file=sys.stderr,
+            )
+        return
+    try:
+        _write_reserved_output(
+            raw_path,
+            f"[스폰 전 중단 — 외부 프로세스 시작 없음(전송 0·과금 0): {reason}]",
+            local_conf_path=local_conf_path,
+            resolved_profile=resolved_profile,
+            target=target,
+            codex_egress=codex_egress,
+        )
+    except Exception as exc:  # noqa: BLE001 — 정리 실패가 주 예외를 덮지 않는다
+        print(
+            f"경고: 스폰 전 중단 사유의 raw 박제 실패 ({type(exc).__name__}: {exc}) — "
+            f"빈 파일이 남았습니다: {raw_path}",
+            file=sys.stderr,
+        )
+    try:
+        relay.finish_raw_record(
+            ledger_path, record_id,
+            rc=_PRE_SPAWN_ABORT_RC, elapsed_sec=elapsed, silence_sec=None,
+        )
+    except Exception as exc:  # noqa: BLE001 — 정리 실패가 주 예외를 덮지 않는다
+        # 사본 불일치(marked skew)도 여기서는 흡수한다 — 등록된 경계 사유가 그 근거다. 다만
+        # 원인을 문구로 구분해 "장부 도구가 이 엔진과 다른 사본"이라는 사실이 지워지지 않게 한다.
+        skew = _absorb_engine_rev_skew_for_recovery(exc, "abort_pre_spawn_raw")
+        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
+        print(
+            f"경고: 스폰 전 중단 레코드 마감 실패 ({cause}) — raw 장부에 "
+            f"미마감 레코드가 남았습니다(실제로는 스폰 0): {ledger_path}",
+            file=sys.stderr,
+        )
 
 
 def run_review(
@@ -3458,11 +4163,18 @@ def run_review(
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
     idle_timeout: float | None = None, local_conf_path: Path | None = None, resolved_profile: str | None = None,
     cwd: Path | str | None = None, env: dict[str, str] | None = None,
+    target: ReviewerTarget | None = None, codex_egress: str | None = None,
+    on_spawn_attempt: Callable[[], None] | None = None,
+    on_no_spawn: Callable[[], None] | None = None,
 ) -> dict:
-    """외부 리뷰어를 실행하고 결과를 수합한다.
+    """추가 리뷰어를 실행하고 결과를 수합한다.
 
     반환 dict: reviewer / ok / output / verdict / contamination / file / failed / started /
     any_must_fix / all_pass.
+    `target` = 해소된 추가 리뷰어(미지정이면 `reviewer_cmd` 의 legacy 대상). 구조화 대상은 argv 를
+    직접 조립하고 회신을 **공용 wire 파서**로 추출해 판정에 넣는다 — JSON/스트림 원문을 그대로
+    판정 파서에 넣으면 이벤트 필드에 실린 문구가 판정으로 오독된다. raw 박제는 추출 전 wire
+    (stdout+stderr)를 그대로 보존한다.
     `started` = 외부 프로세스가 스폰됐는가(전송·과금 가능성) — 라운드 카운트 환불
     판정에 쓴다(False = 확실히 전송 전 실패 → 예약 환불). `idle_timeout` = 무진행 상한(None=공유
     기본) — 타임아웃 시에도 `output` 에 부분 산출물이 실려 `save_output` 이 그대로 박제한다.
@@ -3474,70 +4186,169 @@ def run_review(
     `contamination` = 저장소 밖 탐색 흔적 진단. **하나라도 잡히면** `all_pass` 를 내려 '판정
     불명확'(보수적 exit 1)로 만든다 — 옛 raw·전사를 읽고 쓴 판정은 그 자체로 리뷰어 자신의 판정이
     아닐 수 있어, 오염된 출력에서 통과가 나가는 false-green 을 기계가 막는다.
+
+    `on_spawn_attempt` = 라운드 예약 소유권 이전 seam(기본 None = 종전 동작). 이 함수의 **앞부분**
+    (raw 선점·장부 시작 레코드·구조화 transport·argv/kwargs 준비)은 아직 확실히 전송 전이라,
+    거기서 예외로 나가면 콜백은 돌지 않는다 — 호출부의 스폰 전 seam 이 예약을 한 번 환불하고
+    예외는 원본 그대로 다시 던져진다. 나가는 길에 이 함수가 남긴 raw 선점/미마감 레코드도
+    함께 닫는다(`_abort_pre_spawn_raw`).
+
+    `on_no_spawn` = 그 이전의 **대칭 반납** seam(기본 None = 종전 동작). 러너가 `started=False`
+    로 돌아오면 자식은 뜬 적이 없다고 판명된 것이라, 회신 파싱·raw 박제·장부 마감 **어느 것도
+    하기 전에** 한 번 호출해 소유권을 호출부로 돌려준다. 그 뒤 이 함수의 수합 구간에서 예외로
+    나가면 (1) 호출부의 스폰 전 seam 이 예약을 한 번 환불하고 (2) 여기서 raw 선점/미마감 레코드를
+    같은 보상 경로로 닫는다 — 스폰이 없던 실행이 "떠 있을지 모르는 자식"으로 장부에 남지 않는다.
+    이미 정상 마감된 레코드는 다시 닫지 않는다(이중 마감 없음). 스폰된 실행(started=True)의 수합
+    실패는 종전 보수 규칙 그대로다 — 환불도 보상도 없이 미완으로 남는다.
     """
-    name = reviewer_name(reviewer_cmd)
+    target = target or ReviewerTarget(REVIEWER_SOURCE_LEGACY, reviewer_cmd)
+    name = target.name
     raw_path = _reserve_output(name, output_dir)
-    _raw_dir, ledger_path = _raw_storage(output_dir)
-    relay = _load_relay()
-    model = _reviewer_model(reviewer_cmd)
-    record_id = relay.start_raw_record(
-        ledger_path,
-        surface="external-review",
-        harness=name,
-        model=model,
-        role="code-reviewer",
-        raw_path=raw_path,
-        attempt="primary",
-    )
-    metrics: dict[str, object] = {"rc": 1, "silence_sec": None}
+    # ── 여기부터 스폰 시도 seam 까지가 "확실히 전송 전" 구간이다 ──────────
+    # raw 선점(mkdir/open)·장부 시작 레코드·구조화 transport·argv/kwargs 준비가 전부 이 안이고,
+    # 자식은 아직 없다. 이 구간에서 예외로 나가면 (1) 예약 소유권을 넘기지 않아 호출부의 스폰 전
+    # seam 이 한 번 환불하고, (2) 이 함수가 남긴 raw 선점/미마감 레코드를 정직하게 닫는다.
+    # 소유권 이전 시점 자체는 `_run_reviewer_ex` 의 러너 호출 한 줄 앞이다(그보다 앞이면
+    # "스폰할 수도 있는 함수에 들어갔다"는 이유만으로 환불 권리가 사라진다).
+    record_id: str | None = None
+    ledger_path: Path | None = None
+    relay = None
+    spawn_attempted = False
+    # 러너가 "자식 없음"으로 **판명**해 돌아온 뒤인가 — 스폰 시도 창이 다시 열린 상태다.
+    no_spawn_proven = False
+    # 장부 레코드를 정상 마감했는가 — 마감 뒤의 실패까지 보상 경로가 다시 닫으면 이중 마감이 된다.
+    raw_finalized = False
     started_at = time.monotonic()
-    ok, output, started = _run_reviewer_ex(
-        prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics,
-        cwd=cwd, env=env,
-    )
-    elapsed = time.monotonic() - started_at
-    # 판정과 오염 검출은 **회신 채널**만 본다(진행 로그는 프롬프트·diff 원문을 그대로 싣는다).
-    # 경계는 구조(필드)라서 표시 문자열에 무엇이 섞여 와도 되찾을 필요가 없다.
-    output = _as_reviewer_output(output)
-    verdict = parse_verdict(output.answer)
-    contamination = detect_output_contamination(output.answer)
-    _write_reserved_output(
-        raw_path,
-        output.combined,
-        local_conf_path=local_conf_path,
-        resolved_profile=resolved_profile,
-    )
-    relay.finish_raw_record(
-        ledger_path,
-        record_id,
-        rc=int(metrics["rc"]),
-        elapsed_sec=elapsed,
-        silence_sec=metrics.get("silence_sec"),
-    )
-    return {
-        "reviewer": name,
-        "ok": ok,
-        "output": output.combined,
-        "answer": output.answer,
-        "log": output.log,
-        "verdict": verdict,
-        "contamination": contamination.markers,
-        # 격리는 두 축이 **모두** 있어야 성립한다 — cwd 만 옮기고 env 를 상속하면 세션 포인터가
-        # 그대로 넘어가므로 격리로 기록하면 안 된다.
-        "unisolated": cwd is None or env is None,
-        "file": raw_path,
-        "failed": not ok,
-        "started": started,
-        # 오염된 출력은 통과도 반려도 아니다. 반려만 남겨 두면 옛 반려 블록 echo 가 **이번 리뷰의
-        # 반려**로 기록돼(라운드 장부·PM 판단 모두) 리뷰어가 하지 않은 지적을 근거로 일이 돌아간다.
-        "any_must_fix": (
-            ok and verdict["has_must_fix"] and not contamination.contaminated
-        ),
-        "all_pass": (
-            ok and verdict["has_pass"] and not verdict["has_must_fix"]
-            and not contamination.contaminated
-        ),
-    }
+
+    def _spawn_attempt() -> None:
+        """러너 호출 직전 1회 — 스폰 전 롤백 창을 닫고 예약 소유권을 호출부 계약대로 넘긴다."""
+        nonlocal spawn_attempted
+        spawn_attempted = True
+        if on_spawn_attempt is not None:
+            on_spawn_attempt()
+
+    try:
+        _raw_dir, ledger_path = _raw_storage(output_dir)
+        relay = _load_relay()
+        model = target.ledger_model
+        # 장부 레코드는 raw 헤더·stderr provenance·dry-run 과 **같은 해소 축**을 싣는다 — 그래야
+        # raw 파일이 지워지거나 stderr 를 못 읽어도 "무엇이 어떤 설정으로 나갔는가"가 장부 하나로
+        # 닫힌다. local_conf 는 그 축의 앵커라(어느 conf 가 이 대상을 골랐나) 함께 남긴다.
+        record_id = relay.start_raw_record(
+            ledger_path,
+            surface="external-review",
+            harness=name,
+            model=model,
+            role=REVIEWER_ROLE,
+            raw_path=raw_path,
+            attempt="primary",
+            extra={
+                **({"local_conf": str(local_conf_path)}
+                   if local_conf_path is not None else {}),
+                "reviewer_source": target.source,
+                "reasoning": target.reasoning,
+                "command": target.command,
+                **({"codex_egress": codex_egress} if codex_egress is not None else {}),
+            },
+        )
+        metrics: dict[str, object] = {"rc": 1, "silence_sec": None}
+        started_at = time.monotonic()
+        with _structured_transport(target, prompt, cwd) as (argv, stdin_text):
+            ok, output, started = _run_reviewer_ex(
+                prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics,
+                cwd=cwd, env=env, argv=argv, stdin_text=stdin_text,
+                on_spawn_attempt=_spawn_attempt,
+            )
+            if not started:
+                # ── 스폰 없음 확정 seam ──────────────────────────────────
+                # 러너가 결론적으로 "자식 없음"을 돌려줬다(빈 커맨드·실행 파일 부재·seam 계약
+                # 오류). 스폰 시도 직전에 넘긴 소유권을 **회신 파싱·raw 박제·장부 마감 어느 것도
+                # 하기 전에** 되돌려 놓는다 — 그 뒤 어디서 죽든(요약 출력의 BrokenPipeError 가
+                # 실측 축이다) 전송 0·과금 0 인 실행이 예약을 미완으로 남기지 않는다.
+                no_spawn_proven = True
+                if on_no_spawn is not None:
+                    on_no_spawn()
+        elapsed = time.monotonic() - started_at
+        # 판정과 오염 검출은 **회신 채널**만 본다(진행 로그는 프롬프트·diff 원문을 그대로 싣는다).
+        # 경계는 구조(필드)라서 표시 문자열에 무엇이 섞여 와도 되찾을 필요가 없다.
+        output = _as_reviewer_output(output)
+        # 구조화 대상의 회신 채널은 하네스 wire(JSONL/stream)다 — 공용 추출기를 통과한 **최종 회신
+        # 텍스트만** 판정·오염 검출에 넣는다. 추출 실패(회신 이벤트 부재·비-문자열·형식 붕괴)는 wire 를
+        # 판정에 흘리지 않고 빈 회신으로 둔다 — 타입 계약은 공용 seam 이 소유하므로 어떤 wire 형상도
+        # 여기서 예외로 터지지 않는다(터지면 raw 박제·장부 마감 전이라 진단 근거가 함께 사라진다).
+        #
+        # 그리고 **회신이 없으면 리뷰가 없다** — 프로세스가 rc=0 으로 끝났어도 이 실행은 리뷰어의
+        # 판정을 하나도 받지 못했다. 이것을 '성공 → 판정 불명확'으로 두면 rc 는 1 이어도 폴백 신호
+        # (FALLBACK_INTERNAL)가 없어, PM 이 내부 code-reviewer 로 갈아탈 근거를 못 받는다. 그래서
+        # 실패 축으로 내린다: 요약은 실패 + 사유를 말하고 raw 에 wire 전문이 남는다. 라운드 장부에서의
+        # 취급은 종전과 같다(판정 없음 = 미완 라운드 · 전송은 있었으므로 환불 없음).
+        answer = output.answer
+        reply_extraction_failed = False
+        if target.structured and ok:
+            extracted = relay.extract_harness_reply(target.harness, output.answer)
+            reply_extraction_failed = extracted is None
+            answer = extracted or ""
+            ok = not reply_extraction_failed
+        verdict = parse_verdict(answer)
+        contamination = detect_output_contamination(answer)
+        _write_reserved_output(
+            raw_path,
+            output.combined,
+            local_conf_path=local_conf_path,
+            resolved_profile=resolved_profile,
+            target=target,
+            codex_egress=codex_egress,
+        )
+        relay.finish_raw_record(
+            ledger_path,
+            record_id,
+            rc=int(metrics["rc"]),
+            elapsed_sec=elapsed,
+            silence_sec=metrics.get("silence_sec"),
+        )
+        raw_finalized = True
+        return {
+            "reviewer": name,
+            "ok": ok,
+            # wire 원문(stdout+stderr)은 그대로 보존한다 — raw 박제·사람 진단 입력.
+            "output": output.combined,
+            # 판정에 실제로 들어간 회신(구조화 대상은 추출된 최종 텍스트).
+            "answer": answer,
+            "log": output.log,
+            "reply_extraction_failed": reply_extraction_failed,
+            "verdict": verdict,
+            "contamination": contamination.markers,
+            # 격리는 두 축이 **모두** 있어야 성립한다 — cwd 만 옮기고 env 를 상속하면 세션 포인터가
+            # 그대로 넘어가므로 격리로 기록하면 안 된다.
+            "unisolated": cwd is None or env is None,
+            "file": raw_path,
+            "failed": not ok,
+            "started": started,
+            # 오염된 출력은 통과도 반려도 아니다. 반려만 남겨 두면 옛 반려 블록 echo 가 **이번 리뷰의
+            # 반려**로 기록돼(라운드 장부·PM 판단 모두) 리뷰어가 하지 않은 지적을 근거로 일이 돌아간다.
+            "any_must_fix": (
+                ok and verdict["has_must_fix"] and not contamination.contaminated
+            ),
+            "all_pass": (
+                ok and verdict["has_pass"] and not verdict["has_must_fix"]
+                and not contamination.contaminated
+            ),
+        }
+    except BaseException as exc:
+        # 보상 조건은 두 가지뿐이다. (1) 스폰 시도 **전** — 자식이 아직 없다. (2) 러너가 "자식
+        # 없음"으로 판명해 돌아온 **뒤** — 자식이 뜬 적이 없다. 그 사이(스폰 시도 후·판정 전)의
+        # 실패는 종전 보수 규칙 그대로다: 전송됐을 수 있으니 예약도 미마감 레코드도 건드리지
+        # 않는다(미마감이 곧 "확인 필요" 진단이다). 정상 마감이 이미 끝난 뒤라면 다시 닫지
+        # 않는다 — 닫힌 레코드를 실패 축으로 덮으면 장부가 두 번째 거짓말을 한다.
+        if not spawn_attempted or (no_spawn_proven and not raw_finalized):
+            _abort_pre_spawn_raw(
+                relay, ledger_path, record_id, raw_path,
+                reason=f"{type(exc).__name__}: {exc}",
+                elapsed=time.monotonic() - started_at,
+                local_conf_path=local_conf_path, resolved_profile=resolved_profile,
+                target=target, codex_egress=codex_egress,
+            )
+        raise
 
 
 # ── 결과 요약 출력 ────────────────────────────────────────────────────────
@@ -3576,7 +4387,7 @@ def print_summary(result: dict, gate: str | None = None,
     name = result.get("reviewer", "reviewer")
     suffix = _exclusion_suffix(excluded)
     print(sep)
-    print(f"외부 코드리뷰 결과 요약 [{name}]")
+    print(f"추가 리뷰어 코드리뷰 결과 요약 [{name}]")
     if gate:
         print(f"게이트: {gate}")
     print(sep)
@@ -3588,6 +4399,12 @@ def print_summary(result: dict, gate: str | None = None,
     # 이번 판정이 리뷰어 자신의 것인지 PM 이 확인할 근거를 남긴다.
     for marker in result.get("contamination") or ():
         print(f"  ⚠ 오염 의심(저장소 밖 탐색 흔적): {marker}")
+    if result.get("reply_extraction_failed"):
+        # 구조화 대상이 rc=0 으로 끝났는데 회신을 못 뽑았다 — wire 를 판정에 흘리지 않았으므로
+        # 이 실행은 리뷰를 못 받은 것이고, 실패 축(FALLBACK_INTERNAL)으로 내려간다. 원인(형식
+        # 변경·비-문자열 회신·빈 turn)은 raw 원문에서만 보이니 그리로 보낸다.
+        print("  ⚠ 회신 추출 실패 — 하네스 wire 에서 최종 회신을 찾지 못했습니다"
+              "(리뷰 미수신 처리 · 원문 파일 확인).")
     if result.get("unisolated"):
         print("  ⚠ 미격리 실행 — 리뷰어가 PM 세션 cwd 에서 옛 리뷰 raw·세션 전사를 탐색할 수 "
               f"있었습니다({UNISOLATED_REVIEWER_FLAG}).")
@@ -3596,7 +4413,12 @@ def print_summary(result: dict, gate: str | None = None,
         # 실패 사유 1줄을 판정 라인에 병기 — 타임아웃 안내(`--timeout`/conf 키) 같은 실패
         # 본문이 원문 파일에만 남으면 PM 이 못 본다(판정 라인은 반드시 읽힌다).
         head = str(result.get("output") or "").strip().splitlines()
-        if head:
+        if result.get("reply_extraction_failed"):
+            # 이 실패의 출력은 wire 원문이라 첫 줄(이벤트 JSON)이 사유가 되지 못한다 — 사유를
+            # 직접 말한다.
+            print("  사유: 하네스 wire 에서 최종 회신 텍스트를 추출하지 못했습니다 "
+                  "(회신 이벤트 부재 · 비-문자열 회신 · 형식 붕괴) — 원문 파일에 wire 전문 보존.")
+        elif head:
             print(f"  사유: {head[0][:200]}")
         print(f"종합 판정: {name} 실패{suffix}")
         print("FALLBACK_INTERNAL")  # 내부 code-reviewer 서브에이전트로 폴백 신호
@@ -3626,7 +4448,7 @@ def determine_exit_code(result: dict) -> int:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="외부 코드리뷰 래퍼 — 외부 리뷰어 어댑터 CLI (기본 OFF)",
+        description="추가 리뷰어 래퍼 — 추가 리뷰어(외부 하네스) 어댑터 CLI (외부 전송·기본 OFF)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 예시:
@@ -3648,8 +4470,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
   # 라운드 장부 조회 (외부 전송 없음 — 게이트별 라운드 수·라운드별 산출·wave spent)
   python3 .project_manager/tools/external_review.py --rounds-report --gate T-NNNN
 
-활성화: local.conf 에 `external_review_enabled=true` (+ 필요 시 `reviewer_cmd`) ·
+  # Codex sandbox(network-off) 안에서: 미리보기 → 도구 승격 + 증명 동반 실행
+  python3 .project_manager/tools/external_review.py --dry-run
+  python3 .project_manager/tools/external_review.py --codex-egress-escalated
+
+활성화: local.conf 에 `external_review_enabled=true` ·
         또는 `board.py init` / `pm_update` 시 opt-in 프롬프트.
+추가 리뷰어 대상(원자 tuple · 정상 경로):
+        additional_reviewer.harness=codex
+        additional_reviewer.model=gpt-5.6-sol
+        additional_reviewer.reasoning=max     (선택 · 하네스별 허용집합 검증)
+        harness/model 은 동반 필수이고 legacy `reviewer_cmd` 와 함께 쓸 수 없다.
+        구조화 키가 하나도 없으면 종전 `reviewer_cmd`/기본 커맨드로 도는 unpinned-model 경로다.
+지속 동의: `external_review_enabled=true` 는 설정된 대상의 외부 전송·통상 과금에 대한 지속
+        동의다 — 호출마다 비용을 다시 묻지 않는다. 무한 라운드는 라운드/wave 예산이 기계로 막는다.
 """,
     )
     parser.add_argument("--base", default="HEAD",
@@ -3662,24 +4496,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
                         help="게이트 ticket 표식 (로깅 + 라운드 상한 장부 키)")
     parser.add_argument("--ack-rounds", action="store_true",
-                        help="라운드 상한 승인 재개 — 현 count 를 acked_through 로 기록 후 +limit "
-                             "재개 (--gate 필수·사용자 승인 후에만)")
+                        help="라운드 상한 재개 — 현 count 를 acked_through 로 기록 후 +limit "
+                             "재개 (--gate 필수 · 같은 범위의 정상 수렴이면 PM 이 자율 판단)")
     parser.add_argument("--ack-wave", action="store_true",
-                        help="wave 예산 승인 재개 — wave spent 를 0 으로 리셋 후 재개 "
-                             "(--gate 필수·사용자 승인 후에만)")
+                        help="wave 예산 재개 — wave spent 를 0 으로 리셋 후 재개 "
+                             "(--gate 필수 · 같은 범위의 정상 수렴이면 PM 이 자율 판단)")
     parser.add_argument("--rounds-report", action="store_true",
                         help="라운드 장부 조회 — 게이트별 라운드 수·라운드별 판정/결함 수·wave "
                              "spent 를 출력하고 종료 (외부 전송 없음·--gate 로 한 게이트만)")
     parser.add_argument("--dry-run", action="store_true",
                         help="diff·프롬프트만 출력, 외부 호출/전송 안 함 (비활성이어도 허용·빈 diff 면 exit 1)")
     parser.add_argument("--force", action="store_true",
-                        help="external_review_enabled=false 여도 1회 강제 실행 (외부 전송 발생)")
+                        help=f"{EXTERNAL_REVIEW_ENABLED_KEY}=false 여도 1회 강제 실행 (외부 전송 발생)")
+    parser.add_argument(CODEX_EGRESS_FLAG, action="store_true",
+                        help="Codex egress 승격 호출층 증명 — 이 호출을 Codex 도구 "
+                             'sandbox_permissions="require_escalated" 로 올렸음을 감사 기록한다. '
+                             "CODEX_SANDBOX_NETWORK_DISABLED=true 환경의 실행은 이 증명 없이는 "
+                             "격리·라운드·raw·스폰 전에 rc=1 로 중단된다(플래그 자체는 권한을 "
+                             "만들지 않는다 · 미리보기는 --dry-run)")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
                         help="리뷰 원문 저장 디렉토리"
-                             " (기본: .project_manager/.local/review, PM 홈 미해소 시 tempdir)")
+                             " (기본: .project_manager/.local/review, PM 홈 미해소 시 tempdir)."
+                             " 실제 전송이 일어나는 실행에서만 생성된다"
+                             " (미리보기·비활성 no-op·게이트 거부는 만들지 않음)")
     parser.add_argument("--timeout", type=_timeout_seconds_arg, default=None,
                         metavar="SEC",
-                        help="외부 호출 벽시계 백스톱(초) — 기본은 reviewer_cmd 의 하네스 프로필. "
+                        help="외부 호출 벽시계 백스톱(초) — 기본은 해소 대상의 하네스 프로필. "
                              "local.conf harness.<reviewer>.wall_timeout 또는 "
                              f"{EXTERNAL_TIMEOUT_KEY} 로 조정")
     parser.add_argument("--idle-timeout", type=_timeout_seconds_arg, default=None, metavar="SEC",
@@ -3721,15 +4563,35 @@ def _read_local_config(path: Path) -> dict[str, str]:
 
 def _review_raw_content(
     content: str, local_conf_path: Path | None, resolved_profile: str | None,
+    target: ReviewerTarget | None = None, codex_egress: str | None = None,
 ) -> str:
-    """pm_delegate와 같은 `# key: value` 감사 헤더를 external_review 원문에 붙인다."""
-    if local_conf_path is None and resolved_profile is None:
+    """pm_delegate와 같은 `# key: value` 감사 헤더를 external_review 원문에 붙인다.
+
+    헤더는 **추가만** 한다(기존 두 줄의 위치·표기 불변). 해소 축(출처·harness·model·reasoning·
+    실행 커맨드)과 egress 라벨을 한 줄씩 더해, raw 하나만 봐도 "무엇이 어떤 권한으로 이 판정을
+    냈는가"가 닫힌다."""
+    if (local_conf_path is None and resolved_profile is None
+            and target is None and codex_egress is None):
         return content
     header = ["# external_review raw 출력 (감사)"]
     if local_conf_path is not None:
         header.append(f"# local_conf: {local_conf_path}")
     if resolved_profile is not None:
         header.append(f"# resolved_profile: {resolved_profile}")
+    if target is not None:
+        header.append(f"# reviewer_source: {target.source}")
+        if target.structured:
+            header.extend([
+                f"# harness: {target.harness}",
+                f"# model: {target.model}",
+                f"# reasoning: {target.reasoning}",
+            ])
+        else:
+            # legacy 도 장부와 **같은 정체 값**을 쓴다(표기 없으면 `unpinned-model`).
+            header.append(f"# model: {target.ledger_model}")
+        header.append(f"# command: {target.command}")
+    if codex_egress is not None:
+        header.append(f"# codex_egress: {codex_egress}")
     return "\n".join((*header, "", content))
 
 
@@ -3797,8 +4659,23 @@ def delegate_profile_config(
 
 
 def reviewer_profile_config(conf: dict[str, str]) -> dict[str, str]:
-    """external_review의 실제 송신 대상 값. 미지정과 명시 default는 같은 값으로 정규화한다."""
-    return {"reviewer_cmd": _reviewer_cmd(conf)}
+    """external_review의 실제 송신 대상 값. 미지정과 명시 default는 같은 값으로 정규화한다.
+
+    비교 대상은 **해소된 대상**이다 — 한쪽이 구조화 tuple 이고 다른 쪽이 legacy 커맨드면 실제
+    수신자가 다르므로 커맨드·출처 축이 모두 갈려 loud 하다. 해소 불가능한 대상 conf 는 값 자리에
+    사유를 실어 조용히 같아 보이지 않게 한다(비교기는 절대 예외를 올리지 않는다)."""
+    try:
+        target = resolve_reviewer_target(conf)
+    except ReviewerTargetError as exc:
+        return {"reviewer_cmd": f"<해소 실패: {exc}>"}
+    values = {"reviewer_cmd": target.command, "reviewer_source": target.source}
+    if target.structured:
+        values.update({
+            "reviewer_harness": str(target.harness),
+            "reviewer_model": str(target.model),
+            "reviewer_reasoning": str(target.reasoning),
+        })
+    return values
 
 
 def _cross_repo_target_conf(
@@ -3976,11 +4853,17 @@ def format_local_conf_divergence(
 
 def resolved_reviewer_profile(
     reviewer_cmd: str, timeout: int | None, idle_timeout: float | None,
+    target: ReviewerTarget | None = None,
 ) -> str:
-    """stderr/raw가 공유하는 external_review 해소 tuple."""
+    """stderr·dry-run·raw 가 **같은 문자열로** 공유하는 추가 리뷰어 해소 tuple.
+
+    앞머리(커맨드·시간 예산)는 종전과 같고, 뒤에 해소 출처 축이 붙는다 — 구조화면
+    `source=structured` + harness/model/reasoning, legacy 면 `source=legacy` +
+    `model=unpinned-model`(모델을 고정하지 않은 경로임을 크게 남긴다)."""
+    tail = (target or ReviewerTarget(REVIEWER_SOURCE_LEGACY, reviewer_cmd)).profile_tail
     return (
         f"(reviewer_cmd={reviewer_cmd}, wall_timeout_sec={timeout}, "
-        f"idle_timeout_sec={idle_timeout})"
+        f"idle_timeout_sec={idle_timeout}, {tail})"
     )
 
 
@@ -4002,6 +4885,7 @@ def _main(argv: list[str] | None = None) -> int:
             flag for flag, given in (
                 ("--ack-rounds", args.ack_rounds), ("--ack-wave", args.ack_wave),
                 ("--dry-run", args.dry_run), ("--force", args.force),
+                (CODEX_EGRESS_FLAG, args.codex_egress_escalated),
             ) if given
         )
         if ignored:
@@ -4133,10 +5017,22 @@ def _main(argv: list[str] | None = None) -> int:
         except AnchorResolutionError as exc:
             print(f"오류: 외부 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
             return 1
-    # 시간 예산은 **리뷰어 커맨드의 하네스 프로필**을 따른다 — reviewer_cmd 를 먼저 해소해야
-    # 어떤 축(클라우드/로컬)의 값을 쓸지 정해진다(기본 `codex exec` → codex 축). 깨진 conf의
+    # 시간 예산은 **해소된 대상의 하네스 프로필**을 따른다 — 대상 command 를 먼저 해소해야
+    # 어떤 축(클라우드/로컬)의 값을 쓸지 정해진다. 깨진 conf의
     # fail-soft 경고는 해소 중 발생하지만 stderr 첫 줄 provenance 계약을 지키도록 잠시 보류한다.
-    reviewer_cmd = _reviewer_cmd(conf)
+    # 대상 해소가 시간 예산보다 **먼저**다 — 잘못된 프로필(부분 tuple·미지원 값·대상 이중 선언)은
+    # output-dir 생성·격리 거울·라운드 예약·raw 예약·과금 문구 어느 것도 만들기 전에 끊는다.
+    # 여기까지의 앵커 해소는 읽기 전용이고, 이 함수 자체도 부작용이 없다.
+    try:
+        target = resolve_reviewer_target(conf)
+    except ReviewerTargetError as exc:
+        print(
+            f"오류: 추가 리뷰어 대상 해소 실패 — 외부 송신 전에 중단합니다: {exc}\n"
+            f"  · 설정 파일: {_local_conf_path(pm_home)}",
+            file=sys.stderr,
+        )
+        return 1
+    reviewer_cmd = target.command
     resolution_warnings = io.StringIO()
     with contextlib.redirect_stderr(resolution_warnings):
         resolved_time_profile = reviewer_profile(reviewer_cmd, conf)
@@ -4151,7 +5047,15 @@ def _main(argv: list[str] | None = None) -> int:
         else float(resolved_time_profile.idle_timeout)
     )
     conf_path = _local_conf_path(pm_home)
-    profile = resolved_reviewer_profile(reviewer_cmd, timeout, idle_timeout)
+    profile = resolved_reviewer_profile(reviewer_cmd, timeout, idle_timeout, target)
+    # Codex egress 승격 판정 — dry-run 표시와 실행 게이트가 **같은 입력**을 쓴다. 마커는 "승격이
+    # 필요한 형상인가"만 정하고, "이번 호출이 승격됐는가"는 호출층 attestation 이 소유한다.
+    relay = _load_relay()
+    codex_egress_required = relay.codex_egress_escalation_required()
+    codex_egress = relay.codex_egress_label(
+        escalation_required=codex_egress_required,
+        attested=args.codex_egress_escalated,
+    )
 
     target_repo = diff_root
     # 정상 실행·dry-run 공용 첫 provenance. 이후 cap/reanchor/diff 진단이 붙더라도 어느 PM-home conf와
@@ -4199,10 +5103,12 @@ def _main(argv: list[str] | None = None) -> int:
     if cap_warning is not None:
         print(cap_warning, file=sys.stderr)
 
-    output_dir: Path | None = None
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+    # `--output-dir` 은 **경로 해소만** 여기서 한다(위임 표면과 같은 규칙). 디렉토리 생성은
+    # 부작용이므로 실제로 raw 를 예약하는 지점(`_reserve_output`)이 소유한다 — 그래야 미리보기·
+    # 비활성 no-op·Codex egress 차단·라운드 상한 거부처럼 **전송 없이 끝나는 실행**이 요청한
+    # 디렉토리를 만들지 않는다(빈 디렉토리를 남기면 "아무 일도 없었다"가 파일시스템에서 거짓이
+    # 되고, 사람이 그 자리를 산출물 위치로 오독한다).
+    output_dir: Path | None = Path(args.output_dir) if args.output_dir else None
 
     # 슬롯 선택과 diff 추출은 위에서 확정한 동일 path 집합을 쓴다.
     paths = list(selected_paths)
@@ -4280,6 +5186,22 @@ def _main(argv: list[str] | None = None) -> int:
     prompt = build_prompt(diff=diff, adr_refs=args.adr, gate=args.gate)
 
     if args.dry_run:
+        # 미리보기는 **부작용 0**이다(외부 송신·raw 예약·라운드 예약·격리 거울·`--output-dir`
+        # 생성 모두 없음). 여기까지의 준비는 전부 읽기 전용이고(conf 해소·denylist·git diff),
+        # 그 diff 는 아래 프롬프트 미리보기가 **실제 나갈 내용**을 보여주기 위해 필요하다.
+        # 해소 대상 표시는 stderr 첫 provenance·raw 헤더와 **같은 문자열**을 쓴다 — 세 표면이 서로
+        # 다른 말을 하면 "미리보기로 확인한 대상"과 "실제 나간 대상"을 대조할 수 없다.
+        print("=== [dry-run] 추가 리뷰어 대상 (외부 전송 없음) ===")
+        print(f"local_conf: {conf_path}")
+        print(f"resolved_profile: {profile}")
+        print(f"command: {target.command}")
+        print(relay.dry_run_codex_egress_line(
+            escalation_required=codex_egress_required,
+            attested=args.codex_egress_escalated,
+            script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
+            consent_key=EXTERNAL_REVIEW_ENABLED_KEY,
+            windows=_running_on_windows(),
+        ))
         print("=== [dry-run] 프롬프트 미리보기 (외부 전송 없음) ===")
         print(prompt)
         print("=== [dry-run] 외부 호출 생략 ===")
@@ -4288,50 +5210,108 @@ def _main(argv: list[str] | None = None) -> int:
     # 활성화 게이트 (외부 전송이므로 기본 OFF)
     if not _is_enabled(conf) and not args.force:
         print(
-            "외부 리뷰 비활성 — 코드 diff 외부 전송이 꺼져 있습니다 "
-            "(local.conf external_review_enabled=false).\n"
-            "켜기: local.conf 에 `external_review_enabled=true` 추가, 또는 "
+            "추가 리뷰어 비활성 — 코드 diff 외부 전송이 꺼져 있습니다 "
+            f"(local.conf {EXTERNAL_REVIEW_ENABLED_KEY}=false).\n"
+            f"켜기: local.conf 에 `{EXTERNAL_REVIEW_ENABLED_KEY}=true` 추가, 또는 "
             "`board.py init` / `pm_update` 시 opt-in 프롬프트. "
             "미리보기는 `--dry-run`, 1회 강제는 `--force`.",
             file=sys.stderr,
         )
         return 0  # no-op — 실패 아님
 
-    # ── 리뷰어 가시 범위 격리 ──────────
-    # 라운드 예약보다 **먼저** 만든다 — 격리 실패로 중단하는 실행은 외부 전송이 없으므로 라운드를
-    # 소비하지 않아야 하고(환불 경로를 새로 만들 이유가 없다), 리뷰어는 이 거울 안에서만 돈다.
-    isolation = contextlib.ExitStack()
-    try:
-        workspace = isolation.enter_context(reviewer_visibility_scope(
-            diff_root, allow_unisolated=args.allow_unisolated_reviewer, conf=conf,
-            # 거울과 프롬프트가 **같은 해소값**으로 시크릿을 제외한다(폭이 갈리면 제외가 무의미).
-            denylist=content_resolution.denylist,
-        ))
-    except ReviewerWorkspaceError as exc:
-        isolation.close()
-        print(_UNISOLATED_GUIDANCE.format(reason=exc), file=sys.stderr)
-        return 1
-    # 생성 이후 **모든 경로**(라운드 상한 거부·예외 포함)가 이 finally 를 지나 정리된다.
-    try:
-        return _run_isolated_review(
-            args, workspace, conf=conf, prompt=prompt, reviewer_cmd=reviewer_cmd,
-            timeout=timeout, idle_timeout=idle_timeout, output_dir=output_dir,
-            conf_path=conf_path, profile=profile, excluded=excluded,
+    # Codex egress 게이트 — `--output-dir` 생성·격리 거울·라운드 예약·raw 예약·외부 스폰·과금
+    # 문구보다 **앞**이다. 증명 없는 network-off 실행은 여기서 끝난다(엔진은 sandbox 를 완화하거나
+    # 다른 대상으로 무음 대체하지 않는다). `--force` 는 위의 opt-in 게이트용이라 이 안전 경계를
+    # 열지 못한다(이 판정은 force 를 입력으로 쓰지 않는다). 미리보기(dry-run)는 이 게이트 앞에서
+    # 이미 반환됐다 — 차단 환경에서도 처방을 낼 수 있어야 하고, 반환 시점까지 부작용이 0 이라
+    # 게이트 뒤로 미룰 이유가 없다.
+    if codex_egress_required and not args.codex_egress_escalated:
+        print(
+            relay.codex_egress_block_message(
+                list(sys.argv[1:] if argv is None else argv),
+                target.name, target.ledger_model,
+                script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
+                consent_key=EXTERNAL_REVIEW_ENABLED_KEY,
+                subject="추가 리뷰어 외부 전송",
+                windows=_running_on_windows(),
+            ),
+            file=sys.stderr,
         )
-    finally:
-        isolation.close()
+        return 1
+
+    # 실행 provenance — raw 헤더와 같은 라벨을 stderr 에도 남긴다(사후 안전 경계 재구성 입력).
+    print(
+        "[external-review] 실행 provenance: "
+        + relay.codex_egress_provenance(
+            escalation_required=codex_egress_required,
+            attested=args.codex_egress_escalated,
+        ),
+        file=sys.stderr,
+    )
+
+    # ── 라운드 상한·wave 예산 게이트: 호출 전 예약 ──────────
+    # 격리 컨테이너 생성보다 **먼저**다 — 이미 상한에 닿은 호출은 스폰이 없어도 격리를 먼저 만들면
+    # 저장소·인증 사본을 만들었다 지우는 실 작업을 하고, 그건 "전송 없이 끝나는 실행은 부작용 0"
+    # 규율(dry-run·비활성 no-op·egress 차단과 같은 축)을 이 rc 에서만 깨는 것이다.
+    budget = _reserve_round_budget(args, conf)
+    if budget.refused_rc is not None:
+        return budget.refused_rc
+
+    # ── 추가 리뷰어 가시 범위 격리 ──────────
+    # 리뷰어는 이 거울 안에서만 돈다. 스폰 전에 중단하는 실행은 외부 전송이 없으므로 방금 잡은
+    # 예약을 그 자리에서 원자 환불한다(마감 시점 `started=False` 환불과 같은 조건·같은 기계).
+    # 환불 소유는 이 seam 하나다 — 알려진 격리 실패도, 예상 못 한 예외도 같은 구간 규칙을 탄다.
+    with _PreSpawnReservation(budget) as reservation:
+        isolation = contextlib.ExitStack()
+        try:
+            workspace = isolation.enter_context(reviewer_visibility_scope(
+                diff_root, allow_unisolated=args.allow_unisolated_reviewer, conf=conf,
+                # 거울과 프롬프트가 **같은 해소값**으로 시크릿을 제외한다(폭이 갈리면 제외가 무의미).
+                denylist=content_resolution.denylist,
+            ))
+        except ReviewerWorkspaceError as exc:
+            isolation.close()
+            # 중단 사유를 먼저 말하고, 그 결과로 장부가 어떻게 됐는지를 뒤에 붙인다.
+            print(_UNISOLATED_GUIDANCE.format(reason=exc), file=sys.stderr)
+            reservation.release(reason="리뷰어 격리 생성 실패")
+            return 1
+        # 생성 이후 **모든 경로**(예외 포함)가 이 finally 를 지나 정리된다.
+        try:
+            return _run_isolated_review(
+                args, workspace, conf=conf, prompt=prompt, reviewer_cmd=reviewer_cmd,
+                timeout=timeout, idle_timeout=idle_timeout, output_dir=output_dir,
+                conf_path=conf_path, profile=profile, excluded=excluded,
+                target=target, codex_egress=codex_egress, reservation=reservation,
+            )
+        finally:
+            isolation.close()
 
 
 def _run_isolated_review(
     args, workspace, *, conf, prompt, reviewer_cmd, timeout, idle_timeout,
-    output_dir, conf_path, profile, excluded,
+    output_dir, conf_path, profile, excluded, target=None, codex_egress=None,
+    reservation: "_PreSpawnReservation | None" = None,
 ) -> int:
-    """격리 컨테이너 수명 **안**에서 도는 구간 — 라운드 상한 예약·리뷰 실행·장부 마감.
+    """격리 컨테이너 수명 **안**에서 도는 구간 — 리뷰 실행·장부 마감.
 
     `_main` 에서 떼어낸 이유는 수명 관리 하나다: 여기서 어떤 경로로 빠져나가도(조기 return·예외)
     호출부의 단일 finally 가 컨테이너를 지운다. 거울에는 저장소 사본과 인증 파일 사본이 있어
     잔존이 곧 누출이다.
+
+    예산 확인·예약은 이 구간 **밖**(격리 생성 전)에서 이미 끝났다 — 상한에 닿은 호출이 격리를
+    만들지 않게 하려면 그 순서여야 한다. 넘겨받은 예약(`reservation`)의 앞부분(환경 준비, 그리고
+    `run_review` 안의 raw 선점·장부 시작 레코드·transport·argv 준비)은 아직 스폰 전이라 호출부의
+    환불 seam 이 소유하고, 소유권은 **러너 호출 직전**의 `on_spawn_attempt` 콜백으로 넘어온다 —
+    그 뒤부터 이 구간이 예약을 전송 결과로 마감한다.
+
+    이전에는 대칭 반납이 붙는다(`on_no_spawn`). 러너가 `started=False` 로 판명해 돌아오면 소유권이
+    스폰 전 seam 으로 되돌아오고, 요약·진단·라운드 환불이 **저장까지 끝난 뒤**에야 반납된다 — 그
+    사이의 실패(닫힌 stdout 파이프의 `BrokenPipeError` 가 실측 축이다)는 자식이 없던 실행이므로
+    바깥 seam 이 예약을 한 번 되돌려야 한다. `started=True` 는 종전 그대로 반납하지 않는다.
     """
+    if reservation is None:
+        reservation = _PreSpawnReservation(RoundBudget())  # 장부 밖 직접 호출
+    budget = reservation.budget
     workspace_tree = workspace.tree if workspace is not None else None
     extra_keep = reviewer_env_keep_extra(conf)
     reviewer_environment = reviewer_env(
@@ -4364,143 +5344,44 @@ def _run_isolated_review(
             file=sys.stderr,
         )
 
-    # ── 라운드 상한 게이트: 호출 전 예약 ──────────
-    # 여기까지 왔으면 dry-run·빈-diff·비활성 no-op 을 모두 통과해 *실 외부 전송*이 일어난다 —
-    # 그것들은 전송이 없어 라운드가 아니므로(카운트 제외) 이 앞의 조기 return 뒤에 게이트를 둔다.
-    # `--gate` 지정 시에만 per-gate 장부를 대조한다("--gate 미지정 실행은 상한 대상 밖").
+    print(f"추가 리뷰어 실행 중 (외부 전송·과금): {reviewer_cmd}", file=sys.stderr)
+    # 예약 소유는 `run_review` **진입**이 아니라 그 안의 **스폰 시도 직전**에 넘어간다
+    # (`on_spawn_attempt`). run_review 의 앞부분(raw 선점·장부 시작 레코드·구조화 transport·
+    # argv/kwargs 준비)은 자식이 아직 없는 구간이라, 진입에서 넘기면 스폰 0·과금 0 으로 끝난
+    # 준비 실패(예: `--output-dir` 이 일반 파일이라 raw 선점이 터지는 실행)가 예약을 미완으로
+    # 남긴다 — `incomplete_limit=1` 이면 다음 **정상** 호출이 곧바로 rc=4 로 막힌다.
+    # 이전 이후의 실패는 프롬프트가 이미 나갔을 수 있으므로 환불하지 않는다: 되돌림 판정은 아래
+    # 마감 경로의 `started` 가 소유한다(타임아웃·비정상 종료까지 환불하면 과금된 호출이 상한을
+    # 소비하지 않아 무한 우회가 열린다·MF-A).
     #
-    # MF-A(예약-후-환불): count 를 *호출 전에* +1 예약한다 — 타임아웃·비정상 종료도 프롬프트가 이미
-    # 전송·과금됐을 수 있는데 성공시에만 세면 반복 타임아웃으로 상한을 무한 우회한다. 외부 프로세스가
-    # 확실히 시작되지 않은 경우(스폰 실패·started=False)만 아래에서 환불한다. MF-B(원자성): 확인→예약
-    # →저장을 `_round_ledger_lock()` 한 임계 구역으로 묶어 동시 실행이 같은 잔여 슬롯을 통과 못 하게 한다.
-    # --ack-rounds 는 acked_through 를 현 count 로 올려(엔진은 기록만·승인 판단은 사용자/카드) +limit
-    # 창을 열고 그 호출도 실 전송이므로 함께 예약한다. 초과면 리뷰어 호출 전에 거부(전용 rc·과금 없음).
-    #
-    # 승인(--ack-rounds/--ack-wave)은 **먼저 전부 적용한 뒤** 두 상한을 다시 본다. 한 축의 승인을
-    # 적용해 놓고 다른 축에서 저장 없이 되돌아가면 사용자가 준 승인이 조용히 사라지기 때문이다
-    # (같은 승인을 다시 받아야 한다). 그래서 (1) 두 플래그 동시 지정은 둘 다 적용돼 그대로 재개되고,
-    # (2) 남은 축이 여전히 막으면 적용된 승인만 저장하고 거부한다(다음 실행이 그 승인을 이어받는다).
-    reserved_gate: str | None = None
-    reserved_round_id: str | None = None
-    reserved_round_sequence: int | None = None
-    reserved_wave_id: str | None = None
-    if args.gate:
-        limit = _round_limit(conf)
-        incomplete_limit = _incomplete_round_limit(conf)
-        wave_budget = _wave_budget(conf)
-        try:
-            with _round_ledger_lock():
-                ledger = _load_round_ledger()
-                # 앵커 이동 1회 승계 — legacy(diff 앵커) 장부의 차단 상태를 그대로 이관한다.
-                # 승계분은 판정 *이전에* 저장한다: 차단으로 조기 return 해도 마이그레이션은
-                # 남아야 다음 실행이 다시 승계하지 않는다(게이트당 1회).
-                if _inherit_legacy_round_entry(ledger, args.gate) is not None:
-                    _, legacy_verdicts, legacy_incomplete = _unacked_round_counts(
-                        ledger[args.gate]
-                    )
-                    print(
-                        f"legacy 라운드 장부 승계: {_legacy_round_ledger_path()} → "
-                        f"{_round_ledger_path()} · gate={args.gate} "
-                        f"verdicts={legacy_verdicts} incomplete={legacy_incomplete}",
-                        file=sys.stderr,
-                    )
-                    _save_round_ledger(ledger)
-                entry = _gate_entry(ledger, args.gate)
-                # 손상 복구(재계산된 spent)는 거부되는 실행에서도 저장한다 — 안 그러면 손상값이
-                # 남아 매 실행 같은 경고를 반복하고 장부가 계속 거짓말을 한다. 저장 판정은 정규화와
-                # **같은 술어**를 쓴다.
-                wave_repaired = _wave_corruption_note(ledger.get(WAVE_SECTION_KEY)) is not None
-                wave = _wave_state(ledger)
-                # 승인 적용 (두 축 모두·판정 전). **고지는 아직 하지 않는다** — 재개인지 거부인지는
-                # 두 상한을 다시 본 뒤에야 정해지고, 거부되는 실행이 "재개"를 말하면 rc 4 와
-                # 어긋난 loud 오보가 된다.
-                acked_rounds_to: int | None = None
-                wave_reset = False
-                if args.ack_rounds:
-                    acked_rounds_to = entry["count"]
-                    entry["acked_through"] = acked_rounds_to  # 승인 수위 상향 (+limit 창)
-                    entry["records"] = []               # 승인된 상세 레코드는 집계에서 영구 불필요
-                if args.ack_wave:
-                    wave = _reset_wave(ledger)
-                    wave_reset = True
-                approved = acked_rounds_to is not None or wave_reset
-
-                def announce(resumed: bool) -> None:
-                    for note in _approval_notes(
-                        gate=args.gate, acked_rounds_to=acked_rounds_to, limit=limit,
-                        wave_reset=wave_reset, wave_budget=wave_budget, resumed=resumed,
-                    ):
-                        print(note, file=sys.stderr)
-
-                # 판정은 승인 반영 **뒤**의 값으로 한다. wave 예산은 게이트 상한과 독립 축이라
-                # 한쪽 승인이 다른 쪽을 열지 않는다 — 게이트 축을 먼저 보는 이유는 그쪽이 더
-                # 좁은(그 게이트가 수렴했다는) 진단이라서다.
-                count, acked = entry["count"], entry["acked_through"]
-                unacked, verdicts, incomplete = _unacked_round_counts(entry)
-                if verdicts >= limit or incomplete >= incomplete_limit:
-                    if approved or wave_repaired:
-                        _save_round_ledger(ledger)      # 승인·손상 복구는 거부돼도 남긴다
-                    announce(resumed=False)
-                    print(_ROUND_LIMIT_GUIDANCE.format(
-                        gate=args.gate, unacked=unacked, verdicts=verdicts,
-                        incomplete=incomplete, limit=limit,
-                        incomplete_limit=incomplete_limit,
-                        ledger=_round_ledger_path(),
-                        count=count, acked=acked), file=sys.stderr)
-                    # 거울 정리는 호출부의 단일 finally 가 한다(전송 없이 되돌아감).
-                    return EXIT_ROUND_LIMIT_EXCEEDED    # 예약 없음 (전송 전 거부)
-                if wave["spent"] >= wave_budget:
-                    if approved or wave_repaired:
-                        _save_round_ledger(ledger)
-                    announce(resumed=False)
-                    print(_WAVE_BUDGET_GUIDANCE.format(
-                        gate=args.gate, spent=wave["spent"], budget=wave_budget,
-                        started=wave["started"] or "미기록",
-                        ledger=_round_ledger_path()), file=sys.stderr)
-                    return EXIT_ROUND_LIMIT_EXCEEDED    # 예약 없음 (전송 전 거부)
-                announce(resumed=True)                  # 두 축을 모두 통과한 뒤에만 "재개"
-                reserved_round_id = uuid.uuid4().hex
-                # 예약 sequence 는 **여기서** 잡는다 — 마감 시점에 레코드를 되찾아 읽으면 그 사이
-                # 승인(`--ack-rounds`)이 집계 창을 비운 실행만 순번을 잃는다.
-                reserved_round_sequence = _reserve_round(
-                    entry, reserved_round_id,
-                )["sequence"]                             # 호출 전 라운드 예약
-                _spend_wave_round(wave)                   # 같은 전송을 wave 예산에서도 차감
-                _save_round_ledger(ledger)
-                reserved_gate = args.gate
-                reserved_wave_id = wave["id"]             # 환불은 이 세대에만 유효
-        except OSError as exc:
-            # 락 획득/장부 write 실패 — 상한을 확인하지 못한 채 전송하면 과금 게이트가 무력화되므로
-            # **전송 전에** 멈춘다(과금 0). 가장 흔한 원인은 동시 실행의 락 보유다(Windows
-            # `msvcrt.locking` 은 재시도 소진 시 OSError·POSIX 는 블로킹이라 여기 안 온다).
-            print(
-                f"오류: 라운드 장부 임계 구역 진입 실패 ({type(exc).__name__}: {exc}) — 다른 "
-                "게이트 실행이 장부 락을 보유 중일 수 있습니다. 잠시 후 다시 실행하세요 "
-                f"(장부: {_round_ledger_path()}).",
-                file=sys.stderr,
-            )
-            return 1
-    elif args.ack_rounds or args.ack_wave:
-        acks = " / ".join(
-            flag for flag, given in (
-                ("--ack-rounds", args.ack_rounds), ("--ack-wave", args.ack_wave),
-            ) if given
-        )
-        print(f"경고: {acks} 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
-              file=sys.stderr)
-
-    print(f"외부 리뷰어 실행 중: {reviewer_cmd}", file=sys.stderr)
-    # 리뷰어는 PM 세션의 cwd/env/홈을 물려받지 않는다 — 거울과 임시 홈, allowlist env 만 받는다.
+    # 추가 리뷰어는 PM 세션의 cwd/env/홈을 물려받지 않는다 — 거울과 임시 홈, allowlist env 만 받는다.
     result = run_review(
         prompt=prompt, reviewer_cmd=reviewer_cmd,
         timeout=timeout, output_dir=output_dir, idle_timeout=idle_timeout,
         local_conf_path=conf_path, resolved_profile=profile,
         cwd=workspace_tree,
         env=reviewer_environment,
+        target=target, codex_egress=codex_egress,
+        on_spawn_attempt=reservation.hand_off,
+        on_no_spawn=reservation.reclaim_no_spawn,
     )
+    started = bool(result.get("started", True))
+    if started:
+        # 스폰된 실행의 예약은 아래 마감 경로가 소유한다(소유권은 스폰 시도 콜백이 이미 넘겼다 —
+        # 여기 한 줄은 그 불변식을 이 자리에서 못 박는 멱등 재확인이다). 이후 어디서 죽어도
+        # 환불하지 않는다: 프롬프트가 이미 나갔을 수 있어 되돌리면 과금된 호출이 상한을 소비하지
+        # 않는다(무한 우회·MF-A).
+        reservation.hand_off()
+    # started=False 는 반대다 — 러너가 "자식 없음"으로 판명해 돌아온 실행이라 `on_no_spawn` 이
+    # 소유권을 이 seam 으로 되돌려 놨다. 아래 요약·진단·마감이 **끝날 때까지** 그 상태를 유지한다:
+    # 여기서 미리 넘기면 요약 출력이 닫힌 stdout 파이프로 죽는 순간(BrokenPipeError) 전송 0·과금 0
+    # 인 실행의 예약이 미완으로 남아 `incomplete_limit=1` 형상에서 다음 정상 호출을 막는다.
     print_summary(result, gate=args.gate, excluded=excluded)
-    if result.get("failed") and workspace is not None:
+    if (result.get("failed") and workspace is not None
+            and not result.get("reply_extraction_failed")):
         # 격리 임시 홈에서 로그인 파일이 빠졌을 때의 증상이 '리뷰어 실패'라, 원인 분리 채널을 준다.
+        # 회신 추출 실패는 예외다 — 프로세스가 rc=0 으로 끝났으니 인증은 통과한 실행이고, 여기서
+        # 인증 힌트를 내면 원인을 반대로 가리킨다(진단 채널은 요약의 사유 줄과 raw wire 다).
         print(
             "[external-review] 힌트: 격리(임시 홈·allowlist env)에서 인증 입력이 빠져 실패했을 수 "
             f"있습니다 — 홈 인증/설정 복제 {len(workspace.copied_home_artifacts)}개("
@@ -4518,37 +5399,30 @@ def _run_isolated_review(
 
     # 정상 복귀한 호출은 판정 유무와 별개로 종료 마감한다. 프로세스 kill처럼 이 지점에 도달하지
     # 못한 레코드는 finished_at 없이 남아 다음 호출에서 미완 재시도 예산으로 식별된다.
-    if reserved_gate is not None and reserved_round_id is not None:
+    if budget.reserved:
         # 산출 파싱·시각은 락 **밖**에서 끝낸다 — 임계 구역은 장부 read-modify-write 만 잡는다.
         # 예약 identity(id·sequence)는 예약 시점 값이라 마감 시점 장부 상태에 의존하지 않는다.
         outcome = (
             _round_outcome(result, record={
-                "id": reserved_round_id, "sequence": reserved_round_sequence,
+                "id": budget.round_id, "sequence": budget.sequence,
             })
-            if result.get("started", True) else None
+            if started else None
         )
         try:
             with _round_ledger_lock():
                 ledger = _load_round_ledger()
-                entry = _gate_entry(ledger, reserved_gate)
-                matching = next(
-                    (row for row in entry["records"] if row.get("id") == reserved_round_id),
-                    None,
-                )
-                if not result.get("started", True):
+                if not started:
                     # 전송이 확실히 없던 라운드 — 두 예산(게이트 count·wave spent)을 같은 조건으로
-                    # 되돌린다. 산출도 남기지 않는다(리뷰어가 아무 말도 하지 않았다).
-                    # wave 는 **예약 시점 세대**만 깎는다: 그 사이 `--ack-wave` 로 새 wave 가 열렸으면
-                    # 이 실패는 그 예산과 무관하다(깎으면 승인 1회로 예산이 늘어난다).
-                    if _refund_round(entry, reserved_round_id) and not _refund_wave_round(
-                        _wave_state(ledger), reserved_wave_id
-                    ):
-                        print(
-                            "경고: 예약 시점 wave 가 이미 리셋돼 wave 예산은 환불하지 않았습니다 "
-                            "(라운드 count 만 환불).",
-                            file=sys.stderr,
-                        )
+                    # 되돌린다(격리 생성 실패 환불과 **같은 기계**). 산출도 남기지 않는다
+                    # (리뷰어가 아무 말도 하지 않았다).
+                    _refund_reserved_round(ledger, budget)
                 elif outcome is not None:
+                    entry = _gate_entry(ledger, budget.gate)
+                    matching = next(
+                        (row for row in entry["records"]
+                         if row.get("id") == budget.round_id),
+                        None,
+                    )
                     if matching is not None:
                         matching["finished_at"] = _utc_now_iso()
                         matching["verdict"] = _round_has_verdict(result)
@@ -4557,6 +5431,12 @@ def _run_isolated_review(
                     # 예약 identity 를 함께 실어 동시 완료에서도 라운드↔산출 연결이 확정된다.
                     _append_round_outcome(entry, outcome)
                 _save_round_ledger(ledger)
+            if not started:
+                # 환불이 **저장까지 끝난** 뒤에야 소유권을 반납한다 — 이 줄 앞에서 죽으면 바깥
+                # seam 이 아직 소유자라 한 번 되돌리고, 이 줄 뒤에는 되돌릴 것이 없다. 저장이
+                # 실패한 경로(아래 OSError)는 반납하지 않는다: 되돌리지 못한 예약의 소유자는
+                # 여전히 바깥 seam 이다.
+                reservation.settle_refunded()
         except OSError as exc:
             # 마감은 이미 *끝난* 전송의 부기다 — 여기서 rc 를 바꾸면 리뷰 판정이 락 사정으로
             # 뒤집힌다. loud 경고만 남기고 판정 종료코드를 그대로 돌려준다. 마감 못 한 레코드는

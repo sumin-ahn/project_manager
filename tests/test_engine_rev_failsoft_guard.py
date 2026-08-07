@@ -867,7 +867,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     assert report.boundaries, "scanner found no marked-skew boundaries"
     # 158 = 155 + T-0591 완료 게이트의 원장 기록·쓰기 후 재판정·pm_config 판정 unavailable
     #   세 경계. 모두 마킹된 skew 는 re-raise 하고 그 밖만 rc1 결과로 번역한다.
-    assert len(report.boundaries) == 158, "propagation sweep boundary ratchet changed"
+    # 160 = 158 + T-0590 스폰 전 롤백의 두 경계. `run_review` 의 스폰 전 구간은 주 예외를 그대로
+    #   re-raise 하고(환불 판정은 호출부 seam 이 소유), 그 정리 경로
+    #   (`_abort_pre_spawn_raw` 의 raw 장부 마감)만 등록된 사유로 흡수한다 — 정리 실패가 중단
+    #   사유를 덮으면 이 실행이 왜 죽었는지가 사라지기 때문이다.
+    assert len(report.boundaries) == 160, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
