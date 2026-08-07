@@ -551,6 +551,11 @@ def test_engine_manifest_subset_of_shipping_globs(hf):
     )
 
 
+def test_retired_root_regression_workflow_is_not_shipping(hf):
+    """T-0589 역방향 가드 — manifest 제거 후 stale SHIPPING_GLOBS 재유입 차단."""
+    assert not hf._path_is_shipping(".github/workflows/regression.yml")
+
+
 @requires_git_binary
 def test_manifest_shipping_inventory_ignores_untracked_inflow(tmp_path):
     """TRACKED_ONLY 전환 후 manifest 출하 판정은 미추적 파일 유입에 흔들리지 않는다."""
