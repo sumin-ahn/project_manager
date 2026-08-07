@@ -4127,15 +4127,41 @@ _ADAPTER_CONFIG_LIST_HINT = (
     "./pm-config.sh sync-adapter-config --list (Windows 는 `.\\pm-config.cmd`)")
 _ADAPTER_CONFIG_WINDOWS_HINT = "Windows 는 `.\\pm-config.cmd`"
 _ADAPTER_BACKUP_HINT = ".pm_import_backups/<DATE>/"
+# pm_import 자체를 아직 못 불러오는 복구 RUN에서도 채널 적용 여부를 판정할 최소 좌표.
+# "존재하는 managed 대상"만 완료 게이트 대상이라는 계약 경계다. 파일이 하나도 없는 순수
+# 엔진 복구 트리는 adapter 채널 unavailable이 아니라 적용 대상 없음(vacuous green)이다.
+_ADAPTER_CONFIG_DEST_CANDIDATES = (
+    ".codex/hooks.json", ".codex/config.toml", ".claude/settings.json",
+    ".opencode/opencode.jsonc",
+)
+
+
+def _has_adapter_config_candidate(dest_root: Path) -> bool:
+    """instance-owned config 경로 엔트리가 하나라도 있는가(읽기/쓰기 0).
+
+    regular file만 세면 directory·broken symlink·권한 오류가 외곽 gate에서 채널 실행 자체를
+    건너뛴다. 중앙 판정이 unavailable로 올릴 기회를 보존하도록 "부재가 확인된 경우"만 제외한다.
+    """
+    for relpath in _ADAPTER_CONFIG_DEST_CANDIDATES:
+        try:
+            (Path(dest_root) / relpath).lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        return True
+    return False
 
 
 def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
 
     `write=False`(dry-run)는 판정만 한다(파일·원장 미변경). pm_import 로드/판정 실패는
-    `status="unavailable"` 로 fail-soft 한다 — 이 채널이 엔진 sync 자체를 깨뜨리지 않는다."""
+    `status="unavailable"` 로 반환한다. 엔진 파일 적용은 되돌리지 않지만 상위 완료 게이트는
+    이를 non-green 으로 소비한다."""
     result = {"status": "ok", "updated": [], "preserved": [], "drift": [],
-              "backfilled": [], "degraded": []}
+              "backfilled": [], "degraded": [], "blocking": [],
+              "managed_converged": False}
     try:
         # **로드도 try 안**이다 — 부분 전파로 pm_import 사본이 없는 트리에서 로더가 던지면
         #   그 예외가 CLI 를 통째로 죽인다(엔진 복구 실행이 바로 그 형상이다).
@@ -4148,12 +4174,15 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
             raise
         return {**result, "status": "unavailable", "reason": str(exc)}
 
+    backfill_candidates = {
+        judgment.relpath for judgment in judgments
+        if judgment.status == "in-sync"
+        and judgment.baseline_sha256 != judgment.dest_sha256
+    }
     for judgment in judgments:
         if judgment.status == "in-sync":
-            # 이미 상류와 같다 — 원장만 뒤늦게 채운다(원장 도입 전 채택자가 손댄 적도 없이
-            #   영구 보고 모드에 갇히는 걸 막는 유일한 자동 경로).
-            if judgment.baseline_sha256 != judgment.dest_sha256:
-                result["backfilled"].append(judgment.relpath)
+            # 이미 상류와 같다 — write 경로가 아래에서 원장을 뒤늦게 채운다. 성공 여부는
+            # 재판정으로 확인한 뒤에만 ``backfilled`` 로 보고한다(원장 write 실패 false-green 금지).
             continue
         summary = pm_import.adapter_config_drift_summary(judgment, dest_root)
         managed = judgment.mode == pm_import.ADAPTER_CONFIG_MANAGED
@@ -4194,10 +4223,48 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
         result[bucket].append({
             "relpath": judgment.relpath, "status": judgment.status, "summary": summary})
 
-    if write and (result["updated"] or result["backfilled"]):
+    if write and (result["updated"] or backfill_candidates):
         # 갱신분·in-sync backfill 을 한 번에 기록한다(record 는 template 일치분만 담는다).
-        pm_import.record_adapter_baseline(dest_root, source_root)
+        try:
+            pm_import.record_adapter_baseline(dest_root, source_root)
+        except Exception as exc:  # noqa: BLE001 — 파일 적용은 보존, 재판정이 rc1로 승격.
+            if _is_engine_rev_skew(exc):
+                raise
+            result["degraded"].append({
+                "relpath": ", ".join(sorted(backfill_candidates)) or "adapter_baseline.json",
+                "status": "ledger-failed",
+                "summary": str(exc),
+            })
+
+    # 완료 판정은 **쓰기 후 재판정**이 진실이다. accept가 파일을 바꿨으나 원장을 못 남긴 경우,
+    # in-sync backfill write가 실패한 경우를 모두 여기서 같은 red로 잡는다. dry-run은 현재 상태를
+    # 그대로 판정하므로 write 0 계약을 유지한다.
+    try:
+        final_judgments = pm_import.judge_adapter_configs(dest_root, source_root)
+    except Exception as exc:  # noqa: BLE001 — 엔진 적용 결과는 보존하되 게이트는 red.
+        if _is_engine_rev_skew(exc):
+            raise
+        return {**result, "status": "unavailable", "reason": str(exc)}
+    unconverged = pm_import.unconverged_managed_adapter_configs(final_judgments)
+    result["blocking"] = [
+        {"relpath": judgment.relpath, "status": status,
+         "judgment_status": judgment.status}
+        for judgment, status in unconverged
+    ]
+    result["managed_converged"] = not result["blocking"]
+    final_by_rel = {judgment.relpath: judgment for judgment in final_judgments}
+    result["backfilled"] = sorted(
+        relpath for relpath in backfill_candidates
+        if relpath in final_by_rel
+        and final_by_rel[relpath].baseline_sha256 == final_by_rel[relpath].dest_sha256
+    )
     return result
+
+
+def _adapter_config_gate_failed(result: dict) -> bool:
+    """동기 결과의 managed 완료 게이트 — unavailable/미수렴이면 True."""
+    return (result.get("status") != "ok"
+            or not result.get("managed_converged", False))
 
 
 def _print_adapter_config_finding(result: dict, *, dry_run: bool = False) -> None:
@@ -4251,6 +4318,28 @@ def _print_adapter_config_finding(result: dict, *, dry_run: bool = False) -> Non
               f"({item['summary']}).", file=sys.stderr)
         print(f"    원장 경로 권한을 고친 뒤 `{_ADAPTER_CONFIG_ACCEPT_HINT} {item['relpath']}` 로 "
               f"기록을 복구하라(내용은 이미 상류 값이다).", file=sys.stderr)
+    # in-sync byte지만 원장 backfill 실패 같은 상태는 preserved/degraded 버킷에 아직 없을 수 있다.
+    already_reported = {
+        item["relpath"] for bucket in ("preserved", "degraded")
+        for item in result.get(bucket, [])
+    }
+    for item in result.get("blocking", []):
+        if (item["relpath"] in already_reported
+                or item.get("judgment_status") != "in-sync"):
+            continue
+        print(
+            f"⚠️  어댑터 config {item['relpath']} — 내용은 상류와 같지만 원장 기록이 없어 "
+            "수렴 완료로 볼 수 없다.",
+            file=sys.stderr,
+        )
+        print(
+            ("    다음 실 pm-update가 파일 byte를 바꾸지 않고 원장을 backfill한다. "
+             "dry-run 없이 pm-update를 재실행하라."
+             if dry_run else
+             f"    원장화하려면: {_ADAPTER_CONFIG_ACCEPT_HINT} {item['relpath']} "
+             f"(백업 후 확인 · {_ADAPTER_CONFIG_WINDOWS_HINT})"),
+            file=sys.stderr,
+        )
     drift = result.get("drift", [])
     for item in drift:
         print(f"→ 어댑터 config drift(보고 전용) {item['relpath']} — {item['summary']}")
@@ -4988,10 +5077,12 @@ def _main(argv: list[str] | None = None) -> int:
     #    `--target`(엔진 export)은 dest 가 출하 템플릿 트리라 채택자 config 개념이 없고,
     #    `--paths`(부분 전파)는 요청 밖 write 를 하지 않는다. changes 유무와 독립인 것도 같다 —
     #    이 채널이 나르는 건 manifest 밖 파일이라 엔진 변경 0 인 실행에서도 할 일이 있다.
-    do_adapter_config = not args.target and not scope_paths
+    do_adapter_config = (
+        not args.target and not scope_paths
+        and _has_adapter_config_candidate(effective_dest)
+    )
 
     if not changes:
-        print("최신 — 변경 없음.")
         # 잔존 은퇴 파일은 changes 와 독립이다 — "변경 없음" 이 곧 "dest 가 상류와 같다" 는 아니다.
         _print_retired_manifest_files(retired_files)
         _print_manifest_selfheal_finding(selfheal, dry_run=args.dry_run)
@@ -5013,6 +5104,17 @@ def _main(argv: list[str] | None = None) -> int:
             configs = sync_adapter_configs(
                 effective_dest, source_root, write=not args.dry_run)
             _print_adapter_config_finding(configs, dry_run=args.dry_run)
+            if not args.dry_run and _adapter_config_gate_failed(configs):
+                # 엔진 파일에는 적용할 변경이 없었다는 사실만 말한다. adapter config 가 red인데
+                # "최신/흡수 완료"라고 접으면 release가 false-complete 되므로 baseline 기록도 막는다.
+                print(
+                    "[중단] 엔진 manifest 변경은 0건이지만 managed 어댑터 config가 "
+                    "미수렴이다 — 위 처방 후 pm-update를 재실행하고 "
+                    "`pm-config sync-adapter-config --check`를 통과시켜라.",
+                    file=sys.stderr,
+                )
+                return 1
+        print("최신 — 변경 없음.")
         # RUN2 수렴 지점: 엔진을 배달한 RUN1은 구 pm_update로 실행될 수 있으므로, 새 엔진의
         # 변경 0 재실행에서도 경로 upstream의 baseline/seen 쌍을 확인한다. dry-run은 기존
         # 계약대로 local.conf를 절대 쓰지 않는다. manifest skew면 has-changes 경로와 동형으로
@@ -5062,6 +5164,16 @@ def _main(argv: list[str] | None = None) -> int:
         #   어댑터 config 만 새 세대로 앞서가지 않게·migrate 와 같은 시퀀싱 논거).
         configs = sync_adapter_configs(effective_dest, source_root, write=True)
         _print_adapter_config_finding(configs, dry_run=False)
+        if _adapter_config_gate_failed(configs):
+            # apply는 이미 완료됐다. rollback/성공 은폐 없이 엔진 적용 사실(위 ✓ 출력)을 남기고,
+            # 전체 흡수 baseline·후속 성공 프롬프트만 차단한다.
+            print(
+                f"[중단] 엔진 파일 {len(changes)}건은 적용됐지만 managed 어댑터 config가 "
+                "미수렴이다 — 위 처방 후 pm-update를 재실행하고 "
+                "`pm-config sync-adapter-config --check`를 통과시켜라.",
+                file=sys.stderr,
+            )
+            return 1
 
     # upstream_rev baseline 갱신 — 매 sync 마다 source(upstream) HEAD 를
     # local.conf 에 박아 drift-lint의 "마지막 동기 이후" 기준점을 최신화한다. 경로

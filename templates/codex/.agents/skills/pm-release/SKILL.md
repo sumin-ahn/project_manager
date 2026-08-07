@@ -10,7 +10,8 @@ audience: pm-internal
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
 > 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
-> `./pm-update.sh` 파사드는 bash 용 — PowerShell/cmd 에선 **`.\pm-update.cmd`**(동일 인자).
+> `./pm-update.sh`·`./pm-config.sh` 파사드는 bash 용 — PowerShell/cmd 에선 각각
+> **`.\pm-update.cmd`**·**`.\pm-config.cmd`**(동일 인자).
 > **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
 > 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
 
@@ -22,7 +23,11 @@ livegate record 전에 PM 홈을 worktree canonical에 동기해 stale import �
 
 ```bash
 ./pm-update.sh --from <worktree-canonical-경로>     # 예 work/project_manager_1 (upstream=경로면 --from 생략 가능)
+./pm-config.sh sync-adapter-config --check --from <worktree-canonical-경로>
 ```
+
+두 번째 명령 rc=0이 adopter#0 흡수 완료 조건이다. red면 livegate/main push/tag/GitHub Release로
+진행하지 않고 `--accept` 또는 pm-update 재실행 처방으로 먼저 수렴시킨다.
 
 ### 2. livegate record (readonly 슬롯 핀·수집 N 확인)
 
@@ -80,7 +85,10 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record -
 
 ```bash
 ./pm-update.sh --from <worktree-canonical-경로>     # 릴리즈된 엔진/방법론을 반영
+./pm-config.sh sync-adapter-config --check --from <worktree-canonical-경로>
 ```
+
+마지막 `--check` rc=0까지가 adopter#0 흡수 완료다. red 상태를 릴리즈 완료로 기록하지 않는다.
 
 ### 5. audience 라벨
 

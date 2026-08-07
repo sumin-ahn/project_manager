@@ -6746,3 +6746,293 @@ def test_adapter_config_unavailable_channel_is_loud_not_silent(
     assert "어댑터 config 채널을 건너뛰었다" in err, f"무음 skip(관측 불가): {err!r}"
     assert result["reason"] in err, "사유가 안 나와 사람이 원인을 못 짚는다"
     assert "sync-adapter-config --list" in err, "판정 조회 안내 부재"
+
+
+def test_adapter_config_backfill_is_green_only_after_ledger_verification(
+        pm_update, tmp_path, monkeypatch):
+    """template byte가 같아도 원장 write 실패면 backfilled 성공/green으로 접지 않는다."""
+    pm_import = pm_update._load_pm_import()
+    dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
+    monkeypatch.setattr(pm_import, "record_adapter_baseline", lambda *_a, **_kw: [])
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    result = pm_update.sync_adapter_configs(dest, source, write=True)
+
+    assert result["managed_converged"] is False
+    assert result["backfilled"] == [], "원장 기록 실패를 backfill 성공으로 보고함"
+    assert result["blocking"] == [{
+        "relpath": _ADAPTER_HOOKS_REL,
+        "status": "unrecorded",
+        "judgment_status": "in-sync",
+    }]
+    assert not (dest / ".project_manager" / "adapter_baseline.json").exists()
+
+
+def test_adapter_config_ledger_exception_is_rc_contract_not_traceback(
+        pm_update, tmp_path, monkeypatch):
+    """원장 writer 예외도 파일 적용을 되돌리지 않고 managed red 결과로 번역한다."""
+    pm_import = pm_update._load_pm_import()
+    dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
+
+    def _raise(*_args, **_kwargs):
+        raise OSError("ledger disk failure")
+
+    monkeypatch.setattr(pm_import, "record_adapter_baseline", _raise)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+
+    result = pm_update.sync_adapter_configs(dest, source, write=True)
+
+    assert result["managed_converged"] is False
+    assert result["blocking"][0]["status"] == "unrecorded"
+    assert result["degraded"][0]["status"] == "ledger-failed"
+    assert "ledger disk failure" in result["degraded"][0]["summary"]
+
+
+@pytest.mark.parametrize("has_engine_change", (False, True))
+def test_pm_update_adapter_nonconvergence_is_rc1_without_hiding_engine_result(
+        pm_update, tmp_path, monkeypatch, capsys, has_engine_change):
+    """changes 0/양수 모두 adapter 판정이 돌고, managed red는 엔진 적용을 보존한 채 rc1이다."""
+    dest, source = _make_adapter_config_case(
+        tmp_path, hooks=_EDITED_HOOKS,
+        ledger={_ADAPTER_HOOKS_REL: _ledger_entry(_INSTALLED_HOOKS)})
+    engine_rel = ".project_manager/tools/__adapter_gate_sentinel__.py"
+    sentinel = source / engine_rel
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("# new engine payload\n", encoding="utf-8")
+    (source / ".project_manager" / "engine.manifest").write_text(
+        engine_rel + "\n", encoding="utf-8")
+    _track_source_tree(source)
+    _write_dest_manifest(dest, [engine_rel])
+    if not has_engine_change:
+        local = dest / engine_rel
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_bytes(sentinel.read_bytes())
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    rc = pm_update.main(["--from", str(source)])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "managed 어댑터 config가 미수렴" in captured.err
+    assert "sync-adapter-config --accept" in captured.err
+    assert "최신 — 변경 없음" not in captured.out, "adapter red를 최신으로 오보고함"
+    assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == _EDITED_HOOKS
+    if has_engine_change:
+        assert (dest / engine_rel).read_bytes() == sentinel.read_bytes(), \
+            "rc1 처리에서 이미 적용한 엔진 파일을 rollback함"
+        assert "파일 동기화" in captured.out, "엔진 적용 사실을 숨김"
+
+
+def test_pm_update_adapter_channel_unavailable_is_rc1(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """판정 채널 unavailable은 loud 보고뿐 아니라 명령 전체를 non-green으로 만든다."""
+    dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
+    engine_rel = ".project_manager/tools/__adapter_gate_sentinel__.py"
+    sentinel = source / engine_rel
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("# same\n", encoding="utf-8")
+    (source / ".project_manager" / "engine.manifest").write_text(
+        engine_rel + "\n", encoding="utf-8")
+    _track_source_tree(source)
+    _write_dest_manifest(dest, [engine_rel])
+    local = dest / engine_rel
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(sentinel.read_bytes())
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: None)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    assert pm_update.main(["--from", str(source)]) == 1
+    captured = capsys.readouterr()
+    assert "어댑터 config 채널을 건너뛰었다" in captured.err
+    assert "최신 — 변경 없음" not in captured.out
+
+
+def test_pm_update_managed_dest_missing_source_template_is_rc1_without_rev_convergence(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """managed 비교 template 부재는 changes=0에서도 rc1이고 최신/revision 완료를 기록하지 않는다."""
+    dest, source = _make_adapter_config_case(
+        tmp_path, hooks=_UPSTREAM_HOOKS,
+        ledger={_ADAPTER_HOOKS_REL: _ledger_entry(_UPSTREAM_HOOKS)})
+    (source / "templates" / "codex" / _ADAPTER_HOOKS_REL).unlink()
+    engine_rel = ".project_manager/tools/__adapter_missing_template_sentinel__.py"
+    sentinel = source / engine_rel
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("# same\n", encoding="utf-8")
+    (source / ".project_manager" / "engine.manifest").write_text(
+        engine_rel + "\n", encoding="utf-8")
+    _track_source_tree(source)
+    _write_dest_manifest(dest, [engine_rel])
+    local = dest / engine_rel
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(sentinel.read_bytes())
+    conf = _write_local_conf(
+        dest, f"upstream={source}\nupstream_rev=old\nupstream_seen_rev=old\n")
+    before_conf = conf.read_bytes()
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    def _must_not_converge(*_args, **_kwargs):
+        raise AssertionError("adapter unavailable인데 revision baseline을 수렴시켰다")
+
+    monkeypatch.setattr(pm_update, "converge_upstream_revs", _must_not_converge)
+
+    assert pm_update.main(["--from", str(source)]) == 1
+    captured = capsys.readouterr()
+    assert "비교 기준 unavailable" in captured.err
+    assert "최신 — 변경 없음" not in captured.out
+    assert conf.read_bytes() == before_conf
+
+
+def test_pm_update_partial_engine_without_adapter_candidates_is_vacuous_green(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """source/dest config 후보가 모두 없는 partial recovery는 adapter channel을 요구하지 않는다."""
+    dest = tmp_path / "partial-dest"
+    source = tmp_path / "partial-source"
+    engine_rel = ".project_manager/tools/recovery.py"
+    sentinel = source / engine_rel
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("# same\n", encoding="utf-8")
+    (source / ".project_manager" / "engine.manifest").write_text(
+        engine_rel + "\n", encoding="utf-8")
+    _track_source_tree(source)
+    _write_dest_manifest(dest, [engine_rel])
+    local = dest / engine_rel
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(sentinel.read_bytes())
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("adapter 후보 0인데 판정 채널을 실행했다")
+
+    monkeypatch.setattr(pm_update, "sync_adapter_configs", _must_not_run)
+
+    assert pm_update.main(["--from", str(source)]) == 0
+    captured = capsys.readouterr()
+    assert "최신 — 변경 없음" in captured.out
+    assert "어댑터 config 채널" not in captured.err
+
+
+@pytest.mark.parametrize("kind", ("file", "directory", "broken-symlink"))
+def test_adapter_config_outer_gate_counts_any_existing_path_entry(
+        pm_update, tmp_path, kind):
+    """외곽 gate가 중앙 판정 전부터 비정상 managed 경로를 조용히 제외하지 않는다."""
+    candidate = tmp_path / _ADAPTER_HOOKS_REL
+    candidate.parent.mkdir(parents=True)
+    if kind == "file":
+        candidate.write_text("{}\n", encoding="utf-8")
+    elif kind == "directory":
+        candidate.mkdir()
+    else:
+        candidate.symlink_to(tmp_path / "missing-hooks-target.json")
+
+    assert pm_update._has_adapter_config_candidate(tmp_path) is True
+
+
+def test_adapter_config_outer_gate_candidate_zero_is_false(pm_update, tmp_path):
+    """순수 partial-engine 트리의 vacuous-green 전제: config 경로 엔트리 0."""
+    assert pm_update._has_adapter_config_candidate(tmp_path) is False
+
+
+def test_adapter_config_outer_candidate_paths_match_channel_declaration(pm_update):
+    """복구용 외곽 후보 상수는 중앙 channel의 non-none 경로 전수와 정확히 일치한다."""
+    pm_import = pm_update._load_pm_import()
+    declared = {
+        relpath
+        for channel in pm_import.ADAPTER_CONFIG_CHANNEL.values()
+        for relpath, mode in channel.items()
+        if mode != pm_import.ADAPTER_CONFIG_NO_CHANNEL
+    }
+    assert set(pm_update._ADAPTER_CONFIG_DEST_CANDIDATES) == declared
+
+
+def test_adapter_config_dry_run_in_sync_unrecorded_prescribes_real_backfill(
+        pm_update, tmp_path, capsys):
+    """dry-run은 accept 교체가 아니라 다음 실 pm-update의 byte-불변 원장 backfill을 안내한다."""
+    dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
+
+    result = pm_update.sync_adapter_configs(dest, source, write=False)
+    pm_update._print_adapter_config_finding(result, dry_run=True)
+
+    err = capsys.readouterr().err
+    assert "실 pm-update" in err and "backfill" in err
+    assert "sync-adapter-config --accept" not in err
+
+
+def test_pm_update_explicit_claude_receipt_ignores_foreign_codex_managed_file(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """claude-only receipt가 foreign hooks 하나 때문에 codex red/overwrite로 뒤집히지 않는다."""
+    dest = tmp_path / "claude-only"
+    source = tmp_path / "source"
+    engine_rel = ".project_manager/tools/recovery.py"
+    sentinel = source / engine_rel
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("# same\n", encoding="utf-8")
+    (source / ".project_manager" / "engine.manifest").write_text(
+        engine_rel + "\n", encoding="utf-8")
+    codex_template = source / "templates" / "codex" / _ADAPTER_HOOKS_REL
+    codex_template.parent.mkdir(parents=True)
+    codex_template.write_text(_UPSTREAM_HOOKS, encoding="utf-8")
+    _track_source_tree(source)
+    _write_dest_manifest(dest, [engine_rel])
+    local = dest / engine_rel
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(sentinel.read_bytes())
+    (dest / ".project_manager" / "install.json").write_text(
+        '{"schema": 1, "harnesses": ["claude"]}\n', encoding="utf-8")
+    foreign = dest / _ADAPTER_HOOKS_REL
+    foreign.parent.mkdir(parents=True)
+    foreign_body = _EDITED_HOOKS
+    foreign.write_text(foreign_body, encoding="utf-8")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    assert pm_update.main(["--from", str(source)]) == 0
+
+    captured = capsys.readouterr()
+    assert "최신 — 변경 없음" in captured.out
+    assert "managed 어댑터 config가 미수렴" not in captured.err
+    assert foreign.read_text(encoding="utf-8") == foreign_body
+
+
+def test_pm_update_partial_managed_dest_blocks_zero_change_revision_convergence(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """영수증/완전 shape가 없는 managed dest도 zero-change RUN의 완료 baseline을 막는다."""
+    dest = tmp_path / "partial-dest"
+    source = tmp_path / "partial-source"
+    engine_rel = ".project_manager/tools/recovery.py"
+    sentinel = source / engine_rel
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("# same\n", encoding="utf-8")
+    (source / ".project_manager" / "engine.manifest").write_text(
+        engine_rel + "\n", encoding="utf-8")
+    template = source / "templates" / "codex" / _ADAPTER_HOOKS_REL
+    template.parent.mkdir(parents=True)
+    template.write_text(_UPSTREAM_HOOKS, encoding="utf-8")
+    _track_source_tree(source)
+    _write_dest_manifest(dest, [engine_rel])
+    local = dest / engine_rel
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(sentinel.read_bytes())
+    hooks = dest / _ADAPTER_HOOKS_REL
+    hooks.parent.mkdir(parents=True)
+    hooks.write_text(_INSTALLED_HOOKS, encoding="utf-8")
+    conf = _write_local_conf(
+        dest, f"upstream={source}\nupstream_rev=old\nupstream_seen_rev=old\n")
+    before_conf = conf.read_bytes()
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    def _must_not_converge(*_args, **_kwargs):
+        raise AssertionError("partial managed 판정 실패인데 revision baseline을 수렴시켰다")
+
+    monkeypatch.setattr(pm_update, "converge_upstream_revs", _must_not_converge)
+
+    assert pm_update.main(["--from", str(source)]) == 1
+    captured = capsys.readouterr()
+    assert "managed 어댑터 config가 미수렴" in captured.err
+    assert "sync-adapter-config --accept" in captured.err
+    assert "최신 — 변경 없음" not in captured.out
+    assert conf.read_bytes() == before_conf

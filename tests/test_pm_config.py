@@ -19,7 +19,9 @@ DI seam 동류).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -340,3 +342,214 @@ def test_default_session_no_identity_injected_uses_real_module(pc, tmp_path, mon
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     # 장부·local.conf 둘 다 부재 → 미해소(None) — 크래시 없이 실 모듈 경로가 동작함을 확인.
     assert pc._default_session() is None
+
+
+# ── sync-adapter-config --check 수렴 게이트 (T-0591) ─────────────────────────
+
+_CHECK_HOOKS_REL = ".codex/hooks.json"
+_CHECK_REPORT_REL = ".codex/config.toml"
+_CHECK_UPSTREAM_HOOKS = '{"hooks": {"PreCompact": ["new"]}}\n'
+_CHECK_OLD_HOOKS = '{"hooks": {"PreCompact": ["old"]}}\n'
+_CHECK_EDITED_HOOKS = '{"hooks": {"PreCompact": ["edited"]}}\n'
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _make_check_case(tmp_path: Path, *, hooks: str, ledger_sha: str | None):
+    source = tmp_path / "source"
+    template = source / "templates" / "codex" / ".codex"
+    template.mkdir(parents=True)
+    (template / "hooks.json").write_text(_CHECK_UPSTREAM_HOOKS, encoding="utf-8")
+    (template / "config.toml").write_text("upstream = true\n", encoding="utf-8")
+
+    dest = tmp_path / "dest"
+    (dest / ".codex").mkdir(parents=True)
+    (dest / ".agents").mkdir()
+    (dest / ".project_manager").mkdir()
+    (dest / "AGENTS.md").write_text("# adopter\n", encoding="utf-8")
+    (dest / _CHECK_HOOKS_REL).write_text(hooks, encoding="utf-8")
+    # report-only 차이는 모든 case에 둔다. 이 차이는 출력되되 rc를 올리면 안 된다.
+    (dest / _CHECK_REPORT_REL).write_text("adopter_knob = true\n", encoding="utf-8")
+    (dest / ".project_manager" / "install.json").write_text(
+        '{"schema": 1, "harnesses": ["codex"]}\n', encoding="utf-8")
+    if ledger_sha is not None:
+        document = {
+            "schema": 1,
+            "files": {
+                _CHECK_HOOKS_REL: {
+                    "sha256": ledger_sha,
+                    "recorded_at": "2026-01-01T00:00:00+09:00",
+                    "template_rev": "old",
+                }
+            },
+        }
+        (dest / ".project_manager" / "adapter_baseline.json").write_text(
+            json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    return dest, source
+
+
+@pytest.mark.parametrize(
+    ("name", "hooks", "ledger_sha", "expected_rc", "remedy"),
+    [
+        ("converged", _CHECK_UPSTREAM_HOOKS, _sha(_CHECK_UPSTREAM_HOOKS), 0, None),
+        ("unrecorded", _CHECK_OLD_HOOKS, None, 1, "--accept .codex/hooks.json"),
+        ("unedited", _CHECK_OLD_HOOKS, _sha(_CHECK_OLD_HOOKS), 1, "pm-update"),
+        ("edited", _CHECK_EDITED_HOOKS, _sha(_CHECK_OLD_HOOKS), 1,
+         "--accept .codex/hooks.json"),
+        # byte가 같아도 durable 원장 증거가 없으면 false-green이다.
+        ("in-sync-unrecorded", _CHECK_UPSTREAM_HOOKS, None, 1,
+         "backfill"),
+    ],
+)
+def test_sync_adapter_config_check_exit_and_actionable_remedy(
+        pc, pim, tmp_path, capsys, name, hooks, ledger_sha, expected_rc, remedy):
+    dest, source = _make_check_case(tmp_path / name, hooks=hooks, ledger_sha=ledger_sha)
+    ledger = dest / ".project_manager" / "adapter_baseline.json"
+    before = ledger.read_bytes() if ledger.is_file() else None
+    args = argparse.Namespace(
+        list=False, check=True, accept=None, source=str(source))
+
+    rc = pc.cmd_sync_adapter_config(args, pm_import=pim, dest_root=dest)
+
+    captured = capsys.readouterr()
+    assert rc == expected_rc
+    assert _CHECK_REPORT_REL in captured.out, "report-only 차이가 판정 출력에서 사라짐"
+    if remedy is None:
+        assert "수렴 확인" in captured.out
+    else:
+        assert remedy in captured.err, (name, captured.err)
+        assert "미수렴" in captured.err
+    after = ledger.read_bytes() if ledger.is_file() else None
+    assert after == before, "--check가 원장을 썼다(write 0 계약 위반)"
+    assert (dest / _CHECK_HOOKS_REL).read_text(encoding="utf-8") == hooks
+
+
+def test_sync_adapter_config_check_in_sync_unrecorded_prescribes_real_pm_update(
+        pc, pim, tmp_path, capsys):
+    """byte 동일+원장 부재는 accept overwrite가 아니라 실 pm-update의 무변경 backfill 대상이다."""
+    dest, source = _make_check_case(
+        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, ledger_sha=None)
+    args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
+
+    assert pc.cmd_sync_adapter_config(args, pm_import=pim, dest_root=dest) == 1
+
+    err = capsys.readouterr().err
+    assert "pm-update" in err and "backfill" in err
+    assert "--accept .codex/hooks.json" not in err
+
+
+def test_sync_adapter_config_check_report_only_drift_is_nonblocking(
+        pc, pim, tmp_path, capsys):
+    dest, source = _make_check_case(
+        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, ledger_sha=_sha(_CHECK_UPSTREAM_HOOKS))
+    args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
+
+    assert pc.cmd_sync_adapter_config(
+        args, pm_import=pim, dest_root=dest) == 0
+
+    out = capsys.readouterr().out
+    assert _CHECK_REPORT_REL in out and "report" in out
+
+
+def test_sync_adapter_config_check_unavailable_is_rc1(pc, tmp_path, capsys):
+    class Unavailable:
+        ADAPTER_CONFIG_REPORT = "report"
+
+        @staticmethod
+        def resolve_adapter_config_source(_dest, explicit):
+            return Path(explicit)
+
+        @staticmethod
+        def judge_adapter_configs(_dest, _source):
+            raise OSError("ledger read failed")
+
+    args = argparse.Namespace(
+        list=False, check=True, accept=None, source=str(tmp_path / "source"))
+
+    assert pc.cmd_sync_adapter_config(
+        args, pm_import=Unavailable(), dest_root=tmp_path / "dest") == 1
+    err = capsys.readouterr().err
+    assert "unavailable" in err and "ledger read failed" in err
+
+
+def test_sync_adapter_config_check_managed_dest_missing_source_template_is_rc1(
+        pc, pim, tmp_path, capsys):
+    """managed dest가 있는데 source template이 없으면 빈 판정 rc0로 접지 않는다."""
+    dest, source = _make_check_case(
+        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, ledger_sha=_sha(_CHECK_UPSTREAM_HOOKS))
+    (source / "templates" / "codex" / _CHECK_HOOKS_REL).unlink()
+    args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
+
+    assert pc.cmd_sync_adapter_config(
+        args, pm_import=pim, dest_root=dest) == 1
+
+    err = capsys.readouterr().err
+    assert "unavailable" in err and _CHECK_HOOKS_REL in err
+    assert "--from <framework checkout>" in err, "source 복구 처방이 actionable하지 않음"
+
+
+def test_sync_adapter_config_check_report_only_only_missing_managed_template_is_green(
+        pc, pim, tmp_path, capsys):
+    """managed dest 후보가 아예 없고 report-only만 있으면 missing managed template은 비차단."""
+    dest, source = _make_check_case(
+        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, ledger_sha=_sha(_CHECK_UPSTREAM_HOOKS))
+    (dest / _CHECK_HOOKS_REL).unlink()
+    (source / "templates" / "codex" / _CHECK_HOOKS_REL).unlink()
+    args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
+
+    assert pc.cmd_sync_adapter_config(
+        args, pm_import=pim, dest_root=dest) == 0
+    out = capsys.readouterr().out
+    assert _CHECK_REPORT_REL in out and "수렴 확인" in out
+
+
+def test_sync_adapter_config_check_partial_managed_dest_missing_template_is_rc1(
+        pc, pim, tmp_path, capsys):
+    """영수증/완전 shape 없는 managed dest도 빈 판정 rc0로 접지 않는다."""
+    source = tmp_path / "source"
+    source.mkdir()
+    dest = tmp_path / "partial-dest"
+    hooks = dest / _CHECK_HOOKS_REL
+    hooks.parent.mkdir(parents=True)
+    hooks.write_text(_CHECK_OLD_HOOKS, encoding="utf-8")
+    assert pim.installed_harnesses(dest, source) == []
+    args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
+
+    assert pc.cmd_sync_adapter_config(args, pm_import=pim, dest_root=dest) == 1
+
+    err = capsys.readouterr().err
+    assert "unavailable" in err and _CHECK_HOOKS_REL in err
+
+
+def test_sync_adapter_config_check_partial_managed_dest_unrecorded_is_rc1(
+        pc, pim, tmp_path, capsys):
+    """partial managed 파일은 source가 정상이어도 durable baseline 없이는 green이 아니다."""
+    source = tmp_path / "source"
+    template = source / "templates" / "codex" / _CHECK_HOOKS_REL
+    template.parent.mkdir(parents=True)
+    template.write_text(_CHECK_UPSTREAM_HOOKS, encoding="utf-8")
+    dest = tmp_path / "partial-dest"
+    hooks = dest / _CHECK_HOOKS_REL
+    hooks.parent.mkdir(parents=True)
+    hooks.write_text(_CHECK_OLD_HOOKS, encoding="utf-8")
+    args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
+
+    assert pc.cmd_sync_adapter_config(args, pm_import=pim, dest_root=dest) == 1
+
+    err = capsys.readouterr().err
+    assert "unrecorded" in err and "--accept .codex/hooks.json" in err
+
+
+def test_sync_adapter_config_parser_check_is_exclusive(pc):
+    parser = pc.build_parser()
+    checked = parser.parse_args(
+        ["sync-adapter-config", "--check", "--from", "/tmp/framework"])
+    assert checked.func is pc.cmd_sync_adapter_config
+    assert checked.check is True and checked.source == "/tmp/framework"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["sync-adapter-config", "--check", "--list"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["sync-adapter-config", "--check", "--accept", ".codex/hooks.json"])

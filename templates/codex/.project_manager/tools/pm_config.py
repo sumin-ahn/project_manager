@@ -25,7 +25,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
-    pm-config sync-adapter-config [--list | --accept <경로>]     # 어댑터 config 판정 조회 / 상류 값 수용 (백업 후 교체)
+    pm-config sync-adapter-config [--list | --check | --accept <경로>] # 어댑터 config 판정 조회 / 수렴 게이트 / 상류 값 수용
 
 서브커맨드별 엔진 배선:
   - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1[solo] ~ N×M 공용).
@@ -3297,7 +3297,7 @@ def cmd_sync_adapter_config(
     pm_import=None,
     dest_root: Path | None = None,
 ) -> int:
-    """`sync-adapter-config [--list | --accept <relpath>]` — instance-owned 어댑터 config 채널.
+    """`sync-adapter-config [--list | --check | --accept <relpath>]` — config 채널.
 
     이 파일들(`.codex/hooks.json`·`config.toml`·`.claude/settings.json`·`.opencode/opencode.jsonc`)
     은 manifest 밖이라 pm-update 가 절대 덮지 않는다. 동기는 무편집(원장 일치)인 managed 대상만
@@ -3324,7 +3324,18 @@ def cmd_sync_adapter_config(
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
 
-    judgments = pm_import_mod.judge_adapter_configs(dest, source_root)
+    try:
+        judgments = pm_import_mod.judge_adapter_configs(dest, source_root)
+    except Exception as exc:  # noqa: BLE001 — 판정 채널 unavailable은 완료 게이트 red.
+        if _is_engine_rev_skew(exc):
+            raise
+        print(f"[중단] 어댑터 config 판정 채널 unavailable: {exc}", file=sys.stderr)
+        print(
+            "  → `--from <framework checkout>`이 해당 managed template을 포함한 올바른 "
+            "source인지 확인하고 pm-update 후 다시 검사하라.",
+            file=sys.stderr,
+        )
+        return 1
     accept = getattr(args, "accept", None)
     if accept:
         # 수용은 **판정을 먼저 받고** 그 시점 해시를 넘긴다 — 판정과 쓰기 사이에 파일이 바뀌면
@@ -3365,6 +3376,33 @@ def cmd_sync_adapter_config(
     for judgment in judgments:
         label = _adapter_config_label(judgment, pm_import_mod)
         print(f"  - {judgment.relpath} · {judgment.harness} · {judgment.mode} · {label}")
+    if getattr(args, "check", False):
+        # `--check`는 판정만 읽는다(write 0). 완료 판정은 pm_import helper가 소유하므로
+        # pm-update와 이 CLI가 상태를 서로 다르게 해석할 수 없다.
+        unconverged = pm_import_mod.unconverged_managed_adapter_configs(judgments)
+        if not unconverged:
+            print("✓ managed 어댑터 config 수렴 확인 (template byte + 원장 dest hash).")
+            return 0
+        print("[중단] managed 어댑터 config 미수렴:", file=sys.stderr)
+        for judgment, status in unconverged:
+            print(f"  - {judgment.relpath}: {status}", file=sys.stderr)
+            if status == "unedited":
+                print(
+                    "    → `pm-update`를 재실행해 백업·자동 갱신·원장화를 완료하라.",
+                    file=sys.stderr,
+                )
+            elif status == "unrecorded" and judgment.status == "in-sync":
+                print(
+                    "    → 실 `pm-update`를 재실행하면 파일 byte 변경 없이 원장을 backfill한다.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"    → `{_FACADE_PROG} sync-adapter-config --accept "
+                    f"{judgment.relpath}` (백업 후 상류 값 수용·원장화).",
+                    file=sys.stderr,
+                )
+        return 1
     print(f"  수용(백업 후 상류 값 채택): {_FACADE_PROG} sync-adapter-config --accept <경로> "
           "(Windows 는 `.\\pm-config.cmd`)")
     return 0
@@ -3838,7 +3876,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_add_harness.set_defaults(func=cmd_add_harness)
 
-    # sync-adapter-config [--list|--accept <경로>] — instance-owned 어댑터 config 채널.
+    # sync-adapter-config [--list|--check|--accept <경로>] — instance-owned config 채널.
     #   동기(pm-update)는 무편집분만 자동 갱신하고 편집분·원장 부재는 보존+보고한다. 이 커맨드가
     #   그 보존분을 채택자가 명시적으로 받는 유일한 채널이다(판정은 pm_import 단일 진실).
     p_sync_cfg = sub.add_parser(
@@ -3850,6 +3888,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync_cfg_mode.add_argument(
         "--list", action="store_true",
         help="현재 판정(최신/무편집/편집됨/원장부재)을 조회한다 (기본 동작).",
+    )
+    sync_cfg_mode.add_argument(
+        "--check", action="store_true",
+        help="managed 대상의 template byte + 원장 dest hash 수렴을 읽기 전용으로 검사한다 "
+             "(미수렴/판정 unavailable rc 1·report-only 차이는 비차단).",
     )
     sync_cfg_mode.add_argument(
         "--accept", metavar="RELPATH", default=None,

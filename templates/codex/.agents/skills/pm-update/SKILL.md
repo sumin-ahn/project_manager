@@ -74,7 +74,9 @@ baseline(local.conf `upstream_rev`)과 cache/경로 HEAD 사이 commit 수 및 �
 | 그 외 변경 (manifest 밖·동기 안 받음) | upstream은 바뀌었으나 이 인스턴스가 등재하지 않은 경로 |
 | 상류 삭제·rename (동기가 지우지 않음) | upstream에서 사라진 등재 경로. 이어지는 `상류 부재 파일` 보고가 dest에 잔존하는 실물을 나열한다(동기는 지우지 않음·수동 정리 판단) |
 
-- **변경 0(최신)**: 동기 생략.
+- **변경 0**: `--changes`는 미리보기일 뿐이므로 동기를 생략하지 않는다. facade를 한 번 실행해
+  manifest 밖 instance-owned config 수렴 채널을 태운다. updater 자체가 바뀐 RUN1 뒤에는 새
+  updater로 **zero-change RUN2**를 실행한다.
 - **변경 > 0**: "엔진 영향(이번 동기가 받는 것)" 목록을 PM에게 보고한 뒤 reconcile → sync.
 - baseline 미기록(첫 동기·구 import): "다음 sync 후 추적" 안내가 정상이며 그대로 진행.
 
@@ -100,6 +102,13 @@ cp <cache-or-path>/templates/<harness>/.project_manager/engine.manifest .project
 manifest 경로만 byte-overwrite하며 `@render` path는 operational 토큰을 재치환한다. pm_update가 sync rev를 `upstream_rev`로 기록한다. 경로 upstream이면 `upstream_seen_rev`도 같은 rev로 기록하고, URL이면 2단계에서 기록한 seen과 같아져 drift가 clear된다.
 
 ⚠️ URL upstream에서 `--from`을 생략하면 엔진이 에러로 멈춘다. cache 경로를 `--from`으로 준다.
+
+동기 뒤 managed config 완료 게이트를 확인한다. red면 안내된 `--accept <경로>` 또는 pm-update
+재실행으로 수렴시킨 뒤 다시 검사하며, rc=0 전에는 흡수 완료로 기록하지 않는다.
+
+```bash
+./pm-config.sh sync-adapter-config --check --from <cache-or-path>
+```
 
 ### 5. drift 표면화
 

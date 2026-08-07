@@ -865,9 +865,9 @@ def _canonical_sources(tools: Path = TOOLS) -> dict[str, str]:
 def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     report = collect_failsoft_report(_canonical_sources())
     assert report.boundaries, "scanner found no marked-skew boundaries"
-    # 155 = 154 + pm_update.sync_adapter_configs (T-0585 어댑터 config 채널의 판정 fail-soft
-    #   경계 — 마킹된 skew 는 re-raise 하고 그 밖만 흡수한다·아래 violations 단언이 그 성질을 본다).
-    assert len(report.boundaries) == 155, "propagation sweep boundary ratchet changed"
+    # 158 = 155 + T-0591 완료 게이트의 원장 기록·쓰기 후 재판정·pm_config 판정 unavailable
+    #   세 경계. 모두 마킹된 skew 는 re-raise 하고 그 밖만 rc1 결과로 번역한다.
+    assert len(report.boundaries) == 158, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

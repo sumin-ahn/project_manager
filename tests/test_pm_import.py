@@ -5495,6 +5495,113 @@ def test_install_records_adapter_baseline_for_laid_down_configs(pm_import, tmp_p
         assert entry["recorded_at"] and "template_rev" in entry
 
 
+def test_adapter_config_partial_managed_dest_is_judged_without_install_shape(
+        pm_import, tmp_path):
+    """managed 경로 자체는 설치 영수증/완전 adapter shape와 독립인 복구 증거다.
+
+    구세대/부분 복구 트리에 ``.codex/hooks.json`` 하나만 남으면 installed_harnesses는 의도대로
+    비어도 config 완료 게이트는 그 파일을 판정해야 한다. 빈 judgments는 rc0 false-green이다.
+    """
+    source = tmp_path / "source"
+    template = source / "templates" / "codex" / ".codex" / "hooks.json"
+    template.parent.mkdir(parents=True)
+    template.write_text('{"hooks": {"PreCompact": ["new"]}}\n', encoding="utf-8")
+    dest = tmp_path / "partial-dest"
+    hooks = dest / ".codex" / "hooks.json"
+    hooks.parent.mkdir(parents=True)
+    hooks.write_bytes(template.read_bytes())
+
+    assert pm_import.installed_harnesses(dest, source) == [], \
+        "픽스처가 완전 설치 형상으로 잘못 올라갔다"
+    judgments = pm_import.judge_adapter_configs(dest, source)
+
+    assert [(item.relpath, item.harness, item.mode, item.status) for item in judgments] == [
+        (".codex/hooks.json", "codex", pm_import.ADAPTER_CONFIG_MANAGED, "in-sync")
+    ]
+
+
+@pytest.mark.parametrize("kind", ("directory", "broken-symlink"))
+def test_adapter_config_partial_managed_nonfile_is_unavailable(
+        pm_import, tmp_path, kind):
+    """managed 이름이 존재하지만 byte를 읽을 수 없으면 대상 0이 아니라 unavailable이다."""
+    source = tmp_path / "source"
+    template = source / "templates" / "codex" / ".codex" / "hooks.json"
+    template.parent.mkdir(parents=True)
+    template.write_text('{"hooks": {}}\n', encoding="utf-8")
+    dest = tmp_path / f"partial-{kind}"
+    candidate = dest / ".codex" / "hooks.json"
+    candidate.parent.mkdir(parents=True)
+    if kind == "directory":
+        candidate.mkdir()
+    else:
+        candidate.symlink_to(dest / "missing-hooks-target.json")
+
+    with pytest.raises(pm_import.AdapterConfigChannelUnavailable, match="dest를 읽을 수 없다"):
+        pm_import.judge_adapter_configs(dest, source)
+
+
+def test_adapter_config_partial_managed_regular_file_read_failure_is_unavailable(
+        pm_import, tmp_path, monkeypatch):
+    """regular managed 파일도 byte 판독 실패를 부재로 접지 않는다."""
+    source = tmp_path / "source"
+    template = source / "templates" / "codex" / ".codex" / "hooks.json"
+    template.parent.mkdir(parents=True)
+    template.write_text('{"hooks": {}}\n', encoding="utf-8")
+    dest = tmp_path / "partial-unreadable"
+    candidate = dest / ".codex" / "hooks.json"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text('{"hooks": {"old": true}}\n', encoding="utf-8")
+    original_sha = pm_import.file_sha256
+    monkeypatch.setattr(
+        pm_import, "file_sha256",
+        lambda path: None if Path(path) == candidate else original_sha(path))
+
+    with pytest.raises(pm_import.AdapterConfigChannelUnavailable, match="dest를 읽을 수 없다"):
+        pm_import.judge_adapter_configs(dest, source)
+
+
+def test_adapter_config_partial_report_only_does_not_infer_harness(pm_import, tmp_path):
+    """report-only 파일만 있는 partial 트리는 기존처럼 blocking 판정 집합을 만들지 않는다."""
+    source = tmp_path / "source"
+    template = source / "templates" / "codex" / ".codex" / "config.toml"
+    template.parent.mkdir(parents=True)
+    template.write_text("upstream = true\n", encoding="utf-8")
+    dest = tmp_path / "report-only"
+    report = dest / ".codex" / "config.toml"
+    report.parent.mkdir(parents=True)
+    report.write_text("adopter = true\n", encoding="utf-8")
+
+    assert pm_import.installed_harnesses(dest, source) == []
+    assert pm_import.judge_adapter_configs(dest, source) == []
+
+
+def test_adapter_config_explicit_claude_receipt_ignores_foreign_codex_managed_file(
+        pm_import, tmp_path):
+    """명시 receipt가 부정한 하네스를 foreign managed 파일 하나로 다시 설치 판정하지 않는다."""
+    source = tmp_path / "source"
+    codex_template = source / "templates" / "codex" / ".codex" / "hooks.json"
+    codex_template.parent.mkdir(parents=True)
+    codex_template.write_text('{"hooks": {"upstream": true}}\n', encoding="utf-8")
+    claude_template = source / "templates" / "claude_code" / ".claude" / "settings.json"
+    claude_template.parent.mkdir(parents=True)
+    claude_template.write_text('{}\n', encoding="utf-8")
+    dest = tmp_path / "claude-only"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / "install.json").write_text(
+        '{"schema": 1, "harnesses": ["claude"]}\n', encoding="utf-8")
+    foreign = dest / ".codex" / "hooks.json"
+    foreign.parent.mkdir(parents=True)
+    foreign_body = '{"hooks": {"foreign": true}}\n'
+    foreign.write_text(foreign_body, encoding="utf-8")
+
+    judgments = pm_import.judge_adapter_configs(dest, source)
+
+    assert all(item.harness != "codex" for item in judgments)
+    with pytest.raises(ValueError, match="채널 대상이 아니다"):
+        pm_import.accept_adapter_config(dest, source, ".codex/hooks.json")
+    assert foreign.read_text(encoding="utf-8") == foreign_body
+
+
 def test_add_harness_records_baseline_only_for_unpreserved_configs(pm_import, tmp_path):
     """add-harness 는 보존(기존 값 상이)한 config 를 원장에 올리지 않는다.
 
@@ -5556,10 +5663,11 @@ def test_sync_adapter_config_list_and_accept_via_pm_config(
 
 def test_pm_update_run_preserves_edited_adapter_config_and_reports(
         pm_import, pm_update, tmp_path, monkeypatch, capsys):
-    """실 sync(`pm_update.main`)가 이 채널을 **배선**해 편집분을 보존하고 보고한다.
+    """실 sync가 편집분을 보존·보고하고 managed 미수렴을 rc1 완료 게이트로 올린다.
 
     합성 호출이 아니라 `_main` 흐름을 태워, 채널이 실행 경로에 실제로 걸려 있는지(엔진 sync
-    후단 배치)를 본다 — 함수만 있고 배선이 없으면 채택자에겐 없는 기능이다."""
+    후단 배치)를 본다. 파일 보존과 명령 성공은 별개다 — T-0585의 non-destructive 기본값은
+    유지하되 그 상태를 흡수 완료(rc0)로 접지 않는다."""
     dest = tmp_path / "sync-wiring"
     assert pm_import.main([
         "--new", str(dest), "--harness", "codex", "--name", "Wiring Adopter",
@@ -5570,13 +5678,15 @@ def test_pm_update_run_preserves_edited_adapter_config_and_reports(
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
-    assert pm_update.main(["--from", str(REPO)]) == 0
+    assert pm_update.main(["--from", str(REPO)]) == 1
 
     captured = capsys.readouterr()
     assert (dest / ".codex" / "hooks.json").read_text(encoding="utf-8") == edited, \
         "실 sync 가 채택자 편집을 덮었다(하한선 위반)"
     assert "sync-adapter-config --accept" in captured.err, (
         f"실 sync 에 채널이 배선되지 않음(보고 부재): {captured.err!r}")
+    assert "managed 어댑터 config가 미수렴" in captured.err, (
+        f"보존 상태를 rc1 완료 게이트로 올리지 않음: {captured.err!r}")
 
 
 def test_sync_adapter_config_list_label_reflects_mode_not_status_alone(

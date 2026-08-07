@@ -33,6 +33,7 @@ add-harness 를 안 쓰는 형상이라 도그푸딩으로도 안 걸린다([[do
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -566,3 +567,242 @@ def test_upgrade_adopter_engine_reconciles_stale_manifest_without_manual_copy(tm
         f"{victim} 이 같은 실행에서 전파되지 않았다 — 채택자는 동기를 두 번 돌려야 한다")
     assert _guest_manifest_block(dest) is not None, (
         "엔진 단독 경로가 guest 절을 지웠다 — 안전한 대안 경로가 없다")
+
+
+# ── S5 instance-owned config RUN1/RUN2 완료 게이트 (T-0591) ────────────────
+
+_ADAPTER_HOOKS_REL = ".codex/hooks.json"
+_LEGACY_BLOCKING_HOOKS = '{"hooks": {"PreCompact": [{"command": "legacy-block"}]}}\n'
+
+
+def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.CompletedProcess:
+    """채택자 사본 CLI를 hermetic subprocess로 실행 — 성공/실패 판정은 호출 테스트가 한다."""
+    return subprocess.run(
+        [sys.executable, str(dest / ".project_manager" / "tools" / tool), *args],
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
+    )
+
+
+_T0585_PM_UPDATE_SHA256 = "21575cec59e9a86a614a92bd242c8d7a7096d53d533557f1b1d327ba86f6ec76"
+
+_T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
+    """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
+
+    `write=False`(dry-run)는 판정만 한다(파일·원장 미변경). pm_import 로드/판정 실패는
+    `status="unavailable"` 로 fail-soft 한다 — 이 채널이 엔진 sync 자체를 깨뜨리지 않는다."""
+    result = {"status": "ok", "updated": [], "preserved": [], "drift": [],
+              "backfilled": [], "degraded": []}
+    try:
+        # **로드도 try 안**이다 — 부분 전파로 pm_import 사본이 없는 트리에서 로더가 던지면
+        #   그 예외가 CLI 를 통째로 죽인다(엔진 복구 실행이 바로 그 형상이다).
+        pm_import = _load_pm_import()
+        if pm_import is None:
+            return {**result, "status": "unavailable", "reason": "pm_import 로드 실패"}
+        judgments = pm_import.judge_adapter_configs(dest_root, source_root)
+    except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다(skew 만 예외).
+        if _is_engine_rev_skew(exc):
+            raise
+        return {**result, "status": "unavailable", "reason": str(exc)}
+
+    for judgment in judgments:
+        if judgment.status == "in-sync":
+            # 이미 상류와 같다 — 원장만 뒤늦게 채운다(원장 도입 전 채택자가 손댄 적도 없이
+            #   영구 보고 모드에 갇히는 걸 막는 유일한 자동 경로).
+            if judgment.baseline_sha256 != judgment.dest_sha256:
+                result["backfilled"].append(judgment.relpath)
+            continue
+        summary = pm_import.adapter_config_drift_summary(judgment, dest_root)
+        managed = judgment.mode == pm_import.ADAPTER_CONFIG_MANAGED
+        if managed and judgment.status == "unedited":
+            backup_rel = None
+            if write:
+                try:
+                    # 판정 시점 해시를 넘겨 **판정↔쓰기 사이 동시 편집**을 엔진이 재검증하게 한다
+                    #   (raced 면 아무것도 안 덮고 돌아온다). 백업·원자 교체·원장 확인도 그 안이다.
+                    accepted = pm_import.accept_adapter_config(
+                        dest_root, source_root, judgment.relpath,
+                        expected_sha256=judgment.dest_sha256)
+                except (OSError, ValueError) as exc:
+                    # 한 파일의 실패가 이미 끝난 엔진 sync 를 traceback 으로 덮지 않게 보존 쪽으로
+                    #   내린다(다음 실행이 같은 판정으로 재시도). 경로 안전 거부·루트 교체는
+                    #   의도적 hard abort 라 그대로 올라간다.
+                    result["preserved"].append({
+                        "relpath": judgment.relpath, "status": "update-failed",
+                        "summary": str(exc)})
+                    continue
+                if accepted.status != "accepted":
+                    # `ledger-failed` 만 성질이 다르다 — 파일은 이미 바뀌었으므로 "보존" 으로
+                    #   묶으면 거짓 보고다. 별도 버킷으로 낸다(둘 다 loud).
+                    bucket = ("degraded" if accepted.status == "ledger-failed"
+                              else "preserved")
+                    result[bucket].append({
+                        "relpath": judgment.relpath, "status": accepted.status,
+                        "summary": accepted.detail})
+                    continue
+                backup_rel = Path(accepted.backup).relative_to(Path(dest_root)).as_posix()
+            result["updated"].append({
+                "relpath": judgment.relpath,
+                "backup_rel": backup_rel,
+                "note": pm_import.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(judgment.relpath),
+            })
+            continue
+        bucket = "preserved" if managed else "drift"
+        result[bucket].append({
+            "relpath": judgment.relpath, "status": judgment.status, "summary": summary})
+
+    if write and (result["updated"] or result["backfilled"]):
+        # 갱신분·in-sync backfill 을 한 번에 기록한다(record 는 template 일치분만 담는다).
+        pm_import.record_adapter_baseline(dest_root, source_root)
+    return result
+
+
+'''
+
+
+def _slice_replace(source: str, start_marker: str, end_marker: str, replacement: str) -> str:
+    """동결 세대 복원용 exact structural replace — marker 모호/부재면 loud 실패."""
+    assert source.count(start_marker) == 1, start_marker
+    start = source.index(start_marker)
+    end = source.index(end_marker, start)
+    return source[:start] + replacement + source[end:]
+
+
+def _t0585_pm_update_source() -> str:
+    """현행 전체 updater에서 T-0591 delta만 역적용해 실제 T-0585 source bytes를 복원한다.
+
+    전체 5천 줄을 복제하지 않으면서도 결과 SHA를 결함 세대 실파일로 ratchet한다. 따라서 RUN1은
+    mock driver가 아니라 source/manifest planning, apply, self-update 순서를 포함한 실제 updater다.
+    이 순서 전체가 회귀의 load-bearing 범위라 whole-file SHA가 의도적이다. 향후 updater 변경은
+    무관해 보여도 이 실제 배달 경계를 다시 검토한 뒤 reverse delta/기대 SHA를 함께 현재화한다.
+    """
+    source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
+        encoding="utf-8")
+    source = _slice_replace(
+        source,
+        "# pm_import 자체를 아직 못 불러오는 복구 RUN에서도 채널 적용 여부를 판정할 최소 좌표.\n",
+        "def sync_adapter_configs",
+        "\n\n",
+    )
+    source = _slice_replace(
+        source, "def sync_adapter_configs", "def _print_adapter_config_finding",
+        _T0585_SYNC_ADAPTER_CONFIGS,
+    )
+    source = _slice_replace(
+        source,
+        "    # in-sync byte지만 원장 backfill 실패 같은 상태는 preserved/degraded 버킷에 아직 없을 수 있다.\n",
+        "    drift = result.get(\"drift\", [])\n",
+        "",
+    )
+    source = source.replace(
+        "    do_adapter_config = (\n"
+        "        not args.target and not scope_paths\n"
+        "        and _has_adapter_config_candidate(effective_dest)\n"
+        "    )\n",
+        "    do_adapter_config = not args.target and not scope_paths\n",
+        1,
+    )
+    source = _slice_replace(
+        source,
+        "            if not args.dry_run and _adapter_config_gate_failed(configs):\n",
+        "        print(\"최신 — 변경 없음.\")\n",
+        "",
+    )
+    assert source.count('        print("최신 — 변경 없음.")\n') == 1
+    source = source.replace('        print("최신 — 변경 없음.")\n', "", 1)
+    source = source.replace(
+        "    if not changes:\n",
+        '    if not changes:\n        print("최신 — 변경 없음.")\n',
+        1,
+    )
+    source = _slice_replace(
+        source,
+        "        if _adapter_config_gate_failed(configs):\n",
+        "\n    # upstream_rev baseline 갱신",
+        "",
+    )
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    assert digest == _T0585_PM_UPDATE_SHA256, (
+        f"T-0585 updater fixture drift: {digest} — reverse delta/expected SHA를 함께 검토하라")
+    return source
+
+
+def _install_t0585_updater(dest: Path) -> None:
+    (dest / ".project_manager" / "tools" / "pm_update.py").write_text(
+        _t0585_pm_update_source(), encoding="utf-8")
+
+
+def test_upgrade_adopter_zero_change_run2_blocks_until_adapter_accept(tmp_path):
+    """구 updater RUN1 → 신 zero-change RUN2 red → accept/backfill → check green 전체 경로."""
+    dest = tmp_path / "legacy-adapter-adopter"
+    assert _PM_IMPORT.main([
+        "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
+        "--fill", "manual",
+    ]) == 0
+    # 먼저 나머지 엔진을 canonical과 맞춰 RUN2의 엔진 change를 정확히 0으로 만든다.
+    _prime_engine_to_canonical(dest)
+
+    hooks = dest / _ADAPTER_HOOKS_REL
+    hooks.write_text(_LEGACY_BLOCKING_HOOKS, encoding="utf-8")
+    ledger = dest / ".project_manager" / "adapter_baseline.json"
+    ledger.unlink(missing_ok=True)  # 구세대 설치: durable 원장 부재.
+    _install_t0585_updater(dest)
+
+    run1 = _run_adopter_tool(dest, "pm_update.py", "--from", str(REPO))
+    assert run1.returncode == 0, run1.stderr
+    assert "파일 동기화" in run1.stdout, "실 updater planning/apply 경로를 타지 않음"
+    assert (dest / ".project_manager" / "tools" / "pm_update.py").read_bytes() == \
+        (REPO / ".project_manager" / "tools" / "pm_update.py").read_bytes(), \
+        "RUN1이 신 updater를 배달하지 못함"
+    assert hooks.read_text(encoding="utf-8") == _LEGACY_BLOCKING_HOOKS
+
+    run2 = _run_adopter_tool(dest, "pm_update.py", "--from", str(REPO))
+    assert run2.returncode == 1, (
+        f"원장 부재인데 zero-change RUN2가 green\n{run2.stdout}\n{run2.stderr}")
+    assert "managed 어댑터 config가 미수렴" in run2.stderr
+    assert "엔진 manifest 변경은 0건" in run2.stderr, \
+        "RUN2가 zero-change 경계를 실제로 거치지 않음"
+    assert "최신 — 변경 없음" not in run2.stdout
+    assert hooks.read_text(encoding="utf-8") == _LEGACY_BLOCKING_HOOKS, \
+        "RUN2가 원장 부재 파일을 자동 덮음(비파괴 계약 위반)"
+
+    before_check = _snapshot_tree(dest)
+    red_check = _run_adopter_tool(
+        dest, "pm_config.py", "sync-adapter-config", "--check", "--from", str(REPO))
+    assert red_check.returncode == 1 and "--accept .codex/hooks.json" in red_check.stderr
+    assert _snapshot_tree(dest) == before_check, "--check가 채택자 트리를 변경함"
+
+    accepted = _run_adopter_tool(
+        dest, "pm_config.py", "sync-adapter-config", "--accept", _ADAPTER_HOOKS_REL,
+        "--from", str(REPO))
+    assert accepted.returncode == 0, accepted.stderr
+    green_check = _run_adopter_tool(
+        dest, "pm_config.py", "sync-adapter-config", "--check", "--from", str(REPO))
+    assert green_check.returncode == 0, green_check.stderr
+    assert "수렴 확인" in green_check.stdout
+
+
+def test_update_release_skill_cards_pin_zero_change_and_adapter_gate_contract():
+    """canonical + claude/codex/opencode 출하 카드가 changes=0 skip 문구를 재도입하지 않는다."""
+    update_cards = [
+        REPO / ".claude/skills/pm-update/SKILL.md",
+        REPO / "templates/claude_code/.claude/skills/pm-update/SKILL.md",
+        REPO / "templates/codex/.agents/skills/pm-update/SKILL.md",
+        REPO / "templates/opencode/.claude/skills/pm-update/SKILL.md",
+    ]
+    release_cards = [
+        REPO / ".claude/skills/pm-release/SKILL.md",
+        REPO / "templates/claude_code/.claude/skills/pm-release/SKILL.md",
+        REPO / "templates/codex/.agents/skills/pm-release/SKILL.md",
+        REPO / "templates/opencode/.claude/skills/pm-release/SKILL.md",
+    ]
+    for card in update_cards:
+        text = card.read_text(encoding="utf-8")
+        assert "`--changes`는 미리보기" in text, card
+        assert "zero-change RUN2" in text, card
+        assert "sync-adapter-config --check" in text, card
+        assert "변경 0(최신)**: 동기 생략" not in text, card
+    for card in release_cards:
+        text = card.read_text(encoding="utf-8")
+        assert text.count("sync-adapter-config --check") >= 2, card
+        assert "livegate/main push/tag/GitHub Release" in text, card

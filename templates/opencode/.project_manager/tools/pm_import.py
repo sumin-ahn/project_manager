@@ -1593,9 +1593,8 @@ def plan_copy(
     위에서 일관되게 돈다(lite 모드에선 `X.md` 가 dst — 선택 트리들이 각자 lite 변종을 깐다).
 
     MF3: 여러 선택 트리에서 같은 relpath 가 중복되면(예: 공유 엔진), **내용이 같을
-    때만** 조용히 skip 한다. 내용이 *다르면*(예: README.md — claude_code 는
-    .claude/agents·skills·regression.yml 을 sync 범위에 포함, opencode 는 제외) 첫 트리
-    (registry 정규 순서)를 우선하되 stderr 경고를 남긴다. CLI 입력 순서는 집합 정규화에서
+    때만** 조용히 skip 한다. 서로 다른 하네스가 같은 dest relpath 에 다른 bytes 를 공급하면
+    첫 트리(registry 정규 순서)를 우선하되 stderr 경고를 남긴다. CLI 입력 순서는 집합 정규화에서
     소거되므로 충돌 결과에 영향을 주지 않는다. 이 우선순위는 결정적
     충돌 해소 정책이지 첫 트리가 나머지의 상위집합이라는 전제를 두지 않는다. 단,
     engine.manifest는 복사 뒤 ``_install_selected_manifest_union``이 선택 트리 선언의 합집합으로
@@ -5064,7 +5063,8 @@ def _has_adapter_shape(dest_root: Path, harness: str) -> bool:
             and (Path(dest_root) / root_doc).is_file())
 
 
-def installed_harnesses(dest_root: Path, source_root: Path | None = None) -> list[str]:
+def _installed_harnesses_with_authority(
+        dest_root: Path, source_root: Path | None = None) -> tuple[list[str], str]:
     """dest 트리에 **PM 어댑터가 실제로 설치된** 하네스. registry 정규 순서.
 
     표기 렌더의 독자 집합은 "이번 run 이 고른 하네스"가 아니라 **그 인스턴스를 읽는 하네스
@@ -5107,7 +5107,7 @@ def installed_harnesses(dest_root: Path, source_root: Path | None = None) -> lis
             print(f"경고: 설치 기록의 {', '.join(ghosts)} 어댑터가 트리에 없습니다 — 기록을 진실로 "
                   f"쓰므로 표기 독자에는 그대로 남습니다. 제거하려면 "
                   f"{_install_receipt_fix_hint(dest_root)}.", file=sys.stderr)
-        return recorded
+        return recorded, "receipt"
     evidence, _shipped_all = (
         _pm_install_evidence(source_root) if source_root is not None else ({}, {}))
     structural = [
@@ -5128,7 +5128,12 @@ def installed_harnesses(dest_root: Path, source_root: Path | None = None) -> lis
         name for name in structural
         if not evidence.get(name) or _present(evidence[name])
     ]
-    return [name for name in REGISTERED_HARNESSES if name in found]
+    return [name for name in REGISTERED_HARNESSES if name in found], "inferred"
+
+
+def installed_harnesses(dest_root: Path, source_root: Path | None = None) -> list[str]:
+    """dest 트리에 설치된 PM 하네스 목록 — 상세 판정은 authority helper의 단일 경로."""
+    return _installed_harnesses_with_authority(dest_root, source_root)[0]
 
 
 # ── instance-owned 어댑터 config 의 상류 도달 채널 (3-way 원장) ───────────────────
@@ -5164,6 +5169,40 @@ class AdapterConfigJudgment(NamedTuple):
     template: Path
     dest_sha256: str
     baseline_sha256: str | None
+
+
+class AdapterConfigChannelUnavailable(RuntimeError):
+    """기존 managed dest를 판정할 source/dest byte 기준이 없어 완료를 증명할 수 없음."""
+
+
+def _adapter_config_path_exists(path: Path) -> bool:
+    """경로 엔트리가 존재하는가 — broken symlink/비-regular도 ``True``.
+
+    managed config의 완료 게이트는 "읽을 수 있는 regular file인가"와 "그 이름이 트리에
+    존재하는가"를 분리해야 한다. ``Path.is_file``/``exists``는 디렉터리와 broken symlink를
+    모두 부재로 접어 판정 대상 0 false-green을 만든다. 존재 여부 자체를 확인할 수 없는 IO 오류도
+    완료를 증명하지 못하므로 unavailable로 보수 처리한다.
+    """
+    try:
+        Path(path).lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise AdapterConfigChannelUnavailable(
+            f"managed 어댑터 config 경로 존재 여부 unavailable: {path} ({exc})") from exc
+    return True
+
+
+def _existing_managed_adapter_harnesses(dest_root: Path) -> list[str]:
+    """설치 추론과 별개로 기존 managed 경로가 지목하는 하네스(정규 registry 순서)."""
+    found = set()
+    for harness, channel in ADAPTER_CONFIG_CHANNEL.items():
+        for relpath, mode in channel.items():
+            if (mode == ADAPTER_CONFIG_MANAGED
+                    and _adapter_config_path_exists(Path(dest_root) / relpath)):
+                found.add(harness)
+                break
+    return [name for name in REGISTERED_HARNESSES if name in found]
 
 
 def file_sha256(path: Path) -> str | None:
@@ -5260,12 +5299,27 @@ def adapter_config_targets(dest_root: Path, source_root: Path,
                            harnesses=None) -> list[tuple[str, str, str, Path]]:
     """(relpath, harness, mode, template 경로) — 채널을 가진 instance-owned config 전수.
 
-    대상은 **설치 하네스**(`installed_harnesses` 단일 진실)에서 파생하고 분류(`ADAPTER_CONFIG_CHANNEL`)
-    가 mode 를 준다 — 손-열거 목록이 아니다. `none` 분류와 template 부재는 대상에서 빠진다."""
+    대상은 **설치 하네스**(`installed_harnesses`)와 **기존 managed 경로가 지목한 하네스**의
+    합집합에서 파생하고 분류(`ADAPTER_CONFIG_CHANNEL`)가 mode 를 준다. 후자는 설치 영수증과 완전
+    adapter shape가 없는 partial recovery에서도 managed 파일 하나를 빈 판정으로 접지 않는
+    보수 경계다. report-only 경로만으로는 하네스를 추론하지 않는다.
+
+    `none` 분류와 **report-only** template 부재는 대상에서 빠진다. 반면 existing managed dest의
+    template 부재/읽기 실패는 판정 불능이므로 ``AdapterConfigChannelUnavailable``로 fail-loud한다
+    (빈 judgments false-green 차단)."""
     dest_root = Path(dest_root)
     source_root = Path(source_root)
-    names = list(harnesses) if harnesses is not None else installed_harnesses(
-        dest_root, source_root)
+    if harnesses is not None:
+        names = list(harnesses)
+    else:
+        installed, authority = _installed_harnesses_with_authority(dest_root, source_root)
+        inferred = set(installed)
+        # 유효 receipt는 설치 사실의 명시 단일 진실이다. 그 목록이 부정한 하네스를 우연히 함께
+        # 놓인 foreign managed 파일 하나로 되살리면 `--accept`가 외래 파일 overwrite를 권한다.
+        # 경로 보강은 receipt 부재/손상으로 증거 추론에 내려간 partial recovery에서만 허용한다.
+        if authority == "inferred":
+            inferred.update(_existing_managed_adapter_harnesses(dest_root))
+        names = [name for name in REGISTERED_HARNESSES if name in inferred]
     out: list[tuple[str, str, str, Path]] = []
     for harness in names:
         channel = ADAPTER_CONFIG_CHANNEL.get(harness, {})
@@ -5274,12 +5328,19 @@ def adapter_config_targets(dest_root: Path, source_root: Path,
             continue
         template_root = source_root / "templates" / template_dir
         for relpath in sorted(channel):
-            if channel[relpath] == ADAPTER_CONFIG_NO_CHANNEL:
+            mode = channel[relpath]
+            if mode == ADAPTER_CONFIG_NO_CHANNEL:
                 continue
             template = template_root / relpath
-            if not template.is_file():
-                continue  # upstream 이 그 파일을 안 들고 있으면 대조 기준이 없다.
-            out.append((relpath, harness, channel[relpath], template))
+            dest_path = dest_root / relpath
+            if not template.is_file() or file_sha256(template) is None:
+                if (mode == ADAPTER_CONFIG_MANAGED
+                        and _adapter_config_path_exists(dest_path)):
+                    raise AdapterConfigChannelUnavailable(
+                        f"managed 어댑터 config 비교 기준 unavailable: {relpath}의 source template을 "
+                        f"읽을 수 없거나 찾을 수 없다 ({template})")
+                continue  # report-only 또는 dest 후보 자체 없음 — 완료 게이트 비차단.
+            out.append((relpath, harness, mode, template))
     return out
 
 
@@ -5296,6 +5357,11 @@ def judge_adapter_configs(dest_root: Path, source_root: Path,
         dest_path = dest_root / relpath
         dest_hash = file_sha256(dest_path)
         if dest_hash is None:
+            if (mode == ADAPTER_CONFIG_MANAGED
+                    and _adapter_config_path_exists(dest_path)):
+                raise AdapterConfigChannelUnavailable(
+                    f"managed 어댑터 config 비교 기준 unavailable: dest를 읽을 수 없다 "
+                    f"({dest_path})")
             continue  # dest 에 없거나 못 읽음 — 이 채널의 관심사가 아니다.
         entry = recorded.get(relpath)
         baseline = entry.get("sha256") if isinstance(entry, dict) else None
@@ -5309,6 +5375,38 @@ def judge_adapter_configs(dest_root: Path, source_root: Path,
             status = "edited"
         out.append(AdapterConfigJudgment(
             relpath, harness, mode, status, template, dest_hash, baseline))
+    return out
+
+
+def adapter_config_convergence_status(judgment: AdapterConfigJudgment) -> str:
+    """managed config 한 건의 완료 판정 — ``converged`` 또는 실행 가능한 red 상태.
+
+    byte 가 template 과 같다는 사실만으로는 미래 자동 갱신 궤도에 들어간 게 아니다. 원장에도
+    **그 dest 해시**가 있어야 완료다. ``judge_adapter_configs`` 의 원시 판정은 표시/3-way 갱신에
+    그대로 쓰고, 완료 게이트만 이 helper가 정규화한다(판정 사본 0).
+
+    report-only 대상은 채택자 노브라 완료 게이트를 막지 않는다. 호출부는 필요하면 원시
+    ``judgment.status`` 를 계속 출력한다.
+    """
+    if judgment.mode != ADAPTER_CONFIG_MANAGED:
+        return "report-only"
+    if judgment.status != "in-sync":
+        return judgment.status
+    if (not judgment.dest_sha256
+            or judgment.baseline_sha256 != judgment.dest_sha256):
+        # 수동 byte 교체 또는 원장 기록 실패. 내용은 같아도 durable 증거가 없으므로 red다.
+        return "unrecorded"
+    return "converged"
+
+
+def unconverged_managed_adapter_configs(
+        judgments: list[AdapterConfigJudgment]) -> list[tuple[AdapterConfigJudgment, str]]:
+    """완료 게이트를 막는 managed 판정만 ``(judgment, normalized_status)`` 로 반환."""
+    out = []
+    for judgment in judgments:
+        status = adapter_config_convergence_status(judgment)
+        if status not in ("converged", "report-only"):
+            out.append((judgment, status))
     return out
 
 
