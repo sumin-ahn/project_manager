@@ -8,6 +8,9 @@
     양쪽 auto-compact ON(template 은 T-0458 로 autoCompactEnabled:true — 메인은 훅 hard-stop 선행·
     서브에이전트는 compaction 자체 정리). breadcrumb 은 net-less 도그푸딩 root 전용으로 유지.
   - `precompact_capture_hook.sh`: root 전용(template 엔 없음) — byte-identical 대상 아님.
+  - `run_tests_hook.sh`: byte-identical. 루트 사본이 manifest 전파 **원본**(root-sourced·bare)인데
+    런타임 테스트 하네스는 출하 사본만 복사해 돌린다 — 루트만 깨져도 전 스위트가 green 이던 커버리지
+    갭을 이 동일성으로 기계 폐쇄한다(T-0579).
   - `skills/pm-handoff/SKILL.md`·`skills/pm-dev-delegate/SKILL.md`: byte-identical.
   - `agents/*.md`: byte-identical(4파일).
 
@@ -38,6 +41,7 @@ TEMPLATE_CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 # 상호 참조: `tests/test_board_lint.py::_T0463_TOKEN_FORM_MIRRORS`(12파일·`.claude/` prefix 포함)가
 # 같은 불변식의 상위집합 — 거긴 이 동일성이 render-leak 면제의 근거라는 축이다. 한쪽 수정 시 같이 본다.
 IDENTICAL_RELPATHS = [
+    "run_tests_hook.sh",
     "skills/pm-handoff/SKILL.md",
     "skills/pm-dev-delegate/SKILL.md",
     "skills/pm-wave-claim/SKILL.md",
@@ -103,9 +107,11 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
 # ── byte-identical 어댑터 산출물 (hook·skills·agents) ─────────────────────────
 
 def test_adapter_artifacts_byte_identical():
-    """precompact 훅·pm-handoff/pm-dev-delegate skill·agents 4파일이 양 트리 byte-identical.
+    """회귀 훅·pm-handoff/pm-dev-delegate skill·agents 4파일이 양 트리 byte-identical.
 
     각 파일에 대해 양 트리 존재 + 바이트 동일 검증 (pm_update 전파 무드리프트).
+    `run_tests_hook.sh` 는 여기가 **루트 사본의 유일한 기계 커버리지**다 — 훅 런타임 테스트는 출하
+    사본을 tmp repo 로 복사해 돌리므로, 이 동일성이 깨지지 않아야 루트 사본의 검증이 성립한다.
     """
     for relpath in IDENTICAL_RELPATHS:
         root_path = ROOT_CLAUDE / relpath

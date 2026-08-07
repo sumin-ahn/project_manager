@@ -11,6 +11,7 @@ import datetime
 import importlib.util
 import io
 import itertools
+import json
 import os
 import re
 import shutil
@@ -112,14 +113,34 @@ def _hermetic_opencode_models(request, pm_import, monkeypatch):
     monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
 
 
-def _grep_token_files(root: Path, token: str, *, exclude_engine_docs: bool = False) -> list[Path]:
-    """root 하위에서 token 을 포함한 파일 목록. node_modules 제외."""
+def _consumption_time_token_owners(pm_import) -> dict[str, frozenset]:
+    """채택자 트리에 **토큰-form 으로 남는 게 정상**인 (파일 → 토큰) 지도 (T-0578).
+
+    소비 시점이 소유한 토큰이다 — 설치가 값으로 굳히면 manifest bare 등재의 byte-copy
+    (`pm_update`)가 다음 흡수에서 토큰-form 을 되돌려 매 sync 마다 진동한다. 목록은 엔진 선언
+    (`pm_import.CONSUMPTION_TIME_TOKENS`)에서 파생한다(손-열거 0 — 선언이 늘면 자동 추종).
+
+    **템플릿이 만들어 내는 산출물은 빼지 않는다** — `pm_state.md` 같은 생성 산출물의 날짜는 dest
+    트리의 엔진 사본이 채워야 하고, 그게 안 채워지면 채택자 실수령물에 리터럴 토큰이 남는다.
+    산출물까지 면제하면 이 e2e 가 바로 그 결함(전파 누락·생성 지점 미배선)을 못 본다."""
+    return dict(pm_import.CONSUMPTION_TIME_TOKENS)
+
+
+def _grep_token_files(root: Path, token: str, *, exclude_engine_docs: bool = False,
+                      token_owned_elsewhere: dict | None = None) -> list[Path]:
+    """root 하위에서 token 을 포함한 파일 목록. node_modules 제외.
+
+    `token_owned_elsewhere`(파일 → 토큰 집합)는 그 파일의 **그 토큰만** 제외한다 — 같은 파일의
+    다른 operational 토큰이 새면 여전히 잡힌다(파일 통째 면제 아님)."""
     hits: list[Path] = []
+    owned = token_owned_elsewhere or {}
     for path in root.rglob("*"):
         rel = path.relative_to(root)
         if any(part == "node_modules" for part in rel.parts):
             continue
         if not path.is_file():
+            continue
+        if token in owned.get(rel.as_posix(), frozenset()):
             continue
         if exclude_engine_docs:
             relp = rel.as_posix()
@@ -189,8 +210,10 @@ def test_new_substitutes_operational_placeholders(pm_import, tmp_path, harness):
     rc = pm_import.main(["--new", str(dest), "--harness", harness, "--name", "P", "--fill", "manual"])
     assert rc == 0
 
+    owned_elsewhere = _consumption_time_token_owners(pm_import)
     for token in OPERATIONAL_TOKENS:
-        hits = _grep_token_files(dest, token, exclude_engine_docs=True)
+        hits = _grep_token_files(dest, token, exclude_engine_docs=True,
+                                 token_owned_elsewhere=owned_elsewhere)
         assert hits == [], f"{harness}: {token} 잔존(엔진 문서 제외): {hits}"
 
 
@@ -2136,7 +2159,7 @@ def test_legacy_single_harness_without_stray_has_no_cross_flavor_warning(
 
     captured = capsys.readouterr()
     combined = captured.out + captured.err
-    assert "frozen 다중-harness 의심" not in combined
+    assert "미등재 flavor 파일 관측" not in combined
     assert "타 flavor(" not in combined
     assert "./pm-config.sh add-harness" not in combined
 
@@ -2196,9 +2219,9 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     assert "설치된 다중 하네스" not in combined
     assert "@source 선언이 없는 legacy manifest" in combined
     assert f"타 flavor({stray_flavor}) 관리 경로 일부" in combined
-    assert "legacy 다중-harness 설치의 일부 누락 또는 사용자 stray" in combined
+    assert "어느 동기 채널도 선언하지 않은 출하 파일" in combined
     cli_flavor = "claude" if stray_flavor == "claude_code" else stray_flavor
-    assert f"`add-harness {cli_flavor}`는 guest @render만 등록" in combined
+    assert f"`add-harness {cli_flavor}`는 그 하네스 어댑터만 등재한다" in combined
     migration = re.search(
         r"<manager>/pm-import\.sh --into <project> --harness (\S+) --dry-run",
         combined,
@@ -2236,7 +2259,7 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     assert re.search(
         rf"\(1/{len(evidence_paths)}: {re.escape(observed_rel)}\)", combined
     ), f"진단에 관측 형상(n/m: 경로)이 없음: {combined!r}"
-    assert "guest @render만 등록하므로 완전 마이그레이션이 아니다" in combined
+    assert "그 하네스 어댑터만 등재한다(엔진 전량 마이그레이션 아님)" in combined
     assert "stray라면 이 경고를 무시해도 된다" in combined
     assert stray.read_bytes() == user_bytes
 
@@ -2325,16 +2348,16 @@ def test_declared_claude_manifest_with_opencode_tree_warns_without_promoting(
     assert preview["upstream_manifests"] == [claude_manifest]
     assert not preview.get("multi_flavor_recovery")
     diagnostic = capsys.readouterr().err
-    assert "frozen 다중-harness 의심" in diagnostic
+    assert "미등재 flavor 파일 관측" in diagnostic
     assert "선언되지 않은 타 flavor(opencode)" in diagnostic
-    assert "`add-harness opencode`는 guest @render만 등록" in diagnostic
+    assert "`add-harness opencode`는 그 하네스 어댑터만 등재한다" in diagnostic
     assert "<manager>/pm-import.sh --into <project> --harness all" in diagnostic
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
     assert pm_update.main(["--from", str(REPO)]) == 0
     combined = capsys.readouterr()
-    assert "frozen 다중-harness 의심" in combined.err
+    assert "미등재 flavor 파일 관측" in combined.err
     assert "설치된 다중 하네스의 manifest 누락" not in combined.out
 
 
@@ -2352,19 +2375,28 @@ def test_declared_clean_claude_adopter_has_no_frozen_warning(
 
     preview = pm_update.resolve_manifest_selfheal(dest, REPO)
     assert preview["upstream_manifests"] == [claude_manifest]
-    assert "frozen 다중-harness 의심" not in capsys.readouterr().err
+    assert "미등재 flavor 파일 관측" not in capsys.readouterr().err
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
     assert pm_update.main(["--from", str(REPO)]) == 0
     captured = capsys.readouterr()
-    assert "frozen 다중-harness 의심" not in captured.err
+    assert "미등재 flavor 파일 관측" not in captured.err
     assert "./pm-config.sh add-harness" not in captured.err
 
 
-def test_declared_claude_with_opencode_guest_has_no_permanent_frozen_warning(
+def test_declared_claude_with_opencode_guest_has_channel_not_frozen_warning(
         pm_import, pm_config, pm_update, tmp_path, monkeypatch, capsys):
-    """정식 add-harness 채널로 붙인 opencode guest는 선언 분기 frozen 경고·재실행 지시를 만들지 않는다."""
+    """add-harness guest 의 어댑터 엔진 파일은 **동기 채널을 갖는다** — frozen 경고 대신 전파 계획.
+
+    옛 형상에선 flavor 의 `@render` 선언만 guest 로 등재돼 `.opencode/lib`·`plugins`·driver 같은
+    비-@render 어댑터 엔진 파일이 어떤 동기 채널도 없이 동결됐고, T-0573 이 그 동결을 frozen 경고로
+    표면화했다. T-0574 가 그 파일들에 update 채널을 주면서 **동결 케이스 자체가 소멸**한다 — 이제
+    같은 형상에서 옳은 산출은 경고가 아니라 계획 편입이다(경고의 선언/legacy 축은
+    `test_pm_update.py` 의 합성·수기 절 픽스처가 계속 지킨다).
+
+    민감도: 절이 실제로 엔진 행을 담고 그 경로가 계획 좌표로 뜨는지 함께 단언해 "경고가 없다" 가
+    "채널이 생겼다" 로만 성립하게 한다(경고만 지운 회귀는 red)."""
     dest = tmp_path / "declared-claude-opencode-guest"
     assert pm_import.main([
         "--new", str(dest), "--harness", "claude", "--name", "Declared Guest",
@@ -2376,14 +2408,75 @@ def test_declared_claude_with_opencode_guest_has_no_permanent_frozen_warning(
         args, pm_import=pm_import, dest_root=dest) == 0
     capsys.readouterr()
 
+    # 절이 어댑터 엔진 파일을 담는다(채널 존재의 근거).
+    guest_engine = {
+        str(e).replace("\\", "/")
+        for e in pm_update._dest_guest_manifest_entries(dest)
+        if not getattr(e, "render", False)
+    }
+    assert ".opencode/pm_orch_opencode.py" in guest_engine, \
+        f"어댑터 엔진 파일이 guest 절에 없다(채널 부재·영구 동결): {sorted(guest_engine)}"
+
+    # 채택자 사본을 stale 로 만들어 이번 동기가 실제로 그 파일을 계획에 싣는지 본다.
+    driver = dest / ".opencode" / "pm_orch_opencode.py"
+    driver.write_text("# stale adopter copy\n", encoding="utf-8")
+
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
     assert pm_update.main(["--from", str(REPO), "--dry-run"]) == 0
 
     captured = capsys.readouterr()
     combined = captured.out + captured.err
-    assert "frozen 다중-harness 의심" not in combined
-    assert "./pm-config.sh add-harness opencode" not in combined
+    assert ".opencode/pm_orch_opencode.py" in captured.out, \
+        f"stale 어댑터 엔진 파일이 계획에 없다(동기 채널 미작동): {captured.out!r}"
+    assert "미등재 flavor 파일 관측" not in combined, \
+        f"채널이 생긴 파일에 여전히 frozen 경고(오탐): {combined!r}"
+
+
+def test_codex_rules_converge_on_update_for_main_harness_and_guest(
+        pm_import, pm_update, tmp_path, monkeypatch, capsys):
+    """codex execpolicy rules 가 **주하네스·guest 두 형상 모두** 상류와 수렴한다 (T-0584 e2e).
+
+    `.codex/rules/default.rules` 는 출하되면서 어느 manifest 에도 없어 두 형상 다 채널이 0 이었다 —
+    주하네스 채택자는 pm_update 대상 밖이고, guest 절은 flavor manifest 파생이라 add-harness 도 못
+    실었다(등재 유일분인 `@render` 행에도 안 들어간다). 등재 행 하나가 두 채널을 동시에 여는지
+    실 install + 실 sync 로 확인한다.
+
+    두 dest 의 채널 근거가 다르다 — 주하네스는 flavor manifest 등재 행, guest 는 그 행에서 파생된
+    guest 절 엔진 행이다. 그래서 guest 쪽은 절 등재도 함께 단언한다(수렴만 보면 host 채널로
+    우연히 맞은 경우와 구분되지 않는다)."""
+    rules_rel = ".codex/rules/default.rules"
+    upstream_bytes = (REPO / "templates" / "codex" / rules_rel).read_bytes()
+
+    main_dest = tmp_path / "codex-main-harness"
+    assert pm_import.main([
+        "--new", str(main_dest), "--harness", "codex", "--name", "Rules Adopter",
+    ]) == 0
+    guest_dest = tmp_path / "claude-host-codex-guest"
+    assert pm_import.main([
+        "--new", str(guest_dest), "--harness", "claude", "--name", "Rules Adopter",
+    ]) == 0
+    pm_import.add_harness(guest_dest, "codex", dry_run=False, source_root=REPO)
+    capsys.readouterr()
+
+    guest_engine_rows = {
+        str(entry).replace("\\", "/")
+        for entry in pm_update._dest_guest_manifest_entries(guest_dest)
+        if not getattr(entry, "render", False)
+    }
+    assert rules_rel in guest_engine_rows, (
+        f"guest 절에 rules 엔진 행이 없다(guest 채택자 영구 동결): {sorted(guest_engine_rows)}")
+
+    for label, dest in (("주하네스", main_dest), ("guest", guest_dest)):
+        landed = dest / rules_rel
+        assert landed.is_file(), f"{label}: {rules_rel} 미배포(픽스처 전제 붕괴)"
+        landed.write_text("# stale adopter copy\n", encoding="utf-8")
+        monkeypatch.setattr(pm_update, "REPO", dest)
+        monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+        assert pm_update.main(["--from", str(REPO)]) == 0, f"{label}: self-update rc≠0"
+        capsys.readouterr()
+        assert landed.read_bytes() == upstream_bytes, (
+            f"{label}: {rules_rel} 가 상류와 수렴하지 않음(동기 채널 미작동)")
 
 
 def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors(
@@ -2425,7 +2518,7 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors
     preview = pm_update.resolve_manifest_selfheal(dest, REPO)
     assert preview["upstream_manifests"] == [claude_manifest]
     diagnostic = capsys.readouterr().err
-    assert "frozen 다중-harness 의심" in diagnostic
+    assert "미등재 flavor 파일 관측" in diagnostic
     assert "<manager>/pm-import.sh --into <project> --harness all --dry-run" in diagnostic
 
     before_dry_run = dest_manifest.read_bytes()
@@ -4303,10 +4396,31 @@ def test_add_harness_claude_prints_only_claude_trust_guidance(pm_import, tmp_pat
 _ADD_HARNESS_APPLY_PAIRS = [(b, a) for b in HARNESSES for a in HARNESSES if b != a]
 
 
+def _flavor_manifest_entries(pm_import, harness):
+    """하네스 flavor manifest 의 ManifestEntry 목록 (테스트 공용 파생원)."""
+    template_root = REPO / "templates" / pm_import.HARNESS_TEMPLATE_DIRS[harness][0]
+    return pm_import._pm_update_read_manifest(
+        template_root / ".project_manager" / "engine.manifest")
+
+
+def _expected_guest_engine_paths(pm_import, added, dest_owned):
+    """이 host 에 `added` 를 얹었을 때 등재돼야 할 **엔진 행** 경로 — 복사 술어 파생."""
+    adapter_dirs, root_doc = pm_import.ADD_HARNESS_ADAPTER[added]
+    entries = _flavor_manifest_entries(pm_import, added)
+    render_paths = {str(e).replace("\\", "/") for e in entries if getattr(e, "render", False)}
+    return {
+        str(e).replace("\\", "/") for e in entries
+        if not getattr(e, "render", False)
+        and pm_import._in_adapter_namespace(
+            Path(str(e).replace("\\", "/")), adapter_dirs, root_doc,
+            dest_owned, render_paths)
+    }
+
+
 @pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)
 def test_add_harness_guest_registration_within_namespace_or_flavor_render(
         pm_import, pm_update, tmp_path, base, added):
-    """**등재 ⊆ namespace ∪ (flavor-선언 cross-ns 중 host-미소유)** 불변식 (T-0456 R25·전 N×(N−1) 순서쌍).
+    """**등재 ⊆ flavor@render ∪ (복사 술어 통과 flavor 비-@render)** 불변식 (전 N×(N−1) 순서쌍).
 
     **R18 지시가 R25 에서 기능 요건으로 반전**: R18 은 "flavor 가 무관 공유 경로도 `@render` 로 들 수
     있으니 등재를 복사 namespace 로 막자"였으나(옛 이름 `..._subset_of_added_namespace`), opencode 의
@@ -4315,8 +4429,13 @@ def test_add_harness_guest_registration_within_namespace_or_flavor_render(
     놓쳐 PM 스킬 파손 = R25 MF). 새 경계 = **flavor `@render` 선언 자체** — 등재 경로는 (a) 추가 하네스
     namespace 안이거나 (b) `added` flavor 가 `@render` 로 선언한 경로다(그 밖 = flavor 미선언 유입 0).
     host 실소유 차감(R17)은 그 위에 얹혀 더 좁힐 뿐(claude host + opencode 는 `.claude/skills` host-소유라
-    미등재 — codex↔claude host 대조는 `test_add_harness_opencode_guest_cross_ns_skills_by_host`)."""
+    미등재 — codex↔claude host 대조는 `test_add_harness_opencode_guest_cross_ns_skills_by_host`).
+
+    **T-0574 로 상한이 넓어졌다**: 절은 이제 렌더물(`@render`)뿐 아니라 **엔진 행**(비-`@render`·
+    update 채널)도 담는다. 엔진 행 후보는 복사 술어(`_in_adapter_namespace`)를 그대로 태워 뽑으므로
+    상한도 그 술어로 파생한다 — 손-열거가 아니라 "등재 ⊆ 복사" 가 불변식의 형태다."""
     dest = _build_live_instance(pm_import, tmp_path / f"{base}_add_{added}", base)
+    dest_owned = pm_import._dest_manifest_core_paths(dest)
     pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
     reg = _guest_block_paths(pm_update, dest / ".project_manager" / "engine.manifest")
     adapter_dirs = HARNESS_ADAPTER_DIRS[added]
@@ -4329,9 +4448,104 @@ def test_add_harness_guest_registration_within_namespace_or_flavor_render(
     outside = sorted(r for r in reg if not _in_scope(r))
     assert outside == [], (
         f"{base}->{added}: guest 등재가 namespace ∪ flavor-@render 밖(flavor 미선언 유입): {outside}")
-    # 등재는 모두 flavor `@render` 선언 = 복사 스코프의 부분집합(등재⊆복사 재확인·비-@render 유입 0).
-    assert reg <= flavor_render, \
-        f"{base}->{added}: 등재에 flavor 미선언 경로 포함(등재⊄flavor @render): {sorted(reg - flavor_render)}"
+    # 등재 ⊆ flavor `@render` 선언 ∪ 복사 술어를 통과한 flavor 비-@render(엔진 행) — 두 채널 모두
+    #   flavor manifest 파생이고 후자는 복사 스코프의 부분집합이다(등재⊆복사·미복사 경로 등재 0).
+    allowed = flavor_render | _expected_guest_engine_paths(pm_import, added, dest_owned)
+    assert reg <= allowed, (
+        f"{base}->{added}: 등재에 flavor 미선언·미복사 경로 포함: {sorted(reg - allowed)}")
+
+
+# 출하 flavor manifest 가 지금 들고 있는 **어댑터 네임스페이스 엔진 파일**(비-`@render`) 수 —
+#   codex `.codex/{pm_orch_codex.py,rules/default.rules}` 2 · opencode `.opencode/{lib,plugins,
+#   pm_orch_opencode.py,.gitignore}` 4 · claude ctx 가드 5종 + `pm_orch_claude.py` +
+#   `run_tests_hook.sh` 7. 구조 단언(파생 집합 일치)과 별개로 **수**를 못박아, 상류가 엔진 파일을
+#   새로 얹을 때 그것이 guest 채널을 타는지 사람이 한 번 확인하게 만든다(등재 누락 = 그 하네스의
+#   영구 동결). codex 의 2번째가 T-0584 로 편입된 execpolicy rules 다.
+_GUEST_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 4, "claude": 7}
+
+
+@pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)
+def test_add_harness_registers_flavor_engine_rows(
+        pm_import, pm_update, tmp_path, base, added):
+    """add-harness 가 guest **엔진 행**(비-`@render`)을 dest manifest 에 정확히 등재한다 (T-0574 ②).
+
+    엔진 행이 없으면 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드처럼 `pm_relay` 코어와
+    짝인 engine-mirror 가 설치 시점 사본으로 **영구 동결**된다(코어↔드라이버 skew) — add-harness 는
+    복사만 하고 등재하지 않았고, 등재 유일분이던 `@render` 행은 update plan 에서 전량 차감됐다.
+
+    단언 셋: (a) 등재 집합 == 복사 술어 파생 기대집합(host 실소유 차감 포함) · (b) 출하 수 일치
+    (codex 1·opencode 4·claude 7) · (c) 각 엔진 행이 `@target-owned` + 비-`@render` 마커다."""
+    dest = _build_live_instance(pm_import, tmp_path / f"{base}_eng_{added}", base)
+    dest_owned = pm_import._dest_manifest_core_paths(dest)
+    expected = _expected_guest_engine_paths(pm_import, added, dest_owned)
+    assert len(expected) == _GUEST_ENGINE_ROW_COUNT[added], (
+        f"{base}->{added}: 출하 flavor 의 엔진 행 수가 기대와 다름 — 상류가 엔진 파일을 "
+        f"추가/제거했다면 _GUEST_ENGINE_ROW_COUNT 를 갱신하라: {sorted(expected)}")
+
+    pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
+    block_entries = pm_update._dest_guest_manifest_entries(dest)
+    engine_rows = [e for e in block_entries if not getattr(e, "render", False)]
+    got = {str(e).replace("\\", "/") for e in engine_rows}
+    assert got == expected, (
+        f"{base}->{added}: guest 엔진 행 등재가 기대와 다름 "
+        f"(누락 {sorted(expected - got)} · 초과 {sorted(got - expected)})")
+    assert all(getattr(e, "target_owned", False) for e in engine_rows), (
+        f"{base}->{added}: 엔진 행에 @target-owned 부재 — upstream flavor 부재 시 rc2 로 전체가 "
+        f"막힌다: {[str(e) for e in engine_rows if not getattr(e, 'target_owned', False)]}")
+    # 등재 ⊆ 복사: 등재한 엔진 행은 실제로 dest 에 레이다운돼 있어야 한다(없는 파일 생성 금지).
+    for path in sorted(got):
+        assert (dest / path).exists(), (
+            f"{base}->{added}: 등재했으나 복사되지 않은 엔진 경로(pm_update 가 새 파일을 만든다): {path}")
+
+
+@pytest.mark.parametrize("added", sorted(_GUEST_ENGINE_ROW_COUNT))
+def test_add_harness_engine_row_sync_is_idempotent_and_prunes_stale(
+        pm_import, pm_update, tmp_path, added):
+    """엔진 행 등재도 refresh 멱등(중복 0)이고 상류 폐기분은 제거된다 (T-0574 ③).
+
+    엔진 행이 `@render` 행과 다른 축이라, 목표 계산이 한쪽만 보면 refresh 마다 등재 churn 이거나
+    폐기 행이 영구 잔존한다(그 행은 매 sync 마다 `[skip]` 을 찍는 잔재가 된다)."""
+    base = "claude" if added != "claude" else "opencode"
+    dest = _build_live_instance(pm_import, tmp_path / f"idem_{added}", base)
+    pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
+    mani = dest / ".project_manager" / "engine.manifest"
+    before = mani.read_text(encoding="utf-8")
+
+    pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)  # refresh(멱등).
+    assert mani.read_text(encoding="utf-8") == before, \
+        f"{added}: 엔진 행 포함 refresh 가 manifest 를 바꿈(등재 churn)"
+    paths = [ln.split()[0] for ln in
+             pm_update._extract_guest_manifest_block(before).splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    assert len(paths) == len(set(paths)), f"{added}: guest 절 경로 중복(멱등 위반): {paths}"
+
+    # 상류 폐기분 제거 — 현행 flavor 에 없는 엔진 행을 심고 refresh.
+    adapter_dir = pm_import.ADD_HARNESS_ADAPTER[added][0][0]
+    stale = f"{adapter_dir}/obsolete_engine.py    @target-owned"
+    end = pm_update._GUEST_MANIFEST_END
+    mani.write_text(before.replace(end, stale + "\n" + end), encoding="utf-8")
+    pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
+    assert f"{adapter_dir}/obsolete_engine.py" not in _guest_block_paths(pm_update, mani), \
+        f"{added}: 상류에서 폐기된 엔진 행이 guest 절에 잔존"
+
+
+def test_render_managed_relpaths_excludes_guest_engine_rows(pm_import, pm_update, tmp_path):
+    """guest 엔진 행은 `_render_managed_relpaths` 에 유입되지 않는다 (T-0574 ④).
+
+    엔진 행은 byte-copy 채널이라 렌더 대상이 아니다 — 새면 add-harness/pm_update 가 바이너리성
+    스크립트를 operational 치환 대상으로 삼아 내용을 훼손한다(`@render` 판정 단일 근거 유지)."""
+    dest = _build_live_instance(pm_import, tmp_path / "render_managed", "claude")
+    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
+    managed = pm_import._render_managed_relpaths(dest)
+    engine_paths = {
+        str(e).replace("\\", "/")
+        for e in pm_update._dest_guest_manifest_entries(dest)
+        if not getattr(e, "render", False)
+    }
+    assert engine_paths, "픽스처 전제 붕괴 — guest 엔진 행이 하나도 등재되지 않았다"
+    assert not (engine_paths & managed), \
+        f"비-@render guest 엔진 행이 render 대상에 유입: {sorted(engine_paths & managed)}"
+    assert ".opencode/agents" in managed, "렌더물 축이 함께 사라짐(공허 단언 방지)"
 
 
 @pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)
@@ -4423,13 +4637,20 @@ def test_add_harness_registers_guest_render_in_dest_manifest(pm_import, tmp_path
     assert ".opencode/agents" in managed, "guest @render 미등재(render_managed 미포함)"
     assert ".opencode/pm-instructions.md" in managed
     # guest 는 host 인스턴스 소유 → @target-owned (pm_update 재렌더 skip·T-0456 MF-2).
-    assert ".opencode/agents    @render @target-owned" in manifest.read_text(encoding="utf-8")
+    #   마커 **집합**으로 본다 — 직렬화는 `_manifest_entry_line` 소관이라 공백/순서를 문자로 박으면
+    #   생성기 교체마다 무의미하게 깨진다(T-0574 에서 실제로 구분자가 바뀌었다).
+    agents_entry = next(
+        e for e in pm_import._load_pm_update().read_manifest(manifest)
+        if str(e).replace("\\", "/") == ".opencode/agents")
+    assert agents_entry.render and agents_entry.target_owned, \
+        f"guest 렌더물 마커 누락: render={agents_entry.render} owned={agents_entry.target_owned}"
     # 멱등: 재실행(refresh)이 중복 등재 안 함(guest 라인·마커 절 각 1).
     begin = pm_import._load_pm_update()._GUEST_MANIFEST_BEGIN
     text1 = manifest.read_text(encoding="utf-8")
     pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
     text2 = manifest.read_text(encoding="utf-8")
-    assert text2.count(".opencode/agents    @render") == 1, "guest @render 라인 중복(멱등 위반)"
+    assert [str(e) for e in pm_import._load_pm_update().read_manifest(manifest)].count(
+        ".opencode/agents") == 1, "guest @render 라인 중복(멱등 위반)"
     assert text1.count(begin) == text2.count(begin) == 1, "guest 절(마커) 중복"
 
 
@@ -4479,7 +4700,11 @@ def test_add_harness_opencode_guest_cross_ns_skills_by_host(
     leaked = _grep_token_files(skills_dir, "{{PROJECT_NAME}}")
     assert leaked == [], f"codex host: cross-ns 스킬 미렌더 토큰 잔존(복사만·렌더 누락): {leaked}"
     # guest = host 소유(add-harness 레이다운)라 @target-owned(pm_update 재렌더/재전파 skip).
-    assert ".claude/skills    @render @target-owned" in mani.read_text(encoding="utf-8")
+    skills_entry = next(
+        e for e in pm_update.read_manifest(mani)
+        if str(e).replace("\\", "/") == ".claude/skills")
+    assert skills_entry.render and skills_entry.target_owned, \
+        f"cross-ns guest 마커 누락: render={skills_entry.render} owned={skills_entry.target_owned}"
     # 멱등: refresh 재실행이 manifest 를 안 바꾼다(cross-ns 항목이 매번 changed 로 churn 안 함·_this_ns R25).
     before = mani.read_text(encoding="utf-8")
     pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
@@ -4509,7 +4734,7 @@ def test_add_harness_dry_run_preview_subtracts_existing(pm_import, tmp_path, cap
     dest = _build_live_instance(pm_import, tmp_path / "preview", "claude")
     pm_import.add_harness(dest, "codex", dry_run=True, source_root=REPO)  # fresh dry-run
     fresh = capsys.readouterr().out
-    assert "guest @render 등재 예정" in fresh and ".codex/agents" in fresh, fresh
+    assert "guest 절 등재 예정" in fresh and ".codex/agents" in fresh, fresh
     pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)  # 실제 등재
     capsys.readouterr()
     pm_import.add_harness(dest, "codex", dry_run=True, source_root=REPO)  # refresh dry-run
@@ -4602,35 +4827,46 @@ def test_add_harness_claude_guest_survives_pm_update_roundtrip(pm_import, pm_upd
                    for r, _s, _d, _k in changes), "claude guest 절로 engine.manifest 영구 churn"
 
 
-def test_guest_render_manifest_lines_emits_all_flavor_render(pm_import, tmp_path):
-    """`_guest_render_manifest_lines` 는 flavor manifest 의 `@render` **선언 전부**를 후보로 방출한다
+def test_guest_manifest_lines_emits_all_flavor_render(pm_import, tmp_path):
+    """`_guest_manifest_lines` 는 flavor manifest 의 `@render` **선언 전부**를 후보로 방출한다
     (T-0456 R25·옛 namespace cap R18 **제거**).
 
     **R18 지시가 R25 에서 기능 요건으로 반전**: R18(R19)은 등재 후보를 복사 namespace 로 제한해
     cross-ns 경로(`.other @render`)를 뺐으나, opencode 의 `.claude/skills @render`(ADR-0065·`.opencode`
     밖 네이티브 소비)가 그 cap 에 걸려 codex host 에서 PM 스킬이 파손됨을 R25 가 포착했다 — **flavor
     `@render` 선언 자체가 경계**다(flavor 는 자기 footprint 만 선언). 이제 namespace-레벨(`.fourth`)·
-    하위(`.fourth/agents`)·cross-ns(`.other`) `@render` 를 **모두** 후보로 내고(host 실소유 차감은
-    downstream `_guest_render_sync_plan`), 비-@render(bare copy)는 제외한다. 시그니처도 단순화 —
-    adapter_dirs 인자 제거(경계가 namespace 가 아니라 flavor 선언). 가짜 4번째 하네스 fixture(T-0429)."""
+    하위(`.fourth/agents`)·cross-ns(`.other`) `@render` 를 **모두** 후보로 낸다(host 실소유 차감은
+    downstream `_guest_render_sync_plan`).
+
+    **T-0574**: 비-@render 는 더 이상 무조건 제외가 아니라 **복사 술어**(`_in_adapter_namespace`)로
+    갈린다 — namespace 안이면 엔진 행으로 등재하고(`@source … @target-owned`), 밖이거나 host 실소유면
+    제외한다. 가짜 4번째 하네스 fixture(T-0429)."""
     tmpl = tmp_path / "templates" / "fourth"
     mani = tmpl / ".project_manager" / "engine.manifest"
     mani.parent.mkdir(parents=True)
-    # namespace-레벨 @render + 하위 @render + cross-ns @render + 비-@render(bare copy).
+    # namespace-레벨 @render + 하위 @render + cross-ns @render
+    #   + namespace 안 비-@render(엔진 행) + namespace 밖 비-@render(host 엔진·제외).
     mani.write_text(
         ".fourth    @render\n"
         ".fourth/agents    @render\n"
         ".other    @render\n"
-        ".fourth/plain.txt\n",
+        ".fourth/plain.txt    @source=templates/fourth/.fourth/plain.txt\n"
+        ".project_manager/tools/board.py\n",
         encoding="utf-8")
-    lines = pm_import._guest_render_manifest_lines(tmpl)
-    paths = {ln.split()[0] for ln in lines}
-    # 모든 @render 선언이 후보 — namespace-레벨·하위·cross-ns 전부(cap 제거). 비-@render 는 제외.
-    assert paths == {".fourth", ".fourth/agents", ".other"}, paths
+    lines = pm_import._guest_manifest_lines(tmpl, (".fourth",), "FOURTH.md", set())
+    by_path = {ln.split()[0]: ln for ln in lines}
+    # @render 선언 전부 + namespace 안 엔진 행. namespace 밖 엔진 경로(host 소유)는 제외.
+    assert set(by_path) == {".fourth", ".fourth/agents", ".other", ".fourth/plain.txt"}, by_path
     # cross-ns(`.other`)도 방출(R25 — 옛 namespace cap 이면 빠졌다·이게 `.claude/skills` 파손 클래스).
-    assert ".other    @render @target-owned" in lines
-    # 각 후보는 `@render @target-owned` 마커(guest=host 소유·pm_update 재렌더 skip).
-    assert all(ln.endswith("@render @target-owned") for ln in lines), lines
+    assert "@render" in by_path[".other"] and "@target-owned" in by_path[".other"]
+    # 엔진 행은 `@render` 없이 `@source` + `@target-owned` — 한 줄의 @render 유무가 채널을 가른다.
+    engine_line = by_path[".fourth/plain.txt"]
+    assert "@render" not in engine_line and "@target-owned" in engine_line, engine_line
+    assert "@source=templates/fourth/.fourth/plain.txt" in engine_line, engine_line
+    # host 가 이미 소유하면(`dest_owned`) 엔진 행은 빠진다 — 복사 술어와 같은 차감.
+    owned = pm_import._guest_manifest_lines(
+        tmpl, (".fourth",), "FOURTH.md", {".fourth/plain.txt"})
+    assert ".fourth/plain.txt" not in {ln.split()[0] for ln in owned}, owned
 
 
 def test_add_harness_refresh_syncs_removes_stale_guest(
@@ -4685,10 +4921,16 @@ def test_add_harness_refresh_corrects_stale_marker(pm_import, pm_update, tmp_pat
     pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
     mani = dest / ".project_manager" / "engine.manifest"
     # 마커 손상: `.opencode/agents` 에서 @target-owned 제거(구 마커·경로 동일).
-    mani.write_text(mani.read_text(encoding="utf-8").replace(
-        ".opencode/agents    @render @target-owned", ".opencode/agents    @render"),
-        encoding="utf-8")
-    gl = pm_import._guest_render_manifest_lines(REPO / "templates" / "opencode")
+    damaged = [
+        ".opencode/agents    @render" if line.split()[:1] == [".opencode/agents"] else line
+        for line in mani.read_text(encoding="utf-8").splitlines()
+    ]
+    mani.write_text("\n".join(damaged) + "\n", encoding="utf-8")
+    assert ".opencode/agents    @render\n" in mani.read_text(encoding="utf-8"), \
+        "마커 손상 주입 실패(픽스처 전제 붕괴)"
+    gl = pm_import._guest_manifest_lines(
+        REPO / "templates" / "opencode", (".opencode",), "AGENTS.md",
+        pm_import._dest_manifest_core_paths(dest))
     plan = pm_import._guest_render_sync_plan(dest, gl, (".opencode",))
     assert plan["changed"] and not plan["added"] and not plan["removed"], \
         f"마커 교정 미감지(경로 집합만 비교·R21): {plan}"
@@ -5198,3 +5440,225 @@ def test_add_harness_rejects_missing_dest(pm_import, tmp_path):
     with pytest.raises(FileNotFoundError):
         pm_import.add_harness(tmp_path / "does_not_exist", "opencode",
                               dry_run=True, source_root=REPO)
+
+
+# ── instance-owned 어댑터 config 원장 (T-0585) ────────────────────────────────
+# 기록 시점(설치·add-harness 레이다운 판정)과 수용 커맨드(pm_config)를 실 설치로 태운다. 채널의
+# 판정 분기(무편집/편집/원장부재/보고전용)는 `test_pm_update.py` 의 합성 픽스처 절이 본다.
+
+
+def _ledger_files(dest: Path) -> dict:
+    path = dest / ".project_manager" / "adapter_baseline.json"
+    return json.loads(path.read_text(encoding="utf-8"))["files"] if path.is_file() else {}
+
+
+def test_instance_owned_declaration_and_channel_classification_agree(pm_import):
+    """소유 선언 ↔ 채널 분류가 **양방향 전수 일치**한다 (선언 파생·분류 상수).
+
+    한쪽만 늘면 조용히 깨진다 — 분류에만 있으면 소유 진실이 갈리고(그 파일을 pm_update 가 덮을
+    수도 있다), 선언에만 있으면 새 config 가 채널 0 으로 떨어져 지금 닫는 결함이 재발한다."""
+    declared = pm_import.INSTANCE_OWNED_ADAPTER_FILES
+    channel = pm_import.ADAPTER_CONFIG_CHANNEL
+    assert set(declared) == set(channel), "하네스 축이 어긋남(등록 하네스 누락)"
+    modes = {pm_import.ADAPTER_CONFIG_MANAGED, pm_import.ADAPTER_CONFIG_REPORT,
+             pm_import.ADAPTER_CONFIG_NO_CHANNEL}
+    for harness in sorted(declared):
+        assert set(declared[harness]) == set(channel[harness]), (
+            f"{harness}: 선언 {sorted(declared[harness])} ↔ 분류 {sorted(channel[harness])} 불일치")
+        unknown = {rel: mode for rel, mode in channel[harness].items() if mode not in modes}
+        assert unknown == {}, f"{harness}: 알 수 없는 채널 분류 {unknown}"
+    # 재승인 안내는 managed 대상에만 붙는다(보고-전용에 붙으면 안 하는 일을 안내하는 셈).
+    managed = {rel for harness in channel for rel, mode in channel[harness].items()
+               if mode == pm_import.ADAPTER_CONFIG_MANAGED}
+    assert set(pm_import.ADAPTER_CONFIG_REAPPROVAL_NOTE) <= managed, (
+        "재승인 안내가 managed 아닌 경로에 선언됨: "
+        f"{sorted(set(pm_import.ADAPTER_CONFIG_REAPPROVAL_NOTE) - managed)}")
+
+
+def test_install_records_adapter_baseline_for_laid_down_configs(pm_import, tmp_path):
+    """최초 import 가 레이다운한 instance-owned config 의 template 해시를 원장에 기록한다.
+
+    기록이 곧 다음 동기의 판정 기준이다 — 없으면 그 인스턴스는 영구 보고 모드(상류 동작 fix 미도달).
+    루트 진입 문서(`none` 분류)는 채널이 없으므로 기록 대상이 아니다."""
+    dest = tmp_path / "baseline-install"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "codex", "--name", "Ledger Adopter",
+    ]) == 0
+
+    files = _ledger_files(dest)
+    assert set(files) == {".codex/config.toml", ".codex/hooks.json"}, (
+        f"원장 기록 집합이 채널 대상과 다름: {sorted(files)}")
+    template_root = REPO / "templates" / "codex"
+    for rel, entry in files.items():
+        assert entry["sha256"] == pm_import.file_sha256(template_root / rel), \
+            f"{rel}: 원장 해시가 template 과 다름(레이다운 시점 기록이 아니다)"
+        assert entry["recorded_at"] and "template_rev" in entry
+
+
+def test_add_harness_records_baseline_only_for_unpreserved_configs(pm_import, tmp_path):
+    """add-harness 는 보존(기존 값 상이)한 config 를 원장에 올리지 않는다.
+
+    보존분을 기록하면 그 값이 "상류가 준 그대로" 로 둔갑해 다음 동기가 채택자 편집을 덮는다
+    (하한선 붕괴). 함께 내려놓은 무편집 파일은 정상 기록돼야 한다(공허 단언 방지)."""
+    dest = _build_live_instance(pm_import, tmp_path / "baseline-add", "claude")
+    local_hooks = '{"hooks": {"PreCompact": ["채택자 값"]}}\n'
+    (dest / ".codex").mkdir(parents=True, exist_ok=True)
+    (dest / ".codex" / "hooks.json").write_text(local_hooks, encoding="utf-8")
+
+    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+
+    files = _ledger_files(dest)
+    assert ".codex/hooks.json" not in files, \
+        "보존된(채택자 값) config 가 원장에 올라감 — 다음 동기가 그 값을 덮는다"
+    assert ".codex/config.toml" in files, "함께 레이다운된 config 가 기록되지 않음(공허 단언)"
+    assert (dest / ".codex" / "hooks.json").read_text(encoding="utf-8") == local_hooks
+
+
+def test_sync_adapter_config_list_and_accept_via_pm_config(
+        pm_import, pm_config, tmp_path, capsys):
+    """`sync-adapter-config --list` 는 판정을 조회하고 `--accept` 는 백업 후 상류 값을 채택한다.
+
+    구세대 채택자(원장 부재)가 보고 모드를 빠져나가는 **유일한 명시 채널**이다. 채널 밖 경로는
+    rc1 로 거른다(조용한 무동작 금지)."""
+    dest = tmp_path / "accept-cli"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "codex", "--name", "Accept Adopter",
+    ]) == 0
+    edited = '{"hooks": {"PreCompact": ["채택자 손편집"]}}\n'
+    (dest / ".codex" / "hooks.json").write_text(edited, encoding="utf-8")
+    capsys.readouterr()
+
+    listed = argparse.Namespace(list=True, accept=None, source=str(REPO))
+    assert pm_config.cmd_sync_adapter_config(
+        listed, pm_import=pm_import, dest_root=dest) == 0
+    listing = capsys.readouterr().out
+    assert ".codex/hooks.json" in listing and "managed" in listing, listing
+
+    accepted = argparse.Namespace(list=False, accept=".codex/hooks.json", source=str(REPO))
+    assert pm_config.cmd_sync_adapter_config(
+        accepted, pm_import=pm_import, dest_root=dest) == 0
+
+    upstream_bytes = (REPO / "templates" / "codex" / ".codex" / "hooks.json").read_bytes()
+    assert (dest / ".codex" / "hooks.json").read_bytes() == upstream_bytes
+    assert _ledger_files(dest)[".codex/hooks.json"]["sha256"] == \
+        pm_import.file_sha256(REPO / "templates" / "codex" / ".codex" / "hooks.json")
+    backup = (dest / ".pm_import_backups" / datetime.date.today().isoformat()
+              / ".codex" / "hooks.json")
+    assert backup.is_file() and backup.read_text(encoding="utf-8") == edited, \
+        "수용이 기존 값을 중앙 백업 자리에 남기지 않음(비파괴 위반)"
+    out = capsys.readouterr().out
+    assert "/hooks" in out, f"수용 후 재승인 안내 부재: {out!r}"
+
+    bogus = argparse.Namespace(list=False, accept=".codex/nope.json", source=str(REPO))
+    assert pm_config.cmd_sync_adapter_config(
+        bogus, pm_import=pm_import, dest_root=dest) == 1
+
+
+def test_pm_update_run_preserves_edited_adapter_config_and_reports(
+        pm_import, pm_update, tmp_path, monkeypatch, capsys):
+    """실 sync(`pm_update.main`)가 이 채널을 **배선**해 편집분을 보존하고 보고한다.
+
+    합성 호출이 아니라 `_main` 흐름을 태워, 채널이 실행 경로에 실제로 걸려 있는지(엔진 sync
+    후단 배치)를 본다 — 함수만 있고 배선이 없으면 채택자에겐 없는 기능이다."""
+    dest = tmp_path / "sync-wiring"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "codex", "--name", "Wiring Adopter",
+    ]) == 0
+    edited = '{"hooks": {"PreCompact": ["채택자 손편집"]}}\n'
+    (dest / ".codex" / "hooks.json").write_text(edited, encoding="utf-8")
+    capsys.readouterr()
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    assert pm_update.main(["--from", str(REPO)]) == 0
+
+    captured = capsys.readouterr()
+    assert (dest / ".codex" / "hooks.json").read_text(encoding="utf-8") == edited, \
+        "실 sync 가 채택자 편집을 덮었다(하한선 위반)"
+    assert "sync-adapter-config --accept" in captured.err, (
+        f"실 sync 에 채널이 배선되지 않음(보고 부재): {captured.err!r}")
+
+
+def test_sync_adapter_config_list_label_reflects_mode_not_status_alone(
+        pm_import, pm_config, tmp_path, capsys):
+    """`--list` 라벨은 mode 와 함께 판정한다 — 보고-전용을 "자동 갱신" 으로 안내하지 않는다.
+
+    status(`unedited`)만 보면 report 대상도 "다음 동기가 자동 갱신" 이 되는데, 그 파일은 어떤
+    경우에도 갱신되지 않는다(거짓 안내). 두 mode 를 같은 상태로 만들어 라벨이 갈리는지 본다."""
+    dest = tmp_path / "label-mode"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "codex", "--name", "Label Adopter",
+    ]) == 0
+    # 두 파일 모두 "무편집(원장 일치)인데 template 과 다름" 상태로 만든다 — mode 만 다르다.
+    ledger_path = dest / ".project_manager" / "adapter_baseline.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    for rel, body in ((".codex/hooks.json", '{"hooks": {}}\n'),
+                      (".codex/config.toml", 'sandbox_mode = "read-only"\n')):
+        (dest / rel).write_text(body, encoding="utf-8")
+        ledger["files"][rel]["sha256"] = pm_import.file_sha256(dest / rel)
+    ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+    capsys.readouterr()
+
+    args = argparse.Namespace(list=True, accept=None, source=str(REPO))
+    assert pm_config.cmd_sync_adapter_config(
+        args, pm_import=pm_import, dest_root=dest) == 0
+
+    lines = {line.split("·")[0].strip().lstrip("- "): line
+             for line in capsys.readouterr().out.splitlines() if line.startswith("  - ")}
+    assert "다음 동기가 자동 갱신" in lines[".codex/hooks.json"], lines[".codex/hooks.json"]
+    assert "보고 전용" in lines[".codex/config.toml"], lines[".codex/config.toml"]
+    assert "다음 동기가 자동 갱신" not in lines[".codex/config.toml"], \
+        "보고-전용 대상에 자동 갱신 안내(거짓)"
+
+
+def test_build_parser_routes_sync_adapter_config(pm_config):
+    """build_parser 가 `sync-adapter-config` 를 파싱하고 cmd_sync_adapter_config 로 라우팅한다.
+
+    핸들러가 있어도 파서 배선이 없으면 채택자에겐 없는 커맨드다(배선 자체가 판정 대상)."""
+    parser = pm_config.build_parser()
+    listed = parser.parse_args(["sync-adapter-config", "--list"])
+    assert listed.func is pm_config.cmd_sync_adapter_config
+    assert listed.list is True and listed.accept is None and listed.source is None
+    accepted = parser.parse_args(
+        ["sync-adapter-config", "--accept", ".codex/hooks.json", "--from", "/tmp/fw"])
+    assert accepted.func is pm_config.cmd_sync_adapter_config
+    assert accepted.accept == ".codex/hooks.json" and accepted.source == "/tmp/fw"
+    # 무인자 = 조회(기본 동작)로 떨어진다.
+    bare = parser.parse_args(["sync-adapter-config"])
+    assert bare.func is pm_config.cmd_sync_adapter_config and bare.accept is None
+
+
+def test_sync_adapter_config_list_and_accept_are_mutually_exclusive(pm_config):
+    """`--list` 와 `--accept` 를 함께 주면 argparse 가 거부한다(한쪽 조용한 무시 금지)."""
+    parser = pm_config.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["sync-adapter-config", "--list", "--accept", ".codex/hooks.json"])
+    # 각각 단독은 정상 파싱(가드가 정상 사용을 막지 않음).
+    assert parser.parse_args(["sync-adapter-config", "--list"]).list is True
+    assert parser.parse_args(
+        ["sync-adapter-config", "--accept", ".codex/hooks.json"]).accept == ".codex/hooks.json"
+
+
+def test_sync_adapter_config_accept_reports_failure_rc_without_success_claim(
+        pm_import, pm_config, tmp_path, capsys):
+    """수용이 비정상 종료하면 rc1 + 사유를 내고 "자동 갱신 궤도" 를 주장하지 않는다.
+
+    원장 기록 실패를 무시하고 성공을 찍으면, 채택자는 다음 동기가 자동 갱신할 거라 믿는데 실제론
+    영구 보고 모드다(거짓 안내)."""
+    dest = tmp_path / "accept-failure"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "codex", "--name", "Failure Adopter",
+    ]) == 0
+    (dest / ".codex" / "hooks.json").write_text('{"hooks": {}}\n', encoding="utf-8")
+    ledger_path = dest / ".project_manager" / "adapter_baseline.json"
+    ledger_path.unlink()
+    ledger_path.mkdir()  # 원장 자리를 디렉토리로 점유 → 기록 불가.
+    capsys.readouterr()
+
+    args = argparse.Namespace(list=False, accept=".codex/hooks.json", source=str(REPO))
+    rc = pm_config.cmd_sync_adapter_config(args, pm_import=pm_import, dest_root=dest)
+
+    captured = capsys.readouterr()
+    assert rc == 1, "원장 기록 실패인데 성공 rc"
+    assert "ledger-failed" in captured.err, captured.err
+    assert "자동 갱신 궤도" not in captured.out, f"거짓 성공 안내: {captured.out!r}"

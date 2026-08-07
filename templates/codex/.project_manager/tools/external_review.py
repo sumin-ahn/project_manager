@@ -33,6 +33,9 @@
     판정 4회(local.conf external_review_round_limit) 또는 미완 2회
     (external_review_incomplete_round_limit)를 채우면 이후 실행을 기계 차단하고 "사용자 보고·대기"
     loud 안내를 낸다 — 사용자 승인 후 `--ack-rounds` 로 각 한도만큼 재개.
+  - wave 예산 소진 → exit 4 (같은 rc·같은 실행 전 거부). 게이트별 상한과 **별개로** wave 단위
+    총 라운드 예산(local.conf external_review_wave_budget·기본 24)을 두어 티켓 수 × 라운드 상한
+    으로 비용이 무한 확장되는 구조를 막는다 — 사용자 승인 후 `--ack-wave` 로 예산 리셋 재개.
 
 설계:
   - 어댑터 seam: 외부 도구를 `reviewer_cmd`(local.conf) 뒤로 격리 → codex 외 교체 가능.
@@ -55,6 +58,11 @@
     별 라운드 장부(`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 전송을
     count 하고, 승인 없이 limit(기본 4)회를 넘기면 실행 *전에* 거부(exit 4)한다. PM 자의 판단을
     기계 판정으로 대체 — 사용자 승인 후 `--ack-rounds` 로만 재개한다([[mechanize-dont-instruct-llm]]).
+  - 라운드별 산출 장부 + wave 예산: 같은 장부에 라운드마다 산출(`rounds` — 판정 rc·must-fix 수)을
+    append 하고, 전 게이트 합계 전송을 wave 단위로 센다(`wave` 절). 라운드 수만으로는 "그 라운드가
+    실결함을 냈는가"를 기계로 확인할 수 없어 게이트 심도 대비 비용 적정성 판단이 PM 자기보고에
+    의존했다. 조회는 `--rounds-report`(외부 전송 없는 읽기 전용 표). 기록은 무조건이고 hard 거부는
+    예산 축 하나뿐이다.
 """
 
 from __future__ import annotations
@@ -205,7 +213,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — engine_rev.py --bump가 전 stamped 모듈과 함께 재작성한다.
-ENGINE_REV = "v1.6.1"
+ENGINE_REV = "v1.6.2"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -863,8 +871,15 @@ _REVIEWER_PROGRESS_CONTRACTS = {
 DEFAULT_ROUND_LIMIT = 4
 DEFAULT_INCOMPLETE_ROUND_LIMIT = 2
 
+# wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 **별개** 축이다. 게이트 상한만 있으면 비용이
+# 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 전송을 이 예산으로 묶는다. 기본 24 는
+# 게이트 상한 4 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 "반쯤에서 한 번
+# 사용자 확인"이 걸리게 한다. local.conf external_review_wave_budget 로 조정 가능.
+DEFAULT_WAVE_BUDGET = 24
+
 # 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분).
-# 실행 전 거부라 리뷰어는 호출되지 않는다(외부 전송·과금 없음).
+# 실행 전 거부라 리뷰어는 호출되지 않는다(외부 전송·과금 없음). wave 예산 소진도 같은 축(전송 전
+# 예산 거부)이라 같은 rc 를 쓴다 — 호출부가 "예산 때문에 안 나갔다"를 한 코드로 판별한다.
 EXIT_ROUND_LIMIT_EXCEEDED = 4
 
 # 시크릿 denylist — 이 패턴에 매칭되는 파일은 diff 에서 강제 제외하고 stderr 에 경고.
@@ -1020,6 +1035,21 @@ _ROUND_LIMIT_GUIDANCE = (
     "  · 상한 조정은 local.conf `external_review_round_limit`(판정)과 "
     "`external_review_incomplete_round_limit`(미완).\n"
     "  (장부: {ledger} · count={count} acked_through={acked})"
+)
+
+# wave 예산 소진 fail-loud 안내. 게이트별 상한을 통과한 전송이라도 wave 합계가 예산을 채우면
+# 같은 자리(리뷰어 호출 전)에서 같은 rc 로 막는다 — 게이트마다 상한을 새로 받는 구조에서는 티켓
+# 수만큼 비용이 늘어나기 때문이다. 재개 경로는 사용자 승인 후 `--ack-wave` 하나뿐이다.
+_WAVE_BUDGET_GUIDANCE = (
+    "오류: wave 예산 소진 — 사용자 승인 후 `--ack-wave` 로 재개(예산 리셋)\n"
+    "  게이트 {gate} · wave spent={spent} (예산 {budget} · wave 시작 {started})\n"
+    "  · 게이트별 라운드 상한과 **별개**인 wave 단위 총 라운드 예산입니다 — 티켓 수 × 라운드 "
+    "상한으로 비용이 확장되는 것을 막습니다.\n"
+    "  · 라운드별 산출을 `--rounds-report` 로 확인해 **사용자에게 보고하고 대기**하세요.\n"
+    "  · 사용자 승인을 받은 뒤에만 `--ack-wave` 로 재개하세요 (spent 를 0 으로 리셋):\n"
+    "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-wave [기존 옵션]\n"
+    "  · 예산 조정은 local.conf `external_review_wave_budget`.\n"
+    "  (장부: {ledger})"
 )
 
 
@@ -1215,6 +1245,21 @@ def _incomplete_round_limit(conf: dict[str, str]) -> int:
     return value if value >= 0 else DEFAULT_INCOMPLETE_ROUND_LIMIT
 
 
+def _wave_budget(conf: dict[str, str]) -> int:
+    """wave 총 라운드 예산 (local.conf external_review_wave_budget·기본 `DEFAULT_WAVE_BUDGET`).
+
+    비정수·음수는 기본값으로 fail-soft — 라운드 상한 노브와 같은 규칙이다(깨진 노브가 게이트를
+    벽돌로 만들지 않는다)."""
+    raw = conf.get("external_review_wave_budget", "").strip()
+    if not raw:
+        return DEFAULT_WAVE_BUDGET
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_WAVE_BUDGET
+    return value if value >= 0 else DEFAULT_WAVE_BUDGET
+
+
 # ── 라운드 상한 장부 ─────────────
 # 외부 리뷰는 과금·전송 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한 게이트
 # 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다([[mechanize-dont-instruct-llm]]):
@@ -1223,6 +1268,18 @@ def _incomplete_round_limit(conf: dict[str, str]) -> int:
 # `.project_manager/.local/`(regression/livegate sidecar 와 동위·board 상태 아님)에 둔다. 경로는
 # 호출 시점 REPO(module-level·monkeypatch 가능)에서 파생해 hermetic 테스트가 tmp 로 격리할 수 있게
 # 한다(_tickets_dir 동형). 손상 장부는 빈 장부로 fail-soft(회귀해소·regression flag 동형).
+#
+# 장부는 두 축을 함께 싣는다:
+#   · 게이트 축 — 최상위 키가 게이트 이름이고 값이 `_gate_entry` 스키마다. 상한 집계용
+#     `records`(예약/마감 레코드) 옆에 **라운드별 산출** `rounds`(판정 rc·결함 수)를 append 한다.
+#     `records` 는 승인(`--ack-rounds`) 때 비워지는 집계 창이고 `rounds` 는 남는 이력이라, "그
+#     라운드가 실결함을 냈는가"를 나중에도 기계로 확인할 수 있다.
+#   · wave 축 — 예약 키 `wave`(`WAVE_SECTION_KEY`) 하나에 {started, spent} 를 둔다. 게이트 상한만
+#     있으면 비용이 티켓 수 × 상한으로 확장되므로 전 게이트 합계를 이 예산이 묶는다. 두 축이 한
+#     dict 를 공유하므로 **예약 키를 게이트 이름으로 쓰는 것은 기계로 막는다**(`_reserved_gate_error`
+#     가 `--gate` 를 거르고 `_gate_entry` 가 그 키를 fail-loud 로 거부·집계 순회는 건너뛴다).
+# 두 축의 적용 범위는 같다 — 장부를 타는 실행은 `--gate` 지정분뿐이라 wave 도 게이트 라운드만
+# 센다(`--gate` 없는 실행은 종전대로 장부 밖이고 어느 예산도 쓰지 않는다).
 
 
 def _round_ledger_path() -> Path:
@@ -1350,6 +1407,11 @@ def _round_ledger_lock() -> Iterator[None]:
         yield
 
 
+def _utc_now_iso() -> str:
+    """장부 시각 표기 단일 소스 — UTC ISO-8601 (예약/마감/산출이 같은 형식을 쓴다)."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
 def _as_int(value: object) -> int:
     """장부 필드를 int 로 강제 (손상/누락 → 0·fail-soft)."""
     try:
@@ -1358,11 +1420,205 @@ def _as_int(value: object) -> int:
         return 0
 
 
+# ── wave 예산 절 (전 게이트 합계) ───────────────────────────────────────────
+
+WAVE_SECTION_KEY = "wave"
+
+# 장부 최상위에서 wave 절이 차지하는 **예약 키** — 게이트 이름으로 쓸 수 없다. 같은 키를 게이트가
+# 쓰면 `_gate_entry` 와 `_wave_state` 가 한 항목을 서로 덮어써 게이트 count 는 저장되지 않고 wave
+# 예산은 매 실행 0 으로 되살아난다(두 상한이 조용히 무력화). 게이트 이름은 형식 강제 대상이 아니라
+# 자유 문자열이 실사용이므로(장부 실측: `wave4-b1`·`wave4-b3r2`) `T-NNNN` 강제 대신 **예약 키만**
+# 거부한다 — 기존 이름은 하나도 깨지지 않고 충돌 가능성만 사라진다.
+_RESERVED_LEDGER_KEYS: frozenset[str] = frozenset({WAVE_SECTION_KEY})
+
+# 게이트 항목임을 알아보는 필드 — 예약 키 자리에 이런 항목이 들어 있으면 예약 키 도입 *이전에*
+# 그 이름을 게이트로 쓴 장부다(교체 사실을 조용히 넘기지 않고 알린다).
+_GATE_ENTRY_MARKERS: tuple[str, ...] = ("count", "acked_through", "records", "rounds")
+
+_RESERVED_GATE_GUIDANCE = (
+    "오류: `--gate {gate}` 는 라운드 장부의 예약 키라 게이트 이름으로 쓸 수 없습니다 "
+    "(예약 키: {keys}).\n"
+    "  · 그 키는 장부 최상위에서 wave 예산 절이 씁니다 — 같은 이름의 게이트는 게이트 집계와 "
+    "wave 예산이 서로 덮어써 라운드 상한·예산이 둘 다 조용히 무력화됩니다.\n"
+    "  · 다른 게이트 이름으로 다시 실행하세요 (이름 형식 제약은 없습니다 — 예약 키만 거부)."
+)
+
+
+def _reserved_gate_error(gate: str | None) -> str | None:
+    """게이트 이름이 장부 예약 키면 차단 안내를 돌려준다 (아니면 None).
+
+    판정 입력은 이름 하나뿐이라 전송·장부 접근 **전에** 부를 수 있다 — 거부된 실행은 외부 전송도
+    장부 변경도 남기지 않는다."""
+    if gate is None or gate not in _RESERVED_LEDGER_KEYS:
+        return None
+    return _RESERVED_GATE_GUIDANCE.format(
+        gate=gate, keys=", ".join(sorted(_RESERVED_LEDGER_KEYS)),
+    )
+
+
+def _new_wave_id() -> str:
+    """wave 세대 식별자 — 리셋마다 새로 발급한다 (환불이 남의 세대를 깎지 않게)."""
+    return uuid.uuid4().hex
+
+
+def _wave_frame_corruption(raw: object) -> str | None:
+    """wave 절 **자체**가 못 쓸 형상인지 (절 부재·정상이면 None).
+
+    비-dict 값이나 예약 키를 차지한 옛 게이트 항목은 id/started 를 포함해 아무 좌표도 신뢰할 수
+    없는 경우다 — 소비량은 라운드 이력에서 다시 센다."""
+    if raw is None or (isinstance(raw, dict) and not any(
+        marker in raw for marker in _GATE_ENTRY_MARKERS
+    )):
+        return None
+    if not isinstance(raw, dict):
+        return f"`{WAVE_SECTION_KEY}` 절 형식 오류({type(raw).__name__})"
+    return f"예약 키 `{WAVE_SECTION_KEY}` 자리의 옛 게이트 항목"
+
+
+def _wave_spent_corruption(spent: object) -> str | None:
+    """`spent` 값이 신뢰할 수 없는지 — 비정수와 **음수**가 같은 축이다.
+
+    음수를 정상 정수로 받아 `max(0, …)` 로 접으면 `spent: -1` 한 줄 편집이 승인 없이 hard 예산을
+    되돌린다(무통보 재개방). 소비량은 셀 수 없는 값이지 0 이 아니므로 손상으로 판정한다."""
+    if spent is None:
+        return None
+    if isinstance(spent, bool) or not isinstance(spent, int):
+        return f"`{WAVE_SECTION_KEY}.spent` 값 손상({spent!r})"
+    if spent < 0:
+        return f"`{WAVE_SECTION_KEY}.spent` 음수({spent})"
+    return None
+
+
+def _wave_corruption_note(raw: object) -> str | None:
+    """wave 절 손상 진단 한 곳 — 프레임 축과 spent 축을 합산한다 (정상·부재면 None).
+
+    `_wave_state` 의 복구 판정과 호출부의 "복구값을 저장할까" 판정이 **같은 술어**를 봐야 한다 —
+    갈리면 고친 값을 안 쓰거나(경고만 반복) 멀쩡한 장부를 거부 경로에서 덮어쓴다."""
+    frame = _wave_frame_corruption(raw)
+    if frame is not None:
+        return frame
+    return _wave_spent_corruption(raw.get("spent") if isinstance(raw, dict) else None)
+
+
+def _recorded_round_outcomes(ledger: dict, *, since: str | None = None) -> int:
+    """장부에 남은 라운드 산출 수 — `since`(UTC ISO 시각) 이후로 좁힐 수 있으면 좁힌다.
+
+    손상된 `spent` 를 0 으로 접지 않기 위한 **데이터 근거 재계산**이다. 산출은 실제 전송된 라운드
+    에만 남으므로(스폰 전 실패는 환불·미기록) 소비량의 하한이고, 범위를 좁힐 근거가 없으면
+    (wave 시작 시각까지 손상) 전체를 세어 보수적으로 남는다 — 손상이 예산을 여는 방향으로는
+    작동하지 않게 한다. 같은 형식의 UTC ISO 문자열은 사전순 비교가 곧 시간순이다."""
+    total = 0
+    for name in _gate_names(ledger):
+        entry = ledger.get(name)
+        rounds = entry.get("rounds") if isinstance(entry, dict) else None
+        if not isinstance(rounds, list):
+            continue
+        for row in rounds:
+            if not isinstance(row, dict):
+                continue
+            timestamp = row.get("ts")
+            if since is None or (isinstance(timestamp, str) and timestamp >= since):
+                total += 1
+    return total
+
+
+def _wave_state(ledger: dict) -> dict:
+    """wave 절(`{id, started, spent}`)을 정규화해 돌려주고 장부에 심는다.
+
+    절이 없는 **구세대 장부**나 손상 값은 새 wave(started 미기록·spent 0)로 정규화한다 —
+    `_gate_entry` 와 같은 read→normalize→mutate→write 규약이라 호출부가 그 자리에서 고친 뒤
+    저장하면 깨끗한 값이 기록된다.
+
+    `id` 는 **세대 식별자**다. `--ack-wave` 리셋은 새 id 를 발급하므로, 리셋 전에 예약한 실행이
+    나중에 환불하려 해도 세대가 달라 새 wave 의 예산을 깎지 못한다(예산 우회 차단). id 가 없는
+    구세대 절에는 여기서 하나 발급해 심는다 — 이후 모든 예약/환불이 같은 좌표를 쓴다.
+
+    손상(비-dict 값·옛 게이트 항목·비정수/음수 spent)은 **소비량을 0 으로 접지 않는다** — 예산은
+    승인(`--ack-wave`)으로만 열리는 축이라, 손상을 리셋으로 대접하면 장부 한 줄 편집이 승인을
+    대신하게 된다. 대신 장부에 남은 라운드 산출 이력으로 소비량을 다시 세고(범위는 wave 시작 시각
+    이후, 그것마저 못 믿으면 전체) stderr 한 줄로 무엇을 왜 재계산했는지 고지한다."""
+    raw = ledger.get(WAVE_SECTION_KEY)
+    corruption = _wave_corruption_note(raw)
+    state = raw if isinstance(raw, dict) and _wave_frame_corruption(raw) is None else {}
+    started = state.get("started")
+    started = started if isinstance(started, str) and started else None
+    if corruption is None:
+        spent = max(0, _as_int(state.get("spent")))
+    else:
+        spent = _recorded_round_outcomes(ledger, since=started)
+        print(
+            f"경고: 라운드 장부 {corruption} — wave 소비를 라운드 산출 이력으로 **재계산**했습니다 "
+            f"(spent={spent}). 손상은 승인을 대신하지 않습니다 — 새 wave 로 시작하려면 "
+            "`--ack-wave`.",
+            file=sys.stderr,
+        )
+    wave_id = state.get("id")
+    normalized = {
+        "id": wave_id if isinstance(wave_id, str) and wave_id else _new_wave_id(),
+        "started": started,
+        "spent": spent,
+    }
+    ledger[WAVE_SECTION_KEY] = normalized
+    return normalized
+
+
+def _gate_names(ledger: dict) -> list[str]:
+    """장부의 게이트 키만 정렬해 돌려준다 — 예약 키(`wave`)는 게이트가 아니다."""
+    return sorted(key for key in ledger if key != WAVE_SECTION_KEY)
+
+
+def _spend_wave_round(state: dict) -> None:
+    """실 전송 1회를 wave 예산에서 쓴다 — 첫 전송이 wave 시작 시각을 찍는다.
+
+    wave 경계는 명시 리셋(`--ack-wave`)까지 누적한다. 세션 자동 감지는 하지 않는다 — 세션 식별이
+    이 도구 밖 개념이라 명시 리셋이 단순하고 예측 가능하다."""
+    if not state.get("started"):
+        state["started"] = _utc_now_iso()
+    state["spent"] = max(0, _as_int(state.get("spent"))) + 1
+
+
+def _refund_wave_round(state: dict, wave_id: str | None) -> bool:
+    """예약과 **같은 세대**의 wave 소비만 되돌린다 (라운드 count 환불과 같은 조건).
+
+    세대 확인이 없으면 `--ack-wave` 로 새로 연 wave 의 예산을 옛 실행의 실패가 깎아 예산이 조용히
+    늘어난다(승인 1회로 예산 +N). 세대가 다르면 아무것도 하지 않고 False 를 돌려준다.
+
+    소비가 0 으로 돌아가면 시작 시각도 지운다 — `started` 는 **첫 실 전송** 시각이라, 전송이 하나도
+    없는 wave 에 시각만 남으면 조회 표가 있지도 않은 wave 를 진행 중으로 보여주고 다음 첫 전송이
+    자기 시각을 못 찍는다(그 wave 의 시작이 남의 실패 시각이 된다)."""
+    if wave_id is None or state.get("id") != wave_id:
+        return False
+    state["spent"] = max(0, _as_int(state.get("spent")) - 1)
+    if not state["spent"]:
+        state["started"] = None
+    return True
+
+
+def _reset_wave(ledger: dict) -> dict:
+    """`--ack-wave` — 사용자 승인 뒤 예산을 리셋한다(다음 전송이 새 시작 시각을 찍는다).
+
+    새 세대 id 를 발급한다 — 리셋 전에 예약한 실행의 환불이 이 wave 의 예산을 깎지 못하게."""
+    ledger[WAVE_SECTION_KEY] = {"id": _new_wave_id(), "started": None, "spent": 0}
+    return ledger[WAVE_SECTION_KEY]
+
+
 def _gate_entry(ledger: dict, gate: str) -> dict:
     """게이트 항목을 전송 레코드를 포함한 현 스키마로 정규화한다.
 
     항목이 없거나 손상(비-dict·비정수 필드)이면 0/0 으로 정규화해 저장한다 — 반환 dict 를 그 자리에서
-    수정한 뒤 `_save_round_ledger(ledger)` 하면 깨끗한 값이 기록된다(read→normalize→mutate→write)."""
+    수정한 뒤 `_save_round_ledger(ledger)` 하면 깨끗한 값이 기록된다(read→normalize→mutate→write).
+
+    `rounds`(라운드별 산출 이력)가 없는 **구세대 항목**은 빈 배열로 정규화된다 — 옛 장부를 그대로
+    읽어 상한 판정을 이어가고, 새 산출은 그 뒤부터 쌓인다(마이그레이션 불요).
+
+    예약 키(wave 절)를 게이트로 정규화하려는 호출은 **fail-loud** 다 — 그 자리에 게이트 항목을 쓰면
+    같은 항목을 wave 예산이 덮어써 상한·예산이 둘 다 조용히 무력화된다. 정상 경로는 `_main` 이
+    `--gate` 를 이미 거른 뒤라 여기 오지 않는다(불변식을 주석이 아니라 기계로 지킨다)."""
+    if gate in _RESERVED_LEDGER_KEYS:
+        raise ValueError(
+            f"라운드 장부 예약 키를 게이트로 쓸 수 없습니다: {gate!r} "
+            f"(예약 키: {', '.join(sorted(_RESERVED_LEDGER_KEYS))})"
+        )
     entry = ledger.get(gate)
     if not isinstance(entry, dict):
         entry = {}
@@ -1370,6 +1626,10 @@ def _gate_entry(ledger: dict, gate: str) -> dict:
     if not isinstance(records, list):
         records = []
     records = [row for row in records if isinstance(row, dict)]
+    rounds = entry.get("rounds")
+    if not isinstance(rounds, list):
+        rounds = []
+    rounds = [row for row in rounds if isinstance(row, dict)]
     normalized = {
         "count": _as_int(entry.get("count")),
         "acked_through": _as_int(entry.get("acked_through")),
@@ -1379,6 +1639,7 @@ def _gate_entry(ledger: dict, gate: str) -> dict:
             0,
         ),
         "records": records,
+        "rounds": rounds,
     }
     ledger[gate] = normalized
     return normalized
@@ -1422,20 +1683,237 @@ def _reserve_round(entry: dict, record_id: str) -> dict:
         "id": record_id,
         "number": entry["sequence"],
         "sequence": entry["sequence"],
-        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "started_at": _utc_now_iso(),
     }
     entry.setdefault("records", []).append(record)
     return record
 
 
-def _refund_round(entry: dict, record_id: str) -> None:
-    """스폰 전 실패 예약만 제거한다; sequence는 재사용하지 않는다."""
+def _refund_round(entry: dict, record_id: str) -> bool:
+    """스폰 전 실패 예약만 제거한다; sequence는 재사용하지 않는다.
+
+    반환값은 **실제로 환불했는지**다 — 같은 조건으로 wave 예산도 되돌려야 하는데, 되돌릴 예약이
+    없는데 spent 만 깎으면 두 축의 소비가 갈린다."""
     before = len(entry.get("records", []))
     entry["records"] = [
         row for row in entry.get("records", []) if row.get("id") != record_id
     ]
-    if len(entry["records"]) != before and entry.get("count", 0) > 0:
+    refunded = len(entry["records"]) != before
+    if refunded and entry.get("count", 0) > 0:
         entry["count"] -= 1
+    return refunded
+
+
+# ── 라운드별 산출 기록 ──────────────────────────────────────────────────────
+# 라운드 count 만으로는 "그 라운드가 실결함을 냈는가"를 기계로 확인할 수 없어, 게이트 심도 대비
+# 비용 적정성 판단이 PM 자기보고에 의존했다. 산출은 **새 파서 없이** 기존 판정 결과에서만 파생한다
+# (rc 판정 + 이미 있는 must-fix 파서). 기록은 무조건이고, 셀 근거가 없으면 null 로 남긴다 —
+# 기록 실패로 리뷰를 막지 않는다(hard 거부는 예산 축 하나뿐).
+
+
+def _must_fix_count(result: dict) -> int | None:
+    """이번 라운드가 지적한 must-fix 항목 수 (셀 근거가 없으면 None).
+
+    판정이 무효한 라운드(실패·타임아웃·오염 진단)는 세지 않는다 — 판정 표면에서 무효화한 출력을
+    산출 장부에서만 결함으로 세면 두 표면이 갈린다(`_round_has_verdict` 와 같은 규칙). 세는 대상은
+    **회신 채널**(`answer`)뿐이다: 진행 로그에는 프롬프트와 diff 원문이 그대로 실려 있어 그것까지
+    보면 리뷰 대상 코드의 문구가 결함 수로 둔갑한다.
+
+    **섹션 부재와 "없음" 표기는 다르다.** 형식을 지킨 응답의 `must-fix: 없음` 은 리뷰어가 결함이
+    없다고 *말한* 것이라 0 이고, must-fix 섹션이 아예 없는 응답은 아무 말도 없던 것이라 None 이다
+    (항목 근거 없이 반려만 있는 응답을 '결함 0건 반려'로 박제하면 비용 판단이 거짓이 된다).
+    섹션 인식은 판정 파서와 **같은 정규식**(`_MUST_FIX_SECTION_RE`)을 쓴다."""
+    if not _round_has_verdict(result):
+        return None
+    answer = result.get("answer")
+    if not isinstance(answer, str):
+        return None
+    if not _MUST_FIX_SECTION_RE.search(answer):
+        return None
+    items = _extract_must_fix_items(answer)
+    return 0 if _is_none_items(items) else len(items)
+
+
+def _round_outcome(result: dict, *, record: dict | None = None) -> dict:
+    """리뷰 결과 → 라운드 산출 레코드(`{ts, id, sequence, verdict, must_fix, suggestions}`).
+
+    verdict 는 이 실행이 돌려주는 **rc 판정**(0=통과·1=반려)이라 장부와 종료 코드가 갈리지 않는다.
+    suggestions 는 응답에 suggestion 판별기가 아직 없어 null 로 시작한다 — 자리를 먼저 두어 파서가
+    생기면 스키마 변경 없이 채워진다(파서 확장은 후속).
+
+    `id`/`sequence` 는 이 산출을 낸 **예약 레코드**의 좌표다. 같은 게이트에서 여러 실행이 동시에
+    끝나면 append 순서만으로는 어느 산출이 어느 라운드의 것인지 확정할 수 없어, 예약 identity 를
+    그대로 실어 라운드↔결과 연결을 잠근다(예약 레코드를 못 찾은 경우만 null)."""
+    return {
+        "ts": _utc_now_iso(),
+        "id": (record or {}).get("id"),
+        "sequence": (record or {}).get("sequence"),
+        "verdict": determine_exit_code(result),
+        "must_fix": _must_fix_count(result),
+        "suggestions": None,
+    }
+
+
+def _append_round_outcome(entry: dict, outcome: dict) -> dict:
+    """이미 만들어 둔 산출 레코드를 게이트 이력에 append 한다 (승인으로 비워지지 않는 축).
+
+    산출 **계산**(응답 파싱·시각)은 호출부가 락 밖에서 끝낸다 — 임계 구역은 장부 read-modify-write
+    만 담당한다(파싱이 길어져도 다른 게이트 실행을 붙잡지 않는다)."""
+    entry.setdefault("rounds", []).append(outcome)
+    return outcome
+
+
+# 승인 고지 — 같은 승인이라도 **재개된 실행**과 **남은 축이 막아 거부된 실행**의 문구가 달라야
+# 한다. rc 4 로 끝나는 실행이 "재개"를 말하면 stderr 가 종료 코드와 어긋난 loud 오보가 된다
+# (승인 자체는 저장되므로 다음 실행이 이어받는다).
+_APPROVAL_RESUMED_VERB = "재개"
+_APPROVAL_REFUSED_VERB = "기록(이번 실행은 남은 축이 막아 거부)"
+
+
+def _approval_notes(
+    *, gate: str, acked_rounds_to: int | None, limit: int,
+    wave_reset: bool, wave_budget: int, resumed: bool,
+) -> list[str]:
+    """이번 실행이 적용한 승인의 stderr 고지 문구 (적용분이 없으면 빈 목록)."""
+    verb = _APPROVAL_RESUMED_VERB if resumed else _APPROVAL_REFUSED_VERB
+    notes: list[str] = []
+    if acked_rounds_to is not None:
+        notes.append(
+            f"라운드 상한 승인 {verb}: 게이트 {gate} — acked_through={acked_rounds_to} "
+            f"(+{limit}라운드)."
+        )
+    if wave_reset:
+        notes.append(f"wave 예산 승인 {verb}: spent 리셋 (예산 {wave_budget}).")
+    return notes
+
+
+# ── 장부 조회면 (--rounds-report) ───────────────────────────────────────────
+# 비용 적정성 판단(게이트 심도 대비)을 PM 자기보고 대신 장부 근거로 하게 만드는 읽기 전용 표다.
+# 외부 전송·diff 추출 없이 장부만 읽는다.
+
+# rc 판정 표기 — 1 은 반려뿐 아니라 실패·불명확도 포함하므로 '비통과'로 읽는다(결함 수 '미상'이
+# 그 라운드가 판정을 내지 못했음을 함께 알린다).
+_ROUND_VERDICT_LABELS: dict[int, str] = {0: "통과", 1: "비통과"}
+
+
+def _format_round_field(value: object) -> str:
+    """산출 필드(결함 수) 표기 — 셀 근거가 없던 null 은 '미상'으로 구분해 보인다."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "미상"
+    return str(value)
+
+
+def _format_round_verdict(value: object) -> str:
+    """판정 rc 표기 — `0(통과)` / `1(비통과)`; 기록이 없거나 손상이면 '미상'."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "미상"
+    label = _ROUND_VERDICT_LABELS.get(value)
+    return f"{value}({label})" if label else str(value)
+
+
+def _round_sequence(outcome: dict) -> int | None:
+    """산출 레코드가 실은 **예약 순번** (없거나 손상이면 None)."""
+    value = outcome.get("sequence")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _ordered_round_outcomes(rounds: list) -> list[dict]:
+    """산출을 **예약 순서**로 정렬한다 — append 순서는 *완료* 순서라 라운드 번호가 아니다.
+
+    같은 게이트의 두 라운드가 역순으로 끝나면(느린 1라운드·빠른 2라운드) append 순서는 실제 라운드
+    순서를 뒤집는다. 순번이 없는 구세대/미연결 산출은 뒤에 원래 순서대로 남긴다(안정 정렬)."""
+    return sorted(
+        rounds,
+        key=lambda outcome: (
+            _round_sequence(outcome) is None, _round_sequence(outcome) or 0,
+        ),
+    )
+
+
+def render_rounds_report(
+    ledger: dict,
+    *,
+    ledger_path: Path | str | None = None,
+    gate: str | None = None,
+    wave_budget: int = DEFAULT_WAVE_BUDGET,
+) -> str:
+    """라운드 장부를 조회 표로 렌더한다 (게이트별 라운드 수 · 라운드별 산출 · wave spent).
+
+    `gate` 를 주면 그 게이트만 본다. 순수 함수라 장부 dict 만 있으면 렌더가 재현된다 — 파일/앵커
+    해소는 호출부(`_print_rounds_report`)가 한다.
+
+    라운드 번호와 나열 순서는 **예약 순번**(`sequence`)이다 — 장부의 append 순서는 완료 순서라
+    동시 리뷰가 역순으로 끝나면 라운드가 뒤바뀌어 보인다."""
+    snapshot = dict(ledger)                # 사본 정규화 — 조회가 장부를 고치지 않는다
+    wave = _wave_state(snapshot)
+    lines = [
+        f"외부 리뷰 라운드 장부: {ledger_path if ledger_path is not None else '(미해소)'}",
+        f"wave: spent={wave['spent']} / 예산 {wave_budget} · "
+        f"시작 {wave['started'] or '미시작'}",
+        "범례: 판정 0=통과 · 1=비통과(반려·실패·불명확) · '미상'=판정이 무효했던 라운드",
+    ]
+    names = [name for name in _gate_names(snapshot) if gate is None or name == gate]
+    if not names:
+        lines.append(
+            f"게이트 {gate}: 장부에 기록 없음" if gate else "기록된 게이트 없음"
+        )
+        return "\n".join(lines)
+    for name in names:
+        entry = _gate_entry(snapshot, name)
+        rounds = entry["rounds"]
+        lines.append(
+            f"게이트 {name}: count={entry['count']} · "
+            f"acked_through={entry['acked_through']} · 산출 {len(rounds)}건"
+        )
+        if not rounds:
+            lines.append("  (라운드 산출 기록 없음 — 산출 장부 이전의 전송)")
+            continue
+        for outcome in _ordered_round_outcomes(rounds):
+            sequence = _round_sequence(outcome)
+            lines.append(
+                f"  #{sequence if sequence is not None else '미상'} "
+                f"{outcome.get('ts') or '시각 미상'} "
+                f"판정={_format_round_verdict(outcome.get('verdict'))} "
+                f"must_fix={_format_round_field(outcome.get('must_fix'))} "
+                f"suggestions={_format_round_field(outcome.get('suggestions'))}"
+            )
+    return "\n".join(lines)
+
+
+def _print_rounds_report(
+    anchor: Path, *, gate: str | None, resolved: bool = False,
+) -> int:
+    """`--rounds-report` 실행면 — 소유 PM 홈 장부를 해소해 조회 표를 출력한다 (rc 0).
+
+    앵커 규칙은 **기록면과 같은 입력**을 쓴다. `--paths`/`--ticket` 을 주면 호출부가 기록 경로와
+    똑같이 diff 소유 PM 홈까지 해소한 뒤 그 값을 넘기고(`resolved=True`), selector 없는 조회만
+    엔진 앵커의 소유 PM 홈으로 해소한다(= selector 없는 기록 실행과 같은 규칙). 그래서 같은 인자
+    로는 읽는 장부와 쓰는 장부가 갈리지 않는다. board 가 필요 없는 조회라 해소 실패는 loud 경고
+    뒤 자기 앵커 폴백이다."""
+    global _PM_HOME_OVERRIDE
+    _PM_HOME_OVERRIDE = (
+        anchor if resolved else resolve_pm_home_for_repo(anchor, required=False)
+    )
+    try:
+        wave_budget = _wave_budget(_local_config_for_repo(_PM_HOME_OVERRIDE))
+    except (OSError, UnicodeError) as exc:
+        # 조회는 외부 송신이 없어 conf 판독 실패로 막을 이유가 없다(송신 경로의 fail-closed 와
+        # 다른 축) — 예산 표기만 기본값으로 낮추고 그 사실을 알린다.
+        print(
+            f"경고: local.conf 읽기 실패 ({type(exc).__name__}: {exc}) — wave 예산 표기를 "
+            f"기본값 {DEFAULT_WAVE_BUDGET} 로 대체합니다.",
+            file=sys.stderr,
+        )
+        wave_budget = DEFAULT_WAVE_BUDGET
+    print(render_rounds_report(
+        _load_round_ledger(),
+        ledger_path=_round_ledger_path(),
+        gate=gate,
+        wave_budget=wave_budget,
+    ))
+    return 0
 
 
 # ── 시크릿 필터링 ────────────────────────────────────────────────────────
@@ -3167,6 +3645,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
   # 비활성 상태에서 1회 강제 실행
   python3 .project_manager/tools/external_review.py --force
 
+  # 라운드 장부 조회 (외부 전송 없음 — 게이트별 라운드 수·라운드별 산출·wave spent)
+  python3 .project_manager/tools/external_review.py --rounds-report --gate T-NNNN
+
 활성화: local.conf 에 `external_review_enabled=true` (+ 필요 시 `reviewer_cmd`) ·
         또는 `board.py init` / `pm_update` 시 opt-in 프롬프트.
 """,
@@ -3183,6 +3664,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ack-rounds", action="store_true",
                         help="라운드 상한 승인 재개 — 현 count 를 acked_through 로 기록 후 +limit "
                              "재개 (--gate 필수·사용자 승인 후에만)")
+    parser.add_argument("--ack-wave", action="store_true",
+                        help="wave 예산 승인 재개 — wave spent 를 0 으로 리셋 후 재개 "
+                             "(--gate 필수·사용자 승인 후에만)")
+    parser.add_argument("--rounds-report", action="store_true",
+                        help="라운드 장부 조회 — 게이트별 라운드 수·라운드별 판정/결함 수·wave "
+                             "spent 를 출력하고 종료 (외부 전송 없음·--gate 로 한 게이트만)")
     parser.add_argument("--dry-run", action="store_true",
                         help="diff·프롬프트만 출력, 외부 호출/전송 안 함 (비활성이어도 허용·빈 diff 면 exit 1)")
     parser.add_argument("--force", action="store_true",
@@ -3504,6 +3991,27 @@ def _main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     engine_repo = REPO.resolve()
+    # 게이트 이름 검증이 **가장 먼저**다 — 예약 키 충돌은 전송·장부 접근 뒤에 발견하면 이미
+    # 두 상한이 서로를 덮어쓴 뒤다(조회면도 같은 이름을 게이트로 부르지 않게 함께 막는다).
+    reserved_gate_error = _reserved_gate_error(args.gate)
+    if reserved_gate_error is not None:
+        print(reserved_gate_error, file=sys.stderr)
+        return 1
+    if args.rounds_report:
+        ignored = ", ".join(
+            flag for flag, given in (
+                ("--ack-rounds", args.ack_rounds), ("--ack-wave", args.ack_wave),
+                ("--dry-run", args.dry_run), ("--force", args.force),
+            ) if given
+        )
+        if ignored:
+            print(f"경고: --rounds-report 는 조회 전용이라 다음 플래그를 무시합니다: {ignored}.",
+                  file=sys.stderr)
+        if not (args.paths or args.ticket):
+            # selector 없는 조회는 여기서 끝낸다 — 장부만 읽으므로 검토 경로가 없거나 diff 가
+            # 비어도(빈-diff 가드) 답을 내야 하고, 그러려면 그 게이트들보다 앞서야 한다.
+            # selector 를 준 조회는 기록면과 **같은 해소**를 타야 해서 아래 앵커 해소 뒤로 간다.
+            return _print_rounds_report(engine_repo, gate=args.gate)
     ticket_selected = bool(args.ticket and not args.paths)
     explicit_paths = bool(args.paths)
     engine_demotions: list[PmHomeDemotion] = []
@@ -3596,6 +4104,10 @@ def _main(argv: list[str] | None = None) -> int:
     # 박제하면 PM 홈 장부를 읽는 `pm_delegate raw` 통합 조회가 이 실행의 raw 를 못 본다.
     # 해소 실패 형상에서는 pm_home 자체가 loud 경고 뒤 diff_root 로 폴백해 있다.
     _PM_HOME_OVERRIDE = pm_home
+    if args.rounds_report:
+        # selector 를 준 조회 — 기록면이 쓸 장부(diff 소유 PM 홈)를 그대로 읽는다. 여기서 끝내
+        # 전송 경로(conf 분기·denylist·diff 추출)는 타지 않는다.
+        return _print_rounds_report(pm_home, gate=args.gate, resolved=True)
     if conf is None:
         # 명시 앵커 실행의 config는 여기서 **처음이자 유일하게** 읽고, 강등 필터 검사도 여기서
         # 한다 — 대상은 이번 실행이 실제로 쓰는 conf 소유자뿐이다. 초기 엔진 컨텍스트가 강등·손상
@@ -3863,11 +4375,19 @@ def _run_isolated_review(
     # →저장을 `_round_ledger_lock()` 한 임계 구역으로 묶어 동시 실행이 같은 잔여 슬롯을 통과 못 하게 한다.
     # --ack-rounds 는 acked_through 를 현 count 로 올려(엔진은 기록만·승인 판단은 사용자/카드) +limit
     # 창을 열고 그 호출도 실 전송이므로 함께 예약한다. 초과면 리뷰어 호출 전에 거부(전용 rc·과금 없음).
+    #
+    # 승인(--ack-rounds/--ack-wave)은 **먼저 전부 적용한 뒤** 두 상한을 다시 본다. 한 축의 승인을
+    # 적용해 놓고 다른 축에서 저장 없이 되돌아가면 사용자가 준 승인이 조용히 사라지기 때문이다
+    # (같은 승인을 다시 받아야 한다). 그래서 (1) 두 플래그 동시 지정은 둘 다 적용돼 그대로 재개되고,
+    # (2) 남은 축이 여전히 막으면 적용된 승인만 저장하고 거부한다(다음 실행이 그 승인을 이어받는다).
     reserved_gate: str | None = None
     reserved_round_id: str | None = None
+    reserved_round_sequence: int | None = None
+    reserved_wave_id: str | None = None
     if args.gate:
         limit = _round_limit(conf)
         incomplete_limit = _incomplete_round_limit(conf)
+        wave_budget = _wave_budget(conf)
         try:
             with _round_ledger_lock():
                 ledger = _load_round_ledger()
@@ -3886,17 +4406,41 @@ def _run_isolated_review(
                     )
                     _save_round_ledger(ledger)
                 entry = _gate_entry(ledger, args.gate)
-                count, acked = entry["count"], entry["acked_through"]
+                # 손상 복구(재계산된 spent)는 거부되는 실행에서도 저장한다 — 안 그러면 손상값이
+                # 남아 매 실행 같은 경고를 반복하고 장부가 계속 거짓말을 한다. 저장 판정은 정규화와
+                # **같은 술어**를 쓴다.
+                wave_repaired = _wave_corruption_note(ledger.get(WAVE_SECTION_KEY)) is not None
+                wave = _wave_state(ledger)
+                # 승인 적용 (두 축 모두·판정 전). **고지는 아직 하지 않는다** — 재개인지 거부인지는
+                # 두 상한을 다시 본 뒤에야 정해지고, 거부되는 실행이 "재개"를 말하면 rc 4 와
+                # 어긋난 loud 오보가 된다.
+                acked_rounds_to: int | None = None
+                wave_reset = False
                 if args.ack_rounds:
-                    entry["acked_through"] = count      # 승인 수위 상향 (+limit 창)
+                    acked_rounds_to = entry["count"]
+                    entry["acked_through"] = acked_rounds_to  # 승인 수위 상향 (+limit 창)
                     entry["records"] = []               # 승인된 상세 레코드는 집계에서 영구 불필요
-                    print(f"라운드 상한 승인 재개: 게이트 {args.gate} — acked_through={count} "
-                          f"(+{limit}라운드).", file=sys.stderr)
-                else:
-                    unacked, verdicts, incomplete = _unacked_round_counts(entry)
-                if not args.ack_rounds and (
-                    verdicts >= limit or incomplete >= incomplete_limit
-                ):
+                if args.ack_wave:
+                    wave = _reset_wave(ledger)
+                    wave_reset = True
+                approved = acked_rounds_to is not None or wave_reset
+
+                def announce(resumed: bool) -> None:
+                    for note in _approval_notes(
+                        gate=args.gate, acked_rounds_to=acked_rounds_to, limit=limit,
+                        wave_reset=wave_reset, wave_budget=wave_budget, resumed=resumed,
+                    ):
+                        print(note, file=sys.stderr)
+
+                # 판정은 승인 반영 **뒤**의 값으로 한다. wave 예산은 게이트 상한과 독립 축이라
+                # 한쪽 승인이 다른 쪽을 열지 않는다 — 게이트 축을 먼저 보는 이유는 그쪽이 더
+                # 좁은(그 게이트가 수렴했다는) 진단이라서다.
+                count, acked = entry["count"], entry["acked_through"]
+                unacked, verdicts, incomplete = _unacked_round_counts(entry)
+                if verdicts >= limit or incomplete >= incomplete_limit:
+                    if approved or wave_repaired:
+                        _save_round_ledger(ledger)      # 승인·손상 복구는 거부돼도 남긴다
+                    announce(resumed=False)
                     print(_ROUND_LIMIT_GUIDANCE.format(
                         gate=args.gate, unacked=unacked, verdicts=verdicts,
                         incomplete=incomplete, limit=limit,
@@ -3905,10 +4449,26 @@ def _run_isolated_review(
                         count=count, acked=acked), file=sys.stderr)
                     # 거울 정리는 호출부의 단일 finally 가 한다(전송 없이 되돌아감).
                     return EXIT_ROUND_LIMIT_EXCEEDED    # 예약 없음 (전송 전 거부)
+                if wave["spent"] >= wave_budget:
+                    if approved or wave_repaired:
+                        _save_round_ledger(ledger)
+                    announce(resumed=False)
+                    print(_WAVE_BUDGET_GUIDANCE.format(
+                        gate=args.gate, spent=wave["spent"], budget=wave_budget,
+                        started=wave["started"] or "미기록",
+                        ledger=_round_ledger_path()), file=sys.stderr)
+                    return EXIT_ROUND_LIMIT_EXCEEDED    # 예약 없음 (전송 전 거부)
+                announce(resumed=True)                  # 두 축을 모두 통과한 뒤에만 "재개"
                 reserved_round_id = uuid.uuid4().hex
-                _reserve_round(entry, reserved_round_id)  # 호출 전 라운드 예약
+                # 예약 sequence 는 **여기서** 잡는다 — 마감 시점에 레코드를 되찾아 읽으면 그 사이
+                # 승인(`--ack-rounds`)이 집계 창을 비운 실행만 순번을 잃는다.
+                reserved_round_sequence = _reserve_round(
+                    entry, reserved_round_id,
+                )["sequence"]                             # 호출 전 라운드 예약
+                _spend_wave_round(wave)                   # 같은 전송을 wave 예산에서도 차감
                 _save_round_ledger(ledger)
                 reserved_gate = args.gate
+                reserved_wave_id = wave["id"]             # 환불은 이 세대에만 유효
         except OSError as exc:
             # 락 획득/장부 write 실패 — 상한을 확인하지 못한 채 전송하면 과금 게이트가 무력화되므로
             # **전송 전에** 멈춘다(과금 0). 가장 흔한 원인은 동시 실행의 락 보유다(Windows
@@ -3920,8 +4480,13 @@ def _run_isolated_review(
                 file=sys.stderr,
             )
             return 1
-    elif args.ack_rounds:
-        print("경고: --ack-rounds 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
+    elif args.ack_rounds or args.ack_wave:
+        acks = " / ".join(
+            flag for flag, given in (
+                ("--ack-rounds", args.ack_rounds), ("--ack-wave", args.ack_wave),
+            ) if given
+        )
+        print(f"경고: {acks} 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
               file=sys.stderr)
 
     print(f"외부 리뷰어 실행 중: {reviewer_cmd}", file=sys.stderr)
@@ -3954,6 +4519,14 @@ def _run_isolated_review(
     # 정상 복귀한 호출은 판정 유무와 별개로 종료 마감한다. 프로세스 kill처럼 이 지점에 도달하지
     # 못한 레코드는 finished_at 없이 남아 다음 호출에서 미완 재시도 예산으로 식별된다.
     if reserved_gate is not None and reserved_round_id is not None:
+        # 산출 파싱·시각은 락 **밖**에서 끝낸다 — 임계 구역은 장부 read-modify-write 만 잡는다.
+        # 예약 identity(id·sequence)는 예약 시점 값이라 마감 시점 장부 상태에 의존하지 않는다.
+        outcome = (
+            _round_outcome(result, record={
+                "id": reserved_round_id, "sequence": reserved_round_sequence,
+            })
+            if result.get("started", True) else None
+        )
         try:
             with _round_ledger_lock():
                 ledger = _load_round_ledger()
@@ -3963,12 +4536,26 @@ def _run_isolated_review(
                     None,
                 )
                 if not result.get("started", True):
-                    _refund_round(entry, reserved_round_id)
-                elif matching is not None:
-                    matching["finished_at"] = datetime.datetime.now(
-                        datetime.timezone.utc
-                    ).isoformat()
-                    matching["verdict"] = _round_has_verdict(result)
+                    # 전송이 확실히 없던 라운드 — 두 예산(게이트 count·wave spent)을 같은 조건으로
+                    # 되돌린다. 산출도 남기지 않는다(리뷰어가 아무 말도 하지 않았다).
+                    # wave 는 **예약 시점 세대**만 깎는다: 그 사이 `--ack-wave` 로 새 wave 가 열렸으면
+                    # 이 실패는 그 예산과 무관하다(깎으면 승인 1회로 예산이 늘어난다).
+                    if _refund_round(entry, reserved_round_id) and not _refund_wave_round(
+                        _wave_state(ledger), reserved_wave_id
+                    ):
+                        print(
+                            "경고: 예약 시점 wave 가 이미 리셋돼 wave 예산은 환불하지 않았습니다 "
+                            "(라운드 count 만 환불).",
+                            file=sys.stderr,
+                        )
+                elif outcome is not None:
+                    if matching is not None:
+                        matching["finished_at"] = _utc_now_iso()
+                        matching["verdict"] = _round_has_verdict(result)
+                    # 산출 기록은 예약 레코드 유무와 무관하다 — 전송된 라운드는 무조건 남긴다
+                    # (승인이 집계 창을 비워도 "무엇이 나왔는가"는 이력으로 남아야 한다).
+                    # 예약 identity 를 함께 실어 동시 완료에서도 라운드↔산출 연결이 확정된다.
+                    _append_round_outcome(entry, outcome)
                 _save_round_ledger(ledger)
         except OSError as exc:
             # 마감은 이미 *끝난* 전송의 부기다 — 여기서 rc 를 바꾸면 리뷰 판정이 락 사정으로

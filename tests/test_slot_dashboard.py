@@ -23,6 +23,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from _pytest_summary import pytest_summary
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -855,7 +856,9 @@ def test_alloc_mode_cwd_uses_new_slot_not_existing(tmp_path, monkeypatch):
 
     def rec_pytest():
         bound_at_pytest.append(inst._bound_slot)  # pytest 수집 시점 정체성.
-        return 0, "1 passed\n"
+        # 실 pytest 요약행 형태(`in <초>s` 종결)를 그대로 — 파서는 요약행 문법 완전 일치를
+        # 요구한다(요약 뒤에 붙는 자식 하네스 로그를 요약으로 오인하지 않기 위한 앵커).
+        return 0, pytest_summary()
 
     inst._run_git_fn = rec_git
     inst._run_pytest_fn = rec_pytest

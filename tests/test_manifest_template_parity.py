@@ -70,7 +70,11 @@ CLAUDE_ONLY_PATHS = {
 #     (codex 네이티브 스킬 네임스페이스 — root `.claude/skills` 를 @source 로 remap·D2) ·
 #     pm-dev-delegate file override(Codex native spawn schema를 shared Claude source와 분리·T-0435) ·
 #     .codex/pm_orch_codex.py(relay 드라이버·engine-mirror·@source 전파·claude .claude/pm_orch_claude.py·
-#     opencode .opencode/pm_orch_opencode.py 대응·T-0404).
+#     opencode .opencode/pm_orch_opencode.py 대응·T-0404) ·
+#     .codex/rules/default.rules(execpolicy command policy·엔진 소유 위임 행동 규칙·claude 는 같은
+#     경계를 settings.json deny 로 표현하는데 그건 instance-owned 라 대응 등재가 없다·T-0584.
+#     codex 는 `.codex/rules/` 디렉토리의 `*.rules` 전부를 로드하므로 채택자 커스텀은 형제 파일로
+#     분리 가능 → 이 파일 자체는 프레임워크 소유).
 #   codex 가 제외: CLAUDE_ONLY_PATHS 전부 **+ .claude/skills**. opencode 는 .claude/skills 를 claude 와
 #     공유(bare @render·같은 파일명 스캔)했지만 codex 는 스킬 네임스페이스가 `.agents/skills` 라
 #     .claude/skills 자체는 codex manifest 에서 빠진다(→ .agents/skills remap 으로 대체). 이 한 줄이
@@ -80,6 +84,7 @@ CODEX_ONLY_PATHS = {
     ".agents/skills",
     ".agents/skills/pm-dev-delegate/SKILL.md",
     ".codex/pm_orch_codex.py",
+    ".codex/rules/default.rules",
 }
 CODEX_DROPPED_PATHS = CLAUDE_ONLY_PATHS | {".claude/skills"}
 # engine-mirror hook/driver 등록 경로 (T-0305) — self-prop assert 및 등록 회귀 가드가 참조.

@@ -25,6 +25,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
+    pm-config sync-adapter-config [--list | --accept <경로>]     # 어댑터 config 판정 조회 / 상류 값 수용 (백업 후 교체)
 
 서브커맨드별 엔진 배선:
   - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1[solo] ~ N×M 공용).
@@ -49,6 +50,10 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
                   (복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
                   중복 0). `--from` 생략 시 dest local.conf upstream 자동 해소(imported 인스턴스).
+  - sync-adapter-config → pm_import.judge_adapter_configs(조회) / accept_adapter_config(수용·백업
+                  후 template 채택 + 원장 기록). manifest 밖 instance-owned config 는 동기가 무편집
+                  분만 자동 갱신하고 나머지는 보존+보고하므로, 이 커맨드가 보존분을 채택자가
+                  명시적으로 받는 유일한 채널이다(소스 해소는 add-harness 와 같은 규칙).
 
 
   - thin forwarder(`pm-config.sh/.cmd`)는 로직 0 — 이 디스패처가 엔진 배선의 단일 지점.
@@ -214,7 +219,7 @@ GitRunner = Callable[[list], "tuple[int, str]"]
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.6.1"
+ENGINE_REV = "v1.6.2"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. pm_update는 복구 채널이라 의도적으로 제외한다.
 # deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
@@ -3254,6 +3259,125 @@ def cmd_add_harness(
             dest, args.harness, dry_run=args.dry_run, source_root=source_root)
 
 
+# instance-owned 어댑터 config 판정 → 사람이 읽을 라벨. 판정 이름 자체는 pm_import 소유이고
+# 여기선 표시만 한다(판정 사본 0). ⚠ **라벨은 mode 와 함께 판정한다** — `unedited` 는 managed 에서만
+# 자동 갱신을 뜻하고 report 대상에선 "무편집이지만 갱신 안 함" 이다(status 만 보면 거짓 안내).
+_ADAPTER_CONFIG_STATUS_LABEL = {
+    "in-sync": "최신 (template 과 동일)",
+    "unedited": "무편집 — 다음 동기가 자동 갱신",
+    "edited": "채택자 편집 — 보존(수용은 --accept)",
+    "unrecorded": "원장 부재 — 보존(수용은 --accept)",
+}
+# 보고-전용 대상의 override 라벨(그 밖의 status 는 위 공통 라벨을 그대로 쓴다).
+_ADAPTER_CONFIG_REPORT_LABEL = {
+    "unedited": "무편집 — 보고 전용(자동 갱신 안 함·수용은 --accept)",
+    "edited": "채택자 편집 — 보고 전용(수용은 --accept)",
+    "unrecorded": "원장 부재 — 보고 전용(수용은 --accept)",
+}
+# 수용 결과 → rc·안내. `accepted` 만 성공이고 나머지는 사유를 그대로 노출한다(거짓 성공 금지).
+_ADAPTER_ACCEPT_FAILURE_HINT = {
+    "raced": "다시 실행해 새 판정을 받아라(그 사이 파일이 바뀌었다).",
+    "ledger-blocked": "엔진을 갱신한 뒤 다시 실행하라(원장이 더 새로운 형식이다).",
+    "write-failed": "경로 권한/디스크 상태를 확인한 뒤 다시 실행하라.",
+    "ledger-failed": "원장 경로 권한을 고친 뒤 다시 실행하라(파일 내용은 이미 상류 값이다).",
+}
+
+
+def _adapter_config_label(judgment, pm_import_mod) -> str:
+    """판정 → 표시 라벨 (mode 와 status 를 함께 본다·mode 상수는 엔진 소유)."""
+    common = _ADAPTER_CONFIG_STATUS_LABEL.get(judgment.status, judgment.status)
+    if judgment.mode == pm_import_mod.ADAPTER_CONFIG_REPORT:
+        return _ADAPTER_CONFIG_REPORT_LABEL.get(judgment.status, common)
+    return common
+
+
+def cmd_sync_adapter_config(
+    args: argparse.Namespace,
+    *,
+    pm_import=None,
+    dest_root: Path | None = None,
+) -> int:
+    """`sync-adapter-config [--list | --accept <relpath>]` — instance-owned 어댑터 config 채널.
+
+    이 파일들(`.codex/hooks.json`·`config.toml`·`.claude/settings.json`·`.opencode/opencode.jsonc`)
+    은 manifest 밖이라 pm-update 가 절대 덮지 않는다. 동기는 무편집(원장 일치)인 managed 대상만
+    자동 갱신하고 나머지는 보존+보고한다 — `--accept` 는 그 보존분을 채택자가 **명시적으로**
+    받는 유일한 채널이다(이게 없으면 원장 도입 전 채택자가 영구 보고 모드에 갇힌다).
+
+    판정·수용 로직은 pm_import 단일 진실(`judge_adapter_configs`·`accept_adapter_config`)이고
+    여기선 표시와 rc 번역만 한다. dest 해소는 pm_config 관례(REPO 앵커·cmd_add_harness 동형),
+    소스 해소는 add-harness 와 같은 규칙(`--from` > local.conf upstream > dest 자기전환)이다.
+    """
+    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
+    if pm_import_mod is None:
+        print(
+            "[중단] pm_import.py 엔진을 찾을 수 없다 — 어댑터 config 판정 불가 "
+            f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+    dest = dest_root if dest_root is not None else REPO
+    try:
+        source_root = pm_import_mod.resolve_adapter_config_source(
+            dest, getattr(args, "source", None))
+    except FileNotFoundError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+
+    judgments = pm_import_mod.judge_adapter_configs(dest, source_root)
+    accept = getattr(args, "accept", None)
+    if accept:
+        # 수용은 **판정을 먼저 받고** 그 시점 해시를 넘긴다 — 판정과 쓰기 사이에 파일이 바뀌면
+        #   엔진이 raced 로 중단한다(검증 없는 덮어쓰기 0).
+        judged = next((item for item in judgments if item.relpath == accept), None)
+        try:
+            outcome = pm_import_mod.accept_adapter_config(
+                dest, source_root, accept,
+                expected_sha256=judged.dest_sha256 if judged is not None else None)
+        except ValueError as exc:
+            print(f"오류: {exc}", file=sys.stderr)
+            return 1
+        except OSError as exc:
+            print(f"오류: 어댑터 config 를 교체하지 못했습니다 ({accept}: {exc}) — "
+                  "원본은 그대로입니다.", file=sys.stderr)
+            return 1
+        if outcome.status != "accepted":
+            print(f"오류: 어댑터 config 수용 실패 ({accept} · {outcome.status}): "
+                  f"{outcome.detail}", file=sys.stderr)
+            hint = _ADAPTER_ACCEPT_FAILURE_HINT.get(outcome.status)
+            if hint:
+                print(f"  → {hint}", file=sys.stderr)
+            if outcome.backup is not None:
+                print(f"  백업: {_dest_relative_label(outcome.backup, dest)}", file=sys.stderr)
+            return 1
+        print(f"✓ 어댑터 config 수용: {accept} "
+              f"(백업 {_dest_relative_label(outcome.backup, dest)})")
+        print("  원장 기록까지 확인했다 — 다음 동기부터 무편집 판정(자동 갱신 궤도)이다.")
+        note = pm_import_mod.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(accept)
+        if note:
+            print(f"  ⚠️ {note}")
+        return 0
+
+    if not judgments:
+        print("어댑터 config 채널 대상 없음 (설치 하네스의 config 가 없거나 소스에 template 부재).")
+        return 0
+    print(f"# 어댑터 config 판정 (소스: {source_root})")
+    for judgment in judgments:
+        label = _adapter_config_label(judgment, pm_import_mod)
+        print(f"  - {judgment.relpath} · {judgment.harness} · {judgment.mode} · {label}")
+    print(f"  수용(백업 후 상류 값 채택): {_FACADE_PROG} sync-adapter-config --accept <경로> "
+          "(Windows 는 `.\\pm-config.cmd`)")
+    return 0
+
+
+def _dest_relative_label(path, dest_root) -> str:
+    """dest 기준 상대 표기 — 밖이면 절대 경로 그대로(표시가 죽지 않게)."""
+    try:
+        return Path(path).relative_to(Path(dest_root)).as_posix()
+    except ValueError:
+        return str(path)
+
+
 # ── 대화형 콘솔 ──────────────────────────────────────────────────────
 # 무인자(tty) `pm-config` 의 휴먼 프론트엔드. 상태를 렌더하고 메뉴로 액션을 받고
 # 입력마다 바뀐 상태를 재렌더한다. 액션은 모두 *기존 핸들러*(cmd_repo_add·
@@ -3713,6 +3837,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="적용 없이 복사 plan 만 출력 (파일시스템 미변경).",
     )
     p_add_harness.set_defaults(func=cmd_add_harness)
+
+    # sync-adapter-config [--list|--accept <경로>] — instance-owned 어댑터 config 채널.
+    #   동기(pm-update)는 무편집분만 자동 갱신하고 편집분·원장 부재는 보존+보고한다. 이 커맨드가
+    #   그 보존분을 채택자가 명시적으로 받는 유일한 채널이다(판정은 pm_import 단일 진실).
+    p_sync_cfg = sub.add_parser(
+        "sync-adapter-config",
+        help="어댑터 config(hooks.json·settings.json 등) 판정 조회 / 상류 값 수용",
+    )
+    # 조회와 수용은 **상호 배타**다 — 함께 주면 한쪽이 조용히 무시되는 오사용이 된다.
+    sync_cfg_mode = p_sync_cfg.add_mutually_exclusive_group()
+    sync_cfg_mode.add_argument(
+        "--list", action="store_true",
+        help="현재 판정(최신/무편집/편집됨/원장부재)을 조회한다 (기본 동작).",
+    )
+    sync_cfg_mode.add_argument(
+        "--accept", metavar="RELPATH", default=None,
+        help="그 경로를 백업 후 현행 template 으로 교체하고 원장에 기록한다 "
+             "(보고 모드 탈출 채널·경로는 인스턴스 루트 기준 예 `.codex/hooks.json`).",
+    )
+    p_sync_cfg.add_argument(
+        "--from", dest="source", metavar="SOURCE", default=None,
+        help="어댑터 소스 프레임워크 checkout (생략 시 local.conf upstream 에서 자동 해소·"
+             "add-harness 와 같은 규칙).",
+    )
+    p_sync_cfg.set_defaults(func=cmd_sync_adapter_config)
 
     # update [--from ...] — pm-update 흡수. 실제 forward 는 main 이 argparse 우회로
     # 처리한다(아래 special-case) — 여기 등록은 `--help` 목록 surface(발견성)용이다.

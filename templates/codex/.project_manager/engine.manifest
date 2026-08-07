@@ -113,6 +113,11 @@
 # relay 드라이버 (engine-mirror·비-.md 코드라 @render 아님·byte-copy). canonical=templates/codex·루트
 #   부재 → @source remap 으로 전파(frozen 근절·opencode pm_orch_opencode.py 대칭·T-0404).
 .codex/pm_orch_codex.py     @source=templates/codex/.codex/pm_orch_codex.py
+# 위임 4축 command policy (execpolicy `.rules`·비-.md 코드라 @render 아님·byte-copy). codex 는
+#   `.codex/rules/` **디렉토리의 `*.rules` 전부**를 로드하므로(0.146.0 실측 — "loaded N .rules files
+#   in <dir>") 채택자 커스텀은 형제 파일(예 `local.rules`)로 분리할 수 있다 → `default.rules` 자체는
+#   프레임워크 소유·전파 대상(AGENTS.md 안전 경계의 기계 강제분이라 상류가 계속 진화시킨다).
+.codex/rules/default.rules  @source=templates/codex/.codex/rules/default.rules
 
 # ── manifest 자기전파 (B-selfprop·opencode engine.manifest 대칭) ──────────────────
 # codex 채택자가 자기 flavor 매니페스트를 @source 로 byte-copy 받아 위 신 엔트리(및 T-0404 relay)가

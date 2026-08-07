@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import io
 import os
 import subprocess
 from pathlib import Path
@@ -262,17 +263,26 @@ def test_substitution_py_uses_python_when_python3_absent(pm_import, monkeypatch)
 
 
 class _RcRecorder:
-    """subprocess.run 대역 — env kwargs 를 기록하고 returncode 0 을 돌려준다.
+    """subprocess.Popen 대역 — env kwargs 를 기록하고 returncode 0 을 돌려준다.
 
-    pytest 자식을 실제 기동하지 않고 env 전달만 검증한다.
+    pytest 자식을 실제 기동하지 않고 env 전달만 검증한다. 회귀 러너는 출력을 tee(실시간 echo +
+    캡처)하려고 `Popen` 으로 띄우므로 대역도 스트림 + `wait()` 를 갖춘 프로세스 형태다.
     """
+
+    class _Proc:
+        def __init__(self):
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def wait(self):
+            return 0
 
     def __init__(self):
         self.calls: list[dict] = []
 
     def __call__(self, *args, **kwargs):
         self.calls.append(kwargs)
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return self._Proc()
 
 
 def test_regression_run_child_forces_utf8_env(board, monkeypatch):
@@ -282,14 +292,14 @@ def test_regression_run_child_forces_utf8_env(board, monkeypatch):
     수정 전(env 미전달)에서는 이 단언이 깨진다.
     """
     rec = _RcRecorder()
-    monkeypatch.setattr(board.subprocess, "run", rec)
+    monkeypatch.setattr(board.subprocess, "Popen", rec)
     # os.environ 보존 검증용 마커 키.
     monkeypatch.setenv("T0024_SENTINEL", "preserved")
     args = argparse.Namespace(action="run", cmd=None, ticket=None,
                               touches="tests/test_subprocess_encoding.py")
     rc = board.cmd_regression(args)
     assert rc == 0
-    assert rec.calls, "pytest 자식 subprocess.run 호출이 일어나지 않음"
+    assert rec.calls, "pytest 자식 subprocess 호출이 일어나지 않음"
     env = rec.calls[0].get("env")
     assert env is not None, f"자식에 env 미전달: {rec.calls[0]!r}"
     assert env.get("PYTHONUTF8") == "1", f"PYTHONUTF8=1 누락: {env!r}"

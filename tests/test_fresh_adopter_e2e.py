@@ -743,8 +743,13 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     #   이후 판정(`installed_harnesses`·pm_update 표기 독자)이 증거 추론 대신 그 기록을 읽게 한다
     #   (dev-state metadata·manifest 와 같은 성질). 이 파일의 변경은 아래에서 "하네스 목록이 정확히
     #   base∪added 로 늘었는가" 로 못박는다(허용만 하면 그 파일의 탐지력이 0 이 된다).
+    #   **어댑터 config 원장도 같은 예외**다(T-0585): add-harness 는 자기가 레이다운한 instance-owned
+    #   config 의 template 해시를 원장에 남겨, 다음 동기가 "채택자가 손댔는가" 를 판정할 수 있게 한다
+    #   (dev-state metadata·설치 기록과 같은 성질). 보존된 편집분은 애초에 기록되지 않으므로 이 예외가
+    #   clobber 를 가리지 않는다 — 원장의 기록 규칙 자체는 `test_pm_import.py` 의 절이 못박는다.
     _MANIFEST_REL = ".project_manager/engine.manifest"
     _RECEIPT_REL = pm_import.INSTALL_RECEIPT_RELPATH.as_posix()
+    _BASELINE_REL = pm_import.ADAPTER_BASELINE_RELPATH.as_posix()
     notation_shared = {
         ".project_manager/wiki/README.md",
         ".project_manager/wiki/pm_role.md",
@@ -764,12 +769,12 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     changed = sorted(
         r for r in before_rels & after_rels
         if before[r] != after[r]
-        and r not in (_MANIFEST_REL, _RECEIPT_REL)
+        and r not in (_MANIFEST_REL, _RECEIPT_REL, _BASELINE_REL)
         and r not in notation_shared
     )
     assert changed == [], (
-        f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest·설치 기록 외·byte diff≠0·"
-        f"clobber 재발): {changed}")
+        f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest·설치 기록·config 원장 "
+        f"외·byte diff≠0·clobber 재발): {changed}")
 
     # (3-a) 설치 기록의 변경 내용 — 정확히 base∪added(registry 순서)여야 한다. 표기 독자 집합이
     #   여기서 갈리므로 하나라도 빠지면 이후 공유 문서 재렌더가 그 하네스 표기를 지운다.
@@ -813,6 +818,99 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
         mf_after = after[_MANIFEST_REL].decode("utf-8")
         assert mf_after.startswith(mf_before), (
             f"{base}→{added}: engine.manifest 변경이 append-only 아님(기존 내용 훼손·T-0456 위반)")
+
+
+def _guest_engine_rows(pm_update, dest: Path) -> dict[str, object]:
+    """dest guest 절의 **엔진 행**(비-`@render`) → {경로: ManifestEntry}."""
+    return {
+        str(entry).replace("\\", "/"): entry
+        for entry in pm_update._dest_guest_manifest_entries(dest)
+        if not getattr(entry, "render", False)
+    }
+
+
+@pytest.mark.parametrize("base,added", _ADD_HARNESS_PAIRS)
+def test_add_harness_guest_engine_files_sync_on_pm_update(
+        pm_import, pm_update, tmp_path, monkeypatch, base, added):
+    """add-harness 로 얹은 guest 하네스의 **엔진 파일**이 pm-update 로 상류와 수렴한다 (T-0574 ⑬).
+
+    결함 형상: add-harness 는 복사만 하고 manifest 에 안 올렸고, 등재 유일분(`@render` 행)마저
+    update 계획에서 전량 차감돼 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드가 설치
+    시점 사본으로 영구 동결됐다(`pm_relay` 코어와 짝인 engine-mirror → 코어↔드라이버 skew).
+
+    전 순서쌍에서: 채택자 사본을 stale 로 만들고 self-update → (a) 엔진 파일이 upstream 과 **byte
+    일치** · (b) 어댑터 렌더물(add-harness refresh 소유)과 instance-owned 파일은 byte **불변**."""
+    dest = tmp_path / f"guest-engine-{base}-{added}"
+    assert pm_import.main(
+        ["--new", str(dest), "--harness", base, "--name", "Adopter", "--fill", "manual"]
+    ) == 0
+    pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
+
+    engine_rows = _guest_engine_rows(pm_update, dest)
+    assert engine_rows, f"{base}->{added}: guest 엔진 행 미등재(동기 채널 부재)"
+
+    # 상류 대응이 실재하는 좌표를 stale 로 만든다 — 이번 동기가 실제로 덮는지 본다. 디렉토리
+    #   엔트리는 직계 파일만 본다(하위 트리 전수 순회는 `_snapshot_tree` 축이 담당).
+    stale_marker = "# STALE ADOPTER COPY (guest engine sync gate)\n"
+    compared: dict[str, Path] = {}
+    for rel, entry in engine_rows.items():
+        source_path = REPO / (getattr(entry, "source_rel", None) or rel)
+        dest_path = dest / rel
+        if source_path.is_file() and dest_path.is_file():
+            pairs = [(dest_path, source_path)]
+        elif source_path.is_dir() and dest_path.is_dir():
+            pairs = [(dest_path / child.name, child)
+                     for child in sorted(source_path.iterdir()) if child.is_file()]
+        else:
+            pairs = []
+        for mirror, source in pairs:
+            if not mirror.is_file():
+                continue
+            compared[mirror.relative_to(dest).as_posix()] = source
+            mirror.write_text(stale_marker, encoding="utf-8")
+    assert compared, f"{base}->{added}: 대조 가능한 guest 엔진 파일 0(공허 게이트)"
+
+    # 불변이어야 할 축 — 어댑터 렌더물(guest `@render`)과 instance-owned 설정. 전 트리 스냅샷
+    #   (`_snapshot_tree`)으로 잡아 "그 경로 아래 아무것도 안 바뀌었다" 를 파일 단위로 확인한다.
+    #   `ADD_HARNESS_CREATE_IF_ABSENT` 만 쓰면 claude/opencode 가 빈 집합이라 instance-owned 축이
+    #   codex 2쌍에서만 실효한다 — 어느 manifest 에도 없는 실 설정 파일을 **채택자 로컬 내용으로**
+    #   심어 6쌍 전부에서 byte 불변을 단언한다(전파 대상 아님을 못박는 축).
+    local_config_marker = "// LOCAL ADOPTER CONFIG (must not be touched by update)\n"
+    planted = []
+    for rel in (".claude/settings.json", ".opencode/opencode.jsonc"):
+        target = dest / rel
+        if target.is_file():
+            target.write_text(local_config_marker, encoding="utf-8")
+            planted.append(rel)
+    assert planted, f"{base}->{added}: instance-owned 설정 심기 0(공허 축)"
+    render_paths = sorted(pm_update._dest_guest_manifest_paths(dest))
+    instance_owned = sorted({*pm_import.ADD_HARNESS_CREATE_IF_ABSENT[added], *planted})
+    before = _snapshot_tree(dest)
+
+    def _untouchable(rel: str) -> bool:
+        return (rel in instance_owned
+                or any(rel == p or rel.startswith(p + "/") for p in render_paths))
+
+    assert any(_untouchable(rel) for rel in before), \
+        f"{base}->{added}: 불변 축 대상 0(공허 대조)"
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    assert pm_update.main(["--from", str(REPO)]) == 0, f"{base}->{added}: self-update rc≠0"
+
+    after = _snapshot_tree(dest)
+    unsynced = sorted(
+        rel for rel, source in compared.items()
+        if after.get(rel) != source.read_bytes())
+    assert unsynced == [], (
+        f"{base}->{added}: guest 엔진 파일이 상류와 수렴하지 않음(영구 동결): {unsynced}")
+    changed = sorted(
+        rel for rel, payload in before.items()
+        if _untouchable(rel) and after.get(rel) != payload)
+    assert changed == [], (
+        f"{base}->{added}: 렌더물·instance-owned 파일이 update 채널에 변경됨(불가침 위반): {changed}")
 
 
 def test_add_harness_pairs_are_derived_permutation():

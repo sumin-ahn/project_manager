@@ -196,6 +196,14 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "tmp_path 합성 dest fixture에 **무엇이 착지했는가** 전수 확인 — 경로 스코프의 판정이 "
         "'요청 밖 파일이 하나도 안 왔다'라 열거 자체가 본질(seam 열거로는 미착지 증명 불가)"),
     (
+        "tests/test_pm_update.py",
+        "_tree_digest",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp_path 합성 dest fixture의 read-only 불변식 스냅샷 — `--changes` 판정이 '어떤 파일도 "
+        "추가/수정되지 않았다'라 전수 해시가 본질(좁힌 열거는 예기치 못한 write를 놓친다)"),
+    (
         "tests/test_adapter_token_substitution.py",
         "_token_leaks",
         "rglob",

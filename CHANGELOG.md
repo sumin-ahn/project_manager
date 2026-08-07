@@ -7,6 +7,83 @@
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-08-07
+
+**채택자 제보 흡수 릴리스.** 실채택자(v1.4.5→v1.6.0→v1.6.1 2단계 채택)가 제보한 엔진 결함
+10건과 잔여 로컬 편차를 전량 흡수한다. 관통 성질: add-harness guest 형상과 기존-채택자
+업그레이드 경로가 처음으로 상설 게이트에 들어온다 — 지금까지의 fresh-adopter 게이트는 신규
+설치만 검증해 이 클래스(디스크의 옛 데이터·guest 이력·치환 상태에서만 발현)를 구조적으로
+못 봤다.
+
+### 업그레이드 노트
+
+- **`pm-update` 를 2회 실행하라.** 엔진 자신이 `pm-update` 로 배달되므로 1회차는 구 엔진
+  코드로 돈다. v1.5.0~v1.6.1 엔진 + v1.5.0 이전 add-harness 이력(옛 세대 guest 마커) 조합은
+  1회차에서 guest 절이 소실될 수 있다 — 신 엔진이 착지한 2회차가 마커 세대를 수렴시키고,
+  절이 이미 소실된 채택자는 `미등재 flavor 파일 관측` 경고의 안내대로
+  `./pm-config.sh add-harness <harness>` 재실행으로 복구한 뒤 다시 동기하면 된다(이후에는
+  guest 절 파생 백필이 자동 유지한다).
+- guest 하네스의 **엔진 파일**(codex `pm_orch_codex.py` 등)이 이번 릴리스부터 `pm-update` 로
+  갱신된다. 종전에 동결됐던 파일은 첫 동기에서 상류와 수렴한다.
+
+### Added
+- **guest 하네스 엔진 파일 동기 채널** — guest 절 행이 2채널로 갈린다: `@render` 행(어댑터
+  렌더물)은 종전대로 add-harness refresh 소유, 비-`@render` `@source` 행(guest 엔진 파일)은
+  `pm-update` 가 byte-copy 로 갱신한다. add-harness 가 엔진 행을 함께 등재하고(복사 술어 공유로
+  "등재 ⊆ 복사" 구조 보장), 구세대 절 채택자는 flavor 배타 경로 증거로 엔진 행을 파생·등재해
+  (receipt 미사용·cross-ns 오탐 가드·지속화) 재실행 없이 동결이 풀린다. instance-owned
+  config(`config.toml`·`hooks.json`·`settings.json`·`opencode.jsonc`)는 종전대로 불가침.
+- **상류 은퇴 파일 보고 채널** — 상류에서 삭제·rename 된 등재 파일을 apply·dry-run·`--changes`
+  가 같은 문구로 보고한다(0건 침묵·상한 20 + "외 N건"). 삭제 전파는 하지 않는다 — 채택자
+  로컬 자산(등재 디렉토리 안 공존 스킬 등)과 은퇴 파일을 기계로 구분할 수 없어, 보고가 정확한
+  하한이다. `--changes` 는 D/R 을 `removed_upstream` 버킷으로 분리해 "이번 동기가 받는 것"
+  오보를 제거한다.
+- **회귀 FULL 게이트 수집 하한** — `local.conf` 의 `regression_min_collected`(기본 0=off)가
+  rc0 부분수집 false-green 을 `partial-collection` 으로, 하한 활성 + 요약 검증 불가를
+  `unverified-collection` 으로 강등한다. 플래그에 수집수·하한·conf 앵커를 기록해 green 재사용을
+  산술로 무효화하고, pre-push 재실행이 같은 앵커를 승계한다. 러너는 Popen tee(실시간 출력 +
+  캡처)·요약 파싱은 stdout 단독·요약행 문법 완전 일치(앞뒤 로그 오염 양방향 차단).
+- **외부리뷰 라운드 산출 장부 + wave 총예산** — 게이트별 라운드 이력(`rounds`: 판정·must-fix
+  수·예약 순번)과 세션 총예산(`external_review_wave_budget` 기본 24·`--ack-wave` 승인 재개·
+  세대 토큰으로 환불 우회 차단)을 장부에 신설, `--rounds-report` read-only 조회면을 제공한다.
+  게이트 상한과 wave 예산은 독립 축이며 승인은 서로를 열지 않는다.
+- **업그레이드-채택자 e2e 게이트** — 구세대 디스크 상태(옛 guest 마커·add-harness 이력·치환
+  상태)를 주입한 채택자 픽스처로 guest 절 생존·동결 가시성·토큰 안정성·reconcile 절차 안전을
+  상설 검증한다(v1.6.1 엔진이면 red 인 민감도 실증 포함).
+- **render 토큰 소유권 가드** — bare 등재 파일의 운영 토큰은 소비 시점 치환 선언
+  (`CONSUMPTION_TIME_TOKENS`)이 없는 한 출하를 차단한다(파일×토큰 매트릭스·소비처 실재 검증).
+- **사설참조 strip 데이터-리터럴 표식** — `# pm:data-literal`(라인·begin/end 블록) 주석이 붙은
+  wire 리터럴은 스트립·재유입 가드가 함께 제외한다(tokenize.COMMENT 한정·완전 포함 면제·경계
+  걸침 탐지 유지·near-miss 오탈자 loud·lone CR 거부). v1.5.0 스트립 사고(guest 마커 절단)의
+  클래스 폐쇄.
+- **pytest 요약 파서 공용 seam** — 요약행 파서 5벌(첫-매칭)을 board.py 의 끝-탐색·문법 완전
+  일치 파서로 승격하고 livegate·bootstrap·ticket_finish·handoff 가 공동 소비한다(사본 재유입
+  가드·seam 부재 fail-closed + 재동기 안내).
+
+### Fixed
+- **guest 절 마커 세대 단절** — v1.5.0 스트립이 마커 리터럴을 바꿔 기존 채택자 guest 절이
+  다음 동기에서 경고 없이 소실되던 것(제보 1항목). 읽기는 세대 집합 인식·쓰기는 현행 단일,
+  dest 재부착 직전 1회 치환한다(다중-harness manifest 분기 포함).
+- **frozen 경고 도달 불가** — guest 소유 경로 하나로 flavor evidence 전체를 버리던 판정을
+  개별 제외로 교체(제보 2항목의 탐지 축). add-harness 채택자에서 경고가 실제로 발화하고, 문구를
+  `미등재 flavor 파일 관측` + facade 복구 안내로 재조준했다.
+- **`--changes` 미리보기 과소·과대보고** — `@source` 매핑 무시(제보 5항목·출하 manifest 7/7
+  오분류)와 self-heal 미반영(제보 6항목)을 좌표·owner-우선순위 판정과 계획 manifest 헬퍼 공동
+  소비로 폐쇄(미리보기 == 계획·legacy_preserved·guest 채널 상속 포함).
+- **render 토큰 진동** — 치환된 `wiki/README.md` 를 pm-update 가 토큰으로 되돌리던 반쪽(제보
+  7항목)을 토큰 소유권 정리로 폐쇄: README 는 토큰 제거(하네스 중립 문구), `pm_state.template`·
+  `domain/_template` 의 `{{DATE}}` 는 소비 시점(생성기) 치환 소유로 이관.
+- **테스트 훅 러너 하드코딩** — `run_tests_hook.sh` 가 `local.conf` 의 `test_cmd` 를 해소해
+  실행한다(제보 9항목·`sh -c` 신선 셸로 엔진과 실행 의미 통일·rc 보존·읽기실패와 미지정 구분·
+  파서 동형성 26종 배터리 잠금).
+- **opencode.jsonc 빈 배열 삽입 파손** — 빈(또는 비-문자열 원소) `instructions` 배열에 후행
+  쉼표를 만들던 삽입을 비-공백 바디 판정으로 교체(제보 10항목).
+
+### Docs
+- pm-update 스킬 §3: 선-cp 는 기본 생략(self-prop 채택자는 엔진이 manifest 도달을 처리·실측
+  게이트 박제), cp 사용 시 guest 절 소실과 복구 절차를 명시. README 의 guest 채널·frozen 경고
+  서술 현행화. `docs/manual-import.md`·`docs/placeholders.md` 의 치환 판정을 엔진과 등가로 교정.
+
 ## [1.6.1] - 2026-08-06
 
 **게이트·렌더 견고화 릴리스.** 관통 성질: 조용한 degrade 의 잔여 클래스를 기계 판정으로 폐쇄한다 —

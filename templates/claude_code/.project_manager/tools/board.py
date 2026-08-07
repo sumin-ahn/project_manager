@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -698,8 +699,13 @@ def _guard_worktree_misanchor(action: str, *, runner: Any = subprocess.run) -> b
 
 # ── utilities ──────────────────────────────────────────────────────────
 
-def local_config() -> dict[str, str]:
+def local_config(repo: Path | None = None) -> dict[str, str]:
     """Per-clone local config (`.project_manager/local.conf`, git-ignored).
+
+    `repo` 를 주면 **그 트리의** conf 를 읽는다(`<repo>/.project_manager/local.conf`) —
+    이 board.py 사본의 `REPO` 가 아니라 판정 대상 트리가 앵커여야 하는 소비처(회귀 수집 하한 —
+    스위트는 실행 cwd 트리의 것이다)를 위한 seam. 미지정은 현행 `LOCAL_CONF`(무변경).
+    `external_review.local_config(repo)` 와 동형 시그니처.
 
     Plain `KEY=value` lines; `#` comments and blank lines ignored. Missing → {}.
     Holds per-clone settings that must NOT be shared via git (py·test_cmd·ctx_*·
@@ -708,9 +714,10 @@ def local_config() -> dict[str, str]:
     lease 장부에서 유도된다(session_name·id_prefix). solo 홈만 이 키로 폴백.
     """
     conf: dict[str, str] = {}
-    if not LOCAL_CONF.exists():
+    path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
+    if not path.exists():
         return conf
-    for line in LOCAL_CONF.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -767,7 +774,7 @@ def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.6.1"
+ENGINE_REV = "v1.6.2"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -4357,6 +4364,339 @@ def _quarantine_args() -> str:
     return " ".join(f"--deselect {i}" for i in ids)
 
 
+# ── FULL 게이트 수집 하한 (부분수집 false-green 차단) ─────────────────────
+# rc5(수집 0)만 결함 신호로 보면 **부분 수집**(rc0 인데 스위트 일부만 돎 — cwd/pythonpath 파손)이
+# pass 로 기록된다. 하한은 스위트 규모의 함수라 엔진이 보편값을 정할 수 없으므로 채택자 opt-in
+# (local.conf `regression_min_collected`·기본 0 = 가드 off)으로 선언받고, FULL 게이트 결과가 rc0
+# 인데 실행 수가 하한 미만이면 fail 로 강등한다. 강등 rc 는 전용 라벨이라 실 red(rc≠0)·
+# rc5(수집 0)와 사유가 구분된다(check/훅 메시지 진단 가능).
+REGRESSION_MIN_COLLECTED_KEY = "regression_min_collected"
+REGRESSION_RC_PARTIAL_COLLECTION = "partial-collection"    # 수집 < 하한 (비-0·전용 라벨)
+REGRESSION_RC_UNVERIFIED_COLLECTION = "unverified-collection"  # 하한 활성인데 검증 불가
+
+
+# ── pytest 요약행 파서 (엔진 공용 seam) ────────────────────────────────────
+# 요약행은 **끝에서부터** 줄 단위로 찾는다. 캡처된 pytest 출력에는 테스트 자신이 찍은
+# `3 passed` 류 로그가 섞이고, 출력 전체를 `re.search` 하면 그 로그를 요약으로 오판한다.
+# 도구마다 복제돼 있던 첫-매칭 파서를 여기로 승격했다 — 수집 하한 가드·릴리즈 라이브 게이트
+# (이 파일)·부트스트랩 회귀 dump·ticket 마감 회귀 판정·핸드오프 회귀 1줄이 모두 이 seam 을
+# 쓴다. 다른 도구는 각자 이미 가진 board 형제 로더로 읽는다 — **로컬 사본 금지**(사본은
+# 첫-매칭 오판을 그대로 되살린다).
+#
+# 오염은 **양방향**이다: 요약 *앞* 로그는 끝에서-탐색이, 요약 *뒤* 로그(소비처 넷은 stdout+
+# stderr 를 병합해 먹인다 — 자식 하네스의 stderr 한 줄이 꼬리에 붙는다)는 요약행 문법 완전
+# 일치가 막는다. 두 축 모두 이 seam 안에 있어 소비처가 자동 상속한다.
+
+# pytest 요약행 outcome 종류 — 실행 수 = 이 값들의 합. `deselected`(quarantine `--deselect`·
+# 마커 필터)는 *돌지 않은* 수라 세지 않는다. `xfailed`/`xpassed` 는 패턴이 `<수> <종류>` 라
+# `failed`/`passed` 에 겹쳐 잡히지 않는다(각자 독립 카운트).
+_PYTEST_OUTCOME_KINDS = ("passed", "failed", "errors?", "skipped", "xfailed", "xpassed")
+
+
+def _pytest_outcome_match(line: str, kind: str) -> re.Match[str] | None:
+    """요약행에서 outcome 한 종류(`N passed`)의 정규식 매치 — 없으면 None.
+
+    `kind` 는 pytest 표기 그대로의 패턴 조각이라 단/복수 겸용(`errors?`)도 그대로 받는다.
+    이 한 지점이 outcome 표기의 단일 정의다(카운트·요약 문자열 절단이 함께 쓴다).
+    """
+    return re.search(rf"(\d+) {kind}\b", line or "")
+
+
+def _pytest_outcome_count(line: str, kind: str) -> int | None:
+    """요약행에서 outcome 한 종류의 수 — 그 종류가 없으면 None(수 0 과 구분)."""
+    match = _pytest_outcome_match(line, kind)
+    return int(match.group(1)) if match else None
+
+
+def _pytest_outcome_counts(line: str,
+                           kinds: tuple[str, ...] = _PYTEST_OUTCOME_KINDS) -> list[int]:
+    """한 줄에서 pytest outcome 카운트를 뽑는다 (`7577 passed, 12 skipped …` → [7577, 12]).
+
+    `kinds` 로 셀 종류를 좁힌다 — 소비처마다 *무엇을 실행으로 보는지* 가 다르다(수집 하한은
+    6종 전부·릴리즈 라이브 게이트는 마커 안에서 돈 3종).
+    """
+    counts: list[int] = []
+    for kind in kinds:
+        count = _pytest_outcome_count(line, kind)
+        if count is not None:
+            counts.append(count)
+    return counts
+
+
+# 요약행 **전체 문법** — outcome 목록 + `in <소요시간>` 종결. 끝에서-탐색만으로는 부족하다:
+# 실제 요약 *뒤에* wrapper/자식 하네스가 `child harness: 5 passed in 1.00s` 류를 찍으면(소비처는
+# stdout+stderr 병합 출력을 먹인다) 그게 마지막 카운트 줄이라 요약으로 뽑혀 하한·릴리즈 pin 이
+# 우회된다. 실측된 그 오염 줄은 `in X.XXs` 종결까지 갖췄으므로 **줄머리 앵커가 필수**다 — 판정을
+# "카운트를 포함한다"가 아니라 "요약행 문법에 완전히 일치한다"로 세운다. 허용 형태: 구분선
+# 장식(`==== … ====`)·긴 실행의 `(0:06:28)` 꼬리·구 pytest 의 `in 0.30 seconds`.
+_PYTEST_SUMMARY_ITEM = r"\d+ [a-z]+"
+_PYTEST_SUMMARY_RE = re.compile(
+    r"^=*\s*"                                                       # 선택적 구분선
+    rf"{_PYTEST_SUMMARY_ITEM}(?:\s*,\s*{_PYTEST_SUMMARY_ITEM})*"    # `N kind`(, `N kind`)*
+    r"\s+in\s+\d+(?:\.\d+)?\s*(?:s|seconds?)"                       # 소요시간 종결 앵커
+    r"(?:\s*\(\d+:\d{2}:\d{2}\))?"                                  # 긴 실행 `(0:06:28)`
+    r"\s*=*\s*$"
+)
+# 색 출력(`--color=yes`·`PY_COLORS=1`)은 요약행에 ANSI 를 섞는다 — 문법 판정 전에 걷어낸다
+# (안 걷으면 정상 요약이 문법 불일치로 떨어져 `unverified-collection` false-RED 가 된다).
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _is_pytest_summary_line(line: str) -> bool:
+    """그 줄이 pytest 요약행 문법에 **완전히** 일치하나 (카운트 포함 여부가 아니다)."""
+    return bool(_PYTEST_SUMMARY_RE.match(_ANSI_ESCAPE_RE.sub("", line or "").strip()))
+
+
+def _pytest_summary_line(output: str) -> str | None:
+    """pytest 출력의 요약행 — **끝에서부터** 첫 *요약행 문법* 줄 (없으면 None).
+
+    두 겹으로 거른다:
+      1. **끝에서-탐색** — 캡처 출력에는 테스트/자식 러너가 찍은 `3 passed` 류 로그가 섞이고,
+         앞에서부터 찾으면 그 로그를 요약으로 오판한다.
+      2. **문법 완전 일치**(`_is_pytest_summary_line`) — 실제 요약 *뒤에* 오는 wrapper 로그
+         (`[post] 8000 passed in 900s`)까지 끝에서-탐색이 집어삼키는 구멍을 닫는다. 카운트
+         나열 + `in <초>s` 종결이라는 요약행 고유 형태를 만족해야 한다.
+    """
+    for line in reversed((output or "").splitlines()):
+        if _is_pytest_summary_line(line) and _pytest_outcome_counts(line):
+            return line.strip()
+    return None
+
+
+def _collected_count(output: str) -> int | None:
+    """pytest 요약행에서 *실제 실행된* 테스트 수를 센다 (파싱 실패 시 None).
+
+    N = passed + failed + error(s) + skipped + xfailed + xpassed. 요약행이 없으면
+    (수집 0 "no tests ran"·비-pytest test_cmd) None — 하한 가드는 그때 판정을 건너뛴다
+    (fail-soft·현행 rc 신호에 맡김).
+    """
+    line = _pytest_summary_line(output)
+    if line is None:
+        return None
+    return sum(_pytest_outcome_counts(line))
+
+
+def _pytest_summary_tail(output: str, kind: str = "passed") -> str | None:
+    """요약행의 `N <kind>` 부터 줄 끝까지 (요약행/그 종류가 없으면 None).
+
+    사람이 읽는 회귀 1줄 표기(인계 프롬프트·log entry)가 소비한다 — 줄 전체가 아니라 카운트
+    지점부터 잘라 쓰던 표기를 보존하되, 자를 대상 줄은 끝에서-탐색으로 고른다.
+    """
+    line = _pytest_summary_line(output)
+    if line is None:
+        return None
+    match = _pytest_outcome_match(line, kind)
+    return line[match.start():].strip() if match else None
+
+
+def _regression_min_collected(cwd: str | None = None) -> int:
+    """FULL 게이트 수집 하한 — **회귀를 도는 트리**(run cwd)의 local.conf 에서 해소한다.
+
+    앵커가 run cwd 인 이유: 하한은 *그 트리 스위트* 규모의 함수다. 호출된 board.py 사본의
+    `REPO`(두-git 형상에선 tests/ 가 없는 PM 홈·multi-repo 홈에선 남의 repo)에서 읽으면 다른
+    트리의 선언이 새어 들어와 엉뚱한 스위트를 강등한다 — 실제로 개발 머신 local.conf 가 tmp
+    스텁 회귀(수집 1)를 강등시킨 누출이 있었다. cwd 미지정은 현행 `REPO` 앵커(솔로 동일).
+
+    엔진 기본값은 0(off)이고 채택자가 자기 수집수 기준으로 선언한다. 비정수/음수는 0(off)로
+    폴백하되 **경고 1줄**을 낸다 — 오타로 게이트가 조용히 무력화되면 이 가드가 막으려던
+    false-green 이 그대로 돌아온다.
+    """
+    conf = local_config(Path(cwd)) if cwd else local_config()
+    raw = conf.get(REGRESSION_MIN_COLLECTED_KEY)
+    if raw is None:
+        return 0
+    try:
+        value: int | None = int(str(raw).strip())
+    except ValueError:
+        value = None
+    if value is None or value < 0:
+        print(f"regression: 경고 — local.conf `{REGRESSION_MIN_COLLECTED_KEY}={raw}` 가 "
+              "비정수/음수 — 수집 하한 가드 off.", file=sys.stderr)
+        return 0
+    return value
+
+
+def _collection_shortfall_text(collected: int | None, floor: int | None) -> str:
+    """부분수집 사유의 공용 표기 — `수집 N<하한 M` (run·check 세 surface 가 공유).
+
+    두 값 모두 **플래그에 기록된 실행 당시 값**을 받는다 — check 시점에 conf 를 다시 읽으면
+    그 사이 바뀐 하한으로 과거 기록을 설명하게 된다. 미기록(옛 플래그)은 `?`.
+    """
+    shown = "?" if collected is None else collected
+    limit = "?" if floor is None else floor
+    return f"수집 {shown}<하한 {limit}"
+
+
+def _flag_conf_anchor(data: dict, fallback: str | None) -> str | None:
+    """플래그에 기록된 **conf 앵커**(실행 당시 cwd) — 미기록/손상이면 `fallback`.
+
+    하한은 *실행 트리* 의 선언이다. `run --cwd <tree>` 로 핀해 돈 결과를 pre-push 훅이
+    `check`(훅은 `--cwd` 를 못 넘긴다)로 검증할 때, check 가 **자기** cwd 로 하한을 재해소하면
+    실행 때와 다른 local.conf 를 읽어 실행 트리의 하한 상향을 놓치거나(false-green) 무관한
+    하한으로 막는다(false-RED). 그래서 run 이 앵커를 기록하고 check 는 그 앵커로 해소한다.
+    앵커 트리가 사라졌으면 conf 부재 → 하한 0 으로 흐른다(fail-soft·HEAD 대조가 별도로 stale
+    을 잡는다). 미기록(옛 플래그)은 호출부 해소값으로 폴백해 후방호환.
+    """
+    anchor = data.get("conf_anchor")
+    return anchor if isinstance(anchor, str) and anchor else fallback
+
+
+def _flag_collected(data: dict) -> int | None:
+    """플래그의 `collected` 를 정수로 정규화 — 손상값(문자열·리스트·bool)은 None.
+
+    None 은 "검증 불가" 로 흘러 하한 활성 시 stale 강등이 된다(재실행 유도). 정규화 없이
+    손상값이 `_green_floor_stale` 의 `<` 비교에 들어가면 TypeError 로 **게이트 자체가 죽는다** —
+    장부 손상이 회귀 해소를 깨면 안 된다는 기존 fail-soft 규율과 같은 축이다.
+    """
+    value = data.get("collected")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _flag_blocks_push(data: dict, anchor: str | None) -> bool:
+    """이 기록이 push 를 막는 상태인가 — fail 기록 또는 하한 미달 green(재실행 요구).
+
+    `check` 의 두 차단 갈래(RED / 하한 신규·상향 stale)와 **같은 판정 프리미티브**를 쓴다
+    (판정 두 벌 금지). HEAD 불일치는 여기 없다 — 그건 커밋마다 생기는 정상 재실행 사유다.
+    """
+    if data.get("status") != "pass":
+        return True
+    return _green_floor_stale(_flag_collected(data), _regression_min_collected(anchor))
+
+
+def _inherit_flag_anchor(default_cwd: str) -> str:
+    """차단 기록이 있으면 그 기록의 conf 앵커를 이어받는다 — 없으면 `default_cwd`.
+
+    pre-push 훅은 `check || run` 이고 `--cwd` 를 못 넘긴다. 앵커 A(핀된 트리)의 기록으로
+    check 가 RED/stale 을 냈는데 이어지는 재실행이 기본 트리 B 에서 돌면, **B 의 green 이 A 의
+    차단 기록을 덮어** 그대로 push 된다(게이트 우회). 그래서 차단 기록의 재실행은 그 기록이
+    가리키는 트리에서 돈다.
+
+    **HEAD-stale 은 이어받지 않는다** — 커밋마다 생기는 정상 재실행이라 여기서 이어받으면
+    릴리즈 때 한 번 쓴 `--cwd <readonly>` 핀이 이후 모든 훅 재실행에 눌러붙는다(그 트리는
+    현 작업 커밋이 아니다). 앵커 디렉토리가 사라졌으면(worktree 정리) 기본 해소로 돌아간다.
+    """
+    if not REGRESSION_FLAG.exists():
+        return default_cwd
+    try:
+        data = json.loads(REGRESSION_FLAG.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return default_cwd
+    if not isinstance(data, dict):
+        return default_cwd
+    anchor = _flag_conf_anchor(data, None)
+    if not anchor or os.path.abspath(anchor) == default_cwd:
+        return default_cwd
+    if not _flag_blocks_push(data, anchor):
+        return default_cwd
+    if not Path(anchor).is_dir():
+        print(f"regression: 직전 차단 기록의 앵커({anchor})가 없어 기본 트리에서 재실행 — "
+              "그 기록은 이 실행 결과로 덮인다.", file=sys.stderr)
+        return default_cwd
+    print(f"regression: 직전 차단 기록의 앵커를 이어받아 실행 → {anchor} "
+          "(다른 트리 green 으로 덮이는 게이트 우회 차단)")
+    return os.path.abspath(anchor)
+
+
+def _green_floor_stale(collected: int | None, floor_now: int) -> bool:
+    """기록된 green 이 **현재** 하한을 못 만족하나 — green 재사용(HEAD+status)의 산술 보강.
+
+    HEAD·status 만 보면 하한을 켜거나 올린 뒤에도 옛 green 이 그대로 통과하고(check) M>1 run
+    조차 그 슬롯을 skip 해 새 하한이 영영 적용되지 않는다. 기록 증거가 현재 하한을 만족하지
+    못하면 **stale**(재실행 유도)로 강등한다:
+      - 수집수 < 하한 → stale. 하한을 *낮춘* 경우엔 증거가 이미 충족하므로 green 유지
+        (불필요한 full 재실행 0 — 판정이 산술로 닫힌다).
+      - 수집수 미기록(옛 플래그·하한 0 시절 기록) + 하한 활성 → 검증 불가라 stale.
+    무한 재실행은 없다: 재실행 시 파싱이 또 실패하면 그때는 `fail`(unverified)로 기록돼
+    다음 check 가 stale 이 아니라 RED 로 끝난다.
+    """
+    if floor_now <= 0:
+        return False
+    return collected is None or collected < floor_now
+
+
+def _apply_collection_floor(rc: int, status: str, collected: int | None,
+                            floor: int) -> tuple[str, int | str, str]:
+    """FULL 게이트 수집 하한 판정 — `(status, 기록 rc, 진단 note)` 로 강등을 반영한다.
+
+    rc0(green) 인데 실행 수가 하한 미만이면 부분 수집(cwd/pythonpath 파손으로 스위트 일부만
+    돎)을 의심해 status 를 `fail`, 기록 rc 를 전용 라벨 `partial-collection` 으로 강등한다.
+    하한 0(기본·미설정)이면 무조건 현행 동작 그대로다(no-op — 파싱 실패도 조용히 skip).
+
+    **하한이 활성인데 수집수를 못 읽으면(파싱 실패) `fail`(`unverified-collection`)이다** —
+    경고만 내고 pass 로 기록하면 "설정된 하한을 검증하지 못한 결과"가 push 를 통과해 이 가드가
+    막으려던 false-green 이 그대로 재도입된다. 비-pytest `test_cmd`(요약행 규약 밖)로 하한을
+    쓰려면 하한을 해제하거나 요약행 호환 러너를 써야 한다(remedy 를 메시지에 싣는다).
+
+    `floor` 는 호출부가 **run cwd 앵커**로 해소해 넘긴다(`_regression_min_collected(cwd)`) —
+    이 판정 안에서 conf 를 다시 읽지 않는다(앵커 이원화 금지). run 두 경로(단일-슬롯·M>1
+    `_regression_run_slot`)가 공유하는 단일 판정 지점이다.
+    """
+    if rc != 0 or floor <= 0:
+        return status, rc, ""
+    if collected is None:
+        return ("fail", REGRESSION_RC_UNVERIFIED_COLLECTION,
+                f" · 수집수 파싱 실패 — 하한 {floor} 검증 불가"
+                "(요약행 없는 test_cmd 면 하한 해제 필요)")
+    if collected >= floor:
+        return status, rc, ""
+    return ("fail", REGRESSION_RC_PARTIAL_COLLECTION,
+            f" · {_collection_shortfall_text(collected, floor)} — 부분 수집 의심"
+            "(테스트 루트/cwd 확인)")
+
+
+def _tee_stream(stream, echo: Callable[[str], None]) -> str:
+    """자식 스트림을 줄 단위로 **실시간 echo 하면서 동시에** 전체를 모아 돌려준다.
+
+    수집 하한 가드는 pytest 요약행을 읽어야 해서 출력을 버퍼에 담아야 하는데, 캡처만 하면
+    `git push` 회귀(pre-push 훅)가 수 분 동안 **완전 무출력**으로 멈춰 있는 것처럼 보인다
+    (실측 367s). tee 로 진행을 그대로 흘리면서 파싱용 버퍼를 유지해 둘 다 만족한다.
+    스트림 미개방(None)은 빈 문자열.
+    """
+    if stream is None:
+        return ""
+    chunks: list[str] = []
+    for line in stream:
+        chunks.append(line)
+        echo(line)
+    return "".join(chunks)
+
+
+def _run_regression_cmd(cmd: str, cwd: str,
+                        env: dict[str, str]) -> tuple[int, str, str]:
+    """회귀 test_cmd 를 실행하고 `(rc, stdout, stderr)` 를 돌려준다 — run 두 경로 공용 단일 지점.
+
+    출력을 버퍼에 담는 이유는 수집 하한 가드가 pytest 요약행을 읽어야 하기 때문이다(별도
+    `--co -q` 재실행 대신 *이미 돈* 실행의 요약을 쓴다·자식 1회). 동시에 `_tee_stream` 으로
+    실시간 echo 해 캡처 이전의 가시성을 그대로 유지한다(무출력 대기 근절).
+
+    **두 스트림을 분리해 돌려준다** — 요약행 파싱은 **stdout 단독**이어야 한다. pytest 요약은
+    stdout 에만 나오므로, stderr 에 섞인 로그(`3 passed …`)를 합치면 그게 "마지막 요약행"으로
+    뽑혀 수집수가 오염된다(false-green/false-RED 양방향). 재출력·진단은 두 스트림 모두 쓴다.
+    스트림 읽기는 스레드 2개로 동시에 — 한쪽만 읽으면 파이프가 차서 자식이 멈춘다(교착).
+    """
+    proc = subprocess.Popen(cmd, shell=True, cwd=cwd, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace")
+    captured: dict[str, str] = {}
+
+    def _pump(name: str, stream, echo: Callable[[str], None]) -> None:
+        captured[name] = _tee_stream(stream, echo)
+
+    pumps = [
+        threading.Thread(target=_pump, daemon=True, args=(
+            "stdout", proc.stdout, lambda line: print(line, end="", flush=True))),
+        threading.Thread(target=_pump, daemon=True, args=(
+            "stderr", proc.stderr, lambda line: print(line, end="", flush=True,
+                                                      file=sys.stderr))),
+    ]
+    for pump in pumps:
+        pump.start()
+    rc = proc.wait()
+    for pump in pumps:
+        pump.join()
+    return rc, captured.get("stdout", ""), captured.get("stderr", "")
+
+
 def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
     """rc5(pytest 수집 0 · "no tests ran") 진단 힌트를 만든다 (rc≠5 면 '').
 
@@ -4397,63 +4737,103 @@ def _regression_flag_for(session: str | None) -> Path:
     return LOCAL_DIR / f"regression-{slug}.json"
 
 
-def _regression_slot_state(session: str, cwd: str) -> tuple[str, int | None]:
-    """슬롯별 회귀 플래그를 읽어 상태를 판정 — (`'green'|'stale'|'red'|'missing'`, rc).
+class _SlotRegressionState(NamedTuple):
+    """슬롯 회귀 상태 판정 결과 — 상태 + 진단에 쓰는 기록값(rc·수집수·실행 당시 하한)."""
+    state: str                    # green | stale | red | missing
+    rc: int | str | None
+    collected: int | None
+    floor: int | None
+
+
+def _regression_slot_state(session: str, cwd: str) -> _SlotRegressionState:
+    """슬롯별 회귀 플래그를 읽어 상태를 판정 — (`'green'|'stale'|'red'|'missing'`, rc, 수집수, 하한).
 
     all-or-nothing check-first 의 저비용 판정 (pytest 미실행): per-slot 플래그
     (`_regression_flag_for(session)`)를 읽고 그 슬롯 worktree HEAD(`_git_head_at(cwd)`·각 슬롯은
     독립 worktree·독립 commit)와 대조한다. green(HEAD 일치·pass)이면 재실행 skip, 그 외
     (stale=HEAD 불일치·red=fail·missing=기록없음/손상)는 run 대상. 손상 플래그는 missing 강등
     (fail-soft — 장부 손상이 회귀해소를 깨면 안 된다·`_regression_slot_state` 는 재실행을 유도).
+
+    rc 는 기록값 그대로다 — 강등이면 전용 라벨(`partial-collection`/`unverified-collection`·
+    정수 아님)이라 기록된 수집수·하한과 함께 라벨에 사유를 실을 수 있다.
+
+    **green 은 HEAD·status 만으로 재사용하지 않는다**: 하한을 켜거나 올린 뒤에도 옛 green 이
+    통과하면(그리고 M>1 run 이 그 슬롯을 skip 하면) 새 하한이 영영 적용되지 않는다 —
+    `_green_floor_stale` 로 기록 증거를 **그 슬롯 cwd 앵커의 현재 하한**과 대조해 stale 강등한다.
     """
     flag = _regression_flag_for(session)
     if not flag.exists():
-        return ("missing", None)
+        return _SlotRegressionState("missing", None, None, None)
     try:
         data = json.loads(flag.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return ("missing", None)
+        return _SlotRegressionState("missing", None, None, None)
     if not isinstance(data, dict):
-        return ("missing", None)
+        return _SlotRegressionState("missing", None, None, None)
+    collected, floor = _flag_collected(data), data.get("floor")
     if data.get("head") != _git_head_at(cwd):
-        return ("stale", data.get("rc"))
+        return _SlotRegressionState("stale", data.get("rc"), collected, floor)
     if data.get("status") != "pass":
-        return ("red", data.get("rc"))
-    return ("green", data.get("rc"))
+        return _SlotRegressionState("red", data.get("rc"), collected, floor)
+    # 현재 하한은 **기록된 conf 앵커**(그 실행이 돈 트리)로 해소한다 — 슬롯 cwd 와 다를 수 있다
+    # (`--cwd` 핀 실행). 미기록 플래그는 슬롯 cwd 폴백(후방호환).
+    if _green_floor_stale(collected,
+                          _regression_min_collected(_flag_conf_anchor(data, cwd))):
+        # 기록은 green 이지만 현재 하한을 못 만족 → 재실행 대상(stale). rc/수집수는 기록값 유지.
+        return _SlotRegressionState("stale", data.get("rc"), collected, floor)
+    return _SlotRegressionState("green", data.get("rc"), collected, floor)
 
 
 def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> int:
     """한 슬롯의 회귀를 pytest 로 측정·기록(슬롯별 플래그) — rc 반환.
 
-    단일-슬롯 run 본체와 동형(같은 env·shell·인코딩·rc0 만 pass·rc5 vacuous 근절)이되,
-    cwd/test_cmd/플래그/HEAD 를 슬롯별로 해소한다. 스코프(touches)는 훅 M>1 경로엔 없으므로
-    full 만(플래그는 push 게이트 대상). 플래그 키는 그 슬롯 worktree HEAD 다(`_git_head_at`).
+    단일-슬롯 run 본체와 동형(같은 env·shell·인코딩·rc0 만 pass·rc5 vacuous 근절·수집 하한
+    가드)이되, cwd/test_cmd/플래그/HEAD 를 슬롯별로 해소한다. 스코프(touches)는 훅 M>1 경로엔
+    없으므로 full 만(플래그는 push 게이트 대상). 플래그 키는 그 슬롯 worktree HEAD 다
+    (`_git_head_at`).
+
+    conf 앵커 이어받기(`_inherit_flag_anchor`)는 여기 없다 — 슬롯 실행 위치는 리스 장부에서
+    구조적으로 나오고(플래그도 그 세션 키), 장부가 슬롯을 옮겼다면 새 위치가 맞다.
     """
+    cwd = os.path.abspath(cwd)   # 기록·conf 해소가 프로세스 cwd 에 안 흔들리게(단일-슬롯 동형).
     cmd = " ".join(p for p in (_test_cmd(args.cmd, session=session),
                                _quarantine_args()) if p)
     print(f"regression[{session}]: $ {cmd}  (cwd={cwd})")
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-    rc = subprocess.run(cmd, shell=True, cwd=cwd, env=env).returncode
+    rc, out, _err = _run_regression_cmd(cmd, cwd, env)
     status = "pass" if rc == 0 else "fail"
+    collected = _collected_count(out)        # 파싱은 stdout 단독(stderr 로그 오염 차단).
+    floor = _regression_min_collected(cwd)   # 앵커 = 이 슬롯이 회귀를 도는 트리.
+    status, recorded_rc, floor_note = _apply_collection_floor(rc, status, collected, floor)
     head = _git_head_at(cwd)
-    note = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
+    note = (" · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else "") + floor_note
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     _write_json_atomic(_regression_flag_for(session),
-                       {"head": head, "status": status, "rc": rc, "scope": "full",
+                       {"head": head, "status": status, "rc": recorded_rc, "scope": "full",
+                        "collected": collected, "floor": floor, "conf_anchor": cwd,
                         "session": session, "ts": now_utc()})
-    print(f"regression[{session}]: {status} (rc={rc}{note}) @ {head[:8] or '?'}")
-    return rc
+    print(f"regression[{session}]: {status} (rc={recorded_rc}{note}) @ {head[:8] or '?'}")
+    # 반환은 게이트 판정 — 부분수집 강등(pytest rc0)도 비-0 이어야 M>1 순회가 red 로 센다.
+    return 0 if status == "pass" else (rc or 1)
 
 
-def _slot_state_label(session: str, state: str, rc: int | None) -> str:
+def _slot_state_label(session: str, state: str, rc: int | str | None,
+                      collected: int | None = None, floor: int | None = None) -> str:
     """미검증 슬롯 라벨 — `<session>=<state>(rc=N·수집0)` (rc None 이면 상태만·codex sug).
 
     check 실패 메시지에 슬롯별 rc 를 실어 단일-슬롯 진단과 균질화한다 — 특히 rc5(수집 0)는
     테스트 루트/cwd 결함 신호이므로 힌트를 붙인다(`_regression_slot_state` 가 이미 rc 반환·저비용).
+    수집 하한 강등(`partial-collection`/`unverified-collection`)도 같은 자리에 기록값 기반 사유를
+    붙인다(rc5 힌트와 동형).
     """
     if rc is None:
         return f"{session}={state}"
-    hint = "·수집0" if rc == 5 else ""
+    if rc == REGRESSION_RC_PARTIAL_COLLECTION:
+        hint = "·" + _collection_shortfall_text(collected, floor)
+    elif rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
+        hint = f"·수집수 미확인(하한 {'?' if floor is None else floor})"
+    else:
+        hint = "·수집0" if rc == 5 else ""
     return f"{session}={state}(rc={rc}{hint})"
 
 
@@ -4466,9 +4846,10 @@ def _regression_multi_check(sessions: list[str]) -> int:
     not_green: list[str] = []
     for session in sessions:
         cwd = _active_slot_path(session) or str(REPO)
-        state, rc = _regression_slot_state(session, cwd)
-        if state != "green":
-            not_green.append(_slot_state_label(session, state, rc))
+        slot_state = _regression_slot_state(session, cwd)
+        if slot_state.state != "green":
+            not_green.append(_slot_state_label(session, slot_state.state, slot_state.rc,
+                                               slot_state.collected, slot_state.floor))
     if not_green:
         print(f"regression(M={len(sessions)}): 미검증 슬롯 [{', '.join(not_green)}] "
               "— `regression run` 필요 (push 차단).", file=sys.stderr)
@@ -4489,8 +4870,7 @@ def _regression_multi_run(args: argparse.Namespace, sessions: list[str]) -> int:
     red: list[str] = []
     for session in sessions:
         cwd = _active_slot_path(session) or str(REPO)
-        state, _rc = _regression_slot_state(session, cwd)
-        if state == "green":
+        if _regression_slot_state(session, cwd).state == "green":
             skipped.append(session)
             continue
         # stale/red/missing → 이 슬롯 pytest 실행·슬롯별 플래그 갱신.
@@ -4571,22 +4951,36 @@ def cmd_regression(args: argparse.Namespace) -> int:
         # Windows(cp949 콘솔)에서도 자식 stdout/stderr·파일 IO 를 UTF-8 로 강제.
         env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
         # cwd seam — multi-PM 모델은 활성 repo 의 worktree 에서 돌아야 한다.
-        # `--cwd` 주입 시 그 경로, 미주입(솔로/multi-PM-미배선)은 REPO.
-        cwd = _regression_cwd(getattr(args, "cwd", None), session=sess)
-        rc = subprocess.run(cmd, shell=True, cwd=cwd, env=env).returncode
+        # `--cwd` 주입 시 그 경로, 미주입(솔로/multi-PM-미배선)은 REPO. **절대경로로 정규화**해
+        # 실행·기록·이후 conf 해소가 프로세스 cwd 에 흔들리지 않게 한다(상대 `--cwd` 방어).
+        explicit_cwd = getattr(args, "cwd", None)
+        cwd = os.path.abspath(_regression_cwd(explicit_cwd, session=sess))
+        if not scoped and not explicit_cwd:
+            # 훅 `check || run` 재실행 — 차단 기록이 있으면 그 앵커에서 돈다(위 함수 참조).
+            cwd = _inherit_flag_anchor(cwd)
+        rc, out, _err = _run_regression_cmd(cmd, cwd, env)
         # pass = rc0 한정. pytest rc5(수집 0·"no tests ran")는 fail — 수집 0 은 green 이
         # 아니라 테스트 루트/cwd 결함이다.
         # 미해소 시 상시 vacuous green 이었다.
         status = "pass" if rc == 0 else "fail"
-        detail = f"{status} (rc={rc}{_regression_rc5_note(rc, cwd, getattr(args, 'cwd', None))})"
+        collected = _collected_count(out)     # 파싱은 stdout 단독(stderr 로그 오염 차단).
+        rc5_note = _regression_rc5_note(rc, cwd, getattr(args, "cwd", None))
         if scoped:
             # 스코프 실행 = dev 빠른 피드백 (advisory). full 만 push 게이트 → 게이트 플래그 안 씀.
-            print(f"regression(scoped, {len(touches)} touches): {detail} "
+            # 수집 하한도 FULL 게이트 전용이다 — 스코프는 touches 매칭분만 도는 게 정상이라
+            # 하한을 대면 상시 false-RED 가 된다.
+            print(f"regression(scoped, {len(touches)} touches): {status} (rc={rc}{rc5_note}) "
                   "— dev 피드백 · push 게이트 아님")
             return 0 if status == "pass" else 1
+        # FULL 게이트 = push 게이트. rc0 라도 실행 수가 하한 미만이면 부분 수집으로 강등한다.
+        # 하한 앵커는 **회귀를 도는 트리**(cwd) — 호출 사본의 REPO 가 아니다.
+        floor = _regression_min_collected(cwd)
+        status, recorded_rc, floor_note = _apply_collection_floor(rc, status, collected, floor)
+        detail = f"{status} (rc={recorded_rc}{rc5_note}{floor_note})"
         LOCAL_DIR.mkdir(parents=True, exist_ok=True)
         REGRESSION_FLAG.write_text(json.dumps(
-            {"head": _git_head(), "status": status, "rc": rc, "scope": "full",
+            {"head": _git_head(), "status": status, "rc": recorded_rc, "scope": "full",
+             "collected": collected, "floor": floor, "conf_anchor": cwd,
              "ts": now_utc()}), encoding="utf-8")
         print(f"regression: {detail} @ {_git_head()[:8] or '?'}")
         return 0 if status == "pass" else 1
@@ -4605,9 +4999,28 @@ def cmd_regression(args: argparse.Namespace) -> int:
         rc = data.get("rc")
         # rc5(수집 0)는 fail 로 기록된다— RED 사유를 push 게이트에서 드러내
         # "테스트가 안 돌았는데 green" 이던 침묵 폴백을 진단 가능하게 한다(run/check 일관).
-        extra = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
+        # 수집 하한 강등도 같은 자리에 기록값 기반 사유를 실어 실 red 와 구분한다.
+        if rc == REGRESSION_RC_PARTIAL_COLLECTION:
+            extra = (f" · {_collection_shortfall_text(_flag_collected(data), data.get('floor'))} "
+                     "— 부분 수집 의심(테스트 루트/cwd 확인)")
+        elif rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
+            extra = (f" · 수집수 파싱 실패 — 하한 {data.get('floor')} 검증 불가"
+                     "(요약행 없는 test_cmd 면 하한 해제 필요)")
+        else:
+            extra = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
         print(f"regression: RED @ {head[:8]} (rc={rc}){extra} — push 차단.",
               file=sys.stderr)
+        return 1
+    # green 기록이라도 **현재** 하한을 못 만족하면 재사용하지 않는다 — 하한을 켜거나 올린 뒤
+    # 옛 green 이 그대로 통과하면 새 하한이 영영 미적용이다(run 쪽 강등과 산술 대칭).
+    # 하한 해소 앵커 = **그 실행이 기록한 conf 앵커**. 훅은 `--cwd` 를 못 넘기므로 여기서
+    # 재해소하면 `run --cwd <tree>` 와 다른 local.conf 를 읽는다(false-green/false-RED).
+    recorded_collected = _flag_collected(data)
+    floor_now = _regression_min_collected(_flag_conf_anchor(
+        data, _regression_cwd(getattr(args, "cwd", None), session=sess)))
+    if _green_floor_stale(recorded_collected, floor_now):
+        print(f"regression: stale (기록 수집 {recorded_collected} < 현재 하한 {floor_now} "
+              "— 하한 신규/상향) — 재실행 필요.", file=sys.stderr)
         return 1
     print(f"regression: green @ {head[:8]} ✓")
     return 0
@@ -4624,20 +5037,24 @@ LIVEGATE_RELEASE_PIN = 18  # `pytest -m release` 로 돌아야 하는 라이브/
 LIVEGATE_TEST_CMD = "pytest -m release -q"   # 라이브 릴리즈 wave selection.
 
 
+# 라이브 게이트의 "실행 수" 로 세는 outcome 종류 — 마커 안에서 *돈* 케이스만.
+# `deselected`(release 마커 밖)·`skipped` 는 실행분이 아니라 제외한다.
+_LIVEGATE_RAN_KINDS = ("passed", "failed", "errors?")
+
+
 def _livegate_ran_count(output: str) -> int:
     """`pytest -m release -q` 요약행에서 *실제 실행된* release 테스트 수(수집 N)를 센다.
 
     N = passed + failed + error(s). deselected 는 release 마커 밖이라 세지 않는다. "no tests
     ran"(exit5)처럼 요약에 카운트가 없으면 0. 이 수집 N 을 pin 과 대조해 마커 소실·wrong-cwd
     로 인한 false-green(수집 위장)을 차단한다 — rc0 만으로는 "0개 수집됐지만 red 아님"을
-    green 으로 삼킬 수 있다.
+    green 으로 삼킬 수 있다. 대상 줄은 공용 seam 이 **끝에서** 찾는다(라이브 wave 가 캡처
+    출력에 찍는 `N passed` 로그를 요약으로 오판하면 pin 대조가 통째로 어긋난다).
     """
-    total = 0
-    for kind in ("passed", "failed", "errors?"):
-        m = re.search(rf"(\d+) {kind}\b", output)
-        if m:
-            total += int(m.group(1))
-    return total
+    line = _pytest_summary_line(output)
+    if line is None:
+        return 0
+    return sum(_pytest_outcome_counts(line, _LIVEGATE_RAN_KINDS))
 
 
 def _write_json_atomic(path: Path, data: dict) -> None:
@@ -5483,8 +5900,13 @@ def cmd_init(args: argparse.Namespace) -> int:
             surface_sess = override
     print(f"✓ local.conf: {('prefix=' + prefix + ' · ') if namespaced else ''}session={surface_sess}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
-        PM_STATE_FILE.write_text(PM_STATE_TEMPLATE.read_text(encoding="utf-8"),
-                                 encoding="utf-8")
+        # `{{DATE}}` 의 소유자는 **생성 시점**이다 — 템플릿은 채택자 디스크에 토큰-form
+        #   으로 남아야 pm_update 의 manifest byte-copy 와 진동하지 않는다. 그러니 그 템플릿으로
+        #   산출물을 만드는 이 지점이 오늘 날짜를 채운다(worktree_pool.ensure_task_pm_state 의
+        #   task pm_state 렌더와 같은 규칙·소유 선언은 pm_import.CONSUMPTION_TIME_TOKENS).
+        seed = PM_STATE_TEMPLATE.read_text(encoding="utf-8").replace(
+            "{{DATE}}", datetime.date.today().isoformat())
+        PM_STATE_FILE.write_text(seed, encoding="utf-8")
         print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
     if install_pre_push_hook():
         print("✓ pre-push 회귀 게이트 훅 설치 (green 회귀만 push)")

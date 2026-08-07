@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import json
+import subprocess
 import types
 from pathlib import Path
 
 import pytest
+from _pytest_summary import pytest_summary
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -44,6 +47,10 @@ def board(tmp_path, monkeypatch):
     local = proj / ".project_manager" / ".local"
     mod = _load("board")
     monkeypatch.setattr(mod, "REPO", proj)
+    # `LOCAL_CONF` 는 import 시점에 **실 repo** 로 굳으므로 REPO 재지정만으론 안 따라온다 —
+    # 핀하지 않으면 개발 머신 local.conf(예: `regression_min_collected=7000`)가 스텁 회귀
+    # (수집 1)에 새어들어 강등시킨다(실측 2 fail). tmp 로 핀해 conf 면역을 만든다.
+    monkeypatch.setattr(mod, "LOCAL_CONF", proj / ".project_manager" / "local.conf")
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
     monkeypatch.setattr(mod, "REGRESSION_FLAG", local / "regression.json")
@@ -54,7 +61,21 @@ def board(tmp_path, monkeypatch):
     return mod
 
 
+class _FakeProc:
+    """`subprocess.Popen` 반환 대역 — 회귀 러너가 두 스트림을 tee 하며 읽는 형태를 만족한다."""
+
+    def __init__(self, rc: int, stdout: str = "", stderr: str = ""):
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
+        self._rc = rc
+
+    def wait(self):
+        return self._rc
+
+
 class _FakeRun:
+    """regression run 은 `Popen`(tee), livegate record 는 `run`(캡처) — 양쪽 대역을 겸한다."""
+
     def __init__(self, rc: int = 0, stdout: str = ""):
         self.rc = rc
         self.stdout = stdout
@@ -62,7 +83,16 @@ class _FakeRun:
 
     def __call__(self, *args, **kwargs):
         self.calls.append({"args": args, "kwargs": kwargs})
+        if kwargs.get("stdout") is subprocess.PIPE and "capture_output" not in kwargs:
+            return _FakeProc(self.rc, self.stdout)      # Popen 경로(회귀 tee).
         return types.SimpleNamespace(returncode=self.rc, stdout=self.stdout, stderr="")
+
+
+def _install_fake(board, monkeypatch, fake):
+    """회귀(Popen tee)·livegate(run 캡처) 두 seam 을 같은 대역으로 덮는다 (실 자식 0)."""
+    monkeypatch.setattr(board.subprocess, "run", fake)
+    monkeypatch.setattr(board.subprocess, "Popen", fake)
+    return fake
 
 
 def _reg_args(task=None, repo=None, slot=None, cmd=None, cwd=None):
@@ -76,8 +106,8 @@ def test_regression_run_task_threads_absolute_cwd_and_surfaces(board, monkeypatc
         {"slot": "work/A_1", "repo": "A", "session": "job1", "state": "leased",
          "test_cmd": "pytest -q"},
     ])
-    fake = _FakeRun(0, "10 passed in 1s")
-    monkeypatch.setattr(board.subprocess, "run", fake)
+    fake = _FakeRun(0, pytest_summary(10))
+    _install_fake(board, monkeypatch, fake)
     rc = board.cmd_regression(_reg_args(task="job1"))
     assert rc == 0
     expected_cwd = str(board.REPO / "work" / "A_1")
@@ -93,7 +123,7 @@ def test_regression_run_task_ambiguous_holding_fails_loud(board, monkeypatch):
         {"slot": "work/A_1", "repo": "A", "session": "job2", "state": "leased"},
         {"slot": "work/B_1", "repo": "B", "session": "job2", "state": "leased"},
     ])
-    monkeypatch.setattr(board.subprocess, "run", _FakeRun(0, "ok"))
+    _install_fake(board, monkeypatch, _FakeRun(0, "ok"))
     with pytest.raises(SystemExit):
         board.cmd_regression(_reg_args(task="job2"))
 
@@ -104,8 +134,8 @@ def test_regression_run_rejects_task_repo_mix_before_subprocess(board, monkeypat
         {"slot": "work/A_1", "repo": "A", "session": "job3", "state": "leased"},
         {"slot": "work/B_1", "repo": "B", "session": "job3", "state": "leased"},
     ])
-    fake = _FakeRun(0, "1 passed")
-    monkeypatch.setattr(board.subprocess, "run", fake)
+    fake = _FakeRun(0, pytest_summary())
+    _install_fake(board, monkeypatch, fake)
     with pytest.raises(SystemExit) as exc:
         board.cmd_regression(_reg_args(task="job3", repo="A"))
     assert (
@@ -117,8 +147,8 @@ def test_regression_run_rejects_task_repo_mix_before_subprocess(board, monkeypat
 
 def test_regression_run_rejects_task_cwd_before_subprocess(board, monkeypatch, tmp_path):
     """task 작업공간 표시와 타 경로 실행을 섞는 명시 --cwd 우회를 거부한다."""
-    fake = _FakeRun(0, "1 passed")
-    monkeypatch.setattr(board.subprocess, "run", fake)
+    fake = _FakeRun(0, pytest_summary())
+    _install_fake(board, monkeypatch, fake)
 
     with pytest.raises(SystemExit) as exc:
         board.cmd_regression(_reg_args(task="job3", cwd=str(tmp_path / "outside")))
@@ -132,8 +162,8 @@ def test_regression_run_non_task_cwd_remains_override(board, monkeypatch, tmp_pa
     """비-task regression run의 명시 --cwd는 기존처럼 그대로 subprocess에 전달된다."""
     target = tmp_path / "readonly"
     target.mkdir()
-    fake = _FakeRun(0, "1 passed")
-    monkeypatch.setattr(board.subprocess, "run", fake)
+    fake = _FakeRun(0, pytest_summary())
+    _install_fake(board, monkeypatch, fake)
 
     assert board.cmd_regression(_reg_args(cwd=str(target), cmd="pytest -q")) == 0
 
@@ -149,8 +179,8 @@ def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
     _write_leases(board.LEASES_FILE, [
         {"slot": "work/A_2", "repo": "A", "session": "job4", "state": "leased"},
     ])
-    fake = _FakeRun(0, "14 passed, 800 deselected in 3s")
-    monkeypatch.setattr(board.subprocess, "run", fake)
+    fake = _FakeRun(0, pytest_summary(14, deselected=800))
+    _install_fake(board, monkeypatch, fake)
     # engine-root sidecar 해소를 솔로 폴백으로(_resolve_livegate_flag 가 hooksPath 미설정 시 정상).
     board.cmd_livegate(_lg_args(task="job4"))
     expected_cwd = str(board.REPO / "work" / "A_2")
@@ -162,8 +192,8 @@ def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
 
 def test_livegate_record_rejects_task_slot_mix_before_subprocess(board, monkeypatch):
     """livegate record의 task+slot 혼합은 bare-slot repo 힌트보다 혼합 금지를 먼저 표면화한다."""
-    fake = _FakeRun(0, "14 passed, 800 deselected in 3s")
-    monkeypatch.setattr(board.subprocess, "run", fake)
+    fake = _FakeRun(0, pytest_summary(14, deselected=800))
+    _install_fake(board, monkeypatch, fake)
     with pytest.raises(SystemExit) as exc:
         board.cmd_livegate(_lg_args(task="job4", slot=2))
     assert "--task 는 독립 정체성" in str(exc.value)
@@ -173,8 +203,8 @@ def test_livegate_record_rejects_task_slot_mix_before_subprocess(board, monkeypa
 
 def test_livegate_record_rejects_task_cwd_before_subprocess(board, monkeypatch, tmp_path):
     """task livegate가 task surface를 내면서 타 경로에 green을 기록하는 --cwd 우회를 거부한다."""
-    fake = _FakeRun(0, "18 passed")
-    monkeypatch.setattr(board.subprocess, "run", fake)
+    fake = _FakeRun(0, pytest_summary(18))
+    _install_fake(board, monkeypatch, fake)
 
     with pytest.raises(SystemExit) as exc:
         board.cmd_livegate(_lg_args(task="job4", cwd=str(tmp_path / "outside")))
@@ -189,8 +219,8 @@ def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_p
     """비-task livegate record의 명시 --cwd는 기존처럼 실행·기록 기준 경로로 유지된다."""
     target = tmp_path / "readonly"
     target.mkdir()
-    fake = _FakeRun(0, f"{board.LIVEGATE_RELEASE_PIN} passed in 1s")
-    monkeypatch.setattr(board.subprocess, "run", fake)
+    fake = _FakeRun(0, pytest_summary(board.LIVEGATE_RELEASE_PIN))
+    _install_fake(board, monkeypatch, fake)
     monkeypatch.setattr(
         board,
         "_resolve_livegate_flag",

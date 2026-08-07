@@ -17,6 +17,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from _pytest_summary import pytest_summary
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -227,7 +228,7 @@ def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, tmp_path, capsys
     state_file.write_text(_PM_STATE_FIXTURE, encoding="utf-8")
     playbook_file.write_text(_PM_PLAYBOOK_FIXTURE, encoding="utf-8")
     inst = handoff.PmHandoff(
-        run_pytest_fn=lambda: (0, "1 passed"),
+        run_pytest_fn=lambda: (0, pytest_summary()),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_state_file=state_file,

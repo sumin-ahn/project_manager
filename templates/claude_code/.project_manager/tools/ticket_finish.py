@@ -202,7 +202,7 @@ TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵�
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.6.1"
+ENGINE_REV = "v1.6.2"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -416,6 +416,7 @@ def _load_board_module():
 
     별도 함수로 둔 건 테스트가 areas.md/local.conf 해소를 hermetic 하게 가로채는 seam —
     board 의 areas/local 경로 전역을 tmp 로 재바인딩한 모듈을 주입할 수 있게 한다.
+    per-repo test_cmd 해소·PM-홈 오실행 detector·pytest 요약행 파서 seam 이 공유한다.
     """
     try:
         mod = _load_module_from_path(
@@ -494,11 +495,37 @@ def _resolve_per_repo_test_cmd() -> str | None:
 
 
 # ── pytest 출력 파서 ────────────────────────────────────────────────────
+# 요약행 탐색은 board.py 의 공용 seam(`_pytest_summary_line` — 끝에서-탐색)이 소유한다.
+# 출력 전체를 `re.search` 하면 캡처된 로그의 `3 passed`/`1 failed` 를 요약으로 먼저 만나
+# 마감 판정을 뒤집는다(false-green·false-RED 양방향·자기 사본 금지).
+
+# 이 도구가 실제로 호출하는 seam 함수 — **전부** 있어야 쓴다. 하나만 확인하고 통과시키면
+# 부분 동기된 혼합 사본에서 나머지 호출이 AttributeError 로 터진다(진단 없는 죽음).
+_PYTEST_SEAM_FUNCTIONS = ("_pytest_summary_line", "_pytest_outcome_count")
+# seam 부재 진단 — 뒤따르는 "회귀 red" 중단이 원인을 테스트 실패로 오도하지 않도록 구제책을 낸다.
+_PYTEST_SEAM_MISSING = ("pytest 파서: board.py 사본에 요약행 파서 seam 부재 — "
+                        "pm_update 로 엔진 전체를 재동기하라.")
+
+
+def _pytest_summary_seam():
+    """pytest 요약행 파서 공용 seam(board.py) — 부재/불완전 사본이면 None (fail-soft).
+
+    seam 이 없으면 파싱 실패(None)·red 판정으로 흘린다 — 로컬 첫-매칭 폴백을 두면 엔진
+    사본이 불완전할 때만 조용히 오판이 되살아나 진단이 더 어려워진다(마감은 fail-closed).
+    대신 중단 **바로 앞줄**에 구제책을 stderr 로 실어 red 사유를 잘못 읽지 않게 한다.
+    """
+    board = _load_board_module()
+    if board is not None and all(
+            hasattr(board, name) for name in _PYTEST_SEAM_FUNCTIONS):
+        return board
+    print(_PYTEST_SEAM_MISSING, file=sys.stderr)
+    return None
+
 
 def parse_pytest_output(output: str) -> tuple[int, int] | None:
     """pytest -q 출력에서 (passed, deselected) 를 파싱한다.
 
-    반환: (passed, deselected) — 파싱 실패 시 None.
+    반환: (passed, deselected) — 파싱 실패 시 None (요약행 부재·파서 seam 부재 포함).
 
     pytest -q 요약 라인 형식 예:
       "1472 passed, 24 deselected in 12.34s"
@@ -508,14 +535,14 @@ def parse_pytest_output(output: str) -> tuple[int, int] | None:
     red (failed > 0) 여부 판단은 호출 측이 한다 (failed 수 포함 파싱은 하지 않음).
     반환값 (passed, deselected) 만 추출한다.
     """
-    passed_match = re.search(r"(\d+) passed", output)
-    deselected_match = re.search(r"(\d+) deselected", output)
-
-    if passed_match is None:
+    seam = _pytest_summary_seam()
+    line = seam._pytest_summary_line(output) if seam is not None else None
+    if line is None:
         return None
-
-    passed = int(passed_match.group(1))
-    deselected = int(deselected_match.group(1)) if deselected_match else 0
+    passed = seam._pytest_outcome_count(line, "passed")
+    if passed is None:
+        return None
+    deselected = seam._pytest_outcome_count(line, "deselected") or 0
     return passed, deselected
 
 
@@ -523,15 +550,18 @@ def is_pytest_green(output: str, returncode: int = 0) -> bool:
     """pytest -q 출력이 green (passed 존재, failed 없음) 이면 True.
 
     returncode 도 함께 검사한다 — returncode != 0 이면(인터럽트·부분 출력 등)
-    명확한 'N passed' 가 있어도 green 으로 오판하지 않는다.
+    명확한 'N passed' 가 있어도 green 으로 오판하지 않는다. passed/failed 는 **요약행
+    안에서만** 읽는다 — 캡처 로그의 `1 failed` 로 green 회귀를 red 로 뒤집지 않는다.
     """
     if returncode != 0:
         return False
-    if re.search(r"\d+ failed", output):
+    seam = _pytest_summary_seam()
+    line = seam._pytest_summary_line(output) if seam is not None else None
+    if line is None:
         return False
-    if re.search(r"\d+ passed", output):
-        return True
-    return False
+    if seam._pytest_outcome_count(line, "failed") is not None:
+        return False
+    return seam._pytest_outcome_count(line, "passed") is not None
 
 
 # ── board.py 연동 ───────────────────────────────────────────────────────

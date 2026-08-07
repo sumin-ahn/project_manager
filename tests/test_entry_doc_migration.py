@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -187,6 +188,59 @@ def test_jsonc_append_when_array_without_path(pm_update):
     assert changed
     assert ".opencode/pm-instructions.md" in new
     assert ".opencode/other.md" in new  # 기존 원소 보존
+
+
+def test_jsonc_empty_array_insert_parses_strict(pm_update):
+    """빈 `instructions` 배열 삽입 산출이 strict JSON 으로 파싱된다 — 후행 쉼표를 남기지 않는다.
+
+    앞머리에 `"…",` 를 넣던 옛 삽입은 이을 원소가 없어 `[ "…",]` 가 됐고 opencode 가 config 를
+    못 읽었다(실측)."""
+    src = '{\n  "instructions": []\n}\n'
+    new, changed = pm_update._ensure_jsonc_instructions(src)
+    assert changed
+    assert json.loads(new) == {"instructions": [".opencode/pm-instructions.md"]}, \
+        f"빈 배열 삽입 산출이 strict JSON 이 아니다: {new!r}"
+
+
+def test_jsonc_comment_only_array_insert_parses_masked(pm_update):
+    """주석만 있는 배열도 '원소 0' — 쉼표 없이 삽입되고 주석은 보존된다(마스킹 기준 parse 통과)."""
+    src = '{\n  "instructions": [\n    // 아직 없음\n  ]\n}\n'
+    new, changed = pm_update._ensure_jsonc_instructions(src)
+    assert changed
+    assert "// 아직 없음" in new, "주석이 소실됐다(비파괴 위반)"
+    masked = pm_update._mask_jsonc_comments(new)
+    assert json.loads(masked) == {"instructions": [".opencode/pm-instructions.md"]}, \
+        f"주석-마스킹 기준으로도 파싱 불가(후행 쉼표 잔존?): {new!r}"
+
+
+def test_jsonc_nonempty_array_insert_keeps_comma_and_parses(pm_update):
+    """비어있지 않은 배열은 현행 동작 무변경 — 앞머리 쉼표 삽입·기존 원소 보존·재실행 멱등."""
+    src = '{\n  "instructions": [\n    ".opencode/other.md"\n  ]\n}\n'
+    new, changed = pm_update._ensure_jsonc_instructions(src)
+    assert changed
+    assert json.loads(new) == {
+        "instructions": [".opencode/pm-instructions.md", ".opencode/other.md"]}
+    again, changed_again = pm_update._ensure_jsonc_instructions(new)
+    assert not changed_again and again == new
+
+
+def test_jsonc_nonstring_element_array_keeps_comma(pm_update):
+    """비-문자열 원소 배열(`[123]`)도 '비어있지 않음' — 쉼표 삽입으로 strict JSON 을 유지한다.
+
+    "문자열 원소가 있나" 로 좁히면 이런 배열을 빈 배열로 오인해 쉼표를 빼고, `[ "…"  123]` 처럼
+    구분자 없는 산출이 된다(같은 결함의 다른 모양). 판정을 '비-공백 바디' 로 두어 클래스를 닫는다."""
+    src = '{\n  "instructions": [123]\n}\n'
+    new, changed = pm_update._ensure_jsonc_instructions(src)
+    assert changed
+    assert json.loads(new) == {"instructions": [".opencode/pm-instructions.md", 123]}, \
+        f"비-문자열 원소 배열 삽입 산출이 strict JSON 이 아니다: {new!r}"
+
+
+def test_jsonc_empty_array_insert_is_idempotent(pm_update):
+    """빈 배열에 삽입한 산출을 다시 통과시켜도 무변경(멱등) — 세대 왕복에서 중복 등록 없음."""
+    once, _ = pm_update._ensure_jsonc_instructions('{\n  "instructions": []\n}\n')
+    twice, changed = pm_update._ensure_jsonc_instructions(once)
+    assert not changed and twice == once
 
 
 def test_jsonc_idempotent_double_run(pm_update):

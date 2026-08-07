@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 
 import pytest
+from _pytest_summary import pytest_summary
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1834,7 +1835,7 @@ def test_run_unregistered_task_fails_without_side_effects(
             return None
 
     handoff = hf.PmHandoff(
-        run_pytest_fn=lambda: (pytest_calls.append(True) or (0, "1 passed\n")),
+        run_pytest_fn=lambda: (pytest_calls.append(True) or (0, pytest_summary())),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_playbook_file=tmp_path / "unused-playbook.md",
@@ -2771,7 +2772,7 @@ def test_task_shipping_surface_per_changed_slot_under_no_pytest(hf, tmp_path, ca
 def test_task_resnap_records_all_held_slots(hf, tmp_path, capsys):
     """재스냅 = 보유 전 슬롯 루프(현행 1슬롯 한정 폐지·T-0393·ADR-0068 퇴장)."""
     pool = _TaskSetPool(["work/a_1", "work/b_1"])
-    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, "1 passed\n"))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()))
     rc = handoff.run(
         session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
     )
@@ -2788,7 +2789,7 @@ def test_task_resnap_rechecks_owner_before_snapshot(hf, tmp_path, capsys):
             return False
 
     pool = ReallocatedPool(["work/a_1"])
-    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, "1 passed\n"))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()))
     assert handoff.run(
         session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
     ) == 1
@@ -2801,7 +2802,7 @@ def test_task_resnap_rechecks_owner_before_snapshot(hf, tmp_path, capsys):
 def test_task_resnap_zero_held_slots_skips(hf, tmp_path, capsys):
     """task 보유 0개 — 재스냅 대상 없음 명시 skip(무해·T-0393)."""
     pool = _TaskSetPool([])
-    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, "1 passed\n"))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()))
     rc = handoff.run(
         session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
     )
@@ -2813,7 +2814,7 @@ def test_task_resnap_zero_held_slots_skips(hf, tmp_path, capsys):
 def test_task_resnap_dry_run_previews_all_slots(hf, tmp_path, capsys):
     """dry_run task 재스냅 — 보유 슬롯별 예고만·write 프리미티브 미호출(미리보기·T-0393)."""
     pool = _TaskSetPool(["work/a_1", "work/b_1"])
-    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, "1 passed\n"))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()))
     rc = handoff.run(
         session_num=7, wave_summary="요약", dry_run=True, skip_pytest=True, task="mytask"
     )
@@ -2827,7 +2828,7 @@ def test_task_resnap_dry_run_previews_all_slots(hf, tmp_path, capsys):
 def test_slot_mode_resnap_single_unchanged_by_task_axis(hf, tmp_path):
     """slot 모드(task None) 재스냅은 단일 bound 슬롯 그대로 — task 축이 slot/솔로를 안 건드린다(T-0393 불변)."""
     pool = _TaskSetPool(["work/a_1", "work/b_1"])   # slots_for_task 는 task 모드에서만 소비.
-    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, "1 passed\n"))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()))
     rc = handoff.run(
         session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True,
         worktree_slot="work/project_manager_1",   # task 없음 → slot 모드.

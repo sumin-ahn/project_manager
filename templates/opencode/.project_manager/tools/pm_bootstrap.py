@@ -409,7 +409,7 @@ def _dashboard_file() -> Path:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.6.1"
+ENGINE_REV = "v1.6.2"
 
 # _load_tool(generic)이 이름으로 로드하는 stamped 형제. deep-import AST 가드는 클래스 메서드와
 # 중첩 함수까지 포함해 실제 호출 target을 측정하고, 그 집합이 이 리터럴에 포함되는지 단언한다.
@@ -478,12 +478,13 @@ def _load_worktree_pool():
 
 
 def _load_board():
-    """board 모듈을 동적 로드한다 — 보호 브랜치 surface(`_repo_protected`)용 (fail-soft).
+    """board 모듈을 동적 로드한다 (fail-soft) — 보호 브랜치 surface(`_repo_protected`)와
+    pytest 요약행 파서 seam(`_pytest_summary_seam`)이 공유하는 로더다.
 
     `_load_worktree_pool` 과 동형 — `spec_from_file_location`(스크립트-위치 앵커). board 를
     *직접 import* 하지 않는 이유(touches 격리·병렬충돌 회피)는 동적 로드로 보존된다. 보호
     브랜치 경고는 *소프트*(추가 인지)라 board 부재/로드 실패는 None(경고 생략·정체성 선언
-    자체는 깨지 않음). --repo 경로(multi-PM lean identity)에서만 호출된다.
+    자체는 깨지 않음). 보호 브랜치 경고는 --repo 경로(multi-PM lean identity)에서만 호출된다.
     """
     if not BOARD_PY.exists():
         return None
@@ -1023,21 +1024,48 @@ def parse_lint_result(lint_output: str) -> str:
 
 
 # ── pytest 파서 ──────────────────────────────────────────────────────────
+# 요약행 탐색은 board.py 의 공용 seam(`_pytest_summary_line` — 끝에서-탐색)이 소유한다.
+# 출력 전체를 `re.search` 하면 캡처된 로그의 `3 passed` 를 요약으로 먼저 만나 회귀 수를
+# 오판한다(자기 사본 금지 — 사본이 그 오판을 되살린다).
+
+# 이 도구가 실제로 호출하는 seam 함수 — **전부** 있어야 쓴다. 하나만 확인하고 통과시키면
+# 부분 동기된 혼합 사본에서 나머지 호출이 AttributeError 로 터진다(진단 없는 죽음).
+_PYTEST_SEAM_FUNCTIONS = ("_pytest_summary_line", "_pytest_outcome_count")
+# seam 부재 진단 — 뒤따르는 중단 메시지가 원인을 "출력 파싱 실패" 로 오도하지 않도록 구제책을 낸다.
+_PYTEST_SEAM_MISSING = ("pytest 파서: board.py 사본에 요약행 파서 seam 부재 — "
+                        "pm_update 로 엔진 전체를 재동기하라.")
+
+
+def _pytest_summary_seam():
+    """pytest 요약행 파서 공용 seam(board.py) — 부재/불완전 사본이면 None (fail-soft).
+
+    seam 이 없으면 파싱 실패(None)로 흘려 호출부의 중단 경로가 받게 한다 — 로컬 첫-매칭
+    폴백을 두면 엔진 사본이 불완전할 때만 조용히 오판이 되살아나 진단이 더 어려워진다.
+    대신 중단 **바로 앞줄**에 구제책을 stderr 로 실어 원인을 잘못 읽지 않게 한다.
+    """
+    board = _load_board()
+    if board is not None and all(
+            hasattr(board, name) for name in _PYTEST_SEAM_FUNCTIONS):
+        return board
+    print(_PYTEST_SEAM_MISSING, file=sys.stderr)
+    return None
+
 
 def parse_pytest_counts(pytest_output: str) -> tuple[int, int] | None:
     """pytest -q 출력에서 (passed, total) 을 파싱한다.
 
     반환: (passed, total) — total = passed + failed.
-    파싱 실패 시 None.
+    파싱 실패 시 None (요약행 부재·파서 seam 부재 포함).
     """
-    passed_match = re.search(r"(\d+) passed", pytest_output)
-    if passed_match is None:
+    seam = _pytest_summary_seam()
+    line = seam._pytest_summary_line(pytest_output) if seam is not None else None
+    if line is None:
         return None
-    passed = int(passed_match.group(1))
-    failed_match = re.search(r"(\d+) failed", pytest_output)
-    failed = int(failed_match.group(1)) if failed_match else 0
-    total = passed + failed
-    return passed, total
+    passed = seam._pytest_outcome_count(line, "passed")
+    if passed is None:
+        return None
+    failed = seam._pytest_outcome_count(line, "failed") or 0
+    return passed, passed + failed
 
 
 # ── git 파서 ─────────────────────────────────────────────────────────────

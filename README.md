@@ -481,11 +481,14 @@ flowchart LR
 
 `pm-update` 는 manifest 에 등록된 엔진 파일과 host 하네스 어댑터만 갱신한다. 프로젝트의 board,
 wiki, ticket, log 같은 인스턴스 상태는 덮어쓰지 않는다. 나중에 `add-harness` 로 붙인 guest 하네스
-어댑터도 인스턴스 `engine.manifest` 의 전용 구획(마커로 감싼 `@render` 목록)에 등재돼 render·lint
-관리를 받는다 — opencode 를 codex 프로젝트에 붙일 때 opencode 가 소비하는 `.claude/skills` 처럼
-어댑터 네임스페이스 밖 의존물도 그 구획에 함께 등재된다. `pm-update` 는 이 구획을 보존(코어를
-덮어쓴 뒤 재부착)하되 guest 어댑터 파일은 `@target-owned` 로 표시돼 update-plan 에서 제외하므로,
-그 파일 갱신은 `add-harness <harness>` 를 다시 실행해 받는다(refresh 채널).
+어댑터도 인스턴스 `engine.manifest` 의 전용 구획(마커로 감싼 목록)에 등재돼 관리를 받는다 —
+opencode 를 codex 프로젝트에 붙일 때 opencode 가 소비하는 `.claude/skills` 처럼 어댑터
+네임스페이스 밖 의존물도 그 구획에 함께 등재된다. `pm-update` 는 이 구획을 보존(코어를 덮어쓴 뒤
+재부착)하며, 구획 안 행은 채널이 둘로 갈린다: `@render` 행(어댑터 렌더물)은 update-plan 에서
+제외되어 `add-harness <harness>` 재실행으로 갱신하고(refresh 채널), 비-`@render` 엔진 행
+(`@source=` 매핑·guest 하네스의 드라이버/훅 등)은 `pm-update` 가 byte-copy 로 함께 갱신한다
+(update 채널). 구세대 구획(엔진 행 미등재)은 다음 `pm-update` 가 flavor 배타 경로 증거로 엔진
+행을 파생·등재해 동결 없이 수렴한다.
 
 엔진 버전 관리는 별도 `engine.version` 파일이 아니라 git 으로 한다. 릴리즈는 git tag 와
 CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 upstream rev baseline 으로 "어디까지 받았는지"를
@@ -496,14 +499,14 @@ CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 upstream rev baseline 
 
 예전 고정 `both` 채택본에서 한쪽 어댑터가 manifest 선언 밖에 남으면 그 트리는 `pm-update` 갱신을 받지
 못한 채 오래된 상태로 동결될 수 있다. 채택자 루트에서 `./pm-update.sh --dry-run`
-(`pm_update --dry-run`)을 실행해 `frozen 다중-harness 의심` 경고와 관측 형상을 확인한다. legacy
+(`pm_update --dry-run`)을 실행해 `미등재 flavor 파일 관측` 경고와 관측 형상을 확인한다. legacy
 manifest는 core 경로 집합이 정확히 한 현행 flavor와 완전 일치할 때만 자동 승격한다. 그 밖의
 형상은 flavor 승격·행 제거·치유 없이 로컬 manifest 그대로 갱신하며, 사용자 stray/커스텀 행이면
 경고를 무시할 수 있다.
 
 `pm-update`는 정확히 어느 flavor의 옛 manifest인지 판별되는 경우 그 flavor만 자기치유한다. 고정
-쌍의 누락된 flavor는 사용자 stray 파일과 구별할 수 없어 자동 승격하지 않는다. `add-harness`도 guest
-`@render`만 등록하므로 완전 마이그레이션이 아니다. frozen Claude+opencode 채택본을 완전히
+쌍의 누락된 flavor는 사용자 stray 파일과 구별할 수 없어 자동 승격하지 않는다. `add-harness`도 그
+하네스 어댑터만 등재하므로 완전 마이그레이션이 아니다. frozen Claude+opencode 채택본을 완전히
 전환하려면 아래 순서를 그대로 실행한다. `--into`는 충돌 파일을 `.pm_import_backups/`에 백업하고
 현재 두 flavor의 manifest 합집합을 설치한다.
 

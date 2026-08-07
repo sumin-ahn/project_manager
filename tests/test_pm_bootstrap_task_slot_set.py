@@ -16,6 +16,7 @@ import json as _json
 from pathlib import Path
 
 import pytest
+from _pytest_summary import pytest_summary
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -589,7 +590,7 @@ def test_task_pytest_rechecks_owner_before_execution(bootstrap, tmp_path, capsys
 
     def pytest_fn():
         calls.append("pytest")
-        return 0, "1 passed\n"
+        return 0, pytest_summary()
 
     inst = _make(bootstrap, tmp_path, pool, pytest_fn=pytest_fn)
     # freshness가 끝난 뒤(초기 스냅과 pytest 실행 사이) ownership 변경을 주입한다.

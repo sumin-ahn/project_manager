@@ -20,11 +20,18 @@ python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest(�
 #    `.project_manager/engine.manifest` (①② 는 주석의 토큰이 *설명*이라 verbatim) ③ 방법론 문서
 #    pm_role.md·pm_playbook.md (엔진 동기화 대상 — {{PROJECT_NAME}} 를 리터럴로 두고 local.conf 가
 #    해소, 치환하면 다음 pm_update 때 되돌아간다) ④ 바이너리 (`grep -I` 가 텍스트 아닌 파일을 건너뜀 —
-#    엔진 판정은 UTF-8 decode·`-I` 는 NUL 휴리스틱 근사).
+#    엔진 판정은 UTF-8 decode·`-I` 는 NUL 휴리스틱 근사) ⑤ **소비 시점이 소유한 토큰**
+#    (pm_import 의 `CONSUMPTION_TIME_TOKENS`) — `wiki/pm_state.template.md`·`wiki/domain/_template.md`
+#    의 `{{DATE}}`. 이 둘은 manifest 등재(pm_update 가 byte-copy)인데 설치가 날짜로 굳히면 다음
+#    sync 가 토큰-form 으로 되돌려 **매 sync 진동**한다 — 날짜는 그 템플릿이 산출물을 만드는 시점
+#    (`board.py init` 의 pm_state.md · worktree_pool 의 task pm_state · 사람이 스캐폴드를 복사할 때)이
+#    채운다. 엔진 제외는 *토큰* 단위지만 이 두 파일엔 `{{DATE}}` 외 운영 토큰이 없어 아래처럼 파일
+#    단위로 빼도 등가다. (⑤ 밖의 `{{DATE}}`— status.md·architecture.md·log/current.md 등 manifest
+#    미등재 인스턴스 seed — 는 설치일로 채우는 게 맞다·아래 sed 가 그대로 처리.)
 #    {{PY}}/{{TEST_CMD}} 는 엔진 문서·어댑터에서 폐기(T-0219 — 문서 표기는 python3 관례·test 명령은
 #    local.conf test_cmd= 노브)·진입 문서 등엔 잔존.
 grep -rlI '{{' . --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=node_modules | \
-  grep -vE '^\./\.project_manager/tools/|^\./\.project_manager/engine\.manifest$|^\./\.project_manager/wiki/pm_(role|playbook)\.md$' | \
+  grep -vE '^\./\.project_manager/tools/|^\./\.project_manager/engine\.manifest$|^\./\.project_manager/wiki/pm_(role|playbook)\.md$|^\./\.project_manager/wiki/pm_state\.template\.md$|^\./\.project_manager/wiki/domain/_template\.md$' | \
   xargs sed -i \
     -e 's|{{PROJECT_NAME}}|My Project|g' \
     -e 's|{{PROJECT_TAGLINE}}|한 줄 프로젝트 설명|g' \

@@ -17,4 +17,4 @@
 | 진입 문서 (`CLAUDE.md`·`AGENTS.md`) | 🟡 템플릿 | 부트스트랩 패턴 재사용, 프로젝트 한 줄·제약은 placeholder. |
 | `ticket_finish.py` | 🟡 **Python+pytest 결합** | status.md 의 정확한 라인 형식에 정규식 앵커. **선택 도구** — 없어도 board.py 만으로 완결. Python 외 언어면 pytest 파싱 교체. |
 | `external_review.py` | 🟡 **선택 · 외부 전송 · 기본 OFF** | 외부 리뷰어 어댑터(ADR-0004). `external_review_enabled=true` opt-in 필요. 없어도 내부 code-reviewer 로 완결. |
-| `run_tests_hook.sh` | 🟡 언어별 교체 | `pytest` 호출을 해당 언어 러너로. |
+| `run_tests_hook.sh` | 🟡 러너는 설정으로, 발화는 `.py` 고정 | 러너 명령은 `local.conf` 의 `test_cmd` 로 지정한다(파일 자체는 엔진 소유·manifest 등재라 직접 고치면 다음 동기에 덮인다). 미지정이면 `pytest tests/` 폴백. 발화 게이트는 `.py` 편집 고정이라 다른 언어에선 훅이 발화하지 않는다. |

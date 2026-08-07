@@ -196,7 +196,7 @@ LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.6.1"
+ENGINE_REV = "v1.6.2"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -386,8 +386,9 @@ def _load_board():
     """board 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
 
     _load_worktree_pool 과 동형 — REPO/tools 스크립트-위치 앵커. `--task` 이름 검증에서 예약패턴
-    (`<repo>_<N>`) 거부용 `registered_repos()` 를 fail-soft 로 얻는 데만 쓴다(부재면 None →
-    traversal·구문 검증만·pm_config.cmd_alloc 동형·board.py 직접 import 는 안 함·touches 격리).
+    (`<repo>_<N>`) 거부용 `registered_repos()` 와 pytest 요약행 파서 seam
+    (`_pytest_summary_seam`)이 공유한다(부재면 None → 예약패턴 검증은 traversal·구문 검증만·
+    pm_config.cmd_alloc 동형·board.py 직접 import 는 안 함·touches 격리).
     """
     b_path = TOOLS_DIR / "board.py"
     if not b_path.exists():
@@ -1694,23 +1695,60 @@ def build_handoff_prompt_output(
 
 
 # ── pytest 출력 파서 ─────────────────────────────────────────────────────────
+# 요약행 탐색은 board.py 의 공용 seam(`_pytest_summary_line` — 끝에서-탐색)이 소유한다.
+# 출력 전체를 `re.search` 하면 캡처된 로그의 `3 passed`/`1 failed` 를 요약으로 먼저 만나
+# 인계 게이트를 뒤집거나 인계문에 엉뚱한 수를 싣는다(자기 사본 금지).
+
+# 이 도구가 실제로 호출하는 seam 함수 — **전부** 있어야 쓴다. 하나만 확인하고 통과시키면
+# 부분 동기된 혼합 사본에서 나머지 호출이 AttributeError 로 터진다(진단 없는 죽음).
+_PYTEST_SEAM_FUNCTIONS = ("_pytest_summary_line", "_pytest_outcome_count",
+                          "_pytest_summary_tail")
+# seam 부재 진단 — 뒤따르는 "회귀 red" 중단이 원인을 테스트 실패로 오도하지 않도록 구제책을 낸다.
+_PYTEST_SEAM_MISSING = ("pytest 파서: board.py 사본에 요약행 파서 seam 부재 — "
+                        "pm_update 로 엔진 전체를 재동기하라.")
+
+
+def _pytest_summary_seam():
+    """pytest 요약행 파서 공용 seam(board.py) — 부재/불완전 사본이면 None (fail-soft).
+
+    seam 이 없으면 red 판정·요약 미해소로 흘린다 — 로컬 첫-매칭 폴백을 두면 엔진 사본이
+    불완전할 때만 조용히 오판이 되살아나 진단이 더 어려워진다(인계는 fail-closed).
+    대신 중단 **바로 앞줄**에 구제책을 stderr 로 실어 red 사유를 잘못 읽지 않게 한다.
+    """
+    board = _load_board()
+    if board is not None and all(
+            hasattr(board, name) for name in _PYTEST_SEAM_FUNCTIONS):
+        return board
+    print(_PYTEST_SEAM_MISSING, file=sys.stderr)
+    return None
+
 
 def is_pytest_green(output: str, returncode: int = 0) -> bool:
-    """pytest -q 출력이 green (passed 존재, failed 없음) 이면 True."""
+    """pytest -q 출력이 green (passed 존재, failed 없음) 이면 True.
+
+    passed/failed 는 **요약행 안에서만** 읽는다 — 캡처 로그의 `1 failed` 로 green 회귀를
+    red 로 뒤집지 않는다.
+    """
     if returncode != 0:
         return False
-    if re.search(r"\d+ failed", output):
+    seam = _pytest_summary_seam()
+    line = seam._pytest_summary_line(output) if seam is not None else None
+    if line is None:
         return False
-    if re.search(r"\d+ passed", output):
-        return True
-    return False
+    if seam._pytest_outcome_count(line, "failed") is not None:
+        return False
+    return seam._pytest_outcome_count(line, "passed") is not None
 
 
 def parse_pytest_summary(output: str) -> str:
-    """pytest -q 출력에서 요약 라인을 추출한다. 없으면 빈 문자열."""
-    match = re.search(r"(\d+ passed.*)", output)
-    if match:
-        return match.group(1).strip()
+    """pytest -q 출력에서 요약 라인을 추출한다 (`N passed` 부터 줄 끝까지).
+
+    요약행/파서 seam 이 없으면 현행대로 출력 꼬리 200자, 출력이 비면 빈 문자열.
+    """
+    seam = _pytest_summary_seam()
+    summary = seam._pytest_summary_tail(output) if seam is not None else None
+    if summary is not None:
+        return summary
     return output.strip()[-200:] if output.strip() else ""
 
 

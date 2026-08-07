@@ -29,6 +29,24 @@ RAW_REF_RE = re.compile(r"(?:T|ADR)-\d{4}")
 SPECIFIC_REF_RE = re.compile(r"(?<![A-Za-z0-9_])(?:T|ADR)-\d{4}(?!\d)")
 PLACEHOLDER_RE = re.compile(r"(?<![A-Za-z0-9_])(?:T|ADR)-N{4}(?![A-Za-z0-9_])")
 _INLINE_CODE_RE = re.compile(r"(?<!`)({})(?!`)(.*?)\1(?!`)".format(r"`+"))
+# 채택자 디스크에 기록되는 wire 문자열은 산문이 아니다 — 리터럴 옆 소스 주석으로 그 사실을
+# 밝히면 스트립과 재유입 가드가 함께 제외한다. 표식을 리터럴 옆에 두는 이유는 새 마커를
+# 추가하는 사람이 같은 자리에서 보고 붙이게 하기 위해서다(별도 allow-list 파일은 drift 한다).
+# 두 패턴은 **주석 토큰 본문**에만 맞춘다 — 문자열 리터럴 안의 같은 글자는 데이터지 표식이
+# 아니라서 원문 정규식으로 보면 리터럴 한 줄로 재유입 검사를 우회할 수 있다.
+_DATA_LITERAL_MARKER = "pm:data-literal"
+_DATA_LITERAL_PREFIX_RE = re.compile(r"^#[ \t]*" + re.escape(_DATA_LITERAL_MARKER))
+_DATA_LITERAL_LINE_RE = re.compile(
+    r"^#[ \t]*" + re.escape(_DATA_LITERAL_MARKER) + r"(?![:\w-])"
+)
+_DATA_LITERAL_BLOCK_RE = re.compile(
+    r"^#[ \t]*" + re.escape(_DATA_LITERAL_MARKER) + r":(?P<edge>begin|end)[ \t]*$"
+)
+_LONE_CARRIAGE_RETURN_RE = re.compile(r"\r(?!\n)")
+# 문장 경계를 세는 데 쓰지 않는 토큰 — 라인 표식이 가리키는 문장 범위 계산용.
+_NON_STATEMENT_TOKENS = frozenset(
+    {tokenize.NL, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}
+)
 _MECHANICAL_MARKDOWN_RE = re.compile(
     r"\[\[\s*" + SPECIFIC_REF_RE.pattern
     + r"\s*\]\]|\(\s*" + SPECIFIC_REF_RE.pattern
@@ -96,6 +114,10 @@ class FileResult:
 
 class SelfSufficiencyError(ValueError):
     """Raised when a rewrite introduces a mechanically detectable prose defect."""
+
+
+class DataLiteralMarkerError(ValueError):
+    """데이터 리터럴 블록 표식의 짝이 맞지 않을 때 낸다."""
 
 
 def _load_repo_owned_files():
@@ -204,6 +226,167 @@ def _ast_column_to_character(source_line: str, byte_column: int) -> int:
     return len(source_line.encode("utf-8")[:byte_column].decode("utf-8"))
 
 
+def _line_records(source: str) -> list[tuple[int, int, str]]:
+    """라인마다 (시작 offset, 개행 포함 끝 offset, 본문) 을 낸다.
+
+    ``tokenize`` 와 같은 줄 나눔(``\\n`` 기준)을 써서 토큰의 라인 번호를 그대로 색인으로
+    쓸 수 있게 한다.
+    """
+    records: list[tuple[int, int, str]] = []
+    position = 0
+    for line in source.split("\n"):
+        start = position
+        position += len(line) + 1
+        records.append((start, min(position, len(source)), line.rstrip("\r")))
+    return records
+
+
+def _merge_spans(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _subtract_spans(
+    start: int, end: int, protected: Iterable[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """``[start, end)`` 에서 보호 구간을 뺀 나머지를 낸다.
+
+    여러 줄 토큰이 보호 구간과 일부만 겹칠 때 토큰 전체를 버리면 표식이 없는 나머지 줄까지
+    스트립·검사에서 빠진다. 그래서 겹치는 부분만 도려낸다.
+    """
+    remaining = [(start, end)]
+    for span_start, span_end in protected:
+        pieces: list[tuple[int, int]] = []
+        for piece_start, piece_end in remaining:
+            if span_end <= piece_start or piece_end <= span_start:
+                pieces.append((piece_start, piece_end))
+                continue
+            if piece_start < span_start:
+                pieces.append((piece_start, span_start))
+            if span_end < piece_end:
+                pieces.append((span_end, piece_end))
+        remaining = pieces
+    return [(piece_start, piece_end) for piece_start, piece_end in remaining
+            if piece_end > piece_start]
+
+
+def _data_literal_markers(
+    source: str, records: list[tuple[int, int, str]]
+) -> tuple[set[int], list[tuple[int, str]]]:
+    """표식 주석을 (라인 표식이 가리키는 라인, 블록 경계 목록) 으로 분류한다.
+
+    표식은 **실제 주석 토큰**일 때만 인정한다 — 문자열 리터럴 안의 같은 글자는 그 자체가
+    데이터지 표식이 아니다. 원문 정규식으로 보면 리터럴 한 줄로 스트립·재유입 검사를
+    통째로 우회할 수 있고, 여러 줄 문자열 안의 경계 글자가 짝 불일치를 내기도 한다.
+    """
+    marked: set[int] = set()
+    edges: list[tuple[int, str]] = []
+    comments: list[tokenize.TokenInfo] = []
+    statement_end: dict[int, int] = {}
+    opened: int | None = None
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            comments.append(token)
+        elif token.type == tokenize.NEWLINE:
+            if opened is not None:
+                statement_end[opened] = token.end[0]
+                opened = None
+        elif token.type not in _NON_STATEMENT_TOKENS and opened is None:
+            opened = token.start[0]
+    for token in comments:
+        if not _DATA_LITERAL_PREFIX_RE.match(token.string):
+            continue
+        index = token.start[0] - 1
+        standalone = not records[index][2][: token.start[1]].strip()
+        edge = _DATA_LITERAL_BLOCK_RE.match(token.string)
+        if edge:
+            # 블록 경계는 단독 라인일 때만 구획을 연다 — 코드 뒤 표식은 경계가 아니다.
+            if standalone:
+                edges.append((index, edge.group("edge")))
+            continue
+        if not _DATA_LITERAL_LINE_RE.match(token.string):
+            # 오탈자 표식은 보호를 만들지 못한 채 조용히 지나가 원래 사고를 재현한다.
+            raise DataLiteralMarkerError(
+                f"line {index + 1}: 표식으로 보이는 주석이 정확 형태가 아니다 "
+                f"({token.string.strip()!r}) — 라인 표식은 '# {_DATA_LITERAL_MARKER}'"
+                f"(설명은 그 뒤에), 블록 경계는 단독 라인의 "
+                f"'# {_DATA_LITERAL_MARKER}:begin' / ':end' 만 인정한다"
+            )
+        marked.add(index)
+        if not standalone:
+            continue
+        # 표식만 있는 라인은 다음 **문장 전체**를 가리킨다 — 여러 줄 선언 위에 붙였을 때
+        # 첫 줄만 보호되면 나머지 줄이 조용히 정리된다.
+        following = index + 2
+        end_line = statement_end.get(following, following)
+        marked.update(range(following - 1, min(end_line, len(records))))
+    return marked, edges
+
+
+def _data_literal_block_spans(
+    records: list[tuple[int, int, str]], edges: list[tuple[int, str]]
+) -> list[tuple[int, int]]:
+    """블록 경계를 짝지어 구간으로 만든다 — 짝이 안 맞으면 즉시 실패한다.
+
+    반만 남은 표식은 보호 구간이 사라졌다는 뜻인데 조용히 통과하면 아무도 모른다.
+    """
+    spans: list[tuple[int, int]] = []
+    open_index: int | None = None
+    for index, edge in edges:
+        if edge == "begin":
+            if open_index is not None:
+                raise DataLiteralMarkerError(
+                    f"line {index + 1}: {_DATA_LITERAL_MARKER}:begin 이 line "
+                    f"{open_index + 1} 의 열린 블록 안에서 다시 열렸다 — 짝을 맞춰라"
+                )
+            open_index = index
+        elif open_index is None:
+            raise DataLiteralMarkerError(
+                f"line {index + 1}: {_DATA_LITERAL_MARKER}:end 에 짝이 되는 "
+                f"{_DATA_LITERAL_MARKER}:begin 이 없다"
+            )
+        else:
+            spans.append((records[open_index][0], records[index][1]))
+            open_index = None
+    if open_index is not None:
+        raise DataLiteralMarkerError(
+            f"line {open_index + 1}: {_DATA_LITERAL_MARKER}:begin 이 닫히지 않았다 — "
+            f"{_DATA_LITERAL_MARKER}:end 를 붙여라"
+        )
+    return spans
+
+
+def _data_literal_spans(source: str) -> list[tuple[int, int]]:
+    """소스 주석 표식으로 데이터 선언임을 밝힌 라인 구간을 낸다.
+
+    두 형태를 데이터로 판정한다 — 같은 라인 또는 바로 앞 라인에 표식 주석이 붙은 리터럴
+    라인 전체, 그리고 ``begin``/``end`` 표식으로 감싼 여러 줄 구간. 스트립과 재유입 가드가
+    이 한 함수를 함께 소비하므로 한쪽만 아는 판정이 생기지 않는다.
+
+    표식이 있는 소스는 개행이 LF 여야 한다 — 홀로 선 CR 은 라인 판정을 어긋나게 해 구간이
+    의도한 라인 밖까지 번지고, 그 안의 사설 참조가 조용히 검사에서 빠진다.
+    """
+    if _DATA_LITERAL_MARKER not in source:
+        return []
+    lone_carriage_return = _LONE_CARRIAGE_RETURN_RE.search(source)
+    if lone_carriage_return is not None:
+        raise DataLiteralMarkerError(
+            f"offset {lone_carriage_return.start()}: 표식이 있는 소스에 홀로 선 CR 이 "
+            f"있다 — 라인 판정이 어긋나 보호 구간이 의도 밖까지 번진다. "
+            f"표식·경계가 있는 파일은 개행을 LF 로 통일하라"
+        )
+    records = _line_records(source)
+    marked, edges = _data_literal_markers(source, records)
+    spans = _data_literal_block_spans(records, edges)
+    spans.extend((records[index][0], records[index][1]) for index in sorted(marked))
+    return _merge_spans(spans)
+
+
 def _doc_expression_ranges(
     source: str,
 ) -> list[tuple[tuple[int, int], tuple[int, int]]]:
@@ -234,11 +417,11 @@ def _doc_expression_ranges(
     ]
 
 
-def prose_token_spans(source: str) -> list[TokenSpan]:
-    """Return comment and documentation-expression spans in Python source."""
+def _prose_token_ranges(source: str) -> list[tuple[int, int, int]]:
+    """산문 토큰의 원본 (시작 offset, 끝 offset, 시작 라인) 목록."""
     offsets = _line_offsets(source)
     doc_ranges = _doc_expression_ranges(source)
-    spans: list[TokenSpan] = []
+    ranges: list[tuple[int, int, int]] = []
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
         is_prose = token.type == tokenize.COMMENT
         is_prose = is_prose or (
@@ -249,12 +432,47 @@ def prose_token_spans(source: str) -> list[TokenSpan]:
             )
         )
         if is_prose:
+            ranges.append(
+                (
+                    _offset(offsets, token.start),
+                    _offset(offsets, token.end),
+                    token.start[0],
+                )
+            )
+    return ranges
+
+
+def prose_context_spans(source: str) -> list[TokenSpan]:
+    """분할하지 않은 산문 토큰 구간 — 여러 줄에 걸친 판정의 문맥이다.
+
+    개행을 삼킬 수 있는 패턴(절 참조·세션 표기)은 데이터 구간에서 잘라낸 조각만 보면 경계를
+    걸친 출현을 놓친다. 그래서 판정하는 쪽은 이 원본 문맥을 읽고, 면제는 데이터 구간에
+    **완전히 포함된** 출현만으로 판단한다.
+    """
+    return [
+        TokenSpan(start=start, end=end, line=line, text=source[start:end])
+        for start, end, line in _prose_token_ranges(source)
+    ]
+
+
+def prose_token_spans(source: str) -> list[TokenSpan]:
+    """Return comment and documentation-expression spans in Python source.
+
+    데이터 구간의 주석·문서는 산문이 아니라 마커 선언의 일부다. 일부만 겹치는 여러 줄
+    토큰은 겹친 라인만 빼고 나머지 라인은 계속 산문으로 본다. 고쳐 쓰는 쪽(스트립)이
+    쓰는 뷰이며, 여러 줄 문맥이 필요한 판정은 ``prose_context_spans`` 를 쓴다.
+    """
+    data_spans = _data_literal_spans(source)
+    spans: list[TokenSpan] = []
+    for token_start, token_end, token_line in _prose_token_ranges(source):
+        for start, end in _subtract_spans(token_start, token_end, data_spans):
             spans.append(
                 TokenSpan(
-                    start=_offset(offsets, token.start),
-                    end=_offset(offsets, token.end),
-                    line=token.start[0],
-                    text=token.string,
+                    start=start,
+                    end=end,
+                    # 라인 번호는 토큰 안 개행만 세어 구한다(소스 전체 재스캔 회피).
+                    line=token_line + source.count("\n", token_start, start),
+                    text=source[start:end],
                 )
             )
     return spans

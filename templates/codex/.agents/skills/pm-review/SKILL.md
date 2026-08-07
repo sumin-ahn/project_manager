@@ -27,6 +27,10 @@ engine은 `--gate <T-NNNN>`별 라운드 장부를 세고 한도(기본 4, `loca
 2. 사용자가 계속을 승인한 경우에만 `--ack-rounds`를 붙여 재개한다(+한도만큼 창이 열린다). **승인 없이 `--ack-rounds` 금지**. 엔진은 기록만 하고 승인 게이트는 이 규율이다.
 3. 종결(수락/override) 시 판정 근거를 log에 박제하고 게이트를 닫는다. 연쇄 결함이 이어졌다면 과설계 신호로 설계 재질문도 올린다(cascade-defects-signal-overengineering).
 
+게이트별 상한과 별개로 **wave(세션) 총예산**이 있다 — 실 전송 누적이 한도(기본 24, `local.conf`의 `external_review_wave_budget`)에 닿으면 rc=4로 거부한다. 안내 문구가 `--ack-wave`를 지목하면 게이트 상한이 아니라 이 축이다. 재개 규율은 `--ack-rounds`와 동일하다(사용자 승인 후에만 `--ack-wave`·예산 리셋). 두 승인은 서로를 열지 않으며 동시 소진이면 둘 다 필요하다.
+
+라운드 수렴 상황 보고에는 `--rounds-report`를 쓴다 — 게이트별 라운드 수·라운드별 판정(verdict)·must-fix 수·wave 소비를 표로 dump하는 read-only 조회면이다(`--gate T-NNNN`으로 단일 게이트 한정·`--ticket`/`--paths`를 주면 기록면과 같은 앵커로 해소).
+
 ## 실행 규율
 
 아래 순서를 지킨다. 위반하면 false-green(빈 diff 통과) 또는 stale 결과가 난다.

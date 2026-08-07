@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -129,12 +129,26 @@ def _occurrence(
     )
 
 
+def _is_data_literal(
+    spans: Sequence[tuple[int, int]], start: int, end: int
+) -> bool:
+    """데이터 구간에 **완전히 포함된** 출현만 면제한다.
+
+    hard/ratchet 패턴의 ``\\s`` 는 개행을 삼키므로 표식 경계를 걸친 출현이 나올 수 있다.
+    걸친 출현은 표식 밖 문맥을 함께 담으므로 데이터가 아니다 — 탐지를 유지한다.
+    """
+    return any(
+        span_start <= start and end <= span_end for span_start, span_end in spans
+    )
+
+
 def _scan_ranges(
     *,
     path: str,
     source: str,
     ranges: list[tuple[int, int, str]],
     patterns: dict[str, re.Pattern[str]],
+    exempt: Sequence[tuple[int, int]] = (),
 ) -> list[Occurrence]:
     found: list[Occurrence] = []
     for range_start, range_end, surface in ranges:
@@ -143,6 +157,8 @@ def _scan_ranges(
             for match in pattern.finditer(segment):
                 start = range_start + match.start()
                 end = range_start + match.end()
+                if _is_data_literal(exempt, start, end):
+                    continue
                 found.append(
                     _occurrence(
                         path=path,
@@ -157,17 +173,28 @@ def _scan_ranges(
 
 
 def _python_prose_ranges(source: str) -> list[tuple[int, int, str]]:
+    # 분할 전 토큰 문맥을 읽는다 — 데이터 구간에서 잘라낸 조각만 보면 경계를 걸친 다중행
+    # 출현(개행을 삼키는 패턴)이 어느 조각에도 온전히 안 담겨 탐지를 빠져나간다.
     return [
         (span.start, span.end, "python-prose")
-        for span in PROSE_SCANNER.prose_token_spans(source)
+        for span in PROSE_SCANNER.prose_context_spans(source)
     ]
+
+
+def _python_data_literal_spans(source: str) -> list[tuple[int, int]]:
+    # 스트립 도구와 같은 판정 함수를 소비한다 — 표식이 붙은 리터럴은 채택자 디스크에
+    # 기록되는 wire 문자열이라 사설 참조 재유입이 아니다(판정 사본을 두지 않는다).
+    return PROSE_SCANNER._data_literal_spans(source)
 
 
 def _python_hard_occurrences(path: str, source: str) -> list[Occurrence]:
     prose_ranges = _python_prose_ranges(source)
+    data_spans = _python_data_literal_spans(source)
     found: list[Occurrence] = []
     for kind, pattern in HARD_PATTERNS.items():
         for match in pattern.finditer(source):
+            if _is_data_literal(data_spans, match.start(), match.end()):
+                continue
             surface = (
                 "python-prose"
                 if any(
@@ -195,6 +222,7 @@ def _python_ratchet_occurrences(path: str, source: str) -> list[Occurrence]:
         source=source,
         ranges=_python_prose_ranges(source),
         patterns=RATCHET_PATTERNS,
+        exempt=_python_data_literal_spans(source),
     )
 
 
@@ -793,6 +821,105 @@ def test_python_scanning_reuses_prose_classifier():
         "python-prose",
         "python-non-prose",
     ]
+
+
+def test_marked_data_literals_are_not_reference_inflow():
+    """표식이 붙은 wire 리터럴은 재유입이 아니다 — 스트립과 같은 구간 판정을 소비한다."""
+    marker = "# " + PROSE_SCANNER._DATA_LITERAL_MARKER
+    source = "\n".join(
+        (
+            marker + ":begin",
+            f'_WIRE_BEGIN = "<!-- guest {_SYNTHETIC_REF} begin -->"',
+            marker + ":end",
+            f'_WIRE_END = "<!-- guest {_SYNTHETIC_OTHER} end -->"  {marker}',
+            "",
+        )
+    )
+
+    assert not _python_hard_occurrences("wire.py", source)
+    assert not _python_ratchet_occurrences("wire.py", source)
+
+    # 민감도: 표식을 떼면 같은 리터럴이 즉시 재유입으로 잡힌다.
+    bare = (
+        source.replace(marker + ":begin\n", "")
+        .replace(marker + ":end\n", "")
+        .replace("  " + marker, "")
+    )
+    assert [item.match for item in _python_hard_occurrences("wire.py", bare)] == [
+        _SYNTHETIC_REF,
+        _SYNTHETIC_OTHER,
+    ]
+
+
+def test_marker_text_inside_string_literal_does_not_hide_hard_reference():
+    """리터럴 속 표식 글자로는 재유입 검사를 우회하지 못한다 — 표식은 주석 토큰만이다."""
+    marker = "# " + PROSE_SCANNER._DATA_LITERAL_MARKER
+    source = f'VALUE = "payload {marker} {_SYNTHETIC_REF}"\n'
+
+    assert PROSE_SCANNER._data_literal_spans(source) == []
+    assert [item.match for item in _python_hard_occurrences("wire.py", source)] == [
+        _SYNTHETIC_REF
+    ]
+
+    # 같은 참조를 진짜 주석 표식으로 덮으면 그때는 데이터로 빠진다(민감도 대조).
+    covered = f'VALUE = "payload {_SYNTHETIC_REF}"  {marker}\n'
+    assert not _python_hard_occurrences("wire.py", covered)
+
+
+_SECTION_MARK = "§"
+_SECTION_CODE = "F" + "3"
+_SESSION_LABEL = "PM"
+
+
+def test_data_literal_exemption_requires_full_containment():
+    """면제는 완전 포함만 — 경계를 걸친 출현은 표식 밖 문맥을 담아 데이터가 아니다."""
+    spans = [(10, 20)]
+
+    assert _is_data_literal(spans, 10, 20)
+    assert _is_data_literal(spans, 12, 18)
+    # 앞에서 시작해 안으로 들어오는 출현 / 안에서 시작해 밖으로 나가는 출현.
+    assert not _is_data_literal(spans, 8, 12)
+    assert not _is_data_literal(spans, 18, 24)
+    assert not _is_data_literal(spans, 8, 24)
+    assert not _is_data_literal([], 12, 18)
+
+
+def test_hard_match_straddling_a_data_boundary_stays_detected():
+    """표식 경계를 걸친 hard 출현은 면제되지 않는다(양방향)."""
+    marker = "# " + PROSE_SCANNER._DATA_LITERAL_MARKER
+    entering = f'A = """{_SECTION_MARK}\n{_SECTION_CODE}"""  {marker}\n'
+    leaving = f"B = 1  {marker} 설명 {_SECTION_MARK}\n{_SECTION_CODE} = 2\n"
+    straddle = f"{_SECTION_MARK}\n{_SECTION_CODE}"
+
+    assert [item.match for item in _python_hard_occurrences("wire.py", entering)] == [
+        straddle
+    ]
+    assert [item.match for item in _python_hard_occurrences("wire.py", leaving)] == [
+        straddle
+    ]
+
+    # 민감도: 같은 출현이 표식 구간 안에 온전히 들어가면 그때는 면제된다.
+    contained = f"C = 1  {marker} 설명 {_SECTION_MARK} {_SECTION_CODE}\n"
+    assert not _python_hard_occurrences("wire.py", contained)
+
+
+def test_ratchet_match_straddling_a_data_boundary_stays_detected():
+    """표식 경계를 걸친 ratchet 출현도 유지된다 — 판정은 분할 전 문맥에서 한다.
+
+    반대 방향(구간 안에서 시작해 밖으로 나가는 출현)은 ratchet 축에서 만들 수 없다.
+    구간이 라인 단위이고 산문 범위가 토큰 단위라, 한 토큰 안에서 앞줄만 보호되고 뒷줄이
+    열리는 형태가 나오지 않는다. 그 방향은 완전 포함 판정 테스트가 직접 덮는다.
+    """
+    marker = "# " + PROSE_SCANNER._DATA_LITERAL_MARKER
+    source = f'"""문맥 {_SESSION_LABEL}\n{7} 회차"""  {marker}\n'
+
+    assert [item.match for item in _python_ratchet_occurrences("wire.py", source)] == [
+        f"{_SESSION_LABEL}\n{7}"
+    ]
+
+    # 민감도: 출현 전체가 표식 라인 안에 들어가면 면제된다.
+    contained = f'"""문맥\n{_SESSION_LABEL} {7} 회차"""  {marker}\n'
+    assert not _python_ratchet_occurrences("wire.py", contained)
 
 
 def test_inventory_delta_flags_stale_entries():

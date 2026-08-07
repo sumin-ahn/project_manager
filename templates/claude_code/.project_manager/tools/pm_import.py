@@ -67,6 +67,7 @@ import argparse
 import datetime
 import errno
 import functools
+import hashlib
 import json
 import os
 import re
@@ -207,7 +208,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # Python 하한 probe보다 먼저 평가되므로 3.10에서도 파싱 가능한 문법만 쓴다.
-ENGINE_REV = "v1.6.1"
+ENGINE_REV = "v1.6.2"
 
 
 def _runtime_skill_entry(skill: str) -> str:
@@ -499,14 +500,62 @@ NEUTRAL_SHARED_ENTRY_DOCS = {
     ),
 }
 
+# 어댑터 네임스페이스에서 **채택자 소유**로 출하되는 파일의 단일 선언(harness → template-relative
+# POSIX relpath 집합). 값의 뜻 = "flavor manifest 에 등재하지 않는다"(pm_update 가 안 덮는다) —
+# 루트 진입 문서와 사용자 권한·trust·machine-local config 가 여기 든다. 이 선언이 없으면 그 파일은
+# 산문 주석으로만 채택자 소유이고, 기계는 그것을 "출하되는데 어느 채널에도 없는 파일"(영구 동결)과
+# 구분하지 못한다 — 출하-등재 역방향 가드가 이 선언을 소비해 둘을 가른다.
+# 네 번째 하네스가 자기 config 를 들여오면 여기 명시해야 가드를 통과한다.
+INSTANCE_OWNED_ADAPTER_FILES = {
+    "claude": frozenset({"CLAUDE.md", ".claude/settings.json"}),
+    "opencode": frozenset({"AGENTS.md", ".opencode/opencode.jsonc"}),
+    "codex": frozenset({"AGENTS.md", ".codex/config.toml", ".codex/hooks.json"}),
+}
+
 # add-harness가 절대 merge/clobber하지 않는 adopter-owned adapter 설정의 단일 정책 지점.
-# 값은 template-relative POSIX relpath다. 새 하네스가 사용자 권한·trust·machine-local 설정을
-# 추가하면 여기에 명시해 create-if-absent 정책을 함께 받는다. 엔진/어댑터 코드 전체를 보존하는
-# broad 예외가 아니라, 권한 경계인 개별 config 파일만 좁게 보호한다.
+# 값은 template-relative POSIX relpath다. 위 소유 선언(INSTANCE_OWNED_ADAPTER_FILES)의 **부분집합**
+# 이다 — 소유는 "누구 파일인가", 이 정책은 그 소유에 딸린 "add-harness 복사 때 어떻게 다루나"라
+# 관심사가 다르고, 미선언 경로를 여기 넣으면 소유 진실이 둘로 갈린다(가드가 red). 엔진/어댑터
+# 코드 전체를 보존하는 broad 예외가 아니라, 권한 경계인 개별 config 파일만 좁게 보호한다.
 ADD_HARNESS_CREATE_IF_ABSENT = {
     "claude": frozenset(),
     "opencode": frozenset(),
     "codex": frozenset({"AGENTS.md", ".codex/config.toml", ".codex/hooks.json"}),
+}
+
+# instance-owned config 의 **상류 fix 도달 채널** 분류. 키는 위 소유 선언에 있는 경로여야 하고,
+# 선언된 경로는 전부 여기 분류가 있어야 한다(양방향을 가드가 강제) — 분류 누락을 허용하면 새 config
+# 가 조용히 채널 0 으로 떨어져 지금 닫는 결함이 그대로 재발한다. 값의 뜻:
+#   managed : 무편집(dest 해시 == 원장 해시)이면 백업 후 현행 template 으로 자동 갱신. 파일 전체가
+#             엔진 동작이고 채택자 노브가 없는 것만 든다.
+#   report  : 갱신하지 않고 template 대비 drift 만 표기. 채택자 노브(권한 allowlist·모델·threshold)가
+#             실재해 자동 갱신이 그 값을 지울 수 있는 파일.
+#   none    : 채널 없음 — 루트 진입 문서(본문 대부분이 채택자 산문이라 기계 대조가 무의미).
+ADAPTER_CONFIG_MANAGED = "managed"
+ADAPTER_CONFIG_REPORT = "report"
+ADAPTER_CONFIG_NO_CHANNEL = "none"
+ADAPTER_CONFIG_CHANNEL = {
+    "claude": {
+        "CLAUDE.md": ADAPTER_CONFIG_NO_CHANNEL,
+        ".claude/settings.json": ADAPTER_CONFIG_REPORT,
+    },
+    "opencode": {
+        "AGENTS.md": ADAPTER_CONFIG_NO_CHANNEL,
+        ".opencode/opencode.jsonc": ADAPTER_CONFIG_REPORT,
+    },
+    "codex": {
+        "AGENTS.md": ADAPTER_CONFIG_NO_CHANNEL,
+        ".codex/config.toml": ADAPTER_CONFIG_REPORT,
+        # 초기 롤아웃의 유일한 managed 대상 — 상류 diff 가 100% 엔진 동작(훅 차단→비차단·문구 전면
+        #   교체)이고 채택자 노브가 0 임이 실측됐다. 대상 확장은 원장이 누적된 뒤 별도 판정.
+        ".codex/hooks.json": ADAPTER_CONFIG_MANAGED,
+    },
+}
+
+# managed 갱신 뒤 채택자가 해야 하는 후속 행동 — 자동 갱신이 조용한 기능 비활성화가 되지 않게
+# 갱신 시점에 함께 낸다(codex 는 훅 정의가 바뀌면 세션에서 다시 승인해야 발화한다).
+ADAPTER_CONFIG_REAPPROVAL_NOTE = {
+    ".codex/hooks.json": "codex 세션에서 `/hooks` 로 훅을 다시 승인해야 새 정의가 발화한다",
 }
 
 # 위 정적 경로와 같은 instance-owned 정책 섹션의 조건부 보호 규칙. Codex template은 model을
@@ -551,6 +600,26 @@ OPERATIONAL_TOKENS = (
 ENGINE_METADATA_RELPATHS = frozenset({
     ".project_manager/engine.manifest",
 })
+
+# ── 토큰 소유권: 파일 × 토큰 단위로 치환 주체를 하나로 ───────────────────────
+# operational 토큰의 치환 주체는 셋 중 하나다:
+#   설치-시 치환 — pm_import(기본값·아래 `_should_substitute` 가 제외 사유만 본다)
+#   소비-시 치환 — 그 템플릿이 *산출물을 만드는 시점*(pm_state 생성·domain 페이지 생성)
+#   상시 토큰    — 엔진 소유 문서가 토큰을 *설명*으로 담는다(엔진 소스·manifest·방법론 문서)
+# 같은 파일을 설치-시와 소비-시가 반대 방향으로 소유하면 **매 sync 마다 진동한다**: 설치가 값으로
+# 굳히고, manifest bare 등재의 byte-copy(`pm_update`)가 다음 흡수에서 토큰-form 으로 되돌린다
+# (채택자 실측). 아래 선언은 소비-시 소유를 명시해 **그 파일의 그 토큰에서만** 설치-시 치환을
+# 끈다 — 같은 파일의 다른 토큰(`{{PROJECT_NAME}}` 등)은 종전대로 설치 시 치환된다
+# (치환 예외 *파일* 목록이 아니다).
+# 신규 bare 등재 파일이 선언 없이 토큰을 담으면 `tests/test_manifest_render_token_guard.py` 가 fail.
+CONSUMPTION_TIME_TOKENS: dict[str, frozenset] = {
+    # 소비처: `worktree_pool.ensure_task_pm_state`(task pm_state 렌더)·`board.cmd_init`
+    #   (per-clone `wiki/pm_state.md` seed) — 둘 다 생성 시각으로 채운다.
+    ".project_manager/wiki/pm_state.template.md": frozenset({"{{DATE}}"}),
+    # 소비처: 사람이 스캐폴드를 복사해 domain 페이지를 만드는 시점. 엔진 생성 경로
+    #   (`domain.write_draft_page`)는 스캐폴드 frontmatter 를 복사하지 않고 자체 today 로 쓴다.
+    ".project_manager/wiki/domain/_template.md": frozenset({"{{DATE}}"}),
+}
 
 # operational placeholder 치환에서 *제외*하는 방법론 문서 (repo 기준 relpath) — engine.manifest 파생.
 # 하드코딩 목록(과거 pm_role.md·pm_playbook.md 리터럴 frozenset) 대신 manifest 의 `.project_manager/wiki/`
@@ -1750,6 +1819,19 @@ def _is_engine_metadata(rel: Path) -> bool:
     return any(p == m or p.endswith("/" + m) for m in ENGINE_METADATA_RELPATHS)
 
 
+def _consumption_time_tokens(rel: Path) -> frozenset:
+    """이 파일에서 **설치 시 치환을 하지 않을** 토큰 집합 (소비 시점 소유·`CONSUMPTION_TIME_TOKENS`).
+
+    파일 전체를 제외하는 `_should_substitute` 와 축이 다르다 — 여기서 걸러도 같은 파일의 다른
+    operational 토큰은 종전대로 설치 시 치환된다. rel 은 dest-rel 또는 절대/소스 경로 둘 다 올 수
+    있어 `_is_engine_metadata` 와 같은 suffix 매칭으로 통일한다."""
+    p = rel.as_posix()
+    for owned_rel, tokens in CONSUMPTION_TIME_TOKENS.items():
+        if p == owned_rel or p.endswith("/" + owned_rel):
+            return tokens
+    return frozenset()
+
+
 def _should_substitute(rel: Path, exclude_relpaths: frozenset) -> bool:
     """이 파일이 operational placeholder 치환 대상인가 — **제외 사유가 없으면 대상**.
 
@@ -1832,7 +1914,12 @@ def substitute_placeholders(
         except (UnicodeDecodeError, OSError):
             continue
         new_text = text
+        # 이 파일에서 소비 시점이 소유한 토큰은 설치가 건드리지 않는다 — 굳히면
+        #   manifest bare 등재 byte-copy 가 다음 sync 에 토큰-form 을 되돌려 진동한다.
+        consumption_owned = _consumption_time_tokens(rel)
         for token, value in subs.items():
+            if token in consumption_owned:
+                continue
             if value is None or value == "":
                 # 빈값 subs 는 치환하지 않는다 — 토큰을 그대로 남겨 이후 render 단계
                 # (render_managed_files)의 _assert_no_leak 가 leak 으로 잡게 한다(silent-empty =
@@ -4530,21 +4617,47 @@ def _flavor_render_relpaths(template_root: Path) -> set[str]:
             if getattr(e, "render", False)}
 
 
-def _guest_render_manifest_lines(template_root: Path) -> list[str]:
-    """add-harness 가 레이다운하는 guest 어댑터의 `@render` manifest **후보** 라인 (dest 등재용·손-열거 0).
+def _guest_manifest_lines(
+        template_root: Path, adapter_dirs: tuple, root_doc: str,
+        dest_owned: set[str]) -> list[str]:
+    """add-harness 가 레이다운하는 guest 어댑터의 manifest **후보** 라인 (dest 등재용·손-열거 0).
 
-    후보 = guest flavor manifest 의 `@render` **선언 전부**(`_flavor_render_relpaths`).
-    "flavor 가 무관 공유 경로도 `@render` 로 들 수 있으니
-    opencode 의 `.claude/skills @render`(네이티브
-    소비)가 `.opencode` namespace 밖이라 **cross-ns 의존물이 등재·복사에서 빠져 codex host 에서 PM 스킬이
-    flavor `@render` 선언 자체가 이미
-    경계다 — flavor 는 자기가 관리하는 경로만 `@render` 로 선언하고("flavor 미선언 경로 유입 0" 불변식은
-    이 구성으로 구조적 보장), host 가 이미 소유한 것은 downstream 차감(`_guest_render_sync_plan` 의
-    `_path_owned_by`·기준 `_core_manifest_paths`)이 dest 기준으로 정확히 뺀다. guest 는 host 소유
-    (add-harness 레이다운·upstream source 부재 정상)라 `@target-owned` 태깅(MF-2 재렌더 clobber 계약 —
-    pm_update 재렌더/재전파 skip)."""
-    return sorted(f"{rel}    @render @target-owned"
-                  for rel in _flavor_render_relpaths(template_root))
+    한 절에 두 종류가 모이고 **한 줄의 `@render` 유무가 소유 채널을 가른다**(새 어휘 0):
+
+      - **어댑터 렌더물**(`@render @target-owned [@source=…]`) — add-harness refresh 소유.
+        후보 = guest flavor manifest 의 `@render` **선언 전부**(`_flavor_render_relpaths` 와 같은
+        판정). flavor `@render` 선언 자체가 이미 경계다 — flavor 는 자기가 관리하는 경로만 `@render`
+        로 선언하므로("flavor 미선언 경로 유입 0" 불변식의 구조적 보장) namespace cap 없이 **cross-ns
+        의존물**(opencode 의 `.claude/skills @render` — 네이티브 소비이나 `.opencode` 밖)도 후보다.
+      - **엔진 파일**(`@source=… @target-owned`) — pm_update 소유(byte-copy 전파).
+        후보 = flavor manifest 의 **비-`@render`** 엔트리 중 **복사 술어**(`_in_adapter_namespace`)를
+        통과하는 것. 복사와 같은 술어를 쓰므로 "등재 ⊆ 복사" 가 구조적으로 보장된다 — 별도 판정을
+        두면 claude-as-guest 처럼 복사하지 않은 경로를 등재해 pm_update 가 없던 파일을 만든다.
+        이 행이 없으면 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드처럼 `pm_relay`
+        코어와 짝인 engine-mirror 가 설치 시점 사본으로 영구 동결된다(코어↔드라이버 skew).
+
+    host 가 이미 소유한 것은 downstream 차감(`_guest_render_sync_plan` 의 `_path_owned_by`·기준
+    `_core_manifest_paths`)이 dest 기준으로 정확히 뺀다(엔진 행은 `_in_adapter_namespace` 가 같은
+    `dest_owned` 로 여기서 이미 뺀다). 두 종류 모두 host 인스턴스 소유라 `@target-owned` 를 붙인다 —
+    렌더물은 재렌더 clobber 계약(MF-2), 엔진 행은 upstream flavor 부재 시 loud `[skip]` + rc0 이다.
+    직렬화는 `pm_update._manifest_entry_line` 재사용(마커 순서 결정적·손 f-string 금지)."""
+    pu = _load_pm_update()
+    if pu is None:
+        return []
+    entries = _pm_update_read_manifest(
+        template_root / ".project_manager" / "engine.manifest")
+    render_paths = {str(e).replace("\\", "/")
+                    for e in entries if getattr(e, "render", False)}
+    lines: list[str] = []
+    for entry in entries:
+        rel = str(entry).replace("\\", "/")
+        render = bool(getattr(entry, "render", False))
+        if not render and not _in_adapter_namespace(
+                Path(rel), adapter_dirs, root_doc, dest_owned, render_paths):
+            continue
+        lines.append(pu._manifest_entry_line(pu.ManifestEntry(
+            rel, render, True, getattr(entry, "source_rel", None))))
+    return sorted(lines, key=lambda line: line.split()[0])
 
 
 def _is_safe_dest_path(dest_root: Path, rel: Path) -> bool:
@@ -5018,6 +5131,386 @@ def installed_harnesses(dest_root: Path, source_root: Path | None = None) -> lis
     return [name for name in REGISTERED_HARNESSES if name in found]
 
 
+# ── instance-owned 어댑터 config 의 상류 도달 채널 (3-way 원장) ───────────────────
+# 닫는 결함 클래스: 이 파일들은 어느 manifest 에도 없어 pm_update 가 안 덮고, add-harness 재실행도
+# 기존 값이 template 과 다르면 byte 보존한다 — 상류의 *동작* fix(훅 차단→비차단 같은)가 기존
+# 채택자에 도달할 채널이 0 이다(채택자 실측: 두 릴리스 전 차단판을 들고 운영).
+#
+# 해법은 3-way 대조다. 설치가 내려놓은 template 해시를 원장에 남기면 다음 동기에서 "채택자가
+# 손댔는가" 를 판정할 수 있다 — dest 해시 == 원장 해시면 무편집이므로 백업 후 갱신해도 잃을 값이
+# 없고, 다르거나 원장이 없으면 무조건 보존한다(**하한선: 채택자 커스텀은 절대 안 덮는다**).
+#
+# 원장을 install.json 에 넣지 않는 이유: 그 기록은 문서를 통째 재작성해 구 엔진이 새 키를 지우고,
+# schema bump 는 구 엔진의 설치 판정을 추론으로 강등시킨다. 별도 소파일이 두 위험을 다 피한다.
+# 원장은 flavor manifest 에 **등재하지 않는다** — 등재하면 byte-copy 가 채택자 원장을 상류 값으로
+# 덮어 판정 전체가 거짓이 된다(인스턴스 상태 파일·출하 템플릿 트리에도 없다).
+ADAPTER_BASELINE_RELPATH = Path(".project_manager") / "adapter_baseline.json"
+ADAPTER_BASELINE_SCHEMA = 1
+
+
+class AdapterConfigJudgment(NamedTuple):
+    """instance-owned config 한 개의 현재 판정 (읽기 전용·write 경로가 이걸 소비한다).
+
+    status:
+      `in-sync`    dest == template (할 일 없음·원장만 backfill 대상)
+      `unedited`   dest != template 이고 dest 해시 == 원장 해시 → 상류가 바뀐 것(무편집)
+      `edited`     dest != template 이고 dest 해시 != 원장 해시 → 채택자 편집(보존)
+      `unrecorded` dest != template 이고 원장 항목 없음 → 판정 불가(보존·안전 기본값)
+    """
+    relpath: str
+    harness: str
+    mode: str
+    status: str
+    template: Path
+    dest_sha256: str
+    baseline_sha256: str | None
+
+
+def file_sha256(path: Path) -> str | None:
+    """파일 내용의 sha256 hex — 읽을 수 없으면 None(원장 판정은 fail-soft)."""
+    digest = hashlib.sha256()
+    try:
+        with Path(path).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+class AdapterBaselineDocument(NamedTuple):
+    """원장 파싱 결과 + 판독 사유 — 읽기(해석)와 쓰기(덮어쓰기)가 **같은 판정**을 본다.
+
+    설치 기록(`InstallReceiptDocument`)과 같은 형상이다: schema 판정을 문서 단계로 올려야
+    "해석 못 함" 과 "덮어써도 됨" 이 갈리지 않는다(해석 불가를 빈 값으로 접고 이 엔진 형식으로
+    다시 쓰면 미래 형식 데이터가 파괴된다)."""
+    document: dict | None
+    status: str  # ok | absent | unreadable | corrupt | newer-schema
+
+
+def _load_adapter_baseline_document(dest_root: Path) -> AdapterBaselineDocument:
+    """원장 파일을 파싱한 **원본 문서 + 판독 사유** (부작용 0)."""
+    try:
+        text = read_dest_text(Path(dest_root), ADAPTER_BASELINE_RELPATH)
+    except FileNotFoundError:
+        return AdapterBaselineDocument(None, "absent")
+    except (OSError, UnsafeDestPathError, UnicodeDecodeError):
+        return AdapterBaselineDocument(None, "unreadable")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return AdapterBaselineDocument(None, "corrupt")
+    if not isinstance(data, dict) or not isinstance(data.get("files"), dict):
+        return AdapterBaselineDocument(None, "corrupt")
+    schema = data.get("schema")
+    if isinstance(schema, int) and schema > ADAPTER_BASELINE_SCHEMA:
+        return AdapterBaselineDocument(data, "newer-schema")
+    return AdapterBaselineDocument(data, "ok")
+
+
+def read_adapter_baseline(dest_root: Path) -> dict:
+    """판정용 원장 — 해석할 수 없는 상태(부재·손상·상위 schema)는 빈 원장으로 본다.
+
+    fail-soft 가 안전한 이유: 원장은 *갱신해도 되는가* 를 여는 열쇠라, 못 읽으면 아무것도 갱신하지
+    않는 쪽(보존 + 보고)으로 떨어진다. ⚠ **빈 원장은 '덮어써도 된다' 는 뜻이 아니다** — 쓰기 판정은
+    `_load_adapter_baseline_document` 의 사유를 직접 본다(상위 schema 는 쓰기 거부)."""
+    loaded = _load_adapter_baseline_document(dest_root)
+    if loaded.status != "ok" or loaded.document is None:
+        return {"schema": ADAPTER_BASELINE_SCHEMA, "files": {}}
+    return loaded.document
+
+
+def _write_adapter_baseline(dest_root: Path, document: dict,
+                            root_identity: tuple | None = None) -> bool:
+    """원장을 dest 안전 쓰기로 기록 — 내용이 바뀌었으면 True.
+
+    **상위 schema 기록은 덮지 않는다**(설치 기록과 동형): 해석할 수 없다고 판정에서 뺀 문서를 이
+    엔진 형식으로 다시 쓰면 신 엔진의 원장이 통째로 파괴된다(읽기 거부와 쓰기 거부는 짝이어야
+    한다). 그 밖의 기록 실패는 경고 후 False 다 — 호출부가 성공을 주장하지 않도록 결과를 확인한다."""
+    if _load_adapter_baseline_document(dest_root).status == "newer-schema":
+        print(f"경고: 어댑터 config 원장 schema 가 이 엔진(지원 상한 {ADAPTER_BASELINE_SCHEMA})보다 "
+              f"새로워 갱신하지 않습니다 — 기존 원장을 보존합니다 "
+              f"({Path(dest_root) / ADAPTER_BASELINE_RELPATH}). 엔진을 갱신한 뒤 다시 실행하세요.",
+              file=sys.stderr)
+        return False
+    text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    try:
+        if read_dest_text(Path(dest_root), ADAPTER_BASELINE_RELPATH,
+                          root_identity=root_identity) == text:
+            return False  # 멱등 — 같은 내용 재기록은 byte churn 0.
+    except (OSError, UnsafeDestPathError, UnicodeDecodeError):
+        pass  # 부재·해독 불가는 아래에서 새로 쓴다.
+    try:
+        with _fdopen_text(
+                _open_dest_relative_nofollow(
+                    Path(dest_root), ADAPTER_BASELINE_RELPATH,
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                    root_identity=root_identity, regular_only=True),
+                "w", newline=None) as handle:
+            handle.write(text)
+    except (OSError, UnsafeDestPathError) as exc:
+        print(f"경고: 어댑터 config 원장을 남기지 못했습니다 "
+              f"({Path(dest_root) / ADAPTER_BASELINE_RELPATH}: {exc}) — 다음 동기가 보고 모드로 "
+              f"내려갑니다(파일은 그대로).", file=sys.stderr)
+        return False
+    return True
+
+
+def adapter_config_targets(dest_root: Path, source_root: Path,
+                           harnesses=None) -> list[tuple[str, str, str, Path]]:
+    """(relpath, harness, mode, template 경로) — 채널을 가진 instance-owned config 전수.
+
+    대상은 **설치 하네스**(`installed_harnesses` 단일 진실)에서 파생하고 분류(`ADAPTER_CONFIG_CHANNEL`)
+    가 mode 를 준다 — 손-열거 목록이 아니다. `none` 분류와 template 부재는 대상에서 빠진다."""
+    dest_root = Path(dest_root)
+    source_root = Path(source_root)
+    names = list(harnesses) if harnesses is not None else installed_harnesses(
+        dest_root, source_root)
+    out: list[tuple[str, str, str, Path]] = []
+    for harness in names:
+        channel = ADAPTER_CONFIG_CHANNEL.get(harness, {})
+        template_dir = HARNESS_TEMPLATE_DIRS.get(harness, (None,))[0]
+        if template_dir is None:
+            continue
+        template_root = source_root / "templates" / template_dir
+        for relpath in sorted(channel):
+            if channel[relpath] == ADAPTER_CONFIG_NO_CHANNEL:
+                continue
+            template = template_root / relpath
+            if not template.is_file():
+                continue  # upstream 이 그 파일을 안 들고 있으면 대조 기준이 없다.
+            out.append((relpath, harness, channel[relpath], template))
+    return out
+
+
+def judge_adapter_configs(dest_root: Path, source_root: Path,
+                          harnesses=None) -> list[AdapterConfigJudgment]:
+    """instance-owned config 전수의 현재 판정 (읽기 전용·부작용 0).
+
+    pm_update 의 동기 채널과 `sync-adapter-config --list` 가 같은 판정을 본다(판정 사본 0)."""
+    dest_root = Path(dest_root)
+    recorded = read_adapter_baseline(dest_root).get("files", {})
+    out: list[AdapterConfigJudgment] = []
+    for relpath, harness, mode, template in adapter_config_targets(
+            dest_root, source_root, harnesses):
+        dest_path = dest_root / relpath
+        dest_hash = file_sha256(dest_path)
+        if dest_hash is None:
+            continue  # dest 에 없거나 못 읽음 — 이 채널의 관심사가 아니다.
+        entry = recorded.get(relpath)
+        baseline = entry.get("sha256") if isinstance(entry, dict) else None
+        if _same_bytes(template, dest_path):
+            status = "in-sync"
+        elif baseline is None:
+            status = "unrecorded"
+        elif baseline == dest_hash:
+            status = "unedited"
+        else:
+            status = "edited"
+        out.append(AdapterConfigJudgment(
+            relpath, harness, mode, status, template, dest_hash, baseline))
+    return out
+
+
+def record_adapter_baseline(dest_root: Path, source_root: Path, harnesses=None, *,
+                            root_identity: tuple | None = None) -> list[str]:
+    """template 과 **일치가 확인된** config 의 해시를 원장에 기록 — 기록한 relpath 목록 반환.
+
+    기록 조건이 곧 판정의 전제다: dest 가 template 과 byte 일치할 때만 "이 내용이 상류가 준
+    그대로" 라고 말할 수 있다. 편집분·보존분은 기록하지 않는다(원장 부재 = 보고 모드 = 안전
+    기본값). 설치·add-harness 의 레이다운 시점과, 동기 시점의 in-sync backfill 이 같은 규칙을 쓴다
+    — backfill 이 없으면 원장 도입 전 채택자는 손댄 적이 없어도 영구히 보고 모드에 갇힌다."""
+    dest_root = Path(dest_root)
+    document = read_adapter_baseline(dest_root)
+    files = dict(document.get("files") or {})
+    template_rev = read_upstream_rev(Path(source_root))
+    recorded_at = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    changed: list[str] = []
+    for relpath, _harness, _mode, template in adapter_config_targets(
+            dest_root, source_root, harnesses):
+        dest_path = dest_root / relpath
+        if not dest_path.is_file() or not _same_bytes(template, dest_path):
+            continue
+        digest = file_sha256(dest_path)
+        if digest is None:
+            continue
+        existing = files.get(relpath)
+        if isinstance(existing, dict) and existing.get("sha256") == digest:
+            continue  # 같은 해시 재기록 — 타임스탬프만 흔들지 않는다(byte 안정).
+        files[relpath] = {
+            "sha256": digest,
+            "recorded_at": recorded_at,
+            "template_rev": template_rev,
+        }
+        changed.append(relpath)
+    if not changed:
+        return []
+    document = {"schema": ADAPTER_BASELINE_SCHEMA, "files": files}
+    if not _write_adapter_baseline(dest_root, document, root_identity=root_identity):
+        return []
+    return sorted(changed)
+
+
+def resolve_adapter_config_source(dest_root: Path, explicit=None) -> Path:
+    """instance-owned config 채널의 어댑터 소스 checkout — add-harness 와 **같은 해소 규칙**.
+
+    설치 하네스를 돌며 `_resolve_add_harness_source` 를 태운다(해소 규칙 사본 0). 어느 하네스로도
+    소스를 못 찾으면 add-harness 와 같은 친화 FileNotFoundError 를 그대로 올린다."""
+    if explicit is not None:
+        return Path(explicit).resolve()
+    dest_root = Path(dest_root).resolve()
+    last: FileNotFoundError | None = None
+    for harness in installed_harnesses(dest_root):
+        try:
+            return _resolve_add_harness_source(dest_root, harness, None)
+        except FileNotFoundError as exc:
+            last = exc
+    if last is not None:
+        raise last
+    raise FileNotFoundError(
+        f"어댑터 config 소스 미해소: {dest_root} 에 설치된 PM 어댑터가 없다 "
+        f"(`--from <프레임워크 checkout>` 를 명시하라).")
+
+
+class AdapterConfigAcceptResult(NamedTuple):
+    """수용 시도의 결과 — 성공은 `accepted` 하나뿐이고 나머지는 전부 비정상이다.
+
+    status:
+      `accepted`       백업 + 원자 교체 + 원장 기록까지 검증 완료(이 파일은 자동 갱신 궤도)
+      `raced`          판정 시점 해시와 다름(그 사이 편집) → 아무것도 덮지 않고 중단
+      `ledger-blocked` 원장을 쓸 수 없는 상태(상위 schema) → **파일도 건드리지 않는다**
+      `write-failed`   교체 실패(원본 보존·백업은 남는다)
+      `ledger-failed`  파일은 갱신됐으나 원장 기록이 확인되지 않음(자동 갱신 궤도 미진입)
+    """
+    status: str
+    relpath: str
+    backup: Path | None
+    sha256: str | None
+    detail: str = ""
+
+
+def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
+                          expected_sha256: str | None = None,
+                          root_identity: tuple | None = None) -> AdapterConfigAcceptResult:
+    """config 한 개를 **백업 후** 현행 template 으로 원자 교체하고 원장 기록까지 확인한다.
+
+    managed 자동 갱신과 `--accept` 수용이 같은 write 경로를 탄다(백업 규칙·경쟁 판정·원장 기록이
+    갈리지 않는다). 순서가 곧 안전 계약이다:
+      1) 원장 쓰기 가능 여부 선확인 — 기록할 수 없으면 파일을 아예 안 건드린다(갱신해 놓고 판정
+         기준을 못 남기면 다음 실행이 영구 보고 모드로 본다).
+      2) `expected_sha256` 재검증 — 판정과 쓰기 사이의 동시 편집을 검증 없이 덮지 않는다.
+      3) 중앙 백업(`.pm_import_backups/<날짜>/`) 후 **백업 내용까지** 같은 해시인지 확인 — 덮는
+         내용이 백업에 담겼음이 확인된 뒤에만 교체한다.
+      4) 같은 디렉토리 임시 파일에 write→flush→fsync→`os.replace` 로 **원자 교체** — 디스크 오류가
+         빈/부분 파일을 남기고 호출부가 "원본 보존" 으로 오보고하는 창을 없앤다.
+      5) 교체 결과 해시 + 원장 항목을 다시 읽어 확인 — 확인 못 하면 비정상 상태로 반환한다.
+    대상이 채널 밖이거나 dest 파일이 없으면 ValueError(호출 오류·조용한 무동작 금지)."""
+    dest_root = Path(dest_root)
+    targets = {rel: template for rel, _h, _m, template in adapter_config_targets(
+        dest_root, source_root)}
+    template = targets.get(relpath)
+    if template is None:
+        raise ValueError(
+            f"어댑터 config 채널 대상이 아니다: {relpath} "
+            f"(대상: {', '.join(sorted(targets)) or '없음'})")
+    dest_path = dest_root / relpath
+    if not dest_path.is_file():
+        raise ValueError(f"채택자 트리에 그 파일이 없다: {dest_path}")
+
+    if _load_adapter_baseline_document(dest_root).status == "newer-schema":
+        return AdapterConfigAcceptResult(
+            "ledger-blocked", relpath, None, None,
+            f"원장 schema 가 이 엔진(지원 상한 {ADAPTER_BASELINE_SCHEMA})보다 새로워 기록할 수 "
+            "없다 — 파일을 바꾸지 않았다(엔진을 갱신한 뒤 다시 실행하라)")
+
+    current = file_sha256(dest_path)
+    if expected_sha256 is not None and current != expected_sha256:
+        return AdapterConfigAcceptResult(
+            "raced", relpath, None, None,
+            "판정 뒤 파일이 바뀌었다(동시 편집) — 검증 없이 덮지 않는다. 다시 실행해 새 판정을 받아라")
+    backup = _copy_dest_file_nofollow(
+        dest_root, Path(relpath),
+        Path(BACKUP_DIR_NAME) / datetime.date.today().isoformat() / relpath,
+        root_identity=root_identity)
+    if file_sha256(backup) != current:
+        return AdapterConfigAcceptResult(
+            "raced", relpath, backup, None,
+            "백업 시점 내용이 판정 내용과 달랐다(동시 편집) — 덮지 않았다")
+
+    payload = template.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    if not _atomic_write_dest_bytes(dest_root, Path(relpath), payload,
+                                    root_identity=root_identity):
+        return AdapterConfigAcceptResult(
+            "write-failed", relpath, backup, None,
+            "원자 교체에 실패했다 — 기존 내용은 그대로다(백업도 남아 있다)")
+    if file_sha256(dest_path) != digest:
+        return AdapterConfigAcceptResult(
+            "write-failed", relpath, backup, None,
+            "교체 후 내용이 template 과 다르다 — 백업에서 복원할 수 있다")
+
+    record_adapter_baseline(dest_root, source_root, root_identity=root_identity)
+    entry = read_adapter_baseline(dest_root).get("files", {}).get(relpath)
+    if not isinstance(entry, dict) or entry.get("sha256") != digest:
+        return AdapterConfigAcceptResult(
+            "ledger-failed", relpath, backup, digest,
+            "파일은 갱신됐으나 원장 기록을 확인하지 못했다 — 다음 동기는 이 파일을 보고 모드로 "
+            "본다(원장 경로의 쓰기 권한을 확인하라)")
+    return AdapterConfigAcceptResult("accepted", relpath, backup, digest)
+
+
+def _atomic_write_dest_bytes(dest_root: Path, rel: Path, payload: bytes, *,
+                             root_identity: tuple | None = None) -> bool:
+    """같은 디렉토리 임시 파일 → fsync → `os.replace` 로 dest 파일을 원자 교체한다.
+
+    임시 파일도 **symlink 미추종 fd**(`_open_dest_relative_nofollow`)로 열어 조상 검증을 그대로
+    받는다. 교체는 이름 바꾸기라 대상이 symlink 여도 그 링크 자체를 대체한다(링크 너머 쓰기 없음).
+    실패하면 임시 파일을 치우고 False — 원본은 손대지 않은 상태 그대로다."""
+    tmp_rel = rel.with_name(rel.name + ".pm-accept.tmp")
+    tmp_path = Path(dest_root) / tmp_rel
+    try:
+        with _fdopen_binary(
+                _open_dest_relative_nofollow(
+                    Path(dest_root), tmp_rel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                    root_identity=root_identity, regular_only=True),
+                "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(tmp_path), str(Path(dest_root) / rel))
+    except (OSError, UnsafeDestPathError) as exc:
+        print(f"경고: 어댑터 config 교체 실패 ({rel.as_posix()}: {exc}) — 기존 내용을 보존합니다.",
+              file=sys.stderr)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def adapter_config_drift_summary(judgment: AdapterConfigJudgment,
+                                 dest_root: Path) -> str:
+    """template 대비 차이 한 줄 요약 — 크기·줄 수·첫 차이 줄 번호.
+
+    무엇이 다른지 사람이 판단할 최소 좌표만 준다(전체 diff 는 채택자가 직접 볼 일이고, 동기
+    출력이 파일당 한 줄을 넘기면 아무도 안 읽는다)."""
+    dest_path = Path(dest_root) / judgment.relpath
+    try:
+        dest_lines = dest_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        template_lines = judgment.template.read_text(
+            encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return "차이 요약 불가(읽기 실패)"
+    first_diff = next(
+        (index + 1 for index, (left, right) in enumerate(
+            zip(dest_lines, template_lines)) if left != right),
+        min(len(dest_lines), len(template_lines)) + 1,
+    )
+    return (f"채택자 {len(dest_lines)}줄 ↔ template {len(template_lines)}줄 · "
+            f"첫 차이 {first_diff}줄")
+
+
 def _unowned_shipped_wiki_relpaths(
         source_root: Path, harnesses, notation_contexts: dict) -> list[str]:
     """선택 하네스 template 이 **출하하는** wiki relpath 중 manifest 소유자가 없는 것.
@@ -5434,7 +5927,8 @@ def _guest_render_sync_plan(
 
     반환 `{"added": [라인], "removed": [경로], "new_block": str|None, "changed": bool}`.
     - **이 하네스 namespace(`adapter_dirs`) 항목만** 현행 목표로 교체 — 신규 추가 **+ upstream flavor 에서
-      폐기/`@render` 해제된 stale 제거**.
+      폐기/`@render` 해제된 stale 제거**. 목표(`guest_lines`)는 렌더물과 엔진 행 **둘 다**라
+      (`_guest_manifest_lines`) 이 동기가 두 채널을 함께 최신화한다.
     - **타 하네스 guest 항목은 불변**(다른 namespace — 순차 add 로 한 절에 공존).
     - 목표 = `guest_lines`(flavor·이미 namespace-limited) **−** host 실소유(경로-포함
       `_path_owned_by`·기준 `_core_manifest_paths`). add·refresh·dry-run preview 가 이 단일 계획을 공유
@@ -5453,7 +5947,7 @@ def _guest_render_sync_plan(
         if ln.strip() and not ln.strip().startswith("#")]
 
     # 이 하네스가 관리하는 footprint = adapter namespace ∪ **flavor `@render` 선언**(cross-ns 포함).
-    #   guest_lines 는 flavor `@render` 선언 전부(`_guest_render_manifest_lines`) — 그 경로 집합이 cross-ns
+    #   guest_lines 는 flavor 후보 전부(`_guest_manifest_lines`·렌더물 + 엔진 행) — 그 경로 집합이 cross-ns
     #   의존물(opencode 의 `.claude/skills`)까지 이 하네스 소유로 판정하게 한다(경로-포함
     #   `_path_owned_by`). namespace-only 판정이면 cross-ns 항목이 target 엔 있는데 existing_this 엔 없어
     #   idempotent refresh 가 매번 changed=True(등재 churn)·타 하네스로 오분류된다(멱등 위반).
@@ -5510,7 +6004,7 @@ def _append_guest_render_to_manifest(
     pu = _load_pm_update()
     if pu is None:
         print("  ⚠️ pm_update 로드 실패 — guest 어댑터가 복사됐으나 render/lint 관리 밖입니다 "
-              "(guest @render 등재 생략).", file=sys.stderr)
+              "(guest 절 등재 생략).", file=sys.stderr)
         return {"added": [], "removed": []}
     plan = _guest_render_sync_plan(dest_root, guest_lines, adapter_dirs)
     if not plan["changed"]:
@@ -5523,13 +6017,13 @@ def _append_guest_render_to_manifest(
         manifest.write_text(stripped + "\n" + plan["new_block"] + "\n", encoding="utf-8")
     else:
         manifest.write_text(stripped, encoding="utf-8")  # this-ns guest 전량 폐기·타 하네스도 0 → 절 제거.
-    # read_manifest 왕복 검증 (fail-loud·추가분 반영).
-    after = {str(e).replace("\\", "/") for e in pu.read_manifest(manifest)
-             if getattr(e, "render", False)}
+    # read_manifest 왕복 검증 (fail-loud·추가분 반영). 대조는 **등재 경로 전량**이다 —
+    #   `@render` 로 좁히면 guest 절의 엔진 행(비-render·update 채널)이 매번 미반영으로 오판된다.
+    after = {str(e).replace("\\", "/") for e in pu.read_manifest(manifest)}
     missing = [ln.split()[0] for ln in plan["added"] if ln.split()[0] not in after]
     if missing:
         raise RuntimeError(
-            f"add-harness: guest @render 등재가 read_manifest 왕복에 미반영: {missing}")
+            f"add-harness: guest 절 등재가 read_manifest 왕복에 미반영: {missing}")
     return {"added": plan["added"], "removed": plan["removed"]}
 
 
@@ -5732,13 +6226,15 @@ def add_harness(
         # engine.manifest guest `@render` 동기 미리보기 — 추가/제거 예정 둘 다(실제 sync 와 같은 계획·
         #   `_guest_render_sync_plan` 공유·멱등이면 0건).
         gsync = _guest_render_sync_plan(
-            dest_root, _guest_render_manifest_lines(template_root), adapter_dirs)
+            dest_root,
+            _guest_manifest_lines(template_root, adapter_dirs, root_doc, dest_owned),
+            adapter_dirs)
         if gsync["added"]:
-            print(f"  engine.manifest guest @render 등재 예정 ({len(gsync['added'])}건):")
+            print(f"  engine.manifest guest 절 등재 예정 ({len(gsync['added'])}건):")
             for gl in gsync["added"]:
                 print(f"    + {gl}")
         if gsync["removed"]:
-            print(f"  engine.manifest guest @render 제거 예정 ({len(gsync['removed'])}건·폐기):")
+            print(f"  engine.manifest guest 절 제거 예정 ({len(gsync['removed'])}건·폐기):")
             for gp in gsync["removed"]:
                 print(f"    - {gp}")
         print("[dry-run] 적용 안 함 (파일시스템 미변경).")
@@ -5755,17 +6251,20 @@ def add_harness(
     copy_outcome = apply_copy_plan(plan, dest_root, root_identity=root_identity)
     report_copy_apply_anomalies(copy_outcome)
     copied_relpaths = set(copy_outcome.copied)
-    # guest 어댑터 `@render` 를 dest engine.manifest 에 멱등 등재 —
+    # guest 어댑터를 dest engine.manifest 에 멱등 등재(렌더물 `@render` + **엔진 행**) —
     # 인스턴스 manifest 가 "이 인스턴스에서 framework-managed 인 것"의 단일 진실이 되어, 아래
-    # render_managed_files 와 manifest-파생 overlay 스캔이 guest 를 자연 커버한다.
+    # render_managed_files 와 manifest-파생 overlay 스캔이 guest 를 자연 커버하고, 엔진 행은
+    # pm_update 전파 채널을 얻는다(등재 없으면 설치 시점 사본으로 영구 동결).
     # **render 전에** 등재해야 이번 run 의 render_managed_files 가 guest 를 집는다.
     guest_sync = _append_guest_render_to_manifest(
-        dest_root, _guest_render_manifest_lines(template_root), adapter_dirs)
+        dest_root,
+        _guest_manifest_lines(template_root, adapter_dirs, root_doc, dest_owned),
+        adapter_dirs)
     if guest_sync["added"]:
-        print(f"  ✓ engine.manifest guest @render {len(guest_sync['added'])}건 등재: "
+        print(f"  ✓ engine.manifest guest 절 {len(guest_sync['added'])}건 등재: "
               f"{', '.join(ln.split()[0] for ln in guest_sync['added'])}")
     if guest_sync["removed"]:
-        print(f"  ✓ engine.manifest guest @render {len(guest_sync['removed'])}건 제거(폐기 동기): "
+        print(f"  ✓ engine.manifest guest 절 {len(guest_sync['removed'])}건 제거(폐기 동기): "
               f"{', '.join(guest_sync['removed'])}")
     # 이번 하네스 template 과 **byte-identical 이라 복사만 생략된**
     #   파일만 처리 대상에 추가한다 — token-form 그대로라 미렌더(토큰 잔존) 잔존의 유일 대상. 경로는
@@ -5851,6 +6350,14 @@ def add_harness(
     if record_install_receipt(dest_root, recordable, root_identity=root_identity):
         print(f"  ✓ 설치 기록 갱신 ({INSTALL_RECEIPT_RELPATH.as_posix()}): "
               f"{', '.join(recordable)}")
+    # instance-owned config 원장 — **레이다운/보존 판정 직후**가 기록 시점이다. 방금 내려놓은
+    #   (또는 기존 값이 template 과 같음을 확인한) 파일만 들어가고, 보존된 편집분은 안 들어간다
+    #   (원장 부재 = 다음 동기가 보고 모드 = 안전 기본값).
+    baselined = record_adapter_baseline(
+        dest_root, src_root, recordable, root_identity=root_identity)
+    if baselined:
+        print(f"  ✓ 어댑터 config 원장 기록 ({ADAPTER_BASELINE_RELPATH.as_posix()}): "
+              f"{', '.join(baselined)}")
     # 실복사 수를 보고한다(계획 수 아님) — 제외가 있었으면 위 요약이 사유를 이미 말한다.
     print(f"✓ add-harness 완료: {harness} 어댑터 {len(copied_relpaths)} 파일 복사 · "
           f"{n_subst} 파일 토큰 치환 (스코프: {adapter_scope} + {root_doc})")
@@ -6827,6 +7334,14 @@ def main(argv: list[str] | None = None) -> int:
     if record_install_receipt(dest_root, recordable, root_identity=root_identity):
         print(f"✓ 설치 기록 갱신 ({INSTALL_RECEIPT_RELPATH.as_posix()}): "
               f"{', '.join(recordable)}")
+
+    # instance-owned config 원장 — add-harness 와 같은 기록 시점·같은 규칙(레이다운/일치 확인분만).
+    #   이게 있어야 다음 pm_update 가 "채택자가 손댔는가" 를 판정해 상류 동작 fix 를 안전히 나른다.
+    baselined = record_adapter_baseline(
+        dest_root, source_root, recordable, root_identity=root_identity)
+    if baselined:
+        print(f"✓ 어댑터 config 원장 기록 ({ADAPTER_BASELINE_RELPATH.as_posix()}): "
+              f"{', '.join(baselined)}")
 
     # ── fill 단계: board init·conf sync 직후 hook. 자유서술 placeholder 처리.
     #    auto + opt-in 게이트 통과 → 하니스 구동 *제안*(파일 미변경, 사람 검토 전제).

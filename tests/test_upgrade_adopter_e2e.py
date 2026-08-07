@@ -1,0 +1,568 @@
+"""업그레이드-채택자 e2e 게이트 — 구세대 디스크 + add-harness 형상 (T-0582 · 기계층).
+
+## 이 파일이 있는 이유
+v1.6.1 채택자 제보 중 네 건(guest 절 소실·어댑터 동결·토큰 회귀·reconcile 파괴)은 **기존 채택자가
+업그레이드할 때만** 발현한다 — 디스크에 옛 세대 데이터(옛 guest 마커·add-harness 이력·설치 시점에
+굳은 치환 결과)가 있어야 성립하는 조건이라, 깨끗한 디렉토리만 보는 fresh-adopter 게이트
+(`test_fresh_adopter_e2e.py`)는 이 클래스를 구조적으로 못 본다. 프레임워크 자신(adopter#0)도
+add-harness 를 안 쓰는 형상이라 도그푸딩으로도 안 걸린다([[dogfooding-blind-spot-adopter-shape]]).
+
+## 픽스처 모델 — 현행 엔진 + 구세대 데이터
+옛 태그를 checkout 해 설치하는 대신 **현행 설치 + 상태 주입**을 쓴다(T-0582 결정): 발현 조건은
+"디스크에 남은 옛 데이터" 지 "옛 코드" 가 아니고, 주입 방식이라야 픽스처가 코드로 자명하다.
+`_build_upgraded_adopter` 가 셋을 주입한다 — ① 옛 세대 guest 절(옛 마커 리터럴 + 엔진 행 부재)
+② add-harness guest 어댑터의 설치-시점 동결 사본 ③ 설치 시 값으로 굳은 치환 결과.
+
+채택자 트리의 **엔진 사본은 canonical 로 먼저 승격**한다(`_prime_engine_to_canonical`). pm_import 는
+`templates/<flavor>/` 사본에서 복사하는데 그 사본은 wave 중 stale 할 수 있어, 승격이 없으면 이
+게이트가 "현행 엔진이 옛 디스크를 어떻게 다루나" 가 아니라 "templates 가 언제 동기됐나" 를 재는
+측정기가 된다.
+
+## 시나리오
+- **S1** guest 절 생존 — 옛 마커 채택자가 동기 후에도 절을 갖고, 마커가 현행 리터럴로 수렴하며,
+  다음 동기가 멱등이다.
+- **S2** frozen 가시성 — guest 어댑터 엔진 파일의 동결이 **조용히** 지나가지 않는다(상류와 수렴
+  하거나, 최소한 loud·actionable 하게 표면화된다).
+- **S3** 토큰 안정성 — 동기 후 채택자 가시 문서에 render 토큰이 없고, 소비 시점 소유 템플릿은
+  토큰을 유지하며, 재동기가 진동 0 이다.
+- **S4** reconcile 절차 안전 — 스킬이 지시하는 manifest 선-cp 절차와 엔진 단독 경로 둘 다에서
+  guest 절이 조용히 사라지지 않는다.
+
+**기계층이다** — 로컬 파일시스템 + subprocess(pm_import·pm_update)만 구동한다(라이브 LLM·네트워크
+0·결정적). 실 LLM 이 문서를 읽고 운영하는 런타임 축은 이 파일의 관심사가 아니다.
+"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from _harness_matrix import HARNESSES
+# fresh-adopter 게이트의 헬퍼를 그대로 쓴다(판정 사본 금지) — `_snapshot_tree` 는 산출물 트리
+#   컴포넌트(`__pycache__`·`.git`·`.pm_import_backups`) 제외까지 이미 담고 있다.
+from test_fresh_adopter_e2e import _load_pm_import, _snapshot_tree
+
+REPO = Path(__file__).resolve().parents[1]
+
+# 제보 채택자 형상(claude host + add-harness guest)을 그대로 재현한다. host 축을 곱하지 않는 이유:
+#   이 파일이 검증하는 건 *업그레이드 상태 처리*(마커 세대·치환 잔재·절차 안전)라 host 하네스와
+#   독립이고, guest 방향별 동기 채널 축은 T-0574 게이트(`test_fresh_adopter_e2e`)가 전 순서쌍으로
+#   이미 돈다. guest 축만 파생으로 곱해 flavor shape 차이(엔진 행 1건 vs 디렉토리 포함 4건)를 태운다.
+_HOST_HARNESS = "claude"
+_GUEST_HARNESSES = tuple(harness for harness in HARNESSES if harness != _HOST_HARNESS)
+# S1·S3·S4 는 단일 형상으로 충분하다(축 곱셈 비용 대비 판정력 증가 0) — 제보 그대로의 guest.
+_REPORTED_GUEST = "codex"
+
+assert _GUEST_HARNESSES, "guest 후보 0 — HARNESSES 파생이 퇴화했다(공허 파라미터)"
+assert _REPORTED_GUEST in _GUEST_HARNESSES, (
+    f"제보 형상 guest({_REPORTED_GUEST})가 파생 축에 없다: {_GUEST_HARNESSES}")
+
+# pm:data-literal:begin
+# 아래 세 리터럴은 **채택자 디스크에 기록된 데이터**다 — engine.manifest 안에 실제로 적힌 바이트이지
+# 이 소스의 산문이 아니다. 엔진 상수(`pm_update._GUEST_MANIFEST_BEGIN` 등)를 참조하면 리터럴이 통째로
+# 바뀌어도 이 게이트가 green 이라(참조-only 테스트가 guest 절 소실을 30 여 릴리즈 살린 직접 원인)
+# 여기엔 문자열을 직접 박는다. 마커 세대가 또 바뀌면 이 파일이 red 로 알린다.
+_LEGACY_GUEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>"
+_CURRENT_GUEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>"
+_GUEST_END_MARKER = "# <<< pm add-harness guest @render (local) <<<"
+# pm:data-literal:end
+
+_ADOPTER_NAME = "Upgrade Adopter"
+_ADOPTER_MANIFEST_REL = ".project_manager/engine.manifest"
+
+# 설치 시점 사본으로 굳은 guest 어댑터 엔진 파일의 본문 — 동기가 실제로 상류 값을 덮는지 판정하는 표식.
+_STALE_GUEST_BODY = "# 설치 시점 사본으로 동결된 채택자 파일 (업그레이드 게이트 픽스처)\n"
+# 설치 시 `{{DATE}}` 가 값으로 굳었던 형상(T-0578 착지 전 pm_import 거동)의 재현값.
+_FROZEN_INSTALL_DATE = "2025-11-03"
+# 채택자가 손으로 유지하던 치환 결과(제보 형상) — 상류 산문과 겹치지 않는 픽스처 소유 문장.
+_SUBSTITUTED_README_LINE = f"{_ADOPTER_NAME} 프로젝트의 비-코드 산출물 모음 (설치 시 치환된 옛 본문)."
+
+# T-0571 이 마이그레이션 발생 시 내는 표기(조용한 변환 금지) — 티켓 인터페이스가 고정한 문구.
+_MARKER_MIGRATION_NOTICE = "guest 절 마커 세대 마이그레이션"
+
+_RENDER_TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+# 스킬 §manifest reconcile 의 선-cp 지시. placeholder(`<cache-or-path>`·`<harness>`)를 포함한
+#   한 줄 bash 명령이라 원본/대상 두 좌표만 뽑는다.
+_SKILL_MANIFEST_COPY_RE = re.compile(
+    r"^[ \t]*cp[ \t]+(?P<source>\S*templates/\S*engine\.manifest)"
+    r"[ \t]+(?P<target>\S*engine\.manifest)[ \t]*$",
+    re.MULTILINE,
+)
+
+
+def _engine_pm_import():
+    """canonical pm_import 모듈 — 라이브 `opencode models` 조회를 막은 hermetic 인스턴스.
+
+    `_load_pm_import` 는 호출마다 새 모듈 객체를 만드므로 이 stub 은 이 파일 안에만 남는다."""
+    module = _load_pm_import()
+    module._real_models_runner = lambda: (False, [])
+    return module
+
+
+_PM_IMPORT = _engine_pm_import()
+
+
+# ── 채택자 트리 조작 헬퍼 ──────────────────────────────────────────────────────
+
+
+def _run_pm_update(dest: Path, *args: str) -> subprocess.CompletedProcess:
+    """채택자 트리의 pm_update.py 를 실제 CLI 로 구동한다(cwd=dest·비대화형·capture).
+
+    upstream 은 명시 `--from REPO` 다 — fresh 인스턴스의 local.conf `upstream=` 은 URL 이라
+    엔진이 자동 진행하지 않는다(로컬 checkout 명시가 채택자의 실제 절차)."""
+    proc = subprocess.run(
+        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
+         "--from", str(REPO), *args],
+        cwd=str(dest),
+        capture_output=True,
+        text=True,
+        # 엔진 출력은 UTF-8(한글 포함) — 부모 콘솔 로케일로 디코드하면 캡처가 깨진다.
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PM_NONINTERACTIVE": "1"},
+        timeout=300,
+    )
+    assert proc.returncode == 0, (
+        f"pm_update rc={proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}")
+    return proc
+
+
+def _combined_output(proc: subprocess.CompletedProcess) -> str:
+    """채택자가 화면에서 보는 전체 출력 — 경고 채널(stderr)과 진행 표기(stdout)를 함께 본다."""
+    return f"{proc.stdout}\n{proc.stderr}"
+
+
+def _manifest_path(dest: Path) -> Path:
+    return dest / ".project_manager" / "engine.manifest"
+
+
+def _manifest_text(dest: Path) -> str:
+    return _manifest_path(dest).read_text(encoding="utf-8")
+
+
+def _guest_manifest_block(dest: Path) -> str | None:
+    """engine.manifest 의 add-harness guest 절(마커 포함) — 어느 세대 마커든 인식, 부재면 None.
+
+    엔진 파서를 부르지 않고 리터럴로 직접 훑는다 — 엔진과 같은 함수를 쓰면 마커 리터럴이 통째로
+    바뀌어도 게이트가 함께 따라가 결함을 못 본다(이 게이트가 존재하는 이유)."""
+    text = _manifest_text(dest)
+    for begin in (_CURRENT_GUEST_BEGIN, _LEGACY_GUEST_BEGIN):
+        if begin in text and _GUEST_END_MARKER in text:
+            start = text.index(begin)
+            end = text.index(_GUEST_END_MARKER, start) + len(_GUEST_END_MARKER)
+            return text[start:end]
+    return None
+
+
+def _guest_rows(block: str) -> list[str]:
+    """guest 절의 등재 행(주석·빈 줄 제외)."""
+    return [line.strip() for line in block.splitlines()
+            if line.strip() and not line.strip().startswith("#")]
+
+
+def _guest_engine_rows(block: str) -> list[str]:
+    """guest 절의 **엔진 행** — `@render` 없는 행(update 채널 소유·byte-copy 대상)."""
+    return [row for row in _guest_rows(block) if "@render" not in row]
+
+
+def _guest_render_rows(block: str) -> list[str]:
+    """guest 절의 **어댑터 렌더물 행** — add-harness refresh 소유(update 는 안 건드린다)."""
+    return [row for row in _guest_rows(block) if "@render" in row]
+
+
+def _row_path(row: str) -> str:
+    return row.split()[0].replace("\\", "/")
+
+
+def _row_source(row: str) -> str:
+    """행의 `@source=<루트-상대>` — 없으면 dest 경로와 같은 좌표(root-sourced)."""
+    for token in row.split()[1:]:
+        if token.startswith("@source="):
+            return token[len("@source="):].replace("\\", "/")
+    return _row_path(row)
+
+
+def _files_under(snapshot: dict[str, bytes], rel: str) -> list[str]:
+    """등재 행 한 줄이 커버하는 실파일 relpath — 파일 행은 그 자신, 디렉토리 행은 하위 전체.
+
+    트리 열거는 직접 재귀하지 않고 `_snapshot_tree` 결과를 접두사로 거른다 — repo-owned 열거
+    seam 우회(재귀 tree-walk) 없이 같은 판정을 낸다."""
+    return sorted(path for path in snapshot if path == rel or path.startswith(rel + "/"))
+
+
+def _frozen_guest_files(dest: Path) -> list[str]:
+    """설치 시점 사본으로 동결된 채로 남은 파일의 relpath — 픽스처 표식으로 판정한다.
+
+    스냅샷이 백업 디렉토리(`.pm_import_backups`)를 이미 뺀다 — add-harness 가 남긴 백업 사본까지
+    세면 동기가 끝난 뒤에도 동결이 남은 것처럼 보인다."""
+    frozen_body = _STALE_GUEST_BODY.encode("utf-8")
+    return sorted(rel for rel, payload in _snapshot_tree(dest).items() if payload == frozen_body)
+
+
+def _prime_engine_to_canonical(dest: Path) -> None:
+    """채택자 엔진 사본을 canonical(루트) 판으로 승격 — 이 게이트의 전제 조건.
+
+    pm_import 는 `templates/<flavor>/` 사본을 깔고 그 사본은 wave 중 stale 할 수 있다. 승격이 없으면
+    시나리오가 구동하는 pm_update 가 **옛 엔진**이라, 게이트가 현행 엔진의 업그레이드 처리 대신
+    templates 동기 시점을 측정하게 된다. 엔진 도구는 manifest bare 등재(root-sourced)라 정상 동기
+    한 번으로 전 도구가 **함께** canonical 이 된다(부분 승격에 따른 형제 모듈 skew 없음)."""
+    _run_pm_update(dest)
+    for rel in (".project_manager/tools/pm_update.py", ".project_manager/tools/board.py"):
+        assert (dest / rel).read_bytes() == (REPO / rel).read_bytes(), (
+            f"엔진 승격 실패 — {rel} 가 canonical 과 다르다(게이트가 옛 엔진을 검증하게 된다)")
+
+
+def _inject_legacy_guest_section(dest: Path) -> None:
+    """현행 guest 절을 **옛 세대 절**로 되돌린다 — 옛 마커 리터럴 + 엔진 행 부재.
+
+    엔진 행(비-`@render`)은 그 세대에 존재하지 않던 채널이므로 함께 지운다. 그 결과가 곧 제보
+    채택자의 디스크 형상이고, 마커 세대 인식(T-0571)과 엔진 행 파생 백필을 함께 태운다."""
+    block = _guest_manifest_block(dest)
+    assert block is not None, "픽스처 오류 — add-harness 직후인데 guest 절이 없다"
+    legacy_block = "\n".join([_LEGACY_GUEST_BEGIN, *_guest_render_rows(block), _GUEST_END_MARKER])
+    text = _manifest_text(dest)
+    _manifest_path(dest).write_text(text.replace(block, legacy_block), encoding="utf-8")
+    assert _LEGACY_GUEST_BEGIN in _manifest_text(dest)
+    assert _CURRENT_GUEST_BEGIN not in _manifest_text(dest)
+
+
+def _freeze_guest_engine_files(dest: Path, block: str) -> list[str]:
+    """guest 어댑터 **엔진 파일**을 설치 시점 사본으로 동결한다 — 동기 채널 검증의 대조군.
+
+    렌더물(`@render` 행)은 add-harness refresh 소유라 동결 대상이 아니다(update 가 안 건드리는 게
+    정상). 동결 좌표는 현행 절의 엔진 행에서 파생한다 — flavor 별로 손 열거하지 않는다."""
+    snapshot = _snapshot_tree(dest)
+    frozen = []
+    for row in _guest_engine_rows(block):
+        for rel in _files_under(snapshot, _row_path(row)):
+            (dest / rel).write_text(_STALE_GUEST_BODY, encoding="utf-8")
+            frozen.append(rel)
+    return sorted(frozen)
+
+
+def _inject_substituted_documents(dest: Path) -> None:
+    """설치 시 값으로 굳은 치환 결과를 주입한다 — T-0578 착지 전 채택자 디스크 형상.
+
+    두 방향을 함께 만든다: 채택자 가시 문서(`wiki/README.md`)에 프로젝트명이 박힌 옛 본문,
+    소비 시점 소유 템플릿 2종(`pm_state.template.md`·`domain/_template.md`)에 설치일로 굳은
+    `{{DATE}}`. 전자는 상류가 토큰을 지워 수렴해야 하고, 후자는 토큰-form 으로 되돌아와야 한다."""
+    readme = dest / ".project_manager" / "wiki" / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    assert _SUBSTITUTED_README_LINE not in text, "픽스처 오류 — 주입 문장이 이미 상류 본문에 있다"
+    lines = text.splitlines()
+    readme.write_text(
+        "\n".join([lines[0], "", _SUBSTITUTED_README_LINE, *lines[1:]]) + "\n", encoding="utf-8")
+
+    for rel in ("pm_state.template.md", "domain/_template.md"):
+        path = dest / ".project_manager" / "wiki" / rel
+        text = path.read_text(encoding="utf-8")
+        frozen = text.replace("{{DATE}}", _FROZEN_INSTALL_DATE)
+        assert frozen != text, f"픽스처 오류 — {rel} 에 굳힐 {{{{DATE}}}} 가 없다(공허 주입)"
+        path.write_text(frozen, encoding="utf-8")
+
+
+def _build_upgraded_adopter(
+        tmp_path: Path, *, guest_marker_generation: str, substituted: bool,
+        host: str = _HOST_HARNESS, guest: str = _REPORTED_GUEST) -> Path:
+    """구세대 상태를 주입한 업그레이드 채택자 트리를 만들고 그 경로를 낸다.
+
+    ``guest_marker_generation``
+      ``"legacy"`` — v1.4.5 세대 guest 절(옛 마커 리터럴 + 엔진 행 부재).
+      ``"current"`` — 현행 add-harness 가 쓴 그대로의 절(대조군·멱등 축).
+    ``substituted`` — 설치 시 값으로 굳은 치환 결과(README 프로젝트명·template 실날짜) 주입 여부.
+
+    guest 어댑터 엔진 파일은 두 세대 모두 설치 시점 사본으로 동결한다 — 제보의 실제 증상이
+    "설치 이후 상류 변경을 한 번도 못 받았다" 이기 때문이다.
+    """
+    assert guest_marker_generation in ("legacy", "current"), guest_marker_generation
+    dest = tmp_path / f"upgraded-{host}-{guest}-{guest_marker_generation}"
+
+    # ① 현행 엔진으로 설치 + 엔진 사본 canonical 승격(게이트 전제).
+    assert _PM_IMPORT.main(
+        ["--new", str(dest), "--harness", host, "--name", _ADOPTER_NAME, "--fill", "manual"]
+    ) == 0, f"{host} import 실패"
+    _prime_engine_to_canonical(dest)
+
+    # ② add-harness 이력 — guest 절 등재 + guest 어댑터 실파일.
+    plan = _PM_IMPORT.add_harness(dest, guest, dry_run=False, source_root=REPO)
+    assert plan, f"{host}→{guest}: add-harness plan 이 비어 있다(픽스처 무효)"
+    block = _guest_manifest_block(dest)
+    assert block is not None, f"{host}→{guest}: add-harness 가 guest 절을 등재하지 않았다"
+
+    # ③ guest 어댑터 엔진 파일 동결(설치 시점 사본).
+    frozen = _freeze_guest_engine_files(dest, block)
+    assert frozen, f"{host}→{guest}: 동결할 guest 엔진 파일 0(공허 픽스처)"
+
+    # ④ 옛 세대 guest 절로 되돌리기.
+    if guest_marker_generation == "legacy":
+        _inject_legacy_guest_section(dest)
+
+    # ⑤ 설치 시 굳은 치환 결과.
+    if substituted:
+        _inject_substituted_documents(dest)
+    return dest
+
+
+# ── S1 guest 절 생존 — 옛 마커 채택자의 동기 ──────────────────────────────────
+
+
+@pytest.mark.parametrize("generation", ("legacy", "current"))
+def test_upgrade_adopter_guest_section_survives_sync_and_marker_converges(tmp_path, generation):
+    """옛 마커 채택자가 동기 후에도 guest 절을 갖고, 마커가 현행 리터럴로 수렴하며, 재동기가 멱등이다.
+
+    결함 형상: guest 절 경계 마커 리터럴이 v1.5.0 구간에 바뀌어, 그 전에 `add-harness` 를 쓴
+    채택자가 `pm_update` 를 돌리면 읽기 쪽이 절을 못 알아보고 **경고 없이** 통째로 지웠다
+    (렌더/overlay 스캔 커버리지가 그 시점에 끊긴다). 옛 세대(대조군: 현행 세대) 절을 디스크에 두고
+    실 CLI 동기를 태워 절 생존·마커 수렴·멱등을 못박는다.
+    """
+    dest = _build_upgraded_adopter(
+        tmp_path, guest_marker_generation=generation, substituted=True)
+    before = _guest_manifest_block(dest)
+    assert before is not None
+    render_rows_before = _guest_render_rows(before)
+    assert render_rows_before, "픽스처 오류 — guest 렌더물 행 0"
+
+    result = _run_pm_update(dest)
+
+    after = _guest_manifest_block(dest)
+    assert after is not None, (
+        f"{generation} 세대 guest 절이 동기 후 사라졌다(조용한 소실) — 절 안의 `@render`·엔진 행이 "
+        f"어느 채널에도 안 남는다.\n--- stdout ---\n{result.stdout}")
+    # 쓰기는 항상 현행 리터럴 단일 세대다 — 옛 리터럴이 남으면 다음 세대에서 같은 사고가 반복된다.
+    assert _CURRENT_GUEST_BEGIN in after, f"guest 절 시작 마커가 현행 리터럴이 아니다:\n{after}"
+    assert _LEGACY_GUEST_BEGIN not in _manifest_text(dest), (
+        "옛 세대 마커가 manifest 에 잔존 — 1 회 마이그레이션이 안 일어났다")
+    # 렌더물 행은 add-harness refresh 소유라 동기가 내용을 바꾸지 않는다(경로 집합 보존).
+    assert {_row_path(row) for row in _guest_render_rows(after)} == \
+        {_row_path(row) for row in render_rows_before}, (
+            f"guest 렌더물 행 집합이 동기로 변형됐다\n이전: {render_rows_before}\n이후: {after}")
+
+    if generation == "legacy":
+        assert _MARKER_MIGRATION_NOTICE in result.stdout, (
+            "옛 리터럴을 현행으로 바꿨는데 표기가 없다(조용한 변환 금지)\n"
+            f"--- stdout ---\n{result.stdout}")
+    else:
+        assert _MARKER_MIGRATION_NOTICE not in result.stdout, (
+            "현행 세대인데 마이그레이션 표기가 났다(멱등 위반·헛 변환)\n"
+            f"--- stdout ---\n{result.stdout}")
+
+    # 다음 동기는 멱등 — manifest 가 바이트로 안정(매 sync 재기록 churn 0).
+    manifest_after_first = _manifest_text(dest)
+    _run_pm_update(dest)
+    assert _manifest_text(dest) == manifest_after_first, (
+        "재동기가 engine.manifest 를 또 고쳤다(멱등 위반·영구 churn)")
+
+
+# ── S2 frozen 가시성 — guest 어댑터 엔진 파일 ────────────────────────────────
+
+
+@pytest.mark.parametrize("guest", _GUEST_HARNESSES)
+def test_upgrade_adopter_guest_adapter_is_never_silently_frozen(tmp_path, guest):
+    """설치 시점 사본으로 동결된 guest 어댑터 엔진 파일이 **조용히** 동결로 남지 않는다.
+
+    두 결과 중 하나만 인정한다 — (a) 동기 채널이 상류 값으로 수렴시키거나, (b) 수렴이 없다면
+    출력이 동결 좌표를 짚고 복구 채널(`add-harness`)을 안내한다. 금지되는 건 셋째 경우, 즉 계획
+    0 건·경고 0 건으로 지나가 채택자가 자기 어댑터가 몇 달째 옛 사본인 걸 모르는 상태다(제보의
+    실제 증상: 설치 시점 `.codex/**` 가 상류 6 커밋을 못 받은 채 조용히 동결).
+
+    guest 절 자체는 어느 쪽 결과에서도 생존해야 한다 — 절이 사라지면 다음 동기부터는 동결 사실을
+    표면화할 근거조차 없다.
+    """
+    dest = _build_upgraded_adopter(
+        tmp_path, guest_marker_generation="legacy", substituted=True, guest=guest)
+    frozen_before = _frozen_guest_files(dest)
+    assert frozen_before, f"{guest}: 픽스처가 동결 사본을 안 만들었다(공허 게이트)"
+
+    result = _run_pm_update(dest)
+    output = _combined_output(result)
+
+    block = _guest_manifest_block(dest)
+    assert block is not None, (
+        f"{guest}: 동기가 guest 절을 지웠다 — 동결 표면화의 근거가 사라진다\n{output}")
+
+    frozen_after = _frozen_guest_files(dest)
+    if frozen_after:
+        # (b) 아직 동기 채널이 없다면 최소한 loud·actionable 이어야 한다.
+        assert any(rel in output for rel in frozen_after), (
+            f"{guest}: 동결 파일 {frozen_after} 이 그대로인데 출력이 좌표를 짚지 않는다"
+            f"(조용한 동결)\n{output}")
+        assert "add-harness" in output, (
+            f"{guest}: 동결을 알렸으나 복구 채널 안내가 없다(actionable 아님)\n{output}")
+        return
+
+    # (a) 수렴했다면 상류 값과 **byte 일치** 여야 한다 — 표식만 지운 헛 동기를 배제한다.
+    engine_rows = _guest_engine_rows(block)
+    assert engine_rows, (
+        f"{guest}: 파일은 갱신됐는데 guest 절에 엔진 행이 없다 — 다음 동기의 소유 근거가 없다\n{block}")
+    snapshot = _snapshot_tree(dest)
+    compared = 0
+    for row in engine_rows:
+        source_root = REPO / _row_source(row)
+        row_path = _row_path(row)
+        for rel in _files_under(snapshot, row_path):
+            if rel not in frozen_before:
+                continue
+            source = source_root if source_root.is_file() else \
+                source_root / rel[len(row_path) + 1:]
+            assert source.is_file(), f"{guest}: 상류 대응 부재 — {rel} → {source}"
+            assert snapshot[rel] == source.read_bytes(), (
+                f"{guest}: {rel} 이 상류와 byte 불일치(동기가 값을 안 가져왔다)")
+            compared += 1
+    assert compared, f"{guest}: 상류와 대조한 파일 0(공허 통과)"
+
+
+# ── S3 토큰 안정성 — 치환 소유권과 진동 ──────────────────────────────────────
+
+
+@pytest.mark.parametrize("substituted", (True, False))
+def test_upgrade_adopter_render_tokens_settle_without_oscillation(tmp_path, substituted):
+    """동기가 채택자 가시 문서에 토큰을 되돌리지 않고, 소비 시점 소유 템플릿은 토큰을 유지한다.
+
+    결함 형상: render 토큰을 본문에 담은 wiki 파일이 manifest 에 bare 등재돼, byte-copy 동기가
+    채택자의 치환된 문서를 미치환 토큰으로 되돌렸다(실측: 동기 후 `wiki/README.md` 가
+    `{{PROJECT_NAME}}` 로 회귀). 반대편 반쪽은 설치가 값으로 굳혀 버린 템플릿이다 —
+    `pm_state.template.md`·`domain/_template.md` 의 `{{DATE}}` 는 **소비 시점** 소유라 채택자
+    디스크에 토큰-form 으로 있어야 정상이고, 굳어 있으면 새 산출물이 설치일을 물려받는다.
+
+    두 방향을 한 트리에서 함께 보고, 재동기 진동 0(같은 upstream 을 두 번 받으면 트리가 바이트로
+    안정)까지 확인한다 — 진동은 소유권이 두 주체로 갈렸을 때의 증상이라 1 회 관측으로는 안 보인다.
+    """
+    dest = _build_upgraded_adopter(
+        tmp_path, guest_marker_generation="legacy", substituted=substituted)
+    _run_pm_update(dest)
+
+    readme = (dest / ".project_manager" / "wiki" / "README.md").read_text(encoding="utf-8")
+    leaked = sorted(set(_RENDER_TOKEN_RE.findall(readme)))
+    assert not leaked, (
+        f"동기 후 채택자 가시 문서(wiki/README.md)에 render 토큰 {leaked} — byte-copy 가 치환된 "
+        "문서를 토큰-form 으로 되돌렸다")
+    assert _SUBSTITUTED_README_LINE not in readme, (
+        "채택자가 손으로 유지하던 치환 본문이 남아 있다 — 상류 중립 문구가 안 내려왔다")
+
+    for rel in ("pm_state.template.md", "domain/_template.md"):
+        text = (dest / ".project_manager" / "wiki" / rel).read_text(encoding="utf-8")
+        assert "{{DATE}}" in text, (
+            f"{rel} 에 `{{{{DATE}}}}` 가 없다 — 소비 시점 소유 토큰이 값으로 굳었다"
+            "(이 템플릿에서 나오는 산출물이 옛 날짜를 물려받는다)")
+        assert _FROZEN_INSTALL_DATE not in text, (
+            f"{rel} 에 설치 시점으로 굳은 날짜({_FROZEN_INSTALL_DATE})가 잔존 — 동기가 토큰-form 을 "
+            "복구하지 못했다")
+
+    # 진동 0 — 같은 upstream 을 한 번 더 받아도 트리가 바이트로 안정.
+    before = _snapshot_tree(dest)
+    _run_pm_update(dest)
+    after = _snapshot_tree(dest)
+    changed = sorted(rel for rel in set(before) | set(after) if before.get(rel) != after.get(rel))
+    assert changed == [], f"재동기가 트리를 또 바꿨다(진동): {changed}"
+
+
+# ── S4 reconcile 절차 안전 — 스킬 절차와 엔진 단독 경로 ──────────────────────
+
+
+def _skill_manifest_copy_source(skill_text: str, *, host: str) -> Path | None:
+    """스킬이 지시하는 manifest 선-cp 의 **원본 경로** — 지시가 없으면 None.
+
+    placeholder 두 개(`<cache-or-path>`·`<harness>`)를 이 채택자의 실좌표로 해소한다. 지시가
+    있는데 해소가 안 되면 재연이 조용히 무력화되므로 loud 하게 죽인다."""
+    match = _SKILL_MANIFEST_COPY_RE.search(skill_text)
+    if match is None:
+        return None
+    assert match.group("target") == _ADOPTER_MANIFEST_REL, (
+        f"스킬 cp 대상이 채택자 manifest 가 아니다: {match.group('target')!r}")
+    (template_dir,) = _PM_IMPORT.HARNESS_TEMPLATE_DIRS[host]
+    resolved = Path(
+        match.group("source")
+        .replace("<cache-or-path>", str(REPO))
+        .replace("<harness>", template_dir))
+    assert resolved.is_file(), (
+        f"스킬 cp 원본을 실좌표로 못 풀었다: {match.group('source')!r} → {resolved} "
+        "(스킬 placeholder 어휘가 바뀌었다면 이 재연도 함께 고쳐야 한다)")
+    return resolved
+
+
+def test_upgrade_adopter_skill_manifest_reconcile_never_silently_drops_guest(tmp_path):
+    """스킬이 지시하는 manifest reconcile 절차를 재연해도 guest 절이 **조용히** 사라지지 않는다.
+
+    `pm-update` 스킬은 동기 전에 채택자 manifest 를 상류 flavor manifest 로 덮는 선-cp 를 지시한다
+    (새 등재 항목이 채택자에 도달하게 하는 목적). 그 cp 는 파일 통째 덮기라 add-harness 채택자의
+    guest 절도 함께 지운다 — 절이 사라진 뒤엔 마이그레이션(T-0571)도 살릴 대상이 없다.
+
+    인정하는 결과는 둘이다 — (a) 절차를 그대로 밟아도 guest 절이 생존하거나, (b) 절이 사라졌다면
+    엔진이 그 사실을 loud 하게 짚고 복구(`add-harness` 재실행)를 안내하고, 그 복구가 실제로 절을
+    되살린다. 금지되는 건 절이 조용히 사라져 채택자가 커버리지 상실을 모르는 상태다. **(b) 로
+    green 인 동안은 스킬 본문이 개선 대상**이라는 신호다(guest 절이 있는 채택자에겐 cp 대신 엔진
+    reconcile 경로 안내 — 그 경로가 실재함은 아래 테스트가 실측한다).
+    """
+    dest = _build_upgraded_adopter(
+        tmp_path, guest_marker_generation="legacy", substituted=True)
+    guest_paths_before = [_row_path(row) for row in _guest_rows(_guest_manifest_block(dest))]
+    assert guest_paths_before, "픽스처 오류 — guest 절 등재 행 0"
+
+    # 채택자가 실제로 읽는 사본(설치된 스킬)에서 절차를 뽑는다 — 소스 트리가 아니라 출하물이 진실.
+    skill = dest / ".claude" / "skills" / "pm-update" / "SKILL.md"
+    assert skill.is_file(), f"채택자 트리에 pm-update 스킬 부재: {skill}"
+    copy_source = _skill_manifest_copy_source(skill.read_text(encoding="utf-8"), host=_HOST_HARNESS)
+    if copy_source is not None:
+        _manifest_path(dest).write_bytes(copy_source.read_bytes())
+
+    result = _run_pm_update(dest)
+    output = _combined_output(result)
+
+    if _guest_manifest_block(dest) is not None:
+        return  # (a) 절차가 절을 보존한다 — 더 볼 것 없음.
+
+    # (b) 절이 사라졌다면 loud·actionable 이어야 하고, 안내된 복구가 실제로 작동해야 한다.
+    assert any(path in output for path in guest_paths_before), (
+        f"guest 절이 절차 중 사라졌는데 출력이 그 좌표({guest_paths_before})를 짚지 않는다"
+        f"(조용한 소실)\n{output}")
+    assert "add-harness" in output, (
+        f"guest 절 소실을 알렸으나 복구 채널 안내가 없다(actionable 아님)\n{output}")
+    _PM_IMPORT.add_harness(dest, _REPORTED_GUEST, dry_run=False, source_root=REPO)
+    assert _guest_manifest_block(dest) is not None, (
+        "안내대로 add-harness 를 재실행했는데 guest 절이 복구되지 않는다 — 안내가 거짓이다")
+
+
+def test_upgrade_adopter_engine_reconciles_stale_manifest_without_manual_copy(tmp_path):
+    """엔진 단독 동기가 옛 manifest 를 상류 형상으로 되맞추고 그 항목까지 같은 실행에서 전파한다.
+
+    스킬의 선-cp 는 "새 항목이 채택자에 도달하려면 dest manifest 가 먼저 알아야 한다" 를 근거로
+    한다. 그 전제가 아직 참인지 실측한다 — 등재 행 하나를 지우고 그 파일을 옛 내용으로 되돌린
+    채택자에서 `pm_update` **한 번**이 (a) 행 복구 (b) 파일 전파 (c) guest 절 보존을 함께 해내면,
+    guest 절이 있는 채택자에게 선-cp 는 불필요하며(수동 복사 없이 같은 결과) 위험만 남는다.
+
+    이 테스트가 red 로 바뀌면 선-cp 지시는 다시 필요해진 것이다 — 그때는 위 재연 테스트의 판정과
+    함께 스킬 본문을 재검토해야 한다.
+    """
+    dest = _build_upgraded_adopter(
+        tmp_path, guest_marker_generation="legacy", substituted=True)
+
+    # 옛 manifest 재현 — core 등재 행 하나를 지우고 그 문서를 옛 내용으로 되돌린다. 대상은 엔진이
+    #   실행 중 import 하는 도구가 아니라 문서 행으로 고른다(도구를 부수면 판정 대신 크래시를 본다).
+    assert _guest_manifest_block(dest) is not None, "픽스처 오류 — guest 절 부재"
+    core_text = _manifest_text(dest).split(_LEGACY_GUEST_BEGIN)[0]
+    victim = next(
+        (line.strip() for line in core_text.splitlines()
+         if line.strip().endswith(".md") and "@" not in line and (dest / line.strip()).is_file()),
+        None)
+    assert victim, "core 등재 문서 행을 못 찾았다(픽스처 전제 붕괴)"
+    text = _manifest_text(dest)
+    dropped = "\n".join(line for line in text.splitlines() if line.strip() != victim) + "\n"
+    assert dropped != text, f"{victim} 행 제거가 무효(공허 픽스처)"
+    _manifest_path(dest).write_text(dropped, encoding="utf-8")
+    (dest / victim).write_text(_STALE_GUEST_BODY, encoding="utf-8")
+
+    _run_pm_update(dest)
+
+    restored = [line.strip() for line in _manifest_text(dest).splitlines()]
+    assert victim in restored, (
+        f"엔진 단독 동기가 옛 manifest 의 누락 행({victim})을 복구하지 못했다 — 선-cp 없이는 "
+        "새 등재 항목이 채택자에 도달하지 않는다")
+    assert (dest / victim).read_text(encoding="utf-8") != _STALE_GUEST_BODY, (
+        f"{victim} 이 같은 실행에서 전파되지 않았다 — 채택자는 동기를 두 번 돌려야 한다")
+    assert _guest_manifest_block(dest) is not None, (
+        "엔진 단독 경로가 guest 절을 지웠다 — 안전한 대안 경로가 없다")

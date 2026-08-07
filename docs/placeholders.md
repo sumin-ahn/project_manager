@@ -15,6 +15,7 @@
 | `{{DATE}}` | 초기화 날짜 (wiki frontmatter) | `2026-05-22` |
 
 > ⚠️ `{{PROJECT_NAME}}` 은 **엔진 문서(`pm_role.md`)에선 치환하지 않는다** — `local.conf` 가 해소(`board.py init` 기록)하고 pm_update 동기화 대상이라 치환하면 되돌아간다. `{{PY}}`·`{{TEST_CMD}}` 는 엔진 문서·어댑터에서 폐기(T-0219) — 진입 문서 등 다른 파일에선 sed 로 채워도 됨.
+> ⚠️ `{{DATE}}` 는 **스캐폴드 템플릿 2종(`wiki/pm_state.template.md`·`wiki/domain/_template.md`)에선 치환하지 않는다** — 그 둘의 날짜는 **소비 시점**(그 템플릿이 산출물을 만드는 지점: `board.py init` 의 `pm_state.md` · task pm_state 생성 · 사람이 스캐폴드를 복사해 domain 페이지를 만들 때)이 소유한다. 둘 다 manifest 등재라 설치가 날짜로 굳히면 다음 `pm_update` byte-copy 가 토큰-form 으로 되돌려 매 sync 진동한다. 나머지 파일(`status.md`·`architecture.md`·`log/current.md` 등 manifest 미등재 인스턴스 seed)의 `{{DATE}}` 는 설치일로 채우는 게 맞다. 선언 = `pm_import.CONSUMPTION_TIME_TOKENS`(파일 × 토큰 단위).
 > opencode 타깃은 추가로 `{{OPENCODE_PRO_MODEL}}`(subagent 모델 ID)을 가지며 — sed 가 아니라 pm_import 의 결정적 `opencode models` 조회로 해소된다 ([`../templates/opencode/README.md`](../templates/opencode/README.md) §모델 선택).
 
 직접 서술해야 하는(자유 형식) placeholder — 파일 안 `<!-- TODO -->` 주석으로 표시:
