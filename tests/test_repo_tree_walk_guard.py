@@ -38,6 +38,14 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
 # 원장에 사유와 기대 개수를 명시하지 않는 한 red다.
 REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
     (
+        "tests/test_pm_update_opencode.py",
+        "test_templates_do_not_ship_github_workflows",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "templates/*/.github/workflows라는 닫힌 출하 금지 표면에 실파일이 0개임을 검증"
+    ),
+    (
         "tests/test_template_scaffold_parity.py",
         "_unresolved_wiki_links",
         "rglob",
