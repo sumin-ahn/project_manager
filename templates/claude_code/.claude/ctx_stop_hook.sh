@@ -25,4 +25,9 @@ for _cand in python3 python; do
 done
 [ -n "$py" ] || exit 0
 
-exec "$py" "$hook_dir/ctx_stop_hook.py" "$@"
+target="$hook_dir/ctx_stop_hook.py"
+if [ "${1-}" = "--git-anchor-hook" ]; then
+    target="$hook_dir/pm_orch_claude.py"
+fi
+
+exec "$py" "$target" "$@"

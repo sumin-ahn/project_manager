@@ -75,7 +75,7 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
     """
     root = json.loads((ROOT_CLAUDE / "settings.json").read_text(encoding="utf-8"))
     tmpl = json.loads((TEMPLATE_CLAUDE / "settings.json").read_text(encoding="utf-8"))
-    assert set(root.get("hooks", {})) == {"PostToolUse", "PreCompact"}, (
+    assert set(root.get("hooks", {})) == {"PostToolUse", "PreToolUse", "PreCompact"}, (
         f"root 등록 훅 집합 드리프트: {set(root.get('hooks', {}))}"
     )
     assert set(tmpl.get("hooks", {})) == {
@@ -90,6 +90,11 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
         f"root PreCompact 가 precompact 훅을 안 가리킴: {root_block}"
     )
     assert root.get("autoCompactEnabled") is not False, "root 는 auto-compact 유지여야 함"
+    for config, label in ((root, "root"), (tmpl, "template")):
+        git_hooks = [entry for entry in config["hooks"]["PreToolUse"]
+                     if entry.get("matcher") == "Bash"
+                     and "--git-anchor-hook" in json.dumps(entry)]
+        assert git_hooks, f"{label} PreToolUse(Bash) git-anchor 훅 누락"
     # template: PostCompact 완료 후 재무장 + auto-compact 정본 단일 토글 ON(T-0458).
     postcompact = tmpl["hooks"]["PostCompact"]
     assert "ctx_stop_hook.sh" in json.dumps(postcompact), (

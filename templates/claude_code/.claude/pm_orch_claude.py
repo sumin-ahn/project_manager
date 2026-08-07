@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +48,84 @@ def _load_engine():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module, root
+
+
+def _load_board(root: Path):
+    """raw git 훅 판정의 단일 진실인 board.py를 root 기준으로 로드한다."""
+    board_path = root / ".project_manager" / "tools" / "board.py"
+    spec = importlib.util.spec_from_file_location("pm_git_anchor_board", board_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
+    """Claude PreToolUse(Bash) 입력을 중앙 ``judge_git_anchor_command`` seam에 배선한다."""
+    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
+    tool = stdin.get("tool_name") or stdin.get("toolName")
+    tool_input = stdin.get("tool_input") or stdin.get("toolInput") or {}
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    # 매 Bash 호출에 훅이 떠도 git 비포함은 board import조차 하지 않는 선필터(핫패스 비용 0).
+    if event != "PreToolUse" or tool != "Bash" or not isinstance(command, str):
+        return None
+    prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
+    if not re.search(r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>])", prefilter):
+        return None
+    cwd = stdin.get("cwd")
+    anchor = cwd if isinstance(cwd, str) and cwd else str(root)
+    judgment = _load_board(root).judge_git_anchor_command(anchor, command)
+    verdict = judgment.get("verdict")
+    reason = judgment.get("reason", "git cwd 정체 판정")
+    if verdict == "deny":
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": f"[git-anchor/deny] {reason}",
+            }
+        }
+    if verdict == "warn":
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": f"[git-anchor/warn] {reason}",
+            }
+        }
+    return None
+
+
+def run_git_anchor_hook(root: Path) -> int:
+    """stdin JSON을 읽어 Claude hook JSON을 쓰는 얇은 CLI 모드."""
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        output = git_anchor_hook_evaluate(payload, root)
+    except BaseException as exc:  # SystemExit 포함 판정 인프라 손상은 정상 Bash를 막지 않는다.
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": f"[git-anchor/warn] 판정 불가({exc}) — cwd를 직접 확인",
+            }
+        }
+    if output is not None:
+        sys.stdout.write(json.dumps(output, ensure_ascii=False))
+    return 0
+
+
+def _emit_git_anchor_boundary_warn(exc: BaseException) -> int:
+    """hook-mode 최외곽 실패를 Claude advisory JSON + rc0으로 강등한다."""
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": f"[git-anchor/warn] 판정 불가({exc}) — cwd를 직접 확인",
+        }
+    }
+    sys.stdout.write(json.dumps(output, ensure_ascii=False))
+    return 0
 
 
 class ClaudeCliDriver:
@@ -190,11 +270,21 @@ def build_parser() -> argparse.ArgumentParser:
              "박아 같은 task 를 resume 하게 한다((b) 명시 전달·cwd 추론 금지). 미지정이면 bare "
              "`/pm-bootstrap`(슬롯/솔로).",
     )
+    parser.add_argument("--git-anchor-hook", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    actual_argv = list(sys.argv[1:] if argv is None else argv)
+    hook_requested = "--git-anchor-hook" in actual_argv
+    if hook_requested:
+        try:
+            args = build_parser().parse_args(actual_argv)
+            root = ctx_guard.repo_root(Path(__file__).resolve().parent)
+            return run_git_anchor_hook(root)
+        except BaseException as exc:
+            return _emit_git_anchor_boundary_warn(exc)
+    args = build_parser().parse_args(actual_argv)
     engine, root = _load_engine()
 
     cwd = args.cwd or os.getcwd()

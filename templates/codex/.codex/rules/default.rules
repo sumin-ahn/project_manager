@@ -1,5 +1,12 @@
 # project_manager Codex command policy — Claude settings.json allow/deny 대응.
 # 일상 PM git 작업은 sandbox 밖(.git protected path)에서도 묻지 않고 실행한다.
+#
+# raw git cwd-anchor 파리티 예외(T-0587): execpolicy prefix_rule은 argv prefix와 decision만
+# 판정하며 프로세스 cwd·등록 slot 장부·양쪽 checkout의 path 실재를 읽거나 모델 context를
+# 주입할 수 없다. 따라서 board.judge_git_anchor의 좁은 동적 deny를 여기서 정적 forbidden/prompt로
+# 흉내 내면 정상 PM 홈/worktree commit까지 과차단한다. Codex는 실행 샌드박스가 실제 cwd를 사용자에게
+# 표시하는 기존 관측 채널을 유지하고, 동적 동등 가드는 execpolicy가 cwd predicate/hook command를
+# 지원할 때만 추가한다. 이 비대칭은 false-deny 0 계약을 보존하기 위한 의도된 capability gap이다.
 prefix_rule(
     pattern = ["git", "add"],
     decision = "allow",
