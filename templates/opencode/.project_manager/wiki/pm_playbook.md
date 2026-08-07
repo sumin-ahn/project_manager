@@ -78,25 +78,38 @@ T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 
 ⚠️ code-reviewer 프롬프트에 "`status.md`/`log/current.md` 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님" 을 덧붙인다.
 
-**검토 루프:** dev → **내부 code-reviewer + codex external_review (둘 다)** → must-fix 처리(dev 재작업) → PM 회귀 verify → `board.py complete`. 루프를 생략하지 않는다. git 도입 후 code-reviewer 는 `git diff` 로 변경 범위·내용을 직접 검증한다.
+**검토 루프:** dev → **내부 code-reviewer + 추가 리뷰어 (둘 다)** → must-fix 처리(dev 재작업) → PM 회귀 verify → `board.py complete`. 루프를 생략하지 않는다. git 도입 후 code-reviewer 는 `git diff` 로 변경 범위·내용을 직접 검증한다.
 
-### codex 외부 교차검증 (표준 리뷰 게이트)
+### 추가 리뷰어 교차검증 (표준 리뷰 게이트)
 
-내부 code-reviewer 와 **codex external_review 를 병행**한다. 전제: `external_review_enabled=true` (local.conf opt-in — 비활성이면 `--dry-run` 미리보기·`--force` 1회 강제).
+내부 code-reviewer 와 **추가 리뷰어(additional reviewer)를 병행**한다. 엔진 이름은 `external_review` 이고 `external_*` 은 기계 식별자·외부 전송 축의 이름이다 — 사람이 부르는 역할 이름은 추가 리뷰어다.
+
+전제는 `local.conf` 의 원자적 튜플 하나다(첫 init/update 에서 **1회만** 묻는다 — 비활성이면 `--dry-run` 미리보기·`--force` 1회 강제).
+
+```
+external_review_enabled=true
+additional_reviewer.harness=codex
+additional_reviewer.model=gpt-5.6-sol
+additional_reviewer.reasoning=max
+```
+
+`external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**다 — 켠 뒤에는 리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻지 않는다. 라운드/wave 상한(`--ack-rounds`·`--ack-wave`)은 비용 게이트가 아니라 기계적 anti-loop 정지다: rc=4 면 `--rounds-report` 로 장부를 읽고, **같은 scope 의 정상 수렴이면 PM 이 자율로 ack** 하며 판단 근거를 log 에 남긴다. 사용자에게 올리는 경우는 진짜 미수렴(같은 findings 반복·판정 진동)·중대한 scope 확대·그 밖의 독립적 사용자 게이트 사유다.
+
+레거시 `reviewer_cmd` 를 쓰던 채택자는 그대로 동작한다 — 엔진이 자동 마이그레이션하지 않고, 온보딩도 기존 결정을 덮지 않는다.
 
 Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `timeout: 29300000`(ms)을 반드시 명시한다. 엔진 CLI `--timeout`은 리뷰어 벽시계이고 Bash 호출층 timeout을 대신하지 않는다.
 
-- **코드 리뷰** = 내부 code-reviewer + codex 외부 교차.
+- **코드 리뷰** = 내부 code-reviewer + 추가 리뷰어 교차.
   ```
   python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN
   ```
   `--ticket` 이 touches 를 diff 경로로 잡고, `--adr` 이 관련 ADR 을 프롬프트에 참조로 넣는다.
-- **설계 리뷰** (ADR/spike) = codex 교차. ADR/spike 문서 자체를 diff 로 보낸다.
+- **설계 리뷰** (ADR/spike) = 추가 리뷰어 교차. ADR/spike 문서 자체를 diff 로 보낸다.
   ```
   python3 .project_manager/tools/external_review.py --base <ref> --paths .project_manager/wiki/decisions/ ...
   ```
-- **diff-only 한계**: codex 는 **diff 만** 본다 (`--adr` 은 ID 참조일 뿐 본문 미포함). ADR 본문이 필요하거나 코드 ticket 이 ADR 을 함께 개정하면 **`--paths` 에 코드 경로(ticket touches)와 ADR/문서 경로를 함께 나열**한다. ⚠️ `--paths` 는 `--ticket` touches 를 *대체*하므로 코드 경로 누락 시 코드 diff 가 리뷰에서 빠진다. 또는 코드(`--ticket`)·설계(`--paths`)를 **별도 실행**한다.
-- 판정: codex 가 must-fix 감지 시 exit 1 (반려). 외부 호출 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL` (내부 reviewer 폴백 신호).
+- **diff-only 한계**: 추가 리뷰어는 **diff 만** 본다 (`--adr` 은 ID 참조일 뿐 본문 미포함). ADR 본문이 필요하거나 코드 ticket 이 ADR 을 함께 개정하면 **`--paths` 에 코드 경로(ticket touches)와 ADR/문서 경로를 함께 나열**한다. ⚠️ `--paths` 는 `--ticket` touches 를 *대체*하므로 코드 경로 누락 시 코드 diff 가 리뷰에서 빠진다. 또는 코드(`--ticket`)·설계(`--paths`)를 **별도 실행**한다.
+- 판정: 추가 리뷰어가 must-fix 감지 시 exit 1 (반려). 외부 호출 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL` (내부 reviewer 폴백 신호).
 
 ### 방식 B — 독립 구현 세션 (별도 Claude 세션, 수동 spawn)
 
@@ -123,7 +136,7 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 2. **claim** — `/pm-wave-claim T-NNNN`. DoD self-containment·depends_on·placeholder·wikilink dangling 검증 후 claim.
 3. **dev background 위임** — `/pm-dev-delegate T-NNNN --role developer`. Agent 툴 `run_in_background: true`. **병렬 시 touches disjoint 필수** (file 겹침 0).
 4. **(병렬 wave) dev 실행 중 PM 안전 작업** — touches 와 겹치지 않는 파일 편집·다른 ticket 본문 작성·`.project_manager/wiki/` 페이지 정비. ⚠️ touches 겹치는 파일 편집 금지(reviewer `git diff` 오염). ⚠️ 회귀 baseline 측정도 race 위험 — dev cycle 후 한 번에.
-5. **reviewer 위임 + codex 교차** — `/pm-dev-delegate T-NNNN --role code-reviewer` (background) **+ codex external_review 병행**. 내부 reviewer 프롬프트에 *"status.md / log/current.md 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님"* 명시. codex must-fix 와 내부 must-fix 를 합쳐 6단계에서 처리.
+5. **reviewer 위임 + 추가 리뷰어 교차** — `/pm-dev-delegate T-NNNN --role code-reviewer` (background) **+ 추가 리뷰어 병행**. 내부 reviewer 프롬프트에 *"status.md / log/current.md 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님"* 명시. 추가 리뷰어 must-fix 와 내부 must-fix 를 합쳐 6단계에서 처리.
 6. **PM should-fix 분기**:
    - **PM 직접 fix**: 1줄·1패턴 변경 + dev 가 안 도는 영역.
    - **dev 재작업**: 여러 줄 변경 또는 dev 가 같은 file 작업 중.

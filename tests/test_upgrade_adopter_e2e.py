@@ -584,7 +584,15 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
     )
 
 
-_T0585_PM_UPDATE_SHA256 = "21575cec59e9a86a614a92bd242c8d7a7096d53d533557f1b1d327ba86f6ec76"
+# T-0590 재현행: 추가 리뷰어 온보딩(기본 프로필 상수 + maybe_prompt_external_review)이
+#   updater 본문에 들어오면서 whole-file SHA 가 이동했다. 역적용 delta(T-0591 어댑터 수취 채널)는
+#   그대로 적용되므로 실 배달 경계는 불변이고, RUN1 fixture 는 새 온보딩을 포함한 실 updater 다
+#   (이 경로는 PM_NONINTERACTIVE=1 로 돌아 질문·conf write 가 발화하지 않는다).
+#   T-0590 R2 에서 한 번 더 이동 — 온보딩의 "이미 결정됨" 판정면을 conf raw 텍스트 substring 에서
+#   `_read_local_conf` 파싱 키 존재로 바꿨다(주석 한 줄이 결정을 가로채던 결함). 재검토 결과 이동
+#   범위는 maybe_prompt_external_review 본문뿐이고, 이 fixture 가 ratchet 하는 배달 경계
+#   (source/manifest planning → apply → self-update 순서)와 역적용 delta 구간에는 겹침이 없다.
+_T0585_PM_UPDATE_SHA256 = "97d0d1445a4dc0b60052153654209a433ca0d8cba2584be0c99a7354a81d4443"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

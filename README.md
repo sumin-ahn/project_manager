@@ -522,8 +522,20 @@ cd <project> && ./pm-update.sh
 이 절차 뒤 manifest에는 두 flavor의 `@source` provenance가 들어가므로, 이후 `pm-update`는
 `@render`뿐 아니라 `lib`/`plugins`를 포함한 두 flavor 전체를 갱신한다.
 
-외부 코드리뷰는 기본적으로 꺼져 있다. 켜면 코드 diff 가 외부로 전송되므로 프로젝트가 직접
-opt-in 을 결정한다.
+**추가 리뷰어**(additional reviewer) 는 기본적으로 꺼져 있다. 켜면 코드 diff 가 외부로 전송되므로
+프로젝트가 직접 opt-in 을 결정한다. 질문은 첫 init/update 에서 **한 번**뿐이고, "예" 는
+`local.conf` 에 아래 튜플을 원자적으로 기록한다.
+
+```
+external_review_enabled=true
+additional_reviewer.harness=codex
+additional_reviewer.model=gpt-5.6-sol
+additional_reviewer.reasoning=max
+```
+
+`external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 지속 동의라, 그 뒤 리뷰마다
+비용 승인을 다시 받지 않는다. 프로필은 세 키를 고쳐 교체한다. 옛 `reviewer_cmd` 를 쓰던 프로젝트는
+그대로 동작하며 자동 마이그레이션 대상이 아니다.
 
 ### 티켓의 수명
 

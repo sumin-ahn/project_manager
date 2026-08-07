@@ -2903,6 +2903,122 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
     assert conf["reviewer_cmd"] == "bar"
 
 
+# ── T-0590: 추가 리뷰어 프로필 무손실 왕복 (레거시 reviewer_cmd · 구조적/커스텀 튜플) ──
+# 온보딩이 심는 키는 `additional_reviewer.<축>` 점 표기다. 보존 경로가 키 이름을 열거하지
+# 않는 일반 규칙(_parse_conf_keys 의 문자열 key=value)이라는 사실을 값으로 못박는다 — 열거로
+# 바뀌면 커스텀 축을 쓰는 채택자가 재-import 에서 조용히 설정을 잃는다. 자동 마이그레이션도
+# 하지 않는다: 레거시만 쓰던 채택자에게 튜플이 생기지 않고, 튜플을 쓰던 채택자의 값이
+# 엔진 기본값으로 덮이지 않는다.
+
+_LEGACY_ONLY_CONF = (
+    "# 레거시 채택자 — 구조적 튜플 없이 reviewer_cmd 만 쓴다\n"
+    "external_review_enabled=true\n"
+    "reviewer_cmd=codex exec --sandbox read-only --skip-git-repo-check\n"
+    "session=mine\n"
+)
+
+_CANONICAL_TUPLE_CONF = (
+    "# 추가 리뷰어(additional reviewer) — ON.\n"
+    "external_review_enabled=true\n"
+    "additional_reviewer.harness=codex\n"
+    "additional_reviewer.model=gpt-5.6-sol\n"
+    "additional_reviewer.reasoning=max\n"
+    "session=mine\n"
+)
+
+_CUSTOM_TUPLE_CONF = (
+    "external_review_enabled=true\n"
+    "additional_reviewer.harness=opencode\n"
+    "additional_reviewer.model=qwen3-coder-next\n"
+    "additional_reviewer.reasoning=low\n"
+    "additional_reviewer.persona=security\n"   # 엔진이 모르는 커스텀 축
+    "session=mine\n"
+)
+
+
+@pytest.mark.parametrize(
+    "original,expected",
+    [
+        pytest.param(
+            _LEGACY_ONLY_CONF,
+            {
+                "external_review_enabled": "true",
+                "reviewer_cmd": "codex exec --sandbox read-only --skip-git-repo-check",
+            },
+            id="legacy-reviewer-cmd-only",
+        ),
+        pytest.param(
+            _CANONICAL_TUPLE_CONF,
+            {
+                "external_review_enabled": "true",
+                "additional_reviewer.harness": "codex",
+                "additional_reviewer.model": "gpt-5.6-sol",
+                "additional_reviewer.reasoning": "max",
+            },
+            id="canonical-tuple",
+        ),
+        pytest.param(
+            _CUSTOM_TUPLE_CONF,
+            {
+                "external_review_enabled": "true",
+                "additional_reviewer.harness": "opencode",
+                "additional_reviewer.model": "qwen3-coder-next",
+                "additional_reviewer.reasoning": "low",
+                "additional_reviewer.persona": "security",
+            },
+            id="custom-tuple-values-and-axis",
+        ),
+    ],
+)
+def test_into_reimport_round_trips_additional_reviewer_profile(
+    pm_import, tmp_path, original, expected
+):
+    """--into 재-import 가 추가 리뷰어 설정을 값 그대로 왕복시킨다(자동 마이그레이션 0)."""
+    dest = tmp_path / "roundtrip"
+    pm_dir = dest / ".project_manager"
+    pm_dir.mkdir(parents=True)
+    (pm_dir / "local.conf").write_text(original, encoding="utf-8")
+
+    rc = pm_import.main(["--into", str(dest), "--harness", "claude", "--name", "RT"])
+    assert rc == 0
+
+    conf = _parse_conf(pm_dir / "local.conf")
+    for key, value in expected.items():
+        assert conf.get(key) == value, f"{key} 왕복 실패: {conf.get(key)!r} != {value!r}"
+    # 레거시 채택자에게 구조적 튜플을 새로 만들어 주지 않는다(자동 마이그레이션 금지).
+    if "additional_reviewer.harness" not in expected:
+        assert not [k for k in conf if k.startswith("additional_reviewer.")], (
+            f"레거시 conf 에 추가 리뷰어 튜플이 주입됨: {sorted(conf)}"
+        )
+    # 튜플을 쓰던 채택자에게 레거시 키를 새로 만들어 주지도 않는다.
+    if "reviewer_cmd" not in expected:
+        assert "reviewer_cmd" not in conf, "튜플 채택자에게 reviewer_cmd 가 주입됨"
+
+
+def test_reapply_preserved_conf_keys_round_trips_dotted_and_custom_axes(
+    pm_import, tmp_path
+):
+    """재병합 단위: 점 표기·커스텀 축이 키 열거 없이 그대로 복원된다.
+
+    `_set_conf_keys`/`_parse_conf_keys` 가 정규식이 아니라 문자열 partition 이라 `.` 이
+    특수문자로 취급되지 않는다 — 그 성질이 깨지면 여기서 값이 어긋난다.
+    """
+    dest = tmp_path / "unit_dotted"
+    pm_dir = dest / ".project_manager"
+    pm_dir.mkdir(parents=True)
+    (pm_dir / "local.conf").write_text("session=pm\nproject_name=New\n", encoding="utf-8")
+
+    assert pm_import.reapply_preserved_conf_keys(dest, _CUSTOM_TUPLE_CONF) is True
+
+    conf = _parse_conf(pm_dir / "local.conf")
+    assert conf["additional_reviewer.harness"] == "opencode"
+    assert conf["additional_reviewer.model"] == "qwen3-coder-next"
+    assert conf["additional_reviewer.reasoning"] == "low"
+    assert conf["additional_reviewer.persona"] == "security"
+    assert conf["session"] == "pm"           # init 값 우선(원본 'mine' 이 이기지 않는다)
+    assert conf["project_name"] == "New"
+
+
 # ── SF3: __pycache__ / .pyc 복사 제외 ────────────────────────────────────────
 
 def test_import_excludes_pycache(pm_import, tmp_path):

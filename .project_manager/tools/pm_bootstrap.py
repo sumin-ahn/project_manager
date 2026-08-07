@@ -4746,7 +4746,7 @@ class PmBootstrap:
         pm_role 표기). **엔진이 Python CLI(`tools/*.py` — board.py/ticket_finish.py/
         pm_handoff.py)일 때만** "직접 금지" 강등 줄로 그리고, 엔진이 Agent 툴(`/pm-dev-delegate`)·
         facade 셸(`/pm-update`=pm-update.sh)이면 python3 줄을 지어내지 않고 skill-only + 평문 note
-        로 둔다. external_review 는 래핑 스킬 없는 별도 codex 게이트라 강등이 아니라 직접-CLI 예외
+        로 둔다. external_review 는 래핑 스킬 없는 별도 추가 리뷰어 게이트라 강등이 아니라 직접-CLI 예외
         (`board.py complete` 직접완료 경로·new/promote 도 동일). 강등 = 제거 아님: CLI backbone
         줄은 정체성 보간·⚠ 인접·argparse 정합 가드를 위해 남긴다. 규칙·why 는 재설명하지 않고
         카드 상단 1줄 pointer 로 pm_role 규율 절을 가리킨다.
@@ -4911,10 +4911,12 @@ class PmBootstrap:
             "orchestrator 위임 표준 프롬프트(dev / reviewer)",
         ))
         lines.append("  ↳ 엔진=Agent 툴(위임)·직접 CLI 아님 — skill-only.")
-        # external_review = 래핑 스킬 없는 별도 codex 게이트(직접 OK 예외·reviewer 병행). 위임 직후 sibling.
+        # external_review = 래핑 스킬 없는 별도 추가 리뷰어 게이트(직접 OK 예외·reviewer 병행).
+        # 위임 직후 sibling. 역할 이름은 **추가 리뷰어**이고 수신 하네스(codex 등)는 채택자
+        # local.conf 설정값이라 카드 문구에 고정하지 않는다.
         lines.append(cmd(
             _C_EXTERNAL_REVIEW,
-            "codex 외부 교차검증 게이트 — 직접(래핑 스킬 없음)·reviewer 병행",
+            "추가 리뷰어 교차검증 게이트 — 직접(래핑 스킬 없음)·reviewer 병행",
         ))
         lines.append(skill("/pm-handoff", "세션 종료 7단계 자동화"))
         handoff_prefix = f"--repo {repo_name} --slot {slot_num} " if session else ""

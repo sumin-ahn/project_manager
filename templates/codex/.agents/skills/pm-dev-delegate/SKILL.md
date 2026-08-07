@@ -261,7 +261,7 @@ spawn_agent(
 )
 ```
 
-> ⚙️ reviewer 위임과 **병행해 codex 외부 교차검증**을 돌린다 (표준 리뷰 게이트):
+> ⚙️ reviewer 위임과 **병행해 추가 리뷰어(additional reviewer) 교차검증**을 돌린다 (표준 리뷰 게이트):
 > `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
 > (ADR 본문 정합 필요 시 `--paths` 에 **코드 경로+ADR 함께 나열** — `--paths` 는
 > `--ticket` touches 를 *대체*함). 전제

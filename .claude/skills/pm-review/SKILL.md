@@ -1,12 +1,23 @@
 ---
 name: pm-review
-description: "codex 외부 교차검증 게이트 실행 규율 명령어化 — worktree cwd 앵커 + stage 선행(git add) + --paths/--ticket 경로 핀. backbone = external_review.py(opt-in). 앵커는 명시 selector 기반 diff_root 해소(등록 슬롯 lease 장부 자동 파생)·소유 PM 홈 해소 불가 무인자 실행은 rc=1 차단. 외부 전송은 과금·load-bearing 게이트에만(사소 docs 는 self/내부 리뷰). Triggers: 'codex 게이트', '외부 교차검증', 'external review 돌려', 'pm-review'."
+description: "추가 리뷰어(additional reviewer) 교차검증 게이트 실행 규율 명령어化 — worktree cwd 앵커 + stage 선행(git add) + --paths/--ticket 경로 핀. backbone = external_review.py(opt-in). 앵커는 명시 selector 기반 diff_root 해소(등록 슬롯 lease 장부 자동 파생)·소유 PM 홈 해소 불가 무인자 실행은 rc=1 차단. 외부 전송은 load-bearing 게이트에만(사소 docs 는 self/내부 리뷰). Triggers: '추가 리뷰어', 'codex 게이트', '외부 교차검증', 'external review 돌려', 'pm-review'."
 audience: pm-internal
 ---
 
-# /pm-review — codex 외부 교차검증 게이트
+# /pm-review — 추가 리뷰어 교차검증 게이트
 
-backbone은 `.project_manager/tools/external_review.py`(opt-in)이며, PM이 외부 게이트를 실행할 때 사용한다.
+backbone은 `.project_manager/tools/external_review.py`(opt-in)이며, PM이 추가 리뷰어 게이트를 실행할 때 사용한다. 역할 이름은 **추가 리뷰어(additional reviewer)** 이고, `external_review*`·`external_review_enabled` 는 기계 식별자와 외부 전송·격리·과금 축의 이름이다.
+
+수신자 프로필은 `local.conf` 의 원자적 튜플 하나다.
+
+```
+external_review_enabled=true
+additional_reviewer.harness=codex
+additional_reviewer.model=gpt-5.6-sol
+additional_reviewer.reasoning=max
+```
+
+opt-in 질문은 **첫 1회**뿐이다. `external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**이므로, PM은 리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻지 않는다.
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
 > 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
@@ -15,19 +26,22 @@ backbone은 `.project_manager/tools/external_review.py`(opt-in)이며, PM이 외
 
 ## 사용 시점
 
-- dev→reviewer 내부 게이트를 통과한 **실질 코드·설계**(엔진/알고리즘·비파괴 동작·파서·보안·ADR/설계)에 codex 외부 교차검증을 실행한다.
+- dev→reviewer 내부 게이트를 통과한 **실질 코드·설계**(엔진/알고리즘·비파괴 동작·파서·보안·ADR/설계)에 추가 리뷰어 교차검증을 실행한다.
 - **사소한 docs/prose/자명한 편집에는 실행하지 않는다**. self/내부 리뷰로 끝낸다.
-- codex 라운드가 길어지면(>3~4) 근거를 갖춰 수락/override 또는 재질문할지 판단한다.
+- 라운드가 길어지면(>3~4) 근거를 갖춰 수락/override 또는 재질문할지 판단한다.
 
 ## 라운드 상한
 
+라운드/wave 상한은 **기계적 anti-loop 정지**이지 비용 승인 게이트가 아니다. 비용 의사표시는 `external_review_enabled=true` 한 번으로 끝났다.
+
 engine은 `--gate <T-NNNN>`별 라운드 장부를 세고 한도(기본 4, `local.conf`의 `external_review_round_limit`) 초과분을 실행 전에 거부한다(rc=4). 호출 전 예약되며 전송-전 실패만 환불되어 반복 타임아웃으로 우회할 수 없다. 미완(미마감) 라운드는 별도 상한(기본 2, `DEFAULT_INCOMPLETE_ROUND_LIMIT`)이 먼저 걸린다.
 
-1. rc=4 → 즉시 사용자에게 보고하고 대기한다. 보고 내용: *지금까지 라운드 수 · 라운드별 수락/기각 판정 요지 · 남은 findings의 실질성 평가 · 계속/종결/설계-재질문 권고*.
-2. 사용자가 계속을 승인한 경우에만 `--ack-rounds`를 붙여 재개한다(+한도만큼 창이 열린다). **승인 없이 `--ack-rounds` 금지**. 엔진은 기록만 하고 승인 게이트는 이 규율이다.
-3. 종결(수락/override) 시 판정 근거를 log에 박제하고 게이트를 닫는다. 연쇄 결함이 이어졌다면 과설계 신호로 설계 재질문도 올린다(cascade-defects-signal-overengineering).
+1. rc=4 → `--rounds-report`로 장부를 먼저 읽는다. 확인 항목: *지금까지 라운드 수 · 라운드별 수락/기각 판정 요지 · 남은 findings의 실질성 · 같은 scope 안에서 수렴 중인지*.
+2. **같은 scope의 정상 수렴**이면 PM이 자율로 `--ack-rounds`를 붙여 재개한다(+한도만큼 창이 열린다). 판단 근거를 log에 남긴다.
+3. 사용자에게 올리는 경우는 **비용이 아니라 판단**이다 — 진짜 미수렴(같은 findings 반복·판정 진동), 중대한 scope 확대, 그 밖의 독립적 사용자 게이트 사유(미션·핵심 안전 경계·외부 게시). 이때는 위 확인 항목과 계속/종결/설계-재질문 권고를 함께 보고하고 대기한다.
+4. 종결(수락/override) 시 판정 근거를 log에 박제하고 게이트를 닫는다. 연쇄 결함이 이어졌다면 과설계 신호로 설계 재질문도 올린다(cascade-defects-signal-overengineering).
 
-게이트별 상한과 별개로 **wave(세션) 총예산**이 있다 — 실 전송 누적이 한도(기본 24, `local.conf`의 `external_review_wave_budget`)에 닿으면 rc=4로 거부한다. 안내 문구가 `--ack-wave`를 지목하면 게이트 상한이 아니라 이 축이다. 재개 규율은 `--ack-rounds`와 동일하다(사용자 승인 후에만 `--ack-wave`·예산 리셋). 두 승인은 서로를 열지 않으며 동시 소진이면 둘 다 필요하다.
+게이트별 상한과 별개로 **wave(세션) 총예산**이 있다 — 실 전송 누적이 한도(기본 24, `local.conf`의 `external_review_wave_budget`)에 닿으면 rc=4로 거부한다. 안내 문구가 `--ack-wave`를 지목하면 게이트 상한이 아니라 이 축이다. 재개 규율은 `--ack-rounds`와 동일하다(보고서 확인 → 정상 수렴이면 PM 자율 ack·예산 리셋). 두 ack는 서로를 열지 않으며 동시 소진이면 둘 다 필요하다.
 
 라운드 수렴 상황 보고에는 `--rounds-report`를 쓴다 — 게이트별 라운드 수·라운드별 판정(verdict)·must-fix 수·wave 소비를 표로 dump하는 read-only 조회면이다(`--gate T-NNNN`으로 단일 게이트 한정·`--ticket`/`--paths`를 주면 기록면과 같은 앵커로 해소).
 
@@ -80,7 +94,7 @@ python3 .project_manager/tools/external_review.py --base main --paths src/ tests
 
 ## 외부 전송과 실패
 
-- 코드 diff가 외부로 전송되므로 기본 OFF. `local.conf`의 `external_review_enabled=true`로 opt-in한다. 꺼져 있으면 actual 호출은 no-op(exit 0)이고 `--dry-run`은 항상 허용된다(로컬 미리보기·미전송).
+- 코드 diff가 외부로 전송되므로 기본 OFF. `local.conf`의 `external_review_enabled=true`로 opt-in한다(첫 1회 질문·이후 지속 동의). 꺼져 있으면 actual 호출은 no-op(exit 0)이고 `--dry-run`은 항상 허용된다(로컬 미리보기·미전송).
 - 리뷰어 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL`(내부 code-reviewer 폴백 신호).
 - **빈 diff는 무조건 exit 1**이며 우회 플래그가 없다. 안내대로 worktree cwd + `--paths` / `git add` 후 재실행한다.
 
@@ -90,4 +104,4 @@ python3 .project_manager/tools/external_review.py --base main --paths src/ tests
 - `must-fix 감지` → 반려; must-fix 해소 후 재검토.
 - `판정 불명확` → PM 확인 필요.
 - `FALLBACK_INTERNAL` → 내부 code-reviewer로 폴백.
-- must-fix 전부 해소 → 완료 부기(`ticket_finish`) → push하여 dev→reviewer+codex 이중 게이트를 종료한다.
+- must-fix 전부 해소 → 완료 부기(`ticket_finish`) → push하여 dev→reviewer+추가 리뷰어 이중 게이트를 종료한다.

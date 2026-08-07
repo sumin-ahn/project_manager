@@ -69,6 +69,8 @@ CLAUDE_ONLY_PATHS = {
 #   codex 가 추가: .codex/agents(TOML 4축 custom agent·claude .claude/agents 대응) · .agents/skills
 #     (codex 네이티브 스킬 네임스페이스 — root `.claude/skills` 를 @source 로 remap·D2) ·
 #     pm-dev-delegate file override(Codex native spawn schema를 shared Claude source와 분리·T-0435) ·
+#     pm-review file override(추가 리뷰어 실 전송의 `exec_command` 건별 egress 승격 절차 — codex 전역
+#     `network_access=false` 아래서만 필요한 tool metadata라 shared Claude source와 분리·T-0590) ·
 #     .codex/pm_orch_codex.py(relay 드라이버·engine-mirror·@source 전파·claude .claude/pm_orch_claude.py·
 #     opencode .opencode/pm_orch_opencode.py 대응·T-0404) ·
 #     .codex/rules/default.rules(execpolicy command policy·엔진 소유 위임 행동 규칙·claude 는 같은
@@ -83,6 +85,7 @@ CODEX_ONLY_PATHS = {
     ".codex/agents",
     ".agents/skills",
     ".agents/skills/pm-dev-delegate/SKILL.md",
+    ".agents/skills/pm-review/SKILL.md",
     ".codex/pm_orch_codex.py",
     ".codex/rules/default.rules",
 }

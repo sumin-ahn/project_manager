@@ -103,6 +103,10 @@
 # pm-dev-delegate의 실행 encoding은 Codex native spawn_agent 전용이다. 상위 shared directory보다
 # 구체적인 file remap이 우선하며, 나머지 방법론 스킬은 계속 `.claude/skills` 단일 진실을 소비한다.
 .agents/skills/pm-dev-delegate/SKILL.md    @render @source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md
+# 같은 이유로 pm-review도 codex 전용 판을 갖는다 — 추가 리뷰어 실 전송은 codex 전역
+# `network_access=false` 아래서 `exec_command` 건별 승격(sandbox_permissions·prefix_rule·
+# `--codex-egress-escalated`)을 동반해야 하고, 그 tool metadata는 claude/opencode 계약이 아니다.
+.agents/skills/pm-review/SKILL.md    @render @source=templates/codex/.agents/skills/pm-review/SKILL.md
 
 # ── codex 어댑터 (@render + @source — framework-owned 전파·ADR-0054·claude `.claude/*`·opencode `.opencode/*` 대칭) ──
 # canonical 소스 = 프레임워크 루트의 templates/codex/.codex/*(루트=claude·.codex/ 부재). @source 마커가

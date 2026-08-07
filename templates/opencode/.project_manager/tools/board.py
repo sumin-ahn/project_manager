@@ -5289,8 +5289,9 @@ _HARNESS_BUDGET_CONF_SEED = (
     "# harness.claude.wall_timeout=3600\n"
     "# harness.opencode.idle_timeout=5400\n"
     "# harness.opencode.wall_timeout=14400\n"
-    "# 외부 리뷰(external_review)는 reviewer_cmd 의 첫 토큰을 하네스로 보고 같은 키를 읽는다\n"
-    "# (기본 reviewer_cmd 가 `codex exec …` 이므로 harness.codex.* 가 적용된다).\n"
+    "# 추가 리뷰어(additional reviewer·external_review)도 같은 키를 읽는다 — 하네스는\n"
+    "# additional_reviewer.harness(기본 codex·아래 opt-in 블록)에서, 그게 없는 레거시 채택자는\n"
+    "# reviewer_cmd 의 첫 토큰에서 온다. 둘 다 codex 면 harness.codex.* 가 적용된다.\n"
 )
 
 
@@ -6663,8 +6664,35 @@ INIT_GUIDE = """\
   ID:   `board.py new` 로 {idfmt} 발행
 """
 
-# 외부 리뷰어 기본 명령 (external_review.py 와 동일 default)
-DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
+# 추가 리뷰어(additional reviewer) 첫 opt-in 이 원자적으로 심는 기본 프로필.
+#   사람이 부르는 역할 이름은 **추가 리뷰어**이고, `external_*` 은 기계 식별자와 외부 전송·격리·
+#   과금 축에만 남긴다(기존 키/파일명은 그대로 — 이름만 사람 표면에서 바뀐다).
+#   `reviewer_cmd` 는 **신규 온보딩에서 만들지 않는다** — 레거시 키는 이미 쓰는 채택자에게만
+#   남고, 새 채택자는 구조적 튜플 하나로 통일한다.
+#   같은 값을 pm_update.ADDITIONAL_REVIEWER_DEFAULTS 도 심는다(두 온보딩 진입·동일 프로필).
+#   실행 해소(하네스/모델/추론 강도 → 실 명령)는 external_review 가 하고, 여기서는 값만
+#   시드한다 — 무거운 실행 코어를 board 로 끌어오지 않는다. 드리프트는 테스트가 잡는다.
+ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
+    ("external_review_enabled", "true"),
+    ("additional_reviewer.harness", "codex"),
+    ("additional_reviewer.model", "gpt-5.6-sol"),
+    ("additional_reviewer.reasoning", "max"),
+)
+
+# opt-in "예" 가 append 하는 블록. external_review_enabled=true 는 *설정된* 외부 전송과 통상
+#   과금에 대한 **지속 동의**라, 이후 리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다.
+ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
+    "# 추가 리뷰어(additional reviewer) — ON.\n"
+    "# external_review_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다). 프로필은 아래 3키로 교체한다.\n"
+    + "".join(f"{key}={value}\n" for key, value in ADDITIONAL_REVIEWER_DEFAULTS)
+)
+
+# 나중에 켜는 법 — 비대화형/거절 경로가 같은 문장을 쓴다(안내 단일 진실).
+ADDITIONAL_REVIEWER_ENABLE_HINT = (
+    "local.conf 에 external_review_enabled=true + "
+    "additional_reviewer.harness/model/reasoning"
+)
 
 
 def _is_noninteractive() -> bool:
@@ -6680,36 +6708,43 @@ def _is_noninteractive() -> bool:
 
 
 def prompt_external_review_optin() -> None:
-    """외부 코드리뷰(external_review) opt-in 프롬프트 → local.conf 에 기록.
+    """추가 리뷰어(additional reviewer) opt-in 프롬프트 → local.conf 에 기록.
 
-    코드 diff 가 외부로 *전송*되므로 기본 거부. 이미 설정돼 있거나 비대화형(파이프·CI)이면
-    묻지 않고 안전쪽(OFF 유지). 선택은 어느 쪽이든 기록해 다음 init/update 때 다시 묻지 않는다.
+    코드 diff 가 외부로 *전송*되므로 기본 거부. **첫 1회만** 묻는다 — 이미 결정돼 있거나
+    (true/false 무관) 비대화형(파이프·CI)이면 묻지 않고 안전쪽(OFF 유지). 선택은 어느 쪽이든
+    기록해 다음 init/update 때 다시 묻지 않는다.
+
+    "예" 는 ADDITIONAL_REVIEWER_DEFAULTS 4키를 **원자적으로** 심는다(활성 플래그 + 하네스·
+    모델·추론 강도). 레거시 `reviewer_cmd` 는 만들지 않는다. 이미 결정된 conf 는 구조적 튜플이든
+    레거시 `reviewer_cmd` 든 값을 건드리지 않는다(자동 마이그레이션 없음).
     """
     if "external_review_enabled" in local_config():
-        return  # 이미 결정됨
+        return  # 이미 결정됨 (true/false 무관·기존 프로필/레거시 키 불변)
     # 명시적 비대화 신호 우선: Windows DEVNULL 의 isatty() 신뢰불가 함정 회피.
     # PM_NONINTERACTIVE truthy 면 묻지 않고 안전쪽(OFF 유지). isatty 는 보조 폴백(env 없을 때).
     if _is_noninteractive() or not sys.stdin.isatty():
-        print("  (비대화형 — 외부 리뷰 OFF 유지. 켜려면 local.conf 에 external_review_enabled=true)")
+        print(f"  (비대화형 — 추가 리뷰어 OFF 유지. 켜려면 {ADDITIONAL_REVIEWER_ENABLE_HINT})")
         return
-    print("\n외부 코드리뷰(external_review)를 켤까요? 코드 diff 를 외부 리뷰어(codex 등)로 "
-          "*전송*합니다 — 내부 code-reviewer 와 상보적이나 외부 전송이 발생합니다.")
+    print("\n추가 리뷰어(additional reviewer·external_review)를 켤까요? 코드 diff 가 설정된 "
+          "리뷰 하네스로 *전송*되고 그 하네스에 *과금*됩니다 — 내부 code-reviewer 와 상보적입니다.")
+    print("  예 = 기본 프로필(codex · gpt-5.6-sol · reasoning max)을 한 번에 기록합니다 "
+          "— 이후 리뷰마다 비용을 다시 묻지 않습니다(local.conf 에서 교체 가능).")
     try:
         answer = input("  켜기 [y/N]: ").strip().lower()
     except EOFError:
         # stdin 이 EOF (비대화·파이프 종료) — 비대화 가드와 동일 동작: 결정 미기록,
         # 아무것도 쓰지 않고 반환. 기존 local.conf 의 결정을 덮어쓰지 않는다(preservation).
         return
+    _ensure_trailing_newline(LOCAL_CONF)  # 개행 없는 conf 에 바로 append 시 기존 값 손상 방지
     with LOCAL_CONF.open("a", encoding="utf-8") as f:
         if answer in ("y", "yes"):
-            f.write("# 외부 코드리뷰\n"
-                    "external_review_enabled=true\n"
-                    f"reviewer_cmd={DEFAULT_REVIEWER_CMD}\n")
-            print("  ✓ 외부 리뷰 ON (reviewer_cmd 기본 codex — local.conf 에서 교체 가능)")
+            f.write(ADDITIONAL_REVIEWER_OPTIN_BLOCK)
+            print("  ✓ 추가 리뷰어 ON (codex · gpt-5.6-sol · reasoning max — "
+                  "local.conf additional_reviewer.* 로 교체 가능)")
         else:
-            f.write("# 외부 코드리뷰 — 기본 OFF. 켜려면 true 로.\n"
+            f.write("# 추가 리뷰어 — 기본 OFF. 켜려면 true 로.\n"
                     "external_review_enabled=false\n")
-            print("  → 외부 리뷰 OFF (나중에 local.conf 에서 켤 수 있음).")
+            print(f"  → 추가 리뷰어 OFF (나중에 {ADDITIONAL_REVIEWER_ENABLE_HINT} 로 켤 수 있음).")
 
 
 def prompt_delegate_optin() -> None:
@@ -6831,8 +6866,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         surface_sess = sess
     else:
         # 존재 시 — 비파괴 병합. init 이 안 쓰는 사용자/operational 키
-        # (external_review_enabled·reviewer_cmd·upstream·upstream_rev·opencode_pro_model·
-        # status_total_style·user 등)를 절대 삭제/변경하지 않는다. 통째 write 금지.
+        # (external_review_enabled·additional_reviewer.*·레거시 reviewer_cmd·upstream·
+        # upstream_rev·opencode_pro_model·status_total_style·user 등)를 절대 삭제/변경하지
+        # 않는다. 통째 write 금지.
         text = LOCAL_CONF.read_text(encoding="utf-8")
         existing = local_config()
         updates: dict[str, str] = {}

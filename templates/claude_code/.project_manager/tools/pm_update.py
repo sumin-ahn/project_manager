@@ -187,7 +187,31 @@ if TYPE_CHECKING:
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / ".project_manager" / "engine.manifest"
-DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
+
+# 추가 리뷰어(additional reviewer) 첫 opt-in 이 원자적으로 심는 기본 프로필 —
+#   board.ADDITIONAL_REVIEWER_DEFAULTS 와 **같은 값**이어야 한다(두 온보딩 진입·동일 프로필).
+#   board 를 import 하지 않는 이유는 의존 방향(pm_update 는 stdlib-only 로 돈다)이고, 실행
+#   해소를 하지 않는 이유는 무거운 external_review 코어를 업데이트 경로로 끌어오지 않기
+#   위해서다 — 여기서는 값만 시드하고 드리프트는 테스트가 잡는다.
+#   `reviewer_cmd` 는 신규 온보딩에서 만들지 않는다(레거시 채택자 전용 키).
+ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
+    ("external_review_enabled", "true"),
+    ("additional_reviewer.harness", "codex"),
+    ("additional_reviewer.model", "gpt-5.6-sol"),
+    ("additional_reviewer.reasoning", "max"),
+)
+
+ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
+    "# 추가 리뷰어(additional reviewer) — ON.\n"
+    "# external_review_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다). 프로필은 아래 3키로 교체한다.\n"
+    + "".join(f"{key}={value}\n" for key, value in ADDITIONAL_REVIEWER_DEFAULTS)
+)
+
+ADDITIONAL_REVIEWER_ENABLE_HINT = (
+    "local.conf 에 external_review_enabled=true + "
+    "additional_reviewer.harness/model/reasoning"
+)
 
 
 def _is_engine_rev_skew(exc) -> bool:
@@ -361,9 +385,13 @@ def _is_noninteractive() -> bool:
 
 
 def maybe_prompt_external_review(dest_root: Path) -> None:
-    """업데이트 후 외부 코드리뷰 opt-in — 아직 미설정이면 1회 묻는다.
+    """업데이트 후 추가 리뷰어(additional reviewer) opt-in — 아직 미설정이면 **1회** 묻는다.
 
-    코드 diff 외부 *전송*이라 기본 OFF. 이미 결정됐거나 비대화형이면 안전쪽으로 건너뛴다.
+    코드 diff 외부 *전송*이라 기본 OFF. `external_review_enabled` **실키**가 이미 있으면
+    (true/false 무관) 묻지 않고 기존 프로필·레거시 `reviewer_cmd` 를 그대로 둔다(자동 마이그레이션
+    없음). 비대화형은 안전쪽으로 건너뛰되 나중에 켜는 법을 1줄로 남긴다.
+    board.prompt_external_review_optin 과 같은 계약·같은 기본 프로필
+    (ADDITIONAL_REVIEWER_DEFAULTS 4키 원자 기록·reviewer_cmd 미생성).
 
     dest_root: 동기화 대상 루트 (루트 또는 타깃). local.conf 는 이 경로 기준으로 읽고 쓴다.
     --target 모드에서 루트 local.conf 를 오염시키지 않기 위해 반드시 effective_dest 를 전달한다.
@@ -371,28 +399,38 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.exists():
         return  # init 전 — board.py init 에서 묻는다
-    text = local_conf.read_text(encoding="utf-8")
-    if "external_review_enabled" in text:
-        return  # 이미 결정됨
+    if "external_review_enabled" in _read_local_conf(local_conf):
+        # 실키로 이미 결정됨(true/false 무관·기존 프로필/레거시 키 불변). 판정은 파싱된 키
+        # 존재로 한다 — raw 텍스트 substring 으로 보면 주석(`# external_review_enabled=false`)
+        # 이나 안내 문장이 결정을 가로채, 켜려던 채택자가 질문도 안내도 못 받는다.
+        # maybe_prompt_delegate_optin·board.prompt_external_review_optin 과 같은 seam.
+        return
     # 명시적 비대화 신호 우선: Windows DEVNULL isatty() 신뢰불가 함정 회피.
     # PM_NONINTERACTIVE truthy 면 묻지 않고 안전쪽 skip. isatty 는 보조 폴백(env 없을 때).
     if _is_noninteractive() or not sys.stdin.isatty():
+        print(f"[pm_update] 추가 리뷰어 OFF 유지(비대화형). 켜려면 {ADDITIONAL_REVIEWER_ENABLE_HINT}")
         return
-    print("\n[pm_update] 외부 코드리뷰(external_review)를 켤까요? 코드 diff 를 외부 리뷰어"
-          "(codex 등)로 *전송*합니다 — 내부 code-reviewer 와 상보적이나 외부 전송 발생.")
+    print("\n[pm_update] 추가 리뷰어(additional reviewer·external_review)를 켤까요? 코드 diff 가 "
+          "설정된 리뷰 하네스로 *전송*되고 그 하네스에 *과금*됩니다 — 내부 code-reviewer 와 상보적.")
+    print("  예 = 기본 프로필(codex · gpt-5.6-sol · reasoning max)을 한 번에 기록합니다 "
+          "— 이후 리뷰마다 비용을 다시 묻지 않습니다.")
     try:
         answer = input("  켜기 [y/N]: ").strip().lower()
     except EOFError:
         answer = ""
+    # 개행 없는 conf(`…upstream_rev=abc`)에 바로 append 하면 마지막 키가 변질된다(board 온보딩과
+    # 동일 가드). 응답 후에 읽는다 — 질문 동안 바뀌었을 수 있는 실제 끝 상태가 기준.
+    text = local_conf.read_text(encoding="utf-8")
     with local_conf.open("a", encoding="utf-8") as f:
+        if text and not text.endswith("\n"):
+            f.write("\n")
         if answer in ("y", "yes"):
-            f.write("# 외부 코드리뷰\n"
-                    "external_review_enabled=true\n"
-                    f"reviewer_cmd={DEFAULT_REVIEWER_CMD}\n")
-            print("  ✓ 외부 리뷰 ON (reviewer_cmd 기본 codex)")
+            f.write(ADDITIONAL_REVIEWER_OPTIN_BLOCK)
+            print("  ✓ 추가 리뷰어 ON (codex · gpt-5.6-sol · reasoning max — "
+                  "local.conf additional_reviewer.* 로 교체 가능)")
         else:
-            f.write("# 외부 코드리뷰 — 기본 OFF.\nexternal_review_enabled=false\n")
-            print("  → 외부 리뷰 OFF (나중에 local.conf 로 켤 수 있음).")
+            f.write("# 추가 리뷰어 — 기본 OFF. 켜려면 true 로.\nexternal_review_enabled=false\n")
+            print(f"  → 추가 리뷰어 OFF (나중에 {ADDITIONAL_REVIEWER_ENABLE_HINT} 로 켤 수 있음).")
 
 
 def maybe_prompt_delegate_optin(dest_root: Path) -> None:

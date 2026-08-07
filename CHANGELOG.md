@@ -7,6 +7,31 @@
 
 ## [Unreleased]
 
+### Changed
+- **추가 리뷰어(additional reviewer) 온보딩·명명** — 사람이 부르는 역할 이름을 "외부 리뷰어"에서
+  **추가 리뷰어**로 바꾼다. `external_review.py`·`external_review_enabled`·`external_review_*`
+  등 기계 식별자와 외부 전송·격리·과금 축의 이름은 그대로다(키/파일명 변경 0·자동 마이그레이션 0).
+  `board.py init`·`pm_update` 의 첫 opt-in 은 **1회만** 묻고, "예" 면 `local.conf` 에
+  `external_review_enabled=true` + `additional_reviewer.harness=codex` +
+  `additional_reviewer.model=gpt-5.6-sol` + `additional_reviewer.reasoning=max` 4키를 원자적으로
+  기록한다 — `reviewer_cmd` 는 만들지 않는다. 이미 결정(true/false)이 있으면 다시 묻지 않고 기존
+  구조적 튜플·레거시 `reviewer_cmd` 값을 그대로 둔다. 재-import/update 는 커스텀
+  `additional_reviewer.*` 를 포함해 무손실 왕복한다.
+- **비용 재승인 폐지** — `external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한
+  지속 동의다. 카드·매뉴얼·플레이북이 리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻던
+  문구를 걷어낸다. 라운드/wave 상한은 기계적 anti-loop 정지로 남으며, PM 은 `--rounds-report` 를
+  읽고 **같은 scope 의 정상 수렴이면 자율로 ack** 한다. 사용자에게 올리는 경우는 진짜 미수렴,
+  중대한 scope 확대, 그 밖의 독립적 사용자 게이트 사유다.
+
+### Added
+- **Codex `$pm-review` egress 승격 카드** — codex 전역 `network_access=false` 를 유지한 채 추가
+  리뷰어 실 전송만 `exec_command` 건별 승격으로 실행하는 자족 절차를 codex 판 카드에 싣는다
+  (sandbox `--dry-run` 선행 → `sandbox_permissions="require_escalated"` +
+  `--codex-egress-escalated` attestation → 최초 승인은 좁은
+  `prefix_rule=["python3", ".project_manager/tools/external_review.py"]`). codex flavor manifest 에
+  file override 를 등재해 이 판이 공유 카드 렌더로 덮이지 않게 한다. claude/opencode 카드에는 이
+  Codex tool metadata 를 싣지 않는다.
+
 ### Fixed
 - **Codex cross-harness egress 승인 브리지** — `workspace-write` 샌드박스의
   `network_access=false`를 유지한 채 `pm_delegate → claude/opencode/codex CLI` 실위임만

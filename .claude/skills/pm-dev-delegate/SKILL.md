@@ -186,7 +186,7 @@ Agent 툴 호출:
      - 통과/반려 명시"
 ```
 
-reviewer와 **병행해 codex 외부 교차검증**을 실행한다:
+reviewer와 **병행해 추가 리뷰어(additional reviewer) 교차검증**을 실행한다:
 `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
 ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**한다. `--paths`는 `--ticket` touches를 대체한다. 전제: `external_review_enabled=true`. 상세: `pm_playbook.md` §"검토 루프".
 
