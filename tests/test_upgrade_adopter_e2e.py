@@ -592,7 +592,12 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `_read_local_conf` 파싱 키 존재로 바꿨다(주석 한 줄이 결정을 가로채던 결함). 재검토 결과 이동
 #   범위는 maybe_prompt_external_review 본문뿐이고, 이 fixture 가 ratchet 하는 배달 경계
 #   (source/manifest planning → apply → self-update 순서)와 역적용 delta 구간에는 겹침이 없다.
-_T0585_PM_UPDATE_SHA256 = "97d0d1445a4dc0b60052153654209a433ca0d8cba2584be0c99a7354a81d4443"
+#   T-0590 R3 에서 또 한 번 이동 — `_main` 의 변경 0 수렴 지점이 추가 리뷰어 opt-in 도 호출하게
+#   됐다(has-changes 경로에서만 부르던 결함). 이동분은 `print("최신 — 변경 없음.")` 뒤의
+#   수렴 블록뿐이라 역적용 delta 구간(어댑터 config 게이트·sync_adapter_configs 본문)과 겹치지
+#   않고, 이 테스트의 RUN1 은 has-changes·RUN2 는 red rc1(프롬프트 이전 중단)이며 두 실행 모두
+#   PM_NONINTERACTIVE=1 이라 질문·conf write 는 발화하지 않는다.
+_T0585_PM_UPDATE_SHA256 = "0d4c4fa50df0979f84d8e498d9e07a4b30b6b0d4f54ae90b218490b2cd5c936a"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

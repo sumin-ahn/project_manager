@@ -744,6 +744,68 @@ def test_non_string_final_reply_is_not_a_reply_at_the_shared_seam(
     assert reply is None, (shape, reply)
 
 
+# 공백만 있는 최종 회신 — 형식은 멀쩡하고 회신 이벤트도 있는데 **말한 내용이 없는** 형상이다.
+# 스트리밍 하네스가 빈 turn 을 닫을 때 실제로 나온다(개행만 실린 마지막 이벤트).
+_BLANK_REPLIES: tuple[tuple[str, str], ...] = (
+    ("space", " "),
+    ("newline", "\n"),
+    ("mixed", " \t\r\n  \n"),
+    ("ideographic", "　"),          # 전각 공백도 공백이다(str.strip 대상)
+)
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "opencode"])
+@pytest.mark.parametrize("shape,blank", _BLANK_REPLIES)
+def test_a_whitespace_only_final_reply_is_not_a_reply_at_the_shared_seam(
+        relay, harness, shape, blank):
+    """공백만 있는 최종 회신은 **회신 없음**이다 — 참/거짓이 아니라 내용으로 판정한다.
+
+    참/거짓만 보면 `" "`·`"\\n"` 이 회신으로 통과해, 리뷰어가 아무 말도 하지 않은 실행이 '회신
+    있음'으로 기록된다. 그 뒤 판정 파싱은 아무 토큰도 못 찾아 판정 불명확으로만 끝나고, 폴백
+    신호가 서지 않아 호출자가 내부 리뷰어로 갈아탈 근거를 잃는다."""
+    assert relay.extract_harness_reply(harness, _wire(harness, reply=blank)) is None, shape
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "opencode"])
+def test_a_nonblank_reply_keeps_its_original_bytes_at_the_shared_seam(relay, harness):
+    """내용이 있는 회신은 앞뒤 공백까지 **원문 그대로** 나온다 — 존재 판정만 strip 으로 한다.
+
+    돌려주는 값을 strip 하면 판정·전사 표면이 wire 원문과 어긋나, raw 로 재구성한 회신과 실제
+    판정에 들어간 회신이 다른 문자열이 된다."""
+    padded = "  \n" + _PASS_REPLY + "  \n\n"
+    assert relay.extract_harness_reply(harness, _wire(harness, reply=padded)) == padded
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "opencode"])
+def test_a_whitespace_only_reply_takes_the_fail_loud_extraction_path(
+        external, monkeypatch, tmp_path, capsys, harness):
+    """공백만 있는 회신은 기존 `reply_extraction_failed` 경로를 그대로 탄다 (rc=1·폴백 신호).
+
+    '성공 → 판정 불명확'으로 두면 rc 는 1 이어도 FALLBACK_INTERNAL 이 없어, PM 이 내부
+    code-reviewer 로 갈아탈 근거를 못 받는다. wire 원문은 raw 에 그대로 남고 장부는 닫힌다."""
+    repo = _repo(tmp_path / "repo", _conf(harness, "m", None))
+    wire = _wire(harness, reply=" \n\t ")
+    reviewer = _FakeReviewer(stdout=wire, stderr="진행 로그: " + _DECOY)
+    _wire_main(external, monkeypatch, repo, reviewer)
+
+    rc = external.main(["--gate", "T-0590", "--paths", "x.py"])
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert len(reviewer.calls) == 1                          # 스폰은 됐다(전송·과금 있음)
+    assert "FALLBACK_INTERNAL" in captured.out               # 내부 리뷰어 폴백 신호
+    assert "회신 추출 실패" in captured.out
+    assert "종합 판정: 통과" not in captured.out               # 미끼가 판정이 되지 않았다
+    assert "인증 입력이 빠져 실패했을 수" not in captured.err   # rc=0 실행 — 인증 탓이 아니다
+    raw = _raw_text(repo)
+    assert wire in raw                                       # 원문(공백 회신 포함) 보존
+    assert "진행 로그: " + _DECOY in raw
+    row = _raw_ledger(repo)[0]
+    assert row["rc"] == 0 and row["finished_at"]             # 프로세스 자체는 정상 종료
+    # 라운드는 전송이 있었으므로 환불하지 않는다 — 판정 없는 라운드로 마감된다.
+    assert _round_ledger(repo)["T-0590"]["count"] == 1
+
+
 @pytest.mark.parametrize("harness,shape,line", _MALFORMED_WIRES)
 def test_malformed_wire_fails_loudly_and_still_closes_raw_and_ledger(
         external, monkeypatch, tmp_path, capsys, harness, shape, line):
@@ -1433,6 +1495,29 @@ def test_the_reservation_seam_refunds_at_most_once_in_every_order(
     assert len(released) == refunds
 
 
+@pytest.mark.parametrize("machine_refunded", [True, False])
+def test_the_release_seam_reports_whether_it_actually_refunded(
+        external, monkeypatch, machine_refunded):
+    """`release` 는 **이번 호출이 실제로 되돌렸는지**를 돌려준다 (no-op·환불 실패는 False).
+
+    예외로 나가는 구간은 이 값을 쓰지 않지만, 정상 return 하는 마감 저장 실패 경로는 안내 문구를
+    이 사실에 맞춰야 한다 — 되돌리지 못한 예약을 "되돌렸다"고 말하면 장부와 표면이 갈린다."""
+    reasons: list[str] = []
+
+    def _machine(budget, *, reason: str) -> bool:
+        reasons.append(reason)
+        return machine_refunded
+
+    monkeypatch.setattr(external, "_release_round_reservation", _machine)
+    reservation = external._PreSpawnReservation(external.RoundBudget(
+        gate="T-0590", round_id="round-1", sequence=1, wave_id="wave-1"))
+    reservation.reclaim_no_spawn()                   # 자식 없음 판명 — 권리 회복
+
+    assert reservation.release(reason="마감 실패") is machine_refunded
+    assert reservation.release(reason="두 번째") is False    # 정산 뒤에는 no-op
+    assert reasons == ["마감 실패"]                           # 환불 기계는 한 번만 돈다
+
+
 # 판명된 no-spawn 뒤의 수합 구간에서 나갈 수 있는 실패. `BrokenPipeError` 는 실측 축이다 — 닫힌
 # stdout 파이프(`| head`·죽은 상위 프로세스)로 요약을 쓰면 여기서 터진다.
 _POST_NO_SPAWN_FAILURES = (BrokenPipeError, RuntimeError)
@@ -1530,6 +1615,115 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
         assert "실제로는 스폰 0" in err
         raw = _raw_text(repo)
         assert "스폰 전 중단" in raw and "전송 0·과금 0" in raw
+
+
+def _flaky_ledger_save(external, monkeypatch, *, fail_from: int, fail_to: int | None = None):
+    """`_save_round_ledger` 를 `fail_from`~`fail_to` 번째 호출에서만 실패시키는 대역.
+
+    호출 순서가 곧 구간이다: 1=예약 저장 · 2=마감 저장 · 3=마감 실패 뒤의 보상 환불 저장.
+    락 경합(Windows `msvcrt.locking` 재시도 소진)이 실 유입원이라 예외는 `OSError` 다.
+    반환 dict 로 실제 호출 횟수를 본다 — 보상 경로가 돌았는지를 문구가 아니라 횟수로 확인한다."""
+    real_save = external._save_round_ledger
+    saves = {"n": 0}
+
+    def _save(ledger):
+        saves["n"] += 1
+        if saves["n"] >= fail_from and (fail_to is None or saves["n"] <= fail_to):
+            raise OSError(11, "resource temporarily unavailable")
+        return real_save(ledger)
+
+    monkeypatch.setattr(external, "_save_round_ledger", _save)
+    return saves
+
+
+def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
+        external, monkeypatch, tmp_path, capsys):
+    """마감 **저장**이 실패해도 판명된 no-spawn 의 예약은 되돌아간다 — 정상 return 경로의 소유.
+
+    이 경로는 예외를 삼키고 판정 rc 를 그대로 돌려주므로 스폰 전 seam 의 `__exit__` 가 소유를
+    보지 못한다. 되돌리지 않으면 자식이 뜬 적 없는(전송 0·과금 0) 실행이 라운드 count·wave 예산을
+    먹은 채 미완으로 남아, 상한 1·미완 상한 1·wave 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로
+    막힌다. 마감 저장은 실패했지만 환불 저장은 성공하는 형상이 실측 축이다(락 경합은 지나간다)."""
+    repo = _repo(tmp_path / "repo", _conf(
+        external_review_round_limit="1", external_review_incomplete_round_limit="1",
+        external_review_wave_budget="1"))
+    reviewer = _FakeReviewer(stdout=_wire("codex"))
+    _wire_main(external, monkeypatch, repo, reviewer)
+    monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)
+    saves = _flaky_ledger_save(external, monkeypatch, fail_from=2, fail_to=2)
+
+    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1   # 판정 rc 보존
+    err = capsys.readouterr().err
+
+    assert reviewer.calls == []                                   # 자식 0 (전송·과금 0)
+    assert saves["n"] == 3                        # 예약 · 마감(실패) · 보상 환불
+    ledger = _round_ledger(repo)
+    assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
+    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
+    assert ledger["T-0590"]["rounds"] == []                        # 산출도 남기지 않는다
+    assert "라운드 장부 마감 실패" in err                            # 실패는 여전히 loud
+    assert err.count("라운드 예약 환불: 게이트") == 1                # 조용히도, 두 번도 아니다
+    assert "미완으로 남아" not in err              # 되돌린 라운드를 미완이라고 말하지 않는다
+
+    # 되돌린 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 스폰·성공한다.
+    monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
+    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
+    capsys.readouterr()
+    assert len(reviewer.calls) == 1                                # 재시도는 실제로 스폰됐다
+    ledger = _round_ledger(repo)
+    assert ledger["T-0590"]["count"] == 1
+    assert [row.get("finished_at") is not None for row in _round_records(repo)] == [True]
+
+
+def test_a_failing_compensation_after_no_spawn_stays_loud_and_conservative(
+        external, monkeypatch, tmp_path, capsys):
+    """보상 환불까지 실패하면 예약은 미완으로 남되 두 실패가 모두 loud 하다 (보수적 방향).
+
+    장부가 실제보다 헐거워지는 방향(전송한 라운드를 안 셈)으로 틀리지 않는 대신, 되돌리지 못한
+    사실은 조용히 숨기지 않는다 — 사후에 장부를 믿으려면 실패 표면이 남아야 한다."""
+    repo = _repo(tmp_path / "repo", _conf(
+        external_review_round_limit="1", external_review_incomplete_round_limit="1"))
+    reviewer = _FakeReviewer(stdout=_wire("codex"))
+    _wire_main(external, monkeypatch, repo, reviewer)
+    monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)
+    saves = _flaky_ledger_save(external, monkeypatch, fail_from=2)   # 마감·보상 모두 실패
+
+    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1   # 판정 rc 보존
+    err = capsys.readouterr().err
+
+    assert reviewer.calls == []                                   # 자식 0
+    assert saves["n"] == 3                                        # 보상은 시도했다
+    ledger = _round_ledger(repo)
+    assert ledger["T-0590"]["count"] == 1                         # 되돌리지 못한 예약
+    assert [row.get("finished_at") for row in _round_records(repo)] == [None]  # 미완
+    assert "라운드 장부 마감 실패" in err
+    assert "라운드 예약 환불 실패" in err                           # 보상 실패도 말한다
+    assert "미완으로 남아" in err
+    assert "라운드 예약 환불: 게이트" not in err                     # 성공을 사칭하지 않는다
+
+
+def test_a_spawned_run_is_not_refunded_when_the_finalization_save_fails(
+        external, monkeypatch, tmp_path, capsys):
+    """같은 마감 저장 실패라도 **스폰된** 실행은 되돌리지 않는다 — 프롬프트가 이미 나갔다.
+
+    보상 경로의 조건은 판명된 `started=False` 하나뿐이다. 저장 실패를 조건으로 넓히면 타임아웃·
+    비정상 종료로 죽은 과금 라운드까지 되돌아가 상한 무한 우회가 열린다(MF-A)."""
+    repo = _repo(tmp_path / "repo", _conf())
+    reviewer = _FakeReviewer(stdout=_wire("codex"))
+    _wire_main(external, monkeypatch, repo, reviewer)
+    saves = _flaky_ledger_save(external, monkeypatch, fail_from=2, fail_to=2)
+
+    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0   # 통과 판정 그대로
+    err = capsys.readouterr().err
+
+    assert len(reviewer.calls) == 1                               # 스폰은 실제로 일어났다
+    assert saves["n"] == 2                                        # 보상 저장은 없다
+    ledger = _round_ledger(repo)
+    assert ledger["T-0590"]["count"] == 1                         # 예약은 그대로 소비
+    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1
+    assert [row.get("finished_at") for row in _round_records(repo)] == [None]  # 미완
+    assert "라운드 장부 마감 실패" in err and "미완으로 남아" in err
+    assert "라운드 예약 환불" not in err
 
 
 @pytest.mark.parametrize("runner_kind,seam", [

@@ -5161,7 +5161,13 @@ def _main(argv: list[str] | None = None) -> int:
         #    나머지 미전파분이 drift-lint 에서 사라진다(거짓 최신).
         if not args.dry_run and not scope_paths:
             converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
-            maybe_prompt_delegate_optin(effective_dest)  # 변경 0 경로에서도 opt-in/안내
+            # 변경 0 경로에서도 opt-in/안내 — has-changes 경로와 **같은 순서·같은 게이트**.
+            #   추가 리뷰어를 배달한 RUN1 은 구 엔진이 실행할 수 있고, 이미 최신인 채택자는
+            #   changes 가 영영 0 이라 apply 경로로 오지 않는다. 여기서 묻지 않으면 미결정
+            #   채택자가 첫 질문/안내를 한 번도 못 받는다(훅 재설치·migrate 와 같은 논거).
+            #   재질문은 두 helper 의 "실키 있으면 no-op" 계약이 흡수한다.
+            maybe_prompt_external_review(effective_dest)
+            maybe_prompt_delegate_optin(effective_dest)
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")

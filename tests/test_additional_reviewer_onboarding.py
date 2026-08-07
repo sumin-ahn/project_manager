@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -480,6 +481,182 @@ def test_optin_decision_matches_local_config_key_presence(board, pm_update, tmp_
         assert ("external_review_enabled" in board.local_config(tree)) is decided, text
         assert ("external_review_enabled" in pm_update._read_local_conf(conf)) is decided, text
         assert ("external_review_enabled" in _parse_conf(text)) is decided, text
+
+
+# ── 축 1: 변경 0 수렴 실행(RUN2)도 첫 opt-in 을 배달한다 (진입점 계약) ────────
+#
+# 위 단위들은 helper 를 직접 부른다 — helper 가 옳아도 `_main` 이 그걸 has-changes 경로에서만
+# 부르면 계약은 배달되지 않는다. 추가 리뷰어를 실은 엔진을 이미 흡수한 채택자는 그 다음 실행부터
+# 영구히 `changes == 0` 이라, 미결정이면 질문도 안내도 한 번도 못 받는다(훅 재설치·진입 doc
+# 전환이 changes 와 독립인 것과 같은 논거). 그래서 진입점 자체를 여기서 못박는다 —
+# 발화 경계는 has-changes 경로와 같다: 비-dry-run · `--paths` 아님 · 어댑터 config red 아님.
+
+SENTINEL_REL = ".project_manager/tools/__pm_update_upstream_sentinel__.py"
+SENTINEL_BODY = "# upstream sentinel\n"
+CONVERGED_REV = "converged-rev-1"
+
+
+def _zero_change_tree(tmp_path, conf_text: str) -> tuple[Path, Path, Path]:
+    """엔진 변경 0 인 채택자 트리(dest) + 그 상류(source) → (dest, source, local.conf).
+
+    dest 가 상류 등재 파일을 이미 같은 바이트로 갖고 있어 `_main` 은 `not changes` 경로로 간다.
+    revision 두 키도 상류 HEAD(스텁값)와 맞춰 둬 conf 변화는 opt-in 응답분만 남는다(수렴 write
+    와 섞이지 않게).
+    """
+    source = tmp_path / "upstream"
+    sentinel = source / SENTINEL_REL
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text(SENTINEL_BODY, encoding="utf-8")
+    (source / ".project_manager" / "engine.manifest").write_text(
+        SENTINEL_REL + "\n", encoding="utf-8")
+    # tracked checkout 으로 만들어 directory-manifest fallback 경고를 없앤다(다른 진입점
+    # 테스트와 같은 fixture 규약).
+    subprocess.run(["git", "-C", str(source), "init", "-q"],
+                   capture_output=True, text=True, check=True)
+    subprocess.run(["git", "-C", str(source), "add", "-f", "-A"],
+                   capture_output=True, text=True, check=True)
+
+    dest = tmp_path / "adopter"
+    dest_sentinel = dest / SENTINEL_REL
+    dest_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    dest_sentinel.write_text(SENTINEL_BODY, encoding="utf-8")
+    conf = dest / ".project_manager" / "local.conf"
+    conf.write_text(
+        f"upstream={source}\n"
+        f"upstream_rev={CONVERGED_REV}\nupstream_seen_rev={CONVERGED_REV}\n"
+        + conf_text,
+        encoding="utf-8",
+    )
+    return dest, source, conf
+
+
+def _run_zero_change(pm_update, monkeypatch, dest, argv=()) -> int:
+    """`_main` 을 self-location 모드로 실행 — REPO 와 upstream rev 읽기를 결정적으로 고정."""
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: CONVERGED_REV)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    return pm_update.main(list(argv))
+
+
+def _spy_optin(pm_update, monkeypatch) -> list[Path]:
+    """maybe_prompt_external_review 호출 인자를 기록(실 helper 는 그대로 실행)."""
+    real = pm_update.maybe_prompt_external_review
+    calls: list[Path] = []
+
+    def spy(dest_root):
+        calls.append(Path(dest_root))
+        return real(dest_root)
+
+    monkeypatch.setattr(pm_update, "maybe_prompt_external_review", spy)
+    return calls
+
+
+def test_main_zero_change_prompts_undecided_adopter_exactly_once(
+    pm_update, monkeypatch, tmp_path, capsys
+):
+    """변경 0 · 대화형 · 미결정 → 첫 질문이 정확히 1회 오고 'y' 가 4키를 심는다."""
+    dest, _source, conf = _zero_change_tree(tmp_path, "session=pm\n")
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    _tty(monkeypatch, "y")
+    calls = _spy_optin(pm_update, monkeypatch)
+
+    assert _run_zero_change(pm_update, monkeypatch, dest) == 0
+
+    assert "최신 — 변경 없음." in capsys.readouterr().out, "변경 0 경로가 아니다(fixture 오류)"
+    assert calls == [dest], f"변경 0 실행의 추가 리뷰어 opt-in 호출: {calls!r} (기대 1회)"
+    parsed = _parse_conf(conf.read_text(encoding="utf-8"))
+    for key, value in EXPECTED_DEFAULTS:
+        assert parsed[key] == value, f"{key} 미기록/오값: {parsed.get(key)!r}"
+    assert parsed["session"] == "pm"                       # 기존 키 불변
+    # 짝인 delegate opt-in 도 같은 자리에서 계속 발화한다(둘 중 하나만 남기지 않는다).
+    assert parsed["delegate_enabled"] == "true"
+
+
+def test_main_zero_change_noninteractive_hints_without_write(
+    pm_update, monkeypatch, tmp_path, capsys
+):
+    """변경 0 · 비대화형 · 미결정 → conf write 0 + 나중에 켜는 법 1줄."""
+    dest, _source, conf = _zero_change_tree(tmp_path, "session=pm\n")
+    before = conf.read_text(encoding="utf-8")
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    _tty(monkeypatch, "비대화형인데 질문함")
+    calls = _spy_optin(pm_update, monkeypatch)
+
+    assert _run_zero_change(pm_update, monkeypatch, dest) == 0
+
+    assert calls == [dest]
+    assert conf.read_text(encoding="utf-8") == before, "비대화형인데 conf 를 건드렸다"
+    assert ENABLE_HINT_TEXT in capsys.readouterr().out
+
+
+def test_main_zero_change_does_not_reask_decided_adopter(
+    pm_update, monkeypatch, tmp_path
+):
+    """이미 결정된 채택자는 변경 0 실행이 반복돼도 무질문·byte 보존(재질문 없음)."""
+    decided = "session=pm\nexternal_review_enabled=false\ndelegate_enabled=false\n"
+    dest, _source, conf = _zero_change_tree(tmp_path, decided)
+    before = conf.read_text(encoding="utf-8")
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    _tty(monkeypatch, "이미 결정됐는데 재질문함")
+
+    assert _run_zero_change(pm_update, monkeypatch, dest) == 0
+    assert _run_zero_change(pm_update, monkeypatch, dest) == 0
+
+    assert conf.read_text(encoding="utf-8") == before
+
+
+def test_main_zero_change_dry_run_does_not_prompt(pm_update, monkeypatch, tmp_path):
+    """--dry-run 은 판정 실행이다 — 미결정이어도 묻지 않고 conf 를 쓰지 않는다."""
+    dest, _source, conf = _zero_change_tree(tmp_path, "session=pm\n")
+    before = conf.read_text(encoding="utf-8")
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    _tty(monkeypatch, "dry-run 인데 질문함")
+    calls = _spy_optin(pm_update, monkeypatch)
+
+    assert _run_zero_change(pm_update, monkeypatch, dest, ["--dry-run"]) == 0
+
+    assert calls == [], "dry-run 에서 opt-in 이 발화했다(무write 계약 위반)"
+    assert conf.read_text(encoding="utf-8") == before
+
+
+def test_main_zero_change_scoped_paths_does_not_prompt(pm_update, monkeypatch, tmp_path):
+    """--paths(부분 전파)는 요청 밖 write 를 하지 않는다 — 온보딩 질문도 그 밖이다."""
+    dest, _source, conf = _zero_change_tree(tmp_path, "session=pm\n")
+    before = conf.read_text(encoding="utf-8")
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    _tty(monkeypatch, "경로 스코프인데 질문함")
+    calls = _spy_optin(pm_update, monkeypatch)
+
+    assert _run_zero_change(
+        pm_update, monkeypatch, dest, ["--paths", SENTINEL_REL]) == 0
+
+    assert calls == [], "경로 스코프 실행에서 opt-in 이 발화했다"
+    assert conf.read_text(encoding="utf-8") == before
+
+
+def test_main_zero_change_adapter_config_red_does_not_prompt(
+    pm_update, monkeypatch, tmp_path, capsys
+):
+    """어댑터 config red(rc1)면 질문 전에 중단한다 — 미수렴을 성공 프롬프트로 덮지 않는다."""
+    dest, _source, conf = _zero_change_tree(tmp_path, "session=pm\n")
+    before = conf.read_text(encoding="utf-8")
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    _tty(monkeypatch, "어댑터 config red 인데 질문함")
+    monkeypatch.setattr(pm_update, "_has_adapter_config_candidate", lambda *a, **k: True)
+    monkeypatch.setattr(
+        pm_update, "sync_adapter_configs",
+        lambda *a, **k: {"status": "ok", "managed_converged": False,
+                         "updated": [], "preserved": [], "drift": [],
+                         "backfilled": [], "degraded": []},
+    )
+    calls = _spy_optin(pm_update, monkeypatch)
+
+    assert _run_zero_change(pm_update, monkeypatch, dest) == 1
+
+    assert calls == [], "adapter config red 인데 opt-in 이 발화했다"
+    assert conf.read_text(encoding="utf-8") == before
+    assert "미수렴" in capsys.readouterr().err
 
 
 # ── 축 1: fresh init 이 온보딩 결정을 비파괴로 흡수 ──────────────────────────

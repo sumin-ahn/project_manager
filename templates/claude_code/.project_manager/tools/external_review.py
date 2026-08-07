@@ -2245,7 +2245,7 @@ def _refund_reserved_round(ledger: dict, reservation: RoundBudget) -> bool:
     return True
 
 
-def _release_round_reservation(reservation: RoundBudget, *, reason: str) -> None:
+def _release_round_reservation(reservation: RoundBudget, *, reason: str) -> bool:
     """전송 **전에** 끝난 실행의 예약을 그 자리에서 원자 환불한다 (락→로드→환불→저장).
 
     예약 뒤·스폰 전에 중단하는 구간의 소유자(`_PreSpawnReservation`)가 쓴다. 락과 환불 기계는 마감
@@ -2253,9 +2253,13 @@ def _release_round_reservation(reservation: RoundBudget, *, reason: str) -> None
 
     락/저장 실패는 loud 경고만 남기고 삼킨다 — 이 실행의 rc(또는 전파할 예외)는 중단 사유가 소유하고,
     환불하지 못한 예약은 finished_at 없는 미완 레코드로 남아 다음 실행의 재시도 예산에서
-    보수적으로 세어진다(장부가 실제보다 헐거워지는 방향으로는 틀리지 않는다)."""
+    보수적으로 세어진다(장부가 실제보다 헐거워지는 방향으로는 틀리지 않는다).
+
+    반환값은 **이번 호출이 실제로 되돌려 저장까지 했는지**다 — 정상 return 하는 호출부(마감 저장이
+    실패한 no-spawn 경로)가 뒤따르는 안내 문구를 그 사실에 맞추는 데 쓴다. 되돌릴 예약이 없거나
+    (이미 반영·다른 세대) 락/저장이 실패하면 False 다."""
     if not reservation.reserved:
-        return
+        return False
     try:
         with _round_ledger_lock():
             ledger = _load_round_ledger()
@@ -2268,13 +2272,14 @@ def _release_round_reservation(reservation: RoundBudget, *, reason: str) -> None
             f"세어집니다 (장부: {_round_ledger_path()}).",
             file=sys.stderr,
         )
-        return
+        return False
     if refunded:
         print(
             f"라운드 예약 환불: 게이트 {reservation.gate} — {reason}(으)로 전송 없이 "
             "중단했습니다(상한·wave 예산 미소진).",
             file=sys.stderr,
         )
+    return refunded
 
 
 class _PreSpawnReservation:
@@ -2318,12 +2323,16 @@ class _PreSpawnReservation:
             self.release(reason=f"스폰 전 예외 {exc_type.__name__}")
         return False                                  # 예외는 삼키지 않는다
 
-    def release(self, *, reason: str) -> None:
-        """아직 소유 중인 예약을 환불한다 (이미 환불·이전됐으면 no-op)."""
+    def release(self, *, reason: str) -> bool:
+        """아직 소유 중인 예약을 환불한다 (이미 환불·이전됐으면 no-op).
+
+        반환값은 **이번 호출이 실제로 되돌렸는지**다 — 예외로 나가는 구간은 쓰지 않지만, 정상
+        return 하는 마감 실패 경로는 뒤따르는 안내 문구("미완으로 남는다" vs "되돌렸다")를 그
+        사실에 맞춰야 한다. no-op(이미 정산)·환불 실패는 둘 다 False 다."""
         if self._settled:
-            return
+            return False
         self._settled = True
-        _release_round_reservation(self.budget, reason=reason)
+        return bool(_release_round_reservation(self.budget, reason=reason))
 
     def hand_off(self) -> None:
         """스폰 구간으로 소유권 이전 — 이후 실패는 이 seam 이 아니라 마감 경로가 판정한다."""
@@ -5307,7 +5316,10 @@ def _run_isolated_review(
     이전에는 대칭 반납이 붙는다(`on_no_spawn`). 러너가 `started=False` 로 판명해 돌아오면 소유권이
     스폰 전 seam 으로 되돌아오고, 요약·진단·라운드 환불이 **저장까지 끝난 뒤**에야 반납된다 — 그
     사이의 실패(닫힌 stdout 파이프의 `BrokenPipeError` 가 실측 축이다)는 자식이 없던 실행이므로
-    바깥 seam 이 예약을 한 번 되돌려야 한다. `started=True` 는 종전 그대로 반납하지 않는다.
+    바깥 seam 이 예약을 한 번 되돌려야 한다. 예외로 나가지 **않는** 변종이 하나 있다: 마감 저장이
+    `OSError` 로 실패한 경우다. 그 경로는 판정 rc 를 그대로 돌려주며 정상 return 하므로 바깥
+    `__exit__` 가 소유를 보지 못해, 되돌림을 그 자리에서 직접 한 번 한다.
+    `started=True` 는 종전 그대로 반납하지 않는다.
     """
     if reservation is None:
         reservation = _PreSpawnReservation(RoundBudget())  # 장부 밖 직접 호출
@@ -5435,16 +5447,33 @@ def _run_isolated_review(
                 # 환불이 **저장까지 끝난** 뒤에야 소유권을 반납한다 — 이 줄 앞에서 죽으면 바깥
                 # seam 이 아직 소유자라 한 번 되돌리고, 이 줄 뒤에는 되돌릴 것이 없다. 저장이
                 # 실패한 경로(아래 OSError)는 반납하지 않는다: 되돌리지 못한 예약의 소유자는
-                # 여전히 바깥 seam 이다.
+                # 여전히 스폰 전 seam 이고, 그 경로는 예외 없이 정상 return 하므로(바깥
+                # `__exit__` 가 보지 못한다) 거기서 직접 한 번 되돌린다.
                 reservation.settle_refunded()
         except OSError as exc:
             # 마감은 이미 *끝난* 전송의 부기다 — 여기서 rc 를 바꾸면 리뷰 판정이 락 사정으로
             # 뒤집힌다. loud 경고만 남기고 판정 종료코드를 그대로 돌려준다. 마감 못 한 레코드는
             # finished_at 없이 남아 다음 실행의 미완 재시도 예산으로 보수적으로 집계된다.
+            #
+            # 단 `started=False` 는 예외다 — 자식이 뜬 적 없다고 **판명된** 실행이라 예약 소유는
+            # 아직 스폰 전 seam 에 있다(`on_no_spawn` 이 되돌려 놨고 반납은 저장 성공 뒤에만
+            # 선다). 이 경로는 예외를 삼키고 **정상 return** 하므로 `__exit__` 가 그 소유를 보지
+            # 못한다: 그대로 두면 전송 0·과금 0 인 실행이 라운드·wave 예산을 먹은 채 미완으로
+            # 남아, `incomplete_limit=1` 형상에서 다음 **정상** 재시도가 곧바로 rc=4 로 막힌다.
+            # 그래서 같은 환불 기계로 한 번 더 되돌린다 — 락이 그새 풀리면 예산이 복구되고,
+            # 저장은 됐는데 락 해제만 실패한 형상이면 되돌릴 레코드가 없어 `_refund_round` 가
+            # False 를 내므로 이중 환불이 되지 않는다. 소유는 여전히 한 seam 이다(`release` 는
+            # 한 번만 선다). 스폰된 실행(started=True)은 종전대로 건드리지 않는다 — 프롬프트가
+            # 이미 나갔을 수 있어 되돌리면 과금된 호출이 상한을 소비하지 않는다(MF-A).
+            refunded = not started and reservation.release(
+                reason="스폰 없이 끝난 실행의 장부 마감 실패")
             print(
                 f"경고: 라운드 장부 마감 실패 ({type(exc).__name__}: {exc}) — 다른 게이트 "
-                "실행이 장부 락을 보유 중일 수 있습니다. 이 라운드는 미완으로 남아 다음 실행의 "
-                f"재시도 예산에서 세어집니다 (장부: {_round_ledger_path()}).",
+                "실행이 장부 락을 보유 중일 수 있습니다. "
+                + ("전송이 없던 라운드라 예약은 되돌렸습니다(상한·wave 예산 미소진)."
+                   if refunded else
+                   "이 라운드는 미완으로 남아 다음 실행의 재시도 예산에서 세어집니다.")
+                + f" (장부: {_round_ledger_path()})",
                 file=sys.stderr,
             )
 

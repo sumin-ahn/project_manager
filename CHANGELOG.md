@@ -14,9 +14,16 @@
   `board.py init`·`pm_update` 의 첫 opt-in 은 **1회만** 묻고, "예" 면 `local.conf` 에
   `external_review_enabled=true` + `additional_reviewer.harness=codex` +
   `additional_reviewer.model=gpt-5.6-sol` + `additional_reviewer.reasoning=max` 4키를 원자적으로
-  기록한다 — `reviewer_cmd` 는 만들지 않는다. 이미 결정(true/false)이 있으면 다시 묻지 않고 기존
+  기록한다 — `reviewer_cmd` 는 만들지 않는다. 파일 변경이 0인 수렴 `pm_update` 도 같은 첫 opt-in 을
+  배달한다. 이미 결정(true/false)이 있으면 다시 묻지 않고 기존
   구조적 튜플·레거시 `reviewer_cmd` 값을 그대로 둔다. 재-import/update 는 커스텀
   `additional_reviewer.*` 를 포함해 무손실 왕복한다.
+- **추가 리뷰어 구조화 실행 계약** — `additional_reviewer.{harness,model,reasoning}` 을 원자적으로
+  해소해 codex·claude·opencode 세 하네스를 같은 공용 relay seam 으로 실행한다. 기본값은
+  `codex/gpt-5.6-sol/max`, 역할은 하네스별 고정 read-only `code-reviewer`이고, 실행 전 stderr·
+  dry-run·raw 장부가 동일한 하네스/모델/reasoning/명령 출처를 기록한다. 일부만 설정된 튜플,
+  구조화 튜플과 레거시 `reviewer_cmd` 동시 설정, 미지원 값은 격리·예약·송신 전에 fail-loud한다.
+  레거시 명령은 호환 실행하되 모델을 추측하지 않고 `unpinned-model` 로 크게 표시한다.
 - **비용 재승인 폐지** — `external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한
   지속 동의다. 카드·매뉴얼·플레이북이 리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻던
   문구를 걷어낸다. 라운드/wave 상한은 기계적 anti-loop 정지로 남으며, PM 은 `--rounds-report` 를
@@ -34,14 +41,27 @@
 
 ### Fixed
 - **Codex cross-harness egress 승인 브리지** — `workspace-write` 샌드박스의
-  `network_access=false`를 유지한 채 `pm_delegate → claude/opencode/codex CLI` 실위임만
-  Codex `exec_command` 건별 승격으로 실행한다. dry-run이 승격 필요를 미리
-  표시하고, 실행은 `sandbox_permissions=require_escalated` +
-  `--codex-egress-escalated` attestation을 동반한다. 최초 승인은 `pm_delegate.py`
-  전용 reusable prefix로 기억하고, `delegate_enabled=true`인 후속 호출은 과금을
+  `network_access=false`를 유지한 채 `pm_delegate → claude/opencode/codex CLI` 실위임과
+  `external_review.py` 추가 리뷰 송신만 각 진입점의 Codex `exec_command` 건별 승격으로 실행한다.
+  dry-run이 승격 필요를 미리 표시하고, 실행은 `sandbox_permissions=require_escalated` +
+  `--codex-egress-escalated` attestation을 동반한다. 최초 승인은 각 진입점 전용의 좁은 reusable
+  prefix로 기억하고, `delegate_enabled=true`·`external_review_enabled=true`인 후속 호출은 과금을
   재질문하지 않는다. 일반 sandbox 오호출은 원격 CLI
   재시도·raw 예약·과금 전 fail-loud하고, 거절/실패를 native GPT로 무음
   대체하지 않는다.
+- **worktree git mutation 앵커 가드** — Claude `PreToolUse(Bash)`와 OpenCode hook이 실제 shell
+  command word·cwd 전이·Git pathspec을 중앙 `board.py` 판정으로 해석한다. PM 홈의 공유 경로
+  mutation은 deny, 활성 canonical slot 안의 명백한 mutation은 allow, 동적 wrapper·복잡 shell·
+  symlink alias처럼 확정할 수 없는 호출은 warn으로 내려 false-deny 없이 가시화한다. Codex는
+  동등한 raw exec hook이 없는 capability gap을 문서화한다.
+- **handoff 재실행의 멱등성과 선행 lease 해제** — 같은 task/session의 handoff는 기계 구획을
+  append하지 않고 원자 갱신하며, 다른 세션·task는 새 구획을 만든다. 공유 log lock 안에서
+  read-plan-write를 끝내고 CRLF·혼합 newline과 기계 구획 밖 PM 본문 바이트를 보존한다. task 모드는
+  log 기록 전에 lease PID를 0으로 내려야 하며 해제 실패·부재·예외는 rc1로 중단한다.
+- **어댑터 config 완료 게이트** — `pm_update`가 managed adapter 후보의 비교·수렴·baseline 장부를
+  completion gate로 판정한다. 후보가 전혀 없는 partial recovery만 vacuous green이고, managed
+  목적지가 있는데 source template·판정 채널이 없거나 baseline이 미수렴이면 엔진 파일 변경 0이어도
+  rc1이다. 실제 구 updater RUN1→신 updater RUN2→accept/backfill→green 경로를 E2E로 고정한다.
 - **PM 홈 상시-red 예시 CI 제거** — claude_code 채택자 템플릿에서
   `.github/workflows/regression.yml`을 제거하고 세 하네스 manifest 모두 GitHub workflow를
   비출하한다. 표준 PM 홈에는 제품 테스트가 없어 기존 예시가 push마다 pytest exit 5와 실패 메일을

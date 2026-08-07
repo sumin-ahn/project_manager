@@ -962,14 +962,20 @@ def extract_harness_reply(harness: str, stdout: str) -> str | None:
     opencode=parse_opencode_json → reply. 미추출(파싱 실패·빈 출력)은 None — 호출자가 fail-loud
     한다(wire 원문을 그대로 판정에 넣지 않는다).
 
-    **최종 회신의 타입 계약은 이 seam 이 소유한다** — 비어있지 않은 `str` 하나이고, 그 밖의 값
-    (dict/list/수·null·빈 문자열)은 전부 미추출(None)이다. wire 파서는 "wire 가 무엇을 말했는지"를
+    **최종 회신의 타입 계약은 이 seam 이 소유한다** — 내용이 있는 `str` 하나이고, 그 밖의 값
+    (dict/list/수·null·빈 문자열·공백만)은 전부 미추출(None)이다. wire 파서는 "wire 가 무엇을 말했는지"를
     그대로 옮기는 층이라 claude `result` 필드처럼 스키마상 임의 JSON 값이 올 수 있는 자리를
     통과시킨다(실측 형상: `{"type":"result","result":{...}}`). 그 값이 소비 표면까지 흘러가면
     판정 파싱·전사 단계에서 AttributeError 로 터지는데, 그 시점은 raw 박제·장부 마감 **전**이라
     터진 실행은 원문도 장부도 남기지 않는다. 그래서 타입은 두 표면(위임·추가 리뷰어)이 공유하는
     이 한 지점에서 세운다 — 형상 붕괴는 "회신 없음"으로 환원되고 호출자의 기존 fail-loud 경로가
-    그대로 받는다."""
+    그대로 받는다.
+
+    **공백만 있는 회신은 빈 회신과 같다.** 참/거짓만 보면 `" "`·`"\\n"` 이 통과해 리뷰어가 아무 말도
+    하지 않은 실행이 '회신 있음'으로 기록되고, 그 뒤의 판정 파싱은 아무 토큰도 찾지 못한 채 판정
+    불명확으로만 끝난다 — 폴백 신호(`reply_extraction_failed`)가 서지 않아 호출자가 내부 리뷰어로
+    갈아탈 근거를 잃는다. 그래서 존재 판정은 `strip()` 으로 하고, **돌려주는 값은 원문 그대로**다
+    (앞뒤 공백까지 회신 바이트의 일부라 판정·전사 표면이 wire 와 어긋나면 안 된다)."""
     lines = stdout.splitlines()
     if harness == "claude":
         _sid, reply, _usage = parse_stream_json(lines)
@@ -979,7 +985,7 @@ def extract_harness_reply(harness: str, stdout: str) -> str | None:
         _sid, reply, _usage = parse_opencode_json(lines)
     else:
         raise HarnessContractError(f"미지원 harness {harness!r} — reply 추출 불가.")
-    return reply if isinstance(reply, str) and reply else None
+    return reply if isinstance(reply, str) and reply.strip() else None
 
 
 # ── Codex egress 승격 브리지 (network-off 안전 경계 × 외부 스폰) ─────────────────
