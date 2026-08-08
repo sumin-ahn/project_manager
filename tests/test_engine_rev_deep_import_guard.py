@@ -2587,7 +2587,9 @@ def test_sensitivity_removing_external_review_reraise_swallows_skew(tmp_path, mo
         raise skew
 
     monkeypatch.setattr(mutant, "_reviewer_idle_timeout", raise_skew)
-    # 산출물은 두 채널 구조다(T-0563) — 진단 본문은 회신 채널에 실린다.
+    # 산출물은 두 채널 구조다(T-0563) — 진단 본문은 회신 채널에 실린다. started=False 는 이
+    # 실패 지점이 kwargs 준비(=스폰 경계 앞)라서다(T-0590 R3) — 이 테스트가 보는 것은 skew 가
+    # 일반 실행 오류로 **삼켜졌다**는 사실이고, started 는 그 지점의 사실을 그대로 싣는다.
     assert mutant._run_reviewer_ex(
         "prompt", "reviewer", 1, lambda *_a, **_kw: None,
-    ) == (False, mutant.ReviewerOutput("[리뷰어 실행 오류: nested relay skew]", ""), True)
+    ) == (False, mutant.ReviewerOutput("[리뷰어 실행 오류: nested relay skew]", ""), False)

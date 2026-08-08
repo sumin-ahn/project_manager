@@ -1726,3 +1726,255 @@ def test_rounds_report_numbers_rounds_by_reservation_sequence(external):
             if line.startswith("  #")]
     assert body[0].startswith("  #1 2026-08-07T03:00:00+00:00 판정=1")
     assert body[1].startswith("  #2 2026-08-07T02:00:00+00:00 판정=0")
+
+
+# ── 스폰 경계 seam: 소유권 이전은 **자식 생성 직전** 한 자리 (T-0590 R3) ─────
+#
+# 소유권 이전이 러너 **호출** 직전에 있으면, 러너 안의 준비 구간(relay 로드·프로필 해소·워치독
+# 셋업)과 exec 실패가 전부 "이미 넘긴 뒤"가 된다 — 스폰 0·전송 0 인 실행이 라운드/wave 예산을
+# 먹고, 상한 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로 막힌다. 경계는 relay 워치독이
+# `Popen` 을 부르기 한 줄 앞이고, 그 앞의 실패와 확정 기동 실패는 started=False 다.
+
+# 확정 기동 실패 표 — exec 자체가 실패해 자식이 뜬 적 없는 예외들(전송 0·과금 0).
+_DEFINITE_LAUNCH_EXCEPTIONS = (
+    pytest.param(FileNotFoundError, id="file-not-found"),
+    pytest.param(PermissionError, id="permission-denied"),
+    pytest.param(NotADirectoryError, id="not-a-directory"),
+    pytest.param(IsADirectoryError, id="is-a-directory"),
+)
+
+
+def _spawn_boundary_runner(*, raise_before=None, raise_after=None, rc=0,
+                           out="판정: 통과\n\n## must-fix\n- 없음\n"):
+    """스폰 경계를 **이름으로 선언한** 러너 대역 — 경계 앞/뒤 실패를 갈라 주입한다.
+
+    `raise_before` = 콜백 전(러너 준비 구간 = Popen 전) 실패, `raise_after` = 콜백 뒤(자식이 뜬
+    뒤) 실패. 실 러너와 같은 시그니처를 쓰는 이유는 조건부 전달 판정(`_declares_keyword`)이
+    이름 선언을 보기 때문이다."""
+    seen = {"calls": 0, "spawn": 0}
+
+    def runner(argv, *, input=None, timeout=None, idle_timeout=None,
+               cwd=None, env=None, on_spawn_attempt=None, **_ignored):
+        seen["calls"] += 1
+        if raise_before is not None:
+            raise raise_before
+        if on_spawn_attempt is not None:
+            on_spawn_attempt()
+            seen["spawn"] += 1
+        if raise_after is not None:
+            raise raise_after
+        return subprocess.CompletedProcess(args=argv, returncode=rc, stdout=out, stderr="")
+
+    runner.seen = seen
+    return runner
+
+
+@pytest.mark.parametrize("exc_type", _DEFINITE_LAUNCH_EXCEPTIONS)
+def test_definite_launch_failure_is_started_false(external, exc_type):
+    """exec 자체가 실패한 확정 기동 실패는 종류를 불문하고 started=False (환불 대상)."""
+    runner = _spawn_boundary_runner(raise_after=exc_type("리뷰어"))
+    metrics: dict[str, object] = {}
+    ok, out, started = external._run_reviewer_ex(
+        "p", "codex", 5, runner, metrics=metrics)
+    assert (ok, started) == (False, False)
+    assert "codex" in out.answer
+    assert metrics["rc"] in (126, 127)
+
+
+@pytest.mark.parametrize("exc_type", _DEFINITE_LAUNCH_EXCEPTIONS)
+def test_definite_launch_failure_from_a_legacy_runner_is_started_false(external, exc_type):
+    """스폰 경계를 선언하지 않은 기존 주입 러너의 같은 실패도 started=False (호환 경로)."""
+    def legacy(argv, **kwargs):
+        raise exc_type("리뷰어")
+
+    ok, _out, started = external._run_reviewer_ex("p", "codex", 5, legacy)
+    assert (ok, started) == (False, False)
+
+
+def test_relay_marked_post_spawn_failure_stays_conservative(external):
+    """`Popen` **성공 뒤**의 실패는 같은 예외 종류여도 started=True 로 남는다.
+
+    종류만 보면 자식이 떴다 죽은 실행까지 환불 대상이 된다 — 그건 프롬프트가 이미 나간 실행이라
+    상한 무한 우회로 이어진다. relay 표식이 종류 판정을 이긴다.
+    """
+    marked = PermissionError("정리 중 권한 오류")
+    marked.spawn_failed = False
+    runner = _spawn_boundary_runner(raise_after=marked)
+    ok, _out, started = external._run_reviewer_ex("p", "codex", 5, runner)
+    assert (ok, started) == (False, True)
+
+
+def test_preparation_failure_before_the_boundary_is_started_false(external):
+    """러너 안의 **준비 구간**(콜백 전) 실패는 자식이 없었다는 사실이 확정 — started=False."""
+    handoffs = []
+    runner = _spawn_boundary_runner(raise_before=RuntimeError("relay 로드 실패"))
+    ok, out, started = external._run_reviewer_ex(
+        "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
+    assert (ok, started) == (False, False)
+    assert handoffs == [], "스폰 경계를 지나지도 않았는데 소유권을 넘겼다"
+    assert "리뷰어 실행 오류" in out.answer
+
+
+def test_failure_after_the_boundary_stays_started_true(external):
+    """경계를 **지난 뒤**의 불확실 실패는 종전대로 보수적 started=True (환불 없음)."""
+    handoffs = []
+    runner = _spawn_boundary_runner(raise_after=RuntimeError("드레인 중 오류"))
+    ok, _out, started = external._run_reviewer_ex(
+        "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
+    assert (ok, started) == (False, True)
+    assert handoffs == [1], "경계를 지났는데 소유권을 넘기지 않았다"
+
+
+def test_boundary_callback_fires_once_and_only_inside_the_declaring_runner(external):
+    """경계를 선언한 러너면 콜백은 **러너 안에서** 1회만 돈다(호출부 중복 호출 없음)."""
+    handoffs = []
+    runner = _spawn_boundary_runner()
+    ok, _out, started = external._run_reviewer_ex(
+        "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
+    assert (ok, started) == (True, True)
+    assert handoffs == [1]
+    assert runner.seen["spawn"] == 1
+
+
+def test_declaring_runner_that_skips_the_callback_still_hands_off_on_success(external):
+    """경계를 선언해 놓고 부르지 않은 러너가 정상 반환하면 반환 직후 소유권이 넘어간다.
+
+    자식이 떴는데 소유권이 남아 있으면 그 라운드가 조용히 환불돼 상한이 늘어난다(백스톱).
+    """
+    handoffs = []
+
+    def silent(argv, *, input=None, timeout=None, idle_timeout=None,
+               cwd=None, env=None, on_spawn_attempt=None, **_ignored):
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
+
+    ok, _out, started = external._run_reviewer_ex(
+        "p", "codex", 5, silent, on_spawn_attempt=lambda: handoffs.append(1))
+    assert (ok, started) == (True, True)
+    assert handoffs == [1]
+
+
+def test_legacy_runner_gets_the_callback_before_the_call_without_the_keyword(external):
+    """경계를 선언하지 않은 기존 러너에는 새 키를 넘기지 않고, 콜백은 호출 직전에 돈다."""
+    order = []
+
+    def strict(argv, *, input, capture_output, text, encoding, errors, timeout):
+        order.append("run")
+        return _completed(0)
+
+    ok, _out, started = external._run_reviewer_ex(
+        "p", "codex", 5, strict, on_spawn_attempt=lambda: order.append("handoff"))
+    assert (ok, started) == (True, True)
+    assert order == ["handoff", "run"]
+
+
+def test_default_runner_forwards_the_boundary_to_the_shared_watchdog(external, monkeypatch):
+    """기본 러너는 콜백을 relay 공용 워치독까지 그대로 내려보낸다(경계 소유자 = relay)."""
+    seen = {}
+    real_relay = external._load_relay()
+
+    class _Relay:
+        def __getattr__(self, name):
+            return getattr(real_relay, name)   # 선언 테이블·해소기는 실 relay 그대로.
+
+        def run_with_first_event_watchdog(self, argv, **kw):
+            seen.update(kw)
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="",
+                                               stderr="")
+
+    monkeypatch.setattr(external, "_load_relay", lambda: _Relay())
+    sentinel = object()
+    external._watchdog_reviewer_run(
+        ["codex"], input="p", timeout=5, on_spawn_attempt=sentinel)
+    assert seen["on_spawn_attempt"] is sentinel
+
+
+def _wire_real_run_review(external, monkeypatch, tmp_path, *, conf, runner,
+                          diff="diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n"):
+    """main() → **실** run_review → 주입 러너까지 태우는 배선(스폰 경계 판정 e2e).
+
+    `_wire` 는 run_review 자체를 대역으로 세워 started 매핑을 태우지 않는다. 여기서는 라운드
+    장부·예약 환불까지 실 경로로 돌려야 하므로 기본 러너 자리만 바꾼다."""
+    monkeypatch.setattr(external, "REPO", tmp_path)
+    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(conf))
+    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, []))
+    _stub_reviewer_isolation(external, monkeypatch)
+    monkeypatch.setattr(external, "_watchdog_reviewer_run", runner)
+
+    def _run(argv):
+        return external.main([*argv, "--output-dir", str(tmp_path / "raw")])
+
+    return _run
+
+
+# 상한을 전부 1 로 조인 형상 — 스폰 0 인 실행이 하나라도 예산을 먹으면 다음 정상 호출이 rc=4 다.
+_ALL_LIMITS_ONE = {
+    "external_review_enabled": "true",
+    "external_review_round_limit": "1",
+    "external_review_wave_budget": "1",
+    "external_review_incomplete_round_limit": "1",
+}
+
+
+@pytest.mark.parametrize("exc_type", _DEFINITE_LAUNCH_EXCEPTIONS)
+def test_definite_launch_failure_spends_no_budget_and_a_valid_retry_still_spawns(
+    external, monkeypatch, tmp_path, exc_type,
+):
+    """상한 1/1/1 형상에서 확정 기동 실패 3회가 예산을 0 으로 두고, 그 뒤 정상 실행이 돈다."""
+    failing = _spawn_boundary_runner(raise_after=exc_type("reviewer"))
+    run = _wire_real_run_review(
+        external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
+    gate = ["--gate", "T-9001", "--paths", "x.py"]
+
+    for _ in range(3):
+        assert run(gate) == 1, "확정 기동 실패는 FALLBACK(rc=1) — 상한 거부(rc=4)가 아니다"
+    assert failing.seen["calls"] == 3
+    ledger = _ledger(external, tmp_path)
+    assert ledger["T-9001"]["count"] == 0, "스폰 0 인 실행이 라운드를 먹었다"
+    assert ledger["T-9001"]["records"] == []
+    assert _wave_budget_state(external, tmp_path)["spent"] == 0, "wave 예산까지 먹었다"
+
+    passing = _spawn_boundary_runner()
+    monkeypatch.setattr(external, "_watchdog_reviewer_run", passing)
+    assert run(gate) == 0, "설치를 고친 뒤의 정상 호출이 상한에 막혔다"
+    assert passing.seen["calls"] == 1
+    entry = _ledger(external, tmp_path)["T-9001"]
+    assert entry["count"] == 1 and entry["records"][0]["verdict"] is True
+    assert _wave_budget_state(external, tmp_path)["spent"] == 1
+
+
+def test_preparation_failure_before_popen_spends_no_budget(
+    external, monkeypatch, tmp_path,
+):
+    """러너 준비 구간(Popen 전) 실패도 예산 0 — 그 뒤 정상 호출이 그대로 돈다."""
+    failing = _spawn_boundary_runner(raise_before=RuntimeError("워치독 준비 실패"))
+    run = _wire_real_run_review(
+        external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
+    gate = ["--gate", "T-9002", "--paths", "x.py"]
+
+    for _ in range(3):
+        assert run(gate) == 1
+    ledger = _ledger(external, tmp_path)
+    assert ledger["T-9002"]["count"] == 0
+    assert _wave_budget_state(external, tmp_path)["spent"] == 0
+
+    passing = _spawn_boundary_runner()
+    monkeypatch.setattr(external, "_watchdog_reviewer_run", passing)
+    assert run(gate) == 0
+    assert _ledger(external, tmp_path)["T-9002"]["count"] == 1
+
+
+def test_failure_after_popen_still_consumes_the_round(external, monkeypatch, tmp_path):
+    """경계를 지난 뒤 죽은 실행은 종전대로 라운드를 소비한다 — 상한 1 이면 다음 호출이 rc=4.
+
+    확정 기동 실패의 환불이 "스폰된 실행까지 환불"로 번지지 않았음을 반대편에서 못박는다.
+    """
+    failing = _spawn_boundary_runner(raise_after=RuntimeError("드레인 중 오류"))
+    run = _wire_real_run_review(
+        external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
+    gate = ["--gate", "T-9003", "--paths", "x.py"]
+
+    assert run(gate) == 1
+    assert _ledger(external, tmp_path)["T-9003"]["count"] == 1
+    assert _wave_budget_state(external, tmp_path)["spent"] == 1
+    assert run(gate) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert failing.seen["calls"] == 1, "상한을 넘긴 호출이 리뷰어를 또 띄웠다"

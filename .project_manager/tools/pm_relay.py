@@ -1604,6 +1604,25 @@ def _cleanup_failed_watched_spawn(proc, process_group_id: int | None, *, argv,
             )
 
 
+SPAWN_FAILED_ATTR = "spawn_failed"
+
+
+def _mark_spawn_failed(exc: BaseException, failed: bool) -> None:
+    """예외에 "자식이 떴는가" 표식을 붙인다 — 이미 붙어 있으면 그대로 둔다(최초 관측이 진실).
+
+    표식의 소유자는 **스폰 경계를 실제로 본 층**이다: `_WatchedPopen` 은 `Popen` 반환 뒤의 실패에
+    False(자식 있었음)를, 워치독 루프는 어댑터에서 나온 exec 실패에 True(자식 없음)를 붙인다.
+    상위(추가 리뷰어 러너)는 이 표식이 있으면 그것을, 없으면 예외 종류만 보고 보수적으로 판정한다.
+    속성을 못 받는 예외(슬롯 정의)는 조용히 넘긴다 — 표식 없음은 '판정 유보'라 안전쪽이다.
+    """
+    if getattr(exc, SPAWN_FAILED_ATTR, None) is not None:
+        return
+    try:
+        setattr(exc, SPAWN_FAILED_ATTR, failed)
+    except (AttributeError, TypeError):
+        pass
+
+
 class _WatchedPopen:
     """실 subprocess.Popen 을 감싸 첫-stdout-이벤트 관측 + 진행(chunk) 관측 + 프로세스그룹 kill 제공.
 
@@ -1672,6 +1691,10 @@ class _WatchedPopen:
             self._stderr_reader.start()
         except BaseException as primary:
             if spawned is not None:
+                # 자식이 **실제로 떴다** — 뒤이은 초기화 실패는 '스폰 전'이 아니다. 회수는 하되
+                # 그 사실을 예외에 표식으로 남긴다(호출부가 exec 실패와 구분해 전송 가능성을
+                # 보수적으로 판정한다). 표식을 못 붙이는 예외는 표식 없음 = 판정 유보다.
+                _mark_spawn_failed(primary, False)
                 process_group_id = spawned.pid if os.name == "posix" else None
                 try:
                     _cleanup_failed_watched_spawn(
@@ -1985,6 +2008,7 @@ def run_with_first_event_watchdog(
     env=None,
     text: bool = True,
     input_text: str | None = None,
+    on_spawn_attempt=None,
     popen=None,
     clock=None,
     sleep=None,
@@ -2014,6 +2038,13 @@ def run_with_first_event_watchdog(
       clock : () -> 초(단조). 기본 time.monotonic.
       sleep : (초) -> None. 기본 time.sleep(폴 간격 양보). fake 는 여기서 clock 을 전진시킨다.
       log   : (str) -> None. 기본 stderr 1줄.
+
+    `on_spawn_attempt` = **첫 자식 생성 직전** 1회 호출되는 seam(기본 None = 종전 동작). 호출
+    지점은 인자 검증·프로필 해소·워치독 준비가 모두 끝나 **다음 문장이 자식을 띄우는** 자리다 —
+    그보다 앞의 실패(준비 구간)는 전송이 확실히 0 이라, 이 콜백으로 예산 소유권을 옮기는 호출부가
+    그 구간을 환불 대상으로 유지할 수 있다. stall 재시도의 2회차 이후에는 다시 호출하지 않는다
+    (소유권 이전은 실행당 1회이고, 그때는 이미 자식이 한 번 떴다). 어댑터가 exec 에 실패해 던진
+    `OSError` 에는 "자식 없음" 표식(`spawn_failed=True`)을 붙여 다시 던진다.
     overall_timeout 은 호출부의 벽시계 백스톱이다 — 무진행 판정이 켜지면 주 판정 자리를 내주고
     "감지기가 고장난 경우"의 유한 상한으로만 남는다.
     """
@@ -2040,7 +2071,19 @@ def run_with_first_event_watchdog(
     stalled_stdout: list[str] = []
     stalled_stderr: list[str] = []
     for attempt in range(1, attempts + 1):
-        proc = popen(argv)
+        # ── 실 스폰 경계 ────────────────────────────────────────────────
+        # 여기까지가 "확실히 전송 전"이다(인자 검증·프로필 해소·워치독 준비). 다음 문장이 자식을
+        # 띄우므로 소유권 이전 콜백은 이 자리에 선다. 재시도 2회차부터는 이미 자식이 한 번 떴으니
+        # 다시 넘기지 않는다.
+        if on_spawn_attempt is not None and attempt == 1:
+            on_spawn_attempt()
+        try:
+            proc = popen(argv)
+        except OSError as exc:
+            # 어댑터가 exec 자체에 실패했다(파일 부재·권한·경로 형상) — 자식은 뜬 적이 없다.
+            # `_WatchedPopen` 이 Popen 성공 뒤의 실패에 이미 False 를 붙였으면 덮지 않는다.
+            _mark_spawn_failed(exc, True)
+            raise
         cleaned = False
         try:
             start = clock()

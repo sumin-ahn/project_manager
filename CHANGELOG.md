@@ -15,8 +15,9 @@
   `external_review_enabled=true` + `additional_reviewer.harness=codex` +
   `additional_reviewer.model=gpt-5.6-sol` + `additional_reviewer.reasoning=max` 4키를 원자적으로
   기록한다 — `reviewer_cmd` 는 만들지 않는다. 파일 변경이 0인 수렴 `pm_update` 도 같은 첫 opt-in 을
-  배달한다. 이미 결정(true/false)이 있으면 다시 묻지 않고 기존
-  구조적 튜플·레거시 `reviewer_cmd` 값을 그대로 둔다. 재-import/update 는 커스텀
+  배달한다. 이미 결정(true/false)이 있으면 다시 묻지 않고, 활성 플래그만 빠진 채 유효한 구조적
+  튜플·레거시 `reviewer_cmd`가 있으면 대상은 byte 그대로 두고 플래그만 기록한다. 부분 튜플·이중
+  대상은 쓰기 전에 크게 알리고, stdin EOF는 거절로 박제하지 않는다. 재-import/update 는 커스텀
   `additional_reviewer.*` 를 포함해 무손실 왕복한다.
 - **추가 리뷰어 구조화 실행 계약** — `additional_reviewer.{harness,model,reasoning}` 을 원자적으로
   해소해 codex·claude·opencode 세 하네스를 같은 공용 relay seam 으로 실행한다. 기본값은

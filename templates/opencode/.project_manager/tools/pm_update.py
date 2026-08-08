@@ -208,10 +208,81 @@ ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
     + "".join(f"{key}={value}\n" for key, value in ADDITIONAL_REVIEWER_DEFAULTS)
 )
 
+# 이미 **유효한 대상**이 있는 conf 의 "예" 가 쓰는 블록 — 활성 플래그만 심고 대상은 손대지 않는다
+#   (board.ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK 과 같은 값). 기본 4키를 그냥 덧붙이면 구조화
+#   튜플은 last-wins 로 갈아치워지고, 레거시 `reviewer_cmd` 와는 엔진이 거부하는 이중 대상이 된다.
+ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK = (
+    "# 추가 리뷰어(additional reviewer) — ON (이미 설정된 대상 그대로).\n"
+    "# external_review_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다).\n"
+    "external_review_enabled=true\n"
+)
+
 ADDITIONAL_REVIEWER_ENABLE_HINT = (
     "local.conf 에 external_review_enabled=true + "
     "additional_reviewer.harness/model/reasoning"
 )
+
+# ── 기존 대상 판정 (온보딩 전용 · 실행 해소 없음 · board 와 같은 규칙) ────────
+# 실행 해소(하네스→실 명령·값 검증)는 external_review 코어가 소유하고, 온보딩이 알아야 하는 것은
+# "덧쓰면 안 되는 선언이 이미 있는가" 하나다. board 를 import 하지 않는 이유는 의존 방향
+# (pm_update 는 stdlib-only), external_review 를 import 하지 않는 이유는 무거운 실행 코어를
+# 업데이트 경로로 끌어오지 않기 위해서다. 세 사본의 키/판정 일치는 테스트가 잡는다.
+ADDITIONAL_REVIEWER_PREFIX = "additional_reviewer"
+ADDITIONAL_REVIEWER_HARNESS_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.harness"
+ADDITIONAL_REVIEWER_MODEL_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.model"
+ADDITIONAL_REVIEWER_REASONING_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.reasoning"
+ADDITIONAL_REVIEWER_KEYS: tuple[str, ...] = (
+    ADDITIONAL_REVIEWER_HARNESS_KEY,
+    ADDITIONAL_REVIEWER_MODEL_KEY,
+    ADDITIONAL_REVIEWER_REASONING_KEY,
+)
+LEGACY_REVIEWER_CMD_KEY = "reviewer_cmd"
+
+# 판정 결과 — 대상 없음 / 레거시 자유 커맨드 / 구조화 튜플.
+REVIEWER_TARGET_NONE = "none"
+REVIEWER_TARGET_LEGACY = "legacy"
+REVIEWER_TARGET_STRUCTURED = "structured"
+
+
+class AdditionalReviewerTargetError(RuntimeError):
+    """기존 대상이 그 자체로 깨져 있어 온보딩이 결정을 쓸 수 없는 형상(부분 튜플·이중 대상)."""
+
+
+def classify_additional_reviewer_target(conf: dict[str, str]) -> str:
+    """활성 플래그만 없는 conf 에 **이미 어떤 대상이 있는가**를 판정한다
+    (board.classify_additional_reviewer_target 와 같은 계약·같은 판정).
+
+    · 구조화 키가 하나도 없고 비어있지 않은 `reviewer_cmd` 도 없으면 `none`(대상 없음).
+    · 구조화 키 없이 비어있지 않은 `reviewer_cmd` 만 있으면 `legacy`.
+    · 구조화 키가 하나라도 **있으면**(값이 비어 있어도 선언이다) harness/model 동반 필수이고,
+      그 둘이 온전하면 `structured`. 판정 기준을 값의 truthiness 로 하면 비운 채 선언한 부분
+      튜플이 '대상 없음'으로 떨어져, 온보딩이 기본 4키를 덧써 사용자의 선언을 갈아치운다.
+    · 부분 튜플·구조화+레거시 이중 대상은 `AdditionalReviewerTargetError` 다 — 어느 쪽이 이기는지
+      추측해 쓰지 않는다(external_review 의 해소 규칙과 같은 판정·같은 이유).
+    """
+    present = tuple(key for key in ADDITIONAL_REVIEWER_KEYS if key in conf)
+    legacy_cmd = (conf.get(LEGACY_REVIEWER_CMD_KEY) or "").strip()
+    if not present:
+        return REVIEWER_TARGET_LEGACY if legacy_cmd else REVIEWER_TARGET_NONE
+    if legacy_cmd:
+        raise AdditionalReviewerTargetError(
+            f"대상이 둘입니다 — 구조화 프로필({', '.join(present)})과 legacy "
+            f"`{LEGACY_REVIEWER_CMD_KEY}={legacy_cmd}` 가 같은 local.conf 에 있습니다. "
+            f"하나만 남기세요(권장: `{LEGACY_REVIEWER_CMD_KEY}` 를 지우고 "
+            f"{ADDITIONAL_REVIEWER_PREFIX}.* 유지)."
+        )
+    missing = ", ".join(
+        key for key in (ADDITIONAL_REVIEWER_HARNESS_KEY, ADDITIONAL_REVIEWER_MODEL_KEY)
+        if not (conf.get(key) or "").strip()
+    )
+    if missing:
+        raise AdditionalReviewerTargetError(
+            f"구조화 프로필이 불완전합니다({missing} 부재/빈 값) — harness/model 은 동반 필수인 "
+            f"원자 tuple 입니다. 두 키를 함께 채우거나 {ADDITIONAL_REVIEWER_PREFIX}.* 줄을 "
+            "지우세요."
+        )
+    return REVIEWER_TARGET_STRUCTURED
 
 
 def _is_engine_rev_skew(exc) -> bool:
@@ -390,8 +461,11 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     코드 diff 외부 *전송*이라 기본 OFF. `external_review_enabled` **실키**가 이미 있으면
     (true/false 무관) 묻지 않고 기존 프로필·레거시 `reviewer_cmd` 를 그대로 둔다(자동 마이그레이션
     없음). 비대화형은 안전쪽으로 건너뛰되 나중에 켜는 법을 1줄로 남긴다.
-    board.prompt_external_review_optin 과 같은 계약·같은 기본 프로필
-    (ADDITIONAL_REVIEWER_DEFAULTS 4키 원자 기록·reviewer_cmd 미생성).
+    board.prompt_external_review_optin 과 같은 계약이다 — "예" 는 기존 대상이 없을 때만
+    ADDITIONAL_REVIEWER_DEFAULTS 4키를 원자 기록하고, 이미 유효한 대상(레거시 `reviewer_cmd`·
+    구조화 튜플)이 있으면 **활성 플래그 한 줄만** 덧붙여 그 대상을 byte 그대로 둔다. 어느
+    경로에서도 `reviewer_cmd` 는 만들지 않는다. 기존 대상이 깨져 있으면(부분 튜플·이중 대상)
+    질문도 기록도 하지 않고 진단만 낸다.
 
     dest_root: 동기화 대상 루트 (루트 또는 타깃). local.conf 는 이 경로 기준으로 읽고 쓴다.
     --target 모드에서 루트 local.conf 를 오염시키지 않기 위해 반드시 effective_dest 를 전달한다.
@@ -399,11 +473,19 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.exists():
         return  # init 전 — board.py init 에서 묻는다
-    if "external_review_enabled" in _read_local_conf(local_conf):
+    conf = _read_local_conf(local_conf)
+    if "external_review_enabled" in conf:
         # 실키로 이미 결정됨(true/false 무관·기존 프로필/레거시 키 불변). 판정은 파싱된 키
         # 존재로 한다 — raw 텍스트 substring 으로 보면 주석(`# external_review_enabled=false`)
         # 이나 안내 문장이 결정을 가로채, 켜려던 채택자가 질문도 안내도 못 받는다.
         # maybe_prompt_delegate_optin·board.prompt_external_review_optin 과 같은 seam.
+        return
+    try:
+        target = classify_additional_reviewer_target(conf)
+    except AdditionalReviewerTargetError as exc:
+        # 쓰기 **전에** 멈춘다 — 이 conf 는 어떤 답을 받아도 정직하게 기록할 수 없다(board 동형).
+        print(f"[pm_update] ⚠ 추가 리뷰어 설정이 이미 깨져 있어 opt-in 을 묻지 않습니다: {exc} "
+              "(local.conf 를 고친 뒤 다시 실행하세요 — 지금은 아무것도 기록하지 않았습니다.)")
         return
     # 명시적 비대화 신호 우선: Windows DEVNULL isatty() 신뢰불가 함정 회피.
     # PM_NONINTERACTIVE truthy 면 묻지 않고 안전쪽 skip. isatty 는 보조 폴백(env 없을 때).
@@ -412,12 +494,19 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
         return
     print("\n[pm_update] 추가 리뷰어(additional reviewer·external_review)를 켤까요? 코드 diff 가 "
           "설정된 리뷰 하네스로 *전송*되고 그 하네스에 *과금*됩니다 — 내부 code-reviewer 와 상보적.")
-    print("  예 = 기본 프로필(codex · gpt-5.6-sol · reasoning max)을 한 번에 기록합니다 "
-          "— 이후 리뷰마다 비용을 다시 묻지 않습니다.")
+    if target == REVIEWER_TARGET_NONE:
+        print("  예 = 기본 프로필(codex · gpt-5.6-sol · reasoning max)을 한 번에 기록합니다 "
+              "— 이후 리뷰마다 비용을 다시 묻지 않습니다.")
+    else:
+        print("  예 = local.conf 에 이미 설정된 대상을 그대로 쓰고 활성 플래그만 기록합니다 "
+              "— 이후 리뷰마다 비용을 다시 묻지 않습니다.")
     try:
         answer = input("  켜기 [y/N]: ").strip().lower()
     except EOFError:
-        answer = ""
+        # stdin EOF = 비대화/파이프 종료 신호이지 **거절이 아니다** — TTY 오판정으로 들어온
+        # 질문이라 결정을 박제하면 안 된다(board.prompt_external_review_optin 과 같은 계약).
+        # 아무것도 쓰지 않고 반환한다: 다음 실행이 제대로 된 표면에서 다시 묻는다.
+        return
     # 개행 없는 conf(`…upstream_rev=abc`)에 바로 append 하면 마지막 키가 변질된다(board 온보딩과
     # 동일 가드). 응답 후에 읽는다 — 질문 동안 바뀌었을 수 있는 실제 끝 상태가 기준.
     text = local_conf.read_text(encoding="utf-8")
@@ -425,9 +514,14 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
         if text and not text.endswith("\n"):
             f.write("\n")
         if answer in ("y", "yes"):
-            f.write(ADDITIONAL_REVIEWER_OPTIN_BLOCK)
-            print("  ✓ 추가 리뷰어 ON (codex · gpt-5.6-sol · reasoning max — "
-                  "local.conf additional_reviewer.* 로 교체 가능)")
+            if target == REVIEWER_TARGET_NONE:
+                f.write(ADDITIONAL_REVIEWER_OPTIN_BLOCK)
+                print("  ✓ 추가 리뷰어 ON (codex · gpt-5.6-sol · reasoning max — "
+                      "local.conf additional_reviewer.* 로 교체 가능)")
+            else:
+                # 이미 있는 대상은 한 글자도 건드리지 않는다 — 활성 플래그만 덧붙인다.
+                f.write(ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK)
+                print(f"  ✓ 추가 리뷰어 ON (기존 {target} 대상 유지 — local.conf 의 설정 그대로)")
         else:
             f.write("# 추가 리뷰어 — 기본 OFF. 켜려면 true 로.\nexternal_review_enabled=false\n")
             print(f"  → 추가 리뷰어 OFF (나중에 {ADDITIONAL_REVIEWER_ENABLE_HINT} 로 켤 수 있음).")

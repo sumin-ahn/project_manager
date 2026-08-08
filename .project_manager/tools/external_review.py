@@ -2297,14 +2297,16 @@ class _PreSpawnReservation:
     환불은 하되 예외는 그대로 다시 던진다 — 예상 못 한 실패를 격리 실패와 같은 rc 로 바꾸면 진단이
     사라진다. 판정 rc 를 갖는 건 이미 정의된 격리 실패 경로뿐이다.
 
-    소유권은 **러너 호출 직전**의 `hand_off()` 로 넘어간다 — 스폰할 *수도* 있는 함수의 입구가
-    아니라, argv·kwargs·seam 검증이 끝나 다음 문장이 자식을 띄우는 그 한 줄 앞이다(`run_review`
-    → `_run_reviewer_ex` 의 `on_spawn_attempt`). 그 뒤의 실패는 전송이 이미 일어났을 수 있어 조건이
-    다르고, 마감 경로(`started` 판정)가 본다. `_settled` 는 한 번만 서므로 여러 층이 같은 예외를
-    잡아도 이중 환불(상한이 조용히 늘어남)이 되지 않는다.
+    소유권은 **실 스폰 경계**의 `hand_off()` 로 넘어간다 — 스폰할 *수도* 있는 함수의 입구가
+    아니라, 인자·seam 검증과 러너 준비(relay 로드·프로필 해소·워치독 셋업)가 모두 끝나 다음
+    문장이 `Popen` 을 부르는 그 한 줄 앞이다(`run_review` → `_run_reviewer_ex` →
+    `_watchdog_reviewer_run` → relay 워치독의 `on_spawn_attempt`). 그 뒤의 실패는 전송이 이미
+    일어났을 수 있어 조건이 다르고, 마감 경로(`started` 판정)가 본다. `_settled` 는 한 번만
+    서므로 여러 층이 같은 예외를 잡아도 이중 환불(상한이 조용히 늘어남)이 되지 않는다.
 
     이전은 **대칭 반납**을 갖는다(`reclaim_no_spawn()`). 러너가 `started=False` 로 돌아온 실행은
-    자식이 확실히 없었다고 **판명**된 것이라, 스폰 직전에 넘긴 소유권이 그 자리에서 되돌아온다 —
+    자식이 확실히 없었다고 **판명**된 것이라(확정 기동 실패·경계 전 준비 실패), 스폰 직전에 넘긴
+    소유권이 그 자리에서 되돌아온다 —
     그러지 않으면 그 뒤의 요약 출력·진단·마감이 죽었을 때(닫힌 stdout 파이프의 `BrokenPipeError`
     가 실측 축이다) 예약이 finished_at 없는 미완 레코드로 남아, 전송 0·과금 0 인 실행이
     `incomplete_limit=1` 형상에서 다음 **정상** 호출을 곧바로 막는다. 반납 조건은 판명된
@@ -3494,7 +3496,7 @@ def _reviewer_execution_budget(reviewer_cmd: str, timeout: int) -> int:
 
 
 def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
-                           cwd=None, env=None,
+                           cwd=None, env=None, on_spawn_attempt=None,
                            **_ignored) -> subprocess.CompletedProcess:
     """기본 리뷰어 러너 — pm_relay 공용 워치독 경유(무진행 주 판정 + 벽시계 백스톱).
 
@@ -3505,7 +3507,12 @@ def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
     꺼져 있고, 알려진 startup stall 축인 opencode(True)만 유한 재시도를 얻는다.
 
     `cwd`/`env` 는 리뷰어 가시 범위 격리 입력이다 — 시그니처에 명시해 relay 워치독까지 내려보낸다
-    (`**_ignored` 가 삼키면 격리가 조용히 사라진다)."""
+    (`**_ignored` 가 삼키면 격리가 조용히 사라진다).
+
+    `on_spawn_attempt` 도 같은 이유로 명시한다 — 이 러너의 **앞부분**(relay 로드·프로필 해소·
+    워치독 준비)은 자식이 아직 없는 구간이라, 소유권 이전 콜백을 이 함수 입구에서 태우면 스폰 0·
+    전송 0 으로 끝난 준비 실패가 예산을 먹는다. 콜백은 relay 워치독의 실 스폰 경계까지 그대로
+    내려간다."""
     reviewer_cmd = shlex.join(argv)
     relay, first_event_timeout, retries = _reviewer_watchdog_settings(reviewer_cmd)
     return relay.run_with_first_event_watchdog(
@@ -3517,6 +3524,7 @@ def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
         input_text=input,
         cwd=cwd,
         env=env,
+        on_spawn_attempt=on_spawn_attempt,
     )  # text 는 워치독 기본(True·utf-8/replace 고정) — 인코딩은 _WatchedPopen 이 소유.
 
 
@@ -3628,15 +3636,26 @@ class ReviewerRunSeamError(TypeError):
     """주입 runner 의 호출 계약 불일치 — 리뷰어 프로세스 오류와 구분하는 loud sentinel."""
 
 
+def _declares_keyword(signature: inspect.Signature, name: str) -> bool:
+    """runner 가 이 키워드를 **이름으로 선언**했는가(`**kwargs` 흡수는 선언이 아니다)."""
+    parameter = signature.parameters.get(name)
+    return parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+
+
 def _reviewer_run_kwargs(run_fn: Callable, argv: list[str], *,
                          prompt: str, timeout: int, idle_timeout: float | None,
                          cwd: str | None = None,
-                         env: dict[str, str] | None = None) -> dict:
-    """기존 subprocess.run 호환 seam 을 보존하고 명시 지원 runner 에만 idle_timeout 을 확장한다.
+                         env: dict[str, str] | None = None,
+                         on_spawn_attempt: Callable[[], None] | None = None) -> dict:
+    """기존 subprocess.run 호환 seam 을 보존하고 명시 지원 runner 에만 확장 키를 전달한다.
 
     `**kwargs` 만으로는 새 키를 실제 소비하는지 알 수 없다(`subprocess.run` 은 **kwargs 를 Popen 에
-    넘겨 뒤늦게 TypeError). 따라서 시그니처에 `idle_timeout` 이 명시된 runner 에만 전달한다.
-    호출 전에 bind 해 seam skew 를 프로세스 실행 오류와 분리한다.
+    넘겨 뒤늦게 TypeError). 따라서 시그니처에 `idle_timeout`·`on_spawn_attempt` 가 명시된 runner
+    에만 전달한다. 호출 전에 bind 해 seam skew 를 프로세스 실행 오류와 분리한다.
+
+    `on_spawn_attempt`(스폰 경계 seam)를 선언하지 않은 기존 주입 러너의 kwargs 는 종전과 바이트
+    단위로 같다 — 그 러너의 스폰 경계는 호출부가 알 수 없으므로 콜백은 호출 직전에 태운다.
 
     `cwd`/`env`(리뷰어 가시 범위 격리)는 **값이 있을 때 무조건** 넘긴다 — 조건부로 넘기면 그 키를
     선언하지 않은 runner 에서 격리가 조용히 사라져(silent degrade) 오염 차단이 있다고 착각하게 된다.
@@ -3659,15 +3678,50 @@ def _reviewer_run_kwargs(run_fn: Callable, argv: list[str], *,
         signature = inspect.signature(run_fn)
     except (TypeError, ValueError):
         return kwargs  # introspection 불가 callable 은 기존 seam 만 보수적으로 전달.
-    parameter = signature.parameters.get("idle_timeout")
-    if parameter is not None and parameter.kind in (
-            inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+    if _declares_keyword(signature, "idle_timeout"):
         kwargs["idle_timeout"] = idle_timeout
+    if on_spawn_attempt is not None and _declares_keyword(signature, "on_spawn_attempt"):
+        kwargs["on_spawn_attempt"] = on_spawn_attempt
     try:
         signature.bind(argv, **kwargs)
     except TypeError as exc:
         raise ReviewerRunSeamError(str(exc)) from exc
     return kwargs
+
+
+# exec 자체가 실패해 자식이 **뜬 적 없는** 확정 기동 실패 — 전송 0·과금 0 이라 예약 환불 대상이다.
+#   FileNotFoundError    실행 파일 부재/PATH 미해소
+#   PermissionError      실행 권한 없음(비실행 파일·noexec 마운트)
+#   NotADirectoryError   경로 중간 요소가 디렉토리가 아님(cwd·실행 파일 경로)
+#   IsADirectoryError    실행 대상이 디렉토리
+# 종류로 잡는 이유는 주입 러너(`subprocess.run` 호환)가 표식 없이 이 예외들을 그대로 올리기
+# 때문이고, relay 표식이 있으면 그쪽이 이긴다(`_launch_failed_definitely`).
+_DEFINITE_LAUNCH_FAILURES = (
+    FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError,
+)
+
+
+def _launch_failed_definitely(exc: BaseException) -> bool:
+    """이 예외가 "자식이 뜬 적 없음"을 **확정**하는가.
+
+    1순위는 relay 가 스폰 경계에서 붙인 표식(`spawn_failed`)이다 — 그 층만 `Popen` 반환 전후를
+    실제로 본다. `Popen` 성공 뒤의 실패에 같은 종류가 실려 오면 표식이 False 라 여기서도 False 다.
+    표식이 없는 경로(주입 러너·직접 호출)는 예외 종류만으로 보수적으로 판정한다.
+    """
+    marked = getattr(exc, "spawn_failed", None)
+    if marked is not None:
+        return bool(marked)
+    return isinstance(exc, _DEFINITE_LAUNCH_FAILURES)
+
+
+def _launch_failure_output(argv: list[str], exc: BaseException) -> str:
+    """확정 기동 실패의 사람 진단 1줄 — 원인축(부재 vs 실행 불가)을 구분해 말한다."""
+    if isinstance(exc, FileNotFoundError):
+        return f"[리뷰어 명령 '{argv[0]}' 를 찾을 수 없음 — 설치 또는 PATH 확인]"
+    return (
+        f"[리뷰어 명령 '{argv[0]}' 를 실행할 수 없음 ({type(exc).__name__}: {exc}) — "
+        "실행 권한·경로 확인. 외부 전송은 일어나지 않았습니다]"
+    )
 
 
 def _run_reviewer_ex(
@@ -3687,11 +3741,12 @@ def _run_reviewer_ex(
     """run_reviewer 본체 + 외부 프로세스 스폰 여부(started) 신호.
 
     반환: (성공 여부, `ReviewerOutput`(회신/로그 **분리 보관**), started). started=False = 외부 프로세스가 *확실히 시작되지
-    않음*(전송 0·과금 0) — 빈 reviewer_cmd·실행 파일 부재(FileNotFoundError). started=True =
-    스폰됨(프롬프트가 전송·과금됐을 수 있음) — 정상 종료(비-0 rc 포함)·타임아웃·기타 실행 오류.
-    타임아웃/기타는 시작 여부가 불확실하거나 이미 전송됐으므로 보수적으로 started=True — 라운드
-    환불은 started=False 일 때만 해(반복 타임아웃으로 상한을 무한 우회하지 못하게). 확실히 전송
-    전인 경우만 환불한다.
+    않음*(전송 0·과금 0) — 빈 reviewer_cmd·seam 계약 오류·**스폰 경계 전의 준비 실패**·확정 기동
+    실패(exec 이 실패한 `FileNotFoundError`·`PermissionError`·`NotADirectoryError`·
+    `IsADirectoryError`). started=True = 스폰됨(프롬프트가 전송·과금됐을 수 있음) — 정상 종료
+    (비-0 rc 포함)·타임아웃·스폰 뒤의 실행 오류. 타임아웃/불확실은 이미 전송됐을 수 있으므로
+    보수적으로 started=True — 라운드 환불은 started=False 일 때만 해(반복 타임아웃으로 상한을
+    무한 우회하지 못하게). 확실히 전송 전인 경우만 환불한다.
 
     **판정 기준**: 기본 러너가 `subprocess.run` 단일 호출에서 pm_relay 공용 워치독으로
     바뀌어, 주 판정이 "시작 후 경과"가 아니라 "마지막 진행 이후 무진행"이다(벽시계는 백스톱).
@@ -3705,16 +3760,27 @@ def _run_reviewer_ex(
     `shlex.split(reviewer_cmd)` + 프롬프트 stdin 이라, legacy 자유 문자열 커맨드의 실행 형상은
     바이트 단위로 동일하다(구조화 플래그/파서로 다시 쓰지 않는다).
 
-    `on_spawn_attempt` = **실제 스폰 시도 직전** 1회 호출되는 seam(기본 None = 종전 동작). 라운드
-    예약 소유권 이전(`_PreSpawnReservation.hand_off`)이 이 콜백을 탄다: 호출 지점은 argv·timeout·
-    kwargs·bind 검증이 모두 끝나 **다음 문장이 자식을 띄우는** 자리이고, 그보다 앞의 실패
-    (빈 커맨드·seam 계약 오류·준비 중 예외)는 전송 0 이라 예약이 환불 대상으로 남는다. 콜백이
-    돌지 않은 채 돌아온 `started=False` 결과는 종전대로 마감 경로가 환불한다(이중 환불 없음).
+    `on_spawn_attempt` = **실제 자식 생성 직전** 1회 호출되는 seam(기본 None = 종전 동작). 라운드
+    예약 소유권 이전(`_PreSpawnReservation.hand_off`)이 이 콜백을 탄다. 호출 지점은 러너가 스폰
+    경계를 선언했는지에 따라 두 자리다:
 
-    콜백이 **돈 뒤에** 돌아온 `started=False`(실행 파일 부재)는 자식이 없었다고 판명된 결과라,
+    · 선언한 러너(기본 워치독 러너 — `on_spawn_attempt` 키워드를 이름으로 가짐)면 콜백을 **러너
+      안까지** 내려보내, relay 워치독이 `Popen` 하기 바로 앞에서 돈다. 러너 입구~`Popen` 사이의
+      준비 구간(relay 로드·프로필 해소·워치독 셋업)에서 실패하면 콜백이 아직 돌지 않았으므로
+      이 함수는 `started=False` 로 돌아간다 — 스폰 0·전송 0 인 실행이 예산을 먹지 않는다.
+    · 선언하지 않은 기존 주입 러너면 종전 그대로 **호출 직전**에 한 번 돈다(호환 보존). 그 러너의
+      내부 스폰 경계는 알 수 없으므로 그 뒤의 불확실 실패는 보수적으로 started=True 다.
+
+    콜백은 어느 경로로도 최대 1회만 돈다(멱등 래퍼). 러너가 정상 반환했는데 콜백을 부르지 않은
+    형상은 자식이 있었던 것으로 보고 반환 직후 한 번 돌린다 — 그러지 않으면 스폰된 실행의 예산이
+    조용히 환불된다.
+
+    콜백이 **돈 뒤에** 돌아온 `started=False`(확정 기동 실패)는 자식이 없었다고 판명된 결과라,
     호출부(`run_review` 의 `on_no_spawn`)가 그 자리에서 소유권을 되찾는다 — 판정 자체는 이 함수의
-    반환값 하나가 소유하고, 되돌림 시점만 호출부 계약이다. 임의 주입 러너의 예외까지 '스폰 전'으로
-    단정하지는 않는다: 확실한 건 이 표의 `started` 값뿐이고, 그 밖은 보수적으로 started=True 다."""
+    반환값 하나가 소유하고, 되돌림 시점만 호출부 계약이다. 확정 기동 실패의 판정 입력은 relay 가
+    붙이는 스폰 표식(`spawn_failed`)이 1순위, 없으면 예외 종류다 — `Popen` 성공 **뒤**의 실패에
+    같은 예외 종류가 실려 오면 relay 표식이 그것을 post-spawn 으로 못박아 보수적 started=True 가
+    유지된다."""
     if metrics is not None:
         metrics.clear()
         metrics.update({"rc": 1, "silence_sec": None})
@@ -3724,6 +3790,19 @@ def _run_reviewer_ex(
         return False, ReviewerOutput("[reviewer_cmd 가 비어 있음 — local.conf 확인]"), False
     if timeout is None:  # 미지정 호출(공개 facade) — 리뷰어 프로필의 벽시계 백스톱.
         timeout = int(reviewer_profile(reviewer_cmd).wall_timeout)
+    # 스폰 경계를 실제로 지났는가 — 확실치 않은 실패의 started 판정 입력이다. 경계 전이면 자식이
+    # 없으므로 전송 0 이고, 경계 뒤면 프롬프트가 이미 나갔을 수 있다.
+    spawn_reached = False
+
+    def _spawn_seam() -> None:
+        """스폰 경계 1회 통과 — 예약 소유권을 호출부 계약대로 넘긴다(멱등)."""
+        nonlocal spawn_reached
+        if spawn_reached:
+            return
+        spawn_reached = True
+        if on_spawn_attempt is not None:
+            on_spawn_attempt()
+
     try:
         kwargs = _reviewer_run_kwargs(
             _run, argv,
@@ -3731,14 +3810,18 @@ def _run_reviewer_ex(
             timeout=timeout,
             idle_timeout=_reviewer_idle_timeout(reviewer_cmd, idle_timeout),
             cwd=None if cwd is None else str(cwd), env=env,
+            on_spawn_attempt=_spawn_seam,
         )
-        # ── 스폰 시도 seam ──────────────────────────────────────────────
-        # 여기가 "확실히 전송 전"이 끝나는 **한 줄**이다 — 다음 문장이 자식을 띄우므로 그 뒤의
-        # 실패는 프롬프트가 이미 나갔을 수 있다. 예약 소유권 이전을 이보다 앞(스폰할 *수도* 있는
-        # 함수의 입구)에서 하면, 스폰 0·과금 0 으로 끝난 준비 실패까지 환불받지 못한다.
-        if on_spawn_attempt is not None:
-            on_spawn_attempt()
+        # ── 스폰 경계 seam ──────────────────────────────────────────────
+        # 스폰 경계를 **이름으로 선언한** 러너면 콜백이 그 안(relay 의 `Popen` 직전)에서 돈다 —
+        # 러너 입구~Popen 사이의 준비 실패는 스폰 0·전송 0 이라 예약이 환불 대상으로 남는다.
+        # 선언하지 않은 기존 주입 러너는 종전 자리(호출 직전)에서 한 번 돈다(호환 보존).
+        if "on_spawn_attempt" not in kwargs:
+            _spawn_seam()
         result = _run(argv, **kwargs)
+        # 러너가 결과를 돌려줬다 = 자식이 떴다. 스폰 경계를 선언해 놓고 부르지 않은 러너가 있어도
+        # 여기서 소유권이 넘어간다 — 스폰된 실행의 예산이 조용히 환불되지 않게 하는 백스톱이다.
+        _spawn_seam()
         if metrics is not None:
             metrics["rc"] = int(result.returncode)
             metrics["silence_sec"] = getattr(result, "silence_sec", None)
@@ -3751,24 +3834,30 @@ def _run_reviewer_ex(
         )
     except subprocess.TimeoutExpired as exc:
         # 프로세스가 시작돼 실행 중 타임아웃 — 프롬프트가 이미 전송·과금됐을 수 있다 → started=True.
+        # 타임아웃은 정의상 "자식을 기다리다 만료"라 스폰 경계 신호와 무관하게 보수적으로 True 다
+        # (반복 타임아웃으로 상한을 무한 우회하는 길을 열지 않는다·MF-A).
         if metrics is not None:
             metrics["silence_sec"] = getattr(
                 exc, "silence_seconds", getattr(exc, "idle_seconds", None)
             )
         return False, ReviewerOutput(_timeout_output(timeout, exc)), True
-    except FileNotFoundError:
-        # 실행 파일 자체가 없어 exec 실패 — 아무것도 전송되지 않았다 → started=False (환불 대상).
+    except _DEFINITE_LAUNCH_FAILURES as exc:
+        # exec 자체가 실패해 자식이 뜬 적 없다(파일 부재·실행 권한·경로 형상) → started=False
+        # (환불 대상). 단 relay 표식이 "Popen 성공 뒤"라고 못박은 예외는 예외다 — 그건 자식이
+        # 있었던 실행이라 보수 규칙으로 내려보낸다.
+        if not _launch_failed_definitely(exc):
+            return False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"), True
         if metrics is not None:
-            metrics["rc"] = 127
-        return False, ReviewerOutput(
-            f"[리뷰어 명령 '{argv[0]}' 를 찾을 수 없음 — 설치 또는 PATH 확인]"), False
+            metrics["rc"] = 127 if isinstance(exc, FileNotFoundError) else 126
+        return False, ReviewerOutput(_launch_failure_output(argv, exc)), False
     except ReviewerRunSeamError as exc:
         # 호출 전 bind 실패 — 외부 프로세스는 확실히 시작되지 않았다. 라운드 환불 가능.
         return False, ReviewerOutput(
             f"[리뷰어 runner seam 계약 오류 — 호출 전 차단: {exc}]"), False
     except TypeError as exc:
-        # runner 내부에서 발생한 키워드/시그니처 skew. 시작 여부는 불명이라 보수적으로 started=True.
-        return False, ReviewerOutput(f"[리뷰어 runner seam 호출 오류: {exc}]"), True
+        # runner 내부에서 발생한 키워드/시그니처 skew. 스폰 경계 뒤면 시작 여부가 불명이라
+        # 보수적으로 started=True, 경계 전이면 자식이 없다.
+        return False, ReviewerOutput(f"[리뷰어 runner seam 호출 오류: {exc}]"), spawn_reached
     except Exception as exc:  # noqa: BLE001
         # _load_relay는 호출마다 독립 module 객체를 만들 수 있어 클래스 identity 대신 sentinel의
         # 구조화 속성을 본다. 일반 RuntimeError를 정리 실패로 오인하지 않는다.
@@ -3782,8 +3871,12 @@ def _run_reviewer_ex(
             if getattr(exc, "output", ""):
                 output += f"\n{exc.output}"
             return False, ReviewerOutput(output, getattr(exc, "stderr", "") or ""), True
-        # 시작 여부 불확실 — 보수적으로 started=True (상한 우회 방지 > 과잉 카운트).
-        return False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"), True
+        if _launch_failed_definitely(exc):
+            # relay 가 "exec 실패"로 표식한 그 밖의 OSError — 자식이 없으므로 환불 대상이다.
+            return False, ReviewerOutput(_launch_failure_output(argv, exc)), False
+        # 스폰 경계 뒤의 실패는 시작 여부가 불확실하다 — 보수적으로 started=True (상한 우회 방지 >
+        # 과잉 카운트). 경계 **전**의 실패는 자식이 아직 없었다는 사실이 확정이라 False 다.
+        return False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"), spawn_reached
 
 
 def run_reviewer(
@@ -4197,7 +4290,8 @@ def run_review(
     아닐 수 있어, 오염된 출력에서 통과가 나가는 false-green 을 기계가 막는다.
 
     `on_spawn_attempt` = 라운드 예약 소유권 이전 seam(기본 None = 종전 동작). 이 함수의 **앞부분**
-    (raw 선점·장부 시작 레코드·구조화 transport·argv/kwargs 준비)은 아직 확실히 전송 전이라,
+    (raw 선점·장부 시작 레코드·구조화 transport·argv/kwargs 준비)과 러너 안의 준비 구간
+    (relay 로드·프로필 해소·워치독 셋업)은 아직 확실히 전송 전이라,
     거기서 예외로 나가면 콜백은 돌지 않는다 — 호출부의 스폰 전 seam 이 예약을 한 번 환불하고
     예외는 원본 그대로 다시 던져진다. 나가는 길에 이 함수가 남긴 raw 선점/미마감 레코드도
     함께 닫는다(`_abort_pre_spawn_raw`).
@@ -4217,7 +4311,7 @@ def run_review(
     # raw 선점(mkdir/open)·장부 시작 레코드·구조화 transport·argv/kwargs 준비가 전부 이 안이고,
     # 자식은 아직 없다. 이 구간에서 예외로 나가면 (1) 예약 소유권을 넘기지 않아 호출부의 스폰 전
     # seam 이 한 번 환불하고, (2) 이 함수가 남긴 raw 선점/미마감 레코드를 정직하게 닫는다.
-    # 소유권 이전 시점 자체는 `_run_reviewer_ex` 의 러너 호출 한 줄 앞이다(그보다 앞이면
+    # 소유권 이전 시점 자체는 relay 워치독이 `Popen` 을 부르기 한 줄 앞이다(그보다 앞이면
     # "스폰할 수도 있는 함수에 들어갔다"는 이유만으로 환불 권리가 사라진다).
     record_id: str | None = None
     ledger_path: Path | None = None
@@ -4230,7 +4324,7 @@ def run_review(
     started_at = time.monotonic()
 
     def _spawn_attempt() -> None:
-        """러너 호출 직전 1회 — 스폰 전 롤백 창을 닫고 예약 소유권을 호출부 계약대로 넘긴다."""
+        """실 스폰 경계 1회 — 스폰 전 롤백 창을 닫고 예약 소유권을 호출부 계약대로 넘긴다."""
         nonlocal spawn_attempted
         spawn_attempted = True
         if on_spawn_attempt is not None:
@@ -5309,9 +5403,10 @@ def _run_isolated_review(
 
     예산 확인·예약은 이 구간 **밖**(격리 생성 전)에서 이미 끝났다 — 상한에 닿은 호출이 격리를
     만들지 않게 하려면 그 순서여야 한다. 넘겨받은 예약(`reservation`)의 앞부분(환경 준비, 그리고
-    `run_review` 안의 raw 선점·장부 시작 레코드·transport·argv 준비)은 아직 스폰 전이라 호출부의
-    환불 seam 이 소유하고, 소유권은 **러너 호출 직전**의 `on_spawn_attempt` 콜백으로 넘어온다 —
-    그 뒤부터 이 구간이 예약을 전송 결과로 마감한다.
+    `run_review` 안의 raw 선점·장부 시작 레코드·transport·argv 준비, 그리고 러너 안의 준비
+    구간)은 아직 스폰 전이라 호출부의 환불 seam 이 소유하고, 소유권은 **실 스폰 경계**(relay
+    워치독의 `Popen` 직전)의 `on_spawn_attempt` 콜백으로 넘어온다 — 그 뒤부터 이 구간이 예약을
+    전송 결과로 마감한다.
 
     이전에는 대칭 반납이 붙는다(`on_no_spawn`). 러너가 `started=False` 로 판명해 돌아오면 소유권이
     스폰 전 seam 으로 되돌아오고, 요약·진단·라운드 환불이 **저장까지 끝난 뒤**에야 반납된다 — 그
@@ -5357,10 +5452,11 @@ def _run_isolated_review(
         )
 
     print(f"추가 리뷰어 실행 중 (외부 전송·과금): {reviewer_cmd}", file=sys.stderr)
-    # 예약 소유는 `run_review` **진입**이 아니라 그 안의 **스폰 시도 직전**에 넘어간다
+    # 예약 소유는 `run_review` **진입**이 아니라 relay 워치독이 자식을 띄우기 **직전**에 넘어간다
     # (`on_spawn_attempt`). run_review 의 앞부분(raw 선점·장부 시작 레코드·구조화 transport·
-    # argv/kwargs 준비)은 자식이 아직 없는 구간이라, 진입에서 넘기면 스폰 0·과금 0 으로 끝난
-    # 준비 실패(예: `--output-dir` 이 일반 파일이라 raw 선점이 터지는 실행)가 예약을 미완으로
+    # argv/kwargs 준비)과 러너 안의 준비 구간(relay 로드·프로필 해소·워치독 셋업)은 자식이 아직
+    # 없는 구간이라, 진입에서 넘기면 스폰 0·과금 0 으로 끝난 준비 실패(예: `--output-dir` 이
+    # 일반 파일이라 raw 선점이 터지는 실행, 실행 권한 없는 리뷰어 바이너리)가 예약을 미완/소진으로
     # 남긴다 — `incomplete_limit=1` 이면 다음 **정상** 호출이 곧바로 rc=4 로 막힌다.
     # 이전 이후의 실패는 프롬프트가 이미 나갔을 수 있으므로 환불하지 않는다: 되돌림 판정은 아래
     # 마감 경로의 `started` 가 소유한다(타임아웃·비정상 종료까지 환불하면 과금된 호출이 상한을

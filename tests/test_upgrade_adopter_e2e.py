@@ -597,7 +597,11 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   수렴 블록뿐이라 역적용 delta 구간(어댑터 config 게이트·sync_adapter_configs 본문)과 겹치지
 #   않고, 이 테스트의 RUN1 은 has-changes·RUN2 는 red rc1(프롬프트 이전 중단)이며 두 실행 모두
 #   PM_NONINTERACTIVE=1 이라 질문·conf write 는 발화하지 않는다.
-_T0585_PM_UPDATE_SHA256 = "0d4c4fa50df0979f84d8e498d9e07a4b30b6b0d4f54ae90b218490b2cd5c936a"
+#   T-0590 R3 후속에서 또 이동 — 온보딩이 기존 대상(레거시 `reviewer_cmd`·구조화 튜플)을 덮지
+#   않도록 대상 판정(classify_additional_reviewer_target)과 활성 플래그 전용 블록이 들어왔고,
+#   EOF 응답이 false 를 박제하지 않게 바뀌었다. 이동 범위는 온보딩 상수/헬퍼와
+#   maybe_prompt_external_review 본문뿐이라 역적용 delta 구간·배달 경계와 겹치지 않는다.
+_T0585_PM_UPDATE_SHA256 = "db9f672c9b10ce5ab9ea29062cadd8f0aa7d6d3e75678758a33116c69df77c77"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

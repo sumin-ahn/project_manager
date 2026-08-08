@@ -31,6 +31,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -2214,3 +2215,120 @@ def test_idle_judgment_is_implemented_once(relay):
             f"{tool} 이 무진행 판정을 자체 구현했다 — 공용 seam(pm_relay) 재사용이 DoD")
         assert "run_with_first_event_watchdog" in src, (
             f"{tool} 이 공용 워치독 seam 을 안 탄다 — 한쪽만 고쳐진 상태")
+
+
+# ── 스폰 경계 seam: 소유권 이전은 `Popen` 직전 한 자리 (T-0590 R3) ───────────
+#
+# 워치독 진입~`Popen` 사이에는 인자 검증·프로필 해소·워치독 준비가 있고 그 구간엔 자식이 없다.
+# 예산 소유권을 워치독 **호출** 지점에서 넘기면 그 준비 실패가 전송 0·과금 0 인데도 예산을 먹는다.
+# 경계는 여기 한 자리이고, 어댑터가 exec 에 실패해 던진 OSError 에는 "자식 없음" 표식이 붙는다.
+
+
+def test_spawn_seam_fires_immediately_before_the_child(relay):
+    """콜백은 `popen(argv)` **직전**에 돈다 — 준비가 끝난 뒤, 자식이 생기기 전."""
+    clock = _FakeClock()
+    order: list[str] = []
+    proc = _ScriptedProc(clock, event_times=[0.0], exit_at=1.0)
+
+    def popen(_argv):
+        order.append("popen")
+        return proc
+
+    result = relay.run_with_first_event_watchdog(
+        ["drv"], first_event_timeout=5.0, overall_timeout=30.0, retries=0,
+        idle_timeout=None, popen=popen, clock=clock, sleep=clock.advance,
+        log=[].append, poll_interval=1.0,
+        on_spawn_attempt=lambda: order.append("handoff"),
+    )
+    assert result.returncode == 0
+    assert order == ["handoff", "popen"]
+
+
+def test_spawn_seam_fires_once_across_stall_retries(relay):
+    """stall 재시도로 자식을 여러 번 띄워도 소유권 이전은 실행당 1회다(중복 이전 없음)."""
+    clock = _FakeClock()
+    procs = [_ScriptedProc(clock, event_times=[], exit_at=None) for _ in range(2)]
+    handoffs: list[int] = []
+    with pytest.raises(relay.StallWatchdogError):
+        relay.run_with_first_event_watchdog(
+            ["opencode", "run"], first_event_timeout=5.0, overall_timeout=600.0,
+            retries=1, idle_timeout=900.0, popen=_scripted_popen(procs), clock=clock,
+            sleep=clock.advance, log=[].append, poll_interval=1.0,
+            on_spawn_attempt=lambda: handoffs.append(1),
+        )
+    assert [p.kill_count for p in procs] == [1, 1]   # 두 번 떴다
+    assert handoffs == [1], "재시도마다 소유권을 다시 넘겼다"
+
+
+@pytest.mark.parametrize(
+    "exc_type",
+    [FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError],
+)
+def test_exec_failure_from_the_adapter_is_marked_as_no_child(relay, exc_type):
+    """어댑터의 exec 실패는 '자식 없음' 표식과 함께 그대로 올라간다(호출부 환불 판정 입력)."""
+    handoffs: list[int] = []
+
+    def popen(_argv):
+        raise exc_type("drv")
+
+    with pytest.raises(exc_type) as excinfo:
+        relay.run_with_first_event_watchdog(
+            ["drv"], first_event_timeout=None, overall_timeout=30.0, retries=0,
+            idle_timeout=None, popen=popen, clock=_FakeClock(), sleep=lambda _s: None,
+            log=[].append, on_spawn_attempt=lambda: handoffs.append(1),
+        )
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+    assert handoffs == [1], "경계 콜백은 exec 시도 앞에서 이미 돌아야 한다"
+
+
+def test_preparation_failure_never_hands_off_ownership(relay):
+    """인자 검증 실패(=`Popen` 전)는 콜백을 태우지 않는다 — 소유권은 호출부에 남는다."""
+    handoffs: list[int] = []
+    with pytest.raises(ValueError):
+        relay.run_with_first_event_watchdog(
+            ["drv"], first_event_timeout=None, overall_timeout=30.0, retries=0,
+            idle_timeout=0.5,                      # 유한 정수 초가 아님 → 검증 실패
+            popen=lambda _argv: pytest.fail("검증 전 프로세스를 스폰함"),
+            clock=_FakeClock(), sleep=lambda _s: None, log=[].append,
+            on_spawn_attempt=lambda: handoffs.append(1),
+        )
+    assert handoffs == []
+
+
+def test_post_spawn_marking_wins_over_the_exec_failure_default(relay):
+    """이미 '자식 있었음'으로 표식된 예외는 경계 층이 덮어쓰지 않는다(최초 관측이 진실)."""
+    marked = PermissionError("초기화 실패 롤백")
+    relay._mark_spawn_failed(marked, False)
+
+    def popen(_argv):
+        raise marked
+
+    with pytest.raises(PermissionError) as excinfo:
+        relay.run_with_first_event_watchdog(
+            ["drv"], first_event_timeout=None, overall_timeout=30.0, retries=0,
+            idle_timeout=None, popen=popen, clock=_FakeClock(), sleep=lambda _s: None,
+            log=[].append, on_spawn_attempt=lambda: None,
+        )
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
+
+
+def test_watched_popen_marks_post_spawn_init_failure_as_spawned(relay, monkeypatch):
+    """`Popen` 성공 뒤의 초기화 실패는 자식이 **있었던** 실행이라 표식이 False 다.
+
+    실 자식을 띄운 뒤 리더 스레드 생성을 실패시켜, 롤백(그룹 kill·drain)을 거쳐 올라오는 원
+    예외의 표식을 본다. 종류만 보고 환불하면 이 형상이 '전송 0' 으로 오분류된다.
+    """
+    class _NoThreads:
+        """relay 가 쓰는 threading 표면 대역 — Thread 생성만 실패시킨다."""
+
+        Event = threading.Event
+        Lock = threading.Lock
+
+        @staticmethod
+        def Thread(*args, **kwargs):        # noqa: N802 — 표준 API 이름을 맞춘다
+            raise PermissionError("스레드 생성 거부")
+
+    monkeypatch.setattr(relay, "threading", _NoThreads)
+    with pytest.raises(PermissionError) as excinfo:
+        relay._WatchedPopen([sys.executable, "-c", "import time; time.sleep(30)"])
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False

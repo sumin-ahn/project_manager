@@ -1016,3 +1016,329 @@ def test_canonical_to_template_parity(relpath):
         assert path.read_bytes() == canonical, (
             f"{flavor} 사본 드리프트 — pm_update 전파 필요: {relpath}"
         )
+
+
+# ── 축 4: 첫 opt-in 이 **이미 있는 대상**을 덮지 않는다 (T-0590 R3) ──────────
+#
+# 활성 플래그 하나만 없는 conf 는 "미결정"이지만 **대상은 이미 있을 수 있다** — 레거시
+# `reviewer_cmd` 를 쓰던 채택자, 또는 구조화 튜플만 손으로 적고 플래그를 안 켠 채택자다. 그 형상에
+# 기본 4키를 그대로 append 하면 두 가지로 망가진다:
+#   · 레거시 + 구조화 = 엔진이 fail-loud 로 거부하는 **이중 대상**(리뷰가 아예 안 돈다).
+#   · 구조화 + 구조화 = last-wins 로 사용자의 하네스/모델/추론 강도가 **조용히** 기본값이 된다.
+# 그래서 "예" 는 대상 유무로 갈린다: 없으면 4키, 있으면 활성 플래그 한 줄.
+
+LEGACY_ONLY_CONF = "session=pm\nreviewer_cmd=my-reviewer --flag --model my-model\n"
+STRUCTURED_ONLY_CONF = (
+    "session=pm\n"
+    "additional_reviewer.harness=opencode\n"
+    "additional_reviewer.model=qwen3-coder-next\n"
+    "additional_reviewer.reasoning=low\n"
+)
+# 대상이 그 자체로 깨진 형상 — 어느 쪽이 이기는지 추측하지 않고 **쓰기 전에** 멈춘다.
+BROKEN_TARGET_CONFS = (
+    pytest.param(
+        "session=pm\nadditional_reviewer.harness=codex\n", id="partial-harness-only"
+    ),
+    pytest.param(
+        "session=pm\nadditional_reviewer.model=gpt-5.6-sol\n", id="partial-model-only"
+    ),
+    pytest.param(
+        "session=pm\nadditional_reviewer.harness=\nadditional_reviewer.model=\n",
+        id="blank-structured-declaration",
+    ),
+    pytest.param(
+        "session=pm\nadditional_reviewer.reasoning=max\n", id="reasoning-only",
+    ),
+    pytest.param(
+        "session=pm\nreviewer_cmd=my-reviewer\n"
+        "additional_reviewer.harness=codex\nadditional_reviewer.model=gpt-5.6-sol\n",
+        id="structured-plus-legacy-conflict",
+    ),
+)
+
+
+def _external_review():
+    """실행 코어 — **테스트만** 읽는다(온보딩 경로는 import 하지 않는다·키 대조용)."""
+    return _load("external_review")
+
+
+def test_onboarding_target_keys_mirror_the_execution_core(board, pm_update):
+    """두 온보딩 사본의 키 이름이 실행 해소 코어의 선언과 글자 단위로 같다(드리프트 가드)."""
+    core = _external_review()
+    for module in (board, pm_update):
+        assert module.ADDITIONAL_REVIEWER_KEYS == core.ADDITIONAL_REVIEWER_KEYS
+        assert module.LEGACY_REVIEWER_CMD_KEY == core.LEGACY_REVIEWER_CMD_KEY
+        assert module.ADDITIONAL_REVIEWER_PREFIX == core.ADDITIONAL_REVIEWER_PREFIX
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("session=pm\n", "none", id="no-target"),
+        pytest.param("session=pm\nreviewer_cmd=\n", "none", id="blank-legacy-only"),
+        pytest.param(LEGACY_ONLY_CONF, "legacy", id="legacy-only"),
+        pytest.param(STRUCTURED_ONLY_CONF, "structured", id="structured-only"),
+        pytest.param(
+            "additional_reviewer.harness=codex\nadditional_reviewer.model=gpt-5.6-sol\n",
+            "structured", id="structured-without-reasoning",
+        ),
+        pytest.param(
+            "additional_reviewer.harness=codex\nadditional_reviewer.model=gpt-5.6-sol\n"
+            "additional_reviewer.reasoning=\n",
+            "structured", id="structured-with-blank-optional-reasoning",
+        ),
+    ],
+)
+def test_two_onboarding_entries_classify_the_target_identically(
+    board, pm_update, text, expected
+):
+    """board·pm_update 가 같은 conf 를 같은 대상으로 읽는다(값 검증은 하지 않는다)."""
+    conf = _parse_conf(text)
+    assert board.classify_additional_reviewer_target(conf) == expected
+    assert pm_update.classify_additional_reviewer_target(conf) == expected
+
+
+@pytest.mark.parametrize("text", BROKEN_TARGET_CONFS)
+def test_broken_target_is_refused_by_both_entries_and_the_core(board, pm_update, text):
+    """부분 튜플·이중 대상은 두 온보딩과 실행 코어가 **모두** 거부한다(같은 판정면)."""
+    conf = _parse_conf(text)
+    with pytest.raises(board.AdditionalReviewerTargetError):
+        board.classify_additional_reviewer_target(conf)
+    with pytest.raises(pm_update.AdditionalReviewerTargetError):
+        pm_update.classify_additional_reviewer_target(conf)
+    core = _external_review()
+    with pytest.raises(core.ReviewerTargetError):
+        core.resolve_reviewer_target(conf)
+
+
+@pytest.mark.parametrize(
+    ("text", "label"),
+    [
+        pytest.param(LEGACY_ONLY_CONF, "legacy", id="legacy-only"),
+        pytest.param(STRUCTURED_ONLY_CONF, "structured", id="structured-only"),
+    ],
+)
+def test_board_optin_yes_on_a_configured_target_writes_only_the_flag(
+    board, monkeypatch, tmp_path, capsys, text, label
+):
+    """이미 대상이 있으면 'y' 는 활성 플래그 한 줄만 append 하고 대상은 byte 그대로 둔다."""
+    conf = _isolated_conf(board, monkeypatch, tmp_path, text)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+
+    board.prompt_external_review_optin()
+
+    after = conf.read_text(encoding="utf-8")
+    assert after.startswith(text), "기존 대상 줄이 변형됐다"
+    parsed = _parse_conf(after)
+    assert parsed["external_review_enabled"] == "true"
+    # 기존 대상의 값이 한 글자도 바뀌지 않는다.
+    assert _parse_conf(after) | _parse_conf(text) == parsed
+    if label == "legacy":
+        assert parsed["reviewer_cmd"] == "my-reviewer --flag --model my-model"
+        assert "additional_reviewer." not in after, "레거시 위에 구조화 대상을 겹쳤다(이중 대상)"
+    else:
+        assert parsed["additional_reviewer.harness"] == "opencode"
+        assert parsed["additional_reviewer.model"] == "qwen3-coder-next"
+        assert parsed["additional_reviewer.reasoning"] == "low"
+        assert "reviewer_cmd" not in after
+        # 기본 프로필이 last-wins 로 사용자 선언을 덮지 않았음을 값으로 못박는다.
+        for key, value in EXPECTED_DEFAULTS[1:]:
+            assert parsed[key] != value, f"{key} 가 기본값으로 덮였다"
+    assert "기존" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("text", "label"),
+    [
+        pytest.param(LEGACY_ONLY_CONF, "legacy", id="legacy-only"),
+        pytest.param(STRUCTURED_ONLY_CONF, "structured", id="structured-only"),
+    ],
+)
+def test_pm_update_optin_yes_on_a_configured_target_writes_only_the_flag(
+    pm_update, monkeypatch, tmp_path, text, label
+):
+    """pm_update 도 같은 계약 — 대상이 있으면 활성 플래그만(board 동형)."""
+    dest, conf = _dest_with_conf(tmp_path, text)
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    _tty(monkeypatch, "y")
+
+    pm_update.maybe_prompt_external_review(dest)
+
+    after = conf.read_text(encoding="utf-8")
+    assert after.startswith(text)
+    parsed = _parse_conf(after)
+    assert parsed["external_review_enabled"] == "true"
+    if label == "legacy":
+        assert parsed["reviewer_cmd"] == "my-reviewer --flag --model my-model"
+        assert "additional_reviewer." not in after
+    else:
+        assert parsed["additional_reviewer.harness"] == "opencode"
+        assert parsed["additional_reviewer.model"] == "qwen3-coder-next"
+        assert parsed["additional_reviewer.reasoning"] == "low"
+        assert "reviewer_cmd" not in after
+
+
+def test_optin_yes_on_a_configured_target_appends_safely_without_trailing_newline(
+    board, pm_update, monkeypatch, tmp_path
+):
+    """개행 없이 끝난 conf 의 마지막 대상 줄도 변질되지 않는다(두 진입 모두)."""
+    newlineless = "session=pm\nreviewer_cmd=my-reviewer --flag"
+    conf = _isolated_conf(board, monkeypatch, tmp_path, newlineless)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    board.prompt_external_review_optin()
+    parsed = _parse_conf(conf.read_text(encoding="utf-8"))
+    assert parsed["reviewer_cmd"] == "my-reviewer --flag"
+    assert parsed["external_review_enabled"] == "true"
+
+    dest, update_conf = _dest_with_conf(tmp_path / "u", newlineless)
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    _tty(monkeypatch, "y")
+    pm_update.maybe_prompt_external_review(dest)
+    parsed = _parse_conf(update_conf.read_text(encoding="utf-8"))
+    assert parsed["reviewer_cmd"] == "my-reviewer --flag"
+    assert parsed["external_review_enabled"] == "true"
+
+
+@pytest.mark.parametrize("text", [LEGACY_ONLY_CONF, STRUCTURED_ONLY_CONF])
+def test_optin_decline_records_only_the_flag_and_keeps_the_target(
+    board, pm_update, monkeypatch, tmp_path, text
+):
+    """'n' 은 false 실키만 기록하고 기존 대상을 다시 쓰지 않는다(두 진입 모두)."""
+    conf = _isolated_conf(board, monkeypatch, tmp_path, text)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    board.prompt_external_review_optin()
+    after = conf.read_text(encoding="utf-8")
+    assert after.startswith(text)
+    assert _parse_conf(after)["external_review_enabled"] == "false"
+
+    dest, update_conf = _dest_with_conf(tmp_path / "u", text)
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    _tty(monkeypatch, "n")
+    pm_update.maybe_prompt_external_review(dest)
+    after = update_conf.read_text(encoding="utf-8")
+    assert after.startswith(text)
+    assert _parse_conf(after)["external_review_enabled"] == "false"
+
+
+@pytest.mark.parametrize("text", BROKEN_TARGET_CONFS)
+@pytest.mark.parametrize("answer", ["y", "n"])
+def test_board_optin_refuses_to_write_over_a_broken_target(
+    board, monkeypatch, tmp_path, capsys, text, answer
+):
+    """깨진 대상이면 질문도 기록도 없다 — 어떤 답이 와도 write 0 (loud 진단만)."""
+    conf = _isolated_conf(board, monkeypatch, tmp_path, text)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt="": pytest.fail("깨진 대상인데 질문함")
+    )
+
+    board.prompt_external_review_optin()
+
+    assert conf.read_text(encoding="utf-8") == text, "깨진 대상 위에 무언가를 썼다"
+    out = capsys.readouterr().out
+    assert "추가 리뷰어 설정이 이미 깨져" in out
+    assert "기록하지 않았습니다" in out
+
+
+@pytest.mark.parametrize("text", BROKEN_TARGET_CONFS)
+def test_pm_update_optin_refuses_to_write_over_a_broken_target(
+    pm_update, monkeypatch, tmp_path, capsys, text
+):
+    """pm_update 도 깨진 대상에는 쓰지 않는다(board 동형·같은 진단)."""
+    dest, conf = _dest_with_conf(tmp_path, text)
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    _tty(monkeypatch, "깨진 대상인데 질문함")
+
+    pm_update.maybe_prompt_external_review(dest)
+
+    assert conf.read_text(encoding="utf-8") == text
+    out = capsys.readouterr().out
+    assert "깨져" in out and "기록하지 않았습니다" in out
+
+
+# ── 축 5: EOF 는 거절이 아니다 (T-0590 R3) ──────────────────────────────────
+#
+# `input()` 의 EOFError 는 "안 켜겠다"가 아니라 **질문할 표면이 아니었다**는 신호다(TTY 오판정·
+# 파이프 종료). 그걸 false 로 박제하면 결정이 durable 하게 남아 다음 init/update 가 다시 묻지
+# 않고, 켜려던 채택자는 영영 질문을 못 받는다. 두 진입 모두 write 0 으로 돌아간다.
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("session=pm\n", id="no-target"),
+        pytest.param(LEGACY_ONLY_CONF, id="legacy-target"),
+        pytest.param(STRUCTURED_ONLY_CONF, id="structured-target"),
+        pytest.param("session=pm\nupstream_rev=abc123", id="newlineless"),
+    ],
+)
+def test_eof_answer_writes_nothing_in_both_entries(
+    board, pm_update, monkeypatch, tmp_path, text
+):
+    """EOF → byte 보존 + false 키 미기록(다음 실행이 제대로 된 표면에서 다시 묻는다)."""
+    def _eof(prompt=""):
+        raise EOFError
+
+    conf = _isolated_conf(board, monkeypatch, tmp_path, text)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", _eof)
+    board.prompt_external_review_optin()
+    assert conf.read_text(encoding="utf-8") == text
+    assert "external_review_enabled" not in _parse_conf(conf.read_text(encoding="utf-8"))
+
+    dest, update_conf = _dest_with_conf(tmp_path / "u", text)
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr("builtins.input", _eof)
+    pm_update.maybe_prompt_external_review(dest)
+    assert update_conf.read_text(encoding="utf-8") == text
+    assert "external_review_enabled" not in _parse_conf(
+        update_conf.read_text(encoding="utf-8")
+    )
+
+
+def test_pm_update_main_eof_leaves_the_conf_untouched(pm_update, monkeypatch, tmp_path):
+    """`_main` 전 구간에서도 EOF 는 결정을 박제하지 않는다(실 진입 회귀·byte 보존).
+
+    직접 helper 호출만 보면 진입점이 다른 경로로 false 를 쓰는 변종을 놓친다. 여기서는 실
+    `_main` 을 태우고 external_review 축의 write 가 0 임을 conf byte 로 단언한다(delegate 축은
+    자체 EOF 계약이 따로라 이 테스트의 관심 밖 — 그 seam 만 no-op 으로 세운다).
+    """
+    source = tmp_path / "upstream"
+    sentinel = source / ".project_manager" / "tools" / "__eof_sentinel__.py"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("# sentinel\n", encoding="utf-8")
+    (source / ".project_manager" / "engine.manifest").write_text(
+        ".project_manager/tools/__eof_sentinel__.py\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True,
+                   capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(source), "add", "-f", "-A"], check=True,
+                   capture_output=True, text=True)
+
+    dest = tmp_path / "dest"
+    conf_path = dest / ".project_manager" / "local.conf"
+    conf_path.parent.mkdir(parents=True)
+    original = f"session=pm\nupstream={source}\n"
+    conf_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(pm_update, "maybe_prompt_delegate_optin", lambda dest_root: None)
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
+
+    def _eof(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof)
+
+    assert pm_update._main([]) == 0
+    assert conf_path.read_text(encoding="utf-8") == original, "EOF 인데 conf 가 바뀌었다"
+    assert "external_review_enabled" not in _parse_conf(
+        conf_path.read_text(encoding="utf-8")
+    )
