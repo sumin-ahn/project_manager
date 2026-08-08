@@ -877,7 +877,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 163 = 162 + T-0590 R6 부분 업그레이드 호환의 한 경계. pm_import 의 락 경로 유도가
     #   `conf_lock_path` 없는 구세대 file_lock 사본에서 같은 규칙의 인라인 폴백으로 물러나되,
     #   마킹된 skew(rev 자체가 다른 사본)는 삼키지 않고 그대로 올린다.
-    assert len(report.boundaries) == 163, "propagation sweep boundary ratchet changed"
+    # 164 = 163 + T-0593 diff 서킷브레이커의 한 경계. ticket_finish 가 external_review 를
+    #   형제 로드해 상한 정책·측정식을 빌려 쓰되, 부재/손상은 가드 off 로 물러나고 마킹된
+    #   skew 는 그대로 올린다(다른 형제 로더와 같은 규칙).
+    assert len(report.boundaries) == 164, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

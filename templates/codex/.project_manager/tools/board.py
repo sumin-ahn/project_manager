@@ -3365,11 +3365,58 @@ def _hooks_dir() -> Path | None:
     return d if d.is_absolute() else REPO / d
 
 
+# 엔진이 설치한 훅임을 알아보는 서명 — drift 치유가 남의 pre-push 훅을 덮지 않게 한다.
+_PM_HOOK_SIGNATURE = "pm pre-push gate"
+# 본문 세대 스탬프 — "이 훅이 어느 세대인가"를 파일 자신이 말하게 한다. 스탬프가 없으면 자기치유는
+# 본문 차이만 보고 채택자 커스터마이즈까지 구버전으로 오판해 조용히 덮는다.
+PM_HOOK_REV = 2
+_PM_HOOK_REV_PREFIX = "# pm-hook-rev: "
+# 설치된 훅에서 인터프리터를 되읽는 규칙 — 채택자의 런처 선택(`py -3.12` 등)을 치유가 바꾸지 않게.
+_PM_HOOK_INTERPRETER_RE = re.compile(
+    r"^(?P<py>\S.*?) \.project_manager/tools/board\.py regression check", re.M,
+)
+
+
+def pre_push_hook_body(py: str | None = None) -> str:
+    """pre-push 훅 본문 **단일 진실** — 설치·drift 대조가 같은 문자열을 본다.
+
+    두 표면이 각자 본문을 알면 "설치된 훅이 현행인가"를 물을 수 없다(그게 구버전 훅이 조용히
+    사는 채널이었다). `py` 미지정이면 호출 시점 인터프리터를 탐지한다."""
+    interpreter = py if py is not None else _detect_py()
+    return (
+        "#!/bin/sh\n"
+        "# pm pre-push gate — green 회귀 AND lint 게이트만 push. board.py init 이 설치.\n"
+        f"{_PM_HOOK_REV_PREFIX}{PM_HOOK_REV}\n"
+        f"{interpreter} .project_manager/tools/board.py regression check || \\\n"
+        f"  {interpreter} .project_manager/tools/board.py regression run --final || exit 1\n"
+        f"{interpreter} .project_manager/tools/board.py lint --gate || exit 1\n"
+    )
+
+
+def _legacy_pre_push_hook_bodies(py: str) -> tuple[str, ...]:
+    """자동 교체를 허용하는 **알려진 구세대 본문** 전수 (현행 직전 세대 1종).
+
+    registry 를 정확일치로 두는 이유: "서명이 있고 본문이 다르다"만으로 덮으면 채택자가 손댄 훅
+    (단계 추가·경로 변경)이 조용히 사라진다. 아는 세대만 고치고 모르는 본문은 손대지 않는다.
+    """
+    return (
+        # rev 미표기 세대 — 회귀 게이트가 `--final` 없이 FULL 을 요구하던 본문. 활성 리뷰 사이클
+        # 중에는 강등 실행의 rc0 을 push 허가로 읽어 게이트가 열린다(이 치유의 직접 대상).
+        "#!/bin/sh\n"
+        "# pm pre-push gate — green 회귀 AND lint 게이트만 push. board.py init 이 설치.\n"
+        f"{py} .project_manager/tools/board.py regression check || \\\n"
+        f"  {py} .project_manager/tools/board.py regression run || exit 1\n"
+        f"{py} .project_manager/tools/board.py lint --gate || exit 1\n",
+    )
+
+
 def install_pre_push_hook() -> bool:
     """Install the pre-push gate (회귀 + lint). Idempotent. False if not a git repo.
 
     두 단계를 AND 로 묶는다:
-      1. 회귀 게이트 — green 회귀만 push (`regression check` 실패 시 `regression run`).
+      1. 회귀 게이트 — green 회귀만 push (`regression check` 실패 시 `regression run --final`).
+         `--final` 은 활성 리뷰 사이클 중의 targeted 강등을 건너뛴다 — push 게이트는 언제나
+         FULL 이어야 한다(강등된 결과는 게이트 플래그를 쓰지 않아 훅이 통과할 수 없다).
       2. lint 게이트 — `lint --gate` 차단 카테고리(dangling/unstable-ref/
          dependency/thin) 발견 시 push 실패. status drift 자문성은 차단 안 함.
     `board.py init` 가 (재)설치하므로 멱등·재설치 안전.
@@ -3378,16 +3425,114 @@ def install_pre_push_hook() -> bool:
     if hooks is None:
         return False
     hooks.mkdir(parents=True, exist_ok=True)
+    _write_hook_atomic(hooks / "pre-push", pre_push_hook_body())
+    return True
+
+
+def _write_hook_atomic(hook: Path, body: str) -> None:
+    """훅 파일을 temp + `os.replace` 로 **원자 교체**한다 (`_write_json_atomic` 동형).
+
+    같은 inode 에 truncate-rewrite 하면 **실행 중인 훅을 자기 자신이 덮는다** — 훅이 부른
+    `regression check` 가 치유를 수행하는 형상이 실재하고, shell 은 스크립트를 실행하며 읽으므로
+    파일 오프셋이 바뀐 바이트를 이어 읽어 구문이 깨진다(정렬에 따라 fail-open 방향도 나온다).
+    새 inode 로 갈아끼우면 실행 중인 shell 은 옛 fd 를 그대로 읽어 끝까지 온전하다.
+    실행 권한은 **교체 전 tmp 에** 준다 — 교체 뒤에 chmod 하면 그 사이 훅이 실행 불가다."""
+    tmp = hook.with_name(f"{hook.name}.{os.getpid()}.tmp")
+    tmp.write_text(body, encoding="utf-8")
+    tmp.chmod(0o755)
+    os.replace(str(tmp), str(hook))
+
+
+# ── 설치된 훅 drift 자기치유 ────────────────────────────────────────────────
+# 훅 본문은 **설치 시점에 박제**되므로 엔진이 게이트 명령을 바꿔도 이미 설치된 훅은 옛 명령을
+# 계속 돈다. 실측 클래스: 강등(`--final` 부재) 훅이 targeted 결과 rc0 을 push 허가로 해석해
+# FULL 플래그 없이 push 가 열린다. 릴리즈 체크리스트("훅 재설치하세요")에 맡기면 채택자 트리에서는
+# 아무도 실행하지 않으므로, **게이트 자신이 진입할 때** 대조하고 스스로 고친다.
+
+
+def _pure_hooks_dir() -> Path | None:
+    """훅 디렉토리를 **git 호출 없이** 해소한다 (해소 불가·커스텀 hooksPath 면 None).
+
+    회귀 게이트 진입은 hot path 라 여기에 subprocess 를 더하지 않는다 — `_hooks_dir()`(git
+    `rev-parse --git-path`)는 설치 경로가 계속 쓰고, 치유는 이 순수 해소만 쓴다. 규칙:
+      · `REPO/.git` 디렉토리 → 그 아래 `hooks/`.
+      · `REPO/.git` 파일(linked worktree·`gitdir: <경로>`) → 그 gitdir 의 `commondir` 을 따라
+        **공용 git 디렉토리**로 올라간 뒤 `hooks/` (훅은 worktree 간 공유다).
+      · repo config 에 `hooksPath` 선언이 있으면 **None** — 실제 훅 위치를 git 없이 확정할 수
+        없으므로 치유를 건너뛴다(fail-open·치유는 best-effort 이고 안 고치는 쪽이 안전하다).
+    """
+    try:
+        git_path = REPO / ".git"
+        if git_path.is_dir():
+            git_dir = git_path
+        elif git_path.is_file():
+            pointer = git_path.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return None
+            target = Path(pointer[len("gitdir:"):].strip())
+            git_dir = target if target.is_absolute() else (REPO / target)
+        else:
+            return None
+        common = git_dir / "commondir"
+        if common.is_file():
+            relative = common.read_text(encoding="utf-8").strip()
+            if relative:
+                shared = Path(relative)
+                git_dir = shared if shared.is_absolute() else (git_dir / shared)
+        config = git_dir / "config"
+        if config.is_file() and "hooksPath" in config.read_text(encoding="utf-8"):
+            return None
+        return (git_dir / "hooks").resolve()
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
+def _installed_hook_interpreter(body: str) -> str | None:
+    """설치된 훅이 쓰는 인터프리터 (게이트 줄이 없으면 None)."""
+    match = _PM_HOOK_INTERPRETER_RE.search(body)
+    return match.group("py") if match else None
+
+
+def _heal_pre_push_hook_drift() -> bool:
+    """설치된 pre-push 훅이 **알려진 구세대**면 현행 본문으로 원자 교체한다 (교체했으면 True).
+
+    판정은 세 갈래다:
+      · 현행 세대(`# pm-hook-rev: N` 포함 정확일치) → 무소음 no-op.
+      · 알려진 구세대(정확일치 registry) → 원자 교체 + 안내 1줄.
+      · 서명은 있으나 모르는 본문(채택자 커스터마이즈) → **미접촉 + loud 경고 1줄**. 아는 세대만
+        고치는 게 이 치유의 경계다 — 본문 차이만 보고 덮으면 채택자가 손댄 단계가 조용히 사라진다.
+    **미설치는 무영향**(훅을 새로 심지 않는다)이고, 서명 없는 남의 훅도 대상이 아니다.
+    인터프리터는 설치된 훅의 것을 **보존**한다(채택자의 런처 선택을 치유가 바꾸지 않는다).
+
+    경로 해소는 순수 파이썬(`_pure_hooks_dir`)이라 **회귀 진입에 subprocess 를 추가하지 않는다**.
+    `.git` 부재·커스텀 `hooksPath`·해소 실패는 조용히 skip 한다(fail-open·치유는 best-effort).
+    읽기/쓰기 실패도 회귀 실행을 막지 않는다."""
+    hooks = _pure_hooks_dir()
+    if hooks is None:
+        return False
     hook = hooks / "pre-push"
-    py = _detect_py()
-    hook.write_text(
-        "#!/bin/sh\n"
-        "# pm pre-push gate — green 회귀 AND lint 게이트만 push. board.py init 이 설치.\n"
-        f"{py} .project_manager/tools/board.py regression check || \\\n"
-        f"  {py} .project_manager/tools/board.py regression run || exit 1\n"
-        f"{py} .project_manager/tools/board.py lint --gate || exit 1\n",
-        encoding="utf-8")
-    hook.chmod(0o755)
+    try:
+        if not hook.is_file():
+            return False
+        current = hook.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    if _PM_HOOK_SIGNATURE not in current:
+        return False                                  # 남의 훅 — 대상 아님.
+    interpreter = _installed_hook_interpreter(current) or _detect_py()
+    if current == pre_push_hook_body(interpreter):
+        return False                                  # 현행 세대 — 무소음.
+    if current not in _legacy_pre_push_hook_bodies(interpreter):
+        print(f"regression: 경고 — pre-push 훅 본문이 알려진 세대와 다릅니다 ({hook}). "
+              "커스터마이즈로 보고 건드리지 않았습니다 — 엔진 본문으로 갱신하려면 "
+              "`board.py init` 을 실행하세요.", file=sys.stderr)
+        return False
+    try:
+        _write_hook_atomic(hook, pre_push_hook_body(interpreter))
+    except OSError:
+        return False
+    print("regression: 구버전 pre-push 훅을 감지해 현행 본문으로 교체했습니다 "
+          "(push 게이트가 FULL 회귀를 요구하도록 복구).")
     return True
 
 
@@ -5320,6 +5465,102 @@ def _scope_args(touches: list[str]) -> str:
     return f'-k "{" or ".join(stems)}"' if stems else ""
 
 
+# ── 회귀 스테이징 (활성 리뷰 사이클 중 full → targeted 강등) ──────────────────
+# 리뷰 라운드마다 FULL 회귀를 도는 것이 라운드 비용의 세 번째 축이었다(실측: 라운드당 full).
+# 리뷰가 아직 닫히지 않은 티켓의 FULL 요청은 그 티켓 touches 로 강등한다 — 라운드 중에 필요한
+# 신호는 "내가 건드린 것이 깨졌나"고, 스위트 전체 green 은 **수렴 후 한 번**이면 된다.
+#
+# 판정 입력은 external_review 의 라운드 장부(`.local/review_rounds.json`)뿐이다. 스키마 소유는
+# external_review 이고 여기서는 **읽기만** 한다 — deep-import 하지 않는 이유는 방향이다:
+# external_review 가 board 를 로드하므로(`_load_board`) 역방향 로드는 순환이 된다.
+REVIEW_ROUNDS_LEDGER_NAME = "review_rounds.json"
+_REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (external_review WAVE_SECTION_KEY)
+
+
+def _review_rounds_ledger() -> Path:
+    """외부 리뷰 라운드 장부 경로 — 호출 시점 `LOCAL_DIR` 파생(테스트 격리 추종)."""
+    return LOCAL_DIR / REVIEW_ROUNDS_LEDGER_NAME
+
+
+def _last_round_verdict(entry: dict) -> int | None:
+    """게이트의 **마지막 라운드** 판정 rc (기록 없음/손상이면 None).
+
+    나열 순서는 append 순서가 아니라 **예약 순번**이다 — 동시 라운드가 역순으로 끝나면 append
+    순서가 실제 라운드 순서를 뒤집는다(external_review 조회 표와 같은 규칙)."""
+    rounds = [row for row in (entry.get("rounds") or []) if isinstance(row, dict)]
+    if not rounds:
+        return None
+    ordered = sorted(
+        rounds,
+        key=lambda row: (
+            not isinstance(row.get("sequence"), int), row.get("sequence") or 0,
+        ),
+    )
+    verdict = ordered[-1].get("verdict")
+    return verdict if isinstance(verdict, int) and not isinstance(verdict, bool) else None
+
+
+def _gate_ticket_is_claimed(gate: str) -> bool:
+    """그 게이트 이름이 **현재 claimed 인 티켓**인가 (아니면·못 찾으면 False).
+
+    라운드 장부는 append-only 라 자체 마감 이벤트가 없다 — 반려로 끝난 라운드는 티켓이 done 이
+    된 뒤에도 장부에 그대로 남는다(실측: 마감된 티켓 10건이 '활성'). 마감 신호를 장부에 새로
+    쓰는 대신 **이미 있는 데이터**(보드 티켓 status)를 대조한다: 리뷰 사이클은 그 티켓이 작업 중
+    (claimed)일 때만 살아 있고, done/open/blocked/draft 는 정의상 라운드를 더 돌지 않는다.
+    """
+    try:
+        status, _path = find_ticket(gate)
+    except (FileNotFoundError, OSError):
+        return False
+    return status == "claimed"
+
+
+def _active_review_gates() -> list[str]:
+    """리뷰 사이클이 아직 안 닫힌 게이트 이름 (장부 부재/손상이면 빈 목록·fail-soft).
+
+    **미마감 = (그 티켓이 현재 claimed) ∧ (마지막 라운드가 통과 rc 0 이 아님).** 두 조건을 함께
+    쓰는 이유는 각자 못 잡는 게 있어서다: 장부만 보면 done 티켓의 옛 반려가 영원히 강등을 유발하고
+    (마감 이벤트 부재), status 만 보면 이미 수렴한 claimed 티켓까지 좁힌다. 장부를 못 읽거나 티켓을
+    못 찾으면 강등하지 않는다 — 이 축의 실패가 회귀 게이트를 좁히면 안 된다(fail-open 이 안전한
+    방향이다)."""
+    try:
+        data = json.loads(_review_rounds_ledger().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    active: list[str] = []
+    for gate, entry in sorted(data.items()):
+        if gate == _REVIEW_LEDGER_WAVE_KEY or not isinstance(entry, dict):
+            continue
+        verdict = _last_round_verdict(entry)
+        if verdict is not None and verdict != 0 and _gate_ticket_is_claimed(gate):
+            active.append(gate)
+    return active
+
+
+def _review_cycle_downgrade() -> tuple[list[str], list[str]]:
+    """활성 리뷰 사이클의 (게이트 목록, 그 티켓들의 touches 합집합).
+
+    touches 를 못 얻으면(자유 문자열 게이트·ticket 부재) 강등하지 않는다 — 스코프를 모르는 채
+    좁히면 아무 테스트도 안 도는 '가짜 green'이 된다. 손상 frontmatter 한 건이 모든
+    `regression run` 을 크래시시키지 않게 티켓별로 fail-soft 한다(경고 1줄 + 그 게이트 skip)."""
+    gates: list[str] = []
+    touches: list[str] = []
+    for gate in _active_review_gates():
+        try:
+            gate_touches = _ticket_touches(gate)
+        except Exception as exc:  # noqa: BLE001 — 손상 티켓 1건이 회귀 실행을 막지 않는다.
+            print(f"regression: 경고 — 게이트 {gate} 의 touches 를 읽지 못해 강등 판정에서 "
+                  f"제외합니다 ({type(exc).__name__}: {exc}).", file=sys.stderr)
+            continue
+        gates.append(gate)
+        for touch in gate_touches:
+            if touch not in touches:
+                touches.append(touch)
+    return (gates, touches) if touches else ([], [])
+
+
 def _quarantine_args() -> str:
     """quarantine.txt(있으면)의 test node id 를 --deselect 로. flaky 격리 (full 게이트 보호)."""
     q = REPO / ".project_manager" / "quarantine.txt"
@@ -5865,6 +6106,9 @@ def cmd_regression(args: argparse.Namespace) -> int:
     (문서화된 의도적 조작)만 단일-슬롯으로 좁히고 env 는 이 판정에서 제외한다 — 단일-lease/
     솔로/명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로 유효.)
     """
+    # 설치된 훅 drift 자기치유 — run/check 두 진입 모두에서 대조한다. 회귀 게이트는 push 게이트의
+    # 유일한 상시 진입점이라, 여기서 고치면 채택자가 릴리즈 노트를 읽지 않아도 옛 훅이 소멸한다.
+    _heal_pre_push_hook_drift()
     # task-mode(`--task`) 실행 위치 — 특정 슬롯 worktree 절대경로를 cwd
     # 로 고정하고 슬롯 test_cmd 를 실어 잘못된 형제-슬롯 유도를 피한다. 절대경로를
     # surface 해 dev/git 짐작 여지를 없앤다(cwd 비참여). run 만 실행 위치가 필요하다.
@@ -5905,6 +6149,14 @@ def cmd_regression(args: argparse.Namespace) -> int:
     if args.action == "run":
         touches = (_ticket_touches(args.ticket) if getattr(args, "ticket", None)
                    else (args.touches.split(",") if getattr(args, "touches", None) else []))
+        # 회귀 스테이징 — 활성 리뷰 사이클 중의 FULL 요청은 그 티켓 touches 로 강등한다.
+        # `--final`(수렴 후)·핸드오프·pre-push 훅만 FULL 을 그대로 돈다(훅은 `--final` 을 싣는다).
+        if not touches and not getattr(args, "final", False):
+            gates, cycle_touches = _review_cycle_downgrade()
+            if cycle_touches:
+                touches = cycle_touches
+                print(f"regression: 활성 리뷰 사이클 [{', '.join(gates)}] — FULL 요청을 touches "
+                      f"targeted 로 강등합니다 (수렴 후 FULL 은 `regression run --final`).")
         scoped = bool(touches)
         parts = [_test_cmd(args.cmd, session=sess)]
         if scoped:
@@ -11756,6 +12008,9 @@ def build_parser() -> argparse.ArgumentParser:
     # 슬롯 all-or-nothing
     p.add_argument("--ticket", help="이 ticket 의 touches 로 스코프 (dev 빠른 루프·advisory)")
     p.add_argument("--touches", help="comma-separated 파일로 스코프 (advisory)")
+    p.add_argument("--final", action="store_true",
+                   help="수렴 후 FULL 게이트 — 활성 리뷰 사이클 중에도 강등하지 않는다 "
+                        "(pre-push 훅·핸드오프가 쓰는 경로)")
     p.set_defaults(fn=cmd_regression)
 
     p = sub.add_parser("livegate",

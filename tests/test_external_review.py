@@ -349,7 +349,8 @@ def test_ledger_corrupt_falls_back_to_empty(external, tmp_path, monkeypatch):
 
 def test_gate_entry_normalizes_missing_and_corrupt(external):
     """`_gate_entry` — 부재/손상 항목을 0/0 으로 정규화하고 ledger 에 심는다."""
-    empty = {"count": 0, "acked_through": 0, "sequence": 0, "records": [], "rounds": []}
+    empty = {"count": 0, "acked_through": 0, "sequence": 0, "confirm_fix": 0,
+             "records": [], "rounds": []}
     gate_one, gate_two, gate_three = ("T-" + suffix for suffix in ("0001", "0002", "0003"))
     ledger: dict = {gate_two: {"count": "bad", "acked_through": None}, gate_three: 7}
     assert external._gate_entry(ledger, gate_one) == empty
@@ -368,6 +369,7 @@ def test_gate_entry_normalizes_missing_and_corrupt(external):
         "count": 0,
         "acked_through": 0,
         "sequence": 3,
+        "confirm_fix": 0,
         "records": [{"sequence": "3", "verdict": True}],
         "rounds": [{"ts": "2026-08-07T00:00:00+00:00", "verdict": 1}],
     }
@@ -609,13 +611,17 @@ def test_valid_json_with_corrupt_records_still_runs_gate(
 
 # ── red-first: 4회 정상 → 5회째 거부 (DoD) ──────────────────────────────────
 
+# 수렴-형상 상한(기본 3)은 이 축보다 앞에서 막으므로, 전송 횟수 축만 보는 테스트는 그 노브를
+# 열어 둔다(`review_rounds_max` 는 T-0593 의 별도 축이고 전용 테스트가 소유한다).
+_ROUNDS_MAX_OFF = {"external_review_enabled": "true", "review_rounds_max": "99"}
+
 
 def test_fifth_round_refused_before_reviewer(external, monkeypatch, tmp_path, capsys):
     """같은 --gate 5회째(기본 limit=4 초과) 실 실행이 거부되고 리뷰어는 호출되지 않는다 (red-첫).
 
     rounds 1..4 는 정상(rc=0·리뷰어 호출·count 누적), round 5 는 실행 전 전용 rc 로 거부되고 외부
     전송(리뷰어)이 일어나지 않음을 단언한다 — 과금 초과분을 기계가 멈춘다."""
-    calls = _wire(external, monkeypatch, tmp_path)
+    calls = _wire(external, monkeypatch, tmp_path, conf=_ROUNDS_MAX_OFF)
     argv = ["--gate", "T-0100", "--paths", "x.py"]
 
     for i in range(1, 5):  # 1..4 정상
@@ -634,44 +640,45 @@ def test_fifth_round_refused_before_reviewer(external, monkeypatch, tmp_path, ca
     assert (entry["count"], entry["acked_through"]) == (4, 0)
     err = capsys.readouterr().err
     assert "라운드 상한 도달" in err
-    # 상한의 성격은 무한 루프 차단이지 비용 재승인 요구가 아니다 — 안내는 조회면 확인 뒤 PM 자율
-    # 재개를 지시하고, 사람 호출은 수렴 실패 때로 한정한다.
+    # 상한의 성격은 무한 루프 차단이다 — 연장 승인은 폐지됐고 남은 출구는 재설계·분할,
+    # 해소 확인만 필요하면 게이트당 1회 확인 전용 라운드다.
     assert "--rounds-report" in err           # 먼저 볼 조회면
-    assert "--ack-rounds" in err              # 재개 경로
-    assert "자율" in err                       # PM 자율 재개 (사용자 비용 승인 대기 아님)
-    assert "수렴" in err                       # 사람 호출 조건 = 수렴 실패
-    assert "대기" not in err                   # '사용자 승인 대기' 규율은 삭제됐다
+    assert "재설계" in err and "분할" in err    # 유일한 출구
+    assert "자율 재개" not in err              # ack 연장 규율은 삭제됐다
 
 
-# ── --ack-rounds 승인 재개 + 재차단 (DoD·멱등·장부 정합) ─────────────────────
+# ── --ack-rounds 폐지: 어느 표면에서도 통하지 않는다 (DoD) ────────────────────
 
 
-def test_ack_rounds_resumes_then_reblocks(external, monkeypatch, tmp_path, capsys):
-    """`--ack-rounds` 승인 재개 → +limit 창 소진 시 재차단 (장부 정합).
+def test_ack_rounds_is_refused_and_changes_nothing(
+        external, monkeypatch, tmp_path, capsys):
+    """`--ack-rounds` 호출은 거부된다 — 전송 0·장부 무변경·처방 안내 (연장 경로 폐지).
 
-    거부 상태에서 ack 호출은 acked_through 를 현 count 로 올리고 그 호출 자체는 정상 진행(=재개 창의
-    첫 라운드). 이후 limit 을 다시 소진하면 재차단된다."""
-    calls = _wire(external, monkeypatch, tmp_path)
+    차단 상태를 열어 주던 유일한 승인이라, 남아 있으면 상한이 상한이 아니게 된다."""
+    calls = _wire(external, monkeypatch, tmp_path, conf=_ROUNDS_MAX_OFF)
     argv = ["--gate", "T-0101", "--paths", "x.py"]
     for _ in range(4):
-        external.main(argv)
+        assert external.main(argv) == 0
     assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED  # 차단 확인
+    capsys.readouterr()
 
-    # ack 재개 — acked_through=count(4), 그 호출은 정상 진행(count→5).
-    rc = external.main(argv + ["--ack-rounds"])
-    assert rc == 0
-    assert calls["n"] == 5  # ack 호출이 실 전송으로 진행됨
+    assert external.main(argv + ["--ack-rounds"]) == 1   # 승인이 아니라 거부
+    assert calls["n"] == 4                               # 전송 없음
     entry = _ledger(external, tmp_path)[argv[1]]
-    assert (entry["count"], entry["acked_through"]) == (5, 4)
-    assert "승인 재개" in capsys.readouterr().err
+    assert (entry["count"], entry["acked_through"]) == (4, 0)   # 장부 무변경
+    err = capsys.readouterr().err
+    assert "폐지" in err
+    assert "재설계" in err and "분할" in err
+    assert "--confirm-fix" in err
 
-    # 재개 창에서 +limit(=4) 소진: ack 라운드(#5) 뒤 3라운드(#6,7,8) 더 정상 → #9 재차단.
-    for i in range(3):
-        assert external.main(argv) == 0, f"재개 후 round {i} 는 정상이어야 한다"
-    entry = _ledger(external, tmp_path)[argv[1]]
-    assert (entry["count"], entry["acked_through"]) == (8, 4)
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED  # 재차단
-    assert calls["n"] == 8  # 재차단 라운드는 리뷰어 미호출
+
+def test_ack_rounds_is_refused_even_on_the_report_surface(
+        external, monkeypatch, tmp_path, capsys):
+    """조회면에서도 무시 경고로 흡수하지 않는다 — 폐지된 플래그는 한 곳에서만 답한다."""
+    _wire(external, monkeypatch, tmp_path)
+    assert external.main(["--rounds-report", "--ack-rounds"]) == 1
+    err = capsys.readouterr().err
+    assert "폐지" in err and "무시" not in err
 
 
 # ── 카운트 제외 3분기 (dry-run·빈-diff·리뷰어 실패) ─────────────────────────
@@ -787,10 +794,19 @@ def test_no_gate_is_not_ledgered(external, monkeypatch, tmp_path):
     assert _ledger(external, tmp_path) == {}
 
 
-def test_ack_rounds_without_gate_warns_and_proceeds(external, monkeypatch, tmp_path, capsys):
-    """`--ack-rounds` 를 --gate 없이 쓰면 경고 후 정상 진행 (장부 대상 아님·무해)."""
+def test_ack_rounds_without_gate_is_refused_too(external, monkeypatch, tmp_path, capsys):
+    """`--ack-rounds` 는 --gate 유무와 무관하게 거부된다 (폐지는 형상별 예외가 없다)."""
+    calls = _wire(external, monkeypatch, tmp_path)
+    assert external.main(["--ack-rounds", "--paths", "x.py"]) == 1
+    assert "폐지" in capsys.readouterr().err
+    assert calls["n"] == 0
+    assert _ledger(external, tmp_path) == {}
+
+
+def test_confirm_fix_without_gate_warns_and_proceeds(external, monkeypatch, tmp_path, capsys):
+    """`--confirm-fix` 를 --gate 없이 쓰면 경고 후 정상 진행 (장부 대상 아님·--ack-wave 동형)."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--ack-rounds", "--paths", "x.py"]) == 0
+    assert external.main(["--confirm-fix", "--paths", "x.py"]) == 0
     assert "--gate 와 함께" in capsys.readouterr().err
     assert _ledger(external, tmp_path) == {}
 
@@ -1258,19 +1274,20 @@ def test_spawn_failure_leaves_no_outcome(external, monkeypatch, tmp_path):
     assert entry["count"] == 0 and entry["rounds"] == []
 
 
-def test_ack_rounds_keeps_the_outcome_history(external, monkeypatch, tmp_path, capsys):
-    """승인은 집계 창(records)만 비운다 — 산출 이력은 비용 판단 근거라 남는다."""
+def test_confirm_fix_round_keeps_the_outcome_history(
+        external, monkeypatch, tmp_path, capsys):
+    """확인 전용 라운드도 산출 이력에 그대로 쌓인다 — 비용 판단 근거는 append-only 다."""
     _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
     argv = ["--gate", "T-0308", "--paths", "x.py"]
-    for _ in range(4):
+    for _ in range(3):
         assert external.main(argv) == 0
     assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
     capsys.readouterr()
 
-    assert external.main(argv + ["--ack-rounds"]) == 0
+    assert external.main(argv + ["--confirm-fix"]) == 0
     entry = _ledger(external, tmp_path)["T-0308"]
-    assert len(entry["rounds"]) == 5          # 승인 전 4 + 승인 재개 1 (이력은 append-only)
-    assert len(entry["records"]) == 1         # 집계 창은 비워지고 이번 라운드만 남는다
+    assert len(entry["rounds"]) == 4          # 상한 3 + 확인 전용 1 (이력은 append-only)
+    assert entry["confirm_fix"] == 1
 
 
 def test_old_schema_ledger_keeps_counting_and_gains_outcomes(
@@ -1486,7 +1503,7 @@ def test_negative_wave_spent_does_not_reopen_the_budget(
 def test_ack_wave_does_not_open_the_gate_round_limit(
         external, monkeypatch, tmp_path, capsys):
     """두 예산은 독립 축 — wave 승인이 게이트 라운드 상한을 열지 않는다."""
-    calls = _wire(external, monkeypatch, tmp_path)
+    calls = _wire(external, monkeypatch, tmp_path, conf=_ROUNDS_MAX_OFF)
     argv = ["--gate", "T-0315", "--paths", "x.py"]
     for _ in range(4):
         assert external.main(argv) == 0
@@ -1497,25 +1514,29 @@ def test_ack_wave_does_not_open_the_gate_round_limit(
     assert calls["n"] == 4
 
 
-def test_ack_rounds_does_not_reset_the_wave_budget(
+def test_confirm_fix_does_not_open_the_wave_budget(
         external, monkeypatch, tmp_path, capsys):
-    """반대 방향도 같다 — 게이트 승인이 wave 예산을 열지 않는다 (재개는 각 축의 승인으로)."""
+    """반대 방향도 같다 — 확인 전용 라운드가 wave 예산을 열지 않는다 (축이 다르다).
+
+    거부된 실행은 예외 quota 도 쓰지 않는다 — 쓰지도 못한 라운드로 1회를 소모하면 다음 실행이
+    처방(`--confirm-fix`)을 잃는다."""
     conf = {"external_review_enabled": "true", "external_review_wave_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     for gate in ("T-0316", "T-0317"):
         assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
     capsys.readouterr()
 
-    rc = external.main(["--gate", "T-0318", "--paths", "x.py", "--ack-rounds"])
+    rc = external.main(["--gate", "T-0318", "--paths", "x.py", "--confirm-fix"])
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert "wave 예산 소진" in capsys.readouterr().err
     assert calls["n"] == 2
+    assert "T-0318" not in _ledger(external, tmp_path)   # 거부는 quota 도 쓰지 않는다
 
 
-# ── 두 상한 동시 소진: 승인 유실 금지 ───────────────────────────────────────
-# 한 축의 승인을 적용해 놓고 다른 축에서 저장 없이 되돌아가면 사용자가 준 승인이 조용히 사라진다
-# (같은 승인을 다시 받아야 한다). 승인은 거부되는 실행에서도 저장하고, 두 플래그 동시 지정은
-# 둘 다 적용해 그대로 재개한다.
+# ── 두 상한 동시 소진: wave 승인 유실 금지 ──────────────────────────────────
+# wave 승인을 적용해 놓고 다른 축에서 저장 없이 되돌아가면 사용자가 준 승인이 조용히 사라진다
+# (같은 승인을 다시 받아야 한다). 승인은 거부되는 실행에서도 저장한다. 라운드 축에는 승인 자체가
+# 없다 — 연장은 폐지됐고 남은 출구는 재설계·분할이다.
 
 
 def _exhaust_both_budgets(external, monkeypatch, tmp_path):
@@ -1532,30 +1553,9 @@ def _exhaust_both_budgets(external, monkeypatch, tmp_path):
     return calls
 
 
-def test_round_approval_survives_a_wave_refusal(
-        external, monkeypatch, tmp_path, capsys):
-    """wave 가 막아도 `--ack-rounds` 승인은 저장된다 — 다음 실행이 그 승인을 이어받는다."""
-    calls = _exhaust_both_budgets(external, monkeypatch, tmp_path)
-    capsys.readouterr()
-
-    argv = ["--gate", "T-0330", "--paths", "x.py"]
-    assert external.main(argv + ["--ack-rounds"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    err = capsys.readouterr().err
-    assert "wave 예산 소진" in err                       # 남은 축이 막는다
-    assert calls["n"] == 2
-    assert _ledger(external, tmp_path)["T-0330"]["acked_through"] == 1   # 승인은 남았다
-    # rc 4 인 실행이 "재개"를 말하면 종료 코드와 어긋난 loud 오보다 — 기록됐다고만 말한다.
-    assert "라운드 상한 승인 재개" not in err
-    assert "라운드 상한 승인 기록" in err and "거부" in err
-
-    # wave 만 승인하면 재개된다 — 라운드 승인을 다시 받을 필요가 없다.
-    assert external.main(argv + ["--ack-wave"]) == 0
-    assert calls["n"] == 3
-
-
 def test_wave_approval_survives_a_round_limit_refusal(
         external, monkeypatch, tmp_path, capsys):
-    """반대 방향도 동형 — 게이트가 막아도 `--ack-wave` 리셋은 저장된다."""
+    """게이트가 막아도 `--ack-wave` 리셋은 저장된다 (다음 실행이 그 상태를 이어받는다)."""
     calls = _exhaust_both_budgets(external, monkeypatch, tmp_path)
     capsys.readouterr()
 
@@ -1568,24 +1568,13 @@ def test_wave_approval_survives_a_round_limit_refusal(
     assert "wave 예산 승인 재개" not in err                # 거부된 실행은 '재개'라 말하지 않는다
     assert "wave 예산 승인 기록" in err and "거부" in err
 
-    assert external.main(argv + ["--ack-rounds"]) == 0
-    assert calls["n"] == 3
-
-
-def test_both_ack_flags_together_resume_in_one_run(
-        external, monkeypatch, tmp_path, capsys):
-    """두 플래그 동시 지정은 둘 다 적용돼 그 호출이 바로 재개된다 (승인 왕복 불필요)."""
-    calls = _exhaust_both_budgets(external, monkeypatch, tmp_path)
-    capsys.readouterr()
-
-    rc = external.main(
-        ["--gate", "T-0330", "--paths", "x.py", "--ack-rounds", "--ack-wave"]
-    )
-    err = capsys.readouterr().err
-    assert rc == 0 and calls["n"] == 3
-    assert "라운드 상한 승인 재개" in err and "wave 예산 승인 재개" in err
-    assert _ledger(external, tmp_path)["T-0330"]["acked_through"] == 1
-    assert _wave(external, tmp_path)["spent"] == 1        # 리셋 후 이번 전송 1
+    # 라운드 축에는 재개 승인이 없다 — 리셋된 wave 로도 그 게이트는 계속 막힌다. 확인 전용
+    # 라운드는 **수렴 축의 예외**라 전송 횟수 상한을 열지 않는다(예외가 두 축을 겸하면 상한이
+    # 사실상 +1 로 올라간다).
+    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert calls["n"] == 2
+    assert _ledger(external, tmp_path)["T-0330"]["confirm_fix"] == 0   # quota 소모 없음
 
 
 def test_dry_run_and_empty_diff_do_not_spend_the_wave_budget(

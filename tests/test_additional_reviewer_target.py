@@ -2203,15 +2203,19 @@ def test_reviewer_surface_states_the_name_and_keeps_the_transport_axis(external)
     assert (TOOLS / "external_review.py").is_file()
 
 
-def test_round_and_wave_caps_are_anti_loop_with_pm_autonomous_ack(external):
-    """상한의 성격은 무한 루프 차단이다 — 보고 뒤 PM 자율 ack 이고 비용 재승인 요구가 아니다."""
-    for guidance, ack in ((external._ROUND_LIMIT_GUIDANCE, "--ack-rounds"),
-                          (external._WAVE_BUDGET_GUIDANCE, "--ack-wave")):
+def test_round_and_wave_caps_are_anti_loop_without_round_extension(external):
+    """상한의 성격은 무한 루프 차단이다 — 비용 재승인 요구가 아니고, 라운드 연장은 폐지됐다."""
+    for guidance in (external._ROUND_LIMIT_GUIDANCE, external._CONVERGENCE_GUIDANCE,
+                     external._WAVE_BUDGET_GUIDANCE):
         assert "--rounds-report" in guidance                # 먼저 볼 조회면
-        assert "자율" in guidance and ack in guidance        # PM 자율 재개
-        assert "수렴" in guidance                            # 사람 호출 조건 = 수렴 실패
         assert "대기" not in guidance                        # '사용자 승인 대기' 규율 삭제
         assert "승인 후" not in guidance
+    # 라운드 축의 출구는 재설계·분할뿐이다 (연장 승인 없음).
+    for guidance in (external._ROUND_LIMIT_GUIDANCE, external._CONVERGENCE_GUIDANCE):
+        assert "재설계" in guidance and "분할" in guidance
+    # wave 축만 승인으로 재개한다 (별개 비용 축).
+    assert "--ack-wave" in external._WAVE_BUDGET_GUIDANCE
+    assert "자율" in external._WAVE_BUDGET_GUIDANCE
     # 지속 동의 = 한 번 켜면 호출마다 비용을 다시 묻지 않는다.
     assert "지속 동의" in external._is_enabled.__doc__
 

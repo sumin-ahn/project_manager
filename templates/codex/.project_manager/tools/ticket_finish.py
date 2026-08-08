@@ -302,6 +302,26 @@ def _load_pm_handoff():
     return mod
 
 
+def _load_external_review():
+    """external_review 모듈을 동적 로드한다 (부재/로드 실패 시 None·fail-soft).
+
+    diff 서킷브레이커의 **정책과 측정식**은 external_review 가 소유한다(그쪽이 diff 산정 로직의
+    단일 진실이다). 완료 부기는 그 판정을 빌려 쓸 뿐이라 사본을 두지 않는다 — 두 표면이 서로 다른
+    상한/산정식을 쓰면 "리뷰는 통과했는데 완료가 막힌다"가 규칙이 아니라 사고가 된다."""
+    er_path = TOOLS_DIR / "external_review.py"
+    if not er_path.exists():
+        return None
+    try:
+        mod = _load_module_from_path(
+            er_path, "external_review.py", verifier=_verify_engine_rev,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패가 완료를 막지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
+        return None
+    return mod
+
+
 def _regression_cwd(worktree_slot: str | None = None) -> str:
     """회귀를 실행할 작업 디렉토리를 해소한다 (pm_handoff `_regression_cwd` 위임).
 
@@ -604,12 +624,10 @@ def get_ticket_title(board_py: Path, ticket_id: str) -> str:
         return ""
 
 
-def get_ticket_touches(board_py: Path, ticket_id: str) -> list[str]:
-    """ticket_id 의 frontmatter `touches`(파일/디렉토리 경로 목록)를 board.py 로 읽는다.
+def _ticket_frontmatter(board_py: Path, ticket_id: str) -> dict:
+    """ticket frontmatter 를 board.py 로 읽는다 (board 미로드·ticket 부재/깨짐 → {}).
 
-    문자열 원소만 취한다(비-문자열 오기는 버림). board 미로드·ticket 부재/깨짐 →
-    [](graceful·crash 0 — soft 알림은 막지 않는다). domain soft 알림 step 이 쓴다.
-    """
+    touches·estimate 소비처의 단일 해소 지점 — 같은 티켓을 두 번 다르게 찾지 않는다."""
     try:
         mod = _load_module_from_path(
             Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
@@ -619,8 +637,23 @@ def get_ticket_touches(board_py: Path, ticket_id: str) -> list[str]:
     except Exception as exc:
         if _is_engine_rev_skew(exc):
             raise  # 사본 skew 는 fail-loud(삼키지 않는다).
-        return []
-    touches = fm.get("touches")
+        return {}
+    return fm if isinstance(fm, dict) else {}
+
+
+def get_ticket_estimate(board_py: Path, ticket_id: str) -> str | None:
+    """ticket_id 의 frontmatter `estimate` (없으면 None) — diff 서킷브레이커 상한 선택 입력."""
+    estimate = _ticket_frontmatter(board_py, ticket_id).get("estimate")
+    return estimate.strip() or None if isinstance(estimate, str) else None
+
+
+def get_ticket_touches(board_py: Path, ticket_id: str) -> list[str]:
+    """ticket_id 의 frontmatter `touches`(파일/디렉토리 경로 목록)를 board.py 로 읽는다.
+
+    문자열 원소만 취한다(비-문자열 오기는 버림). board 미로드·ticket 부재/깨짐 →
+    [](graceful·crash 0 — soft 알림은 막지 않는다). domain soft 알림 step 이 쓴다.
+    """
+    touches = _ticket_frontmatter(board_py, ticket_id).get("touches")
     if isinstance(touches, str):
         return [touches.strip()] if touches.strip() else []
     if isinstance(touches, list):
@@ -1110,6 +1143,7 @@ class TicketFinisher:
         run_git_at_fn: Callable[[Path, list[str]], tuple[int, str]] | None = None,
         run_git_stdout_at_fn: Callable[[Path, list[str]], tuple[int, str]] | None = None,
         status_entries_at_fn: Callable[[Path], tuple[tuple[str, str], ...]] | None = None,
+        diff_cap_block_fn: Callable[[str], str | None] | None = None,
         log_file: Path = LOG_FILE,
         board_py: Path = BOARD_PY,
         venv_python: str | Path = _default_python(),
@@ -1156,6 +1190,9 @@ class TicketFinisher:
         # stdout만 쓴다. mutation seam은 stderr 진단을 계속 합쳐 호출자에게 보인다.
         self._run_git_stdout_at_fn = run_git_stdout_at_fn or self._default_run_git_stdout_at
         self._status_entries_at_fn = status_entries_at_fn or self._default_status_entries_at
+        # diff 서킷브레이커 seam — 차단 안내 문자열 또는 None(통과·가드 off). 정책·측정식은
+        # external_review 가 소유하고 여기서는 판정만 소비한다.
+        self._diff_cap_block_fn = diff_cap_block_fn or self._default_diff_cap_block
         # (스코프 밖 staged, 미스테이지 잔여) 건수 — `[완료]` 줄 재고지용(loud 강화).
         self._dirty_summary: tuple[int, int] = (0, 0)
 
@@ -1199,6 +1236,40 @@ class TicketFinisher:
             )
         output = result.stdout + result.stderr
         return result.returncode, output
+
+    def _code_tree(self) -> Path:
+        """코드가 있는 트리 — 회귀 cwd 해소와 **같은 규칙**(task 작업공간 > 명시 > 자동 슬롯).
+
+        분리된 PM 홈엔 코드가 없으므로 diff 측정도 회귀와 같은 트리를 봐야 한다."""
+        if self._task_workspace is not None:
+            return self._task_workspace
+        if self._regression_cwd is not None:
+            return Path(self._regression_cwd)
+        return Path(_regression_cwd())
+
+    def _default_diff_cap_block(self, ticket_id: str) -> str | None:
+        """diff 서킷브레이커 판정 — 차단 안내 문자열, 통과·가드 off 면 None.
+
+        상한 표·측정식·문구는 external_review 소유분을 그대로 쓴다. 측정 불가(모듈 부재·touches
+        부재·estimate 미선언·비-git 트리)는 **가드 off** 다 — 이 축의 실패로 완료 부기를 막지
+        않는다(hard 차단은 상한 초과라는 확정 사실에만 건다)."""
+        external = _load_external_review()
+        if external is None:
+            return None
+        touches = get_ticket_touches(self._board_py, ticket_id)
+        if not touches:
+            return None
+        estimate = get_ticket_estimate(self._board_py, ticket_id)
+        cap = external._diff_cap(external.local_config(REPO), estimate)
+        if cap is None:
+            return None
+        try:
+            total = external.diff_line_total(self._code_tree(), "HEAD", touches)
+        except OSError:
+            return None
+        return external.diff_cap_block(
+            total, cap, ticket=ticket_id, estimate=estimate, scope=touches,
+        )
 
     def _default_run_board(self, args: list[str]) -> tuple[int, str]:
         """board.py 를 subprocess 로 호출해 (returncode, stdout+stderr) 반환."""
@@ -1354,6 +1425,14 @@ class TicketFinisher:
             f"[ticket_finish] {ticket_id} 완료 부기 시작 "
             f"(dry_run={dry_run}, skip_pytest={skip_pytest})"
         )
+
+        # ── 0. diff 서킷브레이커 (진입 검사) ─────────────────────────
+        # 회귀보다 **앞**이다: estimate 를 넘긴 스코프는 회귀가 green 이어도 완료 대상이 아니라
+        # 분할 대상이고, 어떤 부작용(회귀 실행·log append·board·git)도 나기 전에 멈춰야 한다.
+        cap_block = self._diff_cap_block_fn(ticket_id)
+        if cap_block:
+            print(f"\n[중단] {cap_block}", file=sys.stderr)
+            return 1
 
         # ── 1. 회귀 실행 ──────────────────────────────────────────────
         # dry-run 도 pytest 를 실제 실행한다 — "부작용 없음"이지 "빠름"이 아니다.

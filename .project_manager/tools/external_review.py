@@ -35,12 +35,18 @@
     보존한다(전량 폐기 금지).
   - must-fix 감지 → exit 1
   - 통과 → exit 0
-  - 라운드 상한 도달(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 ack 없이
+  - 수렴-형상 차단(--gate 별) → exit 4 (실행 전 거부). 라운드 장부의 must_fix 추이로 판정한다:
+    라운드 수가 상한(local.conf review_rounds_max·기본 3)에 닿았거나 직전 라운드보다 must_fix 가
+    늘었으면(발산·조기 차단) 라운드를 더 쓰지 않는다. 출구는 **재설계·티켓 분할**이고, 직전 지적
+    해소만 확인하려면 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓴다.
+  - diff 서킷브레이커 → exit 1 (리뷰어 호출 전 거부). 티켓 estimate 별 diff 총량 상한
+    (small 300 / medium 1,000 / large 2,500 · local.conf diff_cap.<estimate>)을 넘긴 스코프는
+    리뷰 라운드로 닫히지 않으므로 분할·재설계로 보낸다.
+  - 라운드 상한 도달(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로
     판정 4회(local.conf external_review_round_limit) 또는 미완 2회
     (external_review_incomplete_round_limit)를 채우면 이후 실행을 기계 차단한다. 성격은
-    **무한 루프 차단(anti-loop pause)**이지 비용 재승인 요구가 아니다 — PM 이 `--rounds-report`
-    로 수렴 상황을 확인한 뒤 같은 범위의 정상 수렴이면 `--ack-rounds` 로 자율 재개하고, 사람에게
-    보고하는 건 수렴 실패(같은 지적 반복·범위 재설계)일 때다.
+    **무한 루프 차단(anti-loop pause)**이다 — 연장 승인(`--ack-rounds`)은 폐지됐고, 호출하면
+    아무것도 하지 않고 거부한다.
   - wave 예산 소진 → exit 4 (같은 rc·같은 실행 전 거부). 게이트별 상한과 **별개로** wave 단위
     총 라운드 예산(local.conf external_review_wave_budget·기본 24)을 두어 티켓 수 × 라운드 상한
     으로 비용이 무한 확장되는 구조를 막는다 — 재개는 같은 규율의 `--ack-wave`(예산 리셋).
@@ -65,9 +71,9 @@
     --ticket/기본 암묵 수집분 제외는 종합 판정 라인에 병기. review_denylist_extra 로 추가 가능.
   - 라운드 상한 기계 차단: 추가 리뷰어 호출(과금·전송)이 무한 반복되지 않게 `--gate <T-NNNN>`
     별 라운드 장부(`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 전송을
-    count 하고, ack 없이 limit(기본 4)회를 넘기면 실행 *전에* 거부(exit 4)한다. "몇 라운드나
-    돌았나"라는 PM 자의 집계를 기계 장부로 대체하는 것이고([[mechanize-dont-instruct-llm]]),
-    재개 판단 자체는 조회면(`--rounds-report`) + `--ack-rounds` 로 PM 이 자율로 한다.
+    count 하고, limit(기본 4)회를 넘기면 실행 *전에* 거부(exit 4)한다. "몇 라운드나 돌았나"라는
+    PM 자의 집계를 기계 장부로 대체하는 것이고([[mechanize-dont-instruct-llm]]), 수렴 여부 판정도
+    같은 장부의 must_fix 추이가 소유한다(사람의 "이번엔 진짜 수렴 중" 판단을 입력으로 쓰지 않는다).
   - 라운드별 산출 장부 + wave 예산: 같은 장부에 라운드마다 산출(`rounds` — 판정 rc·must-fix 수)을
     append 하고, 전 게이트 합계 전송을 wave 단위로 센다(`wave` 절). 라운드 수만으로는 "그 라운드가
     실결함을 냈는가"를 기계로 확인할 수 없어 게이트 심도 대비 비용 적정성 판단이 PM 자기보고에
@@ -904,11 +910,36 @@ _REVIEWER_PROGRESS_CONTRACTS = {
     },
 }
 
-# 라운드 상한 — 같은 --gate 로 승인 없이 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
+# 라운드 상한 — 같은 --gate 로 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
 # 기본 4 는 사용자 전역 규율(외부 리뷰 ">3~4 라운드면 수렴 판단")의 기계화. local.conf
 # external_review_round_limit 로 조정 가능.
 DEFAULT_ROUND_LIMIT = 4
 DEFAULT_INCOMPLETE_ROUND_LIMIT = 2
+
+# 수렴-형상 상한 — 코드 리뷰 라운드 수 상한(기본 3·local.conf `review_rounds_max`).
+# 위 판정 상한(4)이 "몇 번 전송했나"만 보는 반면 이 축은 **장부의 must_fix 추이**로 수렴 여부를
+# 본다: 상한을 넘겼거나(초과), 직전 라운드보다 must_fix 가 늘었으면(발산) 라운드를 더 쓰지 않는다.
+# 실측 근거는 리뷰 12라운드(ack 연장 반복)와 must_fix 3→2→2 평탄이다 — 두 형상 모두 라운드로는
+# 닫히지 않아 재설계·티켓 분할이 유일한 출구다.
+DEFAULT_REVIEW_ROUNDS_MAX = 3
+REVIEW_ROUNDS_MAX_KEY = "review_rounds_max"
+
+# 수렴 차단 사유 — 안내 문구의 라벨이자 판정 반환값(호출부가 사유별로 갈리지 않게 한 축).
+CONVERGENCE_DIVERGING = "diverging"
+CONVERGENCE_CAP_UNRESOLVED = "cap-unresolved"
+CONVERGENCE_CAP_REACHED = "cap-reached"
+_CONVERGENCE_REASONS: dict[str, str] = {
+    CONVERGENCE_DIVERGING: "직전 라운드 대비 must_fix 증가(발산) — 상한 전 조기 차단",
+    CONVERGENCE_CAP_UNRESOLVED: "라운드 상한 도달 · must_fix 미해소",
+    CONVERGENCE_CAP_REACHED: "라운드 상한 도달",
+}
+
+# diff 서킷브레이커 — 티켓 `estimate` 별 diff 총량(추가+삭제) 상한. 리뷰 라운드가 수렴하지 않는
+# 두 번째 원인이 **구현 스코프 팽창**이라(실측 5,018줄 단일 티켓), 리뷰/완료 진입에서 총량을
+# 기계로 대조한다. 값은 프로젝트 규약이고 채택자는 local.conf `diff_cap.<estimate>` 로
+# 덮어쓴다. estimate 가 없거나 모르는 값이면 가드 off(None) — 엔진이 보편값을 지어내지 않는다.
+DEFAULT_DIFF_CAPS: dict[str, int] = {"small": 300, "medium": 1000, "large": 2500}
+DIFF_CAP_KEY_PREFIX = "diff_cap."
 
 # wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 **별개** 축이다. 게이트 상한만 있으면 비용이
 # 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 전송을 이 예산으로 묶는다. 기본 24 는
@@ -1026,6 +1057,19 @@ _OUTPUT_FORMAT_BLOCK = """\
 
 """
 
+# 확인 전용 라운드(`--confirm-fix`) 헌장 — 이 라운드의 임무를 프롬프트에서 좁힌다. 좁히지 않으면
+# 예외 라운드가 그냥 한 라운드 더가 되어 상한이 무의미해진다(실측 12라운드의 형상).
+_CONFIRM_FIX_CHARTER = """\
+### 이 라운드의 임무 (확인 전용 · 필수)
+이번 라운드는 **직전 라운드 must-fix 의 해소 확인 전용**이다. 리뷰 라운드의 연장이 아니다.
+
+- 직전 must-fix 항목이 실제로 해소됐는지만 판정하라.
+- 새로 발견한 사항은 must-fix 로 올리지 말고 **"재설계 신호"** 라는 표기와 함께 suggestion 에
+  적어라 — 다음 라운드 거리가 아니라 다음 티켓(재설계·분할)의 입력이다.
+- 직전 지적이 해소됐으면 신규 발견 유무와 무관하게 `판정: 통과` 로 마감하라.
+
+"""
+
 # 빈-diff fail-loud 안내.
 # 검토 경로에 tracked 변경이 없어 diff 가 비면 codex 는 "변경 없음"을 통과로 판정해 가짜
 # 통과(false-green)를 낸다. codex 호출 전에 이 메시지로 fail-loud 한다 (우회 플래그 없음).
@@ -1056,14 +1100,12 @@ def _empty_diff_guidance(paths: Sequence[str], *, root: Path) -> str:
         + "\n    예: --paths a.py b.py (자동 교정하지 않음 — 콤마가 파일명인 경우를 보존)."
     )
 
-# 라운드 상한 초과 fail-loud 안내. 같은 게이트로 ack 없이 limit 회를 넘겨 실 전송이 시도되면
+# 라운드 상한 초과 fail-loud 안내. 같은 게이트로 limit 회를 넘겨 실 전송이 시도되면
 # diff 추출·추가 리뷰어 호출 전에 이 안내로 차단한다.
 #
-# 이 상한의 성격은 **무한 루프 차단(anti-loop pause)**이지 비용 재승인 요구가 아니다 —
-# `external_review_enabled=true` 가 이미 설정된 대상의 외부 전송·통상 과금에 대한 지속 동의이므로,
-# 같은 범위가 정상적으로 수렴 중이면 PM 이 `--rounds-report` 로 상태를 확인한 뒤 자율로 재개한다.
-# 사람을 부르는 건 수렴이 **안 되고 있을 때**(같은 지적 반복·범위 재설계 필요)다. 상한 자체는
-# 그대로 기계가 소유한다(자의 우회 불가).
+# 이 상한의 성격은 **무한 루프 차단(anti-loop pause)**이다. 연장 승인(`--ack-rounds`)은 폐지됐다 —
+# "반례가 진짜니까 계속"을 사람이 승인하는 구조 자체가 비용 누수였다(실측 12라운드). 남은 출구는
+# **재설계·티켓 분할**뿐이고, 직전 지적의 해소만 확인하려면 게이트당 1회 `--confirm-fix` 를 쓴다.
 _ROUND_LIMIT_GUIDANCE = (
     "오류: 추가 리뷰어 라운드 상한 도달 — 게이트 {gate} · "
     "count={unacked}(판정 {verdicts} · 미완 {incomplete})\n"
@@ -1072,14 +1114,58 @@ _ROUND_LIMIT_GUIDANCE = (
     "  · **미완**은 판정이 없던 전송입니다 — 타임아웃·중단뿐 아니라 **오염 진단으로 무효화된 "
     "판정**도 이 축에 들어갑니다(판정 표면과 같은 규칙이라 두 표면이 갈리지 않습니다).\n"
     "  · 먼저 `--rounds-report` 로 라운드별 산출과 수렴 상황을 확인하세요.\n"
-    "  · 같은 범위가 정상 수렴 중이면 PM 이 자율로 `--ack-rounds` 를 붙여 재개합니다 "
-    "(판정 +{limit} · 미완 +{incomplete_limit}):\n"
-    "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-rounds [기존 옵션]\n"
-    "  · 같은 지적이 반복되거나 범위 재설계가 필요하면 그때 사용자에게 보고하고 판단을 받으세요 "
-    "(비용 재승인이 아니라 **수렴 실패** 보고입니다).\n"
+    "  · **재설계·티켓 분할이 유일한 출구입니다** — 라운드 연장 승인(`--ack-rounds`)은 "
+    "폐지됐고, 확인 전용 라운드(`--confirm-fix`)는 수렴 축의 예외라 이 전송 횟수 상한은 "
+    "열지 않습니다.\n"
     "  · 상한 조정은 local.conf `external_review_round_limit`(판정)과 "
     "`external_review_incomplete_round_limit`(미완).\n"
     "  (장부: {ledger} · count={count} acked_through={acked})"
+)
+
+# 수렴-형상 차단 안내 (라운드 상한 rc 를 그대로 쓴다 — 전송 전 예산 거부라 같은 축).
+_CONVERGENCE_GUIDANCE = (
+    "오류: 리뷰 수렴 게이트 차단 — 게이트 {gate} · {reason}\n"
+    "  라운드 {rounds} / 상한 {limit} · must_fix 추이 [{series}]\n"
+    "  · 라운드를 더 쓰지 않습니다 — **재설계·티켓 분할이 유일한 출구입니다**. 남은 지적은 "
+    "다음 티켓의 목표로 옮기세요.\n"
+    "  · 직전 must_fix 해소만 확인하려면 게이트당 1회 `--confirm-fix` 로 확인 전용 라운드를 "
+    "쓸 수 있습니다 (신규 발견은 '재설계 신호'로 보고 — 라운드 계속이 아닙니다):\n"
+    "      python3 .project_manager/tools/external_review.py --gate {gate} --confirm-fix "
+    "[기존 옵션]\n"
+    "  · 라운드별 산출은 `--rounds-report --gate {gate}` 로 확인하세요.\n"
+    "  · 상한 조정은 local.conf `{knob}` (기본 {default}).\n"
+    "  (장부: {ledger})"
+)
+
+# `--confirm-fix` 소진 안내 — 확인 전용 라운드는 게이트당 1회다(장부가 소유·자의 재사용 불가).
+_CONFIRM_FIX_SPENT_GUIDANCE = (
+    "오류: `--confirm-fix` 는 게이트당 1회입니다 — 게이트 {gate} 는 이미 확인 전용 라운드를 "
+    "썼습니다 (사용 {used}회).\n"
+    "  · 남은 지적은 라운드로 닫지 않습니다 — 재설계·티켓 분할로 전환하세요.\n"
+    "  · 지금까지의 산출은 `--rounds-report --gate {gate}` 로 확인하세요.\n"
+    "  (장부: {ledger})"
+)
+
+# `--ack-rounds` 폐지 안내 — 플래그는 인자표에 남겨 두고(모르는 인자 오류 대신 처방을 낸다)
+# 호출 자체를 거부한다. 연장 승인 경로가 남아 있으면 상한이 상한이 아니게 된다.
+_ACK_ROUNDS_REMOVED_GUIDANCE = (
+    "오류: `--ack-rounds`(라운드 연장 승인)는 폐지됐습니다 — 이 실행은 아무것도 하지 않았습니다.\n"
+    "  · 라운드 상한·수렴 상한에 걸렸다면 출구는 **재설계·티켓 분할**입니다 (연장 승인 없음).\n"
+    "  · 직전 must_fix 해소 확인만 필요하면 게이트당 1회 `--confirm-fix` 를 쓰세요.\n"
+    "  · wave 예산 재개(`--ack-wave`)는 그대로입니다 — 별개 축입니다.\n"
+    "  · 현재 수렴 상황은 `--rounds-report --gate <T-NNNN>` 로 확인하세요."
+)
+
+# diff 서킷브레이커 차단 안내 — 리뷰/완료 진입에서 같은 문구를 쓴다(두 표면이 다른 말을 하지 않게).
+_DIFF_CAP_GUIDANCE = (
+    "오류: diff 서킷브레이커 차단 — {ticket}(estimate={estimate}) · "
+    "diff {total}줄 > 상한 {cap}줄\n"
+    "  측정 범위: {scope}\n"
+    "  · 한 티켓의 구현 스코프가 estimate 를 넘겼습니다 — 리뷰 라운드가 수렴하지 않는 원인입니다.\n"
+    "  · **티켓 분할·재설계**로 스코프를 줄이세요 (분할 후 각 티켓이 자기 상한 안에서 돕니다).\n"
+    "  · estimate 자체가 틀렸다면 티켓 frontmatter `estimate` 를 고치세요 "
+    "(상한: small {small} / medium {medium} / large {large}).\n"
+    "  · 프로젝트 상한 조정은 local.conf `{key}`."
 )
 
 # wave 예산 소진 fail-loud 안내. 게이트별 상한을 통과한 전송이라도 wave 합계가 예산을 채우면
@@ -1530,12 +1616,49 @@ def _wave_budget(conf: dict[str, str]) -> int:
     return value if value >= 0 else DEFAULT_WAVE_BUDGET
 
 
+def _review_rounds_max(conf: dict[str, str]) -> int:
+    """수렴-형상 라운드 상한 (local.conf `review_rounds_max`·기본 3).
+
+    비정수·음수는 기본값으로 fail-soft — 다른 예산 노브와 같은 규칙이다(깨진 노브가 게이트를
+    벽돌로 만들지 않는다)."""
+    raw = conf.get(REVIEW_ROUNDS_MAX_KEY, "").strip()
+    if not raw:
+        return DEFAULT_REVIEW_ROUNDS_MAX
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_REVIEW_ROUNDS_MAX
+    return value if value >= 0 else DEFAULT_REVIEW_ROUNDS_MAX
+
+
+def _diff_cap(conf: dict[str, str], estimate: str | None) -> int | None:
+    """이 estimate 의 diff 총량 상한 — 모르는/빈 estimate 면 None(가드 off).
+
+    채택자 override 는 `diff_cap.<estimate>` 한 키다(`diff_cap.small=500`). 비정수·음수는 엔진
+    기본값으로 fail-soft 하고, **엔진이 모르는 estimate 는 상한을 지어내지 않는다** — 상한은
+    스코프 규약의 함수라 선언되지 않은 구간에 보편값을 씌우면 상시 false-block 이 된다."""
+    if not estimate:
+        return None
+    key = estimate.strip().lower()
+    default = DEFAULT_DIFF_CAPS.get(key)
+    if default is None:
+        return None
+    raw = conf.get(f"{DIFF_CAP_KEY_PREFIX}{key}", "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
 # ── 라운드 상한 장부 ─────────────
 # 추가 리뷰어 호출은 과금·전송 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한
 # 게이트 클러스터 25라운드). PM 자의 라운드 집계를 기계 장부로 대체한다
-# ([[mechanize-dont-instruct-llm]]): `--gate <T-NNNN>` 별로 실 전송 횟수(count)와 ack 수위
-# (acked_through)를 per-clone·git-ignored
-# 장부에 기록하고, ack 없이 limit 을 넘기면 실행 전에 거부한다. 장부는 세션/클론 로컬 현상이라
+# ([[mechanize-dont-instruct-llm]]): `--gate <T-NNNN>` 별로 실 전송 횟수(count)와 옛 승인 수위
+# (acked_through — 폐지된 `--ack-rounds` 의 잔존 필드·구 장부 해석에만 쓴다)를 per-clone·
+# git-ignored 장부에 기록하고, limit 을 넘기면 실행 전에 거부한다. 장부는 세션/클론 로컬 현상이라
 # `.project_manager/.local/`(regression/livegate sidecar 와 동위·board 상태 아님)에 둔다. 경로는
 # 호출 시점 REPO(module-level·monkeypatch 가능)에서 파생해 hermetic 테스트가 tmp 로 격리할 수 있게
 # 한다(_tickets_dir 동형). 손상 장부는 빈 장부로 fail-soft(회귀해소·regression flag 동형).
@@ -1543,8 +1666,9 @@ def _wave_budget(conf: dict[str, str]) -> int:
 # 장부는 두 축을 함께 싣는다:
 #   · 게이트 축 — 최상위 키가 게이트 이름이고 값이 `_gate_entry` 스키마다. 상한 집계용
 #     `records`(예약/마감 레코드) 옆에 **라운드별 산출** `rounds`(판정 rc·결함 수)를 append 한다.
-#     `records` 는 승인(`--ack-rounds`) 때 비워지는 집계 창이고 `rounds` 는 남는 이력이라, "그
-#     라운드가 실결함을 냈는가"를 나중에도 기계로 확인할 수 있다.
+#     `rounds` 는 지워지지 않는 이력이라 "그 라운드가 실결함을 냈는가"를 나중에도 기계로 확인할 수
+#     있고, 수렴-형상 게이트(`_convergence_refusal`)의 판정 입력이기도 하다. 확인 전용 라운드
+#     소비(`confirm_fix`)도 같은 항목에 실린다.
 #   · wave 축 — 예약 키 `wave`(`WAVE_SECTION_KEY`) 하나에 {started, spent} 를 둔다. 게이트 상한만
 #     있으면 비용이 티켓 수 × 상한으로 확장되므로 전 게이트 합계를 이 예산이 묶는다. 두 축이 한
 #     dict 를 공유하므로 **예약 키를 게이트 이름으로 쓰는 것은 기계로 막는다**(`_reserved_gate_error`
@@ -1909,6 +2033,9 @@ def _gate_entry(ledger: dict, gate: str) -> dict:
             *(_as_int(row.get("sequence", row.get("number"))) for row in records),
             0,
         ),
+        # 확인 전용 라운드(`--confirm-fix`) 사용 횟수 — 게이트당 1회 예외의 장부다. 구세대 항목은
+        # 0 으로 정규화된다(옛 장부를 그대로 읽고 새 축만 뒤에 쌓인다·마이그레이션 불요).
+        "confirm_fix": max(0, _as_int(entry.get("confirm_fix"))),
         "records": records,
         "rounds": rounds,
     }
@@ -2034,6 +2161,66 @@ def _append_round_outcome(entry: dict, outcome: dict) -> dict:
     return outcome
 
 
+# ── 수렴-형상 게이트 (라운드 장부 위의 판정) ────────────────────────────────
+# 라운드 수만 보는 상한은 "라운드를 몇 번 썼나"만 막고 "닫히고 있나"는 묻지 않는다. 실측 두 형상이
+# 그 공백이다: must_fix 가 줄지 않은 채 라운드만 늘거나(3→2→2), 라운드마다 새 지적이 늘어난다.
+# 판정 입력은 **이미 있는 장부 필드**(`rounds[].must_fix`)뿐이고 LLM 판단은 0 이다.
+
+
+def _recorded_must_fix_series(entry: dict) -> tuple[int | None, ...]:
+    """예약 순번 순 must_fix 추이 — 기록된 라운드 산출만 (셀 근거가 없던 라운드는 None).
+
+    나열 순서는 조회 표와 **같은 정렬**(`_ordered_round_outcomes`)이다 — append 순서는 완료
+    순서라 동시 실행이 역순으로 끝나면 추이가 뒤바뀐다."""
+    series: list[int | None] = []
+    for outcome in _ordered_round_outcomes(
+        [row for row in (entry.get("rounds") or []) if isinstance(row, dict)]
+    ):
+        value = outcome.get("must_fix")
+        series.append(
+            value if isinstance(value, int) and not isinstance(value, bool) else None
+        )
+    return tuple(series)
+
+
+def _format_must_fix_series(series: Sequence[int | None]) -> str:
+    """must_fix 추이 표기 — 셀 근거가 없던 라운드는 '미상'(0 과 구분)."""
+    return " → ".join("미상" if value is None else str(value) for value in series) or "없음"
+
+
+def _convergence_refusal(entry: dict, limit: int) -> str | None:
+    """이번 라운드를 거부할 수렴-형상 사유 (통과면 None).
+
+    세 조건을 이 순서로 본다:
+      (b) **발산** — 직전 라운드 대비 must_fix 증가. 상한 도달을 기다리지 않는다(조기 차단).
+      (a)(c) **상한** — 기록된 라운드 수가 상한 이상. 마지막 must_fix 가 0 이 아니면(미해소·
+          '미상' 포함) 사유를 나눠 표기한다. 미상을 해소로 접지 않는 건 보수 방향이다 —
+          셀 수 없던 라운드를 '0건'으로 읽으면 발산 형상이 통과한다.
+    """
+    series = _recorded_must_fix_series(entry)
+    if (
+        len(series) >= 2
+        and series[-1] is not None
+        and series[-2] is not None
+        and series[-1] > series[-2]
+    ):
+        return CONVERGENCE_DIVERGING
+    if len(series) >= limit:
+        last = series[-1] if series else None
+        return CONVERGENCE_CAP_REACHED if last == 0 else CONVERGENCE_CAP_UNRESOLVED
+    return None
+
+
+def _spend_confirm_fix(entry: dict) -> None:
+    """확인 전용 라운드 1회를 장부에서 소비한다 (게이트당 1회 예외의 유일한 기록 지점)."""
+    entry["confirm_fix"] = max(0, _as_int(entry.get("confirm_fix"))) + 1
+
+
+def _refund_confirm_fix(entry: dict) -> None:
+    """전송이 확실히 없던 실행의 확인 전용 라운드 quota 를 되돌린다 (라운드 count 환불과 동조)."""
+    entry["confirm_fix"] = max(0, _as_int(entry.get("confirm_fix")) - 1)
+
+
 # 승인 고지 — 같은 승인이라도 **재개된 실행**과 **남은 축이 막아 거부된 실행**의 문구가 달라야
 # 한다. rc 4 로 끝나는 실행이 "재개"를 말하면 stderr 가 종료 코드와 어긋난 loud 오보가 된다
 # (승인 자체는 저장되므로 다음 실행이 이어받는다).
@@ -2042,17 +2229,13 @@ _APPROVAL_REFUSED_VERB = "기록(이번 실행은 남은 축이 막아 거부)"
 
 
 def _approval_notes(
-    *, gate: str, acked_rounds_to: int | None, limit: int,
-    wave_reset: bool, wave_budget: int, resumed: bool,
+    *, wave_reset: bool, wave_budget: int, resumed: bool,
 ) -> list[str]:
-    """이번 실행이 적용한 승인의 stderr 고지 문구 (적용분이 없으면 빈 목록)."""
+    """이번 실행이 적용한 승인의 stderr 고지 문구 (적용분이 없으면 빈 목록).
+
+    승인 축은 wave 예산 하나뿐이다 — 라운드 연장 승인(`--ack-rounds`)은 폐지됐다."""
     verb = _APPROVAL_RESUMED_VERB if resumed else _APPROVAL_REFUSED_VERB
     notes: list[str] = []
-    if acked_rounds_to is not None:
-        notes.append(
-            f"라운드 상한 승인 {verb}: 게이트 {gate} — acked_through={acked_rounds_to} "
-            f"(+{limit}라운드)."
-        )
     if wave_reset:
         notes.append(f"wave 예산 승인 {verb}: spent 리셋 (예산 {wave_budget}).")
     return notes
@@ -2079,15 +2262,19 @@ class RoundBudget(NamedTuple):
     통과한 실행 중 `--gate` 지정분만 예약 좌표(gate·round_id·sequence·wave_id)를 갖는다 —
     `--gate` 없는 실행은 종전대로 장부 밖이라 세 값이 비어 있는 통과 결과다.
 
-    `sequence` 는 **예약 시점** 순번이다: 마감 때 레코드를 되찾아 읽으면 그 사이 승인
-    (`--ack-rounds`)이 집계 창을 비운 실행만 순번을 잃는다. `wave_id` 는 예약 시점 wave 세대라
-    환불이 그 세대에만 유효하다(리셋된 새 wave 의 예산을 옛 실패가 깎지 못한다)."""
+    `sequence` 는 **예약 시점** 순번이다: 마감 때 레코드를 되찾아 읽으면 그 사이 집계 창이
+    비워진 실행만 순번을 잃는다. `wave_id` 는 예약 시점 wave 세대라
+    환불이 그 세대에만 유효하다(리셋된 새 wave 의 예산을 옛 실패가 깎지 못한다).
+
+    `confirm_fix_spent` 는 이번 예약이 확인 전용 라운드 quota 를 썼는지다 — 환불도 같은 조건이라
+    (전송 0 이면 예산을 안 먹는다) 라운드 count·wave 와 **한 축으로** 되돌린다."""
 
     refused_rc: int | None = None
     gate: str | None = None
     round_id: str | None = None
     sequence: int | None = None
     wave_id: str | None = None
+    confirm_fix_spent: bool = False
 
     @property
     def reserved(self) -> bool:
@@ -2106,28 +2293,30 @@ def _reserve_round_budget(args, conf: dict[str, str]) -> RoundBudget:
     전송·과금됐을 수 있는데 성공시에만 세면 반복 타임아웃으로 상한을 무한 우회한다. 외부 프로세스가
     확실히 시작되지 않은 경우(스폰 실패·started=False, 그리고 예약 뒤 스폰 전 중단)만 환불한다.
     MF-B(원자성): 확인→예약→저장을 `_round_ledger_lock()` 한 임계 구역으로 묶어 동시 실행이 같은
-    잔여 슬롯을 통과 못 하게 한다. --ack-rounds 는 PM 이 report 로 정상 수렴을 확인한 뒤
-    acked_through 를 현 count 로 올려 +limit 창을 열고, 그 호출도 실 전송이므로 함께 예약한다.
-    초과면 리뷰어 호출 전에 거부(전용 rc·과금 없음).
+    잔여 슬롯을 통과 못 하게 한다. 초과면 리뷰어 호출 전에 거부(전용 rc·과금 없음).
 
-    승인(--ack-rounds/--ack-wave)은 **먼저 전부 적용한 뒤** 두 상한을 다시 본다. 한 축의 승인을
-    적용해 놓고 다른 축에서 저장 없이 되돌아가면 PM 이 적용한 ack가 조용히 사라지기 때문이다.
-    그래서 (1) 두 플래그 동시 지정은 둘 다 적용돼 그대로 재개되고, (2) 남은 축이 여전히 막으면
-    적용된 ack만 저장하고 거부한다(다음 실행이 그 상태를 이어받는다)."""
+    상한 축은 셋이고 이 순서로 본다: **수렴-형상**(장부 must_fix 추이) → 판정/미완 라운드 상한 →
+    wave 예산. 수렴 축을 먼저 보는 이유는 그쪽이 더 좁고 처방이 구체적(재설계·분할)이기 때문이다.
+    유일한 예외는 `--confirm-fix`(게이트당 1회 확인 전용 라운드)이고, 그 소비도 이 임계 구역이
+    기록한다. wave 승인(`--ack-wave`)은 **먼저 적용한 뒤** 남은 축을 다시 본다 — 적용해 놓고 저장
+    없이 되돌아가면 PM 이 적용한 승인이 조용히 사라진다."""
     if not args.gate:
-        if args.ack_rounds or args.ack_wave:
-            acks = " / ".join(
-                flag for flag, given in (
-                    ("--ack-rounds", args.ack_rounds), ("--ack-wave", args.ack_wave),
-                ) if given
-            )
-            print(f"경고: {acks} 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
+        flags = " / ".join(
+            flag for flag, given in (
+                ("--ack-wave", args.ack_wave),
+                ("--confirm-fix", getattr(args, "confirm_fix", False)),
+            ) if given
+        )
+        if flags:
+            print(f"경고: {flags} 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
                   file=sys.stderr)
         return RoundBudget()
 
     limit = _round_limit(conf)
     incomplete_limit = _incomplete_round_limit(conf)
     wave_budget = _wave_budget(conf)
+    rounds_max = _review_rounds_max(conf)
+    confirm_fix = bool(getattr(args, "confirm_fix", False))
     try:
         with _round_ledger_lock():
             ledger = _load_round_ledger()
@@ -2151,30 +2340,47 @@ def _reserve_round_budget(args, conf: dict[str, str]) -> RoundBudget:
             # **같은 술어**를 쓴다.
             wave_repaired = _wave_corruption_note(ledger.get(WAVE_SECTION_KEY)) is not None
             wave = _wave_state(ledger)
-            # 승인 적용 (두 축 모두·판정 전). **고지는 아직 하지 않는다** — 재개인지 거부인지는
-            # 두 상한을 다시 본 뒤에야 정해지고, 거부되는 실행이 "재개"를 말하면 rc 4 와
+            # wave 승인 적용 (판정 전). **고지는 아직 하지 않는다** — 재개인지 거부인지는
+            # 남은 상한을 다시 본 뒤에야 정해지고, 거부되는 실행이 "재개"를 말하면 rc 4 와
             # 어긋난 loud 오보가 된다.
-            acked_rounds_to: int | None = None
             wave_reset = False
-            if args.ack_rounds:
-                acked_rounds_to = entry["count"]
-                entry["acked_through"] = acked_rounds_to  # 승인 수위 상향 (+limit 창)
-                entry["records"] = []               # 승인된 상세 레코드는 집계에서 영구 불필요
             if args.ack_wave:
                 wave = _reset_wave(ledger)
                 wave_reset = True
-            approved = acked_rounds_to is not None or wave_reset
+            approved = wave_reset
 
             def announce(resumed: bool) -> None:
                 for note in _approval_notes(
-                    gate=args.gate, acked_rounds_to=acked_rounds_to, limit=limit,
                     wave_reset=wave_reset, wave_budget=wave_budget, resumed=resumed,
                 ):
                     print(note, file=sys.stderr)
 
-            # 판정은 승인 반영 **뒤**의 값으로 한다. wave 예산은 게이트 상한과 독립 축이라
-            # 한쪽 승인이 다른 쪽을 열지 않는다 — 게이트 축을 먼저 보는 이유는 그쪽이 더
-            # 좁은(그 게이트가 수렴했다는) 진단이라서다.
+            # (1) 수렴-형상 — 장부 must_fix 추이로 "닫히고 있나"를 본다. `--confirm-fix` 는 이 축의
+            #     유일한 예외(게이트당 1회)이고, 그 소비는 통과 직전에 기록한다.
+            convergence = _convergence_refusal(entry, rounds_max)
+            if confirm_fix and entry["confirm_fix"] >= 1:
+                if approved or wave_repaired:
+                    _save_round_ledger(ledger)
+                announce(resumed=False)
+                print(_CONFIRM_FIX_SPENT_GUIDANCE.format(
+                    gate=args.gate, used=entry["confirm_fix"],
+                    ledger=_round_ledger_path()), file=sys.stderr)
+                return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
+            if convergence is not None and not confirm_fix:
+                if approved or wave_repaired:
+                    _save_round_ledger(ledger)
+                announce(resumed=False)
+                series = _recorded_must_fix_series(entry)
+                print(_CONVERGENCE_GUIDANCE.format(
+                    gate=args.gate, reason=_CONVERGENCE_REASONS[convergence],
+                    rounds=len(series), limit=rounds_max,
+                    series=_format_must_fix_series(series),
+                    knob=REVIEW_ROUNDS_MAX_KEY, default=DEFAULT_REVIEW_ROUNDS_MAX,
+                    ledger=_round_ledger_path()), file=sys.stderr)
+                return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
+
+            # (2) 판정/미완 라운드 상한 (전송 횟수 축). wave 예산은 이와 독립 축이라 한쪽 승인이
+            #     다른 쪽을 열지 않는다.
             count, acked = entry["count"], entry["acked_through"]
             unacked, verdicts, incomplete = _unacked_round_counts(entry)
             if verdicts >= limit or incomplete >= incomplete_limit:
@@ -2198,16 +2404,27 @@ def _reserve_round_budget(args, conf: dict[str, str]) -> RoundBudget:
                     started=wave["started"] or "미기록",
                     ledger=_round_ledger_path()), file=sys.stderr)
                 return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
-            announce(resumed=True)                  # 두 축을 모두 통과한 뒤에만 "재개"
+            announce(resumed=True)                  # 세 축을 모두 통과한 뒤에만 "재개"
+            if confirm_fix:
+                # 확인 전용 라운드 소비 — 통과가 확정된 뒤에 기록한다(거부된 실행은 예외를
+                # 쓰지 않는다). 수렴 축이 막지 않는 상태에서 써도 같은 규칙으로 1회를 쓴다:
+                # "플래그를 쓴 실행 = 예외를 쓴 실행"이라 회계가 조건 분기를 갖지 않는다.
+                _spend_confirm_fix(entry)
+                print(
+                    f"확인 전용 라운드(--confirm-fix) 사용: 게이트 {args.gate} — "
+                    f"게이트당 1회 (사용 {entry['confirm_fix']}회).",
+                    file=sys.stderr,
+                )
             round_id = uuid.uuid4().hex
             # 예약 sequence 는 **여기서** 잡는다 — 마감 시점에 레코드를 되찾아 읽으면 그 사이
-            # 승인(`--ack-rounds`)이 집계 창을 비운 실행만 순번을 잃는다.
+            # 집계 창이 비워진 실행만 순번을 잃는다.
             sequence = _reserve_round(entry, round_id)["sequence"]  # 호출 전 라운드 예약
             _spend_wave_round(wave)                   # 같은 전송을 wave 예산에서도 차감
             _save_round_ledger(ledger)
             return RoundBudget(
                 gate=args.gate, round_id=round_id, sequence=sequence,
                 wave_id=wave["id"],                   # 환불은 이 세대에만 유효
+                confirm_fix_spent=confirm_fix,        # 전송 0 이면 quota 도 되돌린다
             )
     except OSError as exc:
         # 락 획득/장부 write 실패 — 상한을 확인하지 못한 채 전송하면 과금 게이트가 무력화되므로
@@ -2223,19 +2440,24 @@ def _reserve_round_budget(args, conf: dict[str, str]) -> RoundBudget:
 
 
 def _refund_reserved_round(ledger: dict, reservation: RoundBudget) -> bool:
-    """예약 하나를 두 예산 축에서 **같은 조건으로** 되돌린다 (전송이 확실히 없던 실행).
+    """예약 하나를 **세 예산 축에서 같은 조건으로** 되돌린다 (전송이 확실히 없던 실행).
 
     호출부가 이미 `_round_ledger_lock()` 안에서 로드한 장부를 그 자리에서 고치고 저장은 호출부가
     한다 — 마감 경로는 같은 임계 구역에서 산출 기록까지 함께 쓰기 때문이다. 환불 조건이 한 군데라
     "격리 실패로 되돌린 예약"과 "스폰 실패로 되돌린 예약"이 서로 다른 규칙을 갖지 않는다.
 
+    세 축은 라운드 count · wave 예산 · **확인 전용 라운드 quota** 다. quota 를 빼놓으면 스폰 실패
+    한 번으로 게이트당 1회뿐인 예외가 소멸해, 전송도 과금도 없던 실행이 유일한 처방을 먹는다
+    ("전송 0·과금 0 실행은 예산을 먹지 않는다" 불변식의 세 번째 축).
+
     wave 는 **예약 시점 세대**만 깎는다: 그 사이 `--ack-wave` 로 새 wave 가 열렸으면 이 실패는 그
-    예산과 무관하다(깎으면 승인 1회로 예산이 늘어난다). 라운드 count 를 되돌리지 못했으면(동시
-    `--ack-rounds` 로 레코드가 접힌 경우) wave 도 건드리지 않는다 — 한쪽만 깎으면 두 축의 소비가
-    갈린다."""
+    예산과 무관하다(깎으면 승인 1회로 예산이 늘어난다). 라운드 count 를 되돌리지 못했으면(레코드가
+    그 사이 접힌 경우) 나머지 축도 건드리지 않는다 — 한쪽만 깎으면 축들의 소비가 갈린다."""
     entry = _gate_entry(ledger, reservation.gate)
     if not _refund_round(entry, reservation.round_id):
         return False
+    if reservation.confirm_fix_spent:
+        _refund_confirm_fix(entry)
     if not _refund_wave_round(_wave_state(ledger), reservation.wave_id):
         print(
             "경고: 예약 시점 wave 가 이미 리셋돼 wave 예산은 환불하지 않았습니다 "
@@ -2605,15 +2827,99 @@ def _slot_selection_bases(base: str) -> tuple[str, ...]:
 def _stage_diff_runs(
     root: Path, stage_base: str, paths: Sequence[str],
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+    *, extra_args: Sequence[str] = (),
 ) -> list[subprocess.CompletedProcess]:
-    """한 diff 단계를 이루는 git 실행 결과 — 'HEAD' 단계만 스테이징/언스테이징 2회다."""
+    """한 diff 단계를 이루는 git 실행 결과 — 'HEAD' 단계만 스테이징/언스테이징 2회다.
+
+    `extra_args` 는 같은 폭을 **다른 형식**으로 뽑는 데 쓴다(`--numstat`). 폭 자체(단계 표)는
+    한 곳이 정하고 형식만 갈리게 해, 리뷰가 본 diff 와 서킷브레이커가 잰 diff 가 어긋나지 않게 한다.
+    """
     _run = run_fn or subprocess.run
     arg_sets = (("--cached",), ()) if stage_base == "HEAD" else ((stage_base,),)
     return [
-        _run(["git", "-C", str(root), "diff", *args, "--", *paths],
+        _run(["git", "-C", str(root), "diff", *extra_args, *args, "--", *paths],
              capture_output=True, text=True, encoding="utf-8", errors="replace")
         for args in arg_sets
     ]
+
+
+def _sum_numstat(text: str) -> int:
+    """`git diff --numstat` 출력의 추가+삭제 합계 (바이너리 `-`/깨진 줄은 제외)."""
+    total = 0
+    for line in text.splitlines():
+        fields = line.split("\t")
+        if len(fields) < 3:
+            continue
+        for value in fields[:2]:
+            if value.isdigit():
+                total += int(value)
+    return total
+
+
+def diff_line_total(
+    root: Path, base: str, paths: Sequence[str],
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+) -> int:
+    """검토 폭의 diff 총량(추가+삭제) — `extract_diff` 와 **같은 단계 표**를 쓴다.
+
+    폭 판정(어느 base 단계가 이번 diff 인가)은 새로 만들지 않고 `_diff_bases` 를 그대로 재사용하고,
+    형식만 `--numstat` 이다. 실패한 git 실행은 '그 단계에는 변경 없음'으로 본다(추출 경로의 폴백
+    규칙과 같다 — 측정 실패가 게이트를 벽돌로 만들지 않는다)."""
+    for stage_base in _diff_bases(base):
+        text = "".join(
+            result.stdout
+            for result in _stage_diff_runs(
+                root, stage_base, paths, run_fn, extra_args=("--numstat",),
+            )
+            if result.returncode == 0
+        )
+        if text.strip():
+            return _sum_numstat(text)
+    return 0
+
+
+def _diff_cap_refusal(
+    args, conf: dict[str, str], *, root: Path, paths: Sequence[str],
+    pm_home: Path | None = None,
+) -> str | None:
+    """이번 실행의 diff 서킷브레이커 판정 (통과·가드 off 면 None).
+
+    상한을 고르는 티켓은 `--ticket`(검토 범위를 정한 티켓) 우선, 없으면 `--gate`(게이트 표식)다.
+    측정 폭은 **이번 실행이 실제로 리뷰하는 범위**(해소된 검토 경로)라 리뷰가 본 것과 잰 것이
+    같다. 측정 실패(git 부재·비-repo)는 0 으로 접혀 가드가 조용히 off 된다 — 이 축의 실패로
+    리뷰 채널을 막지 않는다(hard 거부는 예산 축이 소유)."""
+    ticket = args.ticket or args.gate
+    if not ticket:
+        return None
+    estimate = parse_ticket_estimate(ticket, pm_home=pm_home)
+    cap = _diff_cap(conf, estimate)
+    if cap is None:
+        return None
+    try:
+        total = diff_line_total(root, args.base, list(paths))
+    except OSError:
+        return None
+    return diff_cap_block(
+        total, cap, ticket=ticket, estimate=estimate, scope=list(paths),
+    )
+
+
+def diff_cap_block(
+    total: int, cap: int | None, *,
+    ticket: str, estimate: str | None, scope: Sequence[str],
+) -> str | None:
+    """diff 총량이 estimate 상한을 넘었으면 차단 안내를, 아니면 None 을 돌려준다.
+
+    두 진입 표면(추가 리뷰 · 티켓 완료)이 같은 문구를 쓰도록 판정과 문구를 한 곳에 둔다."""
+    if cap is None or total <= cap:
+        return None
+    key = f"{DIFF_CAP_KEY_PREFIX}{(estimate or '').strip().lower()}"
+    return _DIFF_CAP_GUIDANCE.format(
+        ticket=ticket, estimate=estimate or "미지정", total=total, cap=cap,
+        scope=", ".join(scope) or "(없음)", key=key,
+        small=DEFAULT_DIFF_CAPS["small"], medium=DEFAULT_DIFF_CAPS["medium"],
+        large=DEFAULT_DIFF_CAPS["large"],
+    )
 
 
 def _stage_diff_text(
@@ -2669,10 +2975,8 @@ def extract_diff(
 # ── ticket touches 파싱 ───────────────────────────────────────────────────
 
 
-def parse_ticket_touches(ticket_id: str, *, pm_home: Path | None = None) -> list[str]:
-    """board ticket frontmatter 의 touches 필드를 파싱해 경로 목록을 반환한다.
-
-    YAML frontmatter 직접 파싱 (board.py 를 import 하지 않음). 못 찾으면 fail-loud.
+def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
+    """board 에서 ticket 파일 하나를 찾는다 (못 찾으면 fail-loud).
 
     ticket 디렉토리는 `_tickets_dir()`로 *호출 시점* 해소한다 —
     board/ 분리 후 wiki/ legacy 위치(stale·ticket 미발견)를 안 보게.
@@ -2690,13 +2994,59 @@ def parse_ticket_touches(ticket_id: str, *, pm_home: Path | None = None) -> list
         if not dir_path.exists():
             continue
         for ticket_file in dir_path.glob(f"{ticket_id}-*.md"):
-            return _parse_touches_from_file(ticket_file)
+            return ticket_file
         exact = dir_path / f"{ticket_id}.md"
         if exact.exists():
-            return _parse_touches_from_file(exact)
+            return exact
     raise AnchorResolutionError(
         f"ticket {ticket_id} 을 해소된 board에서 찾지 못했습니다: {tickets_dir}"
     )
+
+
+def parse_ticket_touches(ticket_id: str, *, pm_home: Path | None = None) -> list[str]:
+    """board ticket frontmatter 의 touches 필드를 파싱해 경로 목록을 반환한다.
+
+    YAML frontmatter 직접 파싱 (board.py 를 import 하지 않음). 못 찾으면 fail-loud.
+    """
+    return _parse_touches_from_file(_find_ticket_file(ticket_id, pm_home=pm_home))
+
+
+def parse_ticket_estimate(ticket_id: str, *, pm_home: Path | None = None) -> str | None:
+    """board ticket frontmatter 의 `estimate` 값 (ticket/필드 부재면 None).
+
+    diff 서킷브레이커의 상한 선택 입력이다. 못 찾으면 **가드 off**(None)다 — `--gate` 는 자유
+    문자열이 실사용이라(장부 실측 `wave4-b1`) 티켓이 아닌 이름으로 상한을 지어내면 안 된다."""
+    try:
+        path = _find_ticket_file(ticket_id, pm_home=pm_home)
+    except AnchorResolutionError:
+        return None
+    try:
+        return _parse_estimate_from_file(path)
+    except OSError:
+        return None
+
+
+def _frontmatter_text(path: Path) -> str | None:
+    """ticket 파일의 frontmatter 원문 (없으면 None) — touches/estimate 파서 공용 입력."""
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return None
+    after_open = text[4:]
+    end = after_open.find("\n---\n")
+    return None if end == -1 else after_open[:end]
+
+
+def _parse_estimate_from_file(path: Path) -> str | None:
+    """ticket 파일에서 frontmatter `estimate` 스칼라를 추출한다 (없으면 None)."""
+    fm_text = _frontmatter_text(path)
+    if fm_text is None:
+        return None
+    for line in fm_text.splitlines():
+        match = re.match(r"^estimate\s*:\s*(.*)$", line)
+        if match:
+            value = match.group(1).strip().strip("\"'")
+            return value or None
+    return None
 
 
 def _parse_touches_from_file(path: Path) -> list[str]:
@@ -2756,9 +3106,15 @@ def build_prompt(
     dod: str | None = None,
     adr_refs: list[str] | None = None,
     gate: str | None = None,
+    confirm_fix: bool = False,
 ) -> str:
-    """맥락 헤더 + 출력 형식 + diff 를 결합해 표준 리뷰 프롬프트를 생성한다."""
+    """맥락 헤더 + 출력 형식 + diff 를 결합해 표준 리뷰 프롬프트를 생성한다.
+
+    `confirm_fix` 면 확인 전용 라운드 헌장을 앞에 얹는다 — 이 라운드는 라운드의 연장이 아니라
+    직전 지적의 해소 확인이고, 새로 발견한 것은 다음 라운드 거리가 아니라 **재설계 신호**다."""
     parts: list[str] = [_load_review_context().rstrip() + "\n\n", _OUTPUT_FORMAT_BLOCK]
+    if confirm_fix:
+        parts.append(_CONFIRM_FIX_CHARTER)
     if adr_refs:
         parts.append(f"관련 ADR: {', '.join(adr_refs)}\n\n")
     if gate:
@@ -4628,8 +4984,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
                         help="게이트 ticket 표식 (로깅 + 라운드 상한 장부 키)")
     parser.add_argument("--ack-rounds", action="store_true",
-                        help="라운드 상한 재개 — 현 count 를 acked_through 로 기록 후 +limit "
-                             "재개 (--gate 필수 · 같은 범위의 정상 수렴이면 PM 이 자율 판단)")
+                        help="(폐지됨) 라운드 연장 승인 — 호출하면 아무것도 하지 않고 거부한다. "
+                             "출구는 재설계·티켓 분할이고, 해소 확인만 필요하면 --confirm-fix.")
+    parser.add_argument("--confirm-fix", action="store_true",
+                        help="확인 전용 라운드 — 상한 밖에서 게이트당 1회만 허용(--gate 필수). "
+                             "직전 must-fix 해소만 확인하고 신규 발견은 '재설계 신호'로 보고하는 "
+                             "헌장을 프롬프트에 싣는다 (장부 기록·2회째는 거부)")
     parser.add_argument("--ack-wave", action="store_true",
                         help="wave 예산 재개 — wave spent 를 0 으로 리셋 후 재개 "
                              "(--gate 필수 · 같은 범위의 정상 수렴이면 PM 이 자율 판단)")
@@ -5012,10 +5372,15 @@ def _main(argv: list[str] | None = None) -> int:
     if reserved_gate_error is not None:
         print(reserved_gate_error, file=sys.stderr)
         return 1
+    # 폐지된 연장 승인은 **아무 표면에서도** 통하지 않는다 — 조회면 무시 경고로 흡수하면 "쓰긴
+    # 썼는데 안 먹었다"가 남아 규율이 흐려진다. 부작용 0 지점(장부 접근·전송 전)에서 거부한다.
+    if args.ack_rounds:
+        print(_ACK_ROUNDS_REMOVED_GUIDANCE, file=sys.stderr)
+        return 1
     if args.rounds_report:
         ignored = ", ".join(
             flag for flag, given in (
-                ("--ack-rounds", args.ack_rounds), ("--ack-wave", args.ack_wave),
+                ("--confirm-fix", args.confirm_fix), ("--ack-wave", args.ack_wave),
                 ("--dry-run", args.dry_run), ("--force", args.force),
                 (CODEX_EGRESS_FLAG, args.codex_egress_escalated),
             ) if given
@@ -5315,7 +5680,9 @@ def _main(argv: list[str] | None = None) -> int:
         print(_empty_diff_guidance(paths, root=diff_root), file=sys.stderr)
         return 1
 
-    prompt = build_prompt(diff=diff, adr_refs=args.adr, gate=args.gate)
+    prompt = build_prompt(
+        diff=diff, adr_refs=args.adr, gate=args.gate, confirm_fix=args.confirm_fix,
+    )
 
     if args.dry_run:
         # 미리보기는 **부작용 0**이다(외부 송신·raw 예약·라운드 예약·격리 거울·`--output-dir`
@@ -5380,6 +5747,19 @@ def _main(argv: list[str] | None = None) -> int:
         ),
         file=sys.stderr,
     )
+
+    # ── diff 서킷브레이커 (전송 경로 진입 검사) ──────────
+    # 스코프가 estimate 상한을 넘긴 티켓은 리뷰 라운드로 닫히지 않는다 — 리뷰어를 부르기 전에
+    # 멈추고 분할·재설계로 보낸다. 자리는 **전송이 확정된 구간**이라 미리보기(dry-run)·비활성
+    # no-op·egress 차단은 이 검사를 지나지 않는다: 그 실행들은 전송도 과금도 없어 이 게이트가
+    # 막으려는 비용이 애초에 없고, 미리보기를 막으면 분할 판단에 필요한 diff 확인 채널까지 닫힌다.
+    # estimate 를 못 읽으면(자유 문자열 게이트·티켓 부재) 가드는 조용히 off 다.
+    cap_block = _diff_cap_refusal(
+        args, conf, root=diff_root, paths=paths, pm_home=pm_home,
+    )
+    if cap_block is not None:
+        print(cap_block, file=sys.stderr)
+        return 1
 
     # ── 라운드 상한·wave 예산 게이트: 호출 전 예약 ──────────
     # 격리 컨테이너 생성보다 **먼저**다 — 이미 상한에 닿은 호출은 스폰이 없어도 격리를 먼저 만들면

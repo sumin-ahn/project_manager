@@ -2123,7 +2123,7 @@ def test_parameter_loaders_are_measured_and_hook_exemption_is_code_owned():
         ("delegate_scope.py", "ticket_touches"),
         ("ticket_finish.py", "count_board_done"),
         ("ticket_finish.py", "get_ticket_title"),
-        ("ticket_finish.py", "get_ticket_touches"),
+        ("ticket_finish.py", "_ticket_frontmatter"),
         ("ticket_finish.py", "_load_tool_module"),
     } <= measured
     assert ("board.py", "_run_lint_hooks") in measured

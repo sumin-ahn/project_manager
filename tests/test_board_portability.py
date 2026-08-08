@@ -237,7 +237,11 @@ def test_hook_body_uses_detected_interpreter(board, monkeypatch, tmp_path):
 
 
 def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
-    """hook.write_text 에 encoding='utf-8' 가 명시됐는지 직접 검증 (주석에 한글 포함)."""
+    """훅 write_text 에 encoding='utf-8' 가 명시됐는지 직접 검증 (주석에 한글 포함).
+
+    실제 쓰기는 **원자 교체**라 `pre-push.<pid>.tmp` 에 먼저 떨어진다(실행 중인 훅을 같은 inode
+    에 truncate-rewrite 하지 않기 위해·T-0593) — spy 도 그 tmp 를 함께 본다.
+    """
     hooks = tmp_path / "hooks"
     monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
     # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
@@ -248,13 +252,14 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
     orig = Path.write_text
 
     def spy(self, data, *args, **kwargs):
-        if self.name == "pre-push":
+        if self.name.startswith("pre-push"):
             captured["encoding"] = kwargs.get("encoding")
         return orig(self, data, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", spy)
     board.install_pre_push_hook()
     assert captured.get("encoding") == "utf-8"
+    assert (hooks / "pre-push").is_file()      # 교체가 실제로 최종 경로에 착지했다
 
 
 # ── C8: cmd_init 가 local.conf 에 ctx_window_tokens 핸드오프 예산 surface (T-0128) ──

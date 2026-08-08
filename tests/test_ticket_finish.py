@@ -1575,3 +1575,106 @@ def test_coordinate_loader_old_sibling_reports_explicit_skew(
     monkeypatch.setattr(tf, "TOOLS_DIR", tmp_path)
     with pytest.raises(RuntimeError, match="버전 불일치"):
         tf._load_repo_coordinates()
+
+
+# ── diff 서킷브레이커 진입 검사 (T-0593) ─────────────────────────────────────
+#
+# 리뷰 라운드가 수렴하지 않는 두 번째 원인은 구현 스코프 팽창이다(실측 5,018줄 단일 티켓).
+# estimate 를 넘긴 스코프는 회귀가 green 이어도 완료 대상이 아니라 분할 대상이라, 어떤 부작용
+# (회귀 실행·log append·board complete·git stage)도 나기 전에 멈춘다. 상한 표와 측정식은
+# external_review 가 소유하고 여기서는 판정만 소비한다(사본 0).
+
+
+def _boom_pytest():
+    raise AssertionError("차단된 완료는 회귀를 돌리지 않는다")
+
+
+def test_diff_cap_block_stops_before_any_side_effect(tf, tmp_path, capsys):
+    """상한 초과 → rc 1 · 회귀/log/board/git 어느 것도 건드리지 않는다 (진입 검사·DoD)."""
+    log_file = tmp_path / "log.md"
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=_boom_pytest,
+        run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
+        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "t",
+        affected_domain_fn=lambda tid: [],
+        diff_cap_block_fn=lambda tid: f"diff 서킷브레이커 차단 — {tid} · 분할하세요",
+        log_file=log_file,
+    )
+    assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert not log_file.exists()
+    err = capsys.readouterr().err
+    assert "[중단]" in err and "서킷브레이커" in err and "T-1234" in err
+
+
+def test_diff_cap_pass_completes_normally(tf, tmp_path, capsys):
+    """상한 이내(None)면 종전 흐름 그대로 완료된다 (정상 경로 무영향·DoD)."""
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=_green_pytest(100),
+        run_board_fn=lambda args: (0, "board ok"),
+        run_git_fn=lambda args: (0, ""),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "t",
+        affected_domain_fn=lambda tid: [],
+        diff_cap_block_fn=lambda tid: None,
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher.run("T-1234", section=None, dry_run=False) == 0
+    assert "[완료] T-1234 부기 완료." in capsys.readouterr().out
+
+
+def test_default_diff_cap_seam_consumes_the_external_review_policy(
+        tf, tmp_path, monkeypatch):
+    """기본 seam 은 external_review 의 상한 표·측정식을 그대로 쓴다 (사본 0·배선 고정)."""
+    external = tf._load_external_review()
+    assert external is not None
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/pay.py"])
+    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
+    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
+    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
+    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
+    block = finisher._default_diff_cap_block("T-1234")
+    assert block is not None and "small" in block and "301줄" in block and "300줄" in block
+
+    # 상한 이내면 통과, estimate 미선언이면 가드 off (엔진이 상한을 지어내지 않는다).
+    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 300)
+    assert finisher._default_diff_cap_block("T-1234") is None
+    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: None)
+    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 99999)
+    assert finisher._default_diff_cap_block("T-1234") is None
+
+
+def test_default_diff_cap_seam_is_off_without_touches(tf, tmp_path, monkeypatch):
+    """touches 가 없으면 측정 범위가 없다 — 가드 off(완료를 막지 않는다)."""
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: [])
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
+    assert finisher._default_diff_cap_block("T-1234") is None
+
+
+def test_default_diff_cap_seam_is_off_when_external_review_is_absent(
+        tf, tmp_path, monkeypatch):
+    """external_review 사본이 없으면 가드 off — 부분 설치가 완료를 벽돌로 만들지 않는다."""
+    monkeypatch.setattr(tf, "_load_external_review", lambda: None)
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
+    assert finisher._default_diff_cap_block("T-1234") is None
+
+
+def test_ticket_estimate_reads_frontmatter(tf, tmp_path):
+    """`estimate` 는 board frontmatter 에서 읽고, 부재/비-문자열은 None 이다."""
+    board_py = tmp_path / "estimate_board.py"
+    board_py.write_text(
+        f"ENGINE_REV = {_real_engine_rev()!r}\n"   # T-0397 rev 스탬프
+        "def find_ticket(ticket_id):\n"
+        "    return ('claimed', ticket_id)\n"
+        "def load_ticket(path):\n"
+        "    table = {'T-1': {'estimate': ' medium '}, 'T-2': {},\n"
+        "             'T-3': {'estimate': 7}}\n"
+        "    return (table[path], 'body')\n",
+        encoding="utf-8",
+    )
+    assert tf.get_ticket_estimate(board_py, "T-1") == "medium"
+    assert tf.get_ticket_estimate(board_py, "T-2") is None
+    assert tf.get_ticket_estimate(board_py, "T-3") is None
