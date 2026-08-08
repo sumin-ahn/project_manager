@@ -26,6 +26,10 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
                   미일치 fresh 재실행으로 primary 축을 한 번 더 쓸 수 있다(codex/claude=timeout · opencode 는
                   첫-이벤트 워치독 재시도분이 더 붙는다·_harness_timeout_budget). 호출부(스킬·CI)의
                   대기 예산은 --dry-run 이 찍는 실수치로 잡아라.
+  · 무음 대체 금지 — 채널 실행 실패(스폰 실패·비정상 rc·타임아웃·연결 실패)는 fail-loud rc 로
+                  끝난다. 같은 호출 안에서 **명시 fallback tuple 밖의** 다른 하네스/모델로 자동
+                  재시도하지 않고, 실패 안내도 다른 수신자를 권하지 않는다(권유가 곧 무기록
+                  대행의 입구다·T-0596). 재위임 = 사람의 명시 재호출 · 실패는 raw 장부에 잔존.
   · opt-in 게이트 — `delegate_enabled`(기본 OFF) 비활성 시 rc=3 + stderr 안내(false-green 차단).
   · Codex egress  — Codex sandbox 의 네트워크 차단(`CODEX_SANDBOX_NETWORK_DISABLED`) 환경에서는
                   `--codex-egress-escalated` 호출층 증명이 없는 실행을 스폰·raw 예약·과금 전에
@@ -303,6 +307,31 @@ ACK_FALLBACK_SUPPRESSION_REASON = (
     "시크릿 스캔 승인이 붙은 실행이라 폴백을 끕니다 — 폴백 수신자는 재승인이 필요합니다. "
     "`--harness/--model` 로 명시 재실행하거나 승인 없이 통과하도록 프롬프트를 정리하십시오."
 )
+
+# 위임 채널 실패 안내의 공통 꼬리 — **무음 대체 금지**(T-0596). 실행 실패는 fail-loud rc 로 끝나고,
+# 이 호출은 명시 설정(`delegate.<role>[.hard].fallback.*` 원자 tuple) 밖의 다른 하네스/모델로
+# 자동 대체하지 않는다. 실사고: 실패 안내가 "네이티브/다른 하네스로 재시도를 검토하라"였고, 그
+# 문구를 읽은 세션의 native 모델이 위임 대상 작업을 조용히 대행했다 — 장부엔 그 대행 기록이
+# 없어 사후에 누가 무엇을 했는지 재구성할 수 없었다. 그래서 안내는 **명시 재호출**만 지시한다
+# (실패 자체는 raw 장부의 그 레코드에 rc 와 함께 남는다).
+NO_SILENT_SUBSTITUTE_NOTE = (
+    "  재위임은 명시 재호출만 — 이 호출은 설정된 폴백 밖의 다른 하네스/모델로 자동 대체하지 "
+    "않습니다. 현 세션의 native 모델이 대신 수행하지 마세요(실패는 raw 장부에 남습니다: "
+    "`pm_delegate.py raw --limit 5`)."
+)
+
+
+def fail_loud(message: str, *, rc: int = 1) -> int:
+    """위임 실패 종료의 **단일 깔때기** — 사유 + 무음 대체 금지 안내를 stderr 에 내고 rc 를 돌려준다.
+
+    실패 종료 지점은 여러 곳(스폰 전 egress 차단·타임아웃·비정상 rc·정리 실패·reply 미추출·폴백
+    소진)인데, 안내를 지점마다 손으로 이어붙이면 **새 종료 경로가 조용히 안내를 빠뜨린다** — 실제로
+    스폰 전 egress 차단 경로엔 안내가 없었고, 그 경로는 raw 예약 *전*이라 장부 안전망도 없다.
+    그래서 `NO_SILENT_SUBSTITUTE_NOTE` 의 소비자는 이 함수 하나뿐이고(테스트가 그 불변을 못박는다),
+    실패 경로는 `return fail_loud(...)` 로만 끝난다.
+    """
+    print(f"{message}\n{NO_SILENT_SUBSTITUTE_NOTE}", file=sys.stderr)
+    return rc
 
 # Codex sandbox 의 egress 차단 마커와 감사 라벨. 자식 CLI(claude -p·opencode run)는 부모 Codex
 # sandbox 의 네트워크 차단을 그대로 상속하므로, 이 마커가 참인 환경의 실위임은 스폰 전에 끊는다.
@@ -4224,8 +4253,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # Codex egress 게이트 — 타겟 CLI 스폰·raw 예약·과금 문구보다 **앞**이다. 증명 없는 network-off
     # 실행은 여기서 끝난다(엔진이 sandbox 를 완화하거나 다른 모델로 무음 대체하지 않는다).
     if codex_egress_required and not args.codex_egress_escalated:
-        print(codex_egress_block_message(resolved, harness, model), file=sys.stderr)
-        return 1
+        # raw 예약 *전* 종료라 장부에도 안 남는다 — 안내가 다른 수신자를 권하면 그 대행은
+        # 아무 데도 기록되지 않는다(감사 실사고가 정확히 이 경로).
+        return fail_loud(codex_egress_block_message(resolved, harness, model))
 
     # 비용/송신 경고 + native advisory + egress provenance
     print(
@@ -4370,8 +4400,7 @@ def _execute_and_collect(
                 base_rev=base_rev,
             )
     except OSError as exc:
-        print(f"오류: 위임 실행 준비/raw 박제 실패: {exc}", file=sys.stderr)
-        return 1
+        return fail_loud(f"오류: 위임 실행 준비/raw 박제 실패: {exc}")
 
     # 실패 분류 → 선택적 loud 폴백. rc=0 reply(반려/must-fix 포함)는 분류 함수가 절대 폴백시키지
     # 않는다. 알려지지 않은 rc≠0도 기존 fail-loud로 남는다(오분류 보수 방향).
@@ -4439,11 +4468,8 @@ def _execute_and_collect(
                 base_rev=base_rev,
             )
         except OSError as exc:
-            print(
-                f"오류: 폴백 실행 준비/raw 박제 실패: {exc}. primary raw: {raw_path}",
-                file=sys.stderr,
-            )
-            return 1
+            return fail_loud(
+                f"오류: 폴백 실행 준비/raw 박제 실패: {exc}. primary raw: {raw_path}")
 
         fallback_result = fallback_attempt.result
         fallback_rc = fallback_result.get("returncode", 1)
@@ -4453,37 +4479,25 @@ def _execute_and_collect(
                 fallback_result,
                 fallback_timeout=(fallback_timeout if fallback_timeout is not None else timeout),
             )
-            print(
+            return fail_loud(
                 f"오류: 폴백 위임 turn 타임아웃({actual_timeout}) — 2차 폴백 없음. "
-                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
-                file=sys.stderr,
-            )
-            return 1
+                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}")
         if fallback_rc != 0:
-            print(
+            return fail_loud(
                 f"오류: 폴백 하네스 실패(rc={fallback_rc}) — 2차 폴백 없음. "
-                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
-                file=sys.stderr,
-            )
-            return 1
+                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}")
         try:
             fallback_reply = (
                 extract_reply(fallback_harness, fallback_stdout) if fallback_stdout else None
             )
         except (ValueError, UnicodeError, DelegateError) as exc:
-            print(
+            return fail_loud(
                 f"오류: 폴백 reply 추출 실패: {exc}. "
-                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
-                file=sys.stderr,
-            )
-            return 1
+                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}")
         if not fallback_reply or not fallback_reply.strip():
-            print(
+            return fail_loud(
                 "오류: 폴백 위임 reply 미추출(빈 출력·파싱 실패) — 2차 폴백 없음. "
-                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}",
-                file=sys.stderr,
-            )
-            return 1
+                f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}")
 
         # stdout 결과에 provenance를 넣어 PM 회수 reply 자체가 폴백 사실을 보존한다.
         print(
@@ -4506,32 +4520,26 @@ def _execute_and_collect(
         )
         return 0
 
-    # 미설정 또는 비-인프라 실패 → 현행 fail-loud(rc=1 + stderr + raw 경로).
+    # 미설정 또는 비-인프라 실패 → 현행 fail-loud(rc=1 + stderr + raw 경로). 종료는 전부
+    # `fail_loud` 단일 깔때기를 거친다 — 실패 안내가 다른 수신자를 권하면 그 권유가 곧 무기록
+    # 대행의 입구이고, 지점마다 손으로 안내를 잇는 방식은 새 경로에서 반드시 빠진다(T-0596).
     if timed_out:
         actual_timeout = _timeout_result_summary(result, fallback_timeout=timeout)
-        print(f"오류: 위임 turn 타임아웃({actual_timeout}) — 프로세스그룹 종료. raw: {raw_path}",
-              file=sys.stderr)
-        return 1
+        return fail_loud(
+            f"오류: 위임 turn 타임아웃({actual_timeout}) — 프로세스그룹 종료. raw: {raw_path}")
     if result.get(RUN_RESULT_CLEANUP_FAILED):
-        print(
+        return fail_loud(
             "오류: 위임 프로세스 정리 실패 — primary가 아직 살아 있을 수 있어 자동 폴백을 "
-            f"실행하지 않습니다(중복 실행·과금·worktree 동시 편집 차단). 사람 확인 필요. raw: {raw_path}",
-            file=sys.stderr,
-        )
-        return 1
+            f"실행하지 않습니다(중복 실행·과금·worktree 동시 편집 차단). 사람 확인 필요. raw: {raw_path}")
     if rc != 0:
-        print(f"오류: 위임 하네스 실패(rc={rc}). raw: {raw_path}\n"
-              "  네이티브/다른 하네스로 재시도를 검토하세요.", file=sys.stderr)
-        return 1
+        return fail_loud(f"오류: 위임 하네스 실패(rc={rc}). raw: {raw_path}")
 
     try:
         reply = extract_reply(harness, stdout) if stdout else None
     except (ValueError, UnicodeError, DelegateError) as exc:
-        print(f"오류: reply 추출 실패: {exc}. raw: {raw_path}", file=sys.stderr)
-        return 1
+        return fail_loud(f"오류: reply 추출 실패: {exc}. raw: {raw_path}")
     if not reply or not reply.strip():
-        print(f"오류: 위임 reply 미추출(빈 출력·파싱 실패). raw: {raw_path}", file=sys.stderr)
-        return 1
+        return fail_loud(f"오류: 위임 reply 미추출(빈 출력·파싱 실패). raw: {raw_path}")
 
     if secret_scan_ack_digest is not None:
         print(

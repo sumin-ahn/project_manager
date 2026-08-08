@@ -89,6 +89,19 @@ def _raw_unannotated_slash_entries(path: Path) -> list[tuple[int, str]]:
         issues.append((text.count("\n", 0, match.start()) + 1, match.group(0)))
     return issues
 
+def _check_off_dod(dest: Path, tid: str) -> Path:
+    """채택자 트리의 claimed 티켓 DoD 를 전항 체크(`- [ ]` → `- [x]`)하고 그 경로를 돌려준다.
+
+    complete 는 DoD 부기 게이트(T-0596)를 통과해야 하고, 출하 `_template.md` 의 DoD 4항은 미체크로
+    시작한다 — 채택자 PM 이 마감 전 손으로 하는 일을 lifecycle 테스트가 그대로 재현한다.
+    """
+    claimed = dest / ".project_manager" / "wiki" / "tickets" / "claimed"
+    (path,) = list(claimed.glob(f"{tid}-*.md"))
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("- [ ] ", "- [x] "), encoding="utf-8")
+    return path
+
+
 def _board_status_dirs() -> tuple[str, ...]:
     """엔진 `board.STATUS_DIRS`(open/claimed/blocked/done) 파생 — lifecycle 이 요구하는 ticket 상태
     디렉토리를 손-열거 4종 하드코딩하지 않는다(이 티켓 원칙). `blocked` 만 누락된 반쪽 T-0433 수정도
@@ -257,6 +270,19 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, f"{harness} `board.py claim {tid}` 실패: {claim.stderr}"
 
+    # DoD 부기 게이트(T-0596) — 출하 template 의 미체크 DoD 로는 complete 가 막혀야 한다.
+    # 채택자 형상에서 게이트가 실제로 무는지 여기서 확인한다(엔진만 고치고 template 전파를
+    # 빠뜨리면 이 단언이 red — 반쪽 출하 방지).
+    blocked = _board(
+        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested"
+    )
+    assert blocked.returncode != 0, (
+        f"{harness}: 미체크 DoD 인데 complete 가 통과함 — DoD 게이트가 채택자 사본에 없다.\n"
+        f"--- stdout ---\n{blocked.stdout}")
+    assert "DoD 미체크" in blocked.stderr, (
+        f"{harness}: 차단 사유가 DoD 로 안 나옴:\n{blocked.stderr}")
+
+    _check_off_dod(dest, tid)
     done = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested"
     )
@@ -344,6 +370,7 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
     assert unblock.returncode == 0, unblock.stderr
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, claim.stderr
+    _check_off_dod(dest, tid)   # DoD 부기 게이트(T-0596) — 미체크면 complete 가 막힌다.
     done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested")
     assert done.returncode == 0, done.stderr
     assert all((tickets / status).is_dir() for status in _TICKET_STATUS_DIRS)

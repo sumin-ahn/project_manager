@@ -19,8 +19,9 @@ slot/solo 호환 경로:
   5. 인계 프롬프트 stdout 출력 — pm_playbook.md §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
      의 트리거(역할 framing + /pm-bootstrap)를 채워 stdout. 인계 본문은 log entry 가 이월 —
      부트스트랩이 자동 dump 하므로 프롬프트에 손-채움 안 함.
-  6. git status dump — git status -s 출력 + 변경 파일 카운트.
-  7. 잔여 PM 수동 작업 출력 — checklist.
+  6. git status dump — git status -s 출력 + 변경 파일 카운트 + 미push commit 수(ahead) 경고.
+  6b. 미마감 raw sweep — 위임/외부리뷰 raw 장부의 미마감 레코드 표면화(비차단 경고).
+  7. 잔여 PM 수동 작업 출력 — checklist(커밋 + push 단계 포함).
 
 결정:
   - subprocess DI: pytest/git subprocess 는 주입 가능한 함수로 감싼다.
@@ -42,6 +43,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -402,6 +404,59 @@ def _load_board():
             raise  # board 사본 skew 는 fail-loud(삼키지 않는다).
         return None
     return mod
+
+
+def _load_pm_relay():
+    """pm_relay 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
+
+    _load_worktree_pool 과 동형 — REPO/tools 스크립트-위치 앵커. 미마감 raw sweep([6b/7])이
+    raw 장부 조회 primitive(`unfinished_raw_records`)를 재사용하려고만 쓴다 — 비차단 surface 라
+    부재/실패는 sweep 만 건너뛴다(핸드오프 불변).
+    """
+    relay_path = TOOLS_DIR / "pm_relay.py"
+    if not relay_path.exists():
+        return None
+    try:
+        mod = _load_module_from_path(
+            relay_path, "pm_relay.py", verifier=_verify_engine_rev,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 비차단 sweep 만 끈다.
+        if _is_engine_rev_skew(exc):
+            raise  # pm_relay 사본 skew 는 fail-loud(삼키지 않는다).
+        return None
+    return mod
+
+
+# ── 미마감 raw sweep ([6b/7] · 비차단 경고 — T-0596) ──────────────────────────
+#
+# 위임/외부리뷰는 외부 프로세스 실행 **전**에 raw 장부에 미마감 레코드를 예약하고 종료 시 같은
+# 레코드를 마감한다 — 그래서 미마감으로 남은 레코드는 "죽은 실행"의 흔적이다. 세션이 그걸 안 보면
+# 조용히 누적하고(실측 17건), 나중에 장부는 조회해도 의미를 못 준다. 핸드오프가 세션 끝에서
+# 건수 + 최근 몇 건을 표면화한다. **차단하지 않는다** — 잔존 자체는 정상 종료 실패의 결과이지
+# 핸드오프의 전제조건이 아니다(차단 상향은 운용 후 판단).
+UNFINISHED_RAW_DISPLAY_LIMIT = 5
+
+
+def _ahead_commit_count(
+    runner: Callable[[list[str]], tuple[int, str]],
+) -> tuple[int, str] | None:
+    """PM 홈의 미push commit 수 — (count, baseline ref). 해소 불가면 None (fail-soft).
+
+    `git rev-list --count <baseline>..HEAD` 를 baseline 후보(`_PENDING_PUSH_BASELINE_REFS` —
+    출하 변경 분류와 같은 순서: @{upstream} 우선·origin/main 폴백) 순으로 시도해 첫 성공을 쓴다.
+    detached/upstream 미설정/원격 부재/비수치 출력은 전부 None — 판정을 지어내지 않는다.
+    """
+    for ref in _PENDING_PUSH_BASELINE_REFS:
+        try:
+            rc, out = runner(["rev-list", "--count", f"{ref}..HEAD"])
+        except Exception:  # noqa: BLE001 — fail-soft: git 예외는 rc 실패와 같이 다음 후보로.
+            continue       # 첫 후보의 예외로 폴백 후보를 건너뛰면 upstream 미설정이 곧 미해소가 된다.
+        if rc != 0:
+            continue
+        text = out.strip().splitlines()[0].strip() if out.strip() else ""
+        if text.isdigit():
+            return int(text), ref
+    return None
 
 
 def validate_task_name_engine(task: str) -> None:
@@ -2335,9 +2390,13 @@ class PmHandoff:
         dashboard_file: Path | None = None,
         venv_python: str | Path = _default_python(),
         worktree_pool=None,
+        raw_ledger_file: Path | None = None,
     ) -> None:
         self._log_file = log_file
         self._pm_playbook_file = pm_playbook_file
+        # 미마감 raw sweep([6b/7]) 장부 seam — 명시(hermetic 테스트)면 그 경로, None(프로덕션)이면
+        # sweep 시점에 pm_relay 의 기본 위치(`.project_manager/.local/raw_outputs.json`)로 해소한다.
+        self._raw_ledger_file = raw_ledger_file
         # slot 대시보드 seam — 자기 섹션 overwrite 대상. 명시(hermetic 테스트)면
         # 그 경로, None(프로덕션)이면 write 시 `_dashboard_file()`(호출 시점 REPO 추종)로 해소한다.
         self._dashboard_file = dashboard_file
@@ -2825,6 +2884,76 @@ class PmHandoff:
             )
             return
         print("  출하 변경 없음 (미push diff 가 비-출하·또는 push 없음) — release 라이브 불요.")
+
+    # ── 미마감 raw sweep step ────────────────
+
+    def _resolve_raw_ledger(self, relay=None) -> Path | None:
+        """조회할 raw 장부 경로 — 명시 주입 우선, 없으면 pm_relay 기본 위치. 해소 실패는 None.
+
+        `relay` = 이미 로드한 pm_relay 모듈(미전달이면 여기서 로드). sweep step 은 조회에도
+        같은 모듈이 필요하므로 한 번만 로드해 넘긴다.
+        """
+        if self._raw_ledger_file is not None:
+            return self._raw_ledger_file
+        relay = relay if relay is not None else _load_pm_relay()
+        if relay is None:
+            return None
+        try:
+            _raw_dir, ledger = relay.raw_storage_paths(
+                REPO, "delegate", None, temp_dir=Path(tempfile.gettempdir()),
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 위치 해소 실패는 sweep 만 건너뛴다.
+            if _is_engine_rev_skew(exc):
+                raise  # 사본 skew 는 삼키지 않는다(`_load_pm_relay` 와 같은 규칙).
+            return None
+        return ledger
+
+    def _unfinished_raw_step(self) -> None:
+        """[6b/7] 미마감 raw 레코드를 **비차단 경고로 surface** 한다 (건수 + 최근 N건 식별자).
+
+        미마감 = 실행 전 예약된 레코드가 마감되지 않은 것 = 그 위임/리뷰가 비정상 종료했다는 뜻.
+        누적되면 장부 조회가 무력해지므로 세션 끝에서 건수를 보여주고 정리 판단을 PM 에게 남긴다.
+        **차단하지 않는다**(rc 무영향) — 장부 부재·로드 실패·조회 실패는 전부 사유 1줄 후 skip.
+
+        판정 범위(어느 장부를 봤는지)를 항상 1줄로 밝힌다 — 위임은 소유 PM 홈
+        (`pm_delegate._CONFIG_REPO_OVERRIDE`)이나 명시 `--output-dir` 기준으로 장부를 고르므로
+        이 sweep 이 안 보는 사본 장부(예: worktree 쪽)가 있을 수 있다. 표기가 없으면 "0건"이
+        "전 장부 0건"으로 읽힌다(전 장부 통합 조회는 이 표면의 범위 밖).
+        """
+        relay = _load_pm_relay()
+        if relay is None:
+            print("  pm_relay 부재/로드 실패 — sweep skip.")
+            return
+        ledger = self._resolve_raw_ledger(relay)
+        if ledger is None:
+            print("  raw 장부 위치 미해소 — sweep skip.")
+            return
+        print(f"  이 장부 기준: {ledger}")
+        if not ledger.exists():
+            print("  raw 장부 없음 — 미마감 raw 0건.")
+            return
+        try:
+            rows = relay.unfinished_raw_records(ledger)
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 손상 장부가 핸드오프를 막지 않는다.
+            if _is_engine_rev_skew(exc):
+                raise  # 조회는 deep 형제(`file_lock`)까지 들어간다 — 사본 skew 를 "조회 실패"로
+                       # 접으면 부분 복사 사실이 비차단 1줄에 묻힌다(`_load_pm_relay` 와 같은 규칙).
+            print(f"  ⚠ 미마감 raw 조회 실패 ({exc}) — sweep skip.")
+            return
+        if not rows:
+            print("  미마감 raw 없음.")
+            return
+        print(
+            f"  ⚠ 미마감 raw {len(rows)}건 — 비정상 종료 잔존. 전체 조회: "
+            "`pm_delegate.py raw --unfinished`"
+        )
+        for row in rows[:UNFINISHED_RAW_DISPLAY_LIMIT]:
+            print(
+                f"    - {row.get('started_at')} · {row.get('surface')} · "
+                f"{row.get('harness')} · role={row.get('role')} · id={row.get('id')}"
+            )
+        if len(rows) > UNFINISHED_RAW_DISPLAY_LIMIT:
+            print(f"    … 외 {len(rows) - UNFINISHED_RAW_DISPLAY_LIMIT}건")
 
     # ── 구 task state 호환 backfill (정상 생성은 bind_task 시점) ─────────────────────
 
@@ -3397,6 +3526,22 @@ class PmHandoff:
                     print(f"    {line}")
             else:
                 print("  (변경 없음)")
+        # 미push commit(ahead) — 커밋만 하고 push 를 안 한 세션이 그대로 넘어가면 다음 세션은
+        # 원격에 없는 부기를 기준으로 판단한다(실측: PM 홈 2커밋 미push). 경고 1줄로만 세운다.
+        ahead = _ahead_commit_count(self._run_git_fn)
+        if ahead is None:
+            print("  (미push commit 수 미해소 — upstream 미설정·detached·원격 부재)")
+        elif ahead[0] > 0:
+            print(
+                f"  ⚠ 미push commit {ahead[0]}개 (기준 {ahead[1]}) — 아래 [7/7] push 단계에서 "
+                "올려라(미push 부기는 다음 세션에 안 보인다)."
+            )
+        else:
+            print(f"  미push commit 없음 (기준 {ahead[1]}).")
+
+        # ── 6b. 미마감 raw sweep ───────────────────────────────────────────────
+        print("\n[6b/7] 미마감 raw sweep (비차단·경고)...")
+        self._unfinished_raw_step()
 
         # ── 7. 잔여 PM 수동 작업 출력 ──────────────────────────────────────────
         print("\n[7/7] PM 이 손으로 할 잔여 작업:")
@@ -3418,6 +3563,9 @@ class PmHandoff:
         print("  [ ] git commit — **경로를 명시**하라: "
               "`git commit -m \"<메시지>\" -- .project_manager/wiki/log/current.md "
               "<이번 세션에 고친 wiki 문서 경로들>` (Co-Authored-By: Claude 트레일러 포함)")
+        # commit 다음 단계가 빠져 있으면 부기는 로컬에만 남는다 — 위 [6/7] ahead 경고와 짝이다.
+        print("  [ ] PM 홈 push(private 자율) — commit 후 `git push`. "
+              "보호 브랜치(공개 제품 repo)는 사용자 승인 게이트라 여기서 밀지 마라.")
 
         # ── 핸드오프 완료: 보유 슬롯 git 재스냅 ────
         # 부기(log·pm_state) 완료 후 슬롯의 live git 을 lease.git 에 재기록한다 — 세션 중 브랜치/HEAD

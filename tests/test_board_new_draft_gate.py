@@ -302,12 +302,14 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path):
             if p != draft_path:
                 fm, _ = board.load_ticket(p)
                 seed_id = "-".join(p.stem.split("-")[:2])
+                # DoD 는 체크 상태로 심는다 — 이 테스트의 주제는 draft leak 이지만 아래에서
+                # 실제로 complete 까지 태우므로 DoD 부기 게이트(T-0596)를 만족해야 한다.
                 filled_body = (
                     f"# {seed_id} — 실 티켓\n\n"
                     "## 목표\n실제 목표.\n\n"
                     "## 인터페이스\n규격.\n\n"
                     "## 결정\n방향.\n\n"
-                    "## 완료 조건 (Definition of Done)\n- [ ] 산출물\n\n"
+                    "## 완료 조건 (Definition of Done)\n- [x] 산출물\n\n"
                     "## 참고\n- 참고\n\n## 메모\n"
                 )
                 board.dump_ticket(p, fm, filled_body)

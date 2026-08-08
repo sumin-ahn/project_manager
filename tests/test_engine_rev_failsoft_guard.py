@@ -883,7 +883,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 166 = 164 + T-0595 위임 원장 보강의 두 경계. 회신 구조화 관측과 must_fix 항목 추출은
     #   감사 보강이라 실패해도 위임을 죽이지 않고 필드 부재로 물러나되(회수 fail-loud 는 종전
     #   소유자 몫), 마킹된 skew 는 삼키지 않는다 — 사본이 갈린 사실이 원장 누락으로 위장되면 안 된다.
-    assert len(report.boundaries) == 166, "propagation sweep boundary ratchet changed"
+    # 169 = 166 + T-0596 핸드오프 미마감 raw sweep 의 세 경계(pm_relay 형제 로더 + 장부 위치
+    #   해소 + 미마감 조회). sweep 은 비차단 표면이라 부재·손상·조회 실패를 사유 1줄로 접지만,
+    #   조회는 deep 형제(`file_lock`)까지 들어가므로 마킹된 skew 만은 그대로 올린다 — 부분 복사
+    #   사실이 "미마감 raw 조회 실패" 한 줄에 묻히면 안 된다.
+    assert len(report.boundaries) == 169, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

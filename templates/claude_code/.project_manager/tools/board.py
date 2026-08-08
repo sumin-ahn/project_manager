@@ -6786,7 +6786,8 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
     return 0
 
 
-def _complete_gate(tid: str, args: argparse.Namespace) -> list[str]:
+def _complete_gate(tid: str, args: argparse.Namespace,
+                   body: str | None = None) -> list[str]:
     """Verify completion housekeeping before a ticket may move to done/.
 
     Returns a list of *blocking* problems (empty = gate passes). Non-blocking
@@ -6794,6 +6795,10 @@ def _complete_gate(tid: str, args: argparse.Namespace) -> list[str]:
 
     The regression check trusts the caller's `--tests-pass` assertion rather
     than re-running the (slow) suite.
+
+    `body` = 완료 대상 티켓 본문(§3 DoD 체크 입력). None 이면 DoD 검사를 건너뛴다 —
+    본문 없이 부기 축만 묻는 호출자(단위 테스트 등)를 위한 것이고, 실 complete 경로
+    (`cmd_complete`)는 항상 본문을 넘긴다.
     """
     problems: list[str] = []
     id_re = re.compile(rf"\b{re.escape(tid)}\b")
@@ -6813,6 +6818,11 @@ def _complete_gate(tid: str, args: argparse.Namespace) -> list[str]:
             "--tests-pass (or --allow-untested for a regression-irrelevant "
             "ticket)")
 
+    # 3. DoD 전항이 체크(`- [x]`)되었거나 사유와 함께 이월(`- [>] … (이월: …)`)되어야 한다.
+    #    미체크 항목이 남은 채 done 이 되면 그 항목은 보드에서 증발한다(T-0596).
+    if body is not None:
+        problems.extend(_dod_open_items(body))
+
     return problems
 
 
@@ -6827,15 +6837,18 @@ def cmd_complete(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
 
+    # 본문은 게이트 **전**에 읽는다 — §3 DoD 체크의 입력이다(이동 전 읽기라 차단 시
+    # 티켓은 claimed/ 에 그대로 남는다).
+    fm, body = load_ticket(path)
+
     # Sync gate — refuse to mark done until housekeeping is verified.
-    problems = _complete_gate(args.id, args)
+    problems = _complete_gate(args.id, args, body)
     if problems:
         print(f"cannot complete {args.id}: sync gate failed —", file=sys.stderr)
         for msg in problems:
             print(f"  ✗ {msg}", file=sys.stderr)
         return 1
 
-    fm, body = load_ticket(path)
     new_path = move_ticket(path, "done")
     fm["status"] = "done"
     fm["completed_at"] = now_utc()
@@ -9317,6 +9330,75 @@ _REQUIRED_SECTIONS: tuple[str, ...] = ("## 목표", "## 완료 조건", "## 참�
 # 소비측 파라미터 — 판정 로직은 한 함수).
 _STRICT_REQUIRED_SECTIONS: tuple[str, ...] = (
     "## 목표", "## 인터페이스", "## 결정", "## 완료 조건", "## 참고")
+
+
+# ── 완료 조건(DoD) 부기 게이트 (complete 차단 — T-0596) ────────────────────────
+#
+# DoD 항목이 미체크인 채 done 으로 넘어가면 그 항목은 **증발**한다 — 보드 어디에도 "남았다"는
+# 기록이 없어 후속 세션이 이미 끝난 일로 읽는다(실사고: 라이브 probe DoD 가 기계 표면 없이 사라짐).
+# 그래서 done 이행의 통과 조건을 두 형태로 못박는다:
+#   `- [x] <원문>`                       = 실제로 했다.
+#   `- [>] <원문> (이월: <사유·귀속>)`    = 안 했고, 사유·귀속을 남기고 이월했다.
+# 그 밖(미체크 `- [ ]`·사유 없는 `- [>]`·알 수 없는 마커)은 전부 차단이다 — 판정이 문법이라
+# 사람/에이전트의 해석 재량이 없다. 검사 범위는 `## 완료 조건` **절 안의 체크박스만**이다
+# (메모·설계 절의 체크박스는 DoD 가 아니다). 소급 검사는 없다 — 이미 done 인 티켓은 안 본다.
+_DOD_SECTION = "## 완료 조건"
+_DOD_CHECKED_MARKS = frozenset({"x", "X"})
+_DOD_DEFERRED_MARK = ">"
+# 체크박스 줄: `- [ ] …` / `* [x] …` / `+ [>] …`(들여쓰기 허용·마커 1글자).
+# 불릿 세 종(`-`·`*`·`+`)을 모두 본다 — markdown 이 셋 다 리스트로 렌더하므로 하나라도 빼면
+# 그 표기의 미체크 항목이 조용히 통과한다(fail-open 방향).
+_DOD_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[(?P<mark>.)\]\s?(?P<text>.*)$")
+# 이월 사유: 같은 줄의 `(이월: <사유·귀속>)` — 괄호 안이 비면 사유가 아니다.
+_DOD_DEFERRED_REASON_RE = re.compile(r"\(이월:\s*\S[^)]*\)")
+# 사람 표면(차단 메시지)의 두 통과 형식 — 한 곳에서 렌더한다.
+_DOD_VALUE_FORMS = "`- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)`"
+
+
+def _dod_section_text(body: str) -> str | None:
+    """`## 완료 조건` 절 본문(다음 `## ` 헤딩 직전까지) — 절이 없으면 None.
+
+    **헤딩 탐색 전에** fenced 코드블록을 먼저 제거한다(`_design_section_gaps` 가 `_strip_code`
+    를 먼저 태우는 것과 같은 규율). 펜스를 무시하면 판정이 양방향으로 틀어진다 — 코드블록 안에
+    인용된 `## 완료 조건` 이 절 시작으로 잡혀 실제 DoD 를 못 보거나, 코드블록 안 `## …` 한 줄이
+    절 끝으로 잡혀 뒤쪽 미체크 항목이 통째로 빠진다. 제거 후 남는 예시 체크박스도 함께 사라진다.
+    """
+    lines = _FENCED_CODE_RE.sub("", body).splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if line.startswith(_DOD_SECTION)), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].startswith("## ")), len(lines))
+    return "\n".join(lines[start + 1:end])
+
+
+def _dod_open_items(body: str) -> list[str]:
+    """done 을 막는 DoD 항목 사유 목록 — 전부 통과하면 빈 리스트.
+
+    `_complete_gate` 가 쓰는 단일 깔때기다. 절 부재·체크박스 0개(산문 DoD)는 빈 리스트 —
+    이 게이트는 체크박스를 *요구* 하지 않고, 있는 체크박스의 미결만 막는다(레거시 무영향).
+    """
+    section = _dod_section_text(body)
+    if section is None:
+        return []
+    problems: list[str] = []
+    for line in section.splitlines():
+        match = _DOD_CHECKBOX_RE.match(line)
+        if match is None:
+            continue
+        mark = match.group("mark")
+        text = match.group("text").strip()
+        if mark in _DOD_CHECKED_MARKS:
+            continue
+        if mark == _DOD_DEFERRED_MARK:
+            if _DOD_DEFERRED_REASON_RE.search(text):
+                continue
+            problems.append(
+                f"DoD 이월 사유 누락: {text!r} — 이월은 같은 줄에 `(이월: <사유·귀속>)` 필수")
+            continue
+        problems.append(f"DoD 미체크: {text!r} — {_DOD_VALUE_FORMS} 로 마감하라")
+    return problems
 
 
 # ── 티켓 설계 단계 (design 필드 · 설계 절 · claim 게이트 — T-0594) ──────────────

@@ -17,6 +17,7 @@ T-0041 rename 반영 — `_extract_session_section(pm_state_text)` ·
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -1971,8 +1972,12 @@ class _SnapPool:
         return "v1.3.3"
 
 
-def _hermetic_handoff(hf, tmp_path, pool):
-    """명시 pm_state/log/dashboard 주입 + mock worktree_pool 로 hermetic PmHandoff 구성."""
+def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=None):
+    """명시 pm_state/log/dashboard 주입 + mock worktree_pool 로 hermetic PmHandoff 구성.
+
+    `raw_ledger_file` 미지정이면 tmp 의 **없는** 경로를 준다 — [6b/7] 미마감 raw sweep 이
+    실 PM 홈 장부를 읽지 않게 하는 격리다(sweep 자체 검증은 명시 주입 케이스가 한다).
+    """
     pm_state = tmp_path / "pm_state.md"
     pm_state.write_text(
         _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
@@ -1981,12 +1986,13 @@ def _hermetic_handoff(hf, tmp_path, pool):
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
     return hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
-        run_git_fn=lambda args: (0, ""),
+        run_git_fn=run_git_fn or (lambda args: (0, "")),
         log_file=tmp_path / "current.md",
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
         dashboard_file=tmp_path / "dashboard.md",
         worktree_pool=pool,
+        raw_ledger_file=raw_ledger_file or (tmp_path / "absent_raw_outputs.json"),
     )
 
 
@@ -3329,3 +3335,202 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
     assert updated["work/b_1"].git["head"] == b_head2      # 변경분 live(c2)로 갱신.
     # base(arrival main)는 재스냅에서 보존(base 미전달·arrival 동형).
     assert updated["work/b_1"].git["base"]["branch"] == "main"
+
+
+# ── [6/7] 미push ahead 경고 · [6b/7] 미마감 raw sweep · [7/7] push 단계 (T-0596) ──
+#
+# 실사고 근거: 세션이 커밋만 하고 push 를 안 한 채 넘어가 다음 세션이 원격에 없는 부기를 기준으로
+# 판단했고(PM 홈 2커밋 미push), 비정상 종료한 위임/리뷰의 미마감 raw 가 아무도 안 보는 채로
+# 누적했다(실측 17건). 둘 다 **비차단 표면**이다 — 핸드오프 rc 를 바꾸지 않는다.
+
+
+class _GitStub:
+    """git seam stub — `rev-list --count` 만 케이스별로 응답하고 나머지는 (0, "")."""
+
+    def __init__(self, *, ahead: str | None = None, rc_when_absent: int = 128):
+        self.ahead = ahead                    # None = baseline 해소 실패(미push 수 미해소)
+        self.rc_when_absent = rc_when_absent
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: list[str]) -> tuple[int, str]:
+        self.calls.append(args)
+        if args[:2] == ["rev-list", "--count"]:
+            if self.ahead is None:
+                return self.rc_when_absent, "fatal: no upstream configured"
+            return 0, f"{self.ahead}\n"
+        return 0, ""
+
+
+def _raw_record(index: int, *, finished: bool) -> dict:
+    """raw 장부 레코드 1행 — 미마감은 finished_at/rc 가 없다(실행 전 예약 상태 그대로)."""
+    row = {
+        "id": f"rec{index:02d}",
+        "surface": "delegate",
+        "harness": "codex",
+        "model": "gpt-x",
+        "role": "developer",
+        "attempt": "primary",
+        "pid": 4242,
+        "started_at": f"2026-08-0{index % 8 + 1}T01:02:03.000000+00:00",
+        "raw_path": f"/tmp/raw/pm_delegate_codex_{index}.txt",
+    }
+    if finished:
+        row.update({"finished_at": "2026-08-08T01:03:03.000000+00:00", "rc": 0,
+                    "elapsed_sec": 60.0, "silence_sec": None})
+    return row
+
+
+def _write_ledger(tmp_path, *, unfinished: int = 0, finished: int = 0) -> Path:
+    ledger = tmp_path / "raw_outputs.json"
+    records = ([_raw_record(i, finished=False) for i in range(unfinished)]
+               + [_raw_record(100 + i, finished=True) for i in range(finished)])
+    ledger.write_text(
+        json.dumps({"version": 1, "records": records}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return ledger
+
+
+def _run_handoff_out(hf, tmp_path, capsys, **kwargs) -> str:
+    """hermetic 핸드오프 1회 실행 후 stdout 반환 (rc=0 단언 포함 — 표면은 비차단)."""
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), **kwargs)
+    assert _run_slot_handoff(handoff, 7) == 0, "비차단 표면이 핸드오프를 막았다"
+    return capsys.readouterr().out
+
+
+def test_handoff_warns_on_unpushed_ahead_commits(hf, tmp_path, capsys):
+    """[6/7]: ahead>0 이면 미push commit 수 경고 1줄 + push 단계 지시(비차단)."""
+    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=_GitStub(ahead="2"))
+
+    line = next(l for l in out.splitlines() if "미push commit" in l)
+    assert "⚠" in line and "2개" in line, f"ahead 경고가 건수를 안 싣는다: {line!r}"
+    assert "@{upstream}" in line, f"판정 기준 ref 가 안 보인다: {line!r}"
+    assert "[7/7]" in line, f"경고가 push 단계로 안내하지 않는다: {line!r}"
+
+
+def test_handoff_reports_clean_when_nothing_to_push(hf, tmp_path, capsys):
+    """[6/7]: ahead=0 이면 경고 대신 '미push commit 없음'(무경보를 정확히 말한다)."""
+    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=_GitStub(ahead="0"))
+
+    assert "미push commit 없음" in out
+    assert "⚠ 미push commit" not in out
+
+
+def test_ahead_count_falls_through_to_second_baseline_on_exception(hf, tmp_path):
+    """[6/7]: 첫 baseline 후보에서 git 예외가 나도 두 번째 후보를 시도한다(rc 실패와 동일 취급).
+
+    첫 후보 예외로 곧장 미해소로 떨어지면 upstream 미설정 형상(= 첫 후보가 늘 실패)이 곧
+    "미push 수 미해소"가 돼 origin/main 폴백이 죽는다.
+    """
+    tried: list[str] = []
+
+    def runner(args: list[str]) -> tuple[int, str]:
+        tried.append(args[-1])
+        if args[-1].startswith("@{upstream}"):
+            raise OSError("git: no upstream")
+        return 0, "3\n"
+
+    assert hf._ahead_commit_count(runner) == (3, "origin/main")
+    assert tried == ["@{upstream}..HEAD", "origin/main..HEAD"]
+
+
+def test_handoff_ahead_count_unresolved_is_failsoft(hf, tmp_path, capsys):
+    """[6/7]: baseline 해소 실패(upstream 미설정·detached)는 미해소 1줄 — 0 으로 위장하지 않는다."""
+    git = _GitStub(ahead=None)
+
+    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=git)
+
+    assert "미push commit 수 미해소" in out
+    assert "미push commit 없음" not in out, "미해소를 '없음'(안전)으로 오표기함"
+    tried = [args[-1] for args in git.calls if args[:2] == ["rev-list", "--count"]]
+    assert tried == ["@{upstream}..HEAD", "origin/main..HEAD"], (
+        f"baseline 후보를 순서대로 다 시도하지 않음: {tried}")
+
+
+def test_handoff_surfaces_unfinished_raw_records(hf, tmp_path, capsys):
+    """[6b/7]: 미마감 raw 건수 + 최근 레코드 식별자를 표면화하고, 마감분은 안 센다(비차단)."""
+    ledger = _write_ledger(tmp_path, unfinished=2, finished=3)
+
+    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger)
+
+    assert f"이 장부 기준: {ledger}" in out, (
+        f"판정 범위(어느 장부를 봤나) 표기 누락 — '0건'이 전 장부 0건으로 읽힌다:\n{out}")
+    assert "⚠ 미마감 raw 2건" in out, f"미마감 건수 미표면화:\n{out}"
+    assert "pm_delegate.py raw --unfinished" in out, "전체 조회 경로 안내 누락"
+    assert "id=rec00" in out and "id=rec01" in out, "레코드 식별자가 안 실림"
+    assert "id=rec100" not in out, "마감된 레코드가 미마감으로 표시됨"
+
+
+def test_handoff_raw_sweep_caps_listing_but_keeps_count(hf, tmp_path, capsys):
+    """[6b/7]: 나열은 상한(N건)까지만·나머지는 잔여 건수로 접는다(터미널 폭주 방지·건수는 보존)."""
+    limit = hf.UNFINISHED_RAW_DISPLAY_LIMIT
+    ledger = _write_ledger(tmp_path, unfinished=limit + 2)
+
+    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger)
+
+    assert f"⚠ 미마감 raw {limit + 2}건" in out
+    listed = [l for l in out.splitlines() if l.strip().startswith("- 2026-")]
+    assert len(listed) == limit, f"나열 상한 {limit} 위반: {len(listed)}줄"
+    assert "… 외 2건" in out
+
+
+def test_handoff_reports_clean_raw_ledger(hf, tmp_path, capsys):
+    """[6b/7]: 미마감 0건이면 '없음'을 명시한다(무경보도 말한다)."""
+    ledger = _write_ledger(tmp_path, finished=2)
+
+    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger)
+
+    assert "미마감 raw 없음" in out
+    assert f"이 장부 기준: {ledger}" in out, "0건 보고에도 판정 범위 표기가 있어야 한다"
+    assert "⚠ 미마감 raw" not in out
+
+
+def test_handoff_raw_sweep_is_failsoft_on_corrupt_ledger(hf, tmp_path, capsys):
+    """[6b/7]: 손상 장부는 사유 1줄 후 skip — 핸드오프를 막지 않는다(비차단 계약)."""
+    ledger = tmp_path / "raw_outputs.json"
+    ledger.write_text("{not json", encoding="utf-8")
+
+    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger)
+
+    assert "⚠ 미마감 raw 조회 실패" in out
+
+
+def test_handoff_raw_sweep_reports_missing_ledger(hf, tmp_path, capsys):
+    """[6b/7]: 장부 파일 부재(위임 이력 0)는 사유를 밝히고 0건으로 넘어간다."""
+    out = _run_handoff_out(hf, tmp_path, capsys,
+                           raw_ledger_file=tmp_path / "없는장부.json")
+
+    assert "raw 장부 없음" in out
+
+
+def test_handoff_checklist_includes_push_step_after_commit(hf, tmp_path, capsys):
+    """[7/7]: 커밋 다음에 **push 단계**가 체크리스트로 실제 출력된다(런타임 출력으로 확인).
+
+    소스 문자열 assert 는 `print` 를 dead-code 로 만들어도 통과해 가드가 아니다
+    (`test_run_prints_pathspec_commit_guidance` 와 같은 규율).
+    """
+    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=_GitStub(ahead="2"))
+
+    push_lines = [l for l in out.splitlines() if "[ ]" in l and "push" in l]
+    assert push_lines, f"push 단계가 잔여 작업 체크리스트에 없다:\n{out}"
+    assert any("PM 홈 push" in l for l in push_lines), f"push 대상이 모호하다: {push_lines}"
+    commit_line = next(l for l in out.splitlines() if "[ ]" in l and "git commit" in l)
+    assert out.index(push_lines[0]) > out.index(commit_line), \
+        "push 단계가 commit 안내보다 앞에 있다(순서 역전)"
+
+
+def test_raw_ledger_default_resolves_to_pm_home_local_ledger(hf):
+    """주입이 없으면 sweep 은 **실 PM 홈 장부**(`.project_manager/.local/raw_outputs.json`)를 본다.
+
+    이 배선이 없으면 hermetic 테스트는 다 green 인데 프로덕션 sweep 만 조용히 죽는다
+    (경로 해소만 확인 — 파일을 읽지 않는다).
+    """
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
+        run_git_fn=lambda args: (0, ""),
+    )
+
+    resolved = handoff._resolve_raw_ledger()
+
+    assert resolved == hf.REPO / ".project_manager" / ".local" / "raw_outputs.json", (
+        f"기본 장부 경로가 PM 홈 규약과 다르다: {resolved}")
