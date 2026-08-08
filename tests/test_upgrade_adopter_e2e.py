@@ -637,7 +637,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   self-update 순서)에는 겹침이 없고, 이번에도 네 anchor 가 모두 유일하게 해소됐다
 #   (`_slice_replace` 의 count==1 단언 통과). 두 실행은 PM_NONINTERACTIVE=1 이고 fixture 채택자
 #   conf 에 구키가 없어 새 안내 1줄도 발화하지 않는다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "c73ae9e02dcf90ce541519ca6fc62b6a0a85f3fbcd88f650ef13610c8938435e"
+_T0585_PM_UPDATE_SHA256 = "d86889411db598afa03a301ffafc90c0a3642762898f3c536ba7d14e997effba"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
