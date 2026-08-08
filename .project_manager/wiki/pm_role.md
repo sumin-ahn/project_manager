@@ -101,7 +101,7 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 각 skill의 체크리스트는 `.claude/skills/pm-*/SKILL.md`를 본다.
 
-리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `external_review`)를 병행한다. 코드: `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ...`. 전제는 `external_review_enabled=true`(opt-in), 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
+리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `external_review`)를 병행한다. 코드: `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ...`. 전제는 `additional_reviewer_enabled=true`(opt-in), 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
 
 ## 위임 축 · PM=synthesis
 
@@ -153,7 +153,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 **사용자 게이트(사전 동의):** [[pm_role.local.md]] §사용자 게이트. 예: 미션·핵심 안전 경계, 유료/한도 API 대량 호출, 키 발급·외부 게시·배포, `scope:mission` ADR.
 
-비용 동의는 **켤 때 한 번**이다 — `external_review_enabled=true`(추가 리뷰어)·`delegate_enabled=true`(위임)는 설정된 외부 전송과 통상 과금에 대한 지속 의사표시이고, 그 뒤 호출마다 비용을 다시 묻지 않는다. 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지다(§"검토 루프"). **리뷰 라운드 축은 연장 승인이 없다** — 상한 3회(`review_rounds_max`)·직전 라운드 대비 must-fix 증가(발산) 조기 차단에 걸리면 출구는 재설계·티켓 분할이고, 해소 확인만 필요할 때 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓴다. 사용자에게 올리는 경우는 중대 scope 확대·독립적 사용자 게이트 사유다.
+비용 동의는 **켤 때 한 번**이다 — `additional_reviewer_enabled=true`(추가 리뷰어)·`delegate_enabled=true`(위임)는 설정된 외부 전송과 통상 과금에 대한 지속 의사표시이고, 그 뒤 호출마다 비용을 다시 묻지 않는다. 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지다(§"검토 루프"). **리뷰 라운드 축은 연장 승인이 없다** — 상한 3회(`review_rounds_max`)·직전 라운드 대비 must-fix 증가(발산) 조기 차단에 걸리면 출구는 재설계·티켓 분할이고, 해소 확인만 필요할 때 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓴다. 사용자에게 올리는 경우는 중대 scope 확대·독립적 사용자 게이트 사유다.
 
 **금지(양측 합의+별도 ADR 필요):** [[pm_role.local.md]] §금지. 예: 미션 변경, 핵심 안전 경계(kill switch/한도/보호 영역) 약화, 영구 수동 영역 자동화.
 

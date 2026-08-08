@@ -3064,7 +3064,7 @@ def backup_existing_local_conf(dest_root: Path, backup_root: Path | None) -> str
     """--into 재-import 전, 기존 local.conf 가 있으면 백업하고 원본 텍스트를 반환한다.
 
     MF1: board.py init 은 local.conf 를 무조건 write_text 로 덮으므로, 이미 프레임워크를
-    쓰던 프로젝트(재-import/업그레이드)면 기존 per-clone 설정(external_review_enabled·
+    쓰던 프로젝트(재-import/업그레이드)면 기존 per-clone 설정(additional_reviewer_enabled·
     추가 리뷰어 프로필 `additional_reviewer.*`·레거시 `reviewer_cmd`·session·prefix 등)이
     무백업 손실된다. local.conf 는 pm_import 의
     copy/backup 대상 트리 밖이라 CopyAction 의 백업 로직을 안 탄다 — init 호출 전 여기서
@@ -3095,7 +3095,7 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
     """board.py init 이 새로 쓴 local.conf 위에, 기존 파일의 사용자 키를 재병합한다.
 
     MF1: board.py init 은 local.conf 를 통째로 덮으므로, init 이 *안 쓴* 사용자 키
-    (external_review_enabled·추가 리뷰어 프로필 `additional_reviewer.*`·레거시 `reviewer_cmd`·
+    (additional_reviewer_enabled·추가 리뷰어 프로필 `additional_reviewer.*`·레거시 `reviewer_cmd`·
     prefix 등)는 init 후 사라진다. 따라서 init 산출 local.conf 에 *없는* 기존 키만
     _set_conf_keys 로 다시 얹는다. init 이 쓴 키
     (session·py·test_cmd·project_name·솔로 init 이 채운 prefix 등)는 init/operational sync
@@ -3109,7 +3109,7 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
 
     보존 대상 계산은 **쓰기와 같은 락 구간 안**이다. 현재 conf 를 락 밖에서 읽어 계획을 세우면
     그사이 다른 진입(추가 리뷰어·위임 opt-in)이 기록한 새 결정이 "현재 conf 에 없는 키" 로 남아,
-    백업에 있던 **옛 값이 새 결정을 덮는다**(예: 백업 `external_review_enabled=false` 가 방금
+    백업에 있던 **옛 값이 새 결정을 덮는다**(예: 백업 `additional_reviewer_enabled=false` 가 방금
     기록된 `true` 를 되돌린다). 백업 텍스트 파싱은 대상 conf 와 경쟁하지 않으므로 락 밖이다.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
@@ -7467,7 +7467,7 @@ def main(argv: list[str] | None = None) -> int:
             return board_rc
 
     # MF1: board.py init 은 local.conf 를 무조건 덮으므로(local.conf 는 복사/백업 대상 트리
-    #      밖), --into 재-import 면 기존 per-clone 설정(external_review_enabled·
+    #      밖), --into 재-import 면 기존 per-clone 설정(additional_reviewer_enabled·
     #      additional_reviewer.*·레거시 reviewer_cmd·prefix 등)이 무백업 손실된다.
     #      init *호출 전*에 백업하고 원본 텍스트를 받아둔다(--new 는
     #      빈 디렉토리 보장이라 None — 보존할 것 없음).
@@ -7490,7 +7490,7 @@ def main(argv: list[str] | None = None) -> int:
         print("✓ local.conf operational 값 동기화 (project_name·test_cmd·py)")
 
     # MF1: init 이 덮은 local.conf 위에, 백업해 둔 기존 사용자 키 중 init 이 *안 쓴* 것
-    #      (external_review_enabled·additional_reviewer.*·레거시 reviewer_cmd·prefix 등)을
+    #      (additional_reviewer_enabled·additional_reviewer.*·레거시 reviewer_cmd·prefix 등)을
     #      재병합. init/operational sync 값은 우선.
     if preserved_conf_text is not None:
         reapply_preserved_conf_keys(dest_root, preserved_conf_text)

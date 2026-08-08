@@ -2,8 +2,12 @@
 """추가 리뷰어 래퍼 — 추가 리뷰어(외부 하네스) 어댑터 CLI.
 
 사람 역할 이름은 **추가 리뷰어(additional reviewer)** 다 — 팀에 한 명 더 붙는 리뷰어다.
-`external` 은 전송/격리/과금 축(코드가 저장소 밖으로 나간다)과 기계 식별자(모듈 이름·
-`external_review_enabled`·raw 파일 접두)에만 남는다.
+`external` 은 전송/격리/과금 축(코드가 저장소 밖으로 나간다)과 기계 식별자(모듈 파일 이름·
+raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer_enabled`/`additional_reviewer.*` 다.
+
+명칭 이력: 이 모듈의 파일 이름은 개칭 전 이름 `external_review.py` 그대로다(T-0597 판단) —
+파일명을 바꾸면 동기가 상류 부재 파일을 지우지 않으므로 채택자 PM 홈에 구 사본이 남아 두 진입점이
+공존하고, 이미 기록된 raw 감사물(`external_review_*.txt`)의 접두와도 어긋난다.
 
 사용:
     python3 .project_manager/tools/external_review.py [옵션]
@@ -17,7 +21,7 @@
     + 공유 장부 `raw_outputs.json` · --output-dir 로 격리)
 
 기본 비활성:
-  - 코드 diff 가 *외부로 전송*되므로 기본 OFF. local.conf `external_review_enabled=true`
+  - 코드 diff 가 *외부로 전송*되므로 기본 OFF. local.conf `additional_reviewer_enabled=true`
     또는 `board.py init` / `pm_update` 시 opt-in 으로 켠다. 비활성 시 actual 호출은
     no-op(exit 0)이고 `--dry-run` 은 항상 허용(로컬 미리보기·미전송), `--force` 로 1회 강제.
     단 빈/공백 diff 는 dry-run·비활성 포함 무조건 exit 1 (false-green 원천 차단).
@@ -669,7 +673,7 @@ def _resolve_diff_root(
     }
     if len(absolute_roots) > 1:
         raise AnchorResolutionError(
-            "--paths가 여러 git repo를 가리킵니다 — 외부 리뷰 1회는 diff 앵커 하나만 허용합니다."
+            "--paths가 여러 git repo를 가리킵니다 — 추가 리뷰 1회는 diff 앵커 하나만 허용합니다."
         )
     if absolute_roots:
         selected_root = next(iter(absolute_roots)).resolve()
@@ -809,7 +813,7 @@ DEFAULT_PATHS: list[str] = ["src/", "tests/", "scripts/", ".project_manager/tool
 # 해소된다 — 실 코드 변경은 canonical worktree에 있으므로 `git diff` 가 비어 codex 가 "변경
 # 없음"을 통과로 판정하는 false-green 이 난다.
 # board.py `_pm_home_worktree_misanchor`의 *역방향*: 거긴 worktree 에서 실행된 board 조작을
-# 잡고, 여긴 PM 홈에서 실행된 외부 리뷰를 잡아 worktree 로 재지정한다. 순수 filesystem 판정(subprocess
+# 잡고, 여긴 PM 홈에서 실행된 추가 리뷰를 잡아 worktree 로 재지정한다. 순수 filesystem 판정(subprocess
 # 불요)이라 hermetic — REPO 를 module-level 로 두어 테스트가 monkeypatch 하고, 헬퍼는 anchor/conf 를
 # 명시 인자로 받아 DI seam 이 된다(board `_has_real_board` 를 import 없이 동형 복제·각 파일 self-contained).
 
@@ -875,9 +879,13 @@ DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 # 판정 기준을 무진행으로 교체했고, 벽시계는 "감지기 자체가 고장난 경우"의 유한 상한으로 강등된다.
 # 조정: 일회성 `--timeout`/`--idle-timeout` > local.conf `harness.<reviewer>.wall_timeout`/
 # `.idle_timeout` > 아래 표면-flat legacy 키 > 프로필 선언.
-# opt-in 키·raw 파일 접두 같은 **기계 식별자는 external_review 그대로** 유지한다(사람 역할 이름만
-# '추가 리뷰어'로 바뀐다) — 채택자 local.conf·기존 raw 감사물의 안정 계약이다.
-EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
+# opt-in 게이트 키는 사람 역할 이름과 같이 `additional_reviewer_enabled` 로 개칭됐다(T-0597).
+# 구키 `external_review_enabled` 는 **이번 릴리즈까지만** fallback 으로 읽고(신키 우선), 읽히면
+# deprecation 경고 1줄을 낸다 — 엔진은 채택자 local.conf 를 대신 고쳐 쓰지 않는다(자동 마이그레이션
+# 없음). 모듈 파일명·raw 파일 접두·아래 표면-flat legacy 타임아웃 키는 기계 식별자로 그대로 남는다
+# (기존 raw 감사물과 채택자 PM 홈 사본의 안정 계약).
+ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer_enabled"
+LEGACY_EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
 # Codex egress attestation 플래그 — 판정/문구 단일 소유자는 pm_relay 이고, 여기 리터럴은 argparse
 # 선언용 사본이다(드리프트는 회귀 테스트가 막는다).
 CODEX_EGRESS_FLAG = "--codex-egress-escalated"
@@ -911,7 +919,7 @@ _REVIEWER_PROGRESS_CONTRACTS = {
 }
 
 # 라운드 상한 — 같은 --gate 로 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
-# 기본 4 는 사용자 전역 규율(외부 리뷰 ">3~4 라운드면 수렴 판단")의 기계화. local.conf
+# 기본 4 는 사용자 전역 규율(추가 리뷰 ">3~4 라운드면 수렴 판단")의 기계화. local.conf
 # external_review_round_limit 로 조정 가능.
 DEFAULT_ROUND_LIMIT = 4
 DEFAULT_INCOMPLETE_ROUND_LIMIT = 2
@@ -1209,12 +1217,42 @@ def _local_config_for_repo(repo: Path) -> dict[str, str]:
     return local_config(repo)
 
 
+def enabled_decision_key(conf: dict[str, str]) -> str | None:
+    """게이트 결정을 공급하는 키 — 신키 우선·구키 fallback. 결정이 없으면 None.
+
+    "결정"의 판정은 **키 존재**다(값의 truthiness 가 아니다) — `false` 도 기록된 결정이라 온보딩이
+    다시 묻지 않는다. 둘 다 있으면 신키가 이긴다: 개칭 뒤 남은 구키는 옛 결정이고, 새 결정을 옛
+    값이 되돌리면 켠 사람이 조용히 꺼진다.
+    """
+    if ADDITIONAL_REVIEWER_ENABLED_KEY in conf:
+        return ADDITIONAL_REVIEWER_ENABLED_KEY
+    if LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf:
+        return LEGACY_EXTERNAL_REVIEW_ENABLED_KEY
+    return None
+
+
+# 구키가 결정을 공급할 때의 안내 1줄 — board/pm_update 사본과 **같은 문구**를 쓴다(드리프트는
+# 회귀가 잡는다). 엔진은 채택자 conf 를 대신 고쳐 쓰지 않으므로 처방을 사람에게 준다.
+LEGACY_ENABLED_KEY_DEPRECATION = (
+    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 구키다 — "
+    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요(다음 릴리즈에서 구키 제거)."
+)
+
+
+def legacy_enabled_key_warning(conf: dict[str, str]) -> str | None:
+    """구키가 결정을 공급하는 conf 면 deprecation 1줄, 아니면 None."""
+    if enabled_decision_key(conf) == LEGACY_EXTERNAL_REVIEW_ENABLED_KEY:
+        return LEGACY_ENABLED_KEY_DEPRECATION
+    return None
+
+
 def _is_enabled(conf: dict[str, str]) -> bool:
     """설정된 추가 리뷰어로의 외부 전송·통상 과금에 대한 **지속 동의** 여부.
 
     한 번 켜면 그 프로필의 호출마다 비용을 다시 묻지 않는다 — 반복 질문은 게이트가 아니라 마찰이고,
     실제 상한은 라운드/wave 예산(무한 루프 차단)이 기계로 소유한다."""
-    return conf.get(EXTERNAL_REVIEW_ENABLED_KEY, "false").strip().lower() in (
+    key = enabled_decision_key(conf) or ADDITIONAL_REVIEWER_ENABLED_KEY
+    return conf.get(key, "false").strip().lower() in (
         "true", "1", "yes", "on")
 
 
@@ -1225,8 +1263,9 @@ def _reviewer_cmd(conf: dict[str, str]) -> str:
 # ── 추가 리뷰어 대상 해소 (원자 tuple) ──────────────────────────────────────
 #
 # 사람 역할 이름은 **추가 리뷰어(additional reviewer)** 다 — 팀에 한 명 더 붙는 리뷰어라는 뜻이고,
-# `external` 은 전송/격리/과금(외부로 나간다)에만 남는다. 그래서 설정 키는 `additional_reviewer.*`,
-# opt-in 키·raw 파일 접두·모듈 이름 같은 **기계 식별자는 external_review 그대로** 유지한다.
+# `external` 은 전송/격리/과금(외부로 나간다)에만 남는다. 그래서 설정 키는 opt-in 게이트
+# `additional_reviewer_enabled` + 대상 `additional_reviewer.*` 이고, raw 파일 접두·모듈 파일 이름
+# 같은 **이미 기록된 산출물에 박힌 기계 식별자만 external_review 그대로** 유지한다.
 #
 # 정상 경로의 대상은 위임과 동형의 **원자 tuple**(harness+model 동반 필수·reasoning 선택)이다.
 # 모델을 고정하지 않는 자유 문자열(`reviewer_cmd`)은 "어느 모델이 봤는지"를 사후에 알 수 없어
@@ -1530,7 +1569,7 @@ def reviewer_profile(reviewer_cmd: str, conf: dict[str, str] | None = None):
 
 def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str],
                      reviewer_cmd: str = DEFAULT_REVIEWER_CMD) -> int:
-    """외부 리뷰 **벽시계 백스톱**(초)을 `--timeout` > 리뷰어 프로필 순서로 해소한다.
+    """추가 리뷰 **벽시계 백스톱**(초)을 `--timeout` > 리뷰어 프로필 순서로 해소한다.
 
     CLI 양수값은 argparse 검증을 통과한 명시 override다. 그 아래(legacy flat conf →
     `harness.<reviewer>.wall_timeout` → 선언 기본)는 `pm_relay.resolve_harness_profile` 이 소유한다
@@ -2641,7 +2680,7 @@ def render_rounds_report(
     snapshot = dict(ledger)                # 사본 정규화 — 조회가 장부를 고치지 않는다
     wave = _wave_state(snapshot)
     lines = [
-        f"외부 리뷰 라운드 장부: {ledger_path if ledger_path is not None else '(미해소)'}",
+        f"추가 리뷰 라운드 장부: {ledger_path if ledger_path is not None else '(미해소)'}",
         f"wave: spent={wave['spent']} / 예산 {wave_budget} · "
         f"시작 {wave['started'] or '미시작'}",
         "범례: 판정 0=통과 · 1=비통과(반려·실패·불명확) · '미상'=판정이 무효했던 라운드",
@@ -4967,7 +5006,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
   python3 .project_manager/tools/external_review.py --dry-run
   python3 .project_manager/tools/external_review.py --codex-egress-escalated
 
-활성화: local.conf 에 `external_review_enabled=true` ·
+활성화: local.conf 에 `additional_reviewer_enabled=true` ·
         또는 `board.py init` / `pm_update` 시 opt-in 프롬프트.
 추가 리뷰어 대상(원자 tuple · 정상 경로):
         additional_reviewer.harness=codex
@@ -4975,7 +5014,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         additional_reviewer.reasoning=max     (선택 · 하네스별 허용집합 검증)
         harness/model 은 동반 필수이고 legacy `reviewer_cmd` 와 함께 쓸 수 없다.
         구조화 키가 하나도 없으면 종전 `reviewer_cmd`/기본 커맨드로 도는 unpinned-model 경로다.
-지속 동의: `external_review_enabled=true` 는 설정된 대상의 외부 전송·통상 과금에 대한 지속
+지속 동의: `additional_reviewer_enabled=true` 는 설정된 대상의 외부 전송·통상 과금에 대한 지속
         동의다 — 호출마다 비용을 다시 묻지 않는다. 무한 라운드는 라운드/wave 예산이 기계로 막는다.
 """,
     )
@@ -5004,7 +5043,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true",
                         help="diff·프롬프트만 출력, 외부 호출/전송 안 함 (비활성이어도 허용·빈 diff 면 exit 1)")
     parser.add_argument("--force", action="store_true",
-                        help=f"{EXTERNAL_REVIEW_ENABLED_KEY}=false 여도 1회 강제 실행 (외부 전송 발생)")
+                        help=f"{ADDITIONAL_REVIEWER_ENABLED_KEY}=false 여도 1회 강제 실행 (외부 전송 발생)")
     parser.add_argument(CODEX_EGRESS_FLAG, action="store_true",
                         help="Codex egress 승격 호출층 증명 — 이 호출을 Codex 도구 "
                              'sandbox_permissions="require_escalated" 로 올렸음을 감사 기록한다. '
@@ -5475,7 +5514,7 @@ def _main(argv: list[str] | None = None) -> int:
             ticket_selected=ticket_selected,
         )
     except (AnchorResolutionError, OSError, UnicodeError) as exc:
-        print(f"오류: 외부 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
+        print(f"오류: 추가 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
         return 1
 
     # 이후 기존 diff/raw/round helper는 module seam을 계속 소비한다. 한 프로세스 실행 안에서만
@@ -5517,7 +5556,7 @@ def _main(argv: list[str] | None = None) -> int:
             )
             return 1
         except AnchorResolutionError as exc:
-            print(f"오류: 외부 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
+            print(f"오류: 추가 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
             return 1
     # 시간 예산은 **해소된 대상의 하네스 프로필**을 따른다 — 대상 command 를 먼저 해소해야
     # 어떤 축(클라우드/로컬)의 값을 쓸지 정해진다. 깨진 conf의
@@ -5689,6 +5728,12 @@ def _main(argv: list[str] | None = None) -> int:
         diff=diff, adr_refs=args.adr, gate=args.gate, confirm_fix=args.confirm_fix,
     )
 
+    # 구키 deprecation — 미리보기·실행 **양쪽**에서 같은 자리에 1줄. 게이트 판정 앞이라 꺼져 있는
+    # conf 도 안내를 받는다(구키로 `false` 를 적어 둔 채택자가 켜려 할 때 신키를 알아야 한다).
+    legacy_key_warning = legacy_enabled_key_warning(conf)
+    if legacy_key_warning:
+        print(legacy_key_warning, file=sys.stderr)
+
     if args.dry_run:
         # 미리보기는 **부작용 0**이다(외부 송신·raw 예약·라운드 예약·격리 거울·`--output-dir`
         # 생성 모두 없음). 여기까지의 준비는 전부 읽기 전용이고(conf 해소·denylist·git diff),
@@ -5703,7 +5748,7 @@ def _main(argv: list[str] | None = None) -> int:
             escalation_required=codex_egress_required,
             attested=args.codex_egress_escalated,
             script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
-            consent_key=EXTERNAL_REVIEW_ENABLED_KEY,
+            consent_key=ADDITIONAL_REVIEWER_ENABLED_KEY,
             windows=_running_on_windows(),
         ))
         print("=== [dry-run] 프롬프트 미리보기 (외부 전송 없음) ===")
@@ -5715,8 +5760,8 @@ def _main(argv: list[str] | None = None) -> int:
     if not _is_enabled(conf) and not args.force:
         print(
             "추가 리뷰어 비활성 — 코드 diff 외부 전송이 꺼져 있습니다 "
-            f"(local.conf {EXTERNAL_REVIEW_ENABLED_KEY}=false).\n"
-            f"켜기: local.conf 에 `{EXTERNAL_REVIEW_ENABLED_KEY}=true` 추가, 또는 "
+            f"(local.conf {ADDITIONAL_REVIEWER_ENABLED_KEY}=false).\n"
+            f"켜기: local.conf 에 `{ADDITIONAL_REVIEWER_ENABLED_KEY}=true` 추가, 또는 "
             "`board.py init` / `pm_update` 시 opt-in 프롬프트. "
             "미리보기는 `--dry-run`, 1회 강제는 `--force`.",
             file=sys.stderr,
@@ -5735,7 +5780,7 @@ def _main(argv: list[str] | None = None) -> int:
                 list(sys.argv[1:] if argv is None else argv),
                 target.name, target.ledger_model,
                 script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
-                consent_key=EXTERNAL_REVIEW_ENABLED_KEY,
+                consent_key=ADDITIONAL_REVIEWER_ENABLED_KEY,
                 subject="추가 리뷰어 외부 전송",
                 windows=_running_on_windows(),
             ),

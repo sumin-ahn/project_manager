@@ -40,7 +40,7 @@
 .project_manager/tools/pm_render.py
 # relay core: 하니스 무관 thin stateless supervisor (ADR-0009). 하니스 driver(pm_orch_*.py)는 어댑터층(manifest 밖)
 .project_manager/tools/pm_relay.py
-# external_review: 외부 리뷰어 어댑터 (ADR-0004·기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
+# external_review: 추가 리뷰어 어댑터 (ADR-0004·기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
 .project_manager/tools/external_review.py
 # gate_snapshot: 명시 검토 경로만 working tree↔격리 worktree 내용 해시를 대조하는 fail-loud 생성기.
 .project_manager/tools/gate_snapshot.py

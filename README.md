@@ -347,7 +347,7 @@ slot 에 직접 바인딩해 일하는 방식도 있다. 세션이 부트스트�
 ```
 
 코드를 읽기만 할 기준면이 필요하면 readonly slot 을 만든다. readonly slot 은 detached HEAD 이고,
-배타 대여 대상이 아니다. research, release livegate 기준면, 외부 리뷰 경로 핀처럼 "읽는 슬롯"으로
+배타 대여 대상이 아니다. research, release livegate 기준면, 추가 리뷰 경로 핀처럼 "읽는 슬롯"으로
 쓴다. 생성도 PM 에게 요청하면 물리 작업임을 확인받은 뒤 진행한다:
 
 ```text
@@ -527,15 +527,20 @@ cd <project> && ./pm-update.sh
 `local.conf` 에 아래 튜플을 원자적으로 기록한다.
 
 ```
-external_review_enabled=true
+additional_reviewer_enabled=true
 additional_reviewer.harness=codex
 additional_reviewer.model=gpt-5.6-sol
 additional_reviewer.reasoning=max
 ```
 
-`external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 지속 동의라, 그 뒤 리뷰마다
+`additional_reviewer_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 지속 동의라, 그 뒤 리뷰마다
 비용 승인을 다시 받지 않는다. 프로필은 세 키를 고쳐 교체한다. 옛 `reviewer_cmd` 를 쓰던 프로젝트는
 그대로 동작하며 자동 마이그레이션 대상이 아니다.
+
+게이트 키 이름이 `external_review_enabled` 에서 `additional_reviewer_enabled` 로 바뀌었다. 구키는
+이번 릴리즈까지만 읽히고(읽히면 경고 1줄) **다음 릴리즈에서 제거된다** — `local.conf` 의 키 이름을
+직접 바꾼다(엔진은 인스턴스 소유인 `local.conf` 를 대신 고쳐 쓰지 않는다). 두 키가 함께 있으면
+신키가 이긴다.
 
 ### 티켓의 수명
 

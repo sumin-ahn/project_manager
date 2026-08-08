@@ -137,7 +137,7 @@ def _run_main(external, monkeypatch, *, argv, excluded, diff=None,
     반환: (exit_code, reviewer_called)."""
     if diff is None:
         diff = f"diff --git a/{REAL_FILE} b/{REAL_FILE}\n@@ -0,0 +1 @@\n+ok = 1\n"
-    conf = {"external_review_enabled": "true"} if conf is None else conf
+    conf = {"additional_reviewer_enabled": "true"} if conf is None else conf
     monkeypatch.setattr(external, "local_config", lambda repo=None: conf)
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: external.REPO,
@@ -210,7 +210,7 @@ def test_paths_and_ticket_together_paths_dominates_blocks(external, monkeypatch,
 
 def test_paths_extra_pattern_exclusion_blocks(external, monkeypatch, capsys):
     """review_denylist_extra 사용자 패턴 매칭분도 --paths 명시 지정이면 동일 차단·패턴명 보고."""
-    conf = {"external_review_enabled": "true", "review_denylist_extra": "*apikey*"}
+    conf = {"additional_reviewer_enabled": "true", "review_denylist_extra": "*apikey*"}
     exit_code, reviewer_called = _run_main(
         external, monkeypatch, argv=["--paths", "data/company_apikey.dat"],
         excluded=["data/company_apikey.dat"], diff="", conf=conf)
@@ -336,7 +336,7 @@ def test_reproduce_false_confidence_end_to_end(external, monkeypatch, capsys):
     monkeypatch.setattr(external.subprocess, "run", _fake_git)
     monkeypatch.setattr(
         external, "local_config",
-        lambda repo=None: {"external_review_enabled": "true"},
+        lambda repo=None: {"additional_reviewer_enabled": "true"},
     )
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: external.REPO,

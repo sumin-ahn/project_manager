@@ -265,7 +265,7 @@ spawn_agent(
 > `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
 > (ADR 본문 정합 필요 시 `--paths` 에 **코드 경로+ADR 함께 나열** — `--paths` 는
 > `--ticket` touches 를 *대체*함). 전제
-> `external_review_enabled=true`. 상세는 `pm_playbook.md` §"검토 루프".
+> `additional_reviewer_enabled=true`. 상세는 `pm_playbook.md` §"검토 루프".
 
 #### 게이트 격리 스냅샷 (병렬 wave · 내부 reviewer 전용)
 

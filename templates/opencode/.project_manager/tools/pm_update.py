@@ -195,16 +195,41 @@ MANIFEST = REPO / ".project_manager" / "engine.manifest"
 #   해소를 하지 않는 이유는 무거운 external_review 코어를 업데이트 경로로 끌어오지 않기
 #   위해서다 — 여기서는 값만 시드하고 드리프트는 테스트가 잡는다.
 #   `reviewer_cmd` 는 신규 온보딩에서 만들지 않는다(레거시 채택자 전용 키).
+#   게이트 키는 `additional_reviewer_enabled` 로 개칭됐다(T-0597) — 신규 기록은 신키만 쓰고,
+#   구키 `external_review_enabled` 는 "이미 결정됨" 판정에서만 1릴리즈 더 인정한다(+안내 1줄).
+ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer_enabled"
+LEGACY_EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
+
 ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
-    ("external_review_enabled", "true"),
+    (ADDITIONAL_REVIEWER_ENABLED_KEY, "true"),
     ("additional_reviewer.harness", "codex"),
     ("additional_reviewer.model", "gpt-5.6-sol"),
     ("additional_reviewer.reasoning", "max"),
 )
 
+
+def additional_reviewer_decision_key(conf: dict[str, str]) -> str | None:
+    """이미 기록된 opt-in 결정을 공급하는 키 — 신키 우선·구키 1릴리즈 fallback (없으면 None).
+
+    board·external_review 사본과 같은 판정·같은 순서다. 구키만 있는 채택자를 "미결정"으로 보면
+    업데이트가 다시 물어 두 키가 공존하는 conf 를 만든다.
+    """
+    if ADDITIONAL_REVIEWER_ENABLED_KEY in conf:
+        return ADDITIONAL_REVIEWER_ENABLED_KEY
+    if LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf:
+        return LEGACY_EXTERNAL_REVIEW_ENABLED_KEY
+    return None
+
+
+# 구키 deprecation 안내 1줄 — external_review 사본과 **같은 문구**(드리프트는 회귀가 잡는다).
+LEGACY_ENABLED_KEY_DEPRECATION = (
+    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 구키다 — "
+    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요(다음 릴리즈에서 구키 제거)."
+)
+
 ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
     "# 추가 리뷰어(additional reviewer) — ON.\n"
-    "# external_review_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# additional_reviewer_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
     "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다). 프로필은 아래 3키로 교체한다.\n"
     + "".join(f"{key}={value}\n" for key, value in ADDITIONAL_REVIEWER_DEFAULTS)
 )
@@ -214,25 +239,25 @@ ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
 #   튜플은 last-wins 로 갈아치워지고, 레거시 `reviewer_cmd` 와는 엔진이 거부하는 이중 대상이 된다.
 ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK = (
     "# 추가 리뷰어(additional reviewer) — ON (이미 설정된 대상 그대로).\n"
-    "# external_review_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# additional_reviewer_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
     "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다).\n"
-    "external_review_enabled=true\n"
+    "additional_reviewer_enabled=true\n"
 )
 
 ADDITIONAL_REVIEWER_ENABLE_HINT = (
-    "local.conf 에 external_review_enabled=true + "
+    "local.conf 에 additional_reviewer_enabled=true + "
     "additional_reviewer.harness/model/reasoning"
 )
 
 # **이미 대상이 있는** conf 의 안내 — 활성 플래그 한 줄만 말한다(board 사본과 같은 값·같은 이유).
 #   기본 문장을 그대로 쓰면 구조화 3키를 *더* 적으라는 말이 돼, 레거시 `reviewer_cmd` 위에서는
 #   엔진이 거부하는 이중 대상이 되고 구조화 튜플 위에서는 last-wins 로 자기 선언이 덮인다.
-ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT = "local.conf 에 external_review_enabled=true"
+ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT = "local.conf 에 additional_reviewer_enabled=true"
 
 # 거절이 기록하는 블록 — 결정 자체는 대상과 무관하므로 한 벌뿐이다(board 사본과 같은 값).
 ADDITIONAL_REVIEWER_DECLINE_BLOCK = (
     "# 추가 리뷰어 — 기본 OFF. 켜려면 true 로.\n"
-    "external_review_enabled=false\n"
+    "additional_reviewer_enabled=false\n"
 )
 
 # opt-in 커밋 결과 — 락 안에서 **다시 판정한** 사실이다(질문 시점의 판정이 아니다·board 동형).
@@ -594,7 +619,7 @@ def _commit_additional_reviewer_optin(
     """
     with _local_conf_write_lock(local_conf) as lock:
         conf = _read_local_conf(local_conf)
-        if "external_review_enabled" in conf:
+        if additional_reviewer_decision_key(conf) is not None:
             # 질문하는 사이 결정이 생겼다 — 그 결정이 이긴다(이 응답은 버린다·byte 보존).
             return OPTIN_COMMIT_ALREADY, ""
         try:
@@ -617,9 +642,10 @@ def _commit_additional_reviewer_optin(
 def maybe_prompt_external_review(dest_root: Path) -> None:
     """업데이트 후 추가 리뷰어(additional reviewer) opt-in — 아직 미설정이면 **1회** 묻는다.
 
-    코드 diff 외부 *전송*이라 기본 OFF. `external_review_enabled` **실키**가 이미 있으면
-    (true/false 무관) 묻지 않고 기존 프로필·레거시 `reviewer_cmd` 를 그대로 둔다(자동 마이그레이션
-    없음). 비대화형은 안전쪽으로 건너뛰되 나중에 켜는 법을 1줄로 남긴다.
+    코드 diff 외부 *전송*이라 기본 OFF. `additional_reviewer_enabled`(또는 1릴리즈 더 인정하는
+    구키 `external_review_enabled`) **실키**가 이미 있으면 (true/false 무관) 묻지 않고 기존
+    프로필·레거시 `reviewer_cmd` 를 그대로 둔다(자동 마이그레이션 없음 — 구키는 안내 1줄로만
+    처방한다). 비대화형은 안전쪽으로 건너뛰되 나중에 켜는 법을 1줄로 남긴다.
     board.prompt_external_review_optin 과 같은 계약이다 — "예" 는 기존 대상이 없을 때만
     ADDITIONAL_REVIEWER_DEFAULTS 4키를 원자 기록하고, 이미 유효한 대상(레거시 `reviewer_cmd`·
     구조화 튜플)이 있으면 **활성 플래그 한 줄만** 덧붙여 그 대상을 byte 그대로 둔다. 어느
@@ -637,11 +663,16 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     if not local_conf.exists():
         return  # init 전 — board.py init 에서 묻는다
     conf = _read_local_conf(local_conf)
-    if "external_review_enabled" in conf:
-        # 실키로 이미 결정됨(true/false 무관·기존 프로필/레거시 키 불변). 판정은 파싱된 키
-        # 존재로 한다 — raw 텍스트 substring 으로 보면 주석(`# external_review_enabled=false`)
+    decision_key = additional_reviewer_decision_key(conf)
+    if decision_key is not None:
+        # 실키로 이미 결정됨(신키/구키·true/false 무관·기존 프로필/레거시 키 불변). 판정은 파싱된
+        # 키 존재로 한다 — raw 텍스트 substring 으로 보면 주석(`# additional_reviewer_enabled=false`)
         # 이나 안내 문장이 결정을 가로채, 켜려던 채택자가 질문도 안내도 못 받는다.
         # maybe_prompt_delegate_optin·board.prompt_external_review_optin 과 같은 seam.
+        if decision_key == LEGACY_EXTERNAL_REVIEW_ENABLED_KEY:
+            # 업데이트는 채택자가 구키를 실제로 만나는 채널이다 — 여기서 처방 1줄을 준다.
+            # 엔진이 대신 고쳐 쓰지 않는 이유는 위와 같다(채택자 conf 는 인스턴스 소유).
+            print(f"[pm_update] {LEGACY_ENABLED_KEY_DEPRECATION}")
         return
     try:
         target = classify_additional_reviewer_target(conf)
@@ -656,7 +687,7 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
         print("[pm_update] 추가 리뷰어 OFF 유지(비대화형). 켜려면 "
               f"{_additional_reviewer_enable_hint(target)}")
         return
-    print("\n[pm_update] 추가 리뷰어(additional reviewer·external_review)를 켤까요? 코드 diff 가 "
+    print("\n[pm_update] 추가 리뷰어(additional reviewer)를 켤까요? 코드 diff 가 "
           "설정된 리뷰 하네스로 *전송*되고 그 하네스에 *과금*됩니다 — 내부 code-reviewer 와 상보적.")
     if target == REVIEWER_TARGET_NONE:
         print("  예 = 기본 프로필(codex · gpt-5.6-sol · reasoning max)을 한 번에 기록합니다 "
@@ -676,7 +707,7 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     outcome, detail = _commit_additional_reviewer_optin(
         local_conf, answer in ("y", "yes"))
     if outcome == OPTIN_COMMIT_ALREADY:
-        print("[pm_update] 질문하는 사이 local.conf 에 external_review_enabled 결정이 생겨 "
+        print("[pm_update] 질문하는 사이 local.conf 에 additional_reviewer_enabled 결정이 생겨 "
               "그 결정을 그대로 둡니다 — 이 응답은 기록하지 않았습니다.")
     elif outcome == OPTIN_COMMIT_BROKEN:
         print(f"[pm_update] ⚠ 추가 리뷰어 설정이 이미 깨져 있어 opt-in 을 기록하지 않습니다: "

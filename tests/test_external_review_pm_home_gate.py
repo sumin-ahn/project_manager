@@ -191,7 +191,7 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
 def test_main_pm_home_no_paths_derives_worktree(external, monkeypatch, tmp_path, capsys):
     """PM 홈 엔진 사본도 등록 슬롯 하나에서 diff worktree를 자동 파생한다."""
     home, worktree = _make_pm_home(tmp_path)
-    conf = {"external_review_enabled": "true"}
+    conf = {"additional_reviewer_enabled": "true"}
     exit_code, reviewer_called = _run_main(external, monkeypatch, home, conf, [])
     assert exit_code == 0
     assert reviewer_called is True
@@ -218,11 +218,11 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
     (owner_home / ".project_manager").mkdir(parents=True)
     configs = {
         engine_home: {
-            "external_review_enabled": "true",
+            "additional_reviewer_enabled": "true",
             "review_paths": "engine-only-path",
         },
         owner_home: {
-            "external_review_enabled": "true",
+            "additional_reviewer_enabled": "true",
             "review_paths": "owner-only-path",
         },
     }
@@ -253,7 +253,7 @@ def test_main_pm_home_ticket_derives_board_and_diff_separately(external, monkeyp
     """PM 홈 board touches와 등록 diff worktree를 별도 앵커로 파생해 리뷰한다."""
     home, worktree = _make_pm_home(tmp_path)
     exit_code, reviewer_called = _run_main(
-        external, monkeypatch, home, {"external_review_enabled": "true"},
+        external, monkeypatch, home, {"additional_reviewer_enabled": "true"},
         ["--ticket", _FIXTURE_TICKET],
     )
     assert exit_code == 0
@@ -266,7 +266,7 @@ def test_main_pm_home_with_paths_passes_gate(external, monkeypatch, tmp_path, ca
 
     override 는 escape hatch — 명시 시 게이트가 막지 않음을 못박는다(빈 diff 면 빈-diff 가드가 백스톱)."""
     home, worktree = _make_pm_home(tmp_path)
-    conf = {"external_review_enabled": "true"}
+    conf = {"additional_reviewer_enabled": "true"}
     exit_code, reviewer_called = _run_main(
         external, monkeypatch, home, conf, ["--paths", ".project_manager/tools/"])
     assert reviewer_called is True    # 게이트 미차단 → 리뷰어 진행
@@ -279,7 +279,7 @@ def test_main_worktree_shape_no_block(external, monkeypatch, tmp_path, capsys):
 
     canonical worktree 에서 실행하는 것이 *정답*이므로 게이트가 이를 막으면 안 된다."""
     home, worktree = _make_pm_home(tmp_path)
-    conf = {"external_review_enabled": "true"}
+    conf = {"additional_reviewer_enabled": "true"}
     # worktree 앵커: 실 board 미소유 → 게이트 미발화.
     exit_code, reviewer_called = _run_main(external, monkeypatch, worktree, conf, [])
     assert reviewer_called is True
@@ -298,7 +298,7 @@ def test_main_local_upstream_adopter_ticket_not_blocked(external, monkeypatch, t
     monkeypatch.setattr(
         external, "parse_ticket_touches", lambda t, **kwargs: [".project_manager/tools/"],
     )
-    conf = {"upstream": str(tmp_path / "foreign"), "external_review_enabled": "true"}
+    conf = {"upstream": str(tmp_path / "foreign"), "additional_reviewer_enabled": "true"}
     exit_code, reviewer_called = _run_main(external, monkeypatch, home, conf, ["--ticket", "T-0001"])
     assert reviewer_called is True   # 게이트 미차단 → 리뷰어 진행 (오탐 0)
     assert exit_code == 0

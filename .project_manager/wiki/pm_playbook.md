@@ -82,18 +82,18 @@ T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 
 ### 추가 리뷰어 교차검증 (표준 리뷰 게이트)
 
-내부 code-reviewer 와 **추가 리뷰어(additional reviewer)를 병행**한다. 엔진 이름은 `external_review` 이고 `external_*` 은 기계 식별자·외부 전송 축의 이름이다 — 사람이 부르는 역할 이름은 추가 리뷰어다.
+내부 code-reviewer 와 **추가 리뷰어(additional reviewer)를 병행**한다. 역할 이름도 설정 키(`additional_reviewer_enabled`·`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다 — `external_review` 는 엔진 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 외부 전송 축의 이름으로만 남는다. 개칭 전 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
 
 전제는 `local.conf` 의 원자적 튜플 하나다(첫 init/update 에서 **1회만** 묻는다 — 비활성이면 `--dry-run` 미리보기·`--force` 1회 강제).
 
 ```
-external_review_enabled=true
+additional_reviewer_enabled=true
 additional_reviewer.harness=codex
 additional_reviewer.model=gpt-5.6-sol
 additional_reviewer.reasoning=max
 ```
 
-`external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**다 — 켠 뒤에는 리뷰마다·상한 재개마다 사용자에게 비용을 다시 묻지 않는다. 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지이며 축마다 규율이 다르다:
+`additional_reviewer_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**다 — 켠 뒤에는 리뷰마다·상한 재개마다 사용자에게 비용을 다시 묻지 않는다. 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지이며 축마다 규율이 다르다:
 
 - **리뷰 라운드 축(연장 승인 없음)** — 상한 3회(`review_rounds_max`), 직전 라운드 대비 must-fix 증가는 상한 전 조기 차단이다. rc=4 면 `--rounds-report` 로 장부를 읽고 **재설계·티켓 분할**로 전환한다(남은 지적은 다음 티켓 목표로 이동). 라운드를 연장하는 승인 플래그는 폐지됐고, 옛 플래그를 붙여 호출하면 rc=1 로 거부된다. 직전 지적의 해소 확인만 필요하면 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓰며, 거기서 나온 신규 발견은 재설계 신호로 본다.
 - **wave 예산 축(재개 ack 유지)** — rc=4 면 `--rounds-report` 로 장부를 읽고 **같은 scope 의 정상 수렴이면 PM 이 자율로 `--ack-wave`** 하며 판단 근거를 log 에 남긴다. 예산을 열어도 라운드 축의 수렴 판정은 그대로 닫혀 있다.

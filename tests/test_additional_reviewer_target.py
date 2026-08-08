@@ -76,7 +76,7 @@ def _neutral_codex_egress_marker(monkeypatch):
 def _conf(harness: str = "codex", model: str = "gpt-5.6-sol",
           reasoning: str | None = "max", **extra: str) -> dict[str, str]:
     conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "additional_reviewer.harness": harness,
         "additional_reviewer.model": model,
     }
@@ -878,7 +878,7 @@ def test_legacy_command_stdin_and_output_are_byte_identical_to_the_old_path(
 def test_legacy_unpinned_model_is_loud_in_every_provenance_surface(
         external, monkeypatch, tmp_path, capsys):
     """legacy는 model 표기에도 dry-run·stderr·raw 헤더·장부 모두 unpinned로 라벨링된다."""
-    repo = _repo(tmp_path / "repo", {"external_review_enabled": "true",
+    repo = _repo(tmp_path / "repo", {"additional_reviewer_enabled": "true",
                                      "reviewer_cmd": "codex exec --model gpt-x --sandbox read-only"})
     reviewer = _FakeReviewer(stdout=_PASS_REPLY)
     _wire_main(external, monkeypatch, repo, reviewer)
@@ -1022,7 +1022,7 @@ def test_network_off_without_attestation_fails_before_round_raw_isolation_and_sp
         "--dry-run",
         f"{_EGRESS_MARKER}=true",
         "sandbox_workspace_write.network_access=true",
-        f"{external.EXTERNAL_REVIEW_ENABLED_KEY}=true",
+        f"{external.ADDITIONAL_REVIEWER_ENABLED_KEY}=true",
         "후속 호출마다 비용을 다시 묻지 마세요",
     ):
         assert expected in err, expected
@@ -1031,7 +1031,7 @@ def test_network_off_without_attestation_fails_before_round_raw_isolation_and_sp
 def test_force_cannot_bypass_the_egress_gate(external, monkeypatch, tmp_path, capsys):
     """`--force` 는 opt-in 게이트용이다 — 안전 경계(egress)를 여는 우회로가 아니다."""
     monkeypatch.setenv(_EGRESS_MARKER, "1")
-    repo = _repo(tmp_path / "repo", _conf(**{"external_review_enabled": "false"}))
+    repo = _repo(tmp_path / "repo", _conf(**{"additional_reviewer_enabled": "false"}))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     outdir = tmp_path / "raw-out"
@@ -1048,7 +1048,7 @@ def test_force_cannot_bypass_the_egress_gate(external, monkeypatch, tmp_path, ca
 def test_opt_in_off_is_a_no_op_that_creates_no_output_dir(
         external, monkeypatch, tmp_path, capsys):
     """비활성 no-op(rc=0)도 부작용 0 이다 — 요청한 산출 디렉토리를 만들지 않는다."""
-    repo = _repo(tmp_path / "repo", _conf(**{"external_review_enabled": "false"}))
+    repo = _repo(tmp_path / "repo", _conf(**{"additional_reviewer_enabled": "false"}))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     outdir = tmp_path / "raw-out"
@@ -1533,7 +1533,7 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
     없으면 보수적으로 '전송됐을 수 있음'이 되어, 상한 1·미완 1 인 채택자는 **한 번도 전송하지
     못한 채** 다음 호출이 막힌다."""
     repo = _repo(tmp_path / "repo", {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "reviewer_cmd": "my-reviewer --flag\x00bad",     # 인자에 NUL — fork 전 거절
         "external_review_round_limit": "1",
         "external_review_incomplete_round_limit": "1",
@@ -2076,7 +2076,7 @@ def test_retry_command_starts_with_this_surface_entrypoint(
     message = relay.codex_egress_block_message(
         ["--gate", "T-0590", "--paths", "x.py"], "codex", "gpt-5.6-sol",
         script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
-        consent_key=external.EXTERNAL_REVIEW_ENABLED_KEY,
+        consent_key=external.ADDITIONAL_REVIEWER_ENABLED_KEY,
         subject="추가 리뷰어 외부 전송",
         windows=windows,
     )
@@ -2179,9 +2179,11 @@ def test_delegate_and_reviewer_reject_the_same_misconfiguration_wording():
 
 # ══ ⑨ 문구 규율 (사람 이름 · anti-loop ack · 기계 식별자 불변) ═════════════
 
-# 이 절의 대상은 이번 티켓이 소유한 세 도구다. 채택자 온보딩 표면(board.py·pm_update.py 프롬프트)
-# 은 병렬 작업의 소유라 여기서 판정하지 않는다 — 그쪽이 수렴하면 같은 규율로 확장한다.
-_OWNED_TOOLS = ("external_review.py", "pm_delegate.py", "pm_relay.py")
+# 실행 세 도구 + 채택자 온보딩 표면(board.py·pm_update.py). 온보딩은 T-0590 시점엔 병렬 작업의
+# 소유라 빠져 있었고, 게이트 키 개칭(T-0597)으로 그쪽이 수렴하면서 같은 규율로 확장됐다.
+_OWNED_TOOLS = (
+    "external_review.py", "pm_delegate.py", "pm_relay.py", "board.py", "pm_update.py",
+)
 
 
 @pytest.mark.parametrize("name", _OWNED_TOOLS)
@@ -2196,11 +2198,17 @@ def test_reviewer_surface_states_the_name_and_keeps_the_transport_axis(external)
     source = (TOOLS / "external_review.py").read_text(encoding="utf-8")
     assert "추가 리뷰어" in source
     assert "외부 전송" in source and "과금" in source          # 전송 축 문구는 유지
-    # 기계 식별자는 채택자 형상을 깨지 않게 그대로다.
-    assert external.EXTERNAL_REVIEW_ENABLED_KEY == "external_review_enabled"
+    # 설정 키는 역할 이름과 같은 축으로 통일됐다(T-0597) — 구키는 fallback 으로만 남는다.
+    assert external.ADDITIONAL_REVIEWER_ENABLED_KEY == "additional_reviewer_enabled"
+    assert external.LEGACY_EXTERNAL_REVIEW_ENABLED_KEY == "external_review_enabled"
     assert external.LEGACY_REVIEWER_CMD_KEY == "reviewer_cmd"
     assert external.ADDITIONAL_REVIEWER_PREFIX == "additional_reviewer"
+    # 파일 이름은 개칭하지 않는다 — 동기가 상류 부재 파일을 지우지 않아 채택자 PM 홈에 구 사본이
+    # 남고(두 진입점 공존), 이미 기록된 raw 감사물의 접두와도 어긋난다. 이력은 docstring 1줄.
     assert (TOOLS / "external_review.py").is_file()
+    assert not (TOOLS / "additional_reviewer.py").exists()
+    assert "명칭 이력:" in source
+    assert "external_review.py" in source.split('"""')[1]     # 모듈 docstring 안
 
 
 def test_round_and_wave_caps_are_anti_loop_without_round_extension(external):

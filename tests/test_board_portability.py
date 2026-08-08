@@ -115,13 +115,13 @@ def test_prompt_optin_writes_nothing_when_non_tty(board, monkeypatch, tmp_path):
 
     board.prompt_external_review_optin()
 
-    assert not conf.exists() or "external_review_enabled" not in conf.read_text(encoding="utf-8")
+    assert not conf.exists() or "additional_reviewer_enabled" not in conf.read_text(encoding="utf-8")
 
 
 def test_prompt_optin_writes_nothing_on_eof_under_tty(board, monkeypatch, tmp_path):
     """isatty=True 인데 input() 이 EOFError (Windows-under-pytest 재현) → 아무것도 안 씀.
 
-    수정 전 코드는 answer='' 로 떨어져 external_review_enabled=false 를 기록했다 —
+    수정 전 코드는 answer='' 로 떨어져 additional_reviewer_enabled=false 를 기록했다 —
     사용자의 기존 true 결정을 덮어 preservation 을 깨뜨림.
     """
     conf = _isolated_local_conf(board, monkeypatch, tmp_path)
@@ -134,21 +134,21 @@ def test_prompt_optin_writes_nothing_on_eof_under_tty(board, monkeypatch, tmp_pa
 
     board.prompt_external_review_optin()
 
-    assert not conf.exists() or "external_review_enabled" not in conf.read_text(encoding="utf-8")
+    assert not conf.exists() or "additional_reviewer_enabled" not in conf.read_text(encoding="utf-8")
 
 
 def test_prompt_optin_does_not_clobber_existing_true(board, monkeypatch, tmp_path):
-    """이미 external_review_enabled 가 있으면(여기선 true) EOF 경로로도 건드리지 않음."""
+    """이미 additional_reviewer_enabled 가 있으면(여기선 true) EOF 경로로도 건드리지 않음."""
     conf = _isolated_local_conf(board, monkeypatch, tmp_path)
-    conf.write_text("external_review_enabled=true\n", encoding="utf-8")
+    conf.write_text("additional_reviewer_enabled=true\n", encoding="utf-8")
     monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": (_ for _ in ()).throw(EOFError))
 
     board.prompt_external_review_optin()
 
     text = conf.read_text(encoding="utf-8")
-    assert "external_review_enabled=true" in text
-    assert "external_review_enabled=false" not in text
+    assert "additional_reviewer_enabled=true" in text
+    assert "additional_reviewer_enabled=false" not in text
 
 
 # ── T-0071: PM_NONINTERACTIVE 명시 신호 우선 (isatty 신뢰불가 함정 회피) ──
@@ -172,7 +172,7 @@ def test_prompt_optin_skips_when_pm_noninteractive_truthy(
 
     board.prompt_external_review_optin()
 
-    assert not conf.exists() or "external_review_enabled" not in conf.read_text(
+    assert not conf.exists() or "additional_reviewer_enabled" not in conf.read_text(
         encoding="utf-8"
     )
 
@@ -192,7 +192,7 @@ def test_prompt_optin_falsy_pm_noninteractive_preserves_isatty_path(
 
     board.prompt_external_review_optin()
 
-    assert "external_review_enabled=true" in conf.read_text(encoding="utf-8")
+    assert "additional_reviewer_enabled=true" in conf.read_text(encoding="utf-8")
 
 
 def test_prompt_optin_no_env_preserves_non_tty_skip(board, monkeypatch, tmp_path):
@@ -203,7 +203,7 @@ def test_prompt_optin_no_env_preserves_non_tty_skip(board, monkeypatch, tmp_path
 
     board.prompt_external_review_optin()
 
-    assert not conf.exists() or "external_review_enabled" not in conf.read_text(
+    assert not conf.exists() or "additional_reviewer_enabled" not in conf.read_text(
         encoding="utf-8"
     )
 
@@ -337,7 +337,7 @@ def test_init_scaffold_has_harness_override_comment(board, monkeypatch, tmp_path
 
 # ── C9: cmd_init 재실행 비파괴 병합 — 사용자/operational 키 보존 (T-0184) ──────
 # 🔴 데이터 손실 버그: cmd_init 이 local.conf 를 가드 없이 통째 덮어써 재실행 시 init 이
-# 안 쓰는 사용자 키(external_review_enabled·upstream·upstream_rev·opencode_pro_model 등)가
+# 안 쓰는 사용자 키(additional_reviewer_enabled·upstream·upstream_rev·opencode_pro_model 등)가
 # 소멸하고 커스텀 ctx_window_tokens 가 default 로 리셋됐다. 존재 시 병합으로 수정.
 
 # init 이 안 쓰는 사용자/operational 키 + 커스텀 init 기본키를 담은 기존 local.conf.
@@ -348,7 +348,7 @@ _CUSTOM_CONF = (
     "ctx_nudge_pct=20\nctx_stop_pct=10\n"
     "ctx_window_tokens=5000\n"
     "# 외부 코드리뷰 (ADR-0004)\n"
-    "external_review_enabled=false\n"
+    "additional_reviewer_enabled=false\n"
     "reviewer_cmd=codex exec\n"
     "upstream=/x\nupstream_rev=abc\n"
     "opencode_pro_model=m\n"
@@ -358,7 +358,7 @@ _CUSTOM_CONF = (
 
 
 def test_init_rerun_preserves_custom_operational_keys(board, monkeypatch, tmp_path):
-    """(a) 커스텀 키(external_review_enabled·upstream·upstream_rev·opencode_pro_model 등)를
+    """(a) 커스텀 키(additional_reviewer_enabled·upstream·upstream_rev·opencode_pro_model 등)를
     담은 local.conf 에 cmd_init 재실행 → 모든 커스텀 키/값이 생존한다(통째 덮어쓰기 금지)."""
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
@@ -368,7 +368,7 @@ def test_init_rerun_preserves_custom_operational_keys(board, monkeypatch, tmp_pa
 
     conf_text = conf_path.read_text(encoding="utf-8")
     # init 이 안 쓰는 사용자/operational 키가 전부 원값 그대로 생존.
-    assert "external_review_enabled=false" in conf_text
+    assert "additional_reviewer_enabled=false" in conf_text
     assert "reviewer_cmd=codex exec" in conf_text
     assert "upstream=/x" in conf_text
     assert "upstream_rev=abc" in conf_text
@@ -424,12 +424,12 @@ def test_init_rerun_explicit_session_updates_and_preserves(board, monkeypatch, t
     assert "session=newsess_2" in conf_text
     assert "session=my-pm" not in conf_text
     # session 갱신은 나머지 커스텀 키를 건드리지 않는다.
-    assert "external_review_enabled=false" in conf_text
+    assert "additional_reviewer_enabled=false" in conf_text
     assert "upstream=/x" in conf_text
     assert "ctx_window_tokens=5000" in conf_text
 
 
-# default 키 전부 존재 + external_review_enabled *부재* + 마지막 줄 개행 없음.
+# default 키 전부 존재 + additional_reviewer_enabled *부재* + 마지막 줄 개행 없음.
 # (updates 가 비어 `_set_conf_keys` 가 원문 verbatim 반환 → trailing newline 회귀 재현 조건.)
 _NO_TRAILING_NL_CONF = (
     "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
@@ -449,7 +449,7 @@ def test_init_rerun_no_trailing_newline_optin_append_preserves_last_key(
     붙지 않으며 (b) opt-in 블록이 *새 줄*에서 시작함을 검증한다.
 
     `_init_isolated`(opt-in stub)를 안 쓰고 *실제* prompt_external_review_optin append 를
-    태운다 — 대화형 'n' 경로(external_review_enabled=false 를 append)를 결정적으로 재현."""
+    태운다 — 대화형 'n' 경로(additional_reviewer_enabled=false 를 append)를 결정적으로 재현."""
     conf_path = tmp_path / "local.conf"
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
@@ -469,8 +469,8 @@ def test_init_rerun_no_trailing_newline_optin_append_preserves_last_key(
     # (a) 마지막 키가 변질 안 됨 — 값 온전·뒤에 `#`(주석) 안 붙음.
     assert "ctx_window_tokens=5000\n" in conf_text
     assert "ctx_window_tokens=5000#" not in conf_text
-    # (b) opt-in 블록이 새 줄에서 시작(external_review_enabled 라인이 온전).
-    assert "external_review_enabled=false" in conf_text
+    # (b) opt-in 블록이 새 줄에서 시작(additional_reviewer_enabled 라인이 온전).
+    assert "additional_reviewer_enabled=false" in conf_text
     # 파싱 무결성: 값 파트에 `#` 이 섞여 들어가지 않았다.
     assert board.local_config().get("ctx_window_tokens") == "5000"
-    assert board.local_config().get("external_review_enabled") == "false"
+    assert board.local_config().get("additional_reviewer_enabled") == "false"

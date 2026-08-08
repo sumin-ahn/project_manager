@@ -548,7 +548,7 @@ def _wire(external, monkeypatch, tmp_path, *, conf=None,
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(
         external, "local_config",
-        lambda repo=None: dict(conf) if conf is not None else {"external_review_enabled": "true"})
+        lambda repo=None: dict(conf) if conf is not None else {"additional_reviewer_enabled": "true"})
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, []))
     _stub_reviewer_isolation(external, monkeypatch)
     real_main = external.main
@@ -614,7 +614,7 @@ def test_valid_json_with_corrupt_records_still_runs_gate(
 
 # 수렴-형상 상한(기본 3)은 이 축보다 앞에서 막으므로, 전송 횟수 축만 보는 테스트는 그 노브를
 # 열어 둔다(`review_rounds_max` 는 T-0593 의 별도 축이고 전용 테스트가 소유한다).
-_ROUNDS_MAX_OFF = {"external_review_enabled": "true", "review_rounds_max": "99"}
+_ROUNDS_MAX_OFF = {"additional_reviewer_enabled": "true", "review_rounds_max": "99"}
 
 
 def test_fifth_round_refused_before_reviewer(external, monkeypatch, tmp_path, capsys):
@@ -777,7 +777,7 @@ def test_killed_main_leaves_machine_counted_unfinished_record(
 
 def test_round_limit_knob_changes_threshold(external, monkeypatch, tmp_path):
     """local.conf external_review_round_limit=2 → 3회째 거부 (노브 변경 반영·DoD)."""
-    conf = {"external_review_enabled": "true", "external_review_round_limit": "2"}
+    conf = {"additional_reviewer_enabled": "true", "external_review_round_limit": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     argv = ["--gate", "T-0105", "--paths", "x.py"]
     assert external.main(argv) == 0
@@ -1320,7 +1320,7 @@ def test_old_schema_ledger_keeps_counting_and_gains_outcomes(
 def test_wave_budget_blocks_across_gates_then_ack_wave_resumes(
         external, monkeypatch, tmp_path, capsys):
     """wave 예산은 게이트를 가로질러 합계로 센다 — 소진 시 rc 4·`--ack-wave` 로만 재개 (DoD)."""
-    conf = {"external_review_enabled": "true", "external_review_wave_budget": "2"}
+    conf = {"additional_reviewer_enabled": "true", "external_review_wave_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     for gate in ("T-0310", "T-0311"):         # 서로 다른 게이트 = 각자 라운드 상한은 여유
         assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
@@ -1481,7 +1481,7 @@ def test_outcome_keeps_its_sequence_when_records_are_acked_away(
 def test_negative_wave_spent_does_not_reopen_the_budget(
         external, monkeypatch, tmp_path, capsys):
     """장부를 `spent: -1` 로 고쳐도 예산은 열리지 않는다 — 손상은 승인을 대신하지 않는다."""
-    conf = {"external_review_enabled": "true", "external_review_wave_budget": "2"}
+    conf = {"additional_reviewer_enabled": "true", "external_review_wave_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf, result=_PASS_WITH_ANSWER)
     for gate in ("T-0337", "T-0338"):
         assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
@@ -1521,7 +1521,7 @@ def test_confirm_fix_does_not_open_the_wave_budget(
 
     거부된 실행은 예외 quota 도 쓰지 않는다 — 쓰지도 못한 라운드로 1회를 소모하면 다음 실행이
     처방(`--confirm-fix`)을 잃는다."""
-    conf = {"external_review_enabled": "true", "external_review_wave_budget": "2"}
+    conf = {"additional_reviewer_enabled": "true", "external_review_wave_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     for gate in ("T-0316", "T-0317"):
         assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
@@ -1543,7 +1543,7 @@ def test_confirm_fix_does_not_open_the_wave_budget(
 def _exhaust_both_budgets(external, monkeypatch, tmp_path):
     """게이트 라운드 상한(1)과 wave 예산(2)을 동시에 소진한 장부를 만든다."""
     conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "external_review_round_limit": "1",
         "external_review_wave_budget": "2",
     }
@@ -1671,7 +1671,7 @@ def test_rounds_report_warns_about_ignored_action_flags(
 
 def test_rounds_report_reflects_the_wave_budget_knob(external, monkeypatch, tmp_path, capsys):
     """예산 표기는 해소된 conf 노브를 따른다 (조회와 게이트가 같은 값을 본다)."""
-    conf = {"external_review_enabled": "true", "external_review_wave_budget": "6"}
+    conf = {"additional_reviewer_enabled": "true", "external_review_wave_budget": "6"}
     _wire(external, monkeypatch, tmp_path, conf=conf)
     assert external.main(["--rounds-report"]) == 0
     assert "예산 6" in capsys.readouterr().out
@@ -1970,7 +1970,7 @@ def _wire_real_run_review(external, monkeypatch, tmp_path, *, conf, runner,
 
 # 상한을 전부 1 로 조인 형상 — 스폰 0 인 실행이 하나라도 예산을 먹으면 다음 정상 호출이 rc=4 다.
 _ALL_LIMITS_ONE = {
-    "external_review_enabled": "true",
+    "additional_reviewer_enabled": "true",
     "external_review_round_limit": "1",
     "external_review_wave_budget": "1",
     "external_review_incomplete_round_limit": "1",
@@ -2061,3 +2061,42 @@ def test_failure_after_popen_still_consumes_the_round(external, monkeypatch, tmp
     assert _wave_budget_state(external, tmp_path)["spent"] == 1
     assert run(gate) == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert failing.seen["calls"] == 1, "상한을 넘긴 호출이 리뷰어를 또 띄웠다"
+
+
+# ── 게이트 키 개칭: 구키 deprecation 배선 (T-0597) ───────────────────────────
+#
+# 판정 헬퍼(`legacy_enabled_key_warning`)의 단위 단언만으로는 **`_main` 에서 그 헬퍼를 실제로 부르고
+# 출력하는 배선**이 지워져도 green 이다. 그래서 CLI 표면에서 직접 본다 — 자리는 게이트 판정 *앞*이라
+# 미리보기와 실행이 같은 안내를 받는다(구키로 false 를 적어 둔 채택자가 켜려 할 때도 신키를 안다).
+
+_LEGACY_ENABLED_CONF = {"external_review_enabled": "true"}
+
+
+def test_legacy_gate_key_deprecation_is_printed_on_actual_run(
+        external, monkeypatch, tmp_path, capsys):
+    """구키로 켜진 conf 의 실 실행이 안내 1줄을 stderr 로 낸다 — 실행 자체는 막지 않는다."""
+    calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_ENABLED_CONF)
+
+    assert external.main(["--paths", "x.py"]) == 0
+    assert calls["n"] == 1                                   # 구키도 1릴리즈는 게이트를 연다
+    err = capsys.readouterr().err
+    assert err.count(external.LEGACY_ENABLED_KEY_DEPRECATION) == 1
+
+
+def test_legacy_gate_key_deprecation_is_printed_on_dry_run(
+        external, monkeypatch, tmp_path, capsys):
+    """미리보기도 같은 안내를 받는다 — 전송 0 인 경로에서 처방을 미리 볼 수 있어야 한다."""
+    calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_ENABLED_CONF)
+
+    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
+    assert calls["n"] == 0                                   # 미리보기는 전송 없음
+    assert external.LEGACY_ENABLED_KEY_DEPRECATION in capsys.readouterr().err
+
+
+def test_new_gate_key_run_is_quiet_about_the_legacy_key(
+        external, monkeypatch, tmp_path, capsys):
+    """신키 conf 는 안내를 내지 않는다 — 조건 없이 항상 찍는 배선이면 red."""
+    _wire(external, monkeypatch, tmp_path, conf={"additional_reviewer_enabled": "true"})
+
+    assert external.main(["--paths", "x.py"]) == 0
+    assert "external_review_enabled" not in capsys.readouterr().err

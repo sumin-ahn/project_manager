@@ -200,7 +200,7 @@ def test_init_existing_conf_without_delegate_gets_append(board):
     board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
     board.LOCAL_CONF.write_text(
         "session=pm\npy=python3\ntest_cmd=pytest -q\nctx_window_tokens=500000\n"
-        "external_review_enabled=true\n",
+        "additional_reviewer_enabled=true\n",
         encoding="utf-8")
     rc = board.cmd_init(_init_args())
     assert rc == 0
@@ -209,7 +209,7 @@ def test_init_existing_conf_without_delegate_gets_append(board):
     assert "delegate.developer.harness=codex" in conf
     # 기존 사용자 키/값 보존(비파괴 병합·커스텀 ctx_window·external_review 결정).
     assert "ctx_window_tokens=500000" in conf
-    assert "external_review_enabled=true" in conf
+    assert "additional_reviewer_enabled=true" in conf
     assert "session=pm" in conf
 
 

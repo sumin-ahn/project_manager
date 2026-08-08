@@ -90,7 +90,7 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int], conf=None,
     monkeypatch.setattr(
         external, "local_config",
         lambda repo=None: dict(conf) if conf is not None
-        else {"external_review_enabled": "true"})
+        else {"additional_reviewer_enabled": "true"})
     monkeypatch.setattr(
         external, "extract_diff",
         lambda *a, **k: ("diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n", []))
@@ -241,7 +241,7 @@ def test_converging_series_runs_all_rounds(external, monkeypatch, tmp_path):
 
 def test_rounds_max_knob_changes_the_cap(external, monkeypatch, tmp_path):
     """`review_rounds_max=2` → 3라운드째 차단 (노브 반영)."""
-    conf = {"external_review_enabled": "true", "review_rounds_max": "2"}
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "2"}
     reviewer = _wire(external, monkeypatch, tmp_path, series=[2, 2], conf=conf)
     argv = ["--gate", "T-0596", "--paths", "x.py"]
     for _ in range(2):

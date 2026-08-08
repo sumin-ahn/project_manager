@@ -222,7 +222,7 @@ def test_worktree_shape_local_conf_without_test_cmd_uses_engine_fallback(tmp_pat
         "# per-clone 설정 (git-ignored)\n"
         "py=python3\n"
         "project_name=demo\n"
-        "external_review_enabled=true\n"
+        "additional_reviewer_enabled=true\n"
         "upstream_rev=0123456789abcdef0123456789abcdef01234567\n",
     )
     env = _hook_env(tmp_path)

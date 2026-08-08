@@ -5409,7 +5409,7 @@ _DELEGATE_CONF_SEED = (
 _HARNESS_BUDGET_SEED_MARKER = "하네스별 시간 예산"
 _HARNESS_BUDGET_CONF_SEED = (
     "# ── 하네스별 시간 예산 (무진행 판정 + 벽시계 백스톱·전부 선택) ─────────\n"
-    "# 외부 하네스 실행(위임·외부 리뷰)의 중단 판정은 **무진행**(마지막 진행 출력 이후 침묵)이 주\n"
+    "# 외부 하네스 실행(위임·추가 리뷰)의 중단 판정은 **무진행**(마지막 진행 출력 이후 침묵)이 주\n"
     "# 판정이고 벽시계는 백스톱이다. 엔진 기본값은 축별로 다르다 — 클라우드 축(codex·claude)은\n"
     "# 실측 기반으로 타이트하고, 로컬 GPU 축(opencode)은 긴 침묵 + 장시간 완주를 견딘다.\n"
     "# **미설정이어도 안전**하다(설정 없이 정상 작업이 죽지 않게 잡혀 있다). 아래는 배포 환경이\n"
@@ -5478,7 +5478,7 @@ _REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (externa
 
 
 def _review_rounds_ledger() -> Path:
-    """외부 리뷰 라운드 장부 경로 — 호출 시점 `LOCAL_DIR` 파생(테스트 격리 추종)."""
+    """추가 리뷰 라운드 장부 경로 — 호출 시점 `LOCAL_DIR` 파생(테스트 격리 추종)."""
     return LOCAL_DIR / REVIEW_ROUNDS_LEDGER_NAME
 
 
@@ -6930,25 +6930,54 @@ INIT_GUIDE = """\
 """
 
 # 추가 리뷰어(additional reviewer) 첫 opt-in 이 원자적으로 심는 기본 프로필.
-#   사람이 부르는 역할 이름은 **추가 리뷰어**이고, `external_*` 은 기계 식별자와 외부 전송·격리·
-#   과금 축에만 남긴다(기존 키/파일명은 그대로 — 이름만 사람 표면에서 바뀐다).
+#   사람이 부르는 역할 이름은 **추가 리뷰어**이고, `external_*` 은 이미 기록된 산출물에 박힌 기계
+#   식별자(모듈 파일 이름·raw 파일 접두)와 외부 전송·격리·과금 축에만 남긴다. 게이트 키는
+#   `additional_reviewer_enabled` 로 개칭됐다(T-0597) — 신규 온보딩은 **신키만** 기록하고, 구키
+#   `external_review_enabled` 는 "이미 결정됨" 판정에서만 1릴리즈 더 인정한다(자동 마이그레이션
+#   없음 — 엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다).
 #   `reviewer_cmd` 는 **신규 온보딩에서 만들지 않는다** — 레거시 키는 이미 쓰는 채택자에게만
 #   남고, 새 채택자는 구조적 튜플 하나로 통일한다.
 #   같은 값을 pm_update.ADDITIONAL_REVIEWER_DEFAULTS 도 심는다(두 온보딩 진입·동일 프로필).
 #   실행 해소(하네스/모델/추론 강도 → 실 명령)는 external_review 가 하고, 여기서는 값만
 #   시드한다 — 무거운 실행 코어를 board 로 끌어오지 않는다. 드리프트는 테스트가 잡는다.
+#   키 이름은 external_review 코어 선언과 글자로 같아야 한다(드리프트는 회귀가 잡는다).
+ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer_enabled"
+LEGACY_EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
+
 ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
-    ("external_review_enabled", "true"),
+    (ADDITIONAL_REVIEWER_ENABLED_KEY, "true"),
     ("additional_reviewer.harness", "codex"),
     ("additional_reviewer.model", "gpt-5.6-sol"),
     ("additional_reviewer.reasoning", "max"),
 )
 
-# opt-in "예" 가 append 하는 블록. external_review_enabled=true 는 *설정된* 외부 전송과 통상
+
+def additional_reviewer_decision_key(conf: dict[str, str]) -> str | None:
+    """이미 기록된 opt-in 결정을 공급하는 키 — 신키 우선·구키 1릴리즈 fallback (없으면 None).
+
+    구키만 있는 채택자를 "미결정"으로 보면 온보딩이 다시 물어 **두 키가 공존**하는 conf 를 만든다.
+    그래서 판정은 두 키의 존재로 한다(값의 truthiness 가 아니다 — `false` 도 기록된 결정이다).
+    external_review 코어의 `enabled_decision_key` 와 같은 판정·같은 순서다.
+    """
+    if ADDITIONAL_REVIEWER_ENABLED_KEY in conf:
+        return ADDITIONAL_REVIEWER_ENABLED_KEY
+    if LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf:
+        return LEGACY_EXTERNAL_REVIEW_ENABLED_KEY
+    return None
+
+
+# 구키 deprecation 안내 1줄 — external_review·pm_update 사본과 **같은 문구**다(드리프트는 회귀가
+# 잡는다). 세 진입이 균일해야 채택자가 어느 표면에서 만나든 같은 처방을 받는다.
+LEGACY_ENABLED_KEY_DEPRECATION = (
+    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 구키다 — "
+    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요(다음 릴리즈에서 구키 제거)."
+)
+
+# opt-in "예" 가 append 하는 블록. additional_reviewer_enabled=true 는 *설정된* 외부 전송과 통상
 #   과금에 대한 **지속 동의**라, 이후 리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다.
 ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
     "# 추가 리뷰어(additional reviewer) — ON.\n"
-    "# external_review_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# additional_reviewer_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
     "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다). 프로필은 아래 3키로 교체한다.\n"
     + "".join(f"{key}={value}\n" for key, value in ADDITIONAL_REVIEWER_DEFAULTS)
 )
@@ -6959,14 +6988,14 @@ ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
 #   구조화+레거시 **이중 대상**(엔진이 fail-loud 로 거부하는 형상)이 된다.
 ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK = (
     "# 추가 리뷰어(additional reviewer) — ON (이미 설정된 대상 그대로).\n"
-    "# external_review_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# additional_reviewer_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
     "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다).\n"
-    "external_review_enabled=true\n"
+    "additional_reviewer_enabled=true\n"
 )
 
 # 나중에 켜는 법 — 비대화형/거절 경로가 같은 문장을 쓴다(안내 단일 진실).
 ADDITIONAL_REVIEWER_ENABLE_HINT = (
-    "local.conf 에 external_review_enabled=true + "
+    "local.conf 에 additional_reviewer_enabled=true + "
     "additional_reviewer.harness/model/reasoning"
 )
 
@@ -6974,7 +7003,7 @@ ADDITIONAL_REVIEWER_ENABLE_HINT = (
 #   대상이 있는 채택자에게 구조화 3키를 *더* 적으라는 말이 돼, 레거시 `reviewer_cmd` 위에서는
 #   엔진이 거부하는 이중 대상이 되고 구조화 튜플 위에서는 last-wins 로 자기 선언이 덮인다 —
 #   엔진이 write 경로에서 막아 둔 손상을 안내가 사람 손으로 재현시키는 꼴이다.
-ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT = "local.conf 에 external_review_enabled=true"
+ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT = "local.conf 에 additional_reviewer_enabled=true"
 
 
 def _additional_reviewer_enable_hint(target: str) -> str:
@@ -7069,7 +7098,7 @@ def _additional_reviewer_broken_at_commit_notice(reason: str) -> str:
 # 거절이 기록하는 블록 — 결정 자체는 대상과 무관하므로 한 벌뿐이다.
 ADDITIONAL_REVIEWER_DECLINE_BLOCK = (
     "# 추가 리뷰어 — 기본 OFF. 켜려면 true 로.\n"
-    "external_review_enabled=false\n"
+    "additional_reviewer_enabled=false\n"
 )
 
 # opt-in 커밋 결과 — 락 안에서 **다시 판정한** 사실이다(질문 시점의 판정이 아니다).
@@ -7131,7 +7160,7 @@ def _commit_additional_reviewer_optin(accepted: bool) -> tuple[str, str]:
     """
     with _local_conf_write_lock(LOCAL_CONF):
         conf = local_config()
-        if "external_review_enabled" in conf:
+        if additional_reviewer_decision_key(conf) is not None:
             # 질문하는 사이 결정이 생겼다 — 그 결정이 이긴다(이 응답은 버린다·byte 보존).
             return OPTIN_COMMIT_ALREADY, ""
         try:
@@ -7185,8 +7214,13 @@ def prompt_external_review_optin() -> None:
     판정으로 쓴 기본 4키가 그사이 생긴 대상을 이중 대상/last-wins 로 망가뜨린다.
     """
     conf = local_config()
-    if "external_review_enabled" in conf:
-        return  # 이미 결정됨 (true/false 무관·기존 프로필/레거시 키 불변)
+    decision_key = additional_reviewer_decision_key(conf)
+    if decision_key is not None:
+        # 이미 결정됨 (신키/구키·true/false 무관·기존 프로필/레거시 키 불변). 구키면 처방 1줄 —
+        # init 도 채택자가 구키를 만나는 진입이라 코어·pm_update 와 같은 문구를 낸다.
+        if decision_key == LEGACY_EXTERNAL_REVIEW_ENABLED_KEY:
+            print(f"  {LEGACY_ENABLED_KEY_DEPRECATION}")
+        return
     try:
         target = classify_additional_reviewer_target(conf)
     except AdditionalReviewerTargetError as exc:
@@ -7199,7 +7233,7 @@ def prompt_external_review_optin() -> None:
         print("  (비대화형 — 추가 리뷰어 OFF 유지. 켜려면 "
               f"{_additional_reviewer_enable_hint(target)})")
         return
-    print("\n추가 리뷰어(additional reviewer·external_review)를 켤까요? 코드 diff 가 설정된 "
+    print("\n추가 리뷰어(additional reviewer)를 켤까요? 코드 diff 가 설정된 "
           "리뷰 하네스로 *전송*되고 그 하네스에 *과금*됩니다 — 내부 code-reviewer 와 상보적입니다.")
     if target == REVIEWER_TARGET_NONE:
         print("  예 = 기본 프로필(codex · gpt-5.6-sol · reasoning max)을 한 번에 기록합니다 "
@@ -7216,7 +7250,7 @@ def prompt_external_review_optin() -> None:
     # 질문 전 판정(target)은 **질문 문구**까지의 입력이다. 기록의 입력은 커밋 시점에 다시 읽는다.
     outcome, detail = _commit_additional_reviewer_optin(answer in ("y", "yes"))
     if outcome == OPTIN_COMMIT_ALREADY:
-        print("  (질문하는 사이 local.conf 에 external_review_enabled 결정이 생겨 그 결정을 "
+        print("  (질문하는 사이 local.conf 에 additional_reviewer_enabled 결정이 생겨 그 결정을 "
               "그대로 둡니다 — 이 응답은 기록하지 않았습니다.)")
     elif outcome == OPTIN_COMMIT_BROKEN:
         print(_additional_reviewer_broken_at_commit_notice(detail))
@@ -7313,7 +7347,7 @@ def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
             LOCAL_CONF.write_text(conf, encoding="utf-8")
             return sess
         # 존재 시 — 비파괴 병합. init 이 안 쓰는 사용자/operational 키
-        # (external_review_enabled·additional_reviewer.*·레거시 reviewer_cmd·upstream·
+        # (additional_reviewer_enabled·additional_reviewer.*·레거시 reviewer_cmd·upstream·
         # upstream_rev·opencode_pro_model·status_total_style·user 등)를 절대 삭제/변경하지
         # 않는다. 통째 write 금지.
         text = LOCAL_CONF.read_text(encoding="utf-8")

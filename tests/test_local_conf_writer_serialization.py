@@ -427,7 +427,7 @@ def test_a_concurrent_key_writer_never_loses_the_optin_append(
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["upstream_rev"] == "rev-2", "RMW 의 결정이 사라졌다"
-    assert parsed["external_review_enabled"] == "true", "opt-in 결정이 교체에 덮였다"
+    assert parsed["additional_reviewer_enabled"] == "true", "opt-in 결정이 교체에 덮였다"
     assert parsed["session"] == "pm"
 
 
@@ -467,7 +467,7 @@ def test_a_concurrent_key_writer_waits_for_an_in_flight_optin_append(
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["upstream_rev"] == "rev-2"
-    assert parsed["external_review_enabled"] == "true"
+    assert parsed["additional_reviewer_enabled"] == "true"
 
 
 def test_init_merge_and_optin_append_do_not_lose_either_decision(
@@ -506,7 +506,7 @@ def test_init_merge_and_optin_append_do_not_lose_either_decision(
     assert not append_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["external_review_enabled"] == "true", "opt-in 결정이 병합 교체에 덮였다"
+    assert parsed["additional_reviewer_enabled"] == "true", "opt-in 결정이 병합 교체에 덮였다"
     assert parsed["upstream"] == "/somewhere", "init 이 안 쓰는 사용자 키가 사라졌다"
     assert parsed["py"] == "python3"
 
@@ -563,13 +563,13 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
 ):
     """재-import 의 사용자 키 보존이 **그사이 생긴 결정**을 백업의 옛 값으로 덮지 않는다.
 
-    형상: 백업에 `external_review_enabled=false` 가 있고, board init 산출 conf 에는 아직 그 키가
+    형상: 백업에 `additional_reviewer_enabled=false` 가 있고, board init 산출 conf 에는 아직 그 키가
     없다. 보존 재병합이 "현재 conf 에 없는 키" 판정을 락 밖에서 해 두면, 그 사이 추가 리뷰어
     opt-in 이 `true` 를 기록해도 낡은 계획이 `false` 로 되돌린다(사람이 방금 켠 결정을 무음
     롤백). 판정을 락 안에서 하면 새 결정은 그대로 남고 충돌하지 않는 보존 대상만 복원된다.
     """
     conf = _conf_at(tmp_path, "session=pm\n")
-    backup = "external_review_enabled=false\nmy_custom_key=값\n"
+    backup = "additional_reviewer_enabled=false\nmy_custom_key=값\n"
     barrier = _Barrier()
     real_append = board.file_lock.append_atomic
 
@@ -601,7 +601,7 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
     assert not preserve_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["external_review_enabled"] == "true", (
+    assert parsed["additional_reviewer_enabled"] == "true", (
         "백업의 옛 값이 방금 기록된 결정을 덮었다(락 밖에서 세운 계획)")
     assert parsed["my_custom_key"] == "값", "충돌하지 않는 보존 대상이 사라졌다"
     assert parsed["session"] == "pm"
@@ -968,7 +968,7 @@ def test_a_legacy_copy_still_serializes_against_a_new_api_writer(
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["upstream_rev"] == "rev-2"
-    assert parsed["external_review_enabled"] == "true"
+    assert parsed["additional_reviewer_enabled"] == "true"
 
 
 @pytest.mark.parametrize("name", _LEGACY_MODULES)
@@ -1077,7 +1077,7 @@ def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
     text = conf.read_text(encoding="utf-8")
     parsed = _parse_conf(text)
     assert parsed["session"] == "pm"
-    assert parsed["external_review_enabled"] == "true"
+    assert parsed["additional_reviewer_enabled"] == "true"
     assert parsed["upstream_rev"] == "rev-2"
     if "my_custom_key" in existing:
         assert "# 사용자 주석" in text and parsed["my_custom_key"] == "값"

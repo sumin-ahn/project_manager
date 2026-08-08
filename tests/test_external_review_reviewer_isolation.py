@@ -545,7 +545,7 @@ def test_scrub_failure_is_distinguished_from_absence(external, monkeypatch, tmp_
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config",
-                        lambda repo=None: {"external_review_enabled": "true"})
+                        lambda repo=None: {"additional_reviewer_enabled": "true"})
     monkeypatch.setattr(external, "_build_reviewer_home",
                         lambda *a, **k: external.ReviewerHomeBuild(
                             (".codex/auth.json",), (".codex/config.toml",)))
@@ -566,7 +566,7 @@ def test_main_passes_resolved_denylist_and_conf_to_isolation(external, monkeypat
     """거울/프롬프트 비대칭과 keep_extra 탈출구 사망을 막는 두 배선을 캡처로 고정한다."""
     repo = _standalone_adopter(tmp_path)
     conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "review_denylist_extra": "*vendor_dump*",
         "reviewer_env_keep_extra": "VENDOR_REVIEW_KEY",
     }
@@ -718,7 +718,7 @@ def _blocked_gate_repo(external, monkeypatch, tmp_path) -> Path:
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
-        "external_review_enabled": "true", "external_review_round_limit": "0"})
+        "additional_reviewer_enabled": "true", "external_review_round_limit": "0"})
     return repo
 
 
@@ -760,7 +760,7 @@ def test_workspace_is_removed_when_the_review_raises(external, monkeypatch, tmp_
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
-        "external_review_enabled": "true"})
+        "additional_reviewer_enabled": "true"})
     created: dict[str, Path] = {}
     real_create = external.create_reviewer_workspace
 
@@ -1043,7 +1043,7 @@ def test_main_runs_reviewer_inside_isolated_workspace(external, monkeypatch, tmp
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config",
-                        lambda repo=None: {"external_review_enabled": "true"})
+                        lambda repo=None: {"additional_reviewer_enabled": "true"})
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc-123")
     seen: dict[str, object] = {}
 
@@ -1077,7 +1077,7 @@ def test_isolation_banner_names_applied_keep_extra(external, monkeypatch, tmp_pa
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "reviewer_env_keep_extra": "VENDOR_REVIEW_KEY",
     })
     monkeypatch.setenv("VENDOR_REVIEW_KEY", "k")
@@ -1100,7 +1100,7 @@ def test_reviewer_failure_hint_names_both_escape_keys(external, monkeypatch, tmp
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config",
-                        lambda repo=None: {"external_review_enabled": "true"})
+                        lambda repo=None: {"additional_reviewer_enabled": "true"})
     monkeypatch.setattr(external, "run_review", lambda **kwargs: {
         "reviewer": "codex", "ok": False, "output": "[리뷰어 실행 오류: 401 unauthorized]",
         "verdict": {"has_must_fix": False, "has_pass": False},
@@ -1123,7 +1123,7 @@ def _wire_unbuildable_isolation(external, monkeypatch, tmp_path):
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config",
-                        lambda repo=None: {"external_review_enabled": "true"})
+                        lambda repo=None: {"additional_reviewer_enabled": "true"})
 
     def _boom(*a, **k):
         raise external.ReviewerWorkspaceError("거울 생성 실패(주입)")

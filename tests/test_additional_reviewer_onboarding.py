@@ -1,13 +1,14 @@
-"""추가 리뷰어(additional reviewer) 온보딩·카드·활성문서 계약 (T-0590).
+"""추가 리뷰어(additional reviewer) 온보딩·카드·활성문서 계약 (T-0590·T-0597·T-0598).
 
-사람이 부르는 역할 이름은 **추가 리뷰어**이고, `external_review*`·`external_review_enabled` 는
-기계 식별자와 외부 전송·격리·과금 축의 이름으로 남는다. 이 파일이 못박는 3축:
+사람이 부르는 역할 이름은 **추가 리뷰어**이고, 게이트 키도 `additional_reviewer_enabled` 로 통일돼
+있다(T-0597). `external_review*` 는 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌
+기계 식별자와 외부 전송·격리·과금 축의 이름으로만 남는다. 이 파일이 못박는 3축:
 
 1. **첫 opt-in 계약** — `board.py init` 과 `pm_update` 는 결정이 없을 때만 **1회** 묻고, "예" 면
-   `external_review_enabled=true` + `additional_reviewer.harness/model/reasoning` 4키를 원자적으로
+   `additional_reviewer_enabled=true` + `additional_reviewer.harness/model/reasoning` 4키를 원자적으로
    기록한다(`reviewer_cmd` 미생성). 이미 결정(true/false)이 있으면 묻지도, 기존 구조적 튜플·레거시
    `reviewer_cmd` 를 덮지도 않는다. 비대화형은 안전쪽(OFF) + 나중에 켜는 법 1줄.
-2. **지속 동의** — `external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 지속
+2. **지속 동의** — `additional_reviewer_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 지속
    의사표시다. 카드·매뉴얼이 리뷰마다·라운드 재개마다 비용을 다시 묻게 하면 안 된다. 라운드/wave
    상한은 기계적 anti-loop 정지이고, 정상 수렴 ack 는 PM 자율이다.
 3. **Codex 카드 자족성 / 비누출** — codex 전역 `network_access=false` 아래서 실 전송을 하려면
@@ -36,7 +37,7 @@ TEMPLATE_DIRS = ("claude_code", "codex", "opencode")
 # 첫 opt-in 이 심어야 하는 정확한 4키 (순서 포함). 엔진 상수를 읽지 않고 여기 리터럴로 둔다 —
 # 상수와 함께 조용히 바뀌면 가드가 아니다.
 EXPECTED_DEFAULTS = (
-    ("external_review_enabled", "true"),
+    ("additional_reviewer_enabled", "true"),
     ("additional_reviewer.harness", "codex"),
     ("additional_reviewer.model", "gpt-5.6-sol"),
     ("additional_reviewer.reasoning", "max"),
@@ -147,7 +148,7 @@ def test_board_optin_yes_seeds_exact_tuple(board, monkeypatch, tmp_path, capsys)
 def test_board_optin_no_records_false_without_inventing_target(
     board, monkeypatch, tmp_path
 ):
-    """'n' → external_review_enabled=false 만. 하네스/모델/명령을 지어내지 않는다."""
+    """'n' → additional_reviewer_enabled=false 만. 하네스/모델/명령을 지어내지 않는다."""
     conf = _isolated_conf(board, monkeypatch, tmp_path)
     monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
@@ -155,7 +156,7 @@ def test_board_optin_no_records_false_without_inventing_target(
     board.prompt_external_review_optin()
 
     text = conf.read_text(encoding="utf-8")
-    assert _parse_conf(text) == {"external_review_enabled": "false"}
+    assert _parse_conf(text) == {"additional_reviewer_enabled": "false"}
     assert "reviewer_cmd" not in text
     assert "additional_reviewer." not in text
 
@@ -176,7 +177,7 @@ def test_board_optin_noninteractive_is_off_with_enable_hint(
 
     assert not conf.exists()
     out = capsys.readouterr().out
-    assert "external_review_enabled=true" in out
+    assert "additional_reviewer_enabled=true" in out
     assert "additional_reviewer.harness/model/reasoning" in out
 
 
@@ -184,17 +185,17 @@ def test_board_optin_noninteractive_is_off_with_enable_hint(
     "existing",
     [
         pytest.param(
-            "external_review_enabled=true\nreviewer_cmd=my-reviewer --flag\n",
+            "additional_reviewer_enabled=true\nreviewer_cmd=my-reviewer --flag\n",
             id="legacy-reviewer-cmd",
         ),
         pytest.param(
-            "external_review_enabled=true\n"
+            "additional_reviewer_enabled=true\n"
             "additional_reviewer.harness=opencode\n"
             "additional_reviewer.model=qwen3-coder-next\n"
             "additional_reviewer.reasoning=low\n",
             id="user-structured-tuple",
         ),
-        pytest.param("external_review_enabled=false\n", id="declined"),
+        pytest.param("additional_reviewer_enabled=false\n", id="declined"),
     ],
 )
 def test_board_optin_never_reasks_or_overwrites_a_decision(
@@ -248,7 +249,7 @@ def test_pm_update_optin_no_records_false_only(pm_update, monkeypatch, tmp_path)
     pm_update.maybe_prompt_external_review(dest)
 
     text = conf.read_text(encoding="utf-8")
-    assert _parse_conf(text)["external_review_enabled"] == "false"
+    assert _parse_conf(text)["additional_reviewer_enabled"] == "false"
     assert "additional_reviewer." not in text
 
 
@@ -290,15 +291,15 @@ def test_pm_update_optin_noninteractive_is_off_with_enable_hint(
     "existing",
     [
         pytest.param(
-            "external_review_enabled=true\nreviewer_cmd=my-reviewer --flag\n",
+            "additional_reviewer_enabled=true\nreviewer_cmd=my-reviewer --flag\n",
             id="legacy-reviewer-cmd",
         ),
         pytest.param(
-            "external_review_enabled=true\nadditional_reviewer.harness=claude\n"
+            "additional_reviewer_enabled=true\nadditional_reviewer.harness=claude\n"
             "additional_reviewer.model=opus\n",
             id="user-structured-tuple",
         ),
-        pytest.param("external_review_enabled=false\n", id="declined"),
+        pytest.param("additional_reviewer_enabled=false\n", id="declined"),
     ],
 )
 def test_pm_update_optin_never_reasks_or_overwrites(
@@ -319,7 +320,7 @@ def test_pm_update_optin_never_reasks_or_overwrites(
 
 # ── 축 1: "이미 결정됨" 판정면 = 파싱된 활성 키 (주석·문장·유사 키 아님) ──────
 #
-# 판정을 conf **raw 텍스트 substring** 으로 하면 주석 한 줄(`# external_review_enabled=false`)
+# 판정을 conf **raw 텍스트 substring** 으로 하면 주석 한 줄(`# additional_reviewer_enabled=false`)
 # 이나 무관한 값 안의 같은 문자열이 "이미 결정됨"으로 읽힌다. 그러면 켜려던 채택자는 질문도
 # (대화형) 안내도(비대화형) 못 받고, 결정은 영영 기록되지 않는다. 두 진입 모두 local_config
 # 파싱 의미로 판정해야 한다 — 주석/빈 줄/`=` 없는 줄 제외 · key·value strip · 중복 last-wins.
@@ -327,31 +328,31 @@ def test_pm_update_optin_never_reasks_or_overwrites(
 # 활성 키 부재 = **미결정**. 파싱 규칙의 각 조항이 하나씩 대응한다.
 UNDECIDED_CONFS = (
     pytest.param(
-        "# external_review_enabled=false\nsession=pm\n", id="commented-out-decision"
+        "# additional_reviewer_enabled=false\nsession=pm\n", id="commented-out-decision"
     ),
     pytest.param(
-        "# 켜려면 external_review_enabled=true 로 바꾼다\nsession=pm\n",
+        "# 켜려면 additional_reviewer_enabled=true 로 바꾼다\nsession=pm\n",
         id="prose-comment-naming-the-key",
     ),
     pytest.param(
-        "session=pm\nnot_external_review_enabled=true\n",
+        "session=pm\nnot_additional_reviewer_enabled=true\n",
         id="other-key-ending-with-the-name",
     ),
     pytest.param(
-        "test_cmd=pytest -k external_review_enabled\n",
+        "test_cmd=pytest -k additional_reviewer_enabled\n",
         id="key-name-inside-another-value",
     ),
 )
 
 # 활성 키 존재 = **결정됨**(값 무관). 공백 패딩·중복 키도 local_config 와 같게 본다.
 DECIDED_CONFS = (
-    pytest.param("external_review_enabled=true\n", id="plain-true"),
-    pytest.param("external_review_enabled=false\n", id="plain-false"),
+    pytest.param("additional_reviewer_enabled=true\n", id="plain-true"),
+    pytest.param("additional_reviewer_enabled=false\n", id="plain-false"),
     pytest.param(
-        "  external_review_enabled=true  \nsession=pm\n", id="whitespace-padded-key"
+        "  additional_reviewer_enabled=true  \nsession=pm\n", id="whitespace-padded-key"
     ),
     pytest.param(
-        "external_review_enabled=false\nexternal_review_enabled=true\n",
+        "additional_reviewer_enabled=false\nadditional_reviewer_enabled=true\n",
         id="duplicate-keys-last-wins",
     ),
 )
@@ -359,7 +360,7 @@ DECIDED_CONFS = (
 # 비대화형 경로가 남겨야 하는 "나중에 켜는 법" 문장 (엔진 상수와 별도 리터럴 — 함께 조용히
 # 바뀌면 가드가 아니다).
 ENABLE_HINT_TEXT = (
-    "local.conf 에 external_review_enabled=true + "
+    "local.conf 에 additional_reviewer_enabled=true + "
     "additional_reviewer.harness/model/reasoning"
 )
 
@@ -498,9 +499,9 @@ def test_optin_decision_matches_local_config_key_presence(board, pm_update, tmp_
         conf = tree / ".project_manager" / "local.conf"
         conf.parent.mkdir(parents=True)
         conf.write_text(text, encoding="utf-8")
-        assert ("external_review_enabled" in board.local_config(tree)) is decided, text
-        assert ("external_review_enabled" in pm_update._read_local_conf(conf)) is decided, text
-        assert ("external_review_enabled" in _parse_conf(text)) is decided, text
+        assert ("additional_reviewer_enabled" in board.local_config(tree)) is decided, text
+        assert ("additional_reviewer_enabled" in pm_update._read_local_conf(conf)) is decided, text
+        assert ("additional_reviewer_enabled" in _parse_conf(text)) is decided, text
 
 
 # ── 축 1: 변경 0 수렴 실행(RUN2)도 첫 opt-in 을 배달한다 (진입점 계약) ────────
@@ -614,7 +615,7 @@ def test_main_zero_change_does_not_reask_decided_adopter(
     pm_update, monkeypatch, tmp_path
 ):
     """이미 결정된 채택자는 변경 0 실행이 반복돼도 무질문·byte 보존(재질문 없음)."""
-    decided = "session=pm\nexternal_review_enabled=false\ndelegate_enabled=false\n"
+    decided = "session=pm\nadditional_reviewer_enabled=false\ndelegate_enabled=false\n"
     dest, _source, conf = _zero_change_tree(tmp_path, decided)
     before = conf.read_text(encoding="utf-8")
     monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
@@ -685,7 +686,7 @@ def test_board_init_merge_preserves_existing_profile(board, monkeypatch, tmp_pat
     """기존 conf 가 있는 홈에 init 을 다시 돌려도 추가 리뷰어 프로필은 그대로다."""
     existing = (
         "session=mine\n"
-        "external_review_enabled=true\n"
+        "additional_reviewer_enabled=true\n"
         "additional_reviewer.harness=opencode\n"
         "additional_reviewer.model=qwen3-coder-next\n"
         "additional_reviewer.reasoning=low\n"
@@ -707,7 +708,7 @@ def test_board_init_merge_preserves_existing_profile(board, monkeypatch, tmp_pat
     assert rc == 0
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["external_review_enabled"] == "true"
+    assert parsed["additional_reviewer_enabled"] == "true"
     assert parsed["additional_reviewer.harness"] == "opencode"
     assert parsed["additional_reviewer.model"] == "qwen3-coder-next"
     assert parsed["additional_reviewer.reasoning"] == "low"
@@ -745,7 +746,7 @@ def test_codex_pm_review_card_is_self_contained_for_egress():
 def test_codex_pm_review_card_states_durable_consent_and_mechanical_caps():
     """지속 동의 + 수렴 게이트 규율(3R·발산(증가) 차단·confirm-fix 1회)이 codex 카드에 명시된다."""
     text = CODEX_PM_REVIEW.read_text(encoding="utf-8")
-    assert "external_review_enabled=true" in text
+    assert "additional_reviewer_enabled=true" in text
     assert "후속 호출마다 비용을 다시 묻지 않는다" in text
     assert "기계적 anti-loop 정지" in text
     assert "--rounds-report" in text
@@ -895,13 +896,15 @@ def test_active_docs_have_no_per_round_user_cost_approval_rule():
 #
 # 이름 변경은 **사람이 부르는 역할**에만 적용된다. 활성 표면(출하 스킬 카드 · 방법론 wiki ·
 # README/이식성 문서 · 부트스트랩 첫 턴 카드)에서 폐기 이름을 몰아내되, 다음은 건드리지 않는다:
-#   - 기계 식별자·전송 계약 — `external_review.py` · `external_review_enabled` · `reviewer_cmd`
+#   - 기계 식별자·전송 계약 — `external_review.py` · `additional_reviewer_enabled` · `reviewer_cmd`
 #   - 히스토리 — ADR · CHANGELOG · done 티켓 · archive log · 과거 지적 인용("codex 게이트 must-fix")
 #   - 실제로 *수신 하네스*(선택된 기본 codex)를 가리키는 codex 전용 문맥 — egress 승격 절차 등
 # 인벤토리를 파일 열거로 만드는 이유: 새 카드/새 타깃이 목록을 우회해 폐기 이름을 다시 실어도
 # 자동으로 red 가 되게 하기 위해서다(하드코딩 목록은 반드시 뒤처진다).
 
-RETIRED_ROLE_PHRASES = ("codex 외부 교차검증", "codex 교차검증")
+# 폐기된 역할 이름 — 사람이 부르는 이름은 **추가 리뷰어**다. "외부 리뷰어"는 T-0597 sweep 대상이고,
+# 인벤토리에 agent 카드가 없어 opencode architect 카드 하나가 R1 까지 살아남았다(카드 사각).
+RETIRED_ROLE_PHRASES = ("codex 외부 교차검증", "codex 교차검증", "외부 리뷰어")
 
 SKILL_CARD_ROOTS = (
     REPO / ".claude" / "skills",
@@ -909,6 +912,26 @@ SKILL_CARD_ROOTS = (
     REPO / "templates" / "opencode" / ".claude" / "skills",
     REPO / "templates" / "codex" / ".agents" / "skills",
 )
+
+# agent 카드는 4 네임스페이스가 서로 다른 경로·포맷(codex 는 TOML)이라 스킬 카드 인벤토리로는
+# 잡히지 않는다 — 역할 이름을 싣는 표면이므로 따로 열거한다(glob 패턴까지 명시).
+AGENT_CARD_ROOTS = (
+    (REPO / ".claude" / "agents", "*.md"),
+    (REPO / "templates" / "claude_code" / ".claude" / "agents", "*.md"),
+    (REPO / "templates" / "opencode" / ".opencode" / "agents", "*.md"),
+    (REPO / "templates" / "codex" / ".codex" / "agents", "*.toml"),
+)
+
+
+def _shipping_agent_cards() -> list[Path]:
+    """출하되는 역할 정의 카드 전수 (4 네임스페이스 × 역할). 열거 자체가 판정의 본질."""
+    cards: list[Path] = []
+    for root, pattern in AGENT_CARD_ROOTS:
+        assert root.is_dir(), f"agent 네임스페이스 없음: {root}"
+        found = sorted(root.glob(pattern))
+        assert found, f"agent 카드 0개 — 인벤토리 앵커가 깨졌다: {root}"
+        cards.extend(found)
+    return cards
 
 METHODOLOGY_SURFACES = (
     REPO / ".project_manager" / "wiki" / "pm_role.md",
@@ -959,7 +982,20 @@ def _shipping_skill_cards() -> list[Path]:
 
 
 def _active_pm_surfaces() -> list[Path]:
-    return [*_shipping_skill_cards(), *METHODOLOGY_SURFACES, *BOOTSTRAP_SOURCES]
+    return [*_shipping_skill_cards(), *_shipping_agent_cards(),
+            *METHODOLOGY_SURFACES, *BOOTSTRAP_SOURCES]
+
+
+def test_active_pm_surface_inventory_covers_agent_cards():
+    """인벤토리가 agent 카드 4 네임스페이스를 실제로 포함한다 — 카드 사각(R1 실측)의 재발 차단."""
+    scanned = {path.relative_to(REPO).as_posix() for path in _active_pm_surfaces()}
+    for rel in (
+        ".claude/agents/architect.md",
+        "templates/claude_code/.claude/agents/architect.md",
+        "templates/opencode/.opencode/agents/architect.md",
+        "templates/codex/.codex/agents/architect.toml",
+    ):
+        assert rel in scanned, f"agent 카드가 인벤토리 밖: {rel}"
 
 
 def test_active_pm_surfaces_drop_the_retired_reviewer_role_name():
@@ -1005,7 +1041,7 @@ def test_role_rename_keeps_transport_identifiers_and_history():
     # 전송/설정의 기계 이름은 활성 카드에서도 계속 쓰인다.
     card = CANONICAL_PM_REVIEW.read_text(encoding="utf-8")
     assert "external_review.py" in card
-    assert "external_review_enabled=true" in card
+    assert "additional_reviewer_enabled=true" in card
     playbook = (REPO / ".project_manager" / "wiki" / "pm_playbook.md").read_text(
         encoding="utf-8"
     )
@@ -1272,7 +1308,7 @@ def test_board_optin_yes_on_a_configured_target_writes_only_the_flag(
     after = conf.read_text(encoding="utf-8")
     assert after.startswith(text), "기존 대상 줄이 변형됐다"
     parsed = _parse_conf(after)
-    assert parsed["external_review_enabled"] == "true"
+    assert parsed["additional_reviewer_enabled"] == "true"
     # 기존 대상의 값이 한 글자도 바뀌지 않는다.
     assert _parse_conf(after) | _parse_conf(text) == parsed
     if label == "legacy":
@@ -1309,7 +1345,7 @@ def test_pm_update_optin_yes_on_a_configured_target_writes_only_the_flag(
     after = conf.read_text(encoding="utf-8")
     assert after.startswith(text)
     parsed = _parse_conf(after)
-    assert parsed["external_review_enabled"] == "true"
+    assert parsed["additional_reviewer_enabled"] == "true"
     if label == "legacy":
         assert parsed["reviewer_cmd"] == "my-reviewer --flag --model my-model"
         assert "additional_reviewer." not in after
@@ -1331,7 +1367,7 @@ def test_optin_yes_on_a_configured_target_appends_safely_without_trailing_newlin
     board.prompt_external_review_optin()
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["reviewer_cmd"] == "my-reviewer --flag"
-    assert parsed["external_review_enabled"] == "true"
+    assert parsed["additional_reviewer_enabled"] == "true"
 
     dest, update_conf = _dest_with_conf(tmp_path / "u", newlineless)
     monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
@@ -1339,7 +1375,7 @@ def test_optin_yes_on_a_configured_target_appends_safely_without_trailing_newlin
     pm_update.maybe_prompt_external_review(dest)
     parsed = _parse_conf(update_conf.read_text(encoding="utf-8"))
     assert parsed["reviewer_cmd"] == "my-reviewer --flag"
-    assert parsed["external_review_enabled"] == "true"
+    assert parsed["additional_reviewer_enabled"] == "true"
 
 
 @pytest.mark.parametrize("text", [LEGACY_ONLY_CONF, STRUCTURED_ONLY_CONF])
@@ -1353,7 +1389,7 @@ def test_optin_decline_records_only_the_flag_and_keeps_the_target(
     board.prompt_external_review_optin()
     after = conf.read_text(encoding="utf-8")
     assert after.startswith(text)
-    assert _parse_conf(after)["external_review_enabled"] == "false"
+    assert _parse_conf(after)["additional_reviewer_enabled"] == "false"
 
     dest, update_conf = _dest_with_conf(tmp_path / "u", text)
     monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
@@ -1361,7 +1397,7 @@ def test_optin_decline_records_only_the_flag_and_keeps_the_target(
     pm_update.maybe_prompt_external_review(dest)
     after = update_conf.read_text(encoding="utf-8")
     assert after.startswith(text)
-    assert _parse_conf(after)["external_review_enabled"] == "false"
+    assert _parse_conf(after)["additional_reviewer_enabled"] == "false"
 
 
 @pytest.mark.parametrize("text", BROKEN_TARGET_CONFS)
@@ -1427,7 +1463,7 @@ def test_eof_answer_writes_nothing_in_both_entries(
     monkeypatch.setattr("builtins.input", _eof)
     board.prompt_external_review_optin()
     assert conf.read_text(encoding="utf-8") == text
-    assert "external_review_enabled" not in _parse_conf(conf.read_text(encoding="utf-8"))
+    assert "additional_reviewer_enabled" not in _parse_conf(conf.read_text(encoding="utf-8"))
 
     dest, update_conf = _dest_with_conf(tmp_path / "u", text)
     monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
@@ -1435,7 +1471,7 @@ def test_eof_answer_writes_nothing_in_both_entries(
     monkeypatch.setattr("builtins.input", _eof)
     pm_update.maybe_prompt_external_review(dest)
     assert update_conf.read_text(encoding="utf-8") == text
-    assert "external_review_enabled" not in _parse_conf(
+    assert "additional_reviewer_enabled" not in _parse_conf(
         update_conf.read_text(encoding="utf-8")
     )
 
@@ -1480,7 +1516,7 @@ def test_pm_update_main_eof_leaves_the_conf_untouched(pm_update, monkeypatch, tm
 
     assert pm_update._main([]) == 0
     assert conf_path.read_text(encoding="utf-8") == original, "EOF 인데 conf 가 바뀌었다"
-    assert "external_review_enabled" not in _parse_conf(
+    assert "additional_reviewer_enabled" not in _parse_conf(
         conf_path.read_text(encoding="utf-8")
     )
 
@@ -1493,7 +1529,7 @@ def test_pm_update_main_eof_leaves_the_conf_untouched(pm_update, monkeypatch, tm
 # 대상·구조화의 last-wins)이 창만 바꿔 그대로 재현된다. 그래서 기록 직전에 다시 읽고 다시
 # 판정하며, 재읽기→판정→append 는 배타락 + 단일 O_APPEND 로 닫는다.
 
-_ENABLE_ONLY_HINT_TEXT = "local.conf 에 external_review_enabled=true"
+_ENABLE_ONLY_HINT_TEXT = "local.conf 에 additional_reviewer_enabled=true"
 
 
 def _optin_entry(kind, board, pm_update, monkeypatch, tmp_path, text: str):
@@ -1523,9 +1559,9 @@ ENTRIES = ["board", "pm_update"]
 @pytest.mark.parametrize(
     "appeared",
     [
-        pytest.param("session=pm\nexternal_review_enabled=false\n", id="decided-false"),
+        pytest.param("session=pm\nadditional_reviewer_enabled=false\n", id="decided-false"),
         pytest.param(
-            "session=pm\nexternal_review_enabled=true\n"
+            "session=pm\nadditional_reviewer_enabled=true\n"
             "additional_reviewer.harness=opencode\n"
             "additional_reviewer.model=qwen3-coder-next\n",
             id="decided-true-with-target",
@@ -1571,7 +1607,7 @@ def test_a_target_that_appears_during_the_question_gets_only_the_flag(
     after = conf.read_text(encoding="utf-8")
     assert after.startswith(appeared), "그사이 생긴 대상의 바이트가 변형됐다"
     parsed = _parse_conf(after)
-    assert parsed["external_review_enabled"] == "true"
+    assert parsed["additional_reviewer_enabled"] == "true"
     if label == "legacy":
         assert "additional_reviewer." not in after, "레거시 위에 구조화 대상을 겹쳤다(이중 대상)"
         assert parsed["reviewer_cmd"] == _parse_conf(appeared)["reviewer_cmd"]
@@ -1636,7 +1672,7 @@ def test_declining_after_a_target_appears_records_only_the_flag_and_guides_to_it
 
     after = conf.read_text(encoding="utf-8")
     assert after.startswith(LEGACY_ONLY_CONF)
-    assert _parse_conf(after)["external_review_enabled"] == "false"
+    assert _parse_conf(after)["additional_reviewer_enabled"] == "false"
     assert "additional_reviewer." not in after
     out = capsys.readouterr().out
     assert _ENABLE_ONLY_HINT_TEXT in out
@@ -1668,7 +1704,7 @@ def test_eof_after_a_conf_change_still_writes_nothing(
     run()
 
     assert conf.read_text(encoding="utf-8") == appeared
-    assert "external_review_enabled" not in _parse_conf(appeared)
+    assert "additional_reviewer_enabled" not in _parse_conf(appeared)
 
 
 @pytest.mark.parametrize("kind", ENTRIES)
@@ -1749,3 +1785,213 @@ def test_the_commit_point_append_is_one_write_under_the_shared_lock(
     assert locked == [str(conf.parent / ".local" / "local-conf.lock")]
     assert [path for path, _text in appends] == [str(conf)]
     assert appends[0][1] == module.ADDITIONAL_REVIEWER_OPTIN_BLOCK
+
+
+# ── 축 6: 게이트 키 개칭 + 구키 1릴리즈 fallback (T-0597) ─────────────────────
+#
+# opt-in 게이트 키가 `external_review_enabled` → `additional_reviewer_enabled` 로 바뀌었다. 개칭은
+# 채택자 `local.conf` 를 깨는 축이라 세 가지를 한꺼번에 못박는다:
+#   ① 신규 기록은 **신키만** 쓴다(구키를 새로 만들지 않는다).
+#   ② 구키만 있는 채택자는 여전히 결정된 것으로 읽힌다 — 아니면 온보딩이 다시 물어 두 키가
+#      공존하는 conf 가 생기고, 그 conf 는 어느 값이 이기는지 사람이 알 수 없다.
+#   ③ 두 키가 함께 있으면 **신키가 이긴다** — 개칭 뒤 남은 구키는 옛 결정이라, 새 결정을 옛 값이
+#      되돌리면 켠 사람이 조용히 꺼진다.
+# 엔진은 채택자 conf 를 대신 고쳐 쓰지 않으므로(인스턴스 소유) 처방은 안내 1줄이다.
+GATE_KEY = "additional_reviewer_enabled"
+LEGACY_GATE_KEY = "external_review_enabled"
+
+# 구키 잔존이 정당한 자리 — fallback 을 **구현하는** 세 엔진 파일(canonical + 템플릿 미러 모두
+# 같은 이름), 릴리즈 히스토리(CHANGELOG), 채택자 마이그레이션 절차(README), 그리고 개칭 자체를
+# 단언하는 테스트들. 운영 표면(카드·pm_role·pm_playbook)은 **현재 키만** 가르친다 — 거기서 구키를
+# 다시 설명하면 "둘 다 쓰면 된다"로 읽히고, 제거 릴리즈에서 그 문장들이 통째로 stale 이 된다.
+_LEGACY_GATE_KEY_ENGINE_FILES = ("external_review.py", "board.py", "pm_update.py")
+_LEGACY_GATE_KEY_DOC_FILES = ("CHANGELOG.md", "README.md")
+_LEGACY_GATE_KEY_TEST_FILES = (
+    "tests/test_additional_reviewer_onboarding.py",   # 이 가드 자신(상수·fallback 단언)
+    "tests/test_additional_reviewer_target.py",       # 코어 상수/판정 단언
+    "tests/test_external_review.py",                  # CLI 안내 배선 단언(구키 conf 로 main 실행)
+)
+
+
+def test_gate_key_constants_are_shared_across_the_three_entries(board, pm_update):
+    """세 진입(코어·board·pm_update)의 신키/구키 리터럴이 글자 단위로 같다."""
+    core = _external_review()
+    for module in (core, board, pm_update):
+        assert module.ADDITIONAL_REVIEWER_ENABLED_KEY == GATE_KEY
+        assert module.LEGACY_EXTERNAL_REVIEW_ENABLED_KEY == LEGACY_GATE_KEY
+    # 안내 1줄도 한 문구다 — 채택자가 어느 진입에서 만나든 같은 처방을 받아야 한다(3진입 균일).
+    assert (core.LEGACY_ENABLED_KEY_DEPRECATION
+            == pm_update.LEGACY_ENABLED_KEY_DEPRECATION
+            == board.LEGACY_ENABLED_KEY_DEPRECATION)
+    assert LEGACY_GATE_KEY in core.LEGACY_ENABLED_KEY_DEPRECATION
+    assert GATE_KEY in core.LEGACY_ENABLED_KEY_DEPRECATION
+
+
+@pytest.mark.parametrize(
+    ("conf", "enabled", "warns"),
+    [
+        pytest.param({GATE_KEY: "true"}, True, False, id="new-key-on"),
+        pytest.param({GATE_KEY: "false"}, False, False, id="new-key-off"),
+        pytest.param({LEGACY_GATE_KEY: "true"}, True, True, id="legacy-key-on"),
+        pytest.param({LEGACY_GATE_KEY: "false"}, False, True, id="legacy-key-off"),
+        pytest.param({}, False, False, id="undecided"),
+        # 둘 다 있으면 신키가 이긴다 (양방향).
+        pytest.param({GATE_KEY: "false", LEGACY_GATE_KEY: "true"}, False, False,
+                     id="new-off-beats-legacy-on"),
+        pytest.param({GATE_KEY: "true", LEGACY_GATE_KEY: "false"}, True, False,
+                     id="new-on-beats-legacy-off"),
+    ],
+)
+def test_core_gate_reads_new_key_first_and_falls_back_once(conf, enabled, warns):
+    """코어 게이트: 신키 우선·구키 fallback·구키가 결정을 공급할 때만 경고 1줄."""
+    core = _external_review()
+    assert core._is_enabled(conf) is enabled
+    warning = core.legacy_enabled_key_warning(conf)
+    assert (warning is not None) is warns
+    if warns:
+        assert warning == core.LEGACY_ENABLED_KEY_DEPRECATION
+
+
+def test_onboarding_blocks_never_write_the_legacy_key(board, pm_update):
+    """새로 기록하는 블록(수락·플래그만·거절) 어디에도 구키가 없다 — 개칭은 단방향이다."""
+    for module in (board, pm_update):
+        for block in (module.ADDITIONAL_REVIEWER_OPTIN_BLOCK,
+                      module.ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK,
+                      module.ADDITIONAL_REVIEWER_DECLINE_BLOCK):
+            assert LEGACY_GATE_KEY not in block, block
+            assert GATE_KEY in block
+        for hint in (module.ADDITIONAL_REVIEWER_ENABLE_HINT,
+                     module.ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT):
+            assert LEGACY_GATE_KEY not in hint
+            assert GATE_KEY in hint
+
+
+def test_board_treats_a_legacy_only_conf_as_decided_with_one_notice(
+    board, monkeypatch, tmp_path, capsys
+):
+    """구키만 있는 채택자에게 다시 묻지 않고, init 진입도 같은 처방 1줄을 낸다.
+
+    재질문은 두 키가 공존하는 conf 를 만든다. 안내를 pm_update 에만 두면 `board.py init` 만 도는
+    채택자는 제거 릴리즈까지 구키 사실을 한 번도 못 듣는다.
+    """
+    existing = f"session=pm\n{LEGACY_GATE_KEY}=true\n"
+    conf = _isolated_conf(board, monkeypatch, tmp_path, existing)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt="": pytest.fail("구키 결정을 미결정으로 봤다")
+    )
+
+    board.prompt_external_review_optin()
+
+    assert conf.read_text(encoding="utf-8") == existing      # 자동 마이그레이션 없음
+    assert capsys.readouterr().out.count(board.LEGACY_ENABLED_KEY_DEPRECATION) == 1
+
+
+def test_board_new_key_decision_is_quiet(board, monkeypatch, tmp_path, capsys):
+    """신키로 결정된 conf 는 안내를 내지 않는다 — 조건 없이 찍는 배선이면 red."""
+    existing = f"session=pm\n{GATE_KEY}=true\n"
+    _isolated_conf(board, monkeypatch, tmp_path, existing)
+    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+
+    board.prompt_external_review_optin()
+
+    assert LEGACY_GATE_KEY not in capsys.readouterr().out
+
+
+def test_pm_update_treats_a_legacy_only_conf_as_decided_with_one_notice(
+    pm_update, monkeypatch, tmp_path, capsys
+):
+    """pm_update 도 같은 판정 — 쓰지 않고, 채택자가 만나는 채널이라 처방 1줄을 남긴다."""
+    existing = f"session=pm\n{LEGACY_GATE_KEY}=false\n"
+    dest, conf = _dest_with_conf(tmp_path, existing)
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt="": pytest.fail("구키 결정을 미결정으로 봤다")
+    )
+
+    pm_update.maybe_prompt_external_review(dest)
+
+    assert conf.read_text(encoding="utf-8") == existing      # 자동 마이그레이션 없음
+    out = capsys.readouterr().out
+    assert out.count(pm_update.LEGACY_ENABLED_KEY_DEPRECATION) == 1
+
+
+def test_pm_update_new_key_decision_is_quiet(pm_update, monkeypatch, tmp_path, capsys):
+    """신키로 결정된 conf 는 경고를 내지 않는다 — 경고 조건이 '결정 있음'이 아님을 못박는다."""
+    dest, conf = _dest_with_conf(tmp_path, f"session=pm\n{GATE_KEY}=true\n")
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
+
+    pm_update.maybe_prompt_external_review(dest)
+
+    assert LEGACY_GATE_KEY not in capsys.readouterr().out
+
+
+def _legacy_gate_key_scan_targets() -> list[Path]:
+    """구키 잔존을 검사할 출하 표면 (allowlist 제외 후·축 5 스캔과 같은 인벤토리)."""
+    targets: list[Path] = []
+    for path in repo_owned_paths(REPO, ".", mode=OWNED):
+        if not path.is_file() or path.suffix.lower() not in _RETIRED_ACK_SCAN_SUFFIXES:
+            continue
+        rel = path.relative_to(REPO).as_posix()
+        if rel in _LEGACY_GATE_KEY_DOC_FILES or rel in _LEGACY_GATE_KEY_TEST_FILES:
+            continue
+        if path.name in _LEGACY_GATE_KEY_ENGINE_FILES:
+            continue
+        targets.append(path)
+    return targets
+
+
+def test_legacy_gate_key_has_no_residue_in_shipping_surfaces():
+    """출하 문서·코드 전수에 구 게이트 키가 0건이다 (fallback 구현·히스토리 제외)."""
+    residue = [
+        f"{path.relative_to(REPO).as_posix()}:{lineno}"
+        for path in _legacy_gate_key_scan_targets()
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1)
+        if LEGACY_GATE_KEY in line
+    ]
+    assert not residue, (
+        f"구 게이트 키 잔존({LEGACY_GATE_KEY}) — `{GATE_KEY}` 로 고쳐라:\n  "
+        + "\n  ".join(residue)
+    )
+
+
+def test_legacy_gate_key_scan_covers_the_swept_surfaces():
+    """스캔 인벤토리가 sweep 대상을 실제로 포함한다 — 빈/좁은 스캔의 false-green 방지."""
+    scanned = {path.relative_to(REPO).as_posix() for path in _legacy_gate_key_scan_targets()}
+    for rel in (
+        "docs/portability.md",
+        ".claude/skills/pm-review/SKILL.md",
+        ".claude/skills/pm-dev-delegate/SKILL.md",
+        "templates/claude_code/.claude/skills/pm-review/SKILL.md",
+        "templates/opencode/.claude/skills/pm-review/SKILL.md",
+        "templates/codex/.agents/skills/pm-review/SKILL.md",
+        "templates/codex/.agents/skills/pm-review/SKILL.md",
+        ".project_manager/wiki/pm_role.md",
+        ".project_manager/wiki/pm_playbook.md",
+        "templates/codex/.project_manager/wiki/pm_playbook.md",
+        ".project_manager/tools/pm_import.py",
+        "tests/test_pm_import.py",
+    ):
+        assert rel in scanned, f"sweep 대상이 스캔 밖: {rel}"
+
+
+def test_legacy_gate_key_allowlist_entries_are_load_bearing():
+    """allowlist 는 실제로 구키를 담은 자리만 뺀다 — 빈 예외는 가드를 헐겁게 만든다."""
+    for name in _LEGACY_GATE_KEY_ENGINE_FILES:
+        source = (TOOLS / name).read_text(encoding="utf-8")
+        assert LEGACY_GATE_KEY in source, f"{name} 에 구키 fallback 이 없다 — allowlist 에서 빼라."
+    for rel in _LEGACY_GATE_KEY_DOC_FILES:
+        text = (REPO / rel).read_text(encoding="utf-8")
+        assert LEGACY_GATE_KEY in text, f"{rel} 에 구키 언급이 없다 — allowlist 에서 빼라."
+        assert GATE_KEY in text                               # 처방(신키)이 같은 문서 안에 있다
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "다음 릴리즈에서 제거한다" in changelog              # 구키 제거 예고 부기
+    for rel in _LEGACY_GATE_KEY_TEST_FILES:
+        path = REPO / rel
+        assert path.is_file(), f"allowlist 대상 부재: {rel}"
+        assert LEGACY_GATE_KEY in path.read_text(encoding="utf-8"), (
+            f"{rel} 에 더는 구키가 없다 — allowlist 에서 빼라(스캔 대상 복귀)."
+        )

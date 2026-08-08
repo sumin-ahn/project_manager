@@ -3663,7 +3663,7 @@ def test_self_update_propagates_opencode_adapters_from_templates_source(
         ".opencode/command   @render @source=templates/opencode/.opencode/command\n",
         encoding="utf-8",
     )
-    _write_local_conf(fake_repo, f"upstream={stored}\nexternal_review_enabled=false\n")
+    _write_local_conf(fake_repo, f"upstream={stored}\nadditional_reviewer_enabled=false\n")
     _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -3699,7 +3699,7 @@ def test_self_update_source_templates_absent_errors_rc2(
         ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n",
         encoding="utf-8",
     )
-    _write_local_conf(fake_repo, f"upstream={stored}\nexternal_review_enabled=false\n")
+    _write_local_conf(fake_repo, f"upstream={stored}\nadditional_reviewer_enabled=false\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--dry-run"])
@@ -3730,7 +3730,7 @@ def test_target_opencode_source_channel_self_copy_noop(pm_update, tmp_path, monk
         ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n",
         encoding="utf-8",
     )
-    _write_local_conf(oc_dir, f"upstream={fake_repo}\nexternal_review_enabled=false\n")
+    _write_local_conf(oc_dir, f"upstream={fake_repo}\nadditional_reviewer_enabled=false\n")
     _track_source_tree(fake_repo)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -3759,7 +3759,7 @@ def test_claude_render_only_entry_unaffected_by_source_channel(
     dest_manifest = fake_repo / ".project_manager" / "engine.manifest"
     dest_manifest.parent.mkdir(parents=True, exist_ok=True)
     dest_manifest.write_text(".claude/agents  @render\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={stored}\nexternal_review_enabled=false\n")
+    _write_local_conf(fake_repo, f"upstream={stored}\nadditional_reviewer_enabled=false\n")
     _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -3794,7 +3794,7 @@ def test_render_with_source_marker_renders_operational_tokens(
     )
     _write_local_conf(
         fake_repo,
-        f"upstream={stored}\nproject_name=AcmePay\nexternal_review_enabled=false\n")
+        f"upstream={stored}\nproject_name=AcmePay\nadditional_reviewer_enabled=false\n")
     _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)

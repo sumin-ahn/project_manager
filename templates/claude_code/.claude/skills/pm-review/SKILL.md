@@ -6,18 +6,18 @@ audience: pm-internal
 
 # /pm-review — 추가 리뷰어 교차검증 게이트
 
-backbone은 `.project_manager/tools/external_review.py`(opt-in)이며, PM이 추가 리뷰어 게이트를 실행할 때 사용한다. 역할 이름은 **추가 리뷰어(additional reviewer)** 이고, `external_review*`·`external_review_enabled` 는 기계 식별자와 외부 전송·격리·과금 축의 이름이다.
+backbone은 `.project_manager/tools/external_review.py`(opt-in)이며, PM이 추가 리뷰어 게이트를 실행할 때 사용한다. 역할 이름은 **추가 리뷰어(additional reviewer)** 이고 설정 키도 `additional_reviewer_enabled`·`additional_reviewer.*` 로 통일돼 있다. `external_review*` 는 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 외부 전송·격리·과금 축의 이름으로만 남는다. 개칭 전 구키를 쓰는 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
 
 수신자 프로필은 `local.conf` 의 원자적 튜플 하나다.
 
 ```
-external_review_enabled=true
+additional_reviewer_enabled=true
 additional_reviewer.harness=codex
 additional_reviewer.model=gpt-5.6-sol
 additional_reviewer.reasoning=max
 ```
 
-opt-in 질문은 **첫 1회**뿐이다. `external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**이므로, PM은 리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻지 않는다.
+opt-in 질문은 **첫 1회**뿐이다. `additional_reviewer_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**이므로, PM은 리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻지 않는다.
 
 > **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
 > 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
@@ -32,7 +32,7 @@ opt-in 질문은 **첫 1회**뿐이다. `external_review_enabled=true` 는 설�
 
 ## 수렴 게이트와 라운드 상한
 
-라운드/wave 상한은 **기계적 anti-loop 정지**이지 비용 승인 게이트가 아니다. 비용 의사표시는 `external_review_enabled=true` 한 번으로 끝났다.
+라운드/wave 상한은 **기계적 anti-loop 정지**이지 비용 승인 게이트가 아니다. 비용 의사표시는 `additional_reviewer_enabled=true` 한 번으로 끝났다.
 
 engine은 `--gate <T-NNNN>`별 라운드 장부를 세고, 실행 전에 **수렴 형상**을 먼저 판정해 거부한다(rc=4). 판정 입력은 장부의 must-fix 추이뿐이라 PM 판단이 들어갈 자리가 없다.
 
@@ -100,7 +100,7 @@ python3 .project_manager/tools/external_review.py --base main --paths src/ tests
 
 ## 외부 전송과 실패
 
-- 코드 diff가 외부로 전송되므로 기본 OFF. `local.conf`의 `external_review_enabled=true`로 opt-in한다(첫 1회 질문·이후 지속 동의). 꺼져 있으면 actual 호출은 no-op(exit 0)이고 `--dry-run`은 항상 허용된다(로컬 미리보기·미전송).
+- 코드 diff가 외부로 전송되므로 기본 OFF. `local.conf`의 `additional_reviewer_enabled=true`로 opt-in한다(첫 1회 질문·이후 지속 동의). 꺼져 있으면 actual 호출은 no-op(exit 0)이고 `--dry-run`은 항상 허용된다(로컬 미리보기·미전송).
 - 리뷰어 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL`(내부 code-reviewer 폴백 신호).
 - **빈 diff는 무조건 exit 1**이며 우회 플래그가 없다. 안내대로 worktree cwd + `--paths` / `git add` 후 재실행한다.
 

@@ -8,11 +8,23 @@
 ## [Unreleased]
 
 ### Changed
+- **추가 리뷰어 게이트 키 개칭** — opt-in 게이트 키가 `external_review_enabled` 에서
+  **`additional_reviewer_enabled`** 로 바뀐다. 구키는 이번 릴리즈까지만 fallback 으로 읽히고
+  (신키 우선·둘 다 있으면 신키가 이긴다), 구키로 결정이 잡히면 `external_review.py` 게이트와
+  `pm_update` 온보딩이 각각 deprecation 경고 1줄을 낸다. **구키는 다음 릴리즈에서 제거한다** —
+  채택자는 `local.conf` 의 `external_review_enabled` 를 `additional_reviewer_enabled` 로 바꾼다
+  (자동 마이그레이션 없음·엔진은 채택자 conf 를 고쳐 쓰지 않는다). 새 온보딩(`board.py init`·
+  `pm_update` 첫 opt-in)은 신키만 기록한다. 모듈 파일명(`external_review.py`)·raw 파일 접두
+  (`external_review_*.txt`)·라운드/wave 노브(`external_review_round_limit`·
+  `external_review_wave_budget`·`external_review_incomplete_round_limit`)와 레거시 타임아웃 키
+  (`external_review_timeout`·`external_review_idle_timeout`·`external_review_progress_signal`)는
+  그대로다 — 파일명 변경은 채택자 PM 홈에 구 사본이 남는 형상(동기는 상류 부재 파일을 지우지
+  않는다)을 만들고, raw 접두는 이미 기록된 감사물의 이름이다.
 - **추가 리뷰어(additional reviewer) 온보딩·명명** — 사람이 부르는 역할 이름을 "외부 리뷰어"에서
-  **추가 리뷰어**로 바꾼다. `external_review.py`·`external_review_enabled`·`external_review_*`
-  등 기계 식별자와 외부 전송·격리·과금 축의 이름은 그대로다(키/파일명 변경 0·자동 마이그레이션 0).
+  **추가 리뷰어**로 바꾼다. `external_review.py`·`external_review_*` 등 모듈/raw 기계 식별자와
+  외부 전송·격리·과금 축의 이름은 그대로다(게이트 키만 위 항목대로 개칭·자동 마이그레이션 0).
   `board.py init`·`pm_update` 의 첫 opt-in 은 **1회만** 묻고, "예" 면 `local.conf` 에
-  `external_review_enabled=true` + `additional_reviewer.harness=codex` +
+  `additional_reviewer_enabled=true` + `additional_reviewer.harness=codex` +
   `additional_reviewer.model=gpt-5.6-sol` + `additional_reviewer.reasoning=max` 4키를 원자적으로
   기록한다 — `reviewer_cmd` 는 만들지 않는다. 파일 변경이 0인 수렴 `pm_update` 도 같은 첫 opt-in 을
   배달한다. 이미 결정(true/false)이 있으면 다시 묻지 않고, 활성 플래그만 빠진 채 유효한 구조적
@@ -27,7 +39,7 @@
   dry-run·raw 장부가 동일한 하네스/모델/reasoning/명령 출처를 기록한다. 일부만 설정된 튜플,
   구조화 튜플과 레거시 `reviewer_cmd` 동시 설정, 미지원 값은 격리·예약·송신 전에 fail-loud한다.
   레거시 명령은 호환 실행하되 모델을 추측하지 않고 `unpinned-model` 로 크게 표시한다.
-- **비용 재승인 폐지** — `external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한
+- **비용 재승인 폐지** — `additional_reviewer_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한
   지속 동의다. 카드·매뉴얼·플레이북이 리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻던
   문구를 걷어낸다. 라운드/wave 상한은 기계적 anti-loop 정지로 남으며, PM 은 `--rounds-report` 를
   읽고 **같은 scope 의 정상 수렴이면 자율로 ack** 한다. 사용자에게 올리는 경우는 진짜 미수렴,
@@ -56,7 +68,7 @@
   `external_review.py` 추가 리뷰 송신만 각 진입점의 Codex `exec_command` 건별 승격으로 실행한다.
   dry-run이 승격 필요를 미리 표시하고, 실행은 `sandbox_permissions=require_escalated` +
   `--codex-egress-escalated` attestation을 동반한다. 최초 승인은 각 진입점 전용의 좁은 reusable
-  prefix로 기억하고, `delegate_enabled=true`·`external_review_enabled=true`인 후속 호출은 과금을
+  prefix로 기억하고, `delegate_enabled=true`·`additional_reviewer_enabled=true`인 후속 호출은 과금을
   재질문하지 않는다. 일반 sandbox 오호출은 원격 CLI
   재시도·raw 예약·과금 전 fail-loud하고, 거절/실패를 native GPT로 무음
   대체하지 않는다.

@@ -627,7 +627,17 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   self-update 순서)는 불변이며, 이 테스트의 두 실행은 PM_NONINTERACTIVE=1 이라 온보딩 질문·
 #   conf write 가 발화하지 않는다. rev 기록은 두 실행 모두에서 종전과 같은 키를 같은 값으로
 #   쓴다(락이 추가됐을 뿐 기록 의미 불변) — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "7667a25f97eec1802fdc3fea23da04aa2d3555dc9a9532a7960e0e0f90a30b8a"
+#   T-0597 에서 또 이동 — opt-in 게이트 키가 `additional_reviewer_enabled` 로 개칭되고 개칭 전
+#   구키가 1릴리즈 fallback 이 됐다. 들어온 것은 온보딩 상수
+#   (`ADDITIONAL_REVIEWER_ENABLED_KEY`·`LEGACY_EXTERNAL_REVIEW_ENABLED_KEY`·
+#   `LEGACY_ENABLED_KEY_DEPRECATION`)와 판정 헬퍼(`additional_reviewer_decision_key`),
+#   그 헬퍼를 쓰는 `_commit_additional_reviewer_optin`·`maybe_prompt_external_review` 의 결정 분기,
+#   그리고 블록/힌트 문자열의 키 이름뿐이다. 역적용 delta 의 anchor(어댑터 config 게이트·
+#   `sync_adapter_configs` 본문·`_main` 수렴 블록)와 배달 경계(source/manifest planning → apply →
+#   self-update 순서)에는 겹침이 없고, 이번에도 네 anchor 가 모두 유일하게 해소됐다
+#   (`_slice_replace` 의 count==1 단언 통과). 두 실행은 PM_NONINTERACTIVE=1 이고 fixture 채택자
+#   conf 에 구키가 없어 새 안내 1줄도 발화하지 않는다 — 현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "c73ae9e02dcf90ce541519ca6fc62b6a0a85f3fbcd88f650ef13610c8938435e"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

@@ -475,7 +475,7 @@ def test_delegate_cli_override_raw_records_override_source(
 def test_external_review_cross_repo_different_reviewer_warns_without_blocking(
         external, monkeypatch, tmp_path, capsys):
     engine_conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "reviewer_cmd": "codex exec --sandbox read-only",
     }
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -503,7 +503,7 @@ def test_external_review_cross_repo_different_reviewer_warns_without_blocking(
 def test_external_review_same_effective_reviewer_is_quiet_with_provenance(
         external, monkeypatch, tmp_path, capsys):
     # engine 은 reviewer_cmd 미지정, target 은 현행 default 를 명시 — 실제 송신값은 같으므로 무소음.
-    engine_conf = {"external_review_enabled": "true"}
+    engine_conf = {"additional_reviewer_enabled": "true"}
     engine = _repo(tmp_path / "engine", engine_conf)
     target = _repo(tmp_path / "target", {
         "reviewer_cmd": external.DEFAULT_REVIEWER_CMD,
@@ -523,7 +523,7 @@ def test_external_review_same_effective_reviewer_is_quiet_with_provenance(
 
 def test_external_review_missing_target_conf_is_quiet(
         external, monkeypatch, tmp_path, capsys):
-    engine_conf = {"external_review_enabled": "true"}
+    engine_conf = {"additional_reviewer_enabled": "true"}
     engine = _repo(tmp_path / "engine", engine_conf)
     target = _repo(tmp_path / "target", None)
     _wire_external(external, monkeypatch, engine, target, engine_conf)
@@ -535,7 +535,7 @@ def test_external_review_missing_target_conf_is_quiet(
 def test_external_review_dangling_target_conf_symlink_fails_closed(
         external, monkeypatch, tmp_path, capsys):
     """dangling local.conf는 부재가 아니라 판독 실패이며 대상 denylist 미확인 송신을 차단한다."""
-    engine_conf = {"external_review_enabled": "true"}
+    engine_conf = {"additional_reviewer_enabled": "true"}
     engine = _repo(tmp_path / "engine", engine_conf)
     target = _repo(tmp_path / "target", None)
     target_conf = target / ".project_manager" / "local.conf"
@@ -558,7 +558,7 @@ def test_external_review_dangling_target_conf_symlink_fails_closed(
 def test_external_review_existing_unreadable_target_conf_fails_closed(
         external, monkeypatch, tmp_path, capsys, failure_kind):
     """대상 conf의 정상 부재와 달리, 존재하지만 읽기/해석 불가면 diff 추출 전에 중단한다."""
-    engine_conf = {"external_review_enabled": "true"}
+    engine_conf = {"additional_reviewer_enabled": "true"}
     engine = _repo(tmp_path / "engine", engine_conf)
     target = _repo(tmp_path / "target", None)
     target_conf = target / ".project_manager" / "local.conf"
@@ -603,7 +603,7 @@ def test_external_review_target_only_denylist_warns_and_is_union_applied(
         external, monkeypatch, tmp_path, capsys):
     """대상 보호 선언을 경고만 하고 무시하지 않고 실제 diff denylist에 합친다."""
     engine_conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "review_denylist_extra": "*.engine-vault",
     }
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -633,7 +633,7 @@ def test_external_review_target_only_denylist_warns_and_is_union_applied(
 def test_external_review_same_denylist_is_quiet(
         external, monkeypatch, tmp_path, capsys):
     conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "review_denylist_extra": "*.private *.vault",
     }
     engine = _repo(tmp_path / "engine", conf)
@@ -648,7 +648,7 @@ def test_external_review_engine_denylist_superset_is_safe_and_quiet(
         external, monkeypatch, tmp_path, capsys):
     """엔진이 대상 선언을 이미 모두 포함하면 값 문자열이 달라도 안전 방향이라 무소음이다."""
     engine_conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "review_denylist_extra": "*.private *.vault",
     }
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -664,7 +664,7 @@ def test_external_review_engine_denylist_superset_is_safe_and_quiet(
 def test_external_review_effective_review_paths_difference_warns_when_used(
         external, monkeypatch, tmp_path, capsys):
     engine_conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "review_paths": "src tests",
     }
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -688,7 +688,7 @@ def test_external_review_same_effective_review_path_set_is_quiet(
         external, monkeypatch, tmp_path, capsys):
     """순서·중복과 src/src/./src 표기만 다르면 같은 Git 경로 집합이라 무소음이다."""
     engine_conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "review_paths": "src tests src/",
     }
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -705,7 +705,7 @@ def test_external_review_target_denylist_explicit_path_uses_real_filter_and_bloc
         external, monkeypatch, tmp_path, capsys):
     """대상 전용 합집합 패턴은 실 extract_diff 필터를 거쳐 명시 --paths를 fail-loud 차단한다."""
     engine_conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "review_denylist_extra": "*.engine-vault",
     }
     engine = tmp_path / "engine"
@@ -748,7 +748,7 @@ def test_external_review_target_denylist_explicit_path_uses_real_filter_and_bloc
 def test_external_review_explicit_paths_suppresses_unused_review_paths_difference(
         external, monkeypatch, tmp_path, capsys):
     engine_conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "review_paths": "src tests",
     }
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -790,7 +790,7 @@ def test_review_content_new_axis_preserves_structural_quiet_cases(
 
 def test_external_review_actual_execution_keeps_same_provenance(
         external, monkeypatch, tmp_path, capsys):
-    conf = {"external_review_enabled": "true"}
+    conf = {"additional_reviewer_enabled": "true"}
     engine = _repo(tmp_path / "engine", conf)
     _wire_external(external, monkeypatch, engine, engine, conf)
     seen = {}
@@ -816,7 +816,7 @@ def test_external_review_invalid_timeout_warning_follows_first_line_provenance(
         external, monkeypatch, tmp_path, capsys):
     """fail-soft timeout 경고가 있어도 stderr 첫 줄은 항상 config provenance다."""
     conf = {
-        "external_review_enabled": "true",
+        "additional_reviewer_enabled": "true",
         "harness.codex.wall_timeout": "not-a-timeout",
     }
     engine = _repo(tmp_path / "engine", conf)
