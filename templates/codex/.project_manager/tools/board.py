@@ -6743,6 +6743,19 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
                           file=sys.stderr)
                     return 1
 
+            # 설계 단계 게이트 — `design: required` 티켓은 설계 절을 완성하고
+            # 필드를 `done`(또는 `waived: <사유>`)으로 승격하기 전에는 집을 수 없다. 의존성
+            # 거부와 같은 자리(이동 *전*·board_lock 안)라 티켓은 open/ 에 그대로 남는다.
+            # `n/a`·`waived`·필드 부재(구세대 티켓)는 무영향 — 판정은 `_design_issues` 단일
+            # 깔때기(lint advisory·promote 게이트와 같은 규칙).
+            design_verdict = _design_issues(args.id, body, fm.get("design"))
+            if design_verdict:
+                print(f"cannot claim {args.id}: 설계 단계 미완 — "
+                      f"{design_verdict[0][2]}", file=sys.stderr)
+                print("  → 설계 절(경계 실측·불변식·표면 상한·테스트 전략)을 채우고 설계 "
+                      "검토를 마친 뒤 frontmatter 를 승격하라.", file=sys.stderr)
+                return 1
+
             # 롤백 복원 기준 = 이동 *전* 원본 바이트
             # frontmatter 갱신(claimed_by/claimed_at)을 되돌릴 원본을 우리가 들고 있어야 한다.
             original_bytes = path.read_bytes()
@@ -7800,6 +7813,16 @@ def cmd_new(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 1
 
+    # 설계 단계 기본값 — 명시 `--design` 우선, 무명시는 estimate=large → required · 그 외 n/a
+    # (T-0594). 값 형식은 발행 시점에 fail-loud 로 검증한다 — 잘못된 값이 티켓에 박히면
+    # claim 게이트가 나중에야 걸린다.
+    design = _resolve_design(getattr(args, "design", None),
+                             getattr(args, "estimate", None))
+    design_reason = _validate_design(design)
+    if design_reason:
+        print(f"[중단] {design_reason}", file=sys.stderr)
+        return 1
+
     tmpl_fm, tmpl_body = load_ticket(template_file())
 
     # 발행 규율 게이트: board-git 이 공유(별도 git·submodule) 상태일 때만
@@ -7827,7 +7850,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         # lint 판정은 `tid` 치환과 무관(placeholder/section 검사가 `T-NNNN` 자체를 안 봄) —
         # 발행 전에 판정해 쓰기 경로(open/ vs drafts_dir())를 정한다(open/ 창 노출 0).
         is_draft = _board_git_enabled() and bool(
-            _body_lint_issues(tid, body, strict_sections=True))
+            _body_lint_issues(tid, body, strict_sections=True, design=design))
 
         fm: dict[str, Any] = dict(tmpl_fm)
         fm["id"] = tid
@@ -7850,6 +7873,9 @@ def cmd_new(args: argparse.Namespace) -> int:
         fm["blocks"] = []
         fm["tags"] = (args.tag.split(",") if args.tag else [])
         fm["estimate"] = args.estimate
+        # 설계 단계 상태 — 템플릿에 이미 `design:` 이 있으면 그 자리를, 없으면(구 템플릿) 끝에
+        # 붙는다. 값 자체는 위에서 해소·검증했다.
+        fm["design"] = design
 
         if is_draft:
             drafts_dir().mkdir(parents=True, exist_ok=True)
@@ -7903,7 +7929,8 @@ def cmd_promote(args: argparse.Namespace) -> int:
         return 1
     fm, body = load_ticket(path)
     if _board_git_enabled():
-        remaining = _body_lint_issues(args.id, body, strict_sections=True)
+        remaining = _body_lint_issues(args.id, body, strict_sections=True,
+                                      design=fm.get("design"))
         if remaining:
             print(f"promote 거부 — {args.id} 에 아직 미충전 {len(remaining)}건:",
                   file=sys.stderr)
@@ -9292,8 +9319,123 @@ _STRICT_REQUIRED_SECTIONS: tuple[str, ...] = (
     "## 목표", "## 인터페이스", "## 결정", "## 완료 조건", "## 참고")
 
 
+# ── 티켓 설계 단계 (design 필드 · 설계 절 · claim 게이트 — T-0594) ──────────────
+#
+# 설계 결함이 코드 리뷰 라운드로 전가되는 클래스를 라이프사이클 *앞단*에서 차단한다(근거 T-0587 —
+# 티켓 인터페이스가 명세한 입력 가정이 실환경과 어긋난 채 구현으로 전진해 리뷰 12라운드로도 미수렴).
+# 판정은 **frontmatter 명시값 기준**(기계)이고 설계 *내용* 의 옳고 그름은 사람/리뷰어가 본다 —
+# 엔진은 필드값과 설계 절 충전 여부만 본다.
+# **전 티켓 강제가 아니다**: 자동 `required` 는 estimate=large 뿐이고 나머지는 `n/a` 기본이라
+# 설계 오버헤드가 새 비용이 되지 않는다(touches 패턴 자동 required 는 운용 후 판단).
+DESIGN_REQUIRED = "required"   # 설계 절 완성 + done/waived 승격 전에는 claim 차단
+DESIGN_DONE = "done"           # 설계 절 완성 + 설계 검토 끝 (PM 수동 기입)
+DESIGN_WAIVED = "waived"       # `waived: <사유>` — 사유를 남기고 면제(무영향)
+DESIGN_NA = "n/a"              # 설계 단계 비대상. **필드 부재 = 이 값**(구세대 티켓 하위호환)
+DESIGN_INVALID = "invalid"     # 위 4형식 어디에도 안 맞는 값(오타로 게이트가 조용히 꺼지는 것 방지)
+# 자동 `required` 판정의 유일한 입력 — estimate=large. 그 외는 `n/a`.
+DESIGN_REQUIRED_ESTIMATE = "large"
+# 사람 표면(--design help·거부 메시지)의 값 형식 — 한 곳에서 렌더한다.
+# YAML 주의: `waived: <사유>` 는 콜론을 포함하므로 손편집 시 따옴표로 감싸야 한다
+# (`design: "waived: 리뷰 상한 초과"`). 엔진이 쓸 때는 yaml.safe_dump 가 알아서 인용한다.
+DESIGN_VALUE_FORMS = 'required | done | "waived: <사유>" | n/a'
+
+_DESIGN_SECTION = "## 설계"
+# `_template.md` 설계 절 하위 항목의 뼈대 문장 — 채우면 사라지는 리터럴이라 오탐 0(`_PLACEHOLDERS`
+# 동형). **별도 집합인 이유**: 설계 절은 `design: required|done` 티켓만 채운다 — `n/a` 티켓이
+# 뼈대를 그대로 둔 건 정상이라(`## 메모` 와 같은 부류) 전 티켓 공통 집합에 넣으면 안 된다.
+_DESIGN_PLACEHOLDERS: tuple[str, ...] = (
+    "무엇으로 실측했는지",                              # 경계 실측 미충전
+    "지켜야 하는 성질을 문장으로",                       # 불변식 미충전
+    "무한 표면이면 설계를 기각하고 범위를 좁힌다",         # 표면 상한 미충전
+    "불변식을 고정할 케이스 (경계값·실패 경로)",          # 테스트 전략 미충전
+)
+# 미충전 항목 이름 — 경고 1줄에 "무엇이 비었나" 를 싣는다(`_DESIGN_PLACEHOLDERS` 와 같은 순서).
+_DESIGN_PLACEHOLDER_LABELS: tuple[str, ...] = (
+    "경계 실측", "불변식", "표면 상한", "테스트 전략")
+
+
+def _design_state(design: Any) -> str:
+    """frontmatter `design:` 값 → 정규화 상태 (required/done/waived/n/a/invalid).
+
+    필드 부재·빈값은 `n/a` — 구세대 티켓(설계 절도 필드도 없음)은 마이그레이션 없이 무영향이다.
+    `waived: <사유>` 는 접두만 보고 접는다(사유는 사람용 기록). 형식에 안 맞는 값은 `n/a` 로
+    삼키지 않고 `invalid` 로 세운다 — 오타 하나로 게이트가 조용히 꺼지지 않게(fail-loud).
+    """
+    if design is None:
+        return DESIGN_NA
+    text = str(design).strip()
+    if not text:
+        return DESIGN_NA
+    head, _, reason = text.partition(":")
+    if head.strip().lower() == DESIGN_WAIVED:
+        # 사유 없는 맨 `waived` 는 면제의 근거가 남지 않으므로 형식 위반으로 본다.
+        return DESIGN_WAIVED if reason.strip() else DESIGN_INVALID
+    lowered = text.lower()
+    if lowered in (DESIGN_REQUIRED, DESIGN_DONE, DESIGN_NA):
+        return lowered
+    return DESIGN_INVALID
+
+
+def _resolve_design(explicit: str | None, estimate: str | None) -> str:
+    """발행 시 `design:` 해소 — 명시값 우선, 무명시는 estimate=large → required · 그 외 n/a."""
+    if explicit and str(explicit).strip():
+        return str(explicit).strip()
+    return (DESIGN_REQUIRED if (estimate or "") == DESIGN_REQUIRED_ESTIMATE
+            else DESIGN_NA)
+
+
+def _validate_design(design: str) -> str | None:
+    """`--design` 입력 sanity — 문제면 사유 문자열, 정상이면 None (`_validate_prefix` 동형)."""
+    if _design_state(design) == DESIGN_INVALID:
+        return (f"design 값 인식 불가: {str(design)!r} — {DESIGN_VALUE_FORMS} 중 하나"
+                f"(면제는 사유 필수: \"{DESIGN_WAIVED}: <사유>\")")
+    return None
+
+
+def _design_section_gaps(body: str) -> list[str]:
+    """`## 설계` 절의 미충전 지점 이름 — 절 부재는 절 이름, 충전 완료는 빈 리스트."""
+    if _DESIGN_SECTION not in body:
+        return [f"{_DESIGN_SECTION} 절 부재"]
+    prose = _strip_code(body)
+    return [label
+            for token, label in zip(_DESIGN_PLACEHOLDERS, _DESIGN_PLACEHOLDER_LABELS)
+            if token in prose]
+
+
+def _design_issues(tid: str, body: str, design: Any) -> list[tuple[str, str, str]]:
+    """설계 단계 판정 — `design:` 값 + `## 설계` 절 충전 상태를 **1줄**로 요약한다.
+
+    claim 게이트 · authoring 게이트(new/promote) · 전역 lint advisory 가 공유하는 단일 깔때기다.
+    반환은 0 또는 1건(kind=`design-pending`) — 전역 lint 는 "경고 1줄", 게이트는 그 1줄을 차단
+    사유로 쓴다. `n/a`·`waived`(필드 부재 포함)는 항상 0건이라 설계 단계가 무영향이다.
+
+    `required` 는 설계 절이 다 채워져 있어도 1건을 낸다 — `done` 승격(설계 검토를 사람이 끝냈다는
+    선언)이 남아 있기 때문이다. 반대로 `done` 인데 설계 절이 비었으면 필드값과 절 내용이 어긋난
+    상태라 역시 1건이다(엔진이 보는 건 필드값과 절 존재뿐).
+    """
+    state = _design_state(design)
+    if state == DESIGN_INVALID:
+        return [(tid, "design-pending",
+                 f"design 값 인식 불가: {str(design)!r} — {DESIGN_VALUE_FORMS} 중 하나")]
+    if state not in (DESIGN_REQUIRED, DESIGN_DONE):
+        return []
+    gaps = _design_section_gaps(body)
+    if state == DESIGN_DONE:
+        if not gaps:
+            return []
+        return [(tid, "design-pending",
+                 f"design: {DESIGN_DONE} 인데 설계 절 미충전({' · '.join(gaps)}) — "
+                 f"필드값과 절 내용이 어긋남")]
+    unfilled = f"설계 절 미충전({' · '.join(gaps)}) · " if gaps else ""
+    return [(tid, "design-pending",
+             f"design: {DESIGN_REQUIRED} — {unfilled}설계 절 완성 후 "
+             f"`design: {DESIGN_DONE}` 으로 승격"
+             f"(면제는 `design: \"{DESIGN_WAIVED}: <사유>\"`)")]
+
+
 def _body_lint_issues(tid: str, body: str, *,
-                      strict_sections: bool = False) -> list[tuple[str, str, str]]:
+                      strict_sections: bool = False,
+                      design: Any = None) -> list[tuple[str, str, str]]:
     """단일 티켓 본문의 self-containment issue — `lint_bodies` 와 authoring 게이트가 공유.
 
     `lint_bodies` 의 검사 로직(placeholder·thin)을 단일-티켓 단위로 추출한 것 — `board.py new`
@@ -9303,6 +9445,10 @@ def _body_lint_issues(tid: str, body: str, *,
     존재를 강제한다(절 삭제 회피 차단). False(기본·전역 `lint_bodies` 경로)는 3절 불변
     (`_REQUIRED_SECTIONS`)만 요구 — 인터페이스/결정 절 없는 레거시 티켓의 blast-radius 회피.
     placeholder 검사는 두 모드 공통(단일 규칙).
+
+    `design`: 그 티켓 frontmatter 의 `design:` 값(None=필드 부재=`n/a`). `required`/`done` 일
+    때만 `## 설계` 절 충전을 함께 판정한다(kind=`design-pending`) — 값을 안 넘기는 호출자는
+    설계 판정 없이 기존 검사만 받는다(레거시 호출 무변경).
     """
     issues: list[tuple[str, str, str]] = []
     prose = _strip_code(body)
@@ -9315,6 +9461,7 @@ def _body_lint_issues(tid: str, body: str, *,
         if section not in body:
             issues.append((tid, "thin",
                            f"missing standard section: {section}"))
+    issues.extend(_design_issues(tid, body, design))
     return issues
 
 
@@ -9324,6 +9471,8 @@ def lint_bodies() -> list[tuple[str, str, str]]:
     Checks:
       - placeholder: unfilled `_template.md` text still present as prose
       - thin:        a standard section (목표 / 완료 조건 / 참고) is missing
+      - design-pending: 설계 단계(`design: required`) 미완 — 설계 절 미충전/필드 미승격
+        (advisory·never-block. 차단은 그 티켓을 실제로 집는 claim 게이트가 한다.)
 
     done/blocked tickets are skipped — only live, claimable work is gated.
     """
@@ -9332,7 +9481,7 @@ def lint_bodies() -> list[tuple[str, str, str]]:
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
             fm, body = load_ticket(p)
             tid = fm.get("id") or p.name
-            issues.extend(_body_lint_issues(tid, body))
+            issues.extend(_body_lint_issues(tid, body, design=fm.get("design")))
     return issues
 
 
@@ -10430,6 +10579,9 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #   - areas-merge-union : areas.md 를 담은 git 에 `merge=union` 이 선언되지 않음. 동시 등록
 #     안전(양쪽 행 보존)이 사라진 상태를 보이게만 한다 — 엔진이 backfill 하는 채널이 이미 있고
 #     (`_ensure_board_gitattributes`) 채택자가 자기 `.gitattributes` 를 가질 수 있어 never-block.
+#   - design-pending : 티켓 설계 단계(`design: required`) 미완 — 설계 절 미충전 또는 필드
+#     미승격. 차단은 **그 티켓을 실제로 집는 claim 게이트**가 하므로, 전역 lint 는 남의
+#     설계-중 티켓이 내 push 를 막지 않게 visibility 만 준다(never-block).
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice", "coverage",
      "stale", "orphan", "oversized", "history", "adr-lifecycle", "architecture-stale",
@@ -10437,7 +10589,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "architecture-unverifiable", "status-unverifiable",
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
      "adr-author", "areas-duplicate-repo", "areas-merge-union",
-     "delegate-same-model"})
+     "delegate-same-model", "design-pending"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -11768,7 +11920,9 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     areas-merge-union(areas.md 를 담은 git 에 merge=union 미배포 → 동시 등록 안전 상실 가시화·
     advisory·never-block) +
     delegate-same-model(delegate dev/reviewer 동일-모델 해소 → generate≠evaluate 침식 가시화·
-    advisory·never-block)."""
+    advisory·never-block) +
+    design-pending(티켓 설계 단계 `design: required` 미완 — 설계 절 미충전/필드 미승격 가시화·
+    advisory·never-block·차단은 claim 게이트)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
@@ -11951,6 +12105,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tag", help="comma-separated tags")
     p.add_argument("--estimate", choices=["small", "medium", "large"],
                    default="small")
+    p.add_argument("--design", metavar="값",
+                   help=f"설계 단계 상태 ({DESIGN_VALUE_FORMS}). 생략 시 "
+                        f"estimate={DESIGN_REQUIRED_ESTIMATE} → {DESIGN_REQUIRED}, "
+                        f"그 외 {DESIGN_NA}. required 면 설계 절 완성 + `{DESIGN_DONE}` 승격 "
+                        f"전까지 claim 이 차단된다.")
     p.add_argument("--prefix", help="작업 카테고리 (자유 입력·배타 구획). "
                    "default: local.conf prefix / 없으면 none(무prefix 1급 → legacy T-NNNN)")
     p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf user= / "

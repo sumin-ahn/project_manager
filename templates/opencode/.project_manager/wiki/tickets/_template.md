@@ -12,6 +12,10 @@ blocks: []                   # 이 티켓이 끝나야 풀리는 후속들 (참�
 touches:                     # 건드릴 파일·디렉토리 (다른 세션과 충돌 가능성 평가용)
   - path/to/file
 estimate: small              # small | medium | large
+design: n/a                  # required | done | "waived: <사유>" | n/a — 설계 단계 상태.
+                             # 발행 기본: estimate=large → required, 그 외 n/a (board.py new --design 로 override).
+                             # required 면 아래 `## 설계` 절을 채우고 설계 검토를 마친 뒤 done 으로 승격해야 claim 된다.
+                             # 콜론이 들어가는 waived 형식은 YAML 상 따옴표 필수: design: "waived: <사유>"
 tags: []                     # phase-1, infra 등 분류
 ---
 
@@ -25,6 +29,14 @@ tags: []                     # phase-1, infra 등 분류
 
 ## 결정
 구현 방향에 대한 확정 사항 (어떤 방식으로 / 왜). 미정 사항은 "열린 질문" 으로.
+
+## 설계
+frontmatter `design: required` 인 ticket 만 채운다 (`n/a`·`waived` 면 아래 뼈대를 그대로 둔다).
+
+- **경계 실측**: 인터페이스가 가정한 입력·환경을 무엇으로 실측했는지 (실행한 명령·관측 결과).
+- **불변식**: 구현이 어떤 입력에도 지켜야 하는 성질을 문장으로.
+- **표면 상한**: 입력 공간이 유한한지 판정 — 무한 표면이면 설계를 기각하고 범위를 좁힌다.
+- **테스트 전략**: 불변식을 고정할 케이스 (경계값·실패 경로).
 
 ## 완료 조건 (Definition of Done)
 - [ ] 핵심 산출물 (파일, 동작)
