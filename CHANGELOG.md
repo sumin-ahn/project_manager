@@ -46,6 +46,37 @@
   중대한 scope 확대, 그 밖의 독립적 사용자 게이트 사유다.
 
 ### Added
+- **리뷰 수렴 게이트** — 코드 리뷰 라운드에 기계 수렴 판정을 건다. 기록 라운드가 상한
+  (`review_rounds_max`, 기본 3)에 닿으면 must-fix 잔존과 무관하게 차단하고(사유 라벨
+  `cap-unresolved`/`cap-reached` 분기), 직전 라운드 대비 must_fix 가 늘면(발산) 상한 전에 조기
+  차단한다. `--ack-rounds` 라운드 연장은 폐지(rc=1 거부·재개 승인이 남은 축은 wave 예산 하나).
+  잔여 fix 확인 전용 `--confirm-fix` 를 게이트당 1회 허용(수렴 축 예외일 뿐 전송 횟수 상한은
+  열지 않음·전송 0 실행은 count/wave/confirm 3축 동일 조건 환불). 비수렴의 출구는 라운드 연장이
+  아니라 티켓 재설계·분할이다.
+- **diff 서킷브레이커** — 티켓 touches 스코프 diff 총량이 estimate 상한(small 300 / medium
+  1,000 / large 2,500줄·`diff_cap.<estimate>` conf override)을 넘으면 리뷰 진입과 완료 부기를
+  차단하고 분할·재설계를 요구한다. dry-run·비활성·egress 차단 경로는 검사 밖(전송 확정 구간만).
+- **회귀 스테이징** — 활성 리뷰 사이클(라운드 장부 미종결 ∧ 티켓 claimed) 중 FULL 회귀 요청을
+  touches targeted 로 강등하고, FULL 은 `--final`·pre-push 게이트 경로에서만 돈다. 설치된
+  pre-push 훅이 구세대 본문이면 regression run/check 진입에서 원자 교체로 자기치유한다
+  (`# pm-hook-rev` 세대 스탬프·알려진 구세대 정확일치만·커스텀 본문은 미접촉+경고·순수 파이썬
+  경로 해소로 회귀 진입 subprocess 0).
+- **티켓 설계 단계** — frontmatter `design: required|done|waived:<사유>|n/a`(estimate=large 는
+  required 기본)와 본문 `## 설계` 절(경계 실측·불변식·표면 상한·테스트 전략)을 신설. required
+  티켓은 설계 검토 완료(`done`/`waived`) 전까지 promote 가 거부하고 claim 게이트가 막는다.
+  형식 위반 값은 fail-loud(오타로 게이트가 조용히 꺼지지 않음)·구티켓(필드 부재)은 n/a 하위호환.
+- **위임 세션 재사용** — pm_delegate claude 위임에 `--resume-from`(같은 티켓·role·harness 의
+  rc=0 최신 레코드 결정 선택)을 배선. 재사용 성공 판정은 회신 session_id 일치이며 실패·미일치는
+  fresh + full payload 로 loud 폴백한다(인프라 실패는 재실행이 아니라 폴백 축). 위임 레코드에
+  session_id·usage 4필드(input/cache_creation/cache_read/output)·must_fix 항목·base rev 를
+  구조화 저장해 비용 원장을 겸한다. codex/opencode 축은 미지원 선언(fresh+loud).
+- **완료·위임 부기 게이트** — board complete 가 `## 완료 조건` 체크박스를 판정한다(`- [x]` 와
+  `- [>] <원문> (이월: <사유·귀속>)` 만 통과·done 소급 없음). 위임 실패 종료는 단일 깔때기로
+  수렴해 전 경로에 무음 대체 금지 안내를 부착한다(다른 하네스/모델 자동 대체 없음·명시 fallback
+  tuple 의 1단 loud 폴백만 예외). 핸드오프는 미마감 raw 표면화("이 장부 기준" 명시)·미push
+  commit 경고·push 체크 단계를 얻는다.
+
+### Added
 - **Codex `$pm-review` egress 승격 카드** — codex 전역 `network_access=false` 를 유지한 채 추가
   리뷰어 실 전송만 `exec_command` 건별 승격으로 실행하는 자족 절차를 codex 판 카드에 싣는다
   (sandbox `--dry-run` 선행 → `sandbox_permissions="require_escalated"` +
