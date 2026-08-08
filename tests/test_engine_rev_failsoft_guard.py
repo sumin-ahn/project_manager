@@ -880,7 +880,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 164 = 163 + T-0593 diff 서킷브레이커의 한 경계. ticket_finish 가 external_review 를
     #   형제 로드해 상한 정책·측정식을 빌려 쓰되, 부재/손상은 가드 off 로 물러나고 마킹된
     #   skew 는 그대로 올린다(다른 형제 로더와 같은 규칙).
-    assert len(report.boundaries) == 164, "propagation sweep boundary ratchet changed"
+    # 166 = 164 + T-0595 위임 원장 보강의 두 경계. 회신 구조화 관측과 must_fix 항목 추출은
+    #   감사 보강이라 실패해도 위임을 죽이지 않고 필드 부재로 물러나되(회수 fail-loud 는 종전
+    #   소유자 몫), 마킹된 skew 는 삼키지 않는다 — 사본이 갈린 사실이 원장 누락으로 위장되면 안 된다.
+    assert len(report.boundaries) == 166, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

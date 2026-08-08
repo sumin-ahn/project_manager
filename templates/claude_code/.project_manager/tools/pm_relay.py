@@ -447,6 +447,14 @@ def start_raw_record(
     return record_id
 
 
+# 장부 공통 스키마 키 — 표면별 `extra` 가 절대 덮어쓰지 못하는 이름이다. 조회면이 보는 필드의
+# 뜻이 표면마다 달라지면 장부 하나로 실행을 재구성할 수 없다(start 의 같은 정책과 짝).
+RAW_LEDGER_RESERVED_KEYS: frozenset[str] = frozenset({
+    "id", "surface", "harness", "model", "role", "attempt", "pid",
+    "started_at", "raw_path", "finished_at", "rc", "elapsed_sec", "silence_sec",
+})
+
+
 def finish_raw_record(
     ledger_path: Path,
     record_id: str,
@@ -455,8 +463,14 @@ def finish_raw_record(
     elapsed_sec: float,
     silence_sec: float | None,
     now: datetime.datetime | None = None,
+    extra: dict[str, object] | None = None,
 ) -> None:
-    """동일 레코드에 종료 관측치를 기록한다. 시작 레코드 부재는 유실이므로 fail-loud한다."""
+    """동일 레코드에 종료 관측치를 기록한다. 시작 레코드 부재는 유실이므로 fail-loud한다.
+
+    `extra` = 실행 **후에야 알 수 있는** 표면별 구조화 관측(예: 위임의 세션 id·usage 분해·
+    직전 라운드 must_fix 항목). 공통 스키마 키는 무시하고, 나머지만 같은 레코드 행에 싣는다 —
+    실행 하나의 사실이 두 장부로 갈리지 않게 한다(조인 키 문제 원천 제거).
+    """
     current = now or datetime.datetime.now(datetime.timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=datetime.timezone.utc)
@@ -475,6 +489,9 @@ def finish_raw_record(
                         None if silence_sec is None else round(float(silence_sec), 3)
                     ),
                 })
+                for key, value in (extra or {}).items():
+                    if key not in RAW_LEDGER_RESERVED_KEYS:
+                        row[key] = value
                 found = True
                 break
         if not found:
@@ -595,8 +612,40 @@ def mark_ctx_post_turn_if_over(
     return bool(mark(root, session_id))
 
 
+# claude assistant usage wire → 원장 usage 4필드 이름. 한 스칼라로 접으면 캐시 **재적재**
+# (cache_read)와 **새 적재**(cache_creation)가 구분되지 않아 세션 재사용의 비용 근거가 사라진다.
+CLAUDE_USAGE_WIRE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("input_tokens", "input"),
+    ("cache_creation_input_tokens", "cache_creation"),
+    ("cache_read_input_tokens", "cache_read"),
+    ("output_tokens", "output"),
+)
+
+
+def _claude_usage_fields(usage: object) -> dict[str, int] | None:
+    """claude `message.usage` wire → 원장 4필드(있는 값만·음이 아닌 정수만).
+
+    **없는 필드는 적지 않는다** — 0 은 "0 토큰"이라는 다른 사실이고, 수집 못 한 자리를 0 으로
+    채우면 비용 표가 false-정밀해진다. 값 하나라도 형식이 깨졌으면 그 관측 전체를 미수집으로
+    본다(부분 신뢰 값이 사실로 굳는 걸 막는다)."""
+    if not isinstance(usage, dict):
+        return None
+    fields: dict[str, int] = {}
+    for wire_key, field in CLAUDE_USAGE_WIRE_FIELDS:
+        if wire_key not in usage:
+            continue
+        value = usage.get(wire_key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+        fields[field] = value
+    return fields or None
+
+
 def parse_stream_json(lines) -> tuple[str | None, str | None, int | None]:
     """`claude -p --output-format stream-json` 출력에서 (session_id, result, used_tokens) 추출.
+
+    회전 판정용 3-tuple facade — 같은 1회 파싱의 usage 분해까지 쓰려면
+    `_parse_stream_json_events`(원장·세션 재사용 축)를 쓴다. 파서는 하나다.
 
     - session_id: `system/init` 이벤트의 `session_id`(이후 모든 이벤트에도 실리나 init 우선).
       init 가 없으면 `result` 이벤트의 session_id 로 폴백.
@@ -611,11 +660,23 @@ def parse_stream_json(lines) -> tuple[str | None, str | None, int | None]:
     PoC(`scratch/poc/orchestrator_claude_relay_swap.py`)의 run_turn 파싱 골격을
     순수 함수로 추출 — driver 가 호출하고 테스트가 직접 검증한다.
     """
+    session_id, result, used_tokens, _usage = _parse_stream_json_events(lines)
+    return session_id, result, used_tokens
+
+
+def _parse_stream_json_events(
+    lines,
+) -> tuple[str | None, str | None, int | None, dict[str, int] | None]:
+    """claude stream-json 1회 파싱 — (session_id, result, used_tokens, usage 4필드).
+
+    `parse_stream_json` 의 본체다. 회전 판정은 스칼라 합만 쓰고 원장은 분해를 쓰므로 두
+    소비면이 같은 한 번의 순회를 나눠 갖는다(두 번째 파서를 만들지 않는다)."""
     import json  # 지연 import — 순수 헬퍼만 쓰는 경로의 import 비용 회피.
 
     session_id: str | None = None
     result: str | None = None
     used_tokens: int | None = None
+    usage_fields: dict[str, int] | None = None
     for raw in lines:
         line = raw.strip()
         if not line:
@@ -630,28 +691,14 @@ def parse_stream_json(lines) -> tuple[str | None, str | None, int | None]:
             session_id = event.get("session_id") or session_id
         if event.get("type") == "assistant":
             message = event.get("message")
-            usage = message.get("usage") if isinstance(message, dict) else None
-            if isinstance(usage, dict):
-                keys = (
-                    "input_tokens",
-                    "cache_creation_input_tokens",
-                    "cache_read_input_tokens",
-                    "output_tokens",
-                )
-                values = [usage.get(key, 0) for key in keys]
-                used_tokens = (
-                    sum(values)
-                    if any(key in usage for key in keys)
-                    and all(isinstance(value, int) and not isinstance(value, bool)
-                            and value >= 0 for value in values)
-                    else None
-                )
-            else:
-                used_tokens = None
+            usage_fields = _claude_usage_fields(
+                message.get("usage") if isinstance(message, dict) else None
+            )
+            used_tokens = sum(usage_fields.values()) if usage_fields else None
         if event.get("type") == "result":
             result = event.get("result")
             session_id = session_id or event.get("session_id")
-    return session_id, result, used_tokens
+    return session_id, result, used_tokens, usage_fields
 
 
 def parse_opencode_json(lines) -> tuple[str | None, str | None, int | None]:
@@ -924,19 +971,32 @@ def build_codex_argv(model: str, reasoning: str | None, role: str,
     return argv
 
 
-def build_claude_argv(model: str, reasoning: str | None, role: str) -> list[str]:
+def build_claude_argv(model: str, reasoning: str | None, role: str,
+                      resume_session_id: str | None = None) -> list[str]:
     """claude argv. 프롬프트 stdin 주입·cwd 존중(플래그 불요). `--tools` 로 역할별 가용
     도구 제한, write 역할은 `--permission-mode acceptEdits` 로 무프롬프트 완주.
 
     **출력 형식 = `stream-json`**: `json` 은 종료 시 단일 덩어리라 진행 신호가 0이다. `--verbose`
     는 CLI 강제 요구다(미동반 시 즉시 rc≠0·2.1.220 실측). 회신 추출은 parse_stream_json 이며 이
-    파서는 두 형식을 모두 통과시킨다."""
+    파서는 두 형식을 모두 통과시킨다.
+
+    `resume_session_id` 를 주면 그 세션을 이어받는 turn 이 된다(직전 컨텍스트가 프롬프트 캐시
+    단가로 재적재되고 도구 재읽기가 사라진다 — "재적재 0" 이 아니다). 값은 형식 검증을 통과할
+    때만 실린다: 재개 id 는 argv 에 실리는 유일한 **외부 유래 토큰**이라, 손상 장부의 `--` 시작
+    문자열이 그대로 나가면 CLI 가 그걸 플래그로 소비한다."""
     argv = ["claude", "-p", "--output-format", "stream-json", "--verbose",
             "--model", model, "--tools", claude_tools(role)]
     if reasoning:
         argv += ["--effort", reasoning]
     if role in WRITE_ROLES:
         argv += ["--permission-mode", "acceptEdits"]
+    if resume_session_id is not None:
+        if not is_resumable_session_id(resume_session_id):
+            raise HarnessContractError(
+                f"세션 id 형식 불일치로 재개 argv 를 만들지 않는다: {resume_session_id!r} — "
+                "형식(uuid 표기)이 맞는 값만 실린다(플래그 오소비 차단)."
+            )
+        argv += ["--resume", resume_session_id]
     return argv
 
 
@@ -955,12 +1015,96 @@ def build_opencode_argv(
     return argv
 
 
+# ── 세션 재사용(resume) 계약 ─────────────────────────────────────────────────
+#
+# 재개는 **직전 세션 컨텍스트의 프롬프트 캐시 재적재 + 도구 재읽기 0**이다(재적재 비용 0 아님).
+# 지원 여부는 분기가 아니라 선언표다:
+#   · claude — `-p` 재개 플래그로 같은 세션 id 를 이어받는다. 성공 판정은 **회신 세션 id 일치**
+#     (rc 로 판정하지 않는다 — 만료/부분 손상이 rc=0 새 세션으로 나오는 축은 미측정이다).
+#   · codex — 재개가 대화형 전용이라 `exec --json` argv 와 형식이 다르다. 미검증 argv 를
+#     출하하지 않는다(항상 fresh).
+#   · opencode — 위임 드라이버에 재개 배선 없음.
+HARNESS_RESUME_SUPPORT: dict[str, bool] = {
+    "claude": True, "codex": False, "opencode": False,
+}
+
+# 세션 id 형식(uuid 표기) 가드. 재개 id 는 장부에서 온 값이라 형식이 맞을 때만 argv 에 싣는다.
+SESSION_ID_RE = re.compile(
+    r"\A[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z"
+)
+
+
+def harness_supports_resume(harness: str) -> bool:
+    """이 하네스로 세션 재사용을 시도해도 되는가(미등록/미지원은 False = fresh)."""
+    return bool(HARNESS_RESUME_SUPPORT.get(harness, False))
+
+
+def is_resumable_session_id(value: object) -> bool:
+    """재개 argv 에 실을 수 있는 세션 id 형식인가(uuid 표기 완전일치)."""
+    return isinstance(value, str) and SESSION_ID_RE.match(value) is not None
+
+
+class HarnessReply(NamedTuple):
+    """하네스 wire 1회의 구조화 관측 — 최종 회신·세션 id·원장 usage.
+
+    세 파서가 각자 wire 를 흡수한 결과를 한 형상으로 모은다. 종전 reply 전용 seam 은 이 관측의
+    한 필드를 꺼내는 얇은 facade 다(세션 id·usage 를 버리던 자리)."""
+
+    reply: str | None
+    session_id: str | None
+    usage: dict[str, int] | None
+
+
+def _claude_harness_reply(lines) -> HarnessReply:
+    session_id, reply, _used_tokens, usage = _parse_stream_json_events(lines)
+    return HarnessReply(reply, session_id, usage)
+
+
+def _codex_harness_reply(lines) -> HarnessReply:
+    """thread id 가 세션 id 자리다. usage 는 원장 4필드로 옮기지 않는다 — `cached_input` 이
+    `input` 에 포함되고 cache write 의 포함 관계는 미검증이라, 같은 필드 이름으로 접으면 합산
+    의미가 하네스마다 달라진다(추정 매핑 대신 필드 부재)."""
+    thread_id, reply, _usage = parse_codex_json(lines)
+    return HarnessReply(reply, thread_id, None)
+
+
+def _opencode_harness_reply(lines) -> HarnessReply:
+    """총합 스칼라만 오는 축 — 분해 관측이 없으므로 원장 usage 는 필드 부재로 남긴다."""
+    session_id, reply, _used_tokens = parse_opencode_json(lines)
+    return HarnessReply(reply, session_id, None)
+
+
+# 하네스 → wire 관측 어댑터(선언표 — 소비면에 하네스 분기를 만들지 않는다).
+HARNESS_REPLY_ADAPTERS = {
+    "claude": _claude_harness_reply,
+    "codex": _codex_harness_reply,
+    "opencode": _opencode_harness_reply,
+}
+
+
+def extract_harness_result(harness: str, stdout: str) -> HarnessReply:
+    """하네스 stdout(구조화 wire)에서 회신·세션 id·usage 를 한 번에 관측한다.
+
+    reply 의 **타입 계약은 이 seam 이 소유한다**(아래 `extract_harness_reply` 주석 참조) — 그
+    판정을 여기서 한 번 세우고 두 소비면(회신 전용 facade·원장/세션 재사용)이 같은 결과를 쓴다.
+    미지원 하네스는 fail-loud(조용한 폴백 금지)."""
+    adapter = HARNESS_REPLY_ADAPTERS.get(harness)
+    if adapter is None:
+        raise HarnessContractError(f"미지원 harness {harness!r} — reply 추출 불가.")
+    observed = adapter(stdout.splitlines())
+    reply = observed.reply
+    return observed._replace(
+        reply=reply if isinstance(reply, str) and reply.strip() else None
+    )
+
+
 def extract_harness_reply(harness: str, stdout: str) -> str | None:
     """하네스 stdout(구조화 wire)에서 최종 reply 텍스트만 추출한다.
 
     claude=parse_stream_json → result · codex=parse_codex_json → reply ·
     opencode=parse_opencode_json → reply. 미추출(파싱 실패·빈 출력)은 None — 호출자가 fail-loud
-    한다(wire 원문을 그대로 판정에 넣지 않는다).
+    한다(wire 원문을 그대로 판정에 넣지 않는다). 세션 id·usage 까지 필요한 호출자는
+    `extract_harness_result` 를 쓴다(같은 관측의 다른 필드다).
 
     **최종 회신의 타입 계약은 이 seam 이 소유한다** — 내용이 있는 `str` 하나이고, 그 밖의 값
     (dict/list/수·null·빈 문자열·공백만)은 전부 미추출(None)이다. wire 파서는 "wire 가 무엇을 말했는지"를
@@ -976,16 +1120,7 @@ def extract_harness_reply(harness: str, stdout: str) -> str | None:
     불명확으로만 끝난다 — 폴백 신호(`reply_extraction_failed`)가 서지 않아 호출자가 내부 리뷰어로
     갈아탈 근거를 잃는다. 그래서 존재 판정은 `strip()` 으로 하고, **돌려주는 값은 원문 그대로**다
     (앞뒤 공백까지 회신 바이트의 일부라 판정·전사 표면이 wire 와 어긋나면 안 된다)."""
-    lines = stdout.splitlines()
-    if harness == "claude":
-        _sid, reply, _usage = parse_stream_json(lines)
-    elif harness == "codex":
-        _tid, reply, _usage = parse_codex_json(lines)
-    elif harness == "opencode":
-        _sid, reply, _usage = parse_opencode_json(lines)
-    else:
-        raise HarnessContractError(f"미지원 harness {harness!r} — reply 추출 불가.")
-    return reply if isinstance(reply, str) and reply.strip() else None
+    return extract_harness_result(harness, stdout).reply
 
 
 # ── Codex egress 승격 브리지 (network-off 안전 경계 × 외부 스폰) ─────────────────

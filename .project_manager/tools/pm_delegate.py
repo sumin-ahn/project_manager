@@ -22,7 +22,8 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
   · loud 폴백    — 역할/티어별 명시 fallback tuple 이 있을 때만 인프라 실패를 양성 분류해 1회 실행하고
                   실행 provenance 를 reply/raw 에 남김(미설정·비-인프라 실패는 기존 fail-loud).
                   **시간 예산**: 폴백은 primary 와 별개로 turn timeout 을 새로 쓴다 — 최악 소요는
-                  primary·폴백 **각 하네스 예산의 합**이다(codex/claude=timeout · opencode 는
+                  primary·폴백 **각 하네스 예산의 합**이고, 세션 재사용(--resume-from) 라운드는
+                  미일치 fresh 재실행으로 primary 축을 한 번 더 쓸 수 있다(codex/claude=timeout · opencode 는
                   첫-이벤트 워치독 재시도분이 더 붙는다·_harness_timeout_budget). 호출부(스킬·CI)의
                   대기 예산은 --dry-run 이 찍는 실수치로 잡아라.
   · opt-in 게이트 — `delegate_enabled`(기본 OFF) 비활성 시 rc=3 + stderr 안내(false-green 차단).
@@ -243,7 +244,8 @@ READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 # (표면-flat legacy) > 프로필 선언. 무진행 축은 `harness.<name>.idle_timeout` >
 # `delegate_idle_timeout` > 프로필 선언.
 # 폴백이 발동하면 primary 소진 후 1회 더 실행한다 — 실행 1회의 최악 소요는 하네스마다 달라서
-# _harness_timeout_budget 이 계산한다(2차 폴백 없음 — 상한은 두 시도 예산의 합으로 닫힌다).
+# _harness_timeout_budget 이 계산한다(추가 폴백 없음 — 상한은 두 시도 예산의 합으로 닫히고,
+# 세션 재사용 라운드는 미일치 fresh 재실행분 primary 예산 1회가 더 가산된다).
 
 # 위임 벽시계와 하네스 Bash 상한 사이에 남겨 두는 최소 여유(초) — kill·수확·분류·박제의 예산.
 # 부등식은 `max(유효 primary+fallback 실행 경로) + 여유 ≤ 하네스 상한` 이고
@@ -685,9 +687,13 @@ def build_codex_argv(model: str, reasoning: str | None, role: str, cwd: str) -> 
     return _load_relay().build_codex_argv(model, reasoning, role, str(cwd))
 
 
-def build_claude_argv(model: str, reasoning: str | None, role: str) -> list[str]:
-    """claude argv(공용 계약 wrapper) — `--tools` 역할 제한 + stream-json 진행 신호."""
-    return _load_relay().build_claude_argv(model, reasoning, role)
+def build_claude_argv(model: str, reasoning: str | None, role: str,
+                      resume_session_id: str | None = None) -> list[str]:
+    """claude argv(공용 계약 wrapper) — `--tools` 역할 제한 + stream-json 진행 신호.
+
+    `resume_session_id` 는 세션 재사용 turn 에서만 실린다(형식 가드는 공용 계약이 소유)."""
+    return _load_relay().build_claude_argv(
+        model, reasoning, role, resume_session_id)
 
 
 def build_opencode_argv(
@@ -2305,6 +2311,193 @@ def _cmd_raw(argv: list[str]) -> int:
     return 0
 
 
+# ── 세션 재사용 (resume 라운드) ───────────────────────────────────────────
+#
+# 재위임/다라운드 재작업이 직전 위임 세션을 이어받으면 그 컨텍스트가 프롬프트 캐시 단가로
+# 재적재되고 도구 재읽기가 사라진다(재적재 비용 0 이 아니라 **단가가 내려간다**). 배선 축은
+# 위임 채널 하나뿐이다 — 추가 리뷰어 축은 라운드마다 임시 홈·전사 없는 환경으로 도는 오염 통제가
+# 목적이라 세션 연속성을 의도적으로 끊으며, 그 정책을 완화하지 않는다.
+#
+# 저장 축도 하나다: 세션 id·usage 분해·직전 must_fix 항목·기준 rev 는 **raw 장부의 그 실행
+# 레코드 행**에 실린다. 리뷰 라운드 장부(수렴 게이트 소유)는 건드리지 않는다 — 두 장부를 조인할
+# 키를 만들지 않으면 어긋날 수도 없다. 그래서 재사용 가용 창의 상한은 raw 장부의 완료 레코드
+# 보존 창(기간·건수)이며, 창 밖 재위임은 후보 부재로 자연히 fresh 다(결함 아님).
+#
+# 회계는 **기록만** 한다 — 위임 라운드에는 새 상한도 거부 rc 도 두지 않는다(리뷰 게이트의 라운드
+# 상한·must_fix 추이·wave 예산과 서로 오염되지 않게 네임스페이스를 분리한다).
+
+# `--resume-from` 후보 지시자 — 티켓 표기면 그 티켓의 최근 위임, 아니면 레코드 id 정확일치.
+RESUME_TICKET_PREFIX = "T-"
+# 위임 축 raw 장부 표면 이름 — 재사용 후보는 이 표면 레코드만이다(리뷰 축 레코드는 후보 아님).
+DELEGATE_RAW_SURFACE = "delegate"
+# 후보가 만족해야 하는 마감 rc(성공 마감만 이어받는다).
+RESUME_REQUIRED_RC = 0
+# raw 장부 행에 싣는 구조화 필드 이름(조회면/테스트가 같은 이름을 본다).
+RESUME_FIELD_SESSION_ID = "session_id"
+RESUME_FIELD_MUST_FIX = "must_fix_items"
+RESUME_FIELD_BASE_REV = "base_rev"
+RESUME_FIELD_USAGE = "usage"
+RESUME_FIELD_TICKET = "ticket"
+RESUME_FIELD_RESUME_FROM = "resume_from_session_id"
+RESUME_FIELD_RESUME_MATCHED = "resume_matched"
+# attempt 라벨 — raw 헤더/장부가 이 실행이 어떤 라운드였는지 그대로 말한다.
+RESUME_ATTEMPT = "resume"
+RESUME_FRESH_FALLBACK_ATTEMPT = "fresh-after-resume-mismatch"
+
+
+class ResumePlan(NamedTuple):
+    """확정된 세션 재사용 1건 — 이어받을 세션 id 와 그 세션에 보낼 delta payload."""
+
+    session_id: str
+    record_id: str
+    delta_prompt: str
+
+
+def _resume_selector_matches(row: dict, selector: str) -> bool:
+    """지시자와 레코드의 대응 — 티켓 표기면 기록된 ticket, 아니면 레코드 id 정확일치."""
+    if selector.startswith(RESUME_TICKET_PREFIX):
+        return row.get(RESUME_FIELD_TICKET) == selector
+    return row.get("id") == selector
+
+
+def select_resume_record(
+    rows: Sequence[dict], *, selector: str, role: str, harness: str,
+) -> dict | None:
+    """재사용 후보 1건 — 같은 지시자·role·하네스의 **성공 마감 레코드 중 started_at 최신**.
+
+    결정적 1줄 규칙이다(후보가 여럿이어도 고르는 값이 하나로 정해진다). 하네스가 선택 키인
+    이유는 세션 id 가 발급 축 안에서만 뜻이 있기 때문이다 — 다른 축의 id 도 형식 가드를 통과할
+    수 있어(codex thread id 가 uuid 표기다) 형식만으로는 남의 세션을 거르지 못하고, 그대로
+    보내면 확정 실패 뒤 fresh 재실행으로 한 라운드를 더 지불한다.
+    """
+    matches = [
+        row for row in rows
+        if isinstance(row, dict)
+        and row.get("surface") == DELEGATE_RAW_SURFACE
+        and row.get("role") == role
+        and row.get("harness") == harness
+        and row.get("rc") == RESUME_REQUIRED_RC
+        and _resume_selector_matches(row, selector)
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda row: str(row.get("started_at", "")))
+
+
+def build_resume_delta_payload(
+    *, must_fix_items: Sequence[str], base_rev: str | None, task_text: str,
+) -> str:
+    """이어받는 turn 에 보낼 delta payload.
+
+    입력은 **장부의 구조화 필드**(직전 라운드 must_fix 항목·기준 rev)와 호출자가 넘긴 원문뿐이다.
+    raw 박제 파일을 다시 읽거나 자유 서술을 파싱하지 않으며, 해소 주장은 호출자의 불투명 문자열로
+    그대로 실어 보낸다(엔진이 그 내용을 해석하지 않는다). 역할 preamble 은 붙이지 않는다 — 이어받는
+    세션엔 이미 있다(그래서 재사용이 실패하면 full payload 로 돌아가야 한다).
+    """
+    lines = [
+        "## 이어지는 라운드 (직전 위임 세션 재사용)",
+        "이 세션은 직전 위임 라운드를 이어받는다 — 역할·금지·이미 읽은 파일은 그대로 유효하다.",
+        "아래 '직전 라운드 기록'은 장부에 남은 구조화 값이고, 그 뒤 본문은 호출자가 보낸 원문이다.",
+        "",
+        "### 직전 라운드 기록",
+        f"- 기준 rev: {base_rev}" if base_rev else "- 기준 rev: 장부에 기록 없음",
+    ]
+    items = [str(item) for item in must_fix_items if str(item).strip()]
+    if items:
+        lines.append("- must_fix 항목:")
+        lines.extend(
+            f"  {index}. {item}" for index, item in enumerate(items, start=1)
+        )
+    else:
+        lines.append("- must_fix 항목: 장부에 기록 없음")
+    lines += ["", "### 이번 라운드 입력 (호출자 원문)", "", task_text]
+    return "\n".join(lines)
+
+
+def _resume_unavailable(reason: str) -> None:
+    """재사용 불가 사유를 1줄로 알리고 fresh 로 간다(조용한 강등 금지·차단은 아님)."""
+    print(
+        f"세션 재사용 미적용: {reason} — fresh 스폰 + full payload 로 진행합니다.",
+        file=sys.stderr,
+    )
+
+
+def resolve_resume_plan(
+    selector: str | None,
+    *,
+    harness: str,
+    role: str,
+    task_text: str,
+    output_dir: Path | None,
+) -> ResumePlan | None:
+    """`--resume-from` 지시자를 확정된 재사용 1건으로 해소한다(불가하면 None + loud 1줄).
+
+    막히는 자리는 셋이고 전부 **비차단**이다: 재개 미지원 하네스, 후보 부재(보존 창 밖·다른
+    role·미마감/실패 레코드), 세션 id 형식 불일치. 어느 쪽이든 fresh + full payload 로 진행한다.
+    """
+    if not selector:
+        return None
+    relay = _load_relay()
+    if not relay.harness_supports_resume(harness):
+        _resume_unavailable(f"{harness} 하네스는 재개 argv 가 미검증(선언표 미지원)")
+        return None
+    _raw_dir, ledger_path = _raw_storage(output_dir)
+    try:
+        rows = relay.raw_records(ledger_path)
+    except (OSError, ValueError) as exc:
+        _resume_unavailable(f"raw 장부를 읽지 못함({exc})")
+        return None
+    record = select_resume_record(
+        rows, selector=selector, role=role, harness=harness,
+    )
+    if record is None:
+        _resume_unavailable(
+            f"{selector!r} 의 성공 마감 위임 레코드(role={role}·harness={harness}) 없음 — "
+            "장부 보존 창 밖이거나 아직 없는 라운드"
+        )
+        return None
+    session_id = record.get(RESUME_FIELD_SESSION_ID)
+    if not relay.is_resumable_session_id(session_id):
+        _resume_unavailable(
+            f"레코드 {record.get('id')} 의 세션 id 형식 불일치({session_id!r})"
+        )
+        return None
+    must_fix_items = record.get(RESUME_FIELD_MUST_FIX)
+    base_rev = record.get(RESUME_FIELD_BASE_REV)
+    return ResumePlan(
+        session_id=session_id,
+        record_id=str(record.get("id")),
+        delta_prompt=build_resume_delta_payload(
+            must_fix_items=(
+                must_fix_items if isinstance(must_fix_items, list) else ()
+            ),
+            base_rev=base_rev if isinstance(base_rev, str) else None,
+            task_text=task_text,
+        ),
+    )
+
+
+def _observed_must_fix_items(reply: str | None) -> list[str]:
+    """회신에서 must_fix 항목을 **생산 시점에** 뽑아 장부에 실을 목록으로 만든다.
+
+    다음 라운드의 delta 는 이 목록만 읽는다 — raw 박제 텍스트를 나중에 다시 파싱하지 않는다.
+    추출기는 추가 리뷰어 축이 이미 쓰는 것을 그대로 재사용한다(파서를 새로 만들지 않는다).
+    """
+    if not reply or not reply.strip():
+        return []
+    try:
+        items = _load_external_review()._extract_must_fix_items(reply)
+    except Exception as exc:  # noqa: BLE001 — 원장 보강 실패가 위임 자체를 죽이지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
+        print(
+            f"경고: 장부 must_fix 항목 추출 실패({exc}) — 이 레코드는 항목 없이 남습니다.",
+            file=sys.stderr,
+        )
+        return []
+    return [item for item in items if item and item.strip()]
+
+
 def _format_silence(silence_sec: float | None, idle_killed: bool) -> str:
     """감사 헤더의 침묵 관측치 1줄 값 — 다음 kill 의 원인을 사후 확정하는 입력.
 
@@ -2743,13 +2936,17 @@ def _cleanup_failure_result(harness: str, exc: BaseException) -> RunResult:
 
 
 class DelegateAttempt(NamedTuple):
-    """단일 하네스 실행과 감사 raw 결과(폴백 재귀 없이 primary/fallback 각 1회)."""
+    """단일 하네스 실행과 감사 raw 결과(폴백 재귀 없이 primary/fallback 각 1회).
+
+    `session_id` = 회신 wire 가 말한 세션 id(관측 실패는 None). 세션 재사용 성공 판정은 이
+    값과 요청 id 의 일치뿐이다."""
 
     harness: str
     model: str
     argv: list[str]
     result: RunResult
     raw_path: Path
+    session_id: str | None = None
 
 
 def _build_target_argv(
@@ -2759,17 +2956,18 @@ def _build_target_argv(
     role: str,
     cwd: Path,
     prompt_file: Path,
+    resume_session_id: str | None = None,
 ) -> list[str]:
     if harness == "codex":
         return build_codex_argv(model, reasoning, role, str(cwd))
     if harness == "claude":
-        return build_claude_argv(model, reasoning, role)
+        return build_claude_argv(model, reasoning, role, resume_session_id)
     return build_opencode_argv(model, reasoning, role, str(cwd), str(prompt_file))
 
 
 def _prepare_attempt_transport(
     harness: str, model: str, reasoning: str | None, role: str, cwd: Path,
-    prompt: str, output_dir: Path | None,
+    prompt: str, output_dir: Path | None, resume_session_id: str | None = None,
 ) -> tuple[list[str], str | None, Path | None]:
     """하네스별 wire transport만 준비한다(timeout/판정은 소유하지 않는 좁은 어댑터)."""
     if harness == "opencode":
@@ -2780,7 +2978,9 @@ def _prepare_attempt_transport(
             prompt_path,
         )
     return (
-        _build_target_argv(harness, model, reasoning, role, cwd, Path()),
+        _build_target_argv(
+            harness, model, reasoning, role, cwd, Path(), resume_session_id,
+        ),
         prompt,
         None,
     )
@@ -2805,21 +3005,35 @@ def _execute_attempt(
     local_conf_path: Path | None = None,
     profile_source: str = "local-conf",
     codex_egress: str = CODEX_EGRESS_NOT_REQUIRED,
+    resume_session_id: str | None = None,
+    ticket: str | None = None,
+    base_rev: str | None = None,
 ) -> DelegateAttempt:
     """하네스 1회를 실행하고 raw를 박제한다.
 
     폴백도 같은 드라이버/권한축/env allowlist/timeout 계약을 탄다(그래서 폴백이 발동한 실행의 최악
-    소요는 두 시도의 하네스별 예산 합이다·_harness_timeout_budget). opencode의 합성 prompt-file은
+    소요는 두 시도의 하네스별 예산 합이고, 세션 재사용 라운드는 primary 축을 두 번 쓸 수
+    있다·_harness_timeout_budget). opencode의 합성 prompt-file은
     attempt마다 만들고 즉시 정리한다. DI run_fn이 예외를 직접 raise해도 _default_run_fn과 **같은
     분류 신호**로 정규화한다 — 스폰 단계 예외(_LAUNCH_STAGE_ERRORS)만 RUN_RESULT_LAUNCH_FAILED 이고,
     그 밖의 OSError는 전송 후일 수 있어 미분류 실패로 남긴다(폴백 금지·중복 외부 전송 차단).
 
     `codex_egress`는 감사 라벨만 전달한다 — 승격 증명이 붙은 실행도 argv/env/timeout/권한축을
     바꾸지 않고 기존 드라이버를 그대로 탄다(엔진은 sandbox 를 해제하지 않는다).
+
+    `resume_session_id`/`ticket`/`base_rev` 는 이 실행의 **장부 구조화 필드**다. 재개 id 는 지원
+    선언표를 통과한 축에서만 받는다(미지원 축으로 미검증 argv 가 나가지 않는다).
     """
+    relay = _load_relay()
+    if resume_session_id is not None and not relay.harness_supports_resume(harness):
+        raise DelegateError(
+            f"{harness} 하네스는 세션 재사용 미지원인데 재개 id 가 전달됐다 — "
+            "미검증 argv 를 만들지 않는다."
+        )
     env = build_env(harness)
     argv, stdin_text, prompt_path = _prepare_attempt_transport(
-        harness, model, reasoning, role, cwd, prompt, output_dir
+        harness, model, reasoning, role, cwd, prompt, output_dir,
+        resume_session_id,
     )
 
     # raw 경로와 미마감 장부는 외부 프로세스 실행 전에 확정한다. 이 순서가 하네스 Bash/stdout
@@ -2827,15 +3041,23 @@ def _execute_attempt(
     # 레코드가 의도적으로 미마감 상태로 남아 kill/비정상 종료의 조회 입력이 된다.
     raw_path = _reserve_raw_output(harness, output_dir)
     _raw_dir, ledger_path = _raw_storage(output_dir)
-    relay = _load_relay()
     record_id = relay.start_raw_record(
         ledger_path,
-        surface="delegate",
+        surface=DELEGATE_RAW_SURFACE,
         harness=harness,
         model=model,
         role=role,
         raw_path=raw_path,
         attempt=attempt,
+        # 실행 **전**에 아는 구조화 필드 — 다음 라운드의 후보 선택(ticket)과 delta 기준(rev),
+        # 그리고 이 실행이 어떤 세션을 이어받으려 했는지가 장부 한 행에 남는다.
+        extra={
+            key: value for key, value in (
+                (RESUME_FIELD_TICKET, ticket),
+                (RESUME_FIELD_BASE_REV, base_rev),
+                (RESUME_FIELD_RESUME_FROM, resume_session_id),
+            ) if value is not None
+        },
     )
     started = time.monotonic()
     try:
@@ -2882,14 +3104,61 @@ def _execute_attempt(
             idle_killed=bool(result.get(RUN_RESULT_IDLE_KILLED, False)),
         ),
     )
+    observed = _observe_harness_result(harness, stdout)
     relay.finish_raw_record(
         ledger_path,
         record_id,
         rc=rc,
         elapsed_sec=elapsed,
         silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
+        extra=_finished_ledger_fields(observed, resume_session_id),
     )
-    return DelegateAttempt(harness, model, argv, result, raw_path)
+    return DelegateAttempt(
+        harness, model, argv, result, raw_path, observed.session_id,
+    )
+
+
+def _observe_harness_result(harness: str, stdout: str):
+    """회신 wire 1회 관측(회신·세션 id·usage) — 실패는 관측 없음으로 강등(비차단).
+
+    이 관측은 감사 보강이라 실패해도 위임 자체를 죽이지 않는다. 회수 경로의 fail-loud 는 종전
+    그대로 `extract_reply` 가 소유한다."""
+    relay = _load_relay()
+    if not stdout:
+        return relay.HarnessReply(None, None, None)
+    try:
+        return relay.extract_harness_result(harness, stdout)
+    except Exception as exc:  # noqa: BLE001 — 관측 실패가 실행/마감을 막지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
+        print(
+            f"경고: 회신 구조화 관측 실패({exc}) — 장부에 세션 id/usage 를 남기지 못합니다.",
+            file=sys.stderr,
+        )
+        return relay.HarnessReply(None, None, None)
+
+
+def _finished_ledger_fields(
+    observed, resume_session_id: str | None,
+) -> dict[str, object]:
+    """실행 **후**에야 아는 구조화 필드만 모은다(수집 못 한 값은 필드 자체를 안 만든다).
+
+    `usage` 는 하네스가 분해 관측을 준 축에서만 실린다 — 0 채우기·추정 매핑은 비용 표를
+    false-정밀하게 만든다. `must_fix_items` 는 생산 시점 추출이라 다음 라운드 delta 가 raw 텍스트를
+    재파싱하지 않아도 된다."""
+    fields: dict[str, object] = {}
+    if observed.session_id is not None:
+        fields[RESUME_FIELD_SESSION_ID] = observed.session_id
+    if observed.usage:
+        fields[RESUME_FIELD_USAGE] = dict(observed.usage)
+    items = _observed_must_fix_items(observed.reply)
+    if items:
+        fields[RESUME_FIELD_MUST_FIX] = items
+    if resume_session_id is not None:
+        fields[RESUME_FIELD_RESUME_MATCHED] = (
+            observed.session_id == resume_session_id
+        )
+    return fields
 
 
 # ── 위임 범위 밖 변경 감지 훅 (delegate_scope 판정 재사용·never-block) ──────
@@ -3428,6 +3697,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
                              "(생략 시 허용 경로 0·차단 아님)")
+    parser.add_argument("--resume-from", default=None, metavar="T-NNNN|RECORD-ID",
+                        help="직전 위임 세션을 이어받아 delta 만 보낸다(캐시 단가 재적재·도구 "
+                             "재읽기 0). 티켓 표기면 그 티켓·같은 역할의 성공 마감 레코드 중 "
+                             "started_at 최신 1건, 아니면 raw 장부 레코드 id 정확일치. 후보가 "
+                             "raw 장부 완료 보존 창 밖이거나 세션 id 형식이 어긋나거나 재개 "
+                             "미지원 하네스면 fresh + full payload 로 진행한다(안내 1줄·차단 아님)")
     parser.add_argument("--secret-scan-ack", default=None, metavar="DIGEST",
                         help="이번 합성 프롬프트의 차단을 사람이 발췌 확인 후 건별 승인"
                              "(digest는 합성 프롬프트 전문 + 해소된 primary 수신자 harness:model에 결속"
@@ -3733,10 +4008,22 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     adapter_roots = _resolved_adapter_directories()
     prompt = _role_preamble(args.role, adapter_roots) + "\n\n" + task_text
 
+    # 세션 재사용 해소 — **전송 전 게이트보다 앞**이다. 재사용 라운드가 실제로 내보내는 건 delta
+    # payload 라, 게이트(재앵커·시크릿 스캔)가 그걸 못 보면 검사받지 않은 본문이 나간다. 재사용
+    # 실패 시 full payload 로 돌아가므로 두 본문 **모두**를 게이트 입력으로 합친다.
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    resume = resolve_resume_plan(
+        args.resume_from, harness=harness, role=args.role,
+        task_text=task_text, output_dir=output_dir,
+    )
+    outgoing_text = (
+        prompt if resume is None else "\n".join((resume.delta_prompt, prompt))
+    )
+
     # 쓰기-타깃 axis 재앵커 게이트 (엔진 코드 write + PM 홈 cwd·dry-run 전 = 미리보기서 노출)
     # divergence와 같은 cwd repo 해소 입력을 기존 write-target 가드에도 재사용한다. 하위 디렉토리
     # `--cwd`가 PM 홈 가드를 우회하는 별도 판정축을 만들지 않는다.
-    reanchor = check_write_target_reanchor(args.role, cwd_repo or cwd, prompt)
+    reanchor = check_write_target_reanchor(args.role, cwd_repo or cwd, outgoing_text)
     if reanchor is not None:
         print(
             "오류: 엔진 코드(.project_manager/tools/) write 위임을 adopter#0 PM 홈 cwd 에서 실행했습니다 —\n"
@@ -3758,6 +4045,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # 전달하므로, dry-run argv 는 사용자 prompt-file 경로로 표시(실행 시 합성 파일로 대체).
     argv_display = _build_target_argv(
         harness, model, reasoning, args.role, cwd, prompt_file,
+        None if resume is None else resume.session_id,
     )
 
     # 타임아웃은 dry-run 미리보기(폴백 시간 예산 표시)와 실행이 같은 값을 쓴다. 값이 하네스별이라
@@ -3766,6 +4054,11 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     fallback_timeout = (_resolve_timeout(args, conf, fallback[0])
                         if fallback is not None else timeout)
     execution_budget = _harness_timeout_budget(harness, timeout)
+    if resume is not None:
+        # 재사용 라운드는 primary 축을 두 번 쓸 수 있다(재사용 turn → 세션 불일치 시 fresh
+        # 재실행). 그 뒤 인프라 폴백까지 겹치면 이 실행의 최악 스폰은 3회다 — 호출층 상한
+        # advisory 가 두 시도만 요구하면 하네스가 엔진 진단보다 먼저 kill 한다.
+        execution_budget += _harness_timeout_budget(harness, timeout)
     if fallback is not None:
         execution_budget += _harness_timeout_budget(fallback[0], fallback_timeout)
     cap_warning = harness_cap_advisory(execution_budget=execution_budget)
@@ -3774,9 +4067,10 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
 
     # 시크릿 판정은 dry-run과 실행이 같은 exhaustive 결과를 쓴다. 기존 첫-hit API/판정 순서는
     # `scan_prompt_secrets()`에 그대로 남고, 사람 승인 경로만 모든 hit를 끝까지 수집한다.
-    secret_hits = scan_prompt_secret_hits(prompt)
+    secret_hits = scan_prompt_secret_hits(outgoing_text)
     prompt_digest = (
-        secret_scan_prompt_digest(prompt, harness, model) if secret_hits else None
+        secret_scan_prompt_digest(outgoing_text, harness, model)
+        if secret_hits else None
     )
 
     # 실제 실행의 시크릿 승인/차단을 fallback 분기 비교보다 먼저 확정한다. 유효 승인은 fallback을
@@ -3912,8 +4206,18 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             print(f"승인 digest 미리보기: {prompt_digest}")
         else:
             print("시크릿 스캔: 통과 (탐지 0건)")
+        if args.resume_from is not None:
+            # 재사용을 **요청한** 실행만 이 줄을 낸다(미요청 실행의 미리보기 형상은 불변).
+            print(
+                "세션 재사용: 미적용 — fresh + full payload (사유는 stderr 안내)"
+                if resume is None else
+                f"세션 재사용: session_id={resume.session_id} "
+                f"· 장부 레코드={resume.record_id} · delta payload 송신 "
+                f"(세션 불일치 시 fresh 재실행 1회 = primary 예산 "
+                f"{_harness_timeout_budget(harness, timeout)}s 추가)"
+            )
         print("--- 합성 프롬프트 ---")
-        print(prompt)
+        print(prompt if resume is None else resume.delta_prompt)
         print("=== [dry-run] 외부 호출 생략 ===")
         return 0
 
@@ -3939,8 +4243,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
 
     # env allowlist 정제 + 실행. 인프라 실패일 때만 명시 폴백을 같은 드라이버 계약으로
     # 1회 실행한다(최악 소요 = 두 시도의 하네스별 예산 합·2차 폴백 없음). 보안/재앵커 게이트는 이
-    # 지점보다 앞이라 폴백 대상이 될 수 없다.
-    output_dir = Path(args.output_dir) if args.output_dir else None
+    # 지점보다 앞이라 폴백 대상이 될 수 없다. (`output_dir` 은 재사용 후보 조회에 먼저 쓰였다.)
     _run = run_fn or _default_run_fn
 
     # 범위 판정 캡처 — **위임 전체 단위**로 1회. 폴백 attempt 도 같은 위임의 일부라
@@ -3960,6 +4263,12 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             local_conf_path=conf_path,
             profile_source=profile_source,
             codex_egress=codex_egress,
+            resume=resume,
+            ticket=args.ticket,
+            # 이 위임의 기준 rev — 이미 캡처한 실행-전 worktree 상태를 그대로 쓴다(추가 git 호출 0).
+            base_rev=(
+                scope_audit.before.head or None if scope_audit is not None else None
+            ),
         )
     finally:
         report_scope_audit(scope_audit, args.role)
@@ -3984,6 +4293,9 @@ def _execute_and_collect(
     local_conf_path: Path | None = None,
     profile_source: str = "local-conf",
     codex_egress: str = CODEX_EGRESS_NOT_REQUIRED,
+    resume: ResumePlan | None = None,
+    ticket: str | None = None,
+    base_rev: str | None = None,
 ) -> int:
     """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다.
 
@@ -3992,7 +4304,12 @@ def _execute_and_collect(
 
     `fallback_timeout` = 폴백 하네스의 벽시계 백스톱(미지정이면 primary 값). 값이 하네스별이라
     다른 축으로 폴백하면 예산도 그 축의 것이어야 한다(클라우드→로컬 GPU 폴백에서 로컬 작업이
-    클라우드 예산에 잘리는 걸 막는다)."""
+    클라우드 예산에 잘리는 걸 막는다).
+
+    `resume` 가 있으면 **delta payload 를 그 세션으로** 먼저 보낸다. 성공 판정은 회신 세션 id 가
+    요청한 id 와 같은가 하나뿐이고(rc 로 판정하지 않는다), 어긋나면 같은 라운드를 fresh + full
+    payload 로 1회 다시 실행한다 — 맥락 없는 세션에 delta 만 주면 그 라운드 산출이 수렴 추이를
+    오염시키기 때문이다. 그 라운드는 적재 비용을 한 번 더 지불한다(의도된 예외)."""
     try:
         primary = _execute_attempt(
             harness=harness,
@@ -4000,18 +4317,58 @@ def _execute_and_collect(
             reasoning=reasoning,
             role=args.role,
             cwd=cwd,
-            prompt=prompt,
+            prompt=prompt if resume is None else resume.delta_prompt,
             timeout=timeout,
             output_dir=output_dir,
             run_fn=run_fn,
-            attempt="primary",
+            attempt="primary" if resume is None else RESUME_ATTEMPT,
             secret_scan_ack_digest=secret_scan_ack_digest,
             secret_scan_ack_hits=secret_scan_ack_hits,
             suppress_fallback_for_ack=(fallback is not None),
             local_conf_path=local_conf_path,
             profile_source=profile_source,
             codex_egress=codex_egress,
+            resume_session_id=None if resume is None else resume.session_id,
+            ticket=ticket,
+            base_rev=base_rev,
         )
+        # 재실행은 **재사용 축의 실패에만** 쓴다. 스폰 실패·타임아웃·한도 같은 인프라 실패도
+        # 세션 id 를 못 남기므로 형식만 보면 "불일치"로 보이는데, 그때 같은 하네스로 full
+        # payload 를 다시 태우면 실패를 반복하고 그 뒤 인프라 폴백까지 겹쳐 한 위임이 세 번
+        # 스폰된다. 인프라 실패는 아래 분류·폴백 축이 이미 소유한다("No conversation found"
+        # 류의 미분류 rc≠0 은 여기 남아 계속 재실행된다).
+        if (
+            resume is not None
+            and primary.session_id != resume.session_id
+            and classify_infrastructure_failure(primary.result) is None
+        ):
+            print(
+                f"세션 재사용 실패: 요청 {resume.session_id} · 회신 "
+                f"{primary.session_id or '없음'} — fresh 스폰 + full payload 로 이 라운드를 "
+                f"1회 다시 실행합니다(적재 비용 1회 추가). resume raw: {primary.raw_path}",
+                file=sys.stderr,
+            )
+            primary = _execute_attempt(
+                harness=harness,
+                model=model,
+                reasoning=reasoning,
+                role=args.role,
+                cwd=cwd,
+                prompt=prompt,
+                timeout=timeout,
+                output_dir=output_dir,
+                run_fn=run_fn,
+                attempt=RESUME_FRESH_FALLBACK_ATTEMPT,
+                primary_raw=str(primary.raw_path),
+                secret_scan_ack_digest=secret_scan_ack_digest,
+                secret_scan_ack_hits=secret_scan_ack_hits,
+                suppress_fallback_for_ack=(fallback is not None),
+                local_conf_path=local_conf_path,
+                profile_source=profile_source,
+                codex_egress=codex_egress,
+                ticket=ticket,
+                base_rev=base_rev,
+            )
     except OSError as exc:
         print(f"오류: 위임 실행 준비/raw 박제 실패: {exc}", file=sys.stderr)
         return 1
@@ -4078,6 +4435,8 @@ def _execute_and_collect(
                 local_conf_path=local_conf_path,
                 profile_source="local-conf",
                 codex_egress=codex_egress,
+                ticket=ticket,
+                base_rev=base_rev,
             )
         except OSError as exc:
             print(

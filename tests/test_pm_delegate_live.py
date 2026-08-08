@@ -192,6 +192,66 @@ def test_delegate_live_claude(tmp_path, monkeypatch, capsys):
     _assert_delegate_ok(rc, reply, err, out_dir, "claude")
 
 
+@pytest.mark.skipif(
+    not PM_DELEGATE_LIVE or not shutil.which("claude"),
+    reason="pm_delegate 세션 재사용 라이브(claude) — PM_DELEGATE_LIVE=1 + claude CLI(API 과금) 필요. "
+           "기본 skip·on-demand.",
+)
+def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
+    """실 경로 2라운드 — R1 fresh 스폰 → `--resume-from` 으로 **같은 세션** 이어받기(T-0595 DoD).
+
+    R1 은 marker 인용까지 완주해 장부에 세션 id 를 남기고, R2 는 그 레코드 id 로 재개해 delta 만
+    보낸다. 판정은 세 가지다: R2 회신 세션 id 가 R1 과 같은가(장부 `resume_matched`), delta 가
+    실제로 나갔는가(R2 raw argv 에 재개 플래그), 그리고 **이어받은 컨텍스트로 답했는가**(R2
+    프롬프트는 README 를 다시 읽으라고 하지 않는데 marker 를 그대로 말한다 — fresh 세션이면 못
+    한다). 미일치면 엔진이 fresh + full payload 로 재실행하므로 라운드 수(장부 행)로도 갈린다."""
+    pd = _load_pd()
+    repo, prompt = _seed_repo(tmp_path)
+    out_dir = tmp_path / "raw"
+    rc, reply, err = _delegate(pd, monkeypatch, capsys, repo, prompt, "claude",
+                               CLAUDE_MODEL, "low", out_dir, _CLAUDE_TIMEOUT)
+    _assert_delegate_ok(rc, reply, err, out_dir, "claude")
+
+    ledger = out_dir / "raw_outputs.json"
+    rows = pd._load_relay().raw_records(ledger)
+    first = rows[0]
+    assert first.get("session_id"), f"R1 장부에 세션 id 부재 — 재개 불가.\n{first}"
+    assert first.get("usage"), f"R1 장부에 usage 분해 부재.\n{first}"
+
+    # R2 프롬프트는 README 를 다시 읽으라고 말하지 않는다 — 이어받은 세션만 답할 수 있는 질문이다.
+    followup = repo / "resume_prompt.txt"
+    followup.write_text(
+        "방금 네가 요약한 그 저장소에 대해 한 줄만 더 답하라. 방금 인용했던 교정 코드"
+        "(calibration code)를 그대로 다시 적고, 재고 스냅샷 주기를 한 단어로 덧붙여라. "
+        "파일을 새로 읽지 말고 이미 아는 내용으로만 답하라.",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pd, "local_config", lambda: {"delegate_enabled": "true"})
+    rc2 = pd.main([
+        "--role", "researcher", "--prompt-file", str(followup), "--cwd", str(repo),
+        "--harness", "claude", "--model", CLAUDE_MODEL, "--reasoning", "low",
+        "--output-dir", str(out_dir), "--timeout", str(_CLAUDE_TIMEOUT),
+        "--resume-from", first["id"],
+    ])
+    captured = capsys.readouterr()
+    tail = (f"\n--- stderr(tail) ---\n{captured.err[-1500:]}"
+            f"\n--- reply(tail) ---\n{captured.out[-800:]}")
+    assert rc2 == 0, f"resume 라운드 rc={rc2}" + tail
+    assert "세션 재사용 미적용" not in captured.err, "재개 시도 자체가 서지 않았다" + tail
+    assert "세션 재사용 실패" not in captured.err, (
+        "회신 세션 id 가 요청과 달라 fresh 로 폴백했다(재개 미성립)" + tail)
+    assert _MARKER in captured.out, (
+        "resume 회신에 marker 부재 — 이어받은 컨텍스트로 답하지 못했다(파일 재읽기 금지 지시)" + tail)
+
+    resumed = [row for row in pd._load_relay().raw_records(ledger)
+               if row.get("attempt") == pd.RESUME_ATTEMPT]
+    assert len(resumed) == 1, f"재개 attempt 레코드 수 이상: {len(resumed)}" + tail
+    assert resumed[0]["resume_matched"] is True, "장부가 세션 불일치를 기록" + tail
+    assert resumed[0]["session_id"] == first["session_id"]
+    raw_text = Path(resumed[0]["raw_path"]).read_text(encoding="utf-8")
+    assert first["session_id"] in raw_text, "재개 argv 가 raw 감사 헤더에 없다" + tail
+
+
 # ── release tier (livegate · PM_ORCH_LIVE_RELEASE=1) ──────────────────────────────
 @pytest.mark.release
 @pytest.mark.skipif(

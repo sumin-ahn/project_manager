@@ -216,8 +216,9 @@ _HARNESS_LITERAL_EXEMPTIONS = {
         "claude 실행 파일 토큰을 만드는 전용 argv 빌더",
     ("pm_relay", "build_opencode_argv"):
         "opencode 실행 파일 토큰을 만드는 전용 argv 빌더",
-    ("pm_relay", "extract_harness_reply"):
-        "하네스별 wire format 파서를 고르는 reply 디코더",
+    # 회신 디코더는 면제가 필요 없어졌다 — 하네스별 wire 어댑터가 모듈 레벨 선언표
+    # (`HARNESS_REPLY_ADAPTERS`)로 옮겨가 함수 본문에 하네스 리터럴이 남지 않는다(T-0595).
+    # 여기 다시 등재해야 한다면 그건 선언표를 되돌렸다는 뜻이다.
     ("pm_delegate", "_build_target_argv"):
         "세 전용 argv 빌더 중 하나를 고르는 전달 어댑터",
     ("pm_delegate", "_prepare_attempt_transport"):
